@@ -554,6 +554,16 @@ func (qh *QueueHandler) loadNotificationQueue() (model.NotificationQueue, string
 	return nq, path
 }
 
+// LockFiles acquires the shared file mutex for write handlers.
+func (qh *QueueHandler) LockFiles() {
+	qh.fileMu.Lock()
+}
+
+// UnlockFiles releases the shared file mutex for write handlers.
+func (qh *QueueHandler) UnlockFiles() {
+	qh.fileMu.Unlock()
+}
+
 func (qh *QueueHandler) log(level LogLevel, format string, args ...any) {
 	if level < qh.logLevel {
 		return

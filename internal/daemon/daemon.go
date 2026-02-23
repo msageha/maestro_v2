@@ -59,6 +59,7 @@ type Daemon struct {
 
 	handler     *QueueHandler
 	stateReader StateReader
+	lockMap     *lock.MutexMap
 
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -109,6 +110,7 @@ func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Close
 		fileLock:   lock.NewFileLock(filepath.Join(maestroDir, "daemon.lock")),
 		server:     server,
 		ticker:     time.NewTicker(time.Duration(scanInterval) * time.Second),
+		lockMap:    lock.NewMutexMap(),
 		ctx:        ctx,
 		cancel:     cancel,
 	}
@@ -189,6 +191,9 @@ func (d *Daemon) registerHandlers() {
 		d.handler.PeriodicScan()
 		return uds.SuccessResponse(map[string]string{"status": "scanned"})
 	})
+
+	d.server.Handle("queue_write", d.handleQueueWrite)
+	d.server.Handle("result_write", d.handleResultWrite)
 }
 
 // fsnotifyLoop processes filesystem change events.

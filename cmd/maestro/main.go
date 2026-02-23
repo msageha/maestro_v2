@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"gopkg.in/yaml.v3"
 
@@ -16,6 +17,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/plan"
 	"github.com/msageha/maestro_v2/internal/setup"
 	"github.com/msageha/maestro_v2/internal/status"
+	"github.com/msageha/maestro_v2/internal/uds"
 )
 
 const version = "2.0.0"
@@ -227,14 +229,361 @@ func runStatus(args []string) {
 	}
 }
 
-func runQueueWrite(_ []string) {
-	fmt.Fprintln(os.Stderr, "queue write: not yet implemented")
-	os.Exit(1)
+func runQueueWrite(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: maestro queue write <target> --type <command|task|notification|cancel-request> [options]")
+		os.Exit(1)
+	}
+
+	target := args[0]
+	rest := args[1:]
+
+	var writeType string
+	var content, commandID, purpose, acceptanceCriteria, sourceResultID, notificationType, reason string
+	var bloomLevel, priority int
+	var blockedBy, constraints, toolsHint []string
+
+	for i := 0; i < len(rest); i++ {
+		switch rest[i] {
+		case "--type":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "--type requires a value")
+				os.Exit(1)
+			}
+			i++
+			writeType = rest[i]
+		case "--content":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "--content requires a value")
+				os.Exit(1)
+			}
+			i++
+			content = rest[i]
+		case "--command-id":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "--command-id requires a value")
+				os.Exit(1)
+			}
+			i++
+			commandID = rest[i]
+		case "--purpose":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "--purpose requires a value")
+				os.Exit(1)
+			}
+			i++
+			purpose = rest[i]
+		case "--acceptance-criteria":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "--acceptance-criteria requires a value")
+				os.Exit(1)
+			}
+			i++
+			acceptanceCriteria = rest[i]
+		case "--bloom-level":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "--bloom-level requires a value")
+				os.Exit(1)
+			}
+			i++
+			n, err := strconv.Atoi(rest[i])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "invalid --bloom-level value: %s\n", rest[i])
+				os.Exit(1)
+			}
+			bloomLevel = n
+		case "--priority":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "--priority requires a value")
+				os.Exit(1)
+			}
+			i++
+			n, err := strconv.Atoi(rest[i])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "invalid --priority value: %s\n", rest[i])
+				os.Exit(1)
+			}
+			priority = n
+		case "--source-result-id":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "--source-result-id requires a value")
+				os.Exit(1)
+			}
+			i++
+			sourceResultID = rest[i]
+		case "--notification-type":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "--notification-type requires a value")
+				os.Exit(1)
+			}
+			i++
+			notificationType = rest[i]
+		case "--blocked-by":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "--blocked-by requires a value")
+				os.Exit(1)
+			}
+			i++
+			blockedBy = append(blockedBy, rest[i])
+		case "--constraint":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "--constraint requires a value")
+				os.Exit(1)
+			}
+			i++
+			constraints = append(constraints, rest[i])
+		case "--tools-hint":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "--tools-hint requires a value")
+				os.Exit(1)
+			}
+			i++
+			toolsHint = append(toolsHint, rest[i])
+		case "--reason":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "--reason requires a value")
+				os.Exit(1)
+			}
+			i++
+			reason = rest[i]
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", rest[i])
+			fmt.Fprintln(os.Stderr, "usage: maestro queue write <target> --type <command|task|notification|cancel-request> [options]")
+			os.Exit(1)
+		}
+	}
+
+	if writeType == "" {
+		fmt.Fprintln(os.Stderr, "--type is required")
+		fmt.Fprintln(os.Stderr, "usage: maestro queue write <target> --type <command|task|notification|cancel-request> [options]")
+		os.Exit(1)
+	}
+
+	params := map[string]any{
+		"target": target,
+		"type":   writeType,
+	}
+
+	switch writeType {
+	case "command":
+		if content == "" {
+			fmt.Fprintln(os.Stderr, "--content is required for type=command")
+			os.Exit(1)
+		}
+		params["content"] = content
+		if priority > 0 {
+			params["priority"] = priority
+		}
+	case "task":
+		if commandID == "" || content == "" || purpose == "" || acceptanceCriteria == "" || bloomLevel == 0 {
+			fmt.Fprintln(os.Stderr, "required for type=task: --command-id, --content, --purpose, --acceptance-criteria, --bloom-level")
+			os.Exit(1)
+		}
+		params["command_id"] = commandID
+		params["content"] = content
+		params["purpose"] = purpose
+		params["acceptance_criteria"] = acceptanceCriteria
+		params["bloom_level"] = bloomLevel
+		if priority > 0 {
+			params["priority"] = priority
+		}
+		if len(blockedBy) > 0 {
+			params["blocked_by"] = blockedBy
+		}
+		if len(constraints) > 0 {
+			params["constraints"] = constraints
+		}
+		if len(toolsHint) > 0 {
+			params["tools_hint"] = toolsHint
+		}
+	case "notification":
+		if commandID == "" || content == "" || sourceResultID == "" {
+			fmt.Fprintln(os.Stderr, "required for type=notification: --command-id, --content, --source-result-id")
+			os.Exit(1)
+		}
+		params["command_id"] = commandID
+		params["content"] = content
+		params["source_result_id"] = sourceResultID
+		if notificationType != "" {
+			params["notification_type"] = notificationType
+		}
+		if priority > 0 {
+			params["priority"] = priority
+		}
+	case "cancel-request":
+		if commandID == "" {
+			fmt.Fprintln(os.Stderr, "required for type=cancel-request: --command-id")
+			os.Exit(1)
+		}
+		params["command_id"] = commandID
+		if reason != "" {
+			params["reason"] = reason
+		}
+	default:
+		fmt.Fprintf(os.Stderr, "unknown type: %s\n", writeType)
+		fmt.Fprintln(os.Stderr, "usage: maestro queue write <target> --type <command|task|notification|cancel-request> [options]")
+		os.Exit(1)
+	}
+
+	sendQueueWrite(params)
 }
 
-func runResultWrite(_ []string) {
-	fmt.Fprintln(os.Stderr, "result write: not yet implemented")
-	os.Exit(1)
+func sendQueueWrite(params map[string]any) {
+	maestroDir := findMaestroDir()
+	if maestroDir == "" {
+		fmt.Fprintln(os.Stderr, "error: .maestro/ directory not found. Run 'maestro setup <dir>' first.")
+		os.Exit(1)
+	}
+
+	client := uds.NewClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	resp, err := client.SendCommand("queue_write", params)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "queue write: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !resp.Success {
+		code := ""
+		msg := "unknown error"
+		if resp.Error != nil {
+			code = resp.Error.Code
+			msg = resp.Error.Message
+		}
+		fmt.Fprintf(os.Stderr, "queue write failed [%s]: %s\n", code, msg)
+		if code == "BACKPRESSURE" {
+			os.Exit(2)
+		}
+		os.Exit(1)
+	}
+
+	out, _ := json.MarshalIndent(json.RawMessage(resp.Data), "", "  ")
+	fmt.Println(string(out))
+}
+
+func runResultWrite(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: maestro result write <reporter> [options]")
+		os.Exit(1)
+	}
+
+	reporter := args[0]
+	rest := args[1:]
+
+	var taskID, commandID, resultStatus, summary string
+	var leaseEpoch int
+	var filesChanged []string
+	var partialChangesPossible, noRetrySafe bool
+
+	for i := 0; i < len(rest); i++ {
+		switch rest[i] {
+		case "--task-id":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "--task-id requires a value")
+				os.Exit(1)
+			}
+			i++
+			taskID = rest[i]
+		case "--command-id":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "--command-id requires a value")
+				os.Exit(1)
+			}
+			i++
+			commandID = rest[i]
+		case "--lease-epoch":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "--lease-epoch requires a value")
+				os.Exit(1)
+			}
+			i++
+			n, err := strconv.Atoi(rest[i])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "invalid --lease-epoch value: %s\n", rest[i])
+				os.Exit(1)
+			}
+			leaseEpoch = n
+		case "--status":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "--status requires a value")
+				os.Exit(1)
+			}
+			i++
+			resultStatus = rest[i]
+		case "--summary":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "--summary requires a value")
+				os.Exit(1)
+			}
+			i++
+			summary = rest[i]
+		case "--files-changed":
+			if i+1 >= len(rest) {
+				fmt.Fprintln(os.Stderr, "--files-changed requires a value")
+				os.Exit(1)
+			}
+			i++
+			filesChanged = append(filesChanged, rest[i])
+		case "--partial-changes":
+			partialChangesPossible = true
+		case "--no-retry-safe":
+			noRetrySafe = true
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", rest[i])
+			fmt.Fprintln(os.Stderr, "usage: maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>] [--files-changed <file>]... [--partial-changes] [--no-retry-safe]")
+			os.Exit(1)
+		}
+	}
+
+	if taskID == "" || commandID == "" || resultStatus == "" {
+		fmt.Fprintln(os.Stderr, "usage: maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>]")
+		os.Exit(1)
+	}
+
+	maestroDir := findMaestroDir()
+	if maestroDir == "" {
+		fmt.Fprintln(os.Stderr, "error: .maestro/ directory not found. Run 'maestro setup <dir>' first.")
+		os.Exit(1)
+	}
+
+	params := map[string]any{
+		"reporter":    reporter,
+		"task_id":     taskID,
+		"command_id":  commandID,
+		"lease_epoch": leaseEpoch,
+		"status":      resultStatus,
+		"summary":     summary,
+		"retry_safe":  !noRetrySafe,
+	}
+	if len(filesChanged) > 0 {
+		params["files_changed"] = filesChanged
+	}
+	if partialChangesPossible {
+		params["partial_changes_possible"] = true
+	}
+
+	client := uds.NewClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	resp, err := client.SendCommand("result_write", params)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "result write: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !resp.Success {
+		code := ""
+		msg := "unknown error"
+		if resp.Error != nil {
+			code = resp.Error.Code
+			msg = resp.Error.Message
+		}
+		fmt.Fprintf(os.Stderr, "result write failed [%s]: %s\n", code, msg)
+		if code == "FENCING_REJECT" {
+			os.Exit(2)
+		}
+		os.Exit(1)
+	}
+
+	out, _ := json.MarshalIndent(json.RawMessage(resp.Data), "", "  ")
+	fmt.Println(string(out))
 }
 
 func runPlanSubmit(args []string) {
@@ -421,7 +770,12 @@ func runPlanAddRetryTask(args []string) {
 				os.Exit(1)
 			}
 			i++
-			fmt.Sscanf(args[i], "%d", &bloomLevel)
+			n, err := strconv.Atoi(args[i])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "invalid --bloom-level value: %s\n", args[i])
+				os.Exit(1)
+			}
+			bloomLevel = n
 		case "--blocked-by":
 			if i+1 >= len(args) {
 				fmt.Fprintln(os.Stderr, "--blocked-by requires a value")
