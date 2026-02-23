@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 	yamlv3 "gopkg.in/yaml.v3"
@@ -26,6 +27,9 @@ type QueueHandler struct {
 	dispatcher         *Dispatcher
 	dependencyResolver *DependencyResolver
 	cancelHandler      *CancelHandler
+	resultHandler      *ResultHandler
+	reconciler         *Reconciler
+	lockMap            *lock.MutexMap
 
 	// Debounce state
 	debounceMu    sync.Mutex
@@ -40,11 +44,13 @@ type QueueHandler struct {
 }
 
 // NewQueueHandler creates a new QueueHandler with all sub-modules.
-func NewQueueHandler(maestroDir string, cfg model.Config, logger *log.Logger, logLevel LogLevel) *QueueHandler {
+func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel) *QueueHandler {
 	lm := NewLeaseManager(cfg.Watcher, logger, logLevel)
 	dispatcher := NewDispatcher(maestroDir, cfg, lm, logger, logLevel)
 	dr := NewDependencyResolver(nil, logger, logLevel) // StateReader wired in Phase 6
 	ch := NewCancelHandler(maestroDir, cfg, logger, logLevel)
+	rh := NewResultHandler(maestroDir, cfg, lockMap, logger, logLevel)
+	rec := NewReconciler(maestroDir, cfg, lockMap, logger, logLevel)
 
 	return &QueueHandler{
 		maestroDir:         maestroDir,
@@ -55,6 +61,9 @@ func NewQueueHandler(maestroDir string, cfg model.Config, logger *log.Logger, lo
 		dispatcher:         dispatcher,
 		dependencyResolver: dr,
 		cancelHandler:      ch,
+		resultHandler:      rh,
+		reconciler:         rec,
+		lockMap:            lockMap,
 	}
 }
 
@@ -67,6 +76,7 @@ func (qh *QueueHandler) SetStateReader(reader StateReader) {
 func (qh *QueueHandler) SetExecutorFactory(f ExecutorFactory) {
 	qh.dispatcher.SetExecutorFactory(f)
 	qh.cancelHandler.SetExecutorFactory(f)
+	qh.resultHandler.SetExecutorFactory(f)
 }
 
 // SetBusyChecker overrides the busy checker for testing.
@@ -93,7 +103,9 @@ func (qh *QueueHandler) HandleFileEvent(filePath string) {
 		qh.debounceAndScan(base)
 	} else if dir == "results" {
 		qh.log(LogLevelDebug, "result_event file=%s", base)
-		// Result processing is Phase 7 scope
+		if qh.resultHandler != nil {
+			qh.resultHandler.HandleResultFileEvent(filePath)
+		}
 	}
 }
 
@@ -121,7 +133,7 @@ func (qh *QueueHandler) debounceAndScan(trigger string) {
 }
 
 // PeriodicScan executes all scan steps in order.
-// Steps: 0 (dead_letter, Phase 9) → 0.5 → 0.6 → 0.7 → 1 → 1.5 → 2
+// Steps: 0 (dead_letter, Phase 9) → 0.5 → 0.6 → 0.7 → 1 → 1.5 → 2 → flush → 2.5 → 3
 func (qh *QueueHandler) PeriodicScan() {
 	qh.fileMu.Lock()
 	defer qh.fileMu.Unlock()
@@ -229,7 +241,8 @@ func (qh *QueueHandler) PeriodicScan() {
 	qh.recoverExpiredCommandLeases(&commandQueue, &commandsDirty)
 	qh.recoverExpiredNotificationLeases(&notificationQueue, &notificationsDirty)
 
-	// Write dirty queues
+	// Flush dirty queues to disk BEFORE Step 2.5/3 to prevent stale in-memory
+	// copies from overwriting disk changes made by ResultHandler/Reconciler.
 	if commandsDirty && commandPath != "" {
 		if err := yamlutil.AtomicWrite(commandPath, commandQueue); err != nil {
 			qh.log(LogLevelError, "write_commands error=%v", err)
@@ -243,8 +256,29 @@ func (qh *QueueHandler) PeriodicScan() {
 		}
 	}
 	if notificationsDirty && notificationPath != "" {
+		qh.lockMap.Lock("queue:orchestrator")
 		if err := yamlutil.AtomicWrite(notificationPath, notificationQueue); err != nil {
 			qh.log(LogLevelError, "write_notifications error=%v", err)
+		}
+		qh.lockMap.Unlock("queue:orchestrator")
+	}
+
+	// Step 2.5: Result notification retry (scan all results/ for unnotified entries)
+	// Runs AFTER flushing dirty queues so ResultHandler reads fresh disk state.
+	if qh.resultHandler != nil {
+		n := qh.resultHandler.ScanAllResults()
+		if n > 0 {
+			qh.log(LogLevelInfo, "result_notify_scan notified=%d", n)
+		}
+	}
+
+	// Step 3: Reconciliation
+	// Runs AFTER flushing dirty queues so Reconciler reads fresh disk state.
+	if qh.reconciler != nil {
+		repairs := qh.reconciler.Reconcile()
+		for _, repair := range repairs {
+			qh.log(LogLevelInfo, "reconciliation pattern=%s command=%s task=%s detail=%s",
+				repair.Pattern, repair.CommandID, repair.TaskID, repair.Detail)
 		}
 	}
 

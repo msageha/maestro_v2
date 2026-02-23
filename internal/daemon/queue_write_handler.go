@@ -310,7 +310,12 @@ func (d *Daemon) handleQueueWriteCancelRequest(params QueueWriteParams) *uds.Res
 
 // cancelRequestSubmitted handles cancel-request for already-submitted commands.
 // Sets cancel.requested=true on the state file (idempotent).
+// Lock order: fileMu → lockMap (consistent with PeriodicScan → Reconciler).
 func (d *Daemon) cancelRequestSubmitted(params QueueWriteParams, statePath string) *uds.Response {
+	// Acquire locks in consistent order: fileMu → lockMap to prevent deadlock.
+	d.acquireFileLock()
+	defer d.releaseFileLock()
+
 	d.lockMap.Lock("state:" + params.CommandID)
 	defer d.lockMap.Unlock("state:" + params.CommandID)
 
@@ -342,10 +347,7 @@ func (d *Daemon) cancelRequestSubmitted(params QueueWriteParams, statePath strin
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write state: %v", err))
 	}
 
-	// Also update queue/planner.yaml cancel metadata
-	d.acquireFileLock()
-	defer d.releaseFileLock()
-
+	// Also update queue/planner.yaml cancel metadata (already under fileMu)
 	queuePath := filepath.Join(d.maestroDir, "queue", "planner.yaml")
 	cq, _, err := loadCommandQueueFile(queuePath)
 	if err == nil {

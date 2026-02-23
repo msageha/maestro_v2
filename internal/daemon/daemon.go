@@ -149,7 +149,7 @@ func (d *Daemon) Run() error {
 	}
 
 	// Step 3: Init queue handler
-	d.handler = NewQueueHandler(d.maestroDir, d.config, d.logger, d.logLevel)
+	d.handler = NewQueueHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
 
 	// Step 3.5: Wire state reader for dependency resolution (Phase 6)
 	if d.stateReader != nil {

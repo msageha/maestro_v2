@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 	yamlv3 "gopkg.in/yaml.v3"
@@ -32,7 +33,7 @@ func newTestQueueHandler(maestroDir string) *QueueHandler {
 		Watcher: model.WatcherConfig{DispatchLeaseSec: 300},
 		Queue:   model.QueueConfig{PriorityAgingSec: 60},
 	}
-	qh := NewQueueHandler(maestroDir, cfg, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	qh := NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
 	// Use mock executor to avoid tmux dependency
 	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
