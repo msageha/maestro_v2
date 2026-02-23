@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,8 +10,10 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/daemon"
+	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/notify"
+	"github.com/msageha/maestro_v2/internal/plan"
 	"github.com/msageha/maestro_v2/internal/setup"
 	"github.com/msageha/maestro_v2/internal/status"
 )
@@ -165,6 +168,12 @@ func runDaemon(_ []string) {
 		os.Exit(1)
 	}
 
+	// Wire Phase 6 state reader for dependency resolution
+	lockMap := lock.NewMutexMap()
+	sm := plan.NewStateManager(maestroDir, lockMap)
+	reader := plan.NewPlanStateReader(sm)
+	d.SetStateReader(reader)
+
 	if err := d.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "daemon: %v\n", err)
 		os.Exit(1)
@@ -228,29 +237,344 @@ func runResultWrite(_ []string) {
 	os.Exit(1)
 }
 
-func runPlanSubmit(_ []string) {
-	fmt.Fprintln(os.Stderr, "plan submit: not yet implemented")
-	os.Exit(1)
+func runPlanSubmit(args []string) {
+	var commandID, tasksFile, phaseName string
+	dryRun := false
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--command-id":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--command-id requires a value")
+				os.Exit(1)
+			}
+			i++
+			commandID = args[i]
+		case "--tasks-file":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--tasks-file requires a value")
+				os.Exit(1)
+			}
+			i++
+			tasksFile = args[i]
+		case "--phase":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--phase requires a value")
+				os.Exit(1)
+			}
+			i++
+			phaseName = args[i]
+		case "--dry-run":
+			dryRun = true
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
+			fmt.Fprintln(os.Stderr, "usage: maestro plan submit --command-id <id> [--tasks-file <path>] [--phase <name>] [--dry-run]")
+			os.Exit(1)
+		}
+	}
+
+	if commandID == "" {
+		fmt.Fprintln(os.Stderr, "usage: maestro plan submit --command-id <id> [--tasks-file <path>] [--phase <name>] [--dry-run]")
+		os.Exit(1)
+	}
+
+	if tasksFile == "" {
+		tasksFile = "-" // default to stdin
+	}
+
+	maestroDir := findMaestroDir()
+	if maestroDir == "" {
+		fmt.Fprintln(os.Stderr, "error: .maestro/ directory not found. Run 'maestro setup <dir>' first.")
+		os.Exit(1)
+	}
+
+	cfg, err := loadConfig(maestroDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	result, err := plan.Submit(plan.SubmitOptions{
+		CommandID:  commandID,
+		TasksFile:  tasksFile,
+		PhaseName:  phaseName,
+		DryRun:     dryRun,
+		MaestroDir: maestroDir,
+		Config:     cfg,
+	})
+	if err != nil {
+		if verrs, ok := err.(*plan.ValidationErrors); ok {
+			fmt.Fprint(os.Stderr, verrs.FormatStderr())
+		} else {
+			fmt.Fprintf(os.Stderr, "%v\n", err)
+		}
+		os.Exit(1)
+	}
+
+	out, _ := json.MarshalIndent(result, "", "  ")
+	fmt.Println(string(out))
 }
 
-func runPlanComplete(_ []string) {
-	fmt.Fprintln(os.Stderr, "plan complete: not yet implemented")
-	os.Exit(1)
+func runPlanComplete(args []string) {
+	var commandID, summary string
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--command-id":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--command-id requires a value")
+				os.Exit(1)
+			}
+			i++
+			commandID = args[i]
+		case "--summary":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--summary requires a value")
+				os.Exit(1)
+			}
+			i++
+			summary = args[i]
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
+			fmt.Fprintln(os.Stderr, "usage: maestro plan complete --command-id <id> --summary <text>")
+			os.Exit(1)
+		}
+	}
+
+	if commandID == "" {
+		fmt.Fprintln(os.Stderr, "usage: maestro plan complete --command-id <id> --summary <text>")
+		os.Exit(1)
+	}
+
+	maestroDir := findMaestroDir()
+	if maestroDir == "" {
+		fmt.Fprintln(os.Stderr, "error: .maestro/ directory not found. Run 'maestro setup <dir>' first.")
+		os.Exit(1)
+	}
+
+	cfg, err := loadConfig(maestroDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	result, err := plan.Complete(plan.CompleteOptions{
+		CommandID:  commandID,
+		Summary:    summary,
+		MaestroDir: maestroDir,
+		Config:     cfg,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+
+	out, _ := json.MarshalIndent(result, "", "  ")
+	fmt.Println(string(out))
 }
 
-func runPlanAddRetryTask(_ []string) {
-	fmt.Fprintln(os.Stderr, "plan add-retry-task: not yet implemented")
-	os.Exit(1)
+func runPlanAddRetryTask(args []string) {
+	var commandID, retryOf, purpose, content, acceptanceCriteria string
+	var bloomLevel int
+	var blockedBy []string
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--command-id":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--command-id requires a value")
+				os.Exit(1)
+			}
+			i++
+			commandID = args[i]
+		case "--retry-of":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--retry-of requires a value")
+				os.Exit(1)
+			}
+			i++
+			retryOf = args[i]
+		case "--purpose":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--purpose requires a value")
+				os.Exit(1)
+			}
+			i++
+			purpose = args[i]
+		case "--content":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--content requires a value")
+				os.Exit(1)
+			}
+			i++
+			content = args[i]
+		case "--acceptance-criteria":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--acceptance-criteria requires a value")
+				os.Exit(1)
+			}
+			i++
+			acceptanceCriteria = args[i]
+		case "--bloom-level":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--bloom-level requires a value")
+				os.Exit(1)
+			}
+			i++
+			fmt.Sscanf(args[i], "%d", &bloomLevel)
+		case "--blocked-by":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--blocked-by requires a value")
+				os.Exit(1)
+			}
+			i++
+			blockedBy = append(blockedBy, args[i])
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
+			fmt.Fprintln(os.Stderr, "usage: maestro plan add-retry-task --command-id <id> --retry-of <task_id> --purpose <text> --content <text> --acceptance-criteria <text> --bloom-level <n> [--blocked-by <task_id>]...")
+			os.Exit(1)
+		}
+	}
+
+	if commandID == "" || retryOf == "" || purpose == "" || content == "" || acceptanceCriteria == "" || bloomLevel == 0 {
+		fmt.Fprintln(os.Stderr, "usage: maestro plan add-retry-task --command-id <id> --retry-of <task_id> --purpose <text> --content <text> --acceptance-criteria <text> --bloom-level <n> [--blocked-by <task_id>]...")
+		os.Exit(1)
+	}
+
+	maestroDir := findMaestroDir()
+	if maestroDir == "" {
+		fmt.Fprintln(os.Stderr, "error: .maestro/ directory not found. Run 'maestro setup <dir>' first.")
+		os.Exit(1)
+	}
+
+	cfg, err := loadConfig(maestroDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	result, err := plan.AddRetryTask(plan.RetryOptions{
+		CommandID:          commandID,
+		RetryOf:            retryOf,
+		Purpose:            purpose,
+		Content:            content,
+		AcceptanceCriteria: acceptanceCriteria,
+		BlockedBy:          blockedBy,
+		BloomLevel:         bloomLevel,
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+
+	out, _ := json.MarshalIndent(result, "", "  ")
+	fmt.Println(string(out))
 }
 
-func runPlanRequestCancel(_ []string) {
-	fmt.Fprintln(os.Stderr, "plan request-cancel: not yet implemented")
-	os.Exit(1)
+func runPlanRequestCancel(args []string) {
+	var commandID, requestedBy, reason string
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--command-id":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--command-id requires a value")
+				os.Exit(1)
+			}
+			i++
+			commandID = args[i]
+		case "--requested-by":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--requested-by requires a value")
+				os.Exit(1)
+			}
+			i++
+			requestedBy = args[i]
+		case "--reason":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--reason requires a value")
+				os.Exit(1)
+			}
+			i++
+			reason = args[i]
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
+			fmt.Fprintln(os.Stderr, "usage: maestro plan request-cancel --command-id <id> [--requested-by <agent>] [--reason <text>]")
+			os.Exit(1)
+		}
+	}
+
+	if commandID == "" {
+		fmt.Fprintln(os.Stderr, "usage: maestro plan request-cancel --command-id <id> [--requested-by <agent>] [--reason <text>]")
+		os.Exit(1)
+	}
+
+	if requestedBy == "" {
+		requestedBy = "cli"
+	}
+
+	maestroDir := findMaestroDir()
+	if maestroDir == "" {
+		fmt.Fprintln(os.Stderr, "error: .maestro/ directory not found. Run 'maestro setup <dir>' first.")
+		os.Exit(1)
+	}
+
+	err := plan.RequestCancel(plan.RequestCancelOptions{
+		CommandID:   commandID,
+		RequestedBy: requestedBy,
+		Reason:      reason,
+		MaestroDir:  maestroDir,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("cancel requested for command %s\n", commandID)
 }
 
-func runPlanRebuild(_ []string) {
-	fmt.Fprintln(os.Stderr, "plan rebuild: not yet implemented")
-	os.Exit(1)
+func runPlanRebuild(args []string) {
+	var commandID string
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--command-id":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--command-id requires a value")
+				os.Exit(1)
+			}
+			i++
+			commandID = args[i]
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
+			fmt.Fprintln(os.Stderr, "usage: maestro plan rebuild --command-id <id>")
+			os.Exit(1)
+		}
+	}
+
+	if commandID == "" {
+		fmt.Fprintln(os.Stderr, "usage: maestro plan rebuild --command-id <id>")
+		os.Exit(1)
+	}
+
+	maestroDir := findMaestroDir()
+	if maestroDir == "" {
+		fmt.Fprintln(os.Stderr, "error: .maestro/ directory not found. Run 'maestro setup <dir>' first.")
+		os.Exit(1)
+	}
+
+	err := plan.Rebuild(plan.RebuildOptions{
+		CommandID:  commandID,
+		MaestroDir: maestroDir,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("state rebuilt for command %s\n", commandID)
 }
 
 func runAgentLaunch(_ []string) {

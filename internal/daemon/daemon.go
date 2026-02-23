@@ -57,7 +57,8 @@ type Daemon struct {
 	watcher  *fsnotify.Watcher
 	ticker   *time.Ticker
 
-	handler *QueueHandler
+	handler     *QueueHandler
+	stateReader StateReader
 
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -65,6 +66,12 @@ type Daemon struct {
 	shutdown sync.Once
 
 	forceExit atomic.Bool
+}
+
+// SetStateReader sets the state reader for dependency resolution (Phase 6).
+// Must be called before Run().
+func (d *Daemon) SetStateReader(reader StateReader) {
+	d.stateReader = reader
 }
 
 // New creates a new Daemon instance.
@@ -141,6 +148,11 @@ func (d *Daemon) Run() error {
 
 	// Step 3: Init queue handler
 	d.handler = NewQueueHandler(d.maestroDir, d.config, d.logger, d.logLevel)
+
+	// Step 3.5: Wire state reader for dependency resolution (Phase 6)
+	if d.stateReader != nil {
+		d.handler.SetStateReader(d.stateReader)
+	}
 
 	// Step 4: Register UDS handlers
 	d.registerHandlers()
