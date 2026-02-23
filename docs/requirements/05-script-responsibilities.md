@@ -924,11 +924,11 @@ Queue ハンドラが Planner にコマンドを配信する際、以下の固�
 
 content: {content}
 
-タスク分解後: maestro plan submit {command_id} --stdin < plan.yaml
-全タスク完了後: maestro plan complete {command_id} --status <completed|failed> --summary "..."
+タスク分解後: maestro plan submit --command-id {command_id} --tasks-file plan.yaml
+全タスク完了後: maestro plan complete --command-id {command_id} --summary "..."
 ```
 
-> Planner の terminal アクションは `plan submit`（タスク分解結果の提出）と `plan complete`（コマンド完了報告）の 2 つのみ。`command_id` はテンプレートにプリフィルされているため、Planner が値を記憶・管理する必要はない。コマンドには Worker タスクのような `purpose` / `acceptance_criteria` / `constraints` フィールドは存在しないため、エンベロープにも含めない。
+> Planner の terminal アクションは `plan submit`（タスク分解結果の提出）と `plan complete`（コマンド完了報告）の 2 つのみ。`plan complete` のステータスは `can-complete` からデーモンが自動導出するため、Planner は `--status` を指定しない。`command_id` はテンプレートにプリフィルされているため、Planner が値を記憶・管理する必要はない。コマンドには Worker タスクのような `purpose` / `acceptance_criteria` / `constraints` フィールドは存在しないため、エンベロープにも含めない。
 
 **Orchestrator 向け通知配信エンベロープ**:
 
