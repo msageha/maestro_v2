@@ -1,0 +1,62 @@
+project:
+  name: ""
+  description: ""
+
+maestro:
+  version: "2.0.0"
+  created: ""
+  project_root: ""
+
+agents:
+  orchestrator:
+    id: "orchestrator"
+    model: "opus"
+  planner:
+    id: "planner"
+    model: "opus"
+  workers:
+    count: 4
+    default_model: "sonnet"
+    models: {}
+    boost: false
+
+continuous:
+  enabled: false
+  max_iterations: 10
+  pause_on_failure: true
+
+notify:
+  enabled: true
+
+watcher:
+  debounce_sec: 0.3
+  scan_interval_sec: 60
+  dispatch_lease_sec: 120
+  max_in_progress_min: 30
+  busy_check_interval: 2
+  busy_check_max_retries: 30
+  busy_patterns: "Working|Thinking|Planning|Sending|Searching"
+  idle_stable_sec: 5
+  cooldown_after_clear: 3
+  notify_lease_sec: 120
+
+retry:
+  command_dispatch: 5
+  task_dispatch: 5
+  orchestrator_notification_dispatch: 10
+  result_notification_send: 10
+
+queue:
+  priority_aging_sec: 300
+
+limits:
+  max_pending_commands: 20
+  max_pending_tasks_per_worker: 10
+  max_entry_content_bytes: 65536
+  max_yaml_file_bytes: 5242880
+
+daemon:
+  shutdown_timeout_sec: 90
+
+logging:
+  level: "info"

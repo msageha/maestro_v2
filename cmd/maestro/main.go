@@ -3,6 +3,11 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+
+	"github.com/msageha/maestro_v2/internal/notify"
+	"github.com/msageha/maestro_v2/internal/setup"
+	"github.com/msageha/maestro_v2/internal/status"
 )
 
 const version = "2.0.0"
@@ -141,9 +146,17 @@ func runDaemon(_ []string) {
 	os.Exit(1)
 }
 
-func runSetup(_ []string) {
-	fmt.Fprintln(os.Stderr, "setup: not yet implemented")
-	os.Exit(1)
+func runSetup(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: maestro setup <project_dir>")
+		os.Exit(1)
+	}
+	if err := setup.Run(args[0]); err != nil {
+		fmt.Fprintf(os.Stderr, "setup: %v\n", err)
+		os.Exit(1)
+	}
+	absDir, _ := filepath.Abs(args[0])
+	fmt.Printf("Initialized .maestro/ in %s\n", absDir)
 }
 
 func runUp(_ []string) {
@@ -156,9 +169,28 @@ func runDown(_ []string) {
 	os.Exit(1)
 }
 
-func runStatus(_ []string) {
-	fmt.Fprintln(os.Stderr, "status: not yet implemented")
-	os.Exit(1)
+func runStatus(args []string) {
+	jsonOutput := false
+	for _, a := range args {
+		switch a {
+		case "--json":
+			jsonOutput = true
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\nusage: maestro status [--json]\n", a)
+			os.Exit(1)
+		}
+	}
+
+	maestroDir := findMaestroDir()
+	if maestroDir == "" {
+		fmt.Fprintln(os.Stderr, "error: .maestro/ directory not found. Run 'maestro setup <dir>' first.")
+		os.Exit(1)
+	}
+
+	if err := status.Run(maestroDir, jsonOutput); err != nil {
+		fmt.Fprintf(os.Stderr, "status: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func runQueueWrite(_ []string) {
@@ -211,14 +243,39 @@ func runWorkerStandby(_ []string) {
 	os.Exit(1)
 }
 
-func runNotify(_ []string) {
-	fmt.Fprintln(os.Stderr, "notify: not yet implemented")
-	os.Exit(1)
+func runNotify(args []string) {
+	if len(args) < 2 {
+		fmt.Fprintln(os.Stderr, "usage: maestro notify <title> <message>")
+		os.Exit(1)
+	}
+	if err := notify.Send(args[0], args[1]); err != nil {
+		fmt.Fprintf(os.Stderr, "notify: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func runDashboard(_ []string) {
 	fmt.Fprintln(os.Stderr, "dashboard: not yet implemented")
 	os.Exit(1)
+}
+
+// findMaestroDir searches for .maestro/ in the current directory and ancestors.
+func findMaestroDir() string {
+	dir, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	for {
+		candidate := filepath.Join(dir, ".maestro")
+		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
+			return candidate
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return ""
+		}
+		dir = parent
+	}
 }
 
 func printUsage() {
