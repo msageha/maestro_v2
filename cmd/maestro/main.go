@@ -5,6 +5,10 @@ import (
 	"os"
 	"path/filepath"
 
+	"gopkg.in/yaml.v3"
+
+	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/notify"
 	"github.com/msageha/maestro_v2/internal/setup"
 	"github.com/msageha/maestro_v2/internal/status"
@@ -229,13 +233,104 @@ func runPlanRebuild(_ []string) {
 }
 
 func runAgentLaunch(_ []string) {
-	fmt.Fprintln(os.Stderr, "agent launch: not yet implemented")
-	os.Exit(1)
+	maestroDir := findMaestroDir()
+	if maestroDir == "" {
+		fmt.Fprintln(os.Stderr, "error: .maestro/ directory not found. Run 'maestro setup <dir>' first.")
+		os.Exit(1)
+	}
+	if err := agent.Launch(maestroDir); err != nil {
+		fmt.Fprintf(os.Stderr, "agent launch: %v\n", err)
+		os.Exit(1)
+	}
 }
 
-func runAgentExec(_ []string) {
-	fmt.Fprintln(os.Stderr, "agent exec: not yet implemented")
-	os.Exit(1)
+func runAgentExec(args []string) {
+	var agentID, message, mode string
+	mode = "deliver"
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--agent-id":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--agent-id requires a value")
+				os.Exit(1)
+			}
+			i++
+			agentID = args[i]
+		case "--message":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--message requires a value")
+				os.Exit(1)
+			}
+			i++
+			message = args[i]
+		case "--mode":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--mode requires a value")
+				os.Exit(1)
+			}
+			i++
+			mode = args[i]
+		case "--with-clear":
+			mode = "with_clear"
+		case "--interrupt":
+			mode = "interrupt"
+		case "--is-busy":
+			mode = "is_busy"
+		case "--clear":
+			mode = "clear"
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\nusage: maestro agent exec --agent-id <id> [--mode <mode>] [--message <msg>]\n", args[i])
+			os.Exit(1)
+		}
+	}
+
+	if agentID == "" {
+		fmt.Fprintln(os.Stderr, "usage: maestro agent exec --agent-id <id> [--mode <mode>] [--message <msg>]")
+		os.Exit(1)
+	}
+
+	maestroDir := findMaestroDir()
+	if maestroDir == "" {
+		fmt.Fprintln(os.Stderr, "error: .maestro/ directory not found. Run 'maestro setup <dir>' first.")
+		os.Exit(1)
+	}
+
+	cfg, err := loadConfig(maestroDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	exec, err := agent.NewExecutor(maestroDir, cfg.Watcher, cfg.Logging.Level)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create executor: %v\n", err)
+		os.Exit(1)
+	}
+	defer exec.Close()
+
+	result := exec.Execute(agent.ExecRequest{
+		AgentID: agentID,
+		Message: message,
+		Mode:    agent.ExecMode(mode),
+	})
+
+	if result.Error != nil {
+		fmt.Fprintf(os.Stderr, "agent exec: %v\n", result.Error)
+		if result.Retryable {
+			os.Exit(2)
+		}
+		os.Exit(1)
+	}
+
+	if mode == "is_busy" {
+		if result.Success {
+			fmt.Println("busy")
+			os.Exit(0)
+		}
+		fmt.Println("idle")
+		os.Exit(1)
+	}
 }
 
 func runWorkerStandby(_ []string) {
@@ -276,6 +371,18 @@ func findMaestroDir() string {
 		}
 		dir = parent
 	}
+}
+
+func loadConfig(maestroDir string) (model.Config, error) {
+	data, err := os.ReadFile(filepath.Join(maestroDir, "config.yaml"))
+	if err != nil {
+		return model.Config{}, fmt.Errorf("read config.yaml: %w", err)
+	}
+	var cfg model.Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		return model.Config{}, fmt.Errorf("parse config.yaml: %w", err)
+	}
+	return cfg, nil
 }
 
 func printUsage() {
