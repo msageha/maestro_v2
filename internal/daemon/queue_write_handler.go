@@ -156,6 +156,12 @@ func (d *Daemon) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 	d.acquireFileLock()
 	defer d.releaseFileLock()
 
+	// Sanitize target: prevent directory traversal
+	if filepath.Base(params.Target) != params.Target || params.Target == "." || params.Target == ".." {
+		return uds.ErrorResponse(uds.ErrCodeValidation,
+			fmt.Sprintf("invalid target: %q", params.Target))
+	}
+
 	queuePath := filepath.Join(d.maestroDir, "queue", params.Target+".yaml")
 	tq, data, err := loadTaskQueueFile(queuePath)
 	if err != nil {
@@ -358,7 +364,9 @@ func (d *Daemon) cancelRequestSubmitted(params QueueWriteParams, statePath strin
 					cq.Commands[i].CancelRequestedAt = &now
 					cq.Commands[i].CancelRequestedBy = &requestedBy
 					cq.Commands[i].UpdatedAt = now
-					yamlutil.AtomicWrite(queuePath, cq)
+					if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
+						d.log(LogLevelError, "queue_write cancel_planner_queue_update error=%v", err)
+					}
 				}
 				break
 			}
@@ -522,7 +530,7 @@ func loadNotificationQueueFile(path string) (model.NotificationQueue, []byte, er
 }
 
 func checkFileSizeLimit(maxBytes, currentSize, estimatedAddition int) *uds.Response {
-	if maxBytes <= 0 || currentSize == 0 {
+	if maxBytes <= 0 {
 		return nil
 	}
 	if currentSize+estimatedAddition > maxBytes {

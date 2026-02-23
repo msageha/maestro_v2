@@ -3,10 +3,14 @@ package daemon
 import (
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/model"
+	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
+	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // CancelHandler processes cancellation of commands and their tasks.
@@ -16,6 +20,7 @@ type CancelHandler struct {
 	logger          *log.Logger
 	logLevel        LogLevel
 	executorFactory ExecutorFactory
+	stateReader     StateReader
 }
 
 // NewCancelHandler creates a new CancelHandler.
@@ -34,6 +39,11 @@ func NewCancelHandler(maestroDir string, cfg model.Config, logger *log.Logger, l
 // SetExecutorFactory overrides the executor factory for testing.
 func (ch *CancelHandler) SetExecutorFactory(f ExecutorFactory) {
 	ch.executorFactory = f
+}
+
+// SetStateReader wires the state reader for updating task states on cancellation.
+func (ch *CancelHandler) SetStateReader(reader StateReader) {
+	ch.stateReader = reader
 }
 
 // IsCommandCancelRequested checks if a command has been marked for cancellation.
@@ -61,11 +71,19 @@ func (ch *CancelHandler) CancelPendingTasks(tasks []model.Task, commandID string
 		task.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 
 		ch.log(LogLevelInfo, "cancel_pending task=%s command=%s", task.ID, commandID)
+
+		// Update state/commands/ with cancelled status + reason
+		if ch.stateReader != nil {
+			if err := ch.stateReader.UpdateTaskState(commandID, task.ID, model.StatusCancelled, "command_cancel_requested"); err != nil {
+				ch.log(LogLevelWarn, "cancel_state_update task=%s error=%v", task.ID, err)
+			}
+		}
+
 		results = append(results, CancelledTaskResult{
 			TaskID:    task.ID,
 			CommandID: commandID,
 			Status:    "cancelled",
-			Reason:    "command_cancelled",
+			Reason:    "command_cancel_requested",
 		})
 	}
 
@@ -103,11 +121,19 @@ func (ch *CancelHandler) InterruptInProgressTasks(tasks []model.Task, commandID 
 		task.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 
 		ch.log(LogLevelInfo, "cancel_inprogress task=%s command=%s", task.ID, commandID)
+
+		// Update state/commands/ with cancelled status + reason
+		if ch.stateReader != nil {
+			if err := ch.stateReader.UpdateTaskState(commandID, task.ID, model.StatusCancelled, "command_cancel_requested"); err != nil {
+				ch.log(LogLevelWarn, "cancel_state_update task=%s error=%v", task.ID, err)
+			}
+		}
+
 		results = append(results, CancelledTaskResult{
 			TaskID:    task.ID,
 			CommandID: commandID,
 			Status:    "cancelled",
-			Reason:    "command_cancelled_interrupt",
+			Reason:    "command_cancel_requested",
 		})
 	}
 
@@ -120,6 +146,48 @@ type CancelledTaskResult struct {
 	CommandID string
 	Status    string
 	Reason    string
+}
+
+// WriteSyntheticResults writes synthetic cancelled results to the results/ directory
+// so that downstream processing (result handler, reconciler) can pick them up.
+func (ch *CancelHandler) WriteSyntheticResults(results []CancelledTaskResult, workerID string) {
+	if len(results) == 0 {
+		return
+	}
+
+	resultPath := filepath.Join(ch.maestroDir, "results", workerID+".yaml")
+	var rf model.TaskResultFile
+
+	data, err := os.ReadFile(resultPath)
+	if err == nil {
+		_ = yamlv3.Unmarshal(data, &rf)
+	}
+	if rf.SchemaVersion == 0 {
+		rf.SchemaVersion = 1
+		rf.FileType = "result_task"
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for _, r := range results {
+		resultID, err := model.GenerateID(model.IDTypeResult)
+		if err != nil {
+			ch.log(LogLevelError, "synthetic_result_id task=%s error=%v", r.TaskID, err)
+			continue
+		}
+		rf.Results = append(rf.Results, model.TaskResult{
+			ID:        resultID,
+			TaskID:    r.TaskID,
+			CommandID: r.CommandID,
+			Status:    model.StatusCancelled,
+			Summary:   fmt.Sprintf("cancelled: %s", r.Reason),
+			Notified:  false,
+			CreatedAt: now,
+		})
+	}
+
+	if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
+		ch.log(LogLevelError, "synthetic_result_write worker=%s error=%v", workerID, err)
+	}
 }
 
 // BuildSyntheticResult creates a synthetic result for a cancelled task.

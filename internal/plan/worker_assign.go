@@ -37,10 +37,16 @@ func GetModelForBloomLevel(bloomLevel int, boost bool) string {
 }
 
 func GetWorkerModel(workerID string, config model.WorkerConfig) string {
+	if config.Boost {
+		return "opus"
+	}
 	if m, ok := config.Models[workerID]; ok {
 		return m
 	}
-	return config.DefaultModel
+	if config.DefaultModel != "" {
+		return config.DefaultModel
+	}
+	return "sonnet"
 }
 
 func AssignWorkers(

@@ -23,7 +23,13 @@ func (m *MutexMap) Lock(key string) {
 }
 
 func (m *MutexMap) Unlock(key string) {
-	m.getMutex(key).Unlock()
+	m.mu.Lock()
+	mu, ok := m.mutexes[key]
+	m.mu.Unlock()
+	if !ok {
+		return // no-op if key was never locked
+	}
+	mu.Unlock()
 }
 
 func (m *MutexMap) getMutex(key string) *sync.Mutex {

@@ -20,13 +20,14 @@ import (
 // Worker results → Planner (side-channel via agent_executor).
 // Planner results → Orchestrator (queue write) + macOS notification.
 type ResultHandler struct {
-	maestroDir      string
-	config          model.Config
-	lockMap         *lock.MutexMap
-	logger          *log.Logger
-	logLevel        LogLevel
-	executorFactory ExecutorFactory
-	notifySender    func(title, message string) error
+	maestroDir        string
+	config            model.Config
+	lockMap           *lock.MutexMap
+	logger            *log.Logger
+	logLevel          LogLevel
+	executorFactory   ExecutorFactory
+	notifySender      func(title, message string) error
+	continuousHandler *ContinuousHandler
 }
 
 // NewResultHandler creates a new ResultHandler.
@@ -58,6 +59,11 @@ func (rh *ResultHandler) SetExecutorFactory(f ExecutorFactory) {
 // SetNotifySender overrides the macOS notification sender for testing.
 func (rh *ResultHandler) SetNotifySender(f func(string, string) error) {
 	rh.notifySender = f
+}
+
+// SetContinuousHandler wires the continuous handler for iteration tracking.
+func (rh *ResultHandler) SetContinuousHandler(ch *ContinuousHandler) {
+	rh.continuousHandler = ch
 }
 
 // HandleResultFileEvent processes a single results/ file change from fsnotify.
@@ -251,6 +257,13 @@ func (rh *ResultHandler) processCommandResultFile() int {
 			rh.markCommandNotifySuccess(entry)
 			notified++
 			rh.log(LogLevelInfo, "notify_orchestrator_success command=%s status=%s", commandID, resultStatus)
+
+			// Continuous mode: advance iteration counter
+			if rh.continuousHandler != nil {
+				if err := rh.continuousHandler.CheckAndAdvance(commandID, resultStatus); err != nil {
+					rh.log(LogLevelWarn, "continuous_advance command=%s error=%v", commandID, err)
+				}
+			}
 		}
 
 		if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {

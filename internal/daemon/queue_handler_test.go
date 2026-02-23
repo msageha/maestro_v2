@@ -479,8 +479,8 @@ func TestQueueHandler_DispatchNotification(t *testing.T) {
 		t.Fatalf("parse orchestrator queue: %v", err)
 	}
 
-	if result.Notifications[0].Status != model.StatusInProgress {
-		t.Errorf("status: got %s, want in_progress", result.Notifications[0].Status)
+	if result.Notifications[0].Status != model.StatusCompleted {
+		t.Errorf("status: got %s, want completed", result.Notifications[0].Status)
 	}
 }
 

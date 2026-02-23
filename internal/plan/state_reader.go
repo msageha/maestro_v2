@@ -2,6 +2,7 @@ package plan
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/msageha/maestro_v2/internal/daemon"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -93,4 +94,94 @@ func (r *PlanStateReader) GetTaskDependencies(commandID, taskID string) ([]strin
 		return nil, nil
 	}
 	return deps, nil
+}
+
+func (r *PlanStateReader) ApplyPhaseTransition(commandID, phaseID string, newStatus model.PhaseStatus) error {
+	r.stateManager.LockCommand(commandID)
+	defer r.stateManager.UnlockCommand(commandID)
+
+	state, err := r.stateManager.LoadState(commandID)
+	if err != nil {
+		return err
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for i := range state.Phases {
+		if state.Phases[i].PhaseID == phaseID {
+			state.Phases[i].Status = newStatus
+			if model.IsPhaseTerminal(newStatus) {
+				state.Phases[i].CompletedAt = &now
+			}
+			if newStatus == model.PhaseStatusActive {
+				state.Phases[i].ActivatedAt = &now
+			}
+			if newStatus == model.PhaseStatusAwaitingFill {
+				if state.Phases[i].Constraints != nil && state.Phases[i].Constraints.TimeoutMinutes > 0 {
+					deadline := time.Now().UTC().Add(time.Duration(state.Phases[i].Constraints.TimeoutMinutes) * time.Minute).Format(time.RFC3339)
+					state.Phases[i].FillDeadlineAt = &deadline
+				}
+			}
+			break
+		}
+	}
+
+	state.UpdatedAt = now
+	return r.stateManager.SaveState(state)
+}
+
+func (r *PlanStateReader) UpdateTaskState(commandID, taskID string, newStatus model.Status, cancelledReason string) error {
+	r.stateManager.LockCommand(commandID)
+	defer r.stateManager.UnlockCommand(commandID)
+
+	state, err := r.stateManager.LoadState(commandID)
+	if err != nil {
+		return err
+	}
+
+	if state.TaskStates == nil {
+		state.TaskStates = make(map[string]model.Status)
+	}
+	state.TaskStates[taskID] = newStatus
+
+	if cancelledReason != "" {
+		if state.CancelledReasons == nil {
+			state.CancelledReasons = make(map[string]string)
+		}
+		state.CancelledReasons[taskID] = cancelledReason
+	}
+
+	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	return r.stateManager.SaveState(state)
+}
+
+func (r *PlanStateReader) IsSystemCommitReady(commandID, taskID string) (bool, bool, error) {
+	state, err := r.stateManager.LoadState(commandID)
+	if err != nil {
+		return false, false, err
+	}
+
+	if state.SystemCommitTaskID == nil || *state.SystemCommitTaskID != taskID {
+		return false, false, nil
+	}
+
+	// Non-phased command: check all user tasks (except self) are terminal
+	if len(state.Phases) == 0 {
+		for tid, s := range state.TaskStates {
+			if tid == taskID {
+				continue
+			}
+			if !model.IsTerminal(s) {
+				return true, false, nil
+			}
+		}
+		return true, true, nil
+	}
+
+	// Phased command: check all user phases are terminal
+	for _, phase := range state.Phases {
+		if !model.IsPhaseTerminal(phase.Status) {
+			return true, false, nil
+		}
+	}
+	return true, true, nil
 }

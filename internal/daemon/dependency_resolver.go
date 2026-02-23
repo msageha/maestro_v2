@@ -17,6 +17,14 @@ type StateReader interface {
 	GetCommandPhases(commandID string) ([]PhaseInfo, error)
 	// GetTaskDependencies returns task IDs that the given task depends on.
 	GetTaskDependencies(commandID, taskID string) ([]string, error)
+	// IsSystemCommitReady checks if the given task is a system commit task and whether
+	// all user phases (or user tasks for non-phased commands) are terminal.
+	// Returns (isSystemCommit=false, ready=false, nil) for non-system-commit tasks.
+	IsSystemCommitReady(commandID, taskID string) (isSystemCommit bool, ready bool, err error)
+	// ApplyPhaseTransition persists a phase status change to state/commands/.
+	ApplyPhaseTransition(commandID, phaseID string, newStatus model.PhaseStatus) error
+	// UpdateTaskState updates a single task's status and optionally records a cancelled reason.
+	UpdateTaskState(commandID, taskID string, newStatus model.Status, cancelledReason string) error
 }
 
 // PhaseInfo represents phase metadata from command state.
@@ -331,6 +339,15 @@ func (dr *DependencyResolver) checkAwaitingFillTimeout(phase PhaseInfo) *PhaseTr
 	}
 
 	return nil
+}
+
+// IsSystemCommitReady checks if the given task is a system commit task and whether
+// all user phases/tasks are terminal (dispatch precondition for system commit tasks).
+func (dr *DependencyResolver) IsSystemCommitReady(commandID, taskID string) (bool, bool, error) {
+	if dr.stateReader == nil {
+		return false, false, nil
+	}
+	return dr.stateReader.IsSystemCommitReady(commandID, taskID)
 }
 
 // BuildAwaitingFillNotification creates the notification message for a phase entering awaiting_fill.

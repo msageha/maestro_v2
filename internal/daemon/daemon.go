@@ -57,9 +57,11 @@ type Daemon struct {
 	watcher  *fsnotify.Watcher
 	ticker   *time.Ticker
 
-	handler     *QueueHandler
-	stateReader StateReader
-	lockMap     *lock.MutexMap
+	handler      *QueueHandler
+	stateReader  StateReader
+	canComplete  CanCompleteFunc
+	planExecutor PlanExecutor
+	lockMap      *lock.MutexMap
 
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -73,6 +75,12 @@ type Daemon struct {
 // Must be called before Run().
 func (d *Daemon) SetStateReader(reader StateReader) {
 	d.stateReader = reader
+}
+
+// SetCanComplete wires the plan.CanComplete function for R4 reconciliation.
+// Must be called before Run() to avoid import cycles (daemon→plan→daemon).
+func (d *Daemon) SetCanComplete(f CanCompleteFunc) {
+	d.canComplete = f
 }
 
 // New creates a new Daemon instance.
@@ -107,7 +115,7 @@ func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Close
 		logLevel:   parseLogLevel(cfg.Logging.Level),
 		logger:     log.New(w, "", 0),
 		logFile:    closer,
-		fileLock:   lock.NewFileLock(filepath.Join(maestroDir, "daemon.lock")),
+		fileLock:   lock.NewFileLock(filepath.Join(maestroDir, "locks", "daemon.lock")),
 		server:     server,
 		ticker:     time.NewTicker(time.Duration(scanInterval) * time.Second),
 		lockMap:    lock.NewMutexMap(),
@@ -156,6 +164,15 @@ func (d *Daemon) Run() error {
 		d.handler.SetStateReader(d.stateReader)
 	}
 
+	// Step 3.6: Wire CanComplete for R4 reconciliation
+	if d.canComplete != nil {
+		d.handler.SetCanComplete(d.canComplete)
+	}
+
+	// Step 3.7: Wire continuous handler for iteration tracking
+	ch := NewContinuousHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
+	d.handler.resultHandler.SetContinuousHandler(ch)
+
 	// Step 4: Register UDS handlers
 	d.registerHandlers()
 
@@ -192,8 +209,15 @@ func (d *Daemon) registerHandlers() {
 		return uds.SuccessResponse(map[string]string{"status": "scanned"})
 	})
 
+	d.server.Handle("shutdown", func(req *uds.Request) *uds.Response {
+		d.log(LogLevelInfo, "shutdown requested via UDS")
+		go d.Shutdown()
+		return uds.SuccessResponse(map[string]string{"status": "shutdown_accepted"})
+	})
+
 	d.server.Handle("queue_write", d.handleQueueWrite)
 	d.server.Handle("result_write", d.handleResultWrite)
+	d.server.Handle("plan", d.handlePlan)
 }
 
 // fsnotifyLoop processes filesystem change events.

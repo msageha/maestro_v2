@@ -44,11 +44,11 @@ func (d *Daemon) handleResultWrite(req *uds.Request) *uds.Response {
 
 	resultStatus := model.Status(params.Status)
 	switch resultStatus {
-	case model.StatusCompleted, model.StatusFailed, model.StatusCancelled:
-		// valid terminal statuses for result reporting
+	case model.StatusCompleted, model.StatusFailed:
+		// valid terminal statuses for worker result reporting
 	default:
 		return uds.ErrorResponse(uds.ErrCodeValidation,
-			fmt.Sprintf("status must be completed|failed|cancelled, got %q", params.Status))
+			fmt.Sprintf("status must be completed|failed, got %q", params.Status))
 	}
 
 	// Phase A: Shared file lock + per-worker mutex (results/ + queue/ updates)

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -10,7 +11,9 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/bridge"
 	"github.com/msageha/maestro_v2/internal/daemon"
+	"github.com/msageha/maestro_v2/internal/formation"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/notify"
@@ -175,6 +178,13 @@ func runDaemon(_ []string) {
 	sm := plan.NewStateManager(maestroDir, lockMap)
 	reader := plan.NewPlanStateReader(sm)
 	d.SetStateReader(reader)
+	d.SetCanComplete(plan.CanComplete)
+
+	// Wire plan executor for UDS plan operations
+	d.SetPlanExecutor(&bridge.PlanExecutorImpl{
+		MaestroDir: maestroDir,
+		Config:     cfg,
+	})
 
 	if err := d.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "daemon: %v\n", err)
@@ -195,14 +205,69 @@ func runSetup(args []string) {
 	fmt.Printf("Initialized .maestro/ in %s\n", absDir)
 }
 
-func runUp(_ []string) {
-	fmt.Fprintln(os.Stderr, "up: not yet implemented")
-	os.Exit(1)
+func runUp(args []string) {
+	var reset, boost, continuous, noNotify bool
+	for _, a := range args {
+		switch a {
+		case "--reset":
+			reset = true
+		case "--boost":
+			boost = true
+		case "--continuous":
+			continuous = true
+		case "--no-notify":
+			noNotify = true
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\nusage: maestro up [--reset] [--boost] [--continuous] [--no-notify]\n", a)
+			os.Exit(1)
+		}
+	}
+
+	maestroDir := findMaestroDir()
+	if maestroDir == "" {
+		fmt.Fprintln(os.Stderr, "error: .maestro/ directory not found. Run 'maestro setup <dir>' first.")
+		os.Exit(1)
+	}
+
+	cfg, err := loadConfig(maestroDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	// --reset only: reset and exit without starting formation
+	resetOnly := reset && !boost && !continuous && !noNotify
+
+	opts := formation.UpOptions{
+		MaestroDir:    maestroDir,
+		Config:        cfg,
+		Reset:         reset,
+		Boost:         boost,
+		Continuous:    continuous,
+		NoNotify:      noNotify,
+		BoostSet:      boost,
+		ContinuousSet: continuous,
+		NoNotifySet:   noNotify,
+		ResetOnly:  resetOnly,
+	}
+
+	if err := formation.RunUp(opts); err != nil {
+		fmt.Fprintf(os.Stderr, "up: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func runDown(_ []string) {
-	fmt.Fprintln(os.Stderr, "down: not yet implemented")
-	os.Exit(1)
+	maestroDir := findMaestroDir()
+	if maestroDir == "" {
+		fmt.Fprintln(os.Stderr, "error: .maestro/ directory not found. Run 'maestro setup <dir>' first.")
+		os.Exit(1)
+	}
+
+	if err := formation.RunDown(maestroDir); err != nil {
+		fmt.Fprintf(os.Stderr, "down: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func runStatus(args []string) {
@@ -637,31 +702,41 @@ func runPlanSubmit(args []string) {
 		os.Exit(1)
 	}
 
-	cfg, err := loadConfig(maestroDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
-		os.Exit(1)
-	}
-
-	result, err := plan.Submit(plan.SubmitOptions{
-		CommandID:  commandID,
-		TasksFile:  tasksFile,
-		PhaseName:  phaseName,
-		DryRun:     dryRun,
-		MaestroDir: maestroDir,
-		Config:     cfg,
-	})
-	if err != nil {
-		if verrs, ok := err.(*plan.ValidationErrors); ok {
-			fmt.Fprint(os.Stderr, verrs.FormatStderr())
-		} else {
-			fmt.Fprintf(os.Stderr, "%v\n", err)
+	// If reading from stdin, materialize to a temp file so the daemon can read it
+	// (daemon's stdin is not the CLI's stdin when using UDS)
+	actualFile := tasksFile
+	if tasksFile == "-" {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "read stdin: %v\n", err)
+			os.Exit(1)
 		}
-		os.Exit(1)
+		tmpFile, err := os.CreateTemp("", "maestro-plan-submit-*.yaml")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "create temp file: %v\n", err)
+			os.Exit(1)
+		}
+		defer os.Remove(tmpFile.Name())
+		if _, err := tmpFile.Write(data); err != nil {
+			tmpFile.Close()
+			fmt.Fprintf(os.Stderr, "write temp file: %v\n", err)
+			os.Exit(1)
+		}
+		tmpFile.Close()
+		actualFile = tmpFile.Name()
 	}
 
-	out, _ := json.MarshalIndent(result, "", "  ")
-	fmt.Println(string(out))
+	params := map[string]any{
+		"operation": "submit",
+		"data": map[string]any{
+			"command_id": commandID,
+			"tasks_file": actualFile,
+			"phase_name": phaseName,
+			"dry_run":    dryRun,
+		},
+	}
+
+	sendPlanCommand(maestroDir, params)
 }
 
 func runPlanComplete(args []string) {
@@ -701,25 +776,15 @@ func runPlanComplete(args []string) {
 		os.Exit(1)
 	}
 
-	cfg, err := loadConfig(maestroDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
-		os.Exit(1)
+	params := map[string]any{
+		"operation": "complete",
+		"data": map[string]any{
+			"command_id": commandID,
+			"summary":    summary,
+		},
 	}
 
-	result, err := plan.Complete(plan.CompleteOptions{
-		CommandID:  commandID,
-		Summary:    summary,
-		MaestroDir: maestroDir,
-		Config:     cfg,
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
-	}
-
-	out, _ := json.MarshalIndent(result, "", "  ")
-	fmt.Println(string(out))
+	sendPlanCommand(maestroDir, params)
 }
 
 func runPlanAddRetryTask(args []string) {
@@ -801,30 +866,20 @@ func runPlanAddRetryTask(args []string) {
 		os.Exit(1)
 	}
 
-	cfg, err := loadConfig(maestroDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
-		os.Exit(1)
+	params := map[string]any{
+		"operation": "add_retry_task",
+		"data": map[string]any{
+			"command_id":          commandID,
+			"retry_of":            retryOf,
+			"purpose":             purpose,
+			"content":             content,
+			"acceptance_criteria": acceptanceCriteria,
+			"blocked_by":          blockedBy,
+			"bloom_level":         bloomLevel,
+		},
 	}
 
-	result, err := plan.AddRetryTask(plan.RetryOptions{
-		CommandID:          commandID,
-		RetryOf:            retryOf,
-		Purpose:            purpose,
-		Content:            content,
-		AcceptanceCriteria: acceptanceCriteria,
-		BlockedBy:          blockedBy,
-		BloomLevel:         bloomLevel,
-		MaestroDir:         maestroDir,
-		Config:             cfg,
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
-	}
-
-	out, _ := json.MarshalIndent(result, "", "  ")
-	fmt.Println(string(out))
+	sendPlanCommand(maestroDir, params)
 }
 
 func runPlanRequestCancel(args []string) {
@@ -875,14 +930,29 @@ func runPlanRequestCancel(args []string) {
 		os.Exit(1)
 	}
 
-	err := plan.RequestCancel(plan.RequestCancelOptions{
-		CommandID:   commandID,
-		RequestedBy: requestedBy,
-		Reason:      reason,
-		MaestroDir:  maestroDir,
-	})
+	// Route through daemon UDS to respect single-writer architecture
+	params := map[string]any{
+		"target":     "planner",
+		"type":       "cancel-request",
+		"command_id": commandID,
+		"reason":     reason,
+	}
+
+	client := uds.NewClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	resp, err := client.SendCommand("queue_write", params)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
+		fmt.Fprintf(os.Stderr, "request-cancel: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !resp.Success {
+		code := ""
+		msg := "unknown error"
+		if resp.Error != nil {
+			code = resp.Error.Code
+			msg = resp.Error.Message
+		}
+		fmt.Fprintf(os.Stderr, "request-cancel failed [%s]: %s\n", code, msg)
 		os.Exit(1)
 	}
 
@@ -919,16 +989,37 @@ func runPlanRebuild(args []string) {
 		os.Exit(1)
 	}
 
-	err := plan.Rebuild(plan.RebuildOptions{
-		CommandID:  commandID,
-		MaestroDir: maestroDir,
-	})
+	params := map[string]any{
+		"operation": "rebuild",
+		"data": map[string]any{
+			"command_id": commandID,
+		},
+	}
+
+	sendPlanCommand(maestroDir, params)
+}
+
+func sendPlanCommand(maestroDir string, params map[string]any) {
+	client := uds.NewClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	resp, err := client.SendCommand("plan", params)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
+		fmt.Fprintf(os.Stderr, "plan: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("state rebuilt for command %s\n", commandID)
+	if !resp.Success {
+		code := ""
+		msg := "unknown error"
+		if resp.Error != nil {
+			code = resp.Error.Code
+			msg = resp.Error.Message
+		}
+		fmt.Fprintf(os.Stderr, "plan failed [%s]: %s\n", code, msg)
+		os.Exit(1)
+	}
+
+	out, _ := json.MarshalIndent(json.RawMessage(resp.Data), "", "  ")
+	fmt.Println(string(out))
 }
 
 func runAgentLaunch(_ []string) {

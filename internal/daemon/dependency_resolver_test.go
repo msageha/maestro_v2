@@ -12,9 +12,10 @@ import (
 
 // mockStateReader implements StateReader for testing.
 type mockStateReader struct {
-	taskStates map[string]model.Status // key: "commandID:taskID"
-	phases     map[string][]PhaseInfo  // key: commandID
-	deps       map[string][]string     // key: "commandID:taskID" → dep task IDs
+	taskStates       map[string]model.Status // key: "commandID:taskID"
+	phases           map[string][]PhaseInfo  // key: commandID
+	deps             map[string][]string     // key: "commandID:taskID" → dep task IDs
+	systemCommitReady map[string][2]bool     // key: "commandID:taskID" → [isSystemCommit, ready]
 }
 
 func (m *mockStateReader) GetTaskState(commandID, taskID string) (model.Status, error) {
@@ -37,6 +38,30 @@ func (m *mockStateReader) GetCommandPhases(commandID string) ([]PhaseInfo, error
 func (m *mockStateReader) GetTaskDependencies(commandID, taskID string) ([]string, error) {
 	key := commandID + ":" + taskID
 	return m.deps[key], nil
+}
+
+func (m *mockStateReader) ApplyPhaseTransition(commandID, phaseID string, newStatus model.PhaseStatus) error {
+	return nil
+}
+
+func (m *mockStateReader) UpdateTaskState(commandID, taskID string, newStatus model.Status, cancelledReason string) error {
+	if m.taskStates == nil {
+		m.taskStates = make(map[string]model.Status)
+	}
+	m.taskStates[commandID+":"+taskID] = newStatus
+	return nil
+}
+
+func (m *mockStateReader) IsSystemCommitReady(commandID, taskID string) (bool, bool, error) {
+	if m.systemCommitReady == nil {
+		return false, false, nil
+	}
+	key := commandID + ":" + taskID
+	v, ok := m.systemCommitReady[key]
+	if !ok {
+		return false, false, nil
+	}
+	return v[0], v[1], nil
 }
 
 func newTestDependencyResolver(reader StateReader) *DependencyResolver {
@@ -400,6 +425,76 @@ func TestIsTaskBlocked_NilStateReader(t *testing.T) {
 	}
 	if !blocked {
 		t.Error("task with deps and nil state reader should be blocked")
+	}
+}
+
+func TestIsSystemCommitReady_NotSystemCommit(t *testing.T) {
+	reader := &mockStateReader{
+		systemCommitReady: nil, // no entries → all tasks are non-system-commit
+	}
+	dr := newTestDependencyResolver(reader)
+
+	isSys, ready, err := dr.IsSystemCommitReady("cmd1", "task1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if isSys {
+		t.Error("expected isSystemCommit=false")
+	}
+	if ready {
+		t.Error("expected ready=false")
+	}
+}
+
+func TestIsSystemCommitReady_PhasesNotTerminal(t *testing.T) {
+	reader := &mockStateReader{
+		systemCommitReady: map[string][2]bool{
+			"cmd1:sys_task": {true, false}, // is system commit, NOT ready
+		},
+	}
+	dr := newTestDependencyResolver(reader)
+
+	isSys, ready, err := dr.IsSystemCommitReady("cmd1", "sys_task")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !isSys {
+		t.Error("expected isSystemCommit=true")
+	}
+	if ready {
+		t.Error("expected ready=false (phases not all terminal)")
+	}
+}
+
+func TestIsSystemCommitReady_AllPhasesTerminal(t *testing.T) {
+	reader := &mockStateReader{
+		systemCommitReady: map[string][2]bool{
+			"cmd1:sys_task": {true, true}, // is system commit, ready
+		},
+	}
+	dr := newTestDependencyResolver(reader)
+
+	isSys, ready, err := dr.IsSystemCommitReady("cmd1", "sys_task")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !isSys {
+		t.Error("expected isSystemCommit=true")
+	}
+	if !ready {
+		t.Error("expected ready=true (all phases terminal)")
+	}
+}
+
+func TestIsSystemCommitReady_NilStateReader(t *testing.T) {
+	dr := newTestDependencyResolver(nil)
+
+	isSys, ready, err := dr.IsSystemCommitReady("cmd1", "sys_task")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if isSys || ready {
+		t.Error("nil state reader should return false, false")
 	}
 }
 
