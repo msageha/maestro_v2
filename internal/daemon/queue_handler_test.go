@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -97,8 +98,8 @@ func TestQueueHandler_DispatchPendingTask(t *testing.T) {
 	}
 	if result.Tasks[0].LeaseOwner == nil {
 		t.Error("lease_owner should be set")
-	} else if *result.Tasks[0].LeaseOwner != "worker1" {
-		t.Errorf("lease_owner: got %s, want worker1 (derived from filename)", *result.Tasks[0].LeaseOwner)
+	} else if !strings.HasPrefix(*result.Tasks[0].LeaseOwner, "daemon:") {
+		t.Errorf("lease_owner: got %s, want daemon:{pid} format", *result.Tasks[0].LeaseOwner)
 	}
 	if result.Tasks[0].LeaseEpoch != 1 {
 		t.Errorf("lease_epoch: got %d, want 1", result.Tasks[0].LeaseEpoch)
@@ -153,19 +154,21 @@ func TestQueueHandler_AtMostOneInFlight(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
-	w := "worker1"
+	owner := qh.leaseOwnerID()
+	futureExpiry := time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339)
 	tq := model.TaskQueue{
 		SchemaVersion: 1,
 		FileType:      "task_queue",
 		Tasks: []model.Task{
 			{
-				ID:         "task_001",
-				CommandID:  "cmd_001",
-				Priority:   1,
-				Status:     model.StatusInProgress,
-				LeaseOwner: &w,
-				CreatedAt:  time.Now().UTC().Format(time.RFC3339),
-				UpdatedAt:  time.Now().UTC().Format(time.RFC3339),
+				ID:             "task_001",
+				CommandID:      "cmd_001",
+				Priority:       1,
+				Status:         model.StatusInProgress,
+				LeaseOwner:     &owner,
+				LeaseExpiresAt: &futureExpiry,
+				CreatedAt:      time.Now().UTC().Format(time.RFC3339),
+				UpdatedAt:      time.Now().UTC().Format(time.RFC3339),
 			},
 			{
 				ID:        "task_002",
@@ -207,20 +210,22 @@ func TestQueueHandler_CrossFileInFlight(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
-	// worker1 has an in_progress task
-	w := "worker1"
+	// worker1 has an in_progress task with valid (non-expired) lease
+	owner := qh.leaseOwnerID()
+	futureExpiry := time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339)
 	tq1 := model.TaskQueue{
 		SchemaVersion: 1,
 		FileType:      "task_queue",
 		Tasks: []model.Task{
 			{
-				ID:         "task_001",
-				CommandID:  "cmd_001",
-				Priority:   1,
-				Status:     model.StatusInProgress,
-				LeaseOwner: &w,
-				CreatedAt:  time.Now().UTC().Format(time.RFC3339),
-				UpdatedAt:  time.Now().UTC().Format(time.RFC3339),
+				ID:             "task_001",
+				CommandID:      "cmd_001",
+				Priority:       1,
+				Status:         model.StatusInProgress,
+				LeaseOwner:     &owner,
+				LeaseExpiresAt: &futureExpiry,
+				CreatedAt:      time.Now().UTC().Format(time.RFC3339),
+				UpdatedAt:      time.Now().UTC().Format(time.RFC3339),
 			},
 		},
 	}
@@ -259,8 +264,8 @@ func TestQueueHandler_CrossFileInFlight(t *testing.T) {
 	if result.Tasks[0].Status != model.StatusInProgress {
 		t.Errorf("task_002 should be dispatched (worker2 free), got %s", result.Tasks[0].Status)
 	}
-	if result.Tasks[0].LeaseOwner == nil || *result.Tasks[0].LeaseOwner != "worker2" {
-		t.Error("task_002 should be owned by worker2")
+	if result.Tasks[0].LeaseOwner == nil || !strings.HasPrefix(*result.Tasks[0].LeaseOwner, "daemon:") {
+		t.Error("task_002 should have daemon:{pid} format lease_owner")
 	}
 }
 
@@ -412,14 +417,14 @@ func TestQueueHandler_BuildGlobalInFlightSet(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
-	w1 := "worker1"
-	w2 := "worker2"
+	owner := qh.leaseOwnerID()
+	futureExpiry := time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339)
 
 	taskQueues := map[string]*taskQueueEntry{
-		"worker1": {Queue: model.TaskQueue{Tasks: []model.Task{
-			{Status: model.StatusInProgress, LeaseOwner: &w1},
+		filepath.Join(maestroDir, "queue", "worker1.yaml"): {Queue: model.TaskQueue{Tasks: []model.Task{
+			{Status: model.StatusInProgress, LeaseOwner: &owner, LeaseExpiresAt: &futureExpiry},
 		}}},
-		"worker2": {Queue: model.TaskQueue{Tasks: []model.Task{
+		filepath.Join(maestroDir, "queue", "worker2.yaml"): {Queue: model.TaskQueue{Tasks: []model.Task{
 			{Status: model.StatusPending},
 		}}},
 	}
@@ -433,12 +438,22 @@ func TestQueueHandler_BuildGlobalInFlightSet(t *testing.T) {
 	}
 
 	// Both busy
-	taskQueues["worker2"] = &taskQueueEntry{Queue: model.TaskQueue{Tasks: []model.Task{
-		{Status: model.StatusInProgress, LeaseOwner: &w2},
+	taskQueues[filepath.Join(maestroDir, "queue", "worker2.yaml")] = &taskQueueEntry{Queue: model.TaskQueue{Tasks: []model.Task{
+		{Status: model.StatusInProgress, LeaseOwner: &owner, LeaseExpiresAt: &futureExpiry},
 	}}}
 	inFlight = qh.buildGlobalInFlightSet(taskQueues)
 	if !inFlight["worker1"] || !inFlight["worker2"] {
 		t.Error("both workers should be in-flight")
+	}
+
+	// Expired lease should NOT be in-flight
+	pastExpiry := time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
+	taskQueues[filepath.Join(maestroDir, "queue", "worker1.yaml")] = &taskQueueEntry{Queue: model.TaskQueue{Tasks: []model.Task{
+		{Status: model.StatusInProgress, LeaseOwner: &owner, LeaseExpiresAt: &pastExpiry},
+	}}}
+	inFlight = qh.buildGlobalInFlightSet(taskQueues)
+	if inFlight["worker1"] {
+		t.Error("worker1 with expired lease should NOT be in-flight")
 	}
 }
 

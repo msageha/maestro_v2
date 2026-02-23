@@ -18,6 +18,7 @@ type CompleteOptions struct {
 	Summary    string
 	MaestroDir string
 	Config     model.Config
+	LockMap    *lock.MutexMap
 }
 
 type CompleteResult struct {
@@ -26,8 +27,10 @@ type CompleteResult struct {
 }
 
 func Complete(opts CompleteOptions) (*CompleteResult, error) {
-	lockMap := lock.NewMutexMap()
-	sm := NewStateManager(opts.MaestroDir, lockMap)
+	if opts.LockMap == nil {
+		return nil, fmt.Errorf("LockMap is required")
+	}
+	sm := NewStateManager(opts.MaestroDir, opts.LockMap)
 
 	sm.LockCommand(opts.CommandID)
 	defer sm.UnlockCommand(opts.CommandID)
@@ -48,7 +51,7 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 	// can-complete validation
 	derivedPlanStatus, err := CanComplete(state)
 	if err != nil {
-		return nil, fmt.Errorf("can-complete: %w", err)
+		return nil, err
 	}
 
 	// Map PlanStatus to Status for result

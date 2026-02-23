@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -47,7 +48,23 @@ func (ch *CancelHandler) SetStateReader(reader StateReader) {
 }
 
 // IsCommandCancelRequested checks if a command has been marked for cancellation.
+// For submitted commands, state/commands/ is the authoritative source (spec §4.3).
+// Queue metadata (cancel_*) is only used for unsubmitted commands (no state file).
 func (ch *CancelHandler) IsCommandCancelRequested(cmd *model.Command) bool {
+	if ch.stateReader != nil {
+		requested, err := ch.stateReader.IsCommandCancelRequested(cmd.ID)
+		if err == nil {
+			return requested
+		}
+		// State not found → unsubmitted command → use queue metadata (spec §4.3)
+		if errors.Is(err, ErrStateNotFound) {
+			return cmd.CancelRequestedAt != nil
+		}
+		// State exists but corrupted → log and return false (safe default)
+		ch.log(LogLevelError, "cancel_check state_read_error command=%s error=%v", cmd.ID, err)
+		return false
+	}
+	// No state reader configured → use queue metadata as best effort
 	return cmd.CancelRequestedAt != nil
 }
 
@@ -175,13 +192,15 @@ func (ch *CancelHandler) WriteSyntheticResults(results []CancelledTaskResult, wo
 			continue
 		}
 		rf.Results = append(rf.Results, model.TaskResult{
-			ID:        resultID,
-			TaskID:    r.TaskID,
-			CommandID: r.CommandID,
-			Status:    model.StatusCancelled,
-			Summary:   fmt.Sprintf("cancelled: %s", r.Reason),
-			Notified:  false,
-			CreatedAt: now,
+			ID:                     resultID,
+			TaskID:                 r.TaskID,
+			CommandID:              r.CommandID,
+			Status:                 model.StatusCancelled,
+			Summary:                fmt.Sprintf("cancelled: %s", r.Reason),
+			PartialChangesPossible: true,
+			RetrySafe:              false,
+			Notified:               false,
+			CreatedAt:              now,
 		})
 	}
 

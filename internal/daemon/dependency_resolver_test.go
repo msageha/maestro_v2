@@ -52,6 +52,10 @@ func (m *mockStateReader) UpdateTaskState(commandID, taskID string, newStatus mo
 	return nil
 }
 
+func (m *mockStateReader) IsCommandCancelRequested(commandID string) (bool, error) {
+	return false, nil
+}
+
 func (m *mockStateReader) IsSystemCommitReady(commandID, taskID string) (bool, bool, error) {
 	if m.systemCommitReady == nil {
 		return false, false, nil

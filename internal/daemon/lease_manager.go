@@ -153,16 +153,17 @@ func (lm *LeaseManager) ReleaseNotificationLease(ntf *model.Notification) error 
 }
 
 // ExtendCommandLease extends the lease expiration for an in_progress command.
+// NOTE: UpdatedAt is intentionally NOT updated here. It must retain the original
+// dispatch timestamp from AcquireCommandLease so that max_in_progress_min checks
+// in recoverExpiredCommandLeases work correctly.
 func (lm *LeaseManager) ExtendCommandLease(cmd *model.Command) error {
 	if cmd.Status != model.StatusInProgress {
 		return fmt.Errorf("cannot extend lease: command %s is %s, not in_progress", cmd.ID, cmd.Status)
 	}
 
-	now := time.Now().UTC()
-	expires := now.Add(time.Duration(lm.dispatchLeaseSec) * time.Second)
+	expires := time.Now().UTC().Add(time.Duration(lm.dispatchLeaseSec) * time.Second)
 	expiresStr := expires.Format(time.RFC3339)
 	cmd.LeaseExpiresAt = &expiresStr
-	cmd.UpdatedAt = now.Format(time.RFC3339)
 
 	lm.log(LogLevelDebug, "lease_extend type=command id=%s epoch=%d new_expires=%s",
 		cmd.ID, cmd.LeaseEpoch, expiresStr)
@@ -170,16 +171,17 @@ func (lm *LeaseManager) ExtendCommandLease(cmd *model.Command) error {
 }
 
 // ExtendTaskLease extends the lease expiration for an in_progress task.
+// NOTE: UpdatedAt is intentionally NOT updated here. It must retain the original
+// dispatch timestamp from AcquireTaskLease so that max_in_progress_min checks
+// in recoverExpiredTaskLeases work correctly.
 func (lm *LeaseManager) ExtendTaskLease(task *model.Task) error {
 	if task.Status != model.StatusInProgress {
 		return fmt.Errorf("cannot extend lease: task %s is %s, not in_progress", task.ID, task.Status)
 	}
 
-	now := time.Now().UTC()
-	expires := now.Add(time.Duration(lm.dispatchLeaseSec) * time.Second)
+	expires := time.Now().UTC().Add(time.Duration(lm.dispatchLeaseSec) * time.Second)
 	expiresStr := expires.Format(time.RFC3339)
 	task.LeaseExpiresAt = &expiresStr
-	task.UpdatedAt = now.Format(time.RFC3339)
 
 	lm.log(LogLevelDebug, "lease_extend type=task id=%s epoch=%d new_expires=%s",
 		task.ID, task.LeaseEpoch, expiresStr)

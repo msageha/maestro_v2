@@ -15,11 +15,14 @@ import (
 type RebuildOptions struct {
 	CommandID  string
 	MaestroDir string
+	LockMap    *lock.MutexMap
 }
 
 func Rebuild(opts RebuildOptions) error {
-	lockMap := lock.NewMutexMap()
-	sm := NewStateManager(opts.MaestroDir, lockMap)
+	if opts.LockMap == nil {
+		return fmt.Errorf("LockMap is required")
+	}
+	sm := NewStateManager(opts.MaestroDir, opts.LockMap)
 
 	sm.LockCommand(opts.CommandID)
 	defer sm.UnlockCommand(opts.CommandID)

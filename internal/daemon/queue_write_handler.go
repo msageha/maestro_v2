@@ -28,6 +28,7 @@ type QueueWriteParams struct {
 	Priority           int      `json:"priority"`
 	SourceResultID     string   `json:"source_result_id,omitempty"`
 	NotificationType   string   `json:"notification_type,omitempty"`
+	RequestedBy        string   `json:"requested_by,omitempty"`
 	Reason             string   `json:"reason,omitempty"`
 }
 
@@ -70,6 +71,8 @@ func (d *Daemon) handleQueueWriteCommand(params QueueWriteParams) *uds.Response 
 
 	d.acquireFileLock()
 	defer d.releaseFileLock()
+	d.lockMap.Lock("queue:planner")
+	defer d.lockMap.Unlock("queue:planner")
 
 	queuePath := filepath.Join(d.maestroDir, "queue", "planner.yaml")
 	cq, data, err := loadCommandQueueFile(queuePath)
@@ -92,7 +95,17 @@ func (d *Daemon) handleQueueWriteCommand(params QueueWriteParams) *uds.Response 
 	}
 
 	if resp := checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(data), len(params.Content)+200); resp != nil {
-		return resp
+		archived := archiveTerminalCommands(&cq)
+		if archived > 0 {
+			newData, _ := yamlv3.Marshal(cq)
+			if checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(newData), len(params.Content)+200) != nil {
+				return resp
+			}
+			data = newData
+			d.log(LogLevelInfo, "queue_write archive_commands archived=%d", archived)
+		} else {
+			return resp
+		}
 	}
 
 	id, err := model.GenerateID(model.IDTypeCommand)
@@ -156,11 +169,14 @@ func (d *Daemon) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 	d.acquireFileLock()
 	defer d.releaseFileLock()
 
-	// Sanitize target: prevent directory traversal
+	// Sanitize target: prevent directory traversal (before acquiring per-target lock)
 	if filepath.Base(params.Target) != params.Target || params.Target == "." || params.Target == ".." {
 		return uds.ErrorResponse(uds.ErrCodeValidation,
 			fmt.Sprintf("invalid target: %q", params.Target))
 	}
+
+	d.lockMap.Lock("queue:" + params.Target)
+	defer d.lockMap.Unlock("queue:" + params.Target)
 
 	queuePath := filepath.Join(d.maestroDir, "queue", params.Target+".yaml")
 	tq, data, err := loadTaskQueueFile(queuePath)
@@ -183,7 +199,17 @@ func (d *Daemon) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 	}
 
 	if resp := checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(data), len(params.Content)+500); resp != nil {
-		return resp
+		archived := d.archiveTerminalTasks(&tq)
+		if archived > 0 {
+			newData, _ := yamlv3.Marshal(tq)
+			if checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(newData), len(params.Content)+500) != nil {
+				return resp
+			}
+			data = newData
+			d.log(LogLevelInfo, "queue_write archive_tasks worker=%s archived=%d", params.Target, archived)
+		} else {
+			return resp
+		}
 	}
 
 	id, err := model.GenerateID(model.IDTypeTask)
@@ -249,6 +275,8 @@ func (d *Daemon) handleQueueWriteNotification(params QueueWriteParams) *uds.Resp
 
 	d.acquireFileLock()
 	defer d.releaseFileLock()
+	d.lockMap.Lock("queue:orchestrator")
+	defer d.lockMap.Unlock("queue:orchestrator")
 
 	queuePath := filepath.Join(d.maestroDir, "queue", "orchestrator.yaml")
 	nq, data, err := loadNotificationQueueFile(queuePath)
@@ -265,7 +293,17 @@ func (d *Daemon) handleQueueWriteNotification(params QueueWriteParams) *uds.Resp
 	}
 
 	if resp := checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(data), len(params.Content)+300); resp != nil {
-		return resp
+		archived := archiveTerminalNotifications(&nq)
+		if archived > 0 {
+			newData, _ := yamlv3.Marshal(nq)
+			if checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(newData), len(params.Content)+300) != nil {
+				return resp
+			}
+			data = newData
+			d.log(LogLevelInfo, "queue_write archive_notifications archived=%d", archived)
+		} else {
+			return resp
+		}
 	}
 
 	id, err := model.GenerateID(model.IDTypeNotification)
@@ -316,11 +354,12 @@ func (d *Daemon) handleQueueWriteCancelRequest(params QueueWriteParams) *uds.Res
 
 // cancelRequestSubmitted handles cancel-request for already-submitted commands.
 // Sets cancel.requested=true on the state file (idempotent).
-// Lock order: fileMu → lockMap (consistent with PeriodicScan → Reconciler).
+// Lock order: scanMu.RLock → queue:planner → state:{cmd} (consistent with PeriodicScan).
 func (d *Daemon) cancelRequestSubmitted(params QueueWriteParams, statePath string) *uds.Response {
-	// Acquire locks in consistent order: fileMu → lockMap to prevent deadlock.
 	d.acquireFileLock()
 	defer d.releaseFileLock()
+	d.lockMap.Lock("queue:planner")
+	defer d.lockMap.Unlock("queue:planner")
 
 	d.lockMap.Lock("state:" + params.CommandID)
 	defer d.lockMap.Unlock("state:" + params.CommandID)
@@ -342,7 +381,10 @@ func (d *Daemon) cancelRequestSubmitted(params QueueWriteParams, statePath strin
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	requestedBy := "orchestrator"
+	requestedBy := params.RequestedBy
+	if requestedBy == "" {
+		requestedBy = "orchestrator"
+	}
 	state.Cancel.Requested = true
 	state.Cancel.RequestedAt = &now
 	state.Cancel.RequestedBy = &requestedBy
@@ -382,6 +424,8 @@ func (d *Daemon) cancelRequestSubmitted(params QueueWriteParams, statePath strin
 func (d *Daemon) cancelRequestUnsubmitted(params QueueWriteParams) *uds.Response {
 	d.acquireFileLock()
 	defer d.releaseFileLock()
+	d.lockMap.Lock("queue:planner")
+	defer d.lockMap.Unlock("queue:planner")
 
 	queuePath := filepath.Join(d.maestroDir, "queue", "planner.yaml")
 	cq, _, err := loadCommandQueueFile(queuePath)
@@ -390,7 +434,10 @@ func (d *Daemon) cancelRequestUnsubmitted(params QueueWriteParams) *uds.Response
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	requestedBy := "orchestrator"
+	requestedBy := params.RequestedBy
+	if requestedBy == "" {
+		requestedBy = "orchestrator"
+	}
 	found := false
 
 	for i := range cq.Commands {
@@ -527,6 +574,76 @@ func loadNotificationQueueFile(path string) (model.NotificationQueue, []byte, er
 		nq.FileType = "queue_notification"
 	}
 	return nq, data, nil
+}
+
+// archiveTerminalCommands removes terminal-status commands from the queue in-place.
+// Returns the number of entries removed.
+func archiveTerminalCommands(cq *model.CommandQueue) int {
+	kept := cq.Commands[:0]
+	archived := 0
+	for _, cmd := range cq.Commands {
+		if model.IsTerminal(cmd.Status) {
+			archived++
+			continue
+		}
+		kept = append(kept, cmd)
+	}
+	cq.Commands = kept
+	return archived
+}
+
+// archiveTerminalTasks removes terminal-status tasks whose command plan_status is also terminal.
+func (d *Daemon) archiveTerminalTasks(tq *model.TaskQueue) int {
+	planTerminalCache := make(map[string]bool)
+	kept := tq.Tasks[:0]
+	archived := 0
+	for _, task := range tq.Tasks {
+		if !model.IsTerminal(task.Status) {
+			kept = append(kept, task)
+			continue
+		}
+		terminal, ok := planTerminalCache[task.CommandID]
+		if !ok {
+			terminal = d.isCommandPlanTerminal(task.CommandID)
+			planTerminalCache[task.CommandID] = terminal
+		}
+		if terminal {
+			archived++
+			continue
+		}
+		kept = append(kept, task)
+	}
+	tq.Tasks = kept
+	return archived
+}
+
+// isCommandPlanTerminal checks if a command's plan_status is terminal.
+func (d *Daemon) isCommandPlanTerminal(commandID string) bool {
+	statePath := filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml")
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		return false
+	}
+	var state model.CommandState
+	if err := yamlv3.Unmarshal(data, &state); err != nil {
+		return false
+	}
+	return model.IsPlanTerminal(state.PlanStatus)
+}
+
+// archiveTerminalNotifications removes completed/dead_letter notifications from the queue.
+func archiveTerminalNotifications(nq *model.NotificationQueue) int {
+	kept := nq.Notifications[:0]
+	archived := 0
+	for _, ntf := range nq.Notifications {
+		if ntf.Status == model.StatusCompleted || ntf.Status == model.StatusDeadLetter {
+			archived++
+			continue
+		}
+		kept = append(kept, ntf)
+	}
+	nq.Notifications = kept
+	return archived
 }
 
 func checkFileSizeLimit(maxBytes, currentSize, estimatedAddition int) *uds.Response {

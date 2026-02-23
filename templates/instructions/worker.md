@@ -54,8 +54,8 @@ maestro result write <agent_id> \
   --status completed|failed \
   --summary "<要約>" \
   [--files-changed <file1,file2,...>] \
-  [--partial-changes-possible] \
-  [--retry-safe]
+  [--partial-changes] \
+  [--no-retry-safe]
 ```
 
 `<agent_id>`, `<task_id>`, `<command_id>`, `<epoch>` はタスク配信時の値をそのまま使用する。
@@ -65,8 +65,8 @@ maestro result write <agent_id> \
 | フラグ | 用途 |
 |---|---|
 | `--files-changed` | 変更したファイルのカンマ区切りリスト |
-| `--partial-changes-possible` | 部分的な変更がリポジトリに残っている場合に指定 |
-| `--retry-safe` | 同じタスクをリトライしても安全な場合に指定 |
+| `--partial-changes` | 部分的な変更がリポジトリに残っている場合に指定 |
+| `--no-retry-safe` | リトライが安全でない場合に指定（デフォルトはリトライ可能） |
 
 ---
 

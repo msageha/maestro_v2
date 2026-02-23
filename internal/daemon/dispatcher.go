@@ -222,7 +222,7 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 	}
 	defer exec.Close()
 
-	envelope := agent.BuildWorkerEnvelope(*task, task.LeaseEpoch, task.Attempts)
+	envelope := agent.BuildWorkerEnvelope(*task, workerID, task.LeaseEpoch, task.Attempts)
 
 	result := exec.Execute(agent.ExecRequest{
 		AgentID:    workerID,
@@ -253,7 +253,7 @@ func (d *Dispatcher) DispatchNotification(ntf *model.Notification) error {
 	}
 	defer exec.Close()
 
-	envelope := agent.BuildOrchestratorNotificationEnvelope(ntf.CommandID, ntf.Type, ntf.LeaseEpoch)
+	envelope := agent.BuildOrchestratorNotificationEnvelope(ntf.CommandID, ntf.Type)
 
 	result := exec.Execute(agent.ExecRequest{
 		AgentID:    "orchestrator",

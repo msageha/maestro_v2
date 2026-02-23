@@ -533,7 +533,7 @@ func TestResultWrite_TaskNotRegisteredInState(t *testing.T) {
 	}
 }
 
-func TestResultWrite_PhaseBFailure(t *testing.T) {
+func TestResultWrite_StateNotFound(t *testing.T) {
 	d := newTestDaemon(t)
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -541,12 +541,7 @@ func TestResultWrite_PhaseBFailure(t *testing.T) {
 	leaseEpoch := 1
 
 	setupWorkerQueue(t, d, workerID, taskID, commandID, leaseEpoch)
-	// Create state file but then remove it before Phase B runs
-	setupCommandState(t, d, commandID, []string{taskID})
-
-	// Remove state file to cause Phase B to fail
-	statePath := filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml")
-	os.Remove(statePath)
+	// No state file — Phase A should reject with VALIDATION_ERROR
 
 	req := makeResultWriteRequest(t, ResultWriteParams{
 		Reporter:   workerID,
@@ -558,23 +553,16 @@ func TestResultWrite_PhaseBFailure(t *testing.T) {
 	})
 
 	resp := d.handleResultWrite(req)
-	// Phase B failure should return error (not silently succeed)
 	if resp.Success {
-		t.Fatal("expected error when Phase B fails")
+		t.Fatal("expected error when state file does not exist")
 	}
-	if resp.Error.Code != uds.ErrCodeInternal {
-		t.Errorf("error code = %q, want %q", resp.Error.Code, uds.ErrCodeInternal)
+	if resp.Error.Code != uds.ErrCodeValidation {
+		t.Errorf("error code = %q, want %q", resp.Error.Code, uds.ErrCodeValidation)
 	}
 
-	// Result should still be committed (Phase A succeeded)
+	// Result should NOT be written (Phase A rejected before writing)
 	resultPath := filepath.Join(d.maestroDir, "results", workerID+".yaml")
-	data, err := os.ReadFile(resultPath)
-	if err != nil {
-		t.Fatalf("result file should exist: %v", err)
-	}
-	var rf model.TaskResultFile
-	yamlv3.Unmarshal(data, &rf)
-	if len(rf.Results) != 1 {
-		t.Errorf("expected 1 result (committed in Phase A), got %d", len(rf.Results))
+	if _, err := os.Stat(resultPath); err == nil {
+		t.Error("result file should not exist when Phase A rejects")
 	}
 }

@@ -26,7 +26,7 @@ func IsCancelRequested(state *model.CommandState) bool {
 
 func ValidateNotCancelled(state *model.CommandState) error {
 	if state.Cancel.Requested {
-		return fmt.Errorf("command %s has been cancelled", state.CommandID)
+		return &PlanValidationError{Msg: fmt.Sprintf("command %s has been cancelled", state.CommandID)}
 	}
 	return nil
 }

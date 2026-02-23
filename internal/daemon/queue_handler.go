@@ -40,8 +40,12 @@ type QueueHandler struct {
 	debounceMu    sync.Mutex
 	debounceTimer *time.Timer
 
-	// Per-file mutex for concurrent safety
-	fileMu sync.Mutex
+	// scanMu serializes PeriodicScan (exclusive) vs queue writes (shared RLock).
+	// Spec §5.6: per-agent mutex — queue writes hold RLock + per-target lockMap key.
+	scanMu sync.RWMutex
+
+	// daemonPID for lease_owner format "daemon:{pid}" per spec §5.8.1.
+	daemonPID int
 
 	// busyChecker is called to probe agent busy state before lease expiry release.
 	// Returns true if the agent is currently busy (lease should be extended).
@@ -73,7 +77,13 @@ func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap
 		deadLetterProcessor: dlp,
 		metricsHandler:      mh,
 		lockMap:             lockMap,
+		daemonPID:           os.Getpid(),
 	}
+}
+
+// leaseOwnerID returns the lease owner identifier in "daemon:{pid}" format per spec §5.8.1.
+func (qh *QueueHandler) leaseOwnerID() string {
+	return fmt.Sprintf("daemon:%d", qh.daemonPID)
 }
 
 // SetStateReader wires the state reader for dependency resolution (Phase 6).
@@ -149,10 +159,10 @@ func (qh *QueueHandler) debounceAndScan(trigger string) {
 }
 
 // PeriodicScan executes all scan steps in order.
-// Steps: 0 (dead_letter) → 0.5 → 0.6 → 0.7 → 1 → 1.5 → 2 → flush → 2.5 → 3 → 4 (metrics)
+// Steps: 0 (dead_letter) → 0.5 → 0.6 → 0.7 → [if expired: 2 | else: 1] → 1.5 → flush → 2.5 → 3 → 4 (metrics)
 func (qh *QueueHandler) PeriodicScan() {
-	qh.fileMu.Lock()
-	defer qh.fileMu.Unlock()
+	qh.scanMu.Lock()
+	defer qh.scanMu.Unlock()
 
 	scanStart := time.Now()
 	qh.scanCounters = ScanCounters{}
@@ -249,6 +259,8 @@ func (qh *QueueHandler) PeriodicScan() {
 				qh.log(LogLevelWarn, "phase_transition_check command=%s error=%v", cmd.ID, err)
 				continue
 			}
+			timedOutPhases := make(map[string]bool)
+
 			for _, tr := range transitions {
 				qh.log(LogLevelInfo, "phase_transition command=%s phase=%s %s→%s reason=%s",
 					cmd.ID, tr.PhaseName, tr.OldStatus, tr.NewStatus, tr.Reason)
@@ -260,40 +272,61 @@ func (qh *QueueHandler) PeriodicScan() {
 					continue
 				}
 
-				if tr.NewStatus == model.PhaseStatusAwaitingFill {
+				switch tr.NewStatus {
+				case model.PhaseStatusAwaitingFill:
 					phase := PhaseInfo{ID: tr.PhaseID, Name: tr.PhaseName}
 					msg := qh.dependencyResolver.BuildAwaitingFillNotification(cmd.ID, phase)
 					qh.log(LogLevelInfo, "awaiting_fill_notify command=%s phase=%s msg=%s",
 						cmd.ID, tr.PhaseName, msg)
-
-					// Deliver awaiting_fill notification directly to Planner via agent executor
-					// (not via orchestrator queue — Planner needs the phase-fill instructions)
 					qh.deliverAwaitingFillToPlanner(cmd.ID, msg)
+				case model.PhaseStatusTimedOut:
+					timedOutPhases[tr.PhaseName] = true
 				}
+			}
+
+			// Notify Planner of timed_out phases (batched per command)
+			if len(timedOutPhases) > 0 {
+				qh.deliverTimeoutToPlanner(cmd.ID, timedOutPhases)
 			}
 		}
 	}
 
-	// Step 1: Dispatch pending entries
-	qh.dispatchPendingCommands(&commandQueue, &commandsDirty)
+	// Steps 1 & 2: Dispatch or recovery (mutually exclusive per spec §5.8.1).
+	// If expired leases exist, run recovery first and skip dispatch this cycle.
+	expiredExists := qh.hasExpiredLeases(taskQueues, &commandQueue, &notificationQueue)
 
-	// Build global in-flight set across ALL task queue files for at-most-one-in-flight.
-	globalInFlight := qh.buildGlobalInFlightSet(taskQueues)
+	if expiredExists {
+		// Step 2 first: Lease expiry recovery (expired leases detected)
+		for queueFile, tq := range taskQueues {
+			agentID := workerIDFromPath(queueFile)
+			dirty := qh.recoverExpiredTaskLeases(tq, agentID)
+			if dirty {
+				taskDirty[queueFile] = true
+			}
+		}
+		qh.recoverExpiredCommandLeases(&commandQueue, &commandsDirty)
+		qh.recoverExpiredNotificationLeases(&notificationQueue, &notificationsDirty)
+		qh.log(LogLevelInfo, "expired_leases_recovered skipping_dispatch")
+	} else {
+		// Step 1: Dispatch pending entries (no expired leases)
+		qh.dispatchPendingCommands(&commandQueue, &commandsDirty)
 
-	for queueFile, tq := range taskQueues {
-		workerID := workerIDFromPath(queueFile)
-		if workerID == "" {
-			qh.log(LogLevelWarn, "skip_dispatch cannot derive worker from %s", queueFile)
-			continue
+		globalInFlight := qh.buildGlobalInFlightSet(taskQueues)
+		for queueFile, tq := range taskQueues {
+			workerID := workerIDFromPath(queueFile)
+			if workerID == "" {
+				qh.log(LogLevelWarn, "skip_dispatch cannot derive worker from %s", queueFile)
+				continue
+			}
+			dirty := qh.dispatchPendingTasks(tq, workerID, globalInFlight)
+			if dirty {
+				taskDirty[queueFile] = true
+			}
 		}
-		dirty := qh.dispatchPendingTasks(tq, workerID, globalInFlight)
-		if dirty {
-			taskDirty[queueFile] = true
-		}
+		qh.dispatchPendingNotifications(&notificationQueue, &notificationsDirty)
 	}
-	qh.dispatchPendingNotifications(&notificationQueue, &notificationsDirty)
 
-	// Step 1.5: Dependency failure check (pending + in_progress tasks)
+	// Step 1.5: Dependency failure check (always runs regardless of expired leases)
 	for queueFile, tq := range taskQueues {
 		dirty := qh.checkPendingDependencyFailures(tq, workerIDFromPath(queueFile))
 		dirty2 := qh.checkInProgressDependencyFailures(tq, workerIDFromPath(queueFile))
@@ -301,16 +334,6 @@ func (qh *QueueHandler) PeriodicScan() {
 			taskDirty[queueFile] = true
 		}
 	}
-
-	// Step 2: Lease expiry recovery
-	for queueFile, tq := range taskQueues {
-		dirty := qh.recoverExpiredTaskLeases(tq)
-		if dirty {
-			taskDirty[queueFile] = true
-		}
-	}
-	qh.recoverExpiredCommandLeases(&commandQueue, &commandsDirty)
-	qh.recoverExpiredNotificationLeases(&notificationQueue, &notificationsDirty)
 
 	// Flush dirty queues to disk BEFORE Step 2.5/3 to prevent stale in-memory
 	// copies from overwriting disk changes made by ResultHandler/Reconciler.
@@ -376,10 +399,19 @@ type taskQueueEntry struct {
 }
 
 func (qh *QueueHandler) dispatchPendingCommands(cq *model.CommandQueue, dirty *bool) {
+	// at-most-one-in-flight: skip if any command has a valid in_progress lease
+	for _, cmd := range cq.Commands {
+		if cmd.Status == model.StatusInProgress && cmd.LeaseExpiresAt != nil {
+			if t, err := time.Parse(time.RFC3339, *cmd.LeaseExpiresAt); err == nil && t.After(time.Now()) {
+				return
+			}
+		}
+	}
+
 	sorted := qh.dispatcher.SortPendingCommands(cq.Commands)
 	for _, idx := range sorted {
 		cmd := &cq.Commands[idx]
-		if err := qh.leaseManager.AcquireCommandLease(cmd, "planner"); err != nil {
+		if err := qh.leaseManager.AcquireCommandLease(cmd, qh.leaseOwnerID()); err != nil {
 			qh.log(LogLevelWarn, "lease_acquire_failed type=command id=%s error=%v", cmd.ID, err)
 			continue
 		}
@@ -392,6 +424,7 @@ func (qh *QueueHandler) dispatchPendingCommands(cq *model.CommandQueue, dirty *b
 			qh.scanCounters.CommandsDispatched++
 		}
 		*dirty = true
+		break // at-most-one-in-flight: dispatch only one command per cycle
 	}
 }
 
@@ -429,7 +462,7 @@ func (qh *QueueHandler) dispatchPendingTasks(tq *taskQueueEntry, workerID string
 			continue
 		}
 
-		if err := qh.leaseManager.AcquireTaskLease(task, workerID); err != nil {
+		if err := qh.leaseManager.AcquireTaskLease(task, qh.leaseOwnerID()); err != nil {
 			qh.log(LogLevelWarn, "lease_acquire_failed type=task id=%s error=%v", task.ID, err)
 			continue
 		}
@@ -444,15 +477,25 @@ func (qh *QueueHandler) dispatchPendingTasks(tq *taskQueueEntry, workerID string
 			qh.scanCounters.TasksDispatched++
 		}
 		dirty = true
+		break // at-most-one-in-flight: one dispatch attempt per worker per cycle
 	}
 	return dirty
 }
 
 func (qh *QueueHandler) dispatchPendingNotifications(nq *model.NotificationQueue, dirty *bool) {
+	// at-most-one-in-flight: skip if any notification has a valid in_progress lease
+	for _, ntf := range nq.Notifications {
+		if ntf.Status == model.StatusInProgress && ntf.LeaseExpiresAt != nil {
+			if t, err := time.Parse(time.RFC3339, *ntf.LeaseExpiresAt); err == nil && t.After(time.Now()) {
+				return
+			}
+		}
+	}
+
 	sorted := qh.dispatcher.SortPendingNotifications(nq.Notifications)
 	for _, idx := range sorted {
 		ntf := &nq.Notifications[idx]
-		if err := qh.leaseManager.AcquireNotificationLease(ntf, "orchestrator"); err != nil {
+		if err := qh.leaseManager.AcquireNotificationLease(ntf, qh.leaseOwnerID()); err != nil {
 			qh.log(LogLevelWarn, "lease_acquire_failed type=notification id=%s error=%v", ntf.ID, err)
 			continue
 		}
@@ -462,11 +505,11 @@ func (qh *QueueHandler) dispatchPendingNotifications(nq *model.NotificationQueue
 			qh.log(LogLevelWarn, "dispatch_failed type=notification id=%s error=%v", ntf.ID, err)
 			qh.leaseManager.ReleaseNotificationLease(ntf)
 		} else {
-			// Mark notification as completed after successful dispatch
 			ntf.Status = model.StatusCompleted
 			ntf.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		}
 		*dirty = true
+		break // at-most-one-in-flight: dispatch only one notification per cycle
 	}
 }
 
@@ -525,6 +568,11 @@ func (qh *QueueHandler) checkInProgressDependencyFailures(tq *taskQueueEntry, wo
 			continue
 		}
 
+		// Skip tasks with expired leases (spec step 1.5: only valid leases)
+		if qh.leaseManager.IsLeaseExpired(task.LeaseExpiresAt) {
+			continue
+		}
+
 		failedDep, failedStatus, err := qh.dependencyResolver.CheckDependencyFailure(task)
 		if err != nil || failedDep == "" {
 			continue
@@ -534,9 +582,9 @@ func (qh *QueueHandler) checkInProgressDependencyFailures(tq *taskQueueEntry, wo
 		qh.log(LogLevelWarn, "dependency_failure task=%s dep=%s dep_status=%s",
 			task.ID, failedDep, failedStatus)
 
-		// Cancel the in_progress task
-		if task.LeaseOwner != nil {
-			qh.cancelHandler.interruptAgent(*task.LeaseOwner, task.ID, task.CommandID, task.LeaseEpoch)
+		// Cancel the in_progress task — derive agent ID from queue file for interrupt
+		if workerID != "" {
+			qh.cancelHandler.interruptAgent(workerID, task.ID, task.CommandID, task.LeaseEpoch)
 		}
 		task.Status = model.StatusCancelled
 		task.LeaseOwner = nil
@@ -566,21 +614,37 @@ func (qh *QueueHandler) checkInProgressDependencyFailures(tq *taskQueueEntry, wo
 	return dirty
 }
 
-func (qh *QueueHandler) recoverExpiredTaskLeases(tq *taskQueueEntry) bool {
+func (qh *QueueHandler) recoverExpiredTaskLeases(tq *taskQueueEntry, agentID string) bool {
 	dirty := false
 	expired := qh.leaseManager.ExpireTasks(tq.Queue.Tasks)
 	for _, idx := range expired {
 		task := &tq.Queue.Tasks[idx]
 
-		// Busy probe: if agent is still working, extend instead of releasing
-		if task.LeaseOwner != nil && qh.isAgentBusy(*task.LeaseOwner) {
-			qh.log(LogLevelInfo, "lease_extend_busy type=task id=%s worker=%s epoch=%d",
-				task.ID, *task.LeaseOwner, task.LeaseEpoch)
-			if err := qh.leaseManager.ExtendTaskLease(task); err != nil {
-				qh.log(LogLevelError, "lease_extend_failed type=task id=%s error=%v", task.ID, err)
+		// Busy probe: if agent is still working AND within max_in_progress_min, extend
+		if agentID != "" && qh.isAgentBusy(agentID) {
+			maxMin := qh.config.Watcher.MaxInProgressMin
+			if maxMin <= 0 {
+				maxMin = 60
 			}
-			dirty = true
-			continue
+			withinLimit := true
+			if t, err := time.Parse(time.RFC3339, task.UpdatedAt); err == nil {
+				if time.Since(t) >= time.Duration(maxMin)*time.Minute {
+					withinLimit = false
+				}
+			}
+			if withinLimit {
+				qh.log(LogLevelInfo, "lease_extend_busy type=task id=%s worker=%s epoch=%d",
+					task.ID, agentID, task.LeaseEpoch)
+				if err := qh.leaseManager.ExtendTaskLease(task); err != nil {
+					qh.log(LogLevelError, "lease_extend_failed type=task id=%s error=%v", task.ID, err)
+				}
+				dirty = true
+				continue
+			}
+			// max_in_progress_min exceeded: reset agent via /clear then release lease
+			qh.log(LogLevelWarn, "lease_max_in_progress_timeout type=task id=%s worker=%s max=%dm",
+				task.ID, agentID, maxMin)
+			qh.clearAgent(agentID)
 		}
 
 		if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
@@ -597,15 +661,31 @@ func (qh *QueueHandler) recoverExpiredCommandLeases(cq *model.CommandQueue, dirt
 	for _, idx := range expired {
 		cmd := &cq.Commands[idx]
 
-		// Busy probe: if planner is still working, extend instead of releasing
-		if cmd.LeaseOwner != nil && qh.isAgentBusy(*cmd.LeaseOwner) {
-			qh.log(LogLevelInfo, "lease_extend_busy type=command id=%s owner=%s epoch=%d",
-				cmd.ID, *cmd.LeaseOwner, cmd.LeaseEpoch)
-			if err := qh.leaseManager.ExtendCommandLease(cmd); err != nil {
-				qh.log(LogLevelError, "lease_extend_failed type=command id=%s error=%v", cmd.ID, err)
+		// Busy probe: if planner is still working AND within max_in_progress_min, extend
+		if qh.isAgentBusy("planner") {
+			maxMin := qh.config.Watcher.MaxInProgressMin
+			if maxMin <= 0 {
+				maxMin = 60
 			}
-			*dirty = true
-			continue
+			withinLimit := true
+			if t, err := time.Parse(time.RFC3339, cmd.UpdatedAt); err == nil {
+				if time.Since(t) >= time.Duration(maxMin)*time.Minute {
+					withinLimit = false
+				}
+			}
+			if withinLimit {
+				qh.log(LogLevelInfo, "lease_extend_busy type=command id=%s owner=planner epoch=%d",
+					cmd.ID, cmd.LeaseEpoch)
+				if err := qh.leaseManager.ExtendCommandLease(cmd); err != nil {
+					qh.log(LogLevelError, "lease_extend_failed type=command id=%s error=%v", cmd.ID, err)
+				}
+				*dirty = true
+				continue
+			}
+			// max_in_progress_min exceeded: reset agent via /clear then release lease
+			qh.log(LogLevelWarn, "lease_max_in_progress_timeout type=command id=%s owner=planner max=%dm",
+				cmd.ID, maxMin)
+			qh.clearAgent("planner")
 		}
 
 		if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
@@ -622,9 +702,9 @@ func (qh *QueueHandler) recoverExpiredNotificationLeases(nq *model.NotificationQ
 		ntf := &nq.Notifications[idx]
 
 		// Busy probe for orchestrator
-		if ntf.LeaseOwner != nil && qh.isAgentBusy(*ntf.LeaseOwner) {
-			qh.log(LogLevelInfo, "lease_extend_busy type=notification id=%s owner=%s epoch=%d",
-				ntf.ID, *ntf.LeaseOwner, ntf.LeaseEpoch)
+		if qh.isAgentBusy("orchestrator") {
+			qh.log(LogLevelInfo, "lease_extend_busy type=notification id=%s owner=orchestrator epoch=%d",
+				ntf.ID, ntf.LeaseEpoch)
 			// Notifications don't have ExtendLease — release and let retry
 		}
 
@@ -659,6 +739,35 @@ func (qh *QueueHandler) deliverAwaitingFillToPlanner(commandID, message string) 
 	}
 }
 
+// deliverTimeoutToPlanner sends fill_timeout notification to Planner via agent executor.
+func (qh *QueueHandler) deliverTimeoutToPlanner(commandID string, timedOutPhases map[string]bool) {
+	exec, err := qh.dispatcher.executorFactory(qh.maestroDir, qh.config.Watcher, qh.config.Logging.Level)
+	if err != nil {
+		qh.log(LogLevelWarn, "timeout_deliver create_executor error=%v", err)
+		return
+	}
+	defer exec.Close()
+
+	phases := make([]string, 0, len(timedOutPhases))
+	for name := range timedOutPhases {
+		phases = append(phases, name)
+	}
+	message := fmt.Sprintf("[maestro] kind:fill_timeout command_id:%s phases:%s\nfill deadline expired, phases timed out",
+		commandID, strings.Join(phases, ","))
+
+	result := exec.Execute(agent.ExecRequest{
+		AgentID:   "planner",
+		Message:   message,
+		Mode:      agent.ModeDeliver,
+		CommandID: commandID,
+	})
+	if result.Error != nil {
+		qh.log(LogLevelWarn, "timeout_deliver command=%s error=%v", commandID, result.Error)
+	} else {
+		qh.log(LogLevelInfo, "timeout_deliver command=%s phases=%s success", commandID, strings.Join(phases, ","))
+	}
+}
+
 // isAgentBusy probes agent busy state via executor. Returns false if no checker is set.
 func (qh *QueueHandler) isAgentBusy(agentID string) bool {
 	if qh.busyChecker != nil {
@@ -681,17 +790,70 @@ func (qh *QueueHandler) isAgentBusy(agentID string) bool {
 	return result.Success // Success=true means busy
 }
 
-// buildGlobalInFlightSet scans ALL task queues to find workers with in_progress tasks.
+// clearAgent sends /clear to the specified agent pane to reset a stuck session.
+func (qh *QueueHandler) clearAgent(agentID string) {
+	exec, err := qh.dispatcher.executorFactory(qh.maestroDir, qh.config.Watcher, qh.config.Logging.Level)
+	if err != nil {
+		qh.log(LogLevelWarn, "clear_agent create_executor error=%v", err)
+		return
+	}
+	defer exec.Close()
+
+	result := exec.Execute(agent.ExecRequest{
+		AgentID: agentID,
+		Mode:    agent.ModeClear,
+	})
+	if result.Error != nil {
+		qh.log(LogLevelWarn, "clear_agent agent=%s error=%v", agentID, result.Error)
+	} else {
+		qh.log(LogLevelInfo, "clear_agent agent=%s success", agentID)
+	}
+}
+
+// buildGlobalInFlightSet scans ALL task queues to find workers with in_progress tasks
+// that have valid (non-expired) leases. Keyed by worker ID derived from queue file path.
 func (qh *QueueHandler) buildGlobalInFlightSet(taskQueues map[string]*taskQueueEntry) map[string]bool {
 	inFlight := make(map[string]bool)
-	for _, tq := range taskQueues {
+	for queueFile, tq := range taskQueues {
+		workerID := workerIDFromPath(queueFile)
+		if workerID == "" {
+			continue
+		}
 		for _, task := range tq.Queue.Tasks {
-			if task.Status == model.StatusInProgress && task.LeaseOwner != nil {
-				inFlight[*task.LeaseOwner] = true
+			if task.Status == model.StatusInProgress && !qh.leaseManager.IsLeaseExpired(task.LeaseExpiresAt) {
+				inFlight[workerID] = true
+				break
 			}
 		}
 	}
 	return inFlight
+}
+
+// hasExpiredLeases checks whether any queue entry has an expired lease.
+// Used to decide whether to prioritize recovery over dispatch (spec §5.8.1).
+func (qh *QueueHandler) hasExpiredLeases(
+	taskQueues map[string]*taskQueueEntry,
+	cq *model.CommandQueue,
+	nq *model.NotificationQueue,
+) bool {
+	for _, cmd := range cq.Commands {
+		if cmd.Status == model.StatusInProgress && qh.leaseManager.IsLeaseExpired(cmd.LeaseExpiresAt) {
+			return true
+		}
+	}
+	for _, tq := range taskQueues {
+		for _, task := range tq.Queue.Tasks {
+			if task.Status == model.StatusInProgress && qh.leaseManager.IsLeaseExpired(task.LeaseExpiresAt) {
+				return true
+			}
+		}
+	}
+	for _, ntf := range nq.Notifications {
+		if ntf.Status == model.StatusInProgress && qh.leaseManager.IsLeaseExpired(ntf.LeaseExpiresAt) {
+			return true
+		}
+	}
+	return false
 }
 
 // workerIDFromPath extracts the worker ID from a queue file path.
@@ -777,14 +939,15 @@ func (qh *QueueHandler) loadNotificationQueue() (model.NotificationQueue, string
 	return nq, path
 }
 
-// LockFiles acquires the shared file mutex for write handlers.
+// LockFiles acquires a shared (read) lock for queue write handlers.
+// Multiple queue writes can proceed in parallel; PeriodicScan holds exclusive lock.
 func (qh *QueueHandler) LockFiles() {
-	qh.fileMu.Lock()
+	qh.scanMu.RLock()
 }
 
-// UnlockFiles releases the shared file mutex for write handlers.
+// UnlockFiles releases the shared (read) lock for queue write handlers.
 func (qh *QueueHandler) UnlockFiles() {
-	qh.fileMu.Unlock()
+	qh.scanMu.RUnlock()
 }
 
 func (qh *QueueHandler) log(level LogLevel, format string, args ...any) {

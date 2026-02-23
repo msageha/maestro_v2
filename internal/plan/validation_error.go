@@ -41,3 +41,19 @@ func (ve *ValidationErrors) FormatStderr() string {
 	}
 	return sb.String()
 }
+
+// PlanValidationError represents a plan-level validation error
+// (state precondition, cancel check, etc.) as opposed to field-level
+// ValidationErrors from task/phase input validation.
+// Satisfies the validationFormatter interface in daemon/plan_handler.go.
+type PlanValidationError struct {
+	Msg string
+}
+
+func (e *PlanValidationError) Error() string {
+	return e.Msg
+}
+
+func (e *PlanValidationError) FormatStderr() string {
+	return fmt.Sprintf("error: %s\n", e.Msg)
+}

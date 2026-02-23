@@ -20,6 +20,7 @@ type SubmitOptions struct {
 	DryRun     bool
 	MaestroDir string
 	Config     model.Config
+	LockMap    *lock.MutexMap
 }
 
 type SubmitResult struct {
@@ -64,8 +65,10 @@ func Submit(opts SubmitOptions) (*SubmitResult, error) {
 }
 
 func submitInitial(opts SubmitOptions, input SubmitInput) (*SubmitResult, error) {
-	lockMap := lock.NewMutexMap()
-	sm := NewStateManager(opts.MaestroDir, lockMap)
+	if opts.LockMap == nil {
+		return nil, fmt.Errorf("LockMap is required")
+	}
+	sm := NewStateManager(opts.MaestroDir, opts.LockMap)
 
 	// Double submit prevention
 	if sm.StateExists(opts.CommandID) {
@@ -262,10 +265,10 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 	if opts.Config.Continuous.Enabled {
 		commitTask := TaskInput{
 			Name:               "__system_commit",
-			Purpose:            "Commit all changes",
-			Content:            "git add -A && git commit -m 'maestro: auto-commit'",
-			AcceptanceCriteria: "Changes committed successfully",
-			BloomLevel:         1,
+			Purpose:            "コマンド実行結果をリポジトリにコミットする",
+			Content:            "変更ファイルを確認し、git add + git commit を実行する。コミットメッセージはタスク実行結果のサマリから生成する。",
+			AcceptanceCriteria: "git commit が成功し、コミットハッシュが取得できる",
+			BloomLevel:         2,
 			Required:           true,
 		}
 
@@ -431,8 +434,10 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 		return nil, fmt.Errorf("phase fill only accepts tasks, not phases")
 	}
 
-	lockMap := lock.NewMutexMap()
-	sm := NewStateManager(opts.MaestroDir, lockMap)
+	if opts.LockMap == nil {
+		return nil, fmt.Errorf("LockMap is required")
+	}
+	sm := NewStateManager(opts.MaestroDir, opts.LockMap)
 
 	sm.LockCommand(opts.CommandID)
 	defer sm.UnlockCommand(opts.CommandID)
@@ -443,7 +448,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	}
 
 	if state.PlanStatus != model.PlanStatusSealed {
-		return nil, fmt.Errorf("plan_status must be sealed, got %s", state.PlanStatus)
+		return nil, &PlanValidationError{Msg: fmt.Sprintf("plan_status must be sealed, got %s", state.PlanStatus)}
 	}
 
 	if err := ValidateNotCancelled(state); err != nil {
@@ -461,13 +466,13 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 		}
 	}
 	if targetPhase == nil {
-		return nil, fmt.Errorf("phase %q not found", opts.PhaseName)
+		return nil, &PlanValidationError{Msg: fmt.Sprintf("phase %q not found", opts.PhaseName)}
 	}
 	if targetPhase.Type != "deferred" {
-		return nil, fmt.Errorf("phase %q is not deferred (type: %s)", opts.PhaseName, targetPhase.Type)
+		return nil, &PlanValidationError{Msg: fmt.Sprintf("phase %q is not deferred (type: %s)", opts.PhaseName, targetPhase.Type)}
 	}
 	if targetPhase.Status != model.PhaseStatusAwaitingFill {
-		return nil, fmt.Errorf("phase %q status must be awaiting_fill, got %s", opts.PhaseName, targetPhase.Status)
+		return nil, &PlanValidationError{Msg: fmt.Sprintf("phase %q status must be awaiting_fill, got %s", opts.PhaseName, targetPhase.Status)}
 	}
 
 	// Validate input against constraints
@@ -607,11 +612,11 @@ func insertSystemCommitTask(tasks []TaskInput) []TaskInput {
 
 	commitTask := TaskInput{
 		Name:               "__system_commit",
-		Purpose:            "Commit all changes",
-		Content:            "git add -A && git commit -m 'maestro: auto-commit'",
-		AcceptanceCriteria: "Changes committed successfully",
+		Purpose:            "コマンド実行結果をリポジトリにコミットする",
+		Content:            "変更ファイルを確認し、git add + git commit を実行する。コミットメッセージはタスク実行結果のサマリから生成する。",
+		AcceptanceCriteria: "git commit が成功し、コミットハッシュが取得できる",
 		BlockedBy:          allNames,
-		BloomLevel:         1,
+		BloomLevel:         2,
 		Required:           true,
 	}
 

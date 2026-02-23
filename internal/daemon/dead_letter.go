@@ -306,16 +306,19 @@ func (dlp *DeadLetterProcessor) bufferDeadLetterOrchestratorNotification(command
 		return
 	}
 
+	sourceResultID := fmt.Sprintf("res_dl_%s", commandID)
+
 	now := time.Now().UTC().Format(time.RFC3339)
 	dlp.pendingNotifications = append(dlp.pendingNotifications, model.Notification{
-		ID:        id,
-		CommandID: commandID,
-		Type:      "command_failed",
-		Content:   fmt.Sprintf("command %s dead-lettered: %s", commandID, reason),
-		Priority:  100,
-		Status:    model.StatusPending,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:             id,
+		CommandID:      commandID,
+		Type:           "command_failed",
+		SourceResultID: sourceResultID,
+		Content:        fmt.Sprintf("command %s dead-lettered: %s", commandID, reason),
+		Priority:       100,
+		Status:         model.StatusPending,
+		CreatedAt:      now,
+		UpdatedAt:      now,
 	})
 }
 

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 	yamlv3 "gopkg.in/yaml.v3"
@@ -94,6 +95,7 @@ func TestComplete_AllCompleted(t *testing.T) {
 		Summary:    "all tasks done",
 		MaestroDir: maestroDir,
 		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
 	})
 	if err != nil {
 		t.Fatalf("Complete returned error: %v", err)
@@ -180,6 +182,7 @@ func TestComplete_HasFailed(t *testing.T) {
 		Summary:    "one task failed",
 		MaestroDir: maestroDir,
 		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
 	})
 	if err != nil {
 		t.Fatalf("Complete returned error: %v", err)
@@ -262,6 +265,7 @@ func TestComplete_NotSealed(t *testing.T) {
 		Summary:    "should fail",
 		MaestroDir: maestroDir,
 		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
 	})
 	if err == nil {
 		t.Fatalf("Complete returned nil error, want error for non-sealed plan")

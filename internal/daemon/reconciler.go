@@ -215,10 +215,15 @@ func (r *Reconciler) reconcileR0b() []ReconcileRepair {
 			r.log(LogLevelWarn, "R0b filling_stuck command=%s phase=%s age_sec=%.0f",
 				state.CommandID, phase.Name, ageSec)
 
-			// Remove partially added task IDs from worker queues
+			// Remove partially added task IDs from worker queues and state
 			for _, taskID := range phase.TaskIDs {
 				r.removeTaskFromWorkerQueues(taskID)
+				delete(state.TaskStates, taskID)
+				delete(state.TaskDependencies, taskID)
+				state.RequiredTaskIDs = reconcilerRemoveFromSlice(state.RequiredTaskIDs, taskID)
+				state.OptionalTaskIDs = reconcilerRemoveFromSlice(state.OptionalTaskIDs, taskID)
 			}
+			state.ExpectedTaskCount = len(state.RequiredTaskIDs) + len(state.OptionalTaskIDs)
 
 			// Clear phase task_ids and revert to awaiting_fill
 			phase.TaskIDs = nil
@@ -512,7 +517,7 @@ func (r *Reconciler) reconcileR3() []ReconcileRepair {
 	queueModified := false
 	for i := range cq.Commands {
 		cmd := &cq.Commands[i]
-		if cmd.Status != model.StatusInProgress {
+		if model.IsTerminal(cmd.Status) {
 			continue
 		}
 
@@ -521,8 +526,8 @@ func (r *Reconciler) reconcileR3() []ReconcileRepair {
 			continue
 		}
 
-		r.log(LogLevelWarn, "R3 result_terminal_queue_inprogress command=%s result_status=%s",
-			cmd.ID, resultStatus)
+		r.log(LogLevelWarn, "R3 result_terminal_queue_nonterminal command=%s queue_status=%s result_status=%s",
+			cmd.ID, cmd.Status, resultStatus)
 
 		cmd.Status = resultStatus
 		cmd.LeaseOwner = nil
@@ -1080,6 +1085,16 @@ func (r *Reconciler) removeTaskFromWorkerQueues(taskID string) {
 			r.log(LogLevelError, "R0b remove_task file=%s task=%s error=%v", name, taskID, err)
 		}
 	}
+}
+
+func reconcilerRemoveFromSlice(s []string, target string) []string {
+	var result []string
+	for _, v := range s {
+		if v != target {
+			result = append(result, v)
+		}
+	}
+	return result
 }
 
 // updateLastReconciledAt updates last_reconciled_at on a state file.

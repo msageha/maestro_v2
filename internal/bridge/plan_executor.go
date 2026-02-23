@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/plan"
 )
@@ -12,6 +13,7 @@ import (
 type PlanExecutorImpl struct {
 	MaestroDir string
 	Config     model.Config
+	LockMap    *lock.MutexMap
 }
 
 type submitParams struct {
@@ -34,6 +36,7 @@ func (pe *PlanExecutorImpl) Submit(params json.RawMessage) (json.RawMessage, err
 		DryRun:     p.DryRun,
 		MaestroDir: pe.MaestroDir,
 		Config:     pe.Config,
+		LockMap:    pe.LockMap,
 	})
 	if err != nil {
 		return nil, err
@@ -57,6 +60,7 @@ func (pe *PlanExecutorImpl) Complete(params json.RawMessage) (json.RawMessage, e
 		Summary:    p.Summary,
 		MaestroDir: pe.MaestroDir,
 		Config:     pe.Config,
+		LockMap:    pe.LockMap,
 	})
 	if err != nil {
 		return nil, err
@@ -94,6 +98,7 @@ func (pe *PlanExecutorImpl) AddRetryTask(params json.RawMessage) (json.RawMessag
 		ToolsHint:          p.ToolsHint,
 		MaestroDir:         pe.MaestroDir,
 		Config:             pe.Config,
+		LockMap:            pe.LockMap,
 	})
 	if err != nil {
 		return nil, err
@@ -114,6 +119,7 @@ func (pe *PlanExecutorImpl) Rebuild(params json.RawMessage) (json.RawMessage, er
 	err := plan.Rebuild(plan.RebuildOptions{
 		CommandID:  p.CommandID,
 		MaestroDir: pe.MaestroDir,
+		LockMap:    pe.LockMap,
 	})
 	if err != nil {
 		return nil, err

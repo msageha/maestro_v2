@@ -14,7 +14,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/bridge"
 	"github.com/msageha/maestro_v2/internal/daemon"
 	"github.com/msageha/maestro_v2/internal/formation"
-	"github.com/msageha/maestro_v2/internal/lock"
+
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/notify"
 	"github.com/msageha/maestro_v2/internal/plan"
@@ -174,17 +174,18 @@ func runDaemon(_ []string) {
 		os.Exit(1)
 	}
 
-	// Wire Phase 6 state reader for dependency resolution
-	lockMap := lock.NewMutexMap()
-	sm := plan.NewStateManager(maestroDir, lockMap)
+	// Wire Phase 6 state reader for dependency resolution (shared lockMap)
+	sharedLockMap := d.LockMap()
+	sm := plan.NewStateManager(maestroDir, sharedLockMap)
 	reader := plan.NewPlanStateReader(sm)
 	d.SetStateReader(reader)
 	d.SetCanComplete(plan.CanComplete)
 
-	// Wire plan executor for UDS plan operations
+	// Wire plan executor for UDS plan operations (shared lockMap)
 	d.SetPlanExecutor(&bridge.PlanExecutorImpl{
 		MaestroDir: maestroDir,
 		Config:     cfg,
+		LockMap:    sharedLockMap,
 	})
 
 	if err := d.Run(); err != nil {
@@ -522,6 +523,17 @@ func sendQueueWrite(params map[string]any) {
 		os.Exit(1)
 	}
 
+	var result map[string]string
+	if err := json.Unmarshal(resp.Data, &result); err == nil {
+		if id, ok := result["id"]; ok {
+			fmt.Println(id)
+			return
+		}
+		if cid, ok := result["command_id"]; ok {
+			fmt.Println(cid)
+			return
+		}
+	}
 	out, _ := json.MarshalIndent(json.RawMessage(resp.Data), "", "  ")
 	fmt.Println(string(out))
 }
@@ -933,10 +945,11 @@ func runPlanRequestCancel(args []string) {
 
 	// Route through daemon UDS to respect single-writer architecture
 	params := map[string]any{
-		"target":     "planner",
-		"type":       "cancel-request",
-		"command_id": commandID,
-		"reason":     reason,
+		"target":       "planner",
+		"type":         "cancel-request",
+		"command_id":   commandID,
+		"requested_by": requestedBy,
+		"reason":       reason,
 	}
 
 	client := uds.NewClient(filepath.Join(maestroDir, uds.DefaultSocketName))
@@ -1015,7 +1028,11 @@ func sendPlanCommand(maestroDir string, params map[string]any) {
 			code = resp.Error.Code
 			msg = resp.Error.Message
 		}
-		fmt.Fprintf(os.Stderr, "plan failed [%s]: %s\n", code, msg)
+		if code == uds.ErrCodeValidation {
+			fmt.Fprint(os.Stderr, msg)
+		} else {
+			fmt.Fprintf(os.Stderr, "plan failed [%s]: %s\n", code, msg)
+		}
 		os.Exit(1)
 	}
 

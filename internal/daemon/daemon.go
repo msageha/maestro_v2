@@ -83,6 +83,11 @@ func (d *Daemon) SetCanComplete(f CanCompleteFunc) {
 	d.canComplete = f
 }
 
+// LockMap returns the daemon's shared MutexMap for coordinating state locks.
+func (d *Daemon) LockMap() *lock.MutexMap {
+	return d.lockMap
+}
+
 // New creates a new Daemon instance.
 func New(maestroDir string, cfg model.Config) (*Daemon, error) {
 	logPath := filepath.Join(maestroDir, "logs", "daemon.log")
@@ -223,8 +228,8 @@ func (d *Daemon) registerHandlers() {
 
 // handleDashboard triggers dashboard regeneration and returns the result.
 func (d *Daemon) handleDashboard(req *uds.Request) *uds.Response {
-	d.handler.fileMu.Lock()
-	defer d.handler.fileMu.Unlock()
+	d.handler.scanMu.Lock()
+	defer d.handler.scanMu.Unlock()
 
 	cq, _ := d.handler.loadCommandQueue()
 	taskQueues := d.handler.loadAllTaskQueues()

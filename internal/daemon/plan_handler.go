@@ -7,6 +7,12 @@ import (
 	"github.com/msageha/maestro_v2/internal/uds"
 )
 
+// validationFormatter is satisfied by plan.ValidationErrors without importing plan.
+type validationFormatter interface {
+	error
+	FormatStderr() string
+}
+
 // PlanExecutor executes plan operations under the daemon's file lock.
 // Implementations are wired from main.go to avoid import cycles (plan → daemon).
 type PlanExecutor interface {
@@ -56,6 +62,9 @@ func (d *Daemon) handlePlan(req *uds.Request) *uds.Response {
 
 	if err != nil {
 		d.log(LogLevelWarn, "plan_%s error=%v", params.Operation, err)
+		if ve, ok := err.(validationFormatter); ok {
+			return uds.ErrorResponse(uds.ErrCodeValidation, ve.FormatStderr())
+		}
 		return uds.ErrorResponse(uds.ErrCodeInternal, err.Error())
 	}
 

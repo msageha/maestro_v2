@@ -262,7 +262,7 @@ func inferFileType(dir, filename string) string {
 		return "queue_task"
 	case "results":
 		if filename == "planner.yaml" {
-			return "result_planner"
+			return "result_command"
 		}
 		return "result_task"
 	case "commands":

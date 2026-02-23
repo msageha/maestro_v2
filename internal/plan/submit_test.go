@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 	yamlv3 "gopkg.in/yaml.v3"
@@ -147,6 +148,7 @@ func TestSubmit_BasicTasks(t *testing.T) {
 		TasksFile:  tasksFile,
 		MaestroDir: maestroDir,
 		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
 	})
 	if err != nil {
 		t.Fatalf("Submit returned error: %v", err)
@@ -246,6 +248,7 @@ func TestSubmit_DryRun(t *testing.T) {
 		DryRun:     true,
 		MaestroDir: maestroDir,
 		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
 	})
 	if err != nil {
 		t.Fatalf("Submit dry-run returned error: %v", err)
@@ -286,6 +289,7 @@ func TestSubmit_DoubleSubmit(t *testing.T) {
 		TasksFile:  tasksFile,
 		MaestroDir: maestroDir,
 		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
 	})
 	if err != nil {
 		t.Fatalf("first Submit returned error: %v", err)
@@ -308,6 +312,7 @@ func TestSubmit_DoubleSubmit(t *testing.T) {
 		TasksFile:  tasksFile2,
 		MaestroDir: maestroDir,
 		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
 	})
 	if err == nil {
 		t.Fatalf("second Submit returned nil error, want double submit error")
@@ -341,6 +346,7 @@ func TestSubmit_CancelledCommand(t *testing.T) {
 		TasksFile:  tasksFile,
 		MaestroDir: maestroDir,
 		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
 	})
 	if err == nil {
 		t.Fatalf("Submit returned nil error, want cancelled error")
@@ -389,6 +395,7 @@ func TestSubmit_PhasedSubmit(t *testing.T) {
 		TasksFile:  phasesFile,
 		MaestroDir: maestroDir,
 		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
 	})
 	if err != nil {
 		t.Fatalf("Submit phased returned error: %v", err)

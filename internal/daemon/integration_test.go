@@ -177,6 +177,14 @@ func (r *integrationStateReader) IsSystemCommitReady(commandID, taskID string) (
 	return true, true, nil
 }
 
+func (r *integrationStateReader) IsCommandCancelRequested(commandID string) (bool, error) {
+	state, err := r.loadState(commandID)
+	if err != nil {
+		return false, err
+	}
+	return state.Cancel.Requested, nil
+}
+
 // testCanComplete is a simplified version of plan.CanComplete for integration tests.
 func testCanComplete(state *model.CommandState) (model.PlanStatus, error) {
 	if state.PlanStatus != model.PlanStatusSealed {
@@ -246,8 +254,8 @@ func newIntegrationDaemon(t *testing.T) *Daemon {
 	// handleResultWrite's Phase C spawns `go PeriodicScan()` which creates dashboard/metrics
 	// files asynchronously — wait for it to finish, then remove.
 	t.Cleanup(func() {
-		d.handler.fileMu.Lock()
-		d.handler.fileMu.Unlock()
+		d.handler.scanMu.Lock()
+		d.handler.scanMu.Unlock()
 		os.RemoveAll(d.maestroDir)
 	})
 
@@ -617,6 +625,7 @@ func TestIntegration_LeaseExpiryBusyExtend(t *testing.T) {
 
 	owner := "worker1"
 	expired := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
+	recentUpdate := time.Now().Add(-5 * time.Minute).UTC().Format(time.RFC3339)
 	tq := model.TaskQueue{
 		SchemaVersion: 1,
 		FileType:      "queue_task",
@@ -629,7 +638,7 @@ func TestIntegration_LeaseExpiryBusyExtend(t *testing.T) {
 				LeaseExpiresAt: &expired,
 				LeaseEpoch:     1,
 				CreatedAt:      "2026-01-01T00:00:00Z",
-				UpdatedAt:      "2026-01-01T00:00:00Z",
+				UpdatedAt:      recentUpdate,
 			},
 		},
 	}

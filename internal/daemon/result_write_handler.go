@@ -35,6 +35,9 @@ func (d *Daemon) handleResultWrite(req *uds.Request) *uds.Response {
 	if params.Reporter == "" {
 		return uds.ErrorResponse(uds.ErrCodeValidation, "reporter is required")
 	}
+	if filepath.Base(params.Reporter) != params.Reporter || params.Reporter == "." || params.Reporter == ".." {
+		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid reporter: %q", params.Reporter))
+	}
 	if params.TaskID == "" {
 		return uds.ErrorResponse(uds.ErrCodeValidation, "task_id is required")
 	}
@@ -181,30 +184,37 @@ func (d *Daemon) resultWritePhaseA(params ResultWriteParams, resultStatus model.
 				params.TaskID, queueTask.LeaseEpoch, params.LeaseEpoch)}
 	}
 
-	// Fencing: lease owner must match reporter
-	if queueTask.LeaseOwner == nil || *queueTask.LeaseOwner != params.Reporter {
-		owner := "<nil>"
-		if queueTask.LeaseOwner != nil {
-			owner = *queueTask.LeaseOwner
-		}
+	// Fencing: lease must be held. The task is already looked up from queue/{reporter}.yaml
+	// and lease_epoch matches, so the reporter identity is verified. lease_owner stores
+	// "daemon:{pid}" per spec §5.8.1, not the agent ID.
+	if queueTask.LeaseOwner == nil {
 		return "", &resultWriteError{uds.ErrCodeFencingReject,
-			fmt.Sprintf("task %s lease_owner mismatch: queue=%s, reporter=%s",
-				params.TaskID, owner, params.Reporter)}
+			fmt.Sprintf("task %s has no lease_owner (not dispatched)", params.TaskID)}
 	}
 
-	// 2b. Validate task is registered in state (if state file exists)
+	// 2b. Validate state existence and task registration (mandatory)
 	statePath := filepath.Join(d.maestroDir, "state", "commands", params.CommandID+".yaml")
-	if stateData, err := os.ReadFile(statePath); err == nil {
-		var state model.CommandState
-		if err := yamlv3.Unmarshal(stateData, &state); err == nil {
-			if state.TaskStates != nil {
-				if _, registered := state.TaskStates[params.TaskID]; !registered {
-					return "", &resultWriteError{uds.ErrCodeValidation,
-						fmt.Sprintf("task %s not registered in state for command %s",
-							params.TaskID, params.CommandID)}
-				}
-			}
+	stateData, stateErr := os.ReadFile(statePath)
+	if stateErr != nil {
+		if os.IsNotExist(stateErr) {
+			return "", &resultWriteError{uds.ErrCodeValidation,
+				fmt.Sprintf("state not found for command %s", params.CommandID)}
 		}
+		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("read state: %v", stateErr)}
+	}
+	var preState model.CommandState
+	if err := yamlv3.Unmarshal(stateData, &preState); err != nil {
+		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("parse state: %v", err)}
+	}
+	if preState.TaskStates == nil {
+		return "", &resultWriteError{uds.ErrCodeValidation,
+			fmt.Sprintf("task %s not registered in state for command %s (no tasks registered)",
+				params.TaskID, params.CommandID)}
+	}
+	if _, registered := preState.TaskStates[params.TaskID]; !registered {
+		return "", &resultWriteError{uds.ErrCodeValidation,
+			fmt.Sprintf("task %s not registered in state for command %s",
+				params.TaskID, params.CommandID)}
 	}
 
 	// 3. Generate result ID

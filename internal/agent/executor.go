@@ -465,49 +465,65 @@ func contentHash(s string) string {
 // --- Envelope Builders ---
 
 // BuildWorkerEnvelope creates the delivery envelope for a Worker task.
-func BuildWorkerEnvelope(task model.Task, leaseEpoch, attempt int) string {
+// Format matches spec §5.8.1 Worker 向けタスク配信エンベロープ.
+func BuildWorkerEnvelope(task model.Task, workerID string, leaseEpoch, attempt int) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "[maestro] task_id:%s command_id:%s lease_epoch:%d attempt:%d\n",
 		task.ID, task.CommandID, leaseEpoch, attempt)
-	sb.WriteString("---PURPOSE---\n")
-	sb.WriteString(task.Purpose)
-	sb.WriteString("\n---CONTENT---\n")
-	sb.WriteString(task.Content)
-	sb.WriteString("\n---ACCEPTANCE_CRITERIA---\n")
-	sb.WriteString(task.AcceptanceCriteria)
-	sb.WriteString("\n---CONSTRAINTS---\n")
-	for _, c := range task.Constraints {
-		sb.WriteString(c)
-		sb.WriteString("\n")
+	sb.WriteString("\n")
+	fmt.Fprintf(&sb, "purpose: %s\n", task.Purpose)
+	fmt.Fprintf(&sb, "content: %s\n", task.Content)
+	fmt.Fprintf(&sb, "acceptance_criteria: %s\n", task.AcceptanceCriteria)
+	constraintsStr := "なし"
+	if len(task.Constraints) > 0 {
+		constraintsStr = strings.Join(task.Constraints, ", ")
 	}
-	sb.WriteString("---TOOLS_HINT---\n")
-	for _, th := range task.ToolsHint {
-		sb.WriteString(th)
-		sb.WriteString("\n")
+	fmt.Fprintf(&sb, "constraints: %s\n", constraintsStr)
+	toolsHintStr := "なし"
+	if len(task.ToolsHint) > 0 {
+		toolsHintStr = strings.Join(task.ToolsHint, ", ")
 	}
-	sb.WriteString("---RESULT_TEMPLATE---\n")
-	fmt.Fprintf(&sb, "maestro result write --task-id %s --command-id %s --lease-epoch %d --status <completed|failed> --summary \"...\"",
-		task.ID, task.CommandID, leaseEpoch)
+	fmt.Fprintf(&sb, "tools_hint: %s\n", toolsHintStr)
+	sb.WriteString("\n")
+	fmt.Fprintf(&sb, "完了時: maestro result write %s --task-id %s --command-id %s --lease-epoch %d --status <completed|failed> --summary \"...\"\n",
+		workerID, task.ID, task.CommandID, leaseEpoch)
+	sb.WriteString("失敗時に部分変更あり: 上記に加えて --partial-changes --no-retry-safe")
 	return sb.String()
 }
 
 // BuildPlannerEnvelope creates the delivery envelope for a Planner command.
+// Format matches spec §5.8.1 Planner 向けコマンド配信エンベロープ.
 func BuildPlannerEnvelope(cmd model.Command, leaseEpoch, attempt int) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "[maestro] command_id:%s lease_epoch:%d attempt:%d\n",
 		cmd.ID, leaseEpoch, attempt)
-	sb.WriteString("---CONTENT---\n")
-	sb.WriteString(cmd.Content)
-	sb.WriteString("\n---TEMPLATES---\n")
-	fmt.Fprintf(&sb, "maestro plan submit [{...tasks...}] [--dry-run]\n")
-	fmt.Fprintf(&sb, "maestro plan complete --command-id %s", cmd.ID)
+	sb.WriteString("\n")
+	fmt.Fprintf(&sb, "content: %s\n", cmd.Content)
+	sb.WriteString("\n")
+	fmt.Fprintf(&sb, "タスク分解後: maestro plan submit --command-id %s --tasks-file plan.yaml\n", cmd.ID)
+	fmt.Fprintf(&sb, "全タスク完了後: maestro plan complete --command-id %s --summary \"...\"", cmd.ID)
 	return sb.String()
 }
 
 // BuildOrchestratorNotificationEnvelope creates the envelope for an Orchestrator notification.
-func BuildOrchestratorNotificationEnvelope(commandID, notificationType string, leaseEpoch int) string {
-	return fmt.Sprintf("[maestro] kind:%s command_id:%s status:%s lease_epoch:%d",
-		notificationType, commandID, notificationType, leaseEpoch)
+// Format matches spec §5.8.1 Orchestrator 向け通知配信エンベロープ.
+func BuildOrchestratorNotificationEnvelope(commandID, notificationType string) string {
+	terminalStatus := mapNotificationTypeToStatus(notificationType)
+	return fmt.Sprintf("[maestro] kind:command_completed command_id:%s status:%s\nresults/planner.yaml を確認してください",
+		commandID, terminalStatus)
+}
+
+func mapNotificationTypeToStatus(nt string) string {
+	switch nt {
+	case "command_completed":
+		return "completed"
+	case "command_failed":
+		return "failed"
+	case "command_cancelled":
+		return "cancelled"
+	default:
+		return nt
+	}
 }
 
 // BuildTaskResultNotification creates a side-channel notification for the Planner.

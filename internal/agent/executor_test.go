@@ -19,45 +19,36 @@ func TestBuildWorkerEnvelope(t *testing.T) {
 		ToolsHint:          []string{"context7", "grep"},
 	}
 
-	envelope := BuildWorkerEnvelope(task, 3, 1)
+	envelope := BuildWorkerEnvelope(task, "worker1", 3, 1)
 
 	// Verify header
 	if !strings.Contains(envelope, "[maestro] task_id:task_1771722060_b7c1d4e9 command_id:cmd_1771722000_a3f2b7c1 lease_epoch:3 attempt:1") {
 		t.Error("missing or incorrect header")
 	}
 
-	// Verify all sections present
-	sections := []string{
-		"---PURPOSE---",
-		"---CONTENT---",
-		"---ACCEPTANCE_CRITERIA---",
-		"---CONSTRAINTS---",
-		"---TOOLS_HINT---",
-		"---RESULT_TEMPLATE---",
+	// Verify key-value format fields (spec §5.8.1)
+	if !strings.Contains(envelope, "purpose: Implement login endpoint") {
+		t.Error("missing purpose field")
 	}
-	for _, s := range sections {
-		if !strings.Contains(envelope, s) {
-			t.Errorf("missing section: %s", s)
-		}
+	if !strings.Contains(envelope, "content: Create POST /api/login with JWT auth") {
+		t.Error("missing content field")
 	}
-
-	// Verify content
-	if !strings.Contains(envelope, "Implement login endpoint") {
-		t.Error("missing purpose content")
+	if !strings.Contains(envelope, "acceptance_criteria: Tests pass, endpoint returns 200") {
+		t.Error("missing acceptance_criteria field")
 	}
-	if !strings.Contains(envelope, "Create POST /api/login") {
-		t.Error("missing content")
+	if !strings.Contains(envelope, "constraints: Use JWT, No third-party auth") {
+		t.Error("missing constraints field (comma-separated)")
 	}
-	if !strings.Contains(envelope, "Use JWT") {
-		t.Error("missing constraint")
-	}
-	if !strings.Contains(envelope, "context7") {
-		t.Error("missing tools_hint")
+	if !strings.Contains(envelope, "tools_hint: context7, grep") {
+		t.Error("missing tools_hint field (comma-separated)")
 	}
 
-	// Verify result template
-	if !strings.Contains(envelope, "maestro result write --task-id task_1771722060_b7c1d4e9 --command-id cmd_1771722000_a3f2b7c1 --lease-epoch 3") {
+	// Verify result template with Japanese labels (spec format)
+	if !strings.Contains(envelope, "完了時: maestro result write worker1 --task-id task_1771722060_b7c1d4e9 --command-id cmd_1771722000_a3f2b7c1 --lease-epoch 3") {
 		t.Error("incorrect result template")
+	}
+	if !strings.Contains(envelope, "失敗時に部分変更あり: 上記に加えて --partial-changes --no-retry-safe") {
+		t.Error("missing partial changes guidance")
 	}
 }
 
@@ -72,14 +63,14 @@ func TestBuildWorkerEnvelope_EmptyOptionals(t *testing.T) {
 		ToolsHint:          nil,
 	}
 
-	envelope := BuildWorkerEnvelope(task, 1, 1)
+	envelope := BuildWorkerEnvelope(task, "worker2", 1, 1)
 
-	// Sections should still be present even with empty lists
-	if !strings.Contains(envelope, "---CONSTRAINTS---") {
-		t.Error("missing CONSTRAINTS section")
+	// Empty constraints/tools_hint should show "なし" per spec
+	if !strings.Contains(envelope, "constraints: なし") {
+		t.Error("missing constraints default 'なし'")
 	}
-	if !strings.Contains(envelope, "---TOOLS_HINT---") {
-		t.Error("missing TOOLS_HINT section")
+	if !strings.Contains(envelope, "tools_hint: なし") {
+		t.Error("missing tools_hint default 'なし'")
 	}
 }
 
@@ -94,57 +85,47 @@ func TestBuildPlannerEnvelope(t *testing.T) {
 	if !strings.Contains(envelope, "[maestro] command_id:cmd_1771722000_a3f2b7c1 lease_epoch:2 attempt:1") {
 		t.Error("missing or incorrect header")
 	}
-	if !strings.Contains(envelope, "---CONTENT---") {
-		t.Error("missing CONTENT section")
+	if !strings.Contains(envelope, "content: Implement user authentication system") {
+		t.Error("missing content field")
 	}
-	if !strings.Contains(envelope, "Implement user authentication system") {
-		t.Error("missing command content")
-	}
-	if !strings.Contains(envelope, "---TEMPLATES---") {
-		t.Error("missing TEMPLATES section")
-	}
-	if !strings.Contains(envelope, "maestro plan submit") {
+	if !strings.Contains(envelope, "タスク分解後: maestro plan submit --command-id cmd_1771722000_a3f2b7c1 --tasks-file plan.yaml") {
 		t.Error("missing plan submit template")
 	}
-	if !strings.Contains(envelope, "maestro plan complete --command-id cmd_1771722000_a3f2b7c1") {
+	if !strings.Contains(envelope, "全タスク完了後: maestro plan complete --command-id cmd_1771722000_a3f2b7c1 --summary") {
 		t.Error("missing plan complete template")
 	}
 }
 
 func TestBuildOrchestratorNotificationEnvelope(t *testing.T) {
 	tests := []struct {
-		name       string
-		cmdID      string
-		ntfType    string
-		leaseEpoch int
-		expected   string
+		name     string
+		cmdID    string
+		ntfType  string
+		expected string
 	}{
 		{
 			"completed",
 			"cmd_1771722000_a3f2b7c1",
 			"command_completed",
-			2,
-			"[maestro] kind:command_completed command_id:cmd_1771722000_a3f2b7c1 status:command_completed lease_epoch:2",
+			"[maestro] kind:command_completed command_id:cmd_1771722000_a3f2b7c1 status:completed\nresults/planner.yaml を確認してください",
 		},
 		{
 			"failed",
 			"cmd_1771722000_a3f2b7c1",
 			"command_failed",
-			1,
-			"[maestro] kind:command_failed command_id:cmd_1771722000_a3f2b7c1 status:command_failed lease_epoch:1",
+			"[maestro] kind:command_completed command_id:cmd_1771722000_a3f2b7c1 status:failed\nresults/planner.yaml を確認してください",
 		},
 		{
 			"cancelled",
 			"cmd_1771722000_a3f2b7c1",
 			"command_cancelled",
-			3,
-			"[maestro] kind:command_cancelled command_id:cmd_1771722000_a3f2b7c1 status:command_cancelled lease_epoch:3",
+			"[maestro] kind:command_completed command_id:cmd_1771722000_a3f2b7c1 status:cancelled\nresults/planner.yaml を確認してください",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := BuildOrchestratorNotificationEnvelope(tt.cmdID, tt.ntfType, tt.leaseEpoch)
+			got := BuildOrchestratorNotificationEnvelope(tt.cmdID, tt.ntfType)
 			if got != tt.expected {
 				t.Errorf("got %q, want %q", got, tt.expected)
 			}

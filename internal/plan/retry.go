@@ -25,6 +25,7 @@ type RetryOptions struct {
 	ToolsHint          []string
 	MaestroDir         string
 	Config             model.Config
+	LockMap            *lock.MutexMap
 }
 
 type RetryResult struct {
@@ -43,8 +44,10 @@ type CascadeRecoveredTask struct {
 }
 
 func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
-	lockMap := lock.NewMutexMap()
-	sm := NewStateManager(opts.MaestroDir, lockMap)
+	if opts.LockMap == nil {
+		return nil, fmt.Errorf("LockMap is required")
+	}
+	sm := NewStateManager(opts.MaestroDir, opts.LockMap)
 
 	sm.LockCommand(opts.CommandID)
 	defer sm.UnlockCommand(opts.CommandID)
@@ -56,7 +59,7 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 
 	// Validation
 	if state.PlanStatus != model.PlanStatusSealed {
-		return nil, fmt.Errorf("plan_status must be sealed, got %s", state.PlanStatus)
+		return nil, &PlanValidationError{Msg: fmt.Sprintf("plan_status must be sealed, got %s", state.PlanStatus)}
 	}
 
 	if err := ValidateNotCancelled(state); err != nil {
@@ -65,18 +68,18 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 
 	retryOfStatus, ok := state.TaskStates[opts.RetryOf]
 	if !ok {
-		return nil, fmt.Errorf("task %s not found in state", opts.RetryOf)
+		return nil, &PlanValidationError{Msg: fmt.Sprintf("task %s not found in state", opts.RetryOf)}
 	}
 	if retryOfStatus != model.StatusFailed {
-		return nil, fmt.Errorf("retry-of task %s must be failed, got %s", opts.RetryOf, retryOfStatus)
+		return nil, &PlanValidationError{Msg: fmt.Sprintf("retry-of task %s must be failed, got %s", opts.RetryOf, retryOfStatus)}
 	}
 
 	// Find phase membership
 	phase, phaseIdx := findPhaseForTask(state, opts.RetryOf)
 	if phase != nil {
 		if phase.Status != model.PhaseStatusActive && phase.Status != model.PhaseStatusFailed {
-			return nil, fmt.Errorf("phase %q status must be active or failed, got %s",
-				phase.Name, phase.Status)
+			return nil, &PlanValidationError{Msg: fmt.Sprintf("phase %q status must be active or failed, got %s",
+				phase.Name, phase.Status)}
 		}
 	}
 
@@ -99,7 +102,7 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 			for _, dep := range blockedBy {
 				if !phaseTaskSet[dep] {
 					if state.SystemCommitTaskID == nil || dep != *state.SystemCommitTaskID {
-						return nil, fmt.Errorf("blocked_by task %s is not in phase %q", dep, phase.Name)
+						return nil, &PlanValidationError{Msg: fmt.Sprintf("blocked_by task %s is not in phase %q", dep, phase.Name)}
 					}
 				}
 			}
@@ -107,7 +110,7 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 			// No phase: blocked_by must exist in command's task states
 			for _, dep := range blockedBy {
 				if _, ok := state.TaskStates[dep]; !ok {
-					return nil, fmt.Errorf("blocked_by task %s not found in command state", dep)
+					return nil, &PlanValidationError{Msg: fmt.Sprintf("blocked_by task %s not found in command state", dep)}
 				}
 			}
 		}

@@ -75,11 +75,11 @@ func (sm *StateManager) DeleteState(commandID string) error {
 }
 
 func (sm *StateManager) LockCommand(commandID string) {
-	sm.lockMap.Lock(commandID)
+	sm.lockMap.Lock("state:" + commandID)
 }
 
 func (sm *StateManager) UnlockCommand(commandID string) {
-	sm.lockMap.Unlock(commandID)
+	sm.lockMap.Unlock("state:" + commandID)
 }
 
 type RetryableError struct {
@@ -96,13 +96,13 @@ func (e *RetryableError) Unwrap() error {
 
 func CanComplete(state *model.CommandState) (model.PlanStatus, error) {
 	if state.PlanStatus != model.PlanStatusSealed {
-		return "", fmt.Errorf("plan_status must be sealed, got %s", state.PlanStatus)
+		return "", &PlanValidationError{Msg: fmt.Sprintf("plan_status must be sealed, got %s", state.PlanStatus)}
 	}
 
 	totalExpected := len(state.RequiredTaskIDs) + len(state.OptionalTaskIDs)
 	if totalExpected != state.ExpectedTaskCount {
-		return "", fmt.Errorf("task count mismatch: required(%d) + optional(%d) = %d, expected %d",
-			len(state.RequiredTaskIDs), len(state.OptionalTaskIDs), totalExpected, state.ExpectedTaskCount)
+		return "", &PlanValidationError{Msg: fmt.Sprintf("task count mismatch: required(%d) + optional(%d) = %d, expected %d",
+			len(state.RequiredTaskIDs), len(state.OptionalTaskIDs), totalExpected, state.ExpectedTaskCount)}
 	}
 
 	// Check all phases are terminal (if phases exist)
@@ -114,7 +114,7 @@ func CanComplete(state *model.CommandState) (model.PlanStatus, error) {
 				}
 			}
 			if !model.IsPhaseTerminal(phase.Status) {
-				return "", fmt.Errorf("phase %q is not terminal (status: %s)", phase.Name, phase.Status)
+				return "", &PlanValidationError{Msg: fmt.Sprintf("phase %q is not terminal (status: %s)", phase.Name, phase.Status)}
 			}
 		}
 	}
@@ -132,7 +132,7 @@ func CanComplete(state *model.CommandState) (model.PlanStatus, error) {
 		}
 	}
 	if len(nonTerminal) > 0 {
-		return "", fmt.Errorf("required tasks not terminal: %s", strings.Join(nonTerminal, ", "))
+		return "", &PlanValidationError{Msg: fmt.Sprintf("required tasks not terminal: %s", strings.Join(nonTerminal, ", "))}
 	}
 
 	return DeriveStatus(state)
@@ -152,7 +152,7 @@ func DeriveStatus(state *model.CommandState) (model.PlanStatus, error) {
 	for _, taskID := range state.RequiredTaskIDs {
 		status := state.TaskStates[taskID]
 		switch status {
-		case model.StatusFailed, model.StatusDeadLetter:
+		case model.StatusFailed:
 			hasFailed = true
 		case model.StatusCancelled:
 			hasCancelled = true

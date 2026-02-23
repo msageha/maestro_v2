@@ -1,12 +1,18 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
 )
+
+// ErrStateNotFound is returned by StateReader methods when the state file does not exist
+// (i.e., the command has not been submitted yet). Callers can use errors.Is to distinguish
+// this from other read errors (e.g., parse failures on an existing file).
+var ErrStateNotFound = errors.New("state not found")
 
 // StateReader provides read access to command state (state/commands/{command_id}.yaml).
 // Phase 6 implements the concrete version; Phase 5 uses this interface for decoupling.
@@ -25,6 +31,8 @@ type StateReader interface {
 	ApplyPhaseTransition(commandID, phaseID string, newStatus model.PhaseStatus) error
 	// UpdateTaskState updates a single task's status and optionally records a cancelled reason.
 	UpdateTaskState(commandID, taskID string, newStatus model.Status, cancelledReason string) error
+	// IsCommandCancelRequested checks the state file for cancel.requested flag.
+	IsCommandCancelRequested(commandID string) (bool, error)
 }
 
 // PhaseInfo represents phase metadata from command state.

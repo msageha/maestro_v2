@@ -154,6 +154,17 @@ func (r *PlanStateReader) UpdateTaskState(commandID, taskID string, newStatus mo
 	return r.stateManager.SaveState(state)
 }
 
+func (r *PlanStateReader) IsCommandCancelRequested(commandID string) (bool, error) {
+	state, err := r.stateManager.LoadState(commandID)
+	if err != nil {
+		if !r.stateManager.StateExists(commandID) {
+			return false, daemon.ErrStateNotFound
+		}
+		return false, err
+	}
+	return state.Cancel.Requested, nil
+}
+
 func (r *PlanStateReader) IsSystemCommitReady(commandID, taskID string) (bool, bool, error) {
 	state, err := r.stateManager.LoadState(commandID)
 	if err != nil {
