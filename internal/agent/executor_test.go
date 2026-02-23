@@ -113,34 +113,38 @@ func TestBuildPlannerEnvelope(t *testing.T) {
 
 func TestBuildOrchestratorNotificationEnvelope(t *testing.T) {
 	tests := []struct {
-		name     string
-		cmdID    string
-		ntfType  string
-		expected string
+		name       string
+		cmdID      string
+		ntfType    string
+		leaseEpoch int
+		expected   string
 	}{
 		{
 			"completed",
 			"cmd_1771722000_a3f2b7c1",
 			"command_completed",
-			"[maestro] kind:command_completed command_id:cmd_1771722000_a3f2b7c1 status:command_completed",
+			2,
+			"[maestro] kind:command_completed command_id:cmd_1771722000_a3f2b7c1 status:command_completed lease_epoch:2",
 		},
 		{
 			"failed",
 			"cmd_1771722000_a3f2b7c1",
 			"command_failed",
-			"[maestro] kind:command_failed command_id:cmd_1771722000_a3f2b7c1 status:command_failed",
+			1,
+			"[maestro] kind:command_failed command_id:cmd_1771722000_a3f2b7c1 status:command_failed lease_epoch:1",
 		},
 		{
 			"cancelled",
 			"cmd_1771722000_a3f2b7c1",
 			"command_cancelled",
-			"[maestro] kind:command_cancelled command_id:cmd_1771722000_a3f2b7c1 status:command_cancelled",
+			3,
+			"[maestro] kind:command_cancelled command_id:cmd_1771722000_a3f2b7c1 status:command_cancelled lease_epoch:3",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := BuildOrchestratorNotificationEnvelope(tt.cmdID, tt.ntfType)
+			got := BuildOrchestratorNotificationEnvelope(tt.cmdID, tt.ntfType, tt.leaseEpoch)
 			if got != tt.expected {
 				t.Errorf("got %q, want %q", got, tt.expected)
 			}

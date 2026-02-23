@@ -27,7 +27,7 @@ func (c *Client) Send(req *Request) (*Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf(
 			"failed to connect to daemon at %s: %w\n"+
-				"Is the daemon running? Start it with: maestro up",
+				"Is the daemon running? Start it with: maestro daemon",
 			c.socketPath, err,
 		)
 	}

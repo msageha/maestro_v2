@@ -8,6 +8,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/daemon"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/notify"
 	"github.com/msageha/maestro_v2/internal/setup"
@@ -146,8 +147,28 @@ func runWorker(args []string) {
 // Stub functions — implementations will be added in later phases.
 
 func runDaemon(_ []string) {
-	fmt.Fprintln(os.Stderr, "daemon: not yet implemented")
-	os.Exit(1)
+	maestroDir := findMaestroDir()
+	if maestroDir == "" {
+		fmt.Fprintln(os.Stderr, "error: .maestro/ directory not found. Run 'maestro setup <dir>' first.")
+		os.Exit(1)
+	}
+
+	cfg, err := loadConfig(maestroDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	d, err := daemon.New(maestroDir, cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "create daemon: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := d.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "daemon: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 func runSetup(args []string) {

@@ -505,9 +505,9 @@ func BuildPlannerEnvelope(cmd model.Command, leaseEpoch, attempt int) string {
 }
 
 // BuildOrchestratorNotificationEnvelope creates the envelope for an Orchestrator notification.
-func BuildOrchestratorNotificationEnvelope(commandID, notificationType string) string {
-	return fmt.Sprintf("[maestro] kind:%s command_id:%s status:%s",
-		notificationType, commandID, notificationType)
+func BuildOrchestratorNotificationEnvelope(commandID, notificationType string, leaseEpoch int) string {
+	return fmt.Sprintf("[maestro] kind:%s command_id:%s status:%s lease_epoch:%d",
+		notificationType, commandID, notificationType, leaseEpoch)
 }
 
 // BuildTaskResultNotification creates a side-channel notification for the Planner.

@@ -314,8 +314,8 @@ func TestClient_DaemonNotRunning(t *testing.T) {
 	if !strings.Contains(err.Error(), "failed to connect to daemon") {
 		t.Errorf("expected daemon connection error, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "maestro up") {
-		t.Errorf("expected hint about 'maestro up', got: %v", err)
+	if !strings.Contains(err.Error(), "maestro daemon") {
+		t.Errorf("expected hint about 'maestro daemon', got: %v", err)
 	}
 }
 
