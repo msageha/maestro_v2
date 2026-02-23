@@ -181,6 +181,139 @@ func (mh *MetricsHandler) UpdateDashboard(
 	return atomicWriteText(dashboardPath, sb.String())
 }
 
+// UpdateDashboardFull generates a dashboard including results/ summary (§5.11).
+func (mh *MetricsHandler) UpdateDashboardFull(
+	cq model.CommandQueue,
+	taskQueues map[string]*taskQueueEntry,
+	nq model.NotificationQueue,
+	resultFiles map[string]*model.TaskResultFile,
+) error {
+	depth := mh.computeQueueDepth(cq, taskQueues, nq)
+
+	var sb strings.Builder
+	sb.WriteString("# Maestro Dashboard\n\n")
+	sb.WriteString(fmt.Sprintf("Updated: %s\n\n", time.Now().UTC().Format(time.RFC3339)))
+
+	// Queue Depth table
+	sb.WriteString("## Queue Depth\n\n")
+	sb.WriteString("| Queue | Pending |\n")
+	sb.WriteString("|-------|--------:|\n")
+	sb.WriteString(fmt.Sprintf("| planner | %d |\n", depth.Planner))
+	sb.WriteString(fmt.Sprintf("| orchestrator | %d |\n", depth.Orchestrator))
+
+	workerKeys := make([]string, 0, len(depth.Workers))
+	for k := range depth.Workers {
+		workerKeys = append(workerKeys, k)
+	}
+	sort.Strings(workerKeys)
+	for _, w := range workerKeys {
+		sb.WriteString(fmt.Sprintf("| %s | %d |\n", w, depth.Workers[w]))
+	}
+
+	// Active commands
+	sb.WriteString("\n## Active Commands\n\n")
+	activeCount := 0
+	for _, cmd := range cq.Commands {
+		if cmd.Status == model.StatusInProgress {
+			sb.WriteString(fmt.Sprintf("- `%s` (priority=%d, attempts=%d)\n", cmd.ID, cmd.Priority, cmd.Attempts))
+			activeCount++
+		}
+	}
+	if activeCount == 0 {
+		sb.WriteString("_No active commands_\n")
+	}
+
+	// Task summary per worker
+	sb.WriteString("\n## Worker Tasks\n\n")
+	workerPaths := make([]string, 0, len(taskQueues))
+	for path := range taskQueues {
+		workerPaths = append(workerPaths, path)
+	}
+	sort.Strings(workerPaths)
+
+	for _, path := range workerPaths {
+		tq := taskQueues[path]
+		wID := workerIDFromPath(path)
+		if wID == "" {
+			continue
+		}
+
+		pending, inProg := 0, 0
+		for _, task := range tq.Queue.Tasks {
+			switch task.Status {
+			case model.StatusPending:
+				pending++
+			case model.StatusInProgress:
+				inProg++
+			}
+		}
+		sb.WriteString(fmt.Sprintf("- **%s**: %d pending, %d in_progress\n", wID, pending, inProg))
+	}
+
+	// Results summary (from results/ YAML files)
+	if len(resultFiles) > 0 {
+		sb.WriteString("\n## Results Summary\n\n")
+		sb.WriteString("| Worker | Completed | Failed | Total |\n")
+		sb.WriteString("|--------|----------:|-------:|------:|\n")
+
+		resultWorkers := make([]string, 0, len(resultFiles))
+		for wID := range resultFiles {
+			resultWorkers = append(resultWorkers, wID)
+		}
+		sort.Strings(resultWorkers)
+
+		for _, wID := range resultWorkers {
+			rf := resultFiles[wID]
+			completed, failed, total := 0, 0, 0
+			for _, r := range rf.Results {
+				total++
+				switch r.Status {
+				case model.StatusCompleted:
+					completed++
+				case model.StatusFailed:
+					failed++
+				}
+			}
+			sb.WriteString(fmt.Sprintf("| %s | %d | %d | %d |\n", wID, completed, failed, total))
+		}
+	}
+
+	dashboardPath := filepath.Join(mh.maestroDir, "dashboard.md")
+	return atomicWriteText(dashboardPath, sb.String())
+}
+
+// loadAllResultFiles loads all results/worker{N}.yaml and results/planner.yaml files.
+func (mh *MetricsHandler) loadAllResultFiles() map[string]*model.TaskResultFile {
+	resultsDir := filepath.Join(mh.maestroDir, "results")
+	entries, err := os.ReadDir(resultsDir)
+	if err != nil {
+		return nil
+	}
+
+	result := make(map[string]*model.TaskResultFile)
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".yaml") {
+			continue
+		}
+
+		path := filepath.Join(resultsDir, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+
+		var rf model.TaskResultFile
+		if err := yamlv3.Unmarshal(data, &rf); err != nil {
+			continue
+		}
+
+		wID := strings.TrimSuffix(name, ".yaml")
+		result[wID] = &rf
+	}
+	return result
+}
+
 // computeQueueDepth counts pending entries in each queue.
 func (mh *MetricsHandler) computeQueueDepth(
 	cq model.CommandQueue,

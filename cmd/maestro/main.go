@@ -21,6 +21,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/setup"
 	"github.com/msageha/maestro_v2/internal/status"
 	"github.com/msageha/maestro_v2/internal/uds"
+	"github.com/msageha/maestro_v2/internal/worker"
 )
 
 const version = "2.0.0"
@@ -1123,9 +1124,47 @@ func runAgentExec(args []string) {
 	}
 }
 
-func runWorkerStandby(_ []string) {
-	fmt.Fprintln(os.Stderr, "worker standby: not yet implemented")
-	os.Exit(1)
+func runWorkerStandby(args []string) {
+	var modelFilter string
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--model":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--model requires a value")
+				os.Exit(1)
+			}
+			i++
+			modelFilter = args[i]
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\nusage: maestro worker standby [--model <model>]\n", args[i])
+			os.Exit(1)
+		}
+	}
+
+	maestroDir := findMaestroDir()
+	if maestroDir == "" {
+		fmt.Fprintln(os.Stderr, "error: .maestro/ directory not found. Run 'maestro setup <dir>' first.")
+		os.Exit(1)
+	}
+
+	cfg, err := loadConfig(maestroDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		os.Exit(1)
+	}
+
+	output, err := worker.StandbyJSON(worker.StandbyOptions{
+		MaestroDir:  maestroDir,
+		Config:      cfg,
+		ModelFilter: modelFilter,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "worker standby: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Println(output)
 }
 
 func runNotify(args []string) {
@@ -1139,9 +1178,41 @@ func runNotify(args []string) {
 	}
 }
 
-func runDashboard(_ []string) {
-	fmt.Fprintln(os.Stderr, "dashboard: not yet implemented")
-	os.Exit(1)
+func runDashboard(args []string) {
+	for _, a := range args {
+		fmt.Fprintf(os.Stderr, "unknown flag: %s\nusage: maestro dashboard\n", a)
+		os.Exit(1)
+	}
+
+	maestroDir := findMaestroDir()
+	if maestroDir == "" {
+		fmt.Fprintln(os.Stderr, "error: .maestro/ directory not found. Run 'maestro setup <dir>' first.")
+		os.Exit(1)
+	}
+
+	client := uds.NewClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	resp, err := client.SendCommand("dashboard", nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "dashboard: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !resp.Success {
+		msg := "unknown error"
+		if resp.Error != nil {
+			msg = resp.Error.Message
+		}
+		fmt.Fprintf(os.Stderr, "dashboard failed: %s\n", msg)
+		os.Exit(1)
+	}
+
+	var result map[string]string
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		fmt.Fprintf(os.Stderr, "parse response: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Dashboard regenerated: %s\n", result["path"])
 }
 
 // findMaestroDir searches for .maestro/ in the current directory and ancestors.

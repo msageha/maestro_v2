@@ -218,6 +218,29 @@ func (d *Daemon) registerHandlers() {
 	d.server.Handle("queue_write", d.handleQueueWrite)
 	d.server.Handle("result_write", d.handleResultWrite)
 	d.server.Handle("plan", d.handlePlan)
+	d.server.Handle("dashboard", d.handleDashboard)
+}
+
+// handleDashboard triggers dashboard regeneration and returns the result.
+func (d *Daemon) handleDashboard(req *uds.Request) *uds.Response {
+	d.handler.fileMu.Lock()
+	defer d.handler.fileMu.Unlock()
+
+	cq, _ := d.handler.loadCommandQueue()
+	taskQueues := d.handler.loadAllTaskQueues()
+	nq, _ := d.handler.loadNotificationQueue()
+	resultFiles := d.handler.metricsHandler.loadAllResultFiles()
+
+	if err := d.handler.metricsHandler.UpdateDashboardFull(cq, taskQueues, nq, resultFiles); err != nil {
+		d.log(LogLevelError, "dashboard regeneration error=%v", err)
+		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("dashboard generation failed: %v", err))
+	}
+
+	dashboardPath := filepath.Join(d.maestroDir, "dashboard.md")
+	return uds.SuccessResponse(map[string]string{
+		"status": "regenerated",
+		"path":   dashboardPath,
+	})
 }
 
 // fsnotifyLoop processes filesystem change events.
