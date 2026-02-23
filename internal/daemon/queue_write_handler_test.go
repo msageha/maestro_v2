@@ -7,10 +7,11 @@ import (
 	"path/filepath"
 	"testing"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 func newTestDaemon(t *testing.T) *Daemon {

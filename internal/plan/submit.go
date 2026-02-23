@@ -1,3 +1,4 @@
+// Package plan handles plan submission, validation, state management, and completion logic.
 package plan
 
 import (
@@ -7,10 +8,11 @@ import (
 	"path/filepath"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 type SubmitOptions struct {
@@ -24,9 +26,9 @@ type SubmitOptions struct {
 }
 
 type SubmitResult struct {
-	Valid     bool               `json:"valid,omitempty"`
-	CommandID string             `json:"command_id,omitempty"`
-	Tasks     []SubmitTaskResult `json:"tasks,omitempty"`
+	Valid     bool                `json:"valid,omitempty"`
+	CommandID string              `json:"command_id,omitempty"`
+	Tasks     []SubmitTaskResult  `json:"tasks,omitempty"`
 	Phases    []SubmitPhaseResult `json:"phases,omitempty"`
 }
 
@@ -134,7 +136,7 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm *StateManager)
 
 	// Build state
 	now := time.Now().UTC().Format(time.RFC3339)
-	state := buildCommandState(opts.CommandID, tasks, nameToID, assignMap, nil, opts.Config.Continuous.Enabled, now)
+	state := buildCommandState(opts.CommandID, tasks, nameToID, nil, now)
 
 	// Atomic write: create state (planning)
 	state.PlanStatus = model.PlanStatusPlanning
@@ -145,7 +147,7 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm *StateManager)
 	// Write queue entries
 	if err := writeQueueEntries(opts.MaestroDir, assignments, tasks, nameToID, opts.CommandID, now); err != nil {
 		rollbackQueueEntries(opts.MaestroDir, tasks, nameToID, assignMap)
-		sm.DeleteState(opts.CommandID)
+		_ = sm.DeleteState(opts.CommandID)
 		return nil, fmt.Errorf("write queue: %w", err)
 	}
 
@@ -155,7 +157,7 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm *StateManager)
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := sm.SaveState(state); err != nil {
 		rollbackQueueEntries(opts.MaestroDir, tasks, nameToID, assignMap)
-		sm.DeleteState(opts.CommandID)
+		_ = sm.DeleteState(opts.CommandID)
 		return nil, fmt.Errorf("save state (sealed): %w", err)
 	}
 
@@ -293,20 +295,20 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 
 	// Build state with phases
 	state := &model.CommandState{
-		SchemaVersion:    1,
-		FileType:         "state_command",
-		CommandID:        opts.CommandID,
-		PlanVersion:      0,
-		PlanStatus:       model.PlanStatusPlanning,
-		CompletionPolicy: defaultCompletionPolicy(),
-		TaskDependencies: make(map[string][]string),
-		TaskStates:       make(map[string]model.Status),
-		CancelledReasons: make(map[string]string),
-		AppliedResultIDs: make(map[string]string),
-		RetryLineage:     make(map[string]string),
+		SchemaVersion:      1,
+		FileType:           "state_command",
+		CommandID:          opts.CommandID,
+		PlanVersion:        0,
+		PlanStatus:         model.PlanStatusPlanning,
+		CompletionPolicy:   defaultCompletionPolicy(),
+		TaskDependencies:   make(map[string][]string),
+		TaskStates:         make(map[string]model.Status),
+		CancelledReasons:   make(map[string]string),
+		AppliedResultIDs:   make(map[string]string),
+		RetryLineage:       make(map[string]string),
 		SystemCommitTaskID: systemCommitTaskID,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 
 	// Build phases
@@ -336,7 +338,7 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 
 				// Convert blocked_by names to IDs
 				if len(t.BlockedBy) > 0 {
-					var depIDs []string
+					depIDs := make([]string, 0, len(t.BlockedBy))
 					for _, depName := range t.BlockedBy {
 						depIDs = append(depIDs, allNameToID[depName])
 					}
@@ -377,7 +379,7 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 	// Write queue entries for concrete phase tasks + system commit
 	if err := writeQueueEntries(opts.MaestroDir, allAssignments, allTasks, allNameToID, opts.CommandID, now); err != nil {
 		rollbackQueueEntries(opts.MaestroDir, allTasks, allNameToID, allAssignMap)
-		sm.DeleteState(opts.CommandID)
+		_ = sm.DeleteState(opts.CommandID)
 		return nil, fmt.Errorf("write queue: %w", err)
 	}
 
@@ -387,7 +389,7 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := sm.SaveState(state); err != nil {
 		rollbackQueueEntries(opts.MaestroDir, allTasks, allNameToID, allAssignMap)
-		sm.DeleteState(opts.CommandID)
+		_ = sm.DeleteState(opts.CommandID)
 		return nil, fmt.Errorf("save state (sealed): %w", err)
 	}
 
@@ -512,7 +514,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	if err != nil {
 		state.Phases[targetPhaseIdx].Status = model.PhaseStatusAwaitingFill
 		state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		sm.SaveState(state) // persist rollback to disk
+		_ = sm.SaveState(state) // persist rollback to disk
 		return nil, fmt.Errorf("worker assignment: %w", err)
 	}
 
@@ -536,7 +538,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 		state.TaskStates[taskID] = model.StatusPending
 
 		if len(t.BlockedBy) > 0 {
-			var depIDs []string
+			depIDs := make([]string, 0, len(t.BlockedBy))
 			for _, depName := range t.BlockedBy {
 				depIDs = append(depIDs, nameToID[depName])
 			}
@@ -551,7 +553,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 		state.Phases[targetPhaseIdx].Status = model.PhaseStatusAwaitingFill
 		rollbackPhaseFillState(state, targetPhaseIdx, input.Tasks, nameToID)
 		state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		sm.SaveState(state) // persist rollback to disk
+		_ = sm.SaveState(state) // persist rollback to disk
 		return nil, fmt.Errorf("write queue: %w", err)
 	}
 
@@ -566,7 +568,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 		rollbackQueueEntries(opts.MaestroDir, input.Tasks, nameToID, assignMap)
 		rollbackPhaseFillState(state, targetPhaseIdx, input.Tasks, nameToID)
 		state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		sm.SaveState(state) // persist rollback to disk
+		_ = sm.SaveState(state) // persist rollback to disk
 		return nil, fmt.Errorf("save state: %w", err)
 	}
 
@@ -605,7 +607,7 @@ func readInput(tasksFile string) (*SubmitInput, error) {
 }
 
 func insertSystemCommitTask(tasks []TaskInput) []TaskInput {
-	var allNames []string
+	allNames := make([]string, 0, len(tasks))
 	for _, t := range tasks {
 		allNames = append(allNames, t.Name)
 	}
@@ -635,7 +637,7 @@ func resolveNames(tasks []TaskInput) (map[string]string, error) {
 	return nameToID, nil
 }
 
-func buildCommandState(commandID string, tasks []TaskInput, nameToID map[string]string, assignMap map[string]WorkerAssignment, phases []model.Phase, continuousEnabled bool, now string) *model.CommandState {
+func buildCommandState(commandID string, tasks []TaskInput, nameToID map[string]string, phases []model.Phase, now string) *model.CommandState {
 	state := &model.CommandState{
 		SchemaVersion:    1,
 		FileType:         "state_command",
@@ -665,7 +667,7 @@ func buildCommandState(commandID string, tasks []TaskInput, nameToID map[string]
 		state.TaskStates[taskID] = model.StatusPending
 
 		if len(t.BlockedBy) > 0 {
-			var depIDs []string
+			depIDs := make([]string, 0, len(t.BlockedBy))
 			for _, depName := range t.BlockedBy {
 				depIDs = append(depIDs, nameToID[depName])
 			}
@@ -705,7 +707,7 @@ func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks 
 		t := taskMap[a.TaskName]
 		taskID := nameToID[a.TaskName]
 
-		var depIDs []string
+		depIDs := make([]string, 0, len(t.BlockedBy))
 		for _, depName := range t.BlockedBy {
 			depIDs = append(depIDs, nameToID[depName])
 		}
@@ -788,7 +790,7 @@ func rollbackQueueEntries(maestroDir string, tasks []TaskInput, nameToID map[str
 		}
 		tq.Tasks = kept
 
-		yamlutil.AtomicWrite(queueFile, tq)
+		_ = yamlutil.AtomicWrite(queueFile, tq)
 	}
 }
 

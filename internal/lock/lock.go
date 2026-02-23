@@ -1,3 +1,4 @@
+// Package lock provides file-based locking for daemon coordination.
 package lock
 
 import (
@@ -60,29 +61,29 @@ func (fl *FileLock) TryLock() error {
 	}
 
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
+		_ = f.Close()
 		return fmt.Errorf("acquire lock (another daemon may be running): %w", err)
 	}
 
 	// Write PID to lock file
 	if err := f.Truncate(0); err != nil {
-		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		f.Close()
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
 		return fmt.Errorf("truncate lock file: %w", err)
 	}
 	if _, err := f.Seek(0, 0); err != nil {
-		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		f.Close()
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
 		return fmt.Errorf("seek lock file: %w", err)
 	}
 	if _, err := fmt.Fprintf(f, "%d\n", os.Getpid()); err != nil {
-		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		f.Close()
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
 		return fmt.Errorf("write PID to lock file: %w", err)
 	}
 	if err := f.Sync(); err != nil {
-		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
-		f.Close()
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = f.Close()
 		return fmt.Errorf("sync lock file: %w", err)
 	}
 
@@ -96,7 +97,7 @@ func (fl *FileLock) Unlock() error {
 	}
 
 	if err := syscall.Flock(int(fl.file.Fd()), syscall.LOCK_UN); err != nil {
-		fl.file.Close()
+		_ = fl.file.Close()
 		return fmt.Errorf("release lock: %w", err)
 	}
 
@@ -104,7 +105,7 @@ func (fl *FileLock) Unlock() error {
 		return fmt.Errorf("close lock file: %w", err)
 	}
 
-	os.Remove(fl.path)
+	_ = os.Remove(fl.path)
 	fl.file = nil
 	return nil
 }

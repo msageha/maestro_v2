@@ -1,3 +1,4 @@
+// Package yaml provides atomic YAML file I/O and quarantine utilities.
 package yaml
 
 import (
@@ -28,8 +29,8 @@ func AtomicWriteRaw(path string, content []byte) error {
 
 	defer func() {
 		// Clean up temp file on any failure
-		tmp.Close()
-		os.Remove(tmpName)
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
 	}()
 
 	if _, err := tmp.Write(content); err != nil {
@@ -77,13 +78,13 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer in.Close()
+	defer func() { _ = in.Close() }()
 
 	out, err := os.Create(dst)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	if _, err := io.Copy(out, in); err != nil {
 		return err

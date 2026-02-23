@@ -1,3 +1,4 @@
+// Package agent provides agent lifecycle management and command execution.
 package agent
 
 import (
@@ -375,10 +376,8 @@ func (e *Executor) detectBusy(paneTarget string) BusyVerdict {
 		return VerdictUndecided
 	}
 
-	patternMatched := false
-	if e.busyRegex != nil && e.busyRegex.MatchString(content) {
-		patternMatched = true
-	}
+	patternMatched := e.busyRegex != nil && e.busyRegex.MatchString(content)
+
 	hintStr := "not_matched"
 	if patternMatched {
 		hintStr = "matched"

@@ -68,7 +68,7 @@ func RunUp(opts UpOptions) error {
 	}
 
 	// Create tmux formation
-	if err := createFormation(opts.MaestroDir, cfg); err != nil {
+	if err := createFormation(cfg); err != nil {
 		return fmt.Errorf("create formation: %w", err)
 	}
 
@@ -186,7 +186,7 @@ func startupRecovery(maestroDir string) error {
 	if err := fl.TryLock(); err != nil {
 		return fmt.Errorf("daemon lock check: another instance may be running: %w", err)
 	}
-	fl.Unlock()
+	_ = fl.Unlock()
 
 	// YAML validation: scan all YAML files and quarantine corrupt ones
 	validateAndRecoverYAML(maestroDir)
@@ -199,8 +199,8 @@ func startupRecovery(maestroDir string) error {
 // validateAndRecoverYAML scans all YAML files for syntax errors and quarantines corrupt ones.
 func validateAndRecoverYAML(maestroDir string) {
 	yamlDirs := map[string]string{
-		filepath.Join(maestroDir, "queue"):            "",
-		filepath.Join(maestroDir, "results"):          "",
+		filepath.Join(maestroDir, "queue"):             "",
+		filepath.Join(maestroDir, "results"):           "",
 		filepath.Join(maestroDir, "state", "commands"): "state_command",
 	}
 
@@ -272,7 +272,7 @@ func inferFileType(dir, filename string) string {
 }
 
 // createFormation creates the tmux session with orchestrator, planner, and worker windows.
-func createFormation(maestroDir string, cfg model.Config) error {
+func createFormation(cfg model.Config) error {
 	// Kill existing session if any
 	if tmux.SessionExists() {
 		if err := tmux.KillSession(); err != nil {
@@ -325,7 +325,8 @@ func createFormation(maestroDir string, cfg model.Config) error {
 	}
 
 	// Launch agents in each pane
-	allPanes := []string{orchPane, plannerPane}
+	allPanes := make([]string, 0, 2+cfg.Agents.Workers.Count)
+	allPanes = append(allPanes, orchPane, plannerPane)
 	allPanes = append(allPanes, panes...)
 
 	for _, pane := range allPanes {
@@ -421,7 +422,7 @@ func activateContinuousMode(maestroDir string, cfg model.Config) error {
 	var state model.Continuous
 	data, err := os.ReadFile(continuousPath)
 	if err == nil {
-		yamlv3.Unmarshal(data, &state)
+		_ = yamlv3.Unmarshal(data, &state)
 	}
 
 	state.SchemaVersion = 1

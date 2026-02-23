@@ -31,9 +31,9 @@ func (c *Client) Send(req *Request) (*Response, error) {
 			c.socketPath, err,
 		)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
-	conn.SetDeadline(time.Now().Add(c.timeout))
+	_ = conn.SetDeadline(time.Now().Add(c.timeout))
 
 	if err := WriteFrame(conn, req); err != nil {
 		return nil, fmt.Errorf("send request: %w", err)

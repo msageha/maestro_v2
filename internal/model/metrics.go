@@ -1,12 +1,12 @@
 package model
 
 type Metrics struct {
-	SchemaVersion   int              `yaml:"schema_version"`
-	FileType        string           `yaml:"file_type"`
-	QueueDepth      QueueDepth       `yaml:"queue_depth"`
-	Counters        MetricsCounters  `yaml:"counters"`
-	DaemonHeartbeat *string          `yaml:"daemon_heartbeat"`
-	UpdatedAt       *string          `yaml:"updated_at"`
+	SchemaVersion   int             `yaml:"schema_version"`
+	FileType        string          `yaml:"file_type"`
+	QueueDepth      QueueDepth      `yaml:"queue_depth"`
+	Counters        MetricsCounters `yaml:"counters"`
+	DaemonHeartbeat *string         `yaml:"daemon_heartbeat"`
+	UpdatedAt       *string         `yaml:"updated_at"`
 }
 
 type QueueDepth struct {

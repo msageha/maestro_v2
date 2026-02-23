@@ -1,3 +1,4 @@
+// Package tmux provides helpers for managing tmux sessions and panes.
 package tmux
 
 import (
@@ -72,7 +73,8 @@ func CapturePane(paneTarget string, lastN int) (string, error) {
 
 // SendKeys sends keystrokes to a pane.
 func SendKeys(paneTarget string, keys ...string) error {
-	args := []string{"send-keys", "-t", paneTarget}
+	args := make([]string, 0, 3+len(keys))
+	args = append(args, "send-keys", "-t", paneTarget)
 	args = append(args, keys...)
 	return run(args...)
 }

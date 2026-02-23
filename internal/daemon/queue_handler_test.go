@@ -9,11 +9,12 @@ import (
 	"testing"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 func setupTestMaestroDir(t *testing.T) string {

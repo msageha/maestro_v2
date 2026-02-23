@@ -1,3 +1,4 @@
+// Package templates embeds default configuration and instruction files.
 package templates
 
 import "embed"

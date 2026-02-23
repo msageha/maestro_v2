@@ -13,12 +13,12 @@ import (
 
 // Dispatcher handles priority sorting and agent_executor dispatch.
 type Dispatcher struct {
-	maestroDir       string
-	config           model.Config
-	leaseManager     *LeaseManager
-	logger           *log.Logger
-	logLevel         LogLevel
-	executorFactory  ExecutorFactory
+	maestroDir      string
+	config          model.Config
+	leaseManager    *LeaseManager
+	logger          *log.Logger
+	logLevel        LogLevel
+	executorFactory ExecutorFactory
 }
 
 // ExecutorFactory creates agent executors. Allows testing without tmux.
@@ -191,7 +191,7 @@ func (d *Dispatcher) DispatchCommand(cmd *model.Command) error {
 	if err != nil {
 		return fmt.Errorf("create executor: %w", err)
 	}
-	defer exec.Close()
+	defer func() { _ = exec.Close() }()
 
 	envelope := agent.BuildPlannerEnvelope(*cmd, cmd.LeaseEpoch, cmd.Attempts)
 
@@ -220,7 +220,7 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 	if err != nil {
 		return fmt.Errorf("create executor: %w", err)
 	}
-	defer exec.Close()
+	defer func() { _ = exec.Close() }()
 
 	envelope := agent.BuildWorkerEnvelope(*task, workerID, task.LeaseEpoch, task.Attempts)
 
@@ -251,7 +251,7 @@ func (d *Dispatcher) DispatchNotification(ntf *model.Notification) error {
 	if err != nil {
 		return fmt.Errorf("create executor: %w", err)
 	}
-	defer exec.Close()
+	defer func() { _ = exec.Close() }()
 
 	envelope := agent.BuildOrchestratorNotificationEnvelope(ntf.CommandID, ntf.Type)
 

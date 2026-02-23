@@ -10,11 +10,12 @@ import (
 	"testing"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 func newTestReconciler(maestroDir string) *Reconciler {
@@ -475,9 +476,9 @@ func TestReconciler_AllPatterns_Combined(t *testing.T) {
 	state2 := model.CommandState{
 		SchemaVersion: 1, FileType: "state_command",
 		CommandID: "cmd_r2", PlanStatus: model.PlanStatusSealed,
-		TaskStates: map[string]model.Status{"task_r2": model.StatusInProgress},
+		TaskStates:       map[string]model.Status{"task_r2": model.StatusInProgress},
 		AppliedResultIDs: map[string]string{},
-		CreatedAt: now, UpdatedAt: now,
+		CreatedAt:        now, UpdatedAt: now,
 	}
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r2.yaml"), state2)
 
@@ -773,12 +774,12 @@ func TestReconciler_R5_NotifiedResult_NoOrchestratorNotification(t *testing.T) {
 		SchemaVersion: 1, FileType: "result_command",
 		Results: []model.CommandResult{
 			{
-				ID:        "res_r5_missing",
-				CommandID: "cmd_r5_test",
-				Status:    model.StatusCompleted,
-				Notified:  true,
+				ID:         "res_r5_missing",
+				CommandID:  "cmd_r5_test",
+				Status:     model.StatusCompleted,
+				Notified:   true,
 				NotifiedAt: &now,
-				CreatedAt: now,
+				CreatedAt:  now,
 			},
 		},
 	}
@@ -881,13 +882,13 @@ func TestReconciler_R6_AwaitingFill_DeadlineExpired(t *testing.T) {
 			},
 			{
 				PhaseID: "p2", Name: "implementation", Type: "deferred",
-				Status: model.PhaseStatusAwaitingFill,
+				Status:          model.PhaseStatusAwaitingFill,
 				DependsOnPhases: []string{"research"},
 				FillDeadlineAt:  &pastDeadline,
 			},
 			{
 				PhaseID: "p3", Name: "testing", Type: "deferred",
-				Status: model.PhaseStatusPending,
+				Status:          model.PhaseStatusPending,
 				DependsOnPhases: []string{"implementation"},
 			},
 		},

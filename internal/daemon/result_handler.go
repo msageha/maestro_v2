@@ -8,12 +8,13 @@ import (
 	"strings"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/notify"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // ResultHandler monitors results/ and delivers notifications to agents.
@@ -399,7 +400,7 @@ func (rh *ResultHandler) notifyPlannerOfWorkerResult(commandID, taskID, workerID
 	if err != nil {
 		return fmt.Errorf("create executor: %w", err)
 	}
-	defer exec.Close()
+	defer func() { _ = exec.Close() }()
 
 	message := agent.BuildTaskResultNotification(commandID, taskID, workerID, taskStatus)
 

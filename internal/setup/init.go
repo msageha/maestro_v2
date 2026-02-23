@@ -1,3 +1,4 @@
+// Package setup handles maestro project initialization.
 package setup
 
 import (

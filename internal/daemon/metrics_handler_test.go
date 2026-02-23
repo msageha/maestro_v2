@@ -9,8 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/msageha/maestro_v2/internal/model"
 	yamlv3 "gopkg.in/yaml.v3"
+
+	"github.com/msageha/maestro_v2/internal/model"
 )
 
 func newTestMetricsHandler(maestroDir string) *MetricsHandler {

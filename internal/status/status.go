@@ -1,3 +1,4 @@
+// Package status provides command and task status display utilities.
 package status
 
 import (
@@ -16,9 +17,9 @@ import (
 )
 
 type FormationStatus struct {
-	Daemon  DaemonStatus  `json:"daemon"`
-	Agents  []AgentStatus `json:"agents,omitempty"`
-	Queues  []QueueStatus `json:"queues,omitempty"`
+	Daemon DaemonStatus  `json:"daemon"`
+	Agents []AgentStatus `json:"agents,omitempty"`
+	Queues []QueueStatus `json:"queues,omitempty"`
 }
 
 type DaemonStatus struct {
@@ -149,7 +150,7 @@ func getQueueDepths(maestroDir string) []QueueStatus {
 		}
 
 		// Collect all entries from whichever field is populated
-		var allEntries []queueEntry
+		allEntries := make([]queueEntry, 0, len(qf.Commands)+len(qf.Tasks)+len(qf.Notifications))
 		allEntries = append(allEntries, qf.Commands...)
 		allEntries = append(allEntries, qf.Tasks...)
 		allEntries = append(allEntries, qf.Notifications...)

@@ -1,3 +1,4 @@
+// Package model defines the data structures for Maestro's configuration, state, and queue entries.
 package model
 
 type Config struct {
@@ -54,23 +55,23 @@ type NotifyConfig struct {
 }
 
 type WatcherConfig struct {
-	DebounceSec        float64 `yaml:"debounce_sec"`
-	ScanIntervalSec    int     `yaml:"scan_interval_sec"`
-	DispatchLeaseSec   int     `yaml:"dispatch_lease_sec"`
-	MaxInProgressMin   int     `yaml:"max_in_progress_min"`
-	BusyCheckInterval  int     `yaml:"busy_check_interval"`
-	BusyCheckMaxRetries int    `yaml:"busy_check_max_retries"`
-	BusyPatterns       string  `yaml:"busy_patterns"`
-	IdleStableSec      int     `yaml:"idle_stable_sec"`
-	CooldownAfterClear int     `yaml:"cooldown_after_clear"`
-	NotifyLeaseSec     int     `yaml:"notify_lease_sec"`
+	DebounceSec         float64 `yaml:"debounce_sec"`
+	ScanIntervalSec     int     `yaml:"scan_interval_sec"`
+	DispatchLeaseSec    int     `yaml:"dispatch_lease_sec"`
+	MaxInProgressMin    int     `yaml:"max_in_progress_min"`
+	BusyCheckInterval   int     `yaml:"busy_check_interval"`
+	BusyCheckMaxRetries int     `yaml:"busy_check_max_retries"`
+	BusyPatterns        string  `yaml:"busy_patterns"`
+	IdleStableSec       int     `yaml:"idle_stable_sec"`
+	CooldownAfterClear  int     `yaml:"cooldown_after_clear"`
+	NotifyLeaseSec      int     `yaml:"notify_lease_sec"`
 }
 
 type RetryConfig struct {
-	CommandDispatch                int `yaml:"command_dispatch"`
-	TaskDispatch                   int `yaml:"task_dispatch"`
+	CommandDispatch                  int `yaml:"command_dispatch"`
+	TaskDispatch                     int `yaml:"task_dispatch"`
 	OrchestratorNotificationDispatch int `yaml:"orchestrator_notification_dispatch"`
-	ResultNotificationSend         int `yaml:"result_notification_send"`
+	ResultNotificationSend           int `yaml:"result_notification_send"`
 }
 
 type QueueConfig struct {

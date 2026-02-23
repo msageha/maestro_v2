@@ -2,15 +2,17 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // ResultWriteParams is the request payload for the result_write UDS command.
@@ -57,7 +59,8 @@ func (d *Daemon) handleResultWrite(req *uds.Request) *uds.Response {
 	// Phase A: Shared file lock + per-worker mutex (results/ + queue/ updates)
 	resultID, err := d.resultWritePhaseA(params, resultStatus)
 	if err != nil {
-		if rErr, ok := err.(*resultWriteError); ok {
+		rErr := &resultWriteError{}
+		if errors.As(err, &rErr) {
 			return uds.ErrorResponse(rErr.Code, rErr.Message)
 		}
 		return uds.ErrorResponse(uds.ErrCodeInternal, err.Error())

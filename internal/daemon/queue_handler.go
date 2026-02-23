@@ -9,11 +9,12 @@ import (
 	"sync"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // QueueHandler orchestrates fsnotify event routing and periodic scan execution.
@@ -110,7 +111,7 @@ func (qh *QueueHandler) SetBusyChecker(f func(agentID string) bool) {
 	qh.busyChecker = f
 }
 
-// LeaseManager returns the internal lease manager (for testing).
+// GetLeaseManager returns the internal lease manager (for testing).
 func (qh *QueueHandler) GetLeaseManager() *LeaseManager {
 	return qh.leaseManager
 }
@@ -125,9 +126,10 @@ func (qh *QueueHandler) HandleFileEvent(filePath string) {
 	base := filepath.Base(filePath)
 	dir := filepath.Base(filepath.Dir(filePath))
 
-	if dir == "queue" {
+	switch dir {
+	case "queue":
 		qh.debounceAndScan(base)
-	} else if dir == "results" {
+	case "results":
 		qh.log(LogLevelDebug, "result_event file=%s", base)
 		if qh.resultHandler != nil {
 			qh.resultHandler.HandleResultFileEvent(filePath)
@@ -419,7 +421,7 @@ func (qh *QueueHandler) dispatchPendingCommands(cq *model.CommandQueue, dirty *b
 
 		if err := qh.dispatcher.DispatchCommand(cmd); err != nil {
 			qh.log(LogLevelWarn, "dispatch_failed type=command id=%s error=%v", cmd.ID, err)
-			qh.leaseManager.ReleaseCommandLease(cmd)
+			_ = qh.leaseManager.ReleaseCommandLease(cmd)
 		} else {
 			qh.scanCounters.CommandsDispatched++
 		}
@@ -470,7 +472,7 @@ func (qh *QueueHandler) dispatchPendingTasks(tq *taskQueueEntry, workerID string
 
 		if err := qh.dispatcher.DispatchTask(task, workerID); err != nil {
 			qh.log(LogLevelWarn, "dispatch_failed type=task id=%s error=%v", task.ID, err)
-			qh.leaseManager.ReleaseTaskLease(task)
+			_ = qh.leaseManager.ReleaseTaskLease(task)
 		} else {
 			// Mark worker as in-flight globally so subsequent files see it
 			globalInFlight[workerID] = true
@@ -503,7 +505,7 @@ func (qh *QueueHandler) dispatchPendingNotifications(nq *model.NotificationQueue
 
 		if err := qh.dispatcher.DispatchNotification(ntf); err != nil {
 			qh.log(LogLevelWarn, "dispatch_failed type=notification id=%s error=%v", ntf.ID, err)
-			qh.leaseManager.ReleaseNotificationLease(ntf)
+			_ = qh.leaseManager.ReleaseNotificationLease(ntf)
 		} else {
 			ntf.Status = model.StatusCompleted
 			ntf.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
@@ -584,7 +586,7 @@ func (qh *QueueHandler) checkInProgressDependencyFailures(tq *taskQueueEntry, wo
 
 		// Cancel the in_progress task — derive agent ID from queue file for interrupt
 		if workerID != "" {
-			qh.cancelHandler.interruptAgent(workerID, task.ID, task.CommandID, task.LeaseEpoch)
+			_ = qh.cancelHandler.interruptAgent(workerID, task.ID, task.CommandID, task.LeaseEpoch)
 		}
 		task.Status = model.StatusCancelled
 		task.LeaseOwner = nil
@@ -724,7 +726,7 @@ func (qh *QueueHandler) deliverAwaitingFillToPlanner(commandID, message string) 
 		qh.log(LogLevelWarn, "awaiting_fill_deliver create_executor error=%v", err)
 		return
 	}
-	defer exec.Close()
+	defer func() { _ = exec.Close() }()
 
 	result := exec.Execute(agent.ExecRequest{
 		AgentID:   "planner",
@@ -746,7 +748,7 @@ func (qh *QueueHandler) deliverTimeoutToPlanner(commandID string, timedOutPhases
 		qh.log(LogLevelWarn, "timeout_deliver create_executor error=%v", err)
 		return
 	}
-	defer exec.Close()
+	defer func() { _ = exec.Close() }()
 
 	phases := make([]string, 0, len(timedOutPhases))
 	for name := range timedOutPhases {
@@ -780,7 +782,7 @@ func (qh *QueueHandler) isAgentBusy(agentID string) bool {
 		qh.log(LogLevelWarn, "busy_probe_failed agent=%s error=%v", agentID, err)
 		return false
 	}
-	defer exec.Close()
+	defer func() { _ = exec.Close() }()
 
 	result := exec.Execute(agent.ExecRequest{
 		AgentID: agentID,
@@ -797,7 +799,7 @@ func (qh *QueueHandler) clearAgent(agentID string) {
 		qh.log(LogLevelWarn, "clear_agent create_executor error=%v", err)
 		return
 	}
-	defer exec.Close()
+	defer func() { _ = exec.Close() }()
 
 	result := exec.Execute(agent.ExecRequest{
 		AgentID: agentID,

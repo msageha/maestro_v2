@@ -1,3 +1,4 @@
+// Package daemon implements the maestro background daemon for queue processing and orchestration.
 package daemon
 
 import (
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
@@ -142,7 +144,7 @@ func (d *Daemon) Run() error {
 	// Step 2: Init fsnotify watcher
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		d.fileLock.Unlock()
+		_ = d.fileLock.Unlock()
 		return fmt.Errorf("create fsnotify watcher: %w", err)
 	}
 	d.watcher = watcher
@@ -318,10 +320,10 @@ func (d *Daemon) Shutdown() {
 		// 2. Stop producers
 		d.ticker.Stop()
 		if d.watcher != nil {
-			d.watcher.Close()
+			_ = d.watcher.Close()
 		}
 		if d.server != nil {
-			d.server.Stop()
+			_ = d.server.Stop()
 		}
 
 		// 3. Drain in-flight with timeout
@@ -352,10 +354,10 @@ func (d *Daemon) Shutdown() {
 // cleanup releases resources.
 func (d *Daemon) cleanup() {
 	socketPath := filepath.Join(d.maestroDir, uds.DefaultSocketName)
-	os.Remove(socketPath)
-	d.fileLock.Unlock()
+	_ = os.Remove(socketPath)
+	_ = d.fileLock.Unlock()
 	if d.logFile != nil {
-		d.logFile.Close()
+		_ = d.logFile.Close()
 	}
 }
 

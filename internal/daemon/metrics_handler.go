@@ -9,9 +9,10 @@ import (
 	"strings"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // ScanCounters tracks cumulative counters during a single PeriodicScan cycle.
@@ -118,14 +119,14 @@ func (mh *MetricsHandler) UpdateDashboard(
 
 	var sb strings.Builder
 	sb.WriteString("# Maestro Dashboard\n\n")
-	sb.WriteString(fmt.Sprintf("Updated: %s\n\n", time.Now().UTC().Format(time.RFC3339)))
+	fmt.Fprintf(&sb, "Updated: %s\n\n", time.Now().UTC().Format(time.RFC3339))
 
 	// Queue Depth table
 	sb.WriteString("## Queue Depth\n\n")
 	sb.WriteString("| Queue | Pending |\n")
 	sb.WriteString("|-------|--------:|\n")
-	sb.WriteString(fmt.Sprintf("| planner | %d |\n", depth.Planner))
-	sb.WriteString(fmt.Sprintf("| orchestrator | %d |\n", depth.Orchestrator))
+	fmt.Fprintf(&sb, "| planner | %d |\n", depth.Planner)
+	fmt.Fprintf(&sb, "| orchestrator | %d |\n", depth.Orchestrator)
 
 	// Sort worker keys for deterministic output
 	workerKeys := make([]string, 0, len(depth.Workers))
@@ -134,7 +135,7 @@ func (mh *MetricsHandler) UpdateDashboard(
 	}
 	sort.Strings(workerKeys)
 	for _, w := range workerKeys {
-		sb.WriteString(fmt.Sprintf("| %s | %d |\n", w, depth.Workers[w]))
+		fmt.Fprintf(&sb, "| %s | %d |\n", w, depth.Workers[w])
 	}
 
 	// Active commands
@@ -142,7 +143,7 @@ func (mh *MetricsHandler) UpdateDashboard(
 	activeCount := 0
 	for _, cmd := range cq.Commands {
 		if cmd.Status == model.StatusInProgress {
-			sb.WriteString(fmt.Sprintf("- `%s` (priority=%d, attempts=%d)\n", cmd.ID, cmd.Priority, cmd.Attempts))
+			fmt.Fprintf(&sb, "- `%s` (priority=%d, attempts=%d)\n", cmd.ID, cmd.Priority, cmd.Attempts)
 			activeCount++
 		}
 	}
@@ -174,7 +175,7 @@ func (mh *MetricsHandler) UpdateDashboard(
 				inProg++
 			}
 		}
-		sb.WriteString(fmt.Sprintf("- **%s**: %d pending, %d in_progress\n", wID, pending, inProg))
+		fmt.Fprintf(&sb, "- **%s**: %d pending, %d in_progress\n", wID, pending, inProg)
 	}
 
 	dashboardPath := filepath.Join(mh.maestroDir, "dashboard.md")
@@ -192,14 +193,14 @@ func (mh *MetricsHandler) UpdateDashboardFull(
 
 	var sb strings.Builder
 	sb.WriteString("# Maestro Dashboard\n\n")
-	sb.WriteString(fmt.Sprintf("Updated: %s\n\n", time.Now().UTC().Format(time.RFC3339)))
+	fmt.Fprintf(&sb, "Updated: %s\n\n", time.Now().UTC().Format(time.RFC3339))
 
 	// Queue Depth table
 	sb.WriteString("## Queue Depth\n\n")
 	sb.WriteString("| Queue | Pending |\n")
 	sb.WriteString("|-------|--------:|\n")
-	sb.WriteString(fmt.Sprintf("| planner | %d |\n", depth.Planner))
-	sb.WriteString(fmt.Sprintf("| orchestrator | %d |\n", depth.Orchestrator))
+	fmt.Fprintf(&sb, "| planner | %d |\n", depth.Planner)
+	fmt.Fprintf(&sb, "| orchestrator | %d |\n", depth.Orchestrator)
 
 	workerKeys := make([]string, 0, len(depth.Workers))
 	for k := range depth.Workers {
@@ -207,7 +208,7 @@ func (mh *MetricsHandler) UpdateDashboardFull(
 	}
 	sort.Strings(workerKeys)
 	for _, w := range workerKeys {
-		sb.WriteString(fmt.Sprintf("| %s | %d |\n", w, depth.Workers[w]))
+		fmt.Fprintf(&sb, "| %s | %d |\n", w, depth.Workers[w])
 	}
 
 	// Active commands
@@ -215,7 +216,7 @@ func (mh *MetricsHandler) UpdateDashboardFull(
 	activeCount := 0
 	for _, cmd := range cq.Commands {
 		if cmd.Status == model.StatusInProgress {
-			sb.WriteString(fmt.Sprintf("- `%s` (priority=%d, attempts=%d)\n", cmd.ID, cmd.Priority, cmd.Attempts))
+			fmt.Fprintf(&sb, "- `%s` (priority=%d, attempts=%d)\n", cmd.ID, cmd.Priority, cmd.Attempts)
 			activeCount++
 		}
 	}
@@ -247,7 +248,7 @@ func (mh *MetricsHandler) UpdateDashboardFull(
 				inProg++
 			}
 		}
-		sb.WriteString(fmt.Sprintf("- **%s**: %d pending, %d in_progress\n", wID, pending, inProg))
+		fmt.Fprintf(&sb, "- **%s**: %d pending, %d in_progress\n", wID, pending, inProg)
 	}
 
 	// Results summary (from results/ YAML files)
@@ -274,7 +275,7 @@ func (mh *MetricsHandler) UpdateDashboardFull(
 					failed++
 				}
 			}
-			sb.WriteString(fmt.Sprintf("| %s | %d | %d | %d |\n", wID, completed, failed, total))
+			fmt.Fprintf(&sb, "| %s | %d | %d | %d |\n", wID, completed, failed, total)
 		}
 	}
 
@@ -367,8 +368,8 @@ func atomicWriteText(path string, content string) error {
 	}
 	tmpName := tmp.Name()
 	defer func() {
-		tmp.Close()
-		os.Remove(tmpName)
+		_ = tmp.Close()
+		_ = os.Remove(tmpName)
 	}()
 
 	if _, err := tmp.WriteString(content); err != nil {

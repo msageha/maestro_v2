@@ -9,11 +9,12 @@ import (
 	"testing"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 func newTestResultHandler(maestroDir string) (*ResultHandler, *mockExecutor) {
@@ -102,13 +103,13 @@ func TestResultHandler_WorkerNotification_AlreadyNotified(t *testing.T) {
 		FileType:      "result_task",
 		Results: []model.TaskResult{
 			{
-				ID:        "res_0000000001_aaaaaaaa",
-				TaskID:    "task_0000000001_bbbbbbbb",
-				CommandID: "cmd_0000000001_cccccccc",
-				Status:    model.StatusCompleted,
-				Notified:  true,
+				ID:         "res_0000000001_aaaaaaaa",
+				TaskID:     "task_0000000001_bbbbbbbb",
+				CommandID:  "cmd_0000000001_cccccccc",
+				Status:     model.StatusCompleted,
+				Notified:   true,
 				NotifiedAt: &now,
-				CreatedAt: now,
+				CreatedAt:  now,
 			},
 		},
 	}

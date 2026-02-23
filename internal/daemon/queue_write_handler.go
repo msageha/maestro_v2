@@ -7,16 +7,17 @@ import (
 	"path/filepath"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // QueueWriteParams is the request payload for the queue_write UDS command.
 type QueueWriteParams struct {
-	Target             string   `json:"target"`                        // "planner", "worker1", "orchestrator"
-	Type               string   `json:"type"`                          // "command", "task", "notification", "cancel-request"
+	Target             string   `json:"target"` // "planner", "worker1", "orchestrator"
+	Type               string   `json:"type"`   // "command", "task", "notification", "cancel-request"
 	CommandID          string   `json:"command_id,omitempty"`
 	Content            string   `json:"content,omitempty"`
 	Purpose            string   `json:"purpose,omitempty"`
@@ -101,7 +102,6 @@ func (d *Daemon) handleQueueWriteCommand(params QueueWriteParams) *uds.Response 
 			if checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(newData), len(params.Content)+200) != nil {
 				return resp
 			}
-			data = newData
 			d.log(LogLevelInfo, "queue_write archive_commands archived=%d", archived)
 		} else {
 			return resp
@@ -205,7 +205,6 @@ func (d *Daemon) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 			if checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(newData), len(params.Content)+500) != nil {
 				return resp
 			}
-			data = newData
 			d.log(LogLevelInfo, "queue_write archive_tasks worker=%s archived=%d", params.Target, archived)
 		} else {
 			return resp
@@ -299,7 +298,6 @@ func (d *Daemon) handleQueueWriteNotification(params QueueWriteParams) *uds.Resp
 			if checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(newData), len(params.Content)+300) != nil {
 				return resp
 			}
-			data = newData
 			d.log(LogLevelInfo, "queue_write archive_notifications archived=%d", archived)
 		} else {
 			return resp

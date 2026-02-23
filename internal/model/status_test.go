@@ -127,11 +127,11 @@ func TestValidateNotificationQueueTransition(t *testing.T) {
 	invalid := []struct {
 		from, to Status
 	}{
-		{StatusPending, StatusCancelled},       // notifications cannot be cancelled
-		{StatusPending, StatusFailed},          // notifications cannot fail
-		{StatusInProgress, StatusFailed},       // notifications cannot fail
-		{StatusInProgress, StatusCancelled},    // notifications cannot be cancelled
-		{StatusInProgress, StatusDeadLetter},   // dead_letter only from pending
+		{StatusPending, StatusCancelled},     // notifications cannot be cancelled
+		{StatusPending, StatusFailed},        // notifications cannot fail
+		{StatusInProgress, StatusFailed},     // notifications cannot fail
+		{StatusInProgress, StatusCancelled},  // notifications cannot be cancelled
+		{StatusInProgress, StatusDeadLetter}, // dead_letter only from pending
 		{StatusCompleted, StatusPending},
 		{StatusDeadLetter, StatusPending},
 	}

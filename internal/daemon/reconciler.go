@@ -8,11 +8,12 @@ import (
 	"strings"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // CanCompleteFunc is the signature for plan.CanComplete to avoid import cycles.
@@ -26,9 +27,9 @@ type Reconciler struct {
 	lockMap         *lock.MutexMap
 	logger          *log.Logger
 	logLevel        LogLevel
-	resultHandler   *ResultHandler   // for R5 notification re-issue
-	executorFactory ExecutorFactory  // for R6 Planner notification
-	canComplete     CanCompleteFunc  // for R4 (avoids plan→daemon import cycle)
+	resultHandler   *ResultHandler  // for R5 notification re-issue
+	executorFactory ExecutorFactory // for R6 Planner notification
+	canComplete     CanCompleteFunc // for R4 (avoids plan→daemon import cycle)
 }
 
 // ReconcileRepair describes a single repair action performed by the reconciler.
@@ -72,7 +73,7 @@ func (r *Reconciler) SetExecutorFactory(f ExecutorFactory) {
 
 // Reconcile runs all reconciliation patterns and returns a list of repairs made.
 func (r *Reconciler) Reconcile() []ReconcileRepair {
-	var repairs []ReconcileRepair
+	repairs := make([]ReconcileRepair, 0, 8)
 
 	repairs = append(repairs, r.reconcileR0()...)
 	repairs = append(repairs, r.reconcileR0b()...)
@@ -265,7 +266,7 @@ func (r *Reconciler) notifyPlannerOfReFill(commandID string) {
 		r.log(LogLevelWarn, "R0b notify_planner create_executor error=%v", err)
 		return
 	}
-	defer exec.Close()
+	defer func() { _ = exec.Close() }()
 
 	message := fmt.Sprintf("[maestro] kind:re_fill command_id:%s\nphase filling was stuck, reverted to awaiting_fill — please re-submit tasks",
 		commandID)
@@ -854,7 +855,7 @@ func (r *Reconciler) notifyPlannerOfTimeout(commandID string, timedOutPhases map
 		r.log(LogLevelWarn, "R6 notify_planner create_executor error=%v", err)
 		return
 	}
-	defer exec.Close()
+	defer func() { _ = exec.Close() }()
 
 	phases := make([]string, 0, len(timedOutPhases))
 	for name := range timedOutPhases {
@@ -882,7 +883,7 @@ func (r *Reconciler) notifyPlannerOfReEvaluation(commandID, reason string) {
 		r.log(LogLevelWarn, "R4 notify_planner create_executor error=%v", err)
 		return
 	}
-	defer exec.Close()
+	defer func() { _ = exec.Close() }()
 
 	message := fmt.Sprintf("[maestro] kind:re_evaluate command_id:%s\ncan_complete failed: %s — result quarantined, please re-evaluate",
 		commandID, reason)

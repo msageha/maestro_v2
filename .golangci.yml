@@ -1,0 +1,32 @@
+version: "2"
+
+linters:
+  default: standard
+  enable:
+    - errorlint
+    - misspell
+    - prealloc
+    - unconvert
+    - unparam
+  settings:
+    staticcheck:
+      checks: ["all"]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/msageha/maestro_v2
+
+run:
+  timeout: 5m
+  tests: false
+
+output:
+  formats:
+    text:
+      print-linter-name: true
+      colors: true

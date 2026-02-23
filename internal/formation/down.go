@@ -1,3 +1,4 @@
+// Package formation manages tmux session formation (up/down) for agents.
 package formation
 
 import (

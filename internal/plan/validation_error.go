@@ -27,7 +27,7 @@ func (ve *ValidationErrors) HasErrors() bool {
 }
 
 func (ve *ValidationErrors) Error() string {
-	var msgs []string
+	msgs := make([]string, 0, len(ve.Errors))
 	for _, e := range ve.Errors {
 		msgs = append(msgs, e.Error())
 	}
@@ -37,7 +37,7 @@ func (ve *ValidationErrors) Error() string {
 func (ve *ValidationErrors) FormatStderr() string {
 	var sb strings.Builder
 	for _, e := range ve.Errors {
-		sb.WriteString(fmt.Sprintf("error: %s: %s\n", e.FieldPath, e.Message))
+		fmt.Fprintf(&sb, "error: %s: %s\n", e.FieldPath, e.Message)
 	}
 	return sb.String()
 }

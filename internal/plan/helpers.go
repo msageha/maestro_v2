@@ -3,8 +3,9 @@ package plan
 import (
 	"os"
 
-	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 	yamlv3 "gopkg.in/yaml.v3"
+
+	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 func readFileIfExists(path string) ([]byte, error) {

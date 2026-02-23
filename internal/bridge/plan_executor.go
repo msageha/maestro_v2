@@ -1,3 +1,4 @@
+// Package bridge provides integration between plan execution and the daemon.
 package bridge
 
 import (

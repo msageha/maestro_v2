@@ -12,10 +12,10 @@ import (
 
 // mockStateReader implements StateReader for testing.
 type mockStateReader struct {
-	taskStates       map[string]model.Status // key: "commandID:taskID"
-	phases           map[string][]PhaseInfo  // key: commandID
-	deps             map[string][]string     // key: "commandID:taskID" → dep task IDs
-	systemCommitReady map[string][2]bool     // key: "commandID:taskID" → [isSystemCommit, ready]
+	taskStates        map[string]model.Status // key: "commandID:taskID"
+	phases            map[string][]PhaseInfo  // key: commandID
+	deps              map[string][]string     // key: "commandID:taskID" → dep task IDs
+	systemCommitReady map[string][2]bool      // key: "commandID:taskID" → [isSystemCommit, ready]
 }
 
 func (m *mockStateReader) GetTaskState(commandID, taskID string) (model.Status, error) {
@@ -182,11 +182,11 @@ func TestCheckDependencyFailure_NoFailure(t *testing.T) {
 func TestFindTransitiveDependents(t *testing.T) {
 	dr := newTestDependencyResolver(nil)
 	tasks := []model.Task{
-		{ID: "t1"},                        // root
-		{ID: "t2", BlockedBy: []string{"t1"}},  // depends on t1
-		{ID: "t3", BlockedBy: []string{"t2"}},  // depends on t2
-		{ID: "t4", BlockedBy: []string{"t1"}},  // depends on t1
-		{ID: "t5"},                        // independent
+		{ID: "t1"},                            // root
+		{ID: "t2", BlockedBy: []string{"t1"}}, // depends on t1
+		{ID: "t3", BlockedBy: []string{"t2"}}, // depends on t2
+		{ID: "t4", BlockedBy: []string{"t1"}}, // depends on t1
+		{ID: "t5"},                            // independent
 	}
 
 	dependents := dr.FindTransitiveDependents("cmd1", "t1", tasks)

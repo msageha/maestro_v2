@@ -13,14 +13,14 @@ import (
 type HandlerFunc func(req *Request) *Response
 
 type Server struct {
-	socketPath string
-	listener   net.Listener
-	handlers   map[string]HandlerFunc
-	mu         sync.RWMutex
+	socketPath  string
+	listener    net.Listener
+	handlers    map[string]HandlerFunc
+	mu          sync.RWMutex
 	connTimeout time.Duration
-	wg         sync.WaitGroup
-	ctx        context.Context
-	cancel     context.CancelFunc
+	wg          sync.WaitGroup
+	ctx         context.Context
+	cancel      context.CancelFunc
 }
 
 func NewServer(socketPath string) *Server {
@@ -46,7 +46,7 @@ func (s *Server) Handle(command string, handler HandlerFunc) {
 
 func (s *Server) Start() error {
 	// Remove stale socket file
-	os.Remove(s.socketPath)
+	_ = os.Remove(s.socketPath)
 
 	listener, err := net.Listen("unix", s.socketPath)
 	if err != nil {
@@ -55,7 +55,7 @@ func (s *Server) Start() error {
 
 	// Set socket file permissions to 0600
 	if err := os.Chmod(s.socketPath, 0600); err != nil {
-		listener.Close()
+		_ = listener.Close()
 		return fmt.Errorf("chmod socket: %w", err)
 	}
 
@@ -70,10 +70,10 @@ func (s *Server) Start() error {
 func (s *Server) Stop() error {
 	s.cancel()
 	if s.listener != nil {
-		s.listener.Close()
+		_ = s.listener.Close()
 	}
 	s.wg.Wait()
-	os.Remove(s.socketPath)
+	_ = os.Remove(s.socketPath)
 	return nil
 }
 
@@ -99,9 +99,9 @@ func (s *Server) acceptLoop() {
 
 func (s *Server) handleConn(conn net.Conn) {
 	defer s.wg.Done()
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
-	conn.SetDeadline(time.Now().Add(s.connTimeout))
+	_ = conn.SetDeadline(time.Now().Add(s.connTimeout))
 
 	var req Request
 	if err := ReadFrame(conn, &req); err != nil {

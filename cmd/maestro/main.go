@@ -250,7 +250,7 @@ func runUp(args []string) {
 		BoostSet:      boost,
 		ContinuousSet: continuous,
 		NoNotifySet:   noNotify,
-		ResetOnly:  resetOnly,
+		ResetOnly:     resetOnly,
 	}
 
 	if err := formation.RunUp(opts); err != nil {
@@ -534,7 +534,7 @@ func sendQueueWrite(params map[string]any) {
 			return
 		}
 	}
-	out, _ := json.MarshalIndent(json.RawMessage(resp.Data), "", "  ")
+	out, _ := json.MarshalIndent(resp.Data, "", "  ")
 	fmt.Println(string(out))
 }
 
@@ -660,7 +660,7 @@ func runResultWrite(args []string) {
 		os.Exit(1)
 	}
 
-	out, _ := json.MarshalIndent(json.RawMessage(resp.Data), "", "  ")
+	out, _ := json.MarshalIndent(resp.Data, "", "  ")
 	fmt.Println(string(out))
 }
 
@@ -729,13 +729,13 @@ func runPlanSubmit(args []string) {
 			fmt.Fprintf(os.Stderr, "create temp file: %v\n", err)
 			os.Exit(1)
 		}
-		defer os.Remove(tmpFile.Name())
+		defer func() { _ = os.Remove(tmpFile.Name()) }()
 		if _, err := tmpFile.Write(data); err != nil {
-			tmpFile.Close()
+			_ = tmpFile.Close()
 			fmt.Fprintf(os.Stderr, "write temp file: %v\n", err)
 			os.Exit(1)
 		}
-		tmpFile.Close()
+		_ = tmpFile.Close()
 		actualFile = tmpFile.Name()
 	}
 
@@ -1036,7 +1036,7 @@ func sendPlanCommand(maestroDir string, params map[string]any) {
 		os.Exit(1)
 	}
 
-	out, _ := json.MarshalIndent(json.RawMessage(resp.Data), "", "  ")
+	out, _ := json.MarshalIndent(resp.Data, "", "  ")
 	fmt.Println(string(out))
 }
 
@@ -1115,7 +1115,7 @@ func runAgentExec(args []string) {
 		fmt.Fprintf(os.Stderr, "create executor: %v\n", err)
 		os.Exit(1)
 	}
-	defer exec.Close()
+	defer func() { _ = exec.Close() }()
 
 	result := exec.Execute(agent.ExecRequest{
 		AgentID: agentID,

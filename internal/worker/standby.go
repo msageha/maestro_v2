@@ -1,3 +1,4 @@
+// Package worker provides worker assignment and standby management.
 package worker
 
 import (
@@ -8,23 +9,24 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/msageha/maestro_v2/internal/model"
 	yamlv3 "gopkg.in/yaml.v3"
+
+	"github.com/msageha/maestro_v2/internal/model"
 )
 
 // WorkerStatus represents the status summary for a single worker.
 type WorkerStatus struct {
-	WorkerID       string `json:"worker_id"`
-	Model          string `json:"model"`
-	PendingCount   int    `json:"pending_count"`
-	InProgressCount int   `json:"in_progress_count"`
-	Status         string `json:"status"` // "idle" or "busy"
+	WorkerID        string `json:"worker_id"`
+	Model           string `json:"model"`
+	PendingCount    int    `json:"pending_count"`
+	InProgressCount int    `json:"in_progress_count"`
+	Status          string `json:"status"` // "idle" or "busy"
 }
 
 // StandbyOptions configures the standby scan.
 type StandbyOptions struct {
-	MaestroDir string
-	Config     model.Config
+	MaestroDir  string
+	Config      model.Config
 	ModelFilter string
 }
 

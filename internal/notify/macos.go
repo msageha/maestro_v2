@@ -1,3 +1,4 @@
+// Package notify provides desktop notification support.
 package notify
 
 import (

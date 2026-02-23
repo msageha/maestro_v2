@@ -9,12 +9,13 @@ import (
 	"testing"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // --- File-based StateReader for integration tests (avoids plan→daemon import cycle) ---
@@ -868,15 +869,15 @@ func TestIntegration_ReconciliationR2(t *testing.T) {
 
 	// State says in_progress
 	state := model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       commandID,
-		PlanStatus:      model.PlanStatusSealed,
-		RequiredTaskIDs: []string{taskID},
-		TaskStates:      map[string]model.Status{taskID: model.StatusInProgress},
+		SchemaVersion:    1,
+		FileType:         "state_command",
+		CommandID:        commandID,
+		PlanStatus:       model.PlanStatusSealed,
+		RequiredTaskIDs:  []string{taskID},
+		TaskStates:       map[string]model.Status{taskID: model.StatusInProgress},
 		AppliedResultIDs: map[string]string{},
-		CreatedAt:       time.Now().UTC().Format(time.RFC3339),
-		UpdatedAt:       time.Now().UTC().Format(time.RFC3339),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt:        time.Now().UTC().Format(time.RFC3339),
 	}
 	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml"), state)
 
@@ -1146,17 +1147,17 @@ func TestIntegration_FullPipeline(t *testing.T) {
 
 	// 3. Simulate plan submit (create state + task queue entry)
 	state := model.CommandState{
-		SchemaVersion:    1,
-		FileType:         "state_command",
-		CommandID:        commandID,
-		PlanStatus:       model.PlanStatusSealed,
+		SchemaVersion:     1,
+		FileType:          "state_command",
+		CommandID:         commandID,
+		PlanStatus:        model.PlanStatusSealed,
 		ExpectedTaskCount: 1,
-		RequiredTaskIDs:  []string{taskID},
-		TaskStates:       map[string]model.Status{taskID: model.StatusPending},
-		TaskDependencies: map[string][]string{},
-		AppliedResultIDs: map[string]string{},
-		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
-		UpdatedAt:        time.Now().UTC().Format(time.RFC3339),
+		RequiredTaskIDs:   []string{taskID},
+		TaskStates:        map[string]model.Status{taskID: model.StatusPending},
+		TaskDependencies:  map[string][]string{},
+		AppliedResultIDs:  map[string]string{},
+		CreatedAt:         time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt:         time.Now().UTC().Format(time.RFC3339),
 	}
 	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml"), state)
 
@@ -1165,14 +1166,14 @@ func TestIntegration_FullPipeline(t *testing.T) {
 		FileType:      "queue_task",
 		Tasks: []model.Task{
 			{
-				ID:        taskID,
-				CommandID: commandID,
-				Purpose:   "implement feature",
-				Content:   "write code",
+				ID:         taskID,
+				CommandID:  commandID,
+				Purpose:    "implement feature",
+				Content:    "write code",
 				BloomLevel: 3,
-				Status:    model.StatusPending,
-				CreatedAt: time.Now().UTC().Format(time.RFC3339),
-				UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+				Status:     model.StatusPending,
+				CreatedAt:  time.Now().UTC().Format(time.RFC3339),
+				UpdatedAt:  time.Now().UTC().Format(time.RFC3339),
 			},
 		},
 	}

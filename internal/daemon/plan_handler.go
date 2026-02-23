@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/msageha/maestro_v2/internal/uds"
@@ -62,7 +63,8 @@ func (d *Daemon) handlePlan(req *uds.Request) *uds.Response {
 
 	if err != nil {
 		d.log(LogLevelWarn, "plan_%s error=%v", params.Operation, err)
-		if ve, ok := err.(validationFormatter); ok {
+		var ve validationFormatter
+		if errors.As(err, &ve) {
 			return uds.ErrorResponse(uds.ErrCodeValidation, ve.FormatStderr())
 		}
 		return uds.ErrorResponse(uds.ErrCodeInternal, err.Error())

@@ -138,7 +138,7 @@ func generateSkeletonForType(fileType string) any {
 			"plan_version":          0,
 			"plan_status":           "planning",
 			"completion_policy":     map[string]any{},
-			"cancel":               map[string]any{"requested": false},
+			"cancel":                map[string]any{"requested": false},
 			"expected_task_count":   0,
 			"required_task_ids":     []any{},
 			"optional_task_ids":     []any{},

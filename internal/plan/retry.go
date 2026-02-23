@@ -7,10 +7,11 @@ import (
 	"strings"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 type RetryOptions struct {
@@ -29,10 +30,10 @@ type RetryOptions struct {
 }
 
 type RetryResult struct {
-	TaskID           string                `json:"task_id"`
-	Worker           string                `json:"worker"`
-	Model            string                `json:"model"`
-	Replaced         string                `json:"replaced"`
+	TaskID           string                 `json:"task_id"`
+	Worker           string                 `json:"worker"`
+	Model            string                 `json:"model"`
+	Replaced         string                 `json:"replaced"`
 	CascadeRecovered []CascadeRecoveredTask `json:"cascade_recovered,omitempty"`
 }
 
@@ -170,7 +171,7 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 	origTaskCache := loadOriginalTasksFromQueue(opts.MaestroDir, opts.CommandID)
 	cascadeRecovered, err := cascadeRecover(
 		state, opts.RetryOf, newTaskID,
-		opts.MaestroDir, opts.Config.Agents.Workers, opts.Config.Limits, workerStates, origTaskCache,
+		opts.Config.Agents.Workers, opts.Config.Limits, workerStates, origTaskCache,
 	)
 	if err != nil {
 		restoreState(state, origStateBytes)
@@ -304,20 +305,18 @@ func rewriteDependencies(state *model.CommandState, oldID, newID string) {
 func cascadeRecover(
 	state *model.CommandState,
 	failedTaskID, newRetryTaskID string,
-	maestroDir string,
 	workerConfig model.WorkerConfig,
 	limits model.LimitsConfig,
 	workerStates []WorkerState,
 	origTaskCache map[string]model.Task,
 ) ([]CascadeRecoveredTask, error) {
 	var recovered []CascadeRecoveredTask
-	return cascadeRecoverRecursive(state, failedTaskID, newRetryTaskID, maestroDir, workerConfig, limits, workerStates, recovered, origTaskCache)
+	return cascadeRecoverRecursive(state, failedTaskID, newRetryTaskID, workerConfig, limits, workerStates, recovered, origTaskCache)
 }
 
 func cascadeRecoverRecursive(
 	state *model.CommandState,
 	failedTaskID, newRetryTaskID string,
-	maestroDir string,
 	workerConfig model.WorkerConfig,
 	limits model.LimitsConfig,
 	workerStates []WorkerState,
@@ -399,7 +398,7 @@ func cascadeRecoverRecursive(
 		var err2 error
 		recovered, err2 = cascadeRecoverRecursive(
 			state, cancelledTaskID, newTaskID,
-			maestroDir, workerConfig, limits, workerStates, recovered, origTaskCache,
+			workerConfig, limits, workerStates, recovered, origTaskCache,
 		)
 		if err2 != nil {
 			return recovered, err2
@@ -560,7 +559,7 @@ func rollbackRetryQueueEntries(maestroDir string, written []retryQueueTask) {
 			}
 		}
 		tq.Tasks = kept
-		yamlutil.AtomicWrite(queueFile, tq)
+		_ = yamlutil.AtomicWrite(queueFile, tq)
 	}
 }
 

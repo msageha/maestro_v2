@@ -8,10 +8,11 @@ import (
 	"path/filepath"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // CancelHandler processes cancellation of commands and their tasks.
@@ -227,7 +228,7 @@ func (ch *CancelHandler) interruptAgent(workerID, taskID, commandID string, leas
 	if err != nil {
 		return fmt.Errorf("create executor: %w", err)
 	}
-	defer exec.Close()
+	defer func() { _ = exec.Close() }()
 
 	result := exec.Execute(agent.ExecRequest{
 		AgentID:    workerID,
