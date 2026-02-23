@@ -287,6 +287,9 @@ func (mh *MetricsHandler) loadAllResultFiles() map[string]*model.TaskResultFile 
 	resultsDir := filepath.Join(mh.maestroDir, "results")
 	entries, err := os.ReadDir(resultsDir)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			mh.log(LogLevelWarn, "read results dir: %v", err)
+		}
 		return nil
 	}
 
@@ -300,11 +303,13 @@ func (mh *MetricsHandler) loadAllResultFiles() map[string]*model.TaskResultFile 
 		path := filepath.Join(resultsDir, name)
 		data, err := os.ReadFile(path)
 		if err != nil {
+			mh.log(LogLevelWarn, "read result file %s: %v", name, err)
 			continue
 		}
 
 		var rf model.TaskResultFile
 		if err := yamlv3.Unmarshal(data, &rf); err != nil {
+			mh.log(LogLevelWarn, "parse result file %s: %v", name, err)
 			continue
 		}
 
