@@ -39,6 +39,7 @@ const (
 	ErrCodeFencingReject    = "FENCING_REJECT"
 	ErrCodeDuplicate        = "DUPLICATE"
 	ErrCodeCancelled        = "CANCELLED"
+	ErrCodeActionRequired   = "ACTION_REQUIRED"
 )
 
 func NewRequest(command string, params any) (*Request, error) {

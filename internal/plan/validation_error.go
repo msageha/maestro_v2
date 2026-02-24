@@ -57,3 +57,35 @@ func (e *PlanValidationError) Error() string {
 func (e *PlanValidationError) FormatStderr() string {
 	return fmt.Sprintf("error: %s\n", e.Msg)
 }
+
+// ActionRequiredError indicates that the plan cannot complete because
+// a specific agent action is required first. Provides structured guidance
+// that LLM agents can parse to determine their next action.
+type ActionRequiredError struct {
+	Reason      string // e.g. "PHASE_AWAITING_FILL"
+	CommandID   string
+	PhaseID     string
+	PhaseName   string
+	PhaseStatus string
+	NextAction  string // e.g. "maestro plan submit --command-id <cmd> --phase <name> --tasks-file plan.yaml"
+}
+
+func (e *ActionRequiredError) Error() string {
+	return fmt.Sprintf("action required (%s): phase %q is %s, next_action: %s",
+		e.Reason, e.PhaseName, e.PhaseStatus, e.NextAction)
+}
+
+func (e *ActionRequiredError) FormatStderr() string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "error: action required (%s)\n", e.Reason)
+	fmt.Fprintf(&sb, "command_id: %s\n", e.CommandID)
+	fmt.Fprintf(&sb, "phase_id: %s\n", e.PhaseID)
+	fmt.Fprintf(&sb, "phase: %s\n", e.PhaseName)
+	fmt.Fprintf(&sb, "phase_status: %s\n", e.PhaseStatus)
+	fmt.Fprintf(&sb, "next_action: %s\n", e.NextAction)
+	return sb.String()
+}
+
+func (e *ActionRequiredError) ErrorCode() string {
+	return "ACTION_REQUIRED"
+}

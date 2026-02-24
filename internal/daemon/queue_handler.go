@@ -176,6 +176,9 @@ func (qh *QueueHandler) PeriodicScan() {
 	taskQueues := qh.loadAllTaskQueues()
 	notificationQueue, notificationPath := qh.loadNotificationQueue()
 
+	signalQueue, signalPath := qh.loadPlannerSignalQueue()
+	signalsDirty := false
+
 	commandsDirty := false
 	notificationsDirty := false
 	taskDirty := make(map[string]bool)
@@ -261,7 +264,6 @@ func (qh *QueueHandler) PeriodicScan() {
 				qh.log(LogLevelWarn, "phase_transition_check command=%s error=%v", cmd.ID, err)
 				continue
 			}
-			timedOutPhases := make(map[string]bool)
 
 			for _, tr := range transitions {
 				qh.log(LogLevelInfo, "phase_transition command=%s phase=%s %s→%s reason=%s",
@@ -274,23 +276,42 @@ func (qh *QueueHandler) PeriodicScan() {
 					continue
 				}
 
+				now := time.Now().UTC().Format(time.RFC3339)
 				switch tr.NewStatus {
 				case model.PhaseStatusAwaitingFill:
 					phase := PhaseInfo{ID: tr.PhaseID, Name: tr.PhaseName}
 					msg := qh.dependencyResolver.BuildAwaitingFillNotification(cmd.ID, phase)
-					qh.log(LogLevelInfo, "awaiting_fill_notify command=%s phase=%s msg=%s",
-						cmd.ID, tr.PhaseName, msg)
-					qh.deliverAwaitingFillToPlanner(cmd.ID, msg)
+					qh.log(LogLevelInfo, "awaiting_fill_signal command=%s phase=%s",
+						cmd.ID, tr.PhaseName)
+					qh.upsertPlannerSignal(&signalQueue, &signalsDirty, model.PlannerSignal{
+						Kind:      "awaiting_fill",
+						CommandID: cmd.ID,
+						PhaseID:   tr.PhaseID,
+						PhaseName: tr.PhaseName,
+						Message:   msg,
+						CreatedAt: now,
+						UpdatedAt: now,
+					})
 				case model.PhaseStatusTimedOut:
-					timedOutPhases[tr.PhaseName] = true
+					msg := fmt.Sprintf("[maestro] kind:fill_timeout command_id:%s phase:%s\nfill deadline expired",
+						cmd.ID, tr.PhaseName)
+					qh.upsertPlannerSignal(&signalQueue, &signalsDirty, model.PlannerSignal{
+						Kind:      "fill_timeout",
+						CommandID: cmd.ID,
+						PhaseID:   tr.PhaseID,
+						PhaseName: tr.PhaseName,
+						Message:   msg,
+						CreatedAt: now,
+						UpdatedAt: now,
+					})
 				}
 			}
-
-			// Notify Planner of timed_out phases (batched per command)
-			if len(timedOutPhases) > 0 {
-				qh.deliverTimeoutToPlanner(cmd.ID, timedOutPhases)
-			}
 		}
+	}
+
+	// Step 0.8: Process planner signals — retry delivery with short probe config
+	if len(signalQueue.Signals) > 0 {
+		qh.processPlannerSignals(&signalQueue, &signalsDirty)
 	}
 
 	// Steps 1 & 2: Dispatch or recovery (mutually exclusive per spec §5.8.1).
@@ -357,6 +378,19 @@ func (qh *QueueHandler) PeriodicScan() {
 			qh.log(LogLevelError, "write_notifications error=%v", err)
 		}
 		qh.lockMap.Unlock("queue:orchestrator")
+	}
+	if signalsDirty {
+		p := signalPath
+		if p == "" {
+			p = filepath.Join(qh.maestroDir, "queue", "planner_signals.yaml")
+		}
+		if len(signalQueue.Signals) == 0 {
+			_ = os.Remove(p)
+		} else {
+			if err := yamlutil.AtomicWrite(p, signalQueue); err != nil {
+				qh.log(LogLevelError, "write_planner_signals error=%v", err)
+			}
+		}
 	}
 
 	// Step 2.5: Result notification retry (scan all results/ for unnotified entries)
@@ -718,44 +752,142 @@ func (qh *QueueHandler) recoverExpiredNotificationLeases(nq *model.NotificationQ
 	}
 }
 
-// deliverAwaitingFillToPlanner sends an awaiting_fill notification directly to the Planner agent
-// so the content (phase-fill instructions) is included in the message.
-func (qh *QueueHandler) deliverAwaitingFillToPlanner(commandID, message string) {
-	exec, err := qh.dispatcher.executorFactory(qh.maestroDir, qh.config.Watcher, qh.config.Logging.Level)
-	if err != nil {
-		qh.log(LogLevelWarn, "awaiting_fill_deliver create_executor error=%v", err)
-		return
-	}
-	defer func() { _ = exec.Close() }()
+// loadPlannerSignalQueue loads .maestro/queue/planner_signals.yaml.
+func (qh *QueueHandler) loadPlannerSignalQueue() (model.PlannerSignalQueue, string) {
+	path := filepath.Join(qh.maestroDir, "queue", "planner_signals.yaml")
+	var sq model.PlannerSignalQueue
 
-	result := exec.Execute(agent.ExecRequest{
-		AgentID:   "planner",
-		Message:   message,
-		Mode:      agent.ModeDeliver,
-		CommandID: commandID,
-	})
-	if result.Error != nil {
-		qh.log(LogLevelWarn, "awaiting_fill_deliver command=%s error=%v", commandID, result.Error)
-	} else {
-		qh.log(LogLevelInfo, "awaiting_fill_deliver command=%s success", commandID)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			qh.log(LogLevelWarn, "load_planner_signals error=%v", err)
+		}
+		return sq, ""
 	}
+
+	if err := yamlv3.Unmarshal(data, &sq); err != nil {
+		qh.log(LogLevelError, "parse_planner_signals error=%v", err)
+		return sq, ""
+	}
+	return sq, path
 }
 
-// deliverTimeoutToPlanner sends fill_timeout notification to Planner via agent executor.
-func (qh *QueueHandler) deliverTimeoutToPlanner(commandID string, timedOutPhases map[string]bool) {
-	exec, err := qh.dispatcher.executorFactory(qh.maestroDir, qh.config.Watcher, qh.config.Logging.Level)
+// upsertPlannerSignal adds a signal or skips if one already exists for the same key.
+func (qh *QueueHandler) upsertPlannerSignal(sq *model.PlannerSignalQueue, dirty *bool, sig model.PlannerSignal) {
+	for _, existing := range sq.Signals {
+		if existing.CommandID == sig.CommandID &&
+			existing.PhaseID == sig.PhaseID &&
+			existing.Kind == sig.Kind {
+			qh.log(LogLevelDebug, "planner_signal_dedup kind=%s command=%s phase=%s",
+				sig.Kind, sig.CommandID, sig.PhaseID)
+			return
+		}
+	}
+	if sq.SchemaVersion == 0 {
+		sq.SchemaVersion = 1
+		sq.FileType = "planner_signal_queue"
+	}
+	sq.Signals = append(sq.Signals, sig)
+	*dirty = true
+}
+
+// processPlannerSignals attempts delivery for due signals, removes stale ones,
+// and updates backoff state for failed attempts.
+func (qh *QueueHandler) processPlannerSignals(sq *model.PlannerSignalQueue, dirty *bool) {
+	now := time.Now().UTC()
+	var retained []model.PlannerSignal
+
+	for i := range sq.Signals {
+		sig := &sq.Signals[i]
+
+		// Skip signals whose next_attempt_at is in the future
+		if sig.NextAttemptAt != nil {
+			nextAt, err := time.Parse(time.RFC3339, *sig.NextAttemptAt)
+			if err == nil && nextAt.After(now) {
+				retained = append(retained, *sig)
+				continue
+			}
+		}
+
+		// Check if the phase is still in an actionable state
+		if qh.dependencyResolver.stateReader != nil {
+			phaseStatus, err := qh.dependencyResolver.GetPhaseStatus(sig.CommandID, sig.PhaseID)
+			if err != nil {
+				// If command/phase no longer exists, drop the stale signal
+				errMsg := err.Error()
+				if strings.Contains(errMsg, "not found") || strings.Contains(errMsg, "not exist") || os.IsNotExist(err) {
+					qh.log(LogLevelInfo, "signal_orphaned_removed kind=%s command=%s phase=%s error=%v",
+						sig.Kind, sig.CommandID, sig.PhaseID, err)
+					*dirty = true
+					continue
+				}
+				// Transient error: keep signal but don't attempt delivery
+				qh.log(LogLevelWarn, "signal_phase_check command=%s phase=%s error=%v",
+					sig.CommandID, sig.PhaseID, err)
+				retained = append(retained, *sig)
+				continue
+			}
+
+			if sig.Kind == "awaiting_fill" && phaseStatus != model.PhaseStatusAwaitingFill {
+				qh.log(LogLevelInfo, "signal_stale_removed kind=%s command=%s phase=%s current_status=%s",
+					sig.Kind, sig.CommandID, sig.PhaseID, phaseStatus)
+				*dirty = true
+				continue
+			}
+
+			if sig.Kind == "fill_timeout" && phaseStatus != model.PhaseStatusTimedOut {
+				qh.log(LogLevelInfo, "signal_stale_removed kind=%s command=%s phase=%s current_status=%s",
+					sig.Kind, sig.CommandID, sig.PhaseID, phaseStatus)
+				*dirty = true
+				continue
+			}
+		}
+
+		// Attempt delivery with short config override
+		err := qh.deliverPlannerSignal(sig.CommandID, sig.Message)
+		attemptTime := now.Format(time.RFC3339)
+		sig.LastAttemptAt = &attemptTime
+		sig.Attempts++
+		sig.UpdatedAt = now.Format(time.RFC3339)
+
+		if err == nil {
+			qh.log(LogLevelInfo, "signal_delivered kind=%s command=%s phase=%s attempts=%d",
+				sig.Kind, sig.CommandID, sig.PhaseID, sig.Attempts)
+			qh.scanCounters.SignalDeliveries++
+			*dirty = true
+			continue
+		}
+
+		// Failure: set backoff and retain
+		errStr := err.Error()
+		sig.LastError = &errStr
+		nextAttempt := qh.computeSignalBackoff(sig.Attempts)
+		nextAttemptStr := now.Add(nextAttempt).Format(time.RFC3339)
+		sig.NextAttemptAt = &nextAttemptStr
+		*dirty = true
+
+		qh.log(LogLevelWarn, "signal_delivery_failed kind=%s command=%s phase=%s attempts=%d next_retry=%s error=%v",
+			sig.Kind, sig.CommandID, sig.PhaseID, sig.Attempts, nextAttemptStr, err)
+		qh.scanCounters.SignalRetries++
+
+		retained = append(retained, *sig)
+	}
+
+	sq.Signals = retained
+}
+
+// deliverPlannerSignal attempts delivery to the planner with a short-probe config.
+func (qh *QueueHandler) deliverPlannerSignal(commandID, message string) error {
+	shortCfg := qh.config.Watcher
+	shortCfg.BusyCheckMaxRetries = 1
+	shortCfg.BusyCheckInterval = 1
+	shortCfg.IdleStableSec = 1
+
+	exec, err := qh.dispatcher.executorFactory(qh.maestroDir, shortCfg, qh.config.Logging.Level)
 	if err != nil {
-		qh.log(LogLevelWarn, "timeout_deliver create_executor error=%v", err)
-		return
+		return fmt.Errorf("create executor: %w", err)
 	}
 	defer func() { _ = exec.Close() }()
-
-	phases := make([]string, 0, len(timedOutPhases))
-	for name := range timedOutPhases {
-		phases = append(phases, name)
-	}
-	message := fmt.Sprintf("[maestro] kind:fill_timeout command_id:%s phases:%s\nfill deadline expired, phases timed out",
-		commandID, strings.Join(phases, ","))
 
 	result := exec.Execute(agent.ExecRequest{
 		AgentID:   "planner",
@@ -764,10 +896,27 @@ func (qh *QueueHandler) deliverTimeoutToPlanner(commandID string, timedOutPhases
 		CommandID: commandID,
 	})
 	if result.Error != nil {
-		qh.log(LogLevelWarn, "timeout_deliver command=%s error=%v", commandID, result.Error)
-	} else {
-		qh.log(LogLevelInfo, "timeout_deliver command=%s phases=%s success", commandID, strings.Join(phases, ","))
+		return result.Error
 	}
+	return nil
+}
+
+// computeSignalBackoff returns the backoff duration for the given attempt count.
+func (qh *QueueHandler) computeSignalBackoff(attempts int) time.Duration {
+	baseSec := 5
+	maxSec := qh.config.Watcher.ScanIntervalSec
+	if maxSec <= 0 {
+		maxSec = 10
+	}
+
+	backoffSec := baseSec * (1 << (attempts - 1))
+	if backoffSec > maxSec {
+		backoffSec = maxSec
+	}
+	if backoffSec < baseSec {
+		backoffSec = baseSec
+	}
+	return time.Duration(backoffSec) * time.Second
 }
 
 // isAgentBusy probes agent busy state via executor. Returns false if no checker is set.

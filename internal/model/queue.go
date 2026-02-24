@@ -78,3 +78,23 @@ type Notification struct {
 	CreatedAt        string  `yaml:"created_at"`
 	UpdatedAt        string  `yaml:"updated_at"`
 }
+
+type PlannerSignalQueue struct {
+	SchemaVersion int              `yaml:"schema_version"`
+	FileType      string           `yaml:"file_type"`
+	Signals       []PlannerSignal  `yaml:"signals"`
+}
+
+type PlannerSignal struct {
+	Kind          string  `yaml:"kind"`
+	CommandID     string  `yaml:"command_id"`
+	PhaseID       string  `yaml:"phase_id"`
+	PhaseName     string  `yaml:"phase_name"`
+	Message       string  `yaml:"message"`
+	Attempts      int     `yaml:"attempts"`
+	CreatedAt     string  `yaml:"created_at"`
+	UpdatedAt     string  `yaml:"updated_at"`
+	LastAttemptAt *string `yaml:"last_attempt_at"`
+	NextAttemptAt *string `yaml:"next_attempt_at"`
+	LastError     *string `yaml:"last_error"`
+}

@@ -14,6 +14,14 @@ type validationFormatter interface {
 	FormatStderr() string
 }
 
+// codedFormatter extends validationFormatter with a custom error code.
+// Satisfied by plan.ActionRequiredError.
+type codedFormatter interface {
+	error
+	FormatStderr() string
+	ErrorCode() string
+}
+
 // PlanExecutor executes plan operations under the daemon's file lock.
 // Implementations are wired from main.go to avoid import cycles (plan → daemon).
 type PlanExecutor interface {
@@ -63,6 +71,10 @@ func (d *Daemon) handlePlan(req *uds.Request) *uds.Response {
 
 	if err != nil {
 		d.log(LogLevelWarn, "plan_%s error=%v", params.Operation, err)
+		var cf codedFormatter
+		if errors.As(err, &cf) {
+			return uds.ErrorResponse(cf.ErrorCode(), cf.FormatStderr())
+		}
 		var ve validationFormatter
 		if errors.As(err, &ve) {
 			return uds.ErrorResponse(uds.ErrCodeValidation, ve.FormatStderr())

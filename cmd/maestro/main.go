@@ -1052,7 +1052,7 @@ func sendPlanCommand(maestroDir string, params map[string]any) {
 			code = resp.Error.Code
 			msg = resp.Error.Message
 		}
-		if code == uds.ErrCodeValidation {
+		if code == uds.ErrCodeValidation || code == uds.ErrCodeActionRequired {
 			fmt.Fprint(os.Stderr, msg)
 		} else {
 			fmt.Fprintf(os.Stderr, "plan failed [%s]: %s\n", code, msg)

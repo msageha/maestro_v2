@@ -318,16 +318,7 @@ func (e *Executor) execDeliver(req ExecRequest, paneTarget string) ExecResult {
 }
 
 // sendAndConfirm sends the message and updates @status to busy.
-// For non-orchestrator agents, it first sends C-c to clear partial input.
 func (e *Executor) sendAndConfirm(req ExecRequest, paneTarget string) ExecResult {
-	// Orchestrator pane protection: never send C-c to orchestrator
-	if req.AgentID != "orchestrator" {
-		if err := tmux.SendCtrlC(paneTarget); err != nil {
-			e.log(LogLevelWarn, "cleanup_ctrlc_failed agent_id=%s error=%v", req.AgentID, err)
-		}
-		time.Sleep(200 * time.Millisecond)
-	}
-
 	// Send message via paste-buffer + Enter for reliable multi-line delivery
 	if err := tmux.SendTextAndSubmit(paneTarget, req.Message); err != nil {
 		e.log(LogLevelError, "delivery_error agent_id=%s task_id=%s error=send_text: %v",

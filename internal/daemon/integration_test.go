@@ -108,8 +108,8 @@ func (r *integrationStateReader) GetTaskDependencies(commandID, taskID string) (
 }
 
 func (r *integrationStateReader) ApplyPhaseTransition(commandID, phaseID string, newStatus model.PhaseStatus) error {
-	r.lockMap.Lock(commandID)
-	defer r.lockMap.Unlock(commandID)
+	r.lockMap.Lock("state:" + commandID)
+	defer r.lockMap.Unlock("state:" + commandID)
 
 	state, err := r.loadState(commandID)
 	if err != nil {
@@ -130,8 +130,8 @@ func (r *integrationStateReader) ApplyPhaseTransition(commandID, phaseID string,
 }
 
 func (r *integrationStateReader) UpdateTaskState(commandID, taskID string, newStatus model.Status, cancelledReason string) error {
-	r.lockMap.Lock(commandID)
-	defer r.lockMap.Unlock(commandID)
+	r.lockMap.Lock("state:" + commandID)
+	defer r.lockMap.Unlock("state:" + commandID)
 
 	state, err := r.loadState(commandID)
 	if err != nil {

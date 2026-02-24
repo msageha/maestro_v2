@@ -358,6 +358,23 @@ func (dr *DependencyResolver) IsSystemCommitReady(commandID, taskID string) (boo
 	return dr.stateReader.IsSystemCommitReady(commandID, taskID)
 }
 
+// GetPhaseStatus returns the current status of a specific phase from state.
+func (dr *DependencyResolver) GetPhaseStatus(commandID, phaseID string) (model.PhaseStatus, error) {
+	if dr.stateReader == nil {
+		return "", fmt.Errorf("no state reader")
+	}
+	phases, err := dr.stateReader.GetCommandPhases(commandID)
+	if err != nil {
+		return "", err
+	}
+	for _, p := range phases {
+		if p.ID == phaseID {
+			return p.Status, nil
+		}
+	}
+	return "", fmt.Errorf("phase %s not found in command %s", phaseID, commandID)
+}
+
 // BuildAwaitingFillNotification creates the notification message for a phase entering awaiting_fill.
 func (dr *DependencyResolver) BuildAwaitingFillNotification(commandID string, phase PhaseInfo) string {
 	return fmt.Sprintf("phase:%s phase_id:%s status:awaiting_fill command_id:%s — plan submit --phase %s で次フェーズのタスクを投入してください",

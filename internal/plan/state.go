@@ -114,6 +114,17 @@ func CanComplete(state *model.CommandState) (model.PlanStatus, error) {
 					Err: fmt.Errorf("phase %q is in transient status filling, retry later", phase.Name),
 				}
 			}
+			if phase.Status == model.PhaseStatusAwaitingFill {
+				return "", &ActionRequiredError{
+					Reason:      "PHASE_AWAITING_FILL",
+					CommandID:   state.CommandID,
+					PhaseID:     phase.PhaseID,
+					PhaseName:   phase.Name,
+					PhaseStatus: string(phase.Status),
+					NextAction: fmt.Sprintf("maestro plan submit --command-id %s --phase %s --tasks-file plan.yaml",
+						state.CommandID, phase.Name),
+				}
+			}
 			if !model.IsPhaseTerminal(phase.Status) {
 				return "", &PlanValidationError{Msg: fmt.Sprintf("phase %q is not terminal (status: %s)", phase.Name, phase.Status)}
 			}

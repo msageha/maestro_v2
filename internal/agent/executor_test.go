@@ -396,18 +396,12 @@ func TestOrchestratorInterruptRejected(t *testing.T) {
 	}
 }
 
-// --- Fix #6: Verify orchestrator bypass in sendAndConfirm ---
+// --- Fix #6: Verify orchestrator routing in sendAndConfirm ---
 
-func TestSendAndConfirm_OrchestratorSkipsCtrlC(t *testing.T) {
-	// This is a design verification test.
-	// sendAndConfirm checks req.AgentID != "orchestrator" before sending C-c.
-	// We can't fully test without tmux, but we verify the condition exists
-	// by checking that the code compiles with the guard.
-	// Full integration tested with tmux in session_test.go.
-
-	// Verify ModeDeliver routes orchestrator through execDeliver (no clear, strict busy)
+func TestSendAndConfirm_DirectDelivery(t *testing.T) {
+	// Design verification: execWithClear for orchestrator falls through to execDeliver.
+	// sendAndConfirm delivers messages directly without pre-send cleanup.
 	req := ExecRequest{AgentID: "orchestrator", Mode: ModeWithClear}
-	// execWithClear for orchestrator falls through to execDeliver
 	if req.Mode != ModeWithClear {
 		t.Error("test setup error")
 	}

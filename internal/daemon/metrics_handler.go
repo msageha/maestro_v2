@@ -25,6 +25,8 @@ type ScanCounters struct {
 	DeadLetters           int
 	ReconciliationRepairs int
 	NotificationRetries   int
+	SignalDeliveries      int
+	SignalRetries         int
 }
 
 // MetricsHandler generates metrics and dashboard files.

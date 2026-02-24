@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strings"
 	"sync/atomic"
+	"time"
 )
 
 // bufSeq generates unique buffer names to prevent race conditions when
@@ -27,12 +28,21 @@ func SendTextAndSubmit(paneTarget, text string) error {
 		return fmt.Errorf("tmux load-buffer: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 
-	// Paste buffer + Enter in one tmux invocation.
+	// Paste buffer content into the pane via bracketed paste.
 	// -p forces bracketed paste so the app receives the entire text as a single paste unit.
-	// Chaining with ";" ensures no gap between paste end and Enter.
+	// -r prevents tmux from converting LF to CR inside the paste (avoids spurious submits).
 	// -d deletes the buffer after pasting to avoid leaking tmux buffers.
-	return run("paste-buffer", "-p", "-b", bufName, "-d", "-t", paneTarget,
-		";", "send-keys", "-t", paneTarget, "Enter")
+	if err := run("paste-buffer", "-pr", "-b", bufName, "-d", "-t", paneTarget); err != nil {
+		return err
+	}
+
+	// Delay to let the target application finish processing the bracketed
+	// paste before we send Enter to submit. Claude Code's Ink-based TUI
+	// needs sufficient time to render the pasted content into its input field;
+	// 100ms is too short under load and causes intermittent delivery failures.
+	time.Sleep(500 * time.Millisecond)
+
+	return SendKeys(paneTarget, "Enter")
 }
 
 // SessionName is the tmux session name. Set via SetSessionName before use.
@@ -174,6 +184,10 @@ func SendCtrlC(paneTarget string) error {
 
 // SetupWorkerGrid creates worker panes in a 2-column × N-row grid layout.
 // The window must already exist with a single pane.
+//
+// Panes are created rows-first so that tmux assigns pane indices in row-major
+// order (left-to-right, top-to-bottom): worker1=top-left, worker2=top-right,
+// worker3=bottom-left, worker4=bottom-right, etc.
 func SetupWorkerGrid(windowTarget string, workerCount int) ([]string, error) {
 	if workerCount < 1 || workerCount > 8 {
 		return nil, fmt.Errorf("worker count must be 1-8, got %d", workerCount)
@@ -185,57 +199,42 @@ func SetupWorkerGrid(windowTarget string, workerCount int) ([]string, error) {
 		return ListPanes(windowTarget, paneFormat)
 	}
 
-	// Calculate 2-column grid: left column gets ceil(count/2), right gets floor(count/2).
-	leftRows := (workerCount + 1) / 2
-	rightRows := workerCount / 2
+	totalRows := (workerCount + 1) / 2
+	fullRows := workerCount / 2 // rows that get 2 columns
 
-	// Step 1: Horizontal split → 2 columns
-	if err := SplitPane(windowTarget, true); err != nil {
-		return nil, fmt.Errorf("horizontal split: %w", err)
-	}
-
-	// Use pane IDs (%N) for stable targeting during subsequent splits.
+	// Step 1: Create rows by vertical-splitting the first pane.
+	// Always split the first pane (top) so rows appear in top-to-bottom
+	// order in the layout tree.
 	ids, err := ListPanes(windowTarget, "#{pane_id}")
 	if err != nil {
 		return nil, fmt.Errorf("list pane ids: %w", err)
 	}
-	leftID := strings.TrimSpace(ids[0])
-	rightID := strings.TrimSpace(ids[1])
+	firstPaneID := strings.TrimSpace(ids[0])
 
-	// Step 2: Split left column vertically into rows
-	for i := 1; i < leftRows; i++ {
-		if err := SplitPane(leftID, false); err != nil {
-			return nil, fmt.Errorf("split left row %d: %w", i, err)
+	for i := 1; i < totalRows; i++ {
+		if err := SplitPane(firstPaneID, false); err != nil {
+			return nil, fmt.Errorf("split row %d: %w", i, err)
 		}
 	}
 
-	// Step 3: Split right column vertically into rows
-	for i := 1; i < rightRows; i++ {
-		if err := SplitPane(rightID, false); err != nil {
-			return nil, fmt.Errorf("split right row %d: %w", i, err)
-		}
-	}
-
-	// tmux assigns pane indices in column-major order (left column top→bottom,
-	// then right column top→bottom). Reorder to row-major so that workers are
-	// numbered left-to-right, top-to-bottom (e.g. worker1=top-left, worker2=top-right,
-	// worker3=bottom-left, worker4=bottom-right).
-	colMajor, err := ListPanes(windowTarget, paneFormat)
+	// Get pane IDs for each row (layout tree order: top to bottom).
+	rowIDs, err := ListPanes(windowTarget, "#{pane_id}")
 	if err != nil {
-		return nil, fmt.Errorf("list panes: %w", err)
+		return nil, fmt.Errorf("list row pane ids: %w", err)
 	}
 
-	rowMajor := make([]string, 0, len(colMajor))
-	for row := 0; row < max(leftRows, rightRows); row++ {
-		if row < leftRows {
-			rowMajor = append(rowMajor, colMajor[row])
-		}
-		if row < rightRows {
-			rowMajor = append(rowMajor, colMajor[leftRows+row])
+	// Step 2: Split each full row horizontally to create 2 columns.
+	// The last row is left unsplit when workerCount is odd.
+	for i := 0; i < fullRows; i++ {
+		if err := SplitPane(strings.TrimSpace(rowIDs[i]), true); err != nil {
+			return nil, fmt.Errorf("split row %d cols: %w", i, err)
 		}
 	}
 
-	return rowMajor, nil
+	// The layout tree is now row-major: V(H(TL,TR), H(BL,BR), ...).
+	// tmux assigns pane indices by depth-first traversal, giving row-major order
+	// automatically. No reordering needed.
+	return ListPanes(windowTarget, paneFormat)
 }
 
 // SetSessionOption sets a session-level tmux option on the maestro session.

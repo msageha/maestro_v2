@@ -72,8 +72,11 @@ func Launch(maestroDir string) error {
 
 	args := buildLaunchArgs(role, model, systemPrompt)
 
-	// Execute claude CLI
+	// Execute claude CLI.
+	// Clear CLAUDECODE env var to allow launching inside a parent Claude Code
+	// session (e.g. when maestro is invoked from Claude Code CLI).
 	cmd := exec.Command("claude", args...)
+	cmd.Env = filterEnv(os.Environ(), "CLAUDECODE")
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -126,6 +129,18 @@ func buildSystemPrompt(maestroDir, role string) (string, error) {
 	sb.Write(instructionsContent)
 
 	return sb.String(), nil
+}
+
+// filterEnv returns a copy of environ with the named variable removed.
+func filterEnv(environ []string, name string) []string {
+	prefix := name + "="
+	out := make([]string, 0, len(environ))
+	for _, e := range environ {
+		if !strings.HasPrefix(e, prefix) {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // currentPaneTarget returns the current pane in "session:window.pane" format.
