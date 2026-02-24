@@ -32,7 +32,6 @@ func TestConfigMarshalUnmarshal(t *testing.T) {
 			MaxIterations:  10,
 			PauseOnFailure: true,
 		},
-		Notify: NotifyConfig{Enabled: true},
 		Watcher: WatcherConfig{
 			DebounceSec:         0.3,
 			ScanIntervalSec:     60,
@@ -49,7 +48,6 @@ func TestConfigMarshalUnmarshal(t *testing.T) {
 			CommandDispatch:                  5,
 			TaskDispatch:                     5,
 			OrchestratorNotificationDispatch: 10,
-			ResultNotificationSend:           10,
 		},
 		Queue: QueueConfig{PriorityAgingSec: 300},
 		Limits: LimitsConfig{

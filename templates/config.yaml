@@ -17,16 +17,15 @@ agents:
   workers:
     count: 4
     default_model: "sonnet"
-    models: {}
+    models:
+      worker3: "opus"
+      worker4: "opus"
     boost: false
 
 continuous:
   enabled: false
   max_iterations: 10
   pause_on_failure: true
-
-notify:
-  enabled: true
 
 watcher:
   debounce_sec: 0.3
@@ -44,7 +43,6 @@ retry:
   command_dispatch: 5
   task_dispatch: 5
   orchestrator_notification_dispatch: 10
-  result_notification_send: 10
 
 queue:
   priority_aging_sec: 300

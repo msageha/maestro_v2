@@ -17,7 +17,6 @@ import (
 
 func newTestContinuousHandler(maestroDir string, cfg model.Config) *ContinuousHandler {
 	ch := NewContinuousHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
-	ch.SetNotifySender(func(string, string) error { return nil })
 	return ch
 }
 
@@ -173,15 +172,9 @@ func TestContinuous_MaxIterationsStop(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Continuous: model.ContinuousConfig{Enabled: true, MaxIterations: 5},
-		Notify:     model.NotifyConfig{Enabled: true},
 	}
 
-	notified := false
 	ch := newTestContinuousHandler(maestroDir, cfg)
-	ch.SetNotifySender(func(title, msg string) error {
-		notified = true
-		return nil
-	})
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	writeContinuousState(t, maestroDir, &model.Continuous{
@@ -208,24 +201,15 @@ func TestContinuous_MaxIterationsStop(t *testing.T) {
 	if state.PausedReason == nil || *state.PausedReason != "max_iterations_reached" {
 		t.Error("paused_reason should be max_iterations_reached")
 	}
-	if !notified {
-		t.Error("macOS notification should have been sent")
-	}
 }
 
 func TestContinuous_PauseOnFailure(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Continuous: model.ContinuousConfig{Enabled: true, MaxIterations: 10, PauseOnFailure: true},
-		Notify:     model.NotifyConfig{Enabled: true},
 	}
 
-	notified := false
 	ch := newTestContinuousHandler(maestroDir, cfg)
-	ch.SetNotifySender(func(title, msg string) error {
-		notified = true
-		return nil
-	})
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	writeContinuousState(t, maestroDir, &model.Continuous{
@@ -251,9 +235,6 @@ func TestContinuous_PauseOnFailure(t *testing.T) {
 	}
 	if state.PausedReason == nil || *state.PausedReason != "task_failure" {
 		t.Error("paused_reason should be task_failure")
-	}
-	if !notified {
-		t.Error("macOS notification should have been sent")
 	}
 }
 

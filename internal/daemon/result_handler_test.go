@@ -20,7 +20,6 @@ import (
 func newTestResultHandler(maestroDir string) (*ResultHandler, *mockExecutor) {
 	cfg := model.Config{
 		Watcher: model.WatcherConfig{NotifyLeaseSec: 120},
-		Notify:  model.NotifyConfig{Enabled: true},
 	}
 	lockMap := lock.NewMutexMap()
 	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
@@ -28,9 +27,6 @@ func newTestResultHandler(maestroDir string) (*ResultHandler, *mockExecutor) {
 	mock := &mockExecutor{result: agent.ExecResult{Success: true}}
 	rh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return mock, nil
-	})
-	rh.SetNotifySender(func(title, message string) error {
-		return nil
 	})
 	return rh, mock
 }

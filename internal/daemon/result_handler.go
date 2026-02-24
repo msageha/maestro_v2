@@ -13,13 +13,12 @@ import (
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
-	"github.com/msageha/maestro_v2/internal/notify"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 // ResultHandler monitors results/ and delivers notifications to agents.
 // Worker results → Planner (side-channel via agent_executor).
-// Planner results → Orchestrator (queue write) + macOS notification.
+// Planner results → Orchestrator (queue write).
 type ResultHandler struct {
 	maestroDir        string
 	config            model.Config
@@ -27,7 +26,6 @@ type ResultHandler struct {
 	logger            *log.Logger
 	logLevel          LogLevel
 	executorFactory   ExecutorFactory
-	notifySender      func(title, message string) error
 	continuousHandler *ContinuousHandler
 }
 
@@ -48,18 +46,12 @@ func NewResultHandler(
 		executorFactory: func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 			return agent.NewExecutor(dir, wcfg, level)
 		},
-		notifySender: notify.Send,
 	}
 }
 
 // SetExecutorFactory overrides the executor factory for testing.
 func (rh *ResultHandler) SetExecutorFactory(f ExecutorFactory) {
 	rh.executorFactory = f
-}
-
-// SetNotifySender overrides the macOS notification sender for testing.
-func (rh *ResultHandler) SetNotifySender(f func(string, string) error) {
-	rh.notifySender = f
 }
 
 // SetContinuousHandler wires the continuous handler for iteration tracking.
@@ -418,22 +410,11 @@ func (rh *ResultHandler) notifyPlannerOfWorkerResult(commandID, taskID, workerID
 	return nil
 }
 
-// notifyOrchestratorOfCommandResult writes a notification to queue/orchestrator.yaml
-// and sends macOS notification.
+// notifyOrchestratorOfCommandResult writes a notification to queue/orchestrator.yaml.
 func (rh *ResultHandler) notifyOrchestratorOfCommandResult(resultID, commandID string, status model.Status) error {
-	// Write notification to orchestrator queue
 	if err := rh.writeNotificationToOrchestratorQueue(resultID, commandID, status); err != nil {
 		return fmt.Errorf("write orchestrator notification: %w", err)
 	}
-
-	// macOS notification (best-effort)
-	if rh.config.Notify.Enabled {
-		msg := fmt.Sprintf("command %s: %s", commandID, status)
-		if err := rh.notifySender("Maestro", msg); err != nil {
-			rh.log(LogLevelWarn, "macos_notify_failed command=%s error=%v", commandID, err)
-		}
-	}
-
 	return nil
 }
 

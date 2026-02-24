@@ -1,10 +1,14 @@
 package formation
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
+	"syscall"
 	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -20,28 +24,32 @@ import (
 type UpOptions struct {
 	MaestroDir string
 	Config     model.Config
-	Reset      bool
 	Boost      bool
 	Continuous bool
-	NoNotify   bool
-	ResetOnly  bool // --reset with no other formation flags
+	Force      bool // Force recreation even if session already exists
 
 	// Explicit flags: only overwrite config when explicitly set by CLI
 	BoostSet      bool
 	ContinuousSet bool
-	NoNotifySet   bool
 }
+
+// ErrSessionExists is returned when a maestro session already exists and --force is not set.
+var ErrSessionExists = fmt.Errorf("maestro session already exists (use --force to recreate)")
 
 // RunUp executes the 'maestro up' command.
 func RunUp(opts UpOptions) error {
-	if opts.Reset {
-		if err := resetFormation(opts.MaestroDir); err != nil {
-			return fmt.Errorf("reset: %w", err)
-		}
-		fmt.Println("Formation reset complete.")
-		if opts.ResetOnly {
-			return nil
-		}
+	// Set tmux session name from project config
+	tmux.SetSessionName("maestro-" + opts.Config.Project.Name)
+
+	// Guard: refuse to destroy a running session unless --force is set
+	if tmux.SessionExists() && !opts.Force {
+		return ErrSessionExists
+	}
+
+	// Always reset state on startup — stale queue data from previous sessions
+	// would be dispatched to fresh agents that have no conversation context.
+	if err := resetFormation(opts.MaestroDir); err != nil {
+		return fmt.Errorf("reset: %w", err)
 	}
 
 	// Reflect flags into config
@@ -86,17 +94,11 @@ func RunUp(opts UpOptions) error {
 
 // resetFormation clears all transient state, preserving quarantine for forensics.
 func resetFormation(maestroDir string) error {
-	// Stop existing daemon (best-effort)
-	socketPath := filepath.Join(maestroDir, uds.DefaultSocketName)
-	client := uds.NewClient(socketPath)
-	client.SetTimeout(5 * time.Second)
-	_, _ = client.SendCommand("shutdown", nil) // ignore errors
+	// Stop existing daemon
+	stopDaemon(maestroDir)
 
 	// Kill existing tmux session (best-effort)
 	_ = tmux.KillSession()
-
-	// Wait briefly for daemon to stop
-	time.Sleep(1 * time.Second)
 
 	// Clear queue/ YAML files
 	if err := clearYAMLFiles(filepath.Join(maestroDir, "queue")); err != nil {
@@ -159,9 +161,6 @@ func reflectFlags(opts UpOptions) error {
 	if opts.ContinuousSet {
 		cfg.Continuous.Enabled = opts.Continuous
 	}
-	if opts.NoNotifySet {
-		cfg.Notify.Enabled = !opts.NoNotify
-	}
 
 	configPath := filepath.Join(opts.MaestroDir, "config.yaml")
 	return yamlutil.AtomicWrite(configPath, cfg)
@@ -187,6 +186,10 @@ func startupRecovery(maestroDir string) error {
 		return fmt.Errorf("daemon lock check: another instance may be running: %w", err)
 	}
 	_ = fl.Unlock()
+
+	// Clean stale PID file and socket left behind by a crashed daemon
+	_ = os.Remove(filepath.Join(maestroDir, "daemon.pid"))
+	_ = os.Remove(filepath.Join(maestroDir, uds.DefaultSocketName))
 
 	// YAML validation: scan all YAML files and quarantine corrupt ones
 	validateAndRecoverYAML(maestroDir)
@@ -285,6 +288,15 @@ func createFormation(cfg model.Config) error {
 		return fmt.Errorf("create session: %w", err)
 	}
 
+	// Harden session: keep panes alive on process exit and prevent
+	// user-level tmux config from destroying the detached session.
+	if err := tmux.SetSessionOption("remain-on-exit", "on"); err != nil {
+		return fmt.Errorf("set remain-on-exit: %w", err)
+	}
+	if err := tmux.SetSessionOption("destroy-unattached", "off"); err != nil {
+		return fmt.Errorf("set destroy-unattached: %w", err)
+	}
+
 	orchPane := fmt.Sprintf("%s:0.0", tmux.SessionName)
 	if err := setAgentVars(orchPane, "orchestrator", "orchestrator", resolveModel(cfg, "orchestrator")); err != nil {
 		return err
@@ -301,10 +313,7 @@ func createFormation(cfg model.Config) error {
 	}
 
 	// Window 2: workers
-	workerCount := cfg.Agents.Workers.Count
-	if workerCount < 1 {
-		workerCount = 1
-	}
+	workerCount := max(cfg.Agents.Workers.Count, 1)
 
 	if err := tmux.CreateWindow("workers"); err != nil {
 		return fmt.Errorf("create workers window: %w", err)
@@ -333,6 +342,11 @@ func createFormation(cfg model.Config) error {
 		if err := tmux.SendCommand(pane, "maestro agent launch"); err != nil {
 			return fmt.Errorf("launch agent in %s: %w", pane, err)
 		}
+	}
+
+	// Select orchestrator window so `tmux attach` lands there
+	if err := tmux.SelectWindow(fmt.Sprintf("%s:0", tmux.SessionName)); err != nil {
+		return fmt.Errorf("select orchestrator window: %w", err)
 	}
 
 	return nil
@@ -388,7 +402,8 @@ func startDaemon() error {
 	cmd := exec.Command(execPath, "daemon")
 	cmd.Stdout = nil
 	cmd.Stderr = nil
-	// Detach from the parent process group
+	// Create a new session so the daemon survives terminal closure (no SIGHUP).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start daemon: %w", err)
 	}
@@ -397,6 +412,110 @@ func startDaemon() error {
 		_ = cmd.Wait()
 	}()
 	return nil
+}
+
+// stopDaemon stops the daemon via UDS shutdown, then verifies it exited using
+// the PID file. Falls back to SIGTERM → SIGKILL if the daemon does not exit.
+// When no valid PID is available, polls socket removal as a fallback.
+func stopDaemon(maestroDir string) {
+	// Step 1: Request graceful shutdown via UDS
+	socketPath := filepath.Join(maestroDir, uds.DefaultSocketName)
+	client := uds.NewClient(socketPath)
+	client.SetTimeout(5 * time.Second)
+	_, _ = client.SendCommand("shutdown", nil)
+
+	// Step 2: Read and validate PID from daemon.pid (cross-check with lock file)
+	pid := validateDaemonPID(maestroDir)
+	pidPath := filepath.Join(maestroDir, "daemon.pid")
+
+	if pid > 0 {
+		// PID-based monitoring: poll process exit, then escalate
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			if !processAlive(pid) {
+				_ = os.Remove(pidPath)
+				return
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		// SIGTERM fallback
+		_ = syscall.Kill(pid, syscall.SIGTERM)
+		termDeadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(termDeadline) {
+			if !processAlive(pid) {
+				_ = os.Remove(pidPath)
+				return
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+
+		// SIGKILL as last resort
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+		time.Sleep(500 * time.Millisecond)
+		_ = os.Remove(pidPath)
+		return
+	}
+
+	// No valid PID: fall back to polling socket removal
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, err := os.Stat(socketPath); os.IsNotExist(err) {
+			break
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	_ = os.Remove(pidPath)
+}
+
+// readDaemonPID reads the daemon PID from the PID file. Returns 0 if unreadable.
+func readDaemonPID(pidPath string) int {
+	data, err := os.ReadFile(pidPath)
+	if err != nil {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0
+	}
+	return pid
+}
+
+// validateDaemonPID cross-checks the PID from daemon.pid against
+// the PID stored in locks/daemon.lock. Returns the PID if valid, 0 otherwise.
+func validateDaemonPID(maestroDir string) int {
+	pidPath := filepath.Join(maestroDir, "daemon.pid")
+	pid := readDaemonPID(pidPath)
+	if pid <= 0 {
+		return 0
+	}
+	lockPath := filepath.Join(maestroDir, "locks", "daemon.lock")
+	lockPID := lock.ReadLockPID(lockPath)
+	// Lock file must be readable and match daemon.pid for the PID to be trusted.
+	// If lock file is missing/unreadable (lockPID==0), the daemon likely crashed
+	// and the PID may have been reused by an unrelated process.
+	if lockPID <= 0 || lockPID != pid {
+		_ = os.Remove(pidPath)
+		return 0
+	}
+	return pid
+}
+
+// processAlive checks whether a process with the given PID is still running.
+// Returns false for pid <= 0.
+func processAlive(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	err := syscall.Kill(pid, 0)
+	if err == nil {
+		return true
+	}
+	// EPERM means the process exists but we lack permission to signal it.
+	if errors.Is(err, syscall.EPERM) {
+		return true
+	}
+	return false
 }
 
 func loadConfigFromDir(maestroDir string) (model.Config, error) {

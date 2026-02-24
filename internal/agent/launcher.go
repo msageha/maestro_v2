@@ -14,6 +14,20 @@ import (
 // validRoleName permits only alphanumeric, underscore, and hyphen characters.
 var validRoleName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
+// allowedToolsByRole defines the tools each role is permitted to use.
+// Orchestrator and Planner are restricted to:
+//   - Bash(maestro:*) — only maestro CLI commands (no cat, echo, grep, etc.)
+//   - Read(.maestro/**) — only .maestro/ status files (path restriction is
+//     enforced at the permission-prompt level; under --dangerously-skip-permissions
+//     this acts as a declarative intent only)
+//
+// Workers have no tool restriction (they need full access for task execution).
+var allowedToolsByRole = map[string][]string{
+	"orchestrator": {"Bash(maestro:*)", "Read(.maestro/**)"},
+	"planner":      {"Bash(maestro:*)", "Read(.maestro/**)"},
+	// worker: unrestricted (empty means all tools allowed)
+}
+
 // Launch reads tmux user variables for the current pane and launches the
 // appropriate Agent CLI (claude) with the correct model and system prompt.
 func Launch(maestroDir string) error {
@@ -56,17 +70,37 @@ func Launch(maestroDir string) error {
 		return fmt.Errorf("build system prompt: %w", err)
 	}
 
+	args := buildLaunchArgs(role, model, systemPrompt)
+
 	// Execute claude CLI
-	cmd := exec.Command("claude",
-		"--model", model,
-		"--append-system-prompt", systemPrompt,
-		"--dangerously-skip-permissions",
-	)
+	cmd := exec.Command("claude", args...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
 	return cmd.Run()
+}
+
+// buildLaunchArgs constructs the CLI arguments for the claude command.
+func buildLaunchArgs(role, agentModel, systemPrompt string) []string {
+	args := []string{
+		"--model", agentModel,
+		"--append-system-prompt", systemPrompt,
+		"--dangerously-skip-permissions",
+	}
+
+	// Apply tool restrictions for non-worker roles
+	if tools, ok := allowedToolsByRole[role]; ok && len(tools) > 0 {
+		args = append(args, "--allowedTools", strings.Join(tools, ","))
+	}
+
+	// Disable Notification hooks for non-orchestrator roles via deep merge.
+	// PreToolUse/PostToolUse are preserved; only Notification is cleared.
+	if role != "orchestrator" {
+		args = append(args, "--settings", `{"hooks":{"Notification":[]}}`)
+	}
+
+	return args
 }
 
 // buildSystemPrompt combines maestro.md + instructions/{role}.md.
@@ -95,8 +129,15 @@ func buildSystemPrompt(maestroDir, role string) (string, error) {
 }
 
 // currentPaneTarget returns the current pane in "session:window.pane" format.
+// It uses the TMUX_PANE environment variable (set per-pane by tmux) to resolve
+// the correct pane target, avoiding race conditions when multiple agents are
+// launched concurrently via tmux send-keys.
 func currentPaneTarget() (string, error) {
-	cmd := exec.Command("tmux", "display-message", "-p", "#{session_name}:#{window_index}.#{pane_index}")
+	paneID := os.Getenv("TMUX_PANE")
+	if paneID == "" {
+		return "", fmt.Errorf("TMUX_PANE environment variable not set (not running inside tmux?)")
+	}
+	cmd := exec.Command("tmux", "display-message", "-t", paneID, "-p", "#{session_name}:#{window_index}.#{pane_index}")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return "", fmt.Errorf("tmux display-message: %w: %s", err, strings.TrimSpace(string(out)))

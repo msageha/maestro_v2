@@ -4,6 +4,8 @@ package lock
 import (
 	"fmt"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 )
@@ -108,4 +110,18 @@ func (fl *FileLock) Unlock() error {
 	_ = os.Remove(fl.path)
 	fl.file = nil
 	return nil
+}
+
+// ReadLockPID reads the PID from a lock file without acquiring the lock.
+// Returns 0 if the file is unreadable or does not contain a valid PID.
+func ReadLockPID(path string) int {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return 0
+	}
+	return pid
 }

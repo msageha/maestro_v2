@@ -16,10 +16,10 @@ import (
 	"github.com/msageha/maestro_v2/internal/formation"
 
 	"github.com/msageha/maestro_v2/internal/model"
-	"github.com/msageha/maestro_v2/internal/notify"
 	"github.com/msageha/maestro_v2/internal/plan"
 	"github.com/msageha/maestro_v2/internal/setup"
 	"github.com/msageha/maestro_v2/internal/status"
+	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/worker"
 )
@@ -53,8 +53,6 @@ func main() {
 		runAgent(os.Args[2:])
 	case "worker":
 		runWorker(os.Args[2:])
-	case "notify":
-		runNotify(os.Args[2:])
 	case "dashboard":
 		runDashboard(os.Args[2:])
 	case "version":
@@ -168,6 +166,8 @@ func runDaemon(_ []string) {
 		os.Exit(1)
 	}
 
+	tmux.SetSessionName("maestro-" + cfg.Project.Name)
+
 	d, err := daemon.New(maestroDir, cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create daemon: %v\n", err)
@@ -196,31 +196,36 @@ func runDaemon(_ []string) {
 
 func runSetup(args []string) {
 	if len(args) < 1 {
-		fmt.Fprintln(os.Stderr, "usage: maestro setup <project_dir>")
+		fmt.Fprintln(os.Stderr, "usage: maestro setup <project_dir> [project_name]")
 		os.Exit(1)
 	}
-	if err := setup.Run(args[0]); err != nil {
+	projectDir := args[0]
+	var projectName string
+	if len(args) >= 2 {
+		projectName = args[1]
+	}
+	if err := setup.Run(projectDir, projectName); err != nil {
 		fmt.Fprintf(os.Stderr, "setup: %v\n", err)
 		os.Exit(1)
 	}
-	absDir, _ := filepath.Abs(args[0])
+	absDir, _ := filepath.Abs(projectDir)
 	fmt.Printf("Initialized .maestro/ in %s\n", absDir)
 }
 
 func runUp(args []string) {
-	var reset, boost, continuous, noNotify bool
+	var boost, continuous, detach, force bool
 	for _, a := range args {
 		switch a {
-		case "--reset":
-			reset = true
 		case "--boost":
 			boost = true
 		case "--continuous":
 			continuous = true
-		case "--no-notify":
-			noNotify = true
+		case "--detach", "-d":
+			detach = true
+		case "--force", "-f":
+			force = true
 		default:
-			fmt.Fprintf(os.Stderr, "unknown flag: %s\nusage: maestro up [--reset] [--boost] [--continuous] [--no-notify]\n", a)
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\nusage: maestro up [--boost] [--continuous] [--detach|-d] [--force|-f]\n", a)
 			os.Exit(1)
 		}
 	}
@@ -237,25 +242,30 @@ func runUp(args []string) {
 		os.Exit(1)
 	}
 
-	// --reset only: reset and exit without starting formation
-	resetOnly := reset && !boost && !continuous && !noNotify
-
 	opts := formation.UpOptions{
 		MaestroDir:    maestroDir,
 		Config:        cfg,
-		Reset:         reset,
 		Boost:         boost,
 		Continuous:    continuous,
-		NoNotify:      noNotify,
+		Force:         force,
 		BoostSet:      boost,
 		ContinuousSet: continuous,
-		NoNotifySet:   noNotify,
-		ResetOnly:     resetOnly,
 	}
 
 	if err := formation.RunUp(opts); err != nil {
 		fmt.Fprintf(os.Stderr, "up: %v\n", err)
 		os.Exit(1)
+	}
+
+	if !detach {
+		if os.Getenv("TMUX") != "" {
+			fmt.Printf("Already inside tmux. Attach with: tmux switch-client -t %s\n", tmux.SessionName)
+		} else {
+			if err := tmux.AttachSession(); err != nil {
+				fmt.Fprintf(os.Stderr, "attach: %v\n", err)
+				os.Exit(1)
+			}
+		}
 	}
 }
 
@@ -266,7 +276,14 @@ func runDown(_ []string) {
 		os.Exit(1)
 	}
 
-	if err := formation.RunDown(maestroDir); err != nil {
+	cfg, err := loadConfig(maestroDir)
+	if err != nil {
+		// Config may be corrupt, but 'down' must still be able to stop the daemon.
+		// Proceed with zero config — UDS/PID-based shutdown works without it.
+		fmt.Fprintf(os.Stderr, "Warning: could not load config: %v\nProceeding with default config.\n", err)
+	}
+
+	if err := formation.RunDown(maestroDir, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "down: %v\n", err)
 		os.Exit(1)
 	}
@@ -289,6 +306,13 @@ func runStatus(args []string) {
 		fmt.Fprintln(os.Stderr, "error: .maestro/ directory not found. Run 'maestro setup <dir>' first.")
 		os.Exit(1)
 	}
+
+	cfg, err := loadConfig(maestroDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		os.Exit(1)
+	}
+	tmux.SetSessionName("maestro-" + cfg.Project.Name)
 
 	if err := status.Run(maestroDir, jsonOutput); err != nil {
 		fmt.Fprintf(os.Stderr, "status: %v\n", err)
@@ -718,7 +742,7 @@ func runPlanSubmit(args []string) {
 	// If reading from stdin, materialize to a temp file so the daemon can read it
 	// (daemon's stdin is not the CLI's stdin when using UDS)
 	actualFile := tasksFile
-	if tasksFile == "-" {
+	if tasksFile == "-" || tasksFile == "/dev/stdin" {
 		data, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "read stdin: %v\n", err)
@@ -1109,6 +1133,7 @@ func runAgentExec(args []string) {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
 		os.Exit(1)
 	}
+	tmux.SetSessionName("maestro-" + cfg.Project.Name)
 
 	exec, err := agent.NewExecutor(maestroDir, cfg.Watcher, cfg.Logging.Level)
 	if err != nil {
@@ -1182,17 +1207,6 @@ func runWorkerStandby(args []string) {
 	}
 
 	fmt.Println(output)
-}
-
-func runNotify(args []string) {
-	if len(args) < 2 {
-		fmt.Fprintln(os.Stderr, "usage: maestro notify <title> <message>")
-		os.Exit(1)
-	}
-	if err := notify.Send(args[0], args[1]); err != nil {
-		fmt.Fprintf(os.Stderr, "notify: %v\n", err)
-		os.Exit(1)
-	}
 }
 
 func runDashboard(args []string) {
@@ -1269,8 +1283,8 @@ func printUsage() {
 Usage: maestro <command> [options]
 
 Formation:
-  setup <dir>       Initialize .maestro/ directory
-  up [flags]        Start formation (daemon + tmux + agents)
+  setup <dir> [name]  Initialize .maestro/ directory
+  up [flags]        Start formation and attach (--detach|-d to skip)
   down              Graceful shutdown
   status [--json]   Show formation status
 
@@ -1290,7 +1304,6 @@ Internal:
 
 Utilities:
   worker standby    Show idle workers
-  notify <title> <msg>  macOS notification
   dashboard         Regenerate dashboard.md
   version           Show version
   help              Show this help

@@ -6,7 +6,6 @@ type Config struct {
 	Maestro    MaestroConfig    `yaml:"maestro"`
 	Agents     AgentsConfig     `yaml:"agents"`
 	Continuous ContinuousConfig `yaml:"continuous"`
-	Notify     NotifyConfig     `yaml:"notify"`
 	Watcher    WatcherConfig    `yaml:"watcher"`
 	Retry      RetryConfig      `yaml:"retry"`
 	Queue      QueueConfig      `yaml:"queue"`
@@ -50,10 +49,6 @@ type ContinuousConfig struct {
 	PauseOnFailure bool `yaml:"pause_on_failure"`
 }
 
-type NotifyConfig struct {
-	Enabled bool `yaml:"enabled"`
-}
-
 type WatcherConfig struct {
 	DebounceSec         float64 `yaml:"debounce_sec"`
 	ScanIntervalSec     int     `yaml:"scan_interval_sec"`
@@ -71,7 +66,6 @@ type RetryConfig struct {
 	CommandDispatch                  int `yaml:"command_dispatch"`
 	TaskDispatch                     int `yaml:"task_dispatch"`
 	OrchestratorNotificationDispatch int `yaml:"orchestrator_notification_dispatch"`
-	ResultNotificationSend           int `yaml:"result_notification_send"`
 }
 
 type QueueConfig struct {

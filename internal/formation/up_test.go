@@ -219,10 +219,8 @@ func TestReflectFlags(t *testing.T) {
 		MaestroDir:    maestroDir,
 		Boost:         true,
 		Continuous:    true,
-		NoNotify:      true,
 		BoostSet:      true,
 		ContinuousSet: true,
-		NoNotifySet:   true,
 	}
 
 	if err := reflectFlags(opts); err != nil {
@@ -239,9 +237,6 @@ func TestReflectFlags(t *testing.T) {
 	}
 	if !cfg.Continuous.Enabled {
 		t.Error("expected continuous.enabled=true")
-	}
-	if cfg.Notify.Enabled {
-		t.Error("expected notify.enabled=false (no-notify)")
 	}
 }
 
@@ -330,5 +325,124 @@ func TestResetFormation_ClearsTransientState(t *testing.T) {
 	}
 	if metrics.SchemaVersion != 1 {
 		t.Errorf("expected schema_version=1, got %d", metrics.SchemaVersion)
+	}
+}
+
+func TestValidateDaemonPID_NoLockFile(t *testing.T) {
+	maestroDir := setupTestMaestroDir(t)
+	pidPath := filepath.Join(maestroDir, "daemon.pid")
+	os.WriteFile(pidPath, []byte("12345"), 0644)
+
+	// No lock file → PID cannot be validated
+	pid := validateDaemonPID(maestroDir)
+	if pid != 0 {
+		t.Errorf("expected 0 when lock file missing, got %d", pid)
+	}
+	// PID file should be removed as untrusted
+	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+		t.Error("expected daemon.pid to be removed when lock file missing")
+	}
+}
+
+func TestValidateDaemonPID_MatchingLock(t *testing.T) {
+	maestroDir := setupTestMaestroDir(t)
+	pidPath := filepath.Join(maestroDir, "daemon.pid")
+	lockPath := filepath.Join(maestroDir, "locks", "daemon.lock")
+	os.WriteFile(pidPath, []byte("12345"), 0644)
+	os.WriteFile(lockPath, []byte("12345\n"), 0644)
+
+	pid := validateDaemonPID(maestroDir)
+	if pid != 12345 {
+		t.Errorf("expected 12345, got %d", pid)
+	}
+}
+
+func TestValidateDaemonPID_MismatchingLock(t *testing.T) {
+	maestroDir := setupTestMaestroDir(t)
+	pidPath := filepath.Join(maestroDir, "daemon.pid")
+	lockPath := filepath.Join(maestroDir, "locks", "daemon.lock")
+	os.WriteFile(pidPath, []byte("12345"), 0644)
+	os.WriteFile(lockPath, []byte("99999\n"), 0644)
+
+	pid := validateDaemonPID(maestroDir)
+	if pid != 0 {
+		t.Errorf("expected 0 for mismatching lock, got %d", pid)
+	}
+	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+		t.Error("expected daemon.pid to be removed on mismatch")
+	}
+}
+
+func TestValidateDaemonPID_NoPidFile(t *testing.T) {
+	maestroDir := setupTestMaestroDir(t)
+
+	pid := validateDaemonPID(maestroDir)
+	if pid != 0 {
+		t.Errorf("expected 0 when daemon.pid missing, got %d", pid)
+	}
+}
+
+func TestStartupRecovery_CleansStaleFiles(t *testing.T) {
+	maestroDir := setupTestMaestroDir(t)
+
+	// Create stale PID file and socket
+	pidPath := filepath.Join(maestroDir, "daemon.pid")
+	socketPath := filepath.Join(maestroDir, "daemon.sock")
+	os.WriteFile(pidPath, []byte("12345"), 0644)
+	os.WriteFile(socketPath, []byte{}, 0644)
+
+	if err := startupRecovery(maestroDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
+		t.Error("expected daemon.pid to be removed by startupRecovery")
+	}
+	if _, err := os.Stat(socketPath); !os.IsNotExist(err) {
+		t.Error("expected socket to be removed by startupRecovery")
+	}
+}
+
+func TestProcessAlive_DeadPID(t *testing.T) {
+	// Very large PID should not be alive
+	if processAlive(99999999) {
+		t.Error("expected processAlive(99999999) to return false")
+	}
+}
+
+func TestProcessAlive_ZeroAndNegative(t *testing.T) {
+	if processAlive(0) {
+		t.Error("expected processAlive(0) to return false")
+	}
+	if processAlive(-1) {
+		t.Error("expected processAlive(-1) to return false")
+	}
+}
+
+func TestRunUp_SessionExistsGuard(t *testing.T) {
+	// Test that ErrSessionExists is returned when session already exists and Force is false.
+	// We use a mock approach: directly test the guard logic by simulating SessionExists.
+
+	// Since we can't easily mock tmux.SessionExists in unit tests without tmux,
+	// we test the error type is properly exported and usable.
+	if ErrSessionExists == nil {
+		t.Fatal("ErrSessionExists should not be nil")
+	}
+	if ErrSessionExists.Error() != "maestro session already exists (use --force to recreate)" {
+		t.Errorf("unexpected error message: %s", ErrSessionExists.Error())
+	}
+}
+
+func TestUpOptions_ForceField(t *testing.T) {
+	opts := UpOptions{
+		Force: true,
+	}
+	if !opts.Force {
+		t.Error("expected Force=true")
+	}
+
+	opts2 := UpOptions{}
+	if opts2.Force {
+		t.Error("expected Force=false by default")
 	}
 }

@@ -1017,7 +1017,6 @@ func TestIntegration_ContinuousMode(t *testing.T) {
 
 	// Re-initialize continuous handler with test config
 	ch := NewContinuousHandler(d.maestroDir, d.config, d.handler.lockMap, d.logger, d.logLevel)
-	ch.SetNotifySender(func(string, string) error { return nil })
 
 	// Simulate 2 iterations
 	cmdID1 := "cmd_0000000013_aabbcc01"
@@ -1064,7 +1063,6 @@ func TestIntegration_ContinuousModeIdempotency(t *testing.T) {
 	yamlutil.AtomicWrite(contPath, cont)
 
 	ch := NewContinuousHandler(d.maestroDir, d.config, d.handler.lockMap, d.logger, d.logLevel)
-	ch.SetNotifySender(func(string, string) error { return nil })
 
 	cmdID := "cmd_0000000013_aabbcc03"
 	ch.CheckAndAdvance(cmdID, model.StatusCompleted)

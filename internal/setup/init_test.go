@@ -18,7 +18,7 @@ func TestRun_CreatesDirectoryStructure(t *testing.T) {
 		t.Fatalf("create project dir: %v", err)
 	}
 
-	if err := Run(projectDir); err != nil {
+	if err := Run(projectDir, ""); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -53,7 +53,7 @@ func TestRun_CopiesTemplateFiles(t *testing.T) {
 	projectDir := filepath.Join(dir, "myproject")
 	os.Mkdir(projectDir, 0755)
 
-	if err := Run(projectDir); err != nil {
+	if err := Run(projectDir, ""); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -86,7 +86,7 @@ func TestRun_GeneratesWorkerFiles(t *testing.T) {
 	projectDir := filepath.Join(dir, "myproject")
 	os.Mkdir(projectDir, 0755)
 
-	if err := Run(projectDir); err != nil {
+	if err := Run(projectDir, ""); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -154,7 +154,7 @@ func TestRun_AutoFillsConfig(t *testing.T) {
 	projectDir := filepath.Join(dir, "myproject")
 	os.Mkdir(projectDir, 0755)
 
-	if err := Run(projectDir); err != nil {
+	if err := Run(projectDir, ""); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -191,7 +191,7 @@ func TestRun_CreatesStateFiles(t *testing.T) {
 	projectDir := filepath.Join(dir, "myproject")
 	os.Mkdir(projectDir, 0755)
 
-	if err := Run(projectDir); err != nil {
+	if err := Run(projectDir, ""); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -242,7 +242,7 @@ func TestRun_CreatesDaemonLock(t *testing.T) {
 	projectDir := filepath.Join(dir, "myproject")
 	os.Mkdir(projectDir, 0755)
 
-	if err := Run(projectDir); err != nil {
+	if err := Run(projectDir, ""); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 
@@ -262,7 +262,7 @@ func TestRun_RejectsExistingDir(t *testing.T) {
 	os.Mkdir(projectDir, 0755)
 	os.Mkdir(filepath.Join(projectDir, ".maestro"), 0755)
 
-	err := Run(projectDir)
+	err := Run(projectDir, "")
 	if err == nil {
 		t.Fatal("expected error for existing .maestro/")
 	}

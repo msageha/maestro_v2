@@ -11,18 +11,16 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
-	"github.com/msageha/maestro_v2/internal/notify"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 // ContinuousHandler manages continuous mode iteration tracking.
 type ContinuousHandler struct {
-	maestroDir   string
-	config       model.Config
-	lockMap      *lock.MutexMap
-	logger       *log.Logger
-	logLevel     LogLevel
-	notifySender func(title, message string) error
+	maestroDir string
+	config     model.Config
+	lockMap    *lock.MutexMap
+	logger     *log.Logger
+	logLevel   LogLevel
 }
 
 // NewContinuousHandler creates a new ContinuousHandler.
@@ -34,18 +32,12 @@ func NewContinuousHandler(
 	logLevel LogLevel,
 ) *ContinuousHandler {
 	return &ContinuousHandler{
-		maestroDir:   maestroDir,
-		config:       cfg,
-		lockMap:      lockMap,
-		logger:       logger,
-		logLevel:     logLevel,
-		notifySender: notify.Send,
+		maestroDir: maestroDir,
+		config:     cfg,
+		lockMap:    lockMap,
+		logger:     logger,
+		logLevel:   logLevel,
 	}
-}
-
-// SetNotifySender overrides the macOS notification sender for testing.
-func (ch *ContinuousHandler) SetNotifySender(f func(string, string) error) {
-	ch.notifySender = f
 }
 
 // CheckAndAdvance is called after a successful orchestrator notification of a command result.
@@ -85,13 +77,6 @@ func (ch *ContinuousHandler) CheckAndAdvance(commandID string, commandStatus mod
 		reason := "task_failure"
 		state.PausedReason = &reason
 		ch.log(LogLevelInfo, "continuous_pause command=%s reason=%s iteration=%d", commandID, reason, state.CurrentIteration)
-
-		if ch.config.Notify.Enabled {
-			msg := fmt.Sprintf("Continuous mode paused at iteration %d: command %s failed", state.CurrentIteration, commandID)
-			if err := ch.notifySender("Maestro Alert", msg); err != nil {
-				ch.log(LogLevelWarn, "continuous_notify_pause error=%v", err)
-			}
-		}
 	}
 
 	// Check max_iterations (only if still running — pause takes precedence)
@@ -100,13 +85,6 @@ func (ch *ContinuousHandler) CheckAndAdvance(commandID string, commandStatus mod
 		reason := "max_iterations_reached"
 		state.PausedReason = &reason
 		ch.log(LogLevelInfo, "continuous_stop reason=%s iteration=%d max=%d", reason, state.CurrentIteration, state.MaxIterations)
-
-		if ch.config.Notify.Enabled {
-			msg := fmt.Sprintf("Continuous mode stopped: reached max iterations (%d)", state.MaxIterations)
-			if err := ch.notifySender("Maestro Alert", msg); err != nil {
-				ch.log(LogLevelWarn, "continuous_notify_stop error=%v", err)
-			}
-		}
 	}
 
 	return ch.saveContinuousState(state)

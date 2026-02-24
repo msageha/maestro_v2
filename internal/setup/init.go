@@ -18,7 +18,8 @@ import (
 const maestroDir = ".maestro"
 
 // Run initializes the .maestro/ directory structure in the given project directory.
-func Run(projectDir string) error {
+// projectName overrides the auto-detected name (defaults to directory basename if empty).
+func Run(projectDir, projectName string) error {
 	absDir, err := filepath.Abs(projectDir)
 	if err != nil {
 		return fmt.Errorf("resolve project dir: %w", err)
@@ -66,7 +67,7 @@ func Run(projectDir string) error {
 	}
 
 	// Generate and write config.yaml with auto-filled fields
-	cfg, err := generateConfig(absDir)
+	cfg, err := generateConfig(absDir, projectName)
 	if err != nil {
 		return fmt.Errorf("generate config: %w", err)
 	}
@@ -132,7 +133,7 @@ func copyTemplateFile(name, dst string) error {
 	return nil
 }
 
-func generateConfig(projectDir string) (*model.Config, error) {
+func generateConfig(projectDir, projectName string) (*model.Config, error) {
 	// Read template config as base
 	data, err := fs.ReadFile(templates.FS, "config.yaml")
 	if err != nil {
@@ -145,7 +146,11 @@ func generateConfig(projectDir string) (*model.Config, error) {
 	}
 
 	// Auto-fill fields
-	cfg.Project.Name = filepath.Base(projectDir)
+	if projectName != "" {
+		cfg.Project.Name = projectName
+	} else {
+		cfg.Project.Name = filepath.Base(projectDir)
+	}
 	cfg.Maestro.ProjectRoot = projectDir
 	cfg.Maestro.Created = time.Now().Format(time.RFC3339)
 

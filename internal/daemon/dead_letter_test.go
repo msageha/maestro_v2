@@ -17,7 +17,6 @@ import (
 
 func newTestDeadLetterProcessor(maestroDir string, cfg model.Config) *DeadLetterProcessor {
 	dlp := NewDeadLetterProcessor(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
-	dlp.SetNotifySender(func(string, string) error { return nil })
 	return dlp
 }
 
@@ -372,13 +371,6 @@ func TestDeadLetter_NotificationDeadLetter(t *testing.T) {
 	}
 	dlp := newTestDeadLetterProcessor(maestroDir, cfg)
 
-	notified := false
-	dlp.SetNotifySender(func(title, msg string) error {
-		notified = true
-		return nil
-	})
-	dlp.config.Notify.Enabled = true
-
 	nq := model.NotificationQueue{
 		Notifications: []model.Notification{
 			{
@@ -416,9 +408,6 @@ func TestDeadLetter_NotificationDeadLetter(t *testing.T) {
 	}
 	if !dirty {
 		t.Error("dirty should be true")
-	}
-	if !notified {
-		t.Error("macOS notification should have been sent")
 	}
 
 	// Queue should have only ntf_002

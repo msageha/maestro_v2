@@ -70,7 +70,8 @@ type Daemon struct {
 	wg       sync.WaitGroup
 	shutdown sync.Once
 
-	forceExit atomic.Bool
+	cleanupOnce sync.Once
+	forceExit   atomic.Bool
 }
 
 // SetStateReader sets the state reader for dependency resolution (Phase 6).
@@ -135,16 +136,28 @@ func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Close
 
 // Run starts the daemon and blocks until shutdown completes.
 func (d *Daemon) Run() error {
+	// Ignore SIGHUP so the daemon survives terminal closure.
+	// Setsid in startDaemon detaches the process group, but an explicit
+	// ignore provides defense-in-depth.
+	signal.Ignore(syscall.SIGHUP)
+
 	// Step 1: Acquire file lock
 	if err := d.fileLock.TryLock(); err != nil {
 		return fmt.Errorf("daemon lock: %w", err)
 	}
 	d.log(LogLevelInfo, "daemon starting pid=%d", os.Getpid())
 
+	// Write PID file for reliable lifecycle management
+	pidPath := filepath.Join(d.maestroDir, "daemon.pid")
+	if err := os.WriteFile(pidPath, fmt.Appendf(nil, "%d", os.Getpid()), 0644); err != nil {
+		_ = d.fileLock.Unlock()
+		return fmt.Errorf("write pid file: %w", err)
+	}
+
 	// Step 2: Init fsnotify watcher
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
-		_ = d.fileLock.Unlock()
+		d.cleanup() // removes PID file + socket + unlocks
 		return fmt.Errorf("create fsnotify watcher: %w", err)
 	}
 	d.watcher = watcher
@@ -253,6 +266,7 @@ func (d *Daemon) handleDashboard(req *uds.Request) *uds.Response {
 // fsnotifyLoop processes filesystem change events.
 func (d *Daemon) fsnotifyLoop() {
 	defer d.wg.Done()
+	defer d.recoverPanic("fsnotifyLoop")
 
 	for {
 		select {
@@ -278,6 +292,7 @@ func (d *Daemon) fsnotifyLoop() {
 // tickerLoop triggers periodic scans at configured intervals.
 func (d *Daemon) tickerLoop() {
 	defer d.wg.Done()
+	defer d.recoverPanic("tickerLoop")
 
 	for {
 		select {
@@ -290,23 +305,31 @@ func (d *Daemon) tickerLoop() {
 	}
 }
 
-// waitSignals blocks until a shutdown signal is received.
+// waitSignals blocks until a shutdown signal or context cancellation is received.
 func (d *Daemon) waitSignals() {
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 
-	sig := <-sigCh
-	d.log(LogLevelInfo, "received signal=%s, initiating graceful shutdown", sig)
+	select {
+	case sig := <-sigCh:
+		d.log(LogLevelInfo, "received signal=%s, initiating graceful shutdown", sig)
 
-	// Second signal → force exit
-	go func() {
-		<-sigCh
-		d.log(LogLevelWarn, "received second signal, forcing exit")
-		d.forceExit.Store(true)
-		os.Exit(1)
-	}()
+		// Second signal → force exit
+		go func() {
+			<-sigCh
+			d.log(LogLevelWarn, "received second signal, forcing exit")
+			d.forceExit.Store(true)
+			d.cleanup()
+			os.Exit(1)
+		}()
 
-	d.Shutdown()
+		d.Shutdown()
+	case <-d.ctx.Done():
+		d.log(LogLevelInfo, "context cancelled, waiting for shutdown to complete")
+		d.Shutdown()
+	}
+
+	signal.Stop(sigCh)
 }
 
 // Shutdown performs graceful shutdown (idempotent via sync.Once).
@@ -351,13 +374,27 @@ func (d *Daemon) Shutdown() {
 	})
 }
 
-// cleanup releases resources.
+// cleanup releases resources. Safe to call multiple times via cleanupOnce.
 func (d *Daemon) cleanup() {
-	socketPath := filepath.Join(d.maestroDir, uds.DefaultSocketName)
-	_ = os.Remove(socketPath)
-	_ = d.fileLock.Unlock()
-	if d.logFile != nil {
-		_ = d.logFile.Close()
+	d.cleanupOnce.Do(func() {
+		socketPath := filepath.Join(d.maestroDir, uds.DefaultSocketName)
+		_ = os.Remove(socketPath)
+		// Remove PID file while lock is still held so no concurrent starter
+		// reads a stale PID between lock release and PID file removal.
+		_ = os.Remove(filepath.Join(d.maestroDir, "daemon.pid"))
+		_ = d.fileLock.Unlock()
+		if d.logFile != nil {
+			_ = d.logFile.Close()
+		}
+	})
+}
+
+// recoverPanic catches panics in goroutines to prevent the daemon from crashing.
+// It logs the panic and initiates a graceful shutdown instead of crashing.
+func (d *Daemon) recoverPanic(goroutine string) {
+	if r := recover(); r != nil {
+		d.log(LogLevelError, "panic in %s: %v", goroutine, r)
+		go d.Shutdown()
 	}
 }
 

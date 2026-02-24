@@ -6,12 +6,12 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
 	maestroyaml "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -77,23 +77,17 @@ func checkDaemon(sockPath string) DaemonStatus {
 }
 
 func getAgentStatuses() []AgentStatus {
-	// Check if maestro tmux session exists
-	out, err := exec.Command("tmux", "list-panes", "-s", "-t", "maestro", "-F",
-		"#{@agent_id}\t#{@role}\t#{@model}\t#{@status}").CombinedOutput()
+	lines, err := tmux.ListAllPanes("#{@agent_id}\t#{@role}\t#{@model}\t#{@status}")
 	if err != nil {
 		return nil
 	}
 
 	var agents []AgentStatus
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		if line == "" {
-			continue
-		}
+	for _, line := range lines {
 		parts := strings.SplitN(line, "\t", 4)
 		if len(parts) < 4 {
 			continue
 		}
-		// Skip empty entries (panes without user variables)
 		if parts[0] == "" {
 			continue
 		}

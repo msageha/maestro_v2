@@ -328,9 +328,9 @@ func (e *Executor) sendAndConfirm(req ExecRequest, paneTarget string) ExecResult
 		time.Sleep(200 * time.Millisecond)
 	}
 
-	// Send message
-	if err := tmux.SendKeys(paneTarget, req.Message, "Enter"); err != nil {
-		e.log(LogLevelError, "delivery_error agent_id=%s task_id=%s error=send_keys: %v",
+	// Send message via paste-buffer + Enter for reliable multi-line delivery
+	if err := tmux.SendTextAndSubmit(paneTarget, req.Message); err != nil {
+		e.log(LogLevelError, "delivery_error agent_id=%s task_id=%s error=send_text: %v",
 			req.AgentID, req.TaskID, err)
 		return ExecResult{Error: fmt.Errorf("send message: %w", err)}
 	}

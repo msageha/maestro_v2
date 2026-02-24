@@ -3,11 +3,53 @@ package tmux
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
+	"regexp"
 	"strings"
+	"sync/atomic"
 )
 
-const SessionName = "maestro"
+// bufSeq generates unique buffer names to prevent race conditions when
+// multiple goroutines call SendTextAndSubmit concurrently.
+var bufSeq atomic.Int64
+
+// SendTextAndSubmit sends multi-line text to a pane using paste-buffer for
+// reliable delivery, then sends Enter to submit. This avoids character-by-character
+// key sending issues with newlines in the message.
+func SendTextAndSubmit(paneTarget, text string) error {
+	bufName := fmt.Sprintf("maestro-msg-%d", bufSeq.Add(1))
+
+	// Load text into tmux buffer via stdin (handles arbitrary content safely)
+	cmd := exec.Command("tmux", "load-buffer", "-b", bufName, "-")
+	cmd.Stdin = strings.NewReader(text)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("tmux load-buffer: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+
+	// Paste buffer + Enter in one tmux invocation.
+	// -p forces bracketed paste so the app receives the entire text as a single paste unit.
+	// Chaining with ";" ensures no gap between paste end and Enter.
+	// -d deletes the buffer after pasting to avoid leaking tmux buffers.
+	return run("paste-buffer", "-p", "-b", bufName, "-d", "-t", paneTarget,
+		";", "send-keys", "-t", paneTarget, "Enter")
+}
+
+// SessionName is the tmux session name. Set via SetSessionName before use.
+var SessionName = "maestro"
+
+// unsafeSessionChars matches characters that are unsafe in tmux session names.
+// tmux uses `:` and `.` for target resolution, so these must be sanitized.
+var unsafeSessionChars = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
+
+// SetSessionName updates the tmux session name, sanitizing unsafe characters.
+func SetSessionName(name string) {
+	sanitized := unsafeSessionChars.ReplaceAllString(name, "_")
+	if sanitized == "" {
+		sanitized = "maestro"
+	}
+	SessionName = sanitized
+}
 
 // SessionExists checks whether the maestro tmux session exists.
 func SessionExists() bool {
@@ -174,7 +216,46 @@ func SetupWorkerGrid(windowTarget string, workerCount int) ([]string, error) {
 		}
 	}
 
-	return ListPanes(windowTarget, paneFormat)
+	// tmux assigns pane indices in column-major order (left column top→bottom,
+	// then right column top→bottom). Reorder to row-major so that workers are
+	// numbered left-to-right, top-to-bottom (e.g. worker1=top-left, worker2=top-right,
+	// worker3=bottom-left, worker4=bottom-right).
+	colMajor, err := ListPanes(windowTarget, paneFormat)
+	if err != nil {
+		return nil, fmt.Errorf("list panes: %w", err)
+	}
+
+	rowMajor := make([]string, 0, len(colMajor))
+	for row := 0; row < max(leftRows, rightRows); row++ {
+		if row < leftRows {
+			rowMajor = append(rowMajor, colMajor[row])
+		}
+		if row < rightRows {
+			rowMajor = append(rowMajor, colMajor[leftRows+row])
+		}
+	}
+
+	return rowMajor, nil
+}
+
+// SetSessionOption sets a session-level tmux option on the maestro session.
+func SetSessionOption(name, value string) error {
+	return run("set-option", "-t", SessionName, name, value)
+}
+
+// SelectWindow selects (focuses) a window in the maestro session.
+func SelectWindow(windowTarget string) error {
+	return run("select-window", "-t", windowTarget)
+}
+
+// AttachSession attaches the current terminal to the maestro tmux session.
+// This replaces the current process with tmux attach-session.
+func AttachSession() error {
+	cmd := exec.Command("tmux", "attach-session", "-t", SessionName)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
 }
 
 // GetPaneCurrentCommand returns the currently running command in a pane.

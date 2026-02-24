@@ -11,18 +11,16 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
-	"github.com/msageha/maestro_v2/internal/notify"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 // DeadLetterProcessor handles queue entries that have exceeded max retry attempts.
 type DeadLetterProcessor struct {
-	maestroDir   string
-	config       model.Config
-	lockMap      *lock.MutexMap
-	logger       *log.Logger
-	logLevel     LogLevel
-	notifySender func(title, message string) error
+	maestroDir string
+	config     model.Config
+	lockMap    *lock.MutexMap
+	logger     *log.Logger
+	logLevel   LogLevel
 
 	// pendingNotifications collects orchestrator notifications generated
 	// during command dead-letter post-processing. They are buffered here
@@ -49,18 +47,12 @@ func NewDeadLetterProcessor(
 	logLevel LogLevel,
 ) *DeadLetterProcessor {
 	return &DeadLetterProcessor{
-		maestroDir:   maestroDir,
-		config:       cfg,
-		lockMap:      lockMap,
-		logger:       logger,
-		logLevel:     logLevel,
-		notifySender: notify.Send,
+		maestroDir: maestroDir,
+		config:     cfg,
+		lockMap:    lockMap,
+		logger:     logger,
+		logLevel:   logLevel,
 	}
-}
-
-// SetNotifySender overrides the macOS notification sender for testing.
-func (dlp *DeadLetterProcessor) SetNotifySender(f func(string, string) error) {
-	dlp.notifySender = f
 }
 
 // DrainPendingNotifications returns and clears buffered orchestrator notifications
@@ -201,14 +193,6 @@ func (dlp *DeadLetterProcessor) ProcessNotificationDeadLetters(nq *model.Notific
 		// Archive
 		if err := dlp.archiveDeadLetter("orchestrator", ntf.ID, ntf, reason); err != nil {
 			dlp.log(LogLevelError, "archive_dead_letter orchestrator notification=%s error=%v", ntf.ID, err)
-		}
-
-		// Post-processing: macOS notification (best-effort)
-		if dlp.config.Notify.Enabled {
-			msg := fmt.Sprintf("notification %s dead-lettered for command %s", ntf.ID, ntf.CommandID)
-			if err := dlp.notifySender("Maestro Alert", msg); err != nil {
-				dlp.log(LogLevelWarn, "dead_letter_notify error=%v", err)
-			}
 		}
 
 		results = append(results, DeadLetterResult{
