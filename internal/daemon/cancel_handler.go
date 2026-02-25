@@ -158,6 +158,58 @@ func (ch *CancelHandler) InterruptInProgressTasks(tasks []model.Task, commandID 
 	return results
 }
 
+// InterruptInProgressTasksDeferred performs the same in-memory state mutation as
+// InterruptInProgressTasks but defers the actual tmux interrupt to Phase B.
+// Returns cancelled results and interrupt items to execute later.
+func (ch *CancelHandler) InterruptInProgressTasksDeferred(tasks []model.Task, commandID string, workerID string) ([]CancelledTaskResult, []interruptItem) {
+	var results []CancelledTaskResult
+	var interrupts []interruptItem
+
+	for i := range tasks {
+		task := &tasks[i]
+		if task.CommandID != commandID || task.Status != model.StatusInProgress {
+			continue
+		}
+
+		// Collect interrupt item for Phase B execution
+		if task.LeaseOwner != nil {
+			interrupts = append(interrupts, interruptItem{
+				WorkerID:  workerID,
+				TaskID:    task.ID,
+				CommandID: task.CommandID,
+				Epoch:     task.LeaseEpoch,
+			})
+		}
+
+		if err := model.ValidateCommandTaskQueueTransition(task.Status, model.StatusCancelled); err != nil {
+			ch.log(LogLevelWarn, "cancel_inprogress_skip task=%s error=%v", task.ID, err)
+			continue
+		}
+
+		task.Status = model.StatusCancelled
+		task.LeaseOwner = nil
+		task.LeaseExpiresAt = nil
+		task.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+
+		ch.log(LogLevelInfo, "cancel_inprogress_deferred task=%s command=%s", task.ID, commandID)
+
+		if ch.stateReader != nil {
+			if err := ch.stateReader.UpdateTaskState(commandID, task.ID, model.StatusCancelled, "command_cancel_requested"); err != nil {
+				ch.log(LogLevelWarn, "cancel_state_update task=%s error=%v", task.ID, err)
+			}
+		}
+
+		results = append(results, CancelledTaskResult{
+			TaskID:    task.ID,
+			CommandID: commandID,
+			Status:    "cancelled",
+			Reason:    "command_cancel_requested",
+		})
+	}
+
+	return results, interrupts
+}
+
 // CancelledTaskResult represents a synthetic cancelled result entry.
 type CancelledTaskResult struct {
 	TaskID    string

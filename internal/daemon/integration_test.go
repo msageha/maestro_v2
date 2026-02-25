@@ -253,10 +253,10 @@ func newIntegrationDaemon(t *testing.T) *Daemon {
 
 	// Clean up maestroDir before TempDir cleanup to prevent "directory not empty" errors.
 	// handleResultWrite's Phase C spawns `go PeriodicScan()` which creates dashboard/metrics
-	// files asynchronously — wait for it to finish, then remove.
+	// files asynchronously — wait for the full A/B/C cycle to finish, then remove.
 	t.Cleanup(func() {
-		d.handler.scanMu.Lock()
-		d.handler.scanMu.Unlock()
+		d.handler.scanRunMu.Lock()   //nolint:staticcheck // SA2001: intentional barrier to wait for PeriodicScan cycle
+		d.handler.scanRunMu.Unlock() //nolint:staticcheck
 		os.RemoveAll(d.maestroDir)
 	})
 

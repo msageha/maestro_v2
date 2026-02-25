@@ -98,6 +98,13 @@ func (d *Daemon) resultWritePhaseA(params ResultWriteParams, resultStatus model.
 	d.acquireFileLock()
 	defer d.releaseFileLock()
 
+	// Lock queue file first (consistent order: queue → result → state).
+	// Without this, handleQueueWriteTask (which locks "queue:{target}") and
+	// resultWritePhaseA (which writes queue/{reporter}.yaml) can race.
+	queueLockKey := "queue:" + params.Reporter
+	d.lockMap.Lock(queueLockKey)
+	defer d.lockMap.Unlock(queueLockKey)
+
 	workerLockKey := "result:" + params.Reporter
 	d.lockMap.Lock(workerLockKey)
 	defer d.lockMap.Unlock(workerLockKey)
