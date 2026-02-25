@@ -2,6 +2,7 @@
 package tmux
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,6 +11,108 @@ import (
 	"sync/atomic"
 	"time"
 )
+
+// defaultCmdTimeout is the timeout for individual tmux commands.
+// tmux IPC is normally sub-millisecond; 5s catches hung servers
+// while avoiding false positives on slower systems.
+const defaultCmdTimeout = 5 * time.Second
+
+// TmuxErrorKind categorizes tmux command failures.
+type TmuxErrorKind int
+
+const (
+	ErrKindServer  TmuxErrorKind = iota + 1 // tmux server unreachable
+	ErrKindSession                           // session not found
+	ErrKindPane                              // pane or window not found
+	ErrKindTimeout                           // command timed out
+	ErrKindCommand                           // other command error
+)
+
+func (k TmuxErrorKind) String() string {
+	switch k {
+	case ErrKindServer:
+		return "server"
+	case ErrKindSession:
+		return "session"
+	case ErrKindPane:
+		return "pane"
+	case ErrKindTimeout:
+		return "timeout"
+	case ErrKindCommand:
+		return "command"
+	default:
+		return "unknown"
+	}
+}
+
+// TmuxError is a classified tmux command error.
+type TmuxError struct {
+	Kind   TmuxErrorKind
+	Op     string // tmux subcommand (e.g., "send-keys")
+	Stderr string // raw stderr from tmux
+	Err    error  // underlying error
+}
+
+func (e *TmuxError) Error() string {
+	if e.Stderr != "" {
+		return fmt.Sprintf("tmux %s (%s): %v: %s", e.Op, e.Kind, e.Err, e.Stderr)
+	}
+	return fmt.Sprintf("tmux %s (%s): %v", e.Op, e.Kind, e.Err)
+}
+
+func (e *TmuxError) Unwrap() error { return e.Err }
+
+// Is supports errors.Is() matching by Kind.
+func (e *TmuxError) Is(target error) bool {
+	t, ok := target.(*TmuxError)
+	if !ok {
+		return false
+	}
+	return e.Kind == t.Kind
+}
+
+// Sentinel errors for use with errors.Is().
+var (
+	ErrTmuxServer  = &TmuxError{Kind: ErrKindServer}
+	ErrTmuxSession = &TmuxError{Kind: ErrKindSession}
+	ErrTmuxPane    = &TmuxError{Kind: ErrKindPane}
+	ErrTmuxTimeout = &TmuxError{Kind: ErrKindTimeout}
+	ErrTmuxCommand = &TmuxError{Kind: ErrKindCommand}
+)
+
+// classifyTmuxError parses tmux stderr to determine the error category.
+func classifyTmuxError(op, stderr string, err error) *TmuxError {
+	lower := strings.ToLower(stderr)
+
+	var kind TmuxErrorKind
+	switch {
+	case strings.Contains(lower, "no server running") ||
+		strings.Contains(lower, "server exited") ||
+		strings.Contains(lower, "error connecting") ||
+		strings.Contains(lower, "connect failed"):
+		kind = ErrKindServer
+	case strings.Contains(lower, "session not found") ||
+		strings.Contains(lower, "can't find session") ||
+		strings.Contains(lower, "no such session") ||
+		strings.Contains(lower, "no sessions"):
+		kind = ErrKindSession
+	case strings.Contains(lower, "can't find pane") ||
+		strings.Contains(lower, "no such pane") ||
+		strings.Contains(lower, "can't find window") ||
+		strings.Contains(lower, "no such window") ||
+		strings.Contains(lower, "pane has exited"):
+		kind = ErrKindPane
+	default:
+		kind = ErrKindCommand
+	}
+
+	return &TmuxError{
+		Kind:   kind,
+		Op:     op,
+		Stderr: stderr,
+		Err:    err,
+	}
+}
 
 // bufSeq generates unique buffer names to prevent race conditions when
 // multiple goroutines call SendTextAndSubmit concurrently.
@@ -22,11 +125,27 @@ func SendTextAndSubmit(paneTarget, text string) error {
 	bufName := fmt.Sprintf("maestro-msg-%d", bufSeq.Add(1))
 
 	// Load text into tmux buffer via stdin (handles arbitrary content safely)
-	cmd := exec.Command("tmux", "load-buffer", "-b", bufName, "-")
+	ctx, cancel := context.WithTimeout(context.Background(), defaultCmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "tmux", "load-buffer", "-b", bufName, "-")
 	cmd.Stdin = strings.NewReader(text)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux load-buffer: %w: %s", err, strings.TrimSpace(string(out)))
+		stderr := strings.TrimSpace(string(out))
+		if ctx.Err() != nil {
+			return &TmuxError{Kind: ErrKindTimeout, Op: "load-buffer", Stderr: stderr, Err: ctx.Err()}
+		}
+		return classifyTmuxError("load-buffer", stderr, err)
 	}
+
+	// Guard: ensure the buffer is deleted even if paste-buffer fails.
+	// On success, paste-buffer -d deletes it atomically; this defer
+	// only fires on the error path to prevent buffer leaks.
+	needCleanup := true
+	defer func() {
+		if needCleanup {
+			_ = run("delete-buffer", "-b", bufName)
+		}
+	}()
 
 	// Paste buffer content into the pane via bracketed paste.
 	// -p forces bracketed paste so the app receives the entire text as a single paste unit.
@@ -35,6 +154,7 @@ func SendTextAndSubmit(paneTarget, text string) error {
 	if err := run("paste-buffer", "-pr", "-b", bufName, "-d", "-t", paneTarget); err != nil {
 		return err
 	}
+	needCleanup = false
 
 	// Delay to let the target application finish processing the bracketed
 	// paste before we send Enter to submit. Claude Code's Ink-based TUI
@@ -63,7 +183,9 @@ func SetSessionName(name string) {
 
 // SessionExists checks whether the maestro tmux session exists.
 func SessionExists() bool {
-	err := exec.Command("tmux", "has-session", "-t", SessionName).Run()
+	ctx, cancel := context.WithTimeout(context.Background(), defaultCmdTimeout)
+	defer cancel()
+	err := exec.CommandContext(ctx, "tmux", "has-session", "-t", SessionName).Run()
 	return err == nil
 }
 
@@ -113,11 +235,13 @@ func GetUserVar(paneTarget, name string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// CapturePane captures pane content with the -J flag, which joins wrapped
-// lines to produce stable output regardless of terminal width.
+// CapturePane captures pane content without the -J flag, preserving the
+// visual line structure. Each wrapped line appears as a separate line in the
+// output. Use this for prompt detection and pattern matching where line
+// boundaries matter. For hash-based comparisons, use CapturePaneJoined instead.
 // lastN specifies how many lines from the bottom to capture (0 = entire visible pane).
 func CapturePane(paneTarget string, lastN int) (string, error) {
-	args := []string{"capture-pane", "-p", "-J", "-t", paneTarget}
+	args := []string{"capture-pane", "-p", "-t", paneTarget}
 	if lastN > 0 {
 		args = append(args, "-S", fmt.Sprintf("-%d", lastN))
 	}
@@ -292,19 +416,44 @@ func GetPaneCurrentCommand(paneTarget string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-func run(args ...string) error {
-	cmd := exec.Command("tmux", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("tmux %s: %w: %s", args[0], err, strings.TrimSpace(string(out)))
+// runCtx executes a tmux command with context support and error classification.
+func runCtx(ctx context.Context, args ...string) error {
+	ctx, cancel := context.WithTimeout(ctx, defaultCmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "tmux", args...)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		stderr := strings.TrimSpace(string(out))
+		if ctx.Err() != nil {
+			return &TmuxError{Kind: ErrKindTimeout, Op: args[0], Stderr: stderr, Err: ctx.Err()}
+		}
+		return classifyTmuxError(args[0], stderr, err)
 	}
 	return nil
 }
 
-func output(args ...string) (string, error) {
-	cmd := exec.Command("tmux", args...)
+// outputCtx executes a tmux command that returns output, with context support and error classification.
+func outputCtx(ctx context.Context, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, defaultCmdTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "tmux", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return "", fmt.Errorf("tmux %s: %w: %s", args[0], err, strings.TrimSpace(string(out)))
+		stderr := strings.TrimSpace(string(out))
+		if ctx.Err() != nil {
+			return "", &TmuxError{Kind: ErrKindTimeout, Op: args[0], Stderr: stderr, Err: ctx.Err()}
+		}
+		return "", classifyTmuxError(args[0], stderr, err)
 	}
 	return string(out), nil
+}
+
+// run executes a tmux command with the default timeout.
+func run(args ...string) error {
+	return runCtx(context.Background(), args...)
+}
+
+// output executes a tmux command that returns output, with the default timeout.
+func output(args ...string) (string, error) {
+	return outputCtx(context.Background(), args...)
 }

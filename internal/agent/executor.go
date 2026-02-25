@@ -51,7 +51,7 @@ func (v BusyVerdict) String() string {
 const (
 	promptReadyLines   = 5 // プロンプト検出+安定性ハッシュ用
 	busyHintLines      = 5 // busy パターンマッチ用
-	stableCheckRounds  = 2 // 安定性判定に必要なラウンド数
+	stableCheckRounds  = 1 // 安定性判定に必要なラウンド数
 	lastLineMaxDisplay = 80
 )
 
@@ -233,7 +233,7 @@ func (e *Executor) execClear(ctx context.Context, req ExecRequest, paneTarget st
 		return ExecResult{Error: fmt.Errorf("cooldown after /clear cancelled: %w", err), Retryable: true}
 	}
 
-	if err := e.waitStable(ctx, paneTarget); err != nil {
+	if err := e.waitStable(ctx, paneTarget, false); err != nil {
 		return ExecResult{Error: fmt.Errorf("clear: wait stable: %w", err), Retryable: true}
 	}
 	return ExecResult{Success: true}
@@ -271,8 +271,8 @@ func (e *Executor) execInterrupt(ctx context.Context, req ExecRequest, paneTarge
 		return ExecResult{Error: fmt.Errorf("cooldown after /clear cancelled: %w", err), Retryable: true}
 	}
 
-	// Step 4: Confirm stability
-	if err := e.waitStable(ctx, paneTarget); err != nil {
+	// Step 4: Confirm stability (strict prompt check — no subsequent busy detection)
+	if err := e.waitStable(ctx, paneTarget, false); err != nil {
 		return ExecResult{Error: fmt.Errorf("interrupt: wait stable: %w", err), Retryable: true}
 	}
 
@@ -311,8 +311,8 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 		return ExecResult{Error: fmt.Errorf("cooldown after /clear cancelled: %w", err), Retryable: true}
 	}
 
-	// Step 3: Stability check
-	if err := e.waitStable(ctx, paneTarget); err != nil {
+	// Step 3: Stability check (soft prompt — detectBusyWithRetry guards delivery)
+	if err := e.waitStable(ctx, paneTarget, true); err != nil {
 		e.log(LogLevelWarn, "delivery_failure agent_id=%s task_id=%s reason=unstable_after_clear",
 			req.AgentID, req.TaskID)
 		return ExecResult{Error: fmt.Errorf("with_clear: wait stable: %w", err), Retryable: true}
@@ -411,7 +411,8 @@ func (e *Executor) detectBusy(paneTarget string) BusyVerdict {
 		return VerdictIdle
 	}
 
-	// Stage 2: Pattern hint from last busyHintLines lines
+	// Stage 2: Pattern hint from last busyHintLines lines.
+	// Uses CapturePane (no -J) to preserve line boundaries for regex matching.
 	content, err := tmux.CapturePane(paneTarget, busyHintLines)
 	if err != nil {
 		e.log(LogLevelDebug, "busy_detection capture_pane error=%v", err)
@@ -426,16 +427,22 @@ func (e *Executor) detectBusy(paneTarget string) BusyVerdict {
 	}
 	e.log(LogLevelDebug, "busy_detection busy_pattern_hint=%s", hintStr)
 
-	// Stage 3: Activity probe (hash comparison over idle_stable_sec)
-	hashA := contentHash(content)
+	// Stage 3: Activity probe (hash comparison over idle_stable_sec).
+	// Uses CapturePaneJoined (-J) for width-independent hash stability.
+	joinedContent, err := tmux.CapturePaneJoined(paneTarget, busyHintLines)
+	if err != nil {
+		e.log(LogLevelDebug, "busy_detection joined capture error=%v", err)
+		return VerdictUndecided
+	}
+	hashA := contentHash(joinedContent)
 	time.Sleep(time.Duration(e.config.IdleStableSec) * time.Second)
 
-	content2, err := tmux.CapturePane(paneTarget, busyHintLines)
+	joinedContent2, err := tmux.CapturePaneJoined(paneTarget, busyHintLines)
 	if err != nil {
 		e.log(LogLevelDebug, "busy_detection second capture error=%v", err)
 		return VerdictUndecided
 	}
-	hashB := contentHash(content2)
+	hashB := contentHash(joinedContent2)
 
 	hashChanged := hashA != hashB
 
@@ -475,10 +482,14 @@ func (e *Executor) detectBusyWithRetry(req ExecRequest, paneTarget string) BusyV
 	return VerdictBusy
 }
 
-// waitStable confirms pane content is stable over two consecutive rounds
-// of hash comparison, then verifies the prompt is ready.
-// Worst-case duration: 2 × IdleStableSec (default 5s) = ~10s.
-func (e *Executor) waitStable(ctx context.Context, paneTarget string) error {
+// waitStable confirms pane content is stable over stableCheckRounds consecutive
+// rounds of hash comparison, then verifies the prompt is ready.
+// Worst-case duration: stableCheckRounds × IdleStableSec (default 1 × 5s = ~5s).
+//
+// softPromptCheck controls how prompt detection failure is handled:
+//   - true:  log a warning and proceed (safe when caller runs detectBusyWithRetry afterwards)
+//   - false: return an error (required when no subsequent busy detection exists)
+func (e *Executor) waitStable(ctx context.Context, paneTarget string, softPromptCheck bool) error {
 	for round := 0; round < stableCheckRounds; round++ {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("wait_stable cancelled before round %d: %w", round, err)
@@ -506,12 +517,22 @@ func (e *Executor) waitStable(ctx context.Context, paneTarget string) error {
 		e.log(LogLevelDebug, "wait_stable round=%d passed", round)
 	}
 
-	// Verify prompt is ready after stability confirmed (no -J: line breaks needed for prompt detection)
+	// Verify prompt is ready after stability confirmed.
+	// Uses CapturePane (no -J) to preserve line boundaries for prompt detection.
 	finalContent, err := tmux.CapturePane(paneTarget, promptReadyLines)
 	if err != nil {
+		if softPromptCheck {
+			e.log(LogLevelWarn, "wait_stable prompt_check capture error=%v (non-fatal, soft mode)", err)
+			return nil
+		}
 		return fmt.Errorf("capture pane for prompt check: %w", err)
 	}
 	if !isPromptReady(finalContent) {
+		if softPromptCheck {
+			e.log(LogLevelWarn, "wait_stable prompt_not_detected pane=%s last_line=%q (proceeding — detectBusy will guard delivery)",
+				paneTarget, lastNonBlankLine(finalContent))
+			return nil
+		}
 		return fmt.Errorf("pane stable but no prompt detected (last line: %q)", lastNonBlankLine(finalContent))
 	}
 	e.log(LogLevelDebug, "wait_stable prompt confirmed")
@@ -534,18 +555,37 @@ func contentHash(s string) string {
 //
 // The fallback is intentionally broad; false positives (e.g. markdown blockquotes) are
 // mitigated by callers performing stability checks before invoking this function.
+// maxPromptSearchLines limits how many non-blank lines (from the bottom)
+// are checked for the ❯ prompt character. This accommodates Claude Code's
+// status bar (typically 1–2 lines below the prompt) while bounding the
+// search to avoid false positives from agent output that happens to
+// contain ❯ in earlier lines.
+const maxPromptSearchLines = 4
+
 func isPromptReady(content string) bool {
 	lines := strings.Split(content, "\n")
+	// Scan bottom-up, checking up to maxPromptSearchLines non-blank lines for ❯.
+	// Claude Code's TUI may show a status bar below the prompt,
+	// so the prompt line is not necessarily the last non-blank line.
+	checked := 0
+	for i := len(lines) - 1; i >= 0 && checked < maxPromptSearchLines; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" {
+			continue
+		}
+		if strings.Contains(trimmed, "❯") {
+			return true
+		}
+		checked++
+	}
+	// Fallback: check only the last non-blank line for '>'.
+	// Limiting to the last line avoids false positives from markdown
+	// blockquotes or shell output on earlier lines.
 	for i := len(lines) - 1; i >= 0; i-- {
 		trimmed := strings.TrimSpace(lines[i])
 		if trimmed == "" {
 			continue
 		}
-		// Primary: Claude Code prompt uses ❯ (U+276F)
-		if strings.Contains(trimmed, "❯") {
-			return true
-		}
-		// Fallback: older versions or plain-text terminals use >
 		return strings.HasPrefix(trimmed, ">")
 	}
 	return false
@@ -554,6 +594,11 @@ func isPromptReady(content string) bool {
 // waitReady polls until the pane shows a Claude Code prompt ('❯' or '>'), indicating readiness.
 // It uses WaitReadyIntervalSec and WaitReadyMaxRetries from config for timing.
 // Worst-case duration: (WaitReadyMaxRetries+1) × WaitReadyIntervalSec (default 16 × 2s = 32s).
+//
+// If prompt detection fails after all retries, the function logs a warning
+// and returns nil (proceeds) instead of blocking dispatch. The caller's
+// subsequent detectBusyWithRetry provides a safety net against delivering
+// to a busy agent.
 func (e *Executor) waitReady(ctx context.Context, paneTarget string) error {
 	maxRetries := e.config.WaitReadyMaxRetries
 	interval := time.Duration(e.config.WaitReadyIntervalSec) * time.Second
@@ -572,6 +617,7 @@ func (e *Executor) waitReady(ctx context.Context, paneTarget string) error {
 				}
 				continue
 			}
+			// Capture itself kept failing — this is a tmux error, not a prompt issue.
 			return fmt.Errorf("wait_ready: capture pane failed after %d attempts: %w", i+1, err)
 		}
 
@@ -587,7 +633,12 @@ func (e *Executor) waitReady(ctx context.Context, paneTarget string) error {
 			}
 		}
 	}
-	return fmt.Errorf("wait_ready: prompt not detected after %d attempts", maxRetries+1)
+
+	// Fallback: prompt not detected, but proceed with a warning.
+	// The subsequent detectBusyWithRetry() will catch if the agent is actually busy.
+	e.log(LogLevelWarn, "wait_ready prompt_fallback pane=%s: prompt not detected after %d attempts, proceeding anyway",
+		paneTarget, maxRetries+1)
+	return nil
 }
 
 // lastNonBlankLine returns the last non-blank line from content, truncated to lastLineMaxDisplay chars.

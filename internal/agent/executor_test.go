@@ -428,3 +428,101 @@ func TestExecResult_SuccessFlag(t *testing.T) {
 		t.Error("expected success")
 	}
 }
+
+// --- isPromptReady tests ---
+
+func TestIsPromptReady(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{
+			name:    "prompt on last non-blank line",
+			content: "some output\n ❯ \n",
+			want:    true,
+		},
+		{
+			name:    "prompt with status bar below",
+			content: "output\n ❯ \nTokens: 1.2k  Cost: $0.01\n",
+			want:    true,
+		},
+		{
+			name:    "prompt with multiple status lines below",
+			content: "output\n ❯ \n─────────────\nTokens: 1.2k  Cost: $0.01\n",
+			want:    true,
+		},
+		{
+			name:    "no prompt character",
+			content: "just some output\nno prompt here\n",
+			want:    false,
+		},
+		{
+			name:    "empty content",
+			content: "",
+			want:    false,
+		},
+		{
+			name:    "only blank lines",
+			content: "\n\n\n",
+			want:    false,
+		},
+		{
+			name:    "fallback > on last non-blank line",
+			content: "some output\n> ",
+			want:    true,
+		},
+		{
+			name:    "> not on last non-blank line (should be false)",
+			content: "> old line\nstatus bar text\n",
+			want:    false,
+		},
+		{
+			name:    "prompt within maxPromptSearchLines window",
+			content: "line1\nproject ❯ input text\nstatus1\nstatus2\n",
+			want:    true,
+		},
+		{
+			name:    "prompt outside maxPromptSearchLines window (false positive guard)",
+			content: "❯ old prompt\nline2\nline3\nline4\nline5\n",
+			want:    false,
+		},
+		{
+			name:    "unicode prompt only",
+			content: "❯",
+			want:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isPromptReady(tt.content)
+			if got != tt.want {
+				t.Errorf("isPromptReady(%q) = %v, want %v", tt.content, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestLastNonBlankLine(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"normal", "line1\nline2\n", "line2"},
+		{"with trailing blanks", "line1\nline2\n\n\n", "line2"},
+		{"empty", "", "<empty>"},
+		{"only blanks", "\n\n", "<empty>"},
+		{"long line truncated", strings.Repeat("x", 100), strings.Repeat("x", 80) + "..."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := lastNonBlankLine(tt.content)
+			if got != tt.want {
+				t.Errorf("lastNonBlankLine() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
