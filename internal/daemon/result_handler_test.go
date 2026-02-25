@@ -244,8 +244,19 @@ func TestResultHandler_WorkerNotification_Failure(t *testing.T) {
 	if updated.Results[0].NotifyLastError == nil {
 		t.Error("expected notify_last_error to be set")
 	}
-	if updated.Results[0].NotifyLeaseOwner != nil {
-		t.Error("lease should be cleared after failure")
+	// After failure, a backoff lease should be set to prevent immediate retry
+	if updated.Results[0].NotifyLeaseOwner == nil || *updated.Results[0].NotifyLeaseOwner != "backoff" {
+		t.Errorf("expected notify_lease_owner='backoff', got %v", updated.Results[0].NotifyLeaseOwner)
+	}
+	if updated.Results[0].NotifyLeaseExpiresAt == nil {
+		t.Error("expected notify_lease_expires_at to be set for backoff")
+	} else {
+		expiresAt, err := time.Parse(time.RFC3339, *updated.Results[0].NotifyLeaseExpiresAt)
+		if err != nil {
+			t.Errorf("invalid notify_lease_expires_at: %v", err)
+		} else if !expiresAt.After(time.Now().UTC()) {
+			t.Error("backoff lease should expire in the future")
+		}
 	}
 }
 
@@ -429,6 +440,104 @@ func TestResultHandler_HandleResultFileEvent(t *testing.T) {
 
 	if len(mock.calls) != 1 {
 		t.Fatalf("expected 1 executor call, got %d", len(mock.calls))
+	}
+}
+
+func TestResultHandler_WorkerNotification_MaxRetryExhausted(t *testing.T) {
+	maestroDir := setupTestMaestroDir(t)
+	cfg := model.Config{
+		Watcher: model.WatcherConfig{NotifyLeaseSec: 120},
+	}
+	lockMap := lock.NewMutexMap()
+	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+
+	failMock := &mockExecutor{result: agent.ExecResult{
+		Success: false,
+		Error:   fmt.Errorf("no server running"),
+	}}
+	rh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+		return failMock, nil
+	})
+
+	// Create a result that has already exhausted retries
+	rf := model.TaskResultFile{
+		SchemaVersion: 1,
+		FileType:      "result_task",
+		Results: []model.TaskResult{
+			{
+				ID:             "res_0000000001_aaaaaaaa",
+				TaskID:         "task_0000000001_bbbbbbbb",
+				CommandID:      "cmd_0000000001_cccccccc",
+				Status:         model.StatusCompleted,
+				Notified:       false,
+				NotifyAttempts: maxNotifyAttempts, // already at max
+				CreatedAt:      time.Now().UTC().Format(time.RFC3339),
+			},
+		},
+	}
+	resultPath := filepath.Join(maestroDir, "results", "worker1.yaml")
+	yamlutil.AtomicWrite(resultPath, rf)
+
+	n := rh.processWorkerResultFile("worker1")
+	if n != 0 {
+		t.Fatalf("expected 0 (exhausted), got %d", n)
+	}
+	// No executor calls should be made for exhausted entries
+	if len(failMock.calls) != 0 {
+		t.Fatalf("expected no executor calls for exhausted entry, got %d", len(failMock.calls))
+	}
+}
+
+func TestResultHandler_WorkerNotification_BackoffPreventsImmediateRetry(t *testing.T) {
+	maestroDir := setupTestMaestroDir(t)
+	cfg := model.Config{
+		Watcher: model.WatcherConfig{NotifyLeaseSec: 120},
+	}
+	lockMap := lock.NewMutexMap()
+	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+
+	failMock := &mockExecutor{result: agent.ExecResult{
+		Success: false,
+		Error:   fmt.Errorf("no server running"),
+	}}
+	rh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+		return failMock, nil
+	})
+
+	rf := model.TaskResultFile{
+		SchemaVersion: 1,
+		FileType:      "result_task",
+		Results: []model.TaskResult{
+			{
+				ID:        "res_0000000001_aaaaaaaa",
+				TaskID:    "task_0000000001_bbbbbbbb",
+				CommandID: "cmd_0000000001_cccccccc",
+				Status:    model.StatusCompleted,
+				Notified:  false,
+				CreatedAt: time.Now().UTC().Format(time.RFC3339),
+			},
+		},
+	}
+	resultPath := filepath.Join(maestroDir, "results", "worker1.yaml")
+	yamlutil.AtomicWrite(resultPath, rf)
+
+	// First attempt: fails and sets backoff
+	n := rh.processWorkerResultFile("worker1")
+	if n != 0 {
+		t.Fatalf("expected 0 (failed), got %d", n)
+	}
+	if len(failMock.calls) != 1 {
+		t.Fatalf("expected 1 executor call, got %d", len(failMock.calls))
+	}
+
+	// Second attempt immediately: should be skipped due to backoff
+	failMock.calls = nil
+	n = rh.processWorkerResultFile("worker1")
+	if n != 0 {
+		t.Fatalf("expected 0 (backoff), got %d", n)
+	}
+	if len(failMock.calls) != 0 {
+		t.Fatalf("expected no executor calls during backoff, got %d", len(failMock.calls))
 	}
 }
 

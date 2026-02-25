@@ -95,8 +95,10 @@ func RunUp(opts UpOptions) error {
 
 // resetFormation clears all transient state, preserving quarantine for forensics.
 func resetFormation(maestroDir string) error {
-	// Stop existing daemon
-	stopDaemon(maestroDir)
+	// Stop existing daemon — must succeed before we tear down tmux
+	if err := stopDaemon(maestroDir); err != nil {
+		return fmt.Errorf("stop daemon: %w", err)
+	}
 
 	// Kill existing tmux session (best-effort)
 	_ = tmux.KillSession()
@@ -469,17 +471,25 @@ func startDaemon() error {
 
 // stopDaemon stops the daemon via UDS shutdown, then verifies it exited using
 // the PID file. Falls back to SIGTERM → SIGKILL if the daemon does not exit.
-// When no valid PID is available, polls socket removal as a fallback.
-func stopDaemon(maestroDir string) {
-	// Step 1: Request graceful shutdown via UDS
+// Returns an error if daemon death could not be confirmed.
+func stopDaemon(maestroDir string) error {
 	socketPath := filepath.Join(maestroDir, uds.DefaultSocketName)
+	pidPath := filepath.Join(maestroDir, "daemon.pid")
+
+	// Quick check: if neither socket nor PID file exists, no daemon to stop
+	_, socketErr := os.Stat(socketPath)
+	_, pidErr := os.Stat(pidPath)
+	if os.IsNotExist(socketErr) && os.IsNotExist(pidErr) {
+		return nil
+	}
+
+	// Step 1: Request graceful shutdown via UDS
 	client := uds.NewClient(socketPath)
 	client.SetTimeout(5 * time.Second)
 	_, _ = client.SendCommand("shutdown", nil)
 
 	// Step 2: Read and validate PID from daemon.pid (cross-check with lock file)
 	pid := validateDaemonPID(maestroDir)
-	pidPath := filepath.Join(maestroDir, "daemon.pid")
 
 	if pid > 0 {
 		// PID-based monitoring: poll process exit, then escalate
@@ -487,7 +497,7 @@ func stopDaemon(maestroDir string) {
 		for time.Now().Before(deadline) {
 			if !processAlive(pid) {
 				_ = os.Remove(pidPath)
-				return
+				return nil
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
@@ -498,7 +508,7 @@ func stopDaemon(maestroDir string) {
 		for time.Now().Before(termDeadline) {
 			if !processAlive(pid) {
 				_ = os.Remove(pidPath)
-				return
+				return nil
 			}
 			time.Sleep(500 * time.Millisecond)
 		}
@@ -506,19 +516,47 @@ func stopDaemon(maestroDir string) {
 		// SIGKILL as last resort
 		_ = syscall.Kill(pid, syscall.SIGKILL)
 		time.Sleep(500 * time.Millisecond)
+		if processAlive(pid) {
+			return fmt.Errorf("daemon pid=%d still alive after SIGKILL", pid)
+		}
 		_ = os.Remove(pidPath)
-		return
+		return nil
 	}
 
-	// No valid PID: fall back to polling socket removal
+	// No valid PID: use lock acquisition to verify daemon is gone
+	lockDir := filepath.Join(maestroDir, "locks")
+	lockPath := filepath.Join(lockDir, "daemon.lock")
+
+	// If locks directory doesn't exist, no daemon has ever run
+	if _, err := os.Stat(lockDir); os.IsNotExist(err) {
+		_ = os.Remove(pidPath)
+		_ = os.Remove(socketPath)
+		return nil
+	}
+
+	fl := lock.NewFileLock(lockPath)
+	if err := fl.TryLock(); err == nil {
+		// Lock acquired → no daemon holds it. Clean up stale files.
+		_ = fl.Unlock()
+		_ = os.Remove(pidPath)
+		_ = os.Remove(socketPath)
+		return nil
+	}
+
+	// Lock held but no valid PID: poll for daemon exit via lock release
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(socketPath); os.IsNotExist(err) {
-			break
+		if err := fl.TryLock(); err == nil {
+			_ = fl.Unlock()
+			_ = os.Remove(pidPath)
+			_ = os.Remove(socketPath)
+			return nil
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
+
 	_ = os.Remove(pidPath)
+	return fmt.Errorf("could not confirm daemon stopped (no valid PID, lock still held after timeout)")
 }
 
 // readDaemonPID reads the daemon PID from the PID file. Returns 0 if unreadable.

@@ -16,6 +16,18 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
+const (
+	// maxNotifyAttempts is the maximum number of notification delivery attempts
+	// before giving up. Prevents infinite retries when tmux is unavailable.
+	maxNotifyAttempts = 15
+
+	// notifyBackoffInitial is the initial backoff delay after a failed notification.
+	notifyBackoffInitial = 10 * time.Second
+
+	// notifyBackoffMax is the maximum backoff delay between retry attempts.
+	notifyBackoffMax = 5 * time.Minute
+)
+
 // ResultHandler monitors results/ and delivers notifications to agents.
 // Worker results → Planner (side-channel via agent_executor).
 // Planner results → Orchestrator (queue write).
@@ -172,7 +184,13 @@ func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
 
 		if notifyErr != nil {
 			rh.markTaskNotifyFailure(entry, notifyErr.Error())
-			rh.log(LogLevelWarn, "notify_planner_failed worker=%s task=%s error=%v", workerID, taskID, notifyErr)
+			if entry.NotifyAttempts >= maxNotifyAttempts {
+				rh.log(LogLevelError, "notify_exhausted worker=%s task=%s command=%s attempts=%d last_error=%v",
+					workerID, taskID, commandID, entry.NotifyAttempts, notifyErr)
+			} else {
+				rh.log(LogLevelWarn, "notify_planner_failed worker=%s task=%s error=%v attempts=%d/%d next_retry_in=%s",
+					workerID, taskID, notifyErr, entry.NotifyAttempts, maxNotifyAttempts, rh.notifyBackoff(entry.NotifyAttempts))
+			}
 		} else {
 			rh.markTaskNotifySuccess(entry)
 			notified++
@@ -245,7 +263,13 @@ func (rh *ResultHandler) processCommandResultFile() int {
 
 		if notifyErr != nil {
 			rh.markCommandNotifyFailure(entry, notifyErr.Error())
-			rh.log(LogLevelWarn, "notify_orchestrator_failed command=%s error=%v", commandID, notifyErr)
+			if entry.NotifyAttempts >= maxNotifyAttempts {
+				rh.log(LogLevelError, "notify_exhausted command=%s attempts=%d last_error=%v",
+					commandID, entry.NotifyAttempts, notifyErr)
+			} else {
+				rh.log(LogLevelWarn, "notify_orchestrator_failed command=%s error=%v attempts=%d/%d next_retry_in=%s",
+					commandID, notifyErr, entry.NotifyAttempts, maxNotifyAttempts, rh.notifyBackoff(entry.NotifyAttempts))
+			}
 		} else {
 			rh.markCommandNotifySuccess(entry)
 			notified++
@@ -267,6 +291,19 @@ func (rh *ResultHandler) processCommandResultFile() int {
 }
 
 // --- Notification lease helpers ---
+
+// notifyBackoff computes the exponential backoff delay for the given attempt count.
+// Formula: min(notifyBackoffInitial * 2^(attempts-1), notifyBackoffMax).
+func (rh *ResultHandler) notifyBackoff(attempts int) time.Duration {
+	if attempts < 1 {
+		attempts = 1
+	}
+	delay := notifyBackoffInitial * time.Duration(1<<(attempts-1))
+	if delay > notifyBackoffMax {
+		delay = notifyBackoffMax
+	}
+	return delay
+}
 
 func (rh *ResultHandler) notifyLeaseSec() int {
 	if rh.config.Watcher.NotifyLeaseSec > 0 {
@@ -299,6 +336,9 @@ func (rh *ResultHandler) findUnnotifiedTaskResultExcluding(rf *model.TaskResultF
 		if exclude[r.ID] {
 			continue
 		}
+		if r.NotifyAttempts >= maxNotifyAttempts {
+			continue
+		}
 		if r.NotifyLeaseOwner == nil || rh.isLeaseExpired(r.NotifyLeaseExpiresAt) {
 			return i
 		}
@@ -313,6 +353,9 @@ func (rh *ResultHandler) findUnnotifiedCommandResultExcluding(rf *model.CommandR
 			continue
 		}
 		if exclude[r.ID] {
+			continue
+		}
+		if r.NotifyAttempts >= maxNotifyAttempts {
 			continue
 		}
 		if r.NotifyLeaseOwner == nil || rh.isLeaseExpired(r.NotifyLeaseExpiresAt) {
@@ -366,8 +409,13 @@ func (rh *ResultHandler) markTaskNotifySuccess(r *model.TaskResult) {
 
 func (rh *ResultHandler) markTaskNotifyFailure(r *model.TaskResult, errMsg string) {
 	r.NotifyLastError = &errMsg
-	r.NotifyLeaseOwner = nil
-	r.NotifyLeaseExpiresAt = nil
+	// Set backoff lease to prevent immediate retry.
+	// The entry will be skipped until the backoff period expires.
+	backoff := rh.notifyBackoff(r.NotifyAttempts)
+	owner := "backoff"
+	expiresAt := time.Now().UTC().Add(backoff).Format(time.RFC3339)
+	r.NotifyLeaseOwner = &owner
+	r.NotifyLeaseExpiresAt = &expiresAt
 }
 
 func (rh *ResultHandler) markCommandNotifySuccess(r *model.CommandResult) {
@@ -380,8 +428,12 @@ func (rh *ResultHandler) markCommandNotifySuccess(r *model.CommandResult) {
 
 func (rh *ResultHandler) markCommandNotifyFailure(r *model.CommandResult, errMsg string) {
 	r.NotifyLastError = &errMsg
-	r.NotifyLeaseOwner = nil
-	r.NotifyLeaseExpiresAt = nil
+	// Set backoff lease to prevent immediate retry.
+	backoff := rh.notifyBackoff(r.NotifyAttempts)
+	owner := "backoff"
+	expiresAt := time.Now().UTC().Add(backoff).Format(time.RFC3339)
+	r.NotifyLeaseOwner = &owner
+	r.NotifyLeaseExpiresAt = &expiresAt
 }
 
 // --- Notification delivery ---
