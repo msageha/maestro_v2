@@ -27,9 +27,12 @@ func AtomicWriteRaw(path string, content []byte) error {
 	}
 	tmpName := tmp.Name()
 
+	var tmpClosed bool
 	defer func() {
 		// Clean up temp file on any failure
-		_ = tmp.Close()
+		if !tmpClosed {
+			_ = tmp.Close()
+		}
 		_ = os.Remove(tmpName)
 	}()
 
@@ -42,6 +45,7 @@ func AtomicWriteRaw(path string, content []byte) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp file: %w", err)
 	}
+	tmpClosed = true
 
 	// Step 2: Validate written content by re-reading temp file
 	written, err := os.ReadFile(tmpName)
@@ -80,14 +84,31 @@ func copyFile(src, dst string) error {
 	}
 	defer func() { _ = in.Close() }()
 
-	out, err := os.Create(dst)
+	dir := filepath.Dir(dst)
+	tmp, err := os.CreateTemp(dir, ".maestro-bak-tmp-*.yaml")
 	if err != nil {
 		return err
 	}
-	defer func() { _ = out.Close() }()
+	tmpName := tmp.Name()
 
-	if _, err := io.Copy(out, in); err != nil {
+	var tmpClosed bool
+	defer func() {
+		if !tmpClosed {
+			_ = tmp.Close()
+		}
+		_ = os.Remove(tmpName)
+	}()
+
+	if _, err := io.Copy(tmp, in); err != nil {
 		return err
 	}
-	return out.Sync()
+	if err := tmp.Sync(); err != nil {
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	tmpClosed = true
+
+	return os.Rename(tmpName, dst)
 }

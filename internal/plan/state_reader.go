@@ -108,6 +108,9 @@ func (r *PlanStateReader) ApplyPhaseTransition(commandID, phaseID string, newSta
 	now := time.Now().UTC().Format(time.RFC3339)
 	for i := range state.Phases {
 		if state.Phases[i].PhaseID == phaseID {
+			if err := model.ValidatePhaseTransition(state.Phases[i].Status, newStatus); err != nil {
+				return fmt.Errorf("phase %s in command %s: %w", phaseID, commandID, err)
+			}
 			state.Phases[i].Status = newStatus
 			if model.IsPhaseTerminal(newStatus) {
 				state.Phases[i].CompletedAt = &now
@@ -141,6 +144,13 @@ func (r *PlanStateReader) UpdateTaskState(commandID, taskID string, newStatus mo
 	if state.TaskStates == nil {
 		state.TaskStates = make(map[string]model.Status)
 	}
+
+	if currentStatus, exists := state.TaskStates[taskID]; exists {
+		if err := model.ValidateTaskStateTransition(currentStatus, newStatus); err != nil {
+			return fmt.Errorf("task %s in command %s: %w", taskID, commandID, err)
+		}
+	}
+
 	state.TaskStates[taskID] = newStatus
 
 	if cancelledReason != "" {

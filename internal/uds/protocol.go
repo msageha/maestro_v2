@@ -60,7 +60,10 @@ func NewRequest(command string, params any) (*Request, error) {
 func SuccessResponse(data any) *Response {
 	resp := &Response{Success: true}
 	if data != nil {
-		raw, _ := json.Marshal(data)
+		raw, err := json.Marshal(data)
+		if err != nil {
+			return ErrorResponse(ErrCodeInternal, fmt.Sprintf("marshal response data: %v", err))
+		}
 		resp.Data = raw
 	}
 	return resp

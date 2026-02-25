@@ -115,6 +115,16 @@ func (qh *QueueHandler) SetBusyChecker(f func(agentID string) bool) {
 	qh.busyChecker = f
 }
 
+// Stop cancels any pending debounce timer.
+func (qh *QueueHandler) Stop() {
+	qh.debounceMu.Lock()
+	defer qh.debounceMu.Unlock()
+	if qh.debounceTimer != nil {
+		qh.debounceTimer.Stop()
+		qh.debounceTimer = nil
+	}
+}
+
 // GetLeaseManager returns the internal lease manager (for testing).
 func (qh *QueueHandler) GetLeaseManager() *LeaseManager {
 	return qh.leaseManager
@@ -158,6 +168,11 @@ func (qh *QueueHandler) debounceAndScan(trigger string) {
 	qh.debounceTimer = time.AfterFunc(
 		time.Duration(debounceSec*float64(time.Second)),
 		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					qh.log(LogLevelError, "panic in debounceAndScan: %v", r)
+				}
+			}()
 			qh.log(LogLevelDebug, "debounced_scan trigger=%s", trigger)
 			qh.PeriodicScan()
 		},
@@ -1376,6 +1391,9 @@ func (qh *QueueHandler) computeSignalBackoff(attempts int) time.Duration {
 		maxSec = 10
 	}
 
+	if attempts < 1 {
+		attempts = 1
+	}
 	backoffSec := baseSec * (1 << (attempts - 1))
 	if backoffSec > maxSec {
 		backoffSec = maxSec

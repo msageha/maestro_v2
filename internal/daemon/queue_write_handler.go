@@ -98,7 +98,10 @@ func (d *Daemon) handleQueueWriteCommand(params QueueWriteParams) *uds.Response 
 	if resp := checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(data), len(params.Content)+200); resp != nil {
 		archived := archiveTerminalCommands(&cq)
 		if archived > 0 {
-			newData, _ := yamlv3.Marshal(cq)
+			newData, err := yamlv3.Marshal(cq)
+			if err != nil {
+				return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("marshal queue after archive: %v", err))
+			}
 			if checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(newData), len(params.Content)+200) != nil {
 				return resp
 			}

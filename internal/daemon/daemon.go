@@ -231,7 +231,7 @@ func (d *Daemon) registerHandlers() {
 
 	d.server.Handle("shutdown", func(req *uds.Request) *uds.Response {
 		d.log(LogLevelInfo, "shutdown requested via UDS")
-		go d.Shutdown()
+		go func() { defer d.recoverPanic("shutdownHandler"); d.Shutdown() }()
 		return uds.SuccessResponse(map[string]string{"status": "shutdown_accepted"})
 	})
 
@@ -342,6 +342,9 @@ func (d *Daemon) Shutdown() {
 
 		// 2. Stop producers
 		d.ticker.Stop()
+		if d.handler != nil {
+			d.handler.Stop()
+		}
 		if d.watcher != nil {
 			_ = d.watcher.Close()
 		}

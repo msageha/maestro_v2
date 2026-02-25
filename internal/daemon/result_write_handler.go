@@ -75,8 +75,13 @@ func (d *Daemon) handleResultWrite(req *uds.Request) *uds.Response {
 	}
 
 	// Phase C: Trigger scan (best effort dependency unblocking)
-	if d.handler != nil {
-		go d.handler.PeriodicScan()
+	if d.handler != nil && d.ctx.Err() == nil {
+		d.wg.Add(1)
+		go func() {
+			defer d.wg.Done()
+			defer d.recoverPanic("resultWriteScan")
+			d.handler.PeriodicScan()
+		}()
 	}
 
 	d.log(LogLevelInfo, "result_write result_id=%s task=%s command=%s status=%s reporter=%s",

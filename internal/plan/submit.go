@@ -72,7 +72,11 @@ func submitInitial(opts SubmitOptions, input SubmitInput) (*SubmitResult, error)
 	}
 	sm := NewStateManager(opts.MaestroDir, opts.LockMap)
 
-	// Double submit prevention
+	// Lock command state to prevent concurrent double submit (TOCTOU fix)
+	sm.LockCommand(opts.CommandID)
+	defer sm.UnlockCommand(opts.CommandID)
+
+	// Double submit prevention (now under lock)
 	if sm.StateExists(opts.CommandID) {
 		return nil, fmt.Errorf("state already exists for command %s (double submit)", opts.CommandID)
 	}
@@ -265,11 +269,18 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 	// Insert __system_commit outside phase structure if continuous enabled
 	var systemCommitTaskID *string
 	if opts.Config.Continuous.Enabled {
+		// Collect all concrete-phase task names so __system_commit blocks on them
+		allConcreteTaskNames := make([]string, 0, len(allTasks))
+		for _, t := range allTasks {
+			allConcreteTaskNames = append(allConcreteTaskNames, t.Name)
+		}
+
 		commitTask := TaskInput{
 			Name:               "__system_commit",
 			Purpose:            "コマンド実行結果をリポジトリにコミットする",
 			Content:            "変更ファイルを確認し、git add + git commit を実行する。コミットメッセージはタスク実行結果のサマリから生成する。",
 			AcceptanceCriteria: "git commit が成功し、コミットハッシュが取得できる",
+			BlockedBy:          allConcreteTaskNames,
 			BloomLevel:         2,
 			Required:           true,
 		}
@@ -367,6 +378,17 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 	if systemCommitTaskID != nil {
 		state.RequiredTaskIDs = append(state.RequiredTaskIDs, *systemCommitTaskID)
 		state.TaskStates[*systemCommitTaskID] = model.StatusPending
+
+		// Register dependencies: system commit blocks on all concrete-phase tasks
+		depIDs := make([]string, 0, len(allTasks)-1) // exclude __system_commit itself
+		for _, t := range allTasks {
+			if t.Name != "__system_commit" {
+				depIDs = append(depIDs, allNameToID[t.Name])
+			}
+		}
+		if len(depIDs) > 0 {
+			state.TaskDependencies[*systemCommitTaskID] = depIDs
+		}
 	}
 
 	state.ExpectedTaskCount = len(state.RequiredTaskIDs) + len(state.OptionalTaskIDs)
@@ -540,7 +562,11 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 		if len(t.BlockedBy) > 0 {
 			depIDs := make([]string, 0, len(t.BlockedBy))
 			for _, depName := range t.BlockedBy {
-				depIDs = append(depIDs, nameToID[depName])
+				depID, ok := nameToID[depName]
+				if !ok {
+					return nil, fmt.Errorf("blocked_by %q not found in fill tasks for phase %q (cross-phase references are not supported in phase fill)", depName, opts.PhaseName)
+				}
+				depIDs = append(depIDs, depID)
 			}
 			state.TaskDependencies[taskID] = depIDs
 		}

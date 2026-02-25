@@ -227,9 +227,9 @@ func (e *Executor) execInterrupt(req ExecRequest, paneTarget string) ExecResult 
 		return ExecResult{Error: err, Retryable: true}
 	}
 
-	// Step 4: Update @status
-	if err := tmux.SetUserVar(paneTarget, "status", "busy"); err != nil {
-		e.log(LogLevelWarn, "set_status_failed agent_id=%s error=%v", req.AgentID, err)
+	// Set @status="idle" — the agent is now idle after interrupt.
+	if err := tmux.SetUserVar(paneTarget, "status", "idle"); err != nil {
+		e.log(LogLevelWarn, "set_status_idle_failed agent_id=%s error=%v", req.AgentID, err)
 	}
 
 	e.log(LogLevelInfo, "interrupt_success agent_id=%s task_id=%s lease_epoch=%d",

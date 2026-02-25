@@ -45,7 +45,7 @@ func RestoreFromBackup(filePath string) error {
 		return fmt.Errorf("backup YAML is also corrupted: %w", err)
 	}
 
-	if err := os.WriteFile(filePath, content, 0644); err != nil {
+	if err := AtomicWriteRaw(filePath, content); err != nil {
 		return fmt.Errorf("restore from backup: %w", err)
 	}
 

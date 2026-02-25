@@ -2,6 +2,7 @@ package plan
 
 import (
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/lock"
@@ -13,11 +14,14 @@ type RequestCancelOptions struct {
 	RequestedBy string
 	Reason      string
 	MaestroDir  string
+	LockMap     *lock.MutexMap
 }
 
 func RequestCancel(opts RequestCancelOptions) error {
-	lockMap := lock.NewMutexMap()
-	sm := NewStateManager(opts.MaestroDir, lockMap)
+	if opts.LockMap == nil {
+		return fmt.Errorf("LockMap is required")
+	}
+	sm := NewStateManager(opts.MaestroDir, opts.LockMap)
 
 	sm.LockCommand(opts.CommandID)
 	defer sm.UnlockCommand(opts.CommandID)
@@ -50,7 +54,7 @@ func RequestCancel(opts RequestCancelOptions) error {
 }
 
 func setCancelOnPlannerQueue(maestroDir string, commandID string, requestedBy, reason string) error {
-	plannerPath := fmt.Sprintf("%s/queue/planner.yaml", maestroDir)
+	plannerPath := filepath.Join(maestroDir, "queue", "planner.yaml")
 
 	var cq model.CommandQueue
 	data, err := readFileIfExists(plannerPath)
@@ -83,7 +87,7 @@ func setCancelOnPlannerQueue(maestroDir string, commandID string, requestedBy, r
 }
 
 func cancelInPlannerQueue(maestroDir string, commandID string, requestedBy, reason string) error {
-	plannerPath := fmt.Sprintf("%s/queue/planner.yaml", maestroDir)
+	plannerPath := filepath.Join(maestroDir, "queue", "planner.yaml")
 
 	var cq model.CommandQueue
 	data, err := readFileIfExists(plannerPath)

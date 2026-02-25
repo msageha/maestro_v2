@@ -10,14 +10,15 @@ import (
 const CurrentSchemaVersion = 1
 
 var validFileTypes = map[string]bool{
-	"queue_command":      true,
-	"queue_task":         true,
-	"queue_notification": true,
-	"result_task":        true,
-	"result_command":     true,
-	"state_command":      true,
-	"state_metrics":      true,
-	"state_continuous":   true,
+	"queue_command":       true,
+	"queue_task":          true,
+	"queue_notification":  true,
+	"planner_signal_queue": true,
+	"result_task":         true,
+	"result_command":      true,
+	"state_command":       true,
+	"state_metrics":       true,
+	"state_continuous":    true,
 }
 
 type SchemaHeader struct {

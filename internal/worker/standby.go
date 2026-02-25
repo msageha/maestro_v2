@@ -131,5 +131,5 @@ func resolveWorkerModel(workerID string, cfg model.Config) string {
 	if cfg.Agents.Workers.DefaultModel != "" {
 		return cfg.Agents.Workers.DefaultModel
 	}
-	return "unknown"
+	return "sonnet"
 }

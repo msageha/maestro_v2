@@ -110,57 +110,64 @@ func (r *Reconciler) reconcileR0() []ReconcileRepair {
 
 		commandID := strings.TrimSuffix(entry.Name(), ".yaml")
 		statePath := filepath.Join(stateDir, entry.Name())
-
-		// Acquire per-command lock for state file access
 		lockKey := "state:" + commandID
-		r.lockMap.Lock(lockKey)
 
-		state, err := r.loadState(statePath)
-		if err != nil {
-			r.lockMap.Unlock(lockKey)
-			r.log(LogLevelWarn, "R0 load_state file=%s error=%v", entry.Name(), err)
+		var stuckCommandID string
+		var stuckAgeSec float64
+
+		repaired := func() bool {
+			r.lockMap.Lock(lockKey)
+			defer r.lockMap.Unlock(lockKey)
+
+			state, err := r.loadState(statePath)
+			if err != nil {
+				r.log(LogLevelWarn, "R0 load_state file=%s error=%v", entry.Name(), err)
+				return false
+			}
+
+			if state.PlanStatus != model.PlanStatusPlanning {
+				return false
+			}
+
+			createdAt, err := time.Parse(time.RFC3339, state.CreatedAt)
+			if err != nil {
+				r.log(LogLevelWarn, "R0 parse_created_at command=%s error=%v", state.CommandID, err)
+				return false
+			}
+
+			ageSec := time.Since(createdAt).Seconds()
+			if ageSec < float64(threshold) {
+				return false
+			}
+
+			r.log(LogLevelWarn, "R0 planning_stuck command=%s age_sec=%.0f threshold=%d",
+				state.CommandID, ageSec, threshold)
+
+			// Delete state file (rollback partial submit)
+			if err := os.Remove(statePath); err != nil {
+				r.log(LogLevelError, "R0 delete_state command=%s error=%v", state.CommandID, err)
+				return false
+			}
+
+			stuckCommandID = state.CommandID
+			stuckAgeSec = ageSec
+			return true
+		}()
+
+		if !repaired {
 			continue
 		}
-
-		if state.PlanStatus != model.PlanStatusPlanning {
-			r.lockMap.Unlock(lockKey)
-			continue
-		}
-
-		createdAt, err := time.Parse(time.RFC3339, state.CreatedAt)
-		if err != nil {
-			r.lockMap.Unlock(lockKey)
-			r.log(LogLevelWarn, "R0 parse_created_at command=%s error=%v", state.CommandID, err)
-			continue
-		}
-
-		ageSec := time.Since(createdAt).Seconds()
-		if ageSec < float64(threshold) {
-			r.lockMap.Unlock(lockKey)
-			continue
-		}
-
-		r.log(LogLevelWarn, "R0 planning_stuck command=%s age_sec=%.0f threshold=%d",
-			state.CommandID, ageSec, threshold)
-
-		// Delete state file (rollback partial submit)
-		if err := os.Remove(statePath); err != nil {
-			r.lockMap.Unlock(lockKey)
-			r.log(LogLevelError, "R0 delete_state command=%s error=%v", state.CommandID, err)
-			continue
-		}
-		r.lockMap.Unlock(lockKey)
 
 		// Remove command from planner queue entirely to prevent re-dispatch loops.
-		r.removeCommandFromPlannerQueue(state.CommandID)
+		r.removeCommandFromPlannerQueue(stuckCommandID)
 
 		// Remove any tasks from worker queues for this command
-		r.removeTasksFromWorkerQueues(state.CommandID)
+		r.removeTasksFromWorkerQueues(stuckCommandID)
 
 		repairs = append(repairs, ReconcileRepair{
 			Pattern:   "R0",
-			CommandID: state.CommandID,
-			Detail:    fmt.Sprintf("planning stuck %.0fs, state deleted + command removed from queue + worker tasks removed", ageSec),
+			CommandID: stuckCommandID,
+			Detail:    fmt.Sprintf("planning stuck %.0fs, state deleted + command removed from queue + worker tasks removed", stuckAgeSec),
 		})
 	}
 
@@ -185,70 +192,73 @@ func (r *Reconciler) reconcileR0b() []ReconcileRepair {
 			continue
 		}
 
-		statePath := filepath.Join(stateDir, entry.Name())
-
-		r.lockMap.Lock("state:" + strings.TrimSuffix(entry.Name(), ".yaml"))
-
-		state, err := r.loadState(statePath)
-		if err != nil {
-			r.lockMap.Unlock("state:" + strings.TrimSuffix(entry.Name(), ".yaml"))
-			continue
-		}
-
-		modified := false
-		for i := range state.Phases {
-			phase := &state.Phases[i]
-			if phase.Status != model.PhaseStatusFilling {
-				continue
-			}
-
-			// Check if filling has been stuck based on state update time
-			updatedAt, err := time.Parse(time.RFC3339, state.UpdatedAt)
-			if err != nil {
-				continue
-			}
-
-			ageSec := time.Since(updatedAt).Seconds()
-			if ageSec < float64(threshold) {
-				continue
-			}
-
-			r.log(LogLevelWarn, "R0b filling_stuck command=%s phase=%s age_sec=%.0f",
-				state.CommandID, phase.Name, ageSec)
-
-			// Remove partially added task IDs from worker queues and state
-			for _, taskID := range phase.TaskIDs {
-				r.removeTaskFromWorkerQueues(taskID)
-				delete(state.TaskStates, taskID)
-				delete(state.TaskDependencies, taskID)
-				state.RequiredTaskIDs = reconcilerRemoveFromSlice(state.RequiredTaskIDs, taskID)
-				state.OptionalTaskIDs = reconcilerRemoveFromSlice(state.OptionalTaskIDs, taskID)
-			}
-			state.ExpectedTaskCount = len(state.RequiredTaskIDs) + len(state.OptionalTaskIDs)
-
-			// Clear phase task_ids and revert to awaiting_fill
-			phase.TaskIDs = nil
-			phase.Status = model.PhaseStatusAwaitingFill
-			modified = true
-
-			repairs = append(repairs, ReconcileRepair{
-				Pattern:   "R0b",
-				CommandID: state.CommandID,
-				Detail:    fmt.Sprintf("phase %s filling stuck %.0fs, reverted to awaiting_fill", phase.Name, ageSec),
-			})
-		}
-
-		if modified {
-			now := time.Now().UTC().Format(time.RFC3339)
-			state.LastReconciledAt = &now
-			state.UpdatedAt = now
-			if err := yamlutil.AtomicWrite(statePath, state); err != nil {
-				r.log(LogLevelError, "R0b write_state command=%s error=%v", state.CommandID, err)
-			}
-		}
-
 		commandID := strings.TrimSuffix(entry.Name(), ".yaml")
-		r.lockMap.Unlock("state:" + commandID)
+		statePath := filepath.Join(stateDir, entry.Name())
+		lockKey := "state:" + commandID
+
+		modified := func() bool {
+			r.lockMap.Lock(lockKey)
+			defer r.lockMap.Unlock(lockKey)
+
+			state, err := r.loadState(statePath)
+			if err != nil {
+				return false
+			}
+
+			localModified := false
+			for i := range state.Phases {
+				phase := &state.Phases[i]
+				if phase.Status != model.PhaseStatusFilling {
+					continue
+				}
+
+				// Check if filling has been stuck based on state update time
+				updatedAt, err := time.Parse(time.RFC3339, state.UpdatedAt)
+				if err != nil {
+					continue
+				}
+
+				ageSec := time.Since(updatedAt).Seconds()
+				if ageSec < float64(threshold) {
+					continue
+				}
+
+				r.log(LogLevelWarn, "R0b filling_stuck command=%s phase=%s age_sec=%.0f",
+					state.CommandID, phase.Name, ageSec)
+
+				// Remove partially added task IDs from worker queues and state
+				for _, taskID := range phase.TaskIDs {
+					r.removeTaskFromWorkerQueues(taskID)
+					delete(state.TaskStates, taskID)
+					delete(state.TaskDependencies, taskID)
+					state.RequiredTaskIDs = reconcilerRemoveFromSlice(state.RequiredTaskIDs, taskID)
+					state.OptionalTaskIDs = reconcilerRemoveFromSlice(state.OptionalTaskIDs, taskID)
+				}
+				state.ExpectedTaskCount = len(state.RequiredTaskIDs) + len(state.OptionalTaskIDs)
+
+				// Clear phase task_ids and revert to awaiting_fill
+				phase.TaskIDs = nil
+				phase.Status = model.PhaseStatusAwaitingFill
+				localModified = true
+
+				repairs = append(repairs, ReconcileRepair{
+					Pattern:   "R0b",
+					CommandID: state.CommandID,
+					Detail:    fmt.Sprintf("phase %s filling stuck %.0fs, reverted to awaiting_fill", phase.Name, ageSec),
+				})
+			}
+
+			if localModified {
+				now := time.Now().UTC().Format(time.RFC3339)
+				state.LastReconciledAt = &now
+				state.UpdatedAt = now
+				if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+					r.log(LogLevelError, "R0b write_state command=%s error=%v", state.CommandID, err)
+				}
+			}
+
+			return localModified
+		}()
 
 		// Notify Planner to re-fill reverted phases (best-effort, outside lock)
 		if modified && r.executorFactory != nil {

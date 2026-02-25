@@ -35,6 +35,14 @@ func (m *MutexMap) Unlock(key string) {
 	mu.Unlock()
 }
 
+// Remove deletes the entry for key from the map, freeing the associated memory.
+// The caller must ensure no goroutine is currently holding the lock for key.
+func (m *MutexMap) Remove(key string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.mutexes, key)
+}
+
 func (m *MutexMap) getMutex(key string) *sync.Mutex {
 	m.mu.Lock()
 	defer m.mu.Unlock()
