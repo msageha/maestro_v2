@@ -11,8 +11,13 @@ Orchestrator / Planner / Worker の 3 層構造で、ユーザーの指示を自
 - **Claude Code CLI** (`claude`)
 
 ```bash
-# macOS の場合
+# macOS
 brew install tmux go
+
+# Ubuntu / Debian
+sudo apt update && sudo apt install -y tmux golang
+
+# Claude Code CLI (共通)
 npm install -g @anthropic-ai/claude-code
 ```
 
@@ -81,7 +86,7 @@ maestro status [--json]                # 現在の状態を表示
 | `--reset` | 起動前にキュー・結果・状態をクリア |
 | `--boost` | 全 Worker のモデルを Opus に昇格 |
 | `--continuous` | 継続モードを有効化 |
-| `--no-notify` | macOS 通知を無効化 |
+| `--no-notify` | デスクトップ通知を無効化 |
 
 ### キュー操作
 
@@ -146,7 +151,7 @@ maestro result write worker1 \
 ```bash
 maestro worker standby              # 空き Worker を表示
 maestro dashboard                    # dashboard.md を再生成
-maestro notify "タイトル" "メッセージ"  # macOS デスクトップ通知
+maestro notify "タイトル" "メッセージ"  # デスクトップ通知
 maestro version                      # バージョン表示
 ```
 

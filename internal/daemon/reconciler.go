@@ -40,6 +40,14 @@ type ReconcileRepair struct {
 	Detail    string
 }
 
+// DeferredNotification captures a Planner notification to execute outside scanMu.Lock.
+type DeferredNotification struct {
+	Kind           string            // "re_fill", "re_evaluate", "fill_timeout"
+	CommandID      string            // target command
+	Reason         string            // human-readable reason (for re_evaluate)
+	TimedOutPhases map[string]bool   // phase names (for fill_timeout)
+}
+
 // NewReconciler creates a new Reconciler.
 func NewReconciler(
 	maestroDir string,
@@ -71,20 +79,54 @@ func (r *Reconciler) SetExecutorFactory(f ExecutorFactory) {
 	r.executorFactory = f
 }
 
-// Reconcile runs all reconciliation patterns and returns a list of repairs made.
-func (r *Reconciler) Reconcile() []ReconcileRepair {
+// Reconcile runs all reconciliation patterns and returns repairs and deferred notifications.
+// Deferred notifications must be executed outside scanMu.Lock by the caller via
+// ExecuteDeferredNotifications to avoid blocking queue writes during slow tmux I/O.
+func (r *Reconciler) Reconcile() ([]ReconcileRepair, []DeferredNotification) {
 	repairs := make([]ReconcileRepair, 0, 8)
+	var notifications []DeferredNotification
 
 	repairs = append(repairs, r.reconcileR0()...)
-	repairs = append(repairs, r.reconcileR0b()...)
+
+	r0bRepairs, r0bNotifs := r.reconcileR0b()
+	repairs = append(repairs, r0bRepairs...)
+	notifications = append(notifications, r0bNotifs...)
+
 	repairs = append(repairs, r.reconcileR1()...)
 	repairs = append(repairs, r.reconcileR2()...)
 	repairs = append(repairs, r.reconcileR3()...)
-	repairs = append(repairs, r.reconcileR4()...)
-	repairs = append(repairs, r.reconcileR5()...)
-	repairs = append(repairs, r.reconcileR6()...)
 
-	return repairs
+	r4Repairs, r4Notifs := r.reconcileR4()
+	repairs = append(repairs, r4Repairs...)
+	notifications = append(notifications, r4Notifs...)
+
+	repairs = append(repairs, r.reconcileR5()...)
+
+	r6Repairs, r6Notifs := r.reconcileR6()
+	repairs = append(repairs, r6Repairs...)
+	notifications = append(notifications, r6Notifs...)
+
+	return repairs, notifications
+}
+
+// ExecuteDeferredNotifications sends collected Planner notifications via agent executor.
+// Must be called outside scanMu.Lock to avoid blocking queue writes.
+func (r *Reconciler) ExecuteDeferredNotifications(notifications []DeferredNotification) {
+	if r.executorFactory == nil {
+		return
+	}
+	for _, n := range notifications {
+		switch n.Kind {
+		case "re_fill":
+			r.notifyPlannerOfReFill(n.CommandID)
+		case "re_evaluate":
+			r.notifyPlannerOfReEvaluation(n.CommandID, n.Reason)
+		case "fill_timeout":
+			r.notifyPlannerOfTimeout(n.CommandID, n.TimedOutPhases)
+		default:
+			r.log(LogLevelWarn, "unknown deferred notification kind=%s command=%s", n.Kind, n.CommandID)
+		}
+	}
 }
 
 // reconcileR0 detects plan_status: "planning" that has been stuck.
@@ -176,13 +218,14 @@ func (r *Reconciler) reconcileR0() []ReconcileRepair {
 
 // reconcileR0b detects phases stuck in "filling" status.
 // Action: revert to awaiting_fill, remove partially added tasks.
-func (r *Reconciler) reconcileR0b() []ReconcileRepair {
+func (r *Reconciler) reconcileR0b() ([]ReconcileRepair, []DeferredNotification) {
 	var repairs []ReconcileRepair
+	var notifications []DeferredNotification
 
 	stateDir := filepath.Join(r.maestroDir, "state", "commands")
 	entries, err := os.ReadDir(stateDir)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 
 	threshold := r.stuckThresholdSec()
@@ -260,13 +303,16 @@ func (r *Reconciler) reconcileR0b() []ReconcileRepair {
 			return localModified
 		}()
 
-		// Notify Planner to re-fill reverted phases (best-effort, outside lock)
+		// Defer Planner notification for execution outside scanMu.Lock
 		if modified && r.executorFactory != nil {
-			r.notifyPlannerOfReFill(commandID)
+			notifications = append(notifications, DeferredNotification{
+				Kind:      "re_fill",
+				CommandID: commandID,
+			})
 		}
 	}
 
-	return repairs
+	return repairs, notifications
 }
 
 // notifyPlannerOfReFill sends a re-fill notification to Planner after R0b reversion.
@@ -569,13 +615,14 @@ func (r *Reconciler) reconcileR3() []ReconcileRepair {
 
 // reconcileR4 detects results/planner terminal + state non-terminal plan_status.
 // Action: re-evaluate via plan.CanComplete. If OK, update plan_status. If NG, quarantine result.
-func (r *Reconciler) reconcileR4() []ReconcileRepair {
+func (r *Reconciler) reconcileR4() ([]ReconcileRepair, []DeferredNotification) {
 	var repairs []ReconcileRepair
+	var notifications []DeferredNotification
 
 	resultPath := filepath.Join(r.maestroDir, "results", "planner.yaml")
 	rf, err := r.loadCommandResultFile(resultPath)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 
 	for _, result := range rf.Results {
@@ -620,18 +667,22 @@ func (r *Reconciler) reconcileR4() []ReconcileRepair {
 		derivedStatus, canCompleteErr := r.canComplete(state)
 		if canCompleteErr != nil {
 			r.lockMap.Unlock(lockKey)
-			// CanComplete failed → quarantine the result entry + notify Planner
+			// CanComplete failed → quarantine the result entry + defer Planner notification
 			r.log(LogLevelWarn, "R4 can_complete_failed command=%s error=%v → quarantine result + notify planner",
 				commandID, canCompleteErr)
 			if err := r.quarantineCommandResult(resultPath, result); err != nil {
 				r.log(LogLevelError, "R4 quarantine command=%s error=%v", commandID, err)
 			}
-			// Notify Planner to re-evaluate the command (best-effort)
-			r.notifyPlannerOfReEvaluation(commandID, canCompleteErr.Error())
+			// Defer Planner notification for execution outside scanMu.Lock
+			notifications = append(notifications, DeferredNotification{
+				Kind:      "re_evaluate",
+				CommandID: commandID,
+				Reason:    canCompleteErr.Error(),
+			})
 			repairs = append(repairs, ReconcileRepair{
 				Pattern:   "R4",
 				CommandID: commandID,
-				Detail:    fmt.Sprintf("can_complete failed (%v), result quarantined, planner notified", canCompleteErr),
+				Detail:    fmt.Sprintf("can_complete failed (%v), result quarantined, planner notification deferred", canCompleteErr),
 			})
 			continue
 		}
@@ -653,7 +704,7 @@ func (r *Reconciler) reconcileR4() []ReconcileRepair {
 		})
 	}
 
-	return repairs
+	return repairs, notifications
 }
 
 // reconcileR5 detects results/planner terminal + notified but no orchestrator notification.
@@ -731,14 +782,15 @@ func (r *Reconciler) reconcileR5() []ReconcileRepair {
 }
 
 // reconcileR6 detects awaiting_fill + fill_deadline_at expired.
-// Action: set phase to timed_out, cascade cancel downstream pending phases, notify Planner.
-func (r *Reconciler) reconcileR6() []ReconcileRepair {
+// Action: set phase to timed_out, cascade cancel downstream pending phases, defer Planner notification.
+func (r *Reconciler) reconcileR6() ([]ReconcileRepair, []DeferredNotification) {
 	var repairs []ReconcileRepair
+	var notifications []DeferredNotification
 
 	stateDir := filepath.Join(r.maestroDir, "state", "commands")
 	entries, err := os.ReadDir(stateDir)
 	if err != nil {
-		return nil
+		return nil, nil
 	}
 
 	for _, entry := range entries {
@@ -849,13 +901,17 @@ func (r *Reconciler) reconcileR6() []ReconcileRepair {
 
 		r.lockMap.Unlock(lockKey)
 
-		// Notify Planner (best-effort, outside lock)
+		// Defer Planner notification for execution outside scanMu.Lock
 		if modified && r.executorFactory != nil {
-			r.notifyPlannerOfTimeout(commandID, timedOutPhases)
+			notifications = append(notifications, DeferredNotification{
+				Kind:           "fill_timeout",
+				CommandID:      commandID,
+				TimedOutPhases: timedOutPhases,
+			})
 		}
 	}
 
-	return repairs
+	return repairs, notifications
 }
 
 // notifyPlannerOfTimeout sends a fill timeout notification to Planner via agent executor.

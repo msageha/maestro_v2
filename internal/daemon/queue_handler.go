@@ -62,7 +62,7 @@ func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap
 	lm := NewLeaseManager(cfg.Watcher, logger, logLevel)
 	dispatcher := NewDispatcher(maestroDir, cfg, lm, logger, logLevel)
 	dr := NewDependencyResolver(nil, logger, logLevel) // StateReader wired in Phase 6
-	ch := NewCancelHandler(maestroDir, cfg, logger, logLevel)
+	ch := NewCancelHandler(maestroDir, cfg, lockMap, logger, logLevel)
 	rh := NewResultHandler(maestroDir, cfg, lockMap, logger, logLevel)
 	rec := NewReconciler(maestroDir, cfg, lockMap, logger, logLevel, rh, rh.executorFactory)
 	dlp := NewDeadLetterProcessor(maestroDir, cfg, lockMap, logger, logLevel)
@@ -195,7 +195,13 @@ func (qh *QueueHandler) PeriodicScan() {
 
 	pa := qh.periodicScanPhaseA()
 	pb := qh.periodicScanPhaseB(pa)
-	qh.periodicScanPhaseC(pa, pb)
+	deferredNotifs := qh.periodicScanPhaseC(pa, pb)
+
+	// Execute deferred reconciler notifications outside scanMu.Lock
+	// to avoid blocking queue writes during slow tmux I/O.
+	if qh.reconciler != nil && len(deferredNotifs) > 0 {
+		qh.reconciler.ExecuteDeferredNotifications(deferredNotifs)
+	}
 
 	qh.log(LogLevelDebug, "periodic_scan complete")
 }
@@ -469,7 +475,8 @@ func (qh *QueueHandler) periodicScanPhaseB(pa phaseAResult) phaseBResult {
 
 // periodicScanPhaseC runs under scanMu.Lock. It reloads queues from disk,
 // applies Phase B results with epoch fencing, flushes, and runs post-flush steps.
-func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) {
+// Returns deferred notifications from reconciliation that must be executed outside the lock.
+func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []DeferredNotification {
 	qh.scanMu.Lock()
 	defer qh.scanMu.Unlock()
 
@@ -556,9 +563,11 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) {
 		}
 	}
 
-	// Step 3: Reconciliation (must stay under scanMu per Codex review)
+	// Step 3: Reconciliation (state mutations under scanMu, notifications deferred)
+	var deferredNotifs []DeferredNotification
 	if qh.reconciler != nil {
-		repairs := qh.reconciler.Reconcile()
+		repairs, notifs := qh.reconciler.Reconcile()
+		deferredNotifs = notifs
 		qh.scanCounters.ReconciliationRepairs += len(repairs)
 		for _, repair := range repairs {
 			qh.log(LogLevelInfo, "reconciliation pattern=%s command=%s task=%s detail=%s",
@@ -579,6 +588,8 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) {
 			qh.log(LogLevelError, "update_dashboard error=%v", err)
 		}
 	}
+
+	return deferredNotifs
 }
 
 // --- Collect methods for Phase A ---

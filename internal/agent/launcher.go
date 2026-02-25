@@ -1,12 +1,14 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/msageha/maestro_v2/internal/tmux"
 )
@@ -152,9 +154,14 @@ func currentPaneTarget() (string, error) {
 	if paneID == "" {
 		return "", fmt.Errorf("TMUX_PANE environment variable not set (not running inside tmux?)")
 	}
-	cmd := exec.Command("tmux", "display-message", "-t", paneID, "-p", "#{session_name}:#{window_index}.#{pane_index}")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "tmux", "display-message", "-t", paneID, "-p", "#{session_name}:#{window_index}.#{pane_index}")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if ctx.Err() != nil {
+			return "", fmt.Errorf("tmux display-message: timeout after 5s: %w", ctx.Err())
+		}
 		return "", fmt.Errorf("tmux display-message: %w: %s", err, strings.TrimSpace(string(out)))
 	}
 	return strings.TrimSpace(string(out)), nil

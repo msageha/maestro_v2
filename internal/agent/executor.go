@@ -197,7 +197,7 @@ func (e *Executor) Execute(req ExecRequest) ExecResult {
 
 	switch req.Mode {
 	case ModeIsBusy:
-		return e.execIsBusy(paneTarget)
+		return e.execIsBusy(ctx, paneTarget)
 	case ModeClear:
 		return e.execClear(ctx, req, paneTarget)
 	case ModeInterrupt:
@@ -205,15 +205,15 @@ func (e *Executor) Execute(req ExecRequest) ExecResult {
 	case ModeWithClear:
 		return e.execWithClear(ctx, req, paneTarget)
 	case ModeDeliver:
-		return e.execDeliver(req, paneTarget)
+		return e.execDeliver(ctx, req, paneTarget)
 	default:
 		return ExecResult{Error: fmt.Errorf("unknown exec mode: %s", req.Mode)}
 	}
 }
 
 // execIsBusy checks agent busy state. Returns Success=true if busy, false if idle.
-func (e *Executor) execIsBusy(paneTarget string) ExecResult {
-	verdict := e.detectBusy(paneTarget)
+func (e *Executor) execIsBusy(ctx context.Context, paneTarget string) ExecResult {
+	verdict := e.detectBusy(ctx, paneTarget)
 	return ExecResult{Success: verdict != VerdictIdle}
 }
 
@@ -293,7 +293,7 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 
 	// Orchestrator: never /clear, fall through to deliver mode
 	if req.AgentID == "orchestrator" {
-		return e.execDeliver(req, paneTarget)
+		return e.execDeliver(ctx, req, paneTarget)
 	}
 
 	// Step 1: Wait for prompt readiness
@@ -319,7 +319,7 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 	}
 
 	// Step 4: Busy detection with retry
-	verdict := e.detectBusyWithRetry(req, paneTarget)
+	verdict := e.detectBusyWithRetry(ctx, req, paneTarget)
 	if verdict != VerdictIdle {
 		reason := "busy_timeout"
 		if verdict == VerdictUndecided {
@@ -338,13 +338,13 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 }
 
 // execDeliver delivers a message without /clear (Planner/Orchestrator).
-func (e *Executor) execDeliver(req ExecRequest, paneTarget string) ExecResult {
+func (e *Executor) execDeliver(ctx context.Context, req ExecRequest, paneTarget string) ExecResult {
 	e.log(LogLevelInfo, "delivery_start agent_id=%s task_id=%s command_id=%s lease_epoch=%d attempt=%d",
 		req.AgentID, req.TaskID, req.CommandID, req.LeaseEpoch, req.Attempt)
 
 	// Orchestrator: strict busy check, no retry, immediate failure if busy
 	if req.AgentID == "orchestrator" {
-		verdict := e.detectBusy(paneTarget)
+		verdict := e.detectBusy(ctx, paneTarget)
 		e.log(LogLevelDebug, "busy_detection agent_id=orchestrator verdict=%s", verdict)
 		if verdict != VerdictIdle {
 			e.log(LogLevelWarn, "delivery_failure agent_id=orchestrator reason=orchestrator_busy verdict=%s", verdict)
@@ -357,7 +357,7 @@ func (e *Executor) execDeliver(req ExecRequest, paneTarget string) ExecResult {
 	}
 
 	// Planner/other: busy detection with retry
-	verdict := e.detectBusyWithRetry(req, paneTarget)
+	verdict := e.detectBusyWithRetry(ctx, req, paneTarget)
 	if verdict != VerdictIdle {
 		reason := "busy_timeout"
 		if verdict == VerdictUndecided {
@@ -377,7 +377,11 @@ func (e *Executor) execDeliver(req ExecRequest, paneTarget string) ExecResult {
 // sendAndConfirm sends the message and updates @status to busy.
 func (e *Executor) sendAndConfirm(req ExecRequest, paneTarget string) ExecResult {
 	// Send message via paste-buffer + Enter for reliable multi-line delivery
-	if err := tmux.SendTextAndSubmit(paneTarget, req.Message); err != nil {
+	ctx := req.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := tmux.SendTextAndSubmit(ctx, paneTarget, req.Message); err != nil {
 		e.log(LogLevelError, "delivery_error agent_id=%s task_id=%s error=send_text: %v",
 			req.AgentID, req.TaskID, err)
 		return ExecResult{Error: fmt.Errorf("send message: %w", err), Retryable: true}
@@ -396,7 +400,8 @@ func (e *Executor) sendAndConfirm(req ExecRequest, paneTarget string) ExecResult
 // --- Busy Detection ---
 
 // detectBusy performs one round of the 3-stage busy detection algorithm.
-func (e *Executor) detectBusy(paneTarget string) BusyVerdict {
+// Returns VerdictUndecided if ctx is cancelled during the activity probe sleep.
+func (e *Executor) detectBusy(ctx context.Context, paneTarget string) BusyVerdict {
 	// Stage 1: pane_current_command — quick gate
 	cmd, err := tmux.GetPaneCurrentCommand(paneTarget)
 	if err != nil {
@@ -435,7 +440,10 @@ func (e *Executor) detectBusy(paneTarget string) BusyVerdict {
 		return VerdictUndecided
 	}
 	hashA := contentHash(joinedContent)
-	time.Sleep(time.Duration(e.config.IdleStableSec) * time.Second)
+	if err := sleepCtx(ctx, time.Duration(e.config.IdleStableSec)*time.Second); err != nil {
+		e.log(LogLevelDebug, "busy_detection activity_probe sleep cancelled: %v", err)
+		return VerdictUndecided
+	}
 
 	joinedContent2, err := tmux.CapturePaneJoined(paneTarget, busyHintLines)
 	if err != nil {
@@ -462,8 +470,9 @@ func (e *Executor) detectBusy(paneTarget string) BusyVerdict {
 }
 
 // detectBusyWithRetry runs busy detection with a retry loop on VerdictBusy.
-func (e *Executor) detectBusyWithRetry(req ExecRequest, paneTarget string) BusyVerdict {
-	verdict := e.detectBusy(paneTarget)
+// Returns VerdictUndecided if ctx is cancelled during retries.
+func (e *Executor) detectBusyWithRetry(ctx context.Context, req ExecRequest, paneTarget string) BusyVerdict {
+	verdict := e.detectBusy(ctx, paneTarget)
 	if verdict != VerdictBusy {
 		return verdict
 	}
@@ -471,9 +480,12 @@ func (e *Executor) detectBusyWithRetry(req ExecRequest, paneTarget string) BusyV
 	for i := 1; i <= e.config.BusyCheckMaxRetries; i++ {
 		e.log(LogLevelDebug, "busy_retry retry=%d/%d agent_id=%s",
 			i, e.config.BusyCheckMaxRetries, req.AgentID)
-		time.Sleep(time.Duration(e.config.BusyCheckInterval) * time.Second)
+		if err := sleepCtx(ctx, time.Duration(e.config.BusyCheckInterval)*time.Second); err != nil {
+			e.log(LogLevelDebug, "busy_retry sleep cancelled: %v", err)
+			return VerdictUndecided
+		}
 
-		verdict = e.detectBusy(paneTarget)
+		verdict = e.detectBusy(ctx, paneTarget)
 		if verdict != VerdictBusy {
 			return verdict
 		}

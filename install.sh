@@ -18,13 +18,15 @@ missing=0
 
 if ! command -v tmux &>/dev/null; then
     err "tmux is not installed"
-    echo "  Install via: brew install tmux"
+    echo "  macOS:         brew install tmux"
+    echo "  Ubuntu/Debian: sudo apt install tmux"
     missing=1
 fi
 
 if ! command -v go &>/dev/null; then
     err "go is not installed"
-    echo "  Install via: brew install go"
+    echo "  macOS:         brew install go"
+    echo "  Ubuntu/Debian: sudo apt install golang"
     echo "  Or visit: https://go.dev/dl/"
     missing=1
 fi

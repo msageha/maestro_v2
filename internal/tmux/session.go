@@ -121,18 +121,18 @@ var bufSeq atomic.Int64
 // SendTextAndSubmit sends multi-line text to a pane using paste-buffer for
 // reliable delivery, then sends Enter to submit. This avoids character-by-character
 // key sending issues with newlines in the message.
-func SendTextAndSubmit(paneTarget, text string) error {
+func SendTextAndSubmit(ctx context.Context, paneTarget, text string) error {
 	bufName := fmt.Sprintf("maestro-msg-%d", bufSeq.Add(1))
 
 	// Load text into tmux buffer via stdin (handles arbitrary content safely)
-	ctx, cancel := context.WithTimeout(context.Background(), defaultCmdTimeout)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "tmux", "load-buffer", "-b", bufName, "-")
+	loadCtx, loadCancel := context.WithTimeout(ctx, defaultCmdTimeout)
+	defer loadCancel()
+	cmd := exec.CommandContext(loadCtx, "tmux", "load-buffer", "-b", bufName, "-")
 	cmd.Stdin = strings.NewReader(text)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		stderr := strings.TrimSpace(string(out))
-		if ctx.Err() != nil {
-			return &TmuxError{Kind: ErrKindTimeout, Op: "load-buffer", Stderr: stderr, Err: ctx.Err()}
+		if loadCtx.Err() != nil {
+			return &TmuxError{Kind: ErrKindTimeout, Op: "load-buffer", Stderr: stderr, Err: loadCtx.Err()}
 		}
 		return classifyTmuxError("load-buffer", stderr, err)
 	}
@@ -151,7 +151,7 @@ func SendTextAndSubmit(paneTarget, text string) error {
 	// -p forces bracketed paste so the app receives the entire text as a single paste unit.
 	// -r prevents tmux from converting LF to CR inside the paste (avoids spurious submits).
 	// -d deletes the buffer after pasting to avoid leaking tmux buffers.
-	if err := run("paste-buffer", "-pr", "-b", bufName, "-d", "-t", paneTarget); err != nil {
+	if err := runCtx(ctx, "paste-buffer", "-pr", "-b", bufName, "-d", "-t", paneTarget); err != nil {
 		return err
 	}
 	needCleanup = false
@@ -160,9 +160,24 @@ func SendTextAndSubmit(paneTarget, text string) error {
 	// paste before we send Enter to submit. Claude Code's Ink-based TUI
 	// needs sufficient time to render the pasted content into its input field;
 	// 100ms is too short under load and causes intermittent delivery failures.
-	time.Sleep(500 * time.Millisecond)
+	// Uses context-aware sleep so cancellation is respected.
+	if err := sleepCtx(ctx, 500*time.Millisecond); err != nil {
+		return &TmuxError{Kind: ErrKindTimeout, Op: "send-text-submit-sleep", Err: err}
+	}
 
 	return SendKeys(paneTarget, "Enter")
+}
+
+// sleepCtx sleeps for d or returns early if ctx is cancelled.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // SessionName is the tmux session name. Set via SetSessionName before use.
