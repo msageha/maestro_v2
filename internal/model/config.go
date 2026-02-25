@@ -60,6 +60,8 @@ type WatcherConfig struct {
 	IdleStableSec       int     `yaml:"idle_stable_sec"`
 	CooldownAfterClear  int     `yaml:"cooldown_after_clear"`
 	NotifyLeaseSec      int     `yaml:"notify_lease_sec"`
+	WaitReadyIntervalSec int    `yaml:"wait_ready_interval_sec"`
+	WaitReadyMaxRetries  int    `yaml:"wait_ready_max_retries"`
 }
 
 type RetryConfig struct {

@@ -2,6 +2,7 @@
 package agent
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"io"
@@ -47,8 +48,16 @@ func (v BusyVerdict) String() string {
 	}
 }
 
+const (
+	promptReadyLines   = 5 // プロンプト検出+安定性ハッシュ用
+	busyHintLines      = 5 // busy パターンマッチ用
+	stableCheckRounds  = 2 // 安定性判定に必要なラウンド数
+	lastLineMaxDisplay = 80
+)
+
 // ExecRequest contains parameters for executing a message delivery.
 type ExecRequest struct {
+	Context    context.Context // nil defaults to context.Background()
 	AgentID    string
 	Message    string
 	Mode       ExecMode
@@ -152,11 +161,34 @@ func applyDefaults(cfg model.WatcherConfig) model.WatcherConfig {
 	if cfg.CooldownAfterClear <= 0 {
 		cfg.CooldownAfterClear = 3
 	}
+	if cfg.WaitReadyIntervalSec <= 0 {
+		cfg.WaitReadyIntervalSec = 2
+	}
+	if cfg.WaitReadyMaxRetries <= 0 {
+		cfg.WaitReadyMaxRetries = 15
+	}
 	return cfg
+}
+
+// sleepCtx sleeps for d or returns early if ctx is cancelled.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Execute dispatches the request based on its Mode.
 func (e *Executor) Execute(req ExecRequest) ExecResult {
+	ctx := req.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	paneTarget, err := tmux.FindPaneByAgentID(req.AgentID)
 	if err != nil {
 		e.log(LogLevelError, "delivery_error agent_id=%s error=pane_not_found: %v", req.AgentID, err)
@@ -167,11 +199,11 @@ func (e *Executor) Execute(req ExecRequest) ExecResult {
 	case ModeIsBusy:
 		return e.execIsBusy(paneTarget)
 	case ModeClear:
-		return e.execClear(req, paneTarget)
+		return e.execClear(ctx, req, paneTarget)
 	case ModeInterrupt:
-		return e.execInterrupt(req, paneTarget)
+		return e.execInterrupt(ctx, req, paneTarget)
 	case ModeWithClear:
-		return e.execWithClear(req, paneTarget)
+		return e.execWithClear(ctx, req, paneTarget)
 	case ModeDeliver:
 		return e.execDeliver(req, paneTarget)
 	default:
@@ -186,22 +218,29 @@ func (e *Executor) execIsBusy(paneTarget string) ExecResult {
 }
 
 // execClear sends /clear and waits for stability.
-func (e *Executor) execClear(req ExecRequest, paneTarget string) ExecResult {
+func (e *Executor) execClear(ctx context.Context, req ExecRequest, paneTarget string) ExecResult {
 	e.log(LogLevelDebug, "clear_operation agent_id=%s mode=clear", req.AgentID)
 
-	if err := tmux.SendCommand(paneTarget, "/clear"); err != nil {
-		return ExecResult{Error: fmt.Errorf("send /clear: %w", err)}
+	if err := e.waitReady(ctx, paneTarget); err != nil {
+		e.log(LogLevelWarn, "clear_wait_ready_failed agent_id=%s error=%v", req.AgentID, err)
+		return ExecResult{Error: fmt.Errorf("wait ready before /clear: %w", err), Retryable: true}
 	}
-	time.Sleep(time.Duration(e.config.CooldownAfterClear) * time.Second)
 
-	if err := e.waitStable(paneTarget); err != nil {
-		return ExecResult{Error: err, Retryable: true}
+	if err := tmux.SendCommand(paneTarget, "/clear"); err != nil {
+		return ExecResult{Error: fmt.Errorf("send /clear: %w", err), Retryable: true}
+	}
+	if err := sleepCtx(ctx, time.Duration(e.config.CooldownAfterClear)*time.Second); err != nil {
+		return ExecResult{Error: fmt.Errorf("cooldown after /clear cancelled: %w", err), Retryable: true}
+	}
+
+	if err := e.waitStable(ctx, paneTarget); err != nil {
+		return ExecResult{Error: fmt.Errorf("clear: wait stable: %w", err), Retryable: true}
 	}
 	return ExecResult{Success: true}
 }
 
 // execInterrupt interrupts a running task: C-c → cooldown → /clear → cooldown → stability.
-func (e *Executor) execInterrupt(req ExecRequest, paneTarget string) ExecResult {
+func (e *Executor) execInterrupt(ctx context.Context, req ExecRequest, paneTarget string) ExecResult {
 	e.log(LogLevelInfo, "interrupt_start agent_id=%s task_id=%s lease_epoch=%d",
 		req.AgentID, req.TaskID, req.LeaseEpoch)
 
@@ -212,22 +251,32 @@ func (e *Executor) execInterrupt(req ExecRequest, paneTarget string) ExecResult 
 
 	// Step 1: C-c
 	if err := tmux.SendCtrlC(paneTarget); err != nil {
-		return ExecResult{Error: fmt.Errorf("send C-c: %w", err)}
+		return ExecResult{Error: fmt.Errorf("send C-c: %w", err), Retryable: true}
 	}
-	time.Sleep(time.Duration(e.config.CooldownAfterClear) * time.Second)
+	if err := sleepCtx(ctx, time.Duration(e.config.CooldownAfterClear)*time.Second); err != nil {
+		return ExecResult{Error: fmt.Errorf("cooldown after C-c cancelled: %w", err), Retryable: true}
+	}
 
-	// Step 2: /clear
+	// Step 2: Wait for prompt readiness after C-c
+	if err := e.waitReady(ctx, paneTarget); err != nil {
+		e.log(LogLevelWarn, "interrupt_wait_ready_failed agent_id=%s error=%v", req.AgentID, err)
+		return ExecResult{Error: fmt.Errorf("wait ready before /clear (interrupt): %w", err), Retryable: true}
+	}
+
+	// Step 3: /clear
 	if err := tmux.SendCommand(paneTarget, "/clear"); err != nil {
-		return ExecResult{Error: fmt.Errorf("send /clear: %w", err)}
+		return ExecResult{Error: fmt.Errorf("send /clear: %w", err), Retryable: true}
 	}
-	time.Sleep(time.Duration(e.config.CooldownAfterClear) * time.Second)
-
-	// Step 3: Confirm stability
-	if err := e.waitStable(paneTarget); err != nil {
-		return ExecResult{Error: err, Retryable: true}
+	if err := sleepCtx(ctx, time.Duration(e.config.CooldownAfterClear)*time.Second); err != nil {
+		return ExecResult{Error: fmt.Errorf("cooldown after /clear cancelled: %w", err), Retryable: true}
 	}
 
-	// Set @status="idle" — the agent is now idle after interrupt.
+	// Step 4: Confirm stability
+	if err := e.waitStable(ctx, paneTarget); err != nil {
+		return ExecResult{Error: fmt.Errorf("interrupt: wait stable: %w", err), Retryable: true}
+	}
+
+	// Step 5: Set @status="idle" — the agent is now idle after interrupt.
 	if err := tmux.SetUserVar(paneTarget, "status", "idle"); err != nil {
 		e.log(LogLevelWarn, "set_status_idle_failed agent_id=%s error=%v", req.AgentID, err)
 	}
@@ -238,7 +287,7 @@ func (e *Executor) execInterrupt(req ExecRequest, paneTarget string) ExecResult 
 }
 
 // execWithClear delivers a message with prior /clear (Worker mode).
-func (e *Executor) execWithClear(req ExecRequest, paneTarget string) ExecResult {
+func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarget string) ExecResult {
 	e.log(LogLevelInfo, "delivery_start agent_id=%s task_id=%s command_id=%s lease_epoch=%d attempt=%d",
 		req.AgentID, req.TaskID, req.CommandID, req.LeaseEpoch, req.Attempt)
 
@@ -247,21 +296,29 @@ func (e *Executor) execWithClear(req ExecRequest, paneTarget string) ExecResult 
 		return e.execDeliver(req, paneTarget)
 	}
 
-	// Step 1: /clear
+	// Step 1: Wait for prompt readiness
+	if err := e.waitReady(ctx, paneTarget); err != nil {
+		e.log(LogLevelWarn, "with_clear_wait_ready_failed agent_id=%s error=%v", req.AgentID, err)
+		return ExecResult{Error: fmt.Errorf("wait ready before /clear: %w", err), Retryable: true}
+	}
+
+	// Step 2: /clear
 	e.log(LogLevelDebug, "clear_operation agent_id=%s mode=with_clear", req.AgentID)
 	if err := tmux.SendCommand(paneTarget, "/clear"); err != nil {
-		return ExecResult{Error: fmt.Errorf("send /clear: %w", err)}
+		return ExecResult{Error: fmt.Errorf("send /clear: %w", err), Retryable: true}
 	}
-	time.Sleep(time.Duration(e.config.CooldownAfterClear) * time.Second)
+	if err := sleepCtx(ctx, time.Duration(e.config.CooldownAfterClear)*time.Second); err != nil {
+		return ExecResult{Error: fmt.Errorf("cooldown after /clear cancelled: %w", err), Retryable: true}
+	}
 
-	// Step 2: Stability check
-	if err := e.waitStable(paneTarget); err != nil {
+	// Step 3: Stability check
+	if err := e.waitStable(ctx, paneTarget); err != nil {
 		e.log(LogLevelWarn, "delivery_failure agent_id=%s task_id=%s reason=unstable_after_clear",
 			req.AgentID, req.TaskID)
-		return ExecResult{Error: err, Retryable: true}
+		return ExecResult{Error: fmt.Errorf("with_clear: wait stable: %w", err), Retryable: true}
 	}
 
-	// Step 3: Busy detection with retry
+	// Step 4: Busy detection with retry
 	verdict := e.detectBusyWithRetry(req, paneTarget)
 	if verdict != VerdictIdle {
 		reason := "busy_timeout"
@@ -276,7 +333,7 @@ func (e *Executor) execWithClear(req ExecRequest, paneTarget string) ExecResult 
 		}
 	}
 
-	// Step 4: Deliver
+	// Step 5: Deliver
 	return e.sendAndConfirm(req, paneTarget)
 }
 
@@ -323,7 +380,7 @@ func (e *Executor) sendAndConfirm(req ExecRequest, paneTarget string) ExecResult
 	if err := tmux.SendTextAndSubmit(paneTarget, req.Message); err != nil {
 		e.log(LogLevelError, "delivery_error agent_id=%s task_id=%s error=send_text: %v",
 			req.AgentID, req.TaskID, err)
-		return ExecResult{Error: fmt.Errorf("send message: %w", err)}
+		return ExecResult{Error: fmt.Errorf("send message: %w", err), Retryable: true}
 	}
 
 	// Update @status to busy
@@ -334,12 +391,6 @@ func (e *Executor) sendAndConfirm(req ExecRequest, paneTarget string) ExecResult
 	e.log(LogLevelInfo, "delivery_success agent_id=%s task_id=%s command_id=%s lease_epoch=%d",
 		req.AgentID, req.TaskID, req.CommandID, req.LeaseEpoch)
 	return ExecResult{Success: true}
-}
-
-// shellCommands lists commands that indicate no agent CLI is running.
-var shellCommands = map[string]bool{
-	"bash": true, "zsh": true, "fish": true,
-	"sh": true, "dash": true, "tcsh": true, "csh": true,
 }
 
 // --- Busy Detection ---
@@ -355,13 +406,13 @@ func (e *Executor) detectBusy(paneTarget string) BusyVerdict {
 	e.log(LogLevelDebug, "busy_detection started; pane_current_command=%s", cmd)
 
 	// If the pane is running only a shell, no agent CLI is active → idle.
-	if shellCommands[cmd] {
+	if tmux.IsShellCommand(cmd) {
 		e.log(LogLevelDebug, "busy_detection pane running shell %q → idle", cmd)
 		return VerdictIdle
 	}
 
-	// Stage 2: Pattern hint from last 3 lines
-	content, err := tmux.CapturePane(paneTarget, 3)
+	// Stage 2: Pattern hint from last busyHintLines lines
+	content, err := tmux.CapturePane(paneTarget, busyHintLines)
 	if err != nil {
 		e.log(LogLevelDebug, "busy_detection capture_pane error=%v", err)
 		return VerdictUndecided
@@ -379,7 +430,7 @@ func (e *Executor) detectBusy(paneTarget string) BusyVerdict {
 	hashA := contentHash(content)
 	time.Sleep(time.Duration(e.config.IdleStableSec) * time.Second)
 
-	content2, err := tmux.CapturePane(paneTarget, 3)
+	content2, err := tmux.CapturePane(paneTarget, busyHintLines)
 	if err != nil {
 		e.log(LogLevelDebug, "busy_detection second capture error=%v", err)
 		return VerdictUndecided
@@ -424,25 +475,46 @@ func (e *Executor) detectBusyWithRetry(req ExecRequest, paneTarget string) BusyV
 	return VerdictBusy
 }
 
-// waitStable confirms pane content doesn't change over idle_stable_sec.
-func (e *Executor) waitStable(paneTarget string) error {
-	content, err := tmux.CapturePane(paneTarget, 3)
+// waitStable confirms pane content is stable over two consecutive rounds
+// of hash comparison, then verifies the prompt is ready.
+// Worst-case duration: 2 × IdleStableSec (default 5s) = ~10s.
+func (e *Executor) waitStable(ctx context.Context, paneTarget string) error {
+	for round := 0; round < stableCheckRounds; round++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("wait_stable cancelled before round %d: %w", round, err)
+		}
+
+		content1, err := tmux.CapturePaneJoined(paneTarget, promptReadyLines)
+		if err != nil {
+			return fmt.Errorf("capture pane for stability round %d: %w", round, err)
+		}
+		h1 := contentHash(content1)
+
+		if err := sleepCtx(ctx, time.Duration(e.config.IdleStableSec)*time.Second); err != nil {
+			return fmt.Errorf("wait_stable sleep cancelled (round %d): %w", round, err)
+		}
+
+		content2, err := tmux.CapturePaneJoined(paneTarget, promptReadyLines)
+		if err != nil {
+			return fmt.Errorf("capture pane for stability round %d: %w", round, err)
+		}
+		h2 := contentHash(content2)
+
+		if h1 != h2 {
+			return fmt.Errorf("pane content not stable after %ds (round %d)", e.config.IdleStableSec, round)
+		}
+		e.log(LogLevelDebug, "wait_stable round=%d passed", round)
+	}
+
+	// Verify prompt is ready after stability confirmed (no -J: line breaks needed for prompt detection)
+	finalContent, err := tmux.CapturePane(paneTarget, promptReadyLines)
 	if err != nil {
-		return fmt.Errorf("capture pane for stability: %w", err)
+		return fmt.Errorf("capture pane for prompt check: %w", err)
 	}
-	h1 := contentHash(content)
-
-	time.Sleep(time.Duration(e.config.IdleStableSec) * time.Second)
-
-	content2, err := tmux.CapturePane(paneTarget, 3)
-	if err != nil {
-		return fmt.Errorf("capture pane for stability: %w", err)
+	if !isPromptReady(finalContent) {
+		return fmt.Errorf("pane stable but no prompt detected (last line: %q)", lastNonBlankLine(finalContent))
 	}
-	h2 := contentHash(content2)
-
-	if h1 != h2 {
-		return fmt.Errorf("pane content not stable after %ds", e.config.IdleStableSec)
-	}
+	e.log(LogLevelDebug, "wait_stable prompt confirmed")
 	return nil
 }
 
@@ -450,6 +522,88 @@ func (e *Executor) waitStable(paneTarget string) error {
 func contentHash(s string) string {
 	h := sha256.Sum256([]byte(s))
 	return fmt.Sprintf("%x", h)
+}
+
+// isPromptReady checks whether the pane content indicates Claude Code is at its input prompt.
+// It inspects the last non-blank line of the captured pane output.
+//
+// Primary check: the line contains '❯' (U+276F HEAVY RIGHT-POINTING ANGLE QUOTATION MARK
+// ORNAMENT), which is the character Claude Code uses in its input prompt.
+// Fallback check: the line starts with '>' (ASCII 0x3E). This covers older Claude Code
+// versions or terminal environments where the Unicode character is not rendered.
+//
+// The fallback is intentionally broad; false positives (e.g. markdown blockquotes) are
+// mitigated by callers performing stability checks before invoking this function.
+func isPromptReady(content string) bool {
+	lines := strings.Split(content, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" {
+			continue
+		}
+		// Primary: Claude Code prompt uses ❯ (U+276F)
+		if strings.Contains(trimmed, "❯") {
+			return true
+		}
+		// Fallback: older versions or plain-text terminals use >
+		return strings.HasPrefix(trimmed, ">")
+	}
+	return false
+}
+
+// waitReady polls until the pane shows a Claude Code prompt ('❯' or '>'), indicating readiness.
+// It uses WaitReadyIntervalSec and WaitReadyMaxRetries from config for timing.
+// Worst-case duration: (WaitReadyMaxRetries+1) × WaitReadyIntervalSec (default 16 × 2s = 32s).
+func (e *Executor) waitReady(ctx context.Context, paneTarget string) error {
+	maxRetries := e.config.WaitReadyMaxRetries
+	interval := time.Duration(e.config.WaitReadyIntervalSec) * time.Second
+
+	for i := 0; i <= maxRetries; i++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("wait_ready cancelled at attempt %d: %w", i, err)
+		}
+
+		content, err := tmux.CapturePane(paneTarget, promptReadyLines)
+		if err != nil {
+			e.log(LogLevelDebug, "wait_ready capture error=%v attempt=%d", err, i)
+			if i < maxRetries {
+				if err := sleepCtx(ctx, interval); err != nil {
+					return fmt.Errorf("wait_ready sleep cancelled: %w", err)
+				}
+				continue
+			}
+			return fmt.Errorf("wait_ready: capture pane failed after %d attempts: %w", i+1, err)
+		}
+
+		if isPromptReady(content) {
+			e.log(LogLevelDebug, "wait_ready prompt detected attempt=%d", i)
+			return nil
+		}
+
+		if i < maxRetries {
+			e.log(LogLevelDebug, "wait_ready not ready attempt=%d/%d", i, maxRetries)
+			if err := sleepCtx(ctx, interval); err != nil {
+				return fmt.Errorf("wait_ready sleep cancelled: %w", err)
+			}
+		}
+	}
+	return fmt.Errorf("wait_ready: prompt not detected after %d attempts", maxRetries+1)
+}
+
+// lastNonBlankLine returns the last non-blank line from content, truncated to lastLineMaxDisplay chars.
+func lastNonBlankLine(content string) string {
+	lines := strings.Split(content, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		trimmed := strings.TrimSpace(lines[i])
+		if trimmed == "" {
+			continue
+		}
+		if len(trimmed) > lastLineMaxDisplay {
+			return trimmed[:lastLineMaxDisplay] + "..."
+		}
+		return trimmed
+	}
+	return "<empty>"
 }
 
 // --- Envelope Builders ---

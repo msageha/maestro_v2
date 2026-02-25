@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/tmux"
 )
 
 func TestBuildWorkerEnvelope(t *testing.T) {
@@ -333,18 +334,18 @@ func TestExecMode_UnknownMode(t *testing.T) {
 // --- Fix #3: Stage 1 shell command detection ---
 
 func TestShellCommands(t *testing.T) {
-	// Known shells should be in the map
+	// Known shells should be recognized via tmux.IsShellCommand
 	shells := []string{"bash", "zsh", "fish", "sh", "dash", "tcsh", "csh"}
 	for _, s := range shells {
-		if !shellCommands[s] {
+		if !tmux.IsShellCommand(s) {
 			t.Errorf("expected %q to be a known shell command", s)
 		}
 	}
 
-	// Non-shells should NOT be in the map
+	// Non-shells should NOT be recognized
 	nonShells := []string{"claude", "node", "python", "vim", ""}
 	for _, s := range nonShells {
-		if shellCommands[s] {
+		if tmux.IsShellCommand(s) {
 			t.Errorf("expected %q to NOT be a known shell command", s)
 		}
 	}

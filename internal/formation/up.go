@@ -1,6 +1,7 @@
 package formation
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -338,6 +339,16 @@ func createFormation(cfg model.Config) error {
 	allPanes = append(allPanes, orchPane, plannerPane)
 	allPanes = append(allPanes, panes...)
 
+	// Wait for each pane's shell to be ready before sending commands
+	for _, pane := range allPanes {
+		paneCtx, paneCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err := waitForShellReady(paneCtx, pane)
+		paneCancel()
+		if err != nil {
+			return fmt.Errorf("pane %s shell not ready: %w", pane, err)
+		}
+	}
+
 	for _, pane := range allPanes {
 		if err := tmux.SendCommand(pane, "maestro agent launch"); err != nil {
 			return fmt.Errorf("launch agent in %s: %w", pane, err)
@@ -350,6 +361,48 @@ func createFormation(cfg model.Config) error {
 	}
 
 	return nil
+}
+
+// waitForShellReady polls a tmux pane until its current command is a known
+// shell, indicating the pane is ready to receive input.
+// This prevents the race where SendCommand fires before the shell has started.
+// The caller should set a deadline on ctx via context.WithTimeout.
+//
+// If GetPaneCurrentCommand fails 5 consecutive times (500ms at 100ms intervals),
+// the function returns early with the last error instead of waiting for the
+// full context timeout.
+func waitForShellReady(ctx context.Context, pane string) error {
+	const maxConsecutiveErrors = 5
+	consecutiveErrors := 0
+	var lastErr error
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("waitForShellReady cancelled: %w", err)
+		}
+		cmd, err := tmux.GetPaneCurrentCommand(pane)
+		if err != nil {
+			consecutiveErrors++
+			lastErr = err
+			fmt.Fprintf(os.Stderr, "Warning: GetPaneCurrentCommand failed for pane %s (attempt %d/%d): %v\n",
+				pane, consecutiveErrors, maxConsecutiveErrors, err)
+			if consecutiveErrors >= maxConsecutiveErrors {
+				return fmt.Errorf("waitForShellReady: %d consecutive errors, last: %w", consecutiveErrors, lastErr)
+			}
+		} else {
+			consecutiveErrors = 0
+			if tmux.IsShellCommand(cmd) {
+				return nil
+			}
+		}
+		t := time.NewTimer(100 * time.Millisecond)
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			t.Stop()
+			return fmt.Errorf("waitForShellReady cancelled: %w", ctx.Err())
+		}
+	}
 }
 
 func setAgentVars(pane, agentID, role, agentModel string) error {

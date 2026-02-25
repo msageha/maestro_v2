@@ -113,10 +113,23 @@ func GetUserVar(paneTarget, name string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// CapturePane captures pane content. lastN specifies how many lines from the
-// bottom to capture (0 = entire visible pane).
+// CapturePane captures pane content with the -J flag, which joins wrapped
+// lines to produce stable output regardless of terminal width.
+// lastN specifies how many lines from the bottom to capture (0 = entire visible pane).
 func CapturePane(paneTarget string, lastN int) (string, error) {
-	args := []string{"capture-pane", "-t", paneTarget, "-p"}
+	args := []string{"capture-pane", "-p", "-J", "-t", paneTarget}
+	if lastN > 0 {
+		args = append(args, "-S", fmt.Sprintf("-%d", lastN))
+	}
+	return output(args...)
+}
+
+// CapturePaneJoined captures pane content with the -J flag, which joins
+// wrapped lines and preserves trailing spaces. This produces stable output
+// regardless of terminal width, making it suitable for hash-based comparisons.
+// lastN specifies how many lines from the bottom to capture (0 = entire visible pane).
+func CapturePaneJoined(paneTarget string, lastN int) (string, error) {
+	args := []string{"capture-pane", "-t", paneTarget, "-pJ"}
 	if lastN > 0 {
 		args = append(args, "-S", fmt.Sprintf("-%d", lastN))
 	}
@@ -255,6 +268,19 @@ func AttachSession() error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// ShellCommands is the canonical set of known shell command names.
+// Used to detect whether a tmux pane is running a plain shell (idle)
+// rather than an application like the agent CLI.
+var ShellCommands = map[string]bool{
+	"bash": true, "zsh": true, "fish": true,
+	"sh": true, "dash": true, "tcsh": true, "csh": true,
+}
+
+// IsShellCommand reports whether cmd is a known shell command name.
+func IsShellCommand(cmd string) bool {
+	return ShellCommands[cmd]
 }
 
 // GetPaneCurrentCommand returns the currently running command in a pane.
