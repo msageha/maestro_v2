@@ -484,13 +484,38 @@ func TestIsPromptReady(t *testing.T) {
 		},
 		{
 			name:    "prompt outside maxPromptSearchLines window (false positive guard)",
-			content: "❯ old prompt\nline2\nline3\nline4\nline5\n",
+			content: "❯ old prompt\nline2\nline3\nline4\nline5\nline6\nline7\n",
 			want:    false,
 		},
 		{
 			name:    "unicode prompt only",
 			content: "❯",
 			want:    true,
+		},
+		{
+			name:    "prompt with ANSI escape sequences",
+			content: "output\n \x1b[32m❯\x1b[0m \n",
+			want:    true,
+		},
+		{
+			name:    "prompt hidden by ANSI bold/color",
+			content: "output\n\x1b[1;34mproject\x1b[0m \x1b[32m❯\x1b[0m\nstatus\n",
+			want:    true,
+		},
+		{
+			name:    "fallback > with ANSI escape",
+			content: "output\n\x1b[32m> \x1b[0m",
+			want:    true,
+		},
+		{
+			name:    "skill loading text obscuring prompt within 6 lines",
+			content: "output\n ❯ \nskill line 1\nskill line 2\nskill line 3\nskill line 4\n",
+			want:    true,
+		},
+		{
+			name:    "no prompt even with ANSI stripped",
+			content: "\x1b[32msome colored text\x1b[0m\nno prompt\n",
+			want:    false,
 		},
 	}
 
@@ -522,6 +547,36 @@ func TestLastNonBlankLine(t *testing.T) {
 			got := lastNonBlankLine(tt.content)
 			if got != tt.want {
 				t.Errorf("lastNonBlankLine() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestStripANSI(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"no escape", "hello world", "hello world"},
+		{"CSI color", "\x1b[32mgreen\x1b[0m", "green"},
+		{"CSI bold+color", "\x1b[1;34mbold blue\x1b[0m", "bold blue"},
+		{"OSC title", "\x1b]0;window title\x07rest", "rest"},
+		{"OSC with ST", "\x1b]0;title\x1b\\rest", "rest"},
+		{"charset designator", "\x1b(Bhello", "hello"},
+		{"mixed", "\x1b[32m❯\x1b[0m input", "❯ input"},
+		{"empty", "", ""},
+		{"no escape with unicode", "project ❯ ", "project ❯ "},
+		{"private CSI bracketed paste", "\x1b[?2004htext\x1b[?2004l", "text"},
+		{"private CSI cursor hide", "\x1b[?25lhidden\x1b[?25h", "hidden"},
+		{"CSI with tilde final", "\x1b[1;2~rest", "rest"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripANSI(tt.input)
+			if got != tt.want {
+				t.Errorf("stripANSI(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}

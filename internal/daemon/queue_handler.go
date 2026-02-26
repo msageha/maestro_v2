@@ -357,6 +357,10 @@ func (qh *QueueHandler) periodicScanPhaseA() phaseAResult {
 		qh.processPlannerSignalsDeferred(&signalQueue, &signalsDirty, &work)
 	}
 
+	// Preemptive command lease renewal: renew before checking hasExpiredLeases
+	// so that renewed commands don't trigger recovery mode unnecessarily.
+	qh.preemptiveCommandRenewal(&commandQueue, &commandsDirty)
+
 	// Steps 1 & 2: Dispatch or recovery (mutually exclusive per spec §5.8.1).
 	expiredExists := qh.hasExpiredLeases(taskQueues, &commandQueue, &notificationQueue)
 
@@ -372,7 +376,7 @@ func (qh *QueueHandler) periodicScanPhaseA() phaseAResult {
 		work.busyChecks = append(work.busyChecks, qh.collectExpiredCommandBusyChecks(&commandQueue, &commandsDirty)...)
 		// Notification expiry: always release (busy check doesn't affect outcome)
 		qh.recoverExpiredNotificationLeases(&notificationQueue, &notificationsDirty)
-		qh.log(LogLevelInfo, "expired_leases_detected busy_checks=%d skipping_dispatch", len(work.busyChecks))
+		qh.log(LogLevelDebug, "expired_leases_detected busy_checks=%d skipping_dispatch", len(work.busyChecks))
 	} else {
 		// Step 1: Collect dispatch items (defer tmux dispatch)
 		qh.collectPendingCommandDispatches(&commandQueue, &commandsDirty, &work)
@@ -726,6 +730,7 @@ func (qh *QueueHandler) collectExpiredTaskBusyChecks(tq *taskQueueEntry, agentID
 			if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
 				qh.log(LogLevelError, "expire_release_failed type=task id=%s error=%v", task.ID, err)
 			}
+			qh.scanCounters.LeaseReleases++
 			*dirty = true
 			continue
 		}
@@ -744,10 +749,49 @@ func (qh *QueueHandler) collectExpiredTaskBusyChecks(tq *taskQueueEntry, agentID
 			if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
 				qh.log(LogLevelError, "expire_release_failed type=task id=%s error=%v", task.ID, err)
 			}
+			qh.scanCounters.LeaseReleases++
 			*dirty = true
 		}
 	}
 	return items
+}
+
+// preemptiveCommandRenewal renews command leases approaching expiry to prevent
+// the expire→detect→auto-extend cycle and avoid triggering recovery mode.
+func (qh *QueueHandler) preemptiveCommandRenewal(cq *model.CommandQueue, dirty *bool) {
+	bufferSec := qh.config.Watcher.ScanIntervalSec + 30
+	if bufferSec <= 30 {
+		bufferSec = 90
+	}
+	renewable := qh.leaseManager.RenewableCommands(cq.Commands, bufferSec)
+	for _, idx := range renewable {
+		cmd := &cq.Commands[idx]
+		maxMin := qh.config.Watcher.MaxInProgressMin
+		if maxMin <= 0 {
+			maxMin = 60
+		}
+		if t, err := time.Parse(time.RFC3339, cmd.UpdatedAt); err == nil {
+			if time.Since(t) >= time.Duration(maxMin)*time.Minute {
+				// Hard timeout reached: release immediately instead of waiting
+				// for expiry to enforce max_in_progress_min strictly.
+				qh.log(LogLevelWarn, "command_lease_max_timeout id=%s epoch=%d max=%dm releasing (preemptive)",
+					cmd.ID, cmd.LeaseEpoch, maxMin)
+				if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
+					qh.log(LogLevelError, "expire_release_failed type=command id=%s error=%v", cmd.ID, err)
+				}
+				qh.scanCounters.LeaseReleases++
+				*dirty = true
+				continue
+			}
+		}
+		if err := qh.leaseManager.ExtendCommandLease(cmd); err != nil {
+			qh.log(LogLevelError, "command_lease_preemptive_renew_failed id=%s error=%v", cmd.ID, err)
+			continue
+		}
+		qh.log(LogLevelDebug, "command_lease_renewed id=%s epoch=%d", cmd.ID, cmd.LeaseEpoch)
+		qh.scanCounters.LeaseRenewals++
+		*dirty = true
+	}
 }
 
 // collectExpiredCommandBusyChecks auto-extends expired command leases in Phase A.
@@ -775,6 +819,7 @@ func (qh *QueueHandler) collectExpiredCommandBusyChecks(cq *model.CommandQueue, 
 				if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
 					qh.log(LogLevelError, "expire_release_failed type=command id=%s error=%v", cmd.ID, err)
 				}
+				qh.scanCounters.LeaseReleases++
 				*dirty = true
 				continue
 			}
@@ -788,7 +833,8 @@ func (qh *QueueHandler) collectExpiredCommandBusyChecks(cq *model.CommandQueue, 
 			qh.log(LogLevelError, "command_lease_auto_extend_failed id=%s error=%v", cmd.ID, err)
 			continue
 		}
-		qh.log(LogLevelInfo, "command_lease_auto_extend id=%s epoch=%d", cmd.ID, cmd.LeaseEpoch)
+		qh.log(LogLevelDebug, "command_lease_auto_extend id=%s epoch=%d", cmd.ID, cmd.LeaseEpoch)
+		qh.scanCounters.LeaseExtensions++
 		*dirty = true
 	}
 	// No busy check items for commands — auto-extended in Phase A
@@ -1007,6 +1053,7 @@ func (qh *QueueHandler) applyTaskDispatchResult(dr dispatchResult, taskQueues ma
 			if !dr.Success {
 				qh.log(LogLevelWarn, "dispatch_failed type=task id=%s error=%v", task.ID, dr.Error)
 				_ = qh.leaseManager.ReleaseTaskLease(task)
+				qh.scanCounters.LeaseReleases++
 			} else {
 				qh.scanCounters.TasksDispatched++
 			}
@@ -1075,6 +1122,7 @@ func (qh *QueueHandler) applyTaskBusyCheckResult(bc busyCheckResult, taskQueues 
 				if err := qh.leaseManager.ExtendTaskLease(task); err != nil {
 					qh.log(LogLevelError, "lease_extend_failed type=task id=%s error=%v", task.ID, err)
 				}
+				qh.scanCounters.LeaseExtensions++
 				taskDirty[bc.Item.QueueFile] = true
 				return
 			}
@@ -1086,6 +1134,7 @@ func (qh *QueueHandler) applyTaskBusyCheckResult(bc busyCheckResult, taskQueues 
 			qh.log(LogLevelError, "expire_release_failed type=task id=%s error=%v", task.ID, err)
 			return
 		}
+		qh.scanCounters.LeaseReleases++
 		taskDirty[bc.Item.QueueFile] = true
 		return
 	}
@@ -1121,6 +1170,7 @@ func (qh *QueueHandler) applyCommandBusyCheckResult(bc busyCheckResult, cq *mode
 				if err := qh.leaseManager.ExtendCommandLease(cmd); err != nil {
 					qh.log(LogLevelError, "lease_extend_failed type=command id=%s error=%v", cmd.ID, err)
 				}
+				qh.scanCounters.LeaseExtensions++
 				*dirty = true
 				return
 			}
@@ -1132,6 +1182,7 @@ func (qh *QueueHandler) applyCommandBusyCheckResult(bc busyCheckResult, cq *mode
 			qh.log(LogLevelError, "expire_release_failed type=command id=%s error=%v", cmd.ID, err)
 			return
 		}
+		qh.scanCounters.LeaseReleases++
 		*dirty = true
 		return
 	}

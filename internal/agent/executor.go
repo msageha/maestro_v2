@@ -541,7 +541,7 @@ func (e *Executor) waitStable(ctx context.Context, paneTarget string, softPrompt
 	}
 	if !isPromptReady(finalContent) {
 		if softPromptCheck {
-			e.log(LogLevelWarn, "wait_stable prompt_not_detected pane=%s last_line=%q (proceeding — detectBusy will guard delivery)",
+			e.log(LogLevelInfo, "wait_stable prompt_not_detected pane=%s last_line=%q (proceeding — detectBusy will guard delivery)",
 				paneTarget, lastNonBlankLine(finalContent))
 			return nil
 		}
@@ -572,7 +572,16 @@ func contentHash(s string) string {
 // status bar (typically 1–2 lines below the prompt) while bounding the
 // search to avoid false positives from agent output that happens to
 // contain ❯ in earlier lines.
-const maxPromptSearchLines = 4
+const maxPromptSearchLines = 6
+
+// ansiEscape matches ANSI escape sequences including CSI (with private params),
+// OSC, and charset designators.
+var ansiEscape = regexp.MustCompile(`\x1b(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|\][^\x07]*(?:\x07|\x1b\\)|\([B0UK]|[>=])`)
+
+// stripANSI removes ANSI escape sequences from s.
+func stripANSI(s string) string {
+	return ansiEscape.ReplaceAllString(s, "")
+}
 
 func isPromptReady(content string) bool {
 	lines := strings.Split(content, "\n")
@@ -581,7 +590,7 @@ func isPromptReady(content string) bool {
 	// so the prompt line is not necessarily the last non-blank line.
 	checked := 0
 	for i := len(lines) - 1; i >= 0 && checked < maxPromptSearchLines; i-- {
-		trimmed := strings.TrimSpace(lines[i])
+		trimmed := strings.TrimSpace(stripANSI(lines[i]))
 		if trimmed == "" {
 			continue
 		}
@@ -594,7 +603,7 @@ func isPromptReady(content string) bool {
 	// Limiting to the last line avoids false positives from markdown
 	// blockquotes or shell output on earlier lines.
 	for i := len(lines) - 1; i >= 0; i-- {
-		trimmed := strings.TrimSpace(lines[i])
+		trimmed := strings.TrimSpace(stripANSI(lines[i]))
 		if trimmed == "" {
 			continue
 		}
@@ -607,7 +616,7 @@ func isPromptReady(content string) bool {
 // It uses WaitReadyIntervalSec and WaitReadyMaxRetries from config for timing.
 // Worst-case duration: (WaitReadyMaxRetries+1) × WaitReadyIntervalSec (default 16 × 2s = 32s).
 //
-// If prompt detection fails after all retries, the function logs a warning
+// If prompt detection fails after all retries, the function logs at INFO level
 // and returns nil (proceeds) instead of blocking dispatch. The caller's
 // subsequent detectBusyWithRetry provides a safety net against delivering
 // to a busy agent.
@@ -648,7 +657,7 @@ func (e *Executor) waitReady(ctx context.Context, paneTarget string) error {
 
 	// Fallback: prompt not detected, but proceed with a warning.
 	// The subsequent detectBusyWithRetry() will catch if the agent is actually busy.
-	e.log(LogLevelWarn, "wait_ready prompt_fallback pane=%s: prompt not detected after %d attempts, proceeding anyway",
+	e.log(LogLevelInfo, "wait_ready prompt_fallback pane=%s: prompt not detected after %d attempts, proceeding (detectBusy will guard)",
 		paneTarget, maxRetries+1)
 	return nil
 }

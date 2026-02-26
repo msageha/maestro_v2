@@ -24,4 +24,7 @@ type MetricsCounters struct {
 	DeadLetters           int `yaml:"dead_letters"`
 	ReconciliationRepairs int `yaml:"reconciliation_repairs"`
 	NotificationRetries   int `yaml:"notification_retries"`
+	LeaseRenewals         int `yaml:"lease_renewals"`
+	LeaseExtensions       int `yaml:"lease_extensions"`
+	LeaseReleases         int `yaml:"lease_releases"`
 }
