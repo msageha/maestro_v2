@@ -595,12 +595,14 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 // --- Collect methods for Phase A ---
 
 // collectPendingCommandDispatches acquires leases and records dispatch items (no tmux).
+// Guard: any in_progress command blocks new dispatches regardless of lease validity.
+// Planner processes one command at a time; expired leases are handled by busy-check
+// recovery (auto-extend for commands) and Reconciler R0 for stuck planning.
 func (qh *QueueHandler) collectPendingCommandDispatches(cq *model.CommandQueue, dirty *bool, work *deferredWork) {
 	for _, cmd := range cq.Commands {
-		if cmd.Status == model.StatusInProgress && cmd.LeaseExpiresAt != nil {
-			if t, err := time.Parse(time.RFC3339, *cmd.LeaseExpiresAt); err == nil && t.After(time.Now()) {
-				return
-			}
+		if cmd.Status == model.StatusInProgress {
+			qh.log(LogLevelDebug, "command_in_progress_guard id=%s epoch=%d blocking_dispatch", cmd.ID, cmd.LeaseEpoch)
+			return
 		}
 	}
 
@@ -748,31 +750,49 @@ func (qh *QueueHandler) collectExpiredTaskBusyChecks(tq *taskQueueEntry, agentID
 	return items
 }
 
-// collectExpiredCommandBusyChecks records busy check items for expired command leases.
-// Malformed entries (lease_expires_at == nil) are released immediately.
+// collectExpiredCommandBusyChecks auto-extends expired command leases in Phase A.
+// Unlike tasks, commands are never released on lease expiry because:
+//   - Planner is a singleton; releasing causes duplicate dispatch
+//   - Busy-check false negatives are common (Planner has long API call intervals)
+//   - Reconciler R0 handles truly stuck planning via max_in_progress_min timeout
+//
+// Malformed entries (lease_expires_at == nil) are repaired by setting a new lease.
 func (qh *QueueHandler) collectExpiredCommandBusyChecks(cq *model.CommandQueue, dirty *bool) []busyCheckItem {
-	var items []busyCheckItem
 	expired := qh.leaseManager.ExpireCommands(cq.Commands)
 	for _, idx := range expired {
 		cmd := &cq.Commands[idx]
-		if cmd.LeaseExpiresAt == nil {
-			qh.log(LogLevelWarn, "expire_release_malformed type=command id=%s (nil lease_expires_at)", cmd.ID)
-			if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
-				qh.log(LogLevelError, "expire_release_failed type=command id=%s error=%v", cmd.ID, err)
+
+		// Check max_in_progress_min hard timeout — if exceeded, release to let
+		// Reconciler R0 handle the stuck command on next scan.
+		maxMin := qh.config.Watcher.MaxInProgressMin
+		if maxMin <= 0 {
+			maxMin = 60
+		}
+		if t, err := time.Parse(time.RFC3339, cmd.UpdatedAt); err == nil {
+			if time.Since(t) >= time.Duration(maxMin)*time.Minute {
+				qh.log(LogLevelWarn, "command_lease_max_timeout id=%s epoch=%d max=%dm releasing",
+					cmd.ID, cmd.LeaseEpoch, maxMin)
+				if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
+					qh.log(LogLevelError, "expire_release_failed type=command id=%s error=%v", cmd.ID, err)
+				}
+				*dirty = true
+				continue
 			}
-			*dirty = true
+		}
+
+		// Auto-extend: keep command in_progress to prevent duplicate dispatch
+		if cmd.LeaseExpiresAt == nil {
+			qh.log(LogLevelWarn, "expire_repair_malformed type=command id=%s (nil lease_expires_at)", cmd.ID)
+		}
+		if err := qh.leaseManager.ExtendCommandLease(cmd); err != nil {
+			qh.log(LogLevelError, "command_lease_auto_extend_failed id=%s error=%v", cmd.ID, err)
 			continue
 		}
-		items = append(items, busyCheckItem{
-			Kind:      "command",
-			EntryID:   cmd.ID,
-			AgentID:   "planner",
-			Epoch:     cmd.LeaseEpoch,
-			UpdatedAt: cmd.UpdatedAt,
-			ExpiresAt: *cmd.LeaseExpiresAt,
-		})
+		qh.log(LogLevelInfo, "command_lease_auto_extend id=%s epoch=%d", cmd.ID, cmd.LeaseEpoch)
+		*dirty = true
 	}
-	return items
+	// No busy check items for commands — auto-extended in Phase A
+	return nil
 }
 
 // processPlannerSignalsDeferred evaluates signals but defers tmux delivery to Phase B.
@@ -958,8 +978,11 @@ func (qh *QueueHandler) applyCommandDispatchResult(dr dispatchResult, cq *model.
 			return
 		}
 		if !dr.Success {
-			qh.log(LogLevelWarn, "dispatch_failed type=command id=%s error=%v", cmd.ID, dr.Error)
-			_ = qh.leaseManager.ReleaseCommandLease(cmd)
+			// Keep lease on dispatch error to prevent duplicate dispatch.
+			// The dispatch may have actually succeeded (tmux delivery OK but executor
+			// reported error). Releasing would cause pending revert → re-dispatch.
+			// Lease auto-extend will keep it in_progress; Reconciler R0 handles stuck state.
+			qh.log(LogLevelWarn, "dispatch_failed_lease_kept type=command id=%s error=%v", cmd.ID, dr.Error)
 		} else {
 			qh.scanCounters.CommandsDispatched++
 		}

@@ -68,7 +68,7 @@ func TestReconciler_R0_PlanningStuck(t *testing.T) {
 	}
 	yamlutil.AtomicWrite(filepath.Join(queueDir, "planner.yaml"), cq)
 
-	repairs := rec.Reconcile()
+	repairs, _ := rec.Reconcile()
 
 	// Should have one R0 repair
 	r0 := filterRepairs(repairs, "R0")
@@ -113,7 +113,7 @@ func TestReconciler_R0_PlanningRecent_NoRepair(t *testing.T) {
 	statePath := filepath.Join(stateDir, "cmd_0000000001_aaaaaaaa.yaml")
 	yamlutil.AtomicWrite(statePath, state)
 
-	repairs := rec.Reconcile()
+	repairs, _ := rec.Reconcile()
 
 	r0 := filterRepairs(repairs, "R0")
 	if len(r0) != 0 {
@@ -171,7 +171,7 @@ func TestReconciler_R0b_FillingStuck(t *testing.T) {
 	}
 	yamlutil.AtomicWrite(filepath.Join(queueDir, "worker1.yaml"), tq)
 
-	repairs := rec.Reconcile()
+	repairs, _ := rec.Reconcile()
 
 	r0b := filterRepairs(repairs, "R0b")
 	if len(r0b) != 1 {
@@ -265,7 +265,7 @@ func TestReconciler_R1_ResultTerminal_QueueInProgress(t *testing.T) {
 	statePath := filepath.Join(stateDir, "cmd_0000000001_cccccccc.yaml")
 	yamlutil.AtomicWrite(statePath, state)
 
-	repairs := rec.Reconcile()
+	repairs, _ := rec.Reconcile()
 
 	r1 := filterRepairs(repairs, "R1")
 	if len(r1) != 1 {
@@ -341,7 +341,7 @@ func TestReconciler_R2_ResultTerminal_StateNonTerminal(t *testing.T) {
 	statePath := filepath.Join(stateDir, "cmd_0000000001_dddddddd.yaml")
 	yamlutil.AtomicWrite(statePath, state)
 
-	repairs := rec.Reconcile()
+	repairs, _ := rec.Reconcile()
 
 	r2 := filterRepairs(repairs, "R2")
 	if len(r2) != 1 {
@@ -408,7 +408,7 @@ func TestReconciler_R2_AlreadyTerminal_NoRepair(t *testing.T) {
 	}
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_0000000001_eeeeeeee.yaml"), state)
 
-	repairs := rec.Reconcile()
+	repairs, _ := rec.Reconcile()
 
 	r2 := filterRepairs(repairs, "R2")
 	if len(r2) != 0 {
@@ -482,7 +482,7 @@ func TestReconciler_AllPatterns_Combined(t *testing.T) {
 	}
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r2.yaml"), state2)
 
-	repairs := rec.Reconcile()
+	repairs, _ := rec.Reconcile()
 
 	r0 := filterRepairs(repairs, "R0")
 	r0b := filterRepairs(repairs, "R0b")
@@ -560,7 +560,7 @@ func TestReconciler_R3_PlannerResultTerminal_QueueInProgress(t *testing.T) {
 	}
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_0000000001_r3r3r3r3.yaml"), state)
 
-	repairs := rec.Reconcile()
+	repairs, _ := rec.Reconcile()
 
 	r3 := filterRepairs(repairs, "R3")
 	if len(r3) != 1 {
@@ -608,7 +608,7 @@ func TestReconciler_R3_QueueAlreadyTerminal_NoRepair(t *testing.T) {
 	}
 	yamlutil.AtomicWrite(filepath.Join(queueDir, "planner.yaml"), cq)
 
-	repairs := rec.Reconcile()
+	repairs, _ := rec.Reconcile()
 	r3 := filterRepairs(repairs, "R3")
 	if len(r3) != 0 {
 		t.Fatalf("expected no R3 repairs, got %d", len(r3))
@@ -648,7 +648,7 @@ func TestReconciler_R4_PlannerResultTerminal_StateSealed_CanComplete(t *testing.
 	statePath := filepath.Join(stateDir, "cmd_r4_ok.yaml")
 	yamlutil.AtomicWrite(statePath, state)
 
-	repairs := rec.Reconcile()
+	repairs, _ := rec.Reconcile()
 	r4 := filterRepairs(repairs, "R4")
 	if len(r4) != 1 {
 		t.Fatalf("expected 1 R4 repair, got %d", len(r4))
@@ -699,7 +699,7 @@ func TestReconciler_R4_CanCompleteFails_Quarantine(t *testing.T) {
 	// Create quarantine dir
 	os.MkdirAll(filepath.Join(maestroDir, "quarantine"), 0755)
 
-	repairs := rec.Reconcile()
+	repairs, _ := rec.Reconcile()
 	r4 := filterRepairs(repairs, "R4")
 	if len(r4) != 1 {
 		t.Fatalf("expected 1 R4 repair, got %d", len(r4))
@@ -752,7 +752,7 @@ func TestReconciler_R4_PlanStatusPlanning_Skip(t *testing.T) {
 	}
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r4_planning.yaml"), state)
 
-	repairs := rec.Reconcile()
+	repairs, _ := rec.Reconcile()
 	r4 := filterRepairs(repairs, "R4")
 	if len(r4) != 0 {
 		t.Fatalf("expected no R4 repairs for planning state, got %d", len(r4))
@@ -801,7 +801,7 @@ func TestReconciler_R5_NotifiedResult_NoOrchestratorNotification(t *testing.T) {
 	}
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r5_test.yaml"), state)
 
-	repairs := rec.Reconcile()
+	repairs, _ := rec.Reconcile()
 	r5 := filterRepairs(repairs, "R5")
 	if len(r5) != 1 {
 		t.Fatalf("expected 1 R5 repair, got %d", len(r5))
@@ -849,7 +849,7 @@ func TestReconciler_R5_NotificationExists_NoRepair(t *testing.T) {
 	}
 	yamlutil.AtomicWrite(filepath.Join(queueDir, "orchestrator.yaml"), nq)
 
-	repairs := rec.Reconcile()
+	repairs, _ := rec.Reconcile()
 	r5 := filterRepairs(repairs, "R5")
 	if len(r5) != 0 {
 		t.Fatalf("expected no R5 repairs, got %d", len(r5))
@@ -897,7 +897,7 @@ func TestReconciler_R6_AwaitingFill_DeadlineExpired(t *testing.T) {
 	statePath := filepath.Join(stateDir, "cmd_r6_test.yaml")
 	yamlutil.AtomicWrite(statePath, state)
 
-	repairs := rec.Reconcile()
+	repairs, _ := rec.Reconcile()
 	r6 := filterRepairs(repairs, "R6")
 	// Should have: implementation → timed_out, testing → cancelled (cascade)
 	if len(r6) != 2 {
@@ -944,7 +944,7 @@ func TestReconciler_R6_DeadlineNotExpired_NoRepair(t *testing.T) {
 	}
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r6_ok.yaml"), state)
 
-	repairs := rec.Reconcile()
+	repairs, _ := rec.Reconcile()
 	r6 := filterRepairs(repairs, "R6")
 	if len(r6) != 0 {
 		t.Fatalf("expected no R6 repairs, got %d", len(r6))
@@ -1008,7 +1008,7 @@ func TestReconciler_R6_TransitiveCascade(t *testing.T) {
 	}
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r6_trans.yaml"), state)
 
-	repairs := rec.Reconcile()
+	repairs, _ := rec.Reconcile()
 	r6 := filterRepairs(repairs, "R6")
 	// Should have 3: p1 timed_out, p2 cancelled, p3 cancelled (transitive)
 	if len(r6) != 3 {
