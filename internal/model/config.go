@@ -62,6 +62,12 @@ type WatcherConfig struct {
 	NotifyLeaseSec      int     `yaml:"notify_lease_sec"`
 	WaitReadyIntervalSec int    `yaml:"wait_ready_interval_sec"`
 	WaitReadyMaxRetries  int    `yaml:"wait_ready_max_retries"`
+
+	// Clear confirmation settings (used by clearAndConfirm)
+	ClearConfirmTimeoutSec int `yaml:"clear_confirm_timeout_sec"` // Per-attempt confirmation window (default 5s)
+	ClearConfirmPollMs     int `yaml:"clear_confirm_poll_ms"`     // Polling interval within confirmation window (default 250ms)
+	ClearMaxAttempts       int `yaml:"clear_max_attempts"`        // Total send attempts including initial (default 3)
+	ClearRetryBackoffMs    int `yaml:"clear_retry_backoff_ms"`    // Base backoff between attempts; doubles each retry (default 500ms)
 }
 
 type RetryConfig struct {
