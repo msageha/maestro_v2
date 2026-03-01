@@ -280,3 +280,60 @@ func TestLeaseEpochIncrement(t *testing.T) {
 		t.Errorf("second acquire epoch: got %d, want 2", task.LeaseEpoch)
 	}
 }
+
+func TestIsLeaseNearExpiry(t *testing.T) {
+	lm := newTestLeaseManager()
+
+	// nil → near expiry (treated as expired)
+	if !lm.IsLeaseNearExpiry(nil, 60) {
+		t.Error("nil lease should be near expiry")
+	}
+
+	// Expires in 30s, buffer 60s → near expiry
+	soon := time.Now().UTC().Add(30 * time.Second).Format(time.RFC3339)
+	if !lm.IsLeaseNearExpiry(&soon, 60) {
+		t.Error("lease expiring in 30s with 60s buffer should be near expiry")
+	}
+
+	// Expires in 2 minutes, buffer 60s → NOT near expiry
+	later := time.Now().UTC().Add(2 * time.Minute).Format(time.RFC3339)
+	if lm.IsLeaseNearExpiry(&later, 60) {
+		t.Error("lease expiring in 2m with 60s buffer should NOT be near expiry")
+	}
+
+	// Already expired → near expiry
+	past := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	if !lm.IsLeaseNearExpiry(&past, 60) {
+		t.Error("already expired lease should be near expiry")
+	}
+
+	// Malformed date → near expiry
+	bad := "not-a-date"
+	if !lm.IsLeaseNearExpiry(&bad, 60) {
+		t.Error("malformed date should be treated as near expiry")
+	}
+}
+
+func TestRenewableCommands(t *testing.T) {
+	lm := newTestLeaseManager()
+
+	soon := time.Now().UTC().Add(30 * time.Second).Format(time.RFC3339)
+	later := time.Now().UTC().Add(10 * time.Minute).Format(time.RFC3339)
+	past := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	owner := "daemon:12345"
+
+	commands := []model.Command{
+		{ID: "c1", Status: model.StatusInProgress, LeaseExpiresAt: &soon, LeaseOwner: &owner, LeaseEpoch: 1},
+		{ID: "c2", Status: model.StatusInProgress, LeaseExpiresAt: &later, LeaseOwner: &owner, LeaseEpoch: 1},
+		{ID: "c3", Status: model.StatusPending},
+		{ID: "c4", Status: model.StatusInProgress, LeaseExpiresAt: &past, LeaseOwner: &owner, LeaseEpoch: 1},
+	}
+
+	renewable := lm.RenewableCommands(commands, 60)
+	if len(renewable) != 1 {
+		t.Fatalf("expected 1 renewable, got %d", len(renewable))
+	}
+	if renewable[0] != 0 {
+		t.Errorf("expected index 0 (c1), got %d", renewable[0])
+	}
+}

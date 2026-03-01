@@ -30,7 +30,7 @@ continuous:
 watcher:
   debounce_sec: 0.3
   scan_interval_sec: 60
-  dispatch_lease_sec: 120
+  dispatch_lease_sec: 300
   max_in_progress_min: 30
   busy_check_interval: 2
   busy_check_max_retries: 30

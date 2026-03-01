@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -24,7 +25,7 @@ func (m *mockExecutor) Execute(req agent.ExecRequest) agent.ExecResult {
 func (m *mockExecutor) Close() error { return nil }
 
 func newTestCancelHandler() (*CancelHandler, *mockExecutor) {
-	ch := NewCancelHandler("", model.Config{}, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	ch := NewCancelHandler("", model.Config{}, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
 	mock := &mockExecutor{result: agent.ExecResult{Success: true}}
 	ch.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return mock, nil

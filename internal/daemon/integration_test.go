@@ -122,6 +122,12 @@ func (r *integrationStateReader) ApplyPhaseTransition(commandID, phaseID string,
 			if model.IsPhaseTerminal(newStatus) {
 				state.Phases[i].CompletedAt = &now
 			}
+			if newStatus == model.PhaseStatusAwaitingFill {
+				if state.Phases[i].Constraints != nil && state.Phases[i].Constraints.TimeoutMinutes > 0 {
+					deadline := time.Now().UTC().Add(time.Duration(state.Phases[i].Constraints.TimeoutMinutes) * time.Minute).Format(time.RFC3339)
+					state.Phases[i].FillDeadlineAt = &deadline
+				}
+			}
 			break
 		}
 	}

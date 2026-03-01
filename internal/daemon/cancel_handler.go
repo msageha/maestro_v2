@@ -11,6 +11,7 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -23,13 +24,15 @@ type CancelHandler struct {
 	logLevel        LogLevel
 	executorFactory ExecutorFactory
 	stateReader     StateReader
+	lockMap         *lock.MutexMap
 }
 
 // NewCancelHandler creates a new CancelHandler.
-func NewCancelHandler(maestroDir string, cfg model.Config, logger *log.Logger, logLevel LogLevel) *CancelHandler {
+func NewCancelHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel) *CancelHandler {
 	return &CancelHandler{
 		maestroDir: maestroDir,
 		config:     cfg,
+		lockMap:    lockMap,
 		logger:     logger,
 		logLevel:   logLevel,
 		executorFactory: func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
@@ -220,10 +223,16 @@ type CancelledTaskResult struct {
 
 // WriteSyntheticResults writes synthetic cancelled results to the results/ directory
 // so that downstream processing (result handler, reconciler) can pick them up.
+// The read-modify-write cycle is protected by lockMap to prevent data races with
+// result_handler.processWorkerResultFile which uses the same "result:{workerID}" key.
 func (ch *CancelHandler) WriteSyntheticResults(results []CancelledTaskResult, workerID string) {
 	if len(results) == 0 {
 		return
 	}
+
+	lockKey := "result:" + workerID
+	ch.lockMap.Lock(lockKey)
+	defer ch.lockMap.Unlock(lockKey)
 
 	resultPath := filepath.Join(ch.maestroDir, "results", workerID+".yaml")
 	var rf model.TaskResultFile

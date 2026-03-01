@@ -19,13 +19,14 @@ import (
 const (
 	// maxNotifyAttempts is the maximum number of notification delivery attempts
 	// before giving up. Prevents infinite retries when tmux is unavailable.
-	maxNotifyAttempts = 15
+	maxNotifyAttempts = 5
 
 	// notifyBackoffInitial is the initial backoff delay after a failed notification.
-	notifyBackoffInitial = 10 * time.Second
+	// Exponential backoff: 1s → 2s → 4s → 8s → 16s (capped at notifyBackoffMax).
+	notifyBackoffInitial = 1 * time.Second
 
 	// notifyBackoffMax is the maximum backoff delay between retry attempts.
-	notifyBackoffMax = 5 * time.Minute
+	notifyBackoffMax = 30 * time.Second
 )
 
 // ResultHandler monitors results/ and delivers notifications to agents.
@@ -205,7 +206,7 @@ func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
 }
 
 // processCommandResultFile processes planner results using the notification lease pattern.
-// Notifies Orchestrator via queue write + macOS notification.
+// Notifies Orchestrator via queue write.
 func (rh *ResultHandler) processCommandResultFile() int {
 	notified := 0
 	resultPath := filepath.Join(rh.maestroDir, "results", "planner.yaml")

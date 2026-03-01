@@ -1,6 +1,7 @@
 package tmux
 
 import (
+	"context"
 	"os/exec"
 	"strings"
 	"testing"
@@ -271,7 +272,7 @@ func TestSendTextAndSubmit(t *testing.T) {
 	time.Sleep(500 * time.Millisecond)
 
 	multiLine := "line1\nline2\nline3"
-	if err := SendTextAndSubmit(paneTarget, multiLine); err != nil {
+	if err := SendTextAndSubmit(context.Background(), paneTarget, multiLine); err != nil {
 		t.Fatalf("SendTextAndSubmit: %v", err)
 	}
 
@@ -307,7 +308,7 @@ func TestSendTextAndSubmit_SingleLine(t *testing.T) {
 	}
 	time.Sleep(500 * time.Millisecond)
 
-	if err := SendTextAndSubmit(paneTarget, "hello world"); err != nil {
+	if err := SendTextAndSubmit(context.Background(), paneTarget, "hello world"); err != nil {
 		t.Fatalf("SendTextAndSubmit: %v", err)
 	}
 

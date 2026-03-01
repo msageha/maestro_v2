@@ -200,6 +200,19 @@ func (lm *LeaseManager) IsLeaseExpired(leaseExpiresAt *string) bool {
 	return time.Now().UTC().After(expires)
 }
 
+// IsLeaseNearExpiry checks if a lease will expire within the given buffer duration.
+// Returns true if the lease expires within bufferSec seconds from now.
+func (lm *LeaseManager) IsLeaseNearExpiry(leaseExpiresAt *string, bufferSec int) bool {
+	if leaseExpiresAt == nil {
+		return true
+	}
+	expires, err := time.Parse(time.RFC3339, *leaseExpiresAt)
+	if err != nil {
+		return true
+	}
+	return time.Now().UTC().Add(time.Duration(bufferSec) * time.Second).After(expires)
+}
+
 // ExpireCommands returns commands whose leases have expired (periodic scan step 2).
 func (lm *LeaseManager) ExpireCommands(commands []model.Command) []int {
 	var expired []int
@@ -207,7 +220,7 @@ func (lm *LeaseManager) ExpireCommands(commands []model.Command) []int {
 		cmd := &commands[i]
 		if cmd.Status == model.StatusInProgress && lm.IsLeaseExpired(cmd.LeaseExpiresAt) {
 			expired = append(expired, i)
-			lm.log(LogLevelWarn, "lease_expired type=command id=%s epoch=%d owner=%s",
+			lm.log(LogLevelDebug, "lease_expired type=command id=%s epoch=%d owner=%s",
 				cmd.ID, cmd.LeaseEpoch, ptrStr(cmd.LeaseOwner))
 		}
 	}
@@ -221,11 +234,32 @@ func (lm *LeaseManager) ExpireTasks(tasks []model.Task) []int {
 		task := &tasks[i]
 		if task.Status == model.StatusInProgress && lm.IsLeaseExpired(task.LeaseExpiresAt) {
 			expired = append(expired, i)
-			lm.log(LogLevelWarn, "lease_expired type=task id=%s epoch=%d owner=%s",
+			lm.log(LogLevelInfo, "lease_expired type=task id=%s epoch=%d owner=%s",
 				task.ID, task.LeaseEpoch, ptrStr(task.LeaseOwner))
 		}
 	}
 	return expired
+}
+
+// RenewableCommands returns commands whose leases are approaching expiry but not yet expired.
+// Used for preemptive renewal to avoid the expire→auto-extend cycle.
+func (lm *LeaseManager) RenewableCommands(commands []model.Command, bufferSec int) []int {
+	var renewable []int
+	for i := range commands {
+		cmd := &commands[i]
+		if cmd.Status != model.StatusInProgress {
+			continue
+		}
+		if lm.IsLeaseExpired(cmd.LeaseExpiresAt) {
+			continue // already expired; handled by ExpireCommands
+		}
+		if lm.IsLeaseNearExpiry(cmd.LeaseExpiresAt, bufferSec) {
+			renewable = append(renewable, i)
+			lm.log(LogLevelDebug, "lease_near_expiry type=command id=%s epoch=%d",
+				cmd.ID, cmd.LeaseEpoch)
+		}
+	}
+	return renewable
 }
 
 // ExpireNotifications returns notifications whose leases have expired.

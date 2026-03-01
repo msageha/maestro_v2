@@ -27,6 +27,9 @@ type ScanCounters struct {
 	NotificationRetries   int
 	SignalDeliveries      int
 	SignalRetries         int
+	LeaseRenewals         int
+	LeaseExtensions       int
+	LeaseReleases         int
 }
 
 // MetricsHandler generates metrics and dashboard files.
@@ -101,6 +104,9 @@ func (mh *MetricsHandler) UpdateMetrics(
 	metrics.Counters.DeadLetters += counters.DeadLetters
 	metrics.Counters.ReconciliationRepairs += counters.ReconciliationRepairs
 	metrics.Counters.NotificationRetries += counters.NotificationRetries
+	metrics.Counters.LeaseRenewals += counters.LeaseRenewals
+	metrics.Counters.LeaseExtensions += counters.LeaseExtensions
+	metrics.Counters.LeaseReleases += counters.LeaseReleases
 
 	// Update heartbeat and timestamp
 	heartbeat := scanStart.UTC().Format(time.RFC3339)

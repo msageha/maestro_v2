@@ -12,7 +12,7 @@ import (
 
 func setupTestServer(t *testing.T) (*Server, *Client, string) {
 	t.Helper()
-	// Use /tmp directly to avoid macOS Unix socket path length limit (104 bytes)
+	// Use /tmp directly to keep Unix socket path short (POSIX limit varies by OS)
 	dir, err := os.MkdirTemp("/tmp", "maestro-uds-test-*")
 	if err != nil {
 		t.Fatalf("create temp dir: %v", err)

@@ -198,13 +198,29 @@ func TestApplyDefaults(t *testing.T) {
 	if cfg.CooldownAfterClear != 3 {
 		t.Errorf("CooldownAfterClear: got %d, want 3", cfg.CooldownAfterClear)
 	}
+	if cfg.ClearConfirmTimeoutSec != 5 {
+		t.Errorf("ClearConfirmTimeoutSec: got %d, want 5", cfg.ClearConfirmTimeoutSec)
+	}
+	if cfg.ClearConfirmPollMs != 250 {
+		t.Errorf("ClearConfirmPollMs: got %d, want 250", cfg.ClearConfirmPollMs)
+	}
+	if cfg.ClearMaxAttempts != 3 {
+		t.Errorf("ClearMaxAttempts: got %d, want 3", cfg.ClearMaxAttempts)
+	}
+	if cfg.ClearRetryBackoffMs != 500 {
+		t.Errorf("ClearRetryBackoffMs: got %d, want 500", cfg.ClearRetryBackoffMs)
+	}
 
 	// Non-zero values preserved
 	cfg = applyDefaults(model.WatcherConfig{
-		BusyCheckInterval:   10,
-		BusyCheckMaxRetries: 50,
-		IdleStableSec:       8,
-		CooldownAfterClear:  5,
+		BusyCheckInterval:      10,
+		BusyCheckMaxRetries:    50,
+		IdleStableSec:          8,
+		CooldownAfterClear:     5,
+		ClearConfirmTimeoutSec: 10,
+		ClearConfirmPollMs:     500,
+		ClearMaxAttempts:       5,
+		ClearRetryBackoffMs:    1000,
 	})
 	if cfg.BusyCheckInterval != 10 {
 		t.Errorf("BusyCheckInterval: got %d, want 10", cfg.BusyCheckInterval)
@@ -217,6 +233,18 @@ func TestApplyDefaults(t *testing.T) {
 	}
 	if cfg.CooldownAfterClear != 5 {
 		t.Errorf("CooldownAfterClear: got %d, want 5", cfg.CooldownAfterClear)
+	}
+	if cfg.ClearConfirmTimeoutSec != 10 {
+		t.Errorf("ClearConfirmTimeoutSec: got %d, want 10", cfg.ClearConfirmTimeoutSec)
+	}
+	if cfg.ClearConfirmPollMs != 500 {
+		t.Errorf("ClearConfirmPollMs: got %d, want 500", cfg.ClearConfirmPollMs)
+	}
+	if cfg.ClearMaxAttempts != 5 {
+		t.Errorf("ClearMaxAttempts: got %d, want 5", cfg.ClearMaxAttempts)
+	}
+	if cfg.ClearRetryBackoffMs != 1000 {
+		t.Errorf("ClearRetryBackoffMs: got %d, want 1000", cfg.ClearRetryBackoffMs)
 	}
 }
 
@@ -484,13 +512,38 @@ func TestIsPromptReady(t *testing.T) {
 		},
 		{
 			name:    "prompt outside maxPromptSearchLines window (false positive guard)",
-			content: "❯ old prompt\nline2\nline3\nline4\nline5\n",
+			content: "❯ old prompt\nline2\nline3\nline4\nline5\nline6\nline7\n",
 			want:    false,
 		},
 		{
 			name:    "unicode prompt only",
 			content: "❯",
 			want:    true,
+		},
+		{
+			name:    "prompt with ANSI escape sequences",
+			content: "output\n \x1b[32m❯\x1b[0m \n",
+			want:    true,
+		},
+		{
+			name:    "prompt hidden by ANSI bold/color",
+			content: "output\n\x1b[1;34mproject\x1b[0m \x1b[32m❯\x1b[0m\nstatus\n",
+			want:    true,
+		},
+		{
+			name:    "fallback > with ANSI escape",
+			content: "output\n\x1b[32m> \x1b[0m",
+			want:    true,
+		},
+		{
+			name:    "skill loading text obscuring prompt within 6 lines",
+			content: "output\n ❯ \nskill line 1\nskill line 2\nskill line 3\nskill line 4\n",
+			want:    true,
+		},
+		{
+			name:    "no prompt even with ANSI stripped",
+			content: "\x1b[32msome colored text\x1b[0m\nno prompt\n",
+			want:    false,
 		},
 	}
 
@@ -524,5 +577,115 @@ func TestLastNonBlankLine(t *testing.T) {
 				t.Errorf("lastNonBlankLine() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestStripANSI(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"no escape", "hello world", "hello world"},
+		{"CSI color", "\x1b[32mgreen\x1b[0m", "green"},
+		{"CSI bold+color", "\x1b[1;34mbold blue\x1b[0m", "bold blue"},
+		{"OSC title", "\x1b]0;window title\x07rest", "rest"},
+		{"OSC with ST", "\x1b]0;title\x1b\\rest", "rest"},
+		{"charset designator", "\x1b(Bhello", "hello"},
+		{"mixed", "\x1b[32m❯\x1b[0m input", "❯ input"},
+		{"empty", "", ""},
+		{"no escape with unicode", "project ❯ ", "project ❯ "},
+		{"private CSI bracketed paste", "\x1b[?2004htext\x1b[?2004l", "text"},
+		{"private CSI cursor hide", "\x1b[?25lhidden\x1b[?25h", "hidden"},
+		{"CSI with tilde final", "\x1b[1;2~rest", "rest"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := stripANSI(tt.input)
+			if got != tt.want {
+				t.Errorf("stripANSI(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- clearTextVisible tests ---
+
+func TestClearTextVisible(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{
+			name:    "clear on last line (production failure mode)",
+			content: "some output\n/clear\n",
+			want:    true,
+		},
+		{
+			name:    "clear in prompt line",
+			content: "output\n❯ /clear\n",
+			want:    true,
+		},
+		{
+			name:    "clear with ANSI escapes",
+			content: "output\n\x1b[32m❯\x1b[0m /clear\nstatus\n",
+			want:    true,
+		},
+		{
+			name:    "no clear — normal prompt",
+			content: "output\n ❯ \nTokens: 1.2k\n",
+			want:    false,
+		},
+		{
+			name:    "no clear — empty",
+			content: "",
+			want:    false,
+		},
+		{
+			name:    "no clear — only blanks",
+			content: "\n\n\n",
+			want:    false,
+		},
+		{
+			name:    "clear far above (outside 6-line window)",
+			content: "/clear\nline2\nline3\nline4\nline5\nline6\nline7\nline8\n",
+			want:    false,
+		},
+		{
+			name:    "clear within 6-line window",
+			content: "line1\n/clear\nline3\nline4\nline5\nline6\n",
+			want:    true,
+		},
+		{
+			name:    "clear as part of longer text (substring match)",
+			content: "output\nRunning /clear command...\n",
+			want:    true,
+		},
+		{
+			name:    "clear after successful processing (gone)",
+			content: "Context cleared\n ❯ \nTokens: 0\n",
+			want:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := clearTextVisible(tt.content)
+			if got != tt.want {
+				t.Errorf("clearTextVisible() = %v, want %v\ncontent: %q", got, tt.want, tt.content)
+			}
+		})
+	}
+}
+
+// --- promptReadyLines constant test ---
+
+func TestPromptReadyLinesIncreased(t *testing.T) {
+	// Verify the capture depth has been increased from 5 to 12
+	// to accommodate Claude Code's status bars and improve prompt detection.
+	if promptReadyLines < 12 {
+		t.Errorf("promptReadyLines = %d, want >= 12 (increased for better prompt detection)", promptReadyLines)
 	}
 }

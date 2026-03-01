@@ -49,8 +49,8 @@ func (v BusyVerdict) String() string {
 }
 
 const (
-	promptReadyLines   = 5 // プロンプト検出+安定性ハッシュ用
-	busyHintLines      = 5 // busy パターンマッチ用
+	promptReadyLines   = 12 // プロンプト検出+安定性ハッシュ用 (12 lines to accommodate status bars)
+	busyHintLines      = 5  // busy パターンマッチ用
 	stableCheckRounds  = 1 // 安定性判定に必要なラウンド数
 	lastLineMaxDisplay = 80
 )
@@ -167,6 +167,18 @@ func applyDefaults(cfg model.WatcherConfig) model.WatcherConfig {
 	if cfg.WaitReadyMaxRetries <= 0 {
 		cfg.WaitReadyMaxRetries = 15
 	}
+	if cfg.ClearConfirmTimeoutSec <= 0 {
+		cfg.ClearConfirmTimeoutSec = 5
+	}
+	if cfg.ClearConfirmPollMs <= 0 {
+		cfg.ClearConfirmPollMs = 250
+	}
+	if cfg.ClearMaxAttempts <= 0 {
+		cfg.ClearMaxAttempts = 3
+	}
+	if cfg.ClearRetryBackoffMs <= 0 {
+		cfg.ClearRetryBackoffMs = 500
+	}
 	return cfg
 }
 
@@ -197,7 +209,7 @@ func (e *Executor) Execute(req ExecRequest) ExecResult {
 
 	switch req.Mode {
 	case ModeIsBusy:
-		return e.execIsBusy(paneTarget)
+		return e.execIsBusy(ctx, paneTarget)
 	case ModeClear:
 		return e.execClear(ctx, req, paneTarget)
 	case ModeInterrupt:
@@ -205,15 +217,15 @@ func (e *Executor) Execute(req ExecRequest) ExecResult {
 	case ModeWithClear:
 		return e.execWithClear(ctx, req, paneTarget)
 	case ModeDeliver:
-		return e.execDeliver(req, paneTarget)
+		return e.execDeliver(ctx, req, paneTarget)
 	default:
 		return ExecResult{Error: fmt.Errorf("unknown exec mode: %s", req.Mode)}
 	}
 }
 
 // execIsBusy checks agent busy state. Returns Success=true if busy, false if idle.
-func (e *Executor) execIsBusy(paneTarget string) ExecResult {
-	verdict := e.detectBusy(paneTarget)
+func (e *Executor) execIsBusy(ctx context.Context, paneTarget string) ExecResult {
+	verdict := e.detectBusy(ctx, paneTarget)
 	return ExecResult{Success: verdict != VerdictIdle}
 }
 
@@ -226,15 +238,14 @@ func (e *Executor) execClear(ctx context.Context, req ExecRequest, paneTarget st
 		return ExecResult{Error: fmt.Errorf("wait ready before /clear: %w", err), Retryable: true}
 	}
 
-	if err := tmux.SendCommand(paneTarget, "/clear"); err != nil {
-		return ExecResult{Error: fmt.Errorf("send /clear: %w", err), Retryable: true}
-	}
-	if err := sleepCtx(ctx, time.Duration(e.config.CooldownAfterClear)*time.Second); err != nil {
-		return ExecResult{Error: fmt.Errorf("cooldown after /clear cancelled: %w", err), Retryable: true}
+	if err := e.clearAndConfirm(ctx, paneTarget); err != nil {
+		return ExecResult{Error: fmt.Errorf("clear: %w", err), Retryable: true}
 	}
 
+	// Verify prompt readiness after clear (strict — no subsequent busy detection)
 	if err := e.waitStable(ctx, paneTarget, false); err != nil {
-		return ExecResult{Error: fmt.Errorf("clear: wait stable: %w", err), Retryable: true}
+		e.log(LogLevelWarn, "clear_post_stable_failed agent_id=%s error=%v", req.AgentID, err)
+		return ExecResult{Error: fmt.Errorf("clear: post-clear stability: %w", err), Retryable: true}
 	}
 	return ExecResult{Success: true}
 }
@@ -263,17 +274,15 @@ func (e *Executor) execInterrupt(ctx context.Context, req ExecRequest, paneTarge
 		return ExecResult{Error: fmt.Errorf("wait ready before /clear (interrupt): %w", err), Retryable: true}
 	}
 
-	// Step 3: /clear
-	if err := tmux.SendCommand(paneTarget, "/clear"); err != nil {
-		return ExecResult{Error: fmt.Errorf("send /clear: %w", err), Retryable: true}
-	}
-	if err := sleepCtx(ctx, time.Duration(e.config.CooldownAfterClear)*time.Second); err != nil {
-		return ExecResult{Error: fmt.Errorf("cooldown after /clear cancelled: %w", err), Retryable: true}
+	// Step 3+4: /clear with confirmation (replaces send + cooldown + waitStable)
+	if err := e.clearAndConfirm(ctx, paneTarget); err != nil {
+		return ExecResult{Error: fmt.Errorf("interrupt: %w", err), Retryable: true}
 	}
 
-	// Step 4: Confirm stability (strict prompt check — no subsequent busy detection)
+	// Verify prompt readiness after clear (strict — no subsequent busy detection)
 	if err := e.waitStable(ctx, paneTarget, false); err != nil {
-		return ExecResult{Error: fmt.Errorf("interrupt: wait stable: %w", err), Retryable: true}
+		e.log(LogLevelWarn, "interrupt_post_stable_failed agent_id=%s error=%v", req.AgentID, err)
+		return ExecResult{Error: fmt.Errorf("interrupt: post-clear stability: %w", err), Retryable: true}
 	}
 
 	// Step 5: Set @status="idle" — the agent is now idle after interrupt.
@@ -293,7 +302,7 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 
 	// Orchestrator: never /clear, fall through to deliver mode
 	if req.AgentID == "orchestrator" {
-		return e.execDeliver(req, paneTarget)
+		return e.execDeliver(ctx, req, paneTarget)
 	}
 
 	// Step 1: Wait for prompt readiness
@@ -302,24 +311,16 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 		return ExecResult{Error: fmt.Errorf("wait ready before /clear: %w", err), Retryable: true}
 	}
 
-	// Step 2: /clear
+	// Step 2+3: /clear with confirmation (replaces send + cooldown + waitStable)
 	e.log(LogLevelDebug, "clear_operation agent_id=%s mode=with_clear", req.AgentID)
-	if err := tmux.SendCommand(paneTarget, "/clear"); err != nil {
-		return ExecResult{Error: fmt.Errorf("send /clear: %w", err), Retryable: true}
-	}
-	if err := sleepCtx(ctx, time.Duration(e.config.CooldownAfterClear)*time.Second); err != nil {
-		return ExecResult{Error: fmt.Errorf("cooldown after /clear cancelled: %w", err), Retryable: true}
-	}
-
-	// Step 3: Stability check (soft prompt — detectBusyWithRetry guards delivery)
-	if err := e.waitStable(ctx, paneTarget, true); err != nil {
-		e.log(LogLevelWarn, "delivery_failure agent_id=%s task_id=%s reason=unstable_after_clear",
-			req.AgentID, req.TaskID)
-		return ExecResult{Error: fmt.Errorf("with_clear: wait stable: %w", err), Retryable: true}
+	if err := e.clearAndConfirm(ctx, paneTarget); err != nil {
+		e.log(LogLevelWarn, "delivery_failure agent_id=%s task_id=%s reason=clear_not_confirmed error=%v",
+			req.AgentID, req.TaskID, err)
+		return ExecResult{Error: fmt.Errorf("with_clear: %w", err), Retryable: true}
 	}
 
 	// Step 4: Busy detection with retry
-	verdict := e.detectBusyWithRetry(req, paneTarget)
+	verdict := e.detectBusyWithRetry(ctx, req, paneTarget)
 	if verdict != VerdictIdle {
 		reason := "busy_timeout"
 		if verdict == VerdictUndecided {
@@ -338,13 +339,13 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 }
 
 // execDeliver delivers a message without /clear (Planner/Orchestrator).
-func (e *Executor) execDeliver(req ExecRequest, paneTarget string) ExecResult {
+func (e *Executor) execDeliver(ctx context.Context, req ExecRequest, paneTarget string) ExecResult {
 	e.log(LogLevelInfo, "delivery_start agent_id=%s task_id=%s command_id=%s lease_epoch=%d attempt=%d",
 		req.AgentID, req.TaskID, req.CommandID, req.LeaseEpoch, req.Attempt)
 
 	// Orchestrator: strict busy check, no retry, immediate failure if busy
 	if req.AgentID == "orchestrator" {
-		verdict := e.detectBusy(paneTarget)
+		verdict := e.detectBusy(ctx, paneTarget)
 		e.log(LogLevelDebug, "busy_detection agent_id=orchestrator verdict=%s", verdict)
 		if verdict != VerdictIdle {
 			e.log(LogLevelWarn, "delivery_failure agent_id=orchestrator reason=orchestrator_busy verdict=%s", verdict)
@@ -357,7 +358,7 @@ func (e *Executor) execDeliver(req ExecRequest, paneTarget string) ExecResult {
 	}
 
 	// Planner/other: busy detection with retry
-	verdict := e.detectBusyWithRetry(req, paneTarget)
+	verdict := e.detectBusyWithRetry(ctx, req, paneTarget)
 	if verdict != VerdictIdle {
 		reason := "busy_timeout"
 		if verdict == VerdictUndecided {
@@ -377,7 +378,11 @@ func (e *Executor) execDeliver(req ExecRequest, paneTarget string) ExecResult {
 // sendAndConfirm sends the message and updates @status to busy.
 func (e *Executor) sendAndConfirm(req ExecRequest, paneTarget string) ExecResult {
 	// Send message via paste-buffer + Enter for reliable multi-line delivery
-	if err := tmux.SendTextAndSubmit(paneTarget, req.Message); err != nil {
+	ctx := req.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := tmux.SendTextAndSubmit(ctx, paneTarget, req.Message); err != nil {
 		e.log(LogLevelError, "delivery_error agent_id=%s task_id=%s error=send_text: %v",
 			req.AgentID, req.TaskID, err)
 		return ExecResult{Error: fmt.Errorf("send message: %w", err), Retryable: true}
@@ -393,10 +398,175 @@ func (e *Executor) sendAndConfirm(req ExecRequest, paneTarget string) ExecResult
 	return ExecResult{Success: true}
 }
 
+// --- Clear Confirmation ---
+
+// clearAndConfirm sends /clear and confirms it was processed by the target application.
+// It retries up to ClearMaxAttempts times. Returns nil on confirmed clear, or an error
+// if all attempts fail (fail-closed: caller must NOT proceed with delivery).
+//
+// Confirmation checks (per poll):
+//  1. "/clear" text is NOT visible near the bottom of the pane (primary signal —
+//     directly detects the production failure mode where /clear remains as unprocessed
+//     text in the input field).
+//  2. Pane content hash has changed from pre-clear snapshot (secondary signal).
+//  3. Pane content is stable across two consecutive polls.
+func (e *Executor) clearAndConfirm(ctx context.Context, paneTarget string) error {
+	timeout := time.Duration(e.config.ClearConfirmTimeoutSec) * time.Second
+	pollInterval := time.Duration(e.config.ClearConfirmPollMs) * time.Millisecond
+	maxAttempts := e.config.ClearMaxAttempts
+	backoffMs := e.config.ClearRetryBackoffMs
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("clear_and_confirm cancelled before attempt %d: %w", attempt, err)
+		}
+
+		// Capture pre-clear hash
+		preClearContent, err := tmux.CapturePaneJoined(paneTarget, promptReadyLines)
+		preClearHashValid := err == nil
+		if err != nil {
+			e.log(LogLevelWarn, "clear_confirm pre_capture error=%v attempt=%d (hash check disabled)", err, attempt)
+		}
+		preClearHash := contentHash(preClearContent)
+
+		// Send /clear
+		if err := tmux.SendCommand(paneTarget, "/clear"); err != nil {
+			e.log(LogLevelWarn, "clear_confirm send_clear error=%v attempt=%d", err, attempt)
+			if attempt < maxAttempts {
+				backoff := time.Duration(backoffMs*(1<<(attempt-1))) * time.Millisecond
+				if err := sleepCtx(ctx, backoff); err != nil {
+					return fmt.Errorf("clear_confirm backoff cancelled: %w", err)
+				}
+				continue
+			}
+			return fmt.Errorf("clear_confirm: send /clear failed after %d attempts: %w", maxAttempts, err)
+		}
+
+		// Poll for confirmation within timeout window
+		confirmed, err := e.pollClearConfirmation(ctx, paneTarget, preClearHash, preClearHashValid, timeout, pollInterval)
+		if err != nil {
+			return err // context cancelled
+		}
+		if confirmed {
+			e.log(LogLevelDebug, "clear_confirm confirmed attempt=%d", attempt)
+			return nil
+		}
+
+		// Not confirmed — retry with backoff
+		e.log(LogLevelWarn, "clear_confirm not_confirmed attempt=%d/%d", attempt, maxAttempts)
+		if attempt < maxAttempts {
+			backoff := time.Duration(backoffMs*(1<<(attempt-1))) * time.Millisecond
+			e.log(LogLevelDebug, "clear_confirm retry_backoff=%v", backoff)
+			if err := sleepCtx(ctx, backoff); err != nil {
+				return fmt.Errorf("clear_confirm backoff cancelled: %w", err)
+			}
+		}
+	}
+
+	return fmt.Errorf("clear_confirm: /clear not confirmed after %d attempts", maxAttempts)
+}
+
+// pollClearConfirmation polls the pane within the timeout window to confirm /clear was processed.
+// Returns (true, nil) if confirmed, (false, nil) if timed out, or (false, err) if ctx cancelled.
+//
+// Confirmation requires ALL of:
+//  1. "/clear" text is NOT visible near the bottom of the pane (primary signal)
+//  2. Pane content hash has changed from pre-clear snapshot (mandatory when preClearHashValid)
+//  3. Pane content is stable across two consecutive polls (debounce)
+//
+// When preClearHashValid is false (pre-capture failed), hash change is not required but
+// stability (3 consecutive polls) is demanded as a stricter fallback.
+func (e *Executor) pollClearConfirmation(
+	ctx context.Context,
+	paneTarget string,
+	preClearHash string,
+	preClearHashValid bool,
+	timeout, pollInterval time.Duration,
+) (bool, error) {
+	deadline := time.Now().Add(timeout)
+	stableCount := 0
+	hashChanged := false
+	var prevPollHash string
+
+	for time.Now().Before(deadline) {
+		if err := sleepCtx(ctx, pollInterval); err != nil {
+			return false, fmt.Errorf("clear_confirm poll cancelled: %w", err)
+		}
+
+		content, err := tmux.CapturePaneJoined(paneTarget, promptReadyLines)
+		if err != nil {
+			e.log(LogLevelDebug, "clear_confirm poll capture error=%v", err)
+			stableCount = 0
+			prevPollHash = ""
+			hashChanged = false
+			continue
+		}
+
+		currentHash := contentHash(content)
+
+		// Check 1 (primary): "/clear" text must NOT be visible near the bottom of the pane.
+		if clearTextVisible(content) {
+			e.log(LogLevelDebug, "clear_confirm /clear text still visible")
+			stableCount = 0
+			prevPollHash = currentHash
+			continue
+		}
+
+		// Check 2 (mandatory when valid): hash must differ from pre-clear state.
+		if preClearHashValid && currentHash != preClearHash {
+			hashChanged = true
+		}
+
+		// Check 3: stability — consecutive polls with same hash.
+		if prevPollHash != "" && currentHash == prevPollHash {
+			stableCount++
+		} else {
+			stableCount = 1
+		}
+		prevPollHash = currentHash
+
+		// Confirmation logic:
+		// - With valid pre-clear hash: require hash change + 2 stable polls (debounce)
+		// - Without valid pre-clear hash: require 3 stable polls (stricter debounce as fallback)
+		if preClearHashValid {
+			if hashChanged && stableCount >= 2 {
+				return true, nil
+			}
+		} else {
+			if stableCount >= 3 {
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
+}
+
+// clearTextVisible checks whether "/clear" text is visible near the bottom of the pane content.
+// This is the primary signal for detecting that /clear was NOT processed as a command
+// and instead remains as literal text in the input field.
+func clearTextVisible(content string) bool {
+	lines := strings.Split(content, "\n")
+	// Check the last 6 non-blank lines (covers input line + a few status lines)
+	checked := 0
+	for i := len(lines) - 1; i >= 0 && checked < 6; i-- {
+		trimmed := strings.TrimSpace(stripANSI(lines[i]))
+		if trimmed == "" {
+			continue
+		}
+		if strings.Contains(trimmed, "/clear") {
+			return true
+		}
+		checked++
+	}
+	return false
+}
+
 // --- Busy Detection ---
 
 // detectBusy performs one round of the 3-stage busy detection algorithm.
-func (e *Executor) detectBusy(paneTarget string) BusyVerdict {
+// Returns VerdictUndecided if ctx is cancelled during the activity probe sleep.
+func (e *Executor) detectBusy(ctx context.Context, paneTarget string) BusyVerdict {
 	// Stage 1: pane_current_command — quick gate
 	cmd, err := tmux.GetPaneCurrentCommand(paneTarget)
 	if err != nil {
@@ -435,7 +605,10 @@ func (e *Executor) detectBusy(paneTarget string) BusyVerdict {
 		return VerdictUndecided
 	}
 	hashA := contentHash(joinedContent)
-	time.Sleep(time.Duration(e.config.IdleStableSec) * time.Second)
+	if err := sleepCtx(ctx, time.Duration(e.config.IdleStableSec)*time.Second); err != nil {
+		e.log(LogLevelDebug, "busy_detection activity_probe sleep cancelled: %v", err)
+		return VerdictUndecided
+	}
 
 	joinedContent2, err := tmux.CapturePaneJoined(paneTarget, busyHintLines)
 	if err != nil {
@@ -462,8 +635,9 @@ func (e *Executor) detectBusy(paneTarget string) BusyVerdict {
 }
 
 // detectBusyWithRetry runs busy detection with a retry loop on VerdictBusy.
-func (e *Executor) detectBusyWithRetry(req ExecRequest, paneTarget string) BusyVerdict {
-	verdict := e.detectBusy(paneTarget)
+// Returns VerdictUndecided if ctx is cancelled during retries.
+func (e *Executor) detectBusyWithRetry(ctx context.Context, req ExecRequest, paneTarget string) BusyVerdict {
+	verdict := e.detectBusy(ctx, paneTarget)
 	if verdict != VerdictBusy {
 		return verdict
 	}
@@ -471,9 +645,12 @@ func (e *Executor) detectBusyWithRetry(req ExecRequest, paneTarget string) BusyV
 	for i := 1; i <= e.config.BusyCheckMaxRetries; i++ {
 		e.log(LogLevelDebug, "busy_retry retry=%d/%d agent_id=%s",
 			i, e.config.BusyCheckMaxRetries, req.AgentID)
-		time.Sleep(time.Duration(e.config.BusyCheckInterval) * time.Second)
+		if err := sleepCtx(ctx, time.Duration(e.config.BusyCheckInterval)*time.Second); err != nil {
+			e.log(LogLevelDebug, "busy_retry sleep cancelled: %v", err)
+			return VerdictUndecided
+		}
 
-		verdict = e.detectBusy(paneTarget)
+		verdict = e.detectBusy(ctx, paneTarget)
 		if verdict != VerdictBusy {
 			return verdict
 		}
@@ -529,7 +706,7 @@ func (e *Executor) waitStable(ctx context.Context, paneTarget string, softPrompt
 	}
 	if !isPromptReady(finalContent) {
 		if softPromptCheck {
-			e.log(LogLevelWarn, "wait_stable prompt_not_detected pane=%s last_line=%q (proceeding — detectBusy will guard delivery)",
+			e.log(LogLevelInfo, "wait_stable prompt_not_detected pane=%s last_line=%q (proceeding — detectBusy will guard delivery)",
 				paneTarget, lastNonBlankLine(finalContent))
 			return nil
 		}
@@ -560,7 +737,16 @@ func contentHash(s string) string {
 // status bar (typically 1–2 lines below the prompt) while bounding the
 // search to avoid false positives from agent output that happens to
 // contain ❯ in earlier lines.
-const maxPromptSearchLines = 4
+const maxPromptSearchLines = 6
+
+// ansiEscape matches ANSI escape sequences including CSI (with private params),
+// OSC, and charset designators.
+var ansiEscape = regexp.MustCompile(`\x1b(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|\][^\x07]*(?:\x07|\x1b\\)|\([B0UK]|[>=])`)
+
+// stripANSI removes ANSI escape sequences from s.
+func stripANSI(s string) string {
+	return ansiEscape.ReplaceAllString(s, "")
+}
 
 func isPromptReady(content string) bool {
 	lines := strings.Split(content, "\n")
@@ -569,7 +755,7 @@ func isPromptReady(content string) bool {
 	// so the prompt line is not necessarily the last non-blank line.
 	checked := 0
 	for i := len(lines) - 1; i >= 0 && checked < maxPromptSearchLines; i-- {
-		trimmed := strings.TrimSpace(lines[i])
+		trimmed := strings.TrimSpace(stripANSI(lines[i]))
 		if trimmed == "" {
 			continue
 		}
@@ -582,7 +768,7 @@ func isPromptReady(content string) bool {
 	// Limiting to the last line avoids false positives from markdown
 	// blockquotes or shell output on earlier lines.
 	for i := len(lines) - 1; i >= 0; i-- {
-		trimmed := strings.TrimSpace(lines[i])
+		trimmed := strings.TrimSpace(stripANSI(lines[i]))
 		if trimmed == "" {
 			continue
 		}
@@ -595,7 +781,7 @@ func isPromptReady(content string) bool {
 // It uses WaitReadyIntervalSec and WaitReadyMaxRetries from config for timing.
 // Worst-case duration: (WaitReadyMaxRetries+1) × WaitReadyIntervalSec (default 16 × 2s = 32s).
 //
-// If prompt detection fails after all retries, the function logs a warning
+// If prompt detection fails after all retries, the function logs at INFO level
 // and returns nil (proceeds) instead of blocking dispatch. The caller's
 // subsequent detectBusyWithRetry provides a safety net against delivering
 // to a busy agent.
@@ -636,7 +822,7 @@ func (e *Executor) waitReady(ctx context.Context, paneTarget string) error {
 
 	// Fallback: prompt not detected, but proceed with a warning.
 	// The subsequent detectBusyWithRetry() will catch if the agent is actually busy.
-	e.log(LogLevelWarn, "wait_ready prompt_fallback pane=%s: prompt not detected after %d attempts, proceeding anyway",
+	e.log(LogLevelInfo, "wait_ready prompt_fallback pane=%s: prompt not detected after %d attempts, proceeding (detectBusy will guard)",
 		paneTarget, maxRetries+1)
 	return nil
 }

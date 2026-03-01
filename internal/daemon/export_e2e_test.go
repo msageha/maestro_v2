@@ -59,3 +59,30 @@ func E2EReadPlannerSignals(t *testing.T, e *E2EDaemon) model.PlannerSignalQueue 
 	t.Helper()
 	return readPlannerSignals(t, e.D)
 }
+
+// E2EWriteCancelRequest writes a cancel-request via queue-write and returns the raw response.
+func E2EWriteCancelRequest(t *testing.T, e *E2EDaemon, commandID, reason string) *uds.Response {
+	t.Helper()
+	return e.D.handleQueueWrite(makeQueueWriteRequest(t, QueueWriteParams{
+		Type:      "cancel-request",
+		CommandID: commandID,
+		Reason:    reason,
+	}))
+}
+
+// E2EWriteResultRaw writes a result and returns the raw response (does not fatalf on error).
+func E2EWriteResultRaw(t *testing.T, e *E2EDaemon, params ResultWriteParams) *uds.Response {
+	t.Helper()
+	return e.D.handleResultWrite(makeResultWriteRequest(t, params))
+}
+
+// E2ESetExecutorFactory overrides the executor factory on the queue handler.
+func E2ESetExecutorFactory(e *E2EDaemon, factory func(string, model.WatcherConfig, string) (AgentExecutor, error)) {
+	e.D.handler.SetExecutorFactory(factory)
+}
+
+// E2EReadResultFile reads a worker result file.
+func E2EReadResultFile(t *testing.T, e *E2EDaemon, workerID string) model.TaskResultFile {
+	t.Helper()
+	return readResultFile(t, e.D, workerID)
+}

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net"
 	"os"
+	"runtime/debug"
 	"sync"
 	"time"
 )
@@ -100,6 +101,11 @@ func (s *Server) acceptLoop() {
 func (s *Server) handleConn(conn net.Conn) {
 	defer s.wg.Done()
 	defer func() { _ = conn.Close() }()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("panic in handleConn: %v\n%s", r, debug.Stack())
+		}
+	}()
 
 	_ = conn.SetDeadline(time.Now().Add(s.connTimeout))
 
