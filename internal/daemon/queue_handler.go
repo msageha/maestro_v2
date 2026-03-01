@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -1033,7 +1034,21 @@ func (qh *QueueHandler) applyCommandDispatchResult(dr dispatchResult, cq *model.
 			return
 		}
 		if !dr.Success {
-			// Keep lease on dispatch error to prevent duplicate dispatch.
+			// For transient busy detection errors, release lease to allow immediate retry
+			if errors.Is(dr.Error, agent.ErrBusyUndecided) {
+				// VerdictUndecided = pane looks idle but had stale busy pattern
+				// Safe to retry immediately
+				qh.log(LogLevelWarn, "dispatch_failed_undecided_release type=command id=%s", cmd.ID)
+				if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
+					qh.log(LogLevelError, "release_command_lease_failed id=%s error=%v", cmd.ID, err)
+				} else {
+					qh.scanCounters.LeaseReleases++
+				}
+				*dirty = true
+				return
+			}
+
+			// Keep lease for other errors (prevents duplicate dispatch)
 			// The dispatch may have actually succeeded (tmux delivery OK but executor
 			// reported error). Releasing would cause pending revert → re-dispatch.
 			// Lease auto-extend will keep it in_progress; Reconciler R0 handles stuck state.

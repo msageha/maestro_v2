@@ -431,6 +431,15 @@ func GetPaneCurrentCommand(paneTarget string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// GetPanePID returns the process ID of the pane's shell process.
+func GetPanePID(paneTarget string) (string, error) {
+	out, err := output("display-message", "-t", paneTarget, "-p", "#{pane_pid}")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(out), nil
+}
+
 // runCtx executes a tmux command with context support and error classification.
 func runCtx(ctx context.Context, args ...string) error {
 	ctx, cancel := context.WithTimeout(ctx, defaultCmdTimeout)

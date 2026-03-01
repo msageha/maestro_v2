@@ -87,6 +87,7 @@ func (r *Reconciler) Reconcile() ([]ReconcileRepair, []DeferredNotification) {
 	var notifications []DeferredNotification
 
 	repairs = append(repairs, r.reconcileR0()...)
+	repairs = append(repairs, r.reconcileR0dispatch()...)
 
 	r0bRepairs, r0bNotifs := r.reconcileR0b()
 	repairs = append(repairs, r0bRepairs...)
@@ -211,6 +212,126 @@ func (r *Reconciler) reconcileR0() []ReconcileRepair {
 			CommandID: stuckCommandID,
 			Detail:    fmt.Sprintf("planning stuck %.0fs, state deleted + command removed from queue + worker tasks removed", stuckAgeSec),
 		})
+	}
+
+	return repairs
+}
+
+// reconcileR0dispatch detects commands stuck in dispatch phase (no state file created).
+// Detection: status=in_progress + no state file + age > dispatch_lease_sec
+// Action: Release lease and revert to pending for retry (with backoff and retry limit)
+func (r *Reconciler) reconcileR0dispatch() []ReconcileRepair {
+	var repairs []ReconcileRepair
+
+	queuePath := filepath.Join(r.maestroDir, "queue", "planner.yaml")
+	lockKey := "queue:planner"
+
+	r.lockMap.Lock(lockKey)
+	defer r.lockMap.Unlock(lockKey)
+
+	data, err := os.ReadFile(queuePath)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			r.log(LogLevelWarn, "R0-dispatch read_queue error=%v", err)
+		}
+		return nil
+	}
+
+	var cq model.CommandQueue
+	if err := yamlv3.Unmarshal(data, &cq); err != nil {
+		r.log(LogLevelWarn, "R0-dispatch parse_queue error=%v", err)
+		return nil
+	}
+
+	leaseSec := r.config.Watcher.DispatchLeaseSec
+	if leaseSec <= 0 {
+		leaseSec = 300
+	}
+	// Use 2x lease time for R0-dispatch detection to avoid false positives
+	// when planner is slow but still processing (minimum 10 minutes)
+	threshold := time.Duration(leaseSec*2) * time.Second
+	if threshold < 10*time.Minute {
+		threshold = 10 * time.Minute
+	}
+
+	dirty := false
+	for i := range cq.Commands {
+		cmd := &cq.Commands[i]
+		if cmd.Status != model.StatusInProgress {
+			continue
+		}
+
+		// Lock state:<commandID> to prevent race with planner submit
+		stateLockKey := "state:" + cmd.ID
+		r.lockMap.Lock(stateLockKey)
+
+		// Re-check state file existence under lock
+		statePath := filepath.Join(r.maestroDir, "state", "commands", cmd.ID+".yaml")
+		if _, err := os.Stat(statePath); err != nil {
+			// Only treat as missing if file doesn't exist
+			// Ignore other FS errors (permissions, etc) to avoid false positives
+			if !os.IsNotExist(err) {
+				r.log(LogLevelWarn, "R0-dispatch stat_error command=%s error=%v, skipping", cmd.ID, err)
+				r.lockMap.Unlock(stateLockKey)
+				continue
+			}
+			// State file doesn't exist - potential dispatch deadlock
+		} else {
+			// State file appeared - planner succeeded, no action needed
+			r.log(LogLevelDebug, "R0-dispatch state_exists_skip command=%s", cmd.ID)
+			r.lockMap.Unlock(stateLockKey)
+			continue
+		}
+
+		// Check age based on updated_at (last lease activity)
+		updatedAt, err := time.Parse(time.RFC3339, cmd.UpdatedAt)
+		if err != nil {
+			r.log(LogLevelWarn, "R0-dispatch parse_updated_at command=%s error=%v", cmd.ID, err)
+			r.lockMap.Unlock(stateLockKey)
+			continue
+		}
+
+		age := time.Since(updatedAt)
+		if age < threshold {
+			r.lockMap.Unlock(stateLockKey)
+			continue // Still within dispatch window
+		}
+
+		r.log(LogLevelWarn, "R0-dispatch dispatch_deadlock command=%s age_sec=%.0f attempts=%d no_state_file",
+			cmd.ID, age.Seconds(), cmd.Attempts)
+
+		// Release lease and revert to pending for retry
+		// Dead-lettering is handled by existing mechanisms based on command retry config
+		cmd.Status = model.StatusPending
+		cmd.LeaseOwner = nil
+		cmd.LeaseExpiresAt = nil
+		// Keep LeaseEpoch - will increment on next dispatch
+		// Keep Attempts counter - existing dead-letter logic uses this
+
+		// Note: No exponential backoff is applied here (model.Command lacks NotBefore field).
+		// Retry throttling is naturally provided by the periodic scan interval (~60s).
+		// If scan_interval_sec is reduced, consider adding NotBefore to model.Command schema.
+
+		errMsg := fmt.Sprintf("dispatch stuck %.0fs without state submission, reverted for retry",
+			age.Seconds())
+		cmd.LastError = &errMsg
+		cmd.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+
+		dirty = true
+		repairs = append(repairs, ReconcileRepair{
+			Pattern:   "R0-dispatch",
+			CommandID: cmd.ID,
+			Detail:    fmt.Sprintf("dispatch stuck %.0fs, lease released, reverted to pending", age.Seconds()),
+		})
+
+		// Release state lock after modifying command
+		r.lockMap.Unlock(stateLockKey)
+	}
+
+	if dirty {
+		if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
+			r.log(LogLevelError, "R0-dispatch write_queue error=%v", err)
+		}
 	}
 
 	return repairs

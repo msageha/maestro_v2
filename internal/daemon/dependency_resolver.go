@@ -160,6 +160,10 @@ func (dr *DependencyResolver) CheckPhaseTransitions(commandID string) ([]PhaseTr
 
 	phases, err := dr.stateReader.GetCommandPhases(commandID)
 	if err != nil {
+		if errors.Is(err, ErrStateNotFound) {
+			// Command not yet submitted by planner - no phases to check
+			return nil, nil
+		}
 		return nil, fmt.Errorf("get phases for %s: %w", commandID, err)
 	}
 

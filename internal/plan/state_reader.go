@@ -1,7 +1,9 @@
 package plan
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/daemon"
@@ -20,6 +22,10 @@ func NewPlanStateReader(sm *StateManager) *PlanStateReader {
 func (r *PlanStateReader) GetTaskState(commandID, taskID string) (model.Status, error) {
 	state, err := r.stateManager.LoadState(commandID)
 	if err != nil {
+		// Use errors.Is() to detect not-found without masking other FS errors
+		if errors.Is(err, os.ErrNotExist) {
+			return "", daemon.ErrStateNotFound
+		}
 		return "", err
 	}
 
@@ -33,6 +39,10 @@ func (r *PlanStateReader) GetTaskState(commandID, taskID string) (model.Status, 
 func (r *PlanStateReader) GetCommandPhases(commandID string) ([]daemon.PhaseInfo, error) {
 	state, err := r.stateManager.LoadState(commandID)
 	if err != nil {
+		// Use errors.Is() to detect not-found without masking other FS errors
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, daemon.ErrStateNotFound
+		}
 		return nil, err
 	}
 
@@ -86,6 +96,10 @@ func (r *PlanStateReader) GetCommandPhases(commandID string) ([]daemon.PhaseInfo
 func (r *PlanStateReader) GetTaskDependencies(commandID, taskID string) ([]string, error) {
 	state, err := r.stateManager.LoadState(commandID)
 	if err != nil {
+		// Use errors.Is() to detect not-found without masking other FS errors
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, daemon.ErrStateNotFound
+		}
 		return nil, err
 	}
 
@@ -167,7 +181,8 @@ func (r *PlanStateReader) UpdateTaskState(commandID, taskID string, newStatus mo
 func (r *PlanStateReader) IsCommandCancelRequested(commandID string) (bool, error) {
 	state, err := r.stateManager.LoadState(commandID)
 	if err != nil {
-		if !r.stateManager.StateExists(commandID) {
+		// Use errors.Is() to detect not-found without masking other FS errors
+		if errors.Is(err, os.ErrNotExist) {
 			return false, daemon.ErrStateNotFound
 		}
 		return false, err
@@ -178,6 +193,10 @@ func (r *PlanStateReader) IsCommandCancelRequested(commandID string) (bool, erro
 func (r *PlanStateReader) IsSystemCommitReady(commandID, taskID string) (bool, bool, error) {
 	state, err := r.stateManager.LoadState(commandID)
 	if err != nil {
+		// Use errors.Is() to detect not-found without masking other FS errors
+		if errors.Is(err, os.ErrNotExist) {
+			return false, false, daemon.ErrStateNotFound
+		}
 		return false, false, err
 	}
 

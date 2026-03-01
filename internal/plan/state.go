@@ -38,9 +38,7 @@ func (sm *StateManager) LoadState(commandID string) (*model.CommandState, error)
 	path := sm.StatePath(commandID)
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("state not found for command %s", commandID)
-		}
+		// Preserve os.ErrNotExist for errors.Is() checks by callers
 		return nil, fmt.Errorf("read state %s: %w", commandID, err)
 	}
 

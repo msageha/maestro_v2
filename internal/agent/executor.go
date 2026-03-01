@@ -4,6 +4,7 @@ package agent
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -47,6 +48,13 @@ func (v BusyVerdict) String() string {
 		return "undecided"
 	}
 }
+
+// Sentinel errors for specific executor conditions.
+var (
+	// ErrBusyUndecided is returned when busy detection is inconclusive.
+	// This is a transient condition safe for immediate retry.
+	ErrBusyUndecided = errors.New("agent busy: undecided_after_probes")
+)
 
 const (
 	promptReadyLines   = 12 // プロンプト検出+安定性ハッシュ用 (12 lines to accommodate status bars)
@@ -305,6 +313,48 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 		return e.execDeliver(ctx, req, paneTarget)
 	}
 
+	// Check if pane process has been restarted (PID changed)
+	currentPID, err := tmux.GetPanePID(paneTarget)
+	if err != nil {
+		e.log(LogLevelWarn, "get_pane_pid_failed agent_id=%s error=%v", req.AgentID, err)
+		// Continue with default behavior
+	} else {
+		storedPID, _ := tmux.GetUserVar(paneTarget, "clear_ready_pid")
+		if storedPID != "" && storedPID != currentPID {
+			// Process restarted, reset clear_ready flag
+			e.log(LogLevelInfo, "pane_process_restarted agent_id=%s old_pid=%s new_pid=%s, resetting clear_ready",
+				req.AgentID, storedPID, currentPID)
+			tmux.SetUserVar(paneTarget, "clear_ready", "")
+			tmux.SetUserVar(paneTarget, "clear_ready_pid", "")
+		}
+	}
+
+	// Check if this worker pane is ready for /clear (has active conversation)
+	clearReady, err := tmux.GetUserVar(paneTarget, "clear_ready")
+	if err != nil || clearReady != "true" {
+		// First dispatch: skip /clear, use deliver mode
+		e.log(LogLevelDebug, "first_dispatch agent_id=%s clear_ready=%s, using deliver mode",
+			req.AgentID, clearReady)
+
+		result := e.execDeliver(ctx, req, paneTarget)
+
+		// On success, mark this pane as clear-ready for future dispatches
+		if result.Success {
+			if err := tmux.SetUserVar(paneTarget, "clear_ready", "true"); err != nil {
+				e.log(LogLevelWarn, "set_clear_ready_failed agent_id=%s error=%v", req.AgentID, err)
+			}
+			// Store current PID to detect future process restarts
+			if currentPID != "" {
+				if err := tmux.SetUserVar(paneTarget, "clear_ready_pid", currentPID); err != nil {
+					e.log(LogLevelWarn, "set_clear_ready_pid_failed agent_id=%s error=%v", req.AgentID, err)
+				}
+			}
+		}
+
+		return result
+	}
+
+	// Subsequent dispatches: use full /clear workflow
 	// Step 1: Wait for prompt readiness
 	if err := e.waitReady(ctx, paneTarget); err != nil {
 		e.log(LogLevelWarn, "with_clear_wait_ready_failed agent_id=%s error=%v", req.AgentID, err)
@@ -316,20 +366,32 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 	if err := e.clearAndConfirm(ctx, paneTarget); err != nil {
 		e.log(LogLevelWarn, "delivery_failure agent_id=%s task_id=%s reason=clear_not_confirmed error=%v",
 			req.AgentID, req.TaskID, err)
+
+		// Reset clear_ready on /clear failure - conversation might have been lost
+		e.log(LogLevelInfo, "clear_failed_reset agent_id=%s, resetting clear_ready for next dispatch", req.AgentID)
+		tmux.SetUserVar(paneTarget, "clear_ready", "")
+		tmux.SetUserVar(paneTarget, "clear_ready_pid", "")
+
 		return ExecResult{Error: fmt.Errorf("with_clear: %w", err), Retryable: true}
 	}
 
 	// Step 4: Busy detection with retry
 	verdict := e.detectBusyWithRetry(ctx, req, paneTarget)
 	if verdict != VerdictIdle {
-		reason := "busy_timeout"
+		e.log(LogLevelWarn, "delivery_failure agent_id=%s task_id=%s verdict=%s",
+			req.AgentID, req.TaskID, verdict)
+
+		// Return sentinel error for VerdictUndecided (safe for immediate retry)
 		if verdict == VerdictUndecided {
-			reason = "undecided_after_probes"
+			return ExecResult{
+				Error:     fmt.Errorf("%w", ErrBusyUndecided),
+				Retryable: true,
+			}
 		}
-		e.log(LogLevelWarn, "delivery_failure agent_id=%s task_id=%s reason=%s",
-			req.AgentID, req.TaskID, reason)
+
+		// VerdictBusy: keep lease to prevent duplicate dispatch
 		return ExecResult{
-			Error:     fmt.Errorf("agent %s busy: %s", req.AgentID, reason),
+			Error:     fmt.Errorf("agent %s busy: timeout", req.AgentID),
 			Retryable: true,
 		}
 	}
@@ -429,7 +491,7 @@ func (e *Executor) clearAndConfirm(ctx context.Context, paneTarget string) error
 		}
 		preClearHash := contentHash(preClearContent)
 
-		// Send /clear
+		// Send /clear with double-enter for reliability
 		if err := tmux.SendCommand(paneTarget, "/clear"); err != nil {
 			e.log(LogLevelWarn, "clear_confirm send_clear error=%v attempt=%d", err, attempt)
 			if attempt < maxAttempts {
@@ -440,6 +502,26 @@ func (e *Executor) clearAndConfirm(ctx context.Context, paneTarget string) error
 				continue
 			}
 			return fmt.Errorf("clear_confirm: send /clear failed after %d attempts: %w", maxAttempts, err)
+		}
+
+		// Wait 500ms before sending second Enter
+		if err := sleepCtx(ctx, 500*time.Millisecond); err != nil {
+			return fmt.Errorf("clear_confirm: wait cancelled: %w", err)
+		}
+
+		// Send second Enter to ensure /clear execution.
+		// Commands starting with `/` often trigger completion prompts for the user,
+		// requiring a second Enter to confirm the command.
+		if err := tmux.SendKeys(paneTarget, "Enter"); err != nil {
+			e.log(LogLevelWarn, "clear_confirm send_second_enter error=%v attempt=%d", err, attempt)
+			if attempt < maxAttempts {
+				backoff := time.Duration(backoffMs*(1<<(attempt-1))) * time.Millisecond
+				if err := sleepCtx(ctx, backoff); err != nil {
+					return fmt.Errorf("clear_confirm backoff cancelled: %w", err)
+				}
+				continue
+			}
+			return fmt.Errorf("clear_confirm: send second Enter failed after %d attempts: %w", maxAttempts, err)
 		}
 
 		// Poll for confirmation within timeout window

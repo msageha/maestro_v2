@@ -1,10 +1,12 @@
 package plan
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/msageha/maestro_v2/internal/daemon"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -225,5 +227,57 @@ func TestIsSystemCommitReady_NoSystemCommitField(t *testing.T) {
 	}
 	if isSys || ready {
 		t.Error("expected false, false when SystemCommitTaskID is nil")
+	}
+}
+
+// Test ErrStateNotFound handling for all StateReader methods
+
+func TestGetTaskState_StateNotFound(t *testing.T) {
+	_, reader := setupStateReaderTest(t)
+
+	// State file doesn't exist
+	_, err := reader.GetTaskState("nonexistent_cmd", "task1")
+	if !errors.Is(err, daemon.ErrStateNotFound) {
+		t.Errorf("expected ErrStateNotFound, got %v", err)
+	}
+}
+
+func TestGetCommandPhases_StateNotFound(t *testing.T) {
+	_, reader := setupStateReaderTest(t)
+
+	// State file doesn't exist
+	_, err := reader.GetCommandPhases("nonexistent_cmd")
+	if !errors.Is(err, daemon.ErrStateNotFound) {
+		t.Errorf("expected ErrStateNotFound, got %v", err)
+	}
+}
+
+func TestGetTaskDependencies_StateNotFound(t *testing.T) {
+	_, reader := setupStateReaderTest(t)
+
+	// State file doesn't exist
+	_, err := reader.GetTaskDependencies("nonexistent_cmd", "task1")
+	if !errors.Is(err, daemon.ErrStateNotFound) {
+		t.Errorf("expected ErrStateNotFound, got %v", err)
+	}
+}
+
+func TestIsSystemCommitReady_StateNotFound(t *testing.T) {
+	_, reader := setupStateReaderTest(t)
+
+	// State file doesn't exist
+	_, _, err := reader.IsSystemCommitReady("nonexistent_cmd", "task1")
+	if !errors.Is(err, daemon.ErrStateNotFound) {
+		t.Errorf("expected ErrStateNotFound, got %v", err)
+	}
+}
+
+func TestIsCommandCancelRequested_StateNotFound(t *testing.T) {
+	_, reader := setupStateReaderTest(t)
+
+	// State file doesn't exist
+	_, err := reader.IsCommandCancelRequested("nonexistent_cmd")
+	if !errors.Is(err, daemon.ErrStateNotFound) {
+		t.Errorf("expected ErrStateNotFound, got %v", err)
 	}
 }

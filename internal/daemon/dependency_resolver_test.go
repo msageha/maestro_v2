@@ -514,3 +514,50 @@ func containsStr(s, substr string) bool {
 	}
 	return false
 }
+
+// mockStateReaderErrNotFound returns ErrStateNotFound for GetCommandPhases
+type mockStateReaderErrNotFound struct{}
+
+func (m *mockStateReaderErrNotFound) GetTaskState(commandID, taskID string) (model.Status, error) {
+	return "", ErrStateNotFound
+}
+
+func (m *mockStateReaderErrNotFound) GetCommandPhases(commandID string) ([]PhaseInfo, error) {
+	return nil, ErrStateNotFound
+}
+
+func (m *mockStateReaderErrNotFound) GetTaskDependencies(commandID, taskID string) ([]string, error) {
+	return nil, ErrStateNotFound
+}
+
+func (m *mockStateReaderErrNotFound) ApplyPhaseTransition(commandID, phaseID string, newStatus model.PhaseStatus) error {
+	return ErrStateNotFound
+}
+
+func (m *mockStateReaderErrNotFound) UpdateTaskState(commandID, taskID string, newStatus model.Status, cancelledReason string) error {
+	return ErrStateNotFound
+}
+
+func (m *mockStateReaderErrNotFound) IsCommandCancelRequested(commandID string) (bool, error) {
+	return false, ErrStateNotFound
+}
+
+func (m *mockStateReaderErrNotFound) IsSystemCommitReady(commandID, taskID string) (bool, bool, error) {
+	return false, false, ErrStateNotFound
+}
+
+// TestCheckPhaseTransitions_StateNotFound verifies that CheckPhaseTransitions
+// returns nil when state doesn't exist (command not yet submitted by planner).
+func TestCheckPhaseTransitions_StateNotFound(t *testing.T) {
+	reader := &mockStateReaderErrNotFound{}
+	dr := newTestDependencyResolver(reader)
+
+	// Should return nil, nil when state doesn't exist (no error)
+	transitions, err := dr.CheckPhaseTransitions("cmd_not_yet_submitted")
+	if err != nil {
+		t.Fatalf("expected nil error when state not found, got: %v", err)
+	}
+	if transitions != nil {
+		t.Errorf("expected nil transitions when state not found, got: %v", transitions)
+	}
+}
