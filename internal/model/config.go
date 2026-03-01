@@ -65,9 +65,17 @@ type WatcherConfig struct {
 }
 
 type RetryConfig struct {
-	CommandDispatch                  int `yaml:"command_dispatch"`
-	TaskDispatch                     int `yaml:"task_dispatch"`
-	OrchestratorNotificationDispatch int `yaml:"orchestrator_notification_dispatch"`
+	CommandDispatch                  int   `yaml:"command_dispatch"`
+	TaskDispatch                     int   `yaml:"task_dispatch"`
+	OrchestratorNotificationDispatch int   `yaml:"orchestrator_notification_dispatch"`
+	TaskExecution                    TaskRetryConfig `yaml:"task_execution"`
+}
+
+type TaskRetryConfig struct {
+	Enabled            bool  `yaml:"enabled"`
+	RetryableExitCodes []int `yaml:"retryable_exit_codes"`
+	MaxRetries         int   `yaml:"max_retries"`
+	CooldownSec        int   `yaml:"cooldown_sec"`
 }
 
 type QueueConfig struct {

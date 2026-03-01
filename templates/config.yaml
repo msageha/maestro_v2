@@ -43,6 +43,11 @@ retry:
   command_dispatch: 5
   task_dispatch: 5
   orchestrator_notification_dispatch: 10
+  task_execution:
+    enabled: true
+    retryable_exit_codes: [1, 124, 137]  # general error, timeout, killed
+    max_retries: 2
+    cooldown_sec: 30
 
 queue:
   priority_aging_sec: 300

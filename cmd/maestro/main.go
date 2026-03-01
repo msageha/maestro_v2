@@ -47,6 +47,8 @@ func main() {
 		runQueue(os.Args[2:])
 	case "result":
 		runResult(os.Args[2:])
+	case "task":
+		runTask(os.Args[2:])
 	case "plan":
 		runPlan(os.Args[2:])
 	case "agent":
@@ -92,6 +94,21 @@ func runResult(args []string) {
 	default:
 		fmt.Fprintf(os.Stderr, "unknown result subcommand: %s\n", args[0])
 		fmt.Fprintln(os.Stderr, "usage: maestro result write <reporter> [options]")
+		os.Exit(1)
+	}
+}
+
+func runTask(args []string) {
+	if len(args) < 1 {
+		fmt.Fprintln(os.Stderr, "usage: maestro task <heartbeat> [options]")
+		os.Exit(1)
+	}
+	switch args[0] {
+	case "heartbeat":
+		runTaskHeartbeat(args[1:])
+	default:
+		fmt.Fprintf(os.Stderr, "unknown task subcommand: %s\n", args[0])
+		fmt.Fprintln(os.Stderr, "usage: maestro task heartbeat [options]")
 		os.Exit(1)
 	}
 }
@@ -1275,6 +1292,92 @@ func loadConfig(maestroDir string) (model.Config, error) {
 		return model.Config{}, fmt.Errorf("parse config.yaml: %w", err)
 	}
 	return cfg, nil
+}
+
+func runTaskHeartbeat(args []string) {
+	var (
+		taskID   string
+		workerID string
+		epoch    int
+	)
+
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--task-id":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--task-id requires a value")
+				os.Exit(1)
+			}
+			i++
+			taskID = args[i]
+		case "--worker-id":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--worker-id requires a value")
+				os.Exit(1)
+			}
+			i++
+			workerID = args[i]
+		case "--epoch":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "--epoch requires a value")
+				os.Exit(1)
+			}
+			i++
+			var err error
+			epoch, err = strconv.Atoi(args[i])
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "invalid --epoch value: %s\n", args[i])
+				os.Exit(1)
+			}
+		default:
+			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
+			fmt.Fprintln(os.Stderr, "usage: maestro task heartbeat --task-id <id> --worker-id <id> --epoch <n>")
+			os.Exit(1)
+		}
+	}
+
+	if taskID == "" {
+		fmt.Fprintln(os.Stderr, "--task-id is required")
+		os.Exit(1)
+	}
+	if workerID == "" {
+		fmt.Fprintln(os.Stderr, "--worker-id is required")
+		os.Exit(1)
+	}
+
+	maestroDir := findMaestroDir()
+	if maestroDir == "" {
+		fmt.Fprintln(os.Stderr, "error: .maestro/ directory not found")
+		os.Exit(1)
+	}
+
+	params := map[string]interface{}{
+		"task_id":   taskID,
+		"worker_id": workerID,
+		"epoch":     epoch,
+	}
+
+	client := uds.NewClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	resp, err := client.SendCommand("task_heartbeat", params)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
+	}
+
+	if !resp.Success {
+		if resp.Error != nil {
+			// Special handling for max runtime exceeded - exit silently with error code
+			if resp.Error.Code == uds.ErrCodeMaxRuntimeExceeded {
+				os.Exit(2)
+			}
+			fmt.Fprintf(os.Stderr, "error [%s]: %s\n", resp.Error.Code, resp.Error.Message)
+		} else {
+			fmt.Fprintln(os.Stderr, "error: heartbeat failed")
+		}
+		os.Exit(1)
+	}
+
+	// Success - no output (for use in scripts)
 }
 
 func printUsage() {

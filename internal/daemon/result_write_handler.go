@@ -26,6 +26,7 @@ type ResultWriteParams struct {
 	FilesChanged           []string `json:"files_changed,omitempty"`
 	PartialChangesPossible bool     `json:"partial_changes_possible,omitempty"`
 	RetrySafe              bool     `json:"retry_safe,omitempty"`
+	ExitCode               *int     `json:"exit_code,omitempty"`
 }
 
 func (d *Daemon) handleResultWrite(req *uds.Request) *uds.Response {
@@ -262,7 +263,27 @@ func (d *Daemon) resultWritePhaseA(params ResultWriteParams, resultStatus model.
 		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("write results file: %v", err)}
 	}
 
-	// 5. Update queue entry to terminal
+	// 5. Check for retry if task failed (but don't schedule yet)
+	var retryTask *model.Task
+	if resultStatus == model.StatusFailed && params.ExitCode != nil {
+		retryHandler := NewTaskRetryHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
+		shouldRetry, reason := retryHandler.ShouldRetryTask(queueTask, *params.ExitCode)
+
+		if shouldRetry {
+			// Create retry task
+			rt, err := retryHandler.CreateRetryTask(queueTask, params.Reporter, *params.ExitCode)
+			if err != nil {
+				d.log(LogLevelError, "create_retry_task_failed task=%s error=%v", params.TaskID, err)
+			} else {
+				retryTask = rt
+				// Don't add to queue yet - wait until after queue write succeeds
+			}
+		} else {
+			d.log(LogLevelInfo, "task_retry_skipped task=%s reason=%s", params.TaskID, reason)
+		}
+	}
+
+	// 6. Update queue entry to terminal
 	queueTask.Status = resultStatus
 	queueTask.LeaseOwner = nil
 	queueTask.LeaseExpiresAt = nil
@@ -270,6 +291,24 @@ func (d *Daemon) resultWritePhaseA(params ResultWriteParams, resultStatus model.
 
 	if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
 		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("write worker queue: %v", err)}
+	}
+
+	// 7. Add retry task to queue and state AFTER successful queue write
+	if retryTask != nil {
+		retryHandler := NewTaskRetryHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
+
+		// First register in state
+		if err := retryHandler.RegisterRetryTaskInState(retryTask, params.CommandID); err != nil {
+			d.log(LogLevelError, "register_retry_task_failed task=%s error=%v", retryTask.ID, err)
+		} else {
+			// Then add to queue
+			if err := retryHandler.AddRetryTaskToQueue(retryTask, params.Reporter); err != nil {
+				d.log(LogLevelError, "add_retry_task_failed task=%s error=%v", retryTask.ID, err)
+			} else {
+				d.log(LogLevelInfo, "task_retry_scheduled task=%s retry_id=%s attempt=%d",
+					params.TaskID, retryTask.ID, retryTask.Attempts)
+			}
+		}
 	}
 
 	return resultID, nil

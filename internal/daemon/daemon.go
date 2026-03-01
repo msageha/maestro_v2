@@ -237,8 +237,23 @@ func (d *Daemon) registerHandlers() {
 
 	d.server.Handle("queue_write", d.handleQueueWrite)
 	d.server.Handle("result_write", d.handleResultWrite)
+	d.server.Handle("task_heartbeat", d.handleTaskHeartbeat)
 	d.server.Handle("plan", d.handlePlan)
 	d.server.Handle("dashboard", d.handleDashboard)
+}
+
+// handleTaskHeartbeat handles task heartbeat requests.
+func (d *Daemon) handleTaskHeartbeat(req *uds.Request) *uds.Response {
+	heartbeatHandler := NewTaskHeartbeatHandler(
+		d.maestroDir,
+		d.config,
+		d.handler.leaseManager,
+		d.logger,
+		d.logLevel,
+		&d.handler.scanMu,
+		d.lockMap,
+	)
+	return heartbeatHandler.Handle(req.Params)
 }
 
 // handleDashboard triggers dashboard regeneration and returns the result.

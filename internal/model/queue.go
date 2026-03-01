@@ -44,6 +44,9 @@ type Task struct {
 	Priority           int      `yaml:"priority"`
 	Status             Status   `yaml:"status"`
 	Attempts           int      `yaml:"attempts"`
+	ExecutionRetries   int      `yaml:"execution_retries,omitempty"` // Number of actual retry executions (not dispatch attempts)
+	OriginalTaskID     string   `yaml:"original_task_id,omitempty"`    // For tracking retry lineage
+	NotBefore          *string  `yaml:"not_before,omitempty"`          // RFC3339 timestamp for cooldown
 	LastError          *string  `yaml:"last_error"`
 	DeadLetteredAt     *string  `yaml:"dead_lettered_at"`
 	DeadLetterReason   *string  `yaml:"dead_letter_reason"`

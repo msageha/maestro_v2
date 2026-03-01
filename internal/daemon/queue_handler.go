@@ -627,6 +627,15 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 			break
 		}
 
+		// Check if task is in cooldown period
+		if task.NotBefore != nil {
+			notBefore, err := time.Parse(time.RFC3339, *task.NotBefore)
+			if err == nil && time.Now().Before(notBefore) {
+				qh.log(LogLevelDebug, "task_cooldown task=%s not_before=%s", task.ID, *task.NotBefore)
+				continue
+			}
+		}
+
 		blocked, err := qh.dependencyResolver.IsTaskBlocked(task)
 		if err != nil {
 			qh.log(LogLevelWarn, "dependency_check_error task=%s error=%v", task.ID, err)

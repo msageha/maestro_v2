@@ -40,6 +40,7 @@ const (
 	ErrCodeDuplicate        = "DUPLICATE"
 	ErrCodeCancelled        = "CANCELLED"
 	ErrCodeActionRequired   = "ACTION_REQUIRED"
+	ErrCodeMaxRuntimeExceeded = "MAX_RUNTIME_EXCEEDED"
 )
 
 func NewRequest(command string, params any) (*Request, error) {
