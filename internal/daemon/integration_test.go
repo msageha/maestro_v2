@@ -1,19 +1,26 @@
 package daemon
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/quality"
 	"github.com/msageha/maestro_v2/internal/uds"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -1386,6 +1393,645 @@ func TestIntegration_CommandDispatchLease(t *testing.T) {
 	}
 	if cmd.Attempts < 1 {
 		t.Errorf("attempts = %d, want >= 1", cmd.Attempts)
+	}
+}
+
+const integrationQualityGatesYAML = `
+schema_version: "1.0.0"
+gates:
+  - id: pre_required_purpose
+    name: "Required Purpose"
+    type: pre_task
+    enabled: true
+    priority: 10
+    rules:
+      - id: purpose_exists
+        condition:
+          type: field_validation
+          field: task.purpose
+          operator: exists
+        severity: error
+    action:
+      on_pass: allow
+      on_fail: block
+
+  - id: pre_dangerous_command
+    name: "Dangerous Command Blocker"
+    type: pre_task
+    enabled: true
+    priority: 5
+    rules:
+      - id: block_rm_rf
+        condition:
+          type: field_validation
+          field: task.content
+          operator: not_contains
+          value: "rm -rf /"
+        severity: critical
+    action:
+      on_pass: allow
+      on_fail: block
+
+  - id: post_completion_status
+    name: "Completion Status"
+    type: post_task
+    enabled: true
+    priority: 20
+    rules:
+      - id: must_be_completed
+        condition:
+          type: field_validation
+          field: status
+          operator: equals
+          value: "completed"
+        severity: warning
+    action:
+      on_pass: allow
+      on_fail: warn
+`
+
+const integrationE2EHookGatesYAML = `
+schema_version: "1.0.0"
+gates:
+  - id: pre_task_id_required
+    name: "Task ID Required"
+    type: pre_task
+    enabled: true
+    priority: 10
+    rules:
+      - id: task_id_exists
+        condition:
+          type: field_validation
+          field: task_id
+          operator: exists
+        severity: error
+    action:
+      on_pass: allow
+      on_fail: block
+
+  - id: post_status_present
+    name: "Post Status Present"
+    type: post_task
+    enabled: true
+    priority: 20
+    rules:
+      - id: status_exists
+        condition:
+          type: field_validation
+          field: status
+          operator: exists
+        severity: error
+    action:
+      on_pass: allow
+      on_fail: block
+`
+
+func writeIntegrationGateConfig(tb testing.TB, maestroDir, fileName, content string) string {
+	tb.Helper()
+	gatesDir := filepath.Join(maestroDir, "quality_gates")
+	if err := os.MkdirAll(gatesDir, 0755); err != nil {
+		tb.Fatalf("create quality_gates dir: %v", err)
+	}
+	path := filepath.Join(gatesDir, fileName)
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		tb.Fatalf("write gate config: %v", err)
+	}
+	return path
+}
+
+func waitForQualityGateEvaluations(t *testing.T, qg *QualityGateDaemon, wantAtLeast int64, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		evalCount, _, _, _ := qg.GetMetrics().GetStats()
+		if evalCount >= wantAtLeast {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	evalCount, _, _, _ := qg.GetMetrics().GetStats()
+	t.Fatalf("quality gate eval_count=%d, want >= %d", evalCount, wantAtLeast)
+}
+
+// Scenario 23: Quality gate evaluator with multiple gates/criteria.
+func TestIntegration_QualityGateEvaluator_MultipleGatesAndCriteria(t *testing.T) {
+	d := newIntegrationDaemon(t)
+	writeIntegrationGateConfig(t, d.maestroDir, "integration_gates.yaml", integrationQualityGatesYAML)
+
+	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, d.logger, LogLevelError)
+	if err := qg.loadGateDefinitions(); err != nil {
+		t.Fatalf("load gate definitions: %v", err)
+	}
+
+	passCtx := map[string]interface{}{
+		"task": map[string]interface{}{
+			"purpose": "Implement feature",
+			"content": "echo safe",
+		},
+	}
+	passResult, err := qg.evaluateGateWithResult("pre_task", passCtx)
+	if err != nil {
+		t.Fatalf("evaluate pre_task pass case: %v", err)
+	}
+	if !passResult.Passed {
+		t.Fatalf("expected pre_task pass, got %+v", passResult)
+	}
+
+	failCtx := map[string]interface{}{
+		"task": map[string]interface{}{
+			"purpose": "Dangerous operation",
+			"content": "rm -rf /tmp/test",
+		},
+	}
+	failResult, err := qg.evaluateGateWithResult("pre_task", failCtx)
+	if err != nil {
+		t.Fatalf("evaluate pre_task fail case: %v", err)
+	}
+	if failResult.Passed {
+		t.Fatalf("expected pre_task failure, got %+v", failResult)
+	}
+	if failResult.Action != quality.ActionBlock {
+		t.Fatalf("expected block action, got %s", failResult.Action)
+	}
+	if len(failResult.FailedGates) == 0 {
+		t.Fatalf("expected failed gates, got %+v", failResult)
+	}
+
+	postWarnCtx := map[string]interface{}{
+		"task_id": "task_warn",
+		"status":  "failed",
+	}
+	postResult, err := qg.evaluateGateWithResult("post_task", postWarnCtx)
+	if err != nil {
+		t.Fatalf("evaluate post_task warn case: %v", err)
+	}
+	if postResult.Passed {
+		t.Fatalf("expected post_task warning/failure path, got %+v", postResult)
+	}
+	if postResult.Action == quality.ActionBlock {
+		t.Fatalf("expected non-blocking warning path action, got %s", postResult.Action)
+	}
+}
+
+// Scenario 24: Quality gate performance under load (per-evaluation <= 100ms).
+func TestIntegration_QualityGatePerformanceUnderLoad(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip performance integration test in short mode")
+	}
+
+	d := newIntegrationDaemon(t)
+	writeIntegrationGateConfig(t, d.maestroDir, "perf_gates.yaml", integrationQualityGatesYAML)
+
+	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, d.logger, LogLevelError)
+	if err := qg.loadGateDefinitions(); err != nil {
+		t.Fatalf("load gate definitions: %v", err)
+	}
+
+	const workers = 8
+	const perWorker = 40
+
+	var wg sync.WaitGroup
+	var slowCount int64
+
+	for w := 0; w < workers; w++ {
+		workerID := w
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < perWorker; i++ {
+				ctx := map[string]interface{}{
+					"task": map[string]interface{}{
+						"purpose": fmt.Sprintf("perf worker=%d i=%d", workerID, i),
+						"content": fmt.Sprintf("echo run-%d-%d", workerID, i),
+					},
+				}
+				start := time.Now()
+				result, err := qg.evaluateGateWithResult("pre_task", ctx)
+				if err != nil {
+					atomic.AddInt64(&slowCount, 1)
+					continue
+				}
+				_ = result
+				if time.Since(start) > 100*time.Millisecond {
+					atomic.AddInt64(&slowCount, 1)
+				}
+			}
+		}()
+	}
+
+	wg.Wait()
+	if slowCount > 0 {
+		t.Fatalf("found %d evaluations exceeding 100ms or returning error", slowCount)
+	}
+}
+
+// Scenario 25: Structured logging + non-blocking rate-limited event flow under high load.
+func TestIntegration_LogSystemHighLoadStructuredAndRateLimited(t *testing.T) {
+	d := newIntegrationDaemon(t)
+
+	logPath := filepath.Join(d.maestroDir, "logs", "maestro.jsonl")
+	audit, err := events.NewAuditLogger(logPath, events.DefaultMaxLogSize)
+	if err != nil {
+		t.Fatalf("new audit logger: %v", err)
+	}
+	defer audit.Close()
+
+	const writes = 200
+	var wg sync.WaitGroup
+	for i := 0; i < writes; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := audit.Log("task_completed", map[string]interface{}{
+				"event_id":   fmt.Sprintf("evt-%d", i),
+				"command_id": "cmd_structured",
+				"task_id":    fmt.Sprintf("task-%d", i),
+				"agent_id":   "worker1",
+				"status":     "completed",
+				"summary":    "ok",
+			}); err != nil {
+				t.Errorf("audit log write failed: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	f, err := os.Open(logPath)
+	if err != nil {
+		t.Fatalf("open audit log: %v", err)
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	lineCount := 0
+	for sc.Scan() {
+		lineCount++
+		var e events.LogEntry
+		if err := json.Unmarshal(sc.Bytes(), &e); err != nil {
+			t.Fatalf("invalid JSONL at line %d: %v", lineCount, err)
+		}
+		if e.EventType == "" || e.Timestamp.IsZero() {
+			t.Fatalf("malformed structured entry at line %d: %+v", lineCount, e)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		t.Fatalf("scan log: %v", err)
+	}
+	if lineCount != writes {
+		t.Fatalf("expected %d structured log entries, got %d", writes, lineCount)
+	}
+
+	bus := events.NewBus(1)
+	defer bus.Close()
+
+	var consumed int64
+	unsub := bus.Subscribe(events.EventTaskStarted, func(e events.Event) {
+		time.Sleep(2 * time.Millisecond) // Intentionally slow subscriber
+		atomic.AddInt64(&consumed, 1)
+	})
+	defer unsub()
+
+	const published = 2000
+	start := time.Now()
+	for i := 0; i < published; i++ {
+		bus.Publish(events.EventTaskStarted, map[string]interface{}{"task_id": fmt.Sprintf("task-%d", i)})
+	}
+	publishElapsed := time.Since(start)
+
+	// Allow subscriber to drain some buffered events.
+	time.Sleep(120 * time.Millisecond)
+	gotConsumed := atomic.LoadInt64(&consumed)
+
+	if publishElapsed > 100*time.Millisecond {
+		t.Fatalf("publish path too slow under load: %v", publishElapsed)
+	}
+	if gotConsumed >= published {
+		t.Fatalf("expected backpressure drops, consumed=%d published=%d", gotConsumed, published)
+	}
+}
+
+// Scenario 26: Dynamic config hot reload updates gate behavior.
+func TestIntegration_QualityGateConfigHotReload(t *testing.T) {
+	d := newIntegrationDaemon(t)
+
+	initial := `
+schema_version: "1.0.0"
+gates:
+  - id: require_purpose
+    name: "Require Purpose"
+    type: pre_task
+    enabled: true
+    priority: 10
+    rules:
+      - id: purpose_exists
+        condition:
+          type: field_validation
+          field: task.purpose
+          operator: exists
+        severity: error
+    action:
+      on_pass: allow
+      on_fail: block
+`
+	path := writeIntegrationGateConfig(t, d.maestroDir, "reloadable.yaml", initial)
+
+	loader := quality.NewLoader(d.maestroDir)
+	if _, err := loader.LoadFromFile(path); err != nil {
+		t.Fatalf("initial loader load: %v", err)
+	}
+
+	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, d.logger, LogLevelError)
+	if err := qg.loadGateDefinitions(); err != nil {
+		t.Fatalf("initial gate load: %v", err)
+	}
+
+	ctx := map[string]interface{}{
+		"task": map[string]interface{}{
+			"purpose": "before reload",
+		},
+	}
+	before, err := qg.evaluateGateWithResult("pre_task", ctx)
+	if err != nil {
+		t.Fatalf("evaluate before reload: %v", err)
+	}
+	if !before.Passed {
+		t.Fatalf("expected pass before reload, got %+v", before)
+	}
+
+	updated := `
+schema_version: "1.0.0"
+gates:
+  - id: require_owner
+    name: "Require Owner"
+    type: pre_task
+    enabled: true
+    priority: 10
+    rules:
+      - id: owner_exists
+        condition:
+          type: field_validation
+          field: task.owner
+          operator: exists
+        severity: error
+    action:
+      on_pass: allow
+      on_fail: block
+`
+	// Ensure modtime moves forward for ReloadFile() checks.
+	time.Sleep(15 * time.Millisecond)
+	if err := os.WriteFile(path, []byte(updated), 0644); err != nil {
+		t.Fatalf("rewrite gate config: %v", err)
+	}
+
+	_, reloaded, err := loader.ReloadFile(path)
+	if err != nil {
+		t.Fatalf("reload gate file: %v", err)
+	}
+	if !reloaded {
+		t.Fatal("expected loader to detect reload=true")
+	}
+
+	if err := qg.loadGateDefinitions(); err != nil {
+		t.Fatalf("reload into quality gate daemon: %v", err)
+	}
+
+	after, err := qg.evaluateGateWithResult("pre_task", ctx)
+	if err != nil {
+		t.Fatalf("evaluate after reload: %v", err)
+	}
+	if after.Passed {
+		t.Fatalf("expected fail after reload, got %+v", after)
+	}
+}
+
+// Scenario 27: End-to-end with real daemon handlers, event hooks, and quality gate subscriber.
+func TestIntegration_EndToEndWithEventHooksAndQualityGate(t *testing.T) {
+	d := newIntegrationDaemon(t)
+	writeIntegrationGateConfig(t, d.maestroDir, "e2e_hooks.yaml", integrationE2EHookGatesYAML)
+
+	var logBuf bytes.Buffer
+	logger := log.New(&logBuf, "", 0)
+
+	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, logger, LogLevelDebug)
+	if err := qg.Start(); err != nil {
+		t.Fatalf("start quality gate daemon: %v", err)
+	}
+	defer qg.Stop()
+
+	d.eventBus = events.NewBus(100)
+	defer d.eventBus.Close()
+	d.qualityGateDaemon = qg
+	d.handler.dispatcher.SetEventBus(d.eventBus)
+	d.handler.resultHandler.SetEventBus(d.eventBus)
+	d.handler.dependencyResolver.SetEventBus(d.eventBus)
+	d.handler.dispatcher.SetQualityGate(qg)
+	d.subscribeQualityGateEvents()
+
+	commandID := "cmd_0000000027_aabbcc27"
+	taskID := "task_0000000027_aabbcc27"
+	workerID := "worker1"
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	state := model.CommandState{
+		SchemaVersion:   1,
+		FileType:        "state_command",
+		CommandID:       commandID,
+		PlanStatus:      model.PlanStatusSealed,
+		RequiredTaskIDs: []string{taskID},
+		TaskStates:      map[string]model.Status{taskID: model.StatusPending},
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml"), state); err != nil {
+		t.Fatalf("write command state: %v", err)
+	}
+	tqBefore := model.TaskQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_task",
+		Tasks: []model.Task{
+			{
+				ID:         taskID,
+				CommandID:  commandID,
+				Purpose:    "run e2e hook test",
+				Content:    "echo ok",
+				BloomLevel: 3,
+				Status:     model.StatusPending,
+				CreatedAt:  now,
+				UpdatedAt:  now,
+			},
+		},
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", workerID+".yaml"), tqBefore); err != nil {
+		t.Fatalf("write worker queue: %v", err)
+	}
+
+	d.handler.PeriodicScan() // dispatches task => EventTaskStarted
+	tq := readTaskQueue(t, d, workerID)
+	if len(tq.Tasks) != 1 || tq.Tasks[0].Status != model.StatusInProgress {
+		t.Fatalf("expected in_progress after dispatch, got %+v", tq.Tasks)
+	}
+
+	writeResult(t, d, workerID, taskID, commandID, "completed", "done", tq.Tasks[0].LeaseEpoch)
+	waitForQualityGateEvaluations(t, qg, 2, 2*time.Second) // started + completed
+
+	stateAfter := readCommandState(t, d, commandID)
+	if stateAfter.TaskStates[taskID] != model.StatusCompleted {
+		t.Fatalf("state task_status=%s, want completed", stateAfter.TaskStates[taskID])
+	}
+}
+
+// Scenario 28: Event hook payload validation edge case.
+func TestIntegration_EventHooksInvalidPayloadHandling(t *testing.T) {
+	d := newIntegrationDaemon(t)
+	writeIntegrationGateConfig(t, d.maestroDir, "invalid_payload.yaml", integrationQualityGatesYAML)
+
+	var logBuf bytes.Buffer
+	logger := log.New(&logBuf, "", 0)
+
+	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, logger, LogLevelDebug)
+	if err := qg.Start(); err != nil {
+		t.Fatalf("start quality gate daemon: %v", err)
+	}
+	defer qg.Stop()
+
+	d.eventBus = events.NewBus(100)
+	defer d.eventBus.Close()
+	d.qualityGateDaemon = qg
+	d.subscribeQualityGateEvents()
+
+	// Missing worker_id should be dropped by subscriber bridge.
+	d.eventBus.Publish(events.EventTaskStarted, map[string]interface{}{
+		"task_id":    "task_invalid",
+		"command_id": "cmd_invalid",
+	})
+	time.Sleep(30 * time.Millisecond)
+
+	evalCount, _, _, _ := qg.GetMetrics().GetStats()
+	if evalCount != 0 {
+		t.Fatalf("expected no evaluations for invalid payload, got %d", evalCount)
+	}
+
+	// Valid payload should pass bridge and be evaluated.
+	d.eventBus.Publish(events.EventTaskStarted, map[string]interface{}{
+		"task_id":    "task_valid",
+		"command_id": "cmd_valid",
+		"worker_id":  "worker1",
+	})
+	waitForQualityGateEvaluations(t, qg, 1, time.Second)
+}
+
+// Scenario 29: Dashboard formatter end-to-end output with mixed and malformed log input.
+func TestIntegration_DashboardFormatterEndToEnd(t *testing.T) {
+	d := newIntegrationDaemon(t)
+	logPath := filepath.Join(d.maestroDir, "logs", "maestro.jsonl")
+
+	audit, err := events.NewAuditLogger(logPath, events.DefaultMaxLogSize)
+	if err != nil {
+		t.Fatalf("new audit logger: %v", err)
+	}
+	defer audit.Close()
+
+	entries := []struct {
+		eventType string
+		details   map[string]interface{}
+	}{
+		{"task_started", map[string]interface{}{"task_id": "task_dash_1", "agent_id": "worker1", "status": "in_progress"}},
+		{"task_completed", map[string]interface{}{"task_id": "task_dash_1", "agent_id": "worker1", "status": "completed", "summary": "done"}},
+		{"task_failed", map[string]interface{}{"task_id": "task_dash_2", "agent_id": "worker2", "status": "failed", "error": "boom"}},
+		{"task_retry", map[string]interface{}{"task_id": "task_dash_2", "agent_id": "worker2", "message": "retrying"}},
+		{"lease_warning", map[string]interface{}{"task_id": "task_dash_3", "message": "lease expires soon"}},
+	}
+	for _, e := range entries {
+		if err := audit.Log(e.eventType, e.details); err != nil {
+			t.Fatalf("write audit log %s: %v", e.eventType, err)
+		}
+	}
+
+	// Append malformed line: formatter should ignore it gracefully.
+	file, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("open log for malformed append: %v", err)
+	}
+	if _, err := file.WriteString("{malformed-json\n"); err != nil {
+		file.Close()
+		t.Fatalf("append malformed log line: %v", err)
+	}
+	file.Close()
+
+	formatter := NewDashboardFormatter(d.maestroDir)
+	out, err := formatter.FormatDashboard()
+	if err != nil {
+		t.Fatalf("format dashboard: %v", err)
+	}
+
+	if !strings.Contains(out, "# Maestro Dashboard") {
+		t.Fatal("dashboard output missing header")
+	}
+	if !strings.Contains(out, "task_dash_1") || !strings.Contains(out, "task_dash_2") {
+		t.Fatalf("dashboard output missing expected task IDs:\n%s", out)
+	}
+	if !strings.Contains(out, "Recent Errors") || !strings.Contains(out, "Recent Warnings") {
+		t.Fatalf("dashboard output missing expected sections:\n%s", out)
+	}
+
+	if err := formatter.UpdateDashboardFile(); err != nil {
+		t.Fatalf("update dashboard file: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(d.maestroDir, "dashboard.md")); err != nil {
+		t.Fatalf("dashboard.md not written: %v", err)
+	}
+}
+
+func BenchmarkIntegration_QualityGateEvaluation(b *testing.B) {
+	maestroDir := filepath.Join(b.TempDir(), ".maestro")
+	if err := os.MkdirAll(maestroDir, 0755); err != nil {
+		b.Fatalf("create maestro dir: %v", err)
+	}
+	writeIntegrationGateConfig(b, maestroDir, "bench_gates.yaml", integrationQualityGatesYAML)
+
+	var logBuf bytes.Buffer
+	cfg := model.Config{}
+	lockMap := lock.NewMutexMap()
+	logger := log.New(&logBuf, "", 0)
+	qg := NewQualityGateDaemon(maestroDir, cfg, lockMap, logger, LogLevelError)
+	if err := qg.loadGateDefinitions(); err != nil {
+		b.Fatalf("load gate definitions: %v", err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ctx := map[string]interface{}{
+			"task": map[string]interface{}{
+				"purpose": fmt.Sprintf("bench-%d", i),
+				"content": "echo safe",
+			},
+		}
+		if _, err := qg.evaluateGateWithResult("pre_task", ctx); err != nil {
+			b.Fatalf("evaluate gate: %v", err)
+		}
+	}
+}
+
+func BenchmarkIntegration_AuditLoggerHighLoad(b *testing.B) {
+	logPath := filepath.Join(b.TempDir(), "logs", "maestro.jsonl")
+	audit, err := events.NewAuditLogger(logPath, events.DefaultMaxLogSize)
+	if err != nil {
+		b.Fatalf("new audit logger: %v", err)
+	}
+	defer audit.Close()
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if err := audit.Log("task_completed", map[string]interface{}{
+			"event_id":   fmt.Sprintf("evt-bench-%d", i),
+			"command_id": "cmd_bench",
+			"task_id":    fmt.Sprintf("task-%d", i),
+			"agent_id":   "worker1",
+			"status":     "completed",
+		}); err != nil {
+			b.Fatalf("audit log write: %v", err)
+		}
 	}
 }
 

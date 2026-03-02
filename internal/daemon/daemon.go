@@ -17,6 +17,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
+	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
@@ -59,11 +60,15 @@ type Daemon struct {
 	watcher  *fsnotify.Watcher
 	ticker   *time.Ticker
 
-	handler      *QueueHandler
-	stateReader  StateReader
-	canComplete  CanCompleteFunc
-	planExecutor PlanExecutor
-	lockMap      *lock.MutexMap
+	handler           *QueueHandler
+	stateReader       StateReader
+	canComplete       CanCompleteFunc
+	planExecutor      PlanExecutor
+	lockMap           *lock.MutexMap
+	qualityGateDaemon *QualityGateDaemon
+
+	eventBus          *events.Bus
+	eventUnsubscribers []func()
 
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -149,7 +154,7 @@ func (d *Daemon) Run() error {
 
 	// Write PID file for reliable lifecycle management
 	pidPath := filepath.Join(d.maestroDir, "daemon.pid")
-	if err := os.WriteFile(pidPath, fmt.Appendf(nil, "%d", os.Getpid()), 0644); err != nil {
+	if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0644); err != nil {
 		_ = d.fileLock.Unlock()
 		return fmt.Errorf("write pid file: %w", err)
 	}
@@ -193,6 +198,19 @@ func (d *Daemon) Run() error {
 	ch := NewContinuousHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
 	d.handler.resultHandler.SetContinuousHandler(ch)
 
+	// Step 3.8: Initialize QualityGateDaemon
+	d.qualityGateDaemon = NewQualityGateDaemon(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
+
+	// Step 3.9: Initialize EventBus and wire it to components
+	d.eventBus = events.NewBus(100)
+	d.handler.dispatcher.SetEventBus(d.eventBus)
+	d.handler.dispatcher.SetQualityGate(d.qualityGateDaemon)
+	d.handler.dependencyResolver.SetEventBus(d.eventBus)
+	d.handler.resultHandler.SetEventBus(d.eventBus)
+
+	// Step 3.10: Subscribe QualityGateDaemon to events
+	d.subscribeQualityGateEvents()
+
 	// Step 4: Register UDS handlers
 	d.registerHandlers()
 
@@ -207,6 +225,12 @@ func (d *Daemon) Run() error {
 	d.wg.Add(2)
 	go d.fsnotifyLoop()
 	go d.tickerLoop()
+
+	// Step 6.5: Start QualityGateDaemon
+	if err := d.qualityGateDaemon.Start(); err != nil {
+		d.cleanup()
+		return fmt.Errorf("start quality gate daemon: %w", err)
+	}
 
 	// Step 7: Run initial scan
 	d.handler.PeriodicScan()
@@ -261,12 +285,9 @@ func (d *Daemon) handleDashboard(req *uds.Request) *uds.Response {
 	d.handler.scanMu.Lock()
 	defer d.handler.scanMu.Unlock()
 
-	cq, _ := d.handler.loadCommandQueue()
-	taskQueues := d.handler.loadAllTaskQueues()
-	nq, _ := d.handler.loadNotificationQueue()
-	resultFiles := d.handler.metricsHandler.loadAllResultFiles()
-
-	if err := d.handler.metricsHandler.UpdateDashboardFull(cq, taskQueues, nq, resultFiles); err != nil {
+	// Use the new dashboard formatter for human-readable output
+	formatter := NewDashboardFormatter(d.maestroDir)
+	if err := formatter.UpdateDashboardFile(); err != nil {
 		d.log(LogLevelError, "dashboard regeneration error=%v", err)
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("dashboard generation failed: %v", err))
 	}
@@ -355,7 +376,7 @@ func (d *Daemon) Shutdown() {
 		// 1. Cancel context (stops accepting new work)
 		d.cancel()
 
-		// 2. Stop producers
+		// 2. Stop producers (handler, ticker, watcher, server)
 		d.ticker.Stop()
 		if d.handler != nil {
 			d.handler.Stop()
@@ -367,7 +388,24 @@ func (d *Daemon) Shutdown() {
 			_ = d.server.Stop()
 		}
 
-		// 3. Drain in-flight with timeout
+		// 3. Unsubscribe from event bus (stop event flow to quality gate)
+		for _, unsub := range d.eventUnsubscribers {
+			if unsub != nil {
+				unsub()
+			}
+		}
+
+		// 4. Close event bus (cleanup all subscribers)
+		if d.eventBus != nil {
+			d.eventBus.Close()
+		}
+
+		// 5. Stop quality gate daemon (drain remaining events)
+		if d.qualityGateDaemon != nil {
+			_ = d.qualityGateDaemon.Stop()
+		}
+
+		// 6. Drain in-flight with timeout
 		timeout := d.config.Daemon.ShutdownTimeoutSec
 		if timeout <= 0 {
 			timeout = 30
@@ -386,7 +424,7 @@ func (d *Daemon) Shutdown() {
 			d.log(LogLevelWarn, "shutdown timeout after %ds, some operations may be incomplete", timeout)
 		}
 
-		// 4. Cleanup
+		// 7. Cleanup
 		d.cleanup()
 		d.log(LogLevelInfo, "daemon stopped")
 	})
@@ -414,6 +452,85 @@ func (d *Daemon) recoverPanic(goroutine string) {
 		d.log(LogLevelError, "panic in %s: %v", goroutine, r)
 		go d.Shutdown()
 	}
+}
+
+// subscribeQualityGateEvents subscribes the QualityGateDaemon to EventBus events.
+// It bridges the generic event bus to the quality gate daemon's typed event channel.
+// Uses safe type assertions with logging for dropped events.
+func (d *Daemon) subscribeQualityGateEvents() {
+	// Subscribe to task started events
+	unsub1 := d.eventBus.Subscribe(events.EventTaskStarted, func(e events.Event) {
+		taskID, ok1 := e.Data["task_id"].(string)
+		commandID, ok2 := e.Data["command_id"].(string)
+		workerID, ok3 := e.Data["worker_id"].(string)
+
+		if !ok1 || !ok2 || !ok3 {
+			d.log(LogLevelWarn, "quality_gate_event_invalid type=task_started data=%v", e.Data)
+			return
+		}
+
+		d.qualityGateDaemon.EmitEvent(TaskStartEvent{
+			TaskID:    taskID,
+			CommandID: commandID,
+			AgentID:   workerID,
+			StartedAt: e.Timestamp,
+		})
+	})
+
+	// Subscribe to task completed events
+	unsub2 := d.eventBus.Subscribe(events.EventTaskCompleted, func(e events.Event) {
+		taskID, ok1 := e.Data["task_id"].(string)
+		commandID, ok2 := e.Data["command_id"].(string)
+		workerID, ok3 := e.Data["worker_id"].(string)
+
+		if !ok1 || !ok2 || !ok3 {
+			d.log(LogLevelWarn, "quality_gate_event_invalid type=task_completed data=%v", e.Data)
+			return
+		}
+
+		// Status can be either model.Status or string
+		var status model.Status
+		if s, ok := e.Data["status"].(model.Status); ok {
+			status = s
+		} else if s, ok := e.Data["status"].(string); ok {
+			status = model.Status(s)
+		} else {
+			d.log(LogLevelWarn, "quality_gate_event_invalid type=task_completed status=%v", e.Data["status"])
+			return
+		}
+
+		d.qualityGateDaemon.EmitEvent(TaskCompleteEvent{
+			TaskID:      taskID,
+			CommandID:   commandID,
+			AgentID:     workerID,
+			Status:      status,
+			CompletedAt: e.Timestamp,
+		})
+	})
+
+	// Subscribe to phase transition events
+	unsub3 := d.eventBus.Subscribe(events.EventPhaseTransition, func(e events.Event) {
+		phaseID, ok1 := e.Data["phase_id"].(string)
+		commandID, ok2 := e.Data["command_id"].(string)
+		oldStatus, ok3 := e.Data["old_status"].(string)
+		newStatus, ok4 := e.Data["new_status"].(string)
+
+		if !ok1 || !ok2 || !ok3 || !ok4 {
+			d.log(LogLevelWarn, "quality_gate_event_invalid type=phase_transition data=%v", e.Data)
+			return
+		}
+
+		d.qualityGateDaemon.EmitEvent(PhaseTransitionEvent{
+			PhaseID:        phaseID,
+			CommandID:      commandID,
+			OldStatus:      model.PhaseStatus(oldStatus),
+			NewStatus:      model.PhaseStatus(newStatus),
+			TransitionedAt: e.Timestamp,
+		})
+	})
+
+	// Store unsubscribe functions for cleanup
+	d.eventUnsubscribers = []func(){unsub1, unsub2, unsub3}
 }
 
 func (d *Daemon) log(level LogLevel, format string, args ...any) {

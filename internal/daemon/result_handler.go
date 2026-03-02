@@ -11,6 +11,7 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -40,6 +41,7 @@ type ResultHandler struct {
 	logLevel          LogLevel
 	executorFactory   ExecutorFactory
 	continuousHandler *ContinuousHandler
+	eventBus          *events.Bus
 }
 
 // NewResultHandler creates a new ResultHandler.
@@ -70,6 +72,11 @@ func (rh *ResultHandler) SetExecutorFactory(f ExecutorFactory) {
 // SetContinuousHandler wires the continuous handler for iteration tracking.
 func (rh *ResultHandler) SetContinuousHandler(ch *ContinuousHandler) {
 	rh.continuousHandler = ch
+}
+
+// SetEventBus sets the event bus for publishing events.
+func (rh *ResultHandler) SetEventBus(bus *events.Bus) {
+	rh.eventBus = bus
 }
 
 // HandleResultFileEvent processes a single results/ file change from fsnotify.
@@ -196,6 +203,16 @@ func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
 			rh.markTaskNotifySuccess(entry)
 			notified++
 			rh.log(LogLevelInfo, "notify_planner_success worker=%s task=%s command=%s", workerID, taskID, commandID)
+
+			// Publish task_completed event (non-blocking, best-effort)
+			if rh.eventBus != nil {
+				rh.eventBus.Publish(events.EventTaskCompleted, map[string]interface{}{
+					"task_id":    taskID,
+					"command_id": commandID,
+					"worker_id":  workerID,
+					"status":     taskStatus,
+				})
+			}
 		}
 
 		if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {

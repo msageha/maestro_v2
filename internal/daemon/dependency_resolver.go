@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -51,6 +52,7 @@ type DependencyResolver struct {
 	stateReader StateReader
 	logger      *log.Logger
 	logLevel    LogLevel
+	eventBus    *events.Bus
 }
 
 // NewDependencyResolver creates a new DependencyResolver.
@@ -60,6 +62,11 @@ func NewDependencyResolver(reader StateReader, logger *log.Logger, logLevel LogL
 		logger:      logger,
 		logLevel:    logLevel,
 	}
+}
+
+// SetEventBus sets the event bus for publishing events.
+func (dr *DependencyResolver) SetEventBus(bus *events.Bus) {
+	dr.eventBus = bus
 }
 
 // IsTaskBlocked checks if a task's blocked_by dependencies are all resolved.
@@ -232,26 +239,25 @@ func (dr *DependencyResolver) checkActivePhaseCompletion(commandID string, phase
 		}
 	}
 
+	var result *PhaseTransitionResult
 	if hasFailed {
-		return &PhaseTransitionResult{
+		result = &PhaseTransitionResult{
 			PhaseID:   phase.ID,
 			PhaseName: phase.Name,
 			OldStatus: phase.Status,
 			NewStatus: model.PhaseStatusFailed,
 			Reason:    "required task failed",
 		}
-	}
-	if hasCancelled {
-		return &PhaseTransitionResult{
+	} else if hasCancelled {
+		result = &PhaseTransitionResult{
 			PhaseID:   phase.ID,
 			PhaseName: phase.Name,
 			OldStatus: phase.Status,
 			NewStatus: model.PhaseStatusCancelled,
 			Reason:    "required task cancelled",
 		}
-	}
-	if allCompleted {
-		return &PhaseTransitionResult{
+	} else if allCompleted {
+		result = &PhaseTransitionResult{
 			PhaseID:   phase.ID,
 			PhaseName: phase.Name,
 			OldStatus: phase.Status,
@@ -260,7 +266,11 @@ func (dr *DependencyResolver) checkActivePhaseCompletion(commandID string, phase
 		}
 	}
 
-	return nil
+	if result != nil {
+		dr.publishPhaseTransitionEvent(commandID, *result)
+	}
+
+	return result
 }
 
 // checkPendingPhaseActivation checks if a pending phase should be activated.
@@ -286,13 +296,15 @@ func (dr *DependencyResolver) checkPendingPhaseActivation(allPhases []PhaseInfo,
 	}
 
 	dr.log(LogLevelInfo, "phase_activation phase=%s all_deps_completed", phase.ID)
-	return &PhaseTransitionResult{
+	result := &PhaseTransitionResult{
 		PhaseID:   phase.ID,
 		PhaseName: phase.Name,
 		OldStatus: phase.Status,
 		NewStatus: model.PhaseStatusAwaitingFill,
 		Reason:    "all dependency phases completed",
 	}
+	// commandID is not available in this method, caller will publish event
+	return result
 }
 
 // checkPendingPhaseCascade checks if a pending phase should be cascade-cancelled.
@@ -314,13 +326,15 @@ func (dr *DependencyResolver) checkPendingPhaseCascade(allPhases []PhaseInfo, ph
 		if dep.Status == model.PhaseStatusFailed ||
 			dep.Status == model.PhaseStatusCancelled ||
 			dep.Status == model.PhaseStatusTimedOut {
-			return &PhaseTransitionResult{
+			result := &PhaseTransitionResult{
 				PhaseID:   phase.ID,
 				PhaseName: phase.Name,
 				OldStatus: phase.Status,
 				NewStatus: model.PhaseStatusCancelled,
 				Reason:    fmt.Sprintf("dependency phase %s is %s", depID, dep.Status),
 			}
+			// commandID is not available in this method, caller will publish event
+			return result
 		}
 	}
 
@@ -341,13 +355,15 @@ func (dr *DependencyResolver) checkAwaitingFillTimeout(phase PhaseInfo) *PhaseTr
 	}
 
 	if time.Now().UTC().After(deadline) {
-		return &PhaseTransitionResult{
+		result := &PhaseTransitionResult{
 			PhaseID:   phase.ID,
 			PhaseName: phase.Name,
 			OldStatus: phase.Status,
 			NewStatus: model.PhaseStatusTimedOut,
 			Reason:    "fill deadline exceeded",
 		}
+		// commandID is not available in this method, caller will publish event
+		return result
 	}
 
 	return nil
@@ -383,6 +399,19 @@ func (dr *DependencyResolver) GetPhaseStatus(commandID, phaseID string) (model.P
 func (dr *DependencyResolver) BuildAwaitingFillNotification(commandID string, phase PhaseInfo) string {
 	return fmt.Sprintf("phase:%s phase_id:%s status:awaiting_fill command_id:%s — plan submit --phase %s で次フェーズのタスクを投入してください",
 		phase.Name, phase.ID, commandID, phase.Name)
+}
+
+func (dr *DependencyResolver) publishPhaseTransitionEvent(commandID string, tr PhaseTransitionResult) {
+	if dr.eventBus != nil {
+		dr.eventBus.Publish(events.EventPhaseTransition, map[string]interface{}{
+			"command_id": commandID,
+			"phase_id":   tr.PhaseID,
+			"phase_name": tr.PhaseName,
+			"old_status": string(tr.OldStatus),
+			"new_status": string(tr.NewStatus),
+			"reason":     tr.Reason,
+		})
+	}
 }
 
 func (dr *DependencyResolver) log(level LogLevel, format string, args ...any) {

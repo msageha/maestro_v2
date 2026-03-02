@@ -2,16 +2,17 @@
 package model
 
 type Config struct {
-	Project    ProjectConfig    `yaml:"project"`
-	Maestro    MaestroConfig    `yaml:"maestro"`
-	Agents     AgentsConfig     `yaml:"agents"`
-	Continuous ContinuousConfig `yaml:"continuous"`
-	Watcher    WatcherConfig    `yaml:"watcher"`
-	Retry      RetryConfig      `yaml:"retry"`
-	Queue      QueueConfig      `yaml:"queue"`
-	Limits     LimitsConfig     `yaml:"limits"`
-	Daemon     DaemonConfig     `yaml:"daemon"`
-	Logging    LoggingConfig    `yaml:"logging"`
+	Project      ProjectConfig      `yaml:"project"`
+	Maestro      MaestroConfig      `yaml:"maestro"`
+	Agents       AgentsConfig       `yaml:"agents"`
+	Continuous   ContinuousConfig   `yaml:"continuous"`
+	Watcher      WatcherConfig      `yaml:"watcher"`
+	Retry        RetryConfig        `yaml:"retry"`
+	Queue        QueueConfig        `yaml:"queue"`
+	Limits       LimitsConfig       `yaml:"limits"`
+	Daemon       DaemonConfig       `yaml:"daemon"`
+	Logging      LoggingConfig      `yaml:"logging"`
+	QualityGates QualityGatesConfig `yaml:"quality_gates"`
 }
 
 type ProjectConfig struct {
@@ -101,4 +102,26 @@ type DaemonConfig struct {
 
 type LoggingConfig struct {
 	Level string `yaml:"level"`
+}
+
+type QualityGatesConfig struct {
+	Enabled       bool                       `yaml:"enabled"`
+	SkipGates     bool                       `yaml:"skip_gates"`      // 緊急モードフラグ
+	Thresholds    QualityGateThresholds      `yaml:"thresholds"`
+	Enforcement   QualityGateEnforcement     `yaml:"enforcement"`
+}
+
+type QualityGateThresholds struct {
+	MaxTaskFailureRate      float64 `yaml:"max_task_failure_rate"`       // タスク失敗率閾値（0.0-1.0）
+	MinTaskSuccessRate      float64 `yaml:"min_task_success_rate"`       // タスク成功率閾値（0.0-1.0）
+	MaxConsecutiveFailures  int     `yaml:"max_consecutive_failures"`    // 連続失敗数の上限
+	MaxTaskDurationSec      int     `yaml:"max_task_duration_sec"`       // タスク実行時間の上限（秒）
+	MaxPendingTasks         int     `yaml:"max_pending_tasks"`           // ペンディングタスク数の上限
+}
+
+type QualityGateEnforcement struct {
+	PreTaskCheck   bool   `yaml:"pre_task_check"`    // タスク実行前チェック
+	PostTaskCheck  bool   `yaml:"post_task_check"`   // タスク実行後チェック
+	FailureAction  string `yaml:"failure_action"`    // 失敗時の動作: "warn", "block"
+	LogViolations  bool   `yaml:"log_violations"`    // 違反をログに記録
 }

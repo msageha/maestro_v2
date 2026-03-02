@@ -5,20 +5,26 @@ import (
 	"log"
 	"math"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
 // Dispatcher handles priority sorting and agent_executor dispatch.
 type Dispatcher struct {
-	maestroDir      string
-	config          model.Config
-	leaseManager    *LeaseManager
-	logger          *log.Logger
-	logLevel        LogLevel
-	executorFactory ExecutorFactory
+	maestroDir        string
+	config            model.Config
+	leaseManager      *LeaseManager
+	logger            *log.Logger
+	logLevel          LogLevel
+	executorFactory   ExecutorFactory
+	eventBus          *events.Bus
+	qualityGate       *QualityGateDaemon
+	gateEvaluations   map[string]*model.QualityGateEvaluation // task_id -> evaluation
+	gateEvalMutex     sync.RWMutex
 }
 
 // ExecutorFactory creates agent executors. Allows testing without tmux.
@@ -33,11 +39,12 @@ type AgentExecutor interface {
 // NewDispatcher creates a new Dispatcher.
 func NewDispatcher(maestroDir string, cfg model.Config, lm *LeaseManager, logger *log.Logger, logLevel LogLevel) *Dispatcher {
 	return &Dispatcher{
-		maestroDir:   maestroDir,
-		config:       cfg,
-		leaseManager: lm,
-		logger:       logger,
-		logLevel:     logLevel,
+		maestroDir:      maestroDir,
+		config:          cfg,
+		leaseManager:    lm,
+		logger:          logger,
+		logLevel:        logLevel,
+		gateEvaluations: make(map[string]*model.QualityGateEvaluation),
 		executorFactory: func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 			return agent.NewExecutor(dir, wcfg, level)
 		},
@@ -47,6 +54,16 @@ func NewDispatcher(maestroDir string, cfg model.Config, lm *LeaseManager, logger
 // SetExecutorFactory overrides the executor factory for testing.
 func (d *Dispatcher) SetExecutorFactory(f ExecutorFactory) {
 	d.executorFactory = f
+}
+
+// SetEventBus sets the event bus for publishing events.
+func (d *Dispatcher) SetEventBus(bus *events.Bus) {
+	d.eventBus = bus
+}
+
+// SetQualityGate sets the quality gate daemon for the dispatcher.
+func (d *Dispatcher) SetQualityGate(qg *QualityGateDaemon) {
+	d.qualityGate = qg
 }
 
 // sortableEntry wraps a queue entry with computed effective priority for sorting.
@@ -216,6 +233,44 @@ func (d *Dispatcher) DispatchCommand(cmd *model.Command) error {
 
 // DispatchTask dispatches a task to a worker agent.
 func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
+	// Pre-task quality gate check and record evaluation result
+	var gateEvaluation *model.QualityGateEvaluation
+	if d.shouldEvaluateQualityGates() && d.config.QualityGates.Enforcement.PreTaskCheck {
+		evaluation, err := d.evaluatePreTaskGateWithResult(task, workerID)
+		gateEvaluation = evaluation
+
+		if err != nil {
+			if d.config.QualityGates.Enforcement.FailureAction == "block" {
+				d.log(LogLevelError, "dispatch_task_blocked_by_quality_gate id=%s worker=%s error=%v",
+					task.ID, workerID, err)
+				// Store evaluation result for later recording
+				d.storeGateEvaluation(task.ID, gateEvaluation)
+				return fmt.Errorf("quality gate check failed: %w", err)
+			}
+			// If action is "warn", just log the violation
+			d.log(LogLevelWarn, "dispatch_task_quality_gate_violation id=%s worker=%s error=%v",
+				task.ID, workerID, err)
+		}
+		// Store evaluation result for later recording
+		d.storeGateEvaluation(task.ID, gateEvaluation)
+	} else if !d.config.QualityGates.Enabled {
+		// Record that gates were skipped
+		gateEvaluation = &model.QualityGateEvaluation{
+			Passed:        true,
+			SkippedReason: "disabled",
+			EvaluatedAt:   time.Now().Format(time.RFC3339),
+		}
+		d.storeGateEvaluation(task.ID, gateEvaluation)
+	} else if d.config.QualityGates.SkipGates {
+		// Record that emergency mode was used
+		gateEvaluation = &model.QualityGateEvaluation{
+			Passed:        true,
+			SkippedReason: "emergency_mode",
+			EvaluatedAt:   time.Now().Format(time.RFC3339),
+		}
+		d.storeGateEvaluation(task.ID, gateEvaluation)
+	}
+
 	exec, err := d.executorFactory(d.maestroDir, d.config.Watcher, d.config.Logging.Level)
 	if err != nil {
 		return fmt.Errorf("create executor: %w", err)
@@ -242,6 +297,17 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 
 	d.log(LogLevelInfo, "dispatch_task_success id=%s worker=%s epoch=%d",
 		task.ID, workerID, task.LeaseEpoch)
+
+	// Publish task_started event (non-blocking, best-effort)
+	if d.eventBus != nil {
+		d.eventBus.Publish(events.EventTaskStarted, map[string]interface{}{
+			"task_id":    task.ID,
+			"command_id": task.CommandID,
+			"worker_id":  workerID,
+			"epoch":      task.LeaseEpoch,
+		})
+	}
+
 	return nil
 }
 
@@ -290,4 +356,99 @@ func (d *Dispatcher) log(level LogLevel, format string, args ...any) {
 	}
 	msg := fmt.Sprintf(format, args...)
 	d.logger.Printf("%s %s dispatcher: %s", time.Now().Format(time.RFC3339), levelStr, msg)
+}
+
+// shouldEvaluateQualityGates determines if quality gates should be evaluated
+func (d *Dispatcher) shouldEvaluateQualityGates() bool {
+	// Skip if quality gates are disabled
+	if !d.config.QualityGates.Enabled {
+		return false
+	}
+
+	// Skip if emergency mode is enabled (--skip-gates)
+	if d.config.QualityGates.SkipGates {
+		d.log(LogLevelInfo, "quality_gates_skipped reason=emergency_mode")
+		return false
+	}
+
+	// Skip if quality gate daemon is not available
+	if d.qualityGate == nil {
+		d.log(LogLevelDebug, "quality_gates_skipped reason=daemon_not_available")
+		return false
+	}
+
+	return true
+}
+
+// evaluatePreTaskGateWithResult evaluates quality gates before task execution and returns the result
+func (d *Dispatcher) evaluatePreTaskGateWithResult(task *model.Task, workerID string) (*model.QualityGateEvaluation, error) {
+	if d.qualityGate == nil {
+		return nil, nil
+	}
+
+	// Emit task start event for quality gate evaluation
+	event := TaskStartEvent{
+		TaskID:    task.ID,
+		CommandID: task.CommandID,
+		AgentID:   workerID,
+		StartedAt: time.Now(),
+	}
+
+	d.qualityGate.EmitEvent(event)
+
+	// Perform synchronous evaluation
+	context := map[string]interface{}{
+		"task_id":    task.ID,
+		"command_id": task.CommandID,
+		"agent_id":   workerID,
+		"priority":   task.Priority,
+		"attempts":   task.Attempts,
+	}
+
+	// Use the evaluateGateWithResult method for synchronous evaluation
+	result, err := d.qualityGate.evaluateGateWithResult("pre_task", context)
+
+	// Convert to model.QualityGateEvaluation
+	evaluation := &model.QualityGateEvaluation{
+		Passed:      result != nil && result.Passed,
+		EvaluatedAt: time.Now().Format(time.RFC3339),
+	}
+
+	if result != nil {
+		evaluation.Action = string(result.Action)
+		if len(result.FailedGates) > 0 {
+			evaluation.FailedGates = make([]string, len(result.FailedGates))
+			for i, gate := range result.FailedGates {
+				evaluation.FailedGates[i] = gate
+			}
+		}
+	}
+
+	if err != nil {
+		return evaluation, fmt.Errorf("evaluation failed: %w", err)
+	}
+
+	if !result.Passed {
+		return evaluation, fmt.Errorf("quality gate check failed: %v", result.FailedGates)
+	}
+
+	return evaluation, nil
+}
+
+// storeGateEvaluation stores the gate evaluation for a task
+func (d *Dispatcher) storeGateEvaluation(taskID string, evaluation *model.QualityGateEvaluation) {
+	if evaluation == nil {
+		return
+	}
+
+	d.gateEvalMutex.Lock()
+	defer d.gateEvalMutex.Unlock()
+	d.gateEvaluations[taskID] = evaluation
+}
+
+// GetGateEvaluation retrieves the gate evaluation for a task
+func (d *Dispatcher) GetGateEvaluation(taskID string) *model.QualityGateEvaluation {
+	d.gateEvalMutex.RLock()
+	defer d.gateEvalMutex.RUnlock()
+	return d.gateEvaluations[taskID]
 }
