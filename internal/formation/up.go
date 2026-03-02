@@ -291,9 +291,29 @@ func createFormation(cfg model.Config) error {
 		return fmt.Errorf("create session: %w", err)
 	}
 
+	// Harden server: prevent tmux server from exiting when the last session is destroyed.
+	// Without this, if something kills the maestro session and it's the only session,
+	// the tmux server itself exits (exit-empty defaults to on), losing all state.
+	if err := tmux.SetServerOption("exit-empty", "off"); err != nil {
+		return fmt.Errorf("set exit-empty: %w", err)
+	}
+
+	// Defense in depth: explicitly disable exit-unattached to prevent
+	// user tmux.conf changes from killing the server on detach.
+	if err := tmux.SetServerOption("exit-unattached", "off"); err != nil {
+		return fmt.Errorf("set exit-unattached: %w", err)
+	}
+
 	// Harden session: prevent user-level tmux config from destroying the detached session.
 	if err := tmux.SetSessionOption("destroy-unattached", "off"); err != nil {
 		return fmt.Errorf("set destroy-unattached: %w", err)
+	}
+
+	// Set remain-on-exit at session level as a belt-and-suspenders measure.
+	// Window-level settings (set below) take precedence, but this catches any
+	// windows that might be created later by unexpected means.
+	if err := tmux.SetSessionOption("remain-on-exit", "on"); err != nil {
+		return fmt.Errorf("set session remain-on-exit: %w", err)
 	}
 
 	// Set remain-on-exit for orchestrator window.

@@ -99,6 +99,14 @@ func buildLaunchArgs(role, agentModel, systemPrompt string) []string {
 		args = append(args, "--allowedTools", strings.Join(tools, ","))
 	}
 
+	// Workers: block destructive tmux commands at the tool level.
+	// The textual prohibition in worker.md (D006) is not enforced by Claude CLI;
+	// --disallowedTools provides a hard technical block.
+	if role == "worker" {
+		args = append(args, "--disallowedTools",
+			"Bash(tmux kill-server:*),Bash(tmux kill-session:*),Bash(tmux kill-pane:*)")
+	}
+
 	// Disable Notification hooks for non-orchestrator roles via deep merge.
 	// PreToolUse/PostToolUse are preserved; only Notification is cleared.
 	if role != "orchestrator" {

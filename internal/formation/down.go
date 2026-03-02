@@ -25,6 +25,7 @@ func RunDown(maestroDir string, cfg model.Config) error {
 		if tmux.SessionExists() {
 			_ = tmux.KillSession()
 		}
+		restoreServerOptions()
 		fmt.Println("Daemon is not running. Formation stopped.")
 		return nil
 	}
@@ -43,6 +44,7 @@ func RunDown(maestroDir string, cfg model.Config) error {
 		if tmux.SessionExists() {
 			_ = tmux.KillSession()
 		}
+		restoreServerOptions()
 		fmt.Println("Maestro formation stopped.")
 		return nil
 	}
@@ -94,8 +96,17 @@ func RunDown(maestroDir string, cfg model.Config) error {
 		}
 	}
 
+	restoreServerOptions()
 	fmt.Println("Maestro formation stopped.")
 	return nil
+}
+
+// restoreServerOptions restores tmux server options to their defaults after
+// session cleanup so the tmux server exits naturally when the user has no
+// other sessions. Called on all down paths (normal, early-return, error).
+func restoreServerOptions() {
+	_ = tmux.SetServerOption("exit-empty", "on")
+	_ = tmux.SetServerOption("exit-unattached", "on")
 }
 
 // cleanupStalePID kills a lingering daemon process if daemon.pid exists.

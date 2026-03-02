@@ -389,6 +389,13 @@ func SetupWorkerGrid(windowTarget string, workerCount int) ([]string, error) {
 	return ListPanes(windowTarget, paneFormat)
 }
 
+// SetServerOption sets a server-level tmux option.
+// Server options (e.g., exit-empty, exit-unattached) affect the entire tmux server,
+// not just a single session. Use this for options that must survive session destruction.
+func SetServerOption(name, value string) error {
+	return run("set-option", "-s", name, value)
+}
+
 // SetSessionOption sets a session-level tmux option on the maestro session.
 func SetSessionOption(name, value string) error {
 	return run("set-option", "-t", SessionName, name, value)
