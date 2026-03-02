@@ -394,6 +394,13 @@ func SetSessionOption(name, value string) error {
 	return run("set-option", "-t", SessionName, name, value)
 }
 
+// SetWindowOption sets a window-level tmux option for a specific window.
+// windowTarget should be in the form "session:window" (e.g., "maestro:0").
+// This only affects the specified window, avoiding side effects on other sessions or windows.
+func SetWindowOption(windowTarget, name, value string) error {
+	return run("set-option", "-w", "-t", windowTarget, name, value)
+}
+
 // SelectWindow selects (focuses) a window in the maestro session.
 func SelectWindow(windowTarget string) error {
 	return run("select-window", "-t", windowTarget)

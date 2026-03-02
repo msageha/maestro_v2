@@ -291,13 +291,17 @@ func createFormation(cfg model.Config) error {
 		return fmt.Errorf("create session: %w", err)
 	}
 
-	// Harden session: keep panes alive on process exit and prevent
-	// user-level tmux config from destroying the detached session.
-	if err := tmux.SetSessionOption("remain-on-exit", "on"); err != nil {
-		return fmt.Errorf("set remain-on-exit: %w", err)
-	}
+	// Harden session: prevent user-level tmux config from destroying the detached session.
 	if err := tmux.SetSessionOption("destroy-unattached", "off"); err != nil {
 		return fmt.Errorf("set destroy-unattached: %w", err)
+	}
+
+	// Set remain-on-exit for orchestrator window.
+	// This prevents the window from closing when the agent process exits,
+	// allowing operators to inspect the final pane state for debugging.
+	orchWindow := fmt.Sprintf("%s:0", tmux.SessionName)
+	if err := tmux.SetWindowOption(orchWindow, "remain-on-exit", "on"); err != nil {
+		return fmt.Errorf("set remain-on-exit for orchestrator: %w", err)
 	}
 
 	orchPane := fmt.Sprintf("%s:0.0", tmux.SessionName)
@@ -308,6 +312,12 @@ func createFormation(cfg model.Config) error {
 	// Window 1: planner
 	if err := tmux.CreateWindow("planner"); err != nil {
 		return fmt.Errorf("create planner window: %w", err)
+	}
+
+	// Set remain-on-exit for planner window
+	plannerWindow := fmt.Sprintf("%s:1", tmux.SessionName)
+	if err := tmux.SetWindowOption(plannerWindow, "remain-on-exit", "on"); err != nil {
+		return fmt.Errorf("set remain-on-exit for planner: %w", err)
 	}
 
 	plannerPane := fmt.Sprintf("%s:1.0", tmux.SessionName)
@@ -322,7 +332,12 @@ func createFormation(cfg model.Config) error {
 		return fmt.Errorf("create workers window: %w", err)
 	}
 
+	// Set remain-on-exit for workers window
 	workerWindow := fmt.Sprintf("%s:2", tmux.SessionName)
+	if err := tmux.SetWindowOption(workerWindow, "remain-on-exit", "on"); err != nil {
+		return fmt.Errorf("set remain-on-exit for workers: %w", err)
+	}
+
 	panes, err := tmux.SetupWorkerGrid(workerWindow, workerCount)
 	if err != nil {
 		return fmt.Errorf("setup worker grid: %w", err)
