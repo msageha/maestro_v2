@@ -164,6 +164,8 @@ func (e *Engine) compileCondition(condition *RuleCondition) (*CompiledCondition,
 				return nil, fmt.Errorf("invalid regex pattern: %w", err)
 			}
 			compiled.compiledRegex = re
+			// Also set on RuleCondition so evaluators can access it
+			condition.CompiledRegex = re
 		}
 	}
 
@@ -254,6 +256,18 @@ func (e *Engine) evaluateUncached(ctx context.Context, gateType GateType, evalCt
 
 		gateResult := e.evaluateGate(timeoutCtx, gate, evalCtx)
 		result.RuleResults = append(result.RuleResults, gateResult.RuleResults...)
+
+		// Propagate timeout from gate evaluation
+		if gateResult.TimedOut {
+			result.TimedOut = true
+			// Also reflect any failures from the timed-out gate
+			if !gateResult.Passed {
+				result.Passed = false
+				result.FailedGates = append(result.FailedGates, gate.ID)
+			}
+			result.Duration = time.Since(start)
+			return result, nil
+		}
 
 		if !gateResult.Passed {
 			result.Passed = false
@@ -381,28 +395,27 @@ func (e *Engine) shouldTriggerGate(gate *CompiledGate, evalCtx EvaluationContext
 
 	// Check role filter
 	if len(trigger.Roles) > 0 {
-		if role, ok := evalCtx.GetField("agent.role"); ok {
-			if !contains(trigger.Roles, role.(string)) {
-				return false
-			}
+		role, ok := evalCtx.GetField("agent.role")
+		roleStr, isStr := role.(string)
+		if !ok || !isStr || !contains(trigger.Roles, roleStr) {
+			return false
 		}
 	}
 
 	// Check bloom level filter
 	if len(trigger.BloomLevels) > 0 {
-		if bloomLevel, ok := evalCtx.GetField("task.bloom_level"); ok {
-			if !containsInt(trigger.BloomLevels, toInt(bloomLevel)) {
-				return false
-			}
+		bloomLevel, ok := evalCtx.GetField("task.bloom_level")
+		if !ok || !containsInt(trigger.BloomLevels, toInt(bloomLevel)) {
+			return false
 		}
 	}
 
 	// Check task type filter
 	if len(trigger.TaskTypes) > 0 {
-		if taskType, ok := evalCtx.GetField("task.type"); ok {
-			if !contains(trigger.TaskTypes, taskType.(string)) {
-				return false
-			}
+		taskType, ok := evalCtx.GetField("task.type")
+		taskTypeStr, isStr := taskType.(string)
+		if !ok || !isStr || !contains(trigger.TaskTypes, taskTypeStr) {
+			return false
 		}
 	}
 

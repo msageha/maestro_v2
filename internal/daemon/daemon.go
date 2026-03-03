@@ -75,6 +75,12 @@ type Daemon struct {
 	wg       sync.WaitGroup
 	shutdown sync.Once
 
+	// shuttingDown + shutdownMu guard wg.Add against TOCTOU race with Shutdown.
+	// Writers (Shutdown) set shuttingDown=true under write lock.
+	// Readers (goroutine spawners) check the flag under read lock before wg.Add.
+	shuttingDown atomic.Bool
+	shutdownMu   sync.RWMutex
+
 	cleanupOnce sync.Once
 	forceExit   atomic.Bool
 }
@@ -155,7 +161,9 @@ func (d *Daemon) Run() error {
 	// Write PID file for reliable lifecycle management
 	pidPath := filepath.Join(d.maestroDir, "daemon.pid")
 	if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0644); err != nil {
-		_ = d.fileLock.Unlock()
+		if unlockErr := d.fileLock.Unlock(); unlockErr != nil {
+			d.log(LogLevelError, "startup file_unlock error=%v", unlockErr)
+		}
 		return fmt.Errorf("write pid file: %w", err)
 	}
 
@@ -167,16 +175,24 @@ func (d *Daemon) Run() error {
 	}
 	d.watcher = watcher
 
+	// From this point on, use Shutdown() for cleanup on startup failure.
+	// Shutdown() is idempotent (sync.Once) and handles watcher, EventBus,
+	// goroutines, server, and cleanup() in the correct order.
+	var runOK bool
+	defer func() {
+		if !runOK {
+			d.Shutdown()
+		}
+	}()
+
 	// Watch queue/ and results/ directories
 	queueDir := filepath.Join(d.maestroDir, "queue")
 	resultsDir := filepath.Join(d.maestroDir, "results")
 	for _, dir := range []string{queueDir, resultsDir} {
 		if err := os.MkdirAll(dir, 0755); err != nil {
-			d.cleanup()
 			return fmt.Errorf("ensure dir %s: %w", dir, err)
 		}
 		if err := watcher.Add(dir); err != nil {
-			d.cleanup()
 			return fmt.Errorf("watch %s: %w", dir, err)
 		}
 	}
@@ -216,7 +232,6 @@ func (d *Daemon) Run() error {
 
 	// Step 5: Start UDS server
 	if err := d.server.Start(); err != nil {
-		d.cleanup()
 		return fmt.Errorf("start UDS server: %w", err)
 	}
 	d.log(LogLevelInfo, "UDS server listening on %s", filepath.Join(d.maestroDir, uds.DefaultSocketName))
@@ -228,13 +243,16 @@ func (d *Daemon) Run() error {
 
 	// Step 6.5: Start QualityGateDaemon
 	if err := d.qualityGateDaemon.Start(); err != nil {
-		d.cleanup()
 		return fmt.Errorf("start quality gate daemon: %w", err)
 	}
 
 	// Step 7: Run initial scan
 	d.handler.PeriodicScan()
 	d.log(LogLevelInfo, "daemon ready")
+
+	// Startup succeeded — disable the deferred Shutdown guard.
+	// From here, Shutdown will be called via waitSignals().
+	runOK = true
 
 	// Step 8: Wait for signals
 	d.waitSignals()
@@ -249,6 +267,9 @@ func (d *Daemon) registerHandlers() {
 	})
 
 	d.server.Handle("scan", func(req *uds.Request) *uds.Response {
+		if d.handler == nil {
+			return uds.ErrorResponse(uds.ErrCodeInternal, "handler not initialized")
+		}
 		d.handler.PeriodicScan()
 		return uds.SuccessResponse(map[string]string{"status": "scanned"})
 	})
@@ -268,6 +289,9 @@ func (d *Daemon) registerHandlers() {
 
 // handleTaskHeartbeat handles task heartbeat requests.
 func (d *Daemon) handleTaskHeartbeat(req *uds.Request) *uds.Response {
+	if d.handler == nil {
+		return uds.ErrorResponse(uds.ErrCodeInternal, "handler not initialized")
+	}
 	heartbeatHandler := NewTaskHeartbeatHandler(
 		d.maestroDir,
 		d.config,
@@ -282,6 +306,9 @@ func (d *Daemon) handleTaskHeartbeat(req *uds.Request) *uds.Response {
 
 // handleDashboard triggers dashboard regeneration and returns the result.
 func (d *Daemon) handleDashboard(req *uds.Request) *uds.Response {
+	if d.handler == nil {
+		return uds.ErrorResponse(uds.ErrCodeInternal, "handler not initialized")
+	}
 	d.handler.scanMu.Lock()
 	defer d.handler.scanMu.Unlock()
 
@@ -345,33 +372,46 @@ func (d *Daemon) tickerLoop() {
 func (d *Daemon) waitSignals() {
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
+	defer signal.Stop(sigCh)
 
 	select {
 	case sig := <-sigCh:
 		d.log(LogLevelInfo, "received signal=%s, initiating graceful shutdown", sig)
 
-		// Second signal → force exit
+		// Second signal → force exit.
+		// shutdownDone unblocks this goroutine when Shutdown completes,
+		// preventing a leak if no second signal arrives.
+		shutdownDone := make(chan struct{})
 		go func() {
-			<-sigCh
-			d.log(LogLevelWarn, "received second signal, forcing exit")
-			d.forceExit.Store(true)
-			d.cleanup()
-			os.Exit(1)
+			select {
+			case <-sigCh:
+				d.log(LogLevelWarn, "received second signal, forcing exit")
+				d.forceExit.Store(true)
+				d.cleanup()
+				os.Exit(1)
+			case <-shutdownDone:
+				return
+			}
 		}()
 
 		d.Shutdown()
+		close(shutdownDone)
 	case <-d.ctx.Done():
 		d.log(LogLevelInfo, "context cancelled, waiting for shutdown to complete")
 		d.Shutdown()
 	}
-
-	signal.Stop(sigCh)
 }
 
 // Shutdown performs graceful shutdown (idempotent via sync.Once).
 func (d *Daemon) Shutdown() {
 	d.shutdown.Do(func() {
 		d.log(LogLevelInfo, "shutdown started")
+
+		// 0. Set shuttingDown flag under write lock to prevent new wg.Add
+		// calls from racing with wg.Wait below. Keep the lock short.
+		d.shutdownMu.Lock()
+		d.shuttingDown.Store(true)
+		d.shutdownMu.Unlock()
 
 		// 1. Cancel context (stops accepting new work)
 		d.cancel()
@@ -382,10 +422,14 @@ func (d *Daemon) Shutdown() {
 			d.handler.Stop()
 		}
 		if d.watcher != nil {
-			_ = d.watcher.Close()
+			if err := d.watcher.Close(); err != nil {
+				d.log(LogLevelError, "shutdown watcher_close error=%v", err)
+			}
 		}
 		if d.server != nil {
-			_ = d.server.Stop()
+			if err := d.server.Stop(); err != nil {
+				d.log(LogLevelError, "shutdown server_stop error=%v", err)
+			}
 		}
 
 		// 3. Unsubscribe from event bus (stop event flow to quality gate)
@@ -425,8 +469,8 @@ func (d *Daemon) Shutdown() {
 		}
 
 		// 7. Cleanup
-		d.cleanup()
 		d.log(LogLevelInfo, "daemon stopped")
+		d.cleanup()
 	})
 }
 
@@ -434,13 +478,21 @@ func (d *Daemon) Shutdown() {
 func (d *Daemon) cleanup() {
 	d.cleanupOnce.Do(func() {
 		socketPath := filepath.Join(d.maestroDir, uds.DefaultSocketName)
-		_ = os.Remove(socketPath)
+		if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+			d.log(LogLevelError, "cleanup remove_socket error=%v", err)
+		}
 		// Remove PID file while lock is still held so no concurrent starter
 		// reads a stale PID between lock release and PID file removal.
-		_ = os.Remove(filepath.Join(d.maestroDir, "daemon.pid"))
-		_ = d.fileLock.Unlock()
+		if err := os.Remove(filepath.Join(d.maestroDir, "daemon.pid")); err != nil && !os.IsNotExist(err) {
+			d.log(LogLevelError, "cleanup remove_pid error=%v", err)
+		}
+		if err := d.fileLock.Unlock(); err != nil {
+			d.log(LogLevelError, "cleanup file_unlock error=%v", err)
+		}
 		if d.logFile != nil {
-			_ = d.logFile.Close()
+			if err := d.logFile.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "cleanup: close log file: %v\n", err)
+			}
 		}
 	})
 }

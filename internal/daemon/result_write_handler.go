@@ -12,6 +12,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
+	"github.com/msageha/maestro_v2/internal/validate"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -47,6 +48,12 @@ func (d *Daemon) handleResultWrite(req *uds.Request) *uds.Response {
 	if params.CommandID == "" {
 		return uds.ErrorResponse(uds.ErrCodeValidation, "command_id is required")
 	}
+	if err := validate.ValidateID(params.CommandID); err != nil {
+		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid command_id: %v", err))
+	}
+	if err := validate.ValidateID(params.TaskID); err != nil {
+		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid task_id: %v", err))
+	}
 
 	resultStatus := model.Status(params.Status)
 	switch resultStatus {
@@ -75,14 +82,23 @@ func (d *Daemon) handleResultWrite(req *uds.Request) *uds.Response {
 			fmt.Sprintf("state update failed: %v (result %s committed, run 'maestro plan rebuild' to fix)", err, resultID))
 	}
 
-	// Phase C: Trigger scan (best effort dependency unblocking)
-	if d.handler != nil && d.ctx.Err() == nil {
-		d.wg.Add(1)
-		go func() {
-			defer d.wg.Done()
-			defer d.recoverPanic("resultWriteScan")
-			d.handler.PeriodicScan()
-		}()
+	// Phase C: Trigger scan (best effort dependency unblocking).
+	// Use shutdownMu read lock to atomically check shuttingDown + wg.Add,
+	// preventing TOCTOU race where Shutdown sets the flag and calls wg.Wait
+	// between our check and wg.Add.
+	if d.handler != nil {
+		d.shutdownMu.RLock()
+		if !d.shuttingDown.Load() {
+			d.wg.Add(1)
+			d.shutdownMu.RUnlock()
+			go func() {
+				defer d.wg.Done()
+				defer d.recoverPanic("resultWriteScan")
+				d.handler.PeriodicScan()
+			}()
+		} else {
+			d.shutdownMu.RUnlock()
+		}
 	}
 
 	d.log(LogLevelInfo, "result_write result_id=%s task=%s command=%s status=%s reporter=%s",

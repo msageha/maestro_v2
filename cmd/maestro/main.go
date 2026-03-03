@@ -21,6 +21,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/status"
 	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
+	"github.com/msageha/maestro_v2/internal/validate"
 	"github.com/msageha/maestro_v2/internal/worker"
 )
 
@@ -183,6 +184,11 @@ func runDaemon(_ []string) {
 		os.Exit(1)
 	}
 
+	// HIGH-16: Validate project name before use in tmux session name
+	if err := validate.ValidateProjectName(cfg.Project.Name); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid project name: %v\n", err)
+		os.Exit(1)
+	}
 	tmux.SetSessionName("maestro-" + cfg.Project.Name)
 
 	d, err := daemon.New(maestroDir, cfg)
@@ -259,6 +265,13 @@ func runUp(args []string) {
 		os.Exit(1)
 	}
 
+	// Validate project name before use in tmux session name
+	if err := validate.ValidateProjectName(cfg.Project.Name); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid project name: %v\n", err)
+		os.Exit(1)
+	}
+	tmux.SetSessionName("maestro-" + cfg.Project.Name)
+
 	opts := formation.UpOptions{
 		MaestroDir:    maestroDir,
 		Config:        cfg,
@@ -276,7 +289,7 @@ func runUp(args []string) {
 
 	if !detach {
 		if os.Getenv("TMUX") != "" {
-			fmt.Printf("Already inside tmux. Attach with: tmux switch-client -t %s\n", tmux.SessionName)
+			fmt.Printf("Already inside tmux. Attach with: tmux switch-client -t %s\n", tmux.GetSessionName())
 		} else {
 			if err := tmux.AttachSession(); err != nil {
 				fmt.Fprintf(os.Stderr, "attach: %v\n", err)
@@ -327,6 +340,11 @@ func runStatus(args []string) {
 	cfg, err := loadConfig(maestroDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		os.Exit(1)
+	}
+	// HIGH-16: Validate project name before use in tmux session name
+	if err := validate.ValidateProjectName(cfg.Project.Name); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid project name: %v\n", err)
 		os.Exit(1)
 	}
 	tmux.SetSessionName("maestro-" + cfg.Project.Name)
@@ -750,6 +768,16 @@ func runPlanSubmit(args []string) {
 		tasksFile = "-" // default to stdin
 	}
 
+	// CRIT-05: Validate non-stdin file path before passing to daemon
+	if tasksFile != "-" && tasksFile != "/dev/stdin" {
+		cleaned, err := validate.ValidateFilePath(tasksFile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "invalid tasks file: %v\n", err)
+			os.Exit(1)
+		}
+		tasksFile = cleaned
+	}
+
 	maestroDir := findMaestroDir()
 	if maestroDir == "" {
 		fmt.Fprintln(os.Stderr, "error: .maestro/ directory not found. Run 'maestro setup <dir>' first.")
@@ -760,9 +788,13 @@ func runPlanSubmit(args []string) {
 	// (daemon's stdin is not the CLI's stdin when using UDS)
 	actualFile := tasksFile
 	if tasksFile == "-" || tasksFile == "/dev/stdin" {
-		data, err := io.ReadAll(os.Stdin)
+		data, err := io.ReadAll(io.LimitReader(os.Stdin, int64(model.DefaultMaxYAMLFileBytes)+1))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "read stdin: %v\n", err)
+			os.Exit(1)
+		}
+		if len(data) > model.DefaultMaxYAMLFileBytes {
+			fmt.Fprintf(os.Stderr, "stdin input exceeds maximum size of %d bytes\n", model.DefaultMaxYAMLFileBytes)
 			os.Exit(1)
 		}
 		tmpFile, err := os.CreateTemp("", "maestro-plan-submit-*.yaml")
@@ -1148,6 +1180,11 @@ func runAgentExec(args []string) {
 	cfg, err := loadConfig(maestroDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		os.Exit(1)
+	}
+	// HIGH-16: Validate project name before use in tmux session name
+	if err := validate.ValidateProjectName(cfg.Project.Name); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid project name: %v\n", err)
 		os.Exit(1)
 	}
 	tmux.SetSessionName("maestro-" + cfg.Project.Name)

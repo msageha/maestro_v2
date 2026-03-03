@@ -3,6 +3,7 @@ package tmux
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -21,11 +22,12 @@ const defaultCmdTimeout = 5 * time.Second
 type TmuxErrorKind int
 
 const (
-	ErrKindServer  TmuxErrorKind = iota + 1 // tmux server unreachable
+	ErrKindServer   TmuxErrorKind = iota + 1 // tmux server unreachable
 	ErrKindSession                           // session not found
 	ErrKindPane                              // pane or window not found
 	ErrKindTimeout                           // command timed out
 	ErrKindCommand                           // other command error
+	ErrKindCanceled                          // context was canceled (not timeout)
 )
 
 func (k TmuxErrorKind) String() string {
@@ -40,6 +42,8 @@ func (k TmuxErrorKind) String() string {
 		return "timeout"
 	case ErrKindCommand:
 		return "command"
+	case ErrKindCanceled:
+		return "canceled"
 	default:
 		return "unknown"
 	}
@@ -73,11 +77,12 @@ func (e *TmuxError) Is(target error) bool {
 
 // Sentinel errors for use with errors.Is().
 var (
-	ErrTmuxServer  = &TmuxError{Kind: ErrKindServer}
-	ErrTmuxSession = &TmuxError{Kind: ErrKindSession}
-	ErrTmuxPane    = &TmuxError{Kind: ErrKindPane}
-	ErrTmuxTimeout = &TmuxError{Kind: ErrKindTimeout}
-	ErrTmuxCommand = &TmuxError{Kind: ErrKindCommand}
+	ErrTmuxServer   = &TmuxError{Kind: ErrKindServer}
+	ErrTmuxSession  = &TmuxError{Kind: ErrKindSession}
+	ErrTmuxPane     = &TmuxError{Kind: ErrKindPane}
+	ErrTmuxTimeout  = &TmuxError{Kind: ErrKindTimeout}
+	ErrTmuxCommand  = &TmuxError{Kind: ErrKindCommand}
+	ErrTmuxCanceled = &TmuxError{Kind: ErrKindCanceled}
 )
 
 // classifyTmuxError parses tmux stderr to determine the error category.
@@ -114,6 +119,15 @@ func classifyTmuxError(op, stderr string, err error) *TmuxError {
 	}
 }
 
+// contextErrorKind returns ErrKindTimeout for deadline exceeded and
+// ErrKindCanceled for all other context errors.
+func contextErrorKind(err error) TmuxErrorKind {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return ErrKindTimeout
+	}
+	return ErrKindCanceled
+}
+
 // bufSeq generates unique buffer names to prevent race conditions when
 // multiple goroutines call SendTextAndSubmit concurrently.
 var bufSeq atomic.Int64
@@ -132,7 +146,7 @@ func SendTextAndSubmit(ctx context.Context, paneTarget, text string) error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		stderr := strings.TrimSpace(string(out))
 		if loadCtx.Err() != nil {
-			return &TmuxError{Kind: ErrKindTimeout, Op: "load-buffer", Stderr: stderr, Err: loadCtx.Err()}
+			return &TmuxError{Kind: contextErrorKind(loadCtx.Err()), Op: "load-buffer", Stderr: stderr, Err: loadCtx.Err()}
 		}
 		return classifyTmuxError("load-buffer", stderr, err)
 	}
@@ -162,10 +176,10 @@ func SendTextAndSubmit(ctx context.Context, paneTarget, text string) error {
 	// 100ms is too short under load and causes intermittent delivery failures.
 	// Uses context-aware sleep so cancellation is respected.
 	if err := sleepCtx(ctx, 500*time.Millisecond); err != nil {
-		return &TmuxError{Kind: ErrKindTimeout, Op: "send-text-submit-sleep", Err: err}
+		return &TmuxError{Kind: contextErrorKind(err), Op: "send-text-submit-sleep", Err: err}
 	}
 
-	return SendKeys(paneTarget, "Enter")
+	return SendKeysCtx(ctx, paneTarget, "Enter")
 }
 
 // sleepCtx sleeps for d or returns early if ctx is cancelled.
@@ -180,12 +194,22 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// SessionName is the tmux session name. Set via SetSessionName before use.
-var SessionName = "maestro"
+// sessionName stores the tmux session name. Access via GetSessionName()/SetSessionName().
+// Protected by atomic.Value to prevent data races across goroutines.
+var sessionName atomic.Value
+
+func init() {
+	sessionName.Store("maestro")
+}
 
 // unsafeSessionChars matches characters that are unsafe in tmux session names.
 // tmux uses `:` and `.` for target resolution, so these must be sanitized.
 var unsafeSessionChars = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
+
+// GetSessionName returns the current tmux session name (goroutine-safe).
+func GetSessionName() string {
+	return sessionName.Load().(string)
+}
 
 // SetSessionName updates the tmux session name, sanitizing unsafe characters.
 func SetSessionName(name string) {
@@ -193,31 +217,31 @@ func SetSessionName(name string) {
 	if sanitized == "" {
 		sanitized = "maestro"
 	}
-	SessionName = sanitized
+	sessionName.Store(sanitized)
 }
 
 // SessionExists checks whether the maestro tmux session exists.
 func SessionExists() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultCmdTimeout)
 	defer cancel()
-	err := exec.CommandContext(ctx, "tmux", "has-session", "-t", SessionName).Run()
+	err := exec.CommandContext(ctx, "tmux", "has-session", "-t", GetSessionName()).Run()
 	return err == nil
 }
 
 // CreateSession creates a new maestro tmux session.
 // The first window is named windowName. Returns an error if the session already exists.
 func CreateSession(windowName string) error {
-	return run("new-session", "-d", "-s", SessionName, "-n", windowName)
+	return run("new-session", "-d", "-s", GetSessionName(), "-n", windowName)
 }
 
 // KillSession destroys the maestro tmux session.
 func KillSession() error {
-	return run("kill-session", "-t", SessionName)
+	return run("kill-session", "-t", GetSessionName())
 }
 
 // CreateWindow creates a new window in the maestro session.
 func CreateWindow(name string) error {
-	return run("new-window", "-t", SessionName, "-n", name)
+	return run("new-window", "-t", GetSessionName(), "-n", name)
 }
 
 // SplitPane splits the current pane in the given window horizontally or vertically.
@@ -275,12 +299,17 @@ func CapturePaneJoined(paneTarget string, lastN int) (string, error) {
 	return output(args...)
 }
 
-// SendKeys sends keystrokes to a pane.
-func SendKeys(paneTarget string, keys ...string) error {
+// SendKeysCtx sends keystrokes to a pane with context support.
+func SendKeysCtx(ctx context.Context, paneTarget string, keys ...string) error {
 	args := make([]string, 0, 3+len(keys))
 	args = append(args, "send-keys", "-t", paneTarget)
 	args = append(args, keys...)
-	return run(args...)
+	return runCtx(ctx, args...)
+}
+
+// SendKeys sends keystrokes to a pane.
+func SendKeys(paneTarget string, keys ...string) error {
+	return SendKeysCtx(context.Background(), paneTarget, keys...)
 }
 
 // ListPanes returns pane IDs for a window, formatted by the given format string.
@@ -298,7 +327,7 @@ func ListPanes(windowTarget, format string) ([]string, error) {
 
 // ListAllPanes returns pane info across all windows in the session.
 func ListAllPanes(format string) ([]string, error) {
-	out, err := output("list-panes", "-s", "-t", SessionName, "-F", format)
+	out, err := output("list-panes", "-s", "-t", GetSessionName(), "-F", format)
 	if err != nil {
 		return nil, err
 	}
@@ -398,7 +427,7 @@ func SetServerOption(name, value string) error {
 
 // SetSessionOption sets a session-level tmux option on the maestro session.
 func SetSessionOption(name, value string) error {
-	return run("set-option", "-t", SessionName, name, value)
+	return run("set-option", "-t", GetSessionName(), name, value)
 }
 
 // SetWindowOption sets a window-level tmux option for a specific window.
@@ -416,7 +445,7 @@ func SelectWindow(windowTarget string) error {
 // AttachSession attaches the current terminal to the maestro tmux session.
 // This replaces the current process with tmux attach-session.
 func AttachSession() error {
-	cmd := exec.Command("tmux", "attach-session", "-t", SessionName)
+	cmd := exec.Command("tmux", "attach-session", "-t", GetSessionName())
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -456,6 +485,10 @@ func GetPanePID(paneTarget string) (string, error) {
 
 // runCtx executes a tmux command with context support and error classification.
 func runCtx(ctx context.Context, args ...string) error {
+	// Fast path: if context is already done, don't spawn a process.
+	if err := ctx.Err(); err != nil {
+		return &TmuxError{Kind: contextErrorKind(err), Op: args[0], Err: err}
+	}
 	ctx, cancel := context.WithTimeout(ctx, defaultCmdTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "tmux", args...)
@@ -463,7 +496,7 @@ func runCtx(ctx context.Context, args ...string) error {
 	if err != nil {
 		stderr := strings.TrimSpace(string(out))
 		if ctx.Err() != nil {
-			return &TmuxError{Kind: ErrKindTimeout, Op: args[0], Stderr: stderr, Err: ctx.Err()}
+			return &TmuxError{Kind: contextErrorKind(ctx.Err()), Op: args[0], Stderr: stderr, Err: ctx.Err()}
 		}
 		return classifyTmuxError(args[0], stderr, err)
 	}
@@ -472,6 +505,10 @@ func runCtx(ctx context.Context, args ...string) error {
 
 // outputCtx executes a tmux command that returns output, with context support and error classification.
 func outputCtx(ctx context.Context, args ...string) (string, error) {
+	// Fast path: if context is already done, don't spawn a process.
+	if err := ctx.Err(); err != nil {
+		return "", &TmuxError{Kind: contextErrorKind(err), Op: args[0], Err: err}
+	}
 	ctx, cancel := context.WithTimeout(ctx, defaultCmdTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "tmux", args...)
@@ -479,7 +516,7 @@ func outputCtx(ctx context.Context, args ...string) (string, error) {
 	if err != nil {
 		stderr := strings.TrimSpace(string(out))
 		if ctx.Err() != nil {
-			return "", &TmuxError{Kind: ErrKindTimeout, Op: args[0], Stderr: stderr, Err: ctx.Err()}
+			return "", &TmuxError{Kind: contextErrorKind(ctx.Err()), Op: args[0], Stderr: stderr, Err: ctx.Err()}
 		}
 		return "", classifyTmuxError(args[0], stderr, err)
 	}

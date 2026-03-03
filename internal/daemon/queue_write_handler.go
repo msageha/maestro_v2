@@ -11,6 +11,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
+	"github.com/msageha/maestro_v2/internal/validate"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -142,6 +143,9 @@ func (d *Daemon) handleQueueWriteCommand(params QueueWriteParams) *uds.Response 
 func (d *Daemon) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 	if params.CommandID == "" {
 		return uds.ErrorResponse(uds.ErrCodeValidation, "command_id is required for task")
+	}
+	if err := validate.ValidateID(params.CommandID); err != nil {
+		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid command_id: %v", err))
 	}
 	if params.Content == "" {
 		return uds.ErrorResponse(uds.ErrCodeValidation, "content is required for task")
@@ -341,6 +345,9 @@ func (d *Daemon) handleQueueWriteNotification(params QueueWriteParams) *uds.Resp
 func (d *Daemon) handleQueueWriteCancelRequest(params QueueWriteParams) *uds.Response {
 	if params.CommandID == "" {
 		return uds.ErrorResponse(uds.ErrCodeValidation, "command_id is required for cancel-request")
+	}
+	if err := validate.ValidateID(params.CommandID); err != nil {
+		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid command_id: %v", err))
 	}
 
 	// Check if state exists (submitted command)

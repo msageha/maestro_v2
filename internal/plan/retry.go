@@ -2,6 +2,7 @@ package plan
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -205,7 +206,7 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 		workerID:           assignment.WorkerID,
 	}
 
-	if err := writeRetryQueueEntry(opts.MaestroDir, primaryTask, now); err != nil {
+	if err := writeRetryQueueEntry(opts.MaestroDir, primaryTask, now, opts.LockMap); err != nil {
 		restoreState(state, origStateBytes)
 		return nil, fmt.Errorf("write queue entry for %s: %w", newTaskID, err)
 	}
@@ -242,8 +243,8 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 			toolsHint:          toolsHint,
 			workerID:           cr.Worker,
 		}
-		if err := writeRetryQueueEntry(opts.MaestroDir, crTask, now); err != nil {
-			rollbackRetryQueueEntries(opts.MaestroDir, writtenQueueTaskIDs)
+		if err := writeRetryQueueEntry(opts.MaestroDir, crTask, now, opts.LockMap); err != nil {
+			rollbackRetryQueueEntries(opts.MaestroDir, writtenQueueTaskIDs, opts.LockMap)
 			restoreState(state, origStateBytes)
 			return nil, fmt.Errorf("write queue entry for cascade %s: %w", cr.TaskID, err)
 		}
@@ -252,7 +253,7 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 
 	// Save state
 	if err := sm.SaveState(state); err != nil {
-		rollbackRetryQueueEntries(opts.MaestroDir, writtenQueueTaskIDs)
+		rollbackRetryQueueEntries(opts.MaestroDir, writtenQueueTaskIDs, opts.LockMap)
 		restoreState(state, origStateBytes)
 		return nil, fmt.Errorf("save state: %w", err)
 	}
@@ -434,8 +435,13 @@ func getLatestDescendant(taskID string, lineage map[string]string) string {
 		reverseLineage[oldID] = newID
 	}
 
+	visited := make(map[string]bool)
 	current := taskID
 	for {
+		if visited[current] {
+			return current // cycle detected, break to prevent infinite loop
+		}
+		visited[current] = true
 		next, ok := reverseLineage[current]
 		if !ok {
 			return current
@@ -469,7 +475,13 @@ type retryQueueTask struct {
 	workerID           string
 }
 
-func writeRetryQueueEntry(maestroDir string, task retryQueueTask, now string) error {
+func writeRetryQueueEntry(maestroDir string, task retryQueueTask, now string, lockMap *lock.MutexMap) error {
+	// CRIT-02: Lock per-queue to prevent concurrent read-modify-write data loss.
+	if lockMap != nil {
+		lockMap.Lock("queue:" + task.workerID)
+		defer lockMap.Unlock("queue:" + task.workerID)
+	}
+
 	queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(task.workerID))
 
 	var tq model.TaskQueue
@@ -532,34 +544,51 @@ func loadOriginalTasksFromQueue(maestroDir string, commandID string) map[string]
 	return result
 }
 
-func rollbackRetryQueueEntries(maestroDir string, written []retryQueueTask) {
-	// Group task IDs by worker queue file
-	workerTaskIDs := make(map[string]map[string]bool) // queueFile → taskID set
-	for _, t := range written {
-		queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(t.workerID))
-		if workerTaskIDs[queueFile] == nil {
-			workerTaskIDs[queueFile] = make(map[string]bool)
-		}
-		workerTaskIDs[queueFile][t.taskID] = true
+func rollbackRetryQueueEntries(maestroDir string, written []retryQueueTask, lockMap *lock.MutexMap) {
+	// Group task IDs by worker
+	type workerRollback struct {
+		workerID string
+		taskIDs  map[string]bool
 	}
-
-	for queueFile, taskIDs := range workerTaskIDs {
-		data, err := os.ReadFile(queueFile)
-		if err != nil {
-			continue
-		}
-		var tq model.TaskQueue
-		if err := yamlv3.Unmarshal(data, &tq); err != nil {
-			continue
-		}
-		var kept []model.Task
-		for _, task := range tq.Tasks {
-			if !taskIDs[task.ID] {
-				kept = append(kept, task)
+	workerMap := make(map[string]*workerRollback) // workerID → rollback data
+	for _, t := range written {
+		if workerMap[t.workerID] == nil {
+			workerMap[t.workerID] = &workerRollback{
+				workerID: t.workerID,
+				taskIDs:  make(map[string]bool),
 			}
 		}
-		tq.Tasks = kept
-		_ = yamlutil.AtomicWrite(queueFile, tq)
+		workerMap[t.workerID].taskIDs[t.taskID] = true
+	}
+
+	// CRIT-02: Lock per-queue to prevent concurrent read-modify-write data loss.
+	for _, rb := range workerMap {
+		func() {
+			if lockMap != nil {
+				lockMap.Lock("queue:" + rb.workerID)
+				defer lockMap.Unlock("queue:" + rb.workerID)
+			}
+
+			queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(rb.workerID))
+			data, err := os.ReadFile(queueFile)
+			if err != nil {
+				return
+			}
+			var tq model.TaskQueue
+			if err := yamlv3.Unmarshal(data, &tq); err != nil {
+				return
+			}
+			var kept []model.Task
+			for _, task := range tq.Tasks {
+				if !rb.taskIDs[task.ID] {
+					kept = append(kept, task)
+				}
+			}
+			tq.Tasks = kept
+			if writeErr := yamlutil.AtomicWrite(queueFile, tq); writeErr != nil {
+				log.Printf("rollback: write queue %s: %v", queueFile, writeErr)
+			}
+		}()
 	}
 }
 

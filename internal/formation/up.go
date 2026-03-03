@@ -319,12 +319,12 @@ func createFormation(cfg model.Config) error {
 	// Set remain-on-exit for orchestrator window.
 	// This prevents the window from closing when the agent process exits,
 	// allowing operators to inspect the final pane state for debugging.
-	orchWindow := fmt.Sprintf("%s:0", tmux.SessionName)
+	orchWindow := fmt.Sprintf("%s:0", tmux.GetSessionName())
 	if err := tmux.SetWindowOption(orchWindow, "remain-on-exit", "on"); err != nil {
 		return fmt.Errorf("set remain-on-exit for orchestrator: %w", err)
 	}
 
-	orchPane := fmt.Sprintf("%s:0.0", tmux.SessionName)
+	orchPane := fmt.Sprintf("%s:0.0", tmux.GetSessionName())
 	if err := setAgentVars(orchPane, "orchestrator", "orchestrator", resolveModel(cfg, "orchestrator")); err != nil {
 		return err
 	}
@@ -335,12 +335,12 @@ func createFormation(cfg model.Config) error {
 	}
 
 	// Set remain-on-exit for planner window
-	plannerWindow := fmt.Sprintf("%s:1", tmux.SessionName)
+	plannerWindow := fmt.Sprintf("%s:1", tmux.GetSessionName())
 	if err := tmux.SetWindowOption(plannerWindow, "remain-on-exit", "on"); err != nil {
 		return fmt.Errorf("set remain-on-exit for planner: %w", err)
 	}
 
-	plannerPane := fmt.Sprintf("%s:1.0", tmux.SessionName)
+	plannerPane := fmt.Sprintf("%s:1.0", tmux.GetSessionName())
 	if err := setAgentVars(plannerPane, "planner", "planner", resolveModel(cfg, "planner")); err != nil {
 		return err
 	}
@@ -353,7 +353,7 @@ func createFormation(cfg model.Config) error {
 	}
 
 	// Set remain-on-exit for workers window
-	workerWindow := fmt.Sprintf("%s:2", tmux.SessionName)
+	workerWindow := fmt.Sprintf("%s:2", tmux.GetSessionName())
 	if err := tmux.SetWindowOption(workerWindow, "remain-on-exit", "on"); err != nil {
 		return fmt.Errorf("set remain-on-exit for workers: %w", err)
 	}
@@ -393,7 +393,7 @@ func createFormation(cfg model.Config) error {
 	}
 
 	// Select orchestrator window so `tmux attach` lands there
-	if err := tmux.SelectWindow(fmt.Sprintf("%s:0", tmux.SessionName)); err != nil {
+	if err := tmux.SelectWindow(fmt.Sprintf("%s:0", tmux.GetSessionName())); err != nil {
 		return fmt.Errorf("select orchestrator window: %w", err)
 	}
 

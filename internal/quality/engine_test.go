@@ -415,7 +415,7 @@ func TestEngine_CompileRegex(t *testing.T) {
 						Condition: RuleCondition{
 							Type:     ConditionFieldValidation,
 							Field:    "task.content",
-							Operator: OpMatches,
+							Operator: OpNotMatches,
 							Value:    "rm\\s+-rf\\s+/",
 						},
 						Severity: SeverityCritical,

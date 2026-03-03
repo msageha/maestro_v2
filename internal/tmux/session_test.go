@@ -31,7 +31,7 @@ func cleanupSession(t *testing.T) {
 	t.Helper()
 	t.Cleanup(func() {
 		// Best-effort cleanup
-		exec.Command("tmux", "kill-session", "-t", SessionName).Run()
+		exec.Command("tmux", "kill-session", "-t", GetSessionName()).Run()
 	})
 }
 
@@ -40,7 +40,7 @@ func TestSessionLifecycle(t *testing.T) {
 	cleanupSession(t)
 
 	// Kill any existing test session
-	exec.Command("tmux", "kill-session", "-t", SessionName).Run()
+	exec.Command("tmux", "kill-session", "-t", GetSessionName()).Run()
 
 	if SessionExists() {
 		t.Fatal("session should not exist initially")
@@ -66,13 +66,13 @@ func TestSessionLifecycle(t *testing.T) {
 func TestUserVariables(t *testing.T) {
 	requireTmux(t)
 	cleanupSession(t)
-	exec.Command("tmux", "kill-session", "-t", SessionName).Run()
+	exec.Command("tmux", "kill-session", "-t", GetSessionName()).Run()
 
 	if err := CreateSession("test"); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
-	paneTarget := SessionName + ":0.0"
+	paneTarget := GetSessionName() + ":0.0"
 
 	// Set user variables
 	vars := map[string]string{
@@ -102,7 +102,7 @@ func TestUserVariables(t *testing.T) {
 func TestCreateWindowAndListPanes(t *testing.T) {
 	requireTmux(t)
 	cleanupSession(t)
-	exec.Command("tmux", "kill-session", "-t", SessionName).Run()
+	exec.Command("tmux", "kill-session", "-t", GetSessionName()).Run()
 
 	if err := CreateSession("orchestrator"); err != nil {
 		t.Fatalf("create session: %v", err)
@@ -134,7 +134,7 @@ func TestCreateWindowAndListPanes(t *testing.T) {
 func TestSetupWorkerGrid(t *testing.T) {
 	requireTmux(t)
 	cleanupSession(t)
-	exec.Command("tmux", "kill-session", "-t", SessionName).Run()
+	exec.Command("tmux", "kill-session", "-t", GetSessionName()).Run()
 
 	if err := CreateSession("orchestrator"); err != nil {
 		t.Fatalf("create session: %v", err)
@@ -143,7 +143,7 @@ func TestSetupWorkerGrid(t *testing.T) {
 		t.Fatalf("create window: %v", err)
 	}
 
-	workerWindow := SessionName + ":workers"
+	workerWindow := GetSessionName() + ":workers"
 	panes, err := SetupWorkerGrid(workerWindow, 4)
 	if err != nil {
 		t.Fatalf("setup worker grid: %v", err)
@@ -192,13 +192,13 @@ func TestSetupWorkerGrid(t *testing.T) {
 func TestCapturePane(t *testing.T) {
 	requireTmux(t)
 	cleanupSession(t)
-	exec.Command("tmux", "kill-session", "-t", SessionName).Run()
+	exec.Command("tmux", "kill-session", "-t", GetSessionName()).Run()
 
 	if err := CreateSession("test"); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
-	paneTarget := SessionName + ":0.0"
+	paneTarget := GetSessionName() + ":0.0"
 
 	// Capture should succeed even if pane is empty
 	content, err := CapturePane(paneTarget, 3)
@@ -212,13 +212,13 @@ func TestCapturePane(t *testing.T) {
 func TestFindPaneByAgentID(t *testing.T) {
 	requireTmux(t)
 	cleanupSession(t)
-	exec.Command("tmux", "kill-session", "-t", SessionName).Run()
+	exec.Command("tmux", "kill-session", "-t", GetSessionName()).Run()
 
 	if err := CreateSession("test"); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
-	paneTarget := SessionName + ":0.0"
+	paneTarget := GetSessionName() + ":0.0"
 	SetUserVar(paneTarget, "agent_id", "test-agent")
 
 	found, err := FindPaneByAgentID("test-agent")
@@ -256,13 +256,13 @@ func waitForShell(t *testing.T, paneTarget string) {
 func TestSendTextAndSubmit(t *testing.T) {
 	requireTmux(t)
 	cleanupSession(t)
-	exec.Command("tmux", "kill-session", "-t", SessionName).Run()
+	exec.Command("tmux", "kill-session", "-t", GetSessionName()).Run()
 
 	if err := CreateSession("test"); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
-	paneTarget := SessionName + ":0.0"
+	paneTarget := GetSessionName() + ":0.0"
 	waitForShell(t, paneTarget)
 
 	// Start cat so we can verify text is submitted (cat echoes stdin to stdout)
@@ -294,13 +294,13 @@ func TestSendTextAndSubmit(t *testing.T) {
 func TestSendTextAndSubmit_SingleLine(t *testing.T) {
 	requireTmux(t)
 	cleanupSession(t)
-	exec.Command("tmux", "kill-session", "-t", SessionName).Run()
+	exec.Command("tmux", "kill-session", "-t", GetSessionName()).Run()
 
 	if err := CreateSession("test"); err != nil {
 		t.Fatalf("create session: %v", err)
 	}
 
-	paneTarget := SessionName + ":0.0"
+	paneTarget := GetSessionName() + ":0.0"
 	waitForShell(t, paneTarget)
 
 	if err := SendCommand(paneTarget, "cat"); err != nil {
@@ -339,7 +339,7 @@ func TestSetupWorkerGrid_InvalidCount(t *testing.T) {
 func TestSetSessionOption(t *testing.T) {
 	requireTmux(t)
 	cleanupSession(t)
-	exec.Command("tmux", "kill-session", "-t", SessionName).Run()
+	exec.Command("tmux", "kill-session", "-t", GetSessionName()).Run()
 
 	if err := CreateSession("test"); err != nil {
 		t.Fatalf("create session: %v", err)
@@ -354,7 +354,7 @@ func TestSetSessionOption(t *testing.T) {
 	}
 
 	// Verify remain-on-exit was set
-	out, err := exec.Command("tmux", "show-options", "-t", SessionName, "remain-on-exit").CombinedOutput()
+	out, err := exec.Command("tmux", "show-options", "-t", GetSessionName(), "remain-on-exit").CombinedOutput()
 	if err != nil {
 		t.Fatalf("show-options: %v: %s", err, out)
 	}

@@ -136,10 +136,13 @@ func (ch *CancelHandler) InterruptInProgressTasks(tasks []model.Task, commandID 
 			continue
 		}
 
-		task.Status = model.StatusCancelled
+		// Clear lease fields before setting status to ensure any concurrent
+		// observer sees either (in_progress, lease) or (cancelled, no_lease),
+		// never (cancelled, active_lease).
 		task.LeaseOwner = nil
 		task.LeaseExpiresAt = nil
 		task.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		task.Status = model.StatusCancelled
 
 		ch.log(LogLevelInfo, "cancel_inprogress task=%s command=%s", task.ID, commandID)
 
@@ -189,10 +192,11 @@ func (ch *CancelHandler) InterruptInProgressTasksDeferred(tasks []model.Task, co
 			continue
 		}
 
-		task.Status = model.StatusCancelled
+		// Clear lease fields before setting status (same ordering as InterruptInProgressTasks).
 		task.LeaseOwner = nil
 		task.LeaseExpiresAt = nil
 		task.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		task.Status = model.StatusCancelled
 
 		ch.log(LogLevelInfo, "cancel_inprogress_deferred task=%s command=%s", task.ID, commandID)
 
@@ -239,7 +243,9 @@ func (ch *CancelHandler) WriteSyntheticResults(results []CancelledTaskResult, wo
 
 	data, err := os.ReadFile(resultPath)
 	if err == nil {
-		_ = yamlv3.Unmarshal(data, &rf)
+		if unmarshalErr := yamlv3.Unmarshal(data, &rf); unmarshalErr != nil {
+			ch.log(LogLevelWarn, "unmarshal_result_file worker=%s error=%v", workerID, unmarshalErr)
+		}
 	}
 	if rf.SchemaVersion == 0 {
 		rf.SchemaVersion = 1

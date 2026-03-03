@@ -7,6 +7,15 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
+// Maximum lengths for task fields.
+const (
+	MaxTaskNameRunes               = 128
+	MaxTaskPurposeRunes            = 1024
+	MaxTaskContentBytes            = 102400 // 100KB
+	MaxTaskAcceptanceCriteriaRunes = 4096
+	MaxTaskConstraintRunes         = 1024
+)
+
 func ValidateTasksInput(tasks []TaskInput) *ValidationErrors {
 	errs := &ValidationErrors{}
 
@@ -265,15 +274,28 @@ func ValidatePhaseFillInput(tasks []TaskInput, phase model.Phase) *ValidationErr
 func validateTaskFields(task TaskInput, fieldPrefix string, errs *ValidationErrors) {
 	if task.Name == "" {
 		errs.Add(fieldPrefix+".name", "required field is missing")
+	} else if len([]rune(task.Name)) > MaxTaskNameRunes {
+		errs.Add(fieldPrefix+".name", fmt.Sprintf("exceeds maximum length of %d characters", MaxTaskNameRunes))
 	}
 	if task.Purpose == "" {
 		errs.Add(fieldPrefix+".purpose", "required field is missing")
+	} else if len([]rune(task.Purpose)) > MaxTaskPurposeRunes {
+		errs.Add(fieldPrefix+".purpose", fmt.Sprintf("exceeds maximum length of %d characters", MaxTaskPurposeRunes))
 	}
 	if task.Content == "" {
 		errs.Add(fieldPrefix+".content", "required field is missing")
+	} else if len(task.Content) > MaxTaskContentBytes {
+		errs.Add(fieldPrefix+".content", fmt.Sprintf("exceeds maximum size of %d bytes", MaxTaskContentBytes))
 	}
 	if task.AcceptanceCriteria == "" {
 		errs.Add(fieldPrefix+".acceptance_criteria", "required field is missing")
+	} else if len([]rune(task.AcceptanceCriteria)) > MaxTaskAcceptanceCriteriaRunes {
+		errs.Add(fieldPrefix+".acceptance_criteria", fmt.Sprintf("exceeds maximum length of %d characters", MaxTaskAcceptanceCriteriaRunes))
+	}
+	for i, c := range task.Constraints {
+		if len([]rune(c)) > MaxTaskConstraintRunes {
+			errs.Add(fmt.Sprintf("%s.constraints[%d]", fieldPrefix, i), fmt.Sprintf("exceeds maximum length of %d characters", MaxTaskConstraintRunes))
+		}
 	}
 	validateBloomLevel(task.BloomLevel, fieldPrefix+".bloom_level", errs)
 }

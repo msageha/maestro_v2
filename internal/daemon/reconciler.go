@@ -19,6 +19,11 @@ import (
 // CanCompleteFunc is the signature for plan.CanComplete to avoid import cycles.
 type CanCompleteFunc func(state *model.CommandState) (model.PlanStatus, error)
 
+// Canonical lock ordering for MutexMap keys (to prevent deadlocks):
+//   queue:* → state:* → result:*
+// All methods must acquire locks in this order. Never hold a state:* lock
+// while acquiring a queue:* lock.
+
 // Reconciler detects and repairs inconsistencies between queue/, results/, and state/ files.
 // Implements patterns R0, R0b, R1-R6.
 type Reconciler struct {
@@ -158,7 +163,9 @@ func (r *Reconciler) reconcileR0() []ReconcileRepair {
 		var stuckCommandID string
 		var stuckAgeSec float64
 
-		repaired := func() bool {
+		// Phase 1: Check if state is stuck (under state lock only).
+		// Lock ordering: release state lock before acquiring queue locks.
+		needsRepair := func() bool {
 			r.lockMap.Lock(lockKey)
 			defer r.lockMap.Unlock(lockKey)
 
@@ -186,26 +193,47 @@ func (r *Reconciler) reconcileR0() []ReconcileRepair {
 			r.log(LogLevelWarn, "R0 planning_stuck command=%s age_sec=%.0f threshold=%d",
 				state.CommandID, ageSec, threshold)
 
-			// Delete state file (rollback partial submit)
-			if err := os.Remove(statePath); err != nil {
-				r.log(LogLevelError, "R0 delete_state command=%s error=%v", state.CommandID, err)
+			stuckCommandID = state.CommandID
+			stuckAgeSec = ageSec
+			return true
+		}()
+
+		if !needsRepair {
+			continue
+		}
+
+		// Phase 2: Queue cleanup (no state lock held).
+		// Respects lock ordering: queue:* before state:*.
+		// Safe: Reconcile() runs under scanMu.Lock, serializing against handlers.
+		r.removeCommandFromPlannerQueue(stuckCommandID)
+		r.removeTasksFromWorkerQueues(stuckCommandID)
+
+		// Phase 3: Re-verify and delete state file (under state lock).
+		repaired := func() bool {
+			r.lockMap.Lock(lockKey)
+			defer r.lockMap.Unlock(lockKey)
+
+			// Re-verify: state may have been modified between Phase 1 and Phase 3.
+			state, err := r.loadState(statePath)
+			if err != nil {
+				// State file already removed or unreadable — treat as repaired.
+				return true
+			}
+			if state.PlanStatus != model.PlanStatusPlanning {
+				// State recovered between phases — skip deletion.
 				return false
 			}
 
-			stuckCommandID = state.CommandID
-			stuckAgeSec = ageSec
+			if err := os.Remove(statePath); err != nil {
+				r.log(LogLevelError, "R0 delete_state command=%s error=%v", stuckCommandID, err)
+				return false
+			}
 			return true
 		}()
 
 		if !repaired {
 			continue
 		}
-
-		// Remove command from planner queue entirely to prevent re-dispatch loops.
-		r.removeCommandFromPlannerQueue(stuckCommandID)
-
-		// Remove any tasks from worker queues for this command
-		r.removeTasksFromWorkerQueues(stuckCommandID)
 
 		repairs = append(repairs, ReconcileRepair{
 			Pattern:   "R0",
@@ -360,6 +388,7 @@ func (r *Reconciler) reconcileR0b() ([]ReconcileRepair, []DeferredNotification) 
 		statePath := filepath.Join(stateDir, entry.Name())
 		lockKey := "state:" + commandID
 
+		var taskIDsToRemove []string
 		modified := func() bool {
 			r.lockMap.Lock(lockKey)
 			defer r.lockMap.Unlock(lockKey)
@@ -370,6 +399,7 @@ func (r *Reconciler) reconcileR0b() ([]ReconcileRepair, []DeferredNotification) 
 			}
 
 			localModified := false
+			var localRepairs []ReconcileRepair
 			for i := range state.Phases {
 				phase := &state.Phases[i]
 				if phase.Status != model.PhaseStatusFilling {
@@ -390,9 +420,11 @@ func (r *Reconciler) reconcileR0b() ([]ReconcileRepair, []DeferredNotification) 
 				r.log(LogLevelWarn, "R0b filling_stuck command=%s phase=%s age_sec=%.0f",
 					state.CommandID, phase.Name, ageSec)
 
-				// Remove partially added task IDs from worker queues and state
+				// Collect task IDs for queue cleanup outside state lock.
+				taskIDsToRemove = append(taskIDsToRemove, phase.TaskIDs...)
+
+				// Remove partially added task IDs from state
 				for _, taskID := range phase.TaskIDs {
-					r.removeTaskFromWorkerQueues(taskID)
 					delete(state.TaskStates, taskID)
 					delete(state.TaskDependencies, taskID)
 					state.RequiredTaskIDs = reconcilerRemoveFromSlice(state.RequiredTaskIDs, taskID)
@@ -405,7 +437,7 @@ func (r *Reconciler) reconcileR0b() ([]ReconcileRepair, []DeferredNotification) 
 				phase.Status = model.PhaseStatusAwaitingFill
 				localModified = true
 
-				repairs = append(repairs, ReconcileRepair{
+				localRepairs = append(localRepairs, ReconcileRepair{
 					Pattern:   "R0b",
 					CommandID: state.CommandID,
 					Detail:    fmt.Sprintf("phase %s filling stuck %.0fs, reverted to awaiting_fill", phase.Name, ageSec),
@@ -418,11 +450,18 @@ func (r *Reconciler) reconcileR0b() ([]ReconcileRepair, []DeferredNotification) 
 				state.UpdatedAt = now
 				if err := yamlutil.AtomicWrite(statePath, state); err != nil {
 					r.log(LogLevelError, "R0b write_state command=%s error=%v", state.CommandID, err)
+					return false
 				}
+				repairs = append(repairs, localRepairs...)
 			}
 
 			return localModified
 		}()
+
+		// Queue cleanup outside state lock (respects lock ordering: queue:* before state:*).
+		for _, taskID := range taskIDsToRemove {
+			r.removeTaskFromWorkerQueues(taskID)
+		}
 
 		// Defer Planner notification for execution outside scanMu.Lock
 		if modified && r.executorFactory != nil {
@@ -512,6 +551,8 @@ func (r *Reconciler) reconcileR1() []ReconcileRepair {
 		}
 
 		queueModified := false
+		var workerRepairs []ReconcileRepair
+		workerRepairedCommands := make(map[string]bool)
 		for i := range tq.Tasks {
 			task := &tq.Tasks[i]
 			if task.Status != model.StatusInProgress {
@@ -531,9 +572,9 @@ func (r *Reconciler) reconcileR1() []ReconcileRepair {
 			task.LeaseExpiresAt = nil
 			task.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 			queueModified = true
-			repairedCommands[task.CommandID] = true
+			workerRepairedCommands[task.CommandID] = true
 
-			repairs = append(repairs, ReconcileRepair{
+			workerRepairs = append(workerRepairs, ReconcileRepair{
 				Pattern:   "R1",
 				CommandID: task.CommandID,
 				TaskID:    task.ID,
@@ -544,6 +585,11 @@ func (r *Reconciler) reconcileR1() []ReconcileRepair {
 		if queueModified {
 			if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
 				r.log(LogLevelError, "R1 write_queue worker=%s error=%v", workerID, err)
+				continue
+			}
+			repairs = append(repairs, workerRepairs...)
+			for cmdID := range workerRepairedCommands {
+				repairedCommands[cmdID] = true
 			}
 		}
 	}
@@ -623,6 +669,7 @@ func (r *Reconciler) reconcileR2() []ReconcileRepair {
 		}
 
 		modified := false
+		var commandRepairs []ReconcileRepair
 		for _, re := range results {
 			currentStatus, exists := state.TaskStates[re.TaskID]
 			if exists && model.IsTerminal(currentStatus) {
@@ -636,7 +683,7 @@ func (r *Reconciler) reconcileR2() []ReconcileRepair {
 			state.AppliedResultIDs[re.TaskID] = re.ResultID
 			modified = true
 
-			repairs = append(repairs, ReconcileRepair{
+			commandRepairs = append(commandRepairs, ReconcileRepair{
 				Pattern:   "R2",
 				CommandID: commandID,
 				TaskID:    re.TaskID,
@@ -650,8 +697,12 @@ func (r *Reconciler) reconcileR2() []ReconcileRepair {
 			state.UpdatedAt = now
 			if err := yamlutil.AtomicWrite(statePath, state); err != nil {
 				r.log(LogLevelError, "R2 write_state command=%s error=%v", commandID, err)
+				// Don't report repairs if state write failed
+				r.lockMap.Unlock(lockKey)
+				continue
 			}
 		}
+		repairs = append(repairs, commandRepairs...)
 
 		r.lockMap.Unlock(lockKey)
 	}
@@ -693,6 +744,8 @@ func (r *Reconciler) reconcileR3() []ReconcileRepair {
 	}
 
 	queueModified := false
+	var localRepairs []ReconcileRepair
+	localRepairedCommands := make(map[string]bool)
 	for i := range cq.Commands {
 		cmd := &cq.Commands[i]
 		if model.IsTerminal(cmd.Status) {
@@ -712,9 +765,9 @@ func (r *Reconciler) reconcileR3() []ReconcileRepair {
 		cmd.LeaseExpiresAt = nil
 		cmd.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		queueModified = true
-		repairedCommands[cmd.ID] = true
+		localRepairedCommands[cmd.ID] = true
 
-		repairs = append(repairs, ReconcileRepair{
+		localRepairs = append(localRepairs, ReconcileRepair{
 			Pattern:   "R3",
 			CommandID: cmd.ID,
 			Detail:    fmt.Sprintf("queue planner updated from in_progress to %s", resultStatus),
@@ -724,6 +777,11 @@ func (r *Reconciler) reconcileR3() []ReconcileRepair {
 	if queueModified {
 		if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
 			r.log(LogLevelError, "R3 write_queue error=%v", err)
+			return repairs
+		}
+		repairs = append(repairs, localRepairs...)
+		for cmdID := range localRepairedCommands {
+			repairedCommands[cmdID] = true
 		}
 	}
 
@@ -815,6 +873,9 @@ func (r *Reconciler) reconcileR4() ([]ReconcileRepair, []DeferredNotification) {
 		state.UpdatedAt = now
 		if err := yamlutil.AtomicWrite(statePath, state); err != nil {
 			r.log(LogLevelError, "R4 write_state command=%s error=%v", commandID, err)
+			// Don't report repair if state write failed
+			r.lockMap.Unlock(lockKey)
+			continue
 		}
 		r.lockMap.Unlock(lockKey)
 
@@ -938,6 +999,7 @@ func (r *Reconciler) reconcileR6() ([]ReconcileRepair, []DeferredNotification) {
 
 		modified := false
 		timedOutPhases := make(map[string]bool)
+		var commandRepairs []ReconcileRepair
 
 		for i := range state.Phases {
 			phase := &state.Phases[i]
@@ -964,7 +1026,7 @@ func (r *Reconciler) reconcileR6() ([]ReconcileRepair, []DeferredNotification) {
 			modified = true
 			timedOutPhases[phase.Name] = true
 
-			repairs = append(repairs, ReconcileRepair{
+			commandRepairs = append(commandRepairs, ReconcileRepair{
 				Pattern:   "R6",
 				CommandID: commandID,
 				Detail:    fmt.Sprintf("phase %s timed_out (deadline %s)", phase.Name, *phase.FillDeadlineAt),
@@ -996,7 +1058,7 @@ func (r *Reconciler) reconcileR6() ([]ReconcileRepair, []DeferredNotification) {
 							changed = true
 							cancelledPhases[phase.Name] = true
 
-							repairs = append(repairs, ReconcileRepair{
+							commandRepairs = append(commandRepairs, ReconcileRepair{
 								Pattern:   "R6",
 								CommandID: commandID,
 								Detail:    fmt.Sprintf("phase %s cancelled (cascade from %s)", phase.Name, dep),
@@ -1011,24 +1073,30 @@ func (r *Reconciler) reconcileR6() ([]ReconcileRepair, []DeferredNotification) {
 			}
 		}
 
+		writeOK := false
 		if modified {
 			now := time.Now().UTC().Format(time.RFC3339)
 			state.LastReconciledAt = &now
 			state.UpdatedAt = now
 			if err := yamlutil.AtomicWrite(statePath, state); err != nil {
 				r.log(LogLevelError, "R6 write_state command=%s error=%v", commandID, err)
+			} else {
+				writeOK = true
 			}
 		}
 
 		r.lockMap.Unlock(lockKey)
 
-		// Defer Planner notification for execution outside scanMu.Lock
-		if modified && r.executorFactory != nil {
-			notifications = append(notifications, DeferredNotification{
-				Kind:           "fill_timeout",
-				CommandID:      commandID,
-				TimedOutPhases: timedOutPhases,
-			})
+		// Only report repairs and defer notification on successful state write
+		if writeOK {
+			repairs = append(repairs, commandRepairs...)
+			if r.executorFactory != nil {
+				notifications = append(notifications, DeferredNotification{
+					Kind:           "fill_timeout",
+					CommandID:      commandID,
+					TimedOutPhases: timedOutPhases,
+				})
+			}
 		}
 	}
 
@@ -1166,7 +1234,11 @@ func (r *Reconciler) loadState(path string) (*model.CommandState, error) {
 }
 
 // removeCommandFromPlannerQueue removes a command from queue/planner.yaml entirely.
+// CRIT-02: Per-queue lock for defense-in-depth (already serialized via scanMu.Lock).
 func (r *Reconciler) removeCommandFromPlannerQueue(commandID string) {
+	r.lockMap.Lock("queue:planner")
+	defer r.lockMap.Unlock("queue:planner")
+
 	queuePath := filepath.Join(r.maestroDir, "queue", "planner.yaml")
 	data, err := os.ReadFile(queuePath)
 	if err != nil {
@@ -1194,6 +1266,7 @@ func (r *Reconciler) removeCommandFromPlannerQueue(commandID string) {
 }
 
 // removeTasksFromWorkerQueues removes all tasks for a given command from all worker queues.
+// CRIT-02: Per-queue lock for defense-in-depth (already serialized via scanMu.Lock).
 func (r *Reconciler) removeTasksFromWorkerQueues(commandID string) {
 	queueDir := filepath.Join(r.maestroDir, "queue")
 	entries, err := os.ReadDir(queueDir)
@@ -1207,30 +1280,39 @@ func (r *Reconciler) removeTasksFromWorkerQueues(commandID string) {
 			continue
 		}
 
-		queuePath := filepath.Join(queueDir, name)
-		data, err := os.ReadFile(queuePath)
-		if err != nil {
+		workerID := extractWorkerID(name)
+		if workerID == "" {
 			continue
 		}
-		var tq model.TaskQueue
-		if err := yamlv3.Unmarshal(data, &tq); err != nil {
-			continue
-		}
+		func() {
+			r.lockMap.Lock("queue:" + workerID)
+			defer r.lockMap.Unlock("queue:" + workerID)
 
-		filtered := make([]model.Task, 0, len(tq.Tasks))
-		for _, task := range tq.Tasks {
-			if task.CommandID != commandID {
-				filtered = append(filtered, task)
+			queuePath := filepath.Join(queueDir, name)
+			data, err := os.ReadFile(queuePath)
+			if err != nil {
+				return
 			}
-		}
-		if len(filtered) == len(tq.Tasks) {
-			continue // No tasks removed
-		}
-		tq.Tasks = filtered
+			var tq model.TaskQueue
+			if err := yamlv3.Unmarshal(data, &tq); err != nil {
+				return
+			}
 
-		if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
-			r.log(LogLevelError, "R0 remove_tasks file=%s command=%s error=%v", name, commandID, err)
-		}
+			filtered := make([]model.Task, 0, len(tq.Tasks))
+			for _, task := range tq.Tasks {
+				if task.CommandID != commandID {
+					filtered = append(filtered, task)
+				}
+			}
+			if len(filtered) == len(tq.Tasks) {
+				return // No tasks removed
+			}
+			tq.Tasks = filtered
+
+			if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
+				r.log(LogLevelError, "R0 remove_tasks file=%s command=%s error=%v", name, commandID, err)
+			}
+		}()
 	}
 }
 
@@ -1248,31 +1330,53 @@ func (r *Reconciler) removeTaskFromWorkerQueues(taskID string) {
 			continue
 		}
 
-		queuePath := filepath.Join(queueDir, name)
-		data, err := os.ReadFile(queuePath)
-		if err != nil {
+		// CRIT-02: Lock per-queue to prevent concurrent read-modify-write data loss.
+		workerID := extractWorkerID(name)
+		if workerID == "" {
 			continue
 		}
-		var tq model.TaskQueue
-		if err := yamlv3.Unmarshal(data, &tq); err != nil {
-			continue
-		}
+		func() {
+			r.lockMap.Lock("queue:" + workerID)
+			defer r.lockMap.Unlock("queue:" + workerID)
 
-		filtered := make([]model.Task, 0, len(tq.Tasks))
-		for _, task := range tq.Tasks {
-			if task.ID != taskID {
-				filtered = append(filtered, task)
+			queuePath := filepath.Join(queueDir, name)
+			data, err := os.ReadFile(queuePath)
+			if err != nil {
+				return
 			}
-		}
-		if len(filtered) == len(tq.Tasks) {
-			continue
-		}
-		tq.Tasks = filtered
+			var tq model.TaskQueue
+			if err := yamlv3.Unmarshal(data, &tq); err != nil {
+				return
+			}
 
-		if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
-			r.log(LogLevelError, "R0b remove_task file=%s task=%s error=%v", name, taskID, err)
-		}
+			filtered := make([]model.Task, 0, len(tq.Tasks))
+			for _, task := range tq.Tasks {
+				if task.ID != taskID {
+					filtered = append(filtered, task)
+				}
+			}
+			if len(filtered) == len(tq.Tasks) {
+				return
+			}
+			tq.Tasks = filtered
+
+			if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
+				r.log(LogLevelError, "R0b remove_task file=%s task=%s error=%v", name, taskID, err)
+			}
+		}()
 	}
+}
+
+// extractWorkerID extracts the worker ID from a queue filename.
+// e.g., "worker1.yaml" → "worker1", "worker_2.yaml" → "worker_2"
+// Returns "" for non-worker filenames.
+// This is the single source of truth for worker ID extraction within the reconciler,
+// consistent with workerIDFromPath in queue_handler.go.
+func extractWorkerID(filename string) string {
+	if !strings.HasPrefix(filename, "worker") || !strings.HasSuffix(filename, ".yaml") {
+		return ""
+	}
+	return strings.TrimSuffix(filename, ".yaml")
 }
 
 func reconcilerRemoveFromSlice(s []string, target string) []string {

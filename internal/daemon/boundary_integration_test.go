@@ -242,6 +242,16 @@ func TestCommandLeaseAutoExtend_JustBeforeMaxTimeout(t *testing.T) {
 	plannerPath := filepath.Join(maestroDir, "queue", "planner.yaml")
 	yamlutil.AtomicWrite(plannerPath, cq)
 
+	// Create state file so R0-dispatch doesn't revert to pending
+	stateDir := filepath.Join(maestroDir, "state", "commands")
+	os.MkdirAll(stateDir, 0755)
+	state := model.CommandState{
+		SchemaVersion: 1, FileType: "state_command",
+		CommandID: "cmd_extend", PlanStatus: model.PlanStatusSealed,
+		CreatedAt: updatedAt, UpdatedAt: updatedAt,
+	}
+	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_extend.yaml"), state)
+
 	qh.PeriodicScan()
 
 	data, _ := os.ReadFile(plannerPath)
@@ -328,6 +338,16 @@ func TestCommandLeaseAutoExtend_DefaultMaxInProgressMin(t *testing.T) {
 	}
 	plannerPath := filepath.Join(maestroDir, "queue", "planner.yaml")
 	yamlutil.AtomicWrite(plannerPath, cq)
+
+	// Create state file so R0-dispatch doesn't revert to pending
+	stateDir := filepath.Join(maestroDir, "state", "commands")
+	os.MkdirAll(stateDir, 0755)
+	state := model.CommandState{
+		SchemaVersion: 1, FileType: "state_command",
+		CommandID: "cmd_default", PlanStatus: model.PlanStatusSealed,
+		CreatedAt: updatedAt, UpdatedAt: updatedAt,
+	}
+	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_default.yaml"), state)
 
 	qh.PeriodicScan()
 

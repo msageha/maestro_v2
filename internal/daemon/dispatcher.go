@@ -13,6 +13,9 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
+// maxGateEvaluations is the maximum number of gate evaluation entries kept in memory.
+const maxGateEvaluations = 1000
+
 // Dispatcher handles priority sorting and agent_executor dispatch.
 type Dispatcher struct {
 	maestroDir        string
@@ -435,7 +438,8 @@ func (d *Dispatcher) evaluatePreTaskGateWithResult(task *model.Task, workerID st
 	return evaluation, nil
 }
 
-// storeGateEvaluation stores the gate evaluation for a task
+// storeGateEvaluation stores the gate evaluation for a task.
+// Evicts oldest entries when the map exceeds maxGateEvaluations.
 func (d *Dispatcher) storeGateEvaluation(taskID string, evaluation *model.QualityGateEvaluation) {
 	if evaluation == nil {
 		return
@@ -444,6 +448,39 @@ func (d *Dispatcher) storeGateEvaluation(taskID string, evaluation *model.Qualit
 	d.gateEvalMutex.Lock()
 	defer d.gateEvalMutex.Unlock()
 	d.gateEvaluations[taskID] = evaluation
+
+	if len(d.gateEvaluations) > maxGateEvaluations {
+		d.evictOldGateEvaluationsLocked()
+	}
+}
+
+// evictOldGateEvaluationsLocked removes the oldest gate evaluation entries to bring
+// the map back to maxGateEvaluations/2. Caller must hold gateEvalMutex.
+func (d *Dispatcher) evictOldGateEvaluationsLocked() {
+	type entry struct {
+		taskID      string
+		evaluatedAt time.Time
+	}
+	entries := make([]entry, 0, len(d.gateEvaluations))
+	for id, eval := range d.gateEvaluations {
+		t, err := time.Parse(time.RFC3339, eval.EvaluatedAt)
+		if err != nil {
+			// Malformed timestamp — evict immediately
+			t = time.Time{}
+		}
+		entries = append(entries, entry{taskID: id, evaluatedAt: t})
+	}
+
+	// Sort oldest first
+	sort.Slice(entries, func(i, j int) bool {
+		return entries[i].evaluatedAt.Before(entries[j].evaluatedAt)
+	})
+
+	// Remove oldest entries until we reach half the cap
+	target := maxGateEvaluations / 2
+	for i := 0; i < len(entries) && len(d.gateEvaluations) > target; i++ {
+		delete(d.gateEvaluations, entries[i].taskID)
+	}
 }
 
 // GetGateEvaluation retrieves the gate evaluation for a task

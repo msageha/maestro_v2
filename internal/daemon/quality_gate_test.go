@@ -39,6 +39,8 @@ gates:
     type: pre_task
     enabled: true
     priority: 15
+    trigger:
+      bloom_levels: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
     rules:
       - id: bloom_range
         condition:
@@ -67,7 +69,7 @@ gates:
         condition:
           type: field_validation
           field: task.content
-          operator: contains
+          operator: not_contains
           value: "rm -rf /"
         severity: critical
     action:

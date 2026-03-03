@@ -1076,7 +1076,9 @@ func (qh *QueueHandler) applyTaskDispatchResult(dr dispatchResult, taskQueues ma
 			}
 			if !dr.Success {
 				qh.log(LogLevelWarn, "dispatch_failed type=task id=%s error=%v", task.ID, dr.Error)
-				_ = qh.leaseManager.ReleaseTaskLease(task)
+				if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
+					qh.log(LogLevelError, "release_task_lease task=%s error=%v", task.ID, err)
+				}
 				qh.scanCounters.LeaseReleases++
 			} else {
 				qh.scanCounters.TasksDispatched++
@@ -1101,7 +1103,9 @@ func (qh *QueueHandler) applyNotificationDispatchResult(dr dispatchResult, nq *m
 		}
 		if !dr.Success {
 			qh.log(LogLevelWarn, "dispatch_failed type=notification id=%s error=%v", ntf.ID, dr.Error)
-			_ = qh.leaseManager.ReleaseNotificationLease(ntf)
+			if err := qh.leaseManager.ReleaseNotificationLease(ntf); err != nil {
+				qh.log(LogLevelError, "release_notification_lease id=%s error=%v", ntf.ID, err)
+			}
 		} else {
 			ntf.Status = model.StatusCompleted
 			ntf.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
@@ -1611,6 +1615,10 @@ func workerIDFromPath(path string) string {
 	return strings.TrimSuffix(base, ".yaml") // "worker1"
 }
 
+// maxQuarantineFiles is the maximum number of files allowed in the quarantine directory.
+// When exceeded, the oldest files are automatically removed.
+const maxQuarantineFiles = 100
+
 // --- File I/O helpers ---
 
 func (qh *QueueHandler) loadCommandQueue() (model.CommandQueue, string) {
@@ -1626,10 +1634,57 @@ func (qh *QueueHandler) loadCommandQueue() (model.CommandQueue, string) {
 	}
 
 	if err := yamlv3.Unmarshal(data, &cq); err != nil {
-		qh.log(LogLevelError, "parse_commands error=%v", err)
+		qh.log(LogLevelError, "parse_commands error=%v path=%s", err, path)
+		// Backup corrupted file outside queue/ to avoid fsnotify loop
+		quarantineDir := filepath.Join(qh.maestroDir, "quarantine")
+		if mkErr := os.MkdirAll(quarantineDir, 0755); mkErr != nil {
+			qh.log(LogLevelError, "create_quarantine_dir error=%v", mkErr)
+		} else {
+			backupName := fmt.Sprintf("planner.yaml.corrupted.%s", time.Now().Format("20060102_150405"))
+			backupPath := filepath.Join(quarantineDir, backupName)
+			if backupErr := os.WriteFile(backupPath, data, 0644); backupErr != nil {
+				qh.log(LogLevelError, "backup_corrupted_queue error=%v", backupErr)
+			} else {
+				qh.log(LogLevelWarn, "corrupted_queue_backed_up path=%s", backupPath)
+				// Overwrite original with empty valid YAML to prevent re-parse errors
+				emptyCQ := model.CommandQueue{
+					SchemaVersion: 1,
+					FileType:      "command_queue",
+				}
+				if writeErr := yamlutil.AtomicWrite(path, emptyCQ); writeErr != nil {
+					qh.log(LogLevelError, "overwrite_corrupted_queue error=%v", writeErr)
+				} else {
+					qh.log(LogLevelInfo, "corrupted_queue_reset path=%s", path)
+				}
+			}
+			// Clean up old quarantine files if exceeding limit
+			qh.cleanupQuarantine(quarantineDir)
+		}
 		return cq, ""
 	}
 	return cq, path
+}
+
+// cleanupQuarantine removes the oldest files when the quarantine directory exceeds maxQuarantineFiles.
+// Files are sorted by name (timestamp-based naming ensures chronological order).
+func (qh *QueueHandler) cleanupQuarantine(quarantineDir string) {
+	entries, err := os.ReadDir(quarantineDir)
+	if err != nil {
+		return
+	}
+	if len(entries) <= maxQuarantineFiles {
+		return
+	}
+	// os.ReadDir returns entries sorted by name; timestamp-based names ensure oldest first
+	toRemove := len(entries) - maxQuarantineFiles
+	for i := 0; i < toRemove; i++ {
+		path := filepath.Join(quarantineDir, entries[i].Name())
+		if err := os.Remove(path); err != nil {
+			qh.log(LogLevelWarn, "quarantine_cleanup_failed path=%s error=%v", path, err)
+		} else {
+			qh.log(LogLevelDebug, "quarantine_cleanup_removed path=%s", path)
+		}
+	}
 }
 
 func (qh *QueueHandler) loadAllTaskQueues() map[string]*taskQueueEntry {

@@ -2,6 +2,7 @@ package plan
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/validate"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -25,17 +27,27 @@ func NewStateManager(maestroDir string, lockMap *lock.MutexMap) *StateManager {
 	}
 }
 
-func (sm *StateManager) StatePath(commandID string) string {
-	return filepath.Join(sm.maestroDir, "state", "commands", commandID+".yaml")
+func (sm *StateManager) StatePath(commandID string) (string, error) {
+	if err := validate.ValidateID(commandID); err != nil {
+		return "", fmt.Errorf("invalid command ID for state path: %w", err)
+	}
+	return filepath.Join(sm.maestroDir, "state", "commands", commandID+".yaml"), nil
 }
 
 func (sm *StateManager) StateExists(commandID string) bool {
-	_, err := os.Stat(sm.StatePath(commandID))
+	path, err := sm.StatePath(commandID)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(path)
 	return err == nil
 }
 
 func (sm *StateManager) LoadState(commandID string) (*model.CommandState, error) {
-	path := sm.StatePath(commandID)
+	path, err := sm.StatePath(commandID)
+	if err != nil {
+		return nil, err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		// Preserve os.ErrNotExist for errors.Is() checks by callers
@@ -58,7 +70,10 @@ func (sm *StateManager) LoadState(commandID string) (*model.CommandState, error)
 }
 
 func (sm *StateManager) SaveState(state *model.CommandState) error {
-	path := sm.StatePath(state.CommandID)
+	path, err := sm.StatePath(state.CommandID)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
 		return fmt.Errorf("create state dir: %w", err)
 	}
@@ -66,7 +81,10 @@ func (sm *StateManager) SaveState(state *model.CommandState) error {
 }
 
 func (sm *StateManager) DeleteState(commandID string) error {
-	path := sm.StatePath(commandID)
+	path, err := sm.StatePath(commandID)
+	if err != nil {
+		return err
+	}
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("delete state %s: %w", commandID, err)
 	}
@@ -149,7 +167,7 @@ func CanComplete(state *model.CommandState) (model.PlanStatus, error) {
 }
 
 func DeriveStatus(state *model.CommandState) (model.PlanStatus, error) {
-	// Check phases for timed_out
+	// Check phases for timed_out — always fails regardless of policy
 	for _, phase := range state.Phases {
 		if phase.Status == model.PhaseStatusTimedOut {
 			return model.PlanStatusFailed, nil
@@ -169,11 +187,80 @@ func DeriveStatus(state *model.CommandState) (model.PlanStatus, error) {
 		}
 	}
 
+	// Apply CompletionPolicy for required task failures
+	onFailed := state.CompletionPolicy.OnRequiredFailed
+	if onFailed == "" {
+		onFailed = "fail_command" // default
+	}
+	onCancelled := state.CompletionPolicy.OnRequiredCancelled
+	if onCancelled == "" {
+		onCancelled = "cancel_command" // default
+	}
+
 	if hasFailed {
-		return model.PlanStatusFailed, nil
+		switch onFailed {
+		case "fail_command":
+			return model.PlanStatusFailed, nil
+		case "ignore":
+			// do not force fail; fall through to check cancelled
+		default:
+			return "", fmt.Errorf("unsupported completion_policy.on_required_failed value: %q", onFailed)
+		}
 	}
 	if hasCancelled {
-		return model.PlanStatusCancelled, nil
+		switch onCancelled {
+		case "cancel_command":
+			return model.PlanStatusCancelled, nil
+		case "ignore":
+			// do not force cancel
+		default:
+			return "", fmt.Errorf("unsupported completion_policy.on_required_cancelled value: %q", onCancelled)
+		}
 	}
+
+	// Apply CompletionPolicy for optional task failures
+	onOptionalFailed := state.CompletionPolicy.OnOptionalFailed
+	if onOptionalFailed == "" {
+		onOptionalFailed = "ignore" // default: backwards-compatible
+	}
+
+	hasOptionalFailed := false
+	for _, taskID := range state.OptionalTaskIDs {
+		status := state.TaskStates[taskID]
+		if status == model.StatusFailed {
+			hasOptionalFailed = true
+			break
+		}
+	}
+
+	if hasOptionalFailed {
+		switch onOptionalFailed {
+		case "ignore":
+			// do nothing, succeed
+		case "warn":
+			log.Printf("[WARN] DeriveStatus: optional task(s) failed for command %s (policy: warn)", state.CommandID)
+		case "fail_command":
+			return model.PlanStatusFailed, nil
+		default:
+			return "", fmt.Errorf("unsupported completion_policy.on_optional_failed value: %q", onOptionalFailed)
+		}
+	}
+
+	// Validate DependencyFailurePolicy value
+	depPolicy := state.CompletionPolicy.DependencyFailurePolicy
+	if depPolicy == "" {
+		depPolicy = "cancel_dependents" // default
+	}
+	switch depPolicy {
+	case "cancel_dependents":
+		// Default: dependents of failed tasks are cancelled by the reconciler
+	case "fail_dependents":
+		// Dependents of failed tasks are marked as failed by the reconciler
+	case "ignore":
+		// Dependency failures are not propagated; dependents run regardless
+	default:
+		return "", fmt.Errorf("unsupported completion_policy.dependency_failure_policy value: %q", depPolicy)
+	}
+
 	return model.PlanStatusCompleted, nil
 }

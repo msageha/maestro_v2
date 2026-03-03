@@ -2,8 +2,10 @@
 package plan
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/validate"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -140,7 +143,10 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm *StateManager)
 
 	// Build state
 	now := time.Now().UTC().Format(time.RFC3339)
-	state := buildCommandState(opts.CommandID, tasks, nameToID, nil, now)
+	state, err := buildCommandState(opts.CommandID, tasks, nameToID, nil, now)
+	if err != nil {
+		return nil, fmt.Errorf("build state: %w", err)
+	}
 
 	// Atomic write: create state (planning)
 	state.PlanStatus = model.PlanStatusPlanning
@@ -149,9 +155,11 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm *StateManager)
 	}
 
 	// Write queue entries
-	if err := writeQueueEntries(opts.MaestroDir, assignments, tasks, nameToID, opts.CommandID, now); err != nil {
-		rollbackQueueEntries(opts.MaestroDir, tasks, nameToID, assignMap)
-		_ = sm.DeleteState(opts.CommandID)
+	if err := writeQueueEntries(opts.MaestroDir, assignments, tasks, nameToID, opts.CommandID, now, opts.LockMap); err != nil {
+		rollbackQueueEntries(opts.MaestroDir, tasks, nameToID, assignMap, opts.LockMap)
+		if delErr := sm.DeleteState(opts.CommandID); delErr != nil {
+			log.Printf("rollback: delete state for command %s: %v", opts.CommandID, delErr)
+		}
 		return nil, fmt.Errorf("write queue: %w", err)
 	}
 
@@ -160,8 +168,10 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm *StateManager)
 	state.PlanVersion = 1
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := sm.SaveState(state); err != nil {
-		rollbackQueueEntries(opts.MaestroDir, tasks, nameToID, assignMap)
-		_ = sm.DeleteState(opts.CommandID)
+		rollbackQueueEntries(opts.MaestroDir, tasks, nameToID, assignMap, opts.LockMap)
+		if delErr := sm.DeleteState(opts.CommandID); delErr != nil {
+			log.Printf("rollback: delete state for command %s: %v", opts.CommandID, delErr)
+		}
 		return nil, fmt.Errorf("save state (sealed): %w", err)
 	}
 
@@ -399,9 +409,11 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 	}
 
 	// Write queue entries for concrete phase tasks + system commit
-	if err := writeQueueEntries(opts.MaestroDir, allAssignments, allTasks, allNameToID, opts.CommandID, now); err != nil {
-		rollbackQueueEntries(opts.MaestroDir, allTasks, allNameToID, allAssignMap)
-		_ = sm.DeleteState(opts.CommandID)
+	if err := writeQueueEntries(opts.MaestroDir, allAssignments, allTasks, allNameToID, opts.CommandID, now, opts.LockMap); err != nil {
+		rollbackQueueEntries(opts.MaestroDir, allTasks, allNameToID, allAssignMap, opts.LockMap)
+		if delErr := sm.DeleteState(opts.CommandID); delErr != nil {
+			log.Printf("rollback: delete state for command %s: %v", opts.CommandID, delErr)
+		}
 		return nil, fmt.Errorf("write queue: %w", err)
 	}
 
@@ -410,8 +422,10 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 	state.PlanVersion = 1
 	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := sm.SaveState(state); err != nil {
-		rollbackQueueEntries(opts.MaestroDir, allTasks, allNameToID, allAssignMap)
-		_ = sm.DeleteState(opts.CommandID)
+		rollbackQueueEntries(opts.MaestroDir, allTasks, allNameToID, allAssignMap, opts.LockMap)
+		if delErr := sm.DeleteState(opts.CommandID); delErr != nil {
+			log.Printf("rollback: delete state for command %s: %v", opts.CommandID, delErr)
+		}
 		return nil, fmt.Errorf("save state (sealed): %w", err)
 	}
 
@@ -536,7 +550,9 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	if err != nil {
 		state.Phases[targetPhaseIdx].Status = model.PhaseStatusAwaitingFill
 		state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		_ = sm.SaveState(state) // persist rollback to disk
+		if saveErr := sm.SaveState(state); saveErr != nil {
+			log.Printf("rollback: save state for command %s: %v", opts.CommandID, saveErr)
+		}
 		return nil, fmt.Errorf("worker assignment: %w", err)
 	}
 
@@ -574,12 +590,14 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	state.ExpectedTaskCount = len(state.RequiredTaskIDs) + len(state.OptionalTaskIDs)
 
 	// Write queue entries
-	if err := writeQueueEntries(opts.MaestroDir, assignments, input.Tasks, nameToID, opts.CommandID, now); err != nil {
+	if err := writeQueueEntries(opts.MaestroDir, assignments, input.Tasks, nameToID, opts.CommandID, now, opts.LockMap); err != nil {
 		// Rollback: revert to awaiting_fill and persist
 		state.Phases[targetPhaseIdx].Status = model.PhaseStatusAwaitingFill
 		rollbackPhaseFillState(state, targetPhaseIdx, input.Tasks, nameToID)
 		state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		_ = sm.SaveState(state) // persist rollback to disk
+		if saveErr := sm.SaveState(state); saveErr != nil {
+			log.Printf("rollback: save state for command %s: %v", opts.CommandID, saveErr)
+		}
 		return nil, fmt.Errorf("write queue: %w", err)
 	}
 
@@ -591,10 +609,12 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 
 	if err := sm.SaveState(state); err != nil {
 		state.Phases[targetPhaseIdx].Status = model.PhaseStatusAwaitingFill
-		rollbackQueueEntries(opts.MaestroDir, input.Tasks, nameToID, assignMap)
+		rollbackQueueEntries(opts.MaestroDir, input.Tasks, nameToID, assignMap, opts.LockMap)
 		rollbackPhaseFillState(state, targetPhaseIdx, input.Tasks, nameToID)
 		state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		_ = sm.SaveState(state) // persist rollback to disk
+		if saveErr := sm.SaveState(state); saveErr != nil {
+			log.Printf("rollback: save state for command %s: %v", opts.CommandID, saveErr)
+		}
 		return nil, fmt.Errorf("save state: %w", err)
 	}
 
@@ -617,8 +637,27 @@ func readInput(tasksFile string) (*SubmitInput, error) {
 	var err error
 
 	if tasksFile == "-" || tasksFile == "" {
-		data, err = io.ReadAll(os.Stdin)
+		data, err = io.ReadAll(io.LimitReader(os.Stdin, model.DefaultMaxYAMLFileBytes+1))
+		if err == nil && len(data) > model.DefaultMaxYAMLFileBytes {
+			return nil, fmt.Errorf("stdin input exceeds maximum size of %d bytes", model.DefaultMaxYAMLFileBytes)
+		}
 	} else {
+		// CRIT-05: Validate file path (no null bytes, clean path)
+		cleaned, pathErr := validate.ValidateFilePath(tasksFile)
+		if pathErr != nil {
+			return nil, fmt.Errorf("invalid tasks file path: %w", pathErr)
+		}
+		tasksFile = cleaned
+
+		// HIGH-05: Check file size before reading to prevent memory exhaustion
+		info, statErr := os.Stat(tasksFile)
+		if statErr != nil {
+			return nil, fmt.Errorf("stat tasks file: %w", statErr)
+		}
+		if info.Size() > int64(model.DefaultMaxYAMLFileBytes) {
+			return nil, fmt.Errorf("tasks file exceeds maximum size of %d bytes (got %d)", model.DefaultMaxYAMLFileBytes, info.Size())
+		}
+
 		data, err = os.ReadFile(tasksFile)
 	}
 	if err != nil {
@@ -663,7 +702,7 @@ func resolveNames(tasks []TaskInput) (map[string]string, error) {
 	return nameToID, nil
 }
 
-func buildCommandState(commandID string, tasks []TaskInput, nameToID map[string]string, phases []model.Phase, now string) *model.CommandState {
+func buildCommandState(commandID string, tasks []TaskInput, nameToID map[string]string, phases []model.Phase, now string) (*model.CommandState, error) {
 	state := &model.CommandState{
 		SchemaVersion:    1,
 		FileType:         "state_command",
@@ -695,7 +734,11 @@ func buildCommandState(commandID string, tasks []TaskInput, nameToID map[string]
 		if len(t.BlockedBy) > 0 {
 			depIDs := make([]string, 0, len(t.BlockedBy))
 			for _, depName := range t.BlockedBy {
-				depIDs = append(depIDs, nameToID[depName])
+				id, ok := nameToID[depName]
+				if !ok {
+					return nil, fmt.Errorf("blocked_by references unknown task %q", depName)
+				}
+				depIDs = append(depIDs, id)
 			}
 			state.TaskDependencies[taskID] = depIDs
 		}
@@ -707,7 +750,7 @@ func buildCommandState(commandID string, tasks []TaskInput, nameToID map[string]
 
 	state.SystemCommitTaskID = systemCommitTaskID
 	state.ExpectedTaskCount = len(state.RequiredTaskIDs) + len(state.OptionalTaskIDs)
-	return state
+	return state, nil
 }
 
 func defaultCompletionPolicy() model.CompletionPolicy {
@@ -721,7 +764,7 @@ func defaultCompletionPolicy() model.CompletionPolicy {
 	}
 }
 
-func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks []TaskInput, nameToID map[string]string, commandID string, now string) error {
+func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks []TaskInput, nameToID map[string]string, commandID string, now string, lockMap *lock.MutexMap) error {
 	// Group tasks by worker
 	workerTasks := make(map[string][]model.Task)
 	taskMap := make(map[string]TaskInput)
@@ -757,33 +800,46 @@ func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks 
 		workerTasks[a.WorkerID] = append(workerTasks[a.WorkerID], queueTask)
 	}
 
-	// Write to each worker's queue file
+	// CRIT-02: Write to each worker's queue file under per-queue lock
+	// to prevent concurrent read-modify-write data loss.
 	for workerID, newTasks := range workerTasks {
-		queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(workerID))
-
-		var tq model.TaskQueue
-		data, err := os.ReadFile(queueFile)
-		if err == nil {
-			if err := yamlv3.Unmarshal(data, &tq); err != nil {
-				return fmt.Errorf("parse existing queue %s: %w", workerID, err)
+		if err := func() error {
+			if lockMap != nil {
+				lockMap.Lock("queue:" + workerID)
+				defer lockMap.Unlock("queue:" + workerID)
 			}
-		}
-		if tq.SchemaVersion == 0 {
-			tq.SchemaVersion = 1
-			tq.FileType = "queue_task"
-		}
 
-		tq.Tasks = append(tq.Tasks, newTasks...)
+			queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(workerID))
 
-		if err := yamlutil.AtomicWrite(queueFile, tq); err != nil {
-			return fmt.Errorf("write queue %s: %w", workerID, err)
+			var tq model.TaskQueue
+			data, err := os.ReadFile(queueFile)
+			if err == nil {
+				if err := yamlv3.Unmarshal(data, &tq); err != nil {
+					return fmt.Errorf("parse existing queue %s: %w", workerID, err)
+				}
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("read queue %s: %w", workerID, err)
+			}
+			if tq.SchemaVersion == 0 {
+				tq.SchemaVersion = 1
+				tq.FileType = "queue_task"
+			}
+
+			tq.Tasks = append(tq.Tasks, newTasks...)
+
+			if err := yamlutil.AtomicWrite(queueFile, tq); err != nil {
+				return fmt.Errorf("write queue %s: %w", workerID, err)
+			}
+			return nil
+		}(); err != nil {
+			return err
 		}
 	}
 
 	return nil
 }
 
-func rollbackQueueEntries(maestroDir string, tasks []TaskInput, nameToID map[string]string, assignMap map[string]WorkerAssignment) {
+func rollbackQueueEntries(maestroDir string, tasks []TaskInput, nameToID map[string]string, assignMap map[string]WorkerAssignment, lockMap *lock.MutexMap) {
 	taskIDs := make(map[string]bool)
 	for _, t := range tasks {
 		taskIDs[nameToID[t.Name]] = true
@@ -795,28 +851,38 @@ func rollbackQueueEntries(maestroDir string, tasks []TaskInput, nameToID map[str
 		workerFiles[a.WorkerID] = true
 	}
 
+	// CRIT-02: Lock per-queue to prevent concurrent read-modify-write data loss.
 	for workerID := range workerFiles {
-		queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(workerID))
-
-		data, err := os.ReadFile(queueFile)
-		if err != nil {
-			continue
-		}
-
-		var tq model.TaskQueue
-		if err := yamlv3.Unmarshal(data, &tq); err != nil {
-			continue
-		}
-
-		var kept []model.Task
-		for _, t := range tq.Tasks {
-			if !taskIDs[t.ID] {
-				kept = append(kept, t)
+		func() {
+			if lockMap != nil {
+				lockMap.Lock("queue:" + workerID)
+				defer lockMap.Unlock("queue:" + workerID)
 			}
-		}
-		tq.Tasks = kept
 
-		_ = yamlutil.AtomicWrite(queueFile, tq)
+			queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(workerID))
+
+			data, err := os.ReadFile(queueFile)
+			if err != nil {
+				return
+			}
+
+			var tq model.TaskQueue
+			if err := yamlv3.Unmarshal(data, &tq); err != nil {
+				return
+			}
+
+			var kept []model.Task
+			for _, t := range tq.Tasks {
+				if !taskIDs[t.ID] {
+					kept = append(kept, t)
+				}
+			}
+			tq.Tasks = kept
+
+			if writeErr := yamlutil.AtomicWrite(queueFile, tq); writeErr != nil {
+				log.Printf("rollback: write queue %s: %v", workerID, writeErr)
+			}
+		}()
 	}
 }
 
@@ -857,12 +923,15 @@ func checkCommandNotCancelled(maestroDir string, commandID string) error {
 	plannerQueuePath := filepath.Join(maestroDir, "queue", "planner.yaml")
 	data, err := os.ReadFile(plannerQueuePath)
 	if err != nil {
-		return nil // no queue file = not cancelled
+		if errors.Is(err, os.ErrNotExist) {
+			return nil // no queue file = not cancelled
+		}
+		return fmt.Errorf("read planner queue: %w", err)
 	}
 
 	var cq model.CommandQueue
 	if err := yamlv3.Unmarshal(data, &cq); err != nil {
-		return nil
+		return fmt.Errorf("parse planner queue: %w", err)
 	}
 
 	for _, cmd := range cq.Commands {

@@ -325,23 +325,22 @@ func TestAuditLogger_LargeLogFile(t *testing.T) {
 	tempDir := t.TempDir()
 	logPath := filepath.Join(tempDir, "audit.jsonl")
 
-	// Use default 100MB max size
-	logger, err := NewAuditLogger(logPath, DefaultMaxLogSize)
+	// Use 10KB max size to test rotation quickly
+	testMaxSize := int64(10 * 1024) // 10KB
+	logger, err := NewAuditLogger(logPath, testMaxSize)
 	if err != nil {
 		t.Fatalf("Failed to create audit logger: %v", err)
 	}
 	defer logger.Close()
 
-	// Write entries until we approach 100MB
+	// Write 1KB entries — 20 entries will definitely exceed 10KB and trigger rotation
 	largeData := make([]byte, 1024) // 1KB of data
 	for i := range largeData {
 		largeData[i] = byte('A' + (i % 26))
 	}
 
 	entriesWritten := 0
-	targetSize := int64(100 * 1024 * 1024) // 100MB
-
-	for logger.GetCurrentSize() < targetSize-2048 {
+	for i := 0; i < 20; i++ {
 		details := map[string]interface{}{
 			"index":      entriesWritten,
 			"large_data": string(largeData),
@@ -352,19 +351,14 @@ func TestAuditLogger_LargeLogFile(t *testing.T) {
 		entriesWritten++
 	}
 
-	// Write one more entry to trigger rotation
-	if err := logger.Log("trigger_rotation", map[string]interface{}{"final": true}); err != nil {
-		t.Fatalf("Failed to log final entry: %v", err)
-	}
-
 	// Verify rotation occurred
 	archiveDir := filepath.Join(tempDir, ArchiveDir)
 	files, err := os.ReadDir(archiveDir)
 	if err != nil || len(files) == 0 {
-		t.Error("Expected rotation to occur for 100MB file")
+		t.Error("Expected rotation to occur for large log file")
 	}
 
-	t.Logf("Wrote %d entries before rotation", entriesWritten)
+	t.Logf("Wrote %d entries, %d archive files created", entriesWritten, len(files))
 }
 
 func TestAuditLogger_FileRecovery(t *testing.T) {

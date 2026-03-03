@@ -37,6 +37,10 @@ func newTestHeartbeatHandler(t *testing.T, d *Daemon) *TaskHeartbeatHandler {
 	if d.config.Watcher.MaxInProgressMin == 0 {
 		d.config.Watcher.MaxInProgressMin = 60
 	}
+	// Initialize handler if not set (newTestDaemon doesn't call Run)
+	if d.handler == nil {
+		d.handler = NewQueueHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
+	}
 	return NewTaskHeartbeatHandler(
 		d.maestroDir,
 		d.config,

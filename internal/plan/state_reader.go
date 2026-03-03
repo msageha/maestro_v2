@@ -120,8 +120,10 @@ func (r *PlanStateReader) ApplyPhaseTransition(commandID, phaseID string, newSta
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
+	found := false
 	for i := range state.Phases {
 		if state.Phases[i].PhaseID == phaseID {
+			found = true
 			if err := model.ValidatePhaseTransition(state.Phases[i].Status, newStatus); err != nil {
 				return fmt.Errorf("phase %s in command %s: %w", phaseID, commandID, err)
 			}
@@ -140,6 +142,10 @@ func (r *PlanStateReader) ApplyPhaseTransition(commandID, phaseID string, newSta
 			}
 			break
 		}
+	}
+
+	if !found {
+		return fmt.Errorf("phase %s not found in command %s", phaseID, commandID)
 	}
 
 	state.UpdatedAt = now

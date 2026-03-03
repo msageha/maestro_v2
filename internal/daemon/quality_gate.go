@@ -192,11 +192,11 @@ func (qg *QualityGateDaemon) Stop() error {
 	// Set stopped flag first to prevent new EmitEvent calls
 	qg.stopped.Store(true)
 
-	// Signal shutdown
+	// Signal shutdown — context cancellation unblocks eventLoop via <-qg.ctx.Done().
+	// We intentionally do NOT close eventChan here to avoid a race with EmitEvent:
+	// a concurrent sender could pass the stopped check and send on a closed channel,
+	// causing a panic.
 	qg.cancel()
-
-	// Close event channel to unblock eventLoop
-	close(qg.eventChan)
 
 	// Wait for event loop to finish
 	qg.wg.Wait()

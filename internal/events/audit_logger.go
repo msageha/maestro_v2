@@ -160,6 +160,10 @@ func (l *AuditLogger) rotate() error {
 	// Create archive directory if needed
 	archiveDir := filepath.Join(filepath.Dir(l.logPath), ArchiveDir)
 	if err := os.MkdirAll(archiveDir, 0755); err != nil {
+		// Re-open original to keep logger usable
+		if reopenErr := l.openLogFile(); reopenErr != nil {
+			return fmt.Errorf("failed to create archive directory: %v; failed to reopen log: %w", err, reopenErr)
+		}
 		return fmt.Errorf("failed to create archive directory: %w", err)
 	}
 
@@ -176,12 +180,24 @@ func (l *AuditLogger) rotate() error {
 
 	// Move current log to archive
 	if err := os.Rename(l.logPath, archivePath); err != nil {
+		// Re-open original to keep logger usable
+		if reopenErr := l.openLogFile(); reopenErr != nil {
+			return fmt.Errorf("failed to archive log file: %v; failed to reopen log: %w", err, reopenErr)
+		}
 		return fmt.Errorf("failed to archive log file: %w", err)
 	}
 
 	// Open new log file
 	if err := l.openLogFile(); err != nil {
-		return fmt.Errorf("failed to open new log file: %w", err)
+		// Rename succeeded but new file open failed — roll back archive
+		if rollbackErr := os.Rename(archivePath, l.logPath); rollbackErr == nil {
+			// Rollback succeeded, try to reopen original
+			if reopenErr := l.openLogFile(); reopenErr != nil {
+				return fmt.Errorf("failed to open new log file: %v; rollback succeeded but reopen failed: %w", err, reopenErr)
+			}
+			return fmt.Errorf("failed to open new log file (rolled back): %w", err)
+		}
+		return fmt.Errorf("failed to open new log file after rotation: %w", err)
 	}
 
 	return nil

@@ -1,6 +1,9 @@
 // Package model defines the data structures for Maestro's configuration, state, and queue entries.
 package model
 
+// DefaultMaxYAMLFileBytes is the default maximum size for YAML file reads (5MB).
+const DefaultMaxYAMLFileBytes = 5 * 1024 * 1024
+
 type Config struct {
 	Project      ProjectConfig      `yaml:"project"`
 	Maestro      MaestroConfig      `yaml:"maestro"`

@@ -14,6 +14,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -124,6 +125,9 @@ func main() {
 	for {
 		n, err := os.Stdin.Read(buf)
 		if n == 0 && err != nil {
+			if errors.Is(err, syscall.EINTR) {
+				continue
+			}
 			break
 		}
 		if n == 0 {
@@ -183,6 +187,9 @@ func main() {
 		}
 
 		if err != nil {
+			if errors.Is(err, syscall.EINTR) {
+				continue
+			}
 			break
 		}
 	}

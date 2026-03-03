@@ -2,12 +2,15 @@ package plan
 
 import (
 	"fmt"
+	"log"
+	"math"
 	"os"
 	"path/filepath"
 
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/validate"
 )
 
 type WorkerAssignment struct {
@@ -123,20 +126,36 @@ func BuildWorkerStates(maestroDir string, config model.WorkerConfig) ([]WorkerSt
 
 	for i := 1; i <= config.Count; i++ {
 		workerID := fmt.Sprintf("worker%d", i)
+		if err := validate.ValidateID(workerID); err != nil {
+			return nil, fmt.Errorf("invalid worker ID %q: %w", workerID, err)
+		}
 		workerModel := GetWorkerModel(workerID, config)
 
 		pendingCount := 0
+		workerAvailable := true
 		queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(workerID))
 		data, err := os.ReadFile(queueFile)
-		if err == nil {
+		if err != nil {
+			if !os.IsNotExist(err) {
+				log.Printf("[WARN] BuildWorkerStates: failed to read queue file %s: %v (marking worker unavailable)", queueFile, err)
+				workerAvailable = false
+			}
+			// os.IsNotExist → treat as empty queue (pendingCount=0)
+		} else {
 			var tq model.TaskQueue
-			if err := yamlv3.Unmarshal(data, &tq); err == nil {
+			if err := yamlv3.Unmarshal(data, &tq); err != nil {
+				log.Printf("[WARN] BuildWorkerStates: failed to parse queue file %s: %v (marking worker unavailable)", queueFile, err)
+				workerAvailable = false
+			} else {
 				for _, task := range tq.Tasks {
 					if task.Status == model.StatusPending {
 						pendingCount++
 					}
 				}
 			}
+		}
+		if !workerAvailable {
+			pendingCount = math.MaxInt32 // mark as at capacity to prevent assignment
 		}
 
 		states = append(states, WorkerState{

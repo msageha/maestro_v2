@@ -2,6 +2,7 @@ package plan
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -69,18 +70,21 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 	}
 
 	// Aggregate task results from results/worker{N}.yaml
-	taskResults, err := aggregateTaskResults(opts.MaestroDir, opts.CommandID)
+	taskResults, partial, err := aggregateTaskResults(opts.MaestroDir, opts.CommandID)
 	if err != nil {
 		return nil, fmt.Errorf("aggregate results: %w", err)
 	}
+	if partial {
+		log.Printf("[WARN] Complete: partial task results for command %s (some worker result files were unreadable)", opts.CommandID)
+	}
 
-	// Write to results/planner.yaml
-	if err := writeCommandResult(opts.MaestroDir, opts.CommandID, resultStatus, opts.Summary, taskResults); err != nil {
+	// Write to results/planner.yaml (with lock for read-modify-write safety)
+	if err := writeCommandResult(opts.MaestroDir, opts.CommandID, resultStatus, opts.Summary, taskResults, opts.LockMap); err != nil {
 		return nil, fmt.Errorf("write command result: %w", err)
 	}
 
-	// Update queue/planner.yaml command entry
-	if err := updateCommandQueueEntry(opts.MaestroDir, opts.CommandID, resultStatus); err != nil {
+	// Update queue/planner.yaml command entry (with lock for read-modify-write safety)
+	if err := updateCommandQueueEntry(opts.MaestroDir, opts.CommandID, resultStatus, opts.LockMap); err != nil {
 		return nil, fmt.Errorf("update command queue: %w", err)
 	}
 
@@ -97,14 +101,15 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 	}, nil
 }
 
-func aggregateTaskResults(maestroDir string, commandID string) ([]model.CommandResultTask, error) {
+func aggregateTaskResults(maestroDir string, commandID string) ([]model.CommandResultTask, bool, error) {
 	resultsDir := filepath.Join(maestroDir, "results")
 	entries, err := os.ReadDir(resultsDir)
 	if err != nil {
-		return nil, fmt.Errorf("read results dir: %w", err)
+		return nil, false, fmt.Errorf("read results dir: %w", err)
 	}
 
 	var taskResults []model.CommandResultTask
+	partial := false
 
 	for _, entry := range entries {
 		name := entry.Name()
@@ -116,11 +121,15 @@ func aggregateTaskResults(maestroDir string, commandID string) ([]model.CommandR
 		path := filepath.Join(resultsDir, name)
 		data, err := os.ReadFile(path)
 		if err != nil {
+			log.Printf("[WARN] aggregateTaskResults: failed to read %s: %v (results may be partial)", path, err)
+			partial = true
 			continue
 		}
 
 		var rf model.TaskResultFile
 		if err := yamlv3.Unmarshal(data, &rf); err != nil {
+			log.Printf("[WARN] aggregateTaskResults: failed to parse %s: %v (results may be partial)", path, err)
+			partial = true
 			continue
 		}
 
@@ -136,10 +145,15 @@ func aggregateTaskResults(maestroDir string, commandID string) ([]model.CommandR
 		}
 	}
 
-	return taskResults, nil
+	return taskResults, partial, nil
 }
 
-func writeCommandResult(maestroDir string, commandID string, status model.Status, summary string, tasks []model.CommandResultTask) error {
+func writeCommandResult(maestroDir string, commandID string, status model.Status, summary string, tasks []model.CommandResultTask, lockMap *lock.MutexMap) error {
+	if lockMap != nil {
+		lockMap.Lock("result:planner")
+		defer lockMap.Unlock("result:planner")
+	}
+
 	path := filepath.Join(maestroDir, "results", "planner.yaml")
 
 	var rf model.CommandResultFile
@@ -152,6 +166,13 @@ func writeCommandResult(maestroDir string, commandID string, status model.Status
 	if rf.SchemaVersion == 0 {
 		rf.SchemaVersion = 1
 		rf.FileType = "result_command"
+	}
+
+	// Idempotency: skip if a result for this commandID already exists
+	for _, existing := range rf.Results {
+		if existing.CommandID == commandID {
+			return nil
+		}
 	}
 
 	resultID, err := model.GenerateID(model.IDTypeResult)
@@ -173,7 +194,12 @@ func writeCommandResult(maestroDir string, commandID string, status model.Status
 	return yamlutil.AtomicWrite(path, rf)
 }
 
-func updateCommandQueueEntry(maestroDir string, commandID string, status model.Status) error {
+func updateCommandQueueEntry(maestroDir string, commandID string, status model.Status, lockMap *lock.MutexMap) error {
+	if lockMap != nil {
+		lockMap.Lock("queue:planner")
+		defer lockMap.Unlock("queue:planner")
+	}
+
 	path := filepath.Join(maestroDir, "queue", "planner.yaml")
 
 	data, err := os.ReadFile(path)

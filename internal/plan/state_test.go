@@ -275,3 +275,239 @@ func TestDeriveStatus_TimedOutPhase(t *testing.T) {
 		t.Errorf("status = %q, want %q", status, model.PlanStatusFailed)
 	}
 }
+
+func TestDeriveStatus_OnOptionalFailed_Ignore(t *testing.T) {
+	state := &model.CommandState{
+		PlanStatus:        model.PlanStatusSealed,
+		ExpectedTaskCount: 2,
+		RequiredTaskIDs:   []string{"t1"},
+		OptionalTaskIDs:   []string{"t2"},
+		CompletionPolicy: model.CompletionPolicy{
+			OnOptionalFailed: "ignore",
+		},
+		TaskStates: map[string]model.Status{
+			"t1": model.StatusCompleted,
+			"t2": model.StatusFailed,
+		},
+	}
+
+	status, err := DeriveStatus(state)
+	if err != nil {
+		t.Fatalf("DeriveStatus returned error: %v", err)
+	}
+	if status != model.PlanStatusCompleted {
+		t.Errorf("status = %q, want %q", status, model.PlanStatusCompleted)
+	}
+}
+
+func TestDeriveStatus_OnOptionalFailed_Default(t *testing.T) {
+	// Default (empty string) should behave as "ignore"
+	state := &model.CommandState{
+		PlanStatus:        model.PlanStatusSealed,
+		ExpectedTaskCount: 2,
+		RequiredTaskIDs:   []string{"t1"},
+		OptionalTaskIDs:   []string{"t2"},
+		TaskStates: map[string]model.Status{
+			"t1": model.StatusCompleted,
+			"t2": model.StatusFailed,
+		},
+	}
+
+	status, err := DeriveStatus(state)
+	if err != nil {
+		t.Fatalf("DeriveStatus returned error: %v", err)
+	}
+	if status != model.PlanStatusCompleted {
+		t.Errorf("status = %q, want %q", status, model.PlanStatusCompleted)
+	}
+}
+
+func TestDeriveStatus_OnOptionalFailed_Warn(t *testing.T) {
+	state := &model.CommandState{
+		CommandID:         "cmd-test-warn",
+		PlanStatus:        model.PlanStatusSealed,
+		ExpectedTaskCount: 2,
+		RequiredTaskIDs:   []string{"t1"},
+		OptionalTaskIDs:   []string{"t2"},
+		CompletionPolicy: model.CompletionPolicy{
+			OnOptionalFailed: "warn",
+		},
+		TaskStates: map[string]model.Status{
+			"t1": model.StatusCompleted,
+			"t2": model.StatusFailed,
+		},
+	}
+
+	status, err := DeriveStatus(state)
+	if err != nil {
+		t.Fatalf("DeriveStatus returned error: %v", err)
+	}
+	// warn logs but still completes successfully
+	if status != model.PlanStatusCompleted {
+		t.Errorf("status = %q, want %q", status, model.PlanStatusCompleted)
+	}
+}
+
+func TestDeriveStatus_OnOptionalFailed_FailCommand(t *testing.T) {
+	state := &model.CommandState{
+		PlanStatus:        model.PlanStatusSealed,
+		ExpectedTaskCount: 2,
+		RequiredTaskIDs:   []string{"t1"},
+		OptionalTaskIDs:   []string{"t2"},
+		CompletionPolicy: model.CompletionPolicy{
+			OnOptionalFailed: "fail_command",
+		},
+		TaskStates: map[string]model.Status{
+			"t1": model.StatusCompleted,
+			"t2": model.StatusFailed,
+		},
+	}
+
+	status, err := DeriveStatus(state)
+	if err != nil {
+		t.Fatalf("DeriveStatus returned error: %v", err)
+	}
+	if status != model.PlanStatusFailed {
+		t.Errorf("status = %q, want %q", status, model.PlanStatusFailed)
+	}
+}
+
+func TestDeriveStatus_OnOptionalFailed_NoFailure(t *testing.T) {
+	// When optional tasks succeed, policy should not affect result
+	state := &model.CommandState{
+		PlanStatus:        model.PlanStatusSealed,
+		ExpectedTaskCount: 2,
+		RequiredTaskIDs:   []string{"t1"},
+		OptionalTaskIDs:   []string{"t2"},
+		CompletionPolicy: model.CompletionPolicy{
+			OnOptionalFailed: "fail_command",
+		},
+		TaskStates: map[string]model.Status{
+			"t1": model.StatusCompleted,
+			"t2": model.StatusCompleted,
+		},
+	}
+
+	status, err := DeriveStatus(state)
+	if err != nil {
+		t.Fatalf("DeriveStatus returned error: %v", err)
+	}
+	if status != model.PlanStatusCompleted {
+		t.Errorf("status = %q, want %q", status, model.PlanStatusCompleted)
+	}
+}
+
+func TestDeriveStatus_OnOptionalFailed_UnsupportedValue(t *testing.T) {
+	state := &model.CommandState{
+		PlanStatus:        model.PlanStatusSealed,
+		ExpectedTaskCount: 2,
+		RequiredTaskIDs:   []string{"t1"},
+		OptionalTaskIDs:   []string{"t2"},
+		CompletionPolicy: model.CompletionPolicy{
+			OnOptionalFailed: "invalid_policy",
+		},
+		TaskStates: map[string]model.Status{
+			"t1": model.StatusCompleted,
+			"t2": model.StatusFailed,
+		},
+	}
+
+	_, err := DeriveStatus(state)
+	if err == nil {
+		t.Fatalf("DeriveStatus returned nil error for unsupported on_optional_failed value")
+	}
+}
+
+func TestDeriveStatus_DependencyFailurePolicy_Valid(t *testing.T) {
+	validPolicies := []string{"cancel_dependents", "fail_dependents", "ignore"}
+
+	for _, policy := range validPolicies {
+		t.Run(policy, func(t *testing.T) {
+			state := &model.CommandState{
+				PlanStatus:        model.PlanStatusSealed,
+				ExpectedTaskCount: 1,
+				RequiredTaskIDs:   []string{"t1"},
+				CompletionPolicy: model.CompletionPolicy{
+					DependencyFailurePolicy: policy,
+				},
+				TaskStates: map[string]model.Status{
+					"t1": model.StatusCompleted,
+				},
+			}
+
+			status, err := DeriveStatus(state)
+			if err != nil {
+				t.Fatalf("DeriveStatus returned error for policy %q: %v", policy, err)
+			}
+			if status != model.PlanStatusCompleted {
+				t.Errorf("status = %q, want %q", status, model.PlanStatusCompleted)
+			}
+		})
+	}
+}
+
+func TestDeriveStatus_DependencyFailurePolicy_Unsupported(t *testing.T) {
+	state := &model.CommandState{
+		PlanStatus:        model.PlanStatusSealed,
+		ExpectedTaskCount: 1,
+		RequiredTaskIDs:   []string{"t1"},
+		CompletionPolicy: model.CompletionPolicy{
+			DependencyFailurePolicy: "invalid_policy",
+		},
+		TaskStates: map[string]model.Status{
+			"t1": model.StatusCompleted,
+		},
+	}
+
+	_, err := DeriveStatus(state)
+	if err == nil {
+		t.Fatalf("DeriveStatus returned nil error for unsupported dependency_failure_policy value")
+	}
+}
+
+func TestDeriveStatus_DependencyFailurePolicy_Default(t *testing.T) {
+	// Empty string defaults to "cancel_dependents" — should not error
+	state := &model.CommandState{
+		PlanStatus:        model.PlanStatusSealed,
+		ExpectedTaskCount: 1,
+		RequiredTaskIDs:   []string{"t1"},
+		TaskStates: map[string]model.Status{
+			"t1": model.StatusCompleted,
+		},
+	}
+
+	status, err := DeriveStatus(state)
+	if err != nil {
+		t.Fatalf("DeriveStatus returned error: %v", err)
+	}
+	if status != model.PlanStatusCompleted {
+		t.Errorf("status = %q, want %q", status, model.PlanStatusCompleted)
+	}
+}
+
+func TestDeriveStatus_RequiredFailedOverridesOptionalPolicy(t *testing.T) {
+	// Required failure should take precedence over optional failure policy
+	state := &model.CommandState{
+		PlanStatus:        model.PlanStatusSealed,
+		ExpectedTaskCount: 3,
+		RequiredTaskIDs:   []string{"t1", "t2"},
+		OptionalTaskIDs:   []string{"t3"},
+		CompletionPolicy: model.CompletionPolicy{
+			OnRequiredFailed: "fail_command",
+			OnOptionalFailed: "ignore",
+		},
+		TaskStates: map[string]model.Status{
+			"t1": model.StatusCompleted,
+			"t2": model.StatusFailed,
+			"t3": model.StatusFailed,
+		},
+	}
+
+	status, err := DeriveStatus(state)
+	if err != nil {
+		t.Fatalf("DeriveStatus returned error: %v", err)
+	}
+	if status != model.PlanStatusFailed {
+		t.Errorf("status = %q, want %q", status, model.PlanStatusFailed)
+	}
+}

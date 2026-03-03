@@ -1,7 +1,9 @@
 package events
 
 import (
+	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -32,8 +34,10 @@ type Subscriber func(Event)
 // If a subscriber's channel is full, the event is dropped silently.
 type Bus struct {
 	mu          sync.RWMutex
+	closed      atomic.Bool
 	subscribers map[EventType][]chan Event
 	bufferSize  int
+	wg          sync.WaitGroup
 }
 
 // NewBus creates a new event bus with the specified buffer size per subscriber.
@@ -51,14 +55,27 @@ func NewBus(bufferSize int) *Bus {
 // The subscriber function is called asynchronously in a goroutine.
 // Returns an unsubscribe function.
 func (b *Bus) Subscribe(eventType EventType, fn Subscriber) func() {
+	if b.closed.Load() {
+		return func() {}
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	// Double-check under lock to close TOCTOU race window.
+	// Close() sets closed=true then acquires mu. If Close() completed
+	// between our first check and this lock acquisition, we must bail out.
+	if b.closed.Load() {
+		return func() {}
+	}
 
 	ch := make(chan Event, b.bufferSize)
 	b.subscribers[eventType] = append(b.subscribers[eventType], ch)
 
 	// Start goroutine to deliver events to subscriber
+	b.wg.Add(1)
 	go func() {
+		defer b.wg.Done()
 		for event := range ch {
 			// Wrap in anonymous function to recover from panics in subscriber
 			func() {
@@ -93,6 +110,10 @@ func (b *Bus) Subscribe(eventType EventType, fn Subscriber) func() {
 // Uses select with default to ensure non-blocking behavior.
 // If a subscriber's channel is full, the event is dropped for that subscriber.
 func (b *Bus) Publish(eventType EventType, data map[string]interface{}) {
+	if b.closed.Load() {
+		return
+	}
+
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
@@ -114,15 +135,28 @@ func (b *Bus) Publish(eventType EventType, data map[string]interface{}) {
 	}
 }
 
-// Close closes all subscriber channels and clears subscriptions.
+// Close closes all subscriber channels, waits for goroutines to drain, and clears subscriptions.
 func (b *Bus) Close() {
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	b.closed.Store(true)
 
+	b.mu.Lock()
 	for eventType, subs := range b.subscribers {
 		for _, ch := range subs {
 			close(ch)
 		}
 		delete(b.subscribers, eventType)
+	}
+	b.mu.Unlock()
+
+	// Wait for subscriber goroutines to finish with timeout to prevent deadlock
+	done := make(chan struct{})
+	go func() {
+		b.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		log.Printf("WARN event_bus: Close timed out waiting for subscriber goroutines")
 	}
 }

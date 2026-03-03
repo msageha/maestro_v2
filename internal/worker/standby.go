@@ -4,6 +4,7 @@ package worker
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -57,9 +58,13 @@ func Standby(opts StandbyOptions) ([]WorkerStatus, error) {
 		}
 
 		path := filepath.Join(queueDir, name)
-		data, err := os.ReadFile(path)
+		maxBytes := opts.Config.Limits.MaxYAMLFileBytes
+		if maxBytes <= 0 {
+			maxBytes = model.DefaultMaxYAMLFileBytes
+		}
+		data, err := readQueueFile(path, maxBytes)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "warning: cannot read %s: %v\n", name, err)
+			fmt.Fprintf(os.Stderr, "warning: %s: %v\n", name, err)
 			continue
 		}
 
@@ -115,6 +120,37 @@ func StandbyJSON(opts StandbyOptions) (string, error) {
 		return "", fmt.Errorf("marshal json: %w", err)
 	}
 	return string(data), nil
+}
+
+// readQueueFile opens, validates, and reads a queue YAML file.
+// Extracted from loop to allow proper defer-based resource cleanup.
+func readQueueFile(path string, maxBytes int) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = f.Close() }()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("not a regular file")
+	}
+	if fi.Size() > int64(maxBytes) {
+		return nil, fmt.Errorf("file too large (%d bytes > %d max)", fi.Size(), maxBytes)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(f, int64(maxBytes)+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxBytes {
+		return nil, fmt.Errorf("read data too large (%d bytes > %d max)", len(data), maxBytes)
+	}
+
+	return data, nil
 }
 
 // resolveWorkerModel determines the model for a given worker ID from config.

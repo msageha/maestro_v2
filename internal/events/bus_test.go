@@ -214,6 +214,113 @@ func TestBus_EventTypes(t *testing.T) {
 	}
 }
 
+func TestBus_SubscribeAfterClose(t *testing.T) {
+	bus := NewBus(10)
+	bus.Close()
+
+	called := false
+	unsub := bus.Subscribe(EventTaskStarted, func(e Event) {
+		called = true
+	})
+
+	// Should return a noop unsubscribe
+	unsub()
+
+	// Publish should also be safe
+	bus.Publish(EventTaskStarted, map[string]interface{}{
+		"task_id": "task_789",
+	})
+
+	time.Sleep(50 * time.Millisecond)
+
+	if called {
+		t.Error("subscriber should not be called after bus is closed")
+	}
+}
+
+func TestBus_PublishAfterClose(t *testing.T) {
+	bus := NewBus(10)
+
+	var mu sync.Mutex
+	count := 0
+
+	unsub := bus.Subscribe(EventTaskStarted, func(e Event) {
+		mu.Lock()
+		count++
+		mu.Unlock()
+	})
+	defer unsub()
+
+	bus.Close()
+
+	// Publish after close should be silently ignored
+	bus.Publish(EventTaskStarted, map[string]interface{}{
+		"task_id": "task_after_close",
+	})
+
+	time.Sleep(50 * time.Millisecond)
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if count != 0 {
+		t.Errorf("expected 0 events after close, got %d", count)
+	}
+}
+
+func TestBus_ConcurrentCloseAndPublish(t *testing.T) {
+	bus := NewBus(10)
+
+	var wg sync.WaitGroup
+
+	// 10 goroutines publishing rapidly
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < 100; j++ {
+				bus.Publish(EventTaskStarted, map[string]interface{}{
+					"id": id*100 + j,
+				})
+			}
+		}(i)
+	}
+
+	// 5 goroutines subscribing/unsubscribing
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				unsub := bus.Subscribe(EventTaskStarted, func(e Event) {})
+				unsub()
+			}
+		}()
+	}
+
+	// Close bus concurrently
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		time.Sleep(5 * time.Millisecond)
+		bus.Close()
+	}()
+
+	// Must complete without panic or deadlock
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// success
+	case <-time.After(5 * time.Second):
+		t.Fatal("test timed out - likely deadlock")
+	}
+}
+
 func BenchmarkBus_Publish(b *testing.B) {
 	bus := NewBus(100)
 	defer bus.Close()
