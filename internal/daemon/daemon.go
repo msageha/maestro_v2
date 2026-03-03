@@ -20,6 +20,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
 )
 
@@ -69,6 +70,7 @@ type Daemon struct {
 
 	eventBus          *events.Bus
 	eventUnsubscribers []func()
+	tmuxLogFile        io.Closer // debug log for tmux operations
 
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -158,6 +160,18 @@ func (d *Daemon) Run() error {
 	}
 	d.log(LogLevelInfo, "daemon starting pid=%d", os.Getpid())
 
+	// Initialize tmux debug logger for session lifecycle diagnostics
+	tmuxLogPath := filepath.Join(d.maestroDir, "logs", "tmux_debug.log")
+	if tmuxLogFile, err := os.OpenFile(tmuxLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+		tmuxLogger := log.New(tmuxLogFile, "", log.LstdFlags|log.Lmicroseconds)
+		tmux.SetDebugLogger(tmuxLogger)
+		d.log(LogLevelInfo, "tmux debug logger initialized at %s", tmuxLogPath)
+		// Store for cleanup
+		d.tmuxLogFile = tmuxLogFile
+	} else {
+		d.log(LogLevelWarn, "failed to open tmux debug log: %v", err)
+	}
+
 	// Write PID file for reliable lifecycle management
 	pidPath := filepath.Join(d.maestroDir, "daemon.pid")
 	if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0644); err != nil {
@@ -199,6 +213,9 @@ func (d *Daemon) Run() error {
 
 	// Step 3: Init queue handler
 	d.handler = NewQueueHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
+
+	// Wire shutdown guard so debounce goroutines are tracked by d.wg
+	d.handler.SetShutdownGuard(d.ctx, &d.wg, &d.shuttingDown, &d.shutdownMu)
 
 	// Step 3.5: Wire state reader for dependency resolution (Phase 6)
 	if d.stateReader != nil {
@@ -364,6 +381,11 @@ func (d *Daemon) tickerLoop() {
 		case <-d.ticker.C:
 			d.log(LogLevelDebug, "periodic scan triggered")
 			d.handler.PeriodicScan()
+
+			// Session health check: detect if tmux session disappeared
+			if !tmux.SessionHealthCheck() {
+				d.log(LogLevelError, "SESSION_LOST tmux session %q is no longer alive!", tmux.GetSessionName())
+			}
 		}
 	}
 }
@@ -374,9 +396,11 @@ func (d *Daemon) waitSignals() {
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	defer signal.Stop(sigCh)
 
+	d.log(LogLevelInfo, "waitSignals: listening for SIGTERM/SIGINT")
+
 	select {
 	case sig := <-sigCh:
-		d.log(LogLevelInfo, "received signal=%s, initiating graceful shutdown", sig)
+		d.log(LogLevelInfo, "received signal=%s, initiating graceful shutdown (session_alive=%v)", sig, tmux.SessionExists())
 
 		// Second signal → force exit.
 		// shutdownDone unblocks this goroutine when Shutdown completes,
@@ -405,7 +429,7 @@ func (d *Daemon) waitSignals() {
 // Shutdown performs graceful shutdown (idempotent via sync.Once).
 func (d *Daemon) Shutdown() {
 	d.shutdown.Do(func() {
-		d.log(LogLevelInfo, "shutdown started")
+		d.log(LogLevelInfo, "shutdown started session_alive=%v", tmux.SessionExists())
 
 		// 0. Set shuttingDown flag under write lock to prevent new wg.Add
 		// calls from racing with wg.Wait below. Keep the lock short.
@@ -488,6 +512,13 @@ func (d *Daemon) cleanup() {
 		}
 		if err := d.fileLock.Unlock(); err != nil {
 			d.log(LogLevelError, "cleanup file_unlock error=%v", err)
+		}
+		// Disable tmux debug logger before closing the file
+		tmux.SetDebugLogger(nil)
+		if d.tmuxLogFile != nil {
+			if err := d.tmuxLogFile.Close(); err != nil {
+				fmt.Fprintf(os.Stderr, "cleanup: close tmux log file: %v\n", err)
+			}
 		}
 		if d.logFile != nil {
 			if err := d.logFile.Close(); err != nil {

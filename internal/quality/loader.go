@@ -58,6 +58,11 @@ func (l *Loader) LoadConfiguration() (*GateConfiguration, error) {
 			return nil
 		}
 
+		// Verify file permissions before loading
+		if err := validateFilePermissions(path); err != nil {
+			return fmt.Errorf("unsafe file permissions on %s: %w", path, err)
+		}
+
 		// Load the file
 		fileConfig, err := l.loadFile(path)
 		if err != nil {
@@ -101,6 +106,9 @@ func (l *Loader) loadFile(path string) (*GateConfiguration, error) {
 	if err := yaml.Unmarshal(data, &config); err != nil {
 		return nil, fmt.Errorf("failed to parse YAML: %w", err)
 	}
+
+	// Set source file path on script conditions for permission re-verification
+	setSourceFile(&config, path)
 
 	return &config, nil
 }
@@ -286,9 +294,9 @@ func (l *Loader) applyDefaults(config *GateConfiguration) {
 	for i := range config.Gates {
 		gate := &config.Gates[i]
 
-		// Default enabled to true
-		if !gate.Enabled {
-			gate.Enabled = true
+		// Default enabled to true (only if not explicitly set in YAML)
+		if gate.Enabled == nil {
+			gate.Enabled = boolPtr(true)
 		}
 
 		// Default priority
@@ -396,6 +404,11 @@ func (l *Loader) LoadFromFile(path string) (*GateConfiguration, error) {
 		}
 	}
 
+	// Verify file permissions
+	if err := validateFilePermissions(path); err != nil {
+		return nil, fmt.Errorf("unsafe file permissions on %s: %w", path, err)
+	}
+
 	// Read file
 	file, err := os.Open(path)
 	if err != nil {
@@ -413,6 +426,9 @@ func (l *Loader) LoadFromFile(path string) (*GateConfiguration, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse YAML from %s: %w", path, err)
 	}
+
+	// Set source file path on script conditions for permission re-verification
+	setSourceFile(config, path)
 
 	// Validate configuration
 	if err := l.validateConfiguration(config); err != nil {
@@ -556,7 +572,7 @@ func (l *Loader) loadDefaultGates() *GateConfiguration {
 				ID:          "default_required_fields",
 				Name:        "Required Fields Check",
 				Description: "Ensures required fields are present",
-				Enabled:     true,
+				Enabled:     boolPtr(true),
 				Type:        GateTypePreTask,
 				Priority:    10,
 				Trigger:     TriggerDefinition{},
@@ -631,6 +647,56 @@ func (l *Loader) compileCondition(condition *RuleCondition, gateID, ruleID strin
 				return err
 			}
 		}
+	}
+
+	return nil
+}
+
+// setSourceFile sets the SourceFile field on all script conditions in the configuration
+func setSourceFile(config *GateConfiguration, path string) {
+	for i := range config.Gates {
+		for j := range config.Gates[i].Rules {
+			setConditionSourceFile(&config.Gates[i].Rules[j].Condition, path)
+		}
+	}
+}
+
+// setConditionSourceFile recursively sets SourceFile on script conditions
+func setConditionSourceFile(condition *RuleCondition, path string) {
+	if condition.Type == ConditionScript {
+		condition.SourceFile = path
+	}
+	for i := range condition.Conditions {
+		setConditionSourceFile(&condition.Conditions[i], path)
+	}
+}
+
+// boolPtr returns a pointer to the given bool value
+func boolPtr(b bool) *bool {
+	return &b
+}
+
+// validateFilePermissions checks that a config file is not writable by group or others.
+// This mitigates command injection via tampered config files (e.g., script conditions).
+func validateFilePermissions(path string) error {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("failed to stat file: %w", err)
+	}
+
+	// Reject symlinks to prevent TOCTOU via symlink attacks
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("config file must not be a symlink")
+	}
+
+	// Reject non-regular files
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("config file must be a regular file")
+	}
+
+	// Check that group and other write bits are not set (0o022)
+	if fi.Mode().Perm()&0o022 != 0 {
+		return fmt.Errorf("config file must not be writable by group or others (current permissions: %o)", fi.Mode().Perm())
 	}
 
 	return nil

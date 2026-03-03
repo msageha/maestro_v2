@@ -677,3 +677,382 @@ func TestQueueWriteCommand_DefaultPriority(t *testing.T) {
 		t.Errorf("default priority = %d, want 100", cq.Commands[0].Priority)
 	}
 }
+
+func TestQueueWriteTask_CyclicDependencyDetection(t *testing.T) {
+	d := newTestDaemon(t)
+
+	commandID := "cmd_0000000001_abcdef01"
+
+	// Submit task A (no dependencies)
+	reqA := makeQueueWriteRequest(t, QueueWriteParams{
+		Type:               "task",
+		CommandID:          commandID,
+		Content:            "task A",
+		Purpose:            "purpose A",
+		AcceptanceCriteria: "criteria A",
+		BloomLevel:         3,
+		Target:             "worker1",
+	})
+	respA := d.handleQueueWrite(reqA)
+	if !respA.Success {
+		t.Fatalf("task A: expected success, got error: %v", respA.Error)
+	}
+	var resultA map[string]string
+	json.Unmarshal(respA.Data, &resultA)
+	taskAID := resultA["id"]
+
+	// Submit task B with blocked_by: [taskA]
+	reqB := makeQueueWriteRequest(t, QueueWriteParams{
+		Type:               "task",
+		CommandID:          commandID,
+		Content:            "task B",
+		Purpose:            "purpose B",
+		AcceptanceCriteria: "criteria B",
+		BloomLevel:         3,
+		Target:             "worker1",
+		BlockedBy:          []string{taskAID},
+	})
+	respB := d.handleQueueWrite(reqB)
+	if !respB.Success {
+		t.Fatalf("task B: expected success, got error: %v", respB.Error)
+	}
+	var resultB map[string]string
+	json.Unmarshal(respB.Data, &resultB)
+	taskBID := resultB["id"]
+
+	// Submit task C with blocked_by: [taskB] — should succeed (A→B→C is a DAG, not a cycle)
+	reqC := makeQueueWriteRequest(t, QueueWriteParams{
+		Type:               "task",
+		CommandID:          commandID,
+		Content:            "task C (chain, no cycle)",
+		Purpose:            "purpose C",
+		AcceptanceCriteria: "criteria C",
+		BloomLevel:         3,
+		Target:             "worker1",
+		BlockedBy:          []string{taskBID},
+	})
+	respC := d.handleQueueWrite(reqC)
+	if !respC.Success {
+		t.Fatalf("task C (chain): expected success, got error: %v", respC.Error)
+	}
+
+	// Now submit task D with blocked_by: [taskB] AND manually set taskA's blocked_by to create A→B, B→A cycle
+	// First, manually modify task A to have blocked_by: [taskB] to simulate the cycle
+	workerPath := filepath.Join(d.maestroDir, "queue", "worker1.yaml")
+	data, _ := os.ReadFile(workerPath)
+	var tq model.TaskQueue
+	yamlv3.Unmarshal(data, &tq)
+	for i := range tq.Tasks {
+		if tq.Tasks[i].ID == taskAID {
+			tq.Tasks[i].BlockedBy = []string{taskBID}
+			break
+		}
+	}
+	yamlutil.AtomicWrite(workerPath, tq)
+
+	// Now submit a new task — the existing A→B, B→A cycle should be detected
+	reqD := makeQueueWriteRequest(t, QueueWriteParams{
+		Type:               "task",
+		CommandID:          commandID,
+		Content:            "task D (triggers cycle detection)",
+		Purpose:            "purpose D",
+		AcceptanceCriteria: "criteria D",
+		BloomLevel:         3,
+		Target:             "worker1",
+		BlockedBy:          []string{taskAID},
+	})
+	respD := d.handleQueueWrite(reqD)
+	if respD.Success {
+		t.Fatal("task D: expected cycle detection error, got success")
+	}
+	if respD.Error.Code != uds.ErrCodeValidation {
+		t.Errorf("error code = %q, want %q", respD.Error.Code, uds.ErrCodeValidation)
+	}
+	if !contains(respD.Error.Message, "circular dependency") {
+		t.Errorf("error message = %q, want to contain 'circular dependency'", respD.Error.Message)
+	}
+}
+
+func TestQueueWriteTask_CyclicDependency_MutualBlockAB(t *testing.T) {
+	d := newTestDaemon(t)
+
+	commandID := "cmd_0000000001_abcdef01"
+
+	// Submit task A (no dependencies) to worker1
+	reqA := makeQueueWriteRequest(t, QueueWriteParams{
+		Type:               "task",
+		CommandID:          commandID,
+		Content:            "task A",
+		Purpose:            "purpose A",
+		AcceptanceCriteria: "criteria A",
+		BloomLevel:         3,
+		Target:             "worker1",
+	})
+	respA := d.handleQueueWrite(reqA)
+	if !respA.Success {
+		t.Fatalf("task A: expected success, got error: %v", respA.Error)
+	}
+	var resultA map[string]string
+	json.Unmarshal(respA.Data, &resultA)
+	taskAID := resultA["id"]
+
+	// Submit task B to worker2 with blocked_by: [taskA]
+	reqB := makeQueueWriteRequest(t, QueueWriteParams{
+		Type:               "task",
+		CommandID:          commandID,
+		Content:            "task B",
+		Purpose:            "purpose B",
+		AcceptanceCriteria: "criteria B",
+		BloomLevel:         3,
+		Target:             "worker2",
+		BlockedBy:          []string{taskAID},
+	})
+	respB := d.handleQueueWrite(reqB)
+	if !respB.Success {
+		t.Fatalf("task B: expected success, got error: %v", respB.Error)
+	}
+	var resultB map[string]string
+	json.Unmarshal(respB.Data, &resultB)
+	taskBID := resultB["id"]
+
+	// Manually modify task A to have blocked_by: [taskB] (simulating a mutual dependency)
+	workerPath := filepath.Join(d.maestroDir, "queue", "worker1.yaml")
+	data, _ := os.ReadFile(workerPath)
+	var tq model.TaskQueue
+	yamlv3.Unmarshal(data, &tq)
+	for i := range tq.Tasks {
+		if tq.Tasks[i].ID == taskAID {
+			tq.Tasks[i].BlockedBy = []string{taskBID}
+			break
+		}
+	}
+	yamlutil.AtomicWrite(workerPath, tq)
+
+	// Submit task C to worker1 with blocked_by referencing A
+	// This should detect the cross-queue A→B, B→A cycle
+	reqC := makeQueueWriteRequest(t, QueueWriteParams{
+		Type:               "task",
+		CommandID:          commandID,
+		Content:            "task C (cross-queue cycle)",
+		Purpose:            "purpose C",
+		AcceptanceCriteria: "criteria C",
+		BloomLevel:         3,
+		Target:             "worker1",
+		BlockedBy:          []string{taskAID},
+	})
+	respC := d.handleQueueWrite(reqC)
+	if respC.Success {
+		t.Fatal("task C: expected cycle detection error, got success")
+	}
+	if respC.Error.Code != uds.ErrCodeValidation {
+		t.Errorf("error code = %q, want %q", respC.Error.Code, uds.ErrCodeValidation)
+	}
+	if !contains(respC.Error.Message, "circular dependency") {
+		t.Errorf("error message = %q, want to contain 'circular dependency'", respC.Error.Message)
+	}
+}
+
+func TestQueueWriteTask_NoCycleWithTerminalTasks(t *testing.T) {
+	d := newTestDaemon(t)
+
+	commandID := "cmd_0000000001_abcdef01"
+
+	// Submit task A
+	reqA := makeQueueWriteRequest(t, QueueWriteParams{
+		Type:               "task",
+		CommandID:          commandID,
+		Content:            "task A",
+		Purpose:            "purpose A",
+		AcceptanceCriteria: "criteria A",
+		BloomLevel:         3,
+		Target:             "worker1",
+	})
+	respA := d.handleQueueWrite(reqA)
+	if !respA.Success {
+		t.Fatalf("task A: expected success, got error: %v", respA.Error)
+	}
+	var resultA map[string]string
+	json.Unmarshal(respA.Data, &resultA)
+	taskAID := resultA["id"]
+
+	// Submit task B with blocked_by: [taskA]
+	reqB := makeQueueWriteRequest(t, QueueWriteParams{
+		Type:               "task",
+		CommandID:          commandID,
+		Content:            "task B",
+		Purpose:            "purpose B",
+		AcceptanceCriteria: "criteria B",
+		BloomLevel:         3,
+		Target:             "worker1",
+		BlockedBy:          []string{taskAID},
+	})
+	respB := d.handleQueueWrite(reqB)
+	if !respB.Success {
+		t.Fatalf("task B: expected success, got error: %v", respB.Error)
+	}
+	var resultB map[string]string
+	json.Unmarshal(respB.Data, &resultB)
+	taskBID := resultB["id"]
+
+	// Mark task A as completed and set blocked_by: [taskB] to simulate would-be cycle
+	workerPath := filepath.Join(d.maestroDir, "queue", "worker1.yaml")
+	data, _ := os.ReadFile(workerPath)
+	var tq model.TaskQueue
+	yamlv3.Unmarshal(data, &tq)
+	for i := range tq.Tasks {
+		if tq.Tasks[i].ID == taskAID {
+			tq.Tasks[i].Status = model.StatusCompleted // terminal — should be excluded
+			tq.Tasks[i].BlockedBy = []string{taskBID}
+			break
+		}
+	}
+	yamlutil.AtomicWrite(workerPath, tq)
+
+	// Submit task C with blocked_by: [taskB] — should succeed because task A is terminal
+	reqC := makeQueueWriteRequest(t, QueueWriteParams{
+		Type:               "task",
+		CommandID:          commandID,
+		Content:            "task C (no cycle due to terminal A)",
+		Purpose:            "purpose C",
+		AcceptanceCriteria: "criteria C",
+		BloomLevel:         3,
+		Target:             "worker1",
+		BlockedBy:          []string{taskBID},
+	})
+	respC := d.handleQueueWrite(reqC)
+	if !respC.Success {
+		t.Fatalf("task C: expected success (terminal task breaks cycle), got error: %v", respC.Error)
+	}
+}
+
+func TestDetectCycleDFS(t *testing.T) {
+	tests := []struct {
+		name     string
+		deps     map[string][]string
+		hasCycle bool
+	}{
+		{
+			name:     "no deps",
+			deps:     map[string][]string{},
+			hasCycle: false,
+		},
+		{
+			name: "linear chain",
+			deps: map[string][]string{
+				"B": {"A"},
+				"C": {"B"},
+			},
+			hasCycle: false,
+		},
+		{
+			name: "simple A-B cycle",
+			deps: map[string][]string{
+				"A": {"B"},
+				"B": {"A"},
+			},
+			hasCycle: true,
+		},
+		{
+			name: "three-node cycle",
+			deps: map[string][]string{
+				"A": {"B"},
+				"B": {"C"},
+				"C": {"A"},
+			},
+			hasCycle: true,
+		},
+		{
+			name: "self-reference",
+			deps: map[string][]string{
+				"A": {"A"},
+			},
+			hasCycle: true,
+		},
+		{
+			name: "dangling reference (dep not in graph)",
+			deps: map[string][]string{
+				"A": {"X"}, // X is not in the graph
+			},
+			hasCycle: false,
+		},
+		{
+			name: "diamond (no cycle)",
+			deps: map[string][]string{
+				"C": {"A", "B"},
+				"D": {"A", "B"},
+			},
+			hasCycle: false,
+		},
+		{
+			name: "partial cycle with non-cycling branch",
+			deps: map[string][]string{
+				"A": {"B"},
+				"B": {"C"},
+				"C": {"A"},
+				"D": {"B"}, // D depends on B but is not part of the cycle
+			},
+			hasCycle: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cycle := detectCycleDFS(tt.deps)
+			if tt.hasCycle && len(cycle) == 0 {
+				t.Error("expected cycle to be detected, got none")
+			}
+			if !tt.hasCycle && len(cycle) > 0 {
+				t.Errorf("expected no cycle, got: %v", cycle)
+			}
+			// Validate cycle path quality: first == last (closed cycle)
+			if len(cycle) > 0 {
+				if cycle[0] != cycle[len(cycle)-1] {
+					t.Errorf("cycle path not closed: first=%q last=%q path=%v", cycle[0], cycle[len(cycle)-1], cycle)
+				}
+				if len(cycle) < 2 {
+					t.Errorf("cycle path too short: %v", cycle)
+				}
+			}
+		})
+	}
+}
+
+func TestDetectCycleDFS_PathContent(t *testing.T) {
+	// Verify cycle path contains expected nodes
+	t.Run("A-B cycle contains both nodes", func(t *testing.T) {
+		deps := map[string][]string{
+			"A": {"B"},
+			"B": {"A"},
+		}
+		cycle := detectCycleDFS(deps)
+		if len(cycle) == 0 {
+			t.Fatal("expected cycle")
+		}
+		hasA, hasB := false, false
+		for _, n := range cycle {
+			if n == "A" {
+				hasA = true
+			}
+			if n == "B" {
+				hasB = true
+			}
+		}
+		if !hasA || !hasB {
+			t.Errorf("cycle path should contain A and B, got: %v", cycle)
+		}
+	})
+
+	t.Run("self-reference path", func(t *testing.T) {
+		deps := map[string][]string{
+			"X": {"X"},
+		}
+		cycle := detectCycleDFS(deps)
+		if len(cycle) == 0 {
+			t.Fatal("expected cycle")
+		}
+		if cycle[0] != "X" || cycle[len(cycle)-1] != "X" {
+			t.Errorf("self-reference cycle should start and end with X, got: %v", cycle)
+		}
+	})
+}
+

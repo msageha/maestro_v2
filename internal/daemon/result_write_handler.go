@@ -317,8 +317,8 @@ func (d *Daemon) resultWritePhaseA(params ResultWriteParams, resultStatus model.
 		if err := retryHandler.RegisterRetryTaskInState(retryTask, params.CommandID); err != nil {
 			d.log(LogLevelError, "register_retry_task_failed task=%s error=%v", retryTask.ID, err)
 		} else {
-			// Then add to queue
-			if err := retryHandler.AddRetryTaskToQueue(retryTask, params.Reporter); err != nil {
+			// Then add to queue (use locked variant — queue lock already held by this function)
+			if err := retryHandler.addRetryTaskToQueueLocked(retryTask, params.Reporter); err != nil {
 				d.log(LogLevelError, "add_retry_task_failed task=%s error=%v", retryTask.ID, err)
 			} else {
 				d.log(LogLevelInfo, "task_retry_scheduled task=%s retry_id=%s attempt=%d",

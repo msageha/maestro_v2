@@ -5,13 +5,64 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"time"
 )
+
+// debugLogger is an optional logger for tracing all tmux operations.
+// Set via SetDebugLogger to enable debug logging.
+var debugLogger atomic.Value // *log.Logger or nil
+
+// SetDebugLogger enables debug logging for all tmux operations.
+// Pass nil to disable. The logger output should go to a file for post-mortem analysis.
+func SetDebugLogger(l *log.Logger) {
+	if l == nil {
+		debugLogger.Store((*log.Logger)(nil))
+	} else {
+		debugLogger.Store(l)
+	}
+}
+
+func debugLog(format string, args ...any) {
+	v := debugLogger.Load()
+	if v == nil {
+		return
+	}
+	l, ok := v.(*log.Logger)
+	if !ok || l == nil {
+		return
+	}
+	l.Printf("[tmux] "+format, args...)
+}
+
+// callerInfo returns "file:line function" for the caller at the given skip depth.
+func callerInfo(skip int) string {
+	pc, file, line, ok := runtime.Caller(skip)
+	if !ok {
+		return "unknown"
+	}
+	fn := runtime.FuncForPC(pc)
+	funcName := "unknown"
+	if fn != nil {
+		funcName = fn.Name()
+		// Shorten to last component
+		if idx := strings.LastIndex(funcName, "/"); idx >= 0 {
+			funcName = funcName[idx+1:]
+		}
+	}
+	// Shorten file path to last 2 components
+	parts := strings.Split(file, "/")
+	if len(parts) > 2 {
+		file = strings.Join(parts[len(parts)-2:], "/")
+	}
+	return fmt.Sprintf("%s:%d %s", file, line, funcName)
+}
 
 // defaultCmdTimeout is the timeout for individual tmux commands.
 // tmux IPC is normally sub-millisecond; 5s catches hung servers
@@ -225,18 +276,72 @@ func SessionExists() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultCmdTimeout)
 	defer cancel()
 	err := exec.CommandContext(ctx, "tmux", "has-session", "-t", GetSessionName()).Run()
-	return err == nil
+	exists := err == nil
+	debugLog("SessionExists session=%s exists=%v", GetSessionName(), exists)
+	return exists
 }
 
 // CreateSession creates a new maestro tmux session.
 // The first window is named windowName. Returns an error if the session already exists.
 func CreateSession(windowName string) error {
-	return run("new-session", "-d", "-s", GetSessionName(), "-n", windowName)
+	debugLog("CreateSession session=%s window=%s", GetSessionName(), windowName)
+	err := run("new-session", "-d", "-s", GetSessionName(), "-n", windowName)
+	if err != nil {
+		debugLog("CreateSession FAILED session=%s error=%v", GetSessionName(), err)
+	} else {
+		debugLog("CreateSession OK session=%s", GetSessionName())
+	}
+	return err
 }
 
 // KillSession destroys the maestro tmux session.
 func KillSession() error {
-	return run("kill-session", "-t", GetSessionName())
+	caller := callerInfo(2)
+	debugLog("KillSession called session=%s caller=%s", GetSessionName(), caller)
+	err := run("kill-session", "-t", GetSessionName())
+	if err != nil {
+		debugLog("KillSession FAILED session=%s error=%v caller=%s", GetSessionName(), err, caller)
+	} else {
+		debugLog("KillSession OK session=%s caller=%s", GetSessionName(), caller)
+	}
+	return err
+}
+
+// SessionHealthCheck performs a detailed session health check and logs the result.
+// Returns true if the session is alive, false otherwise.
+// When the session is missing, it also checks if the tmux server is running.
+func SessionHealthCheck() bool {
+	name := GetSessionName()
+	ctx, cancel := context.WithTimeout(context.Background(), defaultCmdTimeout)
+	defer cancel()
+
+	// Check session
+	cmd := exec.CommandContext(ctx, "tmux", "has-session", "-t", name)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		// Session alive — gather window/pane info for diagnostics
+		winOut, winErr := output("list-windows", "-t", name, "-F", "#{window_index}:#{window_name}:#{window_panes}")
+		if winErr == nil {
+			debugLog("SessionHealthCheck OK session=%s windows=[%s]", name, strings.TrimSpace(winOut))
+		} else {
+			debugLog("SessionHealthCheck OK session=%s (list-windows failed: %v)", name, winErr)
+		}
+		return true
+	}
+
+	stderr := strings.TrimSpace(string(out))
+	debugLog("SessionHealthCheck DEAD session=%s stderr=%q", name, stderr)
+
+	// Check if tmux server itself is running
+	serverCmd := exec.CommandContext(ctx, "tmux", "list-sessions")
+	serverOut, serverErr := serverCmd.CombinedOutput()
+	if serverErr != nil {
+		debugLog("SessionHealthCheck SERVER_DOWN stderr=%q", strings.TrimSpace(string(serverOut)))
+	} else {
+		debugLog("SessionHealthCheck SERVER_OK other_sessions=%q", strings.TrimSpace(string(serverOut)))
+	}
+
+	return false
 }
 
 // CreateWindow creates a new window in the maestro session.
@@ -437,6 +542,19 @@ func SetWindowOption(windowTarget, name, value string) error {
 	return run("set-option", "-w", "-t", windowTarget, name, value)
 }
 
+// ListSessions returns the names of all sessions on the current tmux server.
+func ListSessions() ([]string, error) {
+	out, err := output("list-sessions", "-F", "#{session_name}")
+	if err != nil {
+		return nil, err
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return nil, nil
+	}
+	return strings.Split(out, "\n"), nil
+}
+
 // SelectWindow selects (focuses) a window in the maestro session.
 func SelectWindow(windowTarget string) error {
 	return run("select-window", "-t", windowTarget)
@@ -487,6 +605,7 @@ func GetPanePID(paneTarget string) (string, error) {
 func runCtx(ctx context.Context, args ...string) error {
 	// Fast path: if context is already done, don't spawn a process.
 	if err := ctx.Err(); err != nil {
+		debugLog("runCtx SKIP (ctx done) args=%v err=%v", args, err)
 		return &TmuxError{Kind: contextErrorKind(err), Op: args[0], Err: err}
 	}
 	ctx, cancel := context.WithTimeout(ctx, defaultCmdTimeout)
@@ -496,9 +615,12 @@ func runCtx(ctx context.Context, args ...string) error {
 	if err != nil {
 		stderr := strings.TrimSpace(string(out))
 		if ctx.Err() != nil {
+			debugLog("runCtx TIMEOUT args=%v stderr=%q", args, stderr)
 			return &TmuxError{Kind: contextErrorKind(ctx.Err()), Op: args[0], Stderr: stderr, Err: ctx.Err()}
 		}
-		return classifyTmuxError(args[0], stderr, err)
+		classified := classifyTmuxError(args[0], stderr, err)
+		debugLog("runCtx ERROR args=%v kind=%s stderr=%q", args, classified.Kind, stderr)
+		return classified
 	}
 	return nil
 }

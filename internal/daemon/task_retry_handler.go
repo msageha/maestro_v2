@@ -141,15 +141,20 @@ func (h *TaskRetryHandler) RegisterRetryTaskInState(task *model.Task, commandID 
 	return nil
 }
 
-// AddRetryTaskToQueue adds a retry task to the worker's queue.
+// AddRetryTaskToQueue acquires the queue lock for workerID and adds the retry task.
+// It is safe to call without holding any queue lock.
 func (h *TaskRetryHandler) AddRetryTaskToQueue(task *model.Task, workerID string) error {
-	queueFile := fmt.Sprintf("queue/%s.yaml", workerID)
-	queuePath := filepath.Join(h.maestroDir, queueFile)
-
-	// Fix: Use worker ID for lock key, not queueFile path
 	lockKey := fmt.Sprintf("queue:%s", workerID)
 	h.lockMap.Lock(lockKey)
 	defer h.lockMap.Unlock(lockKey)
+
+	return h.addRetryTaskToQueueLocked(task, workerID)
+}
+
+// addRetryTaskToQueueLocked adds a retry task to the worker's queue.
+// Caller must hold lockMap lock for key "queue:<workerID>".
+func (h *TaskRetryHandler) addRetryTaskToQueueLocked(task *model.Task, workerID string) error {
+	queuePath := filepath.Join(h.maestroDir, "queue", workerID+".yaml")
 
 	// Read existing queue
 	queueData, err := os.ReadFile(queuePath)

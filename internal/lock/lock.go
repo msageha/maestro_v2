@@ -1,4 +1,4 @@
-// Package lock provides file-based locking for daemon coordination.
+// Package lock provides file-based locking and keyed mutex coordination.
 package lock
 
 import (
@@ -7,52 +7,102 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 )
 
+// refMutex is a reference-counted mutex entry. The ref field tracks the number
+// of goroutines that are either waiting to acquire or currently holding the
+// per-key lock. When ref drops to zero the entry is eligible for removal from
+// the map, preventing memory leaks. The locked field is an atomic flag (1 =
+// locked, 0 = unlocked) used to guard against double-unlock panics.
+type refMutex struct {
+	mu     sync.Mutex
+	ref    int
+	locked int32 // atomic: 1 = locked, 0 = unlocked
+}
+
+// MutexMap provides per-key mutual exclusion with automatic cleanup.
+// Each key maps to a reference-counted mutex. Entries are created on first
+// Lock and removed when no goroutine is waiting for or holding the lock.
 type MutexMap struct {
 	mu      sync.Mutex
-	mutexes map[string]*sync.Mutex
+	mutexes map[string]*refMutex
 }
 
 func NewMutexMap() *MutexMap {
 	return &MutexMap{
-		mutexes: make(map[string]*sync.Mutex),
+		mutexes: make(map[string]*refMutex),
 	}
 }
 
+// Lock acquires the mutex for key, creating it if necessary. The caller must
+// call Unlock (or TryUnlock) exactly once when done.
 func (m *MutexMap) Lock(key string) {
-	m.getMutex(key).Lock()
+	m.mu.Lock()
+	rm, ok := m.mutexes[key]
+	if !ok {
+		rm = &refMutex{}
+		m.mutexes[key] = rm
+	}
+	rm.ref++
+	m.mu.Unlock()
+
+	rm.mu.Lock()
+	atomic.StoreInt32(&rm.locked, 1)
 }
 
+// Unlock releases the mutex for key. It is safe to call on a key that was
+// never locked or has already been unlocked (no-op in those cases).
 func (m *MutexMap) Unlock(key string) {
+	m.TryUnlock(key)
+}
+
+// TryUnlock attempts to release the mutex for key. It returns true if the
+// unlock was performed, false if the key was not locked (never locked,
+// already unlocked, or non-existent). It never panics.
+func (m *MutexMap) TryUnlock(key string) bool {
 	m.mu.Lock()
-	mu, ok := m.mutexes[key]
-	m.mu.Unlock()
+	rm, ok := m.mutexes[key]
 	if !ok {
-		return // no-op if key was never locked
+		m.mu.Unlock()
+		return false
 	}
-	mu.Unlock()
+	m.mu.Unlock()
+
+	// Atomically clear the locked flag. If the CAS fails the mutex is not
+	// currently locked (double-unlock or racing unlock) — bail out safely.
+	if !atomic.CompareAndSwapInt32(&rm.locked, 1, 0) {
+		return false
+	}
+
+	rm.mu.Unlock()
+
+	// Decrement reference count and clean up if no goroutine needs this entry.
+	m.mu.Lock()
+	rm.ref--
+	if rm.ref == 0 && m.mutexes[key] == rm {
+		delete(m.mutexes, key)
+	}
+	m.mu.Unlock()
+
+	return true
 }
 
 // Remove deletes the entry for key from the map, freeing the associated memory.
-// The caller must ensure no goroutine is currently holding the lock for key.
+// The caller must ensure no goroutine is currently holding or waiting on the
+// lock for key. With reference-counted auto-cleanup this is rarely needed.
 func (m *MutexMap) Remove(key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.mutexes, key)
 }
 
-func (m *MutexMap) getMutex(key string) *sync.Mutex {
+// Len returns the number of keys currently tracked in the map.
+func (m *MutexMap) Len() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	if mu, ok := m.mutexes[key]; ok {
-		return mu
-	}
-	mu := &sync.Mutex{}
-	m.mutexes[key] = mu
-	return mu
+	return len(m.mutexes)
 }
 
 type FileLock struct {

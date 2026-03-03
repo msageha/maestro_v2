@@ -2,9 +2,12 @@
 package formation
 
 import (
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,6 +19,18 @@ import (
 // RunDown executes the 'maestro down' command.
 func RunDown(maestroDir string, cfg model.Config) error {
 	tmux.SetSessionName("maestro-" + cfg.Project.Name)
+
+	// Initialize tmux debug logger for down process
+	tmuxLogPath := filepath.Join(maestroDir, "logs", "tmux_debug.log")
+	if tmuxLogFile, err := os.OpenFile(tmuxLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+		tmuxLogger := log.New(tmuxLogFile, "", log.LstdFlags|log.Lmicroseconds)
+		tmux.SetDebugLogger(tmuxLogger)
+		defer func() {
+			tmux.SetDebugLogger(nil)
+			tmuxLogFile.Close()
+		}()
+	}
+
 	socketPath := filepath.Join(maestroDir, uds.DefaultSocketName)
 
 	// Check if daemon socket exists
@@ -23,6 +38,7 @@ func RunDown(maestroDir string, cfg model.Config) error {
 		// Socket gone but PID file may linger from a crashed daemon
 		cleanupStalePID(maestroDir)
 		if tmux.SessionExists() {
+			fmt.Println("[debug] RunDown: killing session (daemon socket missing)")
 			_ = tmux.KillSession()
 		}
 		restoreServerOptions()
@@ -42,6 +58,7 @@ func RunDown(maestroDir string, cfg model.Config) error {
 		cleanupStalePID(maestroDir)
 		_ = os.Remove(socketPath)
 		if tmux.SessionExists() {
+			fmt.Println("[debug] RunDown: killing session (daemon connection failed)")
 			_ = tmux.KillSession()
 		}
 		restoreServerOptions()
@@ -91,6 +108,7 @@ func RunDown(maestroDir string, cfg model.Config) error {
 
 	// Kill tmux session
 	if tmux.SessionExists() {
+		fmt.Println("[debug] RunDown: killing session (normal shutdown path)")
 		if err := tmux.KillSession(); err != nil {
 			return fmt.Errorf("kill tmux session: %w", err)
 		}
@@ -103,10 +121,37 @@ func RunDown(maestroDir string, cfg model.Config) error {
 
 // restoreServerOptions restores tmux server options to their defaults after
 // session cleanup so the tmux server exits naturally when the user has no
-// other sessions. Called on all down paths (normal, early-return, error).
+// other sessions. Skips restoration if other maestro sessions are still
+// running on the same tmux server to avoid killing them.
 func restoreServerOptions() {
+	if hasOtherMaestroSessions() {
+		return
+	}
 	_ = tmux.SetServerOption("exit-empty", "on")
 	_ = tmux.SetServerOption("exit-unattached", "on")
+}
+
+// hasOtherMaestroSessions checks if any other maestro-* sessions exist
+// on the current tmux server (excluding the session being torn down).
+// On transient errors (timeout, IPC failure) it returns true to err on the
+// safe side and avoid accidentally killing other sessions.
+func hasOtherMaestroSessions() bool {
+	sessions, err := tmux.ListSessions()
+	if err != nil {
+		// Server not running — nothing to protect, safe to restore.
+		if errors.Is(err, tmux.ErrTmuxServer) {
+			return false
+		}
+		// Transient error (timeout, etc.) — assume other sessions may exist.
+		return true
+	}
+	currentSession := tmux.GetSessionName()
+	for _, s := range sessions {
+		if strings.HasPrefix(s, "maestro-") && s != currentSession {
+			return true
+		}
+	}
+	return false
 }
 
 // cleanupStalePID kills a lingering daemon process if daemon.pid exists.

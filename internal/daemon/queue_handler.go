@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -39,8 +41,9 @@ type QueueHandler struct {
 	scanCounters ScanCounters
 
 	// Debounce state
-	debounceMu    sync.Mutex
-	debounceTimer *time.Timer
+	debounceMu      sync.Mutex
+	debounceTimer   *time.Timer
+	debounceTracked bool // true if shutdownWg.Add(1) was called for current timer
 
 	// scanMu serializes PeriodicScan phases (exclusive) vs queue writes (shared RLock).
 	// Spec §5.6: per-agent mutex — queue writes hold RLock + per-target lockMap key.
@@ -56,6 +59,13 @@ type QueueHandler struct {
 	// busyChecker is called to probe agent busy state before lease expiry release.
 	// Returns true if the agent is currently busy (lease should be extended).
 	busyChecker func(agentID string) bool
+
+	// Shutdown guard: allows debounce goroutines to be tracked by daemon's WaitGroup.
+	// These are wired via SetShutdownGuard after construction.
+	shutdownCtx  context.Context
+	shutdownWg   *sync.WaitGroup
+	shuttingDown *atomic.Bool
+	shutdownMu   *sync.RWMutex
 }
 
 // NewQueueHandler creates a new QueueHandler with all sub-modules.
@@ -116,13 +126,28 @@ func (qh *QueueHandler) SetBusyChecker(f func(agentID string) bool) {
 	qh.busyChecker = f
 }
 
-// Stop cancels any pending debounce timer.
+// SetShutdownGuard wires the daemon's shutdown primitives so that debounce
+// goroutines are tracked by the daemon's WaitGroup and respect context cancellation.
+func (qh *QueueHandler) SetShutdownGuard(ctx context.Context, wg *sync.WaitGroup, shuttingDown *atomic.Bool, shutdownMu *sync.RWMutex) {
+	qh.shutdownCtx = ctx
+	qh.shutdownWg = wg
+	qh.shuttingDown = shuttingDown
+	qh.shutdownMu = shutdownMu
+}
+
+// Stop cancels any pending debounce timer. If the timer was successfully
+// stopped (callback prevented from running), the matching wg.Add(1) is
+// balanced with wg.Done() so that Shutdown's wg.Wait() can proceed.
 func (qh *QueueHandler) Stop() {
 	qh.debounceMu.Lock()
 	defer qh.debounceMu.Unlock()
 	if qh.debounceTimer != nil {
-		qh.debounceTimer.Stop()
+		if qh.debounceTimer.Stop() && qh.debounceTracked {
+			// Callback was prevented from running — balance the wg.Add(1).
+			qh.shutdownWg.Done()
+		}
 		qh.debounceTimer = nil
+		qh.debounceTracked = false
 	}
 }
 
@@ -153,6 +178,11 @@ func (qh *QueueHandler) HandleFileEvent(filePath string) {
 }
 
 // debounceAndScan applies debounce logic before triggering a scan.
+// The debounce timer callback is tracked by the daemon's WaitGroup:
+//   - wg.Add(1) is called BEFORE time.AfterFunc (guarantees tracking)
+//   - The callback defers wg.Done() at entry
+//   - If timer.Stop() returns true (callback prevented), wg.Done() is called
+//     to balance the Add, both here and in Stop()
 func (qh *QueueHandler) debounceAndScan(trigger string) {
 	debounceSec := qh.config.Watcher.DebounceSec
 	if debounceSec <= 0 {
@@ -162,13 +192,49 @@ func (qh *QueueHandler) debounceAndScan(trigger string) {
 	qh.debounceMu.Lock()
 	defer qh.debounceMu.Unlock()
 
+	// Stop previous timer. If Stop returns true, the callback was prevented
+	// from running, so balance the wg.Add(1) from the previous scheduling.
 	if qh.debounceTimer != nil {
-		qh.debounceTimer.Stop()
+		if qh.debounceTimer.Stop() && qh.debounceTracked {
+			qh.shutdownWg.Done()
+		}
 	}
+
+	// Track this callback in the daemon's WaitGroup BEFORE spawning
+	// so that Shutdown's wg.Wait() is guaranteed to wait for it.
+	qh.debounceTracked = qh.shutdownWg != nil
+	if qh.debounceTracked {
+		qh.shutdownWg.Add(1)
+	}
+
+	// Capture for closure safety (avoid reading struct fields that may change).
+	wg := qh.shutdownWg
+	tracked := qh.debounceTracked
 
 	qh.debounceTimer = time.AfterFunc(
 		time.Duration(debounceSec*float64(time.Second)),
 		func() {
+			// Balance the wg.Add(1) done before time.AfterFunc.
+			// This must be the first defer to ensure it runs even on panic.
+			if tracked {
+				defer wg.Done()
+			}
+
+			// Guard: if shutting down, bail out immediately to avoid
+			// running PeriodicScan after the daemon has stopped.
+			if qh.shuttingDown != nil && qh.shuttingDown.Load() {
+				return
+			}
+
+			// Check context cancellation before starting the scan.
+			if qh.shutdownCtx != nil {
+				select {
+				case <-qh.shutdownCtx.Done():
+					return
+				default:
+				}
+			}
+
 			defer func() {
 				if r := recover(); r != nil {
 					qh.log(LogLevelError, "panic in debounceAndScan: %v", r)

@@ -78,7 +78,7 @@ type GateDefinition struct {
 	ID          string            `yaml:"id"`
 	Name        string            `yaml:"name"`
 	Description string            `yaml:"description"`
-	Enabled     bool              `yaml:"enabled"`
+	Enabled     *bool             `yaml:"enabled"`
 	Type        GateType          `yaml:"type"`
 	Priority    int               `yaml:"priority"`
 	Trigger     TriggerDefinition `yaml:"trigger"`
@@ -131,6 +131,7 @@ type RuleCondition struct {
 	// Compiled fields (not in YAML)
 	CompiledRegex  interface{} `yaml:"-"` // *regexp.Regexp after compilation
 	CompiledScript interface{} `yaml:"-"` // Compiled script function
+	SourceFile     string      `yaml:"-"` // Source config file path for permission re-verification
 }
 
 // ActionDefinition defines actions based on rule evaluation

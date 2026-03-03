@@ -92,7 +92,7 @@ func (e *Engine) LoadConfiguration(config *GateConfiguration) error {
 
 	// Compile and index gates by type
 	for _, gateDef := range config.Gates {
-		if !gateDef.Enabled {
+		if gateDef.Enabled != nil && !*gateDef.Enabled {
 			continue
 		}
 

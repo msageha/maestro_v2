@@ -18,7 +18,7 @@ func TestEngine_LoadConfiguration(t *testing.T) {
 			{
 				ID:       "test_gate",
 				Name:     "Test Gate",
-				Enabled:  true,
+				Enabled:  boolPtr(true),
 				Type:     GateTypePreTask,
 				Priority: 10,
 				Rules: []RuleDefinition{
@@ -55,7 +55,7 @@ func TestEngine_Evaluate_SimpleFieldValidation(t *testing.T) {
 			{
 				ID:       "field_test",
 				Name:     "Field Test",
-				Enabled:  true,
+				Enabled:  boolPtr(true),
 				Type:     GateTypePreTask,
 				Priority: 10,
 				Rules: []RuleDefinition{
@@ -121,7 +121,7 @@ func TestEngine_Evaluate_LogicalOperators(t *testing.T) {
 			{
 				ID:       "logical_test",
 				Name:     "Logical Test",
-				Enabled:  true,
+				Enabled:  boolPtr(true),
 				Type:     GateTypePreTask,
 				Priority: 10,
 				Rules: []RuleDefinition{
@@ -191,7 +191,7 @@ func TestEngine_Evaluate_Caching(t *testing.T) {
 			{
 				ID:       "cache_test",
 				Name:     "Cache Test",
-				Enabled:  true,
+				Enabled:  boolPtr(true),
 				Type:     GateTypePreTask,
 				Priority: 10,
 				Rules: []RuleDefinition{
@@ -244,7 +244,7 @@ func TestEngine_Evaluate_Performance(t *testing.T) {
 			{
 				ID:       "perf_gate_1",
 				Name:     "Performance Gate 1",
-				Enabled:  true,
+				Enabled:  boolPtr(true),
 				Type:     GateTypePreTask,
 				Priority: 10,
 				Rules: []RuleDefinition{
@@ -276,7 +276,7 @@ func TestEngine_Evaluate_Performance(t *testing.T) {
 			{
 				ID:       "perf_gate_2",
 				Name:     "Performance Gate 2",
-				Enabled:  true,
+				Enabled:  boolPtr(true),
 				Type:     GateTypePreTask,
 				Priority: 20,
 				Rules: []RuleDefinition{
@@ -353,7 +353,7 @@ func TestEngine_Evaluate_Timeout(t *testing.T) {
 			{
 				ID:       "timeout_test",
 				Name:     "Timeout Test",
-				Enabled:  true,
+				Enabled:  boolPtr(true),
 				Type:     GateTypePreTask,
 				Priority: 1,
 				Rules: []RuleDefinition{
@@ -406,7 +406,7 @@ func TestEngine_CompileRegex(t *testing.T) {
 			{
 				ID:       "regex_test",
 				Name:     "Regex Test",
-				Enabled:  true,
+				Enabled:  boolPtr(true),
 				Type:     GateTypePreTask,
 				Priority: 10,
 				Rules: []RuleDefinition{
@@ -472,7 +472,7 @@ func TestEngine_TriggerFilters(t *testing.T) {
 			{
 				ID:       "role_filtered",
 				Name:     "Role Filtered Gate",
-				Enabled:  true,
+				Enabled:  boolPtr(true),
 				Type:     GateTypePreTask,
 				Priority: 10,
 				Trigger: TriggerDefinition{
@@ -497,7 +497,7 @@ func TestEngine_TriggerFilters(t *testing.T) {
 			{
 				ID:       "bloom_filtered",
 				Name:     "Bloom Level Filtered Gate",
-				Enabled:  true,
+				Enabled:  boolPtr(true),
 				Type:     GateTypePreTask,
 				Priority: 20,
 				Trigger: TriggerDefinition{

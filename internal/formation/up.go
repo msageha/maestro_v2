@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -41,6 +42,21 @@ var ErrSessionExists = fmt.Errorf("maestro session already exists (use --force t
 func RunUp(opts UpOptions) error {
 	// Set tmux session name from project config
 	tmux.SetSessionName("maestro-" + opts.Config.Project.Name)
+
+	// Initialize tmux debug logger for session lifecycle diagnostics.
+	// This logger covers the up process (session creation, hardening, agent launch).
+	// The daemon process initializes its own logger independently.
+	tmuxLogPath := filepath.Join(opts.MaestroDir, "logs", "tmux_debug.log")
+	if err := os.MkdirAll(filepath.Dir(tmuxLogPath), 0755); err == nil {
+		if tmuxLogFile, err := os.OpenFile(tmuxLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+			tmuxLogger := log.New(tmuxLogFile, "", log.LstdFlags|log.Lmicroseconds)
+			tmux.SetDebugLogger(tmuxLogger)
+			defer func() {
+				tmux.SetDebugLogger(nil)
+				tmuxLogFile.Close()
+			}()
+		}
+	}
 
 	// Guard: refuse to destroy a running session unless --force is set
 	if tmux.SessionExists() && !opts.Force {
@@ -101,6 +117,7 @@ func resetFormation(maestroDir string) error {
 	}
 
 	// Kill existing tmux session (best-effort)
+	fmt.Println("[debug] resetFormation: killing existing tmux session (best-effort)")
 	_ = tmux.KillSession()
 
 	// Clear queue/ YAML files
@@ -281,6 +298,7 @@ func inferFileType(dir, filename string) string {
 func createFormation(cfg model.Config) error {
 	// Kill existing session if any
 	if tmux.SessionExists() {
+		fmt.Println("[debug] createFormation: killing pre-existing session before creation")
 		if err := tmux.KillSession(); err != nil {
 			return fmt.Errorf("kill existing session: %w", err)
 		}
@@ -290,6 +308,8 @@ func createFormation(cfg model.Config) error {
 	if err := tmux.CreateSession("orchestrator"); err != nil {
 		return fmt.Errorf("create session: %w", err)
 	}
+
+	fmt.Println("[debug] createFormation: applying session hardening options")
 
 	// Harden server: prevent tmux server from exiting when the last session is destroyed.
 	// Without this, if something kills the maestro session and it's the only session,

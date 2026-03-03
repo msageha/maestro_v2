@@ -390,7 +390,8 @@ func TestLoader_GetDefaultGates(t *testing.T) {
 		if gate.ID == "default_required_fields" {
 			found = true
 			assert.Equal(t, GateTypePreTask, gate.Type)
-			assert.True(t, gate.Enabled)
+			assert.NotNil(t, gate.Enabled)
+			assert.True(t, *gate.Enabled)
 			assert.Equal(t, 10, gate.Priority)
 			break
 		}
@@ -423,7 +424,8 @@ gates:
 	gate := config.Gates[0]
 
 	// Check defaults were applied
-	assert.True(t, gate.Enabled)                    // Default to enabled
+	assert.NotNil(t, gate.Enabled)                   // Default to enabled
+	assert.True(t, *gate.Enabled)                    // Default to enabled
 	assert.Equal(t, 50, gate.Priority)              // Default priority
 	assert.Equal(t, ActionAllow, gate.Action.OnPass) // Default on_pass
 	assert.Equal(t, ActionContinue, gate.Action.OnWarn) // Default on_warn
@@ -663,4 +665,161 @@ gates:
 	assert.True(t, gate.Metrics.TrackFailures)
 	assert.Equal(t, "test", gate.Metrics.Tags["environment"])
 	assert.Equal(t, "1.0", gate.Metrics.Tags["version"])
+}
+
+func TestLoader_EnabledFalsePreserved(t *testing.T) {
+	loader := NewLoader(".")
+
+	yaml := `
+schema_version: "1.0.0"
+gates:
+  - id: disabled_gate
+    name: "Disabled Gate"
+    enabled: false
+    type: pre_task
+    rules:
+      - id: rule1
+        condition:
+          type: field_validation
+          field: task.id
+          operator: exists
+    action:
+      on_pass: allow
+      on_fail: block
+  - id: enabled_gate
+    name: "Enabled Gate"
+    enabled: true
+    type: pre_task
+    rules:
+      - id: rule1
+        condition:
+          type: field_validation
+          field: task.id
+          operator: exists
+    action:
+      on_pass: allow
+      on_fail: block
+  - id: unset_gate
+    name: "Unset Gate"
+    type: pre_task
+    rules:
+      - id: rule1
+        condition:
+          type: field_validation
+          field: task.id
+          operator: exists
+    action:
+      on_pass: allow
+      on_fail: block
+`
+
+	config, err := loader.LoadFromBytes([]byte(yaml))
+	require.NoError(t, err)
+	require.Len(t, config.Gates, 3)
+
+	// enabled: false should be preserved as false
+	disabledGate := config.Gates[0]
+	assert.Equal(t, "disabled_gate", disabledGate.ID)
+	require.NotNil(t, disabledGate.Enabled)
+	assert.False(t, *disabledGate.Enabled, "enabled: false must be preserved, not overwritten to true")
+
+	// enabled: true should remain true
+	enabledGate := config.Gates[1]
+	assert.Equal(t, "enabled_gate", enabledGate.ID)
+	require.NotNil(t, enabledGate.Enabled)
+	assert.True(t, *enabledGate.Enabled)
+
+	// unset enabled should default to true
+	unsetGate := config.Gates[2]
+	assert.Equal(t, "unset_gate", unsetGate.ID)
+	require.NotNil(t, unsetGate.Enabled)
+	assert.True(t, *unsetGate.Enabled, "unset enabled should default to true")
+}
+
+func TestValidateFilePermissions(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "perms_test")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	t.Run("safe permissions", func(t *testing.T) {
+		safeFile := filepath.Join(tmpDir, "safe.yaml")
+		err := os.WriteFile(safeFile, []byte("test"), 0600)
+		require.NoError(t, err)
+
+		err = validateFilePermissions(safeFile)
+		assert.NoError(t, err)
+	})
+
+	t.Run("owner read-write only", func(t *testing.T) {
+		file := filepath.Join(tmpDir, "owner_rw.yaml")
+		err := os.WriteFile(file, []byte("test"), 0644)
+		require.NoError(t, err)
+
+		err = validateFilePermissions(file)
+		assert.NoError(t, err, "0644 should be safe (no group/other write)")
+	})
+
+	t.Run("group writable rejected", func(t *testing.T) {
+		file := filepath.Join(tmpDir, "group_w.yaml")
+		err := os.WriteFile(file, []byte("test"), 0600)
+		require.NoError(t, err)
+		// Explicitly set permissions to bypass umask
+		require.NoError(t, os.Chmod(file, 0664))
+
+		err = validateFilePermissions(file)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "must not be writable by group or others")
+	})
+
+	t.Run("world writable rejected", func(t *testing.T) {
+		file := filepath.Join(tmpDir, "world_w.yaml")
+		err := os.WriteFile(file, []byte("test"), 0600)
+		require.NoError(t, err)
+		// Explicitly set permissions to bypass umask
+		require.NoError(t, os.Chmod(file, 0666))
+
+		err = validateFilePermissions(file)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "must not be writable by group or others")
+	})
+
+	t.Run("nonexistent file", func(t *testing.T) {
+		err := validateFilePermissions(filepath.Join(tmpDir, "nonexistent.yaml"))
+		assert.Error(t, err)
+	})
+}
+
+func TestLoader_LoadFromFile_RejectsUnsafePermissions(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "unsafe_perms_test")
+	require.NoError(t, err)
+	defer os.RemoveAll(tmpDir)
+
+	loader := NewLoader(tmpDir)
+
+	testContent := `
+schema_version: "1.0.0"
+gates:
+  - id: test_gate
+    name: "Test Gate"
+    type: pre_task
+    rules:
+      - id: rule1
+        condition:
+          type: field_validation
+          field: task.id
+          operator: exists
+    action:
+      on_pass: allow
+      on_fail: block
+`
+	// Create file with group-writable permissions
+	testFile := filepath.Join(tmpDir, "unsafe.yaml")
+	err = os.WriteFile(testFile, []byte(testContent), 0600)
+	require.NoError(t, err)
+	// Explicitly set permissions to bypass umask
+	require.NoError(t, os.Chmod(testFile, 0664))
+
+	_, err = loader.LoadFromFile(testFile)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "unsafe file permissions")
 }

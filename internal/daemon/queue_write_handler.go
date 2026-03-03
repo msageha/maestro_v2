@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -221,6 +222,13 @@ func (d *Daemon) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 	id, err := model.GenerateID(model.IDTypeTask)
 	if err != nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("generate ID: %v", err))
+	}
+
+	// Cycle detection: check if adding this task creates a circular dependency
+	if len(params.BlockedBy) > 0 {
+		if resp := d.detectCycleInDependencies(id, params.BlockedBy, params.CommandID, params.Target, &tq); resp != nil {
+			return resp
+		}
 	}
 
 	priority := params.Priority
@@ -499,6 +507,124 @@ func validateBlockedBy(blockedBy []string) *uds.Response {
 				fmt.Sprintf("duplicate blocked_by ID: %q", id))
 		}
 		seen[id] = true
+	}
+	return nil
+}
+
+// --- Cycle detection helpers ---
+
+// detectCycleInDependencies checks if adding a task with the given blocked_by
+// would create a circular dependency among all non-terminal tasks for the same command.
+// It collects tasks from all worker queues and the already-loaded target queue.
+func (d *Daemon) detectCycleInDependencies(newTaskID string, newBlockedBy []string, commandID string, targetWorker string, targetQueue *model.TaskQueue) *uds.Response {
+	// Build dependency graph: taskID → list of task IDs it depends on
+	deps := make(map[string][]string)
+	deps[newTaskID] = newBlockedBy
+
+	// Collect non-terminal tasks from the already-loaded target queue
+	for _, task := range targetQueue.Tasks {
+		if task.CommandID != commandID || model.IsTerminal(task.Status) {
+			continue
+		}
+		if len(task.BlockedBy) > 0 {
+			deps[task.ID] = task.BlockedBy
+		}
+	}
+
+	// Collect non-terminal tasks from other worker queues (enumerate from disk)
+	queueDir := filepath.Join(d.maestroDir, "queue")
+	entries, err := os.ReadDir(queueDir)
+	if err != nil {
+		d.log(LogLevelWarn, "cycle_detection read_queue_dir error=%v", err)
+		// Continue with what we have — don't block task submission on dir read failure
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, "worker") || !strings.HasSuffix(name, ".yaml") {
+			continue
+		}
+		workerName := strings.TrimSuffix(name, ".yaml")
+		if workerName == targetWorker {
+			continue // already loaded above
+		}
+		path := filepath.Join(queueDir, name)
+		tq, _, err := loadTaskQueueFile(path)
+		if err != nil {
+			d.log(LogLevelWarn, "cycle_detection load_queue file=%s error=%v", name, err)
+			continue
+		}
+		for _, task := range tq.Tasks {
+			if task.CommandID != commandID || model.IsTerminal(task.Status) {
+				continue
+			}
+			if len(task.BlockedBy) > 0 {
+				deps[task.ID] = task.BlockedBy
+			}
+		}
+	}
+
+	// Run DFS-based cycle detection
+	if cycle := detectCycleDFS(deps); len(cycle) > 0 {
+		return uds.ErrorResponse(uds.ErrCodeValidation,
+			fmt.Sprintf("circular dependency detected: %s", strings.Join(cycle, " -> ")))
+	}
+	return nil
+}
+
+// detectCycleDFS finds a cycle in the dependency graph using DFS with white/gray/black coloring.
+// Returns the cycle path if found, or nil if no cycle exists.
+func detectCycleDFS(deps map[string][]string) []string {
+	const (
+		white = 0 // unvisited
+		gray  = 1 // in current DFS path
+		black = 2 // fully explored
+	)
+
+	color := make(map[string]int)
+	parent := make(map[string]string)
+
+	var dfs func(node string) []string
+	dfs = func(node string) []string {
+		color[node] = gray
+		for _, dep := range deps[node] {
+			if color[dep] == black {
+				continue
+			}
+			if color[dep] == gray {
+				// Found cycle — reconstruct path
+				cycle := []string{dep}
+				current := node
+				for current != dep {
+					cycle = append(cycle, current)
+					current = parent[current]
+				}
+				cycle = append(cycle, dep)
+				// Reverse to get forward order
+				for i, j := 0, len(cycle)-1; i < j; i, j = i+1, j-1 {
+					cycle[i], cycle[j] = cycle[j], cycle[i]
+				}
+				return cycle
+			}
+			// white — unvisited but only if it's in our graph
+			if _, inGraph := deps[dep]; !inGraph {
+				continue // dangling reference, skip
+			}
+			parent[dep] = node
+			if result := dfs(dep); result != nil {
+				return result
+			}
+		}
+		color[node] = black
+		return nil
+	}
+
+	// Start DFS from all nodes in the graph
+	for node := range deps {
+		if color[node] == white {
+			if result := dfs(node); result != nil {
+				return result
+			}
+		}
 	}
 	return nil
 }

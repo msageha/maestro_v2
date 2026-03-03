@@ -389,15 +389,10 @@ func (d *Dispatcher) evaluatePreTaskGateWithResult(task *model.Task, workerID st
 		return nil, nil
 	}
 
-	// Emit task start event for quality gate evaluation
-	event := TaskStartEvent{
-		TaskID:    task.ID,
-		CommandID: task.CommandID,
-		AgentID:   workerID,
-		StartedAt: time.Now(),
-	}
-
-	d.qualityGate.EmitEvent(event)
+	// NOTE: We do NOT emit TaskStartEvent here. The EventBus publish in
+	// DispatchTask (after successful dispatch) triggers the subscription
+	// in subscribeQualityGateEvents, which forwards the event to
+	// QualityGateDaemon. Emitting here would cause duplicate delivery.
 
 	// Perform synchronous evaluation
 	context := map[string]interface{}{
@@ -429,6 +424,10 @@ func (d *Dispatcher) evaluatePreTaskGateWithResult(task *model.Task, workerID st
 
 	if err != nil {
 		return evaluation, fmt.Errorf("evaluation failed: %w", err)
+	}
+
+	if result == nil {
+		return evaluation, fmt.Errorf("evaluation returned nil result")
 	}
 
 	if !result.Passed {

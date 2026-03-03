@@ -3,11 +3,56 @@ package quality
 import (
 	"context"
 	"fmt"
+	"log"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
 	"time"
 )
+
+const (
+	// maxScriptLength is the maximum allowed script length in bytes (4KB).
+	maxScriptLength = 4 * 1024
+)
+
+// dangerousPatterns are compiled regexps that match shell commands which
+// must never be executed by the quality-gate script evaluator.
+var dangerousPatterns = compileDangerousPatterns()
+
+func compileDangerousPatterns() []*regexp.Regexp {
+	raw := []string{
+		// Privilege escalation
+		`(?i)\b(?:sudo|su|doas|pkexec)\b`,
+		// Destructive file operations
+		`(?i)\brm\s+-[^\n;|&]*\brf?\b`,
+		// Disk-level destructive commands
+		`(?i)\b(?:mkfs(?:\.\w+)?|fdisk|parted|wipefs)\b`,
+		`(?i)\bdd\s+[^;\n]*\bof=/dev/`,
+		// System shutdown/reboot
+		`(?i)\b(?:shutdown|reboot|poweroff|halt|init\s+[06])\b`,
+		// Mass process kill
+		`(?i)\bkill\s+-9\s+-1\b`,
+		`(?i)\b(?:killall|pkill)\b`,
+		// Remote code execution via pipe
+		`(?i)\b(?:curl|wget)\b[^|\n]*\|\s*(?:bash|sh|zsh)\b`,
+		// Reverse shell patterns
+		`(?i)\b(?:nc|ncat|netcat)\b[^;\n]*\s-e\s`,
+		`(?i)\b(?:bash|sh)\b[^;\n]*/dev/tcp/`,
+		// Fork bomb
+		`:\(\)\s*\{\s*:\|:\s*&\s*\};:`,
+		// Modifying critical system files
+		`(?i)(?:>|>>|\btee\b)\s*/etc/(?:sudoers|passwd|shadow|group)\b`,
+		// Setuid/ownership changes
+		`(?i)\bchmod\s+\+s\b`,
+		`(?i)\bchown\s+root\b`,
+	}
+	patterns := make([]*regexp.Regexp, 0, len(raw))
+	for _, r := range raw {
+		patterns = append(patterns, regexp.MustCompile(r))
+	}
+	return patterns
+}
 
 // FieldValidationEvaluator evaluates field validation conditions
 type FieldValidationEvaluator struct{}
@@ -347,6 +392,18 @@ func (e *ScriptEvaluator) Evaluate(ctx context.Context, condition *RuleCondition
 		}
 	}
 
+	// Validate script content
+	if err := validateScript(condition.Script); err != nil {
+		return false, err
+	}
+
+	// Re-verify config file permissions before executing script
+	if condition.SourceFile != "" {
+		if err := validateFilePermissions(condition.SourceFile); err != nil {
+			return false, fmt.Errorf("script execution blocked: source config file has unsafe permissions: %w", err)
+		}
+	}
+
 	// Otherwise, execute the script as a shell command
 	timeout := time.Duration(condition.TimeoutSeconds) * time.Second
 	if timeout == 0 {
@@ -366,6 +423,20 @@ func (e *ScriptEvaluator) Evaluate(ctx context.Context, condition *RuleCondition
 		return false, fmt.Errorf("unsupported script language: %s", condition.Language)
 	}
 
+	// Restrict environment variables to a minimal safe set
+	cmd.Env = []string{
+		"PATH=/usr/bin:/bin",
+		"HOME=/tmp",
+	}
+
+	// Restrict working directory to a temporary directory
+	tmpDir := os.TempDir()
+	cmd.Dir = tmpDir
+
+	// Audit log: record script execution
+	log.Printf("quality/script: executing %s script (len=%d, timeout=%v, dir=%s)",
+		scriptLanguage(condition.Language), len(condition.Script), timeout, tmpDir)
+
 	// Run the script
 	err := cmd.Run()
 	if err != nil {
@@ -379,6 +450,31 @@ func (e *ScriptEvaluator) Evaluate(ctx context.Context, condition *RuleCondition
 
 	// Zero exit code means success
 	return true, nil
+}
+
+// validateScript checks that the script content is safe to execute.
+func validateScript(script string) error {
+	if strings.TrimSpace(script) == "" {
+		return fmt.Errorf("script must not be empty")
+	}
+	if len(script) > maxScriptLength {
+		return fmt.Errorf("script exceeds maximum length (%d > %d bytes)", len(script), maxScriptLength)
+	}
+	for _, pat := range dangerousPatterns {
+		if pat.MatchString(script) {
+			log.Printf("quality/script: BLOCKED dangerous pattern %q in script", pat.String())
+			return fmt.Errorf("script contains dangerous command pattern: %s", pat.String())
+		}
+	}
+	return nil
+}
+
+// scriptLanguage returns the effective language name for logging.
+func scriptLanguage(lang string) string {
+	if lang == "" {
+		return "bash"
+	}
+	return lang
 }
 
 // Helper function to convert to float64
