@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
 
@@ -352,10 +353,15 @@ func TestLogLevelFiltering(t *testing.T) {
 	}
 }
 
-func TestExecMode_UnknownMode(t *testing.T) {
-	mode := ExecMode("nonexistent")
-	if mode == ModeDeliver || mode == ModeWithClear || mode == ModeInterrupt || mode == ModeIsBusy || mode == ModeClear {
-		t.Error("nonexistent mode should not match any known mode")
+func TestExecMode_Constants(t *testing.T) {
+	// Verify all mode constants are distinct (regression guard)
+	modes := []ExecMode{ModeDeliver, ModeWithClear, ModeInterrupt, ModeIsBusy, ModeClear}
+	seen := make(map[ExecMode]bool)
+	for _, m := range modes {
+		if seen[m] {
+			t.Errorf("duplicate mode constant: %s", m)
+		}
+		seen[m] = true
 	}
 }
 
@@ -401,59 +407,22 @@ func TestValidRoleName(t *testing.T) {
 
 func TestOrchestratorInterruptRejected(t *testing.T) {
 	// Orchestrator should never be interruptible.
-	// This tests the logic check in execInterrupt (without tmux).
+	// execInterrupt checks AgentID == "orchestrator" before any tmux call,
+	// so we can test the guard directly without a running tmux session.
 	var buf bytes.Buffer
 	exec, err := newExecutor("", model.WatcherConfig{}, "info", &buf, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// execInterrupt checks AgentID == "orchestrator" before tmux calls.
-	// Since we can't call Execute without tmux, test the mode dispatch
-	// indirectly via the error for pane-not-found (non-orchestrator)
-	// and the orchestrator guard.
-
-	// For orchestrator interrupt, the guard should fire before any tmux call,
-	// but Execute itself calls FindPaneByAgentID first. So we test the
-	// guard in execInterrupt directly by verifying the log output.
-	_ = exec // verified via integration; unit test validates the constants:
-
-	// Verify orchestrator ID constant used in guards
 	req := ExecRequest{AgentID: "orchestrator", Mode: ModeInterrupt}
-	if req.AgentID != "orchestrator" {
-		t.Error("test setup error")
+	result := exec.execInterrupt(context.Background(), req, "")
+
+	if result.Error == nil {
+		t.Fatal("expected error for orchestrator interrupt, got nil")
 	}
-}
-
-// --- Fix #6: Verify orchestrator routing in sendAndConfirm ---
-
-func TestSendAndConfirm_DirectDelivery(t *testing.T) {
-	// Design verification: execWithClear for orchestrator falls through to execDeliver.
-	// sendAndConfirm delivers messages directly without pre-send cleanup.
-	req := ExecRequest{AgentID: "orchestrator", Mode: ModeWithClear}
-	if req.Mode != ModeWithClear {
-		t.Error("test setup error")
-	}
-}
-
-// --- Additional coverage: ExecResult fields ---
-
-func TestExecResult_RetryableFlag(t *testing.T) {
-	r := ExecResult{Error: nil, Retryable: true, Success: false}
-	if !r.Retryable {
-		t.Error("expected retryable")
-	}
-
-	r2 := ExecResult{Error: nil, Retryable: false, Success: true}
-	if r2.Retryable {
-		t.Error("expected not retryable")
-	}
-}
-
-func TestExecResult_SuccessFlag(t *testing.T) {
-	r := ExecResult{Success: true}
-	if !r.Success {
-		t.Error("expected success")
+	if !strings.Contains(result.Error.Error(), "cannot interrupt orchestrator") {
+		t.Errorf("expected 'cannot interrupt orchestrator' error, got: %v", result.Error)
 	}
 }
 

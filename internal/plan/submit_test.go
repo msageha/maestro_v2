@@ -474,3 +474,443 @@ func TestSubmit_PhasedSubmit(t *testing.T) {
 		t.Errorf("state.Phases[1].Constraints.MaxTasks = %d, want 5", state.Phases[1].Constraints.MaxTasks)
 	}
 }
+
+// setupAwaitingFillFixture creates a CommandState with a sealed plan containing
+// a concrete phase (completed) and a deferred phase in awaiting_fill status,
+// along with the required maestro directory structure and worker queues.
+func setupAwaitingFillFixture(t *testing.T) (string, *model.CommandState, string) {
+	t.Helper()
+	maestroDir := setupMaestroDir(t)
+	commandID := "cmd_0000000010_aabbccdd"
+
+	sm := NewStateManager(maestroDir, lock.NewMutexMap())
+
+	now := "2025-01-01T00:00:00Z"
+	state := &model.CommandState{
+		SchemaVersion:    1,
+		FileType:         "state_command",
+		CommandID:        commandID,
+		PlanVersion:      1,
+		PlanStatus:       model.PlanStatusSealed,
+		CompletionPolicy: defaultCompletionPolicy(),
+		TaskDependencies: make(map[string][]string),
+		TaskStates: map[string]model.Status{
+			"task_0000000001_aaaaaaaa": model.StatusCompleted,
+		},
+		CancelledReasons: make(map[string]string),
+		AppliedResultIDs: make(map[string]string),
+		RetryLineage:     make(map[string]string),
+		RequiredTaskIDs:  []string{"task_0000000001_aaaaaaaa"},
+		Phases: []model.Phase{
+			{
+				PhaseID:     "phase_0000000001_aaaaaaaa",
+				Name:        "phase_build",
+				Type:        "concrete",
+				Status:      model.PhaseStatusCompleted,
+				TaskIDs:     []string{"task_0000000001_aaaaaaaa"},
+				ActivatedAt: &now,
+				CompletedAt: &now,
+			},
+			{
+				PhaseID:         "phase_0000000002_bbbbbbbb",
+				Name:            "phase_review",
+				Type:            "deferred",
+				Status:          model.PhaseStatusAwaitingFill,
+				DependsOnPhases: []string{"phase_build"},
+				Constraints: &model.PhaseConstraints{
+					MaxTasks:           5,
+					TimeoutMinutes:     30,
+					AllowedBloomLevels: []int{1, 2, 3},
+				},
+			},
+		},
+		ExpectedTaskCount: 1,
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+
+	if err := sm.SaveState(state); err != nil {
+		t.Fatalf("save fixture state: %v", err)
+	}
+
+	return maestroDir, state, commandID
+}
+
+func TestSubmit_PhaseFill_Success(t *testing.T) {
+	maestroDir, origState, commandID := setupAwaitingFillFixture(t)
+	cfg := testConfig()
+
+	tasksFile := writeTasksFile(t, []TaskInput{
+		{
+			Name:               "review_task_1",
+			Purpose:            "review code",
+			Content:            "review the implementation",
+			AcceptanceCriteria: "code reviewed",
+			BloomLevel:         2,
+			Required:           true,
+		},
+		{
+			Name:               "review_task_2",
+			Purpose:            "review tests",
+			Content:            "review the tests",
+			AcceptanceCriteria: "tests reviewed",
+			BloomLevel:         1,
+			Required:           true,
+		},
+	})
+
+	result, err := Submit(SubmitOptions{
+		CommandID:  commandID,
+		TasksFile:  tasksFile,
+		PhaseName:  "phase_review",
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
+	})
+	if err != nil {
+		t.Fatalf("Submit phase fill returned error: %v", err)
+	}
+
+	if result.CommandID != commandID {
+		t.Errorf("CommandID = %q, want %q", result.CommandID, commandID)
+	}
+	if len(result.Tasks) != 2 {
+		t.Fatalf("len(Tasks) = %d, want 2", len(result.Tasks))
+	}
+
+	// Verify task names and IDs
+	for _, tr := range result.Tasks {
+		if tr.TaskID == "" {
+			t.Errorf("task %q has empty TaskID", tr.Name)
+		}
+		if tr.Worker == "" {
+			t.Errorf("task %q has empty Worker", tr.Name)
+		}
+		if !model.ValidateID(tr.TaskID) {
+			t.Errorf("task %q has invalid TaskID format: %s", tr.Name, tr.TaskID)
+		}
+	}
+
+	// Verify state: phase transitioned to active, PlanVersion incremented
+	sm := NewStateManager(maestroDir, lock.NewMutexMap())
+	state, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+
+	if state.PlanVersion != origState.PlanVersion+1 {
+		t.Errorf("PlanVersion = %d, want %d", state.PlanVersion, origState.PlanVersion+1)
+	}
+
+	// Find phase_review
+	var reviewPhase *model.Phase
+	for i := range state.Phases {
+		if state.Phases[i].Name == "phase_review" {
+			reviewPhase = &state.Phases[i]
+			break
+		}
+	}
+	if reviewPhase == nil {
+		t.Fatal("phase_review not found in state")
+	}
+	if reviewPhase.Status != model.PhaseStatusActive {
+		t.Errorf("phase_review.Status = %q, want %q", reviewPhase.Status, model.PhaseStatusActive)
+	}
+	if reviewPhase.ActivatedAt == nil {
+		t.Error("phase_review.ActivatedAt is nil, want non-nil")
+	}
+	if len(reviewPhase.TaskIDs) != 2 {
+		t.Errorf("len(phase_review.TaskIDs) = %d, want 2", len(reviewPhase.TaskIDs))
+	}
+
+	// Verify tasks were added to state
+	if state.ExpectedTaskCount != 3 { // 1 original + 2 new
+		t.Errorf("ExpectedTaskCount = %d, want 3", state.ExpectedTaskCount)
+	}
+	for _, tid := range reviewPhase.TaskIDs {
+		if s, ok := state.TaskStates[tid]; !ok {
+			t.Errorf("task %s not in TaskStates", tid)
+		} else if s != model.StatusPending {
+			t.Errorf("TaskStates[%s] = %q, want %q", tid, s, model.StatusPending)
+		}
+	}
+}
+
+func TestSubmit_PhaseFill_DryRun_NoMutation(t *testing.T) {
+	maestroDir, origState, commandID := setupAwaitingFillFixture(t)
+	cfg := testConfig()
+
+	tasksFile := writeTasksFile(t, []TaskInput{
+		{
+			Name:               "review_dry",
+			Purpose:            "dry run review",
+			Content:            "validate only",
+			AcceptanceCriteria: "valid input",
+			BloomLevel:         2,
+			Required:           true,
+		},
+	})
+
+	result, err := Submit(SubmitOptions{
+		CommandID:  commandID,
+		TasksFile:  tasksFile,
+		PhaseName:  "phase_review",
+		DryRun:     true,
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
+	})
+	if err != nil {
+		t.Fatalf("Submit phase fill dry-run returned error: %v", err)
+	}
+	if !result.Valid {
+		t.Errorf("result.Valid = false, want true")
+	}
+
+	// Verify no mutation: state should be unchanged
+	sm := NewStateManager(maestroDir, lock.NewMutexMap())
+	state, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.PlanVersion != origState.PlanVersion {
+		t.Errorf("PlanVersion = %d, want %d (no mutation)", state.PlanVersion, origState.PlanVersion)
+	}
+	for i := range state.Phases {
+		if state.Phases[i].Name == "phase_review" {
+			if state.Phases[i].Status != model.PhaseStatusAwaitingFill {
+				t.Errorf("phase_review.Status = %q, want %q (no mutation)", state.Phases[i].Status, model.PhaseStatusAwaitingFill)
+			}
+			break
+		}
+	}
+}
+
+func TestSubmit_PhaseFill_Preconditions(t *testing.T) {
+	cfg := testConfig()
+
+	validTasks := []TaskInput{
+		{
+			Name:               "fill_task",
+			Purpose:            "fill task",
+			Content:            "do work",
+			AcceptanceCriteria: "done",
+			BloomLevel:         2,
+			Required:           true,
+		},
+	}
+
+	tests := []struct {
+		name        string
+		setup       func(t *testing.T) (string, string)
+		phaseName   string
+		wantErrMsg  string
+	}{
+		{
+			name: "not_sealed",
+			setup: func(t *testing.T) (string, string) {
+				t.Helper()
+				maestroDir := setupMaestroDir(t)
+				cmdID := "cmd_0000000020_aabbccdd"
+				sm := NewStateManager(maestroDir, lock.NewMutexMap())
+				state := &model.CommandState{
+					SchemaVersion: 1,
+					FileType:      "state_command",
+					CommandID:     cmdID,
+					PlanStatus:    model.PlanStatusPlanning,
+					TaskStates:    make(map[string]model.Status),
+					Phases: []model.Phase{
+						{PhaseID: "p1", Name: "phase_a", Type: "deferred", Status: model.PhaseStatusAwaitingFill},
+					},
+				}
+				if err := sm.SaveState(state); err != nil {
+					t.Fatal(err)
+				}
+				return maestroDir, cmdID
+			},
+			phaseName:  "phase_a",
+			wantErrMsg: "plan_status must be sealed",
+		},
+		{
+			name: "cancelled",
+			setup: func(t *testing.T) (string, string) {
+				t.Helper()
+				maestroDir := setupMaestroDir(t)
+				cmdID := "cmd_0000000021_aabbccdd"
+				sm := NewStateManager(maestroDir, lock.NewMutexMap())
+				now := "2025-01-01T00:00:00Z"
+				state := &model.CommandState{
+					SchemaVersion: 1,
+					FileType:      "state_command",
+					CommandID:     cmdID,
+					PlanStatus:    model.PlanStatusSealed,
+					TaskStates:    make(map[string]model.Status),
+					Cancel: model.CancelState{
+						Requested:   true,
+						RequestedAt: &now,
+					},
+					Phases: []model.Phase{
+						{PhaseID: "p1", Name: "phase_a", Type: "deferred", Status: model.PhaseStatusAwaitingFill},
+					},
+				}
+				if err := sm.SaveState(state); err != nil {
+					t.Fatal(err)
+				}
+				return maestroDir, cmdID
+			},
+			phaseName:  "phase_a",
+			wantErrMsg: "cancelled",
+		},
+		{
+			name: "phase_not_found",
+			setup: func(t *testing.T) (string, string) {
+				t.Helper()
+				maestroDir := setupMaestroDir(t)
+				cmdID := "cmd_0000000022_aabbccdd"
+				sm := NewStateManager(maestroDir, lock.NewMutexMap())
+				state := &model.CommandState{
+					SchemaVersion: 1,
+					FileType:      "state_command",
+					CommandID:     cmdID,
+					PlanStatus:    model.PlanStatusSealed,
+					TaskStates:    make(map[string]model.Status),
+					Phases: []model.Phase{
+						{PhaseID: "p1", Name: "phase_a", Type: "deferred", Status: model.PhaseStatusAwaitingFill},
+					},
+				}
+				if err := sm.SaveState(state); err != nil {
+					t.Fatal(err)
+				}
+				return maestroDir, cmdID
+			},
+			phaseName:  "nonexistent_phase",
+			wantErrMsg: "not found",
+		},
+		{
+			name: "phase_not_deferred",
+			setup: func(t *testing.T) (string, string) {
+				t.Helper()
+				maestroDir := setupMaestroDir(t)
+				cmdID := "cmd_0000000023_aabbccdd"
+				sm := NewStateManager(maestroDir, lock.NewMutexMap())
+				state := &model.CommandState{
+					SchemaVersion: 1,
+					FileType:      "state_command",
+					CommandID:     cmdID,
+					PlanStatus:    model.PlanStatusSealed,
+					TaskStates:    make(map[string]model.Status),
+					Phases: []model.Phase{
+						{PhaseID: "p1", Name: "phase_a", Type: "concrete", Status: model.PhaseStatusActive},
+					},
+				}
+				if err := sm.SaveState(state); err != nil {
+					t.Fatal(err)
+				}
+				return maestroDir, cmdID
+			},
+			phaseName:  "phase_a",
+			wantErrMsg: "not deferred",
+		},
+		{
+			name: "phase_not_awaiting_fill",
+			setup: func(t *testing.T) (string, string) {
+				t.Helper()
+				maestroDir := setupMaestroDir(t)
+				cmdID := "cmd_0000000024_aabbccdd"
+				sm := NewStateManager(maestroDir, lock.NewMutexMap())
+				state := &model.CommandState{
+					SchemaVersion: 1,
+					FileType:      "state_command",
+					CommandID:     cmdID,
+					PlanStatus:    model.PlanStatusSealed,
+					TaskStates:    make(map[string]model.Status),
+					Phases: []model.Phase{
+						{PhaseID: "p1", Name: "phase_a", Type: "deferred", Status: model.PhaseStatusPending},
+					},
+				}
+				if err := sm.SaveState(state); err != nil {
+					t.Fatal(err)
+				}
+				return maestroDir, cmdID
+			},
+			phaseName:  "phase_a",
+			wantErrMsg: "awaiting_fill",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			maestroDir, cmdID := tt.setup(t)
+			tasksFile := writeTasksFile(t, validTasks)
+
+			_, err := Submit(SubmitOptions{
+				CommandID:  cmdID,
+				TasksFile:  tasksFile,
+				PhaseName:  tt.phaseName,
+				MaestroDir: maestroDir,
+				Config:     cfg,
+				LockMap:    lock.NewMutexMap(),
+			})
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErrMsg)
+			}
+			if !strings.Contains(err.Error(), tt.wantErrMsg) {
+				t.Errorf("error = %q, want to contain %q", err.Error(), tt.wantErrMsg)
+			}
+		})
+	}
+}
+
+func TestSubmit_PhaseFill_ConstraintViolation(t *testing.T) {
+	maestroDir, origState, commandID := setupAwaitingFillFixture(t)
+	cfg := testConfig()
+
+	// The phase allows bloom levels 1,2,3 and max 5 tasks.
+	// Submit a task with bloom level 5 (not allowed).
+	tasksFile := writeTasksFile(t, []TaskInput{
+		{
+			Name:               "bad_bloom_task",
+			Purpose:            "this should fail",
+			Content:            "bloom level violation",
+			AcceptanceCriteria: "never passes",
+			BloomLevel:         5,
+			Required:           true,
+		},
+	})
+
+	_, err := Submit(SubmitOptions{
+		CommandID:  commandID,
+		TasksFile:  tasksFile,
+		PhaseName:  "phase_review",
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
+	})
+	if err == nil {
+		t.Fatal("expected constraint violation error, got nil")
+	}
+	if !strings.Contains(err.Error(), "bloom_level") {
+		t.Errorf("error = %q, want to contain %q", err.Error(), "bloom_level")
+	}
+
+	// Verify no mutation: state should be unchanged
+	sm := NewStateManager(maestroDir, lock.NewMutexMap())
+	state, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.PlanVersion != origState.PlanVersion {
+		t.Errorf("PlanVersion = %d, want %d (no mutation after constraint violation)", state.PlanVersion, origState.PlanVersion)
+	}
+	for i := range state.Phases {
+		if state.Phases[i].Name == "phase_review" {
+			if state.Phases[i].Status != model.PhaseStatusAwaitingFill {
+				t.Errorf("phase_review.Status = %q, want %q (no mutation)", state.Phases[i].Status, model.PhaseStatusAwaitingFill)
+			}
+			if len(state.Phases[i].TaskIDs) != 0 {
+				t.Errorf("len(phase_review.TaskIDs) = %d, want 0 (no mutation)", len(state.Phases[i].TaskIDs))
+			}
+			break
+		}
+	}
+}

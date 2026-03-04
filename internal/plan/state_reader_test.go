@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/msageha/maestro_v2/internal/daemon"
@@ -279,5 +280,228 @@ func TestIsCommandCancelRequested_StateNotFound(t *testing.T) {
 	_, err := reader.IsCommandCancelRequested("nonexistent_cmd")
 	if !errors.Is(err, daemon.ErrStateNotFound) {
 		t.Errorf("expected ErrStateNotFound, got %v", err)
+	}
+}
+
+// --- ApplyPhaseTransition tests ---
+
+func TestApplyPhaseTransition_NormalTransition(t *testing.T) {
+	maestroDir, reader := setupStateReaderTest(t)
+
+	writeState(t, maestroDir, &model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		PlanStatus:    model.PlanStatusSealed,
+		TaskStates:    map[string]model.Status{},
+		Phases: []model.Phase{
+			{PhaseID: "p1", Name: "build", Type: "concrete", Status: model.PhaseStatusActive},
+		},
+		UpdatedAt: "2025-01-01T00:00:00Z",
+	})
+
+	err := reader.ApplyPhaseTransition("cmd1", "p1", model.PhaseStatusCompleted)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Reload and verify
+	sm := NewStateManager(maestroDir, lock.NewMutexMap())
+	state, err := sm.LoadState("cmd1")
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.Phases[0].Status != model.PhaseStatusCompleted {
+		t.Errorf("phase status = %q, want %q", state.Phases[0].Status, model.PhaseStatusCompleted)
+	}
+	if state.UpdatedAt == "2025-01-01T00:00:00Z" {
+		t.Error("UpdatedAt was not updated")
+	}
+}
+
+func TestApplyPhaseTransition_TerminalSetsCompletedAt(t *testing.T) {
+	maestroDir, reader := setupStateReaderTest(t)
+
+	writeState(t, maestroDir, &model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		PlanStatus:    model.PlanStatusSealed,
+		TaskStates:    map[string]model.Status{},
+		Phases: []model.Phase{
+			{PhaseID: "p1", Name: "build", Type: "concrete", Status: model.PhaseStatusActive},
+		},
+	})
+
+	err := reader.ApplyPhaseTransition("cmd1", "p1", model.PhaseStatusFailed)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sm := NewStateManager(maestroDir, lock.NewMutexMap())
+	state, err := sm.LoadState("cmd1")
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.Phases[0].CompletedAt == nil {
+		t.Error("CompletedAt is nil, want non-nil for terminal transition")
+	}
+}
+
+func TestApplyPhaseTransition_InvalidTransition(t *testing.T) {
+	maestroDir, reader := setupStateReaderTest(t)
+
+	writeState(t, maestroDir, &model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		PlanStatus:    model.PlanStatusSealed,
+		TaskStates:    map[string]model.Status{},
+		Phases: []model.Phase{
+			{PhaseID: "p1", Name: "build", Type: "deferred", Status: model.PhaseStatusPending},
+		},
+	})
+
+	// pending → active is not a valid phase transition (must go through awaiting_fill first)
+	err := reader.ApplyPhaseTransition("cmd1", "p1", model.PhaseStatusActive)
+	if err == nil {
+		t.Fatal("expected error for invalid transition, got nil")
+	}
+}
+
+func TestApplyPhaseTransition_UnknownPhaseID(t *testing.T) {
+	maestroDir, reader := setupStateReaderTest(t)
+
+	writeState(t, maestroDir, &model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		PlanStatus:    model.PlanStatusSealed,
+		TaskStates:    map[string]model.Status{},
+		Phases: []model.Phase{
+			{PhaseID: "p1", Name: "build", Type: "concrete", Status: model.PhaseStatusActive},
+		},
+	})
+
+	err := reader.ApplyPhaseTransition("cmd1", "p_nonexistent", model.PhaseStatusCompleted)
+	if err == nil {
+		t.Fatal("expected error for unknown phase ID, got nil")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %q, want to contain %q", err.Error(), "not found")
+	}
+}
+
+// --- UpdateTaskState tests ---
+
+func TestUpdateTaskState_NilTaskStates(t *testing.T) {
+	maestroDir, reader := setupStateReaderTest(t)
+
+	// Write state with nil TaskStates to test initialization
+	writeState(t, maestroDir, &model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		PlanStatus:    model.PlanStatusSealed,
+		TaskStates:    nil,
+	})
+
+	err := reader.UpdateTaskState("cmd1", "task1", model.StatusPending, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sm := NewStateManager(maestroDir, lock.NewMutexMap())
+	state, err := sm.LoadState("cmd1")
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.TaskStates == nil {
+		t.Fatal("TaskStates is nil, expected map initialization")
+	}
+	if state.TaskStates["task1"] != model.StatusPending {
+		t.Errorf("TaskStates[task1] = %q, want %q", state.TaskStates["task1"], model.StatusPending)
+	}
+}
+
+func TestUpdateTaskState_NormalTransition(t *testing.T) {
+	maestroDir, reader := setupStateReaderTest(t)
+
+	writeState(t, maestroDir, &model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		PlanStatus:    model.PlanStatusSealed,
+		TaskStates: map[string]model.Status{
+			"task1": model.StatusPending,
+		},
+		UpdatedAt: "2025-01-01T00:00:00Z",
+	})
+
+	err := reader.UpdateTaskState("cmd1", "task1", model.StatusInProgress, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sm := NewStateManager(maestroDir, lock.NewMutexMap())
+	state, err := sm.LoadState("cmd1")
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.TaskStates["task1"] != model.StatusInProgress {
+		t.Errorf("TaskStates[task1] = %q, want %q", state.TaskStates["task1"], model.StatusInProgress)
+	}
+	if state.UpdatedAt == "2025-01-01T00:00:00Z" {
+		t.Error("UpdatedAt was not updated")
+	}
+}
+
+func TestUpdateTaskState_InvalidTransition(t *testing.T) {
+	maestroDir, reader := setupStateReaderTest(t)
+
+	writeState(t, maestroDir, &model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		PlanStatus:    model.PlanStatusSealed,
+		TaskStates: map[string]model.Status{
+			"task1": model.StatusPending,
+		},
+	})
+
+	// pending → completed is not valid (must go through in_progress first)
+	err := reader.UpdateTaskState("cmd1", "task1", model.StatusCompleted, "")
+	if err == nil {
+		t.Fatal("expected error for invalid transition, got nil")
+	}
+}
+
+func TestUpdateTaskState_CancelledReason(t *testing.T) {
+	maestroDir, reader := setupStateReaderTest(t)
+
+	writeState(t, maestroDir, &model.CommandState{
+		SchemaVersion:  1,
+		FileType:       "state_command",
+		CommandID:      "cmd1",
+		PlanStatus:     model.PlanStatusSealed,
+		TaskStates:     map[string]model.Status{"task1": model.StatusPending},
+		CancelledReasons: map[string]string{},
+	})
+
+	err := reader.UpdateTaskState("cmd1", "task1", model.StatusCancelled, "dependency failed")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	sm := NewStateManager(maestroDir, lock.NewMutexMap())
+	state, err := sm.LoadState("cmd1")
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.TaskStates["task1"] != model.StatusCancelled {
+		t.Errorf("TaskStates[task1] = %q, want %q", state.TaskStates["task1"], model.StatusCancelled)
+	}
+	if state.CancelledReasons["task1"] != "dependency failed" {
+		t.Errorf("CancelledReasons[task1] = %q, want %q", state.CancelledReasons["task1"], "dependency failed")
 	}
 }

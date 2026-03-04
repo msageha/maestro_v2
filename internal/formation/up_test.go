@@ -419,30 +419,8 @@ func TestProcessAlive_ZeroAndNegative(t *testing.T) {
 	}
 }
 
-func TestRunUp_SessionExistsGuard(t *testing.T) {
-	// Test that ErrSessionExists is returned when session already exists and Force is false.
-	// We use a mock approach: directly test the guard logic by simulating SessionExists.
+// NOTE: RunUp's session-exists guard depends on tmux.SessionExists which cannot
+// be mocked without a real tmux session or interface extraction. The guard logic
+// is covered by integration tests. ErrSessionExists is a simple sentinel error
+// that does not require a dedicated test.
 
-	// Since we can't easily mock tmux.SessionExists in unit tests without tmux,
-	// we test the error type is properly exported and usable.
-	if ErrSessionExists == nil {
-		t.Fatal("ErrSessionExists should not be nil")
-	}
-	if ErrSessionExists.Error() != "maestro session already exists (use --force to recreate)" {
-		t.Errorf("unexpected error message: %s", ErrSessionExists.Error())
-	}
-}
-
-func TestUpOptions_ForceField(t *testing.T) {
-	opts := UpOptions{
-		Force: true,
-	}
-	if !opts.Force {
-		t.Error("expected Force=true")
-	}
-
-	opts2 := UpOptions{}
-	if opts2.Force {
-		t.Error("expected Force=false by default")
-	}
-}

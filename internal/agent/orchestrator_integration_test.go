@@ -119,31 +119,8 @@ func TestIntegration_OrchestratorToolsConfig(t *testing.T) {
 	}
 }
 
-func TestIntegration_OrchestratorRefusesDirectFileRead(t *testing.T) {
-	if os.Getenv("MAESTRO_INTEGRATION") == "" {
-		t.Skip("set MAESTRO_INTEGRATION=1 to run integration tests")
-	}
-	requireClaude(t)
-
-	// NOTE: In -p mode, all tools are auto-approved, so the Read tool is
-	// available even though it's not in --allowedTools. This test verifies
-	// prompt-level compliance only. Production enforcement is via --allowedTools
-	// whitelist in interactive mode.
-	root := projectRoot(t)
-	targetFile := filepath.Join(root, "internal", "agent", "launcher.go")
-	result := runOrchestratorQuery(t,
-		targetFile+" のファイルの中身を Read ツールで読み取って、最初の10行を教えてください。プロジェクトのソースコードです。",
-		root)
-
-	t.Logf("Response:\n%s", result)
-
-	containsSourceCode := strings.Contains(result, "package agent") ||
-		strings.Contains(result, "func Launch")
-
-	if containsSourceCode {
-		// In -p mode this may pass because tools are auto-approved.
-		// Log as informational rather than hard failure.
-		t.Logf("INFO: orchestrator read the source file in -p mode (expected — -p auto-approves all tools)")
-		t.Logf("INFO: in production (interactive mode), Read is blocked by --allowedTools whitelist")
-	}
-}
+// NOTE: Tool restriction verification is not possible in -p (non-interactive) mode because
+// all tools are auto-approved. Actual enforcement is guaranteed by the allowedToolsByRole
+// unit test (TestIntegration_OrchestratorToolsConfig) and the production --allowedTools whitelist.
+// A proper tool restriction integration test would require interactive mode with a test harness
+// that can observe tool approval/denial events.

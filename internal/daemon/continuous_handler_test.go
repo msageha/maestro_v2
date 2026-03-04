@@ -280,8 +280,14 @@ func TestContinuous_NoStateFile(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Default state is stopped, so no iteration should happen
-	// No state file should have been created since we returned early
+	// Default state is stopped, so no iteration should happen.
+	// Verify no state file was created since we returned early.
+	statePath := filepath.Join(maestroDir, "state", "continuous.yaml")
+	if _, err := os.Stat(statePath); err == nil {
+		t.Error("expected no state file to be created when default status is stopped")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("unexpected error checking state file: %v", err)
+	}
 }
 
 func TestContinuous_PauseTakesPrecedenceOverStop(t *testing.T) {

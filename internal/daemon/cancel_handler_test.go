@@ -3,8 +3,12 @@ package daemon
 import (
 	"bytes"
 	"log"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
+
+	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/lock"
@@ -146,5 +150,279 @@ func TestCancelPendingTasks_AlreadyTerminal(t *testing.T) {
 	results := ch.CancelPendingTasks(tasks, "cmd1")
 	if len(results) != 0 {
 		t.Errorf("expected 0 cancelled (already terminal), got %d", len(results))
+	}
+}
+
+// newTestCancelHandlerWithDir creates a CancelHandler backed by a real temp directory.
+func newTestCancelHandlerWithDir(t *testing.T) (*CancelHandler, *mockExecutor, string) {
+	t.Helper()
+	maestroDir := filepath.Join(t.TempDir(), ".maestro")
+	for _, sub := range []string{"results"} {
+		if err := os.MkdirAll(filepath.Join(maestroDir, sub), 0755); err != nil {
+			t.Fatalf("create dir %s: %v", sub, err)
+		}
+	}
+	ch := NewCancelHandler(maestroDir, model.Config{}, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	mock := &mockExecutor{result: agent.ExecResult{Success: true}}
+	ch.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+		return mock, nil
+	})
+	return ch, mock, maestroDir
+}
+
+// stubStateReader implements StateReader for cancel_handler tests.
+type stubStateReader struct {
+	cancelRequested    bool
+	cancelRequestedErr error
+	updateTaskCalls    []stubUpdateTaskCall
+	updateTaskErr      error
+}
+
+type stubUpdateTaskCall struct {
+	CommandID       string
+	TaskID          string
+	NewStatus       model.Status
+	CancelledReason string
+}
+
+func (s *stubStateReader) GetTaskState(string, string) (model.Status, error) {
+	return "", ErrStateNotFound
+}
+func (s *stubStateReader) GetCommandPhases(string) ([]PhaseInfo, error) {
+	return nil, ErrStateNotFound
+}
+func (s *stubStateReader) GetTaskDependencies(string, string) ([]string, error) {
+	return nil, ErrStateNotFound
+}
+func (s *stubStateReader) IsSystemCommitReady(string, string) (bool, bool, error) {
+	return false, false, ErrStateNotFound
+}
+func (s *stubStateReader) ApplyPhaseTransition(string, string, model.PhaseStatus) error {
+	return ErrStateNotFound
+}
+func (s *stubStateReader) UpdateTaskState(commandID, taskID string, newStatus model.Status, cancelledReason string) error {
+	s.updateTaskCalls = append(s.updateTaskCalls, stubUpdateTaskCall{commandID, taskID, newStatus, cancelledReason})
+	return s.updateTaskErr
+}
+func (s *stubStateReader) IsCommandCancelRequested(commandID string) (bool, error) {
+	return s.cancelRequested, s.cancelRequestedErr
+}
+
+func TestCancelHandler_WriteSyntheticResults_NewFile(t *testing.T) {
+	ch, _, maestroDir := newTestCancelHandlerWithDir(t)
+
+	results := []CancelledTaskResult{
+		{TaskID: "t1", CommandID: "cmd1", Status: "cancelled", Reason: "command_cancel_requested"},
+		{TaskID: "t2", CommandID: "cmd1", Status: "cancelled", Reason: "command_cancel_requested"},
+	}
+
+	ch.WriteSyntheticResults(results, "worker1")
+
+	// Verify file was created with correct contents
+	resultPath := filepath.Join(maestroDir, "results", "worker1.yaml")
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read result file: %v", err)
+	}
+	var rf model.TaskResultFile
+	if err := yamlv3.Unmarshal(data, &rf); err != nil {
+		t.Fatalf("unmarshal result file: %v", err)
+	}
+	if rf.SchemaVersion != 1 {
+		t.Errorf("schema_version = %d, want 1", rf.SchemaVersion)
+	}
+	if rf.FileType != "result_task" {
+		t.Errorf("file_type = %q, want %q", rf.FileType, "result_task")
+	}
+	if len(rf.Results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(rf.Results))
+	}
+	for i, r := range rf.Results {
+		if r.ID == "" {
+			t.Errorf("result[%d]: expected non-empty ID", i)
+		}
+		if r.Status != model.StatusCancelled {
+			t.Errorf("result[%d]: status = %q, want %q", i, r.Status, model.StatusCancelled)
+		}
+		if !r.PartialChangesPossible {
+			t.Errorf("result[%d]: partial_changes_possible should be true", i)
+		}
+		if r.RetrySafe {
+			t.Errorf("result[%d]: retry_safe should be false", i)
+		}
+	}
+	if rf.Results[0].TaskID != "t1" {
+		t.Errorf("result[0].task_id = %q, want %q", rf.Results[0].TaskID, "t1")
+	}
+	if rf.Results[1].TaskID != "t2" {
+		t.Errorf("result[1].task_id = %q, want %q", rf.Results[1].TaskID, "t2")
+	}
+}
+
+func TestCancelHandler_WriteSyntheticResults_AppendExisting(t *testing.T) {
+	ch, _, maestroDir := newTestCancelHandlerWithDir(t)
+
+	// Pre-populate with an existing result
+	existingRF := model.TaskResultFile{
+		SchemaVersion: 1,
+		FileType:      "result_task",
+		Results: []model.TaskResult{
+			{
+				ID:        "result_existing",
+				TaskID:    "t0",
+				CommandID: "cmd0",
+				Status:    model.StatusCompleted,
+				Summary:   "already done",
+				CreatedAt: "2026-01-01T00:00:00Z",
+			},
+		},
+	}
+	resultPath := filepath.Join(maestroDir, "results", "worker1.yaml")
+	existingData, err := yamlv3.Marshal(existingRF)
+	if err != nil {
+		t.Fatalf("marshal existing: %v", err)
+	}
+	if err := os.WriteFile(resultPath, existingData, 0644); err != nil {
+		t.Fatalf("write existing: %v", err)
+	}
+
+	// Append a synthetic result
+	ch.WriteSyntheticResults([]CancelledTaskResult{
+		{TaskID: "t1", CommandID: "cmd1", Status: "cancelled", Reason: "command_cancel_requested"},
+	}, "worker1")
+
+	// Verify both exist
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read result file: %v", err)
+	}
+	var rf model.TaskResultFile
+	if err := yamlv3.Unmarshal(data, &rf); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(rf.Results) != 2 {
+		t.Fatalf("expected 2 results (1 existing + 1 synthetic), got %d", len(rf.Results))
+	}
+	if rf.Results[0].TaskID != "t0" {
+		t.Errorf("result[0].task_id = %q, want existing %q", rf.Results[0].TaskID, "t0")
+	}
+	if rf.Results[1].TaskID != "t1" {
+		t.Errorf("result[1].task_id = %q, want synthetic %q", rf.Results[1].TaskID, "t1")
+	}
+}
+
+func TestCancelHandler_WriteSyntheticResults_EmptyInput(t *testing.T) {
+	ch, _, maestroDir := newTestCancelHandlerWithDir(t)
+
+	// Empty input → no-op, file should not be created
+	ch.WriteSyntheticResults(nil, "worker1")
+
+	resultPath := filepath.Join(maestroDir, "results", "worker1.yaml")
+	if _, err := os.Stat(resultPath); err == nil {
+		t.Error("expected no file created for empty input")
+	}
+
+	ch.WriteSyntheticResults([]CancelledTaskResult{}, "worker1")
+	if _, err := os.Stat(resultPath); err == nil {
+		t.Error("expected no file created for empty slice")
+	}
+}
+
+func TestCancelHandler_InterruptInProgressTasksDeferred_Basic(t *testing.T) {
+	ch, _, _ := newTestCancelHandlerWithDir(t)
+	sr := &stubStateReader{}
+	ch.SetStateReader(sr)
+
+	w := "worker1"
+	exp := "2026-01-01T01:00:00Z"
+	tasks := []model.Task{
+		{ID: "t1", CommandID: "cmd1", Status: model.StatusInProgress, LeaseOwner: &w, LeaseEpoch: 5, LeaseExpiresAt: &exp,
+			CreatedAt: time.Now().Format(time.RFC3339)},
+		{ID: "t2", CommandID: "cmd1", Status: model.StatusPending,
+			CreatedAt: time.Now().Format(time.RFC3339)},
+		{ID: "t3", CommandID: "cmd2", Status: model.StatusInProgress, LeaseOwner: &w, LeaseEpoch: 2,
+			CreatedAt: time.Now().Format(time.RFC3339)},
+		{ID: "t4", CommandID: "cmd1", Status: model.StatusInProgress, LeaseOwner: nil, LeaseEpoch: 1,
+			CreatedAt: time.Now().Format(time.RFC3339)},
+	}
+
+	results, interrupts := ch.InterruptInProgressTasksDeferred(tasks, "cmd1", "worker1")
+
+	// Only t1 and t4 are in_progress for cmd1; t2 is pending, t3 is different command
+	if len(results) != 2 {
+		t.Fatalf("expected 2 cancelled results, got %d", len(results))
+	}
+	if results[0].TaskID != "t1" {
+		t.Errorf("results[0].task_id = %q, want %q", results[0].TaskID, "t1")
+	}
+	if results[1].TaskID != "t4" {
+		t.Errorf("results[1].task_id = %q, want %q", results[1].TaskID, "t4")
+	}
+
+	// Only t1 has a LeaseOwner, so only 1 interrupt item
+	if len(interrupts) != 1 {
+		t.Fatalf("expected 1 interrupt item, got %d", len(interrupts))
+	}
+	if interrupts[0].TaskID != "t1" {
+		t.Errorf("interrupt[0].task_id = %q, want %q", interrupts[0].TaskID, "t1")
+	}
+	if interrupts[0].Epoch != 5 {
+		t.Errorf("interrupt[0].epoch = %d, want 5", interrupts[0].Epoch)
+	}
+
+	// Verify in-memory state mutation
+	if tasks[0].Status != model.StatusCancelled {
+		t.Errorf("t1 status = %q, want cancelled", tasks[0].Status)
+	}
+	if tasks[0].LeaseOwner != nil {
+		t.Error("t1 lease_owner should be nil after deferred cancel")
+	}
+	if tasks[0].LeaseExpiresAt != nil {
+		t.Error("t1 lease_expires_at should be nil after deferred cancel")
+	}
+	if tasks[3].Status != model.StatusCancelled {
+		t.Errorf("t4 status = %q, want cancelled", tasks[3].Status)
+	}
+
+	// t2 (pending) should be untouched
+	if tasks[1].Status != model.StatusPending {
+		t.Errorf("t2 status = %q, want pending", tasks[1].Status)
+	}
+
+	// stateReader.UpdateTaskState should have been called for t1 and t4
+	if len(sr.updateTaskCalls) != 2 {
+		t.Fatalf("expected 2 UpdateTaskState calls, got %d", len(sr.updateTaskCalls))
+	}
+}
+
+func TestCancelHandler_IsCommandCancelRequested_ViaStateReader(t *testing.T) {
+	ch, _ := newTestCancelHandler()
+	cmd := &model.Command{ID: "cmd1"}
+
+	// Case 1: stateReader returns true → should be true
+	sr := &stubStateReader{cancelRequested: true}
+	ch.SetStateReader(sr)
+	if !ch.IsCommandCancelRequested(cmd) {
+		t.Error("expected cancelled via stateReader returning true")
+	}
+
+	// Case 2: stateReader returns false → should be false even if queue metadata says cancelled
+	cancelTime := time.Now().Format(time.RFC3339)
+	cmd.CancelRequestedAt = &cancelTime
+	sr.cancelRequested = false
+	if ch.IsCommandCancelRequested(cmd) {
+		t.Error("expected not cancelled: stateReader returned false, should override queue metadata")
+	}
+
+	// Case 3: stateReader returns ErrStateNotFound → fall back to queue metadata
+	sr.cancelRequestedErr = ErrStateNotFound
+	if !ch.IsCommandCancelRequested(cmd) {
+		t.Error("expected cancelled: stateReader returned ErrStateNotFound, should fall back to queue metadata")
+	}
+
+	// Case 4: stateReader returns ErrStateNotFound, no queue metadata → not cancelled
+	cmd.CancelRequestedAt = nil
+	if ch.IsCommandCancelRequested(cmd) {
+		t.Error("expected not cancelled: stateReader returned ErrStateNotFound and no queue metadata")
 	}
 }

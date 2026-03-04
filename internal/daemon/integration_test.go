@@ -370,10 +370,15 @@ func readCommandQueue(t *testing.T, d *Daemon) model.CommandQueue {
 	path := filepath.Join(d.maestroDir, "queue", "planner.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return model.CommandQueue{}
+		if os.IsNotExist(err) {
+			return model.CommandQueue{}
+		}
+		t.Fatalf("read command queue: %v", err)
 	}
 	var cq model.CommandQueue
-	yamlv3.Unmarshal(data, &cq)
+	if err := yamlv3.Unmarshal(data, &cq); err != nil {
+		t.Fatalf("unmarshal command queue: %v", err)
+	}
 	return cq
 }
 
@@ -382,10 +387,15 @@ func readTaskQueue(t *testing.T, d *Daemon, workerID string) model.TaskQueue {
 	path := filepath.Join(d.maestroDir, "queue", workerID+".yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return model.TaskQueue{}
+		if os.IsNotExist(err) {
+			return model.TaskQueue{}
+		}
+		t.Fatalf("read task queue %s: %v", workerID, err)
 	}
 	var tq model.TaskQueue
-	yamlv3.Unmarshal(data, &tq)
+	if err := yamlv3.Unmarshal(data, &tq); err != nil {
+		t.Fatalf("unmarshal task queue %s: %v", workerID, err)
+	}
 	return tq
 }
 
@@ -397,7 +407,9 @@ func readCommandState(t *testing.T, d *Daemon, commandID string) model.CommandSt
 		t.Fatalf("read state %s: %v", commandID, err)
 	}
 	var state model.CommandState
-	yamlv3.Unmarshal(data, &state)
+	if err := yamlv3.Unmarshal(data, &state); err != nil {
+		t.Fatalf("unmarshal state %s: %v", commandID, err)
+	}
 	return state
 }
 
@@ -406,10 +418,15 @@ func readResultFile(t *testing.T, d *Daemon, workerID string) model.TaskResultFi
 	path := filepath.Join(d.maestroDir, "results", workerID+".yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return model.TaskResultFile{}
+		if os.IsNotExist(err) {
+			return model.TaskResultFile{}
+		}
+		t.Fatalf("read result file %s: %v", workerID, err)
 	}
 	var rf model.TaskResultFile
-	yamlv3.Unmarshal(data, &rf)
+	if err := yamlv3.Unmarshal(data, &rf); err != nil {
+		t.Fatalf("unmarshal result file %s: %v", workerID, err)
+	}
 	return rf
 }
 

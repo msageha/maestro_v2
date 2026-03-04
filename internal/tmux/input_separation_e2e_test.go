@@ -80,6 +80,15 @@ func waitForOutput(t *testing.T, paneTarget, marker string, timeout time.Duratio
 	return false
 }
 
+// mustWaitForOutput is like waitForOutput but calls t.Fatal on timeout.
+func mustWaitForOutput(t *testing.T, paneTarget, marker string, timeout time.Duration) {
+	t.Helper()
+	if !waitForOutput(t, paneTarget, marker, timeout) {
+		content, _ := CapturePane(paneTarget, 30)
+		t.Fatalf("timeout waiting for %q in pane %s\ncontent:\n%s", marker, paneTarget, content)
+	}
+}
+
 // parseSubmissionLog reads the inputrecorder log file and returns parsed entries.
 func parseSubmissionLog(t *testing.T, logPath string) []submissionEntry {
 	t.Helper()
@@ -180,7 +189,7 @@ func TestInputSeparation_Cat_BasicSeparation(t *testing.T) {
 	if err := SendTextAndSubmit(context.Background(), pane, instruction); err != nil {
 		t.Fatalf("send instruction: %v", err)
 	}
-	time.Sleep(1 * time.Second)
+	mustWaitForOutput(t, pane, "INSTRUCTION_MARKER_LINE1", 5*time.Second)
 
 	// Capture and verify
 	content, err := CapturePane(pane, 30)
@@ -246,7 +255,7 @@ func TestInputSeparation_Cat_TimingGaps(t *testing.T) {
 			if err := SendTextAndSubmit(context.Background(), pane, marker); err != nil {
 				t.Fatalf("send instruction: %v", err)
 			}
-			time.Sleep(1 * time.Second)
+			mustWaitForOutput(t, pane, marker, 5*time.Second)
 
 			content, err := CapturePane(pane, 30)
 			if err != nil {
@@ -313,7 +322,7 @@ func TestInputSeparation_BracketedPaste_BasicSeparation(t *testing.T) {
 	}
 
 	// Wait for processing
-	time.Sleep(2 * time.Second)
+	mustWaitForOutput(t, pane, "RECV[2]:", 10*time.Second)
 
 	// Parse log and verify
 	entries := parseSubmissionLog(t, logPath)
@@ -364,7 +373,7 @@ func TestInputSeparation_BracketedPaste_WithProcessingDelay(t *testing.T) {
 	}
 
 	// Wait for all processing (2s delay for each submission)
-	time.Sleep(5 * time.Second)
+	mustWaitForOutput(t, pane, "RECV[2]:", 15*time.Second)
 
 	entries := parseSubmissionLog(t, logPath)
 	t.Logf("submissions: %d entries", len(entries))
@@ -403,8 +412,8 @@ func TestInputSeparation_BracketedPaste_RapidFire(t *testing.T) {
 		t.Fatalf("send instruction: %v", err)
 	}
 
-	// Wait for all processing (5s delay × 2 submissions + buffer)
-	time.Sleep(12 * time.Second)
+	// Wait for all processing (5s delay × 2 submissions)
+	mustWaitForOutput(t, pane, "RECV[2]:", 15*time.Second)
 
 	entries := parseSubmissionLog(t, logPath)
 	t.Logf("submissions (rapid fire): %d entries", len(entries))
@@ -438,7 +447,7 @@ func TestInputSeparation_ExecWithClearFlow_BashPrompt(t *testing.T) {
 	if err := SendCommand(pane, `export PS1="❯ "`); err != nil {
 		t.Fatalf("set PS1: %v", err)
 	}
-	time.Sleep(1 * time.Second)
+	mustWaitForOutput(t, pane, "❯", 5*time.Second)
 
 	// Step 1: Simulate waitReady — verify prompt is visible
 	content, err := CapturePane(pane, 10)
@@ -485,7 +494,7 @@ func TestInputSeparation_ExecWithClearFlow_BashPrompt(t *testing.T) {
 	if err := SendTextAndSubmit(context.Background(), pane, instruction); err != nil {
 		t.Fatalf("send instruction: %v", err)
 	}
-	time.Sleep(2 * time.Second)
+	mustWaitForOutput(t, pane, "FLOW_TEST_MARKER", 5*time.Second)
 
 	// Verify
 	finalContent, err := CapturePane(pane, 30)
@@ -553,7 +562,7 @@ func TestInputSeparation_ExecWithClearFlow_InputRecorder(t *testing.T) {
 		t.Fatalf("send instruction: %v", err)
 	}
 
-	time.Sleep(3 * time.Second)
+	mustWaitForOutput(t, pane, "RECV[2]:", 10*time.Second)
 
 	entries := parseSubmissionLog(t, logPath)
 	t.Logf("submissions (flow): %d entries", len(entries))
@@ -637,7 +646,9 @@ func TestInputSeparation_ConcurrentPanes(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	time.Sleep(2 * time.Second)
+	for i := 0; i < numPanes; i++ {
+		mustWaitForOutput(t, panes[i], "RECV[2]:", 10*time.Second)
+	}
 
 	// Verify each pane
 	for i := 0; i < numPanes; i++ {
@@ -697,17 +708,23 @@ func TestInputSeparation_RepeatedDispatches(t *testing.T) {
 		if err := SendKeys(pane, "/clear", "Enter"); err != nil {
 			t.Fatalf("iter %d send /clear: %v", i, err)
 		}
-		time.Sleep(1 * time.Second)
+		clearMarker := fmt.Sprintf("RECV[%d]:", i*2+1)
+		if !waitForOutput(t, pane, clearMarker, 5*time.Second) {
+			t.Logf("WARNING: %s not detected, proceeding", clearMarker)
+		}
 
 		// Send instruction
 		msg := fmt.Sprintf("TASK_%d_INSTRUCTION", i)
 		if err := SendTextAndSubmit(context.Background(), pane, msg); err != nil {
 			t.Fatalf("iter %d send instruction: %v", i, err)
 		}
-		time.Sleep(1 * time.Second)
+		instrMarker := fmt.Sprintf("RECV[%d]:", i*2+2)
+		if !waitForOutput(t, pane, instrMarker, 5*time.Second) {
+			t.Logf("WARNING: %s not detected, proceeding", instrMarker)
+		}
 	}
 
-	time.Sleep(2 * time.Second)
+	mustWaitForOutput(t, pane, fmt.Sprintf("RECV[%d]:", iterations*2), 10*time.Second)
 
 	entries := parseSubmissionLog(t, logPath)
 	t.Logf("total submissions: %d (expected %d)", len(entries), iterations*2)
