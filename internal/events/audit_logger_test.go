@@ -1,6 +1,7 @@
 package events
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -61,7 +62,7 @@ func TestAuditLogger_WriteEntry(t *testing.T) {
 	}
 
 	var readEntry LogEntry
-	if err := json.Unmarshal(data[:len(data)-1], &readEntry); err != nil {
+	if err := json.Unmarshal(bytes.TrimRight(data, "\n"), &readEntry); err != nil {
 		t.Fatalf("Failed to unmarshal log entry: %v", err)
 	}
 
@@ -107,7 +108,7 @@ func TestAuditLogger_Log(t *testing.T) {
 	}
 
 	var entry LogEntry
-	if err := json.Unmarshal(data[:len(data)-1], &entry); err != nil {
+	if err := json.Unmarshal(bytes.TrimRight(data, "\n"), &entry); err != nil {
 		t.Fatalf("Failed to unmarshal log entry: %v", err)
 	}
 
@@ -254,7 +255,7 @@ func TestAuditLogger_Checksum(t *testing.T) {
 	}
 
 	var entry LogEntry
-	if err := json.Unmarshal(data[:len(data)-1], &entry); err != nil {
+	if err := json.Unmarshal(bytes.TrimRight(data, "\n"), &entry); err != nil {
 		t.Fatalf("Failed to unmarshal log entry: %v", err)
 	}
 

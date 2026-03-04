@@ -14,10 +14,16 @@ func TestQuarantine(t *testing.T) {
 	filePath := filepath.Join(maestroDir, "corrupted.yaml")
 
 	// Create a corrupted file
-	os.WriteFile(filePath, []byte("corrupted: [\n"), 0644)
+	if err := os.WriteFile(filePath, []byte("corrupted: [\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
-	if err := Quarantine(maestroDir, filePath); err != nil {
+	qPath, err := Quarantine(maestroDir, filePath)
+	if err != nil {
 		t.Fatalf("Quarantine failed: %v", err)
+	}
+	if qPath == "" {
+		t.Fatal("Quarantine returned empty quarantine path")
 	}
 
 	// Original file should be gone
@@ -46,7 +52,9 @@ func TestRestoreFromBackup(t *testing.T) {
 
 	// Create a valid backup
 	validContent := []byte("schema_version: 1\nfile_type: queue_command\ncommands: []\n")
-	os.WriteFile(bakPath, validContent, 0644)
+	if err := os.WriteFile(bakPath, validContent, 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	if err := RestoreFromBackup(filePath); err != nil {
 		t.Fatalf("RestoreFromBackup failed: %v", err)
@@ -82,7 +90,9 @@ func TestRestoreFromBackup_CorruptBackup(t *testing.T) {
 	filePath := filepath.Join(dir, "test.yaml")
 	bakPath := filePath + ".bak"
 
-	os.WriteFile(bakPath, []byte(":\n  broken: [\n"), 0644)
+	if err := os.WriteFile(bakPath, []byte(":\n  broken: [\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	err := RestoreFromBackup(filePath)
 	if err == nil {
@@ -144,8 +154,12 @@ func TestRecoverCorruptedFile_WithBackup(t *testing.T) {
 	bakPath := filePath + ".bak"
 
 	// Create corrupted file and valid backup
-	os.WriteFile(filePath, []byte("corrupted: [\n"), 0644)
-	os.WriteFile(bakPath, []byte("schema_version: 1\nfile_type: queue_command\ncommands: []\n"), 0644)
+	if err := os.WriteFile(filePath, []byte("corrupted: [\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.WriteFile(bakPath, []byte("schema_version: 1\nfile_type: queue_command\ncommands: []\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	if err := RecoverCorruptedFile(maestroDir, filePath, "queue_command"); err != nil {
 		t.Fatalf("RecoverCorruptedFile failed: %v", err)
@@ -176,7 +190,9 @@ func TestRecoverCorruptedFile_WithoutBackup(t *testing.T) {
 	filePath := filepath.Join(maestroDir, "test.yaml")
 
 	// Create corrupted file, no backup
-	os.WriteFile(filePath, []byte("corrupted: [\n"), 0644)
+	if err := os.WriteFile(filePath, []byte("corrupted: [\n"), 0644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
 
 	if err := RecoverCorruptedFile(maestroDir, filePath, "queue_task"); err != nil {
 		t.Fatalf("RecoverCorruptedFile failed: %v", err)

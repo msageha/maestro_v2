@@ -114,3 +114,27 @@ func TestParseIDTimestamp(t *testing.T) {
 		t.Errorf("expected timestamp 1771722000, got %d", ts.Unix())
 	}
 }
+
+func TestParseIDTimestamp_Invalid(t *testing.T) {
+	tests := []struct {
+		name string
+		id   string
+	}{
+		{"empty string", ""},
+		{"invalid format", "not_a_valid_id"},
+		{"invalid prefix", "xxx_1771722000_a3f2b7c1"},
+		{"short timestamp", "cmd_177172200_a3f2b7c1"},
+		{"long timestamp", "cmd_17717220001_a3f2b7c1"},
+		{"short hex", "cmd_1771722000_a3f2b7c"},
+		{"no separators", "cmd1771722000a3f2b7c1"},
+		{"uppercase hex", "cmd_1771722000_A3F2B7C1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseIDTimestamp(tt.id)
+			if err == nil {
+				t.Errorf("ParseIDTimestamp(%q) expected error, got nil", tt.id)
+			}
+		})
+	}
+}

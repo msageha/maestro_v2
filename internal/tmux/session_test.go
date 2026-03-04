@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -87,7 +88,7 @@ func TestUserVariables(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
-	paneTarget := GetSessionName() + ":0.0"
+	paneTarget := "=" + GetSessionName() + ":0.0"
 
 	// Set user variables
 	vars := map[string]string{
@@ -156,7 +157,7 @@ func TestSetupWorkerGrid(t *testing.T) {
 		t.Fatalf("create window: %v", err)
 	}
 
-	workerWindow := GetSessionName() + ":workers"
+	workerWindow := "=" + GetSessionName() + ":workers"
 	panes, err := SetupWorkerGrid(workerWindow, 4)
 	if err != nil {
 		t.Fatalf("setup worker grid: %v", err)
@@ -184,20 +185,29 @@ func TestSetupWorkerGrid(t *testing.T) {
 		}
 	}
 
+	// Convert positions to integers for correct numeric comparison
+	toInt := func(s string) int {
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			t.Fatalf("failed to parse position %q as integer: %v", s, err)
+		}
+		return n
+	}
+
 	// pane 0 (top-left) should be above pane 2 (bottom-left)
-	if positions[0].top >= positions[2].top {
+	if toInt(positions[0].top) >= toInt(positions[2].top) {
 		t.Errorf("pane 0 top (%s) should be less than pane 2 top (%s)", positions[0].top, positions[2].top)
 	}
 	// pane 0 (top-left) should be left of pane 1 (top-right)
-	if positions[0].left >= positions[1].left {
+	if toInt(positions[0].left) >= toInt(positions[1].left) {
 		t.Errorf("pane 0 left (%s) should be less than pane 1 left (%s)", positions[0].left, positions[1].left)
 	}
 	// pane 1 (top-right) should be above pane 3 (bottom-right)
-	if positions[1].top >= positions[3].top {
+	if toInt(positions[1].top) >= toInt(positions[3].top) {
 		t.Errorf("pane 1 top (%s) should be less than pane 3 top (%s)", positions[1].top, positions[3].top)
 	}
 	// pane 2 (bottom-left) should be left of pane 3 (bottom-right)
-	if positions[2].left >= positions[3].left {
+	if toInt(positions[2].left) >= toInt(positions[3].left) {
 		t.Errorf("pane 2 left (%s) should be less than pane 3 left (%s)", positions[2].left, positions[3].left)
 	}
 }
@@ -210,15 +220,23 @@ func TestCapturePane(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
-	paneTarget := GetSessionName() + ":0.0"
+	paneTarget := "=" + GetSessionName() + ":0.0"
+	waitForShell(t, paneTarget)
 
-	// Capture should succeed even if pane is empty
-	content, err := CapturePane(paneTarget, 3)
+	// Send a marker string via echo so we can verify CapturePane content
+	marker := "CAPTURE_TEST_MARKER_12345"
+	if err := SendCommand(paneTarget, "echo "+marker); err != nil {
+		t.Fatalf("send echo command: %v", err)
+	}
+	time.Sleep(1 * time.Second)
+
+	content, err := CapturePane(paneTarget, 10)
 	if err != nil {
 		t.Fatalf("capture pane: %v", err)
 	}
-	// Content may be empty or contain a shell prompt
-	_ = content
+	if !strings.Contains(content, marker) {
+		t.Errorf("CapturePane content does not contain marker %q\ncontent:\n%s", marker, content)
+	}
 }
 
 func TestFindPaneByAgentID(t *testing.T) {
@@ -229,15 +247,18 @@ func TestFindPaneByAgentID(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
-	paneTarget := GetSessionName() + ":0.0"
+	paneTarget := "=" + GetSessionName() + ":0.0"
 	SetUserVar(paneTarget, "agent_id", "test-agent")
 
 	found, err := FindPaneByAgentID("test-agent")
 	if err != nil {
 		t.Fatalf("find pane: %v", err)
 	}
-	if found != paneTarget {
-		t.Errorf("got %q, want %q", found, paneTarget)
+	// FindPaneByAgentID returns the raw pane target from tmux (without "=" prefix)
+	// because tmux's #{session_name} format returns the actual session name.
+	wantRaw := GetSessionName() + ":0.0"
+	if found != wantRaw {
+		t.Errorf("got %q, want %q", found, wantRaw)
 	}
 
 	// Non-existent agent
@@ -272,7 +293,7 @@ func TestSendTextAndSubmit(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
-	paneTarget := GetSessionName() + ":0.0"
+	paneTarget := "=" + GetSessionName() + ":0.0"
 	waitForShell(t, paneTarget)
 
 	// Start cat so we can verify text is submitted (cat echoes stdin to stdout)
@@ -309,7 +330,7 @@ func TestSendTextAndSubmit_SingleLine(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
-	paneTarget := GetSessionName() + ":0.0"
+	paneTarget := "=" + GetSessionName() + ":0.0"
 	waitForShell(t, paneTarget)
 
 	if err := SendCommand(paneTarget, "cat"); err != nil {
@@ -353,20 +374,18 @@ func TestSetSessionOption(t *testing.T) {
 		t.Fatalf("create session: %v", err)
 	}
 
-	if err := SetSessionOption("remain-on-exit", "on"); err != nil {
-		t.Fatalf("set remain-on-exit: %v", err)
-	}
-
+	// SetSessionOption uses session name without "=" prefix due to tmux 3.6
+	// set-option limitation. destroy-unattached is session-scoped.
 	if err := SetSessionOption("destroy-unattached", "off"); err != nil {
 		t.Fatalf("set destroy-unattached: %v", err)
 	}
 
-	// Verify remain-on-exit was set
-	out, err := exec.Command("tmux", "show-options", "-t", GetSessionName(), "remain-on-exit").CombinedOutput()
+	// Verify destroy-unattached was set
+	out, err := exec.Command("tmux", "show-options", "-t", GetSessionName(), "destroy-unattached").CombinedOutput()
 	if err != nil {
 		t.Fatalf("show-options: %v: %s", err, out)
 	}
-	if !strings.Contains(string(out), "on") {
-		t.Errorf("expected remain-on-exit on, got %s", strings.TrimSpace(string(out)))
+	if !strings.Contains(string(out), "off") {
+		t.Errorf("expected destroy-unattached off, got %s", strings.TrimSpace(string(out)))
 	}
 }

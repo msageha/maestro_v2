@@ -104,7 +104,9 @@ func TestRun_GeneratesWorkerFiles(t *testing.T) {
 			continue
 		}
 		var qf map[string]any
-		yaml.Unmarshal(data, &qf)
+		if err := yaml.Unmarshal(data, &qf); err != nil {
+			t.Fatalf("unmarshal queue worker%d: %v", i, err)
+		}
 		if qf["file_type"] != "queue_task" {
 			t.Errorf("queue worker%d file_type: got %v", i, qf["file_type"])
 		}
@@ -115,7 +117,9 @@ func TestRun_GeneratesWorkerFiles(t *testing.T) {
 			t.Errorf("results worker%d: %v", i, err)
 			continue
 		}
-		yaml.Unmarshal(data, &qf)
+		if err := yaml.Unmarshal(data, &qf); err != nil {
+			t.Fatalf("unmarshal results worker%d: %v", i, err)
+		}
 		if qf["file_type"] != "result_task" {
 			t.Errorf("results worker%d file_type: got %v", i, qf["file_type"])
 		}
@@ -124,14 +128,18 @@ func TestRun_GeneratesWorkerFiles(t *testing.T) {
 	// Verify planner and orchestrator queue files
 	plannerQ, _ := os.ReadFile(filepath.Join(base, "queue", "planner.yaml"))
 	var pq map[string]any
-	yaml.Unmarshal(plannerQ, &pq)
+	if err := yaml.Unmarshal(plannerQ, &pq); err != nil {
+		t.Fatalf("unmarshal planner queue: %v", err)
+	}
 	if pq["file_type"] != "queue_command" {
 		t.Errorf("queue planner file_type: got %v", pq["file_type"])
 	}
 
 	orchQ, _ := os.ReadFile(filepath.Join(base, "queue", "orchestrator.yaml"))
 	var oq map[string]any
-	yaml.Unmarshal(orchQ, &oq)
+	if err := yaml.Unmarshal(orchQ, &oq); err != nil {
+		t.Fatalf("unmarshal orchestrator queue: %v", err)
+	}
 	if oq["file_type"] != "queue_notification" {
 		t.Errorf("queue orchestrator file_type: got %v", oq["file_type"])
 	}
@@ -139,7 +147,9 @@ func TestRun_GeneratesWorkerFiles(t *testing.T) {
 	// Verify planner results file
 	plannerR, _ := os.ReadFile(filepath.Join(base, "results", "planner.yaml"))
 	var pr map[string]any
-	yaml.Unmarshal(plannerR, &pr)
+	if err := yaml.Unmarshal(plannerR, &pr); err != nil {
+		t.Fatalf("unmarshal planner results: %v", err)
+	}
 	if pr["file_type"] != "result_command" {
 		t.Errorf("results planner file_type: got %v", pr["file_type"])
 	}
@@ -203,7 +213,9 @@ func TestRun_CreatesStateFiles(t *testing.T) {
 		t.Fatalf("read metrics.yaml: %v", err)
 	}
 	var metrics map[string]any
-	yaml.Unmarshal(data, &metrics)
+	if err := yaml.Unmarshal(data, &metrics); err != nil {
+		t.Fatalf("unmarshal metrics: %v", err)
+	}
 	if metrics["file_type"] != "state_metrics" {
 		t.Errorf("metrics file_type: got %v", metrics["file_type"])
 	}
@@ -221,7 +233,9 @@ func TestRun_CreatesStateFiles(t *testing.T) {
 		t.Fatalf("read continuous.yaml: %v", err)
 	}
 	var continuous map[string]any
-	yaml.Unmarshal(data, &continuous)
+	if err := yaml.Unmarshal(data, &continuous); err != nil {
+		t.Fatalf("unmarshal continuous: %v", err)
+	}
 	if continuous["file_type"] != "state_continuous" {
 		t.Errorf("continuous file_type: got %v", continuous["file_type"])
 	}

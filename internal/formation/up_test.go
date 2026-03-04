@@ -101,6 +101,27 @@ func TestResolveModel_WorkerPerWorkerOverride(t *testing.T) {
 	}
 }
 
+func TestResolveModel_WorkerBoostOverridesModelsMap(t *testing.T) {
+	cfg := model.Config{
+		Agents: model.AgentsConfig{
+			Workers: model.WorkerConfig{
+				Boost:        true,
+				Models:       map[string]string{"worker1": "haiku", "worker2": "sonnet"},
+				DefaultModel: "haiku",
+			},
+		},
+	}
+	if m := resolveModel(cfg, "worker1"); m != "opus" {
+		t.Errorf("expected opus (boost overrides per-worker), got %s", m)
+	}
+	if m := resolveModel(cfg, "worker2"); m != "opus" {
+		t.Errorf("expected opus (boost overrides per-worker), got %s", m)
+	}
+	if m := resolveModel(cfg, "worker3"); m != "opus" {
+		t.Errorf("expected opus (boost overrides default), got %s", m)
+	}
+}
+
 func TestResolveModel_WorkerDefaultModel(t *testing.T) {
 	cfg := model.Config{
 		Agents: model.AgentsConfig{

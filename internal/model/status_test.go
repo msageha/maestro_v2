@@ -245,6 +245,10 @@ func TestValidatePhaseTransition(t *testing.T) {
 		{PhaseStatusTimedOut, PhaseStatusActive},
 		{PhaseStatusActive, PhaseStatusPending},
 		{PhaseStatusFilling, PhaseStatusPending},
+		{PhaseStatusFailed, PhaseStatusCompleted},
+		{PhaseStatusFailed, PhaseStatusPending},
+		{PhaseStatusFailed, PhaseStatusFilling},
+		{PhaseStatusFailed, PhaseStatusAwaitingFill},
 	}
 	for _, tt := range invalid {
 		t.Run("invalid_"+string(tt.from)+"→"+string(tt.to), func(t *testing.T) {

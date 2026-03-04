@@ -74,9 +74,14 @@ func TestResultHandler_WorkerNotification_Basic(t *testing.T) {
 	}
 
 	// Verify result is now marked as notified
-	data, _ := os.ReadFile(resultPath)
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
 	var updated model.TaskResultFile
-	yamlv3.Unmarshal(data, &updated)
+	if err := yamlv3.Unmarshal(data, &updated); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
 
 	if !updated.Results[0].Notified {
 		t.Error("expected notified=true")
@@ -187,9 +192,14 @@ func TestResultHandler_WorkerNotification_ExpiredLease(t *testing.T) {
 	}
 
 	// Verify attempts incremented
-	data, _ := os.ReadFile(resultPath)
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
 	var updated model.TaskResultFile
-	yamlv3.Unmarshal(data, &updated)
+	if err := yamlv3.Unmarshal(data, &updated); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
 	if updated.Results[0].NotifyAttempts != 2 {
 		t.Errorf("notify_attempts: got %d, want 2", updated.Results[0].NotifyAttempts)
 	}
@@ -235,9 +245,14 @@ func TestResultHandler_WorkerNotification_Failure(t *testing.T) {
 	}
 
 	// Verify notify_last_error is set and lease is cleared
-	data, _ := os.ReadFile(resultPath)
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
 	var updated model.TaskResultFile
-	yamlv3.Unmarshal(data, &updated)
+	if err := yamlv3.Unmarshal(data, &updated); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
 	if updated.Results[0].Notified {
 		t.Error("should not be marked as notified")
 	}
@@ -290,9 +305,14 @@ func TestResultHandler_CommandNotification_Basic(t *testing.T) {
 	}
 
 	// Verify result is marked as notified
-	data, _ := os.ReadFile(resultPath)
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
 	var updated model.CommandResultFile
-	yamlv3.Unmarshal(data, &updated)
+	if err := yamlv3.Unmarshal(data, &updated); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
 	if !updated.Results[0].Notified {
 		t.Error("expected notified=true")
 	}
@@ -304,7 +324,9 @@ func TestResultHandler_CommandNotification_Basic(t *testing.T) {
 		t.Fatalf("read orchestrator queue: %v", err)
 	}
 	var nq model.NotificationQueue
-	yamlv3.Unmarshal(nqData, &nq)
+	if err := yamlv3.Unmarshal(nqData, &nq); err != nil {
+		t.Fatalf("unmarshal notification queue: %v", err)
+	}
 	if len(nq.Notifications) != 1 {
 		t.Fatalf("expected 1 notification, got %d", len(nq.Notifications))
 	}
@@ -364,9 +386,14 @@ func TestResultHandler_CommandNotification_Idempotent(t *testing.T) {
 	}
 
 	// Verify no duplicate notification
-	nqData, _ := os.ReadFile(filepath.Join(maestroDir, "queue", "orchestrator.yaml"))
+	nqData, err := os.ReadFile(filepath.Join(maestroDir, "queue", "orchestrator.yaml"))
+	if err != nil {
+		t.Fatalf("read orchestrator queue: %v", err)
+	}
 	var updated model.NotificationQueue
-	yamlv3.Unmarshal(nqData, &updated)
+	if err := yamlv3.Unmarshal(nqData, &updated); err != nil {
+		t.Fatalf("unmarshal notification queue: %v", err)
+	}
 	if len(updated.Notifications) != 1 {
 		t.Errorf("expected 1 notification (no duplicate), got %d", len(updated.Notifications))
 	}
@@ -574,9 +601,14 @@ func TestResultHandler_MultipleResults_ProcessedInOrder(t *testing.T) {
 	}
 
 	// Verify both are marked notified
-	data, _ := os.ReadFile(resultPath)
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
 	var updated model.TaskResultFile
-	yamlv3.Unmarshal(data, &updated)
+	if err := yamlv3.Unmarshal(data, &updated); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
 	for i, r := range updated.Results {
 		if !r.Notified {
 			t.Errorf("result[%d] expected notified=true", i)

@@ -21,7 +21,9 @@ func RunDown(maestroDir string, cfg model.Config) error {
 	tmux.SetSessionName("maestro-" + cfg.Project.Name)
 
 	// Initialize tmux debug logger for down process
-	tmuxLogPath := filepath.Join(maestroDir, "logs", "tmux_debug.log")
+	logsDir := filepath.Join(maestroDir, "logs")
+	_ = os.MkdirAll(logsDir, 0o755)
+	tmuxLogPath := filepath.Join(logsDir, "tmux_debug.log")
 	if tmuxLogFile, err := os.OpenFile(tmuxLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
 		tmuxLogger := log.New(tmuxLogFile, "", log.LstdFlags|log.Lmicroseconds)
 		tmux.SetDebugLogger(tmuxLogger)
@@ -128,7 +130,7 @@ func restoreServerOptions() {
 		return
 	}
 	_ = tmux.SetServerOption("exit-empty", "on")
-	_ = tmux.SetServerOption("exit-unattached", "on")
+	_ = tmux.SetServerOption("exit-unattached", "off")
 }
 
 // hasOtherMaestroSessions checks if any other maestro-* sessions exist

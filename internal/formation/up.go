@@ -376,22 +376,18 @@ func createFormation(cfg model.Config) (retErr error) {
 		return fmt.Errorf("set destroy-unattached: %w", err)
 	}
 
-	// Set remain-on-exit at session level as a belt-and-suspenders measure.
-	// Window-level settings (set below) take precedence, but this catches any
-	// windows that might be created later by unexpected means.
-	if err := tmux.SetSessionOption("remain-on-exit", "on"); err != nil {
-		return fmt.Errorf("set session remain-on-exit: %w", err)
-	}
+	// Note: remain-on-exit is a window-scoped option and must be set per-window
+	// via SetWindowOption (not SetSessionOption) to ensure exact target matching.
 
 	// Set remain-on-exit for orchestrator window.
 	// This prevents the window from closing when the agent process exits,
 	// allowing operators to inspect the final pane state for debugging.
-	orchWindow := fmt.Sprintf("%s:0", tmux.GetSessionName())
+	orchWindow := fmt.Sprintf("=%s:0", tmux.GetSessionName())
 	if err := tmux.SetWindowOption(orchWindow, "remain-on-exit", "on"); err != nil {
 		return fmt.Errorf("set remain-on-exit for orchestrator: %w", err)
 	}
 
-	orchPane := fmt.Sprintf("%s:0.0", tmux.GetSessionName())
+	orchPane := fmt.Sprintf("=%s:0.0", tmux.GetSessionName())
 	if err := setAgentVars(orchPane, "orchestrator", "orchestrator", resolveModel(cfg, "orchestrator")); err != nil {
 		return err
 	}
@@ -402,12 +398,12 @@ func createFormation(cfg model.Config) (retErr error) {
 	}
 
 	// Set remain-on-exit for planner window
-	plannerWindow := fmt.Sprintf("%s:1", tmux.GetSessionName())
+	plannerWindow := fmt.Sprintf("=%s:1", tmux.GetSessionName())
 	if err := tmux.SetWindowOption(plannerWindow, "remain-on-exit", "on"); err != nil {
 		return fmt.Errorf("set remain-on-exit for planner: %w", err)
 	}
 
-	plannerPane := fmt.Sprintf("%s:1.0", tmux.GetSessionName())
+	plannerPane := fmt.Sprintf("=%s:1.0", tmux.GetSessionName())
 	if err := setAgentVars(plannerPane, "planner", "planner", resolveModel(cfg, "planner")); err != nil {
 		return err
 	}
@@ -420,7 +416,7 @@ func createFormation(cfg model.Config) (retErr error) {
 	}
 
 	// Set remain-on-exit for workers window
-	workerWindow := fmt.Sprintf("%s:2", tmux.GetSessionName())
+	workerWindow := fmt.Sprintf("=%s:2", tmux.GetSessionName())
 	if err := tmux.SetWindowOption(workerWindow, "remain-on-exit", "on"); err != nil {
 		return fmt.Errorf("set remain-on-exit for workers: %w", err)
 	}
@@ -465,7 +461,7 @@ func createFormation(cfg model.Config) (retErr error) {
 	}
 
 	// Select orchestrator window so `tmux attach` lands there
-	if err := tmux.SelectWindow(fmt.Sprintf("%s:0", tmux.GetSessionName())); err != nil {
+	if err := tmux.SelectWindow(fmt.Sprintf("=%s:0", tmux.GetSessionName())); err != nil {
 		return fmt.Errorf("select orchestrator window: %w", err)
 	}
 
@@ -541,7 +537,7 @@ func resolveModel(cfg model.Config, agentID string) string {
 			return m
 		}
 	default:
-		// Worker: check per-worker override, then boost, then default
+		// Worker: boost overrides all, then per-worker override, then default
 		if cfg.Agents.Workers.Boost {
 			return "opus"
 		}
@@ -739,7 +735,9 @@ func activateContinuousMode(maestroDir string, cfg model.Config) error {
 	var state model.Continuous
 	data, err := os.ReadFile(continuousPath)
 	if err == nil {
-		_ = yamlv3.Unmarshal(data, &state)
+		if err := yamlv3.Unmarshal(data, &state); err != nil {
+			fmt.Printf("Warning: failed to parse %s: %v\n", continuousPath, err)
+		}
 	}
 
 	state.SchemaVersion = 1

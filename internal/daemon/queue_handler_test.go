@@ -262,7 +262,9 @@ func TestQueueHandler_CrossFileInFlight(t *testing.T) {
 		t.Fatalf("read worker2 queue: %v", err)
 	}
 	var result model.TaskQueue
-	parseYAML(data, &result)
+	if err := parseYAML(data, &result); err != nil {
+		t.Fatalf("parse worker queue: %v", err)
+	}
 
 	if result.Tasks[0].Status != model.StatusInProgress {
 		t.Errorf("task_002 should be dispatched (worker2 free), got %s", result.Tasks[0].Status)
@@ -794,7 +796,11 @@ func TestQueueHandler_ConcurrentWriteDuringPhaseB(t *testing.T) {
 		t.Fatalf("read worker queue during Phase B: %v", err)
 	}
 	var currentTQ model.TaskQueue
-	yamlv3.Unmarshal(data, &currentTQ)
+	if err := yamlv3.Unmarshal(data, &currentTQ); err != nil {
+		lockMap.Unlock("queue:worker1")
+		qh.UnlockFiles()
+		t.Fatalf("unmarshal worker queue: %v", err)
+	}
 
 	// Append a new task
 	currentTQ.Tasks = append(currentTQ.Tasks, model.Task{

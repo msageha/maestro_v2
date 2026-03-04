@@ -10,10 +10,10 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
-func Quarantine(maestroDir, filePath string) error {
+func Quarantine(maestroDir, filePath string) (string, error) {
 	quarantineDir := filepath.Join(maestroDir, "quarantine")
 	if err := os.MkdirAll(quarantineDir, 0755); err != nil {
-		return fmt.Errorf("create quarantine dir: %w", err)
+		return "", fmt.Errorf("create quarantine dir: %w", err)
 	}
 
 	baseName := filepath.Base(filePath)
@@ -22,11 +22,11 @@ func Quarantine(maestroDir, filePath string) error {
 	quarantinePath := filepath.Join(quarantineDir, quarantineName)
 
 	if err := os.Rename(filePath, quarantinePath); err != nil {
-		return fmt.Errorf("move to quarantine: %w", err)
+		return "", fmt.Errorf("move to quarantine: %w", err)
 	}
 
 	log.Printf("quarantined corrupted file: %s → %s", filePath, quarantinePath)
-	return nil
+	return quarantinePath, nil
 }
 
 func RestoreFromBackup(filePath string) error {
@@ -70,7 +70,8 @@ func GenerateSkeleton(filePath string, fileType string) error {
 
 func RecoverCorruptedFile(maestroDir, filePath, fileType string) error {
 	// Step 1: Quarantine the corrupted file
-	if err := Quarantine(maestroDir, filePath); err != nil {
+	quarantinePath, err := Quarantine(maestroDir, filePath)
+	if err != nil {
 		return fmt.Errorf("quarantine failed: %w", err)
 	}
 
@@ -83,7 +84,7 @@ func RecoverCorruptedFile(maestroDir, filePath, fileType string) error {
 
 	// Step 3: Generate minimal skeleton
 	if err := GenerateSkeleton(filePath, fileType); err != nil {
-		return fmt.Errorf("skeleton generation failed: %w", err)
+		return fmt.Errorf("skeleton generation failed (quarantined file at %s): %w", quarantinePath, err)
 	}
 
 	return nil

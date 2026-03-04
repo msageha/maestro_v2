@@ -174,9 +174,14 @@ func TestQueueWriteCommand_BackpressureCountsPendingOnly(t *testing.T) {
 
 	// Manually set it to in_progress (non-pending)
 	path := filepath.Join(d.maestroDir, "queue", "planner.yaml")
-	data, _ := os.ReadFile(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read queue: %v", err)
+	}
 	var cq model.CommandQueue
-	yamlv3.Unmarshal(data, &cq)
+	if err := yamlv3.Unmarshal(data, &cq); err != nil {
+		t.Fatalf("unmarshal queue: %v", err)
+	}
 	cq.Commands[0].Status = model.StatusInProgress
 	yamlutil.AtomicWrite(path, cq)
 
@@ -422,9 +427,14 @@ func TestQueueWriteNotification_Idempotency(t *testing.T) {
 
 	// Verify only 1 notification in file
 	path := filepath.Join(d.maestroDir, "queue", "orchestrator.yaml")
-	data, _ := os.ReadFile(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read queue: %v", err)
+	}
 	var nq model.NotificationQueue
-	yamlv3.Unmarshal(data, &nq)
+	if err := yamlv3.Unmarshal(data, &nq); err != nil {
+		t.Fatalf("unmarshal queue: %v", err)
+	}
 	if len(nq.Notifications) != 1 {
 		t.Errorf("expected 1 notification, got %d", len(nq.Notifications))
 	}
@@ -492,9 +502,14 @@ func TestQueueWriteTask_WithBlockedBy(t *testing.T) {
 
 	// Verify blocked_by persisted
 	path := filepath.Join(d.maestroDir, "queue", "worker1.yaml")
-	data, _ := os.ReadFile(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read queue: %v", err)
+	}
 	var tq model.TaskQueue
-	yamlv3.Unmarshal(data, &tq)
+	if err := yamlv3.Unmarshal(data, &tq); err != nil {
+		t.Fatalf("unmarshal queue: %v", err)
+	}
 	if len(tq.Tasks) != 1 {
 		t.Fatalf("expected 1 task, got %d", len(tq.Tasks))
 	}
@@ -574,9 +589,14 @@ func TestQueueWriteCancelRequest_Unsubmitted(t *testing.T) {
 
 	// Verify command is cancelled in queue
 	path := filepath.Join(d.maestroDir, "queue", "planner.yaml")
-	data, _ := os.ReadFile(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read queue: %v", err)
+	}
 	var cq model.CommandQueue
-	yamlv3.Unmarshal(data, &cq)
+	if err := yamlv3.Unmarshal(data, &cq); err != nil {
+		t.Fatalf("unmarshal queue: %v", err)
+	}
 	if cq.Commands[0].Status != model.StatusCancelled {
 		t.Errorf("queue command status = %q, want %q", cq.Commands[0].Status, model.StatusCancelled)
 	}
@@ -618,9 +638,14 @@ func TestQueueWriteCancelRequest_Submitted(t *testing.T) {
 
 	// Verify state updated
 	statePath := filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml")
-	sdata, _ := os.ReadFile(statePath)
+	sdata, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
 	var state model.CommandState
-	yamlv3.Unmarshal(sdata, &state)
+	if err := yamlv3.Unmarshal(sdata, &state); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
 	if !state.Cancel.Requested {
 		t.Error("expected cancel.requested to be true")
 	}
@@ -670,9 +695,14 @@ func TestQueueWriteCommand_DefaultPriority(t *testing.T) {
 	}
 
 	path := filepath.Join(d.maestroDir, "queue", "planner.yaml")
-	data, _ := os.ReadFile(path)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read queue: %v", err)
+	}
 	var cq model.CommandQueue
-	yamlv3.Unmarshal(data, &cq)
+	if err := yamlv3.Unmarshal(data, &cq); err != nil {
+		t.Fatalf("unmarshal queue: %v", err)
+	}
 	if cq.Commands[0].Priority != 100 {
 		t.Errorf("default priority = %d, want 100", cq.Commands[0].Priority)
 	}
@@ -739,9 +769,14 @@ func TestQueueWriteTask_CyclicDependencyDetection(t *testing.T) {
 	// Now submit task D with blocked_by: [taskB] AND manually set taskA's blocked_by to create A→B, B→A cycle
 	// First, manually modify task A to have blocked_by: [taskB] to simulate the cycle
 	workerPath := filepath.Join(d.maestroDir, "queue", "worker1.yaml")
-	data, _ := os.ReadFile(workerPath)
+	data, err := os.ReadFile(workerPath)
+	if err != nil {
+		t.Fatalf("read worker queue: %v", err)
+	}
 	var tq model.TaskQueue
-	yamlv3.Unmarshal(data, &tq)
+	if err := yamlv3.Unmarshal(data, &tq); err != nil {
+		t.Fatalf("unmarshal worker queue: %v", err)
+	}
 	for i := range tq.Tasks {
 		if tq.Tasks[i].ID == taskAID {
 			tq.Tasks[i].BlockedBy = []string{taskBID}
@@ -817,9 +852,14 @@ func TestQueueWriteTask_CyclicDependency_MutualBlockAB(t *testing.T) {
 
 	// Manually modify task A to have blocked_by: [taskB] (simulating a mutual dependency)
 	workerPath := filepath.Join(d.maestroDir, "queue", "worker1.yaml")
-	data, _ := os.ReadFile(workerPath)
+	data, err := os.ReadFile(workerPath)
+	if err != nil {
+		t.Fatalf("read worker queue: %v", err)
+	}
 	var tq model.TaskQueue
-	yamlv3.Unmarshal(data, &tq)
+	if err := yamlv3.Unmarshal(data, &tq); err != nil {
+		t.Fatalf("unmarshal worker queue: %v", err)
+	}
 	for i := range tq.Tasks {
 		if tq.Tasks[i].ID == taskAID {
 			tq.Tasks[i].BlockedBy = []string{taskBID}
@@ -896,9 +936,14 @@ func TestQueueWriteTask_NoCycleWithTerminalTasks(t *testing.T) {
 
 	// Mark task A as completed and set blocked_by: [taskB] to simulate would-be cycle
 	workerPath := filepath.Join(d.maestroDir, "queue", "worker1.yaml")
-	data, _ := os.ReadFile(workerPath)
+	data, err := os.ReadFile(workerPath)
+	if err != nil {
+		t.Fatalf("read worker queue: %v", err)
+	}
 	var tq model.TaskQueue
-	yamlv3.Unmarshal(data, &tq)
+	if err := yamlv3.Unmarshal(data, &tq); err != nil {
+		t.Fatalf("unmarshal worker queue: %v", err)
+	}
 	for i := range tq.Tasks {
 		if tq.Tasks[i].ID == taskAID {
 			tq.Tasks[i].Status = model.StatusCompleted // terminal — should be excluded

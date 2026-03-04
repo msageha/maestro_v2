@@ -132,7 +132,10 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 	assignment := assignments[0]
 
 	// Save original state for rollback
-	origStateBytes, _ := copyState(state)
+	origStateBytes, err := copyState(state)
+	if err != nil {
+		return nil, fmt.Errorf("copy state for rollback: %w", err)
+	}
 
 	// Generate new task ID
 	newTaskID, err := model.GenerateID(model.IDTypeTask)
@@ -602,7 +605,9 @@ func copyState(state *model.CommandState) ([]byte, error) {
 
 func restoreState(state *model.CommandState, data []byte) {
 	var restored model.CommandState
-	if yamlv3.Unmarshal(data, &restored) == nil {
-		*state = restored
+	if err := yamlv3.Unmarshal(data, &restored); err != nil {
+		log.Printf("restoreState: failed to unmarshal state snapshot: %v", err)
+		return
 	}
+	*state = restored
 }

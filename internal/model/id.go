@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -60,8 +61,9 @@ func ParseIDTimestamp(id string) (time.Time, error) {
 	if !ValidateID(id) {
 		return time.Time{}, fmt.Errorf("invalid ID format: %s", id)
 	}
-	// Extract timestamp portion: after first '_', 10 digits
-	tsStr := id[len(id)-19 : len(id)-9]
+	// ID format: {type}_{timestamp}_{hex} — extract the timestamp segment
+	parts := strings.Split(id, "_")
+	tsStr := parts[len(parts)-2]
 	ts, err := strconv.ParseInt(tsStr, 10, 64)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("failed to parse timestamp from ID %s: %w", id, err)

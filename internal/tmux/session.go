@@ -275,6 +275,13 @@ func GetSessionName() string {
 	return sessionName.Load().(string)
 }
 
+// exactSessionTarget returns the session name prefixed with "=" to force
+// tmux exact name matching, preventing prefix/glob resolution.
+// Without this, `-t maestro-` would match `maestro-myproject` via prefix matching.
+func exactSessionTarget() string {
+	return "=" + GetSessionName()
+}
+
 // SetSessionName updates the tmux session name, sanitizing unsafe characters.
 func SetSessionName(name string) {
 	sanitized := unsafeSessionChars.ReplaceAllString(name, "_")
@@ -288,7 +295,7 @@ func SetSessionName(name string) {
 func SessionExists() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultCmdTimeout)
 	defer cancel()
-	err := exec.CommandContext(ctx, "tmux", "has-session", "-t", GetSessionName()).Run()
+	err := exec.CommandContext(ctx, "tmux", "has-session", "-t", exactSessionTarget()).Run()
 	exists := err == nil
 	debugLog("SessionExists session=%s exists=%v", GetSessionName(), exists)
 	return exists
@@ -311,7 +318,7 @@ func CreateSession(windowName string) error {
 func KillSession() error {
 	caller := callerInfo(2)
 	debugLog("KillSession called session=%s caller=%s", GetSessionName(), caller)
-	err := run("kill-session", "-t", GetSessionName())
+	err := run("kill-session", "-t", exactSessionTarget())
 	if err != nil {
 		debugLog("KillSession FAILED session=%s error=%v caller=%s", GetSessionName(), err, caller)
 	} else {
@@ -328,12 +335,13 @@ func SessionHealthCheck() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultCmdTimeout)
 	defer cancel()
 
-	// Check session
-	cmd := exec.CommandContext(ctx, "tmux", "has-session", "-t", name)
+	// Check session (use "=" prefix for exact name matching)
+	exactName := "=" + name
+	cmd := exec.CommandContext(ctx, "tmux", "has-session", "-t", exactName)
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		// Session alive — gather window/pane info for diagnostics
-		winOut, winErr := output("list-windows", "-t", name, "-F", "#{window_index}:#{window_name}:#{window_panes}")
+		winOut, winErr := output("list-windows", "-t", exactName, "-F", "#{window_index}:#{window_name}:#{window_panes}")
 		if winErr == nil {
 			debugLog("SessionHealthCheck OK session=%s windows=[%s]", name, strings.TrimSpace(winOut))
 		} else {
@@ -359,7 +367,7 @@ func SessionHealthCheck() bool {
 
 // CreateWindow creates a new window in the maestro session.
 func CreateWindow(name string) error {
-	return run("new-window", "-t", GetSessionName(), "-n", name)
+	return run("new-window", "-t", exactSessionTarget(), "-n", name)
 }
 
 // SplitPane splits the current pane in the given window horizontally or vertically.
@@ -380,6 +388,9 @@ func SelectLayout(windowTarget, layout string) error {
 // SetUserVar sets a tmux user variable on a pane (pane-scoped via -p).
 // Format: tmux set-option -p -t <pane> @<name> <value>
 func SetUserVar(paneTarget, name, value string) error {
+	if !validUserVarName.MatchString(name) {
+		return fmt.Errorf("invalid user variable name %q: must match [a-zA-Z0-9_]+", name)
+	}
 	return run("set-option", "-p", "-t", paneTarget, "@"+name, value)
 }
 
@@ -450,7 +461,7 @@ func ListPanes(windowTarget, format string) ([]string, error) {
 
 // ListAllPanes returns pane info across all windows in the session.
 func ListAllPanes(format string) ([]string, error) {
-	out, err := output("list-panes", "-s", "-t", GetSessionName(), "-F", format)
+	out, err := output("list-panes", "-s", "-t", exactSessionTarget(), "-F", format)
 	if err != nil {
 		return nil, err
 	}
@@ -494,7 +505,7 @@ func SendCommand(paneTarget, command string) error {
 
 // SendCtrlC sends Ctrl+C to a pane.
 func SendCtrlC(paneTarget string) error {
-	return SendKeys(paneTarget, "", "C-c")
+	return SendKeys(paneTarget, "C-c")
 }
 
 // SetupWorkerGrid creates worker panes in a 2-column × N-row grid layout.
@@ -560,6 +571,10 @@ func SetServerOption(name, value string) error {
 }
 
 // SetSessionOption sets a session-level tmux option on the maestro session.
+// Note: does NOT use the "=" exact-match prefix because tmux 3.6's set-option
+// uses a different target parser that doesn't support the "=" prefix.
+// The prefix-matching risk here is mitigated by using unique session names
+// and is lower severity since set-option cannot destroy sessions.
 func SetSessionOption(name, value string) error {
 	return run("set-option", "-t", GetSessionName(), name, value)
 }
@@ -592,7 +607,7 @@ func SelectWindow(windowTarget string) error {
 // AttachSession attaches the current terminal to the maestro tmux session.
 // This replaces the current process with tmux attach-session.
 func AttachSession() error {
-	cmd := exec.Command("tmux", "attach-session", "-t", GetSessionName())
+	cmd := exec.Command("tmux", "attach-session", "-t", exactSessionTarget())
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr

@@ -1,3 +1,5 @@
+//go:build darwin
+
 // inputrecorder is a test helper binary that simulates a TUI with bracketed paste.
 //
 // Usage: inputrecorder <logfile> [processing_delay_ms]

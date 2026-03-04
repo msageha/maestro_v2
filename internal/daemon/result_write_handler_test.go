@@ -134,9 +134,14 @@ func TestResultWrite_Basic(t *testing.T) {
 
 	// Verify queue entry updated to terminal
 	queuePath := filepath.Join(d.maestroDir, "queue", workerID+".yaml")
-	qdata, _ := os.ReadFile(queuePath)
+	qdata, err := os.ReadFile(queuePath)
+	if err != nil {
+		t.Fatalf("read queue: %v", err)
+	}
 	var tq model.TaskQueue
-	yamlv3.Unmarshal(qdata, &tq)
+	if err := yamlv3.Unmarshal(qdata, &tq); err != nil {
+		t.Fatalf("unmarshal queue: %v", err)
+	}
 	if tq.Tasks[0].Status != model.StatusCompleted {
 		t.Errorf("queue task status = %q, want %q", tq.Tasks[0].Status, model.StatusCompleted)
 	}
@@ -146,9 +151,14 @@ func TestResultWrite_Basic(t *testing.T) {
 
 	// Verify state updated
 	statePath := filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml")
-	sdata, _ := os.ReadFile(statePath)
+	sdata, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
 	var state model.CommandState
-	yamlv3.Unmarshal(sdata, &state)
+	if err := yamlv3.Unmarshal(sdata, &state); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
 	if state.TaskStates[taskID] != model.StatusCompleted {
 		t.Errorf("state task_states[%s] = %q, want %q", taskID, state.TaskStates[taskID], model.StatusCompleted)
 	}
@@ -297,9 +307,14 @@ func TestResultWrite_Idempotency_SameStatus(t *testing.T) {
 
 	// Verify only 1 result in file
 	resultPath := filepath.Join(d.maestroDir, "results", workerID+".yaml")
-	data, _ := os.ReadFile(resultPath)
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
 	var rf model.TaskResultFile
-	yamlv3.Unmarshal(data, &rf)
+	if err := yamlv3.Unmarshal(data, &rf); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
 	if len(rf.Results) != 1 {
 		t.Errorf("expected 1 result, got %d", len(rf.Results))
 	}
@@ -420,18 +435,28 @@ func TestResultWrite_Failed(t *testing.T) {
 
 	// Verify result status
 	resultPath := filepath.Join(d.maestroDir, "results", workerID+".yaml")
-	data, _ := os.ReadFile(resultPath)
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
 	var rf model.TaskResultFile
-	yamlv3.Unmarshal(data, &rf)
+	if err := yamlv3.Unmarshal(data, &rf); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
 	if rf.Results[0].Status != model.StatusFailed {
 		t.Errorf("result status = %q, want %q", rf.Results[0].Status, model.StatusFailed)
 	}
 
 	// Verify state updated
 	statePath := filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml")
-	sdata, _ := os.ReadFile(statePath)
+	sdata, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
 	var state model.CommandState
-	yamlv3.Unmarshal(sdata, &state)
+	if err := yamlv3.Unmarshal(sdata, &state); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
 	if state.TaskStates[taskID] != model.StatusFailed {
 		t.Errorf("state task_states[%s] = %q, want %q", taskID, state.TaskStates[taskID], model.StatusFailed)
 	}
@@ -465,9 +490,14 @@ func TestResultWrite_FilesChanged(t *testing.T) {
 
 	// Verify files_changed persisted
 	resultPath := filepath.Join(d.maestroDir, "results", workerID+".yaml")
-	data, _ := os.ReadFile(resultPath)
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
 	var rf model.TaskResultFile
-	yamlv3.Unmarshal(data, &rf)
+	if err := yamlv3.Unmarshal(data, &rf); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
 	if len(rf.Results[0].FilesChanged) != 2 {
 		t.Errorf("files_changed length = %d, want 2", len(rf.Results[0].FilesChanged))
 	}
