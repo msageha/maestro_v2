@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"errors"
 	"os"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -11,7 +12,7 @@ import (
 func readFileIfExists(path string) ([]byte, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, err

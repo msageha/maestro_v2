@@ -104,7 +104,7 @@ func buildLaunchArgs(role, agentModel, systemPrompt string) []string {
 	// --disallowedTools provides a hard technical block.
 	if role == "worker" {
 		args = append(args, "--disallowedTools",
-			"Bash(tmux kill-server:*),Bash(tmux kill-session:*),Bash(tmux kill-pane:*)")
+			"Bash(tmux kill-server:*),Bash(tmux kill-session:*),Bash(tmux kill-pane:*),Bash(tmux kill-window:*)")
 	}
 
 	// Disable Notification hooks for non-orchestrator roles via deep merge.

@@ -83,12 +83,19 @@ func ErrorResponse(code, message string) *Response {
 // DefaultSocketName is the conventional socket filename inside .maestro/.
 const DefaultSocketName = "daemon.sock"
 
+// maxFrameSize is the safety limit for frame payloads (10 MB).
+const maxFrameSize = 10 * 1024 * 1024
+
 // WriteFrame writes a length-prefixed JSON frame to the connection.
 // Format: [4-byte BigEndian length][JSON payload]
 func WriteFrame(conn net.Conn, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("marshal frame: %w", err)
+	}
+
+	if len(data) > maxFrameSize {
+		return fmt.Errorf("frame too large: %d bytes exceeds %d byte limit", len(data), maxFrameSize)
 	}
 
 	length := uint32(len(data))
@@ -109,7 +116,7 @@ func ReadFrame(conn net.Conn, v any) error {
 		return fmt.Errorf("read frame length: %w", err)
 	}
 
-	if length > 10*1024*1024 { // 10MB safety limit
+	if length > maxFrameSize {
 		return fmt.Errorf("frame too large: %d bytes", length)
 	}
 

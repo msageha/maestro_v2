@@ -60,6 +60,8 @@ func (ch *CancelHandler) SetExecutorFactory(f ExecutorFactory) {
 }
 
 // getExecutor returns the shared executor instance, creating it lazily via sync.Once.
+// The Executor is safe for concurrent use (log.Logger uses internal mutex,
+// os.File in append mode is POSIX-safe, all other fields are immutable).
 func (ch *CancelHandler) getExecutor() (AgentExecutor, error) {
 	ch.execOnce.Do(func() {
 		ch.cachedExec, ch.cachedExecErr = ch.executorFactory(ch.maestroDir, ch.config.Watcher, ch.config.Logging.Level)

@@ -914,3 +914,114 @@ func TestSubmit_PhaseFill_ConstraintViolation(t *testing.T) {
 		}
 	}
 }
+
+// --- ActivateDeferredPhases tests ---
+
+func TestActivateDeferredPhases_AllDepsCompleted(t *testing.T) {
+	state := &model.CommandState{
+		Phases: []model.Phase{
+			{PhaseID: "p1", Name: "build", Type: "concrete", Status: model.PhaseStatusCompleted},
+			{PhaseID: "p2", Name: "test", Type: "concrete", Status: model.PhaseStatusCompleted},
+			{
+				PhaseID:         "p3",
+				Name:            "deploy",
+				Type:            "deferred",
+				Status:          model.PhaseStatusPending,
+				DependsOnPhases: []string{"build", "test"},
+				Constraints:     &model.PhaseConstraints{TimeoutMinutes: 15},
+			},
+		},
+	}
+
+	activated := ActivateDeferredPhases(state)
+
+	if len(activated) != 1 || activated[0] != "deploy" {
+		t.Fatalf("activated = %v, want [deploy]", activated)
+	}
+	if state.Phases[2].Status != model.PhaseStatusAwaitingFill {
+		t.Errorf("phase status = %q, want %q", state.Phases[2].Status, model.PhaseStatusAwaitingFill)
+	}
+	if state.Phases[2].FillDeadlineAt == nil {
+		t.Error("FillDeadlineAt is nil, want non-nil when TimeoutMinutes > 0")
+	}
+}
+
+func TestActivateDeferredPhases_DepsIncomplete(t *testing.T) {
+	state := &model.CommandState{
+		Phases: []model.Phase{
+			{PhaseID: "p1", Name: "build", Type: "concrete", Status: model.PhaseStatusActive},
+			{
+				PhaseID:         "p2",
+				Name:            "deploy",
+				Type:            "deferred",
+				Status:          model.PhaseStatusPending,
+				DependsOnPhases: []string{"build"},
+			},
+		},
+	}
+
+	activated := ActivateDeferredPhases(state)
+
+	if len(activated) != 0 {
+		t.Fatalf("activated = %v, want empty (dep not completed)", activated)
+	}
+	if state.Phases[1].Status != model.PhaseStatusPending {
+		t.Errorf("phase status = %q, want %q (should remain pending)", state.Phases[1].Status, model.PhaseStatusPending)
+	}
+}
+
+func TestActivateDeferredPhases_AlreadyActivated(t *testing.T) {
+	state := &model.CommandState{
+		Phases: []model.Phase{
+			{PhaseID: "p1", Name: "build", Type: "concrete", Status: model.PhaseStatusCompleted},
+			{
+				PhaseID:         "p2",
+				Name:            "deploy",
+				Type:            "deferred",
+				Status:          model.PhaseStatusAwaitingFill,
+				DependsOnPhases: []string{"build"},
+			},
+		},
+	}
+
+	activated := ActivateDeferredPhases(state)
+
+	if len(activated) != 0 {
+		t.Fatalf("activated = %v, want empty (already awaiting_fill)", activated)
+	}
+	// Status should remain unchanged
+	if state.Phases[1].Status != model.PhaseStatusAwaitingFill {
+		t.Errorf("phase status = %q, want %q", state.Phases[1].Status, model.PhaseStatusAwaitingFill)
+	}
+}
+
+func TestActivateDeferredPhases_NilState(t *testing.T) {
+	activated := ActivateDeferredPhases(nil)
+	if activated != nil {
+		t.Errorf("activated = %v, want nil for nil state", activated)
+	}
+}
+
+func TestActivateDeferredPhases_NoDeadlineWithoutTimeout(t *testing.T) {
+	state := &model.CommandState{
+		Phases: []model.Phase{
+			{PhaseID: "p1", Name: "build", Type: "concrete", Status: model.PhaseStatusCompleted},
+			{
+				PhaseID:         "p2",
+				Name:            "deploy",
+				Type:            "deferred",
+				Status:          model.PhaseStatusPending,
+				DependsOnPhases: []string{"build"},
+			},
+		},
+	}
+
+	activated := ActivateDeferredPhases(state)
+
+	if len(activated) != 1 || activated[0] != "deploy" {
+		t.Fatalf("activated = %v, want [deploy]", activated)
+	}
+	if state.Phases[1].FillDeadlineAt != nil {
+		t.Errorf("FillDeadlineAt = %v, want nil when no constraints", state.Phases[1].FillDeadlineAt)
+	}
+}

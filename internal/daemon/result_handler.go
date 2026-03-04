@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,6 +84,8 @@ func (rh *ResultHandler) SetExecutorFactory(f ExecutorFactory) {
 }
 
 // getExecutor returns the shared executor instance, creating it lazily via sync.Once.
+// The Executor is safe for concurrent use (log.Logger uses internal mutex,
+// os.File in append mode is POSIX-safe, all other fields are immutable).
 func (rh *ResultHandler) getExecutor() (AgentExecutor, error) {
 	rh.execOnce.Do(func() {
 		rh.cachedExec, rh.cachedExecErr = rh.executorFactory(rh.maestroDir, rh.config.Watcher, rh.config.Logging.Level)
@@ -342,8 +345,9 @@ func (rh *ResultHandler) processCommandResultFile() int {
 
 // --- Notification lease helpers ---
 
-// notifyBackoff computes the exponential backoff delay for the given attempt count.
-// Formula: min(notifyBackoffInitial * 2^(attempts-1), notifyBackoffMax).
+// notifyBackoff computes the exponential backoff delay for the given attempt count
+// with ±25% uniform jitter to prevent thundering herd on recovery.
+// Formula: min(notifyBackoffInitial * 2^(attempts-1), notifyBackoffMax) * (0.75 + rand*0.5).
 func (rh *ResultHandler) notifyBackoff(attempts int) time.Duration {
 	if attempts < 1 {
 		attempts = 1
@@ -352,7 +356,8 @@ func (rh *ResultHandler) notifyBackoff(attempts int) time.Duration {
 	if delay > notifyBackoffMax {
 		delay = notifyBackoffMax
 	}
-	return delay
+	jittered := time.Duration(float64(delay) * (0.75 + rand.Float64()*0.5))
+	return jittered
 }
 
 func (rh *ResultHandler) notifyLeaseSec() int {

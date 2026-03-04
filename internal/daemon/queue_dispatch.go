@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"os"
 	"strings"
 	"time"
@@ -116,7 +117,8 @@ func (qh *QueueHandler) deliverPlannerSignal(ctx context.Context, commandID, mes
 	return nil
 }
 
-// computeSignalBackoff returns the backoff duration for the given attempt count.
+// computeSignalBackoff returns the backoff duration for the given attempt count
+// with ±25% uniform jitter to prevent thundering herd on recovery.
 func (qh *QueueHandler) computeSignalBackoff(attempts int) time.Duration {
 	baseSec := 5
 	maxSec := qh.config.Watcher.ScanIntervalSec
@@ -134,7 +136,9 @@ func (qh *QueueHandler) computeSignalBackoff(attempts int) time.Duration {
 	if backoffSec < baseSec {
 		backoffSec = baseSec
 	}
-	return time.Duration(backoffSec) * time.Second
+	base := time.Duration(backoffSec) * time.Second
+	jittered := time.Duration(float64(base) * (0.75 + rand.Float64()*0.5))
+	return jittered
 }
 
 // isAgentBusy probes agent busy state via executor. Returns false if no checker is set.

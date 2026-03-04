@@ -165,6 +165,11 @@ func (r *PlanStateReader) UpdateTaskState(commandID, taskID string, newStatus mo
 		state.TaskStates = make(map[string]model.Status)
 	}
 
+	// Verify taskID is a known task (exists in required, optional, or system commit)
+	if !isKnownTaskID(state, taskID) {
+		return fmt.Errorf("task %s not found in command %s: unknown task ID", taskID, commandID)
+	}
+
 	if currentStatus, exists := state.TaskStates[taskID]; exists {
 		if err := model.ValidateTaskStateTransition(currentStatus, newStatus); err != nil {
 			return fmt.Errorf("task %s in command %s: %w", taskID, commandID, err)
@@ -230,4 +235,23 @@ func (r *PlanStateReader) IsSystemCommitReady(commandID, taskID string) (bool, b
 		}
 	}
 	return true, true, nil
+}
+
+// isKnownTaskID checks whether taskID belongs to the command's known tasks
+// (required, optional, or system commit).
+func isKnownTaskID(state *model.CommandState, taskID string) bool {
+	for _, id := range state.RequiredTaskIDs {
+		if id == taskID {
+			return true
+		}
+	}
+	for _, id := range state.OptionalTaskIDs {
+		if id == taskID {
+			return true
+		}
+	}
+	if state.SystemCommitTaskID != nil && *state.SystemCommitTaskID == taskID {
+		return true
+	}
+	return false
 }

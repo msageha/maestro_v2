@@ -1468,7 +1468,7 @@ func TestSignalBackoff_Exponential(t *testing.T) {
 
 	tests := []struct {
 		attempts int
-		wantSec  int
+		baseSec  int // base value before jitter
 	}{
 		{0, 5},  // clamped to 1 → 5*(1<<0) = 5
 		{1, 5},  // 5*(1<<0) = 5
@@ -1481,9 +1481,11 @@ func TestSignalBackoff_Exponential(t *testing.T) {
 
 	for _, tt := range tests {
 		d := qh.computeSignalBackoff(tt.attempts)
-		gotSec := int(d.Seconds())
-		if gotSec != tt.wantSec {
-			t.Errorf("attempts=%d: got %ds, want %ds", tt.attempts, gotSec, tt.wantSec)
+		base := time.Duration(tt.baseSec) * time.Second
+		lo := time.Duration(float64(base) * 0.75)
+		hi := time.Duration(float64(base) * 1.25)
+		if d < lo || d > hi {
+			t.Errorf("attempts=%d: got %v, want in [%v, %v]", tt.attempts, d, lo, hi)
 		}
 	}
 }

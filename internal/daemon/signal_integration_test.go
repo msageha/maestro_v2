@@ -540,13 +540,13 @@ func TestSignal_Deduplication(t *testing.T) {
 	}
 }
 
-// Scenario S8: computeSignalBackoff produces expected values.
+// Scenario S8: computeSignalBackoff produces expected values within ±25% jitter range.
 func TestSignal_ComputeBackoff(t *testing.T) {
 	d := newIntegrationDaemon(t)
 
 	tests := []struct {
 		attempts int
-		wantSec  int
+		baseSec  int // base value before jitter
 	}{
 		{1, 5},   // 5 * 2^0 = 5
 		{2, 10},  // 5 * 2^1 = 10
@@ -558,9 +558,11 @@ func TestSignal_ComputeBackoff(t *testing.T) {
 
 	for _, tt := range tests {
 		got := d.handler.computeSignalBackoff(tt.attempts)
-		want := time.Duration(tt.wantSec) * time.Second
-		if got != want {
-			t.Errorf("computeSignalBackoff(%d) = %v, want %v", tt.attempts, got, want)
+		base := time.Duration(tt.baseSec) * time.Second
+		lo := time.Duration(float64(base) * 0.75)
+		hi := time.Duration(float64(base) * 1.25)
+		if got < lo || got > hi {
+			t.Errorf("computeSignalBackoff(%d) = %v, want in [%v, %v]", tt.attempts, got, lo, hi)
 		}
 	}
 }

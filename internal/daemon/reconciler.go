@@ -1052,112 +1052,113 @@ func (r *Reconciler) reconcileR6() ([]ReconcileRepair, []DeferredNotification) {
 		commandID := strings.TrimSuffix(entry.Name(), ".yaml")
 		statePath := filepath.Join(stateDir, entry.Name())
 
+		// CR-H01: Use closure+defer to guarantee Unlock on panic (matches R2/R4 pattern).
 		lockKey := "state:" + commandID
-		r.lockMap.Lock(lockKey)
+		writeOK, commandRepairs, timedOutPhases := func() (bool, []ReconcileRepair, map[string]bool) {
+			r.lockMap.Lock(lockKey)
+			defer r.lockMap.Unlock(lockKey)
 
-		state, err := r.loadState(statePath)
-		if err != nil {
-			if !os.IsNotExist(err) {
-				r.log(LogLevelError, "R6 load_state_corrupted command=%s file=%s error=%v", commandID, entry.Name(), err)
-			}
-			r.lockMap.Unlock(lockKey)
-			continue
-		}
-
-		if len(state.Phases) == 0 {
-			r.lockMap.Unlock(lockKey)
-			continue
-		}
-
-		modified := false
-		timedOutPhases := make(map[string]bool)
-		var commandRepairs []ReconcileRepair
-
-		for i := range state.Phases {
-			phase := &state.Phases[i]
-			if phase.Status != model.PhaseStatusAwaitingFill {
-				continue
-			}
-			if phase.FillDeadlineAt == nil {
-				continue
-			}
-
-			deadline, err := time.Parse(time.RFC3339, *phase.FillDeadlineAt)
+			state, err := r.loadState(statePath)
 			if err != nil {
-				continue
+				if !os.IsNotExist(err) {
+					r.log(LogLevelError, "R6 load_state_corrupted command=%s file=%s error=%v", commandID, entry.Name(), err)
+				}
+				return false, nil, nil
 			}
 
-			if r.clock.Now().UTC().Before(deadline) {
-				continue
+			if len(state.Phases) == 0 {
+				return false, nil, nil
 			}
 
-			r.log(LogLevelWarn, "R6 awaiting_fill_deadline_expired command=%s phase=%s deadline=%s",
-				commandID, phase.Name, *phase.FillDeadlineAt)
+			modified := false
+			timedOutPhases := make(map[string]bool)
+			var commandRepairs []ReconcileRepair
 
-			phase.Status = model.PhaseStatusTimedOut
-			modified = true
-			timedOutPhases[phase.Name] = true
+			for i := range state.Phases {
+				phase := &state.Phases[i]
+				if phase.Status != model.PhaseStatusAwaitingFill {
+					continue
+				}
+				if phase.FillDeadlineAt == nil {
+					continue
+				}
 
-			commandRepairs = append(commandRepairs, ReconcileRepair{
-				Pattern:   "R6",
-				CommandID: commandID,
-				Detail:    fmt.Sprintf("phase %s timed_out (deadline %s)", phase.Name, *phase.FillDeadlineAt),
-			})
-		}
+				deadline, err := time.Parse(time.RFC3339, *phase.FillDeadlineAt)
+				if err != nil {
+					continue
+				}
 
-		// Cascade cancel: transitive closure over downstream phases.
-		// A phase is cancelled if any of its dependencies are timed_out or
-		// already cascade-cancelled. We loop until no new cancellations occur.
-		if len(timedOutPhases) > 0 {
-			cancelledPhases := make(map[string]bool)
-			for name := range timedOutPhases {
-				cancelledPhases[name] = true
+				if r.clock.Now().UTC().Before(deadline) {
+					continue
+				}
+
+				r.log(LogLevelWarn, "R6 awaiting_fill_deadline_expired command=%s phase=%s deadline=%s",
+					commandID, phase.Name, *phase.FillDeadlineAt)
+
+				phase.Status = model.PhaseStatusTimedOut
+				modified = true
+				timedOutPhases[phase.Name] = true
+
+				commandRepairs = append(commandRepairs, ReconcileRepair{
+					Pattern:   "R6",
+					CommandID: commandID,
+					Detail:    fmt.Sprintf("phase %s timed_out (deadline %s)", phase.Name, *phase.FillDeadlineAt),
+				})
 			}
 
-			for {
-				changed := false
-				for i := range state.Phases {
-					phase := &state.Phases[i]
-					if phase.Status != model.PhaseStatusPending && phase.Status != model.PhaseStatusAwaitingFill {
-						continue
-					}
-					for _, dep := range phase.DependsOnPhases {
-						if cancelledPhases[dep] {
-							r.log(LogLevelWarn, "R6 cascade_cancel command=%s phase=%s (depends on %s)",
-								commandID, phase.Name, dep)
-							phase.Status = model.PhaseStatusCancelled
-							modified = true
-							changed = true
-							cancelledPhases[phase.Name] = true
+			// Cascade cancel: transitive closure over downstream phases.
+			// A phase is cancelled if any of its dependencies are timed_out or
+			// already cascade-cancelled. We loop until no new cancellations occur.
+			if len(timedOutPhases) > 0 {
+				cancelledPhases := make(map[string]bool)
+				for name := range timedOutPhases {
+					cancelledPhases[name] = true
+				}
 
-							commandRepairs = append(commandRepairs, ReconcileRepair{
-								Pattern:   "R6",
-								CommandID: commandID,
-								Detail:    fmt.Sprintf("phase %s cancelled (cascade from %s)", phase.Name, dep),
-							})
-							break
+				for {
+					changed := false
+					for i := range state.Phases {
+						phase := &state.Phases[i]
+						if phase.Status != model.PhaseStatusPending && phase.Status != model.PhaseStatusAwaitingFill {
+							continue
+						}
+						for _, dep := range phase.DependsOnPhases {
+							if cancelledPhases[dep] {
+								r.log(LogLevelWarn, "R6 cascade_cancel command=%s phase=%s (depends on %s)",
+									commandID, phase.Name, dep)
+								phase.Status = model.PhaseStatusCancelled
+								modified = true
+								changed = true
+								cancelledPhases[phase.Name] = true
+
+								commandRepairs = append(commandRepairs, ReconcileRepair{
+									Pattern:   "R6",
+									CommandID: commandID,
+									Detail:    fmt.Sprintf("phase %s cancelled (cascade from %s)", phase.Name, dep),
+								})
+								break
+							}
 						}
 					}
-				}
-				if !changed {
-					break
+					if !changed {
+						break
+					}
 				}
 			}
-		}
 
-		writeOK := false
-		if modified {
-			now := r.clock.Now().UTC().Format(time.RFC3339)
-			state.LastReconciledAt = &now
-			state.UpdatedAt = now
-			if err := yamlutil.AtomicWrite(statePath, state); err != nil {
-				r.log(LogLevelError, "R6 write_state command=%s error=%v", commandID, err)
-			} else {
-				writeOK = true
+			if modified {
+				now := r.clock.Now().UTC().Format(time.RFC3339)
+				state.LastReconciledAt = &now
+				state.UpdatedAt = now
+				if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+					r.log(LogLevelError, "R6 write_state command=%s error=%v", commandID, err)
+					return false, commandRepairs, timedOutPhases
+				}
+				return true, commandRepairs, timedOutPhases
 			}
-		}
 
-		r.lockMap.Unlock(lockKey)
+			return false, nil, nil
+		}()
 
 		// Only report repairs and defer notification on successful state write
 		if writeOK {

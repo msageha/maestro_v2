@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -85,7 +86,7 @@ func (sm *StateManager) DeleteState(commandID string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("delete state %s: %w", commandID, err)
 	}
 	return nil

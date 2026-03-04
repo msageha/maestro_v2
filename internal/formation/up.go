@@ -22,6 +22,10 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
+// serverOptionsBackupFile is the filename for saving tmux server options
+// before hardening, so they can be restored during teardown.
+const serverOptionsBackupFile = "server_options_backup.yaml"
+
 // UpOptions holds configuration for the 'maestro up' command.
 type UpOptions struct {
 	MaestroDir string
@@ -92,6 +96,12 @@ func RunUp(opts UpOptions) error {
 	// Startup recovery
 	if err := startupRecovery(opts.MaestroDir); err != nil {
 		return fmt.Errorf("startup recovery: %w", err)
+	}
+
+	// Save current tmux server options before hardening overrides them.
+	// Best-effort: if the server isn't running yet, defaults are saved.
+	if err := saveServerOptions(opts.MaestroDir); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not save server options: %v\n", err)
 	}
 
 	// Create tmux formation
@@ -278,7 +288,11 @@ func validateAndRecoverYAML(maestroDir string) {
 			}
 
 			filePath := filepath.Join(dir, entry.Name())
-			if err := yamlutil.ValidateSchemaHeader(filePath, expectedType); err != nil {
+			fileExpectedType := expectedType
+			if fileExpectedType == "" {
+				fileExpectedType = inferFileType(dir, entry.Name())
+			}
+			if err := yamlutil.ValidateSchemaHeader(filePath, fileExpectedType); err != nil {
 				fmt.Printf("Warning: corrupt YAML detected: %s (%v)\n", filePath, err)
 				if recErr := yamlutil.RecoverCorruptedFile(maestroDir, filePath, inferFileType(dir, entry.Name())); recErr != nil {
 					fmt.Printf("Warning: recovery failed for %s: %v\n", filePath, recErr)
@@ -317,6 +331,9 @@ func inferFileType(dir, filename string) string {
 		}
 		if filename == "orchestrator.yaml" {
 			return "queue_notification"
+		}
+		if filename == "planner_signals.yaml" {
+			return "planner_signal_queue"
 		}
 		return "queue_task"
 	case "results":
@@ -750,6 +767,51 @@ func activateContinuousMode(maestroDir string, cfg model.Config) error {
 	state.UpdatedAt = &now
 
 	return yamlutil.AtomicWrite(continuousPath, &state)
+}
+
+// saveServerOptions queries the current tmux server option values and saves
+// them to a backup file so they can be restored during teardown.
+// If the tmux server is not running, tmux defaults are saved instead.
+func saveServerOptions(maestroDir string) error {
+	type optDef struct {
+		name       string
+		defaultVal string
+	}
+	opts := []optDef{
+		{"exit-empty", "on"},       // tmux default
+		{"exit-unattached", "off"}, // tmux default
+	}
+
+	saved := make(map[string]string, len(opts))
+	for _, o := range opts {
+		val, err := getServerOptionValue(o.name)
+		if err == nil && val != "" {
+			saved[o.name] = val
+		} else {
+			saved[o.name] = o.defaultVal
+		}
+	}
+
+	data, err := yamlv3.Marshal(saved)
+	if err != nil {
+		return fmt.Errorf("marshal server options: %w", err)
+	}
+
+	backupPath := filepath.Join(maestroDir, serverOptionsBackupFile)
+	return os.WriteFile(backupPath, data, 0644)
+}
+
+// getServerOptionValue retrieves a tmux server-level option value.
+// Returns an error if the tmux server is not running or the option doesn't exist.
+func getServerOptionValue(name string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "tmux", "show-options", "-s", "-v", name)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
 }
 
 // clearYAMLFiles removes all .yaml files in a directory.

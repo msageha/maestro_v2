@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"text/template"
 	"time"
 
@@ -79,6 +80,10 @@ type DashboardFormatter struct {
 	maxErrors   int
 	maxWarnings int
 	clock       Clock
+
+	tmplOnce sync.Once
+	tmplVal  *template.Template
+	tmplErr  error
 }
 
 // NewDashboardFormatter creates a new dashboard formatter
@@ -371,9 +376,10 @@ func (f *DashboardFormatter) limitEvents(data *DashboardData) {
 	}
 }
 
-// getDashboardTemplate returns the dashboard template
+// getDashboardTemplate returns the dashboard template, caching it after the first parse.
 func (f *DashboardFormatter) getDashboardTemplate() (*template.Template, error) {
-	tmplText := `# Maestro Dashboard
+	f.tmplOnce.Do(func() {
+		const tmplText = `# Maestro Dashboard
 
 > Auto-generated at {{ .LastUpdated.Format "2006-01-02 15:04:05 MST" }}. Do not edit manually.
 
@@ -455,8 +461,9 @@ _No recent activity._
 ---
 _Last updated: {{ .LastUpdated.Format "2006-01-02 15:04:05 MST" }}_
 `
-
-	return template.New("dashboard").Parse(tmplText)
+		f.tmplVal, f.tmplErr = template.New("dashboard").Parse(tmplText)
+	})
+	return f.tmplVal, f.tmplErr
 }
 
 // UpdateDashboardFileWithQueues generates the dashboard using both JSONL logs

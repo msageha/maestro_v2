@@ -399,11 +399,12 @@ func TestUpdateTaskState_NilTaskStates(t *testing.T) {
 
 	// Write state with nil TaskStates to test initialization
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion: 1,
-		FileType:      "state_command",
-		CommandID:     "cmd1",
-		PlanStatus:    model.PlanStatusSealed,
-		TaskStates:    nil,
+		SchemaVersion:   1,
+		FileType:        "state_command",
+		CommandID:       "cmd1",
+		PlanStatus:      model.PlanStatusSealed,
+		RequiredTaskIDs: []string{"task1"},
+		TaskStates:      nil,
 	})
 
 	err := reader.UpdateTaskState("cmd1", "task1", model.StatusPending, "")
@@ -424,14 +425,36 @@ func TestUpdateTaskState_NilTaskStates(t *testing.T) {
 	}
 }
 
+func TestUpdateTaskState_UnknownTaskID(t *testing.T) {
+	maestroDir, reader := setupStateReaderTest(t)
+
+	writeState(t, maestroDir, &model.CommandState{
+		SchemaVersion:   1,
+		FileType:        "state_command",
+		CommandID:       "cmd1",
+		PlanStatus:      model.PlanStatusSealed,
+		RequiredTaskIDs: []string{"task1"},
+		TaskStates:      map[string]model.Status{"task1": model.StatusPending},
+	})
+
+	err := reader.UpdateTaskState("cmd1", "unknown_task", model.StatusPending, "")
+	if err == nil {
+		t.Fatal("expected error for unknown task ID, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown task ID") {
+		t.Errorf("error = %q, want to contain %q", err.Error(), "unknown task ID")
+	}
+}
+
 func TestUpdateTaskState_NormalTransition(t *testing.T) {
 	maestroDir, reader := setupStateReaderTest(t)
 
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion: 1,
-		FileType:      "state_command",
-		CommandID:     "cmd1",
-		PlanStatus:    model.PlanStatusSealed,
+		SchemaVersion:   1,
+		FileType:        "state_command",
+		CommandID:       "cmd1",
+		PlanStatus:      model.PlanStatusSealed,
+		RequiredTaskIDs: []string{"task1"},
 		TaskStates: map[string]model.Status{
 			"task1": model.StatusPending,
 		},
@@ -460,10 +483,11 @@ func TestUpdateTaskState_InvalidTransition(t *testing.T) {
 	maestroDir, reader := setupStateReaderTest(t)
 
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion: 1,
-		FileType:      "state_command",
-		CommandID:     "cmd1",
-		PlanStatus:    model.PlanStatusSealed,
+		SchemaVersion:   1,
+		FileType:        "state_command",
+		CommandID:       "cmd1",
+		PlanStatus:      model.PlanStatusSealed,
+		RequiredTaskIDs: []string{"task1"},
 		TaskStates: map[string]model.Status{
 			"task1": model.StatusPending,
 		},
@@ -480,11 +504,12 @@ func TestUpdateTaskState_CancelledReason(t *testing.T) {
 	maestroDir, reader := setupStateReaderTest(t)
 
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:  1,
-		FileType:       "state_command",
-		CommandID:      "cmd1",
-		PlanStatus:     model.PlanStatusSealed,
-		TaskStates:     map[string]model.Status{"task1": model.StatusPending},
+		SchemaVersion:    1,
+		FileType:         "state_command",
+		CommandID:        "cmd1",
+		PlanStatus:       model.PlanStatusSealed,
+		RequiredTaskIDs:  []string{"task1"},
+		TaskStates:       map[string]model.Status{"task1": model.StatusPending},
 		CancelledReasons: map[string]string{},
 	})
 

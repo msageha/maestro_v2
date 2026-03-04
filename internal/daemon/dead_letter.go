@@ -15,9 +15,6 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
-// maxDeadLetterArchiveFiles is the maximum number of dead letter archive files to retain.
-const maxDeadLetterArchiveFiles = 100
-
 // DeadLetterProcessor handles queue entries that have exceeded max retry attempts.
 type DeadLetterProcessor struct {
 	maestroDir string
@@ -289,7 +286,8 @@ func (dlp *DeadLetterProcessor) pruneDeadLetterArchives(archiveDir string) {
 		yamlFiles = append(yamlFiles, fileWithTime{name: e.Name(), modTime: info.ModTime()})
 	}
 
-	if len(yamlFiles) <= maxDeadLetterArchiveFiles {
+	limit := dlp.config.Limits.EffectiveMaxDeadLetterArchiveFiles()
+	if len(yamlFiles) <= limit {
 		return
 	}
 
@@ -298,7 +296,7 @@ func (dlp *DeadLetterProcessor) pruneDeadLetterArchives(archiveDir string) {
 		return yamlFiles[i].modTime.Before(yamlFiles[j].modTime)
 	})
 
-	toRemove := len(yamlFiles) - maxDeadLetterArchiveFiles
+	toRemove := len(yamlFiles) - limit
 	for i := 0; i < toRemove; i++ {
 		path := filepath.Join(archiveDir, yamlFiles[i].name)
 		if err := os.Remove(path); err != nil {
@@ -306,7 +304,7 @@ func (dlp *DeadLetterProcessor) pruneDeadLetterArchives(archiveDir string) {
 		}
 	}
 
-	dlp.log(LogLevelInfo, "pruned_dead_letter_archives removed=%d remaining=%d", toRemove, maxDeadLetterArchiveFiles)
+	dlp.log(LogLevelInfo, "pruned_dead_letter_archives removed=%d remaining=%d", toRemove, limit)
 }
 
 // commandDeadLetterPostProcess updates state for a dead-lettered command.

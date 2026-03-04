@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"math"
@@ -138,11 +139,11 @@ func BuildWorkerStates(maestroDir string, config model.WorkerConfig) ([]WorkerSt
 		queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(workerID))
 		data, err := os.ReadFile(queueFile)
 		if err != nil {
-			if !os.IsNotExist(err) {
+			if !errors.Is(err, os.ErrNotExist) {
 				log.Printf("[WARN] BuildWorkerStates: failed to read queue file %s: %v (marking worker unavailable)", queueFile, err)
 				workerAvailable = false
 			}
-			// os.IsNotExist → treat as empty queue (pendingCount=0)
+			// os.ErrNotExist → treat as empty queue (pendingCount=0)
 		} else {
 			var tq model.TaskQueue
 			if err := yamlv3.Unmarshal(data, &tq); err != nil {

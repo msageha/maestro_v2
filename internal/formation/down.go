@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
@@ -43,7 +45,7 @@ func RunDown(maestroDir string, cfg model.Config) error {
 			fmt.Println("[debug] RunDown: killing session (daemon socket missing)")
 			_ = tmux.KillSession()
 		}
-		restoreServerOptions()
+		restoreServerOptions(maestroDir)
 		fmt.Println("Daemon is not running. Formation stopped.")
 		return nil
 	}
@@ -63,7 +65,7 @@ func RunDown(maestroDir string, cfg model.Config) error {
 			fmt.Println("[debug] RunDown: killing session (daemon connection failed)")
 			_ = tmux.KillSession()
 		}
-		restoreServerOptions()
+		restoreServerOptions(maestroDir)
 		fmt.Println("Maestro formation stopped.")
 		return nil
 	}
@@ -116,21 +118,41 @@ func RunDown(maestroDir string, cfg model.Config) error {
 		}
 	}
 
-	restoreServerOptions()
+	restoreServerOptions(maestroDir)
 	fmt.Println("Maestro formation stopped.")
 	return nil
 }
 
-// restoreServerOptions restores tmux server options to their defaults after
-// session cleanup so the tmux server exits naturally when the user has no
-// other sessions. Skips restoration if other maestro sessions are still
-// running on the same tmux server to avoid killing them.
-func restoreServerOptions() {
+// restoreServerOptions restores tmux server options from the backup file
+// saved during 'maestro up'. Falls back to tmux defaults if the backup
+// file is missing or unreadable. Skips restoration if other maestro
+// sessions are still running on the same tmux server.
+func restoreServerOptions(maestroDir string) {
 	if hasOtherMaestroSessions() {
 		return
 	}
-	_ = tmux.SetServerOption("exit-empty", "on")
-	_ = tmux.SetServerOption("exit-unattached", "off")
+
+	// Defaults matching tmux upstream defaults
+	options := map[string]string{
+		"exit-empty":      "on",
+		"exit-unattached": "off",
+	}
+
+	backupPath := filepath.Join(maestroDir, serverOptionsBackupFile)
+	data, err := os.ReadFile(backupPath)
+	if err == nil {
+		var saved map[string]string
+		if err := yamlv3.Unmarshal(data, &saved); err == nil {
+			for k, v := range saved {
+				options[k] = v
+			}
+		}
+		_ = os.Remove(backupPath)
+	}
+
+	for name, value := range options {
+		_ = tmux.SetServerOption(name, value)
+	}
 }
 
 // hasOtherMaestroSessions checks if any other maestro-* sessions exist

@@ -12,10 +12,6 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
-// maxQuarantineFiles is the maximum number of files allowed in the quarantine directory.
-// When exceeded, the oldest files are automatically removed.
-const maxQuarantineFiles = 100
-
 // --- File I/O helpers ---
 
 func (qh *QueueHandler) loadCommandQueue() (model.CommandQueue, string) {
@@ -121,18 +117,19 @@ func (qh *QueueHandler) salvageCommandQueue(data []byte) model.CommandQueue {
 	return result
 }
 
-// cleanupQuarantine removes the oldest files when the quarantine directory exceeds maxQuarantineFiles.
+// cleanupQuarantine removes the oldest files when the quarantine directory exceeds the configured limit.
 // Files are sorted by name (timestamp-based naming ensures chronological order).
 func (qh *QueueHandler) cleanupQuarantine(quarantineDir string) {
 	entries, err := os.ReadDir(quarantineDir)
 	if err != nil {
 		return
 	}
-	if len(entries) <= maxQuarantineFiles {
+	limit := qh.config.Limits.EffectiveMaxQuarantineFiles()
+	if len(entries) <= limit {
 		return
 	}
 	// os.ReadDir returns entries sorted by name; timestamp-based names ensure oldest first
-	toRemove := len(entries) - maxQuarantineFiles
+	toRemove := len(entries) - limit
 	for i := 0; i < toRemove; i++ {
 		path := filepath.Join(quarantineDir, entries[i].Name())
 		if err := os.Remove(path); err != nil {

@@ -97,6 +97,24 @@ type LimitsConfig struct {
 	MaxPendingTasksPerWorker int `yaml:"max_pending_tasks_per_worker"`
 	MaxEntryContentBytes     int `yaml:"max_entry_content_bytes"`
 	MaxYAMLFileBytes         int `yaml:"max_yaml_file_bytes"`
+	MaxDeadLetterArchiveFiles int `yaml:"max_dead_letter_archive_files"`
+	MaxQuarantineFiles        int `yaml:"max_quarantine_files"`
+}
+
+// EffectiveMaxDeadLetterArchiveFiles returns the configured limit or 100 as default.
+func (l LimitsConfig) EffectiveMaxDeadLetterArchiveFiles() int {
+	if l.MaxDeadLetterArchiveFiles > 0 {
+		return l.MaxDeadLetterArchiveFiles
+	}
+	return 100
+}
+
+// EffectiveMaxQuarantineFiles returns the configured limit or 100 as default.
+func (l LimitsConfig) EffectiveMaxQuarantineFiles() int {
+	if l.MaxQuarantineFiles > 0 {
+		return l.MaxQuarantineFiles
+	}
+	return 100
 }
 
 type DaemonConfig struct {

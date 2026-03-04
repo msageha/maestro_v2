@@ -388,17 +388,11 @@ func (e *Engine) evaluateRule(ctx context.Context, rule *CompiledRule, evalCtx E
 	return result
 }
 
-// evaluateCondition evaluates a compiled condition recursively
+// evaluateCondition evaluates a compiled condition recursively.
+// Logical operators (And/Or/Not) are handled internally by the evaluator
+// via recursive calls, so all condition types use the same code path.
 func (e *Engine) evaluateCondition(ctx context.Context, condition *CompiledCondition, evalCtx EvaluationContext, evaluator RuleEvaluator) (bool, error) {
-	// For logical operators with sub-conditions, we need special handling
-	switch condition.Type {
-	case ConditionAnd, ConditionOr, ConditionNot:
-		// These are handled by their respective evaluators which will call back into evaluateCondition
-		return evaluator.Evaluate(ctx, condition.RuleCondition, evalCtx)
-	default:
-		// For other types, use the registered evaluator directly
-		return evaluator.Evaluate(ctx, condition.RuleCondition, evalCtx)
-	}
+	return evaluator.Evaluate(ctx, condition.RuleCondition, evalCtx)
 }
 
 // shouldTriggerGate checks if a gate should be triggered based on context
