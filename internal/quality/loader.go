@@ -610,8 +610,7 @@ func (l *Loader) compilePatterns(config *GateConfiguration) error {
 				if err != nil {
 					return fmt.Errorf("gate[%s]: invalid trigger pattern regex: %w", gate.ID, err)
 				}
-				// Store compiled regex (would need to add field to struct)
-				_ = re
+				pattern.CompiledRegex = re
 			}
 		}
 

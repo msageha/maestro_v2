@@ -47,15 +47,17 @@ func RunUp(opts UpOptions) error {
 	// This logger covers the up process (session creation, hardening, agent launch).
 	// The daemon process initializes its own logger independently.
 	tmuxLogPath := filepath.Join(opts.MaestroDir, "logs", "tmux_debug.log")
-	if err := os.MkdirAll(filepath.Dir(tmuxLogPath), 0755); err == nil {
-		if tmuxLogFile, err := os.OpenFile(tmuxLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
-			tmuxLogger := log.New(tmuxLogFile, "", log.LstdFlags|log.Lmicroseconds)
-			tmux.SetDebugLogger(tmuxLogger)
-			defer func() {
-				tmux.SetDebugLogger(nil)
-				tmuxLogFile.Close()
-			}()
-		}
+	if err := os.MkdirAll(filepath.Dir(tmuxLogPath), 0755); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to create tmux debug log directory: %v\n", err)
+	} else if tmuxLogFile, err := os.OpenFile(tmuxLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to open tmux debug log: %v\n", err)
+	} else {
+		tmuxLogger := log.New(tmuxLogFile, "", log.LstdFlags|log.Lmicroseconds)
+		tmux.SetDebugLogger(tmuxLogger)
+		defer func() {
+			tmux.SetDebugLogger(nil)
+			tmuxLogFile.Close()
+		}()
 	}
 
 	// Guard: refuse to destroy a running session unless --force is set

@@ -11,6 +11,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
 	maestroyaml "github.com/msageha/maestro_v2/internal/yaml"
@@ -125,6 +126,18 @@ func getQueueDepths(maestroDir string) []QueueStatus {
 		}
 
 		filePath := filepath.Join(queueDir, entry.Name())
+
+		// Size guard: skip files exceeding the maximum YAML file size to prevent OOM
+		info, err := entry.Info()
+		if err != nil {
+			log.Printf("status: failed to stat %s: %v", entry.Name(), err)
+			continue
+		}
+		if info.Size() > int64(model.DefaultMaxYAMLFileBytes) {
+			log.Printf("status: skipping %s: file too large (%d bytes)", entry.Name(), info.Size())
+			continue
+		}
+
 		data, err := os.ReadFile(filePath)
 		if err != nil {
 			log.Printf("status: failed to read %s: %v", entry.Name(), err)

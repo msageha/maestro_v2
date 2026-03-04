@@ -270,7 +270,12 @@ func TestGetLatestDescendant(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := getLatestDescendant(tt.taskID, tt.lineage)
+			// Build reverse lineage (old→new) from lineage (new→old)
+			reverseLineage := make(map[string]string, len(tt.lineage))
+			for newID, oldID := range tt.lineage {
+				reverseLineage[oldID] = newID
+			}
+			got := getLatestDescendant(tt.taskID, reverseLineage)
 			if got != tt.want {
 				t.Errorf("getLatestDescendant(%q) = %q, want %q", tt.taskID, got, tt.want)
 			}

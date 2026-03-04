@@ -75,8 +75,8 @@ func RunDown(maestroDir string, cfg model.Config) error {
 	fmt.Println("Shutdown accepted. Waiting for daemon to stop...")
 
 	// Wait for daemon to stop (poll socket removal or lock release)
-	timeout := 100 * time.Second
-	deadline := time.Now().Add(timeout)
+	const daemonShutdownTimeout = 30 * time.Second
+	deadline := time.Now().Add(daemonShutdownTimeout)
 	for time.Now().Before(deadline) {
 		if _, err := os.Stat(socketPath); os.IsNotExist(err) {
 			break

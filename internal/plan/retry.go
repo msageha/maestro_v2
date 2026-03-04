@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -172,7 +173,11 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 	}
 
 	// Cascade recovery
-	origTaskCache := loadOriginalTasksFromQueue(opts.MaestroDir, opts.CommandID)
+	origTaskCache, err := loadOriginalTasksFromQueue(opts.MaestroDir, opts.CommandID)
+	if err != nil {
+		restoreState(state, origStateBytes)
+		return nil, fmt.Errorf("load original tasks from queue: %w", err)
+	}
 	cascadeRecovered, err := cascadeRecover(
 		state, opts.RetryOf, newTaskID,
 		opts.Config.Agents.Workers, opts.Config.Limits, workerStates, origTaskCache,
@@ -428,20 +433,21 @@ func findCascadeCandidates(state *model.CommandState, failedTaskID string) []str
 }
 
 func resolveBlockedByViaLineage(blockedBy []string, lineage map[string]string) []string {
-	resolved := make([]string, len(blockedBy))
-	for i, dep := range blockedBy {
-		resolved[i] = getLatestDescendant(dep, lineage)
-	}
-	return resolved
-}
-
-func getLatestDescendant(taskID string, lineage map[string]string) string {
-	// lineage maps new -> old, so we need to build reverse map
-	reverseLineage := make(map[string]string)
+	// Build reverse lineage map once (O(m)) instead of per-element (was O(n*m)).
+	// lineage maps new -> old, reverse maps old -> new.
+	reverseLineage := make(map[string]string, len(lineage))
 	for newID, oldID := range lineage {
 		reverseLineage[oldID] = newID
 	}
 
+	resolved := make([]string, len(blockedBy))
+	for i, dep := range blockedBy {
+		resolved[i] = getLatestDescendant(dep, reverseLineage)
+	}
+	return resolved
+}
+
+func getLatestDescendant(taskID string, reverseLineage map[string]string) string {
 	visited := make(map[string]bool)
 	current := taskID
 	for {
@@ -497,6 +503,8 @@ func writeRetryQueueEntry(maestroDir string, task retryQueueTask, now string, lo
 		if err := yamlv3.Unmarshal(data, &tq); err != nil {
 			return fmt.Errorf("parse existing queue %s: %w", task.workerID, err)
 		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read queue %s: %w", task.workerID, err)
 	}
 	if tq.SchemaVersion == 0 {
 		tq.SchemaVersion = 1
@@ -522,24 +530,32 @@ func writeRetryQueueEntry(maestroDir string, task retryQueueTask, now string, lo
 	return yamlutil.AtomicWrite(queueFile, tq)
 }
 
-func loadOriginalTasksFromQueue(maestroDir string, commandID string) map[string]model.Task {
+func loadOriginalTasksFromQueue(maestroDir string, commandID string) (map[string]model.Task, error) {
 	result := make(map[string]model.Task)
 	queueDir := filepath.Join(maestroDir, "queue")
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
-		return result
+		if errors.Is(err, os.ErrNotExist) {
+			return result, nil
+		}
+		return nil, fmt.Errorf("read queue directory: %w", err)
 	}
 	for _, entry := range entries {
 		name := entry.Name()
 		if !strings.HasPrefix(name, "worker") || !strings.HasSuffix(name, ".yaml") {
 			continue
 		}
-		data, err := os.ReadFile(filepath.Join(queueDir, name))
+		filePath := filepath.Join(queueDir, name)
+		data, err := os.ReadFile(filePath)
 		if err != nil {
-			continue
+			if errors.Is(err, os.ErrNotExist) {
+				continue // file removed between ReadDir and ReadFile; race-safe
+			}
+			return nil, fmt.Errorf("read queue file %s: %w", name, err)
 		}
 		var tq model.TaskQueue
-		if yamlv3.Unmarshal(data, &tq) != nil {
+		if err := yamlv3.Unmarshal(data, &tq); err != nil {
+			log.Printf("loadOriginalTasksFromQueue: skipping corrupt queue file %s: %v", name, err)
 			continue
 		}
 		for _, task := range tq.Tasks {
@@ -548,7 +564,7 @@ func loadOriginalTasksFromQueue(maestroDir string, commandID string) map[string]
 			}
 		}
 	}
-	return result
+	return result, nil
 }
 
 func rollbackRetryQueueEntries(maestroDir string, written []retryQueueTask, lockMap *lock.MutexMap) {

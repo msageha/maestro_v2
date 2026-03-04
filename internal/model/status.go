@@ -134,10 +134,8 @@ var validPhaseTransitions = map[PhaseStatus]map[PhaseStatus]bool{
 		PhaseStatusFailed:    true,
 		PhaseStatusCancelled: true,
 	},
-	// add-retry-task can reopen failed → active
-	PhaseStatusFailed: {
-		PhaseStatusActive: true,
-	},
+	// NOTE: PhaseStatusFailed → PhaseStatusActive is handled as a special case
+	// in ValidatePhaseTransition() before the map lookup, so no entry is needed here.
 }
 
 func IsTerminal(s Status) bool {

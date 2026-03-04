@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -27,6 +28,10 @@ type CancelHandler struct {
 	executorFactory ExecutorFactory
 	stateReader     StateReader
 	lockMap         *lock.MutexMap
+
+	cachedExec    AgentExecutor
+	cachedExecErr error
+	execOnce      sync.Once
 }
 
 // NewCancelHandler creates a new CancelHandler.
@@ -46,8 +51,31 @@ func NewCancelHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMa
 }
 
 // SetExecutorFactory overrides the executor factory for testing.
+// Resets the cached executor so the new factory is used on next call.
 func (ch *CancelHandler) SetExecutorFactory(f ExecutorFactory) {
 	ch.executorFactory = f
+	ch.execOnce = sync.Once{}
+	ch.cachedExec = nil
+	ch.cachedExecErr = nil
+}
+
+// getExecutor returns the shared executor instance, creating it lazily via sync.Once.
+func (ch *CancelHandler) getExecutor() (AgentExecutor, error) {
+	ch.execOnce.Do(func() {
+		ch.cachedExec, ch.cachedExecErr = ch.executorFactory(ch.maestroDir, ch.config.Watcher, ch.config.Logging.Level)
+	})
+	if ch.cachedExecErr != nil {
+		return nil, fmt.Errorf("%w: %v", errExecutorInit, ch.cachedExecErr)
+	}
+	return ch.cachedExec, nil
+}
+
+// CloseExecutor releases the shared executor's resources.
+func (ch *CancelHandler) CloseExecutor() {
+	if ch.cachedExec != nil {
+		_ = ch.cachedExec.Close()
+		ch.cachedExec = nil
+	}
 }
 
 // SetStateReader wires the state reader for updating task states on cancellation.
@@ -299,11 +327,10 @@ func (ch *CancelHandler) BuildSyntheticResult(r CancelledTaskResult) map[string]
 
 // interruptAgent sends an interrupt to the agent running the task.
 func (ch *CancelHandler) interruptAgent(workerID, taskID, commandID string, leaseEpoch int) error {
-	exec, err := ch.executorFactory(ch.maestroDir, ch.config.Watcher, ch.config.Logging.Level)
+	exec, err := ch.getExecutor()
 	if err != nil {
 		return fmt.Errorf("create executor: %w", err)
 	}
-	defer func() { _ = exec.Close() }()
 
 	result := exec.Execute(agent.ExecRequest{
 		AgentID:    workerID,

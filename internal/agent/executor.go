@@ -57,10 +57,11 @@ var (
 )
 
 const (
-	promptReadyLines   = 12 // プロンプト検出+安定性ハッシュ用 (12 lines to accommodate status bars)
-	busyHintLines      = 5  // busy パターンマッチ用
-	stableCheckRounds  = 1 // 安定性判定に必要なラウンド数
-	lastLineMaxDisplay = 80
+	promptReadyLines    = 12 // プロンプト検出+安定性ハッシュ用 (12 lines to accommodate status bars)
+	busyHintLines       = 5  // busy パターンマッチ用
+	stableCheckRounds   = 1  // 安定性判定に必要なラウンド数
+	lastLineMaxDisplay  = 80
+	defaultExecTimeout  = 5 * time.Minute // Context未設定時のデフォルトタイムアウト
 )
 
 // ExecRequest contains parameters for executing a message delivery.
@@ -206,8 +207,11 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 func (e *Executor) Execute(req ExecRequest) ExecResult {
 	ctx := req.Context
 	if ctx == nil {
-		ctx = context.Background()
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), defaultExecTimeout)
+		defer cancel()
 	}
+	req.Context = ctx
 
 	paneTarget, err := tmux.FindPaneByAgentID(req.AgentID)
 	if err != nil {

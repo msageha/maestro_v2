@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -44,6 +45,10 @@ type ResultHandler struct {
 	executorFactory   ExecutorFactory
 	continuousHandler *ContinuousHandler
 	eventBus          *events.Bus
+
+	cachedExec    AgentExecutor
+	cachedExecErr error
+	execOnce      sync.Once
 }
 
 // NewResultHandler creates a new ResultHandler.
@@ -69,8 +74,31 @@ func NewResultHandler(
 }
 
 // SetExecutorFactory overrides the executor factory for testing.
+// Resets the cached executor so the new factory is used on next call.
 func (rh *ResultHandler) SetExecutorFactory(f ExecutorFactory) {
 	rh.executorFactory = f
+	rh.execOnce = sync.Once{}
+	rh.cachedExec = nil
+	rh.cachedExecErr = nil
+}
+
+// getExecutor returns the shared executor instance, creating it lazily via sync.Once.
+func (rh *ResultHandler) getExecutor() (AgentExecutor, error) {
+	rh.execOnce.Do(func() {
+		rh.cachedExec, rh.cachedExecErr = rh.executorFactory(rh.maestroDir, rh.config.Watcher, rh.config.Logging.Level)
+	})
+	if rh.cachedExecErr != nil {
+		return nil, fmt.Errorf("%w: %v", errExecutorInit, rh.cachedExecErr)
+	}
+	return rh.cachedExec, nil
+}
+
+// CloseExecutor releases the shared executor's resources.
+func (rh *ResultHandler) CloseExecutor() {
+	if rh.cachedExec != nil {
+		_ = rh.cachedExec.Close()
+		rh.cachedExec = nil
+	}
 }
 
 // SetContinuousHandler wires the continuous handler for iteration tracking.
@@ -462,11 +490,10 @@ func (rh *ResultHandler) markCommandNotifyFailure(r *model.CommandResult, errMsg
 
 // notifyPlannerOfWorkerResult sends a task_result notification to Planner via agent_executor.
 func (rh *ResultHandler) notifyPlannerOfWorkerResult(commandID, taskID, workerID, taskStatus string) error {
-	exec, err := rh.executorFactory(rh.maestroDir, rh.config.Watcher, rh.config.Logging.Level)
+	exec, err := rh.getExecutor()
 	if err != nil {
 		return fmt.Errorf("create executor: %w", err)
 	}
-	defer func() { _ = exec.Close() }()
 
 	message := agent.BuildTaskResultNotification(commandID, taskID, workerID, taskStatus)
 

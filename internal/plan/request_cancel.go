@@ -23,6 +23,12 @@ func RequestCancel(opts RequestCancelOptions) error {
 	}
 	sm := NewStateManager(opts.MaestroDir, opts.LockMap)
 
+	// CRIT-02: Acquire queue:planner lock BEFORE state lock to prevent
+	// race conditions on planner.yaml read-modify-write operations.
+	// Lock ordering: queue:planner → state:<commandID> (documented in daemon package).
+	opts.LockMap.Lock("queue:planner")
+	defer opts.LockMap.Unlock("queue:planner")
+
 	sm.LockCommand(opts.CommandID)
 	defer sm.UnlockCommand(opts.CommandID)
 
@@ -53,6 +59,8 @@ func RequestCancel(opts RequestCancelOptions) error {
 	return cancelInPlannerQueue(opts.MaestroDir, opts.CommandID, opts.RequestedBy, opts.Reason)
 }
 
+// setCancelOnPlannerQueue sets cancel fields on a command in planner.yaml.
+// Precondition: caller must hold the queue:planner lock.
 func setCancelOnPlannerQueue(maestroDir string, commandID string, requestedBy, reason string) error {
 	plannerPath := filepath.Join(maestroDir, "queue", "planner.yaml")
 
@@ -86,6 +94,8 @@ func setCancelOnPlannerQueue(maestroDir string, commandID string, requestedBy, r
 	return nil // command not found in queue — that's ok for submitted commands
 }
 
+// cancelInPlannerQueue cancels an un-submitted command directly in planner.yaml.
+// Precondition: caller must hold the queue:planner lock.
 func cancelInPlannerQueue(maestroDir string, commandID string, requestedBy, reason string) error {
 	plannerPath := filepath.Join(maestroDir, "queue", "planner.yaml")
 

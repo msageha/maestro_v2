@@ -13,6 +13,10 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
+// errExecutorInit is a sentinel returned by getExecutor when the cached executor
+// failed to initialise (sync.Once captured the error on first call).
+var errExecutorInit = fmt.Errorf("executor init failed")
+
 // maxGateEvaluations is the maximum number of gate evaluation entries kept in memory.
 const maxGateEvaluations = 1000
 
@@ -30,6 +34,12 @@ type Dispatcher struct {
 	qualityGate       *QualityGateDaemon
 	gateEvaluations   map[string]*model.QualityGateEvaluation // task_id -> evaluation
 	gateEvalMutex     sync.RWMutex
+
+	// cachedExec is a shared Executor instance created once and reused across
+	// dispatch calls. This avoids per-dispatch log file Open/Close overhead.
+	cachedExec    AgentExecutor
+	cachedExecErr error
+	execOnce      sync.Once
 }
 
 // ExecutorFactory creates agent executors. Allows testing without tmux.
@@ -59,8 +69,35 @@ func NewDispatcher(maestroDir string, cfg model.Config, lm *LeaseManager, logger
 }
 
 // SetExecutorFactory overrides the executor factory for testing.
+// Resets the cached executor so the new factory is used on next call.
 func (d *Dispatcher) SetExecutorFactory(f ExecutorFactory) {
 	d.executorFactory = f
+	// Reset cached executor so the new factory takes effect.
+	d.execOnce = sync.Once{}
+	d.cachedExec = nil
+	d.cachedExecErr = nil
+}
+
+// getExecutor returns the shared executor instance, creating it lazily via sync.Once.
+// The Executor is safe for concurrent use (log.Logger uses internal mutex,
+// os.File in append mode is POSIX-safe, all other fields are immutable).
+func (d *Dispatcher) getExecutor() (AgentExecutor, error) {
+	d.execOnce.Do(func() {
+		d.cachedExec, d.cachedExecErr = d.executorFactory(d.maestroDir, d.config.Watcher, d.config.Logging.Level)
+	})
+	if d.cachedExecErr != nil {
+		return nil, fmt.Errorf("%w: %v", errExecutorInit, d.cachedExecErr)
+	}
+	return d.cachedExec, nil
+}
+
+// CloseExecutor releases the shared executor's resources (log file handle).
+// Safe to call multiple times; subsequent calls are no-ops.
+func (d *Dispatcher) CloseExecutor() {
+	if d.cachedExec != nil {
+		_ = d.cachedExec.Close()
+		d.cachedExec = nil
+	}
 }
 
 // SetEventBus sets the event bus for publishing events.
@@ -211,11 +248,10 @@ func (d *Dispatcher) SortPendingNotifications(notifications []model.Notification
 
 // DispatchCommand dispatches a command to the planner agent.
 func (d *Dispatcher) DispatchCommand(cmd *model.Command) error {
-	exec, err := d.executorFactory(d.maestroDir, d.config.Watcher, d.config.Logging.Level)
+	exec, err := d.getExecutor()
 	if err != nil {
 		return fmt.Errorf("create executor: %w", err)
 	}
-	defer func() { _ = exec.Close() }()
 
 	envelope := agent.BuildPlannerEnvelope(*cmd, cmd.LeaseEpoch, cmd.Attempts)
 
@@ -278,11 +314,10 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 		d.storeGateEvaluation(task.ID, gateEvaluation)
 	}
 
-	exec, err := d.executorFactory(d.maestroDir, d.config.Watcher, d.config.Logging.Level)
+	exec, err := d.getExecutor()
 	if err != nil {
 		return fmt.Errorf("create executor: %w", err)
 	}
-	defer func() { _ = exec.Close() }()
 
 	envelope := agent.BuildWorkerEnvelope(*task, workerID, task.LeaseEpoch, task.Attempts)
 
@@ -320,11 +355,10 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 
 // DispatchNotification dispatches a notification to the orchestrator agent.
 func (d *Dispatcher) DispatchNotification(ntf *model.Notification) error {
-	exec, err := d.executorFactory(d.maestroDir, d.config.Watcher, d.config.Logging.Level)
+	exec, err := d.getExecutor()
 	if err != nil {
 		return fmt.Errorf("create executor: %w", err)
 	}
-	defer func() { _ = exec.Close() }()
 
 	envelope := agent.BuildOrchestratorNotificationEnvelope(ntf.CommandID, ntf.Type)
 

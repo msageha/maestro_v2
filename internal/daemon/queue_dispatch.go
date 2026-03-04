@@ -143,13 +143,12 @@ func (qh *QueueHandler) isAgentBusy(ctx context.Context, agentID string) bool {
 		return qh.busyChecker(agentID)
 	}
 
-	// Default: use agent executor to probe busy state
-	exec, err := qh.dispatcher.executorFactory(qh.maestroDir, qh.config.Watcher, qh.config.Logging.Level)
+	// Default: use shared agent executor to probe busy state
+	exec, err := qh.dispatcher.getExecutor()
 	if err != nil {
 		qh.log(LogLevelWarn, "busy_probe_failed agent=%s error=%v", agentID, err)
 		return false
 	}
-	defer func() { _ = exec.Close() }()
 
 	result := exec.Execute(agent.ExecRequest{
 		Context: ctx,
@@ -162,12 +161,11 @@ func (qh *QueueHandler) isAgentBusy(ctx context.Context, agentID string) bool {
 
 // clearAgent sends /clear to the specified agent pane to reset a stuck session.
 func (qh *QueueHandler) clearAgent(ctx context.Context, agentID string) {
-	exec, err := qh.dispatcher.executorFactory(qh.maestroDir, qh.config.Watcher, qh.config.Logging.Level)
+	exec, err := qh.dispatcher.getExecutor()
 	if err != nil {
 		qh.log(LogLevelWarn, "clear_agent create_executor error=%v", err)
 		return
 	}
-	defer func() { _ = exec.Close() }()
 
 	result := exec.Execute(agent.ExecRequest{
 		Context: ctx,

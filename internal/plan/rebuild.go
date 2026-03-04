@@ -2,6 +2,7 @@ package plan
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,8 +104,16 @@ func Rebuild(opts RebuildOptions) error {
 		}
 	}
 
-	// Apply the latest result for each task
+	// Apply the latest result for each task with transition validation.
+	// Rebuild allows non-terminal → terminal (crash recovery: pending/in_progress → completed/failed)
+	// but rejects terminal → any (prevents overwriting already-settled state).
 	for taskID, lr := range latestByTask {
+		currentStatus := state.TaskStates[taskID]
+		if model.IsTerminal(currentStatus) {
+			log.Printf("rebuild: skipping task %s: current status %q is terminal, cannot transition to %q",
+				taskID, currentStatus, lr.status)
+			continue
+		}
 		state.TaskStates[taskID] = lr.status
 		state.AppliedResultIDs[taskID] = lr.resultID
 	}

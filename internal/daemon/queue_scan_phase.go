@@ -396,7 +396,7 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 		commandQueue, _ := qh.loadCommandQueue()
 		taskQueues := qh.loadAllTaskQueues()
 		notificationQueue, _ := qh.loadNotificationQueue()
-		scanDuration := time.Since(pa.scanStart)
+		scanDuration := qh.clock.Now().Sub(pa.scanStart)
 		if err := qh.metricsHandler.UpdateMetrics(commandQueue, taskQueues, notificationQueue, pa.scanStart, scanDuration, &qh.scanCounters); err != nil {
 			qh.log(LogLevelError, "update_metrics error=%v", err)
 		}
@@ -592,7 +592,7 @@ func (qh *QueueHandler) preemptiveCommandRenewal(cq *model.CommandQueue, dirty *
 			maxMin = 60
 		}
 		if t, err := time.Parse(time.RFC3339, cmd.UpdatedAt); err == nil {
-			if time.Since(t) >= time.Duration(maxMin)*time.Minute {
+			if qh.clock.Now().Sub(t) >= time.Duration(maxMin)*time.Minute {
 				// Hard timeout reached: release immediately instead of waiting
 				// for expiry to enforce max_in_progress_min strictly.
 				qh.log(LogLevelWarn, "command_lease_max_timeout id=%s epoch=%d max=%dm releasing (preemptive)",
@@ -634,7 +634,7 @@ func (qh *QueueHandler) collectExpiredCommandBusyChecks(cq *model.CommandQueue, 
 			maxMin = 60
 		}
 		if t, err := time.Parse(time.RFC3339, cmd.UpdatedAt); err == nil {
-			if time.Since(t) >= time.Duration(maxMin)*time.Minute {
+			if qh.clock.Now().Sub(t) >= time.Duration(maxMin)*time.Minute {
 				qh.log(LogLevelWarn, "command_lease_max_timeout id=%s epoch=%d max=%dm releasing",
 					cmd.ID, cmd.LeaseEpoch, maxMin)
 				if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
@@ -891,7 +891,7 @@ func (qh *QueueHandler) applyTaskBusyCheckResult(bc busyCheckResult, taskQueues 
 			}
 			withinLimit := true
 			if t, err := time.Parse(time.RFC3339, bc.Item.UpdatedAt); err == nil {
-				if time.Since(t) >= time.Duration(maxMin)*time.Minute {
+				if qh.clock.Now().Sub(t) >= time.Duration(maxMin)*time.Minute {
 					withinLimit = false
 				}
 			}
@@ -939,7 +939,7 @@ func (qh *QueueHandler) applyCommandBusyCheckResult(bc busyCheckResult, cq *mode
 			}
 			withinLimit := true
 			if t, err := time.Parse(time.RFC3339, bc.Item.UpdatedAt); err == nil {
-				if time.Since(t) >= time.Duration(maxMin)*time.Minute {
+				if qh.clock.Now().Sub(t) >= time.Duration(maxMin)*time.Minute {
 					withinLimit = false
 				}
 			}

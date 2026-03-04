@@ -189,7 +189,7 @@ func (r *Reconciler) reconcileR0() []ReconcileRepair {
 				return false
 			}
 
-			ageSec := time.Since(createdAt).Seconds()
+			ageSec := r.clock.Now().Sub(createdAt).Seconds()
 			if ageSec < float64(threshold) {
 				return false
 			}
@@ -336,7 +336,7 @@ func (r *Reconciler) reconcileR0dispatch() []ReconcileRepair {
 				return nil
 			}
 
-			age := time.Since(updatedAt)
+			age := r.clock.Now().Sub(updatedAt)
 			if age < threshold {
 				return nil // Still within dispatch window
 			}
@@ -444,7 +444,7 @@ func (r *Reconciler) reconcileR0b() ([]ReconcileRepair, []DeferredNotification) 
 					}
 				}
 
-				ageSec := time.Since(fillingStarted).Seconds()
+				ageSec := r.clock.Now().Sub(fillingStarted).Seconds()
 				if ageSec < float64(threshold) {
 					continue
 				}
@@ -692,59 +692,60 @@ func (r *Reconciler) reconcileR2() []ReconcileRepair {
 	for commandID, results := range commandResults {
 		statePath := filepath.Join(r.maestroDir, "state", "commands", commandID+".yaml")
 
+		// CR-H01: Use closure+defer to guarantee Unlock on panic (matches R0 pattern).
 		lockKey := "state:" + commandID
-		r.lockMap.Lock(lockKey)
+		commandRepairs := func() []ReconcileRepair {
+			r.lockMap.Lock(lockKey)
+			defer r.lockMap.Unlock(lockKey)
 
-		state, err := r.loadState(statePath)
-		if err != nil {
-			r.lockMap.Unlock(lockKey)
-			continue
-		}
-
-		if state.TaskStates == nil {
-			state.TaskStates = make(map[string]model.Status)
-		}
-		if state.AppliedResultIDs == nil {
-			state.AppliedResultIDs = make(map[string]string)
-		}
-
-		modified := false
-		var commandRepairs []ReconcileRepair
-		for _, re := range results {
-			currentStatus, exists := state.TaskStates[re.TaskID]
-			if exists && model.IsTerminal(currentStatus) {
-				continue // Already terminal in state
+			state, err := r.loadState(statePath)
+			if err != nil {
+				return nil
 			}
 
-			r.log(LogLevelWarn, "R2 result_terminal_state_nonterminal command=%s task=%s result_status=%s state_status=%s",
-				commandID, re.TaskID, re.Status, currentStatus)
-
-			state.TaskStates[re.TaskID] = re.Status
-			state.AppliedResultIDs[re.TaskID] = re.ResultID
-			modified = true
-
-			commandRepairs = append(commandRepairs, ReconcileRepair{
-				Pattern:   "R2",
-				CommandID: commandID,
-				TaskID:    re.TaskID,
-				Detail:    fmt.Sprintf("state task_states updated from %s to %s", currentStatus, re.Status),
-			})
-		}
-
-		if modified {
-			now := r.clock.Now().UTC().Format(time.RFC3339)
-			state.LastReconciledAt = &now
-			state.UpdatedAt = now
-			if err := yamlutil.AtomicWrite(statePath, state); err != nil {
-				r.log(LogLevelError, "R2 write_state command=%s error=%v", commandID, err)
-				// Don't report repairs if state write failed
-				r.lockMap.Unlock(lockKey)
-				continue
+			if state.TaskStates == nil {
+				state.TaskStates = make(map[string]model.Status)
 			}
-		}
+			if state.AppliedResultIDs == nil {
+				state.AppliedResultIDs = make(map[string]string)
+			}
+
+			modified := false
+			var reps []ReconcileRepair
+			for _, re := range results {
+				currentStatus, exists := state.TaskStates[re.TaskID]
+				if exists && model.IsTerminal(currentStatus) {
+					continue // Already terminal in state
+				}
+
+				r.log(LogLevelWarn, "R2 result_terminal_state_nonterminal command=%s task=%s result_status=%s state_status=%s",
+					commandID, re.TaskID, re.Status, currentStatus)
+
+				state.TaskStates[re.TaskID] = re.Status
+				state.AppliedResultIDs[re.TaskID] = re.ResultID
+				modified = true
+
+				reps = append(reps, ReconcileRepair{
+					Pattern:   "R2",
+					CommandID: commandID,
+					TaskID:    re.TaskID,
+					Detail:    fmt.Sprintf("state task_states updated from %s to %s", currentStatus, re.Status),
+				})
+			}
+
+			if modified {
+				now := r.clock.Now().UTC().Format(time.RFC3339)
+				state.LastReconciledAt = &now
+				state.UpdatedAt = now
+				if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+					r.log(LogLevelError, "R2 write_state command=%s error=%v", commandID, err)
+					// Don't report repairs if state write failed
+					return nil
+				}
+			}
+			return reps
+		}()
 		repairs = append(repairs, commandRepairs...)
-
-		r.lockMap.Unlock(lockKey)
 	}
 
 	return repairs
@@ -852,6 +853,13 @@ func (r *Reconciler) reconcileR4() ([]ReconcileRepair, []DeferredNotification) {
 		return nil, nil
 	}
 
+	// CR-H01: Local outcome struct for closure return (avoids multi-return complexity).
+	type r4Outcome struct {
+		repair       *ReconcileRepair
+		notification *DeferredNotification
+		quarantine   bool // signal to run quarantineCommandResult outside state lock
+	}
+
 	for _, result := range rf.Results {
 		if !model.IsTerminal(result.Status) {
 			continue
@@ -860,81 +868,91 @@ func (r *Reconciler) reconcileR4() ([]ReconcileRepair, []DeferredNotification) {
 		commandID := result.CommandID
 		statePath := filepath.Join(r.maestroDir, "state", "commands", commandID+".yaml")
 
+		// CR-H01: Use closure+defer to guarantee Unlock on panic (matches R0 pattern).
 		lockKey := "state:" + commandID
-		r.lockMap.Lock(lockKey)
+		outcome := func() r4Outcome {
+			r.lockMap.Lock(lockKey)
+			defer r.lockMap.Unlock(lockKey)
 
-		state, err := r.loadState(statePath)
-		if err != nil {
-			if !os.IsNotExist(err) {
-				r.log(LogLevelError, "R4 load_state_corrupted command=%s error=%v", commandID, err)
+			state, err := r.loadState(statePath)
+			if err != nil {
+				if !os.IsNotExist(err) {
+					r.log(LogLevelError, "R4 load_state_corrupted command=%s error=%v", commandID, err)
+				}
+				return r4Outcome{}
 			}
-			r.lockMap.Unlock(lockKey)
-			continue
-		}
 
-		// Skip if plan_status is already terminal
-		if model.IsPlanTerminal(state.PlanStatus) {
-			r.lockMap.Unlock(lockKey)
-			continue
-		}
+			// Skip if plan_status is already terminal
+			if model.IsPlanTerminal(state.PlanStatus) {
+				return r4Outcome{}
+			}
 
-		// Skip if plan_status is "planning" (R0 handles this)
-		if state.PlanStatus == model.PlanStatusPlanning {
-			r.lockMap.Unlock(lockKey)
-			continue
-		}
+			// Skip if plan_status is "planning" (R0 handles this)
+			if state.PlanStatus == model.PlanStatusPlanning {
+				return r4Outcome{}
+			}
 
-		// plan_status must be "sealed" for CanComplete
-		r.log(LogLevelWarn, "R4 result_terminal_state_nonterminal command=%s result_status=%s plan_status=%s",
-			commandID, result.Status, state.PlanStatus)
+			// plan_status must be "sealed" for CanComplete
+			r.log(LogLevelWarn, "R4 result_terminal_state_nonterminal command=%s result_status=%s plan_status=%s",
+				commandID, result.Status, state.PlanStatus)
 
-		if r.canComplete == nil {
-			r.lockMap.Unlock(lockKey)
-			r.log(LogLevelWarn, "R4 skipped command=%s (canComplete not wired)", commandID)
-			continue
-		}
+			if r.canComplete == nil {
+				r.log(LogLevelWarn, "R4 skipped command=%s (canComplete not wired)", commandID)
+				return r4Outcome{}
+			}
 
-		derivedStatus, canCompleteErr := r.canComplete(state)
-		if canCompleteErr != nil {
-			r.lockMap.Unlock(lockKey)
-			// CanComplete failed → quarantine the result entry + defer Planner notification
-			r.log(LogLevelWarn, "R4 can_complete_failed command=%s error=%v → quarantine result + notify planner",
-				commandID, canCompleteErr)
+			derivedStatus, canCompleteErr := r.canComplete(state)
+			if canCompleteErr != nil {
+				// CanComplete failed → signal quarantine + notification (handled outside lock)
+				r.log(LogLevelWarn, "R4 can_complete_failed command=%s error=%v → quarantine result + notify planner",
+					commandID, canCompleteErr)
+				return r4Outcome{
+					quarantine: true,
+					repair: &ReconcileRepair{
+						Pattern:   "R4",
+						CommandID: commandID,
+						Detail:    fmt.Sprintf("can_complete failed (%v), result quarantined, planner notification deferred", canCompleteErr),
+					},
+					notification: &DeferredNotification{
+						Kind:      "re_evaluate",
+						CommandID: commandID,
+						Reason:    canCompleteErr.Error(),
+					},
+				}
+			}
+
+			// Update plan_status to derived status
+			state.PlanStatus = derivedStatus
+			now := r.clock.Now().UTC().Format(time.RFC3339)
+			state.LastReconciledAt = &now
+			state.UpdatedAt = now
+			if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+				r.log(LogLevelError, "R4 write_state command=%s error=%v", commandID, err)
+				// Don't report repair if state write failed
+				return r4Outcome{}
+			}
+
+			return r4Outcome{
+				repair: &ReconcileRepair{
+					Pattern:   "R4",
+					CommandID: commandID,
+					Detail:    fmt.Sprintf("plan_status updated to %s via can_complete", derivedStatus),
+				},
+			}
+		}()
+
+		// Quarantine outside state lock (respects lock ordering: result:* after state:*)
+		if outcome.quarantine {
 			if err := r.quarantineCommandResult(resultPath, result); err != nil {
 				r.log(LogLevelError, "R4 quarantine command=%s error=%v", commandID, err)
 			}
-			// Defer Planner notification for execution outside scanMu.Lock
-			notifications = append(notifications, DeferredNotification{
-				Kind:      "re_evaluate",
-				CommandID: commandID,
-				Reason:    canCompleteErr.Error(),
-			})
-			repairs = append(repairs, ReconcileRepair{
-				Pattern:   "R4",
-				CommandID: commandID,
-				Detail:    fmt.Sprintf("can_complete failed (%v), result quarantined, planner notification deferred", canCompleteErr),
-			})
-			continue
 		}
-
-		// Update plan_status to derived status
-		state.PlanStatus = derivedStatus
-		now := r.clock.Now().UTC().Format(time.RFC3339)
-		state.LastReconciledAt = &now
-		state.UpdatedAt = now
-		if err := yamlutil.AtomicWrite(statePath, state); err != nil {
-			r.log(LogLevelError, "R4 write_state command=%s error=%v", commandID, err)
-			// Don't report repair if state write failed
-			r.lockMap.Unlock(lockKey)
-			continue
+		if outcome.repair != nil {
+			repairs = append(repairs, *outcome.repair)
 		}
-		r.lockMap.Unlock(lockKey)
-
-		repairs = append(repairs, ReconcileRepair{
-			Pattern:   "R4",
-			CommandID: commandID,
-			Detail:    fmt.Sprintf("plan_status updated to %s via can_complete", derivedStatus),
-		})
+		if outcome.notification != nil {
+			notifications = append(notifications, *outcome.notification)
+		}
 	}
 
 	return repairs, notifications

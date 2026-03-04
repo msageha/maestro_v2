@@ -598,6 +598,13 @@ func (d *Daemon) Shutdown() {
 
 		// ── Cleanup ─────────────────────────────────────────────────
 
+		// Close shared executor instances to release log file handles.
+		if d.handler != nil {
+			d.handler.dispatcher.CloseExecutor()
+			d.handler.resultHandler.CloseExecutor()
+			d.handler.cancelHandler.CloseExecutor()
+		}
+
 		d.log(LogLevelInfo, "daemon stopped")
 		d.cleanup()
 	})

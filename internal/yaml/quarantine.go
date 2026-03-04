@@ -60,7 +60,7 @@ func GenerateSkeleton(filePath string, fileType string) error {
 		return fmt.Errorf("marshal skeleton: %w", err)
 	}
 
-	if err := os.WriteFile(filePath, content, 0644); err != nil {
+	if err := AtomicWriteRaw(filePath, content); err != nil {
 		return fmt.Errorf("write skeleton: %w", err)
 	}
 

@@ -594,7 +594,8 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 
 	// Write queue entries
 	if err := writeQueueEntries(opts.MaestroDir, assignments, input.Tasks, nameToID, opts.CommandID, now, opts.LockMap); err != nil {
-		// Rollback: revert to awaiting_fill and persist
+		// Rollback: remove partial queue writes, revert state to awaiting_fill, and persist
+		rollbackQueueEntries(opts.MaestroDir, input.Tasks, nameToID, assignMap, opts.LockMap)
 		state.Phases[targetPhaseIdx].Status = model.PhaseStatusAwaitingFill
 		rollbackPhaseFillState(state, targetPhaseIdx, input.Tasks, nameToID)
 		state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
