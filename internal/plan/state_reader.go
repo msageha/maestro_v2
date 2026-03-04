@@ -50,14 +50,14 @@ func (r *PlanStateReader) GetCommandPhases(commandID string) ([]daemon.PhaseInfo
 		return nil, nil
 	}
 
+	// Build phase-name-to-ID lookup once (not per-phase)
+	phaseNameToID := make(map[string]string, len(state.Phases))
+	for _, sp := range state.Phases {
+		phaseNameToID[sp.Name] = sp.PhaseID
+	}
+
 	var phases []daemon.PhaseInfo
 	for _, p := range state.Phases {
-		// Convert depends_on_phases (names) to phase IDs
-		phaseNameToID := make(map[string]string)
-		for _, sp := range state.Phases {
-			phaseNameToID[sp.Name] = sp.PhaseID
-		}
-
 		var depIDs []string
 		for _, depName := range p.DependsOnPhases {
 			if id, ok := phaseNameToID[depName]; ok {

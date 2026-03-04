@@ -104,9 +104,6 @@ func submitInitial(opts SubmitOptions, input SubmitInput) (*SubmitResult, error)
 func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm *StateManager) (*SubmitResult, error) {
 	// Validation
 	if verrs := ValidateTasksInput(tasks); verrs != nil {
-		if opts.DryRun {
-			return nil, verrs
-		}
 		return nil, verrs
 	}
 
