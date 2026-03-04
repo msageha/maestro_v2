@@ -37,8 +37,10 @@ type ResultHandler struct {
 	maestroDir        string
 	config            model.Config
 	lockMap           *lock.MutexMap
+	dl                *DaemonLogger
 	logger            *log.Logger
 	logLevel          LogLevel
+	clock             Clock
 	executorFactory   ExecutorFactory
 	continuousHandler *ContinuousHandler
 	eventBus          *events.Bus
@@ -56,8 +58,10 @@ func NewResultHandler(
 		maestroDir: maestroDir,
 		config:     cfg,
 		lockMap:    lockMap,
+		dl:         NewDaemonLoggerFromLegacy("result_handler", logger, logLevel),
 		logger:     logger,
 		logLevel:   logLevel,
+		clock:      RealClock{},
 		executorFactory: func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 			return agent.NewExecutor(dir, wcfg, level)
 		},
@@ -342,7 +346,7 @@ func (rh *ResultHandler) isLeaseExpired(expiresAt *string) bool {
 	if err != nil {
 		return true
 	}
-	return time.Now().UTC().After(t)
+	return rh.clock.Now().UTC().After(t)
 }
 
 func (rh *ResultHandler) findUnnotifiedTaskResultExcluding(rf *model.TaskResultFile, exclude map[string]bool) int {
@@ -403,7 +407,7 @@ func (rh *ResultHandler) findCommandResultByID(rf *model.CommandResultFile, id s
 
 func (rh *ResultHandler) acquireTaskNotifyLease(r *model.TaskResult) {
 	owner := rh.leaseOwner()
-	expiresAt := time.Now().UTC().Add(time.Duration(rh.notifyLeaseSec()) * time.Second).Format(time.RFC3339)
+	expiresAt := rh.clock.Now().UTC().Add(time.Duration(rh.notifyLeaseSec()) * time.Second).Format(time.RFC3339)
 	r.NotifyLeaseOwner = &owner
 	r.NotifyLeaseExpiresAt = &expiresAt
 	r.NotifyAttempts++
@@ -411,14 +415,14 @@ func (rh *ResultHandler) acquireTaskNotifyLease(r *model.TaskResult) {
 
 func (rh *ResultHandler) acquireCommandNotifyLease(r *model.CommandResult) {
 	owner := rh.leaseOwner()
-	expiresAt := time.Now().UTC().Add(time.Duration(rh.notifyLeaseSec()) * time.Second).Format(time.RFC3339)
+	expiresAt := rh.clock.Now().UTC().Add(time.Duration(rh.notifyLeaseSec()) * time.Second).Format(time.RFC3339)
 	r.NotifyLeaseOwner = &owner
 	r.NotifyLeaseExpiresAt = &expiresAt
 	r.NotifyAttempts++
 }
 
 func (rh *ResultHandler) markTaskNotifySuccess(r *model.TaskResult) {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := rh.clock.Now().UTC().Format(time.RFC3339)
 	r.Notified = true
 	r.NotifiedAt = &now
 	r.NotifyLeaseOwner = nil
@@ -431,13 +435,13 @@ func (rh *ResultHandler) markTaskNotifyFailure(r *model.TaskResult, errMsg strin
 	// The entry will be skipped until the backoff period expires.
 	backoff := rh.notifyBackoff(r.NotifyAttempts)
 	owner := "backoff"
-	expiresAt := time.Now().UTC().Add(backoff).Format(time.RFC3339)
+	expiresAt := rh.clock.Now().UTC().Add(backoff).Format(time.RFC3339)
 	r.NotifyLeaseOwner = &owner
 	r.NotifyLeaseExpiresAt = &expiresAt
 }
 
 func (rh *ResultHandler) markCommandNotifySuccess(r *model.CommandResult) {
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := rh.clock.Now().UTC().Format(time.RFC3339)
 	r.Notified = true
 	r.NotifiedAt = &now
 	r.NotifyLeaseOwner = nil
@@ -449,7 +453,7 @@ func (rh *ResultHandler) markCommandNotifyFailure(r *model.CommandResult, errMsg
 	// Set backoff lease to prevent immediate retry.
 	backoff := rh.notifyBackoff(r.NotifyAttempts)
 	owner := "backoff"
-	expiresAt := time.Now().UTC().Add(backoff).Format(time.RFC3339)
+	expiresAt := rh.clock.Now().UTC().Add(backoff).Format(time.RFC3339)
 	r.NotifyLeaseOwner = &owner
 	r.NotifyLeaseExpiresAt = &expiresAt
 }
@@ -525,7 +529,7 @@ func (rh *ResultHandler) writeNotificationToOrchestratorQueue(resultID, commandI
 		notifType = "command_cancelled"
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := rh.clock.Now().UTC().Format(time.RFC3339)
 	content := fmt.Sprintf("command %s %s", commandID, status)
 
 	nq.Notifications = append(nq.Notifications, model.Notification{
@@ -582,18 +586,5 @@ func (rh *ResultHandler) loadCommandResultFile(path string) (*model.CommandResul
 // --- Logging ---
 
 func (rh *ResultHandler) log(level LogLevel, format string, args ...any) {
-	if level < rh.logLevel {
-		return
-	}
-	levelStr := "INFO"
-	switch level {
-	case LogLevelDebug:
-		levelStr = "DEBUG"
-	case LogLevelWarn:
-		levelStr = "WARN"
-	case LogLevelError:
-		levelStr = "ERROR"
-	}
-	msg := fmt.Sprintf(format, args...)
-	rh.logger.Printf("%s %s result_handler: %s", time.Now().Format(time.RFC3339), levelStr, msg)
+	rh.dl.Logf(level, format, args...)
 }

@@ -12,11 +12,16 @@ func TestBus_PublishSubscribe(t *testing.T) {
 
 	var mu sync.Mutex
 	received := []Event{}
+	done := make(chan struct{}, 1)
 
 	unsub := bus.Subscribe(EventTaskStarted, func(e Event) {
 		mu.Lock()
 		received = append(received, e)
 		mu.Unlock()
+		select {
+		case done <- struct{}{}:
+		default:
+		}
 	})
 	defer unsub()
 
@@ -26,7 +31,11 @@ func TestBus_PublishSubscribe(t *testing.T) {
 	})
 
 	// Wait for async delivery
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for event delivery")
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -51,11 +60,17 @@ func TestBus_MultipleSubscribers(t *testing.T) {
 	var mu1, mu2 sync.Mutex
 	received1 := []Event{}
 	received2 := []Event{}
+	done1 := make(chan struct{}, 1)
+	done2 := make(chan struct{}, 1)
 
 	unsub1 := bus.Subscribe(EventTaskStarted, func(e Event) {
 		mu1.Lock()
 		received1 = append(received1, e)
 		mu1.Unlock()
+		select {
+		case done1 <- struct{}{}:
+		default:
+		}
 	})
 	defer unsub1()
 
@@ -63,6 +78,10 @@ func TestBus_MultipleSubscribers(t *testing.T) {
 		mu2.Lock()
 		received2 = append(received2, e)
 		mu2.Unlock()
+		select {
+		case done2 <- struct{}{}:
+		default:
+		}
 	})
 	defer unsub2()
 
@@ -70,7 +89,16 @@ func TestBus_MultipleSubscribers(t *testing.T) {
 		"task_id": "task_456",
 	})
 
-	time.Sleep(50 * time.Millisecond)
+	select {
+	case <-done1:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for subscriber 1")
+	}
+	select {
+	case <-done2:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for subscriber 2")
+	}
 
 	mu1.Lock()
 	count1 := len(received1)
@@ -119,22 +147,34 @@ func TestBus_Unsubscribe(t *testing.T) {
 
 	var mu sync.Mutex
 	count := 0
+	done := make(chan struct{}, 1)
 
 	unsub := bus.Subscribe(EventTaskStarted, func(e Event) {
 		mu.Lock()
 		count++
 		mu.Unlock()
+		select {
+		case done <- struct{}{}:
+		default:
+		}
 	})
 
 	bus.Publish(EventTaskStarted, map[string]interface{}{})
-	time.Sleep(50 * time.Millisecond)
 
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for first event delivery")
+	}
+
+	// Unsubscribe removes channel from map and closes it.
+	// No further events will be delivered.
 	unsub()
-	time.Sleep(10 * time.Millisecond)
 
 	bus.Publish(EventTaskStarted, map[string]interface{}{})
-	time.Sleep(50 * time.Millisecond)
 
+	// After unsubscribe, the channel was removed from the subscribers map,
+	// so the second publish cannot reach the subscriber. No sleep needed.
 	mu.Lock()
 	defer mu.Unlock()
 
@@ -149,6 +189,7 @@ func TestBus_PanicRecovery(t *testing.T) {
 
 	var mu sync.Mutex
 	received := false
+	done := make(chan struct{}, 1)
 
 	// Subscriber that panics
 	unsub1 := bus.Subscribe(EventTaskStarted, func(e Event) {
@@ -161,11 +202,20 @@ func TestBus_PanicRecovery(t *testing.T) {
 		mu.Lock()
 		received = true
 		mu.Unlock()
+		select {
+		case done <- struct{}{}:
+		default:
+		}
 	})
 	defer unsub2()
 
 	bus.Publish(EventTaskStarted, map[string]interface{}{})
-	time.Sleep(50 * time.Millisecond)
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for event delivery to second subscriber")
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -182,11 +232,17 @@ func TestBus_EventTypes(t *testing.T) {
 	var mu sync.Mutex
 	taskStarted := 0
 	taskCompleted := 0
+	startedDone := make(chan struct{}, 2)
+	completedDone := make(chan struct{}, 1)
 
 	unsub1 := bus.Subscribe(EventTaskStarted, func(e Event) {
 		mu.Lock()
 		taskStarted++
 		mu.Unlock()
+		select {
+		case startedDone <- struct{}{}:
+		default:
+		}
 	})
 	defer unsub1()
 
@@ -194,6 +250,10 @@ func TestBus_EventTypes(t *testing.T) {
 		mu.Lock()
 		taskCompleted++
 		mu.Unlock()
+		select {
+		case completedDone <- struct{}{}:
+		default:
+		}
 	})
 	defer unsub2()
 
@@ -201,7 +261,18 @@ func TestBus_EventTypes(t *testing.T) {
 	bus.Publish(EventTaskCompleted, map[string]interface{}{})
 	bus.Publish(EventTaskStarted, map[string]interface{}{})
 
-	time.Sleep(50 * time.Millisecond)
+	for i := 0; i < 2; i++ {
+		select {
+		case <-startedDone:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for task_started event delivery")
+		}
+	}
+	select {
+	case <-completedDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for task_completed event delivery")
+	}
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -231,8 +302,8 @@ func TestBus_SubscribeAfterClose(t *testing.T) {
 		"task_id": "task_789",
 	})
 
-	time.Sleep(50 * time.Millisecond)
-
+	// No goroutine is running because Subscribe returned a no-op after Close.
+	// Publish is also a no-op because closed flag is set. No sleep needed.
 	if called {
 		t.Error("subscriber should not be called after bus is closed")
 	}
@@ -258,8 +329,8 @@ func TestBus_PublishAfterClose(t *testing.T) {
 		"task_id": "task_after_close",
 	})
 
-	time.Sleep(50 * time.Millisecond)
-
+	// Close() waited for goroutines to finish. Publish after close is a no-op.
+	// No sleep needed.
 	mu.Lock()
 	defer mu.Unlock()
 

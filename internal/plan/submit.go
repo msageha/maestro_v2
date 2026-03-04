@@ -75,6 +75,16 @@ func submitInitial(opts SubmitOptions, input SubmitInput) (*SubmitResult, error)
 	}
 	sm := NewStateManager(opts.MaestroDir, opts.LockMap)
 
+	// QA-014: Acquire queue:planner lock BEFORE state lock to check cancellation.
+	// This maintains the global lock ordering (queue:planner → state:<cmd>)
+	// used by other code paths (complete.go, reconciler.go, queue_write_handler.go).
+	opts.LockMap.Lock("queue:planner")
+	cancelErr := checkCommandNotCancelled(opts.MaestroDir, opts.CommandID)
+	opts.LockMap.Unlock("queue:planner")
+	if cancelErr != nil {
+		return nil, cancelErr
+	}
+
 	// Lock command state to prevent concurrent double submit (TOCTOU fix)
 	sm.LockCommand(opts.CommandID)
 	defer sm.UnlockCommand(opts.CommandID)
@@ -82,11 +92,6 @@ func submitInitial(opts SubmitOptions, input SubmitInput) (*SubmitResult, error)
 	// Double submit prevention (now under lock)
 	if sm.StateExists(opts.CommandID) {
 		return nil, fmt.Errorf("state already exists for command %s (double submit)", opts.CommandID)
-	}
-
-	// Check command not cancelled in queue
-	if err := checkCommandNotCancelled(opts.MaestroDir, opts.CommandID); err != nil {
-		return nil, err
 	}
 
 	// Route by input type

@@ -19,8 +19,10 @@ type ContinuousHandler struct {
 	maestroDir string
 	config     model.Config
 	lockMap    *lock.MutexMap
+	dl         *DaemonLogger
 	logger     *log.Logger
 	logLevel   LogLevel
+	clock      Clock
 }
 
 // NewContinuousHandler creates a new ContinuousHandler.
@@ -35,8 +37,10 @@ func NewContinuousHandler(
 		maestroDir: maestroDir,
 		config:     cfg,
 		lockMap:    lockMap,
+		dl:         NewDaemonLoggerFromLegacy("continuous", logger, logLevel),
 		logger:     logger,
 		logLevel:   logLevel,
+		clock:      RealClock{},
 	}
 }
 
@@ -68,7 +72,7 @@ func (ch *ContinuousHandler) CheckAndAdvance(commandID string, commandStatus mod
 	// Increment iteration
 	state.CurrentIteration++
 	state.LastCommandID = &commandID
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := ch.clock.Now().UTC().Format(time.RFC3339)
 	state.UpdatedAt = &now
 
 	// Check pause_on_failure
@@ -120,18 +124,5 @@ func (ch *ContinuousHandler) saveContinuousState(state *model.Continuous) error 
 }
 
 func (ch *ContinuousHandler) log(level LogLevel, format string, args ...any) {
-	if level < ch.logLevel {
-		return
-	}
-	levelStr := "INFO"
-	switch level {
-	case LogLevelDebug:
-		levelStr = "DEBUG"
-	case LogLevelWarn:
-		levelStr = "WARN"
-	case LogLevelError:
-		levelStr = "ERROR"
-	}
-	msg := fmt.Sprintf(format, args...)
-	ch.logger.Printf("%s %s continuous: %s", time.Now().Format(time.RFC3339), levelStr, msg)
+	ch.dl.Logf(level, format, args...)
 }

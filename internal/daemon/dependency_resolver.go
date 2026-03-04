@@ -50,8 +50,10 @@ type PhaseInfo struct {
 // DependencyResolver handles blocked_by dependency checking and phase transitions.
 type DependencyResolver struct {
 	stateReader StateReader
+	dl          *DaemonLogger
 	logger      *log.Logger
 	logLevel    LogLevel
+	clock       Clock
 	eventBus    *events.Bus
 }
 
@@ -59,8 +61,10 @@ type DependencyResolver struct {
 func NewDependencyResolver(reader StateReader, logger *log.Logger, logLevel LogLevel) *DependencyResolver {
 	return &DependencyResolver{
 		stateReader: reader,
+		dl:          NewDaemonLoggerFromLegacy("dependency_resolver", logger, logLevel),
 		logger:      logger,
 		logLevel:    logLevel,
+		clock:       RealClock{},
 	}
 }
 
@@ -362,7 +366,7 @@ func (dr *DependencyResolver) checkAwaitingFillTimeout(phase PhaseInfo) *PhaseTr
 		return nil
 	}
 
-	if time.Now().UTC().After(deadline) {
+	if dr.clock.Now().UTC().After(deadline) {
 		result := &PhaseTransitionResult{
 			PhaseID:   phase.ID,
 			PhaseName: phase.Name,
@@ -423,18 +427,5 @@ func (dr *DependencyResolver) publishPhaseTransitionEvent(commandID string, tr P
 }
 
 func (dr *DependencyResolver) log(level LogLevel, format string, args ...any) {
-	if level < dr.logLevel {
-		return
-	}
-	levelStr := "INFO"
-	switch level {
-	case LogLevelDebug:
-		levelStr = "DEBUG"
-	case LogLevelWarn:
-		levelStr = "WARN"
-	case LogLevelError:
-		levelStr = "ERROR"
-	}
-	msg := fmt.Sprintf(format, args...)
-	dr.logger.Printf("%s %s dependency_resolver: %s", time.Now().Format(time.RFC3339), levelStr, msg)
+	dr.dl.Logf(level, format, args...)
 }

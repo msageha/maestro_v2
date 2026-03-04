@@ -13,12 +13,17 @@ import (
 
 type HandlerFunc func(req *Request) *Response
 
+// DefaultMaxConcurrentConns is the default maximum number of concurrent connections.
+const DefaultMaxConcurrentConns = 64
+
 type Server struct {
 	socketPath  string
 	listener    net.Listener
 	handlers    map[string]HandlerFunc
 	mu          sync.RWMutex
 	connTimeout time.Duration
+	maxConns    int
+	connSem     chan struct{}
 	wg          sync.WaitGroup
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -30,6 +35,7 @@ func NewServer(socketPath string) *Server {
 		socketPath:  socketPath,
 		handlers:    make(map[string]HandlerFunc),
 		connTimeout: 30 * time.Second,
+		maxConns:    DefaultMaxConcurrentConns,
 		ctx:         ctx,
 		cancel:      cancel,
 	}
@@ -37,6 +43,14 @@ func NewServer(socketPath string) *Server {
 
 func (s *Server) SetConnTimeout(d time.Duration) {
 	s.connTimeout = d
+}
+
+// SetMaxConcurrentConns sets the maximum number of concurrent connections.
+// Must be called before Start().
+func (s *Server) SetMaxConcurrentConns(n int) {
+	if n > 0 {
+		s.maxConns = n
+	}
 }
 
 func (s *Server) Handle(command string, handler HandlerFunc) {
@@ -61,6 +75,7 @@ func (s *Server) Start() error {
 	}
 
 	s.listener = listener
+	s.connSem = make(chan struct{}, s.maxConns)
 
 	s.wg.Add(1)
 	go s.acceptLoop()
@@ -93,13 +108,24 @@ func (s *Server) acceptLoop() {
 			}
 		}
 
-		s.wg.Add(1)
-		go s.handleConn(conn)
+		// Non-blocking semaphore acquire: reject connection if at capacity
+		select {
+		case s.connSem <- struct{}{}:
+			s.wg.Add(1)
+			go s.handleConn(conn)
+		default:
+			log.Printf("connection rejected: max concurrent connections (%d) reached", s.maxConns)
+			// Best-effort error response before closing
+			resp := ErrorResponse(ErrCodeBackpressure, "server at capacity, try again later")
+			_ = WriteFrame(conn, resp)
+			_ = conn.Close()
+		}
 	}
 }
 
 func (s *Server) handleConn(conn net.Conn) {
 	defer s.wg.Done()
+	defer func() { <-s.connSem }()
 	defer func() { _ = conn.Close() }()
 	defer func() {
 		if r := recover(); r != nil {

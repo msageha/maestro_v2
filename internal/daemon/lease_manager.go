@@ -12,12 +12,19 @@ import (
 type LeaseManager struct {
 	dispatchLeaseSec int
 	maxInProgressMin int
+	clock            Clock
+	dl               *DaemonLogger
 	logger           *log.Logger
 	logLevel         LogLevel
 }
 
 // NewLeaseManager creates a new LeaseManager.
 func NewLeaseManager(cfg model.WatcherConfig, logger *log.Logger, logLevel LogLevel) *LeaseManager {
+	return NewLeaseManagerWithDeps(cfg, logger, logLevel, RealClock{})
+}
+
+// NewLeaseManagerWithDeps creates a LeaseManager with explicit dependencies.
+func NewLeaseManagerWithDeps(cfg model.WatcherConfig, logger *log.Logger, logLevel LogLevel, clock Clock) *LeaseManager {
 	dispatchLease := cfg.DispatchLeaseSec
 	if dispatchLease <= 0 {
 		dispatchLease = 300
@@ -29,6 +36,8 @@ func NewLeaseManager(cfg model.WatcherConfig, logger *log.Logger, logLevel LogLe
 	return &LeaseManager{
 		dispatchLeaseSec: dispatchLease,
 		maxInProgressMin: maxInProgress,
+		clock:            clock,
+		dl:               NewDaemonLoggerFromLegacy("lease_manager", logger, logLevel),
 		logger:           logger,
 		logLevel:         logLevel,
 	}
@@ -47,7 +56,7 @@ func (lm *LeaseManager) AcquireCommandLease(cmd *model.Command, owner string) er
 		return fmt.Errorf("cannot acquire lease: %w", err)
 	}
 
-	now := time.Now().UTC()
+	now := lm.clock.Now().UTC()
 	expires := now.Add(time.Duration(lm.dispatchLeaseSec) * time.Second)
 
 	cmd.Status = model.StatusInProgress
@@ -69,7 +78,7 @@ func (lm *LeaseManager) AcquireTaskLease(task *model.Task, owner string) error {
 		return fmt.Errorf("cannot acquire lease: %w", err)
 	}
 
-	now := time.Now().UTC()
+	now := lm.clock.Now().UTC()
 	expires := now.Add(time.Duration(lm.dispatchLeaseSec) * time.Second)
 
 	task.Status = model.StatusInProgress
@@ -95,7 +104,7 @@ func (lm *LeaseManager) AcquireNotificationLease(ntf *model.Notification, owner 
 		return fmt.Errorf("cannot acquire lease: %w", err)
 	}
 
-	now := time.Now().UTC()
+	now := lm.clock.Now().UTC()
 	expires := now.Add(time.Duration(lm.dispatchLeaseSec) * time.Second)
 
 	ntf.Status = model.StatusInProgress
@@ -120,7 +129,7 @@ func (lm *LeaseManager) ReleaseCommandLease(cmd *model.Command) error {
 	cmd.Status = model.StatusPending
 	cmd.LeaseOwner = nil
 	cmd.LeaseExpiresAt = nil
-	cmd.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	cmd.UpdatedAt = lm.clock.Now().UTC().Format(time.RFC3339)
 
 	lm.log(LogLevelInfo, "lease_release type=command id=%s epoch=%d", cmd.ID, cmd.LeaseEpoch)
 	return nil
@@ -135,7 +144,7 @@ func (lm *LeaseManager) ReleaseTaskLease(task *model.Task) error {
 	task.Status = model.StatusPending
 	task.LeaseOwner = nil
 	task.LeaseExpiresAt = nil
-	task.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	task.UpdatedAt = lm.clock.Now().UTC().Format(time.RFC3339)
 
 	lm.log(LogLevelInfo, "lease_release type=task id=%s epoch=%d", task.ID, task.LeaseEpoch)
 	return nil
@@ -150,7 +159,7 @@ func (lm *LeaseManager) ReleaseNotificationLease(ntf *model.Notification) error 
 	ntf.Status = model.StatusPending
 	ntf.LeaseOwner = nil
 	ntf.LeaseExpiresAt = nil
-	ntf.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	ntf.UpdatedAt = lm.clock.Now().UTC().Format(time.RFC3339)
 
 	lm.log(LogLevelInfo, "lease_release type=notification id=%s epoch=%d", ntf.ID, ntf.LeaseEpoch)
 	return nil
@@ -165,7 +174,7 @@ func (lm *LeaseManager) ExtendCommandLease(cmd *model.Command) error {
 		return fmt.Errorf("cannot extend lease: command %s is %s, not in_progress", cmd.ID, cmd.Status)
 	}
 
-	expires := time.Now().UTC().Add(time.Duration(lm.dispatchLeaseSec) * time.Second)
+	expires := lm.clock.Now().UTC().Add(time.Duration(lm.dispatchLeaseSec) * time.Second)
 	expiresStr := expires.Format(time.RFC3339)
 	cmd.LeaseExpiresAt = &expiresStr
 
@@ -183,7 +192,7 @@ func (lm *LeaseManager) ExtendTaskLease(task *model.Task) error {
 		return fmt.Errorf("cannot extend lease: task %s is %s, not in_progress", task.ID, task.Status)
 	}
 
-	expires := time.Now().UTC().Add(time.Duration(lm.dispatchLeaseSec) * time.Second)
+	expires := lm.clock.Now().UTC().Add(time.Duration(lm.dispatchLeaseSec) * time.Second)
 	expiresStr := expires.Format(time.RFC3339)
 	task.LeaseExpiresAt = &expiresStr
 
@@ -201,7 +210,7 @@ func (lm *LeaseManager) IsLeaseExpired(leaseExpiresAt *string) bool {
 	if err != nil {
 		return true
 	}
-	return time.Now().UTC().After(expires)
+	return lm.clock.Now().UTC().After(expires)
 }
 
 // IsLeaseNearExpiry checks if a lease will expire within the given buffer duration.
@@ -214,7 +223,7 @@ func (lm *LeaseManager) IsLeaseNearExpiry(leaseExpiresAt *string, bufferSec int)
 	if err != nil {
 		return true
 	}
-	return time.Now().UTC().Add(time.Duration(bufferSec) * time.Second).After(expires)
+	return lm.clock.Now().UTC().Add(time.Duration(bufferSec) * time.Second).After(expires)
 }
 
 // ExpireCommands returns commands whose leases have expired (periodic scan step 2).
@@ -299,18 +308,5 @@ func ptrStr(s *string) string {
 }
 
 func (lm *LeaseManager) log(level LogLevel, format string, args ...any) {
-	if level < lm.logLevel {
-		return
-	}
-	levelStr := "INFO"
-	switch level {
-	case LogLevelDebug:
-		levelStr = "DEBUG"
-	case LogLevelWarn:
-		levelStr = "WARN"
-	case LogLevelError:
-		levelStr = "ERROR"
-	}
-	msg := fmt.Sprintf(format, args...)
-	lm.logger.Printf("%s %s lease_manager: %s", time.Now().Format(time.RFC3339), levelStr, msg)
+	lm.dl.Logf(level, format, args...)
 }

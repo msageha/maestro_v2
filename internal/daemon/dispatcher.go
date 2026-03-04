@@ -21,8 +21,10 @@ type Dispatcher struct {
 	maestroDir        string
 	config            model.Config
 	leaseManager      *LeaseManager
+	dl                *DaemonLogger
 	logger            *log.Logger
 	logLevel          LogLevel
+	clock             Clock
 	executorFactory   ExecutorFactory
 	eventBus          *events.Bus
 	qualityGate       *QualityGateDaemon
@@ -45,8 +47,10 @@ func NewDispatcher(maestroDir string, cfg model.Config, lm *LeaseManager, logger
 		maestroDir:      maestroDir,
 		config:          cfg,
 		leaseManager:    lm,
+		dl:              NewDaemonLoggerFromLegacy("dispatcher", logger, logLevel),
 		logger:          logger,
 		logLevel:        logLevel,
+		clock:           RealClock{},
 		gateEvaluations: make(map[string]*model.QualityGateEvaluation),
 		executorFactory: func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 			return agent.NewExecutor(dir, wcfg, level)
@@ -261,7 +265,7 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 		gateEvaluation = &model.QualityGateEvaluation{
 			Passed:        true,
 			SkippedReason: "disabled",
-			EvaluatedAt:   time.Now().Format(time.RFC3339),
+			EvaluatedAt:   d.clock.Now().Format(time.RFC3339),
 		}
 		d.storeGateEvaluation(task.ID, gateEvaluation)
 	} else if d.config.QualityGates.SkipGates {
@@ -269,7 +273,7 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 		gateEvaluation = &model.QualityGateEvaluation{
 			Passed:        true,
 			SkippedReason: "emergency_mode",
-			EvaluatedAt:   time.Now().Format(time.RFC3339),
+			EvaluatedAt:   d.clock.Now().Format(time.RFC3339),
 		}
 		d.storeGateEvaluation(task.ID, gateEvaluation)
 	}
@@ -345,20 +349,7 @@ func (d *Dispatcher) DispatchNotification(ntf *model.Notification) error {
 }
 
 func (d *Dispatcher) log(level LogLevel, format string, args ...any) {
-	if level < d.logLevel {
-		return
-	}
-	levelStr := "INFO"
-	switch level {
-	case LogLevelDebug:
-		levelStr = "DEBUG"
-	case LogLevelWarn:
-		levelStr = "WARN"
-	case LogLevelError:
-		levelStr = "ERROR"
-	}
-	msg := fmt.Sprintf(format, args...)
-	d.logger.Printf("%s %s dispatcher: %s", time.Now().Format(time.RFC3339), levelStr, msg)
+	d.dl.Logf(level, format, args...)
 }
 
 // shouldEvaluateQualityGates determines if quality gates should be evaluated
@@ -409,7 +400,7 @@ func (d *Dispatcher) evaluatePreTaskGateWithResult(task *model.Task, workerID st
 	// Convert to model.QualityGateEvaluation
 	evaluation := &model.QualityGateEvaluation{
 		Passed:      result != nil && result.Passed,
-		EvaluatedAt: time.Now().Format(time.RFC3339),
+		EvaluatedAt: d.clock.Now().Format(time.RFC3339),
 	}
 
 	if result != nil {

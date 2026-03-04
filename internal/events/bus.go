@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"log"
 	"runtime/debug"
 	"sync"
@@ -34,12 +35,15 @@ type Subscriber func(Event)
 // Events are delivered asynchronously via buffered channels.
 // If a subscriber's channel is full, the event is dropped and counted.
 type Bus struct {
-	mu           sync.RWMutex
-	closed       atomic.Bool
-	subscribers  map[EventType][]chan Event
-	bufferSize   int
-	wg           sync.WaitGroup
-	droppedCount atomic.Int64
+	mu               sync.RWMutex
+	closed           atomic.Bool
+	subscribers      map[EventType][]chan Event
+	bufferSize       int
+	wg               sync.WaitGroup
+	droppedCount     atomic.Int64
+	ctx              context.Context
+	cancel           context.CancelFunc
+	activeGoroutines atomic.Int64
 }
 
 // NewBus creates a new event bus with the specified buffer size per subscriber.
@@ -47,9 +51,12 @@ func NewBus(bufferSize int) *Bus {
 	if bufferSize <= 0 {
 		bufferSize = 100
 	}
+	ctx, cancel := context.WithCancel(context.Background())
 	return &Bus{
 		subscribers: make(map[EventType][]chan Event),
 		bufferSize:  bufferSize,
+		ctx:         ctx,
+		cancel:      cancel,
 	}
 }
 
@@ -76,19 +83,29 @@ func (b *Bus) Subscribe(eventType EventType, fn Subscriber) func() {
 
 	// Start goroutine to deliver events to subscriber
 	b.wg.Add(1)
+	b.activeGoroutines.Add(1)
 	go func() {
 		defer b.wg.Done()
-		for event := range ch {
-			// Wrap in anonymous function to recover from panics in subscriber
-			func() {
-				defer func() {
-					if r := recover(); r != nil {
-						log.Printf("ERROR event_bus: subscriber panic for event %s: %v\n%s",
-							event.Type, r, debug.Stack())
-					}
+		defer b.activeGoroutines.Add(-1)
+		for {
+			select {
+			case event, ok := <-ch:
+				if !ok {
+					return
+				}
+				// Wrap in anonymous function to recover from panics in subscriber
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("ERROR event_bus: subscriber panic for event %s: %v\n%s",
+								event.Type, r, debug.Stack())
+						}
+					}()
+					fn(event)
 				}()
-				fn(event)
-			}()
+			case <-b.ctx.Done():
+				return
+			}
 		}
 	}()
 
@@ -152,6 +169,9 @@ func (b *Bus) DroppedCount() int64 {
 func (b *Bus) Close() {
 	b.closed.Store(true)
 
+	// Cancel context to signal subscriber goroutines to stop
+	b.cancel()
+
 	b.mu.Lock()
 	for eventType, subs := range b.subscribers {
 		for _, ch := range subs {
@@ -161,7 +181,7 @@ func (b *Bus) Close() {
 	}
 	b.mu.Unlock()
 
-	// Wait for subscriber goroutines to finish with timeout to prevent deadlock
+	// Wait for subscriber goroutines to finish with timeout
 	done := make(chan struct{})
 	go func() {
 		b.wg.Wait()
@@ -170,6 +190,7 @@ func (b *Bus) Close() {
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		log.Printf("WARN event_bus: Close timed out waiting for subscriber goroutines")
+		remaining := b.activeGoroutines.Load()
+		log.Printf("WARN event_bus: Close timed out waiting for %d subscriber goroutines", remaining)
 	}
 }

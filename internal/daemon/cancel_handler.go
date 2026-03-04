@@ -20,8 +20,10 @@ import (
 type CancelHandler struct {
 	maestroDir      string
 	config          model.Config
+	dl              *DaemonLogger
 	logger          *log.Logger
 	logLevel        LogLevel
+	clock           Clock
 	executorFactory ExecutorFactory
 	stateReader     StateReader
 	lockMap         *lock.MutexMap
@@ -32,9 +34,11 @@ func NewCancelHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMa
 	return &CancelHandler{
 		maestroDir: maestroDir,
 		config:     cfg,
+		dl:         NewDaemonLoggerFromLegacy("cancel_handler", logger, logLevel),
 		lockMap:    lockMap,
 		logger:     logger,
 		logLevel:   logLevel,
+		clock:      RealClock{},
 		executorFactory: func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 			return agent.NewExecutor(dir, wcfg, level)
 		},
@@ -89,7 +93,7 @@ func (ch *CancelHandler) CancelPendingTasks(tasks []model.Task, commandID string
 		}
 
 		task.Status = model.StatusCancelled
-		task.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		task.UpdatedAt = ch.clock.Now().UTC().Format(time.RFC3339)
 
 		ch.log(LogLevelInfo, "cancel_pending task=%s command=%s", task.ID, commandID)
 
@@ -143,7 +147,7 @@ func (ch *CancelHandler) InterruptInProgressTasks(tasks []model.Task, commandID 
 		// never (cancelled, active_lease).
 		task.LeaseOwner = nil
 		task.LeaseExpiresAt = nil
-		task.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		task.UpdatedAt = ch.clock.Now().UTC().Format(time.RFC3339)
 		task.Status = model.StatusCancelled
 
 		ch.log(LogLevelInfo, "cancel_inprogress task=%s command=%s", task.ID, commandID)
@@ -199,7 +203,7 @@ func (ch *CancelHandler) InterruptInProgressTasksDeferred(tasks []model.Task, co
 		// Clear lease fields before setting status (same ordering as InterruptInProgressTasks).
 		task.LeaseOwner = nil
 		task.LeaseExpiresAt = nil
-		task.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		task.UpdatedAt = ch.clock.Now().UTC().Format(time.RFC3339)
 		task.Status = model.StatusCancelled
 
 		ch.log(LogLevelInfo, "cancel_inprogress_deferred task=%s command=%s", task.ID, commandID)
@@ -256,7 +260,7 @@ func (ch *CancelHandler) WriteSyntheticResults(results []CancelledTaskResult, wo
 		rf.FileType = "result_task"
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := ch.clock.Now().UTC().Format(time.RFC3339)
 	for _, r := range results {
 		resultID, err := model.GenerateID(model.IDTypeResult)
 		if err != nil {
@@ -289,7 +293,7 @@ func (ch *CancelHandler) BuildSyntheticResult(r CancelledTaskResult) map[string]
 		"status":     r.Status,
 		"reason":     r.Reason,
 		"synthetic":  true,
-		"created_at": time.Now().UTC().Format(time.RFC3339),
+		"created_at": ch.clock.Now().UTC().Format(time.RFC3339),
 	}
 }
 
@@ -316,18 +320,5 @@ func (ch *CancelHandler) interruptAgent(workerID, taskID, commandID string, leas
 }
 
 func (ch *CancelHandler) log(level LogLevel, format string, args ...any) {
-	if level < ch.logLevel {
-		return
-	}
-	levelStr := "INFO"
-	switch level {
-	case LogLevelDebug:
-		levelStr = "DEBUG"
-	case LogLevelWarn:
-		levelStr = "WARN"
-	case LogLevelError:
-		levelStr = "ERROR"
-	}
-	msg := fmt.Sprintf(format, args...)
-	ch.logger.Printf("%s %s cancel_handler: %s", time.Now().Format(time.RFC3339), levelStr, msg)
+	ch.dl.Logf(level, format, args...)
 }

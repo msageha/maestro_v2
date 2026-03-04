@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,16 +25,25 @@ type TaskRetryHandler struct {
 	maestroDir string
 	config     model.Config
 	lockMap    *lock.MutexMap
+	clock      Clock
+	dl         *DaemonLogger
 	logger     *log.Logger
 	logLevel   LogLevel
 }
 
 // NewTaskRetryHandler creates a new task retry handler.
 func NewTaskRetryHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel) *TaskRetryHandler {
+	return NewTaskRetryHandlerWithDeps(maestroDir, cfg, lockMap, logger, logLevel, RealClock{})
+}
+
+// NewTaskRetryHandlerWithDeps creates a TaskRetryHandler with explicit dependencies.
+func NewTaskRetryHandlerWithDeps(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel, clock Clock) *TaskRetryHandler {
 	return &TaskRetryHandler{
 		maestroDir: maestroDir,
 		config:     cfg,
 		lockMap:    lockMap,
+		clock:      clock,
+		dl:         NewDaemonLoggerFromLegacy("task_retry", logger, logLevel),
 		logger:     logger,
 		logLevel:   logLevel,
 	}
@@ -87,6 +97,9 @@ func (h *TaskRetryHandler) CreateRetryTask(originalTask *model.Task, workerID st
 
 	// Create retry task with same content but new ID and increased retry count
 	retryTask := *originalTask
+	// QA-009: Deep copy slice fields to avoid shared backing arrays
+	retryTask.BlockedBy = slices.Clone(originalTask.BlockedBy)
+	retryTask.ToolsHint = slices.Clone(originalTask.ToolsHint)
 	retryTask.ID = retryTaskID
 	retryTask.Attempts = 0                                         // Reset dispatch attempts for new task
 	retryTask.ExecutionRetries = originalTask.ExecutionRetries + 1 // Increment retry count
@@ -100,7 +113,7 @@ func (h *TaskRetryHandler) CreateRetryTask(originalTask *model.Task, workerID st
 	retryTask.LeaseEpoch = 0
 	retryTask.InProgressAt = nil // Reset so new dispatch sets fresh timestamp
 
-	now := time.Now().UTC()
+	now := h.clock.Now().UTC()
 	retryTask.CreatedAt = now.Format(time.RFC3339)
 	retryTask.UpdatedAt = now.Format(time.RFC3339)
 
@@ -151,7 +164,7 @@ func (h *TaskRetryHandler) RegisterRetryTaskInState(task *model.Task, commandID 
 		state.TaskStates = make(map[string]model.Status)
 	}
 	state.TaskStates[task.ID] = model.StatusPending
-	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	state.UpdatedAt = h.clock.Now().UTC().Format(time.RFC3339)
 
 	if err := yaml.AtomicWrite(statePath, state); err != nil {
 		return fmt.Errorf("write state file: %w", err)
@@ -234,18 +247,5 @@ func withCappedRetryMeta(constraints []string, newMeta string) []string {
 }
 
 func (h *TaskRetryHandler) log(level LogLevel, format string, args ...interface{}) {
-	if h.logLevel <= level {
-		levelStr := "INFO"
-		switch level {
-		case LogLevelDebug:
-			levelStr = "DEBUG"
-		case LogLevelInfo:
-			levelStr = "INFO"
-		case LogLevelWarn:
-			levelStr = "WARN"
-		case LogLevelError:
-			levelStr = "ERROR"
-		}
-		h.logger.Printf("[%s] "+format, append([]interface{}{levelStr}, args...)...)
-	}
+	h.dl.Logf(level, format, args...)
 }

@@ -92,6 +92,7 @@ func TestExtendCommandLease(t *testing.T) {
 
 	lm.AcquireCommandLease(cmd, "planner")
 	oldExpires, _ := time.Parse(time.RFC3339, *cmd.LeaseExpiresAt)
+	originalUpdatedAt := cmd.UpdatedAt
 
 	// Wait just enough for the new expiry to be after the old one
 	time.Sleep(1100 * time.Millisecond)
@@ -102,6 +103,35 @@ func TestExtendCommandLease(t *testing.T) {
 	newExpires, _ := time.Parse(time.RFC3339, *cmd.LeaseExpiresAt)
 	if !newExpires.After(oldExpires) {
 		t.Errorf("new expiry %v should be after old expiry %v", newExpires, oldExpires)
+	}
+
+	// QA-008: UpdatedAt must NOT change on lease extension
+	if cmd.UpdatedAt != originalUpdatedAt {
+		t.Errorf("UpdatedAt changed after ExtendCommandLease: got %s, want %s", cmd.UpdatedAt, originalUpdatedAt)
+	}
+}
+
+func TestExtendTaskLease_UpdatedAtUnchanged(t *testing.T) {
+	lm := newTestLeaseManager()
+	task := &model.Task{
+		ID:        "task_001",
+		Status:    model.StatusPending,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	if err := lm.AcquireTaskLease(task, "worker1"); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	originalUpdatedAt := task.UpdatedAt
+
+	time.Sleep(1100 * time.Millisecond)
+	if err := lm.ExtendTaskLease(task); err != nil {
+		t.Fatalf("extend: %v", err)
+	}
+
+	// QA-008: UpdatedAt must NOT change on lease extension
+	if task.UpdatedAt != originalUpdatedAt {
+		t.Errorf("UpdatedAt changed after ExtendTaskLease: got %s, want %s", task.UpdatedAt, originalUpdatedAt)
 	}
 }
 

@@ -69,7 +69,22 @@ func AtomicWriteRaw(path string, content []byte) error {
 		return fmt.Errorf("atomic rename: %w", err)
 	}
 
+	// SRE-004: Fsync parent directory to ensure rename metadata is durable
+	if err := syncDir(dir); err != nil {
+		return fmt.Errorf("sync parent dir: %w", err)
+	}
+
 	return nil
+}
+
+// syncDir fsyncs a directory to ensure rename metadata durability.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = d.Close() }()
+	return d.Sync()
 }
 
 func validateYAML(content []byte) error {
@@ -110,5 +125,8 @@ func copyFile(src, dst string) error {
 	}
 	tmpClosed = true
 
-	return os.Rename(tmpName, dst)
+	if err := os.Rename(tmpName, dst); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(dst))
 }

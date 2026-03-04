@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -56,6 +57,7 @@ type Daemon struct {
 	logLevel   LogLevel
 	logger     *log.Logger
 	logFile    io.Closer
+	clock      Clock
 
 	fileLock *lock.FileLock
 	server   *uds.Server
@@ -78,7 +80,8 @@ type Daemon struct {
 
 	ctx      context.Context
 	cancel   context.CancelFunc
-	wg       sync.WaitGroup
+	wg       sync.WaitGroup // short-lived in-flight handlers
+	loopWg   sync.WaitGroup // long-lived loops (fsnotifyLoop, tickerLoop)
 	shutdown sync.Once
 
 	// shuttingDown + shutdownMu guard wg.Add against TOCTOU race with Shutdown.
@@ -153,6 +156,7 @@ func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Close
 		logLevel:   parseLogLevel(cfg.Logging.Level),
 		logger:     log.New(w, "", 0),
 		logFile:    closer,
+		clock:      RealClock{},
 		fileLock:   lock.NewFileLock(filepath.Join(maestroDir, "locks", "daemon.lock")),
 		server:     server,
 		ticker:     time.NewTicker(time.Duration(scanInterval) * time.Second),
@@ -271,8 +275,8 @@ func (d *Daemon) Run() error {
 	}
 	d.log(LogLevelInfo, "UDS server listening on %s", filepath.Join(d.maestroDir, uds.DefaultSocketName))
 
-	// Step 6: Start background loops
-	d.wg.Add(2)
+	// Step 6: Start background loops (tracked by loopWg, not wg)
+	d.loopWg.Add(2)
 	go d.fsnotifyLoop()
 	go d.tickerLoop()
 
@@ -282,7 +286,7 @@ func (d *Daemon) Run() error {
 	}
 
 	// Step 7: Run initial scan
-	d.handler.PeriodicScan()
+	d.handler.PeriodicScanWithContext(d.ctx)
 	d.log(LogLevelInfo, "daemon ready")
 
 	// Startup succeeded — disable the deferred Shutdown guard.
@@ -305,7 +309,7 @@ func (d *Daemon) registerHandlers() {
 		if d.handler == nil {
 			return uds.ErrorResponse(uds.ErrCodeInternal, "handler not initialized")
 		}
-		d.handler.PeriodicScan()
+		d.handler.PeriodicScanWithContext(d.ctx)
 		return uds.SuccessResponse(map[string]string{"status": "scanned"})
 	})
 
@@ -368,7 +372,7 @@ func (d *Daemon) handleDashboard(req *uds.Request) *uds.Response {
 
 // fsnotifyLoop processes filesystem change events.
 func (d *Daemon) fsnotifyLoop() {
-	defer d.wg.Done()
+	defer d.loopWg.Done()
 	defer d.recoverPanic("fsnotifyLoop")
 
 	for {
@@ -415,7 +419,7 @@ func (d *Daemon) fsnotifyLoop() {
 
 // tickerLoop triggers periodic scans at configured intervals.
 func (d *Daemon) tickerLoop() {
-	defer d.wg.Done()
+	defer d.loopWg.Done()
 	defer d.recoverPanic("tickerLoop")
 
 	for {
@@ -424,7 +428,7 @@ func (d *Daemon) tickerLoop() {
 			return
 		case <-d.ticker.C:
 			d.log(LogLevelDebug, "periodic scan triggered")
-			d.handler.PeriodicScan()
+			d.handler.PeriodicScanWithContext(d.ctx)
 
 			// Session health check: detect if tmux session disappeared
 			if !tmux.SessionHealthCheck() {
@@ -470,26 +474,49 @@ func (d *Daemon) waitSignals() {
 	}
 }
 
-// Shutdown performs graceful shutdown (idempotent via sync.Once).
+// Shutdown performs graceful 2-phase shutdown (idempotent via sync.Once).
+//
+// Phase 1 (soft): Stop accepting new work and wait for in-flight handlers
+// to complete naturally. Duration: 70% of shutdown_timeout_sec.
+//
+// Phase 2 (hard): Cancel context to force all goroutines (including loops)
+// to exit. Wait for remaining goroutines. Duration: 30% of shutdown_timeout_sec.
+//
+// If the total timeout is exceeded, goroutine stacks are dumped for debugging.
 func (d *Daemon) Shutdown() {
 	d.shutdown.Do(func() {
 		d.log(LogLevelInfo, "shutdown started session_alive=%v", tmux.SessionExists())
 
-		// 0. Set shuttingDown flag under write lock to prevent new wg.Add
-		// calls from racing with wg.Wait below. Keep the lock short.
+		totalTimeout := d.config.Daemon.ShutdownTimeoutSec
+		if totalTimeout <= 0 {
+			totalTimeout = 30
+		}
+		totalDuration := time.Duration(totalTimeout) * time.Second
+
+		// Use a deadline so that time spent in producer Stop calls is
+		// included in the overall budget (not added on top).
+		deadline := d.clock.Now().Add(totalDuration)
+		softDeadline := d.clock.Now().Add(totalDuration * 7 / 10)
+
+		// ── Phase 1 (soft): graceful drain ──────────────────────────
+
+		d.log(LogLevelInfo, "shutdown phase=soft deadline=%v", softDeadline.Format(time.RFC3339))
+
+		// 1a. Set shuttingDown flag under write lock to prevent new wg.Add
+		// calls from racing with wg.Wait below.
 		d.shutdownMu.Lock()
 		d.shuttingDown.Store(true)
 		d.shutdownMu.Unlock()
 
-		// 1. Cancel context (stops accepting new work)
-		d.cancel()
-
-		// 2. Stop producers (handler, ticker, watcher, server)
+		// 1b. Stop producers — no new work will be enqueued.
+		// Context is NOT cancelled yet so in-flight handlers can finish.
 		d.ticker.Stop()
 		if d.handler != nil {
 			d.handler.Stop()
 		}
 		if d.watcher != nil {
+			// Closing the watcher also closes its Events channel,
+			// which lets fsnotifyLoop exit without context cancel.
 			if err := d.watcher.Close(); err != nil {
 				d.log(LogLevelError, "shutdown watcher_close error=%v", err)
 			}
@@ -500,43 +527,77 @@ func (d *Daemon) Shutdown() {
 			}
 		}
 
-		// 3. Unsubscribe from event bus (stop event flow to quality gate)
+		// 1c. Unsubscribe from event bus and stop event processing.
 		for _, unsub := range d.eventUnsubscribers {
 			if unsub != nil {
 				unsub()
 			}
 		}
-
-		// 4. Close event bus (cleanup all subscribers)
 		if d.eventBus != nil {
 			d.eventBus.Close()
 		}
-
-		// 5. Stop quality gate daemon (drain remaining events)
 		if d.qualityGateDaemon != nil {
 			_ = d.qualityGateDaemon.Stop()
 		}
 
-		// 6. Drain in-flight with timeout
-		timeout := d.config.Daemon.ShutdownTimeoutSec
-		if timeout <= 0 {
-			timeout = 30
-		}
-
-		done := make(chan struct{})
+		// 1d. Wait for short-lived in-flight handlers (wg) to drain.
+		// Uses deadline-based remaining time so producer Stop() overhead
+		// is included in the budget.
+		softDone := make(chan struct{})
 		go func() {
 			d.wg.Wait()
-			close(done)
+			close(softDone)
 		}()
 
-		select {
-		case <-done:
-			d.log(LogLevelInfo, "all goroutines drained")
-		case <-time.After(time.Duration(timeout) * time.Second):
-			d.log(LogLevelWarn, "shutdown timeout after %ds, some operations may be incomplete", timeout)
+		softRemaining := time.Until(softDeadline)
+		if softRemaining <= 0 {
+			d.log(LogLevelWarn, "shutdown phase=soft budget_exhausted_by_producer_stops, escalating immediately")
+		} else {
+			select {
+			case <-softDone:
+				d.log(LogLevelInfo, "shutdown phase=soft all_handlers_drained")
+			case <-time.After(softRemaining):
+				d.log(LogLevelWarn, "shutdown phase=soft timeout_exceeded, escalating to hard phase")
+			}
 		}
 
-		// 7. Cleanup
+		// ── Phase 2 (hard): force stop ──────────────────────────────
+
+		hardRemaining := time.Until(deadline)
+		d.log(LogLevelInfo, "shutdown phase=hard remaining=%v", hardRemaining)
+
+		// 2a. Cancel context — forces loops and any remaining goroutines to exit.
+		d.cancel()
+
+		if hardRemaining <= 0 {
+			d.log(LogLevelWarn, "shutdown phase=hard budget_exhausted, dumping goroutine stacks")
+			buf := make([]byte, 256*1024)
+			n := runtime.Stack(buf, true)
+			d.log(LogLevelWarn, "shutdown timeout after %ds, dumping %d bytes of goroutine stacks:\n%s",
+				totalTimeout, n, string(buf[:n]))
+		} else {
+			// 2b. Wait for all goroutines (loops + any stragglers) with remaining budget.
+			hardDone := make(chan struct{})
+			go func() {
+				d.loopWg.Wait()
+				<-softDone
+				close(hardDone)
+			}()
+
+			select {
+			case <-hardDone:
+				d.log(LogLevelInfo, "shutdown phase=hard all_goroutines_drained")
+			case <-time.After(hardRemaining):
+				// SRE-011: Dump goroutine stacks on timeout for debugging stuck shutdowns.
+				buf := make([]byte, 256*1024)
+				n := runtime.Stack(buf, true)
+				d.log(LogLevelWarn, "shutdown timeout after %ds, dumping %d bytes of goroutine stacks:\n%s",
+					totalTimeout, n, string(buf[:n]))
+			}
+		}
+
+		// ── Cleanup ─────────────────────────────────────────────────
+
 		d.log(LogLevelInfo, "daemon stopped")
 		d.cleanup()
 	})
@@ -674,5 +735,5 @@ func (d *Daemon) log(level LogLevel, format string, args ...any) {
 		levelStr = "ERROR"
 	}
 	msg := fmt.Sprintf(format, args...)
-	d.logger.Printf("%s %s daemon: %s", time.Now().Format(time.RFC3339), levelStr, msg)
+	d.logger.Printf("%s %s daemon: %s", d.clock.Now().Format(time.RFC3339), levelStr, msg)
 }

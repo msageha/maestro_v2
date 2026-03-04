@@ -25,20 +25,28 @@ type refMutex struct {
 // MutexMap provides per-key mutual exclusion with automatic cleanup.
 // Each key maps to a reference-counted mutex. Entries are created on first
 // Lock and removed when no goroutine is waiting for or holding the lock.
+//
+// Lock ordering (enforced programmatically with -tags lockorder):
+//
+//	queue:* (level 1) → state:* (level 2) → result:* (level 3)
 type MutexMap struct {
 	mu      sync.Mutex
 	mutexes map[string]*refMutex
+	order   orderChecker
 }
 
 func NewMutexMap() *MutexMap {
 	return &MutexMap{
 		mutexes: make(map[string]*refMutex),
+		order:   newOrderChecker(),
 	}
 }
 
 // Lock acquires the mutex for key, creating it if necessary. The caller must
 // call Unlock (or TryUnlock) exactly once when done.
 func (m *MutexMap) Lock(key string) {
+	m.order.BeforeLock(key)
+
 	m.mu.Lock()
 	rm, ok := m.mutexes[key]
 	if !ok {
@@ -50,6 +58,8 @@ func (m *MutexMap) Lock(key string) {
 
 	rm.mu.Lock()
 	atomic.StoreInt32(&rm.locked, 1)
+
+	m.order.AfterLock(key)
 }
 
 // Unlock releases the mutex for key. It is safe to call on a key that was
@@ -76,6 +86,7 @@ func (m *MutexMap) TryUnlock(key string) bool {
 		return false
 	}
 
+	m.order.BeforeUnlock(key)
 	rm.mu.Unlock()
 
 	// Decrement reference count and clean up if no goroutine needs this entry.

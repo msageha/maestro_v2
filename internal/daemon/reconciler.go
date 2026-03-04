@@ -30,8 +30,10 @@ type Reconciler struct {
 	maestroDir      string
 	config          model.Config
 	lockMap         *lock.MutexMap
+	dl              *DaemonLogger
 	logger          *log.Logger
 	logLevel        LogLevel
+	clock           Clock
 	resultHandler   *ResultHandler  // for R5 notification re-issue
 	executorFactory ExecutorFactory // for R6 Planner notification
 	canComplete     CanCompleteFunc // for R4 (avoids plan→daemon import cycle)
@@ -67,8 +69,10 @@ func NewReconciler(
 		maestroDir:      maestroDir,
 		config:          cfg,
 		lockMap:         lockMap,
+		dl:              NewDaemonLoggerFromLegacy("reconciler", logger, logLevel),
 		logger:          logger,
 		logLevel:        logLevel,
+		clock:           RealClock{},
 		resultHandler:   resultHandler,
 		executorFactory: executorFactory,
 	}
@@ -355,7 +359,7 @@ func (r *Reconciler) reconcileR0dispatch() []ReconcileRepair {
 			errMsg := fmt.Sprintf("dispatch stuck %.0fs without state submission, reverted for retry",
 				age.Seconds())
 			cmd.LastError = &errMsg
-			cmd.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+			cmd.UpdatedAt = r.clock.Now().UTC().Format(time.RFC3339)
 
 			return &ReconcileRepair{
 				Pattern:   "R0-dispatch",
@@ -409,6 +413,9 @@ func (r *Reconciler) reconcileR0b() ([]ReconcileRepair, []DeferredNotification) 
 
 			state, err := r.loadState(statePath)
 			if err != nil {
+				if !os.IsNotExist(err) {
+					r.log(LogLevelError, "R0b load_state_corrupted command=%s file=%s error=%v", commandID, entry.Name(), err)
+				}
 				return false
 			}
 
@@ -470,7 +477,7 @@ func (r *Reconciler) reconcileR0b() ([]ReconcileRepair, []DeferredNotification) 
 			}
 
 			if localModified {
-				now := time.Now().UTC().Format(time.RFC3339)
+				now := r.clock.Now().UTC().Format(time.RFC3339)
 				state.LastReconciledAt = &now
 				state.UpdatedAt = now
 				if err := yamlutil.AtomicWrite(statePath, state); err != nil {
@@ -602,7 +609,7 @@ func (r *Reconciler) reconcileR1() []ReconcileRepair {
 				task.Status = resultStatus
 				task.LeaseOwner = nil
 				task.LeaseExpiresAt = nil
-				task.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+				task.UpdatedAt = r.clock.Now().UTC().Format(time.RFC3339)
 				queueModified = true
 				workerRepairedCommands[task.CommandID] = true
 
@@ -725,7 +732,7 @@ func (r *Reconciler) reconcileR2() []ReconcileRepair {
 		}
 
 		if modified {
-			now := time.Now().UTC().Format(time.RFC3339)
+			now := r.clock.Now().UTC().Format(time.RFC3339)
 			state.LastReconciledAt = &now
 			state.UpdatedAt = now
 			if err := yamlutil.AtomicWrite(statePath, state); err != nil {
@@ -803,7 +810,7 @@ func (r *Reconciler) reconcileR3() []ReconcileRepair {
 			cmd.Status = resultStatus
 			cmd.LeaseOwner = nil
 			cmd.LeaseExpiresAt = nil
-			cmd.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+			cmd.UpdatedAt = r.clock.Now().UTC().Format(time.RFC3339)
 			queueModified = true
 			localRepairedCommands[cmd.ID] = true
 
@@ -858,6 +865,9 @@ func (r *Reconciler) reconcileR4() ([]ReconcileRepair, []DeferredNotification) {
 
 		state, err := r.loadState(statePath)
 		if err != nil {
+			if !os.IsNotExist(err) {
+				r.log(LogLevelError, "R4 load_state_corrupted command=%s error=%v", commandID, err)
+			}
 			r.lockMap.Unlock(lockKey)
 			continue
 		}
@@ -909,7 +919,7 @@ func (r *Reconciler) reconcileR4() ([]ReconcileRepair, []DeferredNotification) {
 
 		// Update plan_status to derived status
 		state.PlanStatus = derivedStatus
-		now := time.Now().UTC().Format(time.RFC3339)
+		now := r.clock.Now().UTC().Format(time.RFC3339)
 		state.LastReconciledAt = &now
 		state.UpdatedAt = now
 		if err := yamlutil.AtomicWrite(statePath, state); err != nil {
@@ -1029,6 +1039,9 @@ func (r *Reconciler) reconcileR6() ([]ReconcileRepair, []DeferredNotification) {
 
 		state, err := r.loadState(statePath)
 		if err != nil {
+			if !os.IsNotExist(err) {
+				r.log(LogLevelError, "R6 load_state_corrupted command=%s file=%s error=%v", commandID, entry.Name(), err)
+			}
 			r.lockMap.Unlock(lockKey)
 			continue
 		}
@@ -1056,7 +1069,7 @@ func (r *Reconciler) reconcileR6() ([]ReconcileRepair, []DeferredNotification) {
 				continue
 			}
 
-			if time.Now().UTC().Before(deadline) {
+			if r.clock.Now().UTC().Before(deadline) {
 				continue
 			}
 
@@ -1116,7 +1129,7 @@ func (r *Reconciler) reconcileR6() ([]ReconcileRepair, []DeferredNotification) {
 
 		writeOK := false
 		if modified {
-			now := time.Now().UTC().Format(time.RFC3339)
+			now := r.clock.Now().UTC().Format(time.RFC3339)
 			state.LastReconciledAt = &now
 			state.UpdatedAt = now
 			if err := yamlutil.AtomicWrite(statePath, state); err != nil {
@@ -1220,7 +1233,7 @@ func (r *Reconciler) quarantineCommandResult(resultPath string, result model.Com
 	}
 
 	quarantineFile := filepath.Join(quarantineDir,
-		fmt.Sprintf("res_%s_%s.yaml", time.Now().UTC().Format("20060102T150405Z"), result.ID))
+		fmt.Sprintf("res_%s_%s.yaml", r.clock.Now().UTC().Format("20060102T150405Z"), result.ID))
 
 	if err := yamlutil.AtomicWrite(quarantineFile, result); err != nil {
 		return fmt.Errorf("write quarantine file: %w", err)
@@ -1473,7 +1486,7 @@ func (r *Reconciler) updateLastReconciledAt(commandID string) {
 		return
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := r.clock.Now().UTC().Format(time.RFC3339)
 	state.LastReconciledAt = &now
 	state.UpdatedAt = now
 	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
@@ -1484,18 +1497,5 @@ func (r *Reconciler) updateLastReconciledAt(commandID string) {
 // --- Logging ---
 
 func (r *Reconciler) log(level LogLevel, format string, args ...any) {
-	if level < r.logLevel {
-		return
-	}
-	levelStr := "INFO"
-	switch level {
-	case LogLevelDebug:
-		levelStr = "DEBUG"
-	case LogLevelWarn:
-		levelStr = "WARN"
-	case LogLevelError:
-		levelStr = "ERROR"
-	}
-	msg := fmt.Sprintf(format, args...)
-	r.logger.Printf("%s %s reconciler: %s", time.Now().Format(time.RFC3339), levelStr, msg)
+	r.dl.Logf(level, format, args...)
 }

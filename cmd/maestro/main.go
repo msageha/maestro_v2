@@ -6,7 +6,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strconv"
+	"flag"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -26,6 +27,40 @@ import (
 )
 
 const version = "2.0.0"
+
+// stringSliceFlag implements flag.Value for flags that can be specified multiple times.
+type stringSliceFlag []string
+
+func (s *stringSliceFlag) String() string {
+	if s == nil {
+		return ""
+	}
+	return strings.Join(*s, ",")
+}
+
+func (s *stringSliceFlag) Set(v string) error {
+	*s = append(*s, v)
+	return nil
+}
+
+// newFlagSet creates a flag.FlagSet that suppresses default output (errors are handled by callers).
+func newFlagSet(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	return fs
+}
+
+// modeSetter implements flag.Value as a boolean flag that sets a shared string variable.
+// Used for shorthand mode flags (e.g., --interrupt sets mode to "interrupt").
+// Since flag.FlagSet processes args left to right, argv-order precedence is preserved.
+type modeSetter struct {
+	target *string
+	val    string
+}
+
+func (m *modeSetter) String() string  { return "" }
+func (m *modeSetter) Set(string) error { *m.target = m.val; return nil }
+func (m *modeSetter) IsBoolFlag() bool { return true }
 
 func main() {
 	if len(os.Args) < 2 {
@@ -236,21 +271,21 @@ func runSetup(args []string) {
 }
 
 func runUp(args []string) {
+	fs := newFlagSet("maestro up")
 	var boost, continuous, detach, force bool
-	for _, a := range args {
-		switch a {
-		case "--boost":
-			boost = true
-		case "--continuous":
-			continuous = true
-		case "--detach", "-d":
-			detach = true
-		case "--force", "-f":
-			force = true
-		default:
-			fmt.Fprintf(os.Stderr, "unknown flag: %s\nusage: maestro up [--boost] [--continuous] [--detach|-d] [--force|-f]\n", a)
-			os.Exit(1)
-		}
+	fs.BoolVar(&boost, "boost", false, "")
+	fs.BoolVar(&continuous, "continuous", false, "")
+	fs.BoolVar(&detach, "detach", false, "")
+	fs.BoolVar(&detach, "d", false, "")
+	fs.BoolVar(&force, "force", false, "")
+	fs.BoolVar(&force, "f", false, "")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\nusage: maestro up [--boost] [--continuous] [--detach|-d] [--force|-f]\n", err)
+		os.Exit(1)
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "unexpected argument: %s\nusage: maestro up [--boost] [--continuous] [--detach|-d] [--force|-f]\n", fs.Arg(0))
+		os.Exit(1)
 	}
 
 	maestroDir := findMaestroDir()
@@ -323,15 +358,16 @@ func runDown(_ []string) {
 }
 
 func runStatus(args []string) {
-	jsonOutput := false
-	for _, a := range args {
-		switch a {
-		case "--json":
-			jsonOutput = true
-		default:
-			fmt.Fprintf(os.Stderr, "unknown flag: %s\nusage: maestro status [--json]\n", a)
-			os.Exit(1)
-		}
+	fs := newFlagSet("maestro status")
+	var jsonOutput bool
+	fs.BoolVar(&jsonOutput, "json", false, "")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\nusage: maestro status [--json]\n", err)
+		os.Exit(1)
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "unexpected argument: %s\nusage: maestro status [--json]\n", fs.Arg(0))
+		os.Exit(1)
 	}
 
 	maestroDir := findMaestroDir()
@@ -365,121 +401,33 @@ func runQueueWrite(args []string) {
 	}
 
 	target := args[0]
-	rest := args[1:]
 
-	var writeType string
-	var content, commandID, purpose, acceptanceCriteria, sourceResultID, notificationType, reason string
+	fs := newFlagSet("maestro queue write")
+	var writeType, content, commandID, purpose, acceptanceCriteria, sourceResultID, notificationType, reason string
 	var bloomLevel, priority int
-	var blockedBy, constraints, toolsHint []string
+	var blockedBy, constraints, toolsHint stringSliceFlag
 
-	for i := 0; i < len(rest); i++ {
-		switch rest[i] {
-		case "--type":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "--type requires a value")
-				os.Exit(1)
-			}
-			i++
-			writeType = rest[i]
-		case "--content":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "--content requires a value")
-				os.Exit(1)
-			}
-			i++
-			content = rest[i]
-		case "--command-id":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "--command-id requires a value")
-				os.Exit(1)
-			}
-			i++
-			commandID = rest[i]
-		case "--purpose":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "--purpose requires a value")
-				os.Exit(1)
-			}
-			i++
-			purpose = rest[i]
-		case "--acceptance-criteria":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "--acceptance-criteria requires a value")
-				os.Exit(1)
-			}
-			i++
-			acceptanceCriteria = rest[i]
-		case "--bloom-level":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "--bloom-level requires a value")
-				os.Exit(1)
-			}
-			i++
-			n, err := strconv.Atoi(rest[i])
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "invalid --bloom-level value: %s\n", rest[i])
-				os.Exit(1)
-			}
-			bloomLevel = n
-		case "--priority":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "--priority requires a value")
-				os.Exit(1)
-			}
-			i++
-			n, err := strconv.Atoi(rest[i])
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "invalid --priority value: %s\n", rest[i])
-				os.Exit(1)
-			}
-			priority = n
-		case "--source-result-id":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "--source-result-id requires a value")
-				os.Exit(1)
-			}
-			i++
-			sourceResultID = rest[i]
-		case "--notification-type":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "--notification-type requires a value")
-				os.Exit(1)
-			}
-			i++
-			notificationType = rest[i]
-		case "--blocked-by":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "--blocked-by requires a value")
-				os.Exit(1)
-			}
-			i++
-			blockedBy = append(blockedBy, rest[i])
-		case "--constraint":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "--constraint requires a value")
-				os.Exit(1)
-			}
-			i++
-			constraints = append(constraints, rest[i])
-		case "--tools-hint":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "--tools-hint requires a value")
-				os.Exit(1)
-			}
-			i++
-			toolsHint = append(toolsHint, rest[i])
-		case "--reason":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "--reason requires a value")
-				os.Exit(1)
-			}
-			i++
-			reason = rest[i]
-		default:
-			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", rest[i])
-			fmt.Fprintln(os.Stderr, "usage: maestro queue write <target> --type <command|task|notification|cancel-request> [options]")
-			os.Exit(1)
-		}
+	fs.StringVar(&writeType, "type", "", "")
+	fs.StringVar(&content, "content", "", "")
+	fs.StringVar(&commandID, "command-id", "", "")
+	fs.StringVar(&purpose, "purpose", "", "")
+	fs.StringVar(&acceptanceCriteria, "acceptance-criteria", "", "")
+	fs.IntVar(&bloomLevel, "bloom-level", 0, "")
+	fs.IntVar(&priority, "priority", 0, "")
+	fs.StringVar(&sourceResultID, "source-result-id", "", "")
+	fs.StringVar(&notificationType, "notification-type", "", "")
+	fs.Var(&blockedBy, "blocked-by", "")
+	fs.Var(&constraints, "constraint", "")
+	fs.Var(&toolsHint, "tools-hint", "")
+	fs.StringVar(&reason, "reason", "", "")
+
+	if err := fs.Parse(args[1:]); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\nusage: maestro queue write <target> --type <command|task|notification|cancel-request> [options]\n", err)
+		os.Exit(1)
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "unexpected argument: %s\nusage: maestro queue write <target> --type <command|task|notification|cancel-request> [options]\n", fs.Arg(0))
+		os.Exit(1)
 	}
 
 	if writeType == "" {
@@ -607,71 +555,29 @@ func runResultWrite(args []string) {
 	}
 
 	reporter := args[0]
-	rest := args[1:]
 
+	fs := newFlagSet("maestro result write")
 	var taskID, commandID, resultStatus, summary string
 	var leaseEpoch int
-	var filesChanged []string
+	var filesChanged stringSliceFlag
 	var partialChangesPossible, noRetrySafe bool
 
-	for i := 0; i < len(rest); i++ {
-		switch rest[i] {
-		case "--task-id":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "--task-id requires a value")
-				os.Exit(1)
-			}
-			i++
-			taskID = rest[i]
-		case "--command-id":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "--command-id requires a value")
-				os.Exit(1)
-			}
-			i++
-			commandID = rest[i]
-		case "--lease-epoch":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "--lease-epoch requires a value")
-				os.Exit(1)
-			}
-			i++
-			n, err := strconv.Atoi(rest[i])
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "invalid --lease-epoch value: %s\n", rest[i])
-				os.Exit(1)
-			}
-			leaseEpoch = n
-		case "--status":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "--status requires a value")
-				os.Exit(1)
-			}
-			i++
-			resultStatus = rest[i]
-		case "--summary":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "--summary requires a value")
-				os.Exit(1)
-			}
-			i++
-			summary = rest[i]
-		case "--files-changed":
-			if i+1 >= len(rest) {
-				fmt.Fprintln(os.Stderr, "--files-changed requires a value")
-				os.Exit(1)
-			}
-			i++
-			filesChanged = append(filesChanged, rest[i])
-		case "--partial-changes":
-			partialChangesPossible = true
-		case "--no-retry-safe":
-			noRetrySafe = true
-		default:
-			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", rest[i])
-			fmt.Fprintln(os.Stderr, "usage: maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>] [--files-changed <file>]... [--partial-changes] [--no-retry-safe]")
-			os.Exit(1)
-		}
+	fs.StringVar(&taskID, "task-id", "", "")
+	fs.StringVar(&commandID, "command-id", "", "")
+	fs.IntVar(&leaseEpoch, "lease-epoch", 0, "")
+	fs.StringVar(&resultStatus, "status", "", "")
+	fs.StringVar(&summary, "summary", "", "")
+	fs.Var(&filesChanged, "files-changed", "")
+	fs.BoolVar(&partialChangesPossible, "partial-changes", false, "")
+	fs.BoolVar(&noRetrySafe, "no-retry-safe", false, "")
+
+	if err := fs.Parse(args[1:]); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\nusage: maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>] [--files-changed <file>]... [--partial-changes] [--no-retry-safe]\n", err)
+		os.Exit(1)
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "unexpected argument: %s\nusage: maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>] [--files-changed <file>]... [--partial-changes] [--no-retry-safe]\n", fs.Arg(0))
+		os.Exit(1)
 	}
 
 	if taskID == "" || commandID == "" || resultStatus == "" {
@@ -727,39 +633,21 @@ func runResultWrite(args []string) {
 }
 
 func runPlanSubmit(args []string) {
+	fs := newFlagSet("maestro plan submit")
 	var commandID, tasksFile, phaseName string
-	dryRun := false
+	var dryRun bool
+	fs.StringVar(&commandID, "command-id", "", "")
+	fs.StringVar(&tasksFile, "tasks-file", "", "")
+	fs.StringVar(&phaseName, "phase", "", "")
+	fs.BoolVar(&dryRun, "dry-run", false, "")
 
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--command-id":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--command-id requires a value")
-				os.Exit(1)
-			}
-			i++
-			commandID = args[i]
-		case "--tasks-file":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--tasks-file requires a value")
-				os.Exit(1)
-			}
-			i++
-			tasksFile = args[i]
-		case "--phase":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--phase requires a value")
-				os.Exit(1)
-			}
-			i++
-			phaseName = args[i]
-		case "--dry-run":
-			dryRun = true
-		default:
-			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
-			fmt.Fprintln(os.Stderr, "usage: maestro plan submit --command-id <id> [--tasks-file <path>] [--phase <name>] [--dry-run]")
-			os.Exit(1)
-		}
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\nusage: maestro plan submit --command-id <id> [--tasks-file <path>] [--phase <name>] [--dry-run]\n", err)
+		os.Exit(1)
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "unexpected argument: %s\nusage: maestro plan submit --command-id <id> [--tasks-file <path>] [--phase <name>] [--dry-run]\n", fs.Arg(0))
+		os.Exit(1)
 	}
 
 	if commandID == "" {
@@ -829,29 +717,18 @@ func runPlanSubmit(args []string) {
 }
 
 func runPlanComplete(args []string) {
+	fs := newFlagSet("maestro plan complete")
 	var commandID, summary string
+	fs.StringVar(&commandID, "command-id", "", "")
+	fs.StringVar(&summary, "summary", "", "")
 
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--command-id":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--command-id requires a value")
-				os.Exit(1)
-			}
-			i++
-			commandID = args[i]
-		case "--summary":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--summary requires a value")
-				os.Exit(1)
-			}
-			i++
-			summary = args[i]
-		default:
-			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
-			fmt.Fprintln(os.Stderr, "usage: maestro plan complete --command-id <id> --summary <text>")
-			os.Exit(1)
-		}
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\nusage: maestro plan complete --command-id <id> --summary <text>\n", err)
+		os.Exit(1)
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "unexpected argument: %s\nusage: maestro plan complete --command-id <id> --summary <text>\n", fs.Arg(0))
+		os.Exit(1)
 	}
 
 	if commandID == "" {
@@ -877,71 +754,26 @@ func runPlanComplete(args []string) {
 }
 
 func runPlanAddRetryTask(args []string) {
+	fs := newFlagSet("maestro plan add-retry-task")
 	var commandID, retryOf, purpose, content, acceptanceCriteria string
 	var bloomLevel int
-	var blockedBy []string
+	var blockedBy stringSliceFlag
 
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--command-id":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--command-id requires a value")
-				os.Exit(1)
-			}
-			i++
-			commandID = args[i]
-		case "--retry-of":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--retry-of requires a value")
-				os.Exit(1)
-			}
-			i++
-			retryOf = args[i]
-		case "--purpose":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--purpose requires a value")
-				os.Exit(1)
-			}
-			i++
-			purpose = args[i]
-		case "--content":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--content requires a value")
-				os.Exit(1)
-			}
-			i++
-			content = args[i]
-		case "--acceptance-criteria":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--acceptance-criteria requires a value")
-				os.Exit(1)
-			}
-			i++
-			acceptanceCriteria = args[i]
-		case "--bloom-level":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--bloom-level requires a value")
-				os.Exit(1)
-			}
-			i++
-			n, err := strconv.Atoi(args[i])
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "invalid --bloom-level value: %s\n", args[i])
-				os.Exit(1)
-			}
-			bloomLevel = n
-		case "--blocked-by":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--blocked-by requires a value")
-				os.Exit(1)
-			}
-			i++
-			blockedBy = append(blockedBy, args[i])
-		default:
-			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
-			fmt.Fprintln(os.Stderr, "usage: maestro plan add-retry-task --command-id <id> --retry-of <task_id> --purpose <text> --content <text> --acceptance-criteria <text> --bloom-level <n> [--blocked-by <task_id>]...")
-			os.Exit(1)
-		}
+	fs.StringVar(&commandID, "command-id", "", "")
+	fs.StringVar(&retryOf, "retry-of", "", "")
+	fs.StringVar(&purpose, "purpose", "", "")
+	fs.StringVar(&content, "content", "", "")
+	fs.StringVar(&acceptanceCriteria, "acceptance-criteria", "", "")
+	fs.IntVar(&bloomLevel, "bloom-level", 0, "")
+	fs.Var(&blockedBy, "blocked-by", "")
+
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\nusage: maestro plan add-retry-task --command-id <id> --retry-of <task_id> --purpose <text> --content <text> --acceptance-criteria <text> --bloom-level <n> [--blocked-by <task_id>]...\n", err)
+		os.Exit(1)
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "unexpected argument: %s\nusage: maestro plan add-retry-task --command-id <id> --retry-of <task_id> --purpose <text> --content <text> --acceptance-criteria <text> --bloom-level <n> [--blocked-by <task_id>]...\n", fs.Arg(0))
+		os.Exit(1)
 	}
 
 	if commandID == "" || retryOf == "" || purpose == "" || content == "" || acceptanceCriteria == "" || bloomLevel == 0 {
@@ -972,36 +804,19 @@ func runPlanAddRetryTask(args []string) {
 }
 
 func runPlanRequestCancel(args []string) {
+	fs := newFlagSet("maestro plan request-cancel")
 	var commandID, requestedBy, reason string
+	fs.StringVar(&commandID, "command-id", "", "")
+	fs.StringVar(&requestedBy, "requested-by", "", "")
+	fs.StringVar(&reason, "reason", "", "")
 
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--command-id":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--command-id requires a value")
-				os.Exit(1)
-			}
-			i++
-			commandID = args[i]
-		case "--requested-by":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--requested-by requires a value")
-				os.Exit(1)
-			}
-			i++
-			requestedBy = args[i]
-		case "--reason":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--reason requires a value")
-				os.Exit(1)
-			}
-			i++
-			reason = args[i]
-		default:
-			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
-			fmt.Fprintln(os.Stderr, "usage: maestro plan request-cancel --command-id <id> [--requested-by <agent>] [--reason <text>]")
-			os.Exit(1)
-		}
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\nusage: maestro plan request-cancel --command-id <id> [--requested-by <agent>] [--reason <text>]\n", err)
+		os.Exit(1)
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "unexpected argument: %s\nusage: maestro plan request-cancel --command-id <id> [--requested-by <agent>] [--reason <text>]\n", fs.Arg(0))
+		os.Exit(1)
 	}
 
 	if commandID == "" {
@@ -1050,22 +865,17 @@ func runPlanRequestCancel(args []string) {
 }
 
 func runPlanRebuild(args []string) {
+	fs := newFlagSet("maestro plan rebuild")
 	var commandID string
+	fs.StringVar(&commandID, "command-id", "", "")
 
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--command-id":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--command-id requires a value")
-				os.Exit(1)
-			}
-			i++
-			commandID = args[i]
-		default:
-			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
-			fmt.Fprintln(os.Stderr, "usage: maestro plan rebuild --command-id <id>")
-			os.Exit(1)
-		}
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\nusage: maestro plan rebuild --command-id <id>\n", err)
+		os.Exit(1)
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "unexpected argument: %s\nusage: maestro plan rebuild --command-id <id>\n", fs.Arg(0))
+		os.Exit(1)
 	}
 
 	if commandID == "" {
@@ -1129,44 +939,24 @@ func runAgentLaunch(_ []string) {
 }
 
 func runAgentExec(args []string) {
-	var agentID, message, mode string
-	mode = "deliver"
+	fs := newFlagSet("maestro agent exec")
+	var agentID, message string
+	mode := "deliver"
+	fs.StringVar(&agentID, "agent-id", "", "")
+	fs.StringVar(&message, "message", "", "")
+	fs.StringVar(&mode, "mode", "deliver", "")
+	fs.Var(&modeSetter{target: &mode, val: "with_clear"}, "with-clear", "")
+	fs.Var(&modeSetter{target: &mode, val: "interrupt"}, "interrupt", "")
+	fs.Var(&modeSetter{target: &mode, val: "is_busy"}, "is-busy", "")
+	fs.Var(&modeSetter{target: &mode, val: "clear"}, "clear", "")
 
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--agent-id":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--agent-id requires a value")
-				os.Exit(1)
-			}
-			i++
-			agentID = args[i]
-		case "--message":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--message requires a value")
-				os.Exit(1)
-			}
-			i++
-			message = args[i]
-		case "--mode":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--mode requires a value")
-				os.Exit(1)
-			}
-			i++
-			mode = args[i]
-		case "--with-clear":
-			mode = "with_clear"
-		case "--interrupt":
-			mode = "interrupt"
-		case "--is-busy":
-			mode = "is_busy"
-		case "--clear":
-			mode = "clear"
-		default:
-			fmt.Fprintf(os.Stderr, "unknown flag: %s\nusage: maestro agent exec --agent-id <id> [--mode <mode>] [--message <msg>]\n", args[i])
-			os.Exit(1)
-		}
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\nusage: maestro agent exec --agent-id <id> [--mode <mode>] [--message <msg>]\n", err)
+		os.Exit(1)
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "unexpected argument: %s\nusage: maestro agent exec --agent-id <id> [--mode <mode>] [--message <msg>]\n", fs.Arg(0))
+		os.Exit(1)
 	}
 
 	if agentID == "" {
@@ -1224,21 +1014,17 @@ func runAgentExec(args []string) {
 }
 
 func runWorkerStandby(args []string) {
+	fs := newFlagSet("maestro worker standby")
 	var modelFilter string
+	fs.StringVar(&modelFilter, "model", "", "")
 
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--model":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--model requires a value")
-				os.Exit(1)
-			}
-			i++
-			modelFilter = args[i]
-		default:
-			fmt.Fprintf(os.Stderr, "unknown flag: %s\nusage: maestro worker standby [--model <model>]\n", args[i])
-			os.Exit(1)
-		}
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\nusage: maestro worker standby [--model <model>]\n", err)
+		os.Exit(1)
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "unexpected argument: %s\nusage: maestro worker standby [--model <model>]\n", fs.Arg(0))
+		os.Exit(1)
 	}
 
 	maestroDir := findMaestroDir()
@@ -1267,8 +1053,13 @@ func runWorkerStandby(args []string) {
 }
 
 func runDashboard(args []string) {
-	for _, a := range args {
-		fmt.Fprintf(os.Stderr, "unknown flag: %s\nusage: maestro dashboard\n", a)
+	fs := newFlagSet("maestro dashboard")
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\nusage: maestro dashboard\n", err)
+		os.Exit(1)
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "unexpected argument: %s\nusage: maestro dashboard\n", fs.Arg(0))
 		os.Exit(1)
 	}
 
@@ -1335,45 +1126,20 @@ func loadConfig(maestroDir string) (model.Config, error) {
 }
 
 func runTaskHeartbeat(args []string) {
-	var (
-		taskID   string
-		workerID string
-		epoch    int
-	)
+	fs := newFlagSet("maestro task heartbeat")
+	var taskID, workerID string
+	var epoch int
+	fs.StringVar(&taskID, "task-id", "", "")
+	fs.StringVar(&workerID, "worker-id", "", "")
+	fs.IntVar(&epoch, "epoch", 0, "")
 
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--task-id":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--task-id requires a value")
-				os.Exit(1)
-			}
-			i++
-			taskID = args[i]
-		case "--worker-id":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--worker-id requires a value")
-				os.Exit(1)
-			}
-			i++
-			workerID = args[i]
-		case "--epoch":
-			if i+1 >= len(args) {
-				fmt.Fprintln(os.Stderr, "--epoch requires a value")
-				os.Exit(1)
-			}
-			i++
-			var err error
-			epoch, err = strconv.Atoi(args[i])
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "invalid --epoch value: %s\n", args[i])
-				os.Exit(1)
-			}
-		default:
-			fmt.Fprintf(os.Stderr, "unknown flag: %s\n", args[i])
-			fmt.Fprintln(os.Stderr, "usage: maestro task heartbeat --task-id <id> --worker-id <id> --epoch <n>")
-			os.Exit(1)
-		}
+	if err := fs.Parse(args); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\nusage: maestro task heartbeat --task-id <id> --worker-id <id> --epoch <n>\n", err)
+		os.Exit(1)
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(os.Stderr, "unexpected argument: %s\nusage: maestro task heartbeat --task-id <id> --worker-id <id> --epoch <n>\n", fs.Arg(0))
+		os.Exit(1)
 	}
 
 	if taskID == "" {

@@ -22,6 +22,8 @@ type TaskHeartbeatHandler struct {
 	maestroDir   string
 	config       model.Config
 	leaseManager *LeaseManager
+	clock        Clock
+	dl           *DaemonLogger
 	logger       *log.Logger
 	logLevel     LogLevel
 	scanMu       *sync.RWMutex
@@ -31,10 +33,18 @@ type TaskHeartbeatHandler struct {
 // NewTaskHeartbeatHandler creates a new task heartbeat handler.
 func NewTaskHeartbeatHandler(maestroDir string, cfg model.Config, lm *LeaseManager,
 	logger *log.Logger, logLevel LogLevel, scanMu *sync.RWMutex, lockMap *lock.MutexMap) *TaskHeartbeatHandler {
+	return NewTaskHeartbeatHandlerWithDeps(maestroDir, cfg, lm, logger, logLevel, scanMu, lockMap, RealClock{})
+}
+
+// NewTaskHeartbeatHandlerWithDeps creates a TaskHeartbeatHandler with explicit dependencies.
+func NewTaskHeartbeatHandlerWithDeps(maestroDir string, cfg model.Config, lm *LeaseManager,
+	logger *log.Logger, logLevel LogLevel, scanMu *sync.RWMutex, lockMap *lock.MutexMap, clock Clock) *TaskHeartbeatHandler {
 	return &TaskHeartbeatHandler{
 		maestroDir:   maestroDir,
 		config:       cfg,
 		leaseManager: lm,
+		clock:        clock,
+		dl:           NewDaemonLoggerFromLegacy("task_heartbeat", logger, logLevel),
 		logger:       logger,
 		logLevel:     logLevel,
 		scanMu:       scanMu,
@@ -81,9 +91,16 @@ func (h *TaskHeartbeatHandler) Handle(params json.RawMessage) *uds.Response {
 	queueFile := fmt.Sprintf("queue/%s.yaml", p.WorkerID)
 	queuePath := filepath.Join(h.maestroDir, queueFile)
 
-	// Acquire locks in the same order as result_write
-	h.scanMu.RLock()
-	defer h.scanMu.RUnlock()
+	// QA-013: Use TryRLock to avoid blocking heartbeats during long PeriodicScan phases.
+	// If scanMu is held exclusively (Phase A/C), proceed with per-file lock only.
+	// This is safe because heartbeat only extends a single task's lease fields,
+	// and Phase C uses epoch fencing to detect concurrent modifications.
+	scanLocked := h.scanMu.TryRLock()
+	if scanLocked {
+		defer h.scanMu.RUnlock()
+	} else {
+		h.log(LogLevelDebug, "heartbeat_scan_lock_skipped task=%s worker=%s (scan in progress)", p.TaskID, p.WorkerID)
+	}
 
 	// Acquire file lock for the queue file
 	unlock, err := h.acquireFileLock(queueFile)
@@ -155,7 +172,7 @@ func (h *TaskHeartbeatHandler) Handle(params json.RawMessage) *uds.Response {
 		}
 	}
 
-	elapsed := time.Since(inProgressSince)
+	elapsed := h.clock.Now().Sub(inProgressSince)
 	if elapsed >= time.Duration(maxMin)*time.Minute {
 		h.log(LogLevelWarn, "heartbeat_rejected task=%s max_runtime_exceeded elapsed=%v max=%dm",
 			p.TaskID, elapsed, maxMin)
@@ -198,19 +215,5 @@ func (h *TaskHeartbeatHandler) acquireFileLock(file string) (func(), error) {
 }
 
 func (h *TaskHeartbeatHandler) log(level LogLevel, format string, args ...interface{}) {
-	if h.logLevel <= level {
-		levelStr := "INFO"
-		switch level {
-		case LogLevelDebug:
-			levelStr = "DEBUG"
-		case LogLevelInfo:
-			levelStr = "INFO"
-		case LogLevelWarn:
-			levelStr = "WARN"
-		case LogLevelError:
-			levelStr = "ERROR"
-		}
-		prefix := fmt.Sprintf("[%s] ", levelStr)
-		h.logger.Printf(prefix+format, args...)
-	}
+	h.dl.Logf(level, format, args...)
 }

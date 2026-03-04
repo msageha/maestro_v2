@@ -123,7 +123,7 @@ func (d *Daemon) handleQueueWriteCommand(params QueueWriteParams) *uds.Response 
 		priority = 100
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := d.clock.Now().UTC().Format(time.RFC3339)
 	cq.Commands = append(cq.Commands, model.Command{
 		ID:        id,
 		Content:   params.Content,
@@ -236,7 +236,7 @@ func (d *Daemon) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 		priority = 100
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := d.clock.Now().UTC().Format(time.RFC3339)
 	tq.Tasks = append(tq.Tasks, model.Task{
 		ID:                 id,
 		CommandID:          params.CommandID,
@@ -329,7 +329,7 @@ func (d *Daemon) handleQueueWriteNotification(params QueueWriteParams) *uds.Resp
 		priority = 100
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := d.clock.Now().UTC().Format(time.RFC3339)
 	nq.Notifications = append(nq.Notifications, model.Notification{
 		ID:             id,
 		CommandID:      params.CommandID,
@@ -396,7 +396,7 @@ func (d *Daemon) cancelRequestSubmitted(params QueueWriteParams, statePath strin
 		return uds.SuccessResponse(map[string]string{"command_id": params.CommandID, "status": "already_requested"})
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := d.clock.Now().UTC().Format(time.RFC3339)
 	requestedBy := params.RequestedBy
 	if requestedBy == "" {
 		requestedBy = "orchestrator"
@@ -449,7 +449,7 @@ func (d *Daemon) cancelRequestUnsubmitted(params QueueWriteParams) *uds.Response
 		return uds.ErrorResponse(uds.ErrCodeInternal, err.Error())
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := d.clock.Now().UTC().Format(time.RFC3339)
 	requestedBy := params.RequestedBy
 	if requestedBy == "" {
 		requestedBy = "orchestrator"

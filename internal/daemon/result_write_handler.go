@@ -261,7 +261,7 @@ func (d *Daemon) resultWritePhaseA(params ResultWriteParams, resultStatus model.
 		rf.FileType = "result_task"
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := d.clock.Now().UTC().Format(time.RFC3339)
 	rf.Results = append(rf.Results, model.TaskResult{
 		ID:                     resultID,
 		TaskID:                 params.TaskID,
@@ -359,7 +359,7 @@ func (d *Daemon) resultWritePhaseB(params ResultWriteParams, resultID string, re
 	}
 	state.AppliedResultIDs[params.TaskID] = resultID
 
-	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	state.UpdatedAt = d.clock.Now().UTC().Format(time.RFC3339)
 
 	return yamlutil.AtomicWrite(statePath, state)
 }

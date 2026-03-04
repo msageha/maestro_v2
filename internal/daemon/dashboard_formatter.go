@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/events"
+	"github.com/msageha/maestro_v2/internal/model"
 )
 
 // DashboardStats represents aggregated statistics for the dashboard
@@ -48,6 +49,8 @@ type DashboardData struct {
 	RecentWarnings  []DashboardEvent
 	QueueStatus     map[string]QueueInfo
 	AgentStatus     map[string]AgentInfo
+	ActiveCommands  []ActiveCommandInfo
+	WorkerSummaries []WorkerSummary
 	FormationStatus string
 	DaemonStatus    string
 	LastUpdated     time.Time
@@ -75,6 +78,7 @@ type DashboardFormatter struct {
 	maxEvents   int
 	maxErrors   int
 	maxWarnings int
+	clock       Clock
 }
 
 // NewDashboardFormatter creates a new dashboard formatter
@@ -85,6 +89,7 @@ func NewDashboardFormatter(maestroDir string) *DashboardFormatter {
 		maxEvents:   20,
 		maxErrors:   10,
 		maxWarnings: 10,
+		clock:       RealClock{},
 	}
 }
 
@@ -112,7 +117,7 @@ func (f *DashboardFormatter) FormatDashboard() (string, error) {
 // collectDashboardData reads logs and aggregates dashboard data
 func (f *DashboardFormatter) collectDashboardData() (*DashboardData, error) {
 	data := &DashboardData{
-		Stats:           DashboardStats{LastUpdated: time.Now()},
+		Stats:           DashboardStats{LastUpdated: f.clock.Now()},
 		RecentEvents:    make([]DashboardEvent, 0),
 		RecentErrors:    make([]DashboardEvent, 0),
 		RecentWarnings:  make([]DashboardEvent, 0),
@@ -120,7 +125,7 @@ func (f *DashboardFormatter) collectDashboardData() (*DashboardData, error) {
 		AgentStatus:     make(map[string]AgentInfo),
 		FormationStatus: "Active",
 		DaemonStatus:    "Running",
-		LastUpdated:     time.Now(),
+		LastUpdated:     f.clock.Now(),
 	}
 
 	// Read and parse JSONL log file
@@ -379,6 +384,16 @@ func (f *DashboardFormatter) getDashboardTemplate() (*template.Template, error) 
 | Daemon    | {{ .DaemonStatus }} |
 | Formation | {{ .FormationStatus }} |
 
+## Queue Status
+
+| Queue | Pending | In Progress |
+|-------|---------|-------------|
+{{ range .QueueStatus -}}
+| {{ .Name }} | {{ .Pending }} | {{ .InProgress }} |
+{{ else -}}
+| _No queues_ | - | - |
+{{ end }}
+
 ## Task Statistics
 
 | Metric | Value |
@@ -390,16 +405,6 @@ func (f *DashboardFormatter) getDashboardTemplate() (*template.Template, error) 
 | Pending | {{ .Stats.PendingTasks }} |
 | Errors | {{ .Stats.ErrorCount }} |
 | Warnings | {{ .Stats.WarningCount }} |
-
-## Queue Status
-
-| Queue | Pending | In Progress |
-|-------|---------|-------------|
-{{ range .QueueStatus -}}
-| {{ .Name }} | {{ .Pending }} | {{ .InProgress }} |
-{{ else -}}
-| _No queues_ | - | - |
-{{ end }}
 
 ## Agent Status
 
@@ -452,6 +457,116 @@ _Last updated: {{ .LastUpdated.Format "2006-01-02 15:04:05 MST" }}_
 `
 
 	return template.New("dashboard").Parse(tmplText)
+}
+
+// UpdateDashboardFileWithQueues generates the dashboard using both JSONL logs
+// and live queue data. This is the unified entry point for SIER-002:
+// MetricsHandler delegates here so that dashboard.md is generated from a single path.
+// The output format includes queue-depth, active commands, and worker task sections
+// derived from live queue data, plus log-based statistics and events.
+func (f *DashboardFormatter) UpdateDashboardFileWithQueues(
+	cq model.CommandQueue,
+	taskQueues map[string]*taskQueueEntry,
+	nq model.NotificationQueue,
+) error {
+	var sb strings.Builder
+	sb.WriteString("# Maestro Dashboard\n\n")
+	fmt.Fprintf(&sb, "Updated: %s\n\n", f.clock.Now().UTC().Format(time.RFC3339))
+
+	// Queue Depth table (from live queue data)
+	sb.WriteString("## Queue Depth\n\n")
+	sb.WriteString("| Queue | Pending |\n")
+	sb.WriteString("|-------|--------:|\n")
+
+	plannerPending := 0
+	for _, cmd := range cq.Commands {
+		if cmd.Status == model.StatusPending {
+			plannerPending++
+		}
+	}
+	fmt.Fprintf(&sb, "| planner | %d |\n", plannerPending)
+
+	orchPending := 0
+	for _, ntf := range nq.Notifications {
+		if ntf.Status == model.StatusPending {
+			orchPending++
+		}
+	}
+	fmt.Fprintf(&sb, "| orchestrator | %d |\n", orchPending)
+
+	workerKeys := make([]string, 0, len(taskQueues))
+	for path := range taskQueues {
+		wID := workerIDFromPath(path)
+		if wID != "" {
+			workerKeys = append(workerKeys, wID)
+		}
+	}
+	sort.Strings(workerKeys)
+
+	workerPending := make(map[string]int)
+	workerInProg := make(map[string]int)
+	for path, tq := range taskQueues {
+		wID := workerIDFromPath(path)
+		if wID == "" {
+			continue
+		}
+		for _, task := range tq.Queue.Tasks {
+			switch task.Status {
+			case model.StatusPending:
+				workerPending[wID]++
+			case model.StatusInProgress:
+				workerInProg[wID]++
+			}
+		}
+	}
+	for _, wID := range workerKeys {
+		fmt.Fprintf(&sb, "| %s | %d |\n", wID, workerPending[wID])
+	}
+
+	// Active commands
+	sb.WriteString("\n## Active Commands\n\n")
+	activeCount := 0
+	for _, cmd := range cq.Commands {
+		if cmd.Status == model.StatusInProgress {
+			fmt.Fprintf(&sb, "- `%s` (priority=%d, attempts=%d)\n", cmd.ID, cmd.Priority, cmd.Attempts)
+			activeCount++
+		}
+	}
+	if activeCount == 0 {
+		sb.WriteString("_No active commands_\n")
+	}
+
+	// Worker tasks
+	sb.WriteString("\n## Worker Tasks\n\n")
+	for _, wID := range workerKeys {
+		fmt.Fprintf(&sb, "- **%s**: %d pending, %d in_progress\n", wID, workerPending[wID], workerInProg[wID])
+	}
+
+	// Enrich with log-based statistics (best-effort)
+	data, _ := f.collectDashboardData()
+	if data != nil && (data.Stats.TotalTasks > 0 || data.Stats.ErrorCount > 0) {
+		sb.WriteString("\n## Recent Activity\n\n")
+		fmt.Fprintf(&sb, "Tasks: %d total, %d completed, %d failed\n",
+			data.Stats.TotalTasks, data.Stats.CompletedTasks, data.Stats.FailedTasks)
+		fmt.Fprintf(&sb, "Errors: %d, Warnings: %d\n", data.Stats.ErrorCount, data.Stats.WarningCount)
+	}
+
+	dashboardPath := filepath.Join(f.maestroDir, "dashboard.md")
+	return atomicWriteText(dashboardPath, sb.String())
+}
+
+// ActiveCommandInfo holds info about an in-progress command for dashboard display.
+type ActiveCommandInfo struct {
+	ID       string
+	Priority int
+	Attempts int
+}
+
+// WorkerSummary holds per-worker task counts for dashboard display.
+type WorkerSummary struct {
+	ID         string
+	Pending    int
+	InProgress int
 }
 
 // WriteDashboard writes the formatted dashboard to dashboard.md

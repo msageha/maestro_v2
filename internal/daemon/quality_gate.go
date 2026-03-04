@@ -27,7 +27,7 @@ type TaskStartEvent struct {
 	StartedAt time.Time
 }
 
-func (e TaskStartEvent) EventType() string  { return "task_start" }
+func (e TaskStartEvent) EventType() string    { return "task_start" }
 func (e TaskStartEvent) Timestamp() time.Time { return e.StartedAt }
 
 // TaskCompleteEvent is emitted when a task completes (success or failure).
@@ -39,19 +39,19 @@ type TaskCompleteEvent struct {
 	CompletedAt time.Time
 }
 
-func (e TaskCompleteEvent) EventType() string  { return "task_complete" }
+func (e TaskCompleteEvent) EventType() string    { return "task_complete" }
 func (e TaskCompleteEvent) Timestamp() time.Time { return e.CompletedAt }
 
 // PhaseTransitionEvent is emitted when a phase changes status.
 type PhaseTransitionEvent struct {
-	PhaseID       string
-	CommandID     string
-	OldStatus     model.PhaseStatus
-	NewStatus     model.PhaseStatus
+	PhaseID        string
+	CommandID      string
+	OldStatus      model.PhaseStatus
+	NewStatus      model.PhaseStatus
 	TransitionedAt time.Time
 }
 
-func (e PhaseTransitionEvent) EventType() string  { return "phase_transition" }
+func (e PhaseTransitionEvent) EventType() string    { return "phase_transition" }
 func (e PhaseTransitionEvent) Timestamp() time.Time { return e.TransitionedAt }
 
 // QualityGateMetrics tracks quality gate evaluation metrics.
@@ -95,8 +95,10 @@ type QualityGateDaemon struct {
 	maestroDir string
 	config     model.Config
 	lockMap    *lock.MutexMap
+	dl         *DaemonLogger
 	logger     *log.Logger
 	logLevel   LogLevel
+	clock      Clock
 
 	eventChan         chan QualityGateEvent
 	metrics           *QualityGateMetrics
@@ -154,8 +156,10 @@ func NewQualityGateDaemon(
 		maestroDir:        maestroDir,
 		config:            cfg,
 		lockMap:           lockMap,
+		dl:                NewDaemonLoggerFromLegacy("quality_gate", logger, logLevel),
 		logger:            logger,
 		logLevel:          logLevel,
+		clock:             RealClock{},
 		eventChan:         make(chan QualityGateEvent, 100), // Buffered to prevent blocking
 		metrics:           &QualityGateMetrics{},
 		engine:            quality.NewEngine(),
@@ -236,6 +240,23 @@ func (qg *QualityGateDaemon) eventLoop() {
 		select {
 		case <-qg.ctx.Done():
 			qg.log(LogLevelDebug, "quality_gate_event_loop shutdown_signal")
+			// SRE-007: Drain buffered events and log discard count
+			discarded := 0
+			for {
+				select {
+				case _, ok := <-qg.eventChan:
+					if !ok {
+						goto drained
+					}
+					discarded++
+				default:
+					goto drained
+				}
+			}
+		drained:
+			if discarded > 0 {
+				qg.log(LogLevelWarn, "quality_gate_event_loop discarded %d buffered events on shutdown", discarded)
+			}
 			return
 		case event, ok := <-qg.eventChan:
 			if !ok {
@@ -252,7 +273,7 @@ func (qg *QualityGateDaemon) processEvent(event QualityGateEvent) {
 	qg.log(LogLevelDebug, "quality_gate_processing_event type=%s", event.EventType())
 
 	// Record processing start time for metrics
-	startTime := time.Now()
+	startTime := qg.clock.Now()
 
 	// Process based on event type
 	var err error
@@ -412,19 +433,5 @@ func (qg *QualityGateDaemon) GetMetrics() *QualityGateMetrics {
 
 // log writes a log message if the level is enabled.
 func (qg *QualityGateDaemon) log(level LogLevel, format string, args ...interface{}) {
-	if level < qg.logLevel {
-		return
-	}
-	prefix := ""
-	switch level {
-	case LogLevelDebug:
-		prefix = "[DEBUG] "
-	case LogLevelInfo:
-		prefix = "[INFO] "
-	case LogLevelWarn:
-		prefix = "[WARN] "
-	case LogLevelError:
-		prefix = "[ERROR] "
-	}
-	qg.logger.Printf(prefix+format, args...)
+	qg.dl.Logf(level, format, args...)
 }
