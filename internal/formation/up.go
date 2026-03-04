@@ -425,6 +425,11 @@ func createFormation(cfg model.Config) (retErr error) {
 		return fmt.Errorf("set remain-on-exit for workers: %w", err)
 	}
 
+	// Limit scrollback buffer for worker panes to reduce memory usage
+	if err := tmux.SetWindowOption(workerWindow, "history-limit", "500"); err != nil {
+		return fmt.Errorf("set history-limit for workers: %w", err)
+	}
+
 	panes, err := tmux.SetupWorkerGrid(workerWindow, workerCount)
 	if err != nil {
 		return fmt.Errorf("setup worker grid: %w", err)
