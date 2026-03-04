@@ -311,8 +311,12 @@ func cascadeRecover(
 	workerStates []WorkerState,
 	origTaskCache map[string]model.Task,
 ) ([]CascadeRecoveredTask, error) {
+	// CR-020: Work on a copy of workerStates so that on failure the caller's
+	// slice is not left in a partially-mutated state.
+	ws := make([]WorkerState, len(workerStates))
+	copy(ws, workerStates)
 	var recovered []CascadeRecoveredTask
-	return cascadeRecoverRecursive(state, failedTaskID, newRetryTaskID, workerConfig, limits, workerStates, recovered, origTaskCache)
+	return cascadeRecoverRecursive(state, failedTaskID, newRetryTaskID, workerConfig, limits, ws, recovered, origTaskCache)
 }
 
 func cascadeRecoverRecursive(

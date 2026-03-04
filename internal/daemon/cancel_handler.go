@@ -122,6 +122,13 @@ func (ch *CancelHandler) InterruptInProgressTasks(tasks []model.Task, commandID 
 			continue
 		}
 
+		// Validate transition BEFORE sending interrupt (CR-029 consistency):
+		// skip targets must not be interrupted.
+		if err := model.ValidateCommandTaskQueueTransition(task.Status, model.StatusCancelled); err != nil {
+			ch.log(LogLevelWarn, "cancel_inprogress_skip task=%s error=%v", task.ID, err)
+			continue
+		}
+
 		// Send interrupt via agent executor
 		if task.LeaseOwner != nil {
 			if err := ch.interruptAgent(*task.LeaseOwner, task.ID, task.CommandID, task.LeaseEpoch); err != nil {
@@ -129,11 +136,6 @@ func (ch *CancelHandler) InterruptInProgressTasks(tasks []model.Task, commandID 
 					task.ID, *task.LeaseOwner, err)
 				// Continue to cancel even if interrupt fails
 			}
-		}
-
-		if err := model.ValidateCommandTaskQueueTransition(task.Status, model.StatusCancelled); err != nil {
-			ch.log(LogLevelWarn, "cancel_inprogress_skip task=%s error=%v", task.ID, err)
-			continue
 		}
 
 		// Clear lease fields before setting status to ensure any concurrent
@@ -177,6 +179,13 @@ func (ch *CancelHandler) InterruptInProgressTasksDeferred(tasks []model.Task, co
 			continue
 		}
 
+		// Validate transition BEFORE collecting interrupt item (CR-029):
+		// skip targets must not be added to the interrupt list.
+		if err := model.ValidateCommandTaskQueueTransition(task.Status, model.StatusCancelled); err != nil {
+			ch.log(LogLevelWarn, "cancel_inprogress_skip task=%s error=%v", task.ID, err)
+			continue
+		}
+
 		// Collect interrupt item for Phase B execution
 		if task.LeaseOwner != nil {
 			interrupts = append(interrupts, interruptItem{
@@ -185,11 +194,6 @@ func (ch *CancelHandler) InterruptInProgressTasksDeferred(tasks []model.Task, co
 				CommandID: task.CommandID,
 				Epoch:     task.LeaseEpoch,
 			})
-		}
-
-		if err := model.ValidateCommandTaskQueueTransition(task.Status, model.StatusCancelled); err != nil {
-			ch.log(LogLevelWarn, "cancel_inprogress_skip task=%s error=%v", task.ID, err)
-			continue
 		}
 
 		// Clear lease fields before setting status (same ordering as InterruptInProgressTasks).

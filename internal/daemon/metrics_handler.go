@@ -81,21 +81,29 @@ func (mh *MetricsHandler) UpdateMetrics(
 	// Compute queue depth
 	metrics.QueueDepth = mh.computeQueueDepth(cq, taskQueues, nq)
 
-	// Count completed/failed tasks from current queue snapshot for accurate metrics
-	for _, tq := range taskQueues {
-		for _, task := range tq.Queue.Tasks {
-			switch task.Status {
+	// Count completed/failed from result files (persistent, not affected by queue archival).
+	// Result files are the authoritative source: both normal result_write and dead-letter
+	// post-processing write to results/*.yaml, so archived queue entries don't cause
+	// counter regression.
+	resultFiles := mh.loadAllResultFiles()
+	resultCompleted := 0
+	resultFailed := 0
+	for _, rf := range resultFiles {
+		// Skip non-task result files (e.g. planner.yaml which is result_command)
+		if rf.FileType != "result_task" {
+			continue
+		}
+		for _, r := range rf.Results {
+			switch r.Status {
 			case model.StatusCompleted:
-				counters.TasksCompleted++
+				resultCompleted++
 			case model.StatusFailed:
-				counters.TasksFailed++
+				resultFailed++
 			}
 		}
 	}
-
-	// Set absolute counters from snapshot (completed/failed are snapshot-based)
-	metrics.Counters.TasksCompleted = counters.TasksCompleted
-	metrics.Counters.TasksFailed = counters.TasksFailed
+	metrics.Counters.TasksCompleted = resultCompleted
+	metrics.Counters.TasksFailed = resultFailed
 
 	// Merge incremental counters (additive)
 	metrics.Counters.CommandsDispatched += counters.CommandsDispatched

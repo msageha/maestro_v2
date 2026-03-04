@@ -2,11 +2,16 @@ package tmux
 
 import (
 	"context"
+	"fmt"
 	"os/exec"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+// testSessionSeq provides unique suffixes for test session names.
+var testSessionSeq atomic.Int64
 
 func requireTmux(t *testing.T) {
 	t.Helper()
@@ -27,20 +32,31 @@ func requireTmux(t *testing.T) {
 	}
 }
 
-func cleanupSession(t *testing.T) {
+// useTestSession sets a unique, isolated session name for the test.
+// It saves the original session name and restores it on cleanup.
+// The cleanup also kills the test session by its captured name,
+// avoiding the bug where GetSessionName() at cleanup time returns
+// a different test's session name.
+func useTestSession(t *testing.T) string {
 	t.Helper()
+
+	origName := GetSessionName()
+	testName := fmt.Sprintf("maestro-test-%d-%d", time.Now().UnixNano(), testSessionSeq.Add(1))
+	SetSessionName(testName)
+
+	// Capture the concrete name for cleanup — do NOT call GetSessionName() later.
+	capturedName := GetSessionName()
 	t.Cleanup(func() {
-		// Best-effort cleanup
-		exec.Command("tmux", "kill-session", "-t", GetSessionName()).Run()
+		exec.Command("tmux", "kill-session", "-t", capturedName).Run()
+		SetSessionName(origName)
 	})
+
+	return capturedName
 }
 
 func TestSessionLifecycle(t *testing.T) {
 	requireTmux(t)
-	cleanupSession(t)
-
-	// Kill any existing test session
-	exec.Command("tmux", "kill-session", "-t", GetSessionName()).Run()
+	useTestSession(t)
 
 	if SessionExists() {
 		t.Fatal("session should not exist initially")
@@ -65,8 +81,7 @@ func TestSessionLifecycle(t *testing.T) {
 
 func TestUserVariables(t *testing.T) {
 	requireTmux(t)
-	cleanupSession(t)
-	exec.Command("tmux", "kill-session", "-t", GetSessionName()).Run()
+	useTestSession(t)
 
 	if err := CreateSession("test"); err != nil {
 		t.Fatalf("create session: %v", err)
@@ -101,8 +116,7 @@ func TestUserVariables(t *testing.T) {
 
 func TestCreateWindowAndListPanes(t *testing.T) {
 	requireTmux(t)
-	cleanupSession(t)
-	exec.Command("tmux", "kill-session", "-t", GetSessionName()).Run()
+	useTestSession(t)
 
 	if err := CreateSession("orchestrator"); err != nil {
 		t.Fatalf("create session: %v", err)
@@ -133,8 +147,7 @@ func TestCreateWindowAndListPanes(t *testing.T) {
 
 func TestSetupWorkerGrid(t *testing.T) {
 	requireTmux(t)
-	cleanupSession(t)
-	exec.Command("tmux", "kill-session", "-t", GetSessionName()).Run()
+	useTestSession(t)
 
 	if err := CreateSession("orchestrator"); err != nil {
 		t.Fatalf("create session: %v", err)
@@ -191,8 +204,7 @@ func TestSetupWorkerGrid(t *testing.T) {
 
 func TestCapturePane(t *testing.T) {
 	requireTmux(t)
-	cleanupSession(t)
-	exec.Command("tmux", "kill-session", "-t", GetSessionName()).Run()
+	useTestSession(t)
 
 	if err := CreateSession("test"); err != nil {
 		t.Fatalf("create session: %v", err)
@@ -211,8 +223,7 @@ func TestCapturePane(t *testing.T) {
 
 func TestFindPaneByAgentID(t *testing.T) {
 	requireTmux(t)
-	cleanupSession(t)
-	exec.Command("tmux", "kill-session", "-t", GetSessionName()).Run()
+	useTestSession(t)
 
 	if err := CreateSession("test"); err != nil {
 		t.Fatalf("create session: %v", err)
@@ -255,8 +266,7 @@ func waitForShell(t *testing.T, paneTarget string) {
 
 func TestSendTextAndSubmit(t *testing.T) {
 	requireTmux(t)
-	cleanupSession(t)
-	exec.Command("tmux", "kill-session", "-t", GetSessionName()).Run()
+	useTestSession(t)
 
 	if err := CreateSession("test"); err != nil {
 		t.Fatalf("create session: %v", err)
@@ -293,8 +303,7 @@ func TestSendTextAndSubmit(t *testing.T) {
 
 func TestSendTextAndSubmit_SingleLine(t *testing.T) {
 	requireTmux(t)
-	cleanupSession(t)
-	exec.Command("tmux", "kill-session", "-t", GetSessionName()).Run()
+	useTestSession(t)
 
 	if err := CreateSession("test"); err != nil {
 		t.Fatalf("create session: %v", err)
@@ -338,8 +347,7 @@ func TestSetupWorkerGrid_InvalidCount(t *testing.T) {
 
 func TestSetSessionOption(t *testing.T) {
 	requireTmux(t)
-	cleanupSession(t)
-	exec.Command("tmux", "kill-session", "-t", GetSessionName()).Run()
+	useTestSession(t)
 
 	if err := CreateSession("test"); err != nil {
 		t.Fatalf("create session: %v", err)

@@ -102,11 +102,45 @@ func RunUp(opts UpOptions) error {
 		return fmt.Errorf("start daemon: %w", err)
 	}
 
-	// Wait briefly for daemon to initialize
-	time.Sleep(500 * time.Millisecond)
+	// Wait for daemon to become ready (UDS ping)
+	socketPath := filepath.Join(opts.MaestroDir, uds.DefaultSocketName)
+	if err := waitDaemonReady(socketPath, 10*time.Second); err != nil {
+		// Daemon failed to start — clean up
+		_ = stopDaemon(opts.MaestroDir)
+		if tmux.SessionExists() {
+			_ = tmux.KillSession()
+		}
+		return fmt.Errorf("daemon not ready: %w", err)
+	}
 
 	fmt.Println("Maestro formation is up.")
 	return nil
+}
+
+// waitDaemonReady polls the daemon's UDS ping endpoint until it responds
+// successfully or the timeout is reached.
+func waitDaemonReady(socketPath string, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	client := uds.NewClient(socketPath)
+	client.SetTimeout(1 * time.Second)
+
+	for time.Now().Before(deadline) {
+		resp, err := client.SendCommand("ping", nil)
+		if err == nil && resp.Success {
+			return nil
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return fmt.Errorf("daemon did not respond to ping within %s", timeout)
+}
+
+// CleanupOnFailure performs best-effort cleanup of resources that may have been
+// partially created during a failed RunUp. Safe to call even if nothing was created.
+func CleanupOnFailure(maestroDir string) {
+	_ = stopDaemon(maestroDir)
+	if tmux.SessionExists() {
+		_ = tmux.KillSession()
+	}
 }
 
 // resetFormation clears all transient state, preserving quarantine for forensics.
@@ -295,7 +329,8 @@ func inferFileType(dir, filename string) string {
 }
 
 // createFormation creates the tmux session with orchestrator, planner, and worker windows.
-func createFormation(cfg model.Config) error {
+// On partial failure, it rolls back by killing the tmux session.
+func createFormation(cfg model.Config) (retErr error) {
 	// Kill existing session if any
 	if tmux.SessionExists() {
 		fmt.Println("[debug] createFormation: killing pre-existing session before creation")
@@ -308,6 +343,18 @@ func createFormation(cfg model.Config) error {
 	if err := tmux.CreateSession("orchestrator"); err != nil {
 		return fmt.Errorf("create session: %w", err)
 	}
+
+	// Rollback: if any subsequent step fails, destroy the partially-created session
+	defer func() {
+		if retErr != nil {
+			log.Printf("WARN createFormation: rolling back due to error: %v", retErr)
+			if tmux.SessionExists() {
+				if killErr := tmux.KillSession(); killErr != nil {
+					log.Printf("WARN createFormation: rollback kill session failed: %v", killErr)
+				}
+			}
+		}
+	}()
 
 	fmt.Println("[debug] createFormation: applying session hardening options")
 

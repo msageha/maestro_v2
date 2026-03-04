@@ -50,6 +50,7 @@ type Phase struct {
 	ActivatedAt     *string           `yaml:"activated_at"`
 	CompletedAt     *string           `yaml:"completed_at"`
 	FillDeadlineAt  *string           `yaml:"fill_deadline_at"`
+	FillingStartedAt *string          `yaml:"filling_started_at,omitempty"`
 	ReopenedAt      *string           `yaml:"reopened_at"`
 }
 

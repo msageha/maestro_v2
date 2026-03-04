@@ -283,6 +283,9 @@ func runUp(args []string) {
 	}
 
 	if err := formation.RunUp(opts); err != nil {
+		// Clean up any partially-created resources (tmux session, daemon)
+		fmt.Fprintln(os.Stderr, "Cleaning up after setup failure...")
+		formation.CleanupOnFailure(maestroDir)
 		fmt.Fprintf(os.Stderr, "up: %v\n", err)
 		os.Exit(1)
 	}

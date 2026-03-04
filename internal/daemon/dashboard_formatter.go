@@ -144,7 +144,9 @@ func (f *DashboardFormatter) collectDashboardData() (*DashboardData, error) {
 	return data, nil
 }
 
-// parseLogFile reads and parses the JSONL log file
+// parseLogFile reads and parses the JSONL log file.
+// To avoid full-scanning large logs, only the tail portion (last maxTailBytes)
+// is parsed. Statistics are therefore windowed over recent events, not full history.
 func (f *DashboardFormatter) parseLogFile(data *DashboardData) error {
 	file, err := os.Open(f.logPath)
 	if err != nil {
@@ -152,7 +154,29 @@ func (f *DashboardFormatter) parseLogFile(data *DashboardData) error {
 	}
 	defer file.Close()
 
+	// Tail-read optimization: only read the last portion of the file
+	// to avoid O(n) full scans as log files grow.
+	const maxTailBytes int64 = 512 * 1024 // 512KB
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size() > maxTailBytes {
+		if _, err := file.Seek(-maxTailBytes, io.SeekEnd); err != nil {
+			return err
+		}
+	}
+
 	scanner := bufio.NewScanner(file)
+	// Expand scanner buffer from default 64KB to 1MB to handle long log lines
+	const maxScannerBuffer = 1024 * 1024 // 1MB
+	scanner.Buffer(make([]byte, 0, maxScannerBuffer), maxScannerBuffer)
+
+	// If we seeked into the middle of the file, discard the first partial line
+	if info.Size() > maxTailBytes {
+		scanner.Scan() // discard partial line at seek boundary
+	}
+
 	taskStatus := make(map[string]string)
 
 	for scanner.Scan() {

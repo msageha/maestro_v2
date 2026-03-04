@@ -5,12 +5,18 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/yaml"
 	yamlv3 "gopkg.in/yaml.v3"
+)
+
+const (
+	retryMetaPrefix = "retry_attempt="
+	maxRetryMeta    = 5
 )
 
 // TaskRetryHandler handles task retry logic.
@@ -34,12 +40,18 @@ func NewTaskRetryHandler(maestroDir string, cfg model.Config, lockMap *lock.Mute
 }
 
 // ShouldRetryTask determines if a failed task should be retried.
-func (h *TaskRetryHandler) ShouldRetryTask(task *model.Task, exitCode int) (bool, string) {
+// retrySafe indicates whether the worker marked the result as safe to retry.
+func (h *TaskRetryHandler) ShouldRetryTask(task *model.Task, exitCode int, retrySafe bool) (bool, string) {
 	retryConfig := h.config.Retry.TaskExecution
 
 	// Check if retry is enabled
 	if !retryConfig.Enabled {
 		return false, "retry disabled"
+	}
+
+	// CR-030: Respect worker's RetrySafe flag
+	if !retrySafe {
+		return false, "worker marked not retry safe"
 	}
 
 	// Check if max retries exceeded (use ExecutionRetries for actual retry count)
@@ -76,7 +88,7 @@ func (h *TaskRetryHandler) CreateRetryTask(originalTask *model.Task, workerID st
 	// Create retry task with same content but new ID and increased retry count
 	retryTask := *originalTask
 	retryTask.ID = retryTaskID
-	retryTask.Attempts = 0 // Reset dispatch attempts for new task
+	retryTask.Attempts = 0                                         // Reset dispatch attempts for new task
 	retryTask.ExecutionRetries = originalTask.ExecutionRetries + 1 // Increment retry count
 	retryTask.OriginalTaskID = originalTask.OriginalTaskID
 	if retryTask.OriginalTaskID == "" {
@@ -86,6 +98,7 @@ func (h *TaskRetryHandler) CreateRetryTask(originalTask *model.Task, workerID st
 	retryTask.LeaseOwner = nil
 	retryTask.LeaseExpiresAt = nil
 	retryTask.LeaseEpoch = 0
+	retryTask.InProgressAt = nil // Reset so new dispatch sets fresh timestamp
 
 	now := time.Now().UTC()
 	retryTask.CreatedAt = now.Format(time.RFC3339)
@@ -96,14 +109,22 @@ func (h *TaskRetryHandler) CreateRetryTask(originalTask *model.Task, workerID st
 		cooldownTime := now.Add(time.Duration(retryConfig.CooldownSec) * time.Second)
 		notBefore := cooldownTime.Format(time.RFC3339)
 		retryTask.NotBefore = &notBefore
-		// Also adjust priority as a hint
-		retryTask.Priority = originalTask.Priority + retryConfig.CooldownSec
+		// CR-040: Cap priority increase to avoid unbounded growth.
+		// Only add CooldownSec bump when ExecutionRetries is below the cap.
+		// After maxPrioritySteps retries, priority stays at the same level.
+		const maxPrioritySteps = 3
+		if retryTask.ExecutionRetries <= maxPrioritySteps {
+			retryTask.Priority = originalTask.Priority + retryConfig.CooldownSec
+		} else {
+			retryTask.Priority = originalTask.Priority
+		}
 	}
 
-	// Add retry metadata to constraints
+	// CR-039: Cap retry metadata in constraints to maxRetryMeta entries.
+	// Build a fresh slice to avoid mutating the original task's backing array.
 	retryMeta := fmt.Sprintf("retry_attempt=%d,original_task=%s,exit_code=%d",
 		retryTask.ExecutionRetries, originalTask.ID, exitCode)
-	retryTask.Constraints = append(retryTask.Constraints, retryMeta)
+	retryTask.Constraints = withCappedRetryMeta(retryTask.Constraints, retryMeta)
 
 	return &retryTask, nil
 }
@@ -184,6 +205,32 @@ func (h *TaskRetryHandler) addRetryTaskToQueueLocked(task *model.Task, workerID 
 		task.ID, workerID, task.Attempts)
 
 	return nil
+}
+
+// withCappedRetryMeta returns a new constraints slice with retry metadata entries
+// capped at maxRetryMeta (keeping the newest). Non-retry constraints are preserved.
+func withCappedRetryMeta(constraints []string, newMeta string) []string {
+	plain := make([]string, 0, len(constraints)+1)
+	meta := make([]string, 0, maxRetryMeta)
+
+	for _, c := range constraints {
+		if strings.HasPrefix(c, retryMetaPrefix) {
+			meta = append(meta, c)
+		} else {
+			plain = append(plain, c)
+		}
+	}
+
+	// Keep only the most recent (maxRetryMeta-1) old entries
+	if len(meta) > maxRetryMeta-1 {
+		meta = meta[len(meta)-(maxRetryMeta-1):]
+	}
+
+	out := make([]string, 0, len(plain)+len(meta)+1)
+	out = append(out, plain...)
+	out = append(out, meta...)
+	out = append(out, newMeta)
+	return out
 }
 
 func (h *TaskRetryHandler) log(level LogLevel, format string, args ...interface{}) {

@@ -752,6 +752,18 @@ func (d *Daemon) archiveTerminalTasks(tq *model.TaskQueue) int {
 }
 
 // isCommandPlanTerminal checks if a command's plan_status is terminal.
+//
+// This is a read-only check and intentionally does NOT acquire the per-command
+// state lock. Because all state file writes use AtomicWrite (write-to-temp +
+// rename), concurrent reads always see a complete, consistent snapshot.
+// A slightly stale read is acceptable here — the worst case is that we skip
+// archiving a task whose command has just become terminal, which will be
+// caught on the next archive pass.
+//
+// Acquiring the state lock here would create a lock-order inversion:
+// this function is called under queue:{target} (via archiveTerminalTasks),
+// but other code paths (retry, submit) acquire state:{commandID} before
+// queue:{workerID}. Omitting the lock avoids the deadlock risk (CR-011).
 func (d *Daemon) isCommandPlanTerminal(commandID string) bool {
 	statePath := filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml")
 	data, err := os.ReadFile(statePath)

@@ -2,6 +2,7 @@ package quality
 
 import (
 	"context"
+	"regexp"
 	"time"
 )
 
@@ -98,9 +99,10 @@ type TriggerDefinition struct {
 
 // PatternTrigger defines pattern matching for triggers
 type PatternTrigger struct {
-	Field  string `yaml:"field"`
-	Regex  string `yaml:"regex"`
-	Negate bool   `yaml:"negate"`
+	Field         string         `yaml:"field"`
+	Regex         string         `yaml:"regex"`
+	Negate        bool           `yaml:"negate"`
+	CompiledRegex *regexp.Regexp `yaml:"-"`
 }
 
 // RuleDefinition represents a single validation rule

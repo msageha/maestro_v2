@@ -33,12 +33,27 @@ func Rebuild(opts RebuildOptions) error {
 		return fmt.Errorf("load state: %w", err)
 	}
 
+	// Defensive init: AppliedResultIDs may be nil in old/corrupted state files
+	if state.AppliedResultIDs == nil {
+		state.AppliedResultIDs = make(map[string]string)
+	}
+
 	// Scan all results/worker{N}.yaml files for tasks belonging to this command
 	resultsDir := filepath.Join(opts.MaestroDir, "results")
 	entries, err := os.ReadDir(resultsDir)
 	if err != nil {
 		return fmt.Errorf("read results dir: %w", err)
 	}
+
+	// Collect the latest result per task_id across all worker files.
+	// Results may span multiple files and file read order (os.ReadDir) does not
+	// guarantee chronological ordering, so we compare CreatedAt timestamps.
+	type latestResult struct {
+		status    model.Status
+		resultID  string
+		createdAt time.Time
+	}
+	latestByTask := make(map[string]latestResult)
 
 	for _, entry := range entries {
 		name := entry.Name()
@@ -66,9 +81,32 @@ func Rebuild(opts RebuildOptions) error {
 				continue // unknown task
 			}
 
-			state.TaskStates[r.TaskID] = r.Status
-			state.AppliedResultIDs[r.TaskID] = r.ID
+			createdAt, err := time.Parse(time.RFC3339, r.CreatedAt)
+			if err != nil {
+				continue // skip results with unparseable timestamps
+			}
+
+			if existing, ok := latestByTask[r.TaskID]; ok {
+				if createdAt.Before(existing.createdAt) {
+					continue // older result, skip
+				}
+				if createdAt.Equal(existing.createdAt) && r.ID < existing.resultID {
+					continue // same timestamp, use deterministic tie-break by ID
+				}
+			}
+
+			latestByTask[r.TaskID] = latestResult{
+				status:    r.Status,
+				resultID:  r.ID,
+				createdAt: createdAt,
+			}
 		}
+	}
+
+	// Apply the latest result for each task
+	for taskID, lr := range latestByTask {
+		state.TaskStates[taskID] = lr.status
+		state.AppliedResultIDs[taskID] = lr.resultID
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)

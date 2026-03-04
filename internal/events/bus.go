@@ -2,6 +2,7 @@ package events
 
 import (
 	"log"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,13 +32,14 @@ type Subscriber func(Event)
 
 // Bus is a non-blocking event bus using Publish/Subscribe pattern.
 // Events are delivered asynchronously via buffered channels.
-// If a subscriber's channel is full, the event is dropped silently.
+// If a subscriber's channel is full, the event is dropped and counted.
 type Bus struct {
-	mu          sync.RWMutex
-	closed      atomic.Bool
-	subscribers map[EventType][]chan Event
-	bufferSize  int
-	wg          sync.WaitGroup
+	mu           sync.RWMutex
+	closed       atomic.Bool
+	subscribers  map[EventType][]chan Event
+	bufferSize   int
+	wg           sync.WaitGroup
+	droppedCount atomic.Int64
 }
 
 // NewBus creates a new event bus with the specified buffer size per subscriber.
@@ -81,7 +83,8 @@ func (b *Bus) Subscribe(eventType EventType, fn Subscriber) func() {
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						// Silently recover from subscriber panics to prevent bus disruption
+						log.Printf("ERROR event_bus: subscriber panic for event %s: %v\n%s",
+							event.Type, r, debug.Stack())
 					}
 				}()
 				fn(event)
@@ -130,9 +133,19 @@ func (b *Bus) Publish(eventType EventType, data map[string]interface{}) {
 		case ch <- event:
 			// Event delivered successfully
 		default:
-			// Channel full, drop event silently to prevent blocking
+			// Channel full, drop event and record
+			count := b.droppedCount.Add(1)
+			// Log on first drop, then sample every 100 drops to avoid log flooding
+			if count == 1 || count%100 == 0 {
+				log.Printf("WARN event_bus: event dropped for type %s (total dropped: %d)", eventType, count)
+			}
 		}
 	}
+}
+
+// DroppedCount returns the total number of events dropped due to full subscriber channels.
+func (b *Bus) DroppedCount() int64 {
+	return b.droppedCount.Load()
 }
 
 // Close closes all subscriber channels, waits for goroutines to drain, and clears subscriptions.

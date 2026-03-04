@@ -275,8 +275,16 @@ func (dr *DependencyResolver) checkActivePhaseCompletion(commandID string, phase
 
 // checkPendingPhaseActivation checks if a pending phase should be activated.
 func (dr *DependencyResolver) checkPendingPhaseActivation(allPhases []PhaseInfo, phase PhaseInfo) *PhaseTransitionResult {
+	// DependsOn empty means no dependencies — activate immediately
 	if len(phase.DependsOn) == 0 {
-		return nil
+		dr.log(LogLevelInfo, "phase_activation phase=%s no_dependencies", phase.ID)
+		return &PhaseTransitionResult{
+			PhaseID:   phase.ID,
+			PhaseName: phase.Name,
+			OldStatus: phase.Status,
+			NewStatus: model.PhaseStatusAwaitingFill,
+			Reason:    "no dependency phases (immediate activation)",
+		}
 	}
 
 	phaseMap := make(map[string]PhaseInfo)

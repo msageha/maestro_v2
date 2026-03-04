@@ -88,7 +88,9 @@ func AssignWorkers(
 			if ws.PendingCount >= maxPending {
 				continue
 			}
-			if bestWorker == nil || ws.PendingCount < bestWorker.PendingCount {
+			if bestWorker == nil ||
+				ws.PendingCount < bestWorker.PendingCount ||
+				(ws.PendingCount == bestWorker.PendingCount && ws.WorkerID < bestWorker.WorkerID) {
 				bestWorker = ws
 			}
 		}

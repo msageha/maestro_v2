@@ -134,18 +134,28 @@ func (h *TaskHeartbeatHandler) Handle(params json.RawMessage) *uds.Response {
 			fmt.Sprintf("task %s epoch mismatch: queue=%d, request=%d", p.TaskID, task.LeaseEpoch, p.Epoch))
 	}
 
-	// Check max_in_progress_min limit
+	// Check max_in_progress_min limit using InProgressAt (set when task was dispatched).
+	// Using UpdatedAt would be incorrect because heartbeats reset it, defeating max runtime enforcement.
 	maxMin := h.config.Watcher.MaxInProgressMin
 	if maxMin <= 0 {
 		maxMin = 60
 	}
 
-	updatedAt, err := time.Parse(time.RFC3339, task.UpdatedAt)
-	if err != nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("parse updated_at: %v", err))
+	var inProgressSince time.Time
+	if task.InProgressAt != nil {
+		inProgressSince, err = time.Parse(time.RFC3339, *task.InProgressAt)
+		if err != nil {
+			return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("parse in_progress_at: %v", err))
+		}
+	} else {
+		// Backward compatibility: fall back to UpdatedAt for pre-migration tasks
+		inProgressSince, err = time.Parse(time.RFC3339, task.UpdatedAt)
+		if err != nil {
+			return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("parse updated_at: %v", err))
+		}
 	}
 
-	elapsed := time.Since(updatedAt)
+	elapsed := time.Since(inProgressSince)
 	if elapsed >= time.Duration(maxMin)*time.Minute {
 		h.log(LogLevelWarn, "heartbeat_rejected task=%s max_runtime_exceeded elapsed=%v max=%dm",
 			p.TaskID, elapsed, maxMin)

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -72,14 +73,30 @@ type Daemon struct {
 	eventUnsubscribers []func()
 	tmuxLogFile        io.Closer // debug log for tmux operations
 
+	dashboardMu sync.Mutex   // serializes concurrent dashboard generation
+	fsSem       chan struct{} // bounds concurrent fsnotify handler goroutines
+
 	ctx      context.Context
 	cancel   context.CancelFunc
 	wg       sync.WaitGroup
 	shutdown sync.Once
 
 	// shuttingDown + shutdownMu guard wg.Add against TOCTOU race with Shutdown.
-	// Writers (Shutdown) set shuttingDown=true under write lock.
-	// Readers (goroutine spawners) check the flag under read lock before wg.Add.
+	//
+	// The RWMutex is essential: it ensures that checking shuttingDown and
+	// calling wg.Add happen atomically with respect to Shutdown's wg.Wait.
+	// Without the mutex, a goroutine could observe shuttingDown==false,
+	// then Shutdown could set it to true and call wg.Wait, and then the
+	// goroutine would call wg.Add — panicking because Add after Wait is
+	// not allowed.
+	//
+	// shuttingDown is atomic.Bool (rather than plain bool) because external
+	// consumers (e.g. QueueHandler) receive a *atomic.Bool pointer and may
+	// read it for advisory fast-path checks outside the mutex. The
+	// authoritative check-then-Add sequence in daemon.go holds shutdownMu.RLock.
+	//
+	// Writers (Shutdown): shutdownMu.Lock → shuttingDown.Store(true) → Unlock → wg.Wait.
+	// Readers (spawners): shutdownMu.RLock → shuttingDown.Load → wg.Add(1) → RUnlock.
 	shuttingDown atomic.Bool
 	shutdownMu   sync.RWMutex
 
@@ -140,6 +157,7 @@ func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Close
 		server:     server,
 		ticker:     time.NewTicker(time.Duration(scanInterval) * time.Second),
 		lockMap:    lock.NewMutexMap(),
+		fsSem:      make(chan struct{}, 8),
 		ctx:        ctx,
 		cancel:     cancel,
 	}
@@ -322,12 +340,17 @@ func (d *Daemon) handleTaskHeartbeat(req *uds.Request) *uds.Response {
 }
 
 // handleDashboard triggers dashboard regeneration and returns the result.
+// DashboardFormatter reads state from on-disk YAML files (not in-memory scan
+// state), so it does not require scanMu. Holding scanMu here would block
+// PeriodicScan for the duration of the file I/O. A dedicated dashboardMu
+// serializes concurrent dashboard writes to prevent temp-file clobbering.
 func (d *Daemon) handleDashboard(req *uds.Request) *uds.Response {
 	if d.handler == nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, "handler not initialized")
 	}
-	d.handler.scanMu.Lock()
-	defer d.handler.scanMu.Unlock()
+
+	d.dashboardMu.Lock()
+	defer d.dashboardMu.Unlock()
 
 	// Use the new dashboard formatter for human-readable output
 	formatter := NewDashboardFormatter(d.maestroDir)
@@ -358,7 +381,28 @@ func (d *Daemon) fsnotifyLoop() {
 			}
 			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
 				d.log(LogLevelDebug, "fsnotify event=%s file=%s", event.Op, event.Name)
-				d.handler.HandleFileEvent(event.Name)
+				d.shutdownMu.RLock()
+				if d.shuttingDown.Load() {
+					d.shutdownMu.RUnlock()
+					continue
+				}
+				d.wg.Add(1)
+				d.shutdownMu.RUnlock()
+				go func(name string) {
+					defer d.wg.Done()
+					defer d.recoverPanic("fsnotifyHandler")
+					// Bound concurrency to prevent goroutine fan-out
+					// during fsnotify bursts. Drop events that exceed
+					// the semaphore; periodic scan will catch up.
+					select {
+					case d.fsSem <- struct{}{}:
+						defer func() { <-d.fsSem }()
+					default:
+						d.log(LogLevelDebug, "fsnotify handler dropped (semaphore full) file=%s", name)
+						return
+					}
+					d.handler.HandleFileEvent(name)
+				}(event.Name)
 			}
 		case err, ok := <-d.watcher.Errors:
 			if !ok {
@@ -529,10 +573,10 @@ func (d *Daemon) cleanup() {
 }
 
 // recoverPanic catches panics in goroutines to prevent the daemon from crashing.
-// It logs the panic and initiates a graceful shutdown instead of crashing.
+// It logs the panic with a full stack trace and initiates a graceful shutdown.
 func (d *Daemon) recoverPanic(goroutine string) {
 	if r := recover(); r != nil {
-		d.log(LogLevelError, "panic in %s: %v", goroutine, r)
+		d.log(LogLevelError, "panic in %s: %v\n%s", goroutine, r, debug.Stack())
 		go d.Shutdown()
 	}
 }

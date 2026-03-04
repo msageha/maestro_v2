@@ -111,7 +111,11 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm *StateManager)
 
 	// Insert __system_commit if continuous.enabled
 	if opts.Config.Continuous.Enabled {
-		tasks = insertSystemCommitTask(tasks)
+		var commitErr error
+		tasks, commitErr = insertSystemCommitTask(tasks)
+		if commitErr != nil {
+			return nil, commitErr
+		}
 	}
 
 	// Generate IDs and resolve names
@@ -285,14 +289,9 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 			allConcreteTaskNames = append(allConcreteTaskNames, t.Name)
 		}
 
-		commitTask := TaskInput{
-			Name:               "__system_commit",
-			Purpose:            "コマンド実行結果をリポジトリにコミットする",
-			Content:            "変更ファイルを確認し、git add + git commit を実行する。コミットメッセージはタスク実行結果のサマリから生成する。",
-			AcceptanceCriteria: "git commit が成功し、コミットハッシュが取得できる",
-			BlockedBy:          allConcreteTaskNames,
-			BloomLevel:         2,
-			Required:           true,
+		commitTask := buildSystemCommitTask(allConcreteTaskNames)
+		if err := validateSystemTask(commitTask); err != nil {
+			return nil, fmt.Errorf("validate system commit task: %w", err)
 		}
 
 		commitID, err := model.GenerateID(model.IDTypeTask)
@@ -524,7 +523,9 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 
 	// Transition to filling and persist to disk (R0b recovery depends on this)
 	state.Phases[targetPhaseIdx].Status = model.PhaseStatusFilling
-	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	nowStr := time.Now().UTC().Format(time.RFC3339)
+	state.Phases[targetPhaseIdx].FillingStartedAt = &nowStr
+	state.UpdatedAt = nowStr
 	if err := sm.SaveState(state); err != nil {
 		state.Phases[targetPhaseIdx].Status = model.PhaseStatusAwaitingFill
 		return nil, fmt.Errorf("save state (filling): %w", err)
@@ -671,23 +672,44 @@ func readInput(tasksFile string) (*SubmitInput, error) {
 	return &input, nil
 }
 
-func insertSystemCommitTask(tasks []TaskInput) []TaskInput {
+func buildSystemCommitTask(blockedByNames []string) TaskInput {
+	return TaskInput{
+		Name:               "__system_commit",
+		Purpose:            "コマンド実行結果をリポジトリにコミットする",
+		Content:            "変更ファイルを確認し、git add + git commit を実行する。コミットメッセージはタスク実行結果のサマリから生成する。",
+		AcceptanceCriteria: "git commit が成功し、コミットハッシュが取得できる",
+		BlockedBy:          blockedByNames,
+		BloomLevel:         2,
+		Required:           true,
+	}
+}
+
+// validateSystemTask validates a system-generated task's fields without checking
+// the reserved __ name prefix. This ensures system tasks meet the same field
+// integrity requirements (non-empty fields, length limits, bloom_level range)
+// as user-submitted tasks.
+func validateSystemTask(task TaskInput) error {
+	errs := &ValidationErrors{}
+	// Reuse the package-private field validator (skips name-prefix check).
+	validateTaskFields(task, "system_task", errs)
+	if errs.HasErrors() {
+		return errs
+	}
+	return nil
+}
+
+func insertSystemCommitTask(tasks []TaskInput) ([]TaskInput, error) {
 	allNames := make([]string, 0, len(tasks))
 	for _, t := range tasks {
 		allNames = append(allNames, t.Name)
 	}
 
-	commitTask := TaskInput{
-		Name:               "__system_commit",
-		Purpose:            "コマンド実行結果をリポジトリにコミットする",
-		Content:            "変更ファイルを確認し、git add + git commit を実行する。コミットメッセージはタスク実行結果のサマリから生成する。",
-		AcceptanceCriteria: "git commit が成功し、コミットハッシュが取得できる",
-		BlockedBy:          allNames,
-		BloomLevel:         2,
-		Required:           true,
+	commitTask := buildSystemCommitTask(allNames)
+	if err := validateSystemTask(commitTask); err != nil {
+		return nil, fmt.Errorf("validate system commit task: %w", err)
 	}
 
-	return append(tasks, commitTask)
+	return append(tasks, commitTask), nil
 }
 
 func resolveNames(tasks []TaskInput) (map[string]string, error) {
@@ -751,6 +773,61 @@ func buildCommandState(commandID string, tasks []TaskInput, nameToID map[string]
 	state.SystemCommitTaskID = systemCommitTaskID
 	state.ExpectedTaskCount = len(state.RequiredTaskIDs) + len(state.OptionalTaskIDs)
 	return state, nil
+}
+
+// ActivateDeferredPhases checks all deferred phases in "pending" status and
+// transitions them to "awaiting_fill" if all their dependency phases have
+// completed. Returns the list of phase names that were activated.
+// The caller must hold the command-state lock before calling this function.
+func ActivateDeferredPhases(state *model.CommandState) []string {
+	if state == nil || len(state.Phases) == 0 {
+		return nil
+	}
+
+	phaseStatusByName := make(map[string]model.PhaseStatus, len(state.Phases))
+	for _, p := range state.Phases {
+		phaseStatusByName[p.Name] = p.Status
+	}
+
+	var activated []string
+
+	for i := range state.Phases {
+		p := &state.Phases[i]
+
+		if p.Type != "deferred" || p.Status != model.PhaseStatusPending {
+			continue
+		}
+		if len(p.DependsOnPhases) == 0 {
+			continue
+		}
+
+		allCompleted := true
+		for _, depName := range p.DependsOnPhases {
+			depStatus, ok := phaseStatusByName[depName]
+			if !ok || depStatus != model.PhaseStatusCompleted {
+				allCompleted = false
+				break
+			}
+		}
+		if !allCompleted {
+			continue
+		}
+
+		p.Status = model.PhaseStatusAwaitingFill
+
+		// Set fill deadline from phase constraints
+		if p.Constraints != nil && p.Constraints.TimeoutMinutes > 0 {
+			deadline := time.Now().UTC().
+				Add(time.Duration(p.Constraints.TimeoutMinutes) * time.Minute).
+				Format(time.RFC3339)
+			p.FillDeadlineAt = &deadline
+		}
+
+		activated = append(activated, p.Name)
+		phaseStatusByName[p.Name] = model.PhaseStatusAwaitingFill
+	}
+
+	return activated
 }
 
 func defaultCompletionPolicy() model.CompletionPolicy {

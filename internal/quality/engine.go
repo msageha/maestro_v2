@@ -125,6 +125,18 @@ func (e *Engine) compileGate(gateDef *GateDefinition) (*CompiledGate, error) {
 		compiledRules:  make([]*CompiledRule, 0, len(gateDef.Rules)),
 	}
 
+	// Pre-compile trigger pattern regexes to avoid repeated compilation in shouldTriggerGate
+	for i := range gateDef.Trigger.Patterns {
+		pattern := &gateDef.Trigger.Patterns[i]
+		if pattern.Regex != "" && pattern.CompiledRegex == nil {
+			re, err := regexp.Compile(pattern.Regex)
+			if err != nil {
+				return nil, fmt.Errorf("failed to compile trigger pattern regex %q: %w", pattern.Regex, err)
+			}
+			pattern.CompiledRegex = re
+		}
+	}
+
 	for _, ruleDef := range gateDef.Rules {
 		compiledRule, err := e.compileRule(&ruleDef)
 		if err != nil {
@@ -419,11 +431,12 @@ func (e *Engine) shouldTriggerGate(gate *CompiledGate, evalCtx EvaluationContext
 		}
 	}
 
-	// Check pattern triggers
+	// Check pattern triggers using pre-compiled regexes
 	for _, pattern := range trigger.Patterns {
 		if value, ok := evalCtx.GetField(pattern.Field); ok {
-			re, err := regexp.Compile(pattern.Regex)
-			if err != nil {
+			re := pattern.CompiledRegex
+			if re == nil {
+				// Fallback: should not happen if compileGate ran, but be safe
 				continue
 			}
 			matched := re.MatchString(fmt.Sprintf("%v", value))
@@ -450,6 +463,16 @@ func (e *Engine) generateCacheKey(gateType string, context map[string]interface{
 		GateVersionHash:    e.configChecksum,
 		ContextFingerprint: hex.EncodeToString(hash[:]),
 	}
+}
+
+// getEvaluator retrieves a registered evaluator with proper read-lock protection.
+// This must be used by logical evaluators (AND/OR/NOT) that access the evaluators map
+// outside of Engine.evaluateRule, which already holds the lock.
+func (e *Engine) getEvaluator(condType ConditionType) (RuleEvaluator, bool) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	eval, exists := e.evaluators[condType]
+	return eval, exists
 }
 
 // Helper functions

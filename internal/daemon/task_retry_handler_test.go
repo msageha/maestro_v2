@@ -150,7 +150,7 @@ func TestShouldRetryTask_ExitCodes(t *testing.T) {
 				ExecutionRetries: tt.executionRetries,
 			}
 
-			shouldRetry, reason := handler.ShouldRetryTask(task, tt.exitCode)
+			shouldRetry, reason := handler.ShouldRetryTask(task, tt.exitCode, true)
 			if shouldRetry != tt.expectedRetry {
 				t.Errorf("shouldRetry: got %v, want %v", shouldRetry, tt.expectedRetry)
 			}
@@ -507,7 +507,7 @@ func TestShouldRetryTask_MaxRetriesBoundary(t *testing.T) {
 				ExecutionRetries: tt.executionRetries,
 			}
 
-			shouldRetry, reason := handler.ShouldRetryTask(task, 1)
+			shouldRetry, reason := handler.ShouldRetryTask(task, 1, true)
 			if shouldRetry != tt.expectedRetry {
 				t.Errorf("shouldRetry: got %v, want %v", shouldRetry, tt.expectedRetry)
 			}
@@ -539,7 +539,7 @@ func TestShouldRetryTask_DisabledRetry(t *testing.T) {
 		ExecutionRetries: 0,
 	}
 
-	shouldRetry, reason := handler.ShouldRetryTask(task, 1)
+	shouldRetry, reason := handler.ShouldRetryTask(task, 1, true)
 	if shouldRetry {
 		t.Error("should not retry when retry is disabled")
 	}
@@ -936,7 +936,7 @@ func TestShouldRetryTask_OOMKill(t *testing.T) {
 		ExecutionRetries: 0,
 	}
 
-	shouldRetry, reason := handler.ShouldRetryTask(task, 137)
+	shouldRetry, reason := handler.ShouldRetryTask(task, 137, true)
 	if !shouldRetry {
 		t.Error("should retry OOM killed tasks (exit code 137)")
 	}
@@ -966,7 +966,7 @@ func TestShouldRetryTask_PermissionDenied(t *testing.T) {
 		ExecutionRetries: 0,
 	}
 
-	shouldRetry, reason := handler.ShouldRetryTask(task, 126)
+	shouldRetry, reason := handler.ShouldRetryTask(task, 126, true)
 	if shouldRetry {
 		t.Error("should not retry permission denied errors (exit code 126)")
 	}
@@ -1104,7 +1104,7 @@ func TestShouldRetryTask_MaxRetriesZero(t *testing.T) {
 		ExecutionRetries: 100, // Many retries already
 	}
 
-	shouldRetry, reason := handler.ShouldRetryTask(task, 1)
+	shouldRetry, reason := handler.ShouldRetryTask(task, 1, true)
 
 	// max_retries=0 should mean unlimited retries (current implementation behavior)
 	if !shouldRetry {
@@ -1305,7 +1305,7 @@ func TestShouldRetryTask_EmptyRetryableExitCodes(t *testing.T) {
 	// Try various exit codes - none should be retryable
 	exitCodes := []int{0, 1, 2, 124, 126, 127, 128, 137}
 	for _, exitCode := range exitCodes {
-		shouldRetry, _ := handler.ShouldRetryTask(task, exitCode)
+		shouldRetry, _ := handler.ShouldRetryTask(task, exitCode, true)
 		if shouldRetry {
 			t.Errorf("exit code %d should not be retryable with empty retryable codes list", exitCode)
 		}

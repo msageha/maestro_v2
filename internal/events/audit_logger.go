@@ -1,10 +1,14 @@
 package events
 
 import (
+	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -203,7 +207,24 @@ func (l *AuditLogger) rotate() error {
 	return nil
 }
 
-// calculateChecksum calculates a simple checksum for integrity verification
+// checksumSHA256Hex computes a SHA-256 checksum and returns hex-encoded string
+func checksumSHA256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
+}
+
+// checksumDJB2Legacy computes the legacy djb2 hash for backward compatibility (read-only)
+func checksumDJB2Legacy(data []byte) string {
+	var h uint64 = 5381
+	for _, b := range data {
+		h = ((h << 5) + h) + uint64(b)
+	}
+	return fmt.Sprintf("%x", h)
+}
+
+const checksumPrefixSHA256 = "sha256:"
+
+// calculateChecksum calculates a SHA-256 checksum for integrity verification
 func (l *AuditLogger) calculateChecksum(entry *LogEntry) string {
 	// Create a copy without the checksum field
 	entryCopy := *entry
@@ -214,18 +235,18 @@ func (l *AuditLogger) calculateChecksum(entry *LogEntry) string {
 		return ""
 	}
 
-	// Simple checksum using timestamp and content hash
-	hash := fmt.Sprintf("%x", simpleHash(data))
-	return hash
+	return checksumPrefixSHA256 + checksumSHA256Hex(data)
 }
 
-// simpleHash provides a basic hash function for checksums
-func simpleHash(data []byte) uint64 {
-	var hash uint64 = 5381
-	for _, b := range data {
-		hash = ((hash << 5) + hash) + uint64(b)
+// verifyChecksum verifies a checksum against data, supporting both SHA-256 and legacy djb2 formats
+func verifyChecksum(expected string, data []byte) bool {
+	switch {
+	case strings.HasPrefix(expected, checksumPrefixSHA256):
+		return strings.TrimPrefix(expected, checksumPrefixSHA256) == checksumSHA256Hex(data)
+	default:
+		// Legacy unprefixed djb2 checksum
+		return expected == checksumDJB2Legacy(data)
 	}
-	return hash
 }
 
 // EnableChecksum enables checksum calculation for log entries
@@ -235,26 +256,41 @@ func (l *AuditLogger) EnableChecksum(enable bool) {
 	l.enableChecksum = enable
 }
 
-// VerifyLogIntegrity verifies the integrity of log entries in a file
-func VerifyLogIntegrity(logPath string) (int, int, error) {
+// IntegrityResult contains detailed results of a log integrity verification
+type IntegrityResult struct {
+	TotalEntries           int
+	ValidEntries           int
+	MalformedEntries       int
+	InvalidChecksumEntries int
+}
+
+// VerifyLogIntegrityDetailed verifies the integrity of log entries and returns detailed results
+func VerifyLogIntegrityDetailed(logPath string) (IntegrityResult, error) {
 	file, err := os.Open(logPath)
 	if err != nil {
-		return 0, 0, fmt.Errorf("failed to open log file: %w", err)
+		return IntegrityResult{}, fmt.Errorf("failed to open log file: %w", err)
 	}
 	defer file.Close()
 
-	decoder := json.NewDecoder(file)
-	totalEntries := 0
-	validEntries := 0
+	var result IntegrityResult
+	scanner := bufio.NewScanner(file)
+	// Increase buffer size for potentially large log lines
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
-	for decoder.More() {
-		var entry LogEntry
-		if err := decoder.Decode(&entry); err != nil {
-			// Skip malformed entries
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		// Skip empty lines
+		if len(strings.TrimSpace(string(line))) == 0 {
 			continue
 		}
 
-		totalEntries++
+		result.TotalEntries++
+
+		var entry LogEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			result.MalformedEntries++
+			continue
+		}
 
 		// If entry has checksum, verify it
 		if entry.Checksum != "" {
@@ -263,20 +299,44 @@ func VerifyLogIntegrity(logPath string) (int, int, error) {
 
 			data, err := json.Marshal(entry)
 			if err != nil {
+				result.InvalidChecksumEntries++
 				continue
 			}
 
-			actualChecksum := fmt.Sprintf("%x", simpleHash(data))
-			if actualChecksum == expectedChecksum {
-				validEntries++
+			if verifyChecksum(expectedChecksum, data) {
+				result.ValidEntries++
+			} else {
+				result.InvalidChecksumEntries++
 			}
 		} else {
 			// Entries without checksum are considered valid
-			validEntries++
+			result.ValidEntries++
 		}
 	}
 
-	return totalEntries, validEntries, nil
+	if err := scanner.Err(); err != nil {
+		return result, fmt.Errorf("error reading log file: %w", err)
+	}
+
+	return result, nil
+}
+
+// VerifyLogIntegrity verifies the integrity of log entries in a file.
+// Returns total entries, valid entries, and an error if malformed or invalid entries are found.
+func VerifyLogIntegrity(logPath string) (int, int, error) {
+	result, err := VerifyLogIntegrityDetailed(logPath)
+	if err != nil {
+		return result.TotalEntries, result.ValidEntries, err
+	}
+
+	if result.MalformedEntries > 0 || result.InvalidChecksumEntries > 0 {
+		return result.TotalEntries, result.ValidEntries, fmt.Errorf(
+			"integrity check found issues: %d malformed entries, %d invalid checksums out of %d total entries",
+			result.MalformedEntries, result.InvalidChecksumEntries, result.TotalEntries,
+		)
+	}
+
+	return result.TotalEntries, result.ValidEntries, nil
 }
 
 // Close closes the audit logger

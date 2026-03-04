@@ -554,9 +554,11 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 	// Restore counters accumulated during Phase A
 	qh.scanCounters = pa.counters
 
-	// --- Apply dispatch results ---
-	if len(pb.dispatches) > 0 {
-		// Reload queues to get any changes made during Phase B
+	// --- Apply dispatch + busy check results (single load/flush) ---
+	// Load queues once for both sections. Under scanMu.Lock() no external
+	// changes occur, so in-memory mutations from dispatch are visible to
+	// busy-check apply without a disk round-trip.
+	if len(pb.dispatches) > 0 || len(pb.busyChecks) > 0 {
 		commandQueue, commandPath := qh.loadCommandQueue()
 		taskQueues := qh.loadAllTaskQueues()
 		notificationQueue, notificationPath := qh.loadNotificationQueue()
@@ -575,20 +577,6 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 			}
 		}
 
-		// Flush dispatch result changes
-		qh.flushQueues(commandQueue, commandPath, commandsDirty,
-			taskQueues, taskDirty,
-			notificationQueue, notificationPath, notificationsDirty,
-			model.PlannerSignalQueue{}, "", false)
-	}
-
-	// --- Apply busy check results (lease recovery) ---
-	if len(pb.busyChecks) > 0 {
-		commandQueue, commandPath := qh.loadCommandQueue()
-		taskQueues := qh.loadAllTaskQueues()
-		commandsDirty := false
-		taskDirty := make(map[string]bool)
-
 		for _, bc := range pb.busyChecks {
 			switch bc.Item.Kind {
 			case "task":
@@ -598,9 +586,10 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 			}
 		}
 
+		// Single flush for both dispatch and busy check results
 		qh.flushQueues(commandQueue, commandPath, commandsDirty,
 			taskQueues, taskDirty,
-			model.NotificationQueue{}, "", false,
+			notificationQueue, notificationPath, notificationsDirty,
 			model.PlannerSignalQueue{}, "", false)
 	}
 
@@ -1361,6 +1350,9 @@ func (qh *QueueHandler) flushQueues(
 		}
 	}
 	if notificationsDirty && notificationPath != "" {
+		// lockMap is required here even though callers hold scanMu.Lock():
+		// ResultHandler writes orchestrator.yaml via lockMap without scanMu,
+		// so lockMap prevents concurrent atomic rewrites and lost updates.
 		qh.lockMap.Lock("queue:orchestrator")
 		if err := yamlutil.AtomicWrite(notificationPath, notificationQueue); err != nil {
 			qh.log(LogLevelError, "write_notifications error=%v", err)
@@ -1701,30 +1693,26 @@ func (qh *QueueHandler) loadCommandQueue() (model.CommandQueue, string) {
 
 	if err := yamlv3.Unmarshal(data, &cq); err != nil {
 		qh.log(LogLevelError, "parse_commands error=%v path=%s", err, path)
-		// Backup corrupted file outside queue/ to avoid fsnotify loop
-		quarantineDir := filepath.Join(qh.maestroDir, "quarantine")
-		if mkErr := os.MkdirAll(quarantineDir, 0755); mkErr != nil {
-			qh.log(LogLevelError, "create_quarantine_dir error=%v", mkErr)
-		} else {
-			backupName := fmt.Sprintf("planner.yaml.corrupted.%s", time.Now().Format("20060102_150405"))
-			backupPath := filepath.Join(quarantineDir, backupName)
-			if backupErr := os.WriteFile(backupPath, data, 0644); backupErr != nil {
-				qh.log(LogLevelError, "backup_corrupted_queue error=%v", backupErr)
-			} else {
-				qh.log(LogLevelWarn, "corrupted_queue_backed_up path=%s", backupPath)
-				// Overwrite original with empty valid YAML to prevent re-parse errors
-				emptyCQ := model.CommandQueue{
-					SchemaVersion: 1,
-					FileType:      "command_queue",
-				}
-				if writeErr := yamlutil.AtomicWrite(path, emptyCQ); writeErr != nil {
-					qh.log(LogLevelError, "overwrite_corrupted_queue error=%v", writeErr)
-				} else {
-					qh.log(LogLevelInfo, "corrupted_queue_reset path=%s", path)
-				}
+		// Quarantine original corrupted file
+		qh.quarantineFile(data, "planner.yaml")
+		// Attempt per-entry salvage via Node parsing
+		salvaged := qh.salvageCommandQueue(data)
+		if len(salvaged.Commands) > 0 {
+			qh.log(LogLevelWarn, "command_queue_salvaged recovered=%d path=%s", len(salvaged.Commands), path)
+			if writeErr := yamlutil.AtomicWrite(path, salvaged); writeErr != nil {
+				qh.log(LogLevelError, "write_salvaged_queue error=%v", writeErr)
 			}
-			// Clean up old quarantine files if exceeding limit
-			qh.cleanupQuarantine(quarantineDir)
+			return salvaged, path
+		}
+		// No entries salvaged — reset to empty
+		emptyCQ := model.CommandQueue{
+			SchemaVersion: 1,
+			FileType:      "command_queue",
+		}
+		if writeErr := yamlutil.AtomicWrite(path, emptyCQ); writeErr != nil {
+			qh.log(LogLevelError, "overwrite_corrupted_queue error=%v", writeErr)
+		} else {
+			qh.log(LogLevelInfo, "corrupted_queue_reset path=%s", path)
 		}
 		return cq, ""
 	}

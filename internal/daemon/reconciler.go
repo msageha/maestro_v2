@@ -204,9 +204,22 @@ func (r *Reconciler) reconcileR0() []ReconcileRepair {
 
 		// Phase 2: Queue cleanup (no state lock held).
 		// Respects lock ordering: queue:* before state:*.
-		// Safe: Reconcile() runs under scanMu.Lock, serializing against handlers.
-		r.removeCommandFromPlannerQueue(stuckCommandID)
-		r.removeTasksFromWorkerQueues(stuckCommandID)
+		// CR-018: Phase 3 is gated on Phase 2 success. If cleanup fails,
+		// we keep the planning state so R0 can retry on the next reconciliation cycle.
+		var phase2Errs []error
+		if err := r.removeCommandFromPlannerQueue(stuckCommandID); err != nil {
+			r.log(LogLevelError, "R0 phase2_planner_cleanup command=%s error=%v", stuckCommandID, err)
+			phase2Errs = append(phase2Errs, err)
+		}
+		if err := r.removeTasksFromWorkerQueues(stuckCommandID); err != nil {
+			r.log(LogLevelError, "R0 phase2_worker_cleanup command=%s error=%v", stuckCommandID, err)
+			phase2Errs = append(phase2Errs, err)
+		}
+		if len(phase2Errs) > 0 {
+			r.log(LogLevelWarn, "R0 cleanup_incomplete command=%s errors=%d; keeping planning state for retry",
+				stuckCommandID, len(phase2Errs))
+			continue
+		}
 
 		// Phase 3: Re-verify and delete state file (under state lock).
 		repaired := func() bool {
@@ -289,71 +302,72 @@ func (r *Reconciler) reconcileR0dispatch() []ReconcileRepair {
 			continue
 		}
 
-		// Lock state:<commandID> to prevent race with planner submit
-		stateLockKey := "state:" + cmd.ID
-		r.lockMap.Lock(stateLockKey)
+		// CR-049: Use IIFE with defer for state lock to ensure release on panic.
+		// Lock ordering: queue:planner (held by outer defer) → state:* (acquired here).
+		repaired := func(cmd *model.Command) *ReconcileRepair {
+			stateLockKey := "state:" + cmd.ID
+			r.lockMap.Lock(stateLockKey)
+			defer r.lockMap.Unlock(stateLockKey)
 
-		// Re-check state file existence under lock
-		statePath := filepath.Join(r.maestroDir, "state", "commands", cmd.ID+".yaml")
-		if _, err := os.Stat(statePath); err != nil {
-			// Only treat as missing if file doesn't exist
-			// Ignore other FS errors (permissions, etc) to avoid false positives
-			if !os.IsNotExist(err) {
-				r.log(LogLevelWarn, "R0-dispatch stat_error command=%s error=%v, skipping", cmd.ID, err)
-				r.lockMap.Unlock(stateLockKey)
-				continue
+			// Re-check state file existence under lock
+			statePath := filepath.Join(r.maestroDir, "state", "commands", cmd.ID+".yaml")
+			if _, err := os.Stat(statePath); err != nil {
+				// Only treat as missing if file doesn't exist
+				// Ignore other FS errors (permissions, etc) to avoid false positives
+				if !os.IsNotExist(err) {
+					r.log(LogLevelWarn, "R0-dispatch stat_error command=%s error=%v, skipping", cmd.ID, err)
+					return nil
+				}
+				// State file doesn't exist - potential dispatch deadlock
+			} else {
+				// State file appeared - planner succeeded, no action needed
+				r.log(LogLevelDebug, "R0-dispatch state_exists_skip command=%s", cmd.ID)
+				return nil
 			}
-			// State file doesn't exist - potential dispatch deadlock
-		} else {
-			// State file appeared - planner succeeded, no action needed
-			r.log(LogLevelDebug, "R0-dispatch state_exists_skip command=%s", cmd.ID)
-			r.lockMap.Unlock(stateLockKey)
-			continue
+
+			// Check age based on updated_at (last lease activity)
+			updatedAt, err := time.Parse(time.RFC3339, cmd.UpdatedAt)
+			if err != nil {
+				r.log(LogLevelWarn, "R0-dispatch parse_updated_at command=%s error=%v", cmd.ID, err)
+				return nil
+			}
+
+			age := time.Since(updatedAt)
+			if age < threshold {
+				return nil // Still within dispatch window
+			}
+
+			r.log(LogLevelWarn, "R0-dispatch dispatch_deadlock command=%s age_sec=%.0f attempts=%d no_state_file",
+				cmd.ID, age.Seconds(), cmd.Attempts)
+
+			// Release lease and revert to pending for retry
+			// Dead-lettering is handled by existing mechanisms based on command retry config
+			cmd.Status = model.StatusPending
+			cmd.LeaseOwner = nil
+			cmd.LeaseExpiresAt = nil
+			// Keep LeaseEpoch - will increment on next dispatch
+			// Keep Attempts counter - existing dead-letter logic uses this
+
+			// Note: No exponential backoff is applied here (model.Command lacks NotBefore field).
+			// Retry throttling is naturally provided by the periodic scan interval (~60s).
+			// If scan_interval_sec is reduced, consider adding NotBefore to model.Command schema.
+
+			errMsg := fmt.Sprintf("dispatch stuck %.0fs without state submission, reverted for retry",
+				age.Seconds())
+			cmd.LastError = &errMsg
+			cmd.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+
+			return &ReconcileRepair{
+				Pattern:   "R0-dispatch",
+				CommandID: cmd.ID,
+				Detail:    fmt.Sprintf("dispatch stuck %.0fs, lease released, reverted to pending", age.Seconds()),
+			}
+		}(cmd)
+
+		if repaired != nil {
+			dirty = true
+			repairs = append(repairs, *repaired)
 		}
-
-		// Check age based on updated_at (last lease activity)
-		updatedAt, err := time.Parse(time.RFC3339, cmd.UpdatedAt)
-		if err != nil {
-			r.log(LogLevelWarn, "R0-dispatch parse_updated_at command=%s error=%v", cmd.ID, err)
-			r.lockMap.Unlock(stateLockKey)
-			continue
-		}
-
-		age := time.Since(updatedAt)
-		if age < threshold {
-			r.lockMap.Unlock(stateLockKey)
-			continue // Still within dispatch window
-		}
-
-		r.log(LogLevelWarn, "R0-dispatch dispatch_deadlock command=%s age_sec=%.0f attempts=%d no_state_file",
-			cmd.ID, age.Seconds(), cmd.Attempts)
-
-		// Release lease and revert to pending for retry
-		// Dead-lettering is handled by existing mechanisms based on command retry config
-		cmd.Status = model.StatusPending
-		cmd.LeaseOwner = nil
-		cmd.LeaseExpiresAt = nil
-		// Keep LeaseEpoch - will increment on next dispatch
-		// Keep Attempts counter - existing dead-letter logic uses this
-
-		// Note: No exponential backoff is applied here (model.Command lacks NotBefore field).
-		// Retry throttling is naturally provided by the periodic scan interval (~60s).
-		// If scan_interval_sec is reduced, consider adding NotBefore to model.Command schema.
-
-		errMsg := fmt.Sprintf("dispatch stuck %.0fs without state submission, reverted for retry",
-			age.Seconds())
-		cmd.LastError = &errMsg
-		cmd.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-
-		dirty = true
-		repairs = append(repairs, ReconcileRepair{
-			Pattern:   "R0-dispatch",
-			CommandID: cmd.ID,
-			Detail:    fmt.Sprintf("dispatch stuck %.0fs, lease released, reverted to pending", age.Seconds()),
-		})
-
-		// Release state lock after modifying command
-		r.lockMap.Unlock(stateLockKey)
 	}
 
 	if dirty {
@@ -406,13 +420,24 @@ func (r *Reconciler) reconcileR0b() ([]ReconcileRepair, []DeferredNotification) 
 					continue
 				}
 
-				// Check if filling has been stuck based on state update time
-				updatedAt, err := time.Parse(time.RFC3339, state.UpdatedAt)
-				if err != nil {
-					continue
+				// Check if filling has been stuck based on phase-specific timestamp.
+				// Use FillingStartedAt (set on phase transition) instead of state.UpdatedAt
+				// which gets reset by unrelated updates (heartbeats, result application, etc.).
+				var fillingStarted time.Time
+				if phase.FillingStartedAt != nil {
+					fillingStarted, err = time.Parse(time.RFC3339, *phase.FillingStartedAt)
+					if err != nil {
+						continue
+					}
+				} else {
+					// Backward compatibility: fall back to state.UpdatedAt for pre-migration phases
+					fillingStarted, err = time.Parse(time.RFC3339, state.UpdatedAt)
+					if err != nil {
+						continue
+					}
 				}
 
-				ageSec := time.Since(updatedAt).Seconds()
+				ageSec := time.Since(fillingStarted).Seconds()
 				if ageSec < float64(threshold) {
 					continue
 				}
@@ -520,6 +545,7 @@ func (r *Reconciler) reconcileR1() []ReconcileRepair {
 		resultPath := filepath.Join(resultsDir, name)
 		queuePath := filepath.Join(r.maestroDir, "queue", name)
 
+		// Read result file unlocked (snapshot for eventual consistency).
 		resultData, err := os.ReadFile(resultPath)
 		if err != nil {
 			continue
@@ -540,58 +566,65 @@ func (r *Reconciler) reconcileR1() []ReconcileRepair {
 			continue
 		}
 
-		// Load queue file
-		queueData, err := os.ReadFile(queuePath)
-		if err != nil {
-			continue
-		}
-		var tq model.TaskQueue
-		if err := yamlv3.Unmarshal(queueData, &tq); err != nil {
-			continue
-		}
+		// CR-010: Acquire per-queue lock for the read-modify-write on the queue file.
+		// This prevents race with ResultHandler which writes queue files under lockMap
+		// outside of scanMu.
+		func() {
+			r.lockMap.Lock("queue:" + workerID)
+			defer r.lockMap.Unlock("queue:" + workerID)
 
-		queueModified := false
-		var workerRepairs []ReconcileRepair
-		workerRepairedCommands := make(map[string]bool)
-		for i := range tq.Tasks {
-			task := &tq.Tasks[i]
-			if task.Status != model.StatusInProgress {
-				continue
+			queueData, err := os.ReadFile(queuePath)
+			if err != nil {
+				return
+			}
+			var tq model.TaskQueue
+			if err := yamlv3.Unmarshal(queueData, &tq); err != nil {
+				return
 			}
 
-			resultStatus, found := terminalResults[task.ID]
-			if !found {
-				continue
+			queueModified := false
+			var workerRepairs []ReconcileRepair
+			workerRepairedCommands := make(map[string]bool)
+			for i := range tq.Tasks {
+				task := &tq.Tasks[i]
+				if task.Status != model.StatusInProgress {
+					continue
+				}
+
+				resultStatus, found := terminalResults[task.ID]
+				if !found {
+					continue
+				}
+
+				r.log(LogLevelWarn, "R1 result_terminal_queue_inprogress worker=%s task=%s result_status=%s",
+					workerID, task.ID, resultStatus)
+
+				task.Status = resultStatus
+				task.LeaseOwner = nil
+				task.LeaseExpiresAt = nil
+				task.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+				queueModified = true
+				workerRepairedCommands[task.CommandID] = true
+
+				workerRepairs = append(workerRepairs, ReconcileRepair{
+					Pattern:   "R1",
+					CommandID: task.CommandID,
+					TaskID:    task.ID,
+					Detail:    fmt.Sprintf("queue %s updated from in_progress to %s", workerID, resultStatus),
+				})
 			}
 
-			r.log(LogLevelWarn, "R1 result_terminal_queue_inprogress worker=%s task=%s result_status=%s",
-				workerID, task.ID, resultStatus)
-
-			task.Status = resultStatus
-			task.LeaseOwner = nil
-			task.LeaseExpiresAt = nil
-			task.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-			queueModified = true
-			workerRepairedCommands[task.CommandID] = true
-
-			workerRepairs = append(workerRepairs, ReconcileRepair{
-				Pattern:   "R1",
-				CommandID: task.CommandID,
-				TaskID:    task.ID,
-				Detail:    fmt.Sprintf("queue %s updated from in_progress to %s", workerID, resultStatus),
-			})
-		}
-
-		if queueModified {
-			if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
-				r.log(LogLevelError, "R1 write_queue worker=%s error=%v", workerID, err)
-				continue
+			if queueModified {
+				if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
+					r.log(LogLevelError, "R1 write_queue worker=%s error=%v", workerID, err)
+					return
+				}
+				repairs = append(repairs, workerRepairs...)
+				for cmdID := range workerRepairedCommands {
+					repairedCommands[cmdID] = true
+				}
 			}
-			repairs = append(repairs, workerRepairs...)
-			for cmdID := range workerRepairedCommands {
-				repairedCommands[cmdID] = true
-			}
-		}
+		}()
 	}
 
 	// Update last_reconciled_at on affected state files (spec: all repairs update state)
@@ -733,57 +766,65 @@ func (r *Reconciler) reconcileR3() []ReconcileRepair {
 		return nil
 	}
 
+	// CR-010: Acquire per-queue lock for the read-modify-write on the planner queue file.
+	// This prevents race with ResultHandler which writes queue files under lockMap
+	// outside of scanMu.
 	queuePath := filepath.Join(r.maestroDir, "queue", "planner.yaml")
-	queueData, err := os.ReadFile(queuePath)
-	if err != nil {
-		return nil
-	}
-	var cq model.CommandQueue
-	if err := yamlv3.Unmarshal(queueData, &cq); err != nil {
-		return nil
-	}
+	func() {
+		r.lockMap.Lock("queue:planner")
+		defer r.lockMap.Unlock("queue:planner")
 
-	queueModified := false
-	var localRepairs []ReconcileRepair
-	localRepairedCommands := make(map[string]bool)
-	for i := range cq.Commands {
-		cmd := &cq.Commands[i]
-		if model.IsTerminal(cmd.Status) {
-			continue
+		queueData, err := os.ReadFile(queuePath)
+		if err != nil {
+			return
+		}
+		var cq model.CommandQueue
+		if err := yamlv3.Unmarshal(queueData, &cq); err != nil {
+			return
 		}
 
-		resultStatus, found := terminalResults[cmd.ID]
-		if !found {
-			continue
+		queueModified := false
+		var localRepairs []ReconcileRepair
+		localRepairedCommands := make(map[string]bool)
+		for i := range cq.Commands {
+			cmd := &cq.Commands[i]
+			if model.IsTerminal(cmd.Status) {
+				continue
+			}
+
+			resultStatus, found := terminalResults[cmd.ID]
+			if !found {
+				continue
+			}
+
+			r.log(LogLevelWarn, "R3 result_terminal_queue_nonterminal command=%s queue_status=%s result_status=%s",
+				cmd.ID, cmd.Status, resultStatus)
+
+			cmd.Status = resultStatus
+			cmd.LeaseOwner = nil
+			cmd.LeaseExpiresAt = nil
+			cmd.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+			queueModified = true
+			localRepairedCommands[cmd.ID] = true
+
+			localRepairs = append(localRepairs, ReconcileRepair{
+				Pattern:   "R3",
+				CommandID: cmd.ID,
+				Detail:    fmt.Sprintf("queue planner updated from in_progress to %s", resultStatus),
+			})
 		}
 
-		r.log(LogLevelWarn, "R3 result_terminal_queue_nonterminal command=%s queue_status=%s result_status=%s",
-			cmd.ID, cmd.Status, resultStatus)
-
-		cmd.Status = resultStatus
-		cmd.LeaseOwner = nil
-		cmd.LeaseExpiresAt = nil
-		cmd.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		queueModified = true
-		localRepairedCommands[cmd.ID] = true
-
-		localRepairs = append(localRepairs, ReconcileRepair{
-			Pattern:   "R3",
-			CommandID: cmd.ID,
-			Detail:    fmt.Sprintf("queue planner updated from in_progress to %s", resultStatus),
-		})
-	}
-
-	if queueModified {
-		if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
-			r.log(LogLevelError, "R3 write_queue error=%v", err)
-			return repairs
+		if queueModified {
+			if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
+				r.log(LogLevelError, "R3 write_queue error=%v", err)
+				return
+			}
+			repairs = append(repairs, localRepairs...)
+			for cmdID := range localRepairedCommands {
+				repairedCommands[cmdID] = true
+			}
 		}
-		repairs = append(repairs, localRepairs...)
-		for cmdID := range localRepairedCommands {
-			repairedCommands[cmdID] = true
-		}
-	}
+	}()
 
 	for commandID := range repairedCommands {
 		r.updateLastReconciledAt(commandID)
@@ -1235,18 +1276,22 @@ func (r *Reconciler) loadState(path string) (*model.CommandState, error) {
 
 // removeCommandFromPlannerQueue removes a command from queue/planner.yaml entirely.
 // CRIT-02: Per-queue lock for defense-in-depth (already serialized via scanMu.Lock).
-func (r *Reconciler) removeCommandFromPlannerQueue(commandID string) {
+// Returns nil on success (including when the command or queue file is not found).
+func (r *Reconciler) removeCommandFromPlannerQueue(commandID string) error {
 	r.lockMap.Lock("queue:planner")
 	defer r.lockMap.Unlock("queue:planner")
 
 	queuePath := filepath.Join(r.maestroDir, "queue", "planner.yaml")
 	data, err := os.ReadFile(queuePath)
 	if err != nil {
-		return
+		if os.IsNotExist(err) {
+			return nil // Queue file doesn't exist — nothing to remove
+		}
+		return fmt.Errorf("read planner queue: %w", err)
 	}
 	var cq model.CommandQueue
 	if err := yamlv3.Unmarshal(data, &cq); err != nil {
-		return
+		return fmt.Errorf("parse planner queue: %w", err)
 	}
 
 	filtered := make([]model.Command, 0, len(cq.Commands))
@@ -1256,24 +1301,33 @@ func (r *Reconciler) removeCommandFromPlannerQueue(commandID string) {
 		}
 	}
 	if len(filtered) == len(cq.Commands) {
-		return // not found
+		return nil // not found — success
 	}
 	cq.Commands = filtered
 
 	if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
 		r.log(LogLevelError, "R0 remove_command queue=%s error=%v", commandID, err)
+		return fmt.Errorf("write planner queue: %w", err)
 	}
+	return nil
 }
 
 // removeTasksFromWorkerQueues removes all tasks for a given command from all worker queues.
 // CRIT-02: Per-queue lock for defense-in-depth (already serialized via scanMu.Lock).
-func (r *Reconciler) removeTasksFromWorkerQueues(commandID string) {
+// Returns nil on success (including when no tasks are found).
+// Only returns error for write failures on queues that contained matching tasks;
+// read/parse errors on unrelated queues are logged but don't block the operation.
+func (r *Reconciler) removeTasksFromWorkerQueues(commandID string) error {
 	queueDir := filepath.Join(r.maestroDir, "queue")
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
-		return
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read queue dir: %w", err)
 	}
 
+	var writeErrs []error
 	for _, entry := range entries {
 		name := entry.Name()
 		if !strings.HasPrefix(name, "worker") || !strings.HasSuffix(name, ".yaml") {
@@ -1284,18 +1338,25 @@ func (r *Reconciler) removeTasksFromWorkerQueues(commandID string) {
 		if workerID == "" {
 			continue
 		}
-		func() {
+		if err := func() error {
 			r.lockMap.Lock("queue:" + workerID)
 			defer r.lockMap.Unlock("queue:" + workerID)
 
 			queuePath := filepath.Join(queueDir, name)
 			data, err := os.ReadFile(queuePath)
 			if err != nil {
-				return
+				if os.IsNotExist(err) {
+					return nil
+				}
+				// Log read error but don't fail — this queue may not contain our tasks
+				r.log(LogLevelWarn, "R0 remove_tasks read_error file=%s command=%s error=%v", name, commandID, err)
+				return nil
 			}
 			var tq model.TaskQueue
 			if err := yamlv3.Unmarshal(data, &tq); err != nil {
-				return
+				// Log parse error but don't fail — unrelated corruption shouldn't block cleanup
+				r.log(LogLevelWarn, "R0 remove_tasks parse_error file=%s command=%s error=%v", name, commandID, err)
+				return nil
 			}
 
 			filtered := make([]model.Task, 0, len(tq.Tasks))
@@ -1305,15 +1366,24 @@ func (r *Reconciler) removeTasksFromWorkerQueues(commandID string) {
 				}
 			}
 			if len(filtered) == len(tq.Tasks) {
-				return // No tasks removed
+				return nil // No tasks removed
 			}
 			tq.Tasks = filtered
 
 			if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
 				r.log(LogLevelError, "R0 remove_tasks file=%s command=%s error=%v", name, commandID, err)
+				return fmt.Errorf("write %s: %w", name, err)
 			}
-		}()
+			return nil
+		}(); err != nil {
+			writeErrs = append(writeErrs, err)
+		}
 	}
+
+	if len(writeErrs) > 0 {
+		return writeErrs[0]
+	}
+	return nil
 }
 
 // removeTaskFromWorkerQueues removes a specific task ID from all worker queues.

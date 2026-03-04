@@ -234,8 +234,8 @@ type LogicalAndEvaluator struct {
 // Evaluate checks if all sub-conditions are true
 func (e *LogicalAndEvaluator) Evaluate(ctx context.Context, condition *RuleCondition, evalCtx EvaluationContext) (bool, error) {
 	for _, subCond := range condition.Conditions {
-		// Get the evaluator for the sub-condition type
-		evaluator, exists := e.engine.evaluators[subCond.Type]
+		// Get the evaluator for the sub-condition type (with proper lock)
+		evaluator, exists := e.engine.getEvaluator(subCond.Type)
 		if !exists {
 			return false, fmt.Errorf("unknown condition type: %s", subCond.Type)
 		}
@@ -266,8 +266,8 @@ type LogicalOrEvaluator struct {
 // Evaluate checks if any sub-condition is true
 func (e *LogicalOrEvaluator) Evaluate(ctx context.Context, condition *RuleCondition, evalCtx EvaluationContext) (bool, error) {
 	for _, subCond := range condition.Conditions {
-		// Get the evaluator for the sub-condition type
-		evaluator, exists := e.engine.evaluators[subCond.Type]
+		// Get the evaluator for the sub-condition type (with proper lock)
+		evaluator, exists := e.engine.getEvaluator(subCond.Type)
 		if !exists {
 			return false, fmt.Errorf("unknown condition type: %s", subCond.Type)
 		}
@@ -302,7 +302,7 @@ func (e *LogicalNotEvaluator) Evaluate(ctx context.Context, condition *RuleCondi
 	}
 
 	subCond := condition.Conditions[0]
-	evaluator, exists := e.engine.evaluators[subCond.Type]
+	evaluator, exists := e.engine.getEvaluator(subCond.Type)
 	if !exists {
 		return false, fmt.Errorf("unknown condition type: %s", subCond.Type)
 	}
@@ -317,13 +317,12 @@ func (e *LogicalNotEvaluator) Evaluate(ctx context.Context, condition *RuleCondi
 // ResourceLimitEvaluator evaluates resource limit conditions
 type ResourceLimitEvaluator struct{}
 
-// Evaluate checks if resource usage is within limits
+// Evaluate checks if resource usage is within limits.
+// Uses fail-closed approach: returns false on error to prevent bypassing limits.
 func (e *ResourceLimitEvaluator) Evaluate(ctx context.Context, condition *RuleCondition, evalCtx EvaluationContext) (bool, error) {
 	value, err := evalCtx.GetResource(condition.Resource, condition.Scope)
 	if err != nil {
-		// If we can't get the resource, assume it's within limits
-		// This is a fail-open approach for non-critical checks
-		return true, nil
+		return false, fmt.Errorf("resource limit check failed (fail-closed): %w", err)
 	}
 
 	return value <= condition.Limit, nil

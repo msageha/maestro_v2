@@ -320,23 +320,30 @@ func (qg *QualityGateDaemon) handlePhaseTransition(event PhaseTransitionEvent) e
 	})
 }
 
+// mapGateType maps a string gate type to its quality.GateType constant.
+// Both event-style names ("task_start") and gate-style names ("pre_task") are supported.
+func mapGateType(gateType string) (quality.GateType, error) {
+	switch gateType {
+	case "pre_task", "task_start":
+		return quality.GateTypePreTask, nil
+	case "post_task", "task_complete":
+		return quality.GateTypePostTask, nil
+	case "phase_transition":
+		return quality.GateTypePhaseTransition, nil
+	case "command_validation":
+		return quality.GateTypeCommandValidation, nil
+	default:
+		return "", fmt.Errorf("unknown gate type: %s", gateType)
+	}
+}
+
 // evaluateGate evaluates quality gates for the specified type and context
 func (qg *QualityGateDaemon) evaluateGate(gateType string, evalContext map[string]interface{}) error {
 	qg.log(LogLevelDebug, "quality_gate_evaluate gate_type=%s context=%v", gateType, evalContext)
 
-	// Map string gate type to quality.GateType
-	var qualityGateType quality.GateType
-	switch gateType {
-	case "task_start":
-		qualityGateType = quality.GateTypePreTask
-	case "task_complete":
-		qualityGateType = quality.GateTypePostTask
-	case "phase_transition":
-		qualityGateType = quality.GateTypePhaseTransition
-	case "command_validation":
-		qualityGateType = quality.GateTypeCommandValidation
-	default:
-		return fmt.Errorf("unknown gate type: %s", gateType)
+	qualityGateType, err := mapGateType(gateType)
+	if err != nil {
+		return err
 	}
 
 	// Create evaluation context with timeout
@@ -368,19 +375,9 @@ func (qg *QualityGateDaemon) evaluateGate(gateType string, evalContext map[strin
 
 // evaluateGateWithResult evaluates gates and returns the full result (for testing)
 func (qg *QualityGateDaemon) evaluateGateWithResult(gateType string, evalContext map[string]interface{}) (*quality.EvaluationResult, error) {
-	// Map string gate type to quality.GateType
-	var qualityGateType quality.GateType
-	switch gateType {
-	case "pre_task", "task_start":
-		qualityGateType = quality.GateTypePreTask
-	case "post_task", "task_complete":
-		qualityGateType = quality.GateTypePostTask
-	case "phase_transition":
-		qualityGateType = quality.GateTypePhaseTransition
-	case "command_validation":
-		qualityGateType = quality.GateTypeCommandValidation
-	default:
-		return nil, fmt.Errorf("unknown gate type: %s", gateType)
+	qualityGateType, err := mapGateType(gateType)
+	if err != nil {
+		return nil, err
 	}
 
 	// Create evaluation context with timeout

@@ -78,7 +78,11 @@ func (lm *LeaseManager) AcquireTaskLease(task *model.Task, owner string) error {
 	expiresStr := expires.Format(time.RFC3339)
 	task.LeaseExpiresAt = &expiresStr
 	task.LeaseEpoch++
-	task.UpdatedAt = now.Format(time.RFC3339)
+	nowStr := now.Format(time.RFC3339)
+	if task.InProgressAt == nil {
+		task.InProgressAt = &nowStr
+	}
+	task.UpdatedAt = nowStr
 
 	lm.log(LogLevelInfo, "lease_acquire type=task id=%s owner=%s epoch=%d expires=%s",
 		task.ID, owner, task.LeaseEpoch, expiresStr)

@@ -69,6 +69,15 @@ func callerInfo(skip int) string {
 // while avoiding false positives on slower systems.
 const defaultCmdTimeout = 5 * time.Second
 
+// maxMessageSize is the maximum allowed size (in bytes) for text sent via
+// SendTextAndSubmit or SendCommand. This prevents accidental resource
+// exhaustion from extremely large payloads being loaded into tmux buffers.
+const maxMessageSize = 1 << 20 // 1 MB
+
+// validUserVarName matches safe tmux user variable names (alphanumeric + underscore).
+// This prevents tmux format injection via names containing #( or #[.
+var validUserVarName = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
+
 // TmuxErrorKind categorizes tmux command failures.
 type TmuxErrorKind int
 
@@ -187,6 +196,10 @@ var bufSeq atomic.Int64
 // reliable delivery, then sends Enter to submit. This avoids character-by-character
 // key sending issues with newlines in the message.
 func SendTextAndSubmit(ctx context.Context, paneTarget, text string) error {
+	if len(text) > maxMessageSize {
+		return fmt.Errorf("message size %d exceeds maximum %d bytes", len(text), maxMessageSize)
+	}
+
 	bufName := fmt.Sprintf("maestro-msg-%d", bufSeq.Add(1))
 
 	// Load text into tmux buffer via stdin (handles arbitrary content safely)
@@ -371,7 +384,12 @@ func SetUserVar(paneTarget, name, value string) error {
 }
 
 // GetUserVar reads a tmux user variable from a pane.
+// The name parameter is validated to contain only alphanumeric characters and
+// underscores to prevent tmux format injection (e.g., #(command) execution).
 func GetUserVar(paneTarget, name string) (string, error) {
+	if !validUserVarName.MatchString(name) {
+		return "", fmt.Errorf("invalid user variable name %q: must match [a-zA-Z0-9_]+", name)
+	}
 	out, err := output("display-message", "-t", paneTarget, "-p", "#{@"+name+"}")
 	if err != nil {
 		return "", err
@@ -459,8 +477,19 @@ func FindPaneByAgentID(agentID string) (string, error) {
 }
 
 // SendCommand sends a command string to a pane (text + Enter).
+// The command text is sent in literal mode (-l) to prevent tmux from
+// interpreting special key sequences (e.g., C-a, M-x). Enter is sent
+// separately as a key press to submit the command.
 func SendCommand(paneTarget, command string) error {
-	return SendKeys(paneTarget, command, "Enter")
+	if len(command) > maxMessageSize {
+		return fmt.Errorf("command size %d exceeds maximum %d bytes", len(command), maxMessageSize)
+	}
+	// Send command text literally (no special key interpretation).
+	if err := SendKeys(paneTarget, "-l", command); err != nil {
+		return err
+	}
+	// Send Enter as a key press to submit.
+	return SendKeys(paneTarget, "Enter")
 }
 
 // SendCtrlC sends Ctrl+C to a pane.

@@ -283,7 +283,7 @@ func (d *Daemon) resultWritePhaseA(params ResultWriteParams, resultStatus model.
 	var retryTask *model.Task
 	if resultStatus == model.StatusFailed && params.ExitCode != nil {
 		retryHandler := NewTaskRetryHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
-		shouldRetry, reason := retryHandler.ShouldRetryTask(queueTask, *params.ExitCode)
+		shouldRetry, reason := retryHandler.ShouldRetryTask(queueTask, *params.ExitCode, params.RetrySafe)
 
 		if shouldRetry {
 			// Create retry task

@@ -53,6 +53,7 @@ type Task struct {
 	LeaseOwner         *string  `yaml:"lease_owner"`
 	LeaseExpiresAt     *string  `yaml:"lease_expires_at"`
 	LeaseEpoch         int      `yaml:"lease_epoch"`
+	InProgressAt       *string  `yaml:"in_progress_at,omitempty"`
 	CreatedAt          string   `yaml:"created_at"`
 	UpdatedAt          string   `yaml:"updated_at"`
 }

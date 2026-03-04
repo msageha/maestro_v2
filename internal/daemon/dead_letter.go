@@ -308,13 +308,20 @@ func (dlp *DeadLetterProcessor) bufferDeadLetterOrchestratorNotification(command
 }
 
 // taskDeadLetterPostProcess updates state and writes synthetic result for a dead-lettered task.
+//
+// Lock ordering: state:{commandID} → result:{workerID}
+// The state lock is held until the synthetic result is written to prevent a
+// TOCTOU race where Complete() could aggregate results before the synthetic
+// result exists (CR-013).
 func (dlp *DeadLetterProcessor) taskDeadLetterPostProcess(commandID, taskID, workerID string) {
-	// Update state: task_states[taskID] = failed
 	statePath := filepath.Join(dlp.maestroDir, "state", "commands", commandID+".yaml")
 
+	// Acquire state lock first (held through both state update and result write).
 	lockKey := "state:" + commandID
 	dlp.lockMap.Lock(lockKey)
+	defer dlp.lockMap.Unlock(lockKey)
 
+	// Phase 1: Update state — task_states[taskID] = failed
 	data, err := os.ReadFile(statePath)
 	if err == nil {
 		var state model.CommandState
@@ -332,9 +339,9 @@ func (dlp *DeadLetterProcessor) taskDeadLetterPostProcess(commandID, taskID, wor
 			}
 		}
 	}
-	dlp.lockMap.Unlock(lockKey)
 
-	// Write synthetic failed result to results/worker{N}.yaml
+	// Phase 2: Write synthetic failed result to results/worker{N}.yaml
+	// Lock order: state:{commandID} (held above) → result:{workerID}
 	resultPath := filepath.Join(dlp.maestroDir, "results", workerID+".yaml")
 
 	resultLockKey := "result:" + workerID
