@@ -31,6 +31,8 @@ type QueueHandler struct {
 	reconciler          *Reconciler
 	deadLetterProcessor *DeadLetterProcessor
 	metricsHandler      *MetricsHandler
+	circuitBreaker      *CircuitBreakerHandler
+	worktreeManager     *WorktreeManager
 	lockMap             *lock.MutexMap
 
 	// scanCounters accumulates counters during a single PeriodicScan cycle.
@@ -117,6 +119,17 @@ func (qh *QueueHandler) SetExecutorFactory(f ExecutorFactory) {
 // SetCanComplete wires the CanComplete function for R4 reconciliation.
 func (qh *QueueHandler) SetCanComplete(f CanCompleteFunc) {
 	qh.reconciler.SetCanComplete(f)
+}
+
+// SetCircuitBreaker wires the circuit breaker handler for periodic scan integration.
+func (qh *QueueHandler) SetCircuitBreaker(cb *CircuitBreakerHandler) {
+	qh.circuitBreaker = cb
+}
+
+// SetWorktreeManager wires the worktree manager for worker isolation.
+func (qh *QueueHandler) SetWorktreeManager(wm *WorktreeManager) {
+	qh.worktreeManager = wm
+	qh.dispatcher.SetWorktreeManager(wm)
 }
 
 // SetBusyChecker overrides the busy checker for testing.
@@ -271,13 +284,53 @@ type signalDeliveryItem struct {
 	Message   string
 }
 
+// worktreeMergeItem captures a phase-boundary worktree merge for Phase B execution.
+type worktreeMergeItem struct {
+	CommandID string
+	PhaseID   string
+	WorkerIDs []string
+}
+
+// worktreeMergeResult captures the outcome of a Phase B worktree merge.
+type worktreeMergeResult struct {
+	Item      worktreeMergeItem
+	Conflicts []model.MergeConflict
+	Error     error
+}
+
+// worktreePublishItem captures a publish-to-base operation for Phase B execution.
+type worktreePublishItem struct {
+	CommandID string
+}
+
+// worktreePublishResult captures the outcome of a Phase B publish-to-base.
+type worktreePublishResult struct {
+	Item  worktreePublishItem
+	Error error
+}
+
+// worktreeCleanupItem captures a worktree cleanup operation for Phase B execution.
+type worktreeCleanupItem struct {
+	CommandID string
+	Reason    string // "success" or "failure"
+}
+
+// worktreeCleanupResult captures the outcome of a Phase B worktree cleanup.
+type worktreeCleanupResult struct {
+	Item  worktreeCleanupItem
+	Error error
+}
+
 // deferredWork collects all slow I/O operations for Phase B execution.
 type deferredWork struct {
-	dispatches []dispatchItem
-	interrupts []interruptItem
-	busyChecks []busyCheckItem
-	signals    []signalDeliveryItem
-	clears     []string // agent IDs to /clear
+	dispatches        []dispatchItem
+	interrupts        []interruptItem
+	busyChecks        []busyCheckItem
+	signals           []signalDeliveryItem
+	clears            []string // agent IDs to /clear
+	worktreeMerges    []worktreeMergeItem
+	worktreePublishes []worktreePublishItem
+	worktreeCleanups  []worktreeCleanupItem
 }
 
 // dispatchResult captures the outcome of a Phase B dispatch.
@@ -309,7 +362,10 @@ type phaseAResult struct {
 
 // phaseBResult holds all results from Phase B for Phase C to apply.
 type phaseBResult struct {
-	dispatches []dispatchResult
-	busyChecks []busyCheckResult
-	signals    []signalDeliveryResult
+	dispatches        []dispatchResult
+	busyChecks        []busyCheckResult
+	signals           []signalDeliveryResult
+	worktreeMerges    []worktreeMergeResult
+	worktreePublishes []worktreePublishResult
+	worktreeCleanups  []worktreeCleanupResult
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
@@ -62,6 +63,52 @@ func (qh *QueueHandler) periodicScanPhaseA() phaseAResult {
 			notificationsDirty = true
 			if notificationPath == "" {
 				notificationPath = filepath.Join(qh.maestroDir, "queue", "orchestrator.yaml")
+			}
+		}
+	}
+
+	// Step 0.4: Circuit breaker — check progress timeout and emit planner signals
+	if qh.circuitBreaker != nil && qh.circuitBreaker.Enabled() {
+		for i := range commandQueue.Commands {
+			cmd := &commandQueue.Commands[i]
+			if cmd.Status != model.StatusInProgress {
+				continue
+			}
+
+			// Check progress timeout (consecutive failure trips happen in resultWritePhaseB)
+			shouldTrip, reason := qh.circuitBreaker.CheckProgressTimeout(cmd.ID)
+			if shouldTrip {
+				timeoutMin := qh.circuitBreaker.config.CircuitBreaker.EffectiveProgressTimeoutMinutes()
+				if err := qh.circuitBreaker.stateReader.TripCircuitBreaker(cmd.ID, reason, timeoutMin); err != nil {
+					qh.log(LogLevelError, "circuit_breaker_trip_timeout command=%s error=%v", cmd.ID, err)
+				} else {
+					qh.log(LogLevelWarn, "circuit_breaker_tripped_timeout command=%s reason=%s", cmd.ID, reason)
+				}
+			}
+
+			// Emit planner signal for tripped commands (covers both failure-count and timeout trips)
+			if qh.circuitBreaker.stateReader == nil {
+				continue
+			}
+			cbState, err := qh.circuitBreaker.stateReader.GetCircuitBreakerState(cmd.ID)
+			if err != nil {
+				continue
+			}
+			if cbState.Tripped {
+				now := qh.clock.Now().UTC().Format(time.RFC3339)
+				tripReason := "unknown"
+				if cbState.TripReason != nil {
+					tripReason = *cbState.TripReason
+				}
+				msg := fmt.Sprintf("[maestro] kind:circuit_breaker_tripped command_id:%s\nreason: %s",
+					cmd.ID, tripReason)
+				qh.upsertPlannerSignal(&signalQueue, &signalsDirty, model.PlannerSignal{
+					Kind:      "circuit_breaker_tripped",
+					CommandID: cmd.ID,
+					Message:   msg,
+					CreatedAt: now,
+					UpdatedAt: now,
+				})
 			}
 		}
 	}
@@ -156,6 +203,37 @@ func (qh *QueueHandler) periodicScanPhaseA() phaseAResult {
 					})
 				}
 			}
+		}
+	}
+
+	// Step 0.7.1: Worktree phase boundary merge — collect merge work items for Phase B
+	if qh.worktreeManager != nil && qh.dependencyResolver.stateReader != nil {
+		for i := range commandQueue.Commands {
+			cmd := &commandQueue.Commands[i]
+			if cmd.Status != model.StatusInProgress {
+				continue
+			}
+			if !qh.worktreeManager.HasWorktrees(cmd.ID) {
+				continue
+			}
+			mergeItems := qh.collectWorktreePhaseMerges(cmd.ID)
+			work.worktreeMerges = append(work.worktreeMerges, mergeItems...)
+		}
+	}
+
+	// Step 0.7.2: Worktree publish-to-base — detect command completion for publishing
+	if qh.worktreeManager != nil && qh.dependencyResolver.stateReader != nil {
+		for i := range commandQueue.Commands {
+			cmd := &commandQueue.Commands[i]
+			if cmd.Status != model.StatusInProgress {
+				continue
+			}
+			if !qh.worktreeManager.HasWorktrees(cmd.ID) {
+				continue
+			}
+			publishes, cleanups := qh.collectWorktreePublishAndCleanup(cmd.ID, taskQueues)
+			work.worktreePublishes = append(work.worktreePublishes, publishes...)
+			work.worktreeCleanups = append(work.worktreeCleanups, cleanups...)
 		}
 	}
 
@@ -297,6 +375,93 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 		qh.clearAgent(ctx, agentID)
 	}
 
+	// 6. Execute worktree merges (slow git I/O, outside scanMu.Lock)
+	for _, item := range pa.work.worktreeMerges {
+		if ctx.Err() != nil {
+			break
+		}
+		mr := worktreeMergeResult{Item: item}
+
+		// First commit worker changes
+		if qh.worktreeManager != nil && qh.worktreeManager.config.AutoCommit {
+			for _, workerID := range item.WorkerIDs {
+				msg := fmt.Sprintf("[maestro] auto-commit phase %s worker %s for %s",
+					item.PhaseID, workerID, item.CommandID)
+				if err := qh.worktreeManager.CommitWorkerChanges(item.CommandID, workerID, msg); err != nil {
+					qh.log(LogLevelWarn, "worktree_auto_commit command=%s worker=%s error=%v",
+						item.CommandID, workerID, err)
+				}
+			}
+		}
+
+		// Then merge to integration
+		if qh.worktreeManager != nil && qh.worktreeManager.config.AutoMerge {
+			conflicts, err := qh.worktreeManager.MergeToIntegration(item.CommandID, item.WorkerIDs)
+			mr.Conflicts = conflicts
+			mr.Error = err
+
+			// Sync integration → worker worktrees if merge succeeded with no conflicts
+			// (done here in Phase B to avoid holding scanMu during slow git I/O)
+			if len(conflicts) == 0 && err == nil {
+				if syncErr := qh.worktreeManager.SyncFromIntegration(item.CommandID, item.WorkerIDs); syncErr != nil {
+					qh.log(LogLevelWarn, "worktree_sync_failed command=%s error=%v", item.CommandID, syncErr)
+				}
+			}
+		}
+
+		result.worktreeMerges = append(result.worktreeMerges, mr)
+	}
+
+	// 7. Execute worktree publishes (slow git I/O, outside scanMu.Lock)
+	// Re-verify integration status before publishing to guard against merge
+	// conflicts from step 6 in the same scan cycle (codex review finding #2).
+	var additionalCleanups []worktreeCleanupItem
+	for _, item := range pa.work.worktreePublishes {
+		if ctx.Err() != nil {
+			break
+		}
+		pr := worktreePublishResult{Item: item}
+		if qh.worktreeManager != nil {
+			// Re-check integration status: a merge conflict in step 6 may have
+			// changed it from "merged" to "conflict" since Phase A collected this item.
+			cmdState, err := qh.worktreeManager.GetCommandState(item.CommandID)
+			if err != nil || cmdState.Integration.Status != model.IntegrationStatusMerged {
+				qh.log(LogLevelWarn, "worktree_publish_skip_stale command=%s status=%v err=%v",
+					item.CommandID, func() string {
+						if cmdState != nil {
+							return string(cmdState.Integration.Status)
+						}
+						return "unknown"
+					}(), err)
+				pr.Error = fmt.Errorf("integration status no longer merged")
+			} else {
+				pr.Error = qh.worktreeManager.PublishToBase(item.CommandID)
+			}
+		}
+		result.worktreePublishes = append(result.worktreePublishes, pr)
+
+		// On success, collect cleanup if configured
+		if pr.Error == nil && qh.config.Worktree.CleanupOnSuccess {
+			additionalCleanups = append(additionalCleanups, worktreeCleanupItem{
+				CommandID: item.CommandID,
+				Reason:    "success",
+			})
+		}
+	}
+
+	// 8. Execute worktree cleanups (Phase A collected + post-publish)
+	allCleanups := append(pa.work.worktreeCleanups, additionalCleanups...)
+	for _, item := range allCleanups {
+		if ctx.Err() != nil {
+			break
+		}
+		cr := worktreeCleanupResult{Item: item}
+		if qh.worktreeManager != nil {
+			cr.Error = qh.worktreeManager.CleanupCommand(item.CommandID)
+		}
+		result.worktreeCleanups = append(result.worktreeCleanups, cr)
+	}
+
 	return result
 }
 
@@ -347,6 +512,92 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 			taskQueues, taskDirty,
 			notificationQueue, notificationPath, notificationsDirty,
 			model.PlannerSignalQueue{}, "", false)
+	}
+
+	// --- Apply worktree merge results: emit conflict signals, record merged phases ---
+	if len(pb.worktreeMerges) > 0 {
+		signalQueue, signalPath := qh.loadPlannerSignalQueue()
+		signalsDirty := false
+		now := qh.clock.Now().UTC().Format(time.RFC3339)
+		for _, mr := range pb.worktreeMerges {
+			if mr.Error != nil {
+				qh.log(LogLevelError, "worktree_merge_failed command=%s phase=%s error=%v",
+					mr.Item.CommandID, mr.Item.PhaseID, mr.Error)
+			}
+			for _, conflict := range mr.Conflicts {
+				msg := fmt.Sprintf("[maestro] kind:merge_conflict command_id:%s phase:%s worker:%s\nconflict_files: %s",
+					mr.Item.CommandID, mr.Item.PhaseID, conflict.WorkerID,
+					strings.Join(conflict.ConflictFiles, ", "))
+				qh.upsertPlannerSignal(&signalQueue, &signalsDirty, model.PlannerSignal{
+					Kind:      "merge_conflict",
+					CommandID: mr.Item.CommandID,
+					PhaseID:   mr.Item.PhaseID,
+					Message:   msg,
+					CreatedAt: now,
+					UpdatedAt: now,
+				})
+			}
+			// Mark phase as merged to prevent re-merging on next scan
+			if mr.Error == nil && qh.worktreeManager != nil {
+				if err := qh.worktreeManager.MarkPhaseMerged(mr.Item.CommandID, mr.Item.PhaseID); err != nil {
+					qh.log(LogLevelWarn, "mark_phase_merged_failed command=%s phase=%s error=%v",
+						mr.Item.CommandID, mr.Item.PhaseID, err)
+				}
+			}
+		}
+		if signalsDirty {
+			p := signalPath
+			if p == "" {
+				p = filepath.Join(qh.maestroDir, "queue", "planner_signals.yaml")
+			}
+			if err := yamlutil.AtomicWrite(p, signalQueue); err != nil {
+				qh.log(LogLevelError, "write_planner_signals error=%v", err)
+			}
+		}
+	}
+
+	// --- Apply worktree publish results: emit signal on failure ---
+	if len(pb.worktreePublishes) > 0 {
+		signalQueue, signalPath := qh.loadPlannerSignalQueue()
+		signalsDirty := false
+		now := qh.clock.Now().UTC().Format(time.RFC3339)
+		for _, pr := range pb.worktreePublishes {
+			if pr.Error != nil {
+				qh.log(LogLevelError, "worktree_publish_failed command=%s error=%v",
+					pr.Item.CommandID, pr.Error)
+				msg := fmt.Sprintf("[maestro] kind:publish_failed command_id:%s\nerror: %v",
+					pr.Item.CommandID, pr.Error)
+				qh.upsertPlannerSignal(&signalQueue, &signalsDirty, model.PlannerSignal{
+					Kind:      "publish_failed",
+					CommandID: pr.Item.CommandID,
+					Message:   msg,
+					CreatedAt: now,
+					UpdatedAt: now,
+				})
+			} else {
+				qh.log(LogLevelInfo, "worktree_published command=%s", pr.Item.CommandID)
+			}
+		}
+		if signalsDirty {
+			p := signalPath
+			if p == "" {
+				p = filepath.Join(qh.maestroDir, "queue", "planner_signals.yaml")
+			}
+			if err := yamlutil.AtomicWrite(p, signalQueue); err != nil {
+				qh.log(LogLevelError, "write_planner_signals error=%v", err)
+			}
+		}
+	}
+
+	// --- Apply worktree cleanup results: log only ---
+	for _, cr := range pb.worktreeCleanups {
+		if cr.Error != nil {
+			qh.log(LogLevelWarn, "worktree_cleanup_failed command=%s reason=%s error=%v",
+				cr.Item.CommandID, cr.Item.Reason, cr.Error)
+		} else {
+			qh.log(LogLevelInfo, "worktree_cleanup_complete command=%s reason=%s",
+				cr.Item.CommandID, cr.Item.Reason)
+		}
 	}
 
 	// --- Apply signal delivery results ---
@@ -1060,6 +1311,61 @@ func (qh *QueueHandler) buildGlobalInFlightSet(taskQueues map[string]*taskQueueE
 	return inFlight
 }
 
+// collectWorktreePhaseMerges detects phases that just completed and collects
+// merge work items for Phase B execution. Runs in Phase A under scanMu.Lock.
+// Only performs fast in-memory checks — all git I/O is deferred to Phase B.
+// Skips phases that have already been merged (tracked in worktree command state).
+func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string) []worktreeMergeItem {
+	if qh.dependencyResolver.stateReader == nil || qh.worktreeManager == nil {
+		return nil
+	}
+
+	phases, err := qh.dependencyResolver.stateReader.GetCommandPhases(commandID)
+	if err != nil {
+		return nil
+	}
+
+	// Load worktree state to check already-merged phases
+	cmdState, err := qh.worktreeManager.GetCommandState(commandID)
+	if err != nil {
+		return nil
+	}
+
+	var items []worktreeMergeItem
+	for _, phase := range phases {
+		if string(phase.Status) != "completed" {
+			continue
+		}
+		// Skip phases already merged
+		if cmdState.MergedPhases != nil {
+			if _, merged := cmdState.MergedPhases[phase.ID]; merged {
+				continue
+			}
+		}
+		// Only merge if this phase has tasks
+		if len(phase.RequiredTaskIDs) == 0 {
+			continue
+		}
+
+		// Use only workers that actually have worktrees
+		var workerIDs []string
+		for _, ws := range cmdState.Workers {
+			workerIDs = append(workerIDs, ws.WorkerID)
+		}
+		if len(workerIDs) == 0 {
+			continue
+		}
+
+		items = append(items, worktreeMergeItem{
+			CommandID: commandID,
+			PhaseID:   phase.ID,
+			WorkerIDs: workerIDs,
+		})
+	}
+
+	return items
+}
+
 // hasExpiredLeases checks whether any queue entry has an expired lease.
 // Used to decide whether to prioritize recovery over dispatch (spec §5.8.1).
 func (qh *QueueHandler) hasExpiredLeases(
@@ -1085,4 +1391,109 @@ func (qh *QueueHandler) hasExpiredLeases(
 		}
 	}
 	return false
+}
+
+// collectWorktreePublishAndCleanup checks if a command is ready for worktree
+// publish-to-base or cleanup. Returns publish and cleanup items for Phase B.
+// Runs in Phase A under scanMu.Lock — only fast checks and YAML reads.
+func (qh *QueueHandler) collectWorktreePublishAndCleanup(
+	commandID string,
+	taskQueues map[string]*taskQueueEntry,
+) ([]worktreePublishItem, []worktreeCleanupItem) {
+	// Load worktree state
+	cmdState, err := qh.worktreeManager.GetCommandState(commandID)
+	if err != nil {
+		return nil, nil
+	}
+
+	// Check if all tasks for this command are terminal
+	allTerminal, hasFailed := qh.checkCommandTasksTerminal(commandID, taskQueues)
+	if !allTerminal {
+		return nil, nil
+	}
+
+	// For phased commands, also verify all phases are terminal.
+	// Errors fail closed (skip publish) to avoid premature publishing.
+	phases, err := qh.dependencyResolver.stateReader.GetCommandPhases(commandID)
+	if err != nil {
+		if !errors.Is(err, ErrStateNotFound) {
+			qh.log(LogLevelWarn, "worktree_publish_phase_check_failed command=%s error=%v", commandID, err)
+		}
+		return nil, nil
+	}
+	for _, phase := range phases {
+		if !model.IsPhaseTerminal(phase.Status) {
+			return nil, nil
+		}
+	}
+
+	var publishes []worktreePublishItem
+	var cleanups []worktreeCleanupItem
+
+	if hasFailed {
+		// Don't publish if any task failed — partial results stay on integration branch
+		qh.log(LogLevelInfo, "worktree_publish_skip_failed command=%s", commandID)
+		if qh.config.Worktree.CleanupOnFailure {
+			cleanups = append(cleanups, worktreeCleanupItem{
+				CommandID: commandID,
+				Reason:    "failure",
+			})
+		}
+		return publishes, cleanups
+	}
+
+	// No failures — check integration status to decide action
+	switch cmdState.Integration.Status {
+	case model.IntegrationStatusMerged:
+		// Ready to publish
+		publishes = append(publishes, worktreePublishItem{
+			CommandID: commandID,
+		})
+		qh.log(LogLevelInfo, "worktree_publish_collected command=%s", commandID)
+	case model.IntegrationStatusPublished:
+		// Already published — collect cleanup if configured and not yet cleaned
+		if qh.config.Worktree.CleanupOnSuccess {
+			cleanups = append(cleanups, worktreeCleanupItem{
+				CommandID: commandID,
+				Reason:    "success",
+			})
+		}
+	default:
+		// Not ready (created, merging, conflict, publishing, failed)
+		qh.log(LogLevelDebug, "worktree_publish_not_ready command=%s integration_status=%s",
+			commandID, cmdState.Integration.Status)
+	}
+
+	return publishes, cleanups
+}
+
+// checkCommandTasksTerminal checks if all tasks for a command across all task
+// queues are in terminal state. Returns (allTerminal, hasFailed).
+// Runs in Phase A under scanMu.Lock — iterates already-loaded in-memory queues.
+func (qh *QueueHandler) checkCommandTasksTerminal(
+	commandID string,
+	taskQueues map[string]*taskQueueEntry,
+) (bool, bool) {
+	taskCount := 0
+	hasFailed := false
+
+	for _, tq := range taskQueues {
+		for _, task := range tq.Queue.Tasks {
+			if task.CommandID != commandID {
+				continue
+			}
+			taskCount++
+			if !model.IsTerminal(task.Status) {
+				return false, false
+			}
+			if task.Status == model.StatusFailed || task.Status == model.StatusDeadLetter {
+				hasFailed = true
+			}
+		}
+	}
+
+	if taskCount == 0 {
+		return false, false // No tasks found — command not ready
+	}
+	return true, hasFailed
 }

@@ -199,6 +199,45 @@ func (r *integrationStateReader) IsCommandCancelRequested(commandID string) (boo
 	return state.Cancel.Requested, nil
 }
 
+func (r *integrationStateReader) GetCircuitBreakerState(commandID string) (*model.CircuitBreakerState, error) {
+	state, err := r.loadState(commandID)
+	if err != nil {
+		return nil, err
+	}
+	cb := state.CircuitBreaker
+	return &cb, nil
+}
+
+func (r *integrationStateReader) TripCircuitBreaker(commandID string, reason string, progressTimeoutMinutes int) error {
+	r.lockMap.Lock("state:" + commandID)
+	defer r.lockMap.Unlock("state:" + commandID)
+
+	state, err := r.loadState(commandID)
+	if err != nil {
+		return err
+	}
+
+	if state.CircuitBreaker.Tripped {
+		return nil
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	state.CircuitBreaker.Tripped = true
+	state.CircuitBreaker.TrippedAt = &now
+	state.CircuitBreaker.TripReason = &reason
+
+	if !state.Cancel.Requested {
+		by := "circuit_breaker"
+		state.Cancel.Requested = true
+		state.Cancel.RequestedAt = &now
+		state.Cancel.RequestedBy = &by
+		state.Cancel.Reason = &reason
+	}
+
+	state.UpdatedAt = now
+	return r.saveState(state)
+}
+
 // testCanComplete is a simplified version of plan.CanComplete for integration tests.
 func testCanComplete(state *model.CommandState) (model.PlanStatus, error) {
 	if state.PlanStatus != model.PlanStatusSealed {

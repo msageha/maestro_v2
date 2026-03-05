@@ -20,9 +20,10 @@ func TestValidateSchemaHeader_Valid(t *testing.T) {
 
 func TestValidateSchemaHeader_AllFileTypes(t *testing.T) {
 	fileTypes := []string{
-		"queue_command", "queue_task", "queue_notification",
+		"queue_command", "queue_task", "queue_notification", "planner_signal_queue",
 		"result_task", "result_command",
-		"state_command", "state_metrics", "state_continuous",
+		"state_command", "state_metrics", "state_continuous", "state_learnings",
+		"state_worktree",
 	}
 
 	for _, ft := range fileTypes {

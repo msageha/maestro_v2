@@ -5,17 +5,21 @@ package model
 const DefaultMaxYAMLFileBytes = 5 * 1024 * 1024
 
 type Config struct {
-	Project      ProjectConfig      `yaml:"project"`
-	Maestro      MaestroConfig      `yaml:"maestro"`
-	Agents       AgentsConfig       `yaml:"agents"`
-	Continuous   ContinuousConfig   `yaml:"continuous"`
-	Watcher      WatcherConfig      `yaml:"watcher"`
-	Retry        RetryConfig        `yaml:"retry"`
-	Queue        QueueConfig        `yaml:"queue"`
-	Limits       LimitsConfig       `yaml:"limits"`
-	Daemon       DaemonConfig       `yaml:"daemon"`
-	Logging      LoggingConfig      `yaml:"logging"`
-	QualityGates QualityGatesConfig `yaml:"quality_gates"`
+	Project        ProjectConfig        `yaml:"project"`
+	Maestro        MaestroConfig        `yaml:"maestro"`
+	Agents         AgentsConfig         `yaml:"agents"`
+	Continuous     ContinuousConfig     `yaml:"continuous"`
+	Watcher        WatcherConfig        `yaml:"watcher"`
+	Retry          RetryConfig          `yaml:"retry"`
+	Queue          QueueConfig          `yaml:"queue"`
+	Limits         LimitsConfig         `yaml:"limits"`
+	Daemon         DaemonConfig         `yaml:"daemon"`
+	Logging        LoggingConfig        `yaml:"logging"`
+	QualityGates   QualityGatesConfig   `yaml:"quality_gates"`
+	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
+	Learnings      LearningsConfig      `yaml:"learnings"`
+	Verification   VerificationConfig   `yaml:"verification"`
+	Worktree       WorktreeConfig       `yaml:"worktree"`
 }
 
 type ProjectConfig struct {
@@ -145,4 +149,151 @@ type QualityGateEnforcement struct {
 	PostTaskCheck  bool   `yaml:"post_task_check"`   // タスク実行後チェック
 	FailureAction  string `yaml:"failure_action"`    // 失敗時の動作: "warn", "block"
 	LogViolations  bool   `yaml:"log_violations"`    // 違反をログに記録
+}
+
+// CircuitBreakerConfig controls the command-level circuit breaker that auto-stops
+// commands after consecutive task failures.
+type CircuitBreakerConfig struct {
+	Enabled                bool `yaml:"enabled"`                   // opt-in, default: false
+	MaxConsecutiveFailures int  `yaml:"max_consecutive_failures"`  // default: 3
+	ProgressTimeoutMinutes int  `yaml:"progress_timeout_minutes"`  // default: 30, 0=disabled
+}
+
+// EffectiveMaxConsecutiveFailures returns the configured threshold or 3 as default.
+func (c CircuitBreakerConfig) EffectiveMaxConsecutiveFailures() int {
+	if c.MaxConsecutiveFailures > 0 {
+		return c.MaxConsecutiveFailures
+	}
+	return 3
+}
+
+// EffectiveProgressTimeoutMinutes returns the configured timeout.
+// Returns 0 if set to 0 (disabled). The template default is 30.
+func (c CircuitBreakerConfig) EffectiveProgressTimeoutMinutes() int {
+	return c.ProgressTimeoutMinutes
+}
+
+// LearningsConfig controls the learning accumulation feature.
+type LearningsConfig struct {
+	Enabled          bool `yaml:"enabled"`            // opt-in, default: false
+	MaxEntries       int  `yaml:"max_entries"`        // default: 100
+	MaxContentLength int  `yaml:"max_content_length"` // default: 500
+	InjectCount      int  `yaml:"inject_count"`       // top-K learnings injected per task dispatch, default: 5
+	TTLHours         int  `yaml:"ttl_hours"`          // learning expiry in hours, default: 72, 0=unlimited
+}
+
+// EffectiveMaxEntries returns the configured limit or 100 as default.
+func (l LearningsConfig) EffectiveMaxEntries() int {
+	if l.MaxEntries > 0 {
+		return l.MaxEntries
+	}
+	return 100
+}
+
+// EffectiveMaxContentLength returns the configured limit or 500 as default.
+func (l LearningsConfig) EffectiveMaxContentLength() int {
+	if l.MaxContentLength > 0 {
+		return l.MaxContentLength
+	}
+	return 500
+}
+
+// EffectiveInjectCount returns the configured inject count or 5 as default.
+func (l LearningsConfig) EffectiveInjectCount() int {
+	if l.InjectCount > 0 {
+		return l.InjectCount
+	}
+	return 5
+}
+
+// EffectiveTTLHours returns the configured TTL in hours.
+// 0 means unlimited (no expiry). The template default is 72.
+func (l LearningsConfig) EffectiveTTLHours() int {
+	return l.TTLHours
+}
+
+// VerificationConfig controls verification commands run by Workers.
+// When enabled is true and commands are configured, Workers are guided to run
+// basic verification before reporting task completion. Full verification is
+// used in dedicated verification phase tasks.
+type VerificationConfig struct {
+	Enabled        bool   `yaml:"enabled"`         // opt-in, default: false
+	BasicCommand   string `yaml:"basic_command"`   // e.g. "go vet ./..."
+	FullCommand    string `yaml:"full_command"`     // e.g. "go test ./..."
+	TimeoutSeconds int    `yaml:"timeout_seconds"` // default: 300
+	MaxRetries     int    `yaml:"max_retries"`      // 0=no retry, template default: 1
+}
+
+// EffectiveTimeoutSeconds returns the configured timeout or 300 as default.
+func (v VerificationConfig) EffectiveTimeoutSeconds() int {
+	if v.TimeoutSeconds > 0 {
+		return v.TimeoutSeconds
+	}
+	return 300
+}
+
+// EffectiveMaxRetries returns the configured max retries.
+// 0 means no retry. The template default is 1.
+func (v VerificationConfig) EffectiveMaxRetries() int {
+	return v.MaxRetries
+}
+
+// WorktreeConfig controls Worker worktree isolation (opt-in, default disabled).
+type WorktreeConfig struct {
+	Enabled          bool             `yaml:"enabled"`
+	BaseBranch       string           `yaml:"base_branch"`
+	PathPrefix       string           `yaml:"path_prefix"`
+	AutoCommit       bool             `yaml:"auto_commit"`
+	AutoMerge        bool             `yaml:"auto_merge"`
+	MergeStrategy    string           `yaml:"merge_strategy"`
+	CleanupOnSuccess bool             `yaml:"cleanup_on_success"`
+	CleanupOnFailure bool             `yaml:"cleanup_on_failure"`
+	GC               WorktreeGCConfig `yaml:"gc"`
+}
+
+// WorktreeGCConfig controls periodic garbage collection of old worktrees.
+type WorktreeGCConfig struct {
+	Enabled      bool `yaml:"enabled"`
+	TTLHours     int  `yaml:"ttl_hours"`
+	MaxWorktrees int  `yaml:"max_worktrees"`
+}
+
+// EffectiveBaseBranch returns the configured base branch or "main" as default.
+func (w WorktreeConfig) EffectiveBaseBranch() string {
+	if w.BaseBranch != "" {
+		return w.BaseBranch
+	}
+	return "main"
+}
+
+// EffectivePathPrefix returns the configured path prefix or ".maestro/worktrees" as default.
+func (w WorktreeConfig) EffectivePathPrefix() string {
+	if w.PathPrefix != "" {
+		return w.PathPrefix
+	}
+	return ".maestro/worktrees"
+}
+
+// EffectiveMergeStrategy returns the configured merge strategy or "ort" as default.
+func (w WorktreeConfig) EffectiveMergeStrategy() string {
+	if w.MergeStrategy != "" {
+		return w.MergeStrategy
+	}
+	return "ort"
+}
+
+// EffectiveTTLHours returns the configured TTL or 24 hours as default.
+func (w WorktreeGCConfig) EffectiveTTLHours() int {
+	if w.TTLHours > 0 {
+		return w.TTLHours
+	}
+	return 24
+}
+
+// EffectiveMaxWorktrees returns the configured max worktrees or 32 as default.
+func (w WorktreeGCConfig) EffectiveMaxWorktrees() int {
+	if w.MaxWorktrees > 0 {
+		return w.MaxWorktrees
+	}
+	return 32
 }

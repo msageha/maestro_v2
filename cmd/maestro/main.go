@@ -559,7 +559,7 @@ func runResultWrite(args []string) {
 	fs := newFlagSet("maestro result write")
 	var taskID, commandID, resultStatus, summary string
 	var leaseEpoch int
-	var filesChanged stringSliceFlag
+	var filesChanged, learnings stringSliceFlag
 	var partialChangesPossible, noRetrySafe bool
 
 	fs.StringVar(&taskID, "task-id", "", "")
@@ -568,15 +568,16 @@ func runResultWrite(args []string) {
 	fs.StringVar(&resultStatus, "status", "", "")
 	fs.StringVar(&summary, "summary", "", "")
 	fs.Var(&filesChanged, "files-changed", "")
+	fs.Var(&learnings, "learnings", "")
 	fs.BoolVar(&partialChangesPossible, "partial-changes", false, "")
 	fs.BoolVar(&noRetrySafe, "no-retry-safe", false, "")
 
 	if err := fs.Parse(args[1:]); err != nil {
-		fmt.Fprintf(os.Stderr, "%v\nusage: maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>] [--files-changed <file>]... [--partial-changes] [--no-retry-safe]\n", err)
+		fmt.Fprintf(os.Stderr, "%v\nusage: maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>] [--files-changed <file>]... [--learnings <text>]... [--partial-changes] [--no-retry-safe]\n", err)
 		os.Exit(1)
 	}
 	if fs.NArg() > 0 {
-		fmt.Fprintf(os.Stderr, "unexpected argument: %s\nusage: maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>] [--files-changed <file>]... [--partial-changes] [--no-retry-safe]\n", fs.Arg(0))
+		fmt.Fprintf(os.Stderr, "unexpected argument: %s\nusage: maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>] [--files-changed <file>]... [--learnings <text>]... [--partial-changes] [--no-retry-safe]\n", fs.Arg(0))
 		os.Exit(1)
 	}
 
@@ -605,6 +606,9 @@ func runResultWrite(args []string) {
 	}
 	if partialChangesPossible {
 		params["partial_changes_possible"] = true
+	}
+	if len(learnings) > 0 {
+		params["learnings"] = learnings
 	}
 
 	client := uds.NewClient(filepath.Join(maestroDir, uds.DefaultSocketName))

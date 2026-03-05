@@ -237,6 +237,59 @@ func (r *PlanStateReader) IsSystemCommitReady(commandID, taskID string) (bool, b
 	return true, true, nil
 }
 
+func (r *PlanStateReader) GetCircuitBreakerState(commandID string) (*model.CircuitBreakerState, error) {
+	state, err := r.stateManager.LoadState(commandID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, daemon.ErrStateNotFound
+		}
+		return nil, err
+	}
+	cb := state.CircuitBreaker
+	return &cb, nil
+}
+
+func (r *PlanStateReader) TripCircuitBreaker(commandID string, reason string, progressTimeoutMinutes int) error {
+	r.stateManager.LockCommand(commandID)
+	defer r.stateManager.UnlockCommand(commandID)
+
+	state, err := r.stateManager.LoadState(commandID)
+	if err != nil {
+		return err
+	}
+
+	if state.CircuitBreaker.Tripped {
+		return nil // already tripped, idempotent
+	}
+
+	// Re-validate progress timeout under lock to prevent TOCTOU race:
+	// A concurrent success write may have updated LastProgressAt since the unlocked read.
+	if progressTimeoutMinutes > 0 && state.CircuitBreaker.LastProgressAt != nil {
+		lastProgress, parseErr := time.Parse(time.RFC3339, *state.CircuitBreaker.LastProgressAt)
+		if parseErr == nil && time.Since(lastProgress) < time.Duration(progressTimeoutMinutes)*time.Minute {
+			return nil // timeout no longer exceeded
+		}
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	state.CircuitBreaker.Tripped = true
+	state.CircuitBreaker.TrippedAt = &now
+	state.CircuitBreaker.TripReason = &reason
+
+	// Set cancel request so existing cancel flow handles task cancellation
+	if !state.Cancel.Requested {
+		state.Cancel.Requested = true
+		state.Cancel.RequestedAt = &now
+		state.Cancel.RequestedBy = strPtr("circuit_breaker")
+		state.Cancel.Reason = &reason
+	}
+
+	state.UpdatedAt = now
+	return r.stateManager.SaveState(state)
+}
+
+func strPtr(s string) *string { return &s }
+
 // isKnownTaskID checks whether taskID belongs to the command's known tasks
 // (required, optional, or system commit).
 func isKnownTaskID(state *model.CommandState, taskID string) bool {

@@ -34,6 +34,11 @@ type StateReader interface {
 	UpdateTaskState(commandID, taskID string, newStatus model.Status, cancelledReason string) error
 	// IsCommandCancelRequested checks the state file for cancel.requested flag.
 	IsCommandCancelRequested(commandID string) (bool, error)
+	// GetCircuitBreakerState returns the circuit breaker state for a command.
+	GetCircuitBreakerState(commandID string) (*model.CircuitBreakerState, error)
+	// TripCircuitBreaker sets the circuit breaker to tripped and issues a cancel request on the command.
+	// progressTimeoutMinutes is re-validated under lock to prevent TOCTOU race; pass 0 to skip re-validation.
+	TripCircuitBreaker(commandID string, reason string, progressTimeoutMinutes int) error
 }
 
 // PhaseInfo represents phase metadata from command state.

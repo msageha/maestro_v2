@@ -19,6 +19,8 @@ var validFileTypes = map[string]bool{
 	"state_command":       true,
 	"state_metrics":       true,
 	"state_continuous":    true,
+	"state_learnings":    true,
+	"state_worktree":     true,
 }
 
 type SchemaHeader struct {

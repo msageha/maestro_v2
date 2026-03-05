@@ -28,6 +28,7 @@ type ResultWriteParams struct {
 	PartialChangesPossible bool     `json:"partial_changes_possible,omitempty"`
 	RetrySafe              bool     `json:"retry_safe,omitempty"`
 	ExitCode               *int     `json:"exit_code,omitempty"`
+	Learnings              []string `json:"learnings,omitempty"`
 }
 
 func (d *Daemon) handleResultWrite(req *uds.Request) *uds.Response {
@@ -80,6 +81,13 @@ func (d *Daemon) handleResultWrite(req *uds.Request) *uds.Response {
 			params.TaskID, params.CommandID, err)
 		return uds.ErrorResponse(uds.ErrCodeInternal,
 			fmt.Sprintf("state update failed: %v (result %s committed, run 'maestro plan rebuild' to fix)", err, resultID))
+	}
+
+	// Learnings: best-effort write after core phases succeed.
+	if len(params.Learnings) > 0 && d.config.Learnings.Enabled {
+		if err := d.writeLearnings(params, resultID); err != nil {
+			d.log(LogLevelError, "learnings_write_failed result=%s: %v", resultID, err)
+		}
 	}
 
 	// Phase C: Trigger scan (best effort dependency unblocking).
@@ -354,12 +362,119 @@ func (d *Daemon) resultWritePhaseB(params ResultWriteParams, resultID string, re
 	}
 	state.TaskStates[params.TaskID] = resultStatus
 
+	now := d.clock.Now()
+	state.UpdatedAt = now.UTC().Format(time.RFC3339)
+
+	// Circuit breaker: update counter BEFORE AppliedResultIDs so the idempotency
+	// check correctly detects duplicate results against the old map.
+	if d.circuitBreaker != nil {
+		tripped, reason := d.circuitBreaker.UpdateCounterOnResult(&state, resultStatus, resultID, now)
+		if tripped {
+			d.circuitBreaker.TripBreaker(&state, reason, now)
+		}
+	}
+
 	if state.AppliedResultIDs == nil {
 		state.AppliedResultIDs = make(map[string]string)
 	}
 	state.AppliedResultIDs[params.TaskID] = resultID
 
-	state.UpdatedAt = d.clock.Now().UTC().Format(time.RFC3339)
-
 	return yamlutil.AtomicWrite(statePath, state)
+}
+
+// writeLearnings appends learning entries to .maestro/state/learnings.yaml.
+// Best-effort: errors are logged but do not fail the result_write.
+func (d *Daemon) writeLearnings(params ResultWriteParams, resultID string) error {
+	d.lockMap.Lock("state:learnings")
+	defer d.lockMap.Unlock("state:learnings")
+
+	learningsPath := filepath.Join(d.maestroDir, "state", "learnings.yaml")
+	maxEntries := d.config.Learnings.EffectiveMaxEntries()
+	maxLen := d.config.Learnings.EffectiveMaxContentLength()
+
+	// Load existing file
+	var lf model.LearningsFile
+	data, err := os.ReadFile(learningsPath)
+	if err == nil {
+		if err := yamlv3.Unmarshal(data, &lf); err != nil {
+			// Corrupt file — recover via quarantine
+			d.log(LogLevelWarn, "learnings_file_corrupt, recovering: %v", err)
+			if recErr := yamlutil.RecoverCorruptedFile(d.maestroDir, learningsPath, "state_learnings"); recErr != nil {
+				return fmt.Errorf("recover learnings file: %w", recErr)
+			}
+			// Re-read the recovered file (may have been restored from .bak)
+			if recovered, readErr := os.ReadFile(learningsPath); readErr == nil {
+				if parseErr := yamlv3.Unmarshal(recovered, &lf); parseErr != nil {
+					// Recovery produced an unreadable file — start fresh
+					lf = model.LearningsFile{SchemaVersion: 1, FileType: "state_learnings"}
+				}
+			} else {
+				lf = model.LearningsFile{SchemaVersion: 1, FileType: "state_learnings"}
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("read learnings file: %w", err)
+	}
+
+	if lf.SchemaVersion == 0 {
+		lf.SchemaVersion = 1
+		lf.FileType = "state_learnings"
+	}
+
+	// Build dedup set: result_id + content
+	type dedupKey struct {
+		resultID string
+		content  string
+	}
+	existing := make(map[dedupKey]bool, len(lf.Learnings))
+	for _, l := range lf.Learnings {
+		existing[dedupKey{l.ResultID, l.Content}] = true
+	}
+
+	now := d.clock.Now().UTC().Format(time.RFC3339)
+	added := 0
+	for _, content := range params.Learnings {
+		if content == "" {
+			continue
+		}
+		// Truncate content at max length (rune-safe)
+		truncated := truncateRunes(content, maxLen)
+		key := dedupKey{resultID, truncated}
+		if existing[key] {
+			continue
+		}
+		existing[key] = true
+		lf.Learnings = append(lf.Learnings, model.Learning{
+			ResultID:  resultID,
+			CommandID: params.CommandID,
+			Content:   truncated,
+			CreatedAt: now,
+		})
+		added++
+	}
+
+	if added == 0 {
+		return nil
+	}
+
+	// FIFO eviction
+	if len(lf.Learnings) > maxEntries {
+		lf.Learnings = lf.Learnings[len(lf.Learnings)-maxEntries:]
+	}
+
+	if err := yamlutil.AtomicWrite(learningsPath, lf); err != nil {
+		return fmt.Errorf("write learnings file: %w", err)
+	}
+
+	d.log(LogLevelInfo, "learnings_written result=%s added=%d total=%d", resultID, added, len(lf.Learnings))
+	return nil
+}
+
+// truncateRunes truncates a string to at most maxRunes runes.
+func truncateRunes(s string, maxRunes int) string {
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes])
 }

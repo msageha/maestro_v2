@@ -40,6 +40,8 @@ type Dispatcher struct {
 	cachedExec    AgentExecutor
 	cachedExecErr error
 	execOnce      sync.Once
+
+	worktreeManager *WorktreeManager
 }
 
 // ExecutorFactory creates agent executors. Allows testing without tmux.
@@ -108,6 +110,11 @@ func (d *Dispatcher) SetEventBus(bus *events.Bus) {
 // SetQualityGate sets the quality gate daemon for the dispatcher.
 func (d *Dispatcher) SetQualityGate(qg *QualityGateDaemon) {
 	d.qualityGate = qg
+}
+
+// SetWorktreeManager wires the worktree manager for worker path resolution during dispatch.
+func (d *Dispatcher) SetWorktreeManager(wm *WorktreeManager) {
+	d.worktreeManager = wm
 }
 
 // sortableEntry wraps a queue entry with computed effective priority for sorting.
@@ -319,7 +326,40 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 		return fmt.Errorf("create executor: %w", err)
 	}
 
-	envelope := agent.BuildWorkerEnvelope(*task, workerID, task.LeaseEpoch, task.Attempts)
+	// Inject learnings into task content (read-only, best-effort)
+	dispatchTask := *task
+	if d.config.Learnings.Enabled {
+		learnings, err := readTopKLearnings(d.maestroDir, d.config.Learnings, d.clock.Now())
+		if err != nil {
+			d.log(LogLevelWarn, "learnings_read_failed task=%s error=%v", task.ID, err)
+		} else if section := formatLearningsSection(learnings); section != "" {
+			dispatchTask.Content = dispatchTask.Content + section
+			d.log(LogLevelDebug, "learnings_injected task=%s count=%d", task.ID, len(learnings))
+		}
+	}
+
+	// Resolve working_dir for worktree-enabled commands (lazy creation)
+	var workingDir string
+	if d.worktreeManager != nil {
+		wtPath, err := d.worktreeManager.GetWorkerPath(task.CommandID, workerID)
+		if err != nil {
+			// Worktree doesn't exist yet — lazily create for this worker
+			if createErr := d.worktreeManager.EnsureWorkerWorktree(task.CommandID, workerID); createErr != nil {
+				d.log(LogLevelError, "worktree_create_failed task=%s worker=%s error=%v",
+					task.ID, workerID, createErr)
+			} else {
+				wtPath, err = d.worktreeManager.GetWorkerPath(task.CommandID, workerID)
+			}
+		}
+		if err == nil {
+			workingDir = wtPath
+		}
+	}
+
+	envelope := agent.BuildWorkerEnvelope(dispatchTask, workerID, task.LeaseEpoch, task.Attempts)
+	if workingDir != "" {
+		envelope = fmt.Sprintf("%s\nworking_dir: %s", envelope, workingDir)
+	}
 
 	result := exec.Execute(agent.ExecRequest{
 		AgentID:    workerID,
@@ -329,6 +369,7 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 		CommandID:  task.CommandID,
 		LeaseEpoch: task.LeaseEpoch,
 		Attempt:    task.Attempts,
+		WorkingDir: workingDir,
 	})
 
 	if result.Error != nil {

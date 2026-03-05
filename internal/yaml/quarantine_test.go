@@ -113,6 +113,7 @@ func TestGenerateSkeleton(t *testing.T) {
 		{"state_command", "command_id"},
 		{"state_metrics", "queue_depth"},
 		{"state_continuous", "current_iteration"},
+		{"state_learnings", "learnings"},
 	}
 
 	for _, tt := range tests {

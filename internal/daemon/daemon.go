@@ -18,12 +18,14 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
+	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 type LogLevel int
@@ -70,6 +72,8 @@ type Daemon struct {
 	planExecutor      PlanExecutor
 	lockMap           *lock.MutexMap
 	qualityGateDaemon *QualityGateDaemon
+	circuitBreaker    *CircuitBreakerHandler
+	worktreeManager   *WorktreeManager
 
 	eventBus          *events.Bus
 	eventUnsubscribers []func()
@@ -221,6 +225,11 @@ func (d *Daemon) Run() error {
 		}
 	}()
 
+	// Validate learnings file at startup
+	if d.config.Learnings.Enabled {
+		d.validateLearningsFile()
+	}
+
 	// Watch queue/ and results/ directories
 	queueDir := filepath.Join(d.maestroDir, "queue")
 	resultsDir := filepath.Join(d.maestroDir, "results")
@@ -255,6 +264,23 @@ func (d *Daemon) Run() error {
 
 	// Step 3.8: Initialize QualityGateDaemon
 	d.qualityGateDaemon = NewQualityGateDaemon(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
+
+	// Step 3.8.1: Initialize CircuitBreakerHandler
+	d.circuitBreaker = NewCircuitBreakerHandler(d.config, d.logger, d.logLevel)
+	if d.stateReader != nil {
+		d.circuitBreaker.SetStateReader(d.stateReader)
+	}
+	d.handler.SetCircuitBreaker(d.circuitBreaker)
+
+	// Step 3.8.2: Initialize WorktreeManager (opt-in)
+	if d.config.Worktree.Enabled {
+		d.worktreeManager = NewWorktreeManager(d.maestroDir, d.config.Worktree, d.logger, d.logLevel)
+		d.handler.SetWorktreeManager(d.worktreeManager)
+		d.log(LogLevelInfo, "worktree isolation enabled base_branch=%s", d.config.Worktree.EffectiveBaseBranch())
+
+		// H2: Reconcile state/worktree inconsistencies on startup
+		d.worktreeManager.Reconcile()
+	}
 
 	// Step 3.9: Initialize EventBus and wire it to components
 	d.eventBus = events.NewBus(100)
@@ -726,6 +752,31 @@ func (d *Daemon) subscribeQualityGateEvents() {
 
 	// Store unsubscribe functions for cleanup
 	d.eventUnsubscribers = []func(){unsub1, unsub2, unsub3}
+}
+
+// validateLearningsFile checks the learnings file on daemon startup.
+// If the file is corrupt, it uses the quarantine/recovery flow.
+func (d *Daemon) validateLearningsFile() {
+	learningsPath := filepath.Join(d.maestroDir, "state", "learnings.yaml")
+	data, err := os.ReadFile(learningsPath)
+	if os.IsNotExist(err) {
+		return // No file yet — will be created on first write
+	}
+	if err != nil {
+		d.log(LogLevelWarn, "learnings_startup_read error=%v", err)
+		return
+	}
+
+	var lf struct {
+		SchemaVersion int    `yaml:"schema_version"`
+		FileType      string `yaml:"file_type"`
+	}
+	if err := yamlv3.Unmarshal(data, &lf); err != nil || lf.FileType != "state_learnings" {
+		d.log(LogLevelWarn, "learnings_startup_corrupt, recovering")
+		if recErr := yamlutil.RecoverCorruptedFile(d.maestroDir, learningsPath, "state_learnings"); recErr != nil {
+			d.log(LogLevelError, "learnings_startup_recovery_failed: %v", recErr)
+		}
+	}
 }
 
 func (d *Daemon) log(level LogLevel, format string, args ...any) {

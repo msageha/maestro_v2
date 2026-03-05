@@ -269,8 +269,8 @@ func TestResultHandler_WorkerNotification_Failure(t *testing.T) {
 		expiresAt, err := time.Parse(time.RFC3339, *updated.Results[0].NotifyLeaseExpiresAt)
 		if err != nil {
 			t.Errorf("invalid notify_lease_expires_at: %v", err)
-		} else if !expiresAt.After(time.Now().UTC()) {
-			t.Error("backoff lease should expire in the future")
+		} else if expiresAt.Before(time.Now().UTC().Add(-2 * time.Second)) {
+			t.Error("backoff lease should expire in the future (or within 2s tolerance for RFC3339 second-precision truncation)")
 		}
 	}
 }

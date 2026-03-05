@@ -651,3 +651,202 @@ func TestSignal_FillTimeoutCreatesSignal(t *testing.T) {
 			commandID, implPhaseID, sq.Signals)
 	}
 }
+
+// Scenario S10: circuit_breaker_tripped signal (empty PhaseID) is delivered, not orphan-removed.
+func TestSignal_CircuitBreakerTrippedDelivered(t *testing.T) {
+	d := newIntegrationDaemon(t)
+	commandID := "cmd_sig_0010_aabbcc10"
+
+	// Setup: command state with circuit breaker tripped
+	now := time.Now().UTC().Format(time.RFC3339)
+	tripReason := "consecutive_failures=3 reached threshold=3"
+	state := model.CommandState{
+		SchemaVersion:   1,
+		FileType:        "state_command",
+		CommandID:       commandID,
+		PlanStatus:      model.PlanStatusSealed,
+		RequiredTaskIDs: []string{"t1"},
+		TaskStates:      map[string]model.Status{"t1": model.StatusFailed},
+		CircuitBreaker: model.CircuitBreakerState{
+			ConsecutiveFailures: 3,
+			Tripped:             true,
+			TrippedAt:           &now,
+			TripReason:          &tripReason,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml"), state)
+
+	// Setup: command in planner queue (in_progress)
+	plannerOwner := "planner"
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_command",
+		Commands: []model.Command{
+			{
+				ID:         commandID,
+				Content:    "test command",
+				Status:     model.StatusInProgress,
+				LeaseOwner: &plannerOwner,
+				LeaseEpoch: 1,
+				Attempts:   1,
+				CreatedAt:  now,
+				UpdatedAt:  now,
+			},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", "planner.yaml"), cq)
+
+	// Pre-populate circuit_breaker_tripped signal with empty PhaseID
+	sq := model.PlannerSignalQueue{
+		SchemaVersion: 1,
+		FileType:      "planner_signal_queue",
+		Signals: []model.PlannerSignal{
+			{
+				Kind:      "circuit_breaker_tripped",
+				CommandID: commandID,
+				PhaseID:   "", // command-level signal — no phase
+				Message:   fmt.Sprintf("[maestro] kind:circuit_breaker_tripped command_id:%s\nreason: %s", commandID, tripReason),
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", "planner_signals.yaml"), sq)
+
+	// Mock executor: delivery succeeds
+	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
+	})
+
+	// Run scan — signal should be delivered and removed (not orphan-pruned)
+	d.handler.PeriodicScan()
+
+	// Verify signal file removed (successful delivery removes signal)
+	signalPath := filepath.Join(d.maestroDir, "queue", "planner_signals.yaml")
+	if _, err := os.Stat(signalPath); !os.IsNotExist(err) {
+		sq2 := readPlannerSignals(t, d)
+		t.Fatalf("expected circuit_breaker_tripped signal delivered and removed, got %d signals: %+v",
+			len(sq2.Signals), sq2.Signals)
+	}
+}
+
+// Scenario S11: circuit_breaker_tripped signal orphan-removed when command state not found.
+func TestSignal_CircuitBreakerOrphanRemovedOnMissingCommand(t *testing.T) {
+	d := newIntegrationDaemon(t)
+	commandID := "cmd_sig_0011_nonexistent"
+
+	// No command state file exists for this command
+
+	// Setup: empty planner queue
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_command",
+	}
+	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", "planner.yaml"), cq)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	sq := model.PlannerSignalQueue{
+		SchemaVersion: 1,
+		FileType:      "planner_signal_queue",
+		Signals: []model.PlannerSignal{
+			{
+				Kind:      "circuit_breaker_tripped",
+				CommandID: commandID,
+				PhaseID:   "", // command-level
+				Message:   "orphaned circuit breaker signal",
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", "planner_signals.yaml"), sq)
+
+	// Run scan — orphaned command-level signal should be removed
+	d.handler.PeriodicScan()
+
+	// Verify signal file removed
+	signalPath := filepath.Join(d.maestroDir, "queue", "planner_signals.yaml")
+	if _, err := os.Stat(signalPath); !os.IsNotExist(err) {
+		sq2 := readPlannerSignals(t, d)
+		t.Fatalf("expected orphaned circuit_breaker signal removed, got %d signals", len(sq2.Signals))
+	}
+}
+
+// Scenario S12: Phase-level orphan detection still works (regression check).
+func TestSignal_PhaseOrphanStillRemoved(t *testing.T) {
+	d := newIntegrationDaemon(t)
+	commandID := "cmd_sig_0012_aabbcc12"
+
+	// Setup: command state exists but WITHOUT the referenced phase
+	now := time.Now().UTC().Format(time.RFC3339)
+	state := model.CommandState{
+		SchemaVersion:   1,
+		FileType:        "state_command",
+		CommandID:       commandID,
+		PlanStatus:      model.PlanStatusSealed,
+		RequiredTaskIDs: []string{"t1"},
+		TaskStates:      map[string]model.Status{"t1": model.StatusCompleted},
+		Phases: []model.Phase{
+			{
+				PhaseID: "phase-real",
+				Name:    "real-phase",
+				Type:    "concrete",
+				Status:  model.PhaseStatusCompleted,
+				TaskIDs: []string{"t1"},
+			},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml"), state)
+
+	// Setup: command in planner queue
+	plannerOwner := "planner"
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_command",
+		Commands: []model.Command{
+			{
+				ID:         commandID,
+				Content:    "test command",
+				Status:     model.StatusInProgress,
+				LeaseOwner: &plannerOwner,
+				LeaseEpoch: 1,
+				Attempts:   1,
+				CreatedAt:  now,
+				UpdatedAt:  now,
+			},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", "planner.yaml"), cq)
+
+	// Pre-populate signal referencing a non-existent phase
+	sq := model.PlannerSignalQueue{
+		SchemaVersion: 1,
+		FileType:      "planner_signal_queue",
+		Signals: []model.PlannerSignal{
+			{
+				Kind:      "awaiting_fill",
+				CommandID: commandID,
+				PhaseID:   "phase-nonexistent",
+				PhaseName: "ghost",
+				Message:   "orphaned phase signal",
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", "planner_signals.yaml"), sq)
+
+	// Run scan — phase-level orphan should still be removed
+	d.handler.PeriodicScan()
+
+	// Verify signal file removed
+	signalPath := filepath.Join(d.maestroDir, "queue", "planner_signals.yaml")
+	if _, err := os.Stat(signalPath); !os.IsNotExist(err) {
+		sq2 := readPlannerSignals(t, d)
+		t.Fatalf("expected phase-orphaned signal removed, got %d signals", len(sq2.Signals))
+	}
+}

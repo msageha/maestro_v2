@@ -74,6 +74,7 @@ type ExecRequest struct {
 	CommandID  string
 	LeaseEpoch int
 	Attempt    int
+	WorkingDir string // Target working directory (worktree mode). Empty = no change.
 }
 
 // ExecResult contains the outcome of an execution attempt.
@@ -315,6 +316,15 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 	// Orchestrator: never /clear, fall through to deliver mode
 	if req.AgentID == "orchestrator" {
 		return e.execDeliver(ctx, req, paneTarget)
+	}
+
+	// Handle working directory change (worktree mode).
+	// This may restart Claude in a different directory, resetting clear_ready.
+	if req.WorkingDir != "" {
+		if err := e.ensureWorkingDir(ctx, paneTarget, req.WorkingDir); err != nil {
+			e.log(LogLevelError, "working_dir_change_failed agent_id=%s error=%v", req.AgentID, err)
+			return ExecResult{Error: fmt.Errorf("ensure working dir: %w", err), Retryable: true}
+		}
 	}
 
 	// Check if pane process has been restarted (PID changed)
@@ -927,6 +937,202 @@ func lastNonBlankLine(content string) string {
 		return trimmed
 	}
 	return "<empty>"
+}
+
+// --- Working Directory Management ---
+
+// ensureWorkingDir ensures the agent's Claude Code process is running in the
+// specified working directory. If the current CWD (tracked via @cwd tmux user
+// variable) differs from workingDir, the method exits the current Claude
+// process, changes the shell CWD, and re-launches Claude.
+//
+// This is called transparently by the executor before task delivery, so that
+// Workers run in their worktree directory without being aware of worktrees.
+func (e *Executor) ensureWorkingDir(ctx context.Context, paneTarget, workingDir string) error {
+	if workingDir == "" {
+		return nil
+	}
+
+	// Validate path: reject control characters to prevent injection via SendCommand
+	if containsControlChars(workingDir) {
+		return fmt.Errorf("ensureWorkingDir: working dir contains control characters: %q", workingDir)
+	}
+
+	// Check current CWD from tmux user variable
+	currentCWD, _ := tmux.GetUserVar(paneTarget, "cwd")
+	if currentCWD == workingDir {
+		e.log(LogLevelDebug, "working_dir unchanged cwd=%s", workingDir)
+		return nil
+	}
+
+	e.log(LogLevelInfo, "working_dir_change old=%q new=%q", currentCWD, workingDir)
+
+	// Step 1: Exit current Claude process (only if not already at shell)
+	cmd, err := tmux.GetPaneCurrentCommand(paneTarget)
+	if err != nil {
+		e.log(LogLevelWarn, "working_dir get_pane_cmd error=%v, attempting exit sequence", err)
+	}
+
+	if err != nil || !tmux.IsShellCommand(cmd) {
+		// Pane is running Claude (or unknown) — exit it
+		if err := tmux.SendCtrlC(paneTarget); err != nil {
+			return fmt.Errorf("ensureWorkingDir: send Ctrl+C: %w", err)
+		}
+		if err := sleepCtx(ctx, 1*time.Second); err != nil {
+			return fmt.Errorf("ensureWorkingDir: cancelled after Ctrl+C: %w", err)
+		}
+
+		// Send Ctrl+D to exit Claude (EOF on stdin).
+		// Guarded by the IsShellCommand check above — only sent when Claude is running.
+		if err := tmux.SendKeys(paneTarget, "C-d"); err != nil {
+			return fmt.Errorf("ensureWorkingDir: send Ctrl+D: %w", err)
+		}
+		if err := sleepCtx(ctx, 2*time.Second); err != nil {
+			return fmt.Errorf("ensureWorkingDir: cancelled after Ctrl+D: %w", err)
+		}
+
+		// Wait for shell prompt (Claude has exited)
+		if err := e.waitForShell(ctx, paneTarget); err != nil {
+			// Fallback: try sending another Ctrl+C + Ctrl+D in case the first attempt
+			// was absorbed by a confirmation prompt
+			e.log(LogLevelWarn, "working_dir shell_wait_failed, retrying exit sequence: %v", err)
+			_ = tmux.SendCtrlC(paneTarget)
+			_ = sleepCtx(ctx, 500*time.Millisecond)
+			_ = tmux.SendKeys(paneTarget, "C-d")
+			_ = sleepCtx(ctx, 2*time.Second)
+
+			if err := e.waitForShell(ctx, paneTarget); err != nil {
+				return fmt.Errorf("ensureWorkingDir: wait for shell: %w", err)
+			}
+		}
+	}
+
+	// Step 2: cd to new working directory
+	cdCmd := fmt.Sprintf("cd %s", shellQuote(workingDir))
+	if err := tmux.SendCommand(paneTarget, cdCmd); err != nil {
+		return fmt.Errorf("ensureWorkingDir: cd: %w", err)
+	}
+	if err := sleepCtx(ctx, 500*time.Millisecond); err != nil {
+		return fmt.Errorf("ensureWorkingDir: cancelled after cd: %w", err)
+	}
+
+	// Step 3: Re-launch Claude
+	if err := tmux.SendCommand(paneTarget, "maestro agent launch"); err != nil {
+		return fmt.Errorf("ensureWorkingDir: re-launch: %w", err)
+	}
+
+	// Step 4: Wait for Claude prompt readiness (fail-closed: error on timeout)
+	// Use a generous timeout since Claude startup can take a few seconds.
+	launchCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	if err := e.waitReadyStrict(launchCtx, paneTarget); err != nil {
+		return fmt.Errorf("ensureWorkingDir: wait for Claude ready: %w", err)
+	}
+
+	// Step 5: Update CWD tracking and reset clear_ready state
+	if err := tmux.SetUserVar(paneTarget, "cwd", workingDir); err != nil {
+		e.log(LogLevelWarn, "set_cwd_failed cwd=%s error=%v", workingDir, err)
+	}
+	// Reset clear_ready since we started a fresh Claude session
+	_ = tmux.SetUserVar(paneTarget, "clear_ready", "")
+	_ = tmux.SetUserVar(paneTarget, "clear_ready_pid", "")
+
+	e.log(LogLevelInfo, "working_dir_changed cwd=%s", workingDir)
+	return nil
+}
+
+// waitForShell polls a tmux pane until its current command is a known shell,
+// indicating the pane has returned to the shell prompt (e.g., after Claude exits).
+func (e *Executor) waitForShell(ctx context.Context, paneTarget string) error {
+	const maxAttempts = 30        // 30 × 500ms = 15s max
+	const pollInterval = 500      // milliseconds
+	const maxConsecutiveErrors = 5
+
+	consecutiveErrors := 0
+	for i := 0; i < maxAttempts; i++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("waitForShell cancelled: %w", err)
+		}
+
+		cmd, err := tmux.GetPaneCurrentCommand(paneTarget)
+		if err != nil {
+			consecutiveErrors++
+			if consecutiveErrors >= maxConsecutiveErrors {
+				return fmt.Errorf("waitForShell: %d consecutive errors, last: %w", consecutiveErrors, err)
+			}
+		} else {
+			consecutiveErrors = 0
+			if tmux.IsShellCommand(cmd) {
+				e.log(LogLevelDebug, "waitForShell detected shell command=%s", cmd)
+				return nil
+			}
+		}
+
+		if err := sleepCtx(ctx, time.Duration(pollInterval)*time.Millisecond); err != nil {
+			return fmt.Errorf("waitForShell sleep cancelled: %w", err)
+		}
+	}
+
+	return fmt.Errorf("waitForShell: shell not detected after %d attempts", maxAttempts)
+}
+
+// waitReadyStrict is like waitReady but fail-closed: returns an error if the
+// prompt is not detected after all retries (instead of soft-proceeding).
+// Used after re-launching Claude where we must confirm the process started.
+func (e *Executor) waitReadyStrict(ctx context.Context, paneTarget string) error {
+	maxRetries := e.config.WaitReadyMaxRetries
+	interval := time.Duration(e.config.WaitReadyIntervalSec) * time.Second
+
+	for i := 0; i <= maxRetries; i++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("waitReadyStrict cancelled at attempt %d: %w", i, err)
+		}
+
+		content, err := tmux.CapturePane(paneTarget, promptReadyLines)
+		if err != nil {
+			e.log(LogLevelDebug, "waitReadyStrict capture error=%v attempt=%d", err, i)
+			if i < maxRetries {
+				if err := sleepCtx(ctx, interval); err != nil {
+					return fmt.Errorf("waitReadyStrict sleep cancelled: %w", err)
+				}
+				continue
+			}
+			return fmt.Errorf("waitReadyStrict: capture pane failed after %d attempts: %w", i+1, err)
+		}
+
+		if isPromptReady(content) {
+			e.log(LogLevelDebug, "waitReadyStrict prompt detected attempt=%d", i)
+			return nil
+		}
+
+		if i < maxRetries {
+			if err := sleepCtx(ctx, interval); err != nil {
+				return fmt.Errorf("waitReadyStrict sleep cancelled: %w", err)
+			}
+		}
+	}
+
+	return fmt.Errorf("waitReadyStrict: Claude prompt not detected after %d attempts", maxRetries+1)
+}
+
+// containsControlChars returns true if s contains any ASCII control characters
+// (0x00-0x1F, 0x7F) except tab. This prevents injection via tmux SendCommand.
+func containsControlChars(s string) bool {
+	for _, r := range s {
+		if r < 0x20 && r != '\t' {
+			return true
+		}
+		if r == 0x7F {
+			return true
+		}
+	}
+	return false
+}
+
+// shellQuote wraps a path in single quotes for safe shell expansion.
+// Single quotes inside the path are escaped.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
 }
 
 // --- Envelope Builders ---

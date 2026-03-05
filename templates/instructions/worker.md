@@ -38,6 +38,7 @@
 | `acceptance_criteria` | 完了条件 |
 | `constraints` | 制約条件（任意） |
 | `tools_hint` | 推奨ツール（任意） |
+| `working_dir` | 作業ディレクトリ（システムが自動設定済み。変更不要） |
 
 ---
 
@@ -63,6 +64,7 @@ maestro result write <agent_id> \
   --status completed|failed \
   --summary "<要約>" \
   [--files-changed <file1,file2,...>] \
+  [--learnings "<知見1>" --learnings "<知見2>" ...] \
   [--partial-changes] \
   [--no-retry-safe]
 ```
@@ -74,8 +76,141 @@ maestro result write <agent_id> \
 | フラグ | 用途 |
 |---|---|
 | `--files-changed` | 変更したファイルのカンマ区切りリスト |
+| `--learnings` | 他タスクに有用な知見（複数指定可、推奨・任意） |
 | `--partial-changes` | 部分的な変更がリポジトリに残っている場合に指定 |
 | `--no-retry-safe` | リトライが安全でない場合に指定（デフォルトはリトライ可能） |
+
+---
+
+## Summary ガイドライン
+
+`--summary` には以下の構造で記載することを推奨する（義務ではなくガイドライン）。後続タスクへの情報伝達を改善するため、各タグ 1 行を基本とし、必要な場合のみ 2-3 行まで許容する。
+
+**タグは以下の完全一致で記載する（表記ゆれ不可）:**
+
+| タグ | 内容 |
+|------|------|
+| `[変更理由]` | 何をなぜ変更したか（後続タスクが文脈を理解するため） |
+| `[注意事項]` | 後続タスクが知るべき点（API 変更、型変更、互換性影響等） |
+| `[未完了]` | 完了できなかった項目（該当なしの場合は `なし` と記載） |
+
+**例 — 通常ケース:**
+
+```
+[変更理由] UserService に GetByEmail メソッドを追加。認証フローで email ルックアップが必要なため。
+[注意事項] User 型に Email フィールドを追加済み。既存の CreateUser 呼び出し元は影響なし。
+[未完了] なし
+```
+
+**例 — 未完了ありケース:**
+
+```
+[変更理由] 認証ミドルウェアの JWT 検証ロジックを実装。
+[注意事項] トークン有効期限は config.yaml の auth.token_ttl から読み取る。デフォルト値は未設定のため後続タスクで設定が必要。
+[未完了] リフレッシュトークンのローテーション処理は未実装（スコープ外として報告）。
+```
+
+自由記述の summary も引き続き有効である。本ガイドラインに従うことで、後続タスクの Worker が文脈を素早く把握でき、作業効率が向上する。
+
+---
+
+## Learning 知見の共有（推奨）
+
+タスク実行中に他のタスクでも再利用できる知見を発見した場合、`--learnings` フラグで報告できる。**これは推奨であり義務ではない。知見がなければ `--learnings` は指定しない（0 件で正常）。**
+
+### `--summary` との使い分け
+
+- **`--summary`**: このタスクの結果説明（何を変更したか、注意事項等）
+- **`--learnings`**: 別タスクでも再利用できる発見
+
+判断基準: 別のタスクを実行する Worker が知っていると助かる情報なら `--learnings`、このタスクの完了報告なら `--summary`。
+
+### 報告すべき知見の例
+
+- ハマりポイント: 「`go test ./internal/...` には `-count=1` が必要（キャッシュ無効化）」
+- API/ライブラリの癖: 「`UserService.Create` は第 2 引数に context を取る（通常と逆順）」
+- プロジェクト固有の制約: 「認証 API は必ず X-Request-ID ヘッダーが必要」
+- ビルド/環境情報: 「`CGO_ENABLED=0` でないとリンクエラーになる」
+
+### 報告すべきでないもの
+
+- タスク固有の一時的情報（「ファイル X の行 Y を変更した」→ これは `--summary`）
+- `--summary` と重複する内容
+- 推測や未検証の情報
+
+### CLI 使用例
+
+```
+maestro result write worker1 \
+  --task-id <task_id> \
+  --command-id <command_id> \
+  --lease-epoch <epoch> \
+  --status completed \
+  --summary "[変更理由] ... [注意事項] ... [未完了] なし" \
+  --learnings "go test ./internal/foo には -race フラグが必要" \
+  --learnings "config.yaml の db.pool_size はデフォルト 5 で本番では不足する"
+```
+
+### 注入された学習知見について
+
+タスクの `content` 末尾に「参考: 過去の学習知見」セクションが付与されることがある。これは過去の Worker が `--learnings` で報告した知見である。**参考情報として活用するが、現在のタスクの `content` と `acceptance_criteria` を常に優先する。** 注入は best-effort であり、存在しない場合もある。
+
+---
+
+## 基本検証ガイドライン
+
+タスクの `content` または `constraints` に検証コマンドが指定されている場合、以下のガイドラインに従うことを推奨する（義務ではなく Worker の判断で省略可能）。
+
+### 通常タスク
+
+- タスク完了前に、指定された基本検証コマンド（例: `go vet ./...`）の実行を検討する
+- 検証に失敗した場合は、修正を試みるか、失敗として報告する
+- 検証コマンドが未指定の場合は、この手順をスキップする
+
+### verification フェーズのタスク
+
+- タスクの `content` に完全検証コマンド（例: `go test ./...`）が指定されている場合、そちらを使用する
+- タイムアウトやリトライ回数が `constraints` に指定されている場合はそれに従う
+
+### 注意事項
+
+- 検証は品質向上のためのガイドラインであり、すべてのタスクで必須ではない
+- 検証コマンドの内容は Planner がタスク配信時に `content` / `constraints` に含める
+- Worker が config を直接参照する必要はない
+
+---
+
+## Worktree 環境
+
+`config.yaml` の `worktree.enabled: true` の場合のみ適用。`false` の場合は本セクションを無視する。
+
+Worktree モード有効時、各 Worker は隔離された git worktree 内で作業する。作業ディレクトリはシステムが自動設定済みであり、Worker が意識すべき追加手順はない。通常のタスクと同じように `working_dir` 内でファイルを編集するだけでよい。
+
+### 動作の変更点
+
+- タスク配信の `working_dir` が worktree パスに設定される（システムが自動処理）
+- `__system_commit` タスクは配信されない（Daemon が直接コミットする）
+- ファイル編集は通常通り `working_dir` 内で行う
+
+### 禁止される git 操作
+
+Worker は変更を伴う git コマンドを実行してはならない。読み取り専用のコマンドのみ許可される。
+
+| 禁止（変更を伴う操作） | 許可（読み取り専用・任意） |
+|------------------------|--------------------------|
+| `git commit`, `git add`, `git reset` | `git status` |
+| `git checkout`, `git switch`, `git merge` | `git diff` |
+| `git rebase`, `git cherry-pick`, `git revert` | `git log` |
+| `git stash`, `git restore`, `git fetch`, `git pull` | |
+| `git worktree`, `git push`, `git tag` | |
+
+読み取り専用コマンドの使用は任意であり、義務ではない。
+
+### パス制約
+
+- `working_dir` 内のファイルのみ変更可能（`working_dir` が `.maestro/worktrees/` 配下を指す場合でも、そのディレクトリ内での作業は許可される）
+- `..` やシンボリックリンクで `working_dir` 外に脱出してはならない
+- `.maestro/worktrees/` 以下の管理ファイル（`.git`, ブランチ設定等）の直接操作は禁止。ソースコードの読み書きのみ許可
 
 ---
 
@@ -133,6 +268,10 @@ maestro result write <agent_id> \
 5. **`git push` は絶対に実行しない**
 
 変更がない場合は「コミット対象の変更なし」として `--status completed` で報告する。
+
+### Worktree モード時
+
+`worktree.enabled: true` の場合、`__system_commit` タスクは配信されない（Daemon がコミットを管理する）。万が一受信した場合は「worktree モードでは Daemon がコミットを管理するため不要」として `--status completed` で報告する。
 
 ---
 

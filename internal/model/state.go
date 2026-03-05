@@ -8,6 +8,7 @@ type CommandState struct {
 	PlanStatus         PlanStatus          `yaml:"plan_status"`
 	CompletionPolicy   CompletionPolicy    `yaml:"completion_policy"`
 	Cancel             CancelState         `yaml:"cancel"`
+	CircuitBreaker     CircuitBreakerState `yaml:"circuit_breaker"`
 	ExpectedTaskCount  int                 `yaml:"expected_task_count"`
 	RequiredTaskIDs    []string            `yaml:"required_task_ids"`
 	OptionalTaskIDs    []string            `yaml:"optional_task_ids"`
@@ -21,6 +22,15 @@ type CommandState struct {
 	LastReconciledAt   *string             `yaml:"last_reconciled_at"`
 	CreatedAt          string              `yaml:"created_at"`
 	UpdatedAt          string              `yaml:"updated_at"`
+}
+
+// CircuitBreakerState tracks per-command circuit breaker counters.
+type CircuitBreakerState struct {
+	ConsecutiveFailures int     `yaml:"consecutive_failures"`
+	LastProgressAt      *string `yaml:"last_progress_at,omitempty"`
+	Tripped             bool    `yaml:"tripped"`
+	TrippedAt           *string `yaml:"tripped_at,omitempty"`
+	TripReason          *string `yaml:"trip_reason,omitempty"`
 }
 
 type CompletionPolicy struct {

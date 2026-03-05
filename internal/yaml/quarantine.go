@@ -165,6 +165,12 @@ func generateSkeletonForType(fileType string) any {
 			"last_command_id":   nil,
 			"updated_at":        nil,
 		}
+	case "state_learnings":
+		return map[string]any{
+			"schema_version": CurrentSchemaVersion,
+			"file_type":      "state_learnings",
+			"learnings":      []any{},
+		}
 	default:
 		return map[string]any{
 			"schema_version": CurrentSchemaVersion,

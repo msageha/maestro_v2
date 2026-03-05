@@ -28,7 +28,8 @@ func (qh *QueueHandler) processPlannerSignalsDeferred(sq *model.PlannerSignalQue
 			}
 		}
 
-		if qh.dependencyResolver.stateReader != nil {
+		if qh.dependencyResolver.stateReader != nil && sig.PhaseID != "" {
+			// Phase-level signals: check phase existence (orphan) and staleness
 			phaseStatus, err := qh.dependencyResolver.GetPhaseStatus(sig.CommandID, sig.PhaseID)
 			if err != nil {
 				errMsg := err.Error()
@@ -55,6 +56,22 @@ func (qh *QueueHandler) processPlannerSignalsDeferred(sq *model.PlannerSignalQue
 				qh.log(LogLevelInfo, "signal_stale_removed kind=%s command=%s phase=%s current_status=%s",
 					sig.Kind, sig.CommandID, sig.PhaseID, phaseStatus)
 				*dirty = true
+				continue
+			}
+		} else if qh.dependencyResolver.stateReader != nil && sig.PhaseID == "" {
+			// Command-level signals (e.g. circuit_breaker_tripped): check command existence only
+			_, err := qh.dependencyResolver.stateReader.GetCommandPhases(sig.CommandID)
+			if err != nil {
+				errMsg := err.Error()
+				if strings.Contains(errMsg, "not found") || strings.Contains(errMsg, "not exist") || os.IsNotExist(err) {
+					qh.log(LogLevelInfo, "signal_orphaned_removed kind=%s command=%s (command not found)",
+						sig.Kind, sig.CommandID)
+					*dirty = true
+					continue
+				}
+				qh.log(LogLevelWarn, "signal_command_check command=%s error=%v",
+					sig.CommandID, err)
+				retained = append(retained, *sig)
 				continue
 			}
 		}

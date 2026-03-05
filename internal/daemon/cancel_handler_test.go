@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -206,6 +208,12 @@ func (s *stubStateReader) UpdateTaskState(commandID, taskID string, newStatus mo
 }
 func (s *stubStateReader) IsCommandCancelRequested(commandID string) (bool, error) {
 	return s.cancelRequested, s.cancelRequestedErr
+}
+func (s *stubStateReader) GetCircuitBreakerState(commandID string) (*model.CircuitBreakerState, error) {
+	return &model.CircuitBreakerState{}, nil
+}
+func (s *stubStateReader) TripCircuitBreaker(commandID string, reason string, progressTimeoutMinutes int) error {
+	return nil
 }
 
 func TestCancelHandler_WriteSyntheticResults_NewFile(t *testing.T) {
@@ -424,5 +432,123 @@ func TestCancelHandler_IsCommandCancelRequested_ViaStateReader(t *testing.T) {
 	cmd.CancelRequestedAt = nil
 	if ch.IsCommandCancelRequested(cmd) {
 		t.Error("expected not cancelled: stateReader returned ErrStateNotFound and no queue metadata")
+	}
+}
+
+func TestCancelHandler_InterruptInProgressTasks_WorktreeCleanup(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	// Create worktrees
+	if err := wm.CreateForCommand("cmd_cancel_wt", []string{"worker1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make worker1 worktree dirty
+	wtPath, _ := wm.GetWorkerPath("cmd_cancel_wt", "worker1")
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("dirty\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ch, _ := newTestCancelHandler()
+	ch.SetWorktreeManager(wm)
+
+	w := "worker1"
+	tasks := []model.Task{
+		{ID: "t1", CommandID: "cmd_cancel_wt", Status: model.StatusInProgress, LeaseOwner: &w, LeaseEpoch: 1,
+			CreatedAt: time.Now().Format(time.RFC3339)},
+	}
+
+	results := ch.InterruptInProgressTasks(tasks, "cmd_cancel_wt")
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	// Verify worktree is clean after cancel (DiscardWorkerChanges was called)
+	cmd := exec.Command("git", "status", "--porcelain")
+	cmd.Dir = wtPath
+	out, _ := cmd.Output()
+	if strings.TrimSpace(string(out)) != "" {
+		t.Errorf("worktree should be clean after cancel, got: %s", out)
+	}
+}
+
+func TestCancelHandler_InterruptInProgressTasksDeferred_WorktreeCleanup(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	if err := wm.CreateForCommand("cmd_cancel_def", []string{"worker1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make dirty
+	wtPath, _ := wm.GetWorkerPath("cmd_cancel_def", "worker1")
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("dirty\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	ch, _, _ := newTestCancelHandlerWithDir(t)
+	ch.SetWorktreeManager(wm)
+
+	w := "worker1"
+	tasks := []model.Task{
+		{ID: "t1", CommandID: "cmd_cancel_def", Status: model.StatusInProgress, LeaseOwner: &w, LeaseEpoch: 1,
+			CreatedAt: time.Now().Format(time.RFC3339)},
+	}
+
+	results, _ := ch.InterruptInProgressTasksDeferred(tasks, "cmd_cancel_def", "worker1")
+	if len(results) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(results))
+	}
+
+	// Verify worktree is clean
+	cmd := exec.Command("git", "status", "--porcelain")
+	cmd.Dir = wtPath
+	out, _ := cmd.Output()
+	if strings.TrimSpace(string(out)) != "" {
+		t.Errorf("worktree should be clean after deferred cancel, got: %s", out)
+	}
+}
+
+func TestCancelHandler_CleanupCommandWorktrees(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	if err := wm.CreateForCommand("cmd_cancel_cleanup", []string{"worker1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if !wm.HasWorktrees("cmd_cancel_cleanup") {
+		t.Fatal("worktrees should exist before cleanup")
+	}
+
+	ch, _ := newTestCancelHandler()
+	ch.SetWorktreeManager(wm)
+
+	ch.CleanupCommandWorktrees("cmd_cancel_cleanup")
+
+	if wm.HasWorktrees("cmd_cancel_cleanup") {
+		t.Error("worktrees should be cleaned up after CleanupCommandWorktrees")
+	}
+}
+
+func TestCancelHandler_CleanupCommandWorktrees_NilManager(t *testing.T) {
+	ch, _ := newTestCancelHandler()
+	// worktreeManager is nil — should not panic
+	ch.CleanupCommandWorktrees("any_command")
+}
+
+func TestCancelHandler_SetWorktreeManager(t *testing.T) {
+	ch, _ := newTestCancelHandler()
+	if ch.worktreeManager != nil {
+		t.Error("worktreeManager should be nil initially")
+	}
+
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	ch.SetWorktreeManager(wm)
+
+	if ch.worktreeManager != wm {
+		t.Error("worktreeManager should be set after SetWorktreeManager")
 	}
 }

@@ -56,6 +56,14 @@ func (m *mockStateReader) IsCommandCancelRequested(commandID string) (bool, erro
 	return false, nil
 }
 
+func (m *mockStateReader) GetCircuitBreakerState(commandID string) (*model.CircuitBreakerState, error) {
+	return &model.CircuitBreakerState{}, nil
+}
+
+func (m *mockStateReader) TripCircuitBreaker(commandID string, reason string, progressTimeoutMinutes int) error {
+	return nil
+}
+
 func (m *mockStateReader) IsSystemCommitReady(commandID, taskID string) (bool, bool, error) {
 	if m.systemCommitReady == nil {
 		return false, false, nil
@@ -540,6 +548,14 @@ func (m *mockStateReaderErrNotFound) UpdateTaskState(commandID, taskID string, n
 
 func (m *mockStateReaderErrNotFound) IsCommandCancelRequested(commandID string) (bool, error) {
 	return false, ErrStateNotFound
+}
+
+func (m *mockStateReaderErrNotFound) GetCircuitBreakerState(commandID string) (*model.CircuitBreakerState, error) {
+	return nil, ErrStateNotFound
+}
+
+func (m *mockStateReaderErrNotFound) TripCircuitBreaker(commandID string, reason string, progressTimeoutMinutes int) error {
+	return ErrStateNotFound
 }
 
 func (m *mockStateReaderErrNotFound) IsSystemCommitReady(commandID, taskID string) (bool, bool, error) {

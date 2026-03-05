@@ -64,6 +64,39 @@ daemon:
 logging:
   level: "info"
 
+circuit_breaker:
+  enabled: false                   # サーキットブレーカーの有効化フラグ (opt-in)
+  max_consecutive_failures: 3      # 連続失敗でトリップするしきい値
+  progress_timeout_minutes: 30     # 最後の成功からのタイムアウト (分、0で無効)
+
+learnings:
+  enabled: false                    # 学習知見の蓄積 (opt-in)
+  max_entries: 100                  # 蓄積上限件数
+  max_content_length: 500           # 1件あたりの最大文字数
+  inject_count: 5                   # タスク配信時に注入する最新 K 件
+  ttl_hours: 72                     # 学習知見の有効期限 (時間、0で無制限)
+
+verification:
+  enabled: false                    # 検証コマンド実行の有効化フラグ (opt-in)
+  basic_command: ""                 # 基本検証コマンド (例: "go vet ./...")
+  full_command: ""                  # 完全検証コマンド (例: "go test ./...")
+  timeout_seconds: 300              # 検証コマンドのタイムアウト (秒)
+  max_retries: 1                    # フレークテスト対策リトライ回数 (0=リトライなし)
+
+worktree:
+  enabled: false                    # Worker worktree 隔離の有効化フラグ (opt-in)
+  base_branch: "main"              # worktree のベースブランチ
+  path_prefix: ".maestro/worktrees" # worktree 作成先ディレクトリ
+  auto_commit: true                # Phase 完了時の自動コミット
+  auto_merge: true                 # Phase 境界での自動マージ
+  merge_strategy: "ort"            # git merge 戦略
+  cleanup_on_success: true         # コマンド成功時の自動クリーンアップ
+  cleanup_on_failure: false        # コマンド失敗時のクリーンアップ (デフォルト: 保全)
+  gc:
+    enabled: true                  # 定期 GC の有効化
+    ttl_hours: 24                  # 古い worktree の TTL (時間)
+    max_worktrees: 32              # 最大 worktree 数
+
 quality_gates:
   enabled: false                    # 品質ゲートの有効化フラグ
   skip_gates: false                 # 緊急モード (--skip-gates フラグで有効化)
