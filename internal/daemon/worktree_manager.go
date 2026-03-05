@@ -362,6 +362,28 @@ func (wm *WorktreeManager) MergeToIntegration(commandID string, workerIDs []stri
 	}
 
 	integrationPath := wm.integrationWorktreePath(commandID)
+
+	// Guard: ensure integration worktree is clean before merging.
+	// A dirty worktree (e.g., from incomplete merge abort) would cause unpredictable merge results.
+	// Persist IntegrationStatusFailed to prevent stale "merged" status from triggering publish.
+	dirtyOut, dirtyErr := wm.gitOutputInDir(integrationPath, "status", "--porcelain")
+	if dirtyErr != nil {
+		now := wm.clock.Now().UTC().Format(time.RFC3339)
+		state.Integration.Status = model.IntegrationStatusFailed
+		state.Integration.UpdatedAt = now
+		state.UpdatedAt = now
+		_ = wm.saveState(commandID, state)
+		return nil, fmt.Errorf("check integration worktree status: %w", dirtyErr)
+	}
+	if strings.TrimSpace(dirtyOut) != "" {
+		now := wm.clock.Now().UTC().Format(time.RFC3339)
+		state.Integration.Status = model.IntegrationStatusFailed
+		state.Integration.UpdatedAt = now
+		state.UpdatedAt = now
+		_ = wm.saveState(commandID, state)
+		return nil, fmt.Errorf("integration worktree has uncommitted changes; aborting merge to prevent corruption")
+	}
+
 	now := wm.clock.Now().UTC().Format(time.RFC3339)
 	state.Integration.Status = model.IntegrationStatusMerging
 	state.Integration.UpdatedAt = now
@@ -398,22 +420,56 @@ func (wm *WorktreeManager) MergeToIntegration(commandID string, workerIDs []stri
 
 		err = wm.gitRunInDir(integrationPath, "merge", "--no-ff", "-s", strategy, "-m", mergeMsg, ws.Branch)
 		if err != nil {
-			// Merge conflict detected
-			conflictFiles, _ := wm.getConflictFilesInDir(integrationPath)
-			conflicts = append(conflicts, model.MergeConflict{
-				WorkerID:      workerID,
-				ConflictFiles: conflictFiles,
-				Message:       fmt.Sprintf("merge conflict: %s → integration", workerID),
-			})
+			// Classify error: check for unmerged index entries to distinguish
+			// true merge conflicts from fatal git errors (bad ref, corrupt repo, etc.)
+			hasConflict, probeErr := wm.hasUnmergedFiles(integrationPath)
+			if probeErr != nil {
+				// Probe failed — can't classify reliably. Treat as non-conflict (fail-safe).
+				wm.log(LogLevelWarn, "merge_probe_failed command=%s worker=%s probe_error=%v merge_error=%v",
+					commandID, workerID, probeErr, err)
+			}
 
-			// Abort the failed merge
-			_ = wm.gitRunInDir(integrationPath, "merge", "--abort")
+			if hasConflict {
+				// True merge conflict: unmerged entries exist
+				conflictFiles, _ := wm.getConflictFilesInDir(integrationPath)
+				conflicts = append(conflicts, model.MergeConflict{
+					WorkerID:      workerID,
+					ConflictFiles: conflictFiles,
+					Message:       fmt.Sprintf("merge conflict: %s → integration", workerID),
+				})
 
-			ws.Status = model.WorktreeStatusConflict
+				if abortErr := wm.gitRunInDir(integrationPath, "merge", "--abort"); abortErr != nil {
+					wm.log(LogLevelWarn, "merge_abort_failed command=%s worker=%s error=%v",
+						commandID, workerID, abortErr)
+				}
+
+				ws.Status = model.WorktreeStatusConflict
+				ws.UpdatedAt = now
+				wm.log(LogLevelWarn, "merge_conflict command=%s worker=%s files=%v",
+					commandID, workerID, conflictFiles)
+				continue
+			}
+
+			// Non-conflict error (or probe failure): fatal git error, bad ref, infrastructure issue.
+			// Halt the merge loop — this likely indicates a repo-level problem.
+			if abortErr := wm.gitRunInDir(integrationPath, "merge", "--abort"); abortErr != nil {
+				wm.log(LogLevelWarn, "merge_abort_failed command=%s worker=%s error=%v",
+					commandID, workerID, abortErr)
+			}
+
+			ws.Status = model.WorktreeStatusFailed
 			ws.UpdatedAt = now
-			wm.log(LogLevelWarn, "merge_conflict command=%s worker=%s files=%v",
-				commandID, workerID, conflictFiles)
-			continue
+			state.Integration.Status = model.IntegrationStatusFailed
+			state.Integration.UpdatedAt = now
+			state.UpdatedAt = now
+
+			wm.log(LogLevelError, "merge_non_conflict_error command=%s worker=%s error=%v",
+				commandID, workerID, err)
+
+			if saveErr := wm.saveState(commandID, state); saveErr != nil {
+				return conflicts, fmt.Errorf("save state after non-conflict merge error: %w", saveErr)
+			}
+			return conflicts, fmt.Errorf("non-conflict merge error for worker %s: %w", workerID, err)
 		}
 
 		ws.Status = model.WorktreeStatusIntegrated
@@ -873,6 +929,11 @@ func (wm *WorktreeManager) DiscardWorkerChanges(commandID, workerID string) erro
 		return fmt.Errorf("worker %s not found in command %s", workerID, commandID)
 	}
 
+	// Reset staged changes so checkout can fully restore tracked files
+	if err := wm.gitRunInDir(ws.Path, "reset", "HEAD"); err != nil {
+		return fmt.Errorf("reset staged changes in %s: %w", ws.Path, err)
+	}
+
 	// Discard tracked file changes
 	if err := wm.gitRunInDir(ws.Path, "checkout", "--", "."); err != nil {
 		return fmt.Errorf("discard changes in %s: %w", ws.Path, err)
@@ -973,6 +1034,17 @@ func (wm *WorktreeManager) Reconcile() {
 	}
 
 	wm.log(LogLevelInfo, "reconcile_complete")
+}
+
+// hasUnmergedFiles checks if a directory has unmerged index entries (indicating a true merge conflict).
+// Uses `git ls-files -u` which is more robust than checking exit codes for automation.
+// Returns (hasConflict, error) — callers must handle probe errors separately.
+func (wm *WorktreeManager) hasUnmergedFiles(dir string) (bool, error) {
+	output, err := wm.gitOutputInDir(dir, "ls-files", "-u")
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(output) != "", nil
 }
 
 // --- Internal helpers ---

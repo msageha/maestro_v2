@@ -17,7 +17,7 @@ func initTestGitRepo(t *testing.T) string {
 	dir := t.TempDir()
 
 	cmds := [][]string{
-		{"git", "init"},
+		{"git", "init", "-b", "main"},
 		{"git", "config", "user.email", "test@test.com"},
 		{"git", "config", "user.name", "Test"},
 	}
@@ -146,7 +146,10 @@ func TestCommitWorkerChanges(t *testing.T) {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
-	wtPath, _ := wm.GetWorkerPath("cmd_test_003", "worker1")
+	wtPath, err := wm.GetWorkerPath("cmd_test_003", "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath failed: %v", err)
+	}
 
 	// No changes — should succeed silently
 	if err := wm.CommitWorkerChanges("cmd_test_003", "worker1", "test commit"); err != nil {
@@ -165,7 +168,10 @@ func TestCommitWorkerChanges(t *testing.T) {
 	}
 
 	// Verify the state changed to committed
-	state, _ := wm.GetState("cmd_test_003", "worker1")
+	state, err := wm.GetState("cmd_test_003", "worker1")
+	if err != nil {
+		t.Fatalf("GetState failed: %v", err)
+	}
 	if state.Status != model.WorktreeStatusCommitted {
 		t.Errorf("status = %q, want %q", state.Status, model.WorktreeStatusCommitted)
 	}
@@ -193,7 +199,10 @@ func TestMergeToIntegration(t *testing.T) {
 	}
 
 	// Worker1: create file1
-	wt1, _ := wm.GetWorkerPath("cmd_test_004", "worker1")
+	wt1, err := wm.GetWorkerPath("cmd_test_004", "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath(worker1) failed: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(wt1, "file1.txt"), []byte("from worker1"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +211,10 @@ func TestMergeToIntegration(t *testing.T) {
 	}
 
 	// Worker2: create file2 (no conflict)
-	wt2, _ := wm.GetWorkerPath("cmd_test_004", "worker2")
+	wt2, err := wm.GetWorkerPath("cmd_test_004", "worker2")
+	if err != nil {
+		t.Fatalf("GetWorkerPath(worker2) failed: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(wt2, "file2.txt"), []byte("from worker2"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -246,8 +258,14 @@ func TestMergeConflict(t *testing.T) {
 	}
 
 	// Both workers modify the same file
-	wt1, _ := wm.GetWorkerPath("cmd_test_005", "worker1")
-	wt2, _ := wm.GetWorkerPath("cmd_test_005", "worker2")
+	wt1, err := wm.GetWorkerPath("cmd_test_005", "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath(worker1) failed: %v", err)
+	}
+	wt2, err := wm.GetWorkerPath("cmd_test_005", "worker2")
+	if err != nil {
+		t.Fatalf("GetWorkerPath(worker2) failed: %v", err)
+	}
 
 	if err := os.WriteFile(filepath.Join(wt1, "README.md"), []byte("worker1 changes\n"), 0644); err != nil {
 		t.Fatal(err)
@@ -284,7 +302,10 @@ func TestPublishToBase(t *testing.T) {
 	// Check current branch name (could be main or master)
 	cmd := exec.Command("git", "branch", "--show-current")
 	cmd.Dir = projectRoot
-	branchOut, _ := cmd.Output()
+	branchOut, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("get current branch: %v", err)
+	}
 	currentBranch := strings.TrimSpace(string(branchOut))
 	wm.config.BaseBranch = currentBranch
 
@@ -294,7 +315,10 @@ func TestPublishToBase(t *testing.T) {
 	}
 
 	// Worker1: create a file
-	wt1, _ := wm.GetWorkerPath("cmd_test_006", "worker1")
+	wt1, err := wm.GetWorkerPath("cmd_test_006", "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath failed: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(wt1, "published.txt"), []byte("published"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -324,7 +348,10 @@ func TestPublishToBase(t *testing.T) {
 	}
 
 	// Verify state
-	state, _ := wm.GetCommandState("cmd_test_006")
+	state, err := wm.GetCommandState("cmd_test_006")
+	if err != nil {
+		t.Fatalf("GetCommandState failed: %v", err)
+	}
 	if state.Integration.Status != model.IntegrationStatusPublished {
 		t.Errorf("integration status = %q, want %q", state.Integration.Status, model.IntegrationStatusPublished)
 	}
@@ -358,7 +385,10 @@ func TestCleanupCommand(t *testing.T) {
 	// Verify branches are removed
 	cmd := exec.Command("git", "branch", "--list", "maestro/cmd_test_007/*")
 	cmd.Dir = projectRoot
-	out, _ := cmd.Output()
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git branch --list: %v", err)
+	}
 	if strings.TrimSpace(string(out)) != "" {
 		t.Errorf("branches should be removed, got: %s", out)
 	}
@@ -432,7 +462,10 @@ func TestGC(t *testing.T) {
 
 	// The oldest should be cleaned up
 	stateDir := filepath.Join(projectRoot, ".maestro", "state", "worktrees")
-	entries, _ := os.ReadDir(stateDir)
+	entries, err := os.ReadDir(stateDir)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("ReadDir failed: %v", err)
+	}
 	if len(entries) > 1 {
 		t.Errorf("expected at most 1 state file after GC (max_worktrees=1), got %d", len(entries))
 	}
@@ -509,7 +542,10 @@ func TestCreateForCommand_RollbackOnWorktreeFailure(t *testing.T) {
 	// Verify rollback: integration branch should have been cleaned up
 	cmd = exec.Command("git", "branch", "--list", "maestro/cmd_rollback_002/integration")
 	cmd.Dir = projectRoot
-	out, _ := cmd.Output()
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git branch --list: %v", err)
+	}
 	if strings.TrimSpace(string(out)) != "" {
 		t.Error("integration branch should have been cleaned up on rollback")
 	}
@@ -555,7 +591,10 @@ func TestEnsureWorkerWorktree_RollbackOnFailure(t *testing.T) {
 	// Verify rollback: integration branch should have been cleaned up
 	cmd = exec.Command("git", "branch", "--list", "maestro/cmd_ensure_rollback/integration")
 	cmd.Dir = projectRoot
-	out, _ := cmd.Output()
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git branch --list: %v", err)
+	}
 	if strings.TrimSpace(string(out)) != "" {
 		t.Error("integration branch should have been cleaned up on rollback")
 	}
@@ -767,7 +806,10 @@ func TestMarkPhaseMerged_DuplicatePhase(t *testing.T) {
 		t.Fatalf("first MarkPhaseMerged failed: %v", err)
 	}
 
-	state1, _ := wm.GetCommandState("cmd_phase_dup")
+	state1, err := wm.GetCommandState("cmd_phase_dup")
+	if err != nil {
+		t.Fatalf("GetCommandState failed: %v", err)
+	}
 	ts1 := state1.MergedPhases["phase_001"]
 
 	// Mark same phase again — should succeed (overwrite timestamp)
@@ -775,7 +817,10 @@ func TestMarkPhaseMerged_DuplicatePhase(t *testing.T) {
 		t.Fatalf("second MarkPhaseMerged failed: %v", err)
 	}
 
-	state2, _ := wm.GetCommandState("cmd_phase_dup")
+	state2, err := wm.GetCommandState("cmd_phase_dup")
+	if err != nil {
+		t.Fatalf("GetCommandState failed: %v", err)
+	}
 	if len(state2.MergedPhases) != 1 {
 		t.Errorf("MergedPhases should still have 1 entry, got %d", len(state2.MergedPhases))
 	}
@@ -808,7 +853,10 @@ func TestSyncFromIntegration(t *testing.T) {
 	}
 
 	// Worker1 creates a file and commits
-	wt1, _ := wm.GetWorkerPath("cmd_test_sync", "worker1")
+	wt1, err := wm.GetWorkerPath("cmd_test_sync", "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath(worker1) failed: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(wt1, "sync_test.txt"), []byte("sync"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -827,7 +875,10 @@ func TestSyncFromIntegration(t *testing.T) {
 	}
 
 	// Verify worker2 now has the file from worker1
-	wt2, _ := wm.GetWorkerPath("cmd_test_sync", "worker2")
+	wt2, err := wm.GetWorkerPath("cmd_test_sync", "worker2")
+	if err != nil {
+		t.Fatalf("GetWorkerPath(worker2) failed: %v", err)
+	}
 	syncFile := filepath.Join(wt2, "sync_test.txt")
 	if _, err := os.Stat(syncFile); os.IsNotExist(err) {
 		t.Error("sync_test.txt not found in worker2 worktree after sync")
@@ -872,7 +923,10 @@ func TestMergeToIntegration_PreservesProjectRootHEAD(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wt1, _ := wm.GetWorkerPath("cmd_h3_merge", "worker1")
+	wt1, err := wm.GetWorkerPath("cmd_h3_merge", "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath failed: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(wt1, "h3_test.txt"), []byte("h3"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -903,7 +957,10 @@ func TestPublishToBase_PreservesProjectRootHEAD(t *testing.T) {
 
 	cmd := exec.Command("git", "branch", "--show-current")
 	cmd.Dir = projectRoot
-	branchOut, _ := cmd.Output()
+	branchOut, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("get current branch: %v", err)
+	}
 	currentBranch := strings.TrimSpace(string(branchOut))
 	wm.config.BaseBranch = currentBranch
 
@@ -914,7 +971,10 @@ func TestPublishToBase_PreservesProjectRootHEAD(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wt1, _ := wm.GetWorkerPath("cmd_h3_pub", "worker1")
+	wt1, err := wm.GetWorkerPath("cmd_h3_pub", "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath failed: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(wt1, "pub_test.txt"), []byte("pub"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -958,8 +1018,14 @@ func TestSyncFromIntegration_SkipsConflictWorker(t *testing.T) {
 	}
 
 	// Worker1 and worker2 both modify README.md to create a conflict
-	wt1, _ := wm.GetWorkerPath("cmd_m2", "worker1")
-	wt2, _ := wm.GetWorkerPath("cmd_m2", "worker2")
+	wt1, err := wm.GetWorkerPath("cmd_m2", "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath(worker1) failed: %v", err)
+	}
+	wt2, err := wm.GetWorkerPath("cmd_m2", "worker2")
+	if err != nil {
+		t.Fatalf("GetWorkerPath(worker2) failed: %v", err)
+	}
 
 	if err := os.WriteFile(filepath.Join(wt1, "README.md"), []byte("worker1\n"), 0644); err != nil {
 		t.Fatal(err)
@@ -985,7 +1051,10 @@ func TestSyncFromIntegration_SkipsConflictWorker(t *testing.T) {
 	}
 
 	// Verify worker2 is in conflict state
-	ws2, _ := wm.GetState("cmd_m2", "worker2")
+	ws2, err := wm.GetState("cmd_m2", "worker2")
+	if err != nil {
+		t.Fatalf("GetState(worker2) failed: %v", err)
+	}
 	if ws2.Status != model.WorktreeStatusConflict {
 		t.Fatalf("worker2 status = %q, want conflict", ws2.Status)
 	}
@@ -996,7 +1065,10 @@ func TestSyncFromIntegration_SkipsConflictWorker(t *testing.T) {
 	}
 
 	// worker2 should still be in conflict state (not changed to active)
-	ws2After, _ := wm.GetState("cmd_m2", "worker2")
+	ws2After, err := wm.GetState("cmd_m2", "worker2")
+	if err != nil {
+		t.Fatalf("GetState(worker2) after sync failed: %v", err)
+	}
 	if ws2After.Status != model.WorktreeStatusConflict {
 		t.Errorf("worker2 status after sync = %q, want conflict (should be skipped)", ws2After.Status)
 	}
@@ -1014,7 +1086,10 @@ func TestSyncFromIntegration_SkipsDirtyWorktree(t *testing.T) {
 	}
 
 	// Worker1 creates and commits a file
-	wt1, _ := wm.GetWorkerPath("cmd_m3", "worker1")
+	wt1, err := wm.GetWorkerPath("cmd_m3", "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath(worker1) failed: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(wt1, "m3_file.txt"), []byte("m3"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -1028,7 +1103,10 @@ func TestSyncFromIntegration_SkipsDirtyWorktree(t *testing.T) {
 	}
 
 	// Make worker2 dirty (uncommitted changes)
-	wt2, _ := wm.GetWorkerPath("cmd_m3", "worker2")
+	wt2, err := wm.GetWorkerPath("cmd_m3", "worker2")
+	if err != nil {
+		t.Fatalf("GetWorkerPath(worker2) failed: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(wt2, "dirty.txt"), []byte("dirty"), 0644); err != nil {
 		t.Fatal(err)
 	}
@@ -1060,7 +1138,10 @@ func TestDiscardWorkerChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wtPath, _ := wm.GetWorkerPath("cmd_discard", "worker1")
+	wtPath, err := wm.GetWorkerPath("cmd_discard", "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath failed: %v", err)
+	}
 
 	// Modify an existing tracked file
 	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("modified\n"), 0644); err != nil {
@@ -1070,7 +1151,10 @@ func TestDiscardWorkerChanges(t *testing.T) {
 	// Verify it's dirty
 	cmd := exec.Command("git", "status", "--porcelain")
 	cmd.Dir = wtPath
-	out, _ := cmd.Output()
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git status failed: %v", err)
+	}
 	if strings.TrimSpace(string(out)) == "" {
 		t.Fatal("worktree should be dirty")
 	}
@@ -1083,7 +1167,10 @@ func TestDiscardWorkerChanges(t *testing.T) {
 	// Verify it's clean
 	cmd = exec.Command("git", "status", "--porcelain")
 	cmd.Dir = wtPath
-	out, _ = cmd.Output()
+	out, err = cmd.Output()
+	if err != nil {
+		t.Fatalf("git status failed: %v", err)
+	}
 	if strings.TrimSpace(string(out)) != "" {
 		t.Errorf("worktree should be clean after discard, got: %s", out)
 	}
@@ -1116,4 +1203,132 @@ func TestCreateForCommand_CreatesIntegrationWorktree(t *testing.T) {
 	if branch != "maestro/cmd_int_wt/integration" {
 		t.Errorf("integration worktree branch = %q, want %q", branch, "maestro/cmd_int_wt/integration")
 	}
+}
+
+// TestCommitWorkerChanges_ErrorPaths tests error handling in CommitWorkerChanges.
+func TestCommitWorkerChanges_ErrorPaths(t *testing.T) {
+	t.Run("NonExistentCommand", func(t *testing.T) {
+		projectRoot := initTestGitRepo(t)
+		wm := newTestWorktreeManager(t, projectRoot)
+
+		err := wm.CommitWorkerChanges("nonexistent_cmd", "worker1", "msg")
+		if err == nil {
+			t.Fatal("expected error for non-existent command")
+		}
+		if !strings.Contains(err.Error(), "load state") {
+			t.Errorf("error should mention 'load state', got: %v", err)
+		}
+	})
+
+	t.Run("NonExistentWorker", func(t *testing.T) {
+		projectRoot := initTestGitRepo(t)
+		wm := newTestWorktreeManager(t, projectRoot)
+
+		if err := wm.CreateForCommand("cmd_err_worker", []string{"worker1"}); err != nil {
+			t.Fatalf("CreateForCommand failed: %v", err)
+		}
+
+		err := wm.CommitWorkerChanges("cmd_err_worker", "nonexistent_worker", "msg")
+		if err == nil {
+			t.Fatal("expected error for non-existent worker")
+		}
+		if !strings.Contains(err.Error(), "not found") {
+			t.Errorf("error should mention 'not found', got: %v", err)
+		}
+	})
+
+	t.Run("InvalidWorktreePath", func(t *testing.T) {
+		projectRoot := initTestGitRepo(t)
+		wm := newTestWorktreeManager(t, projectRoot)
+
+		if err := wm.CreateForCommand("cmd_err_path", []string{"worker1"}); err != nil {
+			t.Fatalf("CreateForCommand failed: %v", err)
+		}
+
+		// Corrupt the worker path in state to point to a non-existent directory
+		state, err := wm.GetCommandState("cmd_err_path")
+		if err != nil {
+			t.Fatalf("GetCommandState failed: %v", err)
+		}
+		state.Workers[0].Path = filepath.Join(t.TempDir(), "nonexistent_subdir", "bogus")
+		if err := wm.saveState("cmd_err_path", state); err != nil {
+			t.Fatalf("saveState failed: %v", err)
+		}
+
+		err = wm.CommitWorkerChanges("cmd_err_path", "worker1", "msg")
+		if err == nil {
+			t.Fatal("expected error for invalid worktree path")
+		}
+		if !strings.Contains(err.Error(), "git status") {
+			t.Errorf("error should mention 'git status', got: %v", err)
+		}
+	})
+
+	t.Run("EmptyCommitMessage", func(t *testing.T) {
+		projectRoot := initTestGitRepo(t)
+		wm := newTestWorktreeManager(t, projectRoot)
+
+		if err := wm.CreateForCommand("cmd_err_commit", []string{"worker1"}); err != nil {
+			t.Fatalf("CreateForCommand failed: %v", err)
+		}
+
+		wtPath, err := wm.GetWorkerPath("cmd_err_commit", "worker1")
+		if err != nil {
+			t.Fatalf("GetWorkerPath failed: %v", err)
+		}
+
+		// Create a file so there are changes to commit
+		if err := os.WriteFile(filepath.Join(wtPath, "test.txt"), []byte("data"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		// Empty commit message should cause git commit to fail
+		err = wm.CommitWorkerChanges("cmd_err_commit", "worker1", "")
+		if err == nil {
+			t.Fatal("expected error for empty commit message")
+		}
+		if !strings.Contains(err.Error(), "git commit") {
+			t.Errorf("error should mention 'git commit', got: %v", err)
+		}
+	})
+
+	t.Run("UnwritableStateDir", func(t *testing.T) {
+		if os.Getuid() == 0 {
+			t.Skip("skipping: running as root")
+		}
+
+		projectRoot := initTestGitRepo(t)
+		wm := newTestWorktreeManager(t, projectRoot)
+
+		if err := wm.CreateForCommand("cmd_err_save", []string{"worker1"}); err != nil {
+			t.Fatalf("CreateForCommand failed: %v", err)
+		}
+
+		wtPath, err := wm.GetWorkerPath("cmd_err_save", "worker1")
+		if err != nil {
+			t.Fatalf("GetWorkerPath failed: %v", err)
+		}
+
+		// Create a file so there are changes to commit
+		if err := os.WriteFile(filepath.Join(wtPath, "save_test.txt"), []byte("data"), 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		// Make state dir unwritable to cause saveState failure
+		stateDir := filepath.Join(projectRoot, ".maestro", "state", "worktrees")
+		if err := os.Chmod(stateDir, 0555); err != nil {
+			t.Fatalf("chmod failed: %v", err)
+		}
+		t.Cleanup(func() {
+			os.Chmod(stateDir, 0755)
+		})
+
+		err = wm.CommitWorkerChanges("cmd_err_save", "worker1", "save fail test")
+		if err == nil {
+			t.Fatal("expected error for unwritable state dir")
+		}
+		if !strings.Contains(err.Error(), "save state") {
+			t.Errorf("error should mention 'save state', got: %v", err)
+		}
+	})
 }
