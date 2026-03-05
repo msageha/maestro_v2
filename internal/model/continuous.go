@@ -8,5 +8,5 @@ type Continuous struct {
 	Status           ContinuousStatus `yaml:"status"`
 	PausedReason     *string          `yaml:"paused_reason"`
 	LastCommandID    *string          `yaml:"last_command_id"`
-	UpdatedAt        *string          `yaml:"updated_at"`
+	UpdatedAt        string           `yaml:"updated_at"`
 }

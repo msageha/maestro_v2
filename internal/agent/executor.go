@@ -3,7 +3,6 @@ package agent
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -15,7 +14,6 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
-	"github.com/msageha/maestro_v2/internal/tmux"
 )
 
 // ExecMode represents the agent execution mode.
@@ -57,11 +55,10 @@ var (
 )
 
 const (
-	promptReadyLines    = 12 // プロンプト検出+安定性ハッシュ用 (12 lines to accommodate status bars)
-	busyHintLines       = 5  // busy パターンマッチ用
-	stableCheckRounds   = 1  // 安定性判定に必要なラウンド数
-	lastLineMaxDisplay  = 80
-	defaultExecTimeout  = 5 * time.Minute // Context未設定時のデフォルトタイムアウト
+	promptReadyLines   = 12 // プロンプト検出+安定性ハッシュ用 (12 lines to accommodate status bars)
+	busyHintLines      = 5  // busy パターンマッチ用
+	stableCheckRounds  = 1  // 安定性判定に必要なラウンド数
+	defaultExecTimeout = 5 * time.Minute // Context未設定時のデフォルトタイムアウト
 )
 
 // ExecRequest contains parameters for executing a message delivery.
@@ -111,12 +108,14 @@ func parseLogLevel(s string) LogLevel {
 
 // Executor handles message delivery to agents via tmux panes.
 type Executor struct {
-	maestroDir string
-	config     model.WatcherConfig
-	logger     *log.Logger
-	logFile    io.Closer
-	logLevel   LogLevel
-	busyRegex  *regexp.Regexp
+	maestroDir   string
+	config       model.WatcherConfig
+	logger       *log.Logger
+	logFile      io.Closer
+	logLevel     LogLevel
+	paneIO       PaneIO
+	busyDetector *BusyDetector
+	paneState    *PaneStateManager
 }
 
 // NewExecutor creates a new Executor that logs to .maestro/logs/agent_executor.log.
@@ -140,13 +139,26 @@ func newExecutor(maestroDir string, watcherCfg model.WatcherConfig, logLevel str
 		busyRegex = re
 	}
 
+	cfg := applyDefaults(watcherCfg)
+	logger := log.New(w, "", 0)
+	ll := parseLogLevel(logLevel)
+	paneIO := NewTmuxPaneIO()
+
+	bd := NewBusyDetector(paneIO, busyRegex, BusyDetectorConfig{
+		IdleStableSec:       cfg.IdleStableSec,
+		BusyCheckMaxRetries: cfg.BusyCheckMaxRetries,
+		BusyCheckInterval:   cfg.BusyCheckInterval,
+	}, logger, ll)
+
 	return &Executor{
-		maestroDir: maestroDir,
-		config:     applyDefaults(watcherCfg),
-		logger:     log.New(w, "", 0),
-		logFile:    closer,
-		logLevel:   parseLogLevel(logLevel),
-		busyRegex:  busyRegex,
+		maestroDir:   maestroDir,
+		config:       cfg,
+		logger:       logger,
+		logFile:      closer,
+		logLevel:     ll,
+		paneIO:       paneIO,
+		busyDetector: bd,
+		paneState:    NewPaneStateManager(paneIO),
 	}, nil
 }
 
@@ -214,10 +226,17 @@ func (e *Executor) Execute(req ExecRequest) ExecResult {
 	}
 	req.Context = ctx
 
-	paneTarget, err := tmux.FindPaneByAgentID(req.AgentID)
+	paneTarget, err := e.paneIO.FindPaneByAgentID(req.AgentID)
 	if err != nil {
 		e.log(LogLevelError, "delivery_error agent_id=%s error=pane_not_found: %v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("find pane for %s: %w", req.AgentID, err)}
+	}
+
+	// Log delivery_start once for delivery-related modes (prevents duplication
+	// when execWithClear delegates to execDeliver).
+	if req.Mode == ModeWithClear || req.Mode == ModeDeliver {
+		e.log(LogLevelInfo, "delivery_start agent_id=%s task_id=%s command_id=%s lease_epoch=%d attempt=%d",
+			req.AgentID, req.TaskID, req.CommandID, req.LeaseEpoch, req.Attempt)
 	}
 
 	switch req.Mode {
@@ -238,7 +257,7 @@ func (e *Executor) Execute(req ExecRequest) ExecResult {
 
 // execIsBusy checks agent busy state. Returns Success=true if busy, false if idle.
 func (e *Executor) execIsBusy(ctx context.Context, paneTarget string) ExecResult {
-	verdict := e.detectBusy(ctx, paneTarget)
+	verdict := e.busyDetector.DetectBusy(ctx, paneTarget)
 	return ExecResult{Success: verdict != VerdictIdle}
 }
 
@@ -274,7 +293,7 @@ func (e *Executor) execInterrupt(ctx context.Context, req ExecRequest, paneTarge
 	}
 
 	// Step 1: C-c
-	if err := tmux.SendCtrlC(paneTarget); err != nil {
+	if err := e.paneIO.SendCtrlC(paneTarget); err != nil {
 		return ExecResult{Error: fmt.Errorf("send C-c: %w", err), Retryable: true}
 	}
 	if err := sleepCtx(ctx, time.Duration(e.config.CooldownAfterClear)*time.Second); err != nil {
@@ -299,7 +318,7 @@ func (e *Executor) execInterrupt(ctx context.Context, req ExecRequest, paneTarge
 	}
 
 	// Step 5: Set @status="idle" — the agent is now idle after interrupt.
-	if err := tmux.SetUserVar(paneTarget, "status", "idle"); err != nil {
+	if err := e.paneState.SetStatus(paneTarget, "idle"); err != nil {
 		e.log(LogLevelWarn, "set_status_idle_failed agent_id=%s error=%v", req.AgentID, err)
 	}
 
@@ -310,9 +329,6 @@ func (e *Executor) execInterrupt(ctx context.Context, req ExecRequest, paneTarge
 
 // execWithClear delivers a message with prior /clear (Worker mode).
 func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarget string) ExecResult {
-	e.log(LogLevelInfo, "delivery_start agent_id=%s task_id=%s command_id=%s lease_epoch=%d attempt=%d",
-		req.AgentID, req.TaskID, req.CommandID, req.LeaseEpoch, req.Attempt)
-
 	// Orchestrator: never /clear, fall through to deliver mode
 	if req.AgentID == "orchestrator" {
 		return e.execDeliver(ctx, req, paneTarget)
@@ -328,40 +344,27 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 	}
 
 	// Check if pane process has been restarted (PID changed)
-	currentPID, err := tmux.GetPanePID(paneTarget)
+	restarted, currentPID, err := e.paneState.DetectProcessRestart(paneTarget)
 	if err != nil {
-		e.log(LogLevelWarn, "get_pane_pid_failed agent_id=%s error=%v", req.AgentID, err)
-		// Continue with default behavior
-	} else {
-		storedPID, _ := tmux.GetUserVar(paneTarget, "clear_ready_pid")
-		if storedPID != "" && storedPID != currentPID {
-			// Process restarted, reset clear_ready flag
-			e.log(LogLevelInfo, "pane_process_restarted agent_id=%s old_pid=%s new_pid=%s, resetting clear_ready",
-				req.AgentID, storedPID, currentPID)
-			tmux.SetUserVar(paneTarget, "clear_ready", "")
-			tmux.SetUserVar(paneTarget, "clear_ready_pid", "")
-		}
+		e.log(LogLevelWarn, "detect_process_restart_error agent_id=%s error=%v", req.AgentID, err)
+		// Continue with default behavior — IsClearReady will re-check state
+	}
+	if restarted {
+		e.log(LogLevelInfo, "pane_process_restarted agent_id=%s new_pid=%s, resetting clear_ready",
+			req.AgentID, currentPID)
 	}
 
 	// Check if this worker pane is ready for /clear (has active conversation)
-	clearReady, err := tmux.GetUserVar(paneTarget, "clear_ready")
-	if err != nil || clearReady != "true" {
+	if !e.paneState.IsClearReady(paneTarget) {
 		// First dispatch: skip /clear, use deliver mode
-		e.log(LogLevelDebug, "first_dispatch agent_id=%s clear_ready=%s, using deliver mode",
-			req.AgentID, clearReady)
+		e.log(LogLevelDebug, "first_dispatch agent_id=%s, using deliver mode", req.AgentID)
 
 		result := e.execDeliver(ctx, req, paneTarget)
 
 		// On success, mark this pane as clear-ready for future dispatches
 		if result.Success {
-			if err := tmux.SetUserVar(paneTarget, "clear_ready", "true"); err != nil {
+			if err := e.paneState.SetClearReady(paneTarget, currentPID); err != nil {
 				e.log(LogLevelWarn, "set_clear_ready_failed agent_id=%s error=%v", req.AgentID, err)
-			}
-			// Store current PID to detect future process restarts
-			if currentPID != "" {
-				if err := tmux.SetUserVar(paneTarget, "clear_ready_pid", currentPID); err != nil {
-					e.log(LogLevelWarn, "set_clear_ready_pid_failed agent_id=%s error=%v", req.AgentID, err)
-				}
 			}
 		}
 
@@ -383,14 +386,15 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 
 		// Reset clear_ready on /clear failure - conversation might have been lost
 		e.log(LogLevelInfo, "clear_failed_reset agent_id=%s, resetting clear_ready for next dispatch", req.AgentID)
-		tmux.SetUserVar(paneTarget, "clear_ready", "")
-		tmux.SetUserVar(paneTarget, "clear_ready_pid", "")
+		if err := e.paneState.ResetClearReady(paneTarget); err != nil {
+			e.log(LogLevelWarn, "reset_clear_ready_failed agent_id=%s error=%v", req.AgentID, err)
+		}
 
 		return ExecResult{Error: fmt.Errorf("with_clear: %w", err), Retryable: true}
 	}
 
 	// Step 4: Busy detection with retry
-	verdict := e.detectBusyWithRetry(ctx, req, paneTarget)
+	verdict := e.busyDetector.DetectBusyWithRetry(ctx, paneTarget, req.AgentID)
 	if verdict != VerdictIdle {
 		e.log(LogLevelWarn, "delivery_failure agent_id=%s task_id=%s verdict=%s",
 			req.AgentID, req.TaskID, verdict)
@@ -416,12 +420,9 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 
 // execDeliver delivers a message without /clear (Planner/Orchestrator).
 func (e *Executor) execDeliver(ctx context.Context, req ExecRequest, paneTarget string) ExecResult {
-	e.log(LogLevelInfo, "delivery_start agent_id=%s task_id=%s command_id=%s lease_epoch=%d attempt=%d",
-		req.AgentID, req.TaskID, req.CommandID, req.LeaseEpoch, req.Attempt)
-
 	// Orchestrator: strict busy check, no retry, immediate failure if busy
 	if req.AgentID == "orchestrator" {
-		verdict := e.detectBusy(ctx, paneTarget)
+		verdict := e.busyDetector.DetectBusy(ctx, paneTarget)
 		e.log(LogLevelDebug, "busy_detection agent_id=orchestrator verdict=%s", verdict)
 		if verdict != VerdictIdle {
 			e.log(LogLevelWarn, "delivery_failure agent_id=orchestrator reason=orchestrator_busy verdict=%s", verdict)
@@ -434,7 +435,7 @@ func (e *Executor) execDeliver(ctx context.Context, req ExecRequest, paneTarget 
 	}
 
 	// Planner/other: busy detection with retry
-	verdict := e.detectBusyWithRetry(ctx, req, paneTarget)
+	verdict := e.busyDetector.DetectBusyWithRetry(ctx, paneTarget, req.AgentID)
 	if verdict != VerdictIdle {
 		reason := "busy_timeout"
 		if verdict == VerdictUndecided {
@@ -458,14 +459,14 @@ func (e *Executor) sendAndConfirm(req ExecRequest, paneTarget string) ExecResult
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if err := tmux.SendTextAndSubmit(ctx, paneTarget, req.Message); err != nil {
+	if err := e.paneIO.SendTextAndSubmit(ctx, paneTarget, req.Message); err != nil {
 		e.log(LogLevelError, "delivery_error agent_id=%s task_id=%s error=send_text: %v",
 			req.AgentID, req.TaskID, err)
 		return ExecResult{Error: fmt.Errorf("send message: %w", err), Retryable: true}
 	}
 
 	// Update @status to busy
-	if err := tmux.SetUserVar(paneTarget, "status", "busy"); err != nil {
+	if err := e.paneState.SetStatus(paneTarget, "busy"); err != nil {
 		e.log(LogLevelWarn, "set_status_failed agent_id=%s error=%v", req.AgentID, err)
 	}
 
@@ -498,7 +499,7 @@ func (e *Executor) clearAndConfirm(ctx context.Context, paneTarget string) error
 		}
 
 		// Capture pre-clear hash
-		preClearContent, err := tmux.CapturePaneJoined(paneTarget, promptReadyLines)
+		preClearContent, err := e.paneIO.CapturePaneJoined(paneTarget, promptReadyLines)
 		preClearHashValid := err == nil
 		if err != nil {
 			e.log(LogLevelWarn, "clear_confirm pre_capture error=%v attempt=%d (hash check disabled)", err, attempt)
@@ -506,7 +507,7 @@ func (e *Executor) clearAndConfirm(ctx context.Context, paneTarget string) error
 		preClearHash := contentHash(preClearContent)
 
 		// Send /clear with double-enter for reliability
-		if err := tmux.SendCommand(paneTarget, "/clear"); err != nil {
+		if err := e.paneIO.SendCommand(paneTarget, "/clear"); err != nil {
 			e.log(LogLevelWarn, "clear_confirm send_clear error=%v attempt=%d", err, attempt)
 			if attempt < maxAttempts {
 				backoff := time.Duration(backoffMs*(1<<(attempt-1))) * time.Millisecond
@@ -526,7 +527,7 @@ func (e *Executor) clearAndConfirm(ctx context.Context, paneTarget string) error
 		// Send second Enter to ensure /clear execution.
 		// Commands starting with `/` often trigger completion prompts for the user,
 		// requiring a second Enter to confirm the command.
-		if err := tmux.SendKeys(paneTarget, "Enter"); err != nil {
+		if err := e.paneIO.SendKeys(paneTarget, "Enter"); err != nil {
 			e.log(LogLevelWarn, "clear_confirm send_second_enter error=%v attempt=%d", err, attempt)
 			if attempt < maxAttempts {
 				backoff := time.Duration(backoffMs*(1<<(attempt-1))) * time.Millisecond
@@ -589,7 +590,7 @@ func (e *Executor) pollClearConfirmation(
 			return false, fmt.Errorf("clear_confirm poll cancelled: %w", err)
 		}
 
-		content, err := tmux.CapturePaneJoined(paneTarget, promptReadyLines)
+		content, err := e.paneIO.CapturePaneJoined(paneTarget, promptReadyLines)
 		if err != nil {
 			e.log(LogLevelDebug, "clear_confirm poll capture error=%v", err)
 			stableCount = 0
@@ -638,123 +639,6 @@ func (e *Executor) pollClearConfirmation(
 	return false, nil
 }
 
-// clearTextVisible checks whether "/clear" text is visible near the bottom of the pane content.
-// This is the primary signal for detecting that /clear was NOT processed as a command
-// and instead remains as literal text in the input field.
-func clearTextVisible(content string) bool {
-	lines := strings.Split(content, "\n")
-	// Check the last 6 non-blank lines (covers input line + a few status lines)
-	checked := 0
-	for i := len(lines) - 1; i >= 0 && checked < 6; i-- {
-		trimmed := strings.TrimSpace(stripANSI(lines[i]))
-		if trimmed == "" {
-			continue
-		}
-		if strings.Contains(trimmed, "/clear") {
-			return true
-		}
-		checked++
-	}
-	return false
-}
-
-// --- Busy Detection ---
-
-// detectBusy performs one round of the 3-stage busy detection algorithm.
-// Returns VerdictUndecided if ctx is cancelled during the activity probe sleep.
-func (e *Executor) detectBusy(ctx context.Context, paneTarget string) BusyVerdict {
-	// Stage 1: pane_current_command — quick gate
-	cmd, err := tmux.GetPaneCurrentCommand(paneTarget)
-	if err != nil {
-		e.log(LogLevelDebug, "busy_detection pane_current_command error=%v", err)
-		return VerdictUndecided
-	}
-	e.log(LogLevelDebug, "busy_detection started; pane_current_command=%s", cmd)
-
-	// If the pane is running only a shell, no agent CLI is active → idle.
-	if tmux.IsShellCommand(cmd) {
-		e.log(LogLevelDebug, "busy_detection pane running shell %q → idle", cmd)
-		return VerdictIdle
-	}
-
-	// Stage 2: Pattern hint from last busyHintLines lines.
-	// Uses CapturePane (no -J) to preserve line boundaries for regex matching.
-	content, err := tmux.CapturePane(paneTarget, busyHintLines)
-	if err != nil {
-		e.log(LogLevelDebug, "busy_detection capture_pane error=%v", err)
-		return VerdictUndecided
-	}
-
-	patternMatched := e.busyRegex != nil && e.busyRegex.MatchString(content)
-
-	hintStr := "not_matched"
-	if patternMatched {
-		hintStr = "matched"
-	}
-	e.log(LogLevelDebug, "busy_detection busy_pattern_hint=%s", hintStr)
-
-	// Stage 3: Activity probe (hash comparison over idle_stable_sec).
-	// Uses CapturePaneJoined (-J) for width-independent hash stability.
-	joinedContent, err := tmux.CapturePaneJoined(paneTarget, busyHintLines)
-	if err != nil {
-		e.log(LogLevelDebug, "busy_detection joined capture error=%v", err)
-		return VerdictUndecided
-	}
-	hashA := contentHash(joinedContent)
-	if err := sleepCtx(ctx, time.Duration(e.config.IdleStableSec)*time.Second); err != nil {
-		e.log(LogLevelDebug, "busy_detection activity_probe sleep cancelled: %v", err)
-		return VerdictUndecided
-	}
-
-	joinedContent2, err := tmux.CapturePaneJoined(paneTarget, busyHintLines)
-	if err != nil {
-		e.log(LogLevelDebug, "busy_detection second capture error=%v", err)
-		return VerdictUndecided
-	}
-	hashB := contentHash(joinedContent2)
-
-	hashChanged := hashA != hashB
-
-	var verdict BusyVerdict
-	switch {
-	case hashChanged:
-		verdict = VerdictBusy
-	case !patternMatched:
-		verdict = VerdictIdle
-	default:
-		verdict = VerdictUndecided
-	}
-
-	e.log(LogLevelDebug, "busy_detection activity_probe hash_changed=%v verdict=%s",
-		hashChanged, verdict)
-	return verdict
-}
-
-// detectBusyWithRetry runs busy detection with a retry loop on VerdictBusy.
-// Returns VerdictUndecided if ctx is cancelled during retries.
-func (e *Executor) detectBusyWithRetry(ctx context.Context, req ExecRequest, paneTarget string) BusyVerdict {
-	verdict := e.detectBusy(ctx, paneTarget)
-	if verdict != VerdictBusy {
-		return verdict
-	}
-
-	for i := 1; i <= e.config.BusyCheckMaxRetries; i++ {
-		e.log(LogLevelDebug, "busy_retry retry=%d/%d agent_id=%s",
-			i, e.config.BusyCheckMaxRetries, req.AgentID)
-		if err := sleepCtx(ctx, time.Duration(e.config.BusyCheckInterval)*time.Second); err != nil {
-			e.log(LogLevelDebug, "busy_retry sleep cancelled: %v", err)
-			return VerdictUndecided
-		}
-
-		verdict = e.detectBusy(ctx, paneTarget)
-		if verdict != VerdictBusy {
-			return verdict
-		}
-	}
-
-	return VerdictBusy
-}
-
 // waitStable confirms pane content is stable over stableCheckRounds consecutive
 // rounds of hash comparison, then verifies the prompt is ready.
 // Worst-case duration: stableCheckRounds × IdleStableSec (default 1 × 5s = ~5s).
@@ -768,7 +652,7 @@ func (e *Executor) waitStable(ctx context.Context, paneTarget string, softPrompt
 			return fmt.Errorf("wait_stable cancelled before round %d: %w", round, err)
 		}
 
-		content1, err := tmux.CapturePaneJoined(paneTarget, promptReadyLines)
+		content1, err := e.paneIO.CapturePaneJoined(paneTarget, promptReadyLines)
 		if err != nil {
 			return fmt.Errorf("capture pane for stability round %d: %w", round, err)
 		}
@@ -778,7 +662,7 @@ func (e *Executor) waitStable(ctx context.Context, paneTarget string, softPrompt
 			return fmt.Errorf("wait_stable sleep cancelled (round %d): %w", round, err)
 		}
 
-		content2, err := tmux.CapturePaneJoined(paneTarget, promptReadyLines)
+		content2, err := e.paneIO.CapturePaneJoined(paneTarget, promptReadyLines)
 		if err != nil {
 			return fmt.Errorf("capture pane for stability round %d: %w", round, err)
 		}
@@ -792,7 +676,7 @@ func (e *Executor) waitStable(ctx context.Context, paneTarget string, softPrompt
 
 	// Verify prompt is ready after stability confirmed.
 	// Uses CapturePane (no -J) to preserve line boundaries for prompt detection.
-	finalContent, err := tmux.CapturePane(paneTarget, promptReadyLines)
+	finalContent, err := e.paneIO.CapturePane(paneTarget, promptReadyLines)
 	if err != nil {
 		if softPromptCheck {
 			e.log(LogLevelWarn, "wait_stable prompt_check capture error=%v (non-fatal, soft mode)", err)
@@ -812,67 +696,6 @@ func (e *Executor) waitStable(ctx context.Context, paneTarget string, softPrompt
 	return nil
 }
 
-// contentHash returns a hex-encoded SHA-256 hash of the content.
-func contentHash(s string) string {
-	h := sha256.Sum256([]byte(s))
-	return fmt.Sprintf("%x", h)
-}
-
-// isPromptReady checks whether the pane content indicates Claude Code is at its input prompt.
-// It inspects the last non-blank line of the captured pane output.
-//
-// Primary check: the line contains '❯' (U+276F HEAVY RIGHT-POINTING ANGLE QUOTATION MARK
-// ORNAMENT), which is the character Claude Code uses in its input prompt.
-// Fallback check: the line starts with '>' (ASCII 0x3E). This covers older Claude Code
-// versions or terminal environments where the Unicode character is not rendered.
-//
-// The fallback is intentionally broad; false positives (e.g. markdown blockquotes) are
-// mitigated by callers performing stability checks before invoking this function.
-// maxPromptSearchLines limits how many non-blank lines (from the bottom)
-// are checked for the ❯ prompt character. This accommodates Claude Code's
-// status bar (typically 1–2 lines below the prompt) while bounding the
-// search to avoid false positives from agent output that happens to
-// contain ❯ in earlier lines.
-const maxPromptSearchLines = 6
-
-// ansiEscape matches ANSI escape sequences including CSI (with private params),
-// OSC, and charset designators.
-var ansiEscape = regexp.MustCompile(`\x1b(?:\[[\x30-\x3f]*[\x20-\x2f]*[\x40-\x7e]|\][^\x07]*(?:\x07|\x1b\\)|\([B0UK]|[>=])`)
-
-// stripANSI removes ANSI escape sequences from s.
-func stripANSI(s string) string {
-	return ansiEscape.ReplaceAllString(s, "")
-}
-
-func isPromptReady(content string) bool {
-	lines := strings.Split(content, "\n")
-	// Scan bottom-up, checking up to maxPromptSearchLines non-blank lines for ❯.
-	// Claude Code's TUI may show a status bar below the prompt,
-	// so the prompt line is not necessarily the last non-blank line.
-	checked := 0
-	for i := len(lines) - 1; i >= 0 && checked < maxPromptSearchLines; i-- {
-		trimmed := strings.TrimSpace(stripANSI(lines[i]))
-		if trimmed == "" {
-			continue
-		}
-		if strings.Contains(trimmed, "❯") {
-			return true
-		}
-		checked++
-	}
-	// Fallback: check only the last non-blank line for '>'.
-	// Limiting to the last line avoids false positives from markdown
-	// blockquotes or shell output on earlier lines.
-	for i := len(lines) - 1; i >= 0; i-- {
-		trimmed := strings.TrimSpace(stripANSI(lines[i]))
-		if trimmed == "" {
-			continue
-		}
-		return strings.HasPrefix(trimmed, ">")
-	}
-	return false
-}
-
 // waitReady polls until the pane shows a Claude Code prompt ('❯' or '>'), indicating readiness.
 // It uses WaitReadyIntervalSec and WaitReadyMaxRetries from config for timing.
 // Worst-case duration: (WaitReadyMaxRetries+1) × WaitReadyIntervalSec (default 16 × 2s = 32s).
@@ -890,7 +713,7 @@ func (e *Executor) waitReady(ctx context.Context, paneTarget string) error {
 			return fmt.Errorf("wait_ready cancelled at attempt %d: %w", i, err)
 		}
 
-		content, err := tmux.CapturePane(paneTarget, promptReadyLines)
+		content, err := e.paneIO.CapturePane(paneTarget, promptReadyLines)
 		if err != nil {
 			e.log(LogLevelDebug, "wait_ready capture error=%v attempt=%d", err, i)
 			if i < maxRetries {
@@ -923,22 +746,6 @@ func (e *Executor) waitReady(ctx context.Context, paneTarget string) error {
 	return nil
 }
 
-// lastNonBlankLine returns the last non-blank line from content, truncated to lastLineMaxDisplay chars.
-func lastNonBlankLine(content string) string {
-	lines := strings.Split(content, "\n")
-	for i := len(lines) - 1; i >= 0; i-- {
-		trimmed := strings.TrimSpace(lines[i])
-		if trimmed == "" {
-			continue
-		}
-		if len(trimmed) > lastLineMaxDisplay {
-			return trimmed[:lastLineMaxDisplay] + "..."
-		}
-		return trimmed
-	}
-	return "<empty>"
-}
-
 // --- Working Directory Management ---
 
 // ensureWorkingDir ensures the agent's Claude Code process is running in the
@@ -959,7 +766,7 @@ func (e *Executor) ensureWorkingDir(ctx context.Context, paneTarget, workingDir 
 	}
 
 	// Check current CWD from tmux user variable
-	currentCWD, _ := tmux.GetUserVar(paneTarget, "cwd")
+	currentCWD := e.paneState.GetCWD(paneTarget)
 	if currentCWD == workingDir {
 		e.log(LogLevelDebug, "working_dir unchanged cwd=%s", workingDir)
 		return nil
@@ -968,14 +775,14 @@ func (e *Executor) ensureWorkingDir(ctx context.Context, paneTarget, workingDir 
 	e.log(LogLevelInfo, "working_dir_change old=%q new=%q", currentCWD, workingDir)
 
 	// Step 1: Exit current Claude process (only if not already at shell)
-	cmd, err := tmux.GetPaneCurrentCommand(paneTarget)
+	cmd, err := e.paneIO.GetPaneCurrentCommand(paneTarget)
 	if err != nil {
 		e.log(LogLevelWarn, "working_dir get_pane_cmd error=%v, attempting exit sequence", err)
 	}
 
-	if err != nil || !tmux.IsShellCommand(cmd) {
+	if err != nil || !e.paneIO.IsShellCommand(cmd) {
 		// Pane is running Claude (or unknown) — exit it
-		if err := tmux.SendCtrlC(paneTarget); err != nil {
+		if err := e.paneIO.SendCtrlC(paneTarget); err != nil {
 			return fmt.Errorf("ensureWorkingDir: send Ctrl+C: %w", err)
 		}
 		if err := sleepCtx(ctx, 1*time.Second); err != nil {
@@ -984,7 +791,7 @@ func (e *Executor) ensureWorkingDir(ctx context.Context, paneTarget, workingDir 
 
 		// Send Ctrl+D to exit Claude (EOF on stdin).
 		// Guarded by the IsShellCommand check above — only sent when Claude is running.
-		if err := tmux.SendKeys(paneTarget, "C-d"); err != nil {
+		if err := e.paneIO.SendKeys(paneTarget, "C-d"); err != nil {
 			return fmt.Errorf("ensureWorkingDir: send Ctrl+D: %w", err)
 		}
 		if err := sleepCtx(ctx, 2*time.Second); err != nil {
@@ -996,9 +803,9 @@ func (e *Executor) ensureWorkingDir(ctx context.Context, paneTarget, workingDir 
 			// Fallback: try sending another Ctrl+C + Ctrl+D in case the first attempt
 			// was absorbed by a confirmation prompt
 			e.log(LogLevelWarn, "working_dir shell_wait_failed, retrying exit sequence: %v", err)
-			_ = tmux.SendCtrlC(paneTarget)
+			_ = e.paneIO.SendCtrlC(paneTarget)
 			_ = sleepCtx(ctx, 500*time.Millisecond)
-			_ = tmux.SendKeys(paneTarget, "C-d")
+			_ = e.paneIO.SendKeys(paneTarget, "C-d")
 			_ = sleepCtx(ctx, 2*time.Second)
 
 			if err := e.waitForShell(ctx, paneTarget); err != nil {
@@ -1009,7 +816,7 @@ func (e *Executor) ensureWorkingDir(ctx context.Context, paneTarget, workingDir 
 
 	// Step 2: cd to new working directory
 	cdCmd := fmt.Sprintf("cd %s", shellQuote(workingDir))
-	if err := tmux.SendCommand(paneTarget, cdCmd); err != nil {
+	if err := e.paneIO.SendCommand(paneTarget, cdCmd); err != nil {
 		return fmt.Errorf("ensureWorkingDir: cd: %w", err)
 	}
 	if err := sleepCtx(ctx, 500*time.Millisecond); err != nil {
@@ -1017,7 +824,7 @@ func (e *Executor) ensureWorkingDir(ctx context.Context, paneTarget, workingDir 
 	}
 
 	// Step 3: Re-launch Claude
-	if err := tmux.SendCommand(paneTarget, "maestro agent launch"); err != nil {
+	if err := e.paneIO.SendCommand(paneTarget, "maestro agent launch"); err != nil {
 		return fmt.Errorf("ensureWorkingDir: re-launch: %w", err)
 	}
 
@@ -1030,12 +837,13 @@ func (e *Executor) ensureWorkingDir(ctx context.Context, paneTarget, workingDir 
 	}
 
 	// Step 5: Update CWD tracking and reset clear_ready state
-	if err := tmux.SetUserVar(paneTarget, "cwd", workingDir); err != nil {
+	if err := e.paneState.SetCWD(paneTarget, workingDir); err != nil {
 		e.log(LogLevelWarn, "set_cwd_failed cwd=%s error=%v", workingDir, err)
 	}
 	// Reset clear_ready since we started a fresh Claude session
-	_ = tmux.SetUserVar(paneTarget, "clear_ready", "")
-	_ = tmux.SetUserVar(paneTarget, "clear_ready_pid", "")
+	if err := e.paneState.ResetClearReady(paneTarget); err != nil {
+		e.log(LogLevelWarn, "reset_clear_ready_failed error=%v", err)
+	}
 
 	e.log(LogLevelInfo, "working_dir_changed cwd=%s", workingDir)
 	return nil
@@ -1054,7 +862,7 @@ func (e *Executor) waitForShell(ctx context.Context, paneTarget string) error {
 			return fmt.Errorf("waitForShell cancelled: %w", err)
 		}
 
-		cmd, err := tmux.GetPaneCurrentCommand(paneTarget)
+		cmd, err := e.paneIO.GetPaneCurrentCommand(paneTarget)
 		if err != nil {
 			consecutiveErrors++
 			if consecutiveErrors >= maxConsecutiveErrors {
@@ -1062,7 +870,7 @@ func (e *Executor) waitForShell(ctx context.Context, paneTarget string) error {
 			}
 		} else {
 			consecutiveErrors = 0
-			if tmux.IsShellCommand(cmd) {
+			if e.paneIO.IsShellCommand(cmd) {
 				e.log(LogLevelDebug, "waitForShell detected shell command=%s", cmd)
 				return nil
 			}
@@ -1088,7 +896,7 @@ func (e *Executor) waitReadyStrict(ctx context.Context, paneTarget string) error
 			return fmt.Errorf("waitReadyStrict cancelled at attempt %d: %w", i, err)
 		}
 
-		content, err := tmux.CapturePane(paneTarget, promptReadyLines)
+		content, err := e.paneIO.CapturePane(paneTarget, promptReadyLines)
 		if err != nil {
 			e.log(LogLevelDebug, "waitReadyStrict capture error=%v attempt=%d", err, i)
 			if i < maxRetries {
@@ -1115,100 +923,13 @@ func (e *Executor) waitReadyStrict(ctx context.Context, paneTarget string) error
 	return fmt.Errorf("waitReadyStrict: Claude prompt not detected after %d attempts", maxRetries+1)
 }
 
-// containsControlChars returns true if s contains any ASCII control characters
-// (0x00-0x1F, 0x7F) except tab. This prevents injection via tmux SendCommand.
-func containsControlChars(s string) bool {
-	for _, r := range s {
-		if r < 0x20 && r != '\t' {
-			return true
-		}
-		if r == 0x7F {
-			return true
-		}
-	}
-	return false
-}
-
-// shellQuote wraps a path in single quotes for safe shell expansion.
-// Single quotes inside the path are escaped.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
-}
-
-// --- Envelope Builders ---
-
-// BuildWorkerEnvelope creates the delivery envelope for a Worker task.
-// Format matches spec §5.8.1 Worker 向けタスク配信エンベロープ.
-func BuildWorkerEnvelope(task model.Task, workerID string, leaseEpoch, attempt int) string {
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "[maestro] task_id:%s command_id:%s lease_epoch:%d attempt:%d\n",
-		task.ID, task.CommandID, leaseEpoch, attempt)
-	sb.WriteString("\n")
-	fmt.Fprintf(&sb, "purpose: %s\n", task.Purpose)
-	fmt.Fprintf(&sb, "content: %s\n", task.Content)
-	fmt.Fprintf(&sb, "acceptance_criteria: %s\n", task.AcceptanceCriteria)
-	constraintsStr := "なし"
-	if len(task.Constraints) > 0 {
-		constraintsStr = strings.Join(task.Constraints, ", ")
-	}
-	fmt.Fprintf(&sb, "constraints: %s\n", constraintsStr)
-	toolsHintStr := "なし"
-	if len(task.ToolsHint) > 0 {
-		toolsHintStr = strings.Join(task.ToolsHint, ", ")
-	}
-	fmt.Fprintf(&sb, "tools_hint: %s\n", toolsHintStr)
-	sb.WriteString("\n")
-	fmt.Fprintf(&sb, "完了時: maestro result write %s --task-id %s --command-id %s --lease-epoch %d --status <completed|failed> --summary \"...\"\n",
-		workerID, task.ID, task.CommandID, leaseEpoch)
-	sb.WriteString("失敗時に部分変更あり: 上記に加えて --partial-changes --no-retry-safe")
-	return sb.String()
-}
-
-// BuildPlannerEnvelope creates the delivery envelope for a Planner command.
-// Format matches spec §5.8.1 Planner 向けコマンド配信エンベロープ.
-func BuildPlannerEnvelope(cmd model.Command, leaseEpoch, attempt int) string {
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "[maestro] command_id:%s lease_epoch:%d attempt:%d\n",
-		cmd.ID, leaseEpoch, attempt)
-	sb.WriteString("\n")
-	fmt.Fprintf(&sb, "content: %s\n", cmd.Content)
-	sb.WriteString("\n")
-	fmt.Fprintf(&sb, "タスク分解後: maestro plan submit --command-id %s --tasks-file plan.yaml\n", cmd.ID)
-	fmt.Fprintf(&sb, "全タスク完了後: maestro plan complete --command-id %s --summary \"...\"", cmd.ID)
-	return sb.String()
-}
-
-// BuildOrchestratorNotificationEnvelope creates the envelope for an Orchestrator notification.
-// Format matches spec §5.8.1 Orchestrator 向け通知配信エンベロープ.
-func BuildOrchestratorNotificationEnvelope(commandID, notificationType string) string {
-	terminalStatus := mapNotificationTypeToStatus(notificationType)
-	return fmt.Sprintf("[maestro] kind:command_completed command_id:%s status:%s\nresults/planner.yaml を確認してください",
-		commandID, terminalStatus)
-}
-
-func mapNotificationTypeToStatus(nt string) string {
-	switch nt {
-	case "command_completed":
-		return "completed"
-	case "command_failed":
-		return "failed"
-	case "command_cancelled":
-		return "cancelled"
-	default:
-		return nt
-	}
-}
-
-// BuildTaskResultNotification creates a side-channel notification for the Planner.
-func BuildTaskResultNotification(commandID, taskID, workerID, taskStatus string) string {
-	return fmt.Sprintf("[maestro] kind:task_result command_id:%s task_id:%s worker_id:%s status:%s\nresults/%s.yaml を確認してください",
-		commandID, taskID, workerID, taskStatus, workerID)
-}
-
 // --- Logging ---
 
-func (e *Executor) log(level LogLevel, format string, args ...any) {
-	if level < e.logLevel {
+// logf is the shared log formatting function used by Executor and BusyDetector.
+// It checks the level threshold, formats the message with timestamp, level, and
+// component prefix, then writes to the provided logger.
+func logf(logger *log.Logger, minLevel, level LogLevel, component, format string, args ...any) {
+	if level < minLevel {
 		return
 	}
 	levelStr := "INFO"
@@ -1221,5 +942,9 @@ func (e *Executor) log(level LogLevel, format string, args ...any) {
 		levelStr = "ERROR"
 	}
 	msg := fmt.Sprintf(format, args...)
-	e.logger.Printf("%s %s agent_executor: %s", time.Now().Format(time.RFC3339), levelStr, msg)
+	logger.Printf("%s %s %s: %s", time.Now().Format(time.RFC3339), levelStr, component, msg)
+}
+
+func (e *Executor) log(level LogLevel, format string, args ...any) {
+	logf(e.logger, e.logLevel, level, "agent_executor", format, args...)
 }

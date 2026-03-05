@@ -123,7 +123,14 @@ type sortableEntry struct {
 	EffectivePriority int
 	CreatedAt         time.Time
 	ID                string
-	Type              string // "command", "task", "notification"
+}
+
+// sortKey holds the fields extracted from a queue entry for pending-sort filtering.
+type sortKey struct {
+	Status    model.Status
+	Priority  int
+	CreatedAt string
+	ID        string
 }
 
 // EffectivePriority computes the aging-adjusted priority.
@@ -145,22 +152,21 @@ func EffectivePriority(priority int, createdAt string, priorityAgingSec int) int
 	return result
 }
 
-// SortPendingTasks sorts tasks by effective_priority ASC → created_at ASC → id ASC.
-func (d *Dispatcher) SortPendingTasks(tasks []model.Task) []int {
-	priorityAgingSec := d.config.Queue.PriorityAgingSec
-
+// sortPendingIndices filters pending items and returns their original indices
+// sorted by effective_priority ASC → created_at ASC → id ASC.
+func sortPendingIndices[T any](items []T, extract func(T) sortKey, priorityAgingSec int) []int {
 	var entries []sortableEntry
-	for i, task := range tasks {
-		if task.Status != model.StatusPending {
+	for i, item := range items {
+		key := extract(item)
+		if key.Status != model.StatusPending {
 			continue
 		}
-		created, _ := time.Parse(time.RFC3339, task.CreatedAt)
+		created, _ := time.Parse(time.RFC3339, key.CreatedAt)
 		entries = append(entries, sortableEntry{
 			Index:             i,
-			EffectivePriority: EffectivePriority(task.Priority, task.CreatedAt, priorityAgingSec),
+			EffectivePriority: EffectivePriority(key.Priority, key.CreatedAt, priorityAgingSec),
 			CreatedAt:         created,
-			ID:                task.ID,
-			Type:              "task",
+			ID:                key.ID,
 		})
 	}
 
@@ -179,78 +185,27 @@ func (d *Dispatcher) SortPendingTasks(tasks []model.Task) []int {
 		indices[i] = e.Index
 	}
 	return indices
+}
+
+// SortPendingTasks sorts tasks by effective_priority ASC → created_at ASC → id ASC.
+func (d *Dispatcher) SortPendingTasks(tasks []model.Task) []int {
+	return sortPendingIndices(tasks, func(t model.Task) sortKey {
+		return sortKey{Status: t.Status, Priority: t.Priority, CreatedAt: t.CreatedAt, ID: t.ID}
+	}, d.config.Queue.PriorityAgingSec)
 }
 
 // SortPendingCommands sorts commands by effective_priority ASC → created_at ASC → id ASC.
 func (d *Dispatcher) SortPendingCommands(commands []model.Command) []int {
-	priorityAgingSec := d.config.Queue.PriorityAgingSec
-
-	var entries []sortableEntry
-	for i, cmd := range commands {
-		if cmd.Status != model.StatusPending {
-			continue
-		}
-		created, _ := time.Parse(time.RFC3339, cmd.CreatedAt)
-		entries = append(entries, sortableEntry{
-			Index:             i,
-			EffectivePriority: EffectivePriority(cmd.Priority, cmd.CreatedAt, priorityAgingSec),
-			CreatedAt:         created,
-			ID:                cmd.ID,
-			Type:              "command",
-		})
-	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].EffectivePriority != entries[j].EffectivePriority {
-			return entries[i].EffectivePriority < entries[j].EffectivePriority
-		}
-		if !entries[i].CreatedAt.Equal(entries[j].CreatedAt) {
-			return entries[i].CreatedAt.Before(entries[j].CreatedAt)
-		}
-		return entries[i].ID < entries[j].ID
-	})
-
-	indices := make([]int, len(entries))
-	for i, e := range entries {
-		indices[i] = e.Index
-	}
-	return indices
+	return sortPendingIndices(commands, func(c model.Command) sortKey {
+		return sortKey{Status: c.Status, Priority: c.Priority, CreatedAt: c.CreatedAt, ID: c.ID}
+	}, d.config.Queue.PriorityAgingSec)
 }
 
 // SortPendingNotifications sorts notifications by effective_priority ASC → created_at ASC → id ASC.
 func (d *Dispatcher) SortPendingNotifications(notifications []model.Notification) []int {
-	priorityAgingSec := d.config.Queue.PriorityAgingSec
-
-	var entries []sortableEntry
-	for i, ntf := range notifications {
-		if ntf.Status != model.StatusPending {
-			continue
-		}
-		created, _ := time.Parse(time.RFC3339, ntf.CreatedAt)
-		entries = append(entries, sortableEntry{
-			Index:             i,
-			EffectivePriority: EffectivePriority(ntf.Priority, ntf.CreatedAt, priorityAgingSec),
-			CreatedAt:         created,
-			ID:                ntf.ID,
-			Type:              "notification",
-		})
-	}
-
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].EffectivePriority != entries[j].EffectivePriority {
-			return entries[i].EffectivePriority < entries[j].EffectivePriority
-		}
-		if !entries[i].CreatedAt.Equal(entries[j].CreatedAt) {
-			return entries[i].CreatedAt.Before(entries[j].CreatedAt)
-		}
-		return entries[i].ID < entries[j].ID
-	})
-
-	indices := make([]int, len(entries))
-	for i, e := range entries {
-		indices[i] = e.Index
-	}
-	return indices
+	return sortPendingIndices(notifications, func(n model.Notification) sortKey {
+		return sortKey{Status: n.Status, Priority: n.Priority, CreatedAt: n.CreatedAt, ID: n.ID}
+	}, d.config.Queue.PriorityAgingSec)
 }
 
 // DispatchCommand dispatches a command to the planner agent.

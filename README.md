@@ -433,6 +433,7 @@ worktree:
   merge_strategy: "ort"
   cleanup_on_success: true
   cleanup_on_failure: false
+  git_timeout_sec: 120
   gc:
     enabled: true
     ttl_hours: 24
@@ -544,11 +545,11 @@ watcher:
   cooldown_after_clear: 3     # clear 後のクールダウン (秒)
   notify_lease_sec: 120       # 通知リース期間 (秒)
   busy_check_interval: 2      # ビジーチェック間隔 (秒)
-  busy_check_max_retries: 3   # ビジーチェック最大リトライ
-  busy_patterns: ""            # ビジー判定パターン
-  wait_ready_interval_sec: 2   # Agent 起動待機間隔 (秒)
-  wait_ready_max_retries: 10   # Agent 起動待機最大リトライ
-  clear_confirm_timeout_sec: 5 # clear 確認タイムアウト (秒)
+  busy_check_max_retries: 30  # ビジーチェック最大リトライ
+  busy_patterns: "Working|Thinking|Planning|Sending|Searching"  # ビジー判定パターン
+  wait_ready_interval_sec: 2   # Agent 起動待機間隔 (秒、コードデフォルト)
+  wait_ready_max_retries: 15   # Agent 起動待機最大リトライ
+  clear_confirm_timeout_sec: 5 # clear 確認タイムアウト (秒、コードデフォルト)
   clear_confirm_poll_ms: 250   # clear 確認ポーリング間隔 (ミリ秒)
   clear_max_attempts: 3        # clear 送信試行回数
   clear_retry_backoff_ms: 500  # clear リトライバックオフ (ミリ秒)
@@ -572,14 +573,14 @@ retry:
 
 ```yaml
 queue:
-  priority_aging_sec: 60        # 優先度エイジング間隔 (秒)
+  priority_aging_sec: 300       # 優先度エイジング間隔 (秒)
 ```
 
 ### デーモン
 
 ```yaml
 daemon:
-  shutdown_timeout_sec: 30      # グレースフルシャットダウンタイムアウト (秒)
+  shutdown_timeout_sec: 90      # グレースフルシャットダウンタイムアウト (秒)
 ```
 
 ### ログ
@@ -662,6 +663,7 @@ worktree:
   merge_strategy: "ort"            # git merge 戦略
   cleanup_on_success: true         # 成功時の自動クリーンアップ
   cleanup_on_failure: false        # 失敗時のクリーンアップ
+  git_timeout_sec: 120             # git コマンドのタイムアウト (秒)
   gc:
     enabled: true                  # 定期 GC
     ttl_hours: 24                  # 古い worktree の TTL

@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -491,5 +492,112 @@ func BenchmarkEvaluateGate_Complex(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		_, _ = qg.evaluateGateWithResult("pre_task", context)
+	}
+}
+
+// TestQualityGateDaemon_ConcurrentStopEmit verifies that concurrent Stop() and
+// EmitEvent() calls do not race or panic. Run with -race to detect data races.
+func TestQualityGateDaemon_ConcurrentStopEmit(t *testing.T) {
+	qg, _ := setupTestQualityGate(t)
+
+	err := qg.Start()
+	require.NoError(t, err)
+
+	const numEmitters = 10
+	const eventsPerEmitter = 50
+
+	var wg sync.WaitGroup
+
+	// Launch emitters behind a start barrier
+	start := make(chan struct{})
+	for i := 0; i < numEmitters; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			<-start
+			for j := 0; j < eventsPerEmitter; j++ {
+				qg.EmitEvent(TaskStartEvent{
+					TaskID:    fmt.Sprintf("task_%d_%d", id, j),
+					CommandID: "cmd_race_test",
+					AgentID:   fmt.Sprintf("worker%d", id),
+					StartedAt: time.Now(),
+				})
+			}
+		}(i)
+	}
+
+	// Launch Stop() concurrently with emitters
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		// Small delay so some emits are in flight
+		time.Sleep(time.Millisecond)
+		_ = qg.Stop()
+	}()
+
+	// Release all goroutines
+	close(start)
+
+	// Wait with timeout to detect deadlocks
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success — no panic, no deadlock
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for concurrent Stop+EmitEvent to complete (possible deadlock)")
+	}
+}
+
+// TestQualityGateDaemon_StopIdempotent verifies that calling Stop() multiple
+// times is safe and does not panic or deadlock.
+func TestQualityGateDaemon_StopIdempotent(t *testing.T) {
+	qg, _ := setupTestQualityGate(t)
+
+	err := qg.Start()
+	require.NoError(t, err)
+
+	// First stop
+	err = qg.Stop()
+	assert.NoError(t, err)
+
+	// Second stop — should be a no-op
+	err = qg.Stop()
+	assert.NoError(t, err)
+
+	// EmitEvent after double stop — should not panic
+	qg.EmitEvent(TaskStartEvent{
+		TaskID:    "task_after_stop",
+		CommandID: "cmd_after_stop",
+		AgentID:   "worker1",
+		StartedAt: time.Now(),
+	})
+}
+
+// TestQualityGateDaemon_EmitAfterStop verifies that events emitted after Stop()
+// are safely dropped without panic.
+func TestQualityGateDaemon_EmitAfterStop(t *testing.T) {
+	qg, _ := setupTestQualityGate(t)
+
+	err := qg.Start()
+	require.NoError(t, err)
+
+	err = qg.Stop()
+	require.NoError(t, err)
+
+	// Emit many events after stop — none should panic
+	for i := 0; i < 200; i++ {
+		qg.EmitEvent(TaskCompleteEvent{
+			TaskID:      fmt.Sprintf("task_%d", i),
+			CommandID:   "cmd_post_stop",
+			AgentID:     "worker1",
+			Status:      "completed",
+			CompletedAt: time.Now(),
+		})
 	}
 }

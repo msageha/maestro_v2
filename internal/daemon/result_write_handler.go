@@ -286,6 +286,7 @@ func (d *Daemon) resultWritePhaseA(params ResultWriteParams, resultStatus model.
 	if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
 		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("write results file: %v", err)}
 	}
+	d.recordSelfWrite(resultPath)
 
 	// 5. Check for retry if task failed (but don't schedule yet)
 	var retryTask *model.Task
@@ -316,6 +317,7 @@ func (d *Daemon) resultWritePhaseA(params ResultWriteParams, resultStatus model.
 	if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
 		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("write worker queue: %v", err)}
 	}
+	d.recordSelfWrite(queuePath)
 
 	// 7. Add retry task to queue and state AFTER successful queue write
 	if retryTask != nil {

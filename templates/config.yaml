@@ -92,6 +92,7 @@ worktree:
   merge_strategy: "ort"            # git merge 戦略
   cleanup_on_success: true         # コマンド成功時の自動クリーンアップ
   cleanup_on_failure: false        # コマンド失敗時のクリーンアップ (デフォルト: 保全)
+  git_timeout_sec: 120             # git コマンドのタイムアウト (秒)
   gc:
     enabled: true                  # 定期 GC の有効化
     ttl_hours: 24                  # 古い worktree の TTL (時間)

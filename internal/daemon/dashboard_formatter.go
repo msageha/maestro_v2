@@ -587,36 +587,13 @@ func (f *DashboardFormatter) WriteDashboard(output io.Writer) error {
 	return err
 }
 
-// UpdateDashboardFile updates the dashboard.md file
+// UpdateDashboardFile updates the dashboard.md file using atomic write.
 func (f *DashboardFormatter) UpdateDashboardFile() error {
-	dashboardPath := filepath.Join(f.maestroDir, "dashboard.md")
-
-	// Create temporary file
-	tmpPath := dashboardPath + ".tmp"
-	tmpFile, err := os.Create(tmpPath)
+	formatted, err := f.FormatDashboard()
 	if err != nil {
-		return fmt.Errorf("failed to create temp file: %w", err)
-	}
-	defer os.Remove(tmpPath)
-	defer tmpFile.Close()
-
-	// Write formatted dashboard
-	if err := f.WriteDashboard(tmpFile); err != nil {
-		return fmt.Errorf("failed to write dashboard: %w", err)
+		return fmt.Errorf("failed to format dashboard: %w", err)
 	}
 
-	// Sync to disk
-	if err := tmpFile.Sync(); err != nil {
-		return fmt.Errorf("failed to sync temp file: %w", err)
-	}
-
-	// Close before rename
-	tmpFile.Close()
-
-	// Atomic replace
-	if err := os.Rename(tmpPath, dashboardPath); err != nil {
-		return fmt.Errorf("failed to replace dashboard file: %w", err)
-	}
-
-	return nil
+	dashboardPath := filepath.Join(f.maestroDir, "dashboard.md")
+	return atomicWriteText(dashboardPath, formatted)
 }

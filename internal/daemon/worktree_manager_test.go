@@ -1,12 +1,14 @@
 package daemon
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -70,6 +72,10 @@ func newTestWorktreeManager(t *testing.T, projectRoot string) *WorktreeManager {
 			Enabled:      true,
 			TTLHours:     24,
 			MaxWorktrees: 32,
+		},
+		CommitPolicy: model.CommitPolicyConfig{
+			// Zero-valued: no enforcement (MaxFiles=0 means unlimited,
+			// RequireGitignore=false, MessagePattern="" means no check)
 		},
 	}
 
@@ -1331,4 +1337,545 @@ func TestCommitWorkerChanges_ErrorPaths(t *testing.T) {
 			t.Errorf("error should mention 'save state', got: %v", err)
 		}
 	})
+}
+
+// TestCommitWorkerChanges_SensitiveFilesNotStaged verifies that sensitive files
+// (e.g., .env, *.key, *.pem) are not staged by CommitWorkerChanges even when
+// they are not covered by .gitignore.
+func TestCommitWorkerChanges_SensitiveFilesNotStaged(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	if err := wm.CreateForCommand("cmd_sensitive", []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand failed: %v", err)
+	}
+
+	wtPath, err := wm.GetWorkerPath("cmd_sensitive", "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath failed: %v", err)
+	}
+
+	// Create a legitimate file and several sensitive files
+	if err := os.WriteFile(filepath.Join(wtPath, "main.go"), []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	sensitiveFiles := []string{".env", ".env.local", "server.key", "cert.pem", "credentials.json", "token.secret"}
+	for _, f := range sensitiveFiles {
+		if err := os.WriteFile(filepath.Join(wtPath, f), []byte("sensitive data"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Commit
+	if err := wm.CommitWorkerChanges("cmd_sensitive", "worker1", "add main.go"); err != nil {
+		t.Fatalf("CommitWorkerChanges failed: %v", err)
+	}
+
+	// Verify committed files: main.go should be committed, sensitive files should NOT
+	cmd := exec.Command("git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
+	cmd.Dir = wtPath
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git diff-tree failed: %v", err)
+	}
+
+	committedFiles := string(out)
+	if !strings.Contains(committedFiles, "main.go") {
+		t.Error("main.go should have been committed")
+	}
+	for _, f := range sensitiveFiles {
+		if strings.Contains(committedFiles, f) {
+			t.Errorf("sensitive file %q should NOT have been committed", f)
+		}
+	}
+
+	// Verify sensitive files still exist on disk (not deleted, just not committed)
+	for _, f := range sensitiveFiles {
+		if _, statErr := os.Stat(filepath.Join(wtPath, f)); os.IsNotExist(statErr) {
+			t.Errorf("sensitive file %q should still exist on disk", f)
+		}
+	}
+}
+
+// TestCommitWorkerChanges_TrackedModificationsStaged verifies that modifications
+// to already-tracked files are still properly staged and committed.
+func TestCommitWorkerChanges_TrackedModificationsStaged(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	if err := wm.CreateForCommand("cmd_tracked", []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand failed: %v", err)
+	}
+
+	wtPath, err := wm.GetWorkerPath("cmd_tracked", "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath failed: %v", err)
+	}
+
+	// Modify the existing tracked file (README.md from initial commit)
+	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("# Updated\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Commit
+	if err := wm.CommitWorkerChanges("cmd_tracked", "worker1", "update README"); err != nil {
+		t.Fatalf("CommitWorkerChanges failed: %v", err)
+	}
+
+	// Verify README.md was committed
+	cmd := exec.Command("git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
+	cmd.Dir = wtPath
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git diff-tree failed: %v", err)
+	}
+	if !strings.Contains(string(out), "README.md") {
+		t.Error("README.md modification should have been committed")
+	}
+}
+
+// TestCommitWorkerChanges_NewFileStagedWhenSafe verifies that new non-sensitive
+// files are staged and committed.
+func TestCommitWorkerChanges_NewFileStagedWhenSafe(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	if err := wm.CreateForCommand("cmd_newfile", []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand failed: %v", err)
+	}
+
+	wtPath, err := wm.GetWorkerPath("cmd_newfile", "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath failed: %v", err)
+	}
+
+	// Create new safe files
+	newFiles := []string{"feature.go", "feature_test.go", "docs/guide.md"}
+	for _, f := range newFiles {
+		fullPath := filepath.Join(wtPath, f)
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(fullPath, []byte("content"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Commit
+	if err := wm.CommitWorkerChanges("cmd_newfile", "worker1", "add features"); err != nil {
+		t.Fatalf("CommitWorkerChanges failed: %v", err)
+	}
+
+	// Verify new files were committed
+	cmd := exec.Command("git", "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
+	cmd.Dir = wtPath
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git diff-tree failed: %v", err)
+	}
+	committedFiles := string(out)
+	for _, f := range newFiles {
+		if !strings.Contains(committedFiles, filepath.Base(f)) {
+			t.Errorf("new file %q should have been committed", f)
+		}
+	}
+}
+
+// --- Git Timeout Tests ---
+
+func TestGitTimeout_Default(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	// Default should be 120 seconds (from EffectiveGitTimeout)
+	timeout := wm.gitTimeout()
+	if timeout != 120*time.Second {
+		t.Errorf("default timeout = %v, want 120s", timeout)
+	}
+}
+
+func TestGitTimeout_Custom(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	wm.config.GitTimeoutSec = 30
+
+	timeout := wm.gitTimeout()
+	if timeout != 30*time.Second {
+		t.Errorf("custom timeout = %v, want 30s", timeout)
+	}
+}
+
+func TestGitRunUsesContext(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	// Normal git command should succeed within timeout
+	if err := wm.gitRun("status"); err != nil {
+		t.Fatalf("gitRun(status) failed: %v", err)
+	}
+}
+
+func TestGitOutputUsesContext(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	// Normal git output should succeed
+	output, err := wm.gitOutput("rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("gitOutput(rev-parse HEAD) failed: %v", err)
+	}
+	if strings.TrimSpace(output) == "" {
+		t.Error("expected non-empty output from rev-parse HEAD")
+	}
+}
+
+func TestGitRunInDirUsesContext(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	if err := wm.gitRunInDir(projectRoot, "status"); err != nil {
+		t.Fatalf("gitRunInDir(status) failed: %v", err)
+	}
+}
+
+func TestGitOutputInDirUsesContext(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	output, err := wm.gitOutputInDir(projectRoot, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("gitOutputInDir(rev-parse HEAD) failed: %v", err)
+	}
+	if strings.TrimSpace(output) == "" {
+		t.Error("expected non-empty output from rev-parse HEAD")
+	}
+}
+
+func TestEffectiveGitTimeout_Default(t *testing.T) {
+	cfg := model.WorktreeConfig{}
+	if cfg.EffectiveGitTimeout() != 120 {
+		t.Errorf("default EffectiveGitTimeout = %d, want 120", cfg.EffectiveGitTimeout())
+	}
+}
+
+func TestEffectiveGitTimeout_Custom(t *testing.T) {
+	cfg := model.WorktreeConfig{GitTimeoutSec: 60}
+	if cfg.EffectiveGitTimeout() != 60 {
+		t.Errorf("custom EffectiveGitTimeout = %d, want 60", cfg.EffectiveGitTimeout())
+	}
+}
+
+// --- CommitPolicy Tests ---
+
+// TestCommitWorkerChanges_MaxFilesExceeded verifies that CommitWorkerChanges
+// rejects commits that exceed the configured max files limit.
+func TestCommitWorkerChanges_MaxFilesExceeded(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	wm.config.CommitPolicy.MaxFiles = 3 // Set a low limit for testing
+
+	if err := wm.CreateForCommand("cmd_maxfiles", []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand failed: %v", err)
+	}
+
+	wtPath, err := wm.GetWorkerPath("cmd_maxfiles", "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath failed: %v", err)
+	}
+
+	// Create 5 files (exceeds limit of 3)
+	for i := 0; i < 5; i++ {
+		f := filepath.Join(wtPath, fmt.Sprintf("file%d.go", i))
+		if err := os.WriteFile(f, []byte(fmt.Sprintf("package f%d\n", i)), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	err = wm.CommitWorkerChanges("cmd_maxfiles", "worker1", "[maestro] add files")
+	if err == nil {
+		t.Fatal("expected error for exceeding max files limit")
+	}
+	if !strings.Contains(err.Error(), "max_files_exceeded") {
+		t.Errorf("error should mention 'max_files_exceeded', got: %v", err)
+	}
+}
+
+// TestCommitWorkerChanges_MaxFilesWithinLimit verifies that commits within the
+// file limit succeed.
+func TestCommitWorkerChanges_MaxFilesWithinLimit(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	wm.config.CommitPolicy.MaxFiles = 5
+
+	if err := wm.CreateForCommand("cmd_maxfiles_ok", []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand failed: %v", err)
+	}
+
+	wtPath, err := wm.GetWorkerPath("cmd_maxfiles_ok", "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath failed: %v", err)
+	}
+
+	// Create 3 files (within limit of 5)
+	for i := 0; i < 3; i++ {
+		f := filepath.Join(wtPath, fmt.Sprintf("ok%d.go", i))
+		if err := os.WriteFile(f, []byte(fmt.Sprintf("package ok%d\n", i)), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := wm.CommitWorkerChanges("cmd_maxfiles_ok", "worker1", "[maestro] add ok files"); err != nil {
+		t.Fatalf("CommitWorkerChanges should succeed within limit: %v", err)
+	}
+}
+
+// TestCommitWorkerChanges_MissingGitignore verifies that CommitWorkerChanges
+// rejects commits when .gitignore is missing and RequireGitignore is true.
+func TestCommitWorkerChanges_MissingGitignore(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	wm.config.CommitPolicy.RequireGitignore = true
+
+	if err := wm.CreateForCommand("cmd_gitignore", []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand failed: %v", err)
+	}
+
+	wtPath, err := wm.GetWorkerPath("cmd_gitignore", "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath failed: %v", err)
+	}
+
+	// Ensure no .gitignore exists
+	os.Remove(filepath.Join(wtPath, ".gitignore"))
+
+	// Create a file to commit
+	if err := os.WriteFile(filepath.Join(wtPath, "main.go"), []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err = wm.CommitWorkerChanges("cmd_gitignore", "worker1", "[maestro] add main.go")
+	if err == nil {
+		t.Fatal("expected error for missing .gitignore")
+	}
+	if !strings.Contains(err.Error(), "missing_gitignore") {
+		t.Errorf("error should mention 'missing_gitignore', got: %v", err)
+	}
+}
+
+// TestCommitWorkerChanges_GitignorePresent verifies that commits succeed when
+// .gitignore is present.
+func TestCommitWorkerChanges_GitignorePresent(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	wm.config.CommitPolicy.RequireGitignore = true
+
+	if err := wm.CreateForCommand("cmd_gitignore_ok", []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand failed: %v", err)
+	}
+
+	wtPath, err := wm.GetWorkerPath("cmd_gitignore_ok", "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath failed: %v", err)
+	}
+
+	// Create .gitignore
+	if err := os.WriteFile(filepath.Join(wtPath, ".gitignore"), []byte(".env\n*.key\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// Create a file to commit
+	if err := os.WriteFile(filepath.Join(wtPath, "main.go"), []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := wm.CommitWorkerChanges("cmd_gitignore_ok", "worker1", "[maestro] add files"); err != nil {
+		t.Fatalf("CommitWorkerChanges should succeed with .gitignore present: %v", err)
+	}
+}
+
+// TestCommitWorkerChanges_MessageFormatInvalid verifies that commits with
+// invalid message format are rejected.
+func TestCommitWorkerChanges_MessageFormatInvalid(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	wm.config.CommitPolicy.MessagePattern = `^\[maestro\]\s`
+
+	if err := wm.CreateForCommand("cmd_msgfmt", []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand failed: %v", err)
+	}
+
+	wtPath, err := wm.GetWorkerPath("cmd_msgfmt", "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath failed: %v", err)
+	}
+
+	// Create .gitignore so that check passes
+	if err := os.WriteFile(filepath.Join(wtPath, ".gitignore"), []byte(".env\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "main.go"), []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Message does not match default pattern "^\[maestro\]\s"
+	err = wm.CommitWorkerChanges("cmd_msgfmt", "worker1", "bad commit message")
+	if err == nil {
+		t.Fatal("expected error for invalid commit message format")
+	}
+	if !strings.Contains(err.Error(), "message_format_invalid") {
+		t.Errorf("error should mention 'message_format_invalid', got: %v", err)
+	}
+}
+
+// TestCommitWorkerChanges_MessageFormatValid verifies that commits with valid
+// message format succeed.
+func TestCommitWorkerChanges_MessageFormatValid(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	wm.config.CommitPolicy.MessagePattern = `^\[maestro\]\s`
+
+	if err := wm.CreateForCommand("cmd_msgfmt_ok", []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand failed: %v", err)
+	}
+
+	wtPath, err := wm.GetWorkerPath("cmd_msgfmt_ok", "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath failed: %v", err)
+	}
+
+	// Create .gitignore
+	if err := os.WriteFile(filepath.Join(wtPath, ".gitignore"), []byte(".env\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "main.go"), []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := wm.CommitWorkerChanges("cmd_msgfmt_ok", "worker1", "[maestro] add main.go"); err != nil {
+		t.Fatalf("CommitWorkerChanges should succeed with valid message format: %v", err)
+	}
+}
+
+// TestCommitWorkerChanges_RequireGitignoreDisabled verifies that commits succeed
+// without .gitignore when RequireGitignore is explicitly set to false.
+func TestCommitWorkerChanges_RequireGitignoreDisabled(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	// Explicitly set a non-zero policy with RequireGitignore=false
+	wm.config.CommitPolicy = model.CommitPolicyConfig{
+		MaxFiles:         30,
+		RequireGitignore: false,
+		MessagePattern:   `^\[maestro\]\s`,
+	}
+
+	if err := wm.CreateForCommand("cmd_nogitig", []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand failed: %v", err)
+	}
+
+	wtPath, err := wm.GetWorkerPath("cmd_nogitig", "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath failed: %v", err)
+	}
+
+	// Ensure no .gitignore exists
+	os.Remove(filepath.Join(wtPath, ".gitignore"))
+
+	if err := os.WriteFile(filepath.Join(wtPath, "main.go"), []byte("package main\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := wm.CommitWorkerChanges("cmd_nogitig", "worker1", "[maestro] add main.go"); err != nil {
+		t.Fatalf("CommitWorkerChanges should succeed with RequireGitignore disabled: %v", err)
+	}
+}
+
+// TestCheckCommitPolicy_Unit tests the checkCommitPolicy method directly.
+func TestCheckCommitPolicy_Unit(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+
+	t.Run("all_checks_pass", func(t *testing.T) {
+		wm := newTestWorktreeManager(t, projectRoot)
+		wm.config.CommitPolicy.MaxFiles = 30
+		wm.config.CommitPolicy.MessagePattern = `^\[maestro\]\s`
+
+		stagedNul := "file1.go\x00file2.go\x00"
+		violations := wm.checkCommitPolicy(projectRoot, "[maestro] test", stagedNul)
+		if len(violations) != 0 {
+			t.Errorf("expected no violations, got %d: %v", len(violations), violations)
+		}
+	})
+
+	t.Run("max_files_exceeded", func(t *testing.T) {
+		wm := newTestWorktreeManager(t, projectRoot)
+		wm.config.CommitPolicy.MaxFiles = 2
+		wm.config.CommitPolicy.MessagePattern = `^\[maestro\]\s`
+
+		stagedNul := "a.go\x00b.go\x00c.go\x00"
+		violations := wm.checkCommitPolicy(projectRoot, "[maestro] test", stagedNul)
+		if len(violations) != 1 || violations[0].Code != "max_files_exceeded" {
+			t.Errorf("expected max_files_exceeded violation, got %v", violations)
+		}
+	})
+
+	t.Run("message_format_invalid", func(t *testing.T) {
+		wm := newTestWorktreeManager(t, projectRoot)
+		wm.config.CommitPolicy.MaxFiles = 30
+		wm.config.CommitPolicy.MessagePattern = `^\[maestro\]\s`
+
+		stagedNul := "file.go\x00"
+		violations := wm.checkCommitPolicy(projectRoot, "no prefix", stagedNul)
+		if len(violations) != 1 || violations[0].Code != "message_format_invalid" {
+			t.Errorf("expected message_format_invalid violation, got %v", violations)
+		}
+	})
+
+	t.Run("multiple_violations", func(t *testing.T) {
+		wm := newTestWorktreeManager(t, projectRoot)
+		wm.config.CommitPolicy.MaxFiles = 1
+		wm.config.CommitPolicy.RequireGitignore = true
+		wm.config.CommitPolicy.MessagePattern = `^\[maestro\]\s`
+
+		// Use a temp dir without .gitignore
+		tmpDir := t.TempDir()
+		stagedNul := "a.go\x00b.go\x00"
+		violations := wm.checkCommitPolicy(tmpDir, "bad msg", stagedNul)
+		if len(violations) < 2 {
+			t.Errorf("expected at least 2 violations, got %d: %v", len(violations), violations)
+		}
+	})
+}
+
+// TestIsSensitiveFile tests the sensitive file pattern matching.
+func TestIsSensitiveFile(t *testing.T) {
+	tests := []struct {
+		name      string
+		sensitive bool
+	}{
+		{".env", true},
+		{".env.local", true},
+		{".env.production", true},
+		{"server.key", true},
+		{"cert.pem", true},
+		{"credentials.json", true},
+		{"credentials.yaml", true},
+		{"api.secret", true},
+		{"keystore.p12", true},
+		{"cert.pfx", true},
+		{"main.go", false},
+		{"README.md", false},
+		{"config.yaml", false},
+		{"Makefile", false},
+		{".gitignore", false},
+		{"keys.go", false},       // .go, not .key
+		{"env_test.go", false},   // not .env
+		{"secret_handler.go", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isSensitiveFile(tt.name)
+			if got != tt.sensitive {
+				t.Errorf("isSensitiveFile(%q) = %v, want %v", tt.name, got, tt.sensitive)
+			}
+		})
+	}
 }

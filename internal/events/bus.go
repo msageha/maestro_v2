@@ -19,6 +19,9 @@ const (
 	EventTaskCompleted EventType = "task_completed"
 	// EventPhaseTransition is published when a phase status changes.
 	EventPhaseTransition EventType = "phase_transition"
+	// EventQueueWritten is published when the daemon writes to a queue file via UDS handler.
+	// Data keys: "file" (base filename), "source" ("uds"), "type" (write type).
+	EventQueueWritten EventType = "queue_written"
 )
 
 // Event represents a system event.
@@ -31,13 +34,24 @@ type Event struct {
 // Subscriber is a function that receives events.
 type Subscriber func(Event)
 
+// subscriberChan wraps a subscriber channel with sync.Once to prevent double-close panics.
+type subscriberChan struct {
+	ch   chan Event
+	once sync.Once
+}
+
+// safeClose closes the channel exactly once, regardless of how many times it is called.
+func (s *subscriberChan) safeClose() {
+	s.once.Do(func() { close(s.ch) })
+}
+
 // Bus is a non-blocking event bus using Publish/Subscribe pattern.
 // Events are delivered asynchronously via buffered channels.
 // If a subscriber's channel is full, the event is dropped and counted.
 type Bus struct {
 	mu               sync.RWMutex
 	closed           atomic.Bool
-	subscribers      map[EventType][]chan Event
+	subscribers      map[EventType][]*subscriberChan
 	bufferSize       int
 	wg               sync.WaitGroup
 	droppedCount     atomic.Int64
@@ -53,7 +67,7 @@ func NewBus(bufferSize int) *Bus {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Bus{
-		subscribers: make(map[EventType][]chan Event),
+		subscribers: make(map[EventType][]*subscriberChan),
 		bufferSize:  bufferSize,
 		ctx:         ctx,
 		cancel:      cancel,
@@ -78,8 +92,8 @@ func (b *Bus) Subscribe(eventType EventType, fn Subscriber) func() {
 		return func() {}
 	}
 
-	ch := make(chan Event, b.bufferSize)
-	b.subscribers[eventType] = append(b.subscribers[eventType], ch)
+	sub := &subscriberChan{ch: make(chan Event, b.bufferSize)}
+	b.subscribers[eventType] = append(b.subscribers[eventType], sub)
 
 	// Start goroutine to deliver events to subscriber
 	b.wg.Add(1)
@@ -89,7 +103,7 @@ func (b *Bus) Subscribe(eventType EventType, fn Subscriber) func() {
 		defer b.activeGoroutines.Add(-1)
 		for {
 			select {
-			case event, ok := <-ch:
+			case event, ok := <-sub.ch:
 				if !ok {
 					return
 				}
@@ -115,11 +129,11 @@ func (b *Bus) Subscribe(eventType EventType, fn Subscriber) func() {
 		defer b.mu.Unlock()
 
 		subs := b.subscribers[eventType]
-		for i, subCh := range subs {
-			if subCh == ch {
-				// Remove subscriber from slice
+		for i, s := range subs {
+			if s == sub {
+				// Remove subscriber from slice and safely close channel
 				b.subscribers[eventType] = append(subs[:i], subs[i+1:]...)
-				close(ch)
+				sub.safeClose()
 				break
 			}
 		}
@@ -144,10 +158,10 @@ func (b *Bus) Publish(eventType EventType, data map[string]interface{}) {
 	}
 
 	subscribers := b.subscribers[eventType]
-	for _, ch := range subscribers {
+	for _, sub := range subscribers {
 		// Non-blocking send using select with default
 		select {
-		case ch <- event:
+		case sub.ch <- event:
 			// Event delivered successfully
 		default:
 			// Channel full, drop event and record
@@ -174,8 +188,8 @@ func (b *Bus) Close() {
 
 	b.mu.Lock()
 	for eventType, subs := range b.subscribers {
-		for _, ch := range subs {
-			close(ch)
+		for _, sub := range subs {
+			sub.safeClose()
 		}
 		delete(b.subscribers, eventType)
 	}

@@ -78,7 +78,7 @@ func TestContinuous_NotRunning(t *testing.T) {
 		CurrentIteration: 5,
 		MaxIterations:    10,
 		Status:           model.ContinuousStatusStopped,
-		UpdatedAt:        &now,
+		UpdatedAt:        now,
 	})
 
 	err := ch.CheckAndAdvance("cmd_001", model.StatusCompleted)
@@ -107,7 +107,7 @@ func TestContinuous_Increment(t *testing.T) {
 		CurrentIteration: 3,
 		MaxIterations:    10,
 		Status:           model.ContinuousStatusRunning,
-		UpdatedAt:        &now,
+		UpdatedAt:        now,
 	})
 
 	err := ch.CheckAndAdvance("cmd_001", model.StatusCompleted)
@@ -143,7 +143,7 @@ func TestContinuous_Idempotency(t *testing.T) {
 		MaxIterations:    10,
 		Status:           model.ContinuousStatusRunning,
 		LastCommandID:    &lastCmd,
-		UpdatedAt:        &now,
+		UpdatedAt:        now,
 	})
 
 	// Same command ID → should be skipped
@@ -183,7 +183,7 @@ func TestContinuous_MaxIterationsStop(t *testing.T) {
 		CurrentIteration: 4,
 		MaxIterations:    5,
 		Status:           model.ContinuousStatusRunning,
-		UpdatedAt:        &now,
+		UpdatedAt:        now,
 	})
 
 	err := ch.CheckAndAdvance("cmd_005", model.StatusCompleted)
@@ -218,7 +218,7 @@ func TestContinuous_PauseOnFailure(t *testing.T) {
 		CurrentIteration: 2,
 		MaxIterations:    10,
 		Status:           model.ContinuousStatusRunning,
-		UpdatedAt:        &now,
+		UpdatedAt:        now,
 	})
 
 	err := ch.CheckAndAdvance("cmd_003", model.StatusFailed)
@@ -252,7 +252,7 @@ func TestContinuous_PauseOnFailure_Disabled(t *testing.T) {
 		CurrentIteration: 2,
 		MaxIterations:    10,
 		Status:           model.ContinuousStatusRunning,
-		UpdatedAt:        &now,
+		UpdatedAt:        now,
 	})
 
 	// Failed command but pause_on_failure=false → should remain running
@@ -304,7 +304,7 @@ func TestContinuous_PauseTakesPrecedenceOverStop(t *testing.T) {
 		CurrentIteration: 2,
 		MaxIterations:    3,
 		Status:           model.ContinuousStatusRunning,
-		UpdatedAt:        &now,
+		UpdatedAt:        now,
 	})
 
 	// Both pause_on_failure and max_iterations would trigger at iteration 3 with failure
@@ -337,7 +337,7 @@ func TestContinuous_MaxIterationsZero_Unlimited(t *testing.T) {
 		CurrentIteration: 999,
 		MaxIterations:    0,
 		Status:           model.ContinuousStatusRunning,
-		UpdatedAt:        &now,
+		UpdatedAt:        now,
 	})
 
 	err := ch.CheckAndAdvance("cmd_1000", model.StatusCompleted)

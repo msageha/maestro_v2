@@ -240,15 +240,35 @@ func (v VerificationConfig) EffectiveMaxRetries() int {
 
 // WorktreeConfig controls Worker worktree isolation (opt-in, default disabled).
 type WorktreeConfig struct {
-	Enabled          bool             `yaml:"enabled"`
-	BaseBranch       string           `yaml:"base_branch"`
-	PathPrefix       string           `yaml:"path_prefix"`
-	AutoCommit       bool             `yaml:"auto_commit"`
-	AutoMerge        bool             `yaml:"auto_merge"`
-	MergeStrategy    string           `yaml:"merge_strategy"`
-	CleanupOnSuccess bool             `yaml:"cleanup_on_success"`
-	CleanupOnFailure bool             `yaml:"cleanup_on_failure"`
-	GC               WorktreeGCConfig `yaml:"gc"`
+	Enabled          bool               `yaml:"enabled"`
+	BaseBranch       string             `yaml:"base_branch"`
+	PathPrefix       string             `yaml:"path_prefix"`
+	AutoCommit       bool               `yaml:"auto_commit"`
+	AutoMerge        bool               `yaml:"auto_merge"`
+	MergeStrategy    string             `yaml:"merge_strategy"`
+	CleanupOnSuccess bool               `yaml:"cleanup_on_success"`
+	CleanupOnFailure bool               `yaml:"cleanup_on_failure"`
+	GitTimeoutSec    int                `yaml:"git_timeout_sec"`
+	GC               WorktreeGCConfig   `yaml:"gc"`
+	CommitPolicy     CommitPolicyConfig `yaml:"commit_policy"`
+}
+
+// CommitPolicyConfig enforces safety checks before committing worker changes.
+// Zero-valued config means no enforcement. Set fields explicitly via config.yaml
+// to enable checks. Recommended template values: MaxFiles=30, RequireGitignore=true,
+// MessagePattern="^\\[maestro\\]\\s".
+type CommitPolicyConfig struct {
+	MaxFiles         int    `yaml:"max_files"`         // max staged files per commit; 0=unlimited
+	RequireGitignore bool   `yaml:"require_gitignore"` // require .gitignore existence
+	MessagePattern   string `yaml:"message_pattern"`   // regex for commit message validation; empty=no check
+}
+
+// EffectiveMaxFiles returns the configured max files or 30 as default.
+func (c CommitPolicyConfig) EffectiveMaxFiles() int {
+	if c.MaxFiles > 0 {
+		return c.MaxFiles
+	}
+	return 30
 }
 
 // WorktreeGCConfig controls periodic garbage collection of old worktrees.
@@ -280,6 +300,14 @@ func (w WorktreeConfig) EffectiveMergeStrategy() string {
 		return w.MergeStrategy
 	}
 	return "ort"
+}
+
+// EffectiveGitTimeout returns the configured git command timeout or 120 seconds as default.
+func (w WorktreeConfig) EffectiveGitTimeout() int {
+	if w.GitTimeoutSec > 0 {
+		return w.GitTimeoutSec
+	}
+	return 120
 }
 
 // EffectiveTTLHours returns the configured TTL or 24 hours as default.

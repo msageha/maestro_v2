@@ -74,6 +74,20 @@ func Launch(maestroDir string) error {
 
 	args := buildLaunchArgs(role, model, systemPrompt)
 
+	// For workers, set up PreToolUse policy hook for destructive operation prevention.
+	if role == "worker" {
+		pc := NewPolicyChecker(maestroDir)
+		scriptPath, err := pc.WriteHookScript()
+		if err != nil {
+			return fmt.Errorf("write policy hook script: %w", err)
+		}
+		hookSettings, err := pc.HookSettings(scriptPath)
+		if err != nil {
+			return fmt.Errorf("build policy hook settings: %w", err)
+		}
+		args = append(args, "--settings", hookSettings)
+	}
+
 	// Execute claude CLI.
 	// Clear CLAUDECODE env var to allow launching inside a parent Claude Code
 	// session (e.g. when maestro is invoked from Claude Code CLI).
@@ -99,12 +113,23 @@ func buildLaunchArgs(role, agentModel, systemPrompt string) []string {
 		args = append(args, "--allowedTools", strings.Join(tools, ","))
 	}
 
-	// Workers: block destructive tmux commands at the tool level.
-	// The textual prohibition in worker.md (D006) is not enforced by Claude CLI;
-	// --disallowedTools provides a hard technical block.
+	// Workers: block destructive tmux commands and .maestro/ reads at the tool level.
+	// The textual prohibitions in worker.md (D006, .maestro/ access) are not
+	// enforced by Claude CLI; --disallowedTools provides a hard technical block.
 	if role == "worker" {
 		args = append(args, "--disallowedTools",
-			"Bash(tmux kill-server:*),Bash(tmux kill-session:*),Bash(tmux kill-pane:*),Bash(tmux kill-window:*)")
+			strings.Join([]string{
+				"Bash(tmux kill-server:*)",
+				"Bash(tmux kill-session:*)",
+				"Bash(tmux kill-pane:*)",
+				"Bash(tmux kill-window:*)",
+				"Read(.maestro/state/**)",
+				"Read(.maestro/queues/**)",
+				"Read(.maestro/results/**)",
+				"Read(.maestro/locks/**)",
+				"Read(.maestro/logs/**)",
+				"Read(.maestro/config.yaml)",
+			}, ","))
 	}
 
 	// Disable Notification hooks for non-orchestrator roles via deep merge.

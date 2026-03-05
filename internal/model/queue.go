@@ -67,7 +67,7 @@ type NotificationQueue struct {
 type Notification struct {
 	ID               string  `yaml:"id"`
 	CommandID        string  `yaml:"command_id"`
-	Type             string  `yaml:"type"`
+	Type             NotificationType `yaml:"type"`
 	SourceResultID   string  `yaml:"source_result_id"`
 	Content          string  `yaml:"content"`
 	Priority         int     `yaml:"priority"`

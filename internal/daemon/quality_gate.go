@@ -103,6 +103,7 @@ type QualityGateDaemon struct {
 	eventChan         chan QualityGateEvent
 	metrics           *QualityGateMetrics
 	stopped           atomic.Bool // Prevents EmitEvent after Stop to avoid panic
+	stopOnce          sync.Once   // Makes Stop() idempotent
 	engine            *quality.Engine
 	evaluationTimeout time.Duration
 	gates             map[string][]*GateDefinition // For test compatibility
@@ -190,22 +191,26 @@ func (qg *QualityGateDaemon) Start() error {
 
 // Stop gracefully shuts down the quality gate daemon.
 // It waits for the event processing loop to finish.
+// Stop is idempotent: calling it multiple times is safe and only the first
+// call performs the actual shutdown.
 func (qg *QualityGateDaemon) Stop() error {
-	qg.log(LogLevelInfo, "quality_gate_daemon stopping")
+	qg.stopOnce.Do(func() {
+		qg.log(LogLevelInfo, "quality_gate_daemon stopping")
 
-	// Set stopped flag first to prevent new EmitEvent calls
-	qg.stopped.Store(true)
+		// Set stopped flag first to prevent new EmitEvent calls
+		qg.stopped.Store(true)
 
-	// Signal shutdown — context cancellation unblocks eventLoop via <-qg.ctx.Done().
-	// We intentionally do NOT close eventChan here to avoid a race with EmitEvent:
-	// a concurrent sender could pass the stopped check and send on a closed channel,
-	// causing a panic.
-	qg.cancel()
+		// Signal shutdown — context cancellation unblocks eventLoop via <-qg.ctx.Done().
+		// We intentionally do NOT close eventChan here to avoid a race with EmitEvent:
+		// a concurrent sender could pass the stopped check and send on a closed channel,
+		// causing a panic.
+		qg.cancel()
 
-	// Wait for event loop to finish
-	qg.wg.Wait()
+		// Wait for event loop to finish
+		qg.wg.Wait()
 
-	qg.log(LogLevelInfo, "quality_gate_daemon stopped")
+		qg.log(LogLevelInfo, "quality_gate_daemon stopped")
+	})
 	return nil
 }
 

@@ -16,6 +16,10 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
+// errYAMLCorrupted is a sentinel used internally to distinguish YAML parse errors
+// from other I/O errors so that backup recovery is only attempted for corruption.
+var errYAMLCorrupted = errors.New("yaml corrupted")
+
 type StateManager struct {
 	maestroDir string
 	lockMap    *lock.MutexMap
@@ -49,22 +53,92 @@ func (sm *StateManager) LoadState(commandID string) (*model.CommandState, error)
 	if err != nil {
 		return nil, err
 	}
+
+	state, parseErr := sm.loadAndParseState(path, commandID)
+	if parseErr == nil {
+		return state, nil
+	}
+
+	// Only attempt recovery for YAML corruption, not I/O errors
+	if !errors.Is(parseErr, errYAMLCorrupted) {
+		return nil, parseErr
+	}
+
+	// Attempt backup recovery: quarantine corrupted file first, then restore
+	// from .bak. Quarantining removes the primary file so that RestoreFromBackup
+	// (which uses AtomicWriteRaw) does not overwrite the good .bak with the
+	// corrupted primary. Skeleton generation is NOT used for state_command
+	// because it would silently discard command progress.
+	log.Printf("[WARN] LoadState: YAML corrupted for command %s, attempting backup recovery", commandID)
+	if _, quarantineErr := yamlutil.Quarantine(sm.maestroDir, path); quarantineErr != nil {
+		return nil, fmt.Errorf("parse state %s (quarantine failed: %v): %w", commandID, quarantineErr, parseErr)
+	}
+	if recoverErr := yamlutil.RestoreFromBackup(path); recoverErr != nil {
+		return nil, fmt.Errorf("parse state %s (backup recovery also failed: %v): %w", commandID, recoverErr, parseErr)
+	}
+
+	log.Printf("[INFO] LoadState: restored command %s from backup", commandID)
+
+	// Re-read and validate the restored file
+	state, err = sm.loadAndParseState(path, commandID)
+	if err != nil {
+		return nil, fmt.Errorf("parse state %s after backup restore: %w", commandID, err)
+	}
+	return state, nil
+}
+
+// loadAndParseState reads and validates a state file. Returns errYAMLCorrupted
+// (wrapped) for YAML parse errors to distinguish from I/O errors.
+func (sm *StateManager) loadAndParseState(path, commandID string) (*model.CommandState, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		// Preserve os.ErrNotExist for errors.Is() checks by callers
 		return nil, fmt.Errorf("read state %s: %w", commandID, err)
 	}
 
-	var state model.CommandState
-	if err := yamlv3.Unmarshal(data, &state); err != nil {
-		return nil, fmt.Errorf("parse state %s: %w", commandID, err)
+	// First pass: unmarshal to detect schema_version for migration
+	var raw map[string]interface{}
+	if err := yamlv3.Unmarshal(data, &raw); err != nil {
+		return nil, fmt.Errorf("parse state %s: %w: %w", commandID, errYAMLCorrupted, err)
 	}
 
-	if state.SchemaVersion != 1 {
-		return nil, fmt.Errorf("unsupported schema_version %d for state %s (expected 1)", state.SchemaVersion, commandID)
+	// Extract and validate schema_version from raw data
+	schemaVersion := 0
+	if sv, ok := raw["schema_version"]; ok {
+		switch v := sv.(type) {
+		case int:
+			schemaVersion = v
+		case float64:
+			schemaVersion = int(v)
+		}
 	}
+	if schemaVersion < 1 {
+		return nil, fmt.Errorf("invalid schema_version %d for state %s: %w", schemaVersion, commandID, errYAMLCorrupted)
+	}
+	if schemaVersion > CurrentSchemaVersion {
+		return nil, fmt.Errorf("unsupported schema_version %d for state %s (max %d): %w", schemaVersion, commandID, CurrentSchemaVersion, errYAMLCorrupted)
+	}
+
+	// Apply migrations if needed
+	if DefaultMigrator.NeedsMigration(schemaVersion) {
+		if err := DefaultMigrator.Migrate(raw, schemaVersion); err != nil {
+			return nil, fmt.Errorf("migrate state %s from version %d: %w: %w", commandID, schemaVersion, errYAMLCorrupted, err)
+		}
+		// Re-serialize migrated data for structured unmarshal
+		data, err = yamlv3.Marshal(raw)
+		if err != nil {
+			return nil, fmt.Errorf("re-serialize state %s after migration: %w: %w", commandID, errYAMLCorrupted, err)
+		}
+		log.Printf("[INFO] loadAndParseState: migrated state %s from schema version %d to %d", commandID, schemaVersion, CurrentSchemaVersion)
+	}
+
+	var state model.CommandState
+	if err := yamlv3.Unmarshal(data, &state); err != nil {
+		return nil, fmt.Errorf("parse state %s: %w: %w", commandID, errYAMLCorrupted, err)
+	}
+
 	if state.FileType != "state_command" {
-		return nil, fmt.Errorf("unexpected file_type %q for state %s (expected state_command)", state.FileType, commandID)
+		return nil, fmt.Errorf("unexpected file_type %q for state %s (expected state_command): %w", state.FileType, commandID, errYAMLCorrupted)
 	}
 
 	return &state, nil

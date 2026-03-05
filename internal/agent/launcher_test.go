@@ -169,6 +169,46 @@ func TestBuildSystemPrompt_MissingInstructionsFile(t *testing.T) {
 	}
 }
 
+func TestBuildLaunchArgs_WorkerDisallowsMaestroReads(t *testing.T) {
+	args := buildLaunchArgs("worker", "sonnet", "system-prompt")
+	joined := strings.Join(args, " ")
+
+	// Worker should have --disallowedTools containing Read restrictions for .maestro/ control-plane paths
+	controlPlanePaths := []string{
+		"Read(.maestro/state/**)",
+		"Read(.maestro/queues/**)",
+		"Read(.maestro/results/**)",
+		"Read(.maestro/locks/**)",
+		"Read(.maestro/logs/**)",
+		"Read(.maestro/config.yaml)",
+	}
+
+	for _, path := range controlPlanePaths {
+		if !strings.Contains(joined, path) {
+			t.Errorf("worker disallowedTools should contain %q, args: %v", path, args)
+		}
+	}
+
+	// Verify tmux kill restrictions are still present
+	if !strings.Contains(joined, "Bash(tmux kill-server:*)") {
+		t.Error("worker should still have tmux kill-server restriction")
+	}
+}
+
+func TestBuildLaunchArgs_WorkerDoesNotBlockWorktreeReads(t *testing.T) {
+	args := buildLaunchArgs("worker", "sonnet", "system-prompt")
+	joined := strings.Join(args, " ")
+
+	// Should NOT block .maestro/worktrees/** (workers need access to their worktree files)
+	if strings.Contains(joined, "Read(.maestro/worktrees/**") {
+		t.Error("worker should NOT have Read(.maestro/worktrees/**) in disallowedTools")
+	}
+	// Should NOT use a blanket .maestro/** block
+	if strings.Contains(joined, "Read(.maestro/**)") {
+		t.Error("worker should NOT use blanket Read(.maestro/**) block")
+	}
+}
+
 func TestBuildLaunchArgs_NotificationDisabledForNonOrchestrator(t *testing.T) {
 	tests := []struct {
 		role               string

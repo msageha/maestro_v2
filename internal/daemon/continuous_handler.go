@@ -73,7 +73,7 @@ func (ch *ContinuousHandler) CheckAndAdvance(commandID string, commandStatus mod
 	state.CurrentIteration++
 	state.LastCommandID = &commandID
 	now := ch.clock.Now().UTC().Format(time.RFC3339)
-	state.UpdatedAt = &now
+	state.UpdatedAt = now
 
 	// Check pause_on_failure
 	if ch.config.Continuous.PauseOnFailure && commandStatus == model.StatusFailed {

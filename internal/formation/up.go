@@ -764,7 +764,7 @@ func activateContinuousMode(maestroDir string, cfg model.Config) error {
 	state.Status = model.ContinuousStatusRunning
 	state.MaxIterations = cfg.Continuous.MaxIterations
 	now := time.Now().UTC().Format(time.RFC3339)
-	state.UpdatedAt = &now
+	state.UpdatedAt = now
 
 	return yamlutil.AtomicWrite(continuousPath, &state)
 }

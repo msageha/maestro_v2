@@ -2,10 +2,10 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math/rand"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
@@ -32,8 +32,7 @@ func (qh *QueueHandler) processPlannerSignalsDeferred(sq *model.PlannerSignalQue
 			// Phase-level signals: check phase existence (orphan) and staleness
 			phaseStatus, err := qh.dependencyResolver.GetPhaseStatus(sig.CommandID, sig.PhaseID)
 			if err != nil {
-				errMsg := err.Error()
-				if strings.Contains(errMsg, "not found") || strings.Contains(errMsg, "not exist") || os.IsNotExist(err) {
+				if errors.Is(err, ErrPhaseNotFound) || errors.Is(err, ErrStateNotFound) || os.IsNotExist(err) {
 					qh.log(LogLevelInfo, "signal_orphaned_removed kind=%s command=%s phase=%s error=%v",
 						sig.Kind, sig.CommandID, sig.PhaseID, err)
 					*dirty = true
@@ -62,8 +61,7 @@ func (qh *QueueHandler) processPlannerSignalsDeferred(sq *model.PlannerSignalQue
 			// Command-level signals (e.g. circuit_breaker_tripped): check command existence only
 			_, err := qh.dependencyResolver.stateReader.GetCommandPhases(sig.CommandID)
 			if err != nil {
-				errMsg := err.Error()
-				if strings.Contains(errMsg, "not found") || strings.Contains(errMsg, "not exist") || os.IsNotExist(err) {
+				if errors.Is(err, ErrStateNotFound) || os.IsNotExist(err) {
 					qh.log(LogLevelInfo, "signal_orphaned_removed kind=%s command=%s (command not found)",
 						sig.Kind, sig.CommandID)
 					*dirty = true

@@ -1,11 +1,13 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -328,10 +330,42 @@ func (wm *WorktreeManager) CommitWorkerChanges(commandID, workerID, message stri
 		return nil
 	}
 
-	// Stage all changes and commit
-	if err := wm.gitRunInDir(ws.Path, "add", "-A"); err != nil {
-		return fmt.Errorf("git add in %s: %w", ws.Path, err)
+	// Stage tracked file modifications/deletions (safe: never stages untracked files)
+	if err := wm.gitRunInDir(ws.Path, "add", "-u"); err != nil {
+		return fmt.Errorf("git add -u in %s: %w", ws.Path, err)
 	}
+
+	// Unstage any sensitive tracked files that were staged by git add -u
+	if err := wm.unstageSensitiveFiles(ws.Path); err != nil {
+		wm.log(LogLevelWarn, "unstage_sensitive_files_error command=%s worker=%s error=%v", commandID, workerID, err)
+	}
+
+	// Stage untracked files that pass .gitignore and safety filters
+	if err := wm.stageNewFiles(ws.Path); err != nil {
+		return fmt.Errorf("stage new files in %s: %w", ws.Path, err)
+	}
+
+	// Re-check if there is anything staged after filtering
+	stagedOut, err := wm.gitOutputInDir(ws.Path, "diff", "--cached", "--name-only", "-z")
+	if err != nil {
+		return fmt.Errorf("git diff --cached in %s: %w", ws.Path, err)
+	}
+	if strings.TrimRight(stagedOut, "\x00") == "" {
+		wm.log(LogLevelDebug, "no_staged_changes_after_filter command=%s worker=%s", commandID, workerID)
+		return nil
+	}
+
+	// Commit policy checks
+	if violations := wm.checkCommitPolicy(ws.Path, message, stagedOut); len(violations) > 0 {
+		for _, v := range violations {
+			wm.log(LogLevelWarn, "commit_policy_violation command=%s worker=%s code=%s msg=%s",
+				commandID, workerID, v.Code, v.Message)
+		}
+		// Reset staged changes so the worktree is left in a clean index state
+		_ = wm.gitRunInDir(ws.Path, "reset", "HEAD")
+		return fmt.Errorf("commit policy violation [%s]: %s", violations[0].Code, violations[0].Message)
+	}
+
 	if err := wm.gitRunInDir(ws.Path, "commit", "-m", message); err != nil {
 		return fmt.Errorf("git commit in %s: %w", ws.Path, err)
 	}
@@ -1149,11 +1183,69 @@ func (wm *WorktreeManager) getConflictFilesInDir(dir string) ([]string, error) {
 	return files, nil
 }
 
+// gitTimeout returns the configured git command timeout as a time.Duration.
+func (wm *WorktreeManager) gitTimeout() time.Duration {
+	return time.Duration(wm.config.EffectiveGitTimeout()) * time.Second
+}
+
+// gitExec is the shared git execution helper. All git operations go through
+// this method to ensure consistent timeout and error handling.
+// dir specifies the working directory; if empty, projectRoot is used.
+// Returns (stdout, combinedOutput, error). Callers that need only the exit
+// status use gitRun/gitRunInDir; callers that need stdout use gitOutput/gitOutputInDir.
+func (wm *WorktreeManager) gitExecCombined(dir string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), wm.gitTimeout())
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	} else {
+		cmd.Dir = wm.projectRoot
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			dirLabel := wm.projectRoot
+			if dir != "" {
+				dirLabel = dir
+			}
+			return output, fmt.Errorf("git %s (in %s): timeout after %s: %w",
+				strings.Join(args, " "), dirLabel, wm.gitTimeout(), ctx.Err())
+		}
+		return output, err
+	}
+	return output, nil
+}
+
+func (wm *WorktreeManager) gitExecOutput(dir string, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), wm.gitTimeout())
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "git", args...)
+	if dir != "" {
+		cmd.Dir = dir
+	} else {
+		cmd.Dir = wm.projectRoot
+	}
+	output, err := cmd.Output()
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			dirLabel := wm.projectRoot
+			if dir != "" {
+				dirLabel = dir
+			}
+			return nil, fmt.Errorf("git %s (in %s): timeout after %s: %w",
+				strings.Join(args, " "), dirLabel, wm.gitTimeout(), ctx.Err())
+		}
+		return nil, err
+	}
+	return output, nil
+}
+
 // gitRun executes a git command in the project root.
 func (wm *WorktreeManager) gitRun(args ...string) error {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = wm.projectRoot
-	output, err := cmd.CombinedOutput()
+	output, err := wm.gitExecCombined("", args...)
 	if err != nil {
 		return fmt.Errorf("git %s: %w\noutput: %s", strings.Join(args, " "), err, string(output))
 	}
@@ -1162,9 +1254,7 @@ func (wm *WorktreeManager) gitRun(args ...string) error {
 
 // gitOutput executes a git command and returns stdout.
 func (wm *WorktreeManager) gitOutput(args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = wm.projectRoot
-	output, err := cmd.Output()
+	output, err := wm.gitExecOutput("", args...)
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return "", fmt.Errorf("git %s: %w\nstderr: %s", strings.Join(args, " "), err, string(exitErr.Stderr))
@@ -1176,9 +1266,7 @@ func (wm *WorktreeManager) gitOutput(args ...string) (string, error) {
 
 // gitRunInDir executes a git command in a specific directory.
 func (wm *WorktreeManager) gitRunInDir(dir string, args ...string) error {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	output, err := cmd.CombinedOutput()
+	output, err := wm.gitExecCombined(dir, args...)
 	if err != nil {
 		return fmt.Errorf("git -C %s %s: %w\noutput: %s", dir, strings.Join(args, " "), err, string(output))
 	}
@@ -1187,9 +1275,7 @@ func (wm *WorktreeManager) gitRunInDir(dir string, args ...string) error {
 
 // gitOutputInDir executes a git command in a specific directory and returns stdout.
 func (wm *WorktreeManager) gitOutputInDir(dir string, args ...string) (string, error) {
-	cmd := exec.Command("git", args...)
-	cmd.Dir = dir
-	output, err := cmd.Output()
+	output, err := wm.gitExecOutput(dir, args...)
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			return "", fmt.Errorf("git -C %s %s: %w\nstderr: %s", dir, strings.Join(args, " "), err, string(exitErr.Stderr))
@@ -1218,6 +1304,165 @@ func parseWorktreeListPorcelain(output string) []string {
 		}
 	}
 	return paths
+}
+
+// sensitiveFilePatterns lists file name patterns that should never be staged
+// automatically, even if they are not covered by .gitignore.
+var sensitiveFilePatterns = []string{
+	".env",
+	".env.*",
+	"*.key",
+	"*.pem",
+	"*.secret",
+	"*.p12",
+	"*.pfx",
+	"credentials.*",
+}
+
+// isSensitiveFile returns true if the filename matches a sensitive pattern
+// that should not be staged automatically.
+func isSensitiveFile(name string) bool {
+	base := filepath.Base(name)
+	for _, pattern := range sensitiveFilePatterns {
+		if matched, _ := filepath.Match(pattern, base); matched {
+			return true
+		}
+	}
+	return false
+}
+
+// stageNewFiles stages untracked files that pass both .gitignore and the
+// sensitive-file safety filter. Files matching sensitive patterns are logged
+// but not staged. Uses NUL-separated output for safe filename handling.
+func (wm *WorktreeManager) stageNewFiles(dir string) error {
+	// List untracked files respecting .gitignore (NUL-separated for safety)
+	output, err := wm.gitOutputInDir(dir, "ls-files", "--others", "--exclude-standard", "-z")
+	if err != nil {
+		return fmt.Errorf("list untracked files: %w", err)
+	}
+
+	var toStage []string
+	for _, name := range strings.Split(output, "\x00") {
+		if name == "" {
+			continue
+		}
+		if isSensitiveFile(name) {
+			wm.log(LogLevelWarn, "skip_sensitive_file path=%s dir=%s", name, dir)
+			continue
+		}
+		toStage = append(toStage, name)
+	}
+
+	if len(toStage) == 0 {
+		return nil
+	}
+
+	args := append([]string{"add", "--"}, toStage...)
+	if err := wm.gitRunInDir(dir, args...); err != nil {
+		return fmt.Errorf("git add new files: %w", err)
+	}
+	return nil
+}
+
+// unstageSensitiveFiles checks the staged file list and unstages any files
+// matching sensitive patterns. This prevents accidentally committing sensitive
+// tracked files that were staged by git add -u.
+func (wm *WorktreeManager) unstageSensitiveFiles(dir string) error {
+	output, err := wm.gitOutputInDir(dir, "diff", "--cached", "--name-only", "-z")
+	if err != nil {
+		return fmt.Errorf("list staged files: %w", err)
+	}
+
+	var toUnstage []string
+	for _, name := range strings.Split(output, "\x00") {
+		if name == "" {
+			continue
+		}
+		if isSensitiveFile(name) {
+			wm.log(LogLevelWarn, "unstage_sensitive_tracked_file path=%s dir=%s", name, dir)
+			toUnstage = append(toUnstage, name)
+		}
+	}
+
+	if len(toUnstage) == 0 {
+		return nil
+	}
+
+	args := append([]string{"reset", "HEAD", "--"}, toUnstage...)
+	if err := wm.gitRunInDir(dir, args...); err != nil {
+		return fmt.Errorf("unstage sensitive files: %w", err)
+	}
+	return nil
+}
+
+// CommitPolicyViolation represents a single commit policy check failure.
+type CommitPolicyViolation struct {
+	Code    string   // machine-readable code (e.g. "max_files_exceeded")
+	Message string   // human-readable description
+	Files   []string // affected files (if applicable)
+}
+
+// checkCommitPolicy validates the staged changes and commit message against the
+// configured CommitPolicy. Returns an empty slice if all checks pass.
+// stagedNul is the NUL-separated output from `git diff --cached --name-only -z`.
+func (wm *WorktreeManager) checkCommitPolicy(worktreePath, message, stagedNul string) []CommitPolicyViolation {
+	policy := wm.config.CommitPolicy
+	var violations []CommitPolicyViolation
+
+	// Parse staged file list
+	var stagedFiles []string
+	for _, name := range strings.Split(stagedNul, "\x00") {
+		if name != "" {
+			stagedFiles = append(stagedFiles, name)
+		}
+	}
+
+	// Check 1: Maximum files per commit (MaxFiles=0 means unlimited)
+	maxFiles := policy.MaxFiles
+	if maxFiles > 0 && len(stagedFiles) > maxFiles {
+		violations = append(violations, CommitPolicyViolation{
+			Code:    "max_files_exceeded",
+			Message: fmt.Sprintf("staged file count %d exceeds limit %d", len(stagedFiles), maxFiles),
+			Files:   stagedFiles,
+		})
+	}
+
+	// Check 2: .gitignore existence
+	if policy.RequireGitignore {
+		gitignorePath := filepath.Join(worktreePath, ".gitignore")
+		if _, err := os.Stat(gitignorePath); err != nil {
+			if os.IsNotExist(err) {
+				violations = append(violations, CommitPolicyViolation{
+					Code:    "missing_gitignore",
+					Message: ".gitignore file not found in worktree root",
+				})
+			} else {
+				violations = append(violations, CommitPolicyViolation{
+					Code:    "gitignore_check_error",
+					Message: fmt.Sprintf("failed to check .gitignore: %v", err),
+				})
+			}
+		}
+	}
+
+	// Check 3: Commit message format
+	pattern := policy.MessagePattern
+	if pattern != "" {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			violations = append(violations, CommitPolicyViolation{
+				Code:    "invalid_message_pattern",
+				Message: fmt.Sprintf("commit message pattern %q is invalid: %v", pattern, err),
+			})
+		} else if !re.MatchString(message) {
+			violations = append(violations, CommitPolicyViolation{
+				Code:    "message_format_invalid",
+				Message: fmt.Sprintf("commit message does not match required pattern %q", pattern),
+			})
+		}
+	}
+
+	return violations
 }
 
 func (wm *WorktreeManager) log(level LogLevel, format string, args ...any) {

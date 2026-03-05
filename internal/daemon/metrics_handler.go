@@ -84,10 +84,31 @@ func (mh *MetricsHandler) UpdateMetrics(
 	// Compute queue depth
 	metrics.QueueDepth = mh.computeQueueDepth(cq, taskQueues, nq)
 
-	// Count completed/failed from result files (persistent, not affected by queue archival).
-	// Result files are the authoritative source: both normal result_write and dead-letter
-	// post-processing write to results/*.yaml, so archived queue entries don't cause
-	// counter regression.
+	// --- Counter update strategy (B-004 documentation) ---
+	//
+	// MetricsHandler uses two distinct counter update patterns. Both are safe
+	// because UpdateMetrics is called exclusively from the daemon's single-writer
+	// goroutine (PeriodicScan). No mutex or atomic operations are needed.
+	//
+	// Pattern 1: RE-COMPUTED counters (overwrite each scan)
+	//   TasksCompleted and TasksFailed are re-counted from result files every
+	//   scan cycle. This ensures accuracy even after queue archival or process
+	//   restart, since result files are the persistent source of truth.
+	//
+	// Pattern 2: INCREMENTAL counters (additive across scans)
+	//   CommandsDispatched, TasksDispatched, etc. are accumulated from per-scan
+	//   deltas. These track transient events that are not persisted elsewhere.
+	//   Values survive daemon restarts via the metrics.yaml file (loaded at scan
+	//   start, incremented, then written back).
+	//
+	// Mixing these patterns is intentional and correct: re-computed counters
+	// self-heal on restart, while incremental counters preserve cumulative
+	// history. The single-writer goroutine confinement guarantees no data races.
+
+	// Pattern 1: Re-compute completed/failed from result files.
+	// Result files are the authoritative source: both normal result_write and
+	// dead-letter post-processing write to results/*.yaml, so archived queue
+	// entries don't cause counter regression.
 	resultFiles := mh.loadAllResultFiles()
 	resultCompleted := 0
 	resultFailed := 0
@@ -108,7 +129,7 @@ func (mh *MetricsHandler) UpdateMetrics(
 	metrics.Counters.TasksCompleted = resultCompleted
 	metrics.Counters.TasksFailed = resultFailed
 
-	// Merge incremental counters (additive)
+	// Pattern 2: Merge incremental counters (additive across scans).
 	metrics.Counters.CommandsDispatched += counters.CommandsDispatched
 	metrics.Counters.TasksDispatched += counters.TasksDispatched
 	metrics.Counters.TasksCancelled += counters.TasksCancelled

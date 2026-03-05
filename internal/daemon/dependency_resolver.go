@@ -15,6 +15,11 @@ import (
 // this from other read errors (e.g., parse failures on an existing file).
 var ErrStateNotFound = errors.New("state not found")
 
+// ErrPhaseNotFound is returned when a specific phase ID is not present in a command's
+// phase list. Unlike ErrStateNotFound (state file missing), this means the state file
+// exists but the requested phase does not.
+var ErrPhaseNotFound = errors.New("phase not found")
+
 // StateReader provides read access to command state (state/commands/{command_id}.yaml).
 // Phase 6 implements the concrete version; Phase 5 uses this interface for decoupling.
 type StateReader interface {
@@ -183,6 +188,12 @@ func (dr *DependencyResolver) CheckPhaseTransitions(commandID string) ([]PhaseTr
 		return nil, fmt.Errorf("get phases for %s: %w", commandID, err)
 	}
 
+	// Build phase lookup map once for all pending-phase checks (B-006 optimization).
+	phaseMap := make(map[string]PhaseInfo, len(phases))
+	for _, p := range phases {
+		phaseMap[p.ID] = p
+	}
+
 	var transitions []PhaseTransitionResult
 
 	for _, phase := range phases {
@@ -195,13 +206,13 @@ func (dr *DependencyResolver) CheckPhaseTransitions(commandID string) ([]PhaseTr
 
 		case model.PhaseStatusPending:
 			// Check for cascade cancel
-			tr := dr.checkPendingPhaseCascade(phases, phase)
+			tr := dr.checkPendingPhaseCascade(phaseMap, phase)
 			if tr != nil {
 				transitions = append(transitions, *tr)
 				continue
 			}
 			// Check for activation (all dependency phases completed)
-			tr = dr.checkPendingPhaseActivation(phases, phase)
+			tr = dr.checkPendingPhaseActivation(phaseMap, phase)
 			if tr != nil {
 				transitions = append(transitions, *tr)
 			}
@@ -283,7 +294,8 @@ func (dr *DependencyResolver) checkActivePhaseCompletion(commandID string, phase
 }
 
 // checkPendingPhaseActivation checks if a pending phase should be activated.
-func (dr *DependencyResolver) checkPendingPhaseActivation(allPhases []PhaseInfo, phase PhaseInfo) *PhaseTransitionResult {
+// phaseMap is pre-built by CheckPhaseTransitions for O(1) lookups (B-006).
+func (dr *DependencyResolver) checkPendingPhaseActivation(phaseMap map[string]PhaseInfo, phase PhaseInfo) *PhaseTransitionResult {
 	// DependsOn empty means no dependencies — activate immediately
 	if len(phase.DependsOn) == 0 {
 		dr.log(LogLevelInfo, "phase_activation phase=%s no_dependencies", phase.ID)
@@ -294,11 +306,6 @@ func (dr *DependencyResolver) checkPendingPhaseActivation(allPhases []PhaseInfo,
 			NewStatus: model.PhaseStatusAwaitingFill,
 			Reason:    "no dependency phases (immediate activation)",
 		}
-	}
-
-	phaseMap := make(map[string]PhaseInfo)
-	for _, p := range allPhases {
-		phaseMap[p.ID] = p
 	}
 
 	for _, depID := range phase.DependsOn {
@@ -325,14 +332,10 @@ func (dr *DependencyResolver) checkPendingPhaseActivation(allPhases []PhaseInfo,
 }
 
 // checkPendingPhaseCascade checks if a pending phase should be cascade-cancelled.
-func (dr *DependencyResolver) checkPendingPhaseCascade(allPhases []PhaseInfo, phase PhaseInfo) *PhaseTransitionResult {
+// phaseMap is pre-built by CheckPhaseTransitions for O(1) lookups (B-006).
+func (dr *DependencyResolver) checkPendingPhaseCascade(phaseMap map[string]PhaseInfo, phase PhaseInfo) *PhaseTransitionResult {
 	if len(phase.DependsOn) == 0 {
 		return nil
-	}
-
-	phaseMap := make(map[string]PhaseInfo)
-	for _, p := range allPhases {
-		phaseMap[p.ID] = p
 	}
 
 	for _, depID := range phase.DependsOn {
@@ -409,7 +412,7 @@ func (dr *DependencyResolver) GetPhaseStatus(commandID, phaseID string) (model.P
 			return p.Status, nil
 		}
 	}
-	return "", fmt.Errorf("phase %s not found in command %s", phaseID, commandID)
+	return "", fmt.Errorf("phase %s in command %s: %w", phaseID, commandID, ErrPhaseNotFound)
 }
 
 // BuildAwaitingFillNotification creates the notification message for a phase entering awaiting_fill.

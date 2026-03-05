@@ -145,7 +145,7 @@ func (r *PlanStateReader) ApplyPhaseTransition(commandID, phaseID string, newSta
 	}
 
 	if !found {
-		return fmt.Errorf("phase %s not found in command %s", phaseID, commandID)
+		return fmt.Errorf("phase %s in command %s: %w", phaseID, commandID, daemon.ErrPhaseNotFound)
 	}
 
 	state.UpdatedAt = now

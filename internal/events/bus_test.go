@@ -392,6 +392,201 @@ func TestBus_ConcurrentCloseAndPublish(t *testing.T) {
 	}
 }
 
+func TestBus_QueueWrittenEvent(t *testing.T) {
+	bus := NewBus(10)
+	defer bus.Close()
+
+	var mu sync.Mutex
+	received := []Event{}
+	done := make(chan struct{}, 1)
+
+	unsub := bus.Subscribe(EventQueueWritten, func(e Event) {
+		mu.Lock()
+		received = append(received, e)
+		mu.Unlock()
+		select {
+		case done <- struct{}{}:
+		default:
+		}
+	})
+	defer unsub()
+
+	bus.Publish(EventQueueWritten, map[string]interface{}{
+		"file":   "planner.yaml",
+		"source": "uds",
+		"type":   "command",
+	})
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for EventQueueWritten delivery")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	if len(received) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(received))
+	}
+	if received[0].Type != EventQueueWritten {
+		t.Errorf("expected type %s, got %s", EventQueueWritten, received[0].Type)
+	}
+	if file, ok := received[0].Data["file"].(string); !ok || file != "planner.yaml" {
+		t.Errorf("expected file planner.yaml, got %v", received[0].Data["file"])
+	}
+}
+
+func TestBus_QueueWrittenDoesNotAffectOtherSubscribers(t *testing.T) {
+	bus := NewBus(10)
+	defer bus.Close()
+
+	taskCount := 0
+	queueCount := 0
+	var mu sync.Mutex
+	taskDone := make(chan struct{}, 1)
+	queueDone := make(chan struct{}, 1)
+
+	unsub1 := bus.Subscribe(EventTaskStarted, func(e Event) {
+		mu.Lock()
+		taskCount++
+		mu.Unlock()
+		select {
+		case taskDone <- struct{}{}:
+		default:
+		}
+	})
+	defer unsub1()
+
+	unsub2 := bus.Subscribe(EventQueueWritten, func(e Event) {
+		mu.Lock()
+		queueCount++
+		mu.Unlock()
+		select {
+		case queueDone <- struct{}{}:
+		default:
+		}
+	})
+	defer unsub2()
+
+	bus.Publish(EventTaskStarted, map[string]interface{}{"task_id": "t1"})
+	bus.Publish(EventQueueWritten, map[string]interface{}{"file": "planner.yaml"})
+
+	select {
+	case <-taskDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for task_started")
+	}
+	select {
+	case <-queueDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for queue_written")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if taskCount != 1 {
+		t.Errorf("expected 1 task_started, got %d", taskCount)
+	}
+	if queueCount != 1 {
+		t.Errorf("expected 1 queue_written, got %d", queueCount)
+	}
+}
+
+func TestBus_DoubleCloseNoPanic(t *testing.T) {
+	// Reproduce B1: unsubscribe() then Close() must not panic from double close.
+	bus := NewBus(10)
+
+	unsub := bus.Subscribe(EventTaskStarted, func(e Event) {})
+
+	// Unsubscribe closes the channel first
+	unsub()
+	// Close() would previously close the same channel again → panic.
+	// With sync.Once fix, this must complete without panic.
+	bus.Close()
+}
+
+func TestBus_CloseBeforeUnsubscribeNoPanic(t *testing.T) {
+	// Reverse order: Close() first, then unsubscribe().
+	bus := NewBus(10)
+
+	unsub := bus.Subscribe(EventTaskStarted, func(e Event) {})
+
+	// Close() closes all channels
+	bus.Close()
+	// Calling unsubscribe after Close must not panic.
+	unsub()
+}
+
+func TestBus_ConcurrentUnsubscribeAndClose(t *testing.T) {
+	// Stress test: concurrent unsubscribe and Close must not panic.
+	for iter := 0; iter < 100; iter++ {
+		bus := NewBus(10)
+		unsubs := make([]func(), 10)
+		for i := 0; i < 10; i++ {
+			unsubs[i] = bus.Subscribe(EventTaskStarted, func(e Event) {})
+		}
+
+		var wg sync.WaitGroup
+		// Unsubscribe all concurrently
+		for _, u := range unsubs {
+			wg.Add(1)
+			go func(fn func()) {
+				defer wg.Done()
+				fn()
+			}(u)
+		}
+		// Close concurrently
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			bus.Close()
+		}()
+
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("iteration %d: timed out - likely deadlock", iter)
+		}
+	}
+}
+
+func TestBus_DroppedCount(t *testing.T) {
+	// Buffer size 1 with a blocking subscriber → events beyond the first are dropped.
+	bus := NewBus(1)
+	defer bus.Close()
+
+	block := make(chan struct{})
+	unsub := bus.Subscribe(EventTaskStarted, func(e Event) {
+		<-block // block until released
+	})
+	defer unsub()
+
+	// Initial state: no drops
+	if got := bus.DroppedCount(); got != 0 {
+		t.Fatalf("expected 0 dropped before publish, got %d", got)
+	}
+
+	// Fill the buffer (size 1) and cause drops
+	for i := 0; i < 5; i++ {
+		bus.Publish(EventTaskStarted, map[string]interface{}{"id": i})
+	}
+
+	// At least some events should have been dropped (buffer is 1, subscriber is blocked)
+	if got := bus.DroppedCount(); got == 0 {
+		t.Error("expected DroppedCount > 0 after publishing to full channel")
+	}
+
+	// Unblock subscriber
+	close(block)
+}
+
 func BenchmarkBus_Publish(b *testing.B) {
 	bus := NewBus(100)
 	defer bus.Close()

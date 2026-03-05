@@ -870,8 +870,8 @@ func TestReconciler_R0_JustBelowThreshold(t *testing.T) {
 	stateDir := filepath.Join(maestroDir, "state", "commands")
 	os.MkdirAll(stateDir, 0755)
 
-	// Created 119 seconds ago (1 second before threshold)
-	createdAt := time.Now().UTC().Add(-119 * time.Second).Format(time.RFC3339)
+	// Created 115 seconds ago (safely below 120s threshold; 119s is too close due to RFC3339 truncation)
+	createdAt := time.Now().UTC().Add(-115 * time.Second).Format(time.RFC3339)
 	state := model.CommandState{
 		SchemaVersion: 1, FileType: "state_command",
 		CommandID: "cmd_r0_below", PlanStatus: model.PlanStatusPlanning,

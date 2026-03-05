@@ -107,8 +107,69 @@ type Daemon struct {
 	shuttingDown atomic.Bool
 	shutdownMu   sync.RWMutex
 
+	selfWrites *selfWriteTracker // tracks daemon-originated YAML writes for fsnotify filtering
+
 	cleanupOnce sync.Once
 	forceExit   atomic.Bool
+}
+
+// selfWriteTracker tracks files written by the daemon to filter fsnotify self-notifications.
+// When the daemon writes a YAML file via UDS handler, it records the path here.
+// fsnotifyLoop checks this tracker and skips events for self-written files.
+type selfWriteTracker struct {
+	mu    sync.Mutex
+	paths map[string]time.Time
+}
+
+func newSelfWriteTracker() *selfWriteTracker {
+	return &selfWriteTracker{paths: make(map[string]time.Time)}
+}
+
+// Record marks a file path as self-written.
+func (t *selfWriteTracker) Record(path string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.paths[path] = time.Now()
+	// Opportunistic cleanup of stale entries (> 30s)
+	for p, ts := range t.paths {
+		if time.Since(ts) > 30*time.Second {
+			delete(t.paths, p)
+		}
+	}
+}
+
+// Consume checks if a path was recently self-written (within 10s).
+// If so, removes it from tracking and returns true.
+// Also performs opportunistic cleanup of stale entries to prevent accumulation
+// when Record() is not called frequently.
+func (t *selfWriteTracker) Consume(path string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	ts, ok := t.paths[path]
+	if !ok {
+		// Opportunistic cleanup of stale entries (> 30s) even on miss
+		for p, pts := range t.paths {
+			if time.Since(pts) > 30*time.Second {
+				delete(t.paths, p)
+			}
+		}
+		return false
+	}
+	delete(t.paths, path)
+	// Opportunistic cleanup of other stale entries
+	for p, pts := range t.paths {
+		if time.Since(pts) > 30*time.Second {
+			delete(t.paths, p)
+		}
+	}
+	return time.Since(ts) < 10*time.Second
+}
+
+// Len returns the number of tracked paths (for testing).
+func (t *selfWriteTracker) Len() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.paths)
 }
 
 // SetStateReader sets the state reader for dependency resolution (Phase 6).
@@ -166,6 +227,7 @@ func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Close
 		ticker:     time.NewTicker(time.Duration(scanInterval) * time.Second),
 		lockMap:    lock.NewMutexMap(),
 		fsSem:      make(chan struct{}, 8),
+		selfWrites: newSelfWriteTracker(),
 		ctx:        ctx,
 		cancel:     cancel,
 	}
@@ -292,6 +354,10 @@ func (d *Daemon) Run() error {
 	// Step 3.10: Subscribe QualityGateDaemon to events
 	d.subscribeQualityGateEvents()
 
+	// Step 3.11: Subscribe to queue write events for direct scan triggering
+	// (bypasses fsnotify self-notification for daemon-originated writes)
+	d.subscribeQueueWrittenEvents()
+
 	// Step 4: Register UDS handlers
 	d.registerHandlers()
 
@@ -410,6 +476,16 @@ func (d *Daemon) fsnotifyLoop() {
 				return
 			}
 			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
+				base := filepath.Base(event.Name)
+				// Skip daemon-internal temp files and backups from AtomicWrite
+				if strings.HasPrefix(base, ".maestro-") || strings.HasSuffix(base, ".bak") {
+					continue
+				}
+				// Skip self-written files: UDS handlers trigger processing via event bus
+				if d.selfWrites.Consume(event.Name) {
+					d.log(LogLevelDebug, "fsnotify self_write_skipped file=%s", event.Name)
+					continue
+				}
 				d.log(LogLevelDebug, "fsnotify event=%s file=%s", event.Op, event.Name)
 				d.shutdownMu.RLock()
 				if d.shuttingDown.Load() {
@@ -752,6 +828,38 @@ func (d *Daemon) subscribeQualityGateEvents() {
 
 	// Store unsubscribe functions for cleanup
 	d.eventUnsubscribers = []func(){unsub1, unsub2, unsub3}
+}
+
+// subscribeQueueWrittenEvents subscribes to EventQueueWritten to trigger scan
+// directly via the event bus, bypassing fsnotify for daemon-originated writes.
+func (d *Daemon) subscribeQueueWrittenEvents() {
+	unsub := d.eventBus.Subscribe(events.EventQueueWritten, func(e events.Event) {
+		if d.handler == nil || d.shuttingDown.Load() {
+			return
+		}
+		file, _ := e.Data["file"].(string)
+		d.handler.debounceAndScan("event_bus:" + file)
+	})
+	d.eventUnsubscribers = append(d.eventUnsubscribers, unsub)
+}
+
+// notifySelfWrite records a self-write for fsnotify filtering and publishes
+// an EventQueueWritten event to trigger processing via the event bus.
+func (d *Daemon) notifySelfWrite(queuePath, writeType string) {
+	d.selfWrites.Record(queuePath)
+	if d.eventBus != nil {
+		d.eventBus.Publish(events.EventQueueWritten, map[string]interface{}{
+			"file":   filepath.Base(queuePath),
+			"source": "uds",
+			"type":   writeType,
+		})
+	}
+}
+
+// recordSelfWrite records a self-write for fsnotify filtering without
+// publishing an event (used when the caller already triggers processing directly).
+func (d *Daemon) recordSelfWrite(path string) {
+	d.selfWrites.Record(path)
 }
 
 // validateLearningsFile checks the learnings file on daemon startup.

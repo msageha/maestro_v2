@@ -553,12 +553,12 @@ func (rh *ResultHandler) writeNotificationToOrchestratorQueue(resultID, commandI
 	}
 
 	// Map result status to notification type
-	notifType := "command_completed"
+	notifType := model.NotificationTypeCommandCompleted
 	switch status {
 	case model.StatusFailed:
-		notifType = "command_failed"
+		notifType = model.NotificationTypeCommandFailed
 	case model.StatusCancelled:
-		notifType = "command_cancelled"
+		notifType = model.NotificationTypeCommandCancelled
 	}
 
 	now := rh.clock.Now().UTC().Format(time.RFC3339)

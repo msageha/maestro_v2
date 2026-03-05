@@ -430,3 +430,295 @@ func TestAuditLogger_FileRecovery(t *testing.T) {
 		}
 	}
 }
+
+func TestAuditLogger_RotateTimestampCollision(t *testing.T) {
+	// Simulate the scenario where multiple rotations occur within the same second
+	// (or even after process restart where rotationCounter resets).
+	// Each rotation must produce a unique archive filename.
+	tempDir := t.TempDir()
+	logPath := filepath.Join(tempDir, "audit.jsonl")
+
+	// Use a tiny max size so every write triggers rotation.
+	maxSize := int64(10) // 10 bytes — every entry triggers rotation
+	logger, err := NewAuditLogger(logPath, maxSize)
+	if err != nil {
+		t.Fatalf("Failed to create audit logger: %v", err)
+	}
+
+	// Write several entries rapidly to trigger multiple rotations within the same second
+	for i := 0; i < 5; i++ {
+		details := map[string]interface{}{"i": i}
+		if err := logger.Log("rotate_test", details); err != nil {
+			t.Fatalf("Failed to log entry %d: %v", i, err)
+		}
+	}
+	logger.Close()
+
+	// Simulate process restart: create a new logger with reset rotationCounter
+	logger2, err := NewAuditLogger(logPath, maxSize)
+	if err != nil {
+		t.Fatalf("Failed to create second audit logger: %v", err)
+	}
+
+	for i := 5; i < 10; i++ {
+		details := map[string]interface{}{"i": i}
+		if err := logger2.Log("rotate_test", details); err != nil {
+			t.Fatalf("Failed to log entry %d: %v", i, err)
+		}
+	}
+	logger2.Close()
+
+	// Verify all archive files have unique names (no overwrites)
+	archiveDir := filepath.Join(tempDir, ArchiveDir)
+	files, err := os.ReadDir(archiveDir)
+	if err != nil {
+		t.Fatalf("Failed to read archive dir: %v", err)
+	}
+
+	if len(files) < 2 {
+		t.Fatalf("Expected multiple archive files, got %d", len(files))
+	}
+
+	// Check uniqueness of filenames
+	seen := make(map[string]bool)
+	for _, f := range files {
+		if seen[f.Name()] {
+			t.Errorf("Duplicate archive filename: %s", f.Name())
+		}
+		seen[f.Name()] = true
+	}
+
+	t.Logf("Created %d unique archive files", len(files))
+}
+
+func TestAuditLogger_BatchedSync_CountThreshold(t *testing.T) {
+	tempDir := t.TempDir()
+	logPath := filepath.Join(tempDir, "audit.jsonl")
+
+	// syncMax=5 means fsync every 5 writes; large interval so only count triggers
+	logger, err := NewAuditLoggerWithSync(logPath, DefaultMaxLogSize, 5, 10*time.Minute)
+	if err != nil {
+		t.Fatalf("Failed to create audit logger: %v", err)
+	}
+	defer logger.Close()
+
+	// Write 5 entries — should trigger exactly one fsync at the 5th write
+	for i := 0; i < 5; i++ {
+		details := map[string]interface{}{"index": i}
+		if err := logger.Log(fmt.Sprintf("event_%d", i), details); err != nil {
+			t.Fatalf("Failed to log entry %d: %v", i, err)
+		}
+	}
+
+	// After 5 writes, dirty should be false (flushed) and syncCount reset
+	logger.mu.Lock()
+	if logger.dirty {
+		t.Error("expected dirty=false after syncMax writes")
+	}
+	if logger.syncCount != 0 {
+		t.Errorf("expected syncCount=0, got %d", logger.syncCount)
+	}
+	logger.mu.Unlock()
+
+	// Verify all entries are readable
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("Failed to read log file: %v", err)
+	}
+	lines := 0
+	for _, b := range data {
+		if b == '\n' {
+			lines++
+		}
+	}
+	if lines != 5 {
+		t.Errorf("expected 5 lines, got %d", lines)
+	}
+}
+
+func TestAuditLogger_BatchedSync_TimeThreshold(t *testing.T) {
+	tempDir := t.TempDir()
+	logPath := filepath.Join(tempDir, "audit.jsonl")
+
+	// syncMax=1000 (high, won't trigger by count), short interval
+	logger, err := NewAuditLoggerWithSync(logPath, DefaultMaxLogSize, 1000, 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Failed to create audit logger: %v", err)
+	}
+	defer logger.Close()
+
+	// Write a few entries (below count threshold)
+	for i := 0; i < 3; i++ {
+		details := map[string]interface{}{"index": i}
+		if err := logger.Log(fmt.Sprintf("event_%d", i), details); err != nil {
+			t.Fatalf("Failed to log entry %d: %v", i, err)
+		}
+	}
+
+	// Immediately after writes, dirty should be true (not yet fsynced)
+	logger.mu.Lock()
+	wasDirty := logger.dirty
+	hasTimer := logger.syncTimer != nil
+	logger.mu.Unlock()
+
+	if !wasDirty {
+		t.Error("expected dirty=true before timer fires")
+	}
+	if !hasTimer {
+		t.Error("expected sync timer to be set")
+	}
+
+	// Wait for the timer to fire
+	time.Sleep(150 * time.Millisecond)
+
+	logger.mu.Lock()
+	isDirty := logger.dirty
+	logger.mu.Unlock()
+
+	if isDirty {
+		t.Error("expected dirty=false after timer fires")
+	}
+}
+
+func TestAuditLogger_BatchedSync_FlushOnClose(t *testing.T) {
+	tempDir := t.TempDir()
+	logPath := filepath.Join(tempDir, "audit.jsonl")
+
+	// High syncMax so count won't trigger, long interval
+	logger, err := NewAuditLoggerWithSync(logPath, DefaultMaxLogSize, 1000, 10*time.Minute)
+	if err != nil {
+		t.Fatalf("Failed to create audit logger: %v", err)
+	}
+
+	// Write entries (won't trigger count-based flush)
+	for i := 0; i < 3; i++ {
+		details := map[string]interface{}{"index": i}
+		if err := logger.Log(fmt.Sprintf("event_%d", i), details); err != nil {
+			t.Fatalf("Failed to log entry %d: %v", i, err)
+		}
+	}
+
+	// Close should flush
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// Verify all entries are persisted
+	file, err := os.Open(logPath)
+	if err != nil {
+		t.Fatalf("Failed to open log file: %v", err)
+	}
+	defer file.Close()
+
+	decoder := json.NewDecoder(file)
+	count := 0
+	for decoder.More() {
+		var entry LogEntry
+		if err := decoder.Decode(&entry); err != nil {
+			t.Errorf("Failed to decode entry: %v", err)
+			continue
+		}
+		count++
+	}
+
+	if count != 3 {
+		t.Errorf("expected 3 entries after close, got %d", count)
+	}
+}
+
+func TestAuditLogger_BatchedSync_ExplicitFlush(t *testing.T) {
+	tempDir := t.TempDir()
+	logPath := filepath.Join(tempDir, "audit.jsonl")
+
+	logger, err := NewAuditLoggerWithSync(logPath, DefaultMaxLogSize, 1000, 10*time.Minute)
+	if err != nil {
+		t.Fatalf("Failed to create audit logger: %v", err)
+	}
+	defer logger.Close()
+
+	// Write a single entry
+	details := map[string]interface{}{"action": "test"}
+	if err := logger.Log("test_event", details); err != nil {
+		t.Fatalf("Failed to log: %v", err)
+	}
+
+	logger.mu.Lock()
+	if !logger.dirty {
+		t.Error("expected dirty=true before Flush()")
+	}
+	logger.mu.Unlock()
+
+	// Explicit flush
+	if err := logger.Flush(); err != nil {
+		t.Fatalf("Flush failed: %v", err)
+	}
+
+	logger.mu.Lock()
+	if logger.dirty {
+		t.Error("expected dirty=false after Flush()")
+	}
+	logger.mu.Unlock()
+}
+
+func TestAuditLogger_BatchedSync_ConcurrentWithTimer(t *testing.T) {
+	tempDir := t.TempDir()
+	logPath := filepath.Join(tempDir, "audit.jsonl")
+
+	// Short interval for timer-based sync
+	logger, err := NewAuditLoggerWithSync(logPath, DefaultMaxLogSize, 50, 20*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Failed to create audit logger: %v", err)
+	}
+	defer logger.Close()
+
+	// Concurrent writes with timer firing
+	numGoroutines := 20
+	entriesPerGoroutine := 10
+	var wg sync.WaitGroup
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			for j := 0; j < entriesPerGoroutine; j++ {
+				details := map[string]interface{}{
+					"goroutine": id,
+					"iteration": j,
+				}
+				if err := logger.Log(fmt.Sprintf("concurrent_%d_%d", id, j), details); err != nil {
+					t.Errorf("Failed to log: %v", err)
+				}
+			}
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Close to flush remaining
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close failed: %v", err)
+	}
+
+	// Verify all entries
+	file, err := os.Open(logPath)
+	if err != nil {
+		t.Fatalf("Failed to open log: %v", err)
+	}
+	defer file.Close()
+
+	decoder := json.NewDecoder(file)
+	count := 0
+	for decoder.More() {
+		var entry LogEntry
+		if err := decoder.Decode(&entry); err != nil {
+			t.Errorf("Failed to decode: %v", err)
+			continue
+		}
+		count++
+	}
+
+	expected := numGoroutines * entriesPerGoroutine
+	if count != expected {
+		t.Errorf("entry count = %d, want %d", count, expected)
+	}
+}

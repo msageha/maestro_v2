@@ -363,7 +363,7 @@ func (dlp *DeadLetterProcessor) bufferDeadLetterOrchestratorNotification(command
 	dlp.pendingNotifications = append(dlp.pendingNotifications, model.Notification{
 		ID:             id,
 		CommandID:      commandID,
-		Type:           "command_failed",
+		Type:           model.NotificationTypeCommandFailed,
 		SourceResultID: sourceResultID,
 		Content:        fmt.Sprintf("command %s dead-lettered: %s", commandID, reason),
 		Priority:       100,

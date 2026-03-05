@@ -20,6 +20,11 @@ const (
 	LogFileExtension = ".jsonl"
 	// Archive directory name
 	ArchiveDir = "archive"
+
+	// DefaultSyncInterval is the maximum time between fsyncs when writes are sparse.
+	DefaultSyncInterval = 1 * time.Second
+	// DefaultSyncCount is the number of writes that triggers an immediate fsync.
+	DefaultSyncCount = 100
 )
 
 // LogEntry represents a single audit log entry
@@ -43,17 +48,38 @@ type AuditLogger struct {
 	logPath         string
 	enableChecksum  bool
 	rotationCounter int
+
+	// Batched fsync fields
+	syncCount    int           // writes since last fsync
+	syncMax      int           // threshold to trigger fsync
+	syncInterval time.Duration // max time between fsyncs
+	syncTimer    *time.Timer   // one-shot timer for time-based fsync
+	dirty        bool          // true when there are unsynced writes
+	closed       bool          // true after Close() is called
 }
 
 // NewAuditLogger creates a new audit logger instance
 func NewAuditLogger(logPath string, maxSize int64) (*AuditLogger, error) {
+	return NewAuditLoggerWithSync(logPath, maxSize, DefaultSyncCount, DefaultSyncInterval)
+}
+
+// NewAuditLoggerWithSync creates a new audit logger with configurable sync batching.
+// syncMax controls how many writes trigger an immediate fsync.
+// syncInterval controls the max time between fsyncs when writes are sparse.
+// Setting syncMax to 1 and syncInterval to 0 gives per-write fsync (legacy behavior).
+func NewAuditLoggerWithSync(logPath string, maxSize int64, syncMax int, syncInterval time.Duration) (*AuditLogger, error) {
 	if maxSize <= 0 {
 		maxSize = DefaultMaxLogSize
 	}
+	if syncMax <= 0 {
+		syncMax = 1
+	}
 
 	logger := &AuditLogger{
-		logPath: logPath,
-		maxSize: maxSize,
+		logPath:      logPath,
+		maxSize:      maxSize,
+		syncMax:      syncMax,
+		syncInterval: syncInterval,
 	}
 
 	// Ensure log directory exists
@@ -145,17 +171,70 @@ func (l *AuditLogger) WriteEntry(entry *LogEntry) error {
 		return fmt.Errorf("failed to write log entry: %w", err)
 	}
 
-	// Sync to disk for durability
-	if err := l.file.Sync(); err != nil {
-		return fmt.Errorf("failed to sync log file: %w", err)
+	l.currentSize += int64(n)
+	l.dirty = true
+	l.syncCount++
+
+	// Sync when count threshold is reached
+	if l.syncCount >= l.syncMax {
+		if err := l.flushLocked(); err != nil {
+			return fmt.Errorf("failed to sync log file: %w", err)
+		}
+	} else if l.syncInterval > 0 {
+		// Start a one-shot timer for time-based fsync
+		l.ensureTimerLocked()
 	}
 
-	l.currentSize += int64(n)
 	return nil
+}
+
+// flushLocked performs fsync and resets counters. Caller must hold l.mu.
+func (l *AuditLogger) flushLocked() error {
+	if !l.dirty {
+		return nil
+	}
+	if err := l.file.Sync(); err != nil {
+		return err
+	}
+	l.dirty = false
+	l.syncCount = 0
+	l.stopTimerLocked()
+	return nil
+}
+
+// ensureTimerLocked starts the one-shot sync timer if not already running. Caller must hold l.mu.
+func (l *AuditLogger) ensureTimerLocked() {
+	if l.syncTimer != nil {
+		return // already running
+	}
+	l.syncTimer = time.AfterFunc(l.syncInterval, func() {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		if l.closed {
+			return
+		}
+		// Clear the timer reference so it can be rescheduled on next write.
+		l.syncTimer = nil
+		// Best-effort flush; errors are not propagated from the timer.
+		_ = l.flushLocked()
+	})
+}
+
+// stopTimerLocked stops and clears the sync timer. Caller must hold l.mu.
+func (l *AuditLogger) stopTimerLocked() {
+	if l.syncTimer != nil {
+		l.syncTimer.Stop()
+		l.syncTimer = nil
+	}
 }
 
 // rotate performs log rotation
 func (l *AuditLogger) rotate() error {
+	// Flush pending writes before rotation
+	if err := l.flushLocked(); err != nil {
+		return fmt.Errorf("failed to flush before rotation: %w", err)
+	}
+
 	// Close current file
 	if err := l.file.Close(); err != nil {
 		return fmt.Errorf("failed to close current log file: %w", err)
@@ -171,8 +250,12 @@ func (l *AuditLogger) rotate() error {
 		return fmt.Errorf("failed to create archive directory: %w", err)
 	}
 
-	// Generate archive filename with timestamp
-	timestamp := time.Now().Format("20060102_150405")
+	// Generate archive filename with nanosecond-precision timestamp + counter.
+	// Nanosecond precision prevents collisions across process restarts (where
+	// rotationCounter resets to 0). The counter provides additional uniqueness
+	// for multiple rotations within the same nanosecond (theoretically possible
+	// under very fast writes).
+	timestamp := time.Now().Format("20060102_150405.000000000")
 	l.rotationCounter++
 	baseName := filepath.Base(l.logPath)
 	archiveName := fmt.Sprintf("%s.%s.%d%s",
@@ -339,18 +422,29 @@ func VerifyLogIntegrity(logPath string) (int, int, error) {
 	return result.TotalEntries, result.ValidEntries, nil
 }
 
-// Close closes the audit logger
+// Close closes the audit logger, flushing any pending writes.
 func (l *AuditLogger) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
+	l.closed = true
+	l.stopTimerLocked()
+
 	if l.file != nil {
-		if err := l.file.Sync(); err != nil {
+		if err := l.flushLocked(); err != nil {
+			l.file.Close()
 			return err
 		}
 		return l.file.Close()
 	}
 	return nil
+}
+
+// Flush forces an immediate fsync of any pending writes.
+func (l *AuditLogger) Flush() error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.flushLocked()
 }
 
 // GetCurrentLogPath returns the current log file path

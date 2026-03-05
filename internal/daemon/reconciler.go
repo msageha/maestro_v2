@@ -491,8 +491,9 @@ func (r *Reconciler) reconcileR0b() ([]ReconcileRepair, []DeferredNotification) 
 		}()
 
 		// Queue cleanup outside state lock (respects lock ordering: queue:* before state:*).
-		for _, taskID := range taskIDsToRemove {
-			r.removeTaskFromWorkerQueues(taskID)
+		// Batch removal: scan each worker queue once for all task IDs (B-007 optimization).
+		if len(taskIDsToRemove) > 0 {
+			r.batchRemoveTaskIDsFromQueues(taskIDsToRemove)
 		}
 
 		// Defer Planner notification for execution outside scanMu.Lock
@@ -1464,6 +1465,66 @@ func (r *Reconciler) removeTaskFromWorkerQueues(taskID string) {
 
 			if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
 				r.log(LogLevelError, "R0b remove_task file=%s task=%s error=%v", name, taskID, err)
+			}
+		}()
+	}
+}
+
+// batchRemoveTaskIDsFromQueues removes multiple task IDs from all worker queues in a single pass.
+// Each worker queue file is read and written at most once, avoiding repeated I/O (B-007).
+func (r *Reconciler) batchRemoveTaskIDsFromQueues(taskIDs []string) {
+	if len(taskIDs) == 0 {
+		return
+	}
+
+	removeSet := make(map[string]struct{}, len(taskIDs))
+	for _, id := range taskIDs {
+		removeSet[id] = struct{}{}
+	}
+
+	queueDir := filepath.Join(r.maestroDir, "queue")
+	entries, err := os.ReadDir(queueDir)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, "worker") || !strings.HasSuffix(name, ".yaml") {
+			continue
+		}
+
+		workerID := extractWorkerID(name)
+		if workerID == "" {
+			continue
+		}
+		func() {
+			r.lockMap.Lock("queue:" + workerID)
+			defer r.lockMap.Unlock("queue:" + workerID)
+
+			queuePath := filepath.Join(queueDir, name)
+			data, err := os.ReadFile(queuePath)
+			if err != nil {
+				return
+			}
+			var tq model.TaskQueue
+			if err := yamlv3.Unmarshal(data, &tq); err != nil {
+				return
+			}
+
+			filtered := make([]model.Task, 0, len(tq.Tasks))
+			for _, task := range tq.Tasks {
+				if _, remove := removeSet[task.ID]; !remove {
+					filtered = append(filtered, task)
+				}
+			}
+			if len(filtered) == len(tq.Tasks) {
+				return
+			}
+			tq.Tasks = filtered
+
+			if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
+				r.log(LogLevelError, "R0b batch_remove_tasks file=%s error=%v", name, err)
 			}
 		}()
 	}

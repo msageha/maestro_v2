@@ -387,8 +387,8 @@ func TestApplyPhaseTransition_UnknownPhaseID(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown phase ID, got nil")
 	}
-	if !strings.Contains(err.Error(), "not found") {
-		t.Errorf("error = %q, want to contain %q", err.Error(), "not found")
+	if !errors.Is(err, daemon.ErrPhaseNotFound) {
+		t.Errorf("error = %v, want errors.Is(err, daemon.ErrPhaseNotFound)", err)
 	}
 }
 

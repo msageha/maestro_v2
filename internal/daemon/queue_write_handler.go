@@ -35,10 +35,10 @@ type QueueWriteParams struct {
 	Reason             string   `json:"reason,omitempty"`
 }
 
-var validNotificationTypes = map[string]bool{
-	"command_completed": true,
-	"command_failed":    true,
-	"command_cancelled": true,
+var validNotificationTypes = map[model.NotificationType]bool{
+	model.NotificationTypeCommandCompleted: true,
+	model.NotificationTypeCommandFailed:    true,
+	model.NotificationTypeCommandCancelled: true,
 }
 
 func (d *Daemon) handleQueueWrite(req *uds.Request) *uds.Response {
@@ -136,6 +136,7 @@ func (d *Daemon) handleQueueWriteCommand(params QueueWriteParams) *uds.Response 
 	if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write queue: %v", err))
 	}
+	d.notifySelfWrite(queuePath, "command")
 
 	d.log(LogLevelInfo, "queue_write type=command id=%s", id)
 	return uds.SuccessResponse(map[string]string{"id": id})
@@ -256,6 +257,7 @@ func (d *Daemon) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 	if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write queue: %v", err))
 	}
+	d.notifySelfWrite(queuePath, "task")
 
 	d.log(LogLevelInfo, "queue_write type=task id=%s command_id=%s worker=%s", id, params.CommandID, params.Target)
 	return uds.SuccessResponse(map[string]string{"id": id})
@@ -273,10 +275,10 @@ func (d *Daemon) handleQueueWriteNotification(params QueueWriteParams) *uds.Resp
 	}
 
 	// notification_type validation
-	notifType := params.NotificationType
-	if notifType == "" {
+	if params.NotificationType == "" {
 		return uds.ErrorResponse(uds.ErrCodeValidation, "notification_type is required for notification")
 	}
+	notifType := model.NotificationType(params.NotificationType)
 	if !validNotificationTypes[notifType] {
 		return uds.ErrorResponse(uds.ErrCodeValidation,
 			fmt.Sprintf("invalid notification_type: %q, must be command_completed|command_failed|command_cancelled", notifType))
@@ -345,6 +347,7 @@ func (d *Daemon) handleQueueWriteNotification(params QueueWriteParams) *uds.Resp
 	if err := yamlutil.AtomicWrite(queuePath, nq); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write queue: %v", err))
 	}
+	d.notifySelfWrite(queuePath, "notification")
 
 	d.log(LogLevelInfo, "queue_write type=notification id=%s command_id=%s source_result_id=%s", id, params.CommandID, params.SourceResultID)
 	return uds.SuccessResponse(map[string]string{"id": id})
@@ -424,6 +427,8 @@ func (d *Daemon) cancelRequestSubmitted(params QueueWriteParams, statePath strin
 					cq.Commands[i].UpdatedAt = now
 					if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
 						d.log(LogLevelError, "queue_write cancel_planner_queue_update error=%v", err)
+					} else {
+						d.notifySelfWrite(queuePath, "cancel-request")
 					}
 				}
 				break
@@ -483,6 +488,7 @@ func (d *Daemon) cancelRequestUnsubmitted(params QueueWriteParams) *uds.Response
 	if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write queue: %v", err))
 	}
+	d.notifySelfWrite(queuePath, "cancel-request")
 
 	d.log(LogLevelInfo, "queue_write type=cancel-request command=%s submitted=false cancelled", params.CommandID)
 	return uds.SuccessResponse(map[string]string{"command_id": params.CommandID, "status": "cancelled"})

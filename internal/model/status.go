@@ -39,9 +39,19 @@ const (
 type ContinuousStatus string
 
 const (
+	ContinuousStatusIdle    ContinuousStatus = "idle"
 	ContinuousStatusRunning ContinuousStatus = "running"
 	ContinuousStatusPaused  ContinuousStatus = "paused"
 	ContinuousStatusStopped ContinuousStatus = "stopped"
+)
+
+// NotificationType represents the type of an orchestrator notification.
+type NotificationType string
+
+const (
+	NotificationTypeCommandCompleted NotificationType = "command_completed"
+	NotificationTypeCommandFailed    NotificationType = "command_failed"
+	NotificationTypeCommandCancelled NotificationType = "command_cancelled"
 )
 
 var terminalStatuses = map[Status]bool{
@@ -62,6 +72,26 @@ var terminalPhaseStatuses = map[PhaseStatus]bool{
 	PhaseStatusFailed:    true,
 	PhaseStatusCancelled: true,
 	PhaseStatusTimedOut:  true,
+}
+
+var terminalWorktreeStatuses = map[WorktreeStatus]bool{
+	WorktreeStatusCleanupDone:   true,
+	WorktreeStatusCleanupFailed: true,
+}
+
+var terminalIntegrationStatuses = map[IntegrationStatus]bool{
+	IntegrationStatusPublished: true,
+	IntegrationStatusFailed:    true,
+}
+
+var terminalContinuousStatuses = map[ContinuousStatus]bool{
+	ContinuousStatusStopped: true,
+}
+
+var validNotificationTypes = map[NotificationType]bool{
+	NotificationTypeCommandCompleted: true,
+	NotificationTypeCommandFailed:    true,
+	NotificationTypeCommandCancelled: true,
 }
 
 // Queue entry status transitions for command/task: pending ↔ in_progress → terminal
@@ -138,6 +168,97 @@ var validPhaseTransitions = map[PhaseStatus]map[PhaseStatus]bool{
 	// in ValidatePhaseTransition() before the map lookup, so no entry is needed here.
 }
 
+// Worktree status transitions:
+//   created → active, committed, failed
+//   active → committed, conflict, failed
+//   committed → integrated, failed
+//   integrated → published, active (sync), failed
+//   published → cleanup_done, cleanup_failed
+//   conflict → active (resolved), failed
+//   failed → cleanup_done, cleanup_failed (cleanup after failure)
+var validWorktreeTransitions = map[WorktreeStatus]map[WorktreeStatus]bool{
+	WorktreeStatusCreated: {
+		WorktreeStatusActive:    true,
+		WorktreeStatusCommitted: true,
+		WorktreeStatusFailed:    true,
+	},
+	WorktreeStatusActive: {
+		WorktreeStatusCommitted: true,
+		WorktreeStatusConflict:  true,
+		WorktreeStatusFailed:    true,
+	},
+	WorktreeStatusCommitted: {
+		WorktreeStatusIntegrated: true,
+		WorktreeStatusFailed:     true,
+	},
+	WorktreeStatusIntegrated: {
+		WorktreeStatusPublished: true,
+		WorktreeStatusActive:    true, // sync from integration
+		WorktreeStatusFailed:    true,
+	},
+	WorktreeStatusPublished: {
+		WorktreeStatusCleanupDone:   true,
+		WorktreeStatusCleanupFailed: true,
+	},
+	WorktreeStatusConflict: {
+		WorktreeStatusActive: true,
+		WorktreeStatusFailed: true,
+	},
+	WorktreeStatusFailed: {
+		WorktreeStatusCleanupDone:   true,
+		WorktreeStatusCleanupFailed: true,
+	},
+}
+
+// Integration status transitions:
+//   created → merging, failed
+//   merging → merged, conflict, failed
+//   merged → publishing, failed
+//   publishing → published, conflict, failed
+//   conflict → merging (retry), failed
+var validIntegrationTransitions = map[IntegrationStatus]map[IntegrationStatus]bool{
+	IntegrationStatusCreated: {
+		IntegrationStatusMerging: true,
+		IntegrationStatusFailed:  true,
+	},
+	IntegrationStatusMerging: {
+		IntegrationStatusMerged:   true,
+		IntegrationStatusConflict: true,
+		IntegrationStatusFailed:   true,
+	},
+	IntegrationStatusMerged: {
+		IntegrationStatusPublishing: true,
+		IntegrationStatusFailed:     true,
+	},
+	IntegrationStatusPublishing: {
+		IntegrationStatusPublished: true,
+		IntegrationStatusConflict:  true,
+		IntegrationStatusFailed:    true,
+	},
+	IntegrationStatusConflict: {
+		IntegrationStatusMerging: true,
+		IntegrationStatusFailed:  true,
+	},
+}
+
+// Continuous status transitions:
+//   idle → running
+//   running → paused, stopped
+//   paused → running, stopped
+var validContinuousTransitions = map[ContinuousStatus]map[ContinuousStatus]bool{
+	ContinuousStatusIdle: {
+		ContinuousStatusRunning: true,
+	},
+	ContinuousStatusRunning: {
+		ContinuousStatusPaused:  true,
+		ContinuousStatusStopped: true,
+	},
+	ContinuousStatusPaused: {
+		ContinuousStatusRunning: true,
+		ContinuousStatusStopped: true,
+	},
+}
+
 func IsTerminal(s Status) bool {
 	return terminalStatuses[s]
 }
@@ -148,6 +269,18 @@ func IsPlanTerminal(s PlanStatus) bool {
 
 func IsPhaseTerminal(s PhaseStatus) bool {
 	return terminalPhaseStatuses[s]
+}
+
+func IsWorktreeTerminal(s WorktreeStatus) bool {
+	return terminalWorktreeStatuses[s]
+}
+
+func IsIntegrationTerminal(s IntegrationStatus) bool {
+	return terminalIntegrationStatuses[s]
+}
+
+func IsContinuousTerminal(s ContinuousStatus) bool {
+	return terminalContinuousStatuses[s]
 }
 
 func ValidateCommandTaskQueueTransition(from, to Status) error {
@@ -220,6 +353,55 @@ func ValidatePhaseTransition(from, to PhaseStatus) error {
 	}
 	if !allowed[to] {
 		return fmt.Errorf("invalid phase transition: %q → %q", from, to)
+	}
+	return nil
+}
+
+func ValidateWorktreeTransition(from, to WorktreeStatus) error {
+	if IsWorktreeTerminal(from) {
+		return fmt.Errorf("cannot transition from terminal worktree status %q", from)
+	}
+	allowed, ok := validWorktreeTransitions[from]
+	if !ok {
+		return fmt.Errorf("unknown worktree status %q", from)
+	}
+	if !allowed[to] {
+		return fmt.Errorf("invalid worktree transition: %q → %q", from, to)
+	}
+	return nil
+}
+
+func ValidateIntegrationTransition(from, to IntegrationStatus) error {
+	if IsIntegrationTerminal(from) {
+		return fmt.Errorf("cannot transition from terminal integration status %q", from)
+	}
+	allowed, ok := validIntegrationTransitions[from]
+	if !ok {
+		return fmt.Errorf("unknown integration status %q", from)
+	}
+	if !allowed[to] {
+		return fmt.Errorf("invalid integration transition: %q → %q", from, to)
+	}
+	return nil
+}
+
+func ValidateContinuousTransition(from, to ContinuousStatus) error {
+	if IsContinuousTerminal(from) {
+		return fmt.Errorf("cannot transition from terminal continuous status %q", from)
+	}
+	allowed, ok := validContinuousTransitions[from]
+	if !ok {
+		return fmt.Errorf("unknown continuous status %q", from)
+	}
+	if !allowed[to] {
+		return fmt.Errorf("invalid continuous transition: %q → %q", from, to)
+	}
+	return nil
+}
+
+func ValidateNotificationType(t NotificationType) error {
+	if !validNotificationTypes[t] {
+		return fmt.Errorf("invalid notification type: %q", t)
 	}
 	return nil
 }
