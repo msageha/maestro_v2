@@ -496,11 +496,11 @@ func TestTaskLeaseExpiry_BusyAgent_WithinLimit(t *testing.T) {
 }
 
 // =============================================================================
-// Dispatch Error Handling — Asymmetric Command vs Task Behavior
+// Dispatch Error Handling — Command vs Task Behavior
 // =============================================================================
 
 // TestTaskDispatchError_LeaseReleased verifies that when a TASK dispatch fails,
-// the lease IS released (unlike commands where it is retained).
+// the lease is released (back to pending for retry).
 func TestTaskDispatchError_LeaseReleased(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
@@ -546,20 +546,20 @@ func TestTaskDispatchError_LeaseReleased(t *testing.T) {
 	}
 }
 
-// TestCommandDispatchError_SecondScan_StaysInProgress verifies that after a
-// command dispatch fails, the next scan still keeps it in_progress (auto-extend).
-func TestCommandDispatchError_SecondScan_StaysInProgress(t *testing.T) {
+// TestCommandDispatchError_AmbiguousKeepsLease verifies that after a command
+// dispatch fails with an ambiguous error, the lease is kept (stays in_progress)
+// to prevent duplicate planner dispatch.
+func TestCommandDispatchError_AmbiguousKeepsLease(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
-	dispatchCount := 0
+	mock := &mockExecutor{result: agent.ExecResult{
+		Success:   false,
+		Error:     fmt.Errorf("planner not responding"),
+		Retryable: true,
+	}}
 	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
-		dispatchCount++
-		return &mockExecutor{result: agent.ExecResult{
-			Success:   false,
-			Error:     fmt.Errorf("planner not responding"),
-			Retryable: true,
-		}}, nil
+		return mock, nil
 	})
 
 	cq := model.CommandQueue{
@@ -579,7 +579,7 @@ func TestCommandDispatchError_SecondScan_StaysInProgress(t *testing.T) {
 		t.Fatalf("write planner queue: %v", err)
 	}
 
-	// First scan: dispatch fails → lease retained
+	// First scan: dispatch fails with ambiguous error → lease kept
 	qh.PeriodicScan()
 
 	data, err := os.ReadFile(plannerPath)
@@ -591,32 +591,58 @@ func TestCommandDispatchError_SecondScan_StaysInProgress(t *testing.T) {
 		t.Fatalf("parse planner queue after scan 1: %v", err)
 	}
 	if after1.Commands[0].Status != model.StatusInProgress {
-		t.Fatalf("after scan 1: got %s, want in_progress", after1.Commands[0].Status)
+		t.Fatalf("after scan 1: got %s, want in_progress (lease kept on ambiguous failure)", after1.Commands[0].Status)
 	}
 
-	// dispatchCount should be 1 after first scan (dispatch attempted once)
-	if dispatchCount != 1 {
-		t.Errorf("after scan 1: dispatchCount=%d, want 1", dispatchCount)
-	}
-
-	// Second scan: command still in_progress → guard blocks re-dispatch, lease auto-extended if expired
+	// Second scan: command still in_progress → guard blocks re-dispatch
 	qh.PeriodicScan()
 
-	data, err = os.ReadFile(plannerPath)
-	if err != nil {
-		t.Fatalf("read planner queue after scan 2: %v", err)
+	if len(mock.calls) != 1 {
+		t.Errorf("execute calls=%d, want 1 (guard should prevent re-dispatch)", len(mock.calls))
 	}
-	var after2 model.CommandQueue
-	if err := parseYAML(data, &after2); err != nil {
-		t.Fatalf("parse planner queue after scan 2: %v", err)
+}
+
+// TestCommandDispatchError_ExecutorInitReleasesLease verifies that when the
+// executor cannot be created (errExecutorInit), the lease is released so the
+// command can be retried. This is a definite pre-delivery failure.
+func TestCommandDispatchError_ExecutorInitReleasesLease(t *testing.T) {
+	maestroDir := setupTestMaestroDir(t)
+	qh := newTestQueueHandler(maestroDir)
+
+	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+		return nil, fmt.Errorf("tmux not found")
+	})
+
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		FileType:      "command_queue",
+		Commands: []model.Command{
+			{
+				ID: "cmd_init_fail", Content: "init fail test", Priority: 1,
+				Status:    model.StatusPending,
+				CreatedAt: time.Now().UTC().Format(time.RFC3339),
+				UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+			},
+		},
 	}
-	if after2.Commands[0].Status != model.StatusInProgress {
-		t.Errorf("after scan 2: got %s, want in_progress (still retained)", after2.Commands[0].Status)
+	plannerPath := filepath.Join(maestroDir, "queue", "planner.yaml")
+	if err := yamlutil.AtomicWrite(plannerPath, cq); err != nil {
+		t.Fatalf("write planner queue: %v", err)
 	}
 
-	// dispatchCount must still be 1: the at-most-one guard prevents re-dispatch
-	if dispatchCount != 1 {
-		t.Errorf("after scan 2: dispatchCount=%d, want 1 (guard should prevent re-dispatch)", dispatchCount)
+	// Scan: executor init fails → errExecutorInit → lease released back to pending
+	qh.PeriodicScan()
+
+	data, err := os.ReadFile(plannerPath)
+	if err != nil {
+		t.Fatalf("read planner queue: %v", err)
+	}
+	var result model.CommandQueue
+	if err := parseYAML(data, &result); err != nil {
+		t.Fatalf("parse planner queue: %v", err)
+	}
+	if result.Commands[0].Status != model.StatusPending {
+		t.Errorf("status: got %s, want pending (lease released on executor init failure)", result.Commands[0].Status)
 	}
 }
 
