@@ -78,7 +78,7 @@ func (a *API) handleDashboard(req *uds.Request) *uds.Response {
 
 	// Use the new dashboard formatter for human-readable output
 	formatter := NewDashboardFormatter(d.maestroDir)
-	if err := formatter.UpdateDashboardFile(); err != nil {
+	if err := formatter.UpdateDashboardFile(atomicWriteText); err != nil {
 		d.log(LogLevelError, "dashboard regeneration error=%v", err)
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("dashboard generation failed: %v", err))
 	}
