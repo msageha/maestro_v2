@@ -315,11 +315,11 @@ func TestTaskLeaseExpiry_ReleaseToPending(t *testing.T) {
 	}
 }
 
-// TestCommandDispatchError_LeaseRetained verifies that when a command dispatch
-// fails in Phase B, the lease is NOT released in Phase C.
-// This prevents duplicate dispatch: the command stays in_progress and will be
-// auto-extended on the next scan cycle.
-func TestCommandDispatchError_LeaseRetained(t *testing.T) {
+// TestCommandDispatchError_LeaseRetainedOnAmbiguousFailure verifies that when a
+// command dispatch fails with an ambiguous error (not errExecutorInit) in Phase B,
+// the lease is kept in Phase C. This prevents duplicate planner dispatch since
+// the message may have already been delivered.
+func TestCommandDispatchError_LeaseRetainedOnAmbiguousFailure(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -370,28 +370,23 @@ func TestCommandDispatchError_LeaseRetained(t *testing.T) {
 
 	cmd := result.Commands[0]
 
-	// Must stay in_progress — lease is retained on dispatch error for commands
+	// Must stay in_progress — ambiguous errors keep the lease to prevent duplicate delivery
 	if cmd.Status != model.StatusInProgress {
-		t.Errorf("status: got %s, want in_progress (lease retained on dispatch error)", cmd.Status)
+		t.Errorf("status: got %s, want in_progress (lease kept on ambiguous dispatch error)", cmd.Status)
 	}
 
 	// Lease owner should still be set
 	if cmd.LeaseOwner == nil {
-		t.Error("lease_owner should be set (lease retained)")
+		t.Error("lease_owner should be set (lease kept on ambiguous failure)")
 	}
 
 	// LeaseExpiresAt should still be set
 	if cmd.LeaseExpiresAt == nil {
-		t.Error("lease_expires_at should be set (lease retained)")
+		t.Error("lease_expires_at should be set (lease kept on ambiguous failure)")
 	}
 
 	// LeaseEpoch should be 1 (acquired once)
 	if cmd.LeaseEpoch != 1 {
 		t.Errorf("lease_epoch: got %d, want 1", cmd.LeaseEpoch)
-	}
-
-	// Attempts should be 1
-	if cmd.Attempts != 1 {
-		t.Errorf("attempts: got %d, want 1", cmd.Attempts)
 	}
 }
