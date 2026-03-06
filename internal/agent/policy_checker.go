@@ -123,18 +123,6 @@ func DangerousPatterns() []string {
 	}
 }
 
-// mergeSettingsJSON merges multiple JSON settings strings using shallow object merge.
-// Later values override earlier ones at the top level of "hooks".
-func mergeSettingsJSON(existing, newSettings string) string {
-	if existing == "" {
-		return newSettings
-	}
-	// Both are valid JSON objects; we rely on Claude Code's deep merge
-	// behavior when --settings is specified multiple times.
-	// Return them as separate --settings flags handled by the caller.
-	return existing + "\n" + newSettings
-}
-
 // hookScript is the shell script content for the PreToolUse policy hook.
 // It reads JSON from stdin, checks for dangerous patterns, and outputs
 // a deny decision if a violation is detected.

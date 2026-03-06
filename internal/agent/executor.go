@@ -256,9 +256,23 @@ func (e *Executor) Execute(req ExecRequest) ExecResult {
 }
 
 // execIsBusy checks agent busy state. Returns Success=true if busy, false if idle.
+// VerdictUndecided is NOT treated as busy — it returns Success=false with
+// ErrBusyUndecided so callers can distinguish it from a confirmed idle state.
+// This prevents false positive lease extensions when the verdict is inconclusive.
 func (e *Executor) execIsBusy(ctx context.Context, paneTarget string) ExecResult {
 	verdict := e.busyDetector.DetectBusy(ctx, paneTarget)
-	return ExecResult{Success: verdict != VerdictIdle}
+	switch verdict {
+	case VerdictBusy:
+		return ExecResult{Success: true}
+	case VerdictUndecided:
+		return ExecResult{
+			Success:   false,
+			Error:     fmt.Errorf("%w", ErrBusyUndecided),
+			Retryable: true,
+		}
+	default: // VerdictIdle
+		return ExecResult{Success: false}
+	}
 }
 
 // execClear sends /clear and waits for stability.

@@ -331,8 +331,9 @@ type dispatchResult struct {
 
 // busyCheckResult captures the outcome of a Phase B busy probe.
 type busyCheckResult struct {
-	Item busyCheckItem
-	Busy bool
+	Item      busyCheckItem
+	Busy      bool
+	Undecided bool // VerdictUndecided: neither extend nor release; defer to next scan
 }
 
 // signalDeliveryResult captures the outcome of a Phase B signal delivery.

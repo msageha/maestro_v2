@@ -327,10 +327,11 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 		if ctx.Err() != nil {
 			break
 		}
-		busy := qh.isAgentBusy(ctx, item.AgentID)
+		busy, undecided := qh.isAgentBusy(ctx, item.AgentID)
 		result.busyChecks = append(result.busyChecks, busyCheckResult{
-			Item: item,
-			Busy: busy,
+			Item:      item,
+			Busy:      busy,
+			Undecided: undecided,
 		})
 	}
 
@@ -1138,6 +1139,13 @@ func (qh *QueueHandler) applyTaskBusyCheckResult(bc busyCheckResult, taskQueues 
 			return
 		}
 
+		// Undecided: skip both extend and release; defer to next scan cycle
+		if bc.Undecided {
+			qh.log(LogLevelInfo, "lease_undecided type=task id=%s worker=%s epoch=%d, deferring to next scan",
+				task.ID, bc.Item.AgentID, task.LeaseEpoch)
+			return
+		}
+
 		if bc.Busy {
 			maxMin := qh.config.Watcher.MaxInProgressMin
 			if maxMin <= 0 {
@@ -1183,6 +1191,13 @@ func (qh *QueueHandler) applyCommandBusyCheckResult(bc busyCheckResult, cq *mode
 			cmd.LeaseExpiresAt == nil || *cmd.LeaseExpiresAt != bc.Item.ExpiresAt {
 			qh.log(LogLevelWarn, "busy_check_fence_stale kind=command id=%s epoch=%d/%d",
 				cmd.ID, cmd.LeaseEpoch, bc.Item.Epoch)
+			return
+		}
+
+		// Undecided: skip both extend and release; defer to next scan cycle
+		if bc.Undecided {
+			qh.log(LogLevelInfo, "lease_undecided type=command id=%s owner=planner epoch=%d, deferring to next scan",
+				cmd.ID, cmd.LeaseEpoch)
 			return
 		}
 

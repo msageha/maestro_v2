@@ -259,10 +259,12 @@ func TestIsAgentBusy_WithChecker(t *testing.T) {
 		return agentID == "worker1"
 	}
 
-	if !qh.isAgentBusy(nil, "worker1") {
+	busy1, _ := qh.isAgentBusy(nil, "worker1")
+	if !busy1 {
 		t.Error("worker1 should be busy")
 	}
-	if qh.isAgentBusy(nil, "worker2") {
+	busy2, _ := qh.isAgentBusy(nil, "worker2")
+	if busy2 {
 		t.Error("worker2 should not be busy")
 	}
 }
