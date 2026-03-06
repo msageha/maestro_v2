@@ -2105,7 +2105,7 @@ func TestBusyCheckFencing_StaleTask(t *testing.T) {
 func TestReconciler_R4_CanCompleteNil_Skip(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
-	rec.canComplete = nil // explicitly unset
+	rec.SetCanComplete(nil) // explicitly unset
 
 	now := time.Now().UTC().Format(time.RFC3339)
 

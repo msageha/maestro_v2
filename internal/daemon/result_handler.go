@@ -607,6 +607,12 @@ func (rh *ResultHandler) writeNotificationToOrchestratorQueue(resultID, commandI
 	})
 }
 
+// WriteNotificationToOrchestratorQueue is the exported wrapper for writeNotificationToOrchestratorQueue.
+// Used by the reconcile package via the ResultNotifier interface.
+func (rh *ResultHandler) WriteNotificationToOrchestratorQueue(resultID, commandID string, status model.Status) error {
+	return rh.writeNotificationToOrchestratorQueue(resultID, commandID, status)
+}
+
 // --- File I/O helpers ---
 
 func (rh *ResultHandler) loadTaskResultFile(path string) (*model.TaskResultFile, error) {
