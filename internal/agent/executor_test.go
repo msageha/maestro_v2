@@ -3,8 +3,10 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -741,6 +743,32 @@ func TestExecute_ModeIsBusy_Busy(t *testing.T) {
 	}
 	if !result.Success {
 		t.Error("expected Success=true for busy agent")
+	}
+}
+
+func TestExecute_ModeIsBusy_Undecided(t *testing.T) {
+	mock := newExecMock()
+	mock.isShell = false
+	mock.currentCmd = "claude"
+	mock.captureContent = "working..."
+	mock.joinedContents = []string{"same-content", "same-content"} // stable → hash unchanged
+	exec, _ := newTestExecutorWithLog(mock)
+	// Set busyRegex to match "working..." so patternMatched=true
+	exec.busyDetector.busyRegex = regexp.MustCompile(`working`)
+
+	result := exec.Execute(ExecRequest{
+		AgentID: "worker1",
+		Mode:    ModeIsBusy,
+	})
+	// VerdictUndecided: hashChanged=false, patternMatched=true
+	if result.Success {
+		t.Error("expected Success=false for undecided verdict")
+	}
+	if !errors.Is(result.Error, ErrBusyUndecided) {
+		t.Errorf("expected ErrBusyUndecided, got: %v", result.Error)
+	}
+	if !result.Retryable {
+		t.Error("expected Retryable=true for undecided verdict")
 	}
 }
 
