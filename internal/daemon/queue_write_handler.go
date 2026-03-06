@@ -41,7 +41,7 @@ var validNotificationTypes = map[model.NotificationType]bool{
 	model.NotificationTypeCommandCancelled: true,
 }
 
-func (d *Daemon) handleQueueWrite(req *uds.Request) *uds.Response {
+func (a *API) handleQueueWrite(req *uds.Request) *uds.Response {
 	var params QueueWriteParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid params: %v", err))
@@ -49,20 +49,21 @@ func (d *Daemon) handleQueueWrite(req *uds.Request) *uds.Response {
 
 	switch params.Type {
 	case "command":
-		return d.handleQueueWriteCommand(params)
+		return a.handleQueueWriteCommand(params)
 	case "task":
-		return d.handleQueueWriteTask(params)
+		return a.handleQueueWriteTask(params)
 	case "notification":
-		return d.handleQueueWriteNotification(params)
+		return a.handleQueueWriteNotification(params)
 	case "cancel-request":
-		return d.handleQueueWriteCancelRequest(params)
+		return a.handleQueueWriteCancelRequest(params)
 	default:
 		return uds.ErrorResponse(uds.ErrCodeValidation,
 			fmt.Sprintf("invalid type: %q, must be command|task|notification|cancel-request", params.Type))
 	}
 }
 
-func (d *Daemon) handleQueueWriteCommand(params QueueWriteParams) *uds.Response {
+func (a *API) handleQueueWriteCommand(params QueueWriteParams) *uds.Response {
+	d := a.d
 	if params.Content == "" {
 		return uds.ErrorResponse(uds.ErrCodeValidation, "content is required for command")
 	}
@@ -72,8 +73,8 @@ func (d *Daemon) handleQueueWriteCommand(params QueueWriteParams) *uds.Response 
 			fmt.Sprintf("content exceeds max size: %d > %d bytes", len(params.Content), d.config.Limits.MaxEntryContentBytes))
 	}
 
-	d.acquireFileLock()
-	defer d.releaseFileLock()
+	a.acquireFileLock()
+	defer a.releaseFileLock()
 	d.lockMap.Lock("queue:planner")
 	defer d.lockMap.Unlock("queue:planner")
 
@@ -136,13 +137,14 @@ func (d *Daemon) handleQueueWriteCommand(params QueueWriteParams) *uds.Response 
 	if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write queue: %v", err))
 	}
-	d.notifySelfWrite(queuePath, "command", cq)
+	a.notifySelfWrite(queuePath, "command", cq)
 
 	d.log(LogLevelInfo, "queue_write type=command id=%s", id)
 	return uds.SuccessResponse(map[string]string{"id": id})
 }
 
-func (d *Daemon) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
+func (a *API) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
+	d := a.d
 	if params.CommandID == "" {
 		return uds.ErrorResponse(uds.ErrCodeValidation, "command_id is required for task")
 	}
@@ -175,8 +177,8 @@ func (d *Daemon) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 		return resp
 	}
 
-	d.acquireFileLock()
-	defer d.releaseFileLock()
+	a.acquireFileLock()
+	defer a.releaseFileLock()
 
 	// Sanitize target: prevent directory traversal (before acquiring per-target lock)
 	if filepath.Base(params.Target) != params.Target || params.Target == "." || params.Target == ".." {
@@ -208,7 +210,7 @@ func (d *Daemon) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 	}
 
 	if resp := checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(data), len(params.Content)+500); resp != nil {
-		archived := d.archiveTerminalTasks(&tq)
+		archived := a.archiveTerminalTasks(&tq)
 		if archived > 0 {
 			newData, _ := yamlv3.Marshal(tq)
 			if checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(newData), len(params.Content)+500) != nil {
@@ -227,7 +229,7 @@ func (d *Daemon) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 
 	// Cycle detection: check if adding this task creates a circular dependency
 	if len(params.BlockedBy) > 0 {
-		if resp := d.detectCycleInDependencies(id, params.BlockedBy, params.CommandID, params.Target, &tq); resp != nil {
+		if resp := a.detectCycleInDependencies(id, params.BlockedBy, params.CommandID, params.Target, &tq); resp != nil {
 			return resp
 		}
 	}
@@ -257,13 +259,14 @@ func (d *Daemon) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 	if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write queue: %v", err))
 	}
-	d.notifySelfWrite(queuePath, "task", tq)
+	a.notifySelfWrite(queuePath, "task", tq)
 
 	d.log(LogLevelInfo, "queue_write type=task id=%s command_id=%s worker=%s", id, params.CommandID, params.Target)
 	return uds.SuccessResponse(map[string]string{"id": id})
 }
 
-func (d *Daemon) handleQueueWriteNotification(params QueueWriteParams) *uds.Response {
+func (a *API) handleQueueWriteNotification(params QueueWriteParams) *uds.Response {
+	d := a.d
 	if params.CommandID == "" {
 		return uds.ErrorResponse(uds.ErrCodeValidation, "command_id is required for notification")
 	}
@@ -289,8 +292,8 @@ func (d *Daemon) handleQueueWriteNotification(params QueueWriteParams) *uds.Resp
 			fmt.Sprintf("content exceeds max size: %d > %d bytes", len(params.Content), d.config.Limits.MaxEntryContentBytes))
 	}
 
-	d.acquireFileLock()
-	defer d.releaseFileLock()
+	a.acquireFileLock()
+	defer a.releaseFileLock()
 	d.lockMap.Lock("queue:orchestrator")
 	defer d.lockMap.Unlock("queue:orchestrator")
 
@@ -347,13 +350,14 @@ func (d *Daemon) handleQueueWriteNotification(params QueueWriteParams) *uds.Resp
 	if err := yamlutil.AtomicWrite(queuePath, nq); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write queue: %v", err))
 	}
-	d.notifySelfWrite(queuePath, "notification", nq)
+	a.notifySelfWrite(queuePath, "notification", nq)
 
 	d.log(LogLevelInfo, "queue_write type=notification id=%s command_id=%s source_result_id=%s", id, params.CommandID, params.SourceResultID)
 	return uds.SuccessResponse(map[string]string{"id": id})
 }
 
-func (d *Daemon) handleQueueWriteCancelRequest(params QueueWriteParams) *uds.Response {
+func (a *API) handleQueueWriteCancelRequest(params QueueWriteParams) *uds.Response {
+	d := a.d
 	if params.CommandID == "" {
 		return uds.ErrorResponse(uds.ErrCodeValidation, "command_id is required for cancel-request")
 	}
@@ -364,19 +368,20 @@ func (d *Daemon) handleQueueWriteCancelRequest(params QueueWriteParams) *uds.Res
 	// Check if state exists (submitted command)
 	statePath := filepath.Join(d.maestroDir, "state", "commands", params.CommandID+".yaml")
 	if _, err := os.Stat(statePath); err == nil {
-		return d.cancelRequestSubmitted(params, statePath)
+		return a.cancelRequestSubmitted(params, statePath)
 	}
 
 	// Un-submitted: cancel in planner queue
-	return d.cancelRequestUnsubmitted(params)
+	return a.cancelRequestUnsubmitted(params)
 }
 
 // cancelRequestSubmitted handles cancel-request for already-submitted commands.
 // Sets cancel.requested=true on the state file (idempotent).
 // Lock order: scanMu.RLock → queue:planner → state:{cmd} (consistent with PeriodicScan).
-func (d *Daemon) cancelRequestSubmitted(params QueueWriteParams, statePath string) *uds.Response {
-	d.acquireFileLock()
-	defer d.releaseFileLock()
+func (a *API) cancelRequestSubmitted(params QueueWriteParams, statePath string) *uds.Response {
+	d := a.d
+	a.acquireFileLock()
+	defer a.releaseFileLock()
 	d.lockMap.Lock("queue:planner")
 	defer d.lockMap.Unlock("queue:planner")
 
@@ -428,7 +433,7 @@ func (d *Daemon) cancelRequestSubmitted(params QueueWriteParams, statePath strin
 					if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
 						d.log(LogLevelError, "queue_write cancel_planner_queue_update error=%v", err)
 					} else {
-						d.notifySelfWrite(queuePath, "cancel-request", cq)
+						a.notifySelfWrite(queuePath, "cancel-request", cq)
 					}
 				}
 				break
@@ -442,9 +447,10 @@ func (d *Daemon) cancelRequestSubmitted(params QueueWriteParams, statePath strin
 
 // cancelRequestUnsubmitted handles cancel-request for un-submitted commands.
 // Directly cancels the command in queue/planner.yaml.
-func (d *Daemon) cancelRequestUnsubmitted(params QueueWriteParams) *uds.Response {
-	d.acquireFileLock()
-	defer d.releaseFileLock()
+func (a *API) cancelRequestUnsubmitted(params QueueWriteParams) *uds.Response {
+	d := a.d
+	a.acquireFileLock()
+	defer a.releaseFileLock()
 	d.lockMap.Lock("queue:planner")
 	defer d.lockMap.Unlock("queue:planner")
 
@@ -488,7 +494,7 @@ func (d *Daemon) cancelRequestUnsubmitted(params QueueWriteParams) *uds.Response
 	if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write queue: %v", err))
 	}
-	d.notifySelfWrite(queuePath, "cancel-request", cq)
+	a.notifySelfWrite(queuePath, "cancel-request", cq)
 
 	d.log(LogLevelInfo, "queue_write type=cancel-request command=%s submitted=false cancelled", params.CommandID)
 	return uds.SuccessResponse(map[string]string{"command_id": params.CommandID, "status": "cancelled"})
@@ -522,7 +528,8 @@ func validateBlockedBy(blockedBy []string) *uds.Response {
 // detectCycleInDependencies checks if adding a task with the given blocked_by
 // would create a circular dependency among all non-terminal tasks for the same command.
 // It collects tasks from all worker queues and the already-loaded target queue.
-func (d *Daemon) detectCycleInDependencies(newTaskID string, newBlockedBy []string, commandID string, targetWorker string, targetQueue *model.TaskQueue) *uds.Response {
+func (a *API) detectCycleInDependencies(newTaskID string, newBlockedBy []string, commandID string, targetWorker string, targetQueue *model.TaskQueue) *uds.Response {
+	d := a.d
 	// Build dependency graph: taskID → list of task IDs it depends on
 	deps := make(map[string][]string)
 	deps[newTaskID] = newBlockedBy
@@ -635,22 +642,6 @@ func detectCycleDFS(deps map[string][]string) []string {
 	return nil
 }
 
-// --- File lock helpers ---
-
-// acquireFileLock acquires the shared file mutex to serialize with QueueHandler's PeriodicScan.
-func (d *Daemon) acquireFileLock() {
-	if d.handler != nil {
-		d.handler.LockFiles()
-	}
-}
-
-// releaseFileLock releases the shared file mutex.
-func (d *Daemon) releaseFileLock() {
-	if d.handler != nil {
-		d.handler.UnlockFiles()
-	}
-}
-
 // --- File I/O helpers ---
 
 func loadCommandQueueFile(path string) (model.CommandQueue, []byte, error) {
@@ -733,7 +724,7 @@ func archiveTerminalCommands(cq *model.CommandQueue) int {
 }
 
 // archiveTerminalTasks removes terminal-status tasks whose command plan_status is also terminal.
-func (d *Daemon) archiveTerminalTasks(tq *model.TaskQueue) int {
+func (a *API) archiveTerminalTasks(tq *model.TaskQueue) int {
 	planTerminalCache := make(map[string]bool)
 	kept := tq.Tasks[:0]
 	archived := 0
@@ -744,7 +735,7 @@ func (d *Daemon) archiveTerminalTasks(tq *model.TaskQueue) int {
 		}
 		terminal, ok := planTerminalCache[task.CommandID]
 		if !ok {
-			terminal = d.isCommandPlanTerminal(task.CommandID)
+			terminal = a.isCommandPlanTerminal(task.CommandID)
 			planTerminalCache[task.CommandID] = terminal
 		}
 		if terminal {
@@ -770,8 +761,8 @@ func (d *Daemon) archiveTerminalTasks(tq *model.TaskQueue) int {
 // this function is called under queue:{target} (via archiveTerminalTasks),
 // but other code paths (retry, submit) acquire state:{commandID} before
 // queue:{workerID}. Omitting the lock avoids the deadlock risk (CR-011).
-func (d *Daemon) isCommandPlanTerminal(commandID string) bool {
-	statePath := filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml")
+func (a *API) isCommandPlanTerminal(commandID string) bool {
+	statePath := filepath.Join(a.d.maestroDir, "state", "commands", commandID+".yaml")
 	data, err := os.ReadFile(statePath)
 	if err != nil {
 		return false

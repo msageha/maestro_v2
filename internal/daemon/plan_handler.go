@@ -29,7 +29,8 @@ func (d *Daemon) SetPlanExecutor(pe PlanExecutor) {
 	d.planExecutor = pe
 }
 
-func (d *Daemon) handlePlan(req *uds.Request) *uds.Response {
+func (a *API) handlePlan(req *uds.Request) *uds.Response {
+	d := a.d
 	if d.planExecutor == nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, "plan executor not configured")
 	}
@@ -42,8 +43,8 @@ func (d *Daemon) handlePlan(req *uds.Request) *uds.Response {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid params: %v", err))
 	}
 
-	d.acquireFileLock()
-	defer d.releaseFileLock()
+	a.acquireFileLock()
+	defer a.releaseFileLock()
 
 	var result json.RawMessage
 	var err error
