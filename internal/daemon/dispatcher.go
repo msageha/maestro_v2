@@ -438,23 +438,31 @@ func (d *Dispatcher) evaluatePreTaskGateWithResult(task *model.Task, workerID st
 		"attempts":   task.Attempts,
 	}
 
-	// Use the EvaluateGateWithResult method for synchronous evaluation
-	result, err := d.qualityGate.EvaluateGateWithResult("pre_task", context)
+	// Use the evaluateGateWithResult method for synchronous evaluation
+	result, err := d.qualityGate.evaluateGateWithResult("pre_task", context)
 
 	// Convert to model.QualityGateEvaluation
 	evaluation := &model.QualityGateEvaluation{
-		Passed:      result.Passed,
+		Passed:      result != nil && result.Passed,
 		EvaluatedAt: d.clock.Now().Format(time.RFC3339),
-		Action:      result.Action,
 	}
 
-	if len(result.FailedGates) > 0 {
-		evaluation.FailedGates = make([]string, len(result.FailedGates))
-		copy(evaluation.FailedGates, result.FailedGates)
+	if result != nil {
+		evaluation.Action = string(result.Action)
+		if len(result.FailedGates) > 0 {
+			evaluation.FailedGates = make([]string, len(result.FailedGates))
+			for i, gate := range result.FailedGates {
+				evaluation.FailedGates[i] = gate
+			}
+		}
 	}
 
 	if err != nil {
 		return evaluation, fmt.Errorf("evaluation failed: %w", err)
+	}
+
+	if result == nil {
+		return evaluation, fmt.Errorf("evaluation returned nil result")
 	}
 
 	if !result.Passed {

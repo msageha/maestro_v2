@@ -788,53 +788,16 @@ func (e *Executor) ensureWorkingDir(ctx context.Context, paneTarget, workingDir 
 
 	e.log(LogLevelInfo, "working_dir_change old=%q new=%q", currentCWD, workingDir)
 
-	// Step 1: Exit current Claude process (only if not already at shell)
-	cmd, err := e.paneIO.GetPaneCurrentCommand(paneTarget)
-	if err != nil {
-		e.log(LogLevelWarn, "working_dir get_pane_cmd error=%v, attempting exit sequence", err)
+	// Step 1: Kill the current pane process and respawn a fresh shell in the
+	// target working directory. This replaces the fragile Ctrl+C → Ctrl+D →
+	// waitForShell → cd sequence which broke when Claude did not exit cleanly.
+	if err := e.paneIO.RespawnPane(paneTarget, workingDir); err != nil {
+		return fmt.Errorf("ensureWorkingDir: respawn pane: %w", err)
 	}
 
-	if err != nil || !e.paneIO.IsShellCommand(cmd) {
-		// Pane is running Claude (or unknown) — exit it
-		if err := e.paneIO.SendCtrlC(paneTarget); err != nil {
-			return fmt.Errorf("ensureWorkingDir: send Ctrl+C: %w", err)
-		}
-		if err := sleepCtx(ctx, 1*time.Second); err != nil {
-			return fmt.Errorf("ensureWorkingDir: cancelled after Ctrl+C: %w", err)
-		}
-
-		// Send Ctrl+D to exit Claude (EOF on stdin).
-		// Guarded by the IsShellCommand check above — only sent when Claude is running.
-		if err := e.paneIO.SendKeys(paneTarget, "C-d"); err != nil {
-			return fmt.Errorf("ensureWorkingDir: send Ctrl+D: %w", err)
-		}
-		if err := sleepCtx(ctx, 2*time.Second); err != nil {
-			return fmt.Errorf("ensureWorkingDir: cancelled after Ctrl+D: %w", err)
-		}
-
-		// Wait for shell prompt (Claude has exited)
-		if err := e.waitForShell(ctx, paneTarget); err != nil {
-			// Fallback: try sending another Ctrl+C + Ctrl+D in case the first attempt
-			// was absorbed by a confirmation prompt
-			e.log(LogLevelWarn, "working_dir shell_wait_failed, retrying exit sequence: %v", err)
-			_ = e.paneIO.SendCtrlC(paneTarget)
-			_ = sleepCtx(ctx, 500*time.Millisecond)
-			_ = e.paneIO.SendKeys(paneTarget, "C-d")
-			_ = sleepCtx(ctx, 2*time.Second)
-
-			if err := e.waitForShell(ctx, paneTarget); err != nil {
-				return fmt.Errorf("ensureWorkingDir: wait for shell: %w", err)
-			}
-		}
-	}
-
-	// Step 2: cd to new working directory
-	cdCmd := fmt.Sprintf("cd %s", shellQuote(workingDir))
-	if err := e.paneIO.SendCommand(paneTarget, cdCmd); err != nil {
-		return fmt.Errorf("ensureWorkingDir: cd: %w", err)
-	}
-	if err := sleepCtx(ctx, 500*time.Millisecond); err != nil {
-		return fmt.Errorf("ensureWorkingDir: cancelled after cd: %w", err)
+	// Step 2: Wait for the fresh shell to be ready
+	if err := e.waitForShell(ctx, paneTarget); err != nil {
+		return fmt.Errorf("ensureWorkingDir: wait for shell after respawn: %w", err)
 	}
 
 	// Step 3: Re-launch Claude

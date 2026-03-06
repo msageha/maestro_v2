@@ -1,4 +1,4 @@
-package dashboard
+package daemon
 
 import (
 	"bufio"
@@ -15,13 +15,12 @@ import (
 
 	yaml "gopkg.in/yaml.v3"
 
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// Stats represents aggregated statistics for the dashboard
-type Stats struct {
+// DashboardStats represents aggregated statistics for the dashboard
+type DashboardStats struct {
 	TotalTasks      int
 	CompletedTasks  int
 	FailedTasks     int
@@ -33,24 +32,24 @@ type Stats struct {
 	LastUpdated     time.Time
 }
 
-// Event represents a filtered event for display
-type Event struct {
-	Timestamp time.Time
-	EventType string
-	TaskID    string
-	AgentID   string
-	Status    string
-	Summary   string
-	IsError   bool
-	IsWarning bool
+// DashboardEvent represents a filtered event for display
+type DashboardEvent struct {
+	Timestamp   time.Time
+	EventType   string
+	TaskID      string
+	AgentID     string
+	Status      string
+	Summary     string
+	IsError     bool
+	IsWarning   bool
 }
 
-// Data contains all data needed to render the dashboard
-type Data struct {
-	Stats           Stats
-	RecentEvents    []Event
-	RecentErrors    []Event
-	RecentWarnings  []Event
+// DashboardData contains all data needed to render the dashboard
+type DashboardData struct {
+	Stats           DashboardStats
+	RecentEvents    []DashboardEvent
+	RecentErrors    []DashboardEvent
+	RecentWarnings  []DashboardEvent
 	QueueStatus     map[string]QueueInfo
 	AgentStatus     map[string]AgentInfo
 	ActiveCommands  []ActiveCommandInfo
@@ -75,39 +74,40 @@ type AgentInfo struct {
 	LastActivity time.Time
 }
 
-// Formatter formats JSONL logs into human-readable dashboard
-type Formatter struct {
+// DashboardFormatter formats JSONL logs into human-readable dashboard
+type DashboardFormatter struct {
 	logPath     string
 	maestroDir  string
 	maxEvents   int
 	maxErrors   int
 	maxWarnings int
-	clock       core.Clock
+	clock       Clock
 
 	tmplOnce sync.Once
 	tmplVal  *template.Template
 	tmplErr  error
 }
 
-// NewFormatter creates a new dashboard formatter
-func NewFormatter(maestroDir string) *Formatter {
-	return &Formatter{
+// NewDashboardFormatter creates a new dashboard formatter
+func NewDashboardFormatter(maestroDir string) *DashboardFormatter {
+	return &DashboardFormatter{
 		logPath:     filepath.Join(maestroDir, "logs", "maestro.jsonl"),
 		maestroDir:  maestroDir,
 		maxEvents:   20,
 		maxErrors:   10,
 		maxWarnings: 10,
-		clock:       core.RealClock{},
+		clock:       RealClock{},
 	}
 }
 
 // FormatDashboard reads JSONL logs and formats them for dashboard display
-func (f *Formatter) FormatDashboard() (string, error) {
+func (f *DashboardFormatter) FormatDashboard() (string, error) {
 	data, err := f.collectDashboardData()
 	if err != nil {
 		return "", fmt.Errorf("failed to collect dashboard data: %w", err)
 	}
 
+	// Render using template
 	tmpl, err := f.getDashboardTemplate()
 	if err != nil {
 		return "", fmt.Errorf("failed to get template: %w", err)
@@ -122,12 +122,12 @@ func (f *Formatter) FormatDashboard() (string, error) {
 }
 
 // collectDashboardData reads logs and aggregates dashboard data
-func (f *Formatter) collectDashboardData() (*Data, error) {
-	data := &Data{
-		Stats:           Stats{LastUpdated: f.clock.Now()},
-		RecentEvents:    make([]Event, 0),
-		RecentErrors:    make([]Event, 0),
-		RecentWarnings:  make([]Event, 0),
+func (f *DashboardFormatter) collectDashboardData() (*DashboardData, error) {
+	data := &DashboardData{
+		Stats:           DashboardStats{LastUpdated: f.clock.Now()},
+		RecentEvents:    make([]DashboardEvent, 0),
+		RecentErrors:    make([]DashboardEvent, 0),
+		RecentWarnings:  make([]DashboardEvent, 0),
 		QueueStatus:     make(map[string]QueueInfo),
 		AgentStatus:     make(map[string]AgentInfo),
 		FormationStatus: "Active",
@@ -135,31 +135,43 @@ func (f *Formatter) collectDashboardData() (*Data, error) {
 		LastUpdated:     f.clock.Now(),
 	}
 
+	// Read queue depths from filesystem (independent of log file)
 	f.updateQueueStatus(data)
 
+	// Read and parse JSONL log file
 	if err := f.parseLogFile(data); err != nil {
+		// If log file doesn't exist, return data with queue info only
 		if os.IsNotExist(err) {
 			return data, nil
 		}
 		return nil, err
 	}
 
+	// Calculate statistics (log-based, queue status already populated above)
 	f.calculateStats(data)
+
+	// Sort events by timestamp (most recent first)
 	f.sortEvents(data)
+
+	// Limit events to max counts
 	f.limitEvents(data)
 
 	return data, nil
 }
 
 // parseLogFile reads and parses the JSONL log file.
-func (f *Formatter) parseLogFile(data *Data) error {
+// To avoid full-scanning large logs, only the tail portion (last maxTailBytes)
+// is parsed. Statistics are therefore windowed over recent events, not full history.
+func (f *DashboardFormatter) parseLogFile(data *DashboardData) error {
 	file, err := os.Open(f.logPath)
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 
-	const maxTailBytes int64 = 512 * 1024
+	// Tail-read optimization: only read the last portion of the file
+	// to avoid O(n) full scans as log files grow.
+	const maxTailBytes int64 = 512 * 1024 // 512KB
 	info, err := file.Stat()
 	if err != nil {
 		return err
@@ -171,11 +183,13 @@ func (f *Formatter) parseLogFile(data *Data) error {
 	}
 
 	scanner := bufio.NewScanner(file)
-	const maxScannerBuffer = 1024 * 1024
+	// Expand scanner buffer from default 64KB to 1MB to handle long log lines
+	const maxScannerBuffer = 1024 * 1024 // 1MB
 	scanner.Buffer(make([]byte, 0, maxScannerBuffer), maxScannerBuffer)
 
+	// If we seeked into the middle of the file, discard the first partial line
 	if info.Size() > maxTailBytes {
-		scanner.Scan() // discard partial line
+		scanner.Scan() // discard partial line at seek boundary
 	}
 
 	taskStatus := make(map[string]string)
@@ -183,23 +197,28 @@ func (f *Formatter) parseLogFile(data *Data) error {
 	for scanner.Scan() {
 		var entry events.LogEntry
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
-			continue
+			continue // Skip malformed entries
 		}
 
+		// Extract event information
 		event := f.extractEvent(entry)
 
+		// Filter task-related events
 		if f.isTaskRelated(entry.EventType) {
 			data.RecentEvents = append(data.RecentEvents, event)
 
+			// Track task status (include retries)
 			if event.TaskID != "" {
 				if event.Status != "" {
 					taskStatus[event.TaskID] = event.Status
 				} else if strings.Contains(entry.EventType, "retry") {
+					// Count retry as a task (task_002 is retrying)
 					taskStatus[event.TaskID] = "in_progress"
 				}
 			}
 		}
 
+		// Collect errors and warnings
 		if event.IsError {
 			data.RecentErrors = append(data.RecentErrors, event)
 			data.Stats.ErrorCount++
@@ -209,6 +228,7 @@ func (f *Formatter) parseLogFile(data *Data) error {
 			data.Stats.WarningCount++
 		}
 
+		// Update agent status
 		if event.AgentID != "" {
 			agent := data.AgentStatus[event.AgentID]
 			agent.ID = event.AgentID
@@ -223,6 +243,7 @@ func (f *Formatter) parseLogFile(data *Data) error {
 		}
 	}
 
+	// Count task statuses
 	for _, status := range taskStatus {
 		data.Stats.TotalTasks++
 		switch status {
@@ -240,14 +261,16 @@ func (f *Formatter) parseLogFile(data *Data) error {
 	return scanner.Err()
 }
 
-func (f *Formatter) extractEvent(entry events.LogEntry) Event {
-	event := Event{
+// extractEvent extracts displayable event from log entry
+func (f *DashboardFormatter) extractEvent(entry events.LogEntry) DashboardEvent {
+	event := DashboardEvent{
 		Timestamp: entry.Timestamp,
 		EventType: entry.EventType,
 		TaskID:    entry.TaskID,
 		AgentID:   entry.AgentID,
 	}
 
+	// Extract status and summary from details
 	if status, ok := entry.Details["status"].(string); ok {
 		event.Status = status
 	}
@@ -259,18 +282,28 @@ func (f *Formatter) extractEvent(entry events.LogEntry) Event {
 		event.Summary = err
 	}
 
+	// Determine if error or warning
 	event.IsError = f.isErrorEvent(entry.EventType)
 	event.IsWarning = f.isWarningEvent(entry.EventType)
 
 	return event
 }
 
-func (f *Formatter) isTaskRelated(eventType string) bool {
+// isTaskRelated checks if an event type is task-related
+func (f *DashboardFormatter) isTaskRelated(eventType string) bool {
 	taskEvents := []string{
-		"task_created", "task_started", "task_completed", "task_failed",
-		"task_dispatched", "task_retry", "result_written",
-		"command_started", "command_completed", "command_failed",
+		"task_created",
+		"task_started",
+		"task_completed",
+		"task_failed",
+		"task_dispatched",
+		"task_retry",
+		"result_written",
+		"command_started",
+		"command_completed",
+		"command_failed",
 	}
+
 	for _, te := range taskEvents {
 		if strings.Contains(strings.ToLower(eventType), te) {
 			return true
@@ -279,24 +312,29 @@ func (f *Formatter) isTaskRelated(eventType string) bool {
 	return false
 }
 
-func (f *Formatter) isErrorEvent(eventType string) bool {
+// isErrorEvent checks if an event type indicates an error
+func (f *DashboardFormatter) isErrorEvent(eventType string) bool {
 	return strings.Contains(strings.ToLower(eventType), "error") ||
 		strings.Contains(strings.ToLower(eventType), "failed")
 }
 
-func (f *Formatter) isWarningEvent(eventType string) bool {
+// isWarningEvent checks if an event type indicates a warning
+func (f *DashboardFormatter) isWarningEvent(eventType string) bool {
 	return strings.Contains(strings.ToLower(eventType), "warn") ||
 		strings.Contains(strings.ToLower(eventType), "timeout") ||
 		strings.Contains(strings.ToLower(eventType), "retry")
 }
 
-func (f *Formatter) calculateStats(data *Data) {
+// calculateStats calculates aggregate statistics.
+// Queue status is populated separately in collectDashboardData.
+func (f *DashboardFormatter) calculateStats(data *DashboardData) {
 	if data.Stats.TotalTasks > 0 {
 		data.Stats.TaskSuccessRate = float64(data.Stats.CompletedTasks) / float64(data.Stats.TotalTasks) * 100
 	}
 }
 
-func (f *Formatter) updateQueueStatus(data *Data) {
+// updateQueueStatus reads current queue depths by parsing queue YAML files.
+func (f *DashboardFormatter) updateQueueStatus(data *DashboardData) {
 	queueDir := filepath.Join(f.maestroDir, "queue")
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
@@ -317,6 +355,8 @@ func (f *Formatter) updateQueueStatus(data *Data) {
 			continue
 		}
 
+		// Determine queue type and count statuses.
+		// Only process known queue types; skip auxiliary files (e.g., planner_signals.yaml).
 		switch {
 		case queueName == "orchestrator":
 			var nq struct {
@@ -351,6 +391,7 @@ func (f *Formatter) updateQueueStatus(data *Data) {
 				}
 			}
 		case strings.HasPrefix(queueName, "worker"):
+			// Worker task queues
 			var tq struct {
 				Tasks []struct {
 					Status string `yaml:"status"`
@@ -367,6 +408,7 @@ func (f *Formatter) updateQueueStatus(data *Data) {
 				}
 			}
 		default:
+			// Skip unknown queue files (e.g., planner_signals.yaml)
 			continue
 		}
 
@@ -374,7 +416,8 @@ func (f *Formatter) updateQueueStatus(data *Data) {
 	}
 }
 
-func (f *Formatter) sortEvents(data *Data) {
+// sortEvents sorts all event lists by timestamp (most recent first)
+func (f *DashboardFormatter) sortEvents(data *DashboardData) {
 	sort.Slice(data.RecentEvents, func(i, j int) bool {
 		return data.RecentEvents[i].Timestamp.After(data.RecentEvents[j].Timestamp)
 	})
@@ -386,7 +429,8 @@ func (f *Formatter) sortEvents(data *Data) {
 	})
 }
 
-func (f *Formatter) limitEvents(data *Data) {
+// limitEvents limits event lists to maximum counts
+func (f *DashboardFormatter) limitEvents(data *DashboardData) {
 	if len(data.RecentEvents) > f.maxEvents {
 		data.RecentEvents = data.RecentEvents[:f.maxEvents]
 	}
@@ -398,7 +442,8 @@ func (f *Formatter) limitEvents(data *Data) {
 	}
 }
 
-func (f *Formatter) getDashboardTemplate() (*template.Template, error) {
+// getDashboardTemplate returns the dashboard template, caching it after the first parse.
+func (f *DashboardFormatter) getDashboardTemplate() (*template.Template, error) {
 	f.tmplOnce.Do(func() {
 		const tmplText = `# Maestro Dashboard
 
@@ -487,25 +532,21 @@ _Last updated: {{ .LastUpdated.Format "2006-01-02 15:04:05 MST" }}_
 	return f.tmplVal, f.tmplErr
 }
 
-// TaskQueueEntry is the interface-compatible struct for dashboard queue rendering.
-type TaskQueueEntry struct {
-	Queue model.TaskQueue
-	Path  string
-}
-
 // UpdateDashboardFileWithQueues generates the dashboard using both JSONL logs
-// and live queue data.
-func (f *Formatter) UpdateDashboardFileWithQueues(
+// and live queue data. This is the unified entry point for SIER-002:
+// MetricsHandler delegates here so that dashboard.md is generated from a single path.
+// The output format includes queue-depth, active commands, and worker task sections
+// derived from live queue data, plus log-based statistics and events.
+func (f *DashboardFormatter) UpdateDashboardFileWithQueues(
 	cq model.CommandQueue,
-	taskQueues map[string]*TaskQueueEntry,
+	taskQueues map[string]*taskQueueEntry,
 	nq model.NotificationQueue,
-	workerIDFromPath func(string) string,
-	atomicWriteTextFn func(string, string) error,
 ) error {
 	var sb strings.Builder
 	sb.WriteString("# Maestro Dashboard\n\n")
 	fmt.Fprintf(&sb, "Updated: %s\n\n", f.clock.Now().UTC().Format(time.RFC3339))
 
+	// Queue Depth table (from live queue data)
 	sb.WriteString("## Queue Depth\n\n")
 	sb.WriteString("| Queue | Pending |\n")
 	sb.WriteString("|-------|--------:|\n")
@@ -555,6 +596,7 @@ func (f *Formatter) UpdateDashboardFileWithQueues(
 		fmt.Fprintf(&sb, "| %s | %d |\n", wID, workerPending[wID])
 	}
 
+	// Active commands
 	sb.WriteString("\n## Active Commands\n\n")
 	activeCount := 0
 	for _, cmd := range cq.Commands {
@@ -567,11 +609,13 @@ func (f *Formatter) UpdateDashboardFileWithQueues(
 		sb.WriteString("_No active commands_\n")
 	}
 
+	// Worker tasks
 	sb.WriteString("\n## Worker Tasks\n\n")
 	for _, wID := range workerKeys {
 		fmt.Fprintf(&sb, "- **%s**: %d pending, %d in_progress\n", wID, workerPending[wID], workerInProg[wID])
 	}
 
+	// Enrich with log-based statistics (best-effort)
 	data, _ := f.collectDashboardData()
 	if data != nil && (data.Stats.TotalTasks > 0 || data.Stats.ErrorCount > 0) {
 		sb.WriteString("\n## Recent Activity\n\n")
@@ -581,7 +625,7 @@ func (f *Formatter) UpdateDashboardFileWithQueues(
 	}
 
 	dashboardPath := filepath.Join(f.maestroDir, "dashboard.md")
-	return atomicWriteTextFn(dashboardPath, sb.String())
+	return atomicWriteText(dashboardPath, sb.String())
 }
 
 // ActiveCommandInfo holds info about an in-progress command for dashboard display.
@@ -599,22 +643,23 @@ type WorkerSummary struct {
 }
 
 // WriteDashboard writes the formatted dashboard to dashboard.md
-func (f *Formatter) WriteDashboard(output io.Writer) error {
+func (f *DashboardFormatter) WriteDashboard(output io.Writer) error {
 	formatted, err := f.FormatDashboard()
 	if err != nil {
 		return err
 	}
+
 	_, err = output.Write([]byte(formatted))
 	return err
 }
 
 // UpdateDashboardFile updates the dashboard.md file using atomic write.
-func (f *Formatter) UpdateDashboardFile(atomicWriteTextFn func(string, string) error) error {
+func (f *DashboardFormatter) UpdateDashboardFile() error {
 	formatted, err := f.FormatDashboard()
 	if err != nil {
 		return fmt.Errorf("failed to format dashboard: %w", err)
 	}
 
 	dashboardPath := filepath.Join(f.maestroDir, "dashboard.md")
-	return atomicWriteTextFn(dashboardPath, formatted)
+	return atomicWriteText(dashboardPath, formatted)
 }

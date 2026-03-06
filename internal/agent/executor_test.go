@@ -633,6 +633,8 @@ func (m *execMockPaneIO) IsShellCommand(cmd string) bool {
 	return m.isShell
 }
 
+func (m *execMockPaneIO) RespawnPane(paneTarget, startDir string) error { return nil }
+
 // newTestExecutorWithLog creates an Executor with a mock PaneIO and returns
 // the log buffer for verification. Uses zero-sleep config for instant tests.
 func newTestExecutorWithLog(paneIO PaneIO) (*Executor, *bytes.Buffer) {

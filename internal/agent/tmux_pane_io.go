@@ -24,6 +24,7 @@ type PaneIO interface {
 	CapturePane(paneTarget string, lastN int) (string, error)
 	CapturePaneJoined(paneTarget string, lastN int) (string, error)
 	IsShellCommand(cmd string) bool
+	RespawnPane(paneTarget, startDir string) error
 }
 
 // TmuxPaneIO implements PaneIO using the real tmux package.
@@ -80,6 +81,10 @@ func (t *TmuxPaneIO) CapturePaneJoined(paneTarget string, lastN int) (string, er
 
 func (t *TmuxPaneIO) IsShellCommand(cmd string) bool {
 	return tmux.IsShellCommand(cmd)
+}
+
+func (t *TmuxPaneIO) RespawnPane(paneTarget, startDir string) error {
+	return tmux.RespawnPane(paneTarget, startDir)
 }
 
 // --- Pane Content Analysis Helpers ---

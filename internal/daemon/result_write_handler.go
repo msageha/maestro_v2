@@ -334,7 +334,7 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 			d.log(LogLevelError, "register_retry_task_failed task=%s error=%v", retryTask.ID, err)
 		} else {
 			// Then add to queue (use locked variant — queue lock already held by this function)
-			if err := retryHandler.AddRetryTaskToQueueLocked(retryTask, params.Reporter); err != nil {
+			if err := retryHandler.addRetryTaskToQueueLocked(retryTask, params.Reporter); err != nil {
 				d.log(LogLevelError, "add_retry_task_failed task=%s error=%v", retryTask.ID, err)
 			} else {
 				d.log(LogLevelInfo, "task_retry_scheduled task=%s retry_id=%s attempt=%d",

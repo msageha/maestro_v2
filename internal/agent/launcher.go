@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/tmux"
@@ -96,6 +98,19 @@ func Launch(maestroDir string) error {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
+
+	// Ignore SIGINT so that only the child process (claude) handles Ctrl+C.
+	// Without this, the Go runtime terminates this process on SIGINT, orphaning
+	// the claude child and breaking the daemon's ensureWorkingDir exit sequence
+	// (Ctrl+C → Ctrl+D) which relies on claude exiting cleanly back to the shell.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT)
+	defer signal.Stop(sigCh)
+	go func() {
+		for range sigCh {
+			// Intentionally ignored — claude handles SIGINT directly.
+		}
+	}()
 
 	return cmd.Run()
 }

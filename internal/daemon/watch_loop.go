@@ -83,7 +83,6 @@ func (w *WatchLoop) tickerLoop() {
 			return
 		case <-d.ticker.C:
 			d.log(LogLevelDebug, "periodic scan triggered")
-			d.selfWrites.CleanStale()
 			d.handler.PeriodicScanWithContext(d.ctx)
 
 			// Session health check: detect if tmux session disappeared

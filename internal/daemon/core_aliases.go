@@ -6,10 +6,7 @@ package daemon
 import (
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
 	"github.com/msageha/maestro_v2/internal/daemon/core"
-	"github.com/msageha/maestro_v2/internal/daemon/dashboard"
-	"github.com/msageha/maestro_v2/internal/daemon/deadletter"
 	"github.com/msageha/maestro_v2/internal/daemon/learnings"
-	"github.com/msageha/maestro_v2/internal/daemon/qualitygate"
 	"github.com/msageha/maestro_v2/internal/daemon/worktree"
 )
 
@@ -79,34 +76,3 @@ var NewCircuitBreakerHandler = circuitbreaker.NewHandler
 
 var readTopKLearnings = learnings.ReadTopKLearnings
 var formatLearningsSection = learnings.FormatLearningsSection
-
-// --- Dead Letter aliases ---
-
-type DeadLetterProcessor = deadletter.Processor
-type DeadLetterResult = deadletter.Result
-
-var NewDeadLetterProcessor = deadletter.NewProcessor
-
-// --- Quality Gate aliases ---
-
-type QualityGateDaemon = qualitygate.Daemon
-type QualityGateEvent = qualitygate.Event
-type TaskStartEvent = qualitygate.TaskStartEvent
-type TaskCompleteEvent = qualitygate.TaskCompleteEvent
-type PhaseTransitionEvent = qualitygate.PhaseTransitionEvent
-type QualityGateMetrics = qualitygate.Metrics
-
-var NewQualityGateDaemon = qualitygate.NewDaemon
-
-// --- Dashboard aliases ---
-
-type DashboardFormatter = dashboard.Formatter
-type DashboardStats = dashboard.Stats
-type DashboardEvent = dashboard.Event
-type DashboardData = dashboard.Data
-type DashboardQueueInfo = dashboard.QueueInfo
-type DashboardAgentInfo = dashboard.AgentInfo
-type ActiveCommandInfo = dashboard.ActiveCommandInfo
-type WorkerSummary = dashboard.WorkerSummary
-
-var NewDashboardFormatter = dashboard.NewFormatter

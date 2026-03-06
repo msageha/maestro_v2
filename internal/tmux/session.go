@@ -636,6 +636,14 @@ func GetPaneCurrentCommand(paneTarget string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
+// RespawnPane kills the current process in the pane and respawns it as a fresh
+// shell in the given start directory. This is more reliable than sending
+// Ctrl+C/Ctrl+D to exit a running process because it does not depend on the
+// process handling those signals gracefully.
+func RespawnPane(paneTarget, startDir string) error {
+	return run("respawn-pane", "-k", "-t", paneTarget, "-c", startDir)
+}
+
 // GetPanePID returns the process ID of the pane's shell process.
 func GetPanePID(paneTarget string) (string, error) {
 	out, err := output("display-message", "-t", paneTarget, "-p", "#{pane_pid}")

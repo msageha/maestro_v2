@@ -25,6 +25,7 @@ type covMockPaneIO struct {
 	sentCmds         []string
 	sendKeysErr      error
 	sendCtrlCErr     error
+	respawnPaneErr   error
 	sendTextErr      error
 	sentTexts        []string
 	getCmdSeq        []mockResp
@@ -137,6 +138,11 @@ func (m *covMockPaneIO) IsShellCommand(_ string) bool {
 		return m.isShellSeq[idx]
 	}
 	return m.defaultIsShell
+}
+
+func (m *covMockPaneIO) RespawnPane(_, startDir string) error {
+	m.calls = append(m.calls, "RespawnPane:"+startDir)
+	return m.respawnPaneErr
 }
 
 // newCovExecutor creates an Executor with fast config for coverage tests.
@@ -357,7 +363,7 @@ func TestEnsureWorkingDir_SameCWD(t *testing.T) {
 
 func TestEnsureWorkingDir_ContextCancelled(t *testing.T) {
 	mock := newCovMock()
-	// Pane is running Claude (not shell) → exit sequence starts → sleeps → cancelled
+	// waitForShell will detect cancelled context
 	mock.getCmdSeq = []mockResp{{val: "claude"}}
 	mock.isShellSeq = []bool{false}
 	exec, _ := newCovExecutor(mock)
@@ -371,8 +377,9 @@ func TestEnsureWorkingDir_ContextCancelled(t *testing.T) {
 	}
 }
 
-func TestEnsureWorkingDir_AlreadyAtShell(t *testing.T) {
+func TestEnsureWorkingDir_RespawnAndRelaunch(t *testing.T) {
 	mock := newCovMock()
+	// waitForShell: pane returns to shell after respawn
 	mock.getCmdSeq = []mockResp{{val: "bash"}}
 	mock.isShellSeq = []bool{true}
 	// waitReadyStrict: prompt detected
@@ -387,19 +394,23 @@ func TestEnsureWorkingDir_AlreadyAtShell(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Verify cd and relaunch commands were sent
-	foundCD := false
+	// Verify RespawnPane was called with the target directory
+	foundRespawn := false
+	for _, call := range mock.calls {
+		if call == "RespawnPane:/new/dir" {
+			foundRespawn = true
+		}
+	}
+	if !foundRespawn {
+		t.Error("expected RespawnPane to be called with /new/dir")
+	}
+
+	// Verify relaunch command was sent (no cd needed — respawn-pane -c handles it)
 	foundLaunch := false
 	for _, cmd := range mock.sentCmds {
-		if strings.HasPrefix(cmd, "cd ") {
-			foundCD = true
-		}
 		if cmd == "maestro agent launch" {
 			foundLaunch = true
 		}
-	}
-	if !foundCD {
-		t.Error("expected cd command to be sent")
 	}
 	if !foundLaunch {
 		t.Error("expected 'maestro agent launch' to be sent")
@@ -416,18 +427,16 @@ func TestEnsureWorkingDir_AlreadyAtShell(t *testing.T) {
 	}
 }
 
-func TestEnsureWorkingDir_SendCtrlCFails(t *testing.T) {
+func TestEnsureWorkingDir_RespawnPaneFails(t *testing.T) {
 	mock := newCovMock()
-	mock.getCmdSeq = []mockResp{{val: "claude"}}
-	mock.isShellSeq = []bool{false}
-	mock.sendCtrlCErr = fmt.Errorf("tmux send error")
+	mock.respawnPaneErr = fmt.Errorf("tmux respawn error")
 	exec, _ := newCovExecutor(mock)
 
 	err := exec.ensureWorkingDir(context.Background(), "%0", "/new/dir")
 	if err == nil {
-		t.Fatal("expected error when SendCtrlC fails")
+		t.Fatal("expected error when RespawnPane fails")
 	}
-	if !strings.Contains(err.Error(), "send Ctrl+C") {
+	if !strings.Contains(err.Error(), "respawn pane") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }

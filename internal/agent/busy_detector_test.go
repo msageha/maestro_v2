@@ -71,6 +71,8 @@ func (m *mockPaneIO) IsShellCommand(cmd string) bool {
 	return m.isShell
 }
 
+func (m *mockPaneIO) RespawnPane(paneTarget, startDir string) error { return nil }
+
 // newTestBusyDetector creates a BusyDetector for testing.
 // Uses direct field assignment to bypass NewBusyDetector's default normalization,
 // allowing zero-value IdleStableSec/BusyCheckInterval for instant test execution.

@@ -204,34 +204,3 @@ type PlanExecutor interface {
 	AddRetryTask(params json.RawMessage) (json.RawMessage, error)
 	Rebuild(params json.RawMessage) (json.RawMessage, error)
 }
-
-// ---------------------------------------------------------------------------
-// Worker Queue Snapshot (DTO for deadletter)
-// ---------------------------------------------------------------------------
-
-// WorkerQueueSnapshot holds a worker's queue data for processing.
-type WorkerQueueSnapshot struct {
-	WorkerID string
-	Queue    model.TaskQueue
-}
-
-// ---------------------------------------------------------------------------
-// Quality Gate Evaluator (interface for dispatcher → qualitygate decoupling)
-// ---------------------------------------------------------------------------
-
-// QualityGateEvaluator abstracts quality gate evaluation to avoid direct
-// dependency from dispatcher to the qualitygate package.
-type QualityGateEvaluator interface {
-	EvaluateGateWithResult(gateType string, ctx map[string]interface{}) (QualityGateResult, error)
-	EmitEvent(event interface{})
-}
-
-// QualityGateResult holds the result of a quality gate evaluation.
-type QualityGateResult struct {
-	Passed      bool
-	Action      string
-	FailedGates []string
-	CacheHit    bool
-	TimedOut    bool
-	DurationMs  int64
-}
