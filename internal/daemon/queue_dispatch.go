@@ -175,8 +175,8 @@ func (qh *QueueHandler) isAgentBusy(ctx context.Context, agentID string) (busy, 
 	// Default: use shared agent executor to probe busy state
 	exec, err := qh.dispatcher.getExecutor()
 	if err != nil {
-		qh.log(LogLevelWarn, "busy_probe_failed agent=%s error=%v", agentID, err)
-		return false, false
+		qh.log(LogLevelWarn, "busy_probe_executor_error agent=%s error=%v (treating as undecided)", agentID, err)
+		return false, true
 	}
 
 	result := exec.Execute(agent.ExecRequest{

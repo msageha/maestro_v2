@@ -1139,10 +1139,35 @@ func (qh *QueueHandler) applyTaskBusyCheckResult(bc busyCheckResult, taskQueues 
 			return
 		}
 
-		// Undecided: skip both extend and release; defer to next scan cycle
+		// Undecided: apply grace lease extension with shorter TTL to prevent
+		// expired lease from triggering recovery mode and blocking new dispatches.
+		// Still respect max_in_progress_min hard timeout to avoid infinite grace renewals.
 		if bc.Undecided {
-			qh.log(LogLevelInfo, "lease_undecided type=task id=%s worker=%s epoch=%d, deferring to next scan",
-				task.ID, bc.Item.AgentID, task.LeaseEpoch)
+			maxMin := qh.config.Watcher.MaxInProgressMin
+			if maxMin <= 0 {
+				maxMin = 60
+			}
+			if t, err := time.Parse(time.RFC3339, bc.Item.UpdatedAt); err == nil {
+				if qh.clock.Now().Sub(t) >= time.Duration(maxMin)*time.Minute {
+					qh.log(LogLevelWarn, "lease_undecided_max_timeout type=task id=%s worker=%s max=%dm, releasing",
+						task.ID, bc.Item.AgentID, maxMin)
+					if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
+						qh.log(LogLevelError, "expire_release_failed type=task id=%s error=%v", task.ID, err)
+						return
+					}
+					qh.scanCounters.LeaseReleases++
+					taskDirty[bc.Item.QueueFile] = true
+					return
+				}
+			}
+			graceTTL := qh.leaseManager.GraceLeaseTTL(qh.config.Watcher.ScanIntervalSec)
+			qh.log(LogLevelInfo, "lease_grace_extend type=task id=%s worker=%s epoch=%d grace_ttl=%s",
+				task.ID, bc.Item.AgentID, task.LeaseEpoch, graceTTL)
+			if err := qh.leaseManager.ExtendTaskLeaseGrace(task, graceTTL); err != nil {
+				qh.log(LogLevelError, "lease_grace_extend_failed type=task id=%s error=%v", task.ID, err)
+			}
+			qh.scanCounters.LeaseExtensions++
+			taskDirty[bc.Item.QueueFile] = true
 			return
 		}
 
@@ -1194,10 +1219,35 @@ func (qh *QueueHandler) applyCommandBusyCheckResult(bc busyCheckResult, cq *mode
 			return
 		}
 
-		// Undecided: skip both extend and release; defer to next scan cycle
+		// Undecided: apply grace lease extension with shorter TTL to prevent
+		// expired lease from triggering recovery mode and blocking new dispatches.
+		// Still respect max_in_progress_min hard timeout to avoid infinite grace renewals.
 		if bc.Undecided {
-			qh.log(LogLevelInfo, "lease_undecided type=command id=%s owner=planner epoch=%d, deferring to next scan",
-				cmd.ID, cmd.LeaseEpoch)
+			maxMin := qh.config.Watcher.MaxInProgressMin
+			if maxMin <= 0 {
+				maxMin = 60
+			}
+			if t, err := time.Parse(time.RFC3339, bc.Item.UpdatedAt); err == nil {
+				if qh.clock.Now().Sub(t) >= time.Duration(maxMin)*time.Minute {
+					qh.log(LogLevelWarn, "lease_undecided_max_timeout type=command id=%s owner=planner max=%dm, releasing",
+						cmd.ID, maxMin)
+					if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
+						qh.log(LogLevelError, "expire_release_failed type=command id=%s error=%v", cmd.ID, err)
+						return
+					}
+					qh.scanCounters.LeaseReleases++
+					*dirty = true
+					return
+				}
+			}
+			graceTTL := qh.leaseManager.GraceLeaseTTL(qh.config.Watcher.ScanIntervalSec)
+			qh.log(LogLevelInfo, "lease_grace_extend type=command id=%s owner=planner epoch=%d grace_ttl=%s",
+				cmd.ID, cmd.LeaseEpoch, graceTTL)
+			if err := qh.leaseManager.ExtendCommandLeaseGrace(cmd, graceTTL); err != nil {
+				qh.log(LogLevelError, "lease_grace_extend_failed type=command id=%s error=%v", cmd.ID, err)
+			}
+			qh.scanCounters.LeaseExtensions++
+			*dirty = true
 			return
 		}
 

@@ -201,6 +201,60 @@ func (lm *LeaseManager) ExtendTaskLease(task *model.Task) error {
 	return nil
 }
 
+// GraceLeaseTTL returns a shorter TTL for undecided busy probes.
+// Formula: max(2 * scan_interval, dispatch_lease / 3), capped at dispatch_lease / 2.
+// Floor: scan_interval + 10s to ensure the lease survives until the next scan.
+func (lm *LeaseManager) GraceLeaseTTL(scanIntervalSec int) time.Duration {
+	if scanIntervalSec <= 0 {
+		scanIntervalSec = 10
+	}
+	twoScans := 2 * scanIntervalSec
+	thirdLease := lm.dispatchLeaseSec / 3
+	grace := twoScans
+	if thirdLease > grace {
+		grace = thirdLease
+	}
+	halfLease := lm.dispatchLeaseSec / 2
+	if grace > halfLease {
+		grace = halfLease
+	}
+	// Ensure grace survives at least until the next scan cycle
+	minGrace := scanIntervalSec + 10
+	if grace < minGrace {
+		grace = minGrace
+	}
+	if grace < 1 {
+		grace = 1
+	}
+	return time.Duration(grace) * time.Second
+}
+
+// ExtendCommandLeaseGrace extends the lease with a shorter grace TTL for undecided probes.
+func (lm *LeaseManager) ExtendCommandLeaseGrace(cmd *model.Command, graceTTL time.Duration) error {
+	if cmd.Status != model.StatusInProgress {
+		return fmt.Errorf("cannot extend lease: command %s is %s, not in_progress", cmd.ID, cmd.Status)
+	}
+	expires := lm.clock.Now().UTC().Add(graceTTL)
+	expiresStr := expires.Format(time.RFC3339)
+	cmd.LeaseExpiresAt = &expiresStr
+	lm.log(LogLevelDebug, "lease_grace_extend type=command id=%s epoch=%d grace_ttl=%s new_expires=%s",
+		cmd.ID, cmd.LeaseEpoch, graceTTL, expiresStr)
+	return nil
+}
+
+// ExtendTaskLeaseGrace extends the lease with a shorter grace TTL for undecided probes.
+func (lm *LeaseManager) ExtendTaskLeaseGrace(task *model.Task, graceTTL time.Duration) error {
+	if task.Status != model.StatusInProgress {
+		return fmt.Errorf("cannot extend lease: task %s is %s, not in_progress", task.ID, task.Status)
+	}
+	expires := lm.clock.Now().UTC().Add(graceTTL)
+	expiresStr := expires.Format(time.RFC3339)
+	task.LeaseExpiresAt = &expiresStr
+	lm.log(LogLevelDebug, "lease_grace_extend type=task id=%s epoch=%d grace_ttl=%s new_expires=%s",
+		task.ID, task.LeaseEpoch, graceTTL, expiresStr)
+	return nil
+}
+
 // IsLeaseExpired checks if a lease has expired. Returns true if expired.
 func (lm *LeaseManager) IsLeaseExpired(leaseExpiresAt *string) bool {
 	if leaseExpiresAt == nil {
