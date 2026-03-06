@@ -220,6 +220,12 @@ func (d *Dispatcher) SortPendingNotifications(notifications []model.Notification
 }
 
 // DispatchCommand dispatches a command to the planner agent.
+//
+// This is a transport-only operation: it attempts delivery to the agent process
+// and reports the outcome. It never mutates queue state (status, lease, epoch).
+// The caller (Phase C in QueueHandler) is responsible for interpreting the error
+// and performing the appropriate state transition (e.g. lease release or keep)
+// under epoch fencing.
 func (d *Dispatcher) DispatchCommand(cmd *model.Command) error {
 	exec, err := d.getExecutor()
 	if err != nil {
@@ -248,6 +254,12 @@ func (d *Dispatcher) DispatchCommand(cmd *model.Command) error {
 }
 
 // DispatchTask dispatches a task to a worker agent.
+//
+// This is a transport-only operation: it attempts delivery to the agent process
+// and reports the outcome. It never mutates queue state (status, lease, epoch).
+// The caller (Phase C in QueueHandler) is responsible for interpreting the error
+// and performing the appropriate state transition (e.g. lease release back to
+// pending) under epoch fencing.
 func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 	// Pre-task quality gate check and record evaluation result
 	var gateEvaluation *model.QualityGateEvaluation
@@ -364,6 +376,11 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 }
 
 // DispatchNotification dispatches a notification to the orchestrator agent.
+//
+// This is a transport-only operation: it attempts delivery to the agent process
+// and reports the outcome. It never mutates queue state (status, lease, epoch).
+// The caller (Phase C in QueueHandler) is responsible for interpreting the error
+// and performing the appropriate state transition under epoch fencing.
 func (d *Dispatcher) DispatchNotification(ntf *model.Notification) error {
 	exec, err := d.getExecutor()
 	if err != nil {

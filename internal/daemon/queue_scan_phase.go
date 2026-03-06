@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -1051,19 +1050,22 @@ func (qh *QueueHandler) applyCommandDispatchResult(dr dispatchResult, cq *model.
 			return
 		}
 		if !dr.Success {
-			// For transient busy detection errors, release lease to allow immediate retry
-			if errors.Is(dr.Error, agent.ErrBusyUndecided) {
-				qh.log(LogLevelWarn, "dispatch_failed_undecided_release type=command id=%s", cmd.ID)
+			// Distinguish definite pre-delivery failures from ambiguous post-delivery failures.
+			// errExecutorInit means the executor could not be created, so the message was
+			// definitely not delivered — safe to release the lease for immediate retry.
+			// All other errors may occur after the message was pasted into the planner pane,
+			// so we keep the lease to prevent duplicate dispatch. The lease will expire
+			// naturally and be recovered by the reconciler (R0 planning_stuck).
+			if errors.Is(dr.Error, errExecutorInit) {
+				qh.log(LogLevelWarn, "dispatch_failed_pre_delivery type=command id=%s error=%v", cmd.ID, dr.Error)
 				if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
 					qh.log(LogLevelError, "release_command_lease_failed id=%s error=%v", cmd.ID, err)
 				} else {
 					qh.scanCounters.LeaseReleases++
 				}
-				*dirty = true
-				return
+			} else {
+				qh.log(LogLevelWarn, "dispatch_failed_ambiguous type=command id=%s error=%v (lease kept)", cmd.ID, dr.Error)
 			}
-
-			qh.log(LogLevelWarn, "dispatch_failed_lease_kept type=command id=%s error=%v", cmd.ID, dr.Error)
 		} else {
 			qh.scanCounters.CommandsDispatched++
 		}

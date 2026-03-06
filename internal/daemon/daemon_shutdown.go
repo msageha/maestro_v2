@@ -91,7 +91,9 @@ func (d *Daemon) Shutdown() {
 			d.eventBus.Close()
 		}
 		if d.qualityGateDaemon != nil {
-			_ = d.qualityGateDaemon.Stop()
+			if err := d.qualityGateDaemon.Stop(); err != nil {
+				d.log(LogLevelWarn, "shutdown quality_gate_stop error=%v", err)
+			}
 		}
 
 		// 3. Cancel context — forces loops and handlers to exit.

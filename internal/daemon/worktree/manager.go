@@ -428,6 +428,13 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string) ([]m
 	}
 	state.UpdatedAt = now
 
+	// Persist "merging" status to disk BEFORE any git mutations.
+	// This acts as a crash-recovery marker: if the daemon crashes mid-merge,
+	// Reconcile will find "merging" on disk and transition to "failed".
+	if err := wm.saveState(commandID, state); err != nil {
+		return nil, fmt.Errorf("persist merging status: %w", err)
+	}
+
 	// Save pre-merge HEAD so we can rollback on failure
 	preMergeHEAD, err := wm.gitOutputInDir(integrationPath, "rev-parse", "HEAD")
 	if err != nil {
@@ -542,7 +549,11 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string) ([]m
 			}
 
 			if saveErr := wm.saveState(commandID, state); saveErr != nil {
-				return conflicts, fmt.Errorf("save state after non-conflict merge error: %w", saveErr)
+				// saveState failed: disk still shows "merging" from the pre-merge persist.
+				// Reconcile will detect this stuck status and transition to "failed".
+				wm.log(core.LogLevelError, "merge_rollback_save_failed command=%s error=%v (disk retains 'merging'; Reconcile will recover)",
+					commandID, saveErr)
+				return conflicts, fmt.Errorf("non-conflict merge error for worker %s (rollback state persist failed: %v): %w", workerID, saveErr, err)
 			}
 			return conflicts, fmt.Errorf("non-conflict merge error for worker %s: %w", workerID, err)
 		}
@@ -585,6 +596,10 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string) ([]m
 	state.UpdatedAt = now
 
 	if err := wm.saveState(commandID, state); err != nil {
+		// saveState failed: disk still shows "merging" from the pre-merge persist.
+		// Reconcile will detect this stuck status and transition to "failed".
+		wm.log(core.LogLevelError, "merge_final_save_failed command=%s error=%v (disk retains 'merging'; Reconcile will recover)",
+			commandID, err)
 		return conflicts, fmt.Errorf("save state: %w", err)
 	}
 
@@ -1093,6 +1108,31 @@ func (wm *Manager) Reconcile() {
 
 		stateChanged := false
 		now := wm.clock.Now().UTC().Format(time.RFC3339)
+
+		// Recover from interrupted merge: if integration is stuck in "merging",
+		// the daemon likely crashed or saveState failed mid-merge.
+		// Transition to "failed" to prevent stale "merged" and allow retry.
+		if state.Integration.Status == model.IntegrationStatusMerging {
+			wm.log(core.LogLevelWarn, "reconcile_stuck_merging command=%s recovering_to_failed", commandID)
+			// Do NOT reset integration worktree to BaseSHA here — that would
+			// erase successfully merged phases from prior runs. The next
+			// MergeToIntegration call will handle rollback via preMergeHEAD.
+			// Restore any workers marked "integrated" back to "active" so they
+			// can be re-merged on retry (integrated → active is a valid transition).
+			for i := range state.Workers {
+				ws := &state.Workers[i]
+				if ws.Status == model.WorktreeStatusIntegrated {
+					if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusActive, now); tErr != nil {
+						wm.log(core.LogLevelWarn, "reconcile_restore_worker command=%s worker=%s error=%v",
+							commandID, ws.WorkerID, tErr)
+					}
+				}
+			}
+			if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusFailed, now); tErr != nil {
+				wm.log(core.LogLevelWarn, "reconcile_fail_integration command=%s error=%v", commandID, tErr)
+			}
+			stateChanged = true
+		}
 
 		for i := range state.Workers {
 			ws := &state.Workers[i]
