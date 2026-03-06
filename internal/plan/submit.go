@@ -660,7 +660,7 @@ func readInput(tasksFile string) (*SubmitInput, error) {
 			return nil, fmt.Errorf("stdin input exceeds maximum size of %d bytes", model.DefaultMaxYAMLFileBytes)
 		}
 	} else {
-		// CRIT-05: Validate file path (no null bytes, clean path)
+		// CRIT-05: Validate file path (no null bytes, absolute path)
 		cleaned, pathErr := validate.ValidateFilePath(tasksFile)
 		if pathErr != nil {
 			return nil, fmt.Errorf("invalid tasks file path: %w", pathErr)
