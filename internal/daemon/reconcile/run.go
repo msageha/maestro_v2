@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -86,27 +87,37 @@ func (r *Run) QuarantineCommandResult(resultPath string, result model.CommandRes
 		return fmt.Errorf("create quarantine dir: %w", err)
 	}
 
-	quarantineFile := filepath.Join(quarantineDir,
-		fmt.Sprintf("res_%s_%s.yaml", r.Deps.Clock.Now().UTC().Format("20060102T150405Z"), result.ID))
-
-	if err := yamlutil.AtomicWrite(quarantineFile, result); err != nil {
-		return fmt.Errorf("write quarantine file: %w", err)
-	}
-
 	r.Deps.LockMap.Lock("result:planner")
 	defer r.Deps.LockMap.Unlock("result:planner")
 
+	// Reload result file under lock to avoid TOCTOU race.
 	rf, err := r.LoadCommandResultFile(resultPath)
 	if err != nil {
 		return fmt.Errorf("reload result file: %w", err)
 	}
 
+	// Find the target result in the current locked snapshot; no-op if already removed.
+	var target *model.CommandResult
 	filtered := make([]model.CommandResult, 0, len(rf.Results))
 	for _, res := range rf.Results {
-		if res.ID != result.ID {
+		if res.ID == result.ID {
+			found := res
+			target = &found
+		} else {
 			filtered = append(filtered, res)
 		}
 	}
+	if target == nil {
+		return nil
+	}
+
+	quarantineFile := filepath.Join(quarantineDir,
+		fmt.Sprintf("res_%s_%s.yaml", r.Deps.Clock.Now().UTC().Format("20060102T150405Z"), target.ID))
+
+	if err := yamlutil.AtomicWrite(quarantineFile, *target); err != nil {
+		return fmt.Errorf("write quarantine file: %w", err)
+	}
+
 	rf.Results = filtered
 
 	if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
@@ -221,9 +232,9 @@ func (r *Run) RemoveTasksFromWorkerQueues(commandID string) error {
 }
 
 // BatchRemoveTaskIDsFromQueues removes multiple task IDs from all worker queues in a single pass.
-func (r *Run) BatchRemoveTaskIDsFromQueues(taskIDs []string) {
+func (r *Run) BatchRemoveTaskIDsFromQueues(taskIDs []string) error {
 	if len(taskIDs) == 0 {
-		return
+		return nil
 	}
 
 	removeSet := make(map[string]struct{}, len(taskIDs))
@@ -234,9 +245,13 @@ func (r *Run) BatchRemoveTaskIDsFromQueues(taskIDs []string) {
 	queueDir := filepath.Join(r.Deps.MaestroDir, "queue")
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
-		return
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read queue dir: %w", err)
 	}
 
+	var errs []error
 	for _, entry := range entries {
 		name := entry.Name()
 		if !strings.HasPrefix(name, "worker") || !strings.HasSuffix(name, ".yaml") {
@@ -247,18 +262,23 @@ func (r *Run) BatchRemoveTaskIDsFromQueues(taskIDs []string) {
 		if workerID == "" {
 			continue
 		}
-		func() {
+		if err := func() error {
 			r.Deps.LockMap.Lock("queue:" + workerID)
 			defer r.Deps.LockMap.Unlock("queue:" + workerID)
 
 			queuePath := filepath.Join(queueDir, name)
 			data, err := os.ReadFile(queuePath)
 			if err != nil {
-				return
+				if os.IsNotExist(err) {
+					return nil
+				}
+				r.Log(core.LogLevelWarn, "R0b batch_remove_tasks read_error file=%s error=%v", name, err)
+				return nil
 			}
 			var tq model.TaskQueue
 			if err := yamlv3.Unmarshal(data, &tq); err != nil {
-				return
+				r.Log(core.LogLevelWarn, "R0b batch_remove_tasks parse_error file=%s error=%v", name, err)
+				return nil
 			}
 
 			filtered := make([]model.Task, 0, len(tq.Tasks))
@@ -268,15 +288,21 @@ func (r *Run) BatchRemoveTaskIDsFromQueues(taskIDs []string) {
 				}
 			}
 			if len(filtered) == len(tq.Tasks) {
-				return
+				return nil
 			}
 			tq.Tasks = filtered
 
 			if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
 				r.Log(core.LogLevelError, "R0b batch_remove_tasks file=%s error=%v", name, err)
+				return fmt.Errorf("write %s: %w", name, err)
 			}
-		}()
+			return nil
+		}(); err != nil {
+			errs = append(errs, err)
+		}
 	}
+
+	return errors.Join(errs...)
 }
 
 // UpdateLastReconciledAt updates last_reconciled_at on a state file.
