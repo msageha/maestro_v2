@@ -10,6 +10,7 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
+	"github.com/msageha/maestro_v2/internal/daemon/dashboard"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -160,7 +161,12 @@ func (mh *MetricsHandler) UpdateDashboard(
 	nq model.NotificationQueue,
 ) error {
 	formatter := NewDashboardFormatter(mh.maestroDir)
-	return formatter.UpdateDashboardFileWithQueues(cq, taskQueues, nq)
+	// Convert internal taskQueueEntry to dashboard.TaskQueueEntry
+	dashTQ := make(map[string]*dashboard.TaskQueueEntry, len(taskQueues))
+	for k, v := range taskQueues {
+		dashTQ[k] = &dashboard.TaskQueueEntry{Queue: v.Queue, Path: v.Path}
+	}
+	return formatter.UpdateDashboardFileWithQueues(cq, dashTQ, nq, workerIDFromPath, atomicWriteText)
 }
 
 // loadAllResultFiles loads all results/worker{N}.yaml and results/planner.yaml files.

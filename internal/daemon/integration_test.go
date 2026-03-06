@@ -1576,7 +1576,7 @@ func TestIntegration_QualityGateEvaluator_MultipleGatesAndCriteria(t *testing.T)
 	writeIntegrationGateConfig(t, d.maestroDir, "integration_gates.yaml", integrationQualityGatesYAML)
 
 	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, d.logger, LogLevelError, context.Background())
-	if err := qg.loadGateDefinitions(); err != nil {
+	if err := qg.LoadGateDefinitions(); err != nil {
 		t.Fatalf("load gate definitions: %v", err)
 	}
 
@@ -1586,7 +1586,7 @@ func TestIntegration_QualityGateEvaluator_MultipleGatesAndCriteria(t *testing.T)
 			"content": "echo safe",
 		},
 	}
-	passResult, err := qg.evaluateGateWithResult("pre_task", passCtx)
+	passResult, err := qg.EvaluateGateWithResult("pre_task", passCtx)
 	if err != nil {
 		t.Fatalf("evaluate pre_task pass case: %v", err)
 	}
@@ -1600,14 +1600,14 @@ func TestIntegration_QualityGateEvaluator_MultipleGatesAndCriteria(t *testing.T)
 			"content": "rm -rf /tmp/test",
 		},
 	}
-	failResult, err := qg.evaluateGateWithResult("pre_task", failCtx)
+	failResult, err := qg.EvaluateGateWithResult("pre_task", failCtx)
 	if err != nil {
 		t.Fatalf("evaluate pre_task fail case: %v", err)
 	}
 	if failResult.Passed {
 		t.Fatalf("expected pre_task failure, got %+v", failResult)
 	}
-	if failResult.Action != quality.ActionBlock {
+	if failResult.Action != string(quality.ActionBlock) {
 		t.Fatalf("expected block action, got %s", failResult.Action)
 	}
 	if len(failResult.FailedGates) == 0 {
@@ -1618,14 +1618,14 @@ func TestIntegration_QualityGateEvaluator_MultipleGatesAndCriteria(t *testing.T)
 		"task_id": "task_warn",
 		"status":  "failed",
 	}
-	postResult, err := qg.evaluateGateWithResult("post_task", postWarnCtx)
+	postResult, err := qg.EvaluateGateWithResult("post_task", postWarnCtx)
 	if err != nil {
 		t.Fatalf("evaluate post_task warn case: %v", err)
 	}
 	if postResult.Passed {
 		t.Fatalf("expected post_task warning/failure path, got %+v", postResult)
 	}
-	if postResult.Action == quality.ActionBlock {
+	if postResult.Action == string(quality.ActionBlock) {
 		t.Fatalf("expected non-blocking warning path action, got %s", postResult.Action)
 	}
 }
@@ -1640,7 +1640,7 @@ func TestIntegration_QualityGatePerformanceUnderLoad(t *testing.T) {
 	writeIntegrationGateConfig(t, d.maestroDir, "perf_gates.yaml", integrationQualityGatesYAML)
 
 	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, d.logger, LogLevelError, context.Background())
-	if err := qg.loadGateDefinitions(); err != nil {
+	if err := qg.LoadGateDefinitions(); err != nil {
 		t.Fatalf("load gate definitions: %v", err)
 	}
 
@@ -1663,7 +1663,7 @@ func TestIntegration_QualityGatePerformanceUnderLoad(t *testing.T) {
 					},
 				}
 				start := time.Now()
-				result, err := qg.evaluateGateWithResult("pre_task", ctx)
+				result, err := qg.EvaluateGateWithResult("pre_task", ctx)
 				if err != nil {
 					atomic.AddInt64(&slowCount, 1)
 					continue
@@ -1799,7 +1799,7 @@ gates:
 	}
 
 	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, d.logger, LogLevelError, context.Background())
-	if err := qg.loadGateDefinitions(); err != nil {
+	if err := qg.LoadGateDefinitions(); err != nil {
 		t.Fatalf("initial gate load: %v", err)
 	}
 
@@ -1808,7 +1808,7 @@ gates:
 			"purpose": "before reload",
 		},
 	}
-	before, err := qg.evaluateGateWithResult("pre_task", ctx)
+	before, err := qg.EvaluateGateWithResult("pre_task", ctx)
 	if err != nil {
 		t.Fatalf("evaluate before reload: %v", err)
 	}
@@ -1849,11 +1849,11 @@ gates:
 		t.Fatal("expected loader to detect reload=true")
 	}
 
-	if err := qg.loadGateDefinitions(); err != nil {
+	if err := qg.LoadGateDefinitions(); err != nil {
 		t.Fatalf("reload into quality gate daemon: %v", err)
 	}
 
-	after, err := qg.evaluateGateWithResult("pre_task", ctx)
+	after, err := qg.EvaluateGateWithResult("pre_task", ctx)
 	if err != nil {
 		t.Fatalf("evaluate after reload: %v", err)
 	}
@@ -2032,7 +2032,7 @@ func TestIntegration_DashboardFormatterEndToEnd(t *testing.T) {
 		t.Fatalf("dashboard output missing expected sections:\n%s", out)
 	}
 
-	if err := formatter.UpdateDashboardFile(); err != nil {
+	if err := formatter.UpdateDashboardFile(atomicWriteText); err != nil {
 		t.Fatalf("update dashboard file: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(d.maestroDir, "dashboard.md")); err != nil {
@@ -2052,7 +2052,7 @@ func BenchmarkIntegration_QualityGateEvaluation(b *testing.B) {
 	lockMap := lock.NewMutexMap()
 	logger := log.New(&logBuf, "", 0)
 	qg := NewQualityGateDaemon(maestroDir, cfg, lockMap, logger, LogLevelError, context.Background())
-	if err := qg.loadGateDefinitions(); err != nil {
+	if err := qg.LoadGateDefinitions(); err != nil {
 		b.Fatalf("load gate definitions: %v", err)
 	}
 
@@ -2064,7 +2064,7 @@ func BenchmarkIntegration_QualityGateEvaluation(b *testing.B) {
 				"content": "echo safe",
 			},
 		}
-		if _, err := qg.evaluateGateWithResult("pre_task", ctx); err != nil {
+		if _, err := qg.EvaluateGateWithResult("pre_task", ctx); err != nil {
 			b.Fatalf("evaluate gate: %v", err)
 		}
 	}
