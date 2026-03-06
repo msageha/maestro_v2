@@ -322,47 +322,50 @@ func TestDetectBusyWithRetry_ContextCancelled(t *testing.T) {
 	}
 }
 
-func TestDetectBusyWithRetry_UndecidedReturnsImmediately(t *testing.T) {
+func TestDetectBusyWithRetry_UndecidedRetriesThenReturns(t *testing.T) {
+	callCount := 0
 	mock := &mockPaneIO{
 		currentCommand: "claude",
 		isShell:        false,
 		captureFn: func(paneTarget string, lastN int) (string, error) {
-			// Capture error → VerdictUndecided on first probe
-			return "", fmt.Errorf("transient capture error")
+			callCount++
+			// All calls fail → persistent Undecided
+			return "", fmt.Errorf("persistent capture error")
 		},
 	}
 	bd := newTestBusyDetector(mock, nil, fastConfig())
 
 	verdict := bd.DetectBusyWithRetry(context.Background(), "%0", "worker1")
 	if verdict != VerdictUndecided {
-		t.Errorf("expected VerdictUndecided returned immediately (no retry), got %s", verdict)
+		t.Errorf("expected VerdictUndecided after retries, got %s", verdict)
+	}
+	// 1 initial + undecidedImmediateRetries retries = 3 total calls
+	expectedCalls := 1 + undecidedImmediateRetries
+	if callCount != expectedCalls {
+		t.Errorf("expected %d captureFn calls (1 initial + %d retries), got %d",
+			expectedCalls, undecidedImmediateRetries, callCount)
 	}
 }
 
-func TestDetectBusyWithRetry_UndecidedNoRetry(t *testing.T) {
-	retryCount := 0
+func TestDetectBusyWithRetry_UndecidedThenIdle(t *testing.T) {
+	callCount := 0
 	mock := &mockPaneIO{
 		currentCommand: "claude",
 		isShell:        false,
 		captureFn: func(paneTarget string, lastN int) (string, error) {
-			retryCount++
-			return "", fmt.Errorf("persistent capture error")
+			callCount++
+			if callCount <= 1 {
+				return "", fmt.Errorf("transient capture error")
+			}
+			return "normal content", nil
 		},
+		joinedContent: []string{"stable", "stable"},
 	}
-	cfg := BusyDetectorConfig{
-		IdleStableSec:       0,
-		BusyCheckMaxRetries: 2,
-		BusyCheckInterval:   0,
-	}
-	bd := newTestBusyDetector(mock, nil, cfg)
+	bd := newTestBusyDetector(mock, nil, fastConfig())
 
 	verdict := bd.DetectBusyWithRetry(context.Background(), "%0", "worker1")
-	if verdict != VerdictUndecided {
-		t.Errorf("expected VerdictUndecided, got %s", verdict)
-	}
-	// VerdictUndecided should NOT trigger retries — only VerdictBusy does
-	if retryCount > 1 {
-		t.Errorf("expected no retry for VerdictUndecided, but captureFn was called %d times", retryCount)
+	if verdict != VerdictIdle {
+		t.Errorf("expected VerdictIdle after undecided retry, got %s", verdict)
 	}
 }
 

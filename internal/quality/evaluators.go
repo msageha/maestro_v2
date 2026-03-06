@@ -37,15 +37,31 @@ func compileDangerousPatterns() []*regexp.Regexp {
 		// Remote code execution via pipe
 		`(?i)\b(?:curl|wget)\b[^|\n]*\|\s*(?:bash|sh|zsh)\b`,
 		// Reverse shell patterns
-		`(?i)\b(?:nc|ncat|netcat)\b[^;\n]*\s-e\s`,
-		`(?i)\b(?:bash|sh)\b[^;\n]*/dev/tcp/`,
+		`(?i)\b(?:nc|ncat|netcat|socat)\b[^;\n]*\s-e\s`,
+		`(?i)\b(?:bash|sh)\b[^;\n]*/dev/(?:tcp|udp)/`,
 		// Fork bomb
 		`:\(\)\s*\{\s*:\|:\s*&\s*\};:`,
 		// Modifying critical system files
 		`(?i)(?:>|>>|\btee\b)\s*/etc/(?:sudoers|passwd|shadow|group)\b`,
 		// Setuid/ownership changes
-		`(?i)\bchmod\s+\+s\b`,
-		`(?i)\bchown\s+root\b`,
+		`(?i)\bchmod\s+(?:\+s|u\+s|[0-7]*4[0-7]{3})\b`,
+		`(?i)\bchown\s+(?:root\b|0(?::|0|\s))`,
+
+		// --- Bypass prevention patterns ---
+
+		// base64 decode (potential payload decoding)
+		`(?i)\b(?:base64|openssl\s+base64)\b[^\n;]*(?:-d|--decode)`,
+		// eval with variable/substitution
+		`(?i)\b(?:eval|builtin\s+eval|command\s+eval)\b\s+\S`,
+		// Heredoc into shell or interpreter
+		`(?i)\b(?:bash|sh|zsh|dash|ksh|python[0-9.]*|perl|ruby|node)\b[^\n;|&]*<<-?\s*`,
+		// Inline interpreter code execution
+		`(?i)\bpython[0-9.]*\b[^\n;|&]*\s+-c\b`,
+		`(?i)\bperl\b[^\n;|&]*\s+-e\b`,
+		`(?i)\bruby\b[^\n;|&]*\s+-e\b`,
+		`(?i)\bnode(?:js)?\b[^\n;|&]*\s+(?:-e|--eval)\b`,
+		`(?i)\bphp\b[^\n;|&]*\s+-r\b`,
+		`(?i)\blua\b[^\n;|&]*\s+-e\b`,
 	}
 	patterns := make([]*regexp.Regexp, 0, len(raw))
 	for _, r := range raw {

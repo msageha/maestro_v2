@@ -34,8 +34,8 @@ func NewResultCache(maxSize int, ttl time.Duration) *ResultCache {
 
 // Get retrieves a value from the cache
 func (c *ResultCache) Get(key *CacheKey) *EvaluationResult {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	keyStr := c.keyToString(key)
 	elem, exists := c.items[keyStr]
@@ -45,15 +45,14 @@ func (c *ResultCache) Get(key *CacheKey) *EvaluationResult {
 
 	item := elem.Value.(*cacheItem)
 
-	// Check if expired
+	// Check if expired and remove stale entry
 	if time.Now().After(item.expiresAt) {
-		// Item is expired, but we don't remove it here (would need write lock)
+		c.removeElement(elem)
 		return nil
 	}
 
 	// Move to front (most recently used)
-	// This requires a write lock, so we skip it in Get for performance
-	// The LRU order will be updated on Set
+	c.lru.MoveToFront(elem)
 
 	// Return a copy to prevent modification
 	result := *item.value

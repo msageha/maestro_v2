@@ -119,15 +119,27 @@ func (bd *BusyDetector) DetectBusy(ctx context.Context, paneTarget string) BusyV
 	return verdict
 }
 
+// undecidedImmediateRetries is the number of immediate retries for
+// VerdictUndecided before the main busy-retry loop. These retries have no
+// sleep delay, targeting transient tmux capture errors that resolve instantly.
+const undecidedImmediateRetries = 2
+
 // DetectBusyWithRetry runs busy detection with a retry loop on VerdictBusy.
-// VerdictUndecided (transient errors, stable pane with busy-pattern text) is
-// returned immediately without retries to avoid blocking the scan loop;
-// callers already treat it as a retryable failure and will retry on the next
-// scan cycle.
+// VerdictUndecided from transient errors gets up to undecidedImmediateRetries
+// immediate retries (no sleep) before being returned. If all immediate retries
+// still yield Undecided, it is returned as-is.
 // agentID is used only for log messages.
 // Returns VerdictUndecided if ctx is cancelled during retries.
 func (bd *BusyDetector) DetectBusyWithRetry(ctx context.Context, paneTarget, agentID string) BusyVerdict {
 	verdict := bd.DetectBusy(ctx, paneTarget)
+
+	// Immediate retries for VerdictUndecided (transient tmux capture errors)
+	for i := 0; i < undecidedImmediateRetries && verdict == VerdictUndecided; i++ {
+		bd.log(LogLevelDebug, "busy_undecided_retry retry=%d/%d agent_id=%s",
+			i+1, undecidedImmediateRetries, agentID)
+		verdict = bd.DetectBusy(ctx, paneTarget)
+	}
+
 	if verdict != VerdictBusy {
 		return verdict
 	}

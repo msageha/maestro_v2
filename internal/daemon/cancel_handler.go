@@ -187,7 +187,7 @@ func (ch *CancelHandler) CancelPendingTasks(tasks []model.Task, commandID string
 
 // InterruptInProgressTasks interrupts in_progress tasks of a cancelled command.
 // Returns the number of tasks interrupted (periodic scan step 0.6).
-func (ch *CancelHandler) InterruptInProgressTasks(tasks []model.Task, commandID string) []CancelledTaskResult {
+func (ch *CancelHandler) InterruptInProgressTasks(tasks []model.Task, commandID string, workerID string) []CancelledTaskResult {
 	var results []CancelledTaskResult
 
 	for i := range tasks {
@@ -203,17 +203,13 @@ func (ch *CancelHandler) InterruptInProgressTasks(tasks []model.Task, commandID 
 			continue
 		}
 
-		// Capture workerID before clearing lease fields (needed for worktree cleanup)
-		var cancelledWorkerID string
-		if task.LeaseOwner != nil {
-			cancelledWorkerID = *task.LeaseOwner
-		}
-
-		// Send interrupt via agent executor
-		if task.LeaseOwner != nil {
-			if err := ch.interruptAgent(*task.LeaseOwner, task.ID, task.CommandID, task.LeaseEpoch); err != nil {
+		// Send interrupt via agent executor using workerID (agent ID like "worker1"),
+		// NOT task.LeaseOwner which is in "daemon:{pid}" format.
+		// Only interrupt if task has an active lease (LeaseOwner != nil).
+		if task.LeaseOwner != nil && workerID != "" {
+			if err := ch.interruptAgent(workerID, task.ID, task.CommandID, task.LeaseEpoch); err != nil {
 				ch.log(LogLevelError, "interrupt_failed task=%s worker=%s error=%v",
-					task.ID, *task.LeaseOwner, err)
+					task.ID, workerID, err)
 				// Continue to cancel even if interrupt fails
 			}
 		}
@@ -229,10 +225,10 @@ func (ch *CancelHandler) InterruptInProgressTasks(tasks []model.Task, commandID 
 		ch.log(LogLevelInfo, "cancel_inprogress task=%s command=%s", task.ID, commandID)
 
 		// H4: Discard uncommitted changes in worker worktree
-		if ch.worktreeManager != nil && cancelledWorkerID != "" {
-			if err := ch.worktreeManager.DiscardWorkerChanges(commandID, cancelledWorkerID); err != nil {
+		if ch.worktreeManager != nil && workerID != "" {
+			if err := ch.worktreeManager.DiscardWorkerChanges(commandID, workerID); err != nil {
 				ch.log(LogLevelWarn, "cancel_worktree_discard task=%s worker=%s error=%v",
-					task.ID, cancelledWorkerID, err)
+					task.ID, workerID, err)
 			}
 		}
 
@@ -274,16 +270,12 @@ func (ch *CancelHandler) InterruptInProgressTasksDeferred(tasks []model.Task, co
 			continue
 		}
 
-		// Capture workerID before clearing lease fields (needed for worktree cleanup)
-		var cancelledWorkerID string
-		if task.LeaseOwner != nil {
-			cancelledWorkerID = *task.LeaseOwner
-		}
-
-		// Collect interrupt item for Phase B execution
-		if task.LeaseOwner != nil {
+		// Collect interrupt item for Phase B execution using workerID (agent ID like "worker1"),
+		// NOT task.LeaseOwner which is in "daemon:{pid}" format.
+		// Only collect if task has an active lease (LeaseOwner != nil).
+		if task.LeaseOwner != nil && workerID != "" {
 			interrupts = append(interrupts, interruptItem{
-				WorkerID:  *task.LeaseOwner,
+				WorkerID:  workerID,
 				TaskID:    task.ID,
 				CommandID: task.CommandID,
 				Epoch:     task.LeaseEpoch,
@@ -299,10 +291,10 @@ func (ch *CancelHandler) InterruptInProgressTasksDeferred(tasks []model.Task, co
 		ch.log(LogLevelInfo, "cancel_inprogress_deferred task=%s command=%s", task.ID, commandID)
 
 		// H4: Discard uncommitted changes in worker worktree
-		if ch.worktreeManager != nil && cancelledWorkerID != "" {
-			if err := ch.worktreeManager.DiscardWorkerChanges(commandID, cancelledWorkerID); err != nil {
+		if ch.worktreeManager != nil && workerID != "" {
+			if err := ch.worktreeManager.DiscardWorkerChanges(commandID, workerID); err != nil {
 				ch.log(LogLevelWarn, "cancel_worktree_discard task=%s worker=%s error=%v",
-					task.ID, cancelledWorkerID, err)
+					task.ID, workerID, err)
 			}
 		}
 

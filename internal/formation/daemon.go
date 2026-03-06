@@ -69,8 +69,14 @@ func stopDaemon(maestroDir string) error {
 			time.Sleep(500 * time.Millisecond)
 		}
 
-		// SIGTERM fallback
-		_ = syscall.Kill(pid, syscall.SIGTERM)
+		// SIGTERM fallback — re-validate PID against lock to mitigate PID reuse
+		if currentPID := validateDaemonPID(maestroDir); currentPID == pid {
+			_ = syscall.Kill(pid, syscall.SIGTERM)
+		} else {
+			// PID no longer matches lock — original daemon exited, PID may be reused.
+			// Don't remove pidPath: a new daemon may own it now.
+			return nil
+		}
 		termDeadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(termDeadline) {
 			if !processAlive(pid) {
@@ -80,8 +86,13 @@ func stopDaemon(maestroDir string) error {
 			time.Sleep(500 * time.Millisecond)
 		}
 
-		// SIGKILL as last resort
-		_ = syscall.Kill(pid, syscall.SIGKILL)
+		// SIGKILL as last resort — re-validate PID again
+		if currentPID := validateDaemonPID(maestroDir); currentPID == pid {
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+		} else {
+			// Don't remove pidPath: a new daemon may own it now.
+			return nil
+		}
 		time.Sleep(500 * time.Millisecond)
 		if processAlive(pid) {
 			return fmt.Errorf("daemon pid=%d still alive after SIGKILL", pid)

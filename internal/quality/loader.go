@@ -678,14 +678,25 @@ func boolPtr(b bool) *bool {
 // validateFilePermissions checks that a config file is not writable by group or others.
 // This mitigates command injection via tampered config files (e.g., script conditions).
 func validateFilePermissions(path string) error {
-	fi, err := os.Lstat(path)
+	// Lstat first to reject symlinks before opening
+	lfi, err := os.Lstat(path)
 	if err != nil {
-		return fmt.Errorf("failed to stat file: %w", err)
+		return fmt.Errorf("failed to lstat file: %w", err)
+	}
+	if lfi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("config file must not be a symlink")
 	}
 
-	// Reject symlinks to prevent TOCTOU via symlink attacks
-	if fi.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("config file must not be a symlink")
+	// Open the file and stat via fd to avoid TOCTOU between stat and read
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("failed to open file: %w", err)
+	}
+	defer f.Close()
+
+	fi, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("failed to stat file: %w", err)
 	}
 
 	// Reject non-regular files

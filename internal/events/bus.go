@@ -120,6 +120,10 @@ func (b *Bus) Subscribe(eventType EventType, fn Subscriber) func() {
 					fn(event)
 				}()
 			case <-b.ctx.Done():
+				// Drain remaining buffered events from the channel to ensure
+				// the goroutine exits promptly after context cancellation.
+				for range sub.ch {
+				}
 				return
 			}
 		}

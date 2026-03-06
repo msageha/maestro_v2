@@ -394,6 +394,8 @@ func TestEngine_Evaluate_Timeout(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.True(t, result.TimedOut)
+	assert.False(t, result.Passed, "timeout should fail-closed (passed=false)")
+	assert.Equal(t, ActionBlock, result.Action, "timeout should block")
 	assert.Less(t, duration, 150*time.Millisecond, "Should timeout quickly")
 }
 
