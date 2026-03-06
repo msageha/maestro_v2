@@ -283,7 +283,7 @@ func (ch *CancelHandler) InterruptInProgressTasksDeferred(tasks []model.Task, co
 		// Collect interrupt item for Phase B execution
 		if task.LeaseOwner != nil {
 			interrupts = append(interrupts, interruptItem{
-				WorkerID:  workerID,
+				WorkerID:  *task.LeaseOwner,
 				TaskID:    task.ID,
 				CommandID: task.CommandID,
 				Epoch:     task.LeaseEpoch,
