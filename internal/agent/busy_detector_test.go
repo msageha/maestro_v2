@@ -322,35 +322,30 @@ func TestDetectBusyWithRetry_ContextCancelled(t *testing.T) {
 	}
 }
 
-func TestDetectBusyWithRetry_UndecidedThenIdle(t *testing.T) {
-	callCount := 0
+func TestDetectBusyWithRetry_UndecidedReturnsImmediately(t *testing.T) {
 	mock := &mockPaneIO{
 		currentCommand: "claude",
 		isShell:        false,
 		captureFn: func(paneTarget string, lastN int) (string, error) {
-			callCount++
-			// First call: capture error → undecided
-			if callCount <= 1 {
-				return "", fmt.Errorf("transient capture error")
-			}
-			// Subsequent calls: success
-			return "stable content", nil
+			// Capture error → VerdictUndecided on first probe
+			return "", fmt.Errorf("transient capture error")
 		},
-		joinedContent: []string{"stable", "stable"},
 	}
 	bd := newTestBusyDetector(mock, nil, fastConfig())
 
 	verdict := bd.DetectBusyWithRetry(context.Background(), "%0", "worker1")
-	if verdict != VerdictIdle {
-		t.Errorf("expected VerdictIdle after undecided retry, got %s", verdict)
+	if verdict != VerdictUndecided {
+		t.Errorf("expected VerdictUndecided returned immediately (no retry), got %s", verdict)
 	}
 }
 
-func TestDetectBusyWithRetry_UndecidedExhaustsRetries(t *testing.T) {
+func TestDetectBusyWithRetry_UndecidedNoRetry(t *testing.T) {
+	retryCount := 0
 	mock := &mockPaneIO{
 		currentCommand: "claude",
 		isShell:        false,
 		captureFn: func(paneTarget string, lastN int) (string, error) {
+			retryCount++
 			return "", fmt.Errorf("persistent capture error")
 		},
 	}
@@ -363,7 +358,11 @@ func TestDetectBusyWithRetry_UndecidedExhaustsRetries(t *testing.T) {
 
 	verdict := bd.DetectBusyWithRetry(context.Background(), "%0", "worker1")
 	if verdict != VerdictUndecided {
-		t.Errorf("expected VerdictUndecided after exhausting retries, got %s", verdict)
+		t.Errorf("expected VerdictUndecided, got %s", verdict)
+	}
+	// VerdictUndecided should NOT trigger retries — only VerdictBusy does
+	if retryCount > 1 {
+		t.Errorf("expected no retry for VerdictUndecided, but captureFn was called %d times", retryCount)
 	}
 }
 
