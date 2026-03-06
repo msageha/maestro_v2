@@ -91,13 +91,21 @@ func (d *Daemon) handleResultWrite(req *uds.Request) *uds.Response {
 	}
 
 	// Phase C: Trigger scan (best effort dependency unblocking).
-	// Advisory shuttingDown check; no mutex needed since this runs within
-	// a UDS handler and eg.Wait() is only called after server.Stop().
+	// Use errgroup so shutdown (eg.Wait) waits for this goroutine to finish.
+	// Guard d.eg != nil for test paths where Run() was not called.
 	if d.handler != nil && !d.shuttingDown.Load() {
-		go func() {
-			defer d.recoverPanic("resultWriteScan")
-			d.handler.PeriodicScan()
-		}()
+		if d.eg != nil {
+			d.eg.Go(func() error {
+				defer d.recoverPanic("resultWriteScan")
+				d.handler.PeriodicScanWithContext(d.ctx)
+				return nil
+			})
+		} else {
+			go func() {
+				defer d.recoverPanic("resultWriteScan")
+				d.handler.PeriodicScan()
+			}()
+		}
 	}
 
 	d.log(LogLevelInfo, "result_write result_id=%s task=%s command=%s status=%s reporter=%s",
