@@ -6,11 +6,13 @@ import (
 	"time"
 )
 
+// Client is a Unix Domain Socket client that sends requests to a running daemon.
 type Client struct {
 	socketPath string
 	timeout    time.Duration
 }
 
+// NewClient creates a new Client that connects to the daemon at the given Unix socket path.
 func NewClient(socketPath string) *Client {
 	return &Client{
 		socketPath: socketPath,
@@ -18,10 +20,12 @@ func NewClient(socketPath string) *Client {
 	}
 }
 
+// SetTimeout sets the dial and read/write deadline for client connections.
 func (c *Client) SetTimeout(d time.Duration) {
 	c.timeout = d
 }
 
+// Send dials the daemon, writes the given Request, and returns the Response.
 func (c *Client) Send(req *Request) (*Response, error) {
 	conn, err := net.DialTimeout("unix", c.socketPath, c.timeout)
 	if err != nil {
@@ -47,6 +51,7 @@ func (c *Client) Send(req *Request) (*Response, error) {
 	return &resp, nil
 }
 
+// SendCommand is a convenience method that creates a Request from the command and params, then sends it.
 func (c *Client) SendCommand(command string, params any) (*Response, error) {
 	req, err := NewRequest(command, params)
 	if err != nil {

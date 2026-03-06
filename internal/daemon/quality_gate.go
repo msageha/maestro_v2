@@ -27,7 +27,10 @@ type TaskStartEvent struct {
 	StartedAt time.Time
 }
 
-func (e TaskStartEvent) EventType() string    { return "task_start" }
+// EventType returns the event type identifier for task start events.
+func (e TaskStartEvent) EventType() string { return "task_start" }
+
+// Timestamp returns the time when the task started.
 func (e TaskStartEvent) Timestamp() time.Time { return e.StartedAt }
 
 // TaskCompleteEvent is emitted when a task completes (success or failure).
@@ -39,7 +42,10 @@ type TaskCompleteEvent struct {
 	CompletedAt time.Time
 }
 
-func (e TaskCompleteEvent) EventType() string    { return "task_complete" }
+// EventType returns the event type identifier for task complete events.
+func (e TaskCompleteEvent) EventType() string { return "task_complete" }
+
+// Timestamp returns the time when the task completed.
 func (e TaskCompleteEvent) Timestamp() time.Time { return e.CompletedAt }
 
 // PhaseTransitionEvent is emitted when a phase changes status.
@@ -51,7 +57,10 @@ type PhaseTransitionEvent struct {
 	TransitionedAt time.Time
 }
 
-func (e PhaseTransitionEvent) EventType() string    { return "phase_transition" }
+// EventType returns the event type identifier for phase transition events.
+func (e PhaseTransitionEvent) EventType() string { return "phase_transition" }
+
+// Timestamp returns the time when the phase transition occurred.
 func (e PhaseTransitionEvent) Timestamp() time.Time { return e.TransitionedAt }
 
 // QualityGateMetrics tracks quality gate evaluation metrics.
@@ -106,53 +115,25 @@ type QualityGateDaemon struct {
 	stopOnce          sync.Once   // Makes Stop() idempotent
 	engine            *quality.Engine
 	evaluationTimeout time.Duration
-	gates             map[string][]*GateDefinition // For test compatibility
 
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 }
 
-// GateDefinition is a simplified version for test compatibility
-type GateDefinition struct {
-	ID       string
-	Name     string
-	Type     string
-	Enabled  bool
-	Priority int
-	Rules    []RuleDefinition
-	Action   ActionDefinition
-}
-
-// RuleDefinition is a simplified version for test compatibility
-type RuleDefinition struct {
-	ID        string
-	Condition RuleCondition
-	Severity  string
-}
-
-// RuleCondition is a simplified version for test compatibility
-type RuleCondition struct {
-	Type   string
-	Field  string
-	Script func(context.Context, map[string]interface{}) (bool, error)
-}
-
-// ActionDefinition is a simplified version for test compatibility
-type ActionDefinition struct {
-	OnPass string
-	OnFail string
-}
-
 // NewQualityGateDaemon creates a new QualityGateDaemon instance.
+// parentCtx is used as the base context; cancelling it cascades to the daemon's
+// internal context, allowing the quality gate to shut down with the parent daemon.
+// Pass context.Background() if no parent context is available.
 func NewQualityGateDaemon(
 	maestroDir string,
 	cfg model.Config,
 	lockMap *lock.MutexMap,
 	logger *log.Logger,
 	logLevel LogLevel,
+	parentCtx context.Context,
 ) *QualityGateDaemon {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(parentCtx)
 	return &QualityGateDaemon{
 		maestroDir:        maestroDir,
 		config:            cfg,
@@ -165,7 +146,6 @@ func NewQualityGateDaemon(
 		metrics:           &QualityGateMetrics{},
 		engine:            quality.NewEngine(),
 		evaluationTimeout: 100 * time.Millisecond,
-		gates:             make(map[string][]*GateDefinition), // For test compatibility
 		ctx:               ctx,
 		cancel:            cancel,
 	}

@@ -1,15 +1,105 @@
-package daemon
+package circuitbreaker
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"testing"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-func newTestCircuitBreakerHandler(enabled bool, maxFailures, timeoutMin int) *CircuitBreakerHandler {
+// mockStateReader implements core.StateReader for testing.
+type mockStateReader struct {
+	taskStates        map[string]model.Status
+	phases            map[string][]core.PhaseInfo
+	deps              map[string][]string
+	systemCommitReady map[string][2]bool
+}
+
+func (m *mockStateReader) GetTaskState(commandID, taskID string) (model.Status, error) {
+	key := commandID + ":" + taskID
+	s, ok := m.taskStates[key]
+	if !ok {
+		return "", fmt.Errorf("task %s not found in command %s", taskID, commandID)
+	}
+	return s, nil
+}
+
+func (m *mockStateReader) GetCommandPhases(commandID string) ([]core.PhaseInfo, error) {
+	p, ok := m.phases[commandID]
+	if !ok {
+		return nil, fmt.Errorf("command %s not found", commandID)
+	}
+	return p, nil
+}
+
+func (m *mockStateReader) GetTaskDependencies(commandID, taskID string) ([]string, error) {
+	key := commandID + ":" + taskID
+	return m.deps[key], nil
+}
+
+func (m *mockStateReader) ApplyPhaseTransition(commandID, phaseID string, newStatus model.PhaseStatus) error {
+	return nil
+}
+
+func (m *mockStateReader) UpdateTaskState(commandID, taskID string, newStatus model.Status, cancelledReason string) error {
+	if m.taskStates == nil {
+		m.taskStates = make(map[string]model.Status)
+	}
+	m.taskStates[commandID+":"+taskID] = newStatus
+	return nil
+}
+
+func (m *mockStateReader) IsCommandCancelRequested(commandID string) (bool, error) {
+	return false, nil
+}
+
+func (m *mockStateReader) GetCircuitBreakerState(commandID string) (*model.CircuitBreakerState, error) {
+	return &model.CircuitBreakerState{}, nil
+}
+
+func (m *mockStateReader) TripCircuitBreaker(commandID string, reason string, progressTimeoutMinutes int) error {
+	return nil
+}
+
+func (m *mockStateReader) IsSystemCommitReady(commandID, taskID string) (bool, bool, error) {
+	if m.systemCommitReady == nil {
+		return false, false, nil
+	}
+	key := commandID + ":" + taskID
+	v, ok := m.systemCommitReady[key]
+	if !ok {
+		return false, false, nil
+	}
+	return v[0], v[1], nil
+}
+
+// mockCircuitBreakerStateReader provides controllable circuit breaker state for testing.
+type mockCircuitBreakerStateReader struct {
+	mockStateReader
+	cbStates    map[string]*model.CircuitBreakerState
+	trippedCmds map[string]string
+}
+
+func (m *mockCircuitBreakerStateReader) GetCircuitBreakerState(commandID string) (*model.CircuitBreakerState, error) {
+	if s, ok := m.cbStates[commandID]; ok {
+		return s, nil
+	}
+	return &model.CircuitBreakerState{}, nil
+}
+
+func (m *mockCircuitBreakerStateReader) TripCircuitBreaker(commandID string, reason string, progressTimeoutMinutes int) error {
+	if m.trippedCmds == nil {
+		m.trippedCmds = make(map[string]string)
+	}
+	m.trippedCmds[commandID] = reason
+	return nil
+}
+
+func newTestHandler(enabled bool, maxFailures, timeoutMin int) *Handler {
 	cfg := model.Config{
 		CircuitBreaker: model.CircuitBreakerConfig{
 			Enabled:                enabled,
@@ -17,12 +107,12 @@ func newTestCircuitBreakerHandler(enabled bool, maxFailures, timeoutMin int) *Ci
 			ProgressTimeoutMinutes: timeoutMin,
 		},
 	}
-	cb := NewCircuitBreakerHandler(cfg, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	cb := NewHandler(cfg, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
 	return cb
 }
 
 func TestUpdateCounterOnResult_Disabled(t *testing.T) {
-	cb := newTestCircuitBreakerHandler(false, 3, 30)
+	cb := newTestHandler(false, 3, 30)
 	state := &model.CommandState{CommandID: "cmd1"}
 
 	tripped, _ := cb.UpdateCounterOnResult(state, model.StatusFailed, "r1", time.Now())
@@ -35,7 +125,7 @@ func TestUpdateCounterOnResult_Disabled(t *testing.T) {
 }
 
 func TestUpdateCounterOnResult_IncrementOnFailure(t *testing.T) {
-	cb := newTestCircuitBreakerHandler(true, 3, 30)
+	cb := newTestHandler(true, 3, 30)
 	state := &model.CommandState{CommandID: "cmd1"}
 
 	tripped, _ := cb.UpdateCounterOnResult(state, model.StatusFailed, "r1", time.Now())
@@ -48,7 +138,7 @@ func TestUpdateCounterOnResult_IncrementOnFailure(t *testing.T) {
 }
 
 func TestUpdateCounterOnResult_ResetOnSuccess(t *testing.T) {
-	cb := newTestCircuitBreakerHandler(true, 3, 30)
+	cb := newTestHandler(true, 3, 30)
 	state := &model.CommandState{
 		CommandID: "cmd1",
 		CircuitBreaker: model.CircuitBreakerState{
@@ -69,7 +159,7 @@ func TestUpdateCounterOnResult_ResetOnSuccess(t *testing.T) {
 }
 
 func TestUpdateCounterOnResult_TripOnThreshold(t *testing.T) {
-	cb := newTestCircuitBreakerHandler(true, 3, 30)
+	cb := newTestHandler(true, 3, 30)
 	state := &model.CommandState{
 		CommandID: "cmd1",
 		CircuitBreaker: model.CircuitBreakerState{
@@ -90,7 +180,7 @@ func TestUpdateCounterOnResult_TripOnThreshold(t *testing.T) {
 }
 
 func TestUpdateCounterOnResult_IdempotentSkip(t *testing.T) {
-	cb := newTestCircuitBreakerHandler(true, 3, 30)
+	cb := newTestHandler(true, 3, 30)
 	state := &model.CommandState{
 		CommandID: "cmd1",
 		AppliedResultIDs: map[string]string{
@@ -109,7 +199,7 @@ func TestUpdateCounterOnResult_IdempotentSkip(t *testing.T) {
 }
 
 func TestTripBreaker_SetsStateFields(t *testing.T) {
-	cb := newTestCircuitBreakerHandler(true, 3, 30)
+	cb := newTestHandler(true, 3, 30)
 	state := &model.CommandState{CommandID: "cmd1"}
 
 	now := time.Now()
@@ -133,7 +223,7 @@ func TestTripBreaker_SetsStateFields(t *testing.T) {
 }
 
 func TestTripBreaker_IdempotentWhenAlreadyTripped(t *testing.T) {
-	cb := newTestCircuitBreakerHandler(true, 3, 30)
+	cb := newTestHandler(true, 3, 30)
 	firstTrippedAt := "2025-01-01T00:00:00Z"
 	state := &model.CommandState{
 		CommandID: "cmd1",
@@ -152,7 +242,7 @@ func TestTripBreaker_IdempotentWhenAlreadyTripped(t *testing.T) {
 }
 
 func TestTripBreaker_DoesNotOverwriteExistingCancel(t *testing.T) {
-	cb := newTestCircuitBreakerHandler(true, 3, 30)
+	cb := newTestHandler(true, 3, 30)
 	existingBy := "user"
 	existingReason := "user cancelled"
 	existingAt := "2025-01-01T00:00:00Z"
@@ -173,30 +263,8 @@ func TestTripBreaker_DoesNotOverwriteExistingCancel(t *testing.T) {
 	}
 }
 
-// mockCircuitBreakerStateReader provides controllable circuit breaker state for testing.
-type mockCircuitBreakerStateReader struct {
-	mockStateReader
-	cbStates      map[string]*model.CircuitBreakerState
-	trippedCmds   map[string]string
-}
-
-func (m *mockCircuitBreakerStateReader) GetCircuitBreakerState(commandID string) (*model.CircuitBreakerState, error) {
-	if s, ok := m.cbStates[commandID]; ok {
-		return s, nil
-	}
-	return &model.CircuitBreakerState{}, nil
-}
-
-func (m *mockCircuitBreakerStateReader) TripCircuitBreaker(commandID string, reason string, progressTimeoutMinutes int) error {
-	if m.trippedCmds == nil {
-		m.trippedCmds = make(map[string]string)
-	}
-	m.trippedCmds[commandID] = reason
-	return nil
-}
-
 func TestCheckProgressTimeout_Disabled(t *testing.T) {
-	cb := newTestCircuitBreakerHandler(false, 3, 30)
+	cb := newTestHandler(false, 3, 30)
 	shouldTrip, _ := cb.CheckProgressTimeout("cmd1")
 	if shouldTrip {
 		t.Error("expected no trip when disabled")
@@ -204,7 +272,7 @@ func TestCheckProgressTimeout_Disabled(t *testing.T) {
 }
 
 func TestCheckProgressTimeout_NoStateReader(t *testing.T) {
-	cb := newTestCircuitBreakerHandler(true, 3, 30)
+	cb := newTestHandler(true, 3, 30)
 	shouldTrip, _ := cb.CheckProgressTimeout("cmd1")
 	if shouldTrip {
 		t.Error("expected no trip when state reader is nil")
@@ -212,7 +280,7 @@ func TestCheckProgressTimeout_NoStateReader(t *testing.T) {
 }
 
 func TestCheckProgressTimeout_TimeoutDisabled(t *testing.T) {
-	cb := newTestCircuitBreakerHandler(true, 3, 0)
+	cb := newTestHandler(true, 3, 0)
 	reader := &mockCircuitBreakerStateReader{
 		cbStates: map[string]*model.CircuitBreakerState{
 			"cmd1": {LastProgressAt: strPtr(time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339))},
@@ -227,7 +295,7 @@ func TestCheckProgressTimeout_TimeoutDisabled(t *testing.T) {
 }
 
 func TestCheckProgressTimeout_NotExpired(t *testing.T) {
-	cb := newTestCircuitBreakerHandler(true, 3, 30)
+	cb := newTestHandler(true, 3, 30)
 	reader := &mockCircuitBreakerStateReader{
 		cbStates: map[string]*model.CircuitBreakerState{
 			"cmd1": {LastProgressAt: strPtr(time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339))},
@@ -242,7 +310,7 @@ func TestCheckProgressTimeout_NotExpired(t *testing.T) {
 }
 
 func TestCheckProgressTimeout_Expired(t *testing.T) {
-	cb := newTestCircuitBreakerHandler(true, 3, 30)
+	cb := newTestHandler(true, 3, 30)
 	reader := &mockCircuitBreakerStateReader{
 		cbStates: map[string]*model.CircuitBreakerState{
 			"cmd1": {LastProgressAt: strPtr(time.Now().Add(-31 * time.Minute).UTC().Format(time.RFC3339))},
@@ -260,7 +328,7 @@ func TestCheckProgressTimeout_Expired(t *testing.T) {
 }
 
 func TestCheckProgressTimeout_NilLastProgressAt(t *testing.T) {
-	cb := newTestCircuitBreakerHandler(true, 3, 30)
+	cb := newTestHandler(true, 3, 30)
 	reader := &mockCircuitBreakerStateReader{
 		cbStates: map[string]*model.CircuitBreakerState{
 			"cmd1": {},
@@ -275,7 +343,7 @@ func TestCheckProgressTimeout_NilLastProgressAt(t *testing.T) {
 }
 
 func TestCheckProgressTimeout_AlreadyTripped(t *testing.T) {
-	cb := newTestCircuitBreakerHandler(true, 3, 30)
+	cb := newTestHandler(true, 3, 30)
 	reader := &mockCircuitBreakerStateReader{
 		cbStates: map[string]*model.CircuitBreakerState{
 			"cmd1": {
@@ -297,7 +365,7 @@ func TestConfigEffectiveMaxConsecutiveFailures(t *testing.T) {
 		value    int
 		expected int
 	}{
-		{0, 3},  // default
+		{0, 3}, // default
 		{1, 1},
 		{5, 5},
 	}

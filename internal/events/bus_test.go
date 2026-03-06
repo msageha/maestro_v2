@@ -557,6 +557,49 @@ func TestBus_ConcurrentUnsubscribeAndClose(t *testing.T) {
 	}
 }
 
+func TestBus_MultipleCloseNoPanic(t *testing.T) {
+	// Close() called multiple times must not panic (idempotent via CompareAndSwap).
+	bus := NewBus(10)
+
+	unsub := bus.Subscribe(EventTaskStarted, func(e Event) {})
+	defer unsub()
+
+	bus.Close()
+	bus.Close()
+	bus.Close()
+}
+
+func TestBus_ConcurrentMultipleClose(t *testing.T) {
+	// Stress test: multiple goroutines calling Close() concurrently.
+	for iter := 0; iter < 100; iter++ {
+		bus := NewBus(10)
+		for i := 0; i < 5; i++ {
+			bus.Subscribe(EventTaskStarted, func(e Event) {})
+		}
+
+		var wg sync.WaitGroup
+		for i := 0; i < 10; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				bus.Close()
+			}()
+		}
+
+		done := make(chan struct{})
+		go func() {
+			wg.Wait()
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatalf("iteration %d: timed out - likely deadlock", iter)
+		}
+	}
+}
+
 func TestBus_DroppedCount(t *testing.T) {
 	// Buffer size 1 with a blocking subscriber → events beyond the first are dropped.
 	bus := NewBus(1)

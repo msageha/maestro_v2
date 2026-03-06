@@ -81,7 +81,7 @@ func RunUp(opts UpOptions) error {
 	}
 
 	// Reload config after flag reflection
-	cfg, err := loadConfigFromDir(opts.MaestroDir)
+	cfg, err := model.LoadConfig(opts.MaestroDir)
 	if err != nil {
 		return fmt.Errorf("reload config: %w", err)
 	}
@@ -216,7 +216,7 @@ func resetFormation(maestroDir string) error {
 
 // reflectFlags updates config.yaml with CLI flags (only when explicitly set).
 func reflectFlags(opts UpOptions) error {
-	cfg, err := loadConfigFromDir(opts.MaestroDir)
+	cfg, err := model.LoadConfig(opts.MaestroDir)
 	if err != nil {
 		return err
 	}
@@ -729,18 +729,6 @@ func processAlive(pid int) bool {
 		return true
 	}
 	return false
-}
-
-func loadConfigFromDir(maestroDir string) (model.Config, error) {
-	data, err := os.ReadFile(filepath.Join(maestroDir, "config.yaml"))
-	if err != nil {
-		return model.Config{}, fmt.Errorf("read config.yaml: %w", err)
-	}
-	var cfg model.Config
-	if err := yamlv3.Unmarshal(data, &cfg); err != nil {
-		return model.Config{}, fmt.Errorf("parse config.yaml: %w", err)
-	}
-	return cfg, nil
 }
 
 // activateContinuousMode sets state/continuous.yaml status to running.

@@ -25,6 +25,11 @@ func TestBuildWorkerEnvelope(t *testing.T) {
 		t.Error("missing or incorrect header")
 	}
 
+	// Verify agent_id field
+	if !strings.Contains(envelope, "agent_id: worker1") {
+		t.Error("missing agent_id field")
+	}
+
 	// Verify key-value format fields (spec §5.8.1)
 	if !strings.Contains(envelope, "purpose: Implement login endpoint") {
 		t.Error("missing purpose field")

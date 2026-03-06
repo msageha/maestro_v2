@@ -91,22 +91,13 @@ func (d *Daemon) handleResultWrite(req *uds.Request) *uds.Response {
 	}
 
 	// Phase C: Trigger scan (best effort dependency unblocking).
-	// Use shutdownMu read lock to atomically check shuttingDown + wg.Add,
-	// preventing TOCTOU race where Shutdown sets the flag and calls wg.Wait
-	// between our check and wg.Add.
-	if d.handler != nil {
-		d.shutdownMu.RLock()
-		if !d.shuttingDown.Load() {
-			d.wg.Add(1)
-			d.shutdownMu.RUnlock()
-			go func() {
-				defer d.wg.Done()
-				defer d.recoverPanic("resultWriteScan")
-				d.handler.PeriodicScan()
-			}()
-		} else {
-			d.shutdownMu.RUnlock()
-		}
+	// Advisory shuttingDown check; no mutex needed since this runs within
+	// a UDS handler and eg.Wait() is only called after server.Stop().
+	if d.handler != nil && !d.shuttingDown.Load() {
+		go func() {
+			defer d.recoverPanic("resultWriteScan")
+			d.handler.PeriodicScan()
+		}()
 	}
 
 	d.log(LogLevelInfo, "result_write result_id=%s task=%s command=%s status=%s reporter=%s",
@@ -286,7 +277,7 @@ func (d *Daemon) resultWritePhaseA(params ResultWriteParams, resultStatus model.
 	if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
 		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("write results file: %v", err)}
 	}
-	d.recordSelfWrite(resultPath)
+	d.recordSelfWrite(resultPath, rf)
 
 	// 5. Check for retry if task failed (but don't schedule yet)
 	var retryTask *model.Task
@@ -317,7 +308,7 @@ func (d *Daemon) resultWritePhaseA(params ResultWriteParams, resultStatus model.
 	if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
 		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("write worker queue: %v", err)}
 	}
-	d.recordSelfWrite(queuePath)
+	d.recordSelfWrite(queuePath, tq)
 
 	// 7. Add retry task to queue and state AFTER successful queue write
 	if retryTask != nil {
@@ -346,42 +337,36 @@ func (d *Daemon) resultWritePhaseB(params ResultWriteParams, resultID string, re
 	defer d.lockMap.Unlock(cmdLockKey)
 
 	statePath := filepath.Join(d.maestroDir, "state", "commands", params.CommandID+".yaml")
-	data, err := os.ReadFile(statePath)
-	if err != nil {
-		if os.IsNotExist(err) {
+
+	return updateYAMLFile(statePath, func(state *model.CommandState) error {
+		// Guard: if state was zero-value (file not found), the command state is missing
+		if state.CommandID == "" && state.SchemaVersion == 0 && state.TaskStates == nil {
 			return fmt.Errorf("state not found for command %s", params.CommandID)
 		}
-		return fmt.Errorf("read state: %w", err)
-	}
-
-	var state model.CommandState
-	if err := yamlv3.Unmarshal(data, &state); err != nil {
-		return fmt.Errorf("parse state: %w", err)
-	}
-
-	if state.TaskStates == nil {
-		state.TaskStates = make(map[string]model.Status)
-	}
-	state.TaskStates[params.TaskID] = resultStatus
-
-	now := d.clock.Now()
-	state.UpdatedAt = now.UTC().Format(time.RFC3339)
-
-	// Circuit breaker: update counter BEFORE AppliedResultIDs so the idempotency
-	// check correctly detects duplicate results against the old map.
-	if d.circuitBreaker != nil {
-		tripped, reason := d.circuitBreaker.UpdateCounterOnResult(&state, resultStatus, resultID, now)
-		if tripped {
-			d.circuitBreaker.TripBreaker(&state, reason, now)
+		if state.TaskStates == nil {
+			state.TaskStates = make(map[string]model.Status)
 		}
-	}
+		state.TaskStates[params.TaskID] = resultStatus
 
-	if state.AppliedResultIDs == nil {
-		state.AppliedResultIDs = make(map[string]string)
-	}
-	state.AppliedResultIDs[params.TaskID] = resultID
+		now := d.clock.Now()
+		state.UpdatedAt = now.UTC().Format(time.RFC3339)
 
-	return yamlutil.AtomicWrite(statePath, state)
+		// Circuit breaker: update counter BEFORE AppliedResultIDs so the idempotency
+		// check correctly detects duplicate results against the old map.
+		if d.circuitBreaker != nil {
+			tripped, reason := d.circuitBreaker.UpdateCounterOnResult(state, resultStatus, resultID, now)
+			if tripped {
+				d.circuitBreaker.TripBreaker(state, reason, now)
+			}
+		}
+
+		if state.AppliedResultIDs == nil {
+			state.AppliedResultIDs = make(map[string]string)
+		}
+		state.AppliedResultIDs[params.TaskID] = resultID
+
+		return nil
+	})
 }
 
 // writeLearnings appends learning entries to .maestro/state/learnings.yaml.

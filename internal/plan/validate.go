@@ -16,6 +16,7 @@ const (
 	MaxTaskConstraintRunes         = 1024
 )
 
+// ValidateTasksInput validates a slice of task inputs for field integrity, uniqueness, and DAG constraints.
 func ValidateTasksInput(tasks []TaskInput) *ValidationErrors {
 	errs := &ValidationErrors{}
 
@@ -71,6 +72,7 @@ func ValidateTasksInput(tasks []TaskInput) *ValidationErrors {
 	return nil
 }
 
+// ValidatePhasesInput validates a slice of phase inputs for structure, task integrity, and DAG constraints.
 func ValidatePhasesInput(phases []PhaseInput) *ValidationErrors {
 	errs := &ValidationErrors{}
 
@@ -191,6 +193,7 @@ func ValidatePhasesInput(phases []PhaseInput) *ValidationErrors {
 	return nil
 }
 
+// ValidatePhaseFillInput validates tasks submitted to fill a deferred phase against its constraints.
 func ValidatePhaseFillInput(tasks []TaskInput, phase model.Phase) *ValidationErrors {
 	errs := &ValidationErrors{}
 

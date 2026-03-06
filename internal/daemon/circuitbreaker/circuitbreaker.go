@@ -1,41 +1,48 @@
-package daemon
+// Package circuitbreaker provides circuit breaker logic for command failure detection.
+package circuitbreaker
 
 import (
 	"fmt"
 	"log"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// CircuitBreakerHandler evaluates circuit breaker conditions for commands.
-type CircuitBreakerHandler struct {
+// Handler evaluates circuit breaker conditions for commands.
+type Handler struct {
 	config      model.Config
-	dl          *DaemonLogger
+	dl          *core.DaemonLogger
 	logger      *log.Logger
-	logLevel    LogLevel
-	clock       Clock
-	stateReader StateReader
+	logLevel    core.LogLevel
+	clock       core.Clock
+	stateReader core.StateReader
 }
 
-// NewCircuitBreakerHandler creates a new CircuitBreakerHandler.
-func NewCircuitBreakerHandler(cfg model.Config, logger *log.Logger, logLevel LogLevel) *CircuitBreakerHandler {
-	return &CircuitBreakerHandler{
+// NewHandler creates a new Handler.
+func NewHandler(cfg model.Config, logger *log.Logger, logLevel core.LogLevel) *Handler {
+	return &Handler{
 		config:   cfg,
-		dl:       NewDaemonLoggerFromLegacy("circuit_breaker", logger, logLevel),
+		dl:       core.NewDaemonLoggerFromLegacy("circuit_breaker", logger, logLevel),
 		logger:   logger,
 		logLevel: logLevel,
-		clock:    RealClock{},
+		clock:    core.RealClock{},
 	}
 }
 
 // SetStateReader wires the state reader.
-func (cb *CircuitBreakerHandler) SetStateReader(reader StateReader) {
+func (cb *Handler) SetStateReader(reader core.StateReader) {
 	cb.stateReader = reader
 }
 
+// SetClock sets a custom clock (for testing).
+func (cb *Handler) SetClock(c core.Clock) {
+	cb.clock = c
+}
+
 // Enabled returns whether the circuit breaker is enabled in config.
-func (cb *CircuitBreakerHandler) Enabled() bool {
+func (cb *Handler) Enabled() bool {
 	return cb.config.CircuitBreaker.Enabled
 }
 
@@ -43,7 +50,7 @@ func (cb *CircuitBreakerHandler) Enabled() bool {
 // Called from resultWritePhaseB where the state:{commandID} lock is already held.
 // The state pointer is mutated in-place and saved by the caller.
 // Returns (tripped, tripReason) if the breaker should trip.
-func (cb *CircuitBreakerHandler) UpdateCounterOnResult(
+func (cb *Handler) UpdateCounterOnResult(
 	state *model.CommandState,
 	resultStatus model.Status,
 	resultID string,
@@ -72,7 +79,7 @@ func (cb *CircuitBreakerHandler) UpdateCounterOnResult(
 
 	case model.StatusFailed:
 		state.CircuitBreaker.ConsecutiveFailures++
-		cb.log(LogLevelInfo, "circuit_breaker_counter command=%s consecutive_failures=%d",
+		cb.log(core.LogLevelInfo, "circuit_breaker_counter command=%s consecutive_failures=%d",
 			state.CommandID, state.CircuitBreaker.ConsecutiveFailures)
 
 		threshold := cb.config.CircuitBreaker.EffectiveMaxConsecutiveFailures()
@@ -90,7 +97,7 @@ func (cb *CircuitBreakerHandler) UpdateCounterOnResult(
 // TripBreaker sets the circuit breaker to tripped state and issues cancel on the command state.
 // Called from resultWritePhaseB where the state:{commandID} lock is already held.
 // The state pointer is mutated in-place and saved by the caller.
-func (cb *CircuitBreakerHandler) TripBreaker(state *model.CommandState, reason string, now time.Time) {
+func (cb *Handler) TripBreaker(state *model.CommandState, reason string, now time.Time) {
 	if state.CircuitBreaker.Tripped {
 		return // already tripped
 	}
@@ -109,12 +116,12 @@ func (cb *CircuitBreakerHandler) TripBreaker(state *model.CommandState, reason s
 		state.Cancel.Reason = &reason
 	}
 
-	cb.log(LogLevelWarn, "circuit_breaker_tripped command=%s reason=%s", state.CommandID, reason)
+	cb.log(core.LogLevelWarn, "circuit_breaker_tripped command=%s reason=%s", state.CommandID, reason)
 }
 
 // CheckProgressTimeout checks if the progress timeout has been exceeded for a command.
 // Called from periodicScanPhaseA. Returns (shouldTrip, reason).
-func (cb *CircuitBreakerHandler) CheckProgressTimeout(commandID string) (bool, string) {
+func (cb *Handler) CheckProgressTimeout(commandID string) (bool, string) {
 	if !cb.config.CircuitBreaker.Enabled {
 		return false, ""
 	}
@@ -129,7 +136,7 @@ func (cb *CircuitBreakerHandler) CheckProgressTimeout(commandID string) (bool, s
 
 	cbState, err := cb.stateReader.GetCircuitBreakerState(commandID)
 	if err != nil {
-		cb.log(LogLevelWarn, "circuit_breaker_state_read command=%s error=%v", commandID, err)
+		cb.log(core.LogLevelWarn, "circuit_breaker_state_read command=%s error=%v", commandID, err)
 		return false, ""
 	}
 
@@ -143,7 +150,7 @@ func (cb *CircuitBreakerHandler) CheckProgressTimeout(commandID string) (bool, s
 
 	lastProgress, err := time.Parse(time.RFC3339, *cbState.LastProgressAt)
 	if err != nil {
-		cb.log(LogLevelWarn, "circuit_breaker_parse_time command=%s error=%v", commandID, err)
+		cb.log(core.LogLevelWarn, "circuit_breaker_parse_time command=%s error=%v", commandID, err)
 		return false, ""
 	}
 
@@ -157,13 +164,23 @@ func (cb *CircuitBreakerHandler) CheckProgressTimeout(commandID string) (bool, s
 	return false, ""
 }
 
+// ProgressTimeoutMinutes returns the effective progress timeout from config.
+func (cb *Handler) ProgressTimeoutMinutes() int {
+	return cb.config.CircuitBreaker.EffectiveProgressTimeoutMinutes()
+}
+
+// StateReader returns the configured state reader (may be nil).
+func (cb *Handler) StateReader() core.StateReader {
+	return cb.stateReader
+}
+
 // ShouldPreserveWorktrees returns true if worktrees should be preserved after trip.
 // Used by the daemon to decide cleanup behavior.
-func (cb *CircuitBreakerHandler) ShouldPreserveWorktrees() bool {
+func (cb *Handler) ShouldPreserveWorktrees() bool {
 	// Worktrees are preserved on failure for investigation by default
 	return !cb.config.Worktree.CleanupOnFailure
 }
 
-func (cb *CircuitBreakerHandler) log(level LogLevel, format string, args ...any) {
+func (cb *Handler) log(level core.LogLevel, format string, args ...any) {
 	cb.dl.Logf(level, format, args...)
 }

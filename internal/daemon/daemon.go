@@ -3,6 +3,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"log"
@@ -18,8 +19,10 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"golang.org/x/sync/errgroup"
 	yamlv3 "gopkg.in/yaml.v3"
 
+	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -28,29 +31,8 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
-type LogLevel int
-
-const (
-	LogLevelDebug LogLevel = iota
-	LogLevelInfo
-	LogLevelWarn
-	LogLevelError
-)
-
-func parseLogLevel(s string) LogLevel {
-	switch strings.ToLower(s) {
-	case "debug":
-		return LogLevelDebug
-	case "info":
-		return LogLevelInfo
-	case "warn", "warning":
-		return LogLevelWarn
-	case "error":
-		return LogLevelError
-	default:
-		return LogLevelInfo
-	}
-}
+// LogLevel, Clock, DaemonLogger, StateReader, etc. are defined in
+// internal/daemon/core and re-exported via core_aliases.go.
 
 // Daemon is the main maestro daemon process.
 type Daemon struct {
@@ -72,7 +54,7 @@ type Daemon struct {
 	planExecutor      PlanExecutor
 	lockMap           *lock.MutexMap
 	qualityGateDaemon *QualityGateDaemon
-	circuitBreaker    *CircuitBreakerHandler
+	circuitBreaker    *circuitbreaker.Handler
 	worktreeManager   *WorktreeManager
 
 	eventBus          *events.Bus
@@ -84,28 +66,14 @@ type Daemon struct {
 
 	ctx      context.Context
 	cancel   context.CancelFunc
-	wg       sync.WaitGroup // short-lived in-flight handlers
-	loopWg   sync.WaitGroup // long-lived loops (fsnotifyLoop, tickerLoop)
+	eg       *errgroup.Group // tracks all daemon goroutines (loops + handlers)
 	shutdown sync.Once
 
-	// shuttingDown + shutdownMu guard wg.Add against TOCTOU race with Shutdown.
-	//
-	// The RWMutex is essential: it ensures that checking shuttingDown and
-	// calling wg.Add happen atomically with respect to Shutdown's wg.Wait.
-	// Without the mutex, a goroutine could observe shuttingDown==false,
-	// then Shutdown could set it to true and call wg.Wait, and then the
-	// goroutine would call wg.Add — panicking because Add after Wait is
-	// not allowed.
-	//
-	// shuttingDown is atomic.Bool (rather than plain bool) because external
-	// consumers (e.g. QueueHandler) receive a *atomic.Bool pointer and may
-	// read it for advisory fast-path checks outside the mutex. The
-	// authoritative check-then-Add sequence in daemon.go holds shutdownMu.RLock.
-	//
-	// Writers (Shutdown): shutdownMu.Lock → shuttingDown.Store(true) → Unlock → wg.Wait.
-	// Readers (spawners): shutdownMu.RLock → shuttingDown.Load → wg.Add(1) → RUnlock.
+	// shuttingDown is an advisory flag read by spawners for fast-path rejection.
+	// With errgroup, the TOCTOU guard (shutdownMu) is no longer needed because
+	// eg.Go() called from within an eg.Go goroutine (e.g. fsnotifyLoop) is safe:
+	// eg.Wait() cannot return while the calling goroutine is still running.
 	shuttingDown atomic.Bool
-	shutdownMu   sync.RWMutex
 
 	selfWrites *selfWriteTracker // tracks daemon-originated YAML writes for fsnotify filtering
 
@@ -114,62 +82,83 @@ type Daemon struct {
 }
 
 // selfWriteTracker tracks files written by the daemon to filter fsnotify self-notifications.
-// When the daemon writes a YAML file via UDS handler, it records the path here.
-// fsnotifyLoop checks this tracker and skips events for self-written files.
+// Uses content hashing (SHA-256) instead of TTL to reliably detect self-written files.
+// When the daemon writes a YAML file via UDS handler, it records the content hash here.
+// fsnotifyLoop checks this tracker by reading the file and comparing hashes.
 type selfWriteTracker struct {
-	mu    sync.Mutex
-	paths map[string]time.Time
+	mu     sync.Mutex
+	stamps map[string]writeStamp
+}
+
+// writeStamp stores a content hash and a deadline for stale-entry cleanup.
+type writeStamp struct {
+	Hash     [sha256.Size]byte
+	Deadline time.Time
 }
 
 func newSelfWriteTracker() *selfWriteTracker {
-	return &selfWriteTracker{paths: make(map[string]time.Time)}
+	return &selfWriteTracker{stamps: make(map[string]writeStamp)}
 }
 
-// Record marks a file path as self-written.
-func (t *selfWriteTracker) Record(path string) {
+// Record stores a content hash for a self-written file.
+// The data is marshaled to YAML to compute the hash (matching AtomicWrite's output).
+func (t *selfWriteTracker) Record(path string, data any) {
+	content, err := yamlv3.Marshal(data)
+	if err != nil {
+		return // best-effort
+	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.paths[path] = time.Now()
-	// Opportunistic cleanup of stale entries (> 30s)
-	for p, ts := range t.paths {
-		if time.Since(ts) > 30*time.Second {
-			delete(t.paths, p)
-		}
+	t.stamps[path] = writeStamp{
+		Hash:     sha256.Sum256(content),
+		Deadline: time.Now().Add(30 * time.Second),
 	}
+	t.cleanStaleLocked()
 }
 
-// Consume checks if a path was recently self-written (within 10s).
+// Consume checks if a file's current content matches a recorded self-write hash.
 // If so, removes it from tracking and returns true.
-// Also performs opportunistic cleanup of stale entries to prevent accumulation
-// when Record() is not called frequently.
+// The file is read from disk and its hash is compared with the stored hash.
 func (t *selfWriteTracker) Consume(path string) bool {
 	t.mu.Lock()
-	defer t.mu.Unlock()
-	ts, ok := t.paths[path]
+	stamp, ok := t.stamps[path]
 	if !ok {
-		// Opportunistic cleanup of stale entries (> 30s) even on miss
-		for p, pts := range t.paths {
-			if time.Since(pts) > 30*time.Second {
-				delete(t.paths, p)
-			}
-		}
+		t.cleanStaleLocked()
+		t.mu.Unlock()
 		return false
 	}
-	delete(t.paths, path)
-	// Opportunistic cleanup of other stale entries
-	for p, pts := range t.paths {
-		if time.Since(pts) > 30*time.Second {
-			delete(t.paths, p)
-		}
+	delete(t.stamps, path)
+	t.cleanStaleLocked()
+	t.mu.Unlock()
+
+	// Deadline check: discard stale stamps
+	if time.Now().After(stamp.Deadline) {
+		return false
 	}
-	return time.Since(ts) < 10*time.Second
+
+	// Read file and compare hash
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	return sha256.Sum256(content) == stamp.Hash
 }
 
 // Len returns the number of tracked paths (for testing).
 func (t *selfWriteTracker) Len() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return len(t.paths)
+	return len(t.stamps)
+}
+
+// cleanStaleLocked removes entries past their deadline. Must be called with mu held.
+func (t *selfWriteTracker) cleanStaleLocked() {
+	now := time.Now()
+	for p, s := range t.stamps {
+		if now.After(s.Deadline) {
+			delete(t.stamps, p)
+		}
+	}
 }
 
 // SetStateReader sets the state reader for dependency resolution (Phase 6).
@@ -304,11 +293,16 @@ func (d *Daemon) Run() error {
 		}
 	}
 
+	// Create errgroup derived from daemon context.
+	// All daemon goroutines (loops + handlers) are tracked by this group.
+	// Cancelling d.cancel() cascades to the errgroup context.
+	d.eg, d.ctx = errgroup.WithContext(d.ctx)
+
 	// Step 3: Init queue handler
 	d.handler = NewQueueHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
 
-	// Wire shutdown guard so debounce goroutines are tracked by d.wg
-	d.handler.SetShutdownGuard(d.ctx, &d.wg, &d.shuttingDown, &d.shutdownMu)
+	// Wire shutdown guard so debounce callbacks respect shutdown
+	d.handler.SetShutdownGuard(d.ctx, &d.shuttingDown)
 
 	// Step 3.5: Wire state reader for dependency resolution (Phase 6)
 	if d.stateReader != nil {
@@ -324,11 +318,11 @@ func (d *Daemon) Run() error {
 	ch := NewContinuousHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
 	d.handler.resultHandler.SetContinuousHandler(ch)
 
-	// Step 3.8: Initialize QualityGateDaemon
-	d.qualityGateDaemon = NewQualityGateDaemon(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
+	// Step 3.8: Initialize QualityGateDaemon with daemon context
+	d.qualityGateDaemon = NewQualityGateDaemon(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel, d.ctx)
 
 	// Step 3.8.1: Initialize CircuitBreakerHandler
-	d.circuitBreaker = NewCircuitBreakerHandler(d.config, d.logger, d.logLevel)
+	d.circuitBreaker = circuitbreaker.NewHandler(d.config, d.logger, d.logLevel)
 	if d.stateReader != nil {
 		d.circuitBreaker.SetStateReader(d.stateReader)
 	}
@@ -367,10 +361,9 @@ func (d *Daemon) Run() error {
 	}
 	d.log(LogLevelInfo, "UDS server listening on %s", filepath.Join(d.maestroDir, uds.DefaultSocketName))
 
-	// Step 6: Start background loops (tracked by loopWg, not wg)
-	d.loopWg.Add(2)
-	go d.fsnotifyLoop()
-	go d.tickerLoop()
+	// Step 6: Start background loops via errgroup
+	d.eg.Go(func() error { d.fsnotifyLoop(); return nil })
+	d.eg.Go(func() error { d.tickerLoop(); return nil })
 
 	// Step 6.5: Start QualityGateDaemon
 	if err := d.qualityGateDaemon.Start(); err != nil {
@@ -464,7 +457,6 @@ func (d *Daemon) handleDashboard(req *uds.Request) *uds.Response {
 
 // fsnotifyLoop processes filesystem change events.
 func (d *Daemon) fsnotifyLoop() {
-	defer d.loopWg.Done()
 	defer d.recoverPanic("fsnotifyLoop")
 
 	for {
@@ -487,15 +479,14 @@ func (d *Daemon) fsnotifyLoop() {
 					continue
 				}
 				d.log(LogLevelDebug, "fsnotify event=%s file=%s", event.Op, event.Name)
-				d.shutdownMu.RLock()
+				// Advisory check: skip if shutting down. No mutex needed because
+				// eg.Go from within this eg.Go goroutine is safe (eg.Wait cannot
+				// return while this goroutine is running).
 				if d.shuttingDown.Load() {
-					d.shutdownMu.RUnlock()
 					continue
 				}
-				d.wg.Add(1)
-				d.shutdownMu.RUnlock()
-				go func(name string) {
-					defer d.wg.Done()
+				name := event.Name
+				d.eg.Go(func() error {
 					defer d.recoverPanic("fsnotifyHandler")
 					// Bound concurrency to prevent goroutine fan-out
 					// during fsnotify bursts. Drop events that exceed
@@ -505,10 +496,11 @@ func (d *Daemon) fsnotifyLoop() {
 						defer func() { <-d.fsSem }()
 					default:
 						d.log(LogLevelDebug, "fsnotify handler dropped (semaphore full) file=%s", name)
-						return
+						return nil
 					}
 					d.handler.HandleFileEvent(name)
-				}(event.Name)
+					return nil
+				})
 			}
 		case err, ok := <-d.watcher.Errors:
 			if !ok {
@@ -521,7 +513,6 @@ func (d *Daemon) fsnotifyLoop() {
 
 // tickerLoop triggers periodic scans at configured intervals.
 func (d *Daemon) tickerLoop() {
-	defer d.loopWg.Done()
 	defer d.recoverPanic("tickerLoop")
 
 	for {
@@ -576,15 +567,13 @@ func (d *Daemon) waitSignals() {
 	}
 }
 
-// Shutdown performs graceful 2-phase shutdown (idempotent via sync.Once).
+// Shutdown performs graceful shutdown (idempotent via sync.Once).
 //
-// Phase 1 (soft): Stop accepting new work and wait for in-flight handlers
-// to complete naturally. Duration: 70% of shutdown_timeout_sec.
-//
-// Phase 2 (hard): Cancel context to force all goroutines (including loops)
-// to exit. Wait for remaining goroutines. Duration: 30% of shutdown_timeout_sec.
-//
-// If the total timeout is exceeded, goroutine stacks are dumped for debugging.
+// 1. Set shuttingDown flag to reject new work.
+// 2. Stop producers (ticker, watcher, server, events).
+// 3. Cancel context to force all goroutines to exit.
+// 4. Wait for errgroup (all goroutines) with timeout.
+// 5. Dump goroutine stacks on timeout for debugging.
 func (d *Daemon) Shutdown() {
 	d.shutdown.Do(func() {
 		d.log(LogLevelInfo, "shutdown started session_alive=%v", tmux.SessionExists())
@@ -595,30 +584,15 @@ func (d *Daemon) Shutdown() {
 		}
 		totalDuration := time.Duration(totalTimeout) * time.Second
 
-		// Use a deadline so that time spent in producer Stop calls is
-		// included in the overall budget (not added on top).
-		deadline := d.clock.Now().Add(totalDuration)
-		softDeadline := d.clock.Now().Add(totalDuration * 7 / 10)
-
-		// ── Phase 1 (soft): graceful drain ──────────────────────────
-
-		d.log(LogLevelInfo, "shutdown phase=soft deadline=%v", softDeadline.Format(time.RFC3339))
-
-		// 1a. Set shuttingDown flag under write lock to prevent new wg.Add
-		// calls from racing with wg.Wait below.
-		d.shutdownMu.Lock()
+		// 1. Set advisory flag — spawners will skip new work.
 		d.shuttingDown.Store(true)
-		d.shutdownMu.Unlock()
 
-		// 1b. Stop producers — no new work will be enqueued.
-		// Context is NOT cancelled yet so in-flight handlers can finish.
+		// 2. Stop producers — no new work will be enqueued.
 		d.ticker.Stop()
 		if d.handler != nil {
 			d.handler.Stop()
 		}
 		if d.watcher != nil {
-			// Closing the watcher also closes its Events channel,
-			// which lets fsnotifyLoop exit without context cancel.
 			if err := d.watcher.Close(); err != nil {
 				d.log(LogLevelError, "shutdown watcher_close error=%v", err)
 			}
@@ -629,7 +603,7 @@ func (d *Daemon) Shutdown() {
 			}
 		}
 
-		// 1c. Unsubscribe from event bus and stop event processing.
+		// Unsubscribe from event bus and stop event processing.
 		for _, unsub := range d.eventUnsubscribers {
 			if unsub != nil {
 				unsub()
@@ -642,55 +616,21 @@ func (d *Daemon) Shutdown() {
 			_ = d.qualityGateDaemon.Stop()
 		}
 
-		// 1d. Wait for short-lived in-flight handlers (wg) to drain.
-		// Uses deadline-based remaining time so producer Stop() overhead
-		// is included in the budget.
-		softDone := make(chan struct{})
-		go func() {
-			d.wg.Wait()
-			close(softDone)
-		}()
-
-		softRemaining := time.Until(softDeadline)
-		if softRemaining <= 0 {
-			d.log(LogLevelWarn, "shutdown phase=soft budget_exhausted_by_producer_stops, escalating immediately")
-		} else {
-			select {
-			case <-softDone:
-				d.log(LogLevelInfo, "shutdown phase=soft all_handlers_drained")
-			case <-time.After(softRemaining):
-				d.log(LogLevelWarn, "shutdown phase=soft timeout_exceeded, escalating to hard phase")
-			}
-		}
-
-		// ── Phase 2 (hard): force stop ──────────────────────────────
-
-		hardRemaining := time.Until(deadline)
-		d.log(LogLevelInfo, "shutdown phase=hard remaining=%v", hardRemaining)
-
-		// 2a. Cancel context — forces loops and any remaining goroutines to exit.
+		// 3. Cancel context — forces loops and handlers to exit.
 		d.cancel()
 
-		if hardRemaining <= 0 {
-			d.log(LogLevelWarn, "shutdown phase=hard budget_exhausted, dumping goroutine stacks")
-			buf := make([]byte, 256*1024)
-			n := runtime.Stack(buf, true)
-			d.log(LogLevelWarn, "shutdown timeout after %ds, dumping %d bytes of goroutine stacks:\n%s",
-				totalTimeout, n, string(buf[:n]))
-		} else {
-			// 2b. Wait for all goroutines (loops + any stragglers) with remaining budget.
-			hardDone := make(chan struct{})
+		// 4. Wait for all errgroup goroutines with timeout.
+		if d.eg != nil {
+			done := make(chan struct{})
 			go func() {
-				d.loopWg.Wait()
-				<-softDone
-				close(hardDone)
+				_ = d.eg.Wait()
+				close(done)
 			}()
 
 			select {
-			case <-hardDone:
-				d.log(LogLevelInfo, "shutdown phase=hard all_goroutines_drained")
-			case <-time.After(hardRemaining):
-				// SRE-011: Dump goroutine stacks on timeout for debugging stuck shutdowns.
+			case <-done:
+				d.log(LogLevelInfo, "shutdown all_goroutines_drained")
+			case <-time.After(totalDuration):
 				buf := make([]byte, 256*1024)
 				n := runtime.Stack(buf, true)
 				d.log(LogLevelWarn, "shutdown timeout after %ds, dumping %d bytes of goroutine stacks:\n%s",
@@ -845,8 +785,9 @@ func (d *Daemon) subscribeQueueWrittenEvents() {
 
 // notifySelfWrite records a self-write for fsnotify filtering and publishes
 // an EventQueueWritten event to trigger processing via the event bus.
-func (d *Daemon) notifySelfWrite(queuePath, writeType string) {
-	d.selfWrites.Record(queuePath)
+// data is the object that was written (used to compute content hash).
+func (d *Daemon) notifySelfWrite(queuePath, writeType string, data any) {
+	d.selfWrites.Record(queuePath, data)
 	if d.eventBus != nil {
 		d.eventBus.Publish(events.EventQueueWritten, map[string]interface{}{
 			"file":   filepath.Base(queuePath),
@@ -858,8 +799,9 @@ func (d *Daemon) notifySelfWrite(queuePath, writeType string) {
 
 // recordSelfWrite records a self-write for fsnotify filtering without
 // publishing an event (used when the caller already triggers processing directly).
-func (d *Daemon) recordSelfWrite(path string) {
-	d.selfWrites.Record(path)
+// data is the object that was written (used to compute content hash).
+func (d *Daemon) recordSelfWrite(path string, data any) {
+	d.selfWrites.Record(path, data)
 }
 
 // validateLearningsFile checks the learnings file on daemon startup.

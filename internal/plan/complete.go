@@ -16,6 +16,7 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
+// CompleteOptions holds the configuration for completing a command.
 type CompleteOptions struct {
 	CommandID  string
 	Summary    string
@@ -24,6 +25,7 @@ type CompleteOptions struct {
 	LockMap    *lock.MutexMap
 }
 
+// CompleteResult contains the outcome of a command completion operation.
 type CompleteResult struct {
 	CommandID string `json:"command_id"`
 	Status    string `json:"status"`

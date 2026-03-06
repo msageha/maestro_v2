@@ -48,27 +48,24 @@ Edit, Write, Glob, Grep, Task 等のツールは一切使用できない。
 
 ### YAML の渡し方
 
-`maestro plan submit` の `--tasks-file` には以下のいずれかを指定する:
+`maestro plan submit` の `--tasks-file -` で stdin から YAML を渡す。heredoc を使うことで、コマンド自体が `maestro` で始まるため Bash ツール制約と矛盾しない:
 
-1. **ファイルパス**（推奨）: YAML を一時ファイルに書き出してパスを指定
-   ```
-   # Bash で一時ファイルを作成して submit
-   cat > /tmp/plan.yaml <<'PLAN'
-   <tasks YAML>
-   PLAN
-   maestro plan submit --command-id <command_id> --tasks-file /tmp/plan.yaml
-   ```
-2. **`-`（stdin）**: パイプで渡す（`--tasks-file` 省略時のデフォルト）
-   ```
-   echo '<tasks YAML>' | maestro plan submit --command-id <command_id>
-   ```
+```
+maestro plan submit --command-id <command_id> --tasks-file - <<'PLAN'
+<tasks YAML>
+PLAN
+```
+
+`<<'PLAN'`（シングルクオート付き）により、YAML 内の変数展開を防止する。
 
 **プラン検証**（副作用なし）:
 
 ```
 maestro plan submit --dry-run \
   --command-id <command_id> \
-  --tasks-file <path_to_yaml>
+  --tasks-file - <<'PLAN'
+<tasks YAML>
+PLAN
 ```
 
 **プラン提出**（タスク分解・Worker 割当・計画確定）:
@@ -76,7 +73,9 @@ maestro plan submit --dry-run \
 ```
 maestro plan submit \
   --command-id <command_id> \
-  --tasks-file <path_to_yaml>
+  --tasks-file - <<'PLAN'
+<tasks YAML>
+PLAN
 ```
 
 → stdout に各タスクの task_id と割当 Worker が JSON で返る
@@ -111,7 +110,9 @@ maestro plan add-retry-task \
 ```
 maestro plan submit \
   --command-id <command_id> \
-  --tasks-file <path_to_phases_yaml>
+  --tasks-file - <<'PLAN'
+<phases YAML>
+PLAN
 ```
 
 **deferred フェーズへのタスク投入**:
@@ -120,7 +121,9 @@ maestro plan submit \
 maestro plan submit \
   --command-id <command_id> \
   --phase <phase_name> \
-  --tasks-file <path_to_tasks_yaml>
+  --tasks-file - <<'PLAN'
+<tasks YAML>
+PLAN
 ```
 
 ---

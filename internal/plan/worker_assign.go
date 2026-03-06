@@ -14,23 +14,27 @@ import (
 	"github.com/msageha/maestro_v2/internal/validate"
 )
 
+// WorkerAssignment represents the result of assigning a task to a specific worker.
 type WorkerAssignment struct {
 	TaskName string
 	WorkerID string
 	Model    string
 }
 
+// WorkerState tracks a worker's current load for assignment decisions.
 type WorkerState struct {
 	WorkerID     string
 	Model        string
 	PendingCount int
 }
 
+// TaskAssignmentRequest describes a task that needs worker assignment.
 type TaskAssignmentRequest struct {
 	Name       string
 	BloomLevel int
 }
 
+// GetModelForBloomLevel returns the model name appropriate for the given Bloom taxonomy level.
 func GetModelForBloomLevel(bloomLevel int, boost bool) string {
 	if boost {
 		return "opus"
@@ -41,6 +45,7 @@ func GetModelForBloomLevel(bloomLevel int, boost bool) string {
 	return "opus"
 }
 
+// GetWorkerModel returns the model configured for the given worker, falling back to the default.
 func GetWorkerModel(workerID string, config model.WorkerConfig) string {
 	if config.Boost {
 		return "opus"
@@ -54,6 +59,7 @@ func GetWorkerModel(workerID string, config model.WorkerConfig) string {
 	return "sonnet"
 }
 
+// AssignWorkers distributes tasks across available workers using least-loaded selection per model.
 func AssignWorkers(
 	config model.WorkerConfig,
 	limits model.LimitsConfig,
@@ -124,6 +130,7 @@ func AssignWorkers(
 	return assignments, nil
 }
 
+// BuildWorkerStates reads queue files to build the current load state for each configured worker.
 func BuildWorkerStates(maestroDir string, config model.WorkerConfig) ([]WorkerState, error) {
 	var states []WorkerState
 

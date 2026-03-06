@@ -20,11 +20,16 @@ import (
 // from other I/O errors so that backup recovery is only attempted for corruption.
 var errYAMLCorrupted = errors.New("yaml corrupted")
 
+// CurrentSchemaVersion is defined in migrator.go.
+
+// StateManager manages read/write access to command state files (state/commands/{id}.yaml).
+// All state mutations are serialized through LockCommand/UnlockCommand.
 type StateManager struct {
 	maestroDir string
 	lockMap    *lock.MutexMap
 }
 
+// NewStateManager creates a StateManager for the given maestro directory.
 func NewStateManager(maestroDir string, lockMap *lock.MutexMap) *StateManager {
 	return &StateManager{
 		maestroDir: maestroDir,
@@ -32,6 +37,7 @@ func NewStateManager(maestroDir string, lockMap *lock.MutexMap) *StateManager {
 	}
 }
 
+// StatePath returns the filesystem path for a command's state file.
 func (sm *StateManager) StatePath(commandID string) (string, error) {
 	if err := validate.ValidateID(commandID); err != nil {
 		return "", fmt.Errorf("invalid command ID for state path: %w", err)
@@ -39,6 +45,7 @@ func (sm *StateManager) StatePath(commandID string) (string, error) {
 	return filepath.Join(sm.maestroDir, "state", "commands", commandID+".yaml"), nil
 }
 
+// StateExists returns true if a state file exists for the given command.
 func (sm *StateManager) StateExists(commandID string) bool {
 	path, err := sm.StatePath(commandID)
 	if err != nil {
@@ -48,6 +55,8 @@ func (sm *StateManager) StateExists(commandID string) bool {
 	return err == nil
 }
 
+// LoadState reads and parses a command state file. If the file is corrupted,
+// it attempts recovery from the .bak backup.
 func (sm *StateManager) LoadState(commandID string) (*model.CommandState, error) {
 	path, err := sm.StatePath(commandID)
 	if err != nil {
@@ -99,7 +108,7 @@ func (sm *StateManager) loadAndParseState(path, commandID string) (*model.Comman
 	// First pass: unmarshal to detect schema_version for migration
 	var raw map[string]interface{}
 	if err := yamlv3.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("parse state %s: %w: %w", commandID, errYAMLCorrupted, err)
+		return nil, fmt.Errorf("parse state %s: %w", commandID, errors.Join(errYAMLCorrupted, err))
 	}
 
 	// Extract and validate schema_version from raw data
@@ -122,19 +131,19 @@ func (sm *StateManager) loadAndParseState(path, commandID string) (*model.Comman
 	// Apply migrations if needed
 	if DefaultMigrator.NeedsMigration(schemaVersion) {
 		if err := DefaultMigrator.Migrate(raw, schemaVersion); err != nil {
-			return nil, fmt.Errorf("migrate state %s from version %d: %w: %w", commandID, schemaVersion, errYAMLCorrupted, err)
+			return nil, fmt.Errorf("migrate state %s from version %d: %w", commandID, schemaVersion, errors.Join(errYAMLCorrupted, err))
 		}
 		// Re-serialize migrated data for structured unmarshal
 		data, err = yamlv3.Marshal(raw)
 		if err != nil {
-			return nil, fmt.Errorf("re-serialize state %s after migration: %w: %w", commandID, errYAMLCorrupted, err)
+			return nil, fmt.Errorf("re-serialize state %s after migration: %w", commandID, errors.Join(errYAMLCorrupted, err))
 		}
 		log.Printf("[INFO] loadAndParseState: migrated state %s from schema version %d to %d", commandID, schemaVersion, CurrentSchemaVersion)
 	}
 
 	var state model.CommandState
 	if err := yamlv3.Unmarshal(data, &state); err != nil {
-		return nil, fmt.Errorf("parse state %s: %w: %w", commandID, errYAMLCorrupted, err)
+		return nil, fmt.Errorf("parse state %s: %w", commandID, errors.Join(errYAMLCorrupted, err))
 	}
 
 	if state.FileType != "state_command" {
@@ -144,6 +153,7 @@ func (sm *StateManager) loadAndParseState(path, commandID string) (*model.Comman
 	return &state, nil
 }
 
+// SaveState atomically writes the command state to disk.
 func (sm *StateManager) SaveState(state *model.CommandState) error {
 	path, err := sm.StatePath(state.CommandID)
 	if err != nil {
@@ -155,6 +165,7 @@ func (sm *StateManager) SaveState(state *model.CommandState) error {
 	return yamlutil.AtomicWrite(path, state)
 }
 
+// DeleteState removes the state file for a command.
 func (sm *StateManager) DeleteState(commandID string) error {
 	path, err := sm.StatePath(commandID)
 	if err != nil {
@@ -166,14 +177,17 @@ func (sm *StateManager) DeleteState(commandID string) error {
 	return nil
 }
 
+// LockCommand acquires the in-process mutex for a command's state.
 func (sm *StateManager) LockCommand(commandID string) {
 	sm.lockMap.Lock("state:" + commandID)
 }
 
+// UnlockCommand releases the in-process mutex for a command's state.
 func (sm *StateManager) UnlockCommand(commandID string) {
 	sm.lockMap.Unlock("state:" + commandID)
 }
 
+// RetryableError wraps an error that indicates the operation can be safely retried.
 type RetryableError struct {
 	Err error
 }
@@ -186,6 +200,8 @@ func (e *RetryableError) Unwrap() error {
 	return e.Err
 }
 
+// CanComplete checks whether a command can transition to a terminal status.
+// Returns the derived PlanStatus or an error if the command is not ready.
 func CanComplete(state *model.CommandState) (model.PlanStatus, error) {
 	if state.PlanStatus != model.PlanStatusSealed {
 		return "", &PlanValidationError{Msg: fmt.Sprintf("plan_status must be sealed, got %s", state.PlanStatus)}
@@ -241,6 +257,8 @@ func CanComplete(state *model.CommandState) (model.PlanStatus, error) {
 	return DeriveStatus(state)
 }
 
+// DeriveStatus determines the terminal PlanStatus based on task outcomes
+// and the command's CompletionPolicy.
 func DeriveStatus(state *model.CommandState) (model.PlanStatus, error) {
 	// Check phases for timed_out — always fails regardless of policy
 	for _, phase := range state.Phases {

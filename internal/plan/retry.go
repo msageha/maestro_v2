@@ -16,6 +16,7 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
+// RetryOptions holds the configuration for retrying a failed task.
 type RetryOptions struct {
 	CommandID          string
 	RetryOf            string
@@ -31,6 +32,7 @@ type RetryOptions struct {
 	LockMap            *lock.MutexMap
 }
 
+// RetryResult contains the outcome of a task retry including any cascade-recovered tasks.
 type RetryResult struct {
 	TaskID           string                 `json:"task_id"`
 	Worker           string                 `json:"worker"`
@@ -39,6 +41,7 @@ type RetryResult struct {
 	CascadeRecovered []CascadeRecoveredTask `json:"cascade_recovered,omitempty"`
 }
 
+// CascadeRecoveredTask describes a downstream task that was automatically recovered during a retry.
 type CascadeRecoveredTask struct {
 	TaskID   string `json:"task_id"`
 	Worker   string `json:"worker"`
@@ -46,6 +49,7 @@ type CascadeRecoveredTask struct {
 	Replaced string `json:"replaced"`
 }
 
+// AddRetryTask creates a replacement task for a failed task, rewires dependencies, and performs cascade recovery.
 func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 	if opts.LockMap == nil {
 		return nil, fmt.Errorf("LockMap is required")

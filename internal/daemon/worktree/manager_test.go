@@ -1,4 +1,4 @@
-package daemon
+package worktree
 
 import (
 	"fmt"
@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -52,7 +53,7 @@ func initTestGitRepo(t *testing.T) string {
 	return dir
 }
 
-func newTestWorktreeManager(t *testing.T, projectRoot string) *WorktreeManager {
+func newTestWorktreeManager(t *testing.T, projectRoot string) *Manager {
 	t.Helper()
 	maestroDir := filepath.Join(projectRoot, ".maestro")
 	if err := os.MkdirAll(maestroDir, 0755); err != nil {
@@ -80,7 +81,7 @@ func newTestWorktreeManager(t *testing.T, projectRoot string) *WorktreeManager {
 	}
 
 	logger := log.New(os.Stderr, "", 0)
-	return NewWorktreeManager(maestroDir, cfg, logger, LogLevelError)
+	return NewManager(maestroDir, cfg, logger, core.LogLevelError)
 }
 
 // TestCreateForCommand tests worktree creation for a command.
@@ -1840,6 +1841,153 @@ func TestCheckCommitPolicy_Unit(t *testing.T) {
 		violations := wm.checkCommitPolicy(tmpDir, "bad msg", stagedNul)
 		if len(violations) < 2 {
 			t.Errorf("expected at least 2 violations, got %d: %v", len(violations), violations)
+		}
+	})
+}
+
+// TestSetWorkerStatus validates that status transitions are enforced via setWorkerStatus.
+func TestSetWorkerStatus(t *testing.T) {
+	t.Run("valid_transition", func(t *testing.T) {
+		projectRoot := initTestGitRepo(t)
+		wm := newTestWorktreeManager(t, projectRoot)
+
+		ws := &model.WorktreeState{
+			WorkerID: "worker1",
+			Status:   model.WorktreeStatusCreated,
+		}
+		now := "2024-01-01T00:00:00Z"
+
+		if err := wm.setWorkerStatus(ws, model.WorktreeStatusActive, now); err != nil {
+			t.Fatalf("expected valid transition, got error: %v", err)
+		}
+		if ws.Status != model.WorktreeStatusActive {
+			t.Errorf("status = %q, want %q", ws.Status, model.WorktreeStatusActive)
+		}
+		if ws.UpdatedAt != now {
+			t.Errorf("updated_at = %q, want %q", ws.UpdatedAt, now)
+		}
+	})
+
+	t.Run("invalid_transition_rejected", func(t *testing.T) {
+		projectRoot := initTestGitRepo(t)
+		wm := newTestWorktreeManager(t, projectRoot)
+
+		ws := &model.WorktreeState{
+			WorkerID: "worker1",
+			Status:   model.WorktreeStatusCleanupDone,
+		}
+
+		err := wm.setWorkerStatus(ws, model.WorktreeStatusActive, "2024-01-01T00:00:00Z")
+		if err == nil {
+			t.Fatal("expected error for terminal → active transition")
+		}
+		// Status should not change
+		if ws.Status != model.WorktreeStatusCleanupDone {
+			t.Errorf("status changed to %q, should remain %q", ws.Status, model.WorktreeStatusCleanupDone)
+		}
+	})
+
+	t.Run("created_to_integrated_rejected", func(t *testing.T) {
+		projectRoot := initTestGitRepo(t)
+		wm := newTestWorktreeManager(t, projectRoot)
+
+		ws := &model.WorktreeState{
+			WorkerID: "worker1",
+			Status:   model.WorktreeStatusCreated,
+		}
+
+		err := wm.setWorkerStatus(ws, model.WorktreeStatusIntegrated, "2024-01-01T00:00:00Z")
+		if err == nil {
+			t.Fatal("expected error for created → integrated transition")
+		}
+	})
+
+	t.Run("self_transition_committed", func(t *testing.T) {
+		projectRoot := initTestGitRepo(t)
+		wm := newTestWorktreeManager(t, projectRoot)
+
+		ws := &model.WorktreeState{
+			WorkerID: "worker1",
+			Status:   model.WorktreeStatusCommitted,
+		}
+
+		if err := wm.setWorkerStatus(ws, model.WorktreeStatusCommitted, "2024-01-01T00:00:00Z"); err != nil {
+			t.Fatalf("expected valid self-transition committed → committed, got error: %v", err)
+		}
+	})
+}
+
+// TestSetIntegrationStatus validates that integration status transitions are enforced.
+func TestSetIntegrationStatus(t *testing.T) {
+	t.Run("valid_transition", func(t *testing.T) {
+		projectRoot := initTestGitRepo(t)
+		wm := newTestWorktreeManager(t, projectRoot)
+
+		state := &model.WorktreeCommandState{
+			CommandID: "cmd1",
+			Integration: model.IntegrationState{
+				Status: model.IntegrationStatusCreated,
+			},
+		}
+		now := "2024-01-01T00:00:00Z"
+
+		if err := wm.setIntegrationStatus(state, model.IntegrationStatusMerging, now); err != nil {
+			t.Fatalf("expected valid transition, got error: %v", err)
+		}
+		if state.Integration.Status != model.IntegrationStatusMerging {
+			t.Errorf("status = %q, want %q", state.Integration.Status, model.IntegrationStatusMerging)
+		}
+	})
+
+	t.Run("terminal_rejected", func(t *testing.T) {
+		projectRoot := initTestGitRepo(t)
+		wm := newTestWorktreeManager(t, projectRoot)
+
+		state := &model.WorktreeCommandState{
+			CommandID: "cmd1",
+			Integration: model.IntegrationState{
+				Status: model.IntegrationStatusPublished,
+			},
+		}
+
+		err := wm.setIntegrationStatus(state, model.IntegrationStatusMerging, "2024-01-01T00:00:00Z")
+		if err == nil {
+			t.Fatal("expected error for published → merging transition")
+		}
+		if state.Integration.Status != model.IntegrationStatusPublished {
+			t.Errorf("status changed to %q, should remain %q", state.Integration.Status, model.IntegrationStatusPublished)
+		}
+	})
+
+	t.Run("failed_to_merging_allowed", func(t *testing.T) {
+		projectRoot := initTestGitRepo(t)
+		wm := newTestWorktreeManager(t, projectRoot)
+
+		state := &model.WorktreeCommandState{
+			CommandID: "cmd1",
+			Integration: model.IntegrationState{
+				Status: model.IntegrationStatusFailed,
+			},
+		}
+
+		if err := wm.setIntegrationStatus(state, model.IntegrationStatusMerging, "2024-01-01T00:00:00Z"); err != nil {
+			t.Fatalf("expected valid transition failed → merging, got error: %v", err)
+		}
+	})
+
+	t.Run("merged_to_merging_allowed", func(t *testing.T) {
+		projectRoot := initTestGitRepo(t)
+		wm := newTestWorktreeManager(t, projectRoot)
+
+		state := &model.WorktreeCommandState{
+			CommandID: "cmd1",
+			Integration: model.IntegrationState{
+				Status: model.IntegrationStatusMerged,
+			},
+		}
+
+		if err := wm.setIntegrationStatus(state, model.IntegrationStatusMerging, "2024-01-01T00:00:00Z"); err != nil {
+			t.Fatalf("expected valid transition merged → merging (re-merge), got error: %v", err)
 		}
 	})
 }

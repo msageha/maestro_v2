@@ -1,3 +1,4 @@
+// Package events provides an in-process event bus and audit logging for the maestro daemon.
 package events
 
 import (
@@ -180,8 +181,11 @@ func (b *Bus) DroppedCount() int64 {
 }
 
 // Close closes all subscriber channels, waits for goroutines to drain, and clears subscriptions.
+// Close is idempotent: calling it more than once is safe and subsequent calls are no-ops.
 func (b *Bus) Close() {
-	b.closed.Store(true)
+	if !b.closed.CompareAndSwap(false, true) {
+		return
+	}
 
 	// Cancel context to signal subscriber goroutines to stop
 	b.cancel()

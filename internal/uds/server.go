@@ -11,11 +11,13 @@ import (
 	"time"
 )
 
+// HandlerFunc is the function signature for command handlers registered on a Server.
 type HandlerFunc func(req *Request) *Response
 
 // DefaultMaxConcurrentConns is the default maximum number of concurrent connections.
 const DefaultMaxConcurrentConns = 64
 
+// Server is a Unix Domain Socket server that dispatches incoming requests to registered handlers.
 type Server struct {
 	socketPath  string
 	listener    net.Listener
@@ -29,6 +31,7 @@ type Server struct {
 	cancel      context.CancelFunc
 }
 
+// NewServer creates a new Server that will listen on the given Unix socket path.
 func NewServer(socketPath string) *Server {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Server{
@@ -41,6 +44,7 @@ func NewServer(socketPath string) *Server {
 	}
 }
 
+// SetConnTimeout sets the per-connection read/write deadline for the server.
 func (s *Server) SetConnTimeout(d time.Duration) {
 	s.connTimeout = d
 }
@@ -53,12 +57,14 @@ func (s *Server) SetMaxConcurrentConns(n int) {
 	}
 }
 
+// Handle registers a HandlerFunc for the given command name.
 func (s *Server) Handle(command string, handler HandlerFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.handlers[command] = handler
 }
 
+// Start begins listening for connections on the configured Unix socket path.
 func (s *Server) Start() error {
 	// Remove stale socket file
 	_ = os.Remove(s.socketPath)
@@ -83,6 +89,7 @@ func (s *Server) Start() error {
 	return nil
 }
 
+// Stop gracefully shuts down the server, closing the listener and waiting for active connections to finish.
 func (s *Server) Stop() error {
 	s.cancel()
 	if s.listener != nil {

@@ -9,13 +9,12 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/daemon/learnings"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// errExecutorInit is a sentinel returned by getExecutor when the cached executor
-// failed to initialise (sync.Once captured the error on first call).
-var errExecutorInit = fmt.Errorf("executor init failed")
+// errExecutorInit is re-exported from core via core_aliases.go.
 
 // maxGateEvaluations is the maximum number of gate evaluation entries kept in memory.
 const maxGateEvaluations = 1000
@@ -37,21 +36,18 @@ type Dispatcher struct {
 
 	// cachedExec is a shared Executor instance created once and reused across
 	// dispatch calls. This avoids per-dispatch log file Open/Close overhead.
+	// All access is protected by execMu to prevent data races during shutdown
+	// (CloseExecutor) and testing (SetExecutorFactory).
+	execMu        sync.Mutex
 	cachedExec    AgentExecutor
 	cachedExecErr error
-	execOnce      sync.Once
+	execInit      bool
 
 	worktreeManager *WorktreeManager
 }
 
-// ExecutorFactory creates agent executors. Allows testing without tmux.
-type ExecutorFactory func(maestroDir string, watcherCfg model.WatcherConfig, logLevel string) (AgentExecutor, error)
-
-// AgentExecutor is the interface for agent message delivery.
-type AgentExecutor interface {
-	Execute(req agent.ExecRequest) agent.ExecResult
-	Close() error
-}
+// ExecutorFactory, AgentExecutor are defined in internal/daemon/core
+// and re-exported via core_aliases.go.
 
 // NewDispatcher creates a new Dispatcher.
 func NewDispatcher(maestroDir string, cfg model.Config, lm *LeaseManager, logger *log.Logger, logLevel LogLevel) *Dispatcher {
@@ -73,20 +69,29 @@ func NewDispatcher(maestroDir string, cfg model.Config, lm *LeaseManager, logger
 // SetExecutorFactory overrides the executor factory for testing.
 // Resets the cached executor so the new factory is used on next call.
 func (d *Dispatcher) SetExecutorFactory(f ExecutorFactory) {
+	d.execMu.Lock()
+	old := d.cachedExec
 	d.executorFactory = f
-	// Reset cached executor so the new factory takes effect.
-	d.execOnce = sync.Once{}
 	d.cachedExec = nil
 	d.cachedExecErr = nil
+	d.execInit = false
+	d.execMu.Unlock()
+
+	if old != nil {
+		_ = old.Close()
+	}
 }
 
-// getExecutor returns the shared executor instance, creating it lazily via sync.Once.
+// getExecutor returns the shared executor instance, creating it lazily on first call.
 // The Executor is safe for concurrent use (log.Logger uses internal mutex,
 // os.File in append mode is POSIX-safe, all other fields are immutable).
 func (d *Dispatcher) getExecutor() (AgentExecutor, error) {
-	d.execOnce.Do(func() {
+	d.execMu.Lock()
+	defer d.execMu.Unlock()
+	if !d.execInit {
 		d.cachedExec, d.cachedExecErr = d.executorFactory(d.maestroDir, d.config.Watcher, d.config.Logging.Level)
-	})
+		d.execInit = true
+	}
 	if d.cachedExecErr != nil {
 		return nil, fmt.Errorf("%w: %v", errExecutorInit, d.cachedExecErr)
 	}
@@ -96,9 +101,15 @@ func (d *Dispatcher) getExecutor() (AgentExecutor, error) {
 // CloseExecutor releases the shared executor's resources (log file handle).
 // Safe to call multiple times; subsequent calls are no-ops.
 func (d *Dispatcher) CloseExecutor() {
-	if d.cachedExec != nil {
-		_ = d.cachedExec.Close()
-		d.cachedExec = nil
+	d.execMu.Lock()
+	exec := d.cachedExec
+	d.cachedExec = nil
+	d.cachedExecErr = nil
+	d.execInit = false
+	d.execMu.Unlock()
+
+	if exec != nil {
+		_ = exec.Close()
 	}
 }
 
@@ -284,12 +295,12 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 	// Inject learnings into task content (read-only, best-effort)
 	dispatchTask := *task
 	if d.config.Learnings.Enabled {
-		learnings, err := readTopKLearnings(d.maestroDir, d.config.Learnings, d.clock.Now())
+		lrns, err := learnings.ReadTopKLearnings(d.maestroDir, d.config.Learnings, d.clock.Now())
 		if err != nil {
 			d.log(LogLevelWarn, "learnings_read_failed task=%s error=%v", task.ID, err)
-		} else if section := formatLearningsSection(learnings); section != "" {
+		} else if section := learnings.FormatLearningsSection(lrns); section != "" {
 			dispatchTask.Content = dispatchTask.Content + section
-			d.log(LogLevelDebug, "learnings_injected task=%s count=%d", task.ID, len(learnings))
+			d.log(LogLevelDebug, "learnings_injected task=%s count=%d", task.ID, len(lrns))
 		}
 	}
 

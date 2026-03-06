@@ -272,7 +272,7 @@ func TestIsWorktreeTerminal(t *testing.T) {
 		{WorktreeStatusConflict, false},
 		{WorktreeStatusFailed, false},
 		{WorktreeStatusCleanupDone, true},
-		{WorktreeStatusCleanupFailed, true},
+		{WorktreeStatusCleanupFailed, false}, // can transition to cleanup_done
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.status), func(t *testing.T) {
@@ -294,7 +294,7 @@ func TestIsIntegrationTerminal(t *testing.T) {
 		{IntegrationStatusPublishing, false},
 		{IntegrationStatusConflict, false},
 		{IntegrationStatusPublished, true},
-		{IntegrationStatusFailed, true},
+		{IntegrationStatusFailed, false}, // can transition to merging (retry)
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.status), func(t *testing.T) {
@@ -331,20 +331,40 @@ func TestValidateWorktreeTransition(t *testing.T) {
 		{WorktreeStatusCreated, WorktreeStatusActive},
 		{WorktreeStatusCreated, WorktreeStatusCommitted},
 		{WorktreeStatusCreated, WorktreeStatusFailed},
+		{WorktreeStatusCreated, WorktreeStatusPublished},     // bulk publish
+		{WorktreeStatusCreated, WorktreeStatusCleanupDone},   // cleanup
+		{WorktreeStatusCreated, WorktreeStatusCleanupFailed}, // cleanup failure
+		{WorktreeStatusActive, WorktreeStatusActive},      // multiple syncs
 		{WorktreeStatusActive, WorktreeStatusCommitted},
+		{WorktreeStatusActive, WorktreeStatusIntegrated}, // merge after sync
 		{WorktreeStatusActive, WorktreeStatusConflict},
 		{WorktreeStatusActive, WorktreeStatusFailed},
+		{WorktreeStatusActive, WorktreeStatusPublished},     // bulk publish
+		{WorktreeStatusActive, WorktreeStatusCleanupDone},   // cleanup
+		{WorktreeStatusActive, WorktreeStatusCleanupFailed}, // cleanup failure
+		{WorktreeStatusCommitted, WorktreeStatusActive},     // sync back
+		{WorktreeStatusCommitted, WorktreeStatusCommitted},  // multiple commits
 		{WorktreeStatusCommitted, WorktreeStatusIntegrated},
 		{WorktreeStatusCommitted, WorktreeStatusFailed},
+		{WorktreeStatusCommitted, WorktreeStatusPublished},     // bulk publish
+		{WorktreeStatusCommitted, WorktreeStatusCleanupDone},   // cleanup
+		{WorktreeStatusCommitted, WorktreeStatusCleanupFailed}, // cleanup failure
 		{WorktreeStatusIntegrated, WorktreeStatusPublished},
-		{WorktreeStatusIntegrated, WorktreeStatusActive},
+		{WorktreeStatusIntegrated, WorktreeStatusActive},        // cross-phase sync
 		{WorktreeStatusIntegrated, WorktreeStatusFailed},
+		{WorktreeStatusIntegrated, WorktreeStatusCleanupDone},   // cleanup
+		{WorktreeStatusIntegrated, WorktreeStatusCleanupFailed}, // cleanup failure
 		{WorktreeStatusPublished, WorktreeStatusCleanupDone},
 		{WorktreeStatusPublished, WorktreeStatusCleanupFailed},
 		{WorktreeStatusConflict, WorktreeStatusActive},
 		{WorktreeStatusConflict, WorktreeStatusFailed},
+		{WorktreeStatusConflict, WorktreeStatusPublished},     // bulk publish
+		{WorktreeStatusConflict, WorktreeStatusCleanupDone},   // cleanup
+		{WorktreeStatusConflict, WorktreeStatusCleanupFailed}, // cleanup failure
+		{WorktreeStatusFailed, WorktreeStatusPublished},       // bulk publish
 		{WorktreeStatusFailed, WorktreeStatusCleanupDone},
 		{WorktreeStatusFailed, WorktreeStatusCleanupFailed},
+		{WorktreeStatusCleanupFailed, WorktreeStatusCleanupDone}, // retry cleanup
 	}
 	for _, tt := range valid {
 		t.Run(string(tt.from)+"→"+string(tt.to), func(t *testing.T) {
@@ -357,13 +377,12 @@ func TestValidateWorktreeTransition(t *testing.T) {
 	invalid := []struct {
 		from, to WorktreeStatus
 	}{
-		{WorktreeStatusCleanupDone, WorktreeStatusActive},
-		{WorktreeStatusCleanupFailed, WorktreeStatusActive},
-		{WorktreeStatusCreated, WorktreeStatusIntegrated},
-		{WorktreeStatusCreated, WorktreeStatusPublished},
-		{WorktreeStatusActive, WorktreeStatusPublished},
-		{WorktreeStatusPublished, WorktreeStatusActive},
-		{WorktreeStatusCommitted, WorktreeStatusActive},
+		{WorktreeStatusCleanupDone, WorktreeStatusActive},    // terminal
+		{WorktreeStatusCleanupDone, WorktreeStatusPublished}, // terminal
+		{WorktreeStatusCleanupFailed, WorktreeStatusActive},  // only cleanup_done allowed
+		{WorktreeStatusCreated, WorktreeStatusIntegrated},    // must go through committed first
+		{WorktreeStatusPublished, WorktreeStatusActive},      // only cleanup transitions allowed
+		{WorktreeStatusPublished, WorktreeStatusCommitted},   // only cleanup transitions allowed
 	}
 	for _, tt := range invalid {
 		t.Run("invalid_"+string(tt.from)+"→"+string(tt.to), func(t *testing.T) {
@@ -383,6 +402,7 @@ func TestValidateIntegrationTransition(t *testing.T) {
 		{IntegrationStatusMerging, IntegrationStatusMerged},
 		{IntegrationStatusMerging, IntegrationStatusConflict},
 		{IntegrationStatusMerging, IntegrationStatusFailed},
+		{IntegrationStatusMerged, IntegrationStatusMerging},    // re-merge for next phase
 		{IntegrationStatusMerged, IntegrationStatusPublishing},
 		{IntegrationStatusMerged, IntegrationStatusFailed},
 		{IntegrationStatusPublishing, IntegrationStatusPublished},
@@ -390,6 +410,8 @@ func TestValidateIntegrationTransition(t *testing.T) {
 		{IntegrationStatusPublishing, IntegrationStatusFailed},
 		{IntegrationStatusConflict, IntegrationStatusMerging},
 		{IntegrationStatusConflict, IntegrationStatusFailed},
+		{IntegrationStatusFailed, IntegrationStatusMerging}, // retry after failure
+		{IntegrationStatusFailed, IntegrationStatusFailed},  // repeated failures
 	}
 	for _, tt := range valid {
 		t.Run(string(tt.from)+"→"+string(tt.to), func(t *testing.T) {
@@ -402,12 +424,12 @@ func TestValidateIntegrationTransition(t *testing.T) {
 	invalid := []struct {
 		from, to IntegrationStatus
 	}{
-		{IntegrationStatusPublished, IntegrationStatusMerging},
-		{IntegrationStatusFailed, IntegrationStatusMerging},
-		{IntegrationStatusCreated, IntegrationStatusMerged},
-		{IntegrationStatusCreated, IntegrationStatusPublished},
-		{IntegrationStatusMerging, IntegrationStatusPublishing},
-		{IntegrationStatusMerged, IntegrationStatusMerging},
+		{IntegrationStatusPublished, IntegrationStatusMerging},   // terminal
+		{IntegrationStatusPublished, IntegrationStatusFailed},    // terminal
+		{IntegrationStatusCreated, IntegrationStatusMerged},      // must go through merging
+		{IntegrationStatusCreated, IntegrationStatusPublished},   // must go through merging→merged→publishing
+		{IntegrationStatusMerging, IntegrationStatusPublishing},  // must go through merged
+		{IntegrationStatusFailed, IntegrationStatusPublishing},   // can only retry to merging
 	}
 	for _, tt := range invalid {
 		t.Run("invalid_"+string(tt.from)+"→"+string(tt.to), func(t *testing.T) {

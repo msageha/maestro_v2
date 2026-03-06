@@ -1,4 +1,4 @@
-package daemon
+package worktree
 
 import (
 	"os"
@@ -11,7 +11,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// fakeClock implements Clock for deterministic testing.
+// fakeClock implements core.Clock for deterministic testing.
 type fakeClock struct {
 	now time.Time
 }

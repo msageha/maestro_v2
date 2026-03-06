@@ -10,52 +10,8 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// ErrStateNotFound is returned by StateReader methods when the state file does not exist
-// (i.e., the command has not been submitted yet). Callers can use errors.Is to distinguish
-// this from other read errors (e.g., parse failures on an existing file).
-var ErrStateNotFound = errors.New("state not found")
-
-// ErrPhaseNotFound is returned when a specific phase ID is not present in a command's
-// phase list. Unlike ErrStateNotFound (state file missing), this means the state file
-// exists but the requested phase does not.
-var ErrPhaseNotFound = errors.New("phase not found")
-
-// StateReader provides read access to command state (state/commands/{command_id}.yaml).
-// Phase 6 implements the concrete version; Phase 5 uses this interface for decoupling.
-type StateReader interface {
-	// GetTaskState returns the status of a task from the command state.
-	GetTaskState(commandID, taskID string) (model.Status, error)
-	// GetCommandPhases returns phases for a command.
-	GetCommandPhases(commandID string) ([]PhaseInfo, error)
-	// GetTaskDependencies returns task IDs that the given task depends on.
-	GetTaskDependencies(commandID, taskID string) ([]string, error)
-	// IsSystemCommitReady checks if the given task is a system commit task and whether
-	// all user phases (or user tasks for non-phased commands) are terminal.
-	// Returns (isSystemCommit=false, ready=false, nil) for non-system-commit tasks.
-	IsSystemCommitReady(commandID, taskID string) (isSystemCommit bool, ready bool, err error)
-	// ApplyPhaseTransition persists a phase status change to state/commands/.
-	ApplyPhaseTransition(commandID, phaseID string, newStatus model.PhaseStatus) error
-	// UpdateTaskState updates a single task's status and optionally records a cancelled reason.
-	UpdateTaskState(commandID, taskID string, newStatus model.Status, cancelledReason string) error
-	// IsCommandCancelRequested checks the state file for cancel.requested flag.
-	IsCommandCancelRequested(commandID string) (bool, error)
-	// GetCircuitBreakerState returns the circuit breaker state for a command.
-	GetCircuitBreakerState(commandID string) (*model.CircuitBreakerState, error)
-	// TripCircuitBreaker sets the circuit breaker to tripped and issues a cancel request on the command.
-	// progressTimeoutMinutes is re-validated under lock to prevent TOCTOU race; pass 0 to skip re-validation.
-	TripCircuitBreaker(commandID string, reason string, progressTimeoutMinutes int) error
-}
-
-// PhaseInfo represents phase metadata from command state.
-type PhaseInfo struct {
-	ID               string
-	Name             string
-	Status           model.PhaseStatus
-	DependsOn        []string // phase IDs
-	FillDeadlineAt   *string
-	RequiredTaskIDs  []string
-	SystemCommitTask bool
-}
+// StateReader, PhaseInfo, ErrStateNotFound, ErrPhaseNotFound are defined in
+// internal/daemon/core and re-exported via core_aliases.go.
 
 // DependencyResolver handles blocked_by dependency checking and phase transitions.
 type DependencyResolver struct {

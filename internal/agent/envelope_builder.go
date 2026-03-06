@@ -16,6 +16,7 @@ func BuildWorkerEnvelope(task model.Task, workerID string, leaseEpoch, attempt i
 	fmt.Fprintf(&sb, "[maestro] task_id:%s command_id:%s lease_epoch:%d attempt:%d\n",
 		task.ID, task.CommandID, leaseEpoch, attempt)
 	sb.WriteString("\n")
+	fmt.Fprintf(&sb, "agent_id: %s\n", workerID)
 	fmt.Fprintf(&sb, "purpose: %s\n", task.Purpose)
 	fmt.Fprintf(&sb, "content: %s\n", task.Content)
 	fmt.Fprintf(&sb, "acceptance_criteria: %s\n", task.AcceptanceCriteria)

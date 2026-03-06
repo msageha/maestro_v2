@@ -18,6 +18,7 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
+// SubmitOptions holds the configuration for a plan submission operation.
 type SubmitOptions struct {
 	CommandID  string
 	TasksFile  string // path or "-" for stdin
@@ -28,6 +29,7 @@ type SubmitOptions struct {
 	LockMap    *lock.MutexMap
 }
 
+// SubmitResult contains the output of a successful plan submission.
 type SubmitResult struct {
 	Valid     bool                `json:"valid,omitempty"`
 	CommandID string              `json:"command_id,omitempty"`
@@ -35,6 +37,7 @@ type SubmitResult struct {
 	Phases    []SubmitPhaseResult `json:"phases,omitempty"`
 }
 
+// SubmitTaskResult describes a single task's assignment after submission.
 type SubmitTaskResult struct {
 	Name   string `json:"name"`
 	TaskID string `json:"task_id"`
@@ -42,6 +45,7 @@ type SubmitTaskResult struct {
 	Model  string `json:"model"`
 }
 
+// SubmitPhaseResult describes a single phase's status after submission.
 type SubmitPhaseResult struct {
 	Name    string             `json:"name"`
 	PhaseID string             `json:"phase_id"`
@@ -50,6 +54,7 @@ type SubmitPhaseResult struct {
 	Tasks   []SubmitTaskResult `json:"tasks,omitempty"`
 }
 
+// Submit validates and persists a plan, assigning tasks to workers and writing queue entries.
 func Submit(opts SubmitOptions) (*SubmitResult, error) {
 	input, err := readInput(opts.TasksFile)
 	if err != nil {

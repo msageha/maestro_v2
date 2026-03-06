@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -31,7 +32,7 @@ type QueueHandler struct {
 	reconciler          *Reconciler
 	deadLetterProcessor *DeadLetterProcessor
 	metricsHandler      *MetricsHandler
-	circuitBreaker      *CircuitBreakerHandler
+	circuitBreaker      *circuitbreaker.Handler
 	worktreeManager     *WorktreeManager
 	lockMap             *lock.MutexMap
 
@@ -39,9 +40,8 @@ type QueueHandler struct {
 	scanCounters ScanCounters
 
 	// Debounce state
-	debounceMu      sync.Mutex
-	debounceTimer   *time.Timer
-	debounceTracked bool // true if shutdownWg.Add(1) was called for current timer
+	debounceMu    sync.Mutex
+	debounceTimer *time.Timer
 
 	// scanMu serializes PeriodicScan phases (exclusive) vs queue writes (shared RLock).
 	// Spec §5.6: per-agent mutex — queue writes hold RLock + per-target lockMap key.
@@ -58,12 +58,9 @@ type QueueHandler struct {
 	// Returns true if the agent is currently busy (lease should be extended).
 	busyChecker func(agentID string) bool
 
-	// Shutdown guard: allows debounce goroutines to be tracked by daemon's WaitGroup.
-	// These are wired via SetShutdownGuard after construction.
+	// Shutdown guard: wired via SetShutdownGuard after construction.
 	shutdownCtx  context.Context
-	shutdownWg   *sync.WaitGroup
 	shuttingDown *atomic.Bool
-	shutdownMu   *sync.RWMutex
 }
 
 // NewQueueHandler creates a new QueueHandler with all sub-modules.
@@ -122,7 +119,7 @@ func (qh *QueueHandler) SetCanComplete(f CanCompleteFunc) {
 }
 
 // SetCircuitBreaker wires the circuit breaker handler for periodic scan integration.
-func (qh *QueueHandler) SetCircuitBreaker(cb *CircuitBreakerHandler) {
+func (qh *QueueHandler) SetCircuitBreaker(cb *circuitbreaker.Handler) {
 	qh.circuitBreaker = cb
 }
 
@@ -137,28 +134,20 @@ func (qh *QueueHandler) SetBusyChecker(f func(agentID string) bool) {
 	qh.busyChecker = f
 }
 
-// SetShutdownGuard wires the daemon's shutdown primitives so that debounce
-// goroutines are tracked by the daemon's WaitGroup and respect context cancellation.
-func (qh *QueueHandler) SetShutdownGuard(ctx context.Context, wg *sync.WaitGroup, shuttingDown *atomic.Bool, shutdownMu *sync.RWMutex) {
+// SetShutdownGuard wires the daemon's shutdown context and advisory flag
+// so that debounce callbacks respect context cancellation and shutdown state.
+func (qh *QueueHandler) SetShutdownGuard(ctx context.Context, shuttingDown *atomic.Bool) {
 	qh.shutdownCtx = ctx
-	qh.shutdownWg = wg
 	qh.shuttingDown = shuttingDown
-	qh.shutdownMu = shutdownMu
 }
 
-// Stop cancels any pending debounce timer. If the timer was successfully
-// stopped (callback prevented from running), the matching wg.Add(1) is
-// balanced with wg.Done() so that Shutdown's wg.Wait() can proceed.
+// Stop cancels any pending debounce timer.
 func (qh *QueueHandler) Stop() {
 	qh.debounceMu.Lock()
 	defer qh.debounceMu.Unlock()
 	if qh.debounceTimer != nil {
-		if qh.debounceTimer.Stop() && qh.debounceTracked {
-			// Callback was prevented from running — balance the wg.Add(1).
-			qh.shutdownWg.Done()
-		}
+		qh.debounceTimer.Stop()
 		qh.debounceTimer = nil
-		qh.debounceTracked = false
 	}
 }
 

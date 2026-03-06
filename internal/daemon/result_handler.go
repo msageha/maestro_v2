@@ -30,6 +30,10 @@ const (
 
 	// notifyBackoffMax is the maximum backoff delay between retry attempts.
 	notifyBackoffMax = 30 * time.Second
+
+	// maxResultLoopIterations caps the number of iterations in processWorkerResultFile
+	// and processCommandResultFile to prevent infinite loops from unexpected state.
+	maxResultLoopIterations = 100
 )
 
 // ResultHandler monitors results/ and delivers notifications to agents.
@@ -171,7 +175,7 @@ func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
 	resultPath := filepath.Join(rh.maestroDir, "results", workerID+".yaml")
 	attempted := make(map[string]bool)
 
-	for {
+	for iter := 0; iter < maxResultLoopIterations; iter++ {
 		// Phase 1: Acquire lease under lock
 		lockKey := "result:" + workerID
 		rh.lockMap.Lock(lockKey)
@@ -255,6 +259,8 @@ func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
 		}
 		rh.lockMap.Unlock(lockKey)
 	}
+	rh.log(LogLevelError, "process_worker_result loop_cap_reached worker=%s iterations=%d", workerID, maxResultLoopIterations)
+	return notified
 }
 
 // processCommandResultFile processes planner results using the notification lease pattern.
@@ -264,7 +270,7 @@ func (rh *ResultHandler) processCommandResultFile() int {
 	resultPath := filepath.Join(rh.maestroDir, "results", "planner.yaml")
 	attempted := make(map[string]bool)
 
-	for {
+	for iter := 0; iter < maxResultLoopIterations; iter++ {
 		lockKey := "result:planner"
 		rh.lockMap.Lock(lockKey)
 
@@ -341,6 +347,8 @@ func (rh *ResultHandler) processCommandResultFile() int {
 		}
 		rh.lockMap.Unlock(lockKey)
 	}
+	rh.log(LogLevelError, "process_command_result loop_cap_reached iterations=%d", maxResultLoopIterations)
+	return notified
 }
 
 // --- Notification lease helpers ---
@@ -534,49 +542,51 @@ func (rh *ResultHandler) writeNotificationToOrchestratorQueue(resultID, commandI
 	rh.lockMap.Lock("queue:orchestrator")
 	defer rh.lockMap.Unlock("queue:orchestrator")
 
-	nq, _, err := loadNotificationQueueFile(queuePath)
-	if err != nil {
-		return err
-	}
-
-	// Idempotency: check if source_result_id already exists
-	for _, ntf := range nq.Notifications {
-		if ntf.SourceResultID == resultID {
-			rh.log(LogLevelDebug, "orchestrator_notification_duplicate source_result_id=%s", resultID)
-			return nil
+	return updateYAMLFile(queuePath, func(nq *model.NotificationQueue) error {
+		if nq.SchemaVersion == 0 {
+			nq.SchemaVersion = 1
+			nq.FileType = "queue_notification"
 		}
-	}
 
-	id, err := model.GenerateID(model.IDTypeNotification)
-	if err != nil {
-		return fmt.Errorf("generate notification ID: %w", err)
-	}
+		// Idempotency: check if source_result_id already exists
+		for _, ntf := range nq.Notifications {
+			if ntf.SourceResultID == resultID {
+				rh.log(LogLevelDebug, "orchestrator_notification_duplicate source_result_id=%s", resultID)
+				return errNoUpdate
+			}
+		}
 
-	// Map result status to notification type
-	notifType := model.NotificationTypeCommandCompleted
-	switch status {
-	case model.StatusFailed:
-		notifType = model.NotificationTypeCommandFailed
-	case model.StatusCancelled:
-		notifType = model.NotificationTypeCommandCancelled
-	}
+		id, err := model.GenerateID(model.IDTypeNotification)
+		if err != nil {
+			return fmt.Errorf("generate notification ID: %w", err)
+		}
 
-	now := rh.clock.Now().UTC().Format(time.RFC3339)
-	content := fmt.Sprintf("command %s %s", commandID, status)
+		// Map result status to notification type
+		notifType := model.NotificationTypeCommandCompleted
+		switch status {
+		case model.StatusFailed:
+			notifType = model.NotificationTypeCommandFailed
+		case model.StatusCancelled:
+			notifType = model.NotificationTypeCommandCancelled
+		}
 
-	nq.Notifications = append(nq.Notifications, model.Notification{
-		ID:             id,
-		CommandID:      commandID,
-		Type:           notifType,
-		SourceResultID: resultID,
-		Content:        content,
-		Priority:       100,
-		Status:         model.StatusPending,
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		now := rh.clock.Now().UTC().Format(time.RFC3339)
+		content := fmt.Sprintf("command %s %s", commandID, status)
+
+		nq.Notifications = append(nq.Notifications, model.Notification{
+			ID:             id,
+			CommandID:      commandID,
+			Type:           notifType,
+			SourceResultID: resultID,
+			Content:        content,
+			Priority:       100,
+			Status:         model.StatusPending,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		})
+
+		return nil
 	})
-
-	return yamlutil.AtomicWrite(queuePath, nq)
 }
 
 // --- File I/O helpers ---

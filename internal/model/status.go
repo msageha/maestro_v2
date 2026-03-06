@@ -75,13 +75,13 @@ var terminalPhaseStatuses = map[PhaseStatus]bool{
 }
 
 var terminalWorktreeStatuses = map[WorktreeStatus]bool{
-	WorktreeStatusCleanupDone:   true,
-	WorktreeStatusCleanupFailed: true,
+	WorktreeStatusCleanupDone: true,
+	// cleanup_failed is NOT terminal: it can transition to cleanup_done on retry
 }
 
 var terminalIntegrationStatuses = map[IntegrationStatus]bool{
 	IntegrationStatusPublished: true,
-	IntegrationStatusFailed:    true,
+	// failed is NOT terminal: it can transition to merging on retry
 }
 
 var terminalContinuousStatuses = map[ContinuousStatus]bool{
@@ -169,53 +169,81 @@ var validPhaseTransitions = map[PhaseStatus]map[PhaseStatus]bool{
 }
 
 // Worktree status transitions:
-//   created → active, committed, failed
-//   active → committed, conflict, failed
-//   committed → integrated, failed
-//   integrated → published, active (sync), failed
+//   created → active (sync), committed (commit without sync), conflict, failed, published (bulk publish), cleanup_done/cleanup_failed (cleanup)
+//   active → committed, conflict, failed, published, cleanup_done/cleanup_failed
+//   committed → active (sync back), integrated (merge success), conflict (merge conflict), failed, published, cleanup_done/cleanup_failed
+//   integrated → active (cross-phase sync), published, conflict, failed, cleanup_done/cleanup_failed
 //   published → cleanup_done, cleanup_failed
-//   conflict → active (resolved), failed
-//   failed → cleanup_done, cleanup_failed (cleanup after failure)
+//   conflict → active (resolved), failed, published (bulk publish), cleanup_done/cleanup_failed
+//   failed → published (bulk publish), cleanup_done, cleanup_failed
+//   cleanup_done → (terminal)
+//   cleanup_failed → cleanup_done (retry)
 var validWorktreeTransitions = map[WorktreeStatus]map[WorktreeStatus]bool{
 	WorktreeStatusCreated: {
-		WorktreeStatusActive:    true,
-		WorktreeStatusCommitted: true,
-		WorktreeStatusFailed:    true,
+		WorktreeStatusActive:        true,
+		WorktreeStatusCommitted:     true,
+		WorktreeStatusConflict:      true,
+		WorktreeStatusFailed:        true,
+		WorktreeStatusPublished:     true,
+		WorktreeStatusCleanupDone:   true,
+		WorktreeStatusCleanupFailed: true,
 	},
 	WorktreeStatusActive: {
-		WorktreeStatusCommitted: true,
-		WorktreeStatusConflict:  true,
-		WorktreeStatusFailed:    true,
+		WorktreeStatusActive:        true, // multiple syncs
+		WorktreeStatusCommitted:     true,
+		WorktreeStatusIntegrated:    true, // merge after sync (no intermediate commit needed if commits exist)
+		WorktreeStatusConflict:      true,
+		WorktreeStatusFailed:        true,
+		WorktreeStatusPublished:     true,
+		WorktreeStatusCleanupDone:   true,
+		WorktreeStatusCleanupFailed: true,
 	},
 	WorktreeStatusCommitted: {
-		WorktreeStatusIntegrated: true,
-		WorktreeStatusFailed:     true,
+		WorktreeStatusActive:        true,
+		WorktreeStatusCommitted:     true, // multiple commits
+		WorktreeStatusIntegrated:    true,
+		WorktreeStatusConflict:      true,
+		WorktreeStatusFailed:        true,
+		WorktreeStatusPublished:     true,
+		WorktreeStatusCleanupDone:   true,
+		WorktreeStatusCleanupFailed: true,
 	},
 	WorktreeStatusIntegrated: {
-		WorktreeStatusPublished: true,
-		WorktreeStatusActive:    true, // sync from integration
-		WorktreeStatusFailed:    true,
+		WorktreeStatusActive:        true,
+		WorktreeStatusPublished:     true,
+		WorktreeStatusConflict:      true,
+		WorktreeStatusFailed:        true,
+		WorktreeStatusCleanupDone:   true,
+		WorktreeStatusCleanupFailed: true,
 	},
 	WorktreeStatusPublished: {
 		WorktreeStatusCleanupDone:   true,
 		WorktreeStatusCleanupFailed: true,
 	},
 	WorktreeStatusConflict: {
-		WorktreeStatusActive: true,
-		WorktreeStatusFailed: true,
-	},
-	WorktreeStatusFailed: {
+		WorktreeStatusActive:        true,
+		WorktreeStatusFailed:        true,
+		WorktreeStatusPublished:     true,
 		WorktreeStatusCleanupDone:   true,
 		WorktreeStatusCleanupFailed: true,
+	},
+	WorktreeStatusFailed: {
+		WorktreeStatusPublished:     true,
+		WorktreeStatusCleanupDone:   true,
+		WorktreeStatusCleanupFailed: true,
+	},
+	WorktreeStatusCleanupFailed: {
+		WorktreeStatusCleanupDone: true,
 	},
 }
 
 // Integration status transitions:
 //   created → merging, failed
 //   merging → merged, conflict, failed
-//   merged → publishing, failed
+//   merged → merging (re-merge for next phase), publishing, failed
 //   publishing → published, conflict, failed
 //   conflict → merging (retry), failed
+//   failed → merging (retry after failure)
 var validIntegrationTransitions = map[IntegrationStatus]map[IntegrationStatus]bool{
 	IntegrationStatusCreated: {
 		IntegrationStatusMerging: true,
@@ -227,6 +255,7 @@ var validIntegrationTransitions = map[IntegrationStatus]map[IntegrationStatus]bo
 		IntegrationStatusFailed:   true,
 	},
 	IntegrationStatusMerged: {
+		IntegrationStatusMerging:    true,
 		IntegrationStatusPublishing: true,
 		IntegrationStatusFailed:     true,
 	},
@@ -238,6 +267,10 @@ var validIntegrationTransitions = map[IntegrationStatus]map[IntegrationStatus]bo
 	IntegrationStatusConflict: {
 		IntegrationStatusMerging: true,
 		IntegrationStatusFailed:  true,
+	},
+	IntegrationStatusFailed: {
+		IntegrationStatusFailed:  true, // repeated failures (e.g., dirty worktree on retry)
+		IntegrationStatusMerging: true,
 	},
 }
 

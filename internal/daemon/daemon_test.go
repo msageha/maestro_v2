@@ -2,13 +2,17 @@ package daemon
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
+	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 func TestNewDaemon(t *testing.T) {
@@ -100,74 +104,126 @@ func TestDaemonLog(t *testing.T) {
 	}
 }
 
+// selfWriteTestData is a helper type for selfWriteTracker tests.
+type selfWriteTestData struct {
+	Value string `yaml:"value"`
+}
+
+// writeTestFile writes data as YAML to a file and returns the path.
+func writeTestFile(t *testing.T, dir, name string, data any) string {
+	t.Helper()
+	path := filepath.Join(dir, name)
+	if err := yamlutil.AtomicWrite(path, data); err != nil {
+		t.Fatalf("write test file %s: %v", name, err)
+	}
+	return path
+}
+
 func TestSelfWriteTracker_RecordAndConsume(t *testing.T) {
 	tracker := newSelfWriteTracker()
+	dir := t.TempDir()
+	data := selfWriteTestData{Value: "test"}
+	path := writeTestFile(t, dir, "path.yaml", data)
 
 	// Consume without Record returns false
-	if tracker.Consume("/some/path.yaml") {
+	if tracker.Consume(path) {
 		t.Error("expected Consume to return false for unrecorded path")
 	}
 
-	// Record then Consume returns true
-	tracker.Record("/some/path.yaml")
-	if !tracker.Consume("/some/path.yaml") {
+	// Record then Consume returns true (file content matches hash)
+	tracker.Record(path, data)
+	if !tracker.Consume(path) {
 		t.Error("expected Consume to return true for recorded path")
 	}
 
 	// Second Consume returns false (consumed)
-	if tracker.Consume("/some/path.yaml") {
+	if tracker.Consume(path) {
 		t.Error("expected Consume to return false after already consumed")
+	}
+}
+
+func TestSelfWriteTracker_HashMismatch(t *testing.T) {
+	tracker := newSelfWriteTracker()
+	dir := t.TempDir()
+
+	// Record with one data, write different data to file
+	data1 := selfWriteTestData{Value: "original"}
+	data2 := selfWriteTestData{Value: "modified"}
+	path := writeTestFile(t, dir, "path.yaml", data2) // file has data2
+
+	tracker.Record(path, data1) // tracker has hash of data1
+
+	// Consume should return false because file content (data2) != recorded hash (data1)
+	if tracker.Consume(path) {
+		t.Error("expected Consume to return false for hash mismatch")
 	}
 }
 
 func TestSelfWriteTracker_MultiplePaths(t *testing.T) {
 	tracker := newSelfWriteTracker()
+	dir := t.TempDir()
 
-	tracker.Record("/a.yaml")
-	tracker.Record("/b.yaml")
+	dataA := selfWriteTestData{Value: "a"}
+	dataB := selfWriteTestData{Value: "b"}
+	pathA := writeTestFile(t, dir, "a.yaml", dataA)
+	pathB := writeTestFile(t, dir, "b.yaml", dataB)
 
-	if !tracker.Consume("/a.yaml") {
-		t.Error("expected Consume to return true for /a.yaml")
+	tracker.Record(pathA, dataA)
+	tracker.Record(pathB, dataB)
+
+	if !tracker.Consume(pathA) {
+		t.Error("expected Consume to return true for a.yaml")
 	}
-	if !tracker.Consume("/b.yaml") {
-		t.Error("expected Consume to return true for /b.yaml")
+	if !tracker.Consume(pathB) {
+		t.Error("expected Consume to return true for b.yaml")
 	}
 }
 
 func TestSelfWriteTracker_Concurrent(t *testing.T) {
 	tracker := newSelfWriteTracker()
+	dir := t.TempDir()
+	data := selfWriteTestData{Value: "concurrent"}
+	path := writeTestFile(t, dir, "path.yaml", data)
+
 	done := make(chan struct{})
 
 	// Concurrent Record and Consume must not panic
 	go func() {
 		for i := 0; i < 100; i++ {
-			tracker.Record("/path.yaml")
+			tracker.Record(path, data)
 		}
 		close(done)
 	}()
 
 	for i := 0; i < 100; i++ {
-		tracker.Consume("/path.yaml")
+		tracker.Consume(path)
 	}
 	<-done
 }
 
 func TestSelfWriteTracker_StaleCleanupOnRecord(t *testing.T) {
 	tracker := newSelfWriteTracker()
+	dir := t.TempDir()
 
 	// Inject stale entries by directly manipulating the map
+	freshData := selfWriteTestData{Value: "fresh"}
+	freshContent, _ := yamlv3.Marshal(freshData)
+	freshPath := writeTestFile(t, dir, "fresh.yaml", freshData)
+
 	tracker.mu.Lock()
-	tracker.paths["/stale1.yaml"] = time.Now().Add(-60 * time.Second) // 60s ago
-	tracker.paths["/stale2.yaml"] = time.Now().Add(-45 * time.Second) // 45s ago
-	tracker.paths["/fresh.yaml"] = time.Now()                         // just now
+	tracker.stamps["/stale1.yaml"] = writeStamp{Hash: sha256.Sum256([]byte("stale1")), Deadline: time.Now().Add(-60 * time.Second)}
+	tracker.stamps["/stale2.yaml"] = writeStamp{Hash: sha256.Sum256([]byte("stale2")), Deadline: time.Now().Add(-45 * time.Second)}
+	tracker.stamps[freshPath] = writeStamp{Hash: sha256.Sum256(freshContent), Deadline: time.Now().Add(30 * time.Second)}
 	tracker.mu.Unlock()
 
 	if tracker.Len() != 3 {
 		t.Fatalf("expected 3 entries, got %d", tracker.Len())
 	}
 
-	// Record triggers opportunistic cleanup of entries > 30s
-	tracker.Record("/new.yaml")
+	// Record triggers opportunistic cleanup of stale entries
+	newData := selfWriteTestData{Value: "new"}
+	newPath := writeTestFile(t, dir, "new.yaml", newData)
+	tracker.Record(newPath, newData)
 
 	// Stale entries should be cleaned, fresh + new should remain
 	if tracker.Len() != 2 {
@@ -175,21 +231,26 @@ func TestSelfWriteTracker_StaleCleanupOnRecord(t *testing.T) {
 	}
 
 	// Fresh entry should still be consumable
-	if !tracker.Consume("/fresh.yaml") {
-		t.Error("expected /fresh.yaml to still be consumable")
+	if !tracker.Consume(freshPath) {
+		t.Error("expected fresh.yaml to still be consumable")
 	}
-	if !tracker.Consume("/new.yaml") {
-		t.Error("expected /new.yaml to still be consumable")
+	if !tracker.Consume(newPath) {
+		t.Error("expected new.yaml to still be consumable")
 	}
 }
 
 func TestSelfWriteTracker_StaleCleanupOnConsumeMiss(t *testing.T) {
 	tracker := newSelfWriteTracker()
+	dir := t.TempDir()
 
-	// Inject stale entries
+	freshData := selfWriteTestData{Value: "fresh"}
+	freshContent, _ := yamlv3.Marshal(freshData)
+	freshPath := writeTestFile(t, dir, "fresh.yaml", freshData)
+
+	// Inject stale + fresh entries
 	tracker.mu.Lock()
-	tracker.paths["/stale.yaml"] = time.Now().Add(-60 * time.Second)
-	tracker.paths["/fresh.yaml"] = time.Now()
+	tracker.stamps["/stale.yaml"] = writeStamp{Hash: sha256.Sum256([]byte("stale")), Deadline: time.Now().Add(-60 * time.Second)}
+	tracker.stamps[freshPath] = writeStamp{Hash: sha256.Sum256(freshContent), Deadline: time.Now().Add(30 * time.Second)}
 	tracker.mu.Unlock()
 
 	if tracker.Len() != 2 {
@@ -207,22 +268,27 @@ func TestSelfWriteTracker_StaleCleanupOnConsumeMiss(t *testing.T) {
 	}
 
 	// Fresh entry should still be consumable
-	if !tracker.Consume("/fresh.yaml") {
-		t.Error("expected /fresh.yaml to still be consumable")
+	if !tracker.Consume(freshPath) {
+		t.Error("expected fresh.yaml to still be consumable")
 	}
 }
 
 func TestSelfWriteTracker_StaleCleanupOnConsumeHit(t *testing.T) {
 	tracker := newSelfWriteTracker()
+	dir := t.TempDir()
+
+	targetData := selfWriteTestData{Value: "target"}
+	targetContent, _ := yamlv3.Marshal(targetData)
+	targetPath := writeTestFile(t, dir, "target.yaml", targetData)
 
 	// Inject stale + target entries
 	tracker.mu.Lock()
-	tracker.paths["/stale.yaml"] = time.Now().Add(-60 * time.Second)
-	tracker.paths["/target.yaml"] = time.Now()
+	tracker.stamps["/stale.yaml"] = writeStamp{Hash: sha256.Sum256([]byte("stale")), Deadline: time.Now().Add(-60 * time.Second)}
+	tracker.stamps[targetPath] = writeStamp{Hash: sha256.Sum256(targetContent), Deadline: time.Now().Add(30 * time.Second)}
 	tracker.mu.Unlock()
 
 	// Consume the target — should also clean up stale
-	if !tracker.Consume("/target.yaml") {
+	if !tracker.Consume(targetPath) {
 		t.Error("expected true for target path")
 	}
 
@@ -235,14 +301,14 @@ func TestSelfWriteTracker_StaleCleanupOnConsumeHit(t *testing.T) {
 func TestSelfWriteTracker_ExpiredConsumeReturnsFalse(t *testing.T) {
 	tracker := newSelfWriteTracker()
 
-	// Inject an entry that is within the 30s stale threshold but beyond the 10s consume window
+	// Inject an entry with an expired deadline
 	tracker.mu.Lock()
-	tracker.paths["/expired.yaml"] = time.Now().Add(-15 * time.Second)
+	tracker.stamps["/expired.yaml"] = writeStamp{Hash: sha256.Sum256([]byte("expired")), Deadline: time.Now().Add(-1 * time.Second)}
 	tracker.mu.Unlock()
 
-	// Consume should return false since the entry is older than 10s
+	// Consume should return false since the deadline has passed
 	if tracker.Consume("/expired.yaml") {
-		t.Error("expected false for entry older than 10s consume window")
+		t.Error("expected false for entry past deadline")
 	}
 
 	// Entry should be deleted after failed consume
@@ -262,10 +328,15 @@ func TestNotifySelfWrite_PublishesEvent(t *testing.T) {
 	})
 	defer unsub()
 
+	// Write actual data to the file so Consume can verify the hash
+	data := model.CommandQueue{SchemaVersion: 1, FileType: "queue_command"}
 	queuePath := filepath.Join(d.maestroDir, "queue", "planner.yaml")
-	d.notifySelfWrite(queuePath, "command")
+	if err := yamlutil.AtomicWrite(queuePath, data); err != nil {
+		t.Fatalf("write queue file: %v", err)
+	}
+	d.notifySelfWrite(queuePath, "command", data)
 
-	// Verify self-write was recorded
+	// Verify self-write was recorded and hash matches
 	if !d.selfWrites.Consume(queuePath) {
 		t.Error("expected self-write to be recorded")
 	}
@@ -298,8 +369,13 @@ func TestRecordSelfWrite_NoEvent(t *testing.T) {
 	})
 	defer unsub()
 
+	// Write actual data to the file so Consume can verify the hash
+	data := model.TaskResultFile{SchemaVersion: 1, FileType: "result_task"}
 	path := filepath.Join(d.maestroDir, "results", "worker1.yaml")
-	d.recordSelfWrite(path)
+	if err := yamlutil.AtomicWrite(path, data); err != nil {
+		t.Fatalf("write result file: %v", err)
+	}
+	d.recordSelfWrite(path, data)
 
 	// Verify self-write was recorded
 	if !d.selfWrites.Consume(path) {

@@ -10,39 +10,56 @@ import (
 	"net"
 )
 
+// ProtocolVersion is the current version of the UDS wire protocol.
 const ProtocolVersion = 1
 
+// Request represents an IPC request sent from a CLI client to the daemon.
 type Request struct {
 	ProtocolVersion int             `json:"protocol_version"`
 	Command         string          `json:"command"`
 	Params          json.RawMessage `json:"params,omitempty"`
 }
 
+// Response represents an IPC response returned from the daemon to a CLI client.
 type Response struct {
 	Success bool            `json:"success"`
 	Data    json.RawMessage `json:"data,omitempty"`
 	Error   *ErrorDetail    `json:"error,omitempty"`
 }
 
+// ErrorDetail contains a machine-readable error code and a human-readable message.
 type ErrorDetail struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
 
+// Error code constants used in ErrorDetail.Code to classify failures.
 const (
+	// ErrCodeProtocolMismatch indicates a protocol version mismatch between client and server.
 	ErrCodeProtocolMismatch = "PROTOCOL_MISMATCH"
-	ErrCodeUnknownCommand   = "UNKNOWN_COMMAND"
-	ErrCodeInternal         = "INTERNAL_ERROR"
-	ErrCodeBackpressure     = "BACKPRESSURE"
-	ErrCodeValidation       = "VALIDATION_ERROR"
-	ErrCodeNotFound         = "NOT_FOUND"
-	ErrCodeFencingReject    = "FENCING_REJECT"
-	ErrCodeDuplicate        = "DUPLICATE"
-	ErrCodeCancelled        = "CANCELLED"
-	ErrCodeActionRequired   = "ACTION_REQUIRED"
+	// ErrCodeUnknownCommand indicates the requested command is not registered on the server.
+	ErrCodeUnknownCommand = "UNKNOWN_COMMAND"
+	// ErrCodeInternal indicates an unexpected internal server error.
+	ErrCodeInternal = "INTERNAL_ERROR"
+	// ErrCodeBackpressure indicates the server is at capacity and cannot accept new connections.
+	ErrCodeBackpressure = "BACKPRESSURE"
+	// ErrCodeValidation indicates the request parameters failed validation.
+	ErrCodeValidation = "VALIDATION_ERROR"
+	// ErrCodeNotFound indicates the requested resource was not found.
+	ErrCodeNotFound = "NOT_FOUND"
+	// ErrCodeFencingReject indicates the request was rejected due to a fencing token conflict.
+	ErrCodeFencingReject = "FENCING_REJECT"
+	// ErrCodeDuplicate indicates a duplicate resource or operation was detected.
+	ErrCodeDuplicate = "DUPLICATE"
+	// ErrCodeCancelled indicates the operation was cancelled.
+	ErrCodeCancelled = "CANCELLED"
+	// ErrCodeActionRequired indicates the caller must take an action before retrying.
+	ErrCodeActionRequired = "ACTION_REQUIRED"
+	// ErrCodeMaxRuntimeExceeded indicates the operation exceeded its maximum allowed runtime.
 	ErrCodeMaxRuntimeExceeded = "MAX_RUNTIME_EXCEEDED"
 )
 
+// NewRequest creates a new Request with the given command and optional params marshalled to JSON.
 func NewRequest(command string, params any) (*Request, error) {
 	req := &Request{
 		ProtocolVersion: ProtocolVersion,
@@ -58,6 +75,7 @@ func NewRequest(command string, params any) (*Request, error) {
 	return req, nil
 }
 
+// SuccessResponse creates a Response with Success set to true and the given data marshalled to JSON.
 func SuccessResponse(data any) *Response {
 	resp := &Response{Success: true}
 	if data != nil {
@@ -70,6 +88,7 @@ func SuccessResponse(data any) *Response {
 	return resp
 }
 
+// ErrorResponse creates a Response with Success set to false and the given error code and message.
 func ErrorResponse(code, message string) *Response {
 	return &Response{
 		Success: false,

@@ -547,7 +547,7 @@ func newScanPhaseTestQueueHandler(t *testing.T, maestroDir string, wtConfig mode
 	projectRoot := filepath.Dir(maestroDir)
 	wm := NewWorktreeManager(maestroDir, wtConfig, log.New(&bytes.Buffer{}, "", 0), LogLevelError)
 	// Override projectRoot for tests
-	wm.projectRoot = projectRoot
+	wm.SetProjectRoot(projectRoot)
 	qh.SetWorktreeManager(wm)
 
 	return qh

@@ -3,6 +3,7 @@ package daemon
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -1574,7 +1575,7 @@ func TestIntegration_QualityGateEvaluator_MultipleGatesAndCriteria(t *testing.T)
 	d := newIntegrationDaemon(t)
 	writeIntegrationGateConfig(t, d.maestroDir, "integration_gates.yaml", integrationQualityGatesYAML)
 
-	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, d.logger, LogLevelError)
+	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, d.logger, LogLevelError, context.Background())
 	if err := qg.loadGateDefinitions(); err != nil {
 		t.Fatalf("load gate definitions: %v", err)
 	}
@@ -1638,7 +1639,7 @@ func TestIntegration_QualityGatePerformanceUnderLoad(t *testing.T) {
 	d := newIntegrationDaemon(t)
 	writeIntegrationGateConfig(t, d.maestroDir, "perf_gates.yaml", integrationQualityGatesYAML)
 
-	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, d.logger, LogLevelError)
+	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, d.logger, LogLevelError, context.Background())
 	if err := qg.loadGateDefinitions(); err != nil {
 		t.Fatalf("load gate definitions: %v", err)
 	}
@@ -1797,7 +1798,7 @@ gates:
 		t.Fatalf("initial loader load: %v", err)
 	}
 
-	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, d.logger, LogLevelError)
+	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, d.logger, LogLevelError, context.Background())
 	if err := qg.loadGateDefinitions(); err != nil {
 		t.Fatalf("initial gate load: %v", err)
 	}
@@ -1869,7 +1870,7 @@ func TestIntegration_EndToEndWithEventHooksAndQualityGate(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := log.New(&logBuf, "", 0)
 
-	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, logger, LogLevelDebug)
+	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, logger, LogLevelDebug, context.Background())
 	if err := qg.Start(); err != nil {
 		t.Fatalf("start quality gate daemon: %v", err)
 	}
@@ -1945,7 +1946,7 @@ func TestIntegration_EventHooksInvalidPayloadHandling(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := log.New(&logBuf, "", 0)
 
-	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, logger, LogLevelDebug)
+	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, logger, LogLevelDebug, context.Background())
 	if err := qg.Start(); err != nil {
 		t.Fatalf("start quality gate daemon: %v", err)
 	}
@@ -2050,7 +2051,7 @@ func BenchmarkIntegration_QualityGateEvaluation(b *testing.B) {
 	cfg := model.Config{}
 	lockMap := lock.NewMutexMap()
 	logger := log.New(&logBuf, "", 0)
-	qg := NewQualityGateDaemon(maestroDir, cfg, lockMap, logger, LogLevelError)
+	qg := NewQualityGateDaemon(maestroDir, cfg, lockMap, logger, LogLevelError, context.Background())
 	if err := qg.loadGateDefinitions(); err != nil {
 		b.Fatalf("load gate definitions: %v", err)
 	}

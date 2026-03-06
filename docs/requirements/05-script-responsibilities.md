@@ -903,6 +903,7 @@ Queue ハンドラが Worker にタスクを配信する際、以下の固定フ
 ```
 [maestro] task_id:{task_id} command_id:{command_id} lease_epoch:{N} attempt:{N}
 
+agent_id: {worker_id}
 purpose: {purpose}
 content: {content}
 acceptance_criteria: {acceptance_criteria}

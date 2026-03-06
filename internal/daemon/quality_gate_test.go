@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -94,7 +95,7 @@ func setupTestQualityGate(t *testing.T) (*QualityGateDaemon, string) {
 	lockMap := lock.NewMutexMap()
 	logger := log.New(os.Stdout, "[TEST] ", log.LstdFlags)
 
-	qg := NewQualityGateDaemon(maestroDir, cfg, lockMap, logger, LogLevelDebug)
+	qg := NewQualityGateDaemon(maestroDir, cfg, lockMap, logger, LogLevelDebug, context.Background())
 
 	// Initialize the gate engine
 	err := qg.loadGateDefinitions()
@@ -439,7 +440,7 @@ func BenchmarkEvaluateGate_Simple(b *testing.B) {
 	lockMap := lock.NewMutexMap()
 	logger := log.New(os.Stdout, "[TEST] ", log.LstdFlags)
 
-	qg := NewQualityGateDaemon(maestroDir, cfg, lockMap, logger, LogLevelError)
+	qg := NewQualityGateDaemon(maestroDir, cfg, lockMap, logger, LogLevelError, context.Background())
 
 	// Initialize the gate engine
 	err := qg.loadGateDefinitions()
@@ -474,7 +475,7 @@ func BenchmarkEvaluateGate_Complex(b *testing.B) {
 	lockMap := lock.NewMutexMap()
 	logger := log.New(os.Stdout, "[TEST] ", log.LstdFlags)
 
-	qg := NewQualityGateDaemon(maestroDir, cfg, lockMap, logger, LogLevelError)
+	qg := NewQualityGateDaemon(maestroDir, cfg, lockMap, logger, LogLevelError, context.Background())
 
 	// Initialize the gate engine
 	err := qg.loadGateDefinitions()

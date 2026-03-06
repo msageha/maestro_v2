@@ -5,10 +5,14 @@ import (
 	"strings"
 )
 
+// ValidateTaskDAG validates that task dependencies form a directed acyclic graph
+// and returns a topological ordering of task names.
 func ValidateTaskDAG(names []string, blockedBy map[string][]string) ([]string, error) {
 	return validateDAG(names, blockedBy)
 }
 
+// ValidatePhaseDAG validates that phase dependencies form a directed acyclic graph
+// and returns a topological ordering of phase names.
 func ValidatePhaseDAG(phaseNames []string, dependsOn map[string][]string) ([]string, error) {
 	return validateDAG(phaseNames, dependsOn)
 }
@@ -128,6 +132,7 @@ func findCyclePath(nodeNames []string, edges map[string][]string, inDegree map[s
 	return []string{"(cycle detected)"}
 }
 
+// ValidateNoSelfReference checks that no task lists itself in its own blocked_by dependencies.
 func ValidateNoSelfReference(blockedBy map[string][]string) *ValidationErrors {
 	errs := &ValidationErrors{}
 	for name, deps := range blockedBy {
@@ -143,6 +148,7 @@ func ValidateNoSelfReference(blockedBy map[string][]string) *ValidationErrors {
 	return nil
 }
 
+// ValidateSamePhaseRefs checks that all blocked_by references point to names within the given valid name set.
 func ValidateSamePhaseRefs(blockedBy map[string][]string, validNames map[string]bool) *ValidationErrors {
 	errs := &ValidationErrors{}
 	for name, deps := range blockedBy {

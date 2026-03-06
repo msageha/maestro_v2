@@ -14,12 +14,14 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
+// RebuildOptions holds the configuration for rebuilding command state from worker results.
 type RebuildOptions struct {
 	CommandID  string
 	MaestroDir string
 	LockMap    *lock.MutexMap
 }
 
+// Rebuild reconstructs the command state by scanning worker result files and applying the latest status for each task.
 func Rebuild(opts RebuildOptions) error {
 	if opts.LockMap == nil {
 		return fmt.Errorf("LockMap is required")

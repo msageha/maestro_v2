@@ -136,7 +136,7 @@ func (d *Daemon) handleQueueWriteCommand(params QueueWriteParams) *uds.Response 
 	if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write queue: %v", err))
 	}
-	d.notifySelfWrite(queuePath, "command")
+	d.notifySelfWrite(queuePath, "command", cq)
 
 	d.log(LogLevelInfo, "queue_write type=command id=%s", id)
 	return uds.SuccessResponse(map[string]string{"id": id})
@@ -257,7 +257,7 @@ func (d *Daemon) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 	if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write queue: %v", err))
 	}
-	d.notifySelfWrite(queuePath, "task")
+	d.notifySelfWrite(queuePath, "task", tq)
 
 	d.log(LogLevelInfo, "queue_write type=task id=%s command_id=%s worker=%s", id, params.CommandID, params.Target)
 	return uds.SuccessResponse(map[string]string{"id": id})
@@ -347,7 +347,7 @@ func (d *Daemon) handleQueueWriteNotification(params QueueWriteParams) *uds.Resp
 	if err := yamlutil.AtomicWrite(queuePath, nq); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write queue: %v", err))
 	}
-	d.notifySelfWrite(queuePath, "notification")
+	d.notifySelfWrite(queuePath, "notification", nq)
 
 	d.log(LogLevelInfo, "queue_write type=notification id=%s command_id=%s source_result_id=%s", id, params.CommandID, params.SourceResultID)
 	return uds.SuccessResponse(map[string]string{"id": id})
@@ -428,7 +428,7 @@ func (d *Daemon) cancelRequestSubmitted(params QueueWriteParams, statePath strin
 					if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
 						d.log(LogLevelError, "queue_write cancel_planner_queue_update error=%v", err)
 					} else {
-						d.notifySelfWrite(queuePath, "cancel-request")
+						d.notifySelfWrite(queuePath, "cancel-request", cq)
 					}
 				}
 				break
@@ -488,7 +488,7 @@ func (d *Daemon) cancelRequestUnsubmitted(params QueueWriteParams) *uds.Response
 	if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write queue: %v", err))
 	}
-	d.notifySelfWrite(queuePath, "cancel-request")
+	d.notifySelfWrite(queuePath, "cancel-request", cq)
 
 	d.log(LogLevelInfo, "queue_write type=cancel-request command=%s submitted=false cancelled", params.CommandID)
 	return uds.SuccessResponse(map[string]string{"command_id": params.CommandID, "status": "cancelled"})

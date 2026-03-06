@@ -16,8 +16,7 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
-// CanCompleteFunc is the signature for plan.CanComplete to avoid import cycles.
-type CanCompleteFunc func(state *model.CommandState) (model.PlanStatus, error)
+// CanCompleteFunc is defined in internal/daemon/core and re-exported via core_aliases.go.
 
 // Canonical lock ordering for MutexMap keys (to prevent deadlocks):
 //   queue:* → state:* → result:*

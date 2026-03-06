@@ -9,6 +9,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
+// RequestCancelOptions holds the configuration for requesting a command cancellation.
 type RequestCancelOptions struct {
 	CommandID   string
 	RequestedBy string
@@ -17,6 +18,7 @@ type RequestCancelOptions struct {
 	LockMap     *lock.MutexMap
 }
 
+// RequestCancel cancels a command by updating both the state file and planner queue entry.
 func RequestCancel(opts RequestCancelOptions) error {
 	if opts.LockMap == nil {
 		return fmt.Errorf("LockMap is required")

@@ -1,6 +1,11 @@
 // Package model defines the data structures for Maestro's configuration, state, and queue entries.
 package model
 
+import (
+	"errors"
+	"fmt"
+)
+
 // DefaultMaxYAMLFileBytes is the default maximum size for YAML file reads (5MB).
 const DefaultMaxYAMLFileBytes = 5 * 1024 * 1024
 
@@ -324,4 +329,106 @@ func (w WorktreeGCConfig) EffectiveMaxWorktrees() int {
 		return w.MaxWorktrees
 	}
 	return 32
+}
+
+// Validate checks all Config fields for consistency after yaml.Unmarshal.
+// Returns a joined error containing all validation failures with field paths.
+func (c Config) Validate() error {
+	var errs []error
+
+	// project.name
+	if c.Project.Name == "" {
+		errs = append(errs, fmt.Errorf("project.name: must not be empty"))
+	}
+
+	// maestro.version
+	if c.Maestro.Version == "" {
+		errs = append(errs, fmt.Errorf("maestro.version: must not be empty"))
+	}
+
+	// agents.workers.count
+	if c.Agents.Workers.Count < 1 {
+		errs = append(errs, fmt.Errorf("agents.workers.count: must be >= 1"))
+	}
+
+	// watcher timeout fields (negative values invalid)
+	if c.Watcher.ScanIntervalSec < 0 {
+		errs = append(errs, fmt.Errorf("watcher.scan_interval_sec: must be >= 0"))
+	}
+	if c.Watcher.DispatchLeaseSec < 0 {
+		errs = append(errs, fmt.Errorf("watcher.dispatch_lease_sec: must be >= 0"))
+	}
+	if c.Watcher.MaxInProgressMin < 0 {
+		errs = append(errs, fmt.Errorf("watcher.max_in_progress_min: must be >= 0"))
+	}
+
+	// retry fields
+	if c.Retry.CommandDispatch < 0 {
+		errs = append(errs, fmt.Errorf("retry.command_dispatch: must be >= 0"))
+	}
+	if c.Retry.TaskDispatch < 0 {
+		errs = append(errs, fmt.Errorf("retry.task_dispatch: must be >= 0"))
+	}
+	if c.Retry.TaskExecution.MaxRetries < 0 {
+		errs = append(errs, fmt.Errorf("retry.task_execution.max_retries: must be >= 0"))
+	}
+	if c.Retry.TaskExecution.CooldownSec < 0 {
+		errs = append(errs, fmt.Errorf("retry.task_execution.cooldown_sec: must be >= 0"))
+	}
+
+	// limits
+	if c.Limits.MaxPendingCommands < 0 {
+		errs = append(errs, fmt.Errorf("limits.max_pending_commands: must be >= 0"))
+	}
+	if c.Limits.MaxPendingTasksPerWorker < 0 {
+		errs = append(errs, fmt.Errorf("limits.max_pending_tasks_per_worker: must be >= 0"))
+	}
+	if c.Limits.MaxEntryContentBytes < 0 {
+		errs = append(errs, fmt.Errorf("limits.max_entry_content_bytes: must be >= 0"))
+	}
+
+	// daemon.shutdown_timeout_sec
+	if c.Daemon.ShutdownTimeoutSec < 0 {
+		errs = append(errs, fmt.Errorf("daemon.shutdown_timeout_sec: must be >= 0"))
+	}
+
+	// circuit_breaker
+	if c.CircuitBreaker.MaxConsecutiveFailures < 0 {
+		errs = append(errs, fmt.Errorf("circuit_breaker.max_consecutive_failures: must be >= 0"))
+	}
+	if c.CircuitBreaker.ProgressTimeoutMinutes < 0 {
+		errs = append(errs, fmt.Errorf("circuit_breaker.progress_timeout_minutes: must be >= 0"))
+	}
+
+	// verification
+	if c.Verification.TimeoutSeconds < 0 {
+		errs = append(errs, fmt.Errorf("verification.timeout_seconds: must be >= 0"))
+	}
+	if c.Verification.MaxRetries < 0 {
+		errs = append(errs, fmt.Errorf("verification.max_retries: must be >= 0"))
+	}
+
+	// learnings
+	if c.Learnings.MaxEntries < 0 {
+		errs = append(errs, fmt.Errorf("learnings.max_entries: must be >= 0"))
+	}
+	if c.Learnings.MaxContentLength < 0 {
+		errs = append(errs, fmt.Errorf("learnings.max_content_length: must be >= 0"))
+	}
+	if c.Learnings.InjectCount < 0 {
+		errs = append(errs, fmt.Errorf("learnings.inject_count: must be >= 0"))
+	}
+
+	// quality_gates thresholds
+	if c.QualityGates.Thresholds.MaxTaskFailureRate < 0 || c.QualityGates.Thresholds.MaxTaskFailureRate > 1 {
+		errs = append(errs, fmt.Errorf("quality_gates.thresholds.max_task_failure_rate: must be between 0.0 and 1.0"))
+	}
+	if c.QualityGates.Thresholds.MinTaskSuccessRate < 0 || c.QualityGates.Thresholds.MinTaskSuccessRate > 1 {
+		errs = append(errs, fmt.Errorf("quality_gates.thresholds.min_task_success_rate: must be between 0.0 and 1.0"))
+	}
+
+	if len(errs) == 0 {
+		return nil
+	}
+	return errors.Join(errs...)
 }

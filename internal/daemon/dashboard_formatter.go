@@ -13,6 +13,8 @@ import (
 	"text/template"
 	"time"
 
+	yaml "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -133,16 +135,19 @@ func (f *DashboardFormatter) collectDashboardData() (*DashboardData, error) {
 		LastUpdated:     f.clock.Now(),
 	}
 
+	// Read queue depths from filesystem (independent of log file)
+	f.updateQueueStatus(data)
+
 	// Read and parse JSONL log file
 	if err := f.parseLogFile(data); err != nil {
-		// If log file doesn't exist, return empty data
+		// If log file doesn't exist, return data with queue info only
 		if os.IsNotExist(err) {
 			return data, nil
 		}
 		return nil, err
 	}
 
-	// Calculate statistics
+	// Calculate statistics (log-based, queue status already populated above)
 	f.calculateStats(data)
 
 	// Sort events by timestamp (most recent first)
@@ -320,17 +325,15 @@ func (f *DashboardFormatter) isWarningEvent(eventType string) bool {
 		strings.Contains(strings.ToLower(eventType), "retry")
 }
 
-// calculateStats calculates aggregate statistics
+// calculateStats calculates aggregate statistics.
+// Queue status is populated separately in collectDashboardData.
 func (f *DashboardFormatter) calculateStats(data *DashboardData) {
 	if data.Stats.TotalTasks > 0 {
 		data.Stats.TaskSuccessRate = float64(data.Stats.CompletedTasks) / float64(data.Stats.TotalTasks) * 100
 	}
-
-	// Read queue depths from filesystem
-	f.updateQueueStatus(data)
 }
 
-// updateQueueStatus reads current queue depths
+// updateQueueStatus reads current queue depths by parsing queue YAML files.
 func (f *DashboardFormatter) updateQueueStatus(data *DashboardData) {
 	queueDir := filepath.Join(f.maestroDir, "queue")
 	entries, err := os.ReadDir(queueDir)
@@ -339,14 +342,77 @@ func (f *DashboardFormatter) updateQueueStatus(data *DashboardData) {
 	}
 
 	for _, entry := range entries {
-		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".yaml") {
-			queueName := strings.TrimSuffix(entry.Name(), ".yaml")
-			info := QueueInfo{Name: queueName}
-
-			// This is simplified - in reality we'd parse the queue file
-			// to count pending and in-progress tasks
-			data.QueueStatus[queueName] = info
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
+			continue
 		}
+		queueName := strings.TrimSuffix(entry.Name(), ".yaml")
+		info := QueueInfo{Name: queueName}
+
+		queuePath := filepath.Join(queueDir, entry.Name())
+		fileData, err := os.ReadFile(queuePath)
+		if err != nil {
+			data.QueueStatus[queueName] = info
+			continue
+		}
+
+		// Determine queue type and count statuses.
+		// Only process known queue types; skip auxiliary files (e.g., planner_signals.yaml).
+		switch {
+		case queueName == "orchestrator":
+			var nq struct {
+				Notifications []struct {
+					Status string `yaml:"status"`
+				} `yaml:"notifications"`
+			}
+			if err := yaml.Unmarshal(fileData, &nq); err == nil {
+				for _, n := range nq.Notifications {
+					switch n.Status {
+					case "pending":
+						info.Pending++
+					case "in_progress":
+						info.InProgress++
+					}
+				}
+			}
+		case queueName == "planner":
+			var cq struct {
+				Commands []struct {
+					Status string `yaml:"status"`
+				} `yaml:"commands"`
+			}
+			if err := yaml.Unmarshal(fileData, &cq); err == nil {
+				for _, c := range cq.Commands {
+					switch c.Status {
+					case "pending":
+						info.Pending++
+					case "in_progress":
+						info.InProgress++
+					}
+				}
+			}
+		case strings.HasPrefix(queueName, "worker"):
+			// Worker task queues
+			var tq struct {
+				Tasks []struct {
+					Status string `yaml:"status"`
+				} `yaml:"tasks"`
+			}
+			if err := yaml.Unmarshal(fileData, &tq); err == nil {
+				for _, t := range tq.Tasks {
+					switch t.Status {
+					case "pending":
+						info.Pending++
+					case "in_progress":
+						info.InProgress++
+					}
+				}
+			}
+		default:
+			// Skip unknown queue files (e.g., planner_signals.yaml)
+			continue
+		}
+
+		data.QueueStatus[queueName] = info
 	}
 }
 

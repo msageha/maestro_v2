@@ -1,4 +1,6 @@
-package daemon
+// Package learnings provides utility functions for reading and formatting
+// learnings data for injection into task content.
+package learnings
 
 import (
 	"fmt"
@@ -11,10 +13,10 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
-// readTopKLearnings reads learnings.yaml and returns the most recent K entries
+// ReadTopKLearnings reads learnings.yaml and returns the most recent K entries
 // that have not expired according to TTL. Read-only: no lock needed since
 // AtomicWrite guarantees consistent snapshots via rename.
-func readTopKLearnings(maestroDir string, cfg model.LearningsConfig, now time.Time) ([]model.Learning, error) {
+func ReadTopKLearnings(maestroDir string, cfg model.LearningsConfig, now time.Time) ([]model.Learning, error) {
 	learningsPath := filepath.Join(maestroDir, "state", "learnings.yaml")
 
 	data, err := os.ReadFile(learningsPath)
@@ -66,9 +68,9 @@ func readTopKLearnings(maestroDir string, cfg model.LearningsConfig, now time.Ti
 	return valid, nil
 }
 
-// formatLearningsSection formats learnings for injection into task content.
+// FormatLearningsSection formats learnings for injection into task content.
 // Returns empty string if no learnings are provided.
-func formatLearningsSection(learnings []model.Learning) string {
+func FormatLearningsSection(learnings []model.Learning) string {
 	if len(learnings) == 0 {
 		return ""
 	}

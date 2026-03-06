@@ -22,14 +22,7 @@ type codedFormatter interface {
 	ErrorCode() string
 }
 
-// PlanExecutor executes plan operations under the daemon's file lock.
-// Implementations are wired from main.go to avoid import cycles (plan → daemon).
-type PlanExecutor interface {
-	Submit(params json.RawMessage) (json.RawMessage, error)
-	Complete(params json.RawMessage) (json.RawMessage, error)
-	AddRetryTask(params json.RawMessage) (json.RawMessage, error)
-	Rebuild(params json.RawMessage) (json.RawMessage, error)
-}
+// PlanExecutor is defined in internal/daemon/core and re-exported via core_aliases.go.
 
 // SetPlanExecutor wires the plan executor for UDS plan handlers.
 func (d *Daemon) SetPlanExecutor(pe PlanExecutor) {

@@ -1,4 +1,4 @@
-package daemon
+package learnings
 
 import (
 	"os"
@@ -29,7 +29,7 @@ func writeLearningsFile(t *testing.T, dir string, lf model.LearningsFile) {
 func TestReadTopKLearnings_NoFile(t *testing.T) {
 	dir := t.TempDir()
 	cfg := model.LearningsConfig{InjectCount: 5, TTLHours: 72}
-	result, err := readTopKLearnings(dir, cfg, time.Now())
+	result, err := ReadTopKLearnings(dir, cfg, time.Now())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -46,7 +46,7 @@ func TestReadTopKLearnings_EmptyLearnings(t *testing.T) {
 		Learnings:     []model.Learning{},
 	})
 	cfg := model.LearningsConfig{InjectCount: 5, TTLHours: 72}
-	result, err := readTopKLearnings(dir, cfg, time.Now())
+	result, err := ReadTopKLearnings(dir, cfg, time.Now())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -74,7 +74,7 @@ func TestReadTopKLearnings_TopK(t *testing.T) {
 	})
 
 	cfg := model.LearningsConfig{InjectCount: 3, TTLHours: 72}
-	result, err := readTopKLearnings(dir, cfg, now)
+	result, err := ReadTopKLearnings(dir, cfg, now)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestReadTopKLearnings_TTLFilter(t *testing.T) {
 	})
 
 	cfg := model.LearningsConfig{InjectCount: 5, TTLHours: 72}
-	result, err := readTopKLearnings(dir, cfg, now)
+	result, err := ReadTopKLearnings(dir, cfg, now)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestReadTopKLearnings_TTLZeroUnlimited(t *testing.T) {
 
 	// TTLHours: 0 = unlimited (no expiry)
 	cfg := model.LearningsConfig{InjectCount: 5, TTLHours: 0}
-	result, err := readTopKLearnings(dir, cfg, now)
+	result, err := ReadTopKLearnings(dir, cfg, now)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestReadTopKLearnings_AllExpired(t *testing.T) {
 	})
 
 	cfg := model.LearningsConfig{InjectCount: 5, TTLHours: 72}
-	result, err := readTopKLearnings(dir, cfg, now)
+	result, err := ReadTopKLearnings(dir, cfg, now)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -181,7 +181,7 @@ func TestReadTopKLearnings_MalformedTimestamp(t *testing.T) {
 	})
 
 	cfg := model.LearningsConfig{InjectCount: 5, TTLHours: 72}
-	result, err := readTopKLearnings(dir, cfg, now)
+	result, err := ReadTopKLearnings(dir, cfg, now)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -204,7 +204,7 @@ func TestReadTopKLearnings_CorruptYAML(t *testing.T) {
 	}
 
 	cfg := model.LearningsConfig{InjectCount: 5, TTLHours: 72}
-	result, err := readTopKLearnings(dir, cfg, time.Now())
+	result, err := ReadTopKLearnings(dir, cfg, time.Now())
 	if err == nil {
 		t.Fatal("corrupt YAML should return error")
 	}
@@ -214,12 +214,12 @@ func TestReadTopKLearnings_CorruptYAML(t *testing.T) {
 }
 
 func TestFormatLearningsSection_Empty(t *testing.T) {
-	result := formatLearningsSection(nil)
+	result := FormatLearningsSection(nil)
 	if result != "" {
 		t.Fatalf("expected empty string for nil learnings, got %q", result)
 	}
 
-	result = formatLearningsSection([]model.Learning{})
+	result = FormatLearningsSection([]model.Learning{})
 	if result != "" {
 		t.Fatalf("expected empty string for empty learnings, got %q", result)
 	}
@@ -230,7 +230,7 @@ func TestFormatLearningsSection_Format(t *testing.T) {
 		{Content: "Always run tests before commit"},
 		{Content: "Use gofmt for formatting"},
 	}
-	result := formatLearningsSection(learnings)
+	result := FormatLearningsSection(learnings)
 
 	if !strings.Contains(result, "参考: 過去の学習知見") {
 		t.Error("missing section header")
@@ -260,7 +260,7 @@ func TestReadTopKLearnings_FewerThanK(t *testing.T) {
 	})
 
 	cfg := model.LearningsConfig{InjectCount: 5, TTLHours: 72}
-	result, err := readTopKLearnings(dir, cfg, now)
+	result, err := ReadTopKLearnings(dir, cfg, now)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

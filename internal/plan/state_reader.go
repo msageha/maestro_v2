@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/msageha/maestro_v2/internal/daemon"
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -15,16 +15,18 @@ type PlanStateReader struct {
 	stateManager *StateManager
 }
 
+// NewPlanStateReader creates a PlanStateReader backed by the given StateManager.
 func NewPlanStateReader(sm *StateManager) *PlanStateReader {
 	return &PlanStateReader{stateManager: sm}
 }
 
+// GetTaskState returns the status of a task from the command state file.
 func (r *PlanStateReader) GetTaskState(commandID, taskID string) (model.Status, error) {
 	state, err := r.stateManager.LoadState(commandID)
 	if err != nil {
 		// Use errors.Is() to detect not-found without masking other FS errors
 		if errors.Is(err, os.ErrNotExist) {
-			return "", daemon.ErrStateNotFound
+			return "", core.ErrStateNotFound
 		}
 		return "", err
 	}
@@ -36,12 +38,13 @@ func (r *PlanStateReader) GetTaskState(commandID, taskID string) (model.Status, 
 	return status, nil
 }
 
-func (r *PlanStateReader) GetCommandPhases(commandID string) ([]daemon.PhaseInfo, error) {
+// GetCommandPhases returns phase metadata for a command.
+func (r *PlanStateReader) GetCommandPhases(commandID string) ([]core.PhaseInfo, error) {
 	state, err := r.stateManager.LoadState(commandID)
 	if err != nil {
 		// Use errors.Is() to detect not-found without masking other FS errors
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, daemon.ErrStateNotFound
+			return nil, core.ErrStateNotFound
 		}
 		return nil, err
 	}
@@ -56,7 +59,7 @@ func (r *PlanStateReader) GetCommandPhases(commandID string) ([]daemon.PhaseInfo
 		phaseNameToID[sp.Name] = sp.PhaseID
 	}
 
-	var phases []daemon.PhaseInfo
+	var phases []core.PhaseInfo
 	for _, p := range state.Phases {
 		var depIDs []string
 		for _, depName := range p.DependsOnPhases {
@@ -79,7 +82,7 @@ func (r *PlanStateReader) GetCommandPhases(commandID string) ([]daemon.PhaseInfo
 
 		isSystemCommit := state.SystemCommitTaskID != nil && phaseTaskSet[*state.SystemCommitTaskID]
 
-		phases = append(phases, daemon.PhaseInfo{
+		phases = append(phases, core.PhaseInfo{
 			ID:               p.PhaseID,
 			Name:             p.Name,
 			Status:           p.Status,
@@ -93,12 +96,13 @@ func (r *PlanStateReader) GetCommandPhases(commandID string) ([]daemon.PhaseInfo
 	return phases, nil
 }
 
+// GetTaskDependencies returns the task IDs that the given task depends on.
 func (r *PlanStateReader) GetTaskDependencies(commandID, taskID string) ([]string, error) {
 	state, err := r.stateManager.LoadState(commandID)
 	if err != nil {
 		// Use errors.Is() to detect not-found without masking other FS errors
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, daemon.ErrStateNotFound
+			return nil, core.ErrStateNotFound
 		}
 		return nil, err
 	}
@@ -110,6 +114,7 @@ func (r *PlanStateReader) GetTaskDependencies(commandID, taskID string) ([]strin
 	return deps, nil
 }
 
+// ApplyPhaseTransition persists a phase status change under the command lock.
 func (r *PlanStateReader) ApplyPhaseTransition(commandID, phaseID string, newStatus model.PhaseStatus) error {
 	r.stateManager.LockCommand(commandID)
 	defer r.stateManager.UnlockCommand(commandID)
@@ -145,13 +150,14 @@ func (r *PlanStateReader) ApplyPhaseTransition(commandID, phaseID string, newSta
 	}
 
 	if !found {
-		return fmt.Errorf("phase %s in command %s: %w", phaseID, commandID, daemon.ErrPhaseNotFound)
+		return fmt.Errorf("phase %s in command %s: %w", phaseID, commandID, core.ErrPhaseNotFound)
 	}
 
 	state.UpdatedAt = now
 	return r.stateManager.SaveState(state)
 }
 
+// UpdateTaskState updates a single task's status under the command lock.
 func (r *PlanStateReader) UpdateTaskState(commandID, taskID string, newStatus model.Status, cancelledReason string) error {
 	r.stateManager.LockCommand(commandID)
 	defer r.stateManager.UnlockCommand(commandID)
@@ -189,24 +195,27 @@ func (r *PlanStateReader) UpdateTaskState(commandID, taskID string, newStatus mo
 	return r.stateManager.SaveState(state)
 }
 
+// IsCommandCancelRequested checks the cancel.requested flag in the state file.
 func (r *PlanStateReader) IsCommandCancelRequested(commandID string) (bool, error) {
 	state, err := r.stateManager.LoadState(commandID)
 	if err != nil {
 		// Use errors.Is() to detect not-found without masking other FS errors
 		if errors.Is(err, os.ErrNotExist) {
-			return false, daemon.ErrStateNotFound
+			return false, core.ErrStateNotFound
 		}
 		return false, err
 	}
 	return state.Cancel.Requested, nil
 }
 
+// IsSystemCommitReady checks if a task is a system commit task and whether
+// all user tasks/phases are terminal.
 func (r *PlanStateReader) IsSystemCommitReady(commandID, taskID string) (bool, bool, error) {
 	state, err := r.stateManager.LoadState(commandID)
 	if err != nil {
 		// Use errors.Is() to detect not-found without masking other FS errors
 		if errors.Is(err, os.ErrNotExist) {
-			return false, false, daemon.ErrStateNotFound
+			return false, false, core.ErrStateNotFound
 		}
 		return false, false, err
 	}
@@ -237,11 +246,12 @@ func (r *PlanStateReader) IsSystemCommitReady(commandID, taskID string) (bool, b
 	return true, true, nil
 }
 
+// GetCircuitBreakerState returns the circuit breaker state for a command.
 func (r *PlanStateReader) GetCircuitBreakerState(commandID string) (*model.CircuitBreakerState, error) {
 	state, err := r.stateManager.LoadState(commandID)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, daemon.ErrStateNotFound
+			return nil, core.ErrStateNotFound
 		}
 		return nil, err
 	}
@@ -249,6 +259,7 @@ func (r *PlanStateReader) GetCircuitBreakerState(commandID string) (*model.Circu
 	return &cb, nil
 }
 
+// TripCircuitBreaker sets the circuit breaker to tripped state under the command lock.
 func (r *PlanStateReader) TripCircuitBreaker(commandID string, reason string, progressTimeoutMinutes int) error {
 	r.stateManager.LockCommand(commandID)
 	defer r.stateManager.UnlockCommand(commandID)

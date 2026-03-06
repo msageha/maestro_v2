@@ -203,9 +203,11 @@ func TestClearAllFiles_NonExistentDir(t *testing.T) {
 	}
 }
 
-func TestLoadConfigFromDir(t *testing.T) {
+func TestLoadConfig(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
+		Project: model.ProjectConfig{Name: "test"},
+		Maestro: model.MaestroConfig{Version: "2.0.0"},
 		Agents: model.AgentsConfig{
 			Workers: model.WorkerConfig{Count: 3, DefaultModel: "haiku"},
 		},
@@ -213,7 +215,7 @@ func TestLoadConfigFromDir(t *testing.T) {
 	}
 	writeConfig(t, maestroDir, cfg)
 
-	loaded, err := loadConfigFromDir(maestroDir)
+	loaded, err := model.LoadConfig(maestroDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,6 +233,8 @@ func TestLoadConfigFromDir(t *testing.T) {
 func TestReflectFlags(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	writeConfig(t, maestroDir, model.Config{
+		Project: model.ProjectConfig{Name: "test"},
+		Maestro: model.MaestroConfig{Version: "2.0.0"},
 		Agents: model.AgentsConfig{
 			Workers: model.WorkerConfig{Count: 2},
 		},

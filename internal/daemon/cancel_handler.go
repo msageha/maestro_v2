@@ -30,9 +30,10 @@ type CancelHandler struct {
 	lockMap         *lock.MutexMap
 	worktreeManager *WorktreeManager
 
+	execMu        sync.Mutex
 	cachedExec    AgentExecutor
 	cachedExecErr error
-	execOnce      sync.Once
+	execInit      bool
 }
 
 // NewCancelHandler creates a new CancelHandler.
@@ -54,19 +55,29 @@ func NewCancelHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMa
 // SetExecutorFactory overrides the executor factory for testing.
 // Resets the cached executor so the new factory is used on next call.
 func (ch *CancelHandler) SetExecutorFactory(f ExecutorFactory) {
+	ch.execMu.Lock()
+	old := ch.cachedExec
 	ch.executorFactory = f
-	ch.execOnce = sync.Once{}
 	ch.cachedExec = nil
 	ch.cachedExecErr = nil
+	ch.execInit = false
+	ch.execMu.Unlock()
+
+	if old != nil {
+		_ = old.Close()
+	}
 }
 
-// getExecutor returns the shared executor instance, creating it lazily via sync.Once.
+// getExecutor returns the shared executor instance, creating it lazily on first call.
 // The Executor is safe for concurrent use (log.Logger uses internal mutex,
 // os.File in append mode is POSIX-safe, all other fields are immutable).
 func (ch *CancelHandler) getExecutor() (AgentExecutor, error) {
-	ch.execOnce.Do(func() {
+	ch.execMu.Lock()
+	defer ch.execMu.Unlock()
+	if !ch.execInit {
 		ch.cachedExec, ch.cachedExecErr = ch.executorFactory(ch.maestroDir, ch.config.Watcher, ch.config.Logging.Level)
-	})
+		ch.execInit = true
+	}
 	if ch.cachedExecErr != nil {
 		return nil, fmt.Errorf("%w: %v", errExecutorInit, ch.cachedExecErr)
 	}
@@ -74,10 +85,17 @@ func (ch *CancelHandler) getExecutor() (AgentExecutor, error) {
 }
 
 // CloseExecutor releases the shared executor's resources.
+// Safe to call multiple times; subsequent calls are no-ops.
 func (ch *CancelHandler) CloseExecutor() {
-	if ch.cachedExec != nil {
-		_ = ch.cachedExec.Close()
-		ch.cachedExec = nil
+	ch.execMu.Lock()
+	exec := ch.cachedExec
+	ch.cachedExec = nil
+	ch.cachedExecErr = nil
+	ch.execInit = false
+	ch.execMu.Unlock()
+
+	if exec != nil {
+		_ = exec.Close()
 	}
 }
 

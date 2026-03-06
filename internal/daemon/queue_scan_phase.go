@@ -78,8 +78,8 @@ func (qh *QueueHandler) periodicScanPhaseA() phaseAResult {
 			// Check progress timeout (consecutive failure trips happen in resultWritePhaseB)
 			shouldTrip, reason := qh.circuitBreaker.CheckProgressTimeout(cmd.ID)
 			if shouldTrip {
-				timeoutMin := qh.circuitBreaker.config.CircuitBreaker.EffectiveProgressTimeoutMinutes()
-				if err := qh.circuitBreaker.stateReader.TripCircuitBreaker(cmd.ID, reason, timeoutMin); err != nil {
+				timeoutMin := qh.circuitBreaker.ProgressTimeoutMinutes()
+				if err := qh.circuitBreaker.StateReader().TripCircuitBreaker(cmd.ID, reason, timeoutMin); err != nil {
 					qh.log(LogLevelError, "circuit_breaker_trip_timeout command=%s error=%v", cmd.ID, err)
 				} else {
 					qh.log(LogLevelWarn, "circuit_breaker_tripped_timeout command=%s reason=%s", cmd.ID, reason)
@@ -87,10 +87,10 @@ func (qh *QueueHandler) periodicScanPhaseA() phaseAResult {
 			}
 
 			// Emit planner signal for tripped commands (covers both failure-count and timeout trips)
-			if qh.circuitBreaker.stateReader == nil {
+			if qh.circuitBreaker.StateReader() == nil {
 				continue
 			}
-			cbState, err := qh.circuitBreaker.stateReader.GetCircuitBreakerState(cmd.ID)
+			cbState, err := qh.circuitBreaker.StateReader().GetCircuitBreakerState(cmd.ID)
 			if err != nil {
 				continue
 			}
@@ -383,7 +383,7 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 		mr := worktreeMergeResult{Item: item}
 
 		// First commit worker changes
-		if qh.worktreeManager != nil && qh.worktreeManager.config.AutoCommit {
+		if qh.worktreeManager != nil && qh.worktreeManager.AutoCommit() {
 			for _, workerID := range item.WorkerIDs {
 				msg := fmt.Sprintf("[maestro] auto-commit phase %s worker %s for %s",
 					item.PhaseID, workerID, item.CommandID)
@@ -395,7 +395,7 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 		}
 
 		// Then merge to integration
-		if qh.worktreeManager != nil && qh.worktreeManager.config.AutoMerge {
+		if qh.worktreeManager != nil && qh.worktreeManager.AutoMerge() {
 			conflicts, err := qh.worktreeManager.MergeToIntegration(item.CommandID, item.WorkerIDs)
 			mr.Conflicts = conflicts
 			mr.Error = err
