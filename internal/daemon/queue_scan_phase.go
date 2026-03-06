@@ -81,7 +81,8 @@ func (qh *QueueHandler) stepDeadLetters(s *scanState) {
 	dlResults := qh.deadLetterProcessor.ProcessCommandDeadLetters(&s.commands.Data, &s.commands.Dirty)
 	for queueFile, tq := range s.tasks {
 		tqDirty := s.taskDirty[queueFile]
-		dlResults = append(dlResults, qh.deadLetterProcessor.ProcessTaskDeadLetters(tq, &tqDirty)...)
+		wID := workerIDFromPath(tq.Path)
+		dlResults = append(dlResults, qh.deadLetterProcessor.ProcessTaskDeadLetters(wID, &tq.Queue, tq.Path, &tqDirty)...)
 		s.taskDirty[queueFile] = tqDirty
 	}
 	dlResults = append(dlResults, qh.deadLetterProcessor.ProcessNotificationDeadLetters(&s.notifications.Data, &s.notifications.Dirty)...)
