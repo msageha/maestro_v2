@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"time"
 
@@ -121,18 +121,12 @@ func (qh *QueueHandler) upsertPlannerSignal(sq *model.PlannerSignalQueue, dirty 
 	*dirty = true
 }
 
-// deliverPlannerSignal attempts delivery to the planner with a short-probe config.
+// deliverPlannerSignal attempts delivery to the planner using the shared executor.
 func (qh *QueueHandler) deliverPlannerSignal(ctx context.Context, commandID, message string) error {
-	shortCfg := qh.config.Watcher
-	shortCfg.BusyCheckMaxRetries = 1
-	shortCfg.BusyCheckInterval = 1
-	shortCfg.IdleStableSec = 1
-
-	exec, err := qh.dispatcher.executorFactory(qh.maestroDir, shortCfg, qh.config.Logging.Level)
+	exec, err := qh.dispatcher.getExecutor()
 	if err != nil {
-		return fmt.Errorf("create executor: %w", err)
+		return fmt.Errorf("get executor: %w", err)
 	}
-	defer func() { _ = exec.Close() }()
 
 	result := exec.Execute(agent.ExecRequest{
 		Context:   ctx,
