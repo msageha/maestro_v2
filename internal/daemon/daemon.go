@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -35,6 +34,7 @@ import (
 // internal/daemon/core and re-exported via core_aliases.go.
 
 // Daemon is the main maestro daemon process.
+// It acts as a composition root, owning API, WatchLoop, and EventBridge components.
 type Daemon struct {
 	maestroDir string
 	config     model.Config
@@ -57,12 +57,9 @@ type Daemon struct {
 	circuitBreaker    *circuitbreaker.Handler
 	worktreeManager   *WorktreeManager
 
-	eventBus          *events.Bus
-	eventUnsubscribers []func()
-	tmuxLogFile        io.Closer // debug log for tmux operations
-
-	dashboardMu sync.Mutex   // serializes concurrent dashboard generation
-	fsSem       chan struct{} // bounds concurrent fsnotify handler goroutines
+	eventBus    *events.Bus
+	tmuxLogFile io.Closer // debug log for tmux operations
+	selfWrites  *selfWriteTracker // tracks daemon-originated YAML writes for fsnotify filtering
 
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -75,10 +72,13 @@ type Daemon struct {
 	// eg.Wait() cannot return while the calling goroutine is still running.
 	shuttingDown atomic.Bool
 
-	selfWrites *selfWriteTracker // tracks daemon-originated YAML writes for fsnotify filtering
-
 	cleanupOnce sync.Once
 	forceExit   atomic.Bool
+
+	// --- Components ---
+	api    *API
+	watch  *WatchLoop
+	bridge *EventBridge
 }
 
 // selfWriteTracker tracks files written by the daemon to filter fsnotify self-notifications.
@@ -241,11 +241,15 @@ func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Close
 		server:     server,
 		ticker:     time.NewTicker(time.Duration(scanInterval) * time.Second),
 		lockMap:    lock.NewMutexMap(),
-		fsSem:      make(chan struct{}, 8),
 		selfWrites: newSelfWriteTracker(),
 		ctx:        ctx,
 		cancel:     cancel,
 	}
+
+	// Initialize components with back-pointers
+	d.api = &API{d: d}
+	d.watch = &WatchLoop{d: d, fsSem: make(chan struct{}, 8)}
+	d.bridge = &EventBridge{d: d}
 
 	return d, nil
 }
@@ -371,15 +375,15 @@ func (d *Daemon) Run() error {
 	d.handler.dependencyResolver.SetEventBus(d.eventBus)
 	d.handler.resultHandler.SetEventBus(d.eventBus)
 
-	// Step 3.10: Subscribe QualityGateDaemon to events
-	d.subscribeQualityGateEvents()
+	// Step 3.10: Subscribe QualityGateDaemon to events (via EventBridge)
+	d.bridge.subscribeQualityGateEvents()
 
 	// Step 3.11: Subscribe to queue write events for direct scan triggering
 	// (bypasses fsnotify self-notification for daemon-originated writes)
-	d.subscribeQueueWrittenEvents()
+	d.bridge.subscribeQueueWrittenEvents()
 
-	// Step 4: Register UDS handlers
-	d.registerHandlers()
+	// Step 4: Register UDS handlers (via API)
+	d.api.registerHandlers()
 
 	// Step 5: Start UDS server
 	if err := d.server.Start(); err != nil {
@@ -387,9 +391,9 @@ func (d *Daemon) Run() error {
 	}
 	d.log(LogLevelInfo, "UDS server listening on %s", filepath.Join(d.maestroDir, uds.DefaultSocketName))
 
-	// Step 6: Start background loops via errgroup
-	d.eg.Go(func() error { d.fsnotifyLoop(); return nil })
-	d.eg.Go(func() error { d.tickerLoop(); return nil })
+	// Step 6: Start background loops via errgroup (via WatchLoop)
+	d.eg.Go(func() error { d.watch.fsnotifyLoop(); return nil })
+	d.eg.Go(func() error { d.watch.tickerLoop(); return nil })
 
 	// Step 6.5: Start QualityGateDaemon
 	if err := d.qualityGateDaemon.Start(); err != nil {
@@ -408,153 +412,6 @@ func (d *Daemon) Run() error {
 	d.waitSignals()
 
 	return nil
-}
-
-// registerHandlers registers UDS request handlers.
-func (d *Daemon) registerHandlers() {
-	d.server.Handle("ping", func(req *uds.Request) *uds.Response {
-		return uds.SuccessResponse(map[string]string{"status": "ok"})
-	})
-
-	d.server.Handle("scan", func(req *uds.Request) *uds.Response {
-		if d.handler == nil {
-			return uds.ErrorResponse(uds.ErrCodeInternal, "handler not initialized")
-		}
-		d.handler.PeriodicScanWithContext(d.ctx)
-		return uds.SuccessResponse(map[string]string{"status": "scanned"})
-	})
-
-	d.server.Handle("shutdown", func(req *uds.Request) *uds.Response {
-		d.log(LogLevelInfo, "shutdown requested via UDS")
-		go func() { defer d.recoverPanic("shutdownHandler"); d.Shutdown() }()
-		return uds.SuccessResponse(map[string]string{"status": "shutdown_accepted"})
-	})
-
-	d.server.Handle("queue_write", d.handleQueueWrite)
-	d.server.Handle("result_write", d.handleResultWrite)
-	d.server.Handle("task_heartbeat", d.handleTaskHeartbeat)
-	d.server.Handle("plan", d.handlePlan)
-	d.server.Handle("dashboard", d.handleDashboard)
-}
-
-// handleTaskHeartbeat handles task heartbeat requests.
-func (d *Daemon) handleTaskHeartbeat(req *uds.Request) *uds.Response {
-	if d.handler == nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, "handler not initialized")
-	}
-	heartbeatHandler := NewTaskHeartbeatHandler(
-		d.maestroDir,
-		d.config,
-		d.handler.leaseManager,
-		d.logger,
-		d.logLevel,
-		&d.handler.scanMu,
-		d.lockMap,
-	)
-	return heartbeatHandler.Handle(req.Params)
-}
-
-// handleDashboard triggers dashboard regeneration and returns the result.
-// DashboardFormatter reads state from on-disk YAML files (not in-memory scan
-// state), so it does not require scanMu. Holding scanMu here would block
-// PeriodicScan for the duration of the file I/O. A dedicated dashboardMu
-// serializes concurrent dashboard writes to prevent temp-file clobbering.
-func (d *Daemon) handleDashboard(req *uds.Request) *uds.Response {
-	if d.handler == nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, "handler not initialized")
-	}
-
-	d.dashboardMu.Lock()
-	defer d.dashboardMu.Unlock()
-
-	// Use the new dashboard formatter for human-readable output
-	formatter := NewDashboardFormatter(d.maestroDir)
-	if err := formatter.UpdateDashboardFile(); err != nil {
-		d.log(LogLevelError, "dashboard regeneration error=%v", err)
-		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("dashboard generation failed: %v", err))
-	}
-
-	dashboardPath := filepath.Join(d.maestroDir, "dashboard.md")
-	return uds.SuccessResponse(map[string]string{
-		"status": "regenerated",
-		"path":   dashboardPath,
-	})
-}
-
-// fsnotifyLoop processes filesystem change events.
-func (d *Daemon) fsnotifyLoop() {
-	defer d.recoverPanic("fsnotifyLoop")
-
-	for {
-		select {
-		case <-d.ctx.Done():
-			return
-		case event, ok := <-d.watcher.Events:
-			if !ok {
-				return
-			}
-			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
-				base := filepath.Base(event.Name)
-				// Skip daemon-internal temp files and backups from AtomicWrite
-				if strings.HasPrefix(base, ".maestro-") || strings.HasSuffix(base, ".bak") {
-					continue
-				}
-				// Skip self-written files: UDS handlers trigger processing via event bus
-				if d.selfWrites.Consume(event.Name) {
-					d.log(LogLevelDebug, "fsnotify self_write_skipped file=%s", event.Name)
-					continue
-				}
-				d.log(LogLevelDebug, "fsnotify event=%s file=%s", event.Op, event.Name)
-				// Advisory check: skip if shutting down. No mutex needed because
-				// eg.Go from within this eg.Go goroutine is safe (eg.Wait cannot
-				// return while this goroutine is running).
-				if d.shuttingDown.Load() {
-					continue
-				}
-				name := event.Name
-				d.eg.Go(func() error {
-					defer d.recoverPanic("fsnotifyHandler")
-					// Bound concurrency to prevent goroutine fan-out
-					// during fsnotify bursts. Drop events that exceed
-					// the semaphore; periodic scan will catch up.
-					select {
-					case d.fsSem <- struct{}{}:
-						defer func() { <-d.fsSem }()
-					default:
-						d.log(LogLevelDebug, "fsnotify handler dropped (semaphore full) file=%s", name)
-						return nil
-					}
-					d.handler.HandleFileEvent(name)
-					return nil
-				})
-			}
-		case err, ok := <-d.watcher.Errors:
-			if !ok {
-				return
-			}
-			d.log(LogLevelError, "fsnotify error=%v", err)
-		}
-	}
-}
-
-// tickerLoop triggers periodic scans at configured intervals.
-func (d *Daemon) tickerLoop() {
-	defer d.recoverPanic("tickerLoop")
-
-	for {
-		select {
-		case <-d.ctx.Done():
-			return
-		case <-d.ticker.C:
-			d.log(LogLevelDebug, "periodic scan triggered")
-			d.handler.PeriodicScanWithContext(d.ctx)
-
-			// Session health check: detect if tmux session disappeared
-			if !tmux.SessionHealthCheck() {
-				d.log(LogLevelError, "SESSION_LOST tmux session %q is no longer alive!", tmux.GetSessionName())
-			}
-		}
-	}
 }
 
 // waitSignals blocks until a shutdown signal or context cancellation is received.
@@ -630,11 +487,7 @@ func (d *Daemon) Shutdown() {
 		}
 
 		// Unsubscribe from event bus and stop event processing.
-		for _, unsub := range d.eventUnsubscribers {
-			if unsub != nil {
-				unsub()
-			}
-		}
+		d.bridge.unsubscribeAll()
 		if d.eventBus != nil {
 			d.eventBus.Close()
 		}
@@ -715,119 +568,6 @@ func (d *Daemon) recoverPanic(goroutine string) {
 		d.log(LogLevelError, "panic in %s: %v\n%s", goroutine, r, debug.Stack())
 		go d.Shutdown()
 	}
-}
-
-// subscribeQualityGateEvents subscribes the QualityGateDaemon to EventBus events.
-// It bridges the generic event bus to the quality gate daemon's typed event channel.
-// Uses safe type assertions with logging for dropped events.
-func (d *Daemon) subscribeQualityGateEvents() {
-	// Subscribe to task started events
-	unsub1 := d.eventBus.Subscribe(events.EventTaskStarted, func(e events.Event) {
-		taskID, ok1 := e.Data["task_id"].(string)
-		commandID, ok2 := e.Data["command_id"].(string)
-		workerID, ok3 := e.Data["worker_id"].(string)
-
-		if !ok1 || !ok2 || !ok3 {
-			d.log(LogLevelWarn, "quality_gate_event_invalid type=task_started data=%v", e.Data)
-			return
-		}
-
-		d.qualityGateDaemon.EmitEvent(TaskStartEvent{
-			TaskID:    taskID,
-			CommandID: commandID,
-			AgentID:   workerID,
-			StartedAt: e.Timestamp,
-		})
-	})
-
-	// Subscribe to task completed events
-	unsub2 := d.eventBus.Subscribe(events.EventTaskCompleted, func(e events.Event) {
-		taskID, ok1 := e.Data["task_id"].(string)
-		commandID, ok2 := e.Data["command_id"].(string)
-		workerID, ok3 := e.Data["worker_id"].(string)
-
-		if !ok1 || !ok2 || !ok3 {
-			d.log(LogLevelWarn, "quality_gate_event_invalid type=task_completed data=%v", e.Data)
-			return
-		}
-
-		// Status can be either model.Status or string
-		var status model.Status
-		if s, ok := e.Data["status"].(model.Status); ok {
-			status = s
-		} else if s, ok := e.Data["status"].(string); ok {
-			status = model.Status(s)
-		} else {
-			d.log(LogLevelWarn, "quality_gate_event_invalid type=task_completed status=%v", e.Data["status"])
-			return
-		}
-
-		d.qualityGateDaemon.EmitEvent(TaskCompleteEvent{
-			TaskID:      taskID,
-			CommandID:   commandID,
-			AgentID:     workerID,
-			Status:      status,
-			CompletedAt: e.Timestamp,
-		})
-	})
-
-	// Subscribe to phase transition events
-	unsub3 := d.eventBus.Subscribe(events.EventPhaseTransition, func(e events.Event) {
-		phaseID, ok1 := e.Data["phase_id"].(string)
-		commandID, ok2 := e.Data["command_id"].(string)
-		oldStatus, ok3 := e.Data["old_status"].(string)
-		newStatus, ok4 := e.Data["new_status"].(string)
-
-		if !ok1 || !ok2 || !ok3 || !ok4 {
-			d.log(LogLevelWarn, "quality_gate_event_invalid type=phase_transition data=%v", e.Data)
-			return
-		}
-
-		d.qualityGateDaemon.EmitEvent(PhaseTransitionEvent{
-			PhaseID:        phaseID,
-			CommandID:      commandID,
-			OldStatus:      model.PhaseStatus(oldStatus),
-			NewStatus:      model.PhaseStatus(newStatus),
-			TransitionedAt: e.Timestamp,
-		})
-	})
-
-	// Store unsubscribe functions for cleanup
-	d.eventUnsubscribers = []func(){unsub1, unsub2, unsub3}
-}
-
-// subscribeQueueWrittenEvents subscribes to EventQueueWritten to trigger scan
-// directly via the event bus, bypassing fsnotify for daemon-originated writes.
-func (d *Daemon) subscribeQueueWrittenEvents() {
-	unsub := d.eventBus.Subscribe(events.EventQueueWritten, func(e events.Event) {
-		if d.handler == nil || d.shuttingDown.Load() {
-			return
-		}
-		file, _ := e.Data["file"].(string)
-		d.handler.debounceAndScan("event_bus:" + file)
-	})
-	d.eventUnsubscribers = append(d.eventUnsubscribers, unsub)
-}
-
-// notifySelfWrite records a self-write for fsnotify filtering and publishes
-// an EventQueueWritten event to trigger processing via the event bus.
-// data is the object that was written (used to compute content hash).
-func (d *Daemon) notifySelfWrite(queuePath, writeType string, data any) {
-	d.selfWrites.Record(queuePath, data)
-	if d.eventBus != nil {
-		d.eventBus.Publish(events.EventQueueWritten, map[string]interface{}{
-			"file":   filepath.Base(queuePath),
-			"source": "uds",
-			"type":   writeType,
-		})
-	}
-}
-
-// recordSelfWrite records a self-write for fsnotify filtering without
-// publishing an event (used when the caller already triggers processing directly).
-// data is the object that was written (used to compute content hash).
-func (d *Daemon) recordSelfWrite(path string, data any) {
-	d.selfWrites.Record(path, data)
 }
 
 // validateLearningsFile checks the learnings file on daemon startup.

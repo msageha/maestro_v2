@@ -31,7 +31,8 @@ type ResultWriteParams struct {
 	Learnings              []string `json:"learnings,omitempty"`
 }
 
-func (d *Daemon) handleResultWrite(req *uds.Request) *uds.Response {
+func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
+	d := a.d
 	var params ResultWriteParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid params: %v", err))
@@ -66,7 +67,7 @@ func (d *Daemon) handleResultWrite(req *uds.Request) *uds.Response {
 	}
 
 	// Phase A: Shared file lock + per-worker mutex (results/ + queue/ updates)
-	resultID, err := d.resultWritePhaseA(params, resultStatus)
+	resultID, err := a.resultWritePhaseA(params, resultStatus)
 	if err != nil {
 		rErr := &resultWriteError{}
 		if errors.As(err, &rErr) {
@@ -76,7 +77,7 @@ func (d *Daemon) handleResultWrite(req *uds.Request) *uds.Response {
 	}
 
 	// Phase B: Per-command mutex (state/ updates)
-	if err := d.resultWritePhaseB(params, resultID, resultStatus); err != nil {
+	if err := a.resultWritePhaseB(params, resultID, resultStatus); err != nil {
 		d.log(LogLevelError, "result_write phase_b error task=%s command=%s: %v",
 			params.TaskID, params.CommandID, err)
 		return uds.ErrorResponse(uds.ErrCodeInternal,
@@ -85,7 +86,7 @@ func (d *Daemon) handleResultWrite(req *uds.Request) *uds.Response {
 
 	// Learnings: best-effort write after core phases succeed.
 	if len(params.Learnings) > 0 && d.config.Learnings.Enabled {
-		if err := d.writeLearnings(params, resultID); err != nil {
+		if err := a.writeLearnings(params, resultID); err != nil {
 			d.log(LogLevelError, "learnings_write_failed result=%s: %v", resultID, err)
 		}
 	}
@@ -127,10 +128,11 @@ func (e *resultWriteError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
 
-func (d *Daemon) resultWritePhaseA(params ResultWriteParams, resultStatus model.Status) (string, error) {
+func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Status) (string, error) {
+	d := a.d
 	// Acquire shared file lock to serialize with QueueHandler's PeriodicScan
-	d.acquireFileLock()
-	defer d.releaseFileLock()
+	a.acquireFileLock()
+	defer a.releaseFileLock()
 
 	// Lock queue file first (consistent order: queue → result → state).
 	// Without this, handleQueueWriteTask (which locks "queue:{target}") and
@@ -290,7 +292,7 @@ func (d *Daemon) resultWritePhaseA(params ResultWriteParams, resultStatus model.
 	if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
 		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("write results file: %v", err)}
 	}
-	d.recordSelfWrite(resultPath, rf)
+	a.recordSelfWrite(resultPath, rf)
 
 	// 5. Check for retry if task failed (but don't schedule yet)
 	var retryTask *model.Task
@@ -321,7 +323,7 @@ func (d *Daemon) resultWritePhaseA(params ResultWriteParams, resultStatus model.
 	if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
 		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("write worker queue: %v", err)}
 	}
-	d.recordSelfWrite(queuePath, tq)
+	a.recordSelfWrite(queuePath, tq)
 
 	// 7. Add retry task to queue and state AFTER successful queue write
 	if retryTask != nil {
@@ -344,7 +346,8 @@ func (d *Daemon) resultWritePhaseA(params ResultWriteParams, resultStatus model.
 	return resultID, nil
 }
 
-func (d *Daemon) resultWritePhaseB(params ResultWriteParams, resultID string, resultStatus model.Status) error {
+func (a *API) resultWritePhaseB(params ResultWriteParams, resultID string, resultStatus model.Status) error {
+	d := a.d
 	cmdLockKey := "state:" + params.CommandID
 	d.lockMap.Lock(cmdLockKey)
 	defer d.lockMap.Unlock(cmdLockKey)
@@ -384,7 +387,8 @@ func (d *Daemon) resultWritePhaseB(params ResultWriteParams, resultID string, re
 
 // writeLearnings appends learning entries to .maestro/state/learnings.yaml.
 // Best-effort: errors are logged but do not fail the result_write.
-func (d *Daemon) writeLearnings(params ResultWriteParams, resultID string) error {
+func (a *API) writeLearnings(params ResultWriteParams, resultID string) error {
+	d := a.d
 	d.lockMap.Lock("state:learnings")
 	defer d.lockMap.Unlock("state:learnings")
 
