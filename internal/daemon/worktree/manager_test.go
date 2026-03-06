@@ -2027,3 +2027,103 @@ func TestIsSensitiveFile(t *testing.T) {
 		})
 	}
 }
+
+// TestMergeToIntegration_RollbackOnConflict verifies that when a merge conflict
+// occurs, the integration branch is rolled back to its pre-merge HEAD.
+func TestMergeToIntegration_RollbackOnConflict(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	workers := []string{"worker1", "worker2"}
+	if err := wm.CreateForCommand("cmd_rollback", workers); err != nil {
+		t.Fatalf("CreateForCommand failed: %v", err)
+	}
+
+	// Get integration worktree path and save pre-merge HEAD
+	integrationPath := filepath.Join(projectRoot, ".maestro", "worktrees", "cmd_rollback", "_integration")
+	preMergeCmd := exec.Command("git", "rev-parse", "HEAD")
+	preMergeCmd.Dir = integrationPath
+	preMergeOut, err := preMergeCmd.Output()
+	if err != nil {
+		t.Fatalf("get pre-merge HEAD: %v", err)
+	}
+	preMergeHEAD := strings.TrimSpace(string(preMergeOut))
+
+	// Worker1: create a unique file (will merge successfully)
+	wt1, err := wm.GetWorkerPath("cmd_rollback", "worker1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt1, "unique1.txt"), []byte("worker1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges("cmd_rollback", "worker1", "add unique1.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both workers modify README.md to create a conflict on worker2
+	if err := os.WriteFile(filepath.Join(wt1, "README.md"), []byte("worker1 readme\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges("cmd_rollback", "worker1", "worker1 modify README"); err != nil {
+		t.Fatal(err)
+	}
+
+	wt2, err := wm.GetWorkerPath("cmd_rollback", "worker2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt2, "README.md"), []byte("worker2 readme\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges("cmd_rollback", "worker2", "worker2 modify README"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Merge — worker1 succeeds, worker2 conflicts → rollback expected
+	conflicts, err := wm.MergeToIntegration("cmd_rollback", workers)
+	if err != nil {
+		t.Fatalf("MergeToIntegration failed: %v", err)
+	}
+	if len(conflicts) != 1 {
+		t.Fatalf("expected 1 conflict, got %d", len(conflicts))
+	}
+
+	// Verify integration branch HEAD was rolled back to pre-merge HEAD
+	postMergeCmd := exec.Command("git", "rev-parse", "HEAD")
+	postMergeCmd.Dir = integrationPath
+	postMergeOut, err := postMergeCmd.Output()
+	if err != nil {
+		t.Fatalf("get post-merge HEAD: %v", err)
+	}
+	postMergeHEAD := strings.TrimSpace(string(postMergeOut))
+
+	if postMergeHEAD != preMergeHEAD {
+		t.Errorf("integration branch was not rolled back: pre-merge HEAD=%s, post-merge HEAD=%s",
+			preMergeHEAD, postMergeHEAD)
+	}
+
+	// Verify worker1's file is NOT on integration branch (was rolled back)
+	lsCmd := exec.Command("git", "ls-tree", "--name-only", "HEAD")
+	lsCmd.Dir = integrationPath
+	lsOut, err := lsCmd.Output()
+	if err != nil {
+		t.Fatalf("git ls-tree failed: %v", err)
+	}
+	if strings.Contains(string(lsOut), "unique1.txt") {
+		t.Error("unique1.txt should not be on integration branch after rollback")
+	}
+
+	// Verify worker1's status was rolled back from "integrated" to "committed"
+	cmdState, err := wm.GetCommandState("cmd_rollback")
+	if err != nil {
+		t.Fatalf("GetCommandState failed: %v", err)
+	}
+	for _, ws := range cmdState.Workers {
+		if ws.WorkerID == "worker1" {
+			if ws.Status != model.WorktreeStatusCommitted {
+				t.Errorf("worker1 status = %q, want %q (rolled back)", ws.Status, model.WorktreeStatusCommitted)
+			}
+		}
+	}
+}

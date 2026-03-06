@@ -118,8 +118,11 @@ func (t *selfWriteTracker) Record(path string, data any) {
 
 // Consume checks if a file's current content matches a recorded self-write hash.
 // If so, removes it from tracking and returns true.
-// The file is read from disk and its hash is compared with the stored hash.
+// Uses snapshot/revalidate/consume to avoid TOCTOU: the stamp is only deleted
+// after the file hash is verified to match, preventing loss of valid stamps
+// when concurrent writes change the file between snapshot and read.
 func (t *selfWriteTracker) Consume(path string) bool {
+	// Phase 1: Snapshot stamp under lock
 	t.mu.Lock()
 	stamp, ok := t.stamps[path]
 	if !ok {
@@ -127,21 +130,44 @@ func (t *selfWriteTracker) Consume(path string) bool {
 		t.mu.Unlock()
 		return false
 	}
-	delete(t.stamps, path)
-	t.cleanStaleLocked()
-	t.mu.Unlock()
-
-	// Deadline check: discard stale stamps
 	if time.Now().After(stamp.Deadline) {
+		delete(t.stamps, path)
+		t.cleanStaleLocked()
+		t.mu.Unlock()
 		return false
 	}
+	t.mu.Unlock()
 
-	// Read file and compare hash
+	// Phase 2: Read file outside lock (I/O)
 	content, err := os.ReadFile(path)
 	if err != nil {
 		return false
 	}
-	return sha256.Sum256(content) == stamp.Hash
+	fileHash := sha256.Sum256(content)
+
+	// Phase 3: Revalidate and consume under lock
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	cur, ok := t.stamps[path]
+	if !ok || cur != stamp {
+		// Stamp was consumed by another goroutine or replaced by Record
+		t.cleanStaleLocked()
+		return false
+	}
+	if time.Now().After(cur.Deadline) {
+		delete(t.stamps, path)
+		t.cleanStaleLocked()
+		return false
+	}
+	if fileHash != cur.Hash {
+		t.cleanStaleLocked()
+		return false
+	}
+
+	delete(t.stamps, path)
+	t.cleanStaleLocked()
+	return true
 }
 
 // Len returns the number of tracked paths (for testing).

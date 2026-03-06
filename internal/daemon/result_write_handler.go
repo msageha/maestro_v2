@@ -93,14 +93,19 @@ func (d *Daemon) handleResultWrite(req *uds.Request) *uds.Response {
 	// Phase C: Trigger scan (best effort dependency unblocking).
 	// Use errgroup so shutdown (eg.Wait) waits for this goroutine to finish.
 	// Guard d.eg != nil for test paths where Run() was not called.
-	if d.handler != nil && !d.shuttingDown.Load() {
+	// The shuttingDown check is inside the eg.Go callback to close the TOCTOU
+	// window between the check and goroutine admission to the errgroup.
+	if d.handler != nil {
 		if d.eg != nil {
 			d.eg.Go(func() error {
 				defer d.recoverPanic("resultWriteScan")
+				if d.shuttingDown.Load() {
+					return nil
+				}
 				d.handler.PeriodicScanWithContext(d.ctx)
 				return nil
 			})
-		} else {
+		} else if !d.shuttingDown.Load() {
 			go func() {
 				defer d.recoverPanic("resultWriteScan")
 				d.handler.PeriodicScan()
