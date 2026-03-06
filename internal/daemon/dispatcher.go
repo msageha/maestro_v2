@@ -313,13 +313,16 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 			if createErr := d.worktreeManager.EnsureWorkerWorktree(task.CommandID, workerID); createErr != nil {
 				d.log(LogLevelError, "worktree_create_failed task=%s worker=%s error=%v",
 					task.ID, workerID, createErr)
-			} else {
-				wtPath, err = d.worktreeManager.GetWorkerPath(task.CommandID, workerID)
+				return fmt.Errorf("worktree path resolution failed: %w", createErr)
 			}
+			wtPath, err = d.worktreeManager.GetWorkerPath(task.CommandID, workerID)
 		}
-		if err == nil {
-			workingDir = wtPath
+		if err != nil {
+			d.log(LogLevelError, "worktree_path_resolve_failed task=%s worker=%s error=%v",
+				task.ID, workerID, err)
+			return fmt.Errorf("worktree path resolution failed: %w", err)
 		}
+		workingDir = wtPath
 	}
 
 	envelope := agent.BuildWorkerEnvelope(dispatchTask, workerID, task.LeaseEpoch, task.Attempts)
