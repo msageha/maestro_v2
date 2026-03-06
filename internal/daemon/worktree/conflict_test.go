@@ -87,25 +87,21 @@ func TestWorktreeIntegration_ConflictDetection(t *testing.T) {
 			}
 		}
 		if ws.WorkerID == "worker1" {
-			if ws.Status != model.WorktreeStatusIntegrated {
-				t.Errorf("worker1 status = %q, want %q", ws.Status, model.WorktreeStatusIntegrated)
+			// After rollback, worker1's status is restored to its pre-merge status (committed)
+			if ws.Status != model.WorktreeStatusCommitted {
+				t.Errorf("worker1 status = %q, want %q (rolled back)", ws.Status, model.WorktreeStatusCommitted)
 			}
 		}
 	}
 
-	// Verify integration branch contains worker1's file but not worker2's conflicting content
+	// Verify integration branch was rolled back — conflict.txt should NOT exist
+	// (worker1's merge was undone by rollback)
 	integrationBranch := cmdState.Integration.Branch
 	cmd := exec.Command("git", "show", integrationBranch+":conflict.txt")
 	cmd.Dir = projectRoot
-	out, err := cmd.Output()
-	if err != nil {
-		t.Fatalf("git show integration:conflict.txt failed: %v", err)
-	}
-	if !strings.Contains(string(out), "worker1 line") {
-		t.Error("integration branch should contain worker1's content in conflict.txt")
-	}
-	if strings.Contains(string(out), "worker2 line") {
-		t.Error("integration branch should NOT contain worker2's content in conflict.txt")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Errorf("expected conflict.txt to not exist on integration branch after rollback, but got: %s", string(out))
 	}
 
 	// SyncFromIntegration with both workers
@@ -788,16 +784,18 @@ func TestMergeToIntegration_ConflictVsNonConflict(t *testing.T) {
 	for _, ws := range state.Workers {
 		switch ws.WorkerID {
 		case "worker1":
-			if ws.Status != model.WorktreeStatusIntegrated {
-				t.Errorf("worker1 status = %q, want %q", ws.Status, model.WorktreeStatusIntegrated)
+			// After rollback, worker1's status is restored to its pre-merge status (committed)
+			if ws.Status != model.WorktreeStatusCommitted {
+				t.Errorf("worker1 status = %q, want %q (rolled back)", ws.Status, model.WorktreeStatusCommitted)
 			}
 		case "worker2":
 			if ws.Status != model.WorktreeStatusConflict {
 				t.Errorf("worker2 status = %q, want %q", ws.Status, model.WorktreeStatusConflict)
 			}
 		case "worker3":
-			if ws.Status != model.WorktreeStatusIntegrated {
-				t.Errorf("worker3 status = %q, want %q", ws.Status, model.WorktreeStatusIntegrated)
+			// After rollback, worker3's status is restored to its pre-merge status (committed)
+			if ws.Status != model.WorktreeStatusCommitted {
+				t.Errorf("worker3 status = %q, want %q (rolled back)", ws.Status, model.WorktreeStatusCommitted)
 			}
 		}
 	}
