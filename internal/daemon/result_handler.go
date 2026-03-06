@@ -401,9 +401,13 @@ func (rh *ResultHandler) isLeaseExpired(expiresAt *string) bool {
 	if expiresAt == nil {
 		return true
 	}
-	t, err := time.Parse(time.RFC3339, *expiresAt)
+	// Try RFC3339Nano first (used by backoff), then RFC3339 (used by leases).
+	t, err := time.Parse(time.RFC3339Nano, *expiresAt)
 	if err != nil {
-		return true
+		t, err = time.Parse(time.RFC3339, *expiresAt)
+		if err != nil {
+			return true
+		}
 	}
 	return rh.clock.Now().UTC().After(t)
 }
@@ -492,9 +496,10 @@ func (rh *ResultHandler) markTaskNotifyFailure(r *model.TaskResult, errMsg strin
 	r.NotifyLastError = &errMsg
 	// Set backoff lease to prevent immediate retry.
 	// The entry will be skipped until the backoff period expires.
+	// Use RFC3339Nano to preserve sub-second precision (backoff jitter can be <1s).
 	backoff := rh.notifyBackoff(r.NotifyAttempts)
 	owner := "backoff"
-	expiresAt := rh.clock.Now().UTC().Add(backoff).Format(time.RFC3339)
+	expiresAt := rh.clock.Now().UTC().Add(backoff).Format(time.RFC3339Nano)
 	r.NotifyLeaseOwner = &owner
 	r.NotifyLeaseExpiresAt = &expiresAt
 }
@@ -510,9 +515,10 @@ func (rh *ResultHandler) markCommandNotifySuccess(r *model.CommandResult) {
 func (rh *ResultHandler) markCommandNotifyFailure(r *model.CommandResult, errMsg string) {
 	r.NotifyLastError = &errMsg
 	// Set backoff lease to prevent immediate retry.
+	// Use RFC3339Nano to preserve sub-second precision (backoff jitter can be <1s).
 	backoff := rh.notifyBackoff(r.NotifyAttempts)
 	owner := "backoff"
-	expiresAt := rh.clock.Now().UTC().Add(backoff).Format(time.RFC3339)
+	expiresAt := rh.clock.Now().UTC().Add(backoff).Format(time.RFC3339Nano)
 	r.NotifyLeaseOwner = &owner
 	r.NotifyLeaseExpiresAt = &expiresAt
 }
