@@ -80,19 +80,28 @@ func submitInitial(opts SubmitOptions, input SubmitInput) (*SubmitResult, error)
 	}
 	sm := NewStateManager(opts.MaestroDir, opts.LockMap)
 
-	// QA-014: Acquire queue:planner lock BEFORE state lock to check cancellation.
-	// This maintains the global lock ordering (queue:planner → state:<cmd>)
-	// used by other code paths (complete.go, reconciler.go, queue_write_handler.go).
+	// QA-014: Acquire queue:planner lock BEFORE state lock to maintain the
+	// global lock ordering (queue:planner → state:<cmd>) used by other code
+	// paths (complete.go, reconciler.go, queue_write_handler.go).
+	// Hold queue:planner through state lock acquisition to close the TOCTOU
+	// window where cancellation could arrive between unlock and state lock.
 	opts.LockMap.Lock("queue:planner")
 	cancelErr := checkCommandNotCancelled(opts.MaestroDir, opts.CommandID)
-	opts.LockMap.Unlock("queue:planner")
 	if cancelErr != nil {
+		opts.LockMap.Unlock("queue:planner")
 		return nil, cancelErr
 	}
 
-	// Lock command state to prevent concurrent double submit (TOCTOU fix)
+	// Lock command state while still holding queue:planner (canonical order)
 	sm.LockCommand(opts.CommandID)
+	// Release queue:planner now that state lock is held — ordering satisfied
+	opts.LockMap.Unlock("queue:planner")
 	defer sm.UnlockCommand(opts.CommandID)
+
+	// Re-check cancellation under state lock to close any remaining race
+	if cancelErr := checkCommandNotCancelled(opts.MaestroDir, opts.CommandID); cancelErr != nil {
+		return nil, cancelErr
+	}
 
 	// Double submit prevention (now under lock)
 	if sm.StateExists(opts.CommandID) {
