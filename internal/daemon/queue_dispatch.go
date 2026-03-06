@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"time"
 
@@ -121,18 +121,12 @@ func (qh *QueueHandler) upsertPlannerSignal(sq *model.PlannerSignalQueue, dirty 
 	*dirty = true
 }
 
-// deliverPlannerSignal attempts delivery to the planner with a short-probe config.
+// deliverPlannerSignal attempts delivery to the planner using the shared executor.
 func (qh *QueueHandler) deliverPlannerSignal(ctx context.Context, commandID, message string) error {
-	shortCfg := qh.config.Watcher
-	shortCfg.BusyCheckMaxRetries = 1
-	shortCfg.BusyCheckInterval = 1
-	shortCfg.IdleStableSec = 1
-
-	exec, err := qh.dispatcher.executorFactory(qh.maestroDir, shortCfg, qh.config.Logging.Level)
+	exec, err := qh.dispatcher.getExecutor()
 	if err != nil {
-		return fmt.Errorf("create executor: %w", err)
+		return fmt.Errorf("get executor: %w", err)
 	}
-	defer func() { _ = exec.Close() }()
 
 	result := exec.Execute(agent.ExecRequest{
 		Context:   ctx,
@@ -171,17 +165,18 @@ func (qh *QueueHandler) computeSignalBackoff(attempts int) time.Duration {
 	return jittered
 }
 
-// isAgentBusy probes agent busy state via executor. Returns false if no checker is set.
-func (qh *QueueHandler) isAgentBusy(ctx context.Context, agentID string) bool {
+// isAgentBusy probes agent busy state via executor.
+// Returns (busy, undecided). When undecided=true, busy is false.
+func (qh *QueueHandler) isAgentBusy(ctx context.Context, agentID string) (busy, undecided bool) {
 	if qh.busyChecker != nil {
-		return qh.busyChecker(agentID)
+		return qh.busyChecker(agentID), false
 	}
 
 	// Default: use shared agent executor to probe busy state
 	exec, err := qh.dispatcher.getExecutor()
 	if err != nil {
 		qh.log(LogLevelWarn, "busy_probe_failed agent=%s error=%v", agentID, err)
-		return false
+		return false, false
 	}
 
 	result := exec.Execute(agent.ExecRequest{
@@ -190,7 +185,13 @@ func (qh *QueueHandler) isAgentBusy(ctx context.Context, agentID string) bool {
 		Mode:    agent.ModeIsBusy,
 	})
 
-	return result.Success // Success=true means busy
+	// VerdictUndecided: neither extend nor release; defer to next scan cycle.
+	if result.Error != nil && errors.Is(result.Error, agent.ErrBusyUndecided) {
+		qh.log(LogLevelInfo, "busy_probe_undecided agent=%s", agentID)
+		return false, true
+	}
+
+	return result.Success, false // Success=true means busy
 }
 
 // clearAgent sends /clear to the specified agent pane to reset a stuck session.

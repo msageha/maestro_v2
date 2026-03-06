@@ -117,6 +117,52 @@ func (qh *QueueHandler) salvageCommandQueue(data []byte) model.CommandQueue {
 	return result
 }
 
+// salvageNotificationQueue attempts per-entry recovery from corrupted notification queue YAML.
+func (qh *QueueHandler) salvageNotificationQueue(data []byte) model.NotificationQueue {
+	result := model.NotificationQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_notification",
+	}
+
+	var node yamlv3.Node
+	if err := yamlv3.Unmarshal(data, &node); err != nil {
+		return result
+	}
+
+	if node.Kind != yamlv3.DocumentNode || len(node.Content) == 0 {
+		return result
+	}
+	root := node.Content[0]
+	if root.Kind != yamlv3.MappingNode {
+		return result
+	}
+
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == "notifications" {
+			seqNode := root.Content[i+1]
+			if seqNode.Kind != yamlv3.SequenceNode {
+				break
+			}
+			for _, ntfNode := range seqNode.Content {
+				ntfBytes, err := yamlv3.Marshal(ntfNode)
+				if err != nil {
+					continue
+				}
+				var ntf model.Notification
+				if err := yamlv3.Unmarshal(ntfBytes, &ntf); err != nil {
+					qh.log(LogLevelWarn, "salvage_notification_skip error=%v", err)
+					continue
+				}
+				if ntf.ID != "" && ntf.CommandID != "" && ntf.SourceResultID != "" && model.ValidateNotificationType(ntf.Type) == nil {
+					result.Notifications = append(result.Notifications, ntf)
+				}
+			}
+			break
+		}
+	}
+	return result
+}
+
 // cleanupQuarantine removes the oldest files when the quarantine directory exceeds the configured limit.
 // Files are sorted by name (timestamp-based naming ensures chronological order).
 func (qh *QueueHandler) cleanupQuarantine(quarantineDir string) {
@@ -186,8 +232,35 @@ func (qh *QueueHandler) loadNotificationQueue() (model.NotificationQueue, string
 	}
 
 	if err := yamlv3.Unmarshal(data, &nq); err != nil {
-		qh.log(LogLevelError, "parse_notifications error=%v", err)
-		return nq, ""
+		qh.log(LogLevelError, "parse_notifications error=%v path=%s", err, path)
+		// Quarantine original corrupted file
+		qh.quarantineFile(data, "orchestrator.yaml")
+		// Attempt per-entry salvage via Node parsing
+		salvaged := qh.salvageNotificationQueue(data)
+		if len(salvaged.Notifications) > 0 {
+			qh.log(LogLevelWarn, "notification_queue_salvaged recovered=%d path=%s", len(salvaged.Notifications), path)
+			qh.lockMap.Lock("queue:orchestrator")
+			writeErr := yamlutil.AtomicWrite(path, salvaged)
+			qh.lockMap.Unlock("queue:orchestrator")
+			if writeErr != nil {
+				qh.log(LogLevelError, "write_salvaged_notifications error=%v", writeErr)
+			}
+			return salvaged, path
+		}
+		// No entries salvaged — reset to empty
+		emptyNQ := model.NotificationQueue{
+			SchemaVersion: 1,
+			FileType:      "queue_notification",
+		}
+		qh.lockMap.Lock("queue:orchestrator")
+		writeErr := yamlutil.AtomicWrite(path, emptyNQ)
+		qh.lockMap.Unlock("queue:orchestrator")
+		if writeErr != nil {
+			qh.log(LogLevelError, "overwrite_corrupted_notifications error=%v", writeErr)
+		} else {
+			qh.log(LogLevelInfo, "corrupted_notifications_reset path=%s", path)
+		}
+		return emptyNQ, path
 	}
 	return nq, path
 }

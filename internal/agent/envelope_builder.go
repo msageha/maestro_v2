@@ -47,7 +47,11 @@ func BuildWorkerEnvelope(task model.Task, workerID string, leaseEpoch, attempt i
 	fmt.Fprintf(&sb, "constraints: %s\n", constraintsStr)
 	toolsHintStr := "なし"
 	if len(task.ToolsHint) > 0 {
-		toolsHintStr = strings.Join(task.ToolsHint, ", ")
+		sanitizedHints := make([]string, len(task.ToolsHint))
+		for i, h := range task.ToolsHint {
+			sanitizedHints[i] = sanitizeEnvelopeField(h)
+		}
+		toolsHintStr = strings.Join(sanitizedHints, ", ")
 	}
 	fmt.Fprintf(&sb, "tools_hint: %s\n", toolsHintStr)
 	sb.WriteString("\n")
