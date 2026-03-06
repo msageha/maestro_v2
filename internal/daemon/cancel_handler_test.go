@@ -90,15 +90,17 @@ func TestCancelPendingTasks(t *testing.T) {
 func TestInterruptInProgressTasks(t *testing.T) {
 	ch, mock := newTestCancelHandler()
 
-	w := "worker1"
+	// Use daemon:{pid} format for LeaseOwner (production format),
+	// while workerID param is the agent ID — verifies we use workerID, not LeaseOwner.
+	lease := "daemon:12345"
 	tasks := []model.Task{
-		{ID: "t1", CommandID: "cmd1", Status: model.StatusInProgress, LeaseOwner: &w, LeaseEpoch: 3,
+		{ID: "t1", CommandID: "cmd1", Status: model.StatusInProgress, LeaseOwner: &lease, LeaseEpoch: 3,
 			CreatedAt: time.Now().Format(time.RFC3339)},
 		{ID: "t2", CommandID: "cmd1", Status: model.StatusPending,
 			CreatedAt: time.Now().Format(time.RFC3339)},
 	}
 
-	results := ch.InterruptInProgressTasks(tasks, "cmd1")
+	results := ch.InterruptInProgressTasks(tasks, "cmd1", "worker1")
 
 	if len(results) != 1 {
 		t.Fatalf("expected 1 interrupted, got %d", len(results))
@@ -111,7 +113,7 @@ func TestInterruptInProgressTasks(t *testing.T) {
 		t.Error("lease_owner should be nil after cancel")
 	}
 
-	// Verify interrupt was sent
+	// Verify interrupt was sent with agent ID (worker1), not LeaseOwner (daemon:12345)
 	if len(mock.calls) != 1 {
 		t.Fatalf("expected 1 interrupt call, got %d", len(mock.calls))
 	}
@@ -119,7 +121,7 @@ func TestInterruptInProgressTasks(t *testing.T) {
 		t.Errorf("mode: got %s, want interrupt", mock.calls[0].Mode)
 	}
 	if mock.calls[0].AgentID != "worker1" {
-		t.Errorf("agent_id: got %s, want worker1", mock.calls[0].AgentID)
+		t.Errorf("agent_id: got %s, want worker1 (should use workerID param, not LeaseOwner)", mock.calls[0].AgentID)
 	}
 }
 
@@ -341,14 +343,16 @@ func TestCancelHandler_InterruptInProgressTasksDeferred_Basic(t *testing.T) {
 	sr := &stubStateReader{}
 	ch.SetStateReader(sr)
 
-	w := "worker1"
+	// Use daemon:{pid} format for LeaseOwner (production format),
+	// while workerID param is the agent ID — verifies we use workerID, not LeaseOwner.
+	lease := "daemon:12345"
 	exp := "2026-01-01T01:00:00Z"
 	tasks := []model.Task{
-		{ID: "t1", CommandID: "cmd1", Status: model.StatusInProgress, LeaseOwner: &w, LeaseEpoch: 5, LeaseExpiresAt: &exp,
+		{ID: "t1", CommandID: "cmd1", Status: model.StatusInProgress, LeaseOwner: &lease, LeaseEpoch: 5, LeaseExpiresAt: &exp,
 			CreatedAt: time.Now().Format(time.RFC3339)},
 		{ID: "t2", CommandID: "cmd1", Status: model.StatusPending,
 			CreatedAt: time.Now().Format(time.RFC3339)},
-		{ID: "t3", CommandID: "cmd2", Status: model.StatusInProgress, LeaseOwner: &w, LeaseEpoch: 2,
+		{ID: "t3", CommandID: "cmd2", Status: model.StatusInProgress, LeaseOwner: &lease, LeaseEpoch: 2,
 			CreatedAt: time.Now().Format(time.RFC3339)},
 		{ID: "t4", CommandID: "cmd1", Status: model.StatusInProgress, LeaseOwner: nil, LeaseEpoch: 1,
 			CreatedAt: time.Now().Format(time.RFC3339)},
@@ -376,6 +380,9 @@ func TestCancelHandler_InterruptInProgressTasksDeferred_Basic(t *testing.T) {
 	}
 	if interrupts[0].Epoch != 5 {
 		t.Errorf("interrupt[0].epoch = %d, want 5", interrupts[0].Epoch)
+	}
+	if interrupts[0].WorkerID != "worker1" {
+		t.Errorf("interrupt[0].worker_id = %q, want %q (should use workerID param, not LeaseOwner)", interrupts[0].WorkerID, "worker1")
 	}
 
 	// Verify in-memory state mutation
@@ -453,13 +460,13 @@ func TestCancelHandler_InterruptInProgressTasks_WorktreeCleanup(t *testing.T) {
 	ch, _ := newTestCancelHandler()
 	ch.SetWorktreeManager(wm)
 
-	w := "worker1"
+	lease := "daemon:99999"
 	tasks := []model.Task{
-		{ID: "t1", CommandID: "cmd_cancel_wt", Status: model.StatusInProgress, LeaseOwner: &w, LeaseEpoch: 1,
+		{ID: "t1", CommandID: "cmd_cancel_wt", Status: model.StatusInProgress, LeaseOwner: &lease, LeaseEpoch: 1,
 			CreatedAt: time.Now().Format(time.RFC3339)},
 	}
 
-	results := ch.InterruptInProgressTasks(tasks, "cmd_cancel_wt")
+	results := ch.InterruptInProgressTasks(tasks, "cmd_cancel_wt", "worker1")
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
 	}
@@ -490,9 +497,9 @@ func TestCancelHandler_InterruptInProgressTasksDeferred_WorktreeCleanup(t *testi
 	ch, _, _ := newTestCancelHandlerWithDir(t)
 	ch.SetWorktreeManager(wm)
 
-	w := "worker1"
+	lease := "daemon:99999"
 	tasks := []model.Task{
-		{ID: "t1", CommandID: "cmd_cancel_def", Status: model.StatusInProgress, LeaseOwner: &w, LeaseEpoch: 1,
+		{ID: "t1", CommandID: "cmd_cancel_def", Status: model.StatusInProgress, LeaseOwner: &lease, LeaseEpoch: 1,
 			CreatedAt: time.Now().Format(time.RFC3339)},
 	}
 
