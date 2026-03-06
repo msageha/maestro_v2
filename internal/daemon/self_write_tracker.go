@@ -105,6 +105,15 @@ func (t *selfWriteTracker) Len() int {
 	return len(t.stamps)
 }
 
+// CleanStale removes entries past their deadline.
+// Called periodically from the daemon's ticker loop as a safety net
+// for stamps that were never consumed.
+func (t *selfWriteTracker) CleanStale() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.cleanStaleLocked()
+}
+
 // cleanStaleLocked removes entries past their deadline. Must be called with mu held.
 func (t *selfWriteTracker) cleanStaleLocked() {
 	now := time.Now()
