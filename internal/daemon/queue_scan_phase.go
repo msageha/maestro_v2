@@ -21,107 +21,147 @@ func (qh *QueueHandler) periodicScanPhaseA() phaseAResult {
 	qh.scanMu.Lock()
 	defer qh.scanMu.Unlock()
 
+	s := qh.initScanState()
+
+	// Execute steps in fixed order (matches original Step 0 through Step 1.5).
+	qh.stepDeadLetters(&s)
+	qh.stepCircuitBreaker(&s)
+	qh.stepCancelPending(&s)
+	qh.stepCancelInterrupt(&s)
+	qh.stepPhaseTransitions(&s)
+	qh.stepWorktreePhaseMerges(&s)
+	qh.stepWorktreePublish(&s)
+	qh.stepPlannerSignals(&s)
+	qh.stepPreemptiveRenewal(&s)
+	qh.stepDispatchOrRecovery(&s)
+	qh.stepDependencyFailures(&s)
+
+	// Flush dirty queues to disk
+	qh.flushQueues(s.commands.Data, s.commands.Path, s.commands.Dirty,
+		s.tasks, s.taskDirty,
+		s.notifications.Data, s.notifications.Path, s.notifications.Dirty,
+		s.signals.Data, s.signals.Path, s.signals.Dirty)
+
+	return phaseAResult{
+		work:      s.work,
+		scanStart: s.scanStart,
+		counters:  qh.scanCounters,
+	}
+}
+
+// initScanState loads all queue files and initialises a scanState.
+func (qh *QueueHandler) initScanState() scanState {
 	scanStart := qh.clock.Now()
 	qh.scanCounters = ScanCounters{}
 
-	var work deferredWork
-
-	// Load queue files
 	commandQueue, commandPath := qh.loadCommandQueue()
 	taskQueues := qh.loadAllTaskQueues()
 	notificationQueue, notificationPath := qh.loadNotificationQueue()
-
 	signalQueue, signalPath := qh.loadPlannerSignalQueue()
-	signalsDirty := false
-	signalIndex := buildSignalIndex(signalQueue.Signals)
 
-	commandsDirty := false
-	notificationsDirty := false
-	taskDirty := make(map[string]bool)
+	return scanState{
+		commands:      fileState[model.CommandQueue]{Data: commandQueue, Path: commandPath},
+		tasks:         taskQueues,
+		taskDirty:     make(map[string]bool),
+		notifications: fileState[model.NotificationQueue]{Data: notificationQueue, Path: notificationPath},
+		signals:       fileState[model.PlannerSignalQueue]{Data: signalQueue, Path: signalPath},
+		signalIndex:   buildSignalIndex(signalQueue.Signals),
+		scanStart:     scanStart,
+	}
+}
 
-	// Step 0: Dead letter processing — remove entries exceeding max retry attempts
-	if qh.deadLetterProcessor != nil {
-		dlResults := qh.deadLetterProcessor.ProcessCommandDeadLetters(&commandQueue, &commandsDirty)
-		for queueFile, tq := range taskQueues {
-			tqDirty := taskDirty[queueFile]
-			dlResults = append(dlResults, qh.deadLetterProcessor.ProcessTaskDeadLetters(tq, &tqDirty)...)
-			taskDirty[queueFile] = tqDirty
-		}
-		dlResults = append(dlResults, qh.deadLetterProcessor.ProcessNotificationDeadLetters(&notificationQueue, &notificationsDirty)...)
-		qh.scanCounters.DeadLetters += len(dlResults)
-		for _, dl := range dlResults {
-			if dl.TaskID != "" {
-				qh.scanCounters.TasksFailed++
-			}
-		}
-		if len(dlResults) > 0 {
-			qh.log(LogLevelInfo, "dead_letter_scan removed=%d", len(dlResults))
-		}
+// --- Phase A step functions (executed in order) ---
 
-		pendingNtfs := qh.deadLetterProcessor.DrainPendingNotifications()
-		if len(pendingNtfs) > 0 {
-			notificationQueue.Notifications = append(notificationQueue.Notifications, pendingNtfs...)
-			notificationsDirty = true
-			if notificationPath == "" {
-				notificationPath = filepath.Join(qh.maestroDir, "queue", "orchestrator.yaml")
-			}
-		}
+// stepDeadLetters — Step 0: Remove entries exceeding max retry attempts.
+func (qh *QueueHandler) stepDeadLetters(s *scanState) {
+	if qh.deadLetterProcessor == nil {
+		return
 	}
 
-	// Step 0.4: Circuit breaker — check progress timeout and emit planner signals
-	if qh.circuitBreaker != nil && qh.circuitBreaker.Enabled() {
-		for i := range commandQueue.Commands {
-			cmd := &commandQueue.Commands[i]
-			if cmd.Status != model.StatusInProgress {
-				continue
-			}
-
-			// Check progress timeout (consecutive failure trips happen in resultWritePhaseB)
-			shouldTrip, reason := qh.circuitBreaker.CheckProgressTimeout(cmd.ID)
-			if shouldTrip {
-				timeoutMin := qh.circuitBreaker.ProgressTimeoutMinutes()
-				if err := qh.circuitBreaker.StateReader().TripCircuitBreaker(cmd.ID, reason, timeoutMin); err != nil {
-					qh.log(LogLevelError, "circuit_breaker_trip_timeout command=%s error=%v", cmd.ID, err)
-				} else {
-					qh.log(LogLevelWarn, "circuit_breaker_tripped_timeout command=%s reason=%s", cmd.ID, reason)
-				}
-			}
-
-			// Emit planner signal for tripped commands (covers both failure-count and timeout trips)
-			if qh.circuitBreaker.StateReader() == nil {
-				continue
-			}
-			cbState, err := qh.circuitBreaker.StateReader().GetCircuitBreakerState(cmd.ID)
-			if err != nil {
-				continue
-			}
-			if cbState.Tripped {
-				now := qh.clock.Now().UTC().Format(time.RFC3339)
-				tripReason := "unknown"
-				if cbState.TripReason != nil {
-					tripReason = *cbState.TripReason
-				}
-				msg := fmt.Sprintf("[maestro] kind:circuit_breaker_tripped command_id:%s\nreason: %s",
-					cmd.ID, tripReason)
-				qh.upsertPlannerSignal(&signalQueue, &signalsDirty, model.PlannerSignal{
-					Kind:      "circuit_breaker_tripped",
-					CommandID: cmd.ID,
-					Message:   msg,
-					CreatedAt: now,
-					UpdatedAt: now,
-				}, signalIndex)
-			}
+	dlResults := qh.deadLetterProcessor.ProcessCommandDeadLetters(&s.commands.Data, &s.commands.Dirty)
+	for queueFile, tq := range s.tasks {
+		tqDirty := s.taskDirty[queueFile]
+		dlResults = append(dlResults, qh.deadLetterProcessor.ProcessTaskDeadLetters(tq, &tqDirty)...)
+		s.taskDirty[queueFile] = tqDirty
+	}
+	dlResults = append(dlResults, qh.deadLetterProcessor.ProcessNotificationDeadLetters(&s.notifications.Data, &s.notifications.Dirty)...)
+	qh.scanCounters.DeadLetters += len(dlResults)
+	for _, dl := range dlResults {
+		if dl.TaskID != "" {
+			qh.scanCounters.TasksFailed++
 		}
 	}
+	if len(dlResults) > 0 {
+		qh.log(LogLevelInfo, "dead_letter_scan removed=%d", len(dlResults))
+	}
 
-	// Step 0.5: Cancel pending tasks for cancelled commands
-	for i := range commandQueue.Commands {
-		cmd := &commandQueue.Commands[i]
+	pendingNtfs := qh.deadLetterProcessor.DrainPendingNotifications()
+	if len(pendingNtfs) > 0 {
+		s.notifications.Data.Notifications = append(s.notifications.Data.Notifications, pendingNtfs...)
+		s.notifications.Dirty = true
+		if s.notifications.Path == "" {
+			s.notifications.Path = filepath.Join(qh.maestroDir, "queue", "orchestrator.yaml")
+		}
+	}
+}
+
+// stepCircuitBreaker — Step 0.4: Check progress timeout and emit planner signals.
+func (qh *QueueHandler) stepCircuitBreaker(s *scanState) {
+	if qh.circuitBreaker == nil || !qh.circuitBreaker.Enabled() {
+		return
+	}
+
+	for i := range s.commands.Data.Commands {
+		cmd := &s.commands.Data.Commands[i]
+		if cmd.Status != model.StatusInProgress {
+			continue
+		}
+
+		shouldTrip, reason := qh.circuitBreaker.CheckProgressTimeout(cmd.ID)
+		if shouldTrip {
+			timeoutMin := qh.circuitBreaker.ProgressTimeoutMinutes()
+			if err := qh.circuitBreaker.StateReader().TripCircuitBreaker(cmd.ID, reason, timeoutMin); err != nil {
+				qh.log(LogLevelError, "circuit_breaker_trip_timeout command=%s error=%v", cmd.ID, err)
+			} else {
+				qh.log(LogLevelWarn, "circuit_breaker_tripped_timeout command=%s reason=%s", cmd.ID, reason)
+			}
+		}
+
+		if qh.circuitBreaker.StateReader() == nil {
+			continue
+		}
+		cbState, err := qh.circuitBreaker.StateReader().GetCircuitBreakerState(cmd.ID)
+		if err != nil {
+			continue
+		}
+		if cbState.Tripped {
+			now := qh.clock.Now().UTC().Format(time.RFC3339)
+			tripReason := "unknown"
+			if cbState.TripReason != nil {
+				tripReason = *cbState.TripReason
+			}
+			msg := fmt.Sprintf("[maestro] kind:circuit_breaker_tripped command_id:%s\nreason: %s",
+				cmd.ID, tripReason)
+			qh.upsertPlannerSignal(&s.signals.Data, &s.signals.Dirty, model.PlannerSignal{
+				Kind:      "circuit_breaker_tripped",
+				CommandID: cmd.ID,
+				Message:   msg,
+				CreatedAt: now,
+				UpdatedAt: now,
+			}, s.signalIndex)
+		}
+	}
+}
+
+// stepCancelPending — Step 0.5: Cancel pending tasks for cancelled commands.
+func (qh *QueueHandler) stepCancelPending(s *scanState) {
+	for i := range s.commands.Data.Commands {
+		cmd := &s.commands.Data.Commands[i]
 		if qh.cancelHandler.IsCommandCancelRequested(cmd) {
-			for queueFile, tq := range taskQueues {
+			for queueFile, tq := range s.tasks {
 				results := qh.cancelHandler.CancelPendingTasks(tq.Queue.Tasks, cmd.ID)
 				if len(results) > 0 {
-					taskDirty[queueFile] = true
+					s.taskDirty[queueFile] = true
 					qh.scanCounters.TasksCancelled += len(results)
 					wID := workerIDFromPath(queueFile)
 					if wID != "" {
@@ -131,178 +171,186 @@ func (qh *QueueHandler) periodicScanPhaseA() phaseAResult {
 			}
 		}
 	}
+}
 
-	// Step 0.6: Interrupt in_progress tasks for cancelled commands (defer tmux interrupt)
-	for i := range commandQueue.Commands {
-		cmd := &commandQueue.Commands[i]
+// stepCancelInterrupt — Step 0.6: Interrupt in_progress tasks for cancelled commands.
+func (qh *QueueHandler) stepCancelInterrupt(s *scanState) {
+	for i := range s.commands.Data.Commands {
+		cmd := &s.commands.Data.Commands[i]
 		if qh.cancelHandler.IsCommandCancelRequested(cmd) {
-			for queueFile, tq := range taskQueues {
+			for queueFile, tq := range s.tasks {
 				wID := workerIDFromPath(queueFile)
 				results, interrupts := qh.cancelHandler.InterruptInProgressTasksDeferred(tq.Queue.Tasks, cmd.ID, wID)
 				if len(results) > 0 {
-					taskDirty[queueFile] = true
+					s.taskDirty[queueFile] = true
 					qh.scanCounters.TasksCancelled += len(results)
 					if wID != "" {
 						qh.cancelHandler.WriteSyntheticResults(results, wID)
 					}
 				}
-				work.interrupts = append(work.interrupts, interrupts...)
+				s.work.interrupts = append(s.work.interrupts, interrupts...)
 			}
 		}
 	}
+}
 
-	// Step 0.7: Phase transitions — detect and persist to state/commands/
-	if qh.dependencyResolver.stateReader != nil {
-		for i := range commandQueue.Commands {
-			cmd := &commandQueue.Commands[i]
-			if cmd.Status != model.StatusInProgress {
+// stepPhaseTransitions — Step 0.7: Detect and persist phase transitions.
+func (qh *QueueHandler) stepPhaseTransitions(s *scanState) {
+	if qh.dependencyResolver.stateReader == nil {
+		return
+	}
+
+	for i := range s.commands.Data.Commands {
+		cmd := &s.commands.Data.Commands[i]
+		if cmd.Status != model.StatusInProgress {
+			continue
+		}
+		transitions, err := qh.dependencyResolver.CheckPhaseTransitions(cmd.ID)
+		if err != nil {
+			qh.log(LogLevelWarn, "phase_transition_check command=%s error=%v", cmd.ID, err)
+			continue
+		}
+
+		for _, tr := range transitions {
+			qh.log(LogLevelInfo, "phase_transition command=%s phase=%s %s→%s reason=%s",
+				cmd.ID, tr.PhaseName, tr.OldStatus, tr.NewStatus, tr.Reason)
+
+			if err := qh.dependencyResolver.stateReader.ApplyPhaseTransition(cmd.ID, tr.PhaseID, tr.NewStatus); err != nil {
+				qh.log(LogLevelError, "phase_transition_apply command=%s phase=%s error=%v",
+					cmd.ID, tr.PhaseID, err)
 				continue
 			}
-			transitions, err := qh.dependencyResolver.CheckPhaseTransitions(cmd.ID)
-			if err != nil {
-				qh.log(LogLevelWarn, "phase_transition_check command=%s error=%v", cmd.ID, err)
-				continue
-			}
 
-			for _, tr := range transitions {
-				qh.log(LogLevelInfo, "phase_transition command=%s phase=%s %s→%s reason=%s",
-					cmd.ID, tr.PhaseName, tr.OldStatus, tr.NewStatus, tr.Reason)
-
-				if err := qh.dependencyResolver.stateReader.ApplyPhaseTransition(cmd.ID, tr.PhaseID, tr.NewStatus); err != nil {
-					qh.log(LogLevelError, "phase_transition_apply command=%s phase=%s error=%v",
-						cmd.ID, tr.PhaseID, err)
-					continue
-				}
-
-				now := qh.clock.Now().UTC().Format(time.RFC3339)
-				switch tr.NewStatus {
-				case model.PhaseStatusAwaitingFill:
-					phase := PhaseInfo{ID: tr.PhaseID, Name: tr.PhaseName}
-					msg := qh.dependencyResolver.BuildAwaitingFillNotification(cmd.ID, phase)
-					qh.log(LogLevelInfo, "awaiting_fill_signal command=%s phase=%s",
-						cmd.ID, tr.PhaseName)
-					qh.upsertPlannerSignal(&signalQueue, &signalsDirty, model.PlannerSignal{
-						Kind:      "awaiting_fill",
-						CommandID: cmd.ID,
-						PhaseID:   tr.PhaseID,
-						PhaseName: tr.PhaseName,
-						Message:   msg,
-						CreatedAt: now,
-						UpdatedAt: now,
-					}, signalIndex)
-				case model.PhaseStatusTimedOut:
-					msg := fmt.Sprintf("[maestro] kind:fill_timeout command_id:%s phase:%s\nfill deadline expired",
-						cmd.ID, tr.PhaseName)
-					qh.upsertPlannerSignal(&signalQueue, &signalsDirty, model.PlannerSignal{
-						Kind:      "fill_timeout",
-						CommandID: cmd.ID,
-						PhaseID:   tr.PhaseID,
-						PhaseName: tr.PhaseName,
-						Message:   msg,
-						CreatedAt: now,
-						UpdatedAt: now,
-					}, signalIndex)
-				}
+			now := qh.clock.Now().UTC().Format(time.RFC3339)
+			switch tr.NewStatus {
+			case model.PhaseStatusAwaitingFill:
+				phase := PhaseInfo{ID: tr.PhaseID, Name: tr.PhaseName}
+				msg := qh.dependencyResolver.BuildAwaitingFillNotification(cmd.ID, phase)
+				qh.log(LogLevelInfo, "awaiting_fill_signal command=%s phase=%s",
+					cmd.ID, tr.PhaseName)
+				qh.upsertPlannerSignal(&s.signals.Data, &s.signals.Dirty, model.PlannerSignal{
+					Kind:      "awaiting_fill",
+					CommandID: cmd.ID,
+					PhaseID:   tr.PhaseID,
+					PhaseName: tr.PhaseName,
+					Message:   msg,
+					CreatedAt: now,
+					UpdatedAt: now,
+				}, s.signalIndex)
+			case model.PhaseStatusTimedOut:
+				msg := fmt.Sprintf("[maestro] kind:fill_timeout command_id:%s phase:%s\nfill deadline expired",
+					cmd.ID, tr.PhaseName)
+				qh.upsertPlannerSignal(&s.signals.Data, &s.signals.Dirty, model.PlannerSignal{
+					Kind:      "fill_timeout",
+					CommandID: cmd.ID,
+					PhaseID:   tr.PhaseID,
+					PhaseName: tr.PhaseName,
+					Message:   msg,
+					CreatedAt: now,
+					UpdatedAt: now,
+				}, s.signalIndex)
 			}
 		}
 	}
+}
 
-	// Step 0.7.1: Worktree phase boundary merge — collect merge work items for Phase B
-	if qh.worktreeManager != nil && qh.dependencyResolver.stateReader != nil {
-		for i := range commandQueue.Commands {
-			cmd := &commandQueue.Commands[i]
-			if cmd.Status != model.StatusInProgress {
-				continue
-			}
-			if !qh.worktreeManager.HasWorktrees(cmd.ID) {
-				continue
-			}
-			mergeItems := qh.collectWorktreePhaseMerges(cmd.ID)
-			work.worktreeMerges = append(work.worktreeMerges, mergeItems...)
+// stepWorktreePhaseMerges — Step 0.7.1: Collect merge work items for Phase B.
+func (qh *QueueHandler) stepWorktreePhaseMerges(s *scanState) {
+	if qh.worktreeManager == nil || qh.dependencyResolver.stateReader == nil {
+		return
+	}
+
+	for i := range s.commands.Data.Commands {
+		cmd := &s.commands.Data.Commands[i]
+		if cmd.Status != model.StatusInProgress {
+			continue
 		}
-	}
-
-	// Step 0.7.2: Worktree publish-to-base — detect command completion for publishing
-	if qh.worktreeManager != nil && qh.dependencyResolver.stateReader != nil {
-		for i := range commandQueue.Commands {
-			cmd := &commandQueue.Commands[i]
-			if cmd.Status != model.StatusInProgress {
-				continue
-			}
-			if !qh.worktreeManager.HasWorktrees(cmd.ID) {
-				continue
-			}
-			publishes, cleanups := qh.collectWorktreePublishAndCleanup(cmd.ID, taskQueues)
-			work.worktreePublishes = append(work.worktreePublishes, publishes...)
-			work.worktreeCleanups = append(work.worktreeCleanups, cleanups...)
+		if !qh.worktreeManager.HasWorktrees(cmd.ID) {
+			continue
 		}
+		mergeItems := qh.collectWorktreePhaseMerges(cmd.ID)
+		s.work.worktreeMerges = append(s.work.worktreeMerges, mergeItems...)
+	}
+}
+
+// stepWorktreePublish — Step 0.7.2: Detect command completion for worktree publishing.
+func (qh *QueueHandler) stepWorktreePublish(s *scanState) {
+	if qh.worktreeManager == nil || qh.dependencyResolver.stateReader == nil {
+		return
 	}
 
-	// Step 0.8: Process planner signals — evaluate backoff/staleness, defer delivery
-	if len(signalQueue.Signals) > 0 {
-		qh.processPlannerSignalsDeferred(&signalQueue, &signalsDirty, &work)
+	for i := range s.commands.Data.Commands {
+		cmd := &s.commands.Data.Commands[i]
+		if cmd.Status != model.StatusInProgress {
+			continue
+		}
+		if !qh.worktreeManager.HasWorktrees(cmd.ID) {
+			continue
+		}
+		publishes, cleanups := qh.collectWorktreePublishAndCleanup(cmd.ID, s.tasks)
+		s.work.worktreePublishes = append(s.work.worktreePublishes, publishes...)
+		s.work.worktreeCleanups = append(s.work.worktreeCleanups, cleanups...)
 	}
+}
 
-	// Preemptive command lease renewal: renew before checking hasExpiredLeases
-	// so that renewed commands don't trigger recovery mode unnecessarily.
-	qh.preemptiveCommandRenewal(&commandQueue, &commandsDirty)
+// stepPlannerSignals — Step 0.8: Evaluate backoff/staleness, defer delivery.
+func (qh *QueueHandler) stepPlannerSignals(s *scanState) {
+	if len(s.signals.Data.Signals) > 0 {
+		qh.processPlannerSignalsDeferred(&s.signals.Data, &s.signals.Dirty, &s.work)
+	}
+}
 
-	// Steps 1 & 2: Dispatch or recovery (mutually exclusive per spec §5.8.1).
-	expiredExists := qh.hasExpiredLeases(taskQueues, &commandQueue, &notificationQueue)
+// stepPreemptiveRenewal — Renew command leases before checking expired leases.
+func (qh *QueueHandler) stepPreemptiveRenewal(s *scanState) {
+	qh.preemptiveCommandRenewal(&s.commands.Data, &s.commands.Dirty)
+}
+
+// stepDispatchOrRecovery — Steps 1 & 2: Dispatch or recovery (mutually exclusive).
+func (qh *QueueHandler) stepDispatchOrRecovery(s *scanState) {
+	expiredExists := qh.hasExpiredLeases(s.tasks, &s.commands.Data, &s.notifications.Data)
 
 	if expiredExists {
-		// Step 2: Collect busy check items for expired leases (defer tmux probes)
-		for queueFile, tq := range taskQueues {
+		// Step 2: Collect busy check items for expired leases
+		for queueFile, tq := range s.tasks {
 			agentID := workerIDFromPath(queueFile)
-			d := taskDirty[queueFile]
+			d := s.taskDirty[queueFile]
 			items := qh.collectExpiredTaskBusyChecks(tq, agentID, queueFile, &d)
-			taskDirty[queueFile] = d
-			work.busyChecks = append(work.busyChecks, items...)
+			s.taskDirty[queueFile] = d
+			s.work.busyChecks = append(s.work.busyChecks, items...)
 		}
-		work.busyChecks = append(work.busyChecks, qh.collectExpiredCommandBusyChecks(&commandQueue, &commandsDirty)...)
-		// Notification expiry: always release (busy check doesn't affect outcome)
-		qh.recoverExpiredNotificationLeases(&notificationQueue, &notificationsDirty)
-		qh.log(LogLevelDebug, "expired_leases_detected busy_checks=%d skipping_dispatch", len(work.busyChecks))
+		s.work.busyChecks = append(s.work.busyChecks, qh.collectExpiredCommandBusyChecks(&s.commands.Data, &s.commands.Dirty)...)
+		qh.recoverExpiredNotificationLeases(&s.notifications.Data, &s.notifications.Dirty)
+		qh.log(LogLevelDebug, "expired_leases_detected busy_checks=%d skipping_dispatch", len(s.work.busyChecks))
 	} else {
-		// Step 1: Collect dispatch items (defer tmux dispatch)
-		qh.collectPendingCommandDispatches(&commandQueue, &commandsDirty, &work)
+		// Step 1: Collect dispatch items
+		qh.collectPendingCommandDispatches(&s.commands.Data, &s.commands.Dirty, &s.work)
 
-		globalInFlight := qh.buildGlobalInFlightSet(taskQueues)
-		for queueFile, tq := range taskQueues {
+		globalInFlight := qh.buildGlobalInFlightSet(s.tasks)
+		for queueFile, tq := range s.tasks {
 			workerID := workerIDFromPath(queueFile)
 			if workerID == "" {
 				qh.log(LogLevelWarn, "skip_dispatch cannot derive worker from %s", queueFile)
 				continue
 			}
-			dirty := qh.collectPendingTaskDispatches(tq, workerID, globalInFlight, &work)
+			dirty := qh.collectPendingTaskDispatches(tq, workerID, globalInFlight, &s.work)
 			if dirty {
-				taskDirty[queueFile] = true
+				s.taskDirty[queueFile] = true
 			}
 		}
-		qh.collectPendingNotificationDispatches(&notificationQueue, &notificationsDirty, &work)
+		qh.collectPendingNotificationDispatches(&s.notifications.Data, &s.notifications.Dirty, &s.work)
 	}
+}
 
-	// Step 1.5: Dependency failure check (always runs regardless of expired leases)
-	for queueFile, tq := range taskQueues {
+// stepDependencyFailures — Step 1.5: Check pending/in-progress tasks for dependency failures.
+func (qh *QueueHandler) stepDependencyFailures(s *scanState) {
+	for queueFile, tq := range s.tasks {
 		dirty, interrupts := qh.checkPendingDependencyFailuresDeferred(tq, workerIDFromPath(queueFile))
 		dirty2, interrupts2 := qh.checkInProgressDependencyFailuresDeferred(tq, workerIDFromPath(queueFile))
 		if dirty || dirty2 {
-			taskDirty[queueFile] = true
+			s.taskDirty[queueFile] = true
 		}
-		work.interrupts = append(work.interrupts, interrupts...)
-		work.interrupts = append(work.interrupts, interrupts2...)
-	}
-
-	// Flush dirty queues to disk
-	qh.flushQueues(commandQueue, commandPath, commandsDirty,
-		taskQueues, taskDirty,
-		notificationQueue, notificationPath, notificationsDirty,
-		signalQueue, signalPath, signalsDirty)
-
-	return phaseAResult{
-		work:      work,
-		scanStart: scanStart,
-		counters:  qh.scanCounters,
+		s.work.interrupts = append(s.work.interrupts, interrupts...)
+		s.work.interrupts = append(s.work.interrupts, interrupts2...)
 	}
 }
 
@@ -313,33 +361,24 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 	var result phaseBResult
 
 	// 1. Execute interrupts first (before dispatches to avoid killing new tasks)
-	for _, item := range pa.work.interrupts {
-		if ctx.Err() != nil {
-			break
-		}
+	forEachUntilCanceled(ctx, pa.work.interrupts, func(item interruptItem) {
 		if err := qh.cancelHandler.interruptAgent(item.WorkerID, item.TaskID, item.CommandID, item.Epoch); err != nil {
 			qh.log(LogLevelWarn, "phase_b_interrupt worker=%s task=%s error=%v", item.WorkerID, item.TaskID, err)
 		}
-	}
+	})
 
 	// 2. Execute busy probes for expired leases
-	for _, item := range pa.work.busyChecks {
-		if ctx.Err() != nil {
-			break
-		}
+	forEachUntilCanceled(ctx, pa.work.busyChecks, func(item busyCheckItem) {
 		busy, undecided := qh.isAgentBusy(ctx, item.AgentID)
 		result.busyChecks = append(result.busyChecks, busyCheckResult{
 			Item:      item,
 			Busy:      busy,
 			Undecided: undecided,
 		})
-	}
+	})
 
 	// 3. Execute dispatches
-	for _, item := range pa.work.dispatches {
-		if ctx.Err() != nil {
-			break
-		}
+	forEachUntilCanceled(ctx, pa.work.dispatches, func(item dispatchItem) {
 		var err error
 		switch item.Kind {
 		case "command":
@@ -354,34 +393,25 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 			Success: err == nil,
 			Error:   err,
 		})
-	}
+	})
 
 	// 4. Execute signal deliveries
-	for _, item := range pa.work.signals {
-		if ctx.Err() != nil {
-			break
-		}
+	forEachUntilCanceled(ctx, pa.work.signals, func(item signalDeliveryItem) {
 		err := qh.deliverPlannerSignal(ctx, item.CommandID, item.Message)
 		result.signals = append(result.signals, signalDeliveryResult{
 			Item:    item,
 			Success: err == nil,
 			Error:   err,
 		})
-	}
+	})
 
 	// 5. Execute agent clears (fire-and-forget)
-	for _, agentID := range pa.work.clears {
-		if ctx.Err() != nil {
-			break
-		}
+	forEachUntilCanceled(ctx, pa.work.clears, func(agentID string) {
 		qh.clearAgent(ctx, agentID)
-	}
+	})
 
 	// 6. Execute worktree merges (slow git I/O, outside scanMu.Lock)
-	for _, item := range pa.work.worktreeMerges {
-		if ctx.Err() != nil {
-			break
-		}
+	forEachUntilCanceled(ctx, pa.work.worktreeMerges, func(item worktreeMergeItem) {
 		mr := worktreeMergeResult{Item: item}
 
 		// First commit worker changes
@@ -402,8 +432,6 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 			mr.Conflicts = conflicts
 			mr.Error = err
 
-			// Sync integration → worker worktrees if merge succeeded with no conflicts
-			// (done here in Phase B to avoid holding scanMu during slow git I/O)
 			if len(conflicts) == 0 && err == nil {
 				if syncErr := qh.worktreeManager.SyncFromIntegration(item.CommandID, item.WorkerIDs); syncErr != nil {
 					qh.log(LogLevelWarn, "worktree_sync_failed command=%s error=%v", item.CommandID, syncErr)
@@ -412,20 +440,13 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 		}
 
 		result.worktreeMerges = append(result.worktreeMerges, mr)
-	}
+	})
 
 	// 7. Execute worktree publishes (slow git I/O, outside scanMu.Lock)
-	// Re-verify integration status before publishing to guard against merge
-	// conflicts from step 6 in the same scan cycle (codex review finding #2).
 	var additionalCleanups []worktreeCleanupItem
-	for _, item := range pa.work.worktreePublishes {
-		if ctx.Err() != nil {
-			break
-		}
+	forEachUntilCanceled(ctx, pa.work.worktreePublishes, func(item worktreePublishItem) {
 		pr := worktreePublishResult{Item: item}
 		if qh.worktreeManager != nil {
-			// Re-check integration status: a merge conflict in step 6 may have
-			// changed it from "merged" to "conflict" since Phase A collected this item.
 			cmdState, err := qh.worktreeManager.GetCommandState(item.CommandID)
 			if err != nil || cmdState.Integration.Status != model.IntegrationStatusMerged {
 				qh.log(LogLevelWarn, "worktree_publish_skip_stale command=%s status=%v err=%v",
@@ -442,27 +463,23 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 		}
 		result.worktreePublishes = append(result.worktreePublishes, pr)
 
-		// On success, collect cleanup if configured
 		if pr.Error == nil && qh.config.Worktree.CleanupOnSuccess {
 			additionalCleanups = append(additionalCleanups, worktreeCleanupItem{
 				CommandID: item.CommandID,
 				Reason:    "success",
 			})
 		}
-	}
+	})
 
 	// 8. Execute worktree cleanups (Phase A collected + post-publish)
 	allCleanups := append(pa.work.worktreeCleanups, additionalCleanups...)
-	for _, item := range allCleanups {
-		if ctx.Err() != nil {
-			break
-		}
+	forEachUntilCanceled(ctx, allCleanups, func(item worktreeCleanupItem) {
 		cr := worktreeCleanupResult{Item: item}
 		if qh.worktreeManager != nil {
 			cr.Error = qh.worktreeManager.CleanupCommand(item.CommandID)
 		}
 		result.worktreeCleanups = append(result.worktreeCleanups, cr)
-	}
+	})
 
 	return result
 }
@@ -478,9 +495,6 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 	qh.scanCounters = pa.counters
 
 	// --- Apply dispatch + busy check results (single load/flush) ---
-	// Load queues once for both sections. Under scanMu.Lock() no external
-	// changes occur, so in-memory mutations from dispatch are visible to
-	// busy-check apply without a disk round-trip.
 	if len(pb.dispatches) > 0 || len(pb.busyChecks) > 0 {
 		commandQueue, commandPath := qh.loadCommandQueue()
 		taskQueues := qh.loadAllTaskQueues()
@@ -540,7 +554,6 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 					UpdatedAt: now,
 				}, signalIndex)
 			}
-			// Mark phase as merged to prevent re-merging on next scan
 			if mr.Error == nil && qh.worktreeManager != nil {
 				if err := qh.worktreeManager.MarkPhaseMerged(mr.Item.CommandID, mr.Item.PhaseID); err != nil {
 					qh.log(LogLevelWarn, "mark_phase_merged_failed command=%s phase=%s error=%v",
@@ -606,7 +619,6 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 
 	// --- Apply signal delivery results ---
 	if len(pb.signals) > 0 {
-		// Reload signal queue from disk (may have been modified during Phase B)
 		signalQueue, signalPath := qh.loadPlannerSignalQueue()
 		signalsDirty := false
 		qh.applySignalResults(pb.signals, &signalQueue, &signalsDirty)
@@ -848,8 +860,6 @@ func (qh *QueueHandler) preemptiveCommandRenewal(cq *model.CommandQueue, dirty *
 		}
 		if t, err := time.Parse(time.RFC3339, cmd.UpdatedAt); err == nil {
 			if qh.clock.Now().Sub(t) >= time.Duration(maxMin)*time.Minute {
-				// Hard timeout reached: release immediately instead of waiting
-				// for expiry to enforce max_in_progress_min strictly.
 				qh.log(LogLevelWarn, "command_lease_max_timeout id=%s epoch=%d max=%dm releasing (preemptive)",
 					cmd.ID, cmd.LeaseEpoch, maxMin)
 				if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
@@ -997,6 +1007,7 @@ func (qh *QueueHandler) checkInProgressDependencyFailuresDeferred(tq *taskQueueE
 				Epoch:     task.LeaseEpoch,
 			})
 		}
+
 		task.Status = model.StatusCancelled
 		task.LeaseOwner = nil
 		task.LeaseExpiresAt = nil
@@ -1042,8 +1053,6 @@ func (qh *QueueHandler) applyCommandDispatchResult(dr dispatchResult, cq *model.
 		if !dr.Success {
 			// For transient busy detection errors, release lease to allow immediate retry
 			if errors.Is(dr.Error, agent.ErrBusyUndecided) {
-				// VerdictUndecided = pane looks idle but had stale busy pattern
-				// Safe to retry immediately
 				qh.log(LogLevelWarn, "dispatch_failed_undecided_release type=command id=%s", cmd.ID)
 				if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
 					qh.log(LogLevelError, "release_command_lease_failed id=%s error=%v", cmd.ID, err)
@@ -1054,10 +1063,6 @@ func (qh *QueueHandler) applyCommandDispatchResult(dr dispatchResult, cq *model.
 				return
 			}
 
-			// Keep lease for other errors (prevents duplicate dispatch)
-			// The dispatch may have actually succeeded (tmux delivery OK but executor
-			// reported error). Releasing would cause pending revert → re-dispatch.
-			// Lease auto-extend will keep it in_progress; Reconciler R0 handles stuck state.
 			qh.log(LogLevelWarn, "dispatch_failed_lease_kept type=command id=%s error=%v", cmd.ID, dr.Error)
 		} else {
 			qh.scanCounters.CommandsDispatched++
