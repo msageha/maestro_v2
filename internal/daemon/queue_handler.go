@@ -40,8 +40,10 @@ type QueueHandler struct {
 	scanCounters ScanCounters
 
 	// Debounce state
-	debounceMu    sync.Mutex
-	debounceTimer *time.Timer
+	debounceMu       sync.Mutex
+	debounceTimer    *time.Timer
+	firstTriggerAt   time.Time   // tracks first trigger in a debounce window for maxWait
+	scanRunning      atomic.Bool // true while debounced callback is executing
 
 	// scanMu serializes PeriodicScan phases (exclusive) vs queue writes (shared RLock).
 	// Spec §5.6: per-agent mutex — queue writes hold RLock + per-target lockMap key.

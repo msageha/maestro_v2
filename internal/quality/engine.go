@@ -257,10 +257,12 @@ func (e *Engine) evaluateUncached(ctx context.Context, gateType GateType, evalCt
 			continue
 		}
 
-		// Check timeout
+		// Check timeout — fail-closed: timeout means not passed
 		select {
 		case <-timeoutCtx.Done():
 			result.TimedOut = true
+			result.Passed = false
+			result.Action = ActionBlock
 			result.Duration = time.Since(start)
 			return result, nil
 		default:
@@ -269,14 +271,12 @@ func (e *Engine) evaluateUncached(ctx context.Context, gateType GateType, evalCt
 		gateResult := e.evaluateGate(timeoutCtx, gate, evalCtx)
 		result.RuleResults = append(result.RuleResults, gateResult.RuleResults...)
 
-		// Propagate timeout from gate evaluation
+		// Propagate timeout from gate evaluation — fail-closed
 		if gateResult.TimedOut {
 			result.TimedOut = true
-			// Also reflect any failures from the timed-out gate
-			if !gateResult.Passed {
-				result.Passed = false
-				result.FailedGates = append(result.FailedGates, gate.ID)
-			}
+			result.Passed = false
+			result.Action = ActionBlock
+			result.FailedGates = append(result.FailedGates, gate.ID)
 			result.Duration = time.Since(start)
 			return result, nil
 		}
@@ -327,10 +327,12 @@ func (e *Engine) evaluateGate(ctx context.Context, gate *CompiledGate, evalCtx E
 			}
 		}
 
-		// Check for timeout
+		// Check for timeout — fail-closed
 		select {
 		case <-ctx.Done():
 			result.TimedOut = true
+			result.Passed = false
+			result.Action = ActionBlock
 			return result
 		default:
 		}
