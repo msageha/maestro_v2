@@ -14,7 +14,11 @@ func LoadConfig(maestroDir string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("read config.yaml: %w", err)
 	}
-	var cfg Config
+	cfg := Config{
+		Worktree: WorktreeConfig{
+			Enabled: true,
+		},
+	}
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config.yaml: %w", err)
 	}

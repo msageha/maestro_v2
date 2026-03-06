@@ -328,7 +328,7 @@ func (d *Daemon) Run() error {
 	}
 	d.handler.SetCircuitBreaker(d.circuitBreaker)
 
-	// Step 3.8.2: Initialize WorktreeManager (opt-in)
+	// Step 3.8.2: Initialize WorktreeManager (default enabled)
 	if d.config.Worktree.Enabled {
 		d.worktreeManager = NewWorktreeManager(d.maestroDir, d.config.Worktree, d.logger, d.logLevel)
 		d.handler.SetWorktreeManager(d.worktreeManager)

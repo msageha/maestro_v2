@@ -3,7 +3,7 @@ package daemon
 import (
 	"fmt"
 	"log"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,9 +51,10 @@ type ResultHandler struct {
 	continuousHandler *ContinuousHandler
 	eventBus          *events.Bus
 
+	execMu        sync.Mutex
 	cachedExec    AgentExecutor
 	cachedExecErr error
-	execOnce      sync.Once
+	execInit      bool
 }
 
 // NewResultHandler creates a new ResultHandler.
@@ -81,19 +82,29 @@ func NewResultHandler(
 // SetExecutorFactory overrides the executor factory for testing.
 // Resets the cached executor so the new factory is used on next call.
 func (rh *ResultHandler) SetExecutorFactory(f ExecutorFactory) {
+	rh.execMu.Lock()
+	old := rh.cachedExec
 	rh.executorFactory = f
-	rh.execOnce = sync.Once{}
 	rh.cachedExec = nil
 	rh.cachedExecErr = nil
+	rh.execInit = false
+	rh.execMu.Unlock()
+
+	if old != nil {
+		_ = old.Close()
+	}
 }
 
-// getExecutor returns the shared executor instance, creating it lazily via sync.Once.
+// getExecutor returns the shared executor instance, creating it lazily on first call.
 // The Executor is safe for concurrent use (log.Logger uses internal mutex,
 // os.File in append mode is POSIX-safe, all other fields are immutable).
 func (rh *ResultHandler) getExecutor() (AgentExecutor, error) {
-	rh.execOnce.Do(func() {
+	rh.execMu.Lock()
+	defer rh.execMu.Unlock()
+	if !rh.execInit {
 		rh.cachedExec, rh.cachedExecErr = rh.executorFactory(rh.maestroDir, rh.config.Watcher, rh.config.Logging.Level)
-	})
+		rh.execInit = true
+	}
 	if rh.cachedExecErr != nil {
 		return nil, fmt.Errorf("%w: %v", errExecutorInit, rh.cachedExecErr)
 	}
@@ -101,10 +112,17 @@ func (rh *ResultHandler) getExecutor() (AgentExecutor, error) {
 }
 
 // CloseExecutor releases the shared executor's resources.
+// Safe to call multiple times; subsequent calls are no-ops.
 func (rh *ResultHandler) CloseExecutor() {
-	if rh.cachedExec != nil {
-		_ = rh.cachedExec.Close()
-		rh.cachedExec = nil
+	rh.execMu.Lock()
+	exec := rh.cachedExec
+	rh.cachedExec = nil
+	rh.cachedExecErr = nil
+	rh.execInit = false
+	rh.execMu.Unlock()
+
+	if exec != nil {
+		_ = exec.Close()
 	}
 }
 

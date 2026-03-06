@@ -33,6 +33,7 @@ func (qh *QueueHandler) periodicScanPhaseA() phaseAResult {
 
 	signalQueue, signalPath := qh.loadPlannerSignalQueue()
 	signalsDirty := false
+	signalIndex := buildSignalIndex(signalQueue.Signals)
 
 	commandsDirty := false
 	notificationsDirty := false
@@ -108,7 +109,7 @@ func (qh *QueueHandler) periodicScanPhaseA() phaseAResult {
 					Message:   msg,
 					CreatedAt: now,
 					UpdatedAt: now,
-				})
+				}, signalIndex)
 			}
 		}
 	}
@@ -188,7 +189,7 @@ func (qh *QueueHandler) periodicScanPhaseA() phaseAResult {
 						Message:   msg,
 						CreatedAt: now,
 						UpdatedAt: now,
-					})
+					}, signalIndex)
 				case model.PhaseStatusTimedOut:
 					msg := fmt.Sprintf("[maestro] kind:fill_timeout command_id:%s phase:%s\nfill deadline expired",
 						cmd.ID, tr.PhaseName)
@@ -200,7 +201,7 @@ func (qh *QueueHandler) periodicScanPhaseA() phaseAResult {
 						Message:   msg,
 						CreatedAt: now,
 						UpdatedAt: now,
-					})
+					}, signalIndex)
 				}
 			}
 		}
@@ -518,6 +519,7 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 	if len(pb.worktreeMerges) > 0 {
 		signalQueue, signalPath := qh.loadPlannerSignalQueue()
 		signalsDirty := false
+		signalIndex := buildSignalIndex(signalQueue.Signals)
 		now := qh.clock.Now().UTC().Format(time.RFC3339)
 		for _, mr := range pb.worktreeMerges {
 			if mr.Error != nil {
@@ -535,7 +537,7 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 					Message:   msg,
 					CreatedAt: now,
 					UpdatedAt: now,
-				})
+				}, signalIndex)
 			}
 			// Mark phase as merged to prevent re-merging on next scan
 			if mr.Error == nil && qh.worktreeManager != nil {
@@ -560,6 +562,7 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 	if len(pb.worktreePublishes) > 0 {
 		signalQueue, signalPath := qh.loadPlannerSignalQueue()
 		signalsDirty := false
+		signalIndex := buildSignalIndex(signalQueue.Signals)
 		now := qh.clock.Now().UTC().Format(time.RFC3339)
 		for _, pr := range pb.worktreePublishes {
 			if pr.Error != nil {
@@ -573,7 +576,7 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 					Message:   msg,
 					CreatedAt: now,
 					UpdatedAt: now,
-				})
+				}, signalIndex)
 			} else {
 				qh.log(LogLevelInfo, "worktree_published command=%s", pr.Item.CommandID)
 			}

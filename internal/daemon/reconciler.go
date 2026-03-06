@@ -36,6 +36,9 @@ type Reconciler struct {
 	resultHandler   *ResultHandler  // for R5 notification re-issue
 	executorFactory ExecutorFactory // for R6 Planner notification
 	canComplete     CanCompleteFunc // for R4 (avoids plan→daemon import cycle)
+
+	// Per-scan directory entry cache (populated lazily, cleared after each Reconcile call)
+	scanDirCache map[string][]os.DirEntry
 }
 
 // ReconcileRepair describes a single repair action performed by the reconciler.
@@ -87,10 +90,27 @@ func (r *Reconciler) SetExecutorFactory(f ExecutorFactory) {
 	r.executorFactory = f
 }
 
+// cachedReadDir returns cached directory entries for the given path within a single Reconcile scan.
+// Reduces redundant os.ReadDir calls when multiple sub-methods read the same directory.
+func (r *Reconciler) cachedReadDir(dir string) ([]os.DirEntry, error) {
+	if entries, ok := r.scanDirCache[dir]; ok {
+		return entries, nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	r.scanDirCache[dir] = entries
+	return entries, nil
+}
+
 // Reconcile runs all reconciliation patterns and returns repairs and deferred notifications.
 // Deferred notifications must be executed outside scanMu.Lock by the caller via
 // ExecuteDeferredNotifications to avoid blocking queue writes during slow tmux I/O.
 func (r *Reconciler) Reconcile() ([]ReconcileRepair, []DeferredNotification) {
+	r.scanDirCache = make(map[string][]os.DirEntry, 4)
+	defer func() { r.scanDirCache = nil }()
+
 	repairs := make([]ReconcileRepair, 0, 8)
 	var notifications []DeferredNotification
 
@@ -144,7 +164,7 @@ func (r *Reconciler) reconcileR0() []ReconcileRepair {
 	var repairs []ReconcileRepair
 
 	stateDir := filepath.Join(r.maestroDir, "state", "commands")
-	entries, err := os.ReadDir(stateDir)
+	entries, err := r.cachedReadDir(stateDir)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			r.log(LogLevelWarn, "R0 read_state_dir error=%v", err)
@@ -389,7 +409,7 @@ func (r *Reconciler) reconcileR0b() ([]ReconcileRepair, []DeferredNotification) 
 	var notifications []DeferredNotification
 
 	stateDir := filepath.Join(r.maestroDir, "state", "commands")
-	entries, err := os.ReadDir(stateDir)
+	entries, err := r.cachedReadDir(stateDir)
 	if err != nil {
 		return nil, nil
 	}
@@ -537,7 +557,7 @@ func (r *Reconciler) reconcileR1() []ReconcileRepair {
 	repairedCommands := make(map[string]bool)
 
 	resultsDir := filepath.Join(r.maestroDir, "results")
-	entries, err := os.ReadDir(resultsDir)
+	entries, err := r.cachedReadDir(resultsDir)
 	if err != nil {
 		return nil
 	}
@@ -648,7 +668,7 @@ func (r *Reconciler) reconcileR2() []ReconcileRepair {
 	var repairs []ReconcileRepair
 
 	resultsDir := filepath.Join(r.maestroDir, "results")
-	entries, err := os.ReadDir(resultsDir)
+	entries, err := r.cachedReadDir(resultsDir)
 	if err != nil {
 		return nil
 	}
@@ -1039,7 +1059,7 @@ func (r *Reconciler) reconcileR6() ([]ReconcileRepair, []DeferredNotification) {
 	var notifications []DeferredNotification
 
 	stateDir := filepath.Join(r.maestroDir, "state", "commands")
-	entries, err := os.ReadDir(stateDir)
+	entries, err := r.cachedReadDir(stateDir)
 	if err != nil {
 		return nil, nil
 	}

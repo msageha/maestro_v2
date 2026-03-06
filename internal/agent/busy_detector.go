@@ -119,30 +119,32 @@ func (bd *BusyDetector) DetectBusy(ctx context.Context, paneTarget string) BusyV
 	return verdict
 }
 
-// DetectBusyWithRetry runs busy detection with a retry loop on VerdictBusy.
+// DetectBusyWithRetry runs busy detection with a retry loop on VerdictBusy
+// or VerdictUndecided (transient errors like capture failures).
 // agentID is used only for log messages.
 // Returns VerdictUndecided if ctx is cancelled during retries.
+// After exhausting retries, returns the last observed verdict.
 func (bd *BusyDetector) DetectBusyWithRetry(ctx context.Context, paneTarget, agentID string) BusyVerdict {
 	verdict := bd.DetectBusy(ctx, paneTarget)
-	if verdict != VerdictBusy {
-		return verdict
+	if verdict == VerdictIdle {
+		return VerdictIdle
 	}
 
 	for i := 1; i <= bd.config.BusyCheckMaxRetries; i++ {
-		bd.log(LogLevelDebug, "busy_retry retry=%d/%d agent_id=%s",
-			i, bd.config.BusyCheckMaxRetries, agentID)
+		bd.log(LogLevelDebug, "busy_retry retry=%d/%d agent_id=%s verdict=%s",
+			i, bd.config.BusyCheckMaxRetries, agentID, verdict)
 		if err := sleepCtx(ctx, time.Duration(bd.config.BusyCheckInterval)*time.Second); err != nil {
 			bd.log(LogLevelDebug, "busy_retry sleep cancelled: %v", err)
 			return VerdictUndecided
 		}
 
 		verdict = bd.DetectBusy(ctx, paneTarget)
-		if verdict != VerdictBusy {
-			return verdict
+		if verdict == VerdictIdle {
+			return VerdictIdle
 		}
 	}
 
-	return VerdictBusy
+	return verdict
 }
 
 func (bd *BusyDetector) log(level LogLevel, format string, args ...any) {

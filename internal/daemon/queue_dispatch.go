@@ -87,22 +87,37 @@ func (qh *QueueHandler) processPlannerSignalsDeferred(sq *model.PlannerSignalQue
 	sq.Signals = retained
 }
 
+// signalKey is the deduplication key for PlannerSignal.
+type signalKey struct {
+	CommandID string
+	PhaseID   string
+	Kind      string
+}
+
+// buildSignalIndex builds a lookup index from the current signals slice for O(1) dedup.
+func buildSignalIndex(signals []model.PlannerSignal) map[signalKey]struct{} {
+	idx := make(map[signalKey]struct{}, len(signals))
+	for _, s := range signals {
+		idx[signalKey{CommandID: s.CommandID, PhaseID: s.PhaseID, Kind: s.Kind}] = struct{}{}
+	}
+	return idx
+}
+
 // upsertPlannerSignal adds a signal or skips if one already exists for the same key.
-func (qh *QueueHandler) upsertPlannerSignal(sq *model.PlannerSignalQueue, dirty *bool, sig model.PlannerSignal) {
-	for _, existing := range sq.Signals {
-		if existing.CommandID == sig.CommandID &&
-			existing.PhaseID == sig.PhaseID &&
-			existing.Kind == sig.Kind {
-			qh.log(LogLevelDebug, "planner_signal_dedup kind=%s command=%s phase=%s",
-				sig.Kind, sig.CommandID, sig.PhaseID)
-			return
-		}
+// Uses signalIndex for O(1) lookup; caller must pass the index built via buildSignalIndex.
+func (qh *QueueHandler) upsertPlannerSignal(sq *model.PlannerSignalQueue, dirty *bool, sig model.PlannerSignal, signalIndex map[signalKey]struct{}) {
+	key := signalKey{CommandID: sig.CommandID, PhaseID: sig.PhaseID, Kind: sig.Kind}
+	if _, exists := signalIndex[key]; exists {
+		qh.log(LogLevelDebug, "planner_signal_dedup kind=%s command=%s phase=%s",
+			sig.Kind, sig.CommandID, sig.PhaseID)
+		return
 	}
 	if sq.SchemaVersion == 0 {
 		sq.SchemaVersion = 1
 		sq.FileType = "planner_signal_queue"
 	}
 	sq.Signals = append(sq.Signals, sig)
+	signalIndex[key] = struct{}{}
 	*dirty = true
 }
 

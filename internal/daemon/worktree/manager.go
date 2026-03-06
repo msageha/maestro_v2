@@ -830,9 +830,9 @@ func (wm *Manager) GC() error {
 		return nil
 	}
 
-	// Rebuild known paths from remaining state files (some may have been cleaned up above)
-	knownPaths := make(map[string]bool)
+	// Load remaining state files once and cache for orphan check + missing worktree logging
 	remainingEntries, _ := os.ReadDir(stateDir)
+	cachedStates := make(map[string]*model.WorktreeCommandState, len(remainingEntries))
 	for _, entry := range remainingEntries {
 		if !strings.HasSuffix(entry.Name(), ".yaml") {
 			continue
@@ -842,6 +842,12 @@ func (wm *Manager) GC() error {
 		if loadErr != nil {
 			continue
 		}
+		cachedStates[cmdID] = st
+	}
+
+	// Build known paths from cached states
+	knownPaths := make(map[string]bool)
+	for cmdID, st := range cachedStates {
 		for _, ws := range st.Workers {
 			knownPaths[ws.Path] = true
 		}
@@ -863,16 +869,8 @@ func (wm *Manager) GC() error {
 		}
 	}
 
-	// Log state entries whose worktree directories don't exist
-	for _, entry := range remainingEntries {
-		if !strings.HasSuffix(entry.Name(), ".yaml") {
-			continue
-		}
-		cmdID := strings.TrimSuffix(entry.Name(), ".yaml")
-		st, loadErr := wm.loadStateUnlocked(cmdID)
-		if loadErr != nil {
-			continue
-		}
+	// Log state entries whose worktree directories don't exist (using cached states)
+	for cmdID, st := range cachedStates {
 		for _, ws := range st.Workers {
 			if _, statErr := os.Stat(ws.Path); os.IsNotExist(statErr) {
 				if ws.Status != model.WorktreeStatusCleanupDone && ws.Status != model.WorktreeStatusCleanupFailed {
@@ -999,6 +997,11 @@ func (wm *Manager) DiscardWorkerChanges(commandID, workerID string) error {
 	// Discard tracked file changes
 	if err := wm.gitRunInDir(ws.Path, "checkout", "--", "."); err != nil {
 		return fmt.Errorf("discard changes in %s: %w", ws.Path, err)
+	}
+
+	// Remove untracked files (but not .gitignore'd files)
+	if err := wm.gitRunInDir(ws.Path, "clean", "-fd"); err != nil {
+		return fmt.Errorf("clean untracked files in %s: %w", ws.Path, err)
 	}
 
 	wm.log(core.LogLevelInfo, "worker_changes_discarded command=%s worker=%s", commandID, workerID)
@@ -1156,8 +1159,17 @@ func (wm *Manager) loadState(commandID string) (*model.WorktreeCommandState, err
 	return wm.loadStateUnlocked(commandID)
 }
 
+const maxWorktreeStateBytes = 1 << 20 // 1MB
+
 func (wm *Manager) loadStateUnlocked(commandID string) (*model.WorktreeCommandState, error) {
 	statePath := filepath.Join(wm.maestroDir, "state", "worktrees", commandID+".yaml")
+	fi, err := os.Stat(statePath)
+	if err != nil {
+		return nil, err
+	}
+	if fi.Size() > maxWorktreeStateBytes {
+		return nil, fmt.Errorf("worktree state file too large (%d bytes > %d max)", fi.Size(), maxWorktreeStateBytes)
+	}
 	data, err := os.ReadFile(statePath)
 	if err != nil {
 		return nil, err

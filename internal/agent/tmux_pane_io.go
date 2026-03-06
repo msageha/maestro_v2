@@ -105,11 +105,10 @@ func stripANSI(s string) string {
 //
 // Primary check: the line contains '❯' (U+276F HEAVY RIGHT-POINTING ANGLE QUOTATION MARK
 // ORNAMENT), which is the character Claude Code uses in its input prompt.
-// Fallback check: the line starts with '>' (ASCII 0x3E). This covers older Claude Code
-// versions or terminal environments where the Unicode character is not rendered.
-//
-// The fallback is intentionally broad; false positives (e.g. markdown blockquotes) are
-// mitigated by callers performing stability checks before invoking this function.
+// Fallback check: the line is exactly '>' (ASCII 0x3E, after trimming whitespace).
+// This covers older Claude Code versions or terminal environments where the Unicode
+// character is not rendered. The match is strict (bare '>' only) to avoid false
+// positives from markdown blockquotes or log output.
 func isPromptReady(content string) bool {
 	lines := strings.Split(content, "\n")
 	// Scan bottom-up, checking up to maxPromptSearchLines non-blank lines for ❯.
@@ -126,22 +125,29 @@ func isPromptReady(content string) bool {
 		}
 		checked++
 	}
-	// Fallback: check only the last non-blank line for '>'.
-	// Limiting to the last line avoids false positives from markdown
-	// blockquotes or shell output on earlier lines.
+	// Fallback: check only the last non-blank line for a bare '>'.
+	// Requires the trimmed line to be exactly ">" to avoid false positives
+	// from markdown blockquotes ("> quoted text") or log output containing '>'.
 	for i := len(lines) - 1; i >= 0; i-- {
 		trimmed := strings.TrimSpace(stripANSI(lines[i]))
 		if trimmed == "" {
 			continue
 		}
-		return strings.HasPrefix(trimmed, ">")
+		return trimmed == ">"
 	}
 	return false
 }
 
-// clearTextVisible checks whether "/clear" text is visible near the bottom of the pane content.
+// clearTextVisible checks whether "/clear" text is visible near the bottom of the pane content
+// as a command (not as part of agent output prose).
 // This is the primary signal for detecting that /clear was NOT processed as a command
 // and instead remains as literal text in the input field.
+//
+// Matches:
+//   - Bare "/clear" on a line by itself (command typed without prompt marker captured)
+//   - "/clear" on a prompt line (line containing ❯ or starting with ">")
+//
+// Does NOT match "/clear" embedded in longer text like "Running /clear command..."
 func clearTextVisible(content string) bool {
 	lines := strings.Split(content, "\n")
 	// Check the last 6 non-blank lines (covers input line + a few status lines)
@@ -151,8 +157,22 @@ func clearTextVisible(content string) bool {
 		if trimmed == "" {
 			continue
 		}
-		if strings.Contains(trimmed, "/clear") {
+		if trimmed == "/clear" {
 			return true
+		}
+		// Check for /clear as a command on a prompt line:
+		// Strip the prompt marker (❯ or >) and check if the remainder is exactly "/clear".
+		if idx := strings.LastIndex(trimmed, "❯"); idx >= 0 {
+			after := strings.TrimSpace(trimmed[idx+len("❯"):])
+			if after == "/clear" {
+				return true
+			}
+		}
+		if strings.HasPrefix(trimmed, ">") {
+			after := strings.TrimSpace(trimmed[1:])
+			if after == "/clear" {
+				return true
+			}
 		}
 		checked++
 	}

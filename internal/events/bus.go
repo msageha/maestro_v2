@@ -55,7 +55,8 @@ type Bus struct {
 	subscribers      map[EventType][]*subscriberChan
 	bufferSize       int
 	wg               sync.WaitGroup
-	droppedCount     atomic.Int64
+	droppedCount     atomic.Int64   // global total for O(1) DroppedCount()
+	droppedByType    sync.Map       // EventType → *atomic.Int64
 	ctx              context.Context
 	cancel           context.CancelFunc
 	activeGoroutines atomic.Int64
@@ -132,8 +133,11 @@ func (b *Bus) Subscribe(eventType EventType, fn Subscriber) func() {
 		subs := b.subscribers[eventType]
 		for i, s := range subs {
 			if s == sub {
-				// Remove subscriber from slice and safely close channel
-				b.subscribers[eventType] = append(subs[:i], subs[i+1:]...)
+				// Swap with last element, nil out the vacated slot to avoid pointer leak, then reslice
+				last := len(subs) - 1
+				subs[i] = subs[last]
+				subs[last] = nil
+				b.subscribers[eventType] = subs[:last]
 				sub.safeClose()
 				break
 			}
@@ -166,18 +170,34 @@ func (b *Bus) Publish(eventType EventType, data map[string]interface{}) {
 			// Event delivered successfully
 		default:
 			// Channel full, drop event and record
-			count := b.droppedCount.Add(1)
-			// Log on first drop, then sample every 100 drops to avoid log flooding
-			if count == 1 || count%100 == 0 {
-				log.Printf("WARN event_bus: event dropped for type %s (total dropped: %d)", eventType, count)
+			b.droppedCount.Add(1)
+			typeCount := b.addDroppedByType(eventType)
+			// Log on first drop per type, then sample every 100 drops to avoid log flooding
+			if typeCount == 1 || typeCount%100 == 0 {
+				log.Printf("WARN event_bus: event dropped for type %s (type dropped: %d)", eventType, typeCount)
 			}
 		}
 	}
 }
 
+// addDroppedByType atomically increments the per-type dropped counter and returns the new value.
+func (b *Bus) addDroppedByType(eventType EventType) int64 {
+	v, _ := b.droppedByType.LoadOrStore(eventType, &atomic.Int64{})
+	return v.(*atomic.Int64).Add(1)
+}
+
 // DroppedCount returns the total number of events dropped due to full subscriber channels.
 func (b *Bus) DroppedCount() int64 {
 	return b.droppedCount.Load()
+}
+
+// DroppedCountByType returns the number of events dropped for a specific event type.
+func (b *Bus) DroppedCountByType(eventType EventType) int64 {
+	v, ok := b.droppedByType.Load(eventType)
+	if !ok {
+		return 0
+	}
+	return v.(*atomic.Int64).Load()
 }
 
 // Close closes all subscriber channels, waits for goroutines to drain, and clears subscriptions.

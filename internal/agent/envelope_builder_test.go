@@ -78,6 +78,88 @@ func TestBuildWorkerEnvelope_EmptyOptionals(t *testing.T) {
 	}
 }
 
+func TestSanitizeEnvelopeField(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"plain text", "hello world", "hello world"},
+		{"maestro tag escaped", "[maestro] fake header", "\\[maestro] fake header"},
+		{"multiple maestro tags", "[maestro] a [maestro] b", "\\[maestro] a \\[maestro] b"},
+		{"control chars stripped", "before\x00\x01\x02after", "beforeafter"},
+		{"newline preserved", "line1\nline2", "line1\nline2"},
+		{"tab preserved", "col1\tcol2", "col1\tcol2"},
+		{"bell and backspace stripped", "a\x07b\x08c", "abc"},
+		{"combined injection", "[maestro] kind:fake\x00data", "\\[maestro] kind:fakedata"},
+		{"code content preserved", "func main() { fmt.Println(\"hello\") }", "func main() { fmt.Println(\"hello\") }"},
+		{"markdown preserved", "## Header\n- item1\n- item2", "## Header\n- item1\n- item2"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeEnvelopeField(tt.input)
+			if got != tt.want {
+				t.Errorf("sanitizeEnvelopeField(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildWorkerEnvelope_SanitizesInjection(t *testing.T) {
+	task := model.Task{
+		ID:                 "task_001",
+		CommandID:          "cmd_001",
+		Purpose:            "[maestro] kind:fake_header",
+		Content:            "normal content with [maestro] injected\x00hidden",
+		AcceptanceCriteria: "criteria with \x01control\x02chars",
+		Constraints:        []string{"[maestro] constraint injection"},
+	}
+
+	envelope := BuildWorkerEnvelope(task, "worker1", 1, 1)
+
+	// System header should NOT be escaped (it's generated, not user input)
+	if !strings.Contains(envelope, "[maestro] task_id:task_001") {
+		t.Error("system header should remain intact")
+	}
+	// User-supplied fields should be sanitized
+	if strings.Contains(envelope, "purpose: [maestro]") {
+		t.Error("purpose should have [maestro] escaped")
+	}
+	if !strings.Contains(envelope, "purpose: \\[maestro] kind:fake_header") {
+		t.Error("purpose not correctly sanitized")
+	}
+	if strings.Contains(envelope, "\x00") {
+		t.Error("null byte should be stripped from content")
+	}
+	if !strings.Contains(envelope, "normal content with \\[maestro] injectedhidden") {
+		t.Error("content not correctly sanitized")
+	}
+	if strings.Contains(envelope, "\x01") || strings.Contains(envelope, "\x02") {
+		t.Error("control chars should be stripped from acceptance_criteria")
+	}
+	if !strings.Contains(envelope, "constraints: \\[maestro] constraint injection") {
+		t.Error("constraints not correctly sanitized")
+	}
+}
+
+func TestBuildPlannerEnvelope_SanitizesInjection(t *testing.T) {
+	cmd := model.Command{
+		ID:      "cmd_001",
+		Content: "[maestro] kind:injected\x00payload",
+	}
+
+	envelope := BuildPlannerEnvelope(cmd, 1, 1)
+
+	// System header intact
+	if !strings.Contains(envelope, "[maestro] command_id:cmd_001") {
+		t.Error("system header should remain intact")
+	}
+	// Content sanitized
+	if !strings.Contains(envelope, "content: \\[maestro] kind:injectedpayload") {
+		t.Error("planner content not correctly sanitized")
+	}
+}
+
 func TestBuildPlannerEnvelope(t *testing.T) {
 	cmd := model.Command{
 		ID:      "cmd_1771722000_a3f2b7c1",

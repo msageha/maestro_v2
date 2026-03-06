@@ -64,8 +64,9 @@ func (m *MutexMap) Lock(key string) {
 
 // Unlock releases the mutex for key. It is safe to call on a key that was
 // never locked or has already been unlocked (no-op in those cases).
-func (m *MutexMap) Unlock(key string) {
-	m.TryUnlock(key)
+// Returns true if the unlock was performed, false otherwise.
+func (m *MutexMap) Unlock(key string) bool {
+	return m.TryUnlock(key)
 }
 
 // TryUnlock attempts to release the mutex for key. It returns true if the

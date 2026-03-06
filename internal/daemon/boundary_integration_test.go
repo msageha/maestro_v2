@@ -1792,7 +1792,7 @@ func TestUpsertPlannerSignal_Deduplication(t *testing.T) {
 		Message: "first", CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z",
 	}
 
-	qh.upsertPlannerSignal(&sq, &dirty, sig)
+	qh.upsertPlannerSignal(&sq, &dirty, sig, buildSignalIndex(sq.Signals))
 	if !dirty || len(sq.Signals) != 1 {
 		t.Fatal("first signal should be added")
 	}
@@ -1800,7 +1800,7 @@ func TestUpsertPlannerSignal_Deduplication(t *testing.T) {
 	dirty = false
 	sig2 := sig
 	sig2.Message = "duplicate"
-	qh.upsertPlannerSignal(&sq, &dirty, sig2)
+	qh.upsertPlannerSignal(&sq, &dirty, sig2, buildSignalIndex(sq.Signals))
 	if dirty || len(sq.Signals) != 1 {
 		t.Errorf("duplicate signal should be rejected: dirty=%v, len=%d", dirty, len(sq.Signals))
 	}
@@ -1812,7 +1812,7 @@ func TestUpsertPlannerSignal_Deduplication(t *testing.T) {
 	dirty = false
 	sig3 := sig
 	sig3.Kind = "fill_timeout"
-	qh.upsertPlannerSignal(&sq, &dirty, sig3)
+	qh.upsertPlannerSignal(&sq, &dirty, sig3, buildSignalIndex(sq.Signals))
 	if !dirty || len(sq.Signals) != 2 {
 		t.Errorf("different kind should be added: dirty=%v, len=%d", dirty, len(sq.Signals))
 	}

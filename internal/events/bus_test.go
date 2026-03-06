@@ -626,6 +626,14 @@ func TestBus_DroppedCount(t *testing.T) {
 		t.Error("expected DroppedCount > 0 after publishing to full channel")
 	}
 
+	// Per-type counter should match total (only one event type used)
+	if byType := bus.DroppedCountByType(EventTaskStarted); byType == 0 {
+		t.Error("expected DroppedCountByType > 0 for EventTaskStarted")
+	}
+	if byType := bus.DroppedCountByType(EventTaskCompleted); byType != 0 {
+		t.Errorf("expected DroppedCountByType == 0 for EventTaskCompleted, got %d", byType)
+	}
+
 	// Unblock subscriber
 	close(block)
 }

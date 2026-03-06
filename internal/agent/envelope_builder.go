@@ -3,9 +3,25 @@ package agent
 import (
 	"fmt"
 	"strings"
+	"unicode"
 
 	"github.com/msageha/maestro_v2/internal/model"
 )
+
+// sanitizeEnvelopeField neutralises prompt-injection vectors in user-supplied
+// envelope fields.  It performs two transformations:
+//  1. Escapes "[maestro]" → "\\[maestro]" so injected content cannot mimic
+//     system control headers.
+//  2. Strips control characters (U+0000–U+001F) except newline (\n) and tab (\t).
+func sanitizeEnvelopeField(s string) string {
+	s = strings.ReplaceAll(s, "[maestro]", "\\[maestro]")
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+			return -1 // drop
+		}
+		return r
+	}, s)
+}
 
 // --- Envelope Builders ---
 
@@ -17,12 +33,16 @@ func BuildWorkerEnvelope(task model.Task, workerID string, leaseEpoch, attempt i
 		task.ID, task.CommandID, leaseEpoch, attempt)
 	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "agent_id: %s\n", workerID)
-	fmt.Fprintf(&sb, "purpose: %s\n", task.Purpose)
-	fmt.Fprintf(&sb, "content: %s\n", task.Content)
-	fmt.Fprintf(&sb, "acceptance_criteria: %s\n", task.AcceptanceCriteria)
+	fmt.Fprintf(&sb, "purpose: %s\n", sanitizeEnvelopeField(task.Purpose))
+	fmt.Fprintf(&sb, "content: %s\n", sanitizeEnvelopeField(task.Content))
+	fmt.Fprintf(&sb, "acceptance_criteria: %s\n", sanitizeEnvelopeField(task.AcceptanceCriteria))
 	constraintsStr := "なし"
 	if len(task.Constraints) > 0 {
-		constraintsStr = strings.Join(task.Constraints, ", ")
+		sanitized := make([]string, len(task.Constraints))
+		for i, c := range task.Constraints {
+			sanitized[i] = sanitizeEnvelopeField(c)
+		}
+		constraintsStr = strings.Join(sanitized, ", ")
 	}
 	fmt.Fprintf(&sb, "constraints: %s\n", constraintsStr)
 	toolsHintStr := "なし"
@@ -44,7 +64,7 @@ func BuildPlannerEnvelope(cmd model.Command, leaseEpoch, attempt int) string {
 	fmt.Fprintf(&sb, "[maestro] command_id:%s lease_epoch:%d attempt:%d\n",
 		cmd.ID, leaseEpoch, attempt)
 	sb.WriteString("\n")
-	fmt.Fprintf(&sb, "content: %s\n", cmd.Content)
+	fmt.Fprintf(&sb, "content: %s\n", sanitizeEnvelopeField(cmd.Content))
 	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "タスク分解後: maestro plan submit --command-id %s --tasks-file plan.yaml\n", cmd.ID)
 	fmt.Fprintf(&sb, "全タスク完了後: maestro plan complete --command-id %s --summary \"...\"", cmd.ID)

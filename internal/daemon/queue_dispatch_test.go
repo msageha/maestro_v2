@@ -112,7 +112,7 @@ func TestUpsertPlannerSignal_Insert(t *testing.T) {
 		PhaseID:   "phase1",
 		Message:   "test message",
 	}
-	qh.upsertPlannerSignal(sq, &dirty, sig)
+	qh.upsertPlannerSignal(sq, &dirty, sig, buildSignalIndex(sq.Signals))
 
 	if !dirty {
 		t.Error("dirty should be true after insert")
@@ -142,7 +142,7 @@ func TestUpsertPlannerSignal_Dedup(t *testing.T) {
 		PhaseID:   "phase1",
 		Message:   "first",
 	}
-	qh.upsertPlannerSignal(sq, &dirty, sig)
+	qh.upsertPlannerSignal(sq, &dirty, sig, buildSignalIndex(sq.Signals))
 
 	// Reset dirty to verify dedup doesn't set it
 	dirty = false
@@ -152,7 +152,7 @@ func TestUpsertPlannerSignal_Dedup(t *testing.T) {
 		PhaseID:   "phase1",
 		Message:   "second (should be deduped)",
 	}
-	qh.upsertPlannerSignal(sq, &dirty, sig2)
+	qh.upsertPlannerSignal(sq, &dirty, sig2, buildSignalIndex(sq.Signals))
 
 	if dirty {
 		t.Error("dirty should remain false on dedup")
@@ -172,11 +172,11 @@ func TestUpsertPlannerSignal_DifferentKind(t *testing.T) {
 
 	qh.upsertPlannerSignal(sq, &dirty, model.PlannerSignal{
 		Kind: "awaiting_fill", CommandID: "cmd1", PhaseID: "phase1",
-	})
+	}, buildSignalIndex(sq.Signals))
 	dirty = false
 	qh.upsertPlannerSignal(sq, &dirty, model.PlannerSignal{
 		Kind: "fill_timeout", CommandID: "cmd1", PhaseID: "phase1",
-	})
+	}, buildSignalIndex(sq.Signals))
 
 	if !dirty {
 		t.Error("dirty should be true for different kind")
@@ -193,11 +193,11 @@ func TestUpsertPlannerSignal_DifferentCommand(t *testing.T) {
 
 	qh.upsertPlannerSignal(sq, &dirty, model.PlannerSignal{
 		Kind: "awaiting_fill", CommandID: "cmd1", PhaseID: "phase1",
-	})
+	}, buildSignalIndex(sq.Signals))
 	dirty = false
 	qh.upsertPlannerSignal(sq, &dirty, model.PlannerSignal{
 		Kind: "awaiting_fill", CommandID: "cmd2", PhaseID: "phase1",
-	})
+	}, buildSignalIndex(sq.Signals))
 
 	if !dirty {
 		t.Error("dirty should be true for different command")
@@ -214,11 +214,11 @@ func TestUpsertPlannerSignal_DifferentPhase(t *testing.T) {
 
 	qh.upsertPlannerSignal(sq, &dirty, model.PlannerSignal{
 		Kind: "awaiting_fill", CommandID: "cmd1", PhaseID: "phase1",
-	})
+	}, buildSignalIndex(sq.Signals))
 	dirty = false
 	qh.upsertPlannerSignal(sq, &dirty, model.PlannerSignal{
 		Kind: "awaiting_fill", CommandID: "cmd1", PhaseID: "phase2",
-	})
+	}, buildSignalIndex(sq.Signals))
 
 	if !dirty {
 		t.Error("dirty should be true for different phase")
@@ -238,7 +238,7 @@ func TestUpsertPlannerSignal_SchemaVersionPreserved(t *testing.T) {
 
 	qh.upsertPlannerSignal(sq, &dirty, model.PlannerSignal{
 		Kind: "test", CommandID: "cmd1",
-	})
+	}, buildSignalIndex(sq.Signals))
 
 	// Existing schema_version > 0 should not be overwritten
 	if sq.SchemaVersion != 2 {

@@ -243,7 +243,7 @@ func (v VerificationConfig) EffectiveMaxRetries() int {
 	return v.MaxRetries
 }
 
-// WorktreeConfig controls Worker worktree isolation (opt-in, default disabled).
+// WorktreeConfig controls Worker worktree isolation (default enabled).
 type WorktreeConfig struct {
 	Enabled          bool               `yaml:"enabled"`
 	BaseBranch       string             `yaml:"base_branch"`

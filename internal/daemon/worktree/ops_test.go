@@ -34,8 +34,8 @@ func initTestGitRepoResolved(t *testing.T) string {
 }
 
 // TestWorktreeIntegration_DiscardChanges verifies that DiscardWorkerChanges
-// restores tracked file modifications but preserves untracked files.
-// DiscardWorkerChanges uses `git checkout -- .` which only affects tracked files.
+// restores tracked file modifications and removes untracked files.
+// DiscardWorkerChanges uses `git checkout -- .` followed by `git clean -fd`.
 func TestWorktreeIntegration_DiscardChanges(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
@@ -84,12 +84,12 @@ func TestWorktreeIntegration_DiscardChanges(t *testing.T) {
 		t.Errorf("README.md should be restored, got %q", string(content))
 	}
 
-	// Untracked file should still exist (git checkout -- . does not remove untracked files)
-	if _, err := os.Stat(filepath.Join(wtPath, "untracked.txt")); os.IsNotExist(err) {
-		t.Error("untracked.txt should still exist after DiscardWorkerChanges")
+	// Untracked file should be removed by git clean -fd
+	if _, err := os.Stat(filepath.Join(wtPath, "untracked.txt")); !os.IsNotExist(err) {
+		t.Error("untracked.txt should be removed after DiscardWorkerChanges")
 	}
 
-	// git status should show only the untracked file
+	// git status should be clean (no tracked changes, no untracked files)
 	cmd = exec.Command("git", "status", "--porcelain")
 	cmd.Dir = wtPath
 	out, err = cmd.Output()
@@ -97,14 +97,8 @@ func TestWorktreeIntegration_DiscardChanges(t *testing.T) {
 		t.Fatalf("git status failed: %v", err)
 	}
 	statusLines := strings.TrimSpace(string(out))
-	if statusLines == "" {
-		t.Error("expected untracked file in status")
-	}
-	// All remaining lines should be untracked ("?? ...")
-	for _, line := range strings.Split(statusLines, "\n") {
-		if line != "" && !strings.HasPrefix(line, "?? ") {
-			t.Errorf("expected only untracked entries after discard, got: %q", line)
-		}
+	if statusLines != "" {
+		t.Errorf("worktree should be clean after discard, got: %q", statusLines)
 	}
 }
 

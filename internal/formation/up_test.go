@@ -230,6 +230,57 @@ func TestLoadConfig(t *testing.T) {
 	}
 }
 
+func TestLoadConfig_WorktreeEnabledDefault(t *testing.T) {
+	maestroDir := setupTestMaestroDir(t)
+	// Write YAML without worktree section to test default
+	configPath := filepath.Join(maestroDir, "config.yaml")
+	yamlData := []byte(`project:
+  name: test
+maestro:
+  version: "2.0.0"
+agents:
+  workers:
+    count: 1
+`)
+	if err := os.WriteFile(configPath, yamlData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := model.LoadConfig(maestroDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !loaded.Worktree.Enabled {
+		t.Error("expected worktree.enabled=true by default when not specified in YAML")
+	}
+}
+
+func TestLoadConfig_WorktreeEnabledExplicitFalse(t *testing.T) {
+	maestroDir := setupTestMaestroDir(t)
+	configPath := filepath.Join(maestroDir, "config.yaml")
+	yamlData := []byte(`project:
+  name: test
+maestro:
+  version: "2.0.0"
+agents:
+  workers:
+    count: 1
+worktree:
+  enabled: false
+`)
+	if err := os.WriteFile(configPath, yamlData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := model.LoadConfig(maestroDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Worktree.Enabled {
+		t.Error("expected worktree.enabled=false when explicitly set to false")
+	}
+}
+
 func TestReflectFlags(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	writeConfig(t, maestroDir, model.Config{

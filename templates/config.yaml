@@ -84,7 +84,7 @@ verification:
   max_retries: 1                    # フレークテスト対策リトライ回数 (0=リトライなし)
 
 worktree:
-  enabled: false                    # Worker worktree 隔離の有効化フラグ (opt-in)
+  enabled: true                     # Worker worktree 隔離の有効化フラグ (default: true)
   base_branch: "main"              # worktree のベースブランチ
   path_prefix: ".maestro/worktrees" # worktree 作成先ディレクトリ
   auto_commit: true                # Phase 完了時の自動コミット

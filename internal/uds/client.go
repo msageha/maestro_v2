@@ -1,8 +1,10 @@
 package uds
 
 import (
+	"errors"
 	"fmt"
 	"net"
+	"syscall"
 	"time"
 )
 
@@ -25,14 +27,44 @@ func (c *Client) SetTimeout(d time.Duration) {
 	c.timeout = d
 }
 
+// maxDialRetries is the maximum number of dial attempts for transient errors.
+const maxDialRetries = 3
+
+// isTransientDialError returns true if the error is a transient connection error
+// that is safe to retry (connection refused, resource temporarily unavailable,
+// or socket not yet created).
+func isTransientDialError(err error) bool {
+	return errors.Is(err, syscall.ECONNREFUSED) ||
+		errors.Is(err, syscall.EAGAIN) ||
+		errors.Is(err, syscall.ENOENT)
+}
+
 // Send dials the daemon, writes the given Request, and returns the Response.
+// Transient dial errors (ECONNREFUSED, EAGAIN, ENOENT) are retried up to 3 times
+// with exponential backoff.
 func (c *Client) Send(req *Request) (*Response, error) {
-	conn, err := net.DialTimeout("unix", c.socketPath, c.timeout)
-	if err != nil {
+	var conn net.Conn
+	var dialErr error
+	backoff := 100 * time.Millisecond
+
+	for attempt := 0; attempt < maxDialRetries; attempt++ {
+		conn, dialErr = net.DialTimeout("unix", c.socketPath, c.timeout)
+		if dialErr == nil {
+			break
+		}
+		if !isTransientDialError(dialErr) {
+			break
+		}
+		if attempt < maxDialRetries-1 {
+			time.Sleep(backoff)
+			backoff *= 2
+		}
+	}
+	if dialErr != nil {
 		return nil, fmt.Errorf(
 			"failed to connect to daemon at %s: %w\n"+
 				"Is the daemon running? Start it with: maestro daemon",
-			c.socketPath, err,
+			c.socketPath, dialErr,
 		)
 	}
 	defer func() { _ = conn.Close() }()

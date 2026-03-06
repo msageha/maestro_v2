@@ -369,6 +369,16 @@ func TestIsPromptReady(t *testing.T) {
 			content: "\x1b[32msome colored text\x1b[0m\nno prompt\n",
 			want:    false,
 		},
+		{
+			name:    "markdown blockquote should not match fallback",
+			content: "output\n> This is a blockquote\n",
+			want:    false,
+		},
+		{
+			name:    "log line with > should not match fallback",
+			content: "output\n> 2024-01-01 some log entry\n",
+			want:    false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -483,9 +493,9 @@ func TestClearTextVisible(t *testing.T) {
 			want:    true,
 		},
 		{
-			name:    "clear as part of longer text (substring match)",
+			name:    "clear as part of longer text (not a command)",
 			content: "output\nRunning /clear command...\n",
-			want:    true,
+			want:    false,
 		},
 		{
 			name:    "clear after successful processing (gone)",

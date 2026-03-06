@@ -322,6 +322,51 @@ func TestDetectBusyWithRetry_ContextCancelled(t *testing.T) {
 	}
 }
 
+func TestDetectBusyWithRetry_UndecidedThenIdle(t *testing.T) {
+	callCount := 0
+	mock := &mockPaneIO{
+		currentCommand: "claude",
+		isShell:        false,
+		captureFn: func(paneTarget string, lastN int) (string, error) {
+			callCount++
+			// First call: capture error → undecided
+			if callCount <= 1 {
+				return "", fmt.Errorf("transient capture error")
+			}
+			// Subsequent calls: success
+			return "stable content", nil
+		},
+		joinedContent: []string{"stable", "stable"},
+	}
+	bd := newTestBusyDetector(mock, nil, fastConfig())
+
+	verdict := bd.DetectBusyWithRetry(context.Background(), "%0", "worker1")
+	if verdict != VerdictIdle {
+		t.Errorf("expected VerdictIdle after undecided retry, got %s", verdict)
+	}
+}
+
+func TestDetectBusyWithRetry_UndecidedExhaustsRetries(t *testing.T) {
+	mock := &mockPaneIO{
+		currentCommand: "claude",
+		isShell:        false,
+		captureFn: func(paneTarget string, lastN int) (string, error) {
+			return "", fmt.Errorf("persistent capture error")
+		},
+	}
+	cfg := BusyDetectorConfig{
+		IdleStableSec:       0,
+		BusyCheckMaxRetries: 2,
+		BusyCheckInterval:   0,
+	}
+	bd := newTestBusyDetector(mock, nil, cfg)
+
+	verdict := bd.DetectBusyWithRetry(context.Background(), "%0", "worker1")
+	if verdict != VerdictUndecided {
+		t.Errorf("expected VerdictUndecided after exhausting retries, got %s", verdict)
+	}
+}
+
 // --- BusyDetector Logging ---
 
 func TestBusyDetector_LogPrefix(t *testing.T) {
