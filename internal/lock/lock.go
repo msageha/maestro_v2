@@ -107,6 +107,9 @@ func (m *MutexMap) TryUnlock(key string) bool {
 func (m *MutexMap) Remove(key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if rm, ok := m.mutexes[key]; ok && rm.ref != 0 {
+		return // still in use, skip removal
+	}
 	delete(m.mutexes, key)
 }
 
