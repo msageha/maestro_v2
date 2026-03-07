@@ -34,6 +34,8 @@ type CancelHandler struct {
 	cachedExec    AgentExecutor
 	cachedExecErr error
 	execInit      bool
+
+	fieldMu sync.RWMutex // protects stateReader and worktreeManager
 }
 
 // NewCancelHandler creates a new CancelHandler.
@@ -101,24 +103,43 @@ func (ch *CancelHandler) CloseExecutor() {
 
 // SetStateReader wires the state reader for updating task states on cancellation.
 func (ch *CancelHandler) SetStateReader(reader StateReader) {
+	ch.fieldMu.Lock()
+	defer ch.fieldMu.Unlock()
 	ch.stateReader = reader
 }
 
 // SetWorktreeManager wires the worktree manager for cleanup on cancellation (H4).
 func (ch *CancelHandler) SetWorktreeManager(wm *WorktreeManager) {
+	ch.fieldMu.Lock()
+	defer ch.fieldMu.Unlock()
 	ch.worktreeManager = wm
+}
+
+// getStateReader returns the state reader with proper read-lock protection.
+func (ch *CancelHandler) getStateReader() StateReader {
+	ch.fieldMu.RLock()
+	defer ch.fieldMu.RUnlock()
+	return ch.stateReader
+}
+
+// getWorktreeManager returns the worktree manager with proper read-lock protection.
+func (ch *CancelHandler) getWorktreeManager() *WorktreeManager {
+	ch.fieldMu.RLock()
+	defer ch.fieldMu.RUnlock()
+	return ch.worktreeManager
 }
 
 // CleanupCommandWorktrees cleans up all worktrees for a cancelled command.
 // No-op if worktreeManager is nil (worktree feature disabled).
 func (ch *CancelHandler) CleanupCommandWorktrees(commandID string) {
-	if ch.worktreeManager == nil {
+	wm := ch.getWorktreeManager()
+	if wm == nil {
 		return
 	}
-	if !ch.worktreeManager.HasWorktrees(commandID) {
+	if !wm.HasWorktrees(commandID) {
 		return
 	}
-	if err := ch.worktreeManager.CleanupCommand(commandID); err != nil {
+	if err := wm.CleanupCommand(commandID); err != nil {
 		ch.log(LogLevelWarn, "cancel_worktree_cleanup command=%s error=%v", commandID, err)
 	} else {
 		ch.log(LogLevelInfo, "cancel_worktree_cleanup_done command=%s", commandID)
@@ -129,8 +150,9 @@ func (ch *CancelHandler) CleanupCommandWorktrees(commandID string) {
 // For submitted commands, state/commands/ is the authoritative source (spec §4.3).
 // Queue metadata (cancel_*) is only used for unsubmitted commands (no state file).
 func (ch *CancelHandler) IsCommandCancelRequested(cmd *model.Command) bool {
-	if ch.stateReader != nil {
-		requested, err := ch.stateReader.IsCommandCancelRequested(cmd.ID)
+	sr := ch.getStateReader()
+	if sr != nil {
+		requested, err := sr.IsCommandCancelRequested(cmd.ID)
 		if err == nil {
 			return requested
 		}
@@ -149,6 +171,7 @@ func (ch *CancelHandler) IsCommandCancelRequested(cmd *model.Command) bool {
 // CancelPendingTasks transitions pending tasks of a cancelled command to cancelled.
 // Returns the number of tasks cancelled (periodic scan step 0.5).
 func (ch *CancelHandler) CancelPendingTasks(tasks []model.Task, commandID string) []CancelledTaskResult {
+	sr := ch.getStateReader()
 	var results []CancelledTaskResult
 
 	for i := range tasks {
@@ -168,8 +191,8 @@ func (ch *CancelHandler) CancelPendingTasks(tasks []model.Task, commandID string
 		ch.log(LogLevelInfo, "cancel_pending task=%s command=%s", task.ID, commandID)
 
 		// Update state/commands/ with cancelled status + reason
-		if ch.stateReader != nil {
-			if err := ch.stateReader.UpdateTaskState(commandID, task.ID, model.StatusCancelled, "command_cancel_requested"); err != nil {
+		if sr != nil {
+			if err := sr.UpdateTaskState(commandID, task.ID, model.StatusCancelled, "command_cancel_requested"); err != nil {
 				ch.log(LogLevelWarn, "cancel_state_update task=%s error=%v", task.ID, err)
 			}
 		}
@@ -188,6 +211,8 @@ func (ch *CancelHandler) CancelPendingTasks(tasks []model.Task, commandID string
 // InterruptInProgressTasks interrupts in_progress tasks of a cancelled command.
 // Returns the number of tasks interrupted (periodic scan step 0.6).
 func (ch *CancelHandler) InterruptInProgressTasks(tasks []model.Task, commandID string, workerID string) []CancelledTaskResult {
+	sr := ch.getStateReader()
+	wm := ch.getWorktreeManager()
 	var results []CancelledTaskResult
 
 	for i := range tasks {
@@ -225,16 +250,16 @@ func (ch *CancelHandler) InterruptInProgressTasks(tasks []model.Task, commandID 
 		ch.log(LogLevelInfo, "cancel_inprogress task=%s command=%s", task.ID, commandID)
 
 		// H4: Discard uncommitted changes in worker worktree
-		if ch.worktreeManager != nil && workerID != "" {
-			if err := ch.worktreeManager.DiscardWorkerChanges(commandID, workerID); err != nil {
+		if wm != nil && workerID != "" {
+			if err := wm.DiscardWorkerChanges(commandID, workerID); err != nil {
 				ch.log(LogLevelWarn, "cancel_worktree_discard task=%s worker=%s error=%v",
 					task.ID, workerID, err)
 			}
 		}
 
 		// Update state/commands/ with cancelled status + reason
-		if ch.stateReader != nil {
-			if err := ch.stateReader.UpdateTaskState(commandID, task.ID, model.StatusCancelled, "command_cancel_requested"); err != nil {
+		if sr != nil {
+			if err := sr.UpdateTaskState(commandID, task.ID, model.StatusCancelled, "command_cancel_requested"); err != nil {
 				ch.log(LogLevelWarn, "cancel_state_update task=%s error=%v", task.ID, err)
 			}
 		}
@@ -254,6 +279,8 @@ func (ch *CancelHandler) InterruptInProgressTasks(tasks []model.Task, commandID 
 // InterruptInProgressTasks but defers the actual tmux interrupt to Phase B.
 // Returns cancelled results and interrupt items to execute later.
 func (ch *CancelHandler) InterruptInProgressTasksDeferred(tasks []model.Task, commandID string, workerID string) ([]CancelledTaskResult, []interruptItem) {
+	sr := ch.getStateReader()
+	wm := ch.getWorktreeManager()
 	var results []CancelledTaskResult
 	var interrupts []interruptItem
 
@@ -291,15 +318,15 @@ func (ch *CancelHandler) InterruptInProgressTasksDeferred(tasks []model.Task, co
 		ch.log(LogLevelInfo, "cancel_inprogress_deferred task=%s command=%s", task.ID, commandID)
 
 		// H4: Discard uncommitted changes in worker worktree
-		if ch.worktreeManager != nil && workerID != "" {
-			if err := ch.worktreeManager.DiscardWorkerChanges(commandID, workerID); err != nil {
+		if wm != nil && workerID != "" {
+			if err := wm.DiscardWorkerChanges(commandID, workerID); err != nil {
 				ch.log(LogLevelWarn, "cancel_worktree_discard task=%s worker=%s error=%v",
 					task.ID, workerID, err)
 			}
 		}
 
-		if ch.stateReader != nil {
-			if err := ch.stateReader.UpdateTaskState(commandID, task.ID, model.StatusCancelled, "command_cancel_requested"); err != nil {
+		if sr != nil {
+			if err := sr.UpdateTaskState(commandID, task.ID, model.StatusCancelled, "command_cancel_requested"); err != nil {
 				ch.log(LogLevelWarn, "cancel_state_update task=%s error=%v", task.ID, err)
 			}
 		}
