@@ -48,6 +48,8 @@ func runQueueWrite(args []string) error {
 	fs.Var(&constraints, "constraint", "")
 	fs.Var(&toolsHint, "tools-hint", "")
 	fs.StringVar(&personaHint, "persona-hint", "", "")
+	var skillRefs stringSliceFlag
+	fs.Var(&skillRefs, "skill-refs", "")
 	fs.StringVar(&reason, "reason", "", "")
 
 	if err := fs.Parse(args[1:]); err != nil {
@@ -104,6 +106,9 @@ func runQueueWrite(args []string) error {
 		}
 		if personaHint != "" {
 			params["persona_hint"] = personaHint
+		}
+		if len(skillRefs) > 0 {
+			params["skill_refs"] = skillRefs
 		}
 	case "notification":
 		if commandID == "" || content == "" || sourceResultID == "" {

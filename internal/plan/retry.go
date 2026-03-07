@@ -28,6 +28,7 @@ type RetryOptions struct {
 	BloomLevel         int
 	ToolsHint          []string
 	PersonaHint        string
+	SkillRefs          []string
 	MaestroDir         string
 	Config             model.Config
 	LockMap            *lock.MutexMap
@@ -217,6 +218,7 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 		bloomLevel:         opts.BloomLevel,
 		toolsHint:          opts.ToolsHint,
 		personaHint:        opts.PersonaHint,
+		skillRefs:          opts.SkillRefs,
 		workerID:           assignment.WorkerID,
 	}
 
@@ -236,6 +238,7 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 		var constraints []string
 		var toolsHint []string
 		var personaHint string
+		var skillRefs []string
 
 		if orig, ok := origTaskCache[cr.Replaced]; ok {
 			purpose = orig.Purpose
@@ -245,6 +248,7 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 			constraints = orig.Constraints
 			toolsHint = orig.ToolsHint
 			personaHint = orig.PersonaHint
+			skillRefs = orig.SkillRefs
 		}
 
 		crTask := retryQueueTask{
@@ -258,6 +262,7 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 			bloomLevel:         bloomLevel,
 			toolsHint:          toolsHint,
 			personaHint:        personaHint,
+			skillRefs:          skillRefs,
 			workerID:           cr.Worker,
 		}
 		if err := writeRetryQueueEntry(opts.MaestroDir, crTask, now, opts.LockMap); err != nil {
@@ -495,6 +500,7 @@ type retryQueueTask struct {
 	bloomLevel         int
 	toolsHint          []string
 	personaHint        string
+	skillRefs          []string
 	workerID           string
 }
 
@@ -532,6 +538,7 @@ func writeRetryQueueEntry(maestroDir string, task retryQueueTask, now string, lo
 		BloomLevel:         task.bloomLevel,
 		ToolsHint:          task.toolsHint,
 		PersonaHint:        task.personaHint,
+		SkillRefs:          task.skillRefs,
 		Priority:           100,
 		Status:             model.StatusPending,
 		CreatedAt:          now,

@@ -18,6 +18,7 @@ type TaskInput struct {
 	Required           bool     `yaml:"required"`
 	ToolsHint          []string `yaml:"tools_hint"`
 	PersonaHint        string   `yaml:"persona_hint"`
+	SkillRefs          []string `yaml:"skill_refs"`
 }
 
 // PhaseInput represents a phase definition containing grouped tasks with ordering constraints.
