@@ -91,6 +91,8 @@ func run() int {
 		err = runAgent(os.Args[2:])
 	case "worker":
 		err = runWorker(os.Args[2:])
+	case "skill":
+		err = runSkill(os.Args[2:])
 	case "dashboard":
 		err = runDashboard(os.Args[2:])
 	case "version":
@@ -175,6 +177,12 @@ Internal:
   agent launch      Launch agent in tmux pane
   agent exec        Send message to agent
   task heartbeat    Send heartbeat for an active task
+
+Skill Management:
+  skill list                  List registered skills
+  skill candidates [--status] List skill candidates
+  skill approve <id> [--name] Approve a skill candidate
+  skill reject <id>           Reject a skill candidate
 
 Utilities:
   worker standby    Show idle workers
