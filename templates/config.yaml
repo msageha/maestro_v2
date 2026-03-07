@@ -98,6 +98,16 @@ worktree:
     ttl_hours: 24                  # 古い worktree の TTL (時間)
     max_worktrees: 32              # 最大 worktree 数
 
+skills:
+  enabled: false                    # スキル参照機能の有効化フラグ (opt-in)
+  max_refs_per_task: 3              # タスクあたりの最大スキル参照数
+  max_body_chars: 2000              # スキル本文の最大文字数
+  missing_ref_policy: "warn"        # 参照先スキルが見つからない場合の動作: "warn" or "error"
+  auto_collect:
+    enabled: false                  # 学習知見からの自動スキル収集 (opt-in)
+    min_occurrences: 3              # 自動収集の最小出現回数
+    min_commands: 2                 # 自動収集の最小コマンド数
+
 personas:
   general:
     description: "汎用的な開発タスク向けペルソナ"
