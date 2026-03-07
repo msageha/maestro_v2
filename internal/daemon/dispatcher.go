@@ -73,6 +73,10 @@ func NewDispatcher(maestroDir string, cfg model.Config, lm *LeaseManager, logger
 
 // SetExecutorFactory overrides the executor factory for testing.
 // Resets the cached executor so the new factory is used on next call.
+// Close() is called under the lock to prevent a race where concurrent
+// SetExecutorFactory calls could both obtain the same old executor and
+// double-close it, or where getExecutor() could be called between unlock
+// and Close() returning a stale reference.
 func (d *Dispatcher) SetExecutorFactory(f ExecutorFactory) {
 	d.execMu.Lock()
 	old := d.cachedExec
@@ -80,11 +84,10 @@ func (d *Dispatcher) SetExecutorFactory(f ExecutorFactory) {
 	d.cachedExec = nil
 	d.cachedExecErr = nil
 	d.execInit = false
-	d.execMu.Unlock()
-
 	if old != nil {
 		_ = old.Close()
 	}
+	d.execMu.Unlock()
 }
 
 // getExecutor returns the shared executor instance, creating it lazily on first call.

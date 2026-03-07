@@ -17,6 +17,9 @@ type EventBridge struct {
 // Uses safe type assertions with logging for dropped events.
 func (eb *EventBridge) subscribeQualityGateEvents() {
 	d := eb.d
+	if d.eventBus == nil {
+		return
+	}
 
 	// Subscribe to task started events
 	unsub1 := d.eventBus.Subscribe(events.EventTaskStarted, func(e events.Event) {
@@ -29,6 +32,9 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 			return
 		}
 
+		if d.qualityGateDaemon == nil {
+			return
+		}
 		d.qualityGateDaemon.EmitEvent(TaskStartEvent{
 			TaskID:    taskID,
 			CommandID: commandID,
@@ -59,6 +65,9 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 			return
 		}
 
+		if d.qualityGateDaemon == nil {
+			return
+		}
 		d.qualityGateDaemon.EmitEvent(TaskCompleteEvent{
 			TaskID:      taskID,
 			CommandID:   commandID,
@@ -80,6 +89,9 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 			return
 		}
 
+		if d.qualityGateDaemon == nil {
+			return
+		}
 		d.qualityGateDaemon.EmitEvent(PhaseTransitionEvent{
 			PhaseID:        phaseID,
 			CommandID:      commandID,
@@ -97,6 +109,9 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 // directly via the event bus, bypassing fsnotify for daemon-originated writes.
 func (eb *EventBridge) subscribeQueueWrittenEvents() {
 	d := eb.d
+	if d.eventBus == nil {
+		return
+	}
 	unsub := d.eventBus.Subscribe(events.EventQueueWritten, func(e events.Event) {
 		if d.handler == nil || d.shuttingDown.Load() {
 			return
