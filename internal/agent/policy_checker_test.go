@@ -226,7 +226,7 @@ func TestHookScript_ChecksWriteEditToolNames(t *testing.T) {
 func TestHookScript_ProtectsMaestroControlPlanePaths(t *testing.T) {
 	controlPaths := []string{
 		".maestro/state",
-		".maestro/queues",
+		".maestro/queue",
 		".maestro/results",
 		".maestro/locks",
 		".maestro/logs",
