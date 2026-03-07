@@ -547,7 +547,7 @@ func TestCircuitBreakerConfig_EffectiveProgressTimeoutMinutes(t *testing.T) {
 		value int
 		want  int
 	}{
-		{"zero means disabled", 0, 0},
+		{"zero returns default 30", 0, 30},
 		{"positive returns configured", 30, 30},
 		{"custom value", 60, 60},
 	}
@@ -630,7 +630,7 @@ func TestLearningsConfig_EffectiveTTLHours(t *testing.T) {
 		value int
 		want  int
 	}{
-		{"zero means unlimited", 0, 0},
+		{"zero returns default 72", 0, 72},
 		{"positive returns configured", 72, 72},
 		{"custom value", 24, 24},
 	}

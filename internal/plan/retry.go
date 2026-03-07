@@ -313,6 +313,7 @@ func replaceInRequiredOrOptional(state *model.CommandState, oldID, newID string)
 			return
 		}
 	}
+	log.Printf("WARN replaceInRequiredOrOptional: oldID %s not found in required or optional task IDs", oldID)
 }
 
 func rewriteDependencies(state *model.CommandState, oldID, newID string) {
