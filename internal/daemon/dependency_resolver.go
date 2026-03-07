@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -9,6 +10,10 @@ import (
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
 )
+
+// defaultStateReadTimeout is the maximum time allowed for stateReader operations
+// to prevent indefinite hangs on I/O (e.g., NFS, slow disk). M-13.
+const defaultStateReadTimeout = 10 * time.Second
 
 // StateReader, PhaseInfo, ErrStateNotFound, ErrPhaseNotFound are defined in
 // internal/daemon/core and re-exported via core_aliases.go.
@@ -41,6 +46,7 @@ func (dr *DependencyResolver) SetEventBus(bus *events.Bus) {
 
 // IsTaskBlocked checks if a task's blocked_by dependencies are all resolved.
 // Returns true if the task is still blocked.
+// M-13: Uses a timeout to prevent indefinite hangs on stateReader operations.
 func (dr *DependencyResolver) IsTaskBlocked(task *model.Task) (bool, error) {
 	if len(task.BlockedBy) == 0 {
 		return false, nil
@@ -51,21 +57,40 @@ func (dr *DependencyResolver) IsTaskBlocked(task *model.Task) (bool, error) {
 		return len(task.BlockedBy) > 0, nil
 	}
 
-	for _, depTaskID := range task.BlockedBy {
-		status, err := dr.stateReader.GetTaskState(task.CommandID, depTaskID)
-		if err != nil {
-			dr.log(LogLevelWarn, "dependency_check task=%s dep=%s error=%v", task.ID, depTaskID, err)
-			return true, err
-		}
-		if status != model.StatusCompleted {
-			dr.log(LogLevelDebug, "task_blocked task=%s blocked_by=%s dep_status=%s",
-				task.ID, depTaskID, status)
-			return true, nil
-		}
+	type result struct {
+		blocked bool
+		err     error
 	}
+	ch := make(chan result, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), defaultStateReadTimeout)
+	defer cancel()
 
-	dr.log(LogLevelDebug, "task_unblocked task=%s", task.ID)
-	return false, nil
+	go func() {
+		for _, depTaskID := range task.BlockedBy {
+			status, err := dr.stateReader.GetTaskState(task.CommandID, depTaskID)
+			if err != nil {
+				dr.log(LogLevelWarn, "dependency_check task=%s dep=%s error=%v", task.ID, depTaskID, err)
+				ch <- result{true, err}
+				return
+			}
+			if status != model.StatusCompleted {
+				dr.log(LogLevelDebug, "task_blocked task=%s blocked_by=%s dep_status=%s",
+					task.ID, depTaskID, status)
+				ch <- result{true, nil}
+				return
+			}
+		}
+		dr.log(LogLevelDebug, "task_unblocked task=%s", task.ID)
+		ch <- result{false, nil}
+	}()
+
+	select {
+	case r := <-ch:
+		return r.blocked, r.err
+	case <-ctx.Done():
+		dr.log(LogLevelError, "dependency_check_timeout task=%s timeout=%s", task.ID, defaultStateReadTimeout)
+		return true, fmt.Errorf("dependency check timed out after %s", defaultStateReadTimeout)
+	}
 }
 
 // CheckDependencyFailure checks if any of a task's dependencies have failed.

@@ -1,6 +1,9 @@
 package agent
 
-import "fmt"
+import (
+	"fmt"
+	"sync"
+)
 
 // PaneStateManager centralizes management of tmux user variables that track
 // pane state (clear_ready, clear_ready_pid, cwd, status). This extracts the
@@ -9,7 +12,11 @@ import "fmt"
 // All state is stored as tmux user variables (@clear_ready, @clear_ready_pid,
 // @cwd, @status) on the target pane. PaneStateManager is stateless itself —
 // it delegates all reads/writes to PaneIO.
+//
+// M-11: A mutex serializes concurrent access to tmux user variables
+// to prevent races between multiple goroutines operating on the same pane.
 type PaneStateManager struct {
+	mu     sync.Mutex
 	paneIO PaneIO
 }
 
@@ -21,6 +28,8 @@ func NewPaneStateManager(paneIO PaneIO) *PaneStateManager {
 // IsClearReady returns whether the pane has an active conversation and is
 // ready for /clear. Returns false if the variable is unset or on error.
 func (m *PaneStateManager) IsClearReady(paneTarget string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	v, err := m.paneIO.GetUserVar(paneTarget, "clear_ready")
 	return err == nil && v == "true"
 }
@@ -28,6 +37,12 @@ func (m *PaneStateManager) IsClearReady(paneTarget string) bool {
 // SetClearReady marks the pane as having an active conversation (clear_ready=true)
 // and records the current PID for restart detection.
 func (m *PaneStateManager) SetClearReady(paneTarget, pid string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.setClearReadyLocked(paneTarget, pid)
+}
+
+func (m *PaneStateManager) setClearReadyLocked(paneTarget, pid string) error {
 	if err := m.paneIO.SetUserVar(paneTarget, "clear_ready", "true"); err != nil {
 		return fmt.Errorf("set clear_ready: %w", err)
 	}
@@ -42,6 +57,12 @@ func (m *PaneStateManager) SetClearReady(paneTarget, pid string) error {
 // ResetClearReady clears both clear_ready and clear_ready_pid.
 // Used when a /clear fails, the process restarts, or the working directory changes.
 func (m *PaneStateManager) ResetClearReady(paneTarget string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.resetClearReadyLocked(paneTarget)
+}
+
+func (m *PaneStateManager) resetClearReadyLocked(paneTarget string) error {
 	var firstErr error
 	if err := m.paneIO.SetUserVar(paneTarget, "clear_ready", ""); err != nil {
 		firstErr = fmt.Errorf("reset clear_ready: %w", err)
@@ -60,6 +81,9 @@ func (m *PaneStateManager) ResetClearReady(paneTarget string) error {
 // re-read after resetting clear_ready. If it changed again, the caller
 // still gets the latest PID.
 func (m *PaneStateManager) DetectProcessRestart(paneTarget string) (restarted bool, currentPID string, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	currentPID, err = m.paneIO.GetPanePID(paneTarget)
 	if err != nil {
 		return false, "", fmt.Errorf("get pane pid: %w", err)
@@ -73,7 +97,7 @@ func (m *PaneStateManager) DetectProcessRestart(paneTarget string) (restarted bo
 		// Process restarted — reset clear_ready.
 		// Reset errors are non-fatal: the caller should still know a restart
 		// occurred even if the reset partially failed.
-		resetErr := m.ResetClearReady(paneTarget)
+		resetErr := m.resetClearReadyLocked(paneTarget)
 
 		// Re-read PID to mitigate TOCTOU: if the process restarted again
 		// between the first read and now, return the latest PID.
@@ -89,16 +113,22 @@ func (m *PaneStateManager) DetectProcessRestart(paneTarget string) (restarted bo
 
 // SetStatus sets the @status user variable on the pane.
 func (m *PaneStateManager) SetStatus(paneTarget, status string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.paneIO.SetUserVar(paneTarget, "status", status)
 }
 
 // SetCWD updates the @cwd tracking variable.
 func (m *PaneStateManager) SetCWD(paneTarget, cwd string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.paneIO.SetUserVar(paneTarget, "cwd", cwd)
 }
 
 // GetCWD returns the current tracked working directory.
 func (m *PaneStateManager) GetCWD(paneTarget string) string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	v, _ := m.paneIO.GetUserVar(paneTarget, "cwd")
 	return v
 }
