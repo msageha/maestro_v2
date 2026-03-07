@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
 )
@@ -19,11 +20,11 @@ func (d *Daemon) waitSignals() {
 	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	defer signal.Stop(sigCh)
 
-	d.log(LogLevelInfo, "waitSignals: listening for SIGTERM/SIGINT")
+	d.log(core.LogLevelInfo, "waitSignals: listening for SIGTERM/SIGINT")
 
 	select {
 	case sig := <-sigCh:
-		d.log(LogLevelInfo, "received signal=%s, initiating graceful shutdown (session_alive=%v)", sig, tmux.SessionExists())
+		d.log(core.LogLevelInfo, "received signal=%s, initiating graceful shutdown (session_alive=%v)", sig, tmux.SessionExists())
 
 		// Second signal → force exit.
 		// shutdownDone unblocks this goroutine when Shutdown completes,
@@ -32,7 +33,7 @@ func (d *Daemon) waitSignals() {
 		go func() {
 			select {
 			case <-sigCh:
-				d.log(LogLevelWarn, "received second signal, forcing exit")
+				d.log(core.LogLevelWarn, "received second signal, forcing exit")
 				d.forceExit.Store(true)
 				d.cleanup()
 				os.Exit(1)
@@ -44,7 +45,7 @@ func (d *Daemon) waitSignals() {
 		d.Shutdown()
 		close(shutdownDone)
 	case <-d.ctx.Done():
-		d.log(LogLevelInfo, "context cancelled, waiting for shutdown to complete")
+		d.log(core.LogLevelInfo, "context cancelled, waiting for shutdown to complete")
 		d.Shutdown()
 	}
 }
@@ -58,7 +59,7 @@ func (d *Daemon) waitSignals() {
 // 5. Dump goroutine stacks on timeout for debugging.
 func (d *Daemon) Shutdown() {
 	d.shutdown.Do(func() {
-		d.log(LogLevelInfo, "shutdown started session_alive=%v", tmux.SessionExists())
+		d.log(core.LogLevelInfo, "shutdown started session_alive=%v", tmux.SessionExists())
 
 		totalTimeout := d.config.Daemon.ShutdownTimeoutSec
 		if totalTimeout <= 0 {
@@ -76,12 +77,12 @@ func (d *Daemon) Shutdown() {
 		}
 		if d.watcher != nil {
 			if err := d.watcher.Close(); err != nil {
-				d.log(LogLevelError, "shutdown watcher_close error=%v", err)
+				d.log(core.LogLevelError, "shutdown watcher_close error=%v", err)
 			}
 		}
 		if d.server != nil {
 			if err := d.server.Stop(); err != nil {
-				d.log(LogLevelError, "shutdown server_stop error=%v", err)
+				d.log(core.LogLevelError, "shutdown server_stop error=%v", err)
 			}
 		}
 
@@ -107,11 +108,11 @@ func (d *Daemon) Shutdown() {
 
 			select {
 			case <-done:
-				d.log(LogLevelInfo, "shutdown all_goroutines_drained")
+				d.log(core.LogLevelInfo, "shutdown all_goroutines_drained")
 			case <-time.After(totalDuration):
 				buf := make([]byte, 256*1024)
 				n := runtime.Stack(buf, true)
-				d.log(LogLevelWarn, "shutdown timeout after %ds, dumping %d bytes of goroutine stacks:\n%s",
+				d.log(core.LogLevelWarn, "shutdown timeout after %ds, dumping %d bytes of goroutine stacks:\n%s",
 					totalTimeout, n, string(buf[:n]))
 			}
 		}
@@ -125,7 +126,7 @@ func (d *Daemon) Shutdown() {
 			d.handler.cancelHandler.CloseExecutor()
 		}
 
-		d.log(LogLevelInfo, "daemon stopped")
+		d.log(core.LogLevelInfo, "daemon stopped")
 		d.cleanup()
 	})
 }
@@ -135,15 +136,15 @@ func (d *Daemon) cleanup() {
 	d.cleanupOnce.Do(func() {
 		socketPath := filepath.Join(d.maestroDir, uds.DefaultSocketName)
 		if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
-			d.log(LogLevelError, "cleanup remove_socket error=%v", err)
+			d.log(core.LogLevelError, "cleanup remove_socket error=%v", err)
 		}
 		// Remove PID file while lock is still held so no concurrent starter
 		// reads a stale PID between lock release and PID file removal.
 		if err := os.Remove(filepath.Join(d.maestroDir, "daemon.pid")); err != nil && !os.IsNotExist(err) {
-			d.log(LogLevelError, "cleanup remove_pid error=%v", err)
+			d.log(core.LogLevelError, "cleanup remove_pid error=%v", err)
 		}
 		if err := d.fileLock.Unlock(); err != nil {
-			d.log(LogLevelError, "cleanup file_unlock error=%v", err)
+			d.log(core.LogLevelError, "cleanup file_unlock error=%v", err)
 		}
 		// Disable tmux debug logger before closing the file
 		tmux.SetDebugLogger(nil)

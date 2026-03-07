@@ -12,60 +12,64 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/daemon/learnings"
-	"github.com/msageha/maestro_v2/internal/daemon/persona"
 	"github.com/msageha/maestro_v2/internal/daemon/skill"
+	"github.com/msageha/maestro_v2/internal/daemon/worktree"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// errExecutorInit is re-exported from core via core_aliases.go.
 
 // maxGateEvaluations is the maximum number of gate evaluation entries kept in memory.
 const maxGateEvaluations = 1000
 
+// executorErrorTTL is how long a failed executor factory result is cached
+// before the next getExecutor call retries creation.
+const executorErrorTTL = 30 * time.Second
+
 // Dispatcher handles priority sorting and agent_executor dispatch.
 type Dispatcher struct {
-	maestroDir        string
-	config            model.Config
-	leaseManager      *LeaseManager
-	dl                *DaemonLogger
-	logger            *log.Logger
-	logLevel          LogLevel
-	clock             Clock
-	executorFactory   ExecutorFactory
-	eventBus          *events.Bus
-	qualityGate       *QualityGateDaemon
-	gateEvaluations   map[string]*model.QualityGateEvaluation // task_id -> evaluation
-	gateEvalMutex     sync.RWMutex
+	maestroDir      string
+	config          model.Config
+	leaseManager    *LeaseManager
+	dl              *core.DaemonLogger
+	logger          *log.Logger
+	logLevel        core.LogLevel
+	clock           core.Clock
+	executorFactory core.ExecutorFactory
+	eventBus        *events.Bus
+	qualityGate     *QualityGateDaemon
+	gateEvaluations map[string]*model.QualityGateEvaluation // task_id -> evaluation
+	gateEvalMutex   sync.RWMutex
 
 	// cachedExec is a shared Executor instance created once and reused across
 	// dispatch calls. This avoids per-dispatch log file Open/Close overhead.
 	// All access is protected by execMu to prevent data races during shutdown
 	// (CloseExecutor) and testing (SetExecutorFactory).
-	execMu        sync.Mutex
-	cachedExec    AgentExecutor
-	cachedExecErr error
-	execInit      bool
+	execMu          sync.Mutex
+	cachedExec      core.AgentExecutor
+	cachedExecErr   error
+	cachedExecErrAt time.Time
+	execInit        bool
 
-	worktreeManager *WorktreeManager
+	worktreeManager *worktree.Manager
 }
 
-// ExecutorFactory, AgentExecutor are defined in internal/daemon/core
-// and re-exported via core_aliases.go.
+// core.ExecutorFactory, core.AgentExecutor are defined in internal/daemon/core.
 
 // NewDispatcher creates a new Dispatcher.
-func NewDispatcher(maestroDir string, cfg model.Config, lm *LeaseManager, logger *log.Logger, logLevel LogLevel) *Dispatcher {
+func NewDispatcher(maestroDir string, cfg model.Config, lm *LeaseManager, logger *log.Logger, logLevel core.LogLevel) *Dispatcher {
 	return &Dispatcher{
 		maestroDir:      maestroDir,
 		config:          cfg,
 		leaseManager:    lm,
-		dl:              NewDaemonLoggerFromLegacy("dispatcher", logger, logLevel),
+		dl:              core.NewDaemonLoggerFromLegacy("dispatcher", logger, logLevel),
 		logger:          logger,
 		logLevel:        logLevel,
-		clock:           RealClock{},
+		clock:           core.RealClock{},
 		gateEvaluations: make(map[string]*model.QualityGateEvaluation),
-		executorFactory: func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+		executorFactory: func(dir string, wcfg model.WatcherConfig, level string) (core.AgentExecutor, error) {
 			return agent.NewExecutor(dir, wcfg, level)
 		},
 	}
@@ -73,12 +77,13 @@ func NewDispatcher(maestroDir string, cfg model.Config, lm *LeaseManager, logger
 
 // SetExecutorFactory overrides the executor factory for testing.
 // Resets the cached executor so the new factory is used on next call.
-func (d *Dispatcher) SetExecutorFactory(f ExecutorFactory) {
+func (d *Dispatcher) SetExecutorFactory(f core.ExecutorFactory) {
 	d.execMu.Lock()
 	old := d.cachedExec
 	d.executorFactory = f
 	d.cachedExec = nil
 	d.cachedExecErr = nil
+	d.cachedExecErrAt = time.Time{}
 	d.execInit = false
 	d.execMu.Unlock()
 
@@ -90,15 +95,23 @@ func (d *Dispatcher) SetExecutorFactory(f ExecutorFactory) {
 // getExecutor returns the shared executor instance, creating it lazily on first call.
 // The Executor is safe for concurrent use (log.Logger uses internal mutex,
 // os.File in append mode is POSIX-safe, all other fields are immutable).
-func (d *Dispatcher) getExecutor() (AgentExecutor, error) {
+func (d *Dispatcher) getExecutor() (core.AgentExecutor, error) {
 	d.execMu.Lock()
 	defer d.execMu.Unlock()
+	if d.execInit && d.cachedExecErr != nil && d.clock.Now().Sub(d.cachedExecErrAt) >= executorErrorTTL {
+		d.execInit = false
+	}
 	if !d.execInit {
 		d.cachedExec, d.cachedExecErr = d.executorFactory(d.maestroDir, d.config.Watcher, d.config.Logging.Level)
 		d.execInit = true
+		if d.cachedExecErr != nil {
+			d.cachedExecErrAt = d.clock.Now()
+		} else {
+			d.cachedExecErrAt = time.Time{}
+		}
 	}
 	if d.cachedExecErr != nil {
-		return nil, fmt.Errorf("%w: %v", errExecutorInit, d.cachedExecErr)
+		return nil, fmt.Errorf("%w: %v", core.ErrExecutorInit, d.cachedExecErr)
 	}
 	return d.cachedExec, nil
 }
@@ -110,6 +123,7 @@ func (d *Dispatcher) CloseExecutor() {
 	exec := d.cachedExec
 	d.cachedExec = nil
 	d.cachedExecErr = nil
+	d.cachedExecErrAt = time.Time{}
 	d.execInit = false
 	d.execMu.Unlock()
 
@@ -129,7 +143,7 @@ func (d *Dispatcher) SetQualityGate(qg *QualityGateDaemon) {
 }
 
 // SetWorktreeManager wires the worktree manager for worker path resolution during dispatch.
-func (d *Dispatcher) SetWorktreeManager(wm *WorktreeManager) {
+func (d *Dispatcher) SetWorktreeManager(wm *worktree.Manager) {
 	d.worktreeManager = wm
 }
 
@@ -243,12 +257,12 @@ func (d *Dispatcher) DispatchCommand(cmd *model.Command) error {
 	})
 
 	if result.Error != nil {
-		d.log(LogLevelError, "dispatch_command_failed id=%s error=%v retryable=%v",
+		d.log(core.LogLevelError, "dispatch_command_failed id=%s error=%v retryable=%v",
 			cmd.ID, result.Error, result.Retryable)
 		return result.Error
 	}
 
-	d.log(LogLevelInfo, "dispatch_command_success id=%s epoch=%d", cmd.ID, cmd.LeaseEpoch)
+	d.log(core.LogLevelInfo, "dispatch_command_success id=%s epoch=%d", cmd.ID, cmd.LeaseEpoch)
 	return nil
 }
 
@@ -262,14 +276,14 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 
 		if err != nil {
 			if d.config.QualityGates.Enforcement.FailureAction == "block" {
-				d.log(LogLevelError, "dispatch_task_blocked_by_quality_gate id=%s worker=%s error=%v",
+				d.log(core.LogLevelError, "dispatch_task_blocked_by_quality_gate id=%s worker=%s error=%v",
 					task.ID, workerID, err)
 				// Store evaluation result for later recording
 				d.storeGateEvaluation(task.ID, gateEvaluation)
 				return fmt.Errorf("quality gate check failed: %w", err)
 			}
 			// If action is "warn", just log the violation
-			d.log(LogLevelWarn, "dispatch_task_quality_gate_violation id=%s worker=%s error=%v",
+			d.log(core.LogLevelWarn, "dispatch_task_quality_gate_violation id=%s worker=%s error=%v",
 				task.ID, workerID, err)
 		}
 		// Store evaluation result for later recording
@@ -297,23 +311,14 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 		return fmt.Errorf("create executor: %w", err)
 	}
 
-	// Inject persona prompt into task content (best-effort, prepend)
 	dispatchTask := *task
-	if task.PersonaHint != "" {
-		if section, found := persona.FormatPersonaSection(d.config.Personas, task.PersonaHint); !found {
-			d.log(LogLevelWarn, "persona_not_found task=%s persona_hint=%s", task.ID, task.PersonaHint)
-		} else if section != "" {
-			dispatchTask.Content = section + dispatchTask.Content
-			d.log(LogLevelDebug, "persona_injected task=%s persona=%s", task.ID, task.PersonaHint)
-		}
-	}
 
 	// Inject skills into task content (between content and learnings)
 	if d.config.Skills.Enabled && len(task.SkillRefs) > 0 {
 		refs := task.SkillRefs
 		maxRefs := d.config.Skills.EffectiveMaxRefsPerTask()
 		if len(refs) > maxRefs {
-			d.log(LogLevelWarn, "skill_refs_truncated task=%s total=%d max=%d", task.ID, len(refs), maxRefs)
+			d.log(core.LogLevelWarn, "skill_refs_truncated task=%s total=%d max=%d", task.ID, len(refs), maxRefs)
 			refs = refs[:maxRefs]
 		}
 
@@ -328,9 +333,9 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 				}
 				// warn policy: log and skip
 				if errors.Is(err, os.ErrNotExist) {
-					d.log(LogLevelWarn, "skill_ref_not_found task=%s ref=%s", task.ID, ref)
+					d.log(core.LogLevelWarn, "skill_ref_not_found task=%s ref=%s", task.ID, ref)
 				} else {
-					d.log(LogLevelWarn, "skill_read_failed task=%s ref=%s error=%v", task.ID, ref, err)
+					d.log(core.LogLevelWarn, "skill_read_failed task=%s ref=%s error=%v", task.ID, ref, err)
 				}
 				continue
 			}
@@ -339,7 +344,7 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 
 		if section := skill.FormatSkillSection(loaded, d.config.Skills.EffectiveMaxBodyChars()); section != "" {
 			dispatchTask.Content = dispatchTask.Content + section
-			d.log(LogLevelDebug, "skills_injected task=%s count=%d", task.ID, len(loaded))
+			d.log(core.LogLevelDebug, "skills_injected task=%s count=%d", task.ID, len(loaded))
 		}
 	}
 
@@ -347,10 +352,10 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 	if d.config.Learnings.Enabled {
 		lrns, err := learnings.ReadTopKLearnings(d.maestroDir, d.config.Learnings, d.clock.Now())
 		if err != nil {
-			d.log(LogLevelWarn, "learnings_read_failed task=%s error=%v", task.ID, err)
+			d.log(core.LogLevelWarn, "learnings_read_failed task=%s error=%v", task.ID, err)
 		} else if section := learnings.FormatLearningsSection(lrns); section != "" {
 			dispatchTask.Content = dispatchTask.Content + section
-			d.log(LogLevelDebug, "learnings_injected task=%s count=%d", task.ID, len(lrns))
+			d.log(core.LogLevelDebug, "learnings_injected task=%s count=%d", task.ID, len(lrns))
 		}
 	}
 
@@ -361,14 +366,14 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 		if err != nil {
 			// Worktree doesn't exist yet — lazily create for this worker
 			if createErr := d.worktreeManager.EnsureWorkerWorktree(task.CommandID, workerID); createErr != nil {
-				d.log(LogLevelError, "worktree_create_failed task=%s worker=%s error=%v",
+				d.log(core.LogLevelError, "worktree_create_failed task=%s worker=%s error=%v",
 					task.ID, workerID, createErr)
 				return fmt.Errorf("worktree path resolution failed: %w", createErr)
 			}
 			wtPath, err = d.worktreeManager.GetWorkerPath(task.CommandID, workerID)
 		}
 		if err != nil {
-			d.log(LogLevelError, "worktree_path_resolve_failed task=%s worker=%s error=%v",
+			d.log(core.LogLevelError, "worktree_path_resolve_failed task=%s worker=%s error=%v",
 				task.ID, workerID, err)
 			return fmt.Errorf("worktree path resolution failed: %w", err)
 		}
@@ -392,12 +397,12 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 	})
 
 	if result.Error != nil {
-		d.log(LogLevelError, "dispatch_task_failed id=%s worker=%s error=%v retryable=%v",
+		d.log(core.LogLevelError, "dispatch_task_failed id=%s worker=%s error=%v retryable=%v",
 			task.ID, workerID, result.Error, result.Retryable)
 		return result.Error
 	}
 
-	d.log(LogLevelInfo, "dispatch_task_success id=%s worker=%s epoch=%d",
+	d.log(core.LogLevelInfo, "dispatch_task_success id=%s worker=%s epoch=%d",
 		task.ID, workerID, task.LeaseEpoch)
 
 	// Publish task_started event (non-blocking, best-effort)
@@ -432,17 +437,17 @@ func (d *Dispatcher) DispatchNotification(ntf *model.Notification) error {
 	})
 
 	if result.Error != nil {
-		d.log(LogLevelError, "dispatch_notification_failed id=%s error=%v retryable=%v",
+		d.log(core.LogLevelError, "dispatch_notification_failed id=%s error=%v retryable=%v",
 			ntf.ID, result.Error, result.Retryable)
 		return result.Error
 	}
 
-	d.log(LogLevelInfo, "dispatch_notification_success id=%s type=%s epoch=%d",
+	d.log(core.LogLevelInfo, "dispatch_notification_success id=%s type=%s epoch=%d",
 		ntf.ID, ntf.Type, ntf.LeaseEpoch)
 	return nil
 }
 
-func (d *Dispatcher) log(level LogLevel, format string, args ...any) {
+func (d *Dispatcher) log(level core.LogLevel, format string, args ...any) {
 	d.dl.Logf(level, format, args...)
 }
 
@@ -455,13 +460,13 @@ func (d *Dispatcher) shouldEvaluateQualityGates() bool {
 
 	// Skip if emergency mode is enabled (--skip-gates)
 	if d.config.QualityGates.SkipGates {
-		d.log(LogLevelInfo, "quality_gates_skipped reason=emergency_mode")
+		d.log(core.LogLevelInfo, "quality_gates_skipped reason=emergency_mode")
 		return false
 	}
 
 	// Skip if quality gate daemon is not available
 	if d.qualityGate == nil {
-		d.log(LogLevelDebug, "quality_gates_skipped reason=daemon_not_available")
+		d.log(core.LogLevelDebug, "quality_gates_skipped reason=daemon_not_available")
 		return false
 	}
 

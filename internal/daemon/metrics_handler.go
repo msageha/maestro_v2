@@ -10,6 +10,7 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -35,21 +36,21 @@ type ScanCounters struct {
 type MetricsHandler struct {
 	maestroDir string
 	config     model.Config
-	dl         *DaemonLogger
+	dl         *core.DaemonLogger
 	logger     *log.Logger
-	logLevel   LogLevel
-	clock      Clock
+	logLevel   core.LogLevel
+	clock      core.Clock
 }
 
 // NewMetricsHandler creates a new MetricsHandler.
-func NewMetricsHandler(maestroDir string, cfg model.Config, logger *log.Logger, logLevel LogLevel) *MetricsHandler {
+func NewMetricsHandler(maestroDir string, cfg model.Config, logger *log.Logger, logLevel core.LogLevel) *MetricsHandler {
 	return &MetricsHandler{
 		maestroDir: maestroDir,
 		config:     cfg,
-		dl:         NewDaemonLoggerFromLegacy("metrics", logger, logLevel),
+		dl:         core.NewDaemonLoggerFromLegacy("metrics", logger, logLevel),
 		logger:     logger,
 		logLevel:   logLevel,
-		clock:      RealClock{},
+		clock:      core.RealClock{},
 	}
 }
 
@@ -169,7 +170,7 @@ func (mh *MetricsHandler) loadAllResultFiles() map[string]*model.TaskResultFile 
 	entries, err := os.ReadDir(resultsDir)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			mh.log(LogLevelWarn, "read results dir: %v", err)
+			mh.log(core.LogLevelWarn, "read results dir: %v", err)
 		}
 		return nil
 	}
@@ -184,13 +185,13 @@ func (mh *MetricsHandler) loadAllResultFiles() map[string]*model.TaskResultFile 
 		path := filepath.Join(resultsDir, name)
 		data, err := os.ReadFile(path)
 		if err != nil {
-			mh.log(LogLevelWarn, "read result file %s: %v", name, err)
+			mh.log(core.LogLevelWarn, "read result file %s: %v", name, err)
 			continue
 		}
 
 		var rf model.TaskResultFile
 		if err := yamlv3.Unmarshal(data, &rf); err != nil {
-			mh.log(LogLevelWarn, "parse result file %s: %v", name, err)
+			mh.log(core.LogLevelWarn, "parse result file %s: %v", name, err)
 			continue
 		}
 
@@ -264,6 +265,6 @@ func atomicWriteText(path string, content string) error {
 	return os.Rename(tmpName, path)
 }
 
-func (mh *MetricsHandler) log(level LogLevel, format string, args ...any) {
+func (mh *MetricsHandler) log(level core.LogLevel, format string, args ...any) {
 	mh.dl.Logf(level, format, args...)
 }

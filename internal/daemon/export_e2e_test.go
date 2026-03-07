@@ -5,6 +5,7 @@ package daemon
 import (
 	"testing"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
@@ -20,10 +21,10 @@ func NewE2ETestDaemon(t *testing.T) *E2EDaemon {
 	return &E2EDaemon{D: newIntegrationDaemon(t)}
 }
 
-func (e *E2EDaemon) MaestroDir() string        { return e.D.maestroDir }
-func (e *E2EDaemon) Config() model.Config       { return e.D.config }
-func (e *E2EDaemon) LockMap() *lock.MutexMap    { return e.D.handler.lockMap }
-func (e *E2EDaemon) PeriodicScan()              { e.D.handler.PeriodicScan() }
+func (e *E2EDaemon) MaestroDir() string      { return e.D.maestroDir }
+func (e *E2EDaemon) Config() model.Config    { return e.D.config }
+func (e *E2EDaemon) LockMap() *lock.MutexMap { return e.D.handler.lockMap }
+func (e *E2EDaemon) PeriodicScan()           { e.D.handler.PeriodicScan() }
 func (e *E2EDaemon) HandlePlan(req *uds.Request) *uds.Response {
 	return e.D.handlePlan(req)
 }
@@ -77,7 +78,7 @@ func E2EWriteResultRaw(t *testing.T, e *E2EDaemon, params ResultWriteParams) *ud
 }
 
 // E2ESetExecutorFactory overrides the executor factory on the queue handler.
-func E2ESetExecutorFactory(e *E2EDaemon, factory func(string, model.WatcherConfig, string) (AgentExecutor, error)) {
+func E2ESetExecutorFactory(e *E2EDaemon, factory func(string, model.WatcherConfig, string) (core.AgentExecutor, error)) {
 	e.D.handler.SetExecutorFactory(factory)
 }
 

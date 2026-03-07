@@ -13,6 +13,7 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -24,8 +25,8 @@ func newTestReconciler(maestroDir string) *Reconciler {
 	}
 	lockMap := lock.NewMutexMap()
 	logger := log.New(&bytes.Buffer{}, "", 0)
-	rh := NewResultHandler(maestroDir, cfg, lockMap, logger, LogLevelDebug)
-	return NewReconciler(maestroDir, cfg, lockMap, logger, LogLevelDebug, rh, rh.executorFactory)
+	rh := NewResultHandler(maestroDir, cfg, lockMap, logger, core.LogLevelDebug)
+	return NewReconciler(maestroDir, cfg, lockMap, logger, core.LogLevelDebug, rh, rh.executorFactory)
 }
 
 func TestReconciler_R0_PlanningStuck(t *testing.T) {
@@ -862,7 +863,7 @@ func TestReconciler_R6_AwaitingFill_DeadlineExpired(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 	// Set a mock executor so notification doesn't fail
-	rec.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+	rec.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (core.AgentExecutor, error) {
 		return &mockExecutorR6{}, nil
 	})
 
@@ -972,7 +973,7 @@ func filterRepairs(repairs []ReconcileRepair, pattern string) []ReconcileRepair 
 func TestReconciler_R6_TransitiveCascade(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
-	rec.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+	rec.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (core.AgentExecutor, error) {
 		return &mockExecutorR6{}, nil
 	})
 

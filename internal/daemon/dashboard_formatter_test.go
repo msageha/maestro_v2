@@ -63,12 +63,12 @@ func TestDashboardFormatter_ParseLogFile(t *testing.T) {
 
 	// Verify statistics - task_003 only has warning but no status, so it doesn't count as a task
 	// task_002 gets counted once with failed status, then updated to in_progress when retried
-	assert.Equal(t, 2, data.Stats.TotalTasks) // task_001 and task_002
-	assert.Equal(t, 1, data.Stats.CompletedTasks) // task_001
-	assert.Equal(t, 0, data.Stats.FailedTasks) // task_002 was failed but is now in_progress due to retry
+	assert.Equal(t, 2, data.Stats.TotalTasks)      // task_001 and task_002
+	assert.Equal(t, 1, data.Stats.CompletedTasks)  // task_001
+	assert.Equal(t, 0, data.Stats.FailedTasks)     // task_002 was failed but is now in_progress due to retry
 	assert.Equal(t, 1, data.Stats.InProgressTasks) // task_002 after retry
-	assert.Equal(t, 1, data.Stats.ErrorCount) // task_failed
-	assert.Equal(t, 2, data.Stats.WarningCount) // lease_warning and task_retry
+	assert.Equal(t, 1, data.Stats.ErrorCount)      // task_failed
+	assert.Equal(t, 2, data.Stats.WarningCount)    // lease_warning and task_retry
 
 	// Verify events were collected
 	assert.NotEmpty(t, data.RecentEvents)
@@ -83,11 +83,11 @@ func TestDashboardFormatter_EventFiltering(t *testing.T) {
 	formatter := &DashboardFormatter{}
 
 	testCases := []struct {
-		name         string
-		eventType    string
-		isTask       bool
-		isError      bool
-		isWarning    bool
+		name      string
+		eventType string
+		isTask    bool
+		isError   bool
+		isWarning bool
 	}{
 		{"task_created", "task_created", true, false, false},
 		{"task_completed", "task_completed", true, false, false},
@@ -227,9 +227,9 @@ func TestDashboardFormatter_CalculateStats(t *testing.T) {
 
 	data := &DashboardData{
 		Stats: DashboardStats{
-			TotalTasks:     10,
-			CompletedTasks: 7,
-			FailedTasks:    2,
+			TotalTasks:      10,
+			CompletedTasks:  7,
+			FailedTasks:     2,
 			InProgressTasks: 1,
 		},
 	}

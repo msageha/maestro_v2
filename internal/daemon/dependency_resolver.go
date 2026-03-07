@@ -6,31 +6,32 @@ import (
 	"log"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// StateReader, PhaseInfo, ErrStateNotFound, ErrPhaseNotFound are defined in
-// internal/daemon/core and re-exported via core_aliases.go.
+// core.StateReader, core.PhaseInfo, core.ErrStateNotFound, core.ErrPhaseNotFound are defined in
+// internal/daemon/core.
 
 // DependencyResolver handles blocked_by dependency checking and phase transitions.
 type DependencyResolver struct {
-	stateReader StateReader
-	dl          *DaemonLogger
+	stateReader core.StateReader
+	dl          *core.DaemonLogger
 	logger      *log.Logger
-	logLevel    LogLevel
-	clock       Clock
+	logLevel    core.LogLevel
+	clock       core.Clock
 	eventBus    *events.Bus
 }
 
 // NewDependencyResolver creates a new DependencyResolver.
-func NewDependencyResolver(reader StateReader, logger *log.Logger, logLevel LogLevel) *DependencyResolver {
+func NewDependencyResolver(reader core.StateReader, logger *log.Logger, logLevel core.LogLevel) *DependencyResolver {
 	return &DependencyResolver{
 		stateReader: reader,
-		dl:          NewDaemonLoggerFromLegacy("dependency_resolver", logger, logLevel),
+		dl:          core.NewDaemonLoggerFromLegacy("dependency_resolver", logger, logLevel),
 		logger:      logger,
 		logLevel:    logLevel,
-		clock:       RealClock{},
+		clock:       core.RealClock{},
 	}
 }
 
@@ -54,17 +55,17 @@ func (dr *DependencyResolver) IsTaskBlocked(task *model.Task) (bool, error) {
 	for _, depTaskID := range task.BlockedBy {
 		status, err := dr.stateReader.GetTaskState(task.CommandID, depTaskID)
 		if err != nil {
-			dr.log(LogLevelWarn, "dependency_check task=%s dep=%s error=%v", task.ID, depTaskID, err)
+			dr.log(core.LogLevelWarn, "dependency_check task=%s dep=%s error=%v", task.ID, depTaskID, err)
 			return true, err
 		}
 		if status != model.StatusCompleted {
-			dr.log(LogLevelDebug, "task_blocked task=%s blocked_by=%s dep_status=%s",
+			dr.log(core.LogLevelDebug, "task_blocked task=%s blocked_by=%s dep_status=%s",
 				task.ID, depTaskID, status)
 			return true, nil
 		}
 	}
 
-	dr.log(LogLevelDebug, "task_unblocked task=%s", task.ID)
+	dr.log(core.LogLevelDebug, "task_unblocked task=%s", task.ID)
 	return false, nil
 }
 
@@ -137,7 +138,7 @@ func (dr *DependencyResolver) CheckPhaseTransitions(commandID string) ([]PhaseTr
 
 	phases, err := dr.stateReader.GetCommandPhases(commandID)
 	if err != nil {
-		if errors.Is(err, ErrStateNotFound) {
+		if errors.Is(err, core.ErrStateNotFound) {
 			// Command not yet submitted by planner - no phases to check
 			return nil, nil
 		}
@@ -145,7 +146,7 @@ func (dr *DependencyResolver) CheckPhaseTransitions(commandID string) ([]PhaseTr
 	}
 
 	// Build phase lookup map once for all pending-phase checks (B-006 optimization).
-	phaseMap := make(map[string]PhaseInfo, len(phases))
+	phaseMap := make(map[string]core.PhaseInfo, len(phases))
 	for _, p := range phases {
 		phaseMap[p.ID] = p
 	}
@@ -185,7 +186,7 @@ func (dr *DependencyResolver) CheckPhaseTransitions(commandID string) ([]PhaseTr
 }
 
 // checkActivePhaseCompletion checks if an active phase is complete, failed, or cancelled.
-func (dr *DependencyResolver) checkActivePhaseCompletion(commandID string, phase PhaseInfo) *PhaseTransitionResult {
+func (dr *DependencyResolver) checkActivePhaseCompletion(commandID string, phase core.PhaseInfo) *PhaseTransitionResult {
 	if len(phase.RequiredTaskIDs) == 0 {
 		return nil
 	}
@@ -197,7 +198,7 @@ func (dr *DependencyResolver) checkActivePhaseCompletion(commandID string, phase
 	for _, taskID := range phase.RequiredTaskIDs {
 		status, err := dr.stateReader.GetTaskState(commandID, taskID)
 		if err != nil {
-			dr.log(LogLevelWarn, "phase_check task_state error phase=%s task=%s error=%v",
+			dr.log(core.LogLevelWarn, "phase_check task_state error phase=%s task=%s error=%v",
 				phase.ID, taskID, err)
 			allCompleted = false
 			continue
@@ -251,10 +252,10 @@ func (dr *DependencyResolver) checkActivePhaseCompletion(commandID string, phase
 
 // checkPendingPhaseActivation checks if a pending phase should be activated.
 // phaseMap is pre-built by CheckPhaseTransitions for O(1) lookups (B-006).
-func (dr *DependencyResolver) checkPendingPhaseActivation(phaseMap map[string]PhaseInfo, phase PhaseInfo) *PhaseTransitionResult {
+func (dr *DependencyResolver) checkPendingPhaseActivation(phaseMap map[string]core.PhaseInfo, phase core.PhaseInfo) *PhaseTransitionResult {
 	// DependsOn empty means no dependencies — activate immediately
 	if len(phase.DependsOn) == 0 {
-		dr.log(LogLevelInfo, "phase_activation phase=%s no_dependencies", phase.ID)
+		dr.log(core.LogLevelInfo, "phase_activation phase=%s no_dependencies", phase.ID)
 		return &PhaseTransitionResult{
 			PhaseID:   phase.ID,
 			PhaseName: phase.Name,
@@ -267,7 +268,7 @@ func (dr *DependencyResolver) checkPendingPhaseActivation(phaseMap map[string]Ph
 	for _, depID := range phase.DependsOn {
 		dep, ok := phaseMap[depID]
 		if !ok {
-			dr.log(LogLevelWarn, "phase_activation missing dep phase=%s dep=%s", phase.ID, depID)
+			dr.log(core.LogLevelWarn, "phase_activation missing dep phase=%s dep=%s", phase.ID, depID)
 			return nil
 		}
 		if dep.Status != model.PhaseStatusCompleted {
@@ -275,7 +276,7 @@ func (dr *DependencyResolver) checkPendingPhaseActivation(phaseMap map[string]Ph
 		}
 	}
 
-	dr.log(LogLevelInfo, "phase_activation phase=%s all_deps_completed", phase.ID)
+	dr.log(core.LogLevelInfo, "phase_activation phase=%s all_deps_completed", phase.ID)
 	result := &PhaseTransitionResult{
 		PhaseID:   phase.ID,
 		PhaseName: phase.Name,
@@ -289,7 +290,7 @@ func (dr *DependencyResolver) checkPendingPhaseActivation(phaseMap map[string]Ph
 
 // checkPendingPhaseCascade checks if a pending phase should be cascade-cancelled.
 // phaseMap is pre-built by CheckPhaseTransitions for O(1) lookups (B-006).
-func (dr *DependencyResolver) checkPendingPhaseCascade(phaseMap map[string]PhaseInfo, phase PhaseInfo) *PhaseTransitionResult {
+func (dr *DependencyResolver) checkPendingPhaseCascade(phaseMap map[string]core.PhaseInfo, phase core.PhaseInfo) *PhaseTransitionResult {
 	if len(phase.DependsOn) == 0 {
 		return nil
 	}
@@ -318,14 +319,14 @@ func (dr *DependencyResolver) checkPendingPhaseCascade(phaseMap map[string]Phase
 }
 
 // checkAwaitingFillTimeout checks if an awaiting_fill phase has timed out.
-func (dr *DependencyResolver) checkAwaitingFillTimeout(phase PhaseInfo) *PhaseTransitionResult {
+func (dr *DependencyResolver) checkAwaitingFillTimeout(phase core.PhaseInfo) *PhaseTransitionResult {
 	if phase.FillDeadlineAt == nil {
 		return nil
 	}
 
 	deadline, err := time.Parse(time.RFC3339, *phase.FillDeadlineAt)
 	if err != nil {
-		dr.log(LogLevelWarn, "phase_timeout invalid deadline phase=%s deadline=%s",
+		dr.log(core.LogLevelWarn, "phase_timeout invalid deadline phase=%s deadline=%s",
 			phase.ID, *phase.FillDeadlineAt)
 		return nil
 	}
@@ -368,11 +369,11 @@ func (dr *DependencyResolver) GetPhaseStatus(commandID, phaseID string) (model.P
 			return p.Status, nil
 		}
 	}
-	return "", fmt.Errorf("phase %s in command %s: %w", phaseID, commandID, ErrPhaseNotFound)
+	return "", fmt.Errorf("phase %s in command %s: %w", phaseID, commandID, core.ErrPhaseNotFound)
 }
 
 // BuildAwaitingFillNotification creates the notification message for a phase entering awaiting_fill.
-func (dr *DependencyResolver) BuildAwaitingFillNotification(commandID string, phase PhaseInfo) string {
+func (dr *DependencyResolver) BuildAwaitingFillNotification(commandID string, phase core.PhaseInfo) string {
 	return fmt.Sprintf("phase:%s phase_id:%s status:awaiting_fill command_id:%s — plan submit --phase %s で次フェーズのタスクを投入してください",
 		phase.Name, phase.ID, commandID, phase.Name)
 }
@@ -390,6 +391,6 @@ func (dr *DependencyResolver) publishPhaseTransitionEvent(commandID string, tr P
 	}
 }
 
-func (dr *DependencyResolver) log(level LogLevel, format string, args ...any) {
+func (dr *DependencyResolver) log(level core.LogLevel, format string, args ...any) {
 	dr.dl.Logf(level, format, args...)
 }

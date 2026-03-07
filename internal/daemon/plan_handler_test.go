@@ -6,12 +6,13 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// --- mock PlanExecutor ---
+// --- mock core.PlanExecutor ---
 
 type mockPlanExecutor struct {
 	submitFunc       func(json.RawMessage) (json.RawMessage, error)
@@ -55,7 +56,7 @@ type mockValidationError struct {
 	stderr string
 }
 
-func (e *mockValidationError) Error() string       { return e.msg }
+func (e *mockValidationError) Error() string        { return e.msg }
 func (e *mockValidationError) FormatStderr() string { return e.stderr }
 
 // --- mock codedFormatter ---
@@ -66,13 +67,13 @@ type mockCodedError struct {
 	code   string
 }
 
-func (e *mockCodedError) Error() string       { return e.msg }
+func (e *mockCodedError) Error() string        { return e.msg }
 func (e *mockCodedError) FormatStderr() string { return e.stderr }
 func (e *mockCodedError) ErrorCode() string    { return e.code }
 
 // --- helpers ---
 
-func newPlanTestDaemon(t *testing.T, pe PlanExecutor) *Daemon {
+func newPlanTestDaemon(t *testing.T, pe core.PlanExecutor) *Daemon {
 	t.Helper()
 	d := newTestDaemon(t)
 	d.SetPlanExecutor(pe)

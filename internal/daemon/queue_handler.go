@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
+	"github.com/msageha/maestro_v2/internal/daemon/core"
+	"github.com/msageha/maestro_v2/internal/daemon/worktree"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -19,10 +21,10 @@ import (
 type QueueHandler struct {
 	maestroDir string
 	config     model.Config
-	dl         *DaemonLogger
+	dl         *core.DaemonLogger
 	logger     *log.Logger
-	logLevel   LogLevel
-	clock      Clock
+	logLevel   core.LogLevel
+	clock      core.Clock
 
 	leaseManager        *LeaseManager
 	dispatcher          *Dispatcher
@@ -33,17 +35,17 @@ type QueueHandler struct {
 	deadLetterProcessor *DeadLetterProcessor
 	metricsHandler      *MetricsHandler
 	circuitBreaker      *circuitbreaker.Handler
-	worktreeManager     *WorktreeManager
+	worktreeManager     *worktree.Manager
 	lockMap             *lock.MutexMap
 
 	// scanCounters accumulates counters during a single PeriodicScan cycle.
 	scanCounters ScanCounters
 
 	// Debounce state
-	debounceMu       sync.Mutex
-	debounceTimer    *time.Timer
-	firstTriggerAt   time.Time   // tracks first trigger in a debounce window for maxWait
-	scanRunning      atomic.Bool // true while debounced callback is executing
+	debounceMu     sync.Mutex
+	debounceTimer  *time.Timer
+	firstTriggerAt time.Time   // tracks first trigger in a debounce window for maxWait
+	scanRunning    atomic.Bool // true while debounced callback is executing
 
 	// scanMu serializes PeriodicScan phases (exclusive) vs queue writes (shared RLock).
 	// Spec §5.6: per-agent mutex — queue writes hold RLock + per-target lockMap key.
@@ -66,10 +68,10 @@ type QueueHandler struct {
 }
 
 // NewQueueHandler creates a new QueueHandler with all sub-modules.
-func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel) *QueueHandler {
+func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel core.LogLevel) *QueueHandler {
 	lm := NewLeaseManager(cfg.Watcher, logger, logLevel)
 	dispatcher := NewDispatcher(maestroDir, cfg, lm, logger, logLevel)
-	dr := NewDependencyResolver(nil, logger, logLevel) // StateReader wired in Phase 6
+	dr := NewDependencyResolver(nil, logger, logLevel) // core.StateReader wired in Phase 6
 	ch := NewCancelHandler(maestroDir, cfg, lockMap, logger, logLevel)
 	rh := NewResultHandler(maestroDir, cfg, lockMap, logger, logLevel)
 	rec := NewReconciler(maestroDir, cfg, lockMap, logger, logLevel, rh, rh.executorFactory)
@@ -79,10 +81,10 @@ func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap
 	return &QueueHandler{
 		maestroDir:          maestroDir,
 		config:              cfg,
-		dl:                  NewDaemonLoggerFromLegacy("queue_handler", logger, logLevel),
+		dl:                  core.NewDaemonLoggerFromLegacy("queue_handler", logger, logLevel),
 		logger:              logger,
 		logLevel:            logLevel,
-		clock:               RealClock{},
+		clock:               core.RealClock{},
 		leaseManager:        lm,
 		dispatcher:          dispatcher,
 		dependencyResolver:  dr,
@@ -102,13 +104,13 @@ func (qh *QueueHandler) leaseOwnerID() string {
 }
 
 // SetStateReader wires the state reader for dependency resolution (Phase 6).
-func (qh *QueueHandler) SetStateReader(reader StateReader) {
+func (qh *QueueHandler) SetStateReader(reader core.StateReader) {
 	qh.dependencyResolver = NewDependencyResolver(reader, qh.logger, qh.logLevel)
 	qh.cancelHandler.SetStateReader(reader)
 }
 
 // SetExecutorFactory overrides the executor factory for testing.
-func (qh *QueueHandler) SetExecutorFactory(f ExecutorFactory) {
+func (qh *QueueHandler) SetExecutorFactory(f core.ExecutorFactory) {
 	qh.dispatcher.SetExecutorFactory(f)
 	qh.cancelHandler.SetExecutorFactory(f)
 	qh.resultHandler.SetExecutorFactory(f)
@@ -116,7 +118,7 @@ func (qh *QueueHandler) SetExecutorFactory(f ExecutorFactory) {
 }
 
 // SetCanComplete wires the CanComplete function for R4 reconciliation.
-func (qh *QueueHandler) SetCanComplete(f CanCompleteFunc) {
+func (qh *QueueHandler) SetCanComplete(f core.CanCompleteFunc) {
 	qh.reconciler.SetCanComplete(f)
 }
 
@@ -126,7 +128,7 @@ func (qh *QueueHandler) SetCircuitBreaker(cb *circuitbreaker.Handler) {
 }
 
 // SetWorktreeManager wires the worktree manager for worker isolation.
-func (qh *QueueHandler) SetWorktreeManager(wm *WorktreeManager) {
+func (qh *QueueHandler) SetWorktreeManager(wm *worktree.Manager) {
 	qh.worktreeManager = wm
 	qh.dispatcher.SetWorktreeManager(wm)
 }
@@ -172,7 +174,7 @@ func (qh *QueueHandler) HandleFileEvent(filePath string) {
 	case "queue":
 		qh.debounceAndScan(base)
 	case "results":
-		qh.log(LogLevelDebug, "result_event file=%s", base)
+		qh.log(core.LogLevelDebug, "result_event file=%s", base)
 		if qh.resultHandler != nil {
 			qh.resultHandler.HandleResultFileEvent(filePath)
 		}
@@ -199,7 +201,7 @@ func (qh *QueueHandler) PeriodicScanWithContext(ctx context.Context) {
 	qh.scanRunMu.Lock()
 	defer qh.scanRunMu.Unlock()
 
-	qh.log(LogLevelDebug, "periodic_scan start")
+	qh.log(core.LogLevelDebug, "periodic_scan start")
 
 	pa := qh.periodicScanPhaseA()
 	pb := qh.periodicScanPhaseB(ctx, pa)
@@ -211,7 +213,7 @@ func (qh *QueueHandler) PeriodicScanWithContext(ctx context.Context) {
 		qh.reconciler.ExecuteDeferredNotifications(deferredNotifs)
 	}
 
-	qh.log(LogLevelDebug, "periodic_scan complete")
+	qh.log(core.LogLevelDebug, "periodic_scan complete")
 }
 
 // LockFiles acquires a shared (read) lock for queue write handlers.
@@ -225,7 +227,7 @@ func (qh *QueueHandler) UnlockFiles() {
 	qh.scanMu.RUnlock()
 }
 
-func (qh *QueueHandler) log(level LogLevel, format string, args ...any) {
+func (qh *QueueHandler) log(level core.LogLevel, format string, args ...any) {
 	qh.dl.Logf(level, format, args...)
 }
 

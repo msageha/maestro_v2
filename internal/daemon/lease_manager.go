@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -12,19 +13,19 @@ import (
 type LeaseManager struct {
 	dispatchLeaseSec int
 	maxInProgressMin int
-	clock            Clock
-	dl               *DaemonLogger
+	clock            core.Clock
+	dl               *core.DaemonLogger
 	logger           *log.Logger
-	logLevel         LogLevel
+	logLevel         core.LogLevel
 }
 
 // NewLeaseManager creates a new LeaseManager.
-func NewLeaseManager(cfg model.WatcherConfig, logger *log.Logger, logLevel LogLevel) *LeaseManager {
-	return NewLeaseManagerWithDeps(cfg, logger, logLevel, RealClock{})
+func NewLeaseManager(cfg model.WatcherConfig, logger *log.Logger, logLevel core.LogLevel) *LeaseManager {
+	return NewLeaseManagerWithDeps(cfg, logger, logLevel, core.RealClock{})
 }
 
 // NewLeaseManagerWithDeps creates a LeaseManager with explicit dependencies.
-func NewLeaseManagerWithDeps(cfg model.WatcherConfig, logger *log.Logger, logLevel LogLevel, clock Clock) *LeaseManager {
+func NewLeaseManagerWithDeps(cfg model.WatcherConfig, logger *log.Logger, logLevel core.LogLevel, clock core.Clock) *LeaseManager {
 	dispatchLease := cfg.DispatchLeaseSec
 	if dispatchLease <= 0 {
 		dispatchLease = 300
@@ -37,7 +38,7 @@ func NewLeaseManagerWithDeps(cfg model.WatcherConfig, logger *log.Logger, logLev
 		dispatchLeaseSec: dispatchLease,
 		maxInProgressMin: maxInProgress,
 		clock:            clock,
-		dl:               NewDaemonLoggerFromLegacy("lease_manager", logger, logLevel),
+		dl:               core.NewDaemonLoggerFromLegacy("lease_manager", logger, logLevel),
 		logger:           logger,
 		logLevel:         logLevel,
 	}
@@ -67,7 +68,7 @@ func (lm *LeaseManager) AcquireCommandLease(cmd *model.Command, owner string) er
 	cmd.LeaseEpoch++
 	cmd.UpdatedAt = now.Format(time.RFC3339)
 
-	lm.log(LogLevelInfo, "lease_acquire type=command id=%s owner=%s epoch=%d expires=%s",
+	lm.log(core.LogLevelInfo, "lease_acquire type=command id=%s owner=%s epoch=%d expires=%s",
 		cmd.ID, owner, cmd.LeaseEpoch, expiresStr)
 	return nil
 }
@@ -93,7 +94,7 @@ func (lm *LeaseManager) AcquireTaskLease(task *model.Task, owner string) error {
 	}
 	task.UpdatedAt = nowStr
 
-	lm.log(LogLevelInfo, "lease_acquire type=task id=%s owner=%s epoch=%d expires=%s",
+	lm.log(core.LogLevelInfo, "lease_acquire type=task id=%s owner=%s epoch=%d expires=%s",
 		task.ID, owner, task.LeaseEpoch, expiresStr)
 	return nil
 }
@@ -115,7 +116,7 @@ func (lm *LeaseManager) AcquireNotificationLease(ntf *model.Notification, owner 
 	ntf.LeaseEpoch++
 	ntf.UpdatedAt = now.Format(time.RFC3339)
 
-	lm.log(LogLevelInfo, "lease_acquire type=notification id=%s owner=%s epoch=%d expires=%s",
+	lm.log(core.LogLevelInfo, "lease_acquire type=notification id=%s owner=%s epoch=%d expires=%s",
 		ntf.ID, owner, ntf.LeaseEpoch, expiresStr)
 	return nil
 }
@@ -131,7 +132,7 @@ func (lm *LeaseManager) ReleaseCommandLease(cmd *model.Command) error {
 	cmd.LeaseExpiresAt = nil
 	cmd.UpdatedAt = lm.clock.Now().UTC().Format(time.RFC3339)
 
-	lm.log(LogLevelInfo, "lease_release type=command id=%s epoch=%d", cmd.ID, cmd.LeaseEpoch)
+	lm.log(core.LogLevelInfo, "lease_release type=command id=%s epoch=%d", cmd.ID, cmd.LeaseEpoch)
 	return nil
 }
 
@@ -146,7 +147,7 @@ func (lm *LeaseManager) ReleaseTaskLease(task *model.Task) error {
 	task.LeaseExpiresAt = nil
 	task.UpdatedAt = lm.clock.Now().UTC().Format(time.RFC3339)
 
-	lm.log(LogLevelInfo, "lease_release type=task id=%s epoch=%d", task.ID, task.LeaseEpoch)
+	lm.log(core.LogLevelInfo, "lease_release type=task id=%s epoch=%d", task.ID, task.LeaseEpoch)
 	return nil
 }
 
@@ -161,7 +162,7 @@ func (lm *LeaseManager) ReleaseNotificationLease(ntf *model.Notification) error 
 	ntf.LeaseExpiresAt = nil
 	ntf.UpdatedAt = lm.clock.Now().UTC().Format(time.RFC3339)
 
-	lm.log(LogLevelInfo, "lease_release type=notification id=%s epoch=%d", ntf.ID, ntf.LeaseEpoch)
+	lm.log(core.LogLevelInfo, "lease_release type=notification id=%s epoch=%d", ntf.ID, ntf.LeaseEpoch)
 	return nil
 }
 
@@ -178,7 +179,7 @@ func (lm *LeaseManager) ExtendCommandLease(cmd *model.Command) error {
 	expiresStr := expires.Format(time.RFC3339)
 	cmd.LeaseExpiresAt = &expiresStr
 
-	lm.log(LogLevelDebug, "lease_extend type=command id=%s epoch=%d new_expires=%s",
+	lm.log(core.LogLevelDebug, "lease_extend type=command id=%s epoch=%d new_expires=%s",
 		cmd.ID, cmd.LeaseEpoch, expiresStr)
 	return nil
 }
@@ -196,7 +197,7 @@ func (lm *LeaseManager) ExtendTaskLease(task *model.Task) error {
 	expiresStr := expires.Format(time.RFC3339)
 	task.LeaseExpiresAt = &expiresStr
 
-	lm.log(LogLevelDebug, "lease_extend type=task id=%s epoch=%d new_expires=%s",
+	lm.log(core.LogLevelDebug, "lease_extend type=task id=%s epoch=%d new_expires=%s",
 		task.ID, task.LeaseEpoch, expiresStr)
 	return nil
 }
@@ -237,7 +238,7 @@ func (lm *LeaseManager) ExtendCommandLeaseGrace(cmd *model.Command, graceTTL tim
 	expires := lm.clock.Now().UTC().Add(graceTTL)
 	expiresStr := expires.Format(time.RFC3339)
 	cmd.LeaseExpiresAt = &expiresStr
-	lm.log(LogLevelDebug, "lease_grace_extend type=command id=%s epoch=%d grace_ttl=%s new_expires=%s",
+	lm.log(core.LogLevelDebug, "lease_grace_extend type=command id=%s epoch=%d grace_ttl=%s new_expires=%s",
 		cmd.ID, cmd.LeaseEpoch, graceTTL, expiresStr)
 	return nil
 }
@@ -250,7 +251,7 @@ func (lm *LeaseManager) ExtendTaskLeaseGrace(task *model.Task, graceTTL time.Dur
 	expires := lm.clock.Now().UTC().Add(graceTTL)
 	expiresStr := expires.Format(time.RFC3339)
 	task.LeaseExpiresAt = &expiresStr
-	lm.log(LogLevelDebug, "lease_grace_extend type=task id=%s epoch=%d grace_ttl=%s new_expires=%s",
+	lm.log(core.LogLevelDebug, "lease_grace_extend type=task id=%s epoch=%d grace_ttl=%s new_expires=%s",
 		task.ID, task.LeaseEpoch, graceTTL, expiresStr)
 	return nil
 }
@@ -287,7 +288,7 @@ func (lm *LeaseManager) ExpireCommands(commands []model.Command) []int {
 		cmd := &commands[i]
 		if cmd.Status == model.StatusInProgress && lm.IsLeaseExpired(cmd.LeaseExpiresAt) {
 			expired = append(expired, i)
-			lm.log(LogLevelDebug, "lease_expired type=command id=%s epoch=%d owner=%s",
+			lm.log(core.LogLevelDebug, "lease_expired type=command id=%s epoch=%d owner=%s",
 				cmd.ID, cmd.LeaseEpoch, ptrStr(cmd.LeaseOwner))
 		}
 	}
@@ -301,7 +302,7 @@ func (lm *LeaseManager) ExpireTasks(tasks []model.Task) []int {
 		task := &tasks[i]
 		if task.Status == model.StatusInProgress && lm.IsLeaseExpired(task.LeaseExpiresAt) {
 			expired = append(expired, i)
-			lm.log(LogLevelInfo, "lease_expired type=task id=%s epoch=%d owner=%s",
+			lm.log(core.LogLevelInfo, "lease_expired type=task id=%s epoch=%d owner=%s",
 				task.ID, task.LeaseEpoch, ptrStr(task.LeaseOwner))
 		}
 	}
@@ -322,7 +323,7 @@ func (lm *LeaseManager) RenewableCommands(commands []model.Command, bufferSec in
 		}
 		if lm.IsLeaseNearExpiry(cmd.LeaseExpiresAt, bufferSec) {
 			renewable = append(renewable, i)
-			lm.log(LogLevelDebug, "lease_near_expiry type=command id=%s epoch=%d",
+			lm.log(core.LogLevelDebug, "lease_near_expiry type=command id=%s epoch=%d",
 				cmd.ID, cmd.LeaseEpoch)
 		}
 	}
@@ -336,7 +337,7 @@ func (lm *LeaseManager) ExpireNotifications(notifications []model.Notification) 
 		ntf := &notifications[i]
 		if ntf.Status == model.StatusInProgress && lm.IsLeaseExpired(ntf.LeaseExpiresAt) {
 			expired = append(expired, i)
-			lm.log(LogLevelWarn, "lease_expired type=notification id=%s epoch=%d owner=%s",
+			lm.log(core.LogLevelWarn, "lease_expired type=notification id=%s epoch=%d owner=%s",
 				ntf.ID, ntf.LeaseEpoch, ptrStr(ntf.LeaseOwner))
 		}
 	}
@@ -361,6 +362,6 @@ func ptrStr(s *string) string {
 	return *s
 }
 
-func (lm *LeaseManager) log(level LogLevel, format string, args ...any) {
+func (lm *LeaseManager) log(level core.LogLevel, format string, args ...any) {
 	lm.dl.Logf(level, format, args...)
 }

@@ -27,9 +27,9 @@ func NewReconciler(
 	cfg model.Config,
 	lockMap *lock.MutexMap,
 	logger *log.Logger,
-	logLevel LogLevel,
+	logLevel core.LogLevel,
 	resultHandler *ResultHandler,
-	executorFactory ExecutorFactory,
+	executorFactory core.ExecutorFactory,
 ) *Reconciler {
 	// Avoid nil-interface-wrapping-nil-pointer: only assign if non-nil.
 	var notifier reconcile.ResultNotifier
@@ -63,12 +63,12 @@ func NewReconciler(
 }
 
 // SetCanComplete sets the CanComplete function (wired after plan package init to avoid import cycles).
-func (r *Reconciler) SetCanComplete(f CanCompleteFunc) {
+func (r *Reconciler) SetCanComplete(f core.CanCompleteFunc) {
 	r.engine.SetCanComplete(f)
 }
 
 // SetExecutorFactory overrides the executor factory for testing.
-func (r *Reconciler) SetExecutorFactory(f ExecutorFactory) {
+func (r *Reconciler) SetExecutorFactory(f core.ExecutorFactory) {
 	r.engine.SetExecutorFactory(f)
 }
 

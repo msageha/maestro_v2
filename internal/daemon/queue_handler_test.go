@@ -14,6 +14,7 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -37,9 +38,9 @@ func newTestQueueHandler(maestroDir string) *QueueHandler {
 		Watcher: model.WatcherConfig{DispatchLeaseSec: 300},
 		Queue:   model.QueueConfig{PriorityAgingSec: 60},
 	}
-	qh := NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	qh := NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
 	// Use mock executor to avoid tmux dependency
-	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
 	})
 	return qh
@@ -512,7 +513,7 @@ func TestQueueHandler_PhaseB_DoesNotBlockRLock(t *testing.T) {
 	dispatchStarted := make(chan struct{})
 	proceed := make(chan struct{})
 	var startOnce sync.Once
-	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
 		return &slowMockExecutor{
 			result:  agent.ExecResult{Success: true},
 			onStart: func() { startOnce.Do(func() { close(dispatchStarted) }) },
@@ -583,7 +584,7 @@ func TestQueueHandler_PhaseB_DoesNotBlockRLock(t *testing.T) {
 // onStart is called once per Execute invocation (use sync.Once in the closure for safety).
 type slowMockExecutor struct {
 	result  agent.ExecResult
-	onStart func()       // called at start of Execute (use sync.Once for one-shot signaling)
+	onStart func()        // called at start of Execute (use sync.Once for one-shot signaling)
 	proceed chan struct{} // if non-nil, wait for signal instead of sleeping
 	delay   time.Duration
 }
@@ -655,7 +656,7 @@ func TestQueueHandler_DispatchFailure_Rollback(t *testing.T) {
 	qh := newTestQueueHandler(maestroDir)
 
 	// Mock executor that fails dispatch
-	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{
 			Success:   false,
 			Error:     fmt.Errorf("tmux pane not found"),
@@ -732,13 +733,13 @@ func TestQueueHandler_ConcurrentWriteDuringPhaseB(t *testing.T) {
 		Queue:   model.QueueConfig{PriorityAgingSec: 60},
 	}
 	lockMap := lock.NewMutexMap()
-	qh := NewQueueHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	qh := NewQueueHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
 
 	// Executor with proceed channel: signals dispatch start, waits for proceed before returning.
 	dispatchStarted := make(chan struct{})
 	proceed := make(chan struct{})
 	var startOnce sync.Once
-	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
 		return &slowMockExecutor{
 			result:  agent.ExecResult{Success: true},
 			onStart: func() { startOnce.Do(func() { close(dispatchStarted) }) },
