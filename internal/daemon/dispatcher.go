@@ -10,6 +10,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/daemon/learnings"
+	"github.com/msageha/maestro_v2/internal/daemon/persona"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -292,8 +293,18 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 		return fmt.Errorf("create executor: %w", err)
 	}
 
-	// Inject learnings into task content (read-only, best-effort)
+	// Inject persona prompt into task content (best-effort, prepend)
 	dispatchTask := *task
+	if task.PersonaHint != "" {
+		if section, found := persona.FormatPersonaSection(d.config.Personas, task.PersonaHint); !found {
+			d.log(LogLevelWarn, "persona_not_found task=%s persona_hint=%s", task.ID, task.PersonaHint)
+		} else if section != "" {
+			dispatchTask.Content = section + dispatchTask.Content
+			d.log(LogLevelDebug, "persona_injected task=%s persona=%s", task.ID, task.PersonaHint)
+		}
+	}
+
+	// Inject learnings into task content (read-only, best-effort)
 	if d.config.Learnings.Enabled {
 		lrns, err := learnings.ReadTopKLearnings(d.maestroDir, d.config.Learnings, d.clock.Now())
 		if err != nil {
