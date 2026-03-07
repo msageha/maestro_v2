@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
+	"github.com/msageha/maestro_v2/internal/daemon/worktree"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -51,9 +53,9 @@ func initTestGitRepo(t *testing.T) string {
 	return dir
 }
 
-// newTestWorktreeManager creates a WorktreeManager for testing.
+// newTestWorktreeManager creates a worktree.Manager for testing.
 // Duplicated from worktree test package for daemon-level tests.
-func newTestWorktreeManager(t *testing.T, projectRoot string) *WorktreeManager {
+func newTestWorktreeManager(t *testing.T, projectRoot string) *worktree.Manager {
 	t.Helper()
 	maestroDir := filepath.Join(projectRoot, ".maestro")
 	if err := os.MkdirAll(maestroDir, 0755); err != nil {
@@ -78,5 +80,5 @@ func newTestWorktreeManager(t *testing.T, projectRoot string) *WorktreeManager {
 	}
 
 	logger := log.New(os.Stderr, "", 0)
-	return NewWorktreeManager(maestroDir, cfg, logger, LogLevelError)
+	return worktree.NewManager(maestroDir, cfg, logger, core.LogLevelError)
 }

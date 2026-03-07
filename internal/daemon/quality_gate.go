@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/quality"
@@ -104,10 +105,10 @@ type QualityGateDaemon struct {
 	maestroDir string
 	config     model.Config
 	lockMap    *lock.MutexMap
-	dl         *DaemonLogger
+	dl         *core.DaemonLogger
 	logger     *log.Logger
-	logLevel   LogLevel
-	clock      Clock
+	logLevel   core.LogLevel
+	clock      core.Clock
 
 	eventChan         chan QualityGateEvent
 	metrics           *QualityGateMetrics
@@ -130,7 +131,7 @@ func NewQualityGateDaemon(
 	cfg model.Config,
 	lockMap *lock.MutexMap,
 	logger *log.Logger,
-	logLevel LogLevel,
+	logLevel core.LogLevel,
 	parentCtx context.Context,
 ) *QualityGateDaemon {
 	ctx, cancel := context.WithCancel(parentCtx)
@@ -138,10 +139,10 @@ func NewQualityGateDaemon(
 		maestroDir:        maestroDir,
 		config:            cfg,
 		lockMap:           lockMap,
-		dl:                NewDaemonLoggerFromLegacy("quality_gate", logger, logLevel),
+		dl:                core.NewDaemonLoggerFromLegacy("quality_gate", logger, logLevel),
 		logger:            logger,
 		logLevel:          logLevel,
-		clock:             RealClock{},
+		clock:             core.RealClock{},
 		eventChan:         make(chan QualityGateEvent, 100), // Buffered to prevent blocking
 		metrics:           &QualityGateMetrics{},
 		engine:            quality.NewEngine(),
@@ -154,18 +155,18 @@ func NewQualityGateDaemon(
 // Start begins the quality gate daemon's event processing loop.
 // It runs in a separate goroutine and does not block.
 func (qg *QualityGateDaemon) Start() error {
-	qg.log(LogLevelInfo, "quality_gate_daemon starting")
+	qg.log(core.LogLevelInfo, "quality_gate_daemon starting")
 
 	// Load gate definitions on startup
 	if err := qg.loadGateDefinitions(); err != nil {
 		// Log error but don't fail - we can run without gates
-		qg.log(LogLevelWarn, "quality_gate_daemon failed to load definitions: %v", err)
+		qg.log(core.LogLevelWarn, "quality_gate_daemon failed to load definitions: %v", err)
 	}
 
 	qg.wg.Add(1)
 	go qg.eventLoop()
 
-	qg.log(LogLevelInfo, "quality_gate_daemon started")
+	qg.log(core.LogLevelInfo, "quality_gate_daemon started")
 	return nil
 }
 
@@ -175,7 +176,7 @@ func (qg *QualityGateDaemon) Start() error {
 // call performs the actual shutdown.
 func (qg *QualityGateDaemon) Stop() error {
 	qg.stopOnce.Do(func() {
-		qg.log(LogLevelInfo, "quality_gate_daemon stopping")
+		qg.log(core.LogLevelInfo, "quality_gate_daemon stopping")
 
 		// Set stopped flag first to prevent new EmitEvent calls
 		qg.stopped.Store(true)
@@ -189,7 +190,7 @@ func (qg *QualityGateDaemon) Stop() error {
 		// Wait for event loop to finish
 		qg.wg.Wait()
 
-		qg.log(LogLevelInfo, "quality_gate_daemon stopped")
+		qg.log(core.LogLevelInfo, "quality_gate_daemon stopped")
 	})
 	return nil
 }
@@ -200,17 +201,17 @@ func (qg *QualityGateDaemon) Stop() error {
 func (qg *QualityGateDaemon) EmitEvent(event QualityGateEvent) {
 	// Check if already stopped to avoid sending to closed channel
 	if qg.stopped.Load() {
-		qg.log(LogLevelDebug, "quality_gate_event_dropped type=%s reason=stopped", event.EventType())
+		qg.log(core.LogLevelDebug, "quality_gate_event_dropped type=%s reason=stopped", event.EventType())
 		return
 	}
 
 	select {
 	case qg.eventChan <- event:
-		qg.log(LogLevelDebug, "quality_gate_event_queued type=%s", event.EventType())
+		qg.log(core.LogLevelDebug, "quality_gate_event_queued type=%s", event.EventType())
 	case <-qg.ctx.Done():
-		qg.log(LogLevelDebug, "quality_gate_event_dropped type=%s reason=shutdown", event.EventType())
+		qg.log(core.LogLevelDebug, "quality_gate_event_dropped type=%s reason=shutdown", event.EventType())
 	default:
-		qg.log(LogLevelWarn, "quality_gate_event_dropped type=%s reason=channel_full", event.EventType())
+		qg.log(core.LogLevelWarn, "quality_gate_event_dropped type=%s reason=channel_full", event.EventType())
 	}
 }
 
@@ -219,12 +220,12 @@ func (qg *QualityGateDaemon) EmitEvent(event QualityGateEvent) {
 func (qg *QualityGateDaemon) eventLoop() {
 	defer qg.wg.Done()
 
-	qg.log(LogLevelDebug, "quality_gate_event_loop started")
+	qg.log(core.LogLevelDebug, "quality_gate_event_loop started")
 
 	for {
 		select {
 		case <-qg.ctx.Done():
-			qg.log(LogLevelDebug, "quality_gate_event_loop shutdown_signal")
+			qg.log(core.LogLevelDebug, "quality_gate_event_loop shutdown_signal")
 			// SRE-007: Drain buffered events and log discard count
 			discarded := 0
 			for {
@@ -240,12 +241,12 @@ func (qg *QualityGateDaemon) eventLoop() {
 			}
 		drained:
 			if discarded > 0 {
-				qg.log(LogLevelWarn, "quality_gate_event_loop discarded %d buffered events on shutdown", discarded)
+				qg.log(core.LogLevelWarn, "quality_gate_event_loop discarded %d buffered events on shutdown", discarded)
 			}
 			return
 		case event, ok := <-qg.eventChan:
 			if !ok {
-				qg.log(LogLevelDebug, "quality_gate_event_loop channel_closed")
+				qg.log(core.LogLevelDebug, "quality_gate_event_loop channel_closed")
 				return
 			}
 			qg.processEvent(event)
@@ -255,7 +256,7 @@ func (qg *QualityGateDaemon) eventLoop() {
 
 // processEvent handles a single quality gate event.
 func (qg *QualityGateDaemon) processEvent(event QualityGateEvent) {
-	qg.log(LogLevelDebug, "quality_gate_processing_event type=%s", event.EventType())
+	qg.log(core.LogLevelDebug, "quality_gate_processing_event type=%s", event.EventType())
 
 	// Record processing start time for metrics
 	startTime := qg.clock.Now()
@@ -270,7 +271,7 @@ func (qg *QualityGateDaemon) processEvent(event QualityGateEvent) {
 	case PhaseTransitionEvent:
 		err = qg.handlePhaseTransition(e)
 	default:
-		qg.log(LogLevelWarn, "quality_gate_unknown_event_type type=%s", event.EventType())
+		qg.log(core.LogLevelWarn, "quality_gate_unknown_event_type type=%s", event.EventType())
 		return
 	}
 
@@ -279,15 +280,15 @@ func (qg *QualityGateDaemon) processEvent(event QualityGateEvent) {
 	qg.metrics.RecordEvaluation(err == nil, duration)
 
 	if err != nil {
-		qg.log(LogLevelError, "quality_gate_processing_error type=%s error=%v", event.EventType(), err)
+		qg.log(core.LogLevelError, "quality_gate_processing_error type=%s error=%v", event.EventType(), err)
 	} else {
-		qg.log(LogLevelDebug, "quality_gate_processed_event type=%s duration_ms=%d", event.EventType(), duration)
+		qg.log(core.LogLevelDebug, "quality_gate_processed_event type=%s duration_ms=%d", event.EventType(), duration)
 	}
 }
 
 // handleTaskStart processes task start events.
 func (qg *QualityGateDaemon) handleTaskStart(event TaskStartEvent) error {
-	qg.log(LogLevelDebug, "quality_gate_task_start task_id=%s command_id=%s agent_id=%s",
+	qg.log(core.LogLevelDebug, "quality_gate_task_start task_id=%s command_id=%s agent_id=%s",
 		event.TaskID, event.CommandID, event.AgentID)
 
 	// Evaluate quality gates for task start
@@ -300,7 +301,7 @@ func (qg *QualityGateDaemon) handleTaskStart(event TaskStartEvent) error {
 
 // handleTaskComplete processes task completion events.
 func (qg *QualityGateDaemon) handleTaskComplete(event TaskCompleteEvent) error {
-	qg.log(LogLevelDebug, "quality_gate_task_complete task_id=%s command_id=%s status=%s",
+	qg.log(core.LogLevelDebug, "quality_gate_task_complete task_id=%s command_id=%s status=%s",
 		event.TaskID, event.CommandID, event.Status)
 
 	// Evaluate quality gates for task completion
@@ -314,7 +315,7 @@ func (qg *QualityGateDaemon) handleTaskComplete(event TaskCompleteEvent) error {
 
 // handlePhaseTransition processes phase transition events.
 func (qg *QualityGateDaemon) handlePhaseTransition(event PhaseTransitionEvent) error {
-	qg.log(LogLevelDebug, "quality_gate_phase_transition phase_id=%s command_id=%s old=%s new=%s",
+	qg.log(core.LogLevelDebug, "quality_gate_phase_transition phase_id=%s command_id=%s old=%s new=%s",
 		event.PhaseID, event.CommandID, event.OldStatus, event.NewStatus)
 
 	// Evaluate quality gates for phase transitions
@@ -345,7 +346,7 @@ func mapGateType(gateType string) (quality.GateType, error) {
 
 // evaluateGate evaluates quality gates for the specified type and context
 func (qg *QualityGateDaemon) evaluateGate(gateType string, evalContext map[string]interface{}) error {
-	qg.log(LogLevelDebug, "quality_gate_evaluate gate_type=%s context=%v", gateType, evalContext)
+	qg.log(core.LogLevelDebug, "quality_gate_evaluate gate_type=%s context=%v", gateType, evalContext)
 
 	qualityGateType, err := mapGateType(gateType)
 	if err != nil {
@@ -364,10 +365,10 @@ func (qg *QualityGateDaemon) evaluateGate(gateType string, evalContext map[strin
 
 	// Log the result
 	if result.Passed {
-		qg.log(LogLevelDebug, "quality_gate_passed gate_type=%s duration_ms=%d cache_hit=%v",
+		qg.log(core.LogLevelDebug, "quality_gate_passed gate_type=%s duration_ms=%d cache_hit=%v",
 			gateType, result.Duration.Milliseconds(), result.CacheHit)
 	} else {
-		qg.log(LogLevelWarn, "quality_gate_failed gate_type=%s failed_gates=%v action=%s",
+		qg.log(core.LogLevelWarn, "quality_gate_failed gate_type=%s failed_gates=%v action=%s",
 			gateType, result.FailedGates, result.Action)
 
 		// If action is block, return error
@@ -407,7 +408,7 @@ func (qg *QualityGateDaemon) loadGateDefinitions() error {
 		return fmt.Errorf("failed to load configuration into engine: %w", err)
 	}
 
-	qg.log(LogLevelInfo, "quality_gate_definitions_loaded count=%d", len(config.Gates))
+	qg.log(core.LogLevelInfo, "quality_gate_definitions_loaded count=%d", len(config.Gates))
 	return nil
 }
 
@@ -417,6 +418,6 @@ func (qg *QualityGateDaemon) GetMetrics() *QualityGateMetrics {
 }
 
 // log writes a log message if the level is enabled.
-func (qg *QualityGateDaemon) log(level LogLevel, format string, args ...interface{}) {
+func (qg *QualityGateDaemon) log(level core.LogLevel, format string, args ...interface{}) {
 	qg.dl.Logf(level, format, args...)
 }

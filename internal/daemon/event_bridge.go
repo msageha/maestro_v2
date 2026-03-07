@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -25,7 +26,7 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 		workerID, ok3 := e.Data["worker_id"].(string)
 
 		if !ok1 || !ok2 || !ok3 {
-			d.log(LogLevelWarn, "quality_gate_event_invalid type=task_started data=%v", e.Data)
+			d.log(core.LogLevelWarn, "quality_gate_event_invalid type=task_started data=%v", e.Data)
 			return
 		}
 
@@ -44,7 +45,7 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 		workerID, ok3 := e.Data["worker_id"].(string)
 
 		if !ok1 || !ok2 || !ok3 {
-			d.log(LogLevelWarn, "quality_gate_event_invalid type=task_completed data=%v", e.Data)
+			d.log(core.LogLevelWarn, "quality_gate_event_invalid type=task_completed data=%v", e.Data)
 			return
 		}
 
@@ -55,7 +56,7 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 		} else if s, ok := e.Data["status"].(string); ok {
 			status = model.Status(s)
 		} else {
-			d.log(LogLevelWarn, "quality_gate_event_invalid type=task_completed status=%v", e.Data["status"])
+			d.log(core.LogLevelWarn, "quality_gate_event_invalid type=task_completed status=%v", e.Data["status"])
 			return
 		}
 
@@ -76,7 +77,7 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 		newStatus, ok4 := e.Data["new_status"].(string)
 
 		if !ok1 || !ok2 || !ok3 || !ok4 {
-			d.log(LogLevelWarn, "quality_gate_event_invalid type=phase_transition data=%v", e.Data)
+			d.log(core.LogLevelWarn, "quality_gate_event_invalid type=phase_transition data=%v", e.Data)
 			return
 		}
 

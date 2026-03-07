@@ -146,7 +146,7 @@ func TestFormatSkillSection_Multiple(t *testing.T) {
 }
 
 func TestFormatSkillSection_MaxBodyChars(t *testing.T) {
-	p1 := intPtr(1) // high priority (keep)
+	p1 := intPtr(1)  // high priority (keep)
 	p2 := intPtr(50) // lower priority (drop first)
 
 	skills := []SkillContent{

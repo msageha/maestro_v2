@@ -385,7 +385,7 @@ func TestConfigEffectiveProgressTimeoutMinutes(t *testing.T) {
 		value    int
 		expected int
 	}{
-		{0, 30},  // default
+		{0, 30}, // default
 		{30, 30},
 		{60, 60},
 	}
