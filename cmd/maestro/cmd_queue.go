@@ -31,7 +31,7 @@ func runQueueWrite(args []string) error {
 	target := args[0]
 
 	fs := newFlagSet("maestro queue write")
-	var writeType, content, commandID, purpose, acceptanceCriteria, sourceResultID, notificationType, reason string
+	var writeType, content, commandID, purpose, acceptanceCriteria, sourceResultID, notificationType, reason, personaHint string
 	var bloomLevel, priority int
 	var blockedBy, constraints, toolsHint stringSliceFlag
 
@@ -47,6 +47,7 @@ func runQueueWrite(args []string) error {
 	fs.Var(&blockedBy, "blocked-by", "")
 	fs.Var(&constraints, "constraint", "")
 	fs.Var(&toolsHint, "tools-hint", "")
+	fs.StringVar(&personaHint, "persona-hint", "", "")
 	var skillRefs stringSliceFlag
 	fs.Var(&skillRefs, "skill-refs", "")
 	fs.StringVar(&reason, "reason", "", "")
@@ -102,6 +103,9 @@ func runQueueWrite(args []string) error {
 		}
 		if len(toolsHint) > 0 {
 			params["tools_hint"] = toolsHint
+		}
+		if personaHint != "" {
+			params["persona_hint"] = personaHint
 		}
 		if len(skillRefs) > 0 {
 			params["skill_refs"] = skillRefs

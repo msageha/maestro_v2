@@ -41,6 +41,7 @@ type Task struct {
 	BlockedBy          []string `yaml:"blocked_by"`
 	BloomLevel         int      `yaml:"bloom_level"`
 	ToolsHint          []string `yaml:"tools_hint,omitempty"`
+	PersonaHint        string   `yaml:"persona_hint,omitempty"`
 	SkillRefs          []string `yaml:"skill_refs,omitempty"`
 	Priority           int      `yaml:"priority"`
 	Status             Status   `yaml:"status"`

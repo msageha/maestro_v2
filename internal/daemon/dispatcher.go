@@ -13,17 +13,13 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/daemon/learnings"
+	"github.com/msageha/maestro_v2/internal/daemon/persona"
 	"github.com/msageha/maestro_v2/internal/daemon/skill"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
 // errExecutorInit is re-exported from core via core_aliases.go.
-
-// executorErrTTL is the duration after which a cached executor factory error expires,
-// allowing a retry. This prevents transient errors (e.g. log file permission) from
-// permanently blocking all dispatches.
-const executorErrTTL = 30 * time.Second
 
 // maxGateEvaluations is the maximum number of gate evaluation entries kept in memory.
 const maxGateEvaluations = 1000
@@ -47,11 +43,10 @@ type Dispatcher struct {
 	// dispatch calls. This avoids per-dispatch log file Open/Close overhead.
 	// All access is protected by execMu to prevent data races during shutdown
 	// (CloseExecutor) and testing (SetExecutorFactory).
-	execMu           sync.Mutex
-	cachedExec       AgentExecutor
-	cachedExecErr    error
-	cachedExecErrAt  time.Time
-	execInit         bool
+	execMu        sync.Mutex
+	cachedExec    AgentExecutor
+	cachedExecErr error
+	execInit      bool
 
 	worktreeManager *WorktreeManager
 }
@@ -84,7 +79,6 @@ func (d *Dispatcher) SetExecutorFactory(f ExecutorFactory) {
 	d.executorFactory = f
 	d.cachedExec = nil
 	d.cachedExecErr = nil
-	d.cachedExecErrAt = time.Time{}
 	d.execInit = false
 	d.execMu.Unlock()
 
@@ -99,16 +93,9 @@ func (d *Dispatcher) SetExecutorFactory(f ExecutorFactory) {
 func (d *Dispatcher) getExecutor() (AgentExecutor, error) {
 	d.execMu.Lock()
 	defer d.execMu.Unlock()
-	// If a previous init attempt failed and the TTL has expired, allow retry.
-	if d.execInit && d.cachedExecErr != nil && d.clock.Now().Sub(d.cachedExecErrAt) > executorErrTTL {
-		d.execInit = false
-	}
 	if !d.execInit {
 		d.cachedExec, d.cachedExecErr = d.executorFactory(d.maestroDir, d.config.Watcher, d.config.Logging.Level)
 		d.execInit = true
-		if d.cachedExecErr != nil {
-			d.cachedExecErrAt = d.clock.Now()
-		}
 	}
 	if d.cachedExecErr != nil {
 		return nil, fmt.Errorf("%w: %v", errExecutorInit, d.cachedExecErr)
@@ -123,7 +110,6 @@ func (d *Dispatcher) CloseExecutor() {
 	exec := d.cachedExec
 	d.cachedExec = nil
 	d.cachedExecErr = nil
-	d.cachedExecErrAt = time.Time{}
 	d.execInit = false
 	d.execMu.Unlock()
 
@@ -311,7 +297,16 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 		return fmt.Errorf("create executor: %w", err)
 	}
 
+	// Inject persona prompt into task content (best-effort, prepend)
 	dispatchTask := *task
+	if task.PersonaHint != "" {
+		if section, found := persona.FormatPersonaSection(d.config.Personas, task.PersonaHint); !found {
+			d.log(LogLevelWarn, "persona_not_found task=%s persona_hint=%s", task.ID, task.PersonaHint)
+		} else if section != "" {
+			dispatchTask.Content = section + dispatchTask.Content
+			d.log(LogLevelDebug, "persona_injected task=%s persona=%s", task.ID, task.PersonaHint)
+		}
+	}
 
 	// Inject skills into task content (between content and learnings)
 	if d.config.Skills.Enabled && len(task.SkillRefs) > 0 {

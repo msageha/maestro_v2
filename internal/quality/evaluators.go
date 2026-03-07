@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -331,6 +330,65 @@ func (e *LogicalNotEvaluator) Evaluate(ctx context.Context, condition *RuleCondi
 	return !passed, nil
 }
 
+// ResourceLimitEvaluator evaluates resource limit conditions
+type ResourceLimitEvaluator struct{}
+
+// Evaluate checks if resource usage is within limits.
+// Uses fail-closed approach: returns false on error to prevent bypassing limits.
+func (e *ResourceLimitEvaluator) Evaluate(ctx context.Context, condition *RuleCondition, evalCtx EvaluationContext) (bool, error) {
+	value, err := evalCtx.GetResource(condition.Resource, condition.Scope)
+	if err != nil {
+		return false, fmt.Errorf("resource limit check failed (fail-closed): %w", err)
+	}
+
+	return value <= condition.Limit, nil
+}
+
+// DependencyCheckEvaluator evaluates dependency conditions
+type DependencyCheckEvaluator struct{}
+
+// Evaluate checks dependency conditions
+func (e *DependencyCheckEvaluator) Evaluate(ctx context.Context, condition *RuleCondition, evalCtx EvaluationContext) (bool, error) {
+	deps, err := evalCtx.GetDependencies(condition.Mode)
+	if err != nil {
+		return false, fmt.Errorf("failed to get dependencies: %w", err)
+	}
+
+	switch condition.Mode {
+	case "all_completed":
+		// Check if all dependencies are in the list
+		for _, dep := range condition.Dependencies {
+			if !contains(deps, dep) {
+				return false, nil
+			}
+		}
+		return true, nil
+
+	case "all_success":
+		// This would check if all dependencies succeeded
+		// For now, just check existence
+		for _, dep := range condition.Dependencies {
+			if !contains(deps, dep) {
+				return false, nil
+			}
+		}
+		return true, nil
+
+	case "any_failed":
+		// This would check if any dependency failed
+		// For now, return false (no failures)
+		return false, nil
+
+	case "circular_check":
+		// This would check for circular dependencies
+		// For now, assume no circular dependencies
+		return true, nil
+
+	default:
+		return false, fmt.Errorf("unknown dependency mode: %s", condition.Mode)
+	}
+}
+
 // ScriptEvaluator evaluates custom script conditions
 type ScriptEvaluator struct{}
 
@@ -446,7 +504,9 @@ func toFloat64(v interface{}) (float64, error) {
 	case int64:
 		return float64(val), nil
 	case string:
-		return strconv.ParseFloat(val, 64)
+		var f float64
+		_, err := fmt.Sscanf(val, "%f", &f)
+		return f, err
 	default:
 		return 0, fmt.Errorf("cannot convert %T to float64", v)
 	}

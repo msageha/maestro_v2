@@ -10,9 +10,6 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
-// now is a seam for deterministic testing; override in same-package tests only.
-var now = time.Now
-
 func Quarantine(maestroDir, filePath string) (string, error) {
 	quarantineDir := filepath.Join(maestroDir, "quarantine")
 	if err := os.MkdirAll(quarantineDir, 0755); err != nil {
@@ -20,7 +17,7 @@ func Quarantine(maestroDir, filePath string) (string, error) {
 	}
 
 	baseName := filepath.Base(filePath)
-	timestamp := now().Format("20060102T150405")
+	timestamp := time.Now().Format("20060102T150405")
 	quarantineName := fmt.Sprintf("%s.%s.corrupt", baseName, timestamp)
 	quarantinePath := filepath.Join(quarantineDir, quarantineName)
 

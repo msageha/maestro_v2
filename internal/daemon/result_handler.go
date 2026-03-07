@@ -51,11 +51,10 @@ type ResultHandler struct {
 	continuousHandler *ContinuousHandler
 	eventBus          *events.Bus
 
-	execMu           sync.Mutex
-	cachedExec       AgentExecutor
-	cachedExecErr    error
-	cachedExecErrAt  time.Time
-	execInit         bool
+	execMu        sync.Mutex
+	cachedExec    AgentExecutor
+	cachedExecErr error
+	execInit      bool
 }
 
 // NewResultHandler creates a new ResultHandler.
@@ -88,7 +87,6 @@ func (rh *ResultHandler) SetExecutorFactory(f ExecutorFactory) {
 	rh.executorFactory = f
 	rh.cachedExec = nil
 	rh.cachedExecErr = nil
-	rh.cachedExecErrAt = time.Time{}
 	rh.execInit = false
 	rh.execMu.Unlock()
 
@@ -103,15 +101,9 @@ func (rh *ResultHandler) SetExecutorFactory(f ExecutorFactory) {
 func (rh *ResultHandler) getExecutor() (AgentExecutor, error) {
 	rh.execMu.Lock()
 	defer rh.execMu.Unlock()
-	if rh.execInit && rh.cachedExecErr != nil && rh.clock.Now().Sub(rh.cachedExecErrAt) > executorErrTTL {
-		rh.execInit = false
-	}
 	if !rh.execInit {
 		rh.cachedExec, rh.cachedExecErr = rh.executorFactory(rh.maestroDir, rh.config.Watcher, rh.config.Logging.Level)
 		rh.execInit = true
-		if rh.cachedExecErr != nil {
-			rh.cachedExecErrAt = rh.clock.Now()
-		}
 	}
 	if rh.cachedExecErr != nil {
 		return nil, fmt.Errorf("%w: %v", errExecutorInit, rh.cachedExecErr)
@@ -126,7 +118,6 @@ func (rh *ResultHandler) CloseExecutor() {
 	exec := rh.cachedExec
 	rh.cachedExec = nil
 	rh.cachedExecErr = nil
-	rh.cachedExecErrAt = time.Time{}
 	rh.execInit = false
 	rh.execMu.Unlock()
 

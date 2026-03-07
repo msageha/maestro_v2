@@ -2,29 +2,12 @@ package daemon
 
 import (
 	"bytes"
-	"errors"
 	"log"
-	"sync"
 	"testing"
 	"time"
 
-	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/model"
 )
-
-// fakeClock is a controllable clock for testing.
-type fakeClock struct {
-	mu  sync.Mutex
-	now time.Time
-}
-
-func newFakeClock(t time.Time) *fakeClock { return &fakeClock{now: t} }
-func (c *fakeClock) Now() time.Time       { c.mu.Lock(); defer c.mu.Unlock(); return c.now }
-func (c *fakeClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.now = c.now.Add(d)
-}
 
 func TestEffectivePriority(t *testing.T) {
 	now := time.Now().UTC()
@@ -322,101 +305,3 @@ func TestSortPendingIndices_ConsistentAcrossTypes(t *testing.T) {
 		}
 	}
 }
-
-func TestGetExecutor_ErrorTTLRetry(t *testing.T) {
-	cfg := model.Config{}
-	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
-
-	clk := newFakeClock(time.Now())
-	d.clock = clk
-
-	callCount := 0
-	failErr := errors.New("permission denied")
-
-	d.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
-		callCount++
-		return nil, failErr
-	})
-
-	// First call: factory invoked, error cached
-	_, err := d.getExecutor()
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if callCount != 1 {
-		t.Fatalf("expected factory called once, got %d", callCount)
-	}
-
-	// Second call within TTL: factory NOT re-invoked
-	clk.Advance(10 * time.Second)
-	_, err = d.getExecutor()
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if callCount != 1 {
-		t.Fatalf("expected factory still called once, got %d", callCount)
-	}
-
-	// Third call after TTL: factory re-invoked
-	clk.Advance(25 * time.Second) // total 35s > 30s TTL
-	_, err = d.getExecutor()
-	if err == nil {
-		t.Fatal("expected error")
-	}
-	if callCount != 2 {
-		t.Fatalf("expected factory called twice after TTL, got %d", callCount)
-	}
-}
-
-func TestGetExecutor_ErrorTTLRecovery(t *testing.T) {
-	cfg := model.Config{}
-	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
-
-	clk := newFakeClock(time.Now())
-	d.clock = clk
-
-	callCount := 0
-
-	// Factory fails first, then succeeds
-	d.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
-		callCount++
-		if callCount == 1 {
-			return nil, errors.New("transient error")
-		}
-		return &noopExecutor{}, nil
-	})
-
-	// First call fails
-	_, err := d.getExecutor()
-	if err == nil {
-		t.Fatal("expected error on first call")
-	}
-
-	// After TTL, factory should retry and succeed
-	clk.Advance(executorErrTTL + time.Second)
-	exec, err := d.getExecutor()
-	if err != nil {
-		t.Fatalf("expected success after TTL, got %v", err)
-	}
-	if exec == nil {
-		t.Fatal("expected non-nil executor")
-	}
-
-	// Subsequent calls should return cached success
-	exec2, err := d.getExecutor()
-	if err != nil {
-		t.Fatalf("expected cached success, got %v", err)
-	}
-	if exec2 != exec {
-		t.Error("expected same cached executor instance")
-	}
-	if callCount != 2 {
-		t.Errorf("expected factory called twice total, got %d", callCount)
-	}
-}
-
-// noopExecutor is a minimal AgentExecutor for testing.
-type noopExecutor struct{}
-
-func (e *noopExecutor) Execute(_ agent.ExecRequest) agent.ExecResult { return agent.ExecResult{} }
-func (e *noopExecutor) Close() error                                 { return nil }

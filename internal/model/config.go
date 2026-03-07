@@ -4,6 +4,9 @@ package model
 import (
 	"errors"
 	"fmt"
+	"strings"
+
+	"github.com/msageha/maestro_v2/internal/validate"
 )
 
 // DefaultMaxYAMLFileBytes is the default maximum size for YAML file reads (5MB).
@@ -26,6 +29,13 @@ type Config struct {
 	Verification   VerificationConfig   `yaml:"verification"`
 	Worktree       WorktreeConfig       `yaml:"worktree"`
 	Skills         SkillsConfig             `yaml:"skills"`
+	Personas       map[string]PersonaConfig `yaml:"personas,omitempty"`
+}
+
+// PersonaConfig defines a persona that can be assigned to agents.
+type PersonaConfig struct {
+	Description string `yaml:"description"`
+	Prompt      string `yaml:"prompt"`
 }
 
 // SkillsConfig controls the skill reference feature for tasks.
@@ -218,7 +228,7 @@ type QualityGateEnforcement struct {
 type CircuitBreakerConfig struct {
 	Enabled                bool `yaml:"enabled"`                   // opt-in, default: false
 	MaxConsecutiveFailures int  `yaml:"max_consecutive_failures"`  // default: 3
-	ProgressTimeoutMinutes int  `yaml:"progress_timeout_minutes"`  // default: 30
+	ProgressTimeoutMinutes int  `yaml:"progress_timeout_minutes"`  // default: 30, 0=disabled
 }
 
 // EffectiveMaxConsecutiveFailures returns the configured threshold or 3 as default.
@@ -229,12 +239,10 @@ func (c CircuitBreakerConfig) EffectiveMaxConsecutiveFailures() int {
 	return 3
 }
 
-// EffectiveProgressTimeoutMinutes returns the configured timeout or 30 as default.
+// EffectiveProgressTimeoutMinutes returns the configured timeout.
+// Returns 0 if set to 0 (disabled). The template default is 30.
 func (c CircuitBreakerConfig) EffectiveProgressTimeoutMinutes() int {
-	if c.ProgressTimeoutMinutes > 0 {
-		return c.ProgressTimeoutMinutes
-	}
-	return 30
+	return c.ProgressTimeoutMinutes
 }
 
 // LearningsConfig controls the learning accumulation feature.
@@ -243,7 +251,7 @@ type LearningsConfig struct {
 	MaxEntries       int  `yaml:"max_entries"`        // default: 100
 	MaxContentLength int  `yaml:"max_content_length"` // default: 500
 	InjectCount      int  `yaml:"inject_count"`       // top-K learnings injected per task dispatch, default: 5
-	TTLHours         int  `yaml:"ttl_hours"`          // learning expiry in hours, default: 72
+	TTLHours         int  `yaml:"ttl_hours"`          // learning expiry in hours, default: 72, 0=unlimited
 }
 
 // EffectiveMaxEntries returns the configured limit or 100 as default.
@@ -270,12 +278,10 @@ func (l LearningsConfig) EffectiveInjectCount() int {
 	return 5
 }
 
-// EffectiveTTLHours returns the configured TTL or 72 hours as default.
+// EffectiveTTLHours returns the configured TTL in hours.
+// 0 means unlimited (no expiry). The template default is 72.
 func (l LearningsConfig) EffectiveTTLHours() int {
-	if l.TTLHours > 0 {
-		return l.TTLHours
-	}
-	return 72
+	return l.TTLHours
 }
 
 // VerificationConfig controls verification commands run by Workers.
@@ -495,6 +501,16 @@ func (c Config) Validate() error {
 	}
 	if c.Skills.AutoCollect.MinCommands < 0 {
 		errs = append(errs, fmt.Errorf("skills.auto_collect.min_commands: must be >= 0"))
+	}
+
+	// personas
+	for name, p := range c.Personas {
+		if err := validate.ValidateID(name); err != nil {
+			errs = append(errs, fmt.Errorf("personas.%s: invalid persona name: %w", name, err))
+		}
+		if strings.TrimSpace(p.Prompt) == "" {
+			errs = append(errs, fmt.Errorf("personas.%s.prompt: must not be empty", name))
+		}
 	}
 
 	// quality_gates thresholds
