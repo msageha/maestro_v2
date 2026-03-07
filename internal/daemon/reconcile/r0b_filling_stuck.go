@@ -97,7 +97,9 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 		}
 
 		// Phase 2: Queue cleanup (no state lock held — avoids deadlock with queue->state paths).
-		run.BatchRemoveTaskIDsFromQueues(taskIDsToRemove)
+		if err := run.BatchRemoveTaskIDsFromQueues(taskIDsToRemove); err != nil {
+			run.Log(core.LogLevelError, "R0b batch_remove_tasks command=%s error=%v", commandID, err)
+		}
 
 		// Phase 3: Re-verify and commit state change (under state lock).
 		modified := func() bool {
