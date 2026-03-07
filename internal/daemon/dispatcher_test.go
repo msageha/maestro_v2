@@ -2,12 +2,120 @@ package daemon
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"testing"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/model"
 )
+
+// testClock is a controllable clock for testing.
+type testClock struct {
+	now time.Time
+}
+
+func (c *testClock) Now() time.Time { return c.now }
+
+func (c *testClock) Advance(d time.Duration) { c.now = c.now.Add(d) }
+
+func TestGetExecutor_ErrorTTL(t *testing.T) {
+	cfg := model.Config{}
+	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+
+	callCount := 0
+	d.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+		callCount++
+		return nil, fmt.Errorf("factory error %d", callCount)
+	})
+
+	clk := &testClock{now: time.Now()}
+	d.clock = clk
+
+	// First call: factory invoked
+	_, err := d.getExecutor()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if callCount != 1 {
+		t.Fatalf("expected 1 call, got %d", callCount)
+	}
+
+	// Second call within TTL: cached error, no factory call
+	clk.Advance(10 * time.Second)
+	_, err = d.getExecutor()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if callCount != 1 {
+		t.Fatalf("expected 1 call (cached), got %d", callCount)
+	}
+
+	// Third call after TTL: factory retried
+	clk.Advance(25 * time.Second) // total 35s > 30s TTL
+	_, err = d.getExecutor()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 calls (retried), got %d", callCount)
+	}
+}
+
+func TestGetExecutor_ErrorTTL_RecoveryOnRetry(t *testing.T) {
+	cfg := model.Config{}
+	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+
+	callCount := 0
+	d.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+		callCount++
+		if callCount == 1 {
+			return nil, fmt.Errorf("transient error")
+		}
+		return &stubExecutor{}, nil
+	})
+
+	clk := &testClock{now: time.Now()}
+	d.clock = clk
+
+	// First call: error
+	_, err := d.getExecutor()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	// Advance past TTL and retry: should succeed
+	clk.Advance(31 * time.Second)
+	exec, err := d.getExecutor()
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if exec == nil {
+		t.Fatal("expected non-nil executor")
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 calls, got %d", callCount)
+	}
+
+	// Subsequent call: should use cached successful executor
+	exec2, err := d.getExecutor()
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if exec2 != exec {
+		t.Fatal("expected same cached executor")
+	}
+	if callCount != 2 {
+		t.Fatalf("expected 2 calls (cached success), got %d", callCount)
+	}
+}
+
+// stubExecutor is a minimal AgentExecutor for testing.
+type stubExecutor struct{}
+
+func (s *stubExecutor) Execute(req agent.ExecRequest) agent.ExecResult { return agent.ExecResult{} }
+func (s *stubExecutor) Close() error                                   { return nil }
 
 func TestEffectivePriority(t *testing.T) {
 	now := time.Now().UTC()

@@ -30,10 +30,11 @@ type CancelHandler struct {
 	lockMap         *lock.MutexMap
 	worktreeManager *WorktreeManager
 
-	execMu        sync.Mutex
-	cachedExec    AgentExecutor
-	cachedExecErr error
-	execInit      bool
+	execMu          sync.Mutex
+	cachedExec      AgentExecutor
+	cachedExecErr   error
+	cachedExecErrAt time.Time
+	execInit        bool
 }
 
 // NewCancelHandler creates a new CancelHandler.
@@ -60,6 +61,7 @@ func (ch *CancelHandler) SetExecutorFactory(f ExecutorFactory) {
 	ch.executorFactory = f
 	ch.cachedExec = nil
 	ch.cachedExecErr = nil
+	ch.cachedExecErrAt = time.Time{}
 	ch.execInit = false
 	ch.execMu.Unlock()
 
@@ -74,9 +76,17 @@ func (ch *CancelHandler) SetExecutorFactory(f ExecutorFactory) {
 func (ch *CancelHandler) getExecutor() (AgentExecutor, error) {
 	ch.execMu.Lock()
 	defer ch.execMu.Unlock()
+	if ch.execInit && ch.cachedExecErr != nil && ch.clock.Now().Sub(ch.cachedExecErrAt) >= executorErrorTTL {
+		ch.execInit = false
+	}
 	if !ch.execInit {
 		ch.cachedExec, ch.cachedExecErr = ch.executorFactory(ch.maestroDir, ch.config.Watcher, ch.config.Logging.Level)
 		ch.execInit = true
+		if ch.cachedExecErr != nil {
+			ch.cachedExecErrAt = ch.clock.Now()
+		} else {
+			ch.cachedExecErrAt = time.Time{}
+		}
 	}
 	if ch.cachedExecErr != nil {
 		return nil, fmt.Errorf("%w: %v", errExecutorInit, ch.cachedExecErr)
@@ -91,6 +101,7 @@ func (ch *CancelHandler) CloseExecutor() {
 	exec := ch.cachedExec
 	ch.cachedExec = nil
 	ch.cachedExecErr = nil
+	ch.cachedExecErrAt = time.Time{}
 	ch.execInit = false
 	ch.execMu.Unlock()
 
