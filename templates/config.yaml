@@ -67,14 +67,14 @@ logging:
 circuit_breaker:
   enabled: false                   # サーキットブレーカーの有効化フラグ (opt-in)
   max_consecutive_failures: 3      # 連続失敗でトリップするしきい値
-  progress_timeout_minutes: 30     # 最後の成功からのタイムアウト (分、0で無効)
+  progress_timeout_minutes: 30     # 最後の成功からのタイムアウト (分、デフォルト: 30)
 
 learnings:
   enabled: false                    # 学習知見の蓄積 (opt-in)
   max_entries: 100                  # 蓄積上限件数
   max_content_length: 500           # 1件あたりの最大文字数
   inject_count: 5                   # タスク配信時に注入する最新 K 件
-  ttl_hours: 72                     # 学習知見の有効期限 (時間、0で無制限)
+  ttl_hours: 72                     # 学習知見の有効期限 (時間、デフォルト: 72)
 
 verification:
   enabled: false                    # 検証コマンド実行の有効化フラグ (opt-in)
