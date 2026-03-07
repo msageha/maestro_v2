@@ -172,6 +172,19 @@ func runPlanAddRetryTask(args []string) error {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan add-retry-task: --bloom-level must be between 1 and 6, got %d", bloomLevel)}
 	}
 
+	// Validate IDs
+	if err := validate.ValidateID(commandID); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan add-retry-task: invalid --command-id: %v", err)}
+	}
+	if err := validate.ValidateID(retryOf); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan add-retry-task: invalid --retry-of: %v", err)}
+	}
+	for _, id := range blockedBy {
+		if err := validate.ValidateID(id); err != nil {
+			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan add-retry-task: invalid --blocked-by: %v", err)}
+		}
+	}
+
 	maestroDir, err := requireMaestroDir("plan add-retry-task")
 	if err != nil {
 		return err
