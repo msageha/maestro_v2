@@ -948,15 +948,16 @@ func (qh *QueueHandler) checkPendingDependencyFailuresDeferred(tq *taskQueueEntr
 		qh.log(LogLevelWarn, "dependency_failure_pending task=%s dep=%s dep_status=%s",
 			task.ID, failedDep, failedStatus)
 
+		if qh.dependencyResolver.stateReader != nil {
+			if err := qh.dependencyResolver.stateReader.UpdateTaskState(task.CommandID, task.ID, model.StatusCancelled, reason); err != nil {
+				qh.log(LogLevelWarn, "dep_failure_state_update task=%s error=%v (skipping queue update, will retry next scan)", task.ID, err)
+				continue
+			}
+		}
+
 		task.Status = model.StatusCancelled
 		task.UpdatedAt = qh.clock.Now().UTC().Format(time.RFC3339)
 		dirty = true
-
-		if qh.dependencyResolver.stateReader != nil {
-			if err := qh.dependencyResolver.stateReader.UpdateTaskState(task.CommandID, task.ID, model.StatusCancelled, reason); err != nil {
-				qh.log(LogLevelWarn, "dep_failure_state_update task=%s error=%v", task.ID, err)
-			}
-		}
 
 		cancelledResults = append(cancelledResults, CancelledTaskResult{
 			TaskID:    task.ID,
@@ -998,6 +999,13 @@ func (qh *QueueHandler) checkInProgressDependencyFailuresDeferred(tq *taskQueueE
 		qh.log(LogLevelWarn, "dependency_failure task=%s dep=%s dep_status=%s",
 			task.ID, failedDep, failedStatus)
 
+		if qh.dependencyResolver.stateReader != nil {
+			if err := qh.dependencyResolver.stateReader.UpdateTaskState(task.CommandID, task.ID, model.StatusCancelled, reason); err != nil {
+				qh.log(LogLevelWarn, "dep_failure_state_update task=%s error=%v (skipping queue update, will retry next scan)", task.ID, err)
+				continue
+			}
+		}
+
 		// Defer interrupt to Phase B
 		if workerID != "" {
 			interrupts = append(interrupts, interruptItem{
@@ -1013,12 +1021,6 @@ func (qh *QueueHandler) checkInProgressDependencyFailuresDeferred(tq *taskQueueE
 		task.LeaseExpiresAt = nil
 		task.UpdatedAt = qh.clock.Now().UTC().Format(time.RFC3339)
 		dirty = true
-
-		if qh.dependencyResolver.stateReader != nil {
-			if err := qh.dependencyResolver.stateReader.UpdateTaskState(task.CommandID, task.ID, model.StatusCancelled, reason); err != nil {
-				qh.log(LogLevelWarn, "dep_failure_state_update task=%s error=%v", task.ID, err)
-			}
-		}
 
 		cancelledResults = append(cancelledResults, CancelledTaskResult{
 			TaskID:    task.ID,

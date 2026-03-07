@@ -32,10 +32,11 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 			return
 		}
 
-		if d.qualityGateDaemon == nil {
+		qgd := d.qualityGateDaemon
+		if qgd == nil {
 			return
 		}
-		d.qualityGateDaemon.EmitEvent(TaskStartEvent{
+		qgd.EmitEvent(TaskStartEvent{
 			TaskID:    taskID,
 			CommandID: commandID,
 			AgentID:   workerID,
@@ -65,10 +66,11 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 			return
 		}
 
-		if d.qualityGateDaemon == nil {
+		qgd := d.qualityGateDaemon
+		if qgd == nil {
 			return
 		}
-		d.qualityGateDaemon.EmitEvent(TaskCompleteEvent{
+		qgd.EmitEvent(TaskCompleteEvent{
 			TaskID:      taskID,
 			CommandID:   commandID,
 			AgentID:     workerID,
@@ -89,10 +91,11 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 			return
 		}
 
-		if d.qualityGateDaemon == nil {
+		qgd := d.qualityGateDaemon
+		if qgd == nil {
 			return
 		}
-		d.qualityGateDaemon.EmitEvent(PhaseTransitionEvent{
+		qgd.EmitEvent(PhaseTransitionEvent{
 			PhaseID:        phaseID,
 			CommandID:      commandID,
 			OldStatus:      model.PhaseStatus(oldStatus),
@@ -113,11 +116,12 @@ func (eb *EventBridge) subscribeQueueWrittenEvents() {
 		return
 	}
 	unsub := d.eventBus.Subscribe(events.EventQueueWritten, func(e events.Event) {
-		if d.handler == nil || d.shuttingDown.Load() {
+		h := d.handler
+		if h == nil || d.shuttingDown.Load() {
 			return
 		}
 		file, _ := e.Data["file"].(string)
-		d.handler.debounceAndScan("event_bus:" + file)
+		h.debounceAndScan("event_bus:" + file)
 	})
 	eb.eventUnsubscribers = append(eb.eventUnsubscribers, unsub)
 }
