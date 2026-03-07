@@ -17,18 +17,20 @@ const (
 	IDTypeTask         IDType = "task"
 	IDTypePhase        IDType = "phase"
 	IDTypeNotification IDType = "ntf"
-	IDTypeResult       IDType = "res"
+	IDTypeResult         IDType = "res"
+	IDTypeSkillCandidate IDType = "skc"
 )
 
 var validIDTypes = map[IDType]bool{
-	IDTypeCommand:      true,
-	IDTypeTask:         true,
-	IDTypePhase:        true,
-	IDTypeNotification: true,
-	IDTypeResult:       true,
+	IDTypeCommand:        true,
+	IDTypeTask:           true,
+	IDTypePhase:          true,
+	IDTypeNotification:   true,
+	IDTypeResult:         true,
+	IDTypeSkillCandidate: true,
 }
 
-var idRegex = regexp.MustCompile(`^(cmd|task|phase|ntf|res)_[0-9]{10}_[0-9a-f]{8}$`)
+var idRegex = regexp.MustCompile(`^(cmd|task|phase|ntf|res|skc)_[0-9]{10}_[0-9a-f]{8}$`)
 
 func GenerateID(idType IDType) (string, error) {
 	if !validIDTypes[idType] {
