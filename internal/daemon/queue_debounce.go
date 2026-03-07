@@ -47,6 +47,11 @@ func (qh *QueueHandler) debounceAndScan(trigger string) {
 		delay = 0 // fire immediately
 	}
 
+	// Capture trigger for the closure so that log output reflects the
+	// actual trigger that caused this debounce window to fire, not a
+	// later overwrite from a subsequent call.
+	capturedTrigger := trigger
+
 	// Stop previous timer if any.
 	if qh.debounceTimer != nil {
 		qh.debounceTimer.Stop()
@@ -85,7 +90,7 @@ func (qh *QueueHandler) debounceAndScan(trigger string) {
 					qh.log(core.LogLevelError, "panic in debounceAndScan: %v", r)
 				}
 			}()
-			qh.log(core.LogLevelDebug, "debounced_scan trigger=%s", trigger)
+			qh.log(core.LogLevelDebug, "debounced_scan trigger=%s", capturedTrigger)
 
 			ctx := qh.shutdownCtx
 			if ctx == nil {

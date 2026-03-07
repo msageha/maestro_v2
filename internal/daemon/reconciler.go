@@ -81,3 +81,9 @@ func (r *Reconciler) Reconcile() ([]ReconcileRepair, []DeferredNotification) {
 func (r *Reconciler) ExecuteDeferredNotifications(notifications []DeferredNotification) {
 	r.engine.ExecuteDeferredNotifications(notifications)
 }
+
+// CloseExecutor releases the shared executor's resources.
+// Safe to call multiple times; subsequent calls are no-ops.
+func (r *Reconciler) CloseExecutor() {
+	r.engine.CloseExecutor()
+}
