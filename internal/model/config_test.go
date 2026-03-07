@@ -185,3 +185,76 @@ func TestValidate_NegativeLearnings(t *testing.T) {
 		t.Fatalf("expected learnings.max_entries in error, got: %v", err)
 	}
 }
+
+func TestValidate_PersonaValid(t *testing.T) {
+	cfg := validConfig()
+	cfg.Personas = map[string]PersonaConfig{
+		"code-reviewer": {Description: "Reviews code", Prompt: "You are a code reviewer."},
+		"architect":     {Description: "System architect", Prompt: "You are a system architect."},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected no error for valid personas, got: %v", err)
+	}
+}
+
+func TestValidate_PersonaInvalidName(t *testing.T) {
+	cfg := validConfig()
+	cfg.Personas = map[string]PersonaConfig{
+		"invalid name with spaces": {Prompt: "some prompt"},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid persona name")
+	}
+	if !strings.Contains(err.Error(), "personas.invalid name with spaces") {
+		t.Fatalf("expected persona name in error, got: %v", err)
+	}
+}
+
+func TestValidate_PersonaEmptyPrompt(t *testing.T) {
+	cfg := validConfig()
+	cfg.Personas = map[string]PersonaConfig{
+		"valid-name": {Description: "desc", Prompt: ""},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for empty persona prompt")
+	}
+	if !strings.Contains(err.Error(), "personas.valid-name.prompt") {
+		t.Fatalf("expected personas.valid-name.prompt in error, got: %v", err)
+	}
+}
+
+func TestValidate_PersonaWhitespaceOnlyPrompt(t *testing.T) {
+	cfg := validConfig()
+	cfg.Personas = map[string]PersonaConfig{
+		"valid-name": {Description: "desc", Prompt: "   \t\n  "},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for whitespace-only persona prompt")
+	}
+	if !strings.Contains(err.Error(), "personas.valid-name.prompt") {
+		t.Fatalf("expected personas.valid-name.prompt in error, got: %v", err)
+	}
+}
+
+func TestValidate_PersonaMultipleErrors(t *testing.T) {
+	cfg := validConfig()
+	cfg.Personas = map[string]PersonaConfig{
+		"valid-persona":   {Prompt: "valid prompt"},
+		"../bad-traverse": {Prompt: "prompt"},
+		"ok-name":         {Prompt: ""},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected errors for invalid personas")
+	}
+	errStr := err.Error()
+	if !strings.Contains(errStr, "personas.../bad-traverse") {
+		t.Errorf("expected invalid name error, got: %v", err)
+	}
+	if !strings.Contains(errStr, "personas.ok-name.prompt") {
+		t.Errorf("expected empty prompt error, got: %v", err)
+	}
+}
