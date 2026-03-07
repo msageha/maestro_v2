@@ -44,6 +44,8 @@ type QueueHandler struct {
 	debounceTimer    *time.Timer
 	firstTriggerAt   time.Time   // tracks first trigger in a debounce window for maxWait
 	scanRunning      atomic.Bool // true while debounced callback is executing
+	debounceStopped  bool        // true after Stop(); prevents new callbacks from running
+	debounceWg       sync.WaitGroup // tracks in-flight timer callbacks for graceful Stop
 
 	// scanMu serializes PeriodicScan phases (exclusive) vs queue writes (shared RLock).
 	// Spec §5.6: per-agent mutex — queue writes hold RLock + per-target lockMap key.
@@ -143,14 +145,22 @@ func (qh *QueueHandler) SetShutdownGuard(ctx context.Context, shuttingDown *atom
 	qh.shuttingDown = shuttingDown
 }
 
-// Stop cancels any pending debounce timer.
+// Stop cancels any pending debounce timer and waits for any in-flight
+// timer callback to complete, ensuring no goroutine leaks on shutdown.
 func (qh *QueueHandler) Stop() {
 	qh.debounceMu.Lock()
-	defer qh.debounceMu.Unlock()
+	qh.debounceStopped = true
 	if qh.debounceTimer != nil {
-		qh.debounceTimer.Stop()
+		// If Stop returns true, the callback won't fire — balance WaitGroup.
+		if qh.debounceTimer.Stop() {
+			qh.debounceWg.Done()
+		}
 		qh.debounceTimer = nil
 	}
+	qh.debounceMu.Unlock()
+
+	// Wait for any already-fired callback goroutine to finish.
+	qh.debounceWg.Wait()
 }
 
 // GetLeaseManager returns the internal lease manager (for testing).
