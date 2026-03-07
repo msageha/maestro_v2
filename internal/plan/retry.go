@@ -27,6 +27,7 @@ type RetryOptions struct {
 	BlockedBy          []string // task IDs (not names)
 	BloomLevel         int
 	ToolsHint          []string
+	PersonaHint        string
 	MaestroDir         string
 	Config             model.Config
 	LockMap            *lock.MutexMap
@@ -215,6 +216,7 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 		blockedBy:          blockedBy,
 		bloomLevel:         opts.BloomLevel,
 		toolsHint:          opts.ToolsHint,
+		personaHint:        opts.PersonaHint,
 		workerID:           assignment.WorkerID,
 	}
 
@@ -233,6 +235,7 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 		bloomLevel := opts.BloomLevel
 		var constraints []string
 		var toolsHint []string
+		var personaHint string
 
 		if orig, ok := origTaskCache[cr.Replaced]; ok {
 			purpose = orig.Purpose
@@ -241,6 +244,7 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 			bloomLevel = orig.BloomLevel
 			constraints = orig.Constraints
 			toolsHint = orig.ToolsHint
+			personaHint = orig.PersonaHint
 		}
 
 		crTask := retryQueueTask{
@@ -253,6 +257,7 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 			blockedBy:          state.TaskDependencies[cr.TaskID],
 			bloomLevel:         bloomLevel,
 			toolsHint:          toolsHint,
+			personaHint:        personaHint,
 			workerID:           cr.Worker,
 		}
 		if err := writeRetryQueueEntry(opts.MaestroDir, crTask, now, opts.LockMap); err != nil {
@@ -489,6 +494,7 @@ type retryQueueTask struct {
 	blockedBy          []string
 	bloomLevel         int
 	toolsHint          []string
+	personaHint        string
 	workerID           string
 }
 
@@ -525,6 +531,7 @@ func writeRetryQueueEntry(maestroDir string, task retryQueueTask, now string, lo
 		BlockedBy:          task.blockedBy,
 		BloomLevel:         task.bloomLevel,
 		ToolsHint:          task.toolsHint,
+		PersonaHint:        task.personaHint,
 		Priority:           100,
 		Status:             model.StatusPending,
 		CreatedAt:          now,
