@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -26,9 +27,9 @@ func (d *Daemon) waitSignals() {
 		d.log(LogLevelInfo, "received signal=%s, initiating graceful shutdown (session_alive=%v)", sig, tmux.SessionExists())
 
 		// Second signal → force exit.
-		// shutdownDone unblocks this goroutine when Shutdown completes,
-		// preventing a leak if no second signal arrives.
-		shutdownDone := make(chan struct{})
+		// forceCancel stops this goroutine when Shutdown completes normally,
+		// preventing a goroutine leak.
+		forceCtx, forceCancel := context.WithCancel(context.Background())
 		go func() {
 			select {
 			case <-sigCh:
@@ -36,13 +37,13 @@ func (d *Daemon) waitSignals() {
 				d.forceExit.Store(true)
 				d.cleanup()
 				os.Exit(1)
-			case <-shutdownDone:
+			case <-forceCtx.Done():
 				return
 			}
 		}()
 
 		d.Shutdown()
-		close(shutdownDone)
+		forceCancel()
 	case <-d.ctx.Done():
 		d.log(LogLevelInfo, "context cancelled, waiting for shutdown to complete")
 		d.Shutdown()
