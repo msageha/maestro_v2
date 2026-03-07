@@ -576,3 +576,23 @@ func (d *Dispatcher) GetGateEvaluation(taskID string) *model.QualityGateEvaluati
 	defer d.gateEvalMutex.RUnlock()
 	return d.gateEvaluations[taskID]
 }
+
+// RemoveGateEvaluation removes the gate evaluation for a single task.
+func (d *Dispatcher) RemoveGateEvaluation(taskID string) {
+	d.gateEvalMutex.Lock()
+	defer d.gateEvalMutex.Unlock()
+	delete(d.gateEvaluations, taskID)
+}
+
+// RemoveGateEvaluations removes gate evaluations for the given task IDs.
+// Intended to be called when a command completes to free entries for all its tasks.
+func (d *Dispatcher) RemoveGateEvaluations(taskIDs []string) {
+	if len(taskIDs) == 0 {
+		return
+	}
+	d.gateEvalMutex.Lock()
+	defer d.gateEvalMutex.Unlock()
+	for _, id := range taskIDs {
+		delete(d.gateEvaluations, id)
+	}
+}
