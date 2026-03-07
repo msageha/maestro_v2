@@ -23,7 +23,7 @@ type Engine struct {
 	evaluators     map[ConditionType]RuleEvaluator
 	cache          *ResultCache
 	singleflight   *singleflight.Group
-	mu             sync.RWMutex
+	mu             sync.RWMutex // protects gates, evaluators, configVersion, configChecksum
 	configVersion  string
 	configChecksum string
 }

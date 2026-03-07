@@ -8,7 +8,7 @@ import (
 
 // ResultCache is a thread-safe LRU cache for evaluation results
 type ResultCache struct {
-	mu       sync.RWMutex
+	mu       sync.RWMutex // protects items and lru
 	items    map[string]*list.Element
 	lru      *list.List
 	maxSize  int

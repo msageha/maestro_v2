@@ -37,7 +37,7 @@ type Dispatcher struct {
 	eventBus          *events.Bus
 	qualityGate       *QualityGateDaemon
 	gateEvaluations   map[string]*model.QualityGateEvaluation // task_id -> evaluation
-	gateEvalMutex     sync.RWMutex
+	gateEvalMutex     sync.RWMutex                            // protects gateEvaluations
 
 	// cachedExec is a shared Executor instance created once and reused across
 	// dispatch calls. This avoids per-dispatch log file Open/Close overhead.

@@ -65,7 +65,7 @@ func (e PhaseTransitionEvent) Timestamp() time.Time { return e.TransitionedAt }
 
 // QualityGateMetrics tracks quality gate evaluation metrics.
 type QualityGateMetrics struct {
-	mu                    sync.RWMutex
+	mu                    sync.RWMutex // protects all counter fields below
 	evaluationCount       int64
 	successCount          int64
 	failureCount          int64

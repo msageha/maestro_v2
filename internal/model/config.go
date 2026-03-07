@@ -12,6 +12,13 @@ import (
 // DefaultMaxYAMLFileBytes is the default maximum size for YAML file reads (5MB).
 const DefaultMaxYAMLFileBytes = 5 * 1024 * 1024
 
+// Default value pattern: Each config sub-struct provides Effective*() methods
+// that return the configured value or a hardcoded default when the field is
+// zero-valued. This approach keeps defaults close to the type definition
+// rather than centralizing them in config_load.go or a defaults map.
+// When adding new config fields with defaults, follow this pattern:
+//   func (t Type) EffectiveFieldName() T { if t.Field > 0 { return t.Field }; return <default> }
+
 type Config struct {
 	Project        ProjectConfig        `yaml:"project"`
 	Maestro        MaestroConfig        `yaml:"maestro"`

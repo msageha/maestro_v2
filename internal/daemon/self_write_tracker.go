@@ -14,7 +14,7 @@ import (
 // When the daemon writes a YAML file via UDS handler, it records the content hash here.
 // fsnotifyLoop checks this tracker by reading the file and comparing hashes.
 type selfWriteTracker struct {
-	mu     sync.Mutex
+	mu     sync.Mutex              // protects stamps
 	stamps map[string]writeStamp
 }
 
