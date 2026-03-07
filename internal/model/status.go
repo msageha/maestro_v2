@@ -250,7 +250,6 @@ var validIntegrationTransitions = map[IntegrationStatus]map[IntegrationStatus]bo
 		IntegrationStatusFailed:  true,
 	},
 	IntegrationStatusMerging: {
-		IntegrationStatusMerging:  true, // re-entry after saveState failure left disk in "merging"
 		IntegrationStatusMerged:   true,
 		IntegrationStatusConflict: true,
 		IntegrationStatusFailed:   true,

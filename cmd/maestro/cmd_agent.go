@@ -67,9 +67,6 @@ func runAgentExec(args []string) error {
 	if agentID == "" {
 		return &CLIError{Code: 1, Msg: "maestro agent exec: --agent-id is required\nusage: maestro agent exec --agent-id <id> [--mode <mode>] [--message <msg>]"}
 	}
-	if err := validate.ValidateID(agentID); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro agent exec: invalid --agent-id: %v", err)}
-	}
 
 	maestroDir, err := requireMaestroDir("agent exec")
 	if err != nil {

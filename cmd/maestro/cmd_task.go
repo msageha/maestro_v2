@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 
 	"github.com/msageha/maestro_v2/internal/uds"
-	"github.com/msageha/maestro_v2/internal/validate"
 )
 
 // runTask dispatches task subcommands (currently: heartbeat).
@@ -42,12 +41,6 @@ func runTaskHeartbeat(args []string) error {
 	}
 	if workerID == "" {
 		return &CLIError{Code: 1, Msg: "maestro task heartbeat: --worker-id is required"}
-	}
-	if err := validate.ValidateID(taskID); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro task heartbeat: invalid --task-id: %v", err)}
-	}
-	if err := validate.ValidateID(workerID); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro task heartbeat: invalid --worker-id: %v", err)}
 	}
 
 	maestroDir, err := requireMaestroDir("task heartbeat")

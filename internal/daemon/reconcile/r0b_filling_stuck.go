@@ -117,9 +117,7 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 		}()
 
 		if len(taskIDsToRemove) > 0 {
-			if err := run.BatchRemoveTaskIDsFromQueues(taskIDsToRemove); err != nil {
-				run.Log(core.LogLevelError, "R0b batch_remove_tasks command=%s error=%v", commandID, err)
-			}
+			run.BatchRemoveTaskIDsFromQueues(taskIDsToRemove)
 		}
 
 		if modified && run.Deps.ExecutorFactory != nil {

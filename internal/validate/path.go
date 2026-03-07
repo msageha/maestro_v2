@@ -86,9 +86,6 @@ func ValidateFilePath(path string) (string, error) {
 	if strings.ContainsRune(path, 0) {
 		return "", fmt.Errorf("validate: file path contains null byte")
 	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		return "", fmt.Errorf("validate: resolve absolute file path %q: %w", path, err)
-	}
-	return abs, nil
+	cleaned := filepath.Clean(path)
+	return cleaned, nil
 }
