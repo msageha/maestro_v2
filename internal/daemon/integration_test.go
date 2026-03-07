@@ -18,6 +18,7 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -26,7 +27,7 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
-// --- File-based StateReader for integration tests (avoids plan→daemon import cycle) ---
+// --- File-based core.StateReader for integration tests (avoids plan→daemon import cycle) ---
 
 type integrationStateReader struct {
 	maestroDir string
@@ -63,7 +64,7 @@ func (r *integrationStateReader) GetTaskState(commandID, taskID string) (model.S
 	return status, nil
 }
 
-func (r *integrationStateReader) GetCommandPhases(commandID string) ([]PhaseInfo, error) {
+func (r *integrationStateReader) GetCommandPhases(commandID string) ([]core.PhaseInfo, error) {
 	state, err := r.loadState(commandID)
 	if err != nil {
 		return nil, err
@@ -75,7 +76,7 @@ func (r *integrationStateReader) GetCommandPhases(commandID string) ([]PhaseInfo
 	for _, p := range state.Phases {
 		phaseNameToID[p.Name] = p.PhaseID
 	}
-	var phases []PhaseInfo
+	var phases []core.PhaseInfo
 	for _, p := range state.Phases {
 		var depIDs []string
 		for _, depName := range p.DependsOnPhases {
@@ -94,7 +95,7 @@ func (r *integrationStateReader) GetCommandPhases(commandID string) ([]PhaseInfo
 			}
 		}
 		isSystemCommit := state.SystemCommitTaskID != nil && phaseTaskSet[*state.SystemCommitTaskID]
-		phases = append(phases, PhaseInfo{
+		phases = append(phases, core.PhaseInfo{
 			ID:               p.PhaseID,
 			Name:             p.Name,
 			Status:           p.Status,
@@ -294,7 +295,7 @@ func newIntegrationDaemon(t *testing.T) *Daemon {
 	d.handler.SetCanComplete(testCanComplete)
 
 	// Mock executor: always succeeds delivery
-	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
 	})
 	d.handler.SetBusyChecker(func(string) bool { return false })
@@ -737,7 +738,7 @@ func TestIntegration_DeadLetter(t *testing.T) {
 	d.handler = NewQueueHandler(d.maestroDir, d.config, lockMap, d.logger, d.logLevel)
 	d.handler.SetStateReader(reader)
 	d.handler.SetCanComplete(testCanComplete)
-	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
 	})
 	d.handler.SetBusyChecker(func(string) bool { return false })
@@ -1575,7 +1576,7 @@ func TestIntegration_QualityGateEvaluator_MultipleGatesAndCriteria(t *testing.T)
 	d := newIntegrationDaemon(t)
 	writeIntegrationGateConfig(t, d.maestroDir, "integration_gates.yaml", integrationQualityGatesYAML)
 
-	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, d.logger, LogLevelError, context.Background())
+	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, d.logger, core.LogLevelError, context.Background())
 	if err := qg.loadGateDefinitions(); err != nil {
 		t.Fatalf("load gate definitions: %v", err)
 	}
@@ -1639,7 +1640,7 @@ func TestIntegration_QualityGatePerformanceUnderLoad(t *testing.T) {
 	d := newIntegrationDaemon(t)
 	writeIntegrationGateConfig(t, d.maestroDir, "perf_gates.yaml", integrationQualityGatesYAML)
 
-	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, d.logger, LogLevelError, context.Background())
+	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, d.logger, core.LogLevelError, context.Background())
 	if err := qg.loadGateDefinitions(); err != nil {
 		t.Fatalf("load gate definitions: %v", err)
 	}
@@ -1798,7 +1799,7 @@ gates:
 		t.Fatalf("initial loader load: %v", err)
 	}
 
-	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, d.logger, LogLevelError, context.Background())
+	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, d.logger, core.LogLevelError, context.Background())
 	if err := qg.loadGateDefinitions(); err != nil {
 		t.Fatalf("initial gate load: %v", err)
 	}
@@ -1870,7 +1871,7 @@ func TestIntegration_EndToEndWithEventHooksAndQualityGate(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := log.New(&logBuf, "", 0)
 
-	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, logger, LogLevelDebug, context.Background())
+	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, logger, core.LogLevelDebug, context.Background())
 	if err := qg.Start(); err != nil {
 		t.Fatalf("start quality gate daemon: %v", err)
 	}
@@ -1946,7 +1947,7 @@ func TestIntegration_EventHooksInvalidPayloadHandling(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := log.New(&logBuf, "", 0)
 
-	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, logger, LogLevelDebug, context.Background())
+	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, logger, core.LogLevelDebug, context.Background())
 	if err := qg.Start(); err != nil {
 		t.Fatalf("start quality gate daemon: %v", err)
 	}
@@ -2051,7 +2052,7 @@ func BenchmarkIntegration_QualityGateEvaluation(b *testing.B) {
 	cfg := model.Config{}
 	lockMap := lock.NewMutexMap()
 	logger := log.New(&logBuf, "", 0)
-	qg := NewQualityGateDaemon(maestroDir, cfg, lockMap, logger, LogLevelError, context.Background())
+	qg := NewQualityGateDaemon(maestroDir, cfg, lockMap, logger, core.LogLevelError, context.Background())
 	if err := qg.loadGateDefinitions(); err != nil {
 		b.Fatalf("load gate definitions: %v", err)
 	}

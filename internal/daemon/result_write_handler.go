@@ -10,6 +10,7 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/daemon/skill"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
@@ -80,7 +81,7 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 
 	// Phase B: Per-command mutex (state/ updates)
 	if err := a.resultWritePhaseB(params, resultID, resultStatus); err != nil {
-		d.log(LogLevelError, "result_write phase_b error task=%s command=%s: %v",
+		d.log(core.LogLevelError, "result_write phase_b error task=%s command=%s: %v",
 			params.TaskID, params.CommandID, err)
 		return uds.ErrorResponse(uds.ErrCodeInternal,
 			fmt.Sprintf("state update failed: %v (result %s committed, run 'maestro plan rebuild' to fix)", err, resultID))
@@ -89,14 +90,14 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 	// Learnings: best-effort write after core phases succeed.
 	if len(params.Learnings) > 0 && d.config.Learnings.Enabled {
 		if err := a.writeLearnings(params, resultID); err != nil {
-			d.log(LogLevelError, "learnings_write_failed result=%s: %v", resultID, err)
+			d.log(core.LogLevelError, "learnings_write_failed result=%s: %v", resultID, err)
 		}
 	}
 
 	// Skill candidates: best-effort write after core phases succeed.
 	if len(params.SkillCandidates) > 0 {
 		if err := a.writeSkillCandidates(params); err != nil {
-			d.log(LogLevelError, "skill_candidates_write_failed result=%s: %v", resultID, err)
+			d.log(core.LogLevelError, "skill_candidates_write_failed result=%s: %v", resultID, err)
 		}
 	}
 
@@ -123,7 +124,7 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 		}
 	}
 
-	d.log(LogLevelInfo, "result_write result_id=%s task=%s command=%s status=%s reporter=%s",
+	d.log(core.LogLevelInfo, "result_write result_id=%s task=%s command=%s status=%s reporter=%s",
 		resultID, params.TaskID, params.CommandID, params.Status, params.Reporter)
 	return uds.SuccessResponse(map[string]string{"result_id": resultID})
 }
@@ -313,13 +314,13 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 			// Create retry task
 			rt, err := retryHandler.CreateRetryTask(queueTask, params.Reporter, *params.ExitCode)
 			if err != nil {
-				d.log(LogLevelError, "create_retry_task_failed task=%s error=%v", params.TaskID, err)
+				d.log(core.LogLevelError, "create_retry_task_failed task=%s error=%v", params.TaskID, err)
 			} else {
 				retryTask = rt
 				// Don't add to queue yet - wait until after queue write succeeds
 			}
 		} else {
-			d.log(LogLevelInfo, "task_retry_skipped task=%s reason=%s", params.TaskID, reason)
+			d.log(core.LogLevelInfo, "task_retry_skipped task=%s reason=%s", params.TaskID, reason)
 		}
 	}
 
@@ -340,13 +341,13 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 
 		// First register in state
 		if err := retryHandler.RegisterRetryTaskInState(retryTask, params.CommandID); err != nil {
-			d.log(LogLevelError, "register_retry_task_failed task=%s error=%v", retryTask.ID, err)
+			d.log(core.LogLevelError, "register_retry_task_failed task=%s error=%v", retryTask.ID, err)
 		} else {
 			// Then add to queue (use locked variant — queue lock already held by this function)
 			if err := retryHandler.addRetryTaskToQueueLocked(retryTask, params.Reporter); err != nil {
-				d.log(LogLevelError, "add_retry_task_failed task=%s error=%v", retryTask.ID, err)
+				d.log(core.LogLevelError, "add_retry_task_failed task=%s error=%v", retryTask.ID, err)
 			} else {
-				d.log(LogLevelInfo, "task_retry_scheduled task=%s retry_id=%s attempt=%d",
+				d.log(core.LogLevelInfo, "task_retry_scheduled task=%s retry_id=%s attempt=%d",
 					params.TaskID, retryTask.ID, retryTask.Attempts)
 			}
 		}
@@ -411,7 +412,7 @@ func (a *API) writeLearnings(params ResultWriteParams, resultID string) error {
 	if err == nil {
 		if err := yamlv3.Unmarshal(data, &lf); err != nil {
 			// Corrupt file — recover via quarantine
-			d.log(LogLevelWarn, "learnings_file_corrupt, recovering: %v", err)
+			d.log(core.LogLevelWarn, "learnings_file_corrupt, recovering: %v", err)
 			if recErr := yamlutil.RecoverCorruptedFile(d.maestroDir, learningsPath, "state_learnings"); recErr != nil {
 				return fmt.Errorf("recover learnings file: %w", recErr)
 			}
@@ -479,7 +480,7 @@ func (a *API) writeLearnings(params ResultWriteParams, resultID string) error {
 		return fmt.Errorf("write learnings file: %w", err)
 	}
 
-	d.log(LogLevelInfo, "learnings_written result=%s added=%d total=%d", resultID, added, len(lf.Learnings))
+	d.log(core.LogLevelInfo, "learnings_written result=%s added=%d total=%d", resultID, added, len(lf.Learnings))
 	return nil
 }
 
@@ -519,7 +520,7 @@ func (a *API) writeSkillCandidates(params ResultWriteParams) error {
 		before := len(candidates)
 		candidates, err = skill.AddOrUpdateCandidate(candidates, content, params.CommandID, now, idFunc)
 		if err != nil {
-			d.log(LogLevelError, "skill_candidate_add_failed content=%q: %v", content, err)
+			d.log(core.LogLevelError, "skill_candidate_add_failed content=%q: %v", content, err)
 			continue
 		}
 		if len(candidates) > before {
@@ -531,6 +532,6 @@ func (a *API) writeSkillCandidates(params ResultWriteParams) error {
 		return fmt.Errorf("write skill candidates: %w", err)
 	}
 
-	d.log(LogLevelInfo, "skill_candidates_written command=%s added=%d total=%d", params.CommandID, added, len(candidates))
+	d.log(core.LogLevelInfo, "skill_candidates_written command=%s added=%d total=%d", params.CommandID, added, len(candidates))
 	return nil
 }

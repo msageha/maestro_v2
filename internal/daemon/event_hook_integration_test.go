@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -68,14 +69,14 @@ func TestEventHookIntegration(t *testing.T) {
 		}
 
 		logger := log.New(&bytes.Buffer{}, "", 0)
-		dispatcher := NewDispatcher(maestroDir, cfg, nil, logger, LogLevelInfo)
+		dispatcher := NewDispatcher(maestroDir, cfg, nil, logger, core.LogLevelInfo)
 		dispatcher.SetEventBus(bus)
 
 		// Use mock executor
 		mockExec := &MockExecutor{
 			executeResult: agent.ExecResult{Error: nil, Retryable: false},
 		}
-		dispatcher.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+		dispatcher.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (core.AgentExecutor, error) {
 			return mockExec, nil
 		})
 
@@ -126,14 +127,14 @@ func TestEventHookIntegration(t *testing.T) {
 		}
 
 		logger := log.New(&bytes.Buffer{}, "", 0)
-		dispatcher := NewDispatcher(maestroDir, cfg, nil, logger, LogLevelInfo)
+		dispatcher := NewDispatcher(maestroDir, cfg, nil, logger, core.LogLevelInfo)
 		dispatcher.SetEventBus(bus)
 
 		// Use mock executor
 		mockExec := &MockExecutor{
 			executeResult: agent.ExecResult{Error: nil, Retryable: false},
 		}
-		dispatcher.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+		dispatcher.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (core.AgentExecutor, error) {
 			return mockExec, nil
 		})
 
@@ -170,13 +171,13 @@ func TestEventHookIntegration(t *testing.T) {
 		}
 
 		logger := log.New(&bytes.Buffer{}, "", 0)
-		dispatcher := NewDispatcher(maestroDir, cfg, nil, logger, LogLevelInfo)
+		dispatcher := NewDispatcher(maestroDir, cfg, nil, logger, core.LogLevelInfo)
 		// Do NOT set event bus
 
 		mockExec := &MockExecutor{
 			executeResult: agent.ExecResult{Error: nil, Retryable: false},
 		}
-		dispatcher.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+		dispatcher.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (core.AgentExecutor, error) {
 			return mockExec, nil
 		})
 
@@ -226,7 +227,7 @@ func TestEventHookPerformance(t *testing.T) {
 	}
 }
 
-// MockExecutor for testing - implements AgentExecutor interface
+// MockExecutor for testing - implements core.AgentExecutor interface
 type MockExecutor struct {
 	executeResult agent.ExecResult
 }

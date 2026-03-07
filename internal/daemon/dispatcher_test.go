@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -22,10 +23,10 @@ func (c *testClock) Advance(d time.Duration) { c.now = c.now.Add(d) }
 
 func TestGetExecutor_ErrorTTL(t *testing.T) {
 	cfg := model.Config{}
-	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
 
 	callCount := 0
-	d.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+	d.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (core.AgentExecutor, error) {
 		callCount++
 		return nil, fmt.Errorf("factory error %d", callCount)
 	})
@@ -65,10 +66,10 @@ func TestGetExecutor_ErrorTTL(t *testing.T) {
 
 func TestGetExecutor_ErrorTTL_RecoveryOnRetry(t *testing.T) {
 	cfg := model.Config{}
-	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
 
 	callCount := 0
-	d.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+	d.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (core.AgentExecutor, error) {
 		callCount++
 		if callCount == 1 {
 			return nil, fmt.Errorf("transient error")
@@ -111,7 +112,7 @@ func TestGetExecutor_ErrorTTL_RecoveryOnRetry(t *testing.T) {
 	}
 }
 
-// stubExecutor is a minimal AgentExecutor for testing.
+// stubExecutor is a minimal core.AgentExecutor for testing.
 type stubExecutor struct{}
 
 func (s *stubExecutor) Execute(req agent.ExecRequest) agent.ExecResult { return agent.ExecResult{} }
@@ -171,7 +172,7 @@ func TestSortPendingTasks(t *testing.T) {
 		Queue: model.QueueConfig{PriorityAgingSec: 60},
 	}
 
-	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
 
 	tasks := []model.Task{
 		{ID: "t_high", Priority: 5, Status: model.StatusPending, CreatedAt: now.Format(time.RFC3339)},
@@ -205,7 +206,7 @@ func TestSortPendingTasks_TieBreakers(t *testing.T) {
 	cfg := model.Config{
 		Queue: model.QueueConfig{PriorityAgingSec: 0},
 	}
-	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
 
 	// Same priority, different created_at
 	tasks := []model.Task{
@@ -224,7 +225,7 @@ func TestSortPendingTasks_IDTieBreaker(t *testing.T) {
 	created := now.Format(time.RFC3339)
 
 	cfg := model.Config{}
-	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
 
 	tasks := []model.Task{
 		{ID: "t_z", Priority: 1, Status: model.StatusPending, CreatedAt: created},
@@ -241,7 +242,7 @@ func TestSortPendingCommands(t *testing.T) {
 	now := time.Now().UTC()
 
 	cfg := model.Config{}
-	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
 
 	commands := []model.Command{
 		{ID: "c2", Priority: 3, Status: model.StatusPending, CreatedAt: now.Format(time.RFC3339)},
@@ -261,7 +262,7 @@ func TestSortPendingNotifications(t *testing.T) {
 	now := time.Now().UTC()
 
 	cfg := model.Config{}
-	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
 
 	notifications := []model.Notification{
 		{ID: "n2", Priority: 5, Status: model.StatusPending, CreatedAt: now.Format(time.RFC3339)},

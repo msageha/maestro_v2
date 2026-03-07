@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -143,7 +144,7 @@ func TestShouldRetryTask_ExitCodes(t *testing.T) {
 
 			var buf bytes.Buffer
 			logger := log.New(&buf, "", 0)
-			handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, LogLevelDebug)
+			handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 
 			task := &model.Task{
 				ID:               "task_001",
@@ -189,7 +190,7 @@ func TestCreateRetryTask_FieldValidation(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, LogLevelDebug)
+	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 	retryTask, err := handler.CreateRetryTask(originalTask, "worker1", 1)
 
 	if err != nil {
@@ -313,7 +314,7 @@ func TestCreateRetryTask_NotBeforeCalculation(t *testing.T) {
 
 			var buf bytes.Buffer
 			logger := log.New(&buf, "", 0)
-			handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, LogLevelDebug)
+			handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 			retryTask, err := handler.CreateRetryTask(originalTask, "worker1", 1)
 
 			if err != nil {
@@ -374,7 +375,7 @@ func TestCreateRetryTask_ExecutionRetriesIncrement(t *testing.T) {
 
 			var buf bytes.Buffer
 			logger := log.New(&buf, "", 0)
-			handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, LogLevelDebug)
+			handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 			retryTask, err := handler.CreateRetryTask(originalTask, "worker1", 1)
 
 			if err != nil {
@@ -400,7 +401,7 @@ func TestCreateRetryTask_OriginalTaskIDTracking(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, LogLevelDebug)
+	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 
 	// First failure - original task has no OriginalTaskID
 	originalTask := &model.Task{
@@ -500,7 +501,7 @@ func TestShouldRetryTask_MaxRetriesBoundary(t *testing.T) {
 
 			var buf bytes.Buffer
 			logger := log.New(&buf, "", 0)
-			handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, LogLevelDebug)
+			handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 
 			task := &model.Task{
 				ID:               "task_001",
@@ -532,7 +533,7 @@ func TestShouldRetryTask_DisabledRetry(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, LogLevelDebug)
+	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 
 	task := &model.Task{
 		ID:               "task_001",
@@ -579,7 +580,7 @@ func TestRegisterRetryTaskInState(t *testing.T) {
 	config := model.Config{}
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	handler := NewTaskRetryHandler(tmpDir, config, lock.NewMutexMap(), logger, LogLevelDebug)
+	handler := NewTaskRetryHandler(tmpDir, config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 
 	// Create retry task
 	retryTask := &model.Task{
@@ -645,7 +646,7 @@ func TestAddRetryTaskToQueue(t *testing.T) {
 	config := model.Config{}
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	handler := NewTaskRetryHandler(tmpDir, config, lock.NewMutexMap(), logger, LogLevelDebug)
+	handler := NewTaskRetryHandler(tmpDir, config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 
 	// Create retry task
 	retryTask := &model.Task{
@@ -740,7 +741,7 @@ func TestRetryIdempotency(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	handler := NewTaskRetryHandler(tmpDir, config, lock.NewMutexMap(), logger, LogLevelDebug)
+	handler := NewTaskRetryHandler(tmpDir, config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 
 	originalTask := &model.Task{
 		ID:               originalTaskID,
@@ -847,7 +848,7 @@ func TestConcurrentRetryCreation(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	handler := NewTaskRetryHandler(tmpDir, config, lock.NewMutexMap(), logger, LogLevelDebug)
+	handler := NewTaskRetryHandler(tmpDir, config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 
 	// Execute: Create retry tasks concurrently
 	const numGoroutines = 10
@@ -929,7 +930,7 @@ func TestShouldRetryTask_OOMKill(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, LogLevelDebug)
+	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 
 	task := &model.Task{
 		ID:               "task_oom",
@@ -959,7 +960,7 @@ func TestShouldRetryTask_PermissionDenied(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, LogLevelDebug)
+	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 
 	task := &model.Task{
 		ID:               "task_perm",
@@ -1000,7 +1001,7 @@ func TestCreateRetryTask_CooldownMaxDuration(t *testing.T) {
 
 			var buf bytes.Buffer
 			logger := log.New(&buf, "", 0)
-			handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, LogLevelDebug)
+			handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 
 			originalTask := &model.Task{
 				ID:        "task_001",
@@ -1058,7 +1059,7 @@ func TestCreateRetryTask_InvalidCooldownValues(t *testing.T) {
 
 			var buf bytes.Buffer
 			logger := log.New(&buf, "", 0)
-			handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, LogLevelDebug)
+			handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 
 			originalTask := &model.Task{
 				ID:        "task_001",
@@ -1097,7 +1098,7 @@ func TestShouldRetryTask_MaxRetriesZero(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, LogLevelDebug)
+	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 
 	task := &model.Task{
 		ID:               "task_001",
@@ -1124,7 +1125,7 @@ func TestCreateRetryTask_MissingFields(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, LogLevelDebug)
+	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 
 	// Task with minimal fields
 	minimalTask := &model.Task{
@@ -1163,7 +1164,7 @@ func TestCreateRetryTask_LargeExecutionRetries(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, LogLevelDebug)
+	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 
 	const largeRetryCount = 1000000
 	originalTask := &model.Task{
@@ -1197,7 +1198,7 @@ func TestCreateRetryTask_PriorityOverflow(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, LogLevelDebug)
+	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 
 	const maxInt = int(^uint(0) >> 1)
 	originalTask := &model.Task{
@@ -1234,7 +1235,7 @@ func TestCreateRetryTask_MultipleConstraints(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, LogLevelDebug)
+	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 
 	originalTask := &model.Task{
 		ID:          "task_constraints",
@@ -1295,7 +1296,7 @@ func TestShouldRetryTask_EmptyRetryableExitCodes(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, LogLevelDebug)
+	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 
 	task := &model.Task{
 		ID:               "task_empty_codes",
@@ -1324,7 +1325,7 @@ func TestCreateRetryTask_Timestamps(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, LogLevelDebug)
+	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 
 	originalTask := &model.Task{
 		ID:        "task_timestamps",
@@ -1383,7 +1384,7 @@ func TestCreateRetryTask_NilPointerFields(t *testing.T) {
 
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, LogLevelDebug)
+	handler := NewTaskRetryHandler(t.TempDir(), config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 
 	// Task with nil pointer fields
 	originalTask := &model.Task{
@@ -1452,7 +1453,7 @@ func TestRegisterRetryTaskInState_ExistingTasks(t *testing.T) {
 	config := model.Config{}
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	handler := NewTaskRetryHandler(tmpDir, config, lock.NewMutexMap(), logger, LogLevelDebug)
+	handler := NewTaskRetryHandler(tmpDir, config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 
 	// Create retry task
 	retryTask := &model.Task{
@@ -1512,7 +1513,7 @@ func TestAddRetryTaskToQueue_EmptyQueue(t *testing.T) {
 	config := model.Config{}
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
-	handler := NewTaskRetryHandler(tmpDir, config, lock.NewMutexMap(), logger, LogLevelDebug)
+	handler := NewTaskRetryHandler(tmpDir, config, lock.NewMutexMap(), logger, core.LogLevelDebug)
 
 	// Create retry task
 	retryTask := &model.Task{

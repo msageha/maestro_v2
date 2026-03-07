@@ -10,6 +10,7 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -30,8 +31,8 @@ func TestNewDaemon(t *testing.T) {
 	if d.maestroDir != "/tmp/test-maestro" {
 		t.Errorf("maestroDir: got %q, want %q", d.maestroDir, "/tmp/test-maestro")
 	}
-	if d.logLevel != LogLevelDebug {
-		t.Errorf("logLevel: got %d, want %d", d.logLevel, LogLevelDebug)
+	if d.logLevel != core.LogLevelDebug {
+		t.Errorf("logLevel: got %d, want %d", d.logLevel, core.LogLevelDebug)
 	}
 }
 
@@ -58,23 +59,23 @@ func TestDaemonShutdownIdempotent(t *testing.T) {
 func TestParseLogLevel(t *testing.T) {
 	tests := []struct {
 		input    string
-		expected LogLevel
+		expected core.LogLevel
 	}{
-		{"debug", LogLevelDebug},
-		{"DEBUG", LogLevelDebug},
-		{"info", LogLevelInfo},
-		{"warn", LogLevelWarn},
-		{"warning", LogLevelWarn},
-		{"error", LogLevelError},
-		{"unknown", LogLevelInfo},
-		{"", LogLevelInfo},
+		{"debug", core.LogLevelDebug},
+		{"DEBUG", core.LogLevelDebug},
+		{"info", core.LogLevelInfo},
+		{"warn", core.LogLevelWarn},
+		{"warning", core.LogLevelWarn},
+		{"error", core.LogLevelError},
+		{"unknown", core.LogLevelInfo},
+		{"", core.LogLevelInfo},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			got := parseLogLevel(tt.input)
+			got := core.ParseLogLevel(tt.input)
 			if got != tt.expected {
-				t.Errorf("parseLogLevel(%q) = %d, want %d", tt.input, got, tt.expected)
+				t.Errorf("core.ParseLogLevel(%q) = %d, want %d", tt.input, got, tt.expected)
 			}
 		})
 	}
@@ -92,13 +93,13 @@ func TestDaemonLog(t *testing.T) {
 	}
 
 	// Info should be filtered
-	d.log(LogLevelInfo, "should not appear")
+	d.log(core.LogLevelInfo, "should not appear")
 	if buf.Len() != 0 {
 		t.Errorf("expected no output, got: %s", buf.String())
 	}
 
 	// Warn should pass
-	d.log(LogLevelWarn, "warning message")
+	d.log(core.LogLevelWarn, "warning message")
 	if !bytes.Contains(buf.Bytes(), []byte("WARN")) {
 		t.Errorf("expected WARN in output, got: %s", buf.String())
 	}

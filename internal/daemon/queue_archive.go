@@ -8,6 +8,7 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -21,21 +22,21 @@ func (qh *QueueHandler) loadCommandQueue() (model.CommandQueue, string) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			qh.log(LogLevelWarn, "load_commands error=%v", err)
+			qh.log(core.LogLevelWarn, "load_commands error=%v", err)
 		}
 		return cq, ""
 	}
 
 	if err := yamlv3.Unmarshal(data, &cq); err != nil {
-		qh.log(LogLevelError, "parse_commands error=%v path=%s", err, path)
+		qh.log(core.LogLevelError, "parse_commands error=%v path=%s", err, path)
 		// Quarantine original corrupted file
 		qh.quarantineFile(data, "planner.yaml")
 		// Attempt per-entry salvage via Node parsing
 		salvaged := qh.salvageCommandQueue(data)
 		if len(salvaged.Commands) > 0 {
-			qh.log(LogLevelWarn, "command_queue_salvaged recovered=%d path=%s", len(salvaged.Commands), path)
+			qh.log(core.LogLevelWarn, "command_queue_salvaged recovered=%d path=%s", len(salvaged.Commands), path)
 			if writeErr := yamlutil.AtomicWrite(path, salvaged); writeErr != nil {
-				qh.log(LogLevelError, "write_salvaged_queue error=%v", writeErr)
+				qh.log(core.LogLevelError, "write_salvaged_queue error=%v", writeErr)
 			}
 			return salvaged, path
 		}
@@ -45,9 +46,9 @@ func (qh *QueueHandler) loadCommandQueue() (model.CommandQueue, string) {
 			FileType:      "command_queue",
 		}
 		if writeErr := yamlutil.AtomicWrite(path, emptyCQ); writeErr != nil {
-			qh.log(LogLevelError, "overwrite_corrupted_queue error=%v", writeErr)
+			qh.log(core.LogLevelError, "overwrite_corrupted_queue error=%v", writeErr)
 		} else {
-			qh.log(LogLevelInfo, "corrupted_queue_reset path=%s", path)
+			qh.log(core.LogLevelInfo, "corrupted_queue_reset path=%s", path)
 		}
 		return cq, ""
 	}
@@ -58,15 +59,15 @@ func (qh *QueueHandler) loadCommandQueue() (model.CommandQueue, string) {
 func (qh *QueueHandler) quarantineFile(data []byte, name string) {
 	quarantineDir := filepath.Join(qh.maestroDir, "quarantine")
 	if err := os.MkdirAll(quarantineDir, 0755); err != nil {
-		qh.log(LogLevelError, "create_quarantine_dir error=%v", err)
+		qh.log(core.LogLevelError, "create_quarantine_dir error=%v", err)
 		return
 	}
 	ts := qh.clock.Now().UTC().Format("20060102T150405Z")
 	qPath := filepath.Join(quarantineDir, fmt.Sprintf("%s_%s", ts, name))
 	if err := os.WriteFile(qPath, data, 0644); err != nil {
-		qh.log(LogLevelError, "quarantine_write error=%v", err)
+		qh.log(core.LogLevelError, "quarantine_write error=%v", err)
 	} else {
-		qh.log(LogLevelInfo, "quarantined file=%s to=%s", name, qPath)
+		qh.log(core.LogLevelInfo, "quarantined file=%s to=%s", name, qPath)
 	}
 	qh.cleanupQuarantine(quarantineDir)
 }
@@ -104,7 +105,7 @@ func (qh *QueueHandler) salvageCommandQueue(data []byte) model.CommandQueue {
 				}
 				var cmd model.Command
 				if err := yamlv3.Unmarshal(cmdBytes, &cmd); err != nil {
-					qh.log(LogLevelWarn, "salvage_command_skip error=%v", err)
+					qh.log(core.LogLevelWarn, "salvage_command_skip error=%v", err)
 					continue
 				}
 				if cmd.ID != "" {
@@ -150,7 +151,7 @@ func (qh *QueueHandler) salvageNotificationQueue(data []byte) model.Notification
 				}
 				var ntf model.Notification
 				if err := yamlv3.Unmarshal(ntfBytes, &ntf); err != nil {
-					qh.log(LogLevelWarn, "salvage_notification_skip error=%v", err)
+					qh.log(core.LogLevelWarn, "salvage_notification_skip error=%v", err)
 					continue
 				}
 				if ntf.ID != "" && ntf.CommandID != "" && ntf.SourceResultID != "" && model.ValidateNotificationType(ntf.Type) == nil {
@@ -179,9 +180,9 @@ func (qh *QueueHandler) cleanupQuarantine(quarantineDir string) {
 	for i := 0; i < toRemove; i++ {
 		path := filepath.Join(quarantineDir, entries[i].Name())
 		if err := os.Remove(path); err != nil {
-			qh.log(LogLevelWarn, "quarantine_cleanup_failed path=%s error=%v", path, err)
+			qh.log(core.LogLevelWarn, "quarantine_cleanup_failed path=%s error=%v", path, err)
 		} else {
-			qh.log(LogLevelDebug, "quarantine_cleanup_removed path=%s", path)
+			qh.log(core.LogLevelDebug, "quarantine_cleanup_removed path=%s", path)
 		}
 	}
 }
@@ -190,7 +191,7 @@ func (qh *QueueHandler) loadAllTaskQueues() map[string]*taskQueueEntry {
 	queueDir := filepath.Join(qh.maestroDir, "queue")
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
-		qh.log(LogLevelWarn, "read_queue_dir error=%v", err)
+		qh.log(core.LogLevelWarn, "read_queue_dir error=%v", err)
 		return nil
 	}
 
@@ -204,13 +205,13 @@ func (qh *QueueHandler) loadAllTaskQueues() map[string]*taskQueueEntry {
 		path := filepath.Join(queueDir, name)
 		data, err := os.ReadFile(path)
 		if err != nil {
-			qh.log(LogLevelWarn, "load_task_queue file=%s error=%v", name, err)
+			qh.log(core.LogLevelWarn, "load_task_queue file=%s error=%v", name, err)
 			continue
 		}
 
 		var tq model.TaskQueue
 		if err := yamlv3.Unmarshal(data, &tq); err != nil {
-			qh.log(LogLevelError, "parse_task_queue file=%s error=%v", name, err)
+			qh.log(core.LogLevelError, "parse_task_queue file=%s error=%v", name, err)
 			continue
 		}
 
@@ -226,24 +227,24 @@ func (qh *QueueHandler) loadNotificationQueue() (model.NotificationQueue, string
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			qh.log(LogLevelWarn, "load_notifications error=%v", err)
+			qh.log(core.LogLevelWarn, "load_notifications error=%v", err)
 		}
 		return nq, ""
 	}
 
 	if err := yamlv3.Unmarshal(data, &nq); err != nil {
-		qh.log(LogLevelError, "parse_notifications error=%v path=%s", err, path)
+		qh.log(core.LogLevelError, "parse_notifications error=%v path=%s", err, path)
 		// Quarantine original corrupted file
 		qh.quarantineFile(data, "orchestrator.yaml")
 		// Attempt per-entry salvage via Node parsing
 		salvaged := qh.salvageNotificationQueue(data)
 		if len(salvaged.Notifications) > 0 {
-			qh.log(LogLevelWarn, "notification_queue_salvaged recovered=%d path=%s", len(salvaged.Notifications), path)
+			qh.log(core.LogLevelWarn, "notification_queue_salvaged recovered=%d path=%s", len(salvaged.Notifications), path)
 			qh.lockMap.Lock("queue:orchestrator")
 			writeErr := yamlutil.AtomicWrite(path, salvaged)
 			qh.lockMap.Unlock("queue:orchestrator")
 			if writeErr != nil {
-				qh.log(LogLevelError, "write_salvaged_notifications error=%v", writeErr)
+				qh.log(core.LogLevelError, "write_salvaged_notifications error=%v", writeErr)
 			}
 			return salvaged, path
 		}
@@ -256,9 +257,9 @@ func (qh *QueueHandler) loadNotificationQueue() (model.NotificationQueue, string
 		writeErr := yamlutil.AtomicWrite(path, emptyNQ)
 		qh.lockMap.Unlock("queue:orchestrator")
 		if writeErr != nil {
-			qh.log(LogLevelError, "overwrite_corrupted_notifications error=%v", writeErr)
+			qh.log(core.LogLevelError, "overwrite_corrupted_notifications error=%v", writeErr)
 		} else {
-			qh.log(LogLevelInfo, "corrupted_notifications_reset path=%s", path)
+			qh.log(core.LogLevelInfo, "corrupted_notifications_reset path=%s", path)
 		}
 		return emptyNQ, path
 	}
@@ -273,13 +274,13 @@ func (qh *QueueHandler) loadPlannerSignalQueue() (model.PlannerSignalQueue, stri
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			qh.log(LogLevelWarn, "load_planner_signals error=%v", err)
+			qh.log(core.LogLevelWarn, "load_planner_signals error=%v", err)
 		}
 		return sq, ""
 	}
 
 	if err := yamlv3.Unmarshal(data, &sq); err != nil {
-		qh.log(LogLevelError, "parse_planner_signals error=%v", err)
+		qh.log(core.LogLevelError, "parse_planner_signals error=%v", err)
 		return sq, ""
 	}
 	return sq, path
@@ -294,13 +295,13 @@ func (qh *QueueHandler) flushQueues(
 ) {
 	if commandsDirty && commandPath != "" {
 		if err := yamlutil.AtomicWrite(commandPath, commandQueue); err != nil {
-			qh.log(LogLevelError, "write_commands error=%v", err)
+			qh.log(core.LogLevelError, "write_commands error=%v", err)
 		}
 	}
 	for queueFile, tq := range taskQueues {
 		if taskDirty[queueFile] {
 			if err := yamlutil.AtomicWrite(queueFile, tq.Queue); err != nil {
-				qh.log(LogLevelError, "write_tasks file=%s error=%v", queueFile, err)
+				qh.log(core.LogLevelError, "write_tasks file=%s error=%v", queueFile, err)
 			}
 		}
 	}
@@ -310,7 +311,7 @@ func (qh *QueueHandler) flushQueues(
 		// so lockMap prevents concurrent atomic rewrites and lost updates.
 		qh.lockMap.Lock("queue:orchestrator")
 		if err := yamlutil.AtomicWrite(notificationPath, notificationQueue); err != nil {
-			qh.log(LogLevelError, "write_notifications error=%v", err)
+			qh.log(core.LogLevelError, "write_notifications error=%v", err)
 		}
 		qh.lockMap.Unlock("queue:orchestrator")
 	}
@@ -323,7 +324,7 @@ func (qh *QueueHandler) flushQueues(
 			_ = os.Remove(p)
 		} else {
 			if err := yamlutil.AtomicWrite(p, signalQueue); err != nil {
-				qh.log(LogLevelError, "write_planner_signals error=%v", err)
+				qh.log(core.LogLevelError, "write_planner_signals error=%v", err)
 			}
 		}
 	}

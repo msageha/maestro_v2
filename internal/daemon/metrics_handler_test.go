@@ -11,12 +11,13 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
 func newTestMetricsHandler(maestroDir string) *MetricsHandler {
 	cfg := model.Config{}
-	return NewMetricsHandler(maestroDir, cfg, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	return NewMetricsHandler(maestroDir, cfg, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
 }
 
 func TestMetricsHandler_UpdateMetrics_CreateNew(t *testing.T) {

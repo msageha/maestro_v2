@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/uds"
 )
 
@@ -22,10 +23,10 @@ type codedFormatter interface {
 	ErrorCode() string
 }
 
-// PlanExecutor is defined in internal/daemon/core and re-exported via core_aliases.go.
+// core.PlanExecutor is defined in internal/daemon/core.
 
 // SetPlanExecutor wires the plan executor for UDS plan handlers.
-func (d *Daemon) SetPlanExecutor(pe PlanExecutor) {
+func (d *Daemon) SetPlanExecutor(pe core.PlanExecutor) {
 	d.planExecutor = pe
 }
 
@@ -64,7 +65,7 @@ func (a *API) handlePlan(req *uds.Request) *uds.Response {
 	}
 
 	if err != nil {
-		d.log(LogLevelWarn, "plan_%s error=%v", params.Operation, err)
+		d.log(core.LogLevelWarn, "plan_%s error=%v", params.Operation, err)
 		var cf codedFormatter
 		if errors.As(err, &cf) {
 			return uds.ErrorResponse(cf.ErrorCode(), cf.FormatStderr())
@@ -76,6 +77,6 @@ func (a *API) handlePlan(req *uds.Request) *uds.Response {
 		return uds.ErrorResponse(uds.ErrCodeInternal, err.Error())
 	}
 
-	d.log(LogLevelInfo, "plan_%s success", params.Operation)
+	d.log(core.LogLevelInfo, "plan_%s success", params.Operation)
 	return &uds.Response{Success: true, Data: result}
 }

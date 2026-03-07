@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/tmux"
 )
 
@@ -36,10 +37,10 @@ func (w *WatchLoop) fsnotifyLoop() {
 				}
 				// Skip self-written files: UDS handlers trigger processing via event bus
 				if d.selfWrites.Consume(event.Name) {
-					d.log(LogLevelDebug, "fsnotify self_write_skipped file=%s", event.Name)
+					d.log(core.LogLevelDebug, "fsnotify self_write_skipped file=%s", event.Name)
 					continue
 				}
-				d.log(LogLevelDebug, "fsnotify event=%s file=%s", event.Op, event.Name)
+				d.log(core.LogLevelDebug, "fsnotify event=%s file=%s", event.Op, event.Name)
 				// Advisory check: skip if shutting down. No mutex needed because
 				// eg.Go from within this eg.Go goroutine is safe (eg.Wait cannot
 				// return while this goroutine is running).
@@ -56,7 +57,7 @@ func (w *WatchLoop) fsnotifyLoop() {
 					case w.fsSem <- struct{}{}:
 						defer func() { <-w.fsSem }()
 					default:
-						d.log(LogLevelWarn, "fsnotify handler dropped (semaphore full) file=%s", name)
+						d.log(core.LogLevelWarn, "fsnotify handler dropped (semaphore full) file=%s", name)
 						return nil
 					}
 					d.handler.HandleFileEvent(name)
@@ -67,7 +68,7 @@ func (w *WatchLoop) fsnotifyLoop() {
 			if !ok {
 				return
 			}
-			d.log(LogLevelError, "fsnotify error=%v", err)
+			d.log(core.LogLevelError, "fsnotify error=%v", err)
 		}
 	}
 }
@@ -82,12 +83,12 @@ func (w *WatchLoop) tickerLoop() {
 		case <-d.ctx.Done():
 			return
 		case <-d.ticker.C:
-			d.log(LogLevelDebug, "periodic scan triggered")
+			d.log(core.LogLevelDebug, "periodic scan triggered")
 			d.handler.PeriodicScanWithContext(d.ctx)
 
 			// Session health check: detect if tmux session disappeared
 			if !tmux.SessionHealthCheck() {
-				d.log(LogLevelError, "SESSION_LOST tmux session %q is no longer alive!", tmux.GetSessionName())
+				d.log(core.LogLevelError, "SESSION_LOST tmux session %q is no longer alive!", tmux.GetSessionName())
 			}
 		}
 	}

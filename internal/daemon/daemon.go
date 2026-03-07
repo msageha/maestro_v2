@@ -18,24 +18,26 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
+	"github.com/msageha/maestro_v2/internal/daemon/core"
+	"github.com/msageha/maestro_v2/internal/daemon/worktree"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 )
 
-// LogLevel, Clock, DaemonLogger, StateReader, etc. are defined in
-// internal/daemon/core and re-exported via core_aliases.go.
+// core.LogLevel, core.Clock, core.DaemonLogger, core.StateReader, etc. are defined in
+// internal/daemon/core.
 
 // Daemon is the main maestro daemon process.
 // It acts as a composition root, owning API, WatchLoop, and EventBridge components.
 type Daemon struct {
 	maestroDir string
 	config     model.Config
-	logLevel   LogLevel
+	logLevel   core.LogLevel
 	logger     *log.Logger
 	logFile    io.Closer
-	clock      Clock
+	clock      core.Clock
 
 	fileLock *lock.FileLock
 	server   *uds.Server
@@ -43,13 +45,13 @@ type Daemon struct {
 	ticker   *time.Ticker
 
 	handler           *QueueHandler
-	stateReader       StateReader
-	canComplete       CanCompleteFunc
-	planExecutor      PlanExecutor
+	stateReader       core.StateReader
+	canComplete       core.CanCompleteFunc
+	planExecutor      core.PlanExecutor
 	lockMap           *lock.MutexMap
 	qualityGateDaemon *QualityGateDaemon
 	circuitBreaker    *circuitbreaker.Handler
-	worktreeManager   *WorktreeManager
+	worktreeManager   *worktree.Manager
 
 	eventBus    *events.Bus
 	tmuxLogFile io.Closer         // debug log for tmux operations
@@ -74,13 +76,13 @@ type Daemon struct {
 
 // SetStateReader sets the state reader for dependency resolution (Phase 6).
 // Must be called before Run().
-func (d *Daemon) SetStateReader(reader StateReader) {
+func (d *Daemon) SetStateReader(reader core.StateReader) {
 	d.stateReader = reader
 }
 
 // SetCanComplete wires the plan.CanComplete function for R4 reconciliation.
 // Must be called before Run() to avoid import cycles (daemon→plan→daemon).
-func (d *Daemon) SetCanComplete(f CanCompleteFunc) {
+func (d *Daemon) SetCanComplete(f core.CanCompleteFunc) {
 	d.canComplete = f
 }
 
@@ -118,10 +120,10 @@ func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Close
 	d := &Daemon{
 		maestroDir: maestroDir,
 		config:     cfg,
-		logLevel:   parseLogLevel(cfg.Logging.Level),
+		logLevel:   core.ParseLogLevel(cfg.Logging.Level),
 		logger:     log.New(w, "", 0),
 		logFile:    closer,
-		clock:      RealClock{},
+		clock:      core.RealClock{},
 		fileLock:   lock.NewFileLock(filepath.Join(maestroDir, "locks", "daemon.lock")),
 		server:     server,
 		ticker:     time.NewTicker(time.Duration(scanInterval) * time.Second),
@@ -165,7 +167,7 @@ func (d *Daemon) Run() error {
 	}
 
 	d.handler.PeriodicScanWithContext(d.ctx)
-	d.log(LogLevelInfo, "daemon ready")
+	d.log(core.LogLevelInfo, "daemon ready")
 
 	runOK = true
 	d.waitSignals()

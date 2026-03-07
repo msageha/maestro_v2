@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
@@ -22,29 +23,29 @@ type TaskHeartbeatHandler struct {
 	maestroDir   string
 	config       model.Config
 	leaseManager *LeaseManager
-	clock        Clock
-	dl           *DaemonLogger
+	clock        core.Clock
+	dl           *core.DaemonLogger
 	logger       *log.Logger
-	logLevel     LogLevel
+	logLevel     core.LogLevel
 	scanMu       *sync.RWMutex
 	lockMap      *lock.MutexMap
 }
 
 // NewTaskHeartbeatHandler creates a new task heartbeat handler.
 func NewTaskHeartbeatHandler(maestroDir string, cfg model.Config, lm *LeaseManager,
-	logger *log.Logger, logLevel LogLevel, scanMu *sync.RWMutex, lockMap *lock.MutexMap) *TaskHeartbeatHandler {
-	return NewTaskHeartbeatHandlerWithDeps(maestroDir, cfg, lm, logger, logLevel, scanMu, lockMap, RealClock{})
+	logger *log.Logger, logLevel core.LogLevel, scanMu *sync.RWMutex, lockMap *lock.MutexMap) *TaskHeartbeatHandler {
+	return NewTaskHeartbeatHandlerWithDeps(maestroDir, cfg, lm, logger, logLevel, scanMu, lockMap, core.RealClock{})
 }
 
 // NewTaskHeartbeatHandlerWithDeps creates a TaskHeartbeatHandler with explicit dependencies.
 func NewTaskHeartbeatHandlerWithDeps(maestroDir string, cfg model.Config, lm *LeaseManager,
-	logger *log.Logger, logLevel LogLevel, scanMu *sync.RWMutex, lockMap *lock.MutexMap, clock Clock) *TaskHeartbeatHandler {
+	logger *log.Logger, logLevel core.LogLevel, scanMu *sync.RWMutex, lockMap *lock.MutexMap, clock core.Clock) *TaskHeartbeatHandler {
 	return &TaskHeartbeatHandler{
 		maestroDir:   maestroDir,
 		config:       cfg,
 		leaseManager: lm,
 		clock:        clock,
-		dl:           NewDaemonLoggerFromLegacy("task_heartbeat", logger, logLevel),
+		dl:           core.NewDaemonLoggerFromLegacy("task_heartbeat", logger, logLevel),
 		logger:       logger,
 		logLevel:     logLevel,
 		scanMu:       scanMu,
@@ -99,7 +100,7 @@ func (h *TaskHeartbeatHandler) Handle(params json.RawMessage) *uds.Response {
 	if scanLocked {
 		defer h.scanMu.RUnlock()
 	} else {
-		h.log(LogLevelDebug, "heartbeat_scan_lock_skipped task=%s worker=%s (scan in progress)", p.TaskID, p.WorkerID)
+		h.log(core.LogLevelDebug, "heartbeat_scan_lock_skipped task=%s worker=%s (scan in progress)", p.TaskID, p.WorkerID)
 	}
 
 	// Acquire file lock for the queue file
@@ -138,14 +139,14 @@ func (h *TaskHeartbeatHandler) Handle(params json.RawMessage) *uds.Response {
 
 	// Validate task status
 	if task.Status != model.StatusInProgress {
-		h.log(LogLevelWarn, "heartbeat_rejected task=%s status=%s (not in_progress)", p.TaskID, task.Status)
+		h.log(core.LogLevelWarn, "heartbeat_rejected task=%s status=%s (not in_progress)", p.TaskID, task.Status)
 		return uds.ErrorResponse(uds.ErrCodeFencingReject,
 			fmt.Sprintf("task %s is %s, not in_progress", p.TaskID, task.Status))
 	}
 
 	// Validate epoch to prevent stale heartbeats
 	if task.LeaseEpoch != p.Epoch {
-		h.log(LogLevelWarn, "heartbeat_rejected task=%s epoch_mismatch queue=%d request=%d",
+		h.log(core.LogLevelWarn, "heartbeat_rejected task=%s epoch_mismatch queue=%d request=%d",
 			p.TaskID, task.LeaseEpoch, p.Epoch)
 		return uds.ErrorResponse(uds.ErrCodeFencingReject,
 			fmt.Sprintf("task %s epoch mismatch: queue=%d, request=%d", p.TaskID, task.LeaseEpoch, p.Epoch))
@@ -174,7 +175,7 @@ func (h *TaskHeartbeatHandler) Handle(params json.RawMessage) *uds.Response {
 
 	elapsed := h.clock.Now().Sub(inProgressSince)
 	if elapsed >= time.Duration(maxMin)*time.Minute {
-		h.log(LogLevelWarn, "heartbeat_rejected task=%s max_runtime_exceeded elapsed=%v max=%dm",
+		h.log(core.LogLevelWarn, "heartbeat_rejected task=%s max_runtime_exceeded elapsed=%v max=%dm",
 			p.TaskID, elapsed, maxMin)
 		return uds.ErrorResponse(uds.ErrCodeMaxRuntimeExceeded,
 			fmt.Sprintf("task %s exceeded max runtime of %d minutes", p.TaskID, maxMin))
@@ -182,17 +183,17 @@ func (h *TaskHeartbeatHandler) Handle(params json.RawMessage) *uds.Response {
 
 	// Extend the lease
 	if err := h.leaseManager.ExtendTaskLease(task); err != nil {
-		h.log(LogLevelError, "lease_extend_failed task=%s error=%v", p.TaskID, err)
+		h.log(core.LogLevelError, "lease_extend_failed task=%s error=%v", p.TaskID, err)
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("extend lease: %v", err))
 	}
 
 	// Write updated queue back
 	if err := yaml.AtomicWrite(queuePath, &queue); err != nil {
-		h.log(LogLevelError, "queue_write_failed file=%s error=%v", queueFile, err)
+		h.log(core.LogLevelError, "queue_write_failed file=%s error=%v", queueFile, err)
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write queue: %v", err))
 	}
 
-	h.log(LogLevelDebug, "heartbeat_processed task=%s worker=%s epoch=%d lease_extended",
+	h.log(core.LogLevelDebug, "heartbeat_processed task=%s worker=%s epoch=%d lease_extended",
 		p.TaskID, p.WorkerID, p.Epoch)
 
 	return uds.SuccessResponse(&TaskHeartbeatResult{
@@ -214,6 +215,6 @@ func (h *TaskHeartbeatHandler) acquireFileLock(file string) (func(), error) {
 	return func() { h.lockMap.Unlock(key) }, nil
 }
 
-func (h *TaskHeartbeatHandler) log(level LogLevel, format string, args ...interface{}) {
+func (h *TaskHeartbeatHandler) log(level core.LogLevel, format string, args ...interface{}) {
 	h.dl.Logf(level, format, args...)
 }

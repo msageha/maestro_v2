@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -92,7 +93,7 @@ func (qh *QueueHandler) stepDeadLetters(s *scanState) {
 		}
 	}
 	if len(dlResults) > 0 {
-		qh.log(LogLevelInfo, "dead_letter_scan removed=%d", len(dlResults))
+		qh.log(core.LogLevelInfo, "dead_letter_scan removed=%d", len(dlResults))
 	}
 
 	pendingNtfs := qh.deadLetterProcessor.DrainPendingNotifications()
@@ -121,9 +122,9 @@ func (qh *QueueHandler) stepCircuitBreaker(s *scanState) {
 		if shouldTrip {
 			timeoutMin := qh.circuitBreaker.ProgressTimeoutMinutes()
 			if err := qh.circuitBreaker.StateReader().TripCircuitBreaker(cmd.ID, reason, timeoutMin); err != nil {
-				qh.log(LogLevelError, "circuit_breaker_trip_timeout command=%s error=%v", cmd.ID, err)
+				qh.log(core.LogLevelError, "circuit_breaker_trip_timeout command=%s error=%v", cmd.ID, err)
 			} else {
-				qh.log(LogLevelWarn, "circuit_breaker_tripped_timeout command=%s reason=%s", cmd.ID, reason)
+				qh.log(core.LogLevelWarn, "circuit_breaker_tripped_timeout command=%s reason=%s", cmd.ID, reason)
 			}
 		}
 
@@ -207,16 +208,16 @@ func (qh *QueueHandler) stepPhaseTransitions(s *scanState) {
 		}
 		transitions, err := qh.dependencyResolver.CheckPhaseTransitions(cmd.ID)
 		if err != nil {
-			qh.log(LogLevelWarn, "phase_transition_check command=%s error=%v", cmd.ID, err)
+			qh.log(core.LogLevelWarn, "phase_transition_check command=%s error=%v", cmd.ID, err)
 			continue
 		}
 
 		for _, tr := range transitions {
-			qh.log(LogLevelInfo, "phase_transition command=%s phase=%s %s→%s reason=%s",
+			qh.log(core.LogLevelInfo, "phase_transition command=%s phase=%s %s→%s reason=%s",
 				cmd.ID, tr.PhaseName, tr.OldStatus, tr.NewStatus, tr.Reason)
 
 			if err := qh.dependencyResolver.stateReader.ApplyPhaseTransition(cmd.ID, tr.PhaseID, tr.NewStatus); err != nil {
-				qh.log(LogLevelError, "phase_transition_apply command=%s phase=%s error=%v",
+				qh.log(core.LogLevelError, "phase_transition_apply command=%s phase=%s error=%v",
 					cmd.ID, tr.PhaseID, err)
 				continue
 			}
@@ -224,9 +225,9 @@ func (qh *QueueHandler) stepPhaseTransitions(s *scanState) {
 			now := qh.clock.Now().UTC().Format(time.RFC3339)
 			switch tr.NewStatus {
 			case model.PhaseStatusAwaitingFill:
-				phase := PhaseInfo{ID: tr.PhaseID, Name: tr.PhaseName}
+				phase := core.PhaseInfo{ID: tr.PhaseID, Name: tr.PhaseName}
 				msg := qh.dependencyResolver.BuildAwaitingFillNotification(cmd.ID, phase)
-				qh.log(LogLevelInfo, "awaiting_fill_signal command=%s phase=%s",
+				qh.log(core.LogLevelInfo, "awaiting_fill_signal command=%s phase=%s",
 					cmd.ID, tr.PhaseName)
 				qh.upsertPlannerSignal(&s.signals.Data, &s.signals.Dirty, model.PlannerSignal{
 					Kind:      "awaiting_fill",
@@ -320,7 +321,7 @@ func (qh *QueueHandler) stepDispatchOrRecovery(s *scanState) {
 		}
 		s.work.busyChecks = append(s.work.busyChecks, qh.collectExpiredCommandBusyChecks(&s.commands.Data, &s.commands.Dirty)...)
 		qh.recoverExpiredNotificationLeases(&s.notifications.Data, &s.notifications.Dirty)
-		qh.log(LogLevelDebug, "expired_leases_detected busy_checks=%d skipping_dispatch", len(s.work.busyChecks))
+		qh.log(core.LogLevelDebug, "expired_leases_detected busy_checks=%d skipping_dispatch", len(s.work.busyChecks))
 	} else {
 		// Step 1: Collect dispatch items
 		qh.collectPendingCommandDispatches(&s.commands.Data, &s.commands.Dirty, &s.work)
@@ -329,7 +330,7 @@ func (qh *QueueHandler) stepDispatchOrRecovery(s *scanState) {
 		for queueFile, tq := range s.tasks {
 			workerID := workerIDFromPath(queueFile)
 			if workerID == "" {
-				qh.log(LogLevelWarn, "skip_dispatch cannot derive worker from %s", queueFile)
+				qh.log(core.LogLevelWarn, "skip_dispatch cannot derive worker from %s", queueFile)
 				continue
 			}
 			dirty := qh.collectPendingTaskDispatches(tq, workerID, globalInFlight, &s.work)
@@ -363,7 +364,7 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 	// 1. Execute interrupts first (before dispatches to avoid killing new tasks)
 	forEachUntilCanceled(ctx, pa.work.interrupts, func(item interruptItem) {
 		if err := qh.cancelHandler.interruptAgent(item.WorkerID, item.TaskID, item.CommandID, item.Epoch); err != nil {
-			qh.log(LogLevelWarn, "phase_b_interrupt worker=%s task=%s error=%v", item.WorkerID, item.TaskID, err)
+			qh.log(core.LogLevelWarn, "phase_b_interrupt worker=%s task=%s error=%v", item.WorkerID, item.TaskID, err)
 		}
 	})
 
@@ -420,7 +421,7 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 				msg := fmt.Sprintf("[maestro] auto-commit phase %s worker %s for %s",
 					item.PhaseID, workerID, item.CommandID)
 				if err := qh.worktreeManager.CommitWorkerChanges(item.CommandID, workerID, msg); err != nil {
-					qh.log(LogLevelWarn, "worktree_auto_commit command=%s worker=%s error=%v",
+					qh.log(core.LogLevelWarn, "worktree_auto_commit command=%s worker=%s error=%v",
 						item.CommandID, workerID, err)
 				}
 			}
@@ -434,7 +435,7 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 
 			if len(conflicts) == 0 && err == nil {
 				if syncErr := qh.worktreeManager.SyncFromIntegration(item.CommandID, item.WorkerIDs); syncErr != nil {
-					qh.log(LogLevelWarn, "worktree_sync_failed command=%s error=%v", item.CommandID, syncErr)
+					qh.log(core.LogLevelWarn, "worktree_sync_failed command=%s error=%v", item.CommandID, syncErr)
 				}
 			}
 		}
@@ -449,7 +450,7 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 		if qh.worktreeManager != nil {
 			cmdState, err := qh.worktreeManager.GetCommandState(item.CommandID)
 			if err != nil || cmdState.Integration.Status != model.IntegrationStatusMerged {
-				qh.log(LogLevelWarn, "worktree_publish_skip_stale command=%s status=%v err=%v",
+				qh.log(core.LogLevelWarn, "worktree_publish_skip_stale command=%s status=%v err=%v",
 					item.CommandID, func() string {
 						if cmdState != nil {
 							return string(cmdState.Integration.Status)
@@ -538,7 +539,7 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 		now := qh.clock.Now().UTC().Format(time.RFC3339)
 		for _, mr := range pb.worktreeMerges {
 			if mr.Error != nil {
-				qh.log(LogLevelError, "worktree_merge_failed command=%s phase=%s error=%v",
+				qh.log(core.LogLevelError, "worktree_merge_failed command=%s phase=%s error=%v",
 					mr.Item.CommandID, mr.Item.PhaseID, mr.Error)
 			}
 			for _, conflict := range mr.Conflicts {
@@ -556,7 +557,7 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 			}
 			if mr.Error == nil && qh.worktreeManager != nil {
 				if err := qh.worktreeManager.MarkPhaseMerged(mr.Item.CommandID, mr.Item.PhaseID); err != nil {
-					qh.log(LogLevelWarn, "mark_phase_merged_failed command=%s phase=%s error=%v",
+					qh.log(core.LogLevelWarn, "mark_phase_merged_failed command=%s phase=%s error=%v",
 						mr.Item.CommandID, mr.Item.PhaseID, err)
 				}
 			}
@@ -567,7 +568,7 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 				p = filepath.Join(qh.maestroDir, "queue", "planner_signals.yaml")
 			}
 			if err := yamlutil.AtomicWrite(p, signalQueue); err != nil {
-				qh.log(LogLevelError, "write_planner_signals error=%v", err)
+				qh.log(core.LogLevelError, "write_planner_signals error=%v", err)
 			}
 		}
 	}
@@ -580,7 +581,7 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 		now := qh.clock.Now().UTC().Format(time.RFC3339)
 		for _, pr := range pb.worktreePublishes {
 			if pr.Error != nil {
-				qh.log(LogLevelError, "worktree_publish_failed command=%s error=%v",
+				qh.log(core.LogLevelError, "worktree_publish_failed command=%s error=%v",
 					pr.Item.CommandID, pr.Error)
 				msg := fmt.Sprintf("[maestro] kind:publish_failed command_id:%s\nerror: %v",
 					pr.Item.CommandID, pr.Error)
@@ -592,7 +593,7 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 					UpdatedAt: now,
 				}, signalIndex)
 			} else {
-				qh.log(LogLevelInfo, "worktree_published command=%s", pr.Item.CommandID)
+				qh.log(core.LogLevelInfo, "worktree_published command=%s", pr.Item.CommandID)
 			}
 		}
 		if signalsDirty {
@@ -601,7 +602,7 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 				p = filepath.Join(qh.maestroDir, "queue", "planner_signals.yaml")
 			}
 			if err := yamlutil.AtomicWrite(p, signalQueue); err != nil {
-				qh.log(LogLevelError, "write_planner_signals error=%v", err)
+				qh.log(core.LogLevelError, "write_planner_signals error=%v", err)
 			}
 		}
 	}
@@ -609,10 +610,10 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 	// --- Apply worktree cleanup results: log only ---
 	for _, cr := range pb.worktreeCleanups {
 		if cr.Error != nil {
-			qh.log(LogLevelWarn, "worktree_cleanup_failed command=%s reason=%s error=%v",
+			qh.log(core.LogLevelWarn, "worktree_cleanup_failed command=%s reason=%s error=%v",
 				cr.Item.CommandID, cr.Item.Reason, cr.Error)
 		} else {
-			qh.log(LogLevelInfo, "worktree_cleanup_complete command=%s reason=%s",
+			qh.log(core.LogLevelInfo, "worktree_cleanup_complete command=%s reason=%s",
 				cr.Item.CommandID, cr.Item.Reason)
 		}
 	}
@@ -631,7 +632,7 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 				_ = os.Remove(p)
 			} else {
 				if err := yamlutil.AtomicWrite(p, signalQueue); err != nil {
-					qh.log(LogLevelError, "write_planner_signals error=%v", err)
+					qh.log(core.LogLevelError, "write_planner_signals error=%v", err)
 				}
 			}
 		}
@@ -642,7 +643,7 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 		n := qh.resultHandler.ScanAllResults()
 		qh.scanCounters.NotificationRetries += n
 		if n > 0 {
-			qh.log(LogLevelInfo, "result_notify_scan notified=%d", n)
+			qh.log(core.LogLevelInfo, "result_notify_scan notified=%d", n)
 		}
 	}
 
@@ -653,7 +654,7 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 		deferredNotifs = notifs
 		qh.scanCounters.ReconciliationRepairs += len(repairs)
 		for _, repair := range repairs {
-			qh.log(LogLevelInfo, "reconciliation pattern=%s command=%s task=%s detail=%s",
+			qh.log(core.LogLevelInfo, "reconciliation pattern=%s command=%s task=%s detail=%s",
 				repair.Pattern, repair.CommandID, repair.TaskID, repair.Detail)
 		}
 	}
@@ -665,10 +666,10 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 		notificationQueue, _ := qh.loadNotificationQueue()
 		scanDuration := qh.clock.Now().Sub(pa.scanStart)
 		if err := qh.metricsHandler.UpdateMetrics(commandQueue, taskQueues, notificationQueue, pa.scanStart, scanDuration, &qh.scanCounters); err != nil {
-			qh.log(LogLevelError, "update_metrics error=%v", err)
+			qh.log(core.LogLevelError, "update_metrics error=%v", err)
 		}
 		if err := qh.metricsHandler.UpdateDashboard(commandQueue, taskQueues, notificationQueue); err != nil {
-			qh.log(LogLevelError, "update_dashboard error=%v", err)
+			qh.log(core.LogLevelError, "update_dashboard error=%v", err)
 		}
 	}
 
@@ -684,7 +685,7 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 func (qh *QueueHandler) collectPendingCommandDispatches(cq *model.CommandQueue, dirty *bool, work *deferredWork) {
 	for _, cmd := range cq.Commands {
 		if cmd.Status == model.StatusInProgress {
-			qh.log(LogLevelDebug, "command_in_progress_guard id=%s epoch=%d blocking_dispatch", cmd.ID, cmd.LeaseEpoch)
+			qh.log(core.LogLevelDebug, "command_in_progress_guard id=%s epoch=%d blocking_dispatch", cmd.ID, cmd.LeaseEpoch)
 			return
 		}
 	}
@@ -693,7 +694,7 @@ func (qh *QueueHandler) collectPendingCommandDispatches(cq *model.CommandQueue, 
 	for _, idx := range sorted {
 		cmd := &cq.Commands[idx]
 		if err := qh.leaseManager.AcquireCommandLease(cmd, qh.leaseOwnerID()); err != nil {
-			qh.log(LogLevelWarn, "lease_acquire_failed type=command id=%s error=%v", cmd.ID, err)
+			qh.log(core.LogLevelWarn, "lease_acquire_failed type=command id=%s error=%v", cmd.ID, err)
 			continue
 		}
 		cmd.Attempts++
@@ -719,7 +720,7 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 		task := &tq.Queue.Tasks[idx]
 
 		if globalInFlight[workerID] {
-			qh.log(LogLevelDebug, "worker_busy worker=%s task=%s (global in-flight)", workerID, task.ID)
+			qh.log(core.LogLevelDebug, "worker_busy worker=%s task=%s (global in-flight)", workerID, task.ID)
 			break
 		}
 
@@ -727,14 +728,14 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 		if task.NotBefore != nil {
 			notBefore, err := time.Parse(time.RFC3339, *task.NotBefore)
 			if err == nil && qh.clock.Now().Before(notBefore) {
-				qh.log(LogLevelDebug, "task_cooldown task=%s not_before=%s", task.ID, *task.NotBefore)
+				qh.log(core.LogLevelDebug, "task_cooldown task=%s not_before=%s", task.ID, *task.NotBefore)
 				continue
 			}
 		}
 
 		blocked, err := qh.dependencyResolver.IsTaskBlocked(task)
 		if err != nil {
-			qh.log(LogLevelWarn, "dependency_check_error task=%s error=%v", task.ID, err)
+			qh.log(core.LogLevelWarn, "dependency_check_error task=%s error=%v", task.ID, err)
 			continue
 		}
 		if blocked {
@@ -743,16 +744,16 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 
 		isSysCommit, ready, sErr := qh.dependencyResolver.IsSystemCommitReady(task.CommandID, task.ID)
 		if sErr != nil {
-			qh.log(LogLevelWarn, "system_commit_check task=%s error=%v", task.ID, sErr)
+			qh.log(core.LogLevelWarn, "system_commit_check task=%s error=%v", task.ID, sErr)
 			continue
 		}
 		if isSysCommit && !ready {
-			qh.log(LogLevelDebug, "system_commit_not_ready task=%s command=%s", task.ID, task.CommandID)
+			qh.log(core.LogLevelDebug, "system_commit_not_ready task=%s command=%s", task.ID, task.CommandID)
 			continue
 		}
 
 		if err := qh.leaseManager.AcquireTaskLease(task, qh.leaseOwnerID()); err != nil {
-			qh.log(LogLevelWarn, "lease_acquire_failed type=task id=%s error=%v", task.ID, err)
+			qh.log(core.LogLevelWarn, "lease_acquire_failed type=task id=%s error=%v", task.ID, err)
 			continue
 		}
 		task.Attempts++
@@ -786,7 +787,7 @@ func (qh *QueueHandler) collectPendingNotificationDispatches(nq *model.Notificat
 	for _, idx := range sorted {
 		ntf := &nq.Notifications[idx]
 		if err := qh.leaseManager.AcquireNotificationLease(ntf, qh.leaseOwnerID()); err != nil {
-			qh.log(LogLevelWarn, "lease_acquire_failed type=notification id=%s error=%v", ntf.ID, err)
+			qh.log(core.LogLevelWarn, "lease_acquire_failed type=notification id=%s error=%v", ntf.ID, err)
 			continue
 		}
 		ntf.Attempts++
@@ -814,9 +815,9 @@ func (qh *QueueHandler) collectExpiredTaskBusyChecks(tq *taskQueueEntry, agentID
 		// Malformed entry: no lease_expires_at → release immediately.
 		// Phase C fencing requires ExpiresAt match, which can never succeed for nil.
 		if task.LeaseExpiresAt == nil {
-			qh.log(LogLevelWarn, "expire_release_malformed type=task id=%s (nil lease_expires_at)", task.ID)
+			qh.log(core.LogLevelWarn, "expire_release_malformed type=task id=%s (nil lease_expires_at)", task.ID)
 			if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
-				qh.log(LogLevelError, "expire_release_failed type=task id=%s error=%v", task.ID, err)
+				qh.log(core.LogLevelError, "expire_release_failed type=task id=%s error=%v", task.ID, err)
 			}
 			qh.scanCounters.LeaseReleases++
 			*dirty = true
@@ -835,7 +836,7 @@ func (qh *QueueHandler) collectExpiredTaskBusyChecks(tq *taskQueueEntry, agentID
 		} else {
 			// No agent ID: release immediately
 			if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
-				qh.log(LogLevelError, "expire_release_failed type=task id=%s error=%v", task.ID, err)
+				qh.log(core.LogLevelError, "expire_release_failed type=task id=%s error=%v", task.ID, err)
 			}
 			qh.scanCounters.LeaseReleases++
 			*dirty = true
@@ -860,10 +861,10 @@ func (qh *QueueHandler) preemptiveCommandRenewal(cq *model.CommandQueue, dirty *
 		}
 		if t, err := time.Parse(time.RFC3339, cmd.UpdatedAt); err == nil {
 			if qh.clock.Now().Sub(t) >= time.Duration(maxMin)*time.Minute {
-				qh.log(LogLevelWarn, "command_lease_max_timeout id=%s epoch=%d max=%dm releasing (preemptive)",
+				qh.log(core.LogLevelWarn, "command_lease_max_timeout id=%s epoch=%d max=%dm releasing (preemptive)",
 					cmd.ID, cmd.LeaseEpoch, maxMin)
 				if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
-					qh.log(LogLevelError, "expire_release_failed type=command id=%s error=%v", cmd.ID, err)
+					qh.log(core.LogLevelError, "expire_release_failed type=command id=%s error=%v", cmd.ID, err)
 				}
 				qh.scanCounters.LeaseReleases++
 				*dirty = true
@@ -871,10 +872,10 @@ func (qh *QueueHandler) preemptiveCommandRenewal(cq *model.CommandQueue, dirty *
 			}
 		}
 		if err := qh.leaseManager.ExtendCommandLease(cmd); err != nil {
-			qh.log(LogLevelError, "command_lease_preemptive_renew_failed id=%s error=%v", cmd.ID, err)
+			qh.log(core.LogLevelError, "command_lease_preemptive_renew_failed id=%s error=%v", cmd.ID, err)
 			continue
 		}
-		qh.log(LogLevelDebug, "command_lease_renewed id=%s epoch=%d", cmd.ID, cmd.LeaseEpoch)
+		qh.log(core.LogLevelDebug, "command_lease_renewed id=%s epoch=%d", cmd.ID, cmd.LeaseEpoch)
 		qh.scanCounters.LeaseRenewals++
 		*dirty = true
 	}
@@ -900,10 +901,10 @@ func (qh *QueueHandler) collectExpiredCommandBusyChecks(cq *model.CommandQueue, 
 		}
 		if t, err := time.Parse(time.RFC3339, cmd.UpdatedAt); err == nil {
 			if qh.clock.Now().Sub(t) >= time.Duration(maxMin)*time.Minute {
-				qh.log(LogLevelWarn, "command_lease_max_timeout id=%s epoch=%d max=%dm releasing",
+				qh.log(core.LogLevelWarn, "command_lease_max_timeout id=%s epoch=%d max=%dm releasing",
 					cmd.ID, cmd.LeaseEpoch, maxMin)
 				if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
-					qh.log(LogLevelError, "expire_release_failed type=command id=%s error=%v", cmd.ID, err)
+					qh.log(core.LogLevelError, "expire_release_failed type=command id=%s error=%v", cmd.ID, err)
 				}
 				qh.scanCounters.LeaseReleases++
 				*dirty = true
@@ -913,13 +914,13 @@ func (qh *QueueHandler) collectExpiredCommandBusyChecks(cq *model.CommandQueue, 
 
 		// Auto-extend: keep command in_progress to prevent duplicate dispatch
 		if cmd.LeaseExpiresAt == nil {
-			qh.log(LogLevelWarn, "expire_repair_malformed type=command id=%s (nil lease_expires_at)", cmd.ID)
+			qh.log(core.LogLevelWarn, "expire_repair_malformed type=command id=%s (nil lease_expires_at)", cmd.ID)
 		}
 		if err := qh.leaseManager.ExtendCommandLease(cmd); err != nil {
-			qh.log(LogLevelError, "command_lease_auto_extend_failed id=%s error=%v", cmd.ID, err)
+			qh.log(core.LogLevelError, "command_lease_auto_extend_failed id=%s error=%v", cmd.ID, err)
 			continue
 		}
-		qh.log(LogLevelDebug, "command_lease_auto_extend id=%s epoch=%d", cmd.ID, cmd.LeaseEpoch)
+		qh.log(core.LogLevelDebug, "command_lease_auto_extend id=%s epoch=%d", cmd.ID, cmd.LeaseEpoch)
 		qh.scanCounters.LeaseExtensions++
 		*dirty = true
 	}
@@ -945,7 +946,7 @@ func (qh *QueueHandler) checkPendingDependencyFailuresDeferred(tq *taskQueueEntr
 		}
 
 		reason := fmt.Sprintf("blocked_dependency_terminal:%s", failedDep)
-		qh.log(LogLevelWarn, "dependency_failure_pending task=%s dep=%s dep_status=%s",
+		qh.log(core.LogLevelWarn, "dependency_failure_pending task=%s dep=%s dep_status=%s",
 			task.ID, failedDep, failedStatus)
 
 		task.Status = model.StatusCancelled
@@ -954,7 +955,7 @@ func (qh *QueueHandler) checkPendingDependencyFailuresDeferred(tq *taskQueueEntr
 
 		if qh.dependencyResolver.stateReader != nil {
 			if err := qh.dependencyResolver.stateReader.UpdateTaskState(task.CommandID, task.ID, model.StatusCancelled, reason); err != nil {
-				qh.log(LogLevelWarn, "dep_failure_state_update task=%s error=%v", task.ID, err)
+				qh.log(core.LogLevelWarn, "dep_failure_state_update task=%s error=%v", task.ID, err)
 			}
 		}
 
@@ -995,7 +996,7 @@ func (qh *QueueHandler) checkInProgressDependencyFailuresDeferred(tq *taskQueueE
 		}
 
 		reason := fmt.Sprintf("blocked_dependency_terminal:%s", failedDep)
-		qh.log(LogLevelWarn, "dependency_failure task=%s dep=%s dep_status=%s",
+		qh.log(core.LogLevelWarn, "dependency_failure task=%s dep=%s dep_status=%s",
 			task.ID, failedDep, failedStatus)
 
 		// Defer interrupt to Phase B
@@ -1016,7 +1017,7 @@ func (qh *QueueHandler) checkInProgressDependencyFailuresDeferred(tq *taskQueueE
 
 		if qh.dependencyResolver.stateReader != nil {
 			if err := qh.dependencyResolver.stateReader.UpdateTaskState(task.CommandID, task.ID, model.StatusCancelled, reason); err != nil {
-				qh.log(LogLevelWarn, "dep_failure_state_update task=%s error=%v", task.ID, err)
+				qh.log(core.LogLevelWarn, "dep_failure_state_update task=%s error=%v", task.ID, err)
 			}
 		}
 
@@ -1046,16 +1047,16 @@ func (qh *QueueHandler) applyCommandDispatchResult(dr dispatchResult, cq *model.
 		// Epoch fencing: verify entry hasn't changed since Phase A
 		if cmd.LeaseEpoch != dr.Item.Epoch || cmd.Status != model.StatusInProgress ||
 			cmd.LeaseExpiresAt == nil || *cmd.LeaseExpiresAt != dr.Item.ExpiresAt {
-			qh.log(LogLevelWarn, "dispatch_fence_stale kind=command id=%s epoch=%d/%d",
+			qh.log(core.LogLevelWarn, "dispatch_fence_stale kind=command id=%s epoch=%d/%d",
 				cmd.ID, cmd.LeaseEpoch, dr.Item.Epoch)
 			return
 		}
 		if !dr.Success {
 			// For transient busy detection errors, release lease to allow immediate retry
 			if errors.Is(dr.Error, agent.ErrBusyUndecided) {
-				qh.log(LogLevelWarn, "dispatch_failed_undecided_release type=command id=%s", cmd.ID)
+				qh.log(core.LogLevelWarn, "dispatch_failed_undecided_release type=command id=%s", cmd.ID)
 				if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
-					qh.log(LogLevelError, "release_command_lease_failed id=%s error=%v", cmd.ID, err)
+					qh.log(core.LogLevelError, "release_command_lease_failed id=%s error=%v", cmd.ID, err)
 				} else {
 					qh.scanCounters.LeaseReleases++
 				}
@@ -1063,7 +1064,7 @@ func (qh *QueueHandler) applyCommandDispatchResult(dr dispatchResult, cq *model.
 				return
 			}
 
-			qh.log(LogLevelWarn, "dispatch_failed_lease_kept type=command id=%s error=%v", cmd.ID, dr.Error)
+			qh.log(core.LogLevelWarn, "dispatch_failed_lease_kept type=command id=%s error=%v", cmd.ID, dr.Error)
 		} else {
 			qh.scanCounters.CommandsDispatched++
 		}
@@ -1081,14 +1082,14 @@ func (qh *QueueHandler) applyTaskDispatchResult(dr dispatchResult, taskQueues ma
 			}
 			if task.LeaseEpoch != dr.Item.Epoch || task.Status != model.StatusInProgress ||
 				task.LeaseExpiresAt == nil || *task.LeaseExpiresAt != dr.Item.ExpiresAt {
-				qh.log(LogLevelWarn, "dispatch_fence_stale kind=task id=%s epoch=%d/%d",
+				qh.log(core.LogLevelWarn, "dispatch_fence_stale kind=task id=%s epoch=%d/%d",
 					task.ID, task.LeaseEpoch, dr.Item.Epoch)
 				return
 			}
 			if !dr.Success {
-				qh.log(LogLevelWarn, "dispatch_failed type=task id=%s error=%v", task.ID, dr.Error)
+				qh.log(core.LogLevelWarn, "dispatch_failed type=task id=%s error=%v", task.ID, dr.Error)
 				if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
-					qh.log(LogLevelError, "release_task_lease task=%s error=%v", task.ID, err)
+					qh.log(core.LogLevelError, "release_task_lease task=%s error=%v", task.ID, err)
 				}
 				qh.scanCounters.LeaseReleases++
 			} else {
@@ -1108,14 +1109,14 @@ func (qh *QueueHandler) applyNotificationDispatchResult(dr dispatchResult, nq *m
 		}
 		if ntf.LeaseEpoch != dr.Item.Epoch || ntf.Status != model.StatusInProgress ||
 			ntf.LeaseExpiresAt == nil || *ntf.LeaseExpiresAt != dr.Item.ExpiresAt {
-			qh.log(LogLevelWarn, "dispatch_fence_stale kind=notification id=%s epoch=%d/%d",
+			qh.log(core.LogLevelWarn, "dispatch_fence_stale kind=notification id=%s epoch=%d/%d",
 				ntf.ID, ntf.LeaseEpoch, dr.Item.Epoch)
 			return
 		}
 		if !dr.Success {
-			qh.log(LogLevelWarn, "dispatch_failed type=notification id=%s error=%v", ntf.ID, dr.Error)
+			qh.log(core.LogLevelWarn, "dispatch_failed type=notification id=%s error=%v", ntf.ID, dr.Error)
 			if err := qh.leaseManager.ReleaseNotificationLease(ntf); err != nil {
-				qh.log(LogLevelError, "release_notification_lease id=%s error=%v", ntf.ID, err)
+				qh.log(core.LogLevelError, "release_notification_lease id=%s error=%v", ntf.ID, err)
 			}
 		} else {
 			ntf.Status = model.StatusCompleted
@@ -1139,7 +1140,7 @@ func (qh *QueueHandler) applyTaskBusyCheckResult(bc busyCheckResult, taskQueues 
 		// Fencing: verify entry hasn't changed since Phase A
 		if task.LeaseEpoch != bc.Item.Epoch || task.Status != model.StatusInProgress ||
 			task.LeaseExpiresAt == nil || *task.LeaseExpiresAt != bc.Item.ExpiresAt {
-			qh.log(LogLevelWarn, "busy_check_fence_stale kind=task id=%s epoch=%d/%d",
+			qh.log(core.LogLevelWarn, "busy_check_fence_stale kind=task id=%s epoch=%d/%d",
 				task.ID, task.LeaseEpoch, bc.Item.Epoch)
 			return
 		}
@@ -1154,10 +1155,10 @@ func (qh *QueueHandler) applyTaskBusyCheckResult(bc busyCheckResult, taskQueues 
 			}
 			if t, err := time.Parse(time.RFC3339, bc.Item.UpdatedAt); err == nil {
 				if qh.clock.Now().Sub(t) >= time.Duration(maxMin)*time.Minute {
-					qh.log(LogLevelWarn, "lease_undecided_max_timeout type=task id=%s worker=%s max=%dm, releasing",
+					qh.log(core.LogLevelWarn, "lease_undecided_max_timeout type=task id=%s worker=%s max=%dm, releasing",
 						task.ID, bc.Item.AgentID, maxMin)
 					if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
-						qh.log(LogLevelError, "expire_release_failed type=task id=%s error=%v", task.ID, err)
+						qh.log(core.LogLevelError, "expire_release_failed type=task id=%s error=%v", task.ID, err)
 						return
 					}
 					qh.scanCounters.LeaseReleases++
@@ -1166,10 +1167,10 @@ func (qh *QueueHandler) applyTaskBusyCheckResult(bc busyCheckResult, taskQueues 
 				}
 			}
 			graceTTL := qh.leaseManager.GraceLeaseTTL(qh.config.Watcher.ScanIntervalSec)
-			qh.log(LogLevelInfo, "lease_grace_extend type=task id=%s worker=%s epoch=%d grace_ttl=%s",
+			qh.log(core.LogLevelInfo, "lease_grace_extend type=task id=%s worker=%s epoch=%d grace_ttl=%s",
 				task.ID, bc.Item.AgentID, task.LeaseEpoch, graceTTL)
 			if err := qh.leaseManager.ExtendTaskLeaseGrace(task, graceTTL); err != nil {
-				qh.log(LogLevelError, "lease_grace_extend_failed type=task id=%s error=%v", task.ID, err)
+				qh.log(core.LogLevelError, "lease_grace_extend_failed type=task id=%s error=%v", task.ID, err)
 			}
 			qh.scanCounters.LeaseExtensions++
 			taskDirty[bc.Item.QueueFile] = true
@@ -1188,21 +1189,21 @@ func (qh *QueueHandler) applyTaskBusyCheckResult(bc busyCheckResult, taskQueues 
 				}
 			}
 			if withinLimit {
-				qh.log(LogLevelInfo, "lease_extend_busy type=task id=%s worker=%s epoch=%d",
+				qh.log(core.LogLevelInfo, "lease_extend_busy type=task id=%s worker=%s epoch=%d",
 					task.ID, bc.Item.AgentID, task.LeaseEpoch)
 				if err := qh.leaseManager.ExtendTaskLease(task); err != nil {
-					qh.log(LogLevelError, "lease_extend_failed type=task id=%s error=%v", task.ID, err)
+					qh.log(core.LogLevelError, "lease_extend_failed type=task id=%s error=%v", task.ID, err)
 				}
 				qh.scanCounters.LeaseExtensions++
 				taskDirty[bc.Item.QueueFile] = true
 				return
 			}
-			qh.log(LogLevelWarn, "lease_max_in_progress_timeout type=task id=%s worker=%s max=%dm",
+			qh.log(core.LogLevelWarn, "lease_max_in_progress_timeout type=task id=%s worker=%s max=%dm",
 				task.ID, bc.Item.AgentID, maxMin)
 		}
 
 		if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
-			qh.log(LogLevelError, "expire_release_failed type=task id=%s error=%v", task.ID, err)
+			qh.log(core.LogLevelError, "expire_release_failed type=task id=%s error=%v", task.ID, err)
 			return
 		}
 		qh.scanCounters.LeaseReleases++
@@ -1219,7 +1220,7 @@ func (qh *QueueHandler) applyCommandBusyCheckResult(bc busyCheckResult, cq *mode
 		}
 		if cmd.LeaseEpoch != bc.Item.Epoch || cmd.Status != model.StatusInProgress ||
 			cmd.LeaseExpiresAt == nil || *cmd.LeaseExpiresAt != bc.Item.ExpiresAt {
-			qh.log(LogLevelWarn, "busy_check_fence_stale kind=command id=%s epoch=%d/%d",
+			qh.log(core.LogLevelWarn, "busy_check_fence_stale kind=command id=%s epoch=%d/%d",
 				cmd.ID, cmd.LeaseEpoch, bc.Item.Epoch)
 			return
 		}
@@ -1234,10 +1235,10 @@ func (qh *QueueHandler) applyCommandBusyCheckResult(bc busyCheckResult, cq *mode
 			}
 			if t, err := time.Parse(time.RFC3339, bc.Item.UpdatedAt); err == nil {
 				if qh.clock.Now().Sub(t) >= time.Duration(maxMin)*time.Minute {
-					qh.log(LogLevelWarn, "lease_undecided_max_timeout type=command id=%s owner=planner max=%dm, releasing",
+					qh.log(core.LogLevelWarn, "lease_undecided_max_timeout type=command id=%s owner=planner max=%dm, releasing",
 						cmd.ID, maxMin)
 					if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
-						qh.log(LogLevelError, "expire_release_failed type=command id=%s error=%v", cmd.ID, err)
+						qh.log(core.LogLevelError, "expire_release_failed type=command id=%s error=%v", cmd.ID, err)
 						return
 					}
 					qh.scanCounters.LeaseReleases++
@@ -1246,10 +1247,10 @@ func (qh *QueueHandler) applyCommandBusyCheckResult(bc busyCheckResult, cq *mode
 				}
 			}
 			graceTTL := qh.leaseManager.GraceLeaseTTL(qh.config.Watcher.ScanIntervalSec)
-			qh.log(LogLevelInfo, "lease_grace_extend type=command id=%s owner=planner epoch=%d grace_ttl=%s",
+			qh.log(core.LogLevelInfo, "lease_grace_extend type=command id=%s owner=planner epoch=%d grace_ttl=%s",
 				cmd.ID, cmd.LeaseEpoch, graceTTL)
 			if err := qh.leaseManager.ExtendCommandLeaseGrace(cmd, graceTTL); err != nil {
-				qh.log(LogLevelError, "lease_grace_extend_failed type=command id=%s error=%v", cmd.ID, err)
+				qh.log(core.LogLevelError, "lease_grace_extend_failed type=command id=%s error=%v", cmd.ID, err)
 			}
 			qh.scanCounters.LeaseExtensions++
 			*dirty = true
@@ -1268,21 +1269,21 @@ func (qh *QueueHandler) applyCommandBusyCheckResult(bc busyCheckResult, cq *mode
 				}
 			}
 			if withinLimit {
-				qh.log(LogLevelInfo, "lease_extend_busy type=command id=%s owner=planner epoch=%d",
+				qh.log(core.LogLevelInfo, "lease_extend_busy type=command id=%s owner=planner epoch=%d",
 					cmd.ID, cmd.LeaseEpoch)
 				if err := qh.leaseManager.ExtendCommandLease(cmd); err != nil {
-					qh.log(LogLevelError, "lease_extend_failed type=command id=%s error=%v", cmd.ID, err)
+					qh.log(core.LogLevelError, "lease_extend_failed type=command id=%s error=%v", cmd.ID, err)
 				}
 				qh.scanCounters.LeaseExtensions++
 				*dirty = true
 				return
 			}
-			qh.log(LogLevelWarn, "lease_max_in_progress_timeout type=command id=%s owner=planner max=%dm",
+			qh.log(core.LogLevelWarn, "lease_max_in_progress_timeout type=command id=%s owner=planner max=%dm",
 				cmd.ID, maxMin)
 		}
 
 		if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
-			qh.log(LogLevelError, "expire_release_failed type=command id=%s error=%v", cmd.ID, err)
+			qh.log(core.LogLevelError, "expire_release_failed type=command id=%s error=%v", cmd.ID, err)
 			return
 		}
 		qh.scanCounters.LeaseReleases++
@@ -1326,7 +1327,7 @@ func (qh *QueueHandler) applySignalResults(results []signalDeliveryResult, sq *m
 		sig.UpdatedAt = now.Format(time.RFC3339)
 
 		if dlErr == nil {
-			qh.log(LogLevelInfo, "signal_delivered kind=%s command=%s phase=%s attempts=%d",
+			qh.log(core.LogLevelInfo, "signal_delivered kind=%s command=%s phase=%s attempts=%d",
 				sig.Kind, sig.CommandID, sig.PhaseID, sig.Attempts)
 			qh.scanCounters.SignalDeliveries++
 			*dirty = true
@@ -1340,7 +1341,7 @@ func (qh *QueueHandler) applySignalResults(results []signalDeliveryResult, sq *m
 		sig.NextAttemptAt = &nextAttemptStr
 		*dirty = true
 
-		qh.log(LogLevelWarn, "signal_delivery_failed kind=%s command=%s phase=%s attempts=%d next_retry=%s error=%v",
+		qh.log(core.LogLevelWarn, "signal_delivery_failed kind=%s command=%s phase=%s attempts=%d next_retry=%s error=%v",
 			sig.Kind, sig.CommandID, sig.PhaseID, sig.Attempts, nextAttemptStr, dlErr)
 		qh.scanCounters.SignalRetries++
 
@@ -1358,7 +1359,7 @@ func (qh *QueueHandler) recoverExpiredNotificationLeases(nq *model.NotificationQ
 		// Notifications don't have ExtendLease — always release and let retry.
 		// No busy probe here: this runs under scanMu.Lock (Phase A) and must stay fast.
 		if err := qh.leaseManager.ReleaseNotificationLease(ntf); err != nil {
-			qh.log(LogLevelError, "expire_release_failed type=notification id=%s error=%v", ntf.ID, err)
+			qh.log(core.LogLevelError, "expire_release_failed type=notification id=%s error=%v", ntf.ID, err)
 			continue
 		}
 		*dirty = true
@@ -1489,8 +1490,8 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 	// Errors fail closed (skip publish) to avoid premature publishing.
 	phases, err := qh.dependencyResolver.stateReader.GetCommandPhases(commandID)
 	if err != nil {
-		if !errors.Is(err, ErrStateNotFound) {
-			qh.log(LogLevelWarn, "worktree_publish_phase_check_failed command=%s error=%v", commandID, err)
+		if !errors.Is(err, core.ErrStateNotFound) {
+			qh.log(core.LogLevelWarn, "worktree_publish_phase_check_failed command=%s error=%v", commandID, err)
 		}
 		return nil, nil
 	}
@@ -1505,7 +1506,7 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 
 	if hasFailed {
 		// Don't publish if any task failed — partial results stay on integration branch
-		qh.log(LogLevelInfo, "worktree_publish_skip_failed command=%s", commandID)
+		qh.log(core.LogLevelInfo, "worktree_publish_skip_failed command=%s", commandID)
 		if qh.config.Worktree.CleanupOnFailure {
 			cleanups = append(cleanups, worktreeCleanupItem{
 				CommandID: commandID,
@@ -1522,7 +1523,7 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 		publishes = append(publishes, worktreePublishItem{
 			CommandID: commandID,
 		})
-		qh.log(LogLevelInfo, "worktree_publish_collected command=%s", commandID)
+		qh.log(core.LogLevelInfo, "worktree_publish_collected command=%s", commandID)
 	case model.IntegrationStatusPublished:
 		// Already published — collect cleanup if configured and not yet cleaned
 		if qh.config.Worktree.CleanupOnSuccess {
@@ -1533,7 +1534,7 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 		}
 	default:
 		// Not ready (created, merging, conflict, publishing, failed)
-		qh.log(LogLevelDebug, "worktree_publish_not_ready command=%s integration_status=%s",
+		qh.log(core.LogLevelDebug, "worktree_publish_not_ready command=%s integration_status=%s",
 			commandID, cmdState.Integration.Status)
 	}
 

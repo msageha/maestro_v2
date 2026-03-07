@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -27,9 +28,9 @@ func createSkillFile(t *testing.T, skillsDir, name, content string) {
 // newSkillTestDispatcher creates a Dispatcher with a mock executor that captures the dispatched envelope.
 func newSkillTestDispatcher(t *testing.T, maestroDir string, cfg model.Config) (*Dispatcher, *mockExecutor) {
 	t.Helper()
-	d := NewDispatcher(maestroDir, cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	d := NewDispatcher(maestroDir, cfg, nil, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
 	mock := &mockExecutor{result: agent.ExecResult{Success: true}}
-	d.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	d.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
 		return mock, nil
 	})
 	return d, mock
