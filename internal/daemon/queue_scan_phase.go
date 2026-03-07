@@ -50,6 +50,9 @@ func (qh *QueueHandler) periodicScanPhaseA() phaseAResult {
 }
 
 // initScanState loads all queue files and initialises a scanState.
+// Note: scanStart uses qh.clock.Now() which includes a monotonic component for
+// elapsed-time calculations within the process. File-based timestamps (ExpiresAt etc.)
+// use wall-clock time and are susceptible to clock skew from NTP adjustments.
 func (qh *QueueHandler) initScanState() scanState {
 	scanStart := qh.clock.Now()
 	qh.scanCounters = ScanCounters{}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -500,8 +501,10 @@ func toInt(v interface{}) int {
 		return int(val)
 	case string:
 		// Try to parse string as int
-		var i int
-		fmt.Sscanf(val, "%d", &i)
+		i, err := strconv.Atoi(val)
+		if err != nil {
+			return 0
+		}
 		return i
 	default:
 		return 0
