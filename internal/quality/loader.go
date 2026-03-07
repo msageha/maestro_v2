@@ -16,7 +16,7 @@ import (
 // Loader loads and validates gate configurations
 type Loader struct {
 	configDir string
-	mu              sync.RWMutex
+	mu              sync.RWMutex // protects configurations, loadedFiles, defaultGates, validationCache
 	configurations  map[string]*GateConfiguration
 	loadedFiles     map[string]time.Time
 	defaultGates    *GateConfiguration

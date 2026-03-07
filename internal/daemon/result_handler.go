@@ -51,7 +51,7 @@ type ResultHandler struct {
 	continuousHandler *ContinuousHandler
 	eventBus          *events.Bus
 
-	execMu        sync.Mutex
+	execMu        sync.Mutex // protects cachedExec, cachedExecErr, execInit
 	cachedExec    AgentExecutor
 	cachedExecErr error
 	execInit      bool

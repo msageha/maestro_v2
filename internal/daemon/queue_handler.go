@@ -40,7 +40,7 @@ type QueueHandler struct {
 	scanCounters ScanCounters
 
 	// Debounce state
-	debounceMu       sync.Mutex
+	debounceMu       sync.Mutex // protects debounceTimer, firstTriggerAt, debounceStopped
 	debounceTimer    *time.Timer
 	firstTriggerAt   time.Time   // tracks first trigger in a debounce window for maxWait
 	scanRunning      atomic.Bool // true while debounced callback is executing

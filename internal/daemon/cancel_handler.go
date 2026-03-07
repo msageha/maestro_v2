@@ -30,7 +30,7 @@ type CancelHandler struct {
 	lockMap         *lock.MutexMap
 	worktreeManager *WorktreeManager
 
-	execMu        sync.Mutex
+	execMu        sync.Mutex // protects cachedExec, cachedExecErr, execInit
 	cachedExec    AgentExecutor
 	cachedExecErr error
 	execInit      bool
