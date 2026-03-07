@@ -229,10 +229,12 @@ func (c CircuitBreakerConfig) EffectiveMaxConsecutiveFailures() int {
 	return 3
 }
 
-// EffectiveProgressTimeoutMinutes returns the configured timeout.
-// Returns 0 if set to 0 (disabled). The template default is 30.
+// EffectiveProgressTimeoutMinutes returns the configured timeout or 30 as default.
 func (c CircuitBreakerConfig) EffectiveProgressTimeoutMinutes() int {
-	return c.ProgressTimeoutMinutes
+	if c.ProgressTimeoutMinutes > 0 {
+		return c.ProgressTimeoutMinutes
+	}
+	return 30
 }
 
 // LearningsConfig controls the learning accumulation feature.
@@ -268,10 +270,12 @@ func (l LearningsConfig) EffectiveInjectCount() int {
 	return 5
 }
 
-// EffectiveTTLHours returns the configured TTL in hours.
-// 0 means unlimited (no expiry). The template default is 72.
+// EffectiveTTLHours returns the configured TTL in hours or 72 as default.
 func (l LearningsConfig) EffectiveTTLHours() int {
-	return l.TTLHours
+	if l.TTLHours > 0 {
+		return l.TTLHours
+	}
+	return 72
 }
 
 // VerificationConfig controls verification commands run by Workers.
