@@ -100,6 +100,7 @@ func (h *TaskRetryHandler) CreateRetryTask(originalTask *model.Task, workerID st
 	// QA-009: Deep copy slice fields to avoid shared backing arrays
 	retryTask.BlockedBy = slices.Clone(originalTask.BlockedBy)
 	retryTask.ToolsHint = slices.Clone(originalTask.ToolsHint)
+	retryTask.SkillRefs = slices.Clone(originalTask.SkillRefs)
 	retryTask.ID = retryTaskID
 	retryTask.Attempts = 0                                         // Reset dispatch attempts for new task
 	retryTask.ExecutionRetries = originalTask.ExecutionRetries + 1 // Increment retry count

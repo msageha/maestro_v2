@@ -80,6 +80,7 @@ type retryParams struct {
 	BloomLevel         int      `json:"bloom_level"`
 	ToolsHint          []string `json:"tools_hint"`
 	PersonaHint        string   `json:"persona_hint"`
+	SkillRefs          []string `json:"skill_refs"`
 }
 
 func (pe *PlanExecutorImpl) AddRetryTask(params json.RawMessage) (json.RawMessage, error) {
@@ -99,6 +100,7 @@ func (pe *PlanExecutorImpl) AddRetryTask(params json.RawMessage) (json.RawMessag
 		BloomLevel:         p.BloomLevel,
 		ToolsHint:          p.ToolsHint,
 		PersonaHint:        p.PersonaHint,
+		SkillRefs:          p.SkillRefs,
 		MaestroDir:         pe.MaestroDir,
 		Config:             pe.Config,
 		LockMap:            pe.LockMap,

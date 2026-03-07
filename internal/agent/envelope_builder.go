@@ -59,6 +59,15 @@ func BuildWorkerEnvelope(task model.Task, workerID string, leaseEpoch, attempt i
 		personaHintStr = sanitizeEnvelopeField(task.PersonaHint)
 	}
 	fmt.Fprintf(&sb, "persona_hint: %s\n", personaHintStr)
+	skillRefsStr := "なし"
+	if len(task.SkillRefs) > 0 {
+		sanitizedRefs := make([]string, len(task.SkillRefs))
+		for i, r := range task.SkillRefs {
+			sanitizedRefs[i] = sanitizeEnvelopeField(r)
+		}
+		skillRefsStr = strings.Join(sanitizedRefs, ", ")
+	}
+	fmt.Fprintf(&sb, "skill_refs: %s\n", skillRefsStr)
 	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "完了時: maestro result write %s --task-id %s --command-id %s --lease-epoch %d --status <completed|failed> --summary \"...\"\n",
 		workerID, task.ID, task.CommandID, leaseEpoch)

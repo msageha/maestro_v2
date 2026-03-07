@@ -29,6 +29,7 @@ type QueueWriteParams struct {
 	Constraints        []string `json:"constraints,omitempty"`
 	ToolsHint          []string `json:"tools_hint,omitempty"`
 	PersonaHint        string   `json:"persona_hint,omitempty"`
+	SkillRefs          []string `json:"skill_refs,omitempty"`
 	Priority           int      `json:"priority"`
 	SourceResultID     string   `json:"source_result_id,omitempty"`
 	NotificationType   string   `json:"notification_type,omitempty"`
@@ -252,6 +253,7 @@ func (a *API) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 		BloomLevel:         params.BloomLevel,
 		ToolsHint:          params.ToolsHint,
 		PersonaHint:        params.PersonaHint,
+		SkillRefs:          params.SkillRefs,
 		Priority:           priority,
 		Status:             model.StatusPending,
 		CreatedAt:          now,
