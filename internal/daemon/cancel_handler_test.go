@@ -13,12 +13,11 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// mockExecutor implements core.AgentExecutor for testing.
+// mockExecutor implements AgentExecutor for testing.
 type mockExecutor struct {
 	calls  []agent.ExecRequest
 	result agent.ExecResult
@@ -32,9 +31,9 @@ func (m *mockExecutor) Execute(req agent.ExecRequest) agent.ExecResult {
 func (m *mockExecutor) Close() error { return nil }
 
 func newTestCancelHandler() (*CancelHandler, *mockExecutor) {
-	ch := NewCancelHandler("", model.Config{}, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
+	ch := NewCancelHandler("", model.Config{}, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
 	mock := &mockExecutor{result: agent.ExecResult{Success: true}}
-	ch.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	ch.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return mock, nil
 	})
 	return ch, mock
@@ -167,15 +166,15 @@ func newTestCancelHandlerWithDir(t *testing.T) (*CancelHandler, *mockExecutor, s
 			t.Fatalf("create dir %s: %v", sub, err)
 		}
 	}
-	ch := NewCancelHandler(maestroDir, model.Config{}, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
+	ch := NewCancelHandler(maestroDir, model.Config{}, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
 	mock := &mockExecutor{result: agent.ExecResult{Success: true}}
-	ch.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	ch.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return mock, nil
 	})
 	return ch, mock, maestroDir
 }
 
-// stubStateReader implements core.StateReader for cancel_handler tests.
+// stubStateReader implements StateReader for cancel_handler tests.
 type stubStateReader struct {
 	cancelRequested    bool
 	cancelRequestedErr error
@@ -191,19 +190,19 @@ type stubUpdateTaskCall struct {
 }
 
 func (s *stubStateReader) GetTaskState(string, string) (model.Status, error) {
-	return "", core.ErrStateNotFound
+	return "", ErrStateNotFound
 }
-func (s *stubStateReader) GetCommandPhases(string) ([]core.PhaseInfo, error) {
-	return nil, core.ErrStateNotFound
+func (s *stubStateReader) GetCommandPhases(string) ([]PhaseInfo, error) {
+	return nil, ErrStateNotFound
 }
 func (s *stubStateReader) GetTaskDependencies(string, string) ([]string, error) {
-	return nil, core.ErrStateNotFound
+	return nil, ErrStateNotFound
 }
 func (s *stubStateReader) IsSystemCommitReady(string, string) (bool, bool, error) {
-	return false, false, core.ErrStateNotFound
+	return false, false, ErrStateNotFound
 }
 func (s *stubStateReader) ApplyPhaseTransition(string, string, model.PhaseStatus) error {
-	return core.ErrStateNotFound
+	return ErrStateNotFound
 }
 func (s *stubStateReader) UpdateTaskState(commandID, taskID string, newStatus model.Status, cancelledReason string) error {
 	s.updateTaskCalls = append(s.updateTaskCalls, stubUpdateTaskCall{commandID, taskID, newStatus, cancelledReason})
@@ -430,16 +429,16 @@ func TestCancelHandler_IsCommandCancelRequested_ViaStateReader(t *testing.T) {
 		t.Error("expected not cancelled: stateReader returned false, should override queue metadata")
 	}
 
-	// Case 3: stateReader returns core.ErrStateNotFound → fall back to queue metadata
-	sr.cancelRequestedErr = core.ErrStateNotFound
+	// Case 3: stateReader returns ErrStateNotFound → fall back to queue metadata
+	sr.cancelRequestedErr = ErrStateNotFound
 	if !ch.IsCommandCancelRequested(cmd) {
-		t.Error("expected cancelled: stateReader returned core.ErrStateNotFound, should fall back to queue metadata")
+		t.Error("expected cancelled: stateReader returned ErrStateNotFound, should fall back to queue metadata")
 	}
 
-	// Case 4: stateReader returns core.ErrStateNotFound, no queue metadata → not cancelled
+	// Case 4: stateReader returns ErrStateNotFound, no queue metadata → not cancelled
 	cmd.CancelRequestedAt = nil
 	if ch.IsCommandCancelRequested(cmd) {
-		t.Error("expected not cancelled: stateReader returned core.ErrStateNotFound and no queue metadata")
+		t.Error("expected not cancelled: stateReader returned ErrStateNotFound and no queue metadata")
 	}
 }
 

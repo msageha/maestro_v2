@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -14,7 +13,7 @@ func newTestLeaseManager() *LeaseManager {
 	return NewLeaseManager(model.WatcherConfig{
 		DispatchLeaseSec: 300,
 		MaxInProgressMin: 60,
-	}, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
+	}, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
 }
 
 func TestAcquireCommandLease(t *testing.T) {

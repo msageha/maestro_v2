@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -18,7 +17,7 @@ func newDispatchTestQH(scanIntervalSec int) *QueueHandler {
 			ScanIntervalSec: scanIntervalSec,
 		},
 	}
-	return NewQueueHandler("", cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
+	return NewQueueHandler("", cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
 }
 
 // --- computeSignalBackoff ---

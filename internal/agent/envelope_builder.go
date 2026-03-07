@@ -54,6 +54,11 @@ func BuildWorkerEnvelope(task model.Task, workerID string, leaseEpoch, attempt i
 		toolsHintStr = strings.Join(sanitizedHints, ", ")
 	}
 	fmt.Fprintf(&sb, "tools_hint: %s\n", toolsHintStr)
+	personaHintStr := "なし"
+	if task.PersonaHint != "" {
+		personaHintStr = sanitizeEnvelopeField(task.PersonaHint)
+	}
+	fmt.Fprintf(&sb, "persona_hint: %s\n", personaHintStr)
 	skillRefsStr := "なし"
 	if len(task.SkillRefs) > 0 {
 		sanitizedRefs := make([]string, len(task.SkillRefs))

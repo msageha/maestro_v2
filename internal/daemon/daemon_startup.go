@@ -10,8 +10,6 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
-	"github.com/msageha/maestro_v2/internal/daemon/core"
-	"github.com/msageha/maestro_v2/internal/daemon/worktree"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
@@ -23,24 +21,24 @@ func (d *Daemon) prepareStartup() error {
 	if err := d.fileLock.TryLock(); err != nil {
 		return fmt.Errorf("daemon lock: %w", err)
 	}
-	d.log(core.LogLevelInfo, "daemon starting pid=%d", os.Getpid())
+	d.log(LogLevelInfo, "daemon starting pid=%d", os.Getpid())
 
 	// Initialize tmux debug logger
 	tmuxLogPath := filepath.Join(d.maestroDir, "logs", "tmux_debug.log")
 	if tmuxLogFile, err := os.OpenFile(tmuxLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
 		tmuxLogger := log.New(tmuxLogFile, "", log.LstdFlags|log.Lmicroseconds)
 		tmux.SetDebugLogger(tmuxLogger)
-		d.log(core.LogLevelInfo, "tmux debug logger initialized at %s", tmuxLogPath)
+		d.log(LogLevelInfo, "tmux debug logger initialized at %s", tmuxLogPath)
 		d.tmuxLogFile = tmuxLogFile
 	} else {
-		d.log(core.LogLevelWarn, "failed to open tmux debug log: %v", err)
+		d.log(LogLevelWarn, "failed to open tmux debug log: %v", err)
 	}
 
 	// Write PID file
 	pidPath := filepath.Join(d.maestroDir, "daemon.pid")
 	if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0644); err != nil {
 		if unlockErr := d.fileLock.Unlock(); unlockErr != nil {
-			d.log(core.LogLevelError, "startup file_unlock error=%v", unlockErr)
+			d.log(LogLevelError, "startup file_unlock error=%v", unlockErr)
 		}
 		return fmt.Errorf("write pid file: %w", err)
 	}
@@ -101,9 +99,9 @@ func (d *Daemon) initComponents() error {
 	d.handler.SetCircuitBreaker(d.circuitBreaker)
 
 	if d.config.Worktree.Enabled {
-		d.worktreeManager = worktree.NewManager(d.maestroDir, d.config.Worktree, d.logger, d.logLevel)
+		d.worktreeManager = NewWorktreeManager(d.maestroDir, d.config.Worktree, d.logger, d.logLevel)
 		d.handler.SetWorktreeManager(d.worktreeManager)
-		d.log(core.LogLevelInfo, "worktree isolation enabled base_branch=%s", d.config.Worktree.EffectiveBaseBranch())
+		d.log(LogLevelInfo, "worktree isolation enabled base_branch=%s", d.config.Worktree.EffectiveBaseBranch())
 		d.worktreeManager.Reconcile()
 	}
 
@@ -126,7 +124,7 @@ func (d *Daemon) startRuntime() error {
 	if err := d.server.Start(); err != nil {
 		return fmt.Errorf("start UDS server: %w", err)
 	}
-	d.log(core.LogLevelInfo, "UDS server listening on %s", filepath.Join(d.maestroDir, uds.DefaultSocketName))
+	d.log(LogLevelInfo, "UDS server listening on %s", filepath.Join(d.maestroDir, uds.DefaultSocketName))
 
 	d.eg.Go(func() error { d.watch.fsnotifyLoop(); return nil })
 	d.eg.Go(func() error { d.watch.tickerLoop(); return nil })

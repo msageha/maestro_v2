@@ -10,7 +10,6 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -21,10 +20,10 @@ type DeadLetterProcessor struct {
 	maestroDir string
 	config     model.Config
 	lockMap    *lock.MutexMap
-	dl         *core.DaemonLogger
+	dl         *DaemonLogger
 	logger     *log.Logger
-	logLevel   core.LogLevel
-	clock      core.Clock
+	logLevel   LogLevel
+	clock      Clock
 
 	// pendingNotifications collects orchestrator notifications generated
 	// during command dead-letter post-processing. They are buffered here
@@ -48,16 +47,16 @@ func NewDeadLetterProcessor(
 	cfg model.Config,
 	lockMap *lock.MutexMap,
 	logger *log.Logger,
-	logLevel core.LogLevel,
+	logLevel LogLevel,
 ) *DeadLetterProcessor {
 	return &DeadLetterProcessor{
 		maestroDir: maestroDir,
 		config:     cfg,
 		lockMap:    lockMap,
-		dl:         core.NewDaemonLoggerFromLegacy("dead_letter", logger, logLevel),
+		dl:         NewDaemonLoggerFromLegacy("dead_letter", logger, logLevel),
 		logger:     logger,
 		logLevel:   logLevel,
-		clock:      core.RealClock{},
+		clock:      RealClock{},
 	}
 }
 
@@ -97,8 +96,8 @@ func (dlp *DeadLetterProcessor) ProcessCommandDeadLetters(cq *model.CommandQueue
 
 		// Archive
 		if err := dlp.archiveDeadLetter("planner", cmd.ID, cmd, reason); err != nil {
-			dlp.log(core.LogLevelError, "archive_dead_letter planner command=%s error=%v", cmd.ID, err)
-			dlp.log(core.LogLevelWarn, "archive_failed_entry_details queue=planner command=%s status=%s attempts=%d reason=%s",
+			dlp.log(LogLevelError, "archive_dead_letter planner command=%s error=%v", cmd.ID, err)
+			dlp.log(LogLevelWarn, "archive_failed_entry_details queue=planner command=%s status=%s attempts=%d reason=%s",
 				cmd.ID, cmd.Status, cmd.Attempts, reason)
 		}
 
@@ -112,7 +111,7 @@ func (dlp *DeadLetterProcessor) ProcessCommandDeadLetters(cq *model.CommandQueue
 			Reason:    reason,
 		})
 
-		dlp.log(core.LogLevelWarn, "dead_letter planner command=%s attempts=%d reason=%s", cmd.ID, cmd.Attempts, reason)
+		dlp.log(LogLevelWarn, "dead_letter planner command=%s attempts=%d reason=%s", cmd.ID, cmd.Attempts, reason)
 	}
 
 	if len(results) > 0 {
@@ -150,8 +149,8 @@ func (dlp *DeadLetterProcessor) ProcessTaskDeadLetters(tq *taskQueueEntry, dirty
 
 		// Archive
 		if err := dlp.archiveDeadLetter(workerID, task.ID, task, reason); err != nil {
-			dlp.log(core.LogLevelError, "archive_dead_letter %s task=%s error=%v", workerID, task.ID, err)
-			dlp.log(core.LogLevelWarn, "archive_failed_entry_details queue=%s task=%s command=%s status=%s attempts=%d reason=%s",
+			dlp.log(LogLevelError, "archive_dead_letter %s task=%s error=%v", workerID, task.ID, err)
+			dlp.log(LogLevelWarn, "archive_failed_entry_details queue=%s task=%s command=%s status=%s attempts=%d reason=%s",
 				workerID, task.ID, task.CommandID, task.Status, task.Attempts, reason)
 		}
 
@@ -166,7 +165,7 @@ func (dlp *DeadLetterProcessor) ProcessTaskDeadLetters(tq *taskQueueEntry, dirty
 			Reason:    reason,
 		})
 
-		dlp.log(core.LogLevelWarn, "dead_letter %s task=%s command=%s attempts=%d", workerID, task.ID, task.CommandID, task.Attempts)
+		dlp.log(LogLevelWarn, "dead_letter %s task=%s command=%s attempts=%d", workerID, task.ID, task.CommandID, task.Attempts)
 	}
 
 	if len(results) > 0 {
@@ -202,8 +201,8 @@ func (dlp *DeadLetterProcessor) ProcessNotificationDeadLetters(nq *model.Notific
 
 		// Archive
 		if err := dlp.archiveDeadLetter("orchestrator", ntf.ID, ntf, reason); err != nil {
-			dlp.log(core.LogLevelError, "archive_dead_letter orchestrator notification=%s error=%v", ntf.ID, err)
-			dlp.log(core.LogLevelWarn, "archive_failed_entry_details queue=orchestrator notification=%s command=%s status=%s attempts=%d reason=%s",
+			dlp.log(LogLevelError, "archive_dead_letter orchestrator notification=%s error=%v", ntf.ID, err)
+			dlp.log(LogLevelWarn, "archive_failed_entry_details queue=orchestrator notification=%s command=%s status=%s attempts=%d reason=%s",
 				ntf.ID, ntf.CommandID, ntf.Status, ntf.Attempts, reason)
 		}
 
@@ -214,7 +213,7 @@ func (dlp *DeadLetterProcessor) ProcessNotificationDeadLetters(nq *model.Notific
 			Reason:    reason,
 		})
 
-		dlp.log(core.LogLevelWarn, "dead_letter orchestrator notification=%s command=%s attempts=%d", ntf.ID, ntf.CommandID, ntf.Attempts)
+		dlp.log(LogLevelWarn, "dead_letter orchestrator notification=%s command=%s attempts=%d", ntf.ID, ntf.CommandID, ntf.Attempts)
 	}
 
 	if len(results) > 0 {
@@ -301,11 +300,11 @@ func (dlp *DeadLetterProcessor) pruneDeadLetterArchives(archiveDir string) {
 	for i := 0; i < toRemove; i++ {
 		path := filepath.Join(archiveDir, yamlFiles[i].name)
 		if err := os.Remove(path); err != nil {
-			dlp.log(core.LogLevelWarn, "prune_dead_letter_archive file=%s error=%v", yamlFiles[i].name, err)
+			dlp.log(LogLevelWarn, "prune_dead_letter_archive file=%s error=%v", yamlFiles[i].name, err)
 		}
 	}
 
-	dlp.log(core.LogLevelInfo, "pruned_dead_letter_archives removed=%d remaining=%d", toRemove, limit)
+	dlp.log(LogLevelInfo, "pruned_dead_letter_archives removed=%d remaining=%d", toRemove, limit)
 }
 
 // commandDeadLetterPostProcess updates state for a dead-lettered command.
@@ -319,7 +318,7 @@ func (dlp *DeadLetterProcessor) commandDeadLetterPostProcess(commandID, reason s
 	data, err := os.ReadFile(statePath)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			dlp.log(core.LogLevelError, "dead_letter_post_process read_state command=%s error=%v", commandID, err)
+			dlp.log(LogLevelError, "dead_letter_post_process read_state command=%s error=%v", commandID, err)
 		}
 		// State missing or unreadable — still notify orchestrator
 		dlp.bufferDeadLetterOrchestratorNotification(commandID, reason)
@@ -328,7 +327,7 @@ func (dlp *DeadLetterProcessor) commandDeadLetterPostProcess(commandID, reason s
 
 	var state model.CommandState
 	if err := yamlv3.Unmarshal(data, &state); err != nil {
-		dlp.log(core.LogLevelError, "dead_letter_post_process parse_state command=%s error=%v", commandID, err)
+		dlp.log(LogLevelError, "dead_letter_post_process parse_state command=%s error=%v", commandID, err)
 		// Parse failure — still notify orchestrator
 		dlp.bufferDeadLetterOrchestratorNotification(commandID, reason)
 		return
@@ -342,7 +341,7 @@ func (dlp *DeadLetterProcessor) commandDeadLetterPostProcess(commandID, reason s
 	now := dlp.clock.Now().UTC().Format(time.RFC3339)
 	state.UpdatedAt = now
 	if err := yamlutil.AtomicWrite(statePath, &state); err != nil {
-		dlp.log(core.LogLevelError, "dead_letter_state_update command=%s error=%v", commandID, err)
+		dlp.log(LogLevelError, "dead_letter_state_update command=%s error=%v", commandID, err)
 	}
 
 	dlp.bufferDeadLetterOrchestratorNotification(commandID, reason)
@@ -354,7 +353,7 @@ func (dlp *DeadLetterProcessor) commandDeadLetterPostProcess(commandID, reason s
 func (dlp *DeadLetterProcessor) bufferDeadLetterOrchestratorNotification(commandID, reason string) {
 	id, err := model.GenerateID(model.IDTypeNotification)
 	if err != nil {
-		dlp.log(core.LogLevelError, "dead_letter_generate_notification_id error=%v", err)
+		dlp.log(LogLevelError, "dead_letter_generate_notification_id error=%v", err)
 		return
 	}
 
@@ -401,7 +400,7 @@ func (dlp *DeadLetterProcessor) taskDeadLetterPostProcess(commandID, taskID, wor
 				now := dlp.clock.Now().UTC().Format(time.RFC3339)
 				state.UpdatedAt = now
 				if err := yamlutil.AtomicWrite(statePath, &state); err != nil {
-					dlp.log(core.LogLevelError, "dead_letter_state_task_update command=%s task=%s error=%v", commandID, taskID, err)
+					dlp.log(LogLevelError, "dead_letter_state_task_update command=%s task=%s error=%v", commandID, taskID, err)
 				}
 			}
 		}
@@ -452,10 +451,10 @@ func (dlp *DeadLetterProcessor) taskDeadLetterPostProcess(commandID, taskID, wor
 	})
 
 	if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
-		dlp.log(core.LogLevelError, "dead_letter_synthetic_result worker=%s task=%s error=%v", workerID, taskID, err)
+		dlp.log(LogLevelError, "dead_letter_synthetic_result worker=%s task=%s error=%v", workerID, taskID, err)
 	}
 }
 
-func (dlp *DeadLetterProcessor) log(level core.LogLevel, format string, args ...any) {
+func (dlp *DeadLetterProcessor) log(level LogLevel, format string, args ...any) {
 	dlp.dl.Logf(level, format, args...)
 }

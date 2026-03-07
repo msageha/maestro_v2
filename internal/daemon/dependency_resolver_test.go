@@ -7,16 +7,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// mockStateReader implements core.StateReader for testing.
+// mockStateReader implements StateReader for testing.
 type mockStateReader struct {
-	taskStates        map[string]model.Status     // key: "commandID:taskID"
-	phases            map[string][]core.PhaseInfo // key: commandID
-	deps              map[string][]string         // key: "commandID:taskID" → dep task IDs
-	systemCommitReady map[string][2]bool          // key: "commandID:taskID" → [isSystemCommit, ready]
+	taskStates        map[string]model.Status // key: "commandID:taskID"
+	phases            map[string][]PhaseInfo  // key: commandID
+	deps              map[string][]string     // key: "commandID:taskID" → dep task IDs
+	systemCommitReady map[string][2]bool      // key: "commandID:taskID" → [isSystemCommit, ready]
 }
 
 func (m *mockStateReader) GetTaskState(commandID, taskID string) (model.Status, error) {
@@ -28,7 +27,7 @@ func (m *mockStateReader) GetTaskState(commandID, taskID string) (model.Status, 
 	return s, nil
 }
 
-func (m *mockStateReader) GetCommandPhases(commandID string) ([]core.PhaseInfo, error) {
+func (m *mockStateReader) GetCommandPhases(commandID string) ([]PhaseInfo, error) {
 	p, ok := m.phases[commandID]
 	if !ok {
 		return nil, fmt.Errorf("command %s not found", commandID)
@@ -77,8 +76,8 @@ func (m *mockStateReader) IsSystemCommitReady(commandID, taskID string) (bool, b
 	return v[0], v[1], nil
 }
 
-func newTestDependencyResolver(reader core.StateReader) *DependencyResolver {
-	return NewDependencyResolver(reader, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
+func newTestDependencyResolver(reader StateReader) *DependencyResolver {
+	return NewDependencyResolver(reader, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
 }
 
 func TestIsTaskBlocked_NoDeps(t *testing.T) {
@@ -228,7 +227,7 @@ func TestCheckPhaseTransitions_ActiveCompleted(t *testing.T) {
 			"cmd1:task1": model.StatusCompleted,
 			"cmd1:task2": model.StatusCompleted,
 		},
-		phases: map[string][]core.PhaseInfo{
+		phases: map[string][]PhaseInfo{
 			"cmd1": {
 				{
 					ID:              "phase1",
@@ -260,7 +259,7 @@ func TestCheckPhaseTransitions_ActiveFailed(t *testing.T) {
 			"cmd1:task1": model.StatusCompleted,
 			"cmd1:task2": model.StatusFailed,
 		},
-		phases: map[string][]core.PhaseInfo{
+		phases: map[string][]PhaseInfo{
 			"cmd1": {
 				{
 					ID:              "phase1",
@@ -288,7 +287,7 @@ func TestCheckPhaseTransitions_ActiveFailed(t *testing.T) {
 
 func TestCheckPhaseTransitions_PendingActivation(t *testing.T) {
 	reader := &mockStateReader{
-		phases: map[string][]core.PhaseInfo{
+		phases: map[string][]PhaseInfo{
 			"cmd1": {
 				{
 					ID:     "phase1",
@@ -321,7 +320,7 @@ func TestCheckPhaseTransitions_PendingActivation(t *testing.T) {
 
 func TestCheckPhaseTransitions_CascadeCancel(t *testing.T) {
 	reader := &mockStateReader{
-		phases: map[string][]core.PhaseInfo{
+		phases: map[string][]PhaseInfo{
 			"cmd1": {
 				{
 					ID:     "phase1",
@@ -355,7 +354,7 @@ func TestCheckPhaseTransitions_CascadeCancel(t *testing.T) {
 func TestCheckPhaseTransitions_AwaitingFillTimeout(t *testing.T) {
 	pastDeadline := time.Now().Add(-time.Hour).Format(time.RFC3339)
 	reader := &mockStateReader{
-		phases: map[string][]core.PhaseInfo{
+		phases: map[string][]PhaseInfo{
 			"cmd1": {
 				{
 					ID:             "phase1",
@@ -384,7 +383,7 @@ func TestCheckPhaseTransitions_AwaitingFillTimeout(t *testing.T) {
 func TestCheckPhaseTransitions_AwaitingFillNotExpired(t *testing.T) {
 	futureDeadline := time.Now().Add(time.Hour).Format(time.RFC3339)
 	reader := &mockStateReader{
-		phases: map[string][]core.PhaseInfo{
+		phases: map[string][]PhaseInfo{
 			"cmd1": {
 				{
 					ID:             "phase1",
@@ -409,7 +408,7 @@ func TestCheckPhaseTransitions_AwaitingFillNotExpired(t *testing.T) {
 
 func TestBuildAwaitingFillNotification(t *testing.T) {
 	dr := newTestDependencyResolver(nil)
-	phase := core.PhaseInfo{
+	phase := PhaseInfo{
 		ID:   "phase2",
 		Name: "features",
 	}
@@ -524,43 +523,43 @@ func containsStr(s, substr string) bool {
 	return false
 }
 
-// mockStateReaderErrNotFound returns core.ErrStateNotFound for GetCommandPhases
+// mockStateReaderErrNotFound returns ErrStateNotFound for GetCommandPhases
 type mockStateReaderErrNotFound struct{}
 
 func (m *mockStateReaderErrNotFound) GetTaskState(commandID, taskID string) (model.Status, error) {
-	return "", core.ErrStateNotFound
+	return "", ErrStateNotFound
 }
 
-func (m *mockStateReaderErrNotFound) GetCommandPhases(commandID string) ([]core.PhaseInfo, error) {
-	return nil, core.ErrStateNotFound
+func (m *mockStateReaderErrNotFound) GetCommandPhases(commandID string) ([]PhaseInfo, error) {
+	return nil, ErrStateNotFound
 }
 
 func (m *mockStateReaderErrNotFound) GetTaskDependencies(commandID, taskID string) ([]string, error) {
-	return nil, core.ErrStateNotFound
+	return nil, ErrStateNotFound
 }
 
 func (m *mockStateReaderErrNotFound) ApplyPhaseTransition(commandID, phaseID string, newStatus model.PhaseStatus) error {
-	return core.ErrStateNotFound
+	return ErrStateNotFound
 }
 
 func (m *mockStateReaderErrNotFound) UpdateTaskState(commandID, taskID string, newStatus model.Status, cancelledReason string) error {
-	return core.ErrStateNotFound
+	return ErrStateNotFound
 }
 
 func (m *mockStateReaderErrNotFound) IsCommandCancelRequested(commandID string) (bool, error) {
-	return false, core.ErrStateNotFound
+	return false, ErrStateNotFound
 }
 
 func (m *mockStateReaderErrNotFound) GetCircuitBreakerState(commandID string) (*model.CircuitBreakerState, error) {
-	return nil, core.ErrStateNotFound
+	return nil, ErrStateNotFound
 }
 
 func (m *mockStateReaderErrNotFound) TripCircuitBreaker(commandID string, reason string, progressTimeoutMinutes int) error {
-	return core.ErrStateNotFound
+	return ErrStateNotFound
 }
 
 func (m *mockStateReaderErrNotFound) IsSystemCommitReady(commandID, taskID string) (bool, bool, error) {
-	return false, false, core.ErrStateNotFound
+	return false, false, ErrStateNotFound
 }
 
 // TestCheckPhaseTransitions_StateNotFound verifies that CheckPhaseTransitions

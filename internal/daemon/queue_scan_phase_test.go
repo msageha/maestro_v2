@@ -9,8 +9,6 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
-	"github.com/msageha/maestro_v2/internal/daemon/core"
-	"github.com/msageha/maestro_v2/internal/daemon/worktree"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -434,7 +432,7 @@ func TestCollectWorktreePublish_PhaseErrorFailsClosed(t *testing.T) {
 
 // --- Test helpers ---
 
-// scanPhaseStateReader implements core.StateReader for scan phase tests.
+// scanPhaseStateReader implements StateReader for scan phase tests.
 type scanPhaseStateReader struct {
 	maestroDir string
 }
@@ -446,19 +444,19 @@ func (r *scanPhaseStateReader) GetTaskState(commandID, taskID string) (model.Sta
 	}
 	s, ok := state.TaskStates[taskID]
 	if !ok {
-		return "", core.ErrStateNotFound
+		return "", ErrStateNotFound
 	}
 	return s, nil
 }
 
-func (r *scanPhaseStateReader) GetCommandPhases(commandID string) ([]core.PhaseInfo, error) {
+func (r *scanPhaseStateReader) GetCommandPhases(commandID string) ([]PhaseInfo, error) {
 	state, err := r.loadState(commandID)
 	if err != nil {
 		return nil, err
 	}
-	var phases []core.PhaseInfo
+	var phases []PhaseInfo
 	for _, p := range state.Phases {
-		phases = append(phases, core.PhaseInfo{
+		phases = append(phases, PhaseInfo{
 			ID:     p.PhaseID,
 			Name:   p.Name,
 			Status: p.Status,
@@ -499,7 +497,7 @@ func (r *scanPhaseStateReader) loadState(commandID string) (*model.CommandState,
 	path := filepath.Join(r.maestroDir, "state", "commands", commandID+".yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, core.ErrStateNotFound
+		return nil, ErrStateNotFound
 	}
 	var state model.CommandState
 	if err := yamlv3.Unmarshal(data, &state); err != nil {
@@ -529,7 +527,7 @@ func newMinimalQueueHandler(t *testing.T) *QueueHandler {
 		Agents:  model.AgentsConfig{Workers: model.WorkerConfig{Count: 2}},
 		Watcher: model.WatcherConfig{DispatchLeaseSec: 300},
 	}
-	return NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
+	return NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
 }
 
 func newScanPhaseTestQueueHandler(t *testing.T, maestroDir string, wtConfig model.WorktreeConfig) *QueueHandler {
@@ -539,7 +537,7 @@ func newScanPhaseTestQueueHandler(t *testing.T, maestroDir string, wtConfig mode
 		Watcher:  model.WatcherConfig{DispatchLeaseSec: 300},
 		Worktree: wtConfig,
 	}
-	qh := NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
+	qh := NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
 
 	// Wire state reader
 	reader := &scanPhaseStateReader{maestroDir: maestroDir}
@@ -547,7 +545,7 @@ func newScanPhaseTestQueueHandler(t *testing.T, maestroDir string, wtConfig mode
 
 	// Wire worktree manager with minimal config (only needs to read state files)
 	projectRoot := filepath.Dir(maestroDir)
-	wm := worktree.NewManager(maestroDir, wtConfig, log.New(&bytes.Buffer{}, "", 0), core.LogLevelError)
+	wm := NewWorktreeManager(maestroDir, wtConfig, log.New(&bytes.Buffer{}, "", 0), LogLevelError)
 	// Override projectRoot for tests
 	wm.SetProjectRoot(projectRoot)
 	qh.SetWorktreeManager(wm)

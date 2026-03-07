@@ -3,8 +3,6 @@ package daemon
 import (
 	"context"
 	"time"
-
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 )
 
 // maxDebounceSec is the upper bound on how long triggers can be coalesced
@@ -47,11 +45,6 @@ func (qh *QueueHandler) debounceAndScan(trigger string) {
 		delay = 0 // fire immediately
 	}
 
-	// Capture trigger for the closure so that log output reflects the
-	// actual trigger that caused this debounce window to fire, not a
-	// later overwrite from a subsequent call.
-	capturedTrigger := trigger
-
 	// Stop previous timer if any.
 	if qh.debounceTimer != nil {
 		qh.debounceTimer.Stop()
@@ -87,10 +80,10 @@ func (qh *QueueHandler) debounceAndScan(trigger string) {
 
 			defer func() {
 				if r := recover(); r != nil {
-					qh.log(core.LogLevelError, "panic in debounceAndScan: %v", r)
+					qh.log(LogLevelError, "panic in debounceAndScan: %v", r)
 				}
 			}()
-			qh.log(core.LogLevelDebug, "debounced_scan trigger=%s", capturedTrigger)
+			qh.log(LogLevelDebug, "debounced_scan trigger=%s", trigger)
 
 			ctx := qh.shutdownCtx
 			if ctx == nil {

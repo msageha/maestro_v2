@@ -12,8 +12,6 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
-	"github.com/msageha/maestro_v2/internal/daemon/core"
-	"github.com/msageha/maestro_v2/internal/daemon/worktree"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -23,33 +21,32 @@ import (
 type CancelHandler struct {
 	maestroDir      string
 	config          model.Config
-	dl              *core.DaemonLogger
+	dl              *DaemonLogger
 	logger          *log.Logger
-	logLevel        core.LogLevel
-	clock           core.Clock
-	executorFactory core.ExecutorFactory
-	stateReader     core.StateReader
+	logLevel        LogLevel
+	clock           Clock
+	executorFactory ExecutorFactory
+	stateReader     StateReader
 	lockMap         *lock.MutexMap
-	worktreeManager *worktree.Manager
+	worktreeManager *WorktreeManager
 
-	execMu          sync.Mutex
-	cachedExec      core.AgentExecutor
-	cachedExecErr   error
-	cachedExecErrAt time.Time
-	execInit        bool
+	execMu        sync.Mutex
+	cachedExec    AgentExecutor
+	cachedExecErr error
+	execInit      bool
 }
 
 // NewCancelHandler creates a new CancelHandler.
-func NewCancelHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel core.LogLevel) *CancelHandler {
+func NewCancelHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel) *CancelHandler {
 	return &CancelHandler{
 		maestroDir: maestroDir,
 		config:     cfg,
-		dl:         core.NewDaemonLoggerFromLegacy("cancel_handler", logger, logLevel),
+		dl:         NewDaemonLoggerFromLegacy("cancel_handler", logger, logLevel),
 		lockMap:    lockMap,
 		logger:     logger,
 		logLevel:   logLevel,
-		clock:      core.RealClock{},
-		executorFactory: func(dir string, wcfg model.WatcherConfig, level string) (core.AgentExecutor, error) {
+		clock:      RealClock{},
+		executorFactory: func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 			return agent.NewExecutor(dir, wcfg, level)
 		},
 	}
@@ -57,13 +54,12 @@ func NewCancelHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMa
 
 // SetExecutorFactory overrides the executor factory for testing.
 // Resets the cached executor so the new factory is used on next call.
-func (ch *CancelHandler) SetExecutorFactory(f core.ExecutorFactory) {
+func (ch *CancelHandler) SetExecutorFactory(f ExecutorFactory) {
 	ch.execMu.Lock()
 	old := ch.cachedExec
 	ch.executorFactory = f
 	ch.cachedExec = nil
 	ch.cachedExecErr = nil
-	ch.cachedExecErrAt = time.Time{}
 	ch.execInit = false
 	ch.execMu.Unlock()
 
@@ -75,23 +71,15 @@ func (ch *CancelHandler) SetExecutorFactory(f core.ExecutorFactory) {
 // getExecutor returns the shared executor instance, creating it lazily on first call.
 // The Executor is safe for concurrent use (log.Logger uses internal mutex,
 // os.File in append mode is POSIX-safe, all other fields are immutable).
-func (ch *CancelHandler) getExecutor() (core.AgentExecutor, error) {
+func (ch *CancelHandler) getExecutor() (AgentExecutor, error) {
 	ch.execMu.Lock()
 	defer ch.execMu.Unlock()
-	if ch.execInit && ch.cachedExecErr != nil && ch.clock.Now().Sub(ch.cachedExecErrAt) >= executorErrorTTL {
-		ch.execInit = false
-	}
 	if !ch.execInit {
 		ch.cachedExec, ch.cachedExecErr = ch.executorFactory(ch.maestroDir, ch.config.Watcher, ch.config.Logging.Level)
 		ch.execInit = true
-		if ch.cachedExecErr != nil {
-			ch.cachedExecErrAt = ch.clock.Now()
-		} else {
-			ch.cachedExecErrAt = time.Time{}
-		}
 	}
 	if ch.cachedExecErr != nil {
-		return nil, fmt.Errorf("%w: %v", core.ErrExecutorInit, ch.cachedExecErr)
+		return nil, fmt.Errorf("%w: %v", errExecutorInit, ch.cachedExecErr)
 	}
 	return ch.cachedExec, nil
 }
@@ -103,7 +91,6 @@ func (ch *CancelHandler) CloseExecutor() {
 	exec := ch.cachedExec
 	ch.cachedExec = nil
 	ch.cachedExecErr = nil
-	ch.cachedExecErrAt = time.Time{}
 	ch.execInit = false
 	ch.execMu.Unlock()
 
@@ -113,12 +100,12 @@ func (ch *CancelHandler) CloseExecutor() {
 }
 
 // SetStateReader wires the state reader for updating task states on cancellation.
-func (ch *CancelHandler) SetStateReader(reader core.StateReader) {
+func (ch *CancelHandler) SetStateReader(reader StateReader) {
 	ch.stateReader = reader
 }
 
 // SetWorktreeManager wires the worktree manager for cleanup on cancellation (H4).
-func (ch *CancelHandler) SetWorktreeManager(wm *worktree.Manager) {
+func (ch *CancelHandler) SetWorktreeManager(wm *WorktreeManager) {
 	ch.worktreeManager = wm
 }
 
@@ -132,9 +119,9 @@ func (ch *CancelHandler) CleanupCommandWorktrees(commandID string) {
 		return
 	}
 	if err := ch.worktreeManager.CleanupCommand(commandID); err != nil {
-		ch.log(core.LogLevelWarn, "cancel_worktree_cleanup command=%s error=%v", commandID, err)
+		ch.log(LogLevelWarn, "cancel_worktree_cleanup command=%s error=%v", commandID, err)
 	} else {
-		ch.log(core.LogLevelInfo, "cancel_worktree_cleanup_done command=%s", commandID)
+		ch.log(LogLevelInfo, "cancel_worktree_cleanup_done command=%s", commandID)
 	}
 }
 
@@ -148,11 +135,11 @@ func (ch *CancelHandler) IsCommandCancelRequested(cmd *model.Command) bool {
 			return requested
 		}
 		// State not found → unsubmitted command → use queue metadata (spec §4.3)
-		if errors.Is(err, core.ErrStateNotFound) {
+		if errors.Is(err, ErrStateNotFound) {
 			return cmd.CancelRequestedAt != nil
 		}
 		// State exists but corrupted → log and return false (safe default)
-		ch.log(core.LogLevelError, "cancel_check state_read_error command=%s error=%v", cmd.ID, err)
+		ch.log(LogLevelError, "cancel_check state_read_error command=%s error=%v", cmd.ID, err)
 		return false
 	}
 	// No state reader configured → use queue metadata as best effort
@@ -171,19 +158,19 @@ func (ch *CancelHandler) CancelPendingTasks(tasks []model.Task, commandID string
 		}
 
 		if err := model.ValidateCommandTaskQueueTransition(task.Status, model.StatusCancelled); err != nil {
-			ch.log(core.LogLevelWarn, "cancel_pending_skip task=%s error=%v", task.ID, err)
+			ch.log(LogLevelWarn, "cancel_pending_skip task=%s error=%v", task.ID, err)
 			continue
 		}
 
 		task.Status = model.StatusCancelled
 		task.UpdatedAt = ch.clock.Now().UTC().Format(time.RFC3339)
 
-		ch.log(core.LogLevelInfo, "cancel_pending task=%s command=%s", task.ID, commandID)
+		ch.log(LogLevelInfo, "cancel_pending task=%s command=%s", task.ID, commandID)
 
 		// Update state/commands/ with cancelled status + reason
 		if ch.stateReader != nil {
 			if err := ch.stateReader.UpdateTaskState(commandID, task.ID, model.StatusCancelled, "command_cancel_requested"); err != nil {
-				ch.log(core.LogLevelWarn, "cancel_state_update task=%s error=%v", task.ID, err)
+				ch.log(LogLevelWarn, "cancel_state_update task=%s error=%v", task.ID, err)
 			}
 		}
 
@@ -212,7 +199,7 @@ func (ch *CancelHandler) InterruptInProgressTasks(tasks []model.Task, commandID 
 		// Validate transition BEFORE sending interrupt (CR-029 consistency):
 		// skip targets must not be interrupted.
 		if err := model.ValidateCommandTaskQueueTransition(task.Status, model.StatusCancelled); err != nil {
-			ch.log(core.LogLevelWarn, "cancel_inprogress_skip task=%s error=%v", task.ID, err)
+			ch.log(LogLevelWarn, "cancel_inprogress_skip task=%s error=%v", task.ID, err)
 			continue
 		}
 
@@ -221,7 +208,7 @@ func (ch *CancelHandler) InterruptInProgressTasks(tasks []model.Task, commandID 
 		// Only interrupt if task has an active lease (LeaseOwner != nil).
 		if task.LeaseOwner != nil && workerID != "" {
 			if err := ch.interruptAgent(workerID, task.ID, task.CommandID, task.LeaseEpoch); err != nil {
-				ch.log(core.LogLevelError, "interrupt_failed task=%s worker=%s error=%v",
+				ch.log(LogLevelError, "interrupt_failed task=%s worker=%s error=%v",
 					task.ID, workerID, err)
 				// Continue to cancel even if interrupt fails
 			}
@@ -235,12 +222,12 @@ func (ch *CancelHandler) InterruptInProgressTasks(tasks []model.Task, commandID 
 		task.UpdatedAt = ch.clock.Now().UTC().Format(time.RFC3339)
 		task.Status = model.StatusCancelled
 
-		ch.log(core.LogLevelInfo, "cancel_inprogress task=%s command=%s", task.ID, commandID)
+		ch.log(LogLevelInfo, "cancel_inprogress task=%s command=%s", task.ID, commandID)
 
 		// H4: Discard uncommitted changes in worker worktree
 		if ch.worktreeManager != nil && workerID != "" {
 			if err := ch.worktreeManager.DiscardWorkerChanges(commandID, workerID); err != nil {
-				ch.log(core.LogLevelWarn, "cancel_worktree_discard task=%s worker=%s error=%v",
+				ch.log(LogLevelWarn, "cancel_worktree_discard task=%s worker=%s error=%v",
 					task.ID, workerID, err)
 			}
 		}
@@ -248,7 +235,7 @@ func (ch *CancelHandler) InterruptInProgressTasks(tasks []model.Task, commandID 
 		// Update state/commands/ with cancelled status + reason
 		if ch.stateReader != nil {
 			if err := ch.stateReader.UpdateTaskState(commandID, task.ID, model.StatusCancelled, "command_cancel_requested"); err != nil {
-				ch.log(core.LogLevelWarn, "cancel_state_update task=%s error=%v", task.ID, err)
+				ch.log(LogLevelWarn, "cancel_state_update task=%s error=%v", task.ID, err)
 			}
 		}
 
@@ -279,7 +266,7 @@ func (ch *CancelHandler) InterruptInProgressTasksDeferred(tasks []model.Task, co
 		// Validate transition BEFORE collecting interrupt item (CR-029):
 		// skip targets must not be added to the interrupt list.
 		if err := model.ValidateCommandTaskQueueTransition(task.Status, model.StatusCancelled); err != nil {
-			ch.log(core.LogLevelWarn, "cancel_inprogress_skip task=%s error=%v", task.ID, err)
+			ch.log(LogLevelWarn, "cancel_inprogress_skip task=%s error=%v", task.ID, err)
 			continue
 		}
 
@@ -301,19 +288,19 @@ func (ch *CancelHandler) InterruptInProgressTasksDeferred(tasks []model.Task, co
 		task.UpdatedAt = ch.clock.Now().UTC().Format(time.RFC3339)
 		task.Status = model.StatusCancelled
 
-		ch.log(core.LogLevelInfo, "cancel_inprogress_deferred task=%s command=%s", task.ID, commandID)
+		ch.log(LogLevelInfo, "cancel_inprogress_deferred task=%s command=%s", task.ID, commandID)
 
 		// H4: Discard uncommitted changes in worker worktree
 		if ch.worktreeManager != nil && workerID != "" {
 			if err := ch.worktreeManager.DiscardWorkerChanges(commandID, workerID); err != nil {
-				ch.log(core.LogLevelWarn, "cancel_worktree_discard task=%s worker=%s error=%v",
+				ch.log(LogLevelWarn, "cancel_worktree_discard task=%s worker=%s error=%v",
 					task.ID, workerID, err)
 			}
 		}
 
 		if ch.stateReader != nil {
 			if err := ch.stateReader.UpdateTaskState(commandID, task.ID, model.StatusCancelled, "command_cancel_requested"); err != nil {
-				ch.log(core.LogLevelWarn, "cancel_state_update task=%s error=%v", task.ID, err)
+				ch.log(LogLevelWarn, "cancel_state_update task=%s error=%v", task.ID, err)
 			}
 		}
 
@@ -355,7 +342,7 @@ func (ch *CancelHandler) WriteSyntheticResults(results []CancelledTaskResult, wo
 	data, err := os.ReadFile(resultPath)
 	if err == nil {
 		if unmarshalErr := yamlv3.Unmarshal(data, &rf); unmarshalErr != nil {
-			ch.log(core.LogLevelWarn, "unmarshal_result_file worker=%s error=%v", workerID, unmarshalErr)
+			ch.log(LogLevelWarn, "unmarshal_result_file worker=%s error=%v", workerID, unmarshalErr)
 		}
 	}
 	if rf.SchemaVersion == 0 {
@@ -367,7 +354,7 @@ func (ch *CancelHandler) WriteSyntheticResults(results []CancelledTaskResult, wo
 	for _, r := range results {
 		resultID, err := model.GenerateID(model.IDTypeResult)
 		if err != nil {
-			ch.log(core.LogLevelError, "synthetic_result_id task=%s error=%v", r.TaskID, err)
+			ch.log(LogLevelError, "synthetic_result_id task=%s error=%v", r.TaskID, err)
 			continue
 		}
 		rf.Results = append(rf.Results, model.TaskResult{
@@ -384,7 +371,7 @@ func (ch *CancelHandler) WriteSyntheticResults(results []CancelledTaskResult, wo
 	}
 
 	if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
-		ch.log(core.LogLevelError, "synthetic_result_write worker=%s error=%v", workerID, err)
+		ch.log(LogLevelError, "synthetic_result_write worker=%s error=%v", workerID, err)
 	}
 }
 
@@ -421,6 +408,6 @@ func (ch *CancelHandler) interruptAgent(workerID, taskID, commandID string, leas
 	return nil
 }
 
-func (ch *CancelHandler) log(level core.LogLevel, format string, args ...any) {
+func (ch *CancelHandler) log(level LogLevel, format string, args ...any) {
 	ch.dl.Logf(level, format, args...)
 }

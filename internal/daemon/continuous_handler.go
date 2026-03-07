@@ -9,7 +9,6 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -20,10 +19,10 @@ type ContinuousHandler struct {
 	maestroDir string
 	config     model.Config
 	lockMap    *lock.MutexMap
-	dl         *core.DaemonLogger
+	dl         *DaemonLogger
 	logger     *log.Logger
-	logLevel   core.LogLevel
-	clock      core.Clock
+	logLevel   LogLevel
+	clock      Clock
 }
 
 // NewContinuousHandler creates a new ContinuousHandler.
@@ -32,16 +31,16 @@ func NewContinuousHandler(
 	cfg model.Config,
 	lockMap *lock.MutexMap,
 	logger *log.Logger,
-	logLevel core.LogLevel,
+	logLevel LogLevel,
 ) *ContinuousHandler {
 	return &ContinuousHandler{
 		maestroDir: maestroDir,
 		config:     cfg,
 		lockMap:    lockMap,
-		dl:         core.NewDaemonLoggerFromLegacy("continuous", logger, logLevel),
+		dl:         NewDaemonLoggerFromLegacy("continuous", logger, logLevel),
 		logger:     logger,
 		logLevel:   logLevel,
-		clock:      core.RealClock{},
+		clock:      RealClock{},
 	}
 }
 
@@ -81,7 +80,7 @@ func (ch *ContinuousHandler) CheckAndAdvance(commandID string, commandStatus mod
 		state.Status = model.ContinuousStatusPaused
 		reason := "task_failure"
 		state.PausedReason = &reason
-		ch.log(core.LogLevelInfo, "continuous_pause command=%s reason=%s iteration=%d", commandID, reason, state.CurrentIteration)
+		ch.log(LogLevelInfo, "continuous_pause command=%s reason=%s iteration=%d", commandID, reason, state.CurrentIteration)
 	}
 
 	// Check max_iterations (only if still running — pause takes precedence)
@@ -89,7 +88,7 @@ func (ch *ContinuousHandler) CheckAndAdvance(commandID string, commandStatus mod
 		state.Status = model.ContinuousStatusStopped
 		reason := "max_iterations_reached"
 		state.PausedReason = &reason
-		ch.log(core.LogLevelInfo, "continuous_stop reason=%s iteration=%d max=%d", reason, state.CurrentIteration, state.MaxIterations)
+		ch.log(LogLevelInfo, "continuous_stop reason=%s iteration=%d max=%d", reason, state.CurrentIteration, state.MaxIterations)
 	}
 
 	return ch.saveContinuousState(state)
@@ -124,6 +123,6 @@ func (ch *ContinuousHandler) saveContinuousState(state *model.Continuous) error 
 	return yamlutil.AtomicWrite(statePath, state)
 }
 
-func (ch *ContinuousHandler) log(level core.LogLevel, format string, args ...any) {
+func (ch *ContinuousHandler) log(level LogLevel, format string, args ...any) {
 	ch.dl.Logf(level, format, args...)
 }

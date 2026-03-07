@@ -225,6 +225,19 @@ func (l *Loader) validateCondition(condition *RuleCondition) error {
 			return err
 		}
 
+	case ConditionResourceLimit:
+		if condition.Resource == "" {
+			return fmt.Errorf("resource limit condition requires resource")
+		}
+		if condition.Limit <= 0 {
+			return fmt.Errorf("resource limit condition requires positive limit value")
+		}
+
+	case ConditionDependencyCheck:
+		if condition.Mode == "" {
+			return fmt.Errorf("dependency check condition requires mode")
+		}
+
 	case ConditionScript:
 		if condition.Script == "" {
 			return fmt.Errorf("script condition requires script")
@@ -249,7 +262,7 @@ func (l *Loader) validateAction(action *ActionDefinition) error {
 
 	// Validate on_fail action
 	switch action.OnFail {
-	case ActionBlock, ActionWarn, ActionRetry, "":
+	case ActionBlock, ActionWarn, ActionRetry, ActionRollback, ActionEscalate, "":
 		// Valid or will be defaulted
 	default:
 		return fmt.Errorf("invalid on_fail action: %s", action.OnFail)
@@ -257,7 +270,7 @@ func (l *Loader) validateAction(action *ActionDefinition) error {
 
 	// Validate on_warn action
 	switch action.OnWarn {
-	case ActionContinue, ActionLog, "":
+	case ActionContinue, ActionPrompt, ActionLog, "":
 		// Valid or optional
 	default:
 		return fmt.Errorf("invalid on_warn action: %s", action.OnWarn)
@@ -347,6 +360,11 @@ func (l *Loader) applyConditionDefaults(condition *RuleCondition) {
 	// Default script timeout
 	if condition.Type == ConditionScript && condition.TimeoutSeconds == 0 {
 		condition.TimeoutSeconds = 30
+	}
+
+	// Default resource scope
+	if condition.Type == ConditionResourceLimit && condition.Scope == "" {
+		condition.Scope = "task"
 	}
 
 	// Recursively apply to sub-conditions

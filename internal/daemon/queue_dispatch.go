@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -33,27 +32,27 @@ func (qh *QueueHandler) processPlannerSignalsDeferred(sq *model.PlannerSignalQue
 			// Phase-level signals: check phase existence (orphan) and staleness
 			phaseStatus, err := qh.dependencyResolver.GetPhaseStatus(sig.CommandID, sig.PhaseID)
 			if err != nil {
-				if errors.Is(err, core.ErrPhaseNotFound) || errors.Is(err, core.ErrStateNotFound) || os.IsNotExist(err) {
-					qh.log(core.LogLevelInfo, "signal_orphaned_removed kind=%s command=%s phase=%s error=%v",
+				if errors.Is(err, ErrPhaseNotFound) || errors.Is(err, ErrStateNotFound) || os.IsNotExist(err) {
+					qh.log(LogLevelInfo, "signal_orphaned_removed kind=%s command=%s phase=%s error=%v",
 						sig.Kind, sig.CommandID, sig.PhaseID, err)
 					*dirty = true
 					continue
 				}
-				qh.log(core.LogLevelWarn, "signal_phase_check command=%s phase=%s error=%v",
+				qh.log(LogLevelWarn, "signal_phase_check command=%s phase=%s error=%v",
 					sig.CommandID, sig.PhaseID, err)
 				retained = append(retained, *sig)
 				continue
 			}
 
 			if sig.Kind == "awaiting_fill" && phaseStatus != model.PhaseStatusAwaitingFill {
-				qh.log(core.LogLevelInfo, "signal_stale_removed kind=%s command=%s phase=%s current_status=%s",
+				qh.log(LogLevelInfo, "signal_stale_removed kind=%s command=%s phase=%s current_status=%s",
 					sig.Kind, sig.CommandID, sig.PhaseID, phaseStatus)
 				*dirty = true
 				continue
 			}
 
 			if sig.Kind == "fill_timeout" && phaseStatus != model.PhaseStatusTimedOut {
-				qh.log(core.LogLevelInfo, "signal_stale_removed kind=%s command=%s phase=%s current_status=%s",
+				qh.log(LogLevelInfo, "signal_stale_removed kind=%s command=%s phase=%s current_status=%s",
 					sig.Kind, sig.CommandID, sig.PhaseID, phaseStatus)
 				*dirty = true
 				continue
@@ -62,13 +61,13 @@ func (qh *QueueHandler) processPlannerSignalsDeferred(sq *model.PlannerSignalQue
 			// Command-level signals (e.g. circuit_breaker_tripped): check command existence only
 			_, err := qh.dependencyResolver.stateReader.GetCommandPhases(sig.CommandID)
 			if err != nil {
-				if errors.Is(err, core.ErrStateNotFound) || os.IsNotExist(err) {
-					qh.log(core.LogLevelInfo, "signal_orphaned_removed kind=%s command=%s (command not found)",
+				if errors.Is(err, ErrStateNotFound) || os.IsNotExist(err) {
+					qh.log(LogLevelInfo, "signal_orphaned_removed kind=%s command=%s (command not found)",
 						sig.Kind, sig.CommandID)
 					*dirty = true
 					continue
 				}
-				qh.log(core.LogLevelWarn, "signal_command_check command=%s error=%v",
+				qh.log(LogLevelWarn, "signal_command_check command=%s error=%v",
 					sig.CommandID, err)
 				retained = append(retained, *sig)
 				continue
@@ -109,7 +108,7 @@ func buildSignalIndex(signals []model.PlannerSignal) map[signalKey]struct{} {
 func (qh *QueueHandler) upsertPlannerSignal(sq *model.PlannerSignalQueue, dirty *bool, sig model.PlannerSignal, signalIndex map[signalKey]struct{}) {
 	key := signalKey{CommandID: sig.CommandID, PhaseID: sig.PhaseID, Kind: sig.Kind}
 	if _, exists := signalIndex[key]; exists {
-		qh.log(core.LogLevelDebug, "planner_signal_dedup kind=%s command=%s phase=%s",
+		qh.log(LogLevelDebug, "planner_signal_dedup kind=%s command=%s phase=%s",
 			sig.Kind, sig.CommandID, sig.PhaseID)
 		return
 	}
@@ -176,7 +175,7 @@ func (qh *QueueHandler) isAgentBusy(ctx context.Context, agentID string) (busy, 
 	// Default: use shared agent executor to probe busy state
 	exec, err := qh.dispatcher.getExecutor()
 	if err != nil {
-		qh.log(core.LogLevelWarn, "busy_probe_executor_error agent=%s error=%v (treating as undecided)", agentID, err)
+		qh.log(LogLevelWarn, "busy_probe_executor_error agent=%s error=%v (treating as undecided)", agentID, err)
 		return false, true
 	}
 
@@ -188,7 +187,7 @@ func (qh *QueueHandler) isAgentBusy(ctx context.Context, agentID string) (busy, 
 
 	// VerdictUndecided: neither extend nor release; defer to next scan cycle.
 	if result.Error != nil && errors.Is(result.Error, agent.ErrBusyUndecided) {
-		qh.log(core.LogLevelInfo, "busy_probe_undecided agent=%s", agentID)
+		qh.log(LogLevelInfo, "busy_probe_undecided agent=%s", agentID)
 		return false, true
 	}
 
@@ -199,7 +198,7 @@ func (qh *QueueHandler) isAgentBusy(ctx context.Context, agentID string) (busy, 
 func (qh *QueueHandler) clearAgent(ctx context.Context, agentID string) {
 	exec, err := qh.dispatcher.getExecutor()
 	if err != nil {
-		qh.log(core.LogLevelWarn, "clear_agent create_executor error=%v", err)
+		qh.log(LogLevelWarn, "clear_agent create_executor error=%v", err)
 		return
 	}
 
@@ -209,8 +208,8 @@ func (qh *QueueHandler) clearAgent(ctx context.Context, agentID string) {
 		Mode:    agent.ModeClear,
 	})
 	if result.Error != nil {
-		qh.log(core.LogLevelWarn, "clear_agent agent=%s error=%v", agentID, result.Error)
+		qh.log(LogLevelWarn, "clear_agent agent=%s error=%v", agentID, result.Error)
 	} else {
-		qh.log(core.LogLevelInfo, "clear_agent agent=%s success", agentID)
+		qh.log(LogLevelInfo, "clear_agent agent=%s success", agentID)
 	}
 }

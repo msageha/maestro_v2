@@ -117,7 +117,7 @@ func TestReadTopKLearnings_TTLFilter(t *testing.T) {
 	}
 }
 
-func TestReadTopKLearnings_TTLZeroUsesDefault(t *testing.T) {
+func TestReadTopKLearnings_TTLZeroUnlimited(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now().UTC()
 
@@ -131,17 +131,14 @@ func TestReadTopKLearnings_TTLZeroUsesDefault(t *testing.T) {
 		Learnings:     learnings,
 	})
 
-	// TTLHours: 0 → EffectiveTTLHours returns 72 (default), so very old entry is filtered out
+	// TTLHours: 0 = unlimited (no expiry)
 	cfg := model.LearningsConfig{InjectCount: 5, TTLHours: 0}
 	result, err := ReadTopKLearnings(dir, cfg, now)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(result) != 1 {
-		t.Fatalf("expected 1 learning with TTL=0 (default 72h), got %d", len(result))
-	}
-	if result[0].Content != "recent" {
-		t.Errorf("expected 'recent', got %q", result[0].Content)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 learnings with TTL=0 (unlimited), got %d", len(result))
 	}
 }
 
@@ -286,8 +283,8 @@ func TestEffectiveInjectCount_Defaults(t *testing.T) {
 
 func TestEffectiveTTLHours(t *testing.T) {
 	cfg := model.LearningsConfig{TTLHours: 0}
-	if cfg.EffectiveTTLHours() != 72 {
-		t.Errorf("expected ttl_hours=72 (default), got %d", cfg.EffectiveTTLHours())
+	if cfg.EffectiveTTLHours() != 0 {
+		t.Errorf("expected ttl_hours=0 (unlimited), got %d", cfg.EffectiveTTLHours())
 	}
 
 	cfg = model.LearningsConfig{TTLHours: 48}

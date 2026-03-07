@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/yaml"
@@ -26,25 +25,25 @@ type TaskRetryHandler struct {
 	maestroDir string
 	config     model.Config
 	lockMap    *lock.MutexMap
-	clock      core.Clock
-	dl         *core.DaemonLogger
+	clock      Clock
+	dl         *DaemonLogger
 	logger     *log.Logger
-	logLevel   core.LogLevel
+	logLevel   LogLevel
 }
 
 // NewTaskRetryHandler creates a new task retry handler.
-func NewTaskRetryHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel core.LogLevel) *TaskRetryHandler {
-	return NewTaskRetryHandlerWithDeps(maestroDir, cfg, lockMap, logger, logLevel, core.RealClock{})
+func NewTaskRetryHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel) *TaskRetryHandler {
+	return NewTaskRetryHandlerWithDeps(maestroDir, cfg, lockMap, logger, logLevel, RealClock{})
 }
 
 // NewTaskRetryHandlerWithDeps creates a TaskRetryHandler with explicit dependencies.
-func NewTaskRetryHandlerWithDeps(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel core.LogLevel, clock core.Clock) *TaskRetryHandler {
+func NewTaskRetryHandlerWithDeps(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel, clock Clock) *TaskRetryHandler {
 	return &TaskRetryHandler{
 		maestroDir: maestroDir,
 		config:     cfg,
 		lockMap:    lockMap,
 		clock:      clock,
-		dl:         core.NewDaemonLoggerFromLegacy("task_retry", logger, logLevel),
+		dl:         NewDaemonLoggerFromLegacy("task_retry", logger, logLevel),
 		logger:     logger,
 		logLevel:   logLevel,
 	}
@@ -172,7 +171,7 @@ func (h *TaskRetryHandler) RegisterRetryTaskInState(task *model.Task, commandID 
 		return fmt.Errorf("write state file: %w", err)
 	}
 
-	h.log(core.LogLevelInfo, "retry_task_registered task=%s command=%s",
+	h.log(LogLevelInfo, "retry_task_registered task=%s command=%s",
 		task.ID, commandID)
 	return nil
 }
@@ -216,7 +215,7 @@ func (h *TaskRetryHandler) addRetryTaskToQueueLocked(task *model.Task, workerID 
 		return fmt.Errorf("write queue: %w", err)
 	}
 
-	h.log(core.LogLevelInfo, "retry_task_added task=%s worker=%s attempt=%d",
+	h.log(LogLevelInfo, "retry_task_added task=%s worker=%s attempt=%d",
 		task.ID, workerID, task.Attempts)
 
 	return nil
@@ -248,6 +247,6 @@ func withCappedRetryMeta(constraints []string, newMeta string) []string {
 	return out
 }
 
-func (h *TaskRetryHandler) log(level core.LogLevel, format string, args ...interface{}) {
+func (h *TaskRetryHandler) log(level LogLevel, format string, args ...interface{}) {
 	h.dl.Logf(level, format, args...)
 }

@@ -13,7 +13,6 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -44,19 +43,18 @@ type ResultHandler struct {
 	maestroDir        string
 	config            model.Config
 	lockMap           *lock.MutexMap
-	dl                *core.DaemonLogger
+	dl                *DaemonLogger
 	logger            *log.Logger
-	logLevel          core.LogLevel
-	clock             core.Clock
-	executorFactory   core.ExecutorFactory
+	logLevel          LogLevel
+	clock             Clock
+	executorFactory   ExecutorFactory
 	continuousHandler *ContinuousHandler
 	eventBus          *events.Bus
 
-	execMu          sync.Mutex
-	cachedExec      core.AgentExecutor
-	cachedExecErr   error
-	cachedExecErrAt time.Time
-	execInit        bool
+	execMu        sync.Mutex
+	cachedExec    AgentExecutor
+	cachedExecErr error
+	execInit      bool
 }
 
 // NewResultHandler creates a new ResultHandler.
@@ -65,17 +63,17 @@ func NewResultHandler(
 	cfg model.Config,
 	lockMap *lock.MutexMap,
 	logger *log.Logger,
-	logLevel core.LogLevel,
+	logLevel LogLevel,
 ) *ResultHandler {
 	return &ResultHandler{
 		maestroDir: maestroDir,
 		config:     cfg,
 		lockMap:    lockMap,
-		dl:         core.NewDaemonLoggerFromLegacy("result_handler", logger, logLevel),
+		dl:         NewDaemonLoggerFromLegacy("result_handler", logger, logLevel),
 		logger:     logger,
 		logLevel:   logLevel,
-		clock:      core.RealClock{},
-		executorFactory: func(dir string, wcfg model.WatcherConfig, level string) (core.AgentExecutor, error) {
+		clock:      RealClock{},
+		executorFactory: func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 			return agent.NewExecutor(dir, wcfg, level)
 		},
 	}
@@ -83,13 +81,12 @@ func NewResultHandler(
 
 // SetExecutorFactory overrides the executor factory for testing.
 // Resets the cached executor so the new factory is used on next call.
-func (rh *ResultHandler) SetExecutorFactory(f core.ExecutorFactory) {
+func (rh *ResultHandler) SetExecutorFactory(f ExecutorFactory) {
 	rh.execMu.Lock()
 	old := rh.cachedExec
 	rh.executorFactory = f
 	rh.cachedExec = nil
 	rh.cachedExecErr = nil
-	rh.cachedExecErrAt = time.Time{}
 	rh.execInit = false
 	rh.execMu.Unlock()
 
@@ -101,23 +98,15 @@ func (rh *ResultHandler) SetExecutorFactory(f core.ExecutorFactory) {
 // getExecutor returns the shared executor instance, creating it lazily on first call.
 // The Executor is safe for concurrent use (log.Logger uses internal mutex,
 // os.File in append mode is POSIX-safe, all other fields are immutable).
-func (rh *ResultHandler) getExecutor() (core.AgentExecutor, error) {
+func (rh *ResultHandler) getExecutor() (AgentExecutor, error) {
 	rh.execMu.Lock()
 	defer rh.execMu.Unlock()
-	if rh.execInit && rh.cachedExecErr != nil && rh.clock.Now().Sub(rh.cachedExecErrAt) >= executorErrorTTL {
-		rh.execInit = false
-	}
 	if !rh.execInit {
 		rh.cachedExec, rh.cachedExecErr = rh.executorFactory(rh.maestroDir, rh.config.Watcher, rh.config.Logging.Level)
 		rh.execInit = true
-		if rh.cachedExecErr != nil {
-			rh.cachedExecErrAt = rh.clock.Now()
-		} else {
-			rh.cachedExecErrAt = time.Time{}
-		}
 	}
 	if rh.cachedExecErr != nil {
-		return nil, fmt.Errorf("%w: %v", core.ErrExecutorInit, rh.cachedExecErr)
+		return nil, fmt.Errorf("%w: %v", errExecutorInit, rh.cachedExecErr)
 	}
 	return rh.cachedExec, nil
 }
@@ -129,7 +118,6 @@ func (rh *ResultHandler) CloseExecutor() {
 	exec := rh.cachedExec
 	rh.cachedExec = nil
 	rh.cachedExecErr = nil
-	rh.cachedExecErrAt = time.Time{}
 	rh.execInit = false
 	rh.execMu.Unlock()
 
@@ -160,12 +148,12 @@ func (rh *ResultHandler) HandleResultFileEvent(filePath string) {
 	if name == "planner" {
 		n := rh.processCommandResultFile()
 		if n > 0 {
-			rh.log(core.LogLevelInfo, "result_event_notify file=%s notified=%d", base, n)
+			rh.log(LogLevelInfo, "result_event_notify file=%s notified=%d", base, n)
 		}
 	} else if strings.HasPrefix(name, "worker") {
 		n := rh.processWorkerResultFile(name)
 		if n > 0 {
-			rh.log(core.LogLevelInfo, "result_event_notify file=%s notified=%d", base, n)
+			rh.log(LogLevelInfo, "result_event_notify file=%s notified=%d", base, n)
 		}
 	}
 }
@@ -177,7 +165,7 @@ func (rh *ResultHandler) ScanAllResults() int {
 	entries, err := os.ReadDir(resultsDir)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			rh.log(core.LogLevelWarn, "scan_results read_dir error=%v", err)
+			rh.log(LogLevelWarn, "scan_results read_dir error=%v", err)
 		}
 		return 0
 	}
@@ -213,7 +201,7 @@ func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
 		rf, err := rh.loadTaskResultFile(resultPath)
 		if err != nil {
 			rh.lockMap.Unlock(lockKey)
-			rh.log(core.LogLevelWarn, "load_worker_results worker=%s error=%v", workerID, err)
+			rh.log(LogLevelWarn, "load_worker_results worker=%s error=%v", workerID, err)
 			return notified
 		}
 
@@ -235,7 +223,7 @@ func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
 		rh.acquireTaskNotifyLease(result)
 		if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
 			rh.lockMap.Unlock(lockKey)
-			rh.log(core.LogLevelError, "write_lease worker=%s result=%s error=%v", workerID, resultID, err)
+			rh.log(LogLevelError, "write_lease worker=%s result=%s error=%v", workerID, resultID, err)
 			return notified
 		}
 		rh.lockMap.Unlock(lockKey)
@@ -248,30 +236,30 @@ func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
 		rf, err = rh.loadTaskResultFile(resultPath)
 		if err != nil {
 			rh.lockMap.Unlock(lockKey)
-			rh.log(core.LogLevelError, "reload_worker_results worker=%s error=%v", workerID, err)
+			rh.log(LogLevelError, "reload_worker_results worker=%s error=%v", workerID, err)
 			return notified
 		}
 
 		entry := rh.findTaskResultByID(rf, resultID)
 		if entry == nil {
 			rh.lockMap.Unlock(lockKey)
-			rh.log(core.LogLevelWarn, "result_disappeared worker=%s result=%s", workerID, resultID)
+			rh.log(LogLevelWarn, "result_disappeared worker=%s result=%s", workerID, resultID)
 			continue
 		}
 
 		if notifyErr != nil {
 			rh.markTaskNotifyFailure(entry, notifyErr.Error())
 			if entry.NotifyAttempts >= maxNotifyAttempts {
-				rh.log(core.LogLevelError, "notify_exhausted worker=%s task=%s command=%s attempts=%d last_error=%v",
+				rh.log(LogLevelError, "notify_exhausted worker=%s task=%s command=%s attempts=%d last_error=%v",
 					workerID, taskID, commandID, entry.NotifyAttempts, notifyErr)
 			} else {
-				rh.log(core.LogLevelWarn, "notify_planner_failed worker=%s task=%s error=%v attempts=%d/%d next_retry_in=%s",
+				rh.log(LogLevelWarn, "notify_planner_failed worker=%s task=%s error=%v attempts=%d/%d next_retry_in=%s",
 					workerID, taskID, notifyErr, entry.NotifyAttempts, maxNotifyAttempts, rh.notifyBackoff(entry.NotifyAttempts))
 			}
 		} else {
 			rh.markTaskNotifySuccess(entry)
 			notified++
-			rh.log(core.LogLevelInfo, "notify_planner_success worker=%s task=%s command=%s", workerID, taskID, commandID)
+			rh.log(LogLevelInfo, "notify_planner_success worker=%s task=%s command=%s", workerID, taskID, commandID)
 
 			// Publish task_completed event (non-blocking, best-effort)
 			if rh.eventBus != nil {
@@ -285,11 +273,11 @@ func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
 		}
 
 		if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
-			rh.log(core.LogLevelError, "write_result worker=%s error=%v", workerID, err)
+			rh.log(LogLevelError, "write_result worker=%s error=%v", workerID, err)
 		}
 		rh.lockMap.Unlock(lockKey)
 	}
-	rh.log(core.LogLevelError, "process_worker_result loop_cap_reached worker=%s iterations=%d", workerID, maxResultLoopIterations)
+	rh.log(LogLevelError, "process_worker_result loop_cap_reached worker=%s iterations=%d", workerID, maxResultLoopIterations)
 	return notified
 }
 
@@ -307,7 +295,7 @@ func (rh *ResultHandler) processCommandResultFile() int {
 		rf, err := rh.loadCommandResultFile(resultPath)
 		if err != nil {
 			rh.lockMap.Unlock(lockKey)
-			rh.log(core.LogLevelWarn, "load_command_results error=%v", err)
+			rh.log(LogLevelWarn, "load_command_results error=%v", err)
 			return notified
 		}
 
@@ -326,7 +314,7 @@ func (rh *ResultHandler) processCommandResultFile() int {
 		rh.acquireCommandNotifyLease(result)
 		if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
 			rh.lockMap.Unlock(lockKey)
-			rh.log(core.LogLevelError, "write_lease planner result=%s error=%v", resultID, err)
+			rh.log(LogLevelError, "write_lease planner result=%s error=%v", resultID, err)
 			return notified
 		}
 		rh.lockMap.Unlock(lockKey)
@@ -339,45 +327,45 @@ func (rh *ResultHandler) processCommandResultFile() int {
 		rf, err = rh.loadCommandResultFile(resultPath)
 		if err != nil {
 			rh.lockMap.Unlock(lockKey)
-			rh.log(core.LogLevelError, "reload_command_results error=%v", err)
+			rh.log(LogLevelError, "reload_command_results error=%v", err)
 			return notified
 		}
 
 		entry := rh.findCommandResultByID(rf, resultID)
 		if entry == nil {
 			rh.lockMap.Unlock(lockKey)
-			rh.log(core.LogLevelWarn, "command_result_disappeared result=%s", resultID)
+			rh.log(LogLevelWarn, "command_result_disappeared result=%s", resultID)
 			continue
 		}
 
 		if notifyErr != nil {
 			rh.markCommandNotifyFailure(entry, notifyErr.Error())
 			if entry.NotifyAttempts >= maxNotifyAttempts {
-				rh.log(core.LogLevelError, "notify_exhausted command=%s attempts=%d last_error=%v",
+				rh.log(LogLevelError, "notify_exhausted command=%s attempts=%d last_error=%v",
 					commandID, entry.NotifyAttempts, notifyErr)
 			} else {
-				rh.log(core.LogLevelWarn, "notify_orchestrator_failed command=%s error=%v attempts=%d/%d next_retry_in=%s",
+				rh.log(LogLevelWarn, "notify_orchestrator_failed command=%s error=%v attempts=%d/%d next_retry_in=%s",
 					commandID, notifyErr, entry.NotifyAttempts, maxNotifyAttempts, rh.notifyBackoff(entry.NotifyAttempts))
 			}
 		} else {
 			rh.markCommandNotifySuccess(entry)
 			notified++
-			rh.log(core.LogLevelInfo, "notify_orchestrator_success command=%s status=%s", commandID, resultStatus)
+			rh.log(LogLevelInfo, "notify_orchestrator_success command=%s status=%s", commandID, resultStatus)
 
 			// Continuous mode: advance iteration counter
 			if rh.continuousHandler != nil {
 				if err := rh.continuousHandler.CheckAndAdvance(commandID, resultStatus); err != nil {
-					rh.log(core.LogLevelWarn, "continuous_advance command=%s error=%v", commandID, err)
+					rh.log(LogLevelWarn, "continuous_advance command=%s error=%v", commandID, err)
 				}
 			}
 		}
 
 		if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
-			rh.log(core.LogLevelError, "write_result planner error=%v", err)
+			rh.log(LogLevelError, "write_result planner error=%v", err)
 		}
 		rh.lockMap.Unlock(lockKey)
 	}
-	rh.log(core.LogLevelError, "process_command_result loop_cap_reached iterations=%d", maxResultLoopIterations)
+	rh.log(LogLevelError, "process_command_result loop_cap_reached iterations=%d", maxResultLoopIterations)
 	return notified
 }
 
@@ -587,7 +575,7 @@ func (rh *ResultHandler) writeNotificationToOrchestratorQueue(resultID, commandI
 		// Idempotency: check if source_result_id already exists
 		for _, ntf := range nq.Notifications {
 			if ntf.SourceResultID == resultID {
-				rh.log(core.LogLevelDebug, "orchestrator_notification_duplicate source_result_id=%s", resultID)
+				rh.log(LogLevelDebug, "orchestrator_notification_duplicate source_result_id=%s", resultID)
 				return errNoUpdate
 			}
 		}
@@ -669,6 +657,6 @@ func (rh *ResultHandler) loadCommandResultFile(path string) (*model.CommandResul
 
 // --- Logging ---
 
-func (rh *ResultHandler) log(level core.LogLevel, format string, args ...any) {
+func (rh *ResultHandler) log(level LogLevel, format string, args ...any) {
 	rh.dl.Logf(level, format, args...)
 }

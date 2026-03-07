@@ -279,9 +279,7 @@ func TestCheckProgressTimeout_NoStateReader(t *testing.T) {
 	}
 }
 
-func TestCheckProgressTimeout_TimeoutDefaultApplied(t *testing.T) {
-	// With ProgressTimeoutMinutes=0, EffectiveProgressTimeoutMinutes returns 30 (default).
-	// LastProgress 1 hour ago > 30 min default → should trip.
+func TestCheckProgressTimeout_TimeoutDisabled(t *testing.T) {
 	cb := newTestHandler(true, 3, 0)
 	reader := &mockCircuitBreakerStateReader{
 		cbStates: map[string]*model.CircuitBreakerState{
@@ -291,8 +289,8 @@ func TestCheckProgressTimeout_TimeoutDefaultApplied(t *testing.T) {
 	cb.SetStateReader(reader)
 
 	shouldTrip, _ := cb.CheckProgressTimeout("cmd1")
-	if !shouldTrip {
-		t.Error("expected trip when timeout defaults to 30 and last progress was 1 hour ago")
+	if shouldTrip {
+		t.Error("expected no trip when timeout is disabled (0)")
 	}
 }
 
@@ -385,7 +383,7 @@ func TestConfigEffectiveProgressTimeoutMinutes(t *testing.T) {
 		value    int
 		expected int
 	}{
-		{0, 30}, // default
+		{0, 0},   // disabled
 		{30, 30},
 		{60, 60},
 	}

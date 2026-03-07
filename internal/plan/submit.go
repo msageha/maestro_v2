@@ -885,6 +885,7 @@ func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks 
 			BlockedBy:          depIDs,
 			BloomLevel:         t.BloomLevel,
 			ToolsHint:          t.ToolsHint,
+			PersonaHint:        t.PersonaHint,
 			SkillRefs:          t.SkillRefs,
 			Priority:           100,
 			Status:             model.StatusPending,

@@ -9,7 +9,6 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -17,7 +16,7 @@ import (
 // It logs the panic with a full stack trace and initiates a graceful shutdown.
 func (d *Daemon) recoverPanic(goroutine string) {
 	if r := recover(); r != nil {
-		d.log(core.LogLevelError, "panic in %s: %v\n%s", goroutine, r, debug.Stack())
+		d.log(LogLevelError, "panic in %s: %v\n%s", goroutine, r, debug.Stack())
 		go d.Shutdown()
 	}
 }
@@ -31,7 +30,7 @@ func (d *Daemon) validateLearningsFile() {
 		return // No file yet — will be created on first write
 	}
 	if err != nil {
-		d.log(core.LogLevelWarn, "learnings_startup_read error=%v", err)
+		d.log(LogLevelWarn, "learnings_startup_read error=%v", err)
 		return
 	}
 
@@ -40,24 +39,24 @@ func (d *Daemon) validateLearningsFile() {
 		FileType      string `yaml:"file_type"`
 	}
 	if err := yamlv3.Unmarshal(data, &lf); err != nil || lf.FileType != "state_learnings" {
-		d.log(core.LogLevelWarn, "learnings_startup_corrupt, recovering")
+		d.log(LogLevelWarn, "learnings_startup_corrupt, recovering")
 		if recErr := yamlutil.RecoverCorruptedFile(d.maestroDir, learningsPath, "state_learnings"); recErr != nil {
-			d.log(core.LogLevelError, "learnings_startup_recovery_failed: %v", recErr)
+			d.log(LogLevelError, "learnings_startup_recovery_failed: %v", recErr)
 		}
 	}
 }
 
-func (d *Daemon) log(level core.LogLevel, format string, args ...any) {
+func (d *Daemon) log(level LogLevel, format string, args ...any) {
 	if level < d.logLevel {
 		return
 	}
 	levelStr := "INFO"
 	switch level {
-	case core.LogLevelDebug:
+	case LogLevelDebug:
 		levelStr = "DEBUG"
-	case core.LogLevelWarn:
+	case LogLevelWarn:
 		levelStr = "WARN"
-	case core.LogLevelError:
+	case LogLevelError:
 		levelStr = "ERROR"
 	}
 	msg := fmt.Sprintf(format, args...)

@@ -2013,8 +2013,8 @@ func TestIsSensitiveFile(t *testing.T) {
 		{"config.yaml", false},
 		{"Makefile", false},
 		{".gitignore", false},
-		{"keys.go", false},     // .go, not .key
-		{"env_test.go", false}, // not .env
+		{"keys.go", false},       // .go, not .key
+		{"env_test.go", false},   // not .env
 		{"secret_handler.go", false},
 	}
 

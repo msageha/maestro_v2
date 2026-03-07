@@ -22,22 +22,6 @@ func resetFormation(maestroDir string) error {
 		return fmt.Errorf("stop daemon: %w", err)
 	}
 
-	// Acquire daemon.lock to prevent a new daemon from starting during cleanup.
-	// This closes the race window between stopDaemon returning and KillSession+cleanup.
-	lockDir := filepath.Join(maestroDir, "locks")
-	if err := os.MkdirAll(lockDir, 0755); err != nil {
-		return fmt.Errorf("ensure locks dir: %w", err)
-	}
-	fl := lock.NewFileLock(filepath.Join(lockDir, "daemon.lock"))
-	if err := fl.TryLock(); err != nil {
-		return fmt.Errorf("reset aborted: another daemon started during cleanup: %w", err)
-	}
-	defer func() {
-		if unlockErr := fl.Unlock(); unlockErr != nil {
-			fmt.Printf("Warning: failed to release daemon.lock: %v\n", unlockErr)
-		}
-	}()
-
 	// Kill existing tmux session (best-effort)
 	fmt.Println("[debug] resetFormation: killing existing tmux session (best-effort)")
 	_ = tmux.KillSession()

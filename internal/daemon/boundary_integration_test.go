@@ -10,7 +10,6 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -26,7 +25,7 @@ func newBoundaryTestDaemon(t *testing.T) *Daemon {
 	d.handler = NewQueueHandler(d.maestroDir, d.config, lockMap, d.logger, d.logLevel)
 	d.handler.SetStateReader(reader)
 	d.handler.SetCanComplete(testCanComplete)
-	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
 	})
 	d.handler.SetBusyChecker(func(string) bool { return false })
@@ -415,7 +414,7 @@ func TestTaskLeaseExpiry_BusyAgent_MaxTimeout(t *testing.T) {
 	d.handler = NewQueueHandler(d.maestroDir, d.config, lockMap, d.logger, d.logLevel)
 	d.handler.SetStateReader(reader)
 	d.handler.SetCanComplete(testCanComplete)
-	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
 	})
 	d.handler.SetBusyChecker(func(string) bool { return true }) // always busy
@@ -457,7 +456,7 @@ func TestTaskLeaseExpiry_BusyAgent_WithinLimit(t *testing.T) {
 	d.handler = NewQueueHandler(d.maestroDir, d.config, lockMap, d.logger, d.logLevel)
 	d.handler.SetStateReader(reader)
 	d.handler.SetCanComplete(testCanComplete)
-	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
 	})
 	d.handler.SetBusyChecker(func(string) bool { return true })
@@ -507,7 +506,7 @@ func TestTaskDispatchError_LeaseReleased(t *testing.T) {
 	qh := newTestQueueHandler(maestroDir)
 
 	// Mock executor that fails dispatch
-	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{
 			Success:   false,
 			Error:     fmt.Errorf("worker tmux pane not found"),
@@ -554,7 +553,7 @@ func TestCommandDispatchError_SecondScan_StaysInProgress(t *testing.T) {
 	qh := newTestQueueHandler(maestroDir)
 
 	dispatchCount := 0
-	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		dispatchCount++
 		return &mockExecutor{result: agent.ExecResult{
 			Success:   false,
@@ -1130,7 +1129,7 @@ func TestReconciler_R4_AlreadyTerminal_NoRepair(t *testing.T) {
 func TestReconciler_R6_MultiplePhasesTimedOut(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
-	rec.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (core.AgentExecutor, error) {
+	rec.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 		return &mockExecutorR6{}, nil
 	})
 
@@ -1186,7 +1185,7 @@ func TestReconciler_R6_MultiplePhasesTimedOut(t *testing.T) {
 func TestReconciler_R6_DiamondDependency(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
-	rec.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (core.AgentExecutor, error) {
+	rec.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 		return &mockExecutorR6{}, nil
 	})
 
@@ -1235,7 +1234,7 @@ func TestReconciler_R6_DiamondDependency(t *testing.T) {
 func TestReconciler_R6_ActivePhaseNotCancelled(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
-	rec.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (core.AgentExecutor, error) {
+	rec.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 		return &mockExecutorR6{}, nil
 	})
 
@@ -1313,8 +1312,8 @@ func TestDependencyFailure_TransitivePending(t *testing.T) {
 	taskC := "task_dep_c"
 
 	state := model.CommandState{
-		SchemaVersion: 1, FileType: "state_command",
-		CommandID: commandID, PlanStatus: model.PlanStatusSealed,
+		SchemaVersion:   1, FileType: "state_command",
+		CommandID:       commandID, PlanStatus: model.PlanStatusSealed,
 		RequiredTaskIDs: []string{taskA, taskB, taskC},
 		TaskStates:      map[string]model.Status{taskA: model.StatusFailed, taskB: model.StatusPending, taskC: model.StatusPending},
 		TaskDependencies: map[string][]string{
@@ -1376,8 +1375,8 @@ func TestDependencyFailure_InProgressTaskInterrupted(t *testing.T) {
 	taskB := "task_depip_b"
 
 	state := model.CommandState{
-		SchemaVersion: 1, FileType: "state_command",
-		CommandID: commandID, PlanStatus: model.PlanStatusSealed,
+		SchemaVersion:   1, FileType: "state_command",
+		CommandID:       commandID, PlanStatus: model.PlanStatusSealed,
 		RequiredTaskIDs: []string{taskA, taskB},
 		TaskStates:      map[string]model.Status{taskA: model.StatusFailed, taskB: model.StatusInProgress},
 		TaskDependencies: map[string][]string{
@@ -1725,7 +1724,7 @@ func TestReconciler_R5_NotNotified_NoRepair(t *testing.T) {
 		Results: []model.CommandResult{
 			{
 				ID: "res_r5_nonotify", CommandID: "cmd_r5_nn", Status: model.StatusCompleted,
-				Notified:  false, // not yet notified
+				Notified: false, // not yet notified
 				CreatedAt: now,
 			},
 		},
@@ -2375,7 +2374,7 @@ func TestDeferredNotification_R4_ReEvaluate(t *testing.T) {
 func TestDeferredNotification_R6_FillTimeout(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
-	rec.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (core.AgentExecutor, error) {
+	rec.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 		return &mockExecutorR6{}, nil
 	})
 

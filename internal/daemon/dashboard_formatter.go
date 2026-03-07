@@ -15,7 +15,6 @@ import (
 
 	yaml "gopkg.in/yaml.v3"
 
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -35,14 +34,14 @@ type DashboardStats struct {
 
 // DashboardEvent represents a filtered event for display
 type DashboardEvent struct {
-	Timestamp time.Time
-	EventType string
-	TaskID    string
-	AgentID   string
-	Status    string
-	Summary   string
-	IsError   bool
-	IsWarning bool
+	Timestamp   time.Time
+	EventType   string
+	TaskID      string
+	AgentID     string
+	Status      string
+	Summary     string
+	IsError     bool
+	IsWarning   bool
 }
 
 // DashboardData contains all data needed to render the dashboard
@@ -82,7 +81,7 @@ type DashboardFormatter struct {
 	maxEvents   int
 	maxErrors   int
 	maxWarnings int
-	clock       core.Clock
+	clock       Clock
 
 	tmplOnce sync.Once
 	tmplVal  *template.Template
@@ -97,7 +96,7 @@ func NewDashboardFormatter(maestroDir string) *DashboardFormatter {
 		maxEvents:   20,
 		maxErrors:   10,
 		maxWarnings: 10,
-		clock:       core.RealClock{},
+		clock:       RealClock{},
 	}
 }
 

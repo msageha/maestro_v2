@@ -12,7 +12,6 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -101,7 +100,7 @@ func TestSignal_AwaitingFillCreatesSignal(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", "planner.yaml"), cq)
 
 	// Mock executor that fails delivery (simulates busy planner)
-	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{
 			Success: false,
 			Error:   fmt.Errorf("busy_timeout"),
@@ -185,7 +184,7 @@ func TestSignal_SuccessfulDeliveryRemovesSignal(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", "planner_signals.yaml"), sq)
 
 	// Mock executor: delivery succeeds
-	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
 	})
 
@@ -250,7 +249,7 @@ func TestSignal_FailedDeliveryBackoff(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", "planner_signals.yaml"), sq)
 
 	// Mock executor: delivery fails
-	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{
 			Success: false,
 			Error:   fmt.Errorf("busy_timeout"),
@@ -342,7 +341,7 @@ func TestSignal_BackoffSkipsDelivery(t *testing.T) {
 
 	// Track if executor is called
 	called := false
-	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		called = true
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
 	})
@@ -521,7 +520,7 @@ func TestSignal_Deduplication(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", "planner_signals.yaml"), sq)
 
 	// Mock executor: succeeds for normal dispatch, fails for signal
-	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
 	})
 
@@ -628,7 +627,7 @@ func TestSignal_FillTimeoutCreatesSignal(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", "planner.yaml"), cq)
 
 	// Mock executor: delivery fails (to keep signal in queue for inspection)
-	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{
 			Success: false,
 			Error:   fmt.Errorf("busy_timeout"),
@@ -717,7 +716,7 @@ func TestSignal_CircuitBreakerTrippedDelivered(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", "planner_signals.yaml"), sq)
 
 	// Mock executor: delivery succeeds
-	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
 	})
 

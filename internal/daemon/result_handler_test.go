@@ -12,7 +12,6 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -23,10 +22,10 @@ func newTestResultHandler(maestroDir string) (*ResultHandler, *mockExecutor) {
 		Watcher: model.WatcherConfig{NotifyLeaseSec: 120},
 	}
 	lockMap := lock.NewMutexMap()
-	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
+	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
 
 	mock := &mockExecutor{result: agent.ExecResult{Success: true}}
-	rh.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	rh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return mock, nil
 	})
 	return rh, mock
@@ -212,14 +211,14 @@ func TestResultHandler_WorkerNotification_Failure(t *testing.T) {
 		Watcher: model.WatcherConfig{NotifyLeaseSec: 120},
 	}
 	lockMap := lock.NewMutexMap()
-	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
+	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
 
 	// Mock executor that fails
 	failMock := &mockExecutor{result: agent.ExecResult{
 		Success: false,
 		Error:   fmt.Errorf("planner busy"),
 	}}
-	rh.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	rh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return failMock, nil
 	})
 
@@ -477,13 +476,13 @@ func TestResultHandler_WorkerNotification_MaxRetryExhausted(t *testing.T) {
 		Watcher: model.WatcherConfig{NotifyLeaseSec: 120},
 	}
 	lockMap := lock.NewMutexMap()
-	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
+	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
 
 	failMock := &mockExecutor{result: agent.ExecResult{
 		Success: false,
 		Error:   fmt.Errorf("no server running"),
 	}}
-	rh.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	rh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return failMock, nil
 	})
 
@@ -522,13 +521,13 @@ func TestResultHandler_WorkerNotification_BackoffPreventsImmediateRetry(t *testi
 		Watcher: model.WatcherConfig{NotifyLeaseSec: 120},
 	}
 	lockMap := lock.NewMutexMap()
-	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
+	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
 
 	failMock := &mockExecutor{result: agent.ExecResult{
 		Success: false,
 		Error:   fmt.Errorf("no server running"),
 	}}
-	rh.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	rh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return failMock, nil
 	})
 

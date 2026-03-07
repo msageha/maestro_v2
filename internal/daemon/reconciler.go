@@ -27,9 +27,9 @@ func NewReconciler(
 	cfg model.Config,
 	lockMap *lock.MutexMap,
 	logger *log.Logger,
-	logLevel core.LogLevel,
+	logLevel LogLevel,
 	resultHandler *ResultHandler,
-	executorFactory core.ExecutorFactory,
+	executorFactory ExecutorFactory,
 ) *Reconciler {
 	// Avoid nil-interface-wrapping-nil-pointer: only assign if non-nil.
 	var notifier reconcile.ResultNotifier
@@ -63,12 +63,12 @@ func NewReconciler(
 }
 
 // SetCanComplete sets the CanComplete function (wired after plan package init to avoid import cycles).
-func (r *Reconciler) SetCanComplete(f core.CanCompleteFunc) {
+func (r *Reconciler) SetCanComplete(f CanCompleteFunc) {
 	r.engine.SetCanComplete(f)
 }
 
 // SetExecutorFactory overrides the executor factory for testing.
-func (r *Reconciler) SetExecutorFactory(f core.ExecutorFactory) {
+func (r *Reconciler) SetExecutorFactory(f ExecutorFactory) {
 	r.engine.SetExecutorFactory(f)
 }
 
@@ -80,10 +80,4 @@ func (r *Reconciler) Reconcile() ([]ReconcileRepair, []DeferredNotification) {
 // ExecuteDeferredNotifications sends collected Planner notifications via agent executor.
 func (r *Reconciler) ExecuteDeferredNotifications(notifications []DeferredNotification) {
 	r.engine.ExecuteDeferredNotifications(notifications)
-}
-
-// CloseExecutor releases the shared executor's resources.
-// Safe to call multiple times; subsequent calls are no-ops.
-func (r *Reconciler) CloseExecutor() {
-	r.engine.CloseExecutor()
 }

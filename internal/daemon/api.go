@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/uds"
 )
@@ -33,7 +32,7 @@ func (a *API) registerHandlers() {
 	})
 
 	d.server.Handle("shutdown", func(req *uds.Request) *uds.Response {
-		d.log(core.LogLevelInfo, "shutdown requested via UDS")
+		d.log(LogLevelInfo, "shutdown requested via UDS")
 		go func() { defer d.recoverPanic("shutdownHandler"); d.Shutdown() }()
 		return uds.SuccessResponse(map[string]string{"status": "shutdown_accepted"})
 	})
@@ -80,7 +79,7 @@ func (a *API) handleDashboard(req *uds.Request) *uds.Response {
 	// Use the new dashboard formatter for human-readable output
 	formatter := NewDashboardFormatter(d.maestroDir)
 	if err := formatter.UpdateDashboardFile(); err != nil {
-		d.log(core.LogLevelError, "dashboard regeneration error=%v", err)
+		d.log(LogLevelError, "dashboard regeneration error=%v", err)
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("dashboard generation failed: %v", err))
 	}
 

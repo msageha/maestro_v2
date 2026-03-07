@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/stretchr/testify/assert"
@@ -96,7 +95,7 @@ func setupTestQualityGate(t *testing.T) (*QualityGateDaemon, string) {
 	lockMap := lock.NewMutexMap()
 	logger := log.New(os.Stdout, "[TEST] ", log.LstdFlags)
 
-	qg := NewQualityGateDaemon(maestroDir, cfg, lockMap, logger, core.LogLevelDebug, context.Background())
+	qg := NewQualityGateDaemon(maestroDir, cfg, lockMap, logger, LogLevelDebug, context.Background())
 
 	// Initialize the gate engine
 	err := qg.loadGateDefinitions()
@@ -214,9 +213,9 @@ func TestEvaluateGate_LogicalOperators(t *testing.T) {
 	qg, _ := setupTestQualityGate(t)
 
 	testCases := []struct {
-		name       string
-		context    map[string]interface{}
-		expectPass bool
+		name        string
+		context     map[string]interface{}
+		expectPass  bool
 	}{
 		{
 			name: "bloom level in range - should pass",
@@ -265,12 +264,12 @@ func TestEvaluateGate_Performance(t *testing.T) {
 	// Create a context with many fields for a realistic test
 	context := map[string]interface{}{
 		"task": map[string]interface{}{
-			"id":                  "task_perf_test",
-			"purpose":             "Performance test task",
-			"content":             "Complex task content with many lines\n" + generateLongContent(100),
-			"bloom_level":         4,
+			"id":                 "task_perf_test",
+			"purpose":            "Performance test task",
+			"content":            "Complex task content with many lines\n" + generateLongContent(100),
+			"bloom_level":        4,
 			"acceptance_criteria": "Must complete quickly",
-			"constraints":         []string{"time_limit", "memory_limit"},
+			"constraints":        []string{"time_limit", "memory_limit"},
 		},
 		"command": map[string]interface{}{
 			"id":      "cmd_perf_test",
@@ -441,7 +440,7 @@ func BenchmarkEvaluateGate_Simple(b *testing.B) {
 	lockMap := lock.NewMutexMap()
 	logger := log.New(os.Stdout, "[TEST] ", log.LstdFlags)
 
-	qg := NewQualityGateDaemon(maestroDir, cfg, lockMap, logger, core.LogLevelError, context.Background())
+	qg := NewQualityGateDaemon(maestroDir, cfg, lockMap, logger, LogLevelError, context.Background())
 
 	// Initialize the gate engine
 	err := qg.loadGateDefinitions()
@@ -476,7 +475,7 @@ func BenchmarkEvaluateGate_Complex(b *testing.B) {
 	lockMap := lock.NewMutexMap()
 	logger := log.New(os.Stdout, "[TEST] ", log.LstdFlags)
 
-	qg := NewQualityGateDaemon(maestroDir, cfg, lockMap, logger, core.LogLevelError, context.Background())
+	qg := NewQualityGateDaemon(maestroDir, cfg, lockMap, logger, LogLevelError, context.Background())
 
 	// Initialize the gate engine
 	err := qg.loadGateDefinitions()

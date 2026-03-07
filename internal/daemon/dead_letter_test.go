@@ -10,14 +10,13 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 func newTestDeadLetterProcessor(maestroDir string, cfg model.Config) *DeadLetterProcessor {
-	dlp := NewDeadLetterProcessor(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
+	dlp := NewDeadLetterProcessor(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
 	return dlp
 }
 
@@ -604,8 +603,8 @@ func TestDeadLetter_PeriodicScanIntegration(t *testing.T) {
 		Queue:   model.QueueConfig{PriorityAgingSec: 60},
 		Retry:   model.RetryConfig{CommandDispatch: 2},
 	}
-	qh := NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
-	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	qh := NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{}, nil
 	})
 

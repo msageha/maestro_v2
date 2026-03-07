@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -22,15 +21,15 @@ import (
 
 // --- Phase A/B/C Integration Test Helpers ---
 
-// phaseIntegrationStateReader implements core.StateReader for integration tests.
+// phaseIntegrationStateReader implements StateReader for integration tests.
 // It supports task states, phases with depends_on, and phase transitions.
 type phaseIntegrationStateReader struct {
 	maestroDir      string
 	mu              sync.Mutex
-	taskStates      map[string]map[string]model.Status // commandID -> taskID -> status
-	phases          map[string][]core.PhaseInfo        // commandID -> phases
-	cancelRequested map[string]bool                    // commandID -> cancelled
-	transitions     []phaseTransitionRecord            // recorded transitions
+	taskStates      map[string]map[string]model.Status   // commandID -> taskID -> status
+	phases          map[string][]PhaseInfo                // commandID -> phases
+	cancelRequested map[string]bool                       // commandID -> cancelled
+	transitions     []phaseTransitionRecord               // recorded transitions
 }
 
 type phaseTransitionRecord struct {
@@ -42,7 +41,7 @@ type phaseTransitionRecord struct {
 func newPhaseIntegrationStateReader() *phaseIntegrationStateReader {
 	return &phaseIntegrationStateReader{
 		taskStates:      make(map[string]map[string]model.Status),
-		phases:          make(map[string][]core.PhaseInfo),
+		phases:          make(map[string][]PhaseInfo),
 		cancelRequested: make(map[string]bool),
 	}
 }
@@ -56,7 +55,7 @@ func (r *phaseIntegrationStateReader) setTaskState(commandID, taskID string, sta
 	r.taskStates[commandID][taskID] = status
 }
 
-func (r *phaseIntegrationStateReader) setPhases(commandID string, phases []core.PhaseInfo) {
+func (r *phaseIntegrationStateReader) setPhases(commandID string, phases []PhaseInfo) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.phases[commandID] = phases
@@ -67,21 +66,21 @@ func (r *phaseIntegrationStateReader) GetTaskState(commandID, taskID string) (mo
 	defer r.mu.Unlock()
 	ts, ok := r.taskStates[commandID]
 	if !ok {
-		return "", core.ErrStateNotFound
+		return "", ErrStateNotFound
 	}
 	s, ok := ts[taskID]
 	if !ok {
-		return "", core.ErrStateNotFound
+		return "", ErrStateNotFound
 	}
 	return s, nil
 }
 
-func (r *phaseIntegrationStateReader) GetCommandPhases(commandID string) ([]core.PhaseInfo, error) {
+func (r *phaseIntegrationStateReader) GetCommandPhases(commandID string) ([]PhaseInfo, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	ps, ok := r.phases[commandID]
 	if !ok {
-		return nil, core.ErrStateNotFound
+		return nil, ErrStateNotFound
 	}
 	return ps, nil
 }
@@ -201,8 +200,8 @@ func newPhaseIntegrationQH(t *testing.T, maestroDir string, exec *recordingExecu
 		Watcher: model.WatcherConfig{DispatchLeaseSec: 300},
 		Queue:   model.QueueConfig{PriorityAgingSec: 60},
 	}
-	qh := NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
-	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	qh := NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return exec, nil
 	})
 	return qh
@@ -568,7 +567,7 @@ func TestPhaseIntegration_PhaseTransition_PendingToActive(t *testing.T) {
 	// Set up state reader with two phases:
 	// Phase 1 (completed) → Phase 2 (pending, depends on Phase 1)
 	reader := newPhaseIntegrationStateReader()
-	reader.setPhases("cmd_1772000004_00000001", []core.PhaseInfo{
+	reader.setPhases("cmd_1772000004_00000001", []PhaseInfo{
 		{
 			ID:     "phase_1772000004_aaaaaaaa",
 			Name:   "Investigation",
@@ -739,7 +738,7 @@ func TestPhaseIntegration_EpochFencing_StaleResult(t *testing.T) {
 			return agent.ExecResult{Success: true}
 		},
 	})
-	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &slowMockExecutor{
 			result:  agent.ExecResult{Success: true},
 			onStart: func() { startOnce.Do(func() { close(dispatchStarted) }) },
@@ -1102,12 +1101,12 @@ func TestPhaseIntegration_ConcurrentWriteDuringPhaseB(t *testing.T) {
 		Watcher: model.WatcherConfig{DispatchLeaseSec: 300},
 		Queue:   model.QueueConfig{PriorityAgingSec: 60},
 	}
-	qh := NewQueueHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
+	qh := NewQueueHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
 
 	dispatchStarted := make(chan struct{})
 	proceed := make(chan struct{})
 	var startOnce sync.Once
-	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &slowMockExecutor{
 			result:  agent.ExecResult{Success: true},
 			onStart: func() { startOnce.Do(func() { close(dispatchStarted) }) },
@@ -1370,7 +1369,7 @@ func TestPhaseIntegration_PhaseA_B_C_CompletePipeline(t *testing.T) {
 
 	// Setup 3-phase command: Phase1 (completed) → Phase2 (pending) → Phase3 (pending)
 	reader := newPhaseIntegrationStateReader()
-	reader.setPhases("cmd_1772000015_00000001", []core.PhaseInfo{
+	reader.setPhases("cmd_1772000015_00000001", []PhaseInfo{
 		{
 			ID:              "phase_1772000015_aaaaaaaa",
 			Name:            "Research",
@@ -1589,7 +1588,7 @@ func TestPhaseIntegration_SignalDeliveryFailure_Retry(t *testing.T) {
 	exec := newRecordingExecutor(nil)
 	qh := newPhaseIntegrationQH(t, maestroDir, exec)
 	// Override executor factory: deliverPlannerSignal creates its own executor
-	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return newRecordingExecutor(func(req agent.ExecRequest) agent.ExecResult {
 			// Signal delivery to planner fails
 			if req.AgentID == "planner" && req.Mode == agent.ModeDeliver {
@@ -1604,7 +1603,7 @@ func TestPhaseIntegration_SignalDeliveryFailure_Retry(t *testing.T) {
 
 	// Setup: completed phase → pending phase should trigger awaiting_fill signal
 	reader := newPhaseIntegrationStateReader()
-	reader.setPhases("cmd_1772000017_00000001", []core.PhaseInfo{
+	reader.setPhases("cmd_1772000017_00000001", []PhaseInfo{
 		{
 			ID:     "phase_1772000017_aaaaaaaa",
 			Name:   "Research",

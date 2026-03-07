@@ -10,7 +10,6 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
@@ -29,6 +28,7 @@ type QueueWriteParams struct {
 	BlockedBy          []string `json:"blocked_by,omitempty"`
 	Constraints        []string `json:"constraints,omitempty"`
 	ToolsHint          []string `json:"tools_hint,omitempty"`
+	PersonaHint        string   `json:"persona_hint,omitempty"`
 	SkillRefs          []string `json:"skill_refs,omitempty"`
 	Priority           int      `json:"priority"`
 	SourceResultID     string   `json:"source_result_id,omitempty"`
@@ -110,7 +110,7 @@ func (a *API) handleQueueWriteCommand(params QueueWriteParams) *uds.Response {
 			if checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(newData), len(params.Content)+200) != nil {
 				return resp
 			}
-			d.log(core.LogLevelInfo, "queue_write archive_commands archived=%d", archived)
+			d.log(LogLevelInfo, "queue_write archive_commands archived=%d", archived)
 		} else {
 			return resp
 		}
@@ -141,7 +141,7 @@ func (a *API) handleQueueWriteCommand(params QueueWriteParams) *uds.Response {
 	}
 	a.notifySelfWrite(queuePath, "command", cq)
 
-	d.log(core.LogLevelInfo, "queue_write type=command id=%s", id)
+	d.log(LogLevelInfo, "queue_write type=command id=%s", id)
 	return uds.SuccessResponse(map[string]string{"id": id})
 }
 
@@ -218,7 +218,7 @@ func (a *API) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 			if checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(newData), len(params.Content)+500) != nil {
 				return resp
 			}
-			d.log(core.LogLevelInfo, "queue_write archive_tasks worker=%s archived=%d", params.Target, archived)
+			d.log(LogLevelInfo, "queue_write archive_tasks worker=%s archived=%d", params.Target, archived)
 		} else {
 			return resp
 		}
@@ -252,6 +252,7 @@ func (a *API) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 		BlockedBy:          params.BlockedBy,
 		BloomLevel:         params.BloomLevel,
 		ToolsHint:          params.ToolsHint,
+		PersonaHint:        params.PersonaHint,
 		SkillRefs:          params.SkillRefs,
 		Priority:           priority,
 		Status:             model.StatusPending,
@@ -264,7 +265,7 @@ func (a *API) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 	}
 	a.notifySelfWrite(queuePath, "task", tq)
 
-	d.log(core.LogLevelInfo, "queue_write type=task id=%s command_id=%s worker=%s", id, params.CommandID, params.Target)
+	d.log(LogLevelInfo, "queue_write type=task id=%s command_id=%s worker=%s", id, params.CommandID, params.Target)
 	return uds.SuccessResponse(map[string]string{"id": id})
 }
 
@@ -309,7 +310,7 @@ func (a *API) handleQueueWriteNotification(params QueueWriteParams) *uds.Respons
 	// Idempotency: check if source_result_id already exists
 	for _, ntf := range nq.Notifications {
 		if ntf.SourceResultID == params.SourceResultID {
-			d.log(core.LogLevelInfo, "queue_write type=notification duplicate source_result_id=%s existing_id=%s", params.SourceResultID, ntf.ID)
+			d.log(LogLevelInfo, "queue_write type=notification duplicate source_result_id=%s existing_id=%s", params.SourceResultID, ntf.ID)
 			return uds.SuccessResponse(map[string]string{"id": ntf.ID, "duplicate": "true"})
 		}
 	}
@@ -321,7 +322,7 @@ func (a *API) handleQueueWriteNotification(params QueueWriteParams) *uds.Respons
 			if checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(newData), len(params.Content)+300) != nil {
 				return resp
 			}
-			d.log(core.LogLevelInfo, "queue_write archive_notifications archived=%d", archived)
+			d.log(LogLevelInfo, "queue_write archive_notifications archived=%d", archived)
 		} else {
 			return resp
 		}
@@ -355,7 +356,7 @@ func (a *API) handleQueueWriteNotification(params QueueWriteParams) *uds.Respons
 	}
 	a.notifySelfWrite(queuePath, "notification", nq)
 
-	d.log(core.LogLevelInfo, "queue_write type=notification id=%s command_id=%s source_result_id=%s", id, params.CommandID, params.SourceResultID)
+	d.log(LogLevelInfo, "queue_write type=notification id=%s command_id=%s source_result_id=%s", id, params.CommandID, params.SourceResultID)
 	return uds.SuccessResponse(map[string]string{"id": id})
 }
 
@@ -403,7 +404,7 @@ func (a *API) cancelRequestSubmitted(params QueueWriteParams, statePath string) 
 
 	// Idempotent: already requested → skip
 	if state.Cancel.Requested {
-		d.log(core.LogLevelInfo, "queue_write type=cancel-request command=%s already_requested", params.CommandID)
+		d.log(LogLevelInfo, "queue_write type=cancel-request command=%s already_requested", params.CommandID)
 		return uds.SuccessResponse(map[string]string{"command_id": params.CommandID, "status": "already_requested"})
 	}
 
@@ -434,7 +435,7 @@ func (a *API) cancelRequestSubmitted(params QueueWriteParams, statePath string) 
 					cq.Commands[i].CancelRequestedBy = &requestedBy
 					cq.Commands[i].UpdatedAt = now
 					if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
-						d.log(core.LogLevelError, "queue_write cancel_planner_queue_update error=%v", err)
+						d.log(LogLevelError, "queue_write cancel_planner_queue_update error=%v", err)
 					} else {
 						a.notifySelfWrite(queuePath, "cancel-request", cq)
 					}
@@ -444,7 +445,7 @@ func (a *API) cancelRequestSubmitted(params QueueWriteParams, statePath string) 
 		}
 	}
 
-	d.log(core.LogLevelInfo, "queue_write type=cancel-request command=%s submitted=true", params.CommandID)
+	d.log(LogLevelInfo, "queue_write type=cancel-request command=%s submitted=true", params.CommandID)
 	return uds.SuccessResponse(map[string]string{"command_id": params.CommandID, "status": "cancel_requested"})
 }
 
@@ -474,7 +475,7 @@ func (a *API) cancelRequestUnsubmitted(params QueueWriteParams) *uds.Response {
 		if cq.Commands[i].ID == params.CommandID {
 			// Terminal guard: already terminal → skip
 			if model.IsTerminal(cq.Commands[i].Status) {
-				d.log(core.LogLevelInfo, "queue_write type=cancel-request command=%s already_terminal=%s", params.CommandID, cq.Commands[i].Status)
+				d.log(LogLevelInfo, "queue_write type=cancel-request command=%s already_terminal=%s", params.CommandID, cq.Commands[i].Status)
 				return uds.SuccessResponse(map[string]string{"command_id": params.CommandID, "status": string(cq.Commands[i].Status)})
 			}
 			cq.Commands[i].Status = model.StatusCancelled
@@ -499,7 +500,7 @@ func (a *API) cancelRequestUnsubmitted(params QueueWriteParams) *uds.Response {
 	}
 	a.notifySelfWrite(queuePath, "cancel-request", cq)
 
-	d.log(core.LogLevelInfo, "queue_write type=cancel-request command=%s submitted=false cancelled", params.CommandID)
+	d.log(LogLevelInfo, "queue_write type=cancel-request command=%s submitted=false cancelled", params.CommandID)
 	return uds.SuccessResponse(map[string]string{"command_id": params.CommandID, "status": "cancelled"})
 }
 
@@ -551,7 +552,7 @@ func (a *API) detectCycleInDependencies(newTaskID string, newBlockedBy []string,
 	queueDir := filepath.Join(d.maestroDir, "queue")
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
-		d.log(core.LogLevelWarn, "cycle_detection read_queue_dir error=%v", err)
+		d.log(LogLevelWarn, "cycle_detection read_queue_dir error=%v", err)
 		// Continue with what we have — don't block task submission on dir read failure
 	}
 	for _, entry := range entries {
@@ -566,7 +567,7 @@ func (a *API) detectCycleInDependencies(newTaskID string, newBlockedBy []string,
 		path := filepath.Join(queueDir, name)
 		tq, _, err := loadTaskQueueFile(path)
 		if err != nil {
-			d.log(core.LogLevelWarn, "cycle_detection load_queue file=%s error=%v", name, err)
+			d.log(LogLevelWarn, "cycle_detection load_queue file=%s error=%v", name, err)
 			continue
 		}
 		for _, task := range tq.Tasks {

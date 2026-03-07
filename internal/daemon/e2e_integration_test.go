@@ -37,11 +37,11 @@ type constraintInputYAML struct {
 }
 
 type phaseInputYAML struct {
-	Name            string               `yaml:"name"`
-	Type            string               `yaml:"type"`
-	DependsOnPhases []string             `yaml:"depends_on_phases,omitempty"`
-	Tasks           []taskInputYAML      `yaml:"tasks,omitempty"`
-	Constraints     *constraintInputYAML `yaml:"constraints,omitempty"`
+	Name            string                `yaml:"name"`
+	Type            string                `yaml:"type"`
+	DependsOnPhases []string              `yaml:"depends_on_phases,omitempty"`
+	Tasks           []taskInputYAML       `yaml:"tasks,omitempty"`
+	Constraints     *constraintInputYAML  `yaml:"constraints,omitempty"`
 }
 
 type submitInputYAML struct {
@@ -53,8 +53,8 @@ type submitInputYAML struct {
 
 type submitResult struct {
 	Valid     bool                `json:"valid,omitempty"`
-	CommandID string              `json:"command_id,omitempty"`
-	Tasks     []submitTaskResult  `json:"tasks,omitempty"`
+	CommandID string             `json:"command_id,omitempty"`
+	Tasks     []submitTaskResult `json:"tasks,omitempty"`
 	Phases    []submitPhaseResult `json:"phases,omitempty"`
 }
 
