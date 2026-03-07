@@ -139,7 +139,7 @@ func buildLaunchArgs(role, agentModel, systemPrompt string) []string {
 				"Bash(tmux kill-pane:*)",
 				"Bash(tmux kill-window:*)",
 				"Read(.maestro/state/**)",
-				"Read(.maestro/queues/**)",
+				"Read(.maestro/queue/**)",
 				"Read(.maestro/results/**)",
 				"Read(.maestro/locks/**)",
 				"Read(.maestro/logs/**)",
