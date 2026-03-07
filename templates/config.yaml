@@ -98,14 +98,6 @@ worktree:
     ttl_hours: 24                  # 古い worktree の TTL (時間)
     max_worktrees: 32              # 最大 worktree 数
 
-personas:
-  general:
-    description: "汎用的な開発タスク向けペルソナ"
-    prompt: "効率的で保守性の高いコードを書くことに集中する。シンプルさを優先し、過度な抽象化を避ける。"
-  quality-focused:
-    description: "コードレビュー・テスト・品質改善向けペルソナ"
-    prompt: "コード品質・テストカバレッジ・エッジケースの検出に集中する。潜在的なバグやセキュリティリスクを積極的に指摘する。"
-
 quality_gates:
   enabled: false                    # 品質ゲートの有効化フラグ
   skip_gates: false                 # 緊急モード (--skip-gates フラグで有効化)

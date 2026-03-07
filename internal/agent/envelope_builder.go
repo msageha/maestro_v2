@@ -54,11 +54,6 @@ func BuildWorkerEnvelope(task model.Task, workerID string, leaseEpoch, attempt i
 		toolsHintStr = strings.Join(sanitizedHints, ", ")
 	}
 	fmt.Fprintf(&sb, "tools_hint: %s\n", toolsHintStr)
-	personaHintStr := "なし"
-	if task.PersonaHint != "" {
-		personaHintStr = sanitizeEnvelopeField(task.PersonaHint)
-	}
-	fmt.Fprintf(&sb, "persona_hint: %s\n", personaHintStr)
 	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "完了時: maestro result write %s --task-id %s --command-id %s --lease-epoch %d --status <completed|failed> --summary \"...\"\n",
 		workerID, task.ID, task.CommandID, leaseEpoch)

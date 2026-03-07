@@ -76,4 +76,3 @@ var NewCircuitBreakerHandler = circuitbreaker.NewHandler
 
 var readTopKLearnings = learnings.ReadTopKLearnings
 var formatLearningsSection = learnings.FormatLearningsSection
-
