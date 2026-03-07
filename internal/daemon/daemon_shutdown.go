@@ -67,11 +67,14 @@ func (d *Daemon) Shutdown() {
 		}
 		totalDuration := time.Duration(totalTimeout) * time.Second
 
-		// 1. Set advisory flag — spawners will skip new work.
+		// 1. Set advisory flags — spawners will skip new work, API rejects requests.
+		d.ready.Store(false)
 		d.shuttingDown.Store(true)
 
 		// 2. Stop producers — no new work will be enqueued.
-		d.ticker.Stop()
+		if d.ticker != nil {
+			d.ticker.Stop()
+		}
 		if d.handler != nil {
 			d.handler.Stop()
 		}
@@ -87,7 +90,9 @@ func (d *Daemon) Shutdown() {
 		}
 
 		// Unsubscribe from event bus and stop event processing.
-		d.bridge.unsubscribeAll()
+		if d.bridge != nil {
+			d.bridge.unsubscribeAll()
+		}
 		if d.eventBus != nil {
 			d.eventBus.Close()
 		}

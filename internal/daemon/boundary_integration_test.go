@@ -719,7 +719,13 @@ func TestEpochFencing_StaleDispatchResult(t *testing.T) {
 		},
 		Success: true,
 	}
-	qh.applyTaskDispatchResult(staleResult, taskQueues, taskDirty)
+	taskIdx := make(map[string]taskLocation)
+	for qf, tq := range taskQueues {
+		for i, t := range tq.Queue.Tasks {
+			taskIdx[t.ID] = taskLocation{QueueFile: qf, Index: i}
+		}
+	}
+	qh.applyTaskDispatchResult(staleResult, taskQueues, taskIdx, taskDirty)
 
 	// Task should NOT be modified (fencing rejected the stale result)
 	task := taskQueues["worker1.yaml"].Queue.Tasks[0]
@@ -765,7 +771,11 @@ func TestEpochFencing_StaleCommandDispatchResult(t *testing.T) {
 		},
 		Success: true,
 	}
-	qh.applyCommandDispatchResult(staleResult, &cq, &dirty)
+	cmdIndex := make(map[string]int)
+	for i, cmd := range cq.Commands {
+		cmdIndex[cmd.ID] = i
+	}
+	qh.applyCommandDispatchResult(staleResult, &cq, cmdIndex, &dirty)
 
 	if dirty {
 		t.Error("dirty should be false — stale result rejected")
@@ -782,7 +792,7 @@ func TestEpochFencing_StaleCommandDispatchResult(t *testing.T) {
 		},
 		Success: true,
 	}
-	qh.applyCommandDispatchResult(staleResult2, &cq, &dirty)
+	qh.applyCommandDispatchResult(staleResult2, &cq, cmdIndex, &dirty)
 
 	if dirty {
 		t.Error("dirty should be false — stale result rejected (lease mismatch)")
@@ -821,7 +831,11 @@ func TestEpochFencing_StaleNotificationDispatchResult(t *testing.T) {
 		},
 		Success: true,
 	}
-	qh.applyNotificationDispatchResult(staleResult, &nq, &dirty)
+	ntfIndex := make(map[string]int)
+	for i, ntf := range nq.Notifications {
+		ntfIndex[ntf.ID] = i
+	}
+	qh.applyNotificationDispatchResult(staleResult, &nq, ntfIndex, &dirty)
 
 	if dirty {
 		t.Error("dirty should be false — stale notification result rejected")

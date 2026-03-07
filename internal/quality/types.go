@@ -58,8 +58,10 @@ const (
 type FieldOperator string
 
 const (
-	OpExists      FieldOperator = "exists"
-	OpNotExists   FieldOperator = "not_exists"
+	OpExists      FieldOperator = "exists"      // key existence only (nil/empty values still count)
+	OpNotExists   FieldOperator = "not_exists"   // key does not exist
+	OpHasValue    FieldOperator = "has_value"    // key exists AND value is non-nil and non-empty
+	OpIsEmpty     FieldOperator = "is_empty"     // key does not exist OR value is nil/empty
 	OpEquals      FieldOperator = "equals"
 	OpNotEquals   FieldOperator = "not_equals"
 	OpContains    FieldOperator = "contains"

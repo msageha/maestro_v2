@@ -506,14 +506,30 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 		notificationsDirty := false
 		taskDirty := make(map[string]bool)
 
+		// Build index maps for O(1) lookup (avoids O(n²) per-dispatch scans).
+		cmdIndex := make(map[string]int, len(commandQueue.Commands))
+		for i, cmd := range commandQueue.Commands {
+			cmdIndex[cmd.ID] = i
+		}
+		ntfIndex := make(map[string]int, len(notificationQueue.Notifications))
+		for i, ntf := range notificationQueue.Notifications {
+			ntfIndex[ntf.ID] = i
+		}
+		taskIdx := make(map[string]taskLocation)
+		for qf, tq := range taskQueues {
+			for i, t := range tq.Queue.Tasks {
+				taskIdx[t.ID] = taskLocation{QueueFile: qf, Index: i}
+			}
+		}
+
 		for _, dr := range pb.dispatches {
 			switch dr.Item.Kind {
 			case "command":
-				qh.applyCommandDispatchResult(dr, &commandQueue, &commandsDirty)
+				qh.applyCommandDispatchResult(dr, &commandQueue, cmdIndex, &commandsDirty)
 			case "task":
-				qh.applyTaskDispatchResult(dr, taskQueues, taskDirty)
+				qh.applyTaskDispatchResult(dr, taskQueues, taskIdx, taskDirty)
 			case "notification":
-				qh.applyNotificationDispatchResult(dr, &notificationQueue, &notificationsDirty)
+				qh.applyNotificationDispatchResult(dr, &notificationQueue, ntfIndex, &notificationsDirty)
 			}
 		}
 
@@ -1042,93 +1058,95 @@ func (qh *QueueHandler) checkInProgressDependencyFailuresDeferred(tq *taskQueueE
 
 // --- Phase C apply methods ---
 
-func (qh *QueueHandler) applyCommandDispatchResult(dr dispatchResult, cq *model.CommandQueue, dirty *bool) {
-	for i := range cq.Commands {
-		cmd := &cq.Commands[i]
-		if cmd.ID != dr.Item.Command.ID {
-			continue
-		}
-		// Epoch fencing: verify entry hasn't changed since Phase A
-		if cmd.LeaseEpoch != dr.Item.Epoch || cmd.Status != model.StatusInProgress ||
-			cmd.LeaseExpiresAt == nil || *cmd.LeaseExpiresAt != dr.Item.ExpiresAt {
-			qh.log(LogLevelWarn, "dispatch_fence_stale kind=command id=%s epoch=%d/%d",
-				cmd.ID, cmd.LeaseEpoch, dr.Item.Epoch)
-			return
-		}
-		if !dr.Success {
-			// For transient busy detection errors, release lease to allow immediate retry
-			if errors.Is(dr.Error, agent.ErrBusyUndecided) {
-				qh.log(LogLevelWarn, "dispatch_failed_undecided_release type=command id=%s", cmd.ID)
-				if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
-					qh.log(LogLevelError, "release_command_lease_failed id=%s error=%v", cmd.ID, err)
-				} else {
-					qh.scanCounters.LeaseReleases++
-				}
-				*dirty = true
-				return
-			}
-
-			qh.log(LogLevelWarn, "dispatch_failed_lease_kept type=command id=%s error=%v", cmd.ID, dr.Error)
-		} else {
-			qh.scanCounters.CommandsDispatched++
-		}
-		*dirty = true
+func (qh *QueueHandler) applyCommandDispatchResult(dr dispatchResult, cq *model.CommandQueue, cmdIndex map[string]int, dirty *bool) {
+	idx, ok := cmdIndex[dr.Item.Command.ID]
+	if !ok {
 		return
 	}
-}
-
-func (qh *QueueHandler) applyTaskDispatchResult(dr dispatchResult, taskQueues map[string]*taskQueueEntry, taskDirty map[string]bool) {
-	for queueFile, tq := range taskQueues {
-		for i := range tq.Queue.Tasks {
-			task := &tq.Queue.Tasks[i]
-			if task.ID != dr.Item.Task.ID {
-				continue
-			}
-			if task.LeaseEpoch != dr.Item.Epoch || task.Status != model.StatusInProgress ||
-				task.LeaseExpiresAt == nil || *task.LeaseExpiresAt != dr.Item.ExpiresAt {
-				qh.log(LogLevelWarn, "dispatch_fence_stale kind=task id=%s epoch=%d/%d",
-					task.ID, task.LeaseEpoch, dr.Item.Epoch)
-				return
-			}
-			if !dr.Success {
-				qh.log(LogLevelWarn, "dispatch_failed type=task id=%s error=%v", task.ID, dr.Error)
-				if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
-					qh.log(LogLevelError, "release_task_lease task=%s error=%v", task.ID, err)
-				}
-				qh.scanCounters.LeaseReleases++
+	cmd := &cq.Commands[idx]
+	// Epoch fencing: verify entry hasn't changed since Phase A
+	if cmd.LeaseEpoch != dr.Item.Epoch || cmd.Status != model.StatusInProgress ||
+		cmd.LeaseExpiresAt == nil || *cmd.LeaseExpiresAt != dr.Item.ExpiresAt {
+		qh.log(LogLevelWarn, "dispatch_fence_stale kind=command id=%s epoch=%d/%d",
+			cmd.ID, cmd.LeaseEpoch, dr.Item.Epoch)
+		return
+	}
+	if !dr.Success {
+		// For transient busy detection errors, release lease to allow immediate retry
+		if errors.Is(dr.Error, agent.ErrBusyUndecided) {
+			qh.log(LogLevelWarn, "dispatch_failed_undecided_release type=command id=%s", cmd.ID)
+			if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
+				qh.log(LogLevelError, "release_command_lease_failed id=%s error=%v", cmd.ID, err)
 			} else {
-				qh.scanCounters.TasksDispatched++
+				qh.scanCounters.LeaseReleases++
 			}
-			taskDirty[queueFile] = true
+			*dirty = true
 			return
 		}
+
+		qh.log(LogLevelWarn, "dispatch_failed_lease_kept type=command id=%s error=%v", cmd.ID, dr.Error)
+	} else {
+		qh.scanCounters.CommandsDispatched++
 	}
+	*dirty = true
 }
 
-func (qh *QueueHandler) applyNotificationDispatchResult(dr dispatchResult, nq *model.NotificationQueue, dirty *bool) {
-	for i := range nq.Notifications {
-		ntf := &nq.Notifications[i]
-		if ntf.ID != dr.Item.Notification.ID {
-			continue
-		}
-		if ntf.LeaseEpoch != dr.Item.Epoch || ntf.Status != model.StatusInProgress ||
-			ntf.LeaseExpiresAt == nil || *ntf.LeaseExpiresAt != dr.Item.ExpiresAt {
-			qh.log(LogLevelWarn, "dispatch_fence_stale kind=notification id=%s epoch=%d/%d",
-				ntf.ID, ntf.LeaseEpoch, dr.Item.Epoch)
-			return
-		}
-		if !dr.Success {
-			qh.log(LogLevelWarn, "dispatch_failed type=notification id=%s error=%v", ntf.ID, dr.Error)
-			if err := qh.leaseManager.ReleaseNotificationLease(ntf); err != nil {
-				qh.log(LogLevelError, "release_notification_lease id=%s error=%v", ntf.ID, err)
-			}
-		} else {
-			ntf.Status = model.StatusCompleted
-			ntf.UpdatedAt = qh.clock.Now().UTC().Format(time.RFC3339)
-		}
-		*dirty = true
+// taskLocation identifies a task's position across task queue files.
+type taskLocation struct {
+	QueueFile string
+	Index     int
+}
+
+func (qh *QueueHandler) applyTaskDispatchResult(dr dispatchResult, taskQueues map[string]*taskQueueEntry, taskIndex map[string]taskLocation, taskDirty map[string]bool) {
+	loc, ok := taskIndex[dr.Item.Task.ID]
+	if !ok {
 		return
 	}
+	tq := taskQueues[loc.QueueFile]
+	if tq == nil {
+		return
+	}
+	task := &tq.Queue.Tasks[loc.Index]
+	if task.LeaseEpoch != dr.Item.Epoch || task.Status != model.StatusInProgress ||
+		task.LeaseExpiresAt == nil || *task.LeaseExpiresAt != dr.Item.ExpiresAt {
+		qh.log(LogLevelWarn, "dispatch_fence_stale kind=task id=%s epoch=%d/%d",
+			task.ID, task.LeaseEpoch, dr.Item.Epoch)
+		return
+	}
+	if !dr.Success {
+		qh.log(LogLevelWarn, "dispatch_failed type=task id=%s error=%v", task.ID, dr.Error)
+		if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
+			qh.log(LogLevelError, "release_task_lease task=%s error=%v", task.ID, err)
+		}
+		qh.scanCounters.LeaseReleases++
+	} else {
+		qh.scanCounters.TasksDispatched++
+	}
+	taskDirty[loc.QueueFile] = true
+}
+
+func (qh *QueueHandler) applyNotificationDispatchResult(dr dispatchResult, nq *model.NotificationQueue, ntfIndex map[string]int, dirty *bool) {
+	idx, ok := ntfIndex[dr.Item.Notification.ID]
+	if !ok {
+		return
+	}
+	ntf := &nq.Notifications[idx]
+	if ntf.LeaseEpoch != dr.Item.Epoch || ntf.Status != model.StatusInProgress ||
+		ntf.LeaseExpiresAt == nil || *ntf.LeaseExpiresAt != dr.Item.ExpiresAt {
+		qh.log(LogLevelWarn, "dispatch_fence_stale kind=notification id=%s epoch=%d/%d",
+			ntf.ID, ntf.LeaseEpoch, dr.Item.Epoch)
+		return
+	}
+	if !dr.Success {
+		qh.log(LogLevelWarn, "dispatch_failed type=notification id=%s error=%v", ntf.ID, dr.Error)
+		if err := qh.leaseManager.ReleaseNotificationLease(ntf); err != nil {
+			qh.log(LogLevelError, "release_notification_lease id=%s error=%v", ntf.ID, err)
+		}
+	} else {
+		ntf.Status = model.StatusCompleted
+		ntf.UpdatedAt = qh.clock.Now().UTC().Format(time.RFC3339)
+	}
+	*dirty = true
 }
 
 func (qh *QueueHandler) applyTaskBusyCheckResult(bc busyCheckResult, taskQueues map[string]*taskQueueEntry, taskDirty map[string]bool) {

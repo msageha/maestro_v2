@@ -199,7 +199,8 @@ func (l *Loader) validateCondition(condition *RuleCondition) error {
 		}
 		// Validate operator
 		switch condition.Operator {
-		case OpExists, OpNotExists, OpEquals, OpNotEquals, OpContains, OpNotContains,
+		case OpExists, OpNotExists, OpHasValue, OpIsEmpty,
+			OpEquals, OpNotEquals, OpContains, OpNotContains,
 			OpMatches, OpNotMatches, OpGT, OpGTE, OpLT, OpLTE, OpIn, OpNotIn, "":
 			// Valid or will be defaulted
 		default:
