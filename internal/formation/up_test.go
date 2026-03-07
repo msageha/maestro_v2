@@ -3,10 +3,12 @@ package formation
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	yamlv3 "gopkg.in/yaml.v3"
 
+	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -401,6 +403,27 @@ func TestResetFormation_ClearsTransientState(t *testing.T) {
 	}
 	if metrics.SchemaVersion != 1 {
 		t.Errorf("expected schema_version=1, got %d", metrics.SchemaVersion)
+	}
+}
+
+func TestResetFormation_AbortsWhenLockHeld(t *testing.T) {
+	maestroDir := setupTestMaestroDir(t)
+
+	// Simulate another daemon holding daemon.lock
+	lockPath := filepath.Join(maestroDir, "locks", "daemon.lock")
+	fl := lock.NewFileLock(lockPath)
+	if err := fl.TryLock(); err != nil {
+		t.Fatalf("failed to acquire lock for test: %v", err)
+	}
+	defer fl.Unlock()
+
+	// resetFormation should fail because it cannot acquire the lock
+	err := resetFormation(maestroDir)
+	if err == nil {
+		t.Fatal("expected error when daemon.lock is held, got nil")
+	}
+	if !strings.Contains(err.Error(), "another daemon started during cleanup") {
+		t.Errorf("unexpected error message: %v", err)
 	}
 }
 
