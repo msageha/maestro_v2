@@ -109,8 +109,9 @@ func (a *API) releaseFileLock() {
 // data is the object that was written (used to compute content hash).
 func (a *API) notifySelfWrite(queuePath, writeType string, data any) {
 	a.d.selfWrites.Record(queuePath, data)
-	if a.d.eventBus != nil {
-		a.d.eventBus.Publish(events.EventQueueWritten, map[string]interface{}{
+	bus := a.d.eventBus
+	if bus != nil {
+		bus.Publish(events.EventQueueWritten, map[string]interface{}{
 			"file":   filepath.Base(queuePath),
 			"source": "uds",
 			"type":   writeType,
