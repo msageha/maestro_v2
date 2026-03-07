@@ -250,18 +250,38 @@ Orchestrator のキャンセル要求はシステムが自動処理する（pend
 
 ## ペルソナ活用ガイド
 
-`persona_hint` は Worker の実行スタンスを指定する任意フィールドである。`bloom_level` が認知レベル（難易度）を表すのに対し、`persona_hint` は実行時の視点・重点を制御する。
+`persona_hint` は Worker の行動モード（何に集中するか）を指定する任意フィールドである。`bloom_level` が認知レベル（難易度）を表すのに対し、`persona_hint` は実行時の視点・重点を制御する。両者は独立した軸であり、組み合わせて使用する。
 
 利用可能なペルソナ名は `config.yaml` の `personas` セクションで定義される。未定義のペルソナ名を指定した場合はバリデーションエラーとなる。
 
-### 使い分け
+### ペルソナ一覧
 
-| ケース | persona_hint |
-|--------|-------------|
-| 通常の実装・調査タスク | 省略（ペルソナ注入なし） |
-| コードレビュー・テスト品質・セキュリティ | `quality-focused` |
+| persona_hint | 用途 | SubAgent 使用 | 適用タスク例 |
+|---|---|---|---|
+| `implementer` | コード実装・修正全般 | primary: developer, optional: tester | 新機能実装、バグ修正、リファクタ、CI/CD、ドキュメント |
+| `architect` | 設計・大規模構造変更 | primary: analyzer, optional: developer | アーキテクチャ策定、技術選定、大規模リファクタ設計 |
+| `quality-assurance` | テスト・レビュー・品質検証 | primary: tester, optional: analyzer | テスト作成、コードレビュー、セキュリティ監査、ベンチマーク評価 |
+| `researcher` | 調査・分析・レポート | primary: analyzer, optional: tester | コードベース調査、ライブラリ調査、影響範囲分析 |
 
-省略時はペルソナ注入なし（デフォルトの Worker 動作）。大半のタスクでは省略が適切である。
+### タスク種別×ペルソナ マッピング
+
+**主要成果物の種類**でペルソナを判断する:
+
+| タスクの主要成果物 | persona_hint | 判断基準 |
+|---|---|---|
+| パッチ・設定変更・コード修正 | `implementer` | 実装系タスク（機能追加、バグ修正、設定変更、ドキュメント作成） |
+| 設計判断・アーキテクチャ文書・移行計画 | `architect` | 設計系タスク（新規アーキテクチャ、大規模構造変更、ADR 作成、脅威モデル設計） |
+| 検証結果・欠陥リスト・レビュー所見 | `quality-assurance` | 品質系タスク（テスト作成、コードレビュー、セキュリティレビュー、パフォーマンス評価） |
+| 調査報告・比較分析・影響マップ | `researcher` | 調査系タスク（コードベース調査、仕様調査、ライブラリ比較、脆弱性調査） |
+
+**迷う場合**: ペルソナを省略する（デフォルトの Worker 動作）。設計+実装が混在するタスクは `architect` → `implementer` の 2 タスクに分解する。
+
+### bloom_level との関係
+
+- `persona_hint` と `bloom_level` は独立した軸である
+- `bloom_level` はタスクの認知レベル（L1-L3: 定型、L4-L6: 分析的）→ モデル選択に影響
+- `persona_hint` は Worker の行動モード（何に集中するか）→ 実行スタンスに影響
+- 例: `implementer` + L3（定型実装）、`implementer` + L5（複雑な実装）、`architect` + L6（新規設計）
 
 ---
 
@@ -293,11 +313,11 @@ Orchestrator のキャンセル要求はシステムが自動処理する（pend
 | `skill_refs` | 特定の手順・ノウハウの注入 | "何を知っているか" |
 | `bloom_level` | 認知レベルの設定 | "どの深さで"考えるか |
 
-- `persona_hint` は Worker の視点・重点を制御する（例: `quality-focused` で品質重視の姿勢）
+- `persona_hint` は Worker の行動モードを制御する（例: `quality-assurance` で品質検証重視の姿勢）
 - `skill_refs` は具体的な技術手順やベストプラクティスを注入する（例: `go-error-handling` でエラーハンドリングの規約を提供）
 - `bloom_level` はタスクの認知的複雑さに応じたモデル選択を制御する
 
-これらは独立して機能し、組み合わせて使用できる。例えば、`persona_hint: "quality-focused"` + `skill_refs: ["api-design"]` + `bloom_level: 4` で「品質重視の姿勢で、API 設計のノウハウを持ち、分析レベルの認知力で」タスクを実行させることができる。
+これらは独立して機能し、組み合わせて使用できる。例えば、`persona_hint: "quality-assurance"` + `skill_refs: ["api-design"]` + `bloom_level: 4` で「品質検証の姿勢で、API 設計のノウハウを持ち、分析レベルの認知力で」タスクを実行させることができる。
 
 ### 注意事項
 
