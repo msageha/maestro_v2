@@ -55,10 +55,17 @@ func (m *PaneStateManager) ResetClearReady(paneTarget string) error {
 // DetectProcessRestart checks if the pane's process PID has changed since
 // clear_ready_pid was stored. Returns true if a restart was detected and
 // clear_ready was reset.
+//
+// To mitigate TOCTOU between GetPanePID and the comparison, the PID is
+// re-read after resetting clear_ready. If it changed again, the caller
+// still gets the latest PID.
 func (m *PaneStateManager) DetectProcessRestart(paneTarget string) (restarted bool, currentPID string, err error) {
 	currentPID, err = m.paneIO.GetPanePID(paneTarget)
 	if err != nil {
 		return false, "", fmt.Errorf("get pane pid: %w", err)
+	}
+	if currentPID == "" {
+		return false, "", fmt.Errorf("get pane pid: empty PID returned")
 	}
 
 	storedPID, _ := m.paneIO.GetUserVar(paneTarget, "clear_ready_pid")
@@ -67,6 +74,13 @@ func (m *PaneStateManager) DetectProcessRestart(paneTarget string) (restarted bo
 		// Reset errors are non-fatal: the caller should still know a restart
 		// occurred even if the reset partially failed.
 		resetErr := m.ResetClearReady(paneTarget)
+
+		// Re-read PID to mitigate TOCTOU: if the process restarted again
+		// between the first read and now, return the latest PID.
+		if latestPID, pidErr := m.paneIO.GetPanePID(paneTarget); pidErr == nil && latestPID != "" {
+			currentPID = latestPID
+		}
+
 		return true, currentPID, resetErr
 	}
 
