@@ -1,0 +1,19 @@
+# Build binary
+maestro
+
+# Test coverage
+coverage.out
+coverage.html
+
+# Maestro runtime directories
+.maestro/logs/
+.maestro/locks/
+.maestro/state/
+.maestro/queues/
+.maestro/results/
+.maestro/worktrees/
+.maestro/dead_letter/
+.maestro/quarantine/
+
+# Maestro runtime files
+.maestro/dashboard.md

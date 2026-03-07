@@ -22,6 +22,18 @@ func resetFormation(maestroDir string) error {
 		return fmt.Errorf("stop daemon: %w", err)
 	}
 
+	// Acquire daemon lock to prevent a new daemon from starting between
+	// stopDaemon() and the completion of tmux session teardown + state cleanup.
+	// If the lock cannot be acquired, another daemon has already started and
+	// we must not destroy its state.
+	lockDir := filepath.Join(maestroDir, "locks")
+	_ = os.MkdirAll(lockDir, 0755)
+	fl := lock.NewFileLock(filepath.Join(lockDir, "daemon.lock"))
+	if err := fl.TryLock(); err != nil {
+		return fmt.Errorf("reset aborted: another daemon may have started: %w", err)
+	}
+	defer fl.Unlock()
+
 	// Kill existing tmux session (best-effort)
 	fmt.Println("[debug] resetFormation: killing existing tmux session (best-effort)")
 	_ = tmux.KillSession()
