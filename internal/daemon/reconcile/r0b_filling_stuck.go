@@ -39,8 +39,11 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 		statePath := filepath.Join(stateDir, entry.Name())
 		lockKey := "state:" + commandID
 
+		// Phase 1: Detect stuck filling phases (under state lock).
 		var taskIDsToRemove []string
-		modified := func() bool {
+		var stuckPhaseNames []string
+		var stuckAgeSecs []float64
+		needsRepair := func() bool {
 			run.Deps.LockMap.Lock(lockKey)
 			defer run.Deps.LockMap.Unlock(lockKey)
 
@@ -52,8 +55,7 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 				return false
 			}
 
-			localModified := false
-			var localRepairs []Repair
+			found := false
 			for i := range state.Phases {
 				phase := &state.Phases[i]
 				if phase.Status != model.PhaseStatusFilling {
@@ -82,6 +84,46 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 					state.CommandID, phase.Name, ageSec)
 
 				taskIDsToRemove = append(taskIDsToRemove, phase.TaskIDs...)
+				stuckPhaseNames = append(stuckPhaseNames, phase.Name)
+				stuckAgeSecs = append(stuckAgeSecs, ageSec)
+				found = true
+			}
+
+			return found
+		}()
+
+		if !needsRepair {
+			continue
+		}
+
+		// Phase 2: Queue cleanup (no state lock held — avoids deadlock with queue->state paths).
+		run.BatchRemoveTaskIDsFromQueues(taskIDsToRemove)
+
+		// Phase 3: Re-verify and commit state change (under state lock).
+		modified := func() bool {
+			run.Deps.LockMap.Lock(lockKey)
+			defer run.Deps.LockMap.Unlock(lockKey)
+
+			state, err := run.LoadState(statePath)
+			if err != nil {
+				return false
+			}
+
+			stuckSet := make(map[string]struct{}, len(stuckPhaseNames))
+			for _, name := range stuckPhaseNames {
+				stuckSet[name] = struct{}{}
+			}
+
+			localModified := false
+			var localRepairs []Repair
+			for i := range state.Phases {
+				phase := &state.Phases[i]
+				if _, ok := stuckSet[phase.Name]; !ok {
+					continue
+				}
+				if phase.Status != model.PhaseStatusFilling {
+					continue
+				}
 
 				for _, taskID := range phase.TaskIDs {
 					delete(state.TaskStates, taskID)
@@ -95,6 +137,13 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 				phase.Status = model.PhaseStatusAwaitingFill
 				localModified = true
 
+				ageSec := 0.0
+				for j, name := range stuckPhaseNames {
+					if name == phase.Name {
+						ageSec = stuckAgeSecs[j]
+						break
+					}
+				}
 				localRepairs = append(localRepairs, Repair{
 					Pattern:   "R0b",
 					CommandID: state.CommandID,
@@ -115,10 +164,6 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 
 			return localModified
 		}()
-
-		if len(taskIDsToRemove) > 0 {
-			run.BatchRemoveTaskIDsFromQueues(taskIDsToRemove)
-		}
 
 		if modified && run.Deps.ExecutorFactory != nil {
 			notifications = append(notifications, DeferredNotification{

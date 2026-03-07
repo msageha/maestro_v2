@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -69,7 +70,11 @@ func (d *Daemon) prepareStartup() error {
 	}
 
 	// Create errgroup derived from daemon context.
-	d.eg, d.ctx = errgroup.WithContext(d.ctx)
+	// Use a separate variable for the errgroup-derived context so that
+	// d.ctx remains the daemon's own context (cancellable via d.cancel).
+	var egCtx context.Context
+	d.eg, egCtx = errgroup.WithContext(d.ctx)
+	_ = egCtx // errgroup goroutines observe cancellation via d.ctx (parent propagates)
 
 	return nil
 }
