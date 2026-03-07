@@ -58,6 +58,7 @@ Worker が `.maestro/` 内を能動的に参照する必要はない。タスク
 | `acceptance_criteria` | 完了条件 |
 | `constraints` | 制約条件（任意） |
 | `tools_hint` | 推奨ツール（任意） |
+| `persona_hint` | ペルソナ名（任意。詳細は「ペルソナモード」セクション参照） |
 | `working_dir` | 作業ディレクトリ（システムが自動設定済み。変更不要） |
 
 ---
@@ -71,6 +72,60 @@ Worker が `.maestro/` 内を能動的に参照する必要はない。タスク
 5. **報告後、ターンを終了する**（次のタスク配信を待つ）
 
 予期しないファイル状態を検知した場合、即座に失敗として報告する。
+
+---
+
+## ペルソナモード
+
+タスク配信に `persona_hint` が含まれる場合、そのペルソナに応じた視点・重点で作業を遂行する。`persona_hint` は作業方針を示す補助情報であり、SubAgent の使用を強制しない。ペルソナが未指定の場合は従来通り直接作業を行う。
+
+| persona_hint | 役割 | 推奨委譲先 |
+|---|---|---|
+| `implementer` | コード実装・修正・ドキュメント作成 | developer, tester |
+| `architect` | 設計判断・アーキテクチャ策定・大規模構造変更 | analyzer, developer |
+| `quality-assurance` | テスト・レビュー・品質検証・セキュリティ分析 | tester, analyzer |
+| `researcher` | 情報収集・分析・調査レポート作成 | analyzer |
+| （未指定） | 従来通り直接作業 | 必要に応じて使用可 |
+
+各ペルソナの詳細な行動指針はシステムがタスク配信時に自動注入する。Worker がペルソナ定義を直接参照する必要はない。
+
+`persona_hint` が未知の値、またはタスクの明示的な指示と衝突する場合は、タスクの `content` / `acceptance_criteria` の明示的な指示を優先し、未知の値は未指定として扱う。
+
+---
+
+## SubAgent 活用ガイド
+
+Worker は Claude Code の Agent ツール（`subagent_type` パラメータ）を使用して、専門的な作業を SubAgent に委譲できる。ペルソナは判断の視点を示し、SubAgent は任意の実行手段である。両者は独立して機能する。
+
+### SubAgent 3種
+
+| SubAgent | 専門領域 | ツール | 特徴 |
+|---|---|---|---|
+| `developer` | コード実装・設定変更・ドキュメント作成 | Edit, Write, Read, Bash, Glob, Grep | 書き込み可能。実装作業に使用 |
+| `tester` | テスト作成・実行・カバレッジ分析 | Edit, Write, Read, Bash, Glob, Grep | テスト専門。テストコードの作成・実行に使用 |
+| `analyzer` | コード分析・セキュリティスキャン・影響範囲調査 | Read, Bash, Glob, Grep | 読み取り専用。コードベースの調査・分析に使用 |
+
+### 委譲判断基準
+
+以下の場合に SubAgent への委譲を検討する。タスクが単純な場合は直接実行してよい。
+
+| 作業内容 | 推奨 SubAgent |
+|---------|-------------|
+| 複数ファイルにまたがるコード実装 | developer |
+| テストコードの作成・修正 | tester |
+| テストの実行・結果分析 | tester |
+| 広範なコードベース走査・分析 | analyzer |
+| セキュリティスキャン・脆弱性分析 | analyzer |
+| 影響範囲の特定・依存関係調査 | analyzer |
+
+### 委譲の原則
+
+- SubAgent の使用は推奨であり義務ではない。タスクが単純な場合は直接実行してよい
+- 複数の SubAgent を並列に起動して効率化できる（例: analyzer で影響範囲を調査しながら developer で実装）
+- **書き込み可能な SubAgent を並列利用する場合、同一ファイルの同時編集を禁止する**
+- 依存関係が強い作業は逐次実行する
+- SubAgent の結果は Worker が統合し、最終的な品質保証は Worker が行う
+- SubAgent が失敗した場合、Worker が再試行するか直接実行に切り替える
 
 ---
 
