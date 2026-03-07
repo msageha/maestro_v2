@@ -24,6 +24,10 @@ import (
 // maxGateEvaluations is the maximum number of gate evaluation entries kept in memory.
 const maxGateEvaluations = 1000
 
+// executorErrorTTL is how long a failed executor factory result is cached
+// before the next getExecutor call retries creation.
+const executorErrorTTL = 30 * time.Second
+
 // Dispatcher handles priority sorting and agent_executor dispatch.
 type Dispatcher struct {
 	maestroDir        string
@@ -43,10 +47,11 @@ type Dispatcher struct {
 	// dispatch calls. This avoids per-dispatch log file Open/Close overhead.
 	// All access is protected by execMu to prevent data races during shutdown
 	// (CloseExecutor) and testing (SetExecutorFactory).
-	execMu        sync.Mutex
-	cachedExec    AgentExecutor
-	cachedExecErr error
-	execInit      bool
+	execMu          sync.Mutex
+	cachedExec      AgentExecutor
+	cachedExecErr   error
+	cachedExecErrAt time.Time
+	execInit        bool
 
 	worktreeManager *WorktreeManager
 }
@@ -79,6 +84,7 @@ func (d *Dispatcher) SetExecutorFactory(f ExecutorFactory) {
 	d.executorFactory = f
 	d.cachedExec = nil
 	d.cachedExecErr = nil
+	d.cachedExecErrAt = time.Time{}
 	d.execInit = false
 	d.execMu.Unlock()
 
@@ -93,9 +99,17 @@ func (d *Dispatcher) SetExecutorFactory(f ExecutorFactory) {
 func (d *Dispatcher) getExecutor() (AgentExecutor, error) {
 	d.execMu.Lock()
 	defer d.execMu.Unlock()
+	if d.execInit && d.cachedExecErr != nil && d.clock.Now().Sub(d.cachedExecErrAt) >= executorErrorTTL {
+		d.execInit = false
+	}
 	if !d.execInit {
 		d.cachedExec, d.cachedExecErr = d.executorFactory(d.maestroDir, d.config.Watcher, d.config.Logging.Level)
 		d.execInit = true
+		if d.cachedExecErr != nil {
+			d.cachedExecErrAt = d.clock.Now()
+		} else {
+			d.cachedExecErrAt = time.Time{}
+		}
 	}
 	if d.cachedExecErr != nil {
 		return nil, fmt.Errorf("%w: %v", errExecutorInit, d.cachedExecErr)
@@ -110,6 +124,7 @@ func (d *Dispatcher) CloseExecutor() {
 	exec := d.cachedExec
 	d.cachedExec = nil
 	d.cachedExecErr = nil
+	d.cachedExecErrAt = time.Time{}
 	d.execInit = false
 	d.execMu.Unlock()
 
