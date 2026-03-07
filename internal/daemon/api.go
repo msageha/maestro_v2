@@ -24,8 +24,8 @@ func (a *API) registerHandlers() {
 	})
 
 	d.server.Handle("scan", func(req *uds.Request) *uds.Response {
-		if d.handler == nil {
-			return uds.ErrorResponse(uds.ErrCodeInternal, "handler not initialized")
+		if !d.ready.Load() {
+			return uds.ErrorResponse(uds.ErrCodeInternal, "daemon not ready")
 		}
 		d.handler.PeriodicScanWithContext(d.ctx)
 		return uds.SuccessResponse(map[string]string{"status": "scanned"})
@@ -47,8 +47,8 @@ func (a *API) registerHandlers() {
 // handleTaskHeartbeat handles task heartbeat requests.
 func (a *API) handleTaskHeartbeat(req *uds.Request) *uds.Response {
 	d := a.d
-	if d.handler == nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, "handler not initialized")
+	if !d.ready.Load() {
+		return uds.ErrorResponse(uds.ErrCodeInternal, "daemon not ready")
 	}
 	heartbeatHandler := NewTaskHeartbeatHandler(
 		d.maestroDir,
@@ -69,8 +69,8 @@ func (a *API) handleTaskHeartbeat(req *uds.Request) *uds.Response {
 // serializes concurrent dashboard writes to prevent temp-file clobbering.
 func (a *API) handleDashboard(req *uds.Request) *uds.Response {
 	d := a.d
-	if d.handler == nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, "handler not initialized")
+	if !d.ready.Load() {
+		return uds.ErrorResponse(uds.ErrCodeInternal, "daemon not ready")
 	}
 
 	a.dashboardMu.Lock()

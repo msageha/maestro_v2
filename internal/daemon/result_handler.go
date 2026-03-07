@@ -51,7 +51,7 @@ type ResultHandler struct {
 	continuousHandler *ContinuousHandler
 	eventBus          *events.Bus
 
-	execMu        sync.Mutex
+	execMu        sync.Mutex // protects cachedExec, cachedExecErr, execInit
 	cachedExec    AgentExecutor
 	cachedExecErr error
 	execInit      bool
@@ -247,6 +247,14 @@ func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
 			continue
 		}
 
+		// M-10: Guard against duplicate notification — another goroutine may have
+		// already marked this result as notified between our Phase 2 and Phase 3.
+		if entry.Notified {
+			rh.lockMap.Unlock(lockKey)
+			rh.log(LogLevelDebug, "result_already_notified worker=%s result=%s", workerID, resultID)
+			continue
+		}
+
 		if notifyErr != nil {
 			rh.markTaskNotifyFailure(entry, notifyErr.Error())
 			if entry.NotifyAttempts >= maxNotifyAttempts {
@@ -335,6 +343,13 @@ func (rh *ResultHandler) processCommandResultFile() int {
 		if entry == nil {
 			rh.lockMap.Unlock(lockKey)
 			rh.log(LogLevelWarn, "command_result_disappeared result=%s", resultID)
+			continue
+		}
+
+		// M-10: Guard against duplicate notification
+		if entry.Notified {
+			rh.lockMap.Unlock(lockKey)
+			rh.log(LogLevelDebug, "command_result_already_notified result=%s", resultID)
 			continue
 		}
 

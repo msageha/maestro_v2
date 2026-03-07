@@ -14,7 +14,7 @@ import (
 // When the daemon writes a YAML file via UDS handler, it records the content hash here.
 // fsnotifyLoop checks this tracker by reading the file and comparing hashes.
 type selfWriteTracker struct {
-	mu     sync.Mutex
+	mu     sync.Mutex              // protects stamps
 	stamps map[string]writeStamp
 }
 
@@ -46,9 +46,14 @@ func (t *selfWriteTracker) Record(path string, data any) {
 
 // Consume checks if a file's current content matches a recorded self-write hash.
 // If so, removes it from tracking and returns true.
-// Uses snapshot/revalidate/consume to avoid TOCTOU: the stamp is only deleted
-// after the file hash is verified to match, preventing loss of valid stamps
-// when concurrent writes change the file between snapshot and read.
+//
+// M-08: Uses a three-phase snapshot/revalidate/consume pattern to mitigate TOCTOU:
+//   Phase 1: Snapshot the stamp under lock.
+//   Phase 2: Read file content outside lock (I/O must not hold the lock).
+//   Phase 3: Re-acquire lock, revalidate that the stamp hasn't been replaced
+//            or consumed by another goroutine, then consume only if the hash matches.
+// This ensures that a concurrent Record() between Phase 1 and Phase 3 does not
+// cause the new stamp to be incorrectly consumed.
 func (t *selfWriteTracker) Consume(path string) bool {
 	// Phase 1: Snapshot stamp under lock
 	t.mu.Lock()

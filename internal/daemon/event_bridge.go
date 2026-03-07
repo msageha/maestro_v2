@@ -7,6 +7,16 @@ import (
 
 // EventBridge bridges the generic event bus to typed daemon component events.
 // It holds a back-pointer to Daemon for access to shared state.
+//
+// M-16: Initialization order dependency — EventBridge must be instantiated
+// after Daemon.eventBus is created (events.NewBus) but before publishers
+// (dispatcher, dependencyResolver, resultHandler) get SetEventBus().
+// The correct sequence in initComponents() is:
+//   1. Create sub-components (handler, qualityGateDaemon, etc.)
+//   2. Create eventBus
+//   3. Subscribe consumers via bridge (subscribeQualityGateEvents, subscribeQueueWrittenEvents)
+//   4. Wire eventBus to publishers (SetEventBus calls)
+// This ensures subscribers are ready before any events are published.
 type EventBridge struct {
 	d                  *Daemon
 	eventUnsubscribers []func()
@@ -32,10 +42,11 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 			return
 		}
 
-		if d.qualityGateDaemon == nil {
+		qgd := d.qualityGateDaemon
+		if qgd == nil {
 			return
 		}
-		d.qualityGateDaemon.EmitEvent(TaskStartEvent{
+		qgd.EmitEvent(TaskStartEvent{
 			TaskID:    taskID,
 			CommandID: commandID,
 			AgentID:   workerID,
@@ -65,10 +76,11 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 			return
 		}
 
-		if d.qualityGateDaemon == nil {
+		qgd := d.qualityGateDaemon
+		if qgd == nil {
 			return
 		}
-		d.qualityGateDaemon.EmitEvent(TaskCompleteEvent{
+		qgd.EmitEvent(TaskCompleteEvent{
 			TaskID:      taskID,
 			CommandID:   commandID,
 			AgentID:     workerID,
@@ -89,10 +101,11 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 			return
 		}
 
-		if d.qualityGateDaemon == nil {
+		qgd := d.qualityGateDaemon
+		if qgd == nil {
 			return
 		}
-		d.qualityGateDaemon.EmitEvent(PhaseTransitionEvent{
+		qgd.EmitEvent(PhaseTransitionEvent{
 			PhaseID:        phaseID,
 			CommandID:      commandID,
 			OldStatus:      model.PhaseStatus(oldStatus),
@@ -113,11 +126,12 @@ func (eb *EventBridge) subscribeQueueWrittenEvents() {
 		return
 	}
 	unsub := d.eventBus.Subscribe(events.EventQueueWritten, func(e events.Event) {
-		if d.handler == nil || d.shuttingDown.Load() {
+		h := d.handler
+		if h == nil || d.shuttingDown.Load() {
 			return
 		}
 		file, _ := e.Data["file"].(string)
-		d.handler.debounceAndScan("event_bus:" + file)
+		h.debounceAndScan("event_bus:" + file)
 	})
 	eb.eventUnsubscribers = append(eb.eventUnsubscribers, unsub)
 }

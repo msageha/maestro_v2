@@ -37,7 +37,7 @@ type Dispatcher struct {
 	eventBus          *events.Bus
 	qualityGate       *QualityGateDaemon
 	gateEvaluations   map[string]*model.QualityGateEvaluation // task_id -> evaluation
-	gateEvalMutex     sync.RWMutex
+	gateEvalMutex     sync.RWMutex                            // protects gateEvaluations
 
 	// cachedExec is a shared Executor instance created once and reused across
 	// dispatch calls. This avoids per-dispatch log file Open/Close overhead.
@@ -575,4 +575,24 @@ func (d *Dispatcher) GetGateEvaluation(taskID string) *model.QualityGateEvaluati
 	d.gateEvalMutex.RLock()
 	defer d.gateEvalMutex.RUnlock()
 	return d.gateEvaluations[taskID]
+}
+
+// RemoveGateEvaluation removes the gate evaluation for a single task.
+func (d *Dispatcher) RemoveGateEvaluation(taskID string) {
+	d.gateEvalMutex.Lock()
+	defer d.gateEvalMutex.Unlock()
+	delete(d.gateEvaluations, taskID)
+}
+
+// RemoveGateEvaluations removes gate evaluations for the given task IDs.
+// Intended to be called when a command completes to free entries for all its tasks.
+func (d *Dispatcher) RemoveGateEvaluations(taskIDs []string) {
+	if len(taskIDs) == 0 {
+		return
+	}
+	d.gateEvalMutex.Lock()
+	defer d.gateEvalMutex.Unlock()
+	for _, id := range taskIDs {
+		delete(d.gateEvaluations, id)
+	}
 }

@@ -111,13 +111,16 @@ func (d *Daemon) initComponents() error {
 	}
 
 	d.eventBus = events.NewBus(100)
+
+	// Subscribe consumers first so they are ready before publishers get access.
+	d.bridge.subscribeQualityGateEvents()
+	d.bridge.subscribeQueueWrittenEvents()
+
+	// Now wire the event bus to publishers.
 	d.handler.dispatcher.SetEventBus(d.eventBus)
 	d.handler.dispatcher.SetQualityGate(d.qualityGateDaemon)
 	d.handler.dependencyResolver.SetEventBus(d.eventBus)
 	d.handler.resultHandler.SetEventBus(d.eventBus)
-
-	d.bridge.subscribeQualityGateEvents()
-	d.bridge.subscribeQueueWrittenEvents()
 
 	return nil
 }

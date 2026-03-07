@@ -22,7 +22,7 @@ type Server struct {
 	socketPath  string
 	listener    net.Listener
 	handlers    map[string]HandlerFunc
-	mu          sync.RWMutex
+	mu          sync.RWMutex // protects handlers map
 	connTimeout time.Duration
 	maxConns    int
 	connSem     chan struct{}

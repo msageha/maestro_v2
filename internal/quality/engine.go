@@ -6,8 +6,10 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -21,7 +23,7 @@ type Engine struct {
 	evaluators     map[ConditionType]RuleEvaluator
 	cache          *ResultCache
 	singleflight   *singleflight.Group
-	mu             sync.RWMutex
+	mu             sync.RWMutex // protects gates, evaluators, configVersion, configChecksum
 	configVersion  string
 	configChecksum string
 }
@@ -500,8 +502,10 @@ func toInt(v interface{}) int {
 		return int(val)
 	case string:
 		// Try to parse string as int
-		var i int
-		fmt.Sscanf(val, "%d", &i)
+		i, err := strconv.Atoi(val)
+		if err != nil {
+			return 0
+		}
 		return i
 	default:
 		return 0
@@ -540,16 +544,19 @@ func (m *MapEvaluationContext) GetField(path string) (interface{}, bool) {
 	return nil, false
 }
 
-// GetResource retrieves resource metrics
+// GetResource retrieves resource metrics.
+// NOTE: Not yet implemented — always returns 0. Callers relying on this
+// will get a false-positive "within limit" result. Implement when resource
+// monitoring is wired up.
 func (m *MapEvaluationContext) GetResource(metric string, scope string) (float64, error) {
-	// This would be implemented to fetch actual metrics
-	// For now, return a placeholder
-	return 0, nil
+	log.Printf("quality/engine: GetResource called but not implemented (metric=%s, scope=%s)", metric, scope)
+	return 0, fmt.Errorf("GetResource not implemented (metric=%s, scope=%s)", metric, scope)
 }
 
-// GetDependencies retrieves dependency information
+// GetDependencies retrieves dependency information.
+// NOTE: Not yet implemented — always returns an empty slice. Dependency
+// evaluators will behave as if all dependencies are missing.
 func (m *MapEvaluationContext) GetDependencies(mode string) ([]string, error) {
-	// This would be implemented to fetch actual dependencies
-	// For now, return empty
-	return []string{}, nil
+	log.Printf("quality/engine: GetDependencies called but not implemented (mode=%s)", mode)
+	return []string{}, fmt.Errorf("GetDependencies not implemented (mode=%s)", mode)
 }

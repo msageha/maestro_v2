@@ -40,7 +40,7 @@ type QueueHandler struct {
 	scanCounters ScanCounters
 
 	// Debounce state
-	debounceMu       sync.Mutex
+	debounceMu       sync.Mutex // protects debounceTimer, firstTriggerAt, debounceStopped
 	debounceTimer    *time.Timer
 	firstTriggerAt   time.Time   // tracks first trigger in a debounce window for maxWait
 	scanRunning      atomic.Bool // true while debounced callback is executing
@@ -203,6 +203,14 @@ func (qh *QueueHandler) PeriodicScan() {
 // Phase A (scanMu.Lock): Load queues, fast mutations, collect deferred work, flush.
 // Phase B (no lock): Execute slow tmux I/O (interrupts, busy probes, dispatch, signals).
 // Phase C (scanMu.Lock): Reload queues, apply Phase B results with fencing, flush, reconcile.
+//
+// Clock skew note: All timestamps in the scan cycle are derived from qh.clock.Now()
+// (monotonic clock within the process). However, YAML queue files store wall-clock
+// timestamps (time.RFC3339). If the system clock is adjusted between Phase A and
+// Phase C (e.g., NTP correction), file-based timestamp comparisons (ExpiresAt,
+// CreatedAt) may produce unexpected results. The epoch fencing mechanism in Phase C
+// mitigates most risks, but operators should be aware that large clock jumps can
+// cause lease expirations to fire early or late.
 func (qh *QueueHandler) PeriodicScanWithContext(ctx context.Context) {
 	// scanRunMu serializes the full A/B/C cycle so that concurrent scan triggers
 	// wait for the current cycle to finish rather than overlapping with Phase B.
