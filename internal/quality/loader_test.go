@@ -526,24 +526,24 @@ gates:
 			wantErr: false, // Should apply default timeout
 		},
 		{
-			name: "resource limit without limit value",
+			name: "unknown condition type rejected",
 			yaml: `
 schema_version: "1.0.0"
 gates:
-  - id: resource_gate
-    name: "Resource Gate"
+  - id: unknown_gate
+    name: "Unknown Gate"
     type: pre_task
     rules:
-      - id: resource_rule
+      - id: unknown_rule
         condition:
-          type: resource_limit
-          resource: file_count
+          type: unknown_type
+          field: task.id
     action:
       on_pass: allow
       on_fail: block
 `,
 			wantErr: true,
-			errMsg:  "positive limit",
+			errMsg:  "unknown condition type",
 		},
 	}
 
@@ -620,8 +620,10 @@ gates:
                   field: phase.status
                   operator: equals
                   value: completed
-                - type: dependency_check
-                  mode: all_completed
+                - type: field_validation
+                  field: phase.ready
+                  operator: equals
+                  value: true
             - type: not
               conditions:
                 - type: field_validation
@@ -630,10 +632,7 @@ gates:
                   value: true
     action:
       on_pass: allow
-      on_fail: rollback
-      rollback_config:
-        target: phase
-        preserve_logs: true
+      on_fail: block
     metrics:
       enabled: true
       track_duration: true
@@ -654,10 +653,7 @@ gates:
 	assert.Equal(t, []string{"implementation", "refactoring"}, gate.Trigger.TaskTypes)
 
 	// Check action configuration
-	assert.Equal(t, ActionRollback, gate.Action.OnFail)
-	assert.NotNil(t, gate.Action.RollbackConfig)
-	assert.Equal(t, "phase", gate.Action.RollbackConfig.Target)
-	assert.True(t, gate.Action.RollbackConfig.PreserveLogs)
+	assert.Equal(t, ActionBlock, gate.Action.OnFail)
 
 	// Check metrics configuration
 	assert.True(t, gate.Metrics.Enabled)
