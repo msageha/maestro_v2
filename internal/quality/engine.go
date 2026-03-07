@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -59,8 +60,6 @@ func NewEngine() *Engine {
 	engine.RegisterEvaluator(ConditionAnd, &LogicalAndEvaluator{engine: engine})
 	engine.RegisterEvaluator(ConditionOr, &LogicalOrEvaluator{engine: engine})
 	engine.RegisterEvaluator(ConditionNot, &LogicalNotEvaluator{engine: engine})
-	engine.RegisterEvaluator(ConditionResourceLimit, &ResourceLimitEvaluator{})
-	engine.RegisterEvaluator(ConditionDependencyCheck, &DependencyCheckEvaluator{})
 	engine.RegisterEvaluator(ConditionScript, &ScriptEvaluator{})
 
 	return engine
@@ -499,9 +498,7 @@ func toInt(v interface{}) int {
 	case float64:
 		return int(val)
 	case string:
-		// Try to parse string as int
-		var i int
-		fmt.Sscanf(val, "%d", &i)
+		i, _ := strconv.Atoi(val)
 		return i
 	default:
 		return 0
@@ -540,16 +537,3 @@ func (m *MapEvaluationContext) GetField(path string) (interface{}, bool) {
 	return nil, false
 }
 
-// GetResource retrieves resource metrics
-func (m *MapEvaluationContext) GetResource(metric string, scope string) (float64, error) {
-	// This would be implemented to fetch actual metrics
-	// For now, return a placeholder
-	return 0, nil
-}
-
-// GetDependencies retrieves dependency information
-func (m *MapEvaluationContext) GetDependencies(mode string) ([]string, error) {
-	// This would be implemented to fetch actual dependencies
-	// For now, return empty
-	return []string{}, nil
-}
