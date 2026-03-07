@@ -56,7 +56,7 @@ func (w *WatchLoop) fsnotifyLoop() {
 					case w.fsSem <- struct{}{}:
 						defer func() { <-w.fsSem }()
 					default:
-						d.log(LogLevelDebug, "fsnotify handler dropped (semaphore full) file=%s", name)
+						d.log(LogLevelWarn, "fsnotify handler dropped (semaphore full) file=%s", name)
 						return nil
 					}
 					d.handler.HandleFileEvent(name)
