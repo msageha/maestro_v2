@@ -265,6 +265,47 @@ Orchestrator のキャンセル要求はシステムが自動処理する（pend
 
 ---
 
+## スキル活用ガイド
+
+`skill_refs` は Worker にタスク固有の手順・ノウハウを注入する任意フィールドである。スキルは `.maestro/skills/{name}.md`（SKILL.md 形式）で定義され、タスク dispatch 時に Worker のコンテキストに注入される。
+
+### skill_refs の指定方法
+
+タスク YAML の `skill_refs` フィールドにスキル名のリストを指定する:
+
+```yaml
+- name: "impl-auth"
+  purpose: "認証 API を実装する"
+  content: "..."
+  acceptance_criteria: "..."
+  constraints: []
+  blocked_by: []
+  bloom_level: 3
+  required: true
+  skill_refs: ["go-error-handling", "api-design"]
+```
+
+### persona_hint / skill_refs / bloom_level の使い分け
+
+| フィールド | 役割 | 制御する側面 |
+|-----------|------|-------------|
+| `persona_hint` | Worker の行動指針・専門性の設定 | "誰として"振る舞うか |
+| `skill_refs` | 特定の手順・ノウハウの注入 | "何を知っているか" |
+| `bloom_level` | 認知レベルの設定 | "どの深さで"考えるか |
+
+- `persona_hint` は Worker の視点・重点を制御する（例: `quality-focused` で品質重視の姿勢）
+- `skill_refs` は具体的な技術手順やベストプラクティスを注入する（例: `go-error-handling` でエラーハンドリングの規約を提供）
+- `bloom_level` はタスクの認知的複雑さに応じたモデル選択を制御する
+
+これらは独立して機能し、組み合わせて使用できる。例えば、`persona_hint: "quality-focused"` + `skill_refs: ["api-design"]` + `bloom_level: 4` で「品質重視の姿勢で、API 設計のノウハウを持ち、分析レベルの認知力で」タスクを実行させることができる。
+
+### 注意事項
+
+- 存在しないスキル名を指定した場合の挙動は `config.yaml` の `missing_ref_policy` に依存する（`warn`: 警告のみで続行、`error`: タスク拒否等）
+- 大半のタスクでは `skill_refs` は省略が適切である。特定の手順やノウハウの注入が明確に必要な場合にのみ使用する
+
+---
+
 ## タスク設計の原則
 
 ### 最小 Worker 数
@@ -567,6 +608,7 @@ tasks:
     blocked_by: ["login-api"]
     bloom_level: 4
     required: true
+    skill_refs: ["api-design"]
 ```
 
 | フィールド | 必須 | 説明 |
@@ -581,6 +623,7 @@ tasks:
 | `required` | 必須 | `true`: 失敗で command 失敗 / `false`: 失敗しても影響なし |
 | `tools_hint` | 任意 | Worker に推奨する MCP ツール名のリスト。利用可能なツールは自身の MCP ツール一覧を参照 |
 | `persona_hint` | 任意 | Worker に適用するペルソナ名（文字列）。`config.yaml` の `personas` セクションで定義された名前を指定。省略時はペルソナ注入なし |
+| `skill_refs` | 任意 | Worker に注入するスキル名のリスト。`.maestro/skills/{name}.md` に対応 |
 
 ### フェーズ付き（段階実行）
 
