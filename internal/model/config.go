@@ -486,6 +486,21 @@ func (c Config) Validate() error {
 		errs = append(errs, fmt.Errorf("learnings.inject_count: must be >= 0"))
 	}
 
+	// logging.level
+	if l := c.Logging.Level; l != "" && l != "debug" && l != "info" && l != "warn" && l != "error" {
+		errs = append(errs, fmt.Errorf("logging.level: must be one of \"debug\", \"info\", \"warn\", \"error\""))
+	}
+
+	// quality_gates.enforcement.failure_action
+	if fa := c.QualityGates.Enforcement.FailureAction; fa != "" && fa != "warn" && fa != "block" {
+		errs = append(errs, fmt.Errorf("quality_gates.enforcement.failure_action: must be \"warn\" or \"block\""))
+	}
+
+	// worktree.merge_strategy
+	if ms := c.Worktree.MergeStrategy; ms != "" && ms != "ort" && ms != "recursive" && ms != "resolve" && ms != "octopus" && ms != "ours" && ms != "subtree" {
+		errs = append(errs, fmt.Errorf("worktree.merge_strategy: must be one of \"ort\", \"recursive\", \"resolve\", \"octopus\", \"ours\", \"subtree\""))
+	}
+
 	// skills
 	if c.Skills.MaxRefsPerTask < 0 {
 		errs = append(errs, fmt.Errorf("skills.max_refs_per_task: must be >= 0"))

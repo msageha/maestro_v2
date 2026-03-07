@@ -38,6 +38,12 @@ watcher:
   idle_stable_sec: 5
   cooldown_after_clear: 3
   notify_lease_sec: 120
+  wait_ready_interval_sec: 2           # Agent 準備完了ポーリング間隔 (秒)
+  wait_ready_max_retries: 15           # Agent 準備完了ポーリング最大リトライ回数
+  clear_confirm_timeout_sec: 5         # /clear 確認タイムアウト (秒)
+  clear_confirm_poll_ms: 250           # /clear 確認ポーリング間隔 (ミリ秒)
+  clear_max_attempts: 3                # /clear 送信試行回数 (初回含む)
+  clear_retry_backoff_ms: 500          # /clear リトライ間バックオフ (ミリ秒、倍増)
 
 retry:
   command_dispatch: 5
@@ -97,6 +103,10 @@ worktree:
     enabled: true                  # 定期 GC の有効化
     ttl_hours: 24                  # 古い worktree の TTL (時間)
     max_worktrees: 32              # 最大 worktree 数
+  commit_policy:
+    max_files: 30                  # コミットあたりの最大ステージングファイル数 (0=無制限)
+    require_gitignore: true        # .gitignore の存在を必須にする
+    message_pattern: "^\\[maestro\\]\\s"  # コミットメッセージの正規表現パターン (空=チェックなし)
 
 skills:
   enabled: false                    # スキル参照機能の有効化フラグ (opt-in)
