@@ -218,7 +218,7 @@ type QualityGateEnforcement struct {
 type CircuitBreakerConfig struct {
 	Enabled                bool `yaml:"enabled"`                   // opt-in, default: false
 	MaxConsecutiveFailures int  `yaml:"max_consecutive_failures"`  // default: 3
-	ProgressTimeoutMinutes int  `yaml:"progress_timeout_minutes"`  // default: 30, 0=disabled
+	ProgressTimeoutMinutes int  `yaml:"progress_timeout_minutes"`  // default: 30
 }
 
 // EffectiveMaxConsecutiveFailures returns the configured threshold or 3 as default.
@@ -229,10 +229,12 @@ func (c CircuitBreakerConfig) EffectiveMaxConsecutiveFailures() int {
 	return 3
 }
 
-// EffectiveProgressTimeoutMinutes returns the configured timeout.
-// Returns 0 if set to 0 (disabled). The template default is 30.
+// EffectiveProgressTimeoutMinutes returns the configured timeout or 30 as default.
 func (c CircuitBreakerConfig) EffectiveProgressTimeoutMinutes() int {
-	return c.ProgressTimeoutMinutes
+	if c.ProgressTimeoutMinutes > 0 {
+		return c.ProgressTimeoutMinutes
+	}
+	return 30
 }
 
 // LearningsConfig controls the learning accumulation feature.
@@ -241,7 +243,7 @@ type LearningsConfig struct {
 	MaxEntries       int  `yaml:"max_entries"`        // default: 100
 	MaxContentLength int  `yaml:"max_content_length"` // default: 500
 	InjectCount      int  `yaml:"inject_count"`       // top-K learnings injected per task dispatch, default: 5
-	TTLHours         int  `yaml:"ttl_hours"`          // learning expiry in hours, default: 72, 0=unlimited
+	TTLHours         int  `yaml:"ttl_hours"`          // learning expiry in hours, default: 72
 }
 
 // EffectiveMaxEntries returns the configured limit or 100 as default.
@@ -268,10 +270,12 @@ func (l LearningsConfig) EffectiveInjectCount() int {
 	return 5
 }
 
-// EffectiveTTLHours returns the configured TTL in hours.
-// 0 means unlimited (no expiry). The template default is 72.
+// EffectiveTTLHours returns the configured TTL or 72 hours as default.
 func (l LearningsConfig) EffectiveTTLHours() int {
-	return l.TTLHours
+	if l.TTLHours > 0 {
+		return l.TTLHours
+	}
+	return 72
 }
 
 // VerificationConfig controls verification commands run by Workers.
