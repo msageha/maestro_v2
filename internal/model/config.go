@@ -4,9 +4,6 @@ package model
 import (
 	"errors"
 	"fmt"
-	"strings"
-
-	"github.com/msageha/maestro_v2/internal/validate"
 )
 
 // DefaultMaxYAMLFileBytes is the default maximum size for YAML file reads (5MB).
@@ -29,13 +26,6 @@ type Config struct {
 	Verification   VerificationConfig   `yaml:"verification"`
 	Worktree       WorktreeConfig       `yaml:"worktree"`
 	Skills         SkillsConfig             `yaml:"skills"`
-	Personas       map[string]PersonaConfig `yaml:"personas,omitempty"`
-}
-
-// PersonaConfig defines a persona that can be assigned to agents.
-type PersonaConfig struct {
-	Description string `yaml:"description"`
-	Prompt      string `yaml:"prompt"`
 }
 
 // SkillsConfig controls the skill reference feature for tasks.
@@ -501,16 +491,6 @@ func (c Config) Validate() error {
 	}
 	if c.Skills.AutoCollect.MinCommands < 0 {
 		errs = append(errs, fmt.Errorf("skills.auto_collect.min_commands: must be >= 0"))
-	}
-
-	// personas
-	for name, p := range c.Personas {
-		if err := validate.ValidateID(name); err != nil {
-			errs = append(errs, fmt.Errorf("personas.%s: invalid persona name: %w", name, err))
-		}
-		if strings.TrimSpace(p.Prompt) == "" {
-			errs = append(errs, fmt.Errorf("personas.%s.prompt: must not be empty", name))
-		}
 	}
 
 	// quality_gates thresholds
