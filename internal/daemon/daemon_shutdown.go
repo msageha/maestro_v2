@@ -124,6 +124,9 @@ func (d *Daemon) Shutdown() {
 			d.handler.dispatcher.CloseExecutor()
 			d.handler.resultHandler.CloseExecutor()
 			d.handler.cancelHandler.CloseExecutor()
+			if d.handler.reconciler != nil {
+				d.handler.reconciler.CloseExecutor()
+			}
 		}
 
 		d.log(core.LogLevelInfo, "daemon stopped")
