@@ -79,6 +79,7 @@ type retryParams struct {
 	BlockedBy          []string `json:"blocked_by"`
 	BloomLevel         int      `json:"bloom_level"`
 	ToolsHint          []string `json:"tools_hint"`
+	PersonaHint        string   `json:"persona_hint"`
 }
 
 func (pe *PlanExecutorImpl) AddRetryTask(params json.RawMessage) (json.RawMessage, error) {
@@ -97,6 +98,7 @@ func (pe *PlanExecutorImpl) AddRetryTask(params json.RawMessage) (json.RawMessag
 		BlockedBy:          p.BlockedBy,
 		BloomLevel:         p.BloomLevel,
 		ToolsHint:          p.ToolsHint,
+		PersonaHint:        p.PersonaHint,
 		MaestroDir:         pe.MaestroDir,
 		Config:             pe.Config,
 		LockMap:            pe.LockMap,

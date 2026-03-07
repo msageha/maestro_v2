@@ -17,6 +17,7 @@ type TaskInput struct {
 	BloomLevel         int      `yaml:"bloom_level"`
 	Required           bool     `yaml:"required"`
 	ToolsHint          []string `yaml:"tools_hint"`
+	PersonaHint        string   `yaml:"persona_hint"`
 }
 
 // PhaseInput represents a phase definition containing grouped tasks with ordering constraints.
