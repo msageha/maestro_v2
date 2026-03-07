@@ -43,7 +43,7 @@ func (qh *QueueHandler) loadCommandQueue() (model.CommandQueue, string) {
 		// No entries salvaged — reset to empty
 		emptyCQ := model.CommandQueue{
 			SchemaVersion: 1,
-			FileType:      "command_queue",
+			FileType:      "queue_command",
 		}
 		if writeErr := yamlutil.AtomicWrite(path, emptyCQ); writeErr != nil {
 			qh.log(core.LogLevelError, "overwrite_corrupted_queue error=%v", writeErr)
@@ -76,7 +76,7 @@ func (qh *QueueHandler) quarantineFile(data []byte, name string) {
 func (qh *QueueHandler) salvageCommandQueue(data []byte) model.CommandQueue {
 	result := model.CommandQueue{
 		SchemaVersion: 1,
-		FileType:      "command_queue",
+		FileType:      "queue_command",
 	}
 
 	var node yamlv3.Node
