@@ -10,6 +10,7 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
+	"github.com/msageha/maestro_v2/internal/daemon/skill"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
@@ -29,6 +30,7 @@ type ResultWriteParams struct {
 	RetrySafe              bool     `json:"retry_safe,omitempty"`
 	ExitCode               *int     `json:"exit_code,omitempty"`
 	Learnings              []string `json:"learnings,omitempty"`
+	SkillCandidates        []string `json:"skill_candidates,omitempty"`
 }
 
 func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
@@ -88,6 +90,13 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 	if len(params.Learnings) > 0 && d.config.Learnings.Enabled {
 		if err := a.writeLearnings(params, resultID); err != nil {
 			d.log(LogLevelError, "learnings_write_failed result=%s: %v", resultID, err)
+		}
+	}
+
+	// Skill candidates: best-effort write after core phases succeed.
+	if len(params.SkillCandidates) > 0 {
+		if err := a.writeSkillCandidates(params); err != nil {
+			d.log(LogLevelError, "skill_candidates_write_failed result=%s: %v", resultID, err)
 		}
 	}
 
@@ -481,4 +490,47 @@ func truncateRunes(s string, maxRunes int) string {
 		return s
 	}
 	return string(runes[:maxRunes])
+}
+
+// writeSkillCandidates merges skill candidate entries into .maestro/state/skill_candidates.yaml.
+// Best-effort: errors are logged but do not fail the result_write.
+func (a *API) writeSkillCandidates(params ResultWriteParams) error {
+	d := a.d
+	d.lockMap.Lock("state:skill_candidates")
+	defer d.lockMap.Unlock("state:skill_candidates")
+
+	candidatesPath := filepath.Join(d.maestroDir, "state", "skill_candidates.yaml")
+	now := d.clock.Now().UTC().Format(time.RFC3339)
+
+	candidates, err := skill.ReadCandidates(candidatesPath)
+	if err != nil {
+		return fmt.Errorf("read skill candidates: %w", err)
+	}
+
+	idFunc := func() (string, error) {
+		return model.GenerateID(model.IDTypeSkillCandidate)
+	}
+
+	added := 0
+	for _, content := range params.SkillCandidates {
+		if content == "" {
+			continue
+		}
+		before := len(candidates)
+		candidates, err = skill.AddOrUpdateCandidate(candidates, content, params.CommandID, now, idFunc)
+		if err != nil {
+			d.log(LogLevelError, "skill_candidate_add_failed content=%q: %v", content, err)
+			continue
+		}
+		if len(candidates) > before {
+			added++
+		}
+	}
+
+	if err := skill.WriteCandidates(candidatesPath, candidates); err != nil {
+		return fmt.Errorf("write skill candidates: %w", err)
+	}
+
+	d.log(LogLevelInfo, "skill_candidates_written command=%s added=%d total=%d", params.CommandID, added, len(candidates))
+	return nil
 }

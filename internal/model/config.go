@@ -28,6 +28,7 @@ type Config struct {
 	Learnings      LearningsConfig      `yaml:"learnings"`
 	Verification   VerificationConfig   `yaml:"verification"`
 	Worktree       WorktreeConfig       `yaml:"worktree"`
+	Skills         SkillsConfig             `yaml:"skills"`
 	Personas       map[string]PersonaConfig `yaml:"personas,omitempty"`
 }
 
@@ -35,6 +36,62 @@ type Config struct {
 type PersonaConfig struct {
 	Description string `yaml:"description"`
 	Prompt      string `yaml:"prompt"`
+}
+
+// SkillsConfig controls the skill reference feature for tasks.
+type SkillsConfig struct {
+	Enabled          bool              `yaml:"enabled"`
+	MaxRefsPerTask   int               `yaml:"max_refs_per_task"`
+	MaxBodyChars     int               `yaml:"max_body_chars"`
+	MissingRefPolicy string            `yaml:"missing_ref_policy"`
+	AutoCollect      AutoCollectConfig `yaml:"auto_collect"`
+}
+
+// EffectiveMaxRefsPerTask returns the configured limit or 3 as default.
+func (s SkillsConfig) EffectiveMaxRefsPerTask() int {
+	if s.MaxRefsPerTask > 0 {
+		return s.MaxRefsPerTask
+	}
+	return 3
+}
+
+// EffectiveMaxBodyChars returns the configured limit or 2000 as default.
+func (s SkillsConfig) EffectiveMaxBodyChars() int {
+	if s.MaxBodyChars > 0 {
+		return s.MaxBodyChars
+	}
+	return 2000
+}
+
+// EffectiveMissingRefPolicy returns the configured policy or "warn" as default.
+func (s SkillsConfig) EffectiveMissingRefPolicy() string {
+	if s.MissingRefPolicy != "" {
+		return s.MissingRefPolicy
+	}
+	return "warn"
+}
+
+// AutoCollectConfig controls automatic skill collection from learnings.
+type AutoCollectConfig struct {
+	Enabled        bool `yaml:"enabled"`
+	MinOccurrences int  `yaml:"min_occurrences"`
+	MinCommands    int  `yaml:"min_commands"`
+}
+
+// EffectiveMinOccurrences returns the configured minimum or 3 as default.
+func (a AutoCollectConfig) EffectiveMinOccurrences() int {
+	if a.MinOccurrences > 0 {
+		return a.MinOccurrences
+	}
+	return 3
+}
+
+// EffectiveMinCommands returns the configured minimum or 2 as default.
+func (a AutoCollectConfig) EffectiveMinCommands() int {
+	if a.MinCommands > 0 {
+		return a.MinCommands
+	}
+	return 2
 }
 
 type ProjectConfig struct {
@@ -427,6 +484,23 @@ func (c Config) Validate() error {
 	}
 	if c.Learnings.InjectCount < 0 {
 		errs = append(errs, fmt.Errorf("learnings.inject_count: must be >= 0"))
+	}
+
+	// skills
+	if c.Skills.MaxRefsPerTask < 0 {
+		errs = append(errs, fmt.Errorf("skills.max_refs_per_task: must be >= 0"))
+	}
+	if c.Skills.MaxBodyChars < 0 {
+		errs = append(errs, fmt.Errorf("skills.max_body_chars: must be >= 0"))
+	}
+	if p := c.Skills.MissingRefPolicy; p != "" && p != "warn" && p != "error" {
+		errs = append(errs, fmt.Errorf("skills.missing_ref_policy: must be \"warn\" or \"error\""))
+	}
+	if c.Skills.AutoCollect.MinOccurrences < 0 {
+		errs = append(errs, fmt.Errorf("skills.auto_collect.min_occurrences: must be >= 0"))
+	}
+	if c.Skills.AutoCollect.MinCommands < 0 {
+		errs = append(errs, fmt.Errorf("skills.auto_collect.min_commands: must be >= 0"))
 	}
 
 	// personas

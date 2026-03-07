@@ -1,9 +1,12 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"math"
+	"os"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -11,6 +14,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/daemon/learnings"
 	"github.com/msageha/maestro_v2/internal/daemon/persona"
+	"github.com/msageha/maestro_v2/internal/daemon/skill"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -301,6 +305,41 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 		} else if section != "" {
 			dispatchTask.Content = section + dispatchTask.Content
 			d.log(LogLevelDebug, "persona_injected task=%s persona=%s", task.ID, task.PersonaHint)
+		}
+	}
+
+	// Inject skills into task content (between content and learnings)
+	if d.config.Skills.Enabled && len(task.SkillRefs) > 0 {
+		refs := task.SkillRefs
+		maxRefs := d.config.Skills.EffectiveMaxRefsPerTask()
+		if len(refs) > maxRefs {
+			d.log(LogLevelWarn, "skill_refs_truncated task=%s total=%d max=%d", task.ID, len(refs), maxRefs)
+			refs = refs[:maxRefs]
+		}
+
+		skillsDir := filepath.Join(d.maestroDir, "skills")
+		policy := d.config.Skills.EffectiveMissingRefPolicy()
+		var loaded []skill.SkillContent
+		for _, ref := range refs {
+			sc, err := skill.ReadSkill(skillsDir, ref)
+			if err != nil {
+				if policy == "error" {
+					return fmt.Errorf("load skill ref %q for task %s: %w", ref, task.ID, err)
+				}
+				// warn policy: log and skip
+				if errors.Is(err, os.ErrNotExist) {
+					d.log(LogLevelWarn, "skill_ref_not_found task=%s ref=%s", task.ID, ref)
+				} else {
+					d.log(LogLevelWarn, "skill_read_failed task=%s ref=%s error=%v", task.ID, ref, err)
+				}
+				continue
+			}
+			loaded = append(loaded, sc)
+		}
+
+		if section := skill.FormatSkillSection(loaded, d.config.Skills.EffectiveMaxBodyChars()); section != "" {
+			dispatchTask.Content = dispatchTask.Content + section
+			d.log(LogLevelDebug, "skills_injected task=%s count=%d", task.ID, len(loaded))
 		}
 	}
 
