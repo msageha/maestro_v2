@@ -33,7 +33,7 @@ func runResultWrite(args []string) error {
 	fs := newFlagSet("maestro result write")
 	var taskID, commandID, resultStatus, summary string
 	var leaseEpoch int
-	var filesChanged, learnings stringSliceFlag
+	var filesChanged, learnings, skillCandidates stringSliceFlag
 	var partialChangesPossible, noRetrySafe bool
 
 	fs.StringVar(&taskID, "task-id", "", "")
@@ -43,6 +43,7 @@ func runResultWrite(args []string) error {
 	fs.StringVar(&summary, "summary", "", "")
 	fs.Var(&filesChanged, "files-changed", "")
 	fs.Var(&learnings, "learnings", "")
+	fs.Var(&skillCandidates, "skill-candidates", "")
 	fs.BoolVar(&partialChangesPossible, "partial-changes", false, "")
 	fs.BoolVar(&noRetrySafe, "no-retry-safe", false, "")
 
@@ -90,6 +91,9 @@ func runResultWrite(args []string) error {
 	}
 	if len(learnings) > 0 {
 		params["learnings"] = learnings
+	}
+	if len(skillCandidates) > 0 {
+		params["skill_candidates"] = skillCandidates
 	}
 
 	client := uds.NewClient(filepath.Join(maestroDir, uds.DefaultSocketName))
