@@ -7,6 +7,16 @@ import (
 
 // EventBridge bridges the generic event bus to typed daemon component events.
 // It holds a back-pointer to Daemon for access to shared state.
+//
+// M-16: Initialization order dependency — EventBridge must be instantiated
+// after Daemon.eventBus is created (events.NewBus) but before publishers
+// (dispatcher, dependencyResolver, resultHandler) get SetEventBus().
+// The correct sequence in initComponents() is:
+//   1. Create sub-components (handler, qualityGateDaemon, etc.)
+//   2. Create eventBus
+//   3. Subscribe consumers via bridge (subscribeQualityGateEvents, subscribeQueueWrittenEvents)
+//   4. Wire eventBus to publishers (SetEventBus calls)
+// This ensures subscribers are ready before any events are published.
 type EventBridge struct {
 	d                  *Daemon
 	eventUnsubscribers []func()

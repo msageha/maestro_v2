@@ -33,6 +33,15 @@ func (e *Engine) SetExecutorFactory(f core.ExecutorFactory) {
 }
 
 // Reconcile runs all reconciliation patterns and returns repairs and deferred notifications.
+//
+// M-15: Atomicity limitation — Each pattern (R0–R6) independently reads state,
+// applies repairs, and writes back. There is no cross-pattern transactional
+// guarantee: if pattern Rn fails mid-write, patterns R(n+1).. still execute
+// on potentially inconsistent state. This is acceptable because:
+//   - Each pattern uses per-command locks for its own state mutations.
+//   - The reconcile loop is idempotent: re-running repairs already-applied state is a no-op.
+//   - Full transactional guarantees would require a database, which is over-engineered
+//     for a file-based control plane.
 func (e *Engine) Reconcile() ([]Repair, []DeferredNotification) {
 	run := newRun(&e.deps)
 
