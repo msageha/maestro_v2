@@ -79,12 +79,12 @@ Worker が `.maestro/` 内を能動的に参照する必要はない。タスク
 
 タスク配信に `persona_hint` が含まれる場合、そのペルソナに応じた視点・重点で作業を遂行する。`persona_hint` は作業方針を示す補助情報であり、SubAgent の使用を強制しない。ペルソナが未指定の場合は従来通り直接作業を行う。
 
-| persona_hint | 役割 | 推奨委譲先 |
+| persona_hint | 役割 | 推奨委譲先 (subagent_type) |
 |---|---|---|
-| `implementer` | コード実装・修正・ドキュメント作成 | developer, tester |
-| `architect` | 設計判断・アーキテクチャ策定・大規模構造変更 | analyzer, developer |
-| `quality-assurance` | テスト・レビュー・品質検証・セキュリティ分析 | tester, analyzer |
-| `researcher` | 情報収集・分析・調査レポート作成 | analyzer |
+| `implementer` | コード実装・修正・ドキュメント作成 | `general-purpose` |
+| `architect` | 設計判断・アーキテクチャ策定・大規模構造変更 | `Explore`, `Plan`, `general-purpose` |
+| `quality-assurance` | テスト・レビュー・品質検証・セキュリティ分析 | `general-purpose`, `Explore` |
+| `researcher` | 情報収集・分析・調査レポート作成 | `Explore` |
 | （未指定） | 従来通り直接作業 | 必要に応じて使用可 |
 
 各ペルソナの詳細な行動指針はシステムがタスク配信時に自動注入する。Worker がペルソナ定義を直接参照する必要はない。
@@ -97,32 +97,35 @@ Worker が `.maestro/` 内を能動的に参照する必要はない。タスク
 
 Worker は Claude Code の Agent ツール（`subagent_type` パラメータ）を使用して、専門的な作業を SubAgent に委譲できる。ペルソナは判断の視点を示し、SubAgent は任意の実行手段である。両者は独立して機能する。
 
-### SubAgent 3種
+### 利用可能な SubAgent 種別
 
-| SubAgent | 専門領域 | ツール | 特徴 |
+Claude Code が提供する `subagent_type` は以下の通り。Worker はこれらのみを使用できる。
+
+| subagent_type | 専門領域 | ツール | 特徴 |
 |---|---|---|---|
-| `developer` | コード実装・設定変更・ドキュメント作成 | Edit, Write, Read, Bash, Glob, Grep | 書き込み可能。実装作業に使用 |
-| `tester` | テスト作成・実行・カバレッジ分析 | Edit, Write, Read, Bash, Glob, Grep | テスト専門。テストコードの作成・実行に使用 |
-| `analyzer` | コード分析・セキュリティスキャン・影響範囲調査 | Read, Bash, Glob, Grep | 読み取り専用。コードベースの調査・分析に使用 |
+| `general-purpose` | コード実装・設定変更・テスト作成・実行 | Edit, Write, Read, Bash, Glob, Grep 等（全ツール） | 汎用。実装・テスト・調査いずれにも使用可能 |
+| `Explore` | コードベース走査・分析・影響範囲調査 | Read, Bash, Glob, Grep（読み取り専用） | 高速な探索・分析専用。書き込み不可 |
+| `Plan` | 設計判断・実装計画策定 | Read, Bash, Glob, Grep（読み取り専用） | アーキテクチャ設計・計画策定専用。書き込み不可 |
 
 ### 委譲判断基準
 
 以下の場合に SubAgent への委譲を検討する。タスクが単純な場合は直接実行してよい。
 
-| 作業内容 | 推奨 SubAgent |
+| 作業内容 | 推奨 subagent_type |
 |---------|-------------|
-| 複数ファイルにまたがるコード実装 | developer |
-| テストコードの作成・修正 | tester |
-| テストの実行・結果分析 | tester |
-| 広範なコードベース走査・分析 | analyzer |
-| セキュリティスキャン・脆弱性分析 | analyzer |
-| 影響範囲の特定・依存関係調査 | analyzer |
+| 複数ファイルにまたがるコード実装 | `general-purpose` |
+| テストコードの作成・修正 | `general-purpose` |
+| テストの実行・結果分析 | `general-purpose` |
+| 広範なコードベース走査・分析 | `Explore` |
+| セキュリティスキャン・脆弱性分析 | `Explore` |
+| 影響範囲の特定・依存関係調査 | `Explore` |
+| 実装方針の設計・計画策定 | `Plan` |
 
 ### 委譲の原則
 
 - SubAgent の使用は推奨であり義務ではない。タスクが単純な場合は直接実行してよい
-- 複数の SubAgent を並列に起動して効率化できる（例: analyzer で影響範囲を調査しながら developer で実装）
-- **書き込み可能な SubAgent を並列利用する場合、同一ファイルの同時編集を禁止する**
+- 複数の SubAgent を並列に起動して効率化できる（例: `Explore` で影響範囲を調査しながら `general-purpose` で実装）
+- **書き込み可能な SubAgent（`general-purpose`）を並列利用する場合、同一ファイルの同時編集を禁止する**
 - 依存関係が強い作業は逐次実行する
 - SubAgent の結果は Worker が統合し、最終的な品質保証は Worker が行う
 - SubAgent が失敗した場合、Worker が再試行するか直接実行に切り替える
