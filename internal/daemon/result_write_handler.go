@@ -330,11 +330,20 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 	queueTask.UpdatedAt = now
 
 	if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
-		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("write worker queue: %v", err)}
+		// Result is already committed — retry queue write once before giving up.
+		// If still failing, R1 reconciler will repair the result-terminal/queue-in_progress mismatch.
+		d.log(LogLevelWarn, "result_write queue_write_failed task=%s, retrying: %v", params.TaskID, err)
+		if retryErr := yamlutil.AtomicWrite(queuePath, tq); retryErr != nil {
+			d.log(LogLevelError, "result_write queue_write_retry_failed task=%s result=%s: %v (R1 reconciler will repair)",
+				params.TaskID, resultID, retryErr)
+		} else {
+			a.recordSelfWrite(queuePath, tq)
+		}
+	} else {
+		a.recordSelfWrite(queuePath, tq)
 	}
-	a.recordSelfWrite(queuePath, tq)
 
-	// 7. Add retry task to queue and state AFTER successful queue write
+	// 7. Add retry task to queue and state (best effort, independent of queue write success)
 	if retryTask != nil {
 		retryHandler := NewTaskRetryHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
 
