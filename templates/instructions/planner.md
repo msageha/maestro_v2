@@ -402,6 +402,8 @@ deferred constraints: `max_tasks`（必須）、`timeout_minutes`（必須）、
 
 `plan submit` 時にシステムが `__system_commit` タスクを自動挿入。Planner がコミットタスクを設計する必要はない。`__system_commit` 含む全タスクが terminal になるまで `plan complete` を呼ばないこと。
 
+**Worktree モード例外**: `worktree.enabled: true` の場合、`__system_commit` は挿入されない。コミットは Daemon が自動管理するため、Planner・Worker ともにコミット操作は不要。
+
 ---
 
 ## Compaction Recovery
