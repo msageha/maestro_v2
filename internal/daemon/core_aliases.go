@@ -6,7 +6,6 @@ package daemon
 import (
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
 	"github.com/msageha/maestro_v2/internal/daemon/core"
-	"github.com/msageha/maestro_v2/internal/daemon/learnings"
 	"github.com/msageha/maestro_v2/internal/daemon/worktree"
 )
 
@@ -73,6 +72,3 @@ type CircuitBreakerHandler = circuitbreaker.Handler
 var NewCircuitBreakerHandler = circuitbreaker.NewHandler
 
 // --- Learnings aliases ---
-
-var readTopKLearnings = learnings.ReadTopKLearnings
-var formatLearningsSection = learnings.FormatLearningsSection

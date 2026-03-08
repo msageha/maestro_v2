@@ -318,7 +318,7 @@ func (qh *QueueHandler) stepDispatchOrRecovery(s *scanState) {
 			s.taskDirty[queueFile] = d
 			s.work.busyChecks = append(s.work.busyChecks, items...)
 		}
-		s.work.busyChecks = append(s.work.busyChecks, qh.collectExpiredCommandBusyChecks(&s.commands.Data, &s.commands.Dirty)...)
+		qh.autoExtendExpiredCommandLeases(&s.commands.Data, &s.commands.Dirty)
 		qh.recoverExpiredNotificationLeases(&s.notifications.Data, &s.notifications.Dirty)
 		qh.log(LogLevelDebug, "expired_leases_detected busy_checks=%d skipping_dispatch", len(s.work.busyChecks))
 	} else {
@@ -880,14 +880,14 @@ func (qh *QueueHandler) preemptiveCommandRenewal(cq *model.CommandQueue, dirty *
 	}
 }
 
-// collectExpiredCommandBusyChecks auto-extends expired command leases in Phase A.
+// autoExtendExpiredCommandLeases auto-extends expired command leases in Phase A.
 // Unlike tasks, commands are never released on lease expiry because:
 //   - Planner is a singleton; releasing causes duplicate dispatch
 //   - Busy-check false negatives are common (Planner has long API call intervals)
 //   - Reconciler R0 handles truly stuck planning via max_in_progress_min timeout
 //
 // Malformed entries (lease_expires_at == nil) are repaired by setting a new lease.
-func (qh *QueueHandler) collectExpiredCommandBusyChecks(cq *model.CommandQueue, dirty *bool) []busyCheckItem {
+func (qh *QueueHandler) autoExtendExpiredCommandLeases(cq *model.CommandQueue, dirty *bool) {
 	expired := qh.leaseManager.ExpireCommands(cq.Commands)
 	for _, idx := range expired {
 		cmd := &cq.Commands[idx]
@@ -923,8 +923,6 @@ func (qh *QueueHandler) collectExpiredCommandBusyChecks(cq *model.CommandQueue, 
 		qh.scanCounters.LeaseExtensions++
 		*dirty = true
 	}
-	// No busy check items for commands — auto-extended in Phase A
-	return nil
 }
 
 // checkPendingDependencyFailuresDeferred checks pending tasks for dependency failures.

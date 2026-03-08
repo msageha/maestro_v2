@@ -117,12 +117,3 @@ func (eb *EventBridge) unsubscribeAll() {
 	eb.eventUnsubscribers = nil
 }
 
-// --- Forwarding methods on Daemon for backward compatibility ---
-
-func (d *Daemon) subscribeQualityGateEvents() {
-	d.bridge.subscribeQualityGateEvents()
-}
-
-func (d *Daemon) subscribeQueueWrittenEvents() {
-	d.bridge.subscribeQueueWrittenEvents()
-}
