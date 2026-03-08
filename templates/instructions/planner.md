@@ -65,6 +65,21 @@ maestro plan add-retry-task \
 
 **deferred フェーズへのタスク投入**: `maestro plan submit --command-id <id> --phase <phase_name> --tasks-file - <<'PLAN'`
 
+**キャンセル要求**:
+
+```
+maestro plan request-cancel \
+  --command-id <id> \
+  [--requested-by <agent>] \
+  [--reason <text>]
+```
+
+`--command-id` は必須。`--requested-by` 省略時は `"cli"`。内部的に Daemon の `queue_write(target=planner, type=cancel-request)` を呼び出す。
+
+**状態再構築（復旧用）**: `maestro plan rebuild --command-id <id>`
+
+既存の Worker 結果から command state の `task_states` / `applied_result_ids` を再構築する。`--command-id` は必須。通常運用では使用しない復旧・Reconciliation 用コマンド。
+
 ---
 
 ## 通知
