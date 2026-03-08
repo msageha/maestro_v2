@@ -49,9 +49,7 @@ const (
 	ConditionAnd             ConditionType = "and"
 	ConditionOr              ConditionType = "or"
 	ConditionNot             ConditionType = "not"
-	ConditionResourceLimit   ConditionType = "resource_limit"
-	ConditionDependencyCheck ConditionType = "dependency_check"
-	ConditionScript          ConditionType = "script"
+	ConditionScript ConditionType = "script"
 )
 
 // FieldOperator represents comparison operators for field validation
@@ -218,8 +216,6 @@ type RuleResult struct {
 // EvaluationContext provides context data for evaluation
 type EvaluationContext interface {
 	GetField(path string) (interface{}, bool)
-	GetResource(metric string, scope string) (float64, error)
-	GetDependencies(mode string) ([]string, error)
 }
 
 // RuleEvaluator evaluates a specific type of rule condition

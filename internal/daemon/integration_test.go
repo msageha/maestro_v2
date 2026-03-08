@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -1682,63 +1681,8 @@ func TestIntegration_QualityGatePerformanceUnderLoad(t *testing.T) {
 	}
 }
 
-// Scenario 25: Structured logging + non-blocking rate-limited event flow under high load.
+// Scenario 25: Non-blocking rate-limited event flow under high load.
 func TestIntegration_LogSystemHighLoadStructuredAndRateLimited(t *testing.T) {
-	d := newIntegrationDaemon(t)
-
-	logPath := filepath.Join(d.maestroDir, "logs", "maestro.jsonl")
-	audit, err := events.NewAuditLogger(logPath, events.DefaultMaxLogSize)
-	if err != nil {
-		t.Fatalf("new audit logger: %v", err)
-	}
-	defer audit.Close()
-
-	const writes = 200
-	var wg sync.WaitGroup
-	for i := 0; i < writes; i++ {
-		i := i
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := audit.Log("task_completed", map[string]interface{}{
-				"event_id":   fmt.Sprintf("evt-%d", i),
-				"command_id": "cmd_structured",
-				"task_id":    fmt.Sprintf("task-%d", i),
-				"agent_id":   "worker1",
-				"status":     "completed",
-				"summary":    "ok",
-			}); err != nil {
-				t.Errorf("audit log write failed: %v", err)
-			}
-		}()
-	}
-	wg.Wait()
-
-	f, err := os.Open(logPath)
-	if err != nil {
-		t.Fatalf("open audit log: %v", err)
-	}
-	defer f.Close()
-
-	sc := bufio.NewScanner(f)
-	lineCount := 0
-	for sc.Scan() {
-		lineCount++
-		var e events.LogEntry
-		if err := json.Unmarshal(sc.Bytes(), &e); err != nil {
-			t.Fatalf("invalid JSONL at line %d: %v", lineCount, err)
-		}
-		if e.EventType == "" || e.Timestamp.IsZero() {
-			t.Fatalf("malformed structured entry at line %d: %+v", lineCount, e)
-		}
-	}
-	if err := sc.Err(); err != nil {
-		t.Fatalf("scan log: %v", err)
-	}
-	if lineCount != writes {
-		t.Fatalf("expected %d structured log entries, got %d", writes, lineCount)
-	}
-
 	bus := events.NewBus(1)
 	defer bus.Close()
 
@@ -1883,7 +1827,7 @@ func TestIntegration_EndToEndWithEventHooksAndQualityGate(t *testing.T) {
 	d.handler.resultHandler.SetEventBus(d.eventBus)
 	d.handler.dependencyResolver.SetEventBus(d.eventBus)
 	d.handler.dispatcher.SetQualityGate(qg)
-	d.subscribeQualityGateEvents()
+	d.bridge.subscribeQualityGateEvents()
 
 	commandID := "cmd_0000000027_aabbcc27"
 	taskID := "task_0000000027_aabbcc27"
@@ -1955,7 +1899,7 @@ func TestIntegration_EventHooksInvalidPayloadHandling(t *testing.T) {
 	d.eventBus = events.NewBus(100)
 	defer d.eventBus.Close()
 	d.qualityGateDaemon = qg
-	d.subscribeQualityGateEvents()
+	d.bridge.subscribeQualityGateEvents()
 
 	// Missing worker_id should be dropped by subscriber bridge.
 	d.eventBus.Publish(events.EventTaskStarted, map[string]interface{}{
@@ -1983,27 +1927,27 @@ func TestIntegration_DashboardFormatterEndToEnd(t *testing.T) {
 	d := newIntegrationDaemon(t)
 	logPath := filepath.Join(d.maestroDir, "logs", "maestro.jsonl")
 
-	audit, err := events.NewAuditLogger(logPath, events.DefaultMaxLogSize)
-	if err != nil {
-		t.Fatalf("new audit logger: %v", err)
+	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
+		t.Fatalf("create log dir: %v", err)
 	}
-	defer audit.Close()
 
-	entries := []struct {
-		eventType string
-		details   map[string]interface{}
-	}{
-		{"task_started", map[string]interface{}{"task_id": "task_dash_1", "agent_id": "worker1", "status": "in_progress"}},
-		{"task_completed", map[string]interface{}{"task_id": "task_dash_1", "agent_id": "worker1", "status": "completed", "summary": "done"}},
-		{"task_failed", map[string]interface{}{"task_id": "task_dash_2", "agent_id": "worker2", "status": "failed", "error": "boom"}},
-		{"task_retry", map[string]interface{}{"task_id": "task_dash_2", "agent_id": "worker2", "message": "retrying"}},
-		{"lease_warning", map[string]interface{}{"task_id": "task_dash_3", "message": "lease expires soon"}},
+	entries := []events.LogEntry{
+		{Timestamp: time.Now(), EventType: "task_started", TaskID: "task_dash_1", AgentID: "worker1", Details: map[string]interface{}{"status": "in_progress"}},
+		{Timestamp: time.Now(), EventType: "task_completed", TaskID: "task_dash_1", AgentID: "worker1", Details: map[string]interface{}{"status": "completed", "summary": "done"}},
+		{Timestamp: time.Now(), EventType: "task_failed", TaskID: "task_dash_2", AgentID: "worker2", Details: map[string]interface{}{"status": "failed", "error": "boom"}},
+		{Timestamp: time.Now(), EventType: "task_retry", TaskID: "task_dash_2", AgentID: "worker2", Details: map[string]interface{}{"message": "retrying"}},
+		{Timestamp: time.Now(), EventType: "lease_warning", TaskID: "task_dash_3", Details: map[string]interface{}{"message": "lease expires soon"}},
+	}
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		t.Fatalf("create log file: %v", err)
 	}
 	for _, e := range entries {
-		if err := audit.Log(e.eventType, e.details); err != nil {
-			t.Fatalf("write audit log %s: %v", e.eventType, err)
-		}
+		data, _ := json.Marshal(e)
+		logFile.Write(data)
+		logFile.WriteString("\n")
 	}
+	logFile.Close()
 
 	// Append malformed line: formatter should ignore it gracefully.
 	file, err := os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0644)
@@ -2070,27 +2014,6 @@ func BenchmarkIntegration_QualityGateEvaluation(b *testing.B) {
 	}
 }
 
-func BenchmarkIntegration_AuditLoggerHighLoad(b *testing.B) {
-	logPath := filepath.Join(b.TempDir(), "logs", "maestro.jsonl")
-	audit, err := events.NewAuditLogger(logPath, events.DefaultMaxLogSize)
-	if err != nil {
-		b.Fatalf("new audit logger: %v", err)
-	}
-	defer audit.Close()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if err := audit.Log("task_completed", map[string]interface{}{
-			"event_id":   fmt.Sprintf("evt-bench-%d", i),
-			"command_id": "cmd_bench",
-			"task_id":    fmt.Sprintf("task-%d", i),
-			"agent_id":   "worker1",
-			"status":     "completed",
-		}); err != nil {
-			b.Fatalf("audit log write: %v", err)
-		}
-	}
-}
 
 func init() {
 	// Suppress unused import warnings if any test uses fmt

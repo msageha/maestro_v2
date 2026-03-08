@@ -162,7 +162,7 @@ func TestCommandDispatchGuard_ValidLease(t *testing.T) {
 }
 
 // TestCommandLeaseAutoExtend verifies that an expired command lease is auto-extended
-// in Phase A (collectExpiredCommandBusyChecks) rather than released.
+// in Phase A (autoExtendExpiredCommandLeases) rather than released.
 // After a scan, the command should remain in_progress with a new future lease expiry.
 func TestCommandLeaseAutoExtend(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
