@@ -54,6 +54,9 @@ type QueueHandler struct {
 	// Prevents overlapping scans since Phase B releases scanMu.
 	scanRunMu sync.Mutex
 
+	// gcScanCounter counts periodic scans to trigger worktree GC at intervals.
+	gcScanCounter uint64
+
 	// daemonPID for lease_owner format "daemon:{pid}" per spec §5.8.1.
 	daemonPID int
 
@@ -217,6 +220,16 @@ func (qh *QueueHandler) PeriodicScanWithContext(ctx context.Context) {
 	// to avoid blocking queue writes during slow tmux I/O.
 	if qh.reconciler != nil && len(deferredNotifs) > 0 {
 		qh.reconciler.ExecuteDeferredNotifications(deferredNotifs)
+	}
+
+	// Run worktree GC periodically (every 60 scans) as a safety net
+	// complementing the immediate cleanup triggered by CleanupOnSuccess/CleanupOnFailure.
+	const gcInterval uint64 = 60
+	qh.gcScanCounter++
+	if qh.gcScanCounter%gcInterval == 0 && qh.worktreeManager != nil {
+		if err := qh.worktreeManager.GC(); err != nil {
+			qh.log(LogLevelWarn, "worktree_gc error=%v", err)
+		}
 	}
 
 	qh.log(LogLevelDebug, "periodic_scan complete")
