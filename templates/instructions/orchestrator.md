@@ -80,6 +80,8 @@ maestro queue write planner --type cancel-request --command-id <command_id> --re
 2. `maestro queue write planner --type cancel-request --command-id <command_id> --reason "<理由>"` を実行
 3. キャンセル要求を受け付けた旨をユーザーに伝える
 
+**注意**: Planner 側にも `maestro plan request-cancel --command-id <id> --reason "<理由>"` コマンドが存在する。Orchestrator は常に `maestro queue write planner --type cancel-request` を使用すること。`plan request-cancel` は Planner が内部的に使用するコマンドであり、Orchestrator からは使用しない。
+
 ### 通知の受信
 
 コマンドが完了・失敗・キャンセルされると、以下の形式で通知が届く:

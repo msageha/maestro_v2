@@ -171,6 +171,33 @@ reason: consecutive_failures=3 reached threshold=3
 
 迷う場合はペルソナを省略。設計+実装混在タスクは `architect` → `implementer` の 2 タスクに分解。
 
+### 調査→実装の委譲パターン
+
+コード読取が必要なタスク分解では、Planner 自身がコードを読めない制約を踏まえ、以下のパターンで phases 機能を活用する:
+
+1. **concrete フェーズ**: `researcher` ペルソナ（bloom_level 4-5）で調査タスクを Worker に割り当てる。Worker は `Explore` SubAgent にコードベース調査を委譲し、結果を `--summary` に構造化して報告する
+2. **deferred フェーズ**: 調査結果（`results/worker{N}.yaml` の summary）を基に実装タスクを設計・投入する
+
+```yaml
+phases:
+  - name: "research"
+    type: "concrete"
+    tasks:
+      - name: "investigate-auth-flow"
+        purpose: "認証フローの現状構造を調査する"
+        content: "auth/ 以下の認証フローを調査し、エンドポイント一覧・依存関係・変更影響範囲を summary に報告"
+        acceptance_criteria: "summary にエンドポイント一覧と依存関係が構造化されている"
+        bloom_level: 4
+        persona_hint: "researcher"
+        required: true
+  - name: "implementation"
+    type: "deferred"
+    depends_on_phases: ["research"]
+    constraints: { max_tasks: 6, timeout_minutes: 60 }
+```
+
+このパターンは既存の phases 機能（concrete→deferred）で実現可能であり、新機能は不要。
+
 ---
 
 ## スキル活用ガイド
@@ -401,6 +428,8 @@ deferred constraints: `max_tasks`（必須）、`timeout_minutes`（必須）、
 `config.yaml` → `continuous.enabled: true` の場合のみ適用。
 
 `plan submit` 時にシステムが `__system_commit` タスクを自動挿入。Planner がコミットタスクを設計する必要はない。`__system_commit` 含む全タスクが terminal になるまで `plan complete` を呼ばないこと。
+
+**Worktree モード例外**: `worktree.enabled: true` の場合、`__system_commit` は挿入されない。コミットは Daemon が自動管理するため、Planner・Worker ともにコミット操作は不要。
 
 ---
 
