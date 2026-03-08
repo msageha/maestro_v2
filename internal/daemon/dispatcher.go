@@ -34,6 +34,7 @@ type Dispatcher struct {
 	logLevel          LogLevel
 	clock             Clock
 	executorFactory   ExecutorFactory
+	mu                sync.RWMutex // protects eventBus, qualityGate, worktreeManager
 	eventBus          *events.Bus
 	qualityGate       *QualityGateDaemon
 	gateEvaluations   map[string]*model.QualityGateEvaluation // task_id -> evaluation
@@ -121,17 +122,44 @@ func (d *Dispatcher) CloseExecutor() {
 
 // SetEventBus sets the event bus for publishing events.
 func (d *Dispatcher) SetEventBus(bus *events.Bus) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.eventBus = bus
 }
 
 // SetQualityGate sets the quality gate daemon for the dispatcher.
 func (d *Dispatcher) SetQualityGate(qg *QualityGateDaemon) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.qualityGate = qg
 }
 
 // SetWorktreeManager wires the worktree manager for worker path resolution during dispatch.
 func (d *Dispatcher) SetWorktreeManager(wm *WorktreeManager) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
 	d.worktreeManager = wm
+}
+
+// getEventBus returns the event bus with proper synchronization.
+func (d *Dispatcher) getEventBus() *events.Bus {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.eventBus
+}
+
+// getQualityGate returns the quality gate daemon with proper synchronization.
+func (d *Dispatcher) getQualityGate() *QualityGateDaemon {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.qualityGate
+}
+
+// getWorktreeManager returns the worktree manager with proper synchronization.
+func (d *Dispatcher) getWorktreeManager() *WorktreeManager {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.worktreeManager
 }
 
 // sortableEntry wraps a queue entry with computed effective priority for sorting.
@@ -357,16 +385,17 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 
 	// Resolve working_dir for worktree-enabled commands (lazy creation)
 	var workingDir string
-	if d.worktreeManager != nil {
-		wtPath, err := d.worktreeManager.GetWorkerPath(task.CommandID, workerID)
+	wm := d.getWorktreeManager()
+	if wm != nil {
+		wtPath, err := wm.GetWorkerPath(task.CommandID, workerID)
 		if err != nil {
 			// Worktree doesn't exist yet — lazily create for this worker
-			if createErr := d.worktreeManager.EnsureWorkerWorktree(task.CommandID, workerID); createErr != nil {
+			if createErr := wm.EnsureWorkerWorktree(task.CommandID, workerID); createErr != nil {
 				d.log(LogLevelError, "worktree_create_failed task=%s worker=%s error=%v",
 					task.ID, workerID, createErr)
 				return fmt.Errorf("worktree path resolution failed: %w", createErr)
 			}
-			wtPath, err = d.worktreeManager.GetWorkerPath(task.CommandID, workerID)
+			wtPath, err = wm.GetWorkerPath(task.CommandID, workerID)
 		}
 		if err != nil {
 			d.log(LogLevelError, "worktree_path_resolve_failed task=%s worker=%s error=%v",
@@ -402,8 +431,8 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 		task.ID, workerID, task.LeaseEpoch)
 
 	// Publish task_started event (non-blocking, best-effort)
-	if d.eventBus != nil {
-		d.eventBus.Publish(events.EventTaskStarted, map[string]interface{}{
+	if bus := d.getEventBus(); bus != nil {
+		bus.Publish(events.EventTaskStarted, map[string]interface{}{
 			"task_id":    task.ID,
 			"command_id": task.CommandID,
 			"worker_id":  workerID,
@@ -461,7 +490,7 @@ func (d *Dispatcher) shouldEvaluateQualityGates() bool {
 	}
 
 	// Skip if quality gate daemon is not available
-	if d.qualityGate == nil {
+	if d.getQualityGate() == nil {
 		d.log(LogLevelDebug, "quality_gates_skipped reason=daemon_not_available")
 		return false
 	}
@@ -471,7 +500,8 @@ func (d *Dispatcher) shouldEvaluateQualityGates() bool {
 
 // evaluatePreTaskGateWithResult evaluates quality gates before task execution and returns the result
 func (d *Dispatcher) evaluatePreTaskGateWithResult(task *model.Task, workerID string) (*model.QualityGateEvaluation, error) {
-	if d.qualityGate == nil {
+	qg := d.getQualityGate()
+	if qg == nil {
 		return nil, nil
 	}
 
@@ -490,7 +520,7 @@ func (d *Dispatcher) evaluatePreTaskGateWithResult(task *model.Task, workerID st
 	}
 
 	// Use the evaluateGateWithResult method for synchronous evaluation
-	result, err := d.qualityGate.evaluateGateWithResult("pre_task", context)
+	result, err := qg.evaluateGateWithResult("pre_task", context)
 
 	// Convert to model.QualityGateEvaluation
 	evaluation := &model.QualityGateEvaluation{
