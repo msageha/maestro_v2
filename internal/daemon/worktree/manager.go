@@ -147,8 +147,12 @@ func (wm *Manager) CreateForCommand(commandID string, workerIDs []string) error 
 		return fmt.Errorf("save worktree state: %w", err)
 	}
 
+	shortSHA := baseSHA
+	if len(shortSHA) > 8 {
+		shortSHA = shortSHA[:8]
+	}
 	wm.log(core.LogLevelInfo, "worktrees_created command=%s workers=%d base=%s",
-		commandID, len(workerIDs), baseSHA[:8])
+		commandID, len(workerIDs), shortSHA)
 	return nil
 }
 

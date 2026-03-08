@@ -96,6 +96,7 @@ func TestReplaceInRequiredOrOptional(t *testing.T) {
 		newID           string
 		wantRequired    []string
 		wantOptional    []string
+		wantErr         bool
 	}{
 		{
 			name:         "replace in required",
@@ -116,13 +117,14 @@ func TestReplaceInRequiredOrOptional(t *testing.T) {
 			wantOptional: []string{"t4", "t5_retry"},
 		},
 		{
-			name:         "not found (no-op)",
+			name:         "not found returns error",
 			requiredIDs:  []string{"t1"},
 			optionalIDs:  []string{"t2"},
 			oldID:        "t99",
 			newID:        "t99_retry",
 			wantRequired: []string{"t1"},
 			wantOptional: []string{"t2"},
+			wantErr:      true,
 		},
 	}
 
@@ -132,8 +134,11 @@ func TestReplaceInRequiredOrOptional(t *testing.T) {
 				RequiredTaskIDs: append([]string{}, tt.requiredIDs...),
 				OptionalTaskIDs: append([]string{}, tt.optionalIDs...),
 			}
-			replaceInRequiredOrOptional(state, tt.oldID, tt.newID)
+			err := replaceInRequiredOrOptional(state, tt.oldID, tt.newID)
 
+			if (err != nil) != tt.wantErr {
+				t.Errorf("error = %v, wantErr = %v", err, tt.wantErr)
+			}
 			if !sliceEqual(state.RequiredTaskIDs, tt.wantRequired) {
 				t.Errorf("RequiredTaskIDs = %v, want %v", state.RequiredTaskIDs, tt.wantRequired)
 			}
@@ -141,6 +146,22 @@ func TestReplaceInRequiredOrOptional(t *testing.T) {
 				t.Errorf("OptionalTaskIDs = %v, want %v", state.OptionalTaskIDs, tt.wantOptional)
 			}
 		})
+	}
+}
+
+func TestReplaceInRequiredOrOptional_SystemCommitTaskID(t *testing.T) {
+	commitID := "sys_commit_1"
+	state := &model.CommandState{
+		RequiredTaskIDs:    []string{"t1"},
+		OptionalTaskIDs:    []string{},
+		SystemCommitTaskID: &commitID,
+	}
+	err := replaceInRequiredOrOptional(state, "sys_commit_1", "sys_commit_2")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if state.SystemCommitTaskID == nil || *state.SystemCommitTaskID != "sys_commit_2" {
+		t.Errorf("SystemCommitTaskID = %v, want sys_commit_2", state.SystemCommitTaskID)
 	}
 }
 

@@ -152,14 +152,16 @@ func (qh *QueueHandler) SetShutdownGuard(ctx context.Context, shuttingDown *atom
 func (qh *QueueHandler) Stop() {
 	qh.debounceMu.Lock()
 	done := qh.debounceDone
+	timerWasPending := false
 	if qh.debounceTimer != nil {
-		qh.debounceTimer.Stop()
+		timerWasPending = qh.debounceTimer.Stop()
 		qh.debounceTimer = nil
 	}
 	qh.debounceMu.Unlock()
 
-	// If a callback goroutine is in-flight, wait for it to finish.
-	if done != nil {
+	// Only wait if the timer had already fired (callback may be in-flight).
+	// If Stop() returned true the callback will never run, so waiting would hang.
+	if done != nil && !timerWasPending {
 		<-done
 	}
 }
