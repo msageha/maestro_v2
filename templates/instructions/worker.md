@@ -141,7 +141,7 @@ maestro result write <agent_id> \
   --lease-epoch <epoch> \
   --status completed|failed \
   --summary "<要約>" \
-  [--files-changed <file1,file2,...>] \
+  [--files-changed <file>]... \
   [--learnings "<知見1>" --learnings "<知見2>" ...] \
   [--partial-changes] \
   [--no-retry-safe]
@@ -153,7 +153,7 @@ maestro result write <agent_id> \
 
 | フラグ | 用途 |
 |---|---|
-| `--files-changed` | 変更したファイルのカンマ区切りリスト |
+| `--files-changed` | 変更したファイル（複数指定可: `--files-changed file1 --files-changed file2`） |
 | `--learnings` | 他タスクに有用な知見（複数指定可、推奨・任意） |
 | `--partial-changes` | 部分的な変更がリポジトリに残っている場合に指定 |
 | `--no-retry-safe` | リトライが安全でない場合に指定（デフォルトはリトライ可能） |
