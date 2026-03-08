@@ -29,10 +29,7 @@ func NewLeaseManagerWithDeps(cfg model.WatcherConfig, logger *log.Logger, logLev
 	if dispatchLease <= 0 {
 		dispatchLease = 300
 	}
-	maxInProgress := cfg.MaxInProgressMin
-	if maxInProgress <= 0 {
-		maxInProgress = 60
-	}
+	maxInProgress := cfg.EffectiveMaxInProgressMin()
 	return &LeaseManager{
 		dispatchLeaseSec: dispatchLease,
 		maxInProgressMin: maxInProgress,

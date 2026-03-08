@@ -17,8 +17,7 @@ func (qh *QueueHandler) applyCommandDispatchResult(dr dispatchResult, cq *model.
 			continue
 		}
 		// Epoch fencing: verify entry hasn't changed since Phase A
-		if cmd.LeaseEpoch != dr.Item.Epoch || cmd.Status != model.StatusInProgress ||
-			cmd.LeaseExpiresAt == nil || *cmd.LeaseExpiresAt != dr.Item.ExpiresAt {
+		if isFenceStale(cmd.Status, cmd.LeaseEpoch, cmd.LeaseExpiresAt, dr.Item.Epoch, dr.Item.ExpiresAt) {
 			qh.log(LogLevelWarn, "dispatch_fence_stale kind=command id=%s epoch=%d/%d",
 				cmd.ID, cmd.LeaseEpoch, dr.Item.Epoch)
 			return
@@ -52,8 +51,7 @@ func (qh *QueueHandler) applyTaskDispatchResult(dr dispatchResult, taskQueues ma
 			if task.ID != dr.Item.Task.ID {
 				continue
 			}
-			if task.LeaseEpoch != dr.Item.Epoch || task.Status != model.StatusInProgress ||
-				task.LeaseExpiresAt == nil || *task.LeaseExpiresAt != dr.Item.ExpiresAt {
+			if isFenceStale(task.Status, task.LeaseEpoch, task.LeaseExpiresAt, dr.Item.Epoch, dr.Item.ExpiresAt) {
 				qh.log(LogLevelWarn, "dispatch_fence_stale kind=task id=%s epoch=%d/%d",
 					task.ID, task.LeaseEpoch, dr.Item.Epoch)
 				return
@@ -79,8 +77,7 @@ func (qh *QueueHandler) applyNotificationDispatchResult(dr dispatchResult, nq *m
 		if ntf.ID != dr.Item.Notification.ID {
 			continue
 		}
-		if ntf.LeaseEpoch != dr.Item.Epoch || ntf.Status != model.StatusInProgress ||
-			ntf.LeaseExpiresAt == nil || *ntf.LeaseExpiresAt != dr.Item.ExpiresAt {
+		if isFenceStale(ntf.Status, ntf.LeaseEpoch, ntf.LeaseExpiresAt, dr.Item.Epoch, dr.Item.ExpiresAt) {
 			qh.log(LogLevelWarn, "dispatch_fence_stale kind=notification id=%s epoch=%d/%d",
 				ntf.ID, ntf.LeaseEpoch, dr.Item.Epoch)
 			return
@@ -110,8 +107,7 @@ func (qh *QueueHandler) applyTaskBusyCheckResult(bc busyCheckResult, taskQueues 
 			continue
 		}
 		// Fencing: verify entry hasn't changed since Phase A
-		if task.LeaseEpoch != bc.Item.Epoch || task.Status != model.StatusInProgress ||
-			task.LeaseExpiresAt == nil || *task.LeaseExpiresAt != bc.Item.ExpiresAt {
+		if isFenceStale(task.Status, task.LeaseEpoch, task.LeaseExpiresAt, bc.Item.Epoch, bc.Item.ExpiresAt) {
 			qh.log(LogLevelWarn, "busy_check_fence_stale kind=task id=%s epoch=%d/%d",
 				task.ID, task.LeaseEpoch, bc.Item.Epoch)
 			return
@@ -121,22 +117,17 @@ func (qh *QueueHandler) applyTaskBusyCheckResult(bc busyCheckResult, taskQueues 
 		// expired lease from triggering recovery mode and blocking new dispatches.
 		// Still respect max_in_progress_min hard timeout to avoid infinite grace renewals.
 		if bc.Undecided {
-			maxMin := qh.config.Watcher.MaxInProgressMin
-			if maxMin <= 0 {
-				maxMin = 60
-			}
-			if t, err := time.Parse(time.RFC3339, bc.Item.UpdatedAt); err == nil {
-				if qh.clock.Now().Sub(t) >= time.Duration(maxMin)*time.Minute {
-					qh.log(LogLevelWarn, "lease_undecided_max_timeout type=task id=%s worker=%s max=%dm, releasing",
-						task.ID, bc.Item.AgentID, maxMin)
-					if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
-						qh.log(LogLevelError, "expire_release_failed type=task id=%s error=%v", task.ID, err)
-						return
-					}
-					qh.scanCounters.LeaseReleases++
-					taskDirty[bc.Item.QueueFile] = true
+			maxMin := qh.config.Watcher.EffectiveMaxInProgressMin()
+			if isMaxInProgressTimeout(qh.clock.Now(), bc.Item.UpdatedAt, maxMin) {
+				qh.log(LogLevelWarn, "lease_undecided_max_timeout type=task id=%s worker=%s max=%dm, releasing",
+					task.ID, bc.Item.AgentID, maxMin)
+				if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
+					qh.log(LogLevelError, "expire_release_failed type=task id=%s error=%v", task.ID, err)
 					return
 				}
+				qh.scanCounters.LeaseReleases++
+				taskDirty[bc.Item.QueueFile] = true
+				return
 			}
 			graceTTL := qh.leaseManager.GraceLeaseTTL(qh.config.Watcher.ScanIntervalSec)
 			qh.log(LogLevelInfo, "lease_grace_extend type=task id=%s worker=%s epoch=%d grace_ttl=%s",
@@ -150,17 +141,8 @@ func (qh *QueueHandler) applyTaskBusyCheckResult(bc busyCheckResult, taskQueues 
 		}
 
 		if bc.Busy {
-			maxMin := qh.config.Watcher.MaxInProgressMin
-			if maxMin <= 0 {
-				maxMin = 60
-			}
-			withinLimit := true
-			if t, err := time.Parse(time.RFC3339, bc.Item.UpdatedAt); err == nil {
-				if qh.clock.Now().Sub(t) >= time.Duration(maxMin)*time.Minute {
-					withinLimit = false
-				}
-			}
-			if withinLimit {
+			maxMin := qh.config.Watcher.EffectiveMaxInProgressMin()
+			if !isMaxInProgressTimeout(qh.clock.Now(), bc.Item.UpdatedAt, maxMin) {
 				qh.log(LogLevelInfo, "lease_extend_busy type=task id=%s worker=%s epoch=%d",
 					task.ID, bc.Item.AgentID, task.LeaseEpoch)
 				if err := qh.leaseManager.ExtendTaskLease(task); err != nil {
@@ -190,8 +172,7 @@ func (qh *QueueHandler) applyCommandBusyCheckResult(bc busyCheckResult, cq *mode
 		if cmd.ID != bc.Item.EntryID {
 			continue
 		}
-		if cmd.LeaseEpoch != bc.Item.Epoch || cmd.Status != model.StatusInProgress ||
-			cmd.LeaseExpiresAt == nil || *cmd.LeaseExpiresAt != bc.Item.ExpiresAt {
+		if isFenceStale(cmd.Status, cmd.LeaseEpoch, cmd.LeaseExpiresAt, bc.Item.Epoch, bc.Item.ExpiresAt) {
 			qh.log(LogLevelWarn, "busy_check_fence_stale kind=command id=%s epoch=%d/%d",
 				cmd.ID, cmd.LeaseEpoch, bc.Item.Epoch)
 			return
@@ -201,22 +182,17 @@ func (qh *QueueHandler) applyCommandBusyCheckResult(bc busyCheckResult, cq *mode
 		// expired lease from triggering recovery mode and blocking new dispatches.
 		// Still respect max_in_progress_min hard timeout to avoid infinite grace renewals.
 		if bc.Undecided {
-			maxMin := qh.config.Watcher.MaxInProgressMin
-			if maxMin <= 0 {
-				maxMin = 60
-			}
-			if t, err := time.Parse(time.RFC3339, bc.Item.UpdatedAt); err == nil {
-				if qh.clock.Now().Sub(t) >= time.Duration(maxMin)*time.Minute {
-					qh.log(LogLevelWarn, "lease_undecided_max_timeout type=command id=%s owner=planner max=%dm, releasing",
-						cmd.ID, maxMin)
-					if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
-						qh.log(LogLevelError, "expire_release_failed type=command id=%s error=%v", cmd.ID, err)
-						return
-					}
-					qh.scanCounters.LeaseReleases++
-					*dirty = true
+			maxMin := qh.config.Watcher.EffectiveMaxInProgressMin()
+			if isMaxInProgressTimeout(qh.clock.Now(), bc.Item.UpdatedAt, maxMin) {
+				qh.log(LogLevelWarn, "lease_undecided_max_timeout type=command id=%s owner=planner max=%dm, releasing",
+					cmd.ID, maxMin)
+				if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
+					qh.log(LogLevelError, "expire_release_failed type=command id=%s error=%v", cmd.ID, err)
 					return
 				}
+				qh.scanCounters.LeaseReleases++
+				*dirty = true
+				return
 			}
 			graceTTL := qh.leaseManager.GraceLeaseTTL(qh.config.Watcher.ScanIntervalSec)
 			qh.log(LogLevelInfo, "lease_grace_extend type=command id=%s owner=planner epoch=%d grace_ttl=%s",
@@ -230,17 +206,8 @@ func (qh *QueueHandler) applyCommandBusyCheckResult(bc busyCheckResult, cq *mode
 		}
 
 		if bc.Busy {
-			maxMin := qh.config.Watcher.MaxInProgressMin
-			if maxMin <= 0 {
-				maxMin = 60
-			}
-			withinLimit := true
-			if t, err := time.Parse(time.RFC3339, bc.Item.UpdatedAt); err == nil {
-				if qh.clock.Now().Sub(t) >= time.Duration(maxMin)*time.Minute {
-					withinLimit = false
-				}
-			}
-			if withinLimit {
+			maxMin := qh.config.Watcher.EffectiveMaxInProgressMin()
+			if !isMaxInProgressTimeout(qh.clock.Now(), bc.Item.UpdatedAt, maxMin) {
 				qh.log(LogLevelInfo, "lease_extend_busy type=command id=%s owner=planner epoch=%d",
 					cmd.ID, cmd.LeaseEpoch)
 				if err := qh.leaseManager.ExtendCommandLease(cmd); err != nil {

@@ -2,9 +2,31 @@ package daemon
 
 import (
 	"errors"
+	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
 )
+
+// isFenceStale checks whether a queue entry has been modified since Phase A
+// by comparing lease epoch, status, and expiry. Used by Phase C apply methods
+// for both dispatch results and busy-check results.
+func isFenceStale(status model.Status, leaseEpoch int, leaseExpiresAt *string, expectedEpoch int, expectedExpiresAt string) bool {
+	return leaseEpoch != expectedEpoch ||
+		status != model.StatusInProgress ||
+		leaseExpiresAt == nil ||
+		*leaseExpiresAt != expectedExpiresAt
+}
+
+// isMaxInProgressTimeout checks whether the elapsed time since the given
+// RFC3339 timestamp exceeds maxMin minutes. Returns false if the timestamp
+// cannot be parsed (scan-safe: parse errors are treated as "not timed out").
+func isMaxInProgressTimeout(now time.Time, timestampRFC3339 string, maxMin int) bool {
+	t, err := time.Parse(time.RFC3339, timestampRFC3339)
+	if err != nil {
+		return false
+	}
+	return now.Sub(t) >= time.Duration(maxMin)*time.Minute
+}
 
 // buildGlobalInFlightSet scans ALL task queues to find workers with in_progress tasks
 // that have valid (non-expired) leases. Keyed by worker ID derived from queue file path.

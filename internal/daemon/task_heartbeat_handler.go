@@ -153,10 +153,7 @@ func (h *TaskHeartbeatHandler) Handle(params json.RawMessage) *uds.Response {
 
 	// Check max_in_progress_min limit using InProgressAt (set when task was dispatched).
 	// Using UpdatedAt would be incorrect because heartbeats reset it, defeating max runtime enforcement.
-	maxMin := h.config.Watcher.MaxInProgressMin
-	if maxMin <= 0 {
-		maxMin = 60
-	}
+	maxMin := h.config.Watcher.EffectiveMaxInProgressMin()
 
 	var inProgressSince time.Time
 	if task.InProgressAt != nil {
