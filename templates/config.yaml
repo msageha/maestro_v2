@@ -38,6 +38,12 @@ watcher:
   idle_stable_sec: 5
   cooldown_after_clear: 3
   notify_lease_sec: 120
+  wait_ready_interval_sec: 2         # Agent 準備完了待ちのポーリング間隔 (秒)
+  wait_ready_max_retries: 30         # Agent 準備完了待ちの最大リトライ回数
+  clear_confirm_timeout_sec: 5       # クリア確認の1回あたりタイムアウト (秒)
+  clear_confirm_poll_ms: 250         # クリア確認ウィンドウ内のポーリング間隔 (ms)
+  clear_max_attempts: 3              # クリア送信の最大試行回数 (初回含む)
+  clear_retry_backoff_ms: 500        # クリアリトライ間のベースバックオフ (ms、リトライ毎に倍増)
 
 retry:
   command_dispatch: 5
@@ -57,6 +63,8 @@ limits:
   max_pending_tasks_per_worker: 10
   max_entry_content_bytes: 65536
   max_yaml_file_bytes: 5242880
+  max_dead_letter_archive_files: 100  # dead letter アーカイブの最大保持ファイル数 (default: 100)
+  max_quarantine_files: 100            # 隔離キューの最大保持ファイル数 (default: 100)
 
 daemon:
   shutdown_timeout_sec: 90
@@ -93,6 +101,10 @@ worktree:
   cleanup_on_success: true         # コマンド成功時の自動クリーンアップ
   cleanup_on_failure: false        # コマンド失敗時のクリーンアップ (デフォルト: 保全)
   git_timeout_sec: 120             # git コマンドのタイムアウト (秒)
+  commit_policy:
+    max_files: 30                  # 1コミットあたりの最大ステージングファイル数 (0=無制限, default: 30)
+    require_gitignore: true        # .gitignore の存在を要求する
+    message_pattern: "^\\[maestro\\]\\s" # コミットメッセージの正規表現バリデーション (空=チェックなし)
   gc:
     enabled: true                  # 定期 GC の有効化
     ttl_hours: 24                  # 古い worktree の TTL (時間)
