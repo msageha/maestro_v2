@@ -87,7 +87,12 @@ func (R2ResultState) Apply(run *Run) Outcome {
 			var reps []Repair
 			for _, re := range results {
 				currentStatus, exists := state.TaskStates[re.TaskID]
-				if exists && model.IsTerminal(currentStatus) {
+				if !exists {
+					run.Log(core.LogLevelWarn, "R2 skip_unknown_task command=%s task=%s result_status=%s (task not registered in state)",
+						commandID, re.TaskID, re.Status)
+					continue
+				}
+				if model.IsTerminal(currentStatus) {
 					continue
 				}
 
