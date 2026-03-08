@@ -436,6 +436,9 @@ func (c Config) Validate() error {
 	if c.Retry.TaskDispatch < 0 {
 		errs = append(errs, fmt.Errorf("retry.task_dispatch: must be >= 0"))
 	}
+	if c.Retry.OrchestratorNotificationDispatch < 0 {
+		errs = append(errs, fmt.Errorf("retry.orchestrator_notification_dispatch: must be >= 0"))
+	}
 	if c.Retry.TaskExecution.MaxRetries < 0 {
 		errs = append(errs, fmt.Errorf("retry.task_execution.max_retries: must be >= 0"))
 	}
@@ -513,12 +516,15 @@ func (c Config) Validate() error {
 		}
 	}
 
-	// quality_gates thresholds
+	// quality_gates
 	if c.QualityGates.Thresholds.MaxTaskFailureRate < 0 || c.QualityGates.Thresholds.MaxTaskFailureRate > 1 {
 		errs = append(errs, fmt.Errorf("quality_gates.thresholds.max_task_failure_rate: must be between 0.0 and 1.0"))
 	}
 	if c.QualityGates.Thresholds.MinTaskSuccessRate < 0 || c.QualityGates.Thresholds.MinTaskSuccessRate > 1 {
 		errs = append(errs, fmt.Errorf("quality_gates.thresholds.min_task_success_rate: must be between 0.0 and 1.0"))
+	}
+	if fa := c.QualityGates.Enforcement.FailureAction; fa != "" && fa != "warn" && fa != "block" {
+		errs = append(errs, fmt.Errorf("quality_gates.enforcement.failure_action: must be \"warn\" or \"block\""))
 	}
 
 	if len(errs) == 0 {

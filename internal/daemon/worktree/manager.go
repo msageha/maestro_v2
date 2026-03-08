@@ -20,6 +20,17 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
+// validSHAPattern matches a valid git object hash (SHA-1: 40 hex, SHA-256: 64 hex).
+var validSHAPattern = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
+
+// validateSHA checks that s is a valid lowercase hex git hash (40 or 64 chars).
+func validateSHA(s string) error {
+	if !validSHAPattern.MatchString(s) {
+		return fmt.Errorf("invalid git SHA format: %q", s)
+	}
+	return nil
+}
+
 // Manager manages git worktree lifecycle for Worker isolation.
 // All git operations are serialized through this manager (Single-Writer pattern).
 type Manager struct {
@@ -57,6 +68,9 @@ func (wm *Manager) CreateForCommand(commandID string, workerIDs []string) error 
 		return fmt.Errorf("get base SHA from %s: %w", baseBranch, err)
 	}
 	baseSHA = strings.TrimSpace(baseSHA)
+	if err := validateSHA(baseSHA); err != nil {
+		return fmt.Errorf("base SHA from %s: %w", baseBranch, err)
+	}
 
 	// Create integration branch
 	integrationBranch := fmt.Sprintf("maestro/%s/integration", commandID)
@@ -175,6 +189,9 @@ func (wm *Manager) EnsureWorkerWorktree(commandID, workerID string) error {
 			return fmt.Errorf("get base SHA from %s: %w", baseBranch, err)
 		}
 		baseSHA = strings.TrimSpace(baseSHA)
+		if err := validateSHA(baseSHA); err != nil {
+			return fmt.Errorf("base SHA from %s: %w", baseBranch, err)
+		}
 
 		// Create integration branch
 		integrationBranch := fmt.Sprintf("maestro/%s/integration", commandID)
@@ -245,6 +262,11 @@ func (wm *Manager) EnsureWorkerWorktree(commandID, workerID string) error {
 	origWorkers := make([]model.WorktreeState, len(state.Workers))
 	copy(origWorkers, state.Workers)
 	origUpdatedAt := state.UpdatedAt
+
+	// Validate persisted baseSHA before using it for git operations
+	if err := validateSHA(state.Integration.BaseSHA); err != nil {
+		return fmt.Errorf("persisted base SHA for %s: %w", commandID, err)
+	}
 
 	// Add the worker to existing state
 	if err := wm.addWorkerWorktreeUnlocked(state, commandID, workerID, state.Integration.BaseSHA, now); err != nil {
@@ -680,6 +702,9 @@ func (wm *Manager) PublishToBase(commandID string) error {
 		return fmt.Errorf("get base SHA for publish: %w", err)
 	}
 	baseSHA = strings.TrimSpace(baseSHA)
+	if err := validateSHA(baseSHA); err != nil {
+		return fmt.Errorf("base SHA for publish: %w", err)
+	}
 
 	if err := wm.gitRun("branch", tempBranch, baseSHA); err != nil {
 		return fmt.Errorf("create temp publish branch: %w", err)
@@ -1610,13 +1635,28 @@ func (wm *Manager) setIntegrationStatus(state *model.WorktreeCommandState, newSt
 }
 
 // SetClock replaces the clock (for testing).
-func (wm *Manager) SetClock(c core.Clock) { wm.clock = c }
+// Must be called before any concurrent operations start.
+func (wm *Manager) SetClock(c core.Clock) {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+	wm.clock = c
+}
 
 // SetConfig replaces the worktree config (for testing).
-func (wm *Manager) SetConfig(cfg model.WorktreeConfig) { wm.config = cfg }
+// Must be called before any concurrent operations start.
+func (wm *Manager) SetConfig(cfg model.WorktreeConfig) {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+	wm.config = cfg
+}
 
 // SetProjectRoot overrides the project root path (for testing).
-func (wm *Manager) SetProjectRoot(root string) { wm.projectRoot = root }
+// Must be called before any concurrent operations start.
+func (wm *Manager) SetProjectRoot(root string) {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+	wm.projectRoot = root
+}
 
 // AutoCommit returns whether auto-commit is enabled in the worktree config.
 func (wm *Manager) AutoCommit() bool { return wm.config.AutoCommit }
