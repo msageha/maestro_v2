@@ -57,12 +57,15 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 			model.PlannerSignalQueue{}, "", false)
 	}
 
-	// --- Apply worktree merge results: emit conflict signals, record merged phases ---
-	if len(pb.worktreeMerges) > 0 {
+	// --- Apply worktree merge, publish, and signal delivery results (single load/flush) ---
+	hasSignalWork := len(pb.worktreeMerges) > 0 || len(pb.worktreePublishes) > 0 || len(pb.signals) > 0
+	if hasSignalWork {
 		signalQueue, signalPath := qh.loadPlannerSignalQueue()
 		signalsDirty := false
 		signalIndex := buildSignalIndex(signalQueue.Signals)
 		now := qh.clock.Now().UTC().Format(time.RFC3339)
+
+		// Worktree merge results: emit conflict signals, record merged phases
 		for _, mr := range pb.worktreeMerges {
 			if mr.Error != nil {
 				qh.log(LogLevelError, "worktree_merge_failed command=%s phase=%s error=%v",
@@ -88,23 +91,8 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 				}
 			}
 		}
-		if signalsDirty {
-			p := signalPath
-			if p == "" {
-				p = filepath.Join(qh.maestroDir, "queue", "planner_signals.yaml")
-			}
-			if err := yamlutil.AtomicWrite(p, signalQueue); err != nil {
-				qh.log(LogLevelError, "write_planner_signals error=%v", err)
-			}
-		}
-	}
 
-	// --- Apply worktree publish results: emit signal on failure ---
-	if len(pb.worktreePublishes) > 0 {
-		signalQueue, signalPath := qh.loadPlannerSignalQueue()
-		signalsDirty := false
-		signalIndex := buildSignalIndex(signalQueue.Signals)
-		now := qh.clock.Now().UTC().Format(time.RFC3339)
+		// Worktree publish results: emit signal on failure
 		for _, pr := range pb.worktreePublishes {
 			if pr.Error != nil {
 				qh.log(LogLevelError, "worktree_publish_failed command=%s error=%v",
@@ -122,33 +110,11 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 				qh.log(LogLevelInfo, "worktree_published command=%s", pr.Item.CommandID)
 			}
 		}
-		if signalsDirty {
-			p := signalPath
-			if p == "" {
-				p = filepath.Join(qh.maestroDir, "queue", "planner_signals.yaml")
-			}
-			if err := yamlutil.AtomicWrite(p, signalQueue); err != nil {
-				qh.log(LogLevelError, "write_planner_signals error=%v", err)
-			}
-		}
-	}
 
-	// --- Apply worktree cleanup results: log only ---
-	for _, cr := range pb.worktreeCleanups {
-		if cr.Error != nil {
-			qh.log(LogLevelWarn, "worktree_cleanup_failed command=%s reason=%s error=%v",
-				cr.Item.CommandID, cr.Item.Reason, cr.Error)
-		} else {
-			qh.log(LogLevelInfo, "worktree_cleanup_complete command=%s reason=%s",
-				cr.Item.CommandID, cr.Item.Reason)
-		}
-	}
-
-	// --- Apply signal delivery results ---
-	if len(pb.signals) > 0 {
-		signalQueue, signalPath := qh.loadPlannerSignalQueue()
-		signalsDirty := false
+		// Signal delivery results: remove delivered signals
 		qh.applySignalResults(pb.signals, &signalQueue, &signalsDirty)
+
+		// Single flush for all signal queue mutations
 		if signalsDirty {
 			p := signalPath
 			if p == "" {
@@ -161,6 +127,17 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 					qh.log(LogLevelError, "write_planner_signals error=%v", err)
 				}
 			}
+		}
+	}
+
+	// --- Apply worktree cleanup results: log only ---
+	for _, cr := range pb.worktreeCleanups {
+		if cr.Error != nil {
+			qh.log(LogLevelWarn, "worktree_cleanup_failed command=%s reason=%s error=%v",
+				cr.Item.CommandID, cr.Item.Reason, cr.Error)
+		} else {
+			qh.log(LogLevelInfo, "worktree_cleanup_complete command=%s reason=%s",
+				cr.Item.CommandID, cr.Item.Reason)
 		}
 	}
 
