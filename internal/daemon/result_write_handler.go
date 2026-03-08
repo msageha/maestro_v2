@@ -143,9 +143,17 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 	a.acquireFileLock()
 	defer a.releaseFileLock()
 
-	// Lock queue file first (consistent order: queue → result → state).
+	// Lock queue file first (canonical order: queue → state → result).
 	// Without this, handleQueueWriteTask (which locks "queue:{target}") and
 	// resultWritePhaseA (which writes queue/{reporter}.yaml) can race.
+	//
+	// Note: this function acquires queue (level 1) then result (level 3),
+	// skipping state (level 2). The state lock is acquired separately in
+	// resultWritePhaseB after both locks are released.
+	// KNOWN ISSUE: the retry path (RegisterRetryTaskInState) acquires
+	// state:{commandID} while queue and result locks are still held,
+	// violating the canonical order. This should be refactored to release
+	// queue/result locks before acquiring the state lock for retry.
 	queueLockKey := "queue:" + params.Reporter
 	d.lockMap.Lock(queueLockKey)
 	defer d.lockMap.Unlock(queueLockKey)
