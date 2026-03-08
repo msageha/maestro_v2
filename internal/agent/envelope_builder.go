@@ -84,7 +84,7 @@ func BuildPlannerEnvelope(cmd model.Command, leaseEpoch, attempt int) string {
 	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "content: %s\n", sanitizeEnvelopeField(cmd.Content))
 	sb.WriteString("\n")
-	fmt.Fprintf(&sb, "タスク分解後: maestro plan submit --command-id %s --tasks-file plan.yaml\n", cmd.ID)
+	fmt.Fprintf(&sb, "タスク分解後: maestro plan submit --command-id %s --tasks-file -\n", cmd.ID)
 	fmt.Fprintf(&sb, "全タスク完了後: maestro plan complete --command-id %s --summary \"...\"", cmd.ID)
 	return sb.String()
 }
@@ -93,8 +93,8 @@ func BuildPlannerEnvelope(cmd model.Command, leaseEpoch, attempt int) string {
 // Format matches spec §5.8.1 Orchestrator 向け通知配信エンベロープ.
 func BuildOrchestratorNotificationEnvelope(commandID string, notificationType model.NotificationType) string {
 	terminalStatus := mapNotificationTypeToStatus(notificationType)
-	return fmt.Sprintf("[maestro] kind:command_completed command_id:%s status:%s\nresults/planner.yaml を確認してください",
-		commandID, terminalStatus)
+	return fmt.Sprintf("[maestro] kind:%s command_id:%s status:%s\nresults/planner.yaml を確認してください",
+		notificationType, commandID, terminalStatus)
 }
 
 func mapNotificationTypeToStatus(nt model.NotificationType) string {
