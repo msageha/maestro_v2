@@ -69,7 +69,7 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 	}
 
 	// Phase A: Shared file lock + per-worker mutex (results/ + queue/ updates)
-	resultID, err := a.resultWritePhaseA(params, resultStatus)
+	resultWritePhaseAResult, err := a.resultWritePhaseA(params, resultStatus)
 	if err != nil {
 		rErr := &resultWriteError{}
 		if errors.As(err, &rErr) {
@@ -77,6 +77,7 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 		}
 		return uds.ErrorResponse(uds.ErrCodeInternal, err.Error())
 	}
+	resultID := resultWritePhaseAResult.resultID
 
 	// Phase B: Per-command mutex (state/ updates)
 	if err := a.resultWritePhaseB(params, resultID, resultStatus); err != nil {
@@ -84,6 +85,27 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 			params.TaskID, params.CommandID, err)
 		return uds.ErrorResponse(uds.ErrCodeInternal,
 			fmt.Sprintf("state update failed: %v (result %s committed, run 'maestro plan rebuild' to fix)", err, resultID))
+	}
+
+	// Phase A2: Retry registration (state then queue — correct lock order)
+	// This runs after phaseA has released queue+result locks, so acquiring
+	// state(L2) then queue(L1) does not violate canonical order.
+	if resultWritePhaseAResult.retryTask != nil {
+		retryTask := resultWritePhaseAResult.retryTask
+		retryHandler := NewTaskRetryHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
+
+		// First register in state (acquires state lock)
+		if err := retryHandler.RegisterRetryTaskInState(retryTask, params.CommandID); err != nil {
+			d.log(LogLevelError, "register_retry_task_failed task=%s error=%v", retryTask.ID, err)
+		} else {
+			// Then add to queue (acquires queue lock independently)
+			if err := retryHandler.AddRetryTaskToQueue(retryTask, params.Reporter); err != nil {
+				d.log(LogLevelError, "add_retry_task_failed task=%s error=%v", retryTask.ID, err)
+			} else {
+				d.log(LogLevelInfo, "task_retry_scheduled task=%s retry_id=%s attempt=%d",
+					params.TaskID, retryTask.ID, retryTask.Attempts)
+			}
+		}
 	}
 
 	// Learnings: best-effort write after core phases succeed.
@@ -137,7 +159,13 @@ func (e *resultWriteError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
 
-func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Status) (string, error) {
+// resultWritePhaseAResult holds the output of resultWritePhaseA.
+type resultWritePhaseAResult struct {
+	resultID  string
+	retryTask *model.Task // non-nil if a retry should be scheduled (caller handles registration)
+}
+
+func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Status) (*resultWritePhaseAResult, error) {
 	d := a.d
 	// Acquire shared file lock to serialize with QueueHandler's PeriodicScan
 	a.acquireFileLock()
@@ -149,11 +177,9 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 	//
 	// Note: this function acquires queue (level 1) then result (level 3),
 	// skipping state (level 2). The state lock is acquired separately in
-	// resultWritePhaseB after both locks are released.
-	// KNOWN ISSUE: the retry path (RegisterRetryTaskInState) acquires
-	// state:{commandID} while queue and result locks are still held,
-	// violating the canonical order. This should be refactored to release
-	// queue/result locks before acquiring the state lock for retry.
+	// resultWritePhaseB after both locks are released. Retry registration
+	// (state + queue) is also handled by the caller after phaseA returns,
+	// ensuring the canonical lock order is maintained.
 	queueLockKey := "queue:" + params.Reporter
 	d.lockMap.Lock(queueLockKey)
 	defer d.lockMap.Unlock(queueLockKey)
@@ -168,20 +194,20 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 	resultData, err := os.ReadFile(resultPath)
 	if err == nil {
 		if err := yamlv3.Unmarshal(resultData, &rf); err != nil {
-			return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("parse results file: %v", err)}
+			return nil, &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("parse results file: %v", err)}
 		}
 	} else if !os.IsNotExist(err) {
-		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("read results file: %v", err)}
+		return nil, &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("read results file: %v", err)}
 	}
 
 	for _, r := range rf.Results {
 		if r.TaskID == params.TaskID {
 			if r.Status == resultStatus {
 				// Same status — idempotent success
-				return r.ID, nil
+				return &resultWritePhaseAResult{resultID: r.ID}, nil
 			}
 			// Different status — anomaly
-			return "", &resultWriteError{uds.ErrCodeDuplicate,
+			return nil, &resultWriteError{uds.ErrCodeDuplicate,
 				fmt.Sprintf("task %s already has result with status %s, cannot report %s",
 					params.TaskID, r.Status, resultStatus)}
 		}
@@ -192,10 +218,10 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 	var tq model.TaskQueue
 	queueData, err := os.ReadFile(queuePath)
 	if err != nil {
-		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("read worker queue: %v", err)}
+		return nil, &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("read worker queue: %v", err)}
 	}
 	if err := yamlv3.Unmarshal(queueData, &tq); err != nil {
-		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("parse worker queue: %v", err)}
+		return nil, &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("parse worker queue: %v", err)}
 	}
 
 	taskIdx := -1
@@ -206,7 +232,7 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 		}
 	}
 	if taskIdx == -1 {
-		return "", &resultWriteError{uds.ErrCodeNotFound,
+		return nil, &resultWriteError{uds.ErrCodeNotFound,
 			fmt.Sprintf("task %s not found in queue %s", params.TaskID, params.Reporter)}
 	}
 
@@ -214,7 +240,7 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 
 	// Command ID consistency check: queue task's command_id must match request
 	if queueTask.CommandID != params.CommandID {
-		return "", &resultWriteError{uds.ErrCodeValidation,
+		return nil, &resultWriteError{uds.ErrCodeValidation,
 			fmt.Sprintf("command_id mismatch: queue task has %q, request has %q",
 				queueTask.CommandID, params.CommandID)}
 	}
@@ -224,25 +250,25 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 		if queueTask.Status == resultStatus {
 			for _, r := range rf.Results {
 				if r.TaskID == params.TaskID {
-					return r.ID, nil
+					return &resultWritePhaseAResult{resultID: r.ID}, nil
 				}
 			}
 			// Terminal in queue but no result entry — proceed to write result
 		} else {
-			return "", &resultWriteError{uds.ErrCodeDuplicate,
+			return nil, &resultWriteError{uds.ErrCodeDuplicate,
 				fmt.Sprintf("task %s already terminal with status %s in queue", params.TaskID, queueTask.Status)}
 		}
 	}
 
 	// Fencing: task must be in_progress
 	if queueTask.Status != model.StatusInProgress {
-		return "", &resultWriteError{uds.ErrCodeFencingReject,
+		return nil, &resultWriteError{uds.ErrCodeFencingReject,
 			fmt.Sprintf("task %s status is %s, expected in_progress", params.TaskID, queueTask.Status)}
 	}
 
 	// Fencing: lease epoch must match
 	if queueTask.LeaseEpoch != params.LeaseEpoch {
-		return "", &resultWriteError{uds.ErrCodeFencingReject,
+		return nil, &resultWriteError{uds.ErrCodeFencingReject,
 			fmt.Sprintf("task %s lease_epoch mismatch: queue=%d, request=%d",
 				params.TaskID, queueTask.LeaseEpoch, params.LeaseEpoch)}
 	}
@@ -251,7 +277,7 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 	// and lease_epoch matches, so the reporter identity is verified. lease_owner stores
 	// "daemon:{pid}" per spec §5.8.1, not the agent ID.
 	if queueTask.LeaseOwner == nil {
-		return "", &resultWriteError{uds.ErrCodeFencingReject,
+		return nil, &resultWriteError{uds.ErrCodeFencingReject,
 			fmt.Sprintf("task %s has no lease_owner (not dispatched)", params.TaskID)}
 	}
 
@@ -260,22 +286,22 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 	stateData, stateErr := os.ReadFile(statePath)
 	if stateErr != nil {
 		if os.IsNotExist(stateErr) {
-			return "", &resultWriteError{uds.ErrCodeValidation,
+			return nil, &resultWriteError{uds.ErrCodeValidation,
 				fmt.Sprintf("state not found for command %s", params.CommandID)}
 		}
-		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("read state: %v", stateErr)}
+		return nil, &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("read state: %v", stateErr)}
 	}
 	var preState model.CommandState
 	if err := yamlv3.Unmarshal(stateData, &preState); err != nil {
-		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("parse state: %v", err)}
+		return nil, &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("parse state: %v", err)}
 	}
 	if preState.TaskStates == nil {
-		return "", &resultWriteError{uds.ErrCodeValidation,
+		return nil, &resultWriteError{uds.ErrCodeValidation,
 			fmt.Sprintf("task %s not registered in state for command %s (no tasks registered)",
 				params.TaskID, params.CommandID)}
 	}
 	if _, registered := preState.TaskStates[params.TaskID]; !registered {
-		return "", &resultWriteError{uds.ErrCodeValidation,
+		return nil, &resultWriteError{uds.ErrCodeValidation,
 			fmt.Sprintf("task %s not registered in state for command %s",
 				params.TaskID, params.CommandID)}
 	}
@@ -283,7 +309,7 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 	// 3. Generate result ID
 	resultID, err := model.GenerateID(model.IDTypeResult)
 	if err != nil {
-		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("generate result ID: %v", err)}
+		return nil, &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("generate result ID: %v", err)}
 	}
 
 	// 4. Append to results file
@@ -307,7 +333,7 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 	})
 
 	if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
-		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("write results file: %v", err)}
+		return nil, &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("write results file: %v", err)}
 	}
 	a.recordSelfWrite(resultPath, rf)
 
@@ -351,25 +377,7 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 		a.recordSelfWrite(queuePath, tq)
 	}
 
-	// 7. Add retry task to queue and state (best effort, independent of queue write success)
-	if retryTask != nil {
-		retryHandler := NewTaskRetryHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
-
-		// First register in state
-		if err := retryHandler.RegisterRetryTaskInState(retryTask, params.CommandID); err != nil {
-			d.log(LogLevelError, "register_retry_task_failed task=%s error=%v", retryTask.ID, err)
-		} else {
-			// Then add to queue (use locked variant — queue lock already held by this function)
-			if err := retryHandler.addRetryTaskToQueueLocked(retryTask, params.Reporter); err != nil {
-				d.log(LogLevelError, "add_retry_task_failed task=%s error=%v", retryTask.ID, err)
-			} else {
-				d.log(LogLevelInfo, "task_retry_scheduled task=%s retry_id=%s attempt=%d",
-					params.TaskID, retryTask.ID, retryTask.Attempts)
-			}
-		}
-	}
-
-	return resultID, nil
+	return &resultWritePhaseAResult{resultID: resultID, retryTask: retryTask}, nil
 }
 
 func (a *API) resultWritePhaseB(params ResultWriteParams, resultID string, resultStatus model.Status) error {
