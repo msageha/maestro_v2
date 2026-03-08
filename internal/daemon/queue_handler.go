@@ -128,24 +128,36 @@ func (qh *QueueHandler) SetCanComplete(f CanCompleteFunc) {
 }
 
 // SetCircuitBreaker wires the circuit breaker handler for periodic scan integration.
+// Must be called before Run() starts.
 func (qh *QueueHandler) SetCircuitBreaker(cb *circuitbreaker.Handler) {
+	qh.scanRunMu.Lock()
+	defer qh.scanRunMu.Unlock()
 	qh.circuitBreaker = cb
 }
 
 // SetWorktreeManager wires the worktree manager for worker isolation.
+// Must be called before Run() starts.
 func (qh *QueueHandler) SetWorktreeManager(wm *WorktreeManager) {
+	qh.scanRunMu.Lock()
+	defer qh.scanRunMu.Unlock()
 	qh.worktreeManager = wm
 	qh.dispatcher.SetWorktreeManager(wm)
 }
 
 // SetBusyChecker overrides the busy checker for testing.
+// Must be called before Run() starts.
 func (qh *QueueHandler) SetBusyChecker(f func(agentID string) bool) {
+	qh.scanRunMu.Lock()
+	defer qh.scanRunMu.Unlock()
 	qh.busyChecker = f
 }
 
 // SetShutdownGuard wires the daemon's shutdown context and advisory flag
 // so that debounce callbacks respect context cancellation and shutdown state.
+// Must be called before Run() starts.
 func (qh *QueueHandler) SetShutdownGuard(ctx context.Context, shuttingDown *atomic.Bool) {
+	qh.scanRunMu.Lock()
+	defer qh.scanRunMu.Unlock()
 	qh.shutdownCtx = ctx
 	qh.shuttingDown = shuttingDown
 }

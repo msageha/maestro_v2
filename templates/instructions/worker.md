@@ -167,11 +167,12 @@ maestro result write <agent_id> \
   --summary "<要約>" \
   [--files-changed <file>]... \
   [--learnings "<知見1>" --learnings "<知見2>" ...] \
+  [--skill-candidates "<候補1>" --skill-candidates "<候補2>" ...] \
   [--partial-changes] \
   [--no-retry-safe]
 ```
 
-`<agent_id>`, `<task_id>`, `<command_id>`, `<epoch>` はタスク配信時の値をそのまま使用する。
+`<agent_id>`, `<task_id>`, `<command_id>`, `<epoch>` はタスク配信時の値をそのまま使用する。`--lease-epoch` は CLI 実装上のデフォルトは 0 だが、Daemon が lease epoch 一致を検証するため、配信された値を必ず指定すること（実質必須）。
 
 エラー時は stderr にメッセージが出力される（lease_epoch 不一致、task_id 不存在等）。エラーが発生した場合は stderr のメッセージを確認し、修正して再試行する。
 
@@ -179,6 +180,7 @@ maestro result write <agent_id> \
 |---|---|
 | `--files-changed` | 変更したファイル（複数指定可: `--files-changed file1 --files-changed file2`） |
 | `--learnings` | 他タスクに有用な知見（複数指定可、推奨・任意） |
+| `--skill-candidates` | スキル候補の報告（複数指定可、任意） |
 | `--partial-changes` | 部分的な変更がリポジトリに残っている場合に指定 |
 | `--no-retry-safe` | リトライが安全でない場合に指定（デフォルトはリトライ可能） |
 

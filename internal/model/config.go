@@ -33,9 +33,13 @@ type Config struct {
 }
 
 // PersonaConfig defines a persona that can be assigned to agents.
+// Either Prompt or File must be set. If File is set, the file content
+// is read from the embedded template FS at dispatch time.
+// File read failure falls back to the Prompt field.
 type PersonaConfig struct {
 	Description string `yaml:"description"`
 	Prompt      string `yaml:"prompt"`
+	File        string `yaml:"file,omitempty"`
 }
 
 // SkillsConfig controls the skill reference feature for tasks.
@@ -148,6 +152,14 @@ type WatcherConfig struct {
 	ClearConfirmPollMs     int `yaml:"clear_confirm_poll_ms"`     // Polling interval within confirmation window (default 250ms)
 	ClearMaxAttempts       int `yaml:"clear_max_attempts"`        // Total send attempts including initial (default 3)
 	ClearRetryBackoffMs    int `yaml:"clear_retry_backoff_ms"`    // Base backoff between attempts; doubles each retry (default 500ms)
+}
+
+// EffectiveMaxInProgressMin returns the configured max in-progress timeout or 60 as default.
+func (w WatcherConfig) EffectiveMaxInProgressMin() int {
+	if w.MaxInProgressMin > 0 {
+		return w.MaxInProgressMin
+	}
+	return 60
 }
 
 type RetryConfig struct {
@@ -436,6 +448,9 @@ func (c Config) Validate() error {
 	if c.Retry.TaskDispatch < 0 {
 		errs = append(errs, fmt.Errorf("retry.task_dispatch: must be >= 0"))
 	}
+	if c.Retry.OrchestratorNotificationDispatch < 0 {
+		errs = append(errs, fmt.Errorf("retry.orchestrator_notification_dispatch: must be >= 0"))
+	}
 	if c.Retry.TaskExecution.MaxRetries < 0 {
 		errs = append(errs, fmt.Errorf("retry.task_execution.max_retries: must be >= 0"))
 	}
@@ -508,17 +523,20 @@ func (c Config) Validate() error {
 		if err := validate.ValidateID(name); err != nil {
 			errs = append(errs, fmt.Errorf("personas.%s: invalid persona name: %w", name, err))
 		}
-		if strings.TrimSpace(p.Prompt) == "" {
-			errs = append(errs, fmt.Errorf("personas.%s.prompt: must not be empty", name))
+		if strings.TrimSpace(p.Prompt) == "" && strings.TrimSpace(p.File) == "" {
+			errs = append(errs, fmt.Errorf("personas.%s: prompt or file must be set", name))
 		}
 	}
 
-	// quality_gates thresholds
+	// quality_gates
 	if c.QualityGates.Thresholds.MaxTaskFailureRate < 0 || c.QualityGates.Thresholds.MaxTaskFailureRate > 1 {
 		errs = append(errs, fmt.Errorf("quality_gates.thresholds.max_task_failure_rate: must be between 0.0 and 1.0"))
 	}
 	if c.QualityGates.Thresholds.MinTaskSuccessRate < 0 || c.QualityGates.Thresholds.MinTaskSuccessRate > 1 {
 		errs = append(errs, fmt.Errorf("quality_gates.thresholds.min_task_success_rate: must be between 0.0 and 1.0"))
+	}
+	if fa := c.QualityGates.Enforcement.FailureAction; fa != "" && fa != "warn" && fa != "block" {
+		errs = append(errs, fmt.Errorf("quality_gates.enforcement.failure_action: must be \"warn\" or \"block\""))
 	}
 
 	if len(errs) == 0 {

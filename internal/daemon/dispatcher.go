@@ -17,6 +17,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/skill"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/templates"
 )
 
 // errExecutorInit is re-exported from core via core_aliases.go.
@@ -329,7 +330,7 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 	// Inject persona prompt into task content (best-effort, prepend)
 	dispatchTask := *task
 	if task.PersonaHint != "" {
-		if section, found := persona.FormatPersonaSection(d.config.Personas, task.PersonaHint); !found {
+		if section, found := persona.FormatPersonaSectionWithFS(templates.FS, d.config.Personas, task.PersonaHint); !found {
 			d.log(LogLevelWarn, "persona_not_found task=%s persona_hint=%s", task.ID, task.PersonaHint)
 		} else if section != "" {
 			dispatchTask.Content = section + dispatchTask.Content
