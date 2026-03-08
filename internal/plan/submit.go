@@ -550,11 +550,23 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	// Generate IDs and assign workers
 	nameToID, err := resolveNames(input.Tasks)
 	if err != nil {
+		// Rollback filling → awaiting_fill
+		state.Phases[targetPhaseIdx].Status = model.PhaseStatusAwaitingFill
+		state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		if saveErr := sm.SaveState(state); saveErr != nil {
+			log.Printf("rollback: save state for command %s: %v", opts.CommandID, saveErr)
+		}
 		return nil, fmt.Errorf("resolve names: %w", err)
 	}
 
 	workerStates, err := BuildWorkerStates(opts.MaestroDir, opts.Config.Agents.Workers)
 	if err != nil {
+		// Rollback filling → awaiting_fill
+		state.Phases[targetPhaseIdx].Status = model.PhaseStatusAwaitingFill
+		state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		if saveErr := sm.SaveState(state); saveErr != nil {
+			log.Printf("rollback: save state for command %s: %v", opts.CommandID, saveErr)
+		}
 		return nil, fmt.Errorf("build worker states: %w", err)
 	}
 
