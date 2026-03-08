@@ -3,5 +3,5 @@ package templates
 
 import "embed"
 
-//go:embed config.yaml dashboard.md maestro.md instructions
+//go:embed config.yaml dashboard.md maestro.md instructions persona
 var FS embed.FS
