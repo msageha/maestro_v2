@@ -88,11 +88,12 @@ func (rh *ResultHandler) SetExecutorFactory(f ExecutorFactory) {
 	rh.cachedExec = nil
 	rh.cachedExecErr = nil
 	rh.execInit = false
-	rh.execMu.Unlock()
-
+	// Close old executor while still holding the lock to prevent getExecutor()
+	// from racing between state reset and Close() completion.
 	if old != nil {
 		_ = old.Close()
 	}
+	rh.execMu.Unlock()
 }
 
 // getExecutor returns the shared executor instance, creating it lazily on first call.
