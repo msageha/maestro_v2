@@ -83,14 +83,6 @@ func runAgentExec(args []string) error {
 	}
 	tmux.SetSessionName("maestro-" + cfg.Project.Name)
 
-	// Validate exec mode before proceeding
-	switch agent.ExecMode(mode) {
-	case agent.ModeDeliver, agent.ModeWithClear, agent.ModeInterrupt, agent.ModeIsBusy, agent.ModeClear:
-		// valid
-	default:
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro agent exec: invalid mode %q (must be one of: deliver, with_clear, interrupt, is_busy, clear)", mode)}
-	}
-
 	exec, err := agent.NewExecutor(maestroDir, cfg.Watcher, cfg.Logging.Level)
 	if err != nil {
 		return fmt.Errorf("maestro agent exec: create executor: %w", err)

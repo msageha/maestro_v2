@@ -89,22 +89,17 @@ func (R6FillTimeout) Apply(run *Run) Outcome {
 				})
 			}
 
-			// Cascade cancel with cycle detection (M-09)
+			// Cascade cancel
 			if len(timedOutPhases) > 0 {
 				cancelledPhases := make(map[string]bool)
 				for name := range timedOutPhases {
 					cancelledPhases[name] = true
 				}
 
-				// Cap iterations at len(Phases) to prevent infinite loops from cyclic dependencies
-				maxIter := len(state.Phases)
-				for iter := 0; iter < maxIter; iter++ {
+				for {
 					changed := false
 					for i := range state.Phases {
 						phase := &state.Phases[i]
-						if cancelledPhases[phase.Name] {
-							continue // already cancelled, skip
-						}
 						if phase.Status != model.PhaseStatusPending && phase.Status != model.PhaseStatusAwaitingFill {
 							continue
 						}

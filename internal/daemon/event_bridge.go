@@ -7,16 +7,6 @@ import (
 
 // EventBridge bridges the generic event bus to typed daemon component events.
 // It holds a back-pointer to Daemon for access to shared state.
-//
-// M-16: Initialization order dependency — EventBridge must be instantiated
-// after Daemon.eventBus is created (events.NewBus) but before publishers
-// (dispatcher, dependencyResolver, resultHandler) get SetEventBus().
-// The correct sequence in initComponents() is:
-//   1. Create sub-components (handler, qualityGateDaemon, etc.)
-//   2. Create eventBus
-//   3. Subscribe consumers via bridge (subscribeQualityGateEvents, subscribeQueueWrittenEvents)
-//   4. Wire eventBus to publishers (SetEventBus calls)
-// This ensures subscribers are ready before any events are published.
 type EventBridge struct {
 	d                  *Daemon
 	eventUnsubscribers []func()
@@ -27,9 +17,6 @@ type EventBridge struct {
 // Uses safe type assertions with logging for dropped events.
 func (eb *EventBridge) subscribeQualityGateEvents() {
 	d := eb.d
-	if d.eventBus == nil {
-		return
-	}
 
 	// Subscribe to task started events
 	unsub1 := d.eventBus.Subscribe(events.EventTaskStarted, func(e events.Event) {
@@ -42,11 +29,7 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 			return
 		}
 
-		qgd := d.qualityGateDaemon
-		if qgd == nil {
-			return
-		}
-		qgd.EmitEvent(TaskStartEvent{
+		d.qualityGateDaemon.EmitEvent(TaskStartEvent{
 			TaskID:    taskID,
 			CommandID: commandID,
 			AgentID:   workerID,
@@ -76,11 +59,7 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 			return
 		}
 
-		qgd := d.qualityGateDaemon
-		if qgd == nil {
-			return
-		}
-		qgd.EmitEvent(TaskCompleteEvent{
+		d.qualityGateDaemon.EmitEvent(TaskCompleteEvent{
 			TaskID:      taskID,
 			CommandID:   commandID,
 			AgentID:     workerID,
@@ -101,11 +80,7 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 			return
 		}
 
-		qgd := d.qualityGateDaemon
-		if qgd == nil {
-			return
-		}
-		qgd.EmitEvent(PhaseTransitionEvent{
+		d.qualityGateDaemon.EmitEvent(PhaseTransitionEvent{
 			PhaseID:        phaseID,
 			CommandID:      commandID,
 			OldStatus:      model.PhaseStatus(oldStatus),
@@ -122,16 +97,12 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 // directly via the event bus, bypassing fsnotify for daemon-originated writes.
 func (eb *EventBridge) subscribeQueueWrittenEvents() {
 	d := eb.d
-	if d.eventBus == nil {
-		return
-	}
 	unsub := d.eventBus.Subscribe(events.EventQueueWritten, func(e events.Event) {
-		h := d.handler
-		if h == nil || d.shuttingDown.Load() {
+		if d.handler == nil || d.shuttingDown.Load() {
 			return
 		}
 		file, _ := e.Data["file"].(string)
-		h.debounceAndScan("event_bus:" + file)
+		d.handler.debounceAndScan("event_bus:" + file)
 	})
 	eb.eventUnsubscribers = append(eb.eventUnsubscribers, unsub)
 }

@@ -240,15 +240,11 @@ func (qh *QueueHandler) loadNotificationQueue() (model.NotificationQueue, string
 		if len(salvaged.Notifications) > 0 {
 			qh.log(LogLevelWarn, "notification_queue_salvaged recovered=%d path=%s", len(salvaged.Notifications), path)
 			qh.lockMap.Lock("queue:orchestrator")
-			// Re-read inside lock to avoid overwriting a concurrently fixed file
-			freshData, freshErr := os.ReadFile(path)
-			if freshErr != nil || yamlv3.Unmarshal(freshData, &model.NotificationQueue{}) != nil {
-				writeErr := yamlutil.AtomicWrite(path, salvaged)
-				if writeErr != nil {
-					qh.log(LogLevelError, "write_salvaged_notifications error=%v", writeErr)
-				}
-			}
+			writeErr := yamlutil.AtomicWrite(path, salvaged)
 			qh.lockMap.Unlock("queue:orchestrator")
+			if writeErr != nil {
+				qh.log(LogLevelError, "write_salvaged_notifications error=%v", writeErr)
+			}
 			return salvaged, path
 		}
 		// No entries salvaged — reset to empty
@@ -257,17 +253,13 @@ func (qh *QueueHandler) loadNotificationQueue() (model.NotificationQueue, string
 			FileType:      "queue_notification",
 		}
 		qh.lockMap.Lock("queue:orchestrator")
-		// Re-read inside lock to avoid overwriting a concurrently fixed file
-		freshData, freshErr := os.ReadFile(path)
-		if freshErr != nil || yamlv3.Unmarshal(freshData, &model.NotificationQueue{}) != nil {
-			writeErr := yamlutil.AtomicWrite(path, emptyNQ)
-			if writeErr != nil {
-				qh.log(LogLevelError, "overwrite_corrupted_notifications error=%v", writeErr)
-			} else {
-				qh.log(LogLevelInfo, "corrupted_notifications_reset path=%s", path)
-			}
-		}
+		writeErr := yamlutil.AtomicWrite(path, emptyNQ)
 		qh.lockMap.Unlock("queue:orchestrator")
+		if writeErr != nil {
+			qh.log(LogLevelError, "overwrite_corrupted_notifications error=%v", writeErr)
+		} else {
+			qh.log(LogLevelInfo, "corrupted_notifications_reset path=%s", path)
+		}
 		return emptyNQ, path
 	}
 	return nq, path

@@ -65,7 +65,7 @@ func (e PhaseTransitionEvent) Timestamp() time.Time { return e.TransitionedAt }
 
 // QualityGateMetrics tracks quality gate evaluation metrics.
 type QualityGateMetrics struct {
-	mu                    sync.RWMutex // protects all counter fields below
+	mu                    sync.RWMutex
 	evaluationCount       int64
 	successCount          int64
 	failureCount          int64
@@ -116,8 +116,6 @@ type QualityGateDaemon struct {
 	engine            *quality.Engine
 	evaluationTimeout time.Duration
 
-	loadErr error // non-nil if loadGateDefinitions failed; causes evaluations to fail-closed
-
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -160,8 +158,8 @@ func (qg *QualityGateDaemon) Start() error {
 
 	// Load gate definitions on startup
 	if err := qg.loadGateDefinitions(); err != nil {
-		qg.log(LogLevelError, "quality_gate_daemon failed to load definitions: %v", err)
-		qg.loadErr = err
+		// Log error but don't fail - we can run without gates
+		qg.log(LogLevelWarn, "quality_gate_daemon failed to load definitions: %v", err)
 	}
 
 	qg.wg.Add(1)
@@ -347,11 +345,6 @@ func mapGateType(gateType string) (quality.GateType, error) {
 
 // evaluateGate evaluates quality gates for the specified type and context
 func (qg *QualityGateDaemon) evaluateGate(gateType string, evalContext map[string]interface{}) error {
-	// Fail-closed: if gate definitions failed to load, block all evaluations
-	if qg.loadErr != nil {
-		return fmt.Errorf("gate definitions not loaded: %w", qg.loadErr)
-	}
-
 	qg.log(LogLevelDebug, "quality_gate_evaluate gate_type=%s context=%v", gateType, evalContext)
 
 	qualityGateType, err := mapGateType(gateType)

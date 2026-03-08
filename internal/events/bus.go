@@ -50,7 +50,7 @@ func (s *subscriberChan) safeClose() {
 // Events are delivered asynchronously via buffered channels.
 // If a subscriber's channel is full, the event is dropped and counted.
 type Bus struct {
-	mu               sync.RWMutex // protects subscribers map
+	mu               sync.RWMutex
 	closed           atomic.Bool
 	subscribers      map[EventType][]*subscriberChan
 	bufferSize       int

@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"os"
@@ -70,11 +69,7 @@ func (d *Daemon) prepareStartup() error {
 	}
 
 	// Create errgroup derived from daemon context.
-	// Use a separate variable for the errgroup-derived context so that
-	// d.ctx remains the daemon's own context (cancellable via d.cancel).
-	var egCtx context.Context
-	d.eg, egCtx = errgroup.WithContext(d.ctx)
-	_ = egCtx // errgroup goroutines observe cancellation via d.ctx (parent propagates)
+	d.eg, d.ctx = errgroup.WithContext(d.ctx)
 
 	return nil
 }
@@ -111,16 +106,13 @@ func (d *Daemon) initComponents() error {
 	}
 
 	d.eventBus = events.NewBus(100)
-
-	// Subscribe consumers first so they are ready before publishers get access.
-	d.bridge.subscribeQualityGateEvents()
-	d.bridge.subscribeQueueWrittenEvents()
-
-	// Now wire the event bus to publishers.
 	d.handler.dispatcher.SetEventBus(d.eventBus)
 	d.handler.dispatcher.SetQualityGate(d.qualityGateDaemon)
 	d.handler.dependencyResolver.SetEventBus(d.eventBus)
 	d.handler.resultHandler.SetEventBus(d.eventBus)
+
+	d.bridge.subscribeQualityGateEvents()
+	d.bridge.subscribeQueueWrittenEvents()
 
 	return nil
 }

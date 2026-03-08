@@ -31,11 +31,6 @@ func (qh *QueueHandler) debounceAndScan(trigger string) {
 	qh.debounceMu.Lock()
 	defer qh.debounceMu.Unlock()
 
-	// If Stop() has been called, reject new timers.
-	if qh.debounceStopped {
-		return
-	}
-
 	now := time.Now()
 
 	// Track the first trigger in this debounce window.
@@ -50,27 +45,20 @@ func (qh *QueueHandler) debounceAndScan(trigger string) {
 		delay = 0 // fire immediately
 	}
 
-	// Stop previous timer if any. If Stop returns true, the callback
-	// will not fire so we must balance the WaitGroup ourselves.
+	// Stop previous timer if any.
 	if qh.debounceTimer != nil {
-		if qh.debounceTimer.Stop() {
-			qh.debounceWg.Done()
-		}
+		qh.debounceTimer.Stop()
 	}
 
-	qh.debounceWg.Add(1)
+	done := make(chan struct{})
+	qh.debounceDone = done
+
 	qh.debounceTimer = time.AfterFunc(
 		delay,
 		func() {
-			defer qh.debounceWg.Done()
+			defer close(done)
 
-			// Guard: if stopped or shutting down, bail out immediately.
-			qh.debounceMu.Lock()
-			stopped := qh.debounceStopped
-			qh.debounceMu.Unlock()
-			if stopped {
-				return
-			}
+			// Guard: if shutting down, bail out immediately.
 			if qh.shuttingDown != nil && qh.shuttingDown.Load() {
 				return
 			}

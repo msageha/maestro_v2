@@ -117,7 +117,7 @@ func DangerousPatterns() []string {
 		`curl\s.*-o\s*-\s*\|\s*(ba)?sh`,
 		// .maestro/ access via Bash (bypass prevention)
 		`(cat|head|tail|less|more|vim|nano|sed|awk)\s+.*\.maestro/`,
-		`(ls|find|grep|rg)\s+.*\.maestro/(state|queue|results|locks|logs|config)`,
+		`(ls|find|grep|rg)\s+.*\.maestro/(state|queues|results|locks|logs|config)`,
 		`>\s*\.maestro/`,
 		`>>\s*\.maestro/`,
 	}
@@ -206,7 +206,7 @@ if [ "$tool_name" = "Bash" ]; then
   fi
 
   # .maestro/ access via Bash (bypass prevention)
-  if echo "$cmd" | grep -qE '(cat|head|tail|less|more|vim|nano|sed|awk)\s+.*\.maestro/(state|queue|results|locks|logs|config)'; then
+  if echo "$cmd" | grep -qE '(cat|head|tail|less|more|vim|nano|sed|awk)\s+.*\.maestro/(state|queues|results|locks|logs|config)'; then
     deny "Blocked .maestro/ control-plane access via Bash"
   fi
   if echo "$cmd" | grep -qE '(echo|printf|tee)\s.*>\s*\.maestro/'; then
@@ -228,7 +228,7 @@ if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ]; then
 
   # Block writes to .maestro/ control plane
   case "$file_path" in
-    */.maestro/state/*|*/.maestro/queue/*|*/.maestro/results/*|*/.maestro/locks/*|*/.maestro/logs/*|*/.maestro/config.yaml)
+    */.maestro/state/*|*/.maestro/queues/*|*/.maestro/results/*|*/.maestro/locks/*|*/.maestro/logs/*|*/.maestro/config.yaml)
       deny "Blocked write to .maestro/ control-plane path"
       ;;
   esac

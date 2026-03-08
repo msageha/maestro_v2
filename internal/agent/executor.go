@@ -368,14 +368,6 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 			req.AgentID, currentPID)
 	}
 
-	// Ensure we have a valid PID for SetClearReady later.
-	// If DetectProcessRestart failed, currentPID may be empty.
-	if currentPID == "" {
-		if pid, pidErr := e.paneIO.GetPanePID(paneTarget); pidErr == nil {
-			currentPID = pid
-		}
-	}
-
 	// Check if this worker pane is ready for /clear (has active conversation)
 	if !e.paneState.IsClearReady(paneTarget) {
 		// First dispatch: skip /clear, use deliver mode
@@ -799,15 +791,8 @@ func (e *Executor) ensureWorkingDir(ctx context.Context, paneTarget, workingDir 
 	// Step 1: Kill the current pane process and respawn a fresh shell in the
 	// target working directory. This replaces the fragile Ctrl+C → Ctrl+D →
 	// waitForShell → cd sequence which broke when Claude did not exit cleanly.
-	//
-	// On failure the pane may be in a partially broken state (old process killed
-	// but new shell not started). Attempt a retry once before giving up, since
-	// tmux respawn-pane -k is idempotent on an already-dead pane.
 	if err := e.paneIO.RespawnPane(paneTarget, workingDir); err != nil {
-		e.log(LogLevelWarn, "respawn_pane_first_attempt_failed pane=%s error=%v, retrying", paneTarget, err)
-		if retryErr := e.paneIO.RespawnPane(paneTarget, workingDir); retryErr != nil {
-			return fmt.Errorf("ensureWorkingDir: respawn pane failed after retry: %w (first: %v)", retryErr, err)
-		}
+		return fmt.Errorf("ensureWorkingDir: respawn pane: %w", err)
 	}
 
 	// Step 2: Wait for the fresh shell to be ready

@@ -255,23 +255,12 @@ func (lm *LeaseManager) ExtendTaskLeaseGrace(task *model.Task, graceTTL time.Dur
 	return nil
 }
 
-// parseLeaseTime parses a lease expiry string, trying RFC3339Nano first
-// for sub-second precision, then falling back to RFC3339. M-14.
-func parseLeaseTime(s string) (time.Time, error) {
-	t, err := time.Parse(time.RFC3339Nano, s)
-	if err != nil {
-		t, err = time.Parse(time.RFC3339, s)
-	}
-	return t, err
-}
-
 // IsLeaseExpired checks if a lease has expired. Returns true if expired.
-// M-14: Supports both RFC3339 and RFC3339Nano for sub-second precision.
 func (lm *LeaseManager) IsLeaseExpired(leaseExpiresAt *string) bool {
 	if leaseExpiresAt == nil {
 		return true
 	}
-	expires, err := parseLeaseTime(*leaseExpiresAt)
+	expires, err := time.Parse(time.RFC3339, *leaseExpiresAt)
 	if err != nil {
 		return true
 	}
@@ -280,12 +269,11 @@ func (lm *LeaseManager) IsLeaseExpired(leaseExpiresAt *string) bool {
 
 // IsLeaseNearExpiry checks if a lease will expire within the given buffer duration.
 // Returns true if the lease expires within bufferSec seconds from now.
-// M-14: Supports both RFC3339 and RFC3339Nano for sub-second precision.
 func (lm *LeaseManager) IsLeaseNearExpiry(leaseExpiresAt *string, bufferSec int) bool {
 	if leaseExpiresAt == nil {
 		return true
 	}
-	expires, err := parseLeaseTime(*leaseExpiresAt)
+	expires, err := time.Parse(time.RFC3339, *leaseExpiresAt)
 	if err != nil {
 		return true
 	}

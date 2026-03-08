@@ -105,22 +105,14 @@ func Launch(maestroDir string) error {
 	// (Ctrl+C → Ctrl+D) which relies on claude exiting cleanly back to the shell.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT)
-	done := make(chan struct{})
+	defer signal.Stop(sigCh)
 	go func() {
-		for {
-			select {
-			case <-sigCh:
-				// Intentionally ignored — claude handles SIGINT directly.
-			case <-done:
-				return
-			}
+		for range sigCh {
+			// Intentionally ignored — claude handles SIGINT directly.
 		}
 	}()
 
-	err = cmd.Run()
-	signal.Stop(sigCh)
-	close(done)
-	return err
+	return cmd.Run()
 }
 
 // buildLaunchArgs constructs the CLI arguments for the claude command.
@@ -147,7 +139,7 @@ func buildLaunchArgs(role, agentModel, systemPrompt string) []string {
 				"Bash(tmux kill-pane:*)",
 				"Bash(tmux kill-window:*)",
 				"Read(.maestro/state/**)",
-				"Read(.maestro/queue/**)",
+				"Read(.maestro/queues/**)",
 				"Read(.maestro/results/**)",
 				"Read(.maestro/locks/**)",
 				"Read(.maestro/logs/**)",

@@ -40,12 +40,11 @@ type QueueHandler struct {
 	scanCounters ScanCounters
 
 	// Debounce state
-	debounceMu       sync.Mutex // protects debounceTimer, firstTriggerAt, debounceStopped
+	debounceMu       sync.Mutex
 	debounceTimer    *time.Timer
-	firstTriggerAt   time.Time   // tracks first trigger in a debounce window for maxWait
-	scanRunning      atomic.Bool // true while debounced callback is executing
-	debounceStopped  bool        // true after Stop(); prevents new callbacks from running
-	debounceWg       sync.WaitGroup // tracks in-flight timer callbacks for graceful Stop
+	debounceDone     chan struct{} // closed when the in-flight callback finishes
+	firstTriggerAt   time.Time    // tracks first trigger in a debounce window for maxWait
+	scanRunning      atomic.Bool  // true while debounced callback is executing
 
 	// scanMu serializes PeriodicScan phases (exclusive) vs queue writes (shared RLock).
 	// Spec §5.6: per-agent mutex — queue writes hold RLock + per-target lockMap key.
@@ -146,21 +145,20 @@ func (qh *QueueHandler) SetShutdownGuard(ctx context.Context, shuttingDown *atom
 }
 
 // Stop cancels any pending debounce timer and waits for any in-flight
-// timer callback to complete, ensuring no goroutine leaks on shutdown.
+// callback goroutine to finish, ensuring no goroutine leak on shutdown.
 func (qh *QueueHandler) Stop() {
 	qh.debounceMu.Lock()
-	qh.debounceStopped = true
+	done := qh.debounceDone
 	if qh.debounceTimer != nil {
-		// If Stop returns true, the callback won't fire — balance WaitGroup.
-		if qh.debounceTimer.Stop() {
-			qh.debounceWg.Done()
-		}
+		qh.debounceTimer.Stop()
 		qh.debounceTimer = nil
 	}
 	qh.debounceMu.Unlock()
 
-	// Wait for any already-fired callback goroutine to finish.
-	qh.debounceWg.Wait()
+	// If a callback goroutine is in-flight, wait for it to finish.
+	if done != nil {
+		<-done
+	}
 }
 
 // GetLeaseManager returns the internal lease manager (for testing).
@@ -203,14 +201,6 @@ func (qh *QueueHandler) PeriodicScan() {
 // Phase A (scanMu.Lock): Load queues, fast mutations, collect deferred work, flush.
 // Phase B (no lock): Execute slow tmux I/O (interrupts, busy probes, dispatch, signals).
 // Phase C (scanMu.Lock): Reload queues, apply Phase B results with fencing, flush, reconcile.
-//
-// Clock skew note: All timestamps in the scan cycle are derived from qh.clock.Now()
-// (monotonic clock within the process). However, YAML queue files store wall-clock
-// timestamps (time.RFC3339). If the system clock is adjusted between Phase A and
-// Phase C (e.g., NTP correction), file-based timestamp comparisons (ExpiresAt,
-// CreatedAt) may produce unexpected results. The epoch fencing mechanism in Phase C
-// mitigates most risks, but operators should be aware that large clock jumps can
-// cause lease expirations to fire early or late.
 func (qh *QueueHandler) PeriodicScanWithContext(ctx context.Context) {
 	// scanRunMu serializes the full A/B/C cycle so that concurrent scan triggers
 	// wait for the current cycle to finish rather than overlapping with Phase B.

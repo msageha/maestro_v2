@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -27,9 +26,9 @@ func (d *Daemon) waitSignals() {
 		d.log(LogLevelInfo, "received signal=%s, initiating graceful shutdown (session_alive=%v)", sig, tmux.SessionExists())
 
 		// Second signal → force exit.
-		// forceCancel stops this goroutine when Shutdown completes normally,
-		// preventing a goroutine leak.
-		forceCtx, forceCancel := context.WithCancel(context.Background())
+		// shutdownDone unblocks this goroutine when Shutdown completes,
+		// preventing a leak if no second signal arrives.
+		shutdownDone := make(chan struct{})
 		go func() {
 			select {
 			case <-sigCh:
@@ -37,13 +36,13 @@ func (d *Daemon) waitSignals() {
 				d.forceExit.Store(true)
 				d.cleanup()
 				os.Exit(1)
-			case <-forceCtx.Done():
+			case <-shutdownDone:
 				return
 			}
 		}()
 
 		d.Shutdown()
-		forceCancel()
+		close(shutdownDone)
 	case <-d.ctx.Done():
 		d.log(LogLevelInfo, "context cancelled, waiting for shutdown to complete")
 		d.Shutdown()
@@ -67,14 +66,11 @@ func (d *Daemon) Shutdown() {
 		}
 		totalDuration := time.Duration(totalTimeout) * time.Second
 
-		// 1. Set advisory flags — spawners will skip new work, API rejects requests.
-		d.ready.Store(false)
+		// 1. Set advisory flag — spawners will skip new work.
 		d.shuttingDown.Store(true)
 
 		// 2. Stop producers — no new work will be enqueued.
-		if d.ticker != nil {
-			d.ticker.Stop()
-		}
+		d.ticker.Stop()
 		if d.handler != nil {
 			d.handler.Stop()
 		}
@@ -90,9 +86,7 @@ func (d *Daemon) Shutdown() {
 		}
 
 		// Unsubscribe from event bus and stop event processing.
-		if d.bridge != nil {
-			d.bridge.unsubscribeAll()
-		}
+		d.bridge.unsubscribeAll()
 		if d.eventBus != nil {
 			d.eventBus.Close()
 		}

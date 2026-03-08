@@ -41,7 +41,7 @@ type LogEntry struct {
 
 // AuditLogger provides append-only logging functionality with rotation
 type AuditLogger struct {
-	mu              sync.Mutex // protects all mutable fields below (file, currentSize, enableChecksum, sync*, dirty, closed)
+	mu              sync.Mutex
 	file            *os.File
 	currentSize     int64
 	maxSize         int64

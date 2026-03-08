@@ -24,8 +24,8 @@ func (a *API) registerHandlers() {
 	})
 
 	d.server.Handle("scan", func(req *uds.Request) *uds.Response {
-		if !d.ready.Load() {
-			return uds.ErrorResponse(uds.ErrCodeInternal, "daemon not ready")
+		if d.handler == nil {
+			return uds.ErrorResponse(uds.ErrCodeInternal, "handler not initialized")
 		}
 		d.handler.PeriodicScanWithContext(d.ctx)
 		return uds.SuccessResponse(map[string]string{"status": "scanned"})
@@ -47,8 +47,8 @@ func (a *API) registerHandlers() {
 // handleTaskHeartbeat handles task heartbeat requests.
 func (a *API) handleTaskHeartbeat(req *uds.Request) *uds.Response {
 	d := a.d
-	if !d.ready.Load() {
-		return uds.ErrorResponse(uds.ErrCodeInternal, "daemon not ready")
+	if d.handler == nil {
+		return uds.ErrorResponse(uds.ErrCodeInternal, "handler not initialized")
 	}
 	heartbeatHandler := NewTaskHeartbeatHandler(
 		d.maestroDir,
@@ -69,8 +69,8 @@ func (a *API) handleTaskHeartbeat(req *uds.Request) *uds.Response {
 // serializes concurrent dashboard writes to prevent temp-file clobbering.
 func (a *API) handleDashboard(req *uds.Request) *uds.Response {
 	d := a.d
-	if !d.ready.Load() {
-		return uds.ErrorResponse(uds.ErrCodeInternal, "daemon not ready")
+	if d.handler == nil {
+		return uds.ErrorResponse(uds.ErrCodeInternal, "handler not initialized")
 	}
 
 	a.dashboardMu.Lock()
@@ -109,9 +109,8 @@ func (a *API) releaseFileLock() {
 // data is the object that was written (used to compute content hash).
 func (a *API) notifySelfWrite(queuePath, writeType string, data any) {
 	a.d.selfWrites.Record(queuePath, data)
-	bus := a.d.eventBus
-	if bus != nil {
-		bus.Publish(events.EventQueueWritten, map[string]interface{}{
+	if a.d.eventBus != nil {
+		a.d.eventBus.Publish(events.EventQueueWritten, map[string]interface{}{
 			"file":   filepath.Base(queuePath),
 			"source": "uds",
 			"type":   writeType,

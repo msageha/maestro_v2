@@ -28,7 +28,7 @@ func (qh *QueueHandler) processPlannerSignalsDeferred(sq *model.PlannerSignalQue
 			}
 		}
 
-		if qh.dependencyResolver != nil && qh.dependencyResolver.stateReader != nil && sig.PhaseID != "" {
+		if qh.dependencyResolver.stateReader != nil && sig.PhaseID != "" {
 			// Phase-level signals: check phase existence (orphan) and staleness
 			phaseStatus, err := qh.dependencyResolver.GetPhaseStatus(sig.CommandID, sig.PhaseID)
 			if err != nil {
@@ -57,7 +57,7 @@ func (qh *QueueHandler) processPlannerSignalsDeferred(sq *model.PlannerSignalQue
 				*dirty = true
 				continue
 			}
-		} else if qh.dependencyResolver != nil && qh.dependencyResolver.stateReader != nil && sig.PhaseID == "" {
+		} else if qh.dependencyResolver.stateReader != nil && sig.PhaseID == "" {
 			// Command-level signals (e.g. circuit_breaker_tripped): check command existence only
 			_, err := qh.dependencyResolver.stateReader.GetCommandPhases(sig.CommandID)
 			if err != nil {
@@ -152,9 +152,6 @@ func (qh *QueueHandler) computeSignalBackoff(attempts int) time.Duration {
 
 	if attempts < 1 {
 		attempts = 1
-	}
-	if attempts > 30 {
-		attempts = 30
 	}
 	backoffSec := baseSec * (1 << (attempts - 1))
 	if backoffSec > maxSec {

@@ -37,7 +37,7 @@ type Dispatcher struct {
 	eventBus          *events.Bus
 	qualityGate       *QualityGateDaemon
 	gateEvaluations   map[string]*model.QualityGateEvaluation // task_id -> evaluation
-	gateEvalMutex     sync.RWMutex                            // protects gateEvaluations
+	gateEvalMutex     sync.RWMutex
 
 	// cachedExec is a shared Executor instance created once and reused across
 	// dispatch calls. This avoids per-dispatch log file Open/Close overhead.
@@ -73,10 +73,6 @@ func NewDispatcher(maestroDir string, cfg model.Config, lm *LeaseManager, logger
 
 // SetExecutorFactory overrides the executor factory for testing.
 // Resets the cached executor so the new factory is used on next call.
-// Close() is called under the lock to prevent a race where concurrent
-// SetExecutorFactory calls could both obtain the same old executor and
-// double-close it, or where getExecutor() could be called between unlock
-// and Close() returning a stale reference.
 func (d *Dispatcher) SetExecutorFactory(f ExecutorFactory) {
 	d.execMu.Lock()
 	old := d.cachedExec
@@ -84,6 +80,8 @@ func (d *Dispatcher) SetExecutorFactory(f ExecutorFactory) {
 	d.cachedExec = nil
 	d.cachedExecErr = nil
 	d.execInit = false
+	// Close old executor while still holding the lock to prevent getExecutor()
+	// from racing between state reset and Close() completion.
 	if old != nil {
 		_ = old.Close()
 	}
@@ -575,24 +573,4 @@ func (d *Dispatcher) GetGateEvaluation(taskID string) *model.QualityGateEvaluati
 	d.gateEvalMutex.RLock()
 	defer d.gateEvalMutex.RUnlock()
 	return d.gateEvaluations[taskID]
-}
-
-// RemoveGateEvaluation removes the gate evaluation for a single task.
-func (d *Dispatcher) RemoveGateEvaluation(taskID string) {
-	d.gateEvalMutex.Lock()
-	defer d.gateEvalMutex.Unlock()
-	delete(d.gateEvaluations, taskID)
-}
-
-// RemoveGateEvaluations removes gate evaluations for the given task IDs.
-// Intended to be called when a command completes to free entries for all its tasks.
-func (d *Dispatcher) RemoveGateEvaluations(taskIDs []string) {
-	if len(taskIDs) == 0 {
-		return
-	}
-	d.gateEvalMutex.Lock()
-	defer d.gateEvalMutex.Unlock()
-	for _, id := range taskIDs {
-		delete(d.gateEvaluations, id)
-	}
 }

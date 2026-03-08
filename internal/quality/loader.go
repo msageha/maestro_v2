@@ -16,7 +16,7 @@ import (
 // Loader loads and validates gate configurations
 type Loader struct {
 	configDir string
-	mu              sync.RWMutex // protects configurations, loadedFiles, defaultGates, validationCache
+	mu              sync.RWMutex
 	configurations  map[string]*GateConfiguration
 	loadedFiles     map[string]time.Time
 	defaultGates    *GateConfiguration
@@ -199,8 +199,7 @@ func (l *Loader) validateCondition(condition *RuleCondition) error {
 		}
 		// Validate operator
 		switch condition.Operator {
-		case OpExists, OpNotExists, OpHasValue, OpIsEmpty,
-			OpEquals, OpNotEquals, OpContains, OpNotContains,
+		case OpExists, OpNotExists, OpEquals, OpNotEquals, OpContains, OpNotContains,
 			OpMatches, OpNotMatches, OpGT, OpGTE, OpLT, OpLTE, OpIn, OpNotIn, "":
 			// Valid or will be defaulted
 		default:

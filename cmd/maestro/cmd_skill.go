@@ -315,7 +315,7 @@ func sanitizeForTerminal(s string) string {
 func formatSkillMD(name, content string) string {
 	var sb strings.Builder
 	sb.WriteString("---\n")
-	sb.WriteString(fmt.Sprintf("name: %q\n", name))
+	sb.WriteString(fmt.Sprintf("name: %s\n", name))
 	sb.WriteString(fmt.Sprintf("description: Auto-approved from skill candidate\n"))
 	sb.WriteString("---\n")
 	sb.WriteString(content)

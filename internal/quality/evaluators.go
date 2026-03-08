@@ -79,18 +79,9 @@ func (e *FieldValidationEvaluator) Evaluate(ctx context.Context, condition *Rule
 
 	switch condition.Operator {
 	case OpExists:
-		// Key existence only — nil and empty string values still count as "exists".
-		return exists, nil
-
-	case OpNotExists:
-		return !exists, nil
-
-	case OpHasValue:
-		// Key exists AND value is non-nil and non-empty string.
 		return exists && value != nil && value != "", nil
 
-	case OpIsEmpty:
-		// Key does not exist OR value is nil/empty string.
+	case OpNotExists:
 		return !exists || value == nil || value == "", nil
 
 	case OpEquals:

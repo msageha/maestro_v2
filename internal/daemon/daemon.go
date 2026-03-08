@@ -60,10 +60,6 @@ type Daemon struct {
 	eg       *errgroup.Group // tracks all daemon goroutines (loops + handlers)
 	shutdown sync.Once
 
-	// ready indicates that all components are initialized and the daemon is
-	// accepting work. API handlers check this to reject requests during startup.
-	ready atomic.Bool
-
 	// shuttingDown is an advisory flag read by spawners for fast-path rejection.
 	shuttingDown atomic.Bool
 
@@ -149,8 +145,6 @@ func (d *Daemon) Run() error {
 
 	// Install shutdown guard before prepareStartup so that partial startup
 	// (lock acquired, PID written, watcher created) is cleaned up on error.
-	// Both Shutdown and cleanup are protected by sync.Once, so concurrent or
-	// repeated calls (e.g. from defer + waitSignals) are safe no-ops.
 	var runOK bool
 	defer func() {
 		if !runOK {
@@ -171,7 +165,6 @@ func (d *Daemon) Run() error {
 	}
 
 	d.handler.PeriodicScanWithContext(d.ctx)
-	d.ready.Store(true)
 	d.log(LogLevelInfo, "daemon ready")
 
 	runOK = true

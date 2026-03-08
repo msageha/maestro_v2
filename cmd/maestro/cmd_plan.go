@@ -165,11 +165,8 @@ func runPlanAddRetryTask(args []string) error {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan add-retry-task: unexpected argument: %s\nusage: maestro plan add-retry-task --command-id <id> --retry-of <task_id> --purpose <text> --content <text> --acceptance-criteria <text> --bloom-level <n> [--blocked-by <task_id>]...", fs.Arg(0))}
 	}
 
-	if commandID == "" || retryOf == "" || purpose == "" || content == "" || acceptanceCriteria == "" {
+	if commandID == "" || retryOf == "" || purpose == "" || content == "" || acceptanceCriteria == "" || bloomLevel == 0 {
 		return &CLIError{Code: 1, Msg: "maestro plan add-retry-task: all required flags must be set\nusage: maestro plan add-retry-task --command-id <id> --retry-of <task_id> --purpose <text> --content <text> --acceptance-criteria <text> --bloom-level <n> [--blocked-by <task_id>]..."}
-	}
-	if bloomLevel <= 0 {
-		return &CLIError{Code: 1, Msg: "maestro plan add-retry-task: --bloom-level must be a positive integer\nusage: maestro plan add-retry-task --command-id <id> --retry-of <task_id> --purpose <text> --content <text> --acceptance-criteria <text> --bloom-level <n> [--blocked-by <task_id>]..."}
 	}
 
 	maestroDir, err := requireMaestroDir("plan add-retry-task")

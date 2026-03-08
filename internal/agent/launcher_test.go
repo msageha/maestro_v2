@@ -176,7 +176,7 @@ func TestBuildLaunchArgs_WorkerDisallowsMaestroReads(t *testing.T) {
 	// Worker should have --disallowedTools containing Read restrictions for .maestro/ control-plane paths
 	controlPlanePaths := []string{
 		"Read(.maestro/state/**)",
-		"Read(.maestro/queue/**)",
+		"Read(.maestro/queues/**)",
 		"Read(.maestro/results/**)",
 		"Read(.maestro/locks/**)",
 		"Read(.maestro/logs/**)",

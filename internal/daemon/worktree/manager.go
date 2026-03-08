@@ -45,8 +45,6 @@ func NewManager(maestroDir string, cfg model.WorktreeConfig, logger *log.Logger,
 
 // CreateForCommand creates worktrees for all workers and an integration branch for a command.
 func (wm *Manager) CreateForCommand(commandID string, workerIDs []string) error {
-	// M-12: Copy to prevent caller's slice mutation from affecting iteration
-	workerIDs = append([]string(nil), workerIDs...)
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
@@ -595,8 +593,6 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string) ([]m
 
 // SyncFromIntegration updates worker worktrees with the latest integration branch state.
 func (wm *Manager) SyncFromIntegration(commandID string, workerIDs []string) error {
-	// M-12: Copy to prevent caller's slice mutation from affecting iteration
-	workerIDs = append([]string(nil), workerIDs...)
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
