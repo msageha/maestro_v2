@@ -526,7 +526,7 @@ gates:
 			wantErr: false, // Should apply default timeout
 		},
 		{
-			name: "resource limit without limit value",
+			name: "resource limit is unknown condition type",
 			yaml: `
 schema_version: "1.0.0"
 gates:
@@ -543,7 +543,7 @@ gates:
       on_fail: block
 `,
 			wantErr: true,
-			errMsg:  "positive limit",
+			errMsg:  "unknown condition type",
 		},
 	}
 
@@ -620,8 +620,10 @@ gates:
                   field: phase.status
                   operator: equals
                   value: completed
-                - type: dependency_check
-                  mode: all_completed
+                - type: field_validation
+                  field: task.dependencies_met
+                  operator: equals
+                  value: true
             - type: not
               conditions:
                 - type: field_validation

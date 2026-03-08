@@ -51,6 +51,7 @@ type ResultHandler struct {
 	continuousHandler *ContinuousHandler
 	eventBus          *events.Bus
 
+	mu            sync.RWMutex // protects continuousHandler, eventBus
 	execMu        sync.Mutex
 	cachedExec    AgentExecutor
 	cachedExecErr error
@@ -129,12 +130,30 @@ func (rh *ResultHandler) CloseExecutor() {
 
 // SetContinuousHandler wires the continuous handler for iteration tracking.
 func (rh *ResultHandler) SetContinuousHandler(ch *ContinuousHandler) {
+	rh.mu.Lock()
+	defer rh.mu.Unlock()
 	rh.continuousHandler = ch
 }
 
 // SetEventBus sets the event bus for publishing events.
 func (rh *ResultHandler) SetEventBus(bus *events.Bus) {
+	rh.mu.Lock()
+	defer rh.mu.Unlock()
 	rh.eventBus = bus
+}
+
+// getEventBus returns the event bus with proper synchronization.
+func (rh *ResultHandler) getEventBus() *events.Bus {
+	rh.mu.RLock()
+	defer rh.mu.RUnlock()
+	return rh.eventBus
+}
+
+// getContinuousHandler returns the continuous handler with proper synchronization.
+func (rh *ResultHandler) getContinuousHandler() *ContinuousHandler {
+	rh.mu.RLock()
+	defer rh.mu.RUnlock()
+	return rh.continuousHandler
 }
 
 // HandleResultFileEvent processes a single results/ file change from fsnotify.
@@ -263,8 +282,8 @@ func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
 			rh.log(LogLevelInfo, "notify_planner_success worker=%s task=%s command=%s", workerID, taskID, commandID)
 
 			// Publish task_completed event (non-blocking, best-effort)
-			if rh.eventBus != nil {
-				rh.eventBus.Publish(events.EventTaskCompleted, map[string]interface{}{
+			if bus := rh.getEventBus(); bus != nil {
+				bus.Publish(events.EventTaskCompleted, map[string]interface{}{
 					"task_id":    taskID,
 					"command_id": commandID,
 					"worker_id":  workerID,
@@ -354,8 +373,8 @@ func (rh *ResultHandler) processCommandResultFile() int {
 			rh.log(LogLevelInfo, "notify_orchestrator_success command=%s status=%s", commandID, resultStatus)
 
 			// Continuous mode: advance iteration counter
-			if rh.continuousHandler != nil {
-				if err := rh.continuousHandler.CheckAndAdvance(commandID, resultStatus); err != nil {
+			if ch := rh.getContinuousHandler(); ch != nil {
+				if err := ch.CheckAndAdvance(commandID, resultStatus); err != nil {
 					rh.log(LogLevelWarn, "continuous_advance command=%s error=%v", commandID, err)
 				}
 			}

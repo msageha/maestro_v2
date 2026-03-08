@@ -102,8 +102,10 @@ func ErrorResponse(code, message string) *Response {
 // DefaultSocketName is the conventional socket filename inside .maestro/.
 const DefaultSocketName = "daemon.sock"
 
-// maxFrameSize is the safety limit for frame payloads (10 MB).
-const maxFrameSize = 10 * 1024 * 1024
+// maxFrameSize is the safety limit for frame payloads (2 MB).
+// Typical IPC messages (YAML task definitions, result reports) are well under 100 KB.
+// 2 MB provides headroom for large task content while preventing runaway allocations.
+const maxFrameSize = 2 * 1024 * 1024
 
 // WriteFrame writes a length-prefixed JSON frame to the connection.
 // Format: [4-byte BigEndian length][JSON payload]
