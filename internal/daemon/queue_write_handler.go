@@ -214,7 +214,10 @@ func (a *API) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 	if resp := checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(data), len(params.Content)+500); resp != nil {
 		archived := a.archiveTerminalTasks(&tq)
 		if archived > 0 {
-			newData, _ := yamlv3.Marshal(tq)
+			newData, marshalErr := yamlv3.Marshal(tq)
+			if marshalErr != nil {
+				return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("marshal queue after archive: %v", marshalErr))
+			}
 			if checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(newData), len(params.Content)+500) != nil {
 				return resp
 			}
@@ -318,7 +321,10 @@ func (a *API) handleQueueWriteNotification(params QueueWriteParams) *uds.Respons
 	if resp := checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(data), len(params.Content)+300); resp != nil {
 		archived := archiveTerminalNotifications(&nq)
 		if archived > 0 {
-			newData, _ := yamlv3.Marshal(nq)
+			newData, marshalErr := yamlv3.Marshal(nq)
+			if marshalErr != nil {
+				return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("marshal queue after archive: %v", marshalErr))
+			}
 			if checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(newData), len(params.Content)+300) != nil {
 				return resp
 			}

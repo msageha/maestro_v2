@@ -106,7 +106,10 @@ func (qh *QueueHandler) leaseOwnerID() string {
 }
 
 // SetStateReader wires the state reader for dependency resolution (Phase 6).
+// Must be called before PeriodicScan starts.
 func (qh *QueueHandler) SetStateReader(reader StateReader) {
+	qh.scanRunMu.Lock()
+	defer qh.scanRunMu.Unlock()
 	qh.dependencyResolver = NewDependencyResolver(reader, qh.logger, qh.logLevel)
 	qh.cancelHandler.SetStateReader(reader)
 }

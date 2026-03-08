@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/events"
@@ -20,6 +21,7 @@ type DependencyResolver struct {
 	logger      *log.Logger
 	logLevel    LogLevel
 	clock       Clock
+	mu          sync.RWMutex // protects eventBus
 	eventBus    *events.Bus
 }
 
@@ -36,6 +38,8 @@ func NewDependencyResolver(reader StateReader, logger *log.Logger, logLevel LogL
 
 // SetEventBus sets the event bus for publishing events.
 func (dr *DependencyResolver) SetEventBus(bus *events.Bus) {
+	dr.mu.Lock()
+	defer dr.mu.Unlock()
 	dr.eventBus = bus
 }
 
@@ -378,8 +382,11 @@ func (dr *DependencyResolver) BuildAwaitingFillNotification(commandID string, ph
 }
 
 func (dr *DependencyResolver) publishPhaseTransitionEvent(commandID string, tr PhaseTransitionResult) {
-	if dr.eventBus != nil {
-		dr.eventBus.Publish(events.EventPhaseTransition, map[string]interface{}{
+	dr.mu.RLock()
+	bus := dr.eventBus
+	dr.mu.RUnlock()
+	if bus != nil {
+		bus.Publish(events.EventPhaseTransition, map[string]interface{}{
 			"command_id": commandID,
 			"phase_id":   tr.PhaseID,
 			"phase_name": tr.PhaseName,
