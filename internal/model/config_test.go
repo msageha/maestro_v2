@@ -211,31 +211,41 @@ func TestValidate_PersonaInvalidName(t *testing.T) {
 	}
 }
 
-func TestValidate_PersonaEmptyPrompt(t *testing.T) {
+func TestValidate_PersonaEmptyPromptAndFile(t *testing.T) {
 	cfg := validConfig()
 	cfg.Personas = map[string]PersonaConfig{
-		"valid-name": {Description: "desc", Prompt: ""},
+		"valid-name": {Description: "desc", Prompt: "", File: ""},
 	}
 	err := cfg.Validate()
 	if err == nil {
-		t.Fatal("expected error for empty persona prompt")
+		t.Fatal("expected error when both prompt and file are empty")
 	}
-	if !strings.Contains(err.Error(), "personas.valid-name.prompt") {
-		t.Fatalf("expected personas.valid-name.prompt in error, got: %v", err)
+	if !strings.Contains(err.Error(), "personas.valid-name: prompt or file must be set") {
+		t.Fatalf("expected prompt-or-file error, got: %v", err)
 	}
 }
 
-func TestValidate_PersonaWhitespaceOnlyPrompt(t *testing.T) {
+func TestValidate_PersonaWhitespaceOnlyPromptAndFile(t *testing.T) {
 	cfg := validConfig()
 	cfg.Personas = map[string]PersonaConfig{
-		"valid-name": {Description: "desc", Prompt: "   \t\n  "},
+		"valid-name": {Description: "desc", Prompt: "   \t\n  ", File: "  "},
 	}
 	err := cfg.Validate()
 	if err == nil {
-		t.Fatal("expected error for whitespace-only persona prompt")
+		t.Fatal("expected error when both prompt and file are whitespace-only")
 	}
-	if !strings.Contains(err.Error(), "personas.valid-name.prompt") {
-		t.Fatalf("expected personas.valid-name.prompt in error, got: %v", err)
+	if !strings.Contains(err.Error(), "personas.valid-name: prompt or file must be set") {
+		t.Fatalf("expected prompt-or-file error, got: %v", err)
+	}
+}
+
+func TestValidate_PersonaFileOnly(t *testing.T) {
+	cfg := validConfig()
+	cfg.Personas = map[string]PersonaConfig{
+		"valid-name": {Description: "desc", File: "persona/valid.md"},
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected no error when file is set, got: %v", err)
 	}
 }
 
@@ -244,7 +254,7 @@ func TestValidate_PersonaMultipleErrors(t *testing.T) {
 	cfg.Personas = map[string]PersonaConfig{
 		"valid-persona":   {Prompt: "valid prompt"},
 		"../bad-traverse": {Prompt: "prompt"},
-		"ok-name":         {Prompt: ""},
+		"ok-name":         {Prompt: "", File: ""},
 	}
 	err := cfg.Validate()
 	if err == nil {
@@ -254,7 +264,7 @@ func TestValidate_PersonaMultipleErrors(t *testing.T) {
 	if !strings.Contains(errStr, "personas.../bad-traverse") {
 		t.Errorf("expected invalid name error, got: %v", err)
 	}
-	if !strings.Contains(errStr, "personas.ok-name.prompt") {
-		t.Errorf("expected empty prompt error, got: %v", err)
+	if !strings.Contains(errStr, "personas.ok-name: prompt or file must be set") {
+		t.Errorf("expected prompt-or-file error, got: %v", err)
 	}
 }
