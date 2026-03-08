@@ -143,9 +143,17 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 	a.acquireFileLock()
 	defer a.releaseFileLock()
 
-	// Lock queue file first (consistent order: queue → result → state).
+	// Lock queue file first (canonical order: queue → state → result).
 	// Without this, handleQueueWriteTask (which locks "queue:{target}") and
 	// resultWritePhaseA (which writes queue/{reporter}.yaml) can race.
+	//
+	// Note: this function acquires queue (level 1) then result (level 3),
+	// skipping state (level 2). The state lock is acquired separately in
+	// resultWritePhaseB after both locks are released.
+	// KNOWN ISSUE: the retry path (RegisterRetryTaskInState) acquires
+	// state:{commandID} while queue and result locks are still held,
+	// violating the canonical order. This should be refactored to release
+	// queue/result locks before acquiring the state lock for retry.
 	queueLockKey := "queue:" + params.Reporter
 	d.lockMap.Lock(queueLockKey)
 	defer d.lockMap.Unlock(queueLockKey)
@@ -330,11 +338,20 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 	queueTask.UpdatedAt = now
 
 	if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
-		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("write worker queue: %v", err)}
+		// Result is already committed — retry queue write once before giving up.
+		// If still failing, R1 reconciler will repair the result-terminal/queue-in_progress mismatch.
+		d.log(LogLevelWarn, "result_write queue_write_failed task=%s, retrying: %v", params.TaskID, err)
+		if retryErr := yamlutil.AtomicWrite(queuePath, tq); retryErr != nil {
+			d.log(LogLevelError, "result_write queue_write_retry_failed task=%s result=%s: %v (R1 reconciler will repair)",
+				params.TaskID, resultID, retryErr)
+		} else {
+			a.recordSelfWrite(queuePath, tq)
+		}
+	} else {
+		a.recordSelfWrite(queuePath, tq)
 	}
-	a.recordSelfWrite(queuePath, tq)
 
-	// 7. Add retry task to queue and state AFTER successful queue write
+	// 7. Add retry task to queue and state (best effort, independent of queue write success)
 	if retryTask != nil {
 		retryHandler := NewTaskRetryHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
 

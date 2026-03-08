@@ -34,6 +34,7 @@ func (d *Daemon) waitSignals() {
 			case <-sigCh:
 				d.log(LogLevelWarn, "received second signal, forcing exit")
 				d.forceExit.Store(true)
+				d.closeExecutors()
 				d.cleanup()
 				os.Exit(1)
 			case <-shutdownDone:
@@ -118,15 +119,21 @@ func (d *Daemon) Shutdown() {
 
 		// ── Cleanup ─────────────────────────────────────────────────
 
-		// Close shared executor instances to release log file handles.
+		d.closeExecutors()
+		d.log(LogLevelInfo, "daemon stopped")
+		d.cleanup()
+	})
+}
+
+// closeExecutors closes shared executor instances to release log file handles.
+// Safe to call from both graceful and force-exit paths via sync.Once.
+func (d *Daemon) closeExecutors() {
+	d.closeExecutorsOnce.Do(func() {
 		if d.handler != nil {
 			d.handler.dispatcher.CloseExecutor()
 			d.handler.resultHandler.CloseExecutor()
 			d.handler.cancelHandler.CloseExecutor()
 		}
-
-		d.log(LogLevelInfo, "daemon stopped")
-		d.cleanup()
 	})
 }
 

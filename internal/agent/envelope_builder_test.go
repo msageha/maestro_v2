@@ -174,7 +174,7 @@ func TestBuildPlannerEnvelope(t *testing.T) {
 	if !strings.Contains(envelope, "content: Implement user authentication system") {
 		t.Error("missing content field")
 	}
-	if !strings.Contains(envelope, "タスク分解後: maestro plan submit --command-id cmd_1771722000_a3f2b7c1 --tasks-file plan.yaml") {
+	if !strings.Contains(envelope, "タスク分解後: maestro plan submit --command-id cmd_1771722000_a3f2b7c1 --tasks-file -") {
 		t.Error("missing plan submit template")
 	}
 	if !strings.Contains(envelope, "全タスク完了後: maestro plan complete --command-id cmd_1771722000_a3f2b7c1 --summary") {
@@ -199,13 +199,13 @@ func TestBuildOrchestratorNotificationEnvelope(t *testing.T) {
 			"failed",
 			"cmd_1771722000_a3f2b7c1",
 			"command_failed",
-			"[maestro] kind:command_completed command_id:cmd_1771722000_a3f2b7c1 status:failed\nresults/planner.yaml を確認してください",
+			"[maestro] kind:command_failed command_id:cmd_1771722000_a3f2b7c1 status:failed\nresults/planner.yaml を確認してください",
 		},
 		{
 			"cancelled",
 			"cmd_1771722000_a3f2b7c1",
 			"command_cancelled",
-			"[maestro] kind:command_completed command_id:cmd_1771722000_a3f2b7c1 status:cancelled\nresults/planner.yaml を確認してください",
+			"[maestro] kind:command_cancelled command_id:cmd_1771722000_a3f2b7c1 status:cancelled\nresults/planner.yaml を確認してください",
 		},
 	}
 

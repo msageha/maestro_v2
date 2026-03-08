@@ -63,8 +63,9 @@ type Daemon struct {
 	// shuttingDown is an advisory flag read by spawners for fast-path rejection.
 	shuttingDown atomic.Bool
 
-	cleanupOnce sync.Once
-	forceExit   atomic.Bool
+	cleanupOnce        sync.Once
+	closeExecutorsOnce sync.Once
+	forceExit          atomic.Bool
 
 	// --- Components ---
 	api    *API
