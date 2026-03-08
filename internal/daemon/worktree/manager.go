@@ -713,7 +713,16 @@ func (wm *Manager) PublishToBase(commandID string) error {
 	// Restore integration branch checkout before updating refs
 	_ = wm.gitRunInDir(integrationPath, "checkout", state.Integration.Branch)
 
-	// Update baseBranch ref to point to the merge commit (no projectRoot HEAD change)
+	// Check if baseBranch is currently checked out in projectRoot BEFORE updating the ref.
+	// We need this to know whether to sync the working tree afterwards.
+	currentBranch, _ := wm.gitOutput("symbolic-ref", "--short", "HEAD")
+	baseBranchCheckedOut := strings.TrimSpace(currentBranch) == baseBranch
+
+	// Update baseBranch ref to point to the merge commit.
+	// NOTE: git update-ref only moves the branch pointer — it does NOT update the
+	// working tree or index. If baseBranch is checked out in projectRoot, the index
+	// and working tree will still reflect the old commit, causing a "revert" state
+	// where `git status` shows the new changes as staged deletions.
 	if err := wm.gitRun("update-ref", fmt.Sprintf("refs/heads/%s", baseBranch), mergeSHA); err != nil {
 		_ = wm.gitRun("branch", "-D", tempBranch)
 		return fmt.Errorf("update base branch ref: %w", err)
@@ -721,6 +730,22 @@ func (wm *Manager) PublishToBase(commandID string) error {
 
 	// Clean up temp branch
 	_ = wm.gitRun("branch", "-D", tempBranch)
+
+	// If baseBranch is checked out in projectRoot, sync the working tree and index
+	// to match the updated ref. Without this, the working tree would remain at the
+	// old commit state, appearing as a staged revert of all published changes.
+	if baseBranchCheckedOut {
+		// Use git reset --hard to sync index + working tree to the new HEAD.
+		// This is safe because:
+		// 1. Maestro workers operate in isolated worktrees, not in projectRoot
+		// 2. Users should not have uncommitted changes in projectRoot during maestro operation
+		// 3. The alternative (leaving a revert-staged state) is worse — it silently corrupts
+		if resetErr := wm.gitRun("reset", "--hard", "HEAD"); resetErr != nil {
+			wm.log(core.LogLevelWarn, "publish_reset_working_tree command=%s error=%v", commandID, resetErr)
+			// Non-fatal: the ref update succeeded, so the branch is at the right commit.
+			// The working tree mismatch can be fixed manually with `git reset --hard HEAD`.
+		}
+	}
 
 	if err := wm.setIntegrationStatus(state, model.IntegrationStatusPublished, now); err != nil {
 		return err
