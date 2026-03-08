@@ -150,6 +150,14 @@ type WatcherConfig struct {
 	ClearRetryBackoffMs    int `yaml:"clear_retry_backoff_ms"`    // Base backoff between attempts; doubles each retry (default 500ms)
 }
 
+// EffectiveMaxInProgressMin returns the configured max in-progress timeout or 60 as default.
+func (w WatcherConfig) EffectiveMaxInProgressMin() int {
+	if w.MaxInProgressMin > 0 {
+		return w.MaxInProgressMin
+	}
+	return 60
+}
+
 type RetryConfig struct {
 	CommandDispatch                  int   `yaml:"command_dispatch"`
 	TaskDispatch                     int   `yaml:"task_dispatch"`

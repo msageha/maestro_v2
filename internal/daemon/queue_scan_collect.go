@@ -186,21 +186,16 @@ func (qh *QueueHandler) preemptiveCommandRenewal(cq *model.CommandQueue, dirty *
 	renewable := qh.leaseManager.RenewableCommands(cq.Commands, bufferSec)
 	for _, idx := range renewable {
 		cmd := &cq.Commands[idx]
-		maxMin := qh.config.Watcher.MaxInProgressMin
-		if maxMin <= 0 {
-			maxMin = 60
-		}
-		if t, err := time.Parse(time.RFC3339, cmd.UpdatedAt); err == nil {
-			if qh.clock.Now().Sub(t) >= time.Duration(maxMin)*time.Minute {
-				qh.log(LogLevelWarn, "command_lease_max_timeout id=%s epoch=%d max=%dm releasing (preemptive)",
-					cmd.ID, cmd.LeaseEpoch, maxMin)
-				if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
-					qh.log(LogLevelError, "expire_release_failed type=command id=%s error=%v", cmd.ID, err)
-				}
-				qh.scanCounters.LeaseReleases++
-				*dirty = true
-				continue
+		maxMin := qh.config.Watcher.EffectiveMaxInProgressMin()
+		if isMaxInProgressTimeout(qh.clock.Now(), cmd.UpdatedAt, maxMin) {
+			qh.log(LogLevelWarn, "command_lease_max_timeout id=%s epoch=%d max=%dm releasing (preemptive)",
+				cmd.ID, cmd.LeaseEpoch, maxMin)
+			if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
+				qh.log(LogLevelError, "expire_release_failed type=command id=%s error=%v", cmd.ID, err)
 			}
+			qh.scanCounters.LeaseReleases++
+			*dirty = true
+			continue
 		}
 		if err := qh.leaseManager.ExtendCommandLease(cmd); err != nil {
 			qh.log(LogLevelError, "command_lease_preemptive_renew_failed id=%s error=%v", cmd.ID, err)
@@ -226,21 +221,16 @@ func (qh *QueueHandler) autoExtendExpiredCommandLeases(cq *model.CommandQueue, d
 
 		// Check max_in_progress_min hard timeout — if exceeded, release to let
 		// Reconciler R0 handle the stuck command on next scan.
-		maxMin := qh.config.Watcher.MaxInProgressMin
-		if maxMin <= 0 {
-			maxMin = 60
-		}
-		if t, err := time.Parse(time.RFC3339, cmd.UpdatedAt); err == nil {
-			if qh.clock.Now().Sub(t) >= time.Duration(maxMin)*time.Minute {
-				qh.log(LogLevelWarn, "command_lease_max_timeout id=%s epoch=%d max=%dm releasing",
-					cmd.ID, cmd.LeaseEpoch, maxMin)
-				if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
-					qh.log(LogLevelError, "expire_release_failed type=command id=%s error=%v", cmd.ID, err)
-				}
-				qh.scanCounters.LeaseReleases++
-				*dirty = true
-				continue
+		maxMin := qh.config.Watcher.EffectiveMaxInProgressMin()
+		if isMaxInProgressTimeout(qh.clock.Now(), cmd.UpdatedAt, maxMin) {
+			qh.log(LogLevelWarn, "command_lease_max_timeout id=%s epoch=%d max=%dm releasing",
+				cmd.ID, cmd.LeaseEpoch, maxMin)
+			if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
+				qh.log(LogLevelError, "expire_release_failed type=command id=%s error=%v", cmd.ID, err)
 			}
+			qh.scanCounters.LeaseReleases++
+			*dirty = true
+			continue
 		}
 
 		// Auto-extend: keep command in_progress to prevent duplicate dispatch
