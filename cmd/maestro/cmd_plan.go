@@ -83,7 +83,11 @@ func runPlanSubmit(args []string) error {
 		if len(data) > model.DefaultMaxYAMLFileBytes {
 			return fmt.Errorf("maestro plan submit: stdin input exceeds maximum size of %d bytes", model.DefaultMaxYAMLFileBytes)
 		}
-		tmpFile, err := os.CreateTemp("", "maestro-plan-submit-*.yaml")
+		tmpDir := filepath.Join(maestroDir, "tmp")
+		if err := os.MkdirAll(tmpDir, 0700); err != nil {
+			return fmt.Errorf("maestro plan submit: create temp directory: %w", err)
+		}
+		tmpFile, err := os.CreateTemp(tmpDir, "maestro-plan-submit-*.yaml")
 		if err != nil {
 			return fmt.Errorf("maestro plan submit: create temp file: %w", err)
 		}

@@ -1,6 +1,9 @@
 package validate
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -127,5 +130,92 @@ func TestSafePath(t *testing.T) {
 				t.Errorf("SafePath(%q, %q) [%s] returned error: %v", tc.base, tc.elem, tc.desc, err)
 			}
 		}
+	}
+}
+
+func TestSafePath_SymlinkEscape(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink tests not reliable on Windows")
+	}
+
+	// Create a temp directory structure:
+	//   base/
+	//   base/legit/       (real directory)
+	//   outside/          (directory outside base)
+	//   base/escape       -> ../outside  (symlink escaping base)
+	tmp := t.TempDir()
+	base := filepath.Join(tmp, "base")
+	outside := filepath.Join(tmp, "outside")
+	if err := os.MkdirAll(filepath.Join(base, "legit"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0700); err != nil {
+		t.Fatal(err)
+	}
+	// Create a file in the outside directory
+	if err := os.WriteFile(filepath.Join(outside, "secret.txt"), []byte("secret"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Create a symlink inside base that points outside
+	if err := os.Symlink(outside, filepath.Join(base, "escape")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Accessing "escape/secret.txt" should be detected as escaping base
+	_, err := SafePath(base, "escape/secret.txt")
+	if err == nil {
+		t.Error("SafePath should reject symlink that escapes base directory")
+	}
+
+	// Accessing "legit" should still work
+	result, err := SafePath(base, "legit")
+	if err != nil {
+		t.Errorf("SafePath should allow access to real subdirectory: %v", err)
+	}
+	if result == "" {
+		t.Error("SafePath returned empty path for valid subdirectory")
+	}
+}
+
+func TestSafePath_SymlinkEscapeNonExistentLeaf(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink tests not reliable on Windows")
+	}
+
+	// Even if the leaf file doesn't exist, a symlink escape in the path
+	// should be detected by resolving the deepest existing ancestor.
+	//   base/
+	//   outside/
+	//   base/escape -> ../outside  (symlink escaping base)
+	// Accessing "escape/new.txt" (non-existent leaf) should still be rejected.
+	tmp := t.TempDir()
+	base := filepath.Join(tmp, "base")
+	outside := filepath.Join(tmp, "outside")
+	if err := os.MkdirAll(base, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(outside, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join(base, "escape")); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := SafePath(base, "escape/new.txt")
+	if err == nil {
+		t.Error("SafePath should reject symlink escape even when leaf file does not exist")
+	}
+}
+
+func TestSafePath_NonExistentTarget(t *testing.T) {
+	// SafePath should return the lexically-checked path for non-existent targets
+	tmp := t.TempDir()
+	result, err := SafePath(tmp, "nonexistent/file.txt")
+	if err != nil {
+		t.Errorf("SafePath should not error on non-existent target: %v", err)
+	}
+	expected := filepath.Join(tmp, "nonexistent/file.txt")
+	if result != expected {
+		t.Errorf("SafePath returned %q, want %q", result, expected)
 	}
 }
