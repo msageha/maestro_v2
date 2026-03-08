@@ -4,8 +4,10 @@ linters:
   default: standard
   enable:
     - errorlint
+    - gosec
     - misspell
     - prealloc
+    - revive
     - unconvert
     - unparam
   settings:
