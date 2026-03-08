@@ -153,7 +153,10 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	// Replace in required/optional task IDs
-	replaceInRequiredOrOptional(state, opts.RetryOf, newTaskID)
+	if err := replaceInRequiredOrOptional(state, opts.RetryOf, newTaskID); err != nil {
+		restoreState(state, origStateBytes)
+		return nil, fmt.Errorf("replace in required/optional: %w", err)
+	}
 
 	// Record retry lineage
 	state.RetryLineage[newTaskID] = opts.RetryOf
@@ -300,19 +303,33 @@ func findPhaseForTask(state *model.CommandState, taskID string) (*model.Phase, i
 	return nil, -1
 }
 
-func replaceInRequiredOrOptional(state *model.CommandState, oldID, newID string) {
+func replaceInRequiredOrOptional(state *model.CommandState, oldID, newID string) error {
+	found := false
 	for i, id := range state.RequiredTaskIDs {
 		if id == oldID {
 			state.RequiredTaskIDs[i] = newID
-			return
+			found = true
+			break
 		}
 	}
-	for i, id := range state.OptionalTaskIDs {
-		if id == oldID {
-			state.OptionalTaskIDs[i] = newID
-			return
+	if !found {
+		for i, id := range state.OptionalTaskIDs {
+			if id == oldID {
+				state.OptionalTaskIDs[i] = newID
+				found = true
+				break
+			}
 		}
 	}
+	// Update SystemCommitTaskID if it matches the old ID.
+	if state.SystemCommitTaskID != nil && *state.SystemCommitTaskID == oldID {
+		state.SystemCommitTaskID = &newID
+		found = true
+	}
+	if !found {
+		return fmt.Errorf("task %s not found in required, optional, or system_commit_task_id", oldID)
+	}
+	return nil
 }
 
 func rewriteDependencies(state *model.CommandState, oldID, newID string) {
@@ -389,7 +406,9 @@ func cascadeRecoverRecursive(
 		assignment := assignments[0]
 
 		// Update state
-		replaceInRequiredOrOptional(state, cancelledTaskID, newTaskID)
+		if err := replaceInRequiredOrOptional(state, cancelledTaskID, newTaskID); err != nil {
+			return recovered, fmt.Errorf("cascade replace in required/optional: %w", err)
+		}
 		state.RetryLineage[newTaskID] = cancelledTaskID
 		rewriteDependencies(state, cancelledTaskID, newTaskID)
 		state.TaskStates[newTaskID] = model.StatusPending
