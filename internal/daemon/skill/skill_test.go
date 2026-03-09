@@ -176,6 +176,83 @@ func TestFormatSkillSection_Empty(t *testing.T) {
 	}
 }
 
+func TestReadSkill_RoleDirectoryPriority(t *testing.T) {
+	// Verify that when both a role directory and share directory contain
+	// the same skill name, reading from the role directory gets role-specific content.
+	dir := t.TempDir()
+
+	roleDir := filepath.Join(dir, "worker")
+	shareDir := filepath.Join(dir, "share")
+
+	writeSkillFile(t, roleDir, "my-skill", "---\nname: my-skill\ndescription: worker version\n---\nWorker body")
+	writeSkillFile(t, shareDir, "my-skill", "---\nname: my-skill\ndescription: share version\n---\nShare body")
+
+	// Reading from role directory should return the role-specific skill
+	sc, err := ReadSkill(roleDir, "my-skill")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sc.Description != "worker version" {
+		t.Errorf("expected worker version, got %q", sc.Description)
+	}
+	if sc.Body != "Worker body" {
+		t.Errorf("expected Worker body, got %q", sc.Body)
+	}
+}
+
+func TestReadSkill_ShareFallback(t *testing.T) {
+	// Verify that a skill only in the share directory can be read from there.
+	dir := t.TempDir()
+
+	roleDir := filepath.Join(dir, "worker")
+	shareDir := filepath.Join(dir, "share")
+	os.MkdirAll(roleDir, 0755)
+	writeSkillFile(t, shareDir, "shared-skill", "---\nname: shared-skill\n---\nShared body")
+
+	// Role directory has no skills, so ReadSkill on roleDir fails
+	_, err := ReadSkill(roleDir, "shared-skill")
+	if err == nil {
+		t.Fatal("expected error reading from role dir without the skill")
+	}
+
+	// But reading from share directory succeeds
+	sc, err := ReadSkill(shareDir, "shared-skill")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sc.Body != "Shared body" {
+		t.Errorf("expected Shared body, got %q", sc.Body)
+	}
+}
+
+func TestListSkills_RoleDirectory(t *testing.T) {
+	// Verify ListSkills works independently on role and share directories.
+	dir := t.TempDir()
+
+	workerDir := filepath.Join(dir, "worker")
+	shareDir := filepath.Join(dir, "share")
+
+	writeSkillFile(t, workerDir, "worker-only", "---\nname: Worker Only\n---\nW body")
+	writeSkillFile(t, shareDir, "shared-a", "---\nname: Shared A\n---\nSA body")
+	writeSkillFile(t, shareDir, "shared-b", "---\nname: Shared B\n---\nSB body")
+
+	workerSkills, err := ListSkills(workerDir)
+	if err != nil {
+		t.Fatalf("ListSkills(worker): %v", err)
+	}
+	if len(workerSkills) != 1 {
+		t.Errorf("expected 1 worker skill, got %d", len(workerSkills))
+	}
+
+	shareSkills, err := ListSkills(shareDir)
+	if err != nil {
+		t.Fatalf("ListSkills(share): %v", err)
+	}
+	if len(shareSkills) != 2 {
+		t.Errorf("expected 2 share skills, got %d", len(shareSkills))
+	}
+}
+
 func intPtr(v int) *int {
 	return &v
 }

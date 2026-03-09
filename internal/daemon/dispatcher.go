@@ -351,7 +351,7 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 		policy := d.config.Skills.EffectiveMissingRefPolicy()
 		var loaded []skill.SkillContent
 		for _, ref := range refs {
-			sc, err := skill.ReadSkill(skillsDir, ref)
+			sc, err := skill.ReadSkillWithRole(skillsDir, ref, "worker")
 			if err != nil {
 				if policy == "error" {
 					return fmt.Errorf("load skill ref %q for task %s: %w", ref, task.ID, err)
