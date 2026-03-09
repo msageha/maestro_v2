@@ -270,6 +270,59 @@ func TestRun_CreatesDaemonLock(t *testing.T) {
 	}
 }
 
+func TestRun_CopiesSkillTemplates(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "myproject")
+	os.Mkdir(projectDir, 0755)
+
+	if err := Run(projectDir, ""); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	skillsBase := filepath.Join(projectDir, ".maestro", "skills")
+
+	// Verify role-based directory structure exists
+	roleDirs := []string{"share", "worker", "orchestrator"}
+	for _, role := range roleDirs {
+		roleDir := filepath.Join(skillsBase, role)
+		info, err := os.Stat(roleDir)
+		if err != nil {
+			t.Errorf("skills/%s directory does not exist: %v", role, err)
+			continue
+		}
+		if !info.IsDir() {
+			t.Errorf("skills/%s is not a directory", role)
+			continue
+		}
+
+		// Verify each role directory contains at least one skill subdirectory with SKILL.md
+		entries, err := os.ReadDir(roleDir)
+		if err != nil {
+			t.Errorf("read skills/%s: %v", role, err)
+			continue
+		}
+		skillCount := 0
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			skillFile := filepath.Join(roleDir, e.Name(), "SKILL.md")
+			info, err := os.Stat(skillFile)
+			if err != nil {
+				t.Errorf("skills/%s/%s/SKILL.md does not exist: %v", role, e.Name(), err)
+				continue
+			}
+			if info.Size() == 0 {
+				t.Errorf("skills/%s/%s/SKILL.md is empty", role, e.Name())
+			}
+			skillCount++
+		}
+		if skillCount == 0 {
+			t.Errorf("skills/%s has no skill subdirectories", role)
+		}
+	}
+}
+
 func TestRun_RejectsExistingDir(t *testing.T) {
 	dir := t.TempDir()
 	projectDir := filepath.Join(dir, "myproject")

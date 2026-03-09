@@ -2,10 +2,12 @@
 package setup
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -66,6 +68,11 @@ func Run(projectDir, projectName string) error {
 		}
 	}
 
+	// Copy template skills
+	if err := copyTemplateDir("skills", filepath.Join(base, "skills")); err != nil {
+		return err
+	}
+
 	// Generate and write config.yaml with auto-filled fields
 	cfg, err := generateConfig(absDir, projectName)
 	if err != nil {
@@ -120,6 +127,41 @@ func Run(projectDir, projectName string) error {
 	}
 
 	return nil
+}
+
+func copyTemplateDir(srcDir, dstDir string) error {
+	return fs.WalkDir(templates.FS, srcDir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Trim srcDir prefix to get relative path. Embedded FS uses forward slashes.
+		rel := strings.TrimPrefix(p, srcDir+"/")
+		if rel == srcDir {
+			rel = "."
+		}
+		dst := filepath.Join(dstDir, filepath.FromSlash(rel))
+
+		if d.IsDir() {
+			return os.MkdirAll(dst, 0o755)
+		}
+
+		// Skip if file already exists (protect user customizations).
+		if _, statErr := os.Stat(dst); statErr == nil {
+			return nil
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return fmt.Errorf("stat %s: %w", dst, statErr)
+		}
+
+		data, err := fs.ReadFile(templates.FS, p)
+		if err != nil {
+			return fmt.Errorf("read template %s: %w", p, err)
+		}
+		if err := os.WriteFile(dst, data, 0o644); err != nil {
+			return fmt.Errorf("write %s: %w", dst, err)
+		}
+		return nil
+	})
 }
 
 func copyTemplateFile(name, dst string) error {

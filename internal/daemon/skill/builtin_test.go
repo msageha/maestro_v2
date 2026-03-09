@@ -17,6 +17,7 @@ func TestReadBuiltinSkills_FromTemplatesFS(t *testing.T) {
 		"self-evaluation-patterns":    false,
 		"context-window-efficiency":   false,
 		"error-diagnosis-patterns":    false,
+		"security-threat-model":       false,
 	}
 
 	for _, s := range skills {
@@ -31,8 +32,8 @@ func TestReadBuiltinSkills_FromTemplatesFS(t *testing.T) {
 		}
 	}
 
-	if len(skills) != 4 {
-		t.Errorf("expected 4 builtin skills, got %d", len(skills))
+	if len(skills) != 5 {
+		t.Errorf("expected 5 builtin skills, got %d", len(skills))
 	}
 }
 
@@ -55,17 +56,6 @@ func TestReadBuiltinSkills_MetadataValid(t *testing.T) {
 			}
 			if len(s.AppliesTo) == 0 {
 				t.Error("applies_to is empty")
-			}
-
-			// Check applies_to contains all three roles
-			roles := map[string]bool{}
-			for _, r := range s.AppliesTo {
-				roles[r] = true
-			}
-			for _, role := range []string{"orchestrator", "planner", "worker"} {
-				if !roles[role] {
-					t.Errorf("applies_to missing %q", role)
-				}
 			}
 
 			if len(s.Tags) == 0 {
