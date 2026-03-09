@@ -251,6 +251,116 @@ func parseFrontmatter(content string) (SkillMetadata, string, error) {
 	return meta, body, nil
 }
 
+// ReadSkillWithRole reads a skill file using role-based fallback:
+//  1. skills/<role>/<name>/SKILL.md (role-specific)
+//  2. skills/share/<name>/SKILL.md (shared across roles)
+//  3. skills/<name>/SKILL.md (flat/legacy layout)
+//
+// Returns the first match found, or an error if none exist.
+func ReadSkillWithRole(skillsDir, skillName, role string) (SkillContent, error) {
+	if !isValidIdentifier(skillName) {
+		return SkillContent{}, fmt.Errorf("invalid skill name: %q", skillName)
+	}
+
+	candidates := []string{
+		filepath.Join(skillsDir, role, skillName, "SKILL.md"),
+		filepath.Join(skillsDir, "share", skillName, "SKILL.md"),
+		filepath.Join(skillsDir, skillName, "SKILL.md"),
+	}
+
+	for _, path := range candidates {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+
+		meta, body, err := parseFrontmatter(string(data))
+		if err != nil {
+			return SkillContent{}, fmt.Errorf("parse skill %q frontmatter: %w", skillName, err)
+		}
+
+		meta.ID = skillName
+		if meta.Name == "" {
+			meta.Name = skillName
+		}
+
+		return SkillContent{
+			SkillMetadata: meta,
+			Body:          body,
+		}, nil
+	}
+
+	return SkillContent{}, fmt.Errorf("read skill %q: %w", skillName, os.ErrNotExist)
+}
+
+// ListSkillsWithRole lists skill metadata from role-specific, shared, and flat directories.
+// When duplicates exist, the role-specific version takes priority over shared, which
+// takes priority over flat.
+func ListSkillsWithRole(skillsDir, role string) ([]SkillMetadata, error) {
+	seen := make(map[string]struct{})
+	var skills []SkillMetadata
+
+	// Scan directories in priority order: role-specific > share > flat
+	dirs := []string{
+		filepath.Join(skillsDir, role),
+		filepath.Join(skillsDir, "share"),
+	}
+
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("read skills directory %s: %w", dir, err)
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			sc, err := ReadSkillWithRole(skillsDir, name, role)
+			if err != nil {
+				continue
+			}
+			seen[name] = struct{}{}
+			skills = append(skills, sc.SkillMetadata)
+		}
+	}
+
+	// Flat (legacy): skills/<name>/SKILL.md — skip role/share subdirs and already-seen
+	entries, err := os.ReadDir(skillsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return skills, nil
+		}
+		return nil, fmt.Errorf("read skills directory: %w", err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		name := e.Name()
+		if name == role || name == "share" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		sc, err := ReadSkill(skillsDir, name)
+		if err != nil {
+			continue
+		}
+		seen[name] = struct{}{}
+		skills = append(skills, sc.SkillMetadata)
+	}
+
+	return skills, nil
+}
+
 // isValidIdentifier checks that a skill name is a safe directory name.
 func isValidIdentifier(name string) bool {
 	if name == "" || name == "." || name == ".." {
