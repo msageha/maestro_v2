@@ -125,7 +125,7 @@ func SafePath(base, elem string) (string, error) {
 }
 
 // ValidateFilePath checks that a file path is safe: non-empty, no null bytes,
-// and cleaned. Returns the cleaned absolute path.
+// no directory traversal (".."), and cleaned. Returns the cleaned path.
 func ValidateFilePath(path string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("validate: file path must not be empty")
@@ -134,5 +134,12 @@ func ValidateFilePath(path string) (string, error) {
 		return "", fmt.Errorf("validate: file path contains null byte")
 	}
 	cleaned := filepath.Clean(path)
+
+	// Reject paths containing ".." components to prevent directory traversal.
+	for _, part := range strings.Split(cleaned, string(filepath.Separator)) {
+		if part == ".." {
+			return "", fmt.Errorf("validate: file path %q contains directory traversal", path)
+		}
+	}
 	return cleaned, nil
 }

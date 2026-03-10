@@ -71,8 +71,8 @@ func newTestWorktreeManager(t *testing.T, projectRoot string) *WorktreeManager {
 		CleanupOnFailure: false,
 		GC: model.WorktreeGCConfig{
 			Enabled:      true,
-			TTLHours:     24,
-			MaxWorktrees: 32,
+			TTLHours:     model.IntPtr(24),
+			MaxWorktrees: model.IntPtr(32),
 		},
 		CommitPolicy: model.CommitPolicyConfig{},
 	}

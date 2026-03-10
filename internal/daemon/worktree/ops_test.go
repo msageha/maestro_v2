@@ -255,8 +255,8 @@ func TestWorktreeIntegration_GC_TTLExpiry(t *testing.T) {
 	baseTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	fc := &fakeClock{now: baseTime}
 	wm.clock = fc
-	wm.config.GC.TTLHours = 1
-	wm.config.GC.MaxWorktrees = 100 // high limit so max doesn't trigger
+	wm.config.GC.TTLHours = model.IntPtr(1)
+	wm.config.GC.MaxWorktrees = model.IntPtr(100) // high limit so max doesn't trigger
 
 	// Create "old" command at T=0
 	if err := wm.CreateForCommand("cmd_ttl_old", []string{"worker1"}); err != nil {
@@ -312,8 +312,8 @@ func TestWorktreeIntegration_GC_Disabled(t *testing.T) {
 	fc := &fakeClock{now: baseTime}
 	wm.clock = fc
 	wm.config.GC.Enabled = false
-	wm.config.GC.TTLHours = 1
-	wm.config.GC.MaxWorktrees = 1
+	wm.config.GC.TTLHours = model.IntPtr(1)
+	wm.config.GC.MaxWorktrees = model.IntPtr(1)
 
 	// Create two commands (MaxWorktrees=1 would GC one if enabled)
 	if err := wm.CreateForCommand("cmd_gc_dis_1", []string{"worker1"}); err != nil {

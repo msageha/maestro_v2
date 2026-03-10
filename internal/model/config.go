@@ -18,6 +18,10 @@ const MinWorkers = 1
 // MaxWorkers is the maximum allowed worker count.
 const MaxWorkers = 8
 
+// IntPtr returns a pointer to the given int value.
+// Used for setting *int config fields in tests and struct literals.
+func IntPtr(v int) *int { return &v }
+
 type Config struct {
 	Project        ProjectConfig        `yaml:"project"`
 	Maestro        MaestroConfig        `yaml:"maestro"`
@@ -51,24 +55,26 @@ type PersonaConfig struct {
 // SkillsConfig controls the skill reference feature for tasks.
 type SkillsConfig struct {
 	Enabled          bool              `yaml:"enabled"`
-	MaxRefsPerTask   int               `yaml:"max_refs_per_task"`
-	MaxBodyChars     int               `yaml:"max_body_chars"`
+	MaxRefsPerTask   *int              `yaml:"max_refs_per_task"`
+	MaxBodyChars     *int              `yaml:"max_body_chars"`
 	MissingRefPolicy string            `yaml:"missing_ref_policy"`
 	AutoCollect      AutoCollectConfig `yaml:"auto_collect"`
 }
 
 // EffectiveMaxRefsPerTask returns the configured limit or 3 as default.
+// nil (unset) returns the default; explicit 0 returns 0.
 func (s SkillsConfig) EffectiveMaxRefsPerTask() int {
-	if s.MaxRefsPerTask > 0 {
-		return s.MaxRefsPerTask
+	if s.MaxRefsPerTask != nil {
+		return *s.MaxRefsPerTask
 	}
 	return 3
 }
 
 // EffectiveMaxBodyChars returns the configured limit or 2000 as default.
+// nil (unset) returns the default; explicit 0 returns 0.
 func (s SkillsConfig) EffectiveMaxBodyChars() int {
-	if s.MaxBodyChars > 0 {
-		return s.MaxBodyChars
+	if s.MaxBodyChars != nil {
+		return *s.MaxBodyChars
 	}
 	return 2000
 }
@@ -84,22 +90,24 @@ func (s SkillsConfig) EffectiveMissingRefPolicy() string {
 // AutoCollectConfig controls automatic skill collection from learnings.
 type AutoCollectConfig struct {
 	Enabled        bool `yaml:"enabled"`
-	MinOccurrences int  `yaml:"min_occurrences"`
-	MinCommands    int  `yaml:"min_commands"`
+	MinOccurrences *int `yaml:"min_occurrences"`
+	MinCommands    *int `yaml:"min_commands"`
 }
 
 // EffectiveMinOccurrences returns the configured minimum or 3 as default.
+// nil (unset) returns the default; explicit 0 returns 0.
 func (a AutoCollectConfig) EffectiveMinOccurrences() int {
-	if a.MinOccurrences > 0 {
-		return a.MinOccurrences
+	if a.MinOccurrences != nil {
+		return *a.MinOccurrences
 	}
 	return 3
 }
 
 // EffectiveMinCommands returns the configured minimum or 2 as default.
+// nil (unset) returns the default; explicit 0 returns 0.
 func (a AutoCollectConfig) EffectiveMinCommands() int {
-	if a.MinCommands > 0 {
-		return a.MinCommands
+	if a.MinCommands != nil {
+		return *a.MinCommands
 	}
 	return 2
 }
@@ -135,7 +143,7 @@ type WorkerConfig struct {
 
 type ContinuousConfig struct {
 	Enabled        bool `yaml:"enabled"`
-	MaxIterations  int  `yaml:"max_iterations"`
+	MaxIterations  int  `yaml:"max_iterations"` // 0 means unlimited (no iteration cap); positive value sets the cap
 	PauseOnFailure bool `yaml:"pause_on_failure"`
 }
 
@@ -143,7 +151,7 @@ type WatcherConfig struct {
 	DebounceSec         float64 `yaml:"debounce_sec"`
 	ScanIntervalSec     int     `yaml:"scan_interval_sec"`
 	DispatchLeaseSec    int     `yaml:"dispatch_lease_sec"`
-	MaxInProgressMin    int     `yaml:"max_in_progress_min"`
+	MaxInProgressMin    *int    `yaml:"max_in_progress_min"`
 	BusyCheckInterval   int     `yaml:"busy_check_interval"`
 	BusyCheckMaxRetries int     `yaml:"busy_check_max_retries"`
 	BusyPatterns        string  `yaml:"busy_patterns"`
@@ -157,13 +165,15 @@ type WatcherConfig struct {
 	ClearConfirmTimeoutSec int `yaml:"clear_confirm_timeout_sec"` // Per-attempt confirmation window (default 5s)
 	ClearConfirmPollMs     int `yaml:"clear_confirm_poll_ms"`     // Polling interval within confirmation window (default 250ms)
 	ClearMaxAttempts       int `yaml:"clear_max_attempts"`        // Total send attempts including initial (default 3)
-	ClearRetryBackoffMs    int `yaml:"clear_retry_backoff_ms"`    // Base backoff between attempts; doubles each retry (default 500ms)
+	ClearRetryBackoffMs      int `yaml:"clear_retry_backoff_ms"`      // Base backoff between attempts; doubles each retry (default 500ms)
+	ClearSecondEnterDelayMs  int `yaml:"clear_second_enter_delay_ms"` // Delay before sending second Enter after /clear (default 500ms)
 }
 
 // EffectiveMaxInProgressMin returns the configured max in-progress timeout or 60 as default.
+// nil (unset) returns the default; explicit 0 returns 0 (no timeout).
 func (w WatcherConfig) EffectiveMaxInProgressMin() int {
-	if w.MaxInProgressMin > 0 {
-		return w.MaxInProgressMin
+	if w.MaxInProgressMin != nil {
+		return *w.MaxInProgressMin
 	}
 	return 60
 }
@@ -187,26 +197,28 @@ type QueueConfig struct {
 }
 
 type LimitsConfig struct {
-	MaxPendingCommands       int `yaml:"max_pending_commands"`
-	MaxPendingTasksPerWorker int `yaml:"max_pending_tasks_per_worker"`
-	MaxEntryContentBytes     int `yaml:"max_entry_content_bytes"`
-	MaxYAMLFileBytes         int `yaml:"max_yaml_file_bytes"`
-	MaxDeadLetterArchiveFiles int `yaml:"max_dead_letter_archive_files"`
-	MaxQuarantineFiles        int `yaml:"max_quarantine_files"`
+	MaxPendingCommands       int  `yaml:"max_pending_commands"`
+	MaxPendingTasksPerWorker int  `yaml:"max_pending_tasks_per_worker"`
+	MaxEntryContentBytes     int  `yaml:"max_entry_content_bytes"`
+	MaxYAMLFileBytes         int  `yaml:"max_yaml_file_bytes"`
+	MaxDeadLetterArchiveFiles *int `yaml:"max_dead_letter_archive_files"`
+	MaxQuarantineFiles        *int `yaml:"max_quarantine_files"`
 }
 
 // EffectiveMaxDeadLetterArchiveFiles returns the configured limit or 100 as default.
+// nil (unset) returns the default; explicit 0 returns 0.
 func (l LimitsConfig) EffectiveMaxDeadLetterArchiveFiles() int {
-	if l.MaxDeadLetterArchiveFiles > 0 {
-		return l.MaxDeadLetterArchiveFiles
+	if l.MaxDeadLetterArchiveFiles != nil {
+		return *l.MaxDeadLetterArchiveFiles
 	}
 	return 100
 }
 
 // EffectiveMaxQuarantineFiles returns the configured limit or 100 as default.
+// nil (unset) returns the default; explicit 0 returns 0.
 func (l LimitsConfig) EffectiveMaxQuarantineFiles() int {
-	if l.MaxQuarantineFiles > 0 {
-		return l.MaxQuarantineFiles
+	if l.MaxQuarantineFiles != nil {
+		return *l.MaxQuarantineFiles
 	}
 	return 100
 }
@@ -245,22 +257,24 @@ type QualityGateEnforcement struct {
 // commands after consecutive task failures.
 type CircuitBreakerConfig struct {
 	Enabled                bool `yaml:"enabled"`                   // opt-in, default: false
-	MaxConsecutiveFailures int  `yaml:"max_consecutive_failures"`  // default: 3
-	ProgressTimeoutMinutes int  `yaml:"progress_timeout_minutes"`  // default: 30, 0=disabled
+	MaxConsecutiveFailures *int `yaml:"max_consecutive_failures"`  // default: 3
+	ProgressTimeoutMinutes *int `yaml:"progress_timeout_minutes"`  // default: 30, 0=disabled
 }
 
 // EffectiveMaxConsecutiveFailures returns the configured threshold or 3 as default.
+// nil (unset) returns the default; explicit 0 returns 0.
 func (c CircuitBreakerConfig) EffectiveMaxConsecutiveFailures() int {
-	if c.MaxConsecutiveFailures > 0 {
-		return c.MaxConsecutiveFailures
+	if c.MaxConsecutiveFailures != nil {
+		return *c.MaxConsecutiveFailures
 	}
 	return 3
 }
 
 // EffectiveProgressTimeoutMinutes returns the configured timeout or 30 as default.
+// nil (unset) returns the default; explicit 0 means disabled (no timeout).
 func (c CircuitBreakerConfig) EffectiveProgressTimeoutMinutes() int {
-	if c.ProgressTimeoutMinutes > 0 {
-		return c.ProgressTimeoutMinutes
+	if c.ProgressTimeoutMinutes != nil {
+		return *c.ProgressTimeoutMinutes
 	}
 	return 30
 }
@@ -268,32 +282,35 @@ func (c CircuitBreakerConfig) EffectiveProgressTimeoutMinutes() int {
 // LearningsConfig controls the learning accumulation feature.
 type LearningsConfig struct {
 	Enabled          bool `yaml:"enabled"`            // opt-in, default: false
-	MaxEntries       int  `yaml:"max_entries"`        // default: 100
-	MaxContentLength int  `yaml:"max_content_length"` // default: 500
-	InjectCount      int  `yaml:"inject_count"`       // top-K learnings injected per task dispatch, default: 5
+	MaxEntries       *int `yaml:"max_entries"`        // default: 100
+	MaxContentLength *int `yaml:"max_content_length"` // default: 500
+	InjectCount      *int `yaml:"inject_count"`       // top-K learnings injected per task dispatch, default: 5
 	TTLHours         int  `yaml:"ttl_hours"`          // learning expiry in hours, default: 72, 0=unlimited
 }
 
 // EffectiveMaxEntries returns the configured limit or 100 as default.
+// nil (unset) returns the default; explicit 0 returns 0.
 func (l LearningsConfig) EffectiveMaxEntries() int {
-	if l.MaxEntries > 0 {
-		return l.MaxEntries
+	if l.MaxEntries != nil {
+		return *l.MaxEntries
 	}
 	return 100
 }
 
 // EffectiveMaxContentLength returns the configured limit or 500 as default.
+// nil (unset) returns the default; explicit 0 returns 0.
 func (l LearningsConfig) EffectiveMaxContentLength() int {
-	if l.MaxContentLength > 0 {
-		return l.MaxContentLength
+	if l.MaxContentLength != nil {
+		return *l.MaxContentLength
 	}
 	return 500
 }
 
 // EffectiveInjectCount returns the configured inject count or 5 as default.
+// nil (unset) returns the default; explicit 0 returns 0 (no injection).
 func (l LearningsConfig) EffectiveInjectCount() int {
-	if l.InjectCount > 0 {
-		return l.InjectCount
+	if l.InjectCount != nil {
+		return *l.InjectCount
 	}
 	return 5
 }
@@ -312,14 +329,15 @@ type VerificationConfig struct {
 	Enabled        bool   `yaml:"enabled"`         // opt-in, default: false
 	BasicCommand   string `yaml:"basic_command"`   // e.g. "go vet ./..."
 	FullCommand    string `yaml:"full_command"`     // e.g. "go test ./..."
-	TimeoutSeconds int    `yaml:"timeout_seconds"` // default: 300
+	TimeoutSeconds *int   `yaml:"timeout_seconds"` // default: 300
 	MaxRetries     int    `yaml:"max_retries"`      // 0=no retry, template default: 1
 }
 
 // EffectiveTimeoutSeconds returns the configured timeout or 300 as default.
+// nil (unset) returns the default; explicit 0 returns 0 (no timeout).
 func (v VerificationConfig) EffectiveTimeoutSeconds() int {
-	if v.TimeoutSeconds > 0 {
-		return v.TimeoutSeconds
+	if v.TimeoutSeconds != nil {
+		return *v.TimeoutSeconds
 	}
 	return 300
 }
@@ -340,7 +358,7 @@ type WorktreeConfig struct {
 	MergeStrategy    string             `yaml:"merge_strategy"`
 	CleanupOnSuccess bool               `yaml:"cleanup_on_success"`
 	CleanupOnFailure bool               `yaml:"cleanup_on_failure"`
-	GitTimeoutSec    int                `yaml:"git_timeout_sec"`
+	GitTimeoutSec    *int               `yaml:"git_timeout_sec"`
 	GC               WorktreeGCConfig   `yaml:"gc"`
 	CommitPolicy     CommitPolicyConfig `yaml:"commit_policy"`
 }
@@ -350,15 +368,16 @@ type WorktreeConfig struct {
 // to enable checks. Recommended template values: MaxFiles=30, RequireGitignore=true,
 // MessagePattern="^\\[maestro\\]\\s".
 type CommitPolicyConfig struct {
-	MaxFiles         int    `yaml:"max_files"`         // max staged files per commit; 0=unlimited
+	MaxFiles         *int   `yaml:"max_files"`         // max staged files per commit; nil=default(30), 0=unlimited
 	RequireGitignore bool   `yaml:"require_gitignore"` // require .gitignore existence
 	MessagePattern   string `yaml:"message_pattern"`   // regex for commit message validation; empty=no check
 }
 
 // EffectiveMaxFiles returns the configured max files or 30 as default.
+// nil (unset) returns the default; explicit 0 returns 0 (unlimited).
 func (c CommitPolicyConfig) EffectiveMaxFiles() int {
-	if c.MaxFiles > 0 {
-		return c.MaxFiles
+	if c.MaxFiles != nil {
+		return *c.MaxFiles
 	}
 	return 30
 }
@@ -366,8 +385,8 @@ func (c CommitPolicyConfig) EffectiveMaxFiles() int {
 // WorktreeGCConfig controls periodic garbage collection of old worktrees.
 type WorktreeGCConfig struct {
 	Enabled      bool `yaml:"enabled"`
-	TTLHours     int  `yaml:"ttl_hours"`
-	MaxWorktrees int  `yaml:"max_worktrees"`
+	TTLHours     *int `yaml:"ttl_hours"`
+	MaxWorktrees *int `yaml:"max_worktrees"`
 }
 
 // EffectiveBaseBranch returns the configured base branch or "main" as default.
@@ -395,25 +414,28 @@ func (w WorktreeConfig) EffectiveMergeStrategy() string {
 }
 
 // EffectiveGitTimeout returns the configured git command timeout or 120 seconds as default.
+// nil (unset) returns the default; explicit 0 returns 0.
 func (w WorktreeConfig) EffectiveGitTimeout() int {
-	if w.GitTimeoutSec > 0 {
-		return w.GitTimeoutSec
+	if w.GitTimeoutSec != nil {
+		return *w.GitTimeoutSec
 	}
 	return 120
 }
 
 // EffectiveTTLHours returns the configured TTL or 24 hours as default.
+// nil (unset) returns the default; explicit 0 returns 0 (keep forever).
 func (w WorktreeGCConfig) EffectiveTTLHours() int {
-	if w.TTLHours > 0 {
-		return w.TTLHours
+	if w.TTLHours != nil {
+		return *w.TTLHours
 	}
 	return 24
 }
 
 // EffectiveMaxWorktrees returns the configured max worktrees or 32 as default.
+// nil (unset) returns the default; explicit 0 returns 0.
 func (w WorktreeGCConfig) EffectiveMaxWorktrees() int {
-	if w.MaxWorktrees > 0 {
-		return w.MaxWorktrees
+	if w.MaxWorktrees != nil {
+		return *w.MaxWorktrees
 	}
 	return 32
 }
@@ -445,7 +467,7 @@ func (c Config) Validate() error {
 	if c.Watcher.DispatchLeaseSec < 0 {
 		errs = append(errs, fmt.Errorf("watcher.dispatch_lease_sec: must be >= 0"))
 	}
-	if c.Watcher.MaxInProgressMin < 0 {
+	if c.Watcher.MaxInProgressMin != nil && *c.Watcher.MaxInProgressMin < 0 {
 		errs = append(errs, fmt.Errorf("watcher.max_in_progress_min: must be >= 0"))
 	}
 
@@ -483,15 +505,15 @@ func (c Config) Validate() error {
 	}
 
 	// circuit_breaker
-	if c.CircuitBreaker.MaxConsecutiveFailures < 0 {
+	if c.CircuitBreaker.MaxConsecutiveFailures != nil && *c.CircuitBreaker.MaxConsecutiveFailures < 0 {
 		errs = append(errs, fmt.Errorf("circuit_breaker.max_consecutive_failures: must be >= 0"))
 	}
-	if c.CircuitBreaker.ProgressTimeoutMinutes < 0 {
+	if c.CircuitBreaker.ProgressTimeoutMinutes != nil && *c.CircuitBreaker.ProgressTimeoutMinutes < 0 {
 		errs = append(errs, fmt.Errorf("circuit_breaker.progress_timeout_minutes: must be >= 0"))
 	}
 
 	// verification
-	if c.Verification.TimeoutSeconds < 0 {
+	if c.Verification.TimeoutSeconds != nil && *c.Verification.TimeoutSeconds < 0 {
 		errs = append(errs, fmt.Errorf("verification.timeout_seconds: must be >= 0"))
 	}
 	if c.Verification.MaxRetries < 0 {
@@ -499,30 +521,30 @@ func (c Config) Validate() error {
 	}
 
 	// learnings
-	if c.Learnings.MaxEntries < 0 {
+	if c.Learnings.MaxEntries != nil && *c.Learnings.MaxEntries < 0 {
 		errs = append(errs, fmt.Errorf("learnings.max_entries: must be >= 0"))
 	}
-	if c.Learnings.MaxContentLength < 0 {
+	if c.Learnings.MaxContentLength != nil && *c.Learnings.MaxContentLength < 0 {
 		errs = append(errs, fmt.Errorf("learnings.max_content_length: must be >= 0"))
 	}
-	if c.Learnings.InjectCount < 0 {
+	if c.Learnings.InjectCount != nil && *c.Learnings.InjectCount < 0 {
 		errs = append(errs, fmt.Errorf("learnings.inject_count: must be >= 0"))
 	}
 
 	// skills
-	if c.Skills.MaxRefsPerTask < 0 {
+	if c.Skills.MaxRefsPerTask != nil && *c.Skills.MaxRefsPerTask < 0 {
 		errs = append(errs, fmt.Errorf("skills.max_refs_per_task: must be >= 0"))
 	}
-	if c.Skills.MaxBodyChars < 0 {
+	if c.Skills.MaxBodyChars != nil && *c.Skills.MaxBodyChars < 0 {
 		errs = append(errs, fmt.Errorf("skills.max_body_chars: must be >= 0"))
 	}
 	if p := c.Skills.MissingRefPolicy; p != "" && p != "warn" && p != "error" {
 		errs = append(errs, fmt.Errorf("skills.missing_ref_policy: must be \"warn\" or \"error\""))
 	}
-	if c.Skills.AutoCollect.MinOccurrences < 0 {
+	if c.Skills.AutoCollect.MinOccurrences != nil && *c.Skills.AutoCollect.MinOccurrences < 0 {
 		errs = append(errs, fmt.Errorf("skills.auto_collect.min_occurrences: must be >= 0"))
 	}
-	if c.Skills.AutoCollect.MinCommands < 0 {
+	if c.Skills.AutoCollect.MinCommands != nil && *c.Skills.AutoCollect.MinCommands < 0 {
 		errs = append(errs, fmt.Errorf("skills.auto_collect.min_commands: must be >= 0"))
 	}
 

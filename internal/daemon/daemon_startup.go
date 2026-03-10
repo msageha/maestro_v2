@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"golang.org/x/sync/errgroup"
@@ -43,6 +44,10 @@ func (d *Daemon) prepareStartup() error {
 		return fmt.Errorf("write pid file: %w", err)
 	}
 
+	// M2: Clean up stale tmp files (older than 1 hour) that may have been
+	// left behind by SIGKILL during plan submit stdin materialization.
+	d.cleanStaleTmpFiles()
+
 	// Init fsnotify watcher
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -74,6 +79,36 @@ func (d *Daemon) prepareStartup() error {
 	d.eg, d.egCtx = errgroup.WithContext(d.ctx)
 
 	return nil
+}
+
+// cleanStaleTmpFiles removes files in .maestro/tmp/ that are older than 1 hour.
+// These can be left behind when a CLI process is killed (e.g. SIGKILL) before
+// the deferred os.Remove runs.
+func (d *Daemon) cleanStaleTmpFiles() {
+	tmpDir := filepath.Join(d.maestroDir, "tmp")
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		// Directory might not exist yet; that's fine.
+		return
+	}
+	cutoff := time.Now().Add(-1 * time.Hour)
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		if info.ModTime().Before(cutoff) {
+			path := filepath.Join(tmpDir, entry.Name())
+			if err := os.Remove(path); err != nil {
+				d.log(LogLevelWarn, "cleanup_tmp remove_failed path=%s error=%v", path, err)
+			} else {
+				d.log(LogLevelDebug, "cleanup_tmp removed path=%s age=%s", path, time.Since(info.ModTime()).Truncate(time.Second))
+			}
+		}
+	}
 }
 
 // initComponents wires all daemon sub-components: handler, quality gate,

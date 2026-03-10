@@ -103,8 +103,8 @@ func newTestHandler(enabled bool, maxFailures, timeoutMin int) *Handler {
 	cfg := model.Config{
 		CircuitBreaker: model.CircuitBreakerConfig{
 			Enabled:                enabled,
-			MaxConsecutiveFailures: maxFailures,
-			ProgressTimeoutMinutes: timeoutMin,
+			MaxConsecutiveFailures: model.IntPtr(maxFailures),
+			ProgressTimeoutMinutes: model.IntPtr(timeoutMin),
 		},
 	}
 	cb := NewHandler(cfg, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
@@ -279,8 +279,16 @@ func TestCheckProgressTimeout_NoStateReader(t *testing.T) {
 	}
 }
 
-func TestCheckProgressTimeout_ZeroUsesDefault(t *testing.T) {
-	cb := newTestHandler(true, 3, 0)
+func TestCheckProgressTimeout_NilUsesDefault(t *testing.T) {
+	// nil ProgressTimeoutMinutes should default to 30 minutes
+	cfg := model.Config{
+		CircuitBreaker: model.CircuitBreakerConfig{
+			Enabled:                true,
+			MaxConsecutiveFailures: model.IntPtr(3),
+			ProgressTimeoutMinutes: nil, // unset → default 30
+		},
+	}
+	cb := NewHandler(cfg, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
 	reader := &mockCircuitBreakerStateReader{
 		cbStates: map[string]*model.CircuitBreakerState{
 			"cmd1": {LastProgressAt: strPtr(time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339))},
@@ -290,7 +298,7 @@ func TestCheckProgressTimeout_ZeroUsesDefault(t *testing.T) {
 
 	shouldTrip, _ := cb.CheckProgressTimeout("cmd1")
 	if !shouldTrip {
-		t.Error("expected trip when timeout is 0 (defaults to 30) and last progress was 1 hour ago")
+		t.Error("expected trip when timeout is nil (defaults to 30) and last progress was 1 hour ago")
 	}
 }
 
@@ -362,37 +370,36 @@ func TestCheckProgressTimeout_AlreadyTripped(t *testing.T) {
 
 func TestConfigEffectiveMaxConsecutiveFailures(t *testing.T) {
 	tests := []struct {
-		value    int
+		value    *int
 		expected int
 	}{
-		{0, 3}, // default
-		{1, 1},
-		{5, 5},
+		{nil, 3}, // default
+		{model.IntPtr(1), 1},
+		{model.IntPtr(5), 5},
 	}
 	for _, tt := range tests {
 		cfg := model.CircuitBreakerConfig{MaxConsecutiveFailures: tt.value}
 		got := cfg.EffectiveMaxConsecutiveFailures()
 		if got != tt.expected {
-			t.Errorf("EffectiveMaxConsecutiveFailures(%d) = %d, want %d", tt.value, got, tt.expected)
+			t.Errorf("EffectiveMaxConsecutiveFailures(%v) = %d, want %d", tt.value, got, tt.expected)
 		}
 	}
 }
 
 func TestConfigEffectiveProgressTimeoutMinutes(t *testing.T) {
 	tests := []struct {
-		value    int
+		value    *int
 		expected int
 	}{
-		{0, 30},  // zero returns default
-		{-1, 30}, // negative returns default
-		{30, 30},
-		{60, 60},
+		{nil, 30},              // nil returns default
+		{model.IntPtr(30), 30},
+		{model.IntPtr(60), 60},
 	}
 	for _, tt := range tests {
 		cfg := model.CircuitBreakerConfig{ProgressTimeoutMinutes: tt.value}
 		got := cfg.EffectiveProgressTimeoutMinutes()
 		if got != tt.expected {
-			t.Errorf("EffectiveProgressTimeoutMinutes(%d) = %d, want %d", tt.value, got, tt.expected)
+			t.Errorf("EffectiveProgressTimeoutMinutes(%v) = %d, want %d", tt.value, got, tt.expected)
 		}
 	}
 }

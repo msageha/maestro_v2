@@ -209,7 +209,8 @@ func (e *Engine) Evaluate(ctx context.Context, gateType GateType, evalCtx map[st
 	}
 
 	// Use singleflight to prevent duplicate evaluations
-	key := fmt.Sprintf("%s:%s", gateType, cacheKey.ContextFingerprint)
+	// Use null byte separator to avoid key collision when gateType contains ":"
+	key := string(gateType) + "\x00" + cacheKey.ContextFingerprint
 	result, err, _ := e.singleflight.Do(key, func() (interface{}, error) {
 		return e.evaluateUncached(ctx, gateType, contextWrapper)
 	})
