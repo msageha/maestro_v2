@@ -102,22 +102,25 @@ func TestValidateProjectName_Invalid(t *testing.T) {
 }
 
 func TestSafePath(t *testing.T) {
+	realBase := t.TempDir()
+
 	tests := []struct {
 		base    string
 		elem    string
 		wantErr bool
 		desc    string
 	}{
-		{"/base", "file.txt", false, "simple file"},
-		{"/base", "sub/file.txt", false, "subdirectory file"},
-		{"/base", "a/b/c", false, "nested subdirectory"},
-		{"/base", "..", true, "parent traversal"},
-		{"/base", "../etc/passwd", true, "path traversal"},
-		{"/base", "sub/../../etc", true, "nested traversal"},
-		{"/base", "", true, "empty element"},
-		{"/base", "/absolute", true, "absolute path"},
-		{"/base", ".", false, "current directory"},
-		{"/base", "file\x00.txt", true, "null byte"},
+		{realBase, "file.txt", false, "simple file"},
+		{realBase, "sub/file.txt", false, "subdirectory file"},
+		{realBase, "a/b/c", false, "nested subdirectory"},
+		{realBase, "..", true, "parent traversal"},
+		{realBase, "../etc/passwd", true, "path traversal"},
+		{realBase, "sub/../../etc", true, "nested traversal"},
+		{realBase, "", true, "empty element"},
+		{realBase, "/absolute", true, "absolute path"},
+		{realBase, ".", false, "current directory"},
+		{realBase, "file\x00.txt", true, "null byte"},
+		{"/nonexistent-base-dir", "file.txt", true, "non-existent base (fail-closed)"},
 	}
 	for _, tc := range tests {
 		result, err := SafePath(tc.base, tc.elem)

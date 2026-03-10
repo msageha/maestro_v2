@@ -71,6 +71,18 @@ func TestValidate_NegativeWorkerCount(t *testing.T) {
 	}
 }
 
+func TestValidate_WorkerCountExceedsMax(t *testing.T) {
+	cfg := validConfig()
+	cfg.Agents.Workers.Count = 9
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for worker count exceeding max")
+	}
+	if !strings.Contains(err.Error(), "agents.workers.count") {
+		t.Fatalf("expected field path agents.workers.count in error, got: %v", err)
+	}
+}
+
 func TestValidate_NegativeRetryFields(t *testing.T) {
 	cfg := validConfig()
 	cfg.Retry.CommandDispatch = -1

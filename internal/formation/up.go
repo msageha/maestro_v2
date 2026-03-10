@@ -1,6 +1,7 @@
 package formation
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -113,9 +114,16 @@ func RunUp(opts UpOptions) error {
 
 // CleanupOnFailure performs best-effort cleanup of resources that may have been
 // partially created during a failed RunUp. Safe to call even if nothing was created.
-func CleanupOnFailure(maestroDir string) {
-	_ = stopDaemon(maestroDir)
-	if tmux.SessionExists() {
-		_ = tmux.KillSession()
+// Returns an error if any cleanup operation fails.
+func CleanupOnFailure(maestroDir string) error {
+	var errs []error
+	if err := stopDaemon(maestroDir); err != nil {
+		errs = append(errs, fmt.Errorf("stop daemon: %w", err))
 	}
+	if tmux.SessionExists() {
+		if err := tmux.KillSession(); err != nil {
+			errs = append(errs, fmt.Errorf("kill tmux session: %w", err))
+		}
+	}
+	return errors.Join(errs...)
 }

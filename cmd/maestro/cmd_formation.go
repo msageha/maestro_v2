@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -56,7 +57,10 @@ func runUp(args []string) error {
 	if err := formation.RunUp(opts); err != nil {
 		// Clean up any partially-created resources (tmux session, daemon)
 		fmt.Fprintln(os.Stderr, "Cleaning up after setup failure...")
-		formation.CleanupOnFailure(maestroDir)
+		if cleanupErr := formation.CleanupOnFailure(maestroDir); cleanupErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: cleanup encountered errors: %v\n", cleanupErr)
+			return errors.Join(fmt.Errorf("maestro up: %w", err), fmt.Errorf("cleanup: %w", cleanupErr))
+		}
 		return fmt.Errorf("maestro up: %w", err)
 	}
 
