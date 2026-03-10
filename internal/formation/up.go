@@ -102,8 +102,8 @@ func RunUp(opts UpOptions) error {
 	if err := waitDaemonReady(socketPath, 10*time.Second); err != nil {
 		// Daemon failed to start — clean up
 		_ = stopDaemon(opts.MaestroDir)
-		if tmux.SessionExists() {
-			_ = tmux.KillSession()
+		if err := tmux.KillSession(); err != nil {
+			log.Printf("warning: KillSession (daemon not ready cleanup): %v", err)
 		}
 		return fmt.Errorf("daemon not ready: %w", err)
 	}
@@ -120,10 +120,8 @@ func CleanupOnFailure(maestroDir string) error {
 	if err := stopDaemon(maestroDir); err != nil {
 		errs = append(errs, fmt.Errorf("stop daemon: %w", err))
 	}
-	if tmux.SessionExists() {
-		if err := tmux.KillSession(); err != nil {
-			errs = append(errs, fmt.Errorf("kill tmux session: %w", err))
-		}
+	if err := tmux.KillSession(); err != nil {
+		errs = append(errs, fmt.Errorf("kill tmux session: %w", err))
 	}
 	return errors.Join(errs...)
 }

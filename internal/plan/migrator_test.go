@@ -33,10 +33,12 @@ func TestMigrator_NeedsMigration(t *testing.T) {
 
 func TestMigrator_SingleStep(t *testing.T) {
 	m := NewMigrator(2)
-	m.Register(1, func(data map[string]interface{}) error {
+	if err := m.Register(1, func(data map[string]interface{}) error {
 		data["new_field"] = "added_by_migration"
 		return nil
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	data := map[string]interface{}{"schema_version": 1}
 	if err := m.Migrate(data, 1); err != nil {
@@ -53,18 +55,24 @@ func TestMigrator_SingleStep(t *testing.T) {
 
 func TestMigrator_MultiStep(t *testing.T) {
 	m := NewMigrator(4)
-	m.Register(1, func(data map[string]interface{}) error {
+	if err := m.Register(1, func(data map[string]interface{}) error {
 		data["step1"] = true
 		return nil
-	})
-	m.Register(2, func(data map[string]interface{}) error {
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Register(2, func(data map[string]interface{}) error {
 		data["step2"] = true
 		return nil
-	})
-	m.Register(3, func(data map[string]interface{}) error {
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Register(3, func(data map[string]interface{}) error {
 		data["step3"] = true
 		return nil
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	data := map[string]interface{}{"schema_version": 1}
 	if err := m.Migrate(data, 1); err != nil {
@@ -83,18 +91,24 @@ func TestMigrator_MultiStep(t *testing.T) {
 
 func TestMigrator_PartialMigration(t *testing.T) {
 	m := NewMigrator(4)
-	m.Register(1, func(data map[string]interface{}) error {
+	if err := m.Register(1, func(data map[string]interface{}) error {
 		data["step1"] = true
 		return nil
-	})
-	m.Register(2, func(data map[string]interface{}) error {
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Register(2, func(data map[string]interface{}) error {
 		data["step2"] = true
 		return nil
-	})
-	m.Register(3, func(data map[string]interface{}) error {
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Register(3, func(data map[string]interface{}) error {
 		data["step3"] = true
 		return nil
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	// Start from version 2 (skip step 1)
 	data := map[string]interface{}{"schema_version": 2}
@@ -118,9 +132,11 @@ func TestMigrator_PartialMigration(t *testing.T) {
 
 func TestMigrator_MissingStep(t *testing.T) {
 	m := NewMigrator(3)
-	m.Register(1, func(data map[string]interface{}) error {
+	if err := m.Register(1, func(data map[string]interface{}) error {
 		return nil
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 	// Missing step 2→3
 
 	data := map[string]interface{}{"schema_version": 1}
@@ -132,12 +148,16 @@ func TestMigrator_MissingStep(t *testing.T) {
 
 func TestMigrator_StepFailure(t *testing.T) {
 	m := NewMigrator(3)
-	m.Register(1, func(data map[string]interface{}) error {
+	if err := m.Register(1, func(data map[string]interface{}) error {
 		return nil
-	})
-	m.Register(2, func(data map[string]interface{}) error {
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Register(2, func(data map[string]interface{}) error {
 		return fmt.Errorf("intentional failure")
-	})
+	}); err != nil {
+		t.Fatal(err)
+	}
 
 	data := map[string]interface{}{"schema_version": 1}
 	err := m.Migrate(data, 1)
@@ -169,14 +189,13 @@ func TestMigrator_FutureVersion(t *testing.T) {
 
 func TestMigrator_RegisterDuplicate(t *testing.T) {
 	m := NewMigrator(3)
-	m.Register(1, func(data map[string]interface{}) error { return nil })
+	if err := m.Register(1, func(data map[string]interface{}) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
 
-	defer func() {
-		if r := recover(); r == nil {
-			t.Error("expected panic for duplicate registration")
-		}
-	}()
-	m.Register(1, func(data map[string]interface{}) error { return nil })
+	if err := m.Register(1, func(data map[string]interface{}) error { return nil }); err == nil {
+		t.Error("expected error for duplicate registration")
+	}
 }
 
 func TestDefaultMigrator(t *testing.T) {

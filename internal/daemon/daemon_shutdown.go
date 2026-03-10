@@ -29,6 +29,7 @@ func (d *Daemon) waitSignals() {
 		// shutdownDone unblocks this goroutine when Shutdown completes,
 		// preventing a leak if no second signal arrives.
 		shutdownDone := make(chan struct{})
+		defer close(shutdownDone)
 		go func() {
 			select {
 			case <-sigCh:
@@ -43,7 +44,6 @@ func (d *Daemon) waitSignals() {
 		}()
 
 		d.Shutdown()
-		close(shutdownDone)
 	case <-d.ctx.Done():
 		d.log(LogLevelInfo, "context cancelled, waiting for shutdown to complete")
 		d.Shutdown()

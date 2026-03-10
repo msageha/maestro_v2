@@ -2,6 +2,7 @@ package formation
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"time"
@@ -22,9 +23,11 @@ func resetFormation(maestroDir string) error {
 		return fmt.Errorf("stop daemon: %w", err)
 	}
 
-	// Kill existing tmux session (best-effort)
+	// Kill existing tmux session (best-effort, idempotent)
 	fmt.Println("[debug] resetFormation: killing existing tmux session (best-effort)")
-	_ = tmux.KillSession()
+	if err := tmux.KillSession(); err != nil {
+		log.Printf("warning: KillSession (resetFormation best-effort): %v", err)
+	}
 
 	// Clear queue/ YAML files
 	if err := clearYAMLFiles(filepath.Join(maestroDir, "queue")); err != nil {
