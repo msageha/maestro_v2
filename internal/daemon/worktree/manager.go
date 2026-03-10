@@ -520,6 +520,23 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string) ([]m
 				if abortErr := wm.gitRunInDir(integrationPath, "merge", "--abort"); abortErr != nil {
 					wm.log(core.LogLevelWarn, "merge_abort_failed command=%s worker=%s error=%v",
 						commandID, workerID, abortErr)
+					// Fallback recovery: reset --hard + clean + verify
+					if recoveryErr := wm.recoverWorktreeAfterMerge(integrationPath, preMergeHEAD, commandID, workerID); recoveryErr != nil {
+						// Worktree is stuck — set worker to conflict, restore merged workers, fail
+						if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusConflict, now); tErr != nil {
+							wm.log(core.LogLevelWarn, "merge_recovery_conflict_transition command=%s worker=%s error=%v", commandID, workerID, tErr)
+						}
+						if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusFailed, now); tErr != nil {
+							wm.log(core.LogLevelWarn, "merge_recovery_fail_transition command=%s error=%v", commandID, tErr)
+						}
+						for _, mi := range mergedWorkers {
+							mi.ws.Status = mi.previousStatus
+							mi.ws.UpdatedAt = now
+						}
+						state.UpdatedAt = now
+						_ = wm.saveState(commandID, state)
+						return conflicts, fmt.Errorf("worktree stuck after merge abort failure for worker %s: %w", workerID, recoveryErr)
+					}
 				}
 
 				if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusConflict, now); tErr != nil {
@@ -536,6 +553,23 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string) ([]m
 			if abortErr := wm.gitRunInDir(integrationPath, "merge", "--abort"); abortErr != nil {
 				wm.log(core.LogLevelWarn, "merge_abort_failed command=%s worker=%s error=%v",
 					commandID, workerID, abortErr)
+				// Fallback recovery: reset --hard + clean + verify
+				if recoveryErr := wm.recoverWorktreeAfterMerge(integrationPath, preMergeHEAD, commandID, workerID); recoveryErr != nil {
+					// Worktree is stuck — set worker and integration status, restore merged workers, return
+					if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusFailed, now); tErr != nil {
+						wm.log(core.LogLevelWarn, "merge_recovery_worker_fail_transition command=%s worker=%s error=%v", commandID, workerID, tErr)
+					}
+					if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusFailed, now); tErr != nil {
+						wm.log(core.LogLevelWarn, "merge_recovery_fail_transition command=%s error=%v", commandID, tErr)
+					}
+					for _, mi := range mergedWorkers {
+						mi.ws.Status = mi.previousStatus
+						mi.ws.UpdatedAt = now
+					}
+					state.UpdatedAt = now
+					_ = wm.saveState(commandID, state)
+					return conflicts, fmt.Errorf("worktree stuck after merge abort failure for worker %s: %w", workerID, recoveryErr)
+				}
 			}
 
 			if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusFailed, now); tErr != nil {
@@ -1204,6 +1238,44 @@ func (wm *Manager) Reconcile() {
 	}
 
 	wm.log(core.LogLevelInfo, "reconcile_complete")
+}
+
+// recoverWorktreeAfterMerge attempts to recover a worktree when merge --abort fails.
+// It performs git reset --hard to preMergeHEAD, then git clean -fd to remove untracked files,
+// and verifies the worktree is clean via git status --porcelain.
+// Returns nil only if the worktree is confirmed clean after recovery.
+func (wm *Manager) recoverWorktreeAfterMerge(worktreePath, preMergeHEAD, commandID, workerID string) error {
+	// Step 1: reset --hard is mandatory — it restores tracked content, index, and HEAD.
+	if resetErr := wm.gitRunInDir(worktreePath, "reset", "--hard", preMergeHEAD); resetErr != nil {
+		wm.log(core.LogLevelError, "merge_abort_recovery_reset_failed command=%s worker=%s error=%v",
+			commandID, workerID, resetErr)
+		return fmt.Errorf("worktree recovery failed: reset --hard: %w", resetErr)
+	}
+	wm.log(core.LogLevelInfo, "merge_abort_recovery_reset_ok command=%s worker=%s head=%s",
+		commandID, workerID, preMergeHEAD)
+
+	// Step 2: clean -fd to remove untracked files left by the failed merge.
+	if cleanErr := wm.gitRunInDir(worktreePath, "clean", "-fd"); cleanErr != nil {
+		wm.log(core.LogLevelWarn, "merge_abort_recovery_clean_failed command=%s worker=%s error=%v",
+			commandID, workerID, cleanErr)
+		// Not immediately fatal — check status below to confirm.
+	}
+
+	// Step 3: verify the worktree is clean.
+	statusOut, statusErr := wm.gitOutputInDir(worktreePath, "status", "--porcelain")
+	if statusErr != nil {
+		wm.log(core.LogLevelError, "merge_abort_recovery_verify_failed command=%s worker=%s error=%v",
+			commandID, workerID, statusErr)
+		return fmt.Errorf("worktree recovery verification failed: %w", statusErr)
+	}
+	if strings.TrimSpace(statusOut) != "" {
+		wm.log(core.LogLevelError, "merge_abort_recovery_still_dirty command=%s worker=%s status=%q",
+			commandID, workerID, strings.TrimSpace(statusOut))
+		return fmt.Errorf("worktree still dirty after recovery: %s", strings.TrimSpace(statusOut))
+	}
+
+	wm.log(core.LogLevelInfo, "merge_abort_recovery_success command=%s worker=%s", commandID, workerID)
+	return nil
 }
 
 // hasUnmergedFiles checks if a directory has unmerged index entries (indicating a true merge conflict).

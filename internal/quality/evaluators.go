@@ -62,6 +62,23 @@ func compileDangerousPatterns() []*regexp.Regexp {
 		`(?i)\bnode(?:js)?\b[^\n;|&]*\s+(?:-e|--eval)\b`,
 		`(?i)\bphp\b[^\n;|&]*\s+-r\b`,
 		`(?i)\blua\b[^\n;|&]*\s+-e\b`,
+		// Shell variable expansion / obfuscation bypass prevention
+		`\$\{!`,                                      // indirect variable expansion (${!var})
+		`\$\{[^}]+:[0-9]`,                            // substring extraction (${var:0:1}) for char-by-char construction
+		`(?i)\bprintf\b[^\n;|&]*\\x[0-9a-fA-F]`,     // printf with hex escapes for command construction
+		`(?i)\bexport\s+PATH\b`,                      // PATH override attempts
+		`(?i)\bsource\b`,                               // source command for loading external scripts
+		`(?:^|[;\n|&]\s*)\.\s+\S`,                      // dot-source (. /path) for loading external scripts
+		// Unrestricted shell spawning (bypasses bash --restricted)
+		`(?i)\bsh\b[^\n;|&]*\s+-c\b`,                   // sh -c '...' escapes restricted mode
+		`(?i)\bdash\b[^\n;|&]*\s+-c\b`,                 // dash -c '...' escapes restricted mode
+		`(?i)\bksh\b[^\n;|&]*\s+-c\b`,                  // ksh -c '...' escapes restricted mode
+		`(?i)\bzsh\b[^\n;|&]*\s+-c\b`,                  // zsh -c '...' escapes restricted mode
+		`(?i)\bbash\b[^\n;|&]*\s+-c\b`,                 // bash -c '...' spawns unrestricted bash
+		// Interpreter system() calls
+		`(?i)\bawk\b[^\n;|&]*\bsystem\s*\(`,            // awk system() call
+		`(?i)\bgawk\b[^\n;|&]*\bsystem\s*\(`,           // gawk system() call
+		`(?i)\bmawk\b[^\n;|&]*\bsystem\s*\(`,           // mawk system() call
 	}
 	patterns := make([]*regexp.Regexp, 0, len(raw))
 	for _, r := range raw {
@@ -374,7 +391,10 @@ func (e *ScriptEvaluator) Evaluate(ctx context.Context, condition *RuleCondition
 	case "python":
 		cmd = exec.CommandContext(scriptCtx, "python", "-c", condition.Script)
 	case "bash", "":
-		cmd = exec.CommandContext(scriptCtx, "bash", "-c", condition.Script)
+		// Use restricted mode (-r) to prevent directory changes, PATH modification,
+		// commands with slashes, and output redirection. --noprofile/--norc prevent
+		// loading startup files that could override restrictions.
+		cmd = exec.CommandContext(scriptCtx, "bash", "--restricted", "--noprofile", "--norc", "-c", condition.Script)
 	default:
 		return false, fmt.Errorf("unsupported script language: %s", condition.Language)
 	}
