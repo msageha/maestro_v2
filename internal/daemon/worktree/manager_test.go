@@ -1013,6 +1013,52 @@ func TestPublishToBase_PreservesProjectRootHEAD(t *testing.T) {
 	}
 }
 
+// --- C1 Test: PublishToBase rejects when projectRoot has uncommitted changes ---
+
+func TestPublishToBase_RejectsUncommittedChanges(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	currentBranch := "main"
+	wm.config.BaseBranch = currentBranch
+
+	workers := []string{"worker1"}
+	if err := wm.CreateForCommand("cmd_dirty", workers); err != nil {
+		t.Fatal(err)
+	}
+
+	// Worker1: create a file and commit
+	wt1, err := wm.GetWorkerPath("cmd_dirty", "worker1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt1, "feature.txt"), []byte("feature"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges("cmd_dirty", "worker1", "add feature.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Merge to integration
+	if _, err := wm.MergeToIntegration("cmd_dirty", workers); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create an uncommitted change in projectRoot
+	if err := os.WriteFile(filepath.Join(projectRoot, "dirty.txt"), []byte("dirty"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// PublishToBase should fail because projectRoot has uncommitted changes
+	err = wm.PublishToBase("cmd_dirty")
+	if err == nil {
+		t.Fatal("PublishToBase should have failed with uncommitted changes, but succeeded")
+	}
+	if !strings.Contains(err.Error(), "uncommitted changes") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // --- M2 Test: SyncFromIntegration skips conflict workers ---
 
 func TestSyncFromIntegration_SkipsConflictWorker(t *testing.T) {
