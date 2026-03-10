@@ -38,7 +38,7 @@ func TestConfigMarshalUnmarshal(t *testing.T) {
 			DebounceSec:         0.3,
 			ScanIntervalSec:     60,
 			DispatchLeaseSec:    120,
-			MaxInProgressMin:    30,
+			MaxInProgressMin:    IntPtr(30),
 			BusyCheckInterval:   2,
 			BusyCheckMaxRetries: 30,
 			BusyPatterns:        "Working|Thinking|Planning|Sending|Searching",
@@ -490,14 +490,15 @@ func TestLimitsConfig_EffectiveMaxDeadLetterArchiveFiles(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name  string
-		value int
+		value *int
 		want  int
 	}{
-		{"zero returns default 100", 0, 100},
-		{"negative returns default 100", -1, 100},
-		{"positive returns configured", 50, 50},
-		{"one returns configured", 1, 1},
-		{"large value returns configured", 999, 999},
+		{"nil returns default 100", nil, 100},
+		{"zero returns 0", IntPtr(0), 0},
+		{"negative returns -1", IntPtr(-1), -1},
+		{"positive returns configured", IntPtr(50), 50},
+		{"one returns configured", IntPtr(1), 1},
+		{"large value returns configured", IntPtr(999), 999},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -515,13 +516,14 @@ func TestLimitsConfig_EffectiveMaxQuarantineFiles(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name  string
-		value int
+		value *int
 		want  int
 	}{
-		{"zero returns default 100", 0, 100},
-		{"negative returns default 100", -1, 100},
-		{"positive returns configured", 25, 25},
-		{"one returns configured", 1, 1},
+		{"nil returns default 100", nil, 100},
+		{"zero returns 0", IntPtr(0), 0},
+		{"negative returns -1", IntPtr(-1), -1},
+		{"positive returns configured", IntPtr(25), 25},
+		{"one returns configured", IntPtr(1), 1},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -539,13 +541,14 @@ func TestCircuitBreakerConfig_EffectiveMaxConsecutiveFailures(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name  string
-		value int
+		value *int
 		want  int
 	}{
-		{"zero returns default 3", 0, 3},
-		{"negative returns default 3", -1, 3},
-		{"positive returns configured", 10, 10},
-		{"one returns configured", 1, 1},
+		{"nil returns default 3", nil, 3},
+		{"zero returns 0", IntPtr(0), 0},
+		{"negative returns -1", IntPtr(-1), -1},
+		{"positive returns configured", IntPtr(10), 10},
+		{"one returns configured", IntPtr(1), 1},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -563,13 +566,14 @@ func TestCircuitBreakerConfig_EffectiveProgressTimeoutMinutes(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name  string
-		value int
+		value *int
 		want  int
 	}{
-		{"zero returns default", 0, 30},
-		{"negative returns default", -1, 30},
-		{"positive returns configured", 30, 30},
-		{"custom value", 60, 60},
+		{"nil returns default", nil, 30},
+		{"zero returns 0", IntPtr(0), 0},
+		{"negative returns -1", IntPtr(-1), -1},
+		{"positive returns configured", IntPtr(30), 30},
+		{"custom value", IntPtr(60), 60},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -587,13 +591,14 @@ func TestLearningsConfig_EffectiveMaxEntries(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name  string
-		value int
+		value *int
 		want  int
 	}{
-		{"zero returns default 100", 0, 100},
-		{"negative returns default 100", -1, 100},
-		{"positive returns configured", 200, 200},
-		{"one returns configured", 1, 1},
+		{"nil returns default 100", nil, 100},
+		{"zero returns 0", IntPtr(0), 0},
+		{"negative returns -1", IntPtr(-1), -1},
+		{"positive returns configured", IntPtr(200), 200},
+		{"one returns configured", IntPtr(1), 1},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -611,13 +616,14 @@ func TestLearningsConfig_EffectiveMaxContentLength(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name  string
-		value int
+		value *int
 		want  int
 	}{
-		{"zero returns default 500", 0, 500},
-		{"negative returns default 500", -1, 500},
-		{"positive returns configured", 1000, 1000},
-		{"one returns configured", 1, 1},
+		{"nil returns default 500", nil, 500},
+		{"zero returns 0", IntPtr(0), 0},
+		{"negative returns -1", IntPtr(-1), -1},
+		{"positive returns configured", IntPtr(1000), 1000},
+		{"one returns configured", IntPtr(1), 1},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -635,13 +641,14 @@ func TestLearningsConfig_EffectiveInjectCount(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name  string
-		value int
+		value *int
 		want  int
 	}{
-		{"zero returns default 5", 0, 5},
-		{"negative returns default 5", -1, 5},
-		{"positive returns configured", 10, 10},
-		{"one returns configured", 1, 1},
+		{"nil returns default 5", nil, 5},
+		{"zero returns 0", IntPtr(0), 0},
+		{"negative returns -1", IntPtr(-1), -1},
+		{"positive returns configured", IntPtr(10), 10},
+		{"one returns configured", IntPtr(1), 1},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -682,13 +689,14 @@ func TestVerificationConfig_EffectiveTimeoutSeconds(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name  string
-		value int
+		value *int
 		want  int
 	}{
-		{"zero returns default 300", 0, 300},
-		{"negative returns default 300", -1, 300},
-		{"positive returns configured", 600, 600},
-		{"one returns configured", 1, 1},
+		{"nil returns default 300", nil, 300},
+		{"zero returns 0", IntPtr(0), 0},
+		{"negative returns -1", IntPtr(-1), -1},
+		{"positive returns configured", IntPtr(600), 600},
+		{"one returns configured", IntPtr(1), 1},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -796,13 +804,14 @@ func TestWorktreeGCConfig_EffectiveTTLHours(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name  string
-		value int
+		value *int
 		want  int
 	}{
-		{"zero returns default 24", 0, 24},
-		{"negative returns default 24", -1, 24},
-		{"positive returns configured", 48, 48},
-		{"one returns configured", 1, 1},
+		{"nil returns default 24", nil, 24},
+		{"zero returns 0", IntPtr(0), 0},
+		{"negative returns -1", IntPtr(-1), -1},
+		{"positive returns configured", IntPtr(48), 48},
+		{"one returns configured", IntPtr(1), 1},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -820,14 +829,15 @@ func TestWorktreeConfig_EffectiveGitTimeout(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name  string
-		value int
+		value *int
 		want  int
 	}{
-		{"zero returns default 120", 0, 120},
-		{"negative returns default 120", -1, 120},
-		{"positive returns configured", 60, 60},
-		{"one returns configured", 1, 1},
-		{"large value returns configured", 300, 300},
+		{"nil returns default 120", nil, 120},
+		{"zero returns 0", IntPtr(0), 0},
+		{"negative returns -1", IntPtr(-1), -1},
+		{"positive returns configured", IntPtr(60), 60},
+		{"one returns configured", IntPtr(1), 1},
+		{"large value returns configured", IntPtr(300), 300},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -852,8 +862,8 @@ worktree:
 	if err := yaml.Unmarshal(yamlData, &cfg); err != nil {
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
-	if cfg.Worktree.GitTimeoutSec != 60 {
-		t.Errorf("GitTimeoutSec: got %d, want 60", cfg.Worktree.GitTimeoutSec)
+	if cfg.Worktree.GitTimeoutSec == nil || *cfg.Worktree.GitTimeoutSec != 60 {
+		t.Errorf("GitTimeoutSec: got %v, want 60", cfg.Worktree.GitTimeoutSec)
 	}
 	if cfg.Worktree.EffectiveGitTimeout() != 60 {
 		t.Errorf("EffectiveGitTimeout(): got %d, want 60", cfg.Worktree.EffectiveGitTimeout())
@@ -868,8 +878,8 @@ worktree:
 	if err := yaml.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("Unmarshal round-trip failed: %v", err)
 	}
-	if decoded.Worktree.GitTimeoutSec != 60 {
-		t.Errorf("round-trip GitTimeoutSec: got %d, want 60", decoded.Worktree.GitTimeoutSec)
+	if decoded.Worktree.GitTimeoutSec == nil || *decoded.Worktree.GitTimeoutSec != 60 {
+		t.Errorf("round-trip GitTimeoutSec: got %v, want 60", decoded.Worktree.GitTimeoutSec)
 	}
 }
 
@@ -877,13 +887,14 @@ func TestWorktreeGCConfig_EffectiveMaxWorktrees(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name  string
-		value int
+		value *int
 		want  int
 	}{
-		{"zero returns default 32", 0, 32},
-		{"negative returns default 32", -1, 32},
-		{"positive returns configured", 16, 16},
-		{"one returns configured", 1, 1},
+		{"nil returns default 32", nil, 32},
+		{"zero returns 0", IntPtr(0), 0},
+		{"negative returns -1", IntPtr(-1), -1},
+		{"positive returns configured", IntPtr(16), 16},
+		{"one returns configured", IntPtr(1), 1},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -903,13 +914,14 @@ func TestCommitPolicyConfig_EffectiveMaxFiles(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name  string
-		value int
+		value *int
 		want  int
 	}{
-		{"zero returns default 30", 0, 30},
-		{"negative returns default 30", -1, 30},
-		{"positive returns configured", 50, 50},
-		{"one returns configured", 1, 1},
+		{"nil returns default 30", nil, 30},
+		{"zero returns 0", IntPtr(0), 0},
+		{"negative returns -1", IntPtr(-1), -1},
+		{"positive returns configured", IntPtr(50), 50},
+		{"one returns configured", IntPtr(1), 1},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -932,7 +944,7 @@ func TestCommitPolicyConfig_RequireGitignore(t *testing.T) {
 	}{
 		{"zero-valued struct is false", CommitPolicyConfig{}, false},
 		{"explicitly true", CommitPolicyConfig{RequireGitignore: true}, true},
-		{"explicitly false", CommitPolicyConfig{MaxFiles: 30, RequireGitignore: false}, false},
+		{"explicitly false", CommitPolicyConfig{MaxFiles: IntPtr(30), RequireGitignore: false}, false},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -981,8 +993,8 @@ worktree:
 	if err := yaml.Unmarshal(yamlData, &cfg); err != nil {
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
-	if cfg.Worktree.CommitPolicy.MaxFiles != 50 {
-		t.Errorf("MaxFiles: got %d, want 50", cfg.Worktree.CommitPolicy.MaxFiles)
+	if cfg.Worktree.CommitPolicy.MaxFiles == nil || *cfg.Worktree.CommitPolicy.MaxFiles != 50 {
+		t.Errorf("MaxFiles: got %v, want 50", cfg.Worktree.CommitPolicy.MaxFiles)
 	}
 	if !cfg.Worktree.CommitPolicy.RequireGitignore {
 		t.Error("RequireGitignore: got false, want true")
@@ -997,8 +1009,8 @@ worktree:
 	if err := yaml.Unmarshal(data, &decoded); err != nil {
 		t.Fatalf("Unmarshal round-trip failed: %v", err)
 	}
-	if decoded.Worktree.CommitPolicy.MaxFiles != 50 {
-		t.Errorf("round-trip MaxFiles: got %d, want 50", decoded.Worktree.CommitPolicy.MaxFiles)
+	if decoded.Worktree.CommitPolicy.MaxFiles == nil || *decoded.Worktree.CommitPolicy.MaxFiles != 50 {
+		t.Errorf("round-trip MaxFiles: got %v, want 50", decoded.Worktree.CommitPolicy.MaxFiles)
 	}
 }
 
@@ -1046,8 +1058,8 @@ func TestConfigTemplate_ParsesSuccessfully(t *testing.T) {
 		t.Fatalf("templates/config.yaml failed to parse: %v", err)
 	}
 	// Verify git_timeout_sec is loaded from template
-	if cfg.Worktree.GitTimeoutSec != 120 {
-		t.Errorf("template worktree.git_timeout_sec: got %d, want 120", cfg.Worktree.GitTimeoutSec)
+	if cfg.Worktree.GitTimeoutSec == nil || *cfg.Worktree.GitTimeoutSec != 120 {
+		t.Errorf("template worktree.git_timeout_sec: got %v, want 120", cfg.Worktree.GitTimeoutSec)
 	}
 	// Verify a few other fields to ensure overall template integrity
 	if cfg.Maestro.Version != "2.0.0" {

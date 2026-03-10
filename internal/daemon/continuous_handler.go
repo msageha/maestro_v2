@@ -83,7 +83,8 @@ func (ch *ContinuousHandler) CheckAndAdvance(commandID string, commandStatus mod
 		ch.log(LogLevelInfo, "continuous_pause command=%s reason=%s iteration=%d", commandID, reason, state.CurrentIteration)
 	}
 
-	// Check max_iterations (only if still running — pause takes precedence)
+	// Check max_iterations (only if still running — pause takes precedence).
+	// MaxIterations == 0 means unlimited (no cap); only positive values enforce a stop.
 	if state.Status == model.ContinuousStatusRunning && state.MaxIterations > 0 && state.CurrentIteration >= state.MaxIterations {
 		state.Status = model.ContinuousStatusStopped
 		reason := "max_iterations_reached"

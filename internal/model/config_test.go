@@ -164,7 +164,7 @@ func TestValidate_NegativeDaemonTimeout(t *testing.T) {
 
 func TestValidate_NegativeCircuitBreaker(t *testing.T) {
 	cfg := validConfig()
-	cfg.CircuitBreaker.MaxConsecutiveFailures = -1
+	cfg.CircuitBreaker.MaxConsecutiveFailures = IntPtr(-1)
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected error for negative circuit breaker field")
@@ -176,7 +176,7 @@ func TestValidate_NegativeCircuitBreaker(t *testing.T) {
 
 func TestValidate_NegativeVerification(t *testing.T) {
 	cfg := validConfig()
-	cfg.Verification.TimeoutSeconds = -1
+	cfg.Verification.TimeoutSeconds = IntPtr(-1)
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected error for negative verification timeout")
@@ -188,7 +188,7 @@ func TestValidate_NegativeVerification(t *testing.T) {
 
 func TestValidate_NegativeLearnings(t *testing.T) {
 	cfg := validConfig()
-	cfg.Learnings.MaxEntries = -1
+	cfg.Learnings.MaxEntries = IntPtr(-1)
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected error for negative learnings max_entries")

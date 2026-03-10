@@ -96,7 +96,11 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 	blockedBy := opts.BlockedBy
 	if len(blockedBy) == 0 {
 		if deps, ok := state.TaskDependencies[opts.RetryOf]; ok {
-			blockedBy = resolveBlockedByViaLineage(deps, state.RetryLineage)
+			var err error
+			blockedBy, err = resolveBlockedByViaLineage(deps, state.RetryLineage)
+			if err != nil {
+				return nil, fmt.Errorf("resolve blocked_by via lineage: %w", err)
+			}
 		}
 	}
 
@@ -384,7 +388,10 @@ func cascadeRecoverRecursive(
 
 		// Inherit original task's blocked_by, mapped through lineage
 		origDeps := state.TaskDependencies[cancelledTaskID]
-		newDeps := resolveBlockedByViaLineage(origDeps, state.RetryLineage)
+		newDeps, err := resolveBlockedByViaLineage(origDeps, state.RetryLineage)
+		if err != nil {
+			return recovered, fmt.Errorf("resolve blocked_by via lineage for cascade %s: %w", cancelledTaskID, err)
+		}
 
 		// Replace the failed dependency with the new retry task
 		for i, dep := range newDeps {
@@ -465,7 +472,7 @@ func findCascadeCandidates(state *model.CommandState, failedTaskID string) []str
 	return candidates
 }
 
-func resolveBlockedByViaLineage(blockedBy []string, lineage map[string]string) []string {
+func resolveBlockedByViaLineage(blockedBy []string, lineage map[string]string) ([]string, error) {
 	// Build reverse lineage map once (O(m)) instead of per-element (was O(n*m)).
 	// lineage maps new -> old, reverse maps old -> new.
 	reverseLineage := make(map[string]string, len(lineage))
@@ -475,22 +482,27 @@ func resolveBlockedByViaLineage(blockedBy []string, lineage map[string]string) [
 
 	resolved := make([]string, len(blockedBy))
 	for i, dep := range blockedBy {
-		resolved[i] = getLatestDescendant(dep, reverseLineage)
+		desc, err := getLatestDescendant(dep, reverseLineage)
+		if err != nil {
+			return nil, err
+		}
+		resolved[i] = desc
 	}
-	return resolved
+	return resolved, nil
 }
 
-func getLatestDescendant(taskID string, reverseLineage map[string]string) string {
+func getLatestDescendant(taskID string, reverseLineage map[string]string) (string, error) {
 	visited := make(map[string]bool)
 	current := taskID
 	for {
 		if visited[current] {
-			return current // cycle detected, break to prevent infinite loop
+			log.Printf("WARNING: lineage cycle detected starting from task %s, revisited %s", taskID, current)
+			return "", fmt.Errorf("lineage cycle detected: task %s revisited while resolving lineage from %s", current, taskID)
 		}
 		visited[current] = true
 		next, ok := reverseLineage[current]
 		if !ok {
-			return current
+			return current, nil
 		}
 		current = next
 	}

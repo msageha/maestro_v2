@@ -180,7 +180,7 @@ func TestGuard_DeadLetterCommandNotBlockingDispatch(t *testing.T) {
 func TestCommandLeaseAutoExtend_ExactMaxTimeout(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
-	qh.config.Watcher.MaxInProgressMin = 30
+	qh.config.Watcher.MaxInProgressMin = model.IntPtr(30)
 
 	owner := qh.leaseOwnerID()
 	expired := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
@@ -220,7 +220,7 @@ func TestCommandLeaseAutoExtend_ExactMaxTimeout(t *testing.T) {
 func TestCommandLeaseAutoExtend_JustBeforeMaxTimeout(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
-	qh.config.Watcher.MaxInProgressMin = 30
+	qh.config.Watcher.MaxInProgressMin = model.IntPtr(30)
 
 	owner := qh.leaseOwnerID()
 	expired := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
@@ -317,7 +317,7 @@ func TestCommandLeaseAutoExtend_NilLeaseExpiresAt(t *testing.T) {
 func TestCommandLeaseAutoExtend_DefaultMaxInProgressMin(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
-	qh.config.Watcher.MaxInProgressMin = 0 // should default to 60
+	qh.config.Watcher.MaxInProgressMin = nil // should default to 60
 
 	owner := qh.leaseOwnerID()
 	expired := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
@@ -407,7 +407,7 @@ func TestTaskLeaseExpiry_NilLeaseExpiresAt(t *testing.T) {
 // is released when max_in_progress_min is exceeded.
 func TestTaskLeaseExpiry_BusyAgent_MaxTimeout(t *testing.T) {
 	d := newBoundaryTestDaemon(t)
-	d.config.Watcher.MaxInProgressMin = 30
+	d.config.Watcher.MaxInProgressMin = model.IntPtr(30)
 	// Recreate handler with updated config
 	lockMap := d.handler.lockMap
 	reader := &integrationStateReader{maestroDir: d.maestroDir, lockMap: lockMap}
@@ -450,7 +450,7 @@ func TestTaskLeaseExpiry_BusyAgent_MaxTimeout(t *testing.T) {
 // max_in_progress_min gets its lease extended.
 func TestTaskLeaseExpiry_BusyAgent_WithinLimit(t *testing.T) {
 	d := newBoundaryTestDaemon(t)
-	d.config.Watcher.MaxInProgressMin = 60
+	d.config.Watcher.MaxInProgressMin = model.IntPtr(60)
 	lockMap := d.handler.lockMap
 	reader := &integrationStateReader{maestroDir: d.maestroDir, lockMap: lockMap}
 	d.handler = NewQueueHandler(d.maestroDir, d.config, lockMap, d.logger, d.logLevel)

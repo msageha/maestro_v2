@@ -20,8 +20,8 @@ func newTestDaemonWithLearnings(t *testing.T) *Daemon {
 	d := newTestDaemon(t)
 	d.config.Learnings = model.LearningsConfig{
 		Enabled:          true,
-		MaxEntries:       100,
-		MaxContentLength: 500,
+		MaxEntries:       model.IntPtr(100),
+		MaxContentLength: model.IntPtr(500),
 	}
 	return d
 }
@@ -186,7 +186,7 @@ func TestLearnings_DeduplicationByResultAndContent(t *testing.T) {
 
 func TestLearnings_ContentTruncation(t *testing.T) {
 	d := newTestDaemonWithLearnings(t)
-	d.config.Learnings.MaxContentLength = 10
+	d.config.Learnings.MaxContentLength = model.IntPtr(10)
 
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -226,7 +226,7 @@ func TestLearnings_ContentTruncation(t *testing.T) {
 
 func TestLearnings_ContentTruncation_UTF8(t *testing.T) {
 	d := newTestDaemonWithLearnings(t)
-	d.config.Learnings.MaxContentLength = 5
+	d.config.Learnings.MaxContentLength = model.IntPtr(5)
 
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -260,7 +260,7 @@ func TestLearnings_ContentTruncation_UTF8(t *testing.T) {
 
 func TestLearnings_MaxEntriesFIFO(t *testing.T) {
 	d := newTestDaemonWithLearnings(t)
-	d.config.Learnings.MaxEntries = 3
+	d.config.Learnings.MaxEntries = model.IntPtr(3)
 
 	// Pre-populate with 2 existing learnings
 	lf := model.LearningsFile{
@@ -538,7 +538,7 @@ func TestLearningsConfig_Defaults(t *testing.T) {
 		t.Errorf("EffectiveMaxContentLength() = %d, want 500", cfg.EffectiveMaxContentLength())
 	}
 
-	cfg2 := model.LearningsConfig{MaxEntries: 50, MaxContentLength: 200}
+	cfg2 := model.LearningsConfig{MaxEntries: model.IntPtr(50), MaxContentLength: model.IntPtr(200)}
 	if cfg2.EffectiveMaxEntries() != 50 {
 		t.Errorf("EffectiveMaxEntries() = %d, want 50", cfg2.EffectiveMaxEntries())
 	}
@@ -553,8 +553,8 @@ func TestLearningsConfig_Defaults(t *testing.T) {
 // write → sanitize (truncation) → SourceWorker assignment → ReadTopKLearnings → FormatLearningsSection pipeline.
 func TestLearningsIntegration_E2E_SanitizeSourceWorkerReadFormat(t *testing.T) {
 	d := newTestDaemonWithLearnings(t)
-	d.config.Learnings.MaxContentLength = 15
-	d.config.Learnings.InjectCount = 5
+	d.config.Learnings.MaxContentLength = model.IntPtr(15)
+	d.config.Learnings.InjectCount = model.IntPtr(5)
 	d.config.Learnings.TTLHours = 72
 
 	taskID := "task_0000000001_abcdef01"
@@ -600,7 +600,7 @@ func TestLearningsIntegration_E2E_SanitizeSourceWorkerReadFormat(t *testing.T) {
 	}
 
 	// ReadTopKLearnings → FormatLearningsSection
-	cfg := model.LearningsConfig{InjectCount: 5, TTLHours: 72}
+	cfg := model.LearningsConfig{InjectCount: model.IntPtr(5), TTLHours: 72}
 	readBack, err := learnings.ReadTopKLearnings(d.maestroDir, cfg, time.Now())
 	if err != nil {
 		t.Fatalf("ReadTopKLearnings: %v", err)
@@ -625,7 +625,7 @@ func TestLearningsIntegration_E2E_SanitizeSourceWorkerReadFormat(t *testing.T) {
 // which truncate to the same prefix under one resultID are correctly deduplicated.
 func TestLearningsIntegration_Dedup_TruncationCollision(t *testing.T) {
 	d := newTestDaemonWithLearnings(t)
-	d.config.Learnings.MaxContentLength = 5
+	d.config.Learnings.MaxContentLength = model.IntPtr(5)
 
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -705,7 +705,7 @@ func TestLearningsIntegration_TTL_EndToEnd(t *testing.T) {
 	}
 
 	// Read with TTL=72h → old entry (200h ago) should be excluded
-	cfg := model.LearningsConfig{InjectCount: 10, TTLHours: 72}
+	cfg := model.LearningsConfig{InjectCount: model.IntPtr(10), TTLHours: 72}
 	result, err := learnings.ReadTopKLearnings(d.maestroDir, cfg, time.Now())
 	if err != nil {
 		t.Fatalf("ReadTopKLearnings: %v", err)
@@ -766,7 +766,7 @@ func TestLearningsIntegration_InjectCount_EndToEnd(t *testing.T) {
 	}
 
 	// Read with inject_count=2 → should get last 2 entries
-	cfg := model.LearningsConfig{InjectCount: 2, TTLHours: 0}
+	cfg := model.LearningsConfig{InjectCount: model.IntPtr(2), TTLHours: 0}
 	result, err := learnings.ReadTopKLearnings(d.maestroDir, cfg, time.Now())
 	if err != nil {
 		t.Fatalf("ReadTopKLearnings: %v", err)
