@@ -73,6 +73,11 @@ func Run(projectDir, projectName string) error {
 		return err
 	}
 
+	// Copy template persona
+	if err := copyTemplateDir("persona", filepath.Join(base, "persona")); err != nil {
+		return err
+	}
+
 	// Generate and write config.yaml with auto-filled fields
 	cfg, err := generateConfig(absDir, projectName)
 	if err != nil {
