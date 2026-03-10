@@ -31,8 +31,9 @@ const (
 	// notifyBackoffMax is the maximum backoff delay between retry attempts.
 	notifyBackoffMax = 30 * time.Second
 
-	// maxResultLoopIterations caps the number of iterations in processWorkerResultFile
-	// and processCommandResultFile to prevent infinite loops from unexpected state.
+	// maxResultLoopIterations is the iteration count threshold at which a warning is
+	// logged in processWorkerResultFile / processCommandResultFile. The loops are
+	// unbounded (terminated by the attempted-set) so all pending results are drained.
 	maxResultLoopIterations = 100
 )
 
@@ -213,7 +214,10 @@ func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
 	resultPath := filepath.Join(rh.maestroDir, "results", workerID+".yaml")
 	attempted := make(map[string]bool)
 
-	for iter := 0; iter < maxResultLoopIterations; iter++ {
+	for iter := 0; ; iter++ {
+		if iter == maxResultLoopIterations {
+			rh.log(LogLevelWarn, "process_worker_result high_volume worker=%s processed=%d continuing", workerID, notified)
+		}
 		// Phase 1: Acquire lease under lock
 		lockKey := "result:" + workerID
 		rh.lockMap.Lock(lockKey)
@@ -297,8 +301,6 @@ func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
 		}
 		rh.lockMap.Unlock(lockKey)
 	}
-	rh.log(LogLevelError, "process_worker_result loop_cap_reached worker=%s iterations=%d", workerID, maxResultLoopIterations)
-	return notified
 }
 
 // processCommandResultFile processes planner results using the notification lease pattern.
@@ -308,7 +310,10 @@ func (rh *ResultHandler) processCommandResultFile() int {
 	resultPath := filepath.Join(rh.maestroDir, "results", "planner.yaml")
 	attempted := make(map[string]bool)
 
-	for iter := 0; iter < maxResultLoopIterations; iter++ {
+	for iter := 0; ; iter++ {
+		if iter == maxResultLoopIterations {
+			rh.log(LogLevelWarn, "process_command_result high_volume processed=%d continuing", notified)
+		}
 		lockKey := "result:planner"
 		rh.lockMap.Lock(lockKey)
 
@@ -385,8 +390,6 @@ func (rh *ResultHandler) processCommandResultFile() int {
 		}
 		rh.lockMap.Unlock(lockKey)
 	}
-	rh.log(LogLevelError, "process_command_result loop_cap_reached iterations=%d", maxResultLoopIterations)
-	return notified
 }
 
 // --- Notification lease helpers ---
