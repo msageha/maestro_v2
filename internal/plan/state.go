@@ -18,7 +18,7 @@ import (
 
 // errYAMLCorrupted is a sentinel used internally to distinguish YAML parse errors
 // from other I/O errors so that backup recovery is only attempted for corruption.
-var errYAMLCorrupted = errors.New("yaml corrupted")
+var errYAMLCorrupted = errors.New("invalid command state YAML")
 
 // CurrentSchemaVersion is defined in migrator.go.
 

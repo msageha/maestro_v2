@@ -128,12 +128,12 @@ func (RealClock) Now() time.Time { return time.Now() }
 // ErrStateNotFound is returned by StateReader methods when the state file does not exist
 // (i.e., the command has not been submitted yet). Callers can use errors.Is to distinguish
 // this from other read errors (e.g., parse failures on an existing file).
-var ErrStateNotFound = errors.New("state not found")
+var ErrStateNotFound = errors.New("command state file not found")
 
 // ErrPhaseNotFound is returned when a specific phase ID is not present in a command's
 // phase list. Unlike ErrStateNotFound (state file missing), this means the state file
 // exists but the requested phase does not.
-var ErrPhaseNotFound = errors.New("phase not found")
+var ErrPhaseNotFound = errors.New("command phase not found")
 
 // StateReader provides read access to command state (state/commands/{command_id}.yaml).
 // Phase 6 implements the concrete version; Phase 5 uses this interface for decoupling.
@@ -187,7 +187,7 @@ type AgentExecutor interface {
 
 // ErrExecutorInit is a sentinel returned by getExecutor when the cached executor
 // failed to initialise (sync.Once captured the error on first call).
-var ErrExecutorInit = fmt.Errorf("executor init failed")
+var ErrExecutorInit = errors.New("agent executor initialization failed")
 
 // ---------------------------------------------------------------------------
 // Function types (dependency inversion)
