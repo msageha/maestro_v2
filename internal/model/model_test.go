@@ -566,7 +566,8 @@ func TestCircuitBreakerConfig_EffectiveProgressTimeoutMinutes(t *testing.T) {
 		value int
 		want  int
 	}{
-		{"zero means disabled", 0, 0},
+		{"zero returns default", 0, 30},
+		{"negative returns default", -1, 30},
 		{"positive returns configured", 30, 30},
 		{"custom value", 60, 60},
 	}

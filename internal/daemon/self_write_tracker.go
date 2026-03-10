@@ -13,6 +13,10 @@ import (
 // Uses content hashing (SHA-256) instead of TTL to reliably detect self-written files.
 // When the daemon writes a YAML file via UDS handler, it records the content hash here.
 // fsnotifyLoop checks this tracker by reading the file and comparing hashes.
+//
+// Safety: SHA-256 collision is computationally infeasible for this use case.
+// The Deadline field is only used for stale-entry cleanup (preventing unbounded map growth),
+// not for correctness — the hash comparison is the sole source of truth.
 type selfWriteTracker struct {
 	mu     sync.Mutex
 	stamps map[string]writeStamp

@@ -96,6 +96,9 @@ func (qh *QueueHandler) debounceAndScan(trigger string) {
 			}()
 			qh.log(LogLevelDebug, "debounced_scan trigger=%s", trigger)
 
+			// shutdownCtx is nil only in unit tests where QueueHandler is
+			// constructed without a full daemon context. context.Background()
+			// is a safe fallback — test teardown handles cancellation separately.
 			ctx := qh.shutdownCtx
 			if ctx == nil {
 				ctx = context.Background()

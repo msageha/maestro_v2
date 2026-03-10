@@ -91,16 +91,17 @@ func (h *TaskHeartbeatHandler) Handle(params json.RawMessage) *uds.Response {
 	queueFile := fmt.Sprintf("queue/%s.yaml", p.WorkerID)
 	queuePath := filepath.Join(h.maestroDir, queueFile)
 
-	// QA-013: Use TryRLock to avoid blocking heartbeats during long PeriodicScan phases.
-	// If scanMu is held exclusively (Phase A/C), proceed with per-file lock only.
-	// This is safe because heartbeat only extends a single task's lease fields,
-	// and Phase C uses epoch fencing to detect concurrent modifications.
-	scanLocked := h.scanMu.TryRLock()
-	if scanLocked {
-		defer h.scanMu.RUnlock()
-	} else {
-		h.log(LogLevelDebug, "heartbeat_scan_lock_skipped task=%s worker=%s (scan in progress)", p.TaskID, p.WorkerID)
-	}
+	// M-2 fix: Use blocking RLock instead of TryRLock to prevent TOCTOU race.
+	// When Phase C holds scanMu exclusively, it rewrites worker queue files without
+	// taking the per-file queue:<worker> lock. If heartbeat proceeds without scanMu
+	// protection, Phase C can overwrite the queue file between heartbeat's read and
+	// write, causing the lease extension to be lost.
+	//
+	// Lock ordering invariant: scanMu must always be acquired BEFORE any queue:<worker>
+	// lock to prevent deadlock. Heartbeat latency may increase when blocked behind
+	// Phase A/C, but lease timing tolerates worst-case scan duration.
+	h.scanMu.RLock()
+	defer h.scanMu.RUnlock()
 
 	// Acquire file lock for the queue file
 	unlock, err := h.acquireFileLock(queueFile)

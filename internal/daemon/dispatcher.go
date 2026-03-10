@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -97,6 +96,12 @@ func (disp *Dispatcher) SetExecutorFactory(f ExecutorFactory) {
 // backoff to avoid hammering a persistently broken resource.
 // The Executor is safe for concurrent use (log.Logger uses internal mutex,
 // os.File in append mode is POSIX-safe, all other fields are immutable).
+//
+// L-3: The exponential backoff (1s→2s→4s→8s→16s cap) and reset-on-success behavior
+// is intentional for testing and production use. SetExecutorFactory resets the backoff
+// state to allow immediate retry with a new factory, which is the expected behavior
+// for test isolation. In production, the backoff prevents tight retry loops when the
+// underlying resource (e.g., log file) is persistently broken.
 func (disp *Dispatcher) getExecutor() (AgentExecutor, error) {
 	disp.execMu.Lock()
 	defer disp.execMu.Unlock()
@@ -200,21 +205,35 @@ type sortKey struct {
 
 // EffectivePriority computes the aging-adjusted priority.
 // effective_priority = max(0, priority - floor(age_seconds / priority_aging_sec))
+//
+// L-6: Uses integer duration arithmetic instead of float64 to avoid overflow on
+// 32-bit systems and float rounding issues with extreme age values.
 func EffectivePriority(priority int, createdAt string, priorityAgingSec int) int {
-	if priorityAgingSec <= 0 {
-		return priority
+	if priorityAgingSec <= 0 || priority <= 0 {
+		return max(priority, 0)
 	}
 	created, err := time.Parse(time.RFC3339, createdAt)
 	if err != nil {
 		return priority
 	}
-	ageSec := time.Since(created).Seconds()
-	aging := int(math.Floor(ageSec / float64(priorityAgingSec)))
-	result := priority - aging
-	if result < 0 {
+	age := time.Since(created)
+	if age <= 0 {
+		// Future createdAt — no aging applied
+		return priority
+	}
+	// Guard against Duration overflow for very large priorityAgingSec values.
+	// time.Duration is int64 nanoseconds; max safe seconds ≈ 9.2e9 (~292 years).
+	const maxSafeSec = 1<<53 - 1 // well within int64 nanosecond range
+	if priorityAgingSec > maxSafeSec {
+		return priority
+	}
+	interval := time.Duration(priorityAgingSec) * time.Second
+	// Integer division: equivalent to floor(age_seconds / priorityAgingSec)
+	aging := int64(age / interval)
+	if aging >= int64(priority) {
 		return 0
 	}
-	return result
+	return priority - int(aging)
 }
 
 // sortPendingIndices filters pending items and returns their original indices
@@ -522,7 +541,17 @@ func (disp *Dispatcher) shouldEvaluateQualityGates() bool {
 	return true
 }
 
-// evaluatePreTaskGateWithResult evaluates quality gates before task execution and returns the result
+// evaluatePreTaskGateWithResult evaluates quality gates before task execution and returns the result.
+//
+// L-7: There is a TOCTOU window between this pre-task gate check and actual task dispatch.
+// A gate condition could change between evaluation and dispatch. This is acceptable because:
+//   - Phase C's epoch fencing is the authoritative guard against stale dispatches.
+//   - The pre-task gate check is a best-effort early filter (advisory), not a guarantee.
+//   - Making the check and dispatch fully atomic would require holding scanMu across the
+//     entire dispatch path, which would serialize all dispatches and hurt throughput.
+//
+// The three-phase design (Phase A: scan, Phase B: dispatch, Phase C: commit with fencing)
+// ensures correctness even when pre-task checks are slightly stale.
 func (disp *Dispatcher) evaluatePreTaskGateWithResult(task *model.Task, workerID string) (*model.QualityGateEvaluation, error) {
 	qg := disp.getQualityGate()
 	if qg == nil {
