@@ -190,8 +190,8 @@ func runSkillApprove(args []string) error {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill approve: invalid skill name %q: must be kebab-case (a-z0-9 and hyphens, 1-64 chars)", skillName)}
 	}
 
-	// Check for name collision
-	skillsDir := filepath.Join(maestroDir, "skills")
+	// Check for name collision — write to skills/share/ to align with ReadBuiltinSkills
+	skillsDir := filepath.Join(maestroDir, "skills", "share")
 	skillDir := filepath.Join(skillsDir, skillName)
 	if _, err := os.Stat(skillDir); err == nil {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill approve: skill %q already exists; use --name to specify a different name", skillName)}
