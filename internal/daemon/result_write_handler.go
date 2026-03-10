@@ -148,7 +148,7 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 				if d.shuttingDown.Load() {
 					return nil
 				}
-				d.handler.PeriodicScanWithContext(d.ctx)
+				d.handler.PeriodicScanWithContext(d.egCtx)
 				return nil
 			})
 		} else if !d.shuttingDown.Load() {

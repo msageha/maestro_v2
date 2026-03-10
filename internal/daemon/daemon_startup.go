@@ -69,7 +69,9 @@ func (d *Daemon) prepareStartup() error {
 	}
 
 	// Create errgroup derived from daemon context.
-	d.eg, d.ctx = errgroup.WithContext(d.ctx)
+	// Use a separate egCtx field so d.ctx (the root daemon context) is not overwritten.
+	// d.cancel() always cancels d.ctx, which cascades to egCtx.
+	d.eg, d.egCtx = errgroup.WithContext(d.ctx)
 
 	return nil
 }

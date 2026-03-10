@@ -57,7 +57,8 @@ type Daemon struct {
 
 	ctx      context.Context
 	cancel   context.CancelFunc
-	eg       *errgroup.Group // tracks all daemon goroutines (loops + handlers)
+	eg       *errgroup.Group   // tracks all daemon goroutines (loops + handlers)
+	egCtx    context.Context   // errgroup-derived context; use inside eg.Go goroutines
 	shutdown sync.Once
 
 	// shuttingDown is an advisory flag read by spawners for fast-path rejection.
