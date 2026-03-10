@@ -103,12 +103,9 @@ func (d *Dispatcher) getExecutor() (AgentExecutor, error) {
 	if d.execInit {
 		return d.cachedExec, nil
 	}
-	// Exponential backoff cooldown for consecutive failures (cap at 30s)
+	// Exponential backoff cooldown for consecutive failures (cap at 16s)
 	if d.execFailCount > 0 {
 		backoff := time.Duration(1<<min(d.execFailCount-1, 4)) * time.Second // 1s, 2s, 4s, 8s, 16s (cap)
-		if backoff > 30*time.Second {
-			backoff = 30 * time.Second
-		}
 		elapsed := d.clock.Now().Sub(d.execLastFailTime)
 		if elapsed < backoff {
 			return nil, fmt.Errorf("%w: retry cooldown (attempt %d, next retry in %v)", errExecutorInit, d.execFailCount, backoff-elapsed)

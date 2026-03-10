@@ -72,7 +72,7 @@ func TestReadBuiltinSkills_MetadataValid(t *testing.T) {
 }
 
 func TestReadBuiltinSkillByName(t *testing.T) {
-	s, err := ReadBuiltinSkillByName(templates.FS, "structured-ai-communication")
+	s, err := ReadBuiltinSkillByName(templates.FS, "structured-ai-communication", "")
 	if err != nil {
 		t.Fatalf("ReadBuiltinSkillByName failed: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestReadBuiltinSkillByName(t *testing.T) {
 }
 
 func TestReadBuiltinSkillByName_NotExist(t *testing.T) {
-	_, err := ReadBuiltinSkillByName(templates.FS, "nonexistent-skill")
+	_, err := ReadBuiltinSkillByName(templates.FS, "nonexistent-skill", "")
 	if err == nil {
 		t.Fatal("expected error for nonexistent skill")
 	}

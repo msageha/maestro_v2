@@ -460,6 +460,9 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string) ([]m
 		return nil, fmt.Errorf("save pre-merge HEAD: %w", err)
 	}
 	preMergeHEAD = strings.TrimSpace(preMergeHEAD)
+	if err := validateSHA(preMergeHEAD); err != nil {
+		return nil, fmt.Errorf("invalid pre-merge HEAD: %w", err)
+	}
 
 	// Sort worker IDs for deterministic merge order
 	sorted := make([]string, len(workerIDs))
