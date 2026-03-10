@@ -17,7 +17,8 @@ type CommandState struct {
 	CancelledReasons   map[string]string   `yaml:"cancelled_reasons"`
 	AppliedResultIDs   map[string]string   `yaml:"applied_result_ids"`
 	SystemCommitTaskID *string             `yaml:"system_commit_task_id"`
-	RetryLineage       map[string]string   `yaml:"retry_lineage"`
+	RetryLineage         map[string]string   `yaml:"retry_lineage"`
+	RetryEnqueueFailed   map[string]string   `yaml:"retry_enqueue_failed,omitempty"` // task_id → worker_id; set when state registered but queue add failed
 	Phases             []Phase             `yaml:"phases"`
 	LastReconciledAt   *string             `yaml:"last_reconciled_at"`
 	CreatedAt          string              `yaml:"created_at"`

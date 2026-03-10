@@ -221,6 +221,40 @@ func (h *TaskRetryHandler) addRetryTaskToQueueLocked(task *model.Task, workerID 
 	return nil
 }
 
+// MarkRetryEnqueueFailed marks a retry task in the command state as having failed
+// to enqueue. This allows the R1 reconciler to detect the orphaned task and
+// either re-enqueue it or transition it to dead_letter.
+func (h *TaskRetryHandler) MarkRetryEnqueueFailed(taskID, workerID, commandID string) error {
+	stateLockKey := fmt.Sprintf("state:%s", commandID)
+	h.lockMap.Lock(stateLockKey)
+	defer h.lockMap.Unlock(stateLockKey)
+
+	statePath := filepath.Join(h.maestroDir, "state", "commands", commandID+".yaml")
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		return fmt.Errorf("read state file: %w", err)
+	}
+
+	var state model.CommandState
+	if err := yamlv3.Unmarshal(stateData, &state); err != nil {
+		return fmt.Errorf("parse state file: %w", err)
+	}
+
+	if state.RetryEnqueueFailed == nil {
+		state.RetryEnqueueFailed = make(map[string]string)
+	}
+	state.RetryEnqueueFailed[taskID] = workerID
+	state.UpdatedAt = h.clock.Now().UTC().Format(time.RFC3339)
+
+	if err := yaml.AtomicWrite(statePath, state); err != nil {
+		return fmt.Errorf("write state file: %w", err)
+	}
+
+	h.log(LogLevelWarn, "retry_enqueue_failed_marked task=%s worker=%s command=%s "+
+		"(R1 reconciler should detect and re-enqueue or mark dead_letter)", taskID, workerID, commandID)
+	return nil
+}
+
 // withCappedRetryMeta returns a new constraints slice with retry metadata entries
 // capped at maxRetryMeta (keeping the newest). Non-retry constraints are preserved.
 func withCappedRetryMeta(constraints []string, newMeta string) []string {
