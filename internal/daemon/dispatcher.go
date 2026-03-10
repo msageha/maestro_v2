@@ -109,8 +109,9 @@ func (d *Dispatcher) getExecutor() (AgentExecutor, error) {
 		if backoff > 30*time.Second {
 			backoff = 30 * time.Second
 		}
-		if time.Since(d.execLastFailTime) < backoff {
-			return nil, fmt.Errorf("%w: retry cooldown (attempt %d, next retry in %v)", errExecutorInit, d.execFailCount, backoff-time.Since(d.execLastFailTime))
+		elapsed := d.clock.Now().Sub(d.execLastFailTime)
+		if elapsed < backoff {
+			return nil, fmt.Errorf("%w: retry cooldown (attempt %d, next retry in %v)", errExecutorInit, d.execFailCount, backoff-elapsed)
 		}
 	}
 	exec, err := d.executorFactory(d.maestroDir, d.config.Watcher, d.config.Logging.Level)
@@ -350,6 +351,10 @@ func (d *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 
 	// Inject persona prompt into task content (best-effort, prepend)
 	dispatchTask := *task
+	// Sanitize user-supplied content to escape DATA boundary markers BEFORE
+	// appending system-generated sections (skills, learnings) whose markers
+	// must remain intact.
+	dispatchTask.Content = agent.SanitizeUserContent(dispatchTask.Content)
 	if task.PersonaHint != "" {
 		if section, found := persona.FormatPersonaSectionWithFS(templates.FS, d.config.Personas, task.PersonaHint); !found {
 			d.log(LogLevelWarn, "persona_not_found task=%s persona_hint=%s", task.ID, task.PersonaHint)
