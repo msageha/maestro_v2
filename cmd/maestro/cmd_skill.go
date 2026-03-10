@@ -1,13 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/msageha/maestro_v2/internal/daemon/skill"
+	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
 )
 
@@ -128,7 +128,7 @@ func runSkillCandidates(args []string) error {
 	return nil
 }
 
-// runSkillApprove approves a skill candidate and saves it as a SKILL.md file.
+// runSkillApprove approves a skill candidate via the daemon UDS API.
 func runSkillApprove(args []string) error {
 	if len(args) < 1 {
 		return &CLIError{Code: 1, Msg: "maestro skill approve: missing candidate-id\nusage: maestro skill approve <candidate-id> [--name <skill-name>]"}
@@ -155,74 +155,37 @@ func runSkillApprove(args []string) error {
 		return err
 	}
 
-	candidatesPath := filepath.Join(maestroDir, "state", "skill_candidates.yaml")
-	candidates, err := skill.ReadCandidates(candidatesPath)
+	params := map[string]string{
+		"candidate_id": candidateID,
+	}
+	if skillName != "" {
+		params["skill_name"] = skillName
+	}
+
+	client := uds.NewClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	resp, err := client.SendCommand("skill_approve", params)
 	if err != nil {
 		return fmt.Errorf("maestro skill approve: %w", err)
 	}
 
-	idx := -1
-	for i, c := range candidates {
-		if c.ID == candidateID {
-			idx = i
-			break
+	if !resp.Success {
+		code := ""
+		msg := "unknown error"
+		if resp.Error != nil {
+			code = resp.Error.Code
+			msg = resp.Error.Message
 		}
-	}
-	if idx < 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill approve: candidate not found: %s", candidateID)}
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill approve: [%s] %s", code, msg)}
 	}
 
-	candidate := &candidates[idx]
-	if candidate.Status != "pending" {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill approve: candidate %s is already %s", candidateID, candidate.Status)}
+	var result map[string]string
+	if err := json.Unmarshal(resp.Data, &result); err == nil {
+		fmt.Printf("approved %s as skill %q\n", candidateID, result["skill_name"])
 	}
-
-	// Determine skill name
-	if skillName == "" {
-		skillName = slugify(candidate.Content)
-	}
-	if skillName == "" {
-		return &CLIError{Code: 1, Msg: "maestro skill approve: could not auto-generate skill name from content; use --name to specify one"}
-	}
-
-	// Validate skill name as a safe identifier
-	if !isValidSkillName(skillName) {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill approve: invalid skill name %q: must be kebab-case (a-z0-9 and hyphens, 1-64 chars)", skillName)}
-	}
-
-	// Check for name collision — write to skills/share/ to align with ReadBuiltinSkills
-	skillsDir := filepath.Join(maestroDir, "skills", "share")
-	skillDir := filepath.Join(skillsDir, skillName)
-	if _, err := os.Stat(skillDir); err == nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill approve: skill %q already exists; use --name to specify a different name", skillName)}
-	}
-
-	// Create skill directory and write SKILL.md
-	if err := os.MkdirAll(skillDir, 0o755); err != nil {
-		return fmt.Errorf("maestro skill approve: create skill directory: %w", err)
-	}
-
-	skillContent := formatSkillMD(skillName, candidate.Content)
-	skillPath := filepath.Join(skillDir, "SKILL.md")
-	if err := os.WriteFile(skillPath, []byte(skillContent), 0o644); err != nil {
-		// Rollback: remove the created directory
-		_ = os.RemoveAll(skillDir)
-		return fmt.Errorf("maestro skill approve: write SKILL.md: %w", err)
-	}
-
-	// Update candidate status
-	candidate.Status = "approved"
-	if err := skill.WriteCandidates(candidatesPath, candidates); err != nil {
-		// Rollback: remove the skill directory since the status update failed
-		_ = os.RemoveAll(skillDir)
-		return fmt.Errorf("maestro skill approve: update candidates: %w", err)
-	}
-
-	fmt.Printf("approved %s as skill %q\n", candidateID, skillName)
 	return nil
 }
 
-// runSkillReject rejects a skill candidate.
+// runSkillReject rejects a skill candidate via the daemon UDS API.
 func runSkillReject(args []string) error {
 	if len(args) < 1 {
 		return &CLIError{Code: 1, Msg: "maestro skill reject: missing candidate-id\nusage: maestro skill reject <candidate-id>"}
@@ -246,66 +209,28 @@ func runSkillReject(args []string) error {
 		return err
 	}
 
-	candidatesPath := filepath.Join(maestroDir, "state", "skill_candidates.yaml")
-	candidates, err := skill.ReadCandidates(candidatesPath)
+	params := map[string]string{
+		"candidate_id": candidateID,
+	}
+
+	client := uds.NewClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	resp, err := client.SendCommand("skill_reject", params)
 	if err != nil {
 		return fmt.Errorf("maestro skill reject: %w", err)
 	}
 
-	idx := -1
-	for i, c := range candidates {
-		if c.ID == candidateID {
-			idx = i
-			break
+	if !resp.Success {
+		code := ""
+		msg := "unknown error"
+		if resp.Error != nil {
+			code = resp.Error.Code
+			msg = resp.Error.Message
 		}
-	}
-	if idx < 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill reject: candidate not found: %s", candidateID)}
-	}
-
-	candidate := &candidates[idx]
-	if candidate.Status != "pending" {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill reject: candidate %s is already %s", candidateID, candidate.Status)}
-	}
-
-	candidate.Status = "rejected"
-	if err := skill.WriteCandidates(candidatesPath, candidates); err != nil {
-		return fmt.Errorf("maestro skill reject: update candidates: %w", err)
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill reject: [%s] %s", code, msg)}
 	}
 
 	fmt.Printf("rejected %s\n", candidateID)
 	return nil
-}
-
-// skillNamePattern allows kebab-case names: lowercase alphanumeric with hyphens, 1-64 chars.
-var skillNamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$`)
-
-func isValidSkillName(name string) bool {
-	return skillNamePattern.MatchString(name)
-}
-
-// nonAlphaNum matches any non-alphanumeric character.
-var nonAlphaNum = regexp.MustCompile(`[^a-z0-9]+`)
-
-// slugify generates a kebab-case skill name from content text.
-func slugify(content string) string {
-	// Use first line as source
-	line := strings.SplitN(content, "\n", 2)[0]
-	line = strings.TrimSpace(line)
-	// Strip markdown heading prefix
-	line = strings.TrimLeft(line, "# ")
-
-	s := strings.ToLower(line)
-	s = nonAlphaNum.ReplaceAllString(s, "-")
-	s = strings.Trim(s, "-")
-
-	// Cap length
-	if len(s) > 64 {
-		s = s[:64]
-		s = strings.TrimRight(s, "-")
-	}
-
-	return s
 }
 
 // sanitizeForTerminal removes control characters (except space) to prevent terminal injection.
@@ -316,20 +241,6 @@ func sanitizeForTerminal(s string) string {
 		if r == '\t' || r == '\n' || (r >= 0x20 && r != 0x7f) {
 			sb.WriteRune(r)
 		}
-	}
-	return sb.String()
-}
-
-// formatSkillMD creates a SKILL.md with YAML frontmatter from a skill name and content body.
-func formatSkillMD(name, content string) string {
-	var sb strings.Builder
-	sb.WriteString("---\n")
-	sb.WriteString(fmt.Sprintf("name: %s\n", name))
-	sb.WriteString(fmt.Sprintf("description: Auto-approved from skill candidate\n"))
-	sb.WriteString("---\n")
-	sb.WriteString(content)
-	if !strings.HasSuffix(content, "\n") {
-		sb.WriteString("\n")
 	}
 	return sb.String()
 }
