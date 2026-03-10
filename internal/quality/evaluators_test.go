@@ -92,6 +92,13 @@ func TestValidateScript_BypassPatterns(t *testing.T) {
 		{"export PATH", `export PATH=/tmp:$PATH`},
 		{"source script", `source /tmp/evil.sh`},
 		{"dot source", `. /tmp/evil.sh`},
+		{"sh -c bypass", `sh -c 'echo pwned'`},
+		{"dash -c bypass", `dash -c 'echo pwned'`},
+		{"bash -c bypass", `bash -c 'echo pwned'`},
+		{"zsh -c bypass", `zsh -c 'echo pwned'`},
+		{"awk system", `awk 'BEGIN{system("echo pwned")}'`},
+		{"gawk system", `gawk 'BEGIN{system("id")}'`},
+		{"mawk system", `mawk 'BEGIN{system("id")}'`},
 	}
 
 	for _, tc := range bypass {
