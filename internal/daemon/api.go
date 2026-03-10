@@ -42,6 +42,8 @@ func (a *API) registerHandlers() {
 	d.server.Handle("task_heartbeat", a.handleTaskHeartbeat)
 	d.server.Handle("plan", a.handlePlan)
 	d.server.Handle("dashboard", a.handleDashboard)
+	d.server.Handle("skill_approve", a.handleSkillApprove)
+	d.server.Handle("skill_reject", a.handleSkillReject)
 }
 
 // handleTaskHeartbeat handles task heartbeat requests.
