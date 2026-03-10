@@ -4,6 +4,7 @@ package events
 import (
 	"context"
 	"log"
+	"runtime"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -332,6 +333,9 @@ func (b *Bus) Close() {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		remaining := b.activeGoroutines.Load()
-		log.Printf("WARN event_bus: Close timed out waiting for %d subscriber goroutines", remaining)
+		buf := make([]byte, 64*1024)
+		n := runtime.Stack(buf, true)
+		log.Printf("WARN event_bus: Close timed out waiting for %d subscriber goroutines, dumping stacks:\n%s",
+			remaining, string(buf[:n]))
 	}
 }
