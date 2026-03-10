@@ -201,6 +201,9 @@ func applyDefaults(cfg model.WatcherConfig) model.WatcherConfig {
 	if cfg.ClearRetryBackoffMs <= 0 {
 		cfg.ClearRetryBackoffMs = 500
 	}
+	if cfg.ClearSecondEnterDelayMs <= 0 {
+		cfg.ClearSecondEnterDelayMs = 500
+	}
 	return cfg
 }
 
@@ -533,14 +536,15 @@ func (e *Executor) clearAndConfirm(ctx context.Context, paneTarget string) error
 			return fmt.Errorf("clear_confirm: send /clear failed after %d attempts: %w", maxAttempts, err)
 		}
 
-		// Wait 500ms before sending second Enter
-		if err := sleepCtx(ctx, 500*time.Millisecond); err != nil {
+		// Wait before sending second Enter (configurable; default 500ms).
+		// Claude's /clear command may trigger a completion prompt, requiring a
+		// second Enter. The delay ensures the first Enter is processed.
+		secondEnterDelay := time.Duration(e.config.ClearSecondEnterDelayMs) * time.Millisecond
+		if err := sleepCtx(ctx, secondEnterDelay); err != nil {
 			return fmt.Errorf("clear_confirm: wait cancelled: %w", err)
 		}
 
 		// Send second Enter to ensure /clear execution.
-		// Commands starting with `/` often trigger completion prompts for the user,
-		// requiring a second Enter to confirm the command.
 		if err := e.paneIO.SendKeys(paneTarget, "Enter"); err != nil {
 			e.log(LogLevelWarn, "clear_confirm send_second_enter error=%v attempt=%d", err, attempt)
 			if attempt < maxAttempts {

@@ -21,7 +21,7 @@ type WorkerStatus struct {
 	Model           string `json:"model"`
 	PendingCount    int    `json:"pending_count"`
 	InProgressCount int    `json:"in_progress_count"`
-	Status          string `json:"status"` // "idle" or "busy"
+	Status          string `json:"status"` // "idle", "busy", or "error"
 }
 
 // StandbyOptions configures the standby scan.
@@ -65,12 +65,22 @@ func Standby(opts StandbyOptions) ([]WorkerStatus, error) {
 		data, err := readQueueFile(path, maxBytes)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: %s: %v\n", name, err)
+			results = append(results, WorkerStatus{
+				WorkerID: workerID,
+				Model:    workerModel,
+				Status:   "error",
+			})
 			continue
 		}
 
 		var tq model.TaskQueue
 		if err := yamlv3.Unmarshal(data, &tq); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: cannot parse %s: %v\n", name, err)
+			results = append(results, WorkerStatus{
+				WorkerID: workerID,
+				Model:    workerModel,
+				Status:   "error",
+			})
 			continue
 		}
 

@@ -245,8 +245,8 @@ func TestStandbyJSON_Schema(t *testing.T) {
 	if w.Model == "" {
 		t.Error("model must not be empty")
 	}
-	if w.Status != "idle" && w.Status != "busy" {
-		t.Errorf("status must be 'idle' or 'busy', got %q", w.Status)
+	if w.Status != "idle" && w.Status != "busy" && w.Status != "error" {
+		t.Errorf("status must be 'idle', 'busy', or 'error', got %q", w.Status)
 	}
 
 	// Verify all expected JSON fields match the spec (§5.10)
@@ -369,6 +369,57 @@ func TestStandby_IdleBusyLogic(t *testing.T) {
 				t.Errorf("expected status %q, got %q", tt.expected, statuses[0].Status)
 			}
 		})
+	}
+}
+
+func TestStandby_ReadError_ReturnsErrorStatus(t *testing.T) {
+	dir := t.TempDir()
+	maestroDir := filepath.Join(dir, ".maestro")
+	queueDir := filepath.Join(maestroDir, "queue")
+	os.MkdirAll(queueDir, 0755)
+
+	// Create a directory instead of a file to trigger readQueueFile error
+	os.MkdirAll(filepath.Join(queueDir, "worker1.yaml"), 0755)
+
+	statuses, err := Standby(StandbyOptions{
+		MaestroDir: maestroDir,
+		Config:     model.Config{Agents: model.AgentsConfig{Workers: model.WorkerConfig{DefaultModel: "sonnet"}}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("expected 1 worker, got %d", len(statuses))
+	}
+	if statuses[0].Status != "error" {
+		t.Errorf("expected status 'error', got %q", statuses[0].Status)
+	}
+	if statuses[0].WorkerID != "worker1" {
+		t.Errorf("expected worker1, got %s", statuses[0].WorkerID)
+	}
+}
+
+func TestStandby_ParseError_ReturnsErrorStatus(t *testing.T) {
+	dir := t.TempDir()
+	maestroDir := filepath.Join(dir, ".maestro")
+	queueDir := filepath.Join(maestroDir, "queue")
+	os.MkdirAll(queueDir, 0755)
+
+	// Write invalid YAML
+	os.WriteFile(filepath.Join(queueDir, "worker1.yaml"), []byte("{{invalid yaml"), 0644)
+
+	statuses, err := Standby(StandbyOptions{
+		MaestroDir: maestroDir,
+		Config:     model.Config{Agents: model.AgentsConfig{Workers: model.WorkerConfig{DefaultModel: "sonnet"}}},
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(statuses) != 1 {
+		t.Fatalf("expected 1 worker, got %d", len(statuses))
+	}
+	if statuses[0].Status != "error" {
+		t.Errorf("expected status 'error', got %q", statuses[0].Status)
 	}
 }
 

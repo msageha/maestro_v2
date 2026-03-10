@@ -124,21 +124,28 @@ func (bd *BusyDetector) DetectBusy(ctx context.Context, paneTarget string) BusyV
 // sleep delay, targeting transient tmux capture errors that resolve instantly.
 const undecidedImmediateRetries = 2
 
-// DetectBusyWithRetry runs busy detection with a retry loop on VerdictBusy.
-// VerdictUndecided from transient errors gets up to undecidedImmediateRetries
-// immediate retries (no sleep) before being returned. If all immediate retries
-// still yield Undecided, it is returned as-is.
-// agentID is used only for log messages.
-// Returns VerdictUndecided if ctx is cancelled during retries.
-func (bd *BusyDetector) DetectBusyWithRetry(ctx context.Context, paneTarget, agentID string) BusyVerdict {
+// detectWithUndecidedRetry runs DetectBusy and, if the result is
+// VerdictUndecided, retries up to undecidedImmediateRetries times with no
+// sleep delay (targeting transient tmux capture errors that resolve instantly).
+func (bd *BusyDetector) detectWithUndecidedRetry(ctx context.Context, paneTarget, agentID string) BusyVerdict {
 	verdict := bd.DetectBusy(ctx, paneTarget)
-
-	// Immediate retries for VerdictUndecided (transient tmux capture errors)
 	for i := 0; i < undecidedImmediateRetries && verdict == VerdictUndecided; i++ {
 		bd.log(LogLevelDebug, "busy_undecided_retry retry=%d/%d agent_id=%s",
 			i+1, undecidedImmediateRetries, agentID)
 		verdict = bd.DetectBusy(ctx, paneTarget)
 	}
+	return verdict
+}
+
+// DetectBusyWithRetry runs busy detection with a retry loop on VerdictBusy.
+// VerdictUndecided from transient errors gets up to undecidedImmediateRetries
+// immediate retries (no sleep) both on the initial detection and within each
+// busy-retry iteration, ensuring consistent handling. If all immediate retries
+// still yield Undecided, it is returned as-is.
+// agentID is used only for log messages.
+// Returns VerdictUndecided if ctx is cancelled during retries.
+func (bd *BusyDetector) DetectBusyWithRetry(ctx context.Context, paneTarget, agentID string) BusyVerdict {
+	verdict := bd.detectWithUndecidedRetry(ctx, paneTarget, agentID)
 
 	if verdict != VerdictBusy {
 		return verdict
@@ -152,7 +159,7 @@ func (bd *BusyDetector) DetectBusyWithRetry(ctx context.Context, paneTarget, age
 			return VerdictUndecided
 		}
 
-		verdict = bd.DetectBusy(ctx, paneTarget)
+		verdict = bd.detectWithUndecidedRetry(ctx, paneTarget, agentID)
 		if verdict != VerdictBusy {
 			return verdict
 		}
