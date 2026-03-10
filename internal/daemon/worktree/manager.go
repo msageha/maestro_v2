@@ -911,6 +911,11 @@ func (wm *Manager) CleanupCommand(commandID string) error {
 }
 
 // GC removes old worktrees that exceed TTL or max_worktrees limit.
+//
+// Design: GC holds wm.mu for the entire operation to prevent concurrent
+// worktree creation/deletion from racing with GC's read-modify-delete cycle.
+// This is intentional — GC runs infrequently and the critical section is
+// bounded by the number of worktree state files, so lock contention is minimal.
 func (wm *Manager) GC() error {
 	if !wm.config.GC.Enabled {
 		return nil

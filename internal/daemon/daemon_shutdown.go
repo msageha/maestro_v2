@@ -26,8 +26,10 @@ func (d *Daemon) waitSignals() {
 		d.log(LogLevelInfo, "received signal=%s, initiating graceful shutdown (session_alive=%v)", sig, tmux.SessionExists())
 
 		// Second signal → force exit.
-		// shutdownDone unblocks this goroutine when Shutdown completes,
-		// preventing a leak if no second signal arrives.
+		// This goroutine is not tracked by errgroup and has no explicit join.
+		// This is intentional: it only exists to handle a second signal during
+		// shutdown, and shutdownDone is closed when Shutdown completes, causing
+		// this goroutine to return. On process exit, the Go runtime reclaims it.
 		shutdownDone := make(chan struct{})
 		defer close(shutdownDone)
 		go func() {
