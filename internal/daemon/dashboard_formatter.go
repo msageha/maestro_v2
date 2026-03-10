@@ -57,6 +57,8 @@ type DashboardData struct {
 	FormationStatus string
 	DaemonStatus    string
 	LastUpdated     time.Time
+	IsStale         bool
+	StaleReason     string
 }
 
 // QueueInfo represents queue depth information
@@ -144,7 +146,10 @@ func (f *DashboardFormatter) collectDashboardData() (*DashboardData, error) {
 		if os.IsNotExist(err) {
 			return data, nil
 		}
-		return nil, err
+		// Return partial data (queue info) with stale marker
+		data.IsStale = true
+		data.StaleReason = err.Error()
+		return data, err
 	}
 
 	// Calculate statistics (log-based, queue status already populated above)
@@ -617,11 +622,16 @@ func (f *DashboardFormatter) UpdateDashboardFileWithQueues(
 
 	// Enrich with log-based statistics (best-effort)
 	data, _ := f.collectDashboardData()
-	if data != nil && (data.Stats.TotalTasks > 0 || data.Stats.ErrorCount > 0) {
-		sb.WriteString("\n## Recent Activity\n\n")
-		fmt.Fprintf(&sb, "Tasks: %d total, %d completed, %d failed\n",
-			data.Stats.TotalTasks, data.Stats.CompletedTasks, data.Stats.FailedTasks)
-		fmt.Fprintf(&sb, "Errors: %d, Warnings: %d\n", data.Stats.ErrorCount, data.Stats.WarningCount)
+	if data != nil {
+		if data.IsStale {
+			fmt.Fprintf(&sb, "\n> ⚠ [STALE] log data unavailable: %s\n", data.StaleReason)
+		}
+		if data.Stats.TotalTasks > 0 || data.Stats.ErrorCount > 0 {
+			sb.WriteString("\n## Recent Activity\n\n")
+			fmt.Fprintf(&sb, "Tasks: %d total, %d completed, %d failed\n",
+				data.Stats.TotalTasks, data.Stats.CompletedTasks, data.Stats.FailedTasks)
+			fmt.Fprintf(&sb, "Errors: %d, Warnings: %d\n", data.Stats.ErrorCount, data.Stats.WarningCount)
+		}
 	}
 
 	dashboardPath := filepath.Join(f.maestroDir, "dashboard.md")

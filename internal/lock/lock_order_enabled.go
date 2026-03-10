@@ -145,6 +145,10 @@ func (c *debugOrderChecker) BeforeUnlock(key string) {
 	}
 }
 
+// violate handles lock-order violations. This function is only compiled when
+// the "lockorder" build tag is set (see lock_order_disabled.go for the
+// production no-op). In warn mode it logs; in panic mode (used by tests) it
+// panics to surface ordering bugs early.
 func (c *debugOrderChecker) violate(msg string) {
 	if c.mode == lockOrderWarn {
 		log.Printf("LOCKORDER: %s", msg)

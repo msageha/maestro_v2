@@ -315,16 +315,22 @@ func CreateSession(windowName string) error {
 }
 
 // KillSession destroys the maestro tmux session.
+// It is idempotent: if the session (or tmux server) does not exist, it returns nil.
 func KillSession() error {
 	caller := callerInfo(2)
 	debugLog("KillSession called session=%s caller=%s", GetSessionName(), caller)
 	err := run("kill-session", "-t", exactSessionTarget())
 	if err != nil {
+		// Idempotent: session or server already gone is not an error.
+		if errors.Is(err, ErrTmuxSession) || errors.Is(err, ErrTmuxServer) {
+			debugLog("KillSession OK (already gone) session=%s caller=%s", GetSessionName(), caller)
+			return nil
+		}
 		debugLog("KillSession FAILED session=%s error=%v caller=%s", GetSessionName(), err, caller)
-	} else {
-		debugLog("KillSession OK session=%s caller=%s", GetSessionName(), caller)
+		return err
 	}
-	return err
+	debugLog("KillSession OK session=%s caller=%s", GetSessionName(), caller)
+	return nil
 }
 
 // SessionHealthCheck performs a detailed session health check and logs the result.

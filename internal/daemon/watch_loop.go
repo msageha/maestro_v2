@@ -22,7 +22,7 @@ func (w *WatchLoop) fsnotifyLoop() {
 
 	for {
 		select {
-		case <-d.ctx.Done():
+		case <-d.egCtx.Done():
 			return
 		case event, ok := <-d.watcher.Events:
 			if !ok {
@@ -79,11 +79,11 @@ func (w *WatchLoop) tickerLoop() {
 
 	for {
 		select {
-		case <-d.ctx.Done():
+		case <-d.egCtx.Done():
 			return
 		case <-d.ticker.C:
 			d.log(LogLevelDebug, "periodic scan triggered")
-			d.handler.PeriodicScanWithContext(d.ctx)
+			d.handler.PeriodicScanWithContext(d.egCtx)
 
 			// Session health check: detect if tmux session disappeared
 			if !tmux.SessionHealthCheck() {
