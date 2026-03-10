@@ -371,6 +371,42 @@ func TestDetectBusyWithRetry_UndecidedThenIdle(t *testing.T) {
 	}
 }
 
+func TestDetectBusyWithRetry_BusyThenUndecidedThenIdle(t *testing.T) {
+	// Simulates: first detect → Busy, then in retry loop detect → Undecided
+	// (transient error), immediate retry → Idle. Tests that undecided retry
+	// logic is applied within the busy retry loop.
+	detectCount := 0
+	mock := &mockPaneIO{
+		currentCommand: "claude",
+		isShell:        false,
+		captureContent: "content",
+		joinedFn: func(paneTarget string, lastN int) (string, error) {
+			detectCount++
+			// First 2 calls (detect round 1): changing content → Busy
+			if detectCount <= 2 {
+				return fmt.Sprintf("changing-%d", detectCount), nil
+			}
+			// Next call (retry round, detect attempt 1): capture error → Undecided
+			if detectCount == 3 {
+				return "", fmt.Errorf("transient error")
+			}
+			// Subsequent calls (undecided immediate retry): stable → Idle
+			return "stable-content", nil
+		},
+		captureFn: func(paneTarget string, lastN int) (string, error) {
+			// After detect 3 triggers Undecided via joinedFn error,
+			// the immediate retry calls DetectBusy again which calls CapturePane
+			return "content", nil
+		},
+	}
+	bd := newTestBusyDetector(mock, nil, fastConfig())
+
+	verdict := bd.DetectBusyWithRetry(context.Background(), "%0", "worker1")
+	if verdict != VerdictIdle {
+		t.Errorf("expected VerdictIdle after busy→undecided→idle, got %s", verdict)
+	}
+}
+
 // --- BusyDetector Logging ---
 
 func TestBusyDetector_LogPrefix(t *testing.T) {
