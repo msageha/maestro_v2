@@ -78,6 +78,12 @@ func (qh *QueueHandler) debounceAndScan(trigger string) {
 			}
 			defer qh.scanRunning.Store(false)
 
+			// Re-check shutdown after CAS to narrow the TOCTOU window between
+			// the initial shuttingDown check and scan execution.
+			if qh.shuttingDown != nil && qh.shuttingDown.Load() {
+				return
+			}
+
 			// Reset first-trigger tracking for next debounce window.
 			qh.debounceMu.Lock()
 			qh.firstTriggerAt = time.Time{}
