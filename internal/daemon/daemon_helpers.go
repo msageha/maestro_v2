@@ -14,6 +14,11 @@ import (
 
 // recoverPanic catches panics in goroutines to prevent the daemon from crashing.
 // It logs the panic with a full stack trace and initiates a graceful shutdown.
+//
+// Design: Shutdown is called via "go d.Shutdown()" (a new goroutine) intentionally.
+// recoverPanic runs inside errgroup goroutines, and Shutdown calls eg.Wait() to
+// drain the errgroup. Calling Shutdown synchronously here would deadlock because
+// the errgroup cannot finish while this goroutine is blocked waiting for itself.
 func (d *Daemon) recoverPanic(goroutine string) {
 	if r := recover(); r != nil {
 		d.log(LogLevelError, "panic in %s: %v\n%s", goroutine, r, debug.Stack())
