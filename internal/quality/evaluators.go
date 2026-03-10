@@ -79,6 +79,23 @@ func compileDangerousPatterns() []*regexp.Regexp {
 		`(?i)\bawk\b[^\n;|&]*\bsystem\s*\(`,            // awk system() call
 		`(?i)\bgawk\b[^\n;|&]*\bsystem\s*\(`,           // gawk system() call
 		`(?i)\bmawk\b[^\n;|&]*\bsystem\s*\(`,           // mawk system() call
+
+		// --- Python-specific dangerous patterns ---
+
+		// OS-level command execution
+		`(?i)\bos\.(?:system|popen|exec[lv]*[pe]*)\s*\(`, // os.system(), os.popen(), os.exec*()
+		// subprocess module (subprocess.run, subprocess.Popen, etc.)
+		`(?i)\bsubprocess\b`,
+		// Dynamic import mechanisms
+		`(?i)\b__import__\s*\(`,
+		`(?i)\bimportlib\b`,
+		// eval/exec builtins
+		`(?i)\beval\s*\(`,
+		`(?i)\bexec\s*\(`,
+		// Raw socket creation
+		`(?i)\bsocket\.socket\s*\(`,
+		// ctypes FFI (arbitrary native code execution)
+		`(?i)\bctypes\b`,
 	}
 	patterns := make([]*regexp.Regexp, 0, len(raw))
 	for _, r := range raw {
