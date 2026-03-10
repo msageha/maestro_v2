@@ -784,6 +784,20 @@ func (wm *Manager) PublishToBase(commandID string) error {
 	currentBranch, _ := wm.gitOutput("symbolic-ref", "--short", "HEAD")
 	baseBranchCheckedOut := strings.TrimSpace(currentBranch) == baseBranch
 
+	// If baseBranch is checked out, we'll need to reset the working tree after update-ref.
+	// Check for uncommitted changes BEFORE update-ref to avoid data loss.
+	if baseBranchCheckedOut {
+		statusOut, err := wm.gitOutput("status", "--porcelain")
+		if err != nil {
+			_ = wm.gitRun("branch", "-D", tempBranch)
+			return fmt.Errorf("publish dirty check failed: %w", err)
+		}
+		if strings.TrimSpace(statusOut) != "" {
+			_ = wm.gitRun("branch", "-D", tempBranch)
+			return fmt.Errorf("publish aborted: projectRoot has uncommitted changes that would be lost by reset; please commit or stash them first")
+		}
+	}
+
 	// Update baseBranch ref to point to the merge commit.
 	// NOTE: git update-ref only moves the branch pointer — it does NOT update the
 	// working tree or index. If baseBranch is checked out in projectRoot, the index
@@ -801,11 +815,8 @@ func (wm *Manager) PublishToBase(commandID string) error {
 	// to match the updated ref. Without this, the working tree would remain at the
 	// old commit state, appearing as a staged revert of all published changes.
 	if baseBranchCheckedOut {
+		// Uncommitted changes were already checked before update-ref above.
 		// Use git reset --hard to sync index + working tree to the new HEAD.
-		// This is safe because:
-		// 1. Maestro workers operate in isolated worktrees, not in projectRoot
-		// 2. Users should not have uncommitted changes in projectRoot during maestro operation
-		// 3. The alternative (leaving a revert-staged state) is worse — it silently corrupts
 		if resetErr := wm.gitRun("reset", "--hard", "HEAD"); resetErr != nil {
 			wm.log(core.LogLevelWarn, "publish_reset_working_tree command=%s error=%v", commandID, resetErr)
 			// Non-fatal: the ref update succeeded, so the branch is at the right commit.
