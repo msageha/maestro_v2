@@ -952,7 +952,14 @@ func (wm *Manager) GC() error {
 
 		created, err := time.Parse(time.RFC3339, state.CreatedAt)
 		if err != nil {
-			continue
+			wm.log(core.LogLevelWarn, "gc_created_at_parse_failed command=%s value=%q error=%v, falling back to mtime", commandID, state.CreatedAt, err)
+			statePath := filepath.Join(stateDir, entry.Name())
+			info, statErr := os.Stat(statePath)
+			if statErr != nil {
+				wm.log(core.LogLevelWarn, "gc_mtime_fallback_failed command=%s error=%v, skipping", commandID, statErr)
+				continue
+			}
+			created = info.ModTime()
 		}
 
 		// TTL-based cleanup
