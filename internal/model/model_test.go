@@ -8,6 +8,7 @@ import (
 )
 
 func TestConfigMarshalUnmarshal(t *testing.T) {
+	t.Parallel()
 	cfg := Config{
 		Project: ProjectConfig{
 			Name:        "test-project",
@@ -89,6 +90,7 @@ func TestConfigMarshalUnmarshal(t *testing.T) {
 }
 
 func TestCommandQueueMarshalUnmarshal(t *testing.T) {
+	t.Parallel()
 	q := CommandQueue{
 		SchemaVersion: 1,
 		FileType:      "queue_command",
@@ -132,6 +134,7 @@ func TestCommandQueueMarshalUnmarshal(t *testing.T) {
 }
 
 func TestTaskQueueMarshalUnmarshal(t *testing.T) {
+	t.Parallel()
 	q := TaskQueue{
 		SchemaVersion: 1,
 		FileType:      "queue_task",
@@ -179,6 +182,7 @@ func TestTaskQueueMarshalUnmarshal(t *testing.T) {
 }
 
 func TestNotificationQueueMarshalUnmarshal(t *testing.T) {
+	t.Parallel()
 	q := NotificationQueue{
 		SchemaVersion: 1,
 		FileType:      "queue_notification",
@@ -222,6 +226,7 @@ func TestNotificationQueueMarshalUnmarshal(t *testing.T) {
 }
 
 func TestTaskResultFileMarshalUnmarshal(t *testing.T) {
+	t.Parallel()
 	f := TaskResultFile{
 		SchemaVersion: 1,
 		FileType:      "result_task",
@@ -265,6 +270,7 @@ func TestTaskResultFileMarshalUnmarshal(t *testing.T) {
 }
 
 func TestCommandResultFileMarshalUnmarshal(t *testing.T) {
+	t.Parallel()
 	f := CommandResultFile{
 		SchemaVersion: 1,
 		FileType:      "result_command",
@@ -312,6 +318,7 @@ func TestCommandResultFileMarshalUnmarshal(t *testing.T) {
 }
 
 func TestCommandStateMarshalUnmarshal(t *testing.T) {
+	t.Parallel()
 	commitTaskID := "task_1771722180_commit01"
 	s := CommandState{
 		SchemaVersion: 1,
@@ -375,6 +382,7 @@ func TestCommandStateMarshalUnmarshal(t *testing.T) {
 }
 
 func TestCommandStateWithPhasesMarshalUnmarshal(t *testing.T) {
+	t.Parallel()
 	s := CommandState{
 		SchemaVersion: 1,
 		FileType:      "state_command",
@@ -449,6 +457,7 @@ func TestCommandStateWithPhasesMarshalUnmarshal(t *testing.T) {
 }
 
 func TestMetricsMarshalUnmarshal(t *testing.T) {
+	t.Parallel()
 	m := Metrics{
 		SchemaVersion: 1,
 		FileType:      "state_metrics",
@@ -478,6 +487,7 @@ func TestMetricsMarshalUnmarshal(t *testing.T) {
 // --- Effective* method boundary value tests ---
 
 func TestLimitsConfig_EffectiveMaxDeadLetterArchiveFiles(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		value int
@@ -490,7 +500,9 @@ func TestLimitsConfig_EffectiveMaxDeadLetterArchiveFiles(t *testing.T) {
 		{"large value returns configured", 999, 999},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			l := LimitsConfig{MaxDeadLetterArchiveFiles: tt.value}
 			if got := l.EffectiveMaxDeadLetterArchiveFiles(); got != tt.want {
 				t.Errorf("EffectiveMaxDeadLetterArchiveFiles() = %d, want %d", got, tt.want)
@@ -500,6 +512,7 @@ func TestLimitsConfig_EffectiveMaxDeadLetterArchiveFiles(t *testing.T) {
 }
 
 func TestLimitsConfig_EffectiveMaxQuarantineFiles(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		value int
@@ -511,7 +524,9 @@ func TestLimitsConfig_EffectiveMaxQuarantineFiles(t *testing.T) {
 		{"one returns configured", 1, 1},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			l := LimitsConfig{MaxQuarantineFiles: tt.value}
 			if got := l.EffectiveMaxQuarantineFiles(); got != tt.want {
 				t.Errorf("EffectiveMaxQuarantineFiles() = %d, want %d", got, tt.want)
@@ -521,6 +536,7 @@ func TestLimitsConfig_EffectiveMaxQuarantineFiles(t *testing.T) {
 }
 
 func TestCircuitBreakerConfig_EffectiveMaxConsecutiveFailures(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		value int
@@ -532,7 +548,9 @@ func TestCircuitBreakerConfig_EffectiveMaxConsecutiveFailures(t *testing.T) {
 		{"one returns configured", 1, 1},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			c := CircuitBreakerConfig{MaxConsecutiveFailures: tt.value}
 			if got := c.EffectiveMaxConsecutiveFailures(); got != tt.want {
 				t.Errorf("EffectiveMaxConsecutiveFailures() = %d, want %d", got, tt.want)
@@ -542,6 +560,7 @@ func TestCircuitBreakerConfig_EffectiveMaxConsecutiveFailures(t *testing.T) {
 }
 
 func TestCircuitBreakerConfig_EffectiveProgressTimeoutMinutes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		value int
@@ -552,7 +571,9 @@ func TestCircuitBreakerConfig_EffectiveProgressTimeoutMinutes(t *testing.T) {
 		{"custom value", 60, 60},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			c := CircuitBreakerConfig{ProgressTimeoutMinutes: tt.value}
 			if got := c.EffectiveProgressTimeoutMinutes(); got != tt.want {
 				t.Errorf("EffectiveProgressTimeoutMinutes() = %d, want %d", got, tt.want)
@@ -562,6 +583,7 @@ func TestCircuitBreakerConfig_EffectiveProgressTimeoutMinutes(t *testing.T) {
 }
 
 func TestLearningsConfig_EffectiveMaxEntries(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		value int
@@ -573,7 +595,9 @@ func TestLearningsConfig_EffectiveMaxEntries(t *testing.T) {
 		{"one returns configured", 1, 1},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			l := LearningsConfig{MaxEntries: tt.value}
 			if got := l.EffectiveMaxEntries(); got != tt.want {
 				t.Errorf("EffectiveMaxEntries() = %d, want %d", got, tt.want)
@@ -583,6 +607,7 @@ func TestLearningsConfig_EffectiveMaxEntries(t *testing.T) {
 }
 
 func TestLearningsConfig_EffectiveMaxContentLength(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		value int
@@ -594,7 +619,9 @@ func TestLearningsConfig_EffectiveMaxContentLength(t *testing.T) {
 		{"one returns configured", 1, 1},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			l := LearningsConfig{MaxContentLength: tt.value}
 			if got := l.EffectiveMaxContentLength(); got != tt.want {
 				t.Errorf("EffectiveMaxContentLength() = %d, want %d", got, tt.want)
@@ -604,6 +631,7 @@ func TestLearningsConfig_EffectiveMaxContentLength(t *testing.T) {
 }
 
 func TestLearningsConfig_EffectiveInjectCount(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		value int
@@ -615,7 +643,9 @@ func TestLearningsConfig_EffectiveInjectCount(t *testing.T) {
 		{"one returns configured", 1, 1},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			l := LearningsConfig{InjectCount: tt.value}
 			if got := l.EffectiveInjectCount(); got != tt.want {
 				t.Errorf("EffectiveInjectCount() = %d, want %d", got, tt.want)
@@ -625,6 +655,7 @@ func TestLearningsConfig_EffectiveInjectCount(t *testing.T) {
 }
 
 func TestLearningsConfig_EffectiveTTLHours(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		value int
@@ -635,7 +666,9 @@ func TestLearningsConfig_EffectiveTTLHours(t *testing.T) {
 		{"custom value", 24, 24},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			l := LearningsConfig{TTLHours: tt.value}
 			if got := l.EffectiveTTLHours(); got != tt.want {
 				t.Errorf("EffectiveTTLHours() = %d, want %d", got, tt.want)
@@ -645,6 +678,7 @@ func TestLearningsConfig_EffectiveTTLHours(t *testing.T) {
 }
 
 func TestVerificationConfig_EffectiveTimeoutSeconds(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		value int
@@ -656,7 +690,9 @@ func TestVerificationConfig_EffectiveTimeoutSeconds(t *testing.T) {
 		{"one returns configured", 1, 1},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			v := VerificationConfig{TimeoutSeconds: tt.value}
 			if got := v.EffectiveTimeoutSeconds(); got != tt.want {
 				t.Errorf("EffectiveTimeoutSeconds() = %d, want %d", got, tt.want)
@@ -666,6 +702,7 @@ func TestVerificationConfig_EffectiveTimeoutSeconds(t *testing.T) {
 }
 
 func TestVerificationConfig_EffectiveMaxRetries(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		value int
@@ -676,7 +713,9 @@ func TestVerificationConfig_EffectiveMaxRetries(t *testing.T) {
 		{"one returns configured", 1, 1},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			v := VerificationConfig{MaxRetries: tt.value}
 			if got := v.EffectiveMaxRetries(); got != tt.want {
 				t.Errorf("EffectiveMaxRetries() = %d, want %d", got, tt.want)
@@ -686,6 +725,7 @@ func TestVerificationConfig_EffectiveMaxRetries(t *testing.T) {
 }
 
 func TestWorktreeConfig_EffectiveBaseBranch(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		value string
@@ -696,7 +736,9 @@ func TestWorktreeConfig_EffectiveBaseBranch(t *testing.T) {
 		{"master returns configured", "master", "master"},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			w := WorktreeConfig{BaseBranch: tt.value}
 			if got := w.EffectiveBaseBranch(); got != tt.want {
 				t.Errorf("EffectiveBaseBranch() = %q, want %q", got, tt.want)
@@ -706,6 +748,7 @@ func TestWorktreeConfig_EffectiveBaseBranch(t *testing.T) {
 }
 
 func TestWorktreeConfig_EffectivePathPrefix(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		value string
@@ -715,7 +758,9 @@ func TestWorktreeConfig_EffectivePathPrefix(t *testing.T) {
 		{"custom returns configured", "/tmp/worktrees", "/tmp/worktrees"},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			w := WorktreeConfig{PathPrefix: tt.value}
 			if got := w.EffectivePathPrefix(); got != tt.want {
 				t.Errorf("EffectivePathPrefix() = %q, want %q", got, tt.want)
@@ -725,6 +770,7 @@ func TestWorktreeConfig_EffectivePathPrefix(t *testing.T) {
 }
 
 func TestWorktreeConfig_EffectiveMergeStrategy(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		value string
@@ -734,7 +780,9 @@ func TestWorktreeConfig_EffectiveMergeStrategy(t *testing.T) {
 		{"custom returns configured", "recursive", "recursive"},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			w := WorktreeConfig{MergeStrategy: tt.value}
 			if got := w.EffectiveMergeStrategy(); got != tt.want {
 				t.Errorf("EffectiveMergeStrategy() = %q, want %q", got, tt.want)
@@ -744,6 +792,7 @@ func TestWorktreeConfig_EffectiveMergeStrategy(t *testing.T) {
 }
 
 func TestWorktreeGCConfig_EffectiveTTLHours(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		value int
@@ -755,7 +804,9 @@ func TestWorktreeGCConfig_EffectiveTTLHours(t *testing.T) {
 		{"one returns configured", 1, 1},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			gc := WorktreeGCConfig{TTLHours: tt.value}
 			if got := gc.EffectiveTTLHours(); got != tt.want {
 				t.Errorf("EffectiveTTLHours() = %d, want %d", got, tt.want)
@@ -765,6 +816,7 @@ func TestWorktreeGCConfig_EffectiveTTLHours(t *testing.T) {
 }
 
 func TestWorktreeConfig_EffectiveGitTimeout(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		value int
@@ -777,7 +829,9 @@ func TestWorktreeConfig_EffectiveGitTimeout(t *testing.T) {
 		{"large value returns configured", 300, 300},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			w := WorktreeConfig{GitTimeoutSec: tt.value}
 			if got := w.EffectiveGitTimeout(); got != tt.want {
 				t.Errorf("EffectiveGitTimeout() = %d, want %d", got, tt.want)
@@ -787,6 +841,7 @@ func TestWorktreeConfig_EffectiveGitTimeout(t *testing.T) {
 }
 
 func TestWorktreeConfig_GitTimeoutSecYAMLRoundTrip(t *testing.T) {
+	t.Parallel()
 	yamlData := []byte(`
 worktree:
   enabled: true
@@ -818,6 +873,7 @@ worktree:
 }
 
 func TestWorktreeGCConfig_EffectiveMaxWorktrees(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		value int
@@ -829,7 +885,9 @@ func TestWorktreeGCConfig_EffectiveMaxWorktrees(t *testing.T) {
 		{"one returns configured", 1, 1},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			gc := WorktreeGCConfig{MaxWorktrees: tt.value}
 			if got := gc.EffectiveMaxWorktrees(); got != tt.want {
 				t.Errorf("EffectiveMaxWorktrees() = %d, want %d", got, tt.want)
@@ -841,6 +899,7 @@ func TestWorktreeGCConfig_EffectiveMaxWorktrees(t *testing.T) {
 // --- CommitPolicyConfig Tests ---
 
 func TestCommitPolicyConfig_EffectiveMaxFiles(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		value int
@@ -852,7 +911,9 @@ func TestCommitPolicyConfig_EffectiveMaxFiles(t *testing.T) {
 		{"one returns configured", 1, 1},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			c := CommitPolicyConfig{MaxFiles: tt.value}
 			if got := c.EffectiveMaxFiles(); got != tt.want {
 				t.Errorf("EffectiveMaxFiles() = %d, want %d", got, tt.want)
@@ -862,6 +923,7 @@ func TestCommitPolicyConfig_EffectiveMaxFiles(t *testing.T) {
 }
 
 func TestCommitPolicyConfig_RequireGitignore(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		config CommitPolicyConfig
@@ -872,7 +934,9 @@ func TestCommitPolicyConfig_RequireGitignore(t *testing.T) {
 		{"explicitly false", CommitPolicyConfig{MaxFiles: 30, RequireGitignore: false}, false},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			if got := tt.config.RequireGitignore; got != tt.want {
 				t.Errorf("RequireGitignore = %v, want %v", got, tt.want)
 			}
@@ -881,6 +945,7 @@ func TestCommitPolicyConfig_RequireGitignore(t *testing.T) {
 }
 
 func TestCommitPolicyConfig_MessagePattern(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		value string
@@ -890,7 +955,9 @@ func TestCommitPolicyConfig_MessagePattern(t *testing.T) {
 		{"custom pattern", `^\[maestro\]\s`, `^\[maestro\]\s`},
 	}
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			c := CommitPolicyConfig{MessagePattern: tt.value}
 			if got := c.MessagePattern; got != tt.want {
 				t.Errorf("MessagePattern = %q, want %q", got, tt.want)
@@ -900,6 +967,7 @@ func TestCommitPolicyConfig_MessagePattern(t *testing.T) {
 }
 
 func TestCommitPolicyConfig_YAMLRoundTrip(t *testing.T) {
+	t.Parallel()
 	yamlData := []byte(`
 worktree:
   enabled: true
@@ -934,6 +1002,7 @@ worktree:
 }
 
 func TestContinuousMarshalUnmarshal(t *testing.T) {
+	t.Parallel()
 	c := Continuous{
 		SchemaVersion:    1,
 		FileType:         "state_continuous",
@@ -965,6 +1034,7 @@ func TestContinuousMarshalUnmarshal(t *testing.T) {
 }
 
 func TestConfigTemplate_ParsesSuccessfully(t *testing.T) {
+	t.Parallel()
 	// Smoke test: verify templates/config.yaml parses into Config struct
 	data, err := os.ReadFile("../../templates/config.yaml")
 	if err != nil {
@@ -988,6 +1058,7 @@ func TestConfigTemplate_ParsesSuccessfully(t *testing.T) {
 }
 
 func TestContinuousUpdatedAt_ValueType(t *testing.T) {
+	t.Parallel()
 	// Verify UpdatedAt is a value type (string), consistent with CommandState.UpdatedAt
 	c := Continuous{
 		SchemaVersion: 1,

@@ -197,6 +197,7 @@ func callsContain(calls []string, target string) bool {
 // === M1: clear_ready=true path ===
 
 func TestExecWithClear_ClearReadyTrue_FullPath(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	// Pre-set clear_ready=true and matching PID
 	mock.userVars["clear_ready"] = "true"
@@ -250,6 +251,7 @@ func TestExecWithClear_ClearReadyTrue_FullPath(t *testing.T) {
 }
 
 func TestExecWithClear_ClearReadyTrue_ClearFails_ResetsClearReady(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	mock.userVars["clear_ready"] = "true"
 	mock.userVars["clear_ready_pid"] = "12345"
@@ -290,6 +292,7 @@ func TestExecWithClear_ClearReadyTrue_ClearFails_ResetsClearReady(t *testing.T) 
 }
 
 func TestExecWithClear_ClearReadyTrue_ProcessRestarted(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	mock.userVars["clear_ready"] = "true"
 	mock.userVars["clear_ready_pid"] = "99999" // different from current PID
@@ -324,6 +327,7 @@ func TestExecWithClear_ClearReadyTrue_ProcessRestarted(t *testing.T) {
 // === M2: ensureWorkingDir tests ===
 
 func TestEnsureWorkingDir_ControlChars(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	exec, _ := newCovExecutor(mock)
 
@@ -337,6 +341,7 @@ func TestEnsureWorkingDir_ControlChars(t *testing.T) {
 }
 
 func TestEnsureWorkingDir_EmptyPath(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	exec, _ := newCovExecutor(mock)
 
@@ -347,6 +352,7 @@ func TestEnsureWorkingDir_EmptyPath(t *testing.T) {
 }
 
 func TestEnsureWorkingDir_SameCWD(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	mock.userVars["cwd"] = "/project/worktree1"
 	exec, _ := newCovExecutor(mock)
@@ -362,6 +368,7 @@ func TestEnsureWorkingDir_SameCWD(t *testing.T) {
 }
 
 func TestEnsureWorkingDir_ContextCancelled(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	// waitForShell will detect cancelled context
 	mock.getCmdSeq = []mockResp{{val: "claude"}}
@@ -378,6 +385,7 @@ func TestEnsureWorkingDir_ContextCancelled(t *testing.T) {
 }
 
 func TestEnsureWorkingDir_RespawnAndRelaunch(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	// waitForShell: pane returns to shell after respawn
 	mock.getCmdSeq = []mockResp{{val: "bash"}}
@@ -428,6 +436,7 @@ func TestEnsureWorkingDir_RespawnAndRelaunch(t *testing.T) {
 }
 
 func TestEnsureWorkingDir_RespawnPaneFails(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	mock.respawnPaneErr = fmt.Errorf("tmux respawn error")
 	exec, _ := newCovExecutor(mock)
@@ -444,6 +453,7 @@ func TestEnsureWorkingDir_RespawnPaneFails(t *testing.T) {
 // === M3: clearAndConfirm retry tests ===
 
 func TestClearAndConfirm_SendCommandFailsAllAttempts(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	// All 3 attempts fail
 	mock.sendCmdErrSeq = []error{
@@ -466,6 +476,7 @@ func TestClearAndConfirm_SendCommandFailsAllAttempts(t *testing.T) {
 }
 
 func TestClearAndConfirm_ContextCancelledBeforeAttempt(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	exec, _ := newCovExecutor(mock)
 
@@ -482,6 +493,7 @@ func TestClearAndConfirm_ContextCancelledBeforeAttempt(t *testing.T) {
 }
 
 func TestClearAndConfirm_NotConfirmedAfterMaxAttempts(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	// SendCommand succeeds but content always shows "/clear" (not processed)
 	mock.captureJoinedSeq = []mockResp{
@@ -510,6 +522,7 @@ func TestClearAndConfirm_NotConfirmedAfterMaxAttempts(t *testing.T) {
 }
 
 func TestClearAndConfirm_SuccessOnFirstAttempt(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	// Pre-clear hash, then poll returns different stable content
 	mock.captureJoinedSeq = []mockResp{
@@ -529,6 +542,7 @@ func TestClearAndConfirm_SuccessOnFirstAttempt(t *testing.T) {
 }
 
 func TestClearAndConfirm_SendKeysFailsRetries(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	// SendCommand succeeds, but SendKeys (second Enter) fails
 	mock.sendKeysErr = fmt.Errorf("sendkeys error")
@@ -549,6 +563,7 @@ func TestClearAndConfirm_SendKeysFailsRetries(t *testing.T) {
 // === M4: waitStable / waitReady tests ===
 
 func TestWaitStable_ContentStable_PromptReady(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	// Two CapturePaneJoined calls return same content (stable)
 	mock.captureJoinedSeq = []mockResp{
@@ -569,6 +584,7 @@ func TestWaitStable_ContentStable_PromptReady(t *testing.T) {
 }
 
 func TestWaitStable_ContentUnstable(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	// Two CapturePaneJoined calls return different content (unstable)
 	mock.captureJoinedSeq = []mockResp{
@@ -588,6 +604,7 @@ func TestWaitStable_ContentUnstable(t *testing.T) {
 }
 
 func TestWaitStable_CaptureError_FirstCapture(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	mock.captureJoinedSeq = []mockResp{
 		{err: fmt.Errorf("capture failed")},
@@ -605,6 +622,7 @@ func TestWaitStable_CaptureError_FirstCapture(t *testing.T) {
 }
 
 func TestWaitStable_CaptureError_SecondCapture(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	mock.captureJoinedSeq = []mockResp{
 		{val: "content"},
@@ -620,6 +638,7 @@ func TestWaitStable_CaptureError_SecondCapture(t *testing.T) {
 }
 
 func TestWaitStable_SoftPromptCheck_NoPrompt(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	// Stable content
 	mock.captureJoinedSeq = []mockResp{
@@ -641,6 +660,7 @@ func TestWaitStable_SoftPromptCheck_NoPrompt(t *testing.T) {
 }
 
 func TestWaitStable_HardPromptCheck_NoPrompt(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	mock.captureJoinedSeq = []mockResp{
 		{val: "stable"},
@@ -663,6 +683,7 @@ func TestWaitStable_HardPromptCheck_NoPrompt(t *testing.T) {
 }
 
 func TestWaitStable_SoftPromptCheck_CaptureError(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	mock.captureJoinedSeq = []mockResp{
 		{val: "stable"},
@@ -683,6 +704,7 @@ func TestWaitStable_SoftPromptCheck_CaptureError(t *testing.T) {
 }
 
 func TestWaitStable_ContextCancelled(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	exec, _ := newCovExecutor(mock)
 
@@ -699,6 +721,7 @@ func TestWaitStable_ContextCancelled(t *testing.T) {
 }
 
 func TestWaitReady_PromptDetectedImmediately(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	mock.capturePaneSeq = []mockResp{
 		{val: "output\n ❯ \n"},
@@ -713,6 +736,7 @@ func TestWaitReady_PromptDetectedImmediately(t *testing.T) {
 }
 
 func TestWaitReady_PromptDetectedAfterRetries(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	mock.capturePaneSeq = []mockResp{
 		{val: "not ready yet"},     // attempt 0: no prompt
@@ -729,6 +753,7 @@ func TestWaitReady_PromptDetectedAfterRetries(t *testing.T) {
 }
 
 func TestWaitReady_FallbackProceeds(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	// No prompt ever detected → fallback (proceeds with warning)
 	mock.capturePaneSeq = []mockResp{
@@ -745,6 +770,7 @@ func TestWaitReady_FallbackProceeds(t *testing.T) {
 }
 
 func TestWaitReady_CaptureErrorsExhausted(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	// All capture attempts fail
 	mock.capturePaneSeq = []mockResp{
@@ -763,6 +789,7 @@ func TestWaitReady_CaptureErrorsExhausted(t *testing.T) {
 }
 
 func TestWaitReady_ContextCancelled(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	mock.capturePaneSeq = []mockResp{
 		{val: "not ready"},
@@ -779,6 +806,7 @@ func TestWaitReady_ContextCancelled(t *testing.T) {
 }
 
 func TestWaitReadyStrict_PromptDetected(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	mock.capturePaneSeq = []mockResp{
 		{val: "output\n ❯ \n"},
@@ -793,6 +821,7 @@ func TestWaitReadyStrict_PromptDetected(t *testing.T) {
 }
 
 func TestWaitReadyStrict_NoPrompt_Fails(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	mock.capturePaneSeq = []mockResp{
 		{val: "no prompt ever"},
@@ -812,6 +841,7 @@ func TestWaitReadyStrict_NoPrompt_Fails(t *testing.T) {
 // === M5: waitForShell tests ===
 
 func TestWaitForShell_Immediate(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	mock.getCmdSeq = []mockResp{{val: "bash"}}
 	mock.isShellSeq = []bool{true}
@@ -825,6 +855,7 @@ func TestWaitForShell_Immediate(t *testing.T) {
 }
 
 func TestWaitForShell_ShellAfterPolls(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	// Claude running for 2 polls, then shell detected
 	mock.getCmdSeq = []mockResp{
@@ -845,6 +876,7 @@ func TestWaitForShell_ShellAfterPolls(t *testing.T) {
 }
 
 func TestWaitForShell_ConsecutiveErrors(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	// 5 consecutive errors → failure
 	mock.getCmdSeq = []mockResp{
@@ -869,6 +901,7 @@ func TestWaitForShell_ConsecutiveErrors(t *testing.T) {
 }
 
 func TestWaitForShell_ErrorRecovery(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	// 3 errors, then success (under threshold of 5)
 	mock.getCmdSeq = []mockResp{
@@ -890,6 +923,7 @@ func TestWaitForShell_ErrorRecovery(t *testing.T) {
 }
 
 func TestWaitForShell_ContextCancelled(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	// Never returns shell → would loop forever without context cancel
 	mock.getCmdSeq = []mockResp{{val: "claude"}}
@@ -907,6 +941,7 @@ func TestWaitForShell_ContextCancelled(t *testing.T) {
 }
 
 func TestWaitForShell_TimeoutViaContext(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	// Never returns shell → context timeout triggers before maxAttempts
 	mock.getCmdSeq = []mockResp{{val: "claude"}}
@@ -929,6 +964,7 @@ func TestWaitForShell_TimeoutViaContext(t *testing.T) {
 
 // M1 supplement: clear_ready=true with VerdictBusy after clear
 func TestExecWithClear_ClearReadyTrue_BusyAfterClear(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	mock.userVars["clear_ready"] = "true"
 	mock.userVars["clear_ready_pid"] = "12345"
@@ -984,6 +1020,7 @@ func TestExecWithClear_ClearReadyTrue_BusyAfterClear(t *testing.T) {
 
 // M1 supplement: clear_ready=true with VerdictUndecided returns sentinel error
 func TestExecWithClear_ClearReadyTrue_UndecidedAfterClear(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	mock.userVars["clear_ready"] = "true"
 	mock.userVars["clear_ready_pid"] = "12345"
@@ -1024,6 +1061,7 @@ func TestExecWithClear_ClearReadyTrue_UndecidedAfterClear(t *testing.T) {
 
 // M2 supplement: clear_ready_pid also reset after CWD change
 func TestEnsureWorkingDir_ResetsClearReadyPID(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	mock.userVars["clear_ready"] = "true"
 	mock.userVars["clear_ready_pid"] = "99999"
@@ -1051,6 +1089,7 @@ func TestEnsureWorkingDir_ResetsClearReadyPID(t *testing.T) {
 
 // M3 supplement: pre-capture failure fallback (preClearHashValid=false)
 func TestClearAndConfirm_PreCaptureFailure_FallbackToStricter(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	// Pre-clear capture fails → preClearHashValid=false
 	// Then poll returns stable content 3 times (stricter fallback requires 3 stable polls)
@@ -1073,6 +1112,7 @@ func TestClearAndConfirm_PreCaptureFailure_FallbackToStricter(t *testing.T) {
 
 // M4 supplement: waitStable hard prompt check with CapturePane error
 func TestWaitStable_HardPromptCheck_CaptureError(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	mock.captureJoinedSeq = []mockResp{
 		{val: "stable"},
@@ -1096,6 +1136,7 @@ func TestWaitStable_HardPromptCheck_CaptureError(t *testing.T) {
 
 // M4 supplement: waitReadyStrict capture errors exhausted
 func TestWaitReadyStrict_CaptureErrorsExhausted(t *testing.T) {
+	t.Parallel()
 	mock := newCovMock()
 	mock.capturePaneSeq = []mockResp{
 		{err: fmt.Errorf("err")},
@@ -1113,6 +1154,7 @@ func TestWaitReadyStrict_CaptureErrorsExhausted(t *testing.T) {
 }
 
 func TestSleepCtx_NormalCompletion(t *testing.T) {
+	t.Parallel()
 	err := sleepCtx(context.Background(), 1*time.Millisecond)
 	if err != nil {
 		t.Fatalf("expected nil, got: %v", err)
@@ -1120,6 +1162,7 @@ func TestSleepCtx_NormalCompletion(t *testing.T) {
 }
 
 func TestSleepCtx_ContextCancelled(t *testing.T) {
+	t.Parallel()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
