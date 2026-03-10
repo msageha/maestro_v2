@@ -210,6 +210,45 @@ func TestSafePath_SymlinkEscapeNonExistentLeaf(t *testing.T) {
 	}
 }
 
+func TestValidateFilePath(t *testing.T) {
+	valid := []string{
+		"/tmp/tasks.yaml",
+		"tasks.yaml",
+		"sub/tasks.yaml",
+		"/absolute/path/file.txt",
+		"relative/path/file.txt",
+	}
+	for _, path := range valid {
+		result, err := ValidateFilePath(path)
+		if err != nil {
+			t.Errorf("ValidateFilePath(%q) returned error: %v", path, err)
+		}
+		if result != filepath.Clean(path) {
+			t.Errorf("ValidateFilePath(%q) = %q, want %q", path, result, filepath.Clean(path))
+		}
+	}
+}
+
+func TestValidateFilePath_Invalid(t *testing.T) {
+	invalid := []struct {
+		path string
+		desc string
+	}{
+		{"", "empty string"},
+		{"file\x00.txt", "null byte"},
+		{"../etc/passwd", "parent traversal"},
+		{"../../etc/passwd", "double parent traversal"},
+		{"sub/../../etc/passwd", "nested traversal"},
+		{"..", "bare parent"},
+	}
+	for _, tc := range invalid {
+		_, err := ValidateFilePath(tc.path)
+		if err == nil {
+			t.Errorf("ValidateFilePath(%q) [%s] should have returned error", tc.path, tc.desc)
+		}
+	}
+}
+
 func TestSafePath_NonExistentTarget(t *testing.T) {
 	// SafePath should return the lexically-checked path for non-existent targets
 	tmp := t.TempDir()
