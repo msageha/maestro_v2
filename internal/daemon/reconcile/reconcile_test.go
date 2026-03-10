@@ -1913,6 +1913,305 @@ func TestR6FillTimeout_NoExecutorFactory_NoNotification(t *testing.T) {
 	}
 }
 
+// --- R1 RetryEnqueueFailed tests ---
+
+func TestR1ResultQueue_RetryEnqueueFailed_AlreadyInQueue(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// State file with RetryEnqueueFailed entry
+	state := model.CommandState{
+		CommandID:  "cmd1",
+		PlanStatus: model.PlanStatusSealed,
+		RetryEnqueueFailed: map[string]string{
+			"retry_task1": "worker1",
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	// Queue already has the retry task
+	tq := model.TaskQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_task",
+		Tasks: []model.Task{
+			{ID: "retry_task1", CommandID: "cmd1", Status: model.StatusPending, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "worker1.yaml"), tq)
+
+	run := newRun(&deps)
+	outcome := R1ResultQueue{}.Apply(run)
+
+	// Should produce 1 repair (cleared entry)
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
+	}
+	if outcome.Repairs[0].Detail != "retry_enqueue_failed cleared (task already in queue)" {
+		t.Errorf("unexpected detail: %s", outcome.Repairs[0].Detail)
+	}
+
+	// Verify state file: RetryEnqueueFailed entry should be removed
+	data, _ := os.ReadFile(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"))
+	var updated model.CommandState
+	yamlv3.Unmarshal(data, &updated)
+	if len(updated.RetryEnqueueFailed) != 0 {
+		t.Errorf("expected RetryEnqueueFailed to be empty, got %v", updated.RetryEnqueueFailed)
+	}
+	if updated.LastReconciledAt == nil {
+		t.Error("expected LastReconciledAt to be set")
+	}
+}
+
+func TestR1ResultQueue_RetryEnqueueFailed_MaxAttemptsExceeded(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// State with retry count >= maxRetryEnqueueAttempts (3)
+	state := model.CommandState{
+		CommandID:  "cmd1",
+		PlanStatus: model.PlanStatusSealed,
+		RetryEnqueueFailed: map[string]string{
+			"retry_task1": formatRetryEnqueueValue("worker1", 3),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	// Empty queue (task not present)
+	tq := model.TaskQueue{SchemaVersion: 1, FileType: "queue_task"}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "worker1.yaml"), tq)
+
+	run := newRun(&deps)
+	outcome := R1ResultQueue{}.Apply(run)
+
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
+	}
+	if outcome.Repairs[0].Detail != fmt.Sprintf("retry_enqueue_failed max attempts (%d) exceeded, marked failed", 3) {
+		t.Errorf("unexpected detail: %s", outcome.Repairs[0].Detail)
+	}
+
+	// Verify state: entry removed, task marked failed
+	data, _ := os.ReadFile(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"))
+	var updated model.CommandState
+	yamlv3.Unmarshal(data, &updated)
+	if len(updated.RetryEnqueueFailed) != 0 {
+		t.Errorf("expected RetryEnqueueFailed empty, got %v", updated.RetryEnqueueFailed)
+	}
+	if updated.TaskStates["retry_task1"] != model.StatusFailed {
+		t.Errorf("expected task status failed, got %s", updated.TaskStates["retry_task1"])
+	}
+}
+
+func TestR1ResultQueue_RetryEnqueueFailed_OriginalTaskNotFound(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// State with retry entry (count 0, below max)
+	state := model.CommandState{
+		CommandID:  "cmd1",
+		PlanStatus: model.PlanStatusSealed,
+		RetryEnqueueFailed: map[string]string{
+			"retry_task1": "worker1",
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	// Queue has same-command task but non-terminal (pending), so r1FindOriginalTask returns nil
+	tq := model.TaskQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_task",
+		Tasks: []model.Task{
+			{ID: "task_pending", CommandID: "cmd1", Status: model.StatusPending, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "worker1.yaml"), tq)
+
+	run := newRun(&deps)
+	outcome := R1ResultQueue{}.Apply(run)
+
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
+	}
+	if outcome.Repairs[0].Detail != "retry_enqueue_failed original task not found, marked failed" {
+		t.Errorf("unexpected detail: %s", outcome.Repairs[0].Detail)
+	}
+
+	// Verify state: entry removed, task marked failed
+	data, _ := os.ReadFile(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"))
+	var updated model.CommandState
+	yamlv3.Unmarshal(data, &updated)
+	if len(updated.RetryEnqueueFailed) != 0 {
+		t.Errorf("expected RetryEnqueueFailed empty, got %v", updated.RetryEnqueueFailed)
+	}
+	if updated.TaskStates["retry_task1"] != model.StatusFailed {
+		t.Errorf("expected task status failed, got %s", updated.TaskStates["retry_task1"])
+	}
+}
+
+func TestR1ResultQueue_RetryEnqueueFailed_ReenqueueSuccess(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	fixedTime := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
+	deps := newTestDeps(t, maestroDir)
+	setClock(&deps, fixedTime)
+	now := fixedTime.Format(time.RFC3339)
+
+	// State with retry entry
+	state := model.CommandState{
+		CommandID:  "cmd1",
+		PlanStatus: model.PlanStatusSealed,
+		RetryEnqueueFailed: map[string]string{
+			"retry_task1": "worker1",
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	// Queue with a terminal (completed) original task for cmd1, but NOT retry_task1
+	tq := model.TaskQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_task",
+		Tasks: []model.Task{
+			{
+				ID:        "original_task1",
+				CommandID: "cmd1",
+				Status:    model.StatusCompleted,
+				Content:   "do something",
+				Purpose:   "test purpose",
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "worker1.yaml"), tq)
+
+	run := newRun(&deps)
+	outcome := R1ResultQueue{}.Apply(run)
+
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
+	}
+	if outcome.Repairs[0].Detail != "retry_enqueue_failed re-enqueued to worker1" {
+		t.Errorf("unexpected detail: %s", outcome.Repairs[0].Detail)
+	}
+
+	// Verify state: entry removed
+	stateData, _ := os.ReadFile(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"))
+	var updatedState model.CommandState
+	yamlv3.Unmarshal(stateData, &updatedState)
+	if len(updatedState.RetryEnqueueFailed) != 0 {
+		t.Errorf("expected RetryEnqueueFailed empty, got %v", updatedState.RetryEnqueueFailed)
+	}
+
+	// Verify queue: retry task added with correct fields
+	queueData, _ := os.ReadFile(filepath.Join(maestroDir, "queue", "worker1.yaml"))
+	var updatedQueue model.TaskQueue
+	yamlv3.Unmarshal(queueData, &updatedQueue)
+	if len(updatedQueue.Tasks) != 2 {
+		t.Fatalf("expected 2 tasks in queue, got %d", len(updatedQueue.Tasks))
+	}
+	retryTask := updatedQueue.Tasks[1]
+	if retryTask.ID != "retry_task1" {
+		t.Errorf("expected retry task ID retry_task1, got %s", retryTask.ID)
+	}
+	if retryTask.Status != model.StatusPending {
+		t.Errorf("expected pending status, got %s", retryTask.Status)
+	}
+	if retryTask.ExecutionRetries != 1 {
+		t.Errorf("expected ExecutionRetries=1, got %d", retryTask.ExecutionRetries)
+	}
+	if retryTask.OriginalTaskID != "original_task1" {
+		t.Errorf("expected OriginalTaskID=original_task1, got %s", retryTask.OriginalTaskID)
+	}
+	if retryTask.LeaseOwner != nil {
+		t.Error("expected LeaseOwner nil")
+	}
+	if retryTask.Attempts != 0 {
+		t.Errorf("expected Attempts=0, got %d", retryTask.Attempts)
+	}
+}
+
+func TestR1ResultQueue_RetryEnqueueFailed_ReenqueueFails(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("skipping: running as root")
+	}
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// State with retry entry at count 1 (below max)
+	state := model.CommandState{
+		CommandID:  "cmd1",
+		PlanStatus: model.PlanStatusSealed,
+		RetryEnqueueFailed: map[string]string{
+			"retry_task1": formatRetryEnqueueValue("worker1", 1),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	// Queue with a terminal original task for cmd1 (so r1FindOriginalTask succeeds)
+	tq := model.TaskQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_task",
+		Tasks: []model.Task{
+			{
+				ID:        "original_task1",
+				CommandID: "cmd1",
+				Status:    model.StatusCompleted,
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "worker1.yaml"), tq)
+
+	// Make queue directory read-only so AtomicWrite (CreateTemp) fails
+	queueDir := filepath.Join(maestroDir, "queue")
+	os.Chmod(queueDir, 0555)
+	defer os.Chmod(queueDir, 0755)
+
+	run := newRun(&deps)
+	outcome := R1ResultQueue{}.Apply(run)
+
+	// Re-enqueue fails → no repair emitted (only logged), but state is updated
+	// The code increments retry count and continues; no Repair is appended for failures
+	if len(outcome.Repairs) != 0 {
+		t.Errorf("expected 0 repairs (re-enqueue failure doesn't emit repair), got %d", len(outcome.Repairs))
+	}
+
+	// Restore permissions to read state file
+	os.Chmod(queueDir, 0755)
+
+	// Verify state: entry kept with incremented count
+	stateData, _ := os.ReadFile(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"))
+	var updatedState model.CommandState
+	yamlv3.Unmarshal(stateData, &updatedState)
+	if len(updatedState.RetryEnqueueFailed) != 1 {
+		t.Fatalf("expected 1 RetryEnqueueFailed entry, got %d", len(updatedState.RetryEnqueueFailed))
+	}
+	value := updatedState.RetryEnqueueFailed["retry_task1"]
+	wantValue := formatRetryEnqueueValue("worker1", 2)
+	if value != wantValue {
+		t.Errorf("expected RetryEnqueueFailed value %q, got %q", wantValue, value)
+	}
+}
+
 // --- Run helper method tests ---
 
 func TestLoadState_CorruptedYAML(t *testing.T) {
