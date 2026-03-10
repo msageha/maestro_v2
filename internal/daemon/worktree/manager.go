@@ -1673,7 +1673,7 @@ func (wm *Manager) checkCommitPolicy(worktreePath, message, stagedNul string) []
 	}
 
 	// Check 1: Maximum files per commit (MaxFiles=0 means unlimited)
-	maxFiles := policy.MaxFiles
+	maxFiles := policy.EffectiveMaxFiles()
 	if maxFiles > 0 && len(stagedFiles) > maxFiles {
 		violations = append(violations, CommitPolicyViolation{
 			Code:    "max_files_exceeded",

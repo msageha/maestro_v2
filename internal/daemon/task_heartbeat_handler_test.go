@@ -34,8 +34,8 @@ func newTestHeartbeatHandler(t *testing.T, d *Daemon) *TaskHeartbeatHandler {
 	if d.config.Watcher.DispatchLeaseSec == 0 {
 		d.config.Watcher.DispatchLeaseSec = 120
 	}
-	if d.config.Watcher.MaxInProgressMin == 0 {
-		d.config.Watcher.MaxInProgressMin = 60
+	if d.config.Watcher.MaxInProgressMin == nil {
+		d.config.Watcher.MaxInProgressMin = model.IntPtr(60)
 	}
 	// Initialize handler if not set (newTestDaemon doesn't call Run)
 	if d.handler == nil {
@@ -195,7 +195,7 @@ func TestHeartbeat_MaxRuntimeExceeded(t *testing.T) {
 	expiresAt := time.Now().Add(30 * time.Second).Format(time.RFC3339)
 	owner := "daemon:12345"
 	// Task created more than max_in_progress_min ago
-	createdAt := time.Now().Add(-time.Duration(d.config.Watcher.MaxInProgressMin+1) * time.Minute).Format(time.RFC3339)
+	createdAt := time.Now().Add(-time.Duration(*d.config.Watcher.MaxInProgressMin+1) * time.Minute).Format(time.RFC3339)
 
 	tq := model.TaskQueue{
 		SchemaVersion: 1,
@@ -584,7 +584,7 @@ func TestHeartbeatErrorMatrix(t *testing.T) {
 				expiresAt := time.Now().Add(30 * time.Second).Format(time.RFC3339)
 				owner := "daemon:12345"
 				// Task created beyond max_in_progress_min
-				createdAt := time.Now().Add(-time.Duration(d.config.Watcher.MaxInProgressMin+10) * time.Minute).Format(time.RFC3339)
+				createdAt := time.Now().Add(-time.Duration(*d.config.Watcher.MaxInProgressMin+10) * time.Minute).Format(time.RFC3339)
 				tq := model.TaskQueue{
 					SchemaVersion: 1,
 					FileType:      "queue_task",

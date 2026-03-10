@@ -219,6 +219,7 @@ func TestResolveBlockedByViaLineage(t *testing.T) {
 		blockedBy []string
 		lineage   map[string]string
 		want      []string
+		wantErr   bool
 	}{
 		{
 			name:      "no lineage",
@@ -244,12 +245,22 @@ func TestResolveBlockedByViaLineage(t *testing.T) {
 			lineage:   map[string]string{"t1_v2": "t1"},
 			want:      []string{"t1_v2", "t2"},
 		},
+		{
+			name:      "cycle returns error",
+			blockedBy: []string{"t1"},
+			lineage:   map[string]string{"t2": "t1", "t1": "t2"},
+			wantErr:   true,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := resolveBlockedByViaLineage(tt.blockedBy, tt.lineage)
-			if !sliceEqual(got, tt.want) {
+			got, err := resolveBlockedByViaLineage(tt.blockedBy, tt.lineage)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("resolveBlockedByViaLineage error = %v, wantErr = %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && !sliceEqual(got, tt.want) {
 				t.Errorf("resolveBlockedByViaLineage = %v, want %v", got, tt.want)
 			}
 		})
@@ -262,6 +273,7 @@ func TestGetLatestDescendant(t *testing.T) {
 		taskID  string
 		lineage map[string]string
 		want    string
+		wantErr bool
 	}{
 		{
 			name:    "no descendants",
@@ -282,10 +294,10 @@ func TestGetLatestDescendant(t *testing.T) {
 			want:    "t1_v3",
 		},
 		{
-			name:    "cycle protection",
+			name:    "cycle returns error",
 			taskID:  "t1",
 			lineage: map[string]string{"t2": "t1", "t1": "t2"},
-			want:    "t1", // cycle detected on revisit, returns current
+			wantErr: true,
 		},
 	}
 
@@ -296,9 +308,18 @@ func TestGetLatestDescendant(t *testing.T) {
 			for newID, oldID := range tt.lineage {
 				reverseLineage[oldID] = newID
 			}
-			got := getLatestDescendant(tt.taskID, reverseLineage)
-			if got != tt.want {
+			got, err := getLatestDescendant(tt.taskID, reverseLineage)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("getLatestDescendant(%q) error = %v, wantErr = %v", tt.taskID, err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && got != tt.want {
 				t.Errorf("getLatestDescendant(%q) = %q, want %q", tt.taskID, got, tt.want)
+			}
+			if tt.wantErr && err != nil {
+				if !strings.Contains(err.Error(), "lineage cycle detected") {
+					t.Errorf("error = %q, want to contain %q", err.Error(), "lineage cycle detected")
+				}
 			}
 		})
 	}

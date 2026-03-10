@@ -12,7 +12,7 @@ import (
 func newTestLeaseManager() *LeaseManager {
 	return NewLeaseManager(model.WatcherConfig{
 		DispatchLeaseSec: 300,
-		MaxInProgressMin: 60,
+		MaxInProgressMin: model.IntPtr(60),
 	}, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
 }
 

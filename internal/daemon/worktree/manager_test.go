@@ -71,8 +71,8 @@ func newTestWorktreeManager(t *testing.T, projectRoot string) *Manager {
 		CleanupOnFailure: false,
 		GC: model.WorktreeGCConfig{
 			Enabled:      true,
-			TTLHours:     24,
-			MaxWorktrees: 32,
+			TTLHours:     model.IntPtr(24),
+			MaxWorktrees: model.IntPtr(32),
 		},
 		CommitPolicy: model.CommitPolicyConfig{
 			// Zero-valued: no enforcement (MaxFiles=0 means unlimited,
@@ -453,7 +453,7 @@ func TestGC(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Set max_worktrees to 1 so the second one triggers GC
-	wm.config.GC.MaxWorktrees = 1
+	wm.config.GC.MaxWorktrees = model.IntPtr(1)
 
 	if err := wm.CreateForCommand("cmd_gc_001", []string{"worker1"}); err != nil {
 		t.Fatal(err)
@@ -1544,7 +1544,7 @@ func TestGitTimeout_Default(t *testing.T) {
 func TestGitTimeout_Custom(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
-	wm.config.GitTimeoutSec = 30
+	wm.config.GitTimeoutSec = model.IntPtr(30)
 
 	timeout := wm.gitTimeout()
 	if timeout != 30*time.Second {
@@ -1606,7 +1606,7 @@ func TestEffectiveGitTimeout_Default(t *testing.T) {
 }
 
 func TestEffectiveGitTimeout_Custom(t *testing.T) {
-	cfg := model.WorktreeConfig{GitTimeoutSec: 60}
+	cfg := model.WorktreeConfig{GitTimeoutSec: model.IntPtr(60)}
 	if cfg.EffectiveGitTimeout() != 60 {
 		t.Errorf("custom EffectiveGitTimeout = %d, want 60", cfg.EffectiveGitTimeout())
 	}
@@ -1619,7 +1619,7 @@ func TestEffectiveGitTimeout_Custom(t *testing.T) {
 func TestCommitWorkerChanges_MaxFilesExceeded(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
-	wm.config.CommitPolicy.MaxFiles = 3 // Set a low limit for testing
+	wm.config.CommitPolicy.MaxFiles = model.IntPtr(3) // Set a low limit for testing
 
 	if err := wm.CreateForCommand("cmd_maxfiles", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
@@ -1652,7 +1652,7 @@ func TestCommitWorkerChanges_MaxFilesExceeded(t *testing.T) {
 func TestCommitWorkerChanges_MaxFilesWithinLimit(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
-	wm.config.CommitPolicy.MaxFiles = 5
+	wm.config.CommitPolicy.MaxFiles = model.IntPtr(5)
 
 	if err := wm.CreateForCommand("cmd_maxfiles_ok", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
@@ -1809,7 +1809,7 @@ func TestCommitWorkerChanges_RequireGitignoreDisabled(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 	// Explicitly set a non-zero policy with RequireGitignore=false
 	wm.config.CommitPolicy = model.CommitPolicyConfig{
-		MaxFiles:         30,
+		MaxFiles:         model.IntPtr(30),
 		RequireGitignore: false,
 		MessagePattern:   `^\[maestro\]\s`,
 	}
@@ -1841,7 +1841,7 @@ func TestCheckCommitPolicy_Unit(t *testing.T) {
 
 	t.Run("all_checks_pass", func(t *testing.T) {
 		wm := newTestWorktreeManager(t, projectRoot)
-		wm.config.CommitPolicy.MaxFiles = 30
+		wm.config.CommitPolicy.MaxFiles = model.IntPtr(30)
 		wm.config.CommitPolicy.MessagePattern = `^\[maestro\]\s`
 
 		stagedNul := "file1.go\x00file2.go\x00"
@@ -1853,7 +1853,7 @@ func TestCheckCommitPolicy_Unit(t *testing.T) {
 
 	t.Run("max_files_exceeded", func(t *testing.T) {
 		wm := newTestWorktreeManager(t, projectRoot)
-		wm.config.CommitPolicy.MaxFiles = 2
+		wm.config.CommitPolicy.MaxFiles = model.IntPtr(2)
 		wm.config.CommitPolicy.MessagePattern = `^\[maestro\]\s`
 
 		stagedNul := "a.go\x00b.go\x00c.go\x00"
@@ -1865,7 +1865,7 @@ func TestCheckCommitPolicy_Unit(t *testing.T) {
 
 	t.Run("message_format_invalid", func(t *testing.T) {
 		wm := newTestWorktreeManager(t, projectRoot)
-		wm.config.CommitPolicy.MaxFiles = 30
+		wm.config.CommitPolicy.MaxFiles = model.IntPtr(30)
 		wm.config.CommitPolicy.MessagePattern = `^\[maestro\]\s`
 
 		stagedNul := "file.go\x00"
@@ -1877,7 +1877,7 @@ func TestCheckCommitPolicy_Unit(t *testing.T) {
 
 	t.Run("multiple_violations", func(t *testing.T) {
 		wm := newTestWorktreeManager(t, projectRoot)
-		wm.config.CommitPolicy.MaxFiles = 1
+		wm.config.CommitPolicy.MaxFiles = model.IntPtr(1)
 		wm.config.CommitPolicy.RequireGitignore = true
 		wm.config.CommitPolicy.MessagePattern = `^\[maestro\]\s`
 
