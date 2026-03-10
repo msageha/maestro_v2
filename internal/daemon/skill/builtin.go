@@ -1,6 +1,7 @@
 package skill
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 )
@@ -96,29 +97,49 @@ func ReadBuiltinSkillsForRole(fsys fs.FS, role string) ([]SkillContent, error) {
 }
 
 // ReadBuiltinSkillByName reads a single builtin skill by name from the embedded FS.
-func ReadBuiltinSkillByName(fsys fs.FS, skillName string) (SkillContent, error) {
+// It searches in role-specific directory first, then falls back to "share".
+// If role is empty, it defaults to "share".
+func ReadBuiltinSkillByName(fsys fs.FS, skillName, role string) (SkillContent, error) {
 	if !isValidIdentifier(skillName) {
 		return SkillContent{}, fmt.Errorf("invalid skill name: %q", skillName)
 	}
 
-	path := "skills/share/" + skillName + "/SKILL.md"
-	data, err := fs.ReadFile(fsys, path)
-	if err != nil {
-		return SkillContent{}, fmt.Errorf("read builtin skill %q: %w", skillName, err)
+	if role == "" {
+		role = "share"
 	}
 
-	meta, body, err := parseFrontmatter(string(data))
-	if err != nil {
-		return SkillContent{}, fmt.Errorf("parse builtin skill %q: %w", skillName, err)
+	// Try role-specific path first, then fall back to share.
+	candidates := []string{
+		"skills/" + role + "/" + skillName + "/SKILL.md",
+	}
+	if role != "share" {
+		candidates = append(candidates, "skills/share/"+skillName+"/SKILL.md")
 	}
 
-	meta.ID = skillName
-	if meta.Name == "" {
-		meta.Name = skillName
+	for _, path := range candidates {
+		data, err := fs.ReadFile(fsys, path)
+		if err != nil {
+			if errors.Is(err, fs.ErrNotExist) {
+				continue
+			}
+			return SkillContent{}, fmt.Errorf("read builtin skill %q: %w", skillName, err)
+		}
+
+		meta, body, err := parseFrontmatter(string(data))
+		if err != nil {
+			return SkillContent{}, fmt.Errorf("parse builtin skill %q: %w", skillName, err)
+		}
+
+		meta.ID = skillName
+		if meta.Name == "" {
+			meta.Name = skillName
+		}
+
+		return SkillContent{
+			SkillMetadata: meta,
+			Body:          body,
+		}, nil
 	}
 
-	return SkillContent{
-		SkillMetadata: meta,
-		Body:          body,
-	}, nil
+	return SkillContent{}, fmt.Errorf("read builtin skill %q: %w", skillName, fs.ErrNotExist)
 }

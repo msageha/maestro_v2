@@ -5,6 +5,7 @@ package skill
 import (
 	"bufio"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -297,8 +298,11 @@ func ReadSkillWithRole(skillsDir, skillName, role string) (SkillContent, error) 
 
 // ListSkillsWithRole lists skill metadata from role-specific, shared, and flat directories.
 // When duplicates exist, the role-specific version takes priority over shared, which
-// takes priority over flat.
-func ListSkillsWithRole(skillsDir, role string) ([]SkillMetadata, error) {
+// takes priority over flat. Parse errors are logged as warnings and the skill is skipped.
+func ListSkillsWithRole(skillsDir, role string, logger *slog.Logger) ([]SkillMetadata, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	seen := make(map[string]struct{})
 	var skills []SkillMetadata
 
@@ -332,10 +336,12 @@ func ListSkillsWithRole(skillsDir, role string) ([]SkillMetadata, error) {
 			path := filepath.Join(dir, name, "SKILL.md")
 			data, err := os.ReadFile(path)
 			if err != nil {
+				logger.Warn("ListSkillsWithRole: failed to read SKILL.md", "path", path, "error", err)
 				continue
 			}
 			meta, _, err := parseFrontmatter(string(data))
 			if err != nil {
+				logger.Warn("ListSkillsWithRole: failed to parse frontmatter", "path", path, "skill", name, "error", err)
 				continue
 			}
 			meta.ID = name
@@ -368,6 +374,7 @@ func ListSkillsWithRole(skillsDir, role string) ([]SkillMetadata, error) {
 		}
 		sc, err := ReadSkill(skillsDir, name)
 		if err != nil {
+			logger.Warn("ListSkillsWithRole: failed to read skill", "skill", name, "skills_dir", skillsDir, "error", err)
 			continue
 		}
 		seen[name] = struct{}{}

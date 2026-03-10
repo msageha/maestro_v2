@@ -55,7 +55,7 @@ func runSkillList(args []string) error {
 	skillsDir := filepath.Join(maestroDir, "skills")
 	// Use ListSkillsWithRole to include role-specific and shared skills.
 	// When role is empty, only shared and flat skills are listed.
-	skills, err := skill.ListSkillsWithRole(skillsDir, role)
+	skills, err := skill.ListSkillsWithRole(skillsDir, role, nil)
 	if err != nil {
 		return fmt.Errorf("maestro skill list: %w", err)
 	}
