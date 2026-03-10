@@ -227,7 +227,7 @@ func TestFormatLearningsSection_Empty(t *testing.T) {
 
 func TestFormatLearningsSection_Format(t *testing.T) {
 	learnings := []model.Learning{
-		{Content: "Always run tests before commit"},
+		{Content: "Always run tests before commit", SourceWorker: "worker1"},
 		{Content: "Use gofmt for formatting"},
 	}
 	result := FormatLearningsSection(learnings)
@@ -235,14 +235,17 @@ func TestFormatLearningsSection_Format(t *testing.T) {
 	if !strings.Contains(result, "参考: 過去の学習知見") {
 		t.Error("missing section header")
 	}
-	if !strings.Contains(result, "- Always run tests before commit") {
-		t.Error("missing first learning")
+	if !strings.Contains(result, "- [from:worker1] Always run tests before commit") {
+		t.Error("missing first learning with provenance")
 	}
-	if !strings.Contains(result, "- Use gofmt for formatting") {
-		t.Error("missing second learning")
+	if !strings.Contains(result, "- [from:unknown] Use gofmt for formatting") {
+		t.Error("missing second learning with unknown provenance")
 	}
-	if !strings.HasPrefix(result, "\n\n---\n") {
-		t.Error("missing separator prefix")
+	if !strings.HasPrefix(result, "\n\n--- BEGIN LEARNINGS") {
+		t.Error("missing DATA boundary marker prefix")
+	}
+	if !strings.Contains(result, "--- END LEARNINGS ---") {
+		t.Error("missing DATA boundary end marker")
 	}
 }
 

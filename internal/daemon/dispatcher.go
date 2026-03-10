@@ -45,10 +45,11 @@ type Dispatcher struct {
 	// dispatch calls. This avoids per-dispatch log file Open/Close overhead.
 	// All access is protected by execMu to prevent data races during shutdown
 	// (CloseExecutor) and testing (SetExecutorFactory).
-	execMu        sync.Mutex
-	cachedExec    AgentExecutor
-	cachedExecErr error
-	execInit      bool
+	execMu           sync.Mutex
+	cachedExec       AgentExecutor
+	execInit         bool
+	execFailCount    int
+	execLastFailTime time.Time
 
 	worktreeManager *WorktreeManager
 }
@@ -80,8 +81,9 @@ func (d *Dispatcher) SetExecutorFactory(f ExecutorFactory) {
 	old := d.cachedExec
 	d.executorFactory = f
 	d.cachedExec = nil
-	d.cachedExecErr = nil
 	d.execInit = false
+	d.execFailCount = 0
+	d.execLastFailTime = time.Time{}
 	// Close old executor while still holding the lock to prevent getExecutor()
 	// from racing between state reset and Close() completion.
 	if old != nil {
@@ -91,18 +93,36 @@ func (d *Dispatcher) SetExecutorFactory(f ExecutorFactory) {
 }
 
 // getExecutor returns the shared executor instance, creating it lazily on first call.
+// On failure, the error is NOT cached — subsequent calls will retry with exponential
+// backoff to avoid hammering a persistently broken resource.
 // The Executor is safe for concurrent use (log.Logger uses internal mutex,
 // os.File in append mode is POSIX-safe, all other fields are immutable).
 func (d *Dispatcher) getExecutor() (AgentExecutor, error) {
 	d.execMu.Lock()
 	defer d.execMu.Unlock()
-	if !d.execInit {
-		d.cachedExec, d.cachedExecErr = d.executorFactory(d.maestroDir, d.config.Watcher, d.config.Logging.Level)
-		d.execInit = true
+	if d.execInit {
+		return d.cachedExec, nil
 	}
-	if d.cachedExecErr != nil {
-		return nil, fmt.Errorf("%w: %v", errExecutorInit, d.cachedExecErr)
+	// Exponential backoff cooldown for consecutive failures (cap at 30s)
+	if d.execFailCount > 0 {
+		backoff := time.Duration(1<<min(d.execFailCount-1, 4)) * time.Second // 1s, 2s, 4s, 8s, 16s (cap)
+		if backoff > 30*time.Second {
+			backoff = 30 * time.Second
+		}
+		if time.Since(d.execLastFailTime) < backoff {
+			return nil, fmt.Errorf("%w: retry cooldown (attempt %d, next retry in %v)", errExecutorInit, d.execFailCount, backoff-time.Since(d.execLastFailTime))
+		}
 	}
+	exec, err := d.executorFactory(d.maestroDir, d.config.Watcher, d.config.Logging.Level)
+	if err != nil {
+		d.execFailCount++
+		d.execLastFailTime = d.clock.Now()
+		return nil, fmt.Errorf("%w: %v", errExecutorInit, err)
+	}
+	// Success: cache the executor and reset failure state
+	d.cachedExec = exec
+	d.execInit = true
+	d.execFailCount = 0
 	return d.cachedExec, nil
 }
 
@@ -112,8 +132,9 @@ func (d *Dispatcher) CloseExecutor() {
 	d.execMu.Lock()
 	exec := d.cachedExec
 	d.cachedExec = nil
-	d.cachedExecErr = nil
 	d.execInit = false
+	d.execFailCount = 0
+	d.execLastFailTime = time.Time{}
 	d.execMu.Unlock()
 
 	if exec != nil {
