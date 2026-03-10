@@ -398,4 +398,5 @@ type phaseBResult struct {
 	worktreeMerges    []worktreeMergeResult
 	worktreePublishes []worktreePublishResult
 	worktreeCleanups  []worktreeCleanupResult
+	recoveryHints     []string // M3: recovery hints for partial failure diagnosis
 }
