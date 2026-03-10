@@ -9,12 +9,19 @@ import (
 )
 
 // sanitizeEnvelopeField neutralises prompt-injection vectors in user-supplied
-// envelope fields.  It performs two transformations:
+// envelope fields.  It performs the following transformations:
 //  1. Escapes "[maestro]" → "\\[maestro]" so injected content cannot mimic
 //     system control headers.
 //  2. Strips control characters (U+0000–U+001F) except newline (\n) and tab (\t).
+//  3. Escapes DATA boundary markers to prevent multiline structure abuse
+//     (e.g. premature closing of LEARNINGS/SKILLS sections).
 func sanitizeEnvelopeField(s string) string {
 	s = strings.ReplaceAll(s, "[maestro]", "\\[maestro]")
+	// Escape DATA boundary markers that could be injected to break section boundaries
+	s = strings.ReplaceAll(s, "--- BEGIN LEARNINGS", "--- BEGIN\\_LEARNINGS")
+	s = strings.ReplaceAll(s, "--- END LEARNINGS", "--- END\\_LEARNINGS")
+	s = strings.ReplaceAll(s, "--- BEGIN SKILLS", "--- BEGIN\\_SKILLS")
+	s = strings.ReplaceAll(s, "--- END SKILLS", "--- END\\_SKILLS")
 	return strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) && r != '\n' && r != '\t' {
 			return -1 // drop

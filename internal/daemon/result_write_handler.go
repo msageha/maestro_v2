@@ -483,10 +483,11 @@ func (a *API) writeLearnings(params ResultWriteParams, resultID string) error {
 		}
 		existing[key] = true
 		lf.Learnings = append(lf.Learnings, model.Learning{
-			ResultID:  resultID,
-			CommandID: params.CommandID,
-			Content:   truncated,
-			CreatedAt: now,
+			ResultID:     resultID,
+			CommandID:    params.CommandID,
+			Content:      truncated,
+			CreatedAt:    now,
+			SourceWorker: params.Reporter,
 		})
 		added++
 	}

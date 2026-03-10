@@ -2,10 +2,11 @@ package model
 
 // Learning represents a single learning entry accumulated from worker task results.
 type Learning struct {
-	ResultID  string `yaml:"result_id"`
-	CommandID string `yaml:"command_id"`
-	Content   string `yaml:"content"`
-	CreatedAt string `yaml:"created_at"`
+	ResultID     string `yaml:"result_id"`
+	CommandID    string `yaml:"command_id"`
+	Content      string `yaml:"content"`
+	CreatedAt    string `yaml:"created_at"`
+	SourceWorker string `yaml:"source_worker,omitempty"`
 }
 
 // LearningsFile is the on-disk format for .maestro/state/learnings.yaml.
