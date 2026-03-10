@@ -613,6 +613,194 @@ func TestR1ResultQueue_TaskNotInProgress_Ignored(t *testing.T) {
 	}
 }
 
+func TestR1ResultQueue_HappyPath_RepairsInProgressTask(t *testing.T) {
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Result is terminal (completed)
+	rf := model.TaskResultFile{
+		Results: []model.TaskResult{
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
+
+	// Queue still shows in_progress
+	owner := "worker1"
+	expiresAt := now
+	tq := model.TaskQueue{
+		Tasks: []model.Task{
+			{ID: "task1", CommandID: "cmd1", Status: model.StatusInProgress, LeaseOwner: &owner, LeaseExpiresAt: &expiresAt, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "worker1.yaml"), tq)
+
+	// State file for UpdateLastReconciledAt
+	state := model.CommandState{CommandID: "cmd1", PlanStatus: model.PlanStatusSealed, CreatedAt: now, UpdatedAt: now}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R1ResultQueue{}.Apply(run)
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
+	}
+	if outcome.Repairs[0].Pattern != "R1" {
+		t.Errorf("pattern: got %s, want R1", outcome.Repairs[0].Pattern)
+	}
+
+	// Verify queue updated
+	data, _ := os.ReadFile(filepath.Join(maestroDir, "queue", "worker1.yaml"))
+	var updated model.TaskQueue
+	yamlv3.Unmarshal(data, &updated)
+	if updated.Tasks[0].Status != model.StatusCompleted {
+		t.Errorf("queue status: got %s, want completed", updated.Tasks[0].Status)
+	}
+	if updated.Tasks[0].LeaseOwner != nil {
+		t.Error("lease_owner should be nil after repair")
+	}
+	if updated.Tasks[0].LeaseExpiresAt != nil {
+		t.Error("lease_expires_at should be nil after repair")
+	}
+}
+
+func TestR1ResultQueue_Idempotent(t *testing.T) {
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.TaskResultFile{
+		Results: []model.TaskResult{
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
+
+	owner := "worker1"
+	tq := model.TaskQueue{
+		Tasks: []model.Task{
+			{ID: "task1", CommandID: "cmd1", Status: model.StatusInProgress, LeaseOwner: &owner, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "worker1.yaml"), tq)
+
+	state := model.CommandState{CommandID: "cmd1", PlanStatus: model.PlanStatusSealed, CreatedAt: now, UpdatedAt: now}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	// First run — produces repair
+	run1 := newRun(&deps)
+	outcome1 := R1ResultQueue{}.Apply(run1)
+	if len(outcome1.Repairs) != 1 {
+		t.Fatalf("first run: expected 1 repair, got %d", len(outcome1.Repairs))
+	}
+
+	// Second run — queue already terminal, no repair
+	run2 := newRun(&deps)
+	outcome2 := R1ResultQueue{}.Apply(run2)
+	if len(outcome2.Repairs) != 0 {
+		t.Errorf("second run: expected 0 repairs (idempotent), got %d", len(outcome2.Repairs))
+	}
+}
+
+func TestR1ResultQueue_FailedResult(t *testing.T) {
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.TaskResultFile{
+		Results: []model.TaskResult{
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusFailed, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
+
+	tq := model.TaskQueue{
+		Tasks: []model.Task{
+			{ID: "task1", CommandID: "cmd1", Status: model.StatusInProgress, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "worker1.yaml"), tq)
+
+	state := model.CommandState{CommandID: "cmd1", PlanStatus: model.PlanStatusSealed, CreatedAt: now, UpdatedAt: now}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R1ResultQueue{}.Apply(run)
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
+	}
+
+	data, _ := os.ReadFile(filepath.Join(maestroDir, "queue", "worker1.yaml"))
+	var updated model.TaskQueue
+	yamlv3.Unmarshal(data, &updated)
+	if updated.Tasks[0].Status != model.StatusFailed {
+		t.Errorf("queue status: got %s, want failed", updated.Tasks[0].Status)
+	}
+}
+
+func TestR1ResultQueue_MultipleWorkers(t *testing.T) {
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Worker1 has terminal result
+	rf1 := model.TaskResultFile{
+		Results: []model.TaskResult{
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf1)
+	tq1 := model.TaskQueue{
+		Tasks: []model.Task{
+			{ID: "task1", CommandID: "cmd1", Status: model.StatusInProgress, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "worker1.yaml"), tq1)
+
+	// Worker2 has terminal result
+	rf2 := model.TaskResultFile{
+		Results: []model.TaskResult{
+			{ID: "res2", TaskID: "task2", CommandID: "cmd1", Status: model.StatusFailed, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker2.yaml"), rf2)
+	tq2 := model.TaskQueue{
+		Tasks: []model.Task{
+			{ID: "task2", CommandID: "cmd1", Status: model.StatusInProgress, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "worker2.yaml"), tq2)
+
+	state := model.CommandState{CommandID: "cmd1", PlanStatus: model.PlanStatusSealed, CreatedAt: now, UpdatedAt: now}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R1ResultQueue{}.Apply(run)
+	if len(outcome.Repairs) != 2 {
+		t.Errorf("expected 2 repairs (one per worker), got %d", len(outcome.Repairs))
+	}
+}
+
+func TestR1ResultQueue_NoQueueFile_NoRepair(t *testing.T) {
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.TaskResultFile{
+		Results: []model.TaskResult{
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
+	// No queue file for worker1
+
+	run := newRun(&deps)
+	outcome := R1ResultQueue{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Errorf("expected no repairs when queue file missing, got %d", len(outcome.Repairs))
+	}
+}
+
 // --- R2 result state tests ---
 
 func TestR2ResultState_UnknownTask_Skipped(t *testing.T) {
@@ -692,6 +880,181 @@ func TestR2ResultState_NonTerminalResult_Ignored(t *testing.T) {
 	}
 }
 
+func TestR2ResultState_HappyPath_UpdatesStateToTerminal(t *testing.T) {
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.TaskResultFile{
+		Results: []model.TaskResult{
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
+
+	state := model.CommandState{
+		CommandID:        "cmd1",
+		PlanStatus:       model.PlanStatusSealed,
+		TaskStates:       map[string]model.Status{"task1": model.StatusInProgress},
+		AppliedResultIDs: map[string]string{},
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R2ResultState{}.Apply(run)
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
+	}
+	if outcome.Repairs[0].Pattern != "R2" {
+		t.Errorf("pattern: got %s, want R2", outcome.Repairs[0].Pattern)
+	}
+
+	// Verify state updated
+	data, _ := os.ReadFile(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"))
+	var updated model.CommandState
+	yamlv3.Unmarshal(data, &updated)
+	if updated.TaskStates["task1"] != model.StatusCompleted {
+		t.Errorf("task state: got %s, want completed", updated.TaskStates["task1"])
+	}
+	if updated.AppliedResultIDs["task1"] != "res1" {
+		t.Errorf("applied result ID: got %s, want res1", updated.AppliedResultIDs["task1"])
+	}
+	if updated.LastReconciledAt == nil {
+		t.Error("last_reconciled_at should be set")
+	}
+}
+
+func TestR2ResultState_Idempotent(t *testing.T) {
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.TaskResultFile{
+		Results: []model.TaskResult{
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
+
+	state := model.CommandState{
+		CommandID:        "cmd1",
+		PlanStatus:       model.PlanStatusSealed,
+		TaskStates:       map[string]model.Status{"task1": model.StatusInProgress},
+		AppliedResultIDs: map[string]string{},
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	// First run
+	run1 := newRun(&deps)
+	outcome1 := R2ResultState{}.Apply(run1)
+	if len(outcome1.Repairs) != 1 {
+		t.Fatalf("first run: expected 1 repair, got %d", len(outcome1.Repairs))
+	}
+
+	// Second run — state already terminal, no repair
+	run2 := newRun(&deps)
+	outcome2 := R2ResultState{}.Apply(run2)
+	if len(outcome2.Repairs) != 0 {
+		t.Errorf("second run: expected 0 repairs (idempotent), got %d", len(outcome2.Repairs))
+	}
+}
+
+func TestR2ResultState_AlreadyTerminal_NoRepair(t *testing.T) {
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.TaskResultFile{
+		Results: []model.TaskResult{
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
+
+	state := model.CommandState{
+		CommandID:        "cmd1",
+		PlanStatus:       model.PlanStatusSealed,
+		TaskStates:       map[string]model.Status{"task1": model.StatusCompleted},
+		AppliedResultIDs: map[string]string{"task1": "res1"},
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R2ResultState{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Errorf("expected no repairs for already terminal state, got %d", len(outcome.Repairs))
+	}
+}
+
+func TestR2ResultState_MultipleTasks(t *testing.T) {
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.TaskResultFile{
+		Results: []model.TaskResult{
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+			{ID: "res2", TaskID: "task2", CommandID: "cmd1", Status: model.StatusFailed, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
+
+	state := model.CommandState{
+		CommandID:  "cmd1",
+		PlanStatus: model.PlanStatusSealed,
+		TaskStates: map[string]model.Status{
+			"task1": model.StatusInProgress,
+			"task2": model.StatusInProgress,
+		},
+		AppliedResultIDs: map[string]string{},
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R2ResultState{}.Apply(run)
+	if len(outcome.Repairs) != 2 {
+		t.Fatalf("expected 2 repairs, got %d", len(outcome.Repairs))
+	}
+
+	data, _ := os.ReadFile(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"))
+	var updated model.CommandState
+	yamlv3.Unmarshal(data, &updated)
+	if updated.TaskStates["task1"] != model.StatusCompleted {
+		t.Errorf("task1 state: got %s, want completed", updated.TaskStates["task1"])
+	}
+	if updated.TaskStates["task2"] != model.StatusFailed {
+		t.Errorf("task2 state: got %s, want failed", updated.TaskStates["task2"])
+	}
+}
+
+func TestR2ResultState_NoStateFile_NoRepair(t *testing.T) {
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.TaskResultFile{
+		Results: []model.TaskResult{
+			{ID: "res1", TaskID: "task1", CommandID: "cmd_missing", Status: model.StatusCompleted, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
+	// No state file for cmd_missing
+
+	run := newRun(&deps)
+	outcome := R2ResultState{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Errorf("expected no repairs when state file missing, got %d", len(outcome.Repairs))
+	}
+}
+
 // --- R3 planner queue tests ---
 
 func TestR3PlannerQueue_NoResultFile(t *testing.T) {
@@ -720,6 +1083,214 @@ func TestR3PlannerQueue_NoTerminalResults(t *testing.T) {
 	outcome := R3PlannerQueue{}.Apply(run)
 	if len(outcome.Repairs) != 0 {
 		t.Errorf("expected no repairs for non-terminal results, got %d", len(outcome.Repairs))
+	}
+}
+
+func TestR3PlannerQueue_HappyPath_RepairsNonTerminalCommand(t *testing.T) {
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Planner result is terminal
+	rf := model.CommandResultFile{
+		Results: []model.CommandResult{
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+
+	// Queue still shows in_progress
+	owner := "planner"
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		Commands: []model.Command{
+			{ID: "cmd1", Status: model.StatusInProgress, LeaseOwner: &owner, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "planner.yaml"), cq)
+
+	// State file for UpdateLastReconciledAt
+	state := model.CommandState{CommandID: "cmd1", PlanStatus: model.PlanStatusSealed, CreatedAt: now, UpdatedAt: now}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R3PlannerQueue{}.Apply(run)
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
+	}
+	if outcome.Repairs[0].Pattern != "R3" {
+		t.Errorf("pattern: got %s, want R3", outcome.Repairs[0].Pattern)
+	}
+
+	// Verify queue updated
+	data, _ := os.ReadFile(filepath.Join(maestroDir, "queue", "planner.yaml"))
+	var updated model.CommandQueue
+	yamlv3.Unmarshal(data, &updated)
+	if updated.Commands[0].Status != model.StatusCompleted {
+		t.Errorf("queue status: got %s, want completed", updated.Commands[0].Status)
+	}
+	if updated.Commands[0].LeaseOwner != nil {
+		t.Error("lease_owner should be nil after repair")
+	}
+	if updated.Commands[0].LeaseExpiresAt != nil {
+		t.Error("lease_expires_at should be nil after repair")
+	}
+}
+
+func TestR3PlannerQueue_Idempotent(t *testing.T) {
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.CommandResultFile{
+		Results: []model.CommandResult{
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		Commands: []model.Command{
+			{ID: "cmd1", Status: model.StatusInProgress, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "planner.yaml"), cq)
+
+	state := model.CommandState{CommandID: "cmd1", PlanStatus: model.PlanStatusSealed, CreatedAt: now, UpdatedAt: now}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	// First run
+	run1 := newRun(&deps)
+	outcome1 := R3PlannerQueue{}.Apply(run1)
+	if len(outcome1.Repairs) != 1 {
+		t.Fatalf("first run: expected 1 repair, got %d", len(outcome1.Repairs))
+	}
+
+	// Second run — queue already terminal
+	run2 := newRun(&deps)
+	outcome2 := R3PlannerQueue{}.Apply(run2)
+	if len(outcome2.Repairs) != 0 {
+		t.Errorf("second run: expected 0 repairs (idempotent), got %d", len(outcome2.Repairs))
+	}
+}
+
+func TestR3PlannerQueue_AlreadyTerminalQueue_NoRepair(t *testing.T) {
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.CommandResultFile{
+		Results: []model.CommandResult{
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		Commands: []model.Command{
+			{ID: "cmd1", Status: model.StatusCompleted, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "planner.yaml"), cq)
+
+	run := newRun(&deps)
+	outcome := R3PlannerQueue{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Errorf("expected no repairs for already terminal queue, got %d", len(outcome.Repairs))
+	}
+}
+
+func TestR3PlannerQueue_FailedResult(t *testing.T) {
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.CommandResultFile{
+		Results: []model.CommandResult{
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusFailed, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		Commands: []model.Command{
+			{ID: "cmd1", Status: model.StatusInProgress, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "planner.yaml"), cq)
+
+	state := model.CommandState{CommandID: "cmd1", PlanStatus: model.PlanStatusSealed, CreatedAt: now, UpdatedAt: now}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R3PlannerQueue{}.Apply(run)
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
+	}
+
+	data, _ := os.ReadFile(filepath.Join(maestroDir, "queue", "planner.yaml"))
+	var updated model.CommandQueue
+	yamlv3.Unmarshal(data, &updated)
+	if updated.Commands[0].Status != model.StatusFailed {
+		t.Errorf("queue status: got %s, want failed", updated.Commands[0].Status)
+	}
+}
+
+func TestR3PlannerQueue_MultipleCommands(t *testing.T) {
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.CommandResultFile{
+		Results: []model.CommandResult{
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+			{ID: "res2", CommandID: "cmd2", Status: model.StatusFailed, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		Commands: []model.Command{
+			{ID: "cmd1", Status: model.StatusInProgress, CreatedAt: now, UpdatedAt: now},
+			{ID: "cmd2", Status: model.StatusInProgress, CreatedAt: now, UpdatedAt: now},
+			{ID: "cmd3", Status: model.StatusPending, CreatedAt: now, UpdatedAt: now}, // no result
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "planner.yaml"), cq)
+
+	state1 := model.CommandState{CommandID: "cmd1", PlanStatus: model.PlanStatusSealed, CreatedAt: now, UpdatedAt: now}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state1)
+	state2 := model.CommandState{CommandID: "cmd2", PlanStatus: model.PlanStatusSealed, CreatedAt: now, UpdatedAt: now}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd2.yaml"), state2)
+
+	run := newRun(&deps)
+	outcome := R3PlannerQueue{}.Apply(run)
+	if len(outcome.Repairs) != 2 {
+		t.Errorf("expected 2 repairs, got %d", len(outcome.Repairs))
+	}
+}
+
+func TestR3PlannerQueue_NoQueueFile_NoRepair(t *testing.T) {
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.CommandResultFile{
+		Results: []model.CommandResult{
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+	os.Remove(filepath.Join(maestroDir, "queue", "planner.yaml"))
+
+	run := newRun(&deps)
+	outcome := R3PlannerQueue{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Errorf("expected no repairs when queue file missing, got %d", len(outcome.Repairs))
 	}
 }
 
@@ -951,6 +1522,200 @@ func TestR5Notification_WriteError(t *testing.T) {
 	}
 	if len(notifier.calls) != 1 {
 		t.Errorf("expected 1 write attempt, got %d", len(notifier.calls))
+	}
+}
+
+func TestR5Notification_HappyPath_ReissuesNotification(t *testing.T) {
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	notifier := &mockResultNotifier{}
+	deps.ResultHandler = notifier
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Result is terminal, notified, but no orchestrator notification exists
+	rf := model.CommandResultFile{
+		Results: []model.CommandResult{
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, Notified: true, NotifiedAt: &now, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+	// Empty orchestrator queue — no matching source_result_id
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "orchestrator.yaml"), model.NotificationQueue{})
+
+	// State file for UpdateLastReconciledAt
+	state := model.CommandState{CommandID: "cmd1", PlanStatus: model.PlanStatusSealed, CreatedAt: now, UpdatedAt: now}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R5Notification{}.Apply(run)
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
+	}
+	if outcome.Repairs[0].Pattern != "R5" {
+		t.Errorf("pattern: got %s, want R5", outcome.Repairs[0].Pattern)
+	}
+	if len(notifier.calls) != 1 {
+		t.Fatalf("expected 1 notification call, got %d", len(notifier.calls))
+	}
+	if notifier.calls[0].resultID != "res1" {
+		t.Errorf("resultID: got %s, want res1", notifier.calls[0].resultID)
+	}
+	if notifier.calls[0].commandID != "cmd1" {
+		t.Errorf("commandID: got %s, want cmd1", notifier.calls[0].commandID)
+	}
+	if notifier.calls[0].status != model.StatusCompleted {
+		t.Errorf("status: got %s, want completed", notifier.calls[0].status)
+	}
+}
+
+func TestR5Notification_AlreadyInOrchestratorQueue_NoRepair(t *testing.T) {
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	notifier := &mockResultNotifier{}
+	deps.ResultHandler = notifier
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.CommandResultFile{
+		Results: []model.CommandResult{
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, Notified: true, NotifiedAt: &now, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+
+	// Orchestrator queue already has matching notification
+	nq := model.NotificationQueue{
+		Notifications: []model.Notification{
+			{ID: "ntf1", CommandID: "cmd1", SourceResultID: "res1", Status: model.StatusPending, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "orchestrator.yaml"), nq)
+
+	run := newRun(&deps)
+	outcome := R5Notification{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Errorf("expected no repairs when notification already exists, got %d", len(outcome.Repairs))
+	}
+	if len(notifier.calls) != 0 {
+		t.Errorf("expected no notification calls, got %d", len(notifier.calls))
+	}
+}
+
+func TestR5Notification_Idempotent(t *testing.T) {
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	notifier := &mockResultNotifier{}
+	deps.ResultHandler = notifier
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.CommandResultFile{
+		Results: []model.CommandResult{
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, Notified: true, NotifiedAt: &now, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "orchestrator.yaml"), model.NotificationQueue{})
+
+	state := model.CommandState{CommandID: "cmd1", PlanStatus: model.PlanStatusSealed, CreatedAt: now, UpdatedAt: now}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	// First run — produces repair
+	run1 := newRun(&deps)
+	outcome1 := R5Notification{}.Apply(run1)
+	if len(outcome1.Repairs) != 1 {
+		t.Fatalf("first run: expected 1 repair, got %d", len(outcome1.Repairs))
+	}
+
+	// The mockResultNotifier doesn't actually write to orchestrator.yaml,
+	// so calling again would still produce a repair (which is correct behavior —
+	// R5 re-issues until the notification actually appears in the queue).
+	// This verifies the mock was called twice.
+	run2 := newRun(&deps)
+	outcome2 := R5Notification{}.Apply(run2)
+	if len(outcome2.Repairs) != 1 {
+		t.Errorf("second run: expected 1 repair (mock doesn't persist), got %d", len(outcome2.Repairs))
+	}
+	if len(notifier.calls) != 2 {
+		t.Errorf("expected 2 total notification calls, got %d", len(notifier.calls))
+	}
+}
+
+func TestR5Notification_NonTerminalResult_Ignored(t *testing.T) {
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	notifier := &mockResultNotifier{}
+	deps.ResultHandler = notifier
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.CommandResultFile{
+		Results: []model.CommandResult{
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusInProgress, Notified: true, NotifiedAt: &now, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "orchestrator.yaml"), model.NotificationQueue{})
+
+	run := newRun(&deps)
+	outcome := R5Notification{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Errorf("expected no repairs for non-terminal result, got %d", len(outcome.Repairs))
+	}
+}
+
+func TestR5Notification_NoOrchestratorQueue_StillRepairs(t *testing.T) {
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	notifier := &mockResultNotifier{}
+	deps.ResultHandler = notifier
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.CommandResultFile{
+		Results: []model.CommandResult{
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, Notified: true, NotifiedAt: &now, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+	// No orchestrator.yaml file
+
+	state := model.CommandState{CommandID: "cmd1", PlanStatus: model.PlanStatusSealed, CreatedAt: now, UpdatedAt: now}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R5Notification{}.Apply(run)
+	if len(outcome.Repairs) != 1 {
+		t.Errorf("expected 1 repair when orchestrator queue missing, got %d", len(outcome.Repairs))
+	}
+}
+
+func TestR5Notification_MultipleResults(t *testing.T) {
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	notifier := &mockResultNotifier{}
+	deps.ResultHandler = notifier
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.CommandResultFile{
+		Results: []model.CommandResult{
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, Notified: true, NotifiedAt: &now, CreatedAt: now},
+			{ID: "res2", CommandID: "cmd2", Status: model.StatusFailed, Notified: true, NotifiedAt: &now, CreatedAt: now},
+			{ID: "res3", CommandID: "cmd3", Status: model.StatusCompleted, Notified: false, CreatedAt: now}, // not notified
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "orchestrator.yaml"), model.NotificationQueue{})
+
+	state1 := model.CommandState{CommandID: "cmd1", PlanStatus: model.PlanStatusSealed, CreatedAt: now, UpdatedAt: now}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state1)
+	state2 := model.CommandState{CommandID: "cmd2", PlanStatus: model.PlanStatusSealed, CreatedAt: now, UpdatedAt: now}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd2.yaml"), state2)
+
+	run := newRun(&deps)
+	outcome := R5Notification{}.Apply(run)
+	// Only res1 and res2 should be repaired (res3 is not notified)
+	if len(outcome.Repairs) != 2 {
+		t.Errorf("expected 2 repairs, got %d", len(outcome.Repairs))
+	}
+	if len(notifier.calls) != 2 {
+		t.Errorf("expected 2 notification calls, got %d", len(notifier.calls))
 	}
 }
 
