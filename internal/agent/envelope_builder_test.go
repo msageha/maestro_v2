@@ -142,6 +142,29 @@ func TestBuildWorkerEnvelope_SanitizesInjection(t *testing.T) {
 	}
 }
 
+func TestSanitizeUserContent(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"plain text", "hello world", "hello world"},
+		{"escapes BEGIN LEARNINGS", "--- BEGIN LEARNINGS (DATA ONLY) ---", "--- BEGIN\\_LEARNINGS (DATA ONLY) ---"},
+		{"escapes END LEARNINGS", "--- END LEARNINGS ---", "--- END\\_LEARNINGS ---"},
+		{"escapes BEGIN SKILLS", "--- BEGIN SKILLS (DATA ONLY) ---", "--- BEGIN\\_SKILLS (DATA ONLY) ---"},
+		{"escapes END SKILLS", "--- END SKILLS ---", "--- END\\_SKILLS ---"},
+		{"preserves other content", "no markers here", "no markers here"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SanitizeUserContent(tt.input)
+			if got != tt.want {
+				t.Errorf("SanitizeUserContent(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildPlannerEnvelope_SanitizesInjection(t *testing.T) {
 	cmd := model.Command{
 		ID:      "cmd_001",
