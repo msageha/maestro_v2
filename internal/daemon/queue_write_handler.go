@@ -366,6 +366,13 @@ func (a *API) handleQueueWriteNotification(params QueueWriteParams) *uds.Respons
 	return uds.SuccessResponse(map[string]string{"id": id})
 }
 
+// handleQueueWriteCancelRequest processes cancel-request queue writes.
+// Cancel-request is exempt from backpressure checks because it modifies
+// existing state (e.g. setting cancel.requested on a submitted command, or
+// marking an unsubmitted planner entry as cancelled) rather than adding a
+// new entry to the queue. Applying backpressure here would prevent users
+// from cancelling commands when the system is already overloaded, which is
+// the exact scenario where cancellation is most needed.
 func (a *API) handleQueueWriteCancelRequest(params QueueWriteParams) *uds.Response {
 	d := a.d
 	if params.CommandID == "" {

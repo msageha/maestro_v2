@@ -4,10 +4,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
 
+	"github.com/msageha/maestro_v2/internal/daemon/learnings"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -541,6 +544,254 @@ func TestLearningsConfig_Defaults(t *testing.T) {
 	}
 	if cfg2.EffectiveMaxContentLength() != 200 {
 		t.Errorf("EffectiveMaxContentLength() = %d, want 200", cfg2.EffectiveMaxContentLength())
+	}
+}
+
+// --- Integration Tests: E2E flow covering sanitization → SourceWorker → ReadTopK → Format ---
+
+// TestLearningsIntegration_E2E_SanitizeSourceWorkerReadFormat exercises the full
+// write → sanitize (truncation) → SourceWorker assignment → ReadTopKLearnings → FormatLearningsSection pipeline.
+func TestLearningsIntegration_E2E_SanitizeSourceWorkerReadFormat(t *testing.T) {
+	d := newTestDaemonWithLearnings(t)
+	d.config.Learnings.MaxContentLength = 15
+	d.config.Learnings.InjectCount = 5
+	d.config.Learnings.TTLHours = 72
+
+	taskID := "task_0000000001_abcdef01"
+	commandID := "cmd_0000000001_abcdef01"
+	workerID := "worker3"
+	leaseEpoch := 1
+
+	setupWorkerQueue(t, d, workerID, taskID, commandID, leaseEpoch)
+	setupCommandState(t, d, commandID, []string{taskID})
+
+	// Submit a result with learnings that exceed MaxContentLength
+	req := makeResultWriteRequest(t, ResultWriteParams{
+		Reporter:   workerID,
+		TaskID:     taskID,
+		CommandID:  commandID,
+		LeaseEpoch: leaseEpoch,
+		Status:     "completed",
+		Summary:    "done",
+		Learnings:  []string{"this is a very long learning that should be truncated to 15 runes", "short ok"},
+	})
+
+	resp := d.handleResultWrite(req)
+	if !resp.Success {
+		t.Fatalf("expected success, got error: %v", resp.Error)
+	}
+
+	// Verify stored data: sanitization + SourceWorker
+	lf := readLearningsFile(t, d)
+	if len(lf.Learnings) != 2 {
+		t.Fatalf("expected 2 learnings, got %d", len(lf.Learnings))
+	}
+	if lf.Learnings[0].Content != "this is a very " {
+		t.Errorf("truncation failed: content = %q, want %q", lf.Learnings[0].Content, "this is a very ")
+	}
+	if lf.Learnings[0].SourceWorker != workerID {
+		t.Errorf("SourceWorker = %q, want %q", lf.Learnings[0].SourceWorker, workerID)
+	}
+	if lf.Learnings[1].Content != "short ok" {
+		t.Errorf("content[1] = %q, want %q", lf.Learnings[1].Content, "short ok")
+	}
+	if lf.Learnings[1].SourceWorker != workerID {
+		t.Errorf("SourceWorker[1] = %q, want %q", lf.Learnings[1].SourceWorker, workerID)
+	}
+
+	// ReadTopKLearnings → FormatLearningsSection
+	cfg := model.LearningsConfig{InjectCount: 5, TTLHours: 72}
+	readBack, err := learnings.ReadTopKLearnings(d.maestroDir, cfg, time.Now())
+	if err != nil {
+		t.Fatalf("ReadTopKLearnings: %v", err)
+	}
+	if len(readBack) != 2 {
+		t.Fatalf("ReadTopKLearnings returned %d, want 2", len(readBack))
+	}
+
+	formatted := learnings.FormatLearningsSection(readBack)
+	if !strings.Contains(formatted, "[from:worker3]") {
+		t.Errorf("formatted output missing SourceWorker provenance: %q", formatted)
+	}
+	if !strings.Contains(formatted, "this is a very ") {
+		t.Errorf("formatted output missing truncated content: %q", formatted)
+	}
+	if !strings.Contains(formatted, "short ok") {
+		t.Errorf("formatted output missing second learning: %q", formatted)
+	}
+}
+
+// TestLearningsIntegration_Dedup_TruncationCollision tests that two different long strings
+// which truncate to the same prefix under one resultID are correctly deduplicated.
+func TestLearningsIntegration_Dedup_TruncationCollision(t *testing.T) {
+	d := newTestDaemonWithLearnings(t)
+	d.config.Learnings.MaxContentLength = 5
+
+	taskID := "task_0000000001_abcdef01"
+	commandID := "cmd_0000000001_abcdef01"
+	workerID := "worker1"
+	leaseEpoch := 1
+
+	setupWorkerQueue(t, d, workerID, taskID, commandID, leaseEpoch)
+	setupCommandState(t, d, commandID, []string{taskID})
+
+	// Both strings truncate to "AAAAA" (same resultID + same truncated content → dedup)
+	req := makeResultWriteRequest(t, ResultWriteParams{
+		Reporter:   workerID,
+		TaskID:     taskID,
+		CommandID:  commandID,
+		LeaseEpoch: leaseEpoch,
+		Status:     "completed",
+		Summary:    "done",
+		Learnings:  []string{"AAAAAXXX", "AAAAAYYY"},
+	})
+
+	resp := d.handleResultWrite(req)
+	if !resp.Success {
+		t.Fatalf("expected success, got error: %v", resp.Error)
+	}
+
+	lf := readLearningsFile(t, d)
+	if len(lf.Learnings) != 1 {
+		t.Fatalf("expected 1 learning after truncation-collision dedup, got %d", len(lf.Learnings))
+	}
+	if lf.Learnings[0].Content != "AAAAA" {
+		t.Errorf("content = %q, want %q", lf.Learnings[0].Content, "AAAAA")
+	}
+}
+
+// TestLearningsIntegration_TTL_EndToEnd writes learnings via handleResultWrite, then reads
+// them back via ReadTopKLearnings with a TTL that excludes entries by timestamp.
+func TestLearningsIntegration_TTL_EndToEnd(t *testing.T) {
+	d := newTestDaemonWithLearnings(t)
+
+	taskID := "task_0000000001_abcdef01"
+	commandID := "cmd_0000000001_abcdef01"
+	workerID := "worker1"
+	leaseEpoch := 1
+
+	setupWorkerQueue(t, d, workerID, taskID, commandID, leaseEpoch)
+	setupCommandState(t, d, commandID, []string{taskID})
+
+	// Write fresh learnings via handleResultWrite
+	req := makeResultWriteRequest(t, ResultWriteParams{
+		Reporter:   workerID,
+		TaskID:     taskID,
+		CommandID:  commandID,
+		LeaseEpoch: leaseEpoch,
+		Status:     "completed",
+		Summary:    "done",
+		Learnings:  []string{"fresh learning"},
+	})
+
+	resp := d.handleResultWrite(req)
+	if !resp.Success {
+		t.Fatalf("expected success, got error: %v", resp.Error)
+	}
+
+	// Prepend an old entry directly (simulate an entry created long ago)
+	lf := readLearningsFile(t, d)
+	oldEntry := model.Learning{
+		ResultID:     "res_0000000001_oldentry",
+		CommandID:    commandID,
+		Content:      "old learning",
+		CreatedAt:    time.Now().UTC().Add(-200 * time.Hour).Format(time.RFC3339),
+		SourceWorker: "worker2",
+	}
+	lf.Learnings = append([]model.Learning{oldEntry}, lf.Learnings...)
+	learningsPath := filepath.Join(d.maestroDir, "state", "learnings.yaml")
+	if err := yamlutil.AtomicWrite(learningsPath, lf); err != nil {
+		t.Fatalf("write modified learnings: %v", err)
+	}
+
+	// Read with TTL=72h → old entry (200h ago) should be excluded
+	cfg := model.LearningsConfig{InjectCount: 10, TTLHours: 72}
+	result, err := learnings.ReadTopKLearnings(d.maestroDir, cfg, time.Now())
+	if err != nil {
+		t.Fatalf("ReadTopKLearnings: %v", err)
+	}
+	if len(result) != 1 {
+		t.Fatalf("expected 1 learning after TTL filter, got %d", len(result))
+	}
+	if result[0].Content != "fresh learning" {
+		t.Errorf("expected 'fresh learning', got %q", result[0].Content)
+	}
+
+	// Verify format includes only the non-expired entry
+	formatted := learnings.FormatLearningsSection(result)
+	if strings.Contains(formatted, "old learning") {
+		t.Error("formatted output should not contain expired learning")
+	}
+	if !strings.Contains(formatted, "fresh learning") {
+		t.Error("formatted output should contain fresh learning")
+	}
+}
+
+// TestLearningsIntegration_InjectCount_EndToEnd writes multiple learnings via handleResultWrite,
+// then reads back with inject_count limit and verifies only the most recent K entries are returned.
+func TestLearningsIntegration_InjectCount_EndToEnd(t *testing.T) {
+	d := newTestDaemonWithLearnings(t)
+
+	commandID := "cmd_0000000001_abcdef01"
+
+	// Write learnings across multiple result-write calls (separate tasks, same worker)
+	for i := 0; i < 3; i++ {
+		workerID := "worker1"
+		taskID := "task_0000000001_abcdef0" + string(rune('1'+i))
+		leaseEpoch := 1
+
+		setupWorkerQueue(t, d, workerID, taskID, commandID, leaseEpoch)
+		setupCommandState(t, d, commandID, []string{taskID})
+
+		req := makeResultWriteRequest(t, ResultWriteParams{
+			Reporter:   workerID,
+			TaskID:     taskID,
+			CommandID:  commandID,
+			LeaseEpoch: leaseEpoch,
+			Status:     "completed",
+			Summary:    "done",
+			Learnings:  []string{"learning batch " + string(rune('A'+i)) + " item1", "learning batch " + string(rune('A'+i)) + " item2"},
+		})
+
+		resp := d.handleResultWrite(req)
+		if !resp.Success {
+			t.Fatalf("write %d failed: %v", i, resp.Error)
+		}
+	}
+
+	// Should have 6 total learnings
+	lf := readLearningsFile(t, d)
+	if len(lf.Learnings) != 6 {
+		t.Fatalf("expected 6 total learnings, got %d", len(lf.Learnings))
+	}
+
+	// Read with inject_count=2 → should get last 2 entries
+	cfg := model.LearningsConfig{InjectCount: 2, TTLHours: 0}
+	result, err := learnings.ReadTopKLearnings(d.maestroDir, cfg, time.Now())
+	if err != nil {
+		t.Fatalf("ReadTopKLearnings: %v", err)
+	}
+	if len(result) != 2 {
+		t.Fatalf("expected 2 learnings with inject_count=2, got %d", len(result))
+	}
+	// Last 2 entries should be from batch C
+	if result[0].Content != "learning batch C item1" {
+		t.Errorf("result[0].Content = %q, want %q", result[0].Content, "learning batch C item1")
+	}
+	if result[1].Content != "learning batch C item2" {
+		t.Errorf("result[1].Content = %q, want %q", result[1].Content, "learning batch C item2")
+	}
+
+	// Format and verify only injected entries appear
+	formatted := learnings.FormatLearningsSection(result)
+	if strings.Contains(formatted, "batch A") {
+		t.Error("formatted output should not contain batch A (outside inject_count)")
+	}
+	if strings.Contains(formatted, "batch B") {
+		t.Error("formatted output should not contain batch B (outside inject_count)")
+	}
+	if !strings.Contains(formatted, "batch C") {
+		t.Error("formatted output should contain batch C")
 	}
 }
 
