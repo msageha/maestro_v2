@@ -41,9 +41,9 @@ func RunDown(maestroDir string, cfg model.Config) error {
 	if _, err := os.Stat(socketPath); os.IsNotExist(err) {
 		// Socket gone but PID file may linger from a crashed daemon
 		cleanupStalePID(maestroDir)
-		if tmux.SessionExists() {
-			fmt.Println("[debug] RunDown: killing session (daemon socket missing)")
-			_ = tmux.KillSession()
+		fmt.Println("[debug] RunDown: killing session (daemon socket missing)")
+		if err := tmux.KillSession(); err != nil {
+			log.Printf("warning: KillSession (daemon socket missing): %v", err)
 		}
 		restoreServerOptions(maestroDir)
 		fmt.Println("Daemon is not running. Formation stopped.")
@@ -61,9 +61,9 @@ func RunDown(maestroDir string, cfg model.Config) error {
 		fmt.Println("Cleaning up daemon and tmux session...")
 		cleanupStalePID(maestroDir)
 		_ = os.Remove(socketPath)
-		if tmux.SessionExists() {
-			fmt.Println("[debug] RunDown: killing session (daemon connection failed)")
-			_ = tmux.KillSession()
+		fmt.Println("[debug] RunDown: killing session (daemon connection failed)")
+		if err := tmux.KillSession(); err != nil {
+			log.Printf("warning: KillSession (daemon connection failed): %v", err)
 		}
 		restoreServerOptions(maestroDir)
 		fmt.Println("Maestro formation stopped.")
@@ -110,12 +110,10 @@ func RunDown(maestroDir string, cfg model.Config) error {
 		_ = os.Remove(socketPath)
 	}
 
-	// Kill tmux session
-	if tmux.SessionExists() {
-		fmt.Println("[debug] RunDown: killing session (normal shutdown path)")
-		if err := tmux.KillSession(); err != nil {
-			return fmt.Errorf("kill tmux session: %w", err)
-		}
+	// Kill tmux session (idempotent — safe even if already gone)
+	fmt.Println("[debug] RunDown: killing session (normal shutdown path)")
+	if err := tmux.KillSession(); err != nil {
+		return fmt.Errorf("kill tmux session: %w", err)
 	}
 
 	restoreServerOptions(maestroDir)
