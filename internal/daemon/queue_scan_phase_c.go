@@ -130,6 +130,11 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 		}
 	}
 
+	// --- Log recovery hints from Phase B partial failures ---
+	for _, hint := range pb.recoveryHints {
+		qh.log(LogLevelWarn, "phase_b_recovery_hint %s", hint)
+	}
+
 	// --- Apply worktree cleanup results: log only ---
 	for _, cr := range pb.worktreeCleanups {
 		if cr.Error != nil {

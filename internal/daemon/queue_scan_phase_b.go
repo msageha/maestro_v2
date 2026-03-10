@@ -56,7 +56,32 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 			Success: err == nil,
 			Error:   err,
 		})
+		if err != nil {
+			qh.log(LogLevelWarn, "phase_b_signal_failed command=%s error=%v", item.CommandID, err)
+			result.recoveryHints = append(result.recoveryHints,
+				fmt.Sprintf("signal_delivery_failed command=%s: signal will be retried next scan, but planner may have stale view until then", item.CommandID))
+		}
 	})
+
+	// Log partial failure summary: dispatches succeeded but related signals failed
+	if len(result.dispatches) > 0 || len(result.signals) > 0 {
+		failedDispatches := 0
+		for _, dr := range result.dispatches {
+			if !dr.Success {
+				failedDispatches++
+			}
+		}
+		failedSignals := 0
+		for _, sr := range result.signals {
+			if !sr.Success {
+				failedSignals++
+			}
+		}
+		if failedDispatches > 0 || failedSignals > 0 {
+			qh.log(LogLevelWarn, "phase_b_partial_failures dispatches_failed=%d/%d signals_failed=%d/%d",
+				failedDispatches, len(result.dispatches), failedSignals, len(result.signals))
+		}
+	}
 
 	// 5. Execute agent clears (fire-and-forget)
 	forEachUntilCanceled(ctx, pa.work.clears, func(agentID string) {
