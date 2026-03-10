@@ -67,8 +67,8 @@ func compileDangerousPatterns() []*regexp.Regexp {
 		`\$\{[^}]+:[0-9]`,                            // substring extraction (${var:0:1}) for char-by-char construction
 		`(?i)\bprintf\b[^\n;|&]*\\x[0-9a-fA-F]`,     // printf with hex escapes for command construction
 		`(?i)\bexport\s+PATH\b`,                      // PATH override attempts
-		`(?i)\bsource\b`,                               // source command for loading external scripts
-		`(?:^|[;\n|&]\s*)\.\s+\S`,                      // dot-source (. /path) for loading external scripts
+		`(?i)(?:^|[;\r\n|&])\s*source\s+\S`,               // source command for loading external scripts
+		`(?:^|[;\r\n|&]\s*)\.\s+\S`,                     // dot-source (. /path) for loading external scripts
 		// Unrestricted shell spawning (bypasses bash --restricted)
 		`(?i)\bsh\b[^\n;|&]*\s+-c\b`,                   // sh -c '...' escapes restricted mode
 		`(?i)\bdash\b[^\n;|&]*\s+-c\b`,                 // dash -c '...' escapes restricted mode
