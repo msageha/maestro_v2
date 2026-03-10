@@ -1,6 +1,8 @@
 package persona
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"testing/fstest"
@@ -93,7 +95,7 @@ func TestFormatPersonaSectionWithFS_FileBasedPersona(t *testing.T) {
 	personas := map[string]model.PersonaConfig{
 		"tester": {Description: "Tester", File: "persona/tester.md"},
 	}
-	result, found := FormatPersonaSectionWithFS(fsys, personas, "tester")
+	result, found := FormatPersonaSectionWithFS(fsys, personas, "tester", "")
 	if !found {
 		t.Error("expected found=true")
 	}
@@ -110,7 +112,7 @@ func TestFormatPersonaSectionWithFS_FallbackToPrompt(t *testing.T) {
 	personas := map[string]model.PersonaConfig{
 		"dev": {Description: "Dev", File: "persona/missing.md", Prompt: "Fallback prompt."},
 	}
-	result, found := FormatPersonaSectionWithFS(fsys, personas, "dev")
+	result, found := FormatPersonaSectionWithFS(fsys, personas, "dev", "")
 	if !found {
 		t.Error("expected found=true")
 	}
@@ -120,7 +122,7 @@ func TestFormatPersonaSectionWithFS_FallbackToPrompt(t *testing.T) {
 }
 
 func TestFormatPersonaSectionWithFS_EmptyHint(t *testing.T) {
-	result, found := FormatPersonaSectionWithFS(nil, nil, "")
+	result, found := FormatPersonaSectionWithFS(nil, nil, "", "")
 	if !found {
 		t.Error("expected found=true for empty hint")
 	}
@@ -134,7 +136,7 @@ func TestFormatPersonaSectionWithFS_UnknownPersona(t *testing.T) {
 	personas := map[string]model.PersonaConfig{
 		"dev": {Description: "Dev", Prompt: "Dev prompt"},
 	}
-	result, found := FormatPersonaSectionWithFS(fsys, personas, "unknown")
+	result, found := FormatPersonaSectionWithFS(fsys, personas, "unknown", "")
 	if found {
 		t.Error("expected found=false for unknown persona")
 	}
@@ -147,7 +149,7 @@ func TestFormatPersonaSectionWithFS_NilFS(t *testing.T) {
 	personas := map[string]model.PersonaConfig{
 		"dev": {Description: "Dev", File: "persona/dev.md", Prompt: "Inline prompt."},
 	}
-	result, found := FormatPersonaSectionWithFS(nil, personas, "dev")
+	result, found := FormatPersonaSectionWithFS(nil, personas, "dev", "")
 	if !found {
 		t.Error("expected found=true")
 	}
@@ -161,7 +163,7 @@ func TestFormatPersonaSectionWithFS_PromptOnly(t *testing.T) {
 	personas := map[string]model.PersonaConfig{
 		"dev": {Description: "Dev", Prompt: "Pure inline."},
 	}
-	result, found := FormatPersonaSectionWithFS(fsys, personas, "dev")
+	result, found := FormatPersonaSectionWithFS(fsys, personas, "dev", "")
 	if !found {
 		t.Error("expected found=true")
 	}
@@ -177,7 +179,7 @@ func TestFormatPersonaSectionWithFS_InvalidPath(t *testing.T) {
 	personas := map[string]model.PersonaConfig{
 		"evil": {Description: "Evil", File: "config.yaml", Prompt: "Fallback."},
 	}
-	result, found := FormatPersonaSectionWithFS(fsys, personas, "evil")
+	result, found := FormatPersonaSectionWithFS(fsys, personas, "evil", "")
 	if !found {
 		t.Error("expected found=true")
 	}
@@ -231,5 +233,58 @@ func TestStripFrontmatter(t *testing.T) {
 				t.Errorf("stripFrontmatter(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
+	}
+}
+
+// --- maestroDir priority tests ---
+
+func TestFormatPersonaSectionWithFS_MaestroDirPriority(t *testing.T) {
+	// Setup: maestroDir has a customized persona file, template FS has the default
+	dir := t.TempDir()
+	personaDir := filepath.Join(dir, "persona")
+	os.MkdirAll(personaDir, 0o755)
+	os.WriteFile(filepath.Join(personaDir, "tester.md"), []byte("---\nname: tester\n---\nCustomized tester prompt.\n"), 0o644)
+
+	fsys := fstest.MapFS{
+		"persona/tester.md": &fstest.MapFile{
+			Data: []byte("---\nname: tester\n---\nDefault tester prompt.\n"),
+		},
+	}
+	personas := map[string]model.PersonaConfig{
+		"tester": {Description: "Tester", File: "persona/tester.md"},
+	}
+
+	result, found := FormatPersonaSectionWithFS(fsys, personas, "tester", dir)
+	if !found {
+		t.Error("expected found=true")
+	}
+	if !strings.Contains(result, "Customized tester prompt.") {
+		t.Errorf("expected maestroDir persona to take priority, got %q", result)
+	}
+	if strings.Contains(result, "Default tester prompt.") {
+		t.Error("should not contain template FS content when maestroDir file exists")
+	}
+}
+
+func TestFormatPersonaSectionWithFS_MaestroDirFallbackToTemplateFS(t *testing.T) {
+	// maestroDir exists but does not have the persona file -> fallback to template FS
+	dir := t.TempDir()
+	os.MkdirAll(filepath.Join(dir, "persona"), 0o755)
+
+	fsys := fstest.MapFS{
+		"persona/tester.md": &fstest.MapFile{
+			Data: []byte("---\nname: tester\n---\nTemplate tester prompt.\n"),
+		},
+	}
+	personas := map[string]model.PersonaConfig{
+		"tester": {Description: "Tester", File: "persona/tester.md"},
+	}
+
+	result, found := FormatPersonaSectionWithFS(fsys, personas, "tester", dir)
+	if !found {
+		t.Error("expected found=true")
+	}
+	if !strings.Contains(result, "Template tester prompt.") {
+		t.Errorf("expected fallback to template FS, got %q", result)
 	}
 }
