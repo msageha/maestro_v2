@@ -13,6 +13,10 @@ import (
 //  1. Escapes "[maestro]" → "\\[maestro]" so injected content cannot mimic
 //     system control headers.
 //  2. Strips control characters (U+0000–U+001F) except newline (\n) and tab (\t).
+//
+// Note: DATA boundary markers (BEGIN/END LEARNINGS/SKILLS) are sanitized
+// separately via SanitizeUserContent before system sections are appended,
+// to avoid escaping the system's own markers.
 func sanitizeEnvelopeField(s string) string {
 	s = strings.ReplaceAll(s, "[maestro]", "\\[maestro]")
 	return strings.Map(func(r rune) rune {
@@ -21,6 +25,18 @@ func sanitizeEnvelopeField(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// SanitizeUserContent escapes DATA boundary markers in user-supplied content
+// to prevent premature closing of LEARNINGS/SKILLS sections. This must be
+// called on user content BEFORE system-generated sections are appended,
+// so that the system's own markers remain intact.
+func SanitizeUserContent(s string) string {
+	s = strings.ReplaceAll(s, "--- BEGIN LEARNINGS", "--- BEGIN\\_LEARNINGS")
+	s = strings.ReplaceAll(s, "--- END LEARNINGS", "--- END\\_LEARNINGS")
+	s = strings.ReplaceAll(s, "--- BEGIN SKILLS", "--- BEGIN\\_SKILLS")
+	s = strings.ReplaceAll(s, "--- END SKILLS", "--- END\\_SKILLS")
+	return s
 }
 
 // --- Envelope Builders ---

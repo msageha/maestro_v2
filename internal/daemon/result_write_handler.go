@@ -96,11 +96,19 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 
 		// First register in state (acquires state lock)
 		if err := retryHandler.RegisterRetryTaskInState(retryTask, params.CommandID); err != nil {
-			d.log(LogLevelError, "register_retry_task_failed task=%s error=%v", retryTask.ID, err)
+			d.log(LogLevelError, "register_retry_task_failed task=%s command=%s error=%v", retryTask.ID, params.CommandID, err)
 		} else {
 			// Then add to queue (acquires queue lock independently)
 			if err := retryHandler.AddRetryTaskToQueue(retryTask, params.Reporter); err != nil {
-				d.log(LogLevelError, "add_retry_task_failed task=%s error=%v", retryTask.ID, err)
+				// M2 fix: Mark failed enqueue in state so R1 reconciler can detect orphaned retry tasks.
+				// The task is registered in state as pending but has no queue entry.
+				d.log(LogLevelError, "add_retry_task_failed task=%s worker=%s command=%s error=%v "+
+					"(task registered in state but not enqueued; R1 reconciler should re-enqueue or mark dead_letter)",
+					retryTask.ID, params.Reporter, params.CommandID, err)
+				if markErr := retryHandler.MarkRetryEnqueueFailed(retryTask.ID, params.Reporter, params.CommandID); markErr != nil {
+					d.log(LogLevelError, "mark_retry_enqueue_failed task=%s command=%s error=%v",
+						retryTask.ID, params.CommandID, markErr)
+				}
 			} else {
 				d.log(LogLevelInfo, "task_retry_scheduled task=%s retry_id=%s attempt=%d",
 					params.TaskID, retryTask.ID, retryTask.Attempts)
@@ -110,15 +118,21 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 
 	// Learnings: best-effort write after core phases succeed.
 	if len(params.Learnings) > 0 && d.config.Learnings.Enabled {
+		learningsPath := filepath.Join(d.maestroDir, "state", "learnings.yaml")
 		if err := a.writeLearnings(params, resultID); err != nil {
-			d.log(LogLevelError, "learnings_write_failed result=%s: %v", resultID, err)
+			d.log(LogLevelWarn, "learnings_write_failed result=%s task=%s command=%s path=%s count=%d error=%v "+
+				"(learnings data lost; core result already committed; manual recovery: re-submit result with same learnings)",
+				resultID, params.TaskID, params.CommandID, learningsPath, len(params.Learnings), err)
 		}
 	}
 
 	// Skill candidates: best-effort write after core phases succeed.
 	if len(params.SkillCandidates) > 0 {
+		candidatesPath := filepath.Join(d.maestroDir, "state", "skill_candidates.yaml")
 		if err := a.writeSkillCandidates(params); err != nil {
-			d.log(LogLevelError, "skill_candidates_write_failed result=%s: %v", resultID, err)
+			d.log(LogLevelWarn, "skill_candidates_write_failed result=%s task=%s command=%s path=%s count=%d error=%v "+
+				"(skill candidates lost; core result already committed; manual recovery: re-submit result with same skill_candidates)",
+				resultID, params.TaskID, params.CommandID, candidatesPath, len(params.SkillCandidates), err)
 		}
 	}
 
@@ -483,10 +497,11 @@ func (a *API) writeLearnings(params ResultWriteParams, resultID string) error {
 		}
 		existing[key] = true
 		lf.Learnings = append(lf.Learnings, model.Learning{
-			ResultID:  resultID,
-			CommandID: params.CommandID,
-			Content:   truncated,
-			CreatedAt: now,
+			ResultID:     resultID,
+			CommandID:    params.CommandID,
+			Content:      truncated,
+			CreatedAt:    now,
+			SourceWorker: params.Reporter,
 		})
 		added++
 	}

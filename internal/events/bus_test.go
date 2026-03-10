@@ -2,6 +2,7 @@ package events
 
 import (
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -636,6 +637,90 @@ func TestBus_DroppedCount(t *testing.T) {
 
 	// Unblock subscriber
 	close(block)
+}
+
+func TestBus_SubscribeCoalesced(t *testing.T) {
+	bus := NewBus(1) // small buffer to cause drops on regular subscribers
+	defer bus.Close()
+
+	callCount := atomic.Int64{}
+	done := make(chan struct{}, 1)
+
+	unsub := bus.SubscribeCoalesced(EventQueueWritten, func() {
+		callCount.Add(1)
+		select {
+		case done <- struct{}{}:
+		default:
+		}
+	})
+	defer unsub()
+
+	// Publish a single event
+	bus.Publish(EventQueueWritten, map[string]interface{}{"file": "test.yaml"})
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for coalesced callback")
+	}
+
+	if got := callCount.Load(); got < 1 {
+		t.Errorf("expected at least 1 coalesced call, got %d", got)
+	}
+}
+
+func TestBus_SubscribeCoalescedBurst(t *testing.T) {
+	bus := NewBus(1)
+	defer bus.Close()
+
+	callCount := atomic.Int64{}
+	barrier := make(chan struct{})
+
+	unsub := bus.SubscribeCoalesced(EventQueueWritten, func() {
+		callCount.Add(1)
+		<-barrier // block to simulate slow consumer
+	})
+	defer unsub()
+
+	// Burst: publish 100 events while consumer is blocked
+	for i := 0; i < 100; i++ {
+		bus.Publish(EventQueueWritten, map[string]interface{}{"id": i})
+	}
+
+	// No events should be dropped for coalesced subscriber.
+	// The channel coalesces them into at most 1 pending signal.
+	// Release barrier to let first callback complete
+	close(barrier)
+
+	// Wait for processing
+	time.Sleep(50 * time.Millisecond)
+
+	got := callCount.Load()
+	// Should have at least 1 call (coalesced), no drops
+	if got < 1 {
+		t.Errorf("expected at least 1 coalesced call after burst, got %d", got)
+	}
+	// Should have at most 2 calls (1 processing + 1 queued signal)
+	if got > 2 {
+		t.Errorf("expected at most 2 coalesced calls, got %d (coalescing not working)", got)
+	}
+}
+
+func TestBus_SubscribeCoalescedAfterClose(t *testing.T) {
+	bus := NewBus(10)
+	bus.Close()
+
+	called := false
+	unsub := bus.SubscribeCoalesced(EventQueueWritten, func() {
+		called = true
+	})
+	unsub()
+
+	bus.Publish(EventQueueWritten, map[string]interface{}{})
+
+	if called {
+		t.Error("coalesced subscriber should not be called after bus is closed")
+	}
 }
 
 func BenchmarkBus_Publish(b *testing.B) {

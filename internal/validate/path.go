@@ -79,8 +79,7 @@ func SafePath(base, elem string) (string, error) {
 	// Resolve base first so the containment check uses real paths.
 	resolvedBase, err := filepath.EvalSymlinks(base)
 	if err != nil {
-		// If base itself cannot be resolved, return the lexically-checked path.
-		return joined, nil
+		return "", fmt.Errorf("validate: cannot resolve base directory: %w", err)
 	}
 
 	// Try to resolve the full path. If it fails (e.g. leaf doesn't exist),
@@ -93,8 +92,7 @@ func SafePath(base, elem string) (string, error) {
 		for {
 			parent := filepath.Dir(ancestor)
 			if parent == ancestor {
-				// Reached filesystem root without finding an existing path.
-				return joined, nil
+				return "", fmt.Errorf("validate: cannot resolve any ancestor of path %q", elem)
 			}
 			ancestor = parent
 			resolvedAncestor, evalErr := filepath.EvalSymlinks(ancestor)

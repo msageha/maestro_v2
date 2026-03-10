@@ -80,8 +80,8 @@ func Run(projectDir, projectName string) error {
 	}
 
 	workerCount := cfg.Agents.Workers.Count
-	if workerCount < 1 || workerCount > 8 {
-		return fmt.Errorf("agents.workers.count must be 1-8, got %d", workerCount)
+	if workerCount < model.MinWorkers || workerCount > model.MaxWorkers {
+		return fmt.Errorf("agents.workers.count must be %d-%d, got %d", model.MinWorkers, model.MaxWorkers, workerCount)
 	}
 
 	if err := writeYAMLAtomic(filepath.Join(base, "config.yaml"), cfg); err != nil {
