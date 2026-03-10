@@ -69,6 +69,16 @@ func compileDangerousPatterns() []*regexp.Regexp {
 		`(?i)\bexport\s+PATH\b`,                      // PATH override attempts
 		`(?i)\bsource\b`,                               // source command for loading external scripts
 		`(?:^|[;\n|&]\s*)\.\s+\S`,                      // dot-source (. /path) for loading external scripts
+		// Unrestricted shell spawning (bypasses bash --restricted)
+		`(?i)\bsh\b[^\n;|&]*\s+-c\b`,                   // sh -c '...' escapes restricted mode
+		`(?i)\bdash\b[^\n;|&]*\s+-c\b`,                 // dash -c '...' escapes restricted mode
+		`(?i)\bksh\b[^\n;|&]*\s+-c\b`,                  // ksh -c '...' escapes restricted mode
+		`(?i)\bzsh\b[^\n;|&]*\s+-c\b`,                  // zsh -c '...' escapes restricted mode
+		`(?i)\bbash\b[^\n;|&]*\s+-c\b`,                 // bash -c '...' spawns unrestricted bash
+		// Interpreter system() calls
+		`(?i)\bawk\b[^\n;|&]*\bsystem\s*\(`,            // awk system() call
+		`(?i)\bgawk\b[^\n;|&]*\bsystem\s*\(`,           // gawk system() call
+		`(?i)\bmawk\b[^\n;|&]*\bsystem\s*\(`,           // mawk system() call
 	}
 	patterns := make([]*regexp.Regexp, 0, len(raw))
 	for _, r := range raw {
