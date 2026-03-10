@@ -23,6 +23,7 @@ func newTestStateManager(t *testing.T) *StateManager {
 }
 
 func TestStateManager_SaveAndLoad(t *testing.T) {
+	t.Parallel()
 	sm := newTestStateManager(t)
 
 	original := &model.CommandState{
@@ -68,6 +69,7 @@ func TestStateManager_SaveAndLoad(t *testing.T) {
 }
 
 func TestStateManager_StateExists(t *testing.T) {
+	t.Parallel()
 	sm := newTestStateManager(t)
 
 	if sm.StateExists("nonexistent") {
@@ -89,6 +91,7 @@ func TestStateManager_StateExists(t *testing.T) {
 }
 
 func TestStateManager_DeleteState(t *testing.T) {
+	t.Parallel()
 	sm := newTestStateManager(t)
 
 	state := &model.CommandState{
@@ -114,6 +117,7 @@ func TestStateManager_DeleteState(t *testing.T) {
 }
 
 func TestCanComplete_AllCompleted(t *testing.T) {
+	t.Parallel()
 	state := &model.CommandState{
 		PlanStatus:        model.PlanStatusSealed,
 		ExpectedTaskCount: 3,
@@ -136,6 +140,7 @@ func TestCanComplete_AllCompleted(t *testing.T) {
 }
 
 func TestCanComplete_HasFailed(t *testing.T) {
+	t.Parallel()
 	state := &model.CommandState{
 		PlanStatus:        model.PlanStatusSealed,
 		ExpectedTaskCount: 2,
@@ -156,6 +161,7 @@ func TestCanComplete_HasFailed(t *testing.T) {
 }
 
 func TestCanComplete_HasCancelled(t *testing.T) {
+	t.Parallel()
 	state := &model.CommandState{
 		PlanStatus:        model.PlanStatusSealed,
 		ExpectedTaskCount: 2,
@@ -176,6 +182,7 @@ func TestCanComplete_HasCancelled(t *testing.T) {
 }
 
 func TestCanComplete_NotSealed(t *testing.T) {
+	t.Parallel()
 	state := &model.CommandState{
 		PlanStatus:        model.PlanStatusPlanning,
 		ExpectedTaskCount: 1,
@@ -192,6 +199,7 @@ func TestCanComplete_NotSealed(t *testing.T) {
 }
 
 func TestCanComplete_TaskCountMismatch(t *testing.T) {
+	t.Parallel()
 	state := &model.CommandState{
 		PlanStatus:        model.PlanStatusSealed,
 		ExpectedTaskCount: 5,
@@ -210,6 +218,7 @@ func TestCanComplete_TaskCountMismatch(t *testing.T) {
 }
 
 func TestCanComplete_NonTerminalTask(t *testing.T) {
+	t.Parallel()
 	state := &model.CommandState{
 		PlanStatus:        model.PlanStatusSealed,
 		ExpectedTaskCount: 2,
@@ -227,6 +236,7 @@ func TestCanComplete_NonTerminalTask(t *testing.T) {
 }
 
 func TestCanComplete_FillingPhase(t *testing.T) {
+	t.Parallel()
 	state := &model.CommandState{
 		PlanStatus:        model.PlanStatusSealed,
 		ExpectedTaskCount: 1,
@@ -254,6 +264,7 @@ func TestCanComplete_FillingPhase(t *testing.T) {
 }
 
 func TestDeriveStatus_TimedOutPhase(t *testing.T) {
+	t.Parallel()
 	state := &model.CommandState{
 		PlanStatus:        model.PlanStatusSealed,
 		ExpectedTaskCount: 1,
@@ -279,6 +290,7 @@ func TestDeriveStatus_TimedOutPhase(t *testing.T) {
 }
 
 func TestDeriveStatus_OnOptionalFailed_Ignore(t *testing.T) {
+	t.Parallel()
 	state := &model.CommandState{
 		PlanStatus:        model.PlanStatusSealed,
 		ExpectedTaskCount: 2,
@@ -303,6 +315,7 @@ func TestDeriveStatus_OnOptionalFailed_Ignore(t *testing.T) {
 }
 
 func TestDeriveStatus_OnOptionalFailed_Default(t *testing.T) {
+	t.Parallel()
 	// Default (empty string) should behave as "ignore"
 	state := &model.CommandState{
 		PlanStatus:        model.PlanStatusSealed,
@@ -325,6 +338,7 @@ func TestDeriveStatus_OnOptionalFailed_Default(t *testing.T) {
 }
 
 func TestDeriveStatus_OnOptionalFailed_Warn(t *testing.T) {
+	t.Parallel()
 	state := &model.CommandState{
 		CommandID:         "cmd-test-warn",
 		PlanStatus:        model.PlanStatusSealed,
@@ -351,6 +365,7 @@ func TestDeriveStatus_OnOptionalFailed_Warn(t *testing.T) {
 }
 
 func TestDeriveStatus_OnOptionalFailed_FailCommand(t *testing.T) {
+	t.Parallel()
 	state := &model.CommandState{
 		PlanStatus:        model.PlanStatusSealed,
 		ExpectedTaskCount: 2,
@@ -375,6 +390,7 @@ func TestDeriveStatus_OnOptionalFailed_FailCommand(t *testing.T) {
 }
 
 func TestDeriveStatus_OnOptionalFailed_NoFailure(t *testing.T) {
+	t.Parallel()
 	// When optional tasks succeed, policy should not affect result
 	state := &model.CommandState{
 		PlanStatus:        model.PlanStatusSealed,
@@ -400,6 +416,7 @@ func TestDeriveStatus_OnOptionalFailed_NoFailure(t *testing.T) {
 }
 
 func TestDeriveStatus_OnOptionalFailed_UnsupportedValue(t *testing.T) {
+	t.Parallel()
 	state := &model.CommandState{
 		PlanStatus:        model.PlanStatusSealed,
 		ExpectedTaskCount: 2,
@@ -421,10 +438,13 @@ func TestDeriveStatus_OnOptionalFailed_UnsupportedValue(t *testing.T) {
 }
 
 func TestDeriveStatus_DependencyFailurePolicy_Valid(t *testing.T) {
+	t.Parallel()
 	validPolicies := []string{"cancel_dependents", "fail_dependents", "ignore"}
 
 	for _, policy := range validPolicies {
+		policy := policy
 		t.Run(policy, func(t *testing.T) {
+			t.Parallel()
 			state := &model.CommandState{
 				PlanStatus:        model.PlanStatusSealed,
 				ExpectedTaskCount: 1,
@@ -449,6 +469,7 @@ func TestDeriveStatus_DependencyFailurePolicy_Valid(t *testing.T) {
 }
 
 func TestDeriveStatus_DependencyFailurePolicy_Unsupported(t *testing.T) {
+	t.Parallel()
 	state := &model.CommandState{
 		PlanStatus:        model.PlanStatusSealed,
 		ExpectedTaskCount: 1,
@@ -468,6 +489,7 @@ func TestDeriveStatus_DependencyFailurePolicy_Unsupported(t *testing.T) {
 }
 
 func TestDeriveStatus_DependencyFailurePolicy_Default(t *testing.T) {
+	t.Parallel()
 	// Empty string defaults to "cancel_dependents" — should not error
 	state := &model.CommandState{
 		PlanStatus:        model.PlanStatusSealed,
@@ -490,6 +512,7 @@ func TestDeriveStatus_DependencyFailurePolicy_Default(t *testing.T) {
 // --- LoadState backup recovery tests ---
 
 func TestLoadState_CorruptedYAML_RecoveredFromBackup(t *testing.T) {
+	t.Parallel()
 	sm := newTestStateManager(t)
 
 	// Save a valid state (this creates the .bak via AtomicWrite)
@@ -528,6 +551,7 @@ func TestLoadState_CorruptedYAML_RecoveredFromBackup(t *testing.T) {
 }
 
 func TestLoadState_CorruptedYAML_NoBackup(t *testing.T) {
+	t.Parallel()
 	sm := newTestStateManager(t)
 
 	// Write corrupted YAML directly (no .bak exists)
@@ -551,6 +575,7 @@ func TestLoadState_CorruptedYAML_NoBackup(t *testing.T) {
 }
 
 func TestLoadState_FileNotFound_NoRecoveryAttempt(t *testing.T) {
+	t.Parallel()
 	sm := newTestStateManager(t)
 
 	// Non-existent file should return os.ErrNotExist, NOT attempt recovery
@@ -564,6 +589,7 @@ func TestLoadState_FileNotFound_NoRecoveryAttempt(t *testing.T) {
 }
 
 func TestLoadState_InvalidSchemaVersion_RecoveredFromBackup(t *testing.T) {
+	t.Parallel()
 	sm := newTestStateManager(t)
 
 	// Save a valid state twice to create a .bak
@@ -601,6 +627,7 @@ func TestLoadState_InvalidSchemaVersion_RecoveredFromBackup(t *testing.T) {
 }
 
 func TestDeriveStatus_RequiredFailedOverridesOptionalPolicy(t *testing.T) {
+	t.Parallel()
 	// Required failure should take precedence over optional failure policy
 	state := &model.CommandState{
 		PlanStatus:        model.PlanStatusSealed,
@@ -630,6 +657,7 @@ func TestDeriveStatus_RequiredFailedOverridesOptionalPolicy(t *testing.T) {
 // --- Migrator integration tests ---
 
 func TestLoadState_MigratorIntegration_CurrentVersion(t *testing.T) {
+	t.Parallel()
 	// When schema_version == CurrentSchemaVersion, no migration should be applied
 	sm := newTestStateManager(t)
 
@@ -724,6 +752,7 @@ func TestLoadState_MigratorIntegration_OlderVersion(t *testing.T) {
 }
 
 func TestLoadState_MigratorIntegration_NeedsMigrationCalled(t *testing.T) {
+	t.Parallel()
 	// Verify that the migration path is connected by checking that
 	// DefaultMigrator.NeedsMigration is correctly invoked during LoadState.
 	sm := newTestStateManager(t)

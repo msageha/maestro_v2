@@ -116,8 +116,20 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 		}
 	}
 
+	// Best-effort lease epoch check: skip learnings/skill_candidates writes
+	// if the lease epoch no longer matches (stale worker after revocation).
+	// Read-only check without lock is acceptable — this is advisory, not authoritative.
+	bestEffortAllowed := true
+	if len(params.Learnings) > 0 || len(params.SkillCandidates) > 0 {
+		if skip, reason := a.checkLeaseEpochForBestEffort(params); skip {
+			d.log(LogLevelWarn, "best_effort_writes_skipped task=%s command=%s reason=%s",
+				params.TaskID, params.CommandID, reason)
+			bestEffortAllowed = false
+		}
+	}
+
 	// Learnings: best-effort write after core phases succeed.
-	if len(params.Learnings) > 0 && d.config.Learnings.Enabled {
+	if bestEffortAllowed && len(params.Learnings) > 0 && d.config.Learnings.Enabled {
 		learningsPath := filepath.Join(d.maestroDir, "state", "learnings.yaml")
 		if err := a.writeLearnings(params, resultID); err != nil {
 			d.log(LogLevelWarn, "learnings_write_failed result=%s task=%s command=%s path=%s count=%d error=%v "+
@@ -127,7 +139,7 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 	}
 
 	// Skill candidates: best-effort write after core phases succeed.
-	if len(params.SkillCandidates) > 0 {
+	if bestEffortAllowed && len(params.SkillCandidates) > 0 {
 		candidatesPath := filepath.Join(d.maestroDir, "state", "skill_candidates.yaml")
 		if err := a.writeSkillCandidates(params); err != nil {
 			d.log(LogLevelWarn, "skill_candidates_write_failed result=%s task=%s command=%s path=%s count=%d error=%v "+
@@ -431,6 +443,33 @@ func (a *API) resultWritePhaseB(params ResultWriteParams, resultID string, resul
 
 		return nil
 	})
+}
+
+// checkLeaseEpochForBestEffort performs a read-only lease epoch check against
+// the queue file. Returns (skip=true, reason) only on definitive epoch mismatch.
+// On I/O errors, parse errors, or task-not-found (task may have been archived
+// after completion), returns (skip=false, "") to allow writes to proceed.
+func (a *API) checkLeaseEpochForBestEffort(params ResultWriteParams) (skip bool, reason string) {
+	d := a.d
+	queuePath := filepath.Join(d.maestroDir, "queue", params.Reporter+".yaml")
+	data, err := os.ReadFile(queuePath)
+	if err != nil {
+		return false, ""
+	}
+	var tq model.TaskQueue
+	if err := yamlv3.Unmarshal(data, &tq); err != nil {
+		return false, ""
+	}
+	for _, task := range tq.Tasks {
+		if task.ID == params.TaskID {
+			if task.LeaseEpoch != params.LeaseEpoch {
+				return true, fmt.Sprintf("lease_epoch_mismatch: queue=%d request=%d", task.LeaseEpoch, params.LeaseEpoch)
+			}
+			return false, ""
+		}
+	}
+	// Task not found — may have been archived after completion; allow writes
+	return false, ""
 }
 
 // writeLearnings appends learning entries to .maestro/state/learnings.yaml.

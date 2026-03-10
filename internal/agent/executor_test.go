@@ -15,6 +15,7 @@ import (
 )
 
 func TestContentHash(t *testing.T) {
+	t.Parallel()
 	// Same input → same hash
 	h1 := contentHash("hello world")
 	h2 := contentHash("hello world")
@@ -36,6 +37,7 @@ func TestContentHash(t *testing.T) {
 }
 
 func TestApplyDefaults(t *testing.T) {
+	t.Parallel()
 	// Zero values get defaults
 	cfg := applyDefaults(model.WatcherConfig{})
 	if cfg.BusyCheckInterval != 2 {
@@ -101,6 +103,7 @@ func TestApplyDefaults(t *testing.T) {
 }
 
 func TestParseLogLevel(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input    string
 		expected LogLevel
@@ -118,7 +121,9 @@ func TestParseLogLevel(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.input, func(t *testing.T) {
+			t.Parallel()
 			got := parseLogLevel(tt.input)
 			if got != tt.expected {
 				t.Errorf("parseLogLevel(%q) = %d, want %d", tt.input, got, tt.expected)
@@ -128,6 +133,7 @@ func TestParseLogLevel(t *testing.T) {
 }
 
 func TestBusyVerdictString(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		verdict  BusyVerdict
 		expected string
@@ -138,7 +144,9 @@ func TestBusyVerdictString(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.expected, func(t *testing.T) {
+			t.Parallel()
 			if got := tt.verdict.String(); got != tt.expected {
 				t.Errorf("got %q, want %q", got, tt.expected)
 			}
@@ -147,6 +155,7 @@ func TestBusyVerdictString(t *testing.T) {
 }
 
 func TestNewExecutor_InvalidBusyPatterns(t *testing.T) {
+	t.Parallel()
 	_, err := newExecutor("", model.WatcherConfig{
 		BusyPatterns: "[invalid",
 	}, "info", &bytes.Buffer{}, nil)
@@ -156,6 +165,7 @@ func TestNewExecutor_InvalidBusyPatterns(t *testing.T) {
 }
 
 func TestNewExecutor_ValidBusyPatterns(t *testing.T) {
+	t.Parallel()
 	exec, err := newExecutor("", model.WatcherConfig{
 		BusyPatterns: "Working|Thinking|Planning",
 	}, "info", &bytes.Buffer{}, nil)
@@ -171,6 +181,7 @@ func TestNewExecutor_ValidBusyPatterns(t *testing.T) {
 }
 
 func TestNewExecutor_EmptyBusyPatterns(t *testing.T) {
+	t.Parallel()
 	exec, err := newExecutor("", model.WatcherConfig{}, "info", &bytes.Buffer{}, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -184,6 +195,7 @@ func TestNewExecutor_EmptyBusyPatterns(t *testing.T) {
 }
 
 func TestLogLevelFiltering(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	exec, err := newExecutor("", model.WatcherConfig{}, "warn", &buf, nil)
 	if err != nil {
@@ -211,6 +223,7 @@ func TestLogLevelFiltering(t *testing.T) {
 }
 
 func TestExecMode_Constants(t *testing.T) {
+	t.Parallel()
 	// Verify all mode constants are distinct (regression guard)
 	modes := []ExecMode{ModeDeliver, ModeWithClear, ModeInterrupt, ModeIsBusy, ModeClear}
 	seen := make(map[ExecMode]bool)
@@ -225,6 +238,7 @@ func TestExecMode_Constants(t *testing.T) {
 // --- Fix #3: Stage 1 shell command detection ---
 
 func TestShellCommands(t *testing.T) {
+	t.Parallel()
 	// Known shells should be recognized via tmux.IsShellCommand
 	shells := []string{"bash", "zsh", "fish", "sh", "dash", "tcsh", "csh"}
 	for _, s := range shells {
@@ -245,6 +259,7 @@ func TestShellCommands(t *testing.T) {
 // --- Fix #5: Role name validation ---
 
 func TestValidRoleName(t *testing.T) {
+	t.Parallel()
 	valid := []string{"orchestrator", "planner", "worker", "worker-1", "my_role"}
 	for _, r := range valid {
 		if !validRoleName.MatchString(r) {
@@ -263,6 +278,7 @@ func TestValidRoleName(t *testing.T) {
 // --- Fix #2: Orchestrator Ctrl-C protection ---
 
 func TestOrchestratorInterruptRejected(t *testing.T) {
+	t.Parallel()
 	// Orchestrator should never be interruptible.
 	// execInterrupt checks AgentID == "orchestrator" before any tmux call,
 	// so we can test the guard directly without a running tmux session.
@@ -286,6 +302,7 @@ func TestOrchestratorInterruptRejected(t *testing.T) {
 // --- isPromptReady tests ---
 
 func TestIsPromptReady(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		content string
@@ -384,7 +401,9 @@ func TestIsPromptReady(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := isPromptReady(tt.content)
 			if got != tt.want {
 				t.Errorf("isPromptReady(%q) = %v, want %v", tt.content, got, tt.want)
@@ -394,6 +413,7 @@ func TestIsPromptReady(t *testing.T) {
 }
 
 func TestLastNonBlankLine(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		content string
@@ -407,7 +427,9 @@ func TestLastNonBlankLine(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := lastNonBlankLine(tt.content)
 			if got != tt.want {
 				t.Errorf("lastNonBlankLine() = %q, want %q", got, tt.want)
@@ -417,6 +439,7 @@ func TestLastNonBlankLine(t *testing.T) {
 }
 
 func TestStripANSI(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		input string
@@ -437,7 +460,9 @@ func TestStripANSI(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := stripANSI(tt.input)
 			if got != tt.want {
 				t.Errorf("stripANSI(%q) = %q, want %q", tt.input, got, tt.want)
@@ -449,6 +474,7 @@ func TestStripANSI(t *testing.T) {
 // --- clearTextVisible tests ---
 
 func TestClearTextVisible(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		content string
@@ -507,7 +533,9 @@ func TestClearTextVisible(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := clearTextVisible(tt.content)
 			if got != tt.want {
 				t.Errorf("clearTextVisible() = %v, want %v\ncontent: %q", got, tt.want, tt.content)
@@ -519,6 +547,7 @@ func TestClearTextVisible(t *testing.T) {
 // --- promptReadyLines constant test ---
 
 func TestPromptReadyLinesIncreased(t *testing.T) {
+	t.Parallel()
 	// Verify the capture depth has been increased from 5 to 12
 	// to accommodate Claude Code's status bars and improve prompt detection.
 	if promptReadyLines < 12 {
@@ -679,6 +708,7 @@ func newTestExecutorWithLog(paneIO PaneIO) (*Executor, *bytes.Buffer) {
 }
 
 func TestExecute_UnknownMode(t *testing.T) {
+	t.Parallel()
 	mock := newExecMock()
 	exec, _ := newTestExecutorWithLog(mock)
 
@@ -695,6 +725,7 @@ func TestExecute_UnknownMode(t *testing.T) {
 }
 
 func TestExecute_PaneNotFound(t *testing.T) {
+	t.Parallel()
 	mock := newExecMock()
 	mock.findPaneErr = fmt.Errorf("pane not found")
 	exec, _ := newTestExecutorWithLog(mock)
@@ -712,6 +743,7 @@ func TestExecute_PaneNotFound(t *testing.T) {
 }
 
 func TestExecute_ModeIsBusy_Idle(t *testing.T) {
+	t.Parallel()
 	mock := newExecMock()
 	mock.isShell = true // shell → idle
 	exec, _ := newTestExecutorWithLog(mock)
@@ -729,6 +761,7 @@ func TestExecute_ModeIsBusy_Idle(t *testing.T) {
 }
 
 func TestExecute_ModeIsBusy_Busy(t *testing.T) {
+	t.Parallel()
 	mock := newExecMock()
 	mock.isShell = false
 	mock.currentCmd = "claude"
@@ -749,6 +782,7 @@ func TestExecute_ModeIsBusy_Busy(t *testing.T) {
 }
 
 func TestExecute_ModeIsBusy_Undecided(t *testing.T) {
+	t.Parallel()
 	mock := newExecMock()
 	mock.isShell = false
 	mock.currentCmd = "claude"
@@ -775,6 +809,7 @@ func TestExecute_ModeIsBusy_Undecided(t *testing.T) {
 }
 
 func TestExecute_ModeDeliver_Success(t *testing.T) {
+	t.Parallel()
 	mock := newExecMock()
 	mock.isShell = true // idle → deliver immediately
 	exec, _ := newTestExecutorWithLog(mock)
@@ -799,6 +834,7 @@ func TestExecute_ModeDeliver_Success(t *testing.T) {
 }
 
 func TestExecute_ModeDeliver_AgentBusy(t *testing.T) {
+	t.Parallel()
 	mock := newExecMock()
 	mock.isShell = false
 	mock.currentCmd = "claude"
@@ -823,6 +859,7 @@ func TestExecute_ModeDeliver_AgentBusy(t *testing.T) {
 }
 
 func TestExecute_ModeDeliver_SendTextFails(t *testing.T) {
+	t.Parallel()
 	mock := newExecMock()
 	mock.isShell = true // idle
 	mock.sendTextErr = fmt.Errorf("tmux error")
@@ -845,6 +882,7 @@ func TestExecute_ModeDeliver_SendTextFails(t *testing.T) {
 }
 
 func TestExecute_ModeDeliver_Orchestrator_Idle(t *testing.T) {
+	t.Parallel()
 	mock := newExecMock()
 	mock.isShell = true // idle
 	exec, _ := newTestExecutorWithLog(mock)
@@ -863,6 +901,7 @@ func TestExecute_ModeDeliver_Orchestrator_Idle(t *testing.T) {
 }
 
 func TestExecute_ModeDeliver_Orchestrator_Busy(t *testing.T) {
+	t.Parallel()
 	mock := newExecMock()
 	mock.isShell = false
 	mock.currentCmd = "claude"
@@ -887,6 +926,7 @@ func TestExecute_ModeDeliver_Orchestrator_Busy(t *testing.T) {
 }
 
 func TestExecute_ModeWithClear_FirstDispatch(t *testing.T) {
+	t.Parallel()
 	mock := newExecMock()
 	mock.isShell = true // idle
 	// clear_ready not set → first dispatch path
@@ -917,6 +957,7 @@ func TestExecute_ModeWithClear_FirstDispatch(t *testing.T) {
 }
 
 func TestExecute_ModeWithClear_Orchestrator_FallsToDeliver(t *testing.T) {
+	t.Parallel()
 	mock := newExecMock()
 	mock.isShell = true // idle
 	exec, _ := newTestExecutorWithLog(mock)
@@ -939,6 +980,7 @@ func TestExecute_ModeWithClear_Orchestrator_FallsToDeliver(t *testing.T) {
 }
 
 func TestExecute_ModeInterrupt_ViaExecute(t *testing.T) {
+	t.Parallel()
 	mock := newExecMock()
 	exec, _ := newTestExecutorWithLog(mock)
 
@@ -956,6 +998,7 @@ func TestExecute_ModeInterrupt_ViaExecute(t *testing.T) {
 }
 
 func TestExecute_DefaultContext(t *testing.T) {
+	t.Parallel()
 	mock := newExecMock()
 	mock.isShell = true
 	exec, _ := newTestExecutorWithLog(mock)
@@ -978,6 +1021,7 @@ func TestExecute_DefaultContext(t *testing.T) {
 // TestExecute_DeliveryStartLogNoDuplicate verifies that delivery_start is logged
 // exactly once per Execute() call (regression test for B5 fix).
 func TestExecute_DeliveryStartLogNoDuplicate(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		agentID string
@@ -1001,7 +1045,9 @@ func TestExecute_DeliveryStartLogNoDuplicate(t *testing.T) {
 	}
 
 	for _, tt := range tests {
+		tt := tt
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			mock := newExecMock()
 			mock.isShell = true // idle → fast path
 			exec, buf := newTestExecutorWithLog(mock)
@@ -1024,6 +1070,7 @@ func TestExecute_DeliveryStartLogNoDuplicate(t *testing.T) {
 
 // TestExecute_ModeClear_Success verifies the clear-only mode through Execute().
 func TestExecute_ModeClear_Success(t *testing.T) {
+	t.Parallel()
 	mock := newExecMock()
 	mock.isShell = true
 	// For clearAndConfirm: return different content to simulate /clear processing
@@ -1044,6 +1091,7 @@ func TestExecute_ModeClear_Success(t *testing.T) {
 // TestExecutor_Close_NilLogFile verifies that Close() handles nil logFile
 // without panic (zero-value safety).
 func TestExecutor_Close_NilLogFile(t *testing.T) {
+	t.Parallel()
 	exec := &Executor{} // logFile is nil
 	err := exec.Close()
 	if err != nil {
@@ -1054,6 +1102,7 @@ func TestExecutor_Close_NilLogFile(t *testing.T) {
 // TestExecutor_Close_WithLogFile verifies that Close() properly closes
 // a non-nil logFile.
 func TestExecutor_Close_WithLogFile(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	exec, _ := newTestExecutorWithLog(newExecMock())
 
