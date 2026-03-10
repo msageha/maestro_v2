@@ -878,7 +878,10 @@ func (wm *Manager) CleanupCommand(commandID string) error {
 		}
 
 		// Delete worker branch
-		_ = wm.gitRun("branch", "-D", ws.Branch)
+		if err := wm.gitRun("branch", "-D", ws.Branch); err != nil {
+			wm.log(core.LogLevelWarn, "delete_worker_branch_failed command=%s worker=%s branch=%s error=%v",
+				commandID, ws.WorkerID, ws.Branch, err)
+		}
 	}
 
 	// Remove integration worktree (must be before os.RemoveAll and branch deletion)
@@ -886,7 +889,10 @@ func (wm *Manager) CleanupCommand(commandID string) error {
 	_ = wm.gitRun("worktree", "remove", "--force", integrationPath)
 
 	// Delete integration branch
-	_ = wm.gitRun("branch", "-D", state.Integration.Branch)
+	if err := wm.gitRun("branch", "-D", state.Integration.Branch); err != nil {
+		wm.log(core.LogLevelWarn, "delete_integration_branch_failed command=%s branch=%s error=%v",
+			commandID, state.Integration.Branch, err)
+	}
 
 	// Remove the worktree directory for this command
 	wtDir := filepath.Join(wm.projectRoot, wm.config.EffectivePathPrefix(), commandID)
@@ -1377,14 +1383,20 @@ func (wm *Manager) cleanupCommandUnlocked(commandID string, state *model.Worktre
 		if err := wm.gitRun("worktree", "remove", "--force", ws.Path); err != nil {
 			errs = append(errs, fmt.Sprintf("remove worktree %s: %v", ws.WorkerID, err))
 		}
-		_ = wm.gitRun("branch", "-D", ws.Branch)
+		if err := wm.gitRun("branch", "-D", ws.Branch); err != nil {
+			wm.log(core.LogLevelWarn, "delete_worker_branch_failed command=%s worker=%s branch=%s error=%v",
+				commandID, ws.WorkerID, ws.Branch, err)
+		}
 	}
 
 	// Remove integration worktree before branch deletion
 	integrationPath := wm.integrationWorktreePath(commandID)
 	_ = wm.gitRun("worktree", "remove", "--force", integrationPath)
 
-	_ = wm.gitRun("branch", "-D", state.Integration.Branch)
+	if err := wm.gitRun("branch", "-D", state.Integration.Branch); err != nil {
+		wm.log(core.LogLevelWarn, "delete_integration_branch_failed command=%s branch=%s error=%v",
+			commandID, state.Integration.Branch, err)
+	}
 
 	// Remove directory
 	wtDir := filepath.Join(wm.projectRoot, wm.config.EffectivePathPrefix(), commandID)
