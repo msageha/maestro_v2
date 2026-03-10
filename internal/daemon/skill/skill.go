@@ -302,11 +302,14 @@ func ListSkillsWithRole(skillsDir, role string) ([]SkillMetadata, error) {
 	seen := make(map[string]struct{})
 	var skills []SkillMetadata
 
-	// Scan directories in priority order: role-specific > share > flat
-	dirs := []string{
-		filepath.Join(skillsDir, role),
-		filepath.Join(skillsDir, "share"),
+	// Scan directories in priority order: role-specific > share > flat.
+	// When role is empty, skip the role-specific directory to avoid
+	// collapsing to skillsDir which would scan flat entries prematurely.
+	var dirs []string
+	if role != "" {
+		dirs = append(dirs, filepath.Join(skillsDir, role))
 	}
+	dirs = append(dirs, filepath.Join(skillsDir, "share"))
 
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)
@@ -324,12 +327,23 @@ func ListSkillsWithRole(skillsDir, role string) ([]SkillMetadata, error) {
 			if _, ok := seen[name]; ok {
 				continue
 			}
-			sc, err := ReadSkillWithRole(skillsDir, name, role)
+			// Read SKILL.md directly from the current directory instead of
+			// calling ReadSkillWithRole which redundantly searches all fallback paths.
+			path := filepath.Join(dir, name, "SKILL.md")
+			data, err := os.ReadFile(path)
 			if err != nil {
 				continue
 			}
+			meta, _, err := parseFrontmatter(string(data))
+			if err != nil {
+				continue
+			}
+			meta.ID = name
+			if meta.Name == "" {
+				meta.Name = name
+			}
 			seen[name] = struct{}{}
-			skills = append(skills, sc.SkillMetadata)
+			skills = append(skills, meta)
 		}
 	}
 
