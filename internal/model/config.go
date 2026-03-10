@@ -12,6 +12,12 @@ import (
 // DefaultMaxYAMLFileBytes is the default maximum size for YAML file reads (5MB).
 const DefaultMaxYAMLFileBytes = 5 * 1024 * 1024
 
+// MinWorkers is the minimum allowed worker count.
+const MinWorkers = 1
+
+// MaxWorkers is the maximum allowed worker count.
+const MaxWorkers = 8
+
 type Config struct {
 	Project        ProjectConfig        `yaml:"project"`
 	Maestro        MaestroConfig        `yaml:"maestro"`
@@ -426,8 +432,8 @@ func (c Config) Validate() error {
 	}
 
 	// agents.workers.count
-	if c.Agents.Workers.Count < 1 {
-		errs = append(errs, fmt.Errorf("agents.workers.count: must be >= 1"))
+	if c.Agents.Workers.Count < MinWorkers || c.Agents.Workers.Count > MaxWorkers {
+		errs = append(errs, fmt.Errorf("agents.workers.count: must be between %d and %d", MinWorkers, MaxWorkers))
 	}
 
 	// watcher timeout fields (negative values invalid)
