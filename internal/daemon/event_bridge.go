@@ -93,16 +93,16 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 	eb.eventUnsubscribers = []func(){unsub1, unsub2, unsub3}
 }
 
-// subscribeQueueWrittenEvents subscribes to EventQueueWritten to trigger scan
-// directly via the event bus, bypassing fsnotify for daemon-originated writes.
+// subscribeQueueWrittenEvents subscribes to EventQueueWritten using a coalescing
+// channel to trigger scans. This guarantees at least one scan after any queue write,
+// even during bursts, without dropping notifications.
 func (eb *EventBridge) subscribeQueueWrittenEvents() {
 	d := eb.d
-	unsub := d.eventBus.Subscribe(events.EventQueueWritten, func(e events.Event) {
+	unsub := d.eventBus.SubscribeCoalesced(events.EventQueueWritten, func() {
 		if d.handler == nil || d.shuttingDown.Load() {
 			return
 		}
-		file, _ := e.Data["file"].(string)
-		d.handler.debounceAndScan("event_bus:" + file)
+		d.handler.debounceAndScan("event_bus:queue_written")
 	})
 	eb.eventUnsubscribers = append(eb.eventUnsubscribers, unsub)
 }

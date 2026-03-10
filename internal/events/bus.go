@@ -46,6 +46,21 @@ func (s *subscriberChan) safeClose() {
 	s.once.Do(func() { close(s.ch) })
 }
 
+// CoalescedSubscriber receives coalesced notifications.
+// Multiple rapid publishes are merged into a single callback invocation,
+// guaranteeing at least one callback after any publish.
+type CoalescedSubscriber func()
+
+// coalescedSub wraps a coalescing signal channel with sync.Once for safe close.
+type coalescedSub struct {
+	sig  chan struct{}
+	once sync.Once
+}
+
+func (c *coalescedSub) safeClose() {
+	c.once.Do(func() { close(c.sig) })
+}
+
 // Bus is a non-blocking event bus using Publish/Subscribe pattern.
 // Events are delivered asynchronously via buffered channels.
 // If a subscriber's channel is full, the event is dropped and counted.
@@ -53,6 +68,7 @@ type Bus struct {
 	mu               sync.RWMutex
 	closed           atomic.Bool
 	subscribers      map[EventType][]*subscriberChan
+	coalescedSubs    map[EventType][]*coalescedSub
 	bufferSize       int
 	wg               sync.WaitGroup
 	droppedCount     atomic.Int64   // global total for O(1) DroppedCount()
@@ -69,10 +85,11 @@ func NewBus(bufferSize int) *Bus {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Bus{
-		subscribers: make(map[EventType][]*subscriberChan),
-		bufferSize:  bufferSize,
-		ctx:         ctx,
-		cancel:      cancel,
+		subscribers:   make(map[EventType][]*subscriberChan),
+		coalescedSubs: make(map[EventType][]*coalescedSub),
+		bufferSize:    bufferSize,
+		ctx:           ctx,
+		cancel:        cancel,
 	}
 }
 
@@ -149,6 +166,73 @@ func (b *Bus) Subscribe(eventType EventType, fn Subscriber) func() {
 	}
 }
 
+// SubscribeCoalesced registers a coalescing subscriber for a specific event type.
+// Multiple rapid publishes are merged: the callback is invoked once per signal,
+// guaranteeing at least one invocation after any publish. This prevents event
+// loss for notification-style events like EventQueueWritten where the payload
+// content does not matter—only the "something happened" signal.
+// Returns an unsubscribe function.
+func (b *Bus) SubscribeCoalesced(eventType EventType, fn CoalescedSubscriber) func() {
+	if b.closed.Load() {
+		return func() {}
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.closed.Load() {
+		return func() {}
+	}
+
+	sub := &coalescedSub{sig: make(chan struct{}, 1)}
+	b.coalescedSubs[eventType] = append(b.coalescedSubs[eventType], sub)
+
+	b.wg.Add(1)
+	b.activeGoroutines.Add(1)
+	go func() {
+		defer b.wg.Done()
+		defer b.activeGoroutines.Add(-1)
+		for {
+			select {
+			case _, ok := <-sub.sig:
+				if !ok {
+					return
+				}
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("ERROR event_bus: coalesced subscriber panic for event %s: %v\n%s",
+								eventType, r, debug.Stack())
+						}
+					}()
+					fn()
+				}()
+			case <-b.ctx.Done():
+				for range sub.sig {
+				}
+				return
+			}
+		}
+	}()
+
+	return func() {
+		b.mu.Lock()
+		defer b.mu.Unlock()
+
+		subs := b.coalescedSubs[eventType]
+		for i, s := range subs {
+			if s == sub {
+				last := len(subs) - 1
+				subs[i] = subs[last]
+				subs[last] = nil
+				b.coalescedSubs[eventType] = subs[:last]
+				sub.safeClose()
+				break
+			}
+		}
+	}
+}
+
 // Publish sends an event to all subscribers of the given type.
 // Uses select with default to ensure non-blocking behavior.
 // If a subscriber's channel is full, the event is dropped for that subscriber.
@@ -180,6 +264,15 @@ func (b *Bus) Publish(eventType EventType, data map[string]interface{}) {
 			if typeCount == 1 || typeCount%100 == 0 {
 				log.Printf("WARN event_bus: event dropped for type %s (type dropped: %d)", eventType, typeCount)
 			}
+		}
+	}
+
+	// Signal coalesced subscribers (never drops — at-least-once delivery)
+	for _, csub := range b.coalescedSubs[eventType] {
+		select {
+		case csub.sig <- struct{}{}:
+		default:
+			// Already signaled, coalesced — no drop
 		}
 	}
 }
@@ -220,6 +313,12 @@ func (b *Bus) Close() {
 			sub.safeClose()
 		}
 		delete(b.subscribers, eventType)
+	}
+	for eventType, subs := range b.coalescedSubs {
+		for _, sub := range subs {
+			sub.safeClose()
+		}
+		delete(b.coalescedSubs, eventType)
 	}
 	b.mu.Unlock()
 
