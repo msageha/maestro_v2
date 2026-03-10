@@ -372,7 +372,7 @@ func (disp *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 	// must remain intact.
 	dispatchTask.Content = agent.SanitizeUserContent(dispatchTask.Content)
 	if task.PersonaHint != "" {
-		if section, found := persona.FormatPersonaSectionWithFS(templates.FS, disp.config.Personas, task.PersonaHint); !found {
+		if section, found := persona.FormatPersonaSectionWithFS(templates.FS, disp.config.Personas, task.PersonaHint, disp.maestroDir); !found {
 			disp.log(LogLevelWarn, "persona_not_found task=%s persona_hint=%s", task.ID, task.PersonaHint)
 		} else if section != "" {
 			dispatchTask.Content = section + dispatchTask.Content

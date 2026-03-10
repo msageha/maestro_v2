@@ -5,6 +5,8 @@ package persona
 import (
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/msageha/maestro_v2/internal/model"
@@ -37,7 +39,9 @@ func FormatPersonaSection(personas map[string]model.PersonaConfig, personaHint s
 // When a persona has File set, the file is read from fsys and its content
 // (with YAML frontmatter stripped) is used as the prompt.
 // If file reading fails, it falls back to the Prompt field.
-func FormatPersonaSectionWithFS(fsys fs.FS, personas map[string]model.PersonaConfig, personaHint string) (string, bool) {
+// maestroDir, if non-empty, is checked first for persona files (e.g. .maestro/persona/),
+// allowing user customization with fallback to the embedded template FS.
+func FormatPersonaSectionWithFS(fsys fs.FS, personas map[string]model.PersonaConfig, personaHint, maestroDir string) (string, bool) {
 	if personaHint == "" {
 		return "", true
 	}
@@ -47,7 +51,7 @@ func FormatPersonaSectionWithFS(fsys fs.FS, personas map[string]model.PersonaCon
 		return "", false
 	}
 
-	prompt := resolvePrompt(fsys, p)
+	prompt := resolvePrompt(fsys, p, maestroDir)
 	if prompt == "" {
 		return "", true
 	}
@@ -56,18 +60,33 @@ func FormatPersonaSectionWithFS(fsys fs.FS, personas map[string]model.PersonaCon
 }
 
 // resolvePrompt returns the effective prompt text for a persona config.
-// If File is set, it reads from the filesystem and strips frontmatter.
-// Falls back to Prompt if file is not set or cannot be read.
-func resolvePrompt(fsys fs.FS, p model.PersonaConfig) string {
-	if file := strings.TrimSpace(p.File); file != "" && fsys != nil {
+// If File is set, it first tries reading from maestroDir (the .maestro directory),
+// then falls back to the embedded template FS, and finally to the Prompt field.
+func resolvePrompt(fsys fs.FS, p model.PersonaConfig, maestroDir string) string {
+	if file := strings.TrimSpace(p.File); file != "" {
 		if !fs.ValidPath(file) || !strings.HasPrefix(file, "persona/") {
 			return strings.TrimSpace(p.Prompt)
 		}
-		data, err := fs.ReadFile(fsys, file)
-		if err == nil {
-			body := stripFrontmatter(string(data))
-			if trimmed := strings.TrimSpace(body); trimmed != "" {
-				return trimmed
+
+		// Try .maestro/ directory first (user customization)
+		if maestroDir != "" {
+			diskPath := filepath.Join(maestroDir, filepath.FromSlash(file))
+			if data, err := os.ReadFile(diskPath); err == nil {
+				body := stripFrontmatter(string(data))
+				if trimmed := strings.TrimSpace(body); trimmed != "" {
+					return trimmed
+				}
+			}
+		}
+
+		// Fallback to embedded template FS
+		if fsys != nil {
+			data, err := fs.ReadFile(fsys, file)
+			if err == nil {
+				body := stripFrontmatter(string(data))
+				if trimmed := strings.TrimSpace(body); trimmed != "" {
+					return trimmed
+				}
 			}
 		}
 		// Fall back to inline Prompt on file read failure or empty body
