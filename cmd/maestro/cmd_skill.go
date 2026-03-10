@@ -34,7 +34,7 @@ func runSkill(args []string) error {
 func runSkillList(args []string) error {
 	fs := newFlagSet("maestro skill list")
 	var role string
-	fs.StringVar(&role, "role", "", "")
+	fs.StringVar(&role, "role", "", "Filter skills by role name (e.g., worker, planner)")
 	if err := fs.Parse(args); err != nil {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill list: %v\nusage: maestro skill list [--role <role>]", err)}
 	}
@@ -55,7 +55,7 @@ func runSkillList(args []string) error {
 	skillsDir := filepath.Join(maestroDir, "skills")
 	// Use ListSkillsWithRole to include role-specific and shared skills.
 	// When role is empty, only shared and flat skills are listed.
-	skills, err := skill.ListSkillsWithRole(skillsDir, role)
+	skills, err := skill.ListSkillsWithRole(skillsDir, role, nil)
 	if err != nil {
 		return fmt.Errorf("maestro skill list: %w", err)
 	}
@@ -83,7 +83,7 @@ func runSkillList(args []string) error {
 func runSkillCandidates(args []string) error {
 	fs := newFlagSet("maestro skill candidates")
 	var statusFilter string
-	fs.StringVar(&statusFilter, "status", "", "")
+	fs.StringVar(&statusFilter, "status", "", "Filter by status: pending|approved|rejected")
 
 	if err := fs.Parse(args); err != nil {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill candidates: %v\nusage: maestro skill candidates [--status pending|approved|rejected]", err)}
@@ -141,7 +141,7 @@ func runSkillApprove(args []string) error {
 
 	fs := newFlagSet("maestro skill approve")
 	var skillName string
-	fs.StringVar(&skillName, "name", "", "")
+	fs.StringVar(&skillName, "name", "", "Skill name in kebab-case (a-z0-9 and hyphens, 1-64 chars)")
 
 	if err := fs.Parse(args[1:]); err != nil {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill approve: %v\nusage: maestro skill approve <candidate-id> [--name <skill-name>]", err)}
@@ -190,8 +190,8 @@ func runSkillApprove(args []string) error {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill approve: invalid skill name %q: must be kebab-case (a-z0-9 and hyphens, 1-64 chars)", skillName)}
 	}
 
-	// Check for name collision
-	skillsDir := filepath.Join(maestroDir, "skills")
+	// Check for name collision — write to skills/share/ to align with ReadBuiltinSkills
+	skillsDir := filepath.Join(maestroDir, "skills", "share")
 	skillDir := filepath.Join(skillsDir, skillName)
 	if _, err := os.Stat(skillDir); err == nil {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill approve: skill %q already exists; use --name to specify a different name", skillName)}

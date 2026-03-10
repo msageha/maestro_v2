@@ -26,6 +26,7 @@ type DashboardStats struct {
 	FailedTasks     int
 	InProgressTasks int
 	PendingTasks    int
+	CancelledTasks  int
 	TaskSuccessRate float64
 	ErrorCount      int
 	WarningCount    int
@@ -140,19 +141,24 @@ func (f *DashboardFormatter) collectDashboardData() (*DashboardData, error) {
 	// Read queue depths from filesystem (independent of log file)
 	f.updateQueueStatus(data)
 
-	// Read and parse JSONL log file
+	// Collect task statistics from state files (accurate, not log-windowed)
+	f.collectTaskStatsFromState(data)
+
+	// Read and parse JSONL log file (events, errors, warnings, agent status only)
 	if err := f.parseLogFile(data); err != nil {
-		// If log file doesn't exist, return data with queue info only
+		// If log file doesn't exist, return data with state-based stats
 		if os.IsNotExist(err) {
+			f.calculateStats(data)
 			return data, nil
 		}
-		// Return partial data (queue info) with stale marker
+		// Return partial data with stale marker
 		data.IsStale = true
 		data.StaleReason = err.Error()
+		f.calculateStats(data)
 		return data, err
 	}
 
-	// Calculate statistics (log-based, queue status already populated above)
+	// Calculate derived statistics (success rate)
 	f.calculateStats(data)
 
 	// Sort events by timestamp (most recent first)
@@ -197,8 +203,6 @@ func (f *DashboardFormatter) parseLogFile(data *DashboardData) error {
 		scanner.Scan() // discard partial line at seek boundary
 	}
 
-	taskStatus := make(map[string]string)
-
 	for scanner.Scan() {
 		var entry events.LogEntry
 		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
@@ -211,16 +215,6 @@ func (f *DashboardFormatter) parseLogFile(data *DashboardData) error {
 		// Filter task-related events
 		if f.isTaskRelated(entry.EventType) {
 			data.RecentEvents = append(data.RecentEvents, event)
-
-			// Track task status (include retries)
-			if event.TaskID != "" {
-				if event.Status != "" {
-					taskStatus[event.TaskID] = event.Status
-				} else if strings.Contains(entry.EventType, "retry") {
-					// Count retry as a task (task_002 is retrying)
-					taskStatus[event.TaskID] = "in_progress"
-				}
-			}
 		}
 
 		// Collect errors and warnings
@@ -245,21 +239,6 @@ func (f *DashboardFormatter) parseLogFile(data *DashboardData) error {
 				agent.Status = event.Status
 			}
 			data.AgentStatus[event.AgentID] = agent
-		}
-	}
-
-	// Count task statuses
-	for _, status := range taskStatus {
-		data.Stats.TotalTasks++
-		switch status {
-		case "completed":
-			data.Stats.CompletedTasks++
-		case "failed":
-			data.Stats.FailedTasks++
-		case "in_progress":
-			data.Stats.InProgressTasks++
-		case "pending":
-			data.Stats.PendingTasks++
 		}
 	}
 
@@ -335,6 +314,69 @@ func (f *DashboardFormatter) isWarningEvent(eventType string) bool {
 func (f *DashboardFormatter) calculateStats(data *DashboardData) {
 	if data.Stats.TotalTasks > 0 {
 		data.Stats.TaskSuccessRate = float64(data.Stats.CompletedTasks) / float64(data.Stats.TotalTasks) * 100
+	}
+}
+
+// collectTaskStatsFromState reads command state files and aggregates task statistics.
+// Only tasks listed in required_task_ids and optional_task_ids are counted to avoid
+// double-counting retry history entries in task_states.
+func (f *DashboardFormatter) collectTaskStatsFromState(data *DashboardData) {
+	stateDir := filepath.Join(f.maestroDir, "state", "commands")
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		return
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
+			continue
+		}
+
+		filePath := filepath.Join(stateDir, entry.Name())
+		fileData, err := os.ReadFile(filePath)
+		if err != nil {
+			continue
+		}
+
+		var cs struct {
+			RequiredTaskIDs []string                   `yaml:"required_task_ids"`
+			OptionalTaskIDs []string                   `yaml:"optional_task_ids"`
+			TaskStates      map[string]model.Status    `yaml:"task_states"`
+		}
+		if err := yaml.Unmarshal(fileData, &cs); err != nil {
+			continue
+		}
+
+		// Collect only current task IDs (required + optional), not retry history
+		currentTasks := make(map[string]struct{}, len(cs.RequiredTaskIDs)+len(cs.OptionalTaskIDs))
+		for _, id := range cs.RequiredTaskIDs {
+			currentTasks[id] = struct{}{}
+		}
+		for _, id := range cs.OptionalTaskIDs {
+			currentTasks[id] = struct{}{}
+		}
+
+		for taskID := range currentTasks {
+			data.Stats.TotalTasks++
+			status, ok := cs.TaskStates[taskID]
+			if !ok {
+				// Task registered but no state yet — count as pending
+				data.Stats.PendingTasks++
+				continue
+			}
+			switch status {
+			case model.StatusCompleted:
+				data.Stats.CompletedTasks++
+			case model.StatusFailed, model.StatusDeadLetter:
+				data.Stats.FailedTasks++
+			case model.StatusInProgress:
+				data.Stats.InProgressTasks++
+			case model.StatusPending:
+				data.Stats.PendingTasks++
+			case model.StatusCancelled:
+				data.Stats.CancelledTasks++
+			}
+		}
 	}
 }
 
@@ -480,6 +522,7 @@ func (f *DashboardFormatter) getDashboardTemplate() (*template.Template, error) 
 | Failed | {{ .Stats.FailedTasks }} |
 | In Progress | {{ .Stats.InProgressTasks }} |
 | Pending | {{ .Stats.PendingTasks }} |
+| Cancelled | {{ .Stats.CancelledTasks }} |
 | Errors | {{ .Stats.ErrorCount }} |
 | Warnings | {{ .Stats.WarningCount }} |
 

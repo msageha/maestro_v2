@@ -35,6 +35,9 @@ func (d *Daemon) waitSignals() {
 			case <-sigCh:
 				d.log(LogLevelWarn, "received second signal, forcing exit")
 				d.forceExit.Store(true)
+				if d.watcher != nil {
+					_ = d.watcher.Close()
+				}
 				d.closeExecutors()
 				d.cleanup()
 				os.Exit(1)

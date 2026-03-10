@@ -12,7 +12,7 @@ import (
 
 // errNoUpdate is a sentinel error returned by updateYAMLFile's fn to indicate
 // that no write is needed (e.g., idempotent check passed).
-var errNoUpdate = errors.New("no update needed")
+var errNoUpdate = errors.New("no file update needed")
 
 // updateYAMLFile reads a YAML file, applies a mutation function, and writes it back atomically.
 // If the file does not exist, fn receives a zero-value T.

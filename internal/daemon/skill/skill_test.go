@@ -253,6 +253,256 @@ func TestListSkills_RoleDirectory(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// isValidIdentifier edge cases
+// ---------------------------------------------------------------------------
+
+func TestIsValidIdentifier(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		input string
+		want  bool
+	}{
+		{"empty string", "", false},
+		{"dot", ".", false},
+		{"dot-dot", "..", false},
+		{"path traversal", "../evil", false},
+		{"forward slash", "a/b", false},
+		{"backslash", "a\\b", false},
+		{"null byte", "ab\x00cd", false},
+		{"valid simple", "my-skill", true},
+		{"valid with dots", "skill.v2", true},
+		{"valid underscore", "skill_1", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := isValidIdentifier(tt.input)
+			if got != tt.want {
+				t.Errorf("isValidIdentifier(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// parseFrontmatter edge cases
+// ---------------------------------------------------------------------------
+
+func TestParseFrontmatter(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		content   string
+		wantErr   bool
+		errSubstr string
+		wantBody  string
+		wantName  string // optional: verify metadata parsing
+	}{
+		{
+			name:    "empty content",
+			content: "",
+			wantErr: false,
+			// empty content returns empty body, no error
+			wantBody: "",
+		},
+		{
+			name:      "unclosed delimiter",
+			content:   "---\nname: test\nno closing here",
+			wantErr:   true,
+			errSubstr: "unclosed frontmatter",
+		},
+		{
+			name:      "invalid YAML",
+			content:   "---\nname: [\n---\nbody here",
+			wantErr:   true,
+			errSubstr: "invalid YAML",
+		},
+		{
+			name:     "no frontmatter",
+			content:  "Just plain text\nSecond line",
+			wantErr:  false,
+			wantBody: "Just plain text\nSecond line",
+		},
+		{
+			name:     "empty frontmatter block",
+			content:  "---\n---\nbody after empty frontmatter",
+			wantErr:  false,
+			wantBody: "body after empty frontmatter",
+		},
+		{
+			name:      "only opening delimiter no content after",
+			content:   "---\n",
+			wantErr:   true,
+			errSubstr: "unclosed frontmatter",
+		},
+		{
+			name:     "delimiter with surrounding whitespace",
+			content:  "  ---  \nname: ws-test\n  ---  \nbody ws",
+			wantErr:  false,
+			wantBody: "body ws",
+			wantName: "ws-test",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			meta, body, err := parseFrontmatter(tt.content)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.errSubstr)
+				}
+				if !strings.Contains(err.Error(), tt.errSubstr) {
+					t.Errorf("expected error containing %q, got %q", tt.errSubstr, err.Error())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if body != tt.wantBody {
+				t.Errorf("body = %q, want %q", body, tt.wantBody)
+			}
+			if tt.wantName != "" && meta.Name != tt.wantName {
+				t.Errorf("meta.Name = %q, want %q", meta.Name, tt.wantName)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// ReadSkillWithRole edge cases
+// ---------------------------------------------------------------------------
+
+func TestReadSkillWithRole_RoleSpecificPriority(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Set up all three locations with distinct descriptions
+	writeSkillFile(t, filepath.Join(dir, "worker"), "my-skill", "---\ndescription: role-specific\n---\nRole body")
+	writeSkillFile(t, filepath.Join(dir, "share"), "my-skill", "---\ndescription: shared\n---\nShare body")
+	writeSkillFile(t, dir, "my-skill", "---\ndescription: flat\n---\nFlat body")
+
+	sc, err := ReadSkillWithRole(dir, "my-skill", "worker")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sc.Description != "role-specific" {
+		t.Errorf("expected role-specific, got %q", sc.Description)
+	}
+}
+
+func TestReadSkillWithRole_ShareFallback(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Only share and flat exist
+	writeSkillFile(t, filepath.Join(dir, "share"), "my-skill", "---\ndescription: shared\n---\nShare body")
+	writeSkillFile(t, dir, "my-skill", "---\ndescription: flat\n---\nFlat body")
+
+	sc, err := ReadSkillWithRole(dir, "my-skill", "worker")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sc.Description != "shared" {
+		t.Errorf("expected shared, got %q", sc.Description)
+	}
+}
+
+func TestReadSkillWithRole_FlatFallback(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Only flat exists
+	writeSkillFile(t, dir, "my-skill", "---\ndescription: flat\n---\nFlat body")
+
+	sc, err := ReadSkillWithRole(dir, "my-skill", "worker")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sc.Description != "flat" {
+		t.Errorf("expected flat, got %q", sc.Description)
+	}
+}
+
+func TestReadSkillWithRole_EmptyRole(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// With empty role, filepath.Join(dir, "", "my-skill") collapses to the flat
+	// path, so the first candidate matches the flat entry before share is checked.
+	writeSkillFile(t, filepath.Join(dir, "share"), "my-skill", "---\ndescription: shared\n---\nShare body")
+	writeSkillFile(t, dir, "my-skill", "---\ndescription: flat\n---\nFlat body")
+
+	sc, err := ReadSkillWithRole(dir, "my-skill", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sc.Description != "flat" {
+		t.Errorf("expected flat (collapsed empty-role path), got %q", sc.Description)
+	}
+}
+
+func TestReadSkillWithRole_EmptyRoleShareOnly(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// With empty role and no flat skill, share should be found
+	writeSkillFile(t, filepath.Join(dir, "share"), "my-skill", "---\ndescription: shared\n---\nShare body")
+
+	sc, err := ReadSkillWithRole(dir, "my-skill", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sc.Description != "shared" {
+		t.Errorf("expected shared, got %q", sc.Description)
+	}
+}
+
+func TestReadSkillWithRole_NonexistentSkill(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	_, err := ReadSkillWithRole(dir, "nonexistent", "worker")
+	if err == nil {
+		t.Fatal("expected error for nonexistent skill")
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("expected os.ErrNotExist, got %v", err)
+	}
+}
+
+func TestReadSkillWithRole_InvalidSkillName(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	_, err := ReadSkillWithRole(dir, "../evil", "worker")
+	if err == nil {
+		t.Fatal("expected error for invalid skill name")
+	}
+	if !strings.Contains(err.Error(), "invalid skill name") {
+		t.Errorf("expected 'invalid skill name' error, got %v", err)
+	}
+}
+
+func TestReadSkillWithRole_MalformedRoleSpecific(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Role-specific has bad frontmatter — should return error, not fall through to share
+	writeSkillFile(t, filepath.Join(dir, "worker"), "my-skill", "---\nname: [\n---\nbad yaml")
+	writeSkillFile(t, filepath.Join(dir, "share"), "my-skill", "---\ndescription: shared\n---\nShare body")
+
+	_, err := ReadSkillWithRole(dir, "my-skill", "worker")
+	if err == nil {
+		t.Fatal("expected error for malformed role-specific skill")
+	}
+	if !strings.Contains(err.Error(), "frontmatter") {
+		t.Errorf("expected frontmatter parse error, got %v", err)
+	}
+}
+
 func intPtr(v int) *int {
 	return &v
 }

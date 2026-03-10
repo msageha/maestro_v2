@@ -196,19 +196,29 @@ func (qg *QualityGateDaemon) Stop() error {
 
 // EmitEvent sends an event to the quality gate daemon for processing.
 // This is a non-blocking operation; events are queued in a buffered channel.
-// Safe to call from multiple goroutines, but drops events after Stop().
+// Safe to call from multiple goroutines. Uses ctx.Done() in the select as the
+// primary shutdown guard instead of relying solely on stopped flag (which has
+// a TOCTOU window). Note: Go's select chooses randomly among ready cases, so
+// a late enqueue is theoretically possible when both ctx.Done() and eventChan
+// are ready simultaneously — this is benign because the channel is never closed
+// and the eventLoop drains remaining events on shutdown.
 func (qg *QualityGateDaemon) EmitEvent(event QualityGateEvent) {
-	// Check if already stopped to avoid sending to closed channel
+	// Auxiliary guard: best-effort early exit when already stopped.
+	// Reduces unnecessary select overhead but is not relied upon for
+	// correctness due to TOCTOU between this check and the select.
 	if qg.stopped.Load() {
 		qg.log(LogLevelDebug, "quality_gate_event_dropped type=%s reason=stopped", event.EventType())
 		return
 	}
 
+	// ctx.Done() participates in the select as the primary shutdown signal.
+	// Combined with the auxiliary stopped check above, this provides
+	// defense-in-depth against post-shutdown sends.
 	select {
-	case qg.eventChan <- event:
-		qg.log(LogLevelDebug, "quality_gate_event_queued type=%s", event.EventType())
 	case <-qg.ctx.Done():
 		qg.log(LogLevelDebug, "quality_gate_event_dropped type=%s reason=shutdown", event.EventType())
+	case qg.eventChan <- event:
+		qg.log(LogLevelDebug, "quality_gate_event_queued type=%s", event.EventType())
 	default:
 		qg.log(LogLevelWarn, "quality_gate_event_dropped type=%s reason=channel_full", event.EventType())
 	}

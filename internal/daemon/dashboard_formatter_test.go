@@ -53,6 +53,9 @@ func TestDashboardFormatter_ParseLogFile(t *testing.T) {
 	logPath := filepath.Join(logsDir, "maestro.jsonl")
 	createSampleLogFile(t, logPath)
 
+	// Create state files for task statistics
+	createSampleStateFiles(t, tmpDir)
+
 	// Create formatter
 	formatter := NewDashboardFormatter(tmpDir)
 
@@ -61,21 +64,20 @@ func TestDashboardFormatter_ParseLogFile(t *testing.T) {
 	require.NoError(t, err)
 	assert.NotNil(t, data)
 
-	// Verify statistics - task_003 only has warning but no status, so it doesn't count as a task
-	// task_002 gets counted once with failed status, then updated to in_progress when retried
-	assert.Equal(t, 2, data.Stats.TotalTasks) // task_001 and task_002
-	assert.Equal(t, 1, data.Stats.CompletedTasks) // task_001
-	assert.Equal(t, 0, data.Stats.FailedTasks) // task_002 was failed but is now in_progress due to retry
-	assert.Equal(t, 1, data.Stats.InProgressTasks) // task_002 after retry
-	assert.Equal(t, 1, data.Stats.ErrorCount) // task_failed
-	assert.Equal(t, 2, data.Stats.WarningCount) // lease_warning and task_retry
+	// Verify task statistics from state files
+	assert.Equal(t, 2, data.Stats.TotalTasks)       // task_001 and task_002
+	assert.Equal(t, 1, data.Stats.CompletedTasks)    // task_001
+	assert.Equal(t, 0, data.Stats.FailedTasks)       // none currently failed
+	assert.Equal(t, 1, data.Stats.InProgressTasks)   // task_002
+	assert.Equal(t, 1, data.Stats.ErrorCount)        // task_failed log event
+	assert.Equal(t, 2, data.Stats.WarningCount)      // lease_warning and task_retry
 
-	// Verify events were collected
+	// Verify events were collected from logs
 	assert.NotEmpty(t, data.RecentEvents)
 	assert.NotEmpty(t, data.RecentErrors)
 	assert.NotEmpty(t, data.RecentWarnings)
 
-	// Verify agent status
+	// Verify agent status from logs
 	assert.NotEmpty(t, data.AgentStatus)
 }
 
@@ -309,6 +311,31 @@ func createSampleLogFile(t *testing.T, logPath string) {
 	for _, entry := range entries {
 		require.NoError(t, encoder.Encode(entry))
 	}
+}
+
+// createSampleStateFiles creates command state YAML files for testing.
+func createSampleStateFiles(t *testing.T, maestroDir string) {
+	t.Helper()
+	stateDir := filepath.Join(maestroDir, "state", "commands")
+	require.NoError(t, os.MkdirAll(stateDir, 0755))
+
+	// Command with task_001 (completed) and task_002 (in_progress after retry).
+	// task_002_orig is a retry ancestor kept in task_states but NOT in required_task_ids,
+	// so it must not be double-counted.
+	stateYAML := `schema_version: 1
+file_type: state_command
+command_id: cmd_001
+plan_status: sealed
+expected_task_count: 2
+required_task_ids:
+  - task_001
+  - task_002
+task_states:
+  task_001: completed
+  task_002: in_progress
+  task_002_orig: failed
+`
+	require.NoError(t, os.WriteFile(filepath.Join(stateDir, "cmd_001.yaml"), []byte(stateYAML), 0644))
 }
 
 // TestDashboardFormatter_SortEvents tests event sorting functionality
