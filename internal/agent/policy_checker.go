@@ -89,12 +89,12 @@ func (pc *PolicyChecker) HookSettings(scriptPath string) (string, error) {
 // for testing/documentation purposes.
 func DangerousPatterns() []string {
 	return []string{
-		// D001: OS/home destruction
-		`rm\s+-[a-zA-Z]*r[a-zA-Z]*f.*(/|~|/Users)`,
-		`rm\s+-[a-zA-Z]*f[a-zA-Z]*r.*(/|~|/Users)`,
+		// D001: OS/home destruction — match rm -rf targeting /, ~, or /Users
+		`rm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+(/\s|/$|~|/Users)`,
+		`rm\s+-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*\s+(/\s|/$|~|/Users)`,
 		// D003: git push --force (without --force-with-lease)
 		`git\s+push\s+.*--force([^-]|$)`,
-		`git\s+push\s+.*\s-f(\s|$)`,
+		`git\s+push\s+(.*\s)?-f(\s|$)`,
 		// D004: Uncommitted work destruction
 		`git\s+reset\s+--hard`,
 		`git\s+checkout\s+--\s+\.`,
@@ -156,7 +156,7 @@ if [ "$tool_name" = "Bash" ]; then
      ! echo "$cmd" | grep -qE 'git\s+push\s+.*--force-with-lease'; then
     deny "D003: Blocked git push --force (use --force-with-lease)"
   fi
-  if echo "$cmd" | grep -qE 'git\s+push\s+.*\s-f(\s|$)' && \
+  if echo "$cmd" | grep -qE 'git\s+push\s+(.*\s)?-f(\s|$)' && \
      ! echo "$cmd" | grep -qE 'git\s+push\s+.*--force-with-lease'; then
     deny "D003: Blocked git push -f (use --force-with-lease)"
   fi
@@ -207,6 +207,9 @@ if [ "$tool_name" = "Bash" ]; then
 
   # .maestro/ access via Bash (bypass prevention)
   if echo "$cmd" | grep -qE '(cat|head|tail|less|more|vim|nano|sed|awk)\s+.*\.maestro/(state|queues|results|locks|logs|config)'; then
+    deny "Blocked .maestro/ control-plane access via Bash"
+  fi
+  if echo "$cmd" | grep -qE '(ls|find|grep|rg)\s+.*\.maestro/(state|queues|results|locks|logs|config)'; then
     deny "Blocked .maestro/ control-plane access via Bash"
   fi
   if echo "$cmd" | grep -qE '(echo|printf|tee)\s.*>\s*\.maestro/'; then
