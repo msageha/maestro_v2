@@ -371,11 +371,11 @@ invalid yaml content {{
 	assert.True(t, foundGate2)
 }
 
-func TestLoader_GetDefaultGates(t *testing.T) {
+func TestLoader_getDefaultGates(t *testing.T) {
 	loader := NewLoader(".")
 
 	// Get default gates
-	config := loader.GetDefaultGates()
+	config := loader.getDefaultGates()
 	assert.NotNil(t, config)
 	assert.Equal(t, "1.0.0", config.SchemaVersion)
 	assert.NotEmpty(t, config.Gates)
@@ -415,7 +415,7 @@ gates:
           field: task.id
           operator: exists
     action:
-      on_fail: retry
+      on_fail: block
 `
 
 	config, err := loader.LoadFromBytes([]byte(yaml))
@@ -429,12 +429,6 @@ gates:
 	assert.Equal(t, 50, gate.Priority)              // Default priority
 	assert.Equal(t, ActionAllow, gate.Action.OnPass) // Default on_pass
 	assert.Equal(t, ActionContinue, gate.Action.OnWarn) // Default on_warn
-
-	// Check retry config defaults
-	assert.NotNil(t, gate.Action.RetryConfig)
-	assert.Equal(t, 3, gate.Action.RetryConfig.MaxAttempts)
-	assert.Equal(t, 5, gate.Action.RetryConfig.DelaySeconds)
-	assert.False(t, gate.Action.RetryConfig.ExponentialBackoff)
 
 	// Check rule defaults
 	assert.Equal(t, SeverityError, gate.Rules[0].Severity)
@@ -537,7 +531,7 @@ gates:
       - id: resource_rule
         condition:
           type: resource_limit
-          resource: file_count
+          field: file_count
     action:
       on_pass: allow
       on_fail: block
@@ -632,10 +626,7 @@ gates:
                   value: true
     action:
       on_pass: allow
-      on_fail: rollback
-      rollback_config:
-        target: phase
-        preserve_logs: true
+      on_fail: block
     metrics:
       enabled: true
       track_duration: true
@@ -656,10 +647,7 @@ gates:
 	assert.Equal(t, []string{"implementation", "refactoring"}, gate.Trigger.TaskTypes)
 
 	// Check action configuration
-	assert.Equal(t, ActionRollback, gate.Action.OnFail)
-	assert.NotNil(t, gate.Action.RollbackConfig)
-	assert.Equal(t, "phase", gate.Action.RollbackConfig.Target)
-	assert.True(t, gate.Action.RollbackConfig.PreserveLogs)
+	assert.Equal(t, ActionBlock, gate.Action.OnFail)
 
 	// Check metrics configuration
 	assert.True(t, gate.Metrics.Enabled)
