@@ -233,12 +233,16 @@ func runSkillReject(args []string) error {
 	return nil
 }
 
-// sanitizeForTerminal removes control characters (except space) to prevent terminal injection.
+// sanitizeForTerminal removes control characters to prevent terminal injection
+// and output spoofing. Tabs and newlines are replaced with spaces to prevent
+// multi-line output spoofing attacks.
 func sanitizeForTerminal(s string) string {
 	var sb strings.Builder
 	sb.Grow(len(s))
 	for _, r := range s {
-		if r == '\t' || r == '\n' || (r >= 0x20 && r != 0x7f) {
+		if r == '\t' || r == '\n' {
+			sb.WriteByte(' ')
+		} else if r >= 0x20 && r != 0x7f {
 			sb.WriteRune(r)
 		}
 	}
