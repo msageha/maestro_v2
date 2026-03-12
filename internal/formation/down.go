@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -92,19 +91,12 @@ func RunDown(maestroDir string, cfg model.Config) error {
 		pid := validateDaemonPID(maestroDir)
 		pidPath := filepath.Join(maestroDir, "daemon.pid")
 		if pid > 0 {
-			_ = syscall.Kill(pid, syscall.SIGTERM)
-			termDeadline := time.Now().Add(5 * time.Second)
-			for time.Now().Before(termDeadline) {
-				if !processAlive(pid) {
-					break
-				}
-				time.Sleep(500 * time.Millisecond)
+			origStartTime := processStartTime(pid)
+			sameProcess := daemonIdentityChecker(maestroDir, pid, origStartTime)
+			result, _ := terminateProcess(pid, sameProcess, 5*time.Second)
+			if result == TerminateStopped {
+				_ = os.Remove(pidPath)
 			}
-			if processAlive(pid) {
-				_ = syscall.Kill(pid, syscall.SIGKILL)
-				time.Sleep(500 * time.Millisecond)
-			}
-			_ = os.Remove(pidPath)
 		}
 		// Clean up socket if daemon left it behind
 		_ = os.Remove(socketPath)
@@ -189,18 +181,10 @@ func cleanupStalePID(maestroDir string) {
 		return
 	}
 
-	_ = syscall.Kill(pid, syscall.SIGTERM)
-	termDeadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(termDeadline) {
-		if !processAlive(pid) {
-			_ = os.Remove(pidPath)
-			return
-		}
-		time.Sleep(500 * time.Millisecond)
+	origStartTime := processStartTime(pid)
+	sameProcess := daemonIdentityChecker(maestroDir, pid, origStartTime)
+	result, _ := terminateProcess(pid, sameProcess, 5*time.Second)
+	if result == TerminateStopped {
+		_ = os.Remove(pidPath)
 	}
-	if processAlive(pid) {
-		_ = syscall.Kill(pid, syscall.SIGKILL)
-		time.Sleep(500 * time.Millisecond)
-	}
-	_ = os.Remove(pidPath)
 }
