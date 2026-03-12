@@ -57,6 +57,7 @@ func Rebuild(opts RebuildOptions) error {
 		createdAt time.Time
 	}
 	latestByTask := make(map[string]latestResult)
+	skippedFiles := 0
 
 	for _, entry := range entries {
 		name := entry.Name()
@@ -67,11 +68,15 @@ func Rebuild(opts RebuildOptions) error {
 		path := filepath.Join(resultsDir, name)
 		data, err := os.ReadFile(path)
 		if err != nil {
+			log.Printf("rebuild: skipping unreadable result file %s: %v", name, err)
+			skippedFiles++
 			continue
 		}
 
 		var rf model.TaskResultFile
 		if err := yamlv3.Unmarshal(data, &rf); err != nil {
+			log.Printf("rebuild: skipping corrupt result file %s: %v", name, err)
+			skippedFiles++
 			continue
 		}
 
@@ -104,6 +109,10 @@ func Rebuild(opts RebuildOptions) error {
 				createdAt: createdAt,
 			}
 		}
+	}
+
+	if skippedFiles > 0 {
+		log.Printf("rebuild: %d result file(s) skipped due to read/parse errors", skippedFiles)
 	}
 
 	// Apply the latest result for each task with transition validation.
