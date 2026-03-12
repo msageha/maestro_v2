@@ -180,7 +180,10 @@ func (fl *FileLock) Unlock() error {
 		return fmt.Errorf("close lock file: %w", err)
 	}
 
-	_ = os.Remove(fl.path)
+	// Do not remove the lock file. flock is inode-based: removing the path
+	// allows a new file (different inode) to be created at the same path,
+	// breaking mutual exclusion for subsequent lockers. Keeping the lock file
+	// stable ensures all processes contend on the same inode.
 	fl.file = nil
 	return nil
 }
