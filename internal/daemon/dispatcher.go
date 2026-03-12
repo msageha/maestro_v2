@@ -33,22 +33,12 @@ type Dispatcher struct {
 	logger            *log.Logger
 	logLevel          LogLevel
 	clock             Clock
-	executorFactory   ExecutorFactory
+	execProvider      *ExecutorProvider
 	mu                sync.RWMutex // protects eventBus, qualityGate, worktreeManager
 	eventBus          *events.Bus
 	qualityGate       *QualityGateDaemon
 	gateEvaluations   map[string]*model.QualityGateEvaluation // task_id -> evaluation
 	gateEvalMutex     sync.RWMutex
-
-	// cachedExec is a shared Executor instance created once and reused across
-	// dispatch calls. This avoids per-dispatch log file Open/Close overhead.
-	// All access is protected by execMu to prevent data races during shutdown
-	// (CloseExecutor) and testing (SetExecutorFactory).
-	execMu           sync.Mutex
-	cachedExec       AgentExecutor
-	execInit         bool
-	execFailCount    int
-	execLastFailTime time.Time
 
 	worktreeManager *WorktreeManager
 }
@@ -58,6 +48,10 @@ type Dispatcher struct {
 
 // NewDispatcher creates a new Dispatcher.
 func NewDispatcher(maestroDir string, cfg model.Config, lm *LeaseManager, logger *log.Logger, logLevel LogLevel) *Dispatcher {
+	clock := RealClock{}
+	factory := ExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+		return agent.NewExecutor(dir, wcfg, level)
+	})
 	return &Dispatcher{
 		maestroDir:      maestroDir,
 		config:          cfg,
@@ -65,30 +59,16 @@ func NewDispatcher(maestroDir string, cfg model.Config, lm *LeaseManager, logger
 		dl:              NewDaemonLoggerFromLegacy("dispatcher", logger, logLevel),
 		logger:          logger,
 		logLevel:        logLevel,
-		clock:           RealClock{},
+		clock:           clock,
 		gateEvaluations: make(map[string]*model.QualityGateEvaluation),
-		executorFactory: func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
-			return agent.NewExecutor(dir, wcfg, level)
-		},
+		execProvider:    NewExecutorProvider(maestroDir, cfg.Watcher, cfg.Logging.Level, factory, clock, PolicyRetryBackoff),
 	}
 }
 
 // SetExecutorFactory overrides the executor factory for testing.
 // Resets the cached executor so the new factory is used on next call.
 func (disp *Dispatcher) SetExecutorFactory(f ExecutorFactory) {
-	disp.execMu.Lock()
-	old := disp.cachedExec
-	disp.executorFactory = f
-	disp.cachedExec = nil
-	disp.execInit = false
-	disp.execFailCount = 0
-	disp.execLastFailTime = time.Time{}
-	// Close old executor while still holding the lock to prevent getExecutor()
-	// from racing between state reset and Close() completion.
-	if old != nil {
-		_ = old.Close()
-	}
-	disp.execMu.Unlock()
+	disp.execProvider.SetFactory(f)
 }
 
 // getExecutor returns the shared executor instance, creating it lazily on first call.
@@ -103,46 +83,13 @@ func (disp *Dispatcher) SetExecutorFactory(f ExecutorFactory) {
 // for test isolation. In production, the backoff prevents tight retry loops when the
 // underlying resource (e.g., log file) is persistently broken.
 func (disp *Dispatcher) getExecutor() (AgentExecutor, error) {
-	disp.execMu.Lock()
-	defer disp.execMu.Unlock()
-	if disp.execInit {
-		return disp.cachedExec, nil
-	}
-	// Exponential backoff cooldown for consecutive failures (cap at 16s)
-	if disp.execFailCount > 0 {
-		backoff := time.Duration(1<<min(disp.execFailCount-1, 4)) * time.Second // 1s, 2s, 4s, 8s, 16s (cap)
-		elapsed := disp.clock.Now().Sub(disp.execLastFailTime)
-		if elapsed < backoff {
-			return nil, fmt.Errorf("%w: retry cooldown (attempt %d, next retry in %v)", errExecutorInit, disp.execFailCount, backoff-elapsed)
-		}
-	}
-	exec, err := disp.executorFactory(disp.maestroDir, disp.config.Watcher, disp.config.Logging.Level)
-	if err != nil {
-		disp.execFailCount++
-		disp.execLastFailTime = disp.clock.Now()
-		return nil, fmt.Errorf("%w: %v", errExecutorInit, err)
-	}
-	// Success: cache the executor and reset failure state
-	disp.cachedExec = exec
-	disp.execInit = true
-	disp.execFailCount = 0
-	return disp.cachedExec, nil
+	return disp.execProvider.GetExecutor()
 }
 
 // CloseExecutor releases the shared executor's resources (log file handle).
 // Safe to call multiple times; subsequent calls are no-ops.
 func (disp *Dispatcher) CloseExecutor() {
-	disp.execMu.Lock()
-	exec := disp.cachedExec
-	disp.cachedExec = nil
-	disp.execInit = false
-	disp.execFailCount = 0
-	disp.execLastFailTime = time.Time{}
-	disp.execMu.Unlock()
-
-	if exec != nil {
-		_ = exec.Close()
-	}
+	disp.execProvider.CloseExecutor()
 }
 
 // SetEventBus sets the event bus for publishing events.

@@ -48,15 +48,11 @@ type ResultHandler struct {
 	logger            *log.Logger
 	logLevel          LogLevel
 	clock             Clock
-	executorFactory   ExecutorFactory
+	execProvider      *ExecutorProvider
 	continuousHandler *ContinuousHandler
 	eventBus          *events.Bus
 
-	mu            sync.RWMutex // protects continuousHandler, eventBus
-	execMu        sync.Mutex
-	cachedExec    AgentExecutor
-	cachedExecErr error
-	execInit      bool
+	mu sync.RWMutex // protects continuousHandler, eventBus
 }
 
 // NewResultHandler creates a new ResultHandler.
@@ -67,6 +63,10 @@ func NewResultHandler(
 	logger *log.Logger,
 	logLevel LogLevel,
 ) *ResultHandler {
+	clock := RealClock{}
+	factory := ExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+		return agent.NewExecutor(dir, wcfg, level)
+	})
 	return &ResultHandler{
 		maestroDir: maestroDir,
 		config:     cfg,
@@ -74,59 +74,28 @@ func NewResultHandler(
 		dl:         NewDaemonLoggerFromLegacy("result_handler", logger, logLevel),
 		logger:     logger,
 		logLevel:   logLevel,
-		clock:      RealClock{},
-		executorFactory: func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
-			return agent.NewExecutor(dir, wcfg, level)
-		},
+		clock:      clock,
+		execProvider: NewExecutorProvider(maestroDir, cfg.Watcher, cfg.Logging.Level, factory, clock, PolicyCacheError),
 	}
 }
 
 // SetExecutorFactory overrides the executor factory for testing.
 // Resets the cached executor so the new factory is used on next call.
 func (rh *ResultHandler) SetExecutorFactory(f ExecutorFactory) {
-	rh.execMu.Lock()
-	old := rh.cachedExec
-	rh.executorFactory = f
-	rh.cachedExec = nil
-	rh.cachedExecErr = nil
-	rh.execInit = false
-	// Close old executor while still holding the lock to prevent getExecutor()
-	// from racing between state reset and Close() completion.
-	if old != nil {
-		_ = old.Close()
-	}
-	rh.execMu.Unlock()
+	rh.execProvider.SetFactory(f)
 }
 
 // getExecutor returns the shared executor instance, creating it lazily on first call.
 // The Executor is safe for concurrent use (log.Logger uses internal mutex,
 // os.File in append mode is POSIX-safe, all other fields are immutable).
 func (rh *ResultHandler) getExecutor() (AgentExecutor, error) {
-	rh.execMu.Lock()
-	defer rh.execMu.Unlock()
-	if !rh.execInit {
-		rh.cachedExec, rh.cachedExecErr = rh.executorFactory(rh.maestroDir, rh.config.Watcher, rh.config.Logging.Level)
-		rh.execInit = true
-	}
-	if rh.cachedExecErr != nil {
-		return nil, fmt.Errorf("%w: %v", errExecutorInit, rh.cachedExecErr)
-	}
-	return rh.cachedExec, nil
+	return rh.execProvider.GetExecutor()
 }
 
 // CloseExecutor releases the shared executor's resources.
 // Safe to call multiple times; subsequent calls are no-ops.
 func (rh *ResultHandler) CloseExecutor() {
-	rh.execMu.Lock()
-	exec := rh.cachedExec
-	rh.cachedExec = nil
-	rh.cachedExecErr = nil
-	rh.execInit = false
-	rh.execMu.Unlock()
-
-	if exec != nil {
-		_ = exec.Close()
-	}
+	rh.execProvider.CloseExecutor()
 }
 
 // SetContinuousHandler wires the continuous handler for iteration tracking.
