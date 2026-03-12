@@ -249,7 +249,7 @@ func (l *Loader) validateAction(action *ActionDefinition) error {
 
 	// Validate on_fail action
 	switch action.OnFail {
-	case ActionBlock, ActionWarn, ActionRetry, ActionRollback, ActionEscalate, "":
+	case ActionBlock, ActionWarn, "":
 		// Valid or will be defaulted
 	default:
 		return fmt.Errorf("invalid on_fail action: %s", action.OnFail)
@@ -257,20 +257,10 @@ func (l *Loader) validateAction(action *ActionDefinition) error {
 
 	// Validate on_warn action
 	switch action.OnWarn {
-	case ActionContinue, ActionPrompt, ActionLog, "":
+	case ActionContinue, ActionLog, "":
 		// Valid or optional
 	default:
 		return fmt.Errorf("invalid on_warn action: %s", action.OnWarn)
-	}
-
-	// Validate retry config if action is retry
-	if action.OnFail == ActionRetry && action.RetryConfig != nil {
-		if action.RetryConfig.MaxAttempts < 1 || action.RetryConfig.MaxAttempts > 5 {
-			return fmt.Errorf("retry max_attempts must be between 1 and 5")
-		}
-		if action.RetryConfig.DelaySeconds < 1 || action.RetryConfig.DelaySeconds > 60 {
-			return fmt.Errorf("retry delay_seconds must be between 1 and 60")
-		}
 	}
 
 	return nil
@@ -312,15 +302,6 @@ func (l *Loader) applyDefaults(config *GateConfiguration) {
 		}
 		if gate.Action.OnWarn == "" {
 			gate.Action.OnWarn = ActionContinue
-		}
-
-		// Default retry config
-		if gate.Action.OnFail == ActionRetry && gate.Action.RetryConfig == nil {
-			gate.Action.RetryConfig = &RetryConfig{
-				MaxAttempts:        3,
-				DelaySeconds:       5,
-				ExponentialBackoff: false,
-			}
 		}
 
 		// Default metrics
@@ -527,7 +508,7 @@ func (l *Loader) LoadDirectory(dir string) ([]*GateConfiguration, error) {
 }
 
 // GetDefaultGates returns the default gate configuration
-func (l *Loader) GetDefaultGates() *GateConfiguration {
+func (l *Loader) getDefaultGates() *GateConfiguration {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
 

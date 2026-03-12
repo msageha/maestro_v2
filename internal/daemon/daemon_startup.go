@@ -124,16 +124,22 @@ func (d *Daemon) initComponents() error {
 		d.handler.SetCanComplete(d.canComplete)
 	}
 
-	ch := NewContinuousHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
-	d.handler.resultHandler.SetContinuousHandler(ch)
-
-	d.qualityGateDaemon = NewQualityGateDaemon(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel, d.ctx)
-
-	d.circuitBreaker = circuitbreaker.NewHandler(d.config, d.logger, d.logLevel)
-	if d.stateReader != nil {
-		d.circuitBreaker.SetStateReader(d.stateReader)
+	if d.config.Continuous.Enabled {
+		ch := NewContinuousHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
+		d.handler.resultHandler.SetContinuousHandler(ch)
 	}
-	d.handler.SetCircuitBreaker(d.circuitBreaker)
+
+	if d.config.QualityGates.Enabled {
+		d.qualityGateDaemon = NewQualityGateDaemon(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel, d.ctx)
+	}
+
+	if d.config.CircuitBreaker.Enabled {
+		d.circuitBreaker = circuitbreaker.NewHandler(d.config, d.logger, d.logLevel)
+		if d.stateReader != nil {
+			d.circuitBreaker.SetStateReader(d.stateReader)
+		}
+		d.handler.SetCircuitBreaker(d.circuitBreaker)
+	}
 
 	if d.config.Worktree.Enabled {
 		d.worktreeManager = NewWorktreeManager(d.maestroDir, d.config.Worktree, d.logger, d.logLevel)
@@ -144,11 +150,15 @@ func (d *Daemon) initComponents() error {
 
 	d.eventBus = events.NewBus(100)
 	d.handler.dispatcher.SetEventBus(d.eventBus)
-	d.handler.dispatcher.SetQualityGate(d.qualityGateDaemon)
+	if d.qualityGateDaemon != nil {
+		d.handler.dispatcher.SetQualityGate(d.qualityGateDaemon)
+	}
 	d.handler.dependencyResolver.SetEventBus(d.eventBus)
 	d.handler.resultHandler.SetEventBus(d.eventBus)
 
-	d.bridge.subscribeQualityGateEvents()
+	if d.qualityGateDaemon != nil {
+		d.bridge.subscribeQualityGateEvents()
+	}
 	d.bridge.subscribeQueueWrittenEvents()
 
 	return nil
@@ -166,8 +176,10 @@ func (d *Daemon) startRuntime() error {
 	d.eg.Go(func() error { d.watch.fsnotifyLoop(); return nil })
 	d.eg.Go(func() error { d.watch.tickerLoop(); return nil })
 
-	if err := d.qualityGateDaemon.Start(); err != nil {
-		return fmt.Errorf("start quality gate daemon: %w", err)
+	if d.qualityGateDaemon != nil {
+		if err := d.qualityGateDaemon.Start(); err != nil {
+			return fmt.Errorf("start quality gate daemon: %w", err)
+		}
 	}
 
 	return nil
