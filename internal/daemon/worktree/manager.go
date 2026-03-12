@@ -17,6 +17,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/validate"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -27,6 +28,20 @@ var validSHAPattern = regexp.MustCompile(`^[0-9a-f]{40}([0-9a-f]{24})?$`)
 func validateSHA(s string) error {
 	if !validSHAPattern.MatchString(s) {
 		return fmt.Errorf("invalid git SHA format: %q", s)
+	}
+	return nil
+}
+
+// validateIDs checks that commandID and optional workerIDs are safe for use
+// in file paths (defense-in-depth against path traversal).
+func validateIDs(commandID string, workerIDs ...string) error {
+	if err := validate.ValidateID(commandID); err != nil {
+		return fmt.Errorf("invalid commandID: %w", err)
+	}
+	for _, wid := range workerIDs {
+		if err := validate.ValidateID(wid); err != nil {
+			return fmt.Errorf("invalid workerID: %w", err)
+		}
 	}
 	return nil
 }
@@ -56,6 +71,9 @@ func NewManager(maestroDir string, cfg model.WorktreeConfig, logger *log.Logger,
 
 // CreateForCommand creates worktrees for all workers and an integration branch for a command.
 func (wm *Manager) CreateForCommand(commandID string, workerIDs []string) error {
+	if err := validateIDs(commandID, workerIDs...); err != nil {
+		return err
+	}
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
@@ -175,6 +193,9 @@ func (wm *Manager) CreateForCommand(commandID string, workerIDs []string) error 
 // and the worker's worktree. If state exists but the worker is missing, it adds
 // the worker worktree to the existing command state.
 func (wm *Manager) EnsureWorkerWorktree(commandID, workerID string) error {
+	if err := validateIDs(commandID, workerID); err != nil {
+		return err
+	}
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
@@ -315,6 +336,9 @@ func (wm *Manager) addWorkerWorktreeUnlocked(state *model.WorktreeCommandState, 
 
 // GetWorkerPath returns the worktree path for a specific worker.
 func (wm *Manager) GetWorkerPath(commandID, workerID string) (string, error) {
+	if err := validateIDs(commandID, workerID); err != nil {
+		return "", err
+	}
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
@@ -334,6 +358,9 @@ func (wm *Manager) GetWorkerPath(commandID, workerID string) (string, error) {
 // CommitWorkerChanges commits all changes in a worker's worktree.
 // Idempotent: if there are no changes to commit, returns nil.
 func (wm *Manager) CommitWorkerChanges(commandID, workerID, message string) error {
+	if err := validateIDs(commandID, workerID); err != nil {
+		return err
+	}
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
@@ -415,6 +442,9 @@ func (wm *Manager) CommitWorkerChanges(commandID, workerID, message string) erro
 // Returns any merge conflicts encountered. Workers are merged in deterministic order.
 // All merge operations happen in the integration worktree (H3: projectRoot HEAD is never changed).
 func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string) ([]model.MergeConflict, error) {
+	if err := validateIDs(commandID, workerIDs...); err != nil {
+		return nil, err
+	}
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
@@ -656,6 +686,9 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string) ([]m
 
 // SyncFromIntegration updates worker worktrees with the latest integration branch state.
 func (wm *Manager) SyncFromIntegration(commandID string, workerIDs []string) error {
+	if err := validateIDs(commandID, workerIDs...); err != nil {
+		return err
+	}
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
@@ -715,6 +748,9 @@ func (wm *Manager) SyncFromIntegration(commandID string, workerIDs []string) err
 // PublishToBase merges the integration branch into the base branch.
 // Uses a temporary branch in the integration worktree to avoid changing projectRoot HEAD (H3).
 func (wm *Manager) PublishToBase(commandID string) error {
+	if err := validateIDs(commandID); err != nil {
+		return err
+	}
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
@@ -803,9 +839,11 @@ func (wm *Manager) PublishToBase(commandID string) error {
 	// working tree or index. If baseBranch is checked out in projectRoot, the index
 	// and working tree will still reflect the old commit, causing a "revert" state
 	// where `git status` shows the new changes as staged deletions.
-	if err := wm.gitRun("update-ref", fmt.Sprintf("refs/heads/%s", baseBranch), mergeSHA); err != nil {
+	// Use compare-and-swap: update-ref will fail atomically if baseBranch
+	// has been modified since we read baseSHA, preventing TOCTOU races.
+	if err := wm.gitRun("update-ref", fmt.Sprintf("refs/heads/%s", baseBranch), mergeSHA, baseSHA); err != nil {
 		_ = wm.gitRun("branch", "-D", tempBranch)
-		return fmt.Errorf("update base branch ref: %w", err)
+		return fmt.Errorf("update base branch ref (CAS failed — branch may have been modified concurrently): %w", err)
 	}
 
 	// Clean up temp branch
@@ -847,6 +885,9 @@ func (wm *Manager) PublishToBase(commandID string) error {
 
 // CleanupCommand removes all worktrees and branches for a command.
 func (wm *Manager) CleanupCommand(commandID string) error {
+	if err := validateIDs(commandID); err != nil {
+		return err
+	}
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
@@ -861,20 +902,26 @@ func (wm *Manager) CleanupCommand(commandID string) error {
 	now := wm.clock.Now().UTC().Format(time.RFC3339)
 	var errs []string
 
-	// Remove worker worktrees
+	// Remove worker worktrees (skip already-cleaned entries for retry-safety)
 	for i := range state.Workers {
 		ws := &state.Workers[i]
+		if ws.Status == model.WorktreeStatusCleanupDone {
+			continue
+		}
 		if err := wm.gitRun("worktree", "remove", "--force", ws.Path); err != nil {
-			errs = append(errs, fmt.Sprintf("remove worktree %s: %v", ws.WorkerID, err))
-			if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusCleanupFailed, now); tErr != nil {
-				wm.log(core.LogLevelWarn, "cleanup_failed_transition command=%s worker=%s error=%v",
-					commandID, ws.WorkerID, tErr)
+			// Treat "not a working tree" as success (already removed in prior attempt)
+			if !strings.Contains(err.Error(), "not a working tree") {
+				errs = append(errs, fmt.Sprintf("remove worktree %s: %v", ws.WorkerID, err))
+				if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusCleanupFailed, now); tErr != nil {
+					wm.log(core.LogLevelWarn, "cleanup_failed_transition command=%s worker=%s error=%v",
+						commandID, ws.WorkerID, tErr)
+				}
+				continue
 			}
-		} else {
-			if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusCleanupDone, now); tErr != nil {
-				wm.log(core.LogLevelWarn, "cleanup_done_transition command=%s worker=%s error=%v",
-					commandID, ws.WorkerID, tErr)
-			}
+		}
+		if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusCleanupDone, now); tErr != nil {
+			wm.log(core.LogLevelWarn, "cleanup_done_transition command=%s worker=%s error=%v",
+				commandID, ws.WorkerID, tErr)
 		}
 
 		// Delete worker branch
@@ -886,7 +933,9 @@ func (wm *Manager) CleanupCommand(commandID string) error {
 
 	// Remove integration worktree (must be before os.RemoveAll and branch deletion)
 	integrationPath := wm.integrationWorktreePath(commandID)
-	_ = wm.gitRun("worktree", "remove", "--force", integrationPath)
+	if err := wm.gitRun("worktree", "remove", "--force", integrationPath); err != nil {
+		errs = append(errs, fmt.Sprintf("remove integration worktree: %v", err))
+	}
 
 	// Delete integration branch
 	if err := wm.gitRun("branch", "-D", state.Integration.Branch); err != nil {
@@ -894,17 +943,23 @@ func (wm *Manager) CleanupCommand(commandID string) error {
 			commandID, state.Integration.Branch, err)
 	}
 
-	// Remove the worktree directory for this command
+	// Only remove directory and state file if all worktree removals succeeded.
+	// If there were failures, save state with cleanup_failed markers so
+	// GC/Reconcile can retry later.
+	if len(errs) > 0 {
+		state.UpdatedAt = now
+		if sErr := wm.saveState(commandID, state); sErr != nil {
+			wm.log(core.LogLevelWarn, "save_cleanup_failed_state command=%s error=%v", commandID, sErr)
+		}
+		return fmt.Errorf("cleanup errors: %s", strings.Join(errs, "; "))
+	}
+
+	// All worktree removals succeeded — safe to remove directory and state file
 	wtDir := filepath.Join(wm.projectRoot, wm.config.EffectivePathPrefix(), commandID)
 	_ = os.RemoveAll(wtDir)
 
-	// Remove state file so HasWorktrees returns false
 	statePath := filepath.Join(wm.maestroDir, "state", "worktrees", commandID+".yaml")
 	_ = os.Remove(statePath)
-
-	if len(errs) > 0 {
-		return fmt.Errorf("cleanup errors: %s", strings.Join(errs, "; "))
-	}
 
 	wm.log(core.LogLevelInfo, "cleanup_complete command=%s", commandID)
 	return nil
@@ -1055,6 +1110,9 @@ func (wm *Manager) GC() error {
 
 // GetState returns the worktree state for a specific worker in a command.
 func (wm *Manager) GetState(commandID, workerID string) (*model.WorktreeState, error) {
+	if err := validateIDs(commandID, workerID); err != nil {
+		return nil, err
+	}
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
@@ -1073,6 +1131,9 @@ func (wm *Manager) GetState(commandID, workerID string) (*model.WorktreeState, e
 
 // GetCommandState returns the full worktree state for a command.
 func (wm *Manager) GetCommandState(commandID string) (*model.WorktreeCommandState, error) {
+	if err := validateIDs(commandID); err != nil {
+		return nil, err
+	}
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 	return wm.loadState(commandID)
@@ -1080,6 +1141,9 @@ func (wm *Manager) GetCommandState(commandID string) (*model.WorktreeCommandStat
 
 // HasWorktrees checks if worktrees exist for a given command.
 func (wm *Manager) HasWorktrees(commandID string) bool {
+	if err := validateIDs(commandID); err != nil {
+		return false
+	}
 	statePath := filepath.Join(wm.maestroDir, "state", "worktrees", commandID+".yaml")
 	_, err := os.Stat(statePath)
 	return err == nil
@@ -1126,6 +1190,9 @@ func (wm *Manager) CleanupAll() error {
 
 // MarkPhaseMerged records that a phase has been merged so it won't be re-merged.
 func (wm *Manager) MarkPhaseMerged(commandID, phaseID string) error {
+	if err := validateIDs(commandID, phaseID); err != nil {
+		return err
+	}
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
@@ -1145,6 +1212,9 @@ func (wm *Manager) MarkPhaseMerged(commandID, phaseID string) error {
 // DiscardWorkerChanges discards all uncommitted changes in a worker's worktree.
 // Used during cancellation to clean up in-progress work.
 func (wm *Manager) DiscardWorkerChanges(commandID, workerID string) error {
+	if err := validateIDs(commandID, workerID); err != nil {
+		return err
+	}
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
@@ -1392,8 +1462,15 @@ func (wm *Manager) cleanupCommandUnlocked(commandID string, state *model.Worktre
 	var errs []string
 
 	for _, ws := range state.Workers {
+		if ws.Status == model.WorktreeStatusCleanupDone {
+			continue
+		}
 		if err := wm.gitRun("worktree", "remove", "--force", ws.Path); err != nil {
-			errs = append(errs, fmt.Sprintf("remove worktree %s: %v", ws.WorkerID, err))
+			// Treat "not a working tree" as success (already removed)
+			if !strings.Contains(err.Error(), "not a working tree") {
+				errs = append(errs, fmt.Sprintf("remove worktree %s: %v", ws.WorkerID, err))
+				continue
+			}
 		}
 		if err := wm.gitRun("branch", "-D", ws.Branch); err != nil {
 			wm.log(core.LogLevelWarn, "delete_worker_branch_failed command=%s worker=%s branch=%s error=%v",
@@ -1403,24 +1480,31 @@ func (wm *Manager) cleanupCommandUnlocked(commandID string, state *model.Worktre
 
 	// Remove integration worktree before branch deletion
 	integrationPath := wm.integrationWorktreePath(commandID)
-	_ = wm.gitRun("worktree", "remove", "--force", integrationPath)
+	if err := wm.gitRun("worktree", "remove", "--force", integrationPath); err != nil {
+		// Treat "not a working tree" as success (already removed)
+		if !strings.Contains(err.Error(), "not a working tree") {
+			errs = append(errs, fmt.Sprintf("remove integration worktree: %v", err))
+		}
+	}
 
 	if err := wm.gitRun("branch", "-D", state.Integration.Branch); err != nil {
 		wm.log(core.LogLevelWarn, "delete_integration_branch_failed command=%s branch=%s error=%v",
 			commandID, state.Integration.Branch, err)
 	}
 
-	// Remove directory
-	wtDir := filepath.Join(wm.projectRoot, wm.config.EffectivePathPrefix(), commandID)
-	_ = os.RemoveAll(wtDir)
-
-	// Remove state file
-	statePath := filepath.Join(wm.maestroDir, "state", "worktrees", commandID+".yaml")
-	_ = os.Remove(statePath)
-
+	// Only remove directory and state file if all worktree removals succeeded.
+	// On failure, keep state file so GC/Reconcile can retry.
 	if len(errs) > 0 {
 		return fmt.Errorf("cleanup errors: %s", strings.Join(errs, "; "))
 	}
+
+	// All removals succeeded — safe to remove directory and state file
+	wtDir := filepath.Join(wm.projectRoot, wm.config.EffectivePathPrefix(), commandID)
+	_ = os.RemoveAll(wtDir)
+
+	statePath := filepath.Join(wm.maestroDir, "state", "worktrees", commandID+".yaml")
+	_ = os.Remove(statePath)
+
 	return nil
 }
 
