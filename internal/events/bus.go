@@ -62,6 +62,27 @@ func (c *coalescedSub) safeClose() {
 	c.once.Do(func() { close(c.sig) })
 }
 
+// safeCloser is implemented by subscriber types that support idempotent close.
+type safeCloser interface {
+	safeClose()
+}
+
+// removeSubscriber removes a specific subscriber from a slice and closes it.
+// Returns the updated slice.
+func removeSubscriber[T safeCloser](subs []T, target T) []T {
+	for i, s := range subs {
+		if any(s) == any(target) {
+			last := len(subs) - 1
+			subs[i] = subs[last]
+			var zero T
+			subs[last] = zero
+			target.safeClose()
+			return subs[:last]
+		}
+	}
+	return subs
+}
+
 // Bus is a non-blocking event bus using Publish/Subscribe pattern.
 // Events are delivered asynchronously via buffered channels.
 // If a subscriber's channel is full, the event is dropped and counted.
@@ -151,19 +172,7 @@ func (b *Bus) Subscribe(eventType EventType, fn Subscriber) func() {
 	return func() {
 		b.mu.Lock()
 		defer b.mu.Unlock()
-
-		subs := b.subscribers[eventType]
-		for i, s := range subs {
-			if s == sub {
-				// Swap with last element, nil out the vacated slot to avoid pointer leak, then reslice
-				last := len(subs) - 1
-				subs[i] = subs[last]
-				subs[last] = nil
-				b.subscribers[eventType] = subs[:last]
-				sub.safeClose()
-				break
-			}
-		}
+		b.subscribers[eventType] = removeSubscriber(b.subscribers[eventType], sub)
 	}
 }
 
@@ -219,18 +228,7 @@ func (b *Bus) SubscribeCoalesced(eventType EventType, fn CoalescedSubscriber) fu
 	return func() {
 		b.mu.Lock()
 		defer b.mu.Unlock()
-
-		subs := b.coalescedSubs[eventType]
-		for i, s := range subs {
-			if s == sub {
-				last := len(subs) - 1
-				subs[i] = subs[last]
-				subs[last] = nil
-				b.coalescedSubs[eventType] = subs[:last]
-				sub.safeClose()
-				break
-			}
-		}
+		b.coalescedSubs[eventType] = removeSubscriber(b.coalescedSubs[eventType], sub)
 	}
 }
 
@@ -323,19 +321,29 @@ func (b *Bus) Close() {
 	}
 	b.mu.Unlock()
 
-	// Wait for subscriber goroutines to finish with timeout
-	done := make(chan struct{})
+	// Wait for subscriber goroutines to finish with timeout.
+	// Use a timer instead of spawning a goroutine to avoid leaking
+	// a waiter goroutine when the timeout fires.
+	waitDone := make(chan struct{})
 	go func() {
 		b.wg.Wait()
-		close(done)
+		close(waitDone)
 	}()
+
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+
 	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
+	case <-waitDone:
+	case <-timer.C:
 		remaining := b.activeGoroutines.Load()
 		buf := make([]byte, 64*1024)
 		n := runtime.Stack(buf, true)
 		log.Printf("WARN event_bus: Close timed out waiting for %d subscriber goroutines, dumping stacks:\n%s",
 			remaining, string(buf[:n]))
+		// Wait for the waiter goroutine to finish so it does not leak.
+		// At this point all channels are closed, so wg.Wait() will
+		// complete once goroutines drain their channels.
+		<-waitDone
 	}
 }
