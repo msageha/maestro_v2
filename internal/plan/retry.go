@@ -542,41 +542,25 @@ func writeRetryQueueEntry(maestroDir string, task retryQueueTask, now string, lo
 		defer lockMap.Unlock("queue:" + task.workerID)
 	}
 
-	queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(task.workerID))
-
-	var tq model.TaskQueue
-	data, err := os.ReadFile(queueFile)
-	if err == nil {
-		if err := yamlv3.Unmarshal(data, &tq); err != nil {
-			return fmt.Errorf("parse existing queue %s: %w", task.workerID, err)
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("read queue %s: %w", task.workerID, err)
-	}
-	if tq.SchemaVersion == 0 {
-		tq.SchemaVersion = 1
-		tq.FileType = "queue_task"
-	}
-
-	tq.Tasks = append(tq.Tasks, model.Task{
-		ID:                 task.taskID,
-		CommandID:          task.commandID,
-		Purpose:            task.purpose,
-		Content:            task.content,
-		AcceptanceCriteria: task.acceptanceCriteria,
-		Constraints:        task.constraints,
-		BlockedBy:          task.blockedBy,
-		BloomLevel:         task.bloomLevel,
-		ToolsHint:          task.toolsHint,
-		PersonaHint:        task.personaHint,
-		SkillRefs:          task.skillRefs,
-		Priority:           100,
-		Status:             model.StatusPending,
-		CreatedAt:          now,
-		UpdatedAt:          now,
+	return readModifyWriteQueue(maestroDir, task.workerID, func(tq *model.TaskQueue) {
+		tq.Tasks = append(tq.Tasks, model.Task{
+			ID:                 task.taskID,
+			CommandID:          task.commandID,
+			Purpose:            task.purpose,
+			Content:            task.content,
+			AcceptanceCriteria: task.acceptanceCriteria,
+			Constraints:        task.constraints,
+			BlockedBy:          task.blockedBy,
+			BloomLevel:         task.bloomLevel,
+			ToolsHint:          task.toolsHint,
+			PersonaHint:        task.personaHint,
+			SkillRefs:          task.skillRefs,
+			Priority:           100,
+			Status:             model.StatusPending,
+			CreatedAt:          now,
+			UpdatedAt:          now,
+		})
 	})
-
-	return yamlutil.AtomicWrite(queueFile, tq)
 }
 
 func loadOriginalTasksFromQueue(maestroDir string, commandID string) (map[string]model.Task, error) {

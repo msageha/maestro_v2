@@ -16,21 +16,17 @@ const (
 	MaxTaskConstraintRunes         = 1024
 )
 
-// ValidateTasksInput validates a slice of task inputs for field integrity, uniqueness, and DAG constraints.
-func ValidateTasksInput(tasks []TaskInput) *ValidationErrors {
-	errs := &ValidationErrors{}
-
-	if len(tasks) == 0 {
-		errs.Add("tasks", "at least one task is required")
-		return errs
-	}
-
+// validateTaskSetCommon validates a slice of task inputs for field integrity,
+// name uniqueness, reserved-name prefixes, blocked_by references, self-references,
+// and DAG constraints. It collects task names, name set, and blocked_by mappings
+// into the provided errs. The fieldPrefix (e.g. "tasks") is used for error paths.
+func validateTaskSetCommon(tasks []TaskInput, fieldPrefix string, errs *ValidationErrors) {
 	names := make([]string, 0, len(tasks))
 	nameSet := make(map[string]bool, len(tasks))
 	blockedBy := make(map[string][]string)
 
 	for i, task := range tasks {
-		prefix := fmt.Sprintf("tasks[%d]", i)
+		prefix := fmt.Sprintf("%s[%d]", fieldPrefix, i)
 		validateTaskFields(task, prefix, errs)
 
 		if task.Name != "" {
@@ -42,29 +38,37 @@ func ValidateTasksInput(tasks []TaskInput) *ValidationErrors {
 		}
 	}
 
-	validateNameUniqueness(names, "tasks", errs)
-	validateSystemReservedNames(names, "tasks", errs)
+	validateNameUniqueness(names, fieldPrefix, errs)
+	validateSystemReservedNames(names, fieldPrefix, errs)
 
-	// Validate blocked_by references within same scope
 	if refErrs := ValidateSamePhaseRefs(blockedBy, nameSet); refErrs != nil {
 		for _, e := range refErrs.Errors {
-			errs.Add("tasks."+e.FieldPath, e.Message)
+			errs.Add(fieldPrefix+"."+e.FieldPath, e.Message)
 		}
 	}
-
-	// Validate self-references
 	if selfErrs := ValidateNoSelfReference(blockedBy); selfErrs != nil {
 		for _, e := range selfErrs.Errors {
-			errs.Add("tasks."+e.FieldPath, e.Message)
+			errs.Add(fieldPrefix+"."+e.FieldPath, e.Message)
 		}
 	}
 
-	// DAG validation
 	if !errs.HasErrors() && len(blockedBy) > 0 {
 		if _, err := ValidateTaskDAG(names, blockedBy); err != nil {
-			errs.Add("tasks", err.Error())
+			errs.Add(fieldPrefix, err.Error())
 		}
 	}
+}
+
+// ValidateTasksInput validates a slice of task inputs for field integrity, uniqueness, and DAG constraints.
+func ValidateTasksInput(tasks []TaskInput) *ValidationErrors {
+	errs := &ValidationErrors{}
+
+	if len(tasks) == 0 {
+		errs.Add("tasks", "at least one task is required")
+		return errs
+	}
+
+	validateTaskSetCommon(tasks, "tasks", errs)
 
 	if errs.HasErrors() {
 		return errs
@@ -110,41 +114,7 @@ func ValidatePhasesInput(phases []PhaseInput) *ValidationErrors {
 			}
 
 			// Validate tasks within concrete phase
-			taskNames := make(map[string]bool)
-			taskBlockedBy := make(map[string][]string)
-			var taskNameList []string
-			for j, task := range phase.Tasks {
-				taskPrefix := fmt.Sprintf("%s.tasks[%d]", prefix, j)
-				validateTaskFields(task, taskPrefix, errs)
-				if task.Name != "" {
-					taskNames[task.Name] = true
-					taskNameList = append(taskNameList, task.Name)
-					if len(task.BlockedBy) > 0 {
-						taskBlockedBy[task.Name] = task.BlockedBy
-					}
-				}
-			}
-
-			// Validate within-phase blocked_by
-			if refErrs := ValidateSamePhaseRefs(taskBlockedBy, taskNames); refErrs != nil {
-				for _, e := range refErrs.Errors {
-					errs.Add(prefix+".tasks."+e.FieldPath, e.Message)
-				}
-			}
-			if selfErrs := ValidateNoSelfReference(taskBlockedBy); selfErrs != nil {
-				for _, e := range selfErrs.Errors {
-					errs.Add(prefix+".tasks."+e.FieldPath, e.Message)
-				}
-			}
-			// Task-level DAG within phase
-			if len(taskBlockedBy) > 0 {
-				if _, err := ValidateTaskDAG(taskNameList, taskBlockedBy); err != nil {
-					errs.Add(prefix+".tasks", err.Error())
-				}
-			}
-
-			validateNameUniqueness(taskNameList, prefix+".tasks", errs)
-			validateSystemReservedNames(taskNameList, prefix+".tasks", errs)
+			validateTaskSetCommon(phase.Tasks, prefix+".tasks", errs)
 		}
 
 		if phase.Type == "deferred" {
@@ -230,43 +200,8 @@ func ValidatePhaseFillInput(tasks []TaskInput, phase model.Phase) *ValidationErr
 		}
 	}
 
-	// Validate task fields
-	names := make([]string, 0, len(tasks))
-	nameSet := make(map[string]bool)
-	blockedBy := make(map[string][]string)
-
-	for i, task := range tasks {
-		prefix := fmt.Sprintf("tasks[%d]", i)
-		validateTaskFields(task, prefix, errs)
-
-		if task.Name != "" {
-			names = append(names, task.Name)
-			nameSet[task.Name] = true
-			if len(task.BlockedBy) > 0 {
-				blockedBy[task.Name] = task.BlockedBy
-			}
-		}
-	}
-
-	validateNameUniqueness(names, "tasks", errs)
-	validateSystemReservedNames(names, "tasks", errs)
-
-	if refErrs := ValidateSamePhaseRefs(blockedBy, nameSet); refErrs != nil {
-		for _, e := range refErrs.Errors {
-			errs.Add("tasks."+e.FieldPath, e.Message)
-		}
-	}
-	if selfErrs := ValidateNoSelfReference(blockedBy); selfErrs != nil {
-		for _, e := range selfErrs.Errors {
-			errs.Add("tasks."+e.FieldPath, e.Message)
-		}
-	}
-
-	if !errs.HasErrors() && len(blockedBy) > 0 {
-		if _, err := ValidateTaskDAG(names, blockedBy); err != nil {
-			errs.Add("tasks", err.Error())
-		}
-	}
+	// Validate task fields, uniqueness, references, and DAG
+	validateTaskSetCommon(tasks, "tasks", errs)
 
 	if errs.HasErrors() {
 		return errs
