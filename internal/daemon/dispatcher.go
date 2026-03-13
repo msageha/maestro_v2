@@ -597,10 +597,3 @@ func (disp *Dispatcher) evictOldGateEvaluationsLocked() {
 		delete(disp.gateEvaluations, entries[i].taskID)
 	}
 }
-
-// GetGateEvaluation retrieves the gate evaluation for a task
-func (disp *Dispatcher) GetGateEvaluation(taskID string) *model.QualityGateEvaluation {
-	disp.gateEvalMutex.RLock()
-	defer disp.gateEvalMutex.RUnlock()
-	return disp.gateEvaluations[taskID]
-}

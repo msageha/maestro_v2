@@ -21,11 +21,13 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 	// Restore counters accumulated during Phase A
 	qh.scanCounters = pa.counters
 
+	// Load queues once for the entire phase (reused by metrics step below)
+	commandQueue, commandPath := qh.loadCommandQueue()
+	taskQueues := qh.loadAllTaskQueues()
+	notificationQueue, notificationPath := qh.loadNotificationQueue()
+
 	// --- Apply dispatch + busy check results (single load/flush) ---
 	if len(pb.dispatches) > 0 || len(pb.busyChecks) > 0 {
-		commandQueue, commandPath := qh.loadCommandQueue()
-		taskQueues := qh.loadAllTaskQueues()
-		notificationQueue, notificationPath := qh.loadNotificationQueue()
 		commandsDirty := false
 		notificationsDirty := false
 		taskDirty := make(map[string]bool)
@@ -167,11 +169,8 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 		}
 	}
 
-	// Step 4: Metrics and dashboard
+	// Step 4: Metrics and dashboard (reuses queues loaded at phase start)
 	if qh.metricsHandler != nil {
-		commandQueue, _ := qh.loadCommandQueue()
-		taskQueues := qh.loadAllTaskQueues()
-		notificationQueue, _ := qh.loadNotificationQueue()
 		scanDuration := qh.clock.Now().Sub(pa.scanStart)
 		if err := qh.metricsHandler.UpdateMetrics(commandQueue, taskQueues, notificationQueue, pa.scanStart, scanDuration, &qh.scanCounters); err != nil {
 			qh.log(LogLevelError, "update_metrics error=%v", err)
