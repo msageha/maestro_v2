@@ -16,7 +16,7 @@ import (
 // Action: revert to awaiting_fill, remove partially added tasks.
 type R0bFillingStuck struct{}
 
-func (R0bFillingStuck) Name() string { return "R0b" }
+
 
 func (R0bFillingStuck) Apply(run *Run) Outcome {
 	var repairs []Repair
@@ -96,7 +96,7 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 				localModified = true
 
 				localRepairs = append(localRepairs, Repair{
-					Pattern:   "R0b",
+					Pattern:   PatternR0b,
 					CommandID: state.CommandID,
 					Detail:    fmt.Sprintf("phase %s filling stuck %.0fs, reverted to awaiting_fill", phase.Name, ageSec),
 				})
@@ -122,7 +122,7 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 
 		if modified && run.Deps.ExecutorFactory != nil {
 			notifications = append(notifications, DeferredNotification{
-				Kind:      "re_fill",
+				Kind:      NotifyReFill,
 				CommandID: commandID,
 			})
 		}

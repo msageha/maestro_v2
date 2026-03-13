@@ -16,7 +16,7 @@ import (
 // Action: set phase to timed_out, cascade cancel downstream pending phases, defer Planner notification.
 type R6FillTimeout struct{}
 
-func (R6FillTimeout) Name() string { return "R6" }
+
 
 func (R6FillTimeout) Apply(run *Run) Outcome {
 	var repairs []Repair
@@ -83,7 +83,7 @@ func (R6FillTimeout) Apply(run *Run) Outcome {
 				timedOutPhases[phase.Name] = true
 
 				commandRepairs = append(commandRepairs, Repair{
-					Pattern:   "R6",
+					Pattern:   PatternR6,
 					CommandID: commandID,
 					Detail:    fmt.Sprintf("phase %s timed_out (deadline %s)", phase.Name, *phase.FillDeadlineAt),
 				})
@@ -113,7 +113,7 @@ func (R6FillTimeout) Apply(run *Run) Outcome {
 								cancelledPhases[phase.Name] = true
 
 								commandRepairs = append(commandRepairs, Repair{
-									Pattern:   "R6",
+									Pattern:   PatternR6,
 									CommandID: commandID,
 									Detail:    fmt.Sprintf("phase %s cancelled (cascade from %s)", phase.Name, dep),
 								})
@@ -145,7 +145,7 @@ func (R6FillTimeout) Apply(run *Run) Outcome {
 			repairs = append(repairs, commandRepairs...)
 			if run.Deps.ExecutorFactory != nil {
 				notifications = append(notifications, DeferredNotification{
-					Kind:           "fill_timeout",
+					Kind:           NotifyFillTimeout,
 					CommandID:      commandID,
 					TimedOutPhases: timedOutPhases,
 				})

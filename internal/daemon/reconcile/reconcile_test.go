@@ -190,22 +190,20 @@ func TestEngine_Reconcile_EmptyPatterns(t *testing.T) {
 }
 
 type fakePattern struct {
-	name    string
 	outcome Outcome
 }
 
-func (f *fakePattern) Name() string      { return f.name }
 func (f *fakePattern) Apply(*Run) Outcome { return f.outcome }
 
 func TestEngine_Reconcile_AggregatesPatterns(t *testing.T) {
 	t.Parallel()
 	deps := newTestDeps(t, setupTestDir(t))
-	p1 := &fakePattern{name: "P1", outcome: Outcome{
+	p1 := &fakePattern{outcome: Outcome{
 		Repairs: []Repair{{Pattern: "P1", Detail: "repair1"}},
 	}}
-	p2 := &fakePattern{name: "P2", outcome: Outcome{
+	p2 := &fakePattern{outcome: Outcome{
 		Repairs:       []Repair{{Pattern: "P2", Detail: "repair2"}},
-		Notifications: []DeferredNotification{{Kind: "re_fill", CommandID: "cmd1"}},
+		Notifications: []DeferredNotification{{Kind: NotifyReFill, CommandID: "cmd1"}},
 	}}
 
 	engine := NewEngine(deps, p1, p2)
@@ -224,7 +222,7 @@ func TestEngine_ExecuteDeferredNotifications_NilFactory(t *testing.T) {
 	engine := NewEngine(deps)
 	// Should not panic
 	engine.ExecuteDeferredNotifications([]DeferredNotification{
-		{Kind: "re_fill", CommandID: "cmd1"},
+		{Kind: NotifyReFill, CommandID: "cmd1"},
 	})
 }
 
@@ -237,9 +235,9 @@ func TestEngine_ExecuteDeferredNotifications_AllKinds(t *testing.T) {
 	}
 	engine := NewEngine(deps)
 	engine.ExecuteDeferredNotifications([]DeferredNotification{
-		{Kind: "re_fill", CommandID: "cmd1"},
-		{Kind: "re_evaluate", CommandID: "cmd2", Reason: "tasks not done"},
-		{Kind: "fill_timeout", CommandID: "cmd3", TimedOutPhases: map[string]bool{"p1": true}},
+		{Kind: NotifyReFill, CommandID: "cmd1"},
+		{Kind: NotifyReEvaluate, CommandID: "cmd2", Reason: "tasks not done"},
+		{Kind: NotifyFillTimeout, CommandID: "cmd3", TimedOutPhases: map[string]bool{"p1": true}},
 		{Kind: "unknown_kind", CommandID: "cmd4"},
 	})
 	if len(exec.calls) != 3 {
@@ -256,7 +254,7 @@ func TestEngine_ExecuteDeferredNotifications_FactoryError(t *testing.T) {
 	engine := NewEngine(deps)
 	// Should not panic
 	engine.ExecuteDeferredNotifications([]DeferredNotification{
-		{Kind: "re_fill", CommandID: "cmd1"},
+		{Kind: NotifyReFill, CommandID: "cmd1"},
 	})
 }
 
@@ -320,7 +318,7 @@ func TestR0Dispatch_StuckCommand(t *testing.T) {
 	if len(outcome.Repairs) != 1 {
 		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
 	}
-	if outcome.Repairs[0].Pattern != "R0-dispatch" {
+	if outcome.Repairs[0].Pattern != PatternR0Dispatch {
 		t.Errorf("pattern: got %s", outcome.Repairs[0].Pattern)
 	}
 
@@ -563,7 +561,7 @@ func TestR0bFillingStuck_GeneratesNotification(t *testing.T) {
 	if len(outcome.Notifications) != 1 {
 		t.Fatalf("expected 1 notification, got %d", len(outcome.Notifications))
 	}
-	if outcome.Notifications[0].Kind != "re_fill" {
+	if outcome.Notifications[0].Kind != NotifyReFill {
 		t.Errorf("notification kind: got %s", outcome.Notifications[0].Kind)
 	}
 }
@@ -670,7 +668,7 @@ func TestR1ResultQueue_HappyPath_RepairsInProgressTask(t *testing.T) {
 	if len(outcome.Repairs) != 1 {
 		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
 	}
-	if outcome.Repairs[0].Pattern != "R1" {
+	if outcome.Repairs[0].Pattern != PatternR1 {
 		t.Errorf("pattern: got %s, want R1", outcome.Repairs[0].Pattern)
 	}
 
@@ -940,7 +938,7 @@ func TestR2ResultState_HappyPath_UpdatesStateToTerminal(t *testing.T) {
 	if len(outcome.Repairs) != 1 {
 		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
 	}
-	if outcome.Repairs[0].Pattern != "R2" {
+	if outcome.Repairs[0].Pattern != PatternR2 {
 		t.Errorf("pattern: got %s, want R2", outcome.Repairs[0].Pattern)
 	}
 
@@ -1158,7 +1156,7 @@ func TestR3PlannerQueue_HappyPath_RepairsNonTerminalCommand(t *testing.T) {
 	if len(outcome.Repairs) != 1 {
 		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
 	}
-	if outcome.Repairs[0].Pattern != "R3" {
+	if outcome.Repairs[0].Pattern != PatternR3 {
 		t.Errorf("pattern: got %s, want R3", outcome.Repairs[0].Pattern)
 	}
 
@@ -1474,7 +1472,7 @@ func TestR4PlanStatus_CanCompleteFails_QuarantineAndNotify(t *testing.T) {
 	if len(outcome.Notifications) != 1 {
 		t.Fatalf("expected 1 notification, got %d", len(outcome.Notifications))
 	}
-	if outcome.Notifications[0].Kind != "re_evaluate" {
+	if outcome.Notifications[0].Kind != NotifyReEvaluate {
 		t.Errorf("notification kind: got %s", outcome.Notifications[0].Kind)
 	}
 
@@ -1605,7 +1603,7 @@ func TestR5Notification_HappyPath_ReissuesNotification(t *testing.T) {
 	if len(outcome.Repairs) != 1 {
 		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
 	}
-	if outcome.Repairs[0].Pattern != "R5" {
+	if outcome.Repairs[0].Pattern != PatternR5 {
 		t.Errorf("pattern: got %s, want R5", outcome.Repairs[0].Pattern)
 	}
 	if len(notifier.calls) != 1 {

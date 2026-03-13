@@ -55,11 +55,11 @@ func (e *Engine) ExecuteDeferredNotifications(notifications []DeferredNotificati
 	}
 	for _, n := range notifications {
 		switch n.Kind {
-		case "re_fill":
+		case NotifyReFill:
 			e.notifyPlannerOfReFill(n.CommandID)
-		case "re_evaluate":
+		case NotifyReEvaluate:
 			e.notifyPlannerOfReEvaluation(n.CommandID, n.Reason)
-		case "fill_timeout":
+		case NotifyFillTimeout:
 			e.notifyPlannerOfTimeout(n.CommandID, n.TimedOutPhases)
 		default:
 			e.deps.DL.Logf(core.LogLevelWarn, "unknown deferred notification kind=%s command=%s", n.Kind, n.CommandID)
