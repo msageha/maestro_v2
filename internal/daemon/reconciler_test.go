@@ -25,8 +25,9 @@ func newTestReconciler(maestroDir string) *Reconciler {
 	}
 	lockMap := lock.NewMutexMap()
 	logger := log.New(&bytes.Buffer{}, "", 0)
-	rh := NewResultHandler(maestroDir, cfg, lockMap, logger, LogLevelDebug)
-	return NewReconciler(maestroDir, cfg, lockMap, logger, LogLevelDebug, rh, rh.execProvider.Factory())
+	ep := newTestExecutorProvider(maestroDir, cfg)
+	rh := NewResultHandler(maestroDir, cfg, lockMap, logger, LogLevelDebug, ep)
+	return NewReconciler(maestroDir, cfg, lockMap, logger, LogLevelDebug, rh, ep.Factory())
 }
 
 func TestReconciler_R0_PlanningStuck(t *testing.T) {

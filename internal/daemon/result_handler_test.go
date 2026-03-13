@@ -22,7 +22,8 @@ func newTestResultHandler(maestroDir string) (*ResultHandler, *mockExecutor) {
 		Watcher: model.WatcherConfig{NotifyLeaseSec: 120},
 	}
 	lockMap := lock.NewMutexMap()
-	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	ep := newTestExecutorProvider(maestroDir, cfg)
+	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, ep)
 
 	mock := &mockExecutor{result: agent.ExecResult{Success: true}}
 	rh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
@@ -211,7 +212,8 @@ func TestResultHandler_WorkerNotification_Failure(t *testing.T) {
 		Watcher: model.WatcherConfig{NotifyLeaseSec: 120},
 	}
 	lockMap := lock.NewMutexMap()
-	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	ep := newTestExecutorProvider(maestroDir, cfg)
+	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, ep)
 
 	// Mock executor that fails
 	failMock := &mockExecutor{result: agent.ExecResult{
@@ -476,7 +478,8 @@ func TestResultHandler_WorkerNotification_MaxRetryExhausted(t *testing.T) {
 		Watcher: model.WatcherConfig{NotifyLeaseSec: 120},
 	}
 	lockMap := lock.NewMutexMap()
-	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	ep := newTestExecutorProvider(maestroDir, cfg)
+	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, ep)
 
 	failMock := &mockExecutor{result: agent.ExecResult{
 		Success: false,
@@ -521,7 +524,8 @@ func TestResultHandler_WorkerNotification_BackoffPreventsImmediateRetry(t *testi
 		Watcher: model.WatcherConfig{NotifyLeaseSec: 120},
 	}
 	lockMap := lock.NewMutexMap()
-	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	ep := newTestExecutorProvider(maestroDir, cfg)
+	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, ep)
 
 	failMock := &mockExecutor{result: agent.ExecResult{
 		Success: false,

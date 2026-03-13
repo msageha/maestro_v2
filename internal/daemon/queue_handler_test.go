@@ -31,6 +31,19 @@ func setupTestMaestroDir(t *testing.T) string {
 	return maestroDir
 }
 
+// newTestExecutorProvider creates a no-op ExecutorProvider for tests.
+func newTestExecutorProvider(maestroDir string, cfg model.Config) *ExecutorProvider {
+	return NewExecutorProvider(
+		maestroDir,
+		cfg.Watcher,
+		cfg.Logging.Level,
+		func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+			return nil, fmt.Errorf("no executor configured")
+		},
+		RealClock{},
+	)
+}
+
 func newTestQueueHandler(maestroDir string) *QueueHandler {
 	cfg := model.Config{
 		Agents:  model.AgentsConfig{Workers: model.WorkerConfig{Count: 2}},

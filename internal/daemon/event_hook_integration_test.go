@@ -68,7 +68,7 @@ func TestEventHookIntegration(t *testing.T) {
 		}
 
 		logger := log.New(&bytes.Buffer{}, "", 0)
-		dispatcher := NewDispatcher(maestroDir, cfg, nil, logger, LogLevelInfo)
+		dispatcher := NewDispatcher(maestroDir, cfg, nil, logger, LogLevelInfo, newTestExecutorProvider(maestroDir, cfg))
 		dispatcher.SetEventBus(bus)
 
 		// Use mock executor
@@ -126,7 +126,7 @@ func TestEventHookIntegration(t *testing.T) {
 		}
 
 		logger := log.New(&bytes.Buffer{}, "", 0)
-		dispatcher := NewDispatcher(maestroDir, cfg, nil, logger, LogLevelInfo)
+		dispatcher := NewDispatcher(maestroDir, cfg, nil, logger, LogLevelInfo, newTestExecutorProvider(maestroDir, cfg))
 		dispatcher.SetEventBus(bus)
 
 		// Use mock executor
@@ -170,7 +170,7 @@ func TestEventHookIntegration(t *testing.T) {
 		}
 
 		logger := log.New(&bytes.Buffer{}, "", 0)
-		dispatcher := NewDispatcher(maestroDir, cfg, nil, logger, LogLevelInfo)
+		dispatcher := NewDispatcher(maestroDir, cfg, nil, logger, LogLevelInfo, newTestExecutorProvider(maestroDir, cfg))
 		// Do NOT set event bus
 
 		mockExec := &MockExecutor{

@@ -55,27 +55,24 @@ type ResultHandler struct {
 	mu sync.RWMutex // protects continuousHandler, eventBus
 }
 
-// NewResultHandler creates a new ResultHandler.
+// NewResultHandler creates a new ResultHandler with a shared ExecutorProvider.
 func NewResultHandler(
 	maestroDir string,
 	cfg model.Config,
 	lockMap *lock.MutexMap,
 	logger *log.Logger,
 	logLevel LogLevel,
+	ep *ExecutorProvider,
 ) *ResultHandler {
-	clock := RealClock{}
-	factory := ExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
-		return agent.NewExecutor(dir, wcfg, level)
-	})
 	return &ResultHandler{
-		maestroDir: maestroDir,
-		config:     cfg,
-		lockMap:    lockMap,
-		dl:         NewDaemonLoggerFromLegacy("result_handler", logger, logLevel),
-		logger:     logger,
-		logLevel:   logLevel,
-		clock:      clock,
-		execProvider: NewExecutorProvider(maestroDir, cfg.Watcher, cfg.Logging.Level, factory, clock, PolicyCacheError),
+		maestroDir:   maestroDir,
+		config:       cfg,
+		lockMap:      lockMap,
+		dl:           NewDaemonLoggerFromLegacy("result_handler", logger, logLevel),
+		logger:       logger,
+		logLevel:     logLevel,
+		clock:        ep.clock,
+		execProvider: ep,
 	}
 }
 
