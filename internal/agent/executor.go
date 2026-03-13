@@ -723,44 +723,16 @@ func (e *Executor) waitStable(ctx context.Context, paneTarget string, softPrompt
 // subsequent detectBusyWithRetry provides a safety net against delivering
 // to a busy agent.
 func (e *Executor) waitReady(ctx context.Context, paneTarget string) error {
-	maxRetries := e.config.WaitReadyMaxRetries
-	interval := time.Duration(e.config.WaitReadyIntervalSec) * time.Second
-
-	for i := 0; i <= maxRetries; i++ {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("wait_ready cancelled at attempt %d: %w", i, err)
-		}
-
-		content, err := e.paneIO.CapturePane(paneTarget, promptReadyLines)
-		if err != nil {
-			e.log(LogLevelDebug, "wait_ready capture error=%v attempt=%d", err, i)
-			if i < maxRetries {
-				if err := sleepCtx(ctx, interval); err != nil {
-					return fmt.Errorf("wait_ready sleep cancelled: %w", err)
-				}
-				continue
-			}
-			// Capture itself kept failing — this is a tmux error, not a prompt issue.
-			return fmt.Errorf("wait_ready: capture pane failed after %d attempts: %w", i+1, err)
-		}
-
-		if isPromptReady(content) {
-			e.log(LogLevelDebug, "wait_ready prompt detected attempt=%d", i)
-			return nil
-		}
-
-		if i < maxRetries {
-			e.log(LogLevelDebug, "wait_ready not ready attempt=%d/%d", i, maxRetries)
-			if err := sleepCtx(ctx, interval); err != nil {
-				return fmt.Errorf("wait_ready sleep cancelled: %w", err)
-			}
-		}
+	ready, err := e.waitReadyCore(ctx, paneTarget)
+	if err != nil {
+		return err
 	}
-
-	// Fallback: prompt not detected, but proceed with a warning.
-	// The subsequent detectBusyWithRetry() will catch if the agent is actually busy.
-	e.log(LogLevelInfo, "wait_ready prompt_fallback pane=%s: prompt not detected after %d attempts, proceeding (detectBusy will guard)",
-		paneTarget, maxRetries+1)
+	if !ready {
+		// Fallback: prompt not detected, but proceed with a warning.
+		// The subsequent detectBusyWithRetry() will catch if the agent is actually busy.
+		e.log(LogLevelInfo, "wait_ready prompt_fallback pane=%s: prompt not detected after retries, proceeding (detectBusy will guard)",
+			paneTarget)
+	}
 	return nil
 }
 
@@ -869,39 +841,55 @@ func (e *Executor) waitForShell(ctx context.Context, paneTarget string) error {
 // prompt is not detected after all retries (instead of soft-proceeding).
 // Used after re-launching Claude where we must confirm the process started.
 func (e *Executor) waitReadyStrict(ctx context.Context, paneTarget string) error {
+	ready, err := e.waitReadyCore(ctx, paneTarget)
+	if err != nil {
+		return err
+	}
+	if !ready {
+		return fmt.Errorf("waitReadyStrict: Claude prompt not detected after %d attempts", e.config.WaitReadyMaxRetries+1)
+	}
+	return nil
+}
+
+// waitReadyCore is the shared retry loop for prompt detection. It returns
+// (true, nil) if the prompt was detected, (false, nil) if retries were
+// exhausted without detection, or (false, err) on hard failures (context
+// cancellation, persistent capture errors).
+func (e *Executor) waitReadyCore(ctx context.Context, paneTarget string) (bool, error) {
 	maxRetries := e.config.WaitReadyMaxRetries
 	interval := time.Duration(e.config.WaitReadyIntervalSec) * time.Second
 
 	for i := 0; i <= maxRetries; i++ {
 		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("waitReadyStrict cancelled at attempt %d: %w", i, err)
+			return false, fmt.Errorf("waitReadyCore cancelled at attempt %d: %w", i, err)
 		}
 
 		content, err := e.paneIO.CapturePane(paneTarget, promptReadyLines)
 		if err != nil {
-			e.log(LogLevelDebug, "waitReadyStrict capture error=%v attempt=%d", err, i)
+			e.log(LogLevelDebug, "waitReadyCore capture error=%v attempt=%d", err, i)
 			if i < maxRetries {
 				if err := sleepCtx(ctx, interval); err != nil {
-					return fmt.Errorf("waitReadyStrict sleep cancelled: %w", err)
+					return false, fmt.Errorf("waitReadyCore sleep cancelled: %w", err)
 				}
 				continue
 			}
-			return fmt.Errorf("waitReadyStrict: capture pane failed after %d attempts: %w", i+1, err)
+			return false, fmt.Errorf("waitReadyCore: capture pane failed after %d attempts: %w", i+1, err)
 		}
 
 		if isPromptReady(content) {
-			e.log(LogLevelDebug, "waitReadyStrict prompt detected attempt=%d", i)
-			return nil
+			e.log(LogLevelDebug, "waitReadyCore prompt detected attempt=%d", i)
+			return true, nil
 		}
 
 		if i < maxRetries {
+			e.log(LogLevelDebug, "waitReadyCore not ready attempt=%d/%d", i, maxRetries)
 			if err := sleepCtx(ctx, interval); err != nil {
-				return fmt.Errorf("waitReadyStrict sleep cancelled: %w", err)
+				return false, fmt.Errorf("waitReadyCore sleep cancelled: %w", err)
 			}
 		}
 	}
 
-	return fmt.Errorf("waitReadyStrict: Claude prompt not detected after %d attempts", maxRetries+1)
+	return false, nil
 }
 
 // --- Logging ---

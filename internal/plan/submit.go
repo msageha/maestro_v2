@@ -916,29 +916,9 @@ func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks 
 				lockMap.Lock("queue:" + workerID)
 				defer lockMap.Unlock("queue:" + workerID)
 			}
-
-			queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(workerID))
-
-			var tq model.TaskQueue
-			data, err := os.ReadFile(queueFile)
-			if err == nil {
-				if err := yamlv3.Unmarshal(data, &tq); err != nil {
-					return fmt.Errorf("parse existing queue %s: %w", workerID, err)
-				}
-			} else if !errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("read queue %s: %w", workerID, err)
-			}
-			if tq.SchemaVersion == 0 {
-				tq.SchemaVersion = 1
-				tq.FileType = "queue_task"
-			}
-
-			tq.Tasks = append(tq.Tasks, newTasks...)
-
-			if err := yamlutil.AtomicWrite(queueFile, tq); err != nil {
-				return fmt.Errorf("write queue %s: %w", workerID, err)
-			}
-			return nil
+			return readModifyWriteQueue(maestroDir, workerID, func(tq *model.TaskQueue) {
+				tq.Tasks = append(tq.Tasks, newTasks...)
+			})
 		}(); err != nil {
 			return err
 		}

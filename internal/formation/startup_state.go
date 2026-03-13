@@ -114,11 +114,12 @@ func startupRecovery(maestroDir string) error {
 	if err := fl.TryLock(); err != nil {
 		return fmt.Errorf("daemon lock check: another instance may be running: %w", err)
 	}
-	_ = fl.Unlock()
-
-	// Clean stale PID file and socket left behind by a crashed daemon
+	// Clean stale PID file and socket while holding the lock (Fix #9:
+	// prevents another process from acquiring the lock between cleanup
+	// and unlock).
 	_ = os.Remove(filepath.Join(maestroDir, "daemon.pid"))
 	_ = os.Remove(filepath.Join(maestroDir, uds.DefaultSocketName))
+	_ = fl.Unlock()
 
 	// YAML validation: scan all YAML files and quarantine corrupt ones
 	validateAndRecoverYAML(maestroDir)

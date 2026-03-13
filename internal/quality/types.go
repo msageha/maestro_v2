@@ -34,11 +34,7 @@ const (
 	ActionLog      ActionType = "log"
 	ActionBlock    ActionType = "block"
 	ActionWarn     ActionType = "warn"
-	ActionRetry    ActionType = "retry"
-	ActionRollback ActionType = "rollback"
-	ActionEscalate ActionType = "escalate"
 	ActionContinue ActionType = "continue"
-	ActionPrompt   ActionType = "prompt"
 )
 
 // ConditionType represents the type of rule condition
@@ -119,11 +115,6 @@ type RuleCondition struct {
 	Value          interface{}      `yaml:"value"`
 	CaseSensitive  bool             `yaml:"case_sensitive"`
 	Conditions     []RuleCondition  `yaml:"conditions"`
-	Resource       string           `yaml:"resource"`
-	Limit          float64          `yaml:"limit"`
-	Scope          string           `yaml:"scope"`
-	Mode           string           `yaml:"mode"`
-	Dependencies   []string         `yaml:"dependencies"`
 	Language       string           `yaml:"language"`
 	Script         string           `yaml:"script"`
 	TimeoutSeconds int              `yaml:"timeout_seconds"`
@@ -139,22 +130,7 @@ type ActionDefinition struct {
 	OnPass           ActionType       `yaml:"on_pass"`
 	OnFail           ActionType       `yaml:"on_fail"`
 	OnWarn           ActionType       `yaml:"on_warn"`
-	RetryConfig      *RetryConfig     `yaml:"retry_config"`
-	RollbackConfig   *RollbackConfig  `yaml:"rollback_config"`
 	NotificationConfig *NotificationConfig `yaml:"notification"`
-}
-
-// RetryConfig defines retry behavior
-type RetryConfig struct {
-	MaxAttempts        int  `yaml:"max_attempts"`
-	DelaySeconds       int  `yaml:"delay_seconds"`
-	ExponentialBackoff bool `yaml:"exponential_backoff"`
-}
-
-// RollbackConfig defines rollback behavior
-type RollbackConfig struct {
-	Target       string `yaml:"target"`
-	PreserveLogs bool   `yaml:"preserve_logs"`
 }
 
 // NotificationConfig defines notification settings

@@ -76,7 +76,7 @@ func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap
 	dr := NewDependencyResolver(nil, logger, logLevel) // StateReader wired in Phase 6
 	ch := NewCancelHandler(maestroDir, cfg, lockMap, logger, logLevel)
 	rh := NewResultHandler(maestroDir, cfg, lockMap, logger, logLevel)
-	rec := NewReconciler(maestroDir, cfg, lockMap, logger, logLevel, rh, rh.executorFactory)
+	rec := NewReconciler(maestroDir, cfg, lockMap, logger, logLevel, rh, rh.execProvider.Factory())
 	dlp := NewDeadLetterProcessor(maestroDir, cfg, lockMap, logger, logLevel)
 	mh := NewMetricsHandler(maestroDir, cfg, logger, logLevel)
 

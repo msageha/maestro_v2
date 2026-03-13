@@ -8,6 +8,7 @@ import (
 	"os"
 	"runtime/debug"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -69,15 +70,14 @@ func (s *Server) Start() error {
 	// Remove stale socket file
 	_ = os.Remove(s.socketPath)
 
+	// Set umask before creating the socket so the file is created with 0600
+	// permissions atomically, eliminating the TOCTOU window between
+	// Listen and Chmod.
+	oldUmask := syscall.Umask(0177)
 	listener, err := net.Listen("unix", s.socketPath)
+	syscall.Umask(oldUmask)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", s.socketPath, err)
-	}
-
-	// Set socket file permissions to 0600
-	if err := os.Chmod(s.socketPath, 0600); err != nil {
-		_ = listener.Close()
-		return fmt.Errorf("chmod socket: %w", err)
 	}
 
 	s.listener = listener
@@ -137,6 +137,9 @@ func (s *Server) handleConn(conn net.Conn) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("panic in handleConn: %v\n%s", r, debug.Stack())
+			// Send an error response so the client does not wait indefinitely.
+			resp := ErrorResponse(ErrCodeInternal, fmt.Sprintf("internal server error: panic: %v", r))
+			_ = WriteFrame(conn, resp)
 		}
 	}()
 

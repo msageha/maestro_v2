@@ -59,6 +59,9 @@ func stopDaemon(maestroDir string) error {
 	pid := validateDaemonPID(maestroDir)
 
 	if pid > 0 {
+		// Capture process start time to detect PID reuse (Fix #7)
+		origStartTime := processStartTime(pid)
+
 		// PID-based monitoring: poll process exit, then escalate
 		deadline := time.Now().Add(10 * time.Second)
 		for time.Now().Before(deadline) {
@@ -69,33 +72,15 @@ func stopDaemon(maestroDir string) error {
 			time.Sleep(500 * time.Millisecond)
 		}
 
-		// SIGTERM fallback — re-validate PID against lock to mitigate PID reuse
-		if currentPID := validateDaemonPID(maestroDir); currentPID == pid {
-			_ = syscall.Kill(pid, syscall.SIGTERM)
-		} else {
-			// PID no longer matches lock — original daemon exited, PID may be reused.
-			// Don't remove pidPath: a new daemon may own it now.
+		// Use terminateProcess with PID + start time identity check (Fix #7, #8)
+		sameProcess := daemonIdentityChecker(maestroDir, pid, origStartTime)
+		result, err := terminateProcess(pid, sameProcess, 5*time.Second)
+		if result == TerminateNotTarget {
+			// PID was reused by another process — don't clean up
 			return nil
 		}
-		termDeadline := time.Now().Add(5 * time.Second)
-		for time.Now().Before(termDeadline) {
-			if !processAlive(pid) {
-				_ = os.Remove(pidPath)
-				return nil
-			}
-			time.Sleep(500 * time.Millisecond)
-		}
-
-		// SIGKILL as last resort — re-validate PID again
-		if currentPID := validateDaemonPID(maestroDir); currentPID == pid {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
-		} else {
-			// Don't remove pidPath: a new daemon may own it now.
-			return nil
-		}
-		time.Sleep(500 * time.Millisecond)
-		if processAlive(pid) {
-			return fmt.Errorf("daemon pid=%d still alive after SIGKILL", pid)
+		if err != nil {
+			return err
 		}
 		_ = os.Remove(pidPath)
 		return nil
@@ -114,10 +99,11 @@ func stopDaemon(maestroDir string) error {
 
 	fl := lock.NewFileLock(lockPath)
 	if err := fl.TryLock(); err == nil {
-		// Lock acquired → no daemon holds it. Clean up stale files.
-		_ = fl.Unlock()
+		// Lock acquired → no daemon holds it.
+		// Clean up stale files while holding the lock (Fix #9)
 		_ = os.Remove(pidPath)
 		_ = os.Remove(socketPath)
+		_ = fl.Unlock()
 		return nil
 	}
 
@@ -125,9 +111,10 @@ func stopDaemon(maestroDir string) error {
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		if err := fl.TryLock(); err == nil {
-			_ = fl.Unlock()
+			// Clean up while holding the lock (Fix #9)
 			_ = os.Remove(pidPath)
 			_ = os.Remove(socketPath)
+			_ = fl.Unlock()
 			return nil
 		}
 		time.Sleep(500 * time.Millisecond)
@@ -135,6 +122,26 @@ func stopDaemon(maestroDir string) error {
 
 	_ = os.Remove(pidPath)
 	return fmt.Errorf("could not confirm daemon stopped (no valid PID, lock still held after timeout)")
+}
+
+// daemonIdentityChecker returns a function that verifies a PID still belongs
+// to the original daemon by checking both the PID file cross-reference and
+// the process start time.
+func daemonIdentityChecker(maestroDir string, originalPID int, origStartTime string) func(int) bool {
+	return func(pid int) bool {
+		// Check PID file still matches
+		if currentPID := validateDaemonPID(maestroDir); currentPID != originalPID {
+			return false
+		}
+		// Check process start time hasn't changed (PID reuse detection)
+		if origStartTime != "" {
+			currentStartTime := processStartTime(pid)
+			if currentStartTime == "" || currentStartTime != origStartTime {
+				return false
+			}
+		}
+		return true
+	}
 }
 
 // waitDaemonReady polls the daemon's UDS ping endpoint until it responds

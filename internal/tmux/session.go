@@ -577,11 +577,16 @@ func SetServerOption(name, value string) error {
 }
 
 // SetSessionOption sets a session-level tmux option on the maestro session.
-// Note: does NOT use the "=" exact-match prefix because tmux 3.6's set-option
-// uses a different target parser that doesn't support the "=" prefix.
-// The prefix-matching risk here is mitigated by using unique session names
-// and is lower severity since set-option cannot destroy sessions.
+// Verifies session existence via exact match before applying the option.
+// Note: tmux set-option does not support the "=" exact-match prefix (unlike
+// has-session, kill-session, etc.), so we use the plain session name for the
+// set-option call but guard it with an exact-match existence check first.
 func SetSessionOption(name, value string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := exec.CommandContext(ctx, "tmux", "has-session", "-t", exactSessionTarget()).Run(); err != nil {
+		return fmt.Errorf("set-option (session): session %q not found: %w", GetSessionName(), err)
+	}
 	return run("set-option", "-t", GetSessionName(), name, value)
 }
 

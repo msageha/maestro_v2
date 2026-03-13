@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -25,19 +24,18 @@ type CancelHandler struct {
 	logger          *log.Logger
 	logLevel        LogLevel
 	clock           Clock
-	executorFactory ExecutorFactory
+	execProvider    *ExecutorProvider
 	stateReader     StateReader
 	lockMap         *lock.MutexMap
 	worktreeManager *WorktreeManager
-
-	execMu        sync.Mutex
-	cachedExec    AgentExecutor
-	cachedExecErr error
-	execInit      bool
 }
 
 // NewCancelHandler creates a new CancelHandler.
 func NewCancelHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel) *CancelHandler {
+	clock := RealClock{}
+	factory := ExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+		return agent.NewExecutor(dir, wcfg, level)
+	})
 	return &CancelHandler{
 		maestroDir: maestroDir,
 		config:     cfg,
@@ -45,58 +43,28 @@ func NewCancelHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMa
 		lockMap:    lockMap,
 		logger:     logger,
 		logLevel:   logLevel,
-		clock:      RealClock{},
-		executorFactory: func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
-			return agent.NewExecutor(dir, wcfg, level)
-		},
+		clock:      clock,
+		execProvider: NewExecutorProvider(maestroDir, cfg.Watcher, cfg.Logging.Level, factory, clock, PolicyCacheError),
 	}
 }
 
 // SetExecutorFactory overrides the executor factory for testing.
 // Resets the cached executor so the new factory is used on next call.
 func (ch *CancelHandler) SetExecutorFactory(f ExecutorFactory) {
-	ch.execMu.Lock()
-	old := ch.cachedExec
-	ch.executorFactory = f
-	ch.cachedExec = nil
-	ch.cachedExecErr = nil
-	ch.execInit = false
-	ch.execMu.Unlock()
-
-	if old != nil {
-		_ = old.Close()
-	}
+	ch.execProvider.SetFactory(f)
 }
 
 // getExecutor returns the shared executor instance, creating it lazily on first call.
 // The Executor is safe for concurrent use (log.Logger uses internal mutex,
 // os.File in append mode is POSIX-safe, all other fields are immutable).
 func (ch *CancelHandler) getExecutor() (AgentExecutor, error) {
-	ch.execMu.Lock()
-	defer ch.execMu.Unlock()
-	if !ch.execInit {
-		ch.cachedExec, ch.cachedExecErr = ch.executorFactory(ch.maestroDir, ch.config.Watcher, ch.config.Logging.Level)
-		ch.execInit = true
-	}
-	if ch.cachedExecErr != nil {
-		return nil, fmt.Errorf("%w: %v", errExecutorInit, ch.cachedExecErr)
-	}
-	return ch.cachedExec, nil
+	return ch.execProvider.GetExecutor()
 }
 
 // CloseExecutor releases the shared executor's resources.
 // Safe to call multiple times; subsequent calls are no-ops.
 func (ch *CancelHandler) CloseExecutor() {
-	ch.execMu.Lock()
-	exec := ch.cachedExec
-	ch.cachedExec = nil
-	ch.cachedExecErr = nil
-	ch.execInit = false
-	ch.execMu.Unlock()
-
-	if exec != nil {
-		_ = exec.Close()
-	}
+	ch.execProvider.CloseExecutor()
 }
 
 // SetStateReader wires the state reader for updating task states on cancellation.

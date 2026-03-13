@@ -17,6 +17,9 @@ type EventBridge struct {
 // Uses safe type assertions with logging for dropped events.
 func (eb *EventBridge) subscribeQualityGateEvents() {
 	d := eb.d
+	if d.qualityGateDaemon == nil {
+		return
+	}
 
 	// Subscribe to task started events
 	unsub1 := d.eventBus.Subscribe(events.EventTaskStarted, func(e events.Event) {
