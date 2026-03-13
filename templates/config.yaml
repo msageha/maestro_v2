@@ -66,8 +66,7 @@ limits:
   max_dead_letter_archive_files: 100  # dead letter アーカイブの最大保持ファイル数 (default: 100)
   max_quarantine_files: 100            # 隔離キューの最大保持ファイル数 (default: 100)
 
-daemon:
-  shutdown_timeout_sec: 90
+shutdown_timeout_sec: 90
 
 logging:
   level: "info"
@@ -83,13 +82,6 @@ learnings:
   max_content_length: 500           # 1件あたりの最大文字数
   inject_count: 5                   # タスク配信時に注入する最新 K 件
   ttl_hours: 72                     # 学習知見の有効期限 (時間、0で無制限)
-
-verification:
-  enabled: false                    # 検証コマンド実行の有効化フラグ (opt-in)
-  basic_command: ""                 # 基本検証コマンド (例: "go vet ./...")
-  full_command: ""                  # 完全検証コマンド (例: "go test ./...")
-  timeout_seconds: 300              # 検証コマンドのタイムアウト (秒)
-  max_retries: 1                    # フレークテスト対策リトライ回数 (0=リトライなし)
 
 worktree:
   enabled: true                     # Worker worktree 隔離の有効化フラグ (default: true)
