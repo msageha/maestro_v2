@@ -17,49 +17,49 @@ import (
 
 // Engine is the main quality gate evaluation engine
 type Engine struct {
-	gates          map[GateType][]*CompiledGate
+	gates          map[GateType][]*compiledGate
 	evaluators     map[ConditionType]RuleEvaluator
-	cache          *ResultCache
+	cache          *resultCache
 	singleflight   *singleflight.Group
 	mu             sync.RWMutex
 	configVersion  string
 	configChecksum string
 }
 
-// CompiledGate represents a gate with pre-compiled conditions
-type CompiledGate struct {
+// compiledGate represents a gate with pre-compiled conditions
+type compiledGate struct {
 	*GateDefinition
-	compiledRules []*CompiledRule
+	compiledRules []*compiledRule
 }
 
-// CompiledRule represents a rule with pre-compiled conditions
-type CompiledRule struct {
+// compiledRule represents a rule with pre-compiled conditions
+type compiledRule struct {
 	*RuleDefinition
-	compiledCondition *CompiledCondition
+	compiledCondition *compiledCondition
 }
 
-// CompiledCondition represents a pre-compiled condition
-type CompiledCondition struct {
+// compiledCondition represents a pre-compiled condition
+type compiledCondition struct {
 	*RuleCondition
 	compiledRegex *regexp.Regexp
-	subConditions []*CompiledCondition
+	subConditions []*compiledCondition
 }
 
 // NewEngine creates a new quality gate engine
 func NewEngine() *Engine {
 	engine := &Engine{
-		gates:        make(map[GateType][]*CompiledGate),
+		gates:        make(map[GateType][]*compiledGate),
 		evaluators:   make(map[ConditionType]RuleEvaluator),
-		cache:        NewResultCache(1000, 30*time.Second), // 1000 items, 30s TTL
+		cache:        newResultCache(1000, 30*time.Second), // 1000 items, 30s TTL
 		singleflight: &singleflight.Group{},
 	}
 
 	// Register built-in evaluators
-	engine.RegisterEvaluator(ConditionFieldValidation, &FieldValidationEvaluator{})
-	engine.RegisterEvaluator(ConditionAnd, &LogicalAndEvaluator{engine: engine})
-	engine.RegisterEvaluator(ConditionOr, &LogicalOrEvaluator{engine: engine})
-	engine.RegisterEvaluator(ConditionNot, &LogicalNotEvaluator{engine: engine})
-	engine.RegisterEvaluator(ConditionScript, &ScriptEvaluator{})
+	engine.RegisterEvaluator(ConditionFieldValidation, &fieldValidationEvaluator{})
+	engine.RegisterEvaluator(ConditionAnd, &logicalAndEvaluator{engine: engine})
+	engine.RegisterEvaluator(ConditionOr, &logicalOrEvaluator{engine: engine})
+	engine.RegisterEvaluator(ConditionNot, &logicalNotEvaluator{engine: engine})
+	engine.RegisterEvaluator(ConditionScript, &scriptEvaluator{})
 
 	return engine
 }
@@ -77,7 +77,7 @@ func (e *Engine) LoadConfiguration(config *GateConfiguration) error {
 	defer e.mu.Unlock()
 
 	// Clear existing gates
-	e.gates = make(map[GateType][]*CompiledGate)
+	e.gates = make(map[GateType][]*compiledGate)
 
 	// Calculate configuration checksum
 	configData, err := json.Marshal(config)
@@ -117,10 +117,10 @@ func (e *Engine) LoadConfiguration(config *GateConfiguration) error {
 }
 
 // compileGate pre-compiles a gate definition for efficient evaluation
-func (e *Engine) compileGate(gateDef *GateDefinition) (*CompiledGate, error) {
-	compiledGate := &CompiledGate{
+func (e *Engine) compileGate(gateDef *GateDefinition) (*compiledGate, error) {
+	compiledGate := &compiledGate{
 		GateDefinition: gateDef,
-		compiledRules:  make([]*CompiledRule, 0, len(gateDef.Rules)),
+		compiledRules:  make([]*compiledRule, 0, len(gateDef.Rules)),
 	}
 
 	// Pre-compile trigger pattern regexes to avoid repeated compilation in shouldTriggerGate
@@ -147,21 +147,21 @@ func (e *Engine) compileGate(gateDef *GateDefinition) (*CompiledGate, error) {
 }
 
 // compileRule pre-compiles a rule definition
-func (e *Engine) compileRule(ruleDef *RuleDefinition) (*CompiledRule, error) {
+func (e *Engine) compileRule(ruleDef *RuleDefinition) (*compiledRule, error) {
 	compiledCondition, err := e.compileCondition(&ruleDef.Condition)
 	if err != nil {
 		return nil, err
 	}
 
-	return &CompiledRule{
+	return &compiledRule{
 		RuleDefinition:    ruleDef,
 		compiledCondition: compiledCondition,
 	}, nil
 }
 
 // compileCondition pre-compiles a rule condition
-func (e *Engine) compileCondition(condition *RuleCondition) (*CompiledCondition, error) {
-	compiled := &CompiledCondition{
+func (e *Engine) compileCondition(condition *RuleCondition) (*compiledCondition, error) {
+	compiled := &compiledCondition{
 		RuleCondition: condition,
 	}
 
@@ -181,7 +181,7 @@ func (e *Engine) compileCondition(condition *RuleCondition) (*CompiledCondition,
 
 	// Recursively compile sub-conditions for logical operators
 	if len(condition.Conditions) > 0 {
-		compiled.subConditions = make([]*CompiledCondition, 0, len(condition.Conditions))
+		compiled.subConditions = make([]*compiledCondition, 0, len(condition.Conditions))
 		for _, subCond := range condition.Conditions {
 			compiledSub, err := e.compileCondition(&subCond)
 			if err != nil {
@@ -197,10 +197,10 @@ func (e *Engine) compileCondition(condition *RuleCondition) (*CompiledCondition,
 // Evaluate evaluates all gates of the specified type against the context
 func (e *Engine) Evaluate(ctx context.Context, gateType GateType, evalCtx map[string]interface{}) (*EvaluationResult, error) {
 	// Create context wrapper
-	contextWrapper := &MapEvaluationContext{data: evalCtx}
+	contextWrapper := &mapEvaluationContext{data: evalCtx}
 
 	// Generate cache key
-	cacheKey := e.generateCacheKey(string(gateType), evalCtx)
+	cacheKey := e.generatecacheKey(string(gateType), evalCtx)
 
 	// Try to get from cache
 	if cached := e.cache.Get(cacheKey); cached != nil {
@@ -299,7 +299,7 @@ func (e *Engine) evaluateUncached(ctx context.Context, gateType GateType, evalCt
 }
 
 // evaluateGate evaluates a single gate
-func (e *Engine) evaluateGate(ctx context.Context, gate *CompiledGate, evalCtx EvaluationContext) *EvaluationResult {
+func (e *Engine) evaluateGate(ctx context.Context, gate *compiledGate, evalCtx EvaluationContext) *EvaluationResult {
 	result := &EvaluationResult{
 		GateID:      gate.ID,
 		GateType:    gate.Type,
@@ -352,7 +352,7 @@ func (e *Engine) evaluateGate(ctx context.Context, gate *CompiledGate, evalCtx E
 }
 
 // evaluateRule evaluates a single rule
-func (e *Engine) evaluateRule(ctx context.Context, rule *CompiledRule, evalCtx EvaluationContext) RuleResult {
+func (e *Engine) evaluateRule(ctx context.Context, rule *compiledRule, evalCtx EvaluationContext) RuleResult {
 	start := time.Now()
 
 	result := RuleResult{
@@ -392,12 +392,12 @@ func (e *Engine) evaluateRule(ctx context.Context, rule *CompiledRule, evalCtx E
 // evaluateCondition evaluates a compiled condition recursively.
 // Logical operators (And/Or/Not) are handled internally by the evaluator
 // via recursive calls, so all condition types use the same code path.
-func (e *Engine) evaluateCondition(ctx context.Context, condition *CompiledCondition, evalCtx EvaluationContext, evaluator RuleEvaluator) (bool, error) {
+func (e *Engine) evaluateCondition(ctx context.Context, condition *compiledCondition, evalCtx EvaluationContext, evaluator RuleEvaluator) (bool, error) {
 	return evaluator.Evaluate(ctx, condition.RuleCondition, evalCtx)
 }
 
 // shouldTriggerGate checks if a gate should be triggered based on context
-func (e *Engine) shouldTriggerGate(gate *CompiledGate, evalCtx EvaluationContext) bool {
+func (e *Engine) shouldTriggerGate(gate *compiledGate, evalCtx EvaluationContext) bool {
 	trigger := &gate.Trigger
 
 	// Check role filter
@@ -447,13 +447,13 @@ func (e *Engine) shouldTriggerGate(gate *CompiledGate, evalCtx EvaluationContext
 	return true
 }
 
-// generateCacheKey generates a cache key for the evaluation
-func (e *Engine) generateCacheKey(gateType string, context map[string]interface{}) *CacheKey {
+// generatecacheKey generates a cache key for the evaluation
+func (e *Engine) generatecacheKey(gateType string, context map[string]interface{}) *cacheKey {
 	// Create a canonical JSON representation
 	contextData, _ := json.Marshal(context)
 	hash := sha256.Sum256(contextData)
 
-	return &CacheKey{
+	return &cacheKey{
 		GateID:             gateType,
 		GateVersionHash:    e.configChecksum,
 		ContextFingerprint: hex.EncodeToString(hash[:]),
@@ -507,13 +507,13 @@ func toInt(v interface{}) int {
 	}
 }
 
-// MapEvaluationContext provides evaluation context from a map
-type MapEvaluationContext struct {
+// mapEvaluationContext provides evaluation context from a map
+type mapEvaluationContext struct {
 	data map[string]interface{}
 }
 
 // GetField retrieves a field value by path (e.g., "task.purpose")
-func (m *MapEvaluationContext) GetField(path string) (interface{}, bool) {
+func (m *mapEvaluationContext) GetField(path string) (interface{}, bool) {
 	parts := strings.Split(path, ".")
 	current := m.data
 

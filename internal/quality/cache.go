@@ -6,8 +6,8 @@ import (
 	"time"
 )
 
-// ResultCache is a thread-safe LRU cache for evaluation results
-type ResultCache struct {
+// resultCache is a thread-safe LRU cache for evaluation results
+type resultCache struct {
 	mu       sync.RWMutex
 	items    map[string]*list.Element
 	lru      *list.List
@@ -22,9 +22,9 @@ type cacheItem struct {
 	expiresAt time.Time
 }
 
-// NewResultCache creates a new result cache
-func NewResultCache(maxSize int, ttl time.Duration) *ResultCache {
-	return &ResultCache{
+// newResultCache creates a new result cache
+func newResultCache(maxSize int, ttl time.Duration) *resultCache {
+	return &resultCache{
 		items:   make(map[string]*list.Element),
 		lru:     list.New(),
 		maxSize: maxSize,
@@ -33,7 +33,7 @@ func NewResultCache(maxSize int, ttl time.Duration) *ResultCache {
 }
 
 // Get retrieves a value from the cache
-func (c *ResultCache) Get(key *CacheKey) *EvaluationResult {
+func (c *resultCache) Get(key *cacheKey) *EvaluationResult {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -60,7 +60,7 @@ func (c *ResultCache) Get(key *CacheKey) *EvaluationResult {
 }
 
 // Set stores a value in the cache
-func (c *ResultCache) Set(key *CacheKey, value *EvaluationResult) {
+func (c *resultCache) Set(key *cacheKey, value *EvaluationResult) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -98,7 +98,7 @@ func (c *ResultCache) Set(key *CacheKey, value *EvaluationResult) {
 }
 
 // Clear removes all items from the cache
-func (c *ResultCache) Clear() {
+func (c *resultCache) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -107,7 +107,7 @@ func (c *ResultCache) Clear() {
 }
 
 // evictOldest removes the least recently used item
-func (c *ResultCache) evictOldest() {
+func (c *resultCache) evictOldest() {
 	elem := c.lru.Back()
 	if elem != nil {
 		c.removeElement(elem)
@@ -115,14 +115,14 @@ func (c *ResultCache) evictOldest() {
 }
 
 // removeElement removes an element from the cache
-func (c *ResultCache) removeElement(elem *list.Element) {
+func (c *resultCache) removeElement(elem *list.Element) {
 	c.lru.Remove(elem)
 	item := elem.Value.(*cacheItem)
 	delete(c.items, item.key)
 }
 
 // cleanExpired removes expired items from the cache
-func (c *ResultCache) cleanExpired() {
+func (c *resultCache) cleanExpired() {
 	now := time.Now()
 	for elem := c.lru.Back(); elem != nil; {
 		prev := elem.Prev()
@@ -135,23 +135,23 @@ func (c *ResultCache) cleanExpired() {
 }
 
 // keyToString converts a cache key to a string
-func (c *ResultCache) keyToString(key *CacheKey) string {
+func (c *resultCache) keyToString(key *cacheKey) string {
 	return key.GateID + ":" + key.GateVersionHash + ":" + key.ContextFingerprint
 }
 
 // Size returns the current number of items in the cache
-func (c *ResultCache) Size() int {
+func (c *resultCache) Size() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.lru.Len()
 }
 
 // Stats returns cache statistics
-func (c *ResultCache) Stats() CacheStats {
+func (c *resultCache) Stats() cacheStats {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	stats := CacheStats{
+	stats := cacheStats{
 		Size:    c.lru.Len(),
 		MaxSize: c.maxSize,
 	}
@@ -168,8 +168,8 @@ func (c *ResultCache) Stats() CacheStats {
 	return stats
 }
 
-// CacheStats represents cache statistics
-type CacheStats struct {
+// cacheStats represents cache statistics
+type cacheStats struct {
 	Size    int
 	MaxSize int
 	Expired int

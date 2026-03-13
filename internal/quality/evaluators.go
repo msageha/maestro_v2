@@ -104,11 +104,11 @@ func compileDangerousPatterns() []*regexp.Regexp {
 	return patterns
 }
 
-// FieldValidationEvaluator evaluates field validation conditions
-type FieldValidationEvaluator struct{}
+// fieldValidationEvaluator evaluates field validation conditions
+type fieldValidationEvaluator struct{}
 
 // Evaluate checks if a field meets the specified condition
-func (e *FieldValidationEvaluator) Evaluate(ctx context.Context, condition *RuleCondition, evalCtx EvaluationContext) (bool, error) {
+func (e *fieldValidationEvaluator) Evaluate(ctx context.Context, condition *RuleCondition, evalCtx EvaluationContext) (bool, error) {
 	value, exists := evalCtx.GetField(condition.Field)
 
 	switch condition.Operator {
@@ -194,7 +194,7 @@ func (e *FieldValidationEvaluator) Evaluate(ctx context.Context, condition *Rule
 }
 
 // compareValues compares two values for equality
-func (e *FieldValidationEvaluator) compareValues(a, b interface{}, caseSensitive bool) bool {
+func (e *fieldValidationEvaluator) compareValues(a, b interface{}, caseSensitive bool) bool {
 	aStr := fmt.Sprintf("%v", a)
 	bStr := fmt.Sprintf("%v", b)
 
@@ -207,7 +207,7 @@ func (e *FieldValidationEvaluator) compareValues(a, b interface{}, caseSensitive
 }
 
 // containsValue checks if a contains b
-func (e *FieldValidationEvaluator) containsValue(a, b interface{}, caseSensitive bool) bool {
+func (e *fieldValidationEvaluator) containsValue(a, b interface{}, caseSensitive bool) bool {
 	aStr := fmt.Sprintf("%v", a)
 	bStr := fmt.Sprintf("%v", b)
 
@@ -220,7 +220,7 @@ func (e *FieldValidationEvaluator) containsValue(a, b interface{}, caseSensitive
 }
 
 // compareNumeric performs numeric comparison
-func (e *FieldValidationEvaluator) compareNumeric(a, b interface{}, op FieldOperator) (bool, error) {
+func (e *fieldValidationEvaluator) compareNumeric(a, b interface{}, op FieldOperator) (bool, error) {
 	aNum, err := toFloat64(a)
 	if err != nil {
 		return false, fmt.Errorf("cannot convert %v to number: %w", a, err)
@@ -246,7 +246,7 @@ func (e *FieldValidationEvaluator) compareNumeric(a, b interface{}, op FieldOper
 }
 
 // isInList checks if value is in a list
-func (e *FieldValidationEvaluator) isInList(value, list interface{}) bool {
+func (e *fieldValidationEvaluator) isInList(value, list interface{}) bool {
 	// Handle different list types
 	switch l := list.(type) {
 	case []interface{}:
@@ -276,13 +276,13 @@ func (e *FieldValidationEvaluator) isInList(value, list interface{}) bool {
 	return false
 }
 
-// LogicalAndEvaluator evaluates AND conditions
-type LogicalAndEvaluator struct {
+// logicalAndEvaluator evaluates AND conditions
+type logicalAndEvaluator struct {
 	engine *Engine
 }
 
 // Evaluate checks if all sub-conditions are true
-func (e *LogicalAndEvaluator) Evaluate(ctx context.Context, condition *RuleCondition, evalCtx EvaluationContext) (bool, error) {
+func (e *logicalAndEvaluator) Evaluate(ctx context.Context, condition *RuleCondition, evalCtx EvaluationContext) (bool, error) {
 	for _, subCond := range condition.Conditions {
 		// Get the evaluator for the sub-condition type (with proper lock)
 		evaluator, exists := e.engine.getEvaluator(subCond.Type)
@@ -308,13 +308,13 @@ func (e *LogicalAndEvaluator) Evaluate(ctx context.Context, condition *RuleCondi
 	return true, nil
 }
 
-// LogicalOrEvaluator evaluates OR conditions
-type LogicalOrEvaluator struct {
+// logicalOrEvaluator evaluates OR conditions
+type logicalOrEvaluator struct {
 	engine *Engine
 }
 
 // Evaluate checks if any sub-condition is true
-func (e *LogicalOrEvaluator) Evaluate(ctx context.Context, condition *RuleCondition, evalCtx EvaluationContext) (bool, error) {
+func (e *logicalOrEvaluator) Evaluate(ctx context.Context, condition *RuleCondition, evalCtx EvaluationContext) (bool, error) {
 	for _, subCond := range condition.Conditions {
 		// Get the evaluator for the sub-condition type (with proper lock)
 		evaluator, exists := e.engine.getEvaluator(subCond.Type)
@@ -340,13 +340,13 @@ func (e *LogicalOrEvaluator) Evaluate(ctx context.Context, condition *RuleCondit
 	return false, nil
 }
 
-// LogicalNotEvaluator evaluates NOT conditions
-type LogicalNotEvaluator struct {
+// logicalNotEvaluator evaluates NOT conditions
+type logicalNotEvaluator struct {
 	engine *Engine
 }
 
 // Evaluate negates the sub-condition
-func (e *LogicalNotEvaluator) Evaluate(ctx context.Context, condition *RuleCondition, evalCtx EvaluationContext) (bool, error) {
+func (e *logicalNotEvaluator) Evaluate(ctx context.Context, condition *RuleCondition, evalCtx EvaluationContext) (bool, error) {
 	if len(condition.Conditions) != 1 {
 		return false, fmt.Errorf("NOT condition must have exactly one sub-condition")
 	}
@@ -364,18 +364,18 @@ func (e *LogicalNotEvaluator) Evaluate(ctx context.Context, condition *RuleCondi
 	return !passed, nil
 }
 
-// ScriptEvaluator evaluates custom script conditions
-type ScriptEvaluator struct{}
+// scriptEvaluator evaluates custom script conditions
+type scriptEvaluator struct{}
 
 // Evaluate runs a script and checks its exit code
-func (e *ScriptEvaluator) Evaluate(ctx context.Context, condition *RuleCondition, evalCtx EvaluationContext) (bool, error) {
+func (e *scriptEvaluator) Evaluate(ctx context.Context, condition *RuleCondition, evalCtx EvaluationContext) (bool, error) {
 	// If we have a compiled script function, use it
 	if condition.CompiledScript != nil {
 		if fn, ok := condition.CompiledScript.(func(context.Context, map[string]interface{}) (bool, error)); ok {
 			// Convert EvaluationContext to map for script
 			data := make(map[string]interface{})
 			// This is a simplified conversion - in practice, you'd need to extract all relevant data
-			if mapCtx, ok := evalCtx.(*MapEvaluationContext); ok {
+			if mapCtx, ok := evalCtx.(*mapEvaluationContext); ok {
 				data = mapCtx.data
 			}
 			return fn(ctx, data)

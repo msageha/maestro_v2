@@ -7,9 +7,9 @@ import (
 )
 
 func TestNewResultCache(t *testing.T) {
-	c := NewResultCache(10, time.Minute)
+	c := newResultCache(10, time.Minute)
 	if c == nil {
-		t.Fatal("NewResultCache returned nil")
+		t.Fatal("newResultCache returned nil")
 	}
 	if c.Size() != 0 {
 		t.Errorf("Size() = %d, want 0", c.Size())
@@ -17,8 +17,8 @@ func TestNewResultCache(t *testing.T) {
 }
 
 func TestResultCache_SetAndGet(t *testing.T) {
-	c := NewResultCache(10, time.Minute)
-	key := &CacheKey{GateID: "g1", GateVersionHash: "v1", ContextFingerprint: "c1"}
+	c := newResultCache(10, time.Minute)
+	key := &cacheKey{GateID: "g1", GateVersionHash: "v1", ContextFingerprint: "c1"}
 	val := &EvaluationResult{GateID: "g1", Passed: true, Action: ActionAllow}
 
 	c.Set(key, val)
@@ -33,8 +33,8 @@ func TestResultCache_SetAndGet(t *testing.T) {
 }
 
 func TestResultCache_GetMiss(t *testing.T) {
-	c := NewResultCache(10, time.Minute)
-	key := &CacheKey{GateID: "missing", GateVersionHash: "v1", ContextFingerprint: "c1"}
+	c := newResultCache(10, time.Minute)
+	key := &cacheKey{GateID: "missing", GateVersionHash: "v1", ContextFingerprint: "c1"}
 
 	got := c.Get(key)
 	if got != nil {
@@ -43,8 +43,8 @@ func TestResultCache_GetMiss(t *testing.T) {
 }
 
 func TestResultCache_TTLExpiry(t *testing.T) {
-	c := NewResultCache(10, 10*time.Millisecond)
-	key := &CacheKey{GateID: "g1", GateVersionHash: "v1", ContextFingerprint: "c1"}
+	c := newResultCache(10, 10*time.Millisecond)
+	key := &cacheKey{GateID: "g1", GateVersionHash: "v1", ContextFingerprint: "c1"}
 	val := &EvaluationResult{GateID: "g1", Passed: true}
 
 	c.Set(key, val)
@@ -57,10 +57,10 @@ func TestResultCache_TTLExpiry(t *testing.T) {
 }
 
 func TestResultCache_LRUEviction(t *testing.T) {
-	c := NewResultCache(3, time.Minute)
+	c := newResultCache(3, time.Minute)
 
 	for i := 0; i < 5; i++ {
-		key := &CacheKey{GateID: "g", GateVersionHash: "v", ContextFingerprint: string(rune('a' + i))}
+		key := &cacheKey{GateID: "g", GateVersionHash: "v", ContextFingerprint: string(rune('a' + i))}
 		val := &EvaluationResult{GateID: "g", Passed: true}
 		c.Set(key, val)
 	}
@@ -70,20 +70,20 @@ func TestResultCache_LRUEviction(t *testing.T) {
 	}
 
 	// Oldest entries (a, b) should be evicted; newest (c, d, e) should remain.
-	evicted := &CacheKey{GateID: "g", GateVersionHash: "v", ContextFingerprint: "a"}
+	evicted := &cacheKey{GateID: "g", GateVersionHash: "v", ContextFingerprint: "a"}
 	if c.Get(evicted) != nil {
 		t.Error("oldest entry 'a' should have been evicted")
 	}
 
-	newest := &CacheKey{GateID: "g", GateVersionHash: "v", ContextFingerprint: "e"}
+	newest := &cacheKey{GateID: "g", GateVersionHash: "v", ContextFingerprint: "e"}
 	if c.Get(newest) == nil {
 		t.Error("newest entry 'e' should still be present")
 	}
 }
 
 func TestResultCache_UpdateExisting(t *testing.T) {
-	c := NewResultCache(10, time.Minute)
-	key := &CacheKey{GateID: "g1", GateVersionHash: "v1", ContextFingerprint: "c1"}
+	c := newResultCache(10, time.Minute)
+	key := &cacheKey{GateID: "g1", GateVersionHash: "v1", ContextFingerprint: "c1"}
 
 	c.Set(key, &EvaluationResult{GateID: "g1", Passed: false})
 	c.Set(key, &EvaluationResult{GateID: "g1", Passed: true})
@@ -98,9 +98,9 @@ func TestResultCache_UpdateExisting(t *testing.T) {
 }
 
 func TestResultCache_Clear(t *testing.T) {
-	c := NewResultCache(10, time.Minute)
+	c := newResultCache(10, time.Minute)
 	for i := 0; i < 5; i++ {
-		key := &CacheKey{GateID: "g", GateVersionHash: "v", ContextFingerprint: string(rune('a' + i))}
+		key := &cacheKey{GateID: "g", GateVersionHash: "v", ContextFingerprint: string(rune('a' + i))}
 		c.Set(key, &EvaluationResult{GateID: "g"})
 	}
 
@@ -112,9 +112,9 @@ func TestResultCache_Clear(t *testing.T) {
 }
 
 func TestResultCache_Stats(t *testing.T) {
-	c := NewResultCache(10, 10*time.Millisecond)
-	key1 := &CacheKey{GateID: "g1", GateVersionHash: "v1", ContextFingerprint: "c1"}
-	key2 := &CacheKey{GateID: "g2", GateVersionHash: "v2", ContextFingerprint: "c2"}
+	c := newResultCache(10, 10*time.Millisecond)
+	key1 := &cacheKey{GateID: "g1", GateVersionHash: "v1", ContextFingerprint: "c1"}
+	key2 := &cacheKey{GateID: "g2", GateVersionHash: "v2", ContextFingerprint: "c2"}
 
 	c.Set(key1, &EvaluationResult{GateID: "g1"})
 	c.Set(key2, &EvaluationResult{GateID: "g2"})
@@ -138,8 +138,8 @@ func TestResultCache_Stats(t *testing.T) {
 }
 
 func TestResultCache_GetReturnsCopy(t *testing.T) {
-	c := NewResultCache(10, time.Minute)
-	key := &CacheKey{GateID: "g1", GateVersionHash: "v1", ContextFingerprint: "c1"}
+	c := newResultCache(10, time.Minute)
+	key := &cacheKey{GateID: "g1", GateVersionHash: "v1", ContextFingerprint: "c1"}
 	orig := &EvaluationResult{GateID: "g1", Passed: true}
 
 	c.Set(key, orig)
@@ -154,14 +154,14 @@ func TestResultCache_GetReturnsCopy(t *testing.T) {
 }
 
 func TestResultCache_ConcurrentAccess(t *testing.T) {
-	c := NewResultCache(100, time.Minute)
+	c := newResultCache(100, time.Minute)
 	var wg sync.WaitGroup
 
 	for i := 0; i < 50; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			key := &CacheKey{GateID: "g", GateVersionHash: "v", ContextFingerprint: string(rune('a' + i%26))}
+			key := &cacheKey{GateID: "g", GateVersionHash: "v", ContextFingerprint: string(rune('a' + i%26))}
 			val := &EvaluationResult{GateID: "g", Passed: true}
 			c.Set(key, val)
 			c.Get(key)
@@ -177,14 +177,14 @@ func TestResultCache_ConcurrentAccess(t *testing.T) {
 }
 
 func TestResultCache_KeyToString(t *testing.T) {
-	c := NewResultCache(10, time.Minute)
+	c := newResultCache(10, time.Minute)
 	tests := []struct {
-		key  *CacheKey
+		key  *cacheKey
 		want string
 	}{
-		{&CacheKey{GateID: "a", GateVersionHash: "b", ContextFingerprint: "c"}, "a:b:c"},
-		{&CacheKey{GateID: "", GateVersionHash: "", ContextFingerprint: ""}, "::"},
-		{&CacheKey{GateID: "gate:1", GateVersionHash: "v2", ContextFingerprint: "fp3"}, "gate:1:v2:fp3"},
+		{&cacheKey{GateID: "a", GateVersionHash: "b", ContextFingerprint: "c"}, "a:b:c"},
+		{&cacheKey{GateID: "", GateVersionHash: "", ContextFingerprint: ""}, "::"},
+		{&cacheKey{GateID: "gate:1", GateVersionHash: "v2", ContextFingerprint: "fp3"}, "gate:1:v2:fp3"},
 	}
 	for _, tt := range tests {
 		got := c.keyToString(tt.key)
