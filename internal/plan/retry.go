@@ -61,12 +61,113 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 	sm.LockCommand(opts.CommandID)
 	defer sm.UnlockCommand(opts.CommandID)
 
+	// Validate
+	rc, err := validateRetryRequest(sm, opts)
+	if err != nil {
+		return nil, err
+	}
+	state := rc.state
+
+	// Worker assignment
+	workerStates, err := BuildWorkerStates(opts.MaestroDir, opts.Config.Agents.Workers)
+	if err != nil {
+		return nil, fmt.Errorf("build worker states: %w", err)
+	}
+
+	assignReqs := []TaskAssignmentRequest{{Name: "__retry", BloomLevel: opts.BloomLevel}}
+	assignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, workerStates, assignReqs)
+	if err != nil {
+		return nil, fmt.Errorf("worker assignment: %w", err)
+	}
+	assignment := assignments[0]
+
+	// Generate new task ID
+	newTaskID, err := model.GenerateID(model.IDTypeTask)
+	if err != nil {
+		return nil, fmt.Errorf("generate task ID: %w", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Load original task cache for cascade recovery and queue building
+	origTaskCache, err := loadOriginalTasksFromQueue(opts.MaestroDir, opts.CommandID)
+	if err != nil {
+		return nil, fmt.Errorf("load original tasks from queue: %w", err)
+	}
+
+	// Apply state changes and cascade recovery
+	cascadeRecovered, origStateBytes, err := applyRetryStateChanges(
+		state, opts, newTaskID, rc, now, workerStates, origTaskCache,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	// Write queue entry for the primary retry task
+	var writtenQueueTaskIDs []retryQueueTask // track for rollback
+	primaryTask := retryQueueTask{
+		taskID:             newTaskID,
+		commandID:          opts.CommandID,
+		purpose:            opts.Purpose,
+		content:            opts.Content,
+		acceptanceCriteria: opts.AcceptanceCriteria,
+		constraints:        opts.Constraints,
+		blockedBy:          rc.blockedBy,
+		bloomLevel:         opts.BloomLevel,
+		toolsHint:          opts.ToolsHint,
+		personaHint:        opts.PersonaHint,
+		skillRefs:          opts.SkillRefs,
+		workerID:           assignment.WorkerID,
+	}
+
+	if err := writeRetryQueueEntry(opts.MaestroDir, primaryTask, now, opts.LockMap); err != nil {
+		restoreState(state, origStateBytes)
+		return nil, fmt.Errorf("write queue entry for %s: %w", newTaskID, err)
+	}
+	writtenQueueTaskIDs = append(writtenQueueTaskIDs, primaryTask)
+
+	// Write queue entries for cascade recovered tasks
+	for _, cr := range cascadeRecovered {
+		crTask := buildCascadeQueueTask(cr, opts, state, origTaskCache)
+		if err := writeRetryQueueEntry(opts.MaestroDir, crTask, now, opts.LockMap); err != nil {
+			rollbackRetryQueueEntries(opts.MaestroDir, writtenQueueTaskIDs, opts.LockMap)
+			restoreState(state, origStateBytes)
+			return nil, fmt.Errorf("write queue entry for cascade %s: %w", cr.TaskID, err)
+		}
+		writtenQueueTaskIDs = append(writtenQueueTaskIDs, crTask)
+	}
+
+	// Save state
+	if err := sm.SaveState(state); err != nil {
+		rollbackRetryQueueEntries(opts.MaestroDir, writtenQueueTaskIDs, opts.LockMap)
+		restoreState(state, origStateBytes)
+		return nil, fmt.Errorf("save state: %w", err)
+	}
+
+	return &RetryResult{
+		TaskID:           newTaskID,
+		Worker:           assignment.WorkerID,
+		Model:            assignment.Model,
+		Replaced:         opts.RetryOf,
+		CascadeRecovered: cascadeRecovered,
+	}, nil
+}
+
+// retryContext holds validated state and metadata for a retry operation.
+type retryContext struct {
+	state     *model.CommandState
+	phase     *model.Phase
+	phaseIdx  int
+	blockedBy []string
+}
+
+// validateRetryRequest loads and validates state, task status, phase membership, and blocked_by references.
+func validateRetryRequest(sm *StateManager, opts RetryOptions) (*retryContext, error) {
 	state, err := sm.LoadState(opts.CommandID)
 	if err != nil {
 		return nil, fmt.Errorf("load state: %w", err)
 	}
 
-	// Validation
 	if state.PlanStatus != model.PlanStatusSealed {
 		return nil, &PlanValidationError{Msg: fmt.Sprintf("plan_status must be sealed, got %s", state.PlanStatus)}
 	}
@@ -106,60 +207,62 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 
 	// Validate blocked_by references
 	if len(blockedBy) > 0 {
-		if phase != nil {
-			// Phase-scoped: blocked_by must be within same phase (or system commit)
-			phaseTaskSet := make(map[string]bool)
-			for _, tid := range phase.TaskIDs {
-				phaseTaskSet[tid] = true
-			}
-			for _, dep := range blockedBy {
-				if !phaseTaskSet[dep] {
-					if state.SystemCommitTaskID == nil || dep != *state.SystemCommitTaskID {
-						return nil, &PlanValidationError{Msg: fmt.Sprintf("blocked_by task %s is not in phase %q", dep, phase.Name)}
-					}
-				}
-			}
-		} else {
-			// No phase: blocked_by must exist in command's task states
-			for _, dep := range blockedBy {
-				if _, ok := state.TaskStates[dep]; !ok {
-					return nil, &PlanValidationError{Msg: fmt.Sprintf("blocked_by task %s not found in command state", dep)}
-				}
-			}
+		if err := validateRetryBlockedBy(state, blockedBy, phase); err != nil {
+			return nil, err
 		}
 	}
 
-	// Worker assignment
-	workerStates, err := BuildWorkerStates(opts.MaestroDir, opts.Config.Agents.Workers)
-	if err != nil {
-		return nil, fmt.Errorf("build worker states: %w", err)
-	}
+	return &retryContext{
+		state:     state,
+		phase:     phase,
+		phaseIdx:  phaseIdx,
+		blockedBy: blockedBy,
+	}, nil
+}
 
-	assignReqs := []TaskAssignmentRequest{{Name: "__retry", BloomLevel: opts.BloomLevel}}
-	assignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, workerStates, assignReqs)
-	if err != nil {
-		return nil, fmt.Errorf("worker assignment: %w", err)
+// validateRetryBlockedBy checks that blocked_by references are valid within the phase or command scope.
+func validateRetryBlockedBy(state *model.CommandState, blockedBy []string, phase *model.Phase) error {
+	if phase != nil {
+		// Phase-scoped: blocked_by must be within same phase (or system commit)
+		phaseTaskSet := make(map[string]bool)
+		for _, tid := range phase.TaskIDs {
+			phaseTaskSet[tid] = true
+		}
+		for _, dep := range blockedBy {
+			if !phaseTaskSet[dep] {
+				if state.SystemCommitTaskID == nil || dep != *state.SystemCommitTaskID {
+					return &PlanValidationError{Msg: fmt.Sprintf("blocked_by task %s is not in phase %q", dep, phase.Name)}
+				}
+			}
+		}
+	} else {
+		// No phase: blocked_by must exist in command's task states
+		for _, dep := range blockedBy {
+			if _, ok := state.TaskStates[dep]; !ok {
+				return &PlanValidationError{Msg: fmt.Sprintf("blocked_by task %s not found in command state", dep)}
+			}
+		}
 	}
-	assignment := assignments[0]
+	return nil
+}
 
-	// Save original state for rollback
+// applyRetryStateChanges modifies state for the retry task and performs cascade recovery.
+// Returns the cascade recovered tasks and the original state bytes for rollback.
+func applyRetryStateChanges(
+	state *model.CommandState, opts RetryOptions, newTaskID string,
+	rc *retryContext, now string,
+	workerStates []WorkerState, origTaskCache map[string]model.Task,
+) ([]CascadeRecoveredTask, []byte, error) {
+
 	origStateBytes, err := copyState(state)
 	if err != nil {
-		return nil, fmt.Errorf("copy state for rollback: %w", err)
+		return nil, nil, fmt.Errorf("copy state for rollback: %w", err)
 	}
-
-	// Generate new task ID
-	newTaskID, err := model.GenerateID(model.IDTypeTask)
-	if err != nil {
-		return nil, fmt.Errorf("generate task ID: %w", err)
-	}
-
-	now := time.Now().UTC().Format(time.RFC3339)
 
 	// Replace in required/optional task IDs
 	if err := replaceInRequiredOrOptional(state, opts.RetryOf, newTaskID); err != nil {
 		restoreState(state, origStateBytes)
-		return nil, fmt.Errorf("replace in required/optional: %w", err)
+		return nil, nil, fmt.Errorf("replace in required/optional: %w", err)
 	}
 
 	// Record retry lineage
@@ -170,130 +273,82 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 
 	// Set new task state
 	state.TaskStates[newTaskID] = model.StatusPending
-	state.TaskDependencies[newTaskID] = blockedBy
+	state.TaskDependencies[newTaskID] = rc.blockedBy
 
 	// Add to phase
-	if phase != nil {
-		state.Phases[phaseIdx].TaskIDs = append(state.Phases[phaseIdx].TaskIDs, newTaskID)
+	if rc.phase != nil {
+		state.Phases[rc.phaseIdx].TaskIDs = append(state.Phases[rc.phaseIdx].TaskIDs, newTaskID)
 
 		// Reopen phase if failed
-		if phase.Status == model.PhaseStatusFailed {
-			if err := reopenPhase(state, phaseIdx, now); err != nil {
+		if rc.phase.Status == model.PhaseStatusFailed {
+			if err := reopenPhase(state, rc.phaseIdx, now); err != nil {
 				restoreState(state, origStateBytes)
-				return nil, fmt.Errorf("reopen phase: %w", err)
+				return nil, nil, fmt.Errorf("reopen phase: %w", err)
 			}
 		}
 	}
 
 	// Cascade recovery
-	origTaskCache, err := loadOriginalTasksFromQueue(opts.MaestroDir, opts.CommandID)
-	if err != nil {
-		restoreState(state, origStateBytes)
-		return nil, fmt.Errorf("load original tasks from queue: %w", err)
-	}
 	cascadeRecovered, err := cascadeRecover(
 		state, opts.RetryOf, newTaskID,
 		opts.Config.Agents.Workers, opts.Config.Limits, workerStates, origTaskCache,
 	)
 	if err != nil {
 		restoreState(state, origStateBytes)
-		return nil, fmt.Errorf("cascade recovery: %w", err)
+		return nil, nil, fmt.Errorf("cascade recovery: %w", err)
 	}
 
 	// Post-recovery DAG validation
-	allNames := make([]string, 0, len(state.TaskDependencies))
+	allNames := make([]string, 0, len(state.TaskStates))
 	for k := range state.TaskStates {
 		allNames = append(allNames, k)
 	}
 	if _, err := ValidateTaskDAG(allNames, state.TaskDependencies); err != nil {
 		restoreState(state, origStateBytes)
-		return nil, fmt.Errorf("post-recovery DAG validation: %w", err)
+		return nil, nil, fmt.Errorf("post-recovery DAG validation: %w", err)
 	}
 
 	state.UpdatedAt = now
+	return cascadeRecovered, origStateBytes, nil
+}
 
-	// Write queue entry for the primary retry task
-	var writtenQueueTaskIDs []retryQueueTask // track for rollback
-	primaryTask := retryQueueTask{
-		taskID:             newTaskID,
+// buildCascadeQueueTask constructs a retryQueueTask for a cascade-recovered task,
+// inheriting content from the original task when available.
+func buildCascadeQueueTask(cr CascadeRecoveredTask, opts RetryOptions, state *model.CommandState, origTaskCache map[string]model.Task) retryQueueTask {
+	purpose := "cascade recovery of " + cr.Replaced
+	content := purpose
+	acceptanceCriteria := purpose
+	bloomLevel := opts.BloomLevel
+	var constraints []string
+	var toolsHint []string
+	var personaHint string
+	var skillRefs []string
+
+	if orig, ok := origTaskCache[cr.Replaced]; ok {
+		purpose = orig.Purpose
+		content = orig.Content
+		acceptanceCriteria = orig.AcceptanceCriteria
+		bloomLevel = orig.BloomLevel
+		constraints = orig.Constraints
+		toolsHint = orig.ToolsHint
+		personaHint = orig.PersonaHint
+		skillRefs = orig.SkillRefs
+	}
+
+	return retryQueueTask{
+		taskID:             cr.TaskID,
 		commandID:          opts.CommandID,
-		purpose:            opts.Purpose,
-		content:            opts.Content,
-		acceptanceCriteria: opts.AcceptanceCriteria,
-		constraints:        opts.Constraints,
-		blockedBy:          blockedBy,
-		bloomLevel:         opts.BloomLevel,
-		toolsHint:          opts.ToolsHint,
-		personaHint:        opts.PersonaHint,
-		skillRefs:          opts.SkillRefs,
-		workerID:           assignment.WorkerID,
+		purpose:            purpose,
+		content:            content,
+		acceptanceCriteria: acceptanceCriteria,
+		constraints:        constraints,
+		blockedBy:          state.TaskDependencies[cr.TaskID],
+		bloomLevel:         bloomLevel,
+		toolsHint:          toolsHint,
+		personaHint:        personaHint,
+		skillRefs:          skillRefs,
+		workerID:           cr.Worker,
 	}
-
-	if err := writeRetryQueueEntry(opts.MaestroDir, primaryTask, now, opts.LockMap); err != nil {
-		restoreState(state, origStateBytes)
-		return nil, fmt.Errorf("write queue entry for %s: %w", newTaskID, err)
-	}
-	writtenQueueTaskIDs = append(writtenQueueTaskIDs, primaryTask)
-
-	// Write queue entries for cascade recovered tasks
-	for _, cr := range cascadeRecovered {
-		// Inherit content from original task if available
-		purpose := "cascade recovery of " + cr.Replaced
-		content := purpose
-		acceptanceCriteria := purpose
-		bloomLevel := opts.BloomLevel
-		var constraints []string
-		var toolsHint []string
-		var personaHint string
-		var skillRefs []string
-
-		if orig, ok := origTaskCache[cr.Replaced]; ok {
-			purpose = orig.Purpose
-			content = orig.Content
-			acceptanceCriteria = orig.AcceptanceCriteria
-			bloomLevel = orig.BloomLevel
-			constraints = orig.Constraints
-			toolsHint = orig.ToolsHint
-			personaHint = orig.PersonaHint
-			skillRefs = orig.SkillRefs
-		}
-
-		crTask := retryQueueTask{
-			taskID:             cr.TaskID,
-			commandID:          opts.CommandID,
-			purpose:            purpose,
-			content:            content,
-			acceptanceCriteria: acceptanceCriteria,
-			constraints:        constraints,
-			blockedBy:          state.TaskDependencies[cr.TaskID],
-			bloomLevel:         bloomLevel,
-			toolsHint:          toolsHint,
-			personaHint:        personaHint,
-			skillRefs:          skillRefs,
-			workerID:           cr.Worker,
-		}
-		if err := writeRetryQueueEntry(opts.MaestroDir, crTask, now, opts.LockMap); err != nil {
-			rollbackRetryQueueEntries(opts.MaestroDir, writtenQueueTaskIDs, opts.LockMap)
-			restoreState(state, origStateBytes)
-			return nil, fmt.Errorf("write queue entry for cascade %s: %w", cr.TaskID, err)
-		}
-		writtenQueueTaskIDs = append(writtenQueueTaskIDs, crTask)
-	}
-
-	// Save state
-	if err := sm.SaveState(state); err != nil {
-		rollbackRetryQueueEntries(opts.MaestroDir, writtenQueueTaskIDs, opts.LockMap)
-		restoreState(state, origStateBytes)
-		return nil, fmt.Errorf("save state: %w", err)
-	}
-
-	return &RetryResult{
-		TaskID:           newTaskID,
-		Worker:           assignment.WorkerID,
-		Model:            assignment.Model,
-		Replaced:         opts.RetryOf,
-		CascadeRecovered: cascadeRecovered,
-	}, nil
 }
 
 func findPhaseForTask(state *model.CommandState, taskID string) (*model.Phase, int) {
