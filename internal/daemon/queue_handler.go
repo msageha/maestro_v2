@@ -142,6 +142,7 @@ func (qh *QueueHandler) SetWorktreeManager(wm *WorktreeManager) {
 	defer qh.scanRunMu.Unlock()
 	qh.worktreeManager = wm
 	qh.dispatcher.SetWorktreeManager(wm)
+	qh.cancelHandler.SetWorktreeManager(wm)
 }
 
 // SetBusyChecker overrides the busy checker for testing.
