@@ -34,7 +34,7 @@ func reconcileTerminalQueueItems[T any](
 	terminalResults map[string]model.Status,
 	accessor queueItemAccessor[T],
 	run *Run,
-	patternName string,
+	patternName RepairPatternID,
 	queueName string,
 ) (modified bool, repairs []Repair, repairedCommands map[string]bool) {
 	repairedCommands = make(map[string]bool)
@@ -78,7 +78,7 @@ func reconcileTerminalQueueItems[T any](
 // Q is the queue file type, T is the queue item type.
 func reconcileTerminalQueue[Q any, T any](
 	run *Run,
-	patternName string,
+	patternName RepairPatternID,
 	queueName string,
 	queuePath string,
 	terminalResults map[string]model.Status,

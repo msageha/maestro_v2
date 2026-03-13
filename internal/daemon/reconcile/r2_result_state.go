@@ -18,8 +18,6 @@ import (
 // Action: update task_states + applied_result_ids in state file.
 type R2ResultState struct{}
 
-func (R2ResultState) Name() string { return "R2" }
-
 func (R2ResultState) Apply(run *Run) Outcome {
 	var repairs []Repair
 
@@ -104,7 +102,7 @@ func (R2ResultState) Apply(run *Run) Outcome {
 				modified = true
 
 				reps = append(reps, Repair{
-					Pattern:   "R2",
+					Pattern:   PatternR2,
 					CommandID: commandID,
 					TaskID:    re.TaskID,
 					Detail:    fmt.Sprintf("state task_states updated from %s to %s", currentStatus, re.Status),

@@ -10,8 +10,6 @@ import (
 // Action: update queue to terminal, clear lease. Update last_reconciled_at on state file.
 type R3PlannerQueue struct{}
 
-func (R3PlannerQueue) Name() string { return "R3" }
-
 func (R3PlannerQueue) Apply(run *Run) Outcome {
 	resultPath := filepath.Join(run.Deps.MaestroDir, "results", "planner.yaml")
 	rf, err := run.LoadCommandResultFile(resultPath)
@@ -31,7 +29,7 @@ func (R3PlannerQueue) Apply(run *Run) Outcome {
 
 	queuePath := filepath.Join(run.Deps.MaestroDir, "queue", "planner.yaml")
 	repairs, repairedCommands := reconcileTerminalQueue(
-		run, "R3", "planner", queuePath, terminalResults,
+		run, PatternR3, "planner", queuePath, terminalResults,
 		unmarshalCommandQueue, setCommandQueueItems, commandQueueAccessor(),
 	)
 

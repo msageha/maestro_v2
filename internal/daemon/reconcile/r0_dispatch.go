@@ -18,8 +18,6 @@ import (
 // Action: Release lease and revert to pending for retry
 type R0Dispatch struct{}
 
-func (R0Dispatch) Name() string { return "R0-dispatch" }
-
 func (R0Dispatch) Apply(run *Run) Outcome {
 	var repairs []Repair
 
@@ -99,7 +97,7 @@ func (R0Dispatch) Apply(run *Run) Outcome {
 			cmd.UpdatedAt = run.Deps.Clock.Now().UTC().Format(time.RFC3339)
 
 			return &Repair{
-				Pattern:   "R0-dispatch",
+				Pattern:   PatternR0Dispatch,
 				CommandID: cmd.ID,
 				Detail:    fmt.Sprintf("dispatch stuck %.0fs, lease released, reverted to pending", age.Seconds()),
 			}

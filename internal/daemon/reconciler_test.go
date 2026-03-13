@@ -13,6 +13,7 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/daemon/reconcile"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -71,7 +72,7 @@ func TestReconciler_R0_PlanningStuck(t *testing.T) {
 	repairs, _ := rec.Reconcile()
 
 	// Should have one R0 repair
-	r0 := filterRepairs(repairs, "R0")
+	r0 := filterRepairs(repairs, reconcile.PatternR0)
 	if len(r0) != 1 {
 		t.Fatalf("expected 1 R0 repair, got %d", len(r0))
 	}
@@ -115,7 +116,7 @@ func TestReconciler_R0_PlanningRecent_NoRepair(t *testing.T) {
 
 	repairs, _ := rec.Reconcile()
 
-	r0 := filterRepairs(repairs, "R0")
+	r0 := filterRepairs(repairs, reconcile.PatternR0)
 	if len(r0) != 0 {
 		t.Fatalf("expected no R0 repairs for recent planning, got %d", len(r0))
 	}
@@ -173,7 +174,7 @@ func TestReconciler_R0b_FillingStuck(t *testing.T) {
 
 	repairs, _ := rec.Reconcile()
 
-	r0b := filterRepairs(repairs, "R0b")
+	r0b := filterRepairs(repairs, reconcile.PatternR0b)
 	if len(r0b) != 1 {
 		t.Fatalf("expected 1 R0b repair, got %d", len(r0b))
 	}
@@ -267,7 +268,7 @@ func TestReconciler_R1_ResultTerminal_QueueInProgress(t *testing.T) {
 
 	repairs, _ := rec.Reconcile()
 
-	r1 := filterRepairs(repairs, "R1")
+	r1 := filterRepairs(repairs, reconcile.PatternR1)
 	if len(r1) != 1 {
 		t.Fatalf("expected 1 R1 repair, got %d", len(r1))
 	}
@@ -343,7 +344,7 @@ func TestReconciler_R2_ResultTerminal_StateNonTerminal(t *testing.T) {
 
 	repairs, _ := rec.Reconcile()
 
-	r2 := filterRepairs(repairs, "R2")
+	r2 := filterRepairs(repairs, reconcile.PatternR2)
 	if len(r2) != 1 {
 		t.Fatalf("expected 1 R2 repair, got %d", len(r2))
 	}
@@ -410,7 +411,7 @@ func TestReconciler_R2_AlreadyTerminal_NoRepair(t *testing.T) {
 
 	repairs, _ := rec.Reconcile()
 
-	r2 := filterRepairs(repairs, "R2")
+	r2 := filterRepairs(repairs, reconcile.PatternR2)
 	if len(r2) != 0 {
 		t.Fatalf("expected no R2 repairs for already terminal state, got %d", len(r2))
 	}
@@ -484,10 +485,10 @@ func TestReconciler_AllPatterns_Combined(t *testing.T) {
 
 	repairs, _ := rec.Reconcile()
 
-	r0 := filterRepairs(repairs, "R0")
-	r0b := filterRepairs(repairs, "R0b")
-	r1 := filterRepairs(repairs, "R1")
-	r2 := filterRepairs(repairs, "R2")
+	r0 := filterRepairs(repairs, reconcile.PatternR0)
+	r0b := filterRepairs(repairs, reconcile.PatternR0b)
+	r1 := filterRepairs(repairs, reconcile.PatternR1)
+	r2 := filterRepairs(repairs, reconcile.PatternR2)
 
 	if len(r0) != 1 {
 		t.Errorf("R0: expected 1 repair, got %d", len(r0))
@@ -562,7 +563,7 @@ func TestReconciler_R3_PlannerResultTerminal_QueueInProgress(t *testing.T) {
 
 	repairs, _ := rec.Reconcile()
 
-	r3 := filterRepairs(repairs, "R3")
+	r3 := filterRepairs(repairs, reconcile.PatternR3)
 	if len(r3) != 1 {
 		t.Fatalf("expected 1 R3 repair, got %d", len(r3))
 	}
@@ -609,7 +610,7 @@ func TestReconciler_R3_QueueAlreadyTerminal_NoRepair(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(queueDir, "planner.yaml"), cq)
 
 	repairs, _ := rec.Reconcile()
-	r3 := filterRepairs(repairs, "R3")
+	r3 := filterRepairs(repairs, reconcile.PatternR3)
 	if len(r3) != 0 {
 		t.Fatalf("expected no R3 repairs, got %d", len(r3))
 	}
@@ -649,7 +650,7 @@ func TestReconciler_R4_PlannerResultTerminal_StateSealed_CanComplete(t *testing.
 	yamlutil.AtomicWrite(statePath, state)
 
 	repairs, _ := rec.Reconcile()
-	r4 := filterRepairs(repairs, "R4")
+	r4 := filterRepairs(repairs, reconcile.PatternR4)
 	if len(r4) != 1 {
 		t.Fatalf("expected 1 R4 repair, got %d", len(r4))
 	}
@@ -700,7 +701,7 @@ func TestReconciler_R4_CanCompleteFails_Quarantine(t *testing.T) {
 	os.MkdirAll(filepath.Join(maestroDir, "quarantine"), 0755)
 
 	repairs, _ := rec.Reconcile()
-	r4 := filterRepairs(repairs, "R4")
+	r4 := filterRepairs(repairs, reconcile.PatternR4)
 	if len(r4) != 1 {
 		t.Fatalf("expected 1 R4 repair, got %d", len(r4))
 	}
@@ -753,7 +754,7 @@ func TestReconciler_R4_PlanStatusPlanning_Skip(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r4_planning.yaml"), state)
 
 	repairs, _ := rec.Reconcile()
-	r4 := filterRepairs(repairs, "R4")
+	r4 := filterRepairs(repairs, reconcile.PatternR4)
 	if len(r4) != 0 {
 		t.Fatalf("expected no R4 repairs for planning state, got %d", len(r4))
 	}
@@ -802,7 +803,7 @@ func TestReconciler_R5_NotifiedResult_NoOrchestratorNotification(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r5_test.yaml"), state)
 
 	repairs, _ := rec.Reconcile()
-	r5 := filterRepairs(repairs, "R5")
+	r5 := filterRepairs(repairs, reconcile.PatternR5)
 	if len(r5) != 1 {
 		t.Fatalf("expected 1 R5 repair, got %d", len(r5))
 	}
@@ -850,7 +851,7 @@ func TestReconciler_R5_NotificationExists_NoRepair(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(queueDir, "orchestrator.yaml"), nq)
 
 	repairs, _ := rec.Reconcile()
-	r5 := filterRepairs(repairs, "R5")
+	r5 := filterRepairs(repairs, reconcile.PatternR5)
 	if len(r5) != 0 {
 		t.Fatalf("expected no R5 repairs, got %d", len(r5))
 	}
@@ -898,7 +899,7 @@ func TestReconciler_R6_AwaitingFill_DeadlineExpired(t *testing.T) {
 	yamlutil.AtomicWrite(statePath, state)
 
 	repairs, _ := rec.Reconcile()
-	r6 := filterRepairs(repairs, "R6")
+	r6 := filterRepairs(repairs, reconcile.PatternR6)
 	// Should have: implementation → timed_out, testing → cancelled (cascade)
 	if len(r6) != 2 {
 		t.Fatalf("expected 2 R6 repairs, got %d: %+v", len(r6), r6)
@@ -945,7 +946,7 @@ func TestReconciler_R6_DeadlineNotExpired_NoRepair(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r6_ok.yaml"), state)
 
 	repairs, _ := rec.Reconcile()
-	r6 := filterRepairs(repairs, "R6")
+	r6 := filterRepairs(repairs, reconcile.PatternR6)
 	if len(r6) != 0 {
 		t.Fatalf("expected no R6 repairs, got %d", len(r6))
 	}
@@ -959,7 +960,7 @@ func (m *mockExecutorR6) Execute(req agent.ExecRequest) agent.ExecResult {
 }
 func (m *mockExecutorR6) Close() error { return nil }
 
-func filterRepairs(repairs []ReconcileRepair, pattern string) []ReconcileRepair {
+func filterRepairs(repairs []ReconcileRepair, pattern reconcile.RepairPatternID) []ReconcileRepair {
 	var filtered []ReconcileRepair
 	for _, r := range repairs {
 		if r.Pattern == pattern {
@@ -1009,7 +1010,7 @@ func TestReconciler_R6_TransitiveCascade(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r6_trans.yaml"), state)
 
 	repairs, _ := rec.Reconcile()
-	r6 := filterRepairs(repairs, "R6")
+	r6 := filterRepairs(repairs, reconcile.PatternR6)
 	// Should have 3: p1 timed_out, p2 cancelled, p3 cancelled (transitive)
 	if len(r6) != 3 {
 		t.Fatalf("expected 3 R6 repairs (transitive cascade), got %d: %+v", len(r6), r6)
