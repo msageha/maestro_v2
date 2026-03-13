@@ -89,9 +89,9 @@ func (pc *PolicyChecker) HookSettings(scriptPath string) (string, error) {
 // for testing/documentation purposes.
 func DangerousPatterns() []string {
 	return []string{
-		// D001: OS/home destruction — match rm -rf targeting /, ~, or /Users
-		`rm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+(/\s|/$|~|/Users)`,
-		`rm\s+-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*\s+(/\s|/$|~|/Users)`,
+		// D001: OS/home destruction — match rm -rf targeting /, ~, or /Users (case-insensitive for macOS)
+		`(?i)rm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+(/\s|/$|~|/Users)`,
+		`(?i)rm\s+-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*\s+(/\s|/$|~|/Users)`,
 		// D003: git push --force (without --force-with-lease)
 		`git\s+push\s+.*--force([^-]|$)`,
 		`git\s+push\s+(.*\s)?-f(\s|$)`,
@@ -110,16 +110,16 @@ func DangerousPatterns() []string {
 		`(^|;|\||&&)\s*mkfs\s`,
 		`(^|;|\||&&)\s*dd\s+if=`,
 		`(^|;|\||&&)\s*fdisk\s`,
-		`(^|;|\||&&)\s*diskutil\s+eraseDisk`,
+		`(?i)(^|;|\||&&)\s*diskutil\s+eraseDisk`,
 		// D008: Remote code execution
 		`curl\s.*\|\s*(ba)?sh`,
 		`wget\s.*\|\s*(ba)?sh`,
 		`curl\s.*-o\s*-\s*\|\s*(ba)?sh`,
-		// .maestro/ access via Bash (bypass prevention)
-		`(cat|head|tail|less|more|vim|nano|sed|awk)\s+.*\.maestro/`,
-		`(ls|find|grep|rg)\s+.*\.maestro/(state|queues|results|locks|logs|config)`,
-		`>\s*\.maestro/`,
-		`>>\s*\.maestro/`,
+		// .maestro/ access via Bash (bypass prevention, case-insensitive for macOS)
+		`(?i)(cat|head|tail|less|more|vim|nano|sed|awk)\s+.*\.maestro/`,
+		`(?i)(ls|find|grep|rg)\s+.*\.maestro/(state|queues|results|locks|logs|config)`,
+		`(?i)>\s*\.maestro/`,
+		`(?i)>>\s*\.maestro/`,
 	}
 }
 
@@ -146,8 +146,8 @@ deny() {
 if [ "$tool_name" = "Bash" ]; then
   cmd="$(echo "$input" | jq -r '.tool_input.command // ""')"
 
-  # D001: OS/home/root destruction
-  if echo "$cmd" | grep -qE 'rm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+(/\s|/$|~|/Users)'; then
+  # D001: OS/home/root destruction (case-insensitive for macOS)
+  if echo "$cmd" | grep -qiE 'rm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+(/\s|/$|~|/Users)'; then
     deny "D001: Blocked rm -rf targeting system/home directory"
   fi
 
@@ -205,22 +205,22 @@ if [ "$tool_name" = "Bash" ]; then
     deny "D008: Blocked remote code execution (curl/wget piped to shell)"
   fi
 
-  # .maestro/ access via Bash (bypass prevention)
-  if echo "$cmd" | grep -qE '(cat|head|tail|less|more|vim|nano|sed|awk)\s+.*\.maestro/(state|queues|results|locks|logs|config)'; then
+  # .maestro/ access via Bash (bypass prevention, case-insensitive for macOS)
+  if echo "$cmd" | grep -qiE '(cat|head|tail|less|more|vim|nano|sed|awk)\s+.*\.maestro/(state|queues|results|locks|logs|config)'; then
     deny "Blocked .maestro/ control-plane access via Bash"
   fi
-  if echo "$cmd" | grep -qE '(ls|find|grep|rg)\s+.*\.maestro/(state|queues|results|locks|logs|config)'; then
+  if echo "$cmd" | grep -qiE '(ls|find|grep|rg)\s+.*\.maestro/(state|queues|results|locks|logs|config)'; then
     deny "Blocked .maestro/ control-plane access via Bash"
   fi
-  if echo "$cmd" | grep -qE '(echo|printf|tee)\s.*>\s*\.maestro/'; then
+  if echo "$cmd" | grep -qiE '(echo|printf|tee)\s.*>\s*\.maestro/'; then
     deny "Blocked write to .maestro/ via Bash"
   fi
-  if echo "$cmd" | grep -qE '>\s*\.maestro/'; then
+  if echo "$cmd" | grep -qiE '>\s*\.maestro/'; then
     deny "Blocked redirect to .maestro/ via Bash"
   fi
 
-  # macOS system directory protection
-  if echo "$cmd" | grep -qE 'rm\s+-[a-zA-Z]*r.*/(System|Library|Applications)/'; then
+  # macOS system directory protection (case-insensitive)
+  if echo "$cmd" | grep -qiE 'rm\s+-[a-zA-Z]*r.*/(System|Library|Applications)/'; then
     deny "Blocked recursive delete targeting macOS system directory"
   fi
 fi
@@ -228,17 +228,19 @@ fi
 # --- Write/Edit path checks ---
 if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ]; then
   file_path="$(echo "$input" | jq -r '.tool_input.file_path // ""')"
+  # Normalize to lowercase for case-insensitive FS (macOS)
+  file_path_lower="$(echo "$file_path" | tr '[:upper:]' '[:lower:]')"
 
   # Block writes to .maestro/ control plane
-  case "$file_path" in
+  case "$file_path_lower" in
     */.maestro/state/*|*/.maestro/queues/*|*/.maestro/results/*|*/.maestro/locks/*|*/.maestro/logs/*|*/.maestro/config.yaml)
       deny "Blocked write to .maestro/ control-plane path"
       ;;
   esac
 
-  # Block writes to macOS system directories
-  case "$file_path" in
-    /System/*|/Library/*|/Applications/*|/usr/*|/bin/*|/sbin/*)
+  # Block writes to macOS system directories (case-insensitive)
+  case "$file_path_lower" in
+    /system/*|/library/*|/applications/*|/usr/*|/bin/*|/sbin/*)
       deny "Blocked write to system directory: $file_path"
       ;;
   esac
