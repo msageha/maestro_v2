@@ -120,6 +120,19 @@ func (a *API) notifySelfWrite(queuePath, writeType string, data any) {
 	}
 }
 
+// publishQueueWritten publishes an EventQueueWritten event to trigger an
+// immediate queue scan without recording a self-write hash. Use this when
+// queue files were written by an external package (e.g. plan.Submit) and
+// the exact written data is not available to the API layer.
+func (a *API) publishQueueWritten(source string) {
+	if a.d.eventBus != nil {
+		a.d.eventBus.Publish(events.EventQueueWritten, map[string]interface{}{
+			"source": source,
+			"type":   "plan",
+		})
+	}
+}
+
 // recordSelfWrite records a self-write for fsnotify filtering without
 // publishing an event (used when the caller already triggers processing directly).
 // data is the object that was written (used to compute content hash).

@@ -21,8 +21,9 @@ const (
 	EventTaskCompleted EventType = "task_completed"
 	// EventPhaseTransition is published when a phase status changes.
 	EventPhaseTransition EventType = "phase_transition"
-	// EventQueueWritten is published when the daemon writes to a queue file via UDS handler.
-	// Data keys: "file" (base filename), "source" ("uds"), "type" (write type).
+	// EventQueueWritten is published when the daemon writes to a queue file via UDS handler,
+	// or when a plan operation (submit/complete/add_retry_task) writes queue files.
+	// Data keys: "file" (base filename, optional), "source" ("uds" or "plan_*"), "type" (write type).
 	EventQueueWritten EventType = "queue_written"
 )
 

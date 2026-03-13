@@ -77,5 +77,14 @@ func (a *API) handlePlan(req *uds.Request) *uds.Response {
 	}
 
 	d.log(LogLevelInfo, "plan_%s success", params.Operation)
+
+	// Trigger an immediate queue scan for operations that write to worker/planner
+	// queue files. Without this, the daemon relies on fsnotify (which may miss
+	// AtomicWrite's os.Rename on macOS) or the 60-second periodic scan, causing
+	// significant dispatch delay. "rebuild" only updates state and needs no scan.
+	if params.Operation != "rebuild" {
+		a.publishQueueWritten("plan_" + params.Operation)
+	}
+
 	return &uds.Response{Success: true, Data: result}
 }
