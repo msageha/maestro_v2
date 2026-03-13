@@ -39,7 +39,9 @@ func validateTaskSetCommon(tasks []TaskInput, fieldPrefix string, errs *Validati
 	}
 
 	validateNameUniqueness(names, fieldPrefix, errs)
-	validateSystemReservedNames(names, fieldPrefix, errs)
+
+	// Reserved name prefix (__) is now checked per-task inside validateTaskFields,
+	// so validateSystemReservedNames is no longer needed here for tasks.
 
 	if refErrs := ValidateSamePhaseRefs(blockedBy, nameSet); refErrs != nil {
 		for _, e := range refErrs.Errors {
@@ -209,7 +211,18 @@ func ValidatePhaseFillInput(tasks []TaskInput, phase model.Phase) *ValidationErr
 	return nil
 }
 
+// validateTaskFields validates a single task's fields including reserved name prefix check.
+// For system-generated tasks that use the __ prefix, use validateTaskFieldsCore instead.
 func validateTaskFields(task TaskInput, fieldPrefix string, errs *ValidationErrors) {
+	validateTaskFieldsCore(task, fieldPrefix, errs)
+	if task.Name != "" && strings.HasPrefix(task.Name, "__") {
+		errs.Add(fieldPrefix+".name", fmt.Sprintf("name %q uses reserved prefix '__'", task.Name))
+	}
+}
+
+// validateTaskFieldsCore validates a single task's field integrity (non-empty, length limits,
+// bloom level range) without checking the reserved __ name prefix.
+func validateTaskFieldsCore(task TaskInput, fieldPrefix string, errs *ValidationErrors) {
 	if task.Name == "" {
 		errs.Add(fieldPrefix+".name", "required field is missing")
 	} else if len([]rune(task.Name)) > MaxTaskNameRunes {

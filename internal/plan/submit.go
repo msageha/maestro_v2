@@ -215,19 +215,8 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 		return nil, verrs
 	}
 
-	// Check for cross-phase task name collisions (must run before dry-run return)
-	globalTaskNames := make(map[string]string) // name → phase name
-	for _, phase := range phases {
-		if phase.Type != "concrete" {
-			continue
-		}
-		for _, task := range phase.Tasks {
-			if existingPhase, exists := globalTaskNames[task.Name]; exists {
-				return nil, fmt.Errorf("task name %q appears in both phase %q and %q; task names must be unique across all phases",
-					task.Name, existingPhase, phase.Name)
-			}
-			globalTaskNames[task.Name] = phase.Name
-		}
+	if err := validateCrossPhaseTaskNames(phases); err != nil {
+		return nil, err
 	}
 
 	if opts.DryRun {
@@ -246,15 +235,92 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 		phaseNameToID[p.Name] = id
 	}
 
-	// Process concrete phases: generate task IDs, assign workers
-	allNameToID := make(map[string]string)
-	allAssignMap := make(map[string]WorkerAssignment)
-	var allTasks []TaskInput
-	var allAssignments []WorkerAssignment
+	// Process concrete phases: resolve names, assign workers
+	cpd, err := processConcretePhases(opts, phases)
+	if err != nil {
+		return nil, err
+	}
 
+	// Insert __system_commit outside phase structure if continuous enabled
+	var systemCommitTaskID *string
+	if opts.Config.Continuous.Enabled {
+		var scErr error
+		systemCommitTaskID, scErr = addSystemCommitForPhases(opts, cpd)
+		if scErr != nil {
+			return nil, scErr
+		}
+	}
+
+	// Build state
+	state := buildPhaseCommandState(opts, phases, phaseNameToID, cpd, systemCommitTaskID, now)
+
+	// Save state (planning)
+	if err := sm.SaveState(state); err != nil {
+		return nil, fmt.Errorf("save state (planning): %w", err)
+	}
+
+	// Write queue entries for concrete phase tasks + system commit
+	if err := writeQueueEntries(opts.MaestroDir, cpd.assignments, cpd.tasks, cpd.nameToID, opts.CommandID, now, opts.LockMap); err != nil {
+		rollbackQueueEntries(opts.MaestroDir, cpd.tasks, cpd.nameToID, cpd.assignMap, opts.LockMap)
+		if delErr := sm.DeleteState(opts.CommandID); delErr != nil {
+			log.Printf("rollback: delete state for command %s: %v", opts.CommandID, delErr)
+		}
+		return nil, fmt.Errorf("write queue: %w", err)
+	}
+
+	// Seal
+	state.PlanStatus = model.PlanStatusSealed
+	state.PlanVersion = 1
+	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := sm.SaveState(state); err != nil {
+		rollbackQueueEntries(opts.MaestroDir, cpd.tasks, cpd.nameToID, cpd.assignMap, opts.LockMap)
+		if delErr := sm.DeleteState(opts.CommandID); delErr != nil {
+			log.Printf("rollback: delete state for command %s: %v", opts.CommandID, delErr)
+		}
+		return nil, fmt.Errorf("save state (sealed): %w", err)
+	}
+
+	return buildPhaseSubmitResult(opts.CommandID, phases, phaseNameToID, cpd, systemCommitTaskID), nil
+}
+
+// validateCrossPhaseTaskNames checks for task name collisions across concrete phases.
+func validateCrossPhaseTaskNames(phases []PhaseInput) error {
+	globalTaskNames := make(map[string]string) // name → phase name
+	for _, phase := range phases {
+		if phase.Type != "concrete" {
+			continue
+		}
+		for _, task := range phase.Tasks {
+			if existingPhase, exists := globalTaskNames[task.Name]; exists {
+				return fmt.Errorf("task name %q appears in both phase %q and %q; task names must be unique across all phases",
+					task.Name, existingPhase, phase.Name)
+			}
+			globalTaskNames[task.Name] = phase.Name
+		}
+	}
+	return nil
+}
+
+// concretePhaseData holds the aggregated results of processing concrete phases.
+type concretePhaseData struct {
+	nameToID     map[string]string
+	assignMap    map[string]WorkerAssignment
+	tasks        []TaskInput
+	assignments  []WorkerAssignment
+	workerStates []WorkerState
+}
+
+// processConcretePhases resolves names and assigns workers for all concrete phases.
+func processConcretePhases(opts SubmitOptions, phases []PhaseInput) (*concretePhaseData, error) {
 	workerStates, err := BuildWorkerStates(opts.MaestroDir, opts.Config.Agents.Workers)
 	if err != nil {
 		return nil, fmt.Errorf("build worker states: %w", err)
+	}
+
+	cpd := &concretePhaseData{
+		nameToID:     make(map[string]string),
+		assignMap:    make(map[string]WorkerAssignment),
+		workerStates: workerStates,
 	}
 
 	for _, phase := range phases {
@@ -267,7 +333,7 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 			return nil, fmt.Errorf("resolve names for phase %s: %w", phase.Name, err)
 		}
 		for k, v := range nameToID {
-			allNameToID[k] = v
+			cpd.nameToID[k] = v
 		}
 
 		var assignReqs []TaskAssignmentRequest
@@ -275,61 +341,66 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 			assignReqs = append(assignReqs, TaskAssignmentRequest{Name: t.Name, BloomLevel: t.BloomLevel})
 		}
 
-		assignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, workerStates, assignReqs)
+		assignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, cpd.workerStates, assignReqs)
 		if err != nil {
 			return nil, fmt.Errorf("worker assignment for phase %s: %w", phase.Name, err)
 		}
-		allAssignments = append(allAssignments, assignments...)
+		cpd.assignments = append(cpd.assignments, assignments...)
 		for _, a := range assignments {
-			allAssignMap[a.TaskName] = a
+			cpd.assignMap[a.TaskName] = a
 		}
-		allTasks = append(allTasks, phase.Tasks...)
+		cpd.tasks = append(cpd.tasks, phase.Tasks...)
 
 		// Update workerStates for next phase assignment
 		for _, a := range assignments {
-			for i := range workerStates {
-				if workerStates[i].WorkerID == a.WorkerID {
-					workerStates[i].PendingCount++
+			for i := range cpd.workerStates {
+				if cpd.workerStates[i].WorkerID == a.WorkerID {
+					cpd.workerStates[i].PendingCount++
 					break
 				}
 			}
 		}
 	}
 
-	// Insert __system_commit outside phase structure if continuous enabled
-	var systemCommitTaskID *string
-	if opts.Config.Continuous.Enabled {
-		// Collect all concrete-phase task names so __system_commit blocks on them
-		allConcreteTaskNames := make([]string, 0, len(allTasks))
-		for _, t := range allTasks {
-			allConcreteTaskNames = append(allConcreteTaskNames, t.Name)
-		}
+	return cpd, nil
+}
 
-		commitTask := buildSystemCommitTask(allConcreteTaskNames)
-		if err := validateSystemTask(commitTask); err != nil {
-			return nil, fmt.Errorf("validate system commit task: %w", err)
-		}
-
-		commitID, err := model.GenerateID(model.IDTypeTask)
-		if err != nil {
-			return nil, fmt.Errorf("generate system commit ID: %w", err)
-		}
-		allNameToID[commitTask.Name] = commitID
-		systemCommitTaskID = &commitID
-
-		assignReqs := []TaskAssignmentRequest{{Name: commitTask.Name, BloomLevel: commitTask.BloomLevel}}
-		commitAssignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, workerStates, assignReqs)
-		if err != nil {
-			return nil, fmt.Errorf("worker assignment for system commit: %w", err)
-		}
-		allAssignments = append(allAssignments, commitAssignments...)
-		for _, a := range commitAssignments {
-			allAssignMap[a.TaskName] = a
-		}
-		allTasks = append(allTasks, commitTask)
+// addSystemCommitForPhases creates a system commit task that depends on all concrete-phase tasks.
+func addSystemCommitForPhases(opts SubmitOptions, cpd *concretePhaseData) (*string, error) {
+	allConcreteTaskNames := make([]string, 0, len(cpd.tasks))
+	for _, t := range cpd.tasks {
+		allConcreteTaskNames = append(allConcreteTaskNames, t.Name)
 	}
 
-	// Build state with phases
+	commitTask := buildSystemCommitTask(allConcreteTaskNames)
+	if err := validateSystemTask(commitTask); err != nil {
+		return nil, fmt.Errorf("validate system commit task: %w", err)
+	}
+
+	commitID, err := model.GenerateID(model.IDTypeTask)
+	if err != nil {
+		return nil, fmt.Errorf("generate system commit ID: %w", err)
+	}
+	cpd.nameToID[commitTask.Name] = commitID
+
+	assignReqs := []TaskAssignmentRequest{{Name: commitTask.Name, BloomLevel: commitTask.BloomLevel}}
+	commitAssignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, cpd.workerStates, assignReqs)
+	if err != nil {
+		return nil, fmt.Errorf("worker assignment for system commit: %w", err)
+	}
+	cpd.assignments = append(cpd.assignments, commitAssignments...)
+	for _, a := range commitAssignments {
+		cpd.assignMap[a.TaskName] = a
+	}
+	cpd.tasks = append(cpd.tasks, commitTask)
+
+	return &commitID, nil
+}
+
+// buildPhaseCommandState constructs the CommandState for a phase-based submission.
+func buildPhaseCommandState(opts SubmitOptions, phases []PhaseInput, phaseNameToID map[string]string,
+	cpd *concretePhaseData, systemCommitTaskID *string, now string) *model.CommandState {
+
 	state := &model.CommandState{
 		SchemaVersion:      1,
 		FileType:           "state_command",
@@ -361,7 +432,7 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 			phaseModel.ActivatedAt = &now
 
 			for _, t := range p.Tasks {
-				taskID := allNameToID[t.Name]
+				taskID := cpd.nameToID[t.Name]
 				phaseModel.TaskIDs = append(phaseModel.TaskIDs, taskID)
 
 				if t.Required {
@@ -376,7 +447,7 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 				if len(t.BlockedBy) > 0 {
 					depIDs := make([]string, 0, len(t.BlockedBy))
 					for _, depName := range t.BlockedBy {
-						depIDs = append(depIDs, allNameToID[depName])
+						depIDs = append(depIDs, cpd.nameToID[depName])
 					}
 					state.TaskDependencies[taskID] = depIDs
 				}
@@ -405,10 +476,10 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 		state.TaskStates[*systemCommitTaskID] = model.StatusPending
 
 		// Register dependencies: system commit blocks on all concrete-phase tasks
-		depIDs := make([]string, 0, len(allTasks)-1) // exclude __system_commit itself
-		for _, t := range allTasks {
+		depIDs := make([]string, 0, len(cpd.tasks)-1) // exclude __system_commit itself
+		for _, t := range cpd.tasks {
 			if t.Name != "__system_commit" {
-				depIDs = append(depIDs, allNameToID[t.Name])
+				depIDs = append(depIDs, cpd.nameToID[t.Name])
 			}
 		}
 		if len(depIDs) > 0 {
@@ -417,35 +488,14 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 	}
 
 	state.ExpectedTaskCount = len(state.RequiredTaskIDs) + len(state.OptionalTaskIDs)
+	return state
+}
 
-	// Save state (planning)
-	if err := sm.SaveState(state); err != nil {
-		return nil, fmt.Errorf("save state (planning): %w", err)
-	}
+// buildPhaseSubmitResult constructs the SubmitResult for a phase-based submission.
+func buildPhaseSubmitResult(commandID string, phases []PhaseInput, phaseNameToID map[string]string,
+	cpd *concretePhaseData, systemCommitTaskID *string) *SubmitResult {
 
-	// Write queue entries for concrete phase tasks + system commit
-	if err := writeQueueEntries(opts.MaestroDir, allAssignments, allTasks, allNameToID, opts.CommandID, now, opts.LockMap); err != nil {
-		rollbackQueueEntries(opts.MaestroDir, allTasks, allNameToID, allAssignMap, opts.LockMap)
-		if delErr := sm.DeleteState(opts.CommandID); delErr != nil {
-			log.Printf("rollback: delete state for command %s: %v", opts.CommandID, delErr)
-		}
-		return nil, fmt.Errorf("write queue: %w", err)
-	}
-
-	// Seal
-	state.PlanStatus = model.PlanStatusSealed
-	state.PlanVersion = 1
-	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := sm.SaveState(state); err != nil {
-		rollbackQueueEntries(opts.MaestroDir, allTasks, allNameToID, allAssignMap, opts.LockMap)
-		if delErr := sm.DeleteState(opts.CommandID); delErr != nil {
-			log.Printf("rollback: delete state for command %s: %v", opts.CommandID, delErr)
-		}
-		return nil, fmt.Errorf("save state (sealed): %w", err)
-	}
-
-	// Build output
-	result := &SubmitResult{CommandID: opts.CommandID}
+	result := &SubmitResult{CommandID: commandID}
 	for _, p := range phases {
 		pr := SubmitPhaseResult{
 			Name:    p.Name,
@@ -455,10 +505,10 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 		if p.Type == "concrete" {
 			pr.Status = string(model.PhaseStatusActive)
 			for _, t := range p.Tasks {
-				a := allAssignMap[t.Name]
+				a := cpd.assignMap[t.Name]
 				pr.Tasks = append(pr.Tasks, SubmitTaskResult{
 					Name:   t.Name,
-					TaskID: allNameToID[t.Name],
+					TaskID: cpd.nameToID[t.Name],
 					Worker: a.WorkerID,
 					Model:  a.Model,
 				})
@@ -470,7 +520,7 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 	}
 
 	if systemCommitTaskID != nil {
-		a := allAssignMap["__system_commit"]
+		a := cpd.assignMap["__system_commit"]
 		result.Tasks = append(result.Tasks, SubmitTaskResult{
 			Name:   "__system_commit",
 			TaskID: *systemCommitTaskID,
@@ -479,7 +529,7 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 		})
 	}
 
-	return result, nil
+	return result
 }
 
 func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, error) {
@@ -719,8 +769,8 @@ func buildSystemCommitTask(blockedByNames []string) TaskInput {
 // as user-submitted tasks.
 func validateSystemTask(task TaskInput) error {
 	errs := &ValidationErrors{}
-	// Reuse the package-private field validator (skips name-prefix check).
-	validateTaskFields(task, "system_task", errs)
+	// Use the core field validator which skips the reserved __ name-prefix check.
+	validateTaskFieldsCore(task, "system_task", errs)
 	if errs.HasErrors() {
 		return errs
 	}
