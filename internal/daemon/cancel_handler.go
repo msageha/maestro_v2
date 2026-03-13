@@ -30,21 +30,17 @@ type CancelHandler struct {
 	worktreeManager *WorktreeManager
 }
 
-// NewCancelHandler creates a new CancelHandler.
-func NewCancelHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel) *CancelHandler {
-	clock := RealClock{}
-	factory := ExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
-		return agent.NewExecutor(dir, wcfg, level)
-	})
+// NewCancelHandler creates a new CancelHandler with a shared ExecutorProvider.
+func NewCancelHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel, ep *ExecutorProvider) *CancelHandler {
 	return &CancelHandler{
-		maestroDir: maestroDir,
-		config:     cfg,
-		dl:         NewDaemonLoggerFromLegacy("cancel_handler", logger, logLevel),
-		lockMap:    lockMap,
-		logger:     logger,
-		logLevel:   logLevel,
-		clock:      clock,
-		execProvider: NewExecutorProvider(maestroDir, cfg.Watcher, cfg.Logging.Level, factory, clock, PolicyCacheError),
+		maestroDir:   maestroDir,
+		config:       cfg,
+		dl:           NewDaemonLoggerFromLegacy("cancel_handler", logger, logLevel),
+		lockMap:      lockMap,
+		logger:       logger,
+		logLevel:     logLevel,
+		clock:        ep.clock,
+		execProvider: ep,
 	}
 }
 

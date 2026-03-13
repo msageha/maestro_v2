@@ -31,12 +31,11 @@ type Config struct {
 	Retry          RetryConfig          `yaml:"retry"`
 	Queue          QueueConfig          `yaml:"queue"`
 	Limits         LimitsConfig         `yaml:"limits"`
-	Daemon         DaemonConfig         `yaml:"daemon"`
+	ShutdownTimeoutSec int              `yaml:"shutdown_timeout_sec"`
 	Logging        LoggingConfig        `yaml:"logging"`
 	QualityGates   QualityGatesConfig   `yaml:"quality_gates"`
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
 	Learnings      LearningsConfig      `yaml:"learnings"`
-	Verification   VerificationConfig   `yaml:"verification"`
 	Worktree       WorktreeConfig       `yaml:"worktree"`
 	Skills         SkillsConfig             `yaml:"skills"`
 	Personas       map[string]PersonaConfig `yaml:"personas,omitempty"`
@@ -223,10 +222,6 @@ func (l LimitsConfig) EffectiveMaxQuarantineFiles() int {
 	return 100
 }
 
-type DaemonConfig struct {
-	ShutdownTimeoutSec int `yaml:"shutdown_timeout_sec"`
-}
-
 type LoggingConfig struct {
 	Level string `yaml:"level"`
 }
@@ -319,33 +314,6 @@ func (l LearningsConfig) EffectiveInjectCount() int {
 // 0 means unlimited (no expiry). The template default is 72.
 func (l LearningsConfig) EffectiveTTLHours() int {
 	return l.TTLHours
-}
-
-// VerificationConfig controls verification commands run by Workers.
-// When enabled is true and commands are configured, Workers are guided to run
-// basic verification before reporting task completion. Full verification is
-// used in dedicated verification phase tasks.
-type VerificationConfig struct {
-	Enabled        bool   `yaml:"enabled"`         // opt-in, default: false
-	BasicCommand   string `yaml:"basic_command"`   // e.g. "go vet ./..."
-	FullCommand    string `yaml:"full_command"`     // e.g. "go test ./..."
-	TimeoutSeconds *int   `yaml:"timeout_seconds"` // default: 300
-	MaxRetries     int    `yaml:"max_retries"`      // 0=no retry, template default: 1
-}
-
-// EffectiveTimeoutSeconds returns the configured timeout or 300 as default.
-// nil (unset) returns the default; explicit 0 returns 0 (no timeout).
-func (v VerificationConfig) EffectiveTimeoutSeconds() int {
-	if v.TimeoutSeconds != nil {
-		return *v.TimeoutSeconds
-	}
-	return 300
-}
-
-// EffectiveMaxRetries returns the configured max retries.
-// 0 means no retry. The template default is 1.
-func (v VerificationConfig) EffectiveMaxRetries() int {
-	return v.MaxRetries
 }
 
 // WorktreeConfig controls Worker worktree isolation (default enabled).
@@ -499,9 +467,9 @@ func (c Config) Validate() error {
 		errs = append(errs, fmt.Errorf("limits.max_entry_content_bytes: must be >= 0"))
 	}
 
-	// daemon.shutdown_timeout_sec
-	if c.Daemon.ShutdownTimeoutSec < 0 {
-		errs = append(errs, fmt.Errorf("daemon.shutdown_timeout_sec: must be >= 0"))
+	// shutdown_timeout_sec
+	if c.ShutdownTimeoutSec < 0 {
+		errs = append(errs, fmt.Errorf("shutdown_timeout_sec: must be >= 0"))
 	}
 
 	// circuit_breaker
@@ -510,14 +478,6 @@ func (c Config) Validate() error {
 	}
 	if c.CircuitBreaker.ProgressTimeoutMinutes != nil && *c.CircuitBreaker.ProgressTimeoutMinutes < 0 {
 		errs = append(errs, fmt.Errorf("circuit_breaker.progress_timeout_minutes: must be >= 0"))
-	}
-
-	// verification
-	if c.Verification.TimeoutSeconds != nil && *c.Verification.TimeoutSeconds < 0 {
-		errs = append(errs, fmt.Errorf("verification.timeout_seconds: must be >= 0"))
-	}
-	if c.Verification.MaxRetries < 0 {
-		errs = append(errs, fmt.Errorf("verification.max_retries: must be >= 0"))
 	}
 
 	// learnings

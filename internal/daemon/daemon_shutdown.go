@@ -66,7 +66,7 @@ func (d *Daemon) Shutdown() {
 	d.shutdown.Do(func() {
 		d.log(LogLevelInfo, "shutdown started session_alive=%v", tmux.SessionExists())
 
-		totalTimeout := d.config.Daemon.ShutdownTimeoutSec
+		totalTimeout := d.config.ShutdownTimeoutSec
 		if totalTimeout <= 0 {
 			totalTimeout = 30
 		}
@@ -130,14 +130,12 @@ func (d *Daemon) Shutdown() {
 	})
 }
 
-// closeExecutors closes shared executor instances to release log file handles.
+// closeExecutors closes the shared executor instance to release log file handles.
 // Safe to call from both graceful and force-exit paths via sync.Once.
 func (d *Daemon) closeExecutors() {
 	d.closeExecutorsOnce.Do(func() {
 		if d.handler != nil {
-			d.handler.dispatcher.CloseExecutor()
-			d.handler.resultHandler.CloseExecutor()
-			d.handler.cancelHandler.CloseExecutor()
+			d.handler.execProvider.CloseExecutor()
 		}
 	})
 }

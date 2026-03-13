@@ -23,8 +23,6 @@ const maxRetryEnqueueAttempts = 3
 // orphaned retry tasks or marking them as failed after max attempts.
 type R1ResultQueue struct{}
 
-func (R1ResultQueue) Name() string { return "R1" }
-
 func (R1ResultQueue) Apply(run *Run) Outcome {
 	var repairs []Repair
 	repairedCommands := make(map[string]bool)
@@ -65,62 +63,14 @@ func (R1ResultQueue) Apply(run *Run) Outcome {
 			continue
 		}
 
-		func() {
-			run.Deps.LockMap.Lock("queue:" + workerID)
-			defer run.Deps.LockMap.Unlock("queue:" + workerID)
-
-			queueData, err := os.ReadFile(queuePath)
-			if err != nil {
-				return
-			}
-			var tq model.TaskQueue
-			if err := yamlv3.Unmarshal(queueData, &tq); err != nil {
-				return
-			}
-
-			queueModified := false
-			var workerRepairs []Repair
-			workerRepairedCommands := make(map[string]bool)
-			for i := range tq.Tasks {
-				task := &tq.Tasks[i]
-				if task.Status != model.StatusInProgress {
-					continue
-				}
-
-				resultStatus, found := terminalResults[task.ID]
-				if !found {
-					continue
-				}
-
-				run.Log(core.LogLevelWarn, "R1 result_terminal_queue_inprogress worker=%s task=%s result_status=%s",
-					workerID, task.ID, resultStatus)
-
-				task.Status = resultStatus
-				task.LeaseOwner = nil
-				task.LeaseExpiresAt = nil
-				task.UpdatedAt = run.Deps.Clock.Now().UTC().Format(time.RFC3339)
-				queueModified = true
-				workerRepairedCommands[task.CommandID] = true
-
-				workerRepairs = append(workerRepairs, Repair{
-					Pattern:   "R1",
-					CommandID: task.CommandID,
-					TaskID:    task.ID,
-					Detail:    fmt.Sprintf("queue %s updated from in_progress to %s", workerID, resultStatus),
-				})
-			}
-
-			if queueModified {
-				if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
-					run.Log(core.LogLevelError, "R1 write_queue worker=%s error=%v", workerID, err)
-					return
-				}
-				repairs = append(repairs, workerRepairs...)
-				for cmdID := range workerRepairedCommands {
-					repairedCommands[cmdID] = true
-				}
-			}
-		}()
+		workerRepairs, workerRepairedCommands := reconcileTerminalQueue(
+			run, PatternR1, workerID, queuePath, terminalResults,
+			unmarshalTaskQueue, setTaskQueueItems, taskQueueAccessor(),
+		)
+		repairs = append(repairs, workerRepairs...)
+		for cmdID := range workerRepairedCommands {
+			repairedCommands[cmdID] = true
+		}
 	}
 
 	for commandID := range repairedCommands {
@@ -187,7 +137,7 @@ func r1ProcessRetryEnqueueForCommand(run *Run, commandID, statePath string) []Re
 			run.Log(core.LogLevelInfo, "R1 retry_enqueue_already_in_queue task=%s worker=%s command=%s",
 				taskID, workerID, commandID)
 			repairs = append(repairs, Repair{
-				Pattern:   "R1",
+				Pattern:   PatternR1,
 				CommandID: commandID,
 				TaskID:    taskID,
 				Detail:    "retry_enqueue_failed cleared (task already in queue)",
@@ -206,7 +156,7 @@ func r1ProcessRetryEnqueueForCommand(run *Run, commandID, statePath string) []Re
 			run.Log(core.LogLevelError, "R1 retry_enqueue_max_retries task=%s worker=%s command=%s attempts=%d",
 				taskID, workerID, commandID, retryCount)
 			repairs = append(repairs, Repair{
-				Pattern:   "R1",
+				Pattern:   PatternR1,
 				CommandID: commandID,
 				TaskID:    taskID,
 				Detail:    fmt.Sprintf("retry_enqueue_failed max attempts (%d) exceeded, marked failed", retryCount),
@@ -227,7 +177,7 @@ func r1ProcessRetryEnqueueForCommand(run *Run, commandID, statePath string) []Re
 			run.Log(core.LogLevelError, "R1 retry_enqueue_no_original task=%s worker=%s command=%s (original task not found, marked failed)",
 				taskID, workerID, commandID)
 			repairs = append(repairs, Repair{
-				Pattern:   "R1",
+				Pattern:   PatternR1,
 				CommandID: commandID,
 				TaskID:    taskID,
 				Detail:    "retry_enqueue_failed original task not found, marked failed",
@@ -254,7 +204,7 @@ func r1ProcessRetryEnqueueForCommand(run *Run, commandID, statePath string) []Re
 		run.Log(core.LogLevelInfo, "R1 retry_enqueue_success task=%s worker=%s command=%s",
 			taskID, workerID, commandID)
 		repairs = append(repairs, Repair{
-			Pattern:   "R1",
+			Pattern:   PatternR1,
 			CommandID: commandID,
 			TaskID:    taskID,
 			Detail:    fmt.Sprintf("retry_enqueue_failed re-enqueued to %s", workerID),

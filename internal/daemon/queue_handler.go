@@ -10,7 +10,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
+	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -24,6 +26,7 @@ type QueueHandler struct {
 	logLevel   LogLevel
 	clock      Clock
 
+	execProvider        *ExecutorProvider // shared across dispatcher, resultHandler, cancelHandler
 	leaseManager        *LeaseManager
 	dispatcher          *Dispatcher
 	dependencyResolver  *DependencyResolver
@@ -70,13 +73,21 @@ type QueueHandler struct {
 }
 
 // NewQueueHandler creates a new QueueHandler with all sub-modules.
+// A single shared ExecutorProvider is created and injected into all handlers
+// that need executor access (Dispatcher, ResultHandler, CancelHandler).
 func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel) *QueueHandler {
+	clock := RealClock{}
+	factory := ExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+		return agent.NewExecutor(dir, wcfg, level)
+	})
+	ep := NewExecutorProvider(maestroDir, cfg.Watcher, cfg.Logging.Level, factory, clock)
+
 	lm := NewLeaseManager(cfg.Watcher, logger, logLevel)
-	dispatcher := NewDispatcher(maestroDir, cfg, lm, logger, logLevel)
+	dispatcher := NewDispatcher(maestroDir, cfg, lm, logger, logLevel, ep)
 	dr := NewDependencyResolver(nil, logger, logLevel) // StateReader wired in Phase 6
-	ch := NewCancelHandler(maestroDir, cfg, lockMap, logger, logLevel)
-	rh := NewResultHandler(maestroDir, cfg, lockMap, logger, logLevel)
-	rec := NewReconciler(maestroDir, cfg, lockMap, logger, logLevel, rh, rh.execProvider.Factory())
+	ch := NewCancelHandler(maestroDir, cfg, lockMap, logger, logLevel, ep)
+	rh := NewResultHandler(maestroDir, cfg, lockMap, logger, logLevel, ep)
+	rec := NewReconciler(maestroDir, cfg, lockMap, logger, logLevel, rh, ep.Factory())
 	dlp := NewDeadLetterProcessor(maestroDir, cfg, lockMap, logger, logLevel)
 	mh := NewMetricsHandler(maestroDir, cfg, logger, logLevel)
 
@@ -86,7 +97,8 @@ func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap
 		dl:                  NewDaemonLoggerFromLegacy("queue_handler", logger, logLevel),
 		logger:              logger,
 		logLevel:            logLevel,
-		clock:               RealClock{},
+		clock:               clock,
+		execProvider:        ep,
 		leaseManager:        lm,
 		dispatcher:          dispatcher,
 		dependencyResolver:  dr,
@@ -115,10 +127,9 @@ func (qh *QueueHandler) SetStateReader(reader StateReader) {
 }
 
 // SetExecutorFactory overrides the executor factory for testing.
+// Updates the shared ExecutorProvider and the reconciler's factory.
 func (qh *QueueHandler) SetExecutorFactory(f ExecutorFactory) {
-	qh.dispatcher.SetExecutorFactory(f)
-	qh.cancelHandler.SetExecutorFactory(f)
-	qh.resultHandler.SetExecutorFactory(f)
+	qh.execProvider.SetFactory(f)
 	qh.reconciler.SetExecutorFactory(f)
 }
 
@@ -142,6 +153,7 @@ func (qh *QueueHandler) SetWorktreeManager(wm *WorktreeManager) {
 	defer qh.scanRunMu.Unlock()
 	qh.worktreeManager = wm
 	qh.dispatcher.SetWorktreeManager(wm)
+	qh.cancelHandler.SetWorktreeManager(wm)
 }
 
 // SetBusyChecker overrides the busy checker for testing.
@@ -160,6 +172,23 @@ func (qh *QueueHandler) SetShutdownGuard(ctx context.Context, shuttingDown *atom
 	defer qh.scanRunMu.Unlock()
 	qh.shutdownCtx = ctx
 	qh.shuttingDown = shuttingDown
+}
+
+// SetEventBus wires the event bus for all sub-components that publish events.
+func (qh *QueueHandler) SetEventBus(bus *events.Bus) {
+	qh.dispatcher.SetEventBus(bus)
+	qh.dependencyResolver.SetEventBus(bus)
+	qh.resultHandler.SetEventBus(bus)
+}
+
+// SetQualityGate wires the quality gate daemon for the dispatcher.
+func (qh *QueueHandler) SetQualityGate(qg *QualityGateDaemon) {
+	qh.dispatcher.SetQualityGate(qg)
+}
+
+// SetContinuousHandler wires the continuous handler for result processing.
+func (qh *QueueHandler) SetContinuousHandler(ch *ContinuousHandler) {
+	qh.resultHandler.SetContinuousHandler(ch)
 }
 
 // Stop cancels any pending debounce timer and waits for any in-flight

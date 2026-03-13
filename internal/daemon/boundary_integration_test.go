@@ -10,6 +10,7 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/daemon/reconcile"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -855,7 +856,7 @@ func TestReconciler_R0_ExactThreshold(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r0_exact.yaml"), state)
 
 	repairs, _ := rec.Reconcile()
-	r0 := filterRepairs(repairs, "R0")
+	r0 := filterRepairs(repairs, reconcile.PatternR0)
 	if len(r0) != 1 {
 		t.Fatalf("expected 1 R0 repair at exact threshold, got %d", len(r0))
 	}
@@ -880,7 +881,7 @@ func TestReconciler_R0_JustBelowThreshold(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r0_below.yaml"), state)
 
 	repairs, _ := rec.Reconcile()
-	r0 := filterRepairs(repairs, "R0")
+	r0 := filterRepairs(repairs, reconcile.PatternR0)
 	if len(r0) != 0 {
 		t.Fatalf("expected 0 R0 repairs just below threshold, got %d", len(r0))
 	}
@@ -915,7 +916,7 @@ func TestReconciler_R0_WithWorkerTasks(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(queueDir, "worker1.yaml"), tq)
 
 	repairs, _ := rec.Reconcile()
-	r0 := filterRepairs(repairs, "R0")
+	r0 := filterRepairs(repairs, reconcile.PatternR0)
 	if len(r0) != 1 {
 		t.Fatalf("expected 1 R0 repair, got %d", len(r0))
 	}
@@ -956,7 +957,7 @@ func TestReconciler_R0b_NoTasks(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r0b_empty.yaml"), state)
 
 	repairs, _ := rec.Reconcile()
-	r0b := filterRepairs(repairs, "R0b")
+	r0b := filterRepairs(repairs, reconcile.PatternR0b)
 	if len(r0b) != 1 {
 		t.Fatalf("expected 1 R0b repair with empty TaskIDs, got %d", len(r0b))
 	}
@@ -984,7 +985,7 @@ func TestReconciler_R0b_MultiplePhases(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r0b_multi.yaml"), state)
 
 	repairs, _ := rec.Reconcile()
-	r0b := filterRepairs(repairs, "R0b")
+	r0b := filterRepairs(repairs, reconcile.PatternR0b)
 	if len(r0b) != 2 {
 		t.Fatalf("expected 2 R0b repairs (2 filling phases), got %d", len(r0b))
 	}
@@ -1025,7 +1026,7 @@ func TestReconciler_R4_CanCompleteReturnsFailed(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r4_f.yaml"), state)
 
 	repairs, _ := rec.Reconcile()
-	r4 := filterRepairs(repairs, "R4")
+	r4 := filterRepairs(repairs, reconcile.PatternR4)
 	if len(r4) != 1 {
 		t.Fatalf("expected 1 R4 repair, got %d", len(r4))
 	}
@@ -1069,7 +1070,7 @@ func TestReconciler_R4_CanCompleteReturnsCancelled(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r4_c.yaml"), state)
 
 	repairs, _ := rec.Reconcile()
-	r4 := filterRepairs(repairs, "R4")
+	r4 := filterRepairs(repairs, reconcile.PatternR4)
 	if len(r4) != 1 {
 		t.Fatalf("expected 1 R4 repair, got %d", len(r4))
 	}
@@ -1114,7 +1115,7 @@ func TestReconciler_R4_AlreadyTerminal_NoRepair(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r4_term.yaml"), state)
 
 	repairs, _ := rec.Reconcile()
-	r4 := filterRepairs(repairs, "R4")
+	r4 := filterRepairs(repairs, reconcile.PatternR4)
 	if len(r4) != 0 {
 		t.Fatalf("expected 0 R4 repairs for terminal state, got %d", len(r4))
 	}
@@ -1156,7 +1157,7 @@ func TestReconciler_R6_MultiplePhasesTimedOut(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r6_multi.yaml"), state)
 
 	repairs, _ := rec.Reconcile()
-	r6 := filterRepairs(repairs, "R6")
+	r6 := filterRepairs(repairs, reconcile.PatternR6)
 	// Should have 4: p1 timed_out, p2 timed_out, p3 cancelled, p4 cancelled
 	if len(r6) != 4 {
 		t.Fatalf("expected 4 R6 repairs, got %d: %+v", len(r6), r6)
@@ -1209,7 +1210,7 @@ func TestReconciler_R6_DiamondDependency(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r6_diamond.yaml"), state)
 
 	repairs, _ := rec.Reconcile()
-	r6 := filterRepairs(repairs, "R6")
+	r6 := filterRepairs(repairs, reconcile.PatternR6)
 	// root timed_out, left cancelled, right cancelled, merge cancelled
 	if len(r6) != 4 {
 		t.Fatalf("expected 4 R6 repairs (diamond), got %d: %+v", len(r6), r6)
@@ -1256,7 +1257,7 @@ func TestReconciler_R6_ActivePhaseNotCancelled(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r6_active.yaml"), state)
 
 	repairs, _ := rec.Reconcile()
-	r6 := filterRepairs(repairs, "R6")
+	r6 := filterRepairs(repairs, reconcile.PatternR6)
 	// Only p1 timed_out; p2 is active so NOT cancelled
 	if len(r6) != 1 {
 		t.Fatalf("expected 1 R6 repair (only timeout), got %d: %+v", len(r6), r6)
@@ -1292,7 +1293,7 @@ func TestReconciler_R6_NoDeadline_NoTimeout(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r6_nodeadline.yaml"), state)
 
 	repairs, _ := rec.Reconcile()
-	r6 := filterRepairs(repairs, "R6")
+	r6 := filterRepairs(repairs, reconcile.PatternR6)
 	if len(r6) != 0 {
 		t.Fatalf("expected 0 R6 repairs (no deadline), got %d", len(r6))
 	}
@@ -1737,7 +1738,7 @@ func TestReconciler_R5_NotNotified_NoRepair(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(queueDir, "orchestrator.yaml"), nq)
 
 	repairs, _ := rec.Reconcile()
-	r5 := filterRepairs(repairs, "R5")
+	r5 := filterRepairs(repairs, reconcile.PatternR5)
 	if len(r5) != 0 {
 		t.Fatalf("expected 0 R5 repairs for non-notified result, got %d", len(r5))
 	}
@@ -1770,7 +1771,7 @@ func TestReconciler_R5_NonTerminalResult_NoRepair(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(queueDir, "orchestrator.yaml"), nq)
 
 	repairs, _ := rec.Reconcile()
-	r5 := filterRepairs(repairs, "R5")
+	r5 := filterRepairs(repairs, reconcile.PatternR5)
 	if len(r5) != 0 {
 		t.Fatalf("expected 0 R5 repairs for non-terminal result, got %d", len(r5))
 	}
@@ -2154,7 +2155,7 @@ func TestReconciler_R4_CanCompleteNil_Skip(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(queueDir, "planner.yaml"), cq)
 
 	repairs, _ := rec.Reconcile()
-	r4 := filterRepairs(repairs, "R4")
+	r4 := filterRepairs(repairs, reconcile.PatternR4)
 	// R4 should be skipped because canComplete is nil
 	if len(r4) != 0 {
 		t.Fatalf("expected 0 R4 repairs when canComplete is nil, got %d", len(r4))
@@ -2194,7 +2195,7 @@ func TestReconciler_R6_DeadlineParseError(t *testing.T) {
 	}
 
 	repairs, _ := rec.Reconcile()
-	r6 := filterRepairs(repairs, "R6")
+	r6 := filterRepairs(repairs, reconcile.PatternR6)
 	if len(r6) != 0 {
 		t.Fatalf("expected 0 R6 repairs for unparseable deadline, got %d", len(r6))
 	}
@@ -2236,7 +2237,7 @@ func TestReconciler_R6_DeadlineExactlyNow(t *testing.T) {
 	time.Sleep(1100 * time.Millisecond)
 
 	repairs, _ := rec.Reconcile()
-	r6 := filterRepairs(repairs, "R6")
+	r6 := filterRepairs(repairs, reconcile.PatternR6)
 	if len(r6) != 1 {
 		t.Fatalf("expected 1 R6 repair for deadline at exact boundary, got %d", len(r6))
 	}
@@ -2289,7 +2290,7 @@ func TestDeferredNotification_R0b_ReFill(t *testing.T) {
 
 	repairs, notifications := rec.Reconcile()
 
-	r0b := filterRepairs(repairs, "R0b")
+	r0b := filterRepairs(repairs, reconcile.PatternR0b)
 	if len(r0b) != 1 {
 		t.Fatalf("expected 1 R0b repair, got %d", len(r0b))
 	}
@@ -2299,7 +2300,7 @@ func TestDeferredNotification_R0b_ReFill(t *testing.T) {
 		t.Fatalf("expected 1 deferred notification from R0b, got %d", len(notifications))
 	}
 	n := notifications[0]
-	if n.Kind != "re_fill" {
+	if n.Kind != reconcile.NotifyReFill {
 		t.Errorf("notification kind: got %s, want re_fill", n.Kind)
 	}
 	if n.CommandID != "cmd_r0b_notif" {
@@ -2348,7 +2349,7 @@ func TestDeferredNotification_R4_ReEvaluate(t *testing.T) {
 
 	repairs, notifications := rec.Reconcile()
 
-	r4 := filterRepairs(repairs, "R4")
+	r4 := filterRepairs(repairs, reconcile.PatternR4)
 	if len(r4) != 1 {
 		t.Fatalf("expected 1 R4 repair, got %d", len(r4))
 	}
@@ -2358,7 +2359,7 @@ func TestDeferredNotification_R4_ReEvaluate(t *testing.T) {
 		t.Fatalf("expected 1 deferred notification from R4, got %d", len(notifications))
 	}
 	n := notifications[0]
-	if n.Kind != "re_evaluate" {
+	if n.Kind != reconcile.NotifyReEvaluate {
 		t.Errorf("notification kind: got %s, want re_evaluate", n.Kind)
 	}
 	if n.CommandID != "cmd_r4_ntf" {
@@ -2408,7 +2409,7 @@ func TestDeferredNotification_R6_FillTimeout(t *testing.T) {
 
 	repairs, notifications := rec.Reconcile()
 
-	r6 := filterRepairs(repairs, "R6")
+	r6 := filterRepairs(repairs, reconcile.PatternR6)
 	if len(r6) != 1 {
 		t.Fatalf("expected 1 R6 repair, got %d: %+v", len(r6), r6)
 	}
@@ -2418,7 +2419,7 @@ func TestDeferredNotification_R6_FillTimeout(t *testing.T) {
 		t.Fatalf("expected 1 deferred notification from R6, got %d", len(notifications))
 	}
 	n := notifications[0]
-	if n.Kind != "fill_timeout" {
+	if n.Kind != reconcile.NotifyFillTimeout {
 		t.Errorf("notification kind: got %s, want fill_timeout", n.Kind)
 	}
 	if n.CommandID != "cmd_r6_ntf" {

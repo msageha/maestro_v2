@@ -23,8 +23,8 @@ func NewPolicyChecker(maestroDir string) *PolicyChecker {
 	return &PolicyChecker{maestroDir: maestroDir}
 }
 
-// HookScriptPath returns the filesystem path for the policy hook script.
-func (pc *PolicyChecker) HookScriptPath() string {
+// hookScriptPath returns the filesystem path for the policy hook script.
+func (pc *PolicyChecker) hookScriptPath() string {
 	return filepath.Join(pc.maestroDir, "hooks", "worker-policy.sh")
 }
 
@@ -36,7 +36,7 @@ func (pc *PolicyChecker) WriteHookScript() (string, error) {
 		return "", fmt.Errorf("create hooks dir: %w", err)
 	}
 
-	scriptPath := pc.HookScriptPath()
+	scriptPath := pc.hookScriptPath()
 	if err := os.WriteFile(scriptPath, []byte(hookScript), 0755); err != nil {
 		return "", fmt.Errorf("write hook script: %w", err)
 	}

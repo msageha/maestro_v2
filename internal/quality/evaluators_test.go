@@ -131,13 +131,13 @@ func TestValidateScript_SafeScripts(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// ScriptEvaluator integration tests
+// scriptEvaluator integration tests
 // ---------------------------------------------------------------------------
 
 func TestScriptEvaluator_NormalExecution(t *testing.T) {
-	eval := &ScriptEvaluator{}
+	eval := &scriptEvaluator{}
 	ctx := context.Background()
-	evalCtx := &MapEvaluationContext{data: map[string]interface{}{}}
+	evalCtx := &mapEvaluationContext{data: map[string]interface{}{}}
 
 	cond := &RuleCondition{
 		Type:           ConditionScript,
@@ -152,9 +152,9 @@ func TestScriptEvaluator_NormalExecution(t *testing.T) {
 }
 
 func TestScriptEvaluator_FailingScript(t *testing.T) {
-	eval := &ScriptEvaluator{}
+	eval := &scriptEvaluator{}
 	ctx := context.Background()
-	evalCtx := &MapEvaluationContext{data: map[string]interface{}{}}
+	evalCtx := &mapEvaluationContext{data: map[string]interface{}{}}
 
 	cond := &RuleCondition{
 		Type:           ConditionScript,
@@ -169,9 +169,9 @@ func TestScriptEvaluator_FailingScript(t *testing.T) {
 }
 
 func TestScriptEvaluator_EnvironmentRestricted(t *testing.T) {
-	eval := &ScriptEvaluator{}
+	eval := &scriptEvaluator{}
 	ctx := context.Background()
-	evalCtx := &MapEvaluationContext{data: map[string]interface{}{}}
+	evalCtx := &mapEvaluationContext{data: map[string]interface{}{}}
 
 	// The script should only see the minimal env vars we set.
 	// HOME should be /tmp, not the real user home.
@@ -188,9 +188,9 @@ func TestScriptEvaluator_EnvironmentRestricted(t *testing.T) {
 }
 
 func TestScriptEvaluator_PathRestricted(t *testing.T) {
-	eval := &ScriptEvaluator{}
+	eval := &scriptEvaluator{}
 	ctx := context.Background()
-	evalCtx := &MapEvaluationContext{data: map[string]interface{}{}}
+	evalCtx := &mapEvaluationContext{data: map[string]interface{}{}}
 
 	// Verify PATH is restricted to /usr/bin:/bin only
 	cond := &RuleCondition{
@@ -206,9 +206,9 @@ func TestScriptEvaluator_PathRestricted(t *testing.T) {
 }
 
 func TestScriptEvaluator_DangerousScriptRejected(t *testing.T) {
-	eval := &ScriptEvaluator{}
+	eval := &scriptEvaluator{}
 	ctx := context.Background()
-	evalCtx := &MapEvaluationContext{data: map[string]interface{}{}}
+	evalCtx := &mapEvaluationContext{data: map[string]interface{}{}}
 
 	cond := &RuleCondition{
 		Type:           ConditionScript,
@@ -223,9 +223,9 @@ func TestScriptEvaluator_DangerousScriptRejected(t *testing.T) {
 }
 
 func TestScriptEvaluator_TooLongScriptRejected(t *testing.T) {
-	eval := &ScriptEvaluator{}
+	eval := &scriptEvaluator{}
 	ctx := context.Background()
-	evalCtx := &MapEvaluationContext{data: map[string]interface{}{}}
+	evalCtx := &mapEvaluationContext{data: map[string]interface{}{}}
 
 	cond := &RuleCondition{
 		Type:           ConditionScript,
@@ -240,9 +240,9 @@ func TestScriptEvaluator_TooLongScriptRejected(t *testing.T) {
 }
 
 func TestScriptEvaluator_Timeout(t *testing.T) {
-	eval := &ScriptEvaluator{}
+	eval := &scriptEvaluator{}
 	ctx := context.Background()
-	evalCtx := &MapEvaluationContext{data: map[string]interface{}{}}
+	evalCtx := &mapEvaluationContext{data: map[string]interface{}{}}
 
 	cond := &RuleCondition{
 		Type:           ConditionScript,
@@ -261,9 +261,9 @@ func TestScriptEvaluator_Timeout(t *testing.T) {
 }
 
 func TestScriptEvaluator_RestrictedModePreventsSlashCommands(t *testing.T) {
-	eval := &ScriptEvaluator{}
+	eval := &scriptEvaluator{}
 	ctx := context.Background()
-	evalCtx := &MapEvaluationContext{data: map[string]interface{}{}}
+	evalCtx := &mapEvaluationContext{data: map[string]interface{}{}}
 
 	// In bash restricted mode, executing commands with slashes should fail
 	cond := &RuleCondition{
@@ -279,9 +279,9 @@ func TestScriptEvaluator_RestrictedModePreventsSlashCommands(t *testing.T) {
 }
 
 func TestScriptEvaluator_RestrictedModePreventsRedirection(t *testing.T) {
-	eval := &ScriptEvaluator{}
+	eval := &scriptEvaluator{}
 	ctx := context.Background()
-	evalCtx := &MapEvaluationContext{data: map[string]interface{}{}}
+	evalCtx := &mapEvaluationContext{data: map[string]interface{}{}}
 
 	// In bash restricted mode, output redirection should fail
 	cond := &RuleCondition{
@@ -297,9 +297,9 @@ func TestScriptEvaluator_RestrictedModePreventsRedirection(t *testing.T) {
 }
 
 func TestScriptEvaluator_UnsupportedLanguage(t *testing.T) {
-	eval := &ScriptEvaluator{}
+	eval := &scriptEvaluator{}
 	ctx := context.Background()
-	evalCtx := &MapEvaluationContext{data: map[string]interface{}{}}
+	evalCtx := &mapEvaluationContext{data: map[string]interface{}{}}
 
 	cond := &RuleCondition{
 		Type:           ConditionScript,
@@ -316,9 +316,9 @@ func TestScriptEvaluator_UnsupportedLanguage(t *testing.T) {
 func TestScriptEvaluator_DefaultTimeout(t *testing.T) {
 	// Verify that a script with TimeoutSeconds=0 gets the default 30s timeout
 	// (just checks it doesn't panic; doesn't actually wait 30s)
-	eval := &ScriptEvaluator{}
+	eval := &scriptEvaluator{}
 	ctx := context.Background()
-	evalCtx := &MapEvaluationContext{data: map[string]interface{}{}}
+	evalCtx := &mapEvaluationContext{data: map[string]interface{}{}}
 
 	cond := &RuleCondition{
 		Type:     ConditionScript,
@@ -332,9 +332,9 @@ func TestScriptEvaluator_DefaultTimeout(t *testing.T) {
 }
 
 func TestScriptEvaluator_CompiledScriptTakesPrecedence(t *testing.T) {
-	eval := &ScriptEvaluator{}
+	eval := &scriptEvaluator{}
 	ctx := context.Background()
-	evalCtx := &MapEvaluationContext{data: map[string]interface{}{"key": "val"}}
+	evalCtx := &mapEvaluationContext{data: map[string]interface{}{"key": "val"}}
 
 	called := false
 	cond := &RuleCondition{

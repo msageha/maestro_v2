@@ -19,7 +19,7 @@ func TestNewDaemon(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := model.Config{
 		Watcher: model.WatcherConfig{ScanIntervalSec: 5},
-		Daemon:  model.DaemonConfig{ShutdownTimeoutSec: 10},
+		ShutdownTimeoutSec: 10,
 		Logging: model.LoggingConfig{Level: "debug"},
 	}
 
@@ -39,7 +39,7 @@ func TestDaemonShutdownIdempotent(t *testing.T) {
 	var buf bytes.Buffer
 	cfg := model.Config{
 		Watcher: model.WatcherConfig{ScanIntervalSec: 1},
-		Daemon:  model.DaemonConfig{ShutdownTimeoutSec: 1},
+		ShutdownTimeoutSec: 1,
 	}
 
 	d, err := newDaemon("/tmp/test-maestro-shutdown", cfg, &buf, nil)

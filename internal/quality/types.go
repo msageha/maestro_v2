@@ -79,7 +79,6 @@ type GateDefinition struct {
 	Trigger     TriggerDefinition `yaml:"trigger"`
 	Rules       []RuleDefinition  `yaml:"rules"`
 	Action      ActionDefinition  `yaml:"action"`
-	Metrics     MetricsDefinition `yaml:"metrics"`
 }
 
 // TriggerDefinition defines when a gate should be triggered
@@ -130,22 +129,6 @@ type ActionDefinition struct {
 	OnPass           ActionType       `yaml:"on_pass"`
 	OnFail           ActionType       `yaml:"on_fail"`
 	OnWarn           ActionType       `yaml:"on_warn"`
-	NotificationConfig *NotificationConfig `yaml:"notification"`
-}
-
-// NotificationConfig defines notification settings
-type NotificationConfig struct {
-	Channels       []string          `yaml:"channels"`
-	WebhookURL     string            `yaml:"webhook_url"`
-	IncludeContext bool              `yaml:"include_context"`
-}
-
-// MetricsDefinition defines metrics collection settings
-type MetricsDefinition struct {
-	Enabled       bool              `yaml:"enabled"`
-	Tags          map[string]string `yaml:"tags"`
-	TrackDuration bool              `yaml:"track_duration"`
-	TrackFailures bool              `yaml:"track_failures"`
 }
 
 // GateConfiguration represents the full gate configuration file
@@ -199,15 +182,9 @@ type RuleEvaluator interface {
 	Evaluate(ctx context.Context, condition *RuleCondition, evalCtx EvaluationContext) (bool, error)
 }
 
-// CacheKey represents a key for caching evaluation results
-type CacheKey struct {
+// cacheKey represents a key for caching evaluation results
+type cacheKey struct {
 	GateID           string
 	GateVersionHash  string
 	ContextFingerprint string
-}
-
-// CacheEntry represents a cached evaluation result
-type CacheEntry struct {
-	Result    *EvaluationResult
-	ExpiresAt time.Time
 }

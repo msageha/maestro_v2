@@ -15,8 +15,6 @@ import (
 // Action: delete state file + remove queue entry. Planner will resubmit on next dispatch.
 type R0PlanningStuck struct{}
 
-func (R0PlanningStuck) Name() string { return "R0" }
-
 func (R0PlanningStuck) Apply(run *Run) Outcome {
 	var repairs []Repair
 
@@ -122,7 +120,7 @@ func (R0PlanningStuck) Apply(run *Run) Outcome {
 		}
 
 		repairs = append(repairs, Repair{
-			Pattern:   "R0",
+			Pattern:   PatternR0,
 			CommandID: stuckCommandID,
 			Detail:    fmt.Sprintf("planning stuck %.0fs, state deleted + command removed from queue + worker tasks removed", stuckAgeSec),
 		})

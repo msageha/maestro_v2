@@ -15,8 +15,6 @@ import (
 // Action: re-evaluate via plan.CanComplete. If OK, update plan_status. If NG, quarantine result.
 type R4PlanStatus struct{}
 
-func (R4PlanStatus) Name() string { return "R4" }
-
 func (R4PlanStatus) Apply(run *Run) Outcome {
 	var repairs []Repair
 	var notifications []DeferredNotification
@@ -77,12 +75,12 @@ func (R4PlanStatus) Apply(run *Run) Outcome {
 				return r4Outcome{
 					quarantine: true,
 					repair: &Repair{
-						Pattern:   "R4",
+						Pattern:   PatternR4,
 						CommandID: commandID,
 						Detail:    fmt.Sprintf("can_complete failed (%v), result quarantined, planner notification deferred", canCompleteErr),
 					},
 					notification: &DeferredNotification{
-						Kind:      "re_evaluate",
+						Kind:      NotifyReEvaluate,
 						CommandID: commandID,
 						Reason:    canCompleteErr.Error(),
 					},
@@ -100,7 +98,7 @@ func (R4PlanStatus) Apply(run *Run) Outcome {
 
 			return r4Outcome{
 				repair: &Repair{
-					Pattern:   "R4",
+					Pattern:   PatternR4,
 					CommandID: commandID,
 					Detail:    fmt.Sprintf("plan_status updated to %s via can_complete", derivedStatus),
 				},

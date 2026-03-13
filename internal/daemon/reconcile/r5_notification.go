@@ -15,8 +15,6 @@ import (
 // Action: re-issue notification via writeNotificationToOrchestratorQueue.
 type R5Notification struct{}
 
-func (R5Notification) Name() string { return "R5" }
-
 func (R5Notification) Apply(run *Run) Outcome {
 	var repairs []Repair
 
@@ -72,7 +70,7 @@ func (R5Notification) Apply(run *Run) Outcome {
 
 		repairedCommands[result.CommandID] = true
 		repairs = append(repairs, Repair{
-			Pattern:   "R5",
+			Pattern:   PatternR5,
 			CommandID: result.CommandID,
 			Detail:    fmt.Sprintf("orchestrator notification re-issued for result %s", result.ID),
 		})
