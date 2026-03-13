@@ -507,7 +507,7 @@ func (l *Loader) LoadDirectory(dir string) ([]*GateConfiguration, error) {
 	return configs, nil
 }
 
-// GetDefaultGates returns the default gate configuration
+// getDefaultGates returns the default gate configuration
 func (l *Loader) getDefaultGates() *GateConfiguration {
 	l.mu.RLock()
 	defer l.mu.RUnlock()
