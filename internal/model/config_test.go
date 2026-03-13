@@ -152,13 +152,13 @@ func TestValidate_MultipleErrors(t *testing.T) {
 
 func TestValidate_NegativeDaemonTimeout(t *testing.T) {
 	cfg := validConfig()
-	cfg.Daemon.ShutdownTimeoutSec = -1
+	cfg.ShutdownTimeoutSec = -1
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected error for negative daemon timeout")
 	}
-	if !strings.Contains(err.Error(), "daemon.shutdown_timeout_sec") {
-		t.Fatalf("expected daemon.shutdown_timeout_sec in error, got: %v", err)
+	if !strings.Contains(err.Error(), "shutdown_timeout_sec") {
+		t.Fatalf("expected shutdown_timeout_sec in error, got: %v", err)
 	}
 }
 
@@ -171,18 +171,6 @@ func TestValidate_NegativeCircuitBreaker(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "circuit_breaker.max_consecutive_failures") {
 		t.Fatalf("expected circuit_breaker.max_consecutive_failures in error, got: %v", err)
-	}
-}
-
-func TestValidate_NegativeVerification(t *testing.T) {
-	cfg := validConfig()
-	cfg.Verification.TimeoutSeconds = IntPtr(-1)
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("expected error for negative verification timeout")
-	}
-	if !strings.Contains(err.Error(), "verification.timeout_seconds") {
-		t.Fatalf("expected verification.timeout_seconds in error, got: %v", err)
 	}
 }
 

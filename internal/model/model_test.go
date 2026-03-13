@@ -58,7 +58,7 @@ func TestConfigMarshalUnmarshal(t *testing.T) {
 			MaxEntryContentBytes:     65536,
 			MaxYAMLFileBytes:         5242880,
 		},
-		Daemon:  DaemonConfig{ShutdownTimeoutSec: 90},
+		ShutdownTimeoutSec: 90,
 		Logging: LoggingConfig{Level: "info"},
 	}
 
@@ -680,54 +680,6 @@ func TestLearningsConfig_EffectiveTTLHours(t *testing.T) {
 			l := LearningsConfig{TTLHours: tt.value}
 			if got := l.EffectiveTTLHours(); got != tt.want {
 				t.Errorf("EffectiveTTLHours() = %d, want %d", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestVerificationConfig_EffectiveTimeoutSeconds(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name  string
-		value *int
-		want  int
-	}{
-		{"nil returns default 300", nil, 300},
-		{"zero returns 0", IntPtr(0), 0},
-		{"negative returns -1", IntPtr(-1), -1},
-		{"positive returns configured", IntPtr(600), 600},
-		{"one returns configured", IntPtr(1), 1},
-	}
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			v := VerificationConfig{TimeoutSeconds: tt.value}
-			if got := v.EffectiveTimeoutSeconds(); got != tt.want {
-				t.Errorf("EffectiveTimeoutSeconds() = %d, want %d", got, tt.want)
-			}
-		})
-	}
-}
-
-func TestVerificationConfig_EffectiveMaxRetries(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name  string
-		value int
-		want  int
-	}{
-		{"zero means no retry", 0, 0},
-		{"positive returns configured", 3, 3},
-		{"one returns configured", 1, 1},
-	}
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			v := VerificationConfig{MaxRetries: tt.value}
-			if got := v.EffectiveMaxRetries(); got != tt.want {
-				t.Errorf("EffectiveMaxRetries() = %d, want %d", got, tt.want)
 			}
 		})
 	}

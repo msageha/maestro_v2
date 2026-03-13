@@ -66,7 +66,7 @@ func (d *Daemon) Shutdown() {
 	d.shutdown.Do(func() {
 		d.log(LogLevelInfo, "shutdown started session_alive=%v", tmux.SessionExists())
 
-		totalTimeout := d.config.Daemon.ShutdownTimeoutSec
+		totalTimeout := d.config.ShutdownTimeoutSec
 		if totalTimeout <= 0 {
 			totalTimeout = 30
 		}
