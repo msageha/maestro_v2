@@ -303,13 +303,6 @@ func (l *Loader) applyDefaults(config *GateConfiguration) {
 		if gate.Action.OnWarn == "" {
 			gate.Action.OnWarn = ActionContinue
 		}
-
-		// Default metrics
-		if gate.Metrics.Enabled {
-			if gate.Metrics.Tags == nil {
-				gate.Metrics.Tags = make(map[string]string)
-			}
-		}
 	}
 }
 

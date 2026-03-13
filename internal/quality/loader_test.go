@@ -627,13 +627,6 @@ gates:
     action:
       on_pass: allow
       on_fail: block
-    metrics:
-      enabled: true
-      track_duration: true
-      track_failures: true
-      tags:
-        environment: test
-        version: "1.0"
 `
 
 	config, err := loader.LoadFromBytes([]byte(yaml))
@@ -648,13 +641,6 @@ gates:
 
 	// Check action configuration
 	assert.Equal(t, ActionBlock, gate.Action.OnFail)
-
-	// Check metrics configuration
-	assert.True(t, gate.Metrics.Enabled)
-	assert.True(t, gate.Metrics.TrackDuration)
-	assert.True(t, gate.Metrics.TrackFailures)
-	assert.Equal(t, "test", gate.Metrics.Tags["environment"])
-	assert.Equal(t, "1.0", gate.Metrics.Tags["version"])
 }
 
 func TestLoader_EnabledFalsePreserved(t *testing.T) {
