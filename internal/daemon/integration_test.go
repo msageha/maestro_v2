@@ -1823,10 +1823,8 @@ func TestIntegration_EndToEndWithEventHooksAndQualityGate(t *testing.T) {
 	d.eventBus = events.NewBus(100)
 	defer d.eventBus.Close()
 	d.qualityGateDaemon = qg
-	d.handler.dispatcher.SetEventBus(d.eventBus)
-	d.handler.resultHandler.SetEventBus(d.eventBus)
-	d.handler.dependencyResolver.SetEventBus(d.eventBus)
-	d.handler.dispatcher.SetQualityGate(qg)
+	d.handler.SetEventBus(d.eventBus)
+	d.handler.SetQualityGate(qg)
 	d.bridge.subscribeQualityGateEvents()
 
 	commandID := "cmd_0000000027_aabbcc27"

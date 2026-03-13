@@ -126,7 +126,7 @@ func (d *Daemon) initComponents() error {
 
 	if d.config.Continuous.Enabled {
 		ch := NewContinuousHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
-		d.handler.resultHandler.SetContinuousHandler(ch)
+		d.handler.SetContinuousHandler(ch)
 	}
 
 	if d.config.QualityGates.Enabled {
@@ -149,12 +149,10 @@ func (d *Daemon) initComponents() error {
 	}
 
 	d.eventBus = events.NewBus(100)
-	d.handler.dispatcher.SetEventBus(d.eventBus)
+	d.handler.SetEventBus(d.eventBus)
 	if d.qualityGateDaemon != nil {
-		d.handler.dispatcher.SetQualityGate(d.qualityGateDaemon)
+		d.handler.SetQualityGate(d.qualityGateDaemon)
 	}
-	d.handler.dependencyResolver.SetEventBus(d.eventBus)
-	d.handler.resultHandler.SetEventBus(d.eventBus)
 
 	if d.qualityGateDaemon != nil {
 		d.bridge.subscribeQualityGateEvents()

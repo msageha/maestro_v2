@@ -63,7 +63,7 @@ func TestSortPendingTasks(t *testing.T) {
 		Queue: model.QueueConfig{PriorityAgingSec: 60},
 	}
 
-	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, newTestExecutorProvider("", cfg))
 
 	tasks := []model.Task{
 		{ID: "t_high", Priority: 5, Status: model.StatusPending, CreatedAt: now.Format(time.RFC3339)},
@@ -97,7 +97,7 @@ func TestSortPendingTasks_TieBreakers(t *testing.T) {
 	cfg := model.Config{
 		Queue: model.QueueConfig{PriorityAgingSec: 0},
 	}
-	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, newTestExecutorProvider("", cfg))
 
 	// Same priority, different created_at
 	tasks := []model.Task{
@@ -116,7 +116,7 @@ func TestSortPendingTasks_IDTieBreaker(t *testing.T) {
 	created := now.Format(time.RFC3339)
 
 	cfg := model.Config{}
-	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, newTestExecutorProvider("", cfg))
 
 	tasks := []model.Task{
 		{ID: "t_z", Priority: 1, Status: model.StatusPending, CreatedAt: created},
@@ -133,7 +133,7 @@ func TestSortPendingCommands(t *testing.T) {
 	now := time.Now().UTC()
 
 	cfg := model.Config{}
-	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, newTestExecutorProvider("", cfg))
 
 	commands := []model.Command{
 		{ID: "c2", Priority: 3, Status: model.StatusPending, CreatedAt: now.Format(time.RFC3339)},
@@ -153,7 +153,7 @@ func TestSortPendingNotifications(t *testing.T) {
 	now := time.Now().UTC()
 
 	cfg := model.Config{}
-	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	d := NewDispatcher("", cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, newTestExecutorProvider("", cfg))
 
 	notifications := []model.Notification{
 		{ID: "n2", Priority: 5, Status: model.StatusPending, CreatedAt: now.Format(time.RFC3339)},

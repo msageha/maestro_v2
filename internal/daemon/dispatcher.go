@@ -1,22 +1,15 @@
 package daemon
 
 import (
-	"errors"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
 	"sort"
 	"sync"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
-	"github.com/msageha/maestro_v2/internal/daemon/learnings"
-	"github.com/msageha/maestro_v2/internal/daemon/persona"
-	"github.com/msageha/maestro_v2/internal/daemon/skill"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
-	"github.com/msageha/maestro_v2/templates"
 )
 
 // errExecutorInit is re-exported from core via core_aliases.go.
@@ -34,6 +27,7 @@ type Dispatcher struct {
 	logLevel          LogLevel
 	clock             Clock
 	execProvider      *ExecutorProvider
+	envelopeBuilder   *EnvelopeBuilder
 	mu                sync.RWMutex // protects eventBus, qualityGate, worktreeManager
 	eventBus          *events.Bus
 	qualityGate       *QualityGateDaemon
@@ -46,22 +40,20 @@ type Dispatcher struct {
 // ExecutorFactory, AgentExecutor are defined in internal/daemon/core
 // and re-exported via core_aliases.go.
 
-// NewDispatcher creates a new Dispatcher.
-func NewDispatcher(maestroDir string, cfg model.Config, lm *LeaseManager, logger *log.Logger, logLevel LogLevel) *Dispatcher {
-	clock := RealClock{}
-	factory := ExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
-		return agent.NewExecutor(dir, wcfg, level)
-	})
+// NewDispatcher creates a new Dispatcher with a shared ExecutorProvider.
+func NewDispatcher(maestroDir string, cfg model.Config, lm *LeaseManager, logger *log.Logger, logLevel LogLevel, ep *ExecutorProvider) *Dispatcher {
+	dl := NewDaemonLoggerFromLegacy("dispatcher", logger, logLevel)
 	return &Dispatcher{
 		maestroDir:      maestroDir,
 		config:          cfg,
 		leaseManager:    lm,
-		dl:              NewDaemonLoggerFromLegacy("dispatcher", logger, logLevel),
+		dl:              dl,
 		logger:          logger,
 		logLevel:        logLevel,
-		clock:           clock,
+		clock:           ep.clock,
 		gateEvaluations: make(map[string]*model.QualityGateEvaluation),
-		execProvider:    NewExecutorProvider(maestroDir, cfg.Watcher, cfg.Logging.Level, factory, clock, PolicyRetryBackoff),
+		execProvider:    ep,
+		envelopeBuilder: NewEnvelopeBuilder(maestroDir, cfg, ep.clock, dl),
 	}
 }
 
@@ -312,66 +304,13 @@ func (disp *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 		return fmt.Errorf("create executor: %w", err)
 	}
 
-	// Inject persona prompt into task content (best-effort, prepend)
+	// Build enriched task content (persona, skills, learnings injection)
 	dispatchTask := *task
-	// Sanitize user-supplied content to escape DATA boundary markers BEFORE
-	// appending system-generated sections (skills, learnings) whose markers
-	// must remain intact.
-	dispatchTask.Content = agent.SanitizeUserContent(dispatchTask.Content)
-	if task.PersonaHint != "" {
-		if section, found := persona.FormatPersonaSectionWithFS(templates.FS, disp.config.Personas, task.PersonaHint, disp.maestroDir); !found {
-			disp.log(LogLevelWarn, "persona_not_found task=%s persona_hint=%s", task.ID, task.PersonaHint)
-		} else if section != "" {
-			dispatchTask.Content = section + dispatchTask.Content
-			disp.log(LogLevelDebug, "persona_injected task=%s persona=%s", task.ID, task.PersonaHint)
-		}
+	enrichedContent, err := disp.envelopeBuilder.BuildTaskContent(task)
+	if err != nil {
+		return fmt.Errorf("build task envelope for %s: %w", task.ID, err)
 	}
-
-	// Inject skills into task content (between content and learnings)
-	if disp.config.Skills.Enabled && len(task.SkillRefs) > 0 {
-		refs := task.SkillRefs
-		maxRefs := disp.config.Skills.EffectiveMaxRefsPerTask()
-		if len(refs) > maxRefs {
-			disp.log(LogLevelWarn, "skill_refs_truncated task=%s total=%d max=%d", task.ID, len(refs), maxRefs)
-			refs = refs[:maxRefs]
-		}
-
-		skillsDir := filepath.Join(disp.maestroDir, "skills")
-		policy := disp.config.Skills.EffectiveMissingRefPolicy()
-		var loaded []skill.SkillContent
-		for _, ref := range refs {
-			sc, err := skill.ReadSkillWithRole(skillsDir, ref, "worker")
-			if err != nil {
-				if policy == "error" {
-					return fmt.Errorf("load skill ref %q for task %s: %w", ref, task.ID, err)
-				}
-				// warn policy: log and skip
-				if errors.Is(err, os.ErrNotExist) {
-					disp.log(LogLevelWarn, "skill_ref_not_found task=%s ref=%s", task.ID, ref)
-				} else {
-					disp.log(LogLevelWarn, "skill_read_failed task=%s ref=%s error=%v", task.ID, ref, err)
-				}
-				continue
-			}
-			loaded = append(loaded, sc)
-		}
-
-		if section := skill.FormatSkillSection(loaded, disp.config.Skills.EffectiveMaxBodyChars()); section != "" {
-			dispatchTask.Content = dispatchTask.Content + section
-			disp.log(LogLevelDebug, "skills_injected task=%s count=%d", task.ID, len(loaded))
-		}
-	}
-
-	// Inject learnings into task content (read-only, best-effort)
-	if disp.config.Learnings.Enabled {
-		lrns, err := learnings.ReadTopKLearnings(disp.maestroDir, disp.config.Learnings, disp.clock.Now())
-		if err != nil {
-			disp.log(LogLevelWarn, "learnings_read_failed task=%s error=%v", task.ID, err)
-		} else if section := learnings.FormatLearningsSection(lrns); section != "" {
-			dispatchTask.Content = dispatchTask.Content + section
-			disp.log(LogLevelDebug, "learnings_injected task=%s count=%d", task.ID, len(lrns))
-		}
-	}
+	dispatchTask.Content = enrichedContent
 
 	// Resolve working_dir for worktree-enabled commands (lazy creation)
 	var workingDir string
