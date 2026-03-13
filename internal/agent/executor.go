@@ -381,7 +381,7 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 		// On success, mark this pane as clear-ready for future dispatches
 		if result.Success {
 			if err := e.paneState.SetClearReady(paneTarget, currentPID); err != nil {
-				e.log(LogLevelWarn, "set_clear_ready_failed agent_id=%s error=%v", req.AgentID, err)
+				e.log(LogLevelError, "set_clear_ready_failed agent_id=%s error=%v", req.AgentID, err)
 			}
 		}
 
@@ -403,8 +403,9 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 
 		// Reset clear_ready on /clear failure - conversation might have been lost
 		e.log(LogLevelInfo, "clear_failed_reset agent_id=%s, resetting clear_ready for next dispatch", req.AgentID)
-		if err := e.paneState.ResetClearReady(paneTarget); err != nil {
-			e.log(LogLevelWarn, "reset_clear_ready_failed agent_id=%s error=%v", req.AgentID, err)
+		if resetErr := e.paneState.ResetClearReady(paneTarget); resetErr != nil {
+			e.log(LogLevelError, "reset_clear_ready_failed agent_id=%s error=%v", req.AgentID, resetErr)
+			return ExecResult{Error: errors.Join(fmt.Errorf("with_clear: %w", err), fmt.Errorf("reset_clear_ready: %w", resetErr)), Retryable: true}
 		}
 
 		return ExecResult{Error: fmt.Errorf("with_clear: %w", err), Retryable: true}
@@ -795,7 +796,8 @@ func (e *Executor) ensureWorkingDir(ctx context.Context, paneTarget, workingDir 
 	}
 	// Reset clear_ready since we started a fresh Claude session
 	if err := e.paneState.ResetClearReady(paneTarget); err != nil {
-		e.log(LogLevelWarn, "reset_clear_ready_failed error=%v", err)
+		e.log(LogLevelError, "reset_clear_ready_failed error=%v", err)
+		return fmt.Errorf("ensureWorkingDir: reset_clear_ready: %w", err)
 	}
 
 	e.log(LogLevelInfo, "working_dir_changed cwd=%s", workingDir)
