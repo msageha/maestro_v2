@@ -4,7 +4,6 @@ package events
 import (
 	"context"
 	"log"
-	"runtime"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -297,7 +296,9 @@ func (b *Bus) DroppedCountByType(eventType EventType) int64 {
 	return v.(*atomic.Int64).Load()
 }
 
-// Close closes all subscriber channels, waits for goroutines to drain, and clears subscriptions.
+// Close closes all subscriber channels, waits up to 5 seconds for goroutines to drain,
+// and clears subscriptions. If the timeout expires, Close returns immediately; remaining
+// goroutines will finish asynchronously once their callbacks complete.
 // Close is idempotent: calling it more than once is safe and subsequent calls are no-ops.
 func (b *Bus) Close() {
 	if !b.closed.CompareAndSwap(false, true) {
@@ -323,8 +324,10 @@ func (b *Bus) Close() {
 	b.mu.Unlock()
 
 	// Wait for subscriber goroutines to finish with timeout.
-	// Use a timer instead of spawning a goroutine to avoid leaking
-	// a waiter goroutine when the timeout fires.
+	// A goroutine is used because sync.WaitGroup.Wait is not cancellable.
+	// If the timeout fires, Close returns immediately. The waiter goroutine
+	// will finish on its own once the subscriber goroutines drain their
+	// (already-closed) channels, so it does not leak permanently.
 	waitDone := make(chan struct{})
 	go func() {
 		b.wg.Wait()
@@ -338,13 +341,7 @@ func (b *Bus) Close() {
 	case <-waitDone:
 	case <-timer.C:
 		remaining := b.activeGoroutines.Load()
-		buf := make([]byte, 64*1024)
-		n := runtime.Stack(buf, true)
-		log.Printf("WARN event_bus: Close timed out waiting for %d subscriber goroutines, dumping stacks:\n%s",
-			remaining, string(buf[:n]))
-		// Wait for the waiter goroutine to finish so it does not leak.
-		// At this point all channels are closed, so wg.Wait() will
-		// complete once goroutines drain their channels.
-		<-waitDone
+		log.Printf("WARN event_bus: Close timed out waiting for %d subscriber goroutines",
+			remaining)
 	}
 }
