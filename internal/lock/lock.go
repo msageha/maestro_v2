@@ -79,24 +79,24 @@ func (m *MutexMap) TryUnlock(key string) bool {
 		m.mu.Unlock()
 		return false
 	}
-	m.mu.Unlock()
 
 	// Atomically clear the locked flag. If the CAS fails the mutex is not
 	// currently locked (double-unlock or racing unlock) — bail out safely.
 	if !atomic.CompareAndSwapInt32(&rm.locked, 1, 0) {
+		m.mu.Unlock()
 		return false
 	}
 
-	m.order.BeforeUnlock(key)
-	rm.mu.Unlock()
-
-	// Decrement reference count and clean up if no goroutine needs this entry.
-	m.mu.Lock()
+	// Decrement reference count and clean up while still holding m.mu,
+	// closing the TOCTOU window between lookup and cleanup.
 	rm.ref--
 	if rm.ref == 0 && m.mutexes[key] == rm {
 		delete(m.mutexes, key)
 	}
 	m.mu.Unlock()
+
+	m.order.BeforeUnlock(key)
+	rm.mu.Unlock()
 
 	return true
 }
