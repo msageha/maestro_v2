@@ -16,6 +16,11 @@ func FormatPersonaSection(personaHint, maestroDir string) string {
 		return ""
 	}
 
+	// Reject path traversal and unsafe characters in persona hint.
+	if !isValidPersonaHint(personaHint) {
+		return ""
+	}
+
 	diskPath := filepath.Join(maestroDir, "persona", personaHint+".md")
 	data, err := os.ReadFile(diskPath)
 	if err != nil {
@@ -29,6 +34,23 @@ func FormatPersonaSection(personaHint, maestroDir string) string {
 	}
 
 	return fmt.Sprintf("---\nペルソナ: %s\n%s\n---\n\n", personaHint, prompt)
+}
+
+// isValidPersonaHint checks that a persona hint is a safe identifier
+// (no path traversal or special characters).
+func isValidPersonaHint(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	if strings.Contains(name, "..") {
+		return false
+	}
+	for _, r := range name {
+		if r == '/' || r == '\\' || r == '\x00' {
+			return false
+		}
+	}
+	return true
 }
 
 // stripFrontmatter removes YAML frontmatter (delimited by --- on its own line)

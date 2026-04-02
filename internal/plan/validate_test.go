@@ -159,6 +159,53 @@ func TestValidateTasksInput_CrossRef(t *testing.T) {
 	}
 }
 
+func TestValidateTasksInput_PersonaHintValidation(t *testing.T) {
+	tests := []struct {
+		name      string
+		hint      string
+		wantError bool
+	}{
+		{"valid hint", "implementer", false},
+		{"path traversal", "../etc/passwd", true},
+		{"slash", "foo/bar", true},
+		{"backslash", "foo\\bar", true},
+		{"null byte", "foo\x00bar", true},
+		{"dot-dot embedded", "foo..bar", true},
+		{"empty hint", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := validTask("test-task")
+			task.PersonaHint = tt.hint
+			errs := ValidateTasksInput([]TaskInput{task})
+			if tt.wantError {
+				if errs == nil {
+					t.Fatalf("expected error for persona_hint %q", tt.hint)
+				}
+				if !strings.Contains(errs.Error(), "persona_hint") {
+					t.Errorf("expected error mentioning 'persona_hint', got: %s", errs.Error())
+				}
+			} else {
+				if errs != nil {
+					t.Errorf("unexpected error for persona_hint %q: %v", tt.hint, errs)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateTasksInput_SkillRefsValidation(t *testing.T) {
+	task := validTask("test-task")
+	task.SkillRefs = []string{"valid-skill", "../bad/skill"}
+	errs := ValidateTasksInput([]TaskInput{task})
+	if errs == nil {
+		t.Fatal("expected error for invalid skill_ref")
+	}
+	if !strings.Contains(errs.Error(), "skill_refs") {
+		t.Errorf("expected error mentioning 'skill_refs', got: %s", errs.Error())
+	}
+}
+
 func TestValidatePhasesInput_Valid(t *testing.T) {
 	phases := []PhaseInput{
 		{
