@@ -157,15 +157,30 @@ func TestHookScript_OutputsValidDenyJSON(t *testing.T) {
 	}
 }
 
-func TestBuildLaunchArgs_WorkerHasPreToolUseHookSettings(t *testing.T) {
-	// Worker args should include --settings for hooks (added by Launch, not buildLaunchArgs)
-	// But buildLaunchArgs should still have Notification disabled for workers
+func TestBuildLaunchArgs_WorkerNoSettingsInBuildLaunchArgs(t *testing.T) {
+	// Worker args from buildLaunchArgs should NOT include --settings.
+	// Workers get a single merged --settings (Notification + PreToolUse) in Launch().
 	args := buildLaunchArgs("worker", "sonnet", "system-prompt")
 	joined := strings.Join(args, " ")
 
-	// Worker already has Notification disabled via --settings
-	if !strings.Contains(joined, `"Notification":[]`) {
-		t.Error("worker should have Notification disabled")
+	if strings.Contains(joined, "--settings") {
+		t.Error("worker buildLaunchArgs should NOT include --settings (merged in Launch)")
+	}
+}
+
+func TestHookSettings_WorkerMergedSettings(t *testing.T) {
+	// HookSettings should produce a single JSON containing both Notification:[] and PreToolUse.
+	dir := t.TempDir()
+	pc := NewPolicyChecker(dir)
+	settings, err := pc.HookSettings("/tmp/test-hook.sh")
+	if err != nil {
+		t.Fatalf("HookSettings error: %v", err)
+	}
+	if !strings.Contains(settings, `"Notification":[]`) {
+		t.Error("merged settings should contain Notification:[]")
+	}
+	if !strings.Contains(settings, `"PreToolUse"`) {
+		t.Error("merged settings should contain PreToolUse")
 	}
 }
 

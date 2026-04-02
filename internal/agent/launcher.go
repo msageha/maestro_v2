@@ -79,7 +79,10 @@ func Launch(maestroDir string) error {
 
 	args := buildLaunchArgs(role, model, systemPrompt)
 
-	// For workers, set up PreToolUse policy hook for destructive operation prevention.
+	// For workers, set up a single --settings containing both Notification
+	// disablement and PreToolUse policy hook. HookSettings produces the merged
+	// JSON so we do NOT add a separate --settings in buildLaunchArgs (workers
+	// are excluded from the Notification-only --settings there).
 	if role == "worker" {
 		pc := NewPolicyChecker(maestroDir)
 		scriptPath, err := pc.WriteHookScript()
@@ -150,9 +153,10 @@ func buildLaunchArgs(role, agentModel, systemPrompt string) []string {
 			}, ","))
 	}
 
-	// Disable Notification hooks for non-orchestrator roles via deep merge.
-	// PreToolUse/PostToolUse are preserved; only Notification is cleared.
-	if role != "orchestrator" {
+	// Disable Notification hooks for non-orchestrator, non-worker roles.
+	// Workers get a merged --settings (Notification + PreToolUse) in Launch(),
+	// so we skip them here to avoid passing two --settings flags.
+	if role != "orchestrator" && role != "worker" {
 		args = append(args, "--settings", `{"hooks":{"Notification":[]}}`)
 	}
 

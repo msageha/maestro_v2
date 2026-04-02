@@ -360,6 +360,13 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 		}
 	}
 
+	// Ensure Claude is actually running (not crashed back to shell).
+	// This catches cases where Claude exits but the pane PID stays the same.
+	if err := e.ensureClaudeRunning(ctx, paneTarget, req.AgentID); err != nil {
+		e.log(LogLevelError, "ensure_claude_running_failed agent_id=%s error=%v", req.AgentID, err)
+		return ExecResult{Error: fmt.Errorf("ensure claude running: %w", err), Retryable: true}
+	}
+
 	// Check if pane process has been restarted (PID changed)
 	restarted, currentPID, err := e.paneState.DetectProcessRestart(paneTarget)
 	if err != nil {
@@ -440,6 +447,11 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 func (e *Executor) execDeliver(ctx context.Context, req ExecRequest, paneTarget string) ExecResult {
 	// Orchestrator: strict busy check, no retry, immediate failure if busy
 	if req.AgentID == "orchestrator" {
+		// Ensure Claude is running for orchestrator too
+		if err := e.ensureClaudeRunning(ctx, paneTarget, req.AgentID); err != nil {
+			e.log(LogLevelError, "ensure_claude_running_failed agent_id=orchestrator error=%v", err)
+			return ExecResult{Error: fmt.Errorf("ensure claude running: %w", err), Retryable: true}
+		}
 		verdict := e.busyDetector.DetectBusy(ctx, paneTarget)
 		e.log(LogLevelDebug, "busy_detection agent_id=orchestrator verdict=%s", verdict)
 		if verdict != VerdictIdle {
@@ -450,6 +462,12 @@ func (e *Executor) execDeliver(ctx context.Context, req ExecRequest, paneTarget 
 			}
 		}
 		return e.sendAndConfirm(req, paneTarget)
+	}
+
+	// Planner/other: ensure Claude is running before delivery
+	if err := e.ensureClaudeRunning(ctx, paneTarget, req.AgentID); err != nil {
+		e.log(LogLevelError, "ensure_claude_running_failed agent_id=%s error=%v", req.AgentID, err)
+		return ExecResult{Error: fmt.Errorf("ensure claude running: %w", err), Retryable: true}
 	}
 
 	// Planner/other: busy detection with retry
@@ -471,7 +489,19 @@ func (e *Executor) execDeliver(ctx context.Context, req ExecRequest, paneTarget 
 }
 
 // sendAndConfirm sends the message and updates @status to busy.
+// It includes a final shell guard to prevent sending to a bare shell if Claude
+// crashed between ensureClaudeRunning and delivery.
 func (e *Executor) sendAndConfirm(req ExecRequest, paneTarget string) ExecResult {
+	// Final shell guard: reject delivery if pane has fallen back to a shell.
+	// This closes the timing window between ensureClaudeRunning and here.
+	if cmd, err := e.paneIO.GetPaneCurrentCommand(paneTarget); err == nil {
+		if e.paneIO.IsShellCommand(cmd) {
+			e.log(LogLevelError, "delivery_rejected agent_id=%s task_id=%s reason=pane_is_shell cmd=%s",
+				req.AgentID, req.TaskID, cmd)
+			return ExecResult{Error: fmt.Errorf("pane is shell (%s), Claude not running", cmd), Retryable: true}
+		}
+	}
+
 	// Send message via paste-buffer + Enter for reliable multi-line delivery
 	ctx := req.Context
 	if ctx == nil {
@@ -734,6 +764,50 @@ func (e *Executor) waitReady(ctx context.Context, paneTarget string) error {
 		e.log(LogLevelInfo, "wait_ready prompt_fallback pane=%s: prompt not detected after retries, proceeding (detectBusy will guard)",
 			paneTarget)
 	}
+	return nil
+}
+
+// --- Claude Process Recovery ---
+
+// ensureClaudeRunning checks whether the pane is running a shell (indicating
+// Claude has crashed or exited) and re-launches Claude if necessary.
+// This guards against the scenario where Claude crashes back to the shell
+// but the pane PID stays the same (shell PID unchanged), which
+// DetectProcessRestart cannot detect.
+// Returns nil if Claude is confirmed running, or a retryable error on failure.
+func (e *Executor) ensureClaudeRunning(ctx context.Context, paneTarget, agentID string) error {
+	cmd, err := e.paneIO.GetPaneCurrentCommand(paneTarget)
+	if err != nil {
+		e.log(LogLevelWarn, "ensure_claude_running_check_failed agent_id=%s error=%v", agentID, err)
+		// Cannot determine state; proceed optimistically
+		return nil
+	}
+
+	if !e.paneIO.IsShellCommand(cmd) {
+		// Not a shell — Claude (or another process) is running
+		return nil
+	}
+
+	e.log(LogLevelWarn, "claude_not_running agent_id=%s pane_command=%s, re-launching", agentID, cmd)
+
+	// Reset clear_ready since we are starting a fresh Claude session
+	if resetErr := e.paneState.ResetClearReady(paneTarget); resetErr != nil {
+		e.log(LogLevelError, "ensure_claude_running_reset_clear_ready agent_id=%s error=%v", agentID, resetErr)
+	}
+
+	// Re-launch Claude
+	if sendErr := e.paneIO.SendCommand(paneTarget, "maestro agent launch"); sendErr != nil {
+		return fmt.Errorf("ensureClaudeRunning: re-launch: %w", sendErr)
+	}
+
+	// Wait for Claude prompt readiness (fail-closed)
+	launchCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+	if waitErr := e.waitReadyStrict(launchCtx, paneTarget); waitErr != nil {
+		return fmt.Errorf("ensureClaudeRunning: wait for Claude ready: %w", waitErr)
+	}
+
+	e.log(LogLevelInfo, "claude_relaunched agent_id=%s", agentID)
 	return nil
 }
 

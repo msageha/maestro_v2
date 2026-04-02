@@ -203,7 +203,8 @@ func TestExecWithClear_ClearReadyTrue_FullPath(t *testing.T) {
 	mock.userVars["clear_ready"] = "true"
 	mock.userVars["clear_ready_pid"] = "12345"
 	mock.panePID = "12345"
-	mock.defaultIsShell = true // busyDetector → idle
+	// ensureClaudeRunning: not shell, busyDetector: shell → idle, sendAndConfirm guard: not shell
+	mock.isShellSeq = []bool{false, true, false}
 
 	// waitReady: CapturePane returns prompt-ready
 	mock.capturePaneSeq = []mockResp{
@@ -216,8 +217,6 @@ func TestExecWithClear_ClearReadyTrue_FullPath(t *testing.T) {
 		{val: "after-clear-new-content"},        // poll 1 (hash changed, no /clear visible)
 		{val: "after-clear-new-content"},        // poll 2 (stable)
 		{val: "after-clear-new-content"},        // poll 3 (stable) → confirmed
-		{val: "after-clear-new-content"},        // busyDetector stage 3 hash A
-		{val: "after-clear-new-content"},        // busyDetector stage 3 hash B (same → idle)
 	}
 
 	exec, _ := newCovExecutor(mock)
@@ -256,6 +255,8 @@ func TestExecWithClear_ClearReadyTrue_ClearFails_ResetsClearReady(t *testing.T) 
 	mock.userVars["clear_ready"] = "true"
 	mock.userVars["clear_ready_pid"] = "12345"
 	mock.panePID = "12345"
+	// ensureClaudeRunning: Claude is running
+	mock.isShellSeq = []bool{false}
 
 	// waitReady: prompt ready
 	mock.capturePaneSeq = []mockResp{{val: "output\n ❯ \n"}}
@@ -297,7 +298,10 @@ func TestExecWithClear_ClearReadyTrue_ProcessRestarted(t *testing.T) {
 	mock.userVars["clear_ready"] = "true"
 	mock.userVars["clear_ready_pid"] = "99999" // different from current PID
 	mock.panePID = "12345"
-	mock.defaultIsShell = true
+	// ensureClaudeRunning (execWithClear): not shell,
+	// ensureClaudeRunning (execDeliver first dispatch): not shell,
+	// busyDetector: shell → idle, sendAndConfirm guard: not shell
+	mock.isShellSeq = []bool{false, false, true, false}
 
 	// After restart detection, clear_ready is reset → first dispatch path
 	mock.capturePaneSeq = []mockResp{{val: "output\n ❯ \n"}}
@@ -987,13 +991,14 @@ func TestExecWithClear_ClearReadyTrue_BusyAfterClear(t *testing.T) {
 		{val: "busy-content4"}, // busyDetector retry stage 3 hash B (different → busy)
 	}
 
-	// busyDetector: not shell → proceed to stages 2/3
+	// ensureClaudeRunning + busyDetector: not shell → proceed to stages 2/3
 	mock.defaultIsShell = false
 	mock.getCmdSeq = []mockResp{
+		{val: "claude"}, // ensureClaudeRunning
 		{val: "claude"}, // busyDetector stage 1
 		{val: "claude"}, // retry
 	}
-	mock.isShellSeq = []bool{false, false}
+	mock.isShellSeq = []bool{false, false, false}
 
 	exec, _ := newCovExecutor(mock)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1038,8 +1043,11 @@ func TestExecWithClear_ClearReadyTrue_UndecidedAfterClear(t *testing.T) {
 	}
 
 	mock.defaultIsShell = false
-	mock.getCmdSeq = []mockResp{{val: "claude"}}
-	mock.isShellSeq = []bool{false}
+	mock.getCmdSeq = []mockResp{
+		{val: "claude"}, // ensureClaudeRunning
+		{val: "claude"}, // busyDetector
+	}
+	mock.isShellSeq = []bool{false, false}
 
 	exec, _ := newCovExecutor(mock)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -1169,5 +1177,100 @@ func TestSleepCtx_ContextCancelled(t *testing.T) {
 	err := sleepCtx(ctx, 10*time.Second)
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
+	}
+}
+
+// === ensureClaudeRunning direct tests ===
+
+func TestEnsureClaudeRunning_ClaudeAlreadyRunning(t *testing.T) {
+	t.Parallel()
+	mock := newCovMock()
+	mock.getCmdSeq = []mockResp{{val: "node"}}
+	mock.isShellSeq = []bool{false}
+
+	exec, _ := newCovExecutor(mock)
+	err := exec.ensureClaudeRunning(context.Background(), "%0", "worker1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should not have sent any re-launch command
+	if callsContain(mock.calls, "SendCommand:maestro agent launch") {
+		t.Error("should not re-launch when Claude is already running")
+	}
+}
+
+func TestEnsureClaudeRunning_ShellDetected_Relaunch(t *testing.T) {
+	t.Parallel()
+	mock := newCovMock()
+	mock.getCmdSeq = []mockResp{{val: "bash"}}
+	mock.isShellSeq = []bool{true}
+	// waitReadyStrict: CapturePane returns prompt-ready
+	mock.capturePaneSeq = []mockResp{{val: "output\n ❯ \n"}}
+
+	exec, _ := newCovExecutor(mock)
+	err := exec.ensureClaudeRunning(context.Background(), "%0", "worker1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !callsContain(mock.calls, "SendCommand:maestro agent launch") {
+		t.Error("should re-launch Claude when shell detected")
+	}
+	// clear_ready should be reset
+	if mock.userVars["clear_ready"] != "" {
+		t.Errorf("expected clear_ready to be reset, got %q", mock.userVars["clear_ready"])
+	}
+}
+
+func TestEnsureClaudeRunning_RelaunchFails(t *testing.T) {
+	t.Parallel()
+	mock := newCovMock()
+	mock.getCmdSeq = []mockResp{{val: "zsh"}}
+	mock.isShellSeq = []bool{true}
+	mock.sendCmdErrSeq = []error{fmt.Errorf("tmux send error")}
+
+	exec, _ := newCovExecutor(mock)
+	err := exec.ensureClaudeRunning(context.Background(), "%0", "worker1")
+	if err == nil {
+		t.Fatal("expected error when re-launch fails")
+	}
+	if !strings.Contains(err.Error(), "re-launch") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestEnsureClaudeRunning_WaitReadyTimeout(t *testing.T) {
+	t.Parallel()
+	mock := newCovMock()
+	mock.getCmdSeq = []mockResp{{val: "bash"}}
+	mock.isShellSeq = []bool{true}
+	// waitReadyStrict: CapturePane always returns non-prompt content → timeout
+	mock.capturePaneSeq = []mockResp{{val: "still loading..."}}
+
+	exec, _ := newCovExecutor(mock)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	err := exec.ensureClaudeRunning(ctx, "%0", "worker1")
+	if err == nil {
+		t.Fatal("expected error when waitReadyStrict times out")
+	}
+	if !strings.Contains(err.Error(), "wait for Claude ready") {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestEnsureClaudeRunning_GetCmdError_ProceedsOptimistically(t *testing.T) {
+	t.Parallel()
+	mock := newCovMock()
+	mock.getCmdSeq = []mockResp{{err: fmt.Errorf("tmux error")}}
+
+	exec, _ := newCovExecutor(mock)
+	err := exec.ensureClaudeRunning(context.Background(), "%0", "worker1")
+	if err != nil {
+		t.Fatalf("should proceed optimistically on GetPaneCurrentCommand error, got: %v", err)
+	}
+	// Should not have attempted re-launch
+	if callsContain(mock.calls, "SendCommand:maestro agent launch") {
+		t.Error("should not re-launch on GetPaneCurrentCommand error")
 	}
 }

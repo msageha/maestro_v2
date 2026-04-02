@@ -566,8 +566,10 @@ type execMockPaneIO struct {
 	findPaneErr    error
 
 	// GetPaneCurrentCommand / IsShellCommand
-	currentCmd string
-	isShell    bool
+	currentCmd   string
+	isShell      bool
+	isShellSeq   []bool
+	isShellIdx   int
 
 	// CapturePane / CapturePaneJoined
 	captureContent  string
@@ -659,6 +661,14 @@ func (m *execMockPaneIO) CapturePaneJoined(paneTarget string, lastN int) (string
 }
 
 func (m *execMockPaneIO) IsShellCommand(cmd string) bool {
+	if len(m.isShellSeq) > 0 {
+		idx := m.isShellIdx
+		if idx >= len(m.isShellSeq) {
+			idx = len(m.isShellSeq) - 1
+		}
+		m.isShellIdx++
+		return m.isShellSeq[idx]
+	}
 	return m.isShell
 }
 
@@ -811,7 +821,8 @@ func TestExecute_ModeIsBusy_Undecided(t *testing.T) {
 func TestExecute_ModeDeliver_Success(t *testing.T) {
 	t.Parallel()
 	mock := newExecMock()
-	mock.isShell = true // idle → deliver immediately
+	// ensureClaudeRunning: not shell, busyDetector: shell → idle, sendAndConfirm: not shell
+	mock.isShellSeq = []bool{false, true, false}
 	exec, _ := newTestExecutorWithLog(mock)
 
 	result := exec.Execute(ExecRequest{
@@ -861,7 +872,8 @@ func TestExecute_ModeDeliver_AgentBusy(t *testing.T) {
 func TestExecute_ModeDeliver_SendTextFails(t *testing.T) {
 	t.Parallel()
 	mock := newExecMock()
-	mock.isShell = true // idle
+	// ensureClaudeRunning: not shell, busyDetector: shell → idle, sendAndConfirm: not shell
+	mock.isShellSeq = []bool{false, true, false}
 	mock.sendTextErr = fmt.Errorf("tmux error")
 	exec, _ := newTestExecutorWithLog(mock)
 
@@ -884,7 +896,8 @@ func TestExecute_ModeDeliver_SendTextFails(t *testing.T) {
 func TestExecute_ModeDeliver_Orchestrator_Idle(t *testing.T) {
 	t.Parallel()
 	mock := newExecMock()
-	mock.isShell = true // idle
+	// ensureClaudeRunning: not shell, busyDetector: shell → idle, sendAndConfirm: not shell
+	mock.isShellSeq = []bool{false, true, false}
 	exec, _ := newTestExecutorWithLog(mock)
 
 	result := exec.Execute(ExecRequest{
@@ -928,7 +941,10 @@ func TestExecute_ModeDeliver_Orchestrator_Busy(t *testing.T) {
 func TestExecute_ModeWithClear_FirstDispatch(t *testing.T) {
 	t.Parallel()
 	mock := newExecMock()
-	mock.isShell = true // idle
+	// ensureClaudeRunning in execWithClear: not shell,
+	// ensureClaudeRunning in execDeliver: not shell,
+	// busyDetector: shell → idle, sendAndConfirm: not shell
+	mock.isShellSeq = []bool{false, false, true, false}
 	// clear_ready not set → first dispatch path
 	exec, _ := newTestExecutorWithLog(mock)
 
@@ -959,7 +975,8 @@ func TestExecute_ModeWithClear_FirstDispatch(t *testing.T) {
 func TestExecute_ModeWithClear_Orchestrator_FallsToDeliver(t *testing.T) {
 	t.Parallel()
 	mock := newExecMock()
-	mock.isShell = true // idle
+	// ensureClaudeRunning: not shell, busyDetector: shell → idle, sendAndConfirm: not shell
+	mock.isShellSeq = []bool{false, true, false}
 	exec, _ := newTestExecutorWithLog(mock)
 
 	result := exec.Execute(ExecRequest{
@@ -1000,7 +1017,8 @@ func TestExecute_ModeInterrupt_ViaExecute(t *testing.T) {
 func TestExecute_DefaultContext(t *testing.T) {
 	t.Parallel()
 	mock := newExecMock()
-	mock.isShell = true
+	// ensureClaudeRunning: not shell, busyDetector: shell → idle, sendAndConfirm: not shell
+	mock.isShellSeq = []bool{false, true, false}
 	exec, _ := newTestExecutorWithLog(mock)
 
 	// Execute with nil context — should use default timeout
@@ -1049,7 +1067,9 @@ func TestExecute_DeliveryStartLogNoDuplicate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			mock := newExecMock()
-			mock.isShell = true // idle → fast path
+			// ensureClaudeRunning calls (up to 2 for worker first dispatch),
+			// busyDetector: shell → idle, sendAndConfirm: not shell
+			mock.isShellSeq = []bool{false, false, true, false}
 			exec, buf := newTestExecutorWithLog(mock)
 
 			exec.Execute(ExecRequest{

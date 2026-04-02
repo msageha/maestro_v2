@@ -44,11 +44,15 @@ func (pc *PolicyChecker) WriteHookScript() (string, error) {
 	return scriptPath, nil
 }
 
-// hookSettingsJSON is the settings JSON structure for PreToolUse hooks.
+// hookSettingsJSON is the settings JSON structure for hook overrides.
+// All hook types are optional; omitted keys are left unmodified by Claude Code.
 type hookSettingsJSON struct {
-	Hooks struct {
-		PreToolUse []hookMatcherGroup `json:"PreToolUse"`
-	} `json:"hooks"`
+	Hooks hookSettingsHooks `json:"hooks"`
+}
+
+type hookSettingsHooks struct {
+	Notification *[]any      `json:"Notification,omitempty"`
+	PreToolUse   []hookMatcherGroup  `json:"PreToolUse,omitempty"`
 }
 
 type hookMatcherGroup struct {
@@ -63,9 +67,12 @@ type hookEntry struct {
 }
 
 // HookSettings returns the --settings JSON string that configures the
-// PreToolUse hook for Workers.
+// PreToolUse hook for Workers, with Notification hooks disabled.
+// This produces a single merged JSON so that only one --settings flag is needed.
 func (pc *PolicyChecker) HookSettings(scriptPath string) (string, error) {
+	emptyNotification := []any{}
 	settings := hookSettingsJSON{}
+	settings.Hooks.Notification = &emptyNotification
 	settings.Hooks.PreToolUse = []hookMatcherGroup{
 		{
 			Matcher: "Bash|Write|Edit",

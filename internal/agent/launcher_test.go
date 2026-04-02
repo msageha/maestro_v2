@@ -407,7 +407,9 @@ func TestBuildLaunchArgs_NotificationDisabledForNonOrchestrator(t *testing.T) {
 	}{
 		{"orchestrator", false},
 		{"planner", true},
-		{"worker", true},
+		// Worker: Notification is disabled via merged --settings in Launch(),
+		// NOT in buildLaunchArgs. So buildLaunchArgs output won't have it.
+		{"worker", false},
 	}
 
 	for _, tt := range tests {
