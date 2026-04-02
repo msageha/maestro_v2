@@ -112,20 +112,6 @@ skills:
     min_occurrences: 3              # 自動収集の最小出現回数
     min_commands: 2                 # 自動収集の最小コマンド数
 
-personas:
-  implementer:
-    description: "実装者。コード実装・修正・ドキュメント作成に集中する"
-    file: "persona/implementer.md"
-  architect:
-    description: "設計者。アーキテクチャ策定・設計判断・大規模構造変更の方針決定を行う"
-    file: "persona/architect.md"
-  quality-assurance:
-    description: "品質保証。テスト・レビュー・品質検証・セキュリティ分析に集中する"
-    file: "persona/quality-assurance.md"
-  researcher:
-    description: "調査者。情報収集・分析・調査レポート作成に集中する"
-    file: "persona/researcher.md"
-
 quality_gates:
   enabled: false                    # 品質ゲートの有効化フラグ
   skip_gates: false                 # 緊急モード (--skip-gates フラグで有効化)

@@ -4,72 +4,31 @@ package persona
 
 import (
 	"fmt"
-	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// FormatPersonaSectionWithFS formats a persona prompt for injection into task content,
-// resolving file-backed personas from the provided filesystem.
-// When a persona has File set, the file is read from fsys and its content
-// (with YAML frontmatter stripped) is used as the prompt.
-// If file reading fails, it falls back to the Prompt field.
-// maestroDir, if non-empty, is checked first for persona files (e.g. .maestro/persona/),
-// allowing user customization with fallback to the embedded template FS.
-func FormatPersonaSectionWithFS(fsys fs.FS, personas map[string]model.PersonaConfig, personaHint, maestroDir string) (string, bool) {
-	if personaHint == "" {
-		return "", true
+// FormatPersonaSection formats a persona prompt for injection into task content.
+// The persona prompt is read from {maestroDir}/persona/{personaHint}.md.
+func FormatPersonaSection(personaHint, maestroDir string) string {
+	if personaHint == "" || maestroDir == "" {
+		return ""
 	}
 
-	p, ok := personas[personaHint]
-	if !ok {
-		return "", false
+	diskPath := filepath.Join(maestroDir, "persona", personaHint+".md")
+	data, err := os.ReadFile(diskPath)
+	if err != nil {
+		return ""
 	}
 
-	prompt := resolvePrompt(fsys, p, maestroDir)
+	body := stripFrontmatter(string(data))
+	prompt := strings.TrimSpace(body)
 	if prompt == "" {
-		return "", true
+		return ""
 	}
 
-	return fmt.Sprintf("---\nペルソナ: %s\n%s\n---\n\n", personaHint, prompt), true
-}
-
-// resolvePrompt returns the effective prompt text for a persona config.
-// If File is set, it first tries reading from maestroDir (the .maestro directory),
-// then falls back to the embedded template FS, and finally to the Prompt field.
-func resolvePrompt(fsys fs.FS, p model.PersonaConfig, maestroDir string) string {
-	if file := strings.TrimSpace(p.File); file != "" {
-		if !fs.ValidPath(file) || !strings.HasPrefix(file, "persona/") {
-			return strings.TrimSpace(p.Prompt)
-		}
-
-		// Try .maestro/ directory first (user customization)
-		if maestroDir != "" {
-			diskPath := filepath.Join(maestroDir, filepath.FromSlash(file))
-			if data, err := os.ReadFile(diskPath); err == nil {
-				body := stripFrontmatter(string(data))
-				if trimmed := strings.TrimSpace(body); trimmed != "" {
-					return trimmed
-				}
-			}
-		}
-
-		// Fallback to embedded template FS
-		if fsys != nil {
-			data, err := fs.ReadFile(fsys, file)
-			if err == nil {
-				body := stripFrontmatter(string(data))
-				if trimmed := strings.TrimSpace(body); trimmed != "" {
-					return trimmed
-				}
-			}
-		}
-		// Fall back to inline Prompt on file read failure or empty body
-	}
-	return strings.TrimSpace(p.Prompt)
+	return fmt.Sprintf("---\nペルソナ: %s\n%s\n---\n\n", personaHint, prompt)
 }
 
 // stripFrontmatter removes YAML frontmatter (delimited by --- on its own line)

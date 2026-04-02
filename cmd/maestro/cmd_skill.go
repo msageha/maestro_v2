@@ -30,20 +30,25 @@ func runSkill(args []string) error {
 	}
 }
 
-// runSkillList lists all registered skills.
+// runSkillList lists all registered skills for a given role.
 func runSkillList(args []string) error {
 	fs := newFlagSet("maestro skill list")
 	var role string
-	fs.StringVar(&role, "role", "", "Filter skills by role name (e.g., worker, planner)")
+	fs.StringVar(&role, "role", "", "Role name (required, e.g., worker, planner, orchestrator)")
 	if err := fs.Parse(args); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill list: %v\nusage: maestro skill list [--role <role>]", err)}
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill list: %v\nusage: maestro skill list --role <role>", err)}
 	}
 	if fs.NArg() > 0 {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill list: unexpected argument: %s", fs.Arg(0))}
 	}
 
+	// --role is required.
+	if role == "" {
+		return &CLIError{Code: 1, Msg: "maestro skill list: --role is required\nusage: maestro skill list --role <role>"}
+	}
+
 	// Validate --role to prevent path traversal.
-	if role != "" && (role == "." || role == ".." || strings.Contains(role, "/") || strings.Contains(role, "\\")) {
+	if role == "." || role == ".." || strings.Contains(role, "/") || strings.Contains(role, "\\") {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill list: invalid --role value: %s", role)}
 	}
 
@@ -54,7 +59,6 @@ func runSkillList(args []string) error {
 
 	skillsDir := filepath.Join(maestroDir, "skills")
 	// Use ListSkillsWithRole to include role-specific and shared skills.
-	// When role is empty, only shared and flat skills are listed.
 	skills, err := skill.ListSkillsWithRole(skillsDir, role, nil)
 	if err != nil {
 		return fmt.Errorf("maestro skill list: %w", err)

@@ -1,5 +1,6 @@
 // Package skill provides functions for reading and formatting SKILL.md files
-// from .maestro/skills/<name>/SKILL.md for injection into task content.
+// from .maestro/skills/<role>/<name>/SKILL.md and .maestro/skills/share/<name>/SKILL.md
+// for injection into task content.
 package skill
 
 import (
@@ -41,36 +42,6 @@ func (m SkillMetadata) EffectivePriority() int {
 type SkillContent struct {
 	SkillMetadata
 	Body string
-}
-
-// ReadSkill reads .maestro/skills/<skillName>/SKILL.md, parses YAML frontmatter,
-// and returns the skill content. Returns an error if the file does not exist
-// or if the frontmatter is malformed.
-func ReadSkill(skillsDir, skillName string) (SkillContent, error) {
-	if !isValidIdentifier(skillName) {
-		return SkillContent{}, fmt.Errorf("invalid skill name: %q", skillName)
-	}
-
-	path := filepath.Join(skillsDir, skillName, "SKILL.md")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return SkillContent{}, fmt.Errorf("read skill %q: %w", skillName, err)
-	}
-
-	meta, body, err := parseFrontmatter(string(data))
-	if err != nil {
-		return SkillContent{}, fmt.Errorf("parse skill %q frontmatter: %w", skillName, err)
-	}
-
-	meta.ID = skillName
-	if meta.Name == "" {
-		meta.Name = skillName
-	}
-
-	return SkillContent{
-		SkillMetadata: meta,
-		Body:          body,
-	}, nil
 }
 
 // FormatSkillSection formats multiple skills for injection into task content.
@@ -228,7 +199,6 @@ func parseFrontmatter(content string) (SkillMetadata, string, error) {
 // ReadSkillWithRole reads a skill file using role-based fallback:
 //  1. skills/<role>/<name>/SKILL.md (role-specific)
 //  2. skills/share/<name>/SKILL.md (shared across roles)
-//  3. skills/<name>/SKILL.md (flat/legacy layout)
 //
 // Returns the first match found, or an error if none exist.
 func ReadSkillWithRole(skillsDir, skillName, role string) (SkillContent, error) {
@@ -239,7 +209,6 @@ func ReadSkillWithRole(skillsDir, skillName, role string) (SkillContent, error) 
 	candidates := []string{
 		filepath.Join(skillsDir, role, skillName, "SKILL.md"),
 		filepath.Join(skillsDir, "share", skillName, "SKILL.md"),
-		filepath.Join(skillsDir, skillName, "SKILL.md"),
 	}
 
 	for _, path := range candidates {
@@ -324,32 +293,65 @@ func ListSkillsWithRole(skillsDir, role string, logger *slog.Logger) ([]SkillMet
 		}
 	}
 
-	// Flat (legacy): skills/<name>/SKILL.md — skip role/share subdirs and already-seen
-	entries, err := os.ReadDir(skillsDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return skills, nil
-		}
-		return nil, fmt.Errorf("read skills directory: %w", err)
+	return skills, nil
+}
+
+// ReadAllSkillsForRole reads all skill contents for a given role.
+// It scans skills/<role>/ and skills/share/ directories, returning the full
+// SkillContent (metadata + body) for each skill found. When duplicates exist,
+// the role-specific version takes priority over shared. Parse errors are logged
+// as warnings and the skill is skipped.
+func ReadAllSkillsForRole(skillsDir, role string, logger *slog.Logger) ([]SkillContent, error) {
+	if logger == nil {
+		logger = slog.Default()
 	}
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		if name == role || name == "share" {
-			continue
-		}
-		if _, ok := seen[name]; ok {
-			continue
-		}
-		sc, err := ReadSkill(skillsDir, name)
+	seen := make(map[string]struct{})
+	var skills []SkillContent
+
+	var dirs []string
+	if role != "" {
+		dirs = append(dirs, filepath.Join(skillsDir, role))
+	}
+	dirs = append(dirs, filepath.Join(skillsDir, "share"))
+
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
 		if err != nil {
-			logger.Warn("ListSkillsWithRole: failed to read skill", "skill", name, "skills_dir", skillsDir, "error", err)
-			continue
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, fmt.Errorf("read skills directory %s: %w", dir, err)
 		}
-		seen[name] = struct{}{}
-		skills = append(skills, sc.SkillMetadata)
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			name := e.Name()
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			path := filepath.Join(dir, name, "SKILL.md")
+			data, err := os.ReadFile(path)
+			if err != nil {
+				logger.Warn("ReadAllSkillsForRole: failed to read SKILL.md", "path", path, "error", err)
+				continue
+			}
+			meta, body, err := parseFrontmatter(string(data))
+			if err != nil {
+				logger.Warn("ReadAllSkillsForRole: failed to parse frontmatter", "path", path, "skill", name, "error", err)
+				// Mark as seen even on parse failure to prevent shared fallback
+				// for this skill name. This matches ReadSkillWithRole behavior
+				// where a broken role-specific file does not fall through to share.
+				seen[name] = struct{}{}
+				continue
+			}
+			meta.ID = name
+			if meta.Name == "" {
+				meta.Name = name
+			}
+			seen[name] = struct{}{}
+			skills = append(skills, SkillContent{SkillMetadata: meta, Body: body})
+		}
 	}
 
 	return skills, nil

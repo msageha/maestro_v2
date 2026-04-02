@@ -226,7 +226,15 @@ func (disp *Dispatcher) DispatchCommand(cmd *model.Command) error {
 		return fmt.Errorf("create executor: %w", err)
 	}
 
-	envelope := agent.BuildPlannerEnvelope(*cmd, cmd.LeaseEpoch, cmd.Attempts)
+	// Build enriched command content (planner skills injection)
+	dispatchCmd := *cmd
+	enrichedContent, err := disp.envelopeBuilder.BuildCommandContent(cmd)
+	if err != nil {
+		return fmt.Errorf("build command envelope for %s: %w", cmd.ID, err)
+	}
+	dispatchCmd.Content = enrichedContent
+
+	envelope := agent.BuildPlannerEnvelope(dispatchCmd, cmd.LeaseEpoch, cmd.Attempts)
 
 	result := exec.Execute(agent.ExecRequest{
 		AgentID:    "planner",

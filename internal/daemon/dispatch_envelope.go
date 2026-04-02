@@ -10,7 +10,6 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/persona"
 	"github.com/msageha/maestro_v2/internal/daemon/skill"
 	"github.com/msageha/maestro_v2/internal/model"
-	"github.com/msageha/maestro_v2/templates"
 )
 
 // EnvelopeBuilder assembles the dispatch envelope for a task by injecting
@@ -42,9 +41,7 @@ func (eb *EnvelopeBuilder) BuildTaskContent(task *model.Task) (string, error) {
 
 	// Inject persona prompt (prepend)
 	if task.PersonaHint != "" {
-		if section, found := persona.FormatPersonaSectionWithFS(templates.FS, eb.config.Personas, task.PersonaHint, eb.maestroDir); !found {
-			eb.dl.Logf(LogLevelWarn, "persona_not_found task=%s persona_hint=%s", task.ID, task.PersonaHint)
-		} else if section != "" {
+		if section := persona.FormatPersonaSection(task.PersonaHint, eb.maestroDir); section != "" {
 			content = section + content
 			eb.dl.Logf(LogLevelDebug, "persona_injected task=%s persona=%s", task.ID, task.PersonaHint)
 		}
@@ -67,6 +64,26 @@ func (eb *EnvelopeBuilder) BuildTaskContent(task *model.Task) (string, error) {
 		} else if section := learnings.FormatLearningsSection(lrns); section != "" {
 			content += section
 			eb.dl.Logf(LogLevelDebug, "learnings_injected task=%s count=%d", task.ID, len(lrns))
+		}
+	}
+
+	return content, nil
+}
+
+// BuildCommandContent enriches the command content with all planner skills.
+// Unlike BuildTaskContent (which injects per-task skill_refs), this loads all
+// skills for the "planner" role and shared skills automatically.
+func (eb *EnvelopeBuilder) BuildCommandContent(cmd *model.Command) (string, error) {
+	content := agent.SanitizeUserContent(cmd.Content)
+
+	if eb.config.Skills.Enabled {
+		skillsDir := filepath.Join(eb.maestroDir, "skills")
+		loaded, err := skill.ReadAllSkillsForRole(skillsDir, "planner", nil)
+		if err != nil {
+			eb.dl.Logf(LogLevelWarn, "planner_skills_read_failed command=%s error=%v", cmd.ID, err)
+		} else if section := skill.FormatSkillSection(loaded, eb.config.Skills.EffectiveMaxBodyChars()); section != "" {
+			content += section
+			eb.dl.Logf(LogLevelDebug, "planner_skills_injected command=%s count=%d", cmd.ID, len(loaded))
 		}
 	}
 

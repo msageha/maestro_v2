@@ -169,6 +169,197 @@ func TestBuildSystemPrompt_MissingInstructionsFile(t *testing.T) {
 	}
 }
 
+// writeConfigYAML writes a minimal valid config.yaml to the given maestro dir.
+func writeConfigYAML(t *testing.T, dir string, skillsEnabled bool) {
+	t.Helper()
+	enabled := "false"
+	if skillsEnabled {
+		enabled = "true"
+	}
+	content := "project:\n  name: test\nmaestro:\n  version: \"1.0\"\nagents:\n  workers:\n    count: 1\nskills:\n  enabled: " + enabled + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestBuildSystemPrompt_OrchestratorInjectsSkills(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "maestro.md"), []byte("# Maestro"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	instDir := filepath.Join(dir, "instructions")
+	if err := os.MkdirAll(instDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(instDir, "orchestrator.md"), []byte("# Orchestrator Instructions"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	writeConfigYAML(t, dir, true)
+
+	// Create orchestrator-specific and shared skills
+	orchSkillDir := filepath.Join(dir, "skills", "orchestrator", "orch-skill")
+	if err := os.MkdirAll(orchSkillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orchSkillDir, "SKILL.md"), []byte("---\nname: Orch Skill\n---\nOrchestrator skill body"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	shareSkillDir := filepath.Join(dir, "skills", "share", "shared-skill")
+	if err := os.MkdirAll(shareSkillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shareSkillDir, "SKILL.md"), []byte("---\nname: Shared Skill\n---\nShared skill body"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := buildSystemPrompt(dir, "orchestrator")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(result, "# Maestro") {
+		t.Error("result should contain maestro.md content")
+	}
+	if !strings.Contains(result, "# Orchestrator Instructions") {
+		t.Error("result should contain orchestrator instructions")
+	}
+	if !strings.Contains(result, "スキル: Orch Skill") {
+		t.Error("result should contain orchestrator-specific skill")
+	}
+	if !strings.Contains(result, "Orchestrator skill body") {
+		t.Error("result should contain orchestrator skill body")
+	}
+	if !strings.Contains(result, "スキル: Shared Skill") {
+		t.Error("result should contain shared skill")
+	}
+	if !strings.Contains(result, "Shared skill body") {
+		t.Error("result should contain shared skill body")
+	}
+}
+
+func TestBuildSystemPrompt_OrchestratorSkillsDisabled(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "maestro.md"), []byte("# Maestro"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	instDir := filepath.Join(dir, "instructions")
+	if err := os.MkdirAll(instDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(instDir, "orchestrator.md"), []byte("# Orchestrator"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	writeConfigYAML(t, dir, false) // skills disabled
+
+	orchSkillDir := filepath.Join(dir, "skills", "orchestrator", "orch-skill")
+	if err := os.MkdirAll(orchSkillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orchSkillDir, "SKILL.md"), []byte("---\nname: Orch Skill\n---\nBody"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := buildSystemPrompt(dir, "orchestrator")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(result, "スキル:") {
+		t.Error("orchestrator should NOT inject skills when skills.enabled=false")
+	}
+}
+
+func TestBuildSystemPrompt_NonOrchestratorNoSkillInjection(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "maestro.md"), []byte("# Maestro"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	instDir := filepath.Join(dir, "instructions")
+	if err := os.MkdirAll(instDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(instDir, "worker.md"), []byte("# Worker"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create worker-specific skill
+	skillDir := filepath.Join(dir, "skills", "worker", "some-skill")
+	if err := os.MkdirAll(skillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: Some Skill\n---\nBody"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := buildSystemPrompt(dir, "worker")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if strings.Contains(result, "スキル:") {
+		t.Error("worker system prompt should NOT contain skills section")
+	}
+}
+
+func TestBuildSystemPrompt_OrchestratorNoSkillsDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "maestro.md"), []byte("# Maestro"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	instDir := filepath.Join(dir, "instructions")
+	if err := os.MkdirAll(instDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(instDir, "orchestrator.md"), []byte("# Orchestrator"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	writeConfigYAML(t, dir, true)
+
+	// No skills directory — should still succeed
+	result, err := buildSystemPrompt(dir, "orchestrator")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result, "# Maestro") {
+		t.Error("result should contain maestro.md content")
+	}
+	if strings.Contains(result, "スキル:") {
+		t.Error("result should NOT contain skills section when no skills exist")
+	}
+}
+
+func TestBuildSystemPrompt_OrchestratorNoConfigYAML(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "maestro.md"), []byte("# Maestro"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	instDir := filepath.Join(dir, "instructions")
+	if err := os.MkdirAll(instDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(instDir, "orchestrator.md"), []byte("# Orchestrator"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	// No config.yaml — skills injection should be silently skipped
+
+	orchSkillDir := filepath.Join(dir, "skills", "orchestrator", "orch-skill")
+	if err := os.MkdirAll(orchSkillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orchSkillDir, "SKILL.md"), []byte("---\nname: Orch Skill\n---\nBody"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := buildSystemPrompt(dir, "orchestrator")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(result, "スキル:") {
+		t.Error("should NOT inject skills when config.yaml is missing")
+	}
+}
+
 func TestBuildLaunchArgs_WorkerDisallowsMaestroReads(t *testing.T) {
 	args := buildLaunchArgs("worker", "sonnet", "system-prompt")
 	joined := strings.Join(args, " ")

@@ -12,10 +12,10 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// createSkillFile creates a SKILL.md file under skillsDir/<name>/SKILL.md with the given content.
+// createSkillFile creates a SKILL.md file under skillsDir/worker/<name>/SKILL.md with the given content.
 func createSkillFile(t *testing.T, skillsDir, name, content string) {
 	t.Helper()
-	dir := filepath.Join(skillsDir, name)
+	dir := filepath.Join(skillsDir, "worker", name)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatalf("create skill dir %s: %v", name, err)
 	}
@@ -259,6 +259,142 @@ func TestDispatchTask_SkillInjection_MultipleSkills(t *testing.T) {
 	}
 	if !strings.Contains(envelope, "Body A content") || !strings.Contains(envelope, "Body B content") {
 		t.Error("envelope should contain both skill bodies")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Planner skill injection tests
+// ---------------------------------------------------------------------------
+
+// createSkillFileForRole creates a SKILL.md file under skillsDir/<role>/<name>/SKILL.md.
+func createSkillFileForRole(t *testing.T, skillsDir, role, name, content string) {
+	t.Helper()
+	dir := filepath.Join(skillsDir, role, name)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("create skill dir %s/%s: %v", role, name, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0644); err != nil {
+		t.Fatalf("write SKILL.md for %s/%s: %v", role, name, err)
+	}
+}
+
+func TestDispatchCommand_PlannerSkillInjection(t *testing.T) {
+	maestroDir := t.TempDir()
+	skillsDir := filepath.Join(maestroDir, "skills")
+	createSkillFileForRole(t, skillsDir, "planner", "plan-skill", "---\nname: Plan Skill\n---\nPlanner skill body\n")
+	createSkillFileForRole(t, skillsDir, "share", "shared-skill", "---\nname: Shared Skill\n---\nShared skill body\n")
+
+	cfg := model.Config{
+		Skills: model.SkillsConfig{Enabled: true},
+	}
+	d, mock := newSkillTestDispatcher(t, maestroDir, cfg)
+
+	cmd := &model.Command{
+		ID:      "cmd_001",
+		Content: "implement feature X",
+	}
+
+	if err := d.DispatchCommand(cmd); err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(mock.calls))
+	}
+
+	envelope := mock.calls[0].Message
+	if !strings.Contains(envelope, "implement feature X") {
+		t.Error("envelope should contain original content")
+	}
+	if !strings.Contains(envelope, "スキル: Plan Skill") {
+		t.Error("envelope should contain planner-specific skill")
+	}
+	if !strings.Contains(envelope, "Planner skill body") {
+		t.Error("envelope should contain planner skill body")
+	}
+	if !strings.Contains(envelope, "スキル: Shared Skill") {
+		t.Error("envelope should contain shared skill")
+	}
+	if !strings.Contains(envelope, "Shared skill body") {
+		t.Error("envelope should contain shared skill body")
+	}
+}
+
+func TestDispatchCommand_SkillsDisabled_NoInjection(t *testing.T) {
+	maestroDir := t.TempDir()
+	skillsDir := filepath.Join(maestroDir, "skills")
+	createSkillFileForRole(t, skillsDir, "planner", "plan-skill", "---\nname: Plan Skill\n---\nBody\n")
+
+	cfg := model.Config{
+		Skills: model.SkillsConfig{Enabled: false},
+	}
+	d, mock := newSkillTestDispatcher(t, maestroDir, cfg)
+
+	cmd := &model.Command{
+		ID:      "cmd_001",
+		Content: "implement feature X",
+	}
+
+	if err := d.DispatchCommand(cmd); err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+
+	envelope := mock.calls[0].Message
+	if strings.Contains(envelope, "スキル:") {
+		t.Error("envelope should NOT contain skill section when skills are disabled")
+	}
+}
+
+func TestDispatchCommand_NoSkillsDir_NoError(t *testing.T) {
+	maestroDir := t.TempDir()
+	// No skills directory
+
+	cfg := model.Config{
+		Skills: model.SkillsConfig{Enabled: true},
+	}
+	d, mock := newSkillTestDispatcher(t, maestroDir, cfg)
+
+	cmd := &model.Command{
+		ID:      "cmd_001",
+		Content: "implement feature X",
+	}
+
+	if err := d.DispatchCommand(cmd); err != nil {
+		t.Fatalf("dispatch should succeed even without skills dir: %v", err)
+	}
+
+	envelope := mock.calls[0].Message
+	if strings.Contains(envelope, "スキル:") {
+		t.Error("envelope should NOT contain skill section when no skills exist")
+	}
+}
+
+func TestDispatchCommand_OnlyPlannerSkills_NotWorkerSkills(t *testing.T) {
+	maestroDir := t.TempDir()
+	skillsDir := filepath.Join(maestroDir, "skills")
+	createSkillFileForRole(t, skillsDir, "planner", "plan-skill", "---\nname: Plan Skill\n---\nPlanner body\n")
+	createSkillFileForRole(t, skillsDir, "worker", "worker-skill", "---\nname: Worker Skill\n---\nWorker body\n")
+
+	cfg := model.Config{
+		Skills: model.SkillsConfig{Enabled: true},
+	}
+	d, mock := newSkillTestDispatcher(t, maestroDir, cfg)
+
+	cmd := &model.Command{
+		ID:      "cmd_001",
+		Content: "implement feature X",
+	}
+
+	if err := d.DispatchCommand(cmd); err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+
+	envelope := mock.calls[0].Message
+	if !strings.Contains(envelope, "スキル: Plan Skill") {
+		t.Error("envelope should contain planner skill")
+	}
+	if strings.Contains(envelope, "Worker Skill") {
+		t.Error("envelope should NOT contain worker-specific skill")
 	}
 }
 

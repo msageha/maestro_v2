@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -12,6 +13,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/skill"
+	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/tmux"
 )
 
@@ -157,6 +160,7 @@ func buildLaunchArgs(role, agentModel, systemPrompt string) []string {
 }
 
 // buildSystemPrompt combines maestro.md + instructions/{role}.md.
+// For orchestrator, it also appends all role-specific and shared skills.
 func buildSystemPrompt(maestroDir, role string) (string, error) {
 	// Read maestro.md
 	maestroPath := filepath.Join(maestroDir, "maestro.md")
@@ -177,6 +181,22 @@ func buildSystemPrompt(maestroDir, role string) (string, error) {
 	sb.Write(maestroContent)
 	sb.WriteString("\n\n---\n\n")
 	sb.Write(instructionsContent)
+
+	// For orchestrator, inject all role-specific and shared skills into system prompt.
+	// Respects skills.enabled and skills.max_body_chars from config.yaml.
+	if role == "orchestrator" {
+		cfg, cfgErr := model.LoadConfig(maestroDir)
+		if cfgErr == nil && cfg.Skills.Enabled {
+			skillsDir := filepath.Join(maestroDir, "skills")
+			skills, err := skill.ReadAllSkillsForRole(skillsDir, role, slog.Default())
+			if err != nil {
+				return "", fmt.Errorf("read skills for %s: %w", role, err)
+			}
+			if section := skill.FormatSkillSection(skills, cfg.Skills.EffectiveMaxBodyChars()); section != "" {
+				sb.WriteString(section)
+			}
+		}
+	}
 
 	return sb.String(), nil
 }

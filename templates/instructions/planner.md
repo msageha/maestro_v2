@@ -217,7 +217,19 @@ phases:
 
 ## スキル活用ガイド
 
-`skill_refs` は Worker にタスク固有の手順・ノウハウを注入する任意フィールド。`.maestro/skills/{name}.md` で定義。
+`skill_refs` は Worker にタスク固有の手順・ノウハウを注入する任意フィールド。
+
+### 利用可能スキルの確認
+
+タスク分解の前に、以下のコマンドで Worker に注入可能なスキル一覧を取得すること:
+
+```bash
+maestro skill list --role worker
+```
+
+出力は `スキル名\t説明` の形式。この一覧に存在するスキル名のみを `skill_refs` に指定できる。
+
+### 使い方
 
 ```yaml
 - name: "impl-auth"
@@ -406,8 +418,8 @@ tasks:
 | `bloom_level` | 必須 | Bloom's Taxonomy レベル (1-6) |
 | `required` | 必須 | `true`: 失敗で command 失敗 / `false`: 影響なし |
 | `tools_hint` | 任意 | 推奨 MCP ツール名リスト |
-| `persona_hint` | 任意 | ペルソナ名（`config.yaml` の `personas` で定義） |
-| `skill_refs` | 任意 | スキル名リスト（`.maestro/skills/{name}.md`） |
+| `persona_hint` | 任意 | ペルソナ名（`.maestro/persona/{name}.md`） |
+| `skill_refs` | 任意 | スキル名リスト（`.maestro/skills/{role}/{name}/SKILL.md`） |
 
 ### フェーズ付き（段階実行）
 
