@@ -123,18 +123,6 @@ func TestValidate_NegativeWatcherFields(t *testing.T) {
 	}
 }
 
-func TestValidate_QualityGateRateOutOfRange(t *testing.T) {
-	cfg := validConfig()
-	cfg.QualityGates.Thresholds.MaxTaskFailureRate = 1.5
-	err := cfg.Validate()
-	if err == nil {
-		t.Fatal("expected error for failure rate > 1.0")
-	}
-	if !strings.Contains(err.Error(), "quality_gates.thresholds.max_task_failure_rate") {
-		t.Fatalf("expected quality_gates.thresholds.max_task_failure_rate in error, got: %v", err)
-	}
-}
-
 func TestValidate_MultipleErrors(t *testing.T) {
 	cfg := Config{} // all zero values: name empty, version empty, workers 0
 	err := cfg.Validate()

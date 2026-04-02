@@ -74,6 +74,7 @@ func (qh *QueueHandler) debounceAndScan(trigger string) {
 
 			// Mark scan as running; if already running, skip.
 			if !qh.scanRunning.CompareAndSwap(false, true) {
+				qh.log(LogLevelDebug, "debounce_scan_skipped reason=scan_already_running trigger=%s", trigger)
 				return
 			}
 			defer qh.scanRunning.Store(false)
