@@ -354,6 +354,7 @@ maestro plan rebuild --command-id cmd_xxx
 | `--summary` | 結果の要約 |
 | `--files-changed` | 変更したファイル（複数指定可） |
 | `--learnings` | 再利用可能な知見（複数指定可） |
+| `--skill-candidates` | スキル候補の報告（複数指定可） |
 | `--partial-changes` | 部分的な変更がある場合に指定 |
 | `--no-retry-safe` | リトライが安全でない場合に指定 |
 
@@ -399,13 +400,13 @@ tmux ペイン内で Claude CLI エージェントを起動する（`maestro up`
 
 ### スキル管理
 
-#### `maestro skill list [--role <role>]`
+#### `maestro skill list --role <role>`
 
-登録済みスキルの一覧を表示する。`--role` でロール別にフィルタ可能。
+登録済みスキルの一覧を表示する。`--role` は必須で、指定したロールのスキル（ロール固有＋共有スキル）を表示する。
 
 ```bash
-maestro skill list
 maestro skill list --role worker
+maestro skill list --role planner
 ```
 
 #### `maestro skill candidates [--status <status>]`
