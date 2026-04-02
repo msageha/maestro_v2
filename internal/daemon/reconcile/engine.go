@@ -68,6 +68,10 @@ func (e *Engine) notifyPlannerOfReFill(commandID string) {
 		e.deps.DL.Logf(core.LogLevelWarn, "R0b notify_planner create_executor error=%v", err)
 		return
 	}
+	if exec == nil {
+		e.deps.DL.Logf(core.LogLevelWarn, "R0b notify_planner create_executor returned nil")
+		return
+	}
 	defer func() { _ = exec.Close() }()
 
 	message := fmt.Sprintf("[maestro] kind:re_fill command_id:%s\nphase filling was stuck, reverted to awaiting_fill — please re-submit tasks",
@@ -90,6 +94,10 @@ func (e *Engine) notifyPlannerOfReEvaluation(commandID, reason string) {
 		e.deps.DL.Logf(core.LogLevelWarn, "R4 notify_planner create_executor error=%v", err)
 		return
 	}
+	if exec == nil {
+		e.deps.DL.Logf(core.LogLevelWarn, "R4 notify_planner create_executor returned nil")
+		return
+	}
 	defer func() { _ = exec.Close() }()
 
 	message := fmt.Sprintf("[maestro] kind:re_evaluate command_id:%s\ncan_complete failed: %s — result quarantined, please re-evaluate",
@@ -110,6 +118,10 @@ func (e *Engine) notifyPlannerOfTimeout(commandID string, timedOutPhases map[str
 	exec, err := e.deps.ExecutorFactory(e.deps.MaestroDir, e.deps.Config.Watcher, e.deps.Config.Logging.Level)
 	if err != nil {
 		e.deps.DL.Logf(core.LogLevelWarn, "R6 notify_planner create_executor error=%v", err)
+		return
+	}
+	if exec == nil {
+		e.deps.DL.Logf(core.LogLevelWarn, "R6 notify_planner create_executor returned nil")
 		return
 	}
 	defer func() { _ = exec.Close() }()

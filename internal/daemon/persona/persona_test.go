@@ -58,6 +58,35 @@ func TestFormatPersonaSection_EmptyFileBody(t *testing.T) {
 	}
 }
 
+func TestFormatPersonaSection_PathTraversal(t *testing.T) {
+	dir := t.TempDir()
+	personaDir := filepath.Join(dir, "persona")
+	os.MkdirAll(personaDir, 0o755)
+	// Create a file that would be reachable via traversal
+	os.WriteFile(filepath.Join(dir, "secret.md"), []byte("secret data"), 0o644)
+
+	tests := []struct {
+		name string
+		hint string
+	}{
+		{"dot-dot-slash", "../secret"},
+		{"dot-dot", ".."},
+		{"single-dot", "."},
+		{"slash", "foo/bar"},
+		{"backslash", "foo\\bar"},
+		{"null-byte", "foo\x00bar"},
+		{"embedded-dot-dot", "foo..bar"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := FormatPersonaSection(tt.hint, dir)
+			if result != "" {
+				t.Errorf("expected empty result for hint %q, got %q", tt.hint, result)
+			}
+		})
+	}
+}
+
 func TestStripFrontmatter(t *testing.T) {
 	tests := []struct {
 		name  string

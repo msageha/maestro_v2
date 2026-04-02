@@ -249,6 +249,23 @@ func validateTaskFieldsCore(task TaskInput, fieldPrefix string, errs *Validation
 		}
 	}
 	validateBloomLevel(task.BloomLevel, fieldPrefix+".bloom_level", errs)
+
+	// Validate persona_hint: must be a safe identifier (no path traversal).
+	if task.PersonaHint != "" {
+		if !isValidIdentifier(task.PersonaHint) {
+			errs.Add(fieldPrefix+".persona_hint", fmt.Sprintf("invalid persona_hint %q: must not contain '/', '\\', or null bytes", task.PersonaHint))
+		}
+		if strings.Contains(task.PersonaHint, "..") {
+			errs.Add(fieldPrefix+".persona_hint", fmt.Sprintf("invalid persona_hint %q: must not contain '..'", task.PersonaHint))
+		}
+	}
+
+	// Validate skill_refs: each must be a safe identifier.
+	for i, ref := range task.SkillRefs {
+		if !isValidIdentifier(ref) {
+			errs.Add(fmt.Sprintf("%s.skill_refs[%d]", fieldPrefix, i), fmt.Sprintf("invalid skill_ref %q: must not contain '/', '\\', or null bytes", ref))
+		}
+	}
 }
 
 func validateNameUniqueness(names []string, fieldPrefix string, errs *ValidationErrors) {
@@ -273,6 +290,20 @@ func validateBloomLevel(level int, fieldPath string, errs *ValidationErrors) {
 	if level < 1 || level > 6 {
 		errs.Add(fieldPath, fmt.Sprintf("must be between 1 and 6, got %d", level))
 	}
+}
+
+// isValidIdentifier checks that a name is a safe directory component
+// (no path separators or null bytes).
+func isValidIdentifier(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	for _, r := range name {
+		if r == '/' || r == '\\' || r == '\x00' {
+			return false
+		}
+	}
+	return true
 }
 
 func validatePhaseConstraints(c *ConstraintInput, fieldPath string, errs *ValidationErrors) {
