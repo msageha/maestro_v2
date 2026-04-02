@@ -44,6 +44,7 @@ watcher:
   clear_confirm_poll_ms: 250 # クリア確認ウィンドウ内のポーリング間隔 (ms)
   clear_max_attempts: 3 # クリア送信の最大試行回数 (初回含む)
   clear_retry_backoff_ms: 500 # クリアリトライ間のベースバックオフ (ms、リトライ毎に倍増)
+  clear_second_enter_delay_ms: 500 # /clear 後の2回目 Enter 送信までの遅延 (ms)
 
 retry:
   command_dispatch: 5
@@ -115,14 +116,7 @@ skills:
 quality_gates:
   enabled: false # 品質ゲートの有効化フラグ
   skip_gates: false # 緊急モード (--skip-gates フラグで有効化)
-  thresholds:
-    max_task_failure_rate: 0.3 # タスク失敗率の上限 (30%)
-    min_task_success_rate: 0.7 # タスク成功率の下限 (70%)
-    max_consecutive_failures: 3 # 連続失敗の上限
-    max_task_duration_sec: 300 # タスク実行時間の上限 (5分)
-    max_pending_tasks: 50 # ペンディングタスクの上限
+  thresholds: {}
   enforcement:
     pre_task_check: true # タスク実行前のチェック
-    post_task_check: false # タスク実行後のチェック
     failure_action: "warn" # 失敗時の動作: "warn" or "block"
-    log_violations: true # 違反をログに記録

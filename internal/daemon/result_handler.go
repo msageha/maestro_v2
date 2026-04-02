@@ -31,10 +31,16 @@ const (
 	// notifyBackoffMax is the maximum backoff delay between retry attempts.
 	notifyBackoffMax = 30 * time.Second
 
-	// maxResultLoopIterations is the iteration count threshold at which a warning is
-	// logged in processWorkerResultFile / processCommandResultFile. The loops are
-	// unbounded (terminated by the attempted-set) so all pending results are drained.
-	maxResultLoopIterations = 100
+	// maxResultLoopIterations is the maximum number of iterations allowed per
+	// processWorkerResultFile / processCommandResultFile call. Prevents unbounded
+	// CPU/memory consumption when results are added faster than they are processed.
+	// Remaining results will be handled on the next scan cycle.
+	maxResultLoopIterations = 1000
+
+	// maxAtomicWriteFailures is the maximum number of consecutive AtomicWrite
+	// failures before the processing loop aborts. Prevents infinite loops when
+	// persistent write errors occur (e.g., disk full).
+	maxAtomicWriteFailures = 3
 )
 
 // ResultHandler monitors results/ and delivers notifications to agents.
@@ -179,11 +185,9 @@ func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
 	notified := 0
 	resultPath := filepath.Join(rh.maestroDir, "results", workerID+".yaml")
 	attempted := make(map[string]bool)
+	writeFailures := 0
 
-	for iter := 0; ; iter++ {
-		if iter == maxResultLoopIterations {
-			rh.log(LogLevelWarn, "process_worker_result high_volume worker=%s processed=%d continuing", workerID, notified)
-		}
+	for iter := 0; iter < maxResultLoopIterations; iter++ {
 		// Phase 1: Acquire lease under lock
 		lockKey := "result:" + workerID
 		rh.lockMap.Lock(lockKey)
@@ -263,10 +267,23 @@ func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
 		}
 
 		if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
-			rh.log(LogLevelError, "write_result worker=%s error=%v", workerID, err)
+			writeFailures++
+			rh.log(LogLevelError, "write_result worker=%s error=%v failures=%d/%d", workerID, err, writeFailures, maxAtomicWriteFailures)
+			if writeFailures >= maxAtomicWriteFailures {
+				rh.lockMap.Unlock(lockKey)
+				rh.log(LogLevelError, "write_result_abort worker=%s consecutive_failures=%d", workerID, writeFailures)
+				return notified
+			}
+		} else {
+			writeFailures = 0
 		}
 		rh.lockMap.Unlock(lockKey)
 	}
+
+	if len(attempted) >= maxResultLoopIterations {
+		rh.log(LogLevelWarn, "process_worker_result iteration_limit worker=%s processed=%d limit=%d", workerID, notified, maxResultLoopIterations)
+	}
+	return notified
 }
 
 // processCommandResultFile processes planner results using the notification lease pattern.
@@ -275,11 +292,9 @@ func (rh *ResultHandler) processCommandResultFile() int {
 	notified := 0
 	resultPath := filepath.Join(rh.maestroDir, "results", "planner.yaml")
 	attempted := make(map[string]bool)
+	writeFailures := 0
 
-	for iter := 0; ; iter++ {
-		if iter == maxResultLoopIterations {
-			rh.log(LogLevelWarn, "process_command_result high_volume processed=%d continuing", notified)
-		}
+	for iter := 0; iter < maxResultLoopIterations; iter++ {
 		lockKey := "result:planner"
 		rh.lockMap.Lock(lockKey)
 
@@ -352,10 +367,23 @@ func (rh *ResultHandler) processCommandResultFile() int {
 		}
 
 		if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
-			rh.log(LogLevelError, "write_result planner error=%v", err)
+			writeFailures++
+			rh.log(LogLevelError, "write_result planner error=%v failures=%d/%d", err, writeFailures, maxAtomicWriteFailures)
+			if writeFailures >= maxAtomicWriteFailures {
+				rh.lockMap.Unlock(lockKey)
+				rh.log(LogLevelError, "write_result_abort planner consecutive_failures=%d", writeFailures)
+				return notified
+			}
+		} else {
+			writeFailures = 0
 		}
 		rh.lockMap.Unlock(lockKey)
 	}
+
+	if len(attempted) >= maxResultLoopIterations {
+		rh.log(LogLevelWarn, "process_command_result iteration_limit processed=%d limit=%d", notified, maxResultLoopIterations)
+	}
+	return notified
 }
 
 // --- Notification lease helpers ---

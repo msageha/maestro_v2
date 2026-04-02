@@ -184,7 +184,11 @@ func runSkillApprove(args []string) error {
 
 	var result map[string]string
 	if err := json.Unmarshal(resp.Data, &result); err == nil {
-		fmt.Printf("approved %s as skill %q\n", candidateID, result["skill_name"])
+		skillName, ok := result["skill_name"]
+		if !ok {
+			return &CLIError{Code: 1, Msg: "maestro skill approve: response missing skill_name"}
+		}
+		fmt.Printf("approved %s as skill %q\n", candidateID, skillName)
 	}
 	return nil
 }

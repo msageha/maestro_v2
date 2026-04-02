@@ -48,10 +48,10 @@ func runResultWrite(args []string) error {
 	fs.BoolVar(&noRetrySafe, "no-retry-safe", false, "")
 
 	if err := fs.Parse(args[1:]); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro result write: %v\nusage: maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>] [--files-changed <file>]... [--learnings <text>]... [--partial-changes] [--no-retry-safe]", err)}
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro result write: %v\nusage: maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>] [--files-changed <file>]... [--learnings <text>]... [--skill-candidates <text>]... [--partial-changes] [--no-retry-safe]", err)}
 	}
 	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro result write: unexpected argument: %s\nusage: maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>] [--files-changed <file>]... [--learnings <text>]... [--partial-changes] [--no-retry-safe]", fs.Arg(0))}
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro result write: unexpected argument: %s\nusage: maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>] [--files-changed <file>]... [--learnings <text>]... [--skill-candidates <text>]... [--partial-changes] [--no-retry-safe]", fs.Arg(0))}
 	}
 
 	if taskID == "" || commandID == "" || resultStatus == "" {

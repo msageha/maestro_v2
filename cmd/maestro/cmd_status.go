@@ -79,6 +79,10 @@ func runDashboard(args []string) error {
 		return fmt.Errorf("maestro dashboard: parse response: %w", err)
 	}
 
-	fmt.Printf("Dashboard regenerated: %s\n", result["path"])
+	path, ok := result["path"]
+	if !ok {
+		return &CLIError{Code: 1, Msg: "maestro dashboard: response missing path"}
+	}
+	fmt.Printf("Dashboard regenerated: %s\n", path)
 	return nil
 }

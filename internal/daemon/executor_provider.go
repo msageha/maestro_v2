@@ -79,7 +79,7 @@ func (ep *ExecutorProvider) GetExecutor() (AgentExecutor, error) {
 }
 
 // SetFactory overrides the executor factory and resets all cached state.
-// The old executor is closed while holding the lock to prevent races.
+// The old executor is closed outside the lock to prevent blocking GetExecutor() callers.
 func (ep *ExecutorProvider) SetFactory(f ExecutorFactory) {
 	ep.mu.Lock()
 	old := ep.cachedExec
@@ -88,10 +88,11 @@ func (ep *ExecutorProvider) SetFactory(f ExecutorFactory) {
 	ep.execInit = false
 	ep.execFailCount = 0
 	ep.execLastFailAt = time.Time{}
+	ep.mu.Unlock()
+
 	if old != nil {
 		_ = old.Close()
 	}
-	ep.mu.Unlock()
 }
 
 // Factory returns the current ExecutorFactory. Used by components that need

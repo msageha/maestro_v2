@@ -94,10 +94,19 @@ func (disp *Dispatcher) SetWorktreeManager(wm *WorktreeManager) {
 }
 
 // getEventBus returns the event bus with proper synchronization.
+// May return nil if SetEventBus has not been called yet.
 func (disp *Dispatcher) getEventBus() *events.Bus {
 	disp.mu.RLock()
 	defer disp.mu.RUnlock()
 	return disp.eventBus
+}
+
+// publishEvent publishes an event to the event bus if available.
+// Safe to call when eventBus is nil (no-op).
+func (disp *Dispatcher) publishEvent(eventType events.EventType, data map[string]interface{}) {
+	if bus := disp.getEventBus(); bus != nil {
+		bus.Publish(eventType, data)
+	}
 }
 
 // getQualityGate returns the quality gate daemon with proper synchronization.
@@ -356,14 +365,12 @@ func (disp *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 		task.ID, workerID, task.LeaseEpoch)
 
 	// Publish task_started event (non-blocking, best-effort)
-	if bus := disp.getEventBus(); bus != nil {
-		bus.Publish(events.EventTaskStarted, map[string]interface{}{
-			"task_id":    task.ID,
-			"command_id": task.CommandID,
-			"worker_id":  workerID,
-			"epoch":      task.LeaseEpoch,
-		})
-	}
+	disp.publishEvent(events.EventTaskStarted, map[string]interface{}{
+		"task_id":    task.ID,
+		"command_id": task.CommandID,
+		"worker_id":  workerID,
+		"epoch":      task.LeaseEpoch,
+	})
 
 	return nil
 }
