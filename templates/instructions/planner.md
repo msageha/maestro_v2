@@ -217,9 +217,15 @@ phases:
 
 ## スキル活用ガイド
 
+### Planner 自身のスキル（Orchestrator が選定・注入）
+
+Planner が受け取るコマンドには、Orchestrator が選定した Planner 向けスキル（タスク分解フレームワーク、要件分析等）が `skill_refs` 経由で注入される。共有スキル（コンテキスト効率化、自己評価、構造化通信）は自動注入される。これらのスキルはコマンドの `content` 末尾に付与されるため、Planner が能動的に取得する必要はない。
+
+### Worker 向け `skill_refs`
+
 `skill_refs` は Worker にタスク固有の手順・ノウハウを注入する任意フィールド。
 
-### 利用可能スキルの確認
+**利用可能スキルの確認**:
 
 タスク分解の前に、以下のコマンドで Worker に注入可能なスキル一覧を取得すること:
 
@@ -227,13 +233,13 @@ phases:
 maestro skill list --role worker
 ```
 
-出力は `スキル名\t説明` の形式。この一覧に存在するスキル名のみを `skill_refs` に指定できる。
+出力は `スキル名\t説明` の形式。この一覧に存在するスキル名のみを `skill_refs` に指定できる。共有スキルは Worker にも自動注入されるため、`skill_refs` に含めない。
 
 ### 使い方
 
 ```yaml
 - name: "impl-auth"
-  skill_refs: ["go-error-handling", "api-design"]
+  skill_refs: ["constraint-aware-implementation", "resilient-execution"]
   # ... 他フィールド
 ```
 
@@ -404,7 +410,7 @@ tasks:
     required: true
     tools_hint: ["context7"]
     persona_hint: "implementer"
-    skill_refs: ["api-design"]
+    skill_refs: ["constraint-aware-implementation"]
 ```
 
 | フィールド | 必須 | 説明 |

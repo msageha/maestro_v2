@@ -2,7 +2,6 @@
 name: security-threat-model
 description: AppSecグレードの脅威モデリングフレームワーク。Plannerがセキュリティ分析タスクを設計・分解するための8ステップワークフロー
 version: "1.0"
-applies_to: ["planner"]
 tags: [security, threat-modeling, risk-analysis, appsec, architecture]
 priority: 20
 ---

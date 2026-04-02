@@ -38,12 +38,12 @@ watcher:
   idle_stable_sec: 5
   cooldown_after_clear: 3
   notify_lease_sec: 120
-  wait_ready_interval_sec: 2         # Agent 準備完了待ちのポーリング間隔 (秒)
-  wait_ready_max_retries: 30         # Agent 準備完了待ちの最大リトライ回数
-  clear_confirm_timeout_sec: 5       # クリア確認の1回あたりタイムアウト (秒)
-  clear_confirm_poll_ms: 250         # クリア確認ウィンドウ内のポーリング間隔 (ms)
-  clear_max_attempts: 3              # クリア送信の最大試行回数 (初回含む)
-  clear_retry_backoff_ms: 500        # クリアリトライ間のベースバックオフ (ms、リトライ毎に倍増)
+  wait_ready_interval_sec: 2 # Agent 準備完了待ちのポーリング間隔 (秒)
+  wait_ready_max_retries: 30 # Agent 準備完了待ちの最大リトライ回数
+  clear_confirm_timeout_sec: 5 # クリア確認の1回あたりタイムアウト (秒)
+  clear_confirm_poll_ms: 250 # クリア確認ウィンドウ内のポーリング間隔 (ms)
+  clear_max_attempts: 3 # クリア送信の最大試行回数 (初回含む)
+  clear_retry_backoff_ms: 500 # クリアリトライ間のベースバックオフ (ms、リトライ毎に倍増)
 
 retry:
   command_dispatch: 5
@@ -51,7 +51,7 @@ retry:
   orchestrator_notification_dispatch: 10
   task_execution:
     enabled: true
-    retryable_exit_codes: [1, 124, 137]  # general error, timeout, killed
+    retryable_exit_codes: [1, 124, 137] # general error, timeout, killed
     max_retries: 2
     cooldown_sec: 30
 
@@ -63,8 +63,8 @@ limits:
   max_pending_tasks_per_worker: 10
   max_entry_content_bytes: 65536
   max_yaml_file_bytes: 5242880
-  max_dead_letter_archive_files: 100  # dead letter アーカイブの最大保持ファイル数 (default: 100)
-  max_quarantine_files: 100            # 隔離キューの最大保持ファイル数 (default: 100)
+  max_dead_letter_archive_files: 100 # dead letter アーカイブの最大保持ファイル数 (default: 100)
+  max_quarantine_files: 100 # 隔離キューの最大保持ファイル数 (default: 100)
 
 shutdown_timeout_sec: 90
 
@@ -72,57 +72,57 @@ logging:
   level: "info"
 
 circuit_breaker:
-  enabled: false                   # サーキットブレーカーの有効化フラグ (opt-in)
-  max_consecutive_failures: 3      # 連続失敗でトリップするしきい値
-  progress_timeout_minutes: 30     # 最後の成功からのタイムアウト (分、0で無効)
+  enabled: false # サーキットブレーカーの有効化フラグ (opt-in)
+  max_consecutive_failures: 3 # 連続失敗でトリップするしきい値
+  progress_timeout_minutes: 30 # 最後の成功からのタイムアウト (分、0で無効)
 
 learnings:
-  enabled: false                    # 学習知見の蓄積 (opt-in)
-  max_entries: 100                  # 蓄積上限件数
-  max_content_length: 500           # 1件あたりの最大文字数
-  inject_count: 5                   # タスク配信時に注入する最新 K 件
-  ttl_hours: 72                     # 学習知見の有効期限 (時間、0で無制限)
+  enabled: false # 学習知見の蓄積 (opt-in)
+  max_entries: 100 # 蓄積上限件数
+  max_content_length: 500 # 1件あたりの最大文字数
+  inject_count: 5 # タスク配信時に注入する最新 K 件
+  ttl_hours: 72 # 学習知見の有効期限 (時間、0で無制限)
 
 worktree:
-  enabled: true                     # Worker worktree 隔離の有効化フラグ (default: true)
-  base_branch: "main"              # worktree のベースブランチ
+  enabled: true # Worker worktree 隔離の有効化フラグ (default: true)
+  base_branch: "main" # worktree のベースブランチ
   path_prefix: ".maestro/worktrees" # worktree 作成先ディレクトリ
-  auto_commit: true                # Phase 完了時の自動コミット
-  auto_merge: true                 # Phase 境界での自動マージ
-  merge_strategy: "ort"            # git merge 戦略
-  cleanup_on_success: true         # コマンド成功時の自動クリーンアップ
-  cleanup_on_failure: false        # コマンド失敗時のクリーンアップ (デフォルト: 保全)
-  git_timeout_sec: 120             # git コマンドのタイムアウト (秒)
+  auto_commit: true # Phase 完了時の自動コミット
+  auto_merge: true # Phase 境界での自動マージ
+  merge_strategy: "ort" # git merge 戦略
+  cleanup_on_success: true # コマンド成功時の自動クリーンアップ
+  cleanup_on_failure: false # コマンド失敗時のクリーンアップ (デフォルト: 保全)
+  git_timeout_sec: 120 # git コマンドのタイムアウト (秒)
   commit_policy:
-    max_files: 30                  # 1コミットあたりの最大ステージングファイル数 (0=無制限, default: 30)
-    require_gitignore: true        # .gitignore の存在を要求する
+    max_files: 30 # 1コミットあたりの最大ステージングファイル数 (0=無制限, default: 30)
+    require_gitignore: true # .gitignore の存在を要求する
     message_pattern: "^\\[maestro\\]\\s" # コミットメッセージの正規表現バリデーション (空=チェックなし)
   gc:
-    enabled: true                  # 定期 GC の有効化
-    ttl_hours: 24                  # 古い worktree の TTL (時間)
-    max_worktrees: 32              # 最大 worktree 数
+    enabled: true # 定期 GC の有効化
+    ttl_hours: 24 # 古い worktree の TTL (時間)
+    max_worktrees: 32 # 最大 worktree 数
 
 skills:
-  enabled: true                    # スキル参照機能の有効化フラグ (opt-in)
-  max_refs_per_task: 3              # タスクあたりの最大スキル参照数
-  max_body_chars: 2000              # スキル本文の最大文字数
-  missing_ref_policy: "warn"        # 参照先スキルが見つからない場合の動作: "warn" or "error"
+  enabled: true # スキル参照機能の有効化フラグ (opt-in)
+  max_refs_per_task: 3 # タスクあたりの最大スキル参照数（roleスキルのみカウント）
+  max_body_chars: 0 # スキル本文の最大文字数（0で無制限）。共有スキルは自動注入されるため、サイズ制限は max_refs_per_task で制御する
+  missing_ref_policy: "warn" # 参照先スキルが見つからない場合の動作: "warn" or "error"
   auto_collect:
-    enabled: false                  # 学習知見からの自動スキル収集 (opt-in)
-    min_occurrences: 3              # 自動収集の最小出現回数
-    min_commands: 2                 # 自動収集の最小コマンド数
+    enabled: false # 学習知見からの自動スキル収集 (opt-in)
+    min_occurrences: 3 # 自動収集の最小出現回数
+    min_commands: 2 # 自動収集の最小コマンド数
 
 quality_gates:
-  enabled: false                    # 品質ゲートの有効化フラグ
-  skip_gates: false                 # 緊急モード (--skip-gates フラグで有効化)
+  enabled: false # 品質ゲートの有効化フラグ
+  skip_gates: false # 緊急モード (--skip-gates フラグで有効化)
   thresholds:
-    max_task_failure_rate: 0.3     # タスク失敗率の上限 (30%)
-    min_task_success_rate: 0.7     # タスク成功率の下限 (70%)
-    max_consecutive_failures: 3    # 連続失敗の上限
-    max_task_duration_sec: 300     # タスク実行時間の上限 (5分)
-    max_pending_tasks: 50          # ペンディングタスクの上限
+    max_task_failure_rate: 0.3 # タスク失敗率の上限 (30%)
+    min_task_success_rate: 0.7 # タスク成功率の下限 (70%)
+    max_consecutive_failures: 3 # 連続失敗の上限
+    max_task_duration_sec: 300 # タスク実行時間の上限 (5分)
+    max_pending_tasks: 50 # ペンディングタスクの上限
   enforcement:
-    pre_task_check: true           # タスク実行前のチェック
-    post_task_check: false         # タスク実行後のチェック
-    failure_action: "warn"         # 失敗時の動作: "warn" or "block"
-    log_violations: true           # 違反をログに記録
+    pre_task_check: true # タスク実行前のチェック
+    post_task_check: false # タスク実行後のチェック
+    failure_action: "warn" # 失敗時の動作: "warn" or "block"
+    log_violations: true # 違反をログに記録

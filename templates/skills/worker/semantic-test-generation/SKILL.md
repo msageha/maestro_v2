@@ -2,9 +2,8 @@
 name: semantic-test-generation
 description: acceptance_criteriaと要件分析に基づく体系的テストケース生成ガイドライン
 version: "1.0.0"
-applies_to: ["worker"]
 tags: [testing, test-generation, acceptance-criteria, quality-assurance]
-priority: 10
+priority: 15
 ---
 
 # Semantic Test Generation

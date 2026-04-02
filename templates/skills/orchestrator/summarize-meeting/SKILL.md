@@ -2,9 +2,8 @@
 name: summarize-meeting
 description: コマンド完了結果を構造化要約として整理するスキル
 version: "1.0.0"
-applies_to: ["orchestrator"]
 tags: [summary, reporting, structured-output, post-command]
-priority: 10
+priority: 15
 ---
 
 # Summarize Meeting — コマンド完了結果の構造化要約

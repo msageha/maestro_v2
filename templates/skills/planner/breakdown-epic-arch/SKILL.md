@@ -2,9 +2,8 @@
 name: breakdown-epic-arch
 description: 大規模コマンドをアーキテクチャ観点で分解するフレームワーク
 version: "1.0.0"
-applies_to: ["planner"]
 tags: [planner, architecture, decomposition]
-priority: 10
+priority: 15
 ---
 
 # Breakdown Epic Architecture — アーキテクチャ分解フレームワーク

@@ -2,9 +2,8 @@
 name: semantic-code-search
 description: 類似コード発見・影響範囲調査・テスト対象選定のためのパターンベース検索ガイド
 version: "1.0.0"
-applies_to: ["worker"]
 tags: [search, code-analysis, impact-analysis, refactoring]
-priority: 10
+priority: 15
 ---
 
 # Semantic Code Search

@@ -128,6 +128,73 @@ func TestQueueWriteCommand_Basic(t *testing.T) {
 	}
 }
 
+func TestQueueWriteCommand_SkillRefs(t *testing.T) {
+	d := newTestDaemon(t)
+
+	req := makeQueueWriteRequest(t, QueueWriteParams{
+		Type:      "command",
+		Content:   "implement feature X",
+		SkillRefs: []string{"breakdown-plan", "create-implementation-plan"},
+	})
+
+	resp := d.api.handleQueueWrite(req)
+	if !resp.Success {
+		t.Fatalf("expected success, got error: %v", resp.Error)
+	}
+
+	// Verify skill_refs persisted in queue file
+	path := filepath.Join(d.maestroDir, "queue", "planner.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read queue file: %v", err)
+	}
+	var cq model.CommandQueue
+	if err := yamlv3.Unmarshal(data, &cq); err != nil {
+		t.Fatalf("parse queue: %v", err)
+	}
+	if len(cq.Commands) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(cq.Commands))
+	}
+	cmd := cq.Commands[0]
+	if len(cmd.SkillRefs) != 2 {
+		t.Fatalf("expected 2 skill_refs, got %d", len(cmd.SkillRefs))
+	}
+	if cmd.SkillRefs[0] != "breakdown-plan" || cmd.SkillRefs[1] != "create-implementation-plan" {
+		t.Errorf("skill_refs = %v, want [breakdown-plan create-implementation-plan]", cmd.SkillRefs)
+	}
+}
+
+func TestQueueWriteCommand_NoSkillRefs(t *testing.T) {
+	d := newTestDaemon(t)
+
+	req := makeQueueWriteRequest(t, QueueWriteParams{
+		Type:    "command",
+		Content: "simple fix",
+		// No SkillRefs
+	})
+
+	resp := d.api.handleQueueWrite(req)
+	if !resp.Success {
+		t.Fatalf("expected success, got error: %v", resp.Error)
+	}
+
+	path := filepath.Join(d.maestroDir, "queue", "planner.yaml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read queue file: %v", err)
+	}
+	var cq model.CommandQueue
+	if err := yamlv3.Unmarshal(data, &cq); err != nil {
+		t.Fatalf("parse queue: %v", err)
+	}
+	if len(cq.Commands) != 1 {
+		t.Fatalf("expected 1 command, got %d", len(cq.Commands))
+	}
+	if len(cq.Commands[0].SkillRefs) != 0 {
+		t.Errorf("expected empty skill_refs, got %v", cq.Commands[0].SkillRefs)
+	}
+}
+
 func TestQueueWriteCommand_Backpressure(t *testing.T) {
 	d := newTestDaemon(t)
 	d.config.Limits.MaxPendingCommands = 2

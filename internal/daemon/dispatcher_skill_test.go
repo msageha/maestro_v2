@@ -73,9 +73,10 @@ func TestDispatchTask_SkillInjection_Success(t *testing.T) {
 	}
 }
 
-func TestDispatchTask_SkillRefs_Empty_NoInjection(t *testing.T) {
+func TestDispatchTask_SkillRefs_Empty_NoShared_NoInjection(t *testing.T) {
 	maestroDir := t.TempDir()
 	skillsDir := filepath.Join(maestroDir, "skills")
+	// Only create a worker-specific skill (no shared skills)
 	createSkillFile(t, skillsDir, "go-testing", "---\nname: Go Testing\n---\nBody\n")
 
 	cfg := model.Config{
@@ -97,7 +98,108 @@ func TestDispatchTask_SkillRefs_Empty_NoInjection(t *testing.T) {
 
 	envelope := mock.calls[0].Message
 	if strings.Contains(envelope, "スキル:") {
-		t.Error("envelope should NOT contain skill section when SkillRefs is empty")
+		t.Error("envelope should NOT contain skill section when no shared skills and no skill_refs")
+	}
+}
+
+func TestDispatchTask_SharedSkills_AutoInjected(t *testing.T) {
+	maestroDir := t.TempDir()
+	skillsDir := filepath.Join(maestroDir, "skills")
+	// Create shared skill only (no skill_refs needed)
+	createSkillFileForRole(t, skillsDir, "share", "error-patterns", "---\nname: Error Patterns\n---\nDiagnose errors systematically.\n")
+
+	cfg := model.Config{
+		Skills: model.SkillsConfig{Enabled: true},
+	}
+	d, mock := newSkillTestDispatcher(t, maestroDir, cfg)
+
+	task := &model.Task{
+		ID:        "task_001",
+		CommandID: "cmd_001",
+		Purpose:   "test",
+		Content:   "original content",
+		SkillRefs: nil, // no explicit skill_refs
+	}
+
+	if err := d.DispatchTask(task, "worker1"); err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+
+	envelope := mock.calls[0].Message
+	if !strings.Contains(envelope, "スキル: Error Patterns") {
+		t.Error("envelope should contain auto-injected shared skill")
+	}
+	if !strings.Contains(envelope, "Diagnose errors systematically.") {
+		t.Error("envelope should contain shared skill body")
+	}
+}
+
+func TestDispatchTask_SharedSkills_DeduplicatedWithSkillRefs(t *testing.T) {
+	maestroDir := t.TempDir()
+	skillsDir := filepath.Join(maestroDir, "skills")
+	// Create a shared skill and a worker-specific override with the same name
+	createSkillFileForRole(t, skillsDir, "share", "my-skill", "---\nname: Shared Version\n---\nShared body\n")
+	createSkillFile(t, skillsDir, "my-skill", "---\nname: Worker Version\n---\nWorker body\n")
+
+	cfg := model.Config{
+		Skills: model.SkillsConfig{Enabled: true},
+	}
+	d, mock := newSkillTestDispatcher(t, maestroDir, cfg)
+
+	task := &model.Task{
+		ID:        "task_001",
+		CommandID: "cmd_001",
+		Purpose:   "test",
+		Content:   "original content",
+		SkillRefs: []string{"my-skill"}, // explicitly references the skill
+	}
+
+	if err := d.DispatchTask(task, "worker1"); err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+
+	envelope := mock.calls[0].Message
+	// Worker-specific version should be used (via ReadSkillWithRole fallback)
+	if !strings.Contains(envelope, "Worker Version") {
+		t.Error("envelope should contain worker-specific version of the skill")
+	}
+	// Should NOT contain the shared version as a duplicate
+	if strings.Contains(envelope, "Shared Version") {
+		t.Error("envelope should NOT contain shared version when worker-specific exists in skill_refs")
+	}
+}
+
+func TestDispatchTask_SharedSkills_MixedWithSkillRefs(t *testing.T) {
+	maestroDir := t.TempDir()
+	skillsDir := filepath.Join(maestroDir, "skills")
+	// Worker-specific skill
+	createSkillFile(t, skillsDir, "impl-skill", "---\nname: Impl Skill\n---\nImplementation body\n")
+	// Shared skill (different name, should be auto-injected)
+	createSkillFileForRole(t, skillsDir, "share", "shared-skill", "---\nname: Shared Skill\n---\nShared body\n")
+
+	cfg := model.Config{
+		Skills: model.SkillsConfig{Enabled: true},
+	}
+	d, mock := newSkillTestDispatcher(t, maestroDir, cfg)
+
+	task := &model.Task{
+		ID:        "task_001",
+		CommandID: "cmd_001",
+		Purpose:   "test",
+		Content:   "original content",
+		SkillRefs: []string{"impl-skill"},
+	}
+
+	if err := d.DispatchTask(task, "worker1"); err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+
+	envelope := mock.calls[0].Message
+	if !strings.Contains(envelope, "スキル: Impl Skill") {
+		t.Error("envelope should contain explicitly referenced skill")
+	}
+	if !strings.Contains(envelope, "スキル: Shared Skill") {
+		t.Error("envelope should contain auto-injected shared skill")
 	}
 }
 
@@ -290,8 +392,9 @@ func TestDispatchCommand_PlannerSkillInjection(t *testing.T) {
 	d, mock := newSkillTestDispatcher(t, maestroDir, cfg)
 
 	cmd := &model.Command{
-		ID:      "cmd_001",
-		Content: "implement feature X",
+		ID:        "cmd_001",
+		Content:   "implement feature X",
+		SkillRefs: []string{"plan-skill"}, // Orchestrator selects planner skills
 	}
 
 	if err := d.DispatchCommand(cmd); err != nil {
@@ -307,16 +410,46 @@ func TestDispatchCommand_PlannerSkillInjection(t *testing.T) {
 		t.Error("envelope should contain original content")
 	}
 	if !strings.Contains(envelope, "スキル: Plan Skill") {
-		t.Error("envelope should contain planner-specific skill")
+		t.Error("envelope should contain planner-specific skill from skill_refs")
 	}
 	if !strings.Contains(envelope, "Planner skill body") {
 		t.Error("envelope should contain planner skill body")
 	}
 	if !strings.Contains(envelope, "スキル: Shared Skill") {
-		t.Error("envelope should contain shared skill")
+		t.Error("envelope should contain auto-injected shared skill")
 	}
 	if !strings.Contains(envelope, "Shared skill body") {
 		t.Error("envelope should contain shared skill body")
+	}
+}
+
+func TestDispatchCommand_NoSkillRefs_OnlySharedInjected(t *testing.T) {
+	maestroDir := t.TempDir()
+	skillsDir := filepath.Join(maestroDir, "skills")
+	createSkillFileForRole(t, skillsDir, "planner", "plan-skill", "---\nname: Plan Skill\n---\nPlanner body\n")
+	createSkillFileForRole(t, skillsDir, "share", "shared-skill", "---\nname: Shared Skill\n---\nShared body\n")
+
+	cfg := model.Config{
+		Skills: model.SkillsConfig{Enabled: true},
+	}
+	d, mock := newSkillTestDispatcher(t, maestroDir, cfg)
+
+	cmd := &model.Command{
+		ID:      "cmd_001",
+		Content: "simple fix",
+		// No SkillRefs — only shared skills should be injected
+	}
+
+	if err := d.DispatchCommand(cmd); err != nil {
+		t.Fatalf("dispatch failed: %v", err)
+	}
+
+	envelope := mock.calls[0].Message
+	if strings.Contains(envelope, "Plan Skill") {
+		t.Error("envelope should NOT contain planner skill when not in skill_refs")
+	}
+	if !strings.Contains(envelope, "Shared Skill") {
+		t.Error("envelope should contain auto-injected shared skill")
 	}
 }
 
@@ -381,8 +514,9 @@ func TestDispatchCommand_OnlyPlannerSkills_NotWorkerSkills(t *testing.T) {
 	d, mock := newSkillTestDispatcher(t, maestroDir, cfg)
 
 	cmd := &model.Command{
-		ID:      "cmd_001",
-		Content: "implement feature X",
+		ID:        "cmd_001",
+		Content:   "implement feature X",
+		SkillRefs: []string{"plan-skill"},
 	}
 
 	if err := d.DispatchCommand(cmd); err != nil {

@@ -2,7 +2,6 @@
 name: idempotent-tool-execution
 description: ツール実行の冪等性設計・副作用管理・安全な再試行を保証するパターン集
 version: "1.0.0"
-applies_to: ["worker"]
 tags: [idempotent, retry, side-effect, safety, tool-execution]
 priority: 10
 ---

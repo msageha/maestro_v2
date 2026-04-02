@@ -2,9 +2,8 @@
 name: internal-comms
 description: Orchestratorからユーザーへの構造化報告テンプレート集
 version: "1.0.0"
-applies_to: ["orchestrator"]
 tags: [communication, reporting, status, orchestrator]
-priority: 10
+priority: 5
 ---
 
 # Internal Communications

@@ -2,9 +2,8 @@
 name: resilient-execution
 description: エラーのリトライ戦略・段階的エスカレーション・回復パターンのガイドライン
 version: "1.0.0"
-applies_to: ["worker"]
 tags: [retry, resilience, error-recovery, escalation]
-priority: 10
+priority: 5
 ---
 
 # Resilient Execution

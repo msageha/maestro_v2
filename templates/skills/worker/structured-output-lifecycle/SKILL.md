@@ -2,9 +2,8 @@
 name: structured-output-lifecycle
 description: 構造化出力の生成・スキーマ検証・自動修復サイクルのガイドライン
 version: "1.0.0"
-applies_to: ["worker"]
 tags: [structured-output, validation, schema, auto-repair]
-priority: 10
+priority: 15
 ---
 
 # Structured Output Lifecycle

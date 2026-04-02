@@ -2,7 +2,6 @@
 name: error-diagnosis-patterns
 description: エラーの分類・根本原因分析・高速診断のパターン集
 version: "1.0"
-applies_to: ["orchestrator", "planner", "worker"]
 tags: [error, diagnosis, debugging, retry, root-cause-analysis]
 priority: 10
 ---

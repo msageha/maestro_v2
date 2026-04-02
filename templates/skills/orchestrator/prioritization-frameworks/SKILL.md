@@ -2,9 +2,8 @@
 name: prioritization-frameworks
 description: Orchestratorが複数要求の委譲順序を判断するための優先順位フレームワーク
 version: "1.0.0"
-applies_to: ["orchestrator"]
 tags: [prioritization, decision-making, orchestrator, triage]
-priority: 10
+priority: 15
 ---
 
 # Prioritization Frameworks

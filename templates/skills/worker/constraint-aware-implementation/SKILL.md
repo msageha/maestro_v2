@@ -2,9 +2,8 @@
 name: constraint-aware-implementation
 description: 性能・セキュリティ・スタイル制約の明示的列挙と遵守検証ガイド
 version: "1.0.0"
-applies_to: ["worker"]
 tags: [constraints, verification, quality, implementation]
-priority: 10
+priority: 5
 ---
 
 # Constraint-Aware Implementation

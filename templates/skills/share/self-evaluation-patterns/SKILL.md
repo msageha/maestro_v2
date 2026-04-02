@@ -2,7 +2,6 @@
 name: self-evaluation-patterns
 description: 出力前の自己チェックと完了判定のための構造化パターン集
 version: "1.0"
-applies_to: ["orchestrator", "planner", "worker"]
 tags: [quality, evaluation, self-check, completeness]
 priority: 10
 ---

@@ -2,7 +2,6 @@
 name: prd
 description: ユーザーとの対話で要件を構造化し Planner 委譲用コマンドを生成するスキル
 version: "1.0.0"
-applies_to: ["orchestrator"]
 tags: [prd, requirements, discovery, planning, structured-input]
 priority: 10
 ---
@@ -11,7 +10,7 @@ priority: 10
 
 ユーザーの曖昧な要求を対話ベースで明確化し、Planner に委譲可能な構造化コマンドを生成する。技術的な分解は行わず「何を作るか」の整理に特化する。
 
-> **create-prd（Planner スキル）との差別化**: Orchestrator は要件の初期構造化のみ担当する。技術スタック選定・タスク分解・依存関係設計は Planner に委譲する。
+> **requirements-analysis（Planner スキル）との差別化**: Orchestrator は要件の初期構造化のみ担当する。技術スタック選定・タスク分解・依存関係設計は Planner に委譲する。
 
 ## Phase 1: Discovery（ユーザーへの質問）
 

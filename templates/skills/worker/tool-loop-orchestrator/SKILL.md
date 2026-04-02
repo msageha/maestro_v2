@@ -2,7 +2,6 @@
 name: tool-loop-orchestrator
 description: 複数ツールの逐次実行・状態管理・停止条件判定・エラー時分岐のパターン集
 version: "1.0.0"
-applies_to: ["worker"]
 tags: [workflow, loop, orchestration, multi-step, state-management]
 priority: 10
 ---

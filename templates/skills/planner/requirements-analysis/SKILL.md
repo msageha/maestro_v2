@@ -1,13 +1,12 @@
 ---
-name: create-prd
-description: 曖昧なコマンドを構造化要件に変換するPRDフレームワーク
+name: requirements-analysis
+description: 曖昧なコマンドを構造化要件に変換しタスク設計に接続するフレームワーク
 version: "1.0.0"
-applies_to: ["planner"]
-tags: [prd, requirements, planning]
-priority: 10
+tags: [requirements, analysis, planning]
+priority: 15
 ---
 
-# PRD作成スキル
+# 要件分析スキル
 
 ユーザーの曖昧な要求を構造化要件に変換し、Maestroタスク設計に接続する。
 

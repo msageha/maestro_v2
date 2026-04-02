@@ -2,9 +2,8 @@
 name: context-window-efficiency
 description: コンテキストウィンドウの効率的な利用と情報ロス防止パターン
 version: "1.0"
-applies_to: ["orchestrator", "planner", "worker"]
 tags: [context, efficiency, summary, compaction, information-density]
-priority: 10
+priority: 5
 ---
 
 # Context Window Efficiency

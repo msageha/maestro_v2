@@ -2,9 +2,8 @@
 name: structured-ai-communication
 description: AI-to-AI通信品質を高めるための構造化コミュニケーションガイドライン
 version: "1.0"
-applies_to: ["orchestrator", "planner", "worker"]
 tags: [communication, structured-output, clarity, ai-to-ai]
-priority: 10
+priority: 5
 ---
 
 # Structured AI Communication

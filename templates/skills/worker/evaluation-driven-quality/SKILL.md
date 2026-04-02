@@ -2,7 +2,6 @@
 name: evaluation-driven-quality
 description: Input-Output-Score評価による反復的品質改善サイクルのガイドライン
 version: "1.0.0"
-applies_to: ["worker"]
 tags: [quality, evaluation, improvement-cycle, scoring]
 priority: 10
 ---

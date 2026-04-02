@@ -2,7 +2,6 @@
 name: breakdown-feature-implementation
 description: 機能要件を実装タスクに分解するフレームワーク
 version: "1.0.0"
-applies_to: ["planner"]
 tags: [planner, feature, implementation]
 priority: 10
 ---

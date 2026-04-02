@@ -7,9 +7,10 @@ type CommandQueue struct {
 }
 
 type Command struct {
-	ID                string  `yaml:"id"`
-	Content           string  `yaml:"content"`
-	Priority          int     `yaml:"priority"`
+	ID                string   `yaml:"id"`
+	Content           string   `yaml:"content"`
+	SkillRefs         []string `yaml:"skill_refs,omitempty"`
+	Priority          int      `yaml:"priority"`
 	Status            Status  `yaml:"status"`
 	Attempts          int     `yaml:"attempts"`
 	LastError         *string `yaml:"last_error"`

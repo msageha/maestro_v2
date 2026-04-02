@@ -2,9 +2,8 @@
 name: source-grounded-response
 description: 事実のみ引用・不確実性の明示・ハルシネーション防止のパターン集
 version: "1.0.0"
-applies_to: ["worker"]
 tags: [grounding, evidence, hallucination-prevention, accuracy, reporting]
-priority: 10
+priority: 15
 ---
 
 # Source-Grounded Response

@@ -24,8 +24,7 @@ type SkillMetadata struct {
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description"`
 	Version     string   `yaml:"version"`
-	AppliesTo   []string `yaml:"applies_to"`
-	Tags        []string `yaml:"tags"`
+	Tags []string `yaml:"tags"`
 	Priority    *int     `yaml:"priority"`
 	Mode        string   `yaml:"mode"`
 }
@@ -197,15 +196,20 @@ func parseFrontmatter(content string) (SkillMetadata, string, error) {
 }
 
 // ReadSkillWithRole reads a skill file using role-based fallback:
-//  1. skills/<role>/<name>/SKILL.md (role-specific)
-//  2. skills/share/<name>/SKILL.md (shared across roles)
+//  1. skills/<role>/<skillName>/SKILL.md (directory name match)
+//  2. skills/share/<skillName>/SKILL.md (shared directory name match)
+//  3. Scan skills/<role>/ and skills/share/ for a skill whose frontmatter
+//     "name" field matches skillName (name-based fallback).
 //
+// The name-based fallback (step 3) allows callers to reference skills by
+// their frontmatter name, which is what "maestro skill list" displays.
 // Returns the first match found, or an error if none exist.
 func ReadSkillWithRole(skillsDir, skillName, role string) (SkillContent, error) {
 	if !isValidIdentifier(skillName) {
 		return SkillContent{}, fmt.Errorf("invalid skill name: %q", skillName)
 	}
 
+	// Fast path: try exact directory name match.
 	candidates := []string{
 		filepath.Join(skillsDir, role, skillName, "SKILL.md"),
 		filepath.Join(skillsDir, "share", skillName, "SKILL.md"),
@@ -233,12 +237,59 @@ func ReadSkillWithRole(skillsDir, skillName, role string) (SkillContent, error) 
 		}, nil
 	}
 
+	// Slow path: scan directories and match by frontmatter name.
+	if sc, err := readSkillByFrontmatterName(skillsDir, skillName, role); err == nil {
+		return sc, nil
+	}
+
 	return SkillContent{}, fmt.Errorf("read skill %q: %w", skillName, os.ErrNotExist)
 }
 
-// ListSkillsWithRole lists skill metadata from role-specific, shared, and flat directories.
-// When duplicates exist, the role-specific version takes priority over shared, which
-// takes priority over flat. Parse errors are logged as warnings and the skill is skipped.
+// readSkillByFrontmatterName scans role-specific and shared directories for a
+// skill whose frontmatter "name" field matches the given skillName.
+func readSkillByFrontmatterName(skillsDir, skillName, role string) (SkillContent, error) {
+	var dirs []string
+	if role != "" {
+		dirs = append(dirs, filepath.Join(skillsDir, role))
+	}
+	dirs = append(dirs, filepath.Join(skillsDir, "share"))
+
+	for _, dir := range dirs {
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			path := filepath.Join(dir, e.Name(), "SKILL.md")
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			meta, body, err := parseFrontmatter(string(data))
+			if err != nil {
+				continue
+			}
+			if meta.Name == skillName {
+				meta.ID = e.Name()
+				return SkillContent{
+					SkillMetadata: meta,
+					Body:          body,
+				}, nil
+			}
+		}
+	}
+
+	return SkillContent{}, fmt.Errorf("read skill %q: %w", skillName, os.ErrNotExist)
+}
+
+// ListSkillsWithRole lists skill metadata for a given role directory only.
+// Shared skills (skills/share/) are NOT included unless role is "share".
+// This is because shared skills are auto-injected at dispatch time and
+// listing them alongside role-specific skills would be misleading.
+// Parse errors are logged as warnings and the skill is skipped.
 func ListSkillsWithRole(skillsDir, role string, logger *slog.Logger) ([]SkillMetadata, error) {
 	if logger == nil {
 		logger = slog.Default()
@@ -246,14 +297,12 @@ func ListSkillsWithRole(skillsDir, role string, logger *slog.Logger) ([]SkillMet
 	seen := make(map[string]struct{})
 	var skills []SkillMetadata
 
-	// Scan directories in priority order: role-specific > share > flat.
-	// When role is empty, skip the role-specific directory to avoid
-	// collapsing to skillsDir which would scan flat entries prematurely.
+	// Scan only the role-specific directory.
+	// When role is "share", this naturally scans skills/share/.
 	var dirs []string
 	if role != "" {
 		dirs = append(dirs, filepath.Join(skillsDir, role))
 	}
-	dirs = append(dirs, filepath.Join(skillsDir, "share"))
 
 	for _, dir := range dirs {
 		entries, err := os.ReadDir(dir)

@@ -2,9 +2,8 @@
 name: create-specification
 description: PRDの要件をWorkerが実装可能な技術仕様に変換するフレームワーク
 version: "1.0.0"
-applies_to: ["planner"]
 tags: [specification, requirements, quality]
-priority: 10
+priority: 15
 ---
 
 # 仕様書作成スキル

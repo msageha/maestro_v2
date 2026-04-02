@@ -77,6 +77,9 @@ func runQueueWrite(args []string) error {
 		if priority > 0 {
 			params["priority"] = priority
 		}
+		if len(skillRefs) > 0 {
+			params["skill_refs"] = skillRefs
+		}
 	case "task":
 		if commandID == "" || content == "" || purpose == "" || acceptanceCriteria == "" || bloomLevel == 0 {
 			return &CLIError{Code: 1, Msg: "maestro queue write: required for type=task: --command-id, --content, --purpose, --acceptance-criteria, --bloom-level"}

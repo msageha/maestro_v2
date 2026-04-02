@@ -55,13 +55,14 @@ func (s SkillsConfig) EffectiveMaxRefsPerTask() int {
 	return 3
 }
 
-// EffectiveMaxBodyChars returns the configured limit or 2000 as default.
-// nil (unset) returns the default; explicit 0 returns 0.
+// EffectiveMaxBodyChars returns the configured limit or 0 (no limit) as default.
+// Shared skills are auto-injected and should not be silently dropped by size limits.
+// Use max_refs_per_task to control the number of role-specific skills instead.
 func (s SkillsConfig) EffectiveMaxBodyChars() int {
 	if s.MaxBodyChars != nil {
 		return *s.MaxBodyChars
 	}
-	return 2000
+	return 0
 }
 
 // EffectiveMissingRefPolicy returns the configured policy or "warn" as default.

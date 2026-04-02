@@ -2,9 +2,8 @@
 name: create-implementation-plan
 description: AI-to-AI通信に最適化された実装計画作成フレームワーク
 version: "1.0.0"
-applies_to: ["planner"]
 tags: [planner, planning, implementation]
-priority: 10
+priority: 5
 ---
 
 # Create Implementation Plan

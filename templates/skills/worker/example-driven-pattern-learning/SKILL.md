@@ -2,9 +2,8 @@
 name: example-driven-pattern-learning
 description: Few-shot例示による出力品質・一貫性向上のためのパターン学習ガイドライン
 version: "1.0.0"
-applies_to: ["worker"]
 tags: [few-shot, pattern-learning, consistency, code-generation]
-priority: 10
+priority: 20
 ---
 
 # Example-Driven Pattern Learning

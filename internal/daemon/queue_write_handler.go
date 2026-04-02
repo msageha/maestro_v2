@@ -130,6 +130,7 @@ func (a *API) handleQueueWriteCommand(params QueueWriteParams) *uds.Response {
 	cq.Commands = append(cq.Commands, model.Command{
 		ID:        id,
 		Content:   params.Content,
+		SkillRefs: params.SkillRefs,
 		Priority:  priority,
 		Status:    model.StatusPending,
 		CreatedAt: now,

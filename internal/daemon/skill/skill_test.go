@@ -317,6 +317,68 @@ func TestReadSkillWithRole_NoFrontmatter(t *testing.T) {
 	}
 }
 
+func TestReadSkillWithRole_FrontmatterNameFallback(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Directory name is "my-dir-name" but frontmatter name is "My Display Name"
+	writeSkillFile(t, filepath.Join(dir, "worker"), "my-dir-name",
+		"---\nname: My Display Name\ndescription: A skill\n---\nSkill body")
+
+	// Look up by frontmatter name (not directory name)
+	sc, err := ReadSkillWithRole(dir, "My Display Name", "worker")
+	if err != nil {
+		t.Fatalf("expected frontmatter name fallback to succeed, got: %v", err)
+	}
+	if sc.Name != "My Display Name" {
+		t.Errorf("expected Name 'My Display Name', got %q", sc.Name)
+	}
+	if sc.ID != "my-dir-name" {
+		t.Errorf("expected ID 'my-dir-name', got %q", sc.ID)
+	}
+	if sc.Body != "Skill body" {
+		t.Errorf("unexpected body: %q", sc.Body)
+	}
+}
+
+func TestReadSkillWithRole_FrontmatterNameFallback_SharedDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Skill only in share, referenced by frontmatter name
+	writeSkillFile(t, filepath.Join(dir, "share"), "shared-dir",
+		"---\nname: Shared Display\n---\nShared body")
+
+	sc, err := ReadSkillWithRole(dir, "Shared Display", "worker")
+	if err != nil {
+		t.Fatalf("expected shared frontmatter name fallback to succeed, got: %v", err)
+	}
+	if sc.Name != "Shared Display" {
+		t.Errorf("expected Name 'Shared Display', got %q", sc.Name)
+	}
+	if sc.ID != "shared-dir" {
+		t.Errorf("expected ID 'shared-dir', got %q", sc.ID)
+	}
+}
+
+func TestReadSkillWithRole_DirectoryNameTakesPriorityOverFrontmatterName(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Directory name matches lookup — should use fast path, not scan
+	writeSkillFile(t, filepath.Join(dir, "worker"), "exact-match",
+		"---\nname: Different Name\n---\nBody")
+
+	sc, err := ReadSkillWithRole(dir, "exact-match", "worker")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Fast path sets ID = skillName, not directory name scan
+	if sc.ID != "exact-match" {
+		t.Errorf("expected ID 'exact-match', got %q", sc.ID)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ReadAllSkillsForRole
 // ---------------------------------------------------------------------------

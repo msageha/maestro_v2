@@ -2,9 +2,8 @@
 name: breakdown-plan
 description: コマンドをタスクに分解するためのフレームワーク
 version: "1.0.0"
-applies_to: ["planner"]
 tags: [planner, task-design, decomposition]
-priority: 10
+priority: 5
 ---
 
 # Breakdown Plan — タスク分解フレームワーク
