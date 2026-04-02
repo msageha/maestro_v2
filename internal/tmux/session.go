@@ -137,12 +137,8 @@ func (e *TmuxError) Is(target error) bool {
 
 // Sentinel errors for use with errors.Is().
 var (
-	ErrTmuxServer   = &TmuxError{Kind: ErrKindServer}
-	ErrTmuxSession  = &TmuxError{Kind: ErrKindSession}
-	ErrTmuxPane     = &TmuxError{Kind: ErrKindPane}
-	ErrTmuxTimeout  = &TmuxError{Kind: ErrKindTimeout}
-	ErrTmuxCommand  = &TmuxError{Kind: ErrKindCommand}
-	ErrTmuxCanceled = &TmuxError{Kind: ErrKindCanceled}
+	ErrTmuxServer  = &TmuxError{Kind: ErrKindServer}
+	ErrTmuxSession = &TmuxError{Kind: ErrKindSession}
 )
 
 // classifyTmuxError parses tmux stderr to determine the error category.
@@ -384,11 +380,6 @@ func SplitPane(windowTarget string, horizontal bool) error {
 		flag = "-h"
 	}
 	return run("split-window", flag, "-t", windowTarget)
-}
-
-// SelectLayout applies a tmux layout to a window.
-func SelectLayout(windowTarget, layout string) error {
-	return run("select-layout", "-t", windowTarget, layout)
 }
 
 // SetUserVar sets a tmux user variable on a pane (pane-scoped via -p).

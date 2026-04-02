@@ -75,7 +75,7 @@ func TestEventHookIntegration(t *testing.T) {
 		mockExec := &MockExecutor{
 			executeResult: agent.ExecResult{Error: nil, Retryable: false},
 		}
-		dispatcher.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+		dispatcher.execProvider.SetFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 			return mockExec, nil
 		})
 
@@ -133,7 +133,7 @@ func TestEventHookIntegration(t *testing.T) {
 		mockExec := &MockExecutor{
 			executeResult: agent.ExecResult{Error: nil, Retryable: false},
 		}
-		dispatcher.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+		dispatcher.execProvider.SetFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 			return mockExec, nil
 		})
 
@@ -176,7 +176,7 @@ func TestEventHookIntegration(t *testing.T) {
 		mockExec := &MockExecutor{
 			executeResult: agent.ExecResult{Error: nil, Retryable: false},
 		}
-		dispatcher.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+		dispatcher.execProvider.SetFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 			return mockExec, nil
 		})
 

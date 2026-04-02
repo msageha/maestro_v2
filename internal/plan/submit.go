@@ -854,61 +854,6 @@ func buildCommandState(commandID string, tasks []TaskInput, nameToID map[string]
 	return state, nil
 }
 
-// ActivateDeferredPhases checks all deferred phases in "pending" status and
-// transitions them to "awaiting_fill" if all their dependency phases have
-// completed. Returns the list of phase names that were activated.
-// The caller must hold the command-state lock before calling this function.
-func ActivateDeferredPhases(state *model.CommandState) []string {
-	if state == nil || len(state.Phases) == 0 {
-		return nil
-	}
-
-	phaseStatusByName := make(map[string]model.PhaseStatus, len(state.Phases))
-	for _, p := range state.Phases {
-		phaseStatusByName[p.Name] = p.Status
-	}
-
-	var activated []string
-
-	for i := range state.Phases {
-		p := &state.Phases[i]
-
-		if p.Type != "deferred" || p.Status != model.PhaseStatusPending {
-			continue
-		}
-		if len(p.DependsOnPhases) == 0 {
-			continue
-		}
-
-		allCompleted := true
-		for _, depName := range p.DependsOnPhases {
-			depStatus, ok := phaseStatusByName[depName]
-			if !ok || depStatus != model.PhaseStatusCompleted {
-				allCompleted = false
-				break
-			}
-		}
-		if !allCompleted {
-			continue
-		}
-
-		p.Status = model.PhaseStatusAwaitingFill
-
-		// Set fill deadline from phase constraints
-		if p.Constraints != nil && p.Constraints.TimeoutMinutes > 0 {
-			deadline := time.Now().UTC().
-				Add(time.Duration(p.Constraints.TimeoutMinutes) * time.Minute).
-				Format(time.RFC3339)
-			p.FillDeadlineAt = &deadline
-		}
-
-		activated = append(activated, p.Name)
-		phaseStatusByName[p.Name] = model.PhaseStatusAwaitingFill
-	}
-
-	return activated
-}
-
 func defaultCompletionPolicy() model.CompletionPolicy {
 	return model.CompletionPolicy{
 		Mode:                    "all_required_completed",

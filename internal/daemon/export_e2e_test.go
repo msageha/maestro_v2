@@ -25,7 +25,7 @@ func (e *E2EDaemon) Config() model.Config       { return e.D.config }
 func (e *E2EDaemon) LockMap() *lock.MutexMap    { return e.D.handler.lockMap }
 func (e *E2EDaemon) PeriodicScan()              { e.D.handler.PeriodicScan() }
 func (e *E2EDaemon) HandlePlan(req *uds.Request) *uds.Response {
-	return e.D.handlePlan(req)
+	return e.D.api.handlePlan(req)
 }
 
 // Re-export integration test helpers for external test packages.
@@ -63,7 +63,7 @@ func E2EReadPlannerSignals(t *testing.T, e *E2EDaemon) model.PlannerSignalQueue 
 // E2EWriteCancelRequest writes a cancel-request via queue-write and returns the raw response.
 func E2EWriteCancelRequest(t *testing.T, e *E2EDaemon, commandID, reason string) *uds.Response {
 	t.Helper()
-	return e.D.handleQueueWrite(makeQueueWriteRequest(t, QueueWriteParams{
+	return e.D.api.handleQueueWrite(makeQueueWriteRequest(t, QueueWriteParams{
 		Type:      "cancel-request",
 		CommandID: commandID,
 		Reason:    reason,
@@ -73,12 +73,12 @@ func E2EWriteCancelRequest(t *testing.T, e *E2EDaemon, commandID, reason string)
 // E2EWriteResultRaw writes a result and returns the raw response (does not fatalf on error).
 func E2EWriteResultRaw(t *testing.T, e *E2EDaemon, params ResultWriteParams) *uds.Response {
 	t.Helper()
-	return e.D.handleResultWrite(makeResultWriteRequest(t, params))
+	return e.D.api.handleResultWrite(makeResultWriteRequest(t, params))
 }
 
 // E2ESetExecutorFactory overrides the executor factory on the queue handler.
 func E2ESetExecutorFactory(e *E2EDaemon, factory func(string, model.WatcherConfig, string) (AgentExecutor, error)) {
-	e.D.handler.SetExecutorFactory(factory)
+	e.D.handler.execProvider.SetFactory(factory)
 }
 
 // E2EReadResultFile reads a worker result file.

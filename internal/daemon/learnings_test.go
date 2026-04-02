@@ -60,7 +60,7 @@ func TestLearnings_BasicWrite(t *testing.T) {
 		Learnings:  []string{"learned thing 1", "learned thing 2"},
 	})
 
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if !resp.Success {
 		t.Fatalf("expected success, got error: %v", resp.Error)
 	}
@@ -110,7 +110,7 @@ func TestLearnings_Disabled(t *testing.T) {
 		Learnings:  []string{"should not be written"},
 	})
 
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if !resp.Success {
 		t.Fatalf("expected success, got error: %v", resp.Error)
 	}
@@ -141,7 +141,7 @@ func TestLearnings_DeduplicationByResultAndContent(t *testing.T) {
 		Learnings:  []string{"learning A"},
 	})
 
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if !resp.Success {
 		t.Fatalf("first write failed: %v", resp.Error)
 	}
@@ -156,7 +156,7 @@ func TestLearnings_DeduplicationByResultAndContent(t *testing.T) {
 	}
 
 	// Simulate idempotent retry: call writeLearnings again with same resultID + content
-	err := d.writeLearnings(ResultWriteParams{
+	err := d.api.writeLearnings(ResultWriteParams{
 		CommandID: commandID,
 		Learnings: []string{"learning A"},
 	}, resultID)
@@ -170,7 +170,7 @@ func TestLearnings_DeduplicationByResultAndContent(t *testing.T) {
 	}
 
 	// Different content with same resultID should be added
-	err = d.writeLearnings(ResultWriteParams{
+	err = d.api.writeLearnings(ResultWriteParams{
 		CommandID: commandID,
 		Learnings: []string{"learning B"},
 	}, resultID)
@@ -207,7 +207,7 @@ func TestLearnings_ContentTruncation(t *testing.T) {
 		Learnings:  []string{longContent},
 	})
 
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if !resp.Success {
 		t.Fatalf("expected success, got error: %v", resp.Error)
 	}
@@ -247,7 +247,7 @@ func TestLearnings_ContentTruncation_UTF8(t *testing.T) {
 		Learnings:  []string{"あいうえおかきくけこ"},
 	})
 
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if !resp.Success {
 		t.Fatalf("expected success, got error: %v", resp.Error)
 	}
@@ -295,7 +295,7 @@ func TestLearnings_MaxEntriesFIFO(t *testing.T) {
 		Learnings:  []string{"new 1", "new 2"},
 	})
 
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if !resp.Success {
 		t.Fatalf("expected success, got error: %v", resp.Error)
 	}
@@ -337,7 +337,7 @@ func TestLearnings_EmptyContentSkipped(t *testing.T) {
 		Learnings:  []string{"", "valid", ""},
 	})
 
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if !resp.Success {
 		t.Fatalf("expected success, got error: %v", resp.Error)
 	}
@@ -376,7 +376,7 @@ func TestLearnings_WriteFailureDoesNotFailResultWrite(t *testing.T) {
 		Learnings:  []string{"should fail silently"},
 	})
 
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	// Result write should still succeed even if learnings write fails
 	if !resp.Success {
 		t.Fatalf("expected success despite learnings write failure, got error: %v", resp.Error)
@@ -465,7 +465,7 @@ func TestLearnings_NoLearningsParam(t *testing.T) {
 		Summary:    "done",
 	})
 
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if !resp.Success {
 		t.Fatalf("expected success, got error: %v", resp.Error)
 	}
@@ -498,7 +498,7 @@ func TestLearnings_MultipleLearningsSameContent(t *testing.T) {
 		Learnings:  []string{"same content", "same content", "different content"},
 	})
 
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if !resp.Success {
 		t.Fatalf("expected success, got error: %v", resp.Error)
 	}
@@ -576,7 +576,7 @@ func TestLearningsIntegration_E2E_SanitizeSourceWorkerReadFormat(t *testing.T) {
 		Learnings:  []string{"this is a very long learning that should be truncated to 15 runes", "short ok"},
 	})
 
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if !resp.Success {
 		t.Fatalf("expected success, got error: %v", resp.Error)
 	}
@@ -646,7 +646,7 @@ func TestLearningsIntegration_Dedup_TruncationCollision(t *testing.T) {
 		Learnings:  []string{"AAAAAXXX", "AAAAAYYY"},
 	})
 
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if !resp.Success {
 		t.Fatalf("expected success, got error: %v", resp.Error)
 	}
@@ -684,7 +684,7 @@ func TestLearningsIntegration_TTL_EndToEnd(t *testing.T) {
 		Learnings:  []string{"fresh learning"},
 	})
 
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if !resp.Success {
 		t.Fatalf("expected success, got error: %v", resp.Error)
 	}
@@ -753,7 +753,7 @@ func TestLearningsIntegration_InjectCount_EndToEnd(t *testing.T) {
 			Learnings:  []string{"learning batch " + string(rune('A'+i)) + " item1", "learning batch " + string(rune('A'+i)) + " item2"},
 		})
 
-		resp := d.handleResultWrite(req)
+		resp := d.api.handleResultWrite(req)
 		if !resp.Success {
 			t.Fatalf("write %d failed: %v", i, resp.Error)
 		}
@@ -819,7 +819,7 @@ func TestLearnings_RecoveryPreservesBackupEntries(t *testing.T) {
 	os.MkdirAll(filepath.Join(d.maestroDir, "quarantine"), 0755)
 
 	// writeLearnings should recover from backup and preserve old entries
-	err := d.writeLearnings(ResultWriteParams{
+	err := d.api.writeLearnings(ResultWriteParams{
 		CommandID: "cmd_0000000001_new00001",
 		Learnings: []string{"new learning"},
 	}, "res_0000000001_new00001")

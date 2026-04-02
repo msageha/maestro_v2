@@ -26,10 +26,10 @@ func newBoundaryTestDaemon(t *testing.T) *Daemon {
 	d.handler = NewQueueHandler(d.maestroDir, d.config, lockMap, d.logger, d.logLevel)
 	d.handler.SetStateReader(reader)
 	d.handler.SetCanComplete(testCanComplete)
-	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
 	})
-	d.handler.SetBusyChecker(func(string) bool { return false })
+	d.handler.busyChecker = func(string) bool { return false }
 	for _, sub := range []string{"dead_letters", "quarantine", "state"} {
 		os.MkdirAll(filepath.Join(d.maestroDir, sub), 0755)
 	}
@@ -415,10 +415,10 @@ func TestTaskLeaseExpiry_BusyAgent_MaxTimeout(t *testing.T) {
 	d.handler = NewQueueHandler(d.maestroDir, d.config, lockMap, d.logger, d.logLevel)
 	d.handler.SetStateReader(reader)
 	d.handler.SetCanComplete(testCanComplete)
-	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
 	})
-	d.handler.SetBusyChecker(func(string) bool { return true }) // always busy
+	d.handler.busyChecker = func(string) bool { return true } // always busy
 
 	owner := "worker1"
 	expired := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
@@ -457,10 +457,10 @@ func TestTaskLeaseExpiry_BusyAgent_WithinLimit(t *testing.T) {
 	d.handler = NewQueueHandler(d.maestroDir, d.config, lockMap, d.logger, d.logLevel)
 	d.handler.SetStateReader(reader)
 	d.handler.SetCanComplete(testCanComplete)
-	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
 	})
-	d.handler.SetBusyChecker(func(string) bool { return true })
+	d.handler.busyChecker = func(string) bool { return true }
 
 	owner := "worker1"
 	expired := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
@@ -507,7 +507,7 @@ func TestTaskDispatchError_LeaseReleased(t *testing.T) {
 	qh := newTestQueueHandler(maestroDir)
 
 	// Mock executor that fails dispatch
-	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{
 			Success:   false,
 			Error:     fmt.Errorf("worker tmux pane not found"),
@@ -554,7 +554,7 @@ func TestCommandDispatchError_SecondScan_StaysInProgress(t *testing.T) {
 	qh := newTestQueueHandler(maestroDir)
 
 	dispatchCount := 0
-	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		dispatchCount++
 		return &mockExecutor{result: agent.ExecResult{
 			Success:   false,
@@ -1129,8 +1129,7 @@ func TestReconciler_R4_AlreadyTerminal_NoRepair(t *testing.T) {
 // phases and their independent downstream cascades.
 func TestReconciler_R6_MultiplePhasesTimedOut(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
-	rec := newTestReconciler(maestroDir)
-	rec.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+	rec := newTestReconcilerWithFactory(maestroDir, func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 		return &mockExecutorR6{}, nil
 	})
 
@@ -1185,8 +1184,7 @@ func TestReconciler_R6_MultiplePhasesTimedOut(t *testing.T) {
 // p1 → p2, p1 → p3, p2+p3 → p4
 func TestReconciler_R6_DiamondDependency(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
-	rec := newTestReconciler(maestroDir)
-	rec.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+	rec := newTestReconcilerWithFactory(maestroDir, func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 		return &mockExecutorR6{}, nil
 	})
 
@@ -1234,8 +1232,7 @@ func TestReconciler_R6_DiamondDependency(t *testing.T) {
 // are NOT cancelled by R6 cascade (only pending/awaiting_fill).
 func TestReconciler_R6_ActivePhaseNotCancelled(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
-	rec := newTestReconciler(maestroDir)
-	rec.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+	rec := newTestReconcilerWithFactory(maestroDir, func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 		return &mockExecutorR6{}, nil
 	})
 
@@ -1589,7 +1586,7 @@ func TestNotificationDispatch_ExpiredLeaseUnblocks(t *testing.T) {
 func TestMixedQueue_ExpiredLeasesPrioritizeRecovery(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
-	qh.SetBusyChecker(func(string) bool { return false })
+	qh.busyChecker = func(string) bool { return false }
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	owner := "worker1"
@@ -2374,8 +2371,7 @@ func TestDeferredNotification_R4_ReEvaluate(t *testing.T) {
 // "fill_timeout" deferred notification with the correct TimedOutPhases.
 func TestDeferredNotification_R6_FillTimeout(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
-	rec := newTestReconciler(maestroDir)
-	rec.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+	rec := newTestReconcilerWithFactory(maestroDir, func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 		return &mockExecutorR6{}, nil
 	})
 

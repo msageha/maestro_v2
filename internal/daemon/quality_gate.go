@@ -85,19 +85,6 @@ func (m *QualityGateMetrics) RecordEvaluation(success bool, durationMs int64) {
 	}
 }
 
-// GetStats returns current metrics statistics.
-func (m *QualityGateMetrics) GetStats() (evalCount, successCount, failureCount, avgTimeMs int64) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	evalCount = m.evaluationCount
-	successCount = m.successCount
-	failureCount = m.failureCount
-	if m.evaluationCount > 0 {
-		avgTimeMs = m.totalEvaluationTimeMs / m.evaluationCount
-	}
-	return
-}
-
 // QualityGateDaemon manages quality gate evaluations independently from the core daemon loop.
 // It runs in a separate goroutine and processes events asynchronously.
 type QualityGateDaemon struct {
@@ -419,11 +406,6 @@ func (qg *QualityGateDaemon) loadGateDefinitions() error {
 
 	qg.log(LogLevelInfo, "quality_gate_definitions_loaded count=%d", len(config.Gates))
 	return nil
-}
-
-// GetMetrics returns the current quality gate metrics.
-func (qg *QualityGateDaemon) GetMetrics() *QualityGateMetrics {
-	return qg.metrics
 }
 
 // log writes a log message if the level is enabled.

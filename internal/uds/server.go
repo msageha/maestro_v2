@@ -45,19 +45,6 @@ func NewServer(socketPath string) *Server {
 	}
 }
 
-// SetConnTimeout sets the per-connection read/write deadline for the server.
-func (s *Server) SetConnTimeout(d time.Duration) {
-	s.connTimeout = d
-}
-
-// SetMaxConcurrentConns sets the maximum number of concurrent connections.
-// Must be called before Start().
-func (s *Server) SetMaxConcurrentConns(n int) {
-	if n > 0 {
-		s.maxConns = n
-	}
-}
-
 // Handle registers a HandlerFunc for the given command name.
 func (s *Server) Handle(command string, handler HandlerFunc) {
 	s.mu.Lock()

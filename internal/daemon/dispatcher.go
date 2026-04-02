@@ -57,12 +57,6 @@ func NewDispatcher(maestroDir string, cfg model.Config, lm *LeaseManager, logger
 	}
 }
 
-// SetExecutorFactory overrides the executor factory for testing.
-// Resets the cached executor so the new factory is used on next call.
-func (disp *Dispatcher) SetExecutorFactory(f ExecutorFactory) {
-	disp.execProvider.SetFactory(f)
-}
-
 // getExecutor returns the shared executor instance, creating it lazily on first call.
 // On failure, the error is NOT cached — subsequent calls will retry with exponential
 // backoff to avoid hammering a persistently broken resource.
@@ -70,18 +64,12 @@ func (disp *Dispatcher) SetExecutorFactory(f ExecutorFactory) {
 // os.File in append mode is POSIX-safe, all other fields are immutable).
 //
 // L-3: The exponential backoff (1s→2s→4s→8s→16s cap) and reset-on-success behavior
-// is intentional for testing and production use. SetExecutorFactory resets the backoff
-// state to allow immediate retry with a new factory, which is the expected behavior
-// for test isolation. In production, the backoff prevents tight retry loops when the
-// underlying resource (e.g., log file) is persistently broken.
+// is intentional for testing and production use. ExecutorProvider.SetFactory resets
+// the backoff state to allow immediate retry with a new factory, which is the
+// expected behavior for test isolation. In production, the backoff prevents tight
+// retry loops when the underlying resource (e.g., log file) is persistently broken.
 func (disp *Dispatcher) getExecutor() (AgentExecutor, error) {
 	return disp.execProvider.GetExecutor()
-}
-
-// CloseExecutor releases the shared executor's resources (log file handle).
-// Safe to call multiple times; subsequent calls are no-ops.
-func (disp *Dispatcher) CloseExecutor() {
-	disp.execProvider.CloseExecutor()
 }
 
 // SetEventBus sets the event bus for publishing events.

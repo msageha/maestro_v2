@@ -126,13 +126,6 @@ func (qh *QueueHandler) SetStateReader(reader StateReader) {
 	qh.cancelHandler.SetStateReader(reader)
 }
 
-// SetExecutorFactory overrides the executor factory for testing.
-// Updates the shared ExecutorProvider and the reconciler's factory.
-func (qh *QueueHandler) SetExecutorFactory(f ExecutorFactory) {
-	qh.execProvider.SetFactory(f)
-	qh.reconciler.SetExecutorFactory(f)
-}
-
 // SetCanComplete wires the CanComplete function for R4 reconciliation.
 func (qh *QueueHandler) SetCanComplete(f CanCompleteFunc) {
 	qh.reconciler.SetCanComplete(f)
@@ -154,14 +147,6 @@ func (qh *QueueHandler) SetWorktreeManager(wm *WorktreeManager) {
 	qh.worktreeManager = wm
 	qh.dispatcher.SetWorktreeManager(wm)
 	qh.cancelHandler.SetWorktreeManager(wm)
-}
-
-// SetBusyChecker overrides the busy checker for testing.
-// Must be called before Run() starts.
-func (qh *QueueHandler) SetBusyChecker(f func(agentID string) bool) {
-	qh.scanRunMu.Lock()
-	defer qh.scanRunMu.Unlock()
-	qh.busyChecker = f
 }
 
 // SetShutdownGuard wires the daemon's shutdown context and advisory flag
@@ -208,16 +193,6 @@ func (qh *QueueHandler) Stop() {
 	if done != nil && !timerWasPending {
 		<-done
 	}
-}
-
-// GetLeaseManager returns the internal lease manager (for testing).
-func (qh *QueueHandler) GetLeaseManager() *LeaseManager {
-	return qh.leaseManager
-}
-
-// GetDispatcher returns the internal dispatcher (for testing).
-func (qh *QueueHandler) GetDispatcher() *Dispatcher {
-	return qh.dispatcher
 }
 
 // HandleFileEvent routes an fsnotify event to the appropriate handler.

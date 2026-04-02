@@ -5,8 +5,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"regexp"
-	"strconv"
-	"strings"
 	"time"
 )
 
@@ -57,18 +55,4 @@ func ParseIDType(id string) (IDType, error) {
 	}
 	match := idRegex.FindStringSubmatch(id)
 	return IDType(match[1]), nil
-}
-
-func ParseIDTimestamp(id string) (time.Time, error) {
-	if !ValidateID(id) {
-		return time.Time{}, fmt.Errorf("invalid ID format: %s", id)
-	}
-	// ID format: {type}_{timestamp}_{hex} — extract the timestamp segment
-	parts := strings.Split(id, "_")
-	tsStr := parts[len(parts)-2]
-	ts, err := strconv.ParseInt(tsStr, 10, 64)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("failed to parse timestamp from ID %s: %w", id, err)
-	}
-	return time.Unix(ts, 0), nil
 }

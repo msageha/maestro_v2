@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -153,30 +152,6 @@ func TestDashboardFormatter_LimitEvents(t *testing.T) {
 	assert.Len(t, data.RecentEvents, 5)
 	assert.Len(t, data.RecentErrors, 3)
 	assert.Len(t, data.RecentWarnings, 3)
-}
-
-func TestDashboardFormatter_WriteDashboard(t *testing.T) {
-	// Create temp directory
-	tmpDir := t.TempDir()
-	logsDir := filepath.Join(tmpDir, "logs")
-	require.NoError(t, os.MkdirAll(logsDir, 0755))
-
-	// Create sample JSONL log file
-	logPath := filepath.Join(logsDir, "maestro.jsonl")
-	createSampleLogFile(t, logPath)
-
-	// Create formatter
-	formatter := NewDashboardFormatter(tmpDir)
-
-	// Write to buffer
-	var buf bytes.Buffer
-	err := formatter.WriteDashboard(&buf)
-	require.NoError(t, err)
-
-	// Verify output
-	output := buf.String()
-	assert.NotEmpty(t, output)
-	assert.Contains(t, output, "# Maestro Dashboard")
 }
 
 func TestDashboardFormatter_UpdateDashboardFile(t *testing.T) {

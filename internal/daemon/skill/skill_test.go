@@ -82,49 +82,6 @@ func TestReadSkill_NotExist(t *testing.T) {
 	}
 }
 
-func TestListSkills_Multiple(t *testing.T) {
-	dir := t.TempDir()
-	writeSkillFile(t, dir, "skill-a", "---\nname: Alpha\n---\nBody A")
-	writeSkillFile(t, dir, "skill-b", "---\nname: Beta\n---\nBody B")
-
-	skills, err := ListSkills(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(skills) != 2 {
-		t.Fatalf("expected 2 skills, got %d", len(skills))
-	}
-
-	names := map[string]bool{}
-	for _, s := range skills {
-		names[s.Name] = true
-	}
-	if !names["Alpha"] || !names["Beta"] {
-		t.Errorf("expected Alpha and Beta, got %v", names)
-	}
-}
-
-func TestListSkills_EmptyDir(t *testing.T) {
-	dir := t.TempDir()
-	skills, err := ListSkills(dir)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(skills) != 0 {
-		t.Fatalf("expected 0 skills, got %d", len(skills))
-	}
-}
-
-func TestListSkills_NotExistDir(t *testing.T) {
-	skills, err := ListSkills("/nonexistent/path/skills")
-	if err != nil {
-		t.Fatalf("expected nil error for nonexistent dir, got %v", err)
-	}
-	if skills != nil {
-		t.Fatalf("expected nil, got %v", skills)
-	}
-}
-
 func TestFormatSkillSection_Multiple(t *testing.T) {
 	skills := []SkillContent{
 		{SkillMetadata: SkillMetadata{ID: "s1", Name: "Skill One"}, Body: "Body one"},
@@ -222,34 +179,6 @@ func TestReadSkill_ShareFallback(t *testing.T) {
 	}
 	if sc.Body != "Shared body" {
 		t.Errorf("expected Shared body, got %q", sc.Body)
-	}
-}
-
-func TestListSkills_RoleDirectory(t *testing.T) {
-	// Verify ListSkills works independently on role and share directories.
-	dir := t.TempDir()
-
-	workerDir := filepath.Join(dir, "worker")
-	shareDir := filepath.Join(dir, "share")
-
-	writeSkillFile(t, workerDir, "worker-only", "---\nname: Worker Only\n---\nW body")
-	writeSkillFile(t, shareDir, "shared-a", "---\nname: Shared A\n---\nSA body")
-	writeSkillFile(t, shareDir, "shared-b", "---\nname: Shared B\n---\nSB body")
-
-	workerSkills, err := ListSkills(workerDir)
-	if err != nil {
-		t.Fatalf("ListSkills(worker): %v", err)
-	}
-	if len(workerSkills) != 1 {
-		t.Errorf("expected 1 worker skill, got %d", len(workerSkills))
-	}
-
-	shareSkills, err := ListSkills(shareDir)
-	if err != nil {
-		t.Fatalf("ListSkills(share): %v", err)
-	}
-	if len(shareSkills) != 2 {
-		t.Errorf("expected 2 share skills, got %d", len(shareSkills))
 	}
 }
 

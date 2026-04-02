@@ -67,11 +67,6 @@ func (r *Reconciler) SetCanComplete(f CanCompleteFunc) {
 	r.engine.SetCanComplete(f)
 }
 
-// SetExecutorFactory overrides the executor factory for testing.
-func (r *Reconciler) SetExecutorFactory(f ExecutorFactory) {
-	r.engine.SetExecutorFactory(f)
-}
-
 // Reconcile runs all reconciliation patterns and returns repairs and deferred notifications.
 func (r *Reconciler) Reconcile() ([]ReconcileRepair, []DeferredNotification) {
 	return r.engine.Reconcile()

@@ -263,27 +263,6 @@ func TestExpireCommands(t *testing.T) {
 	}
 }
 
-func TestHasInFlightForOwner(t *testing.T) {
-	lm := newTestLeaseManager()
-
-	w1 := "worker1"
-	w2 := "worker2"
-
-	tasks := []model.Task{
-		{ID: "t1", Status: model.StatusInProgress, LeaseOwner: &w1},
-		{ID: "t2", Status: model.StatusPending},
-	}
-
-	if !lm.HasInFlightForOwner(tasks, "worker1") {
-		t.Error("worker1 should have in-flight")
-	}
-	if lm.HasInFlightForOwner(tasks, "worker2") {
-		t.Error("worker2 should not have in-flight")
-	}
-
-	_ = w2
-}
-
 func TestLeaseEpochIncrement(t *testing.T) {
 	lm := newTestLeaseManager()
 	task := &model.Task{

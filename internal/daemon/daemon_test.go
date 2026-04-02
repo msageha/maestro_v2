@@ -216,8 +216,11 @@ func TestSelfWriteTracker_StaleCleanupOnRecord(t *testing.T) {
 	tracker.stamps[freshPath] = writeStamp{Hash: sha256.Sum256(freshContent), Deadline: time.Now().Add(30 * time.Second)}
 	tracker.mu.Unlock()
 
-	if tracker.Len() != 3 {
-		t.Fatalf("expected 3 entries, got %d", tracker.Len())
+	tracker.mu.Lock()
+	trackerLen := len(tracker.stamps)
+	tracker.mu.Unlock()
+	if trackerLen != 3 {
+		t.Fatalf("expected 3 entries, got %d", trackerLen)
 	}
 
 	// Record triggers opportunistic cleanup of stale entries
@@ -226,8 +229,11 @@ func TestSelfWriteTracker_StaleCleanupOnRecord(t *testing.T) {
 	tracker.Record(newPath, newData)
 
 	// Stale entries should be cleaned, fresh + new should remain
-	if tracker.Len() != 2 {
-		t.Errorf("expected 2 entries after stale cleanup, got %d", tracker.Len())
+	tracker.mu.Lock()
+	trackerLen = len(tracker.stamps)
+	tracker.mu.Unlock()
+	if trackerLen != 2 {
+		t.Errorf("expected 2 entries after stale cleanup, got %d", trackerLen)
 	}
 
 	// Fresh entry should still be consumable
@@ -253,8 +259,11 @@ func TestSelfWriteTracker_StaleCleanupOnConsumeMiss(t *testing.T) {
 	tracker.stamps[freshPath] = writeStamp{Hash: sha256.Sum256(freshContent), Deadline: time.Now().Add(30 * time.Second)}
 	tracker.mu.Unlock()
 
-	if tracker.Len() != 2 {
-		t.Fatalf("expected 2 entries, got %d", tracker.Len())
+	tracker.mu.Lock()
+	trackerLen := len(tracker.stamps)
+	tracker.mu.Unlock()
+	if trackerLen != 2 {
+		t.Fatalf("expected 2 entries, got %d", trackerLen)
 	}
 
 	// Consume for a non-existent path triggers cleanup
@@ -263,8 +272,11 @@ func TestSelfWriteTracker_StaleCleanupOnConsumeMiss(t *testing.T) {
 	}
 
 	// Stale entry should be cleaned up
-	if tracker.Len() != 1 {
-		t.Errorf("expected 1 entry after Consume cleanup, got %d", tracker.Len())
+	tracker.mu.Lock()
+	trackerLen = len(tracker.stamps)
+	tracker.mu.Unlock()
+	if trackerLen != 1 {
+		t.Errorf("expected 1 entry after Consume cleanup, got %d", trackerLen)
 	}
 
 	// Fresh entry should still be consumable
@@ -293,8 +305,11 @@ func TestSelfWriteTracker_StaleCleanupOnConsumeHit(t *testing.T) {
 	}
 
 	// Stale entry should be cleaned
-	if tracker.Len() != 0 {
-		t.Errorf("expected 0 entries after consume+cleanup, got %d", tracker.Len())
+	tracker.mu.Lock()
+	trackerLen := len(tracker.stamps)
+	tracker.mu.Unlock()
+	if trackerLen != 0 {
+		t.Errorf("expected 0 entries after consume+cleanup, got %d", trackerLen)
 	}
 }
 
@@ -312,8 +327,11 @@ func TestSelfWriteTracker_ExpiredConsumeReturnsFalse(t *testing.T) {
 	}
 
 	// Entry should be deleted after failed consume
-	if tracker.Len() != 0 {
-		t.Errorf("expected 0 entries after expired consume, got %d", tracker.Len())
+	tracker.mu.Lock()
+	trackerLen := len(tracker.stamps)
+	tracker.mu.Unlock()
+	if trackerLen != 0 {
+		t.Errorf("expected 0 entries after expired consume, got %d", trackerLen)
 	}
 }
 
@@ -334,7 +352,7 @@ func TestNotifySelfWrite_PublishesEvent(t *testing.T) {
 	if err := yamlutil.AtomicWrite(queuePath, data); err != nil {
 		t.Fatalf("write queue file: %v", err)
 	}
-	d.notifySelfWrite(queuePath, "command", data)
+	d.api.notifySelfWrite(queuePath, "command", data)
 
 	// Verify self-write was recorded and hash matches
 	if !d.selfWrites.Consume(queuePath) {
@@ -375,7 +393,7 @@ func TestRecordSelfWrite_NoEvent(t *testing.T) {
 	if err := yamlutil.AtomicWrite(path, data); err != nil {
 		t.Fatalf("write result file: %v", err)
 	}
-	d.recordSelfWrite(path, data)
+	d.api.recordSelfWrite(path, data)
 
 	// Verify self-write was recorded
 	if !d.selfWrites.Consume(path) {

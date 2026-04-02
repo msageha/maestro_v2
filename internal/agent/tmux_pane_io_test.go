@@ -46,36 +46,3 @@ func TestContainsControlChars(t *testing.T) {
 		})
 	}
 }
-
-func TestShellQuote(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  string
-	}{
-		{name: "simple path", input: "/usr/bin/test", want: "'/usr/bin/test'"},
-		{name: "empty string", input: "", want: "''"},
-		{name: "with spaces", input: "/path/to/my file", want: "'/path/to/my file'"},
-		{name: "with double quotes", input: `say "hello"`, want: `'say "hello"'`},
-		{name: "with single quote", input: "it's", want: "'it'\"'\"'s'"},
-		{name: "multiple single quotes", input: "a'b'c", want: "'a'\"'\"'b'\"'\"'c'"},
-		{name: "only single quote", input: "'", want: "''\"'\"''"},
-		{name: "special shell chars", input: "$(rm -rf /)", want: "'$(rm -rf /)'"},
-		{name: "backticks", input: "`id`", want: "'`id`'"},
-		{name: "semicolons and pipes", input: "a; b | c && d", want: "'a; b | c && d'"},
-		{name: "glob characters", input: "*.txt", want: "'*.txt'"},
-		{name: "newline in string", input: "line1\nline2", want: "'line1\nline2'"},
-		{name: "tab in string", input: "col1\tcol2", want: "'col1\tcol2'"},
-		{name: "backslash", input: `path\to\file`, want: `'path\to\file'`},
-		{name: "already single quoted", input: "'already'", want: "''\"'\"'already'\"'\"''"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := shellQuote(tt.input)
-			if got != tt.want {
-				t.Errorf("shellQuote(%q) = %q, want %q", tt.input, got, tt.want)
-			}
-		})
-	}
-}

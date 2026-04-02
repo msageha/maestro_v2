@@ -102,13 +102,6 @@ func (t *selfWriteTracker) Consume(path string) bool {
 	return true
 }
 
-// Len returns the number of tracked paths (for testing).
-func (t *selfWriteTracker) Len() int {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	return len(t.stamps)
-}
-
 // cleanStaleLocked removes entries past their deadline. Must be called with mu held.
 func (t *selfWriteTracker) cleanStaleLocked() {
 	now := time.Now()

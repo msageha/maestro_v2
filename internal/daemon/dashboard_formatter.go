@@ -695,17 +695,6 @@ type WorkerSummary struct {
 	InProgress int
 }
 
-// WriteDashboard writes the formatted dashboard to dashboard.md
-func (f *DashboardFormatter) WriteDashboard(output io.Writer) error {
-	formatted, err := f.FormatDashboard()
-	if err != nil {
-		return err
-	}
-
-	_, err = output.Write([]byte(formatted))
-	return err
-}
-
 // UpdateDashboardFile updates the dashboard.md file using atomic write.
 func (f *DashboardFormatter) UpdateDashboardFile() error {
 	formatted, err := f.FormatDashboard()

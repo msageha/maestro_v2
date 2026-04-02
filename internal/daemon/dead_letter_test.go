@@ -604,7 +604,7 @@ func TestDeadLetter_PeriodicScanIntegration(t *testing.T) {
 		Retry:   model.RetryConfig{CommandDispatch: 2},
 	}
 	qh := NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
-	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{}, nil
 	})
 

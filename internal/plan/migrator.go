@@ -23,16 +23,6 @@ func NewMigrator(currentVersion int) *Migrator {
 	}
 }
 
-// Register adds a migration step from version `from` to `from+1`.
-// Returns an error if a step for that version is already registered.
-func (m *Migrator) Register(from int, fn MigrateFunc) error {
-	if _, exists := m.steps[from]; exists {
-		return fmt.Errorf("migration step from version %d already registered", from)
-	}
-	m.steps[from] = fn
-	return nil
-}
-
 // NeedsMigration returns true if the given version is older than current.
 func (m *Migrator) NeedsMigration(version int) bool {
 	return version > 0 && version < m.current

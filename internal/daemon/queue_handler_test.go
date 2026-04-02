@@ -52,7 +52,7 @@ func newTestQueueHandler(maestroDir string) *QueueHandler {
 	}
 	qh := NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
 	// Use mock executor to avoid tmux dependency
-	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
 	})
 	return qh
@@ -525,7 +525,7 @@ func TestQueueHandler_PhaseB_DoesNotBlockRLock(t *testing.T) {
 	dispatchStarted := make(chan struct{})
 	proceed := make(chan struct{})
 	var startOnce sync.Once
-	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &slowMockExecutor{
 			result:  agent.ExecResult{Success: true},
 			onStart: func() { startOnce.Do(func() { close(dispatchStarted) }) },
@@ -668,7 +668,7 @@ func TestQueueHandler_DispatchFailure_Rollback(t *testing.T) {
 	qh := newTestQueueHandler(maestroDir)
 
 	// Mock executor that fails dispatch
-	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{
 			Success:   false,
 			Error:     fmt.Errorf("tmux pane not found"),
@@ -751,7 +751,7 @@ func TestQueueHandler_ConcurrentWriteDuringPhaseB(t *testing.T) {
 	dispatchStarted := make(chan struct{})
 	proceed := make(chan struct{})
 	var startOnce sync.Once
-	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &slowMockExecutor{
 			result:  agent.ExecResult{Success: true},
 			onStart: func() { startOnce.Do(func() { close(dispatchStarted) }) },

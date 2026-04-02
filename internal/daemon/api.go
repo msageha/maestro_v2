@@ -139,38 +139,3 @@ func (a *API) publishQueueWritten(source string) {
 func (a *API) recordSelfWrite(path string, data any) {
 	a.d.selfWrites.Record(path, data)
 }
-
-// --- Forwarding methods on Daemon for backward compatibility ---
-// These allow tests and internal code to call d.handleXxx() directly.
-
-func (d *Daemon) handleQueueWrite(req *uds.Request) *uds.Response {
-	return d.api.handleQueueWrite(req)
-}
-
-func (d *Daemon) handleResultWrite(req *uds.Request) *uds.Response {
-	return d.api.handleResultWrite(req)
-}
-
-func (d *Daemon) handlePlan(req *uds.Request) *uds.Response {
-	return d.api.handlePlan(req)
-}
-
-func (d *Daemon) handleDashboard(req *uds.Request) *uds.Response {
-	return d.api.handleDashboard(req)
-}
-
-func (d *Daemon) handleTaskHeartbeat(req *uds.Request) *uds.Response {
-	return d.api.handleTaskHeartbeat(req)
-}
-
-func (d *Daemon) notifySelfWrite(queuePath, writeType string, data any) {
-	d.api.notifySelfWrite(queuePath, writeType, data)
-}
-
-func (d *Daemon) recordSelfWrite(path string, data any) {
-	d.api.recordSelfWrite(path, data)
-}
-
-func (d *Daemon) writeLearnings(params ResultWriteParams, resultID string) error {
-	return d.api.writeLearnings(params, resultID)
-}

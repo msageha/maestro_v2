@@ -73,35 +73,6 @@ func ReadSkill(skillsDir, skillName string) (SkillContent, error) {
 	}, nil
 }
 
-// ListSkills lists all skill metadata from the given skills directory.
-// Each subdirectory containing a SKILL.md is treated as a skill.
-// Skills with parse errors are skipped.
-func ListSkills(skillsDir string) ([]SkillMetadata, error) {
-	entries, err := os.ReadDir(skillsDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read skills directory: %w", err)
-	}
-
-	var skills []SkillMetadata
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		name := e.Name()
-		sc, err := ReadSkill(skillsDir, name)
-		if err != nil {
-			// Skip skills with errors (file missing, bad frontmatter, etc.)
-			continue
-		}
-		skills = append(skills, sc.SkillMetadata)
-	}
-
-	return skills, nil
-}
-
 // FormatSkillSection formats multiple skills for injection into task content.
 // Skills are included in their original order. If the total body exceeds
 // maxBodyChars (measured in runes), lower-priority skills are dropped first.

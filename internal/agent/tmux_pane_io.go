@@ -219,9 +219,3 @@ func containsControlChars(s string) bool {
 	}
 	return false
 }
-
-// shellQuote wraps a path in single quotes for safe shell expansion.
-// Single quotes inside the path are escaped.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\"'\"'") + "'"
-}

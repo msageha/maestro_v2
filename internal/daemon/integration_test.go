@@ -293,10 +293,10 @@ func newIntegrationDaemon(t *testing.T) *Daemon {
 	d.handler.SetCanComplete(testCanComplete)
 
 	// Mock executor: always succeeds delivery
-	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
 	})
-	d.handler.SetBusyChecker(func(string) bool { return false })
+	d.handler.busyChecker = func(string) bool { return false }
 
 	// Ensure dead_letters and state dirs exist
 	for _, sub := range []string{"dead_letters", "quarantine", "state"} {
@@ -321,7 +321,7 @@ func writeCommand(t *testing.T, d *Daemon, content string) string {
 		Type:    "command",
 		Content: content,
 	})
-	resp := d.handleQueueWrite(req)
+	resp := d.api.handleQueueWrite(req)
 	if !resp.Success {
 		t.Fatalf("queue write command: %v", resp.Error)
 	}
@@ -341,7 +341,7 @@ func writeTask(t *testing.T, d *Daemon, target, commandID, content, purpose, cri
 		AcceptanceCriteria: criteria,
 		BloomLevel:         bloomLevel,
 	})
-	resp := d.handleQueueWrite(req)
+	resp := d.api.handleQueueWrite(req)
 	if !resp.Success {
 		t.Fatalf("queue write task: %v", resp.Error)
 	}
@@ -362,7 +362,7 @@ func writeTaskWithDeps(t *testing.T, d *Daemon, target, commandID, content strin
 		BloomLevel:         3,
 		BlockedBy:          blockedBy,
 	})
-	resp := d.handleQueueWrite(req)
+	resp := d.api.handleQueueWrite(req)
 	if !resp.Success {
 		t.Fatalf("queue write task with deps: %v", resp.Error)
 	}
@@ -382,7 +382,7 @@ func writeResult(t *testing.T, d *Daemon, reporter, taskID, commandID, status, s
 		Summary:    summary,
 		RetrySafe:  true,
 	})
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if !resp.Success {
 		t.Fatalf("result write: %v", resp.Error)
 	}
@@ -398,7 +398,7 @@ func writeCancelRequest(t *testing.T, d *Daemon, commandID, reason string) {
 		CommandID: commandID,
 		Reason:    reason,
 	})
-	resp := d.handleQueueWrite(req)
+	resp := d.api.handleQueueWrite(req)
 	if !resp.Success {
 		t.Fatalf("cancel request: %v", resp.Error)
 	}
@@ -688,7 +688,7 @@ func TestIntegration_LeaseExpiryRecovery(t *testing.T) {
 // Scenario 4b: Lease expiry with busy agent — lease extended
 func TestIntegration_LeaseExpiryBusyExtend(t *testing.T) {
 	d := newIntegrationDaemon(t)
-	d.handler.SetBusyChecker(func(string) bool { return true }) // always busy
+	d.handler.busyChecker = func(string) bool { return true } // always busy
 
 	taskID := "task_0000000004_aabbcc02"
 	commandID := "cmd_0000000004_aabbcc05"
@@ -736,10 +736,10 @@ func TestIntegration_DeadLetter(t *testing.T) {
 	d.handler = NewQueueHandler(d.maestroDir, d.config, lockMap, d.logger, d.logLevel)
 	d.handler.SetStateReader(reader)
 	d.handler.SetCanComplete(testCanComplete)
-	d.handler.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
 	})
-	d.handler.SetBusyChecker(func(string) bool { return false })
+	d.handler.busyChecker = func(string) bool { return false }
 
 	// Setup: command with attempts >= max
 	cq := model.CommandQueue{
@@ -794,7 +794,7 @@ func TestIntegration_Backpressure(t *testing.T) {
 		Type:    "command",
 		Content: "cmd 3",
 	})
-	resp := d.handleQueueWrite(req)
+	resp := d.api.handleQueueWrite(req)
 	if resp.Success {
 		t.Fatal("expected backpressure rejection")
 	}
@@ -829,7 +829,7 @@ func TestIntegration_ResultWriteIdempotency(t *testing.T) {
 		Summary:    "done again",
 		RetrySafe:  true,
 	})
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if !resp.Success {
 		t.Fatalf("duplicate result write should succeed: %v", resp.Error)
 	}
@@ -862,7 +862,7 @@ func TestIntegration_ResultWriteFencing(t *testing.T) {
 		Summary:    "stale",
 		RetrySafe:  true,
 	})
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if resp.Success {
 		t.Fatal("expected fencing rejection")
 	}
@@ -1037,7 +1037,7 @@ func TestIntegration_NotificationFlow(t *testing.T) {
 		SourceResultID:   "res_0000000012_aabbcc12",
 		NotificationType: "command_completed",
 	})
-	resp := d.handleQueueWrite(req)
+	resp := d.api.handleQueueWrite(req)
 	if !resp.Success {
 		t.Fatalf("notification write: %v", resp.Error)
 	}
@@ -1331,7 +1331,7 @@ func TestIntegration_TaskBackpressure(t *testing.T) {
 		AcceptanceCriteria: "criteria",
 		BloomLevel:         3,
 	})
-	resp := d.handleQueueWrite(req)
+	resp := d.api.handleQueueWrite(req)
 	if resp.Success {
 		t.Fatal("expected task backpressure rejection")
 	}
@@ -1355,7 +1355,7 @@ func TestIntegration_NotificationIdempotency(t *testing.T) {
 		SourceResultID:   sourceResultID,
 		NotificationType: "command_completed",
 	})
-	resp := d.handleQueueWrite(req)
+	resp := d.api.handleQueueWrite(req)
 	if !resp.Success {
 		t.Fatalf("first notification: %v", resp.Error)
 	}
@@ -1363,7 +1363,7 @@ func TestIntegration_NotificationIdempotency(t *testing.T) {
 	json.Unmarshal(resp.Data, &result1)
 
 	// Duplicate
-	resp2 := d.handleQueueWrite(req)
+	resp2 := d.api.handleQueueWrite(req)
 	if !resp2.Success {
 		t.Fatalf("duplicate notification should succeed: %v", resp2.Error)
 	}
@@ -1421,7 +1421,7 @@ func TestIntegration_QueueWriteValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := makeQueueWriteRequest(t, tt.params)
-			resp := d.handleQueueWrite(req)
+			resp := d.api.handleQueueWrite(req)
 			if resp.Success {
 				t.Error("expected validation error")
 			}
@@ -1559,13 +1559,17 @@ func waitForQualityGateEvaluations(t *testing.T, qg *QualityGateDaemon, wantAtLe
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		evalCount, _, _, _ := qg.GetMetrics().GetStats()
+		qg.metrics.mu.RLock()
+		evalCount := qg.metrics.evaluationCount
+		qg.metrics.mu.RUnlock()
 		if evalCount >= wantAtLeast {
 			return
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	evalCount, _, _, _ := qg.GetMetrics().GetStats()
+	qg.metrics.mu.RLock()
+	evalCount := qg.metrics.evaluationCount
+	qg.metrics.mu.RUnlock()
 	t.Fatalf("quality gate eval_count=%d, want >= %d", evalCount, wantAtLeast)
 }
 
@@ -1735,12 +1739,7 @@ gates:
       on_pass: allow
       on_fail: block
 `
-	path := writeIntegrationGateConfig(t, d.maestroDir, "reloadable.yaml", initial)
-
-	loader := quality.NewLoader(d.maestroDir)
-	if _, err := loader.LoadFromFile(path); err != nil {
-		t.Fatalf("initial loader load: %v", err)
-	}
+	writeIntegrationGateConfig(t, d.maestroDir, "reloadable.yaml", initial)
 
 	qg := NewQualityGateDaemon(d.maestroDir, d.config, d.handler.lockMap, d.logger, LogLevelError, context.Background())
 	if err := qg.loadGateDefinitions(); err != nil {
@@ -1779,19 +1778,8 @@ gates:
       on_pass: allow
       on_fail: block
 `
-	// Ensure modtime moves forward for ReloadFile() checks.
-	time.Sleep(15 * time.Millisecond)
-	if err := os.WriteFile(path, []byte(updated), 0644); err != nil {
-		t.Fatalf("rewrite gate config: %v", err)
-	}
-
-	_, reloaded, err := loader.ReloadFile(path)
-	if err != nil {
-		t.Fatalf("reload gate file: %v", err)
-	}
-	if !reloaded {
-		t.Fatal("expected loader to detect reload=true")
-	}
+	// Rewrite the gate config file with updated content.
+	writeIntegrationGateConfig(t, d.maestroDir, "reloadable.yaml", updated)
 
 	if err := qg.loadGateDefinitions(); err != nil {
 		t.Fatalf("reload into quality gate daemon: %v", err)
@@ -1906,7 +1894,9 @@ func TestIntegration_EventHooksInvalidPayloadHandling(t *testing.T) {
 	})
 	time.Sleep(30 * time.Millisecond)
 
-	evalCount, _, _, _ := qg.GetMetrics().GetStats()
+	qg.metrics.mu.RLock()
+	evalCount := qg.metrics.evaluationCount
+	qg.metrics.mu.RUnlock()
 	if evalCount != 0 {
 		t.Fatalf("expected no evaluations for invalid payload, got %d", evalCount)
 	}

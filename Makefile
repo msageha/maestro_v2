@@ -1,4 +1,4 @@
-.PHONY: all build test lint format vet clean install help
+.PHONY: all build test lint format clean install help ensure-lint
 
 BINARY    := maestro
 CMD_DIR   := ./cmd/maestro
@@ -40,21 +40,17 @@ test-cover: ## カバレッジレポートを生成
 
 ## ─── Lint & Format ────────────────────────────────────
 
-$(GOLANGCI_LINT):
-	@echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."
-	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+ensure-lint:
+	@test -x $(GOLANGCI_LINT) || { echo "Installing golangci-lint $(GOLANGCI_LINT_VERSION)..."; go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION); }
 
-lint: $(GOLANGCI_LINT) ## golangci-lint を実行
+lint: ensure-lint ## golangci-lint を実行
 	$(GOLANGCI_LINT) run ./...
 
-lint-fix: $(GOLANGCI_LINT) ## golangci-lint の自動修正を適用
+lint-fix: ensure-lint ## golangci-lint の自動修正を適用
 	$(GOLANGCI_LINT) run --fix ./...
 
-format: $(GOLANGCI_LINT) ## gofmt + goimports でフォーマット
+format: ensure-lint ## gofmt + goimports でフォーマット
 	$(GOLANGCI_LINT) fmt ./...
-
-vet: ## go vet を実行
-	go vet ./...
 
 ## ─── Help ─────────────────────────────────────────────
 

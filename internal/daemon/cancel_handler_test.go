@@ -35,7 +35,7 @@ func newTestCancelHandler() (*CancelHandler, *mockExecutor) {
 	ep := newTestExecutorProvider("", cfg)
 	ch := NewCancelHandler("", cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, ep)
 	mock := &mockExecutor{result: agent.ExecResult{Success: true}}
-	ch.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	ch.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return mock, nil
 	})
 	return ch, mock
@@ -89,62 +89,6 @@ func TestCancelPendingTasks(t *testing.T) {
 	}
 }
 
-func TestInterruptInProgressTasks(t *testing.T) {
-	ch, mock := newTestCancelHandler()
-
-	// Use daemon:{pid} format for LeaseOwner (production format),
-	// while workerID param is the agent ID — verifies we use workerID, not LeaseOwner.
-	lease := "daemon:12345"
-	tasks := []model.Task{
-		{ID: "t1", CommandID: "cmd1", Status: model.StatusInProgress, LeaseOwner: &lease, LeaseEpoch: 3,
-			CreatedAt: time.Now().Format(time.RFC3339)},
-		{ID: "t2", CommandID: "cmd1", Status: model.StatusPending,
-			CreatedAt: time.Now().Format(time.RFC3339)},
-	}
-
-	results := ch.InterruptInProgressTasks(tasks, "cmd1", "worker1")
-
-	if len(results) != 1 {
-		t.Fatalf("expected 1 interrupted, got %d", len(results))
-	}
-
-	if tasks[0].Status != model.StatusCancelled {
-		t.Errorf("t1: got %s, want cancelled", tasks[0].Status)
-	}
-	if tasks[0].LeaseOwner != nil {
-		t.Error("lease_owner should be nil after cancel")
-	}
-
-	// Verify interrupt was sent with agent ID (worker1), not LeaseOwner (daemon:12345)
-	if len(mock.calls) != 1 {
-		t.Fatalf("expected 1 interrupt call, got %d", len(mock.calls))
-	}
-	if mock.calls[0].Mode != agent.ModeInterrupt {
-		t.Errorf("mode: got %s, want interrupt", mock.calls[0].Mode)
-	}
-	if mock.calls[0].AgentID != "worker1" {
-		t.Errorf("agent_id: got %s, want worker1 (should use workerID param, not LeaseOwner)", mock.calls[0].AgentID)
-	}
-}
-
-func TestBuildSyntheticResult(t *testing.T) {
-	ch, _ := newTestCancelHandler()
-
-	result := ch.BuildSyntheticResult(CancelledTaskResult{
-		TaskID:    "t1",
-		CommandID: "cmd1",
-		Status:    "cancelled",
-		Reason:    "command_cancelled",
-	})
-
-	if result["task_id"] != "t1" {
-		t.Errorf("task_id: got %v", result["task_id"])
-	}
-	if result["synthetic"] != true {
-		t.Errorf("synthetic: got %v", result["synthetic"])
-	}
-}
-
 func TestCancelPendingTasks_AlreadyTerminal(t *testing.T) {
 	ch, _ := newTestCancelHandler()
 
@@ -172,7 +116,7 @@ func newTestCancelHandlerWithDir(t *testing.T) (*CancelHandler, *mockExecutor, s
 	ep := newTestExecutorProvider(maestroDir, cfg)
 	ch := NewCancelHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, ep)
 	mock := &mockExecutor{result: agent.ExecResult{Success: true}}
-	ch.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	ch.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return mock, nil
 	})
 	return ch, mock, maestroDir
@@ -446,49 +390,11 @@ func TestCancelHandler_IsCommandCancelRequested_ViaStateReader(t *testing.T) {
 	}
 }
 
-func TestCancelHandler_InterruptInProgressTasks_WorktreeCleanup(t *testing.T) {
-	projectRoot := initTestGitRepo(t)
-	wm := newTestWorktreeManager(t, projectRoot)
-
-	// Create worktrees
-	if err := wm.CreateForCommand("cmd_cancel_wt", []string{"worker1"}); err != nil {
-		t.Fatal(err)
-	}
-
-	// Make worker1 worktree dirty
-	wtPath, _ := wm.GetWorkerPath("cmd_cancel_wt", "worker1")
-	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("dirty\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	ch, _ := newTestCancelHandler()
-	ch.SetWorktreeManager(wm)
-
-	lease := "daemon:99999"
-	tasks := []model.Task{
-		{ID: "t1", CommandID: "cmd_cancel_wt", Status: model.StatusInProgress, LeaseOwner: &lease, LeaseEpoch: 1,
-			CreatedAt: time.Now().Format(time.RFC3339)},
-	}
-
-	results := ch.InterruptInProgressTasks(tasks, "cmd_cancel_wt", "worker1")
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
-	}
-
-	// Verify worktree is clean after cancel (DiscardWorkerChanges was called)
-	cmd := exec.Command("git", "status", "--porcelain")
-	cmd.Dir = wtPath
-	out, _ := cmd.Output()
-	if strings.TrimSpace(string(out)) != "" {
-		t.Errorf("worktree should be clean after cancel, got: %s", out)
-	}
-}
-
 func TestCancelHandler_InterruptInProgressTasksDeferred_WorktreeCleanup(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
-	if err := wm.CreateForCommand("cmd_cancel_def", []string{"worker1"}); err != nil {
+	if err := wm.EnsureWorkerWorktree("cmd_cancel_def", "worker1"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -519,34 +425,6 @@ func TestCancelHandler_InterruptInProgressTasksDeferred_WorktreeCleanup(t *testi
 	if strings.TrimSpace(string(out)) != "" {
 		t.Errorf("worktree should be clean after deferred cancel, got: %s", out)
 	}
-}
-
-func TestCancelHandler_CleanupCommandWorktrees(t *testing.T) {
-	projectRoot := initTestGitRepo(t)
-	wm := newTestWorktreeManager(t, projectRoot)
-
-	if err := wm.CreateForCommand("cmd_cancel_cleanup", []string{"worker1"}); err != nil {
-		t.Fatal(err)
-	}
-
-	if !wm.HasWorktrees("cmd_cancel_cleanup") {
-		t.Fatal("worktrees should exist before cleanup")
-	}
-
-	ch, _ := newTestCancelHandler()
-	ch.SetWorktreeManager(wm)
-
-	ch.CleanupCommandWorktrees("cmd_cancel_cleanup")
-
-	if wm.HasWorktrees("cmd_cancel_cleanup") {
-		t.Error("worktrees should be cleaned up after CleanupCommandWorktrees")
-	}
-}
-
-func TestCancelHandler_CleanupCommandWorktrees_NilManager(t *testing.T) {
-	ch, _ := newTestCancelHandler()
-	// worktreeManager is nil — should not panic
-	ch.CleanupCommandWorktrees("any_command")
 }
 
 func TestCancelHandler_SetWorktreeManager(t *testing.T) {

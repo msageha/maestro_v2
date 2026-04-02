@@ -30,7 +30,7 @@ func TestWorktreeIntegration_BasicLifecycle(t *testing.T) {
 	workerIDs := []string{"worker1", "worker2"}
 
 	// Step 1: Create worktrees
-	if err := wm.CreateForCommand(commandID, workerIDs); err != nil {
+	if err := createForCommand(wm, commandID, workerIDs); err != nil {
 		t.Fatalf("CreateForCommand: %v", err)
 	}
 
@@ -155,7 +155,7 @@ func TestWorktreeIntegration_CrossPhaseSync(t *testing.T) {
 	workerIDs := []string{"worker1", "worker2", "worker3"}
 
 	// Step 1: Create worktrees for all workers
-	if err := wm.CreateForCommand(commandID, workerIDs); err != nil {
+	if err := createForCommand(wm, commandID, workerIDs); err != nil {
 		t.Fatalf("CreateForCommand: %v", err)
 	}
 

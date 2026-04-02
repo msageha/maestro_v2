@@ -36,11 +36,6 @@ func (cb *Handler) SetStateReader(reader core.StateReader) {
 	cb.stateReader = reader
 }
 
-// SetClock sets a custom clock (for testing).
-func (cb *Handler) SetClock(c core.Clock) {
-	cb.clock = c
-}
-
 // Enabled returns whether the circuit breaker is enabled in config.
 func (cb *Handler) Enabled() bool {
 	return cb.config.CircuitBreaker.Enabled
@@ -172,13 +167,6 @@ func (cb *Handler) ProgressTimeoutMinutes() int {
 // StateReader returns the configured state reader (may be nil).
 func (cb *Handler) StateReader() core.StateReader {
 	return cb.stateReader
-}
-
-// ShouldPreserveWorktrees returns true if worktrees should be preserved after trip.
-// Used by the daemon to decide cleanup behavior.
-func (cb *Handler) ShouldPreserveWorktrees() bool {
-	// Worktrees are preserved on failure for investigation by default
-	return !cb.config.Worktree.CleanupOnFailure
 }
 
 func (cb *Handler) log(level core.LogLevel, format string, args ...any) {

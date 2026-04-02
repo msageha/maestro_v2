@@ -30,6 +30,17 @@ func newTestReconciler(maestroDir string) *Reconciler {
 	return NewReconciler(maestroDir, cfg, lockMap, logger, LogLevelDebug, rh, ep.Factory())
 }
 
+func newTestReconcilerWithFactory(maestroDir string, factory ExecutorFactory) *Reconciler {
+	cfg := model.Config{
+		Watcher: model.WatcherConfig{DispatchLeaseSec: 60},
+	}
+	lockMap := lock.NewMutexMap()
+	logger := log.New(&bytes.Buffer{}, "", 0)
+	ep := newTestExecutorProvider(maestroDir, cfg)
+	rh := NewResultHandler(maestroDir, cfg, lockMap, logger, LogLevelDebug, ep)
+	return NewReconciler(maestroDir, cfg, lockMap, logger, LogLevelDebug, rh, factory)
+}
+
 func TestReconciler_R0_PlanningStuck(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
@@ -862,9 +873,8 @@ func TestReconciler_R5_NotificationExists_NoRepair(t *testing.T) {
 
 func TestReconciler_R6_AwaitingFill_DeadlineExpired(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
-	rec := newTestReconciler(maestroDir)
 	// Set a mock executor so notification doesn't fail
-	rec.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+	rec := newTestReconcilerWithFactory(maestroDir, func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 		return &mockExecutorR6{}, nil
 	})
 
@@ -973,8 +983,7 @@ func filterRepairs(repairs []ReconcileRepair, pattern reconcile.RepairPatternID)
 
 func TestReconciler_R6_TransitiveCascade(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
-	rec := newTestReconciler(maestroDir)
-	rec.SetExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+	rec := newTestReconcilerWithFactory(maestroDir, func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 		return &mockExecutorR6{}, nil
 	})
 

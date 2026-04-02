@@ -544,10 +544,7 @@ func newScanPhaseTestQueueHandler(t *testing.T, maestroDir string, wtConfig mode
 	qh.SetStateReader(reader)
 
 	// Wire worktree manager with minimal config (only needs to read state files)
-	projectRoot := filepath.Dir(maestroDir)
 	wm := NewWorktreeManager(maestroDir, wtConfig, log.New(&bytes.Buffer{}, "", 0), LogLevelError)
-	// Override projectRoot for tests
-	wm.SetProjectRoot(projectRoot)
 	qh.SetWorktreeManager(wm)
 
 	return qh

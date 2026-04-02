@@ -44,23 +44,11 @@ func NewCancelHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMa
 	}
 }
 
-// SetExecutorFactory overrides the executor factory for testing.
-// Resets the cached executor so the new factory is used on next call.
-func (ch *CancelHandler) SetExecutorFactory(f ExecutorFactory) {
-	ch.execProvider.SetFactory(f)
-}
-
 // getExecutor returns the shared executor instance, creating it lazily on first call.
 // The Executor is safe for concurrent use (log.Logger uses internal mutex,
 // os.File in append mode is POSIX-safe, all other fields are immutable).
 func (ch *CancelHandler) getExecutor() (AgentExecutor, error) {
 	return ch.execProvider.GetExecutor()
-}
-
-// CloseExecutor releases the shared executor's resources.
-// Safe to call multiple times; subsequent calls are no-ops.
-func (ch *CancelHandler) CloseExecutor() {
-	ch.execProvider.CloseExecutor()
 }
 
 // SetStateReader wires the state reader for updating task states on cancellation.
@@ -71,22 +59,6 @@ func (ch *CancelHandler) SetStateReader(reader StateReader) {
 // SetWorktreeManager wires the worktree manager for cleanup on cancellation (H4).
 func (ch *CancelHandler) SetWorktreeManager(wm *WorktreeManager) {
 	ch.worktreeManager = wm
-}
-
-// CleanupCommandWorktrees cleans up all worktrees for a cancelled command.
-// No-op if worktreeManager is nil (worktree feature disabled).
-func (ch *CancelHandler) CleanupCommandWorktrees(commandID string) {
-	if ch.worktreeManager == nil {
-		return
-	}
-	if !ch.worktreeManager.HasWorktrees(commandID) {
-		return
-	}
-	if err := ch.worktreeManager.CleanupCommand(commandID); err != nil {
-		ch.log(LogLevelWarn, "cancel_worktree_cleanup command=%s error=%v", commandID, err)
-	} else {
-		ch.log(LogLevelInfo, "cancel_worktree_cleanup_done command=%s", commandID)
-	}
 }
 
 // IsCommandCancelRequested checks if a command has been marked for cancellation.
@@ -130,71 +102,6 @@ func (ch *CancelHandler) CancelPendingTasks(tasks []model.Task, commandID string
 		task.UpdatedAt = ch.clock.Now().UTC().Format(time.RFC3339)
 
 		ch.log(LogLevelInfo, "cancel_pending task=%s command=%s", task.ID, commandID)
-
-		// Update state/commands/ with cancelled status + reason
-		if ch.stateReader != nil {
-			if err := ch.stateReader.UpdateTaskState(commandID, task.ID, model.StatusCancelled, "command_cancel_requested"); err != nil {
-				ch.log(LogLevelWarn, "cancel_state_update task=%s error=%v", task.ID, err)
-			}
-		}
-
-		results = append(results, CancelledTaskResult{
-			TaskID:    task.ID,
-			CommandID: commandID,
-			Status:    "cancelled",
-			Reason:    "command_cancel_requested",
-		})
-	}
-
-	return results
-}
-
-// InterruptInProgressTasks interrupts in_progress tasks of a cancelled command.
-// Returns the number of tasks interrupted (periodic scan step 0.6).
-func (ch *CancelHandler) InterruptInProgressTasks(tasks []model.Task, commandID string, workerID string) []CancelledTaskResult {
-	var results []CancelledTaskResult
-
-	for i := range tasks {
-		task := &tasks[i]
-		if task.CommandID != commandID || task.Status != model.StatusInProgress {
-			continue
-		}
-
-		// Validate transition BEFORE sending interrupt (CR-029 consistency):
-		// skip targets must not be interrupted.
-		if err := model.ValidateCommandTaskQueueTransition(task.Status, model.StatusCancelled); err != nil {
-			ch.log(LogLevelWarn, "cancel_inprogress_skip task=%s error=%v", task.ID, err)
-			continue
-		}
-
-		// Send interrupt via agent executor using workerID (agent ID like "worker1"),
-		// NOT task.LeaseOwner which is in "daemon:{pid}" format.
-		// Only interrupt if task has an active lease (LeaseOwner != nil).
-		if task.LeaseOwner != nil && workerID != "" {
-			if err := ch.interruptAgent(workerID, task.ID, task.CommandID, task.LeaseEpoch); err != nil {
-				ch.log(LogLevelError, "interrupt_failed task=%s worker=%s error=%v",
-					task.ID, workerID, err)
-				// Continue to cancel even if interrupt fails
-			}
-		}
-
-		// Clear lease fields before setting status to ensure any concurrent
-		// observer sees either (in_progress, lease) or (cancelled, no_lease),
-		// never (cancelled, active_lease).
-		task.LeaseOwner = nil
-		task.LeaseExpiresAt = nil
-		task.UpdatedAt = ch.clock.Now().UTC().Format(time.RFC3339)
-		task.Status = model.StatusCancelled
-
-		ch.log(LogLevelInfo, "cancel_inprogress task=%s command=%s", task.ID, commandID)
-
-		// H4: Discard uncommitted changes in worker worktree
-		if ch.worktreeManager != nil && workerID != "" {
-			if err := ch.worktreeManager.DiscardWorkerChanges(commandID, workerID); err != nil {
-				ch.log(LogLevelWarn, "cancel_worktree_discard task=%s worker=%s error=%v",
-					task.ID, workerID, err)
-			}
-		}
 
 		// Update state/commands/ with cancelled status + reason
 		if ch.stateReader != nil {
@@ -336,18 +243,6 @@ func (ch *CancelHandler) WriteSyntheticResults(results []CancelledTaskResult, wo
 
 	if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
 		ch.log(LogLevelError, "synthetic_result_write worker=%s error=%v", workerID, err)
-	}
-}
-
-// BuildSyntheticResult creates a synthetic result for a cancelled task.
-func (ch *CancelHandler) BuildSyntheticResult(r CancelledTaskResult) map[string]any {
-	return map[string]any{
-		"task_id":    r.TaskID,
-		"command_id": r.CommandID,
-		"status":     r.Status,
-		"reason":     r.Reason,
-		"synthetic":  true,
-		"created_at": ch.clock.Now().UTC().Format(time.RFC3339),
 	}
 }
 

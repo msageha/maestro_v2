@@ -107,7 +107,7 @@ func TestHandlePlan_NilExecutor(t *testing.T) {
 	// Do not set plan executor
 	req := makePlanRequest(t, "submit", nil)
 
-	resp := d.handlePlan(req)
+	resp := d.api.handlePlan(req)
 
 	assert.False(t, resp.Success)
 	assert.NotNil(t, resp.Error)
@@ -119,7 +119,7 @@ func TestHandlePlan_InvalidJSON(t *testing.T) {
 	d := newPlanTestDaemon(t, &mockPlanExecutor{})
 	req := &uds.Request{Params: json.RawMessage(`{invalid`)}
 
-	resp := d.handlePlan(req)
+	resp := d.api.handlePlan(req)
 
 	assert.False(t, resp.Success)
 	assert.NotNil(t, resp.Error)
@@ -131,7 +131,7 @@ func TestHandlePlan_UnknownOperation(t *testing.T) {
 	d := newPlanTestDaemon(t, &mockPlanExecutor{})
 	req := makePlanRequest(t, "nonexistent", nil)
 
-	resp := d.handlePlan(req)
+	resp := d.api.handlePlan(req)
 
 	assert.False(t, resp.Success)
 	assert.NotNil(t, resp.Error)
@@ -149,7 +149,7 @@ func TestHandlePlan_SubmitSuccess(t *testing.T) {
 	d := newPlanTestDaemon(t, pe)
 	req := makePlanRequest(t, "submit", map[string]string{"purpose": "test"})
 
-	resp := d.handlePlan(req)
+	resp := d.api.handlePlan(req)
 
 	assert.True(t, resp.Success)
 	assert.Nil(t, resp.Error)
@@ -165,7 +165,7 @@ func TestHandlePlan_CompleteSuccess(t *testing.T) {
 	d := newPlanTestDaemon(t, pe)
 	req := makePlanRequest(t, "complete", map[string]string{"command_id": "cmd_001"})
 
-	resp := d.handlePlan(req)
+	resp := d.api.handlePlan(req)
 
 	assert.True(t, resp.Success)
 	assert.Nil(t, resp.Error)
@@ -181,7 +181,7 @@ func TestHandlePlan_AddRetryTaskSuccess(t *testing.T) {
 	d := newPlanTestDaemon(t, pe)
 	req := makePlanRequest(t, "add_retry_task", map[string]string{"task_id": "task_001"})
 
-	resp := d.handlePlan(req)
+	resp := d.api.handlePlan(req)
 
 	assert.True(t, resp.Success)
 	assert.Nil(t, resp.Error)
@@ -197,7 +197,7 @@ func TestHandlePlan_RebuildSuccess(t *testing.T) {
 	d := newPlanTestDaemon(t, pe)
 	req := makePlanRequest(t, "rebuild", map[string]string{"command_id": "cmd_001"})
 
-	resp := d.handlePlan(req)
+	resp := d.api.handlePlan(req)
 
 	assert.True(t, resp.Success)
 	assert.Nil(t, resp.Error)
@@ -213,7 +213,7 @@ func TestHandlePlan_GenericError(t *testing.T) {
 	d := newPlanTestDaemon(t, pe)
 	req := makePlanRequest(t, "submit", nil)
 
-	resp := d.handlePlan(req)
+	resp := d.api.handlePlan(req)
 
 	assert.False(t, resp.Success)
 	assert.NotNil(t, resp.Error)
@@ -233,7 +233,7 @@ func TestHandlePlan_ValidationError(t *testing.T) {
 	d := newPlanTestDaemon(t, pe)
 	req := makePlanRequest(t, "submit", nil)
 
-	resp := d.handlePlan(req)
+	resp := d.api.handlePlan(req)
 
 	assert.False(t, resp.Success)
 	assert.NotNil(t, resp.Error)
@@ -254,7 +254,7 @@ func TestHandlePlan_CodedError(t *testing.T) {
 	d := newPlanTestDaemon(t, pe)
 	req := makePlanRequest(t, "complete", nil)
 
-	resp := d.handlePlan(req)
+	resp := d.api.handlePlan(req)
 
 	assert.False(t, resp.Success)
 	assert.NotNil(t, resp.Error)
@@ -276,7 +276,7 @@ func TestHandlePlan_CodedErrorPrecedesValidation(t *testing.T) {
 	d := newPlanTestDaemon(t, pe)
 	req := makePlanRequest(t, "submit", nil)
 
-	resp := d.handlePlan(req)
+	resp := d.api.handlePlan(req)
 
 	assert.False(t, resp.Success)
 	assert.Equal(t, "CUSTOM_CODE", resp.Error.Code)
@@ -292,7 +292,7 @@ func TestHandlePlan_AllOperations(t *testing.T) {
 			d := newPlanTestDaemon(t, pe)
 			req := makePlanRequest(t, op, nil)
 
-			resp := d.handlePlan(req)
+			resp := d.api.handlePlan(req)
 
 			assert.True(t, resp.Success, "operation %s should succeed", op)
 			assert.Nil(t, resp.Error)
@@ -316,7 +316,7 @@ func TestHandlePlan_DataPassthrough(t *testing.T) {
 	}
 	req := makePlanRequest(t, "submit", inputData)
 
-	resp := d.handlePlan(req)
+	resp := d.api.handlePlan(req)
 
 	assert.True(t, resp.Success)
 	// Verify the data was forwarded to the executor
@@ -330,7 +330,7 @@ func TestHandlePlan_EmptyParams(t *testing.T) {
 	// Empty JSON object — missing operation field
 	req := &uds.Request{Params: json.RawMessage(`{}`)}
 
-	resp := d.handlePlan(req)
+	resp := d.api.handlePlan(req)
 
 	// Empty operation string triggers "unknown plan operation"
 	assert.False(t, resp.Success)
@@ -342,7 +342,7 @@ func TestHandlePlan_NilParams(t *testing.T) {
 	d := newPlanTestDaemon(t, &mockPlanExecutor{})
 	req := &uds.Request{Params: nil}
 
-	resp := d.handlePlan(req)
+	resp := d.api.handlePlan(req)
 
 	assert.False(t, resp.Success)
 	assert.Equal(t, uds.ErrCodeValidation, resp.Error.Code)
@@ -372,7 +372,7 @@ func TestHandlePlan_ErrorAllOperations(t *testing.T) {
 			d := newPlanTestDaemon(t, pe)
 			req := makePlanRequest(t, op, nil)
 
-			resp := d.handlePlan(req)
+			resp := d.api.handlePlan(req)
 
 			assert.False(t, resp.Success, "operation %s should fail", op)
 			assert.Equal(t, uds.ErrCodeInternal, resp.Error.Code)

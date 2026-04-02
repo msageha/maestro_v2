@@ -91,7 +91,7 @@ func TestQueueWriteCommand_Basic(t *testing.T) {
 		Content: "implement authentication",
 	})
 
-	resp := d.handleQueueWrite(req)
+	resp := d.api.handleQueueWrite(req)
 	if !resp.Success {
 		t.Fatalf("expected success, got error: %v", resp.Error)
 	}
@@ -138,7 +138,7 @@ func TestQueueWriteCommand_Backpressure(t *testing.T) {
 			Type:    "command",
 			Content: "cmd",
 		})
-		resp := d.handleQueueWrite(req)
+		resp := d.api.handleQueueWrite(req)
 		if !resp.Success {
 			t.Fatalf("write %d: expected success, got error: %v", i, resp.Error)
 		}
@@ -149,7 +149,7 @@ func TestQueueWriteCommand_Backpressure(t *testing.T) {
 		Type:    "command",
 		Content: "cmd3",
 	})
-	resp := d.handleQueueWrite(req)
+	resp := d.api.handleQueueWrite(req)
 	if resp.Success {
 		t.Fatal("expected backpressure error")
 	}
@@ -167,7 +167,7 @@ func TestQueueWriteCommand_BackpressureCountsPendingOnly(t *testing.T) {
 		Type:    "command",
 		Content: "cmd1",
 	})
-	resp := d.handleQueueWrite(req)
+	resp := d.api.handleQueueWrite(req)
 	if !resp.Success {
 		t.Fatalf("write 1: expected success, got error: %v", resp.Error)
 	}
@@ -190,7 +190,7 @@ func TestQueueWriteCommand_BackpressureCountsPendingOnly(t *testing.T) {
 		Type:    "command",
 		Content: "cmd2",
 	})
-	resp2 := d.handleQueueWrite(req2)
+	resp2 := d.api.handleQueueWrite(req2)
 	if !resp2.Success {
 		t.Fatalf("write 2: expected success (in_progress doesn't count), got error: %v", resp2.Error)
 	}
@@ -204,7 +204,7 @@ func TestQueueWriteCommand_ContentSizeLimit(t *testing.T) {
 		Type:    "command",
 		Content: "this content exceeds the 10 byte limit",
 	})
-	resp := d.handleQueueWrite(req)
+	resp := d.api.handleQueueWrite(req)
 	if resp.Success {
 		t.Fatal("expected validation error for oversized content")
 	}
@@ -219,7 +219,7 @@ func TestQueueWriteCommand_MissingContent(t *testing.T) {
 	req := makeQueueWriteRequest(t, QueueWriteParams{
 		Type: "command",
 	})
-	resp := d.handleQueueWrite(req)
+	resp := d.api.handleQueueWrite(req)
 	if resp.Success {
 		t.Fatal("expected validation error for missing content")
 	}
@@ -238,7 +238,7 @@ func TestQueueWriteTask_Basic(t *testing.T) {
 		Target:             "worker1",
 	})
 
-	resp := d.handleQueueWrite(req)
+	resp := d.api.handleQueueWrite(req)
 	if !resp.Success {
 		t.Fatalf("expected success, got error: %v", resp.Error)
 	}
@@ -288,7 +288,7 @@ func TestQueueWriteTask_Backpressure(t *testing.T) {
 		BloomLevel:         2,
 		Target:             "worker1",
 	})
-	resp := d.handleQueueWrite(req)
+	resp := d.api.handleQueueWrite(req)
 	if !resp.Success {
 		t.Fatalf("write 1: expected success, got error: %v", resp.Error)
 	}
@@ -303,7 +303,7 @@ func TestQueueWriteTask_Backpressure(t *testing.T) {
 		BloomLevel:         2,
 		Target:             "worker1",
 	})
-	resp2 := d.handleQueueWrite(req2)
+	resp2 := d.api.handleQueueWrite(req2)
 	if resp2.Success {
 		t.Fatal("expected backpressure error")
 	}
@@ -331,7 +331,7 @@ func TestQueueWriteTask_ValidationErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := makeQueueWriteRequest(t, tt.params)
-			resp := d.handleQueueWrite(req)
+			resp := d.api.handleQueueWrite(req)
 			if resp.Success {
 				t.Fatal("expected validation error")
 			}
@@ -353,7 +353,7 @@ func TestQueueWriteNotification_Basic(t *testing.T) {
 		NotificationType: "command_completed",
 	})
 
-	resp := d.handleQueueWrite(req)
+	resp := d.api.handleQueueWrite(req)
 	if !resp.Success {
 		t.Fatalf("expected success, got error: %v", resp.Error)
 	}
@@ -399,7 +399,7 @@ func TestQueueWriteNotification_Idempotency(t *testing.T) {
 	}
 
 	req1 := makeQueueWriteRequest(t, params)
-	resp1 := d.handleQueueWrite(req1)
+	resp1 := d.api.handleQueueWrite(req1)
 	if !resp1.Success {
 		t.Fatalf("write 1: expected success, got error: %v", resp1.Error)
 	}
@@ -410,7 +410,7 @@ func TestQueueWriteNotification_Idempotency(t *testing.T) {
 
 	// Same source_result_id should return duplicate
 	req2 := makeQueueWriteRequest(t, params)
-	resp2 := d.handleQueueWrite(req2)
+	resp2 := d.api.handleQueueWrite(req2)
 	if !resp2.Success {
 		t.Fatalf("write 2: expected success (duplicate), got error: %v", resp2.Error)
 	}
@@ -457,7 +457,7 @@ func TestQueueWriteNotification_ValidationErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := makeQueueWriteRequest(t, tt.params)
-			resp := d.handleQueueWrite(req)
+			resp := d.api.handleQueueWrite(req)
 			if resp.Success {
 				t.Fatal("expected validation error")
 			}
@@ -475,7 +475,7 @@ func TestQueueWrite_InvalidType(t *testing.T) {
 		Type:    "invalid",
 		Content: "test",
 	})
-	resp := d.handleQueueWrite(req)
+	resp := d.api.handleQueueWrite(req)
 	if resp.Success {
 		t.Fatal("expected validation error for invalid type")
 	}
@@ -495,7 +495,7 @@ func TestQueueWriteTask_WithBlockedBy(t *testing.T) {
 		BlockedBy:          []string{"task_0000000001_11111111", "task_0000000001_22222222"},
 	})
 
-	resp := d.handleQueueWrite(req)
+	resp := d.api.handleQueueWrite(req)
 	if !resp.Success {
 		t.Fatalf("expected success, got error: %v", resp.Error)
 	}
@@ -542,7 +542,7 @@ func TestQueueWriteTask_BlockedByValidation(t *testing.T) {
 				Target:             "worker1",
 				BlockedBy:          tt.blockedBy,
 			})
-			resp := d.handleQueueWrite(req)
+			resp := d.api.handleQueueWrite(req)
 			if resp.Success {
 				t.Fatal("expected validation error for blocked_by")
 			}
@@ -561,7 +561,7 @@ func TestQueueWriteCancelRequest_Unsubmitted(t *testing.T) {
 		Type:    "command",
 		Content: "test command",
 	})
-	resp := d.handleQueueWrite(req)
+	resp := d.api.handleQueueWrite(req)
 	if !resp.Success {
 		t.Fatalf("create command: %v", resp.Error)
 	}
@@ -576,7 +576,7 @@ func TestQueueWriteCancelRequest_Unsubmitted(t *testing.T) {
 		CommandID: commandID,
 		Reason:    "user requested",
 	})
-	cancelResp := d.handleQueueWrite(cancelReq)
+	cancelResp := d.api.handleQueueWrite(cancelReq)
 	if !cancelResp.Success {
 		t.Fatalf("cancel: expected success, got error: %v", cancelResp.Error)
 	}
@@ -625,7 +625,7 @@ func TestQueueWriteCancelRequest_Submitted(t *testing.T) {
 		CommandID: commandID,
 		Reason:    "timeout",
 	})
-	cancelResp := d.handleQueueWrite(cancelReq)
+	cancelResp := d.api.handleQueueWrite(cancelReq)
 	if !cancelResp.Success {
 		t.Fatalf("cancel: expected success, got error: %v", cancelResp.Error)
 	}
@@ -664,13 +664,13 @@ func TestQueueWriteCancelRequest_Idempotent(t *testing.T) {
 	})
 
 	// First cancel
-	resp1 := d.handleQueueWrite(cancelReq)
+	resp1 := d.api.handleQueueWrite(cancelReq)
 	if !resp1.Success {
 		t.Fatalf("cancel 1: expected success, got error: %v", resp1.Error)
 	}
 
 	// Second cancel (idempotent)
-	resp2 := d.handleQueueWrite(cancelReq)
+	resp2 := d.api.handleQueueWrite(cancelReq)
 	if !resp2.Success {
 		t.Fatalf("cancel 2: expected success (idempotent), got error: %v", resp2.Error)
 	}
@@ -689,7 +689,7 @@ func TestQueueWriteCommand_DefaultPriority(t *testing.T) {
 		Type:    "command",
 		Content: "test",
 	})
-	resp := d.handleQueueWrite(req)
+	resp := d.api.handleQueueWrite(req)
 	if !resp.Success {
 		t.Fatalf("expected success, got error: %v", resp.Error)
 	}
@@ -723,7 +723,7 @@ func TestQueueWriteTask_CyclicDependencyDetection(t *testing.T) {
 		BloomLevel:         3,
 		Target:             "worker1",
 	})
-	respA := d.handleQueueWrite(reqA)
+	respA := d.api.handleQueueWrite(reqA)
 	if !respA.Success {
 		t.Fatalf("task A: expected success, got error: %v", respA.Error)
 	}
@@ -742,7 +742,7 @@ func TestQueueWriteTask_CyclicDependencyDetection(t *testing.T) {
 		Target:             "worker1",
 		BlockedBy:          []string{taskAID},
 	})
-	respB := d.handleQueueWrite(reqB)
+	respB := d.api.handleQueueWrite(reqB)
 	if !respB.Success {
 		t.Fatalf("task B: expected success, got error: %v", respB.Error)
 	}
@@ -761,7 +761,7 @@ func TestQueueWriteTask_CyclicDependencyDetection(t *testing.T) {
 		Target:             "worker1",
 		BlockedBy:          []string{taskBID},
 	})
-	respC := d.handleQueueWrite(reqC)
+	respC := d.api.handleQueueWrite(reqC)
 	if !respC.Success {
 		t.Fatalf("task C (chain): expected success, got error: %v", respC.Error)
 	}
@@ -796,7 +796,7 @@ func TestQueueWriteTask_CyclicDependencyDetection(t *testing.T) {
 		Target:             "worker1",
 		BlockedBy:          []string{taskAID},
 	})
-	respD := d.handleQueueWrite(reqD)
+	respD := d.api.handleQueueWrite(reqD)
 	if respD.Success {
 		t.Fatal("task D: expected cycle detection error, got success")
 	}
@@ -823,7 +823,7 @@ func TestQueueWriteTask_CyclicDependency_MutualBlockAB(t *testing.T) {
 		BloomLevel:         3,
 		Target:             "worker1",
 	})
-	respA := d.handleQueueWrite(reqA)
+	respA := d.api.handleQueueWrite(reqA)
 	if !respA.Success {
 		t.Fatalf("task A: expected success, got error: %v", respA.Error)
 	}
@@ -842,7 +842,7 @@ func TestQueueWriteTask_CyclicDependency_MutualBlockAB(t *testing.T) {
 		Target:             "worker2",
 		BlockedBy:          []string{taskAID},
 	})
-	respB := d.handleQueueWrite(reqB)
+	respB := d.api.handleQueueWrite(reqB)
 	if !respB.Success {
 		t.Fatalf("task B: expected success, got error: %v", respB.Error)
 	}
@@ -880,7 +880,7 @@ func TestQueueWriteTask_CyclicDependency_MutualBlockAB(t *testing.T) {
 		Target:             "worker1",
 		BlockedBy:          []string{taskAID},
 	})
-	respC := d.handleQueueWrite(reqC)
+	respC := d.api.handleQueueWrite(reqC)
 	if respC.Success {
 		t.Fatal("task C: expected cycle detection error, got success")
 	}
@@ -907,7 +907,7 @@ func TestQueueWriteTask_NoCycleWithTerminalTasks(t *testing.T) {
 		BloomLevel:         3,
 		Target:             "worker1",
 	})
-	respA := d.handleQueueWrite(reqA)
+	respA := d.api.handleQueueWrite(reqA)
 	if !respA.Success {
 		t.Fatalf("task A: expected success, got error: %v", respA.Error)
 	}
@@ -926,7 +926,7 @@ func TestQueueWriteTask_NoCycleWithTerminalTasks(t *testing.T) {
 		Target:             "worker1",
 		BlockedBy:          []string{taskAID},
 	})
-	respB := d.handleQueueWrite(reqB)
+	respB := d.api.handleQueueWrite(reqB)
 	if !respB.Success {
 		t.Fatalf("task B: expected success, got error: %v", respB.Error)
 	}
@@ -964,7 +964,7 @@ func TestQueueWriteTask_NoCycleWithTerminalTasks(t *testing.T) {
 		Target:             "worker1",
 		BlockedBy:          []string{taskBID},
 	})
-	respC := d.handleQueueWrite(reqC)
+	respC := d.api.handleQueueWrite(reqC)
 	if !respC.Success {
 		t.Fatalf("task C: expected success (terminal task breaks cycle), got error: %v", respC.Error)
 	}

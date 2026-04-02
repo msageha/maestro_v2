@@ -340,17 +340,6 @@ func (lm *LeaseManager) ExpireNotifications(notifications []model.Notification) 
 	return expired
 }
 
-// HasInFlightForOwner checks if an owner already has an in_progress entry.
-// Enforces at-most-one-in-flight invariant per agent.
-func (lm *LeaseManager) HasInFlightForOwner(tasks []model.Task, owner string) bool {
-	for _, task := range tasks {
-		if task.Status == model.StatusInProgress && task.LeaseOwner != nil && *task.LeaseOwner == owner {
-			return true
-		}
-	}
-	return false
-}
-
 func ptrStr(s *string) string {
 	if s == nil {
 		return "<nil>"

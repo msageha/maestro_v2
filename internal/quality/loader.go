@@ -2,13 +2,8 @@ package quality
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
-	"regexp"
-	"strings"
-	"sync"
-	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -16,20 +11,12 @@ import (
 // Loader loads and validates gate configurations
 type Loader struct {
 	configDir string
-	mu              sync.RWMutex
-	configurations  map[string]*GateConfiguration
-	loadedFiles     map[string]time.Time
-	defaultGates    *GateConfiguration
-	validationCache map[string]*regexp.Regexp
 }
 
 // NewLoader creates a new configuration loader
 func NewLoader(configDir string) *Loader {
 	return &Loader{
-		configDir:       configDir,
-		configurations:  make(map[string]*GateConfiguration),
-		loadedFiles:     make(map[string]time.Time),
-		validationCache: make(map[string]*regexp.Regexp),
+		configDir: configDir,
 	}
 }
 
@@ -340,273 +327,6 @@ func hasExtension(path string, extensions ...string) bool {
 	return false
 }
 
-// LoadFromFile loads gate definitions from a YAML file with caching
-func (l *Loader) LoadFromFile(path string) (*GateConfiguration, error) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-
-	// Check if file exists
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to stat file %s: %w", path, err)
-	}
-
-	// Check if already loaded and not modified
-	if lastLoad, exists := l.loadedFiles[path]; exists {
-		if info.ModTime().Before(lastLoad) || info.ModTime().Equal(lastLoad) {
-			if config, ok := l.configurations[path]; ok {
-				return config, nil
-			}
-		}
-	}
-
-	// Verify file permissions
-	if err := validateFilePermissions(path); err != nil {
-		return nil, fmt.Errorf("unsafe file permissions on %s: %w", path, err)
-	}
-
-	// Read file
-	file, err := os.Open(path)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open file %s: %w", path, err)
-	}
-	defer file.Close()
-
-	data, err := io.ReadAll(file)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read file %s: %w", path, err)
-	}
-
-	// Parse YAML
-	config, err := l.parseYAML(data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse YAML from %s: %w", path, err)
-	}
-
-	// Set source file path on script conditions for permission re-verification
-	setSourceFile(config, path)
-
-	// Validate configuration
-	if err := l.validateConfiguration(config); err != nil {
-		return nil, fmt.Errorf("invalid configuration in %s: %w", path, err)
-	}
-
-	// Apply defaults
-	l.applyDefaults(config)
-
-	// Compile patterns
-	if err := l.compilePatterns(config); err != nil {
-		return nil, fmt.Errorf("failed to compile patterns in %s: %w", path, err)
-	}
-
-	// Store in cache
-	l.configurations[path] = config
-	l.loadedFiles[path] = time.Now()
-
-	return config, nil
-}
-
-// LoadFromBytes loads gate definitions from YAML bytes
-func (l *Loader) LoadFromBytes(data []byte) (*GateConfiguration, error) {
-	config, err := l.parseYAML(data)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse YAML: %w", err)
-	}
-
-	if err := l.validateConfiguration(config); err != nil {
-		return nil, fmt.Errorf("invalid configuration: %w", err)
-	}
-
-	l.applyDefaults(config)
-
-	if err := l.compilePatterns(config); err != nil {
-		return nil, fmt.Errorf("failed to compile patterns: %w", err)
-	}
-
-	return config, nil
-}
-
-// parseYAML parses YAML data into a GateConfiguration
-func (l *Loader) parseYAML(data []byte) (*GateConfiguration, error) {
-	var config GateConfiguration
-
-	decoder := yaml.NewDecoder(strings.NewReader(string(data)))
-	decoder.KnownFields(true) // Strict mode - fail on unknown fields
-
-	if err := decoder.Decode(&config); err != nil {
-		return nil, fmt.Errorf("YAML decode error: %w", err)
-	}
-
-	return &config, nil
-}
-
-// ReloadFile reloads a specific file if it has been modified
-func (l *Loader) ReloadFile(path string) (*GateConfiguration, bool, error) {
-	l.mu.RLock()
-	lastLoad, exists := l.loadedFiles[path]
-	l.mu.RUnlock()
-
-	if !exists {
-		// File not previously loaded, load it now
-		config, err := l.LoadFromFile(path)
-		return config, true, err
-	}
-
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, false, fmt.Errorf("failed to stat file %s: %w", path, err)
-	}
-
-	// Check if file has been modified
-	if info.ModTime().After(lastLoad) {
-		config, err := l.LoadFromFile(path)
-		return config, true, err
-	}
-
-	l.mu.RLock()
-	config := l.configurations[path]
-	l.mu.RUnlock()
-
-	return config, false, nil
-}
-
-// LoadDirectory loads all YAML files from a directory
-func (l *Loader) LoadDirectory(dir string) ([]*GateConfiguration, error) {
-	pattern := filepath.Join(dir, "*.yaml")
-	files, err := filepath.Glob(pattern)
-	if err != nil {
-		return nil, fmt.Errorf("failed to glob directory %s: %w", dir, err)
-	}
-
-	// Also check for .yml files
-	ymlPattern := filepath.Join(dir, "*.yml")
-	ymlFiles, err := filepath.Glob(ymlPattern)
-	if err != nil {
-		return nil, fmt.Errorf("failed to glob yml files in %s: %w", dir, err)
-	}
-	files = append(files, ymlFiles...)
-
-	var configs []*GateConfiguration
-	for _, file := range files {
-		config, err := l.LoadFromFile(file)
-		if err != nil {
-			// Log error but continue loading other files
-			fmt.Fprintf(os.Stderr, "warning: failed to load %s: %v\n", file, err)
-			continue
-		}
-		configs = append(configs, config)
-	}
-
-	return configs, nil
-}
-
-// getDefaultGates returns the default gate configuration
-func (l *Loader) getDefaultGates() *GateConfiguration {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
-
-	if l.defaultGates != nil {
-		return l.defaultGates
-	}
-
-	// Return embedded default gates
-	return l.loadDefaultGates()
-}
-
-// loadDefaultGates loads the embedded default gate configuration
-func (l *Loader) loadDefaultGates() *GateConfiguration {
-	return &GateConfiguration{
-		SchemaVersion: "1.0.0",
-		Metadata: &GateMetadata{
-			Name:        "Default Gates",
-			Description: "Default quality gates for Maestro",
-			Author:      "Maestro System",
-			CreatedAt:   time.Now(),
-		},
-		Gates: []GateDefinition{
-			{
-				ID:          "default_required_fields",
-				Name:        "Required Fields Check",
-				Description: "Ensures required fields are present",
-				Enabled:     boolPtr(true),
-				Type:        GateTypePreTask,
-				Priority:    10,
-				Trigger:     TriggerDefinition{},
-				Rules: []RuleDefinition{
-					{
-						ID:          "check_task_id",
-						Description: "Task must have an ID",
-						Condition: RuleCondition{
-							Type:     ConditionFieldValidation,
-							Field:    "task.id",
-							Operator: OpExists,
-						},
-						Severity: SeverityError,
-					},
-				},
-				Action: ActionDefinition{
-					OnPass: ActionAllow,
-					OnFail: ActionBlock,
-				},
-			},
-		},
-	}
-}
-
-// compilePatterns compiles regex patterns in the configuration
-func (l *Loader) compilePatterns(config *GateConfiguration) error {
-	for i := range config.Gates {
-		gate := &config.Gates[i]
-
-		// Compile trigger patterns
-		for j := range gate.Trigger.Patterns {
-			pattern := &gate.Trigger.Patterns[j]
-			if pattern.Regex != "" {
-				re, err := l.getOrCompileRegex(pattern.Regex)
-				if err != nil {
-					return fmt.Errorf("gate[%s]: invalid trigger pattern regex: %w", gate.ID, err)
-				}
-				pattern.CompiledRegex = re
-			}
-		}
-
-		// Compile rule conditions
-		for j := range gate.Rules {
-			rule := &gate.Rules[j]
-			if err := l.compileCondition(&rule.Condition, gate.ID, rule.ID); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
-}
-
-// compileCondition compiles patterns in a condition recursively
-func (l *Loader) compileCondition(condition *RuleCondition, gateID, ruleID string) error {
-	switch condition.Type {
-	case ConditionFieldValidation:
-		if condition.Operator == OpMatches || condition.Operator == OpNotMatches {
-			if str, ok := condition.Value.(string); ok {
-				re, err := l.getOrCompileRegex(str)
-				if err != nil {
-					return fmt.Errorf("gate[%s].rule[%s]: invalid regex pattern: %w", gateID, ruleID, err)
-				}
-				condition.CompiledRegex = re
-			}
-		}
-
-	case ConditionAnd, ConditionOr, ConditionNot:
-		for i := range condition.Conditions {
-			if err := l.compileCondition(&condition.Conditions[i], gateID, fmt.Sprintf("%s.%d", ruleID, i)); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
-}
-
 // setSourceFile sets the SourceFile field on all script conditions in the configuration
 func setSourceFile(config *GateConfiguration, path string) {
 	for i := range config.Gates {
@@ -666,19 +386,4 @@ func validateFilePermissions(path string) error {
 	}
 
 	return nil
-}
-
-// getOrCompileRegex compiles and caches regex patterns
-func (l *Loader) getOrCompileRegex(pattern string) (*regexp.Regexp, error) {
-	if cached, exists := l.validationCache[pattern]; exists {
-		return cached, nil
-	}
-
-	re, err := regexp.Compile(pattern)
-	if err != nil {
-		return nil, err
-	}
-
-	l.validationCache[pattern] = re
-	return re, nil
 }

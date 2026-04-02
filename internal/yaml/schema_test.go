@@ -90,12 +90,3 @@ func TestValidateSchemaHeader_EmptyExpectedType(t *testing.T) {
 		t.Errorf("expected valid when no expected type specified, got: %v", err)
 	}
 }
-
-func TestNeedsMigration(t *testing.T) {
-	if NeedsMigration(CurrentSchemaVersion) {
-		t.Error("current version should not need migration")
-	}
-	if !NeedsMigration(0) {
-		t.Error("version 0 should need migration")
-	}
-}

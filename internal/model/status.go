@@ -84,10 +84,6 @@ var terminalIntegrationStatuses = map[IntegrationStatus]bool{
 	// failed is NOT terminal: it can transition to merging on retry
 }
 
-var terminalContinuousStatuses = map[ContinuousStatus]bool{
-	ContinuousStatusStopped: true,
-}
-
 var validNotificationTypes = map[NotificationType]bool{
 	NotificationTypeCommandCompleted: true,
 	NotificationTypeCommandFailed:    true,
@@ -132,17 +128,6 @@ var validTaskStateTransitions = map[Status]map[Status]bool{
 		StatusCompleted: true,
 		StatusFailed:    true,
 		StatusCancelled: true,
-	},
-}
-
-var validPlanTransitions = map[PlanStatus]map[PlanStatus]bool{
-	PlanStatusPlanning: {
-		PlanStatusSealed: true,
-	},
-	PlanStatusSealed: {
-		PlanStatusCompleted: true,
-		PlanStatusFailed:    true,
-		PlanStatusCancelled: true,
 	},
 }
 
@@ -274,24 +259,6 @@ var validIntegrationTransitions = map[IntegrationStatus]map[IntegrationStatus]bo
 	},
 }
 
-// Continuous status transitions:
-//   idle → running
-//   running → paused, stopped
-//   paused → running, stopped
-var validContinuousTransitions = map[ContinuousStatus]map[ContinuousStatus]bool{
-	ContinuousStatusIdle: {
-		ContinuousStatusRunning: true,
-	},
-	ContinuousStatusRunning: {
-		ContinuousStatusPaused:  true,
-		ContinuousStatusStopped: true,
-	},
-	ContinuousStatusPaused: {
-		ContinuousStatusRunning: true,
-		ContinuousStatusStopped: true,
-	},
-}
-
 func IsTerminal(s Status) bool {
 	return terminalStatuses[s]
 }
@@ -310,10 +277,6 @@ func IsWorktreeTerminal(s WorktreeStatus) bool {
 
 func IsIntegrationTerminal(s IntegrationStatus) bool {
 	return terminalIntegrationStatuses[s]
-}
-
-func IsContinuousTerminal(s ContinuousStatus) bool {
-	return terminalContinuousStatuses[s]
 }
 
 func ValidateCommandTaskQueueTransition(from, to Status) error {
@@ -354,20 +317,6 @@ func ValidateTaskStateTransition(from, to Status) error {
 	}
 	if !allowed[to] {
 		return fmt.Errorf("invalid task state transition: %q → %q", from, to)
-	}
-	return nil
-}
-
-func ValidatePlanTransition(from, to PlanStatus) error {
-	if IsPlanTerminal(from) {
-		return fmt.Errorf("cannot transition from terminal plan status %q", from)
-	}
-	allowed, ok := validPlanTransitions[from]
-	if !ok {
-		return fmt.Errorf("unknown plan status %q", from)
-	}
-	if !allowed[to] {
-		return fmt.Errorf("invalid plan transition: %q → %q", from, to)
 	}
 	return nil
 }
@@ -414,20 +363,6 @@ func ValidateIntegrationTransition(from, to IntegrationStatus) error {
 	}
 	if !allowed[to] {
 		return fmt.Errorf("invalid integration transition: %q → %q", from, to)
-	}
-	return nil
-}
-
-func ValidateContinuousTransition(from, to ContinuousStatus) error {
-	if IsContinuousTerminal(from) {
-		return fmt.Errorf("cannot transition from terminal continuous status %q", from)
-	}
-	allowed, ok := validContinuousTransitions[from]
-	if !ok {
-		return fmt.Errorf("unknown continuous status %q", from)
-	}
-	if !allowed[to] {
-		return fmt.Errorf("invalid continuous transition: %q → %q", from, to)
 	}
 	return nil
 }

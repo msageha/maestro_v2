@@ -140,7 +140,15 @@ func TestQualityGateDaemon_EmitEvent(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 
 	// Check metrics
-	evalCount, successCount, failureCount, avgTimeMs := qg.GetMetrics().GetStats()
+	qg.metrics.mu.RLock()
+	evalCount := qg.metrics.evaluationCount
+	successCount := qg.metrics.successCount
+	failureCount := qg.metrics.failureCount
+	var avgTimeMs int64
+	if qg.metrics.evaluationCount > 0 {
+		avgTimeMs = qg.metrics.totalEvaluationTimeMs / qg.metrics.evaluationCount
+	}
+	qg.metrics.mu.RUnlock()
 	assert.Greater(t, evalCount, int64(0), "Should have at least one evaluation")
 	assert.LessOrEqual(t, avgTimeMs, int64(100), "Average time should be under 100ms")
 
@@ -406,7 +414,15 @@ func TestQualityGateMetrics(t *testing.T) {
 	metrics.RecordEvaluation(false, 75)
 	metrics.RecordEvaluation(true, 25)
 
-	evalCount, successCount, failureCount, avgTimeMs := metrics.GetStats()
+	metrics.mu.RLock()
+	evalCount := metrics.evaluationCount
+	successCount := metrics.successCount
+	failureCount := metrics.failureCount
+	var avgTimeMs int64
+	if metrics.evaluationCount > 0 {
+		avgTimeMs = metrics.totalEvaluationTimeMs / metrics.evaluationCount
+	}
+	metrics.mu.RUnlock()
 
 	assert.Equal(t, int64(3), evalCount)
 	assert.Equal(t, int64(2), successCount)

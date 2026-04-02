@@ -27,11 +27,6 @@ func (e *Engine) SetCanComplete(f core.CanCompleteFunc) {
 	e.deps.CanComplete = f
 }
 
-// SetExecutorFactory overrides the executor factory for testing.
-func (e *Engine) SetExecutorFactory(f core.ExecutorFactory) {
-	e.deps.ExecutorFactory = f
-}
-
 // Reconcile runs all reconciliation patterns and returns repairs and deferred notifications.
 func (e *Engine) Reconcile() ([]Repair, []DeferredNotification) {
 	run := newRun(&e.deps)

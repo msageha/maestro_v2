@@ -63,125 +63,6 @@ func NewManager(maestroDir string, cfg model.WorktreeConfig, logger *log.Logger,
 	}
 }
 
-// CreateForCommand creates worktrees for all workers and an integration branch for a command.
-func (wm *Manager) CreateForCommand(commandID string, workerIDs []string) error {
-	if err := validateIDs(commandID, workerIDs...); err != nil {
-		return err
-	}
-	wm.mu.Lock()
-	defer wm.mu.Unlock()
-
-	now := wm.clock.Now().UTC().Format(time.RFC3339)
-
-	// Get base SHA from configured base branch (not HEAD which may be on a different branch)
-	baseBranch := wm.config.EffectiveBaseBranch()
-	baseSHA, err := wm.gitOutput("rev-parse", baseBranch)
-	if err != nil {
-		return fmt.Errorf("get base SHA from %s: %w", baseBranch, err)
-	}
-	baseSHA = strings.TrimSpace(baseSHA)
-	if err := validateSHA(baseSHA); err != nil {
-		return fmt.Errorf("base SHA from %s: %w", baseBranch, err)
-	}
-
-	// Create integration branch
-	integrationBranch := fmt.Sprintf("maestro/%s/integration", commandID)
-	if err := wm.gitRun("branch", integrationBranch, baseSHA); err != nil {
-		return fmt.Errorf("create integration branch %s: %w", integrationBranch, err)
-	}
-
-	// Create integration worktree (H3: all merge/publish ops happen here, not in projectRoot)
-	integrationPath := wm.integrationWorktreePath(commandID)
-	if err := os.MkdirAll(filepath.Dir(integrationPath), 0755); err != nil {
-		_ = wm.gitRun("branch", "-D", integrationBranch)
-		return fmt.Errorf("create integration worktree parent dir: %w", err)
-	}
-	if err := wm.gitRun("worktree", "add", integrationPath, integrationBranch); err != nil {
-		_ = wm.gitRun("branch", "-D", integrationBranch)
-		return fmt.Errorf("create integration worktree: %w", err)
-	}
-
-	state := model.WorktreeCommandState{
-		SchemaVersion: 1,
-		FileType:      "state_worktree",
-		CommandID:     commandID,
-		Integration: model.IntegrationState{
-			CommandID: commandID,
-			Branch:    integrationBranch,
-			BaseSHA:   baseSHA,
-			Status:    model.IntegrationStatusCreated,
-			CreatedAt: now,
-			UpdatedAt: now,
-		},
-		CreatedAt: now,
-		UpdatedAt: now,
-	}
-
-	// rollbackCreated cleans up all resources created so far on failure (best-effort).
-	type createdWT struct{ path, branch string }
-	var createdWorktrees []createdWT
-	rollbackCreated := func() {
-		for _, wt := range createdWorktrees {
-			if rbErr := wm.gitRun("worktree", "remove", "--force", wt.path); rbErr != nil {
-				wm.log(core.LogLevelWarn, "rollback_worktree_remove command=%s path=%s error=%v", commandID, wt.path, rbErr)
-			}
-			_ = wm.gitRun("branch", "-D", wt.branch)
-		}
-		// Remove integration worktree before branch deletion
-		_ = wm.gitRun("worktree", "remove", "--force", integrationPath)
-		if rbErr := wm.gitRun("branch", "-D", integrationBranch); rbErr != nil {
-			wm.log(core.LogLevelWarn, "rollback_integration_branch command=%s error=%v", commandID, rbErr)
-		}
-		wtDir := filepath.Join(wm.projectRoot, wm.config.EffectivePathPrefix(), commandID)
-		_ = os.RemoveAll(wtDir)
-		// Remove state file if partially written
-		statePath := filepath.Join(wm.maestroDir, "state", "worktrees", commandID+".yaml")
-		_ = os.Remove(statePath)
-	}
-
-	// Create worker worktrees
-	for _, workerID := range workerIDs {
-		workerBranch := fmt.Sprintf("maestro/%s/%s", commandID, workerID)
-		wtPath := filepath.Join(wm.projectRoot, wm.config.EffectivePathPrefix(), commandID, workerID)
-
-		if err := os.MkdirAll(filepath.Dir(wtPath), 0755); err != nil {
-			rollbackCreated()
-			return fmt.Errorf("create worktree parent dir for %s: %w", workerID, err)
-		}
-
-		if err := wm.gitRun("worktree", "add", "-b", workerBranch, wtPath, baseSHA); err != nil {
-			rollbackCreated()
-			return fmt.Errorf("create worktree for %s: %w", workerID, err)
-		}
-
-		createdWorktrees = append(createdWorktrees, createdWT{path: wtPath, branch: workerBranch})
-		state.Workers = append(state.Workers, model.WorktreeState{
-			CommandID: commandID,
-			WorkerID:  workerID,
-			Path:      wtPath,
-			Branch:    workerBranch,
-			BaseSHA:   baseSHA,
-			Status:    model.WorktreeStatusCreated,
-			CreatedAt: now,
-			UpdatedAt: now,
-		})
-	}
-
-	// Persist state
-	if err := wm.saveState(commandID, &state); err != nil {
-		rollbackCreated()
-		return fmt.Errorf("save worktree state: %w", err)
-	}
-
-	shortSHA := baseSHA
-	if len(shortSHA) > 8 {
-		shortSHA = shortSHA[:8]
-	}
-	wm.log(core.LogLevelInfo, "worktrees_created command=%s workers=%d base=%s",
-		commandID, len(workerIDs), shortSHA)
-	return nil
-}
-
 // EnsureWorkerWorktree lazily creates a worktree for a single worker.
 // If the command has no worktree state yet, it creates the integration branch
 // and the worker's worktree. If state exists but the worker is missing, it adds
@@ -432,27 +313,6 @@ func (wm *Manager) CommitWorkerChanges(commandID, workerID, message string) erro
 	return nil
 }
 
-// GetState returns the worktree state for a specific worker in a command.
-func (wm *Manager) GetState(commandID, workerID string) (*model.WorktreeState, error) {
-	if err := validateIDs(commandID, workerID); err != nil {
-		return nil, err
-	}
-	wm.mu.Lock()
-	defer wm.mu.Unlock()
-
-	state, err := wm.loadState(commandID)
-	if err != nil {
-		return nil, err
-	}
-
-	for i := range state.Workers {
-		if state.Workers[i].WorkerID == workerID {
-			return &state.Workers[i], nil
-		}
-	}
-	return nil, fmt.Errorf("worker %s not found in command %s", workerID, commandID)
-}
-
 // GetCommandState returns the full worktree state for a command.
 func (wm *Manager) GetCommandState(commandID string) (*model.WorktreeCommandState, error) {
 	if err := validateIDs(commandID); err != nil {
@@ -559,30 +419,6 @@ func (wm *Manager) findWorker(state *model.WorktreeCommandState, workerID string
 		}
 	}
 	return nil
-}
-
-// SetClock replaces the clock (for testing).
-// Must be called before any concurrent operations start.
-func (wm *Manager) SetClock(c core.Clock) {
-	wm.mu.Lock()
-	defer wm.mu.Unlock()
-	wm.clock = c
-}
-
-// SetConfig replaces the worktree config (for testing).
-// Must be called before any concurrent operations start.
-func (wm *Manager) SetConfig(cfg model.WorktreeConfig) {
-	wm.mu.Lock()
-	defer wm.mu.Unlock()
-	wm.config = cfg
-}
-
-// SetProjectRoot overrides the project root path (for testing).
-// Must be called before any concurrent operations start.
-func (wm *Manager) SetProjectRoot(root string) {
-	wm.mu.Lock()
-	defer wm.mu.Unlock()
-	wm.projectRoot = root
 }
 
 // AutoCommit returns whether auto-commit is enabled in the worktree config.

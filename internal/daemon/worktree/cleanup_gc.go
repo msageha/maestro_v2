@@ -237,45 +237,6 @@ func (wm *Manager) GC() error {
 	return nil
 }
 
-// CleanupAll removes all worktrees (used by `maestro up --reset`).
-func (wm *Manager) CleanupAll() error {
-	wm.mu.Lock()
-	defer wm.mu.Unlock()
-
-	stateDir := filepath.Join(wm.maestroDir, "state", "worktrees")
-	entries, err := os.ReadDir(stateDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
-		return fmt.Errorf("read worktree state dir: %w", err)
-	}
-
-	var errs []string
-	for _, entry := range entries {
-		if !strings.HasSuffix(entry.Name(), ".yaml") {
-			continue
-		}
-		commandID := strings.TrimSuffix(entry.Name(), ".yaml")
-		state, err := wm.loadStateUnlocked(commandID)
-		if err != nil {
-			errs = append(errs, fmt.Sprintf("load state %s: %v", commandID, err))
-			continue
-		}
-		if err := wm.cleanupCommandUnlocked(commandID, state); err != nil {
-			errs = append(errs, fmt.Sprintf("cleanup %s: %v", commandID, err))
-		}
-	}
-
-	// Also prune any orphaned git worktrees
-	_ = wm.gitRun("worktree", "prune")
-
-	if len(errs) > 0 {
-		return fmt.Errorf("cleanup_all errors: %s", strings.Join(errs, "; "))
-	}
-	return nil
-}
-
 func (wm *Manager) cleanupCommandUnlocked(commandID string, state *model.WorktreeCommandState) error {
 	var errs []string
 

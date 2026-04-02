@@ -699,18 +699,16 @@ func TestLoadState_MigratorIntegration_OlderVersion(t *testing.T) {
 
 	// Only test when CurrentSchemaVersion > 1, otherwise skip
 	if CurrentSchemaVersion <= 1 {
-		// Register a temporary migration to test the flow:
 		// Save original DefaultMigrator, replace with test migrator
 		origMigrator := DefaultMigrator
 		testVersion := 2
-		DefaultMigrator = NewMigrator(testVersion)
-		if err := DefaultMigrator.Register(1, func(data map[string]interface{}) error {
+		testMigrator := NewMigrator(testVersion)
+		testMigrator.steps[1] = func(data map[string]interface{}) error {
 			// Simulate migration: add a field
 			data["migrated_from_v1"] = true
 			return nil
-		}); err != nil {
-			t.Fatal(err)
 		}
+		DefaultMigrator = testMigrator
 		origCurrentVersion := CurrentSchemaVersion
 		// Temporarily override (package-level var)
 		defer func() {

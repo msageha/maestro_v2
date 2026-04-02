@@ -84,13 +84,172 @@ func newTestWorktreeManager(t *testing.T, projectRoot string) *Manager {
 	return NewManager(maestroDir, cfg, logger, core.LogLevelError)
 }
 
+// createForCommand is a test helper that replicates the removed CreateForCommand method.
+func createForCommand(wm *Manager, commandID string, workerIDs []string) error {
+	if err := validateIDs(commandID, workerIDs...); err != nil {
+		return err
+	}
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	now := wm.clock.Now().UTC().Format(time.RFC3339)
+
+	baseBranch := wm.config.EffectiveBaseBranch()
+	baseSHA, err := wm.gitOutput("rev-parse", baseBranch)
+	if err != nil {
+		return fmt.Errorf("get base SHA from %s: %w", baseBranch, err)
+	}
+	baseSHA = strings.TrimSpace(baseSHA)
+	if err := validateSHA(baseSHA); err != nil {
+		return fmt.Errorf("base SHA from %s: %w", baseBranch, err)
+	}
+
+	integrationBranch := fmt.Sprintf("maestro/%s/integration", commandID)
+	if err := wm.gitRun("branch", integrationBranch, baseSHA); err != nil {
+		return fmt.Errorf("create integration branch %s: %w", integrationBranch, err)
+	}
+
+	integrationPath := wm.integrationWorktreePath(commandID)
+	if err := os.MkdirAll(filepath.Dir(integrationPath), 0755); err != nil {
+		_ = wm.gitRun("branch", "-D", integrationBranch)
+		return fmt.Errorf("create integration worktree parent dir: %w", err)
+	}
+	if err := wm.gitRun("worktree", "add", integrationPath, integrationBranch); err != nil {
+		_ = wm.gitRun("branch", "-D", integrationBranch)
+		return fmt.Errorf("create integration worktree: %w", err)
+	}
+
+	state := model.WorktreeCommandState{
+		SchemaVersion: 1,
+		FileType:      "state_worktree",
+		CommandID:     commandID,
+		Integration: model.IntegrationState{
+			CommandID: commandID,
+			Branch:    integrationBranch,
+			BaseSHA:   baseSHA,
+			Status:    model.IntegrationStatusCreated,
+			CreatedAt: now,
+			UpdatedAt: now,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	type createdWT struct{ path, branch string }
+	var createdWorktrees []createdWT
+	rollbackCreated := func() {
+		for _, wt := range createdWorktrees {
+			_ = wm.gitRun("worktree", "remove", "--force", wt.path)
+			_ = wm.gitRun("branch", "-D", wt.branch)
+		}
+		_ = wm.gitRun("worktree", "remove", "--force", integrationPath)
+		_ = wm.gitRun("branch", "-D", integrationBranch)
+		wtDir := filepath.Join(wm.projectRoot, wm.config.EffectivePathPrefix(), commandID)
+		_ = os.RemoveAll(wtDir)
+		statePath := filepath.Join(wm.maestroDir, "state", "worktrees", commandID+".yaml")
+		_ = os.Remove(statePath)
+	}
+
+	for _, workerID := range workerIDs {
+		workerBranch := fmt.Sprintf("maestro/%s/%s", commandID, workerID)
+		wtPath := filepath.Join(wm.projectRoot, wm.config.EffectivePathPrefix(), commandID, workerID)
+
+		if err := os.MkdirAll(filepath.Dir(wtPath), 0755); err != nil {
+			rollbackCreated()
+			return fmt.Errorf("create worktree parent dir for %s: %w", workerID, err)
+		}
+
+		if err := wm.gitRun("worktree", "add", "-b", workerBranch, wtPath, baseSHA); err != nil {
+			rollbackCreated()
+			return fmt.Errorf("create worktree for %s: %w", workerID, err)
+		}
+
+		createdWorktrees = append(createdWorktrees, createdWT{path: wtPath, branch: workerBranch})
+		state.Workers = append(state.Workers, model.WorktreeState{
+			CommandID: commandID,
+			WorkerID:  workerID,
+			Path:      wtPath,
+			Branch:    workerBranch,
+			BaseSHA:   baseSHA,
+			Status:    model.WorktreeStatusCreated,
+			CreatedAt: now,
+			UpdatedAt: now,
+		})
+	}
+
+	if err := wm.saveState(commandID, &state); err != nil {
+		rollbackCreated()
+		return fmt.Errorf("save worktree state: %w", err)
+	}
+	return nil
+}
+
+// getState is a test helper that replicates the removed GetState method.
+func getState(wm *Manager, commandID, workerID string) (*model.WorktreeState, error) {
+	if err := validateIDs(commandID, workerID); err != nil {
+		return nil, err
+	}
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	state, err := wm.loadState(commandID)
+	if err != nil {
+		return nil, err
+	}
+
+	for i := range state.Workers {
+		if state.Workers[i].WorkerID == workerID {
+			return &state.Workers[i], nil
+		}
+	}
+	return nil, fmt.Errorf("worker %s not found in command %s", workerID, commandID)
+}
+
+// cleanupAll is a test helper that replicates the removed CleanupAll method.
+func cleanupAll(wm *Manager) error {
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	stateDir := filepath.Join(wm.maestroDir, "state", "worktrees")
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read worktree state dir: %w", err)
+	}
+
+	var errs []string
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".yaml") {
+			continue
+		}
+		commandID := strings.TrimSuffix(entry.Name(), ".yaml")
+		state, err := wm.loadStateUnlocked(commandID)
+		if err != nil {
+			errs = append(errs, fmt.Sprintf("load state %s: %v", commandID, err))
+			continue
+		}
+		if err := wm.cleanupCommandUnlocked(commandID, state); err != nil {
+			errs = append(errs, fmt.Sprintf("cleanup %s: %v", commandID, err))
+		}
+	}
+
+	_ = wm.gitRun("worktree", "prune")
+
+	if len(errs) > 0 {
+		return fmt.Errorf("cleanup_all errors: %s", strings.Join(errs, "; "))
+	}
+	return nil
+}
+
 // TestCreateForCommand tests worktree creation for a command.
 func TestCreateForCommand(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	workerIDs := []string{"worker1", "worker2"}
-	if err := wm.CreateForCommand("cmd_test_001", workerIDs); err != nil {
+	if err := createForCommand(wm, "cmd_test_001", workerIDs); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -123,7 +282,7 @@ func TestGetWorkerPath(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
-	if err := wm.CreateForCommand("cmd_test_002", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_test_002", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -149,7 +308,7 @@ func TestCommitWorkerChanges(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
-	if err := wm.CreateForCommand("cmd_test_003", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_test_003", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -175,7 +334,7 @@ func TestCommitWorkerChanges(t *testing.T) {
 	}
 
 	// Verify the state changed to committed
-	state, err := wm.GetState("cmd_test_003", "worker1")
+	state, err := getState(wm, "cmd_test_003", "worker1")
 	if err != nil {
 		t.Fatalf("GetState failed: %v", err)
 	}
@@ -201,7 +360,7 @@ func TestMergeToIntegration(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	workers := []string{"worker1", "worker2"}
-	if err := wm.CreateForCommand("cmd_test_004", workers); err != nil {
+	if err := createForCommand(wm, "cmd_test_004", workers); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -260,7 +419,7 @@ func TestMergeConflict(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	workers := []string{"worker1", "worker2"}
-	if err := wm.CreateForCommand("cmd_test_005", workers); err != nil {
+	if err := createForCommand(wm, "cmd_test_005", workers); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -317,7 +476,7 @@ func TestPublishToBase(t *testing.T) {
 	wm.config.BaseBranch = currentBranch
 
 	workers := []string{"worker1"}
-	if err := wm.CreateForCommand("cmd_test_006", workers); err != nil {
+	if err := createForCommand(wm, "cmd_test_006", workers); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -370,7 +529,7 @@ func TestCleanupCommand(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	workers := []string{"worker1", "worker2"}
-	if err := wm.CreateForCommand("cmd_test_007", workers); err != nil {
+	if err := createForCommand(wm, "cmd_test_007", workers); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -407,14 +566,14 @@ func TestCleanupAll(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Create worktrees for two commands
-	if err := wm.CreateForCommand("cmd_all_001", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_all_001", []string{"worker1"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := wm.CreateForCommand("cmd_all_002", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_all_002", []string{"worker1"}); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := wm.CleanupAll(); err != nil {
+	if err := cleanupAll(wm); err != nil {
 		t.Fatalf("CleanupAll failed: %v", err)
 	}
 
@@ -438,7 +597,7 @@ func TestHasWorktrees(t *testing.T) {
 		t.Error("HasWorktrees should be false for non-existent command")
 	}
 
-	if err := wm.CreateForCommand("cmd_test_exists", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_test_exists", []string{"worker1"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -455,10 +614,10 @@ func TestGC(t *testing.T) {
 	// Set max_worktrees to 1 so the second one triggers GC
 	wm.config.GC.MaxWorktrees = model.IntPtr(1)
 
-	if err := wm.CreateForCommand("cmd_gc_001", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_gc_001", []string{"worker1"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := wm.CreateForCommand("cmd_gc_002", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_gc_002", []string{"worker1"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -508,7 +667,7 @@ func TestCreateForCommand_RollbackOnWorktreeFailure(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// First, create worktrees for worker1 successfully
-	if err := wm.CreateForCommand("cmd_rollback_001", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_rollback_001", []string{"worker1"}); err != nil {
 		t.Fatalf("initial CreateForCommand failed: %v", err)
 	}
 
@@ -535,7 +694,7 @@ func TestCreateForCommand_RollbackOnWorktreeFailure(t *testing.T) {
 	}
 
 	// Now CreateForCommand should fail on worker2 (branch already exists)
-	err = wm.CreateForCommand("cmd_rollback_002", []string{"worker1", "worker2"})
+	err = createForCommand(wm, "cmd_rollback_002", []string{"worker1", "worker2"})
 	if err == nil {
 		t.Fatal("expected CreateForCommand to fail due to conflicting branch")
 	}
@@ -779,7 +938,7 @@ func TestMarkPhaseMerged_Basic(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
-	if err := wm.CreateForCommand("cmd_phase", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_phase", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -805,7 +964,7 @@ func TestMarkPhaseMerged_DuplicatePhase(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
-	if err := wm.CreateForCommand("cmd_phase_dup", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_phase_dup", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -855,7 +1014,7 @@ func TestSyncFromIntegration(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	workers := []string{"worker1", "worker2"}
-	if err := wm.CreateForCommand("cmd_test_sync", workers); err != nil {
+	if err := createForCommand(wm, "cmd_test_sync", workers); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -926,7 +1085,7 @@ func TestMergeToIntegration_PreservesProjectRootHEAD(t *testing.T) {
 	headSHABefore := gitRevParse(t, projectRoot, "HEAD")
 
 	workers := []string{"worker1"}
-	if err := wm.CreateForCommand("cmd_h3_merge", workers); err != nil {
+	if err := createForCommand(wm, "cmd_h3_merge", workers); err != nil {
 		t.Fatal(err)
 	}
 
@@ -974,7 +1133,7 @@ func TestPublishToBase_PreservesProjectRootHEAD(t *testing.T) {
 	headRefBefore := gitSymbolicRef(t, projectRoot)
 
 	workers := []string{"worker1"}
-	if err := wm.CreateForCommand("cmd_h3_pub", workers); err != nil {
+	if err := createForCommand(wm, "cmd_h3_pub", workers); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1023,7 +1182,7 @@ func TestPublishToBase_RejectsUncommittedChanges(t *testing.T) {
 	wm.config.BaseBranch = currentBranch
 
 	workers := []string{"worker1"}
-	if err := wm.CreateForCommand("cmd_dirty", workers); err != nil {
+	if err := createForCommand(wm, "cmd_dirty", workers); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1066,7 +1225,7 @@ func TestSyncFromIntegration_SkipsConflictWorker(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	workers := []string{"worker1", "worker2"}
-	if err := wm.CreateForCommand("cmd_m2", workers); err != nil {
+	if err := createForCommand(wm, "cmd_m2", workers); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1104,7 +1263,7 @@ func TestSyncFromIntegration_SkipsConflictWorker(t *testing.T) {
 	}
 
 	// Verify worker2 is in conflict state
-	ws2, err := wm.GetState("cmd_m2", "worker2")
+	ws2, err := getState(wm, "cmd_m2", "worker2")
 	if err != nil {
 		t.Fatalf("GetState(worker2) failed: %v", err)
 	}
@@ -1118,7 +1277,7 @@ func TestSyncFromIntegration_SkipsConflictWorker(t *testing.T) {
 	}
 
 	// worker2 should still be in conflict state (not changed to active)
-	ws2After, err := wm.GetState("cmd_m2", "worker2")
+	ws2After, err := getState(wm, "cmd_m2", "worker2")
 	if err != nil {
 		t.Fatalf("GetState(worker2) after sync failed: %v", err)
 	}
@@ -1134,7 +1293,7 @@ func TestSyncFromIntegration_SkipsDirtyWorktree(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	workers := []string{"worker1", "worker2"}
-	if err := wm.CreateForCommand("cmd_m3", workers); err != nil {
+	if err := createForCommand(wm, "cmd_m3", workers); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1187,7 +1346,7 @@ func TestDiscardWorkerChanges(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
-	if err := wm.CreateForCommand("cmd_discard", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_discard", []string{"worker1"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1235,7 +1394,7 @@ func TestCreateForCommand_CreatesIntegrationWorktree(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
-	if err := wm.CreateForCommand("cmd_int_wt", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_int_wt", []string{"worker1"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1277,7 +1436,7 @@ func TestCommitWorkerChanges_ErrorPaths(t *testing.T) {
 		projectRoot := initTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
-		if err := wm.CreateForCommand("cmd_err_worker", []string{"worker1"}); err != nil {
+		if err := createForCommand(wm, "cmd_err_worker", []string{"worker1"}); err != nil {
 			t.Fatalf("CreateForCommand failed: %v", err)
 		}
 
@@ -1294,7 +1453,7 @@ func TestCommitWorkerChanges_ErrorPaths(t *testing.T) {
 		projectRoot := initTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
-		if err := wm.CreateForCommand("cmd_err_path", []string{"worker1"}); err != nil {
+		if err := createForCommand(wm, "cmd_err_path", []string{"worker1"}); err != nil {
 			t.Fatalf("CreateForCommand failed: %v", err)
 		}
 
@@ -1321,7 +1480,7 @@ func TestCommitWorkerChanges_ErrorPaths(t *testing.T) {
 		projectRoot := initTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
-		if err := wm.CreateForCommand("cmd_err_commit", []string{"worker1"}); err != nil {
+		if err := createForCommand(wm, "cmd_err_commit", []string{"worker1"}); err != nil {
 			t.Fatalf("CreateForCommand failed: %v", err)
 		}
 
@@ -1353,7 +1512,7 @@ func TestCommitWorkerChanges_ErrorPaths(t *testing.T) {
 		projectRoot := initTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
-		if err := wm.CreateForCommand("cmd_err_save", []string{"worker1"}); err != nil {
+		if err := createForCommand(wm, "cmd_err_save", []string{"worker1"}); err != nil {
 			t.Fatalf("CreateForCommand failed: %v", err)
 		}
 
@@ -1393,7 +1552,7 @@ func TestCommitWorkerChanges_SensitiveFilesNotStaged(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
-	if err := wm.CreateForCommand("cmd_sensitive", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_sensitive", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -1450,7 +1609,7 @@ func TestCommitWorkerChanges_TrackedModificationsStaged(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
-	if err := wm.CreateForCommand("cmd_tracked", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_tracked", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -1487,7 +1646,7 @@ func TestCommitWorkerChanges_NewFileStagedWhenSafe(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
-	if err := wm.CreateForCommand("cmd_newfile", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_newfile", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -1621,7 +1780,7 @@ func TestCommitWorkerChanges_MaxFilesExceeded(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 	wm.config.CommitPolicy.MaxFiles = model.IntPtr(3) // Set a low limit for testing
 
-	if err := wm.CreateForCommand("cmd_maxfiles", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_maxfiles", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -1654,7 +1813,7 @@ func TestCommitWorkerChanges_MaxFilesWithinLimit(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 	wm.config.CommitPolicy.MaxFiles = model.IntPtr(5)
 
-	if err := wm.CreateForCommand("cmd_maxfiles_ok", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_maxfiles_ok", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -1683,7 +1842,7 @@ func TestCommitWorkerChanges_MissingGitignore(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 	wm.config.CommitPolicy.RequireGitignore = true
 
-	if err := wm.CreateForCommand("cmd_gitignore", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_gitignore", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -1716,7 +1875,7 @@ func TestCommitWorkerChanges_GitignorePresent(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 	wm.config.CommitPolicy.RequireGitignore = true
 
-	if err := wm.CreateForCommand("cmd_gitignore_ok", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_gitignore_ok", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -1746,7 +1905,7 @@ func TestCommitWorkerChanges_MessageFormatInvalid(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 	wm.config.CommitPolicy.MessagePattern = `^\[maestro\]\s`
 
-	if err := wm.CreateForCommand("cmd_msgfmt", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_msgfmt", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -1780,7 +1939,7 @@ func TestCommitWorkerChanges_MessageFormatValid(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 	wm.config.CommitPolicy.MessagePattern = `^\[maestro\]\s`
 
-	if err := wm.CreateForCommand("cmd_msgfmt_ok", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_msgfmt_ok", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -1814,7 +1973,7 @@ func TestCommitWorkerChanges_RequireGitignoreDisabled(t *testing.T) {
 		MessagePattern:   `^\[maestro\]\s`,
 	}
 
-	if err := wm.CreateForCommand("cmd_nogitig", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_nogitig", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -2081,7 +2240,7 @@ func TestMergeToIntegration_RollbackOnConflict(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	workers := []string{"worker1", "worker2"}
-	if err := wm.CreateForCommand("cmd_rollback", workers); err != nil {
+	if err := createForCommand(wm, "cmd_rollback", workers); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 

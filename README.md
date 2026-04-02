@@ -922,7 +922,6 @@ templates/
 | `make lint` | golangci-lint を実行 |
 | `make lint-fix` | golangci-lint の自動修正を適用 |
 | `make format` | gofmt + goimports でフォーマット |
-| `make vet` | go vet を実行 |
 | `make help` | ターゲット一覧を表示 |
 
 ### CI（GitHub Actions）
@@ -960,7 +959,4 @@ go test -bench=. ./internal/daemon/...
 
 ## 関連ドキュメント
 
-| ファイル | 内容 |
-|---------|------|
-| `LOCK_ORDER.md` | ロック取得順序の正規定義。`queue:*`(L1) → `state:*`(L2) → `result:*`(L3) の 3 レベル。`-tags lockorder` で実行時検証可能 |
-| `docs/requirements/` | 設計仕様書（01〜11 + abstract）。システム概要・ユーザーフロー・ファイル構造・YAML スキーマ・スクリプト責務・実行フロー・エラーハンドリング・tmux 操作・安全規則・Continuous Mode・将来拡張 |
+ロック取得順序は `queue:*`(L1) → `state:*`(L2) → `result:*`(L3) の 3 レベル。`-tags lockorder` で実行時検証可能。

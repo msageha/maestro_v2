@@ -201,7 +201,7 @@ func newPhaseIntegrationQH(t *testing.T, maestroDir string, exec *recordingExecu
 		Queue:   model.QueueConfig{PriorityAgingSec: 60},
 	}
 	qh := NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
-	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return exec, nil
 	})
 	return qh
@@ -490,9 +490,9 @@ func TestPhaseIntegration_WorkerBusy_LeaseExtension(t *testing.T) {
 		return agent.ExecResult{Success: true}
 	})
 	qh := newPhaseIntegrationQH(t, maestroDir, exec)
-	qh.SetBusyChecker(func(agentID string) bool {
+	qh.busyChecker = func(agentID string) bool {
 		return true // all agents are busy
-	})
+	}
 
 	now := nowRFC3339()
 	expiredTime := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
@@ -738,7 +738,7 @@ func TestPhaseIntegration_EpochFencing_StaleResult(t *testing.T) {
 			return agent.ExecResult{Success: true}
 		},
 	})
-	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &slowMockExecutor{
 			result:  agent.ExecResult{Success: true},
 			onStart: func() { startOnce.Do(func() { close(dispatchStarted) }) },
@@ -1106,7 +1106,7 @@ func TestPhaseIntegration_ConcurrentWriteDuringPhaseB(t *testing.T) {
 	dispatchStarted := make(chan struct{})
 	proceed := make(chan struct{})
 	var startOnce sync.Once
-	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &slowMockExecutor{
 			result:  agent.ExecResult{Success: true},
 			onStart: func() { startOnce.Do(func() { close(dispatchStarted) }) },
@@ -1507,9 +1507,9 @@ func TestPhaseIntegration_BusyFalse_LeaseRelease(t *testing.T) {
 		return agent.ExecResult{Success: true}
 	})
 	qh := newPhaseIntegrationQH(t, maestroDir, exec)
-	qh.SetBusyChecker(func(agentID string) bool {
+	qh.busyChecker = func(agentID string) bool {
 		return false // agent is NOT busy
-	})
+	}
 
 	now := nowRFC3339()
 	expiredTime := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
@@ -1588,7 +1588,7 @@ func TestPhaseIntegration_SignalDeliveryFailure_Retry(t *testing.T) {
 	exec := newRecordingExecutor(nil)
 	qh := newPhaseIntegrationQH(t, maestroDir, exec)
 	// Override executor factory: deliverPlannerSignal creates its own executor
-	qh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return newRecordingExecutor(func(req agent.ExecRequest) agent.ExecResult {
 			// Signal delivery to planner fails
 			if req.AgentID == "planner" && req.Mode == agent.ModeDeliver {

@@ -60,7 +60,3 @@ func ValidateSchemaHeaderFromBytes(content []byte, expectedFileType string) erro
 
 	return nil
 }
-
-func NeedsMigration(schemaVersion int) bool {
-	return schemaVersion < CurrentSchemaVersion
-}

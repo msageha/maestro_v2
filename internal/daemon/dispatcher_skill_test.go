@@ -29,7 +29,7 @@ func newSkillTestDispatcher(t *testing.T, maestroDir string, cfg model.Config) (
 	t.Helper()
 	d := NewDispatcher(maestroDir, cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, newTestExecutorProvider(maestroDir, cfg))
 	mock := &mockExecutor{result: agent.ExecResult{Success: true}}
-	d.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	d.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return mock, nil
 	})
 	return d, mock

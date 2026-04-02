@@ -96,7 +96,7 @@ func TestResultWrite_Basic(t *testing.T) {
 		RetrySafe:  true,
 	})
 
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if !resp.Success {
 		t.Fatalf("expected success, got error: %v", resp.Error)
 	}
@@ -184,7 +184,7 @@ func TestResultWrite_FencingReject_EpochMismatch(t *testing.T) {
 		Status:     "completed",
 	})
 
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if resp.Success {
 		t.Fatal("expected fencing rejection")
 	}
@@ -210,7 +210,7 @@ func TestResultWrite_FencingReject_WrongOwner(t *testing.T) {
 	})
 
 	// Create worker2 queue (task not there)
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if resp.Success {
 		t.Fatal("expected error for task not found in wrong worker queue")
 	}
@@ -252,7 +252,7 @@ func TestResultWrite_FencingReject_NotInProgress(t *testing.T) {
 		Status:     "completed",
 	})
 
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if resp.Success {
 		t.Fatal("expected fencing rejection for non-in_progress task")
 	}
@@ -282,7 +282,7 @@ func TestResultWrite_Idempotency_SameStatus(t *testing.T) {
 
 	// First write
 	req1 := makeResultWriteRequest(t, params)
-	resp1 := d.handleResultWrite(req1)
+	resp1 := d.api.handleResultWrite(req1)
 	if !resp1.Success {
 		t.Fatalf("write 1: expected success, got error: %v", resp1.Error)
 	}
@@ -293,7 +293,7 @@ func TestResultWrite_Idempotency_SameStatus(t *testing.T) {
 
 	// Second write (idempotent retry)
 	req2 := makeResultWriteRequest(t, params)
-	resp2 := d.handleResultWrite(req2)
+	resp2 := d.api.handleResultWrite(req2)
 	if !resp2.Success {
 		t.Fatalf("write 2: expected idempotent success, got error: %v", resp2.Error)
 	}
@@ -338,7 +338,7 @@ func TestResultWrite_Idempotency_DifferentStatus(t *testing.T) {
 		LeaseEpoch: leaseEpoch,
 		Status:     "completed",
 	})
-	resp1 := d.handleResultWrite(req1)
+	resp1 := d.api.handleResultWrite(req1)
 	if !resp1.Success {
 		t.Fatalf("write 1: expected success, got error: %v", resp1.Error)
 	}
@@ -351,7 +351,7 @@ func TestResultWrite_Idempotency_DifferentStatus(t *testing.T) {
 		LeaseEpoch: leaseEpoch,
 		Status:     "failed",
 	})
-	resp2 := d.handleResultWrite(req2)
+	resp2 := d.api.handleResultWrite(req2)
 	if resp2.Success {
 		t.Fatal("expected error for different status on same task")
 	}
@@ -371,7 +371,7 @@ func TestResultWrite_TaskNotFound(t *testing.T) {
 		Status:     "completed",
 	})
 
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if resp.Success {
 		t.Fatal("expected error for task not found")
 	}
@@ -397,7 +397,7 @@ func TestResultWrite_ValidationErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := makeResultWriteRequest(t, tt.params)
-			resp := d.handleResultWrite(req)
+			resp := d.api.handleResultWrite(req)
 			if resp.Success {
 				t.Fatal("expected validation error")
 			}
@@ -428,7 +428,7 @@ func TestResultWrite_Failed(t *testing.T) {
 		RetrySafe:  true,
 	})
 
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if !resp.Success {
 		t.Fatalf("expected success, got error: %v", resp.Error)
 	}
@@ -483,7 +483,7 @@ func TestResultWrite_FilesChanged(t *testing.T) {
 		PartialChangesPossible: true,
 	})
 
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if !resp.Success {
 		t.Fatalf("expected success, got error: %v", resp.Error)
 	}
@@ -525,7 +525,7 @@ func TestResultWrite_CommandIDMismatch(t *testing.T) {
 		Status:     "completed",
 	})
 
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if resp.Success {
 		t.Fatal("expected error for command_id mismatch")
 	}
@@ -555,7 +555,7 @@ func TestResultWrite_TaskNotRegisteredInState(t *testing.T) {
 		Status:     "completed",
 	})
 
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if resp.Success {
 		t.Fatal("expected error for task not registered in state")
 	}
@@ -583,7 +583,7 @@ func TestResultWrite_StateNotFound(t *testing.T) {
 		Summary:    "done",
 	})
 
-	resp := d.handleResultWrite(req)
+	resp := d.api.handleResultWrite(req)
 	if resp.Success {
 		t.Fatal("expected error when state file does not exist")
 	}

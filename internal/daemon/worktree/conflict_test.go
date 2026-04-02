@@ -17,7 +17,7 @@ func TestWorktreeIntegration_ConflictDetection(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	workers := []string{"worker1", "worker2"}
-	if err := wm.CreateForCommand("cmd_conflict", workers); err != nil {
+	if err := createForCommand(wm, "cmd_conflict", workers); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -116,7 +116,7 @@ func TestWorktreeIntegration_ConflictDetection(t *testing.T) {
 	}
 
 	// Verify worker2 still in conflict state
-	ws2After, err := wm.GetState("cmd_conflict", "worker2")
+	ws2After, err := getState(wm, "cmd_conflict", "worker2")
 	if err != nil {
 		t.Fatalf("GetState worker2 failed: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestWorktreeIntegration_ConflictDetection(t *testing.T) {
 	}
 
 	// Verify worker1 was synced normally (status changed to active)
-	ws1After, err := wm.GetState("cmd_conflict", "worker1")
+	ws1After, err := getState(wm, "cmd_conflict", "worker1")
 	if err != nil {
 		t.Fatalf("GetState worker1 failed: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestWorktreeIntegration_CreateRollback(t *testing.T) {
 	}
 
 	// CreateForCommand with 3 workers — worker3 should fail
-	err = wm.CreateForCommand("cmd_rollback_3w", []string{"worker1", "worker2", "worker3"})
+	err = createForCommand(wm, "cmd_rollback_3w", []string{"worker1", "worker2", "worker3"})
 	if err == nil {
 		t.Fatal("expected CreateForCommand to fail due to conflicting branch for worker3")
 	}
@@ -212,7 +212,7 @@ func TestWorktreeIntegration_DirtyWorktreeSkip(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	workers := []string{"worker1", "worker2"}
-	if err := wm.CreateForCommand("cmd_dirty", workers); err != nil {
+	if err := createForCommand(wm, "cmd_dirty", workers); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -269,7 +269,7 @@ func TestWorktreeIntegration_DirtyWorktreeSkip(t *testing.T) {
 	}
 
 	// Verify worker1 was synced normally
-	ws1After, err := wm.GetState("cmd_dirty", "worker1")
+	ws1After, err := getState(wm, "cmd_dirty", "worker1")
 	if err != nil {
 		t.Fatalf("GetState worker1 failed: %v", err)
 	}
@@ -278,7 +278,7 @@ func TestWorktreeIntegration_DirtyWorktreeSkip(t *testing.T) {
 	}
 
 	// Verify worker2 status remains "created" (unchanged — skipped due to dirty)
-	ws2After, err := wm.GetState("cmd_dirty", "worker2")
+	ws2After, err := getState(wm, "cmd_dirty", "worker2")
 	if err != nil {
 		t.Fatalf("GetState worker2 failed: %v", err)
 	}
@@ -309,7 +309,7 @@ func TestWorktreeIntegration_PublishToBaseConflict(t *testing.T) {
 	workerIDs := []string{"worker1"}
 
 	// Step 1: Create worktrees
-	if err := wm.CreateForCommand(commandID, workerIDs); err != nil {
+	if err := createForCommand(wm, commandID, workerIDs); err != nil {
 		t.Fatalf("CreateForCommand: %v", err)
 	}
 
@@ -453,7 +453,7 @@ func TestWorktreeIntegration_SyncFromIntegrationConflict(t *testing.T) {
 	workerIDs := []string{"worker1", "worker2", "worker3"}
 
 	// Step 1: Create worktrees for all workers
-	if err := wm.CreateForCommand(commandID, workerIDs); err != nil {
+	if err := createForCommand(wm, commandID, workerIDs); err != nil {
 		t.Fatalf("CreateForCommand: %v", err)
 	}
 
@@ -495,7 +495,7 @@ func TestWorktreeIntegration_SyncFromIntegrationConflict(t *testing.T) {
 
 	// Record worker2 state before sync
 	w2HeadBefore := gitRevParse(t, wt2, "HEAD")
-	ws2Before, err := wm.GetState(commandID, "worker2")
+	ws2Before, err := getState(wm, commandID, "worker2")
 	if err != nil {
 		t.Fatalf("GetState worker2 before sync: %v", err)
 	}
@@ -539,7 +539,7 @@ func TestWorktreeIntegration_SyncFromIntegrationConflict(t *testing.T) {
 	}
 
 	// Step 8: Verify worker2 status is unchanged (SyncFromIntegration doesn't update status on conflict)
-	ws2After, err := wm.GetState(commandID, "worker2")
+	ws2After, err := getState(wm, commandID, "worker2")
 	if err != nil {
 		t.Fatalf("GetState worker2 after sync: %v", err)
 	}
@@ -563,7 +563,7 @@ func TestWorktreeIntegration_SyncFromIntegrationConflict(t *testing.T) {
 	}
 
 	// Step 11: Verify worker3 status is "active" (successfully synced)
-	ws3After, err := wm.GetState(commandID, "worker3")
+	ws3After, err := getState(wm, commandID, "worker3")
 	if err != nil {
 		t.Fatalf("GetState worker3 after sync: %v", err)
 	}
@@ -590,7 +590,7 @@ func TestMergeToIntegration_DirtyIntegrationWorktree(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	workers := []string{"worker1"}
-	if err := wm.CreateForCommand("cmd_dirty_int", workers); err != nil {
+	if err := createForCommand(wm, "cmd_dirty_int", workers); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -641,7 +641,7 @@ func TestMergeToIntegration_NonConflictError(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	workers := []string{"worker1"}
-	if err := wm.CreateForCommand("cmd_nce", workers); err != nil {
+	if err := createForCommand(wm, "cmd_nce", workers); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -720,7 +720,7 @@ func TestMergeToIntegration_ConflictVsNonConflict(t *testing.T) {
 	// Use worker1 (succeeds), worker2 (conflict), worker3 (would be non-conflict error)
 	// Sorted order: worker1, worker2, worker3
 	workers := []string{"worker1", "worker2", "worker3"}
-	if err := wm.CreateForCommand("cmd_cvnc", workers); err != nil {
+	if err := createForCommand(wm, "cmd_cvnc", workers); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 

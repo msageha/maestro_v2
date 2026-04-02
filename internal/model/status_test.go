@@ -180,40 +180,6 @@ func TestValidateTaskStateTransition(t *testing.T) {
 	}
 }
 
-func TestValidatePlanTransition(t *testing.T) {
-	valid := []struct {
-		from, to PlanStatus
-	}{
-		{PlanStatusPlanning, PlanStatusSealed},
-		{PlanStatusSealed, PlanStatusCompleted},
-		{PlanStatusSealed, PlanStatusFailed},
-		{PlanStatusSealed, PlanStatusCancelled},
-	}
-	for _, tt := range valid {
-		t.Run(string(tt.from)+"→"+string(tt.to), func(t *testing.T) {
-			if err := ValidatePlanTransition(tt.from, tt.to); err != nil {
-				t.Errorf("expected valid, got error: %v", err)
-			}
-		})
-	}
-
-	invalid := []struct {
-		from, to PlanStatus
-	}{
-		{PlanStatusCompleted, PlanStatusPlanning},
-		{PlanStatusFailed, PlanStatusPlanning},
-		{PlanStatusCancelled, PlanStatusPlanning},
-		{PlanStatusPlanning, PlanStatusCompleted},
-	}
-	for _, tt := range invalid {
-		t.Run("invalid_"+string(tt.from)+"→"+string(tt.to), func(t *testing.T) {
-			if err := ValidatePlanTransition(tt.from, tt.to); err == nil {
-				t.Errorf("expected error for %q → %q", tt.from, tt.to)
-			}
-		})
-	}
-}
-
 func TestValidatePhaseTransition(t *testing.T) {
 	valid := []struct {
 		from, to PhaseStatus
@@ -300,25 +266,6 @@ func TestIsIntegrationTerminal(t *testing.T) {
 		t.Run(string(tt.status), func(t *testing.T) {
 			if got := IsIntegrationTerminal(tt.status); got != tt.terminal {
 				t.Errorf("IsIntegrationTerminal(%q) = %v, want %v", tt.status, got, tt.terminal)
-			}
-		})
-	}
-}
-
-func TestIsContinuousTerminal(t *testing.T) {
-	tests := []struct {
-		status   ContinuousStatus
-		terminal bool
-	}{
-		{ContinuousStatusIdle, false},
-		{ContinuousStatusRunning, false},
-		{ContinuousStatusPaused, false},
-		{ContinuousStatusStopped, true},
-	}
-	for _, tt := range tests {
-		t.Run(string(tt.status), func(t *testing.T) {
-			if got := IsContinuousTerminal(tt.status); got != tt.terminal {
-				t.Errorf("IsContinuousTerminal(%q) = %v, want %v", tt.status, got, tt.terminal)
 			}
 		})
 	}
@@ -434,43 +381,6 @@ func TestValidateIntegrationTransition(t *testing.T) {
 	for _, tt := range invalid {
 		t.Run("invalid_"+string(tt.from)+"→"+string(tt.to), func(t *testing.T) {
 			if err := ValidateIntegrationTransition(tt.from, tt.to); err == nil {
-				t.Errorf("expected error for %q → %q", tt.from, tt.to)
-			}
-		})
-	}
-}
-
-func TestValidateContinuousTransition(t *testing.T) {
-	valid := []struct {
-		from, to ContinuousStatus
-	}{
-		{ContinuousStatusIdle, ContinuousStatusRunning},
-		{ContinuousStatusRunning, ContinuousStatusPaused},
-		{ContinuousStatusRunning, ContinuousStatusStopped},
-		{ContinuousStatusPaused, ContinuousStatusRunning},
-		{ContinuousStatusPaused, ContinuousStatusStopped},
-	}
-	for _, tt := range valid {
-		t.Run(string(tt.from)+"→"+string(tt.to), func(t *testing.T) {
-			if err := ValidateContinuousTransition(tt.from, tt.to); err != nil {
-				t.Errorf("expected valid, got error: %v", err)
-			}
-		})
-	}
-
-	invalid := []struct {
-		from, to ContinuousStatus
-	}{
-		{ContinuousStatusStopped, ContinuousStatusRunning},
-		{ContinuousStatusStopped, ContinuousStatusPaused},
-		{ContinuousStatusIdle, ContinuousStatusPaused},
-		{ContinuousStatusIdle, ContinuousStatusStopped},
-		{ContinuousStatusRunning, ContinuousStatusIdle},
-		{ContinuousStatusPaused, ContinuousStatusIdle},
-	}
-	for _, tt := range invalid {
-		t.Run("invalid_"+string(tt.from)+"→"+string(tt.to), func(t *testing.T) {
-			if err := ValidateContinuousTransition(tt.from, tt.to); err == nil {
 				t.Errorf("expected error for %q → %q", tt.from, tt.to)
 			}
 		})

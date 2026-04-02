@@ -321,7 +321,8 @@ func TestClient_DaemonNotRunning(t *testing.T) {
 
 func TestServer_ConnectionTimeout(t *testing.T) {
 	server, _, sockPath := setupTestServer(t)
-	server.SetConnTimeout(500 * time.Millisecond)
+	// Server uses default connTimeout (30s). Override the field directly for test.
+	server.connTimeout = 500 * time.Millisecond
 
 	server.Handle("slow", func(req *Request) *Response {
 		return SuccessResponse(nil)

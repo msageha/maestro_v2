@@ -91,38 +91,6 @@ func (dr *DependencyResolver) CheckDependencyFailure(task *model.Task) (string, 
 	return "", "", nil
 }
 
-// FindTransitiveDependents finds all tasks that transitively depend on the given task.
-func (dr *DependencyResolver) FindTransitiveDependents(commandID string, failedTaskID string, allTasks []model.Task) []string {
-	// Build reverse dependency graph: task → tasks that depend on it
-	dependents := make(map[string][]string)
-	for _, task := range allTasks {
-		for _, dep := range task.BlockedBy {
-			dependents[dep] = append(dependents[dep], task.ID)
-		}
-	}
-
-	// BFS from failed task
-	visited := make(map[string]bool)
-	queue := []string{failedTaskID}
-	var result []string
-
-	for len(queue) > 0 {
-		current := queue[0]
-		queue = queue[1:]
-
-		for _, dependent := range dependents[current] {
-			if visited[dependent] {
-				continue
-			}
-			visited[dependent] = true
-			result = append(result, dependent)
-			queue = append(queue, dependent)
-		}
-	}
-
-	return result
-}
-
 // PhaseTransitionResult describes the outcome of a phase transition check.
 type PhaseTransitionResult struct {
 	PhaseID   string

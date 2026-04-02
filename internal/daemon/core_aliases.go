@@ -4,7 +4,6 @@ package daemon
 // referencing daemon.LogLevel, daemon.Clock, etc. continues to compile.
 
 import (
-	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/daemon/worktree"
 )
@@ -64,11 +63,5 @@ type WorktreeManager = worktree.Manager
 var NewWorktreeManager = worktree.NewManager
 
 type CommitPolicyViolation = worktree.CommitPolicyViolation
-
-// --- Circuit Breaker aliases ---
-
-type CircuitBreakerHandler = circuitbreaker.Handler
-
-var NewCircuitBreakerHandler = circuitbreaker.NewHandler
 
 // --- Learnings aliases ---

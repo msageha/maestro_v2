@@ -12,25 +12,6 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
-func readFileIfExists(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return data, nil
-}
-
-func unmarshalYAML(data []byte, v any) error {
-	return yamlv3.Unmarshal(data, v)
-}
-
-func writeYAMLAtomic(path string, data any) error {
-	return yamlutil.AtomicWrite(path, data)
-}
-
 // readModifyWriteQueue performs the common read-modify-write pattern on a worker queue file.
 // It reads the existing queue, calls modifyFn to apply changes, and atomically writes the result.
 func readModifyWriteQueue(maestroDir string, workerID string, modifyFn func(tq *model.TaskQueue)) error {

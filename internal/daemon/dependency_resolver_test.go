@@ -187,40 +187,6 @@ func TestCheckDependencyFailure_NoFailure(t *testing.T) {
 	}
 }
 
-func TestFindTransitiveDependents(t *testing.T) {
-	dr := newTestDependencyResolver(nil)
-	tasks := []model.Task{
-		{ID: "t1"},                            // root
-		{ID: "t2", BlockedBy: []string{"t1"}}, // depends on t1
-		{ID: "t3", BlockedBy: []string{"t2"}}, // depends on t2
-		{ID: "t4", BlockedBy: []string{"t1"}}, // depends on t1
-		{ID: "t5"},                            // independent
-	}
-
-	dependents := dr.FindTransitiveDependents("cmd1", "t1", tasks)
-
-	depSet := make(map[string]bool)
-	for _, d := range dependents {
-		depSet[d] = true
-	}
-
-	if !depSet["t2"] {
-		t.Error("expected t2 in dependents")
-	}
-	if !depSet["t3"] {
-		t.Error("expected t3 in dependents (transitive)")
-	}
-	if !depSet["t4"] {
-		t.Error("expected t4 in dependents")
-	}
-	if depSet["t5"] {
-		t.Error("t5 should not be in dependents")
-	}
-	if depSet["t1"] {
-		t.Error("t1 (the failed task itself) should not be in dependents")
-	}
-}
-
 func TestCheckPhaseTransitions_ActiveCompleted(t *testing.T) {
 	reader := &mockStateReader{
 		taskStates: map[string]model.Status{

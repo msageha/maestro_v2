@@ -40,7 +40,7 @@ func TestWorktreeIntegration_DiscardChanges(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
-	if err := wm.CreateForCommand("cmd_discard_int", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_discard_int", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -109,7 +109,7 @@ func TestWorktreeIntegration_Reconcile(t *testing.T) {
 		projectRoot := initTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
-		if err := wm.CreateForCommand("cmd_reconcile_a", []string{"worker1"}); err != nil {
+		if err := createForCommand(wm, "cmd_reconcile_a", []string{"worker1"}); err != nil {
 			t.Fatalf("CreateForCommand failed: %v", err)
 		}
 
@@ -144,7 +144,7 @@ func TestWorktreeIntegration_Reconcile(t *testing.T) {
 		wm.Reconcile()
 
 		// Verify state updated to cleanup_done
-		ws, err := wm.GetState("cmd_reconcile_a", "worker1")
+		ws, err := getState(wm, "cmd_reconcile_a", "worker1")
 		if err != nil {
 			t.Fatalf("GetState failed: %v", err)
 		}
@@ -161,7 +161,7 @@ func TestWorktreeIntegration_Reconcile(t *testing.T) {
 
 		// Create a managed worktree first (ensures state directory exists,
 		// which Reconcile requires to proceed past the early return)
-		if err := wm.CreateForCommand("cmd_reconcile_managed", []string{"worker1"}); err != nil {
+		if err := createForCommand(wm, "cmd_reconcile_managed", []string{"worker1"}); err != nil {
 			t.Fatalf("CreateForCommand failed: %v", err)
 		}
 
@@ -216,12 +216,12 @@ func TestWorktreeIntegration_Reconcile(t *testing.T) {
 		projectRoot := initTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
-		if err := wm.CreateForCommand("cmd_reconcile_c", []string{"worker1"}); err != nil {
+		if err := createForCommand(wm, "cmd_reconcile_c", []string{"worker1"}); err != nil {
 			t.Fatalf("CreateForCommand failed: %v", err)
 		}
 
 		// Get state before reconcile
-		stateBefore, err := wm.GetState("cmd_reconcile_c", "worker1")
+		stateBefore, err := getState(wm, "cmd_reconcile_c", "worker1")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -229,7 +229,7 @@ func TestWorktreeIntegration_Reconcile(t *testing.T) {
 		wm.Reconcile()
 
 		// Get state after reconcile
-		stateAfter, err := wm.GetState("cmd_reconcile_c", "worker1")
+		stateAfter, err := getState(wm, "cmd_reconcile_c", "worker1")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -259,7 +259,7 @@ func TestWorktreeIntegration_GC_TTLExpiry(t *testing.T) {
 	wm.config.GC.MaxWorktrees = model.IntPtr(100) // high limit so max doesn't trigger
 
 	// Create "old" command at T=0
-	if err := wm.CreateForCommand("cmd_ttl_old", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_ttl_old", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand (old) failed: %v", err)
 	}
 	oldPath, err := wm.GetWorkerPath("cmd_ttl_old", "worker1")
@@ -269,7 +269,7 @@ func TestWorktreeIntegration_GC_TTLExpiry(t *testing.T) {
 
 	// Create "new" command at T=50min
 	fc.now = baseTime.Add(50 * time.Minute)
-	if err := wm.CreateForCommand("cmd_ttl_new", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_ttl_new", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand (new) failed: %v", err)
 	}
 	newPath, err := wm.GetWorkerPath("cmd_ttl_new", "worker1")
@@ -316,10 +316,10 @@ func TestWorktreeIntegration_GC_Disabled(t *testing.T) {
 	wm.config.GC.MaxWorktrees = model.IntPtr(1)
 
 	// Create two commands (MaxWorktrees=1 would GC one if enabled)
-	if err := wm.CreateForCommand("cmd_gc_dis_1", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_gc_dis_1", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand (1) failed: %v", err)
 	}
-	if err := wm.CreateForCommand("cmd_gc_dis_2", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_gc_dis_2", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand (2) failed: %v", err)
 	}
 
@@ -361,7 +361,7 @@ func TestWorktreeIntegration_DiscardStagedChanges(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
-	if err := wm.CreateForCommand("cmd_staged", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_staged", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 
@@ -425,7 +425,7 @@ func TestWorktreeIntegration_GCHealthCheck(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Create a normal managed worktree
-	if err := wm.CreateForCommand("cmd_gc_health", []string{"worker1"}); err != nil {
+	if err := createForCommand(wm, "cmd_gc_health", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
 	}
 

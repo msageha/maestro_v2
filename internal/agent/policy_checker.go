@@ -85,44 +85,6 @@ func (pc *PolicyChecker) HookSettings(scriptPath string) (string, error) {
 	return string(b), nil
 }
 
-// DangerousPatterns returns the list of regex patterns used by the hook script
-// for testing/documentation purposes.
-func DangerousPatterns() []string {
-	return []string{
-		// D001: OS/home destruction — match rm -rf targeting /, ~, or /Users (case-insensitive for macOS)
-		`(?i)rm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+(/\s|/$|~|/Users)`,
-		`(?i)rm\s+-[a-zA-Z]*f[a-zA-Z]*r[a-zA-Z]*\s+(/\s|/$|~|/Users)`,
-		// D003: git push --force (without --force-with-lease)
-		`git\s+push\s+.*--force([^-]|$)`,
-		`git\s+push\s+(.*\s)?-f(\s|$)`,
-		// D004: Uncommitted work destruction
-		`git\s+reset\s+--hard`,
-		`git\s+checkout\s+--\s+\.`,
-		`git\s+clean\s+-[a-zA-Z]*f`,
-		// D005: Privilege escalation
-		`(^|;|\||&&)\s*sudo\s`,
-		`(^|;|\||&&)\s*su\s`,
-		// D006: Process/infra destruction (tmux handled by --disallowedTools, but defense in depth)
-		`(^|;|\||&&)\s*kill\s`,
-		`(^|;|\||&&)\s*killall\s`,
-		`(^|;|\||&&)\s*pkill\s`,
-		// D007: Disk destruction
-		`(^|;|\||&&)\s*mkfs\s`,
-		`(^|;|\||&&)\s*dd\s+if=`,
-		`(^|;|\||&&)\s*fdisk\s`,
-		`(?i)(^|;|\||&&)\s*diskutil\s+eraseDisk`,
-		// D008: Remote code execution
-		`curl\s.*\|\s*(ba)?sh`,
-		`wget\s.*\|\s*(ba)?sh`,
-		`curl\s.*-o\s*-\s*\|\s*(ba)?sh`,
-		// .maestro/ access via Bash (bypass prevention, case-insensitive for macOS)
-		`(?i)(cat|head|tail|less|more|vim|nano|sed|awk)\s+.*\.maestro/`,
-		`(?i)(ls|find|grep|rg)\s+.*\.maestro/(state|queues|results|locks|logs|config)`,
-		`(?i)>\s*\.maestro/`,
-		`(?i)>>\s*\.maestro/`,
-	}
-}
-
 // hookScript is the shell script content for the PreToolUse policy hook.
 // It reads JSON from stdin, checks for dangerous patterns, and outputs
 // a deny decision if a violation is detected.
