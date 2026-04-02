@@ -221,18 +221,11 @@ type QualityGatesConfig struct {
 }
 
 type QualityGateThresholds struct {
-	MaxTaskFailureRate      float64 `yaml:"max_task_failure_rate"`       // タスク失敗率閾値（0.0-1.0）
-	MinTaskSuccessRate      float64 `yaml:"min_task_success_rate"`       // タスク成功率閾値（0.0-1.0）
-	MaxConsecutiveFailures  int     `yaml:"max_consecutive_failures"`    // 連続失敗数の上限
-	MaxTaskDurationSec      int     `yaml:"max_task_duration_sec"`       // タスク実行時間の上限（秒）
-	MaxPendingTasks         int     `yaml:"max_pending_tasks"`           // ペンディングタスク数の上限
 }
 
 type QualityGateEnforcement struct {
 	PreTaskCheck   bool   `yaml:"pre_task_check"`    // タスク実行前チェック
-	PostTaskCheck  bool   `yaml:"post_task_check"`   // タスク実行後チェック
 	FailureAction  string `yaml:"failure_action"`    // 失敗時の動作: "warn", "block"
-	LogViolations  bool   `yaml:"log_violations"`    // 違反をログに記録
 }
 
 // CircuitBreakerConfig controls the command-level circuit breaker that auto-stops
@@ -496,12 +489,6 @@ func (c Config) Validate() error {
 	}
 
 	// quality_gates
-	if c.QualityGates.Thresholds.MaxTaskFailureRate < 0 || c.QualityGates.Thresholds.MaxTaskFailureRate > 1 {
-		errs = append(errs, fmt.Errorf("quality_gates.thresholds.max_task_failure_rate: must be between 0.0 and 1.0"))
-	}
-	if c.QualityGates.Thresholds.MinTaskSuccessRate < 0 || c.QualityGates.Thresholds.MinTaskSuccessRate > 1 {
-		errs = append(errs, fmt.Errorf("quality_gates.thresholds.min_task_success_rate: must be between 0.0 and 1.0"))
-	}
 	if fa := c.QualityGates.Enforcement.FailureAction; fa != "" && fa != "warn" && fa != "block" {
 		errs = append(errs, fmt.Errorf("quality_gates.enforcement.failure_action: must be \"warn\" or \"block\""))
 	}
