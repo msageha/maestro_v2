@@ -44,6 +44,7 @@ watcher:
   clear_confirm_poll_ms: 250 # クリア確認ウィンドウ内のポーリング間隔 (ms)
   clear_max_attempts: 3 # クリア送信の最大試行回数 (初回含む)
   clear_retry_backoff_ms: 500 # クリアリトライ間のベースバックオフ (ms、リトライ毎に倍増)
+  clear_second_enter_delay_ms: 500 # /clear 後の2回目 Enter 送信までの遅延 (ms)
 
 retry:
   command_dispatch: 5

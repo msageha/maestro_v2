@@ -6,6 +6,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"syscall"
 	"time"
 
@@ -31,7 +32,8 @@ func (d *Daemon) waitSignals() {
 		// shutdown, and shutdownDone is closed when Shutdown completes, causing
 		// this goroutine to return. On process exit, the Go runtime reclaims it.
 		shutdownDone := make(chan struct{})
-		defer close(shutdownDone)
+		var closeShutdownDone sync.Once
+		defer closeShutdownDone.Do(func() { close(shutdownDone) })
 		go func() {
 			select {
 			case <-sigCh:
