@@ -97,9 +97,9 @@ func TestSanitizeEnvelopeField(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := sanitizeEnvelopeField(tt.input)
+			got := SanitizeEnvelopeField(tt.input)
 			if got != tt.want {
-				t.Errorf("sanitizeEnvelopeField(%q) = %q, want %q", tt.input, got, tt.want)
+				t.Errorf("SanitizeEnvelopeField(%q) = %q, want %q", tt.input, got, tt.want)
 			}
 		})
 	}
