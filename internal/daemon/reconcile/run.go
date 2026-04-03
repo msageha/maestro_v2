@@ -170,7 +170,7 @@ func (r *Run) RemoveTasksFromWorkerQueues(commandID string) error {
 			continue
 		}
 
-		workerID := ExtractWorkerID(name)
+		workerID := extractWorkerID(name)
 		if workerID == "" {
 			continue
 		}
@@ -243,7 +243,7 @@ func (r *Run) BatchRemoveTaskIDsFromQueues(taskIDs []string) {
 			continue
 		}
 
-		workerID := ExtractWorkerID(name)
+		workerID := extractWorkerID(name)
 		if workerID == "" {
 			continue
 		}
@@ -305,16 +305,16 @@ func (r *Run) Log(level core.LogLevel, format string, args ...any) {
 	r.Deps.DL.Logf(level, format, args...)
 }
 
-// ExtractWorkerID extracts the worker ID from a queue filename.
-func ExtractWorkerID(filename string) string {
+// extractWorkerID extracts the worker ID from a queue filename.
+func extractWorkerID(filename string) string {
 	if !strings.HasPrefix(filename, "worker") || !strings.HasSuffix(filename, ".yaml") {
 		return ""
 	}
 	return strings.TrimSuffix(filename, ".yaml")
 }
 
-// RemoveFromSlice removes a target string from a slice.
-func RemoveFromSlice(s []string, target string) []string {
+// removeFromSlice removes a target string from a slice.
+func removeFromSlice(s []string, target string) []string {
 	var result []string
 	for _, v := range s {
 		if v != target {

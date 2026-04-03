@@ -15,8 +15,8 @@ import (
 // HandlerFunc is the function signature for command handlers registered on a Server.
 type HandlerFunc func(req *Request) *Response
 
-// DefaultMaxConcurrentConns is the default maximum number of concurrent connections.
-const DefaultMaxConcurrentConns = 64
+// defaultMaxConcurrentConns is the default maximum number of concurrent connections.
+const defaultMaxConcurrentConns = 64
 
 // Server is a Unix Domain Socket server that dispatches incoming requests to registered handlers.
 type Server struct {
@@ -39,7 +39,7 @@ func NewServer(socketPath string) *Server {
 		socketPath:  socketPath,
 		handlers:    make(map[string]HandlerFunc),
 		connTimeout: 30 * time.Second,
-		maxConns:    DefaultMaxConcurrentConns,
+		maxConns:    defaultMaxConcurrentConns,
 		ctx:         ctx,
 		cancel:      cancel,
 	}

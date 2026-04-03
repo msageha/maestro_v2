@@ -613,7 +613,7 @@ func TestBus_DroppedCount(t *testing.T) {
 	defer unsub()
 
 	// Initial state: no drops
-	if got := bus.DroppedCount(); got != 0 {
+	if got := bus.getDroppedCount(); got != 0 {
 		t.Fatalf("expected 0 dropped before publish, got %d", got)
 	}
 
@@ -623,15 +623,15 @@ func TestBus_DroppedCount(t *testing.T) {
 	}
 
 	// At least some events should have been dropped (buffer is 1, subscriber is blocked)
-	if got := bus.DroppedCount(); got == 0 {
+	if got := bus.getDroppedCount(); got == 0 {
 		t.Error("expected DroppedCount > 0 after publishing to full channel")
 	}
 
 	// Per-type counter should match total (only one event type used)
-	if byType := bus.DroppedCountByType(EventTaskStarted); byType == 0 {
+	if byType := bus.getDroppedCountByType(EventTaskStarted); byType == 0 {
 		t.Error("expected DroppedCountByType > 0 for EventTaskStarted")
 	}
-	if byType := bus.DroppedCountByType(EventTaskCompleted); byType != 0 {
+	if byType := bus.getDroppedCountByType(EventTaskCompleted); byType != 0 {
 		t.Errorf("expected DroppedCountByType == 0 for EventTaskCompleted, got %d", byType)
 	}
 

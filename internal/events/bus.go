@@ -282,13 +282,13 @@ func (b *Bus) addDroppedByType(eventType EventType) int64 {
 	return v.(*atomic.Int64).Add(1)
 }
 
-// DroppedCount returns the total number of events dropped due to full subscriber channels.
-func (b *Bus) DroppedCount() int64 {
+// getDroppedCount returns the total number of events dropped due to full subscriber channels.
+func (b *Bus) getDroppedCount() int64 {
 	return b.droppedCount.Load()
 }
 
-// DroppedCountByType returns the number of events dropped for a specific event type.
-func (b *Bus) DroppedCountByType(eventType EventType) int64 {
+// getDroppedCountByType returns the number of events dropped for a specific event type.
+func (b *Bus) getDroppedCountByType(eventType EventType) int64 {
 	v, ok := b.droppedByType.Load(eventType)
 	if !ok {
 		return 0
