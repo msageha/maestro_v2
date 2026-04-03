@@ -12,28 +12,9 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// EnvelopeBuilder assembles the dispatch envelope for a task by injecting
-// persona, skills, and learnings sections into the task content.
-type EnvelopeBuilder struct {
-	maestroDir string
-	config     model.Config
-	clock      Clock
-	dl         *DaemonLogger
-}
-
-// NewEnvelopeBuilder creates an EnvelopeBuilder.
-func NewEnvelopeBuilder(maestroDir string, cfg model.Config, clock Clock, dl *DaemonLogger) *EnvelopeBuilder {
-	return &EnvelopeBuilder{
-		maestroDir: maestroDir,
-		config:     cfg,
-		clock:      clock,
-		dl:         dl,
-	}
-}
-
 // BuildTaskContent enriches the task content with persona, skills, and learnings.
 // Returns the enriched content or an error (only when skills policy is "error").
-func (eb *EnvelopeBuilder) BuildTaskContent(task *model.Task) (string, error) {
+func (disp *Dispatcher) BuildTaskContent(task *model.Task) (string, error) {
 	// Sanitize user-supplied content to escape DATA boundary markers BEFORE
 	// appending system-generated sections (skills, learnings) whose markers
 	// must remain intact.
@@ -41,15 +22,15 @@ func (eb *EnvelopeBuilder) BuildTaskContent(task *model.Task) (string, error) {
 
 	// Inject persona prompt (prepend)
 	if task.PersonaHint != "" {
-		if section := persona.FormatPersonaSection(task.PersonaHint, eb.maestroDir); section != "" {
+		if section := persona.FormatPersonaSection(task.PersonaHint, disp.maestroDir); section != "" {
 			content = section + content
-			eb.dl.Logf(LogLevelDebug, "persona_injected task=%s persona=%s", task.ID, task.PersonaHint)
+			disp.dl.Logf(LogLevelDebug, "persona_injected task=%s persona=%s", task.ID, task.PersonaHint)
 		}
 	}
 
 	// Inject skills (append after persona): task-specific skill_refs + shared skills.
-	if eb.config.Skills.Enabled {
-		skillContent, err := eb.buildSkillsSection(task)
+	if disp.config.Skills.Enabled {
+		skillContent, err := disp.buildSkillsSection(task.SkillRefs, task.ID, "worker")
 		if err != nil {
 			return "", err
 		}
@@ -57,13 +38,13 @@ func (eb *EnvelopeBuilder) BuildTaskContent(task *model.Task) (string, error) {
 	}
 
 	// Inject learnings (append after skills)
-	if eb.config.Learnings.Enabled {
-		lrns, err := learnings.ReadTopKLearnings(eb.maestroDir, eb.config.Learnings, eb.clock.Now())
+	if disp.config.Learnings.Enabled {
+		lrns, err := learnings.ReadTopKLearnings(disp.maestroDir, disp.config.Learnings, disp.clock.Now())
 		if err != nil {
-			eb.dl.Logf(LogLevelWarn, "learnings_read_failed task=%s error=%v", task.ID, err)
+			disp.dl.Logf(LogLevelWarn, "learnings_read_failed task=%s error=%v", task.ID, err)
 		} else if section := learnings.FormatLearningsSection(lrns); section != "" {
 			content += section
-			eb.dl.Logf(LogLevelDebug, "learnings_injected task=%s count=%d", task.ID, len(lrns))
+			disp.dl.Logf(LogLevelDebug, "learnings_injected task=%s count=%d", task.ID, len(lrns))
 		}
 	}
 
@@ -74,11 +55,11 @@ func (eb *EnvelopeBuilder) BuildTaskContent(task *model.Task) (string, error) {
 // Like BuildTaskContent, it loads command-specific skill_refs and auto-injects
 // shared skills. Skills referenced in skill_refs are loaded from the "planner"
 // role directory with fallback to "share".
-func (eb *EnvelopeBuilder) BuildCommandContent(cmd *model.Command) (string, error) {
+func (disp *Dispatcher) BuildCommandContent(cmd *model.Command) (string, error) {
 	content := agent.SanitizeUserContent(cmd.Content)
 
-	if eb.config.Skills.Enabled {
-		skillContent, err := eb.buildCommandSkillsSection(cmd)
+	if disp.config.Skills.Enabled {
+		skillContent, err := disp.buildSkillsSection(cmd.SkillRefs, cmd.ID, "planner")
 		if err != nil {
 			return "", err
 		}
@@ -88,33 +69,33 @@ func (eb *EnvelopeBuilder) BuildCommandContent(cmd *model.Command) (string, erro
 	return content, nil
 }
 
-// buildCommandSkillsSection loads and formats the skills section for a command.
-// It loads command-specific skills from skill_refs AND shared skills automatically.
-// Command-specific skills take priority over shared skills with the same name.
-func (eb *EnvelopeBuilder) buildCommandSkillsSection(cmd *model.Command) (string, error) {
-	skillsDir := filepath.Join(eb.maestroDir, "skills")
+// buildSkillsSection loads and formats the skills section for a task or command.
+// It loads role-specific skills from skillRefs AND shared skills automatically.
+// Role-specific skills take priority over shared skills with the same name.
+func (disp *Dispatcher) buildSkillsSection(skillRefs []string, entityID, role string) (string, error) {
+	skillsDir := filepath.Join(disp.maestroDir, "skills")
 
-	// 1. Load command-specific skills from skill_refs.
-	refs := cmd.SkillRefs
-	maxRefs := eb.config.Skills.EffectiveMaxRefsPerTask()
+	// 1. Load skills from skill_refs.
+	refs := skillRefs
+	maxRefs := disp.config.Skills.EffectiveMaxRefsPerTask()
 	if len(refs) > maxRefs {
-		eb.dl.Logf(LogLevelWarn, "skill_refs_truncated command=%s total=%d max=%d", cmd.ID, len(refs), maxRefs)
+		disp.dl.Logf(LogLevelWarn, "skill_refs_truncated %s=%s total=%d max=%d", role, entityID, len(refs), maxRefs)
 		refs = refs[:maxRefs]
 	}
 
-	policy := eb.config.Skills.EffectiveMissingRefPolicy()
+	policy := disp.config.Skills.EffectiveMissingRefPolicy()
 	var loaded []skill.SkillContent
 	seen := make(map[string]struct{})
 	for _, ref := range refs {
-		sc, err := skill.ReadSkillWithRole(skillsDir, ref, "planner")
+		sc, err := skill.ReadSkillWithRole(skillsDir, ref, role)
 		if err != nil {
 			if policy == "error" {
 				return "", errors.Join(err)
 			}
 			if errors.Is(err, os.ErrNotExist) {
-				eb.dl.Logf(LogLevelWarn, "skill_ref_not_found command=%s ref=%s", cmd.ID, ref)
+				disp.dl.Logf(LogLevelWarn, "skill_ref_not_found %s=%s ref=%s", role, entityID, ref)
 			} else {
-				eb.dl.Logf(LogLevelWarn, "skill_read_failed command=%s ref=%s error=%v", cmd.ID, ref, err)
+				disp.dl.Logf(LogLevelWarn, "skill_read_failed %s=%s ref=%s error=%v", role, entityID, ref, err)
 			}
 			continue
 		}
@@ -125,7 +106,7 @@ func (eb *EnvelopeBuilder) buildCommandSkillsSection(cmd *model.Command) (string
 	// 2. Auto-inject shared skills (passing empty role scans only skills/share/).
 	sharedSkills, err := skill.ReadAllSkillsForRole(skillsDir, "", nil)
 	if err != nil {
-		eb.dl.Logf(LogLevelWarn, "shared_skills_read_failed command=%s error=%v", cmd.ID, err)
+		disp.dl.Logf(LogLevelWarn, "shared_skills_read_failed %s=%s error=%v", role, entityID, err)
 	} else {
 		for _, sc := range sharedSkills {
 			if _, dup := seen[sc.ID]; !dup {
@@ -135,63 +116,8 @@ func (eb *EnvelopeBuilder) buildCommandSkillsSection(cmd *model.Command) (string
 		}
 	}
 
-	if section := skill.FormatSkillSection(loaded, eb.config.Skills.EffectiveMaxBodyChars()); section != "" {
-		eb.dl.Logf(LogLevelDebug, "planner_skills_injected command=%s count=%d", cmd.ID, len(loaded))
-		return section, nil
-	}
-	return "", nil
-}
-
-// buildSkillsSection loads and formats the skills section for a task.
-// It loads task-specific skills from skill_refs AND shared skills automatically.
-// Task-specific skills take priority over shared skills with the same name.
-func (eb *EnvelopeBuilder) buildSkillsSection(task *model.Task) (string, error) {
-	skillsDir := filepath.Join(eb.maestroDir, "skills")
-
-	// 1. Load task-specific skills from skill_refs.
-	refs := task.SkillRefs
-	maxRefs := eb.config.Skills.EffectiveMaxRefsPerTask()
-	if len(refs) > maxRefs {
-		eb.dl.Logf(LogLevelWarn, "skill_refs_truncated task=%s total=%d max=%d", task.ID, len(refs), maxRefs)
-		refs = refs[:maxRefs]
-	}
-
-	policy := eb.config.Skills.EffectiveMissingRefPolicy()
-	var loaded []skill.SkillContent
-	seen := make(map[string]struct{})
-	for _, ref := range refs {
-		sc, err := skill.ReadSkillWithRole(skillsDir, ref, "worker")
-		if err != nil {
-			if policy == "error" {
-				return "", errors.Join(err)
-			}
-			// warn policy: log and skip
-			if errors.Is(err, os.ErrNotExist) {
-				eb.dl.Logf(LogLevelWarn, "skill_ref_not_found task=%s ref=%s", task.ID, ref)
-			} else {
-				eb.dl.Logf(LogLevelWarn, "skill_read_failed task=%s ref=%s error=%v", task.ID, ref, err)
-			}
-			continue
-		}
-		loaded = append(loaded, sc)
-		seen[sc.ID] = struct{}{}
-	}
-
-	// 2. Auto-inject shared skills (passing empty role scans only skills/share/).
-	sharedSkills, err := skill.ReadAllSkillsForRole(skillsDir, "", nil)
-	if err != nil {
-		eb.dl.Logf(LogLevelWarn, "shared_skills_read_failed task=%s error=%v", task.ID, err)
-	} else {
-		for _, sc := range sharedSkills {
-			if _, dup := seen[sc.ID]; !dup {
-				loaded = append(loaded, sc)
-				seen[sc.ID] = struct{}{}
-			}
-		}
-	}
-
-	if section := skill.FormatSkillSection(loaded, eb.config.Skills.EffectiveMaxBodyChars()); section != "" {
-		eb.dl.Logf(LogLevelDebug, "skills_injected task=%s count=%d", task.ID, len(loaded))
+	if section := skill.FormatSkillSection(loaded, disp.config.Skills.EffectiveMaxBodyChars()); section != "" {
+		disp.dl.Logf(LogLevelDebug, "skills_injected %s=%s count=%d", role, entityID, len(loaded))
 		return section, nil
 	}
 	return "", nil

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/validate"
 )
 
 // Maximum lengths for task fields.
@@ -252,7 +253,7 @@ func validateTaskFieldsCore(task TaskInput, fieldPrefix string, errs *Validation
 
 	// Validate persona_hint: must be a safe identifier (no path traversal).
 	if task.PersonaHint != "" {
-		if !isValidIdentifier(task.PersonaHint) {
+		if !validate.IsValidIdentifier(task.PersonaHint) {
 			errs.Add(fieldPrefix+".persona_hint", fmt.Sprintf("invalid persona_hint %q: must not contain '/', '\\', or null bytes", task.PersonaHint))
 		}
 		if strings.Contains(task.PersonaHint, "..") {
@@ -262,7 +263,7 @@ func validateTaskFieldsCore(task TaskInput, fieldPrefix string, errs *Validation
 
 	// Validate skill_refs: each must be a safe identifier.
 	for i, ref := range task.SkillRefs {
-		if !isValidIdentifier(ref) {
+		if !validate.IsValidIdentifier(ref) {
 			errs.Add(fmt.Sprintf("%s.skill_refs[%d]", fieldPrefix, i), fmt.Sprintf("invalid skill_ref %q: must not contain '/', '\\', or null bytes", ref))
 		}
 	}
@@ -290,20 +291,6 @@ func validateBloomLevel(level int, fieldPath string, errs *ValidationErrors) {
 	if level < 1 || level > 6 {
 		errs.Add(fieldPath, fmt.Sprintf("must be between 1 and 6, got %d", level))
 	}
-}
-
-// isValidIdentifier checks that a name is a safe directory component
-// (no path separators or null bytes).
-func isValidIdentifier(name string) bool {
-	if name == "" || name == "." || name == ".." {
-		return false
-	}
-	for _, r := range name {
-		if r == '/' || r == '\\' || r == '\x00' {
-			return false
-		}
-	}
-	return true
 }
 
 func validatePhaseConstraints(c *ConstraintInput, fieldPath string, errs *ValidationErrors) {

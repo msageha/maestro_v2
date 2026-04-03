@@ -5,6 +5,7 @@ package skill
 import (
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"github.com/msageha/maestro_v2/internal/model"
@@ -62,7 +63,7 @@ func AddOrUpdateCandidate(candidates []model.SkillCandidate, content, commandID,
 				return candidates, nil
 			}
 			// Only increment if this commandID hasn't been recorded yet
-			if !containsString(c.CommandIDs, commandID) {
+			if !slices.Contains(c.CommandIDs, commandID) {
 				candidates[i].Occurrences++
 				candidates[i].CommandIDs = append(candidates[i].CommandIDs, commandID)
 				candidates[i].UpdatedAt = now
@@ -88,13 +89,4 @@ func AddOrUpdateCandidate(candidates []model.SkillCandidate, content, commandID,
 	})
 
 	return candidates, nil
-}
-
-func containsString(ss []string, target string) bool {
-	for _, s := range ss {
-		if s == target {
-			return true
-		}
-	}
-	return false
 }

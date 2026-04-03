@@ -8,7 +8,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// sanitizeEnvelopeField neutralises prompt-injection vectors in user-supplied
+// SanitizeEnvelopeField neutralises prompt-injection vectors in user-supplied
 // envelope fields.  It performs two transformations:
 //  1. Escapes "[maestro]" → "\\[maestro]" so injected content cannot mimic
 //     system control headers.
@@ -17,7 +17,7 @@ import (
 // Note: DATA boundary markers (BEGIN/END LEARNINGS/SKILLS) are sanitized
 // separately via SanitizeUserContent before system sections are appended,
 // to avoid escaping the system's own markers.
-func sanitizeEnvelopeField(s string) string {
+func SanitizeEnvelopeField(s string) string {
 	s = strings.ReplaceAll(s, "[maestro]", "\\[maestro]")
 	return strings.Map(func(r rune) rune {
 		if unicode.IsControl(r) && r != '\n' && r != '\t' {
@@ -49,14 +49,14 @@ func BuildWorkerEnvelope(task model.Task, workerID string, leaseEpoch, attempt i
 		task.ID, task.CommandID, leaseEpoch, attempt)
 	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "agent_id: %s\n", workerID)
-	fmt.Fprintf(&sb, "purpose: %s\n", sanitizeEnvelopeField(task.Purpose))
-	fmt.Fprintf(&sb, "content: %s\n", sanitizeEnvelopeField(task.Content))
-	fmt.Fprintf(&sb, "acceptance_criteria: %s\n", sanitizeEnvelopeField(task.AcceptanceCriteria))
+	fmt.Fprintf(&sb, "purpose: %s\n", SanitizeEnvelopeField(task.Purpose))
+	fmt.Fprintf(&sb, "content: %s\n", SanitizeEnvelopeField(task.Content))
+	fmt.Fprintf(&sb, "acceptance_criteria: %s\n", SanitizeEnvelopeField(task.AcceptanceCriteria))
 	constraintsStr := "なし"
 	if len(task.Constraints) > 0 {
 		sanitized := make([]string, len(task.Constraints))
 		for i, c := range task.Constraints {
-			sanitized[i] = sanitizeEnvelopeField(c)
+			sanitized[i] = SanitizeEnvelopeField(c)
 		}
 		constraintsStr = strings.Join(sanitized, ", ")
 	}
@@ -65,21 +65,21 @@ func BuildWorkerEnvelope(task model.Task, workerID string, leaseEpoch, attempt i
 	if len(task.ToolsHint) > 0 {
 		sanitizedHints := make([]string, len(task.ToolsHint))
 		for i, h := range task.ToolsHint {
-			sanitizedHints[i] = sanitizeEnvelopeField(h)
+			sanitizedHints[i] = SanitizeEnvelopeField(h)
 		}
 		toolsHintStr = strings.Join(sanitizedHints, ", ")
 	}
 	fmt.Fprintf(&sb, "tools_hint: %s\n", toolsHintStr)
 	personaHintStr := "なし"
 	if task.PersonaHint != "" {
-		personaHintStr = sanitizeEnvelopeField(task.PersonaHint)
+		personaHintStr = SanitizeEnvelopeField(task.PersonaHint)
 	}
 	fmt.Fprintf(&sb, "persona_hint: %s\n", personaHintStr)
 	skillRefsStr := "なし"
 	if len(task.SkillRefs) > 0 {
 		sanitizedRefs := make([]string, len(task.SkillRefs))
 		for i, r := range task.SkillRefs {
-			sanitizedRefs[i] = sanitizeEnvelopeField(r)
+			sanitizedRefs[i] = SanitizeEnvelopeField(r)
 		}
 		skillRefsStr = strings.Join(sanitizedRefs, ", ")
 	}
@@ -98,7 +98,7 @@ func BuildPlannerEnvelope(cmd model.Command, leaseEpoch, attempt int) string {
 	fmt.Fprintf(&sb, "[maestro] command_id:%s lease_epoch:%d attempt:%d\n",
 		cmd.ID, leaseEpoch, attempt)
 	sb.WriteString("\n")
-	fmt.Fprintf(&sb, "content: %s\n", sanitizeEnvelopeField(cmd.Content))
+	fmt.Fprintf(&sb, "content: %s\n", SanitizeEnvelopeField(cmd.Content))
 	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "タスク分解後: maestro plan submit --command-id %s --tasks-file -\n", cmd.ID)
 	fmt.Fprintf(&sb, "全タスク完了後: maestro plan complete --command-id %s --summary \"...\"", cmd.ID)
