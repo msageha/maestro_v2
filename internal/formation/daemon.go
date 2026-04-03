@@ -75,7 +75,7 @@ func stopDaemon(maestroDir string) error {
 		// Use terminateProcess with PID + start time identity check (Fix #7, #8)
 		sameProcess := daemonIdentityChecker(maestroDir, pid, origStartTime)
 		result, err := terminateProcess(pid, sameProcess, 5*time.Second)
-		if result == TerminateNotTarget {
+		if result == terminateNotTarget {
 			// PID was reused by another process — don't clean up
 			return nil
 		}

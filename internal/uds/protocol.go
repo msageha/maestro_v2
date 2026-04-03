@@ -51,8 +51,6 @@ const (
 	ErrCodeFencingReject = "FENCING_REJECT"
 	// ErrCodeDuplicate indicates a duplicate resource or operation was detected.
 	ErrCodeDuplicate = "DUPLICATE"
-	// ErrCodeCancelled indicates the operation was cancelled.
-	ErrCodeCancelled = "CANCELLED"
 	// ErrCodeActionRequired indicates the caller must take an action before retrying.
 	ErrCodeActionRequired = "ACTION_REQUIRED"
 	// ErrCodeMaxRuntimeExceeded indicates the operation exceeded its maximum allowed runtime.

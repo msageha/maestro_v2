@@ -101,10 +101,10 @@ func (m *MutexMap) TryUnlock(key string) bool {
 	return true
 }
 
-// Remove deletes the entry for key from the map, freeing the associated memory.
+// remove deletes the entry for key from the map, freeing the associated memory.
 // The caller must ensure no goroutine is currently holding or waiting on the
 // lock for key. With reference-counted auto-cleanup this is rarely needed.
-func (m *MutexMap) Remove(key string) {
+func (m *MutexMap) remove(key string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if rm, ok := m.mutexes[key]; ok && rm.ref != 0 {
@@ -113,8 +113,8 @@ func (m *MutexMap) Remove(key string) {
 	delete(m.mutexes, key)
 }
 
-// Len returns the number of keys currently tracked in the map.
-func (m *MutexMap) Len() int {
+// len_ returns the number of keys currently tracked in the map.
+func (m *MutexMap) len_() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.mutexes)

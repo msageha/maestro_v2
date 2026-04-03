@@ -83,7 +83,7 @@ func setClock(deps *Deps, t time.Time) {
 
 // --- Run helper tests ---
 
-func TestExtractWorkerID(t *testing.T) {
+func Test_extractWorkerID(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		input string
@@ -97,14 +97,14 @@ func TestExtractWorkerID(t *testing.T) {
 		{"", ""},
 	}
 	for _, tt := range tests {
-		got := ExtractWorkerID(tt.input)
+		got := extractWorkerID(tt.input)
 		if got != tt.want {
-			t.Errorf("ExtractWorkerID(%q) = %q, want %q", tt.input, got, tt.want)
+			t.Errorf("extractWorkerID(%q) = %q, want %q", tt.input, got, tt.want)
 		}
 	}
 }
 
-func TestRemoveFromSlice(t *testing.T) {
+func Test_removeFromSlice(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		s      []string
@@ -117,9 +117,9 @@ func TestRemoveFromSlice(t *testing.T) {
 		{nil, "x", 0},
 	}
 	for _, tt := range tests {
-		got := RemoveFromSlice(tt.s, tt.target)
+		got := removeFromSlice(tt.s, tt.target)
 		if len(got) != tt.want {
-			t.Errorf("RemoveFromSlice(%v, %q): len=%d, want %d", tt.s, tt.target, len(got), tt.want)
+			t.Errorf("removeFromSlice(%v, %q): len=%d, want %d", tt.s, tt.target, len(got), tt.want)
 		}
 	}
 }

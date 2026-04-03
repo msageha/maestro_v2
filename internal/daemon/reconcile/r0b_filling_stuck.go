@@ -86,8 +86,8 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 				for _, taskID := range phase.TaskIDs {
 					delete(state.TaskStates, taskID)
 					delete(state.TaskDependencies, taskID)
-					state.RequiredTaskIDs = RemoveFromSlice(state.RequiredTaskIDs, taskID)
-					state.OptionalTaskIDs = RemoveFromSlice(state.OptionalTaskIDs, taskID)
+					state.RequiredTaskIDs = removeFromSlice(state.RequiredTaskIDs, taskID)
+					state.OptionalTaskIDs = removeFromSlice(state.OptionalTaskIDs, taskID)
 				}
 				state.ExpectedTaskCount = len(state.RequiredTaskIDs) + len(state.OptionalTaskIDs)
 

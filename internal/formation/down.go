@@ -94,7 +94,7 @@ func RunDown(maestroDir string, cfg model.Config) error {
 			origStartTime := processStartTime(pid)
 			sameProcess := daemonIdentityChecker(maestroDir, pid, origStartTime)
 			result, _ := terminateProcess(pid, sameProcess, 5*time.Second)
-			if result == TerminateStopped {
+			if result == terminateStopped {
 				_ = os.Remove(pidPath)
 			}
 		}
@@ -184,7 +184,7 @@ func cleanupStalePID(maestroDir string) {
 	origStartTime := processStartTime(pid)
 	sameProcess := daemonIdentityChecker(maestroDir, pid, origStartTime)
 	result, _ := terminateProcess(pid, sameProcess, 5*time.Second)
-	if result == TerminateStopped {
+	if result == terminateStopped {
 		_ = os.Remove(pidPath)
 	}
 }
