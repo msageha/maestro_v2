@@ -32,8 +32,8 @@ const (
 	notifyBackoffMax = 30 * time.Second
 
 	// maxResultLoopIterations is the maximum number of iterations allowed per
-	// processWorkerResultFile / processCommandResultFile call. Prevents unbounded
-	// CPU/memory consumption when results are added faster than they are processed.
+	// processResultFile call. Prevents unbounded CPU/memory consumption when
+	// results are added faster than they are processed.
 	// Remaining results will be handled on the next scan cycle.
 	maxResultLoopIterations = 1000
 
@@ -84,6 +84,8 @@ func NewResultHandler(
 
 // SetExecutorFactory overrides the executor factory for testing.
 // Resets the cached executor so the new factory is used on next call.
+// This method exists solely for test injection; production code uses the factory
+// provided at construction time.
 func (rh *ResultHandler) SetExecutorFactory(f ExecutorFactory) {
 	rh.execProvider.SetFactory(f)
 }
@@ -93,12 +95,6 @@ func (rh *ResultHandler) SetExecutorFactory(f ExecutorFactory) {
 // os.File in append mode is POSIX-safe, all other fields are immutable).
 func (rh *ResultHandler) getExecutor() (AgentExecutor, error) {
 	return rh.execProvider.GetExecutor()
-}
-
-// CloseExecutor releases the shared executor's resources.
-// Safe to call multiple times; subsequent calls are no-ops.
-func (rh *ResultHandler) CloseExecutor() {
-	rh.execProvider.CloseExecutor()
 }
 
 // SetContinuousHandler wires the continuous handler for iteration tracking.
@@ -179,214 +175,238 @@ func (rh *ResultHandler) ScanAllResults() int {
 	return total
 }
 
-// processWorkerResultFile processes worker results using the notification lease pattern.
-// Notifies Planner of each unnotified result. Each result is attempted at most once per call.
-func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
+// --- Generic result processing ---
+
+// resultFileSpec defines the type-specific behavior for processResultFile.
+type resultFileSpec[T any, PT interface {
+	*T
+	model.Notifiable
+}, F any] struct {
+	lockKey    string
+	resultPath string
+	label      string // entity label for log messages (e.g. "worker=worker1", "planner")
+
+	loadFile   func(path string) (*F, error)
+	getResults func(f *F) []T
+	findByID   func(f *F, id string) PT
+
+	notify    func(r PT) error // execute notification delivery
+	onSuccess func(r PT)       // post-success action (publish event, advance continuous handler)
+
+	logSuccess func(r PT)
+	logFailure func(r PT, err error)
+}
+
+// processResultFile is the generic notification processing loop shared by
+// processWorkerResultFile and processCommandResultFile.
+func processResultFile[T any, PT interface {
+	*T
+	model.Notifiable
+}, F any](rh *ResultHandler, spec resultFileSpec[T, PT, F]) int {
 	notified := 0
-	resultPath := filepath.Join(rh.maestroDir, "results", workerID+".yaml")
 	attempted := make(map[string]bool)
 	writeFailures := 0
 
 	for iter := 0; iter < maxResultLoopIterations; iter++ {
 		// Phase 1: Acquire lease under lock
-		lockKey := "result:" + workerID
-		rh.lockMap.Lock(lockKey)
+		rh.lockMap.Lock(spec.lockKey)
 
-		rf, err := rh.loadTaskResultFile(resultPath)
+		rf, err := spec.loadFile(spec.resultPath)
 		if err != nil {
-			rh.lockMap.Unlock(lockKey)
-			rh.log(LogLevelWarn, "load_worker_results worker=%s error=%v", workerID, err)
+			rh.lockMap.Unlock(spec.lockKey)
+			rh.log(LogLevelWarn, "load_results %s error=%v", spec.label, err)
 			return notified
 		}
 
-		// Find first eligible result not already attempted in this call
-		idx := rh.findUnnotifiedTaskResultExcluding(rf, attempted)
+		results := spec.getResults(rf)
+		idx := findUnnotifiedExcluding[T, PT](results, attempted, rh.isLeaseExpired)
 		if idx < 0 {
-			rh.lockMap.Unlock(lockKey)
+			rh.lockMap.Unlock(spec.lockKey)
 			return notified
 		}
 
-		result := &rf.Results[idx]
-		resultID := result.ID
-		taskID := result.TaskID
-		commandID := result.CommandID
-		taskStatus := string(result.Status)
+		entry := PT(&results[idx])
+		resultID := entry.GetResultID()
 		attempted[resultID] = true
 
-		// Acquire notification lease
-		rh.acquireTaskNotifyLease(result)
-		if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
-			rh.lockMap.Unlock(lockKey)
-			rh.log(LogLevelError, "write_lease worker=%s result=%s error=%v", workerID, resultID, err)
+		rh.acquireNotifyLease(entry)
+		if err := yamlutil.AtomicWrite(spec.resultPath, rf); err != nil {
+			rh.lockMap.Unlock(spec.lockKey)
+			rh.log(LogLevelError, "write_lease %s result=%s error=%v", spec.label, resultID, err)
 			return notified
 		}
-		rh.lockMap.Unlock(lockKey)
+		rh.lockMap.Unlock(spec.lockKey)
 
 		// Phase 2: Execute notification (outside lock)
-		notifyErr := rh.notifyPlannerOfWorkerResult(commandID, taskID, workerID, taskStatus)
+		notifyErr := spec.notify(entry)
 
 		// Phase 3: Update result under lock
-		rh.lockMap.Lock(lockKey)
-		rf, err = rh.loadTaskResultFile(resultPath)
+		rh.lockMap.Lock(spec.lockKey)
+		rf, err = spec.loadFile(spec.resultPath)
 		if err != nil {
-			rh.lockMap.Unlock(lockKey)
-			rh.log(LogLevelError, "reload_worker_results worker=%s error=%v", workerID, err)
+			rh.lockMap.Unlock(spec.lockKey)
+			rh.log(LogLevelError, "reload_results %s error=%v", spec.label, err)
 			return notified
 		}
 
-		entry := rh.findTaskResultByID(rf, resultID)
+		entry = spec.findByID(rf, resultID)
 		if entry == nil {
-			rh.lockMap.Unlock(lockKey)
-			rh.log(LogLevelWarn, "result_disappeared worker=%s result=%s", workerID, resultID)
+			rh.lockMap.Unlock(spec.lockKey)
+			rh.log(LogLevelWarn, "result_disappeared %s result=%s", spec.label, resultID)
 			continue
 		}
 
 		if notifyErr != nil {
-			rh.markTaskNotifyFailure(entry, notifyErr.Error())
-			if entry.NotifyAttempts >= maxNotifyAttempts {
-				rh.log(LogLevelError, "notify_exhausted worker=%s task=%s command=%s attempts=%d last_error=%v",
-					workerID, taskID, commandID, entry.NotifyAttempts, notifyErr)
-			} else {
-				rh.log(LogLevelWarn, "notify_planner_failed worker=%s task=%s error=%v attempts=%d/%d next_retry_in=%s",
-					workerID, taskID, notifyErr, entry.NotifyAttempts, maxNotifyAttempts, rh.notifyBackoff(entry.NotifyAttempts))
-			}
+			rh.markNotifyFailure(entry, notifyErr.Error())
+			spec.logFailure(entry, notifyErr)
 		} else {
-			rh.markTaskNotifySuccess(entry)
+			rh.markNotifySuccess(entry)
 			notified++
-			rh.log(LogLevelInfo, "notify_planner_success worker=%s task=%s command=%s", workerID, taskID, commandID)
-
-			// Publish task_completed event (non-blocking, best-effort)
-			if bus := rh.getEventBus(); bus != nil {
-				bus.Publish(events.EventTaskCompleted, map[string]interface{}{
-					"task_id":    taskID,
-					"command_id": commandID,
-					"worker_id":  workerID,
-					"status":     taskStatus,
-				})
+			spec.logSuccess(entry)
+			if spec.onSuccess != nil {
+				spec.onSuccess(entry)
 			}
 		}
 
-		if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
+		if err := yamlutil.AtomicWrite(spec.resultPath, rf); err != nil {
 			writeFailures++
-			rh.log(LogLevelError, "write_result worker=%s error=%v failures=%d/%d", workerID, err, writeFailures, maxAtomicWriteFailures)
+			rh.log(LogLevelError, "write_result %s error=%v failures=%d/%d", spec.label, err, writeFailures, maxAtomicWriteFailures)
 			if writeFailures >= maxAtomicWriteFailures {
-				rh.lockMap.Unlock(lockKey)
-				rh.log(LogLevelError, "write_result_abort worker=%s consecutive_failures=%d", workerID, writeFailures)
+				rh.lockMap.Unlock(spec.lockKey)
+				rh.log(LogLevelError, "write_result_abort %s consecutive_failures=%d", spec.label, writeFailures)
 				return notified
 			}
 		} else {
 			writeFailures = 0
 		}
-		rh.lockMap.Unlock(lockKey)
+		rh.lockMap.Unlock(spec.lockKey)
 	}
 
 	if len(attempted) >= maxResultLoopIterations {
-		rh.log(LogLevelWarn, "process_worker_result iteration_limit worker=%s processed=%d limit=%d", workerID, notified, maxResultLoopIterations)
+		rh.log(LogLevelWarn, "process_result iteration_limit %s processed=%d limit=%d", spec.label, notified, maxResultLoopIterations)
 	}
 	return notified
+}
+
+// processWorkerResultFile processes worker results using the notification lease pattern.
+// Notifies Planner of each unnotified result.
+func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
+	resultPath := filepath.Join(rh.maestroDir, "results", workerID+".yaml")
+	label := "worker=" + workerID
+
+	return processResultFile(rh, resultFileSpec[model.TaskResult, *model.TaskResult, model.TaskResultFile]{
+		lockKey:    "result:" + workerID,
+		resultPath: resultPath,
+		label:      label,
+		loadFile:   rh.loadTaskResultFile,
+		getResults: func(f *model.TaskResultFile) []model.TaskResult { return f.Results },
+		findByID:   func(f *model.TaskResultFile, id string) *model.TaskResult { return findResultByID[model.TaskResult, *model.TaskResult](f.Results, id) },
+
+		notify: func(r *model.TaskResult) error {
+			return rh.notifyPlannerOfWorkerResult(r.CommandID, r.TaskID, workerID, string(r.Status))
+		},
+		onSuccess: func(r *model.TaskResult) {
+			if bus := rh.getEventBus(); bus != nil {
+				bus.Publish(events.EventTaskCompleted, map[string]any{
+					"task_id":    r.TaskID,
+					"command_id": r.CommandID,
+					"worker_id":  workerID,
+					"status":     string(r.Status),
+				})
+			}
+		},
+		logSuccess: func(r *model.TaskResult) {
+			rh.log(LogLevelInfo, "notify_planner_success worker=%s task=%s command=%s", workerID, r.TaskID, r.CommandID)
+		},
+		logFailure: func(r *model.TaskResult, notifyErr error) {
+			if r.NotifyAttempts >= maxNotifyAttempts {
+				rh.log(LogLevelError, "notify_exhausted worker=%s task=%s command=%s attempts=%d last_error=%v",
+					workerID, r.TaskID, r.CommandID, r.NotifyAttempts, notifyErr)
+			} else {
+				rh.log(LogLevelWarn, "notify_planner_failed worker=%s task=%s error=%v attempts=%d/%d next_retry_in=%s",
+					workerID, r.TaskID, notifyErr, r.NotifyAttempts, maxNotifyAttempts, rh.notifyBackoff(r.NotifyAttempts))
+			}
+		},
+	})
 }
 
 // processCommandResultFile processes planner results using the notification lease pattern.
 // Notifies Orchestrator via queue write.
 func (rh *ResultHandler) processCommandResultFile() int {
-	notified := 0
 	resultPath := filepath.Join(rh.maestroDir, "results", "planner.yaml")
-	attempted := make(map[string]bool)
-	writeFailures := 0
 
-	for iter := 0; iter < maxResultLoopIterations; iter++ {
-		lockKey := "result:planner"
-		rh.lockMap.Lock(lockKey)
+	return processResultFile(rh, resultFileSpec[model.CommandResult, *model.CommandResult, model.CommandResultFile]{
+		lockKey:    "result:planner",
+		resultPath: resultPath,
+		label:      "planner",
+		loadFile:   rh.loadCommandResultFile,
+		getResults: func(f *model.CommandResultFile) []model.CommandResult { return f.Results },
+		findByID:   func(f *model.CommandResultFile, id string) *model.CommandResult { return findResultByID[model.CommandResult, *model.CommandResult](f.Results, id) },
 
-		rf, err := rh.loadCommandResultFile(resultPath)
-		if err != nil {
-			rh.lockMap.Unlock(lockKey)
-			rh.log(LogLevelWarn, "load_command_results error=%v", err)
-			return notified
-		}
-
-		idx := rh.findUnnotifiedCommandResultExcluding(rf, attempted)
-		if idx < 0 {
-			rh.lockMap.Unlock(lockKey)
-			return notified
-		}
-
-		result := &rf.Results[idx]
-		resultID := result.ID
-		commandID := result.CommandID
-		resultStatus := result.Status
-		attempted[resultID] = true
-
-		rh.acquireCommandNotifyLease(result)
-		if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
-			rh.lockMap.Unlock(lockKey)
-			rh.log(LogLevelError, "write_lease planner result=%s error=%v", resultID, err)
-			return notified
-		}
-		rh.lockMap.Unlock(lockKey)
-
-		// Execute notification (outside lock)
-		notifyErr := rh.notifyOrchestratorOfCommandResult(resultID, commandID, resultStatus)
-
-		// Update result under lock
-		rh.lockMap.Lock(lockKey)
-		rf, err = rh.loadCommandResultFile(resultPath)
-		if err != nil {
-			rh.lockMap.Unlock(lockKey)
-			rh.log(LogLevelError, "reload_command_results error=%v", err)
-			return notified
-		}
-
-		entry := rh.findCommandResultByID(rf, resultID)
-		if entry == nil {
-			rh.lockMap.Unlock(lockKey)
-			rh.log(LogLevelWarn, "command_result_disappeared result=%s", resultID)
-			continue
-		}
-
-		if notifyErr != nil {
-			rh.markCommandNotifyFailure(entry, notifyErr.Error())
-			if entry.NotifyAttempts >= maxNotifyAttempts {
-				rh.log(LogLevelError, "notify_exhausted command=%s attempts=%d last_error=%v",
-					commandID, entry.NotifyAttempts, notifyErr)
-			} else {
-				rh.log(LogLevelWarn, "notify_orchestrator_failed command=%s error=%v attempts=%d/%d next_retry_in=%s",
-					commandID, notifyErr, entry.NotifyAttempts, maxNotifyAttempts, rh.notifyBackoff(entry.NotifyAttempts))
-			}
-		} else {
-			rh.markCommandNotifySuccess(entry)
-			notified++
-			rh.log(LogLevelInfo, "notify_orchestrator_success command=%s status=%s", commandID, resultStatus)
-
-			// Continuous mode: advance iteration counter
+		notify: func(r *model.CommandResult) error {
+			return rh.notifyOrchestratorOfCommandResult(r.ID, r.CommandID, r.Status)
+		},
+		onSuccess: func(r *model.CommandResult) {
 			if ch := rh.getContinuousHandler(); ch != nil {
-				if err := ch.CheckAndAdvance(commandID, resultStatus); err != nil {
-					rh.log(LogLevelWarn, "continuous_advance command=%s error=%v", commandID, err)
+				if err := ch.CheckAndAdvance(r.CommandID, r.Status); err != nil {
+					rh.log(LogLevelWarn, "continuous_advance command=%s error=%v", r.CommandID, err)
 				}
 			}
-		}
-
-		if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
-			writeFailures++
-			rh.log(LogLevelError, "write_result planner error=%v failures=%d/%d", err, writeFailures, maxAtomicWriteFailures)
-			if writeFailures >= maxAtomicWriteFailures {
-				rh.lockMap.Unlock(lockKey)
-				rh.log(LogLevelError, "write_result_abort planner consecutive_failures=%d", writeFailures)
-				return notified
+		},
+		logSuccess: func(r *model.CommandResult) {
+			rh.log(LogLevelInfo, "notify_orchestrator_success command=%s status=%s", r.CommandID, r.Status)
+		},
+		logFailure: func(r *model.CommandResult, notifyErr error) {
+			if r.NotifyAttempts >= maxNotifyAttempts {
+				rh.log(LogLevelError, "notify_exhausted command=%s attempts=%d last_error=%v",
+					r.CommandID, r.NotifyAttempts, notifyErr)
+			} else {
+				rh.log(LogLevelWarn, "notify_orchestrator_failed command=%s error=%v attempts=%d/%d next_retry_in=%s",
+					r.CommandID, notifyErr, r.NotifyAttempts, maxNotifyAttempts, rh.notifyBackoff(r.NotifyAttempts))
 			}
-		} else {
-			writeFailures = 0
-		}
-		rh.lockMap.Unlock(lockKey)
-	}
-
-	if len(attempted) >= maxResultLoopIterations {
-		rh.log(LogLevelWarn, "process_command_result iteration_limit processed=%d limit=%d", notified, maxResultLoopIterations)
-	}
-	return notified
+		},
+	})
 }
 
-// --- Notification lease helpers ---
+// --- Generic notification lease helpers ---
+
+// findUnnotifiedExcluding finds the first unnotified result not in the exclude set
+// whose lease is either unset or expired.
+func findUnnotifiedExcluding[T any, PT interface {
+	*T
+	model.Notifiable
+}](results []T, exclude map[string]bool, isLeaseExpired func(*string) bool) int {
+	for i := range results {
+		r := PT(&results[i])
+		if r.IsNotified() {
+			continue
+		}
+		if exclude[r.GetResultID()] {
+			continue
+		}
+		if r.GetNotifyAttempts() >= maxNotifyAttempts {
+			continue
+		}
+		if r.GetNotifyLeaseOwner() == nil || isLeaseExpired(r.GetNotifyLeaseExpiresAt()) {
+			return i
+		}
+	}
+	return -1
+}
+
+// findResultByID returns a pointer to the result with the given ID, or nil.
+func findResultByID[T any, PT interface {
+	*T
+	model.Notifiable
+}](results []T, id string) PT {
+	for i := range results {
+		r := PT(&results[i])
+		if r.GetResultID() == id {
+			return r
+		}
+	}
+	return nil
+}
 
 // notifyBackoff computes the exponential backoff delay for the given attempt count
 // with ±25% uniform jitter to prevent thundering herd on recovery.
@@ -429,115 +449,25 @@ func (rh *ResultHandler) isLeaseExpired(expiresAt *string) bool {
 	return rh.clock.Now().UTC().After(t)
 }
 
-func (rh *ResultHandler) findUnnotifiedTaskResultExcluding(rf *model.TaskResultFile, exclude map[string]bool) int {
-	for i := range rf.Results {
-		r := &rf.Results[i]
-		if r.Notified {
-			continue
-		}
-		if exclude[r.ID] {
-			continue
-		}
-		if r.NotifyAttempts >= maxNotifyAttempts {
-			continue
-		}
-		if r.NotifyLeaseOwner == nil || rh.isLeaseExpired(r.NotifyLeaseExpiresAt) {
-			return i
-		}
-	}
-	return -1
-}
-
-func (rh *ResultHandler) findUnnotifiedCommandResultExcluding(rf *model.CommandResultFile, exclude map[string]bool) int {
-	for i := range rf.Results {
-		r := &rf.Results[i]
-		if r.Notified {
-			continue
-		}
-		if exclude[r.ID] {
-			continue
-		}
-		if r.NotifyAttempts >= maxNotifyAttempts {
-			continue
-		}
-		if r.NotifyLeaseOwner == nil || rh.isLeaseExpired(r.NotifyLeaseExpiresAt) {
-			return i
-		}
-	}
-	return -1
-}
-
-func (rh *ResultHandler) findTaskResultByID(rf *model.TaskResultFile, id string) *model.TaskResult {
-	for i := range rf.Results {
-		if rf.Results[i].ID == id {
-			return &rf.Results[i]
-		}
-	}
-	return nil
-}
-
-func (rh *ResultHandler) findCommandResultByID(rf *model.CommandResultFile, id string) *model.CommandResult {
-	for i := range rf.Results {
-		if rf.Results[i].ID == id {
-			return &rf.Results[i]
-		}
-	}
-	return nil
-}
-
-func (rh *ResultHandler) acquireTaskNotifyLease(r *model.TaskResult) {
+// acquireNotifyLease sets the lease owner and expiration on a Notifiable result.
+func (rh *ResultHandler) acquireNotifyLease(r model.Notifiable) {
 	owner := rh.leaseOwner()
 	expiresAt := rh.clock.Now().UTC().Add(time.Duration(rh.notifyLeaseSec()) * time.Second).Format(time.RFC3339)
-	r.NotifyLeaseOwner = &owner
-	r.NotifyLeaseExpiresAt = &expiresAt
-	r.NotifyAttempts++
+	r.AcquireLease(owner, expiresAt)
 }
 
-func (rh *ResultHandler) acquireCommandNotifyLease(r *model.CommandResult) {
-	owner := rh.leaseOwner()
-	expiresAt := rh.clock.Now().UTC().Add(time.Duration(rh.notifyLeaseSec()) * time.Second).Format(time.RFC3339)
-	r.NotifyLeaseOwner = &owner
-	r.NotifyLeaseExpiresAt = &expiresAt
-	r.NotifyAttempts++
-}
-
-func (rh *ResultHandler) markTaskNotifySuccess(r *model.TaskResult) {
+// markNotifySuccess marks a Notifiable result as successfully notified.
+func (rh *ResultHandler) markNotifySuccess(r model.Notifiable) {
 	now := rh.clock.Now().UTC().Format(time.RFC3339)
-	r.Notified = true
-	r.NotifiedAt = &now
-	r.NotifyLeaseOwner = nil
-	r.NotifyLeaseExpiresAt = nil
+	r.MarkNotified(now)
 }
 
-func (rh *ResultHandler) markTaskNotifyFailure(r *model.TaskResult, errMsg string) {
-	r.NotifyLastError = &errMsg
-	// Set backoff lease to prevent immediate retry.
-	// The entry will be skipped until the backoff period expires.
+// markNotifyFailure marks a Notifiable result as failed with backoff lease.
+func (rh *ResultHandler) markNotifyFailure(r model.Notifiable, errMsg string) {
+	backoff := rh.notifyBackoff(r.GetNotifyAttempts())
 	// Use RFC3339Nano to preserve sub-second precision (backoff jitter can be <1s).
-	backoff := rh.notifyBackoff(r.NotifyAttempts)
-	owner := "backoff"
 	expiresAt := rh.clock.Now().UTC().Add(backoff).Format(time.RFC3339Nano)
-	r.NotifyLeaseOwner = &owner
-	r.NotifyLeaseExpiresAt = &expiresAt
-}
-
-func (rh *ResultHandler) markCommandNotifySuccess(r *model.CommandResult) {
-	now := rh.clock.Now().UTC().Format(time.RFC3339)
-	r.Notified = true
-	r.NotifiedAt = &now
-	r.NotifyLeaseOwner = nil
-	r.NotifyLeaseExpiresAt = nil
-}
-
-func (rh *ResultHandler) markCommandNotifyFailure(r *model.CommandResult, errMsg string) {
-	r.NotifyLastError = &errMsg
-	// Set backoff lease to prevent immediate retry.
-	// Use RFC3339Nano to preserve sub-second precision (backoff jitter can be <1s).
-	backoff := rh.notifyBackoff(r.NotifyAttempts)
-	owner := "backoff"
-	expiresAt := rh.clock.Now().UTC().Add(backoff).Format(time.RFC3339Nano)
-	r.NotifyLeaseOwner = &owner
-	r.NotifyLeaseExpiresAt = &expiresAt
+	r.MarkNotifyFailure(errMsg, "backoff", expiresAt)
 }
 
 // --- Notification delivery ---
@@ -639,37 +569,37 @@ func (rh *ResultHandler) WriteNotificationToOrchestratorQueue(resultID, commandI
 // --- File I/O helpers ---
 
 func (rh *ResultHandler) loadTaskResultFile(path string) (*model.TaskResultFile, error) {
-	var rf model.TaskResultFile
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			rf.SchemaVersion = 1
-			rf.FileType = "result_task"
-			return &rf, nil
-		}
-		return nil, fmt.Errorf("read %s: %w", path, err)
-	}
-	if err := yamlv3.Unmarshal(data, &rf); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
-	}
-	return &rf, nil
+	return loadResultFile(path, "result_task", func() *model.TaskResultFile { return &model.TaskResultFile{} })
 }
 
 func (rh *ResultHandler) loadCommandResultFile(path string) (*model.CommandResultFile, error) {
-	var rf model.CommandResultFile
+	return loadResultFile(path, "result_command", func() *model.CommandResultFile { return &model.CommandResultFile{} })
+}
+
+// loadResultFile is a generic file loader for result files.
+func loadResultFile[F interface{ *model.TaskResultFile | *model.CommandResultFile }](path, defaultFileType string, newFile func() F) (F, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			rf.SchemaVersion = 1
-			rf.FileType = "result_command"
-			return &rf, nil
+			rf := newFile()
+			// Use type switch to set defaults
+			switch v := any(rf).(type) {
+			case *model.TaskResultFile:
+				v.SchemaVersion = 1
+				v.FileType = defaultFileType
+			case *model.CommandResultFile:
+				v.SchemaVersion = 1
+				v.FileType = defaultFileType
+			}
+			return rf, nil
 		}
-		return nil, fmt.Errorf("read %s: %w", path, err)
+		return newFile(), fmt.Errorf("read %s: %w", path, err)
 	}
-	if err := yamlv3.Unmarshal(data, &rf); err != nil {
-		return nil, fmt.Errorf("parse %s: %w", path, err)
+	rf := newFile()
+	if err := yamlv3.Unmarshal(data, rf); err != nil {
+		return newFile(), fmt.Errorf("parse %s: %w", path, err)
 	}
-	return &rf, nil
+	return rf, nil
 }
 
 // --- Logging ---

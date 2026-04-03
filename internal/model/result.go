@@ -53,6 +53,73 @@ type CommandResultTask struct {
 	Summary string `yaml:"summary"`
 }
 
+// Notifiable provides access to the notification lease fields shared by TaskResult and CommandResult.
+// Both *TaskResult and *CommandResult implement this interface.
+type Notifiable interface {
+	GetResultID() string
+	IsNotified() bool
+	GetNotifyAttempts() int
+	GetNotifyLeaseOwner() *string
+	GetNotifyLeaseExpiresAt() *string
+	AcquireLease(owner, expiresAt string)
+	MarkNotified(at string)
+	MarkNotifyFailure(errMsg, backoffOwner, backoffExpiresAt string)
+}
+
+// --- TaskResult implements Notifiable ---
+
+func (r *TaskResult) GetResultID() string              { return r.ID }
+func (r *TaskResult) IsNotified() bool                 { return r.Notified }
+func (r *TaskResult) GetNotifyAttempts() int            { return r.NotifyAttempts }
+func (r *TaskResult) GetNotifyLeaseOwner() *string      { return r.NotifyLeaseOwner }
+func (r *TaskResult) GetNotifyLeaseExpiresAt() *string  { return r.NotifyLeaseExpiresAt }
+
+func (r *TaskResult) AcquireLease(owner, expiresAt string) {
+	r.NotifyLeaseOwner = &owner
+	r.NotifyLeaseExpiresAt = &expiresAt
+	r.NotifyAttempts++
+}
+
+func (r *TaskResult) MarkNotified(at string) {
+	r.Notified = true
+	r.NotifiedAt = &at
+	r.NotifyLeaseOwner = nil
+	r.NotifyLeaseExpiresAt = nil
+}
+
+func (r *TaskResult) MarkNotifyFailure(errMsg, backoffOwner, backoffExpiresAt string) {
+	r.NotifyLastError = &errMsg
+	r.NotifyLeaseOwner = &backoffOwner
+	r.NotifyLeaseExpiresAt = &backoffExpiresAt
+}
+
+// --- CommandResult implements Notifiable ---
+
+func (r *CommandResult) GetResultID() string              { return r.ID }
+func (r *CommandResult) IsNotified() bool                 { return r.Notified }
+func (r *CommandResult) GetNotifyAttempts() int            { return r.NotifyAttempts }
+func (r *CommandResult) GetNotifyLeaseOwner() *string      { return r.NotifyLeaseOwner }
+func (r *CommandResult) GetNotifyLeaseExpiresAt() *string  { return r.NotifyLeaseExpiresAt }
+
+func (r *CommandResult) AcquireLease(owner, expiresAt string) {
+	r.NotifyLeaseOwner = &owner
+	r.NotifyLeaseExpiresAt = &expiresAt
+	r.NotifyAttempts++
+}
+
+func (r *CommandResult) MarkNotified(at string) {
+	r.Notified = true
+	r.NotifiedAt = &at
+	r.NotifyLeaseOwner = nil
+	r.NotifyLeaseExpiresAt = nil
+}
+
+func (r *CommandResult) MarkNotifyFailure(errMsg, backoffOwner, backoffExpiresAt string) {
+	r.NotifyLastError = &errMsg
+	r.NotifyLeaseOwner = &backoffOwner
+	r.NotifyLeaseExpiresAt = &backoffExpiresAt
+}
+
 // QualityGateEvaluation records the quality gate evaluation result
 type QualityGateEvaluation struct {
 	Passed       bool     `yaml:"passed"`
