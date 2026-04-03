@@ -169,7 +169,7 @@ func (qh *QueueHandler) computeSignalBackoff(attempts int) time.Duration {
 // Returns (busy, undecided). When undecided=true, busy is false.
 func (qh *QueueHandler) isAgentBusy(ctx context.Context, agentID string) (busy, undecided bool) {
 	if qh.busyChecker != nil {
-		return qh.busyChecker(agentID), false
+		return qh.busyChecker.IsBusy(agentID), false
 	}
 
 	// Default: use shared agent executor to probe busy state

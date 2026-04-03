@@ -255,9 +255,9 @@ func TestIsAgentBusy_WithChecker(t *testing.T) {
 	qh := newDispatchTestQH(10)
 
 	// Set a custom busy checker that returns busy for "worker1"
-	qh.busyChecker = func(agentID string) bool {
+	qh.busyChecker = BusyCheckerFunc(func(agentID string) bool {
 		return agentID == "worker1"
-	}
+	})
 
 	busy1, _ := qh.isAgentBusy(nil, "worker1")
 	if !busy1 {

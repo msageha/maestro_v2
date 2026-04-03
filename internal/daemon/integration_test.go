@@ -296,7 +296,7 @@ func newIntegrationDaemon(t *testing.T) *Daemon {
 	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
 	})
-	d.handler.busyChecker = func(string) bool { return false }
+	d.handler.busyChecker = BusyCheckerFunc(func(string) bool { return false })
 
 	// Ensure dead_letters and state dirs exist
 	for _, sub := range []string{"dead_letters", "quarantine", "state"} {
@@ -688,7 +688,7 @@ func TestIntegration_LeaseExpiryRecovery(t *testing.T) {
 // Scenario 4b: Lease expiry with busy agent — lease extended
 func TestIntegration_LeaseExpiryBusyExtend(t *testing.T) {
 	d := newIntegrationDaemon(t)
-	d.handler.busyChecker = func(string) bool { return true } // always busy
+	d.handler.busyChecker = BusyCheckerFunc(func(string) bool { return true }) // always busy
 
 	taskID := "task_0000000004_aabbcc02"
 	commandID := "cmd_0000000004_aabbcc05"
@@ -739,7 +739,7 @@ func TestIntegration_DeadLetter(t *testing.T) {
 	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
 	})
-	d.handler.busyChecker = func(string) bool { return false }
+	d.handler.busyChecker = BusyCheckerFunc(func(string) bool { return false })
 
 	// Setup: command with attempts >= max
 	cq := model.CommandQueue{
