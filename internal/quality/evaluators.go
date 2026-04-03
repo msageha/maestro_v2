@@ -470,22 +470,3 @@ func scriptLanguage(lang string) string {
 	return lang
 }
 
-// Helper function to convert to float64
-func toFloat64(v interface{}) (float64, error) {
-	switch val := v.(type) {
-	case float64:
-		return val, nil
-	case float32:
-		return float64(val), nil
-	case int:
-		return float64(val), nil
-	case int64:
-		return float64(val), nil
-	case string:
-		var f float64
-		_, err := fmt.Sscanf(val, "%f", &f)
-		return f, err
-	default:
-		return 0, fmt.Errorf("cannot convert %T to float64", v)
-	}
-}

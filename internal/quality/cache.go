@@ -146,7 +146,7 @@ func (c *resultCache) Size() int {
 	return c.lru.Len()
 }
 
-// Stats returns cache statistics
+// Stats returns cache statistics. Used only in tests.
 func (c *resultCache) Stats() cacheStats {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
