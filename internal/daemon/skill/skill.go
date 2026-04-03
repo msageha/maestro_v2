@@ -13,6 +13,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/msageha/maestro_v2/internal/validate"
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
@@ -205,7 +206,7 @@ func parseFrontmatter(content string) (SkillMetadata, string, error) {
 // their frontmatter name, which is what "maestro skill list" displays.
 // Returns the first match found, or an error if none exist.
 func ReadSkillWithRole(skillsDir, skillName, role string) (SkillContent, error) {
-	if !isValidIdentifier(skillName) {
+	if !validate.IsValidIdentifier(skillName) {
 		return SkillContent{}, fmt.Errorf("invalid skill name: %q", skillName)
 	}
 
@@ -406,15 +407,3 @@ func ReadAllSkillsForRole(skillsDir, role string, logger *slog.Logger) ([]SkillC
 	return skills, nil
 }
 
-// isValidIdentifier checks that a skill name is a safe directory name.
-func isValidIdentifier(name string) bool {
-	if name == "" || name == "." || name == ".." {
-		return false
-	}
-	for _, r := range name {
-		if r == '/' || r == '\\' || r == '\x00' {
-			return false
-		}
-	}
-	return true
-}

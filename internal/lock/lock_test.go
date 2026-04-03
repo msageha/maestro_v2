@@ -67,7 +67,7 @@ func TestMutexMap_AutoCleanup(t *testing.T) {
 		m.Unlock(key)
 	}
 
-	if n := m.Len(); n != 0 {
+	if n := m.len_(); n != 0 {
 		t.Errorf("expected 0 tracked keys after unlock, got %d", n)
 	}
 }
@@ -86,7 +86,7 @@ func TestMutexMap_AutoCleanupConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 
-	if n := m.Len(); n != 0 {
+	if n := m.len_(); n != 0 {
 		t.Errorf("expected 0 tracked keys after concurrent lock/unlock, got %d", n)
 	}
 }
@@ -125,7 +125,7 @@ func TestMutexMap_DoubleUnlockSafe(t *testing.T) {
 	m.Unlock("key1")
 
 	// After double-unlock the map should still be clean.
-	if n := m.Len(); n != 0 {
+	if n := m.len_(); n != 0 {
 		t.Errorf("expected 0 tracked keys after double unlock, got %d", n)
 	}
 }
@@ -136,7 +136,7 @@ func TestMutexMap_UnlockNeverLocked(t *testing.T) {
 	// Unlock on a key that was never locked must not panic.
 	m.Unlock("phantom")
 
-	if n := m.Len(); n != 0 {
+	if n := m.len_(); n != 0 {
 		t.Errorf("expected 0 tracked keys, got %d", n)
 	}
 }
@@ -148,18 +148,18 @@ func TestMutexMap_RelockAfterAutoCleanup(t *testing.T) {
 	m.Lock("key1")
 	m.Unlock("key1")
 
-	if n := m.Len(); n != 0 {
+	if n := m.len_(); n != 0 {
 		t.Fatalf("expected 0 tracked keys after unlock, got %d", n)
 	}
 
 	// Re-locking the same key after cleanup must work.
 	m.Lock("key1")
-	if n := m.Len(); n != 1 {
+	if n := m.len_(); n != 1 {
 		t.Errorf("expected 1 tracked key after re-lock, got %d", n)
 	}
 	m.Unlock("key1")
 
-	if n := m.Len(); n != 0 {
+	if n := m.len_(); n != 0 {
 		t.Errorf("expected 0 tracked keys after final unlock, got %d", n)
 	}
 }
@@ -188,7 +188,7 @@ func TestMutexMap_ConcurrentTryUnlock(t *testing.T) {
 		t.Errorf("expected exactly 1 successful TryUnlock, got %d", successCount)
 	}
 
-	if n := m.Len(); n != 0 {
+	if n := m.len_(); n != 0 {
 		t.Errorf("expected 0 tracked keys, got %d", n)
 	}
 }
@@ -210,7 +210,7 @@ func TestMutexMap_ConcurrentMultiKeyCleanup(t *testing.T) {
 	}
 	wg.Wait()
 
-	if n := m.Len(); n != 0 {
+	if n := m.len_(); n != 0 {
 		t.Errorf("expected 0 tracked keys after multi-key concurrent lock/unlock, got %d", n)
 	}
 }
@@ -242,7 +242,7 @@ func TestMutexMap_ConcurrentDoubleUnlock(t *testing.T) {
 	}
 	wg.Wait()
 
-	if n := m.Len(); n != 0 {
+	if n := m.len_(); n != 0 {
 		t.Errorf("expected 0 tracked keys after concurrent double unlock, got %d", n)
 	}
 }

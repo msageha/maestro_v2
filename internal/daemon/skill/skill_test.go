@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/msageha/maestro_v2/internal/validate"
 )
 
 func writeSkillFile(t *testing.T, skillsDir, skillName, content string) {
@@ -95,9 +97,9 @@ func TestIsValidIdentifier(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := isValidIdentifier(tt.input)
+			got := validate.IsValidIdentifier(tt.input)
 			if got != tt.want {
-				t.Errorf("isValidIdentifier(%q) = %v, want %v", tt.input, got, tt.want)
+				t.Errorf("validate.IsValidIdentifier(%q) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
 	}

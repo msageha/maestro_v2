@@ -22,7 +22,6 @@ type Engine struct {
 	cache          *resultCache
 	singleflight   *singleflight.Group
 	mu             sync.RWMutex
-	configVersion  string
 	configChecksum string
 }
 
@@ -55,17 +54,17 @@ func NewEngine() *Engine {
 	}
 
 	// Register built-in evaluators
-	engine.RegisterEvaluator(ConditionFieldValidation, &fieldValidationEvaluator{})
-	engine.RegisterEvaluator(ConditionAnd, &logicalAndEvaluator{engine: engine})
-	engine.RegisterEvaluator(ConditionOr, &logicalOrEvaluator{engine: engine})
-	engine.RegisterEvaluator(ConditionNot, &logicalNotEvaluator{engine: engine})
-	engine.RegisterEvaluator(ConditionScript, &scriptEvaluator{})
+	engine.registerEvaluator(ConditionFieldValidation, &fieldValidationEvaluator{})
+	engine.registerEvaluator(ConditionAnd, &logicalAndEvaluator{engine: engine})
+	engine.registerEvaluator(ConditionOr, &logicalOrEvaluator{engine: engine})
+	engine.registerEvaluator(ConditionNot, &logicalNotEvaluator{engine: engine})
+	engine.registerEvaluator(ConditionScript, &scriptEvaluator{})
 
 	return engine
 }
 
-// RegisterEvaluator registers a rule evaluator for a condition type
-func (e *Engine) RegisterEvaluator(condType ConditionType, evaluator RuleEvaluator) {
+// registerEvaluator registers a rule evaluator for a condition type
+func (e *Engine) registerEvaluator(condType ConditionType, evaluator RuleEvaluator) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.evaluators[condType] = evaluator
@@ -86,8 +85,6 @@ func (e *Engine) LoadConfiguration(config *GateConfiguration) error {
 	}
 	checksum := sha256.Sum256(configData)
 	e.configChecksum = hex.EncodeToString(checksum[:])
-	e.configVersion = config.SchemaVersion
-
 	// Compile and index gates by type
 	for _, gateDef := range config.Gates {
 		if gateDef.Enabled != nil && !*gateDef.Enabled {
@@ -504,6 +501,25 @@ func toInt(v interface{}) int {
 		return i
 	default:
 		return 0
+	}
+}
+
+func toFloat64(v interface{}) (float64, error) {
+	switch val := v.(type) {
+	case float64:
+		return val, nil
+	case float32:
+		return float64(val), nil
+	case int:
+		return float64(val), nil
+	case int64:
+		return float64(val), nil
+	case string:
+		var f float64
+		_, err := fmt.Sscanf(val, "%f", &f)
+		return f, err
+	default:
+		return 0, fmt.Errorf("cannot convert %T to float64", v)
 	}
 }
 

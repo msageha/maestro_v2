@@ -27,7 +27,6 @@ type Dispatcher struct {
 	logLevel          LogLevel
 	clock             Clock
 	execProvider      *ExecutorProvider
-	envelopeBuilder   *EnvelopeBuilder
 	mu                sync.RWMutex // protects eventBus, qualityGate, worktreeManager
 	eventBus          *events.Bus
 	qualityGate       *QualityGateDaemon
@@ -52,8 +51,7 @@ func NewDispatcher(maestroDir string, cfg model.Config, lm *LeaseManager, logger
 		logLevel:        logLevel,
 		clock:           ep.clock,
 		gateEvaluations: make(map[string]*model.QualityGateEvaluation),
-		execProvider:    ep,
-		envelopeBuilder: NewEnvelopeBuilder(maestroDir, cfg, ep.clock, dl),
+		execProvider: ep,
 	}
 }
 
@@ -237,7 +235,7 @@ func (disp *Dispatcher) DispatchCommand(cmd *model.Command) error {
 
 	// Build enriched command content (planner skills injection)
 	dispatchCmd := *cmd
-	enrichedContent, err := disp.envelopeBuilder.BuildCommandContent(cmd)
+	enrichedContent, err := disp.BuildCommandContent(cmd)
 	if err != nil {
 		return fmt.Errorf("build command envelope for %s: %w", cmd.ID, err)
 	}
@@ -311,7 +309,7 @@ func (disp *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 
 	// Build enriched task content (persona, skills, learnings injection)
 	dispatchTask := *task
-	enrichedContent, err := disp.envelopeBuilder.BuildTaskContent(task)
+	enrichedContent, err := disp.BuildTaskContent(task)
 	if err != nil {
 		return fmt.Errorf("build task envelope for %s: %w", task.ID, err)
 	}
