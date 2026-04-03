@@ -17,6 +17,17 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
+// BusyChecker probes whether an agent is currently busy.
+// Implementations are used to override the default executor-based probe in tests.
+type BusyChecker interface {
+	IsBusy(agentID string) bool
+}
+
+// BusyCheckerFunc adapts a plain function to the BusyChecker interface.
+type BusyCheckerFunc func(agentID string) bool
+
+func (f BusyCheckerFunc) IsBusy(agentID string) bool { return f(agentID) }
+
 // QueueHandler orchestrates fsnotify event routing and periodic scan execution.
 type QueueHandler struct {
 	maestroDir string
@@ -63,9 +74,9 @@ type QueueHandler struct {
 	// daemonPID for lease_owner format "daemon:{pid}" per spec §5.8.1.
 	daemonPID int
 
-	// busyChecker is called to probe agent busy state before lease expiry release.
-	// Returns true if the agent is currently busy (lease should be extended).
-	busyChecker func(agentID string) bool
+	// busyChecker overrides the default executor-based busy probe.
+	// Used in tests to stub agent busy state. When nil, the real executor probe is used.
+	busyChecker BusyChecker
 
 	// Shutdown guard: wired via SetShutdownGuard after construction.
 	shutdownCtx  context.Context
