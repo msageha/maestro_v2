@@ -140,12 +140,8 @@ type GateConfiguration struct {
 
 // GateMetadata represents metadata about the gate configuration
 type GateMetadata struct {
-	Name        string    `yaml:"name"`
-	Description string    `yaml:"description"`
-	Author      string    `yaml:"author"`
-	CreatedAt   time.Time `yaml:"created_at"`
-	UpdatedAt   time.Time `yaml:"updated_at"`
-	Tags        []string  `yaml:"tags"`
+	Name        string `yaml:"name"`
+	Description string `yaml:"description"`
 }
 
 // EvaluationResult represents the result of gate evaluation
