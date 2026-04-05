@@ -36,6 +36,10 @@ func compileDangerousPatterns() []*regexp.Regexp {
 		`(?i)\b(?:killall|pkill)\b`,
 		// Remote code execution via pipe
 		`(?i)\b(?:curl|wget)\b[^|\n]*\|\s*(?:bash|sh|zsh)\b`,
+		// Generic pipe to shell (bypasses bash --restricted)
+		`(?i)\|\s*(?:(?:/(?:usr/)?bin/)?(?:ba)?sh)\b`,
+		// Absolute path shell invocation (bypasses bash --restricted)
+		`(?i)(?:^|[;\r\n|&])\s*/(?:usr/)?bin/(?:ba)?sh\b`,
 		// Reverse shell patterns
 		`(?i)\b(?:nc|ncat|netcat|socat)\b[^;\n]*\s-e\s`,
 		`(?i)\b(?:bash|sh)\b[^;\n]*/dev/(?:tcp|udp)/`,

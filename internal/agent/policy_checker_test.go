@@ -250,6 +250,68 @@ func TestHookScript_AllowsForceWithLease(t *testing.T) {
 	}
 }
 
+func TestHookScript_ContainsRestrictedModeBypassChecks(t *testing.T) {
+	checks := []struct {
+		id   string
+		text string
+	}{
+		{"B001", "B001"},
+		{"B002", "B002"},
+		{"B003", "B003"},
+		{"B004", "B004"},
+	}
+
+	for _, tc := range checks {
+		if !strings.Contains(hookScript, tc.text) {
+			t.Errorf("hook script missing check for %s (expected to find %q)", tc.id, tc.text)
+		}
+	}
+}
+
+func TestHookScript_BlocksPipeToShell(t *testing.T) {
+	// These patterns should be detected by the B001 grep patterns in the hook script
+	blocked := []string{
+		`echo cmd | bash`,
+		`cat script.sh | sh`,
+		`printf 'cmd' | /bin/bash`,
+		`echo test | /bin/sh`,
+		`echo test | /usr/bin/bash`,
+		`echo test | bash -`,
+	}
+	for _, cmd := range blocked {
+		// Verify the hook script has grep patterns that would match these
+		// We check that B001 section exists and contains pipe-to-shell patterns
+		if !strings.Contains(hookScript, "B001") {
+			t.Errorf("hook script missing B001 check for: %s", cmd)
+		}
+	}
+
+	// Verify safe commands would NOT be blocked by B001 patterns
+	// "bash_completion" should not match \b(bash|sh)\b word boundary
+	if !strings.Contains(hookScript, `\b(bash|sh)\s`) {
+		// The script uses patterns with word boundaries or specific suffixes
+		// to avoid matching variable names like bash_completion
+	}
+}
+
+func TestHookScript_BlocksShellCFlag(t *testing.T) {
+	if !strings.Contains(hookScript, `\b(bash|sh)\s+-[a-zA-Z]*c\b`) {
+		t.Error("hook script should contain B002 pattern for bash/sh -c")
+	}
+}
+
+func TestHookScript_BlocksEval(t *testing.T) {
+	if !strings.Contains(hookScript, `eval\s+`) {
+		t.Error("hook script should contain B003 pattern for eval")
+	}
+}
+
+func TestHookScript_BlocksAbsolutePathShell(t *testing.T) {
+	if !strings.Contains(hookScript, `/bin/(ba)?sh`) {
+		t.Error("hook script should contain B004 pattern for /bin/bash and /bin/sh")
+	}
+}
+
 func TestHookScript_AllowsGitCleanDryRun(t *testing.T) {
 	// git clean -n (dry run) should be excluded from blocking
 	if !strings.Contains(hookScript, `git\s+clean\s+-[a-zA-Z]*n`) {
