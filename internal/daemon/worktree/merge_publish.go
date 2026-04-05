@@ -13,7 +13,8 @@ import (
 // MergeToIntegration merges worker branches into the integration branch.
 // Returns any merge conflicts encountered. Workers are merged in deterministic order.
 // All merge operations happen in the integration worktree (H3: projectRoot HEAD is never changed).
-func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string) ([]model.MergeConflict, error) {
+// workerPurposes maps workerID to the task purpose for descriptive commit messages.
+func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, workerPurposes map[string]string) ([]model.MergeConflict, error) {
 	if err := validateIDs(commandID, workerIDs...); err != nil {
 		return nil, err
 	}
@@ -96,7 +97,7 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string) ([]m
 
 		// Merge worker branch in integration worktree (not projectRoot)
 		strategy := wm.config.EffectiveMergeStrategy()
-		mergeMsg := fmt.Sprintf("[maestro] merge %s into integration for %s", workerID, commandID)
+		mergeMsg := buildMergeMessage(workerID, workerPurposes)
 
 		err = wm.gitRunInDir(integrationPath, "merge", "--no-ff", "-s", strategy, "-m", mergeMsg, ws.Branch)
 		if err != nil {
@@ -334,7 +335,8 @@ func (wm *Manager) SyncFromIntegration(commandID string, workerIDs []string) err
 
 // PublishToBase merges the integration branch into the base branch.
 // Uses a temporary branch in the integration worktree to avoid changing projectRoot HEAD (H3).
-func (wm *Manager) PublishToBase(commandID string) error {
+// publishMessage is used as the commit message summary; falls back to a default if empty.
+func (wm *Manager) PublishToBase(commandID string, publishMessage string) error {
 	if err := validateIDs(commandID); err != nil {
 		return err
 	}
@@ -377,7 +379,7 @@ func (wm *Manager) PublishToBase(commandID string) error {
 	}
 
 	// Merge integration branch into temp branch (at baseBranch's position)
-	mergeMsg := fmt.Sprintf("[maestro] publish %s integration to %s", commandID, baseBranch)
+	mergeMsg := buildPublishMessage(publishMessage, baseBranch)
 	if err := wm.gitRunInDir(integrationPath, "merge", "--no-ff", "-m", mergeMsg, state.Integration.Branch); err != nil {
 		if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusConflict, now); tErr != nil {
 			wm.log(core.LogLevelWarn, "publish_conflict_transition command=%s error=%v", commandID, tErr)
@@ -487,4 +489,44 @@ func (wm *Manager) PublishToBase(commandID string) error {
 
 	wm.log(core.LogLevelInfo, "published_to_base command=%s branch=%s", commandID, baseBranch)
 	return nil
+}
+
+const mergePublishMaxLen = 72
+
+// buildMergeMessage creates a merge commit message from the worker's task purpose.
+func buildMergeMessage(workerID string, workerPurposes map[string]string) string {
+	prefix := "merge: "
+	if workerPurposes != nil {
+		if purpose, ok := workerPurposes[workerID]; ok && purpose != "" {
+			return truncateMessage(prefix, purpose, mergePublishMaxLen)
+		}
+	}
+	return prefix + workerID + " changes"
+}
+
+// buildPublishMessage creates a publish commit message from the command content summary.
+func buildPublishMessage(publishMessage, baseBranch string) string {
+	prefix := "publish: "
+	if publishMessage != "" {
+		return truncateMessage(prefix, publishMessage, mergePublishMaxLen)
+	}
+	return prefix + "integrate changes to " + baseBranch
+}
+
+// truncateMessage builds "prefix + body" and truncates to maxLen if needed.
+// If body contains newlines, only the first line is used.
+func truncateMessage(prefix, body string, maxLen int) string {
+	// Use only the first line
+	if idx := strings.IndexByte(body, '\n'); idx >= 0 {
+		body = body[:idx]
+	}
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return prefix
+	}
+	msg := prefix + body
+	if len(msg) > maxLen {
+		msg = msg[:maxLen]
+	}
+	return msg
 }

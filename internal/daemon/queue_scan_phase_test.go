@@ -162,7 +162,7 @@ func TestCollectWorktreePublish_MergedIntegration(t *testing.T) {
 		},
 	})
 
-	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", tqs)
+	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", "", tqs)
 	if len(publishes) != 1 {
 		t.Fatalf("expected 1 publish item, got %d", len(publishes))
 	}
@@ -193,7 +193,7 @@ func TestCollectWorktreePublish_SkipAlreadyPublished(t *testing.T) {
 		},
 	})
 
-	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", tqs)
+	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", "", tqs)
 	if len(publishes) != 0 {
 		t.Errorf("expected 0 publish items for already published, got %d", len(publishes))
 	}
@@ -226,7 +226,7 @@ func TestCollectWorktreePublish_SkipOnFailedTasks(t *testing.T) {
 		},
 	})
 
-	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", tqs)
+	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", "", tqs)
 	if len(publishes) != 0 {
 		t.Errorf("expected 0 publish items when tasks failed, got %d", len(publishes))
 	}
@@ -256,7 +256,7 @@ func TestCollectWorktreePublish_NoCleanupOnFailureDisabled(t *testing.T) {
 		},
 	})
 
-	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", tqs)
+	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", "", tqs)
 	if len(publishes) != 0 {
 		t.Errorf("expected 0 publish items, got %d", len(publishes))
 	}
@@ -283,7 +283,7 @@ func TestCollectWorktreePublish_SkipNotReady(t *testing.T) {
 		},
 	})
 
-	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", tqs)
+	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", "", tqs)
 	if len(publishes) != 0 {
 		t.Errorf("expected 0 publish items for created status, got %d", len(publishes))
 	}
@@ -309,7 +309,7 @@ func TestCollectWorktreePublish_SkipConflict(t *testing.T) {
 		},
 	})
 
-	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", tqs)
+	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", "", tqs)
 	if len(publishes) != 0 {
 		t.Errorf("expected 0 publish items for conflict status, got %d", len(publishes))
 	}
@@ -341,7 +341,7 @@ func TestCollectWorktreePublish_SkipNonTerminalPhases(t *testing.T) {
 		},
 	})
 
-	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", tqs)
+	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", "", tqs)
 	if len(publishes) != 0 {
 		t.Errorf("expected 0 publish items when phases not terminal, got %d", len(publishes))
 	}
@@ -372,7 +372,7 @@ func TestCollectWorktreePublish_AllPhasesTerminal(t *testing.T) {
 		},
 	})
 
-	publishes, _ := qh.collectWorktreePublishAndCleanup("cmd1", tqs)
+	publishes, _ := qh.collectWorktreePublishAndCleanup("cmd1", "", tqs)
 	if len(publishes) != 1 {
 		t.Fatalf("expected 1 publish item when all phases terminal, got %d", len(publishes))
 	}
@@ -397,7 +397,7 @@ func TestCollectWorktreePublish_SkipNonTerminalTasks(t *testing.T) {
 		},
 	})
 
-	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", tqs)
+	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", "", tqs)
 	if len(publishes) != 0 {
 		t.Errorf("expected 0 publish items when tasks not terminal, got %d", len(publishes))
 	}
@@ -421,7 +421,7 @@ func TestCollectWorktreePublish_PhaseErrorFailsClosed(t *testing.T) {
 		},
 	})
 
-	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", tqs)
+	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", "", tqs)
 	if len(publishes) != 0 {
 		t.Errorf("expected 0 publish items when phase check errors, got %d", len(publishes))
 	}

@@ -345,7 +345,8 @@ type worktreeMergeResult struct {
 
 // worktreePublishItem captures a publish-to-base operation for Phase B execution.
 type worktreePublishItem struct {
-	CommandID string
+	CommandID      string
+	PublishMessage string // command content summary for commit message
 }
 
 // worktreePublishResult captures the outcome of a Phase B publish-to-base.

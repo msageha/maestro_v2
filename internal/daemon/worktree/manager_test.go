@@ -389,7 +389,7 @@ func TestMergeToIntegration(t *testing.T) {
 	}
 
 	// Merge both to integration
-	conflicts, err := wm.MergeToIntegration("cmd_test_004", workers)
+	conflicts, err := wm.MergeToIntegration("cmd_test_004", workers, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration failed: %v", err)
 	}
@@ -448,7 +448,7 @@ func TestMergeConflict(t *testing.T) {
 	}
 
 	// Merge — should detect conflict on worker2 (worker1 merges first)
-	conflicts, err := wm.MergeToIntegration("cmd_test_005", workers)
+	conflicts, err := wm.MergeToIntegration("cmd_test_005", workers, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration failed: %v", err)
 	}
@@ -493,12 +493,12 @@ func TestPublishToBase(t *testing.T) {
 	}
 
 	// Merge to integration
-	if _, err := wm.MergeToIntegration("cmd_test_006", workers); err != nil {
+	if _, err := wm.MergeToIntegration("cmd_test_006", workers, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	// Publish to base
-	if err := wm.PublishToBase("cmd_test_006"); err != nil {
+	if err := wm.PublishToBase("cmd_test_006", ""); err != nil {
 		t.Fatalf("PublishToBase failed: %v", err)
 	}
 
@@ -1031,7 +1031,7 @@ func TestSyncFromIntegration(t *testing.T) {
 	}
 
 	// Merge worker1 to integration
-	if _, err := wm.MergeToIntegration("cmd_test_sync", []string{"worker1"}); err != nil {
+	if _, err := wm.MergeToIntegration("cmd_test_sync", []string{"worker1"}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1100,7 +1100,7 @@ func TestMergeToIntegration_PreservesProjectRootHEAD(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := wm.MergeToIntegration("cmd_h3_merge", workers); err != nil {
+	if _, err := wm.MergeToIntegration("cmd_h3_merge", workers, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1147,11 +1147,11 @@ func TestPublishToBase_PreservesProjectRootHEAD(t *testing.T) {
 	if err := wm.CommitWorkerChanges("cmd_h3_pub", "worker1", "add pub_test.txt"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := wm.MergeToIntegration("cmd_h3_pub", workers); err != nil {
+	if _, err := wm.MergeToIntegration("cmd_h3_pub", workers, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := wm.PublishToBase("cmd_h3_pub"); err != nil {
+	if err := wm.PublishToBase("cmd_h3_pub", ""); err != nil {
 		t.Fatalf("PublishToBase failed: %v", err)
 	}
 
@@ -1199,7 +1199,7 @@ func TestPublishToBase_RejectsUncommittedChanges(t *testing.T) {
 	}
 
 	// Merge to integration
-	if _, err := wm.MergeToIntegration("cmd_dirty", workers); err != nil {
+	if _, err := wm.MergeToIntegration("cmd_dirty", workers, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1209,7 +1209,7 @@ func TestPublishToBase_RejectsUncommittedChanges(t *testing.T) {
 	}
 
 	// PublishToBase should fail because projectRoot has uncommitted changes
-	err = wm.PublishToBase("cmd_dirty")
+	err = wm.PublishToBase("cmd_dirty", "")
 	if err == nil {
 		t.Fatal("PublishToBase should have failed with uncommitted changes, but succeeded")
 	}
@@ -1254,7 +1254,7 @@ func TestSyncFromIntegration_SkipsConflictWorker(t *testing.T) {
 	}
 
 	// Merge — worker2 will conflict
-	conflicts, err := wm.MergeToIntegration("cmd_m2", workers)
+	conflicts, err := wm.MergeToIntegration("cmd_m2", workers, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1310,7 +1310,7 @@ func TestSyncFromIntegration_SkipsDirtyWorktree(t *testing.T) {
 	}
 
 	// Merge worker1 to integration
-	if _, err := wm.MergeToIntegration("cmd_m3", []string{"worker1"}); err != nil {
+	if _, err := wm.MergeToIntegration("cmd_m3", []string{"worker1"}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -2287,7 +2287,7 @@ func TestMergeToIntegration_PartialMergeOnConflict(t *testing.T) {
 	}
 
 	// Merge — worker1 succeeds, worker2 conflicts → partial merge expected
-	conflicts, err := wm.MergeToIntegration("cmd_rollback", workers)
+	conflicts, err := wm.MergeToIntegration("cmd_rollback", workers, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration failed: %v", err)
 	}
@@ -2397,7 +2397,7 @@ func TestMergeToIntegration_AllConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	conflicts, err := wm.MergeToIntegration("cmd_allconflict", workers)
+	conflicts, err := wm.MergeToIntegration("cmd_allconflict", workers, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration failed: %v", err)
 	}
@@ -2441,12 +2441,12 @@ func TestPublishToBase_DurableStashRefCreated(t *testing.T) {
 	if err := wm.CommitWorkerChanges("cmd_stash_ref", "worker1", "add stash_test.txt"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := wm.MergeToIntegration("cmd_stash_ref", workers); err != nil {
+	if _, err := wm.MergeToIntegration("cmd_stash_ref", workers, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	// Publish should succeed
-	if err := wm.PublishToBase("cmd_stash_ref"); err != nil {
+	if err := wm.PublishToBase("cmd_stash_ref", ""); err != nil {
 		t.Fatalf("PublishToBase failed: %v", err)
 	}
 
@@ -2502,12 +2502,12 @@ func TestPublishToBase_StashCreateFailureContinues(t *testing.T) {
 	if err := wm.CommitWorkerChanges("cmd_stash_fail", "worker1", "add resilience.txt"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := wm.MergeToIntegration("cmd_stash_fail", workers); err != nil {
+	if _, err := wm.MergeToIntegration("cmd_stash_fail", workers, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	// PublishToBase should succeed regardless of stash create outcome
-	if err := wm.PublishToBase("cmd_stash_fail"); err != nil {
+	if err := wm.PublishToBase("cmd_stash_fail", ""); err != nil {
 		t.Fatalf("PublishToBase failed: %v", err)
 	}
 

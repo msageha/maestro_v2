@@ -51,7 +51,7 @@ func TestWorktreeIntegration_ConflictDetection(t *testing.T) {
 	w2HeadBefore := gitRevParse(t, wt2, "HEAD")
 
 	// Merge both to integration — worker1 first (sorted), worker2 conflicts
-	conflicts, err := wm.MergeToIntegration("cmd_conflict", workers)
+	conflicts, err := wm.MergeToIntegration("cmd_conflict", workers, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration failed: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestWorktreeIntegration_DirtyWorktreeSkip(t *testing.T) {
 	}
 
 	// Merge worker1 to integration
-	if _, err := wm.MergeToIntegration("cmd_dirty", []string{"worker1"}); err != nil {
+	if _, err := wm.MergeToIntegration("cmd_dirty", []string{"worker1"}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -335,7 +335,7 @@ func TestWorktreeIntegration_PublishToBaseConflict(t *testing.T) {
 	}
 
 	// Step 3: Merge worker1 to integration
-	conflicts, err := wm.MergeToIntegration(commandID, workerIDs)
+	conflicts, err := wm.MergeToIntegration(commandID, workerIDs, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration: %v", err)
 	}
@@ -377,7 +377,7 @@ func TestWorktreeIntegration_PublishToBaseConflict(t *testing.T) {
 	}
 
 	// Step 5: Call PublishToBase — expect error due to conflict
-	publishErr := wm.PublishToBase(commandID)
+	publishErr := wm.PublishToBase(commandID, "")
 	if publishErr == nil {
 		t.Fatal("PublishToBase should have returned an error due to conflict")
 	}
@@ -485,7 +485,7 @@ func TestWorktreeIntegration_SyncFromIntegrationConflict(t *testing.T) {
 	if err := wm.CommitWorkerChanges(commandID, "worker1", "worker1 add shared.txt"); err != nil {
 		t.Fatalf("CommitWorkerChanges(worker1): %v", err)
 	}
-	conflicts, err := wm.MergeToIntegration(commandID, []string{"worker1"})
+	conflicts, err := wm.MergeToIntegration(commandID, []string{"worker1"}, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration(worker1): %v", err)
 	}
@@ -616,7 +616,7 @@ func TestMergeToIntegration_DirtyIntegrationWorktree(t *testing.T) {
 	}
 
 	// MergeToIntegration should fail due to dirty worktree
-	conflicts, err := wm.MergeToIntegration("cmd_dirty_int", workers)
+	conflicts, err := wm.MergeToIntegration("cmd_dirty_int", workers, nil)
 	if err == nil {
 		t.Fatal("expected error due to dirty integration worktree")
 	}
@@ -682,7 +682,7 @@ func TestMergeToIntegration_TransientError(t *testing.T) {
 	defer os.Remove(lockFile)
 
 	// MergeToIntegration returns an error because the lock blocks recovery too
-	conflicts, mergeErr := wm.MergeToIntegration("cmd_nce", workers)
+	conflicts, mergeErr := wm.MergeToIntegration("cmd_nce", workers, nil)
 	if mergeErr == nil {
 		t.Fatal("expected error (lock blocks recovery)")
 	}
@@ -792,7 +792,7 @@ func TestMergeToIntegration_ConflictVsNonConflict(t *testing.T) {
 
 	// Merge — worker1 succeeds, worker2 conflicts (README.md), worker3 never runs
 	// because worker2's conflict is handled with continue (not halt)
-	conflicts, err := wm.MergeToIntegration("cmd_cvnc", workers)
+	conflicts, err := wm.MergeToIntegration("cmd_cvnc", workers, nil)
 
 	// We expect the merge to complete (even with conflicts — halts only on non-conflict errors)
 	if err != nil {

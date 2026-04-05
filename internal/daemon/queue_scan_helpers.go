@@ -67,20 +67,8 @@ func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string, taskQueues 
 		return nil
 	}
 
-	// Build a lookup: taskID -> purpose from loaded task queues
-	taskPurposes := make(map[string]string)
-	taskLeaseOwners := make(map[string]string)
-	for _, entry := range taskQueues {
-		for i := range entry.Queue.Tasks {
-			t := &entry.Queue.Tasks[i]
-			if t.CommandID == commandID && t.Purpose != "" {
-				taskPurposes[t.ID] = t.Purpose
-			}
-			if t.CommandID == commandID && t.LeaseOwner != nil {
-				taskLeaseOwners[t.ID] = *t.LeaseOwner
-			}
-		}
-	}
+	// Build workerID → task purpose map from task queues
+	workerPurposes := buildWorkerPurposes(commandID, taskQueues)
 
 	var items []worktreeMergeItem
 	for _, phase := range phases {
@@ -107,16 +95,6 @@ func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string, taskQueues 
 			continue
 		}
 
-		// Map workers to their task purposes
-		workerPurposes := make(map[string]string)
-		for _, taskID := range phase.RequiredTaskIDs {
-			owner := taskLeaseOwners[taskID]
-			purpose := taskPurposes[taskID]
-			if owner != "" && purpose != "" {
-				workerPurposes[owner] = purpose
-			}
-		}
-
 		items = append(items, worktreeMergeItem{
 			CommandID:      commandID,
 			PhaseID:        phase.ID,
@@ -126,6 +104,25 @@ func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string, taskQueues 
 	}
 
 	return items
+}
+
+// buildWorkerPurposes builds a workerID → task purpose map from task queues.
+// Uses the most recently dispatched task's purpose for each worker.
+func buildWorkerPurposes(commandID string, taskQueues map[string]*taskQueueEntry) map[string]string {
+	tqEntry, ok := taskQueues[commandID]
+	if !ok {
+		return nil
+	}
+	purposes := make(map[string]string)
+	for _, task := range tqEntry.Queue.Tasks {
+		if task.LeaseOwner != nil && *task.LeaseOwner != "" && task.Purpose != "" {
+			purposes[*task.LeaseOwner] = task.Purpose
+		}
+	}
+	if len(purposes) == 0 {
+		return nil
+	}
+	return purposes
 }
 
 // hasExpiredLeases checks whether any queue entry has an expired lease.
@@ -160,6 +157,7 @@ func (qh *QueueHandler) hasExpiredLeases(
 // Runs in Phase A under scanMu.Lock — only fast checks and YAML reads.
 func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 	commandID string,
+	commandContent string,
 	taskQueues map[string]*taskQueueEntry,
 ) ([]worktreePublishItem, []worktreeCleanupItem) {
 	// Load worktree state
@@ -209,7 +207,8 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 	case model.IntegrationStatusMerged:
 		// Ready to publish
 		publishes = append(publishes, worktreePublishItem{
-			CommandID: commandID,
+			CommandID:      commandID,
+			PublishMessage: commandContent,
 		})
 		qh.log(LogLevelInfo, "worktree_publish_collected command=%s", commandID)
 	case model.IntegrationStatusPublished:

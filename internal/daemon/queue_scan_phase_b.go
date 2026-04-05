@@ -105,7 +105,7 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 
 		// Then merge to integration
 		if qh.worktreeManager != nil && qh.worktreeManager.AutoMerge() {
-			conflicts, err := qh.worktreeManager.MergeToIntegration(item.CommandID, item.WorkerIDs)
+			conflicts, err := qh.worktreeManager.MergeToIntegration(item.CommandID, item.WorkerIDs, item.WorkerPurposes)
 			mr.Conflicts = conflicts
 			mr.Error = err
 
@@ -135,7 +135,7 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 					}(), err)
 				pr.Error = fmt.Errorf("integration status no longer merged")
 			} else {
-				pr.Error = qh.worktreeManager.PublishToBase(item.CommandID)
+				pr.Error = qh.worktreeManager.PublishToBase(item.CommandID, item.PublishMessage)
 			}
 		}
 		result.worktreePublishes = append(result.worktreePublishes, pr)
