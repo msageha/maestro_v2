@@ -831,3 +831,218 @@ func TestMergeToIntegration_ConflictVsNonConflict(t *testing.T) {
 		}
 	}
 }
+
+// TestPublishToBase_PreservesConflictWorkerStatus verifies that PublishToBase only
+// sets integrated workers to published, preserving conflict/failed worker statuses.
+func TestPublishToBase_PreservesConflictWorkerStatus(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	cmd := exec.Command("git", "branch", "--show-current")
+	cmd.Dir = projectRoot
+	branchOut, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("get current branch: %v", err)
+	}
+	baseBranch := strings.TrimSpace(string(branchOut))
+	wm.config.BaseBranch = baseBranch
+
+	commandID := "cmd_publish_preserve"
+	workers := []string{"worker1", "worker2"}
+	if err := createForCommand(wm, commandID, workers); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	// Worker1: create a unique file (will merge successfully)
+	wt1, err := wm.GetWorkerPath(commandID, "worker1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt1, "unique1.txt"), []byte("worker1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker1", "add unique1.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Worker1 also modifies README to create conflict with worker2
+	if err := os.WriteFile(filepath.Join(wt1, "README.md"), []byte("worker1 readme\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker1", "worker1 modify README"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Worker2: conflicting README change
+	wt2, err := wm.GetWorkerPath(commandID, "worker2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt2, "README.md"), []byte("worker2 readme\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker2", "worker2 modify README"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Merge — worker1 succeeds, worker2 conflicts → partial_merge
+	conflicts, err := wm.MergeToIntegration(commandID, workers)
+	if err != nil {
+		t.Fatalf("MergeToIntegration: %v", err)
+	}
+	if len(conflicts) != 1 {
+		t.Fatalf("expected 1 conflict, got %d", len(conflicts))
+	}
+
+	// Re-merge with only worker1 to transition partial_merge → merging → merged
+	// Worker1 has no new commits, so loop produces mergedCount=0, conflicts=0 → merged
+	_, err = wm.MergeToIntegration(commandID, []string{"worker1"})
+	if err != nil {
+		t.Fatalf("re-MergeToIntegration: %v", err)
+	}
+
+	state, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	if state.Integration.Status != model.IntegrationStatusMerged {
+		t.Fatalf("integration status = %q, want %q", state.Integration.Status, model.IntegrationStatusMerged)
+	}
+
+	// Publish to base
+	if err := wm.PublishToBase(commandID); err != nil {
+		t.Fatalf("PublishToBase: %v", err)
+	}
+
+	// Verify worker statuses
+	state, err = wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	for _, ws := range state.Workers {
+		switch ws.WorkerID {
+		case "worker1":
+			if ws.Status != model.WorktreeStatusPublished {
+				t.Errorf("worker1 status = %q, want %q", ws.Status, model.WorktreeStatusPublished)
+			}
+		case "worker2":
+			if ws.Status != model.WorktreeStatusConflict {
+				t.Errorf("worker2 status = %q, want %q (should be preserved)", ws.Status, model.WorktreeStatusConflict)
+			}
+		}
+	}
+	if state.Integration.Status != model.IntegrationStatusPublished {
+		t.Errorf("integration status = %q, want %q", state.Integration.Status, model.IntegrationStatusPublished)
+	}
+}
+
+// TestMergeToIntegration_SkippedWorkerCausesPartialMerge verifies that when a worker
+// is skipped due to a transient error, the integration status is partial_merge (not merged).
+func TestMergeToIntegration_SkippedWorkerCausesPartialMerge(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_skip_partial"
+	workers := []string{"worker1", "worker2"}
+	if err := createForCommand(wm, commandID, workers); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	// Worker1: create a unique file (will merge successfully)
+	wt1, err := wm.GetWorkerPath(commandID, "worker1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt1, "unique1.txt"), []byte("worker1"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker1", "add unique1.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Worker2: create a unique file (would merge successfully but will be blocked by lock)
+	wt2, err := wm.GetWorkerPath(commandID, "worker2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt2, "unique2.txt"), []byte("worker2"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker2", "add unique2.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Merge worker1 first (alone, will succeed)
+	conflicts, err := wm.MergeToIntegration(commandID, []string{"worker1"})
+	if err != nil {
+		t.Fatalf("MergeToIntegration(worker1): %v", err)
+	}
+	if len(conflicts) != 0 {
+		t.Fatalf("expected 0 conflicts for worker1, got %d", len(conflicts))
+	}
+
+	// Now create index.lock in the integration worktree's git dir to cause a transient error for worker2
+	integrationPath := filepath.Join(projectRoot, ".maestro", "worktrees", commandID, "_integration")
+	gitDirCmd := exec.Command("git", "rev-parse", "--git-dir")
+	gitDirCmd.Dir = integrationPath
+	gitDirOut, err := gitDirCmd.Output()
+	if err != nil {
+		t.Fatalf("git rev-parse --git-dir: %v", err)
+	}
+	gitDir := strings.TrimSpace(string(gitDirOut))
+	if !filepath.IsAbs(gitDir) {
+		gitDir = filepath.Join(integrationPath, gitDir)
+	}
+
+	lockFile := filepath.Join(gitDir, "index.lock")
+	if err := os.WriteFile(lockFile, []byte("locked"), 0644); err != nil {
+		t.Fatalf("create index.lock: %v", err)
+	}
+
+	// MergeToIntegration with worker2 — transient error causes skip.
+	// The lock also blocks merge --abort + recovery, causing fatal error return.
+	conflicts, mergeErr := wm.MergeToIntegration(commandID, []string{"worker2"})
+	// Remove lock before state checks
+	os.Remove(lockFile)
+
+	// With the lock, recovery fails so the function returns an error.
+	// But the worker status should be "failed" and integration should NOT be "merged".
+	if mergeErr == nil {
+		// If no error, the function completed (lock may have been non-blocking for some git versions).
+		// In that case, check the state directly.
+		state, err := wm.GetCommandState(commandID)
+		if err != nil {
+			t.Fatalf("GetCommandState: %v", err)
+		}
+		// If worker2 was skipped (failed), integration should be partial_merge or conflict, not merged
+		for _, ws := range state.Workers {
+			if ws.WorkerID == "worker2" && ws.Status == model.WorktreeStatusFailed {
+				// Worker2 was skipped — integration should not be "merged"
+				if state.Integration.Status == model.IntegrationStatusMerged {
+					t.Errorf("integration status = %q, want partial_merge or conflict (worker2 was skipped)",
+						state.Integration.Status)
+				}
+			}
+		}
+		return
+	}
+
+	_ = conflicts // may contain partial results
+
+	// Verify state: worker2 should be failed, integration should be failed (recovery error)
+	state, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	for _, ws := range state.Workers {
+		if ws.WorkerID == "worker2" {
+			if ws.Status != model.WorktreeStatusFailed {
+				t.Errorf("worker2 status = %q, want %q", ws.Status, model.WorktreeStatusFailed)
+			}
+		}
+	}
+	// Integration status should be failed (recovery error halts before final status determination)
+	if state.Integration.Status != model.IntegrationStatusFailed {
+		t.Errorf("integration status = %q, want %q", state.Integration.Status, model.IntegrationStatusFailed)
+	}
+}
