@@ -279,14 +279,42 @@ func (wm *Manager) SyncFromIntegration(commandID string, workerIDs []string) err
 			continue
 		}
 
-		// Merge integration branch into worker worktree
+		// Merge integration branch into worker worktree (no retry — merge itself is not retried)
 		err := wm.gitRunInDir(ws.Path, "merge", state.Integration.Branch,
 			"-m", fmt.Sprintf("[maestro] sync integration into %s", workerID))
 		if err != nil {
-			wm.log(core.LogLevelWarn, "sync_from_integration command=%s worker=%s error=%v",
-				commandID, workerID, err)
-			// Abort on conflict
+			// Classify error: check for unmerged index entries to distinguish
+			// true merge conflicts from fatal git errors.
+			hasConflict, probeErr := wm.hasUnmergedFiles(ws.Path)
+			if probeErr != nil {
+				wm.log(core.LogLevelWarn, "sync_probe_failed command=%s worker=%s probe_error=%v merge_error=%v",
+					commandID, workerID, probeErr, err)
+			}
+
+			// Collect conflict files BEFORE aborting (abort clears unmerged state)
+			var conflictFiles []string
+			if hasConflict {
+				conflictFiles, _ = wm.getConflictFilesInDir(ws.Path)
+			}
+
+			// Abort the merge to restore worktree state
 			_ = wm.gitRunInDir(ws.Path, "merge", "--abort")
+
+			if hasConflict {
+				wm.log(core.LogLevelWarn, "sync_conflict command=%s worker=%s files=%v",
+					commandID, workerID, conflictFiles)
+				if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusConflict, now); tErr != nil {
+					wm.log(core.LogLevelWarn, "sync_conflict_transition command=%s worker=%s error=%v",
+						commandID, workerID, tErr)
+				}
+			} else {
+				wm.log(core.LogLevelWarn, "sync_from_integration command=%s worker=%s error=%v",
+					commandID, workerID, err)
+				if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusFailed, now); tErr != nil {
+					wm.log(core.LogLevelWarn, "sync_failed_transition command=%s worker=%s error=%v",
+						commandID, workerID, tErr)
+				}
+			}
 			continue
 		}
 
