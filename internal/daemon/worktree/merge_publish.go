@@ -425,10 +425,29 @@ func (wm *Manager) PublishToBase(commandID string) error {
 	// to match the updated ref. Without this, the working tree would remain at the
 	// old commit state, appearing as a staged revert of all published changes.
 	if baseBranchCheckedOut {
+		// Before reset --hard, create a durable ref to preserve any working tree state.
+		// git stash create builds a stash commit without modifying the working tree or index.
+		// If there are no changes (expected after dirty check above), stash create returns empty.
+		stashRef, stashErr := wm.gitOutput("stash", "create")
+		if stashErr != nil {
+			wm.log(core.LogLevelWarn, "publish_stash_create_failed command=%s error=%v (continuing)", commandID, stashErr)
+		} else if ref := strings.TrimSpace(stashRef); ref != "" {
+			// Unexpected: dirty check passed but stash create found changes.
+			// Save as a durable ref so the data survives GC and can be recovered manually.
+			durableRef := fmt.Sprintf("refs/maestro/pre-publish-stash/%s", commandID)
+			if refErr := wm.gitRun("update-ref", durableRef, ref); refErr != nil {
+				wm.log(core.LogLevelWarn, "publish_stash_save_failed command=%s ref=%s error=%v", commandID, durableRef, refErr)
+			} else {
+				wm.log(core.LogLevelInfo, "publish_stash_saved command=%s ref=%s sha=%s", commandID, durableRef, ref)
+			}
+		}
+
 		// Uncommitted changes were already checked before update-ref above.
 		// Use git reset --hard to sync index + working tree to the new HEAD.
 		if resetErr := wm.gitRun("reset", "--hard", "HEAD"); resetErr != nil {
-			wm.log(core.LogLevelWarn, "publish_reset_working_tree command=%s error=%v", commandID, resetErr)
+			// Include recovery hint with durable ref path if stash was saved.
+			durableRef := fmt.Sprintf("refs/maestro/pre-publish-stash/%s", commandID)
+			wm.log(core.LogLevelWarn, "publish_reset_working_tree command=%s error=%v recovery_ref=%s", commandID, resetErr, durableRef)
 			// Non-fatal: the ref update succeeded, so the branch is at the right commit.
 			// The working tree mismatch can be fixed manually with `git reset --hard HEAD`.
 		}
