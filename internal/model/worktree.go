@@ -24,8 +24,9 @@ const (
 	IntegrationStatusMerged     IntegrationStatus = "merged"
 	IntegrationStatusPublishing IntegrationStatus = "publishing"
 	IntegrationStatusPublished  IntegrationStatus = "published"
-	IntegrationStatusConflict   IntegrationStatus = "conflict"
-	IntegrationStatusFailed     IntegrationStatus = "failed"
+	IntegrationStatusConflict     IntegrationStatus = "conflict"
+	IntegrationStatusPartialMerge IntegrationStatus = "partial_merge"
+	IntegrationStatusFailed       IntegrationStatus = "failed"
 )
 
 // WorktreeState tracks the lifecycle of a single worker worktree.
@@ -55,6 +56,9 @@ type MergeConflict struct {
 	WorkerID      string   `yaml:"worker_id"`
 	ConflictFiles []string `yaml:"conflict_files"`
 	Message       string   `yaml:"message"`
+	BaseRef       string   `yaml:"base_ref,omitempty"`   // conflict の base（共通祖先）の ref
+	OursRef       string   `yaml:"ours_ref,omitempty"`   // integration 側の ref
+	TheirsRef     string   `yaml:"theirs_ref,omitempty"` // worker 側の ref
 }
 
 // WorktreeCommandState holds all worktree state for a single command.

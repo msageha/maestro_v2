@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -12,6 +13,155 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 )
+
+// GitErrorClass classifies git errors for retry decisions.
+type GitErrorClass int
+
+const (
+	// GitErrorTransient indicates a temporary error that may succeed on retry (e.g. lock contention).
+	GitErrorTransient GitErrorClass = iota
+	// GitErrorPermanent indicates an error that will not recover on retry.
+	GitErrorPermanent
+)
+
+// transientPatterns are substrings that indicate a transient git error.
+var transientPatterns = []string{
+	"lock",
+	"Unable to create",
+	".lock",
+}
+
+// permanentPatterns are substrings that indicate a permanent git error.
+var permanentPatterns = []string{
+	"bad object",
+	"corrupt",
+	"fatal: not a git repository",
+	"invalid",
+}
+
+// classifyGitError determines whether a git error is transient (retryable) or permanent.
+// Timeout errors (context.DeadlineExceeded, "timeout") are classified as Permanent
+// because a timed-out git command may leave the worktree in a dirty state.
+// Unknown errors default to Permanent (safe fallback).
+func classifyGitError(err error) GitErrorClass {
+	if err == nil {
+		return GitErrorPermanent
+	}
+
+	// Timeout errors are Permanent — dirty worktree risk.
+	if errors.Is(err, context.DeadlineExceeded) {
+		return GitErrorPermanent
+	}
+
+	msg := err.Error()
+
+	if strings.Contains(msg, "timeout") {
+		return GitErrorPermanent
+	}
+
+	// Check permanent patterns first to avoid false transient matches
+	// (e.g. "invalid" should not be overridden by a transient pattern).
+	for _, p := range permanentPatterns {
+		if strings.Contains(msg, p) {
+			return GitErrorPermanent
+		}
+	}
+
+	for _, p := range transientPatterns {
+		if strings.Contains(msg, p) {
+			return GitErrorTransient
+		}
+	}
+
+	// Unknown errors default to Permanent.
+	return GitErrorPermanent
+}
+
+// isTransientGitError returns true if the error is classified as transient (retryable).
+func isTransientGitError(err error) bool {
+	return classifyGitError(err) == GitErrorTransient
+}
+
+// gitRunWithRetry executes a git command via gitExecCombined with retry for transient errors.
+// Backoff starts at 50ms and doubles each attempt, capped at 1s.
+// maxRetries=0 means no retry (same as calling gitRunInDir directly).
+func (wm *Manager) gitRunWithRetry(dir string, maxRetries int, args ...string) error {
+	output, err := wm.gitExecCombined(dir, args...)
+	if err == nil {
+		return nil
+	}
+	firstErr := fmt.Errorf("git %s: %w\noutput: %s", strings.Join(args, " "), err, string(output))
+
+	if maxRetries <= 0 || !isTransientGitError(firstErr) {
+		return firstErr
+	}
+
+	backoff := 50 * time.Millisecond
+	const maxBackoff = 1 * time.Second
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		wm.log(core.LogLevelWarn, "git_retry attempt=%d/%d backoff=%s cmd=\"git %s\" error=%v",
+			attempt, maxRetries, backoff, strings.Join(args, " "), firstErr)
+
+		time.Sleep(backoff)
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+
+		output, err = wm.gitExecCombined(dir, args...)
+		if err == nil {
+			return nil
+		}
+		firstErr = fmt.Errorf("git %s: %w\noutput: %s", strings.Join(args, " "), err, string(output))
+
+		if !isTransientGitError(firstErr) {
+			return firstErr
+		}
+	}
+
+	return firstErr
+}
+
+// gitOutputWithRetry executes a git command via gitExecOutput with retry for transient errors.
+// Behaves like gitRunWithRetry but returns stdout on success.
+func (wm *Manager) gitOutputWithRetry(dir string, maxRetries int, args ...string) (string, error) {
+	output, err := wm.gitExecOutput(dir, args...)
+	if err == nil {
+		return string(output), nil
+	}
+	firstErr := fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+
+	if maxRetries <= 0 || !isTransientGitError(firstErr) {
+		return "", firstErr
+	}
+
+	backoff := 50 * time.Millisecond
+	const maxBackoff = 1 * time.Second
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		wm.log(core.LogLevelWarn, "git_retry attempt=%d/%d backoff=%s cmd=\"git %s\" error=%v",
+			attempt, maxRetries, backoff, strings.Join(args, " "), firstErr)
+
+		time.Sleep(backoff)
+		backoff *= 2
+		if backoff > maxBackoff {
+			backoff = maxBackoff
+		}
+
+		output, err = wm.gitExecOutput(dir, args...)
+		if err == nil {
+			return string(output), nil
+		}
+		firstErr = fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+
+		if !isTransientGitError(firstErr) {
+			return "", firstErr
+		}
+	}
+
+	return "", firstErr
+}
 
 // gitTimeout returns the configured git command timeout as a time.Duration.
 func (wm *Manager) gitTimeout() time.Duration {
