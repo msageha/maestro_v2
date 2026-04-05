@@ -123,6 +123,16 @@ func (wm *Manager) gitRunWithRetry(dir string, maxRetries int, args ...string) e
 	return firstErr
 }
 
+// wrapGitOutputError wraps a git exec error, including stderr from exec.ExitError
+// so that classifyGitError can match transient patterns in stderr content.
+func wrapGitOutputError(err error, args []string) error {
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
+		return fmt.Errorf("git %s: %w\nstderr: %s", strings.Join(args, " "), err, string(exitErr.Stderr))
+	}
+	return fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+}
+
 // gitOutputWithRetry executes a git command via gitExecOutput with retry for transient errors.
 // Behaves like gitRunWithRetry but returns stdout on success.
 func (wm *Manager) gitOutputWithRetry(dir string, maxRetries int, args ...string) (string, error) {
@@ -130,7 +140,7 @@ func (wm *Manager) gitOutputWithRetry(dir string, maxRetries int, args ...string
 	if err == nil {
 		return string(output), nil
 	}
-	firstErr := fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+	firstErr := wrapGitOutputError(err, args)
 
 	if maxRetries <= 0 || !isTransientGitError(firstErr) {
 		return "", firstErr
@@ -153,7 +163,7 @@ func (wm *Manager) gitOutputWithRetry(dir string, maxRetries int, args ...string
 		if err == nil {
 			return string(output), nil
 		}
-		firstErr = fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
+		firstErr = wrapGitOutputError(err, args)
 
 		if !isTransientGitError(firstErr) {
 			return "", firstErr

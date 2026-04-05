@@ -63,6 +63,7 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string) ([]m
 
 	var conflicts []model.MergeConflict
 	var mergedCount int
+	var skippedCount int
 
 	for _, workerID := range sorted {
 		ws := wm.findWorker(state, workerID)
@@ -184,6 +185,7 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string) ([]m
 					wm.log(core.LogLevelWarn, "merge_transient_fail_transition command=%s worker=%s error=%v",
 						commandID, workerID, tErr)
 				}
+				skippedCount++
 				wm.log(core.LogLevelWarn, "merge_transient_error_skip command=%s worker=%s error=%v",
 					commandID, workerID, err)
 				continue
@@ -218,10 +220,11 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string) ([]m
 	}
 
 	// Determine final integration status:
-	// - conflicts=0, merged>0 → Merged (all successful)
+	// - conflicts=0, skipped=0, merged>0 → Merged (all successful)
+	// - conflicts=0, skipped>0, merged>0 → PartialMerge (some skipped due to transient errors)
 	// - conflicts>0, merged>0 → PartialMerge (some succeeded, some conflicted; successful merges preserved)
-	// - conflicts>0, merged=0 → Conflict (all conflicted, nothing merged)
-	if len(conflicts) == 0 {
+	// - merged=0 (all conflict or skipped) → Conflict
+	if len(conflicts) == 0 && skippedCount == 0 {
 		if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusMerged, now); tErr != nil {
 			wm.log(core.LogLevelWarn, "merge_merged_integration_transition command=%s error=%v", commandID, tErr)
 		}
@@ -473,8 +476,11 @@ func (wm *Manager) PublishToBase(commandID string) error {
 	}
 	state.UpdatedAt = now
 
-	// Mark all workers as published
+	// Mark only integrated workers as published; preserve conflict/failed statuses
 	for i := range state.Workers {
+		if state.Workers[i].Status != model.WorktreeStatusIntegrated {
+			continue
+		}
 		if tErr := wm.setWorkerStatus(&state.Workers[i], model.WorktreeStatusPublished, now); tErr != nil {
 			wm.log(core.LogLevelWarn, "publish_worker_transition command=%s worker=%s error=%v",
 				commandID, state.Workers[i].WorkerID, tErr)

@@ -357,8 +357,7 @@ func TestValidateIntegrationTransition(t *testing.T) {
 		{IntegrationStatusPublishing, IntegrationStatusPublished},
 		{IntegrationStatusPublishing, IntegrationStatusConflict},
 		{IntegrationStatusPublishing, IntegrationStatusFailed},
-		{IntegrationStatusPartialMerge, IntegrationStatusMerging},    // retry
-		{IntegrationStatusPartialMerge, IntegrationStatusPublishing}, // publish partial
+		{IntegrationStatusPartialMerge, IntegrationStatusMerging}, // retry
 		{IntegrationStatusPartialMerge, IntegrationStatusFailed},
 		{IntegrationStatusConflict, IntegrationStatusMerging},
 		{IntegrationStatusConflict, IntegrationStatusFailed},
@@ -381,8 +380,9 @@ func TestValidateIntegrationTransition(t *testing.T) {
 		{IntegrationStatusCreated, IntegrationStatusMerged},      // must go through merging
 		{IntegrationStatusCreated, IntegrationStatusPublished},   // must go through merging→merged→publishing
 		{IntegrationStatusMerging, IntegrationStatusPublishing},     // must go through merged
-		{IntegrationStatusPartialMerge, IntegrationStatusCreated}, // invalid backward
-		{IntegrationStatusFailed, IntegrationStatusPublishing},    // can only retry to merging
+		{IntegrationStatusPartialMerge, IntegrationStatusPublishing}, // partial_merge cannot publish directly
+		{IntegrationStatusPartialMerge, IntegrationStatusCreated},    // invalid backward
+		{IntegrationStatusFailed, IntegrationStatusPublishing},       // can only retry to merging
 	}
 	for _, tt := range invalid {
 		t.Run("invalid_"+string(tt.from)+"→"+string(tt.to), func(t *testing.T) {
