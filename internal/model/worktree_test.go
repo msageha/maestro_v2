@@ -114,6 +114,7 @@ func TestIntegrationStatusConstants(t *testing.T) {
 		{IntegrationStatusPublishing, "publishing"},
 		{IntegrationStatusPublished, "published"},
 		{IntegrationStatusConflict, "conflict"},
+		{IntegrationStatusPartialMerge, "partial_merge"},
 		{IntegrationStatusFailed, "failed"},
 	}
 	for _, tt := range tests {
@@ -130,6 +131,9 @@ func TestMergeConflictMarshalUnmarshal(t *testing.T) {
 		WorkerID:      "worker2",
 		ConflictFiles: []string{"src/main.go", "src/util.go"},
 		Message:       "conflict in main.go lines 10-20",
+		BaseRef:       "abc123",
+		OursRef:       "def456",
+		TheirsRef:     "ghi789",
 	}
 
 	data, err := yaml.Marshal(&mc)
@@ -153,6 +157,15 @@ func TestMergeConflictMarshalUnmarshal(t *testing.T) {
 	}
 	if decoded.Message != mc.Message {
 		t.Errorf("message: got %q, want %q", decoded.Message, mc.Message)
+	}
+	if decoded.BaseRef != mc.BaseRef {
+		t.Errorf("base_ref: got %q, want %q", decoded.BaseRef, mc.BaseRef)
+	}
+	if decoded.OursRef != mc.OursRef {
+		t.Errorf("ours_ref: got %q, want %q", decoded.OursRef, mc.OursRef)
+	}
+	if decoded.TheirsRef != mc.TheirsRef {
+		t.Errorf("theirs_ref: got %q, want %q", decoded.TheirsRef, mc.TheirsRef)
 	}
 }
 

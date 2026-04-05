@@ -235,9 +235,10 @@ var validIntegrationTransitions = map[IntegrationStatus]map[IntegrationStatus]bo
 		IntegrationStatusFailed:  true,
 	},
 	IntegrationStatusMerging: {
-		IntegrationStatusMerged:   true,
-		IntegrationStatusConflict: true,
-		IntegrationStatusFailed:   true,
+		IntegrationStatusMerged:       true,
+		IntegrationStatusConflict:     true,
+		IntegrationStatusPartialMerge: true,
+		IntegrationStatusFailed:       true,
 	},
 	IntegrationStatusMerged: {
 		IntegrationStatusMerging:    true,
@@ -248,6 +249,11 @@ var validIntegrationTransitions = map[IntegrationStatus]map[IntegrationStatus]bo
 		IntegrationStatusPublished: true,
 		IntegrationStatusConflict:  true,
 		IntegrationStatusFailed:    true,
+	},
+	IntegrationStatusPartialMerge: {
+		IntegrationStatusMerging:    true,
+		IntegrationStatusPublishing: true,
+		IntegrationStatusFailed:     true,
 	},
 	IntegrationStatusConflict: {
 		IntegrationStatusMerging: true,
