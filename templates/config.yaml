@@ -97,7 +97,7 @@ worktree:
   commit_policy:
     max_files: 30 # 1コミットあたりの最大ステージングファイル数 (0=無制限, default: 30)
     require_gitignore: true # .gitignore の存在を要求する
-    message_pattern: "^\\[maestro\\]\\s" # コミットメッセージの正規表現バリデーション (空=チェックなし)
+    message_pattern: "^.+" # コミットメッセージの正規表現バリデーション (空=チェックなし, ^.+=非空)
   gc:
     enabled: true # 定期 GC の有効化
     ttl_hours: 24 # 古い worktree の TTL (時間)

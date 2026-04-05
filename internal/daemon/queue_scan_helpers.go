@@ -51,7 +51,7 @@ func (qh *QueueHandler) buildGlobalInFlightSet(taskQueues map[string]*taskQueueE
 // merge work items for Phase B execution. Runs in Phase A under scanMu.Lock.
 // Only performs fast in-memory checks — all git I/O is deferred to Phase B.
 // Skips phases that have already been merged (tracked in worktree command state).
-func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string) []worktreeMergeItem {
+func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string, taskQueues map[string]*taskQueueEntry) []worktreeMergeItem {
 	if qh.dependencyResolver.stateReader == nil || qh.worktreeManager == nil {
 		return nil
 	}
@@ -65,6 +65,21 @@ func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string) []worktreeM
 	cmdState, err := qh.worktreeManager.GetCommandState(commandID)
 	if err != nil {
 		return nil
+	}
+
+	// Build a lookup: taskID -> purpose from loaded task queues
+	taskPurposes := make(map[string]string)
+	taskLeaseOwners := make(map[string]string)
+	for _, entry := range taskQueues {
+		for i := range entry.Queue.Tasks {
+			t := &entry.Queue.Tasks[i]
+			if t.CommandID == commandID && t.Purpose != "" {
+				taskPurposes[t.ID] = t.Purpose
+			}
+			if t.CommandID == commandID && t.LeaseOwner != nil {
+				taskLeaseOwners[t.ID] = *t.LeaseOwner
+			}
+		}
 	}
 
 	var items []worktreeMergeItem
@@ -92,10 +107,21 @@ func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string) []worktreeM
 			continue
 		}
 
+		// Map workers to their task purposes
+		workerPurposes := make(map[string]string)
+		for _, taskID := range phase.RequiredTaskIDs {
+			owner := taskLeaseOwners[taskID]
+			purpose := taskPurposes[taskID]
+			if owner != "" && purpose != "" {
+				workerPurposes[owner] = purpose
+			}
+		}
+
 		items = append(items, worktreeMergeItem{
-			CommandID: commandID,
-			PhaseID:   phase.ID,
-			WorkerIDs: workerIDs,
+			CommandID:      commandID,
+			PhaseID:        phase.ID,
+			WorkerIDs:      workerIDs,
+			WorkerPurposes: workerPurposes,
 		})
 	}
 

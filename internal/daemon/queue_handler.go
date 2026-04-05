@@ -330,9 +330,10 @@ type signalDeliveryItem struct {
 
 // worktreeMergeItem captures a phase-boundary worktree merge for Phase B execution.
 type worktreeMergeItem struct {
-	CommandID string
-	PhaseID   string
-	WorkerIDs []string
+	CommandID      string
+	PhaseID        string
+	WorkerIDs      []string
+	WorkerPurposes map[string]string // workerID -> task purpose (for commit messages)
 }
 
 // worktreeMergeResult captures the outcome of a Phase B worktree merge.

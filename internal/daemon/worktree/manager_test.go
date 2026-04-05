@@ -1797,7 +1797,7 @@ func TestCommitWorkerChanges_MaxFilesExceeded(t *testing.T) {
 		}
 	}
 
-	err = wm.CommitWorkerChanges("cmd_maxfiles", "worker1", "[maestro] add files")
+	err = wm.CommitWorkerChanges("cmd_maxfiles", "worker1", "add files")
 	if err == nil {
 		t.Fatal("expected error for exceeding max files limit")
 	}
@@ -1830,7 +1830,7 @@ func TestCommitWorkerChanges_MaxFilesWithinLimit(t *testing.T) {
 		}
 	}
 
-	if err := wm.CommitWorkerChanges("cmd_maxfiles_ok", "worker1", "[maestro] add ok files"); err != nil {
+	if err := wm.CommitWorkerChanges("cmd_maxfiles_ok", "worker1", "add ok files"); err != nil {
 		t.Fatalf("CommitWorkerChanges should succeed within limit: %v", err)
 	}
 }
@@ -1859,7 +1859,7 @@ func TestCommitWorkerChanges_MissingGitignore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = wm.CommitWorkerChanges("cmd_gitignore", "worker1", "[maestro] add main.go")
+	err = wm.CommitWorkerChanges("cmd_gitignore", "worker1", "add main.go")
 	if err == nil {
 		t.Fatal("expected error for missing .gitignore")
 	}
@@ -1893,7 +1893,7 @@ func TestCommitWorkerChanges_GitignorePresent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := wm.CommitWorkerChanges("cmd_gitignore_ok", "worker1", "[maestro] add files"); err != nil {
+	if err := wm.CommitWorkerChanges("cmd_gitignore_ok", "worker1", "add files"); err != nil {
 		t.Fatalf("CommitWorkerChanges should succeed with .gitignore present: %v", err)
 	}
 }
@@ -1903,7 +1903,7 @@ func TestCommitWorkerChanges_GitignorePresent(t *testing.T) {
 func TestCommitWorkerChanges_MessageFormatInvalid(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
-	wm.config.CommitPolicy.MessagePattern = `^\[maestro\]\s`
+	wm.config.CommitPolicy.MessagePattern = `^.+`
 
 	if err := createForCommand(wm, "cmd_msgfmt", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
@@ -1922,8 +1922,8 @@ func TestCommitWorkerChanges_MessageFormatInvalid(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Message does not match default pattern "^\[maestro\]\s"
-	err = wm.CommitWorkerChanges("cmd_msgfmt", "worker1", "bad commit message")
+	// Empty message does not match pattern "^.+" (requires non-empty)
+	err = wm.CommitWorkerChanges("cmd_msgfmt", "worker1", "")
 	if err == nil {
 		t.Fatal("expected error for invalid commit message format")
 	}
@@ -1937,7 +1937,7 @@ func TestCommitWorkerChanges_MessageFormatInvalid(t *testing.T) {
 func TestCommitWorkerChanges_MessageFormatValid(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
-	wm.config.CommitPolicy.MessagePattern = `^\[maestro\]\s`
+	wm.config.CommitPolicy.MessagePattern = `^.+`
 
 	if err := createForCommand(wm, "cmd_msgfmt_ok", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
@@ -1956,7 +1956,7 @@ func TestCommitWorkerChanges_MessageFormatValid(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := wm.CommitWorkerChanges("cmd_msgfmt_ok", "worker1", "[maestro] add main.go"); err != nil {
+	if err := wm.CommitWorkerChanges("cmd_msgfmt_ok", "worker1", "add main.go"); err != nil {
 		t.Fatalf("CommitWorkerChanges should succeed with valid message format: %v", err)
 	}
 }
@@ -1970,7 +1970,7 @@ func TestCommitWorkerChanges_RequireGitignoreDisabled(t *testing.T) {
 	wm.config.CommitPolicy = model.CommitPolicyConfig{
 		MaxFiles:         model.IntPtr(30),
 		RequireGitignore: false,
-		MessagePattern:   `^\[maestro\]\s`,
+		MessagePattern:   `^.+`,
 	}
 
 	if err := createForCommand(wm, "cmd_nogitig", []string{"worker1"}); err != nil {
@@ -1989,7 +1989,7 @@ func TestCommitWorkerChanges_RequireGitignoreDisabled(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := wm.CommitWorkerChanges("cmd_nogitig", "worker1", "[maestro] add main.go"); err != nil {
+	if err := wm.CommitWorkerChanges("cmd_nogitig", "worker1", "add main.go"); err != nil {
 		t.Fatalf("CommitWorkerChanges should succeed with RequireGitignore disabled: %v", err)
 	}
 }
@@ -2001,10 +2001,10 @@ func TestCheckCommitPolicy_Unit(t *testing.T) {
 	t.Run("all_checks_pass", func(t *testing.T) {
 		wm := newTestWorktreeManager(t, projectRoot)
 		wm.config.CommitPolicy.MaxFiles = model.IntPtr(30)
-		wm.config.CommitPolicy.MessagePattern = `^\[maestro\]\s`
+		wm.config.CommitPolicy.MessagePattern = `^.+`
 
 		stagedNul := "file1.go\x00file2.go\x00"
-		violations := wm.checkCommitPolicy(projectRoot, "[maestro] test", stagedNul)
+		violations := wm.checkCommitPolicy(projectRoot, "ログイン API を提供する", stagedNul)
 		if len(violations) != 0 {
 			t.Errorf("expected no violations, got %d: %v", len(violations), violations)
 		}
@@ -2013,10 +2013,10 @@ func TestCheckCommitPolicy_Unit(t *testing.T) {
 	t.Run("max_files_exceeded", func(t *testing.T) {
 		wm := newTestWorktreeManager(t, projectRoot)
 		wm.config.CommitPolicy.MaxFiles = model.IntPtr(2)
-		wm.config.CommitPolicy.MessagePattern = `^\[maestro\]\s`
+		wm.config.CommitPolicy.MessagePattern = `^.+`
 
 		stagedNul := "a.go\x00b.go\x00c.go\x00"
-		violations := wm.checkCommitPolicy(projectRoot, "[maestro] test", stagedNul)
+		violations := wm.checkCommitPolicy(projectRoot, "ログイン API を提供する", stagedNul)
 		if len(violations) != 1 || violations[0].Code != "max_files_exceeded" {
 			t.Errorf("expected max_files_exceeded violation, got %v", violations)
 		}
@@ -2025,10 +2025,10 @@ func TestCheckCommitPolicy_Unit(t *testing.T) {
 	t.Run("message_format_invalid", func(t *testing.T) {
 		wm := newTestWorktreeManager(t, projectRoot)
 		wm.config.CommitPolicy.MaxFiles = model.IntPtr(30)
-		wm.config.CommitPolicy.MessagePattern = `^\[maestro\]\s`
+		wm.config.CommitPolicy.MessagePattern = `^.+`
 
 		stagedNul := "file.go\x00"
-		violations := wm.checkCommitPolicy(projectRoot, "no prefix", stagedNul)
+		violations := wm.checkCommitPolicy(projectRoot, "", stagedNul)
 		if len(violations) != 1 || violations[0].Code != "message_format_invalid" {
 			t.Errorf("expected message_format_invalid violation, got %v", violations)
 		}
@@ -2038,14 +2038,14 @@ func TestCheckCommitPolicy_Unit(t *testing.T) {
 		wm := newTestWorktreeManager(t, projectRoot)
 		wm.config.CommitPolicy.MaxFiles = model.IntPtr(1)
 		wm.config.CommitPolicy.RequireGitignore = true
-		wm.config.CommitPolicy.MessagePattern = `^\[maestro\]\s`
+		wm.config.CommitPolicy.MessagePattern = `^.+`
 
 		// Use a temp dir without .gitignore
 		tmpDir := t.TempDir()
 		stagedNul := "a.go\x00b.go\x00"
-		violations := wm.checkCommitPolicy(tmpDir, "bad msg", stagedNul)
-		if len(violations) < 2 {
-			t.Errorf("expected at least 2 violations, got %d: %v", len(violations), violations)
+		violations := wm.checkCommitPolicy(tmpDir, "", stagedNul)
+		if len(violations) < 3 {
+			t.Errorf("expected at least 3 violations (max_files + missing_gitignore + message_format), got %d: %v", len(violations), violations)
 		}
 	})
 }

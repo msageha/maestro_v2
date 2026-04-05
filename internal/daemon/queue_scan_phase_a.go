@@ -262,7 +262,7 @@ func (qh *QueueHandler) stepWorktreePhaseMerges(s *scanState) {
 		if !qh.worktreeManager.HasWorktrees(cmd.ID) {
 			continue
 		}
-		mergeItems := qh.collectWorktreePhaseMerges(cmd.ID)
+		mergeItems := qh.collectWorktreePhaseMerges(cmd.ID, s.tasks)
 		s.work.worktreeMerges = append(s.work.worktreeMerges, mergeItems...)
 	}
 }

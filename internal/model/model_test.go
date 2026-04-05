@@ -939,7 +939,7 @@ worktree:
   commit_policy:
     max_files: 50
     require_gitignore: true
-    message_pattern: "^\\[maestro\\]\\s"
+    message_pattern: "^.+"
 `)
 	var cfg Config
 	if err := yaml.Unmarshal(yamlData, &cfg); err != nil {
