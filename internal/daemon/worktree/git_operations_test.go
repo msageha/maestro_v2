@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
+	"strings"
 	"testing"
 	"time"
 )
@@ -96,6 +98,93 @@ func TestClassifyGitError(t *testing.T) {
 					gotStr = "Transient"
 				}
 				t.Errorf("classifyGitError(%v) = %s, want %s", tt.err, gotStr, wantStr)
+			}
+		})
+	}
+}
+
+func TestWrapGitOutputError_IncludesStderr(t *testing.T) {
+	// Simulate exec.ExitError with Stderr containing a transient pattern.
+	exitErr := &exec.ExitError{
+		ProcessState: nil, // not used by our code
+		Stderr:       []byte("Unable to create '/path/to/repo/.git/index.lock': File exists"),
+	}
+	wrapped := wrapGitOutputError(exitErr, []string{"merge", "main"})
+	msg := wrapped.Error()
+
+	if !strings.Contains(msg, "Unable to create") {
+		t.Errorf("expected wrapped error to contain stderr, got: %s", msg)
+	}
+	if !strings.Contains(msg, "git merge main") {
+		t.Errorf("expected wrapped error to contain command, got: %s", msg)
+	}
+
+	// The error should be classified as Transient thanks to stderr content.
+	if classifyGitError(wrapped) != GitErrorTransient {
+		t.Error("expected classifyGitError to return Transient for stderr with lock pattern")
+	}
+}
+
+func TestWrapGitOutputError_EmptyStderr(t *testing.T) {
+	exitErr := &exec.ExitError{
+		Stderr: []byte{},
+	}
+	wrapped := wrapGitOutputError(exitErr, []string{"status"})
+	msg := wrapped.Error()
+
+	// Should not contain "stderr:" when Stderr is empty.
+	if strings.Contains(msg, "stderr:") {
+		t.Errorf("expected no stderr in error message for empty Stderr, got: %s", msg)
+	}
+}
+
+func TestClassifyGitError_ExitErrorWithTransientStderr(t *testing.T) {
+	// When exec.ExitError is wrapped with stderr via wrapGitOutputError,
+	// classifyGitError should detect transient patterns.
+	tests := []struct {
+		name   string
+		stderr string
+		want   GitErrorClass
+	}{
+		{
+			name:   "lock file in stderr",
+			stderr: "Unable to create '/repo/.git/index.lock': File exists",
+			want:   GitErrorTransient,
+		},
+		{
+			name:   "dotlock in stderr",
+			stderr: "error: cannot lock ref 'refs/heads/main': is at abc123 but expected def456",
+			want:   GitErrorTransient,
+		},
+		{
+			name:   "permanent error in stderr",
+			stderr: "fatal: bad object abc123",
+			want:   GitErrorPermanent,
+		},
+		{
+			name:   "unknown stderr content",
+			stderr: "exit status 128",
+			want:   GitErrorPermanent,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exitErr := &exec.ExitError{
+				Stderr: []byte(tt.stderr),
+			}
+			wrapped := wrapGitOutputError(exitErr, []string{"merge", "main"})
+			got := classifyGitError(wrapped)
+			if got != tt.want {
+				wantStr := "Permanent"
+				gotStr := "Permanent"
+				if tt.want == GitErrorTransient {
+					wantStr = "Transient"
+				}
+				if got == GitErrorTransient {
+					gotStr = "Transient"
+				}
+				t.Errorf("classifyGitError(wrapped stderr=%q) = %s, want %s", tt.stderr, gotStr, wantStr)
 			}
 		})
 	}
