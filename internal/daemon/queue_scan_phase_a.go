@@ -262,7 +262,7 @@ func (qh *QueueHandler) stepWorktreePhaseMerges(s *scanState) {
 		if !qh.worktreeManager.HasWorktrees(cmd.ID) {
 			continue
 		}
-		mergeItems := qh.collectWorktreePhaseMerges(cmd.ID)
+		mergeItems := qh.collectWorktreePhaseMerges(cmd.ID, s.tasks)
 		s.work.worktreeMerges = append(s.work.worktreeMerges, mergeItems...)
 	}
 }
@@ -281,7 +281,7 @@ func (qh *QueueHandler) stepWorktreePublish(s *scanState) {
 		if !qh.worktreeManager.HasWorktrees(cmd.ID) {
 			continue
 		}
-		publishes, cleanups := qh.collectWorktreePublishAndCleanup(cmd.ID, s.tasks)
+		publishes, cleanups := qh.collectWorktreePublishAndCleanup(cmd.ID, cmd.Content, s.tasks)
 		s.work.worktreePublishes = append(s.work.worktreePublishes, publishes...)
 		s.work.worktreeCleanups = append(s.work.worktreeCleanups, cleanups...)
 	}

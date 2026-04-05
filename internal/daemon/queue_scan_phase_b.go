@@ -95,8 +95,7 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 		// First commit worker changes
 		if qh.worktreeManager != nil && qh.worktreeManager.AutoCommit() {
 			for _, workerID := range item.WorkerIDs {
-				msg := fmt.Sprintf("[maestro] auto-commit phase %s worker %s for %s",
-					item.PhaseID, workerID, item.CommandID)
+				msg := workerCommitMessage(item.WorkerPurposes, workerID)
 				if err := qh.worktreeManager.CommitWorkerChanges(item.CommandID, workerID, msg); err != nil {
 					qh.log(LogLevelWarn, "worktree_auto_commit command=%s worker=%s error=%v",
 						item.CommandID, workerID, err)
@@ -106,7 +105,7 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 
 		// Then merge to integration
 		if qh.worktreeManager != nil && qh.worktreeManager.AutoMerge() {
-			conflicts, err := qh.worktreeManager.MergeToIntegration(item.CommandID, item.WorkerIDs)
+			conflicts, err := qh.worktreeManager.MergeToIntegration(item.CommandID, item.WorkerIDs, item.WorkerPurposes)
 			mr.Conflicts = conflicts
 			mr.Error = err
 
@@ -136,7 +135,7 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 					}(), err)
 				pr.Error = fmt.Errorf("integration status no longer merged")
 			} else {
-				pr.Error = qh.worktreeManager.PublishToBase(item.CommandID)
+				pr.Error = qh.worktreeManager.PublishToBase(item.CommandID, item.PublishMessage)
 			}
 		}
 		result.worktreePublishes = append(result.worktreePublishes, pr)
@@ -160,4 +159,20 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 	})
 
 	return result
+}
+
+const autoCommitFallbackMessage = "auto-commit: worker changes"
+
+// workerCommitMessage returns the commit message for a worker's auto-commit.
+// Uses the task purpose if available, truncated to 72 characters.
+// Falls back to a generic message if purpose is empty.
+func workerCommitMessage(workerPurposes map[string]string, workerID string) string {
+	purpose := workerPurposes[workerID]
+	if purpose == "" {
+		return autoCommitFallbackMessage
+	}
+	if len(purpose) > 72 {
+		purpose = purpose[:72]
+	}
+	return purpose
 }

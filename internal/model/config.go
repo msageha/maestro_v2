@@ -314,7 +314,7 @@ type WorktreeConfig struct {
 // CommitPolicyConfig enforces safety checks before committing worker changes.
 // Zero-valued config means no enforcement. Set fields explicitly via config.yaml
 // to enable checks. Recommended template values: MaxFiles=30, RequireGitignore=true,
-// MessagePattern="^\\[maestro\\]\\s".
+// MessagePattern="^.+" (non-empty message).
 type CommitPolicyConfig struct {
 	MaxFiles         *int   `yaml:"max_files"`         // max staged files per commit; nil=default(30), 0=unlimited
 	RequireGitignore bool   `yaml:"require_gitignore"` // require .gitignore existence
