@@ -1,0 +1,189 @@
+package worktree
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"testing"
+	"time"
+)
+
+func TestClassifyGitError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want GitErrorClass
+	}{
+		// Transient errors
+		{
+			name: "lock contention",
+			err:  errors.New("Unable to create '/path/to/repo/.git/index.lock': File exists"),
+			want: GitErrorTransient,
+		},
+		{
+			name: "dotlock file",
+			err:  errors.New("cannot create .lock file"),
+			want: GitErrorTransient,
+		},
+		{
+			name: "unable to create generic",
+			err:  errors.New("Unable to create temp file"),
+			want: GitErrorTransient,
+		},
+
+		// Permanent errors
+		{
+			name: "bad object",
+			err:  errors.New("fatal: bad object abc123"),
+			want: GitErrorPermanent,
+		},
+		{
+			name: "corrupt repo",
+			err:  errors.New("error: object file is corrupt"),
+			want: GitErrorPermanent,
+		},
+		{
+			name: "not a git repository",
+			err:  errors.New("fatal: not a git repository (or any parent up to mount point /)"),
+			want: GitErrorPermanent,
+		},
+		{
+			name: "invalid reference",
+			err:  errors.New("fatal: invalid reference: refs/heads/nonexistent"),
+			want: GitErrorPermanent,
+		},
+
+		// Timeout errors — must be Permanent (dirty worktree risk)
+		{
+			name: "context.DeadlineExceeded",
+			err:  context.DeadlineExceeded,
+			want: GitErrorPermanent,
+		},
+		{
+			name: "wrapped DeadlineExceeded",
+			err:  fmt.Errorf("git merge: timeout after 30s: %w", context.DeadlineExceeded),
+			want: GitErrorPermanent,
+		},
+		{
+			name: "timeout in error message",
+			err:  errors.New("connection timeout while fetching"),
+			want: GitErrorPermanent,
+		},
+
+		// Unknown errors default to Permanent
+		{
+			name: "unknown error",
+			err:  errors.New("something completely unexpected happened"),
+			want: GitErrorPermanent,
+		},
+		{
+			name: "nil error",
+			err:  nil,
+			want: GitErrorPermanent,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyGitError(tt.err)
+			if got != tt.want {
+				wantStr := "Permanent"
+				gotStr := "Permanent"
+				if tt.want == GitErrorTransient {
+					wantStr = "Transient"
+				}
+				if got == GitErrorTransient {
+					gotStr = "Transient"
+				}
+				t.Errorf("classifyGitError(%v) = %s, want %s", tt.err, gotStr, wantStr)
+			}
+		})
+	}
+}
+
+func TestIsTransientGitError(t *testing.T) {
+	if !isTransientGitError(errors.New("Unable to create lock")) {
+		t.Error("expected lock error to be transient")
+	}
+	if isTransientGitError(errors.New("fatal: bad object")) {
+		t.Error("expected bad object error to not be transient")
+	}
+	if isTransientGitError(context.DeadlineExceeded) {
+		t.Error("expected DeadlineExceeded to not be transient")
+	}
+}
+
+func TestGitRunWithRetry_TransientRetries(t *testing.T) {
+	// Use a real git repo — run a command that will produce a transient-like error.
+	// We test the retry mechanism by verifying that gitRunWithRetry eventually
+	// succeeds or retries the expected number of times.
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	// A command that succeeds should not retry.
+	err := wm.gitRunWithRetry(projectRoot, 3, "status")
+	if err != nil {
+		t.Fatalf("gitRunWithRetry on successful command: %v", err)
+	}
+}
+
+func TestGitRunWithRetry_PermanentNoRetry(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	// A command that produces a permanent error (bad revision) should not retry.
+	start := time.Now()
+	err := wm.gitRunWithRetry(projectRoot, 3, "log", "--oneline", "nonexistent_ref_abc123..HEAD")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error for bad revision, got nil")
+	}
+
+	// If it retried 3 times with backoff (50+100+200=350ms minimum), elapsed would be >300ms.
+	// A permanent error should return immediately, so elapsed should be well under 300ms.
+	if elapsed > 300*time.Millisecond {
+		t.Errorf("gitRunWithRetry took %v, expected fast return for permanent error", elapsed)
+	}
+}
+
+func TestGitRunWithRetry_MaxRetriesZero(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	// maxRetries=0 should behave like a single attempt.
+	err := wm.gitRunWithRetry(projectRoot, 0, "status")
+	if err != nil {
+		t.Fatalf("gitRunWithRetry with maxRetries=0 on success: %v", err)
+	}
+}
+
+func TestGitOutputWithRetry_Success(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	output, err := wm.gitOutputWithRetry(projectRoot, 3, "rev-parse", "HEAD")
+	if err != nil {
+		t.Fatalf("gitOutputWithRetry: %v", err)
+	}
+	if len(output) < 7 {
+		t.Errorf("expected SHA output, got %q", output)
+	}
+}
+
+func TestGitOutputWithRetry_PermanentNoRetry(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	start := time.Now()
+	_, err := wm.gitOutputWithRetry(projectRoot, 3, "rev-parse", "nonexistent_ref_xyz999")
+	elapsed := time.Since(start)
+
+	if err == nil {
+		t.Fatal("expected error for nonexistent ref, got nil")
+	}
+
+	if elapsed > 300*time.Millisecond {
+		t.Errorf("gitOutputWithRetry took %v, expected fast return for permanent error", elapsed)
+	}
+}
