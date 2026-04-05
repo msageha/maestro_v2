@@ -495,11 +495,6 @@ func TestWorktreeIntegration_SyncFromIntegrationConflict(t *testing.T) {
 
 	// Record worker2 state before sync
 	w2HeadBefore := gitRevParse(t, wt2, "HEAD")
-	ws2Before, err := getState(wm, commandID, "worker2")
-	if err != nil {
-		t.Fatalf("GetState worker2 before sync: %v", err)
-	}
-	w2StatusBefore := ws2Before.Status
 
 	// Record worker3 HEAD before sync (worker3 is clean, should sync normally)
 	w3HeadBefore := gitRevParse(t, wt3, "HEAD")
@@ -538,13 +533,13 @@ func TestWorktreeIntegration_SyncFromIntegrationConflict(t *testing.T) {
 		t.Errorf("worker2 shared.txt = %q, want %q", string(content), "worker2 content\n")
 	}
 
-	// Step 8: Verify worker2 status is unchanged (SyncFromIntegration doesn't update status on conflict)
+	// Step 8: Verify worker2 status is "conflict" (SyncFromIntegration sets conflict status)
 	ws2After, err := getState(wm, commandID, "worker2")
 	if err != nil {
 		t.Fatalf("GetState worker2 after sync: %v", err)
 	}
-	if ws2After.Status != w2StatusBefore {
-		t.Errorf("worker2 status changed from %q to %q (should remain unchanged on conflict)", w2StatusBefore, ws2After.Status)
+	if ws2After.Status != model.WorktreeStatusConflict {
+		t.Errorf("worker2 status = %q, want %q (should be conflict after sync conflict)", ws2After.Status, model.WorktreeStatusConflict)
 	}
 
 	// Step 9: Verify worker3 was synced successfully (continues after worker2 conflict)
