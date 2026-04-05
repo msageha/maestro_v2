@@ -116,7 +116,9 @@ if [ "$tool_name" = "Bash" ]; then
   cmd="$(echo "$input" | jq -r '.tool_input.command // ""')"
 
   # D001: OS/home/root destruction (case-insensitive for macOS)
-  if echo "$cmd" | grep -qiE 'rm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+(/\s|/$|~|/Users)'; then
+  # Match both rm -rf and rm -fr (and variants like -fR, -Rf, -rRf, etc.)
+  if echo "$cmd" | grep -qiE 'rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+(/\s|/$|~|/Users)' || \
+     echo "$cmd" | grep -qiE 'rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+(/\s|/$|~|/Users)'; then
     deny "D001: Blocked rm -rf targeting system/home directory"
   fi
 

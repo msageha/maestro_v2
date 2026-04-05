@@ -256,3 +256,30 @@ func TestHookScript_AllowsGitCleanDryRun(t *testing.T) {
 		t.Error("hook script should check for git clean -n (dry run) to exclude it from blocking")
 	}
 }
+
+func TestHookScript_D001_BlocksAllFlagOrders(t *testing.T) {
+	// D001 regex must match rm with both r/R and f in any order
+	tests := []struct {
+		pattern string
+		shouldMatch bool
+	}{
+		// Should be blocked (contains both r/R and f)
+		{`rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f`, true},   // pattern A: r before f
+		{`rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR]`, true},    // pattern B: f before r
+	}
+
+	for _, tc := range tests {
+		if strings.Contains(hookScript, tc.pattern) != tc.shouldMatch {
+			t.Errorf("hook script should contain pattern %q: got %v, want %v",
+				tc.pattern, !tc.shouldMatch, tc.shouldMatch)
+		}
+	}
+
+	// Verify both OR branches exist for D001 to handle -fr, -fR, -Rf variants
+	if !strings.Contains(hookScript, `rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f`) {
+		t.Error("D001: missing pattern for r/R before f (e.g., rm -rf)")
+	}
+	if !strings.Contains(hookScript, `rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR]`) {
+		t.Error("D001: missing pattern for f before r/R (e.g., rm -fr, rm -fR)")
+	}
+}
