@@ -251,9 +251,8 @@ var validIntegrationTransitions = map[IntegrationStatus]map[IntegrationStatus]bo
 		IntegrationStatusFailed:    true,
 	},
 	IntegrationStatusPartialMerge: {
-		IntegrationStatusMerging:    true,
-		IntegrationStatusPublishing: true,
-		IntegrationStatusFailed:     true,
+		IntegrationStatusMerging: true,
+		IntegrationStatusFailed:  true,
 	},
 	IntegrationStatusConflict: {
 		IntegrationStatusMerging: true,
