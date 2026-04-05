@@ -2233,9 +2233,10 @@ func TestIsSensitiveFile(t *testing.T) {
 	}
 }
 
-// TestMergeToIntegration_RollbackOnConflict verifies that when a merge conflict
-// occurs, the integration branch is rolled back to its pre-merge HEAD.
-func TestMergeToIntegration_RollbackOnConflict(t *testing.T) {
+// TestMergeToIntegration_PartialMergeOnConflict verifies that when a merge conflict
+// occurs, successfully merged workers are preserved (partial merge) and integration
+// status is set to partial_merge.
+func TestMergeToIntegration_PartialMergeOnConflict(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -2285,7 +2286,7 @@ func TestMergeToIntegration_RollbackOnConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Merge — worker1 succeeds, worker2 conflicts → rollback expected
+	// Merge — worker1 succeeds, worker2 conflicts → partial merge expected
 	conflicts, err := wm.MergeToIntegration("cmd_rollback", workers)
 	if err != nil {
 		t.Fatalf("MergeToIntegration failed: %v", err)
@@ -2294,7 +2295,7 @@ func TestMergeToIntegration_RollbackOnConflict(t *testing.T) {
 		t.Fatalf("expected 1 conflict, got %d", len(conflicts))
 	}
 
-	// Verify integration branch HEAD was rolled back to pre-merge HEAD
+	// Verify integration branch HEAD advanced (worker1's merge is preserved)
 	postMergeCmd := exec.Command("git", "rev-parse", "HEAD")
 	postMergeCmd.Dir = integrationPath
 	postMergeOut, err := postMergeCmd.Output()
@@ -2303,32 +2304,113 @@ func TestMergeToIntegration_RollbackOnConflict(t *testing.T) {
 	}
 	postMergeHEAD := strings.TrimSpace(string(postMergeOut))
 
-	if postMergeHEAD != preMergeHEAD {
-		t.Errorf("integration branch was not rolled back: pre-merge HEAD=%s, post-merge HEAD=%s",
-			preMergeHEAD, postMergeHEAD)
+	if postMergeHEAD == preMergeHEAD {
+		t.Errorf("integration branch should have advanced (worker1 merge preserved): HEAD=%s", postMergeHEAD)
 	}
 
-	// Verify worker1's file is NOT on integration branch (was rolled back)
+	// Verify worker1's file IS on integration branch (preserved)
 	lsCmd := exec.Command("git", "ls-tree", "--name-only", "HEAD")
 	lsCmd.Dir = integrationPath
 	lsOut, err := lsCmd.Output()
 	if err != nil {
 		t.Fatalf("git ls-tree failed: %v", err)
 	}
-	if strings.Contains(string(lsOut), "unique1.txt") {
-		t.Error("unique1.txt should not be on integration branch after rollback")
+	if !strings.Contains(string(lsOut), "unique1.txt") {
+		t.Error("unique1.txt should be on integration branch (worker1 merge preserved)")
 	}
 
-	// Verify worker1's status was rolled back from "integrated" to "committed"
+	// Verify worker1's status is "integrated" (preserved, not rolled back)
 	cmdState, err := wm.GetCommandState("cmd_rollback")
 	if err != nil {
 		t.Fatalf("GetCommandState failed: %v", err)
 	}
 	for _, ws := range cmdState.Workers {
-		if ws.WorkerID == "worker1" {
-			if ws.Status != model.WorktreeStatusCommitted {
-				t.Errorf("worker1 status = %q, want %q (rolled back)", ws.Status, model.WorktreeStatusCommitted)
+		switch ws.WorkerID {
+		case "worker1":
+			if ws.Status != model.WorktreeStatusIntegrated {
+				t.Errorf("worker1 status = %q, want %q (preserved)", ws.Status, model.WorktreeStatusIntegrated)
+			}
+		case "worker2":
+			if ws.Status != model.WorktreeStatusConflict {
+				t.Errorf("worker2 status = %q, want %q", ws.Status, model.WorktreeStatusConflict)
 			}
 		}
+	}
+
+	// Verify integration status is partial_merge
+	if cmdState.Integration.Status != model.IntegrationStatusPartialMerge {
+		t.Errorf("integration status = %q, want %q", cmdState.Integration.Status, model.IntegrationStatusPartialMerge)
+	}
+
+	// Verify conflict has ref information
+	if conflicts[0].WorkerID != "worker2" {
+		t.Errorf("conflict worker = %q, want worker2", conflicts[0].WorkerID)
+	}
+	// BaseRef/OursRef/TheirsRef should be populated for text file conflicts
+	if conflicts[0].BaseRef == "" || conflicts[0].OursRef == "" || conflicts[0].TheirsRef == "" {
+		t.Errorf("conflict refs not populated: base=%q ours=%q theirs=%q",
+			conflicts[0].BaseRef, conflicts[0].OursRef, conflicts[0].TheirsRef)
+	}
+}
+
+// TestMergeToIntegration_AllConflict verifies that when all workers conflict,
+// integration status is set to "conflict" (not partial_merge).
+func TestMergeToIntegration_AllConflict(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	workers := []string{"worker1", "worker2"}
+	if err := createForCommand(wm, "cmd_allconflict", workers); err != nil {
+		t.Fatalf("CreateForCommand failed: %v", err)
+	}
+
+	integrationPath := filepath.Join(projectRoot, ".maestro", "worktrees", "cmd_allconflict", "_integration")
+
+	// Modify README.md directly in integration to create conflict base
+	if err := os.WriteFile(filepath.Join(integrationPath, "README.md"), []byte("integration readme\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	commitCmd := exec.Command("git", "add", "README.md")
+	commitCmd.Dir = integrationPath
+	if out, err := commitCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %s %v", out, err)
+	}
+	commitCmd = exec.Command("git", "commit", "-m", "integration modify README")
+	commitCmd.Dir = integrationPath
+	if out, err := commitCmd.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %s %v", out, err)
+	}
+
+	// Both workers modify README.md differently
+	wt1, _ := wm.GetWorkerPath("cmd_allconflict", "worker1")
+	if err := os.WriteFile(filepath.Join(wt1, "README.md"), []byte("worker1 readme\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges("cmd_allconflict", "worker1", "worker1 modify README"); err != nil {
+		t.Fatal(err)
+	}
+	wt2, _ := wm.GetWorkerPath("cmd_allconflict", "worker2")
+	if err := os.WriteFile(filepath.Join(wt2, "README.md"), []byte("worker2 readme\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges("cmd_allconflict", "worker2", "worker2 modify README"); err != nil {
+		t.Fatal(err)
+	}
+
+	conflicts, err := wm.MergeToIntegration("cmd_allconflict", workers)
+	if err != nil {
+		t.Fatalf("MergeToIntegration failed: %v", err)
+	}
+	if len(conflicts) != 2 {
+		t.Fatalf("expected 2 conflicts, got %d", len(conflicts))
+	}
+
+	cmdState, err := wm.GetCommandState("cmd_allconflict")
+	if err != nil {
+		t.Fatalf("GetCommandState failed: %v", err)
+	}
+	// All conflicted, none merged → IntegrationStatusConflict
+	if cmdState.Integration.Status != model.IntegrationStatusConflict {
+		t.Errorf("integration status = %q, want %q", cmdState.Integration.Status, model.IntegrationStatusConflict)
 	}
 }
