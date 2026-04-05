@@ -56,29 +56,13 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string) ([]m
 	}
 	state.UpdatedAt = now
 
-	// Save pre-merge HEAD so we can rollback on failure
-	preMergeHEAD, err := wm.gitOutputInDir(integrationPath, "rev-parse", "HEAD")
-	if err != nil {
-		return nil, fmt.Errorf("save pre-merge HEAD: %w", err)
-	}
-	preMergeHEAD = strings.TrimSpace(preMergeHEAD)
-	if err := validateSHA(preMergeHEAD); err != nil {
-		return nil, fmt.Errorf("invalid pre-merge HEAD: %w", err)
-	}
-
 	// Sort worker IDs for deterministic merge order
 	sorted := make([]string, len(workerIDs))
 	copy(sorted, workerIDs)
 	sort.Strings(sorted)
 
 	var conflicts []model.MergeConflict
-	// Track workers whose status was changed to "integrated" so we can
-	// restore their previous status if a rollback occurs.
-	type preMergeInfo struct {
-		ws             *model.WorktreeState
-		previousStatus model.WorktreeStatus
-	}
-	var mergedWorkers []preMergeInfo
+	var mergedCount int
 
 	for _, workerID := range sorted {
 		ws := wm.findWorker(state, workerID)
@@ -87,7 +71,7 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string) ([]m
 		}
 
 		// Check if worker branch has commits beyond base
-		logOut, err := wm.gitOutput("log", "--oneline",
+		logOut, err := wm.gitOutputWithRetry(integrationPath, 2, "log", "--oneline",
 			fmt.Sprintf("%s..%s", state.Integration.BaseSHA, ws.Branch))
 		if err != nil {
 			wm.log(core.LogLevelWarn, "merge_log_check command=%s worker=%s error=%v", commandID, workerID, err)
@@ -95,6 +79,18 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string) ([]m
 		}
 		if strings.TrimSpace(logOut) == "" {
 			wm.log(core.LogLevelDebug, "no_commits_to_merge command=%s worker=%s", commandID, workerID)
+			continue
+		}
+
+		// Record per-worker pre-merge HEAD so abort recovery resets only this merge
+		perWorkerPreMergeHEAD, err := wm.gitOutputWithRetry(integrationPath, 2, "rev-parse", "HEAD")
+		if err != nil {
+			wm.log(core.LogLevelWarn, "merge_pre_head_failed command=%s worker=%s error=%v", commandID, workerID, err)
+			continue
+		}
+		perWorkerPreMergeHEAD = strings.TrimSpace(perWorkerPreMergeHEAD)
+		if err := validateSHA(perWorkerPreMergeHEAD); err != nil {
+			wm.log(core.LogLevelWarn, "merge_invalid_pre_head command=%s worker=%s error=%v", commandID, workerID, err)
 			continue
 		}
 
@@ -114,29 +110,39 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string) ([]m
 			}
 
 			if hasConflict {
-				// True merge conflict: unmerged entries exist
+				// Collect conflict detail refs (base/ours/theirs) before aborting
 				conflictFiles, _ := wm.getConflictFilesInDir(integrationPath)
-				conflicts = append(conflicts, model.MergeConflict{
+				mc := model.MergeConflict{
 					WorkerID:      workerID,
 					ConflictFiles: conflictFiles,
 					Message:       fmt.Sprintf("merge conflict: %s → integration", workerID),
-				})
+				}
+				// Collect per-file base/ours/theirs refs via rev-parse of index stages
+				for _, cf := range conflictFiles {
+					baseRef, err1 := wm.gitOutputWithRetry(integrationPath, 1, "rev-parse", ":1:"+cf)
+					oursRef, err2 := wm.gitOutputWithRetry(integrationPath, 1, "rev-parse", ":2:"+cf)
+					theirsRef, err3 := wm.gitOutputWithRetry(integrationPath, 1, "rev-parse", ":3:"+cf)
+					if err1 == nil && err2 == nil && err3 == nil {
+						// Use refs from first conflict file as representative
+						mc.BaseRef = strings.TrimSpace(baseRef)
+						mc.OursRef = strings.TrimSpace(oursRef)
+						mc.TheirsRef = strings.TrimSpace(theirsRef)
+						break
+					}
+					// Binary files or missing stages — continue to next file
+				}
+				conflicts = append(conflicts, mc)
 
 				if abortErr := wm.gitRunInDir(integrationPath, "merge", "--abort"); abortErr != nil {
 					wm.log(core.LogLevelWarn, "merge_abort_failed command=%s worker=%s error=%v",
 						commandID, workerID, abortErr)
-					// Fallback recovery: reset --hard + clean + verify
-					if recoveryErr := wm.recoverWorktreeAfterMerge(integrationPath, preMergeHEAD, commandID, workerID); recoveryErr != nil {
-						// Worktree is stuck — set worker to conflict, restore merged workers, fail
+					// Fallback recovery: reset --hard + clean + verify (per-worker HEAD)
+					if recoveryErr := wm.recoverWorktreeAfterMerge(integrationPath, perWorkerPreMergeHEAD, commandID, workerID); recoveryErr != nil {
 						if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusConflict, now); tErr != nil {
 							wm.log(core.LogLevelWarn, "merge_recovery_conflict_transition command=%s worker=%s error=%v", commandID, workerID, tErr)
 						}
 						if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusFailed, now); tErr != nil {
 							wm.log(core.LogLevelWarn, "merge_recovery_fail_transition command=%s error=%v", commandID, tErr)
-						}
-						for _, mi := range mergedWorkers {
-							mi.ws.Status = mi.previousStatus
-							mi.ws.UpdatedAt = now
 						}
 						state.UpdatedAt = now
 						_ = wm.saveState(commandID, state)
@@ -153,23 +159,18 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string) ([]m
 				continue
 			}
 
-			// Non-conflict error (or probe failure): fatal git error, bad ref, infrastructure issue.
-			// Halt the merge loop — this likely indicates a repo-level problem.
+			// Non-conflict error: classify as transient or permanent
+			errClass := classifyGitError(err)
+
 			if abortErr := wm.gitRunInDir(integrationPath, "merge", "--abort"); abortErr != nil {
 				wm.log(core.LogLevelWarn, "merge_abort_failed command=%s worker=%s error=%v",
 					commandID, workerID, abortErr)
-				// Fallback recovery: reset --hard + clean + verify
-				if recoveryErr := wm.recoverWorktreeAfterMerge(integrationPath, preMergeHEAD, commandID, workerID); recoveryErr != nil {
-					// Worktree is stuck — set worker and integration status, restore merged workers, return
+				if recoveryErr := wm.recoverWorktreeAfterMerge(integrationPath, perWorkerPreMergeHEAD, commandID, workerID); recoveryErr != nil {
 					if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusFailed, now); tErr != nil {
 						wm.log(core.LogLevelWarn, "merge_recovery_worker_fail_transition command=%s worker=%s error=%v", commandID, workerID, tErr)
 					}
 					if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusFailed, now); tErr != nil {
 						wm.log(core.LogLevelWarn, "merge_recovery_fail_transition command=%s error=%v", commandID, tErr)
-					}
-					for _, mi := range mergedWorkers {
-						mi.ws.Status = mi.previousStatus
-						mi.ws.UpdatedAt = now
 					}
 					state.UpdatedAt = now
 					_ = wm.saveState(commandID, state)
@@ -177,6 +178,18 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string) ([]m
 				}
 			}
 
+			if errClass == GitErrorTransient {
+				// Transient error: skip this worker, continue loop
+				if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusFailed, now); tErr != nil {
+					wm.log(core.LogLevelWarn, "merge_transient_fail_transition command=%s worker=%s error=%v",
+						commandID, workerID, tErr)
+				}
+				wm.log(core.LogLevelWarn, "merge_transient_error_skip command=%s worker=%s error=%v",
+					commandID, workerID, err)
+				continue
+			}
+
+			// Permanent error: halt merge loop — repo-level problem
 			if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusFailed, now); tErr != nil {
 				wm.log(core.LogLevelWarn, "merge_fail_transition command=%s worker=%s error=%v",
 					commandID, workerID, tErr)
@@ -190,61 +203,35 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string) ([]m
 			wm.log(core.LogLevelError, "merge_non_conflict_error command=%s worker=%s error=%v",
 				commandID, workerID, err)
 
-			// Rollback integration branch to pre-merge HEAD
-			if resetErr := wm.gitRunInDir(integrationPath, "reset", "--hard", preMergeHEAD); resetErr != nil {
-				wm.log(core.LogLevelError, "merge_rollback_failed command=%s pre_merge_head=%s error=%v",
-					commandID, preMergeHEAD, resetErr)
-			} else {
-				wm.log(core.LogLevelInfo, "merge_rollback command=%s pre_merge_head=%s reason=non_conflict_error",
-					commandID, preMergeHEAD)
-			}
-			// Restore worker statuses that were changed to "integrated"
-			for _, mi := range mergedWorkers {
-				mi.ws.Status = mi.previousStatus
-				mi.ws.UpdatedAt = now
-				wm.log(core.LogLevelInfo, "merge_rollback_worker_status command=%s worker=%s restored=%s",
-					commandID, mi.ws.WorkerID, mi.previousStatus)
-			}
-
 			if saveErr := wm.saveState(commandID, state); saveErr != nil {
 				return conflicts, fmt.Errorf("save state after non-conflict merge error: %w", saveErr)
 			}
 			return conflicts, fmt.Errorf("non-conflict merge error for worker %s: %w", workerID, err)
 		}
 
-		prevStatus := ws.Status
 		if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusIntegrated, now); tErr != nil {
 			wm.log(core.LogLevelWarn, "merge_integrated_transition command=%s worker=%s error=%v",
 				commandID, workerID, tErr)
-		} else {
-			mergedWorkers = append(mergedWorkers, preMergeInfo{ws: ws, previousStatus: prevStatus})
 		}
+		mergedCount++
 		wm.log(core.LogLevelInfo, "worker_merged command=%s worker=%s", commandID, workerID)
 	}
 
-	if len(conflicts) > 0 {
-		// Rollback integration branch to pre-merge HEAD
-		if resetErr := wm.gitRunInDir(integrationPath, "reset", "--hard", preMergeHEAD); resetErr != nil {
-			wm.log(core.LogLevelError, "merge_rollback_failed command=%s pre_merge_head=%s error=%v",
-				commandID, preMergeHEAD, resetErr)
-		} else {
-			wm.log(core.LogLevelInfo, "merge_rollback command=%s pre_merge_head=%s reason=conflict",
-				commandID, preMergeHEAD)
-		}
-		// Restore worker statuses that were changed to "integrated"
-		for _, mi := range mergedWorkers {
-			mi.ws.Status = mi.previousStatus
-			mi.ws.UpdatedAt = now
-			wm.log(core.LogLevelInfo, "merge_rollback_worker_status command=%s worker=%s restored=%s",
-				commandID, mi.ws.WorkerID, mi.previousStatus)
-		}
-
-		if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusConflict, now); tErr != nil {
-			wm.log(core.LogLevelWarn, "merge_conflict_integration_transition command=%s error=%v", commandID, tErr)
-		}
-	} else {
+	// Determine final integration status:
+	// - conflicts=0, merged>0 → Merged (all successful)
+	// - conflicts>0, merged>0 → PartialMerge (some succeeded, some conflicted; successful merges preserved)
+	// - conflicts>0, merged=0 → Conflict (all conflicted, nothing merged)
+	if len(conflicts) == 0 {
 		if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusMerged, now); tErr != nil {
 			wm.log(core.LogLevelWarn, "merge_merged_integration_transition command=%s error=%v", commandID, tErr)
+		}
+	} else if mergedCount > 0 {
+		if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusPartialMerge, now); tErr != nil {
+			wm.log(core.LogLevelWarn, "merge_partial_merge_integration_transition command=%s error=%v", commandID, tErr)
+		}
+	} else {
+		if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusConflict, now); tErr != nil {
+			wm.log(core.LogLevelWarn, "merge_conflict_integration_transition command=%s error=%v", commandID, tErr)
 		}
 	}
 	state.UpdatedAt = now

@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -87,21 +88,28 @@ func TestWorktreeIntegration_ConflictDetection(t *testing.T) {
 			}
 		}
 		if ws.WorkerID == "worker1" {
-			// After rollback, worker1's status is restored to its pre-merge status (committed)
-			if ws.Status != model.WorktreeStatusCommitted {
-				t.Errorf("worker1 status = %q, want %q (rolled back)", ws.Status, model.WorktreeStatusCommitted)
+			// Worker1 merged successfully — preserved in partial merge (not rolled back)
+			if ws.Status != model.WorktreeStatusIntegrated {
+				t.Errorf("worker1 status = %q, want %q (preserved)", ws.Status, model.WorktreeStatusIntegrated)
 			}
 		}
 	}
 
-	// Verify integration branch was rolled back — conflict.txt should NOT exist
-	// (worker1's merge was undone by rollback)
+	// Verify integration branch preserved worker1's merge — conflict.txt should exist
 	integrationBranch := cmdState.Integration.Branch
 	cmd := exec.Command("git", "show", integrationBranch+":conflict.txt")
 	cmd.Dir = projectRoot
 	out, err := cmd.CombinedOutput()
-	if err == nil {
-		t.Errorf("expected conflict.txt to not exist on integration branch after rollback, but got: %s", string(out))
+	if err != nil {
+		t.Errorf("expected conflict.txt to exist on integration branch (worker1 preserved), but got error: %v", err)
+	}
+	if err == nil && !strings.Contains(string(out), "worker1 line") {
+		t.Errorf("conflict.txt should contain worker1's content, got: %s", string(out))
+	}
+
+	// Verify integration status is partial_merge (worker1 merged, worker2 conflicted)
+	if cmdState.Integration.Status != model.IntegrationStatusPartialMerge {
+		t.Errorf("integration status = %q, want %q", cmdState.Integration.Status, model.IntegrationStatusPartialMerge)
 	}
 
 	// SyncFromIntegration with both workers
@@ -634,9 +642,10 @@ func TestMergeToIntegration_DirtyIntegrationWorktree(t *testing.T) {
 	}
 }
 
-// TestMergeToIntegration_NonConflictError tests that MergeToIntegration correctly
-// classifies non-conflict git errors (e.g., locked index) as "failed" rather than "conflict".
-func TestMergeToIntegration_NonConflictError(t *testing.T) {
+// TestMergeToIntegration_TransientError tests that MergeToIntegration classifies
+// lock-file errors as transient. When a lock exists, merge --abort and recovery
+// also fail (same lock), so the worktree becomes stuck.
+func TestMergeToIntegration_TransientError(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -657,7 +666,8 @@ func TestMergeToIntegration_NonConflictError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create index.lock in the integration worktree's git dir to cause a fatal error
+	// Create index.lock in the integration worktree's git dir to cause a transient error.
+	// Note: the lock also blocks merge --abort and reset --hard, causing recovery to fail.
 	integrationPath := filepath.Join(projectRoot, ".maestro", "worktrees", "cmd_nce", "_integration")
 	cmd := exec.Command("git", "rev-parse", "--git-dir")
 	cmd.Dir = integrationPath
@@ -676,19 +686,19 @@ func TestMergeToIntegration_NonConflictError(t *testing.T) {
 	}
 	defer os.Remove(lockFile)
 
-	// MergeToIntegration should return a non-conflict error
+	// MergeToIntegration returns an error because the lock blocks recovery too
 	conflicts, mergeErr := wm.MergeToIntegration("cmd_nce", workers)
 	if mergeErr == nil {
-		t.Fatal("expected non-conflict error from MergeToIntegration")
+		t.Fatal("expected error (lock blocks recovery)")
 	}
 	if strings.Contains(mergeErr.Error(), "merge conflict") {
 		t.Errorf("error should NOT be classified as merge conflict, got: %v", mergeErr)
 	}
 	if len(conflicts) != 0 {
-		t.Errorf("expected 0 conflicts (non-conflict error), got %d", len(conflicts))
+		t.Errorf("expected 0 conflicts (transient error, not conflict), got %d", len(conflicts))
 	}
 
-	// Remove lock before reading state (saveState doesn't use git, so this is fine)
+	// Remove lock before reading state
 	os.Remove(lockFile)
 
 	// Verify worker status is "failed" (not "conflict")
@@ -707,6 +717,32 @@ func TestMergeToIntegration_NonConflictError(t *testing.T) {
 	// Verify integration status is "failed"
 	if state.Integration.Status != model.IntegrationStatusFailed {
 		t.Errorf("integration status = %q, want %q", state.Integration.Status, model.IntegrationStatusFailed)
+	}
+}
+
+// TestClassifyGitError_TransientVsPermanent tests the error classification logic.
+func TestClassifyGitError_TransientVsPermanent(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected GitErrorClass
+	}{
+		{"lock error is transient", fmt.Errorf("Unable to create index.lock"), GitErrorTransient},
+		{".lock file error is transient", fmt.Errorf("File exists: .lock"), GitErrorTransient},
+		{"bad object is permanent", fmt.Errorf("bad object 1234abc"), GitErrorPermanent},
+		{"corrupt repo is permanent", fmt.Errorf("corrupt loose object"), GitErrorPermanent},
+		{"not a git repo is permanent", fmt.Errorf("fatal: not a git repository"), GitErrorPermanent},
+		{"unknown error defaults to permanent", fmt.Errorf("some unknown error"), GitErrorPermanent},
+		{"nil error is permanent", nil, GitErrorPermanent},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyGitError(tt.err)
+			if got != tt.expected {
+				t.Errorf("classifyGitError(%v) = %d, want %d", tt.err, got, tt.expected)
+			}
+		})
 	}
 }
 
@@ -784,18 +820,18 @@ func TestMergeToIntegration_ConflictVsNonConflict(t *testing.T) {
 	for _, ws := range state.Workers {
 		switch ws.WorkerID {
 		case "worker1":
-			// After rollback, worker1's status is restored to its pre-merge status (committed)
-			if ws.Status != model.WorktreeStatusCommitted {
-				t.Errorf("worker1 status = %q, want %q (rolled back)", ws.Status, model.WorktreeStatusCommitted)
+			// Worker1 merged successfully — preserved in partial merge (not rolled back)
+			if ws.Status != model.WorktreeStatusIntegrated {
+				t.Errorf("worker1 status = %q, want %q (preserved)", ws.Status, model.WorktreeStatusIntegrated)
 			}
 		case "worker2":
 			if ws.Status != model.WorktreeStatusConflict {
 				t.Errorf("worker2 status = %q, want %q", ws.Status, model.WorktreeStatusConflict)
 			}
 		case "worker3":
-			// After rollback, worker3's status is restored to its pre-merge status (committed)
-			if ws.Status != model.WorktreeStatusCommitted {
-				t.Errorf("worker3 status = %q, want %q (rolled back)", ws.Status, model.WorktreeStatusCommitted)
+			// Worker3 merged successfully — preserved in partial merge (not rolled back)
+			if ws.Status != model.WorktreeStatusIntegrated {
+				t.Errorf("worker3 status = %q, want %q (preserved)", ws.Status, model.WorktreeStatusIntegrated)
 			}
 		}
 	}
