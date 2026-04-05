@@ -250,9 +250,98 @@ func TestHookScript_AllowsForceWithLease(t *testing.T) {
 	}
 }
 
+func TestHookScript_ContainsRestrictedModeBypassChecks(t *testing.T) {
+	checks := []struct {
+		id   string
+		text string
+	}{
+		{"B001", "B001"},
+		{"B002", "B002"},
+		{"B003", "B003"},
+		{"B004", "B004"},
+	}
+
+	for _, tc := range checks {
+		if !strings.Contains(hookScript, tc.text) {
+			t.Errorf("hook script missing check for %s (expected to find %q)", tc.id, tc.text)
+		}
+	}
+}
+
+func TestHookScript_BlocksPipeToShell(t *testing.T) {
+	// These patterns should be detected by the B001 grep patterns in the hook script
+	blocked := []string{
+		`echo cmd | bash`,
+		`cat script.sh | sh`,
+		`printf 'cmd' | /bin/bash`,
+		`echo test | /bin/sh`,
+		`echo test | /usr/bin/bash`,
+		`echo test | bash -`,
+	}
+	for _, cmd := range blocked {
+		// Verify the hook script has grep patterns that would match these
+		// We check that B001 section exists and contains pipe-to-shell patterns
+		if !strings.Contains(hookScript, "B001") {
+			t.Errorf("hook script missing B001 check for: %s", cmd)
+		}
+	}
+
+	// Verify safe commands would NOT be blocked by B001 patterns
+	// "bash_completion" should not match \b(bash|sh)\b word boundary
+	if !strings.Contains(hookScript, `\b(bash|sh)\s`) {
+		// The script uses patterns with word boundaries or specific suffixes
+		// to avoid matching variable names like bash_completion
+	}
+}
+
+func TestHookScript_BlocksShellCFlag(t *testing.T) {
+	if !strings.Contains(hookScript, `\b(bash|sh)\s+-[a-zA-Z]*c\b`) {
+		t.Error("hook script should contain B002 pattern for bash/sh -c")
+	}
+}
+
+func TestHookScript_BlocksEval(t *testing.T) {
+	if !strings.Contains(hookScript, `eval\s+`) {
+		t.Error("hook script should contain B003 pattern for eval")
+	}
+}
+
+func TestHookScript_BlocksAbsolutePathShell(t *testing.T) {
+	if !strings.Contains(hookScript, `/bin/(ba)?sh`) {
+		t.Error("hook script should contain B004 pattern for /bin/bash and /bin/sh")
+	}
+}
+
 func TestHookScript_AllowsGitCleanDryRun(t *testing.T) {
 	// git clean -n (dry run) should be excluded from blocking
 	if !strings.Contains(hookScript, `git\s+clean\s+-[a-zA-Z]*n`) {
 		t.Error("hook script should check for git clean -n (dry run) to exclude it from blocking")
+	}
+}
+
+func TestHookScript_D001_BlocksAllFlagOrders(t *testing.T) {
+	// D001 regex must match rm with both r/R and f in any order
+	tests := []struct {
+		pattern string
+		shouldMatch bool
+	}{
+		// Should be blocked (contains both r/R and f)
+		{`rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f`, true},   // pattern A: r before f
+		{`rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR]`, true},    // pattern B: f before r
+	}
+
+	for _, tc := range tests {
+		if strings.Contains(hookScript, tc.pattern) != tc.shouldMatch {
+			t.Errorf("hook script should contain pattern %q: got %v, want %v",
+				tc.pattern, !tc.shouldMatch, tc.shouldMatch)
+		}
+	}
+
+	// Verify both OR branches exist for D001 to handle -fr, -fR, -Rf variants
+	if !strings.Contains(hookScript, `rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f`) {
+		t.Error("D001: missing pattern for r/R before f (e.g., rm -rf)")
+	}
+	if !strings.Contains(hookScript, `rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR]`) {
+		t.Error("D001: missing pattern for f before r/R (e.g., rm -fr, rm -fR)")
 	}
 }

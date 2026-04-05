@@ -99,6 +99,18 @@ func TestValidateScript_BypassPatterns(t *testing.T) {
 		{"awk system", `awk 'BEGIN{system("echo pwned")}'`},
 		{"gawk system", `gawk 'BEGIN{system("id")}'`},
 		{"mawk system", `mawk 'BEGIN{system("id")}'`},
+		// Generic pipe to shell (bash --restricted bypass)
+		{"pipe to bash", `echo cmd | bash`},
+		{"pipe to sh", `cat script.sh | sh`},
+		{"pipe to /bin/bash", `printf 'cmd' | /bin/bash`},
+		{"pipe to /bin/sh", `echo test | /bin/sh`},
+		{"pipe to /usr/bin/bash", `echo test | /usr/bin/bash`},
+		{"pipe to /usr/bin/sh", `echo test | /usr/bin/sh`},
+		// Absolute path shell invocation
+		{"/bin/bash direct", `/bin/bash script.sh`},
+		{"/bin/sh direct", `/bin/sh script.sh`},
+		{"/usr/bin/bash direct", `/usr/bin/bash -c 'echo pwned'`},
+		{"/bin/sh after semicolon", `echo ok; /bin/sh`},
 	}
 
 	for _, tc := range bypass {
@@ -121,6 +133,9 @@ func TestValidateScript_SafeScripts(t *testing.T) {
 		"date +%s",
 		"go test ./...",
 		"cat /tmp/report.txt | wc -l",
+		"bash_completion=true",
+		"echo $SHELL",
+		"which bash",
 	}
 
 	for _, s := range safe {

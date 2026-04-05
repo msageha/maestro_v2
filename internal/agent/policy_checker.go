@@ -116,7 +116,9 @@ if [ "$tool_name" = "Bash" ]; then
   cmd="$(echo "$input" | jq -r '.tool_input.command // ""')"
 
   # D001: OS/home/root destruction (case-insensitive for macOS)
-  if echo "$cmd" | grep -qiE 'rm\s+-[a-zA-Z]*r[a-zA-Z]*f[a-zA-Z]*\s+(/\s|/$|~|/Users)'; then
+  # Match both rm -rf and rm -fr (and variants like -fR, -Rf, -rRf, etc.)
+  if echo "$cmd" | grep -qiE 'rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+(/\s|/$|~|/Users)' || \
+     echo "$cmd" | grep -qiE 'rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+(/\s|/$|~|/Users)'; then
     deny "D001: Blocked rm -rf targeting system/home directory"
   fi
 
@@ -172,6 +174,28 @@ if [ "$tool_name" = "Bash" ]; then
   # D008: Remote code execution via pipe
   if echo "$cmd" | grep -qE '(curl|wget)\s.*\|\s*(ba)?sh'; then
     deny "D008: Blocked remote code execution (curl/wget piped to shell)"
+  fi
+
+  # B001: Pipe to shell (indirect execution bypass for bash --restricted)
+  if echo "$cmd" | grep -qE '\|\s*(/usr)?/bin/(ba)?sh\b' || \
+     echo "$cmd" | grep -qE '\|\s*(bash|sh)\s*($|;|\||&|>|<)' || \
+     echo "$cmd" | grep -qE '\|\s*(bash|sh)\s+-'; then
+    deny "B001: Blocked pipe to shell (restricted mode bypass)"
+  fi
+
+  # B002: Shell -c flag (unrestricted shell spawn)
+  if echo "$cmd" | grep -qE '\b(bash|sh)\s+-[a-zA-Z]*c\b'; then
+    deny "B002: Blocked shell -c execution (restricted mode bypass)"
+  fi
+
+  # B003: eval command (arbitrary command execution)
+  if echo "$cmd" | grep -qE '(^|;|\||&&)\s*eval\s+'; then
+    deny "B003: Blocked eval (arbitrary command execution)"
+  fi
+
+  # B004: Absolute path shell invocation (bypasses restricted mode)
+  if echo "$cmd" | grep -qE '(^|;|\||&&)\s*(/usr)?/bin/(ba)?sh\b'; then
+    deny "B004: Blocked absolute path shell invocation"
   fi
 
   # .maestro/ access via Bash (bypass prevention, case-insensitive for macOS)
