@@ -259,6 +259,7 @@ func TestIsIntegrationTerminal(t *testing.T) {
 		{IntegrationStatusMerged, false},
 		{IntegrationStatusPublishing, false},
 		{IntegrationStatusConflict, false},
+		{IntegrationStatusPartialMerge, false},
 		{IntegrationStatusPublished, true},
 		{IntegrationStatusFailed, false}, // can transition to merging (retry)
 	}
@@ -348,6 +349,7 @@ func TestValidateIntegrationTransition(t *testing.T) {
 		{IntegrationStatusCreated, IntegrationStatusFailed},
 		{IntegrationStatusMerging, IntegrationStatusMerged},
 		{IntegrationStatusMerging, IntegrationStatusConflict},
+		{IntegrationStatusMerging, IntegrationStatusPartialMerge},
 		{IntegrationStatusMerging, IntegrationStatusFailed},
 		{IntegrationStatusMerged, IntegrationStatusMerging},    // re-merge for next phase
 		{IntegrationStatusMerged, IntegrationStatusPublishing},
@@ -355,6 +357,9 @@ func TestValidateIntegrationTransition(t *testing.T) {
 		{IntegrationStatusPublishing, IntegrationStatusPublished},
 		{IntegrationStatusPublishing, IntegrationStatusConflict},
 		{IntegrationStatusPublishing, IntegrationStatusFailed},
+		{IntegrationStatusPartialMerge, IntegrationStatusMerging},    // retry
+		{IntegrationStatusPartialMerge, IntegrationStatusPublishing}, // publish partial
+		{IntegrationStatusPartialMerge, IntegrationStatusFailed},
 		{IntegrationStatusConflict, IntegrationStatusMerging},
 		{IntegrationStatusConflict, IntegrationStatusFailed},
 		{IntegrationStatusFailed, IntegrationStatusMerging}, // retry after failure
@@ -375,8 +380,9 @@ func TestValidateIntegrationTransition(t *testing.T) {
 		{IntegrationStatusPublished, IntegrationStatusFailed},    // terminal
 		{IntegrationStatusCreated, IntegrationStatusMerged},      // must go through merging
 		{IntegrationStatusCreated, IntegrationStatusPublished},   // must go through merging→merged→publishing
-		{IntegrationStatusMerging, IntegrationStatusPublishing},  // must go through merged
-		{IntegrationStatusFailed, IntegrationStatusPublishing},   // can only retry to merging
+		{IntegrationStatusMerging, IntegrationStatusPublishing},     // must go through merged
+		{IntegrationStatusPartialMerge, IntegrationStatusCreated}, // invalid backward
+		{IntegrationStatusFailed, IntegrationStatusPublishing},    // can only retry to merging
 	}
 	for _, tt := range invalid {
 		t.Run("invalid_"+string(tt.from)+"→"+string(tt.to), func(t *testing.T) {
