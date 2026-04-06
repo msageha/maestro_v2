@@ -4,6 +4,7 @@ package yaml
 import (
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -31,9 +32,13 @@ func AtomicWriteRaw(path string, content []byte) error {
 	defer func() {
 		// Clean up temp file on any failure
 		if !tmpClosed {
-			_ = tmp.Close()
+			if err := tmp.Close(); err != nil {
+				log.Printf("WARN: failed to close temp file %s: %v", tmpName, err)
+			}
 		}
-		_ = os.Remove(tmpName)
+		if err := os.Remove(tmpName); err != nil && !os.IsNotExist(err) {
+			log.Printf("WARN: failed to remove temp file %s: %v", tmpName, err)
+		}
 	}()
 
 	if _, err := tmp.Write(content); err != nil {
@@ -83,7 +88,11 @@ func syncDir(dir string) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = d.Close() }()
+	defer func() {
+		if err := d.Close(); err != nil {
+			log.Printf("WARN: failed to close directory %s: %v", dir, err)
+		}
+	}()
 	return d.Sync()
 }
 
@@ -97,7 +106,11 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = in.Close() }()
+	defer func() {
+		if err := in.Close(); err != nil {
+			log.Printf("WARN: failed to close source file %s: %v", src, err)
+		}
+	}()
 
 	dir := filepath.Dir(dst)
 	tmp, err := os.CreateTemp(dir, ".maestro-bak-tmp-*.yaml")
@@ -109,9 +122,13 @@ func copyFile(src, dst string) error {
 	var tmpClosed bool
 	defer func() {
 		if !tmpClosed {
-			_ = tmp.Close()
+			if err := tmp.Close(); err != nil {
+				log.Printf("WARN: failed to close backup temp file %s: %v", tmpName, err)
+			}
 		}
-		_ = os.Remove(tmpName)
+		if err := os.Remove(tmpName); err != nil && !os.IsNotExist(err) {
+			log.Printf("WARN: failed to remove backup temp file %s: %v", tmpName, err)
+		}
 	}()
 
 	if _, err := io.Copy(tmp, in); err != nil {

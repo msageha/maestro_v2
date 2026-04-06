@@ -80,10 +80,14 @@ func (s *Server) Start() error {
 func (s *Server) Stop() error {
 	s.cancel()
 	if s.listener != nil {
-		_ = s.listener.Close()
+		if err := s.listener.Close(); err != nil {
+			log.Printf("DEBUG: failed to close listener during stop: %v", err)
+		}
 	}
 	s.wg.Wait()
-	_ = os.Remove(s.socketPath)
+	if err := os.Remove(s.socketPath); err != nil && !os.IsNotExist(err) {
+		log.Printf("DEBUG: failed to remove socket file during stop: %v", err)
+	}
 	return nil
 }
 
@@ -111,8 +115,12 @@ func (s *Server) acceptLoop() {
 			log.Printf("connection rejected: max concurrent connections (%d) reached", s.maxConns)
 			// Best-effort error response before closing
 			resp := ErrorResponse(ErrCodeBackpressure, "server at capacity, try again later")
-			_ = WriteFrame(conn, resp)
-			_ = conn.Close()
+			if err := WriteFrame(conn, resp); err != nil {
+				log.Printf("DEBUG: failed to write backpressure response: %v", err)
+			}
+			if err := conn.Close(); err != nil {
+				log.Printf("DEBUG: failed to close rejected connection: %v", err)
+			}
 		}
 	}
 }
@@ -120,7 +128,11 @@ func (s *Server) acceptLoop() {
 func (s *Server) handleConn(conn net.Conn) {
 	defer s.wg.Done()
 	defer func() { <-s.connSem }()
-	defer func() { _ = conn.Close() }()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			log.Printf("DEBUG: failed to close handled connection: %v", err)
+		}
+	}()
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("panic in handleConn: %v\n%s", r, debug.Stack())

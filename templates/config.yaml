@@ -31,7 +31,7 @@ continuous:
   pause_on_failure: true
 
 watcher:
-  debounce_sec: 0.3
+  debounce_sec: 0.5
   scan_interval_sec: 60
   dispatch_lease_sec: 300
   max_in_progress_min: 30
@@ -42,7 +42,7 @@ watcher:
   cooldown_after_clear: 3
   notify_lease_sec: 120
   wait_ready_interval_sec: 2 # Agent 準備完了待ちのポーリング間隔 (秒)
-  wait_ready_max_retries: 30 # Agent 準備完了待ちの最大リトライ回数
+  wait_ready_max_retries: 15 # Agent 準備完了待ちの最大リトライ回数
   clear_confirm_timeout_sec: 5 # クリア確認の1回あたりタイムアウト (秒)
   clear_confirm_poll_ms: 250 # クリア確認ウィンドウ内のポーリング間隔 (ms)
   clear_max_attempts: 3 # クリア送信の最大試行回数 (初回含む)

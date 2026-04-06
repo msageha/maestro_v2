@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -40,7 +41,9 @@ func (d *Daemon) waitSignals() {
 				d.log(LogLevelWarn, "received second signal, forcing exit")
 				d.forceExit.Store(true)
 				if d.watcher != nil {
-					_ = d.watcher.Close()
+					if err := d.watcher.Close(); err != nil {
+						log.Printf("DEBUG: failed to close watcher during force exit: %v", err)
+					}
 				}
 				d.closeExecutors()
 				d.cleanup()
@@ -99,7 +102,9 @@ func (d *Daemon) Shutdown() {
 			d.eventBus.Close()
 		}
 		if d.qualityGateDaemon != nil {
-			_ = d.qualityGateDaemon.Stop()
+			if err := d.qualityGateDaemon.Stop(); err != nil {
+				log.Printf("DEBUG: failed to stop quality gate daemon during shutdown: %v", err)
+			}
 		}
 
 		// 3. Cancel context — forces loops and handlers to exit.
