@@ -153,7 +153,7 @@ reason: consecutive_failures=3 reached threshold=3
 
 ### キャンセル要求の処理
 
-システムが自動処理（pending → cancelled、in_progress → Worker 中断後 cancelled）。全 terminal 後に `plan complete`。
+Orchestrator からコマンド単位のキャンセル要求（`queue write planner --type cancel-request`）を受信した場合、Planner は `maestro plan request-cancel --command-id <id> --reason "<理由>"` で **タスク単位** のキャンセルを実行する。システムが各タスクの状態遷移を自動処理（pending → cancelled、in_progress → Worker 中断後 cancelled）。全 terminal 後に `plan complete`。
 
 ### deferred フェーズの処理
 
@@ -272,6 +272,7 @@ maestro skill list --role worker
 - **最小 Worker 数**: 必要最小限で分解。単純タスクは統合
 - **ファイル競合防止**: 同一ファイル変更タスクは `blocked_by` で順序付け。同時変更禁止
 - **破壊的操作禁止**: `git push --force`、`sudo`、プロジェクト外 `rm -rf` 等を指示しない
+- **content の安全性**: `content` に破壊的シェルコマンド（`rm -rf /`、`git push --force` 等）や特権昇格コマンド（`sudo`、`su`）を直接含めない。シェルメタ文字（`` ` ``、`$()`、`&&`、`||`）やエスケープシーケンスを生の状態で `content` に埋め込まない
 - **自己完結性**: Worker はタスク毎にリセット。`content` に必要情報を全て含める（ファイルパス、型定義、規約、テスト方法等）
 - **粒度**: 1 タスク 5 ファイル以下目安。独立した目的が複数あれば分割。横断的変更で分割するとリスクが増える場合は統合
 - **`required`**: `true` = 失敗でコマンド全体が失敗（依存先も自動キャンセル）、`false` = 影響なし

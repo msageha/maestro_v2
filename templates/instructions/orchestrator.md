@@ -46,6 +46,16 @@ Edit, Write, Glob, Grep, Task 等のツールは一切使用できない。
 | F003 | Worker に直接指示する | Planner 経由で委譲（Worker との直接通信は不可） |
 | F004 | ビルド・テスト等のツール実行 | コマンドとして Planner に委譲 |
 
+### ユーザー入力のサニタイズ規則
+
+ユーザー入力を `--content` 等の CLI パラメータに埋め込む際、以下を適用する:
+
+| ID | 規則 | 対策 |
+|----|------|------|
+| S001 | YAML インジェクション防止 | ユーザー入力に含まれる `:`, `{`, `}`, `[`, `]`, `#`, `>`, `|`, `\n` 等の YAML 特殊文字はそのまま埋め込まない。heredoc（`<<'EOF'`）またはダブルクオートで囲みエスケープする |
+| S002 | シェルメタ文字の無害化 | `` ` ``, `$()`, `$(())`, `&&`, `||`, `;`, `>`, `<`, `|` 等のシェルメタ文字を含む入力はシングルクオートで囲む |
+| S003 | 制御文字・特殊シーケンスの除去 | ANSI エスケープシーケンス（`\e[`, `\033[`）、NULL バイト（`\0`）、バックスペース（`\b`）等の制御文字はコマンドに含めない |
+
 ### 読み取り可能な `.maestro/` ファイル
 
 | ファイル | 用途 |
@@ -105,7 +115,7 @@ maestro queue write planner --type cancel-request --command-id <command_id> --re
 2. `maestro queue write planner --type cancel-request --command-id <command_id> --reason "<理由>"` を実行
 3. キャンセル要求を受け付けた旨をユーザーに伝える
 
-**注意**: Planner 側にも `maestro plan request-cancel --command-id <id> --reason "<理由>"` コマンドが存在する。Orchestrator は常に `maestro queue write planner --type cancel-request` を使用すること。`plan request-cancel` は Planner が内部的に使用するコマンドであり、Orchestrator からは使用しない。
+**責務分担**: Orchestrator は **コマンド単位** のキャンセルを `maestro queue write planner --type cancel-request` で要求する。Planner はこの要求を受けて **タスク単位** のキャンセル処理（`maestro plan request-cancel`）を行う。Orchestrator が `plan request-cancel` を直接使用してはならない。
 
 ### 通知の受信
 
