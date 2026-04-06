@@ -575,6 +575,76 @@ func TestAddRetryTask_HappyPath(t *testing.T) {
 	}
 }
 
+func TestAddRetryTask_CancelsOriginalQueueEntry(t *testing.T) {
+	maestroDir, commandID, failedTaskID := setupRetryFixture(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	// Pre-populate a queue file with the original failed task so that
+	// cancelOriginalTaskInQueue can find and cancel it.
+	origQueueFile := filepath.Join(maestroDir, "queue", "worker1.yaml")
+	origQueue := model.TaskQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_task",
+		Tasks: []model.Task{
+			{
+				ID:        failedTaskID,
+				CommandID: commandID,
+				Purpose:   "original task",
+				Status:    model.StatusFailed,
+				CreatedAt: "2025-01-01T00:00:00Z",
+				UpdatedAt: "2025-01-01T00:00:00Z",
+			},
+		},
+	}
+	if err := yamlutil.AtomicWrite(origQueueFile, origQueue); err != nil {
+		t.Fatalf("write original queue: %v", err)
+	}
+
+	result, err := AddRetryTask(RetryOptions{
+		CommandID:          commandID,
+		RetryOf:            failedTaskID,
+		Purpose:            "retry task",
+		Content:            "redo task",
+		AcceptanceCriteria: "task passes",
+		BloomLevel:         2,
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err != nil {
+		t.Fatalf("AddRetryTask returned error: %v", err)
+	}
+	if result.TaskID == "" {
+		t.Fatal("result.TaskID is empty")
+	}
+
+	// Verify the original failed task's queue entry was cancelled.
+	foundOriginal := false
+	for i := 1; i <= 2; i++ {
+		queueFile := filepath.Join(maestroDir, "queue", fmt.Sprintf("worker%d.yaml", i))
+		data, err := os.ReadFile(queueFile)
+		if err != nil {
+			continue
+		}
+		var tq model.TaskQueue
+		if yamlv3.Unmarshal(data, &tq) != nil {
+			continue
+		}
+		for _, task := range tq.Tasks {
+			if task.ID == failedTaskID {
+				foundOriginal = true
+				if task.Status != model.StatusCancelled {
+					t.Errorf("original task queue status = %s, want cancelled", task.Status)
+				}
+			}
+		}
+	}
+	if !foundOriginal {
+		t.Error("original task not found in any queue after retry")
+	}
+}
+
 func TestAddRetryTask_CascadeRecover(t *testing.T) {
 	// Setup: A→B→C chain where A failed and B,C were cancelled due to dependency failure
 	maestroDir := setupMaestroDir(t)
