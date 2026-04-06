@@ -341,7 +341,9 @@ func (b *Bus) Close() {
 	go func() {
 		defer b.activeGoroutines.Add(-1)
 		wgDone := make(chan struct{})
+		b.activeGoroutines.Add(1)
 		go func() {
+			defer b.activeGoroutines.Add(-1)
 			b.wg.Wait()
 			close(wgDone)
 		}()
