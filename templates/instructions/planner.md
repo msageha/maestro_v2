@@ -405,6 +405,26 @@ workers: [worker1, worker3]
 1. 競合解決タスクを発行（`content` に競合パス・原因・解決方針、`acceptance_criteria` に競合マーカー不在を明記）
 2. **最大リトライ: 2 回**。解決できなければ `plan complete` で報告
 
+### コミット失敗ハンドリング (commit_failed)
+
+Worker の自動コミットに失敗すると、Daemon は該当 Worker を `commit_failed_workers` に記録し、worktree を統合ブランチへマージできない状態で保留する。Planner には以下の構造化シグナルが届く:
+
+```
+[maestro] kind:commit_failed
+kind: commit_failed
+command_id: "cmd_xxx"
+phase_id: "implementation"
+worker_id: "worker2"
+reason_code: "commit_error"
+error: "..."
+```
+
+対応手順:
+
+1. `worker_id` のタスクをリトライ用に再発行する。`content` には `reason_code` と `error` を含めて再現条件を明示する
+2. リトライしても解決できない場合は `plan complete` で当該 worker のタスクを `failed` 扱いにする
+3. **重要**: コミット失敗時は worktree がダーティのまま残る。`config.yaml` の `worktree.cleanup_on_failure: true` の場合でも、commit 失敗単体では cleanup されない（タスク自体は `completed` のため）。タスクを失敗扱いに転じない限り worktree は手動で `maestro worktree clean` する必要がある
+
 verification フェーズは main 上で実行。worktree 固有の考慮は不要。
 
 ---
