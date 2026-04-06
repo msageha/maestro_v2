@@ -183,24 +183,28 @@ func (qg *QualityGateDaemon) Stop() error {
 
 // EmitEvent sends an event to the quality gate daemon for processing.
 // This is a non-blocking operation; events are queued in a buffered channel.
-// Safe to call from multiple goroutines. Uses ctx.Done() in the select as the
-// primary shutdown guard instead of relying solely on stopped flag (which has
-// a TOCTOU window). Note: Go's select chooses randomly among ready cases, so
-// a late enqueue is theoretically possible when both ctx.Done() and eventChan
-// are ready simultaneously — this is benign because the channel is never closed
-// and the eventLoop drains remaining events on shutdown.
+// Safe to call from multiple goroutines. Uses a two-stage select pattern to
+// prioritize ctx.Done() over channel send, eliminating the TOCTOU race between
+// the stopped flag check and the send operation.
 func (qg *QualityGateDaemon) EmitEvent(event QualityGateEvent) {
 	// Auxiliary guard: best-effort early exit when already stopped.
-	// Reduces unnecessary select overhead but is not relied upon for
-	// correctness due to TOCTOU between this check and the select.
 	if qg.stopped.Load() {
 		qg.log(LogLevelDebug, "quality_gate_event_dropped type=%s reason=stopped", event.EventType())
 		return
 	}
 
-	// ctx.Done() participates in the select as the primary shutdown signal.
-	// Combined with the auxiliary stopped check above, this provides
-	// defense-in-depth against post-shutdown sends.
+	// Stage 1: Prioritize context cancellation. This non-blocking check
+	// ensures we never proceed to send if shutdown is already in progress,
+	// closing the TOCTOU window between the stopped check and the send.
+	select {
+	case <-qg.ctx.Done():
+		qg.log(LogLevelDebug, "quality_gate_event_dropped type=%s reason=shutdown", event.EventType())
+		return
+	default:
+	}
+
+	// Stage 2: Attempt to send the event. Include ctx.Done() again to handle
+	// cancellation that occurs between stage 1 and this select.
 	select {
 	case <-qg.ctx.Done():
 		qg.log(LogLevelDebug, "quality_gate_event_dropped type=%s reason=shutdown", event.EventType())
