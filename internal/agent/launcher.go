@@ -30,7 +30,7 @@ var validRoleName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 //
 // Workers have no tool restriction (they need full access for task execution).
 var allowedToolsByRole = map[string][]string{
-	"orchestrator": {"Bash(maestro:*)", "Read(.maestro/**)"},
+	"orchestrator": {"Bash(maestro:*)", "Read(.maestro/dashboard.md)", "Read(.maestro/results/*)", "Read(.maestro/config.yaml)"},
 	"planner":      {"Bash(maestro:*)", "Read(.maestro/**)"},
 	// worker: unrestricted (empty means all tools allowed)
 }
