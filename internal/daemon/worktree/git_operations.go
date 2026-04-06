@@ -385,6 +385,27 @@ func (wm *Manager) unstageSensitiveFiles(dir string) error {
 	return nil
 }
 
+// ErrAllFilesFiltered is returned when all dirty files were filtered out by
+// sensitive-file rules, leaving nothing to commit while the worktree is still dirty.
+var ErrAllFilesFiltered = errors.New("all changed files were filtered by sensitive-file rules; nothing to commit")
+
+// CommitPolicyViolationError wraps one or more commit policy violations as a
+// structured error so callers can use errors.Is / errors.As.
+type CommitPolicyViolationError struct {
+	Violations []CommitPolicyViolation
+}
+
+func (e *CommitPolicyViolationError) Error() string {
+	if len(e.Violations) == 0 {
+		return "commit policy violation"
+	}
+	msgs := make([]string, len(e.Violations))
+	for i, v := range e.Violations {
+		msgs[i] = fmt.Sprintf("[%s] %s", v.Code, v.Message)
+	}
+	return fmt.Sprintf("commit policy violation: %s", strings.Join(msgs, "; "))
+}
+
 // CommitPolicyViolation represents a single commit policy check failure.
 type CommitPolicyViolation struct {
 	Code    string   // machine-readable code (e.g. "max_files_exceeded")

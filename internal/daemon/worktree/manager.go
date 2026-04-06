@@ -280,8 +280,9 @@ func (wm *Manager) CommitWorkerChanges(commandID, workerID, message string) erro
 		return fmt.Errorf("git diff --cached in %s: %w", ws.Path, err)
 	}
 	if strings.TrimRight(stagedOut, "\x00") == "" {
-		wm.log(core.LogLevelDebug, "no_staged_changes_after_filter command=%s worker=%s", commandID, workerID)
-		return nil
+		// Worktree had dirty files but all were filtered — this is not a clean success.
+		wm.log(core.LogLevelWarn, "all_files_filtered command=%s worker=%s", commandID, workerID)
+		return fmt.Errorf("commit for worker %s in command %s: %w", workerID, commandID, ErrAllFilesFiltered)
 	}
 
 	// Commit policy checks
@@ -290,9 +291,15 @@ func (wm *Manager) CommitWorkerChanges(commandID, workerID, message string) erro
 			wm.log(core.LogLevelWarn, "commit_policy_violation command=%s worker=%s code=%s msg=%s",
 				commandID, workerID, v.Code, v.Message)
 		}
-		// Reset staged changes so the worktree is left in a clean index state
-		_ = wm.gitRunInDir(ws.Path, "reset", "HEAD")
-		return fmt.Errorf("commit policy violation [%s]: %s", violations[0].Code, violations[0].Message)
+		// Reset staged changes so the worktree is left in a clean index state.
+		// Note: dirty files remain in the worktree after reset.
+		if resetErr := wm.gitRunInDir(ws.Path, "reset", "HEAD"); resetErr != nil {
+			wm.log(core.LogLevelWarn, "git_reset_after_policy_violation command=%s worker=%s error=%v",
+				commandID, workerID, resetErr)
+		}
+		wm.log(core.LogLevelWarn, "dirty_files_remain_after_policy_reset command=%s worker=%s",
+			commandID, workerID)
+		return &CommitPolicyViolationError{Violations: violations}
 	}
 
 	if err := wm.gitRunInDir(ws.Path, "commit", "-m", message); err != nil {

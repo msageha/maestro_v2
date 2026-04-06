@@ -336,11 +336,18 @@ type worktreeMergeItem struct {
 	WorkerPurposes map[string]string // workerID -> task purpose (for commit messages)
 }
 
+// commitFailure records a worker whose CommitWorkerChanges failed.
+type commitFailure struct {
+	WorkerID string
+	Error    error
+}
+
 // worktreeMergeResult captures the outcome of a Phase B worktree merge.
 type worktreeMergeResult struct {
-	Item      worktreeMergeItem
-	Conflicts []model.MergeConflict
-	Error     error
+	Item           worktreeMergeItem
+	CommitFailures []commitFailure // workers whose commit failed (excluded from merge)
+	Conflicts      []model.MergeConflict
+	Error          error
 }
 
 // worktreePublishItem captures a publish-to-base operation for Phase B execution.
