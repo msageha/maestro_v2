@@ -292,6 +292,50 @@ func TestCollectWorktreePublish_SkipNotReady(t *testing.T) {
 	}
 }
 
+// TestCollectWorktreePublish_BlockedByCommitFailedWorkers verifies that publish
+// is blocked when worktree state still records workers whose auto-commit failed,
+// even if integration status reached Merged via the workers that did commit.
+func TestCollectWorktreePublish_BlockedByCommitFailedWorkers(t *testing.T) {
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{
+		Enabled:          true,
+		CleanupOnSuccess: true,
+	})
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusMerged)
+
+	// Re-load and inject CommitFailedWorkers, then re-write.
+	statePath := filepath.Join(maestroDir, "state", "worktrees", "cmd1.yaml")
+	state, err := qh.worktreeManager.GetCommandState("cmd1")
+	if err != nil {
+		t.Fatalf("load worktree state: %v", err)
+	}
+	state.CommitFailedWorkers = []string{"worker2"}
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("rewrite worktree state: %v", err)
+	}
+
+	writeCommandState(t, maestroDir, "cmd1", map[string]model.Status{
+		"t1": model.StatusCompleted,
+		"t2": model.StatusCompleted,
+	}, nil)
+
+	tqs := makeTaskQueues(map[string][]model.Task{
+		"worker1": {
+			{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
+			{ID: "t2", CommandID: "cmd1", Status: model.StatusCompleted},
+		},
+	})
+
+	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", "", tqs)
+	if len(publishes) != 0 {
+		t.Errorf("expected 0 publish items when CommitFailedWorkers is non-empty, got %d", len(publishes))
+	}
+	if len(cleanups) != 0 {
+		t.Errorf("expected 0 cleanup items, got %d", len(cleanups))
+	}
+}
+
 func TestCollectWorktreePublish_SkipConflict(t *testing.T) {
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{

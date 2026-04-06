@@ -70,6 +70,10 @@ type WorktreeCommandState struct {
 	Integration   IntegrationState   `yaml:"integration"`
 	Workers       []WorktreeState    `yaml:"workers"`
 	MergedPhases  map[string]string  `yaml:"merged_phases,omitempty"` // phase_id -> merged_at (tracks which phases have been merged)
+	// CommitFailedWorkers tracks worker IDs whose auto-commit failed during a phase merge.
+	// Publish-to-base is blocked while this list is non-empty so unmerged worker changes
+	// are never silently published.
+	CommitFailedWorkers []string     `yaml:"commit_failed_workers,omitempty"`
 	CreatedAt     string             `yaml:"created_at"`
 	UpdatedAt     string             `yaml:"updated_at"`
 }

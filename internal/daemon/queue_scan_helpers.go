@@ -204,6 +204,13 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 	// No failures — check integration status to decide action
 	switch cmdState.Integration.Status {
 	case model.IntegrationStatusMerged:
+		// Block publish if any worker had an unresolved auto-commit failure.
+		// Otherwise, partially-committed phases would publish unmerged worker changes.
+		if len(cmdState.CommitFailedWorkers) > 0 {
+			qh.log(LogLevelWarn, "worktree_publish_blocked_commit_failed command=%s workers=%v",
+				commandID, cmdState.CommitFailedWorkers)
+			return publishes, cleanups
+		}
 		// Ready to publish
 		publishes = append(publishes, worktreePublishItem{
 			CommandID:      commandID,

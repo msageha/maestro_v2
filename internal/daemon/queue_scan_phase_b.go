@@ -105,8 +105,18 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 						WorkerID: workerID,
 						Error:    err,
 					})
+					// Persist commit-failed marker so the publish gate blocks until cleared.
+					if recErr := qh.worktreeManager.AddCommitFailedWorker(item.CommandID, workerID); recErr != nil {
+						qh.log(LogLevelWarn, "worktree_record_commit_failed command=%s worker=%s error=%v",
+							item.CommandID, workerID, recErr)
+					}
 				} else {
 					succeeded = append(succeeded, workerID)
+					// Clear any prior commit-failed marker on successful retry.
+					if clrErr := qh.worktreeManager.RemoveCommitFailedWorker(item.CommandID, workerID); clrErr != nil {
+						qh.log(LogLevelWarn, "worktree_clear_commit_failed command=%s worker=%s error=%v",
+							item.CommandID, workerID, clrErr)
+					}
 				}
 			}
 			committedWorkerIDs = succeeded

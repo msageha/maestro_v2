@@ -361,6 +361,61 @@ func (wm *Manager) MarkPhaseMerged(commandID, phaseID string) error {
 	return wm.saveState(commandID, state)
 }
 
+// AddCommitFailedWorker records a worker whose auto-commit failed for a command.
+// Idempotent: duplicate IDs are deduped. Used by Phase B to block publish until cleared.
+func (wm *Manager) AddCommitFailedWorker(commandID, workerID string) error {
+	if err := validateIDs(commandID, workerID); err != nil {
+		return err
+	}
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	state, err := wm.loadState(commandID)
+	if err != nil {
+		return err
+	}
+	for _, w := range state.CommitFailedWorkers {
+		if w == workerID {
+			return nil
+		}
+	}
+	state.CommitFailedWorkers = append(state.CommitFailedWorkers, workerID)
+	state.UpdatedAt = wm.clock.Now().UTC().Format(time.RFC3339)
+	return wm.saveState(commandID, state)
+}
+
+// RemoveCommitFailedWorker clears a worker from the commit-failed list after a successful commit.
+func (wm *Manager) RemoveCommitFailedWorker(commandID, workerID string) error {
+	if err := validateIDs(commandID, workerID); err != nil {
+		return err
+	}
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	state, err := wm.loadState(commandID)
+	if err != nil {
+		return err
+	}
+	if len(state.CommitFailedWorkers) == 0 {
+		return nil
+	}
+	filtered := state.CommitFailedWorkers[:0]
+	changed := false
+	for _, w := range state.CommitFailedWorkers {
+		if w == workerID {
+			changed = true
+			continue
+		}
+		filtered = append(filtered, w)
+	}
+	if !changed {
+		return nil
+	}
+	state.CommitFailedWorkers = filtered
+	state.UpdatedAt = wm.clock.Now().UTC().Format(time.RFC3339)
+	return wm.saveState(commandID, state)
+}
+
 // DiscardWorkerChanges discards all uncommitted changes in a worker's worktree.
 // Used during cancellation to clean up in-progress work.
 func (wm *Manager) DiscardWorkerChanges(commandID, workerID string) error {

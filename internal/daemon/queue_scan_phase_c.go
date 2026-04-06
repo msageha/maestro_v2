@@ -78,6 +78,7 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 					Kind:      "commit_failed",
 					CommandID: mr.Item.CommandID,
 					PhaseID:   mr.Item.PhaseID,
+					WorkerID:  cf.WorkerID,
 					Message:   msg,
 					CreatedAt: now,
 					UpdatedAt: now,
