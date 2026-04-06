@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/tmux"
 )
 
