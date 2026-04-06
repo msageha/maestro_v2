@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -91,7 +92,9 @@ func (ep *ExecutorProvider) SetFactory(f ExecutorFactory) {
 	ep.mu.Unlock()
 
 	if old != nil {
-		_ = old.Close()
+		if err := old.Close(); err != nil {
+			log.Printf("WARN: failed to close old executor: %v", err)
+		}
 	}
 }
 
@@ -114,6 +117,8 @@ func (ep *ExecutorProvider) CloseExecutor() {
 	ep.mu.Unlock()
 
 	if exec != nil {
-		_ = exec.Close()
+		if err := exec.Close(); err != nil {
+			log.Printf("WARN: failed to close executor: %v", err)
+		}
 	}
 }

@@ -3,6 +3,7 @@ package uds
 import (
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"syscall"
 	"time"
@@ -67,7 +68,11 @@ func (c *Client) Send(req *Request) (*Response, error) {
 			c.socketPath, dialErr,
 		)
 	}
-	defer func() { _ = conn.Close() }()
+	defer func() {
+		if err := conn.Close(); err != nil {
+			log.Printf("WARN: failed to close client connection: %v", err)
+		}
+	}()
 
 	if err := conn.SetDeadline(time.Now().Add(c.timeout)); err != nil {
 		return nil, fmt.Errorf("set connection deadline: %w", err)

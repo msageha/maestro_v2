@@ -14,8 +14,14 @@ func validConfig() Config {
 			Workers: WorkerConfig{Count: 2},
 		},
 		Watcher: WatcherConfig{
-			BusyCheckInterval:   5,
-			BusyCheckMaxRetries: 3,
+			BusyCheckInterval:      5,
+			BusyCheckMaxRetries:    3,
+			NotifyLeaseSec:         120,
+			WaitReadyIntervalSec:   2,
+			WaitReadyMaxRetries:    15,
+			ClearConfirmTimeoutSec: 5,
+			ClearConfirmPollMs:     250,
+			ClearMaxAttempts:       3,
 		},
 	}
 }

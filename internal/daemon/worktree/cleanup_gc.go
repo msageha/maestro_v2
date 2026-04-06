@@ -2,6 +2,7 @@ package worktree
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -85,10 +86,14 @@ func (wm *Manager) CleanupCommand(commandID string) error {
 
 	// All worktree removals succeeded — safe to remove directory and state file
 	wtDir := filepath.Join(wm.projectRoot, wm.config.EffectivePathPrefix(), commandID)
-	_ = os.RemoveAll(wtDir)
+	if err := os.RemoveAll(wtDir); err != nil {
+		log.Printf("WARN: failed to remove worktree directory %s: %v", wtDir, err)
+	}
 
 	statePath := filepath.Join(wm.maestroDir, "state", "worktrees", commandID+".yaml")
-	_ = os.Remove(statePath)
+	if err := os.Remove(statePath); err != nil {
+		log.Printf("WARN: failed to remove state file %s: %v", statePath, err)
+	}
 
 	wm.log(core.LogLevelInfo, "cleanup_complete command=%s", commandID)
 	return nil
@@ -279,10 +284,14 @@ func (wm *Manager) cleanupCommandUnlocked(commandID string, state *model.Worktre
 
 	// All removals succeeded — safe to remove directory and state file
 	wtDir := filepath.Join(wm.projectRoot, wm.config.EffectivePathPrefix(), commandID)
-	_ = os.RemoveAll(wtDir)
+	if err := os.RemoveAll(wtDir); err != nil {
+		log.Printf("WARN: failed to remove worktree directory %s: %v", wtDir, err)
+	}
 
 	statePath := filepath.Join(wm.maestroDir, "state", "worktrees", commandID+".yaml")
-	_ = os.Remove(statePath)
+	if err := os.Remove(statePath); err != nil {
+		log.Printf("WARN: failed to remove state file %s: %v", statePath, err)
+	}
 
 	return nil
 }

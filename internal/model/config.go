@@ -447,6 +447,36 @@ func (c Config) Validate() error {
 	if c.Watcher.MaxInProgressMin != nil && *c.Watcher.MaxInProgressMin < 0 {
 		errs = append(errs, fmt.Errorf("watcher.max_in_progress_min: must be >= 0"))
 	}
+	if c.Watcher.DebounceSec < 0 {
+		errs = append(errs, fmt.Errorf("watcher.debounce_sec: must be >= 0"))
+	}
+	if c.Watcher.CooldownAfterClear < 0 {
+		errs = append(errs, fmt.Errorf("watcher.cooldown_after_clear: must be >= 0"))
+	}
+	if c.Watcher.NotifyLeaseSec <= 0 {
+		errs = append(errs, fmt.Errorf("watcher.notify_lease_sec: must be > 0"))
+	}
+	if c.Watcher.WaitReadyIntervalSec <= 0 {
+		errs = append(errs, fmt.Errorf("watcher.wait_ready_interval_sec: must be > 0"))
+	}
+	if c.Watcher.WaitReadyMaxRetries <= 0 {
+		errs = append(errs, fmt.Errorf("watcher.wait_ready_max_retries: must be > 0"))
+	}
+	if c.Watcher.ClearConfirmTimeoutSec <= 0 {
+		errs = append(errs, fmt.Errorf("watcher.clear_confirm_timeout_sec: must be > 0"))
+	}
+	if c.Watcher.ClearConfirmPollMs <= 0 {
+		errs = append(errs, fmt.Errorf("watcher.clear_confirm_poll_ms: must be > 0"))
+	}
+	if c.Watcher.ClearMaxAttempts <= 0 {
+		errs = append(errs, fmt.Errorf("watcher.clear_max_attempts: must be > 0"))
+	}
+	if c.Watcher.ClearRetryBackoffMs < 0 {
+		errs = append(errs, fmt.Errorf("watcher.clear_retry_backoff_ms: must be >= 0"))
+	}
+	if c.Watcher.ClearSecondEnterDelayMs < 0 {
+		errs = append(errs, fmt.Errorf("watcher.clear_second_enter_delay_ms: must be >= 0"))
+	}
 
 	// queue fields
 	if c.Queue.PriorityAgingSec < 0 {
@@ -530,6 +560,25 @@ func (c Config) Validate() error {
 	// quality_gates
 	if fa := c.QualityGates.Enforcement.FailureAction; fa != "" && fa != "warn" && fa != "block" {
 		errs = append(errs, fmt.Errorf("quality_gates.enforcement.failure_action: must be \"warn\" or \"block\""))
+	}
+
+	// worktree fields
+	if ms := c.Worktree.MergeStrategy; ms != "" && ms != "ort" && ms != "ours" && ms != "theirs" && ms != "recursive" {
+		errs = append(errs, fmt.Errorf("worktree.merge_strategy: must be one of \"ort\", \"ours\", \"theirs\", \"recursive\""))
+	}
+	if c.Worktree.GitTimeoutSec != nil && *c.Worktree.GitTimeoutSec <= 0 {
+		errs = append(errs, fmt.Errorf("worktree.git_timeout_sec: must be > 0"))
+	}
+	if c.Worktree.CommitPolicy.MaxFiles != nil && *c.Worktree.CommitPolicy.MaxFiles < 0 {
+		errs = append(errs, fmt.Errorf("worktree.commit_policy.max_files: must be >= 0"))
+	}
+	if c.Worktree.GC.Enabled {
+		if c.Worktree.GC.TTLHours != nil && *c.Worktree.GC.TTLHours <= 0 {
+			errs = append(errs, fmt.Errorf("worktree.gc.ttl_hours: must be > 0 when gc is enabled"))
+		}
+		if c.Worktree.GC.MaxWorktrees != nil && *c.Worktree.GC.MaxWorktrees <= 0 {
+			errs = append(errs, fmt.Errorf("worktree.gc.max_worktrees: must be > 0 when gc is enabled"))
+		}
 	}
 
 	if len(errs) == 0 {
