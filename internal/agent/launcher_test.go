@@ -13,7 +13,7 @@ func TestAllowedToolsByRole(t *testing.T) {
 		wantTools []string
 		wantOK    bool
 	}{
-		{"orchestrator", []string{"Bash(maestro:*)", "Read(.maestro/**)"}, true},
+		{"orchestrator", []string{"Bash(maestro:*)", "Read(.maestro/dashboard.md)", "Read(.maestro/results/*)", "Read(.maestro/config.yaml)"}, true},
 		{"planner", []string{"Bash(maestro:*)", "Read(.maestro/**)"}, true},
 		{"worker", nil, false},
 	}
@@ -67,13 +67,24 @@ func TestAllowedToolsByRole_OrchestratorReadHasPathRestriction(t *testing.T) {
 	tools := allowedToolsByRole["orchestrator"]
 	joined := strings.Join(tools, ",")
 
-	if !strings.Contains(joined, "Read(.maestro/**)") {
-		t.Error("orchestrator must have Read(.maestro/**)")
+	// Orchestrator Read is scoped to specific files only
+	expectedReads := []string{
+		"Read(.maestro/dashboard.md)",
+		"Read(.maestro/results/*)",
+		"Read(.maestro/config.yaml)",
 	}
-	// Must NOT have bare "Read" (unrestricted)
+	for _, r := range expectedReads {
+		if !strings.Contains(joined, r) {
+			t.Errorf("orchestrator must have %q", r)
+		}
+	}
+	// Must NOT have bare "Read" (unrestricted) or wildcard Read(.maestro/**)
 	for _, tool := range tools {
 		if tool == "Read" {
-			t.Error("orchestrator must use Read(.maestro/**), not bare Read")
+			t.Error("orchestrator must not have bare Read")
+		}
+		if tool == "Read(.maestro/**)" {
+			t.Error("orchestrator must not have wildcard Read(.maestro/**)")
 		}
 	}
 }
