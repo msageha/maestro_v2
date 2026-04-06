@@ -243,6 +243,14 @@ func (b *Bus) Publish(eventType EventType, data map[string]interface{}) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
+	// Double-check under RLock to close TOCTOU race window.
+	// Close() sets closed=true then acquires mu (exclusive). If Close()
+	// completed between our first check and this RLock acquisition,
+	// subscriber channels may already be closed — sending would panic.
+	if b.closed.Load() {
+		return
+	}
+
 	event := Event{
 		Type:      eventType,
 		Timestamp: time.Now().UTC(),
@@ -325,13 +333,26 @@ func (b *Bus) Close() {
 
 	// Wait for subscriber goroutines to finish with timeout.
 	// A goroutine is used because sync.WaitGroup.Wait is not cancellable.
-	// If the timeout fires, Close returns immediately. The waiter goroutine
-	// will finish on its own once the subscriber goroutines drain their
-	// (already-closed) channels, so it does not leak permanently.
+	// The goroutine is tracked via activeGoroutines and will self-terminate
+	// after the timeout even if wg.Wait blocks, preventing goroutine leaks.
 	waitDone := make(chan struct{})
+	timeout := make(chan struct{})
+	b.activeGoroutines.Add(1)
 	go func() {
-		b.wg.Wait()
-		close(waitDone)
+		defer b.activeGoroutines.Add(-1)
+		wgDone := make(chan struct{})
+		go func() {
+			b.wg.Wait()
+			close(wgDone)
+		}()
+		select {
+		case <-wgDone:
+			close(waitDone)
+		case <-timeout:
+			// Parent timed out; exit to avoid goroutine leak.
+			// The inner wg.Wait goroutine will finish on its own once
+			// subscriber goroutines drain their (already-closed) channels.
+		}
 	}()
 
 	timer := time.NewTimer(5 * time.Second)
@@ -340,6 +361,7 @@ func (b *Bus) Close() {
 	select {
 	case <-waitDone:
 	case <-timer.C:
+		close(timeout)
 		remaining := b.activeGoroutines.Load()
 		log.Printf("WARN event_bus: Close timed out waiting for %d subscriber goroutines",
 			remaining)
