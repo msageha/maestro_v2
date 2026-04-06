@@ -67,8 +67,22 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 		signalIndex := buildSignalIndex(signalQueue.Signals)
 		now := qh.clock.Now().UTC().Format(time.RFC3339)
 
-		// Worktree merge results: emit conflict signals, record merged phases
+		// Worktree merge results: emit commit failure signals, conflict signals, record merged phases
 		for _, mr := range pb.worktreeMerges {
+			for _, cf := range mr.CommitFailures {
+				qh.log(LogLevelError, "worktree_commit_failed command=%s phase=%s worker=%s error=%v",
+					mr.Item.CommandID, mr.Item.PhaseID, cf.WorkerID, cf.Error)
+				msg := fmt.Sprintf("[maestro] kind:commit_failed command_id:%s phase:%s worker:%s\nerror: %v",
+					mr.Item.CommandID, mr.Item.PhaseID, cf.WorkerID, cf.Error)
+				qh.upsertPlannerSignal(&signalQueue, &signalsDirty, model.PlannerSignal{
+					Kind:      "commit_failed",
+					CommandID: mr.Item.CommandID,
+					PhaseID:   mr.Item.PhaseID,
+					Message:   msg,
+					CreatedAt: now,
+					UpdatedAt: now,
+				}, signalIndex)
+			}
 			if mr.Error != nil {
 				qh.log(LogLevelError, "worktree_merge_failed command=%s phase=%s error=%v",
 					mr.Item.CommandID, mr.Item.PhaseID, mr.Error)
@@ -86,7 +100,7 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 					UpdatedAt: now,
 				}, signalIndex)
 			}
-			if mr.Error == nil && len(mr.Conflicts) == 0 && qh.worktreeManager != nil {
+			if mr.Error == nil && len(mr.Conflicts) == 0 && len(mr.CommitFailures) == 0 && qh.worktreeManager != nil {
 				if err := qh.worktreeManager.MarkPhaseMerged(mr.Item.CommandID, mr.Item.PhaseID); err != nil {
 					qh.log(LogLevelWarn, "mark_phase_merged_failed command=%s phase=%s error=%v",
 						mr.Item.CommandID, mr.Item.PhaseID, err)
