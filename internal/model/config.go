@@ -116,15 +116,35 @@ type AgentsConfig struct {
 }
 
 type AgentConfig struct {
-	ID    string `yaml:"id"`
-	Model string `yaml:"model"`
+	ID             string `yaml:"id"`
+	Model          string `yaml:"model"`
+	BasePromptMode string `yaml:"base_prompt_mode"`
+}
+
+// EffectiveBasePromptMode returns the configured base prompt mode or "append" as default.
+// Valid values: "replace" (--system-prompt), "append" (--append-system-prompt).
+func (a AgentConfig) EffectiveBasePromptMode() string {
+	if a.BasePromptMode == "replace" {
+		return "replace"
+	}
+	return "append"
 }
 
 type WorkerConfig struct {
-	Count        int               `yaml:"count"`
-	DefaultModel string            `yaml:"default_model"`
-	Models       map[string]string `yaml:"models,omitempty"`
-	Boost        bool              `yaml:"boost"`
+	Count          int               `yaml:"count"`
+	DefaultModel   string            `yaml:"default_model"`
+	Models         map[string]string `yaml:"models,omitempty"`
+	Boost          bool              `yaml:"boost"`
+	BasePromptMode string            `yaml:"base_prompt_mode"`
+}
+
+// EffectiveBasePromptMode returns the configured base prompt mode or "append" as default.
+// Valid values: "replace" (--system-prompt), "append" (--append-system-prompt).
+func (w WorkerConfig) EffectiveBasePromptMode() string {
+	if w.BasePromptMode == "replace" {
+		return "replace"
+	}
+	return "append"
 }
 
 type ContinuousConfig struct {

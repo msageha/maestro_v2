@@ -160,7 +160,7 @@ func TestHookScript_OutputsValidDenyJSON(t *testing.T) {
 func TestBuildLaunchArgs_WorkerNoSettingsInBuildLaunchArgs(t *testing.T) {
 	// Worker args from buildLaunchArgs should NOT include --settings.
 	// Workers get a single merged --settings (Notification + PreToolUse) in Launch().
-	args := buildLaunchArgs("worker", "sonnet", "system-prompt")
+	args := buildLaunchArgs("worker", "sonnet", "system-prompt", "")
 	joined := strings.Join(args, " ")
 
 	if strings.Contains(joined, "--settings") {
@@ -187,7 +187,7 @@ func TestHookSettings_WorkerMergedSettings(t *testing.T) {
 func TestBuildLaunchArgs_NonWorkerNoPreToolUseHook(t *testing.T) {
 	// Orchestrator and planner should NOT have PreToolUse hook settings
 	for _, role := range []string{"orchestrator", "planner"} {
-		args := buildLaunchArgs(role, "sonnet", "system-prompt")
+		args := buildLaunchArgs(role, "sonnet", "system-prompt", "")
 		joined := strings.Join(args, " ")
 
 		if strings.Contains(joined, "PreToolUse") {
