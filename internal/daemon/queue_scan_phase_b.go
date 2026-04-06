@@ -92,20 +92,29 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 	forEachUntilCanceled(ctx, pa.work.worktreeMerges, func(item worktreeMergeItem) {
 		mr := worktreeMergeResult{Item: item}
 
-		// First commit worker changes
+		// First commit worker changes, tracking failures
+		committedWorkerIDs := item.WorkerIDs
 		if qh.worktreeManager != nil && qh.worktreeManager.AutoCommit() {
+			var succeeded []string
 			for _, workerID := range item.WorkerIDs {
 				msg := workerCommitMessage(item.WorkerPurposes, workerID)
 				if err := qh.worktreeManager.CommitWorkerChanges(item.CommandID, workerID, msg); err != nil {
 					qh.log(LogLevelWarn, "worktree_auto_commit command=%s worker=%s error=%v",
 						item.CommandID, workerID, err)
+					mr.CommitFailures = append(mr.CommitFailures, commitFailure{
+						WorkerID: workerID,
+						Error:    err,
+					})
+				} else {
+					succeeded = append(succeeded, workerID)
 				}
 			}
+			committedWorkerIDs = succeeded
 		}
 
-		// Then merge to integration
-		if qh.worktreeManager != nil && qh.worktreeManager.AutoMerge() {
-			conflicts, err := qh.worktreeManager.MergeToIntegration(item.CommandID, item.WorkerIDs, item.WorkerPurposes)
+		// Then merge to integration (only workers that committed successfully)
+		if qh.worktreeManager != nil && qh.worktreeManager.AutoMerge() && len(committedWorkerIDs) > 0 {
+			conflicts, err := qh.worktreeManager.MergeToIntegration(item.CommandID, committedWorkerIDs, item.WorkerPurposes)
 			mr.Conflicts = conflicts
 			mr.Error = err
 
