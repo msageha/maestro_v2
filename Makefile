@@ -1,4 +1,4 @@
-.PHONY: all build test lint format clean install help ensure-lint
+.PHONY: all build test lint format clean install help ensure-lint check-deps
 
 BINARY    := maestro
 CMD_DIR   := ./cmd/maestro
@@ -10,13 +10,48 @@ GOLANGCI_LINT := $(GOBIN)/golangci-lint
 
 all: lint test build
 
+## ─── Deps ─────────────────────────────────────────────
+
+check-deps: ## tmux/go/claude の依存チェック
+	@missing=0; \
+	if ! command -v tmux >/dev/null 2>&1; then \
+		echo "error: tmux is not installed"; \
+		echo "  macOS:         brew install tmux"; \
+		echo "  Ubuntu/Debian: sudo apt install tmux"; \
+		missing=1; \
+	fi; \
+	if ! command -v go >/dev/null 2>&1; then \
+		echo "error: go is not installed"; \
+		echo "  macOS:         brew install go"; \
+		echo "  Ubuntu/Debian: sudo apt install golang"; \
+		echo "  Or visit: https://go.dev/dl/"; \
+		missing=1; \
+	fi; \
+	if ! command -v claude >/dev/null 2>&1; then \
+		echo "error: claude (Claude Code CLI) is not installed"; \
+		echo "  Install via: npm install -g @anthropic-ai/claude-code"; \
+		missing=1; \
+	fi; \
+	if [ "$$missing" -ne 0 ]; then \
+		echo ""; \
+		echo "error: Missing dependencies. Please install them and retry."; \
+		exit 1; \
+	fi; \
+	echo "All dependencies found."
+
 ## ─── Build ────────────────────────────────────────────
 
 build: ## Go バイナリをビルド
 	go build -o $(BUILD_DIR)/$(BINARY) $(CMD_DIR)/
 
-install: build ## ビルドして ~/Works/bin にインストール
-	mv $(BUILD_DIR)/$(BINARY) $(HOME)/Works/bin/$(BINARY)
+install: check-deps build ## ビルドしてインストール（MAESTRO_INSTALL_DIR > ~/bin > /usr/local/bin）
+	$(eval INSTALL_DIR := $(or $(MAESTRO_INSTALL_DIR),$(if $(wildcard $(HOME)/bin),$(HOME)/bin,/usr/local/bin)))
+	@mkdir -p $(INSTALL_DIR)
+	mv $(BUILD_DIR)/$(BINARY) $(INSTALL_DIR)/$(BINARY)
+	@chmod +x $(INSTALL_DIR)/$(BINARY)
+	@echo "Installed $(BINARY) to $(INSTALL_DIR)/$(BINARY)"
+	@echo "$(PATH)" | tr ':' '\n' | grep -qx "$(INSTALL_DIR)" || \
+		echo "warning: $(INSTALL_DIR) is not in your PATH. Add: export PATH=\"$(INSTALL_DIR):\$$PATH\""
 
 clean: ## ビルド成果物を削除
 	rm -f $(BUILD_DIR)/$(BINARY)
