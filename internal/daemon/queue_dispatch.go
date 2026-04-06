@@ -88,17 +88,31 @@ func (qh *QueueHandler) processPlannerSignalsDeferred(sq *model.PlannerSignalQue
 }
 
 // signalKey is the deduplication key for PlannerSignal.
+// WorkerID is only populated for kinds that need per-worker disambiguation
+// (currently "commit_failed"); for all other kinds it stays empty so phase-level
+// dedup behavior is preserved.
 type signalKey struct {
 	CommandID string
 	PhaseID   string
 	Kind      string
+	WorkerID  string
+}
+
+// signalDedupKey returns the dedup key for a signal, applying per-worker
+// disambiguation only for kinds that opt in.
+func signalDedupKey(s model.PlannerSignal) signalKey {
+	k := signalKey{CommandID: s.CommandID, PhaseID: s.PhaseID, Kind: s.Kind}
+	if s.Kind == "commit_failed" {
+		k.WorkerID = s.WorkerID
+	}
+	return k
 }
 
 // buildSignalIndex builds a lookup index from the current signals slice for O(1) dedup.
 func buildSignalIndex(signals []model.PlannerSignal) map[signalKey]struct{} {
 	idx := make(map[signalKey]struct{}, len(signals))
 	for _, s := range signals {
-		idx[signalKey{CommandID: s.CommandID, PhaseID: s.PhaseID, Kind: s.Kind}] = struct{}{}
+		idx[signalDedupKey(s)] = struct{}{}
 	}
 	return idx
 }
@@ -106,7 +120,7 @@ func buildSignalIndex(signals []model.PlannerSignal) map[signalKey]struct{} {
 // upsertPlannerSignal adds a signal or skips if one already exists for the same key.
 // Uses signalIndex for O(1) lookup; caller must pass the index built via buildSignalIndex.
 func (qh *QueueHandler) upsertPlannerSignal(sq *model.PlannerSignalQueue, dirty *bool, sig model.PlannerSignal, signalIndex map[signalKey]struct{}) {
-	key := signalKey{CommandID: sig.CommandID, PhaseID: sig.PhaseID, Kind: sig.Kind}
+	key := signalDedupKey(sig)
 	if _, exists := signalIndex[key]; exists {
 		qh.log(LogLevelDebug, "planner_signal_dedup kind=%s command=%s phase=%s",
 			sig.Kind, sig.CommandID, sig.PhaseID)

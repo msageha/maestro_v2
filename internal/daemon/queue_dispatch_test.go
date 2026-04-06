@@ -58,6 +58,69 @@ func TestComputeSignalBackoff_ZeroAttempt(t *testing.T) {
 	}
 }
 
+// TestUpsertPlannerSignal_CommitFailedDedupPerWorker verifies that commit_failed
+// signals from different workers in the same phase are NOT collapsed by the
+// dedup index — each worker must retain its own entry. Other kinds remain
+// phase-level deduped (backwards compatible).
+func TestUpsertPlannerSignal_CommitFailedDedupPerWorker(t *testing.T) {
+	qh := newDispatchTestQH(60)
+	sq := &model.PlannerSignalQueue{}
+	dirty := false
+	idx := buildSignalIndex(sq.Signals)
+
+	mk := func(worker string) model.PlannerSignal {
+		return model.PlannerSignal{
+			Kind:      "commit_failed",
+			CommandID: "cmd1",
+			PhaseID:   "phase1",
+			WorkerID:  worker,
+			Message:   "err for " + worker,
+			CreatedAt: "2026-01-01T00:00:00Z",
+			UpdatedAt: "2026-01-01T00:00:00Z",
+		}
+	}
+
+	qh.upsertPlannerSignal(sq, &dirty, mk("worker1"), idx)
+	qh.upsertPlannerSignal(sq, &dirty, mk("worker2"), idx)
+	qh.upsertPlannerSignal(sq, &dirty, mk("worker3"), idx)
+	// Duplicate of worker2 → should be skipped.
+	qh.upsertPlannerSignal(sq, &dirty, mk("worker2"), idx)
+
+	if len(sq.Signals) != 3 {
+		t.Fatalf("expected 3 distinct commit_failed signals, got %d: %+v", len(sq.Signals), sq.Signals)
+	}
+	seen := map[string]bool{}
+	for _, s := range sq.Signals {
+		if s.Kind != "commit_failed" || s.CommandID != "cmd1" || s.PhaseID != "phase1" {
+			t.Errorf("unexpected signal fields: %+v", s)
+		}
+		seen[s.WorkerID] = true
+	}
+	for _, w := range []string{"worker1", "worker2", "worker3"} {
+		if !seen[w] {
+			t.Errorf("missing signal for %s", w)
+		}
+	}
+
+	// Sanity: a non-commit_failed kind still dedupes by phase ignoring WorkerID.
+	mc := func(worker string) model.PlannerSignal {
+		return model.PlannerSignal{
+			Kind:      "merge_conflict",
+			CommandID: "cmd1",
+			PhaseID:   "phase1",
+			WorkerID:  worker,
+			CreatedAt: "2026-01-01T00:00:00Z",
+			UpdatedAt: "2026-01-01T00:00:00Z",
+		}
+	}
+	before := len(sq.Signals)
+	qh.upsertPlannerSignal(sq, &dirty, mc("worker1"), idx)
+	qh.upsertPlannerSignal(sq, &dirty, mc("worker2"), idx) // same key, deduped
+	if got := len(sq.Signals) - before; got != 1 {
+		t.Errorf("merge_conflict added %d entries, want 1 (phase-level dedup)", got)
+	}
+}
+
 func TestComputeSignalBackoff_NegativeAttempt(t *testing.T) {
 	qh := newDispatchTestQH(60)
 	d := qh.computeSignalBackoff(-5)

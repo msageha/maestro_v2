@@ -104,4 +104,8 @@ type PlannerSignal struct {
 	LastAttemptAt *string `yaml:"last_attempt_at"`
 	NextAttemptAt *string `yaml:"next_attempt_at"`
 	LastError     *string `yaml:"last_error"`
+	// WorkerID disambiguates per-worker signals (e.g. commit_failed) so multiple
+	// workers in the same phase each retain a distinct entry. Empty for
+	// phase-level signals — preserves the legacy dedup key.
+	WorkerID      string  `yaml:"worker_id,omitempty"`
 }
