@@ -11,12 +11,15 @@ agents:
   orchestrator:
     id: "orchestrator"
     model: "opus"
+    base_prompt_mode: "replace"
   planner:
     id: "planner"
     model: "opus"
+    base_prompt_mode: "replace"
   workers:
     count: 4
     default_model: "sonnet"
+    base_prompt_mode: "append"
     models:
       worker3: "opus"
       worker4: "opus"
