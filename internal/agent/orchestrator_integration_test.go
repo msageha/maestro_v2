@@ -111,8 +111,15 @@ func TestIntegration_OrchestratorToolsConfig(t *testing.T) {
 	tools := allowedToolsByRole["orchestrator"]
 	joined := strings.Join(tools, ",")
 
-	if !strings.Contains(joined, "Read(.maestro/**)") {
-		t.Errorf("orchestrator allowedTools must include Read(.maestro/**), got: %s", joined)
+	expectedReads := []string{
+		"Read(.maestro/dashboard.md)",
+		"Read(.maestro/results/*)",
+		"Read(.maestro/config.yaml)",
+	}
+	for _, r := range expectedReads {
+		if !strings.Contains(joined, r) {
+			t.Errorf("orchestrator allowedTools must include %s, got: %s", r, joined)
+		}
 	}
 	if !strings.Contains(joined, "Bash(maestro:*)") {
 		t.Errorf("orchestrator allowedTools must include Bash(maestro:*), got: %s", joined)
