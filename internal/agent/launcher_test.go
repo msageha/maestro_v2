@@ -182,7 +182,7 @@ func writeConfigYAML(t *testing.T, dir string, skillsEnabled bool) {
 	}
 }
 
-func TestBuildSystemPrompt_OrchestratorInjectsSkills(t *testing.T) {
+func TestBuildSystemPrompt_OrchestratorNoSkillInjection(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "maestro.md"), []byte("# Maestro"), 0644); err != nil {
 		t.Fatal(err)
@@ -194,9 +194,8 @@ func TestBuildSystemPrompt_OrchestratorInjectsSkills(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(instDir, "orchestrator.md"), []byte("# Orchestrator Instructions"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	writeConfigYAML(t, dir, true)
 
-	// Create orchestrator-specific and shared skills
+	// Create orchestrator-specific and shared skills — these should NOT be injected
 	orchSkillDir := filepath.Join(dir, "skills", "orchestrator", "orch-skill")
 	if err := os.MkdirAll(orchSkillDir, 0755); err != nil {
 		t.Fatal(err)
@@ -224,51 +223,14 @@ func TestBuildSystemPrompt_OrchestratorInjectsSkills(t *testing.T) {
 	if !strings.Contains(result, "# Orchestrator Instructions") {
 		t.Error("result should contain orchestrator instructions")
 	}
-	if !strings.Contains(result, "スキル: Orch Skill") {
-		t.Error("result should contain orchestrator-specific skill")
-	}
-	if !strings.Contains(result, "Orchestrator skill body") {
-		t.Error("result should contain orchestrator skill body")
-	}
-	if !strings.Contains(result, "スキル: Shared Skill") {
-		t.Error("result should contain shared skill")
-	}
-	if !strings.Contains(result, "Shared skill body") {
-		t.Error("result should contain shared skill body")
-	}
-}
-
-func TestBuildSystemPrompt_OrchestratorSkillsDisabled(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "maestro.md"), []byte("# Maestro"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	instDir := filepath.Join(dir, "instructions")
-	if err := os.MkdirAll(instDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(instDir, "orchestrator.md"), []byte("# Orchestrator"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	writeConfigYAML(t, dir, false) // skills disabled
-
-	orchSkillDir := filepath.Join(dir, "skills", "orchestrator", "orch-skill")
-	if err := os.MkdirAll(orchSkillDir, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(orchSkillDir, "SKILL.md"), []byte("---\nname: Orch Skill\n---\nBody"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	result, err := buildSystemPrompt(dir, "orchestrator")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
 	if strings.Contains(result, "スキル:") {
-		t.Error("orchestrator should NOT inject skills when skills.enabled=false")
+		t.Error("orchestrator system prompt should NOT contain skills section")
 	}
 }
+
+// TestBuildSystemPrompt_OrchestratorSkillsDisabled is no longer needed because
+// the orchestrator never injects skills regardless of config. Covered by
+// TestBuildSystemPrompt_OrchestratorNoSkillInjection above.
 
 func TestBuildSystemPrompt_NonOrchestratorNoSkillInjection(t *testing.T) {
 	dir := t.TempDir()

@@ -45,23 +45,13 @@ Edit, Write, Glob, Grep, Task 等のツールは一切使用できない。
 
 ### 使用する CLI コマンド
 
-**Planner スキル一覧の確認**:
-
-```
-maestro skill list --role planner
-```
-
-→ Planner に注入可能なスキル名と説明がタブ区切りで出力される。コマンド投入前に確認し、必要なスキルを `--skill-refs` で指定する。
-
 **コマンド投入**:
 
 ```
-maestro queue write planner --type command --content "<指示内容>" [--skill-refs <スキル名> ...]
+maestro queue write planner --type command --content "<指示内容>"
 ```
 
 → stdout にコマンド ID が返る（例: `cmd_1771722000_a3f2b7c1`）。エラー時は stderr にメッセージが出力される（backpressure 超過等）。エラーが発生した場合はユーザーに報告する。
-
-`--skill-refs` は任意フラグで、複数指定可（`--skill-refs breakdown-plan --skill-refs create-implementation-plan`）。コマンドの内容に応じて Planner に必要なスキルを選択する。共有スキル（コンテキスト効率化、自己評価、構造化通信）は自動注入されるため指定不要。
 
 **キャンセル要求**:
 
@@ -76,11 +66,9 @@ maestro queue write planner --type cancel-request --command-id <command_id> --re
 ### コマンド投入
 
 1. ユーザーの入力を受け取り、意図を理解する
-2. `maestro skill list --role planner` で Planner スキル一覧を確認する
-3. コマンドの内容に適した Planner スキルを選定する（判断基準は「スキル選定ガイド」参照）
-4. `maestro queue write planner --type command --content "..." --skill-refs <スキル1> --skill-refs <スキル2>` でコマンドを投入
-5. stdout で返されたコマンド ID をユーザーに伝える
-6. **ターンを終了する**。Planner の応答を待たない。ポーリングしない
+2. `maestro queue write planner --type command --content "..."` でコマンドを投入
+3. stdout で返されたコマンド ID をユーザーに伝える
+4. **ターンを終了する**。Planner の応答を待たない。ポーリングしない
 
 ユーザーが複数の要求を同時に出した場合は、1 つのコマンドにまとめて投入する。
 
@@ -120,30 +108,6 @@ results/planner.yaml を確認してください
 
 ---
 
-## スキル選定ガイド
-
-`maestro skill list --role planner` の出力からコマンドに適したスキルを選定する。スキル一覧はセッション中にキャッシュしてよい（毎回実行する必要はない）。
-
-### 選定基準
-
-| コマンドの特徴 | 推奨スキル（名前は一覧出力を参照） |
-|---|---|
-| 新機能の実装 | タスク分解系 + 実装計画系 |
-| 大規模・複数レイヤーにまたがる変更 | アーキテクチャ分解系 + タスク分解系 |
-| 曖昧な要求（「〜を作りたい」等） | PRD 系 + タスク分解系 |
-| バグ修正・小規模変更 | タスク分解系のみ（1-2 個で十分） |
-| セキュリティ関連の分析・対策 | セキュリティ系 + タスク分解系 |
-| 調査・分析のみ | タスク分解系のみ |
-
-### 注意事項
-
-- **大半のコマンドではスキル 1-3 個で十分**。全スキルを指定しない
-- 共有スキル（コンテキスト効率化、自己評価、構造化通信）は自動注入されるため `--skill-refs` に含めない
-- 存在しないスキル名を指定した場合の挙動は `config.yaml` の `missing_ref_policy` に依存する
-- スキル一覧が空の場合は `--skill-refs` を省略してよい
-
----
-
 ## Compaction Recovery
 
 コンテキスト圧縮時の復旧:
@@ -164,8 +128,8 @@ results/planner.yaml を確認してください
 
 | 条件 | カテゴリ | アクション |
 |---|---|---|
-| 成功かつ未達成の目標がある | a | 次のコマンドを `maestro queue write planner`（スキル選定含む）で自動生成 |
-| 軽微な問題が含まれる | b | 修正コマンドを `maestro queue write planner`（スキル選定含む）で生成 |
+| 成功かつ未達成の目標がある | a | 次のコマンドを `maestro queue write planner` で自動生成 |
+| 軽微な問題が含まれる | b | 修正コマンドを `maestro queue write planner` で生成 |
 | 判断が困難な問題が含まれる | c | 停止。ユーザーに判断を仰ぐ |
 | 全目標が達成された | d | 停止。ユーザーに完了を報告 |
 
