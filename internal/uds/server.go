@@ -2,6 +2,7 @@ package uds
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -93,13 +94,20 @@ func (s *Server) acceptLoop() {
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
+			// Exit on shutdown context cancellation
 			select {
 			case <-s.ctx.Done():
 				return
 			default:
-				log.Printf("accept error: %v", err)
-				continue
 			}
+			// Exit on permanent listener errors (e.g. listener closed)
+			if errors.Is(err, net.ErrClosed) {
+				log.Printf("listener closed, stopping accept loop: %v", err)
+				return
+			}
+			// Temporary errors: log and continue
+			log.Printf("accept error: %v", err)
+			continue
 		}
 
 		// Non-blocking semaphore acquire: reject connection if at capacity
