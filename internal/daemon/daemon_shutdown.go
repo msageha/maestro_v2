@@ -109,7 +109,9 @@ func (d *Daemon) Shutdown() {
 		if d.eg != nil {
 			done := make(chan struct{})
 			go func() {
-				_ = d.eg.Wait()
+				if err := d.eg.Wait(); err != nil {
+					d.log(LogLevelWarn, "shutdown errgroup returned error: %v", err)
+				}
 				close(done)
 			}()
 

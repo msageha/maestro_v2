@@ -71,7 +71,7 @@ func runResultWrite(args []string) error {
 
 	maestroDir, err := requireMaestroDir("result write")
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to resolve maestro directory: %w", err)
 	}
 
 	params := map[string]any{

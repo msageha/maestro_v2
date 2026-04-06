@@ -93,7 +93,10 @@ func RunDown(maestroDir string, cfg model.Config) error {
 		if pid > 0 {
 			origStartTime := processStartTime(pid)
 			sameProcess := daemonIdentityChecker(maestroDir, pid, origStartTime)
-			result, _ := terminateProcess(pid, sameProcess, 5*time.Second)
+			result, termErr := terminateProcess(pid, sameProcess, 5*time.Second)
+			if termErr != nil {
+				log.Printf("Warning: terminateProcess failed for pid %d: %v", pid, termErr)
+			}
 			if result == terminateStopped {
 				_ = os.Remove(pidPath)
 			}

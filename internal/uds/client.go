@@ -69,7 +69,9 @@ func (c *Client) Send(req *Request) (*Response, error) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	_ = conn.SetDeadline(time.Now().Add(c.timeout))
+	if err := conn.SetDeadline(time.Now().Add(c.timeout)); err != nil {
+		return nil, fmt.Errorf("set connection deadline: %w", err)
+	}
 
 	if err := WriteFrame(conn, req); err != nil {
 		return nil, fmt.Errorf("send request: %w", err)
