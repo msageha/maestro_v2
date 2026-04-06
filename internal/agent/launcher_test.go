@@ -334,7 +334,7 @@ func TestBuildSystemPrompt_OrchestratorNoConfigYAML(t *testing.T) {
 }
 
 func TestBuildLaunchArgs_WorkerDisallowsMaestroReads(t *testing.T) {
-	args := buildLaunchArgs("worker", "sonnet", "system-prompt")
+	args := buildLaunchArgs("worker", "sonnet", "system-prompt", "")
 	joined := strings.Join(args, " ")
 
 	// Worker should have --disallowedTools containing Read restrictions for .maestro/ control-plane paths
@@ -360,7 +360,7 @@ func TestBuildLaunchArgs_WorkerDisallowsMaestroReads(t *testing.T) {
 }
 
 func TestBuildLaunchArgs_WorkerDoesNotBlockWorktreeReads(t *testing.T) {
-	args := buildLaunchArgs("worker", "sonnet", "system-prompt")
+	args := buildLaunchArgs("worker", "sonnet", "system-prompt", "")
 	joined := strings.Join(args, " ")
 
 	// Should NOT block .maestro/worktrees/** (workers need access to their worktree files)
@@ -387,7 +387,7 @@ func TestBuildLaunchArgs_NotificationDisabledForNonOrchestrator(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.role, func(t *testing.T) {
-			args := buildLaunchArgs(tt.role, "sonnet", "system-prompt")
+			args := buildLaunchArgs(tt.role, "sonnet", "system-prompt", "")
 			joined := strings.Join(args, " ")
 
 			hasNotificationOff := strings.Contains(joined, `"Notification":[]`)
@@ -401,5 +401,46 @@ func TestBuildLaunchArgs_NotificationDisabledForNonOrchestrator(t *testing.T) {
 				t.Errorf("role=%s: must not use disableAllHooks", tt.role)
 			}
 		})
+	}
+}
+
+func TestBuildLaunchArgs_BasePromptModeReplace(t *testing.T) {
+	args := buildLaunchArgs("orchestrator", "sonnet", "my-prompt", "replace")
+	joined := strings.Join(args, " ")
+
+	if !strings.Contains(joined, "--system-prompt") {
+		t.Error("base_prompt_mode=replace should use --system-prompt")
+	}
+	if strings.Contains(joined, "--append-system-prompt") {
+		t.Error("base_prompt_mode=replace should NOT use --append-system-prompt")
+	}
+}
+
+func TestBuildLaunchArgs_BasePromptModeAppend(t *testing.T) {
+	args := buildLaunchArgs("worker", "sonnet", "my-prompt", "append")
+	joined := strings.Join(args, " ")
+
+	if !strings.Contains(joined, "--append-system-prompt") {
+		t.Error("base_prompt_mode=append should use --append-system-prompt")
+	}
+	// --append-system-prompt contains --system-prompt as substring, so check exact flag
+	for _, arg := range args {
+		if arg == "--system-prompt" {
+			t.Error("base_prompt_mode=append should NOT use --system-prompt")
+		}
+	}
+}
+
+func TestBuildLaunchArgs_BasePromptModeDefault(t *testing.T) {
+	args := buildLaunchArgs("worker", "sonnet", "my-prompt", "")
+	joined := strings.Join(args, " ")
+
+	if !strings.Contains(joined, "--append-system-prompt") {
+		t.Error("empty base_prompt_mode should default to --append-system-prompt")
+	}
+	for _, arg := range args {
+		if arg == "--system-prompt" {
+			t.Error("empty base_prompt_mode should NOT use --system-prompt")
+		}
 	}
 }

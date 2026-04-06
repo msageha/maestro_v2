@@ -74,7 +74,13 @@ func Launch(maestroDir string) error {
 		return fmt.Errorf("build system prompt: %w", err)
 	}
 
-	args := buildLaunchArgs(role, model, systemPrompt)
+	// Determine base_prompt_mode from config
+	basePromptMode := "append" // default
+	if cfg, err := loadBasePromptMode(maestroDir, role); err == nil {
+		basePromptMode = cfg
+	}
+
+	args := buildLaunchArgs(role, model, systemPrompt, basePromptMode)
 
 	// For workers, set up a single --settings containing both Notification
 	// disablement and PreToolUse policy hook. HookSettings produces the merged
@@ -119,10 +125,16 @@ func Launch(maestroDir string) error {
 }
 
 // buildLaunchArgs constructs the CLI arguments for the claude command.
-func buildLaunchArgs(role, agentModel, systemPrompt string) []string {
+// basePromptMode controls the system prompt flag: "replace" uses --system-prompt,
+// "append" (or empty) uses --append-system-prompt.
+func buildLaunchArgs(role, agentModel, systemPrompt, basePromptMode string) []string {
+	promptFlag := "--append-system-prompt"
+	if basePromptMode == "replace" {
+		promptFlag = "--system-prompt"
+	}
 	args := []string{
 		"--model", agentModel,
-		"--append-system-prompt", systemPrompt,
+		promptFlag, systemPrompt,
 		"--dangerously-skip-permissions",
 	}
 
@@ -195,6 +207,22 @@ func filterEnv(environ []string, name string) []string {
 		}
 	}
 	return out
+}
+
+// loadBasePromptMode loads config and returns the effective base_prompt_mode for the given role.
+func loadBasePromptMode(maestroDir, role string) (string, error) {
+	cfg, err := model.LoadConfig(maestroDir)
+	if err != nil {
+		return "", err
+	}
+	switch role {
+	case "orchestrator":
+		return cfg.Agents.Orchestrator.EffectiveBasePromptMode(), nil
+	case "planner":
+		return cfg.Agents.Planner.EffectiveBasePromptMode(), nil
+	default:
+		return cfg.Agents.Workers.EffectiveBasePromptMode(), nil
+	}
 }
 
 // currentPaneTarget returns the current pane in "session:window.pane" format.
