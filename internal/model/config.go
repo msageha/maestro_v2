@@ -428,7 +428,16 @@ func (c Config) Validate() error {
 		errs = append(errs, fmt.Errorf("agents.workers.count: must be between %d and %d", MinWorkers, MaxWorkers))
 	}
 
-	// watcher timeout fields (negative values invalid)
+	// watcher fields (positive/non-negative checks)
+	if c.Watcher.BusyCheckInterval <= 0 {
+		errs = append(errs, fmt.Errorf("watcher.busy_check_interval: must be > 0"))
+	}
+	if c.Watcher.BusyCheckMaxRetries <= 0 {
+		errs = append(errs, fmt.Errorf("watcher.busy_check_max_retries: must be > 0"))
+	}
+	if c.Watcher.IdleStableSec < 0 {
+		errs = append(errs, fmt.Errorf("watcher.idle_stable_sec: must be >= 0"))
+	}
 	if c.Watcher.ScanIntervalSec < 0 {
 		errs = append(errs, fmt.Errorf("watcher.scan_interval_sec: must be >= 0"))
 	}
@@ -437,6 +446,16 @@ func (c Config) Validate() error {
 	}
 	if c.Watcher.MaxInProgressMin != nil && *c.Watcher.MaxInProgressMin < 0 {
 		errs = append(errs, fmt.Errorf("watcher.max_in_progress_min: must be >= 0"))
+	}
+
+	// queue fields
+	if c.Queue.PriorityAgingSec < 0 {
+		errs = append(errs, fmt.Errorf("queue.priority_aging_sec: must be >= 0"))
+	}
+
+	// continuous fields
+	if c.Continuous.Enabled && c.Continuous.MaxIterations <= 0 {
+		errs = append(errs, fmt.Errorf("continuous.max_iterations: must be > 0 when continuous is enabled"))
 	}
 
 	// retry fields

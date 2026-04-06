@@ -155,7 +155,7 @@ maestro setup .
 maestro up
 
 # tmux セッションにアタッチして Orchestrator に指示
-tmux attach -t maestro
+tmux attach -t maestro-<project-name>
 # ウィンドウ: 0=Orchestrator, 1=Planner, 2=Workers
 
 # 終了

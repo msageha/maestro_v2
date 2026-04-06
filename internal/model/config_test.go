@@ -13,6 +13,10 @@ func validConfig() Config {
 		Agents: AgentsConfig{
 			Workers: WorkerConfig{Count: 2},
 		},
+		Watcher: WatcherConfig{
+			BusyCheckInterval:   5,
+			BusyCheckMaxRetries: 3,
+		},
 	}
 }
 
