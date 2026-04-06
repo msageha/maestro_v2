@@ -123,6 +123,10 @@ func (d *Daemon) Shutdown() {
 				n := runtime.Stack(buf, true)
 				d.log(LogLevelWarn, "shutdown timeout after %ds, dumping %d bytes of goroutine stacks:\n%s",
 					totalTimeout, n, string(buf[:n]))
+				d.log(LogLevelWarn, "WARNING: shutdown timed out, forcing exit")
+				d.closeExecutors()
+				d.cleanup()
+				os.Exit(1)
 			}
 		}
 
