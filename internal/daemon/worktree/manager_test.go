@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -2518,5 +2519,81 @@ func TestPublishToBase_StashCreateFailureContinues(t *testing.T) {
 	}
 	if state.Integration.Status != model.IntegrationStatusPublished {
 		t.Errorf("integration status = %q, want %q", state.Integration.Status, model.IntegrationStatusPublished)
+	}
+}
+
+// TestCommitWorkerChanges_AllFilesFiltered verifies that when the only dirty
+// files are sensitive (e.g. .env), CommitWorkerChanges returns
+// ErrAllFilesFiltered (wrapped) so callers can detect via errors.Is.
+func TestCommitWorkerChanges_AllFilesFiltered(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_filtered"
+	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+		t.Fatalf("createForCommand: %v", err)
+	}
+
+	wtPath := filepath.Join(projectRoot, ".maestro", "worktrees", commandID, "worker1")
+	if err := os.WriteFile(filepath.Join(wtPath, ".env"), []byte("SECRET=1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wtPath, "private.key"), []byte("KEY"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	err := wm.CommitWorkerChanges(commandID, "worker1", "should be filtered")
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	if !errors.Is(err, ErrAllFilesFiltered) {
+		t.Errorf("expected errors.Is(err, ErrAllFilesFiltered) true, got %v", err)
+	}
+}
+
+// TestCommitWorkerChanges_PolicyViolationMaxFiles verifies that exceeding
+// CommitPolicy.MaxFiles returns *CommitPolicyViolationError detectable via errors.As.
+func TestCommitWorkerChanges_PolicyViolationMaxFiles(t *testing.T) {
+	projectRoot := initTestGitRepo(t)
+	maestroDir := filepath.Join(projectRoot, ".maestro")
+	if err := os.MkdirAll(maestroDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := model.WorktreeConfig{
+		Enabled:       true,
+		BaseBranch:    "main",
+		PathPrefix:    ".maestro/worktrees",
+		AutoCommit:    true,
+		AutoMerge:     true,
+		MergeStrategy: "ort",
+		CommitPolicy: model.CommitPolicyConfig{
+			MaxFiles: model.IntPtr(2),
+		},
+	}
+	wm := NewManager(maestroDir, cfg, log.New(os.Stderr, "", 0), core.LogLevelError)
+
+	commandID := "cmd_policy"
+	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+		t.Fatalf("createForCommand: %v", err)
+	}
+
+	wtPath := filepath.Join(projectRoot, ".maestro", "worktrees", commandID, "worker1")
+	for i := 0; i < 5; i++ {
+		name := filepath.Join(wtPath, fmt.Sprintf("file_%d.txt", i))
+		if err := os.WriteFile(name, []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	err := wm.CommitWorkerChanges(commandID, "worker1", "too many files")
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	var policyErr *CommitPolicyViolationError
+	if !errors.As(err, &policyErr) {
+		t.Fatalf("expected errors.As(*CommitPolicyViolationError) to succeed, got %v", err)
+	}
+	if len(policyErr.Violations) == 0 || policyErr.Violations[0].Code != "max_files_exceeded" {
+		t.Errorf("expected max_files_exceeded violation, got %+v", policyErr.Violations)
 	}
 }

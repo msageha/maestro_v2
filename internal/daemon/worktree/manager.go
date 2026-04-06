@@ -340,6 +340,33 @@ func (wm *Manager) HasWorktrees(commandID string) bool {
 	return err == nil
 }
 
+// MarkIntegrationFailed transitions the integration branch status to Failed.
+// Used when no worker commit succeeded for a phase, so the merge step is
+// skipped entirely and the integration must be marked failed explicitly to
+// distinguish a stuck "still Created/Merged" state from a permanent failure
+// that the planner can react to.
+func (wm *Manager) MarkIntegrationFailed(commandID string) error {
+	if err := validateIDs(commandID); err != nil {
+		return err
+	}
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	state, err := wm.loadState(commandID)
+	if err != nil {
+		return fmt.Errorf("load state: %w", err)
+	}
+	now := wm.clock.Now().UTC().Format(time.RFC3339)
+	if err := wm.setIntegrationStatus(state, model.IntegrationStatusFailed, now); err != nil {
+		return err
+	}
+	state.UpdatedAt = now
+	if err := wm.saveState(commandID, state); err != nil {
+		return fmt.Errorf("save state: %w", err)
+	}
+	return nil
+}
+
 // MarkPhaseMerged records that a phase has been merged so it won't be re-merged.
 func (wm *Manager) MarkPhaseMerged(commandID, phaseID string) error {
 	if err := validateIDs(commandID, phaseID); err != nil {

@@ -108,4 +108,9 @@ type PlannerSignal struct {
 	// workers in the same phase each retain a distinct entry. Empty for
 	// phase-level signals — preserves the legacy dedup key.
 	WorkerID      string  `yaml:"worker_id,omitempty"`
+	// Reason is a structured machine-readable classification for the signal
+	// (e.g. "all_files_filtered", "policy_violation:max_files_exceeded",
+	// "generic:<message>"). Currently populated for commit_failed signals so
+	// the planner can take recovery action without parsing free-form text.
+	Reason string `yaml:"reason,omitempty"`
 }

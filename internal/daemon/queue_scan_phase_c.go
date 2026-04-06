@@ -70,15 +70,16 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 		// Worktree merge results: emit commit failure signals, conflict signals, record merged phases
 		for _, mr := range pb.worktreeMerges {
 			for _, cf := range mr.CommitFailures {
-				qh.log(LogLevelError, "worktree_commit_failed command=%s phase=%s worker=%s error=%v",
-					mr.Item.CommandID, mr.Item.PhaseID, cf.WorkerID, cf.Error)
-				msg := fmt.Sprintf("[maestro] kind:commit_failed command_id:%s phase:%s worker:%s\nerror: %v",
-					mr.Item.CommandID, mr.Item.PhaseID, cf.WorkerID, cf.Error)
+				qh.log(LogLevelError, "worktree_commit_failed command=%s phase=%s worker=%s reason=%s error=%v",
+					mr.Item.CommandID, mr.Item.PhaseID, cf.WorkerID, cf.Reason, cf.Error)
+				msg := fmt.Sprintf("[maestro] kind:commit_failed command_id:%s phase:%s worker:%s reason:%s\nerror: %v",
+					mr.Item.CommandID, mr.Item.PhaseID, cf.WorkerID, cf.Reason, cf.Error)
 				qh.upsertPlannerSignal(&signalQueue, &signalsDirty, model.PlannerSignal{
 					Kind:      "commit_failed",
 					CommandID: mr.Item.CommandID,
 					PhaseID:   mr.Item.PhaseID,
 					WorkerID:  cf.WorkerID,
+					Reason:    cf.Reason,
 					Message:   msg,
 					CreatedAt: now,
 					UpdatedAt: now,

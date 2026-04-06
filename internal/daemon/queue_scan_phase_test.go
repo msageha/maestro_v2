@@ -2,13 +2,18 @@ package daemon
 
 import (
 	"bytes"
+	"context"
+	errorspkg "errors"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
 
+	worktreepkg "github.com/msageha/maestro_v2/internal/daemon/worktree"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -665,5 +670,188 @@ func writeCommandState(t *testing.T, maestroDir, commandID string, taskStates ma
 	path := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
 	if err := yamlutil.AtomicWrite(path, state); err != nil {
 		t.Fatalf("write command state: %v", err)
+	}
+}
+
+// --- classifyCommitError unit tests ---
+
+func TestClassifyCommitError(t *testing.T) {
+	wrappedFiltered := fmt.Errorf("commit for worker w in command c: %w", worktreepkg.ErrAllFilesFiltered)
+	policyErr := &worktreepkg.CommitPolicyViolationError{
+		Violations: []worktreepkg.CommitPolicyViolation{
+			{Code: "max_files_exceeded", Message: "too many"},
+		},
+	}
+	policyEmpty := &worktreepkg.CommitPolicyViolationError{}
+
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"nil", nil, ""},
+		{"all_files_filtered", wrappedFiltered, "all_files_filtered"},
+		{"policy_with_code", policyErr, "policy_violation:max_files_exceeded"},
+		{"policy_no_violations", policyEmpty, "policy_violation:unknown"},
+		{"generic", errorspkg.New("boom"), "generic:boom"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := classifyCommitError(tc.err)
+			if got != tc.want {
+				t.Errorf("classifyCommitError(%v) = %q, want %q", tc.err, got, tc.want)
+			}
+		})
+	}
+}
+
+// --- Phase B/C commit failure → signal flow integration tests ---
+
+// TestPhaseBC_CommitFailure_AllFilesFiltered_Flow drives a real worktree
+// manager through periodicScanPhaseB+C with a worker whose only dirty files
+// are sensitive (.env). It verifies the full P1 contract:
+//   - CommitFailures recorded with classified Reason
+//   - MergeToIntegration skipped (no Conflicts/Error)
+//   - SyncFromIntegration not invoked (worker stays Active, not synced)
+//   - Integration status transitioned to Failed
+//   - MarkPhaseMerged NOT recorded
+//   - commit_failed signal emitted with Reason populated
+func TestPhaseBC_CommitFailure_FlowTable(t *testing.T) {
+	cases := []struct {
+		name        string
+		mutateCfg   func(cfg *model.WorktreeConfig)
+		writeDirty  func(t *testing.T, wtPath string)
+		wantReason  string
+	}{
+		{
+			name:      "all_files_filtered",
+			mutateCfg: func(cfg *model.WorktreeConfig) {},
+			writeDirty: func(t *testing.T, wtPath string) {
+				// Use a file that matches sensitiveFilePatterns but is unlikely
+				// to appear in the user's global gitignore (e.g., .env often is).
+				if err := os.WriteFile(filepath.Join(wtPath, "credentials.json"), []byte("S=1\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(wtPath, "secrets.secret"), []byte("S=1\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			wantReason: "all_files_filtered",
+		},
+		{
+			name: "policy_violation_max_files",
+			mutateCfg: func(cfg *model.WorktreeConfig) {
+				cfg.CommitPolicy = model.CommitPolicyConfig{MaxFiles: model.IntPtr(1)}
+			},
+			writeDirty: func(t *testing.T, wtPath string) {
+				for i := 0; i < 4; i++ {
+					if err := os.WriteFile(filepath.Join(wtPath, fmt.Sprintf("f%d.txt", i)), []byte("x"), 0644); err != nil {
+						t.Fatal(err)
+					}
+				}
+			},
+			wantReason: "policy_violation:max_files_exceeded",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			projectRoot := initTestGitRepo(t)
+			maestroDir := filepath.Join(projectRoot, ".maestro")
+			for _, sub := range []string{"queue", "results", "logs", "state/commands", "state/worktrees"} {
+				if err := os.MkdirAll(filepath.Join(maestroDir, sub), 0755); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			wtCfg := model.WorktreeConfig{
+				Enabled: true, BaseBranch: "main", PathPrefix: ".maestro/worktrees",
+				AutoCommit: true, AutoMerge: true, MergeStrategy: "ort",
+			}
+			tc.mutateCfg(&wtCfg)
+
+			cfg := model.Config{
+				Agents:   model.AgentsConfig{Workers: model.WorkerConfig{Count: 1}},
+				Watcher:  model.WatcherConfig{DispatchLeaseSec: 300},
+				Worktree: wtCfg,
+			}
+			qh := NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelError)
+			wm := NewWorktreeManager(maestroDir, wtCfg, log.New(&bytes.Buffer{}, "", 0), LogLevelError)
+			qh.SetWorktreeManager(wm)
+
+			commandID := "cmd_pf_" + tc.name
+			if err := wm.EnsureWorkerWorktree(commandID, "worker1"); err != nil {
+				t.Fatalf("EnsureWorkerWorktree: %v", err)
+			}
+			wtPath, err := wm.GetWorkerPath(commandID, "worker1")
+			if err != nil {
+				t.Fatalf("GetWorkerPath: %v", err)
+			}
+			tc.writeDirty(t, wtPath)
+
+			// Build minimal phaseAResult with one worktree merge item.
+			pa := phaseAResult{
+				scanStart: time.Now(),
+				work: deferredWork{
+					worktreeMerges: []worktreeMergeItem{{
+						CommandID:      commandID,
+						PhaseID:        "phase1",
+						WorkerIDs:      []string{"worker1"},
+						WorkerPurposes: map[string]string{"worker1": "test"},
+					}},
+				},
+			}
+
+			pb := qh.periodicScanPhaseB(context.Background(), pa)
+			if len(pb.worktreeMerges) != 1 {
+				t.Fatalf("expected 1 worktreeMerge result, got %d", len(pb.worktreeMerges))
+			}
+			mr := pb.worktreeMerges[0]
+			if len(mr.CommitFailures) != 1 {
+				t.Fatalf("expected 1 CommitFailure, got %d", len(mr.CommitFailures))
+			}
+			if mr.CommitFailures[0].Reason != tc.wantReason {
+				t.Errorf("Reason = %q, want %q (err=%v)", mr.CommitFailures[0].Reason, tc.wantReason, mr.CommitFailures[0].Error)
+			}
+			if mr.Error != nil || len(mr.Conflicts) != 0 {
+				t.Errorf("merge should have been skipped: err=%v conflicts=%v", mr.Error, mr.Conflicts)
+			}
+
+			// Integration must have been marked Failed.
+			state, err := wm.GetCommandState(commandID)
+			if err != nil {
+				t.Fatalf("GetCommandState: %v", err)
+			}
+			if state.Integration.Status != model.IntegrationStatusFailed {
+				t.Errorf("integration status = %q, want %q", state.Integration.Status, model.IntegrationStatusFailed)
+			}
+
+			// Run phase C and verify commit_failed signal with Reason was emitted,
+			// and MarkPhaseMerged was NOT called for the failing phase.
+			qh.periodicScanPhaseC(pa, pb)
+
+			signalQueue, _ := qh.loadPlannerSignalQueue()
+			var found *model.PlannerSignal
+			for i := range signalQueue.Signals {
+				s := &signalQueue.Signals[i]
+				if s.Kind == "commit_failed" && s.CommandID == commandID && s.WorkerID == "worker1" {
+					found = s
+					break
+				}
+			}
+			if found == nil {
+				t.Fatalf("commit_failed signal not found in %+v", signalQueue.Signals)
+			}
+			if found.Reason != tc.wantReason {
+				t.Errorf("signal Reason = %q, want %q", found.Reason, tc.wantReason)
+			}
+
+			// MarkPhaseMerged must not have been recorded for phase1.
+			state2, _ := wm.GetCommandState(commandID)
+			if _, merged := state2.MergedPhases["phase1"]; merged {
+				t.Errorf("phase1 should not be marked merged after commit failure")
+			}
+		})
 	}
 }

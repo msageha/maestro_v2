@@ -340,6 +340,10 @@ type worktreeMergeItem struct {
 type commitFailure struct {
 	WorkerID string
 	Error    error
+	// Reason is a structured classification computed at commit time using
+	// errors.Is/As so downstream signal emission can populate
+	// PlannerSignal.Reason without re-inspecting the error chain.
+	Reason string
 }
 
 // worktreeMergeResult captures the outcome of a Phase B worktree merge.

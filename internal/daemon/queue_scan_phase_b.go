@@ -2,10 +2,32 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/msageha/maestro_v2/internal/daemon/worktree"
 	"github.com/msageha/maestro_v2/internal/model"
 )
+
+// classifyCommitError converts a CommitWorkerChanges error into a structured
+// machine-readable Reason for commit_failed signals. The Reason lets the
+// planner act on the failure category without parsing the error message.
+func classifyCommitError(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, worktree.ErrAllFilesFiltered) {
+		return "all_files_filtered"
+	}
+	var policyErr *worktree.CommitPolicyViolationError
+	if errors.As(err, &policyErr) {
+		if len(policyErr.Violations) > 0 {
+			return "policy_violation:" + policyErr.Violations[0].Code
+		}
+		return "policy_violation:unknown"
+	}
+	return "generic:" + err.Error()
+}
 
 // periodicScanPhaseB executes all slow tmux I/O operations without holding any lock.
 // Order: interrupts → busy checks → dispatches → signals (per Codex review).
@@ -99,11 +121,13 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 			for _, workerID := range item.WorkerIDs {
 				msg := workerCommitMessage(item.WorkerPurposes, workerID)
 				if err := qh.worktreeManager.CommitWorkerChanges(item.CommandID, workerID, msg); err != nil {
-					qh.log(LogLevelWarn, "worktree_auto_commit command=%s worker=%s error=%v",
-						item.CommandID, workerID, err)
+					reason := classifyCommitError(err)
+					qh.log(LogLevelWarn, "worktree_auto_commit command=%s worker=%s reason=%s error=%v",
+						item.CommandID, workerID, reason, err)
 					mr.CommitFailures = append(mr.CommitFailures, commitFailure{
 						WorkerID: workerID,
 						Error:    err,
+						Reason:   reason,
 					})
 					// Persist commit-failed marker so the publish gate blocks until cleared.
 					if recErr := qh.worktreeManager.AddCommitFailedWorker(item.CommandID, workerID); recErr != nil {
@@ -129,9 +153,24 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 			mr.Error = err
 
 			if len(conflicts) == 0 && err == nil {
-				if syncErr := qh.worktreeManager.SyncFromIntegration(item.CommandID, item.WorkerIDs); syncErr != nil {
+				// Sync only the workers that successfully committed; workers
+				// excluded due to commit failure must not be sync targets
+				// because their dirty worktrees would block the merge anyway
+				// and we do not want to advance their state.
+				if syncErr := qh.worktreeManager.SyncFromIntegration(item.CommandID, committedWorkerIDs); syncErr != nil {
 					qh.log(LogLevelWarn, "worktree_sync_failed command=%s error=%v", item.CommandID, syncErr)
 				}
+			}
+		}
+
+		// All-failed transition: if every worker's commit failed there is
+		// nothing to merge. Mark the integration branch Failed explicitly so
+		// the planner can detect a permanent stall instead of seeing the
+		// status frozen at Created/Merged.
+		if qh.worktreeManager != nil && len(mr.CommitFailures) > 0 && len(committedWorkerIDs) == 0 {
+			if markErr := qh.worktreeManager.MarkIntegrationFailed(item.CommandID); markErr != nil {
+				qh.log(LogLevelWarn, "worktree_mark_integration_failed command=%s error=%v",
+					item.CommandID, markErr)
 			}
 		}
 
