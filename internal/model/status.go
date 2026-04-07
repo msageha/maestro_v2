@@ -196,6 +196,7 @@ var validWorktreeTransitions = map[WorktreeStatus]map[WorktreeStatus]bool{
 	},
 	WorktreeStatusIntegrated: {
 		WorktreeStatusActive:        true,
+		WorktreeStatusCommitted:     true, // cross-phase: new commits after integration without intermediate sync
 		WorktreeStatusPublished:     true,
 		WorktreeStatusConflict:      true,
 		WorktreeStatusFailed:        true,

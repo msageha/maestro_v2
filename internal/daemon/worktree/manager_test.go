@@ -2108,6 +2108,26 @@ func TestSetWorkerStatus(t *testing.T) {
 		}
 	})
 
+	t.Run("integrated_to_committed_allowed", func(t *testing.T) {
+		// Regression: cross-phase commit on a worker still in `integrated` state
+		// (e.g. verification phase reusing a worker from a previously merged phase)
+		// must be permitted instead of returning "invalid worktree transition".
+		projectRoot := initTestGitRepo(t)
+		wm := newTestWorktreeManager(t, projectRoot)
+
+		ws := &model.WorktreeState{
+			WorkerID: "worker1",
+			Status:   model.WorktreeStatusIntegrated,
+		}
+
+		if err := wm.setWorkerStatus(ws, model.WorktreeStatusCommitted, "2024-01-01T00:00:00Z"); err != nil {
+			t.Fatalf("expected valid integrated → committed transition, got error: %v", err)
+		}
+		if ws.Status != model.WorktreeStatusCommitted {
+			t.Errorf("status = %q, want %q", ws.Status, model.WorktreeStatusCommitted)
+		}
+	})
+
 	t.Run("self_transition_committed", func(t *testing.T) {
 		projectRoot := initTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
