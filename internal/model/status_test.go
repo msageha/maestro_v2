@@ -313,6 +313,12 @@ func TestValidateWorktreeTransition(t *testing.T) {
 		{WorktreeStatusConflict, WorktreeStatusPublished},     // bulk publish
 		{WorktreeStatusConflict, WorktreeStatusCleanupDone},   // cleanup
 		{WorktreeStatusConflict, WorktreeStatusCleanupFailed}, // cleanup failure
+		{WorktreeStatusConflict, WorktreeStatusResolving},     // dispatch resolver
+		{WorktreeStatusResolving, WorktreeStatusIntegrated},   // resolver commit success
+		{WorktreeStatusResolving, WorktreeStatusConflict},     // resolver retryable failure
+		{WorktreeStatusResolving, WorktreeStatusFailed},       // resolver permanent failure
+		{WorktreeStatusResolving, WorktreeStatusCleanupDone},  // cleanup
+		{WorktreeStatusResolving, WorktreeStatusCleanupFailed},
 		{WorktreeStatusFailed, WorktreeStatusPublished},       // bulk publish
 		{WorktreeStatusFailed, WorktreeStatusCleanupDone},
 		{WorktreeStatusFailed, WorktreeStatusCleanupFailed},
@@ -335,6 +341,10 @@ func TestValidateWorktreeTransition(t *testing.T) {
 		{WorktreeStatusCreated, WorktreeStatusIntegrated},    // must go through committed first
 		{WorktreeStatusPublished, WorktreeStatusActive},      // only cleanup transitions allowed
 		{WorktreeStatusPublished, WorktreeStatusCommitted},   // only cleanup transitions allowed
+		{WorktreeStatusActive, WorktreeStatusResolving},      // resolving only reachable from conflict
+		{WorktreeStatusCommitted, WorktreeStatusResolving},   // resolving only reachable from conflict
+		{WorktreeStatusResolving, WorktreeStatusActive},      // no direct return to active
+		{WorktreeStatusResolving, WorktreeStatusCommitted},   // no direct return to committed
 	}
 	for _, tt := range invalid {
 		t.Run("invalid_"+string(tt.from)+"→"+string(tt.to), func(t *testing.T) {

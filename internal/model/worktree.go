@@ -11,6 +11,11 @@ const (
 	WorktreeStatusPublished    WorktreeStatus = "published"
 	WorktreeStatusCleanupDone  WorktreeStatus = "cleanup_done"
 	WorktreeStatusConflict     WorktreeStatus = "conflict"
+	// WorktreeStatusResolving marks a worker that is in the conflict-resolution
+	// pipeline. The resolver agent has been dispatched and the daemon is
+	// waiting for it to commit (or fail). Reachable from conflict; can return
+	// to conflict on retryable failure or terminate via integrated/failed.
+	WorktreeStatusResolving WorktreeStatus = "resolving"
 	WorktreeStatusFailed       WorktreeStatus = "failed"
 	WorktreeStatusCleanupFailed WorktreeStatus = "cleanup_failed"
 )
