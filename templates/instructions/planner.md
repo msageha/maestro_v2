@@ -291,7 +291,12 @@ maestro skill list --role worker
 | 同一 command 内に複数 phase を置く場合 | 各 phase を `concrete` で順次実行し、前段の成果物を main 反映後に次段を投入する設計を優先 |
 | 高リスク実験的タスク | required: false にするか、別 command に隔離 |
 
-**事故事例 (cmd_1775542302)**: foundation phase は完全成功し型定義・インターフェースが確立されたにもかかわらず、後続 implementation phase の Worker 失敗により command 全体が failed 判定となった。worktree mode の巻き添えで foundation の成果物（型定義ファイル等）も統合ブランチごと破棄され、main に何も残らない結果となった。以降は依存関係のある phase を 1 command にまとめず、foundation を別 command で確定させてから implementation を発注する運用とする。
+- **独立性のないタスクの相乗り禁止**: 1 つの failed が全体を巻き添えにするため、相互独立な作業のみ同一 command に同梱する
+- **Planner 自身の完了報告前検証**: `git rev-parse main` および `git grep` で対象 command の成果が main に実在することを確認してから completed と報告する。未 publish の状態で completed と報告してはならない
+
+**事故事例 (再発防止のための記録)**:
+- **cmd_1775542302**: foundation phase は完全成功し型定義・インターフェースが確立されたにもかかわらず、後続 implementation phase の Worker 失敗により command 全体が failed 判定となった。worktree mode の巻き添えで foundation の成果物（型定義ファイル等）も統合ブランチごと破棄され、main に何も残らない結果となった。以降は依存関係のある phase を 1 command にまとめず、foundation を別 command で確定させてから implementation を発注する運用とする。
+- **cmd_1775548269**: worker が summary で完了を主張したが、実際には publish されず main 未反映だった。Planner / Orchestrator が summary を信用して検証を怠ったことが原因。
 
 ### Wave 構造（共通基盤の先行確立）
 
@@ -588,18 +593,3 @@ deferred constraints: `max_tasks`（必須）、`timeout_minutes`（必須）、
 3. **STOP**: ターン終了
 
 **禁止**: sleep/loop、ポーリング、`watch`/`while true`、アイドル待機
-
----
-
-### Phase 分離規約 (worktree mode の巻き添え失敗対策)
-
-worktree mode では、command 内の 1 worker でも failed すると、同 command の他 worker の成果も巻き添えで破棄される (merge されない)。この事実を踏まえ、以下を遵守すること。
-
-- **依存のある後段 phase は同一 command に同居させない**: Phase 1 の成果に依存する Phase 2 は、別 concrete phase / 別 command として分離投入する
-- **独立性のないタスクの相乗り禁止**: 1 つの failed が全体を巻き添えにするため、相互独立な作業のみ同一 command に同梱する
-- **Planner 自身の完了報告前検証**: `git rev-parse main` および `git grep` で対象 command の成果が main に実在することを確認してから completed と報告する。未 publish の状態で completed と報告してはならない
-
-### 事故事例 (再発防止のための記録)
-
-- **cmd_1775542302**: Phase 1 と Phase 2 を同一 command に同居させた結果、worker3 が failed → 成功した worker1/worker2 の成果も worktree mode の巻き添えで破棄された
-- **cmd_1775548269**: worker が summary で完了を主張したが、実際には publish されず main 未反映だった。Planner / Orchestrator が summary を信用して検証を怠ったことが原因
