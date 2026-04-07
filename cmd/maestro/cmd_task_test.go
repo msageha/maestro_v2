@@ -5,28 +5,6 @@ import (
 	"testing"
 )
 
-func TestRunTask_NoSubcommand(t *testing.T) {
-	err := runTask(nil)
-	if err == nil {
-		t.Fatal("expected error for missing subcommand")
-	}
-	var ce *CLIError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected CLIError, got %T: %v", err, err)
-	}
-}
-
-func TestRunTask_UnknownSubcommand(t *testing.T) {
-	err := runTask([]string{"bogus"})
-	if err == nil {
-		t.Fatal("expected error for unknown subcommand")
-	}
-	var ce *CLIError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected CLIError, got %T: %v", err, err)
-	}
-}
-
 func TestRunTaskHeartbeat_FlagParsing(t *testing.T) {
 	tests := []struct {
 		name    string

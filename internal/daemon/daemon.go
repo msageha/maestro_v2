@@ -114,7 +114,7 @@ func New(maestroDir string, cfg model.Config) (*Daemon, error) {
 	return newDaemon(maestroDir, cfg, logFile, logFile)
 }
 
-// newDaemon is the internal constructor for testing.
+// newDaemon is the internal constructor accepting injectable dependencies (used by NewDaemon and tests).
 func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Closer) (*Daemon, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 

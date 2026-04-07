@@ -84,12 +84,6 @@ func NewTaskID(caller TaskIDCaller) (string, error) {
 	return GenerateID(IDTypeTask)
 }
 
-// ValidTaskIDCaller reports whether the given caller is recognised. Used by
-// daemon UDS handlers to gate the queue_write task path.
-func ValidTaskIDCaller(caller TaskIDCaller) bool {
-	return validTaskIDCallers[caller]
-}
-
 func ValidateID(id string) bool {
 	return idRegex.MatchString(id)
 }
