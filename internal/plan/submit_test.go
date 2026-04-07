@@ -914,3 +914,150 @@ func TestSubmit_PhaseFill_ConstraintViolation(t *testing.T) {
 		}
 	}
 }
+
+// TestShouldInsertSystemCommit verifies that __system_commit insertion is
+// gated on both continuous mode AND worktree mode being disabled. The latter
+// is critical: in worktree mode the Daemon commits worktree changes itself,
+// so a Worker-side commit task is redundant and harmful.
+func TestShouldInsertSystemCommit(t *testing.T) {
+	tests := []struct {
+		name       string
+		continuous bool
+		worktree   bool
+		want       bool
+	}{
+		{"continuous off, worktree off", false, false, false},
+		{"continuous on,  worktree off", true, false, true},
+		{"continuous off, worktree on", false, true, false},
+		{"continuous on,  worktree on", true, true, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := model.Config{
+				Continuous: model.ContinuousConfig{Enabled: tc.continuous},
+				Worktree:   model.WorktreeConfig{Enabled: tc.worktree},
+			}
+			if got := shouldInsertSystemCommit(cfg); got != tc.want {
+				t.Errorf("shouldInsertSystemCommit(continuous=%v worktree=%v) = %v, want %v",
+					tc.continuous, tc.worktree, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestSubmit_NoSystemCommit_InWorktreeMode verifies that even when continuous
+// mode is enabled, no __system_commit task is inserted into the plan when
+// worktree isolation is enabled. This ensures that the responsibility for
+// committing changes lives in exactly one place (the Daemon's worktree
+// merge/publish path), not in a Worker-side task.
+func TestSubmit_NoSystemCommit_InWorktreeMode(t *testing.T) {
+	maestroDir := setupMaestroDir(t)
+	cfg := testConfig()
+	cfg.Continuous = model.ContinuousConfig{Enabled: true}
+	cfg.Worktree = model.WorktreeConfig{Enabled: true}
+	commandID := "cmd_0000000099_aabbccdd"
+
+	writePlannerQueue(t, maestroDir, commandID, model.StatusInProgress)
+
+	tasksFile := writeTasksFile(t, []TaskInput{
+		{
+			Name:               "task_a",
+			Purpose:            "do task a",
+			Content:            "implement feature a",
+			AcceptanceCriteria: "feature a works",
+			BloomLevel:         2,
+			Required:           true,
+		},
+	})
+
+	result, err := Submit(SubmitOptions{
+		CommandID:  commandID,
+		TasksFile:  tasksFile,
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
+	})
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+
+	for _, tr := range result.Tasks {
+		if tr.Name == "__system_commit" {
+			t.Errorf("Submit inserted __system_commit task in worktree mode (should be skipped); tasks=%+v", result.Tasks)
+		}
+	}
+	if len(result.Tasks) != 1 {
+		t.Errorf("len(Tasks) = %d, want 1 (only the user task, no __system_commit)", len(result.Tasks))
+	}
+
+	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+	var state model.CommandState
+	if err := yamlv3.Unmarshal(stateData, &state); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	if state.SystemCommitTaskID != nil {
+		t.Errorf("SystemCommitTaskID = %v, want nil in worktree mode", *state.SystemCommitTaskID)
+	}
+}
+
+// TestSubmit_PhasedSubmit_NoSystemCommit_InWorktreeMode is the phased-input
+// counterpart of TestSubmit_NoSystemCommit_InWorktreeMode.
+func TestSubmit_PhasedSubmit_NoSystemCommit_InWorktreeMode(t *testing.T) {
+	maestroDir := setupMaestroDir(t)
+	cfg := testConfig()
+	cfg.Continuous = model.ContinuousConfig{Enabled: true}
+	cfg.Worktree = model.WorktreeConfig{Enabled: true}
+	commandID := "cmd_0000000100_aabbccdd"
+
+	writePlannerQueue(t, maestroDir, commandID, model.StatusInProgress)
+
+	phasesFile := writePhasesFile(t, []PhaseInput{
+		{
+			Name: "phase_impl",
+			Type: "concrete",
+			Tasks: []TaskInput{
+				{
+					Name:               "task_a",
+					Purpose:            "do task a",
+					Content:            "implement feature a",
+					AcceptanceCriteria: "feature a works",
+					BloomLevel:         2,
+					Required:           true,
+				},
+			},
+		},
+	})
+
+	result, err := Submit(SubmitOptions{
+		CommandID:  commandID,
+		TasksFile:  phasesFile,
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
+	})
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+	for _, tr := range result.Tasks {
+		if tr.Name == "__system_commit" {
+			t.Errorf("Phased Submit inserted __system_commit task in worktree mode; tasks=%+v", result.Tasks)
+		}
+	}
+
+	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+	var state model.CommandState
+	if err := yamlv3.Unmarshal(stateData, &state); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	if state.SystemCommitTaskID != nil {
+		t.Errorf("SystemCommitTaskID = %v, want nil in worktree mode (phased)", *state.SystemCommitTaskID)
+	}
+}

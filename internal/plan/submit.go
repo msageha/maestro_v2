@@ -125,8 +125,9 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm *StateManager)
 		return &SubmitResult{Valid: true}, nil
 	}
 
-	// Insert __system_commit if continuous.enabled
-	if opts.Config.Continuous.Enabled {
+	// Insert __system_commit if continuous.enabled (and worktree mode is off,
+	// since worktree mode delegates commits to the Daemon directly).
+	if shouldInsertSystemCommit(opts.Config) {
 		var commitErr error
 		tasks, commitErr = insertSystemCommitTask(tasks)
 		if commitErr != nil {
@@ -242,8 +243,9 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManag
 	}
 
 	// Insert __system_commit outside phase structure if continuous enabled
+	// (skipped in worktree mode: Daemon manages commits directly).
 	var systemCommitTaskID *string
-	if opts.Config.Continuous.Enabled {
+	if shouldInsertSystemCommit(opts.Config) {
 		var scErr error
 		systemCommitTaskID, scErr = addSystemCommitForPhases(opts, cpd)
 		if scErr != nil {
@@ -749,6 +751,22 @@ func readInput(tasksFile string) (*SubmitInput, error) {
 		return nil, fmt.Errorf("parse tasks YAML: %w", err)
 	}
 	return &input, nil
+}
+
+// shouldInsertSystemCommit centralises the policy that determines whether the
+// Planner must inject a __system_commit task into the plan. The task exists to
+// have a Worker run `git commit` after all user tasks finish, which is only
+// meaningful when:
+//   - continuous mode is enabled (otherwise the daemon never re-submits commands), and
+//   - worktree isolation is disabled (when worktrees are enabled, the daemon
+//     commits worktree changes itself during merge/publish, so a Worker-side
+//     commit task is both redundant and harmful).
+//
+// Keeping this single predicate as the sole authority for system_commit
+// insertion prevents the responsibility from drifting between Planner and
+// Daemon (see Critical #2 in reports/repo-audit-20260407.md).
+func shouldInsertSystemCommit(cfg model.Config) bool {
+	return cfg.Continuous.Enabled && !cfg.Worktree.Enabled
 }
 
 func buildSystemCommitTask(blockedByNames []string) TaskInput {
