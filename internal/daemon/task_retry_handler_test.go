@@ -1548,3 +1548,147 @@ func TestAddRetryTaskToQueue_EmptyQueue(t *testing.T) {
 		t.Errorf("task ID mismatch: got %q, want %q", queue.Tasks[0].ID, retryTask.ID)
 	}
 }
+
+// TC-RT-026: UnregisterRetryTaskFromState removes the task entry registered
+// by RegisterRetryTaskInState while preserving other entries.
+func TestUnregisterRetryTaskFromState(t *testing.T) {
+	tmpDir := t.TempDir()
+	commandID := "cmd_unreg_001"
+	taskID := "task_retry_unreg"
+
+	stateDir := filepath.Join(tmpDir, "state", "commands")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+	statePath := filepath.Join(stateDir, commandID+".yaml")
+	state := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "command_state",
+		CommandID:     commandID,
+		TaskStates: map[string]model.Status{
+			"task_existing": model.StatusCompleted,
+		},
+		RetryEnqueueFailed: map[string]string{
+			taskID: "worker1",
+		},
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	handler := NewTaskRetryHandler(tmpDir, model.Config{}, lock.NewMutexMap(), logger, LogLevelDebug)
+
+	// First register, then unregister, so we exercise the round-trip.
+	retryTask := &model.Task{ID: taskID, CommandID: commandID, Status: model.StatusPending}
+	if err := handler.RegisterRetryTaskInState(retryTask, commandID); err != nil {
+		t.Fatalf("RegisterRetryTaskInState: %v", err)
+	}
+	if err := handler.UnregisterRetryTaskFromState(taskID, commandID); err != nil {
+		t.Fatalf("UnregisterRetryTaskFromState: %v", err)
+	}
+
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var got model.CommandState
+	if err := yamlv3.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	if _, ok := got.TaskStates[taskID]; ok {
+		t.Errorf("retry task entry not removed: %v", got.TaskStates)
+	}
+	if _, ok := got.TaskStates["task_existing"]; !ok {
+		t.Errorf("unrelated task entry was lost: %v", got.TaskStates)
+	}
+	if _, ok := got.RetryEnqueueFailed[taskID]; ok {
+		t.Errorf("RetryEnqueueFailed entry not cleaned: %v", got.RetryEnqueueFailed)
+	}
+}
+
+// TC-RT-027: Compensating delete restores state when AddRetryTaskToQueue fails.
+// This simulates the M2 scenario: state register succeeds but queue enqueue
+// fails. After running the (register → enqueue → unregister-on-failure)
+// sequence the state must contain no orphan entry for the retry task.
+func TestRetryRegistration_CompensatingDeleteOnEnqueueFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	commandID := "cmd_comp_001"
+	workerID := "worker1"
+	taskID := "task_retry_comp"
+
+	// Setup state file.
+	stateDir := filepath.Join(tmpDir, "state", "commands")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+	statePath := filepath.Join(stateDir, commandID+".yaml")
+	state := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "command_state",
+		CommandID:     commandID,
+		TaskStates:    map[string]model.Status{"task_original": model.StatusFailed},
+		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt:     time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	// Force AddRetryTaskToQueue to fail by creating a directory at the queue
+	// file path; AtomicWrite's rename target collides with a directory.
+	queueDir := filepath.Join(tmpDir, "queue")
+	if err := os.MkdirAll(queueDir, 0755); err != nil {
+		t.Fatalf("create queue dir: %v", err)
+	}
+	queuePath := filepath.Join(queueDir, workerID+".yaml")
+	if err := os.MkdirAll(queuePath, 0755); err != nil {
+		t.Fatalf("create queue path as dir: %v", err)
+	}
+
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	handler := NewTaskRetryHandler(tmpDir, model.Config{}, lock.NewMutexMap(), logger, LogLevelDebug)
+
+	retryTask := &model.Task{
+		ID: taskID, CommandID: commandID, Status: model.StatusPending,
+	}
+
+	// Step 1: register in state (must succeed).
+	if err := handler.RegisterRetryTaskInState(retryTask, commandID); err != nil {
+		t.Fatalf("RegisterRetryTaskInState: %v", err)
+	}
+
+	// Step 2: enqueue must fail because the queue path is a directory.
+	enqErr := handler.AddRetryTaskToQueue(retryTask, workerID)
+	if enqErr == nil {
+		t.Fatalf("AddRetryTaskToQueue should have failed when queue path is a directory")
+	}
+
+	// Step 3: compensating delete (this is the M2 fix).
+	if err := handler.UnregisterRetryTaskFromState(taskID, commandID); err != nil {
+		t.Fatalf("UnregisterRetryTaskFromState: %v", err)
+	}
+
+	// Verify state no longer references the retry task.
+	data, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var got model.CommandState
+	if err := yamlv3.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	if _, orphaned := got.TaskStates[taskID]; orphaned {
+		t.Errorf("orphan retry task left in state after compensating delete: %v", got.TaskStates)
+	}
+	if _, ok := got.TaskStates["task_original"]; !ok {
+		t.Errorf("unrelated entry was lost: %v", got.TaskStates)
+	}
+	if _, marked := got.RetryEnqueueFailed[taskID]; marked {
+		t.Errorf("compensating delete should leave RetryEnqueueFailed empty for atomic rollback, got: %v", got.RetryEnqueueFailed)
+	}
+}
