@@ -41,7 +41,9 @@ func (a *API) handleSkillApprove(req *uds.Request) *uds.Response {
 		return uds.ErrorResponse(uds.ErrCodeValidation, "candidate_id is required")
 	}
 
-	// Acquire skill_candidates lock to serialize with writeSkillCandidates in result_write
+	// Acquire skill_candidates lock to serialize with writeSkillCandidates in result_write.
+	// Lock order: leaf lock under the state:* namespace; see daemon/doc.go.
+	// Acquired in isolation — no state:{commandID} is held on this path.
 	d.lockMap.Lock("state:skill_candidates")
 	defer d.lockMap.Unlock("state:skill_candidates")
 
@@ -125,7 +127,9 @@ func (a *API) handleSkillReject(req *uds.Request) *uds.Response {
 		return uds.ErrorResponse(uds.ErrCodeValidation, "candidate_id is required")
 	}
 
-	// Acquire skill_candidates lock to serialize with writeSkillCandidates in result_write
+	// Acquire skill_candidates lock to serialize with writeSkillCandidates in result_write.
+	// Lock order: leaf lock under the state:* namespace; see daemon/doc.go.
+	// Acquired in isolation — no state:{commandID} is held on this path.
 	d.lockMap.Lock("state:skill_candidates")
 	defer d.lockMap.Unlock("state:skill_candidates")
 

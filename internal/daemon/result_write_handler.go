@@ -532,6 +532,9 @@ func (a *API) checkLeaseEpochForBestEffort(params ResultWriteParams) (skip bool,
 // Best-effort: errors are logged but do not fail the result_write.
 func (a *API) writeLearnings(params ResultWriteParams, resultID string) error {
 	d := a.d
+	// Lock order: leaf lock under the state:* namespace. See doc.go — must
+	// be acquired in isolation (no state:{commandID} held). Phase B has
+	// already released state:{commandID} by the time this is called.
 	d.lockMap.Lock("state:learnings")
 	defer d.lockMap.Unlock("state:learnings")
 
@@ -631,6 +634,9 @@ func truncateRunes(s string, maxRunes int) string {
 // Best-effort: errors are logged but do not fail the result_write.
 func (a *API) writeSkillCandidates(params ResultWriteParams) error {
 	d := a.d
+	// Lock order: leaf lock under the state:* namespace. See doc.go — must
+	// be acquired in isolation (no state:{commandID} held). Phase B has
+	// already released state:{commandID} by the time this is called.
 	d.lockMap.Lock("state:skill_candidates")
 	defer d.lockMap.Unlock("state:skill_candidates")
 

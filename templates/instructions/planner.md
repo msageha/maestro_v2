@@ -189,7 +189,7 @@ Orchestrator からコマンド単位のキャンセル要求（`queue write pla
 
 ## ペルソナ活用ガイド
 
-`persona_hint` は Worker の行動モードを指定する任意フィールド。`bloom_level`（認知レベル）とは独立した軸。`config.yaml` の `personas` セクションで定義された名前を使用（未定義はバリデーションエラー）。
+`persona_hint` は Worker の行動モードを指定する任意フィールド。`bloom_level`（認知レベル）とは独立した軸。ペルソナは `templates/persona/{name}.md` で定義され、`maestro init` 時に `.maestro/persona/{name}.md` へ配置される（`internal/setup/init.go:77`）。Worker 配信時に同ファイルが存在すれば詳細プロンプトが注入される。`persona_hint` の検証は識別子安全性のみで、対応する `.maestro/persona/{name}.md` が無くても `persona_hint` は配信エンベロープに残り、Worker 側でそのペルソナ視点での作業が指示される（注入がスキップされるだけ）。未知値は Worker 側で未指定扱いとなる。
 
 | persona_hint | 用途 | 適用タスク例 |
 |---|---|---|

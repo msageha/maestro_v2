@@ -27,6 +27,10 @@ const (
 	IntegrationStatusConflict     IntegrationStatus = "conflict"
 	IntegrationStatusPartialMerge IntegrationStatus = "partial_merge"
 	IntegrationStatusFailed       IntegrationStatus = "failed"
+	// IntegrationStatusQuarantined is a terminal state set when merge attempts
+	// have failed repeatedly (see mergeFailureQuarantineThreshold). Operator
+	// intervention via CLI is required to recover.
+	IntegrationStatusQuarantined IntegrationStatus = "quarantined"
 )
 
 // WorktreeState tracks the lifecycle of a single worker worktree.
@@ -49,6 +53,13 @@ type IntegrationState struct {
 	Status    IntegrationStatus `yaml:"status"`
 	CreatedAt string            `yaml:"created_at"`
 	UpdatedAt string            `yaml:"updated_at"`
+	// MergeFailureCount counts consecutive merge attempts that failed in a way
+	// that left the worktree in an unrecoverable state. Reset on successful merge.
+	MergeFailureCount int `yaml:"merge_failure_count,omitempty"`
+	// QuarantinedAt records when the integration entered Quarantined state.
+	QuarantinedAt string `yaml:"quarantined_at,omitempty"`
+	// QuarantineReason describes why the integration was quarantined.
+	QuarantineReason string `yaml:"quarantine_reason,omitempty"`
 }
 
 // MergeConflict describes a merge conflict between a worker branch and the integration branch.

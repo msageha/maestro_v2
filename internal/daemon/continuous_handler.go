@@ -51,6 +51,8 @@ func (ch *ContinuousHandler) CheckAndAdvance(commandID string, commandStatus mod
 		return nil
 	}
 
+	// Lock order: leaf lock under the state:* namespace; see daemon/doc.go.
+	// Acquired in isolation — no state:{commandID} is held on this path.
 	ch.lockMap.Lock("state:continuous")
 	defer ch.lockMap.Unlock("state:continuous")
 
