@@ -1638,7 +1638,7 @@ func TestR5Notification_AlreadyInOrchestratorQueue_NoRepair(t *testing.T) {
 	// Orchestrator queue already has matching notification
 	nq := model.NotificationQueue{
 		Notifications: []model.Notification{
-			{ID: "ntf1", CommandID: "cmd1", SourceResultID: "res1", Status: model.StatusPending, CreatedAt: now, UpdatedAt: now},
+			{ID: "ntf1", CommandID: "cmd1", Type: model.NotificationTypeCommandCompleted, SourceResultID: "res1", Status: model.StatusPending, CreatedAt: now, UpdatedAt: now},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "orchestrator.yaml"), nq)
@@ -1773,6 +1773,54 @@ func TestR5Notification_MultipleResults(t *testing.T) {
 	}
 	if len(notifier.calls) != 2 {
 		t.Errorf("expected 2 notification calls, got %d", len(notifier.calls))
+	}
+}
+
+// TestR5Notification_TypeMismatch_ReissuesForSupersede covers the H3-driven case
+// where a result's terminal status was promoted (e.g. completed → cancelled, or
+// → failed) after a notification with the previous type was already enqueued.
+// The dedup key is (source_result_id, type), so R5 must re-issue the notification
+// for the new type instead of dropping it.
+func TestR5Notification_TypeMismatch_ReissuesForSupersede(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	notifier := &mockResultNotifier{}
+	deps.ResultHandler = notifier
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Result has been promoted to failed (e.g. by H3 cancelled-on-failure path).
+	rf := model.CommandResultFile{
+		Results: []model.CommandResult{
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusFailed, Notified: true, NotifiedAt: &now, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+
+	// Existing notification still has the previous type (command_completed).
+	nq := model.NotificationQueue{
+		Notifications: []model.Notification{
+			{ID: "ntf1", CommandID: "cmd1", Type: model.NotificationTypeCommandCompleted, SourceResultID: "res1", Status: model.StatusPending, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "orchestrator.yaml"), nq)
+
+	state := model.CommandState{CommandID: "cmd1", PlanStatus: model.PlanStatusSealed, CreatedAt: now, UpdatedAt: now}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R5Notification{}.Apply(run)
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair when type mismatches existing notification, got %d", len(outcome.Repairs))
+	}
+	if len(notifier.calls) != 1 {
+		t.Fatalf("expected 1 notification call, got %d", len(notifier.calls))
+	}
+	if notifier.calls[0].status != model.StatusFailed {
+		t.Errorf("expected notifier called with failed status, got %s", notifier.calls[0].status)
+	}
+	if notifier.calls[0].resultID != "res1" {
+		t.Errorf("expected resultID res1, got %s", notifier.calls[0].resultID)
 	}
 }
 

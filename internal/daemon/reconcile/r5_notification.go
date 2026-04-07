@@ -11,6 +11,20 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
+// notificationTypeForStatus mirrors ResultHandler.writeNotificationToOrchestratorQueue.
+// Kept in sync so R5's dedup key matches the type the orchestrator-side writer would
+// assign for a given terminal status.
+func notificationTypeForStatus(status model.Status) model.NotificationType {
+	switch status {
+	case model.StatusFailed:
+		return model.NotificationTypeCommandFailed
+	case model.StatusCancelled:
+		return model.NotificationTypeCommandCancelled
+	default:
+		return model.NotificationTypeCommandCompleted
+	}
+}
+
 // R5Notification detects results/planner terminal + notified but no orchestrator notification.
 // Action: re-issue notification via writeNotificationToOrchestratorQueue.
 type R5Notification struct{}
@@ -40,11 +54,22 @@ func (R5Notification) Apply(run *Run) Outcome {
 		}
 	}
 
-	existingSourceIDs := make(map[string]bool)
+	// Dedup key is (source_result_id, type) to mirror the upsert logic in
+	// ResultHandler.writeNotificationToOrchestratorQueue. H3 reconcile may
+	// promote a result to a different terminal status (e.g. completed →
+	// cancelled), in which case the existing notification has the previous
+	// type and we must re-issue so the orchestrator-side handler supersedes
+	// it. Keying on source_result_id alone would drop that re-delivery.
+	type dedupKey struct {
+		SourceResultID string
+		Type           model.NotificationType
+	}
+	existingKeys := make(map[dedupKey]bool)
 	for _, ntf := range nq.Notifications {
-		if ntf.SourceResultID != "" {
-			existingSourceIDs[ntf.SourceResultID] = true
+		if ntf.SourceResultID == "" {
+			continue
 		}
+		existingKeys[dedupKey{SourceResultID: ntf.SourceResultID, Type: ntf.Type}] = true
 	}
 
 	repairedCommands := make(map[string]bool)
@@ -56,7 +81,8 @@ func (R5Notification) Apply(run *Run) Outcome {
 			continue
 		}
 
-		if existingSourceIDs[result.ID] {
+		notifType := notificationTypeForStatus(result.Status)
+		if existingKeys[dedupKey{SourceResultID: result.ID, Type: notifType}] {
 			continue
 		}
 

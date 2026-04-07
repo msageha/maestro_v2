@@ -856,7 +856,7 @@ func TestReconciler_R5_NotificationExists_NoRepair(t *testing.T) {
 	nq := model.NotificationQueue{
 		SchemaVersion: 1, FileType: "queue_notification",
 		Notifications: []model.Notification{
-			{ID: "ntf_001", CommandID: "cmd_r5_ok", SourceResultID: "res_r5_exists",
+			{ID: "ntf_001", CommandID: "cmd_r5_ok", Type: model.NotificationTypeCommandCompleted, SourceResultID: "res_r5_exists",
 				Status: model.StatusPending, CreatedAt: now, UpdatedAt: now},
 		},
 	}
