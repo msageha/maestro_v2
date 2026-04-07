@@ -15,7 +15,7 @@ import (
 // runPlan dispatches plan subcommands (submit, complete, add-retry-task, request-cancel, rebuild).
 func runPlan(args []string) error {
 	if len(args) < 1 {
-		return &CLIError{Code: 1, Msg: "maestro plan: missing subcommand\nusage: maestro plan <submit|complete|add-retry-task|request-cancel|rebuild> [options]"}
+		return &CLIError{Code: 1, Msg: "maestro plan: missing subcommand\nusage: maestro plan <submit|complete|add-retry-task|request-cancel|rebuild|unquarantine|resume-merge> [options]"}
 	}
 	switch args[0] {
 	case "submit":
@@ -28,8 +28,12 @@ func runPlan(args []string) error {
 		return runPlanRequestCancel(args[1:])
 	case "rebuild":
 		return runPlanRebuild(args[1:])
+	case "unquarantine":
+		return runPlanUnquarantine(args[1:])
+	case "resume-merge":
+		return runPlanResumeMerge(args[1:])
 	default:
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan: unknown subcommand: %s\nusage: maestro plan <submit|complete|add-retry-task|request-cancel|rebuild> [options]", args[0])}
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan: unknown subcommand: %s\nusage: maestro plan <submit|complete|add-retry-task|request-cancel|rebuild|unquarantine|resume-merge> [options]", args[0])}
 	}
 }
 
@@ -296,6 +300,78 @@ func runPlanRebuild(args []string) error {
 	}
 
 	return sendPlanCommand("plan rebuild", maestroDir, params)
+}
+
+// runPlanUnquarantine clears quarantine state on a command's integration
+// branch so the next queue scan can re-enqueue merge attempts.
+func runPlanUnquarantine(args []string) error {
+	fs := newFlagSet("maestro plan unquarantine")
+	var commandID, reason string
+	fs.StringVar(&commandID, "command-id", "", "")
+	fs.StringVar(&reason, "reason", "", "")
+
+	usage := "usage: maestro plan unquarantine --command-id <id> [--reason <text>]"
+	if err := fs.Parse(args); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan unquarantine: %v\n%s", err, usage)}
+	}
+	if fs.NArg() > 0 {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan unquarantine: unexpected argument: %s\n%s", fs.Arg(0), usage)}
+	}
+	if commandID == "" {
+		return &CLIError{Code: 1, Msg: "maestro plan unquarantine: --command-id is required\n" + usage}
+	}
+	if err := validate.ValidateID(commandID); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan unquarantine: invalid --command-id: %v", err)}
+	}
+
+	maestroDir, err := requireMaestroDir("plan unquarantine")
+	if err != nil {
+		return err
+	}
+
+	params := map[string]any{
+		"operation": "unquarantine",
+		"data": map[string]any{
+			"command_id": commandID,
+			"reason":     reason,
+		},
+	}
+	return sendPlanCommand("plan unquarantine", maestroDir, params)
+}
+
+// runPlanResumeMerge resets the merge failure counter and moves a stuck
+// integration (conflict / partial_merge / failed) back to a re-mergeable state.
+func runPlanResumeMerge(args []string) error {
+	fs := newFlagSet("maestro plan resume-merge")
+	var commandID string
+	fs.StringVar(&commandID, "command-id", "", "")
+
+	usage := "usage: maestro plan resume-merge --command-id <id>"
+	if err := fs.Parse(args); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan resume-merge: %v\n%s", err, usage)}
+	}
+	if fs.NArg() > 0 {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan resume-merge: unexpected argument: %s\n%s", fs.Arg(0), usage)}
+	}
+	if commandID == "" {
+		return &CLIError{Code: 1, Msg: "maestro plan resume-merge: --command-id is required\n" + usage}
+	}
+	if err := validate.ValidateID(commandID); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan resume-merge: invalid --command-id: %v", err)}
+	}
+
+	maestroDir, err := requireMaestroDir("plan resume-merge")
+	if err != nil {
+		return err
+	}
+
+	params := map[string]any{
+		"operation": "resume_merge",
+		"data": map[string]any{
+			"command_id": commandID,
+		},
+	}
+	return sendPlanCommand("plan resume-merge", maestroDir, params)
 }
 
 // sendPlanCommand sends a plan operation to the daemon via UDS.
