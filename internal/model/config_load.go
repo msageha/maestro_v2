@@ -16,7 +16,9 @@ func LoadConfig(maestroDir string) (Config, error) {
 	}
 	cfg := Config{
 		Worktree: WorktreeConfig{
-			Enabled: true,
+			Enabled:          true,
+			CleanupOnSuccess: true,
+			CleanupOnFailure: false,
 		},
 	}
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
