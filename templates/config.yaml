@@ -102,6 +102,7 @@ worktree:
   cleanup_on_success: true # コマンド成功時の自動クリーンアップ
   cleanup_on_failure: false # コマンド失敗時のクリーンアップ (デフォルト: 保全)
   git_timeout_sec: 120 # git コマンドのタイムアウト (秒)
+  fallback_merge_timeout_minutes: 60 # auto_commit/auto_merge 無効時に integration branch 未マージ警告を出すまでの分数 (0=無効)
   commit_policy:
     max_files: 30 # 1コミットあたりの最大ステージングファイル数 (0=無制限, default: 30)
     require_gitignore: true # .gitignore の存在を要求する

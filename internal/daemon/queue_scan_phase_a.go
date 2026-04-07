@@ -25,6 +25,7 @@ func (qh *QueueHandler) periodicScanPhaseA() phaseAResult {
 	qh.stepPhaseTransitions(&s)
 	qh.stepWorktreePhaseMerges(&s)
 	qh.stepWorktreePublish(&s)
+	qh.stepCheckWorktreeConfigViolations(&s)
 	qh.stepPlannerSignals(&s)
 	qh.stepPreemptiveRenewal(&s)
 	qh.stepDispatchOrRecovery(&s)
@@ -286,6 +287,80 @@ func (qh *QueueHandler) stepWorktreePublish(s *scanState) {
 		publishes, cleanups := qh.collectWorktreePublishAndCleanup(cmd.ID, cmd.Content, s.tasks)
 		s.work.worktreePublishes = append(s.work.worktreePublishes, publishes...)
 		s.work.worktreeCleanups = append(s.work.worktreeCleanups, cleanups...)
+	}
+}
+
+// stepCheckWorktreeConfigViolations — Step 0.7.3: When AutoCommit/AutoMerge are
+// disabled, warn the operator (via WARN log + planner signal) for any in-progress
+// command whose integration branch has stayed unmerged longer than the configured
+// fallback timeout. The daemon does NOT force a merge; this step only surfaces
+// the situation so the operator can act. Independent of the P1 stall step.
+func (qh *QueueHandler) stepCheckWorktreeConfigViolations(s *scanState) {
+	if qh.worktreeManager == nil {
+		return
+	}
+	// Both flags enabled → normal mode, nothing to warn about.
+	if qh.worktreeManager.AutoCommit() && qh.worktreeManager.AutoMerge() {
+		return
+	}
+	timeoutMin := qh.config.Worktree.EffectiveFallbackMergeTimeoutMinutes()
+	if timeoutMin <= 0 {
+		return
+	}
+	timeout := time.Duration(timeoutMin) * time.Minute
+
+	for i := range s.commands.Data.Commands {
+		cmd := &s.commands.Data.Commands[i]
+		if cmd.Status != model.StatusInProgress {
+			continue
+		}
+		if !qh.worktreeManager.HasWorktrees(cmd.ID) {
+			continue
+		}
+		cmdState, err := qh.worktreeManager.GetCommandState(cmd.ID)
+		if err != nil || cmdState == nil {
+			continue
+		}
+		// Skip if integration has already advanced past the unmerged window.
+		switch cmdState.Integration.Status {
+		case model.IntegrationStatusMerged,
+			model.IntegrationStatusPublishing,
+			model.IntegrationStatusPublished:
+			continue
+		}
+		createdAt, err := time.Parse(time.RFC3339, cmdState.Integration.CreatedAt)
+		if err != nil {
+			continue
+		}
+		elapsed := qh.clock.Now().Sub(createdAt)
+		if elapsed < timeout {
+			continue
+		}
+
+		elapsedMin := int(elapsed.Minutes())
+		autoCommit := qh.worktreeManager.AutoCommit()
+		autoMerge := qh.worktreeManager.AutoMerge()
+		qh.log(LogLevelWarn,
+			"worktree_config_violation command=%s auto_commit=%v auto_merge=%v elapsed_min=%d timeout_min=%d",
+			cmd.ID, autoCommit, autoMerge, elapsedMin, timeoutMin)
+
+		now := qh.clock.Now().UTC().Format(time.RFC3339)
+		msg := fmt.Sprintf(
+			"[maestro] kind:worktree_config_violation command_id:%s\n"+
+				"auto_commit=%v auto_merge=%v\n"+
+				"integration branch unmerged for %d minutes (timeout: %d)\n"+
+				"operator action required: review worktree config or merge manually",
+			cmd.ID, autoCommit, autoMerge, elapsedMin, timeoutMin)
+		// upsertPlannerSignal dedupes by (command_id, phase_id, kind), preventing
+		// duplicate notifications for the same command across scans as long as
+		// the prior signal has not yet been delivered/cleared.
+		qh.upsertPlannerSignal(&s.signals.Data, &s.signals.Dirty, model.PlannerSignal{
+			Kind:      "worktree_config_violation",
+			CommandID: cmd.ID,
+			Message:   msg,
+			CreatedAt: now,
+			UpdatedAt: now,
+		}, s.signalIndex)
 	}
 }
 

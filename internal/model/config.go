@@ -341,6 +341,20 @@ type WorktreeConfig struct {
 	GitTimeoutSec    *int               `yaml:"git_timeout_sec"`
 	GC               WorktreeGCConfig   `yaml:"gc"`
 	CommitPolicy     CommitPolicyConfig `yaml:"commit_policy"`
+	// FallbackMergeTimeoutMinutes controls how long an integration branch may
+	// remain unmerged before the daemon emits a worktree_config_violation
+	// warning when AutoCommit/AutoMerge are disabled. nil=default(60), 0=disabled.
+	FallbackMergeTimeoutMinutes *int `yaml:"fallback_merge_timeout_minutes"`
+}
+
+// EffectiveFallbackMergeTimeoutMinutes returns the configured fallback merge
+// timeout in minutes, or 60 as default. nil (unset) returns the default;
+// explicit 0 disables the check.
+func (w WorktreeConfig) EffectiveFallbackMergeTimeoutMinutes() int {
+	if w.FallbackMergeTimeoutMinutes != nil {
+		return *w.FallbackMergeTimeoutMinutes
+	}
+	return 60
 }
 
 // CommitPolicyConfig enforces safety checks before committing worker changes.
