@@ -8,6 +8,7 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
+	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -595,5 +596,85 @@ func TestResultWrite_StateNotFound(t *testing.T) {
 	resultPath := filepath.Join(d.maestroDir, "results", workerID+".yaml")
 	if _, err := os.Stat(resultPath); err == nil {
 		t.Error("result file should not exist when Phase A rejects")
+	}
+}
+
+// TestResultWrite_Idempotency_CircuitBreakerNotDoubleCounted is a regression
+// test for the bug where the CircuitBreaker counter was incremented before the
+// AppliedResultIDs idempotency check, causing duplicate failed-result
+// submissions to inflate consecutive_failures and trip the breaker spuriously.
+func TestResultWrite_Idempotency_CircuitBreakerNotDoubleCounted(t *testing.T) {
+	d := newTestDaemon(t)
+	// Enable circuit breaker with a low threshold so any double-count would trip it.
+	threshold := 2
+	d.config.CircuitBreaker.Enabled = true
+	d.config.CircuitBreaker.MaxConsecutiveFailures = &threshold
+	d.circuitBreaker = circuitbreaker.NewHandler(d.config, d.logger, d.logLevel)
+
+	taskID := "task_0000000001_abcdef01"
+	commandID := "cmd_0000000001_abcdef01"
+	workerID := "worker1"
+	leaseEpoch := 1
+	exitCode := 1
+
+	setupWorkerQueue(t, d, workerID, taskID, commandID, leaseEpoch)
+	setupCommandState(t, d, commandID, []string{taskID})
+
+	params := ResultWriteParams{
+		Reporter:   workerID,
+		TaskID:     taskID,
+		CommandID:  commandID,
+		LeaseEpoch: leaseEpoch,
+		Status:     "failed",
+		Summary:    "boom",
+		ExitCode:   &exitCode,
+		RetrySafe:  false,
+	}
+
+	// First write: failed.
+	resp1 := d.api.handleResultWrite(makeResultWriteRequest(t, params))
+	if !resp1.Success {
+		t.Fatalf("write 1: expected success, got error: %v", resp1.Error)
+	}
+
+	// Read state and confirm exactly 1 failure was counted.
+	statePath := filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml")
+	readState := func() model.CommandState {
+		t.Helper()
+		sdata, err := os.ReadFile(statePath)
+		if err != nil {
+			t.Fatalf("read state: %v", err)
+		}
+		var st model.CommandState
+		if err := yamlv3.Unmarshal(sdata, &st); err != nil {
+			t.Fatalf("parse state: %v", err)
+		}
+		return st
+	}
+	st1 := readState()
+	if st1.CircuitBreaker.ConsecutiveFailures != 1 {
+		t.Fatalf("after first write: ConsecutiveFailures = %d, want 1", st1.CircuitBreaker.ConsecutiveFailures)
+	}
+	if st1.CircuitBreaker.Tripped {
+		t.Fatalf("breaker should not be tripped after one failure (threshold=2)")
+	}
+
+	// Second write: idempotent retry of the same failed result. PhaseA returns
+	// the existing result_id; phaseB must NOT increment the counter again.
+	resp2 := d.api.handleResultWrite(makeResultWriteRequest(t, params))
+	if !resp2.Success {
+		t.Fatalf("write 2 (idempotent): expected success, got error: %v", resp2.Error)
+	}
+
+	st2 := readState()
+	if st2.CircuitBreaker.ConsecutiveFailures != 1 {
+		t.Errorf("after idempotent retry: ConsecutiveFailures = %d, want 1 (counter must not double-count)",
+			st2.CircuitBreaker.ConsecutiveFailures)
+	}
+	if st2.CircuitBreaker.Tripped {
+		t.Errorf("breaker should not be tripped on duplicate submission (threshold=%d)", threshold)
+	}
+	if st2.AppliedResultIDs[taskID] == "" {
+		t.Errorf("AppliedResultIDs[%s] should be populated", taskID)
 	}
 }

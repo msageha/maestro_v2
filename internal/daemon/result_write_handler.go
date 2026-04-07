@@ -427,9 +427,27 @@ func (a *API) resultWritePhaseB(params ResultWriteParams, resultID string, resul
 		now := d.clock.Now()
 		state.UpdatedAt = now.UTC().Format(time.RFC3339)
 
-		// Circuit breaker: update counter BEFORE AppliedResultIDs so the idempotency
-		// check correctly detects duplicate results against the old map.
-		if d.circuitBreaker != nil {
+		// Task-unit idempotency: if this task already has a result recorded in
+		// AppliedResultIDs, treat the current submission as a duplicate and
+		// skip the circuit breaker counter update. Without this guard the
+		// failure counter would inflate on every retry of the same failed
+		// result (e.g. when phaseA returned the existing result_id for an
+		// idempotent retry) and trip the breaker spuriously. AppliedResultIDs
+		// is keyed by task_id and is the authoritative record of "already
+		// applied" at task granularity, which is what phaseB cares about.
+		alreadyApplied := false
+		if existing, ok := state.AppliedResultIDs[params.TaskID]; ok {
+			alreadyApplied = true
+			if existing != resultID {
+				// State drift: a different result_id is recorded. Skip the CB
+				// update to avoid spurious trips and log for diagnosis.
+				d.log(LogLevelWarn,
+					"result_write applied_result_ids drift task=%s command=%s recorded=%s incoming=%s (skipping CB counter update)",
+					params.TaskID, params.CommandID, existing, resultID)
+			}
+		}
+
+		if !alreadyApplied && d.circuitBreaker != nil {
 			tripped, reason := d.circuitBreaker.UpdateCounterOnResult(state, resultStatus, resultID, now)
 			if tripped {
 				d.circuitBreaker.TripBreaker(state, reason, now)
