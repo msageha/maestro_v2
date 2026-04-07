@@ -174,7 +174,30 @@ maestro result write <agent_id> \
 
 `<agent_id>`, `<task_id>`, `<command_id>`, `<epoch>` はタスク配信時の値をそのまま使用する。`--lease-epoch` は CLI 実装上のデフォルトは 0 だが、Daemon が lease epoch 一致を検証するため、配信された値を必ず指定すること（実質必須）。
 
-エラー時は stderr にメッセージが出力される（lease_epoch 不一致、task_id 不存在等）。エラーが発生した場合は stderr のメッセージを確認し、修正して再試行する。
+エラー時は stderr にメッセージが出力される（lease_epoch 不一致、task_id 不存在等）。エラーが発生した場合は stderr のメッセージを確認し、修正して再試行する。lease_epoch 不一致の詳細は下記「lease_epoch ライフサイクル」を参照。
+
+### lease_epoch ライフサイクル
+
+`lease_epoch` は単一タスクに対する dispatch の世代番号であり、Worker の作業結果が「現在有効なリース所有者によるもの」かを Daemon が検証するためのフェンシングトークンである。Worker はこの値を生成・更新せず、配信された値をそのまま CLI に渡すだけでよい。
+
+| 項目 | 仕様 |
+|------|------|
+| **採番主体** | Daemon の `LeaseManager` のみ。Worker は採番しない |
+| **インクリメント条件** | `AcquireTaskLease` 呼び出し時（pending → in_progress 遷移時）に `+1`。**1 回の dispatch につき 1 回だけ**増加する |
+| **不変な操作** | `ExtendTaskLease`（heartbeat による延長）、`ReleaseTaskLease`（pending 戻し）では epoch は変化しない |
+| **失効条件** | リース TTL 超過後、queue scan の collect/apply フェーズが Worker の状態を判定する。busy/undecided と判定されればリースが延長されるが、non-busy/no-agent/max-runtime 超過と判定されると `ReleaseTaskLease` で pending に戻り、次の dispatch で再 `AcquireTaskLease` されたとき epoch が `+1` される。これにより旧 Worker が保持する epoch は永久に stale になる |
+| **検証点** | Daemon は `task_heartbeat` と `result write` の両エンドポイントで、リクエスト epoch と queue 上の epoch を厳密一致比較する |
+| **不一致時の応答** | `FENCING_REJECT` エラーコードを返却。stderr の文言は heartbeat が `task <id> epoch mismatch: queue=<N>, request=<M>`、result write が `task <id> lease_epoch mismatch: queue=<N>, request=<M>` と微妙に異なる（どちらも同じ意味） |
+
+### Worker 側の epoch 失効検知
+
+現状、能動的に lease 状態を照会する API は提供されていない（必要性が出れば fencing エラー側に `current_epoch` を載せる拡張が推奨方針として残されている）。Worker は以下のいずれかで失効を検知する:
+
+1. **heartbeat 応答**: 長時間タスクで heartbeat を送る場合、`FENCING_REJECT` が返ったら即座に作業を中断する。同じ task_id を別 Worker が再取得済みであり、ファイルシステムへの書き込みを継続するとデータ競合を起こす
+2. **result write 応答**: タスク完了時に `maestro result write` の stderr に `lease_epoch mismatch` が出た場合、その結果は破棄される。Worker は `--status failed --no-retry-safe --partial-changes` での再報告を試みず、ターンを終了する（Daemon 側で既に新しい dispatch が走っているため）
+3. **MAX_RUNTIME_EXCEEDED の副作用**: heartbeat 時にこのエラーが返った場合、queue scan が次サイクルで Worker のリースを release する可能性が高い。受領したら作業を中断する
+
+epoch 不一致は Worker 側のバグではなく**正常系**である（リース TTL を超えるほど作業が長引いた、または Daemon が Worker の停止を検知したケース）。Worker は黙ってターンを終了し、Daemon 側で再 dispatch されるのを待つ。
 
 | フラグ | 用途 |
 |---|---|
