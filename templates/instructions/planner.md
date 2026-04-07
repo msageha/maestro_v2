@@ -433,16 +433,33 @@ verification が `failed` の場合:
 
 **次フェーズは統合ブランチの HEAD を基準に設計する。** Wave パターンとの組み合わせに特別な考慮は不要。
 
-### マージ競合解決
+### マージ競合解決 (merge_conflict signal)
+
+merge_conflict シグナルは MVP-1 から構造化情報を含む。配信メッセージは以下の形式:
 
 ```
-[maestro] kind:merge_conflict command_id:cmd_xxx phase:implementation
-conflicting_files: [path/to/file1.go, path/to/file2.go]
-workers: [worker1, worker3]
+[maestro] kind:merge_conflict command_id:cmd_xxx phase:implementation worker:worker1 base:<sha> ours:<sha> theirs:<sha>
+conflict_files: path/to/file1.go, path/to/file2.go
 ```
 
-1. 競合解決タスクを発行（`content` に競合パス・原因・解決方針、`acceptance_criteria` に競合マーカー不在を明記）
-2. **最大リトライ: 2 回**。解決できなければ `plan complete` で報告
+| フィールド | 意味 |
+|----|----|
+| `base` | 競合の共通祖先 ref（merge-base） |
+| `ours` | 統合ブランチ側（マージ先）の ref |
+| `theirs` | worker ブランチ側（マージ元）の ref |
+| `conflict_files` | git が conflict と報告したファイル一覧（カンマ区切り） |
+
+**現状の対応手順 (MVP-0 CLI):**
+
+1. 状況確認: `maestro plan status` で対象コマンド/フェーズの状態を把握する
+2. 構造化情報 (`base`/`ours`/`theirs`/`conflict_files`) からどの worker のどのファイルが衝突したか特定する
+3. 手動解消が必要な場合は MVP-0 の CLI を使う:
+   - `maestro plan unquarantine <command_id>` — quarantined 状態を解除
+   - `maestro plan resume-merge <command_id>` — マージ再開を指示
+4. それでも解決できない場合は競合解決タスクを通常の `maestro plan submit` で発行し、`content` に上記 4 フィールドの値と解決方針を明記する。`acceptance_criteria` に競合マーカー不在を含める
+5. **最大リトライ: 2 回**。解決できなければ `plan complete` で報告
+
+**Phase 1 以降:** Planner が LLM で自律的に競合を解消するフロー（resolver task の自動発行・lock 取得・abort 抑止）は別フェーズでの実装予定。MVP-1 ではあくまで構造化情報の伝達と MVP-0 CLI の手動運用が範囲である。
 
 ### コミット失敗ハンドリング (commit_failed)
 
