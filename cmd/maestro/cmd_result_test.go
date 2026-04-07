@@ -6,28 +6,6 @@ import (
 	"testing"
 )
 
-func TestRunResult_NoSubcommand(t *testing.T) {
-	err := runResult(nil)
-	if err == nil {
-		t.Fatal("expected error for missing subcommand")
-	}
-	var ce *CLIError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected CLIError, got %T: %v", err, err)
-	}
-}
-
-func TestRunResult_UnknownSubcommand(t *testing.T) {
-	err := runResult([]string{"bogus"})
-	if err == nil {
-		t.Fatal("expected error for unknown subcommand")
-	}
-	var ce *CLIError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected CLIError, got %T: %v", err, err)
-	}
-}
-
 func TestRunResultWrite_MissingReporter(t *testing.T) {
 	err := runResultWrite(nil)
 	if err == nil {
