@@ -104,6 +104,7 @@ worktree:
   git_timeout_sec: 120 # git コマンドのタイムアウト (秒)
   stall_timeout_minutes: 30 # 全タスク terminal & integration={created,merged} のまま停滞した command を planner に通知するまでの分数 (default: 30, 0=無効)
   fallback_merge_timeout_minutes: 60 # auto_commit/auto_merge 無効時に integration branch 未マージ警告を出すまでの分数 (default: 60, 0=無効)
+  stall_cleanup_after: "10m" # 全タスク terminal だが phase が pending/awaiting_fill/filling/active のまま停滞した command を fast-track 失敗扱いして worktree cleanup (merge スキップ) を発火するまでの時間 (default: 10m, "0s"=無効)
   commit_policy:
     max_files: 30 # 1コミットあたりの最大ステージングファイル数 (0=無制限, default: 30)
     require_gitignore: true # .gitignore の存在を要求する
