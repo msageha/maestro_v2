@@ -81,38 +81,18 @@ func runQueueWrite(args []string) error {
 			params["skill_refs"] = skillRefs
 		}
 	case "task":
-		if commandID == "" || content == "" || purpose == "" || acceptanceCriteria == "" || bloomLevel == 0 {
-			return &CLIError{Code: 1, Msg: "maestro queue write: required for type=task: --command-id, --content, --purpose, --acceptance-criteria, --bloom-level"}
-		}
-		if err := validate.ValidateID(commandID); err != nil {
-			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: invalid --command-id: %v", err)}
-		}
-		if bloomLevel < 1 || bloomLevel > 6 {
-			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: --bloom-level must be between 1 and 6, got %d", bloomLevel)}
-		}
-		params["command_id"] = commandID
-		params["content"] = content
-		params["purpose"] = purpose
-		params["acceptance_criteria"] = acceptanceCriteria
-		params["bloom_level"] = bloomLevel
-		if priority > 0 {
-			params["priority"] = priority
-		}
-		if len(blockedBy) > 0 {
-			params["blocked_by"] = blockedBy
-		}
-		if len(constraints) > 0 {
-			params["constraints"] = constraints
-		}
-		if len(toolsHint) > 0 {
-			params["tools_hint"] = toolsHint
-		}
-		if personaHint != "" {
-			params["persona_hint"] = personaHint
-		}
-		if len(skillRefs) > 0 {
-			params["skill_refs"] = skillRefs
-		}
+		// Task creation is the Planner's exclusive responsibility. The
+		// queue_write task entrypoint is reserved for system-internal use
+		// and is intentionally not exposed via the CLI to prevent
+		// Planner-bypass task injection (audit C3).
+		_ = purpose
+		_ = acceptanceCriteria
+		_ = bloomLevel
+		_ = blockedBy
+		_ = constraints
+		_ = toolsHint
+		_ = personaHint
+		return &CLIError{Code: 1, Msg: "maestro queue write: --type task is not supported via CLI; tasks must be created through the Planner (maestro plan submit / maestro plan retry-task)"}
 	case "notification":
 		if commandID == "" || content == "" || sourceResultID == "" {
 			return &CLIError{Code: 1, Msg: "maestro queue write: required for type=notification: --command-id, --content, --source-result-id"}

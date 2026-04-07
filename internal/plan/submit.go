@@ -379,7 +379,7 @@ func addSystemCommitForPhases(opts SubmitOptions, cpd *concretePhaseData) (*stri
 		return nil, fmt.Errorf("validate system commit task: %w", err)
 	}
 
-	commitID, err := model.GenerateID(model.IDTypeTask)
+	commitID, err := model.NewTaskID(model.TaskIDCallerPlannerSystemCommit)
 	if err != nil {
 		return nil, fmt.Errorf("generate system commit ID: %w", err)
 	}
@@ -812,7 +812,7 @@ func insertSystemCommitTask(tasks []TaskInput) ([]TaskInput, error) {
 func resolveNames(tasks []TaskInput) (map[string]string, error) {
 	nameToID := make(map[string]string, len(tasks))
 	for _, t := range tasks {
-		id, err := model.GenerateID(model.IDTypeTask)
+		id, err := model.NewTaskID(model.TaskIDCallerPlannerSubmit)
 		if err != nil {
 			return nil, fmt.Errorf("generate task ID for %s: %w", t.Name, err)
 		}

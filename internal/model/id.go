@@ -45,6 +45,51 @@ func GenerateID(idType IDType) (string, error) {
 	return fmt.Sprintf("%s_%010d_%s", idType, timestamp, hexStr), nil
 }
 
+// TaskIDCaller identifies the legitimate caller responsible for minting a
+// task ID. Task ID generation must go through NewTaskID with one of the
+// constants below so that callers are explicit and auditable. This is the
+// single chokepoint that resolves the historical "task ID minted in two
+// places (Planner vs Daemon queue_write)" Critical issue.
+type TaskIDCaller string
+
+const (
+	// TaskIDCallerPlannerSubmit — Planner.plan submit (resolveNames).
+	TaskIDCallerPlannerSubmit TaskIDCaller = "planner-submit"
+	// TaskIDCallerPlannerSystemCommit — Planner.plan submit system_commit task.
+	TaskIDCallerPlannerSystemCommit TaskIDCaller = "planner-system-commit"
+	// TaskIDCallerPlannerRetry — Planner.plan retry-task.
+	TaskIDCallerPlannerRetry TaskIDCaller = "planner-retry"
+	// TaskIDCallerDaemonRetry — Daemon TaskRetryHandler (automatic retry).
+	TaskIDCallerDaemonRetry TaskIDCaller = "daemon-retry-handler"
+	// TaskIDCallerSystemInternal — internal/test entrypoint for queue_write
+	// task path. NOT exposed via the maestro CLI.
+	TaskIDCallerSystemInternal TaskIDCaller = "system-internal"
+)
+
+var validTaskIDCallers = map[TaskIDCaller]bool{
+	TaskIDCallerPlannerSubmit:       true,
+	TaskIDCallerPlannerSystemCommit: true,
+	TaskIDCallerPlannerRetry:        true,
+	TaskIDCallerDaemonRetry:         true,
+	TaskIDCallerSystemInternal:      true,
+}
+
+// NewTaskID is the single, audited entrypoint for minting task IDs. The
+// caller argument MUST be one of the TaskIDCaller constants so the origin
+// of every task ID is explicit and grep-able.
+func NewTaskID(caller TaskIDCaller) (string, error) {
+	if !validTaskIDCallers[caller] {
+		return "", fmt.Errorf("NewTaskID: unknown caller %q (must be one of TaskIDCaller constants)", caller)
+	}
+	return GenerateID(IDTypeTask)
+}
+
+// ValidTaskIDCaller reports whether the given caller is recognised. Used by
+// daemon UDS handlers to gate the queue_write task path.
+func ValidTaskIDCaller(caller TaskIDCaller) bool {
+	return validTaskIDCallers[caller]
+}
+
 func ValidateID(id string) bool {
 	return idRegex.MatchString(id)
 }

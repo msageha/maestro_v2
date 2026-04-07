@@ -89,8 +89,8 @@ func (h *TaskRetryHandler) ShouldRetryTask(task *model.Task, exitCode int, retry
 func (h *TaskRetryHandler) CreateRetryTask(originalTask *model.Task, workerID string, exitCode int) (*model.Task, error) {
 	retryConfig := h.config.Retry.TaskExecution
 
-	// Generate a proper task ID for the retry task
-	retryTaskID, err := model.GenerateID(model.IDTypeTask)
+	// Generate a proper task ID for the retry task via the audited entrypoint.
+	retryTaskID, err := model.NewTaskID(model.TaskIDCallerDaemonRetry)
 	if err != nil {
 		return nil, fmt.Errorf("generate retry task ID: %w", err)
 	}
