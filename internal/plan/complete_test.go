@@ -548,3 +548,143 @@ func TestComplete_IntentCorrupt_Removed(t *testing.T) {
 		t.Errorf("state.PlanStatus = %q, want %q", state.PlanStatus, model.PlanStatusCompleted)
 	}
 }
+
+// TestComplete_H3_ConflictRecovery_StateFailedIntentCompleted simulates the
+// H3 race: a previous Complete attempt wrote results/planner.yaml and the
+// queue entry as "completed" but crashed before updating state. After the
+// crash, dead-letter (or another actor) transitioned state.PlanStatus to
+// "failed". On recovery, the replay must reconcile result/queue to match the
+// actual state ("failed"), not silently leave the prior "completed" artifacts
+// in place.
+func TestComplete_H3_ConflictRecovery_StateFailedIntentCompleted(t *testing.T) {
+	commandID := "cmd_0000000043_aabbccdd"
+	taskID1 := "task_0000000043_11111111"
+
+	// State: tasks all completed (so CanComplete would derive completed),
+	// but plan_status has been forced to failed (e.g. by dead-letter).
+	taskStates := map[string]model.Status{
+		taskID1: model.StatusCompleted,
+	}
+	requiredIDs := []string{taskID1}
+
+	maestroDir := setupCompleteTest(t, commandID, taskStates, requiredIDs)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	// Force state to failed (simulating dead-letter post-crash transition).
+	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var st model.CommandState
+	if err := yamlv3.Unmarshal(stateData, &st); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	st.PlanStatus = model.PlanStatusFailed
+	if err := yamlutil.AtomicWrite(statePath, &st); err != nil {
+		t.Fatalf("write failed state: %v", err)
+	}
+
+	// Pre-write results/planner.yaml as completed (Step 1 from prior crashed run).
+	lm.Lock("result:planner")
+	if err := writeCommandResultLocked(maestroDir, commandID, model.StatusCompleted, "prior completed", []model.CommandResultTask{
+		{TaskID: taskID1, Worker: "worker0", Status: model.StatusCompleted, Summary: "done"},
+	}); err != nil {
+		lm.Unlock("result:planner")
+		t.Fatalf("pre-write result: %v", err)
+	}
+	lm.Unlock("result:planner")
+
+	// Pre-update planner queue as completed (Step 2 from prior crashed run).
+	if err := updateCommandQueueEntryLocked(maestroDir, commandID, model.StatusCompleted); err != nil {
+		t.Fatalf("pre-update queue: %v", err)
+	}
+
+	// Write the original "completed" intent.
+	writeManualIntent(t, maestroDir, &completeIntent{
+		SchemaVersion: 1,
+		FileType:      "intent_plan_complete",
+		CommandID:     commandID,
+		Summary:       "prior completed",
+		ResultStatus:  model.StatusCompleted,
+		PlanStatus:    model.PlanStatusCompleted,
+		TaskResults: []model.CommandResultTask{
+			{TaskID: taskID1, Worker: "worker0", Status: model.StatusCompleted, Summary: "done"},
+		},
+		CreatedAt: "2025-01-01T00:00:00Z",
+	})
+
+	// Recovery via Complete().
+	result, err := Complete(CompleteOptions{
+		CommandID:  commandID,
+		Summary:    "caller summary (ignored on recovery)",
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lm,
+	})
+	if err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+	// Returned status reflects the actual state, not the intent.
+	if result.Status != string(model.PlanStatusFailed) {
+		t.Errorf("Status = %q, want %q", result.Status, model.PlanStatusFailed)
+	}
+
+	// results/planner.yaml: existing entry should be reconciled to failed,
+	// preserving its ID (so notification dedup keys remain stable).
+	cmdResultPath := filepath.Join(maestroDir, "results", "planner.yaml")
+	cmdResultData, err := os.ReadFile(cmdResultPath)
+	if err != nil {
+		t.Fatalf("read command result: %v", err)
+	}
+	var crf model.CommandResultFile
+	if err := yamlv3.Unmarshal(cmdResultData, &crf); err != nil {
+		t.Fatalf("unmarshal command result: %v", err)
+	}
+	if len(crf.Results) != 1 {
+		t.Fatalf("len(Results) = %d, want 1 (in-place reconcile)", len(crf.Results))
+	}
+	if crf.Results[0].Status != model.StatusFailed {
+		t.Errorf("result.Status = %q, want failed (reconciled)", crf.Results[0].Status)
+	}
+	if crf.Results[0].Notified {
+		t.Errorf("result.Notified = true, want false (reset for re-notification)")
+	}
+
+	// queue/planner.yaml: entry should be force-updated from completed → failed.
+	plannerPath := filepath.Join(maestroDir, "queue", "planner.yaml")
+	plannerData, err := os.ReadFile(plannerPath)
+	if err != nil {
+		t.Fatalf("read planner queue: %v", err)
+	}
+	var cq model.CommandQueue
+	if err := yamlv3.Unmarshal(plannerData, &cq); err != nil {
+		t.Fatalf("unmarshal planner queue: %v", err)
+	}
+	if cq.Commands[0].Status != model.StatusFailed {
+		t.Errorf("queue command status = %s, want failed (reconciled)", cq.Commands[0].Status)
+	}
+
+	// state.PlanStatus must remain failed (not overwritten back to completed).
+	stateData2, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("re-read state: %v", err)
+	}
+	var st2 model.CommandState
+	if err := yamlv3.Unmarshal(stateData2, &st2); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	if st2.PlanStatus != model.PlanStatusFailed {
+		t.Errorf("state.PlanStatus = %q, want failed (unchanged)", st2.PlanStatus)
+	}
+
+	// Intent file removed after recovery.
+	intentPath := completeIntentPath(maestroDir, commandID)
+	if _, err := os.Stat(intentPath); !os.IsNotExist(err) {
+		t.Error("intent file should be removed after recovery")
+	}
+
+	// Sanity: avoid unused-import lint when strings package is dropped.
+	_ = strings.TrimSpace
+}

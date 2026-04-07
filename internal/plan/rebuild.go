@@ -41,6 +41,17 @@ func Rebuild(opts RebuildOptions) error {
 		state.AppliedResultIDs = make(map[string]string)
 	}
 
+	// Prune stale entries: AppliedResultIDs may contain task_ids that no longer
+	// exist in TaskStates (e.g. tasks removed from the plan after a previous
+	// reconcile). Leaving them in place would let result_write idempotency
+	// checks key off ghost task_ids and incorrectly drop legitimate writes.
+	for taskID := range state.AppliedResultIDs {
+		if _, ok := state.TaskStates[taskID]; !ok {
+			log.Printf("rebuild: pruning stale applied_result_id for unknown task %s", taskID)
+			delete(state.AppliedResultIDs, taskID)
+		}
+	}
+
 	// Scan all results/worker{N}.yaml files for tasks belonging to this command
 	resultsDir := filepath.Join(opts.MaestroDir, "results")
 	entries, err := os.ReadDir(resultsDir)

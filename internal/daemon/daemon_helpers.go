@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +12,42 @@ import (
 
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
+
+// spawnTracked admits a background goroutine to the daemon errgroup atomically
+// with respect to Shutdown. Callers from outside the errgroup (e.g. UDS
+// handlers) MUST use this helper rather than calling d.eg.Go directly: the
+// naive check-then-Go pattern races with Shutdown's eg.Wait() and can either
+// panic in sync.WaitGroup or leak the goroutine past Wait.
+//
+// If the daemon is shutting down (or already shut down), the goroutine is not
+// started. The supplied function receives d.egCtx so it observes context
+// cancellation. The fallback path (d.eg == nil, used by tests that bypass
+// Run()) launches an untracked goroutine with d.ctx instead — preserving the
+// previous behaviour for that path. Returns true iff a goroutine was started.
+func (d *Daemon) spawnTracked(name string, fn func(context.Context)) bool {
+	if d.eg == nil {
+		if d.shuttingDown.Load() {
+			return false
+		}
+		go func() {
+			defer d.recoverPanic(name)
+			fn(d.ctx)
+		}()
+		return true
+	}
+
+	d.egMu.Lock()
+	defer d.egMu.Unlock()
+	if d.shuttingDown.Load() {
+		return false
+	}
+	d.eg.Go(func() error {
+		defer d.recoverPanic(name)
+		fn(d.egCtx)
+		return nil
+	})
+	return true
+}
 
 // recoverPanic catches panics in goroutines to prevent the daemon from crashing.
 // It logs the panic with a full stack trace and initiates a graceful shutdown.

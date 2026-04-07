@@ -78,7 +78,15 @@ func (d *Daemon) Shutdown() {
 		totalDuration := time.Duration(totalTimeout) * time.Second
 
 		// 1. Set advisory flag — spawners will skip new work.
+		// Hold egMu across the flag flip so any spawnTracked caller currently
+		// inside its critical section finishes (its eg.Go has completed and
+		// the WaitGroup counter is incremented before we proceed to eg.Wait).
+		// Subsequent spawnTracked calls will observe shuttingDown=true and
+		// skip. Release the lock before eg.Wait so tracked goroutines that
+		// internally spawn children via spawnTracked do not deadlock.
+		d.egMu.Lock()
 		d.shuttingDown.Store(true)
+		d.egMu.Unlock()
 
 		// 2. Stop producers — no new work will be enqueued.
 		d.ticker.Stop()

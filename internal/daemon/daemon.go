@@ -59,6 +59,15 @@ type Daemon struct {
 	cancel   context.CancelFunc
 	eg       *errgroup.Group   // tracks all daemon goroutines (loops + handlers)
 	egCtx    context.Context   // errgroup-derived context; use inside eg.Go goroutines
+	// egMu serializes admission of new goroutines via spawnTracked against the
+	// shutdown flag flip. Without it, an untracked caller (e.g. a UDS handler)
+	// could observe shuttingDown=false, then race with Shutdown's eg.Wait():
+	// either the new eg.Go() panics ("WaitGroup is reused before previous Wait
+	// has returned") or the goroutine leaks past eg.Wait. Shutdown takes the
+	// lock briefly to flip the flag — it must NOT be held across eg.Wait, since
+	// tracked goroutines may need to spawn children via spawnTracked during
+	// unwind (those callers will then observe shuttingDown=true and skip).
+	egMu     sync.Mutex
 	shutdown sync.Once
 
 	// shuttingDown is an advisory flag read by spawners for fast-path rejection.

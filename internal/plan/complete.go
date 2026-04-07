@@ -179,15 +179,32 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 
 // executeCompleteSteps runs the 3-step completion sequence. Each step is
 // idempotent so it is safe to replay on recovery.
+//
+// H3 conflict handling: if the state has been independently transitioned to a
+// different terminal status (e.g., dead-letter set it to failed while a
+// previous Complete crashed mid-sequence), the result/queue artifacts written
+// by the previous attempt will be inconsistent with state. Rather than
+// silently skipping, we reconcile result/queue forward to match the actual
+// state.PlanStatus so all three stores agree.
 func executeCompleteSteps(opts CompleteOptions, sm *StateManager, state *model.CommandState, intent *completeIntent) error {
-	// Early exit: if state has already been transitioned to a different terminal
-	// status by another process (e.g., dead-letter, cancel), skip all steps to
-	// prevent writing result/queue artifacts with an inconsistent status.
-	// If state matches the intent's terminal status, proceed to ensure all
-	// artifacts are consistent (partial-replay scenario).
+	// Conflict path: state already terminal AND differs from intent.
 	if model.IsPlanTerminal(state.PlanStatus) && state.PlanStatus != intent.PlanStatus {
-		log.Printf("[WARN] executeCompleteSteps: state already terminal (%s), differs from intent (%s) for command %s; skipping all steps",
+		actualStatus, err := planStatusToResultStatus(state.PlanStatus)
+		if err != nil {
+			return fmt.Errorf("conflict reconcile: %w", err)
+		}
+		log.Printf("[WARN] executeCompleteSteps: conflict — state=%s intent=%s for command %s; reconciling result/queue to state",
 			state.PlanStatus, intent.PlanStatus, intent.CommandID)
+
+		opts.LockMap.Lock("result:planner")
+		rerr := reconcileCommandResultLocked(opts.MaestroDir, intent.CommandID, actualStatus, intent.Summary, intent.TaskResults)
+		opts.LockMap.Unlock("result:planner")
+		if rerr != nil {
+			return fmt.Errorf("reconcile command result: %w", rerr)
+		}
+		if err := reconcileCommandQueueEntryLocked(opts.MaestroDir, intent.CommandID, actualStatus); err != nil {
+			return fmt.Errorf("reconcile command queue: %w", err)
+		}
 		return nil
 	}
 
@@ -205,22 +222,120 @@ func executeCompleteSteps(opts CompleteOptions, sm *StateManager, state *model.C
 	}
 
 	// Step 3: Update state plan_status (caller holds state:{commandID})
-	// Idempotent: skip if state is already in the target terminal status.
+	// Idempotent: state matches intent already, no-op. Otherwise update.
 	if state.PlanStatus != intent.PlanStatus {
-		if model.IsPlanTerminal(state.PlanStatus) {
-			// State reached a different terminal status (e.g. via cancel); do not
-			// overwrite. Log and treat as success for the completion sequence.
-			log.Printf("[WARN] executeCompleteSteps: state already terminal (%s) but differs from intent (%s) for command %s",
-				state.PlanStatus, intent.PlanStatus, intent.CommandID)
-		} else {
-			state.PlanStatus = intent.PlanStatus
-			state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-			if err := sm.SaveState(state); err != nil {
-				return fmt.Errorf("save state: %w", err)
-			}
+		state.PlanStatus = intent.PlanStatus
+		state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		if err := sm.SaveState(state); err != nil {
+			return fmt.Errorf("save state: %w", err)
 		}
 	}
 
+	return nil
+}
+
+// planStatusToResultStatus maps a terminal PlanStatus to the corresponding
+// command-level result Status.
+func planStatusToResultStatus(ps model.PlanStatus) (model.Status, error) {
+	switch ps {
+	case model.PlanStatusCompleted:
+		return model.StatusCompleted, nil
+	case model.PlanStatusFailed:
+		return model.StatusFailed, nil
+	case model.PlanStatusCancelled:
+		return model.StatusCancelled, nil
+	default:
+		return "", fmt.Errorf("not a terminal plan status: %s", ps)
+	}
+}
+
+// reconcileCommandResultLocked overwrites an existing command result entry's
+// status (preserving the result ID so downstream notification dedup keys
+// remain stable) when an H3 conflict is detected. If no entry exists yet,
+// a new one is appended via writeCommandResultLocked.
+// Precondition: caller holds "result:planner" lock.
+func reconcileCommandResultLocked(maestroDir string, commandID string, status model.Status, summary string, tasks []model.CommandResultTask) error {
+	path := filepath.Join(maestroDir, "results", "planner.yaml")
+
+	var rf model.CommandResultFile
+	data, err := os.ReadFile(path)
+	if err == nil {
+		if perr := yamlv3.Unmarshal(data, &rf); perr != nil {
+			return fmt.Errorf("parse existing result file: %w", perr)
+		}
+	}
+	if rf.SchemaVersion == 0 {
+		rf.SchemaVersion = 1
+		rf.FileType = "result_command"
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for i := range rf.Results {
+		if rf.Results[i].CommandID == commandID {
+			// Preserve ID; mutate status/summary/tasks. Reset Notified so
+			// the orchestrator notification path can resend the corrected
+			// result. Pending notifications referencing the original ID
+			// remain valid because the ID itself is unchanged.
+			rf.Results[i].Status = status
+			rf.Results[i].Summary = summary
+			rf.Results[i].Tasks = tasks
+			rf.Results[i].Notified = false
+			rf.Results[i].CreatedAt = now
+			return yamlutil.AtomicWrite(path, rf)
+		}
+	}
+
+	// No existing entry: fall back to a fresh append.
+	resultID, err := model.GenerateID(model.IDTypeResult)
+	if err != nil {
+		return fmt.Errorf("generate result ID: %w", err)
+	}
+	rf.Results = append(rf.Results, model.CommandResult{
+		ID:        resultID,
+		CommandID: commandID,
+		Status:    status,
+		Summary:   summary,
+		Tasks:     tasks,
+		Notified:  false,
+		CreatedAt: now,
+	})
+	return yamlutil.AtomicWrite(path, rf)
+}
+
+// reconcileCommandQueueEntryLocked force-updates a command's status in
+// queue/planner.yaml even if the entry is already in a terminal state. This
+// is the H3 reconciliation counterpart to updateCommandQueueEntryLocked,
+// which is intentionally idempotent (no-op on terminal). If the entry is
+// missing (already archived), this is a no-op.
+// Precondition: caller holds "queue:planner" lock.
+func reconcileCommandQueueEntryLocked(maestroDir string, commandID string, status model.Status) error {
+	path := filepath.Join(maestroDir, "queue", "planner.yaml")
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read planner queue: %w", err)
+	}
+
+	var cq model.CommandQueue
+	if err := yamlv3.Unmarshal(data, &cq); err != nil {
+		return fmt.Errorf("parse planner queue: %w", err)
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	for i := range cq.Commands {
+		if cq.Commands[i].ID == commandID {
+			if cq.Commands[i].Status == status {
+				return nil
+			}
+			cq.Commands[i].Status = status
+			cq.Commands[i].LeaseOwner = nil
+			cq.Commands[i].LeaseExpiresAt = nil
+			cq.Commands[i].UpdatedAt = now
+			return yamlutil.AtomicWrite(path, cq)
+		}
+	}
+
+	log.Printf("[WARN] reconcileCommandQueueEntryLocked: command %s not found in planner queue (already archived)", commandID)
 	return nil
 }
 
