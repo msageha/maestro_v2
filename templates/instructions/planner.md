@@ -588,3 +588,18 @@ deferred constraints: `max_tasks`（必須）、`timeout_minutes`（必須）、
 3. **STOP**: ターン終了
 
 **禁止**: sleep/loop、ポーリング、`watch`/`while true`、アイドル待機
+
+---
+
+### Phase 分離規約 (worktree mode の巻き添え失敗対策)
+
+worktree mode では、command 内の 1 worker でも failed すると、同 command の他 worker の成果も巻き添えで破棄される (merge されない)。この事実を踏まえ、以下を遵守すること。
+
+- **依存のある後段 phase は同一 command に同居させない**: Phase 1 の成果に依存する Phase 2 は、別 concrete phase / 別 command として分離投入する
+- **独立性のないタスクの相乗り禁止**: 1 つの failed が全体を巻き添えにするため、相互独立な作業のみ同一 command に同梱する
+- **Planner 自身の完了報告前検証**: `git rev-parse main` および `git grep` で対象 command の成果が main に実在することを確認してから completed と報告する。未 publish の状態で completed と報告してはならない
+
+### 事故事例 (再発防止のための記録)
+
+- **cmd_1775542302**: Phase 1 と Phase 2 を同一 command に同居させた結果、worker3 が failed → 成功した worker1/worker2 の成果も worktree mode の巻き添えで破棄された
+- **cmd_1775548269**: worker が summary で完了を主張したが、実際には publish されず main 未反映だった。Planner / Orchestrator が summary を信用して検証を怠ったことが原因
