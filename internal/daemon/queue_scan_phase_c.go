@@ -90,16 +90,26 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 					mr.Item.CommandID, mr.Item.PhaseID, mr.Error)
 			}
 			for _, conflict := range mr.Conflicts {
-				msg := fmt.Sprintf("[maestro] kind:merge_conflict command_id:%s phase:%s worker:%s\nconflict_files: %s",
+				// Append base/ours/theirs refs to the legacy message format so
+				// existing CSV-style consumers continue to parse it. New
+				// structured fields are also populated below for planners that
+				// understand the MVP-1 schema.
+				msg := fmt.Sprintf("[maestro] kind:merge_conflict command_id:%s phase:%s worker:%s base:%s ours:%s theirs:%s\nconflict_files: %s",
 					mr.Item.CommandID, mr.Item.PhaseID, conflict.WorkerID,
+					conflict.BaseRef, conflict.OursRef, conflict.TheirsRef,
 					strings.Join(conflict.ConflictFiles, ", "))
 				qh.upsertPlannerSignal(&signalQueue, &signalsDirty, model.PlannerSignal{
-					Kind:      "merge_conflict",
-					CommandID: mr.Item.CommandID,
-					PhaseID:   mr.Item.PhaseID,
-					Message:   msg,
-					CreatedAt: now,
-					UpdatedAt: now,
+					Kind:              "merge_conflict",
+					CommandID:         mr.Item.CommandID,
+					PhaseID:           mr.Item.PhaseID,
+					WorkerID:          conflict.WorkerID,
+					Message:           msg,
+					ConflictBaseRef:   conflict.BaseRef,
+					ConflictOursRef:   conflict.OursRef,
+					ConflictTheirsRef: conflict.TheirsRef,
+					ConflictFiles:     append([]string(nil), conflict.ConflictFiles...),
+					CreatedAt:         now,
+					UpdatedAt:         now,
 				}, signalIndex)
 			}
 			if mr.Error == nil && len(mr.Conflicts) == 0 && len(mr.CommitFailures) == 0 && qh.worktreeManager != nil {
