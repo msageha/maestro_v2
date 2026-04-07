@@ -27,6 +27,7 @@ func (qh *QueueHandler) periodicScanPhaseA() phaseAResult {
 	qh.stepWorktreePhaseMerges(&s)
 	qh.stepWorktreePublish(&s)
 	qh.stepWorktreeStallDetection(&s)
+	qh.stepCheckWorktreeConfigViolations(&s)
 	qh.stepPlannerSignals(&s)
 	qh.stepPreemptiveRenewal(&s)
 	qh.stepDispatchOrRecovery(&s)
