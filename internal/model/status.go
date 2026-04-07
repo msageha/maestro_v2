@@ -136,14 +136,17 @@ var validPhaseTransitions = map[PhaseStatus]map[PhaseStatus]bool{
 	PhaseStatusPending: {
 		PhaseStatusAwaitingFill: true,
 		PhaseStatusCancelled:    true,
+		PhaseStatusFailed:       true, // fast-track stall cleanup
 	},
 	PhaseStatusAwaitingFill: {
 		PhaseStatusFilling:  true,
 		PhaseStatusTimedOut: true,
+		PhaseStatusFailed:   true, // fast-track stall cleanup
 	},
 	PhaseStatusFilling: {
 		PhaseStatusActive:       true,
 		PhaseStatusAwaitingFill: true, // fill failure → back to awaiting_fill
+		PhaseStatusFailed:       true, // fast-track stall cleanup
 	},
 	PhaseStatusActive: {
 		PhaseStatusCompleted: true,

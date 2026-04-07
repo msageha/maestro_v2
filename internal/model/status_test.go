@@ -186,10 +186,13 @@ func TestValidatePhaseTransition(t *testing.T) {
 	}{
 		{PhaseStatusPending, PhaseStatusAwaitingFill},
 		{PhaseStatusPending, PhaseStatusCancelled},
+		{PhaseStatusPending, PhaseStatusFailed},        // fast-track stall cleanup
 		{PhaseStatusAwaitingFill, PhaseStatusFilling},
 		{PhaseStatusAwaitingFill, PhaseStatusTimedOut},
+		{PhaseStatusAwaitingFill, PhaseStatusFailed},   // fast-track stall cleanup
 		{PhaseStatusFilling, PhaseStatusActive},
 		{PhaseStatusFilling, PhaseStatusAwaitingFill},
+		{PhaseStatusFilling, PhaseStatusFailed},        // fast-track stall cleanup
 		{PhaseStatusActive, PhaseStatusCompleted},
 		{PhaseStatusActive, PhaseStatusFailed},
 		{PhaseStatusActive, PhaseStatusCancelled},
