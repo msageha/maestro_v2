@@ -4,8 +4,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 
+	"github.com/msageha/maestro_v2/internal/daemon/worktree"
 	"github.com/msageha/maestro_v2/internal/uds"
+	"github.com/msageha/maestro_v2/internal/validate"
 )
 
 // validationFormatter is satisfied by plan.ValidationErrors without importing plan.
@@ -31,9 +35,6 @@ func (d *Daemon) SetPlanExecutor(pe PlanExecutor) {
 
 func (a *API) handlePlan(req *uds.Request) *uds.Response {
 	d := a.d
-	if d.planExecutor == nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, "plan executor not configured")
-	}
 
 	var params struct {
 		Operation string          `json:"operation"`
@@ -41,6 +42,17 @@ func (a *API) handlePlan(req *uds.Request) *uds.Response {
 	}
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid params: %v", err))
+	}
+
+	// Operations that route through the worktree manager rather than the
+	// plan executor (operator-recovery commands).
+	switch params.Operation {
+	case "unquarantine", "resume_merge":
+		return a.handlePlanWorktreeRecovery(params.Operation, params.Data)
+	}
+
+	if d.planExecutor == nil {
+		return uds.ErrorResponse(uds.ErrCodeInternal, "plan executor not configured")
 	}
 
 	a.acquireFileLock()
@@ -87,4 +99,74 @@ func (a *API) handlePlan(req *uds.Request) *uds.Response {
 	}
 
 	return &uds.Response{Success: true, Data: result}
+}
+
+// handlePlanWorktreeRecovery serves the operator-recovery plan operations
+// (unquarantine, resume_merge). Both delegate to the worktree manager rather
+// than the plan executor and produce uniform error mapping for the CLI.
+func (a *API) handlePlanWorktreeRecovery(operation string, data json.RawMessage) *uds.Response {
+	d := a.d
+	if d.worktreeManager == nil {
+		return uds.ErrorResponse(uds.ErrCodeInternal, "worktree manager not configured (worktree.enabled=false?)")
+	}
+
+	var p struct {
+		CommandID string `json:"command_id"`
+		Reason    string `json:"reason"`
+	}
+	if err := json.Unmarshal(data, &p); err != nil {
+		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid params: %v", err))
+	}
+	if p.CommandID == "" {
+		return uds.ErrorResponse(uds.ErrCodeValidation, "command_id is required")
+	}
+	if err := validate.ValidateID(p.CommandID); err != nil {
+		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid command_id: %v", err))
+	}
+
+	a.acquireFileLock()
+	defer a.releaseFileLock()
+
+	// Check that the command itself exists (state/commands/<id>.yaml) under
+	// the file lock to avoid a TOCTOU window with concurrent queue scans.
+	// This distinguishes "no such command" from "command exists but never
+	// used worktree mode" so the CLI can surface accurate error messages.
+	commandStatePath := filepath.Join(d.maestroDir, "state", "commands", p.CommandID+".yaml")
+	if _, err := os.Stat(commandStatePath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return uds.ErrorResponse(uds.ErrCodeNotFound, fmt.Sprintf("command not found: %s", p.CommandID))
+		}
+		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("stat command state: %v", err))
+	}
+
+	var opErr error
+	switch operation {
+	case "unquarantine":
+		opErr = d.worktreeManager.Unquarantine(p.CommandID, p.Reason)
+	case "resume_merge":
+		opErr = d.worktreeManager.ResumeMerge(p.CommandID)
+	}
+
+	if opErr != nil {
+		d.log(LogLevelWarn, "plan_%s error=%v", operation, opErr)
+		switch {
+		case errors.Is(opErr, worktree.ErrNoWorktreeState):
+			return uds.ErrorResponse(uds.ErrCodeNotFound,
+				fmt.Sprintf("no worktree state for command %s (worktree mode unused or not yet initialized)", p.CommandID))
+		case errors.Is(opErr, worktree.ErrAlreadyResolved):
+			return uds.ErrorResponse(uds.ErrCodeActionRequired, opErr.Error())
+		default:
+			return uds.ErrorResponse(uds.ErrCodeInternal, opErr.Error())
+		}
+	}
+
+	d.log(LogLevelInfo, "plan_%s success command=%s", operation, p.CommandID)
+	a.publishQueueWritten("plan_" + operation)
+
+	out, _ := json.Marshal(map[string]string{
+		"command_id": p.CommandID,
+		"operation":  operation,
+		"status":     "ok",
+	})
+	return &uds.Response{Success: true, Data: out}
 }
