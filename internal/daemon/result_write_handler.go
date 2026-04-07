@@ -104,14 +104,27 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 		} else {
 			// Then add to queue (acquires queue lock independently)
 			if err := retryHandler.AddRetryTaskToQueue(retryTask, params.Reporter); err != nil {
-				// M2 fix: Mark failed enqueue in state so R1 reconciler can detect orphaned retry tasks.
-				// The task is registered in state as pending but has no queue entry.
+				// M2 fix: Atomic registration via compensating delete.
+				// Order: state register (done) → queue enqueue (failed). To avoid
+				// leaving an orphaned pending task in state that depends on the R1
+				// reconciler for cleanup, attempt to roll back the state entry.
+				// If the rollback also fails, fall back to marking the entry so
+				// R1 can pick it up — this preserves the previous safety net.
 				d.log(LogLevelError, "add_retry_task_failed task=%s worker=%s command=%s error=%v "+
-					"(task registered in state but not enqueued; R1 reconciler should re-enqueue or mark dead_letter)",
+					"(attempting compensating delete to roll back state registration)",
 					retryTask.ID, params.Reporter, params.CommandID, err)
-				if markErr := retryHandler.MarkRetryEnqueueFailed(retryTask.ID, params.Reporter, params.CommandID); markErr != nil {
-					d.log(LogLevelError, "mark_retry_enqueue_failed task=%s command=%s error=%v",
-						retryTask.ID, params.CommandID, markErr)
+				if rbErr := retryHandler.UnregisterRetryTaskFromState(retryTask.ID, params.CommandID); rbErr != nil {
+					d.log(LogLevelError, "compensating_delete_failed task=%s command=%s error=%v "+
+						"(state still references task; falling back to RetryEnqueueFailed marker for R1 reconciler)",
+						retryTask.ID, params.CommandID, rbErr)
+					if markErr := retryHandler.MarkRetryEnqueueFailed(retryTask.ID, params.Reporter, params.CommandID); markErr != nil {
+						d.log(LogLevelError, "mark_retry_enqueue_failed task=%s command=%s error=%v",
+							retryTask.ID, params.CommandID, markErr)
+					}
+				} else {
+					d.log(LogLevelWarn, "retry_registration_rolled_back task=%s command=%s "+
+						"(state and queue both empty; original failure already reported via result)",
+						retryTask.ID, params.CommandID)
 				}
 			} else {
 				d.log(LogLevelInfo, "task_retry_scheduled task=%s retry_id=%s attempt=%d",
