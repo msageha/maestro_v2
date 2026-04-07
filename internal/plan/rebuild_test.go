@@ -308,6 +308,60 @@ func TestRebuild_DeterministicTieBreak(t *testing.T) {
 	}
 }
 
+func TestRebuild_PrunesStaleAppliedResultIDs(t *testing.T) {
+	dir, lm := setupRebuildDir(t)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	state := &model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd_test_stale",
+		TaskStates:    map[string]model.Status{"task_live": model.StatusPending},
+		AppliedResultIDs: map[string]string{
+			"task_live":    "res_live_old",
+			"task_deleted": "res_ghost", // task no longer in TaskStates
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	writeRebuildState(t, dir, state)
+
+	writeWorkerResult(t, dir, "worker1.yaml", model.TaskResultFile{
+		SchemaVersion: 1,
+		FileType:      "result_task",
+		Results: []model.TaskResult{
+			{
+				ID:        "res_live_new",
+				TaskID:    "task_live",
+				CommandID: "cmd_test_stale",
+				Status:    model.StatusCompleted,
+				CreatedAt: now,
+			},
+		},
+	})
+
+	if err := Rebuild(RebuildOptions{
+		CommandID:  "cmd_test_stale",
+		MaestroDir: dir,
+		LockMap:    lm,
+	}); err != nil {
+		t.Fatalf("Rebuild error: %v", err)
+	}
+
+	updated := loadState(t, dir, "cmd_test_stale")
+	if _, exists := updated.AppliedResultIDs["task_deleted"]; exists {
+		t.Errorf("stale applied_result_id for task_deleted should be pruned, got %q",
+			updated.AppliedResultIDs["task_deleted"])
+	}
+	if updated.AppliedResultIDs["task_live"] != "res_live_new" {
+		t.Errorf("task_live applied result = %s, want res_live_new",
+			updated.AppliedResultIDs["task_live"])
+	}
+	if updated.TaskStates["task_live"] != model.StatusCompleted {
+		t.Errorf("task_live status = %s, want completed", updated.TaskStates["task_live"])
+	}
+}
+
 func TestRebuild_NilAppliedResultIDs(t *testing.T) {
 	dir, lm := setupRebuildDir(t)
 

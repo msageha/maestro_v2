@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -149,26 +150,21 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 	}
 
 	// Phase C: Trigger scan (best effort dependency unblocking).
-	// Use errgroup so shutdown (eg.Wait) waits for this goroutine to finish.
-	// Guard d.eg != nil for test paths where Run() was not called.
-	// The shuttingDown check is inside the eg.Go callback to close the TOCTOU
-	// window between the check and goroutine admission to the errgroup.
+	// spawnTracked atomically checks shuttingDown and admits the goroutine to
+	// the errgroup under egMu, closing the race window where Shutdown could
+	// otherwise call eg.Wait() between this caller's check and the eg.Go()
+	// admission. See Daemon.spawnTracked / Shutdown for the synchronization
+	// contract.
 	if d.handler != nil {
-		if d.eg != nil {
-			d.eg.Go(func() error {
-				defer d.recoverPanic("resultWriteScan")
-				if d.shuttingDown.Load() {
-					return nil
-				}
-				d.handler.PeriodicScanWithContext(d.egCtx)
-				return nil
-			})
-		} else if !d.shuttingDown.Load() {
-			go func() {
-				defer d.recoverPanic("resultWriteScan")
+		d.spawnTracked("resultWriteScan", func(ctx context.Context) {
+			if d.eg != nil {
+				d.handler.PeriodicScanWithContext(ctx)
+			} else {
+				// Test/fallback path (Run() not called): preserve historical
+				// behaviour of invoking the no-context variant.
 				d.handler.PeriodicScan()
-			}()
-		}
+			}
+		})
 	}
 
 	d.log(LogLevelInfo, "result_write result_id=%s task=%s command=%s status=%s reporter=%s",
