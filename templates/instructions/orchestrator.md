@@ -202,6 +202,17 @@ results/planner.yaml を確認してください
 カテゴリ a/b の場合はターンを終了し、次のイテレーションに入る。
 カテゴリ c/d の場合はユーザーの明示的な指示があるまで再開しない。
 
-### 暴走防止
+### 暴走防止 (Pre-generation gate)
 
-次のコマンドを自動生成する前に `.maestro/dashboard.md` を確認し、継続モードが停止されている場合（`max_iterations` 到達、タスク失敗による自動停止等）は自動生成を行わずユーザーに報告する。
+次のコマンドを自動生成する前に、以下の停止条件を **明示的に** 確認すること。いずれかに該当する場合は自動生成を行わずユーザーに報告し、ターンを終了する。
+
+| 停止条件 | 検出方法 | 出典 |
+|---|---|---|
+| `max_iterations` 到達 | `.maestro/state/continuous.yaml` の `status: stopped` かつ `paused_reason: max_iterations_reached` | `config.yaml` → `continuous.max_iterations` |
+| 連続失敗閾値到達 (新規) | `status: stopped` かつ `paused_reason: max_consecutive_failures_reached` | `config.yaml` → `continuous.max_consecutive_failures` |
+| 単発失敗での一時停止 | `status: paused` かつ `paused_reason: task_failure` | `config.yaml` → `continuous.pause_on_failure` |
+| 手動停止 | `status: stopped` (理由なし、または手動操作) | ユーザー操作 |
+
+`continuous.max_consecutive_failures` (デフォルト 3、`0` で無効) は連続失敗を pre-generation gate として働かせる仕組みであり、`pause_on_failure` の設定に依存せず発火する。Decide ステップに到達する前にこの gate を踏むため、`pause_on_failure: false` で運用していても失敗が続いた場合は確実に停止する。
+
+正常なコマンドが完了すると `consecutive_failures` カウンタはリセットされる。

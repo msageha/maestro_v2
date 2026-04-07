@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -320,6 +321,122 @@ func TestContinuous_PauseTakesPrecedenceOverStop(t *testing.T) {
 	}
 	if state.PausedReason == nil || *state.PausedReason != "task_failure" {
 		t.Error("paused_reason should be task_failure")
+	}
+}
+
+func TestContinuous_MaxConsecutiveFailures_Gate(t *testing.T) {
+	maestroDir := setupTestMaestroDir(t)
+	cfg := model.Config{
+		Continuous: model.ContinuousConfig{
+			Enabled:                true,
+			MaxIterations:          100,
+			PauseOnFailure:         false, // gate must fire even when pause_on_failure is off
+			MaxConsecutiveFailures: 3,
+		},
+	}
+	ch := newTestContinuousHandler(maestroDir, cfg)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	writeContinuousState(t, maestroDir, &model.Continuous{
+		SchemaVersion: 1,
+		FileType:      "state_continuous",
+		Status:        model.ContinuousStatusRunning,
+		UpdatedAt:     now,
+	})
+
+	// Two failures: still running, counter accumulates.
+	if err := ch.CheckAndAdvance("cmd_a", model.StatusFailed); err != nil {
+		t.Fatal(err)
+	}
+	if err := ch.CheckAndAdvance("cmd_b", model.StatusFailed); err != nil {
+		t.Fatal(err)
+	}
+	state := readContinuousState(t, maestroDir)
+	if state.Status != model.ContinuousStatusRunning {
+		t.Fatalf("status after 2 failures: got %s, want running", state.Status)
+	}
+	if state.ConsecutiveFailures != 2 {
+		t.Errorf("consecutive_failures: got %d, want 2", state.ConsecutiveFailures)
+	}
+
+	// Third failure trips the gate.
+	if err := ch.CheckAndAdvance("cmd_c", model.StatusFailed); err != nil {
+		t.Fatal(err)
+	}
+	state = readContinuousState(t, maestroDir)
+	if state.Status != model.ContinuousStatusStopped {
+		t.Errorf("status: got %s, want stopped", state.Status)
+	}
+	if state.PausedReason == nil || *state.PausedReason != "max_consecutive_failures_reached" {
+		t.Errorf("paused_reason: got %v, want max_consecutive_failures_reached", state.PausedReason)
+	}
+	if state.ConsecutiveFailures != 3 {
+		t.Errorf("consecutive_failures: got %d, want 3", state.ConsecutiveFailures)
+	}
+}
+
+func TestContinuous_ConsecutiveFailures_ResetOnSuccess(t *testing.T) {
+	maestroDir := setupTestMaestroDir(t)
+	cfg := model.Config{
+		Continuous: model.ContinuousConfig{
+			Enabled:                true,
+			MaxIterations:          100,
+			MaxConsecutiveFailures: 3,
+		},
+	}
+	ch := newTestContinuousHandler(maestroDir, cfg)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	writeContinuousState(t, maestroDir, &model.Continuous{
+		SchemaVersion:       1,
+		FileType:            "state_continuous",
+		Status:              model.ContinuousStatusRunning,
+		ConsecutiveFailures: 2,
+		UpdatedAt:           now,
+	})
+
+	if err := ch.CheckAndAdvance("cmd_ok", model.StatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	state := readContinuousState(t, maestroDir)
+	if state.ConsecutiveFailures != 0 {
+		t.Errorf("consecutive_failures should reset to 0 on success, got %d", state.ConsecutiveFailures)
+	}
+	if state.Status != model.ContinuousStatusRunning {
+		t.Errorf("status should remain running, got %s", state.Status)
+	}
+}
+
+func TestContinuous_MaxConsecutiveFailures_Disabled(t *testing.T) {
+	maestroDir := setupTestMaestroDir(t)
+	cfg := model.Config{
+		Continuous: model.ContinuousConfig{
+			Enabled:                true,
+			MaxIterations:          100,
+			MaxConsecutiveFailures: 0, // disabled
+		},
+	}
+	ch := newTestContinuousHandler(maestroDir, cfg)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	writeContinuousState(t, maestroDir, &model.Continuous{
+		SchemaVersion: 1,
+		FileType:      "state_continuous",
+		Status:        model.ContinuousStatusRunning,
+		UpdatedAt:     now,
+	})
+
+	for i := 0; i < 10; i++ {
+		if err := ch.CheckAndAdvance(fmt.Sprintf("cmd_%d", i), model.StatusFailed); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := readContinuousState(t, maestroDir)
+	if state.Status != model.ContinuousStatusRunning {
+		t.Errorf("status should remain running when gate is disabled, got %s", state.Status)
+	}
+	if state.ConsecutiveFailures != 10 {
+		t.Errorf("consecutive_failures: got %d, want 10", state.ConsecutiveFailures)
 	}
 }
 

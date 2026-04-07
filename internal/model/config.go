@@ -151,6 +151,11 @@ type ContinuousConfig struct {
 	Enabled        bool `yaml:"enabled"`
 	MaxIterations  int  `yaml:"max_iterations"` // 0 means unlimited (no iteration cap); positive value sets the cap
 	PauseOnFailure bool `yaml:"pause_on_failure"`
+	// MaxConsecutiveFailures sets the pre-generation gate threshold: when the number of
+	// consecutive failed commands reaches this value, continuous mode stops automatically.
+	// 0 means disabled (no consecutive-failure gate). Independent of pause_on_failure:
+	// this gate fires even when pause_on_failure=false.
+	MaxConsecutiveFailures int `yaml:"max_consecutive_failures"`
 }
 
 type WatcherConfig struct {
@@ -486,6 +491,9 @@ func (c Config) Validate() error {
 	// continuous fields (0 means unlimited — no iteration cap)
 	if c.Continuous.Enabled && c.Continuous.MaxIterations < 0 {
 		errs = append(errs, fmt.Errorf("continuous.max_iterations: must be >= 0 when continuous is enabled"))
+	}
+	if c.Continuous.Enabled && c.Continuous.MaxConsecutiveFailures < 0 {
+		errs = append(errs, fmt.Errorf("continuous.max_consecutive_failures: must be >= 0 when continuous is enabled"))
 	}
 
 	// retry fields
