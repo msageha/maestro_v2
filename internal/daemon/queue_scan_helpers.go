@@ -67,6 +67,14 @@ func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string, taskQueues 
 		return nil
 	}
 
+	// H10: do not collect any merge work for quarantined integrations.
+	// Quarantined is terminal and requires manual operator intervention; without
+	// this gate Phase B would re-enter MergeToIntegration on every scan and
+	// either spin on the early-return error or attempt mutating git ops.
+	if cmdState.Integration.Status == model.IntegrationStatusQuarantined {
+		return nil
+	}
+
 	// Build workerID → task purpose map from task queues
 	workerPurposes := buildWorkerPurposes(commandID, taskQueues)
 

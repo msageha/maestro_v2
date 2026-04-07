@@ -356,6 +356,12 @@ func (wm *Manager) MarkIntegrationFailed(commandID string) error {
 	if err != nil {
 		return fmt.Errorf("load state: %w", err)
 	}
+	// H10: quarantined is terminal — never attempt a Failed transition (which
+	// would be rejected as invalid). Treat as success no-op so out-of-band or
+	// stale callers cannot spam errors against quarantined integrations.
+	if state.Integration.Status == model.IntegrationStatusQuarantined {
+		return nil
+	}
 	now := wm.clock.Now().UTC().Format(time.RFC3339)
 	if err := wm.setIntegrationStatus(state, model.IntegrationStatusFailed, now); err != nil {
 		return err

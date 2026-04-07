@@ -80,7 +80,8 @@ var terminalWorktreeStatuses = map[WorktreeStatus]bool{
 }
 
 var terminalIntegrationStatuses = map[IntegrationStatus]bool{
-	IntegrationStatusPublished: true,
+	IntegrationStatusPublished:   true,
+	IntegrationStatusQuarantined: true, // requires manual operator intervention
 	// failed is NOT terminal: it can transition to merging on retry
 }
 
@@ -231,36 +232,43 @@ var validWorktreeTransitions = map[WorktreeStatus]map[WorktreeStatus]bool{
 //   failed → merging (retry after failure)
 var validIntegrationTransitions = map[IntegrationStatus]map[IntegrationStatus]bool{
 	IntegrationStatusCreated: {
-		IntegrationStatusMerging: true,
-		IntegrationStatusFailed:  true,
+		IntegrationStatusMerging:     true,
+		IntegrationStatusFailed:      true,
+		IntegrationStatusQuarantined: true,
 	},
 	IntegrationStatusMerging: {
 		IntegrationStatusMerged:       true,
 		IntegrationStatusConflict:     true,
 		IntegrationStatusPartialMerge: true,
 		IntegrationStatusFailed:       true,
+		IntegrationStatusQuarantined:  true,
 	},
 	IntegrationStatusMerged: {
-		IntegrationStatusMerging:    true,
-		IntegrationStatusPublishing: true,
-		IntegrationStatusFailed:     true,
+		IntegrationStatusMerging:     true,
+		IntegrationStatusPublishing:  true,
+		IntegrationStatusFailed:      true,
+		IntegrationStatusQuarantined: true,
 	},
 	IntegrationStatusPublishing: {
-		IntegrationStatusPublished: true,
-		IntegrationStatusConflict:  true,
-		IntegrationStatusFailed:    true,
+		IntegrationStatusPublished:   true,
+		IntegrationStatusConflict:    true,
+		IntegrationStatusFailed:      true,
+		IntegrationStatusQuarantined: true,
 	},
 	IntegrationStatusPartialMerge: {
-		IntegrationStatusMerging: true,
-		IntegrationStatusFailed:  true,
+		IntegrationStatusMerging:     true,
+		IntegrationStatusFailed:      true,
+		IntegrationStatusQuarantined: true,
 	},
 	IntegrationStatusConflict: {
-		IntegrationStatusMerging: true,
-		IntegrationStatusFailed:  true,
+		IntegrationStatusMerging:     true,
+		IntegrationStatusFailed:      true,
+		IntegrationStatusQuarantined: true,
 	},
 	IntegrationStatusFailed: {
-		IntegrationStatusFailed:  true, // repeated failures (e.g., dirty worktree on retry)
-		IntegrationStatusMerging: true,
+		IntegrationStatusFailed:      true, // repeated failures (e.g., dirty worktree on retry)
+		IntegrationStatusMerging:     true,
+		IntegrationStatusQuarantined: true,
 	},
 }
 

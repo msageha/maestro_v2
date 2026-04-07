@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -9,6 +10,36 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 )
+
+// mergeFailureQuarantineThreshold is the number of consecutive unrecoverable
+// merge attempts (abort+recover failures, dirty-worktree precheck failures, or
+// permanent non-conflict git errors) after which the integration is quarantined.
+// Manual operator intervention is required to recover from quarantine.
+const mergeFailureQuarantineThreshold = 3
+
+// ErrIntegrationQuarantined is returned when MergeToIntegration is called on an
+// integration that has been quarantined due to repeated unrecoverable failures.
+// Callers must surface this to operators rather than retrying.
+var ErrIntegrationQuarantined = errors.New("integration is quarantined; manual intervention required")
+
+// recordMergeFailure increments the merge failure counter and either persists
+// IntegrationStatusFailed (when below threshold) or transitions to
+// IntegrationStatusQuarantined (when at/above threshold). Callers should still
+// invoke saveState afterwards to persist the change.
+func (wm *Manager) recordMergeFailure(state *model.WorktreeCommandState, reason string, now string) error {
+	state.Integration.MergeFailureCount++
+	if state.Integration.MergeFailureCount >= mergeFailureQuarantineThreshold {
+		if err := wm.setIntegrationStatus(state, model.IntegrationStatusQuarantined, now); err != nil {
+			return err
+		}
+		state.Integration.QuarantinedAt = now
+		state.Integration.QuarantineReason = fmt.Sprintf("%s (failure_count=%d)", reason, state.Integration.MergeFailureCount)
+		wm.log(core.LogLevelError, "integration_quarantined command=%s reason=%s count=%d",
+			state.CommandID, reason, state.Integration.MergeFailureCount)
+		return nil
+	}
+	return wm.setIntegrationStatus(state, model.IntegrationStatusFailed, now)
+}
 
 // MergeToIntegration merges worker branches into the integration branch.
 // Returns any merge conflicts encountered. Workers are merged in deterministic order.
@@ -26,6 +57,13 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 		return nil, fmt.Errorf("load state: %w", err)
 	}
 
+	// Short-circuit: a quarantined integration must never be merged again until
+	// an operator has manually inspected and reset the state. Returning early
+	// without any git ops or state mutations breaks the H10 retry loop.
+	if state.Integration.Status == model.IntegrationStatusQuarantined {
+		return nil, fmt.Errorf("%w: command=%s reason=%s", ErrIntegrationQuarantined, commandID, state.Integration.QuarantineReason)
+	}
+
 	integrationPath := wm.integrationWorktreePath(commandID)
 
 	// Guard: ensure integration worktree is clean before merging.
@@ -34,7 +72,7 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 	dirtyOut, dirtyErr := wm.gitOutputInDir(integrationPath, "status", "--porcelain")
 	if dirtyErr != nil {
 		now := wm.clock.Now().UTC().Format(time.RFC3339)
-		if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusFailed, now); tErr != nil {
+		if tErr := wm.recordMergeFailure(state, "status_check_failed", now); tErr != nil {
 			return nil, fmt.Errorf("check integration worktree status: %w (transition error: %v)", dirtyErr, tErr)
 		}
 		state.UpdatedAt = now
@@ -43,7 +81,7 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 	}
 	if strings.TrimSpace(dirtyOut) != "" {
 		now := wm.clock.Now().UTC().Format(time.RFC3339)
-		if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusFailed, now); tErr != nil {
+		if tErr := wm.recordMergeFailure(state, "dirty_worktree", now); tErr != nil {
 			return nil, fmt.Errorf("integration worktree has uncommitted changes (transition error: %v)", tErr)
 		}
 		state.UpdatedAt = now
@@ -143,7 +181,7 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 						if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusConflict, now); tErr != nil {
 							wm.log(core.LogLevelWarn, "merge_recovery_conflict_transition command=%s worker=%s error=%v", commandID, workerID, tErr)
 						}
-						if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusFailed, now); tErr != nil {
+						if tErr := wm.recordMergeFailure(state, "abort_recover_failed_conflict", now); tErr != nil {
 							wm.log(core.LogLevelWarn, "merge_recovery_fail_transition command=%s error=%v", commandID, tErr)
 						}
 						state.UpdatedAt = now
@@ -171,7 +209,7 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 					if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusFailed, now); tErr != nil {
 						wm.log(core.LogLevelWarn, "merge_recovery_worker_fail_transition command=%s worker=%s error=%v", commandID, workerID, tErr)
 					}
-					if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusFailed, now); tErr != nil {
+					if tErr := wm.recordMergeFailure(state, "abort_recover_failed_nonconflict", now); tErr != nil {
 						wm.log(core.LogLevelWarn, "merge_recovery_fail_transition command=%s error=%v", commandID, tErr)
 					}
 					state.UpdatedAt = now
@@ -197,7 +235,7 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 				wm.log(core.LogLevelWarn, "merge_fail_transition command=%s worker=%s error=%v",
 					commandID, workerID, tErr)
 			}
-			if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusFailed, now); tErr != nil {
+			if tErr := wm.recordMergeFailure(state, "permanent_git_error", now); tErr != nil {
 				wm.log(core.LogLevelWarn, "merge_integration_fail_transition command=%s error=%v",
 					commandID, tErr)
 			}
@@ -225,17 +263,27 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 	// - conflicts=0, skipped>0, merged>0 → PartialMerge (some skipped due to transient errors)
 	// - conflicts>0, merged>0 → PartialMerge (some succeeded, some conflicted; successful merges preserved)
 	// - merged=0 (all conflict or skipped) → Conflict
+	// Any non-quarantine outcome (Merged / PartialMerge / Conflict) breaks the
+	// "consecutive unrecoverable failure" streak — reaching this point means
+	// recordMergeFailure was not invoked for any worker, so the loop did not
+	// hit a dirty-precheck, abort+recover failure, or permanent git error.
 	if len(conflicts) == 0 && skippedCount == 0 {
 		if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusMerged, now); tErr != nil {
 			wm.log(core.LogLevelWarn, "merge_merged_integration_transition command=%s error=%v", commandID, tErr)
+		} else {
+			state.Integration.MergeFailureCount = 0
 		}
 	} else if mergedCount > 0 {
 		if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusPartialMerge, now); tErr != nil {
 			wm.log(core.LogLevelWarn, "merge_partial_merge_integration_transition command=%s error=%v", commandID, tErr)
+		} else {
+			state.Integration.MergeFailureCount = 0
 		}
 	} else {
 		if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusConflict, now); tErr != nil {
 			wm.log(core.LogLevelWarn, "merge_conflict_integration_transition command=%s error=%v", commandID, tErr)
+		} else {
+			state.Integration.MergeFailureCount = 0
 		}
 	}
 	state.UpdatedAt = now
