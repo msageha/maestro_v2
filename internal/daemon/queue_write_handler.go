@@ -335,12 +335,37 @@ func (a *API) handleQueueWriteNotification(params QueueWriteParams) *uds.Respons
 		return uds.ErrorResponse(uds.ErrCodeInternal, err.Error())
 	}
 
-	// Idempotency: check if source_result_id already exists
-	for _, ntf := range nq.Notifications {
-		if ntf.SourceResultID == params.SourceResultID {
-			d.log(LogLevelInfo, "queue_write type=notification duplicate source_result_id=%s existing_id=%s", params.SourceResultID, ntf.ID)
-			return uds.SuccessResponse(map[string]string{"id": ntf.ID, "duplicate": "true"})
+	// Idempotency: dedup key is (source_result_id, type). When a re-delivery
+	// arrives with the same source_result_id but a different notification type
+	// (e.g. H3 reconcile forced a previously-completed result to cancelled),
+	// supersede the existing entry in place: reset delivery state so the
+	// orchestrator picks it up again. ID/CreatedAt/Priority are preserved.
+	now := d.clock.Now().UTC().Format(time.RFC3339)
+	for i := range nq.Notifications {
+		if nq.Notifications[i].SourceResultID != params.SourceResultID {
+			continue
 		}
+		if nq.Notifications[i].Type == notifType {
+			d.log(LogLevelInfo, "queue_write type=notification duplicate source_result_id=%s existing_id=%s", params.SourceResultID, nq.Notifications[i].ID)
+			return uds.SuccessResponse(map[string]string{"id": nq.Notifications[i].ID, "duplicate": "true"})
+		}
+		d.log(LogLevelInfo, "queue_write type=notification supersede source_result_id=%s old_type=%s new_type=%s existing_id=%s",
+			params.SourceResultID, nq.Notifications[i].Type, notifType, nq.Notifications[i].ID)
+		nq.Notifications[i].Type = notifType
+		nq.Notifications[i].Content = params.Content
+		nq.Notifications[i].Status = model.StatusPending
+		nq.Notifications[i].Attempts = 0
+		nq.Notifications[i].LastError = nil
+		nq.Notifications[i].DeadLetteredAt = nil
+		nq.Notifications[i].DeadLetterReason = nil
+		nq.Notifications[i].LeaseOwner = nil
+		nq.Notifications[i].LeaseExpiresAt = nil
+		nq.Notifications[i].UpdatedAt = now
+		if err := yamlutil.AtomicWrite(queuePath, nq); err != nil {
+			return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write queue: %v", err))
+		}
+		a.notifySelfWrite(queuePath, "notification", nq)
+		return uds.SuccessResponse(map[string]string{"id": nq.Notifications[i].ID, "superseded": "true"})
 	}
 
 	if resp := checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(data), len(params.Content)+300); resp != nil {
@@ -369,7 +394,6 @@ func (a *API) handleQueueWriteNotification(params QueueWriteParams) *uds.Respons
 		priority = 100
 	}
 
-	now := d.clock.Now().UTC().Format(time.RFC3339)
 	nq.Notifications = append(nq.Notifications, model.Notification{
 		ID:             id,
 		CommandID:      params.CommandID,

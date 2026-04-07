@@ -77,19 +77,21 @@ Worker が `.maestro/` 内を能動的に参照する必要はない。タスク
 
 ## ペルソナモード
 
-タスク配信に `persona_hint` が含まれる場合、そのペルソナに応じた視点・重点で作業を遂行する。`persona_hint` は作業方針を示す補助情報であり、SubAgent の使用を強制しない。ペルソナが未指定の場合は従来通り直接作業を行う。
+ペルソナ定義の **正本は `templates/persona/{name}.md`**（init 時に `.maestro/persona/` へ配置）。タスク配信に `persona_hint` が含まれる場合、システムが該当ファイルの行動指針をタスク本文へ自動注入する。Worker が persona ファイルを能動参照する必要はない。
 
-| persona_hint | 役割 | 推奨委譲先 (subagent_type) |
+最低限の挙動ルール:
+
+- `persona_hint` はその視点・重点で作業を行うことを示す補助情報であり、SubAgent 使用を強制しない。未指定時は従来通り直接作業
+- 未知の `persona_hint`、またはタスクの明示指示と衝突する場合は、`content` / `acceptance_criteria` を優先し、未知値は未指定扱い
+
+利用可能なペルソナ一覧（詳細は `templates/persona/*.md` 参照）:
+
+| persona_hint | 役割 | 推奨 subagent_type |
 |---|---|---|
-| `implementer` | コード実装・修正・ドキュメント作成 | `general-purpose` |
-| `architect` | 設計判断・アーキテクチャ策定・大規模構造変更 | `Explore`, `Plan`, `general-purpose` |
-| `quality-assurance` | テスト・レビュー・品質検証・セキュリティ分析 | `general-purpose`, `Explore` |
-| `researcher` | 情報収集・分析・調査レポート作成 | `Explore` |
-| （未指定） | 従来通り直接作業 | 必要に応じて使用可 |
-
-各ペルソナの詳細な行動指針はシステムがタスク配信時に自動注入する。Worker がペルソナ定義を直接参照する必要はない。
-
-`persona_hint` が未知の値、またはタスクの明示的な指示と衝突する場合は、タスクの `content` / `acceptance_criteria` の明示的な指示を優先し、未知の値は未指定として扱う。
+| `implementer` | コード実装・修正・実装ドキュメント | `general-purpose` |
+| `architect` | 設計・アーキテクチャ策定 | `Explore`, `Plan`, `general-purpose` |
+| `quality-assurance` | テスト・レビュー・品質検証 | `general-purpose`, `Explore` |
+| `researcher` | 調査・分析・レポート | `Explore` |
 
 ---
 
