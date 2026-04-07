@@ -77,12 +77,34 @@ func (ch *ContinuousHandler) CheckAndAdvance(commandID string, commandStatus mod
 	now := ch.clock.Now().UTC().Format(time.RFC3339)
 	state.UpdatedAt = now
 
+	// Track consecutive failures for the pre-generation gate. Reset on any non-failed
+	// command so transient failures recover automatically.
+	if commandStatus == model.StatusFailed {
+		state.ConsecutiveFailures++
+	} else {
+		state.ConsecutiveFailures = 0
+	}
+
 	// Check pause_on_failure
 	if ch.config.Continuous.PauseOnFailure && commandStatus == model.StatusFailed {
 		state.Status = model.ContinuousStatusPaused
 		reason := "task_failure"
 		state.PausedReason = &reason
 		ch.log(LogLevelInfo, "continuous_pause command=%s reason=%s iteration=%d", commandID, reason, state.CurrentIteration)
+	}
+
+	// Pre-generation gate: stop when consecutive failures reach the configured threshold.
+	// MaxConsecutiveFailures == 0 means disabled. This fires regardless of pause_on_failure
+	// so deployments that prefer to keep running on isolated failures still get a hard stop
+	// when failures pile up.
+	if state.Status == model.ContinuousStatusRunning &&
+		ch.config.Continuous.MaxConsecutiveFailures > 0 &&
+		state.ConsecutiveFailures >= ch.config.Continuous.MaxConsecutiveFailures {
+		state.Status = model.ContinuousStatusStopped
+		reason := "max_consecutive_failures_reached"
+		state.PausedReason = &reason
+		ch.log(LogLevelInfo, "continuous_stop reason=%s iteration=%d consecutive_failures=%d max=%d",
+			reason, state.CurrentIteration, state.ConsecutiveFailures, ch.config.Continuous.MaxConsecutiveFailures)
 	}
 
 	// Check max_iterations (only if still running — pause takes precedence).

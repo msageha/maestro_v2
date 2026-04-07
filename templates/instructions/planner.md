@@ -536,6 +536,8 @@ deferred constraints: `max_tasks`（必須）、`timeout_minutes`（必須）、
 
 **Worktree モード例外**: `worktree.enabled: true` の場合、`__system_commit` は挿入されない。コミットは Daemon が自動管理するため、Planner・Worker ともにコミット操作は不要。
 
+**自動停止条件**: continuous モードは Daemon 側の pre-generation gate で自動停止する。停止条件は `continuous.max_iterations`（イテレーション上限）、`continuous.max_consecutive_failures`（連続失敗上限、デフォルト 3）、`continuous.pause_on_failure`（単発失敗で一時停止）。停止状態は `.maestro/state/continuous.yaml` の `paused_reason` に記録される。詳細は `templates/instructions/orchestrator.md` の "Pre-generation gate" を参照。
+
 ---
 
 ## Compaction Recovery

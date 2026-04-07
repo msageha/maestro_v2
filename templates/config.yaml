@@ -29,6 +29,9 @@ continuous:
   enabled: false
   max_iterations: 10
   pause_on_failure: true
+  # Pre-generation gate: stop continuous mode after this many consecutive failed commands.
+  # 0 disables the gate. Independent of pause_on_failure.
+  max_consecutive_failures: 3
 
 watcher:
   debounce_sec: 0.5
