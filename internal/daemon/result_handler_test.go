@@ -27,7 +27,7 @@ func newTestResultHandler(maestroDir string) (*ResultHandler, *mockExecutor) {
 	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, ep)
 
 	mock := &mockExecutor{result: agent.ExecResult{Success: true}}
-	rh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	rh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return mock, nil
 	})
 	return rh, mock
@@ -221,7 +221,7 @@ func TestResultHandler_WorkerNotification_Failure(t *testing.T) {
 		Success: false,
 		Error:   fmt.Errorf("planner busy"),
 	}}
-	rh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	rh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return failMock, nil
 	})
 
@@ -598,7 +598,7 @@ func TestResultHandler_WorkerNotification_MaxRetryExhausted(t *testing.T) {
 		Success: false,
 		Error:   fmt.Errorf("no server running"),
 	}}
-	rh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	rh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return failMock, nil
 	})
 
@@ -644,7 +644,7 @@ func TestResultHandler_WorkerNotification_BackoffPreventsImmediateRetry(t *testi
 		Success: false,
 		Error:   fmt.Errorf("no server running"),
 	}}
-	rh.SetExecutorFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	rh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return failMock, nil
 	})
 
