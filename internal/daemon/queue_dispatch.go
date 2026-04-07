@@ -88,9 +88,10 @@ func (qh *QueueHandler) processPlannerSignalsDeferred(sq *model.PlannerSignalQue
 }
 
 // signalKey is the deduplication key for PlannerSignal.
-// WorkerID is only populated for kinds that need per-worker disambiguation
-// (currently "commit_failed"); for all other kinds it stays empty so phase-level
-// dedup behavior is preserved.
+// WorkerID is always part of the key so that per-worker signals (commit_failed,
+// merge_conflict, and the conflict-resolution kinds) each retain a distinct
+// entry. Phase-level signals (PhaseID set, WorkerID empty) continue to dedup
+// the same way they did before because their WorkerID field is empty.
 type signalKey struct {
 	CommandID string
 	PhaseID   string
@@ -98,14 +99,9 @@ type signalKey struct {
 	WorkerID  string
 }
 
-// signalDedupKey returns the dedup key for a signal, applying per-worker
-// disambiguation only for kinds that opt in.
+// signalDedupKey returns the worker-scoped dedup key for a signal.
 func signalDedupKey(s model.PlannerSignal) signalKey {
-	k := signalKey{CommandID: s.CommandID, PhaseID: s.PhaseID, Kind: s.Kind}
-	if s.Kind == "commit_failed" {
-		k.WorkerID = s.WorkerID
-	}
-	return k
+	return signalKey{CommandID: s.CommandID, PhaseID: s.PhaseID, Kind: s.Kind, WorkerID: s.WorkerID}
 }
 
 // buildSignalIndex builds a lookup index from the current signals slice for O(1) dedup.

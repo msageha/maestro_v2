@@ -124,4 +124,21 @@ type PlannerSignal struct {
 	// ConflictFiles lists the files reported in conflict by git for
 	// merge_conflict signals. Empty for non-conflict signals.
 	ConflictFiles []string `yaml:"conflict_files,omitempty"`
+
+	// Conflict-resolution lifecycle fields (Phase 1 SSOT, additive).
+	// ResolutionState tracks the current resolver state machine for this
+	// signal: pending|dispatched|resolving|failed. Empty for signals that
+	// have not entered the resolver pipeline.
+	ResolutionState string `yaml:"resolution_state,omitempty"`
+	// ResolveAttempt is the number of resolver commit attempts that have been
+	// made for this signal. Used by attempt-limit logic.
+	ResolveAttempt int `yaml:"resolve_attempt,omitempty"`
+	// LastResolutionError captures the most recent resolver error message for
+	// observability and planner backoff decisions.
+	LastResolutionError string `yaml:"last_resolution_error,omitempty"`
+	// ConflictGeneration is a deterministic CAS token computed from the
+	// integration HEAD, the worker branch SHA, the phase ID and the worker ID
+	// at the moment the conflict was detected. The resolver must echo this
+	// value back to confirm it is acting on the same generation.
+	ConflictGeneration string `yaml:"conflict_generation,omitempty"`
 }

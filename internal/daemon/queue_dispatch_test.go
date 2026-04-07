@@ -102,7 +102,9 @@ func TestUpsertPlannerSignal_CommitFailedDedupPerWorker(t *testing.T) {
 		}
 	}
 
-	// Sanity: a non-commit_failed kind still dedupes by phase ignoring WorkerID.
+	// All worker-scoped kinds (e.g. merge_conflict) now dedup by worker_id too:
+	// distinct workers in the same phase each get a separate entry, but a
+	// repeat for the same worker is still deduped.
 	mc := func(worker string) model.PlannerSignal {
 		return model.PlannerSignal{
 			Kind:      "merge_conflict",
@@ -115,9 +117,26 @@ func TestUpsertPlannerSignal_CommitFailedDedupPerWorker(t *testing.T) {
 	}
 	before := len(sq.Signals)
 	qh.upsertPlannerSignal(sq, &dirty, mc("worker1"), idx)
-	qh.upsertPlannerSignal(sq, &dirty, mc("worker2"), idx) // same key, deduped
+	qh.upsertPlannerSignal(sq, &dirty, mc("worker2"), idx) // distinct worker → distinct entry
+	qh.upsertPlannerSignal(sq, &dirty, mc("worker2"), idx) // same key → deduped
+	if got := len(sq.Signals) - before; got != 2 {
+		t.Errorf("merge_conflict added %d entries, want 2 (worker-scoped dedup)", got)
+	}
+
+	// A phase-level signal (no worker_id) is still deduped exactly once across
+	// repeated upserts within the same (cmd, phase, kind).
+	pl := model.PlannerSignal{
+		Kind:      "awaiting_fill",
+		CommandID: "cmd1",
+		PhaseID:   "phase1",
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+	}
+	before = len(sq.Signals)
+	qh.upsertPlannerSignal(sq, &dirty, pl, idx)
+	qh.upsertPlannerSignal(sq, &dirty, pl, idx) // dedup
 	if got := len(sq.Signals) - before; got != 1 {
-		t.Errorf("merge_conflict added %d entries, want 1 (phase-level dedup)", got)
+		t.Errorf("phase-level signal added %d entries, want 1", got)
 	}
 }
 

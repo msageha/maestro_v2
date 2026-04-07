@@ -212,8 +212,16 @@ var validWorktreeTransitions = map[WorktreeStatus]map[WorktreeStatus]bool{
 	},
 	WorktreeStatusConflict: {
 		WorktreeStatusActive:        true,
+		WorktreeStatusResolving:     true,
 		WorktreeStatusFailed:        true,
 		WorktreeStatusPublished:     true,
+		WorktreeStatusCleanupDone:   true,
+		WorktreeStatusCleanupFailed: true,
+	},
+	WorktreeStatusResolving: {
+		WorktreeStatusIntegrated:    true,
+		WorktreeStatusConflict:      true,
+		WorktreeStatusFailed:        true,
 		WorktreeStatusCleanupDone:   true,
 		WorktreeStatusCleanupFailed: true,
 	},

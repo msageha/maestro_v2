@@ -49,6 +49,15 @@ type Manager struct {
 	dl          *core.DaemonLogger
 	clock       core.Clock
 	mu          sync.Mutex // serializes all git operations
+
+	// signalStore (optional) provides RMW access to merge_conflict signals
+	// for the conflict-resolution lifecycle. Wired via SetSignalStore so
+	// existing NewManager call sites do not need to change.
+	signalStore SignalStore
+	// cmdLocks holds per-commandID *sync.Mutex used by resolver methods to
+	// serialize against scan and against each other. Locking order:
+	// scanMu (caller, outside this package) → cmdLocks[cmd] → wm.mu.
+	cmdLocks sync.Map
 }
 
 // NewManager creates a new Manager.
