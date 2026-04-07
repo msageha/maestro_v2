@@ -60,6 +60,9 @@ type IntegrationState struct {
 	QuarantinedAt string `yaml:"quarantined_at,omitempty"`
 	// QuarantineReason describes why the integration was quarantined.
 	QuarantineReason string `yaml:"quarantine_reason,omitempty"`
+	// StallSignaled is set once a worktree_stalled planner signal has been
+	// emitted for this command, to prevent re-emission on every scan.
+	StallSignaled bool `yaml:"stall_signaled,omitempty"`
 }
 
 // MergeConflict describes a merge conflict between a worker branch and the integration branch.

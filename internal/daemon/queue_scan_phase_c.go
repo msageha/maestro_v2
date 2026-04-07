@@ -188,7 +188,11 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 	// Step 4: Metrics and dashboard (reuses queues loaded at phase start)
 	if qh.metricsHandler != nil {
 		scanDuration := qh.clock.Now().Sub(pa.scanStart)
-		if err := qh.metricsHandler.UpdateMetrics(commandQueue, taskQueues, notificationQueue, pa.scanStart, scanDuration, &qh.scanCounters); err != nil {
+		gauges := MetricsGauges{
+			WorktreeCommandsStalled: qh.countWorktreeCommandsStalled(commandQueue),
+			BakFilesCount:           countBakFiles(qh.maestroDir),
+		}
+		if err := qh.metricsHandler.UpdateMetrics(commandQueue, taskQueues, notificationQueue, pa.scanStart, scanDuration, &qh.scanCounters, gauges); err != nil {
 			qh.log(LogLevelError, "update_metrics error=%v", err)
 		}
 		if err := qh.metricsHandler.UpdateDashboard(commandQueue, taskQueues, notificationQueue); err != nil {
@@ -197,4 +201,48 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 	}
 
 	return deferredNotifs
+}
+
+// countWorktreeCommandsStalled returns the number of commands in cq whose
+// worktree integration state has the StallSignaled flag set. Commands with no
+// worktree state, or whose state cannot be loaded, are skipped silently —
+// stall detection itself logs the relevant errors during Phase A.
+func (qh *QueueHandler) countWorktreeCommandsStalled(cq model.CommandQueue) int {
+	if qh.worktreeManager == nil {
+		return 0
+	}
+	count := 0
+	for _, cmd := range cq.Commands {
+		if !qh.worktreeManager.HasWorktrees(cmd.ID) {
+			continue
+		}
+		state, err := qh.worktreeManager.GetCommandState(cmd.ID)
+		if err != nil || state == nil {
+			continue
+		}
+		if state.Integration.StallSignaled {
+			count++
+		}
+	}
+	return count
+}
+
+// countBakFiles returns the total number of files ending in ".bak" anywhere
+// under the maestro directory. Walk errors are tolerated by skipping the
+// offending entry; this is a best-effort gauge.
+func countBakFiles(maestroDir string) int {
+	if maestroDir == "" {
+		return 0
+	}
+	count := 0
+	_ = filepath.Walk(maestroDir, func(_ string, info os.FileInfo, err error) error {
+		if err != nil || info == nil {
+			return nil
+		}
+		if !info.IsDir() && strings.HasSuffix(info.Name(), ".bak") {
+			count++
+		}
+		return nil
+	})
+	return count
 }

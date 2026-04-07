@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -25,6 +26,7 @@ func (qh *QueueHandler) periodicScanPhaseA() phaseAResult {
 	qh.stepPhaseTransitions(&s)
 	qh.stepWorktreePhaseMerges(&s)
 	qh.stepWorktreePublish(&s)
+	qh.stepWorktreeStallDetection(&s)
 	qh.stepPlannerSignals(&s)
 	qh.stepPreemptiveRenewal(&s)
 	qh.stepDispatchOrRecovery(&s)
@@ -287,6 +289,120 @@ func (qh *QueueHandler) stepWorktreePublish(s *scanState) {
 		s.work.worktreePublishes = append(s.work.worktreePublishes, publishes...)
 		s.work.worktreeCleanups = append(s.work.worktreeCleanups, cleanups...)
 	}
+}
+
+// stepWorktreeStallDetection — Step 0.7.3: Detect commands whose tasks and
+// phases are all terminal but whose integration branch remains stuck in
+// {created, merged} for longer than the configured stall timeout. Emits a
+// worktree_stalled planner signal once per command (deduped via the
+// integration state's StallSignaled flag). If signal persistence fails, the
+// integration is transitioned to Failed so the command is not re-detected
+// indefinitely.
+func (qh *QueueHandler) stepWorktreeStallDetection(s *scanState) {
+	if qh.worktreeManager == nil || qh.dependencyResolver.stateReader == nil {
+		return
+	}
+	if !qh.config.Worktree.Enabled {
+		return
+	}
+	timeoutMin := qh.config.Worktree.EffectiveStallTimeoutMinutes()
+	if timeoutMin <= 0 {
+		return
+	}
+
+	now := qh.clock.Now()
+	threshold := now.Add(-time.Duration(timeoutMin) * time.Minute)
+
+	for i := range s.commands.Data.Commands {
+		cmd := &s.commands.Data.Commands[i]
+		if !qh.worktreeManager.HasWorktrees(cmd.ID) {
+			continue
+		}
+		cmdState, err := qh.worktreeManager.GetCommandState(cmd.ID)
+		if err != nil {
+			continue
+		}
+		if cmdState.Integration.Status != model.IntegrationStatusCreated &&
+			cmdState.Integration.Status != model.IntegrationStatusMerged {
+			continue
+		}
+		if cmdState.Integration.StallSignaled {
+			continue
+		}
+		if !qh.allPhasesAndTasksTerminal(cmd.ID, s.tasks) {
+			continue
+		}
+
+		ref := cmd.UpdatedAt
+		if ref == "" {
+			ref = cmd.CreatedAt
+		}
+		refTime, err := time.Parse(time.RFC3339, ref)
+		if err != nil {
+			continue
+		}
+		if !refTime.Before(threshold) {
+			continue
+		}
+
+		reason := fmt.Sprintf("integration_stalled:%s", cmdState.Integration.Status)
+		stalledSince := refTime.UTC().Format(time.RFC3339)
+		nowStr := now.UTC().Format(time.RFC3339)
+		msg := fmt.Sprintf("[maestro] kind:worktree_stalled command_id:%s\nreason: %s\nstalled_since: %s",
+			cmd.ID, reason, stalledSince)
+
+		qh.upsertPlannerSignal(&s.signals.Data, &s.signals.Dirty, model.PlannerSignal{
+			Kind:      "worktree_stalled",
+			CommandID: cmd.ID,
+			Reason:    reason,
+			Message:   msg,
+			CreatedAt: nowStr,
+			UpdatedAt: nowStr,
+		}, s.signalIndex)
+
+		markFn := qh.worktreeStallMarkFn
+		if markFn == nil {
+			markFn = qh.worktreeManager.MarkIntegrationStallSignaled
+		}
+		if err := markFn(cmd.ID); err != nil {
+			qh.log(LogLevelWarn, "worktree_stall_mark_failed command=%s error=%v", cmd.ID, err)
+			if mfErr := qh.worktreeManager.MarkIntegrationFailed(cmd.ID); mfErr != nil {
+				qh.log(LogLevelError, "worktree_stall_integration_failed_transition command=%s error=%v",
+					cmd.ID, mfErr)
+			} else {
+				qh.log(LogLevelWarn, "worktree_stall_integration_marked_failed command=%s", cmd.ID)
+			}
+			continue
+		}
+		qh.log(LogLevelWarn, "worktree_stall_signal_emitted command=%s reason=%s stalled_since=%s",
+			cmd.ID, reason, stalledSince)
+	}
+}
+
+// allPhasesAndTasksTerminal returns true iff every task that belongs to the
+// given command is terminal AND every phase known to the state reader is
+// terminal. Used by stall detection.
+func (qh *QueueHandler) allPhasesAndTasksTerminal(commandID string, taskQueues map[string]*taskQueueEntry) bool {
+	allTerm, _ := qh.checkCommandTasksTerminal(commandID, taskQueues)
+	if !allTerm {
+		return false
+	}
+	phases, err := qh.dependencyResolver.stateReader.GetCommandPhases(commandID)
+	if err != nil {
+		// Non-phased commands surface ErrStateNotFound here; we still want
+		// stall detection in that case, so a not-found error is treated as
+		// "no phases" rather than a hard failure. Other errors fail closed.
+		if !errors.Is(err, ErrStateNotFound) {
+			return false
+		}
+		return true
+	}
+	for _, p := range phases {
+		if !model.IsPhaseTerminal(p.Status) {
+			return false
+		}
+	}
+	return true
 }
 
 // stepPlannerSignals — Step 0.8: Evaluate backoff/staleness, defer delivery.

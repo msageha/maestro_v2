@@ -48,7 +48,7 @@ func TestMetricsHandler_UpdateMetrics_CreateNew(t *testing.T) {
 		DeadLetters:        1,
 	}
 
-	if err := mh.UpdateMetrics(cq, tq, nq, scanStart, time.Second, counters); err != nil {
+	if err := mh.UpdateMetrics(cq, tq, nq, scanStart, time.Second, counters, MetricsGauges{WorktreeCommandsStalled: 2, BakFilesCount: 3}); err != nil {
 		t.Fatalf("UpdateMetrics: %v", err)
 	}
 
@@ -86,6 +86,43 @@ func TestMetricsHandler_UpdateMetrics_CreateNew(t *testing.T) {
 	if metrics.DaemonHeartbeat == nil {
 		t.Error("daemon_heartbeat should be set")
 	}
+	if metrics.WorktreeCommandsStalled != 2 {
+		t.Errorf("worktree_commands_stalled: got %d, want 2", metrics.WorktreeCommandsStalled)
+	}
+	if metrics.BakFilesCount != 3 {
+		t.Errorf("bak_files_count: got %d, want 3", metrics.BakFilesCount)
+	}
+}
+
+func TestCountBakFiles(t *testing.T) {
+	dir := t.TempDir()
+	mustWrite := func(p string) {
+		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustWrite(filepath.Join(dir, "a.bak"))
+	mustWrite(filepath.Join(dir, "sub", "b.bak"))
+	mustWrite(filepath.Join(dir, "sub", "c.yaml"))
+	mustWrite(filepath.Join(dir, "deep", "nested", "d.bak"))
+
+	if got := countBakFiles(dir); got != 3 {
+		t.Errorf("countBakFiles: got %d, want 3", got)
+	}
+	if got := countBakFiles(""); got != 0 {
+		t.Errorf("countBakFiles empty: got %d, want 0", got)
+	}
+}
+
+func TestCountWorktreeCommandsStalled_NoManager(t *testing.T) {
+	qh := &QueueHandler{}
+	cq := model.CommandQueue{Commands: []model.Command{{ID: "cmd_001"}}}
+	if got := qh.countWorktreeCommandsStalled(cq); got != 0 {
+		t.Errorf("got %d, want 0 when worktreeManager is nil", got)
+	}
 }
 
 func TestMetricsHandler_UpdateMetrics_Additive(t *testing.T) {
@@ -98,13 +135,13 @@ func TestMetricsHandler_UpdateMetrics_Additive(t *testing.T) {
 
 	// First update
 	counters1 := &ScanCounters{CommandsDispatched: 3, TasksDispatched: 5}
-	if err := mh.UpdateMetrics(cq, tq, nq, time.Now(), time.Second, counters1); err != nil {
+	if err := mh.UpdateMetrics(cq, tq, nq, time.Now(), time.Second, counters1, MetricsGauges{}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Second update
 	counters2 := &ScanCounters{CommandsDispatched: 2, TasksDispatched: 1, DeadLetters: 4}
-	if err := mh.UpdateMetrics(cq, tq, nq, time.Now(), time.Second, counters2); err != nil {
+	if err := mh.UpdateMetrics(cq, tq, nq, time.Now(), time.Second, counters2, MetricsGauges{}); err != nil {
 		t.Fatal(err)
 	}
 

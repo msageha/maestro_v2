@@ -78,6 +78,11 @@ type QueueHandler struct {
 	// Used in tests to stub agent busy state. When nil, the real executor probe is used.
 	busyChecker BusyChecker
 
+	// worktreeStallMarkFn overrides the persistence step of stepWorktreeStallDetection.
+	// When nil, worktreeManager.MarkIntegrationStallSignaled is used. Tests inject a
+	// failing implementation to exercise the integration→Failed fallback path.
+	worktreeStallMarkFn func(commandID string) error
+
 	// Shutdown guard: wired via SetShutdownGuard after construction.
 	shutdownCtx  context.Context
 	shuttingDown *atomic.Bool

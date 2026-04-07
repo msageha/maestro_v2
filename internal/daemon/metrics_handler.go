@@ -31,6 +31,13 @@ type ScanCounters struct {
 	LeaseReleases         int
 }
 
+// MetricsGauges holds snapshot (non-incremental) values computed at scan time
+// and overwritten on every UpdateMetrics call.
+type MetricsGauges struct {
+	WorktreeCommandsStalled int
+	BakFilesCount           int
+}
+
 // MetricsHandler generates metrics and dashboard files.
 type MetricsHandler struct {
 	maestroDir string
@@ -61,6 +68,7 @@ func (mh *MetricsHandler) UpdateMetrics(
 	scanStart time.Time,
 	scanDuration time.Duration,
 	counters *ScanCounters,
+	gauges MetricsGauges,
 ) error {
 	metricsPath := filepath.Join(mh.maestroDir, "state", "metrics.yaml")
 	if err := os.MkdirAll(filepath.Dir(metricsPath), 0755); err != nil {
@@ -139,6 +147,10 @@ func (mh *MetricsHandler) UpdateMetrics(
 	metrics.Counters.LeaseRenewals += counters.LeaseRenewals
 	metrics.Counters.LeaseExtensions += counters.LeaseExtensions
 	metrics.Counters.LeaseReleases += counters.LeaseReleases
+
+	// Snapshot gauges (overwrite each scan).
+	metrics.WorktreeCommandsStalled = gauges.WorktreeCommandsStalled
+	metrics.BakFilesCount = gauges.BakFilesCount
 
 	// Update heartbeat and timestamp
 	heartbeat := scanStart.UTC().Format(time.RFC3339)
