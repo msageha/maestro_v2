@@ -594,6 +594,53 @@ func (qh *QueueHandler) stepWorktreeStallDetection(s *scanState) {
 			continue
 		}
 
+		// Phase 0 件 + Integration.Status==created の早期 stall fast-path:
+		// phases が一切定義されていない command が created のまま放置されている
+		// ケースは timeoutMin を待つ必要がない (case 5)。即時 stall シグナルを発火する。
+		if cmdState.Integration.Status == model.IntegrationStatusCreated {
+			phases, perr := qh.dependencyResolver.stateReader.GetCommandPhases(cmd.ID)
+			noPhases := false
+			if perr != nil {
+				if errors.Is(perr, ErrStateNotFound) {
+					noPhases = true
+				}
+			} else if len(phases) == 0 {
+				noPhases = true
+			}
+			if noPhases {
+				reason := "integration_stalled_no_phases:created"
+				nowStr := now.UTC().Format(time.RFC3339)
+				msg := fmt.Sprintf("[maestro] kind:worktree_stalled command_id:%s\nreason: %s\nstalled_since: %s",
+					cmd.ID, reason, nowStr)
+				qh.upsertPlannerSignal(&s.signals.Data, &s.signals.Dirty, model.PlannerSignal{
+					Kind:      "worktree_stalled",
+					CommandID: cmd.ID,
+					Reason:    reason,
+					Message:   msg,
+					CreatedAt: nowStr,
+					UpdatedAt: nowStr,
+				}, s.signalIndex)
+
+				markFn := qh.worktreeStallMarkFn
+				if markFn == nil {
+					markFn = qh.worktreeManager.MarkIntegrationStallSignaled
+				}
+				if err := markFn(cmd.ID); err != nil {
+					qh.log(LogLevelWarn, "worktree_stall_mark_failed command=%s error=%v", cmd.ID, err)
+					if mfErr := qh.worktreeManager.MarkIntegrationFailed(cmd.ID); mfErr != nil {
+						qh.log(LogLevelError, "worktree_stall_integration_failed_transition command=%s error=%v",
+							cmd.ID, mfErr)
+					} else {
+						qh.log(LogLevelWarn, "worktree_stall_integration_marked_failed command=%s", cmd.ID)
+					}
+					continue
+				}
+				qh.log(LogLevelWarn, "worktree_stall_signal_emitted command=%s reason=%s stalled_since=%s",
+					cmd.ID, reason, nowStr)
+				continue
+			}
+		}
+
 		ref := cmd.UpdatedAt
 		if ref == "" {
 			ref = cmd.CreatedAt
