@@ -297,6 +297,7 @@ func TestQueueWriteTask_Basic(t *testing.T) {
 
 	req := makeQueueWriteRequest(t, QueueWriteParams{
 		Type:               "task",
+		SystemCaller:       string(model.TaskIDCallerSystemInternal),
 		CommandID:          "cmd_0000000001_abcdef01",
 		Content:            "implement login page",
 		Purpose:            "create login UI",
@@ -348,6 +349,7 @@ func TestQueueWriteTask_Backpressure(t *testing.T) {
 
 	req := makeQueueWriteRequest(t, QueueWriteParams{
 		Type:               "task",
+		SystemCaller:       string(model.TaskIDCallerSystemInternal),
 		CommandID:          "cmd_0000000001_abcdef01",
 		Content:            "task1",
 		Purpose:            "purpose1",
@@ -363,6 +365,7 @@ func TestQueueWriteTask_Backpressure(t *testing.T) {
 	// 2nd should be rejected
 	req2 := makeQueueWriteRequest(t, QueueWriteParams{
 		Type:               "task",
+		SystemCaller:       string(model.TaskIDCallerSystemInternal),
 		CommandID:          "cmd_0000000001_abcdef01",
 		Content:            "task2",
 		Purpose:            "purpose2",
@@ -386,13 +389,13 @@ func TestQueueWriteTask_ValidationErrors(t *testing.T) {
 		name   string
 		params QueueWriteParams
 	}{
-		{"missing command_id", QueueWriteParams{Type: "task", Content: "c", Purpose: "p", AcceptanceCriteria: "ac", BloomLevel: 3, Target: "worker1"}},
-		{"missing content", QueueWriteParams{Type: "task", CommandID: "cmd_0000000001_abcdef01", Purpose: "p", AcceptanceCriteria: "ac", BloomLevel: 3, Target: "worker1"}},
-		{"missing purpose", QueueWriteParams{Type: "task", CommandID: "cmd_0000000001_abcdef01", Content: "c", AcceptanceCriteria: "ac", BloomLevel: 3, Target: "worker1"}},
-		{"missing acceptance_criteria", QueueWriteParams{Type: "task", CommandID: "cmd_0000000001_abcdef01", Content: "c", Purpose: "p", BloomLevel: 3, Target: "worker1"}},
-		{"bloom_level 0", QueueWriteParams{Type: "task", CommandID: "cmd_0000000001_abcdef01", Content: "c", Purpose: "p", AcceptanceCriteria: "ac", BloomLevel: 0, Target: "worker1"}},
-		{"bloom_level 7", QueueWriteParams{Type: "task", CommandID: "cmd_0000000001_abcdef01", Content: "c", Purpose: "p", AcceptanceCriteria: "ac", BloomLevel: 7, Target: "worker1"}},
-		{"missing target", QueueWriteParams{Type: "task", CommandID: "cmd_0000000001_abcdef01", Content: "c", Purpose: "p", AcceptanceCriteria: "ac", BloomLevel: 3}},
+		{"missing command_id", QueueWriteParams{SystemCaller: string(model.TaskIDCallerSystemInternal), Type: "task", Content: "c", Purpose: "p", AcceptanceCriteria: "ac", BloomLevel: 3, Target: "worker1"}},
+		{"missing content", QueueWriteParams{SystemCaller: string(model.TaskIDCallerSystemInternal), Type: "task", CommandID: "cmd_0000000001_abcdef01", Purpose: "p", AcceptanceCriteria: "ac", BloomLevel: 3, Target: "worker1"}},
+		{"missing purpose", QueueWriteParams{SystemCaller: string(model.TaskIDCallerSystemInternal), Type: "task", CommandID: "cmd_0000000001_abcdef01", Content: "c", AcceptanceCriteria: "ac", BloomLevel: 3, Target: "worker1"}},
+		{"missing acceptance_criteria", QueueWriteParams{SystemCaller: string(model.TaskIDCallerSystemInternal), Type: "task", CommandID: "cmd_0000000001_abcdef01", Content: "c", Purpose: "p", BloomLevel: 3, Target: "worker1"}},
+		{"bloom_level 0", QueueWriteParams{SystemCaller: string(model.TaskIDCallerSystemInternal), Type: "task", CommandID: "cmd_0000000001_abcdef01", Content: "c", Purpose: "p", AcceptanceCriteria: "ac", BloomLevel: 0, Target: "worker1"}},
+		{"bloom_level 7", QueueWriteParams{SystemCaller: string(model.TaskIDCallerSystemInternal), Type: "task", CommandID: "cmd_0000000001_abcdef01", Content: "c", Purpose: "p", AcceptanceCriteria: "ac", BloomLevel: 7, Target: "worker1"}},
+		{"missing target", QueueWriteParams{SystemCaller: string(model.TaskIDCallerSystemInternal), Type: "task", CommandID: "cmd_0000000001_abcdef01", Content: "c", Purpose: "p", AcceptanceCriteria: "ac", BloomLevel: 3}},
 	}
 
 	for _, tt := range tests {
@@ -553,6 +556,7 @@ func TestQueueWriteTask_WithBlockedBy(t *testing.T) {
 
 	req := makeQueueWriteRequest(t, QueueWriteParams{
 		Type:               "task",
+		SystemCaller:       string(model.TaskIDCallerSystemInternal),
 		CommandID:          "cmd_0000000001_abcdef01",
 		Content:            "task with deps",
 		Purpose:            "test",
@@ -601,6 +605,7 @@ func TestQueueWriteTask_BlockedByValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			req := makeQueueWriteRequest(t, QueueWriteParams{
 				Type:               "task",
+		SystemCaller:       string(model.TaskIDCallerSystemInternal),
 				CommandID:          "cmd_0000000001_abcdef01",
 				Content:            "task",
 				Purpose:            "purpose",
@@ -783,6 +788,7 @@ func TestQueueWriteTask_CyclicDependencyDetection(t *testing.T) {
 	// Submit task A (no dependencies)
 	reqA := makeQueueWriteRequest(t, QueueWriteParams{
 		Type:               "task",
+		SystemCaller:       string(model.TaskIDCallerSystemInternal),
 		CommandID:          commandID,
 		Content:            "task A",
 		Purpose:            "purpose A",
@@ -801,6 +807,7 @@ func TestQueueWriteTask_CyclicDependencyDetection(t *testing.T) {
 	// Submit task B with blocked_by: [taskA]
 	reqB := makeQueueWriteRequest(t, QueueWriteParams{
 		Type:               "task",
+		SystemCaller:       string(model.TaskIDCallerSystemInternal),
 		CommandID:          commandID,
 		Content:            "task B",
 		Purpose:            "purpose B",
@@ -820,6 +827,7 @@ func TestQueueWriteTask_CyclicDependencyDetection(t *testing.T) {
 	// Submit task C with blocked_by: [taskB] — should succeed (A→B→C is a DAG, not a cycle)
 	reqC := makeQueueWriteRequest(t, QueueWriteParams{
 		Type:               "task",
+		SystemCaller:       string(model.TaskIDCallerSystemInternal),
 		CommandID:          commandID,
 		Content:            "task C (chain, no cycle)",
 		Purpose:            "purpose C",
@@ -855,6 +863,7 @@ func TestQueueWriteTask_CyclicDependencyDetection(t *testing.T) {
 	// Now submit a new task — the existing A→B, B→A cycle should be detected
 	reqD := makeQueueWriteRequest(t, QueueWriteParams{
 		Type:               "task",
+		SystemCaller:       string(model.TaskIDCallerSystemInternal),
 		CommandID:          commandID,
 		Content:            "task D (triggers cycle detection)",
 		Purpose:            "purpose D",
@@ -883,6 +892,7 @@ func TestQueueWriteTask_CyclicDependency_MutualBlockAB(t *testing.T) {
 	// Submit task A (no dependencies) to worker1
 	reqA := makeQueueWriteRequest(t, QueueWriteParams{
 		Type:               "task",
+		SystemCaller:       string(model.TaskIDCallerSystemInternal),
 		CommandID:          commandID,
 		Content:            "task A",
 		Purpose:            "purpose A",
@@ -901,6 +911,7 @@ func TestQueueWriteTask_CyclicDependency_MutualBlockAB(t *testing.T) {
 	// Submit task B to worker2 with blocked_by: [taskA]
 	reqB := makeQueueWriteRequest(t, QueueWriteParams{
 		Type:               "task",
+		SystemCaller:       string(model.TaskIDCallerSystemInternal),
 		CommandID:          commandID,
 		Content:            "task B",
 		Purpose:            "purpose B",
@@ -939,6 +950,7 @@ func TestQueueWriteTask_CyclicDependency_MutualBlockAB(t *testing.T) {
 	// This should detect the cross-queue A→B, B→A cycle
 	reqC := makeQueueWriteRequest(t, QueueWriteParams{
 		Type:               "task",
+		SystemCaller:       string(model.TaskIDCallerSystemInternal),
 		CommandID:          commandID,
 		Content:            "task C (cross-queue cycle)",
 		Purpose:            "purpose C",
@@ -967,6 +979,7 @@ func TestQueueWriteTask_NoCycleWithTerminalTasks(t *testing.T) {
 	// Submit task A
 	reqA := makeQueueWriteRequest(t, QueueWriteParams{
 		Type:               "task",
+		SystemCaller:       string(model.TaskIDCallerSystemInternal),
 		CommandID:          commandID,
 		Content:            "task A",
 		Purpose:            "purpose A",
@@ -985,6 +998,7 @@ func TestQueueWriteTask_NoCycleWithTerminalTasks(t *testing.T) {
 	// Submit task B with blocked_by: [taskA]
 	reqB := makeQueueWriteRequest(t, QueueWriteParams{
 		Type:               "task",
+		SystemCaller:       string(model.TaskIDCallerSystemInternal),
 		CommandID:          commandID,
 		Content:            "task B",
 		Purpose:            "purpose B",
@@ -1023,6 +1037,7 @@ func TestQueueWriteTask_NoCycleWithTerminalTasks(t *testing.T) {
 	// Submit task C with blocked_by: [taskB] — should succeed because task A is terminal
 	reqC := makeQueueWriteRequest(t, QueueWriteParams{
 		Type:               "task",
+		SystemCaller:       string(model.TaskIDCallerSystemInternal),
 		CommandID:          commandID,
 		Content:            "task C (no cycle due to terminal A)",
 		Purpose:            "purpose C",

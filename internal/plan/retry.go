@@ -82,7 +82,7 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 	assignment := assignments[0]
 
 	// Generate new task ID
-	newTaskID, err := model.GenerateID(model.IDTypeTask)
+	newTaskID, err := model.NewTaskID(model.TaskIDCallerPlannerRetry)
 	if err != nil {
 		return nil, fmt.Errorf("generate task ID: %w", err)
 	}
@@ -448,7 +448,7 @@ func cascadeRecoverRecursive(
 		}
 
 		// Generate new task ID
-		newTaskID, err := model.GenerateID(model.IDTypeTask)
+		newTaskID, err := model.NewTaskID(model.TaskIDCallerPlannerRetry)
 		if err != nil {
 			return recovered, fmt.Errorf("generate cascade recovery ID: %w", err)
 		}

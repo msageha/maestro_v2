@@ -35,6 +35,12 @@ type QueueWriteParams struct {
 	NotificationType   string   `json:"notification_type,omitempty"`
 	RequestedBy        string   `json:"requested_by,omitempty"`
 	Reason             string   `json:"reason,omitempty"`
+	// SystemCaller gates the queue_write task path. Task ID minting is the
+	// Planner's responsibility; the queue_write task entrypoint is reserved
+	// for internal/test usage and is NOT exposed via the maestro CLI. Callers
+	// must set this to a recognised model.TaskIDCaller (typically
+	// TaskIDCallerSystemInternal) or the request is rejected.
+	SystemCaller string `json:"system_caller,omitempty"`
 }
 
 var validNotificationTypes = map[model.NotificationType]bool{
@@ -146,8 +152,26 @@ func (a *API) handleQueueWriteCommand(params QueueWriteParams) *uds.Response {
 	return uds.SuccessResponse(map[string]string{"id": id})
 }
 
+// handleQueueWriteTask is an INTERNAL entrypoint for the queue_write "task"
+// type. The Planner is the single source of truth for task creation and
+// minting; this path exists only for system-internal/test usage and is not
+// exposed via the maestro CLI. Callers must set params.SystemCaller to a
+// recognised model.TaskIDCaller value (typically TaskIDCallerSystemInternal)
+// — otherwise the request is rejected to prevent the historical
+// "Planner-bypass task injection" Critical issue.
 func (a *API) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 	d := a.d
+	// The queue_write task UDS path is reserved for system-internal/test
+	// callers ONLY. Planner / Daemon-retry callers must mint task IDs via
+	// model.NewTaskID directly inside their own packages — they must NOT
+	// reach the queue via this UDS entrypoint. Accepting only
+	// TaskIDCallerSystemInternal here makes "planner-submit" / "daemon-retry"
+	// values un-spoofable through UDS, which closes the Planner-bypass hole.
+	caller := model.TaskIDCaller(params.SystemCaller)
+	if caller != model.TaskIDCallerSystemInternal {
+		return uds.ErrorResponse(uds.ErrCodeValidation,
+			"queue_write type=task is internal-only; task creation must go through Planner (plan submit / plan retry-task). Only system-internal callers may use this path.")
+	}
 	if params.CommandID == "" {
 		return uds.ErrorResponse(uds.ErrCodeValidation, "command_id is required for task")
 	}
@@ -228,7 +252,7 @@ func (a *API) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 		}
 	}
 
-	id, err := model.GenerateID(model.IDTypeTask)
+	id, err := model.NewTaskID(caller)
 	if err != nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("generate ID: %v", err))
 	}

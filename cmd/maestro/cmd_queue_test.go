@@ -83,55 +83,26 @@ func TestRunQueueWrite_CommandMissingContent(t *testing.T) {
 	}
 }
 
-func TestRunQueueWrite_TaskInvalidCommandID(t *testing.T) {
-	// Command ID with path traversal characters should be rejected
+func TestRunQueueWrite_TaskTypeRejectedFromCLI(t *testing.T) {
+	// Task creation is the Planner's exclusive responsibility (audit C3).
+	// `maestro queue write --type task` must be rejected at the CLI surface
+	// to prevent Planner-bypass task injection.
 	err := runQueueWrite([]string{"worker1", "--type", "task",
-		"--command-id", "../evil",
+		"--command-id", "cmd_0000000001_abcdef01",
 		"--content", "test",
 		"--purpose", "test",
 		"--acceptance-criteria", "test",
 		"--bloom-level", "3",
 	})
 	if err == nil {
-		t.Fatal("expected error for invalid command-id")
+		t.Fatal("expected --type task to be rejected from CLI")
 	}
 	var ce *CLIError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected CLIError, got %T: %v", err, err)
 	}
-	if !strings.Contains(ce.Msg, "invalid --command-id") {
-		t.Errorf("expected 'invalid --command-id' in error, got: %s", ce.Msg)
-	}
-}
-
-func TestRunQueueWrite_TaskBloomLevelOutOfRange(t *testing.T) {
-	tests := []struct {
-		name  string
-		level string
-	}{
-		{"too high", "7"},
-		{"negative", "-1"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := runQueueWrite([]string{"worker1", "--type", "task",
-				"--command-id", "cmd_0000000001_abcdef01",
-				"--content", "test",
-				"--purpose", "test",
-				"--acceptance-criteria", "test",
-				"--bloom-level", tt.level,
-			})
-			if err == nil {
-				t.Fatal("expected error for bloom-level out of range")
-			}
-			var ce *CLIError
-			if !errors.As(err, &ce) {
-				t.Fatalf("expected CLIError, got %T: %v", err, err)
-			}
-			if !strings.Contains(ce.Msg, "--bloom-level must be between 1 and 6") {
-				t.Errorf("expected bloom-level range error, got: %s", ce.Msg)
-			}
-		})
+	if !strings.Contains(ce.Msg, "not supported via CLI") {
+		t.Errorf("expected 'not supported via CLI' in error, got: %s", ce.Msg)
 	}
 }
 

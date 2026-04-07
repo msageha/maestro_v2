@@ -335,6 +335,7 @@ func writeTask(t *testing.T, d *Daemon, target, commandID, content, purpose, cri
 	req := makeQueueWriteRequest(t, QueueWriteParams{
 		Target:             target,
 		Type:               "task",
+		SystemCaller:       string(model.TaskIDCallerSystemInternal),
 		CommandID:          commandID,
 		Content:            content,
 		Purpose:            purpose,
@@ -355,6 +356,7 @@ func writeTaskWithDeps(t *testing.T, d *Daemon, target, commandID, content strin
 	req := makeQueueWriteRequest(t, QueueWriteParams{
 		Target:             target,
 		Type:               "task",
+		SystemCaller:       string(model.TaskIDCallerSystemInternal),
 		CommandID:          commandID,
 		Content:            content,
 		Purpose:            "test",
@@ -1325,6 +1327,7 @@ func TestIntegration_TaskBackpressure(t *testing.T) {
 	req := makeQueueWriteRequest(t, QueueWriteParams{
 		Target:             "worker1",
 		Type:               "task",
+		SystemCaller:       string(model.TaskIDCallerSystemInternal),
 		CommandID:          commandID,
 		Content:            "task3",
 		Purpose:            "purpose",
@@ -1414,8 +1417,8 @@ func TestIntegration_QueueWriteValidation(t *testing.T) {
 	}{
 		{"empty type", QueueWriteParams{Type: "", Content: "x"}},
 		{"command without content", QueueWriteParams{Type: "command"}},
-		{"task without command_id", QueueWriteParams{Type: "task", Content: "x", Purpose: "p", AcceptanceCriteria: "a", BloomLevel: 3}},
-		{"task without purpose", QueueWriteParams{Type: "task", CommandID: "cmd_0000000001_abcdef01", Content: "x", AcceptanceCriteria: "a", BloomLevel: 3}},
+		{"task without command_id", QueueWriteParams{SystemCaller: string(model.TaskIDCallerSystemInternal), Type: "task", Content: "x", Purpose: "p", AcceptanceCriteria: "a", BloomLevel: 3}},
+		{"task without purpose", QueueWriteParams{SystemCaller: string(model.TaskIDCallerSystemInternal), Type: "task", CommandID: "cmd_0000000001_abcdef01", Content: "x", AcceptanceCriteria: "a", BloomLevel: 3}},
 	}
 
 	for _, tt := range tests {
