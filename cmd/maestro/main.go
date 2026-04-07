@@ -87,6 +87,8 @@ func run() int {
 		err = runTask(os.Args[2:])
 	case "plan":
 		err = runPlan(os.Args[2:])
+	case "resolve-conflict":
+		err = runResolveConflict(os.Args[2:])
 	case "agent":
 		err = runAgent(os.Args[2:])
 	case "worker":

@@ -357,6 +357,17 @@ func TestBuildLaunchArgs_WorkerDisallowsMaestroReads(t *testing.T) {
 	if !strings.Contains(joined, "Bash(tmux kill-server:*)") {
 		t.Error("worker should still have tmux kill-server restriction")
 	}
+
+	// D009: recovery API escape hatches must be in worker disallowedTools.
+	for _, sub := range []string{
+		"Bash(maestro plan unquarantine:*)",
+		"Bash(maestro plan resume-merge:*)",
+		"Bash(maestro resolve-conflict:*)",
+	} {
+		if !strings.Contains(joined, sub) {
+			t.Errorf("worker disallowedTools should contain %q", sub)
+		}
+	}
 }
 
 func TestBuildLaunchArgs_WorkerDoesNotBlockWorktreeReads(t *testing.T) {

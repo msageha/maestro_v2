@@ -8,7 +8,14 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 )
+
+// CallerRoleEnv is the environment variable from which CLI clients populate
+// Request.CallerRole. The agent launcher sets this when spawning role-specific
+// claude processes so that downstream maestro CLI invocations carry an
+// authenticated role hint to the daemon.
+const CallerRoleEnv = "MAESTRO_AGENT_ROLE"
 
 // ProtocolVersion is the current version of the UDS wire protocol.
 const ProtocolVersion = 1
@@ -18,6 +25,14 @@ type Request struct {
 	ProtocolVersion int             `json:"protocol_version"`
 	Command         string          `json:"command"`
 	Params          json.RawMessage `json:"params,omitempty"`
+	// CallerRole identifies the role of the caller (orchestrator, planner,
+	// worker, cli, etc.). Populated by the CLI client from the
+	// MAESTRO_AGENT_ROLE environment variable, which the agent launcher sets
+	// per-pane. Empty when invoked from a plain shell. Used by the daemon to
+	// enforce trust boundaries on operator-recovery commands so that worker
+	// agents cannot invoke them even if they bypass the launcher/policy hook
+	// layers.
+	CallerRole string `json:"caller_role,omitempty"`
 }
 
 // Response represents an IPC response returned from the daemon to a CLI client.
@@ -62,6 +77,7 @@ func NewRequest(command string, params any) (*Request, error) {
 	req := &Request{
 		ProtocolVersion: ProtocolVersion,
 		Command:         command,
+		CallerRole:      os.Getenv(CallerRoleEnv),
 	}
 	if params != nil {
 		data, err := json.Marshal(params)

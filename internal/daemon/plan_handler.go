@@ -45,9 +45,17 @@ func (a *API) handlePlan(req *uds.Request) *uds.Response {
 	}
 
 	// Operations that route through the worktree manager rather than the
-	// plan executor (operator-recovery commands).
+	// plan executor (operator-recovery commands). Trust boundary: workers
+	// must not be allowed to invoke any of these even if they bypass the
+	// launcher --disallowedTools and policy hook layers, so we reject any
+	// caller that self-identifies as a worker. Empty CallerRole is allowed
+	// for shell/operator invocations and is treated as the trusted CLI path.
 	switch params.Operation {
-	case "unquarantine", "resume_merge":
+	case "unquarantine", "resume_merge", "resolve_conflict":
+		if req.CallerRole == "worker" {
+			return uds.ErrorResponse(uds.ErrCodeValidation,
+				fmt.Sprintf("operation %q is not permitted for caller role %q", params.Operation, req.CallerRole))
+		}
 		return a.handlePlanWorktreeRecovery(params.Operation, params.Data)
 	}
 
@@ -113,6 +121,8 @@ func (a *API) handlePlanWorktreeRecovery(operation string, data json.RawMessage)
 	var p struct {
 		CommandID string `json:"command_id"`
 		Reason    string `json:"reason"`
+		PhaseID   string `json:"phase_id"`
+		WorkerID  string `json:"worker_id"`
 	}
 	if err := json.Unmarshal(data, &p); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid params: %v", err))
@@ -145,6 +155,14 @@ func (a *API) handlePlanWorktreeRecovery(operation string, data json.RawMessage)
 		opErr = d.worktreeManager.Unquarantine(p.CommandID, p.Reason)
 	case "resume_merge":
 		opErr = d.worktreeManager.ResumeMerge(p.CommandID)
+	case "resolve_conflict":
+		if p.PhaseID == "" {
+			return uds.ErrorResponse(uds.ErrCodeValidation, "phase_id is required")
+		}
+		if p.WorkerID == "" {
+			return uds.ErrorResponse(uds.ErrCodeValidation, "worker_id is required")
+		}
+		opErr = d.worktreeManager.ResolveConflict(p.CommandID, p.PhaseID, p.WorkerID)
 	}
 
 	if opErr != nil {
