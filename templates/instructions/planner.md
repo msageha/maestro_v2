@@ -279,6 +279,20 @@ maestro skill list --role worker
 - **粒度**: 1 タスク 5 ファイル以下目安。独立した目的が複数あれば分割。横断的変更で分割するとリスクが増える場合は統合
 - **`required`**: `true` = 失敗でコマンド全体が失敗（依存先も自動キャンセル）、`false` = 影響なし
 
+### Phase 分離規約 (worktree mode の巻き添え失敗対策)
+
+**事実**: `worktree.enabled: true` の場合、command が `failed` に終わると、フェーズ単位で成功した Worker の成果物も統合ブランチごと巻き添えで破棄される。foundation phase が成功していても、後続の implementation phase が失敗すると foundation の成果物まで main に到達しない。
+
+**ルール**: 依存のある後段 phase は **別 concrete phase** として分離し、可能であれば **別 command** に切り出す。1 command 内に「絶対に守りたい成果物」と「失敗リスクが高い後続作業」を同居させない。
+
+| パターン | 推奨 |
+|---|---|
+| 共通基盤の確立 + 大規模並列実装 | foundation を **別 command** で先行確定。実装は後続 command で発注 |
+| 同一 command 内に複数 phase を置く場合 | 各 phase を `concrete` で順次実行し、前段の成果物を main 反映後に次段を投入する設計を優先 |
+| 高リスク実験的タスク | required: false にするか、別 command に隔離 |
+
+**事故事例 (cmd_1775542302)**: foundation phase は完全成功し型定義・インターフェースが確立されたにもかかわらず、後続 implementation phase の Worker 失敗により command 全体が failed 判定となった。worktree mode の巻き添えで foundation の成果物（型定義ファイル等）も統合ブランチごと破棄され、main に何も残らない結果となった。以降は依存関係のある phase を 1 command にまとめず、foundation を別 command で確定させてから implementation を発注する運用とする。
+
 ### Wave 構造（共通基盤の先行確立）
 
 2 つ以上の後続タスクが同一の未実装コードに依存する場合に適用:
