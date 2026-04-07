@@ -373,6 +373,32 @@ func (wm *Manager) MarkIntegrationFailed(commandID string) error {
 	return nil
 }
 
+// MarkIntegrationStallSignaled records that a worktree_stalled signal has been
+// emitted for this command's integration branch. Idempotent: subsequent calls
+// after the flag is set are no-ops. The integration status itself is left
+// unchanged.
+func (wm *Manager) MarkIntegrationStallSignaled(commandID string) error {
+	if err := validateIDs(commandID); err != nil {
+		return err
+	}
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	state, err := wm.loadState(commandID)
+	if err != nil {
+		return fmt.Errorf("load state: %w", err)
+	}
+	if state.Integration.StallSignaled {
+		return nil
+	}
+	state.Integration.StallSignaled = true
+	state.UpdatedAt = wm.clock.Now().UTC().Format(time.RFC3339)
+	if err := wm.saveState(commandID, state); err != nil {
+		return fmt.Errorf("save state: %w", err)
+	}
+	return nil
+}
+
 // MarkPhaseMerged records that a phase has been merged so it won't be re-merged.
 func (wm *Manager) MarkPhaseMerged(commandID, phaseID string) error {
 	if err := validateIDs(commandID, phaseID); err != nil {

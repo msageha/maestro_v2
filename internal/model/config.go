@@ -341,6 +341,25 @@ type WorktreeConfig struct {
 	GitTimeoutSec    *int               `yaml:"git_timeout_sec"`
 	GC               WorktreeGCConfig   `yaml:"gc"`
 	CommitPolicy     CommitPolicyConfig `yaml:"commit_policy"`
+	// StallTimeoutMinutes is the threshold after which a command whose tasks
+	// and phases are all terminal but whose integration branch is still in
+	// {created, merged} is treated as stalled and surfaced to the planner.
+	// nil (unset) → default of 30 minutes; explicit 0 disables stall detection.
+	StallTimeoutMinutes *int `yaml:"stall_timeout_minutes,omitempty"`
+	// FallbackMergeTimeoutMinutes controls how long an integration branch may
+	// remain unmerged before the daemon emits a worktree_config_violation
+	// warning when AutoCommit/AutoMerge are disabled. nil=default(60), 0=disabled.
+	FallbackMergeTimeoutMinutes *int `yaml:"fallback_merge_timeout_minutes"`
+}
+
+// EffectiveFallbackMergeTimeoutMinutes returns the configured fallback merge
+// timeout in minutes, or 60 as default. nil (unset) returns the default;
+// explicit 0 disables the check.
+func (w WorktreeConfig) EffectiveFallbackMergeTimeoutMinutes() int {
+	if w.FallbackMergeTimeoutMinutes != nil {
+		return *w.FallbackMergeTimeoutMinutes
+	}
+	return 60
 }
 
 // CommitPolicyConfig enforces safety checks before committing worker changes.
@@ -400,6 +419,16 @@ func (w WorktreeConfig) EffectiveGitTimeout() int {
 		return *w.GitTimeoutSec
 	}
 	return 120
+}
+
+// EffectiveStallTimeoutMinutes returns the configured worktree stall timeout
+// in minutes. nil (unset) returns the default of 30; explicit 0 returns 0
+// (disabled).
+func (w WorktreeConfig) EffectiveStallTimeoutMinutes() int {
+	if w.StallTimeoutMinutes != nil {
+		return *w.StallTimeoutMinutes
+	}
+	return 30
 }
 
 // EffectiveTTLHours returns the configured TTL or 24 hours as default.

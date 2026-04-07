@@ -239,7 +239,63 @@ func (wm *Manager) GC() error {
 		}
 	}
 
+	// Sweep .bak orphan/expired files left behind by yaml.AtomicWrite.
+	wm.gcBakFiles()
+
 	return nil
+}
+
+// bakTTL is the maximum age a .bak file may live before GC removes it.
+// Backups are intended only as crash-recovery aids for the most recent
+// AtomicWrite, so a 24h ceiling is sufficient.
+const bakTTL = 24 * time.Hour
+
+// bakScanSubdirs lists the .maestro subdirectories that contain control-plane
+// YAML files written via yaml.AtomicWrite. The worktree source directory and
+// static template directories (instructions, hooks, persona) are intentionally
+// excluded so that user files cannot be touched.
+var bakScanSubdirs = []string{"state", "queues", "results", "locks", "logs"}
+
+// gcBakFiles walks the control-plane subdirectories under maestroDir and
+// removes .bak files that are either orphaned (no matching .yaml) or older
+// than bakTTL. Errors are logged and never returned: the sweep is best-effort.
+func (wm *Manager) gcBakFiles() {
+	now := wm.clock.Now()
+	for _, sub := range bakScanSubdirs {
+		root := filepath.Join(wm.maestroDir, sub)
+		if _, err := os.Stat(root); os.IsNotExist(err) {
+			continue
+		}
+		walkErr := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				wm.log(core.LogLevelWarn, "gc_bak_walk_error path=%s error=%v", path, err)
+				return nil
+			}
+			if info.IsDir() || !strings.HasSuffix(path, ".bak") {
+				return nil
+			}
+			yamlPath := strings.TrimSuffix(path, ".bak")
+			if _, statErr := os.Stat(yamlPath); os.IsNotExist(statErr) {
+				if rmErr := os.Remove(path); rmErr != nil {
+					wm.log(core.LogLevelWarn, "gc_bak_remove_orphan_failed path=%s error=%v", path, rmErr)
+				} else {
+					wm.log(core.LogLevelInfo, "gc_bak_orphan_removed path=%s", path)
+				}
+				return nil
+			}
+			if now.Sub(info.ModTime()) > bakTTL {
+				if rmErr := os.Remove(path); rmErr != nil {
+					wm.log(core.LogLevelWarn, "gc_bak_remove_expired_failed path=%s error=%v", path, rmErr)
+				} else {
+					wm.log(core.LogLevelInfo, "gc_bak_expired_removed path=%s age=%s", path, now.Sub(info.ModTime()))
+				}
+			}
+			return nil
+		})
+		if walkErr != nil {
+			wm.log(core.LogLevelWarn, "gc_bak_walk_failed root=%s error=%v", root, walkErr)
+		}
+	}
 }
 
 func (wm *Manager) cleanupCommandUnlocked(commandID string, state *model.WorktreeCommandState) error {
@@ -387,6 +443,9 @@ func (wm *Manager) Reconcile() {
 	if pruneErr := wm.gitRun("worktree", "prune"); pruneErr != nil {
 		wm.log(core.LogLevelWarn, "reconcile_prune error=%v", pruneErr)
 	}
+
+	// Sweep .bak orphan/expired files left behind by yaml.AtomicWrite.
+	wm.gcBakFiles()
 
 	wm.log(core.LogLevelInfo, "reconcile_complete")
 }

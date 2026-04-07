@@ -48,6 +48,10 @@ func (d *Daemon) prepareStartup() error {
 	// left behind by SIGKILL during plan submit stdin materialization.
 	d.cleanStaleTmpFiles()
 
+	// P4: Validate command state YAMLs and recover any corrupted file from
+	// its sibling .bak. Failures are logged as warnings; startup continues.
+	d.recoverStateFiles()
+
 	// Init fsnotify watcher
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
