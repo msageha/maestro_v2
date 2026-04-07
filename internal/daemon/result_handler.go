@@ -82,14 +82,6 @@ func NewResultHandler(
 	}
 }
 
-// SetExecutorFactory overrides the executor factory for testing.
-// Resets the cached executor so the new factory is used on next call.
-// This method exists solely for test injection; production code uses the factory
-// provided at construction time.
-func (rh *ResultHandler) SetExecutorFactory(f ExecutorFactory) {
-	rh.execProvider.SetFactory(f)
-}
-
 // getExecutor returns the shared executor instance, creating it lazily on first call.
 // The Executor is safe for concurrent use (log.Logger uses internal mutex,
 // os.File in append mode is POSIX-safe, all other fields are immutable).
