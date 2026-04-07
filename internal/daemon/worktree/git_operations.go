@@ -507,6 +507,12 @@ func (wm *Manager) getConflictFilesInDir(dir string) ([]string, error) {
 // and verifies the worktree is clean via git status --porcelain.
 // Returns nil only if the worktree is confirmed clean after recovery.
 func (wm *Manager) recoverWorktreeAfterMerge(worktreePath, preMergeHEAD, commandID, workerID string) error {
+	// Tripwire: refuse to run destructive git ops outside the project root.
+	if err := ensureWithinProjectRoot(wm.projectRoot, worktreePath); err != nil {
+		wm.log(core.LogLevelError, "merge_abort_recovery_path_guard command=%s worker=%s error=%v",
+			commandID, workerID, err)
+		return fmt.Errorf("worktree recovery refused: %w", err)
+	}
 	// Step 1: reset --hard is mandatory — it restores tracked content, index, and HEAD.
 	if resetErr := wm.gitRunInDir(worktreePath, "reset", "--hard", preMergeHEAD); resetErr != nil {
 		wm.log(core.LogLevelError, "merge_abort_recovery_reset_failed command=%s worker=%s error=%v",

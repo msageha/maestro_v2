@@ -510,6 +510,12 @@ func (wm *Manager) PublishToBase(commandID string, publishMessage string) error 
 			}
 		}
 
+		// Tripwire: refuse to run destructive git ops outside the project root
+		// (projectRoot is the working tree target here since gitRun runs there).
+		if guardErr := ensureWithinProjectRoot(wm.projectRoot, wm.projectRoot); guardErr != nil {
+			wm.log(core.LogLevelError, "publish_reset_path_guard command=%s error=%v", commandID, guardErr)
+			return fmt.Errorf("publish reset refused: %w", guardErr)
+		}
 		// Uncommitted changes were already checked before update-ref above.
 		// Use git reset --hard to sync index + working tree to the new HEAD.
 		if resetErr := wm.gitRun("reset", "--hard", "HEAD"); resetErr != nil {
