@@ -4,6 +4,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"time"
 )
 
 // DefaultMaxYAMLFileBytes is the default maximum size for YAML file reads (5MB).
@@ -350,6 +351,29 @@ type WorktreeConfig struct {
 	// remain unmerged before the daemon emits a worktree_config_violation
 	// warning when AutoCommit/AutoMerge are disabled. nil=default(60), 0=disabled.
 	FallbackMergeTimeoutMinutes *int `yaml:"fallback_merge_timeout_minutes"`
+	// StallCleanupAfter is the duration after which a command whose tasks are
+	// all terminal but whose phases remain non-terminal (pending / awaiting_fill
+	// / filling / active) is treated as stalled. The daemon force-fails the
+	// stuck phases and triggers a worktree cleanup (skipping the merge path) to
+	// avoid leaking .maestro/worktrees/cmd_*/ directories when daemon or worker
+	// sessions are interrupted mid-phase. Parsed via time.ParseDuration. Empty
+	// or unparseable → default 10m. "0" / "0s" disables fast-track cleanup.
+	StallCleanupAfter string `yaml:"stall_cleanup_after,omitempty"`
+}
+
+// EffectiveStallCleanupAfter returns the configured fast-track stall cleanup
+// duration. Empty / unparseable input falls back to 10 minutes; an explicit
+// "0" / "0s" returns 0 (disabled).
+func (w WorktreeConfig) EffectiveStallCleanupAfter() time.Duration {
+	const defaultStallCleanupAfter = 10 * time.Minute
+	if w.StallCleanupAfter == "" {
+		return defaultStallCleanupAfter
+	}
+	d, err := time.ParseDuration(w.StallCleanupAfter)
+	if err != nil {
+		return defaultStallCleanupAfter
+	}
+	return d
 }
 
 // EffectiveFallbackMergeTimeoutMinutes returns the configured fallback merge
