@@ -155,6 +155,13 @@ type ContinuousConfig struct {
 	// consecutive failed commands reaches this value, continuous mode stops automatically.
 	// 0 means disabled (no consecutive-failure gate). Independent of pause_on_failure:
 	// this gate fires even when pause_on_failure=false.
+	//
+	// Backward compatibility: config files written before this field existed
+	// deserialize with the Go zero value (0 = disabled). New templates ship
+	// with a recommended value of 3, but operators upgrading an existing
+	// installation must opt in by adding the key explicitly. No non-zero
+	// default is synthesized at load time so that "0" always means "disabled"
+	// with no surprising hidden defaults.
 	MaxConsecutiveFailures int `yaml:"max_consecutive_failures"`
 }
 

@@ -221,49 +221,6 @@ func (h *TaskRetryHandler) addRetryTaskToQueueLocked(task *model.Task, workerID 
 	return nil
 }
 
-// UnregisterRetryTaskFromState removes a retry task entry from the command state.
-// Used as a compensating action when AddRetryTaskToQueue fails after
-// RegisterRetryTaskInState has already succeeded, so the (state, queue) pair
-// is rolled back atomically from an external observer's perspective and no
-// orphaned task remains in state.
-//
-// Caller must NOT hold the state lock for commandID; this function acquires it.
-func (h *TaskRetryHandler) UnregisterRetryTaskFromState(taskID, commandID string) error {
-	stateLockKey := fmt.Sprintf("state:%s", commandID)
-	h.lockMap.Lock(stateLockKey)
-	defer h.lockMap.Unlock(stateLockKey)
-
-	statePath := filepath.Join(h.maestroDir, "state", "commands", commandID+".yaml")
-	stateData, err := os.ReadFile(statePath)
-	if err != nil {
-		return fmt.Errorf("read state file: %w", err)
-	}
-
-	var state model.CommandState
-	if err := yamlv3.Unmarshal(stateData, &state); err != nil {
-		return fmt.Errorf("parse state file: %w", err)
-	}
-
-	if state.TaskStates != nil {
-		delete(state.TaskStates, taskID)
-	}
-	// Defensive: also clear any RetryEnqueueFailed entry for the same task,
-	// in case a previous attempt to mark it had partially succeeded.
-	if state.RetryEnqueueFailed != nil {
-		delete(state.RetryEnqueueFailed, taskID)
-	}
-	state.UpdatedAt = h.clock.Now().UTC().Format(time.RFC3339)
-
-	if err := yaml.AtomicWrite(statePath, state); err != nil {
-		return fmt.Errorf("write state file: %w", err)
-	}
-
-	h.log(LogLevelWarn, "retry_task_unregistered task=%s command=%s "+
-		"(compensating delete after queue enqueue failure; registration rolled back)",
-		taskID, commandID)
-	return nil
-}
-
 // MarkRetryEnqueueFailed marks a retry task in the command state as having failed
 // to enqueue. This allows the R1 reconciler to detect the orphaned task and
 // either re-enqueue it or transition it to dead_letter.

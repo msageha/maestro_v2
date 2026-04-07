@@ -231,6 +231,13 @@ func activateContinuousMode(maestroDir string, cfg model.Config) error {
 	state.FileType = "state_continuous"
 	state.Status = model.ContinuousStatusRunning
 	state.MaxIterations = cfg.Continuous.MaxIterations
+	// Reset transient counters/markers from any prior run so that activation
+	// always starts from a clean slate. Without this, a restarted continuous
+	// session would inherit a stale ConsecutiveFailures streak (and could
+	// trip the pre-generation gate on the very next failure) or carry an
+	// outdated PausedReason that confuses the orchestrator.
+	state.ConsecutiveFailures = 0
+	state.PausedReason = nil
 	now := time.Now().UTC().Format(time.RFC3339)
 	state.UpdatedAt = now
 
