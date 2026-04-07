@@ -2,11 +2,14 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -120,12 +123,45 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 	// Best-effort lease epoch check: skip learnings/skill_candidates writes
 	// if the lease epoch no longer matches (stale worker after revocation).
 	// Read-only check without lock is acceptable — this is advisory, not authoritative.
+	// On detection, we re-check authoritatively under canonical locks and
+	// persist a RejectedSubmission so the loss is auditable / user-visible.
 	bestEffortAllowed := true
-	if len(params.Learnings) > 0 || len(params.SkillCandidates) > 0 {
+	var rejectionID string
+	// Only treat advisory skip as a "rejected drop" when at least one
+	// best-effort write would actually have occurred. If learnings are
+	// disabled config-side, the learnings payload is not "lost" — it was
+	// never going to be written. Skill candidates have no enable flag, so
+	// any skill_candidates payload does count.
+	hasMeaningfulBestEffort := (len(params.Learnings) > 0 && d.config.Learnings.Enabled) ||
+		len(params.SkillCandidates) > 0
+	if hasMeaningfulBestEffort {
 		if skip, reason := a.checkLeaseEpochForBestEffort(params); skip {
 			d.log(LogLevelWarn, "best_effort_writes_skipped task=%s command=%s reason=%s",
 				params.TaskID, params.CommandID, reason)
 			bestEffortAllowed = false
+			if id, persisted, perr := a.persistLeaseRejection(params, reason); perr != nil {
+				d.log(LogLevelError,
+					"lease_rejection_persist_failed task=%s command=%s reporter=%s error=%v "+
+						"(learnings/skill_candidates lost; not recorded in audit trail)",
+					params.TaskID, params.CommandID, params.Reporter, perr)
+			} else if !persisted {
+				// Authoritative re-check showed lease epoch matches under
+				// the lock — the advisory read was racing a queue write.
+				// Re-allow the best-effort writes; the loss was a false
+				// positive.
+				d.log(LogLevelInfo,
+					"lease_rejection_recheck_cleared task=%s command=%s reporter=%s "+
+						"(advisory mismatch resolved under lock; best-effort writes re-enabled)",
+					params.TaskID, params.CommandID, params.Reporter)
+				bestEffortAllowed = true
+			} else {
+				rejectionID = id
+				d.log(LogLevelWarn,
+					"lease_rejection_persisted rejection_id=%s task=%s command=%s reporter=%s reason=%s "+
+						"learnings_count=%d skill_candidate_count=%d",
+					rejectionID, params.TaskID, params.CommandID, params.Reporter, reason,
+					len(params.Learnings), len(params.SkillCandidates))
+			}
 		}
 	}
 
@@ -169,7 +205,13 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 
 	d.log(LogLevelInfo, "result_write result_id=%s task=%s command=%s status=%s reporter=%s",
 		resultID, params.TaskID, params.CommandID, params.Status, params.Reporter)
-	return uds.SuccessResponse(map[string]string{"result_id": resultID})
+	respPayload := map[string]string{"result_id": resultID}
+	if rejectionID != "" {
+		respPayload["lease_rejection_id"] = rejectionID
+		respPayload["lease_rejection_warning"] =
+			"learnings/skill_candidates rejected: lease revoked; recorded as " + rejectionID
+	}
+	return uds.SuccessResponse(respPayload)
 }
 
 type resultWriteError struct {
@@ -517,6 +559,150 @@ func (a *API) resultWritePhaseB(params ResultWriteParams, resultID string, resul
 
 		return nil
 	})
+}
+
+// persistLeaseRejection records a RejectedSubmission entry in the reporter's
+// results file when a best-effort lease epoch check detects that the worker
+// no longer holds a valid lease. The function takes the canonical
+// queue→result lock order and re-verifies the lease epoch under the lock so
+// the persisted record is authoritative (not based on the unlocked advisory
+// read). Duplicate stale-worker retries with identical payload are
+// suppressed via a content fingerprint (DedupKey) so the rejection log
+// cannot grow unbounded.
+//
+// Returns the persisted rejection ID, or "" with an error if the persist
+// failed. If the post-lock re-check shows the lease epoch now matches
+// (race: revoke rolled back, or task archived), the function returns
+// ("", nil) and the caller should treat best-effort writes as still
+// rejected — the original advisory check has already gated them and we
+// avoid creating a misleading audit record.
+func (a *API) persistLeaseRejection(params ResultWriteParams, advisoryReason string) (string, bool, error) {
+	d := a.d
+
+	a.acquireFileLock()
+	defer a.releaseFileLock()
+
+	queueLockKey := "queue:" + params.Reporter
+	d.lockMap.Lock(queueLockKey)
+	defer d.lockMap.Unlock(queueLockKey)
+
+	resultLockKey := "result:" + params.Reporter
+	d.lockMap.Lock(resultLockKey)
+	defer d.lockMap.Unlock(resultLockKey)
+
+	// Re-verify lease epoch mismatch authoritatively under the queue lock.
+	// If the queue file is unreadable / parse-fails / task is gone, fall
+	// back to the advisory reason captured by the caller — the data is
+	// still considered lost.
+	queuePath := filepath.Join(d.maestroDir, "queue", params.Reporter+".yaml")
+	queueLeaseEpoch := -1
+	authoritativeReason := advisoryReason
+	if data, err := os.ReadFile(queuePath); err == nil {
+		var tq model.TaskQueue
+		if perr := yamlv3.Unmarshal(data, &tq); perr == nil {
+			found := false
+			for _, task := range tq.Tasks {
+				if task.ID == params.TaskID {
+					found = true
+					queueLeaseEpoch = task.LeaseEpoch
+					if task.LeaseEpoch == params.LeaseEpoch {
+						// Race: epoch matches under the lock. Tell the
+						// caller this was a false positive so it can
+						// re-enable best-effort writes.
+						return "", false, nil
+					}
+					authoritativeReason = fmt.Sprintf(
+						"lease_epoch_mismatch_under_lock: queue=%d request=%d",
+						task.LeaseEpoch, params.LeaseEpoch)
+					break
+				}
+			}
+			if !found {
+				authoritativeReason = "task_archived_after_lease_revoke"
+			}
+		}
+	}
+
+	resultPath := filepath.Join(d.maestroDir, "results", params.Reporter+".yaml")
+	var rf model.TaskResultFile
+	if data, err := os.ReadFile(resultPath); err == nil {
+		if perr := yamlv3.Unmarshal(data, &rf); perr != nil {
+			return "", false, fmt.Errorf("parse results file: %w", perr)
+		}
+	} else if !os.IsNotExist(err) {
+		return "", false, fmt.Errorf("read results file: %w", err)
+	}
+
+	if rf.SchemaVersion == 0 {
+		rf.SchemaVersion = 1
+		rf.FileType = "result_task"
+	}
+
+	// Dedup key includes queueLeaseEpoch so that a fresh revoke against
+	// the same payload (e.g. queue epoch advanced 2→3) produces a new
+	// audit record rather than collapsing into a stale one.
+	dedupKey := computeRejectionDedupKey(params, queueLeaseEpoch)
+	for _, existing := range rf.RejectedSubmissions {
+		if existing.DedupKey == dedupKey {
+			// Identical stale retry against the same authoritative queue
+			// epoch — return the existing record's ID, don't grow the
+			// audit log.
+			return existing.ID, true, nil
+		}
+	}
+
+	rejectionID, err := model.GenerateID(model.IDTypeResult)
+	if err != nil {
+		return "", false, fmt.Errorf("generate rejection id: %w", err)
+	}
+
+	// Defensive copy slices so a later mutation of params can't alias
+	// into the persisted record.
+	lostLearnings := append([]string(nil), params.Learnings...)
+	lostSkills := append([]string(nil), params.SkillCandidates...)
+
+	rf.RejectedSubmissions = append(rf.RejectedSubmissions, model.RejectedSubmission{
+		ID:                  rejectionID,
+		TaskID:              params.TaskID,
+		CommandID:           params.CommandID,
+		Reporter:            params.Reporter,
+		Reason:              authoritativeReason,
+		RequestLeaseEpoch:   params.LeaseEpoch,
+		QueueLeaseEpoch:     queueLeaseEpoch,
+		LostLearnings:       lostLearnings,
+		LostSkillCandidates: lostSkills,
+		OriginalSummary:     params.Summary,
+		DedupKey:            dedupKey,
+		CreatedAt:           d.clock.Now().UTC().Format(time.RFC3339),
+	})
+
+	if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
+		return "", false, fmt.Errorf("write results file: %w", err)
+	}
+	a.recordSelfWrite(resultPath, rf)
+	return rejectionID, true, nil
+}
+
+// computeRejectionDedupKey produces a deterministic content fingerprint of
+// the rejected submission so that an identical stale-worker retry collapses
+// to the existing record. Order of learnings/skill_candidates is preserved
+// (matching how the worker submitted them).
+func computeRejectionDedupKey(params ResultWriteParams, queueLeaseEpoch int) string {
+	h := sha256.New()
+	h.Write([]byte(params.TaskID))
+	h.Write([]byte{0})
+	h.Write([]byte(params.CommandID))
+	h.Write([]byte{0})
+	h.Write([]byte(params.Reporter))
+	h.Write([]byte{0})
+	fmt.Fprintf(h, "%d", params.LeaseEpoch)
+	h.Write([]byte{0})
+	fmt.Fprintf(h, "%d", queueLeaseEpoch)
+	h.Write([]byte{0})
+	h.Write([]byte(strings.Join(params.Learnings, "\x01")))
+	h.Write([]byte{0})
+	h.Write([]byte(strings.Join(params.SkillCandidates, "\x01")))
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // checkLeaseEpochForBestEffort performs a read-only lease epoch check against

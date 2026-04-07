@@ -4,6 +4,35 @@ type TaskResultFile struct {
 	SchemaVersion int          `yaml:"schema_version"`
 	FileType      string       `yaml:"file_type"`
 	Results       []TaskResult `yaml:"results"`
+	// RejectedSubmissions captures result_write submissions whose
+	// best-effort writes (learnings / skill_candidates) were dropped because
+	// the worker no longer held a valid lease (e.g. lease epoch revoked
+	// after the original result was committed and a stale worker re-sent
+	// data attached to the same task_id). Recorded for audit / user
+	// notification — these entries do not participate in plan reconcile,
+	// rebuild, or metrics counters.
+	RejectedSubmissions []RejectedSubmission `yaml:"rejected_submissions,omitempty"`
+}
+
+// RejectedSubmission records a result_write whose best-effort side data
+// (learnings / skill_candidates) was rejected due to a lease epoch revoke.
+// The reporter's core result (if any) lives in Results; this entry is the
+// audit-trail record of what was dropped and why.
+type RejectedSubmission struct {
+	ID                  string   `yaml:"id"`
+	TaskID              string   `yaml:"task_id"`
+	CommandID           string   `yaml:"command_id"`
+	Reporter            string   `yaml:"reporter"`
+	Reason              string   `yaml:"reason"`
+	RequestLeaseEpoch   int      `yaml:"request_lease_epoch"`
+	QueueLeaseEpoch     int      `yaml:"queue_lease_epoch"`
+	LostLearnings       []string `yaml:"lost_learnings,omitempty"`
+	LostSkillCandidates []string `yaml:"lost_skill_candidates,omitempty"`
+	OriginalSummary     string   `yaml:"original_summary,omitempty"`
+	// DedupKey is a content fingerprint used to suppress duplicate
+	// rejections from a stale worker that retries with identical payload.
+	DedupKey  string `yaml:"dedup_key"`
+	CreatedAt string `yaml:"created_at"`
 }
 
 type TaskResult struct {
