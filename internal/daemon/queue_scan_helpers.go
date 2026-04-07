@@ -78,6 +78,13 @@ func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string, taskQueues 
 	// Build workerID → task purpose map from task queues
 	workerPurposes := buildWorkerPurposes(commandID, taskQueues)
 
+	// Phase 0 件フォールバック: phases が一切定義されていない command でも
+	// worker worktree への書き込みは発生しうる。この場合、全タスク終了かつ
+	// 失敗なしの条件で暗黙の単一フェーズとして merge を集約する。
+	if len(phases) == 0 {
+		return qh.collectImplicitWorktreeMerge(commandID, cmdState, taskQueues, workerPurposes)
+	}
+
 	var items []worktreeMergeItem
 	for _, phase := range phases {
 		if string(phase.Status) != "completed" {
@@ -271,4 +278,45 @@ func (qh *QueueHandler) checkCommandTasksTerminal(
 		return false, false // No tasks found — command not ready
 	}
 	return true, hasFailed
+}
+
+// collectImplicitWorktreeMerge は phases が一切定義されていない command 向けに
+// 暗黙の単一フェーズ ("__implicit_phase") として worktree merge を集約する。
+// 全タスク terminal かつ failed なしかつ Integration.Status==created で
+// worker が登録されている場合のみ 1 件返す。それ以外は nil。
+// collectWorktreePhaseMerges の phases==0 経路から呼ばれる。
+func (qh *QueueHandler) collectImplicitWorktreeMerge(
+	commandID string,
+	cmdState *model.WorktreeCommandState,
+	taskQueues map[string]*taskQueueEntry,
+	workerPurposes map[string]string,
+) []worktreeMergeItem {
+	if cmdState == nil {
+		return nil
+	}
+	if cmdState.Integration.Status != model.IntegrationStatusCreated {
+		return nil
+	}
+	if len(cmdState.Workers) == 0 {
+		return nil
+	}
+	allTerm, hasFailed := qh.checkCommandTasksTerminal(commandID, taskQueues)
+	if !allTerm || hasFailed {
+		return nil
+	}
+
+	var workerIDs []string
+	for _, ws := range cmdState.Workers {
+		workerIDs = append(workerIDs, ws.WorkerID)
+	}
+	if len(workerIDs) == 0 {
+		return nil
+	}
+
+	return []worktreeMergeItem{{
+		CommandID:      commandID,
+		PhaseID:        "__implicit_phase",
+		WorkerIDs:      workerIDs,
+		WorkerPurposes: workerPurposes,
+	}}
 }
