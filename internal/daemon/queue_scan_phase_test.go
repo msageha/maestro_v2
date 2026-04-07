@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -853,5 +854,120 @@ func TestPhaseBC_CommitFailure_FlowTable(t *testing.T) {
 				t.Errorf("phase1 should not be marked merged after commit failure")
 			}
 		})
+	}
+}
+
+// TestPeriodicScanPhaseC_MergeConflictSignalStructuredFields verifies that
+// MVP-1 structured conflict fields (BaseRef/OursRef/TheirsRef/Files) are
+// propagated from MergeConflict into the emitted PlannerSignal, while the
+// legacy free-form Message field continues to embed the same values for
+// backward compatibility with CSV-style consumers.
+func TestPeriodicScanPhaseC_MergeConflictSignalStructuredFields(t *testing.T) {
+	maestroDir := setupScanPhaseTestDir(t)
+	wtCfg := model.WorktreeConfig{Enabled: false}
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, wtCfg)
+
+	commandID := "cmd_mc_struct"
+	pa := phaseAResult{scanStart: time.Now()}
+	pb := phaseBResult{
+		worktreeMerges: []worktreeMergeResult{{
+			Item: worktreeMergeItem{
+				CommandID: commandID,
+				PhaseID:   "phase1",
+				WorkerIDs: []string{"worker1"},
+			},
+			Conflicts: []model.MergeConflict{{
+				WorkerID:      "worker1",
+				ConflictFiles: []string{"a.go", "b.go"},
+				BaseRef:       "base_sha",
+				OursRef:       "ours_sha",
+				TheirsRef:     "theirs_sha",
+			}},
+		}},
+	}
+
+	qh.periodicScanPhaseC(pa, pb)
+
+	signalQueue, _ := qh.loadPlannerSignalQueue()
+	var found *model.PlannerSignal
+	for i := range signalQueue.Signals {
+		s := &signalQueue.Signals[i]
+		if s.Kind == "merge_conflict" && s.CommandID == commandID {
+			found = s
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("merge_conflict signal not found: %+v", signalQueue.Signals)
+	}
+	if found.ConflictBaseRef != "base_sha" || found.ConflictOursRef != "ours_sha" || found.ConflictTheirsRef != "theirs_sha" {
+		t.Errorf("structured refs mismatch: base=%q ours=%q theirs=%q",
+			found.ConflictBaseRef, found.ConflictOursRef, found.ConflictTheirsRef)
+	}
+	if len(found.ConflictFiles) != 2 || found.ConflictFiles[0] != "a.go" || found.ConflictFiles[1] != "b.go" {
+		t.Errorf("ConflictFiles mismatch: %v", found.ConflictFiles)
+	}
+	if found.WorkerID != "worker1" {
+		t.Errorf("WorkerID = %q, want worker1", found.WorkerID)
+	}
+	// Backward-compat: legacy CSV-style Message must still embed refs and files.
+	if !strings.Contains(found.Message, "base:base_sha") ||
+		!strings.Contains(found.Message, "ours:ours_sha") ||
+		!strings.Contains(found.Message, "theirs:theirs_sha") ||
+		!strings.Contains(found.Message, "a.go, b.go") {
+		t.Errorf("legacy Message missing structured fields: %q", found.Message)
+	}
+}
+
+// TestPlannerSignal_StructuredConflictFields_RoundTrip verifies that the new
+// MVP-1 fields survive a YAML marshal/unmarshal round trip and that absent
+// values stay omitted (preserving on-disk compatibility for non-conflict
+// signal kinds).
+func TestPlannerSignal_StructuredConflictFields_RoundTrip(t *testing.T) {
+	orig := model.PlannerSignal{
+		Kind:              "merge_conflict",
+		CommandID:         "cmd1",
+		PhaseID:           "phase1",
+		WorkerID:          "worker1",
+		Message:           "[maestro] kind:merge_conflict ...",
+		ConflictBaseRef:   "base_sha",
+		ConflictOursRef:   "ours_sha",
+		ConflictTheirsRef: "theirs_sha",
+		ConflictFiles:     []string{"a.go", "b.go"},
+		CreatedAt:         "2026-01-01T00:00:00Z",
+		UpdatedAt:         "2026-01-01T00:00:00Z",
+	}
+	data, err := yamlv3.Marshal(orig)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got model.PlannerSignal
+	if err := yamlv3.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.ConflictBaseRef != orig.ConflictBaseRef ||
+		got.ConflictOursRef != orig.ConflictOursRef ||
+		got.ConflictTheirsRef != orig.ConflictTheirsRef ||
+		len(got.ConflictFiles) != 2 {
+		t.Errorf("round-trip mismatch: %+v", got)
+	}
+
+	// Non-conflict signals: empty fields must be omitted from YAML output.
+	plain := model.PlannerSignal{
+		Kind:      "commit_failed",
+		CommandID: "cmd1",
+		PhaseID:   "phase1",
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+	}
+	data2, err := yamlv3.Marshal(plain)
+	if err != nil {
+		t.Fatalf("marshal plain: %v", err)
+	}
+	out := string(data2)
+	for _, key := range []string{"conflict_base_ref", "conflict_ours_ref", "conflict_theirs_ref", "conflict_files"} {
+		if strings.Contains(out, key) {
+			t.Errorf("expected %q to be omitted from non-conflict signal yaml: %s", key, out)
+		}
 	}
 }

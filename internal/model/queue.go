@@ -113,4 +113,15 @@ type PlannerSignal struct {
 	// "generic:<message>"). Currently populated for commit_failed signals so
 	// the planner can take recovery action without parsing free-form text.
 	Reason string `yaml:"reason,omitempty"`
+	// ConflictBaseRef / ConflictOursRef / ConflictTheirsRef are populated for
+	// merge_conflict signals to give planners structured access to the
+	// underlying refs (base = common ancestor, ours = integration side,
+	// theirs = worker side). Empty for non-conflict signals. Added in MVP-1;
+	// the legacy free-form Message field is preserved for backward compat.
+	ConflictBaseRef   string   `yaml:"conflict_base_ref,omitempty"`
+	ConflictOursRef   string   `yaml:"conflict_ours_ref,omitempty"`
+	ConflictTheirsRef string   `yaml:"conflict_theirs_ref,omitempty"`
+	// ConflictFiles lists the files reported in conflict by git for
+	// merge_conflict signals. Empty for non-conflict signals.
+	ConflictFiles []string `yaml:"conflict_files,omitempty"`
 }
