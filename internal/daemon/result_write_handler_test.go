@@ -777,3 +777,108 @@ func TestResultWrite_LateAfterPlanTerminal(t *testing.T) {
 		})
 	}
 }
+
+// TestResultWrite_QueueWriteFailed_StickyError verifies that when phaseA's
+// queue write fails on both attempts (queue dir made read-only after the
+// result file is committed), the sticky error marker is persisted to
+// state.QueueWriteFailed so the R1 reconciler can repair the
+// result-terminal/queue-in_progress mismatch durably across daemon restarts.
+// Regression test for H2 (audit cmd_1775522508_05ee0f69).
+func TestResultWrite_QueueWriteFailed_StickyError(t *testing.T) {
+	d := newTestDaemon(t)
+	taskID := "task_0000000001_abcdef01"
+	commandID := "cmd_0000000001_abcdef01"
+	workerID := "worker1"
+	leaseEpoch := 1
+
+	setupWorkerQueue(t, d, workerID, taskID, commandID, leaseEpoch)
+	setupCommandState(t, d, commandID, []string{taskID})
+
+	// Make the queue directory read-only so AtomicWrite (tempfile + rename in
+	// the same dir) fails on both attempts in phaseA. Reads still work because
+	// 0500 grants r-x.
+	queueDir := filepath.Join(d.maestroDir, "queue")
+	if err := os.Chmod(queueDir, 0o500); err != nil {
+		t.Fatalf("chmod queue dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(queueDir, 0o755)
+	})
+
+	req := makeResultWriteRequest(t, ResultWriteParams{
+		Reporter:   workerID,
+		TaskID:     taskID,
+		CommandID:  commandID,
+		LeaseEpoch: leaseEpoch,
+		Status:     "completed",
+		Summary:    "task done but queue write fails",
+	})
+
+	resp := d.api.handleResultWrite(req)
+	if !resp.Success {
+		t.Fatalf("expected success (result file committed), got error: %v", resp.Error)
+	}
+	var result map[string]string
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	resultID := result["result_id"]
+	if resultID == "" {
+		t.Fatal("expected non-empty result_id")
+	}
+
+	// Restore perms before reading queue file (read alone is fine but we want
+	// to leave the dir in a clean state for any later assertions/cleanup).
+	if err := os.Chmod(queueDir, 0o755); err != nil {
+		t.Fatalf("restore queue dir perms: %v", err)
+	}
+
+	// Queue should still be in_progress on disk (the writes failed).
+	queuePath := filepath.Join(d.maestroDir, "queue", workerID+".yaml")
+	qdata, err := os.ReadFile(queuePath)
+	if err != nil {
+		t.Fatalf("read queue: %v", err)
+	}
+	var tq model.TaskQueue
+	if err := yamlv3.Unmarshal(qdata, &tq); err != nil {
+		t.Fatalf("unmarshal queue: %v", err)
+	}
+	if tq.Tasks[0].Status != model.StatusInProgress {
+		t.Errorf("queue status = %q, want %q (writes were blocked)",
+			tq.Tasks[0].Status, model.StatusInProgress)
+	}
+
+	// State should carry the sticky marker keyed by task_id.
+	statePath := filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml")
+	sdata, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var state model.CommandState
+	if err := yamlv3.Unmarshal(sdata, &state); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	got, ok := state.QueueWriteFailed[taskID]
+	if !ok {
+		t.Fatalf("expected state.QueueWriteFailed[%s] to be set, got map=%v",
+			taskID, state.QueueWriteFailed)
+	}
+	want := workerID + ":" + resultID
+	if got != want {
+		t.Errorf("state.QueueWriteFailed[%s] = %q, want %q", taskID, got, want)
+	}
+
+	// Result file should still be committed (the durable record).
+	resultPath := filepath.Join(d.maestroDir, "results", workerID+".yaml")
+	rdata, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	var rf model.TaskResultFile
+	if err := yamlv3.Unmarshal(rdata, &rf); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if len(rf.Results) != 1 || rf.Results[0].TaskID != taskID || rf.Results[0].Status != model.StatusCompleted {
+		t.Errorf("result file unexpected: %+v", rf.Results)
+	}
+}

@@ -1,10 +1,37 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"strings"
 	"testing"
 )
+
+// TestRunQueueWrite_CancelRequestDeprecationWarning verifies that the
+// deprecated `queue write --type cancel-request` CLI surface emits a
+// migration warning to stderr (H7: cancel route unification).
+func TestRunQueueWrite_CancelRequestDeprecationWarning(t *testing.T) {
+	var buf bytes.Buffer
+	prev := queueWriteWarnOut
+	queueWriteWarnOut = &buf
+	defer func() { queueWriteWarnOut = prev }()
+
+	// Use a valid command-id so we hit the deprecation warning emission path
+	// before the CLI tries to dial the daemon. The daemon dial will fail
+	// (no socket in test env), but the warning is written before that.
+	_ = runQueueWrite([]string{"planner", "--type", "cancel-request",
+		"--command-id", "cmd_0000000001_abcdef01",
+		"--reason", "test",
+	})
+
+	got := buf.String()
+	if !strings.Contains(got, "deprecated") {
+		t.Errorf("expected deprecation warning, got: %q", got)
+	}
+	if !strings.Contains(got, "plan request-cancel") {
+		t.Errorf("expected migration hint to plan request-cancel, got: %q", got)
+	}
+}
 
 func TestRunQueue_NoSubcommand(t *testing.T) {
 	err := runQueue(nil)

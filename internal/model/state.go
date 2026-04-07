@@ -19,6 +19,7 @@ type CommandState struct {
 	SystemCommitTaskID *string             `yaml:"system_commit_task_id"`
 	RetryLineage         map[string]string   `yaml:"retry_lineage"`
 	RetryEnqueueFailed   map[string]string   `yaml:"retry_enqueue_failed,omitempty"` // task_id → worker_id; set when state registered but queue add failed
+	QueueWriteFailed     map[string]string   `yaml:"queue_write_failed,omitempty"`   // task_id → "workerID:resultID"; set when result committed but queue terminal write failed (H2 sticky error)
 	Phases             []Phase             `yaml:"phases"`
 	LastReconciledAt   *string             `yaml:"last_reconciled_at"`
 	CreatedAt          string              `yaml:"created_at"`

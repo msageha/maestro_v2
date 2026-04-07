@@ -392,6 +392,15 @@ func (a *API) handleQueueWriteNotification(params QueueWriteParams) *uds.Respons
 }
 
 // handleQueueWriteCancelRequest processes cancel-request queue writes.
+//
+// H7 (cancel route unification): this handler is the SINGLE canonical entry
+// point for command cancellation. Both `maestro plan request-cancel` (the
+// recommended CLI surface) and the deprecated `maestro queue write planner
+// --type cancel-request` route reach this function. There is no separate
+// state mutation path that bypasses this handler. The deprecation warning
+// is emitted at the CLI layer (cmd_queue.go) so operators migrate, but the
+// behavior is identical to keep both routes consistent.
+//
 // Cancel-request is exempt from backpressure checks because it modifies
 // existing state (e.g. setting cancel.requested on a submitted command, or
 // marking an unsubmitted planner entry as cancelled) rather than adding a

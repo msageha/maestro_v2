@@ -81,7 +81,7 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 	resultID := resultWritePhaseAResult.resultID
 
 	// Phase B: Per-command mutex (state/ updates)
-	if err := a.resultWritePhaseB(params, resultID, resultStatus); err != nil {
+	if err := a.resultWritePhaseB(params, resultID, resultStatus, resultWritePhaseAResult.queueWriteFailed); err != nil {
 		d.log(LogLevelError, "result_write phase_b error task=%s command=%s: %v",
 			params.TaskID, params.CommandID, err)
 		return uds.ErrorResponse(uds.ErrCodeInternal,
@@ -183,8 +183,9 @@ func (e *resultWriteError) Error() string {
 
 // resultWritePhaseAResult holds the output of resultWritePhaseA.
 type resultWritePhaseAResult struct {
-	resultID  string
-	retryTask *model.Task // non-nil if a retry should be scheduled (caller handles registration)
+	resultID         string
+	retryTask        *model.Task // non-nil if a retry should be scheduled (caller handles registration)
+	queueWriteFailed bool        // true when result was committed but queue terminal write failed (H2 sticky error)
 }
 
 func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Status) (*resultWritePhaseAResult, error) {
@@ -385,13 +386,18 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 	queueTask.LeaseExpiresAt = nil
 	queueTask.UpdatedAt = now
 
+	queueWriteFailed := false
 	if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
 		// Result is already committed — retry queue write once before giving up.
-		// If still failing, R1 reconciler will repair the result-terminal/queue-in_progress mismatch.
+		// If still failing, persist a sticky error in command state (H2) so the
+		// R1 reconciler can repair the result-terminal/queue-in_progress mismatch
+		// durably (across daemon restarts) instead of relying on the next
+		// periodic scan reading the bare log line.
 		d.log(LogLevelWarn, "result_write queue_write_failed task=%s, retrying: %v", params.TaskID, err)
 		if retryErr := yamlutil.AtomicWrite(queuePath, tq); retryErr != nil {
-			d.log(LogLevelError, "result_write queue_write_retry_failed task=%s result=%s: %v (R1 reconciler will repair)",
+			d.log(LogLevelError, "result_write queue_write_retry_failed task=%s result=%s: %v (sticky error recorded; R1 reconciler will repair)",
 				params.TaskID, resultID, retryErr)
+			queueWriteFailed = true
 		} else {
 			a.recordSelfWrite(queuePath, tq)
 		}
@@ -399,10 +405,10 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 		a.recordSelfWrite(queuePath, tq)
 	}
 
-	return &resultWritePhaseAResult{resultID: resultID, retryTask: retryTask}, nil
+	return &resultWritePhaseAResult{resultID: resultID, retryTask: retryTask, queueWriteFailed: queueWriteFailed}, nil
 }
 
-func (a *API) resultWritePhaseB(params ResultWriteParams, resultID string, resultStatus model.Status) error {
+func (a *API) resultWritePhaseB(params ResultWriteParams, resultID string, resultStatus model.Status, queueWriteFailed bool) error {
 	d := a.d
 	cmdLockKey := "state:" + params.CommandID
 	d.lockMap.Lock(cmdLockKey)
@@ -492,6 +498,22 @@ func (a *API) resultWritePhaseB(params ResultWriteParams, resultID string, resul
 			state.AppliedResultIDs = make(map[string]string)
 		}
 		state.AppliedResultIDs[params.TaskID] = resultID
+
+		// H2 sticky error: if Phase A failed to update the worker queue to
+		// terminal after retry, persist a marker so R1 reconciler can repair
+		// the result-terminal/queue-in_progress mismatch durably across daemon
+		// restarts. The value encodes "workerID:resultID" so the reconciler
+		// knows which queue to inspect and which result the marker corresponds
+		// to.
+		if queueWriteFailed {
+			if state.QueueWriteFailed == nil {
+				state.QueueWriteFailed = make(map[string]string)
+			}
+			state.QueueWriteFailed[params.TaskID] = params.Reporter + ":" + resultID
+			d.log(LogLevelWarn,
+				"result_write queue_write_failed_sticky task=%s command=%s worker=%s result=%s",
+				params.TaskID, params.CommandID, params.Reporter, resultID)
+		}
 
 		return nil
 	})

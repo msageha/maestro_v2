@@ -81,7 +81,159 @@ func (R1ResultQueue) Apply(run *Run) Outcome {
 	retryRepairs := r1ConsumeRetryEnqueueFailed(run)
 	repairs = append(repairs, retryRepairs...)
 
+	// --- Phase 3: QueueWriteFailed (H2 sticky error) cleanup ---
+	// Phase 1 above already repairs the result-terminal/queue-in_progress
+	// mismatch by walking results files. This phase clears the durable
+	// QueueWriteFailed marker once the queue task has reached a terminal state
+	// (either by Phase 1 in this same Apply or by an earlier scan).
+	queueWriteRepairs := r1ConsumeQueueWriteFailed(run)
+	repairs = append(repairs, queueWriteRepairs...)
+
 	return Outcome{Repairs: repairs}
+}
+
+// r1ConsumeQueueWriteFailed walks command state files and clears
+// QueueWriteFailed entries whose corresponding worker queue task has reached
+// a terminal state. The marker is purely a durability hint; Phase 1 performs
+// the actual queue repair, so this phase only needs to handle cleanup.
+//
+// Lock ordering: snapshot markers under state lock, release, then acquire the
+// queue lock to inspect, then reacquire the state lock to clear (queue → state
+// canonical order is preserved on the clear path because we drop the state
+// lock before touching queue).
+func r1ConsumeQueueWriteFailed(run *Run) []Repair {
+	stateDir := filepath.Join(run.Deps.MaestroDir, "state", "commands")
+	entries, err := run.CachedReadDir(stateDir)
+	if err != nil {
+		return nil
+	}
+
+	var repairs []Repair
+
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".yaml") {
+			continue
+		}
+		commandID := strings.TrimSuffix(entry.Name(), ".yaml")
+		statePath := filepath.Join(stateDir, entry.Name())
+
+		// Snapshot under state lock.
+		type pending struct {
+			taskID   string
+			workerID string
+			resultID string
+		}
+		var snapshot []pending
+		func() {
+			lockKey := "state:" + commandID
+			run.Deps.LockMap.Lock(lockKey)
+			defer run.Deps.LockMap.Unlock(lockKey)
+
+			state, err := run.LoadState(statePath)
+			if err != nil {
+				return
+			}
+			for taskID, value := range state.QueueWriteFailed {
+				workerID, resultID := parseQueueWriteFailedValue(value)
+				if workerID == "" {
+					continue
+				}
+				snapshot = append(snapshot, pending{taskID: taskID, workerID: workerID, resultID: resultID})
+			}
+		}()
+
+		if len(snapshot) == 0 {
+			continue
+		}
+
+		// Inspect queue without state lock.
+		clearable := make(map[string]bool)
+		for _, p := range snapshot {
+			if r1QueueTaskTerminal(run, p.workerID, p.taskID) {
+				clearable[p.taskID] = true
+			}
+		}
+
+		if len(clearable) == 0 {
+			continue
+		}
+
+		// Reacquire state lock and clear entries that are still present.
+		func() {
+			lockKey := "state:" + commandID
+			run.Deps.LockMap.Lock(lockKey)
+			defer run.Deps.LockMap.Unlock(lockKey)
+
+			state, err := run.LoadState(statePath)
+			if err != nil {
+				return
+			}
+			if len(state.QueueWriteFailed) == 0 {
+				return
+			}
+			modified := false
+			for taskID := range clearable {
+				if _, ok := state.QueueWriteFailed[taskID]; ok {
+					delete(state.QueueWriteFailed, taskID)
+					modified = true
+					run.Log(core.LogLevelInfo, "R1 queue_write_failed_cleared task=%s command=%s",
+						taskID, commandID)
+					repairs = append(repairs, Repair{
+						Pattern:   PatternR1,
+						CommandID: commandID,
+						TaskID:    taskID,
+						Detail:    "queue_write_failed marker cleared (queue terminal)",
+					})
+				}
+			}
+			if !modified {
+				return
+			}
+			now := run.Deps.Clock.Now().UTC().Format(time.RFC3339)
+			state.LastReconciledAt = &now
+			state.UpdatedAt = now
+			if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+				run.Log(core.LogLevelError, "R1 write_state_queue_write_failed command=%s error=%v", commandID, err)
+			}
+		}()
+	}
+
+	return repairs
+}
+
+// parseQueueWriteFailedValue parses the "workerID:resultID" encoding written
+// by result_write_handler.go. Returns empty workerID if the value is malformed.
+func parseQueueWriteFailedValue(value string) (workerID, resultID string) {
+	idx := strings.Index(value, ":")
+	if idx <= 0 || idx == len(value)-1 {
+		return "", ""
+	}
+	return value[:idx], value[idx+1:]
+}
+
+// r1QueueTaskTerminal reports whether the named task is currently terminal in
+// the worker's queue. Acquires queue lock internally. Returns false on any
+// I/O or parse error (caller will retry on the next scan).
+func r1QueueTaskTerminal(run *Run, workerID, taskID string) bool {
+	queuePath := filepath.Join(run.Deps.MaestroDir, "queue", workerID+".yaml")
+
+	run.Deps.LockMap.Lock("queue:" + workerID)
+	defer run.Deps.LockMap.Unlock("queue:" + workerID)
+
+	data, err := os.ReadFile(queuePath)
+	if err != nil {
+		return false
+	}
+	var tq model.TaskQueue
+	if err := yamlv3.Unmarshal(data, &tq); err != nil {
+		return false
+	}
+	for _, task := range tq.Tasks {
+		if task.ID == taskID {
+			return model.IsTerminal(task.Status)
+		}
+	}
+	return false
 }
 
 // r1ConsumeRetryEnqueueFailed scans command state files for RetryEnqueueFailed entries
