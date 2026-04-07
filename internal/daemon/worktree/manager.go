@@ -503,6 +503,11 @@ func (wm *Manager) DiscardWorkerChanges(commandID, workerID string) error {
 		return fmt.Errorf("worker %s not found in command %s", workerID, commandID)
 	}
 
+	// Tripwire: refuse to run destructive git ops outside the project root.
+	if err := ensureWithinProjectRoot(wm.projectRoot, ws.Path); err != nil {
+		return fmt.Errorf("discard worker changes: %w", err)
+	}
+
 	// Reset staged changes so checkout can fully restore tracked files
 	if err := wm.gitRunInDir(ws.Path, "reset", "HEAD"); err != nil {
 		return fmt.Errorf("reset staged changes in %s: %w", ws.Path, err)

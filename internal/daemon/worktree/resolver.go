@@ -219,6 +219,10 @@ func (wm *Manager) DiscardResolverEdits(commandID, workerID string) error {
 	if err := wm.assertWorktreeContained(intPath); err != nil {
 		return err
 	}
+	// Tripwire: additionally refuse to run destructive git ops outside the project root.
+	if err := ensureWithinProjectRoot(wm.projectRoot, intPath); err != nil {
+		return fmt.Errorf("discard resolver edits: %w", err)
+	}
 	if err := wm.resolverGitRunInDir(intPath, "reset", "HEAD"); err != nil {
 		return fmt.Errorf("reset staged: %w", err)
 	}
