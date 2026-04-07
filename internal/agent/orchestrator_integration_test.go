@@ -27,16 +27,6 @@ func requireClaude(t *testing.T) {
 	}
 }
 
-// projectRoot returns the absolute path to the project root.
-func projectRoot(t *testing.T) string {
-	t.Helper()
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("cannot determine caller")
-	}
-	return filepath.Join(filepath.Dir(file), "..", "..")
-}
-
 // runOrchestratorQuery launches claude with the orchestrator system prompt and
 // sends a single-turn query via -p flag. Returns stdout as a string.
 // If workDir is empty, os.TempDir() is used.

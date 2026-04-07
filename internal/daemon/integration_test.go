@@ -351,28 +351,6 @@ func writeTask(t *testing.T, d *Daemon, target, commandID, content, purpose, cri
 	return result["id"]
 }
 
-func writeTaskWithDeps(t *testing.T, d *Daemon, target, commandID, content string, blockedBy []string) string {
-	t.Helper()
-	req := makeQueueWriteRequest(t, QueueWriteParams{
-		Target:             target,
-		Type:               "task",
-		SystemCaller:       string(model.TaskIDCallerSystemInternal),
-		CommandID:          commandID,
-		Content:            content,
-		Purpose:            "test",
-		AcceptanceCriteria: "passes",
-		BloomLevel:         3,
-		BlockedBy:          blockedBy,
-	})
-	resp := d.api.handleQueueWrite(req)
-	if !resp.Success {
-		t.Fatalf("queue write task with deps: %v", resp.Error)
-	}
-	var result map[string]string
-	json.Unmarshal(resp.Data, &result)
-	return result["id"]
-}
-
 func writeResult(t *testing.T, d *Daemon, reporter, taskID, commandID, status, summary string, leaseEpoch int) string {
 	t.Helper()
 	req := makeResultWriteRequest(t, ResultWriteParams{

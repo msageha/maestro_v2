@@ -24,7 +24,6 @@ import (
 // phaseIntegrationStateReader implements StateReader for integration tests.
 // It supports task states, phases with depends_on, and phase transitions.
 type phaseIntegrationStateReader struct {
-	maestroDir      string
 	mu              sync.Mutex
 	taskStates      map[string]map[string]model.Status   // commandID -> taskID -> status
 	phases          map[string][]PhaseInfo                // commandID -> phases
