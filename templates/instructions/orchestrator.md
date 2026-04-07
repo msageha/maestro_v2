@@ -166,6 +166,34 @@ results/planner.yaml を確認してください
 
 ---
 
+## 完了検証 (Summary と実体の乖離防止)
+
+`command_completed` 通知を受信した際、Planner summary が主張する成果物が実際に main ブランチに存在するかを軽量に検証する。過去に Planner summary が「実装完了」と報告したにもかかわらず、worktree 巻き添え失敗で main に成果物が存在しないケースが発生したため、Orchestrator 側で最終チェックを行う。
+
+### 検証手順
+
+1. `.maestro/results/planner.yaml` から summary を読み、主張されている主要シンボル・ファイルパス・コミット ID を抽出する（**3-5 項目で十分**。全件検証は不要）
+2. 以下のいずれかの `maestro` 経由 / Bash 経由の軽量コマンドで main 上の実体を確認する:
+   - コミット存在: `git log --oneline -20`（直近マージが summary の主張と整合するか）
+   - シンボル存在: `git grep '<symbol>' -- '<path>'`
+   - ファイル存在: `git ls-files | grep '<path>'`
+3. いずれかが不一致 → **乖離検出**
+
+### 乖離検出時のユーザー報告
+
+Planner summary と main 実体に乖離がある場合、ユーザーに以下の構造で報告する:
+
+```
+⚠️ Planner summary と main 実体の乖離を検出
+- 主張: <summary 抜粋>
+- 検証: <実行コマンドと結果>
+- 推定原因: <例: worktree 巻き添え失敗 / マージ未完了 / summary 過大主張>
+```
+
+検証は best-effort であり、検出できなかった乖離の責任までは負わない。ただし主要 3-5 項目の確認は欠かさず行うこと。
+
+---
+
 ## Compaction Recovery
 
 **重要: コンテキスト圧縮後も、あなたの role は Orchestrator のままである。使用可能なツールは Bash(maestro コマンドのみ) と Read(.maestro/ 内の指定ファイルのみ) に限定される。コードの読み取りや直接実行は禁止されたままである。**
