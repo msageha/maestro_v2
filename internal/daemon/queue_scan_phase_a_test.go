@@ -367,3 +367,211 @@ func TestStepCheckWorktreeConfigViolations_WithinTimeout(t *testing.T) {
 		t.Errorf("expected no signal within timeout, got %d", len(s.signals.Data.Signals))
 	}
 }
+
+// --- stepWorktreePublish guard relaxation tests (案1) ---
+
+// TestStepWorktreePublish_TerminalCmdMergedIntegrationCollects verifies that
+// a terminal (completed) command with HasWorktrees and integration.status=merged
+// still produces a publish item via the relaxed guard.
+func TestStepWorktreePublish_TerminalCmdMergedIntegrationCollects(t *testing.T) {
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusMerged)
+	// Non-phased command state (phases:[]) so collect... advances to publish.
+	writeCommandState(t, maestroDir, "cmd1",
+		map[string]model.Status{"t1": model.StatusCompleted}, nil)
+
+	now := qh.clock.Now()
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{{
+					ID:        "cmd1",
+					Status:    model.StatusCompleted,
+					Content:   "test publish",
+					CreatedAt: now.UTC().Format(time.RFC3339),
+					UpdatedAt: now.UTC().Format(time.RFC3339),
+				}},
+			},
+		},
+		tasks: makeTaskQueues(map[string][]model.Task{
+			"worker1": {{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted}},
+		}),
+	}
+
+	qh.stepWorktreePublish(&s)
+
+	if got := len(s.work.worktreePublishes); got != 1 {
+		t.Fatalf("expected 1 publish item, got %d", got)
+	}
+	if s.work.worktreePublishes[0].CommandID != "cmd1" {
+		t.Errorf("publish CommandID = %q, want cmd1", s.work.worktreePublishes[0].CommandID)
+	}
+}
+
+// TestStepWorktreePublish_PendingCmdSkipped verifies the new guard still
+// skips pending commands (which have no worktrees yet).
+func TestStepWorktreePublish_PendingCmdSkipped(t *testing.T) {
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusMerged)
+	writeCommandState(t, maestroDir, "cmd1",
+		map[string]model.Status{"t1": model.StatusCompleted}, nil)
+
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{{ID: "cmd1", Status: model.StatusPending}},
+			},
+		},
+		tasks: makeTaskQueues(map[string][]model.Task{
+			"worker1": {{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted}},
+		}),
+	}
+	qh.stepWorktreePublish(&s)
+	if len(s.work.worktreePublishes)+len(s.work.worktreeCleanups) != 0 {
+		t.Errorf("pending command must not produce publish/cleanup items")
+	}
+}
+
+// --- stepWorktreeOrphanCleanup tests (案2) ---
+
+// TestStepWorktreeOrphanCleanup_NonPhasedTerminalCreatedFires verifies the
+// canonical leak case: a non-phased command terminated past the threshold with
+// integration.status=created produces an orphan_terminal cleanup item.
+func TestStepWorktreeOrphanCleanup_NonPhasedTerminalCreatedFires(t *testing.T) {
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusCreated)
+	writeCommandState(t, maestroDir, "cmd1",
+		map[string]model.Status{"t1": model.StatusFailed}, nil)
+
+	stalled := qh.clock.Now().Add(-30 * time.Minute)
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{{
+					ID:        "cmd1",
+					Status:    model.StatusFailed,
+					CreatedAt: stalled.UTC().Format(time.RFC3339),
+					UpdatedAt: stalled.UTC().Format(time.RFC3339),
+				}},
+			},
+		},
+	}
+
+	qh.stepWorktreeOrphanCleanup(&s)
+
+	if got := len(s.work.worktreeCleanups); got != 1 {
+		t.Fatalf("expected 1 orphan cleanup item, got %d", got)
+	}
+	if s.work.worktreeCleanups[0].Reason != "orphan_terminal" {
+		t.Errorf("reason = %q, want orphan_terminal", s.work.worktreeCleanups[0].Reason)
+	}
+}
+
+// TestStepWorktreeOrphanCleanup_BeforeThresholdSkipped verifies negative case
+// (elapsed < stall_cleanup_after).
+func TestStepWorktreeOrphanCleanup_BeforeThresholdSkipped(t *testing.T) {
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusCreated)
+
+	recent := qh.clock.Now().Add(-1 * time.Minute)
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{{
+					ID:        "cmd1",
+					Status:    model.StatusCompleted,
+					CreatedAt: recent.UTC().Format(time.RFC3339),
+					UpdatedAt: recent.UTC().Format(time.RFC3339),
+				}},
+			},
+		},
+	}
+
+	qh.stepWorktreeOrphanCleanup(&s)
+	if len(s.work.worktreeCleanups) != 0 {
+		t.Errorf("expected no cleanup before threshold, got %d", len(s.work.worktreeCleanups))
+	}
+}
+
+// TestStepWorktreeOrphanCleanup_MergedSkipped verifies idempotency vs 案1:
+// integration.status=merged is handled by stepWorktreePublish, so the orphan
+// cleanup step must NOT also fire on the same command.
+func TestStepWorktreeOrphanCleanup_MergedSkipped(t *testing.T) {
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusMerged)
+
+	stalled := qh.clock.Now().Add(-30 * time.Minute)
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{{
+					ID:        "cmd1",
+					Status:    model.StatusCompleted,
+					CreatedAt: stalled.UTC().Format(time.RFC3339),
+					UpdatedAt: stalled.UTC().Format(time.RFC3339),
+				}},
+			},
+		},
+	}
+
+	qh.stepWorktreeOrphanCleanup(&s)
+	if len(s.work.worktreeCleanups) != 0 {
+		t.Errorf("merged integration must be left to stepWorktreePublish, got %d cleanup items", len(s.work.worktreeCleanups))
+	}
+}
+
+// TestStepWorktreeOrphanCleanup_NoDoubleFireWithPublish verifies that running
+// both stepWorktreePublish and stepWorktreeOrphanCleanup against the same
+// terminal command never enqueues two cleanup items for the same cmd.
+func TestStepWorktreeOrphanCleanup_NoDoubleFireWithPublish(t *testing.T) {
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
+
+	// integration=created → publish step's collect... falls through to default
+	// (no item); orphan step (case A) emits cleanup.
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusCreated)
+	writeCommandState(t, maestroDir, "cmd1",
+		map[string]model.Status{"t1": model.StatusFailed}, nil)
+
+	stalled := qh.clock.Now().Add(-30 * time.Minute)
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{{
+					ID:        "cmd1",
+					Status:    model.StatusFailed,
+					CreatedAt: stalled.UTC().Format(time.RFC3339),
+					UpdatedAt: stalled.UTC().Format(time.RFC3339),
+				}},
+			},
+		},
+		tasks: makeTaskQueues(map[string][]model.Task{
+			"worker1": {{ID: "t1", CommandID: "cmd1", Status: model.StatusFailed}},
+		}),
+	}
+
+	qh.stepWorktreePublish(&s)
+	pubCleanups := len(s.work.worktreeCleanups)
+	qh.stepWorktreeOrphanCleanup(&s)
+
+	// Only orphan step should add a cleanup; publish step contributes 0 here
+	// (created → default → no-op) unless cleanup_on_failure is configured,
+	// which fastTrackCleanupConfig leaves default (false).
+	if got := len(s.work.worktreeCleanups); got > 1 {
+		t.Fatalf("double-fire detected: total=%d (publish=%d, orphan added=%d)",
+			got, pubCleanups, got-pubCleanups)
+	}
+	if got := len(s.work.worktreeCleanups); got != 1 {
+		t.Fatalf("expected exactly 1 cleanup after both steps, got %d", got)
+	}
+}
