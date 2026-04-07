@@ -422,13 +422,49 @@ func (a *API) resultWritePhaseB(params ResultWriteParams, resultID string, resul
 		if state.TaskStates == nil {
 			state.TaskStates = make(map[string]model.Status)
 		}
-		state.TaskStates[params.TaskID] = resultStatus
+
+		// Late-arriving result handling: if the plan has already failed or
+		// cancelled (e.g. via cancel command, or because another required task
+		// failed and the planner finalized the command before this dispatched
+		// task reported), a still-pending task's late completed/failed result
+		// must NOT be applied verbatim — that would leave
+		// TaskStates[taskID] = completed while PlanStatus = failed/cancelled,
+		// an inconsistent view that plan.Complete's idempotency skip path
+		// (complete.go:113-118) would not re-validate. Coerce the recorded task
+		// state to cancelled so the plan view stays consistent.
+		//
+		// Two carve-outs (per codex review):
+		//  1. plan_status=completed is left alone — a plan that successfully
+		//     completed reflects a terminal task view we must not regress, and
+		//     duplicate result re-submission shouldn't flip completed→cancelled.
+		//  2. If TaskStates[taskID] is already terminal, don't overwrite it
+		//     (idempotent re-submission of the same late result).
+		//
+		// The result file (audit trail) and queue entry still record the
+		// reporter's original status — only the plan's TaskStates view is
+		// normalized. The circuit breaker still observes the original reported
+		// status so its counters reflect actual task execution outcomes.
+		recordedStatus := resultStatus
+		existing, hadExisting := state.TaskStates[params.TaskID]
+		planFailedOrCancelled := state.PlanStatus == model.PlanStatusFailed || state.PlanStatus == model.PlanStatusCancelled
+		if planFailedOrCancelled && !(hadExisting && model.IsTerminal(existing)) {
+			d.log(LogLevelWarn,
+				"result_write late_after_plan_terminal task=%s command=%s plan_status=%s reported=%s coerced=cancelled",
+				params.TaskID, params.CommandID, state.PlanStatus, resultStatus)
+			recordedStatus = model.StatusCancelled
+		} else if hadExisting && model.IsTerminal(existing) {
+			// Idempotent re-submission: keep settled terminal state.
+			recordedStatus = existing
+		}
+		state.TaskStates[params.TaskID] = recordedStatus
 
 		now := d.clock.Now()
 		state.UpdatedAt = now.UTC().Format(time.RFC3339)
 
 		// Circuit breaker: update counter BEFORE AppliedResultIDs so the idempotency
 		// check correctly detects duplicate results against the old map.
+		// Pass the original reported status (not the coerced one) so metrics
+		// reflect what actually happened in the worker.
 		if d.circuitBreaker != nil {
 			tripped, reason := d.circuitBreaker.UpdateCounterOnResult(state, resultStatus, resultID, now)
 			if tripped {

@@ -597,3 +597,102 @@ func TestResultWrite_StateNotFound(t *testing.T) {
 		t.Error("result file should not exist when Phase A rejects")
 	}
 }
+
+// TestResultWrite_LateAfterPlanTerminal verifies that when a result_write
+// arrives after the plan has already been transitioned to a terminal status
+// (e.g. failed/cancelled by another path), the late task's state is coerced
+// to cancelled instead of being applied verbatim. Without the fix, the
+// resulting state would have plan_status=failed but TaskStates[taskID]=completed,
+// an inconsistency that plan.Complete's idempotency skip path would not
+// re-validate (Critical #5 in repo audit 20260407).
+func TestResultWrite_LateAfterPlanTerminal(t *testing.T) {
+	cases := []struct {
+		name           string
+		planStatus     model.PlanStatus
+		reportedStatus string
+	}{
+		{"plan_failed_late_completed", model.PlanStatusFailed, "completed"},
+		{"plan_cancelled_late_completed", model.PlanStatusCancelled, "completed"},
+		{"plan_failed_late_failed", model.PlanStatusFailed, "failed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newTestDaemon(t)
+			taskID := "task_0000000001_abcdef01"
+			commandID := "cmd_0000000001_abcdef01"
+			workerID := "worker1"
+			leaseEpoch := 1
+
+			setupWorkerQueue(t, d, workerID, taskID, commandID, leaseEpoch)
+
+			// Setup state with plan already terminal and the task still in_progress
+			// (a previously dispatched task whose result is now arriving late).
+			statePath := filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml")
+			state := model.CommandState{
+				SchemaVersion: 1,
+				FileType:      "state_command",
+				CommandID:     commandID,
+				PlanStatus:    tc.planStatus,
+				TaskStates:    map[string]model.Status{taskID: model.StatusInProgress},
+				CreatedAt:     "2026-01-01T00:00:00Z",
+				UpdatedAt:     "2026-01-01T00:00:00Z",
+			}
+			if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+				t.Fatalf("write state: %v", err)
+			}
+
+			req := makeResultWriteRequest(t, ResultWriteParams{
+				Reporter:   workerID,
+				TaskID:     taskID,
+				CommandID:  commandID,
+				LeaseEpoch: leaseEpoch,
+				Status:     tc.reportedStatus,
+				Summary:    "late result after plan terminal",
+			})
+
+			resp := d.api.handleResultWrite(req)
+			if !resp.Success {
+				t.Fatalf("expected success (late result is recorded), got error: %v", resp.Error)
+			}
+
+			// Verify result file received the original reporter status (audit trail)
+			resultPath := filepath.Join(d.maestroDir, "results", workerID+".yaml")
+			rdata, err := os.ReadFile(resultPath)
+			if err != nil {
+				t.Fatalf("read result: %v", err)
+			}
+			var rf model.TaskResultFile
+			if err := yamlv3.Unmarshal(rdata, &rf); err != nil {
+				t.Fatalf("unmarshal result: %v", err)
+			}
+			if len(rf.Results) != 1 {
+				t.Fatalf("expected 1 result entry, got %d", len(rf.Results))
+			}
+			if string(rf.Results[0].Status) != tc.reportedStatus {
+				t.Errorf("result file status = %q, want original reported %q",
+					rf.Results[0].Status, tc.reportedStatus)
+			}
+
+			// Verify state remains consistent: plan_status unchanged, and the
+			// task state is coerced to cancelled (not the reported status).
+			sdata, err := os.ReadFile(statePath)
+			if err != nil {
+				t.Fatalf("read state: %v", err)
+			}
+			var got model.CommandState
+			if err := yamlv3.Unmarshal(sdata, &got); err != nil {
+				t.Fatalf("unmarshal state: %v", err)
+			}
+			if got.PlanStatus != tc.planStatus {
+				t.Errorf("plan_status mutated: got %q, want %q (unchanged)", got.PlanStatus, tc.planStatus)
+			}
+			if got.TaskStates[taskID] != model.StatusCancelled {
+				t.Errorf("late task state = %q, want %q (coerced for plan/state consistency)",
+					got.TaskStates[taskID], model.StatusCancelled)
+			}
+			if got.AppliedResultIDs[taskID] == "" {
+				t.Error("expected applied_result_ids to record the late result")
+			}
+		})
+	}
+}
