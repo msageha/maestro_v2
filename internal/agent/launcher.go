@@ -14,6 +14,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/tmux"
+	"github.com/msageha/maestro_v2/internal/uds"
 )
 
 // validRoleName permits only alphanumeric, underscore, and hyphen characters.
@@ -104,7 +105,10 @@ func Launch(maestroDir string) error {
 	// Clear CLAUDECODE env var to allow launching inside a parent Claude Code
 	// session (e.g. when maestro is invoked from Claude Code CLI).
 	cmd := exec.Command("claude", args...)
-	cmd.Env = filterEnv(os.Environ(), "CLAUDECODE")
+	// Propagate the agent role to child processes via MAESTRO_AGENT_ROLE so
+	// that any maestro CLI invocations they spawn carry an authenticated role
+	// hint to the daemon (used for recovery API trust boundaries).
+	cmd.Env = append(filterEnv(os.Environ(), "CLAUDECODE"), uds.CallerRoleEnv+"="+role)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -154,6 +158,12 @@ func buildLaunchArgs(role, agentModel, systemPrompt, basePromptMode string) []st
 				"Bash(tmux kill-session:*)",
 				"Bash(tmux kill-pane:*)",
 				"Bash(tmux kill-window:*)",
+				// D009: recovery API escape hatches are operator-only.
+				// Workers must never invoke these even if a future content
+				// payload tries to embed them.
+				"Bash(maestro plan unquarantine:*)",
+				"Bash(maestro plan resume-merge:*)",
+				"Bash(maestro resolve-conflict:*)",
 				"Read(.maestro/state/**)",
 				"Read(.maestro/queues/**)",
 				"Read(.maestro/results/**)",

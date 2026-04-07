@@ -127,3 +127,64 @@ func (wm *Manager) ResumeMerge(commandID string) error {
 	}
 	return nil
 }
+
+// ResolveConflict marks a per-phase, per-worker merge conflict as resolved
+// after an operator has manually fixed up the integration branch. It removes
+// the worker from CommitFailedWorkers (the gating list that blocks
+// publish-to-base) and resets the merge failure counter so that the next Phase
+// A scan can re-enqueue the merge attempt for the named phase.
+//
+// Idempotency: returns ErrAlreadyResolved when the worker is not in the
+// commit-failed list and the integration is not in a recoverable state.
+func (wm *Manager) ResolveConflict(commandID, phaseID, workerID string) error {
+	if err := validateIDs(commandID, phaseID, workerID); err != nil {
+		return err
+	}
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	state, err := wm.loadState(commandID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ErrNoWorktreeState
+		}
+		return fmt.Errorf("load state: %w", err)
+	}
+
+	removed := false
+	filtered := state.CommitFailedWorkers[:0]
+	for _, w := range state.CommitFailedWorkers {
+		if w == workerID {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, w)
+	}
+	if !removed {
+		return fmt.Errorf("%w: worker %s is not in commit_failed_workers for command %s phase %s",
+			ErrAlreadyResolved, workerID, commandID, phaseID)
+	}
+	state.CommitFailedWorkers = filtered
+
+	now := wm.clock.Now().UTC().Format(time.RFC3339)
+	switch state.Integration.Status {
+	case model.IntegrationStatusConflict,
+		model.IntegrationStatusPartialMerge,
+		model.IntegrationStatusFailed:
+		if state.Integration.Status != model.IntegrationStatusFailed {
+			if err := wm.setIntegrationStatus(state, model.IntegrationStatusFailed, now); err != nil {
+				return err
+			}
+		} else {
+			state.Integration.UpdatedAt = now
+		}
+		state.Integration.MergeFailureCount = 0
+	}
+	state.UpdatedAt = now
+
+	wm.log(core.LogLevelInfo, "resolve_conflict command=%s phase=%s worker=%s", commandID, phaseID, workerID)
+	if err := wm.saveState(commandID, state); err != nil {
+		return fmt.Errorf("save state: %w", err)
+	}
+	return nil
+}

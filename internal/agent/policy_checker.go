@@ -193,6 +193,20 @@ if [ "$tool_name" = "Bash" ]; then
     deny "B003: Blocked eval (arbitrary command execution)"
   fi
 
+  # D009: Operator-only recovery API escape hatches.
+  # Workers must never invoke these even if launcher --disallowedTools is
+  # bypassed; the daemon enforces an additional role check, but rejecting
+  # at the hook layer gives a faster, clearer failure.
+  if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+plan\s+unquarantine(\s|$)'; then
+    deny "D009: Blocked maestro plan unquarantine (operator-only recovery API)"
+  fi
+  if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+plan\s+resume-merge(\s|$)'; then
+    deny "D009: Blocked maestro plan resume-merge (operator-only recovery API)"
+  fi
+  if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+resolve-conflict(\s|$)'; then
+    deny "D009: Blocked maestro resolve-conflict (operator-only recovery API)"
+  fi
+
   # B004: Absolute path shell invocation (bypasses restricted mode)
   if echo "$cmd" | grep -qE '(^|;|\||&&)\s*(/usr)?/bin/(ba)?sh\b'; then
     deny "B004: Blocked absolute path shell invocation"

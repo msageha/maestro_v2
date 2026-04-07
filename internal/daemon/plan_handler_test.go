@@ -102,6 +102,41 @@ func makePlanRequest(t *testing.T, op string, data any) *uds.Request {
 
 // --- Tests ---
 
+// TestHandlePlan_RecoveryRoleCheck verifies the trust boundary on the
+// operator-recovery operations: requests whose CallerRole is "worker" must be
+// rejected before reaching the worktree manager, regardless of whether the
+// worktree manager is configured. Non-worker callers (planner, cli, empty)
+// pass the role gate and reach the next layer (here: "worktree manager not
+// configured" because the test daemon has none).
+func TestHandlePlan_RecoveryRoleCheck(t *testing.T) {
+	d := newPlanTestDaemon(t, &mockPlanExecutor{})
+	ops := []string{"unquarantine", "resume_merge", "resolve_conflict"}
+	for _, op := range ops {
+		t.Run("worker_rejected_"+op, func(t *testing.T) {
+			req := makePlanRequest(t, op, map[string]string{"command_id": "cmd_x"})
+			req.CallerRole = "worker"
+			resp := d.api.handlePlan(req)
+			assert.False(t, resp.Success)
+			require.NotNil(t, resp.Error)
+			assert.Equal(t, uds.ErrCodeValidation, resp.Error.Code)
+			assert.Contains(t, resp.Error.Message, "not permitted")
+			assert.Contains(t, resp.Error.Message, "worker")
+		})
+		for _, role := range []string{"planner", "cli", ""} {
+			t.Run("role_passes_"+op+"_"+role, func(t *testing.T) {
+				req := makePlanRequest(t, op, map[string]string{"command_id": "cmd_x"})
+				req.CallerRole = role
+				resp := d.api.handlePlan(req)
+				// Passes the role check; fails at the worktree manager gate.
+				assert.False(t, resp.Success)
+				require.NotNil(t, resp.Error)
+				assert.Equal(t, uds.ErrCodeInternal, resp.Error.Code)
+				assert.Contains(t, resp.Error.Message, "worktree manager not configured")
+			})
+		}
+	}
+}
+
 func TestHandlePlan_NilExecutor(t *testing.T) {
 	d := newTestDaemon(t)
 	// Do not set plan executor
