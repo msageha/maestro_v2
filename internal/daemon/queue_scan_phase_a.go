@@ -111,20 +111,22 @@ func (qh *QueueHandler) stepCircuitBreaker(s *scanState) {
 			continue
 		}
 
+		stateReader := qh.circuitBreaker.StateReader()
+		if stateReader == nil {
+			continue
+		}
+
 		shouldTrip, reason := qh.circuitBreaker.CheckProgressTimeout(cmd.ID)
 		if shouldTrip {
 			timeoutMin := qh.circuitBreaker.ProgressTimeoutMinutes()
-			if err := qh.circuitBreaker.StateReader().TripCircuitBreaker(cmd.ID, reason, timeoutMin); err != nil {
+			if err := stateReader.TripCircuitBreaker(cmd.ID, reason, timeoutMin); err != nil {
 				qh.log(LogLevelError, "circuit_breaker_trip_timeout command=%s error=%v", cmd.ID, err)
 			} else {
 				qh.log(LogLevelWarn, "circuit_breaker_tripped_timeout command=%s reason=%s", cmd.ID, reason)
 			}
 		}
 
-		if qh.circuitBreaker.StateReader() == nil {
-			continue
-		}
-		cbState, err := qh.circuitBreaker.StateReader().GetCircuitBreakerState(cmd.ID)
+		cbState, err := stateReader.GetCircuitBreakerState(cmd.ID)
 		if err != nil {
 			continue
 		}
