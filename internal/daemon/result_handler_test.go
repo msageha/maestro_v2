@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -398,6 +399,118 @@ func TestResultHandler_CommandNotification_Idempotent(t *testing.T) {
 	}
 	if len(updated.Notifications) != 1 {
 		t.Errorf("expected 1 notification (no duplicate), got %d", len(updated.Notifications))
+	}
+}
+
+// TestResultHandler_CommandNotification_SupersedeOnTypeChange covers the H3
+// derivative scenario: a previously-queued completed notification must be
+// superseded when the result is reconciled to a different terminal status
+// (e.g. cancelled). The notification entry is mutated in place — Type is
+// updated and delivery state (Status, Attempts, Lease*, errors) is reset so
+// the orchestrator picks up the corrected status. ID/CreatedAt/Priority are
+// preserved.
+func TestResultHandler_CommandNotification_SupersedeOnTypeChange(t *testing.T) {
+	maestroDir := setupTestMaestroDir(t)
+	rh, _ := newTestResultHandler(maestroDir)
+
+	os.MkdirAll(filepath.Join(maestroDir, "queue"), 0755)
+
+	createdAt := "2026-01-01T00:00:00Z"
+	leaseOwner := "orchestrator"
+	leaseExpiresAt := "2026-01-01T00:05:00Z"
+	lastErr := "tmux send-keys failed"
+
+	// Pre-existing notification: previously dispatched as completed but failed
+	// delivery (attempts > 0, has lease + last_error).
+	nq := model.NotificationQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_notification",
+		Notifications: []model.Notification{
+			{
+				ID:             "ntf_0000000001_eeeeeeee",
+				CommandID:      "cmd_0000000001_cccccccc",
+				Type:           model.NotificationTypeCommandCompleted,
+				SourceResultID: "res_0000000001_dddddddd",
+				Content:        "command cmd_0000000001_cccccccc completed",
+				Priority:       100,
+				Status:         model.StatusInProgress,
+				Attempts:       3,
+				LastError:      &lastErr,
+				LeaseOwner:     &leaseOwner,
+				LeaseExpiresAt: &leaseExpiresAt,
+				LeaseEpoch:     2,
+				CreatedAt:      createdAt,
+				UpdatedAt:      createdAt,
+			},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "orchestrator.yaml"), nq)
+
+	// H3 reconcile: same result ID but status forced to cancelled, Notified
+	// reset so result_handler re-issues the notification.
+	rf := model.CommandResultFile{
+		SchemaVersion: 1,
+		FileType:      "result_command",
+		Results: []model.CommandResult{
+			{
+				ID:        "res_0000000001_dddddddd",
+				CommandID: "cmd_0000000001_cccccccc",
+				Status:    model.StatusCancelled,
+				Notified:  false,
+				CreatedAt: time.Now().UTC().Format(time.RFC3339),
+			},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+
+	if n := rh.processCommandResultFile(); n != 1 {
+		t.Fatalf("expected 1 notified, got %d", n)
+	}
+
+	nqData, err := os.ReadFile(filepath.Join(maestroDir, "queue", "orchestrator.yaml"))
+	if err != nil {
+		t.Fatalf("read orchestrator queue: %v", err)
+	}
+	var updated model.NotificationQueue
+	if err := yamlv3.Unmarshal(nqData, &updated); err != nil {
+		t.Fatalf("unmarshal notification queue: %v", err)
+	}
+	if len(updated.Notifications) != 1 {
+		t.Fatalf("expected 1 notification (in-place supersede), got %d", len(updated.Notifications))
+	}
+	got := updated.Notifications[0]
+	if got.ID != "ntf_0000000001_eeeeeeee" {
+		t.Errorf("ID not preserved: got %s", got.ID)
+	}
+	if got.CreatedAt != createdAt {
+		t.Errorf("CreatedAt not preserved: got %s", got.CreatedAt)
+	}
+	if got.Priority != 100 {
+		t.Errorf("Priority not preserved: got %d", got.Priority)
+	}
+	if got.Type != model.NotificationTypeCommandCancelled {
+		t.Errorf("Type not superseded: got %s, want command_cancelled", got.Type)
+	}
+	if got.Status != model.StatusPending {
+		t.Errorf("Status not reset: got %s, want pending", got.Status)
+	}
+	if got.Attempts != 0 {
+		t.Errorf("Attempts not reset: got %d", got.Attempts)
+	}
+	if got.LastError != nil {
+		t.Errorf("LastError not cleared: got %v", *got.LastError)
+	}
+	if got.LeaseOwner != nil {
+		t.Errorf("LeaseOwner not cleared: got %v", *got.LeaseOwner)
+	}
+	if got.LeaseExpiresAt != nil {
+		t.Errorf("LeaseExpiresAt not cleared: got %v", *got.LeaseExpiresAt)
+	}
+	if got.UpdatedAt == createdAt {
+		t.Errorf("UpdatedAt not refreshed")
+	}
+	if !strings.Contains(got.Content, "cancelled") {
+		t.Errorf("Content not refreshed: got %s", got.Content)
 	}
 }
 

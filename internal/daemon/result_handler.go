@@ -519,20 +519,7 @@ func (rh *ResultHandler) writeNotificationToOrchestratorQueue(resultID, commandI
 			nq.FileType = "queue_notification"
 		}
 
-		// Idempotency: check if source_result_id already exists
-		for _, ntf := range nq.Notifications {
-			if ntf.SourceResultID == resultID {
-				rh.log(LogLevelDebug, "orchestrator_notification_duplicate source_result_id=%s", resultID)
-				return errNoUpdate
-			}
-		}
-
-		id, err := model.GenerateID(model.IDTypeNotification)
-		if err != nil {
-			return fmt.Errorf("generate notification ID: %w", err)
-		}
-
-		// Map result status to notification type
+		// Map result status to notification type (computed early for dedup key).
 		notifType := model.NotificationTypeCommandCompleted
 		switch status {
 		case model.StatusFailed:
@@ -543,6 +530,41 @@ func (rh *ResultHandler) writeNotificationToOrchestratorQueue(resultID, commandI
 
 		now := rh.clock.Now().UTC().Format(time.RFC3339)
 		content := fmt.Sprintf("command %s %s", commandID, status)
+
+		// Idempotency: dedup key is (source_result_id, type). H3 reconcile may
+		// preserve the original result ID but change the terminal status — in
+		// that case the notification Type differs and we supersede the existing
+		// entry in place rather than dropping the re-delivery. Resetting
+		// delivery state ensures stale lease/attempts from a prior failed
+		// dispatch do not block re-delivery. ID/CreatedAt/Priority are preserved
+		// so downstream observers see the same notification identity.
+		for i := range nq.Notifications {
+			if nq.Notifications[i].SourceResultID != resultID {
+				continue
+			}
+			if nq.Notifications[i].Type == notifType {
+				rh.log(LogLevelDebug, "orchestrator_notification_duplicate source_result_id=%s", resultID)
+				return errNoUpdate
+			}
+			rh.log(LogLevelInfo, "orchestrator_notification_supersede source_result_id=%s old_type=%s new_type=%s existing_id=%s",
+				resultID, nq.Notifications[i].Type, notifType, nq.Notifications[i].ID)
+			nq.Notifications[i].Type = notifType
+			nq.Notifications[i].Content = content
+			nq.Notifications[i].Status = model.StatusPending
+			nq.Notifications[i].Attempts = 0
+			nq.Notifications[i].LastError = nil
+			nq.Notifications[i].DeadLetteredAt = nil
+			nq.Notifications[i].DeadLetterReason = nil
+			nq.Notifications[i].LeaseOwner = nil
+			nq.Notifications[i].LeaseExpiresAt = nil
+			nq.Notifications[i].UpdatedAt = now
+			return nil
+		}
+
+		id, err := model.GenerateID(model.IDTypeNotification)
+		if err != nil {
+			return fmt.Errorf("generate notification ID: %w", err)
+		}
 
 		nq.Notifications = append(nq.Notifications, model.Notification{
 			ID:             id,
