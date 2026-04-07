@@ -380,7 +380,7 @@ func (qg *QualityGateDaemon) evaluateGate(gateType string, evalContext map[strin
 	return nil
 }
 
-// evaluateGateWithResult evaluates gates and returns the full result (for testing)
+// evaluateGateWithResult performs synchronous gate evaluation and returns the full result. Called from dispatcher.go for pre_task gating.
 func (qg *QualityGateDaemon) evaluateGateWithResult(gateType string, evalContext map[string]interface{}) (*quality.EvaluationResult, error) {
 	qualityGateType, err := mapGateType(gateType)
 	if err != nil {

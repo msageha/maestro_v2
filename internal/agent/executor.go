@@ -128,7 +128,7 @@ func NewExecutor(maestroDir string, watcherCfg model.WatcherConfig, logLevel str
 	return newExecutor(maestroDir, watcherCfg, logLevel, logFile, logFile)
 }
 
-// newExecutor is the internal constructor that accepts an io.Writer for testing.
+// newExecutor is the internal constructor accepting injectable writer/closer (used by NewExecutor and tests).
 func newExecutor(maestroDir string, watcherCfg model.WatcherConfig, logLevel string, w io.Writer, closer io.Closer) (*Executor, error) {
 	var busyRegex *regexp.Regexp
 	if watcherCfg.BusyPatterns != "" {
