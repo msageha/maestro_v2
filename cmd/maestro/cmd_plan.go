@@ -374,6 +374,51 @@ func runPlanResumeMerge(args []string) error {
 	return sendPlanCommand("plan resume-merge", maestroDir, params)
 }
 
+// runResolveConflict resolves a worker merge conflict by delegating to the
+// daemon's plan handler with the resolve_conflict operation.
+func runResolveConflict(args []string) error {
+	fs := newFlagSet("maestro resolve-conflict")
+	var commandID, phaseID, workerID string
+	fs.StringVar(&commandID, "command-id", "", "")
+	fs.StringVar(&phaseID, "phase-id", "", "")
+	fs.StringVar(&workerID, "worker-id", "", "")
+
+	usage := "usage: maestro resolve-conflict --command-id <id> --phase-id <id> --worker-id <id>"
+	if err := fs.Parse(args); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro resolve-conflict: %v\n%s", err, usage)}
+	}
+	if fs.NArg() > 0 {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro resolve-conflict: unexpected argument: %s\n%s", fs.Arg(0), usage)}
+	}
+	if commandID == "" {
+		return &CLIError{Code: 1, Msg: "maestro resolve-conflict: --command-id is required\n" + usage}
+	}
+	if err := validate.ValidateID(commandID); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro resolve-conflict: invalid --command-id: %v", err)}
+	}
+	if phaseID == "" {
+		return &CLIError{Code: 1, Msg: "maestro resolve-conflict: --phase-id is required\n" + usage}
+	}
+	if workerID == "" {
+		return &CLIError{Code: 1, Msg: "maestro resolve-conflict: --worker-id is required\n" + usage}
+	}
+
+	maestroDir, err := requireMaestroDir("resolve-conflict")
+	if err != nil {
+		return err
+	}
+
+	params := map[string]any{
+		"operation": "resolve_conflict",
+		"data": map[string]any{
+			"command_id": commandID,
+			"phase_id":   phaseID,
+			"worker_id":  workerID,
+		},
+	}
+	return sendPlanCommand("resolve-conflict", maestroDir, params)
+}
+
 // sendPlanCommand sends a plan operation to the daemon via UDS.
 func sendPlanCommand(cmd string, maestroDir string, params map[string]any) error {
 	client := uds.NewClient(filepath.Join(maestroDir, uds.DefaultSocketName))
