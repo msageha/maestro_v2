@@ -101,6 +101,32 @@ func TestRunPlanResumeMerge_FlagParsing(t *testing.T) {
 	}
 }
 
+func TestRunResolveConflict_FlagParsing(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"missing command-id", []string{"--phase-id", "p1", "--worker-id", "worker1"}},
+		{"invalid command-id", []string{"--command-id", "../bad", "--phase-id", "p1", "--worker-id", "worker1"}},
+		{"missing phase-id", []string{"--command-id", "cmd_1", "--worker-id", "worker1"}},
+		{"missing worker-id", []string{"--command-id", "cmd_1", "--phase-id", "p1"}},
+		{"unexpected arg", []string{"--command-id", "cmd_1", "--phase-id", "p1", "--worker-id", "worker1", "extra"}},
+		{"unknown flag", []string{"--unknown"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := runResolveConflict(tt.args)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			var ce *CLIError
+			if !errors.As(err, &ce) {
+				t.Fatalf("expected CLIError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
 func TestRunPlan_RecoverySubcommandsRouted(t *testing.T) {
 	// Sanity: runPlan should accept the new subcommand names without
 	// returning "unknown subcommand". They will fail flag parsing instead.
