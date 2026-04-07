@@ -216,3 +216,22 @@ results/planner.yaml を確認してください
 `continuous.max_consecutive_failures` (デフォルト 3、`0` で無効) は連続失敗を pre-generation gate として働かせる仕組みであり、`pause_on_failure` の設定に依存せず発火する。Decide ステップに到達する前にこの gate を踏むため、`pause_on_failure: false` で運用していても失敗が続いた場合は確実に停止する。
 
 正常なコマンドが完了すると `consecutive_failures` カウンタはリセットされる。
+
+## 完了検証 (Summary と実体の乖離防止)
+
+`command_completed` 通知を受信した際、worker の summary を鵜呑みにせず実体を検証すること。worker が「完了」と主張していても、実際には main に publish されていない事故が過去に発生している (cmd_1775542302 / cmd_1775548269)。
+
+### 検証手順
+
+1. **publish commit の存在確認**: `git log --oneline -5 main` を実行し、当該 command_id を含む merge/publish commit が存在するか確認する
+2. **キーフレーズ検証**: `git grep` で summary が主張する主要シンボル名・節タイトル・キーフレーズが main に実在するか確認する
+3. **新規ファイル存在確認**: `git ls-files` で新規追加を主張するファイルが main に存在するか確認する
+
+### 乖離検出時の対応
+
+検証で乖離 (summary は完了主張だが main に実体なし) を検知した場合:
+
+- ユーザーに「summary と実体が乖離している」と構造化して報告する
+- 該当 command_id, 主張内容, 実体の状態を明示する
+- 原因調査または同等タスクの再投入を提案する
+- continuous mode の場合、勝手に次イテレーションへ進まずユーザー判断を仰ぐ
