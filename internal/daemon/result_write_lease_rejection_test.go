@@ -186,3 +186,76 @@ func TestResultWrite_LeaseRevoke_PersistsRejection(t *testing.T) {
 			len(rf3.RejectedSubmissions))
 	}
 }
+
+// TestResultWrite_LeaseRevoke_PartialAndRetrySafePropagation verifies that
+// the originally committed TaskResult's PartialChangesPossible / RetrySafe
+// flags are NOT mutated when a stale worker re-sends the same task with
+// different flag values after its lease has been revoked. The idempotent
+// path must return the existing result unchanged.
+func TestResultWrite_LeaseRevoke_PartialAndRetrySafePropagation(t *testing.T) {
+	d := newTestDaemonWithLearnings(t)
+	taskID := "task_0000000002_abcdef02"
+	commandID := "cmd_0000000002_abcdef02"
+	workerID := "worker1"
+	leaseEpoch := 1
+
+	setupWorkerQueue(t, d, workerID, taskID, commandID, leaseEpoch)
+	setupCommandState(t, d, commandID, []string{taskID})
+
+	// 1. Initial successful write with partial_changes_possible=true and
+	// retry_safe=false (the conservative "do not retry" combination).
+	resp := d.api.handleResultWrite(makeResultWriteRequest(t, ResultWriteParams{
+		Reporter:               workerID,
+		TaskID:                 taskID,
+		CommandID:              commandID,
+		LeaseEpoch:             leaseEpoch,
+		Status:                 "completed",
+		Summary:                "done",
+		PartialChangesPossible: true,
+		RetrySafe:              false,
+	}))
+	if !resp.Success {
+		t.Fatalf("initial write: expected success, got error: %v", resp.Error)
+	}
+
+	rfBefore := readResultsFile(t, d, workerID)
+	if len(rfBefore.Results) != 1 {
+		t.Fatalf("expected 1 result entry after initial write, got %d", len(rfBefore.Results))
+	}
+	if !rfBefore.Results[0].PartialChangesPossible {
+		t.Fatalf("initial write must persist PartialChangesPossible=true")
+	}
+	if rfBefore.Results[0].RetrySafe {
+		t.Fatalf("initial write must persist RetrySafe=false")
+	}
+
+	// 2. Revoke the lease.
+	bumpQueueLeaseEpoch(t, d, workerID, taskID, leaseEpoch+1)
+
+	// 3. Stale worker resubmits with FLIPPED flag values.
+	resp2 := d.api.handleResultWrite(makeResultWriteRequest(t, ResultWriteParams{
+		Reporter:               workerID,
+		TaskID:                 taskID,
+		CommandID:              commandID,
+		LeaseEpoch:             leaseEpoch, // stale
+		Status:                 "completed",
+		Summary:                "done",
+		PartialChangesPossible: false, // attempts to flip
+		RetrySafe:              true,  // attempts to flip
+	}))
+	if !resp2.Success {
+		t.Fatalf("stale write: expected idempotent success, got error: %v", resp2.Error)
+	}
+
+	// 4. The committed TaskResult flags must be unchanged.
+	rfAfter := readResultsFile(t, d, workerID)
+	if len(rfAfter.Results) != 1 {
+		t.Fatalf("idempotent stale resubmit must not append a second result, got %d", len(rfAfter.Results))
+	}
+	if !rfAfter.Results[0].PartialChangesPossible {
+		t.Errorf("PartialChangesPossible must remain true after stale flip, got false")
+	}
+	if rfAfter.Results[0].RetrySafe {
+		t.Errorf("RetrySafe must remain false after stale flip, got true")
+	}
+}

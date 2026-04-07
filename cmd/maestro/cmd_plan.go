@@ -1,16 +1,27 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
 )
+
+// planCommandTimeout bounds how long sendPlanCommand will wait for the daemon
+// to respond before aborting the request. The CLI's UDS client also enforces
+// a per-connection deadline, but a request-level timeout makes SIGINT-driven
+// cancellation deterministic for operators.
+const planCommandTimeout = 30 * time.Second
 
 // runPlan dispatches plan subcommands (submit, complete, add-retry-task, request-cancel, rebuild).
 func runPlan(args []string) error {
@@ -376,14 +387,29 @@ func runPlanResumeMerge(args []string) error {
 
 // runResolveConflict resolves a worker merge conflict by delegating to the
 // daemon's plan handler with the resolve_conflict operation.
+//
+// Usage:
+//
+//	maestro resolve-conflict \
+//	    --command-id   <id>           # parent command id
+//	    --phase-id     <id>           # phase containing the conflicting merge
+//	    --worker-id    <id>           # worker whose worktree has the conflict
+//	    [--conflicting-files <list>]  # repeat or comma-separated; optional hint
+//
+// Example:
+//
+//	maestro resolve-conflict --command-id cmd_42 --phase-id ph_3 \
+//	    --worker-id worker2 --conflicting-files internal/a.go,internal/b.go
 func runResolveConflict(args []string) error {
 	fs := newFlagSet("maestro resolve-conflict")
 	var commandID, phaseID, workerID string
-	fs.StringVar(&commandID, "command-id", "", "")
-	fs.StringVar(&phaseID, "phase-id", "", "")
-	fs.StringVar(&workerID, "worker-id", "", "")
+	var conflictingFiles stringSliceFlag
+	fs.StringVar(&commandID, "command-id", "", "parent command id")
+	fs.StringVar(&phaseID, "phase-id", "", "phase id containing the conflict")
+	fs.StringVar(&workerID, "worker-id", "", "worker id whose worktree conflicts")
+	fs.Var(&conflictingFiles, "conflicting-files", "conflicting file paths (repeat flag or comma-separated)")
 
-	usage := "usage: maestro resolve-conflict --command-id <id> --phase-id <id> --worker-id <id>"
+	usage := "usage: maestro resolve-conflict --command-id <id> --phase-id <id> --worker-id <id> [--conflicting-files <path>[,<path>...]]..."
 	if err := fs.Parse(args); err != nil {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro resolve-conflict: %v\n%s", err, usage)}
 	}
@@ -399,8 +425,27 @@ func runResolveConflict(args []string) error {
 	if phaseID == "" {
 		return &CLIError{Code: 1, Msg: "maestro resolve-conflict: --phase-id is required\n" + usage}
 	}
+	if err := validate.ValidateID(phaseID); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro resolve-conflict: invalid --phase-id: %v", err)}
+	}
 	if workerID == "" {
 		return &CLIError{Code: 1, Msg: "maestro resolve-conflict: --worker-id is required\n" + usage}
+	}
+	if err := validate.ValidateID(workerID); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro resolve-conflict: invalid --worker-id: %v", err)}
+	}
+
+	// Allow comma-separated values inside a single --conflicting-files flag
+	// in addition to repeated flag invocations. Empty entries are dropped so
+	// "--conflicting-files a.go," does not propagate a blank path.
+	files := make([]string, 0, len(conflictingFiles))
+	for _, raw := range conflictingFiles {
+		for _, p := range strings.Split(raw, ",") {
+			p = strings.TrimSpace(p)
+			if p != "" {
+				files = append(files, p)
+			}
+		}
 	}
 
 	maestroDir, err := requireMaestroDir("resolve-conflict")
@@ -411,18 +456,28 @@ func runResolveConflict(args []string) error {
 	params := map[string]any{
 		"operation": "resolve_conflict",
 		"data": map[string]any{
-			"command_id": commandID,
-			"phase_id":   phaseID,
-			"worker_id":  workerID,
+			"command_id":        commandID,
+			"phase_id":          phaseID,
+			"worker_id":         workerID,
+			"conflicting_files": files,
 		},
 	}
 	return sendPlanCommand("resolve-conflict", maestroDir, params)
 }
 
 // sendPlanCommand sends a plan operation to the daemon via UDS.
+//
+// The request is bounded by [planCommandTimeout] and is interruptible by
+// SIGINT/SIGTERM so an operator can abort a hung CLI invocation with Ctrl-C
+// without leaving a stuck connection on the daemon side.
 func sendPlanCommand(cmd string, maestroDir string, params map[string]any) error {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer cancel()
+	ctx, cancelTimeout := context.WithTimeout(ctx, planCommandTimeout)
+	defer cancelTimeout()
+
 	client := uds.NewClient(filepath.Join(maestroDir, uds.DefaultSocketName))
-	resp, err := client.SendCommand("plan", params)
+	resp, err := client.SendCommandContext(ctx, "plan", params)
 	if err != nil {
 		return fmt.Errorf("maestro %s: %w", cmd, err)
 	}

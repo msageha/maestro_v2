@@ -286,7 +286,7 @@ func TestCancelHandler_WriteSyntheticResults_EmptyInput(t *testing.T) {
 	}
 }
 
-func TestCancelHandler_InterruptInProgressTasksDeferred_Basic(t *testing.T) {
+func TestCancelHandler_CollectCancelInterruptItems_Basic(t *testing.T) {
 	ch, _, _ := newTestCancelHandlerWithDir(t)
 	sr := &stubStateReader{}
 	ch.SetStateReader(sr)
@@ -306,55 +306,91 @@ func TestCancelHandler_InterruptInProgressTasksDeferred_Basic(t *testing.T) {
 			CreatedAt: time.Now().Format(time.RFC3339)},
 	}
 
-	results, interrupts := ch.InterruptInProgressTasksDeferred(tasks, "cmd1", "worker1")
+	marks, interrupts := ch.CollectCancelInterruptItems(tasks, "cmd1", "worker1")
 
 	// Only t1 and t4 are in_progress for cmd1; t2 is pending, t3 is different command
-	if len(results) != 2 {
-		t.Fatalf("expected 2 cancelled results, got %d", len(results))
+	if len(marks) != 2 {
+		t.Fatalf("expected 2 cancel marks, got %d", len(marks))
 	}
-	if results[0].TaskID != "t1" {
-		t.Errorf("results[0].task_id = %q, want %q", results[0].TaskID, "t1")
+	if marks[0].TaskID != "t1" || marks[1].TaskID != "t4" {
+		t.Errorf("marks task ids = [%q, %q], want [t1, t4]", marks[0].TaskID, marks[1].TaskID)
 	}
-	if results[1].TaskID != "t4" {
-		t.Errorf("results[1].task_id = %q, want %q", results[1].TaskID, "t4")
+	if marks[0].LeaseEpoch != 5 {
+		t.Errorf("marks[0].lease_epoch = %d, want 5", marks[0].LeaseEpoch)
 	}
 
 	// Only t1 has a LeaseOwner, so only 1 interrupt item
 	if len(interrupts) != 1 {
 		t.Fatalf("expected 1 interrupt item, got %d", len(interrupts))
 	}
-	if interrupts[0].TaskID != "t1" {
-		t.Errorf("interrupt[0].task_id = %q, want %q", interrupts[0].TaskID, "t1")
-	}
-	if interrupts[0].Epoch != 5 {
-		t.Errorf("interrupt[0].epoch = %d, want 5", interrupts[0].Epoch)
-	}
-	if interrupts[0].WorkerID != "worker1" {
-		t.Errorf("interrupt[0].worker_id = %q, want %q (should use workerID param, not LeaseOwner)", interrupts[0].WorkerID, "worker1")
+	if interrupts[0].TaskID != "t1" || interrupts[0].Epoch != 5 || interrupts[0].WorkerID != "worker1" {
+		t.Errorf("interrupt[0] = %+v", interrupts[0])
 	}
 
-	// Verify in-memory state mutation
-	if tasks[0].Status != model.StatusCancelled {
-		t.Errorf("t1 status = %q, want cancelled", tasks[0].Status)
+	// CollectCancelInterruptItems must NOT mutate task state — Phase C performs
+	// the cancellation under scanMu so workers racing to completion are not
+	// clobbered.
+	for i, want := range []model.Status{
+		model.StatusInProgress, model.StatusPending,
+		model.StatusInProgress, model.StatusInProgress,
+	} {
+		if tasks[i].Status != want {
+			t.Errorf("tasks[%d].status = %q, want %q (collection must not mutate)", i, tasks[i].Status, want)
+		}
 	}
-	if tasks[0].LeaseOwner != nil {
-		t.Error("t1 lease_owner should be nil after deferred cancel")
-	}
-	if tasks[0].LeaseExpiresAt != nil {
-		t.Error("t1 lease_expires_at should be nil after deferred cancel")
-	}
-	if tasks[3].Status != model.StatusCancelled {
-		t.Errorf("t4 status = %q, want cancelled", tasks[3].Status)
-	}
-
-	// t2 (pending) should be untouched
-	if tasks[1].Status != model.StatusPending {
-		t.Errorf("t2 status = %q, want pending", tasks[1].Status)
+	if tasks[0].LeaseOwner == nil {
+		t.Error("t1 lease_owner should be preserved during collection")
 	}
 
-	// stateReader.UpdateTaskState should have been called for t1 and t4
-	if len(sr.updateTaskCalls) != 2 {
-		t.Fatalf("expected 2 UpdateTaskState calls, got %d", len(sr.updateTaskCalls))
+	// stateReader.UpdateTaskState must NOT be called during collection.
+	if len(sr.updateTaskCalls) != 0 {
+		t.Fatalf("expected 0 UpdateTaskState calls during collection, got %d", len(sr.updateTaskCalls))
+	}
+}
+
+func TestCancelHandler_ApplyCancelMark(t *testing.T) {
+	ch, _, _ := newTestCancelHandlerWithDir(t)
+	sr := &stubStateReader{}
+	ch.SetStateReader(sr)
+
+	lease := "daemon:1"
+	exp := "2026-01-01T01:00:00Z"
+	task := model.Task{
+		ID: "t1", CommandID: "cmd1", Status: model.StatusInProgress,
+		LeaseOwner: &lease, LeaseExpiresAt: &exp, LeaseEpoch: 7,
+		CreatedAt: time.Now().Format(time.RFC3339),
+	}
+
+	res, applied := ch.ApplyCancelMark(&task, 7)
+	if !applied {
+		t.Fatal("expected ApplyCancelMark to apply on matching epoch")
+	}
+	if task.Status != model.StatusCancelled || task.LeaseOwner != nil || task.LeaseExpiresAt != nil {
+		t.Errorf("task not transitioned correctly: %+v", task)
+	}
+	if res.TaskID != "t1" || res.Reason != "command_cancel_requested" {
+		t.Errorf("unexpected result: %+v", res)
+	}
+	if len(sr.updateTaskCalls) != 1 {
+		t.Errorf("expected 1 UpdateTaskState call, got %d", len(sr.updateTaskCalls))
+	}
+
+	// Race: worker already completed (terminal status). Apply must be a no-op.
+	completed := model.Task{ID: "t2", CommandID: "cmd1", Status: model.StatusCompleted, LeaseEpoch: 3}
+	if _, applied := ch.ApplyCancelMark(&completed, 3); applied {
+		t.Error("expected ApplyCancelMark to be no-op on terminal task")
+	}
+	if completed.Status != model.StatusCompleted {
+		t.Errorf("terminal task mutated: %s", completed.Status)
+	}
+
+	// Race: lease epoch advanced (re-dispatched to a new worker generation).
+	stale := model.Task{ID: "t3", CommandID: "cmd1", Status: model.StatusInProgress, LeaseEpoch: 9}
+	if _, applied := ch.ApplyCancelMark(&stale, 7); applied {
+		t.Error("expected ApplyCancelMark to be no-op on epoch mismatch")
+	}
+	if stale.Status != model.StatusInProgress {
+		t.Errorf("stale task mutated: %s", stale.Status)
 	}
 }
 
@@ -390,15 +426,16 @@ func TestCancelHandler_IsCommandCancelRequested_ViaStateReader(t *testing.T) {
 	}
 }
 
-func TestCancelHandler_InterruptInProgressTasksDeferred_WorktreeCleanup(t *testing.T) {
+func TestCancelHandler_CollectCancelInterruptItems_DoesNotTouchWorktree(t *testing.T) {
+	// H4: DiscardWorkerChanges has been moved out of CancelHandler into
+	// Phase B (queue_scan_phase_b.go), executed AFTER the tmux interrupt
+	// completes. Collection in Phase A must not touch the worktree.
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	if err := wm.EnsureWorkerWorktree("cmd_cancel_def", "worker1"); err != nil {
 		t.Fatal(err)
 	}
-
-	// Make dirty
 	wtPath, _ := wm.GetWorkerPath("cmd_cancel_def", "worker1")
 	if err := os.WriteFile(filepath.Join(wtPath, "README.md"), []byte("dirty\n"), 0644); err != nil {
 		t.Fatal(err)
@@ -413,17 +450,18 @@ func TestCancelHandler_InterruptInProgressTasksDeferred_WorktreeCleanup(t *testi
 			CreatedAt: time.Now().Format(time.RFC3339)},
 	}
 
-	results, _ := ch.InterruptInProgressTasksDeferred(tasks, "cmd_cancel_def", "worker1")
-	if len(results) != 1 {
-		t.Fatalf("expected 1 result, got %d", len(results))
+	marks, interrupts := ch.CollectCancelInterruptItems(tasks, "cmd_cancel_def", "worker1")
+	if len(marks) != 1 || len(interrupts) != 1 {
+		t.Fatalf("expected 1 mark + 1 interrupt, got %d marks / %d interrupts", len(marks), len(interrupts))
 	}
 
-	// Verify worktree is clean
+	// The worktree should STILL be dirty — Phase B is responsible for the
+	// reset, not Phase A collection.
 	cmd := exec.Command("git", "status", "--porcelain")
 	cmd.Dir = wtPath
 	out, _ := cmd.Output()
-	if strings.TrimSpace(string(out)) != "" {
-		t.Errorf("worktree should be clean after deferred cancel, got: %s", out)
+	if strings.TrimSpace(string(out)) == "" {
+		t.Error("worktree should still be dirty after Phase A collection (cleanup is now Phase B's job)")
 	}
 }
 

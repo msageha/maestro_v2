@@ -132,6 +132,13 @@ if [ "$tool_name" = "Bash" ]; then
     deny "D003: Blocked git push -f (use --force-with-lease)"
   fi
 
+  # Note: git merge --abort is not listed in this hook. Workers never run
+  # git merge themselves -- merge orchestration (and any abort) is performed
+  # by the daemon via the worktree manager (resolve_conflict / resume_merge
+  # plan ops). If a worker ever attempts git merge --abort directly, it
+  # indicates a bug or protocol violation and should surface as a normal
+  # command error rather than be silently allowed by this hook.
+
   # D004: Uncommitted work destruction
   if echo "$cmd" | grep -qE 'git\s+reset\s+--hard'; then
     deny "D004: Blocked git reset --hard (use git stash)"

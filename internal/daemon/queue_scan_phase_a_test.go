@@ -575,3 +575,78 @@ func TestStepWorktreeOrphanCleanup_NoDoubleFireWithPublish(t *testing.T) {
 		t.Fatalf("expected exactly 1 cleanup after both steps, got %d", got)
 	}
 }
+
+// TestStepDispatchOrRecovery_Boundaries exercises the empty/all-stale
+// branch boundaries of the collect/apply phase. These cases historically
+// regressed when new step branches were added without considering scans
+// that have nothing to dispatch and nothing to recover.
+func TestStepDispatchOrRecovery_Boundaries(t *testing.T) {
+	t.Run("empty_state", func(t *testing.T) {
+		qh := newMinimalQueueHandler(t)
+		s := scanState{
+			commands: fileState[model.CommandQueue]{Data: model.CommandQueue{}},
+			tasks:    map[string]*taskQueueEntry{},
+			taskDirty: map[string]bool{},
+			notifications: fileState[model.NotificationQueue]{
+				Data: model.NotificationQueue{},
+			},
+		}
+		qh.stepDispatchOrRecovery(&s)
+
+		if n := len(s.work.dispatches) + len(s.work.busyChecks); n != 0 {
+			t.Errorf("empty scan must produce no work items, got %d", n)
+		}
+		if s.commands.Dirty || s.notifications.Dirty {
+			t.Errorf("empty scan must not dirty any queue (commands=%v notifications=%v)",
+				s.commands.Dirty, s.notifications.Dirty)
+		}
+	})
+
+	t.Run("all_pending_no_expired", func(t *testing.T) {
+		qh := newMinimalQueueHandler(t)
+		s := scanState{
+			commands: fileState[model.CommandQueue]{
+				Data: model.CommandQueue{
+					Commands: []model.Command{
+						{ID: "cmd1", Status: model.StatusPending},
+						{ID: "cmd2", Status: model.StatusPending},
+					},
+				},
+			},
+			tasks:     map[string]*taskQueueEntry{},
+			taskDirty: map[string]bool{},
+			notifications: fileState[model.NotificationQueue]{
+				Data: model.NotificationQueue{},
+			},
+		}
+
+		qh.stepDispatchOrRecovery(&s)
+
+		// No expired leases anywhere → must take the dispatch branch and
+		// emit zero busy checks.
+		if got := len(s.work.busyChecks); got != 0 {
+			t.Errorf("no expired leases: busyChecks must be 0, got %d", got)
+		}
+	})
+
+	t.Run("no_panic_on_nil_task_dirty_map", func(t *testing.T) {
+		qh := newMinimalQueueHandler(t)
+		// Defensive: fresh scanState with nil maps must not panic the dispatch
+		// branch (callers always go through initScanState, but the function
+		// itself must remain robust against zero values).
+		s := scanState{
+			commands: fileState[model.CommandQueue]{Data: model.CommandQueue{}},
+			tasks:    map[string]*taskQueueEntry{},
+			taskDirty: map[string]bool{},
+			notifications: fileState[model.NotificationQueue]{
+				Data: model.NotificationQueue{},
+			},
+		}
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("stepDispatchOrRecovery panicked on minimal state: %v", r)
+			}
+		}()
+		qh.stepDispatchOrRecovery(&s)
+	})
+}

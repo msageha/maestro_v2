@@ -72,6 +72,33 @@ func TestMutexMap_AutoCleanup(t *testing.T) {
 	}
 }
 
+func TestMutexMap_Remove(t *testing.T) {
+	m := NewMutexMap()
+
+	// Remove on a never-seen key is a safe no-op.
+	if ok := m.Remove("ghost"); ok {
+		t.Errorf("Remove of unknown key should return false")
+	}
+
+	// After Lock/Unlock the entry is already cleaned up by ref counting,
+	// so Remove is a no-op but must not panic.
+	m.Lock("k")
+	m.Unlock("k")
+	if ok := m.Remove("k"); ok {
+		t.Errorf("Remove after unlock-cleanup should return false (already gone)")
+	}
+
+	// While the key is held, Remove must refuse to drop it.
+	m.Lock("held")
+	if ok := m.Remove("held"); ok {
+		t.Errorf("Remove while held must return false")
+	}
+	if n := m.len_(); n != 1 {
+		t.Errorf("held entry must remain tracked, got len=%d", n)
+	}
+	m.Unlock("held")
+}
+
 func TestMutexMap_AutoCleanupConcurrent(t *testing.T) {
 	m := NewMutexMap()
 

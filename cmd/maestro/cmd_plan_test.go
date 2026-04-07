@@ -109,9 +109,12 @@ func TestRunResolveConflict_FlagParsing(t *testing.T) {
 		{"missing command-id", []string{"--phase-id", "p1", "--worker-id", "worker1"}},
 		{"invalid command-id", []string{"--command-id", "../bad", "--phase-id", "p1", "--worker-id", "worker1"}},
 		{"missing phase-id", []string{"--command-id", "cmd_1", "--worker-id", "worker1"}},
+		{"invalid phase-id", []string{"--command-id", "cmd_1", "--phase-id", "../bad", "--worker-id", "worker1"}},
 		{"missing worker-id", []string{"--command-id", "cmd_1", "--phase-id", "p1"}},
+		{"invalid worker-id", []string{"--command-id", "cmd_1", "--phase-id", "p1", "--worker-id", "../bad"}},
 		{"unexpected arg", []string{"--command-id", "cmd_1", "--phase-id", "p1", "--worker-id", "worker1", "extra"}},
 		{"unknown flag", []string{"--unknown"}},
+		{"conflicting-files without other flags", []string{"--conflicting-files", "a.go"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

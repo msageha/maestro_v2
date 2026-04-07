@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/worktree"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -26,11 +27,51 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 	taskQueues := qh.loadAllTaskQueues()
 	notificationQueue, notificationPath := qh.loadNotificationQueue()
 
-	// --- Apply dispatch + busy check results (single load/flush) ---
-	if len(pb.dispatches) > 0 || len(pb.busyChecks) > 0 {
+	// --- Apply cancel marks + dispatch + busy check results (single load/flush) ---
+	if len(pb.dispatches) > 0 || len(pb.busyChecks) > 0 || len(pa.work.cancelMarks) > 0 {
 		commandsDirty := false
 		notificationsDirty := false
 		taskDirty := make(map[string]bool)
+
+		// M3+H4: apply deferred cancel marks first. Phase B has already
+		// interrupted the worker and discarded its worktree changes, so
+		// any task still observed as in_progress with the same lease_epoch
+		// can be safely transitioned to cancelled. Tasks that the worker
+		// raced to a terminal state are skipped — the real result wins.
+		var syntheticByWorker map[string][]CancelledTaskResult
+		if len(pa.work.cancelMarks) > 0 {
+			syntheticByWorker = make(map[string][]CancelledTaskResult)
+			for _, m := range pa.work.cancelMarks {
+				tq, ok := taskQueues[m.QueueFile]
+				if !ok {
+					qh.log(LogLevelInfo, "cancel_mark_skip_missing_queue file=%s task=%s",
+						m.QueueFile, m.TaskID)
+					continue
+				}
+				var target *model.Task
+				for i := range tq.Queue.Tasks {
+					if tq.Queue.Tasks[i].ID == m.TaskID {
+						target = &tq.Queue.Tasks[i]
+						break
+					}
+				}
+				if target == nil {
+					qh.log(LogLevelInfo, "cancel_mark_skip_missing_task task=%s", m.TaskID)
+					continue
+				}
+				res, applied := qh.cancelHandler.ApplyCancelMark(target, m.LeaseEpoch)
+				if !applied {
+					qh.log(LogLevelInfo, "cancel_mark_skip_raced task=%s status=%s epoch=%d expected_epoch=%d",
+						m.TaskID, target.Status, target.LeaseEpoch, m.LeaseEpoch)
+					continue
+				}
+				taskDirty[m.QueueFile] = true
+				qh.scanCounters.TasksCancelled++
+				if m.WorkerID != "" {
+					syntheticByWorker[m.WorkerID] = append(syntheticByWorker[m.WorkerID], res)
+				}
+			}
+		}
 
 		for _, dr := range pb.dispatches {
 			switch dr.Item.Kind {
@@ -52,11 +93,17 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 			}
 		}
 
-		// Single flush for both dispatch and busy check results
+		// Single flush for cancel marks, dispatch, and busy check results
 		qh.flushQueues(commandQueue, commandPath, commandsDirty,
 			taskQueues, taskDirty,
 			notificationQueue, notificationPath, notificationsDirty,
 			model.PlannerSignalQueue{}, "", false)
+
+		// Write synthetic cancelled results after the queue flush so any
+		// concurrent reader observes queue state matching the result file.
+		for wID, results := range syntheticByWorker {
+			qh.cancelHandler.WriteSyntheticResults(results, wID)
+		}
 	}
 
 	// --- Apply worktree merge, publish, and signal delivery results (single load/flush) ---
@@ -98,18 +145,23 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 					mr.Item.CommandID, mr.Item.PhaseID, conflict.WorkerID,
 					conflict.BaseRef, conflict.OursRef, conflict.TheirsRef,
 					strings.Join(conflict.ConflictFiles, ", "))
+				cg := worktree.ComputeConflictGeneration(
+					mr.Item.CommandID, mr.Item.PhaseID, conflict.WorkerID,
+					conflict.BaseRef, conflict.OursRef, conflict.TheirsRef,
+				)
 				qh.upsertPlannerSignal(&signalQueue, &signalsDirty, model.PlannerSignal{
-					Kind:              "merge_conflict",
-					CommandID:         mr.Item.CommandID,
-					PhaseID:           mr.Item.PhaseID,
-					WorkerID:          conflict.WorkerID,
-					Message:           msg,
-					ConflictBaseRef:   conflict.BaseRef,
-					ConflictOursRef:   conflict.OursRef,
-					ConflictTheirsRef: conflict.TheirsRef,
-					ConflictFiles:     append([]string(nil), conflict.ConflictFiles...),
-					CreatedAt:         now,
-					UpdatedAt:         now,
+					Kind:               "merge_conflict",
+					CommandID:          mr.Item.CommandID,
+					PhaseID:            mr.Item.PhaseID,
+					WorkerID:           conflict.WorkerID,
+					Message:            msg,
+					ConflictBaseRef:    conflict.BaseRef,
+					ConflictOursRef:    conflict.OursRef,
+					ConflictTheirsRef:  conflict.TheirsRef,
+					ConflictFiles:      append([]string(nil), conflict.ConflictFiles...),
+					ConflictGeneration: cg,
+					CreatedAt:          now,
+					UpdatedAt:          now,
 				}, signalIndex)
 			}
 			if mr.Error == nil && len(mr.Conflicts) == 0 && len(mr.CommitFailures) == 0 && qh.worktreeManager != nil {
@@ -136,6 +188,34 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 				}, signalIndex)
 			} else {
 				qh.log(LogLevelInfo, "worktree_published command=%s", pr.Item.CommandID)
+			}
+		}
+
+		// C1: opportunistically dispatch the conflict resolver pipeline for any
+		// merge_conflict signal that is still in its initial (empty) state.
+		// This is the minimal wiring that hands a freshly-detected conflict to
+		// the resolver pipeline; the resolver agent itself runs out-of-band
+		// and the operator-driven resolve_conflict CLI op (→
+		// recover.ResolveConflict) closes the loop by clearing
+		// CommitFailedWorkers, resetting MergeFailureCount, and clearing the
+		// merge_conflict signal.
+		if qh.worktreeManager != nil {
+			for i := range signalQueue.Signals {
+				sig := &signalQueue.Signals[i]
+				if sig.Kind != "merge_conflict" || sig.ResolutionState != "" || sig.ConflictGeneration == "" {
+					continue
+				}
+				if err := qh.worktreeManager.DispatchConflictResolution(
+					sig.CommandID, sig.PhaseID, sig.WorkerID, sig.ConflictGeneration,
+				); err != nil {
+					qh.log(LogLevelWarn, "conflict_dispatch_failed command=%s phase=%s worker=%s error=%v",
+						sig.CommandID, sig.PhaseID, sig.WorkerID, err)
+				} else {
+					// The store mutated the on-disk signal already; mirror the
+					// state on our in-memory copy so the next iteration sees it.
+					sig.ResolutionState = "dispatched"
+					sig.UpdatedAt = now
+				}
 			}
 		}
 

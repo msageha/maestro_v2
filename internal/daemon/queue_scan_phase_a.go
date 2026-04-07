@@ -174,23 +174,25 @@ func (qh *QueueHandler) stepCancelPending(s *scanState) {
 	}
 }
 
-// stepCancelInterrupt — Step 0.6: Interrupt in_progress tasks for cancelled commands.
+// stepCancelInterrupt — Step 0.6: Collect interrupt + cancelMark items for
+// in_progress tasks of cancelled commands. The actual queue mutation is
+// deferred to Phase C (after Phase B interrupts the worker), so a worker
+// racing to completion before the interrupt can still report its real
+// result via the normal result_write path.
 func (qh *QueueHandler) stepCancelInterrupt(s *scanState) {
 	for i := range s.commands.Data.Commands {
 		cmd := &s.commands.Data.Commands[i]
-		if qh.cancelHandler.IsCommandCancelRequested(cmd) {
-			for queueFile, tq := range s.tasks {
-				wID := workerIDFromPath(queueFile)
-				results, interrupts := qh.cancelHandler.InterruptInProgressTasksDeferred(tq.Queue.Tasks, cmd.ID, wID)
-				if len(results) > 0 {
-					s.taskDirty[queueFile] = true
-					qh.scanCounters.TasksCancelled += len(results)
-					if wID != "" {
-						qh.cancelHandler.WriteSyntheticResults(results, wID)
-					}
-				}
-				s.work.interrupts = append(s.work.interrupts, interrupts...)
+		if !qh.cancelHandler.IsCommandCancelRequested(cmd) {
+			continue
+		}
+		for queueFile, tq := range s.tasks {
+			wID := workerIDFromPath(queueFile)
+			marks, interrupts := qh.cancelHandler.CollectCancelInterruptItems(tq.Queue.Tasks, cmd.ID, wID)
+			for _, m := range marks {
+				m.QueueFile = queueFile
+				s.work.cancelMarks = append(s.work.cancelMarks, m)
 			}
+			s.work.interrupts = append(s.work.interrupts, interrupts...)
 		}
 	}
 }

@@ -35,10 +35,19 @@ func classifyCommitError(err error) string {
 func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult) phaseBResult {
 	var result phaseBResult
 
-	// 1. Execute interrupts first (before dispatches to avoid killing new tasks)
+	// 1. Execute interrupts first (before dispatches to avoid killing new tasks).
+	// H4: discard the worker's uncommitted worktree changes ONLY after the
+	// tmux interrupt has been delivered, so the worker process is no longer
+	// holding files in its working tree when the reset runs.
 	forEachUntilCanceled(ctx, pa.work.interrupts, func(item interruptItem) {
 		if err := qh.cancelHandler.interruptAgent(item.WorkerID, item.TaskID, item.CommandID, item.Epoch); err != nil {
 			qh.log(LogLevelWarn, "phase_b_interrupt worker=%s task=%s error=%v", item.WorkerID, item.TaskID, err)
+		}
+		if qh.worktreeManager != nil && item.WorkerID != "" {
+			if err := qh.worktreeManager.DiscardWorkerChanges(item.CommandID, item.WorkerID); err != nil {
+				qh.log(LogLevelWarn, "phase_b_worktree_discard worker=%s task=%s error=%v",
+					item.WorkerID, item.TaskID, err)
+			}
 		}
 	})
 

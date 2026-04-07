@@ -147,6 +147,10 @@ func (d *Daemon) initComponents() error {
 
 	if d.config.Worktree.Enabled {
 		d.worktreeManager = NewWorktreeManager(d.maestroDir, d.config.Worktree, d.logger, d.logLevel)
+		// Wire the YAML-backed signal store so the resolver pipeline can
+		// CAS-update merge_conflict signals on planner_signals.yaml without
+		// importing daemon-internal types.
+		d.worktreeManager.SetSignalStore(NewYAMLSignalStore(d.maestroDir, d.lockMap))
 		d.handler.SetWorktreeManager(d.worktreeManager)
 		d.log(LogLevelInfo, "worktree isolation enabled base_branch=%s", d.config.Worktree.EffectiveBaseBranch())
 		d.worktreeManager.Reconcile()

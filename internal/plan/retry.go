@@ -175,6 +175,10 @@ type retryContext struct {
 
 // validateRetryRequest loads and validates state, task status, phase membership, and blocked_by references.
 func validateRetryRequest(sm *StateManager, opts RetryOptions) (*retryContext, error) {
+	if opts.BloomLevel < 1 || opts.BloomLevel > 6 {
+		return nil, &PlanValidationError{Msg: fmt.Sprintf("bloom_level must be between 1 and 6, got %d", opts.BloomLevel)}
+	}
+
 	state, err := sm.LoadState(opts.CommandID)
 	if err != nil {
 		return nil, fmt.Errorf("load state: %w", err)

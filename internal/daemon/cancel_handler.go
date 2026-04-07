@@ -121,11 +121,22 @@ func (ch *CancelHandler) CancelPendingTasks(tasks []model.Task, commandID string
 	return results
 }
 
-// InterruptInProgressTasksDeferred performs the same in-memory state mutation as
-// InterruptInProgressTasks but defers the actual tmux interrupt to Phase B.
-// Returns cancelled results and interrupt items to execute later.
-func (ch *CancelHandler) InterruptInProgressTasksDeferred(tasks []model.Task, commandID string, workerID string) ([]CancelledTaskResult, []interruptItem) {
-	var results []CancelledTaskResult
+// CollectCancelInterruptItems inspects in_progress tasks for the cancelled
+// command and returns deferred work items WITHOUT mutating task state.
+//
+// This is the Phase A half of the M3+H4 race-free cancellation protocol:
+//
+//   - Phase A (this function): collect interrupt + cancelMark items only.
+//     Task state stays in_progress so a worker that races to completion before
+//     the interrupt takes effect can still submit its result via the normal
+//     result_write path (no FENCING_REJECT / DUPLICATE).
+//   - Phase B: send the tmux interrupt and discard uncommitted worktree
+//     changes (H4) — both must complete before queue mutation.
+//   - Phase C: re-validate each cancelMark against the freshly-loaded queue
+//     and apply ApplyCancelMark, which is a no-op for tasks that have already
+//     transitioned to a terminal state by the worker.
+func (ch *CancelHandler) CollectCancelInterruptItems(tasks []model.Task, commandID string, workerID string) ([]cancelMarkItem, []interruptItem) {
+	var marks []cancelMarkItem
 	var interrupts []interruptItem
 
 	for i := range tasks {
@@ -134,16 +145,16 @@ func (ch *CancelHandler) InterruptInProgressTasksDeferred(tasks []model.Task, co
 			continue
 		}
 
-		// Validate transition BEFORE collecting interrupt item (CR-029):
-		// skip targets must not be added to the interrupt list.
+		// Validate transition BEFORE collecting items (CR-029): skip targets
+		// must not be added to the interrupt or mark lists.
 		if err := model.ValidateCommandTaskQueueTransition(task.Status, model.StatusCancelled); err != nil {
 			ch.log(LogLevelWarn, "cancel_inprogress_skip task=%s error=%v", task.ID, err)
 			continue
 		}
 
-		// Collect interrupt item for Phase B execution using workerID (agent ID like "worker1"),
-		// NOT task.LeaseOwner which is in "daemon:{pid}" format.
-		// Only collect if task has an active lease (LeaseOwner != nil).
+		// Use workerID (agent ID like "worker1"), NOT task.LeaseOwner
+		// (which is in "daemon:{pid}" format). Only emit an interrupt
+		// when the task has an active lease.
 		if task.LeaseOwner != nil && workerID != "" {
 			interrupts = append(interrupts, interruptItem{
 				WorkerID:  workerID,
@@ -153,37 +164,57 @@ func (ch *CancelHandler) InterruptInProgressTasksDeferred(tasks []model.Task, co
 			})
 		}
 
-		// Clear lease fields before setting status (same ordering as InterruptInProgressTasks).
-		task.LeaseOwner = nil
-		task.LeaseExpiresAt = nil
-		task.UpdatedAt = ch.clock.Now().UTC().Format(time.RFC3339)
-		task.Status = model.StatusCancelled
-
-		ch.log(LogLevelInfo, "cancel_inprogress_deferred task=%s command=%s", task.ID, commandID)
-
-		// H4: Discard uncommitted changes in worker worktree
-		if ch.worktreeManager != nil && workerID != "" {
-			if err := ch.worktreeManager.DiscardWorkerChanges(commandID, workerID); err != nil {
-				ch.log(LogLevelWarn, "cancel_worktree_discard task=%s worker=%s error=%v",
-					task.ID, workerID, err)
-			}
-		}
-
-		if ch.stateReader != nil {
-			if err := ch.stateReader.UpdateTaskState(commandID, task.ID, model.StatusCancelled, "command_cancel_requested"); err != nil {
-				ch.log(LogLevelWarn, "cancel_state_update task=%s error=%v", task.ID, err)
-			}
-		}
-
-		results = append(results, CancelledTaskResult{
-			TaskID:    task.ID,
-			CommandID: commandID,
-			Status:    "cancelled",
-			Reason:    "command_cancel_requested",
+		marks = append(marks, cancelMarkItem{
+			WorkerID:   workerID,
+			TaskID:     task.ID,
+			CommandID:  task.CommandID,
+			LeaseEpoch: task.LeaseEpoch,
 		})
+
+		ch.log(LogLevelInfo, "cancel_inprogress_collected task=%s command=%s", task.ID, commandID)
 	}
 
-	return results, interrupts
+	return marks, interrupts
+}
+
+// ApplyCancelMark mutates a queue task from in_progress to cancelled, but
+// only if the task is still in_progress with the same lease_epoch that was
+// observed when the cancel was collected in Phase A. If the worker raced to
+// completion between Phase A and Phase C, the task is now terminal and this
+// function is a no-op (returns applied=false), preserving the worker's real
+// result. Caller must hold scanMu.Lock so the read-modify-write is atomic
+// against result_write_handler (which acquires scanMu.RLock).
+func (ch *CancelHandler) ApplyCancelMark(task *model.Task, expectedEpoch int) (CancelledTaskResult, bool) {
+	// Accept both in_progress (still running) and pending (released back to
+	// the queue between Phase A collection and Phase C apply, e.g. by
+	// stepDispatchOrRecovery's malformed-lease release path). Both transitions
+	// are valid command-task-queue transitions to cancelled. Epoch must match
+	// to ensure we are cancelling the same dispatch generation we observed.
+	if task.Status != model.StatusInProgress && task.Status != model.StatusPending {
+		return CancelledTaskResult{}, false
+	}
+	if task.LeaseEpoch != expectedEpoch {
+		return CancelledTaskResult{}, false
+	}
+	if err := model.ValidateCommandTaskQueueTransition(task.Status, model.StatusCancelled); err != nil {
+		return CancelledTaskResult{}, false
+	}
+	task.LeaseOwner = nil
+	task.LeaseExpiresAt = nil
+	task.UpdatedAt = ch.clock.Now().UTC().Format(time.RFC3339)
+	task.Status = model.StatusCancelled
+
+	if ch.stateReader != nil {
+		if err := ch.stateReader.UpdateTaskState(task.CommandID, task.ID, model.StatusCancelled, "command_cancel_requested"); err != nil {
+			ch.log(LogLevelWarn, "cancel_state_update task=%s error=%v", task.ID, err)
+		}
+	}
+	return CancelledTaskResult{
+		TaskID:    task.ID,
+		CommandID: task.CommandID,
+		Status:    "cancelled",
+		Reason:    "command_cancel_requested",
+	}, true
 }
 
 // CancelledTaskResult represents a synthetic cancelled result entry.

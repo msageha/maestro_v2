@@ -3,9 +3,7 @@ package worktree
 import (
 	"errors"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 
@@ -127,143 +125,20 @@ func TestDispatchConflictResolution_CASMismatch(t *testing.T) {
 	}
 }
 
-// resolverPrep brings worker to resolving and writes a non-conflicted file.
-func resolverPrep(t *testing.T, wm *Manager, cmd, phase, worker, gen string) {
-	t.Helper()
-	if err := wm.DispatchConflictResolution(cmd, phase, worker, gen); err != nil {
-		t.Fatalf("dispatch: %v", err)
-	}
-}
-
-func writeIntFile(t *testing.T, wm *Manager, cmd, rel, content string) string {
-	t.Helper()
-	full := filepath.Join(wm.integrationWorktreePath(cmd), rel)
-	if err := os.MkdirAll(filepath.Dir(full), 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(full, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-	return full
-}
-
-func TestCommitResolvedConflict_OK(t *testing.T) {
-	gen := "g1"
-	wm, _, cmd, phase, worker := setupResolverTest(t, gen)
-	resolverPrep(t, wm, cmd, phase, worker, gen)
-
-	writeIntFile(t, wm, cmd, "resolved.txt", "clean content\n")
-
-	if err := wm.CommitResolvedConflict(cmd, phase, worker, gen, []string{"resolved.txt"}); err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-	state, _ := wm.loadState(cmd)
-	if got := wm.findWorker(state, worker).Status; got != model.WorktreeStatusIntegrated {
-		t.Errorf("worker status = %s, want integrated", got)
-	}
-}
-
-func TestCommitResolvedConflict_LsFilesUNonEmpty(t *testing.T) {
-	gen := "g2"
-	wm, _, cmd, phase, worker := setupResolverTest(t, gen)
-	resolverPrep(t, wm, cmd, phase, worker, gen)
-
-	// Inject an unmerged (stage>0) index entry via `git update-index --index-info`
-	// by writing the line to a temp file and feeding it through a shell pipe.
-	intPath := wm.integrationWorktreePath(cmd)
-	writeIntFile(t, wm, cmd, "seed.txt", "seed\n")
-	blob, err := wm.gitOutputInDir(intPath, "hash-object", "-w", "seed.txt")
-	if err != nil {
-		t.Fatalf("hash-object: %v", err)
-	}
-	blob = strings.TrimSpace(blob)
-
-	// Use os/exec directly so we can pipe stdin to update-index --index-info.
-	c := exec.Command("git", "-C", intPath, "update-index", "--index-info")
-	c.Stdin = strings.NewReader("100644 " + blob + " 1\tconflicted.txt\n")
-	if out, err := c.CombinedOutput(); err != nil {
-		t.Skipf("cannot inject unmerged entry portably: %v\n%s", err, out)
-	}
-	out, _ := wm.gitOutputInDir(intPath, "ls-files", "-u")
-	if strings.TrimSpace(out) == "" {
-		t.Skip("unmerged entry injection produced empty ls-files -u; skipping")
-	}
-
-	err = wm.CommitResolvedConflict(cmd, phase, worker, gen, []string{"seed.txt"})
-	if !errors.Is(err, ErrResolverPreconditionFailed) {
-		t.Fatalf("expected precondition failure, got %v", err)
-	}
-}
-
-func TestCommitResolvedConflict_FileSubsetViolation(t *testing.T) {
-	gen := "g3"
-	wm, _, cmd, phase, worker := setupResolverTest(t, gen)
-	resolverPrep(t, wm, cmd, phase, worker, gen)
-
-	// Two dirty files, but only one is allowed.
-	writeIntFile(t, wm, cmd, "a.txt", "A\n")
-	writeIntFile(t, wm, cmd, "b.txt", "B\n")
-
-	err := wm.CommitResolvedConflict(cmd, phase, worker, gen, []string{"a.txt"})
-	if !errors.Is(err, ErrResolverPreconditionFailed) {
-		t.Fatalf("expected precondition failure, got %v", err)
-	}
-}
-
-func TestCommitResolvedConflict_ConflictMarkerRemains(t *testing.T) {
-	gen := "g4"
-	wm, _, cmd, phase, worker := setupResolverTest(t, gen)
-	resolverPrep(t, wm, cmd, phase, worker, gen)
-
-	writeIntFile(t, wm, cmd, "x.txt", "ok\n<<<<<<< HEAD\nfoo\n=======\nbar\n>>>>>>> theirs\n")
-
-	err := wm.CommitResolvedConflict(cmd, phase, worker, gen, []string{"x.txt"})
-	if !errors.Is(err, ErrResolverPreconditionFailed) {
-		t.Fatalf("expected precondition failure, got %v", err)
-	}
-}
-
-func TestCommitResolvedConflict_AttemptLimitRevertsAndIncrements(t *testing.T) {
-	gen := "g5"
-	wm, _, cmd, phase, worker := setupResolverTest(t, gen)
-	resolverPrep(t, wm, cmd, phase, worker, gen)
-
-	// Always-failing commit: dirty file is not in allowed list.
-	writeIntFile(t, wm, cmd, "x.txt", "x\n")
-
-	// Attempt 1: failure, worker still resolving.
-	if err := wm.CommitResolvedConflict(cmd, phase, worker, gen, []string{"unrelated.txt"}); err == nil {
-		t.Fatal("attempt 1 should fail")
-	}
-	state, _ := wm.loadState(cmd)
-	if got := wm.findWorker(state, worker).Status; got != model.WorktreeStatusResolving {
-		t.Errorf("after attempt 1: status = %s, want resolving", got)
-	}
-
-	// Attempt 2: failure, hits maxResolveAttempts → revert to conflict.
-	if err := wm.CommitResolvedConflict(cmd, phase, worker, gen, []string{"unrelated.txt"}); err == nil {
-		t.Fatal("attempt 2 should fail")
-	}
-	state, _ = wm.loadState(cmd)
-	if got := wm.findWorker(state, worker).Status; got != model.WorktreeStatusConflict {
-		t.Errorf("after attempt-limit: status = %s, want conflict", got)
-	}
-	if state.Integration.MergeFailureCount != 1 {
-		t.Errorf("MergeFailureCount = %d, want 1", state.Integration.MergeFailureCount)
-	}
-}
-
 func TestDiscardResolverEdits(t *testing.T) {
 	gen := "g6"
 	wm, _, cmd, _, worker := setupResolverTest(t, gen)
 
 	// Dirty the integration worktree.
-	writeIntFile(t, wm, cmd, "scratch.txt", "junk\n")
+	intPath := wm.integrationWorktreePath(cmd)
+	scratch := filepath.Join(intPath, "scratch.txt")
+	if err := os.WriteFile(scratch, []byte("junk\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
 	if err := wm.DiscardResolverEdits(cmd, worker); err != nil {
 		t.Fatalf("discard: %v", err)
 	}
-	intPath := wm.integrationWorktreePath(cmd)
-	if _, err := os.Stat(filepath.Join(intPath, "scratch.txt")); !os.IsNotExist(err) {
+	if _, err := os.Stat(scratch); !os.IsNotExist(err) {
 		t.Errorf("scratch.txt should be removed by discard, stat err=%v", err)
 	}
 }

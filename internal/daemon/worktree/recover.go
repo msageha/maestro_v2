@@ -186,5 +186,23 @@ func (wm *Manager) ResolveConflict(commandID, phaseID, workerID string) error {
 	if err := wm.saveState(commandID, state); err != nil {
 		return fmt.Errorf("save state: %w", err)
 	}
+
+	// H3: clear any lingering merge_conflict signal so a stale ResolutionState
+	// from a split-brain dispatch (saveState succeeded but the worker state
+	// revert failed) cannot block re-merge after the operator recovers.
+	if wm.signalStore != nil {
+		if serr := wm.signalStore.UpdateMergeConflictSignal(commandID, phaseID, workerID, func(sig *model.PlannerSignal) error {
+			if sig == nil {
+				return nil
+			}
+			sig.ResolutionState = ""
+			sig.LastResolutionError = ""
+			sig.UpdatedAt = wm.clock.Now().UTC().Format(time.RFC3339)
+			return nil
+		}); serr != nil {
+			wm.log(core.LogLevelWarn, "resolve_conflict_signal_clear_failed command=%s worker=%s error=%v",
+				commandID, workerID, serr)
+		}
+	}
 	return nil
 }

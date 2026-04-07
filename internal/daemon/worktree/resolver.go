@@ -1,9 +1,14 @@
 package worktree
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -12,22 +17,33 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// maxResolveAttempts is the upper bound on resolver commit attempts. After
-// this many failed attempts the worker is reverted to conflict and the
-// integration's MergeFailureCount is incremented so the existing quarantine
-// path can pick it up.
-const maxResolveAttempts = 2
+// resolverGitTimeout caps git operations issued by the resolver pipeline so a
+// hung integration worktree cannot stall the daemon scan loop. This is
+// intentionally independent from wm.gitTimeout() (which is config-driven and
+// shared across all git ops) so the resolver always has a tight upper bound.
+const resolverGitTimeout = 60 * time.Second
+
+// ComputeConflictGeneration derives a deterministic identifier for a single
+// merge_conflict instance. The generation changes whenever any input shifts
+// (integration HEAD, worker SHA, phase/worker identity), which lets the
+// resolver code path use it as a CAS token: a stale resolver attempt against a
+// re-detected conflict will fail with ErrConflictGenerationMismatch instead of
+// silently overwriting newer state.
+func ComputeConflictGeneration(commandID, phaseID, workerID, baseRef, oursRef, theirsRef string) string {
+	h := sha256.New()
+	// NUL-separator prevents accidental field collisions.
+	for _, s := range []string{commandID, phaseID, workerID, baseRef, oursRef, theirsRef} {
+		h.Write([]byte(s))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
+}
 
 // ErrConflictGenerationMismatch is returned by the resolver entry points when
 // the supplied conflict generation no longer matches the signal stored on
 // disk — typically because the integration HEAD or worker SHA shifted under
 // the resolver. The caller is expected to abort and re-fetch fresh state.
 var ErrConflictGenerationMismatch = errors.New("conflict generation mismatch")
-
-// ErrResolverPreconditionFailed is returned when one of the static
-// pre-validation checks (unmerged paths, file subset, conflict markers) fails
-// before any git mutation is attempted. Wrapped errors carry the detail.
-var ErrResolverPreconditionFailed = errors.New("resolver precondition failed")
 
 // ErrSignalStoreUnavailable indicates that the Manager was constructed
 // without a SignalStore, so resolver methods cannot persist their CAS
@@ -96,6 +112,14 @@ func (wm *Manager) commandLock(commandID string) *sync.Mutex {
 // be held by the caller for the duration of this call to keep scan from
 // racing the worker state transition. This method itself acquires the
 // per-command resolver lock and then wm.mu.
+//
+// Lifecycle note: completion of the conflict resolution is driven externally
+// via the resolve_conflict CLI op (cmd_plan.runResolveConflict →
+// plan_handler.resolve_conflict → recover.ResolveConflict). That path clears
+// CommitFailedWorkers, resets MergeFailureCount, and clears the lingering
+// merge_conflict signal (H3). The daemon does not perform the integration
+// commit itself; the resolver agent (or operator) commits in the integration
+// worktree before invoking resolve_conflict.
 func (wm *Manager) DispatchConflictResolution(commandID, phaseID, workerID, conflictGen string) error {
 	if err := validateIDs(commandID, workerID); err != nil {
 		return err
@@ -142,12 +166,16 @@ func (wm *Manager) DispatchConflictResolution(commandID, phaseID, workerID, conf
 	state.UpdatedAt = now
 	if err := wm.saveState(commandID, state); err != nil {
 		// Best-effort signal revert so we don't leave ResolutionState=dispatched
-		// while the worker is still in conflict (split-brain).
+		// while the worker is still in conflict (split-brain). C3: also count
+		// this as a resolve attempt so repeated dispatch crashes do not loop
+		// forever.
 		if revErr := wm.signalStore.UpdateMergeConflictSignal(commandID, phaseID, workerID, func(sig *model.PlannerSignal) error {
 			if sig == nil {
 				return nil
 			}
 			sig.ResolutionState = ""
+			sig.ResolveAttempt++
+			sig.LastResolutionError = fmt.Sprintf("dispatch save_state failed: %v", err)
 			sig.UpdatedAt = wm.clock.Now().UTC().Format(time.RFC3339)
 			return nil
 		}); revErr != nil {
@@ -156,208 +184,6 @@ func (wm *Manager) DispatchConflictResolution(commandID, phaseID, workerID, conf
 		return fmt.Errorf("save state: %w", err)
 	}
 	wm.log(core.LogLevelInfo, "conflict_resolution_dispatched command=%s phase=%s worker=%s", commandID, phaseID, workerID)
-	return nil
-}
-
-// CommitResolvedConflict performs the resolver commit in the integration
-// worktree after a resolver agent has staged a fix. See package doc for the
-// full pre-validation contract.
-//
-// Locking note: like DispatchConflictResolution, the caller must hold scanMu
-// for the duration of the call. This method acquires the per-command
-// resolver lock and then wm.mu for state IO.
-func (wm *Manager) CommitResolvedConflict(commandID, phaseID, workerID, conflictGen string, files []string) error {
-	if err := validateIDs(commandID, workerID); err != nil {
-		return err
-	}
-	if wm.signalStore == nil {
-		return ErrSignalStoreUnavailable
-	}
-	if len(files) == 0 {
-		return fmt.Errorf("%w: files list is empty", ErrResolverPreconditionFailed)
-	}
-	for _, f := range files {
-		if f == "" || strings.HasPrefix(f, "/") || strings.Contains(f, "..") {
-			return fmt.Errorf("%w: invalid file path %q (must be repo-relative, no .. or absolute)", ErrResolverPreconditionFailed, f)
-		}
-	}
-
-	cl := wm.commandLock(commandID)
-	cl.Lock()
-	defer cl.Unlock()
-
-	// 1. Bump attempt counter and CAS-check generation atomically with the
-	// signal store so we never run a commit against stale state.
-	var attempt int
-	if err := wm.signalStore.UpdateMergeConflictSignal(commandID, phaseID, workerID, func(sig *model.PlannerSignal) error {
-		if sig == nil {
-			return fmt.Errorf("merge_conflict signal not found for command=%s phase=%s worker=%s", commandID, phaseID, workerID)
-		}
-		if sig.ConflictGeneration != conflictGen {
-			return ErrConflictGenerationMismatch
-		}
-		sig.ResolveAttempt++
-		attempt = sig.ResolveAttempt
-		sig.ResolutionState = "resolving"
-		sig.UpdatedAt = wm.clock.Now().UTC().Format(time.RFC3339)
-		return nil
-	}); err != nil {
-		return err
-	}
-
-	commitErr := wm.runResolverCommit(commandID, phaseID, workerID, files)
-	if commitErr == nil {
-		// Mark signal resolved + transition worker to integrated.
-		if err := wm.signalStore.UpdateMergeConflictSignal(commandID, phaseID, workerID, func(sig *model.PlannerSignal) error {
-			if sig == nil {
-				return nil
-			}
-			sig.ResolutionState = "" // cleared on success
-			sig.LastResolutionError = ""
-			sig.UpdatedAt = wm.clock.Now().UTC().Format(time.RFC3339)
-			return nil
-		}); err != nil {
-			wm.log(core.LogLevelError, "signal_clear_after_resolve_failed command=%s worker=%s err=%v", commandID, workerID, err)
-		}
-
-		wm.mu.Lock()
-		defer wm.mu.Unlock()
-		state, err := wm.loadState(commandID)
-		if err != nil {
-			return fmt.Errorf("load state after resolver commit: %w", err)
-		}
-		ws := wm.findWorker(state, workerID)
-		if ws == nil {
-			return fmt.Errorf("worker %s not found post-resolve in command %s", workerID, commandID)
-		}
-		now := wm.clock.Now().UTC().Format(time.RFC3339)
-		if err := wm.setWorkerStatus(ws, model.WorktreeStatusIntegrated, now); err != nil {
-			return err
-		}
-		state.UpdatedAt = now
-		if err := wm.saveState(commandID, state); err != nil {
-			return fmt.Errorf("save state after resolver commit: %w", err)
-		}
-		wm.log(core.LogLevelInfo, "conflict_resolution_committed command=%s phase=%s worker=%s attempt=%d",
-			commandID, phaseID, workerID, attempt)
-		return nil
-	}
-
-	// Failure path: record the error and decide whether to retry or quarantine.
-	errMsg := commitErr.Error()
-	if err := wm.signalStore.UpdateMergeConflictSignal(commandID, phaseID, workerID, func(sig *model.PlannerSignal) error {
-		if sig == nil {
-			return nil
-		}
-		sig.ResolutionState = "failed"
-		sig.LastResolutionError = errMsg
-		sig.UpdatedAt = wm.clock.Now().UTC().Format(time.RFC3339)
-		return nil
-	}); err != nil {
-		wm.log(core.LogLevelError, "signal_mark_failed_failed command=%s worker=%s err=%v", commandID, workerID, err)
-	}
-
-	if attempt >= maxResolveAttempts {
-		// Revert worker to conflict and bump MergeFailureCount so quarantine
-		// logic picks it up on the next scan.
-		wm.mu.Lock()
-		defer wm.mu.Unlock()
-		state, lerr := wm.loadState(commandID)
-		if lerr != nil {
-			return fmt.Errorf("load state after attempt-limit: %w (original: %v)", lerr, commitErr)
-		}
-		ws := wm.findWorker(state, workerID)
-		if ws == nil {
-			return fmt.Errorf("worker %s not found post-failure in command %s (original: %v)", workerID, commandID, commitErr)
-		}
-		now := wm.clock.Now().UTC().Format(time.RFC3339)
-		// resolving → conflict is a valid transition; ignore the error if
-		// the worker has been concurrently moved (best-effort revert).
-		if ws.Status == model.WorktreeStatusResolving {
-			if err := wm.setWorkerStatus(ws, model.WorktreeStatusConflict, now); err != nil {
-				wm.log(core.LogLevelWarn, "resolver_revert_failed command=%s worker=%s error=%v", commandID, workerID, err)
-			}
-		}
-		state.Integration.MergeFailureCount++
-		state.UpdatedAt = now
-		if err := wm.saveState(commandID, state); err != nil {
-			return fmt.Errorf("save state after attempt-limit: %w (original: %v)", err, commitErr)
-		}
-		wm.log(core.LogLevelError, "conflict_resolution_attempts_exhausted command=%s phase=%s worker=%s error=%v",
-			commandID, phaseID, workerID, commitErr)
-		return commitErr
-	}
-
-	wm.log(core.LogLevelWarn, "conflict_resolution_failed command=%s phase=%s worker=%s attempt=%d error=%v",
-		commandID, phaseID, workerID, attempt, commitErr)
-	return commitErr
-}
-
-// runResolverCommit performs the actual git operations for a resolver commit
-// in the integration worktree. Caller holds the per-command lock; this
-// function does NOT take wm.mu (the underlying gitRunInDir uses exec.Cmd
-// which is process-safe). Validation precedes mutation so a precondition
-// failure leaves the index untouched.
-func (wm *Manager) runResolverCommit(commandID, phaseID, workerID string, files []string) error {
-	intPath := wm.integrationWorktreePath(commandID)
-	if _, err := os.Stat(intPath); err != nil {
-		return fmt.Errorf("integration worktree path: %w", err)
-	}
-
-	// (2) git ls-files -u must be empty (no unmerged paths remaining).
-	unmerged, err := wm.gitOutputInDir(intPath, "ls-files", "-u")
-	if err != nil {
-		return fmt.Errorf("ls-files -u: %w", err)
-	}
-	if strings.TrimSpace(unmerged) != "" {
-		return fmt.Errorf("%w: unmerged paths still present:\n%s", ErrResolverPreconditionFailed, unmerged)
-	}
-
-	// (3) staged∪unstaged file set must be a subset of `files`.
-	dirtyOut, err := wm.gitOutputInDir(intPath, "status", "--porcelain", "-z")
-	if err != nil {
-		return fmt.Errorf("git status --porcelain: %w", err)
-	}
-	dirtySet := parsePorcelainZ(dirtyOut)
-	allowed := make(map[string]bool, len(files))
-	for _, f := range files {
-		allowed[f] = true
-	}
-	for f := range dirtySet {
-		if !allowed[f] {
-			return fmt.Errorf("%w: dirty file %q is not in the allowed file set", ErrResolverPreconditionFailed, f)
-		}
-	}
-	if len(dirtySet) == 0 {
-		return fmt.Errorf("%w: nothing staged or modified — refusing to commit", ErrResolverPreconditionFailed)
-	}
-
-	// (4) Each file in `files` must contain no conflict marker. We only
-	// scan files that physically exist (a deleted file in the resolution is
-	// fine). Markers are checked at column 0 with the canonical 7-char form.
-	for _, f := range files {
-		full := joinClean(intPath, f)
-		data, rerr := os.ReadFile(full)
-		if rerr != nil {
-			if os.IsNotExist(rerr) {
-				continue
-			}
-			return fmt.Errorf("%w: read %q: %v", ErrResolverPreconditionFailed, f, rerr)
-		}
-		if containsConflictMarker(data) {
-			return fmt.Errorf("%w: conflict marker remaining in %q", ErrResolverPreconditionFailed, f)
-		}
-	}
-
-	// Execution: git add -- <files> ; git commit -m ...
-	addArgs := append([]string{"add", "--"}, files...)
-	if err := wm.gitRunInDir(intPath, addArgs...); err != nil {
-		return fmt.Errorf("git add: %w", err)
-	}
-	msg := fmt.Sprintf("[maestro] resolve: phase=%s worker=%s", phaseID, workerID)
-	if err := wm.gitRunInDir(intPath, "commit", "-m", msg); err != nil {
-		return fmt.Errorf("git commit: %w", err)
-	}
 	return nil
 }
 
@@ -387,13 +213,19 @@ func (wm *Manager) DiscardResolverEdits(commandID, workerID string) error {
 	if _, err := os.Stat(intPath); err != nil {
 		return fmt.Errorf("integration worktree path: %w", err)
 	}
-	if err := wm.gitRunInDir(intPath, "reset", "HEAD"); err != nil {
+	// M4: defense-in-depth — refuse to operate outside .maestro/worktrees on
+	// the real (symlink-resolved) filesystem so a poisoned state file cannot
+	// redirect destructive git ops at the working tree.
+	if err := wm.assertWorktreeContained(intPath); err != nil {
+		return err
+	}
+	if err := wm.resolverGitRunInDir(intPath, "reset", "HEAD"); err != nil {
 		return fmt.Errorf("reset staged: %w", err)
 	}
-	if err := wm.gitRunInDir(intPath, "checkout", "--", "."); err != nil {
+	if err := wm.resolverGitRunInDir(intPath, "checkout", "--", "."); err != nil {
 		return fmt.Errorf("checkout discard: %w", err)
 	}
-	if err := wm.gitRunInDir(intPath, "clean", "-fd"); err != nil {
+	if err := wm.resolverGitRunInDir(intPath, "clean", "-fd"); err != nil {
 		return fmt.Errorf("clean: %w", err)
 	}
 	wm.log(core.LogLevelInfo, "resolver_edits_discarded command=%s worker=%s", commandID, workerID)
@@ -402,64 +234,45 @@ func (wm *Manager) DiscardResolverEdits(commandID, workerID string) error {
 
 // --- helpers ---
 
-// parsePorcelainZ extracts the file paths from `git status --porcelain -z`.
-// Each entry is "XY <path>\0" (rename has an extra "\0<oldpath>"); we collect
-// the new path on either side.
-func parsePorcelainZ(out string) map[string]bool {
-	set := map[string]bool{}
-	parts := strings.Split(out, "\x00")
-	i := 0
-	for i < len(parts) {
-		entry := parts[i]
-		if len(entry) < 4 {
-			i++
-			continue
-		}
-		xy := entry[:2]
-		path := entry[3:]
-		set[path] = true
-		// Renamed (R) and copied (C) entries are followed by the original path.
-		if xy[0] == 'R' || xy[1] == 'R' || xy[0] == 'C' || xy[1] == 'C' {
-			if i+1 < len(parts) {
-				set[parts[i+1]] = true
-				i += 2
-				continue
-			}
-		}
-		i++
+// assertWorktreeContained verifies that path resolves (via realpath) to a
+// location strictly under <maestroDir>/worktrees. Used as a tripwire by
+// destructive git operations in the resolver pipeline (M4).
+func (wm *Manager) assertWorktreeContained(path string) error {
+	realPath, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return fmt.Errorf("realpath %q: %w", path, err)
 	}
-	return set
+	worktreesRoot := filepath.Join(wm.maestroDir, "worktrees")
+	realRoot, err := filepath.EvalSymlinks(worktreesRoot)
+	if err != nil {
+		// If the root itself doesn't resolve, fall back to lexical containment.
+		realRoot = worktreesRoot
+	}
+	rel, err := filepath.Rel(realRoot, realPath)
+	if err != nil || rel == "" || rel == "." || strings.HasPrefix(rel, "..") {
+		return fmt.Errorf("refusing destructive op outside worktrees root: %s (real=%s, root=%s)",
+			path, realPath, realRoot)
+	}
+	return nil
 }
 
-func containsConflictMarker(data []byte) bool {
-	// Match canonical 7-character markers anywhere in the file. Conservative:
-	// any occurrence is treated as unresolved.
-	return bytesContains(data, []byte("<<<<<<<")) ||
-		bytesContains(data, []byte("=======")) ||
-		bytesContains(data, []byte(">>>>>>>"))
-}
-
-func bytesContains(haystack, needle []byte) bool {
-	if len(needle) == 0 {
-		return true
-	}
-	if len(haystack) < len(needle) {
-		return false
-	}
-outer:
-	for i := 0; i <= len(haystack)-len(needle); i++ {
-		for j := 0; j < len(needle); j++ {
-			if haystack[i+j] != needle[j] {
-				continue outer
-			}
+// resolverGitRunInDir is a context-bounded git wrapper for resolver-pipeline
+// operations. It applies a hard resolverGitTimeout regardless of the
+// configured wm.gitTimeout() so a stuck integration worktree cannot stall the
+// scan loop indefinitely.
+func (wm *Manager) resolverGitRunInDir(dir string, args ...string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), resolverGitTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return fmt.Errorf("git -C %s %s: timeout after %s: %w",
+				dir, strings.Join(args, " "), resolverGitTimeout, ctx.Err())
 		}
-		return true
+		return fmt.Errorf("git -C %s %s: %w\noutput: %s",
+			dir, strings.Join(args, " "), err, string(output))
 	}
-	return false
-}
-
-// joinClean joins dir + rel safely, refusing escape via "..".
-func joinClean(dir, rel string) string {
-	clean := strings.TrimLeft(rel, "/")
-	return dir + string(os.PathSeparator) + clean
+	return nil
 }

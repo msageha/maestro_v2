@@ -187,11 +187,15 @@ Skill Management:
   skill reject <id>           Reject a skill candidate
 
 Utilities:
-  worker standby    Show idle workers
-  dashboard         Regenerate dashboard.md
-  resolve-conflict     Resolve a worker merge conflict (operator-only)
-  version           Show version
-  help              Show this help
+  worker standby     Show idle workers
+  dashboard          Regenerate dashboard.md
+  resolve-conflict   Resolve a worker merge conflict (operator-only)
+  version            Show version
+  help               Show this help
+
+Examples:
+  maestro resolve-conflict --command-id cmd_42 --phase-id ph_3 \
+      --worker-id worker2 --conflicting-files internal/a.go,internal/b.go
 
 `, version)
 }

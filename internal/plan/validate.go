@@ -116,8 +116,12 @@ func ValidatePhasesInput(phases []PhaseInput) *ValidationErrors {
 				errs.Add(prefix+".constraints", "concrete phases must not have constraints")
 			}
 
-			// Validate tasks within concrete phase
-			validateTaskSetCommon(phase.Tasks, prefix+".tasks", errs)
+			if len(phase.Tasks) == 0 {
+				errs.Add(prefix+".tasks", "concrete phases must have at least one task")
+			} else {
+				// Validate tasks within concrete phase
+				validateTaskSetCommon(phase.Tasks, prefix+".tasks", errs)
+			}
 		}
 
 		if phase.Type == "deferred" {

@@ -141,6 +141,10 @@ func (lm *LeaseManager) ReleaseTaskLease(task *model.Task) error {
 	task.Status = model.StatusPending
 	task.LeaseOwner = nil
 	task.LeaseExpiresAt = nil
+	// H5: clear InProgressAt so the next AcquireTaskLease records a fresh
+	// dispatch timestamp. Otherwise the original (stale) value would block
+	// max_in_progress_min checks from ever firing on the re-dispatched task.
+	task.InProgressAt = nil
 	task.UpdatedAt = lm.clock.Now().UTC().Format(time.RFC3339)
 
 	lm.log(LogLevelInfo, "lease_release type=task id=%s epoch=%d", task.ID, task.LeaseEpoch)

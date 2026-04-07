@@ -325,6 +325,22 @@ type interruptItem struct {
 	Epoch     int
 }
 
+// cancelMarkItem captures a deferred cancellation mutation to apply in Phase C
+// after Phase B has interrupted the running worker (M3 + H4).
+//
+// Deferring the queue mutation past Phase B's interrupt resolves a race with
+// result_write_handler: a worker that completes its real result before being
+// interrupted can submit it via the normal path, and Phase C's apply step
+// detects the now-terminal task and skips overwriting it with a synthetic
+// cancelled marker.
+type cancelMarkItem struct {
+	QueueFile  string
+	WorkerID   string
+	TaskID     string
+	CommandID  string
+	LeaseEpoch int
+}
+
 // signalDeliveryItem captures a planner signal delivery for Phase B.
 type signalDeliveryItem struct {
 	CommandID string
@@ -387,6 +403,7 @@ type worktreeCleanupResult struct {
 type deferredWork struct {
 	dispatches        []dispatchItem
 	interrupts        []interruptItem
+	cancelMarks       []cancelMarkItem
 	busyChecks        []busyCheckItem
 	signals           []signalDeliveryItem
 	clears            []string // agent IDs to /clear

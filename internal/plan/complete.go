@@ -76,6 +76,11 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 	opts.LockMap.Lock("queue:planner")
 	defer opts.LockMap.Unlock("queue:planner")
 
+	// Schedule explicit removal of the per-command state lock entry after
+	// the unlock runs. defer is LIFO, so this Remove fires last and drops
+	// the now-idle entry from the MutexMap to prevent unbounded growth as
+	// commands accumulate over a long-running daemon.
+	defer opts.LockMap.Remove("state:" + opts.CommandID)
 	sm.LockCommand(opts.CommandID) // state:{commandID}
 	defer sm.UnlockCommand(opts.CommandID)
 

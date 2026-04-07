@@ -101,6 +101,29 @@ func (m *MutexMap) TryUnlock(key string) bool {
 	return true
 }
 
+// Remove drops the entry for key if no goroutine currently holds or is
+// waiting for the lock (ref == 0). It is a no-op when the entry is in use,
+// when the key has never been seen, or when the entry was already removed
+// by Unlock-time cleanup. It never blocks on the per-key mutex.
+//
+// Use this for keys whose lifetime is known to have ended (e.g. command-
+// scoped state locks after Complete) to make cleanup intent explicit at
+// the call site, complementing the implicit ref-count cleanup performed
+// by Unlock/TryUnlock. Returns true when an entry was actually removed.
+func (m *MutexMap) Remove(key string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rm, ok := m.mutexes[key]
+	if !ok {
+		return false
+	}
+	if rm.ref != 0 {
+		return false
+	}
+	delete(m.mutexes, key)
+	return true
+}
+
 // len_ returns the number of keys currently tracked in the map.
 func (m *MutexMap) len_() int {
 	m.mu.Lock()

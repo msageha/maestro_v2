@@ -279,6 +279,21 @@ maestro skill list --role worker
 - **粒度**: 1 タスク 5 ファイル以下目安。独立した目的が複数あれば分割。横断的変更で分割するとリスクが増える場合は統合
 - **`required`**: `true` = 失敗でコマンド全体が失敗（依存先も自動キャンセル）、`false` = 影響なし
 
+### Synthesis アンチパターン (Worker への統合タスク禁止)
+
+**事実**: 複数 Worker の結果を「統合・要約・整合検証」するだけのタスクを別 Worker に発注すると、(1) 受信側 Worker は元タスクの実装文脈を持たないため誤解釈しやすい、(2) `--summary` の伝言ゲームで情報が欠落する、(3) 1 ターン分のレイテンシと context window が無駄になる、という三重のロスが発生する。
+
+**ルール**: synthesis (複数結果の統合・要約・整合チェック) は **Planner 自身が plan complete の summary に直接統合する**。Worker への synthesis 専用タスク発注を禁止する。
+
+| 種別 | 担当 |
+|---|---|
+| 実装・調査・検証 (個別作業) | Worker |
+| 複数 Worker 結果の集約・要約 | **Planner が直接** (`maestro plan complete --summary`) |
+| 複数 Worker 結果の整合チェック | **Planner が直接** (results/worker*.yaml を `Read` で参照) |
+| 後続 Worker 向けの追加実装 | Worker (synthesis 結果を `content` に埋めて発注) |
+
+**例外**: 統合作業が「コードを書く」「ファイルを生成する」「テストを走らせる」等の Worker 権限を必要とする場合は Worker タスクとして発注してよい。純粋な要約・テキスト統合のみを Worker に投げてはならない。
+
 ### Phase 分離規約 (worktree mode の巻き添え失敗対策)
 
 **事実**: `worktree.enabled: true` の場合、command が `failed` に終わると、フェーズ単位で成功した Worker の成果物も統合ブランチごと巻き添えで破棄される。foundation phase が成功していても、後続の implementation phase が失敗すると foundation の成果物まで main に到達しない。

@@ -119,10 +119,11 @@ func (a *API) handlePlanWorktreeRecovery(operation string, data json.RawMessage)
 	}
 
 	var p struct {
-		CommandID string `json:"command_id"`
-		Reason    string `json:"reason"`
-		PhaseID   string `json:"phase_id"`
-		WorkerID  string `json:"worker_id"`
+		CommandID        string   `json:"command_id"`
+		Reason           string   `json:"reason"`
+		PhaseID          string   `json:"phase_id"`
+		WorkerID         string   `json:"worker_id"`
+		ConflictingFiles []string `json:"conflicting_files"`
 	}
 	if err := json.Unmarshal(data, &p); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid params: %v", err))
@@ -159,8 +160,23 @@ func (a *API) handlePlanWorktreeRecovery(operation string, data json.RawMessage)
 		if p.PhaseID == "" {
 			return uds.ErrorResponse(uds.ErrCodeValidation, "phase_id is required")
 		}
+		if err := validate.ValidateID(p.PhaseID); err != nil {
+			return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid phase_id: %v", err))
+		}
 		if p.WorkerID == "" {
 			return uds.ErrorResponse(uds.ErrCodeValidation, "worker_id is required")
+		}
+		if err := validate.ValidateID(p.WorkerID); err != nil {
+			return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid worker_id: %v", err))
+		}
+		// conflicting_files is an optional operator-supplied hint about which
+		// paths are in conflict. It is recorded in the daemon log so that the
+		// resolution can be correlated with the operator's intent, but the
+		// underlying worktree.ResolveConflict signature is intentionally not
+		// extended here (out of scope for this task).
+		if len(p.ConflictingFiles) > 0 {
+			d.log(LogLevelInfo, "plan_resolve_conflict command=%s phase=%s worker=%s conflicting_files=%v",
+				p.CommandID, p.PhaseID, p.WorkerID, p.ConflictingFiles)
 		}
 		opErr = d.worktreeManager.ResolveConflict(p.CommandID, p.PhaseID, p.WorkerID)
 	}

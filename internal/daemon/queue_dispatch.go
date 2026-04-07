@@ -93,15 +93,26 @@ func (qh *QueueHandler) processPlannerSignalsDeferred(sq *model.PlannerSignalQue
 // entry. Phase-level signals (PhaseID set, WorkerID empty) continue to dedup
 // the same way they did before because their WorkerID field is empty.
 type signalKey struct {
-	CommandID string
-	PhaseID   string
-	Kind      string
-	WorkerID  string
+	CommandID          string
+	PhaseID            string
+	Kind               string
+	WorkerID           string
+	ConflictGeneration string
 }
 
 // signalDedupKey returns the worker-scoped dedup key for a signal.
+// ConflictGeneration is included so that a re-detected merge conflict against
+// a different integration HEAD or worker SHA registers as a fresh signal
+// instead of being suppressed by the previous (now-stale) entry. Non-resolver
+// signals leave ConflictGeneration empty, preserving the prior dedup behavior.
 func signalDedupKey(s model.PlannerSignal) signalKey {
-	return signalKey{CommandID: s.CommandID, PhaseID: s.PhaseID, Kind: s.Kind, WorkerID: s.WorkerID}
+	return signalKey{
+		CommandID:          s.CommandID,
+		PhaseID:            s.PhaseID,
+		Kind:               s.Kind,
+		WorkerID:           s.WorkerID,
+		ConflictGeneration: s.ConflictGeneration,
+	}
 }
 
 // buildSignalIndex builds a lookup index from the current signals slice for O(1) dedup.

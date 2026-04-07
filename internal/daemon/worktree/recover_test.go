@@ -203,3 +203,163 @@ func TestResumeMerge_NoWorktreeState(t *testing.T) {
 		t.Errorf("err = %v, want ErrNoWorktreeState", err)
 	}
 }
+
+// conflictWorkerState builds a state where a worker is recorded in
+// CommitFailedWorkers and the integration is in a recoverable state.
+func conflictWorkerState(commandID, workerID string, status model.IntegrationStatus, failures int) *model.WorktreeCommandState {
+	st := quarantinedState(commandID)
+	st.Integration.Status = status
+	st.Integration.MergeFailureCount = failures
+	st.Integration.QuarantinedAt = ""
+	st.Integration.QuarantineReason = ""
+	st.Integration.StallSignaled = false
+	st.CommitFailedWorkers = []string{workerID}
+	return st
+}
+
+func TestResolveConflict_FromConflict_ClearsSignal(t *testing.T) {
+	wm, _ := newRecoveryTestManager(t)
+	cmdID := "cmd_resolve_001"
+	phaseID := "phase_001"
+	workerID := "worker_a"
+	writeWorktreeState(t, wm, conflictWorkerState(cmdID, workerID, model.IntegrationStatusConflict, 3))
+
+	store := newFakeSignalStore()
+	store.put(model.PlannerSignal{
+		Kind:                "merge_conflict",
+		CommandID:           cmdID,
+		PhaseID:             phaseID,
+		WorkerID:            workerID,
+		ConflictGeneration:  "g1",
+		ResolutionState:     "dispatched",
+		LastResolutionError: "prior failure",
+	})
+	wm.SetSignalStore(store)
+
+	if err := wm.ResolveConflict(cmdID, phaseID, workerID); err != nil {
+		t.Fatalf("ResolveConflict: %v", err)
+	}
+
+	got, err := wm.GetCommandState(cmdID)
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	if len(got.CommitFailedWorkers) != 0 {
+		t.Errorf("CommitFailedWorkers = %v, want empty", got.CommitFailedWorkers)
+	}
+	if got.Integration.Status != model.IntegrationStatusFailed {
+		t.Errorf("status = %s, want failed", got.Integration.Status)
+	}
+	if got.Integration.MergeFailureCount != 0 {
+		t.Errorf("MergeFailureCount = %d, want 0", got.Integration.MergeFailureCount)
+	}
+
+	// H3: lingering merge_conflict signal must be cleared so a stale
+	// ResolutionState=dispatched cannot block re-merge after recovery.
+	sig := store.get(cmdID, phaseID, workerID)
+	if sig == nil {
+		t.Fatal("merge_conflict signal disappeared")
+	}
+	if sig.ResolutionState != "" {
+		t.Errorf("ResolutionState = %q, want empty", sig.ResolutionState)
+	}
+	if sig.LastResolutionError != "" {
+		t.Errorf("LastResolutionError = %q, want empty", sig.LastResolutionError)
+	}
+}
+
+func TestResolveConflict_Idempotent(t *testing.T) {
+	wm, maestroDir := newRecoveryTestManager(t)
+	cmdID := "cmd_resolve_002"
+	phaseID := "phase_001"
+	workerID := "worker_a"
+	writeWorktreeState(t, wm, conflictWorkerState(cmdID, workerID, model.IntegrationStatusConflict, 1))
+
+	if err := wm.ResolveConflict(cmdID, phaseID, workerID); err != nil {
+		t.Fatalf("first ResolveConflict: %v", err)
+	}
+	first := readStateFile(t, maestroDir, cmdID)
+
+	err := wm.ResolveConflict(cmdID, phaseID, workerID)
+	if !errors.Is(err, ErrAlreadyResolved) {
+		t.Fatalf("second ResolveConflict err = %v, want ErrAlreadyResolved", err)
+	}
+	second := readStateFile(t, maestroDir, cmdID)
+	if string(first) != string(second) {
+		t.Errorf("state file mutated on second call")
+	}
+}
+
+func TestResolveConflict_NoWorktreeState(t *testing.T) {
+	wm, _ := newRecoveryTestManager(t)
+	err := wm.ResolveConflict("cmd_missing_resolve", "phase_001", "worker_a")
+	if !errors.Is(err, ErrNoWorktreeState) {
+		t.Errorf("err = %v, want ErrNoWorktreeState", err)
+	}
+}
+
+func TestResolveConflict_FromPartialMerge(t *testing.T) {
+	wm, _ := newRecoveryTestManager(t)
+	cmdID := "cmd_resolve_004"
+	phaseID := "phase_001"
+	workerID := "worker_a"
+	writeWorktreeState(t, wm, conflictWorkerState(cmdID, workerID, model.IntegrationStatusPartialMerge, 2))
+
+	if err := wm.ResolveConflict(cmdID, phaseID, workerID); err != nil {
+		t.Fatalf("ResolveConflict: %v", err)
+	}
+	got, _ := wm.GetCommandState(cmdID)
+	if got.Integration.Status != model.IntegrationStatusFailed {
+		t.Errorf("status = %s, want failed", got.Integration.Status)
+	}
+	if got.Integration.MergeFailureCount != 0 {
+		t.Errorf("MergeFailureCount = %d, want 0", got.Integration.MergeFailureCount)
+	}
+	if len(got.CommitFailedWorkers) != 0 {
+		t.Errorf("CommitFailedWorkers = %v, want empty", got.CommitFailedWorkers)
+	}
+}
+
+// When integration is already Failed, ResolveConflict should still remove the
+// worker from CommitFailedWorkers and reset the failure counter without
+// requiring a status transition.
+func TestResolveConflict_AlreadyFailedJustClearsWorker(t *testing.T) {
+	wm, _ := newRecoveryTestManager(t)
+	cmdID := "cmd_resolve_005"
+	phaseID := "phase_001"
+	workerID := "worker_a"
+	writeWorktreeState(t, wm, conflictWorkerState(cmdID, workerID, model.IntegrationStatusFailed, 4))
+
+	if err := wm.ResolveConflict(cmdID, phaseID, workerID); err != nil {
+		t.Fatalf("ResolveConflict: %v", err)
+	}
+	got, _ := wm.GetCommandState(cmdID)
+	if got.Integration.Status != model.IntegrationStatusFailed {
+		t.Errorf("status = %s, want failed", got.Integration.Status)
+	}
+	if got.Integration.MergeFailureCount != 0 {
+		t.Errorf("MergeFailureCount = %d, want 0", got.Integration.MergeFailureCount)
+	}
+	if len(got.CommitFailedWorkers) != 0 {
+		t.Errorf("CommitFailedWorkers = %v, want empty", got.CommitFailedWorkers)
+	}
+}
+
+// ResolveConflict with no signal store registered must still succeed
+// (signal clearing is best-effort and should not be a hard dependency).
+func TestResolveConflict_NoSignalStore(t *testing.T) {
+	wm, _ := newRecoveryTestManager(t)
+	cmdID := "cmd_resolve_006"
+	phaseID := "phase_001"
+	workerID := "worker_a"
+	writeWorktreeState(t, wm, conflictWorkerState(cmdID, workerID, model.IntegrationStatusConflict, 1))
+
+	// Intentionally do not call SetSignalStore.
+	if err := wm.ResolveConflict(cmdID, phaseID, workerID); err != nil {
+		t.Fatalf("ResolveConflict without signal store: %v", err)
+	}
+	got, _ := wm.GetCommandState(cmdID)
+	if len(got.CommitFailedWorkers) != 0 {
+		t.Errorf("CommitFailedWorkers = %v, want empty", got.CommitFailedWorkers)
+	}
+}
