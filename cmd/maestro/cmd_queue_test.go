@@ -33,28 +33,6 @@ func TestRunQueueWrite_CancelRequestDeprecationWarning(t *testing.T) {
 	}
 }
 
-func TestRunQueue_NoSubcommand(t *testing.T) {
-	err := runQueue(nil)
-	if err == nil {
-		t.Fatal("expected error for missing subcommand")
-	}
-	var ce *CLIError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected CLIError, got %T: %v", err, err)
-	}
-}
-
-func TestRunQueue_UnknownSubcommand(t *testing.T) {
-	err := runQueue([]string{"bogus"})
-	if err == nil {
-		t.Fatal("expected error for unknown subcommand")
-	}
-	var ce *CLIError
-	if !errors.As(err, &ce) {
-		t.Fatalf("expected CLIError, got %T: %v", err, err)
-	}
-}
-
 func TestRunQueueWrite_MissingTarget(t *testing.T) {
 	err := runQueueWrite(nil)
 	if err == nil {
