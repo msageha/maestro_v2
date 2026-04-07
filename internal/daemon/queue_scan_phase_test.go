@@ -674,6 +674,130 @@ func writeCommandState(t *testing.T, maestroDir, commandID string, taskStates ma
 	}
 }
 
+// --- collectWorktreePhaseMerges phase 0 件 fallback tests ---
+
+// noPhasesFallbackFixture seeds: worktree state (Integration=integrationStatus,
+// 1 worker), command state with phases=nil, and a task queue with the given
+// task statuses. Returns the qh + task queue map ready for the helper call.
+func noPhasesFallbackFixture(
+	t *testing.T,
+	integrationStatus model.IntegrationStatus,
+	taskStates map[string]model.Status,
+	mergedPhases map[string]string,
+) (*QueueHandler, map[string]*taskQueueEntry) {
+	t.Helper()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+	writeWorktreeState(t, maestroDir, "cmd1", integrationStatus)
+	if mergedPhases != nil {
+		statePath := filepath.Join(maestroDir, "state", "worktrees", "cmd1.yaml")
+		state, err := qh.worktreeManager.GetCommandState("cmd1")
+		if err != nil {
+			t.Fatalf("get worktree state: %v", err)
+		}
+		state.MergedPhases = mergedPhases
+		if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+			t.Fatalf("rewrite worktree state: %v", err)
+		}
+	}
+	writeCommandState(t, maestroDir, "cmd1", taskStates, nil)
+
+	tasks := make([]model.Task, 0, len(taskStates))
+	for id, st := range taskStates {
+		tasks = append(tasks, model.Task{ID: id, CommandID: "cmd1", Status: st})
+	}
+	tqs := makeTaskQueues(map[string][]model.Task{"worker1": tasks})
+	return qh, tqs
+}
+
+func TestCollectWorktreePhaseMerges_NoPhasesFallback(t *testing.T) {
+	qh, tqs := noPhasesFallbackFixture(t, model.IntegrationStatusCreated, map[string]model.Status{
+		"t1": model.StatusCompleted,
+		"t2": model.StatusCompleted,
+	}, nil)
+
+	items := qh.collectWorktreePhaseMerges("cmd1", tqs)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 implicit merge item, got %d", len(items))
+	}
+	if items[0].PhaseID != "__implicit_phase" {
+		t.Errorf("PhaseID = %q, want __implicit_phase", items[0].PhaseID)
+	}
+	if items[0].CommandID != "cmd1" {
+		t.Errorf("CommandID = %q, want cmd1", items[0].CommandID)
+	}
+	if len(items[0].WorkerIDs) != 1 || items[0].WorkerIDs[0] != "worker1" {
+		t.Errorf("WorkerIDs = %v, want [worker1]", items[0].WorkerIDs)
+	}
+}
+
+func TestCollectWorktreePhaseMerges_NoPhasesSkipsOnFailure(t *testing.T) {
+	qh, tqs := noPhasesFallbackFixture(t, model.IntegrationStatusCreated, map[string]model.Status{
+		"t1": model.StatusCompleted,
+		"t2": model.StatusFailed,
+	}, nil)
+	items := qh.collectWorktreePhaseMerges("cmd1", tqs)
+	if items != nil {
+		t.Errorf("expected nil items when a task failed, got %v", items)
+	}
+}
+
+func TestCollectWorktreePhaseMerges_NoPhasesSkipsWhenNotAllTerminal(t *testing.T) {
+	qh, tqs := noPhasesFallbackFixture(t, model.IntegrationStatusCreated, map[string]model.Status{
+		"t1": model.StatusCompleted,
+		"t2": model.StatusInProgress,
+	}, nil)
+	items := qh.collectWorktreePhaseMerges("cmd1", tqs)
+	if items != nil {
+		t.Errorf("expected nil items when a task is non-terminal, got %v", items)
+	}
+}
+
+func TestCollectWorktreePhaseMerges_NoPhasesSkipsWhenAlreadyMerged(t *testing.T) {
+	// Integration already merged → fallback should not produce a new item.
+	qh, tqs := noPhasesFallbackFixture(t, model.IntegrationStatusMerged, map[string]model.Status{
+		"t1": model.StatusCompleted,
+	}, nil)
+	items := qh.collectWorktreePhaseMerges("cmd1", tqs)
+	if items != nil {
+		t.Errorf("expected nil items when integration already merged, got %v", items)
+	}
+}
+
+// TestStepWorktreeStallDetection_NoPhasesFastPath verifies the case 5
+// fast-path: phase 0 件 + Integration.Status==created → 即時 stall シグナル発火
+// (timeoutMin を待たない).
+func TestStepWorktreeStallDetection_NoPhasesFastPath(t *testing.T) {
+	// recent updated_at: regular timeout path is NOT triggered.
+	recent := time.Now().Add(-1 * time.Minute).UTC().Format(time.RFC3339)
+	qh, s := stallTestSetup(t, recent, model.IntegrationStatusCreated, false)
+
+	// Overwrite command state with no phases.
+	writeCommandState(t, qh.maestroDir, "cmd1", map[string]model.Status{
+		"t1": model.StatusCompleted,
+	}, nil)
+
+	qh.stepWorktreeStallDetection(s)
+
+	if len(s.signals.Data.Signals) != 1 {
+		t.Fatalf("expected 1 fast-path stall signal, got %d", len(s.signals.Data.Signals))
+	}
+	sig := s.signals.Data.Signals[0]
+	if sig.Reason != "integration_stalled_no_phases:created" {
+		t.Errorf("reason = %q, want integration_stalled_no_phases:created", sig.Reason)
+	}
+	if sig.Kind != "worktree_stalled" || sig.CommandID != "cmd1" {
+		t.Errorf("unexpected signal: %+v", sig)
+	}
+	state, err := qh.worktreeManager.GetCommandState("cmd1")
+	if err != nil {
+		t.Fatalf("get state: %v", err)
+	}
+	if !state.Integration.StallSignaled {
+		t.Errorf("StallSignaled flag was not persisted")
+	}
+}
+
 // --- classifyCommitError unit tests ---
 
 func TestClassifyCommitError(t *testing.T) {
