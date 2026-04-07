@@ -299,6 +299,7 @@ func TestValidateWorktreeTransition(t *testing.T) {
 		{WorktreeStatusCommitted, WorktreeStatusCleanupFailed}, // cleanup failure
 		{WorktreeStatusIntegrated, WorktreeStatusPublished},
 		{WorktreeStatusIntegrated, WorktreeStatusActive},        // cross-phase sync
+		{WorktreeStatusIntegrated, WorktreeStatusCommitted},     // cross-phase: new commit after integration without intermediate sync
 		{WorktreeStatusIntegrated, WorktreeStatusFailed},
 		{WorktreeStatusIntegrated, WorktreeStatusCleanupDone},   // cleanup
 		{WorktreeStatusIntegrated, WorktreeStatusCleanupFailed}, // cleanup failure
