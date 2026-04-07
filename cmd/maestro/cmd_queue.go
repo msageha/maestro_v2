@@ -3,11 +3,17 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 
 	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
 )
+
+// queueWriteWarnOut is the destination for deprecation warnings emitted by
+// runQueueWrite. It defaults to os.Stderr and is overridden by tests.
+var queueWriteWarnOut io.Writer = os.Stderr
 
 // runQueue dispatches queue subcommands (currently: write).
 func runQueue(args []string) error {
@@ -120,6 +126,13 @@ func runQueueWrite(args []string) error {
 		if reason != "" {
 			params["reason"] = reason
 		}
+		// H7: deprecated CLI surface. The canonical entrypoint is
+		// `maestro plan request-cancel`. Both routes converge at the
+		// daemon's queue_write(type=cancel-request) handler, but the
+		// queue-write surface is retained only for backward compatibility
+		// and emits a warning so operators migrate.
+		fmt.Fprintln(queueWriteWarnOut,
+			"maestro queue write: WARNING: --type cancel-request is deprecated; use `maestro plan request-cancel --command-id <id>` instead")
 	default:
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: unknown type: %s\nusage: maestro queue write <target> --type <command|task|notification|cancel-request> [options]", writeType)}
 	}

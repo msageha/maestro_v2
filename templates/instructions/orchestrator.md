@@ -86,8 +86,10 @@ maestro queue write planner --type command --content "<指示内容>"
 **キャンセル要求**:
 
 ```
-maestro queue write planner --type cancel-request --command-id <command_id> --reason "<理由>"
+maestro plan request-cancel --command-id <command_id> --reason "<理由>"
 ```
+
+`maestro plan request-cancel` が cancel 経路の唯一の正規ルートである。旧来の `maestro queue write planner --type cancel-request` は後方互換のため残されているが deprecated であり、実行すると stderr に警告が出力される。新規スクリプトでは `plan request-cancel` を使用すること。
 
 ---
 

@@ -88,7 +88,7 @@ maestro plan request-cancel \
   [--reason <text>]
 ```
 
-`--command-id` は必須。`--requested-by` 省略時は `"cli"`。内部的に Daemon の `queue_write(target=planner, type=cancel-request)` を呼び出す。
+`--command-id` は必須。`--requested-by` 省略時は `"cli"`。内部的に Daemon の `queue_write(target=planner, type=cancel-request)` を呼び出す。これが cancel 経路の唯一の正規ルートである (Daemon 側ハンドラ `handleQueueWriteCancelRequest` に集約)。`maestro queue write planner --type cancel-request` は同一ハンドラに到達するが deprecated であり、新規利用は禁止する。
 
 **状態再構築（復旧用）**: `maestro plan rebuild --command-id <id>`
 

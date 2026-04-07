@@ -754,6 +754,67 @@ func TestQueueWriteCancelRequest_Idempotent(t *testing.T) {
 	}
 }
 
+// TestQueueWriteCancelRequest_UnifiedRoute verifies H7: both the canonical
+// `plan request-cancel` CLI and the deprecated `queue write --type
+// cancel-request` CLI converge on the same daemon handler and produce
+// identical state mutations. The two requested_by values ("cli" vs
+// "orchestrator") are the only observable difference, and both lead to a
+// single state.cancel.requested mutation through handleQueueWriteCancelRequest.
+func TestQueueWriteCancelRequest_UnifiedRoute(t *testing.T) {
+	cases := []struct {
+		name        string
+		requestedBy string
+	}{
+		{name: "plan_request_cancel_route", requestedBy: "cli"},
+		{name: "queue_write_deprecated_route", requestedBy: "orchestrator"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := newTestDaemon(t)
+			commandID := "cmd_0000000001_abcdef01"
+			setupCommandState(t, d, commandID, []string{"task_0000000001_abcdef01"})
+
+			cq := model.CommandQueue{
+				SchemaVersion: 1,
+				FileType:      "queue_command",
+				Commands: []model.Command{
+					{ID: commandID, Content: "test", Status: model.StatusInProgress, CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z"},
+				},
+			}
+			yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", "planner.yaml"), cq)
+
+			req := makeQueueWriteRequest(t, QueueWriteParams{
+				Type:        "cancel-request",
+				CommandID:   commandID,
+				Reason:      "unification test",
+				RequestedBy: tc.requestedBy,
+			})
+			resp := d.api.handleQueueWrite(req)
+			if !resp.Success {
+				t.Fatalf("cancel: expected success, got error: %v", resp.Error)
+			}
+
+			// Both routes must mutate state.cancel identically.
+			statePath := filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml")
+			sdata, err := os.ReadFile(statePath)
+			if err != nil {
+				t.Fatalf("read state: %v", err)
+			}
+			var state model.CommandState
+			if err := yamlv3.Unmarshal(sdata, &state); err != nil {
+				t.Fatalf("unmarshal state: %v", err)
+			}
+			if !state.Cancel.Requested {
+				t.Error("expected cancel.requested=true via unified handler")
+			}
+			if state.Cancel.RequestedBy == nil || *state.Cancel.RequestedBy != tc.requestedBy {
+				t.Errorf("requested_by = %v, want %q", state.Cancel.RequestedBy, tc.requestedBy)
+			}
+		})
+	}
+}
+
 func TestQueueWriteCommand_DefaultPriority(t *testing.T) {
 	d := newTestDaemon(t)
 
