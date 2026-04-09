@@ -388,7 +388,7 @@ func (qg *QualityGateDaemon) evaluateGateWithResult(gateType string, evalContext
 	}
 
 	// Create evaluation context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), qg.evaluationTimeout)
+	ctx, cancel := context.WithTimeout(qg.ctx, qg.evaluationTimeout)
 	defer cancel()
 
 	// Evaluate using the engine
