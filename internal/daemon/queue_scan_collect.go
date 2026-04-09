@@ -2,8 +2,11 @@ package daemon
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/rollout"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -385,4 +388,43 @@ func (qh *QueueHandler) checkInProgressDependencyFailuresDeferred(tq *taskQueueE
 		qh.scanCounters.TasksCancelled += len(cancelledResults)
 	}
 	return dirty, interrupts
+}
+
+// checkRolloutEligibility adapts model.Task fields into rollout.ConditionInput
+// and evaluates whether the task qualifies for multi-rollout dispatch.
+func (qh *QueueHandler) checkRolloutEligibility(task *model.Task, cfg model.Config) rollout.EligibilityResult {
+	// Determine HasVerifyConfig by checking if verify.yaml exists and has commands
+	hasVerify := false
+	verifyPath := filepath.Join(qh.maestroDir, "verify.yaml")
+	if vc, err := model.LoadVerifyConfig(verifyPath); err == nil && vc != nil {
+		hasVerify = len(vc.Build)+len(vc.Test) > 0
+	} else if os.IsNotExist(err) {
+		// Also check the project root if available
+		if cfg.Maestro.ProjectRoot != "" {
+			altPath := filepath.Join(cfg.Maestro.ProjectRoot, ".maestro", "verify.yaml")
+			if vc2, err2 := model.LoadVerifyConfig(altPath); err2 == nil && vc2 != nil {
+				hasVerify = len(vc2.Build)+len(vc2.Test) > 0
+			}
+		}
+	}
+
+	failureCount := task.ExecutionRetries
+	if failureCount == 0 && task.Attempts > 1 {
+		failureCount = task.Attempts - 1
+	}
+
+	input := rollout.ConditionInput{
+		HasVerifyConfig:   hasVerify,
+		FailureCount:      failureCount,
+		BloomLevel:        task.BloomLevel,
+		ExpectedPathCount: len(task.ExpectedPaths),
+	}
+
+	thresholds := rollout.ConditionThresholds{
+		MinBloomLevel:    cfg.Rollout.EffectiveMinBloomLevel(),
+		MaxExpectedPaths: cfg.Rollout.EffectiveMaxExpectedPaths(),
+		MinFailureCount:  cfg.Rollout.EffectiveMinFailureCount(),
+	}
+
+	return rollout.CheckEligibility(input, thresholds)
 }

@@ -115,6 +115,14 @@ func (d *Daemon) Shutdown() {
 			}
 		}
 
+		// Log warning for active rollout groups that will be abandoned.
+		if d.rolloutManager != nil {
+			activeCount := d.rolloutManager.ActiveGroupCount()
+			if activeCount > 0 {
+				d.log(LogLevelWarn, "shutdown abandoning %d active rollout groups", activeCount)
+			}
+		}
+
 		// Close review dispatcher: waits for in-flight reviews, then closes
 		// the results channel so monitorReviewResults exits cleanly.
 		if d.reviewDispatcher != nil {
