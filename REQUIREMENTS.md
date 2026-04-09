@@ -40,7 +40,6 @@ definition_of_done: [string]
 definition_of_abort:          # 撤退条件 (MUST)
     max_repair_count: integer
     max_wall_clock_sec: integer
-    max_token_budget: integer
     explicit_failure_conditions: [string]
 
 Verify Schema 例:
@@ -50,7 +49,7 @@ build: [command]
 lint: [command]
 test: [command]
 typecheck: [command]
-
+```
 ———
 
 ## 3. 実装フェーズ S: 制御・評価・観測基盤（最優先事項）
@@ -60,7 +59,7 @@ typecheck: [command]
 ### Priority S0: 安全に止まれる最小制御面（システムの命綱）
 
 - [S0-1] Admission Control（リソースと並行実行の管理）: Daemonは、Worker数だけでなく「同時Verify数」「同時Repair数」「同時Rollout
-数」「タスク毎の総トークン予算」を厳格に管理する [MUST]。
+数」を厳格に管理する [MUST]。
 - [S0-2] Single-worker Fallback（単一ワーカー縮退動作の保証）: マルチモデルや並列機能がエラーを起こした場合でも、システム全体を停止
 させず Planner → 1 Worker → Verify → Repair の最小ループに縮退して動作継続可能なアーキテクチャとする [MUST]。
 
@@ -82,8 +81,7 @@ Validationし、不完全な場合は即座に差し戻す [MUST]。
 
 - [S2-1] Failure Fingerprint（エラー指紋）による無限修復の防止: Verify/Repair時のエラーログを正規化・ハッシュ化し、同一指紋のエラー
 が連続発生した場合は、即座に自動Repairループを停止し paused_for_replan へ遷移させる [MUST]。
-- [S2-2] 多角的な Circuit Breaker（遮断器）の実装: Taskスキーマの definition_of_abort で定義された閾値（Repair深度、実時間、トーク
-ン予算）を超過した時点でタスクを強制終了させる [MUST]。
+- [S2-2] 多角的な Circuit Breaker（遮断器）の実装: Taskスキーマの definition_of_abort で定義された閾値（Repair深度、実時間）を超過した時点でタスクを強制終了させる [MUST]。
 
 ### Priority S3: 観測性とタスク定義の解像度向上
 
@@ -116,8 +114,7 @@ only レビュアー」としてアサインする [SHOULD]。
 開始)させる [MAY]。
     1. verify.yaml が定義され実行可能であること。
     2. 単一Worker実行またはRepairで一定回数失敗している、またはBloom Taxonomy高難度であること。
-    3. トークン予算・同時実行枠（Admission Control）に余裕があること。
-    4. expected_paths が過度に広すぎない（リポジトリ全体に及ばない）こと。
+    3. expected_paths が過度に広すぎない（リポジトリ全体に及ばない）こと。
 - [B-2] Judge（裁定者）の「Tie-breaker」限定利用: Multi-rolloutの勝者はS1-2の機械的Fitnessで決定する。最優秀LLM（Judge）の介入は、
 「機械スコアが Tie (同点) の場合」に単一候補を採択する Tie-breaker としてのみ許可する [MUST]。
 - [B-3] Graph-based Schedulingの高度化 (将来拡張): 簡易ヒューリスティック(A-4)の運用実績蓄積後、グラフ彩色やシンボル単位の競合予測
