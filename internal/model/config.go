@@ -35,7 +35,8 @@ type Config struct {
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
 	Learnings      LearningsConfig      `yaml:"learnings"`
 	Worktree       WorktreeConfig       `yaml:"worktree"`
-	Skills         SkillsConfig             `yaml:"skills"`
+	Skills           SkillsConfig     `yaml:"skills"`
+	AdmissionControl AdmissionControl `yaml:"admission_control"`
 }
 
 // SkillsConfig controls the skill reference feature for tasks.
@@ -327,6 +328,47 @@ func (l LearningsConfig) EffectiveInjectCount() int {
 // 0 means unlimited (no expiry). The template default is 72.
 func (l LearningsConfig) EffectiveTTLHours() int {
 	return l.TTLHours
+}
+
+// AdmissionControl controls concurrency limits for verify/repair/rollout phases.
+type AdmissionControl struct {
+	MaxConcurrentVerify  int `yaml:"max_concurrent_verify"`
+	MaxConcurrentRepair  int `yaml:"max_concurrent_repair"`
+	MaxConcurrentRollout int `yaml:"max_concurrent_rollout"`
+}
+
+// EffectiveMaxConcurrentVerify returns the configured limit or 2 as default.
+// 0 means use default.
+func (a AdmissionControl) EffectiveMaxConcurrentVerify() int {
+	if a.MaxConcurrentVerify > 0 {
+		return a.MaxConcurrentVerify
+	}
+	return 2
+}
+
+// EffectiveMaxConcurrentRepair returns the configured limit or 1 as default.
+// 0 means use default.
+func (a AdmissionControl) EffectiveMaxConcurrentRepair() int {
+	if a.MaxConcurrentRepair > 0 {
+		return a.MaxConcurrentRepair
+	}
+	return 1
+}
+
+// EffectiveMaxConcurrentRollout returns the configured limit or 1 as default.
+// 0 means use default.
+func (a AdmissionControl) EffectiveMaxConcurrentRollout() int {
+	if a.MaxConcurrentRollout > 0 {
+		return a.MaxConcurrentRollout
+	}
+	return 1
+}
+
+// DefinitionOfAbort defines conditions under which a command should be aborted.
+type DefinitionOfAbort struct {
+	MaxRepairCount            int      `yaml:"max_repair_count"`
+	MaxWallClockSec           int      `yaml:"max_wall_clock_sec"`
+	ExplicitFailureConditions []string `yaml:"explicit_failure_conditions,omitempty"`
 }
 
 // WorktreeConfig controls Worker worktree isolation (default enabled).
@@ -623,6 +665,17 @@ func (c Config) Validate() error {
 	}
 	if c.Skills.AutoCollect.MinCommands != nil && *c.Skills.AutoCollect.MinCommands < 0 {
 		errs = append(errs, fmt.Errorf("skills.auto_collect.min_commands: must be >= 0"))
+	}
+
+	// admission_control: negative values are invalid
+	if c.AdmissionControl.MaxConcurrentVerify < 0 {
+		errs = append(errs, fmt.Errorf("admission_control.max_concurrent_verify: must be >= 0"))
+	}
+	if c.AdmissionControl.MaxConcurrentRepair < 0 {
+		errs = append(errs, fmt.Errorf("admission_control.max_concurrent_repair: must be >= 0"))
+	}
+	if c.AdmissionControl.MaxConcurrentRollout < 0 {
+		errs = append(errs, fmt.Errorf("admission_control.max_concurrent_rollout: must be >= 0"))
 	}
 
 	// quality_gates
