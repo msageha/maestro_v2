@@ -13,8 +13,8 @@ import (
 	"time"
 )
 
-// HandlerFunc is the function signature for command handlers registered on a Server.
-type HandlerFunc func(req *Request) *Response
+// handlerFunc is the function signature for command handlers registered on a Server.
+type handlerFunc func(req *Request) *Response
 
 // defaultMaxConcurrentConns is the default maximum number of concurrent connections.
 const defaultMaxConcurrentConns = 64
@@ -23,7 +23,7 @@ const defaultMaxConcurrentConns = 64
 type Server struct {
 	socketPath  string
 	listener    net.Listener
-	handlers    map[string]HandlerFunc
+	handlers    map[string]handlerFunc
 	mu          sync.RWMutex
 	connTimeout time.Duration
 	maxConns    int
@@ -38,7 +38,7 @@ func NewServer(socketPath string) *Server {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Server{
 		socketPath:  socketPath,
-		handlers:    make(map[string]HandlerFunc),
+		handlers:    make(map[string]handlerFunc),
 		connTimeout: 30 * time.Second,
 		maxConns:    defaultMaxConcurrentConns,
 		ctx:         ctx,
@@ -46,8 +46,8 @@ func NewServer(socketPath string) *Server {
 	}
 }
 
-// Handle registers a HandlerFunc for the given command name.
-func (s *Server) Handle(command string, handler HandlerFunc) {
+// Handle registers a handlerFunc for the given command name.
+func (s *Server) Handle(command string, handler handlerFunc) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.handlers[command] = handler
@@ -123,7 +123,7 @@ func (s *Server) acceptLoop() {
 			log.Printf("connection rejected: max concurrent connections (%d) reached", s.maxConns)
 			// Best-effort error response before closing
 			resp := ErrorResponse(ErrCodeBackpressure, "server at capacity, try again later")
-			if err := WriteFrame(conn, resp); err != nil {
+			if err := writeFrame(conn, resp); err != nil {
 				log.Printf("DEBUG: failed to write backpressure response: %v", err)
 			}
 			if err := conn.Close(); err != nil {
@@ -146,21 +146,21 @@ func (s *Server) handleConn(conn net.Conn) {
 			log.Printf("panic in handleConn: %v\n%s", r, debug.Stack())
 			// Send an error response so the client does not wait indefinitely.
 			resp := ErrorResponse(ErrCodeInternal, fmt.Sprintf("internal server error: panic: %v", r))
-			_ = WriteFrame(conn, resp)
+			_ = writeFrame(conn, resp)
 		}
 	}()
 
 	_ = conn.SetDeadline(time.Now().Add(s.connTimeout))
 
 	var req Request
-	if err := ReadFrame(conn, &req); err != nil {
+	if err := readFrame(conn, &req); err != nil {
 		log.Printf("read request error: %v", err)
 		return
 	}
 
 	resp := s.processRequest(&req)
 
-	if err := WriteFrame(conn, resp); err != nil {
+	if err := writeFrame(conn, resp); err != nil {
 		log.Printf("write response error: %v", err)
 	}
 }

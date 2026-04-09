@@ -20,7 +20,7 @@ func BenchmarkWriteReadFrame(b *testing.B) {
 		{
 			name: "medium",
 			payload: func() *Request {
-				r, _ := NewRequest("task.dispatch", map[string]string{
+				r, _ := newRequest("task.dispatch", map[string]string{
 					"agent_id":   "worker1",
 					"task_id":    "task_123456",
 					"command_id": "cmd_789012",
@@ -41,7 +41,7 @@ func BenchmarkWriteReadFrame(b *testing.B) {
 			go func() {
 				for {
 					var req Request
-					if err := ReadFrame(server, &req); err != nil {
+					if err := readFrame(server, &req); err != nil {
 						errCh <- err
 						return
 					}
@@ -51,7 +51,7 @@ func BenchmarkWriteReadFrame(b *testing.B) {
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				if err := WriteFrame(client, bm.payload); err != nil {
+				if err := writeFrame(client, bm.payload); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -71,7 +71,7 @@ func BenchmarkReadFrame(b *testing.B) {
 
 	go func() {
 		for {
-			if err := WriteFrame(client, req); err != nil {
+			if err := writeFrame(client, req); err != nil {
 				return
 			}
 		}
@@ -81,7 +81,7 @@ func BenchmarkReadFrame(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		var r Request
-		if err := ReadFrame(server, &r); err != nil {
+		if err := readFrame(server, &r); err != nil {
 			b.Fatal(err)
 		}
 	}

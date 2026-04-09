@@ -52,7 +52,7 @@ func FuzzReadFrame(f *testing.F) {
 
 		// Attempt to read a frame — should never panic
 		var req Request
-		err := ReadFrame(server, &req)
+		err := readFrame(server, &req)
 
 		// Wait for writer goroutine to finish
 		<-done
@@ -64,7 +64,7 @@ func FuzzReadFrame(f *testing.F) {
 		// If read succeeded, verify that the request can be re-marshalled
 		_, marshalErr := json.Marshal(&req)
 		if marshalErr != nil {
-			t.Fatalf("successful ReadFrame produced un-marshallable result: %v", marshalErr)
+			t.Fatalf("successful readFrame produced un-marshallable result: %v", marshalErr)
 		}
 	})
 }

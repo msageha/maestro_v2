@@ -41,10 +41,10 @@ func isTransientDialError(err error) bool {
 		errors.Is(err, syscall.ENOENT)
 }
 
-// Send dials the daemon, writes the given Request, and returns the Response.
+// send dials the daemon, writes the given Request, and returns the Response.
 // Transient dial errors (ECONNREFUSED, EAGAIN, ENOENT) are retried up to 3 times
 // with exponential backoff.
-func (c *Client) Send(req *Request) (*Response, error) {
+func (c *Client) send(req *Request) (*Response, error) {
 	var conn net.Conn
 	var dialErr error
 	backoff := 100 * time.Millisecond
@@ -79,12 +79,12 @@ func (c *Client) Send(req *Request) (*Response, error) {
 		return nil, fmt.Errorf("set connection deadline: %w", err)
 	}
 
-	if err := WriteFrame(conn, req); err != nil {
+	if err := writeFrame(conn, req); err != nil {
 		return nil, fmt.Errorf("send request: %w", err)
 	}
 
 	var resp Response
-	if err := ReadFrame(conn, &resp); err != nil {
+	if err := readFrame(conn, &resp); err != nil {
 		return nil, fmt.Errorf("read response: %w", err)
 	}
 
@@ -93,19 +93,19 @@ func (c *Client) Send(req *Request) (*Response, error) {
 
 // SendCommand is a convenience method that creates a Request from the command and params, then sends it.
 func (c *Client) SendCommand(command string, params any) (*Response, error) {
-	req, err := NewRequest(command, params)
+	req, err := newRequest(command, params)
 	if err != nil {
 		return nil, err
 	}
-	return c.Send(req)
+	return c.send(req)
 }
 
-// SendContext behaves like Send but is cancelable via ctx. Cancellation
+// sendContext behaves like send but is cancelable via ctx. Cancellation
 // (including SIGINT propagated through a context) closes the underlying
 // connection so the in-flight dial / read / write returns promptly.
-func (c *Client) SendContext(ctx context.Context, req *Request) (*Response, error) {
+func (c *Client) sendContext(ctx context.Context, req *Request) (*Response, error) {
 	if ctx == nil {
-		return c.Send(req)
+		return c.send(req)
 	}
 
 	dialer := &net.Dialer{Timeout: c.timeout}
@@ -147,7 +147,7 @@ func (c *Client) SendContext(ctx context.Context, req *Request) (*Response, erro
 	}()
 
 	// Propagate ctx cancellation by closing the connection, which unblocks
-	// any in-flight WriteFrame/ReadFrame with a use-of-closed-network-connection
+	// any in-flight writeFrame/readFrame with a use-of-closed-network-connection
 	// error.
 	stop := make(chan struct{})
 	defer close(stop)
@@ -163,7 +163,7 @@ func (c *Client) SendContext(ctx context.Context, req *Request) (*Response, erro
 		return nil, fmt.Errorf("set connection deadline: %w", err)
 	}
 
-	if err := WriteFrame(conn, req); err != nil {
+	if err := writeFrame(conn, req); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
@@ -171,7 +171,7 @@ func (c *Client) SendContext(ctx context.Context, req *Request) (*Response, erro
 	}
 
 	var resp Response
-	if err := ReadFrame(conn, &resp); err != nil {
+	if err := readFrame(conn, &resp); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}
@@ -183,9 +183,9 @@ func (c *Client) SendContext(ctx context.Context, req *Request) (*Response, erro
 
 // SendCommandContext is a convenience method like SendCommand but cancelable via ctx.
 func (c *Client) SendCommandContext(ctx context.Context, command string, params any) (*Response, error) {
-	req, err := NewRequest(command, params)
+	req, err := newRequest(command, params)
 	if err != nil {
 		return nil, err
 	}
-	return c.SendContext(ctx, req)
+	return c.sendContext(ctx, req)
 }
