@@ -115,6 +115,12 @@ func (d *Daemon) Shutdown() {
 			}
 		}
 
+		// Close review dispatcher: waits for in-flight reviews, then closes
+		// the results channel so monitorReviewResults exits cleanly.
+		if d.reviewDispatcher != nil {
+			d.reviewDispatcher.Close()
+		}
+
 		// 3. Cancel context — forces loops and handlers to exit.
 		d.cancel()
 

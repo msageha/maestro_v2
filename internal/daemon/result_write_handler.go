@@ -202,6 +202,12 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 		}
 	}
 
+	// Advisory review dispatch: non-blocking, best-effort.
+	// Only dispatch for completed tasks when reviews are enabled and the task qualifies.
+	if resultStatus == model.StatusCompleted && d.reviewDispatcher != nil {
+		d.dispatchReviewIfEligible(params)
+	}
+
 	// Phase C: Trigger scan (best effort dependency unblocking).
 	// spawnTracked atomically checks shuttingDown and admits the goroutine to
 	// the errgroup under egMu, closing the race window where Shutdown could
@@ -933,4 +939,64 @@ func (a *API) writeSkillCandidates(params ResultWriteParams) error {
 
 	d.log(LogLevelInfo, "skill_candidates_written command=%s added=%d total=%d", params.CommandID, added, len(candidates))
 	return nil
+}
+
+// dispatchReviewIfEligible checks whether the completed task qualifies for
+// an advisory review and dispatches it asynchronously. Failures are logged
+// but never block the main result_write flow.
+func (d *Daemon) dispatchReviewIfEligible(params ResultWriteParams) {
+	// Load the task from the queue to get BloomLevel and other metadata
+	queuePath := filepath.Join(d.maestroDir, "queue", params.Reporter+".yaml")
+	data, err := os.ReadFile(queuePath)
+	if err != nil {
+		d.log(LogLevelDebug, "review_dispatch_skip task=%s reason=queue_read_error: %v", params.TaskID, err)
+		return
+	}
+
+	var tq model.TaskQueue
+	if err := yamlv3.Unmarshal(data, &tq); err != nil {
+		d.log(LogLevelDebug, "review_dispatch_skip task=%s reason=queue_parse_error: %v", params.TaskID, err)
+		return
+	}
+
+	var task *model.Task
+	for i := range tq.Tasks {
+		if tq.Tasks[i].ID == params.TaskID {
+			task = &tq.Tasks[i]
+			break
+		}
+	}
+	if task == nil {
+		return
+	}
+
+	if !d.reviewDispatcher.ShouldReview(*task) {
+		return
+	}
+
+	// Build a minimal diff content from the summary and file list
+	diffContent := params.Summary
+	if len(params.FilesChanged) > 0 {
+		diffContent += "\n\nFiles changed: " + strings.Join(params.FilesChanged, ", ")
+	}
+
+	// Record task→command mapping for the results monitor goroutine.
+	// Keyed by taskID since each task gets at most one review.
+	d.reviewReqMu.Lock()
+	d.reviewRequests[params.TaskID] = reviewTaskInfo{
+		taskID:    params.TaskID,
+		commandID: params.CommandID,
+	}
+	d.reviewReqMu.Unlock()
+
+	if err := d.reviewDispatcher.Dispatch(d.ctx, *task, diffContent); err != nil {
+		d.log(LogLevelWarn, "review_dispatch_failed task=%s error=%v", params.TaskID, err)
+		d.reviewReqMu.Lock()
+		delete(d.reviewRequests, params.TaskID)
+		d.reviewReqMu.Unlock()
+		return
+	}
+
+	d.log(LogLevelInfo, "review_dispatched task=%s command=%s bloom_level=%d",
+		params.TaskID, params.CommandID, task.BloomLevel)
 }
