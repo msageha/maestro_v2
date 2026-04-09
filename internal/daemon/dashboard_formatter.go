@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -178,7 +179,11 @@ func (f *DashboardFormatter) parseLogFile(data *DashboardData) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() {
+		if cerr := file.Close(); cerr != nil {
+			log.Printf("warning: close %s: %v", f.logPath, cerr)
+		}
+	}()
 
 	// Tail-read optimization: only read the last portion of the file
 	// to avoid O(n) full scans as log files grow.

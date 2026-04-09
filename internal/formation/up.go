@@ -30,20 +30,24 @@ type UpOptions struct {
 var ErrSessionExists = fmt.Errorf("maestro session already exists (use --force to recreate)")
 
 // RunUp executes the 'maestro up' command.
-func RunUp(opts UpOptions) error {
+func RunUp(opts UpOptions) (err error) {
 	// Set tmux session name from project config
 	tmux.SetSessionName("maestro-" + opts.Config.Project.Name)
 
 	// Initialize tmux debug logger for session lifecycle diagnostics.
 	tmuxLogPath := filepath.Join(opts.MaestroDir, "logs", "tmux_debug.log")
-	if err := os.MkdirAll(filepath.Dir(tmuxLogPath), 0755); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: failed to create tmux debug log directory: %v\n", err)
+	if mkErr := os.MkdirAll(filepath.Dir(tmuxLogPath), 0755); mkErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to create tmux debug log directory: %v\n", mkErr)
 	} else {
-		tmuxLogFile, err := os.OpenFile(tmuxLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to open tmux debug log: %v\n", err)
+		tmuxLogFile, openErr := os.OpenFile(tmuxLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if openErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to open tmux debug log: %v\n", openErr)
 		} else {
-			defer tmuxLogFile.Close()
+			defer func() {
+				if cerr := tmuxLogFile.Close(); cerr != nil {
+					err = errors.Join(err, fmt.Errorf("close tmux debug log: %w", cerr))
+				}
+			}()
 			tmuxLogger := log.New(tmuxLogFile, "", log.LstdFlags|log.Lmicroseconds)
 			tmux.SetDebugLogger(tmuxLogger)
 			defer tmux.SetDebugLogger(nil)
