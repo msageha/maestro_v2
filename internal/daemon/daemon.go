@@ -143,7 +143,7 @@ func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Close
 	}
 
 	// Initialize components with back-pointers
-	d.api = &API{d: d}
+	d.api = &API{d: d, fileStore: newFSResultFileStore(maestroDir)}
 	d.watch = &WatchLoop{d: d, fsSem: make(chan struct{}, 8)}
 	d.bridge = &EventBridge{d: d}
 

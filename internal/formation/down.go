@@ -52,8 +52,7 @@ func RunDown(maestroDir string, cfg model.Config) error {
 	}
 
 	// Send shutdown request to daemon
-	client := uds.NewClient(socketPath)
-	client.SetTimeout(5 * time.Second)
+	client := newUDSClient(socketPath, 5*time.Second)
 
 	resp, err := client.SendCommand("shutdown", nil)
 	if err != nil {
@@ -93,7 +92,7 @@ func RunDown(maestroDir string, cfg model.Config) error {
 		pid := validateDaemonPID(maestroDir)
 		pidPath := filepath.Join(maestroDir, "daemon.pid")
 		if pid > 0 {
-			origStartTime := processStartTime(pid)
+			origStartTime := procMgr.StartTime(pid)
 			sameProcess := daemonIdentityChecker(maestroDir, pid, origStartTime)
 			result, termErr := terminateProcess(pid, sameProcess, 5*time.Second)
 			if termErr != nil {
@@ -186,7 +185,7 @@ func cleanupStalePID(maestroDir string) {
 		return
 	}
 
-	origStartTime := processStartTime(pid)
+	origStartTime := procMgr.StartTime(pid)
 	sameProcess := daemonIdentityChecker(maestroDir, pid, origStartTime)
 	result, _ := terminateProcess(pid, sameProcess, 5*time.Second)
 	if result == terminateStopped {
