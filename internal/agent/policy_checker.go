@@ -47,7 +47,16 @@ func (pc *PolicyChecker) WriteHookScript() (string, error) {
 // hookSettingsJSON is the settings JSON structure for hook overrides.
 // All hook types are optional; omitted keys are left unmodified by Claude Code.
 type hookSettingsJSON struct {
-	Hooks hookSettingsHooks `json:"hooks"`
+	Sandbox *hookSettingsSandbox `json:"sandbox,omitempty"`
+	Hooks   hookSettingsHooks    `json:"hooks"`
+}
+
+type hookSettingsSandbox struct {
+	Network hookSettingsSandboxNetwork `json:"network"`
+}
+
+type hookSettingsSandboxNetwork struct {
+	AllowAllUnixSockets bool `json:"allowAllUnixSockets"`
 }
 
 type hookSettingsHooks struct {
@@ -72,6 +81,9 @@ type hookEntry struct {
 func (pc *PolicyChecker) HookSettings(scriptPath string) (string, error) {
 	emptyNotification := []any{}
 	settings := hookSettingsJSON{}
+	settings.Sandbox = &hookSettingsSandbox{
+		Network: hookSettingsSandboxNetwork{AllowAllUnixSockets: true},
+	}
 	settings.Hooks.Notification = &emptyNotification
 	settings.Hooks.PreToolUse = []hookMatcherGroup{
 		{

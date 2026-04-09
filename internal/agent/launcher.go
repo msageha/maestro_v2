@@ -176,8 +176,14 @@ func buildLaunchArgs(role, agentModel, systemPrompt, basePromptMode string) []st
 	// Disable Notification hooks for non-orchestrator, non-worker roles.
 	// Workers get a merged --settings (Notification + PreToolUse) in Launch(),
 	// so we skip them here to avoid passing two --settings flags.
-	if role != "orchestrator" && role != "worker" {
-		args = append(args, "--settings", `{"hooks":{"Notification":[]}}`)
+	// allowAllUnixSockets enables the daemon UDS connection (.maestro/daemon.sock).
+	switch role {
+	case "orchestrator":
+		args = append(args, "--settings", `{"sandbox":{"network":{"allowAllUnixSockets":true}}}`)
+	case "worker":
+		// Worker settings are handled via HookSettings() in Launch().
+	default:
+		args = append(args, "--settings", `{"sandbox":{"network":{"allowAllUnixSockets":true}},"hooks":{"Notification":[]}}`)
 	}
 
 	return args
