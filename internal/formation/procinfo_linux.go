@@ -10,7 +10,7 @@ import (
 // processStartTime returns a monotonic token representing when pid was started.
 // On Linux this reads field 22 (starttime) from /proc/<pid>/stat.
 // Returns "" if the process info is unavailable.
-func processStartTime(pid int) string {
+func platformProcessStartTime(pid int) string {
 	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
 		return ""

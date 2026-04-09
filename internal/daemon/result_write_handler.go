@@ -262,41 +262,74 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 	defer d.lockMap.Unlock(workerLockKey)
 
 	// 1. Load result file and check idempotency
-	resultPath := filepath.Join(d.maestroDir, "results", params.Reporter+".yaml")
-	var rf model.TaskResultFile
-	resultData, err := os.ReadFile(resultPath)
-	if err == nil {
-		if err := yamlv3.Unmarshal(resultData, &rf); err != nil {
-			return nil, &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("parse results file: %v", err)}
-		}
-	} else if !os.IsNotExist(err) {
-		return nil, &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("read results file: %v", err)}
+	rf, err := a.fileStore.LoadResultFile(params.Reporter)
+	if err != nil {
+		return nil, &resultWriteError{uds.ErrCodeInternal, err.Error()}
 	}
 
+	if idempotentID, err := a.checkResultIdempotency(&rf, params, resultStatus); err != nil {
+		return nil, err
+	} else if idempotentID != "" {
+		return &resultWritePhaseAResult{resultID: idempotentID}, nil
+	}
+
+	// 2. Fencing verification
+	tq, err := a.fileStore.LoadQueueFile(params.Reporter)
+	if err != nil {
+		return nil, &resultWriteError{uds.ErrCodeInternal, err.Error()}
+	}
+
+	taskIdx, idempotentID, err := a.validateFencing(&tq, &rf, params, resultStatus)
+	if err != nil {
+		return nil, err
+	}
+	if idempotentID != "" {
+		return &resultWritePhaseAResult{resultID: idempotentID}, nil
+	}
+
+	// 3. Validate state existence and task registration
+	if err := a.validateStateRegistration(params); err != nil {
+		return nil, err
+	}
+
+	// 4. Append result entry
+	resultID, err := a.appendResultEntry(&rf, params, resultStatus)
+	if err != nil {
+		return nil, err
+	}
+
+	// 5. Check for retry if task failed
+	retryTask := a.evaluateRetry(&tq.Tasks[taskIdx], params, resultStatus)
+
+	// 6. Update queue entry to terminal
+	now := d.clock.Now().UTC().Format(time.RFC3339)
+	queueWriteFailed := a.updateQueueState(&tq, taskIdx, params, resultStatus, resultID, now)
+
+	return &resultWritePhaseAResult{resultID: resultID, retryTask: retryTask, queueWriteFailed: queueWriteFailed}, nil
+}
+
+// checkResultIdempotency checks whether a result for the given task already
+// exists in the result file. Returns the existing result ID for an idempotent
+// match, "" if no prior result exists, or an error for status conflicts.
+func (a *API) checkResultIdempotency(rf *model.TaskResultFile, params ResultWriteParams, resultStatus model.Status) (string, error) {
 	for _, r := range rf.Results {
 		if r.TaskID == params.TaskID {
 			if r.Status == resultStatus {
-				// Same status — idempotent success
-				return &resultWritePhaseAResult{resultID: r.ID}, nil
+				return r.ID, nil
 			}
-			// Different status — anomaly
-			return nil, &resultWriteError{uds.ErrCodeDuplicate,
+			return "", &resultWriteError{uds.ErrCodeDuplicate,
 				fmt.Sprintf("task %s already has result with status %s, cannot report %s",
 					params.TaskID, r.Status, resultStatus)}
 		}
 	}
+	return "", nil
+}
 
-	// 2. Fencing verification
-	queuePath := filepath.Join(d.maestroDir, "queue", params.Reporter+".yaml")
-	var tq model.TaskQueue
-	queueData, err := os.ReadFile(queuePath)
-	if err != nil {
-		return nil, &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("read worker queue: %v", err)}
-	}
-	if err := yamlv3.Unmarshal(queueData, &tq); err != nil {
-		return nil, &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("parse worker queue: %v", err)}
-	}
-
+// validateFencing finds the task in the queue and verifies fencing invariants
+// (command ID consistency, terminal idempotency, in_progress status, lease
+// epoch, lease ownership). Returns the task index and, for terminal-idempotent
+// matches, the existing result ID (caller should return early).
+func (a *API) validateFencing(tq *model.TaskQueue, rf *model.TaskResultFile, params ResultWriteParams, resultStatus model.Status) (int, string, error) {
 	taskIdx := -1
 	for i, task := range tq.Tasks {
 		if task.ID == params.TaskID {
@@ -305,15 +338,15 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 		}
 	}
 	if taskIdx == -1 {
-		return nil, &resultWriteError{uds.ErrCodeNotFound,
+		return -1, "", &resultWriteError{uds.ErrCodeNotFound,
 			fmt.Sprintf("task %s not found in queue %s", params.TaskID, params.Reporter)}
 	}
 
 	queueTask := &tq.Tasks[taskIdx]
 
-	// Command ID consistency check: queue task's command_id must match request
+	// Command ID consistency check
 	if queueTask.CommandID != params.CommandID {
-		return nil, &resultWriteError{uds.ErrCodeValidation,
+		return -1, "", &resultWriteError{uds.ErrCodeValidation,
 			fmt.Sprintf("command_id mismatch: queue task has %q, request has %q",
 				queueTask.CommandID, params.CommandID)}
 	}
@@ -323,75 +356,76 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 		if queueTask.Status == resultStatus {
 			for _, r := range rf.Results {
 				if r.TaskID == params.TaskID {
-					return &resultWritePhaseAResult{resultID: r.ID}, nil
+					return taskIdx, r.ID, nil
 				}
 			}
 			// Terminal in queue but no result entry — proceed to write result
 		} else {
-			return nil, &resultWriteError{uds.ErrCodeDuplicate,
+			return -1, "", &resultWriteError{uds.ErrCodeDuplicate,
 				fmt.Sprintf("task %s already terminal with status %s in queue", params.TaskID, queueTask.Status)}
 		}
 	}
 
 	// Fencing: task must be in_progress
 	if queueTask.Status != model.StatusInProgress {
-		return nil, &resultWriteError{uds.ErrCodeFencingReject,
+		return -1, "", &resultWriteError{uds.ErrCodeFencingReject,
 			fmt.Sprintf("task %s status is %s, expected in_progress", params.TaskID, queueTask.Status)}
 	}
 
 	// Fencing: lease epoch must match
 	if queueTask.LeaseEpoch != params.LeaseEpoch {
-		return nil, &resultWriteError{uds.ErrCodeFencingReject,
+		return -1, "", &resultWriteError{uds.ErrCodeFencingReject,
 			fmt.Sprintf("task %s lease_epoch mismatch: queue=%d, request=%d",
 				params.TaskID, queueTask.LeaseEpoch, params.LeaseEpoch)}
 	}
 
-	// Fencing: lease must be held. The task is already looked up from queue/{reporter}.yaml
-	// and lease_epoch matches, so the reporter identity is verified. lease_owner stores
-	// "daemon:{pid}" per spec §5.8.1, not the agent ID.
+	// Fencing: lease must be held
 	if queueTask.LeaseOwner == nil {
-		return nil, &resultWriteError{uds.ErrCodeFencingReject,
+		return -1, "", &resultWriteError{uds.ErrCodeFencingReject,
 			fmt.Sprintf("task %s has no lease_owner (not dispatched)", params.TaskID)}
 	}
 
-	// 2b. Validate state existence and task registration (mandatory)
-	statePath := filepath.Join(d.maestroDir, "state", "commands", params.CommandID+".yaml")
-	stateData, stateErr := os.ReadFile(statePath)
-	if stateErr != nil {
-		if os.IsNotExist(stateErr) {
-			return nil, &resultWriteError{uds.ErrCodeValidation,
+	return taskIdx, "", nil
+}
+
+// validateStateRegistration verifies that the command state file exists and
+// the task is registered within it.
+func (a *API) validateStateRegistration(params ResultWriteParams) error {
+	preState, err := a.fileStore.LoadCommandState(params.CommandID)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &resultWriteError{uds.ErrCodeValidation,
 				fmt.Sprintf("state not found for command %s", params.CommandID)}
 		}
-		return nil, &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("read state: %v", stateErr)}
-	}
-	var preState model.CommandState
-	if err := yamlv3.Unmarshal(stateData, &preState); err != nil {
-		return nil, &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("parse state: %v", err)}
+		return &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("read state: %v", err)}
 	}
 	if preState.TaskStates == nil {
-		return nil, &resultWriteError{uds.ErrCodeValidation,
+		return &resultWriteError{uds.ErrCodeValidation,
 			fmt.Sprintf("task %s not registered in state for command %s (no tasks registered)",
 				params.TaskID, params.CommandID)}
 	}
 	if _, registered := preState.TaskStates[params.TaskID]; !registered {
-		return nil, &resultWriteError{uds.ErrCodeValidation,
+		return &resultWriteError{uds.ErrCodeValidation,
 			fmt.Sprintf("task %s not registered in state for command %s",
 				params.TaskID, params.CommandID)}
 	}
+	return nil
+}
 
-	// 3. Generate result ID
+// appendResultEntry generates a result ID, appends the new result entry to
+// the result file, and persists it to disk via the FileStore.
+func (a *API) appendResultEntry(rf *model.TaskResultFile, params ResultWriteParams, resultStatus model.Status) (string, error) {
 	resultID, err := model.GenerateID(model.IDTypeResult)
 	if err != nil {
-		return nil, &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("generate result ID: %v", err)}
+		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("generate result ID: %v", err)}
 	}
 
-	// 4. Append to results file
 	if rf.SchemaVersion == 0 {
 		rf.SchemaVersion = 1
 		rf.FileType = "result_task"
 	}
 
-	now := d.clock.Now().UTC().Format(time.RFC3339)
+	now := a.d.clock.Now().UTC().Format(time.RFC3339)
 	rf.Results = append(rf.Results, model.TaskResult{
 		ID:                     resultID,
 		TaskID:                 params.TaskID,
@@ -405,57 +439,61 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 		CreatedAt:              now,
 	})
 
-	if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
-		return nil, &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("write results file: %v", err)}
+	if err := a.fileStore.SaveResultFile(params.Reporter, *rf); err != nil {
+		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("write results file: %v", err)}
 	}
-	a.recordSelfWrite(resultPath, rf)
+	a.recordSelfWrite(a.fileStore.ResultFilePath(params.Reporter), *rf)
 
-	// 5. Check for retry if task failed (but don't schedule yet)
-	var retryTask *model.Task
-	if resultStatus == model.StatusFailed && params.ExitCode != nil {
-		retryHandler := NewTaskRetryHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
-		shouldRetry, reason := retryHandler.ShouldRetryTask(queueTask, *params.ExitCode, params.RetrySafe)
+	return resultID, nil
+}
 
-		if shouldRetry {
-			// Create retry task
-			rt, err := retryHandler.CreateRetryTask(queueTask, params.Reporter, *params.ExitCode)
-			if err != nil {
-				d.log(LogLevelError, "create_retry_task_failed task=%s error=%v", params.TaskID, err)
-			} else {
-				retryTask = rt
-				// Don't add to queue yet - wait until after queue write succeeds
-			}
-		} else {
-			d.log(LogLevelInfo, "task_retry_skipped task=%s reason=%s", params.TaskID, reason)
-		}
+// evaluateRetry checks whether a failed task should be retried and creates
+// the retry task if so. Returns nil if no retry is warranted.
+func (a *API) evaluateRetry(queueTask *model.Task, params ResultWriteParams, resultStatus model.Status) *model.Task {
+	if resultStatus != model.StatusFailed || params.ExitCode == nil {
+		return nil
+	}
+	d := a.d
+	retryHandler := NewTaskRetryHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
+	shouldRetry, reason := retryHandler.ShouldRetryTask(queueTask, *params.ExitCode, params.RetrySafe)
+
+	if !shouldRetry {
+		d.log(LogLevelInfo, "task_retry_skipped task=%s reason=%s", params.TaskID, reason)
+		return nil
 	}
 
-	// 6. Update queue entry to terminal
+	rt, err := retryHandler.CreateRetryTask(queueTask, params.Reporter, *params.ExitCode)
+	if err != nil {
+		d.log(LogLevelError, "create_retry_task_failed task=%s error=%v", params.TaskID, err)
+		return nil
+	}
+	return rt
+}
+
+// updateQueueState transitions the queue task to its terminal status and
+// persists the queue file. Returns true if the queue write failed (H2 sticky
+// error scenario).
+func (a *API) updateQueueState(tq *model.TaskQueue, taskIdx int, params ResultWriteParams, resultStatus model.Status, resultID string, now string) bool {
+	d := a.d
+	queueTask := &tq.Tasks[taskIdx]
 	queueTask.Status = resultStatus
 	queueTask.LeaseOwner = nil
 	queueTask.LeaseExpiresAt = nil
 	queueTask.UpdatedAt = now
 
-	queueWriteFailed := false
-	if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
+	if err := a.fileStore.SaveQueueFile(params.Reporter, *tq); err != nil {
 		// Result is already committed — retry queue write once before giving up.
-		// If still failing, persist a sticky error in command state (H2) so the
-		// R1 reconciler can repair the result-terminal/queue-in_progress mismatch
-		// durably (across daemon restarts) instead of relying on the next
-		// periodic scan reading the bare log line.
 		d.log(LogLevelWarn, "result_write queue_write_failed task=%s, retrying: %v", params.TaskID, err)
-		if retryErr := yamlutil.AtomicWrite(queuePath, tq); retryErr != nil {
+		if retryErr := a.fileStore.SaveQueueFile(params.Reporter, *tq); retryErr != nil {
 			d.log(LogLevelError, "result_write queue_write_retry_failed task=%s result=%s: %v (sticky error recorded; R1 reconciler will repair)",
 				params.TaskID, resultID, retryErr)
-			queueWriteFailed = true
-		} else {
-			a.recordSelfWrite(queuePath, tq)
+			return true
 		}
-	} else {
-		a.recordSelfWrite(queuePath, tq)
+		a.recordSelfWrite(a.fileStore.QueueFilePath(params.Reporter), *tq)
+		return false
 	}
-
-	return &resultWritePhaseAResult{resultID: resultID, retryTask: retryTask, queueWriteFailed: queueWriteFailed}, nil
+	a.recordSelfWrite(a.fileStore.QueueFilePath(params.Reporter), *tq)
+	return false
 }
 
 func (a *API) resultWritePhaseB(params ResultWriteParams, resultID string, resultStatus model.Status, queueWriteFailed bool) error {
