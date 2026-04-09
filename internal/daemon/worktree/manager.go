@@ -255,7 +255,7 @@ func (wm *Manager) CommitWorkerChanges(commandID, workerID, message string) erro
 
 	ws := wm.findWorker(state, workerID)
 	if ws == nil {
-		return fmt.Errorf("worker %s not found in command %s", workerID, commandID)
+		return fmt.Errorf("worker %s in command %s: %w", workerID, commandID, model.ErrWorkerNotFound)
 	}
 
 	// Check if there are changes to commit
@@ -500,7 +500,7 @@ func (wm *Manager) DiscardWorkerChanges(commandID, workerID string) error {
 
 	ws := wm.findWorker(state, workerID)
 	if ws == nil {
-		return fmt.Errorf("worker %s not found in command %s", workerID, commandID)
+		return fmt.Errorf("worker %s in command %s: %w", workerID, commandID, model.ErrWorkerNotFound)
 	}
 
 	// Tripwire: refuse to run destructive git ops outside the project root.

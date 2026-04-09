@@ -85,6 +85,15 @@ func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string, taskQueues 
 		return qh.collectImplicitWorktreeMerge(commandID, cmdState, taskQueues, workerPurposes)
 	}
 
+	// Build workerIDs once outside the phase loop
+	workerIDs := make([]string, 0, len(cmdState.Workers))
+	for _, ws := range cmdState.Workers {
+		workerIDs = append(workerIDs, ws.WorkerID)
+	}
+	if len(workerIDs) == 0 {
+		return nil
+	}
+
 	var items []worktreeMergeItem
 	for _, phase := range phases {
 		if string(phase.Status) != "completed" {
@@ -98,15 +107,6 @@ func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string, taskQueues 
 		}
 		// Only merge if this phase has tasks
 		if len(phase.RequiredTaskIDs) == 0 {
-			continue
-		}
-
-		// Use only workers that actually have worktrees
-		var workerIDs []string
-		for _, ws := range cmdState.Workers {
-			workerIDs = append(workerIDs, ws.WorkerID)
-		}
-		if len(workerIDs) == 0 {
 			continue
 		}
 

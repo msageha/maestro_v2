@@ -33,7 +33,7 @@ func (r *PlanStateReader) GetTaskState(commandID, taskID string) (model.Status, 
 
 	status, ok := state.TaskStates[taskID]
 	if !ok {
-		return "", fmt.Errorf("task %s not found in command %s", taskID, commandID)
+		return "", fmt.Errorf("task %s in command %s: %w", taskID, commandID, model.ErrTaskNotFound)
 	}
 	return status, nil
 }
@@ -125,32 +125,27 @@ func (r *PlanStateReader) ApplyPhaseTransition(commandID, phaseID string, newSta
 	}
 
 	now := time.Now().UTC().Format(time.RFC3339)
-	found := false
-	for i := range state.Phases {
-		if state.Phases[i].PhaseID == phaseID {
-			found = true
-			if err := model.ValidatePhaseTransition(state.Phases[i].Status, newStatus); err != nil {
-				return fmt.Errorf("phase %s in command %s: %w", phaseID, commandID, err)
-			}
-			state.Phases[i].Status = newStatus
-			if model.IsPhaseTerminal(newStatus) {
-				state.Phases[i].CompletedAt = &now
-			}
-			if newStatus == model.PhaseStatusActive {
-				state.Phases[i].ActivatedAt = &now
-			}
-			if newStatus == model.PhaseStatusAwaitingFill {
-				if state.Phases[i].Constraints != nil && state.Phases[i].Constraints.TimeoutMinutes > 0 {
-					deadline := time.Now().UTC().Add(time.Duration(state.Phases[i].Constraints.TimeoutMinutes) * time.Minute).Format(time.RFC3339)
-					state.Phases[i].FillDeadlineAt = &deadline
-				}
-			}
-			break
-		}
-	}
-
+	idx, found := state.PhaseIndex(phaseID)
 	if !found {
 		return fmt.Errorf("phase %s in command %s: %w", phaseID, commandID, core.ErrPhaseNotFound)
+	}
+
+	p := &state.Phases[idx]
+	if err := model.ValidatePhaseTransition(p.Status, newStatus); err != nil {
+		return fmt.Errorf("phase %s in command %s: %w", phaseID, commandID, err)
+	}
+	p.Status = newStatus
+	if model.IsPhaseTerminal(newStatus) {
+		p.CompletedAt = &now
+	}
+	if newStatus == model.PhaseStatusActive {
+		p.ActivatedAt = &now
+	}
+	if newStatus == model.PhaseStatusAwaitingFill {
+		if p.Constraints != nil && p.Constraints.TimeoutMinutes > 0 {
+			deadline := time.Now().UTC().Add(time.Duration(p.Constraints.TimeoutMinutes) * time.Minute).Format(time.RFC3339)
+			p.FillDeadlineAt = &deadline
+		}
 	}
 
 	state.UpdatedAt = now
@@ -173,7 +168,7 @@ func (r *PlanStateReader) UpdateTaskState(commandID, taskID string, newStatus mo
 
 	// Verify taskID is a known task (exists in required, optional, or system commit)
 	if !isKnownTaskID(state, taskID) {
-		return fmt.Errorf("task %s not found in command %s: unknown task ID", taskID, commandID)
+		return fmt.Errorf("task %s in command %s: %w", taskID, commandID, model.ErrTaskNotFound)
 	}
 
 	if currentStatus, exists := state.TaskStates[taskID]; exists {

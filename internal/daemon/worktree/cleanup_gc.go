@@ -188,14 +188,23 @@ func (wm *Manager) GC() error {
 		return nil
 	}
 
-	// Load remaining state files once and cache for orphan check + missing worktree logging
+	// Reuse already-loaded states from the first loop (TTL pass) and load any
+	// new entries that appeared since then (e.g. concurrent creation).
+	// This eliminates the second ReadDir + loadState round-trip.
+	cachedStates := make(map[string]*model.WorktreeCommandState, len(allStates))
+	for _, se := range allStates {
+		cachedStates[se.commandID] = se.state
+	}
+	// Pick up entries not covered by allStates (they were TTL-cleaned or skipped)
 	remainingEntries, _ := os.ReadDir(stateDir)
-	cachedStates := make(map[string]*model.WorktreeCommandState, len(remainingEntries))
 	for _, entry := range remainingEntries {
 		if !strings.HasSuffix(entry.Name(), ".yaml") {
 			continue
 		}
 		cmdID := strings.TrimSuffix(entry.Name(), ".yaml")
+		if _, exists := cachedStates[cmdID]; exists {
+			continue
+		}
 		st, loadErr := wm.loadStateUnlocked(cmdID)
 		if loadErr != nil {
 			continue
