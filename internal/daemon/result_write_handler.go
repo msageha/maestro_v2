@@ -91,6 +91,15 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 			fmt.Sprintf("state update failed: %v (result %s committed, run 'maestro plan rebuild' to fix)", err, resultID))
 	}
 
+	// Fallback tracking: record success/failure for worker health monitoring.
+	if d.fallbackMgr != nil {
+		if resultStatus == model.StatusCompleted {
+			d.fallbackMgr.RecordSuccess(params.Reporter)
+		} else if resultStatus == model.StatusFailed {
+			d.fallbackMgr.RecordFailure(params.Reporter)
+		}
+	}
+
 	// Retry registration (state then queue — correct lock order).
 	// Runs after phaseA has released queue+result locks, so acquiring
 	// state(L2) then queue(L1) does not violate canonical order.

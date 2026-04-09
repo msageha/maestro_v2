@@ -37,6 +37,7 @@ type Config struct {
 	Worktree       WorktreeConfig       `yaml:"worktree"`
 	Skills           SkillsConfig     `yaml:"skills"`
 	AdmissionControl AdmissionControl `yaml:"admission_control"`
+	Fallback         Fallback         `yaml:"fallback"`
 }
 
 // SkillsConfig controls the skill reference feature for tasks.
@@ -364,11 +365,44 @@ func (a AdmissionControl) EffectiveMaxConcurrentRollout() int {
 	return 1
 }
 
-// DefinitionOfAbort defines conditions under which a command should be aborted.
-type DefinitionOfAbort struct {
-	MaxRepairCount            int      `yaml:"max_repair_count"`
-	MaxWallClockSec           int      `yaml:"max_wall_clock_sec"`
-	ExplicitFailureConditions []string `yaml:"explicit_failure_conditions,omitempty"`
+// Fallback controls degraded-mode behavior when workers experience consecutive failures.
+type Fallback struct {
+	Enabled                     bool `yaml:"enabled"`
+	ConsecutiveFailureThreshold int  `yaml:"consecutive_failure_threshold"`
+	RecoveryCheckIntervalSec    int  `yaml:"recovery_check_interval_sec"`
+	MinHealthyDurationSec       int  `yaml:"min_healthy_duration_sec"`
+}
+
+// EffectiveEnabled returns the configured enabled flag (default false).
+func (f Fallback) EffectiveEnabled() bool {
+	return f.Enabled
+}
+
+// EffectiveConsecutiveFailureThreshold returns the configured threshold or 5 as default.
+// 0 means use default.
+func (f Fallback) EffectiveConsecutiveFailureThreshold() int {
+	if f.ConsecutiveFailureThreshold > 0 {
+		return f.ConsecutiveFailureThreshold
+	}
+	return 5
+}
+
+// EffectiveRecoveryCheckIntervalSec returns the configured interval or 60 as default.
+// 0 means use default.
+func (f Fallback) EffectiveRecoveryCheckIntervalSec() int {
+	if f.RecoveryCheckIntervalSec > 0 {
+		return f.RecoveryCheckIntervalSec
+	}
+	return 60
+}
+
+// EffectiveMinHealthyDurationSec returns the configured duration or 120 as default.
+// 0 means use default.
+func (f Fallback) EffectiveMinHealthyDurationSec() int {
+	if f.MinHealthyDurationSec > 0 {
+		return f.MinHealthyDurationSec
+	}
+	return 120
 }
 
 // WorktreeConfig controls Worker worktree isolation (default enabled).
@@ -676,6 +710,17 @@ func (c Config) Validate() error {
 	}
 	if c.AdmissionControl.MaxConcurrentRollout < 0 {
 		errs = append(errs, fmt.Errorf("admission_control.max_concurrent_rollout: must be >= 0"))
+	}
+
+	// fallback
+	if c.Fallback.ConsecutiveFailureThreshold < 0 {
+		errs = append(errs, fmt.Errorf("fallback.consecutive_failure_threshold: must be >= 0"))
+	}
+	if c.Fallback.RecoveryCheckIntervalSec < 0 {
+		errs = append(errs, fmt.Errorf("fallback.recovery_check_interval_sec: must be >= 0"))
+	}
+	if c.Fallback.MinHealthyDurationSec < 0 {
+		errs = append(errs, fmt.Errorf("fallback.min_healthy_duration_sec: must be >= 0"))
 	}
 
 	// quality_gates
