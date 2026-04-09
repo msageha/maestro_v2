@@ -120,6 +120,65 @@ only レビュアー」としてアサインする [SHOULD]。
 - [B-3] Graph-based Schedulingの高度化 (将来拡張): 簡易ヒューリスティック(A-4)の運用実績蓄積後、グラフ彩色やシンボル単位の競合予測
 アルゴリズムの導入を検討する [MAY]。
 
+### 4.5. 実装フェーズ C: Agent—Daemon 責務境界の確立と適応的制御（Phase B完了後）
+
+Phase A–B で確立した群知能基盤の上に、決定論的制御と LLM 推論の責務境界を明確にし、適応的な制御機構を段階的に導入する。
+
+#### 4.5.1. 責務境界原則 (Responsibility Boundary Principles)
+
+Phase C の全機能設計において、以下の責務分割原則を適用する。
+
+1. **決定論的処理の Daemon 集約**: LLM 推論を必要としない決定論的処理（数値計算・統計処理・状態管理・プロセス管理）は Daemon が担う [MUST]。Agent に機械的計算を委ねてはならない。
+2. **Agent 責務の意味的判断限定**: Planner の責務は意味的判断（タスク分解・品質評価の解釈・設計方針策定）に限定する [SHOULD]。構造的・数値的メトリクスの計算を Planner に委ねてはならない。
+3. **Daemon 前処理—Agent 判断パターン**: 構造的・数値的メトリクスは Daemon が前処理し、Agent には計算済みの結果のみを提供する [SHOULD]。Agent は提供された指標に基づき意味的判断を行う。
+
+#### 4.5.2. Phase C 機能一覧と責務割当 (Feature Responsibility Matrix)
+
+各機能について「判断主体」（何をすべきか決める者）と「実行主体」（実際に処理を行う者）を明記する。
+
+| ID | 機能 | 判断主体 | 実行主体 | Daemon移譲度 | 根拠 |
+|----|------|---------|---------|-------------|------|
+| C-1 | 進化的コード品質改善 | Planner（変異方針策定） | Worker（変異生成）+ Daemon（Fitness 数値計算） | 中 | 変異生成は LLM 必須。品質軸の数値計算は S1-2 Fitness 関数の拡張として Daemon が担う |
+| C-2 | 適応的モデル選択 | Daemon（UCB バンディット計算） | Daemon（モデル割当） | 極高 | UCB1 計算（avg_reward + c×√(ln(N)/n_i)）は純粋数学。S3 Trace データに基づく自動決定 [MUST] |
+| C-3 | 自律的検証ループ | Planner（検証戦略設計） | Worker（検証実行）+ Daemon（リトライ閾値判定・投票集計） | 低〜中 | 検証自体は LLM 必須。debug_prob 閾値判定と Area Chair 投票集計のみ Daemon |
+| C-4 | 探索的実装最適化 | Planner（探索方針設定: 幅 vs 深さ優先度） | Daemon（MCTS 木管理・UCT 計算・枝刈り） | 高 | 探索木操作は全て決定論的。worktree 管理と自然統合 [MUST] |
+| C-5 | 自己改善メカニズム | Planner（プロンプト最適化方針） | Daemon（Fingerprint DB 管理）+ Worker（プロンプト適用） | 高（一部） | S2-1 Fingerprint の拡張。DB 管理は Daemon、プロンプト最適化は LLM 依存 |
+| C-6 | 適応的計算深度制御 | Planner（意味的複雑度判断） | Daemon（構造的指標前処理） | 中〜高 | 構造的指標（ファイル数・依存関係・変更行数）は Daemon が前処理 [SHOULD] |
+| C-7 | マルチランタイム管理 | Planner（タスクスキーマで runtime/model 指定） | Daemon（プロセス起動・管理・ヘルスチェック） | 極高 | プロセス管理は Daemon の既存責務の延長 [MUST] |
+| C-8 | Feature Gate（プロファイル適用） | Planner（複雑度レベルの意味的判断） | Daemon（プロファイル適用・構造的指標計算） | 高 | quality gate 基盤の RuleEvaluator 拡張 [MUST] |
+
+#### 4.5.3. Daemon 拡張方針 (Daemon Extension Points)
+
+Phase C 機能の Daemon 側実装は、既存アーキテクチャの拡張ポイントを活用する [SHOULD]。新規パッケージの追加は最小限とし、既存のモジュール境界を尊重する。
+
+| 機能 | 拡張対象コンポーネント | 方針 |
+|------|----------------------|------|
+| C-2 | `worker_assign.go` の `GetModelForBloomLevel()` | 静的 bloom_level マッピングを UCB ベース動的選択に置換。S3 Trace データを報酬信号として入力 |
+| C-4 | `daemon/worktree/` + 新パッケージ `search/` | 探索木管理を worktree 管理と統合。UCT 計算エンジンを `search/` に配置 |
+| C-5 | `daemon/learnings/` | Fingerprint DB を拡張し、失敗パターンの構造化蓄積・検索を実現 |
+| C-7 | `formation/tmux_formation.go` + `agent/launcher.go` | Role 別ツール制限を維持しつつ、複数ランタイム（claude/codex/gemini 等）の起動を統一管理 |
+| C-8 | `quality/engine.go` の `RuleEvaluator` インターフェース | プロファイルベースの条件評価器を追加。既存 4 ゲートタイプ（pre_task, post_task, phase_transition, command_validation）を活用 |
+
+#### 4.5.4. Planner 負荷軽減方針 (Planner Load Reduction)
+
+Phase A–B の Planner 7 責務（verify.yaml 生成、タスク定義生成、definition_of_abort/expected_paths 定義、DAG 設計、Repair Task 変換、自己診断、インターフェース先行定義）に加え Phase C で追加される判断負荷を、Daemon 前処理により軽減する [SHOULD]。
+
+| Phase C 機能 | 軽減前（Planner 責務） | 軽減後（Daemon 前処理 → Planner 意味的判断のみ） |
+|---|---|---|
+| C-2 モデル選択 | Planner がモデル適性を判断 | Daemon が UCB 計算で自動決定。Planner はモデル選択に関与しない |
+| C-4 探索戦略 | Planner が探索木全体を管理 | Daemon が木操作・UCT 計算を実行。Planner は方針（幅 vs 深さ優先度）設定のみ |
+| C-6 計算深度 | Planner が全指標を自力で評価 | Daemon が構造的指標（ファイル数・依存関係・変更行数）を前処理し、Planner は意味的複雑度のみ判断 |
+| C-8 プロファイル | Planner が複雑度評価 + プロファイル選択 | Daemon が構造的指標を計算しプロファイル候補を提示。Planner は意味的判断で最終選択 |
+
+#### 4.5.5. Anti-Requirements §5 との整合性 (Consistency with Anti-Requirements)
+
+Phase C の各機能は §5 の禁止事項に抵触しないことを以下の通り確認する。
+
+- **§5-7（Bandit アルゴリズム禁止）との整合**: C-2 の UCB バンディット計算は「S3 Trace ログによる効果測定基盤が稼働済み」であることを前提条件とする [MUST]。Phase C は Phase S 完了後に位置するため、§5-7 の「最初からの実装禁止」条件を満たす。
+- **§5-1（LLM による Fitness 判定上書き禁止）との整合**: C-4 の探索木管理（MCTS/UCT）は Daemon 内の決定論的制御であり、探索結果の評価は S1-2 の機械的 Fitness で行う [MUST]。LLM が Fitness を上書きする経路は存在しない。
+- **§5-4（Worker 間直接通信禁止）との整合**: C-7 のマルチランタイムは Hub-and-Spoke 型を維持する [MUST]。異種ランタイム間の通信も Daemon 経由のみ許可し、Worker 間の直接通信経路は設けない。
+- **§5-3（Frankenstein マージ禁止）との整合**: C-4 の探索的実装は Multi-rollout と同様に Winner-takes-all 方式を採用する [MUST]。複数探索結果の部分的合成は行わない。
+
 ———
 
 ## 4.5. 実装フェーズ C: 進化的品質最適化と自律改善（Sakana.ai 研究知見）
@@ -423,6 +482,13 @@ Planner は以下の基準を総合的に評価し、複雑度レベルを決定
     - 異種モデル Reviewer の指摘事項がマージをブロックせず、かつその採用率がデータとして蓄積されていること。
 - Phase B 完了基準:
     - 条件を満たしたMulti-rolloutタスクにおいて、LLMの主観によらず、定義されたFitness関数によって勝者が自動的に選定されること。
+- Phase C 責務境界完了基準:
+    - §4.5.1 の責務境界原則（決定論的処理の Daemon 集約・Agent 責務の意味的判断限定・Daemon 前処理パターン）が、Phase C 全機能（C-1〜C-8）の設計・実装において遵守されていること。
+    - C-2（適応的モデル選択）において、モデル割当が Daemon の UCB バンディット計算により自動決定され、Planner/Worker がモデル選択判断に関与しないこと。
+    - C-4（探索的実装最適化）において、探索木操作（MCTS/UCT 計算・枝刈り）が Daemon 内で完結し、探索結果の評価が S1-2 の機械的 Fitness に基づくこと。
+    - C-7（マルチランタイム管理）において、異種ランタイムのプロセス起動・管理が Daemon に集約され、Hub-and-Spoke 型通信が維持されていること。
+    - C-8（Feature Gate）において、構造的指標の計算が Daemon 前処理として実行され、Planner には計算済み結果のみが提供されていること。
+    - Phase C の全機能が §5 Anti-Requirements の禁止事項に抵触していないこと（特に §5-7 の Bandit 前提条件、§5-1 の Fitness 上書き禁止、§5-4 の直接通信禁止）。
 - Phase C-α 完了基準:
     - 適応的モデル選択（C-2）が稼働し、Trace JSONL のタスク結果データに基づきモデル割当が動的に最適化されていること。デフォルトモデルへの縮退が正常に動作すること。
     - 自律的検証改善ループ（C-3）が verification フェーズに統合され、2回以上の自律的改善サイクル（検証→修正→再検証）を完了できること。検証カバレッジの拡大方向でのみ改善を行い、基準の緩和が発生しないこと。
