@@ -208,7 +208,7 @@ func (a *API) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 	defer a.releaseFileLock()
 
 	// Sanitize target: prevent directory traversal (before acquiring per-target lock)
-	if filepath.Base(params.Target) != params.Target || params.Target == "." || params.Target == ".." {
+	if !validate.IsValidBaseName(params.Target) {
 		return uds.ErrorResponse(uds.ErrCodeValidation,
 			fmt.Sprintf("invalid target: %q", params.Target))
 	}
