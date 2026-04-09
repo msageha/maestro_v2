@@ -1,0 +1,281 @@
+package agent
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"time"
+
+	"github.com/msageha/maestro_v2/internal/model"
+)
+
+// messageDeliverer handles message delivery and /clear confirmation for
+// tmux-based agent communication. Extracted from Executor to isolate
+// the send/clear responsibility from dispatch routing and lifecycle management.
+type messageDeliverer struct {
+	paneIO    PaneIO
+	paneState *paneStateManager
+	config    *model.WatcherConfig // shared with Executor so test mutations propagate
+	execCfg   ExecutorConfig
+	logger    *log.Logger
+	logLevel  logLevel
+}
+
+func newMessageDeliverer(paneIO PaneIO, paneState *paneStateManager, cfg *model.WatcherConfig, execCfg ExecutorConfig, logger *log.Logger, ll logLevel) *messageDeliverer {
+	return &messageDeliverer{
+		paneIO:    paneIO,
+		paneState: paneState,
+		config:    cfg,
+		execCfg:   execCfg,
+		logger:    logger,
+		logLevel:  ll,
+	}
+}
+
+// sendAndConfirm sends the message and updates @status to busy.
+// It includes a final shell guard to prevent sending to a bare shell if Claude
+// crashed between ensureClaudeRunning and delivery.
+func (d *messageDeliverer) sendAndConfirm(req ExecRequest, paneTarget string) ExecResult {
+	// Final shell guard: reject delivery if pane has fallen back to a shell.
+	// This closes the timing window between ensureClaudeRunning and here.
+	if cmd, err := d.paneIO.GetPaneCurrentCommand(paneTarget); err == nil {
+		if d.paneIO.IsShellCommand(cmd) {
+			d.log(logLevelError, "delivery_rejected agent_id=%s task_id=%s reason=pane_is_shell cmd=%s",
+				req.AgentID, req.TaskID, cmd)
+			return ExecResult{Error: fmt.Errorf("pane is shell (%s), Claude not running", cmd), Retryable: true}
+		}
+	}
+
+	// Send message via paste-buffer + Enter for reliable multi-line delivery
+	ctx := req.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := d.paneIO.SendTextAndSubmit(ctx, paneTarget, req.Message); err != nil {
+		d.log(logLevelError, "delivery_error agent_id=%s task_id=%s error=send_text: %v",
+			req.AgentID, req.TaskID, err)
+		return ExecResult{Error: fmt.Errorf("send message: %w", err), Retryable: true}
+	}
+
+	// Update @status to busy
+	if err := d.paneState.SetStatus(paneTarget, "busy"); err != nil {
+		d.log(logLevelWarn, "set_status_failed agent_id=%s error=%v", req.AgentID, err)
+	}
+
+	d.log(logLevelInfo, "delivery_success agent_id=%s task_id=%s command_id=%s lease_epoch=%d",
+		req.AgentID, req.TaskID, req.CommandID, req.LeaseEpoch)
+	return ExecResult{Success: true}
+}
+
+// clearAndConfirm sends /clear and confirms it was processed by the target application.
+// It retries up to ClearMaxAttempts times. Returns nil on confirmed clear, or an error
+// if all attempts fail (fail-closed: caller must NOT proceed with delivery).
+//
+// Confirmation checks (per poll):
+//  1. "/clear" text is NOT visible near the bottom of the pane (primary signal --
+//     directly detects the production failure mode where /clear remains as unprocessed
+//     text in the input field).
+//  2. Pane content hash has changed from pre-clear snapshot (secondary signal).
+//  3. Pane content is stable across two consecutive polls.
+func (d *messageDeliverer) clearAndConfirm(ctx context.Context, paneTarget string) error {
+	timeout := time.Duration(d.config.ClearConfirmTimeoutSec) * time.Second
+	pollInterval := time.Duration(d.config.ClearConfirmPollMs) * time.Millisecond
+	maxAttempts := d.config.ClearMaxAttempts
+	backoffMs := d.config.ClearRetryBackoffMs
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("clear_and_confirm cancelled before attempt %d: %w", attempt, err)
+		}
+
+		// Capture pre-clear hash
+		preClearContent, err := d.paneIO.CapturePaneJoined(paneTarget, d.execCfg.PromptReadyLines)
+		preClearHashValid := err == nil
+		if err != nil {
+			d.log(logLevelWarn, "clear_confirm pre_capture error=%v attempt=%d (hash check disabled)", err, attempt)
+		}
+		preClearHash := contentHash(preClearContent)
+
+		// Send /clear with double-enter for reliability
+		if err := d.paneIO.SendCommand(paneTarget, "/clear"); err != nil {
+			d.log(logLevelWarn, "clear_confirm send_clear error=%v attempt=%d", err, attempt)
+			if attempt < maxAttempts {
+				backoff := time.Duration(backoffMs*(1<<(attempt-1))) * time.Millisecond
+				if err := sleepCtx(ctx, backoff); err != nil {
+					return fmt.Errorf("clear_confirm backoff cancelled: %w", err)
+				}
+				continue
+			}
+			return fmt.Errorf("clear_confirm: send /clear failed after %d attempts: %w", maxAttempts, err)
+		}
+
+		// Wait before sending second Enter (configurable; default 500ms).
+		// Claude's /clear command may trigger a completion prompt, requiring a
+		// second Enter. The delay ensures the first Enter is processed.
+		secondEnterDelay := time.Duration(d.config.ClearSecondEnterDelayMs) * time.Millisecond
+		if err := sleepCtx(ctx, secondEnterDelay); err != nil {
+			return fmt.Errorf("clear_confirm: wait cancelled: %w", err)
+		}
+
+		// Send second Enter to ensure /clear execution.
+		if err := d.paneIO.SendKeys(paneTarget, "Enter"); err != nil {
+			d.log(logLevelWarn, "clear_confirm send_second_enter error=%v attempt=%d", err, attempt)
+			if attempt < maxAttempts {
+				backoff := time.Duration(backoffMs*(1<<(attempt-1))) * time.Millisecond
+				if err := sleepCtx(ctx, backoff); err != nil {
+					return fmt.Errorf("clear_confirm backoff cancelled: %w", err)
+				}
+				continue
+			}
+			return fmt.Errorf("clear_confirm: send second Enter failed after %d attempts: %w", maxAttempts, err)
+		}
+
+		// Poll for confirmation within timeout window
+		poller := newClearConfirmationPoller(
+			d.paneIO, paneTarget, preClearHash, preClearHashValid,
+			d.execCfg.PromptReadyLines, d.logger, d.logLevel,
+		)
+		confirmed, err := poller.pollUntilTimeout(ctx, timeout, pollInterval)
+		if err != nil {
+			return err // context cancelled
+		}
+		if confirmed {
+			d.log(logLevelDebug, "clear_confirm confirmed attempt=%d", attempt)
+			return nil
+		}
+
+		// Not confirmed -- retry with backoff
+		d.log(logLevelWarn, "clear_confirm not_confirmed attempt=%d/%d", attempt, maxAttempts)
+		if attempt < maxAttempts {
+			backoff := time.Duration(backoffMs*(1<<(attempt-1))) * time.Millisecond
+			d.log(logLevelDebug, "clear_confirm retry_backoff=%v", backoff)
+			if err := sleepCtx(ctx, backoff); err != nil {
+				return fmt.Errorf("clear_confirm backoff cancelled: %w", err)
+			}
+		}
+	}
+
+	return fmt.Errorf("clear_confirm: /clear not confirmed after %d attempts", maxAttempts)
+}
+
+func (d *messageDeliverer) log(level logLevel, format string, args ...any) {
+	logf(d.logger, d.logLevel, level, "agent_executor", format, args...)
+}
+
+// --- Clear Confirmation Poller ---
+
+// clearConfirmationPoller encapsulates the state machine for polling pane
+// content to confirm that a /clear command was processed.
+//
+// Confirmation requires ALL of:
+//  1. "/clear" text is NOT visible near the bottom of the pane (primary signal)
+//  2. Pane content hash differs from pre-clear snapshot (when preClearHashValid)
+//  3. Pane content is stable across consecutive polls (debounce)
+type clearConfirmationPoller struct {
+	paneIO            PaneIO
+	paneTarget        string
+	preClearHash      string
+	preClearHashValid bool
+	promptReadyLines  int
+	logger            *log.Logger
+	logLevel          logLevel
+
+	// internal state
+	stableCount  int
+	hashChanged  bool
+	prevPollHash string
+}
+
+func newClearConfirmationPoller(
+	paneIO PaneIO, paneTarget, preClearHash string, hashValid bool,
+	promptReadyLines int, logger *log.Logger, ll logLevel,
+) *clearConfirmationPoller {
+	return &clearConfirmationPoller{
+		paneIO:            paneIO,
+		paneTarget:        paneTarget,
+		preClearHash:      preClearHash,
+		preClearHashValid: hashValid,
+		promptReadyLines:  promptReadyLines,
+		logger:            logger,
+		logLevel:          ll,
+	}
+}
+
+// pollUntilTimeout polls the pane within the timeout window to confirm /clear was processed.
+// Returns (true, nil) if confirmed, (false, nil) if timed out, or (false, err) if ctx cancelled.
+func (p *clearConfirmationPoller) pollUntilTimeout(ctx context.Context, timeout, pollInterval time.Duration) (bool, error) {
+	deadline := time.Now().Add(timeout)
+
+	for time.Now().Before(deadline) {
+		if err := sleepCtx(ctx, pollInterval); err != nil {
+			return false, fmt.Errorf("clear_confirm poll cancelled: %w", err)
+		}
+
+		confirmed, err := p.poll()
+		if err != nil {
+			return false, err
+		}
+		if confirmed {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// poll captures the current pane state and evaluates confirmation criteria.
+// Returns true if /clear has been confirmed processed.
+func (p *clearConfirmationPoller) poll() (bool, error) {
+	content, err := p.paneIO.CapturePaneJoined(p.paneTarget, p.promptReadyLines)
+	if err != nil {
+		p.log(logLevelDebug, "clear_confirm poll capture error=%v", err)
+		p.reset()
+		return false, nil
+	}
+
+	currentHash := contentHash(content)
+
+	// Check 1 (primary): "/clear" text must NOT be visible near the bottom of the pane.
+	if clearTextVisible(content) {
+		p.log(logLevelDebug, "clear_confirm /clear text still visible")
+		p.stableCount = 0
+		p.prevPollHash = currentHash
+		return false, nil
+	}
+
+	// Check 2 (mandatory when valid): hash must differ from pre-clear state.
+	if p.preClearHashValid && currentHash != p.preClearHash {
+		p.hashChanged = true
+	}
+
+	// Check 3: stability -- consecutive polls with same hash.
+	if p.prevPollHash != "" && currentHash == p.prevPollHash {
+		p.stableCount++
+	} else {
+		p.stableCount = 1
+	}
+	p.prevPollHash = currentHash
+
+	return p.isConfirmed(), nil
+}
+
+// isConfirmed evaluates whether the confirmation criteria are met.
+//   - With valid pre-clear hash: require hash change + 2 stable polls (debounce).
+//   - Without valid pre-clear hash: require 3 stable polls (stricter debounce as fallback).
+func (p *clearConfirmationPoller) isConfirmed() bool {
+	if p.preClearHashValid {
+		return p.hashChanged && p.stableCount >= 2
+	}
+	return p.stableCount >= 3
+}
+
+// reset clears the poller state after a capture error.
+func (p *clearConfirmationPoller) reset() {
+	p.stableCount = 0
+	p.prevPollHash = ""
+	p.hashChanged = false
+}
+
+func (p *clearConfirmationPoller) log(level logLevel, format string, args ...any) {
+	logf(p.logger, p.logLevel, level, "clear_poller", format, args...)
+}

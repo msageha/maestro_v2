@@ -53,12 +53,8 @@ type QueueHandler struct {
 	// scanCounters accumulates counters during a single PeriodicScan cycle.
 	scanCounters ScanCounters
 
-	// Debounce state
-	debounceMu       sync.Mutex
-	debounceTimer    *time.Timer
-	debounceDone     chan struct{} // closed when the in-flight callback finishes
-	firstTriggerAt   time.Time    // tracks first trigger in a debounce window for maxWait
-	scanRunning      atomic.Bool  // true while debounced callback is executing
+	// debounce manages filesystem event coalescing and starvation protection.
+	debounce *DebounceController
 
 	// scanMu serializes PeriodicScan phases (exclusive) vs queue writes (shared RLock).
 	// Spec §5.6: per-agent mutex — queue writes hold RLock + per-target lockMap key.
@@ -107,10 +103,11 @@ func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap
 	dlp := NewDeadLetterProcessor(maestroDir, cfg, lockMap, logger, logLevel)
 	mh := NewMetricsHandler(maestroDir, cfg, logger, logLevel)
 
-	return &QueueHandler{
+	dl := NewDaemonLoggerFromLegacy("queue_handler", logger, logLevel)
+	qh := &QueueHandler{
 		maestroDir:          maestroDir,
 		config:              cfg,
-		dl:                  NewDaemonLoggerFromLegacy("queue_handler", logger, logLevel),
+		dl:                  dl,
 		logger:              logger,
 		logLevel:            logLevel,
 		clock:               clock,
@@ -126,6 +123,8 @@ func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap
 		lockMap:             lockMap,
 		daemonPID:           os.Getpid(),
 	}
+	qh.debounce = NewDebounceController(cfg.Watcher.DebounceSec, dl, qh.PeriodicScanWithContext)
+	return qh
 }
 
 // leaseOwnerID returns the lease owner identifier in "daemon:{pid}" format per spec §5.8.1.
@@ -173,6 +172,7 @@ func (qh *QueueHandler) SetShutdownGuard(ctx context.Context, shuttingDown *atom
 	defer qh.scanRunMu.Unlock()
 	qh.shutdownCtx = ctx
 	qh.shuttingDown = shuttingDown
+	qh.debounce.SetShutdownGuard(ctx, shuttingDown)
 }
 
 // SetEventBus wires the event bus for all sub-components that publish events.
@@ -195,20 +195,7 @@ func (qh *QueueHandler) SetContinuousHandler(ch *ContinuousHandler) {
 // Stop cancels any pending debounce timer and waits for any in-flight
 // callback goroutine to finish, ensuring no goroutine leak on shutdown.
 func (qh *QueueHandler) Stop() {
-	qh.debounceMu.Lock()
-	done := qh.debounceDone
-	timerWasPending := false
-	if qh.debounceTimer != nil {
-		timerWasPending = qh.debounceTimer.Stop()
-		qh.debounceTimer = nil
-	}
-	qh.debounceMu.Unlock()
-
-	// Only wait if the timer had already fired (callback may be in-flight).
-	// If Stop() returned true the callback will never run, so waiting would hang.
-	if done != nil && !timerWasPending {
-		<-done
-	}
+	qh.debounce.Stop()
 }
 
 // HandleFileEvent routes an fsnotify event to the appropriate handler.
@@ -218,7 +205,7 @@ func (qh *QueueHandler) HandleFileEvent(filePath string) {
 
 	switch dir {
 	case "queue":
-		qh.debounceAndScan(base)
+		qh.debounce.Trigger(base)
 	case "results":
 		qh.log(LogLevelDebug, "result_event file=%s", base)
 		if qh.resultHandler != nil {
@@ -259,8 +246,10 @@ func (qh *QueueHandler) PeriodicScanWithContext(ctx context.Context) {
 		qh.reconciler.ExecuteDeferredNotifications(deferredNotifs)
 	}
 
-	// Run worktree GC periodically (every 60 scans) as a safety net
-	// complementing the immediate cleanup triggered by CleanupOnSuccess/CleanupOnFailure.
+	// Run worktree GC periodically as a safety net complementing the
+	// immediate cleanup triggered by CleanupOnSuccess/CleanupOnFailure.
+	// Why: 60 scans ≈ 5 minutes at default 5s interval, balancing GC
+	// freshness against the I/O cost of scanning worktree directories.
 	const gcInterval uint64 = 60
 	qh.gcScanCounter++
 	if qh.gcScanCounter%gcInterval == 0 && qh.worktreeManager != nil {

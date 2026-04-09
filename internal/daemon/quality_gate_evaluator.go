@@ -10,6 +10,8 @@ import (
 )
 
 // maxGateEvaluations is the maximum number of gate evaluation entries kept in memory.
+// Why: 1000 entries accommodate typical concurrent command loads while bounding
+// memory usage. When exceeded, the oldest half is evicted (LRU-style).
 const maxGateEvaluations = 1000
 
 // QualityGateEvaluator encapsulates pre-task quality gate evaluation logic,

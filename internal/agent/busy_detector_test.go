@@ -484,7 +484,7 @@ func TestNewExecutor_WiresBusyDetectorConfig(t *testing.T) {
 		BusyCheckMaxRetries: 20,
 		BusyCheckInterval:   3,
 		BusyPatterns:        "Working",
-	}, "info", &bytes.Buffer{}, nil)
+	}, "info", &bytes.Buffer{}, nil, DefaultExecutorConfig())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -508,7 +508,7 @@ func TestNewExecutor_WiresBusyDetectorConfig(t *testing.T) {
 }
 
 func TestNewExecutor_DefaultConfig_WiresBusyDetectorDefaults(t *testing.T) {
-	exec, err := newExecutor("", model.WatcherConfig{}, "info", &bytes.Buffer{}, nil)
+	exec, err := newExecutor("", model.WatcherConfig{}, "info", &bytes.Buffer{}, nil, DefaultExecutorConfig())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
