@@ -42,6 +42,22 @@ type TaskQueue struct {
 	Tasks         []Task `yaml:"tasks"`
 }
 
+// DefinitionOfAbort はタスクの中断条件を定義する構造体。
+// REQUIREMENTS.md §2.2 で要求されるフィールド。
+type DefinitionOfAbort struct {
+	MaxRepairCount            int      `yaml:"max_repair_count"`
+	MaxWallClockSec           int      `yaml:"max_wall_clock_sec"`
+	ExplicitFailureConditions []string `yaml:"explicit_failure_conditions"`
+}
+
+// DefaultDefinitionOfAbort は未指定時のデフォルト値を返す。
+func DefaultDefinitionOfAbort() DefinitionOfAbort {
+	return DefinitionOfAbort{
+		MaxRepairCount:  3,
+		MaxWallClockSec: 1800,
+	}
+}
+
 // Task はコマンドから分解された単一の作業単位を表す。
 // Worker に配信され、実行・結果報告のライフサイクルを持つ。
 type Task struct {
@@ -50,12 +66,15 @@ type Task struct {
 	Purpose            string   `yaml:"purpose"`
 	Content            string   `yaml:"content"`
 	AcceptanceCriteria string   `yaml:"acceptance_criteria"`
+	DefinitionOfDone   []string `yaml:"definition_of_done,omitempty"`
 	Constraints        []string `yaml:"constraints"`
 	BlockedBy          []string `yaml:"blocked_by"`
 	BloomLevel         int      `yaml:"bloom_level"`
 	ToolsHint          []string `yaml:"tools_hint,omitempty"`
 	PersonaHint        string   `yaml:"persona_hint,omitempty"`
 	SkillRefs          []string `yaml:"skill_refs,omitempty"`
+	ExpectedPaths      []string          `yaml:"expected_paths,omitempty"`
+	DefinitionOfAbort  *DefinitionOfAbort `yaml:"definition_of_abort,omitempty"`
 	Priority           int      `yaml:"priority"`
 	Status             Status   `yaml:"status"`
 	Attempts           int      `yaml:"attempts"`
@@ -71,6 +90,20 @@ type Task struct {
 	InProgressAt       *string  `yaml:"in_progress_at,omitempty"`
 	CreatedAt          string   `yaml:"created_at"`
 	UpdatedAt          string   `yaml:"updated_at"`
+}
+
+// GetDoneConditions は完了条件を返す。
+// DefinitionOfDone が設定されている場合はそちらを優先し、
+// 未設定の場合は AcceptanceCriteria を単一要素のスライスとして返す。
+// どちらも未設定の場合は nil を返す。
+func (t *Task) GetDoneConditions() []string {
+	if len(t.DefinitionOfDone) > 0 {
+		return t.DefinitionOfDone
+	}
+	if t.AcceptanceCriteria != "" {
+		return []string{t.AcceptanceCriteria}
+	}
+	return nil
 }
 
 // NotificationQueue は通知キューファイルの YAML 構造を表す。
