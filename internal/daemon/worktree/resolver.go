@@ -27,7 +27,7 @@ const resolverGitTimeout = 60 * time.Second
 // merge_conflict instance. The generation changes whenever any input shifts
 // (integration HEAD, worker SHA, phase/worker identity), which lets the
 // resolver code path use it as a CAS token: a stale resolver attempt against a
-// re-detected conflict will fail with ErrConflictGenerationMismatch instead of
+// re-detected conflict will fail with errConflictGenerationMismatch instead of
 // silently overwriting newer state.
 func ComputeConflictGeneration(commandID, phaseID, workerID, baseRef, oursRef, theirsRef string) string {
 	h := sha256.New()
@@ -39,17 +39,17 @@ func ComputeConflictGeneration(commandID, phaseID, workerID, baseRef, oursRef, t
 	return hex.EncodeToString(h.Sum(nil))[:16]
 }
 
-// ErrConflictGenerationMismatch is returned by the resolver entry points when
+// errConflictGenerationMismatch is returned by the resolver entry points when
 // the supplied conflict generation no longer matches the signal stored on
 // disk — typically because the integration HEAD or worker SHA shifted under
 // the resolver. The caller is expected to abort and re-fetch fresh state.
-var ErrConflictGenerationMismatch = errors.New("conflict generation mismatch")
+var errConflictGenerationMismatch = errors.New("conflict generation mismatch")
 
-// ErrSignalStoreUnavailable indicates that the Manager was constructed
+// errSignalStoreUnavailable indicates that the Manager was constructed
 // without a SignalStore, so resolver methods cannot persist their CAS
 // updates. The caller should ensure the daemon wires a store via
 // SetSignalStore before invoking resolver entry points.
-var ErrSignalStoreUnavailable = errors.New("signal store not configured on Manager")
+var errSignalStoreUnavailable = errors.New("signal store not configured on Manager")
 
 // SignalStore abstracts read/modify/write access to the planner signal queue
 // for a single command. The resolver code path needs:
@@ -77,7 +77,7 @@ type SignalStore interface {
 
 // SetSignalStore wires the planner-signal store used by resolver methods.
 // Safe to call once during daemon startup. nil disables resolver entry
-// points (they will return ErrSignalStoreUnavailable).
+// points (they will return errSignalStoreUnavailable).
 //
 // Concurrency note: callers must invoke this before any resolver method runs;
 // it does not take wm.mu.
@@ -106,7 +106,7 @@ func (wm *Manager) commandLock(commandID string) *sync.Mutex {
 // DispatchConflictResolution transitions a worker from conflict→resolving and
 // marks the corresponding planner signal as dispatched. CAS-protected by
 // conflictGen: if the current signal's ConflictGeneration differs, returns
-// ErrConflictGenerationMismatch and no state is mutated.
+// errConflictGenerationMismatch and no state is mutated.
 //
 // Locking note: scanMu (owned by the daemon scanner outside this package) MUST
 // be held by the caller for the duration of this call to keep scan from
@@ -125,7 +125,7 @@ func (wm *Manager) DispatchConflictResolution(commandID, phaseID, workerID, conf
 		return err
 	}
 	if wm.signalStore == nil {
-		return ErrSignalStoreUnavailable
+		return errSignalStoreUnavailable
 	}
 
 	cl := wm.commandLock(commandID)
@@ -139,7 +139,7 @@ func (wm *Manager) DispatchConflictResolution(commandID, phaseID, workerID, conf
 			return fmt.Errorf("merge_conflict signal not found for command=%s phase=%s worker=%s", commandID, phaseID, workerID)
 		}
 		if sig.ConflictGeneration != conflictGen {
-			return ErrConflictGenerationMismatch
+			return errConflictGenerationMismatch
 		}
 		sig.ResolutionState = "dispatched"
 		sig.UpdatedAt = wm.clock.Now().UTC().Format(time.RFC3339)

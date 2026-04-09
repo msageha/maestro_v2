@@ -14,14 +14,14 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 )
 
-// GitErrorClass classifies git errors for retry decisions.
-type GitErrorClass int
+// gitErrorClass classifies git errors for retry decisions.
+type gitErrorClass int
 
 const (
-	// GitErrorTransient indicates a temporary error that may succeed on retry (e.g. lock contention).
-	GitErrorTransient GitErrorClass = iota
-	// GitErrorPermanent indicates an error that will not recover on retry.
-	GitErrorPermanent
+	// gitErrorTransient indicates a temporary error that may succeed on retry (e.g. lock contention).
+	gitErrorTransient gitErrorClass = iota
+	// gitErrorPermanent indicates an error that will not recover on retry.
+	gitErrorPermanent
 )
 
 // transientPatterns are substrings that indicate a transient git error.
@@ -43,43 +43,43 @@ var permanentPatterns = []string{
 // Timeout errors (context.DeadlineExceeded, "timeout") are classified as Permanent
 // because a timed-out git command may leave the worktree in a dirty state.
 // Unknown errors default to Permanent (safe fallback).
-func classifyGitError(err error) GitErrorClass {
+func classifyGitError(err error) gitErrorClass {
 	if err == nil {
-		return GitErrorPermanent
+		return gitErrorPermanent
 	}
 
 	// Timeout errors are Permanent — dirty worktree risk.
 	if errors.Is(err, context.DeadlineExceeded) {
-		return GitErrorPermanent
+		return gitErrorPermanent
 	}
 
 	msg := err.Error()
 
 	if strings.Contains(msg, "timeout") {
-		return GitErrorPermanent
+		return gitErrorPermanent
 	}
 
 	// Check permanent patterns first to avoid false transient matches
 	// (e.g. "invalid" should not be overridden by a transient pattern).
 	for _, p := range permanentPatterns {
 		if strings.Contains(msg, p) {
-			return GitErrorPermanent
+			return gitErrorPermanent
 		}
 	}
 
 	for _, p := range transientPatterns {
 		if strings.Contains(msg, p) {
-			return GitErrorTransient
+			return gitErrorTransient
 		}
 	}
 
 	// Unknown errors default to Permanent.
-	return GitErrorPermanent
+	return gitErrorPermanent
 }
 
 // isTransientGitError returns true if the error is classified as transient (retryable).
 func isTransientGitError(err error) bool {
-	return classifyGitError(err) == GitErrorTransient
+	return classifyGitError(err) == gitErrorTransient
 }
 
 // gitRunWithRetry executes a git command via gitExecCombined with retry for transient errors.
