@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/validate"
 )
 
@@ -314,8 +315,8 @@ func TestReadSkillWithRole_NoFrontmatter(t *testing.T) {
 	if sc.Body != body {
 		t.Errorf("expected body to be entire content, got %q", sc.Body)
 	}
-	if sc.EffectivePriority() != defaultPriority {
-		t.Errorf("expected default priority %d, got %d", defaultPriority, sc.EffectivePriority())
+	if sc.EffectivePriority() != model.DefaultPriority {
+		t.Errorf("expected default priority %d, got %d", model.DefaultPriority, sc.EffectivePriority())
 	}
 }
 
