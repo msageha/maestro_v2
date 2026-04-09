@@ -1,5 +1,7 @@
 package model
 
+// TaskResultFile はタスク結果ファイルの YAML 構造を表す。
+// Worker が報告したタスク実行結果の永続化に使用される。
 type TaskResultFile struct {
 	SchemaVersion int          `yaml:"schema_version"`
 	FileType      string       `yaml:"file_type"`
@@ -35,6 +37,8 @@ type RejectedSubmission struct {
 	CreatedAt string `yaml:"created_at"`
 }
 
+// TaskResult は単一タスクの実行結果を表す。
+// ステータス、サマリー、変更ファイル一覧、通知状態などを保持する。
 type TaskResult struct {
 	ID                     string                `yaml:"id"`
 	TaskID                 string                `yaml:"task_id"`
@@ -54,12 +58,16 @@ type TaskResult struct {
 	QualityGateEvaluation  *QualityGateEvaluation `yaml:"quality_gate_evaluation,omitempty"`
 }
 
+// CommandResultFile はコマンド結果ファイルの YAML 構造を表す。
+// コマンド全体の完了結果を Orchestrator に通知するために使用される。
 type CommandResultFile struct {
 	SchemaVersion int             `yaml:"schema_version"`
 	FileType      string          `yaml:"file_type"`
 	Results       []CommandResult `yaml:"results"`
 }
 
+// CommandResult はコマンド全体の実行結果を表す。
+// 配下の全タスク結果を集約し、Orchestrator への通知状態を管理する。
 type CommandResult struct {
 	ID                   string              `yaml:"id"`
 	CommandID            string              `yaml:"command_id"`

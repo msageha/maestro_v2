@@ -1,5 +1,7 @@
 package model
 
+// Continuous は継続実行モードの状態を表す。
+// 現在のイテレーション番号、上限、連続失敗数、一時停止状態などを管理する。
 type Continuous struct {
 	SchemaVersion    int              `yaml:"schema_version"`
 	FileType         string           `yaml:"file_type"`

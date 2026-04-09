@@ -1,11 +1,15 @@
 package model
 
+// CommandQueue はコマンドキューファイルの YAML 構造を表す。
+// Daemon がコマンドのディスパッチとリース管理に使用する。
 type CommandQueue struct {
 	SchemaVersion int       `yaml:"schema_version"`
 	FileType      string    `yaml:"file_type"`
 	Commands      []Command `yaml:"commands"`
 }
 
+// Command はユーザーから投入された単一のコマンドを表す。
+// Planner によるタスク分解とライフサイクル管理の単位となる。
 type Command struct {
 	ID                string   `yaml:"id"`
 	Content           string   `yaml:"content"`
@@ -26,12 +30,16 @@ type Command struct {
 	UpdatedAt         string  `yaml:"updated_at"`
 }
 
+// TaskQueue はタスクキューファイルの YAML 構造を表す。
+// Daemon がタスクのディスパッチとリース管理に使用する。
 type TaskQueue struct {
 	SchemaVersion int    `yaml:"schema_version"`
 	FileType      string `yaml:"file_type"`
 	Tasks         []Task `yaml:"tasks"`
 }
 
+// Task はコマンドから分解された単一の作業単位を表す。
+// Worker に配信され、実行・結果報告のライフサイクルを持つ。
 type Task struct {
 	ID                 string   `yaml:"id"`
 	CommandID          string   `yaml:"command_id"`
@@ -61,12 +69,16 @@ type Task struct {
 	UpdatedAt          string   `yaml:"updated_at"`
 }
 
+// NotificationQueue は通知キューファイルの YAML 構造を表す。
+// タスク・コマンド結果の通知配信をリース方式で管理する。
 type NotificationQueue struct {
 	SchemaVersion int            `yaml:"schema_version"`
 	FileType      string         `yaml:"file_type"`
 	Notifications []Notification `yaml:"notifications"`
 }
 
+// Notification はタスクまたはコマンドの結果に対する単一の通知エントリを表す。
+// Orchestrator / Planner への結果配信に使用される。
 type Notification struct {
 	ID               string  `yaml:"id"`
 	CommandID        string  `yaml:"command_id"`
@@ -86,12 +98,17 @@ type Notification struct {
 	UpdatedAt        string  `yaml:"updated_at"`
 }
 
+// PlannerSignalQueue は Planner 向けシグナルキューファイルの YAML 構造を表す。
+// フェーズ完了やコンフリクト検知などのイベントを Planner に伝達する。
 type PlannerSignalQueue struct {
 	SchemaVersion int              `yaml:"schema_version"`
 	FileType      string           `yaml:"file_type"`
 	Signals       []PlannerSignal  `yaml:"signals"`
 }
 
+// PlannerSignal は Planner に送信される単一のシグナルを表す。
+// フェーズ完了、コミット失敗、マージコンフリクトなどの種別を持ち、
+// Planner がリカバリアクションを判断するための構造化情報を格納する。
 type PlannerSignal struct {
 	Kind          string  `yaml:"kind"`
 	CommandID     string  `yaml:"command_id"`
