@@ -43,7 +43,9 @@ func (qh *QueueHandler) collectPendingCommandDispatches(cq *model.CommandQueue, 
 }
 
 // collectPendingTaskDispatches acquires leases and records dispatch items (no tmux).
-func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerID string, globalInFlight map[string]bool, work *deferredWork) bool {
+// inFlightPaths contains expected_paths of all currently in-progress tasks across
+// all queues, used to prevent dispatching tasks with overlapping file paths.
+func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerID string, globalInFlight map[string]bool, inFlightPaths []inFlightPathEntry, work *deferredWork) bool {
 	dirty := false
 	sorted := qh.dispatcher.SortPendingTasks(tq.Queue.Tasks)
 
@@ -98,6 +100,13 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 			continue
 		}
 
+		// Path overlap check: skip tasks that would touch files already being worked on
+		if conflictID, candPath, flightPath := findOverlappingTask(task, inFlightPaths); conflictID != "" {
+			qh.log(LogLevelDebug, "path_overlap: delaying task %s (conflicts with in-flight task %s on path %s vs %s)",
+				task.ID, conflictID, candPath, flightPath)
+			continue
+		}
+
 		if err := qh.leaseManager.AcquireTaskLease(task, qh.leaseOwnerID()); err != nil {
 			qh.log(LogLevelWarn, "lease_acquire_failed type=task id=%s error=%v", task.ID, err)
 			continue
@@ -113,6 +122,14 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 			ExpiresAt: safeStr(task.LeaseExpiresAt),
 		})
 		globalInFlight[workerID] = true
+		// Add newly dispatched task's paths to in-flight set so subsequent
+		// iterations in the same scan cycle also respect them.
+		if len(task.ExpectedPaths) > 0 {
+			inFlightPaths = append(inFlightPaths, inFlightPathEntry{
+				TaskID:        task.ID,
+				ExpectedPaths: task.ExpectedPaths,
+			})
+		}
 		dirty = true
 		break
 	}
