@@ -2,8 +2,111 @@ package bridge
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
+
+	yamlv3 "gopkg.in/yaml.v3"
+
+	"github.com/msageha/maestro_v2/internal/lock"
+	"github.com/msageha/maestro_v2/internal/model"
+	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
+
+// bridgeTestConfig returns a minimal Config suitable for bridge tests.
+func bridgeTestConfig() model.Config {
+	return model.Config{
+		Agents: model.AgentsConfig{
+			Workers: model.WorkerConfig{
+				Count:        2,
+				DefaultModel: "sonnet",
+				Models:       map[string]string{"worker2": "opus"},
+			},
+		},
+		Limits: model.LimitsConfig{
+			MaxPendingTasksPerWorker: 10,
+		},
+	}
+}
+
+// setupBridgeMaestroDir creates a temp maestro directory with empty worker queue files.
+func setupBridgeMaestroDir(t *testing.T) string {
+	t.Helper()
+	base := t.TempDir()
+	maestroDir := filepath.Join(base, ".maestro")
+
+	dirs := []string{
+		filepath.Join(maestroDir, "queue"),
+		filepath.Join(maestroDir, "results"),
+		filepath.Join(maestroDir, "state", "commands"),
+		filepath.Join(maestroDir, "logs"),
+	}
+	for _, d := range dirs {
+		if err := os.MkdirAll(d, 0755); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+
+	for i := 1; i <= 2; i++ {
+		tq := model.TaskQueue{
+			SchemaVersion: 1,
+			FileType:      "queue_task",
+			Tasks:         []model.Task{},
+		}
+		queueFile := filepath.Join(maestroDir, "queue", fmt.Sprintf("worker%d.yaml", i))
+		if err := yamlutil.AtomicWrite(queueFile, tq); err != nil {
+			t.Fatalf("write worker queue %d: %v", i, err)
+		}
+	}
+
+	return maestroDir
+}
+
+// writeBridgePlannerQueue writes a planner queue file with a single command.
+func writeBridgePlannerQueue(t *testing.T, maestroDir, commandID string, status model.Status) {
+	t.Helper()
+	leaseOwner := "planner"
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_command",
+		Commands: []model.Command{
+			{
+				ID:         commandID,
+				Content:    "test command",
+				Priority:   100,
+				Status:     status,
+				LeaseOwner: &leaseOwner,
+				CreatedAt:  "2025-01-01T00:00:00Z",
+				UpdatedAt:  "2025-01-01T00:00:00Z",
+			},
+		},
+	}
+	path := filepath.Join(maestroDir, "queue", "planner.yaml")
+	if err := yamlutil.AtomicWrite(path, cq); err != nil {
+		t.Fatalf("write planner queue: %v", err)
+	}
+}
+
+// writeBridgeTasksFile writes a tasks YAML file for Submit.
+func writeBridgeTasksFile(t *testing.T, yamlContent string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "tasks.yaml")
+	if err := os.WriteFile(path, []byte(yamlContent), 0644); err != nil {
+		t.Fatalf("write tasks file: %v", err)
+	}
+	return path
+}
+
+// writeBridgeState writes a CommandState YAML to the state directory.
+func writeBridgeState(t *testing.T, maestroDir string, state *model.CommandState) {
+	t.Helper()
+	statePath := filepath.Join(maestroDir, "state", "commands", state.CommandID+".yaml")
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+}
 
 func TestSubmitParams_Unmarshal(t *testing.T) {
 	tests := []struct {
@@ -197,5 +300,279 @@ func TestPlanExecutorImpl_RebuildInvalidJSON(t *testing.T) {
 	_, err := pe.Rebuild(json.RawMessage(`{invalid`))
 	if err == nil {
 		t.Fatal("Rebuild with invalid JSON should return error")
+	}
+}
+
+// --- Success path tests ---
+
+func TestPlanExecutorImpl_SubmitSuccess(t *testing.T) {
+	maestroDir := setupBridgeMaestroDir(t)
+	cfg := bridgeTestConfig()
+	commandID := "cmd_0000000001_aabbccdd"
+
+	writeBridgePlannerQueue(t, maestroDir, commandID, model.StatusInProgress)
+
+	tasksYAML := `tasks:
+  - name: task_a
+    purpose: do task a
+    content: implement feature a
+    acceptance_criteria: feature a works
+    bloom_level: 2
+    required: true
+`
+	tasksFile := writeBridgeTasksFile(t, tasksYAML)
+
+	pe := &PlanExecutorImpl{
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
+	}
+
+	params, _ := json.Marshal(submitParams{
+		CommandID: commandID,
+		TasksFile: tasksFile,
+	})
+
+	raw, err := pe.Submit(json.RawMessage(params))
+	if err != nil {
+		t.Fatalf("Submit returned error: %v", err)
+	}
+
+	var result struct {
+		CommandID string `json:"command_id"`
+		Tasks     []struct {
+			Name   string `json:"name"`
+			TaskID string `json:"task_id"`
+			Worker string `json:"worker"`
+			Model  string `json:"model"`
+		} `json:"tasks"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if result.CommandID != commandID {
+		t.Errorf("CommandID = %q, want %q", result.CommandID, commandID)
+	}
+	if len(result.Tasks) != 1 {
+		t.Fatalf("len(Tasks) = %d, want 1", len(result.Tasks))
+	}
+	if result.Tasks[0].Name != "task_a" {
+		t.Errorf("Tasks[0].Name = %q, want task_a", result.Tasks[0].Name)
+	}
+	if result.Tasks[0].TaskID == "" {
+		t.Error("Tasks[0].TaskID is empty")
+	}
+	if result.Tasks[0].Worker == "" {
+		t.Error("Tasks[0].Worker is empty")
+	}
+}
+
+func TestPlanExecutorImpl_CompleteSuccess(t *testing.T) {
+	maestroDir := setupBridgeMaestroDir(t)
+	cfg := bridgeTestConfig()
+	commandID := "cmd_0000000010_aabbccdd"
+	taskID1 := "task_0000000010_11111111"
+
+	writeBridgePlannerQueue(t, maestroDir, commandID, model.StatusInProgress)
+
+	state := &model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanVersion:   1,
+		PlanStatus:    model.PlanStatusSealed,
+		CompletionPolicy: model.CompletionPolicy{
+			Mode:                    "all_required_completed",
+			OnRequiredFailed:        "fail_command",
+			OnRequiredCancelled:     "cancel_command",
+			OnOptionalFailed:        "ignore",
+			DependencyFailurePolicy: "cancel_dependents",
+		},
+		ExpectedTaskCount: 1,
+		RequiredTaskIDs:   []string{taskID1},
+		OptionalTaskIDs:   []string{},
+		TaskDependencies:  make(map[string][]string),
+		TaskStates:        map[string]model.Status{taskID1: model.StatusCompleted},
+		CancelledReasons:  make(map[string]string),
+		AppliedResultIDs:  make(map[string]string),
+		RetryLineage:      make(map[string]string),
+		CreatedAt:         "2025-01-01T00:00:00Z",
+		UpdatedAt:         "2025-01-01T00:00:00Z",
+	}
+	writeBridgeState(t, maestroDir, state)
+
+	// Write worker results to match state
+	rf := model.TaskResultFile{
+		SchemaVersion: 1,
+		FileType:      "result_task",
+		Results: []model.TaskResult{
+			{
+				ID:        "res_0000000001_00000001",
+				TaskID:    taskID1,
+				CommandID: commandID,
+				Status:    model.StatusCompleted,
+				Summary:   "task completed",
+				CreatedAt: "2025-01-01T00:00:00Z",
+			},
+		},
+	}
+	resultPath := filepath.Join(maestroDir, "results", "worker0.yaml")
+	if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
+		t.Fatalf("write worker results: %v", err)
+	}
+
+	pe := &PlanExecutorImpl{
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
+	}
+
+	params, _ := json.Marshal(completeParams{
+		CommandID: commandID,
+		Summary:   "all done",
+	})
+
+	raw, err := pe.Complete(json.RawMessage(params))
+	if err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+
+	var result struct {
+		CommandID string `json:"command_id"`
+		Status    string `json:"status"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if result.CommandID != commandID {
+		t.Errorf("CommandID = %q, want %q", result.CommandID, commandID)
+	}
+	if result.Status != string(model.PlanStatusCompleted) {
+		t.Errorf("Status = %q, want %q", result.Status, model.PlanStatusCompleted)
+	}
+}
+
+func TestPlanExecutorImpl_AddRetryTaskSuccess(t *testing.T) {
+	maestroDir := setupBridgeMaestroDir(t)
+	cfg := bridgeTestConfig()
+	commandID := "cmd_0000000020_aabbccdd"
+	taskID1 := "task_0000000020_11111111"
+	taskID2 := "task_0000000020_22222222"
+
+	state := &model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanVersion:   1,
+		PlanStatus:    model.PlanStatusSealed,
+		CompletionPolicy: model.CompletionPolicy{
+			Mode:                    "all_required_completed",
+			OnRequiredFailed:        "fail_command",
+			OnRequiredCancelled:     "cancel_command",
+			OnOptionalFailed:        "ignore",
+			DependencyFailurePolicy: "cancel_dependents",
+		},
+		ExpectedTaskCount: 2,
+		RequiredTaskIDs:   []string{taskID1, taskID2},
+		OptionalTaskIDs:   []string{},
+		TaskDependencies: map[string][]string{
+			taskID1: {},
+			taskID2: {taskID1},
+		},
+		TaskStates: map[string]model.Status{
+			taskID1: model.StatusCompleted,
+			taskID2: model.StatusFailed,
+		},
+		CancelledReasons: make(map[string]string),
+		AppliedResultIDs: make(map[string]string),
+		RetryLineage:     make(map[string]string),
+		CreatedAt:        "2025-01-01T00:00:00Z",
+		UpdatedAt:        "2025-01-01T00:00:00Z",
+	}
+	writeBridgeState(t, maestroDir, state)
+
+	pe := &PlanExecutorImpl{
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
+	}
+
+	params, _ := json.Marshal(retryParams{
+		CommandID:          commandID,
+		RetryOf:            taskID2,
+		Purpose:            "retry task 2",
+		Content:            "redo task 2",
+		AcceptanceCriteria: "task 2 passes",
+		BloomLevel:         2,
+	})
+
+	raw, err := pe.AddRetryTask(json.RawMessage(params))
+	if err != nil {
+		t.Fatalf("AddRetryTask returned error: %v", err)
+	}
+
+	var result struct {
+		TaskID   string `json:"task_id"`
+		Worker   string `json:"worker"`
+		Model    string `json:"model"`
+		Replaced string `json:"replaced"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if result.TaskID == "" {
+		t.Error("result.TaskID is empty")
+	}
+	if result.Worker == "" {
+		t.Error("result.Worker is empty")
+	}
+	if result.Replaced != taskID2 {
+		t.Errorf("Replaced = %q, want %q", result.Replaced, taskID2)
+	}
+}
+
+func TestPlanExecutorImpl_RebuildSuccess(t *testing.T) {
+	maestroDir := setupBridgeMaestroDir(t)
+	commandID := "cmd_0000000030_aabbccdd"
+
+	state := &model.CommandState{
+		SchemaVersion:    1,
+		FileType:         "state_command",
+		CommandID:        commandID,
+		TaskStates:       map[string]model.Status{"task1": model.StatusPending},
+		AppliedResultIDs: make(map[string]string),
+		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt:        time.Now().UTC().Format(time.RFC3339),
+	}
+	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
+	data, err := yamlv3.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal state: %v", err)
+	}
+	if err := os.WriteFile(statePath, data, 0644); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	pe := &PlanExecutorImpl{
+		MaestroDir: maestroDir,
+		LockMap:    lock.NewMutexMap(),
+	}
+
+	params, _ := json.Marshal(rebuildParams{CommandID: commandID})
+
+	raw, err := pe.Rebuild(json.RawMessage(params))
+	if err != nil {
+		t.Fatalf("Rebuild returned error: %v", err)
+	}
+
+	var result rebuildResult
+	if err := json.Unmarshal(raw, &result); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if result.CommandID != commandID {
+		t.Errorf("CommandID = %q, want %q", result.CommandID, commandID)
+	}
+	if result.Status != "rebuilt" {
+		t.Errorf("Status = %q, want rebuilt", result.Status)
 	}
 }
