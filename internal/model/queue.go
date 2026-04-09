@@ -90,6 +90,13 @@ type Task struct {
 	InProgressAt       *string  `yaml:"in_progress_at,omitempty"`
 	CreatedAt          string   `yaml:"created_at"`
 	UpdatedAt          string   `yaml:"updated_at"`
+
+	// C-7: Runtime selection (claude-code|codex|gemini)
+	Runtime         string `yaml:"runtime,omitempty" json:"runtime,omitempty"`
+	// C-7: Runtime-specific model override
+	ModelOverride   string `yaml:"model_override,omitempty" json:"model_override,omitempty"`
+	// C-6/C-8: Complexity level (simple|standard|complex|critical)
+	ComplexityLevel string `yaml:"complexity_level,omitempty" json:"complexity_level,omitempty"`
 }
 
 // GetDoneConditions は完了条件を返す。

@@ -13,10 +13,12 @@ import (
 
 // VerifyConfig holds the verification commands defined in verify.yaml.
 type VerifyConfig struct {
-	Build     []string `yaml:"build"`
-	Lint      []string `yaml:"lint"`
-	Test      []string `yaml:"test"`
-	Typecheck []string `yaml:"typecheck"`
+	Build       []string `yaml:"build"`
+	Lint        []string `yaml:"lint"`
+	Test        []string `yaml:"test"`
+	Typecheck   []string `yaml:"typecheck"`
+	Security    []string `yaml:"security,omitempty"`    // C-3: セキュリティ検証コマンド
+	Performance []string `yaml:"performance,omitempty"` // C-3: パフォーマンスベンチコマンド
 }
 
 // VerifyResult holds the result of executing a single verification command.
@@ -54,16 +56,19 @@ func DefaultVerifyConfig() *VerifyConfig {
 
 // IsEmpty reports whether the config has no commands in any category.
 func (v *VerifyConfig) IsEmpty() bool {
-	return len(v.Build) == 0 && len(v.Lint) == 0 && len(v.Test) == 0 && len(v.Typecheck) == 0
+	return len(v.Build) == 0 && len(v.Lint) == 0 && len(v.Test) == 0 && len(v.Typecheck) == 0 &&
+		len(v.Security) == 0 && len(v.Performance) == 0
 }
 
-// AllCommands returns all commands in category order: build, lint, test, typecheck.
+// AllCommands returns all commands in category order: build, lint, test, typecheck, security, performance.
 func (v *VerifyConfig) AllCommands() []string {
-	cmds := make([]string, 0, len(v.Build)+len(v.Lint)+len(v.Test)+len(v.Typecheck))
+	cmds := make([]string, 0, len(v.Build)+len(v.Lint)+len(v.Test)+len(v.Typecheck)+len(v.Security)+len(v.Performance))
 	cmds = append(cmds, v.Build...)
 	cmds = append(cmds, v.Lint...)
 	cmds = append(cmds, v.Test...)
 	cmds = append(cmds, v.Typecheck...)
+	cmds = append(cmds, v.Security...)
+	cmds = append(cmds, v.Performance...)
 	return cmds
 }
 

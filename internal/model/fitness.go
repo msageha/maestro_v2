@@ -14,6 +14,7 @@ type FitnessScore struct {
 	DiffLinesChanged int
 	PathDeviation    bool // expected_paths からの逸脱有無
 	ExecutionTime    time.Duration
+	QualityScore     float64 // C-1: 0.0-1.0, 静的解析ベース (lint警告数, 循環的複雑度)
 }
 
 // FitnessThresholds は Fitness 比較時のマージン閾値を定義する。
@@ -22,6 +23,7 @@ type FitnessThresholds struct {
 	RepairCountMargin   int
 	DiffSizeMargin      int
 	ExecutionTimeMargin time.Duration
+	QualityScoreMargin  float64 // C-1: QualityScore 差のマージン
 }
 
 // DefaultFitnessThresholds はデフォルトの閾値を返す。
@@ -30,6 +32,7 @@ func DefaultFitnessThresholds() FitnessThresholds {
 		RepairCountMargin:   0,
 		DiffSizeMargin:      10,
 		ExecutionTimeMargin: 30 * time.Second,
+		QualityScoreMargin:  0.05,
 	}
 }
 
@@ -82,6 +85,18 @@ func (a FitnessScore) Compare(b FitnessScore, th FitnessThresholds) int {
 	}
 	if timeDiff > th.ExecutionTimeMargin {
 		if a.ExecutionTime < b.ExecutionTime {
+			return -1
+		}
+		return 1
+	}
+
+	// 軸6: QualityScore（高い方が勝ち、C-1 静的解析ベース）
+	qualDiff := a.QualityScore - b.QualityScore
+	if qualDiff < 0 {
+		qualDiff = -qualDiff
+	}
+	if qualDiff > th.QualityScoreMargin {
+		if a.QualityScore > b.QualityScore {
 			return -1
 		}
 		return 1

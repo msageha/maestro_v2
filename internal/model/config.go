@@ -20,6 +20,15 @@ const MaxWorkers = 8
 // Used for setting *int config fields in tests and struct literals.
 func IntPtr(v int) *int { return &v }
 
+// BoolPtr returns a pointer to the given bool value.
+func BoolPtr(v bool) *bool { return &v }
+
+// Float64Ptr returns a pointer to the given float64 value.
+func Float64Ptr(v float64) *float64 { return &v }
+
+// StringPtr returns a pointer to the given string value.
+func StringPtr(v string) *string { return &v }
+
 type Config struct {
 	Project        ProjectConfig        `yaml:"project"`
 	Maestro        MaestroConfig        `yaml:"maestro"`
@@ -41,6 +50,23 @@ type Config struct {
 	Review           ReviewConfig     `yaml:"review"`
 	Rollout          RolloutConfig    `yaml:"rollout"`
 	Judge            JudgeConfig      `yaml:"judge"`
+
+	// C-1 Evolution
+	Evolution EvolutionConfig `yaml:"evolution,omitempty"`
+	// C-2 Adaptive Model Selection
+	Bandit BanditConfig `yaml:"bandit,omitempty"`
+	// C-3 Extended Verification
+	ExtendedVerification ExtendedVerificationConfig `yaml:"extended_verification,omitempty"`
+	// C-4 Search
+	Search SearchConfig `yaml:"search,omitempty"`
+	// C-5 Self-Improvement
+	SelfImprovement SelfImprovementConfig `yaml:"self_improvement,omitempty"`
+	// C-6 Complexity
+	Complexity ComplexityConfig `yaml:"complexity,omitempty"`
+	// C-7 Runtimes
+	Runtimes map[string]RuntimeConfig `yaml:"runtimes,omitempty"`
+	// C-8 Feature Profiles
+	FeatureProfiles map[string]FeatureProfile `yaml:"feature_profiles,omitempty"`
 }
 
 // SkillsConfig controls the skill reference feature for tasks.
@@ -586,6 +612,393 @@ func (r ReviewConfig) EffectiveTimeoutSec() int {
 		return *r.TimeoutSec
 	}
 	return 300
+}
+
+// --- C-1 Evolution Config ---
+
+// EvolutionConfig controls evolutionary quality improvement.
+type EvolutionConfig struct {
+	Enabled              *bool    `yaml:"enabled,omitempty"`
+	MaxMutationsPerRound *int     `yaml:"max_mutations_per_round,omitempty"`
+	NoveltyThreshold     *float64 `yaml:"novelty_threshold,omitempty"`
+	Strategies           []string `yaml:"strategies,omitempty"`
+}
+
+// EffectiveEnabled returns the configured enabled flag or false as default.
+func (e EvolutionConfig) EffectiveEnabled() bool {
+	if e.Enabled != nil {
+		return *e.Enabled
+	}
+	return false
+}
+
+// EffectiveMaxMutationsPerRound returns the configured limit or 3 as default.
+func (e EvolutionConfig) EffectiveMaxMutationsPerRound() int {
+	if e.MaxMutationsPerRound != nil {
+		return *e.MaxMutationsPerRound
+	}
+	return 3
+}
+
+// EffectiveNoveltyThreshold returns the configured threshold or 0.99 as default.
+func (e EvolutionConfig) EffectiveNoveltyThreshold() float64 {
+	if e.NoveltyThreshold != nil {
+		return *e.NoveltyThreshold
+	}
+	return 0.99
+}
+
+// EffectiveStrategies returns the configured strategies or ["diff","full","cross"] as default.
+func (e EvolutionConfig) EffectiveStrategies() []string {
+	if len(e.Strategies) > 0 {
+		return e.Strategies
+	}
+	return []string{"diff", "full", "cross"}
+}
+
+// --- C-2 Bandit Config ---
+
+// BanditConfig controls adaptive model selection (UCB1-based).
+type BanditConfig struct {
+	Enabled              *bool    `yaml:"enabled,omitempty"`
+	ExplorationCoeff     *float64 `yaml:"exploration_coefficient,omitempty"`
+	MinSamplesBeforeUse  *int     `yaml:"min_samples_before_use,omitempty"`
+	DecayFactor          *float64 `yaml:"decay_factor,omitempty"`
+	TraceDataRequirement *int     `yaml:"trace_data_requirement,omitempty"`
+}
+
+// EffectiveEnabled returns the configured enabled flag or false as default.
+func (b BanditConfig) EffectiveEnabled() bool {
+	if b.Enabled != nil {
+		return *b.Enabled
+	}
+	return false
+}
+
+// EffectiveExplorationCoeff returns the configured UCB1 coefficient or 1.41 as default.
+func (b BanditConfig) EffectiveExplorationCoeff() float64 {
+	if b.ExplorationCoeff != nil {
+		return *b.ExplorationCoeff
+	}
+	return 1.41
+}
+
+// EffectiveMinSamplesBeforeUse returns the configured minimum or 10 as default.
+func (b BanditConfig) EffectiveMinSamplesBeforeUse() int {
+	if b.MinSamplesBeforeUse != nil {
+		return *b.MinSamplesBeforeUse
+	}
+	return 10
+}
+
+// EffectiveDecayFactor returns the configured decay factor or 0.95 as default.
+func (b BanditConfig) EffectiveDecayFactor() float64 {
+	if b.DecayFactor != nil {
+		return *b.DecayFactor
+	}
+	return 0.95
+}
+
+// EffectiveTraceDataRequirement returns the configured minimum trace count or 50 as default.
+func (b BanditConfig) EffectiveTraceDataRequirement() int {
+	if b.TraceDataRequirement != nil {
+		return *b.TraceDataRequirement
+	}
+	return 50
+}
+
+// --- C-3 Extended Verification Config ---
+
+// ExtendedVerificationConfig controls extended verification perspectives.
+type ExtendedVerificationConfig struct {
+	Enabled            *bool              `yaml:"enabled,omitempty"`
+	SecurityCheck      *bool              `yaml:"security_check,omitempty"`
+	PerformanceBench   *bool              `yaml:"performance_bench,omitempty"`
+	PerspectiveWeights map[string]float64 `yaml:"perspective_weights,omitempty"`
+	MaxAutoRetries     *int               `yaml:"max_auto_retries,omitempty"`
+}
+
+// EffectiveEnabled returns the configured enabled flag or false as default.
+func (ev ExtendedVerificationConfig) EffectiveEnabled() bool {
+	if ev.Enabled != nil {
+		return *ev.Enabled
+	}
+	return false
+}
+
+// EffectiveSecurityCheck returns the configured flag or false as default.
+func (ev ExtendedVerificationConfig) EffectiveSecurityCheck() bool {
+	if ev.SecurityCheck != nil {
+		return *ev.SecurityCheck
+	}
+	return false
+}
+
+// EffectivePerformanceBench returns the configured flag or false as default.
+func (ev ExtendedVerificationConfig) EffectivePerformanceBench() bool {
+	if ev.PerformanceBench != nil {
+		return *ev.PerformanceBench
+	}
+	return false
+}
+
+// EffectivePerspectiveWeights returns the configured weights or defaults.
+func (ev ExtendedVerificationConfig) EffectivePerspectiveWeights() map[string]float64 {
+	if len(ev.PerspectiveWeights) > 0 {
+		return ev.PerspectiveWeights
+	}
+	return map[string]float64{"build": 1.0, "test": 1.0, "security": 0.5}
+}
+
+// EffectiveMaxAutoRetries returns the configured limit or 2 as default.
+func (ev ExtendedVerificationConfig) EffectiveMaxAutoRetries() int {
+	if ev.MaxAutoRetries != nil {
+		return *ev.MaxAutoRetries
+	}
+	return 2
+}
+
+// --- C-4 Search Config ---
+
+// SearchConfig controls search-based optimization (Alpha-Beta, Thompson Sampling).
+type SearchConfig struct {
+	Enabled        *bool    `yaml:"enabled,omitempty"`
+	MaxDepth       *int     `yaml:"max_depth,omitempty"`
+	MaxBranching   *int     `yaml:"max_branching,omitempty"`
+	PruneThreshold *float64 `yaml:"prune_threshold,omitempty"`
+	ThompsonAlpha  *float64 `yaml:"thompson_alpha,omitempty"`
+	ThompsonBeta   *float64 `yaml:"thompson_beta,omitempty"`
+}
+
+// EffectiveEnabled returns the configured enabled flag or false as default.
+func (s SearchConfig) EffectiveEnabled() bool {
+	if s.Enabled != nil {
+		return *s.Enabled
+	}
+	return false
+}
+
+// EffectiveMaxDepth returns the configured max depth or 3 as default.
+func (s SearchConfig) EffectiveMaxDepth() int {
+	if s.MaxDepth != nil {
+		return *s.MaxDepth
+	}
+	return 3
+}
+
+// EffectiveMaxBranching returns the configured max branching or 4 as default.
+func (s SearchConfig) EffectiveMaxBranching() int {
+	if s.MaxBranching != nil {
+		return *s.MaxBranching
+	}
+	return 4
+}
+
+// EffectivePruneThreshold returns the configured threshold or 0.3 as default.
+func (s SearchConfig) EffectivePruneThreshold() float64 {
+	if s.PruneThreshold != nil {
+		return *s.PruneThreshold
+	}
+	return 0.3
+}
+
+// EffectiveThompsonAlpha returns the configured alpha or 1.0 as default.
+func (s SearchConfig) EffectiveThompsonAlpha() float64 {
+	if s.ThompsonAlpha != nil {
+		return *s.ThompsonAlpha
+	}
+	return 1.0
+}
+
+// EffectiveThompsonBeta returns the configured beta or 1.0 as default.
+func (s SearchConfig) EffectiveThompsonBeta() float64 {
+	if s.ThompsonBeta != nil {
+		return *s.ThompsonBeta
+	}
+	return 1.0
+}
+
+// --- C-5 Self-Improvement Config ---
+
+// SelfImprovementConfig controls self-improvement of prompts and personas.
+type SelfImprovementConfig struct {
+	Enabled        *bool    `yaml:"enabled,omitempty"`
+	Targets        []string `yaml:"targets,omitempty"`
+	ExcludeTargets []string `yaml:"exclude_targets,omitempty"`
+	ArchiveMaxSize *int     `yaml:"archive_max_size,omitempty"`
+}
+
+// EffectiveEnabled returns the configured enabled flag or false as default.
+func (si SelfImprovementConfig) EffectiveEnabled() bool {
+	if si.Enabled != nil {
+		return *si.Enabled
+	}
+	return false
+}
+
+// EffectiveTargets returns the configured targets or defaults.
+func (si SelfImprovementConfig) EffectiveTargets() []string {
+	if len(si.Targets) > 0 {
+		return si.Targets
+	}
+	return []string{"planner_prompt", "persona", "worker_prompt"}
+}
+
+// EffectiveExcludeTargets returns the configured exclusions or defaults.
+func (si SelfImprovementConfig) EffectiveExcludeTargets() []string {
+	if len(si.ExcludeTargets) > 0 {
+		return si.ExcludeTargets
+	}
+	return []string{"fitness", "daemon_logic", "circuit_breaker"}
+}
+
+// EffectiveArchiveMaxSize returns the configured limit or 100 as default.
+func (si SelfImprovementConfig) EffectiveArchiveMaxSize() int {
+	if si.ArchiveMaxSize != nil {
+		return *si.ArchiveMaxSize
+	}
+	return 100
+}
+
+// --- C-6 Complexity Config ---
+
+// ComplexityConfig controls adaptive computation depth.
+type ComplexityConfig struct {
+	Enabled    *bool                `yaml:"enabled,omitempty"`
+	Thresholds ComplexityThresholds `yaml:"thresholds,omitempty"`
+}
+
+// EffectiveEnabled returns the configured enabled flag or false as default.
+func (cc ComplexityConfig) EffectiveEnabled() bool {
+	if cc.Enabled != nil {
+		return *cc.Enabled
+	}
+	return false
+}
+
+// ComplexityThresholds defines file count thresholds for complexity levels.
+type ComplexityThresholds struct {
+	SimpleMaxFiles   *int `yaml:"simple_max_files,omitempty"`
+	StandardMaxFiles *int `yaml:"standard_max_files,omitempty"`
+	ComplexMaxFiles  *int `yaml:"complex_max_files,omitempty"`
+}
+
+// EffectiveSimpleMaxFiles returns the configured limit or 3 as default.
+func (ct ComplexityThresholds) EffectiveSimpleMaxFiles() int {
+	if ct.SimpleMaxFiles != nil {
+		return *ct.SimpleMaxFiles
+	}
+	return 3
+}
+
+// EffectiveStandardMaxFiles returns the configured limit or 10 as default.
+func (ct ComplexityThresholds) EffectiveStandardMaxFiles() int {
+	if ct.StandardMaxFiles != nil {
+		return *ct.StandardMaxFiles
+	}
+	return 10
+}
+
+// EffectiveComplexMaxFiles returns the configured limit or 30 as default.
+func (ct ComplexityThresholds) EffectiveComplexMaxFiles() int {
+	if ct.ComplexMaxFiles != nil {
+		return *ct.ComplexMaxFiles
+	}
+	return 30
+}
+
+// --- C-7 Runtime Config ---
+
+// RuntimeConfig holds per-runtime configuration.
+type RuntimeConfig struct {
+	Enabled      *bool    `yaml:"enabled,omitempty"`
+	Default      *bool    `yaml:"default,omitempty"`
+	Models       []string `yaml:"models,omitempty"`
+	DefaultModel *string  `yaml:"default_model,omitempty"`
+}
+
+// EffectiveEnabled returns the configured enabled flag or false as default.
+func (rc RuntimeConfig) EffectiveEnabled() bool {
+	if rc.Enabled != nil {
+		return *rc.Enabled
+	}
+	return false
+}
+
+// EffectiveDefault returns the configured default flag or false as default.
+func (rc RuntimeConfig) EffectiveDefault() bool {
+	if rc.Default != nil {
+		return *rc.Default
+	}
+	return false
+}
+
+// EffectiveDefaultModel returns the configured default model or empty string.
+func (rc RuntimeConfig) EffectiveDefaultModel() string {
+	if rc.DefaultModel != nil {
+		return *rc.DefaultModel
+	}
+	return ""
+}
+
+// --- C-8 Feature Profiles ---
+
+// FeatureProfile defines feature flags per complexity level.
+type FeatureProfile struct {
+	CrossAgentReview        *string `yaml:"cross_agent_review,omitempty"`
+	ExploratoryOptimization *bool   `yaml:"exploratory_optimization,omitempty"`
+	EvolutionaryQuality     *bool   `yaml:"evolutionary_quality,omitempty"`
+	AdaptiveModelSelection  *bool   `yaml:"adaptive_model_selection,omitempty"`
+	SelfImprovement         *bool   `yaml:"self_improvement,omitempty"`
+	AdaptiveDepth           *bool   `yaml:"adaptive_depth,omitempty"`
+}
+
+// EffectiveCrossAgentReview returns the configured value or "false" as default.
+func (fp FeatureProfile) EffectiveCrossAgentReview() string {
+	if fp.CrossAgentReview != nil {
+		return *fp.CrossAgentReview
+	}
+	return "false"
+}
+
+// EffectiveExploratoryOptimization returns the configured flag or false as default.
+func (fp FeatureProfile) EffectiveExploratoryOptimization() bool {
+	if fp.ExploratoryOptimization != nil {
+		return *fp.ExploratoryOptimization
+	}
+	return false
+}
+
+// EffectiveEvolutionaryQuality returns the configured flag or false as default.
+func (fp FeatureProfile) EffectiveEvolutionaryQuality() bool {
+	if fp.EvolutionaryQuality != nil {
+		return *fp.EvolutionaryQuality
+	}
+	return false
+}
+
+// EffectiveAdaptiveModelSelection returns the configured flag or false as default.
+func (fp FeatureProfile) EffectiveAdaptiveModelSelection() bool {
+	if fp.AdaptiveModelSelection != nil {
+		return *fp.AdaptiveModelSelection
+	}
+	return false
+}
+
+// EffectiveSelfImprovement returns the configured flag or false as default.
+func (fp FeatureProfile) EffectiveSelfImprovement() bool {
+	if fp.SelfImprovement != nil {
+		return *fp.SelfImprovement
+	}
+	return false
+}
+
+// EffectiveAdaptiveDepth returns the configured flag or false as default.
+func (fp FeatureProfile) EffectiveAdaptiveDepth() bool {
+	if fp.AdaptiveDepth != nil {
+		return *fp.AdaptiveDepth
+	}
+	return false
 }
 
 // Validate checks all Config fields for consistency after yaml.Unmarshal.
