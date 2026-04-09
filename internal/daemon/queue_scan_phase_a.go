@@ -199,7 +199,7 @@ func (qh *QueueHandler) stepCancelInterrupt(s *scanState) {
 
 // stepPhaseTransitions — Step 0.7: Detect and persist phase transitions.
 func (qh *QueueHandler) stepPhaseTransitions(s *scanState) {
-	if qh.dependencyResolver.stateReader == nil {
+	if !qh.dependencyResolver.HasStateReader() {
 		return
 	}
 
@@ -218,7 +218,7 @@ func (qh *QueueHandler) stepPhaseTransitions(s *scanState) {
 			qh.log(LogLevelInfo, "phase_transition command=%s phase=%s %s→%s reason=%s",
 				cmd.ID, tr.PhaseName, tr.OldStatus, tr.NewStatus, tr.Reason)
 
-			if err := qh.dependencyResolver.stateReader.ApplyPhaseTransition(cmd.ID, tr.PhaseID, tr.NewStatus); err != nil {
+			if err := qh.dependencyResolver.GetStateReader().ApplyPhaseTransition(cmd.ID, tr.PhaseID, tr.NewStatus); err != nil {
 				qh.log(LogLevelError, "phase_transition_apply command=%s phase=%s error=%v",
 					cmd.ID, tr.PhaseID, err)
 				continue
@@ -259,7 +259,7 @@ func (qh *QueueHandler) stepPhaseTransitions(s *scanState) {
 
 // stepWorktreePhaseMerges — Step 0.7.1: Collect merge work items for Phase B.
 func (qh *QueueHandler) stepWorktreePhaseMerges(s *scanState) {
-	if qh.worktreeManager == nil || qh.dependencyResolver.stateReader == nil {
+	if qh.worktreeManager == nil || !qh.dependencyResolver.HasStateReader() {
 		return
 	}
 
@@ -289,7 +289,7 @@ func (qh *QueueHandler) stepWorktreePhaseMerges(s *scanState) {
 // operator-managed quarantines. Pending commands are still skipped — they have
 // no worktrees yet.
 func (qh *QueueHandler) stepWorktreePublish(s *scanState) {
-	if qh.worktreeManager == nil || qh.dependencyResolver.stateReader == nil {
+	if qh.worktreeManager == nil || !qh.dependencyResolver.HasStateReader() {
 		return
 	}
 
@@ -456,7 +456,7 @@ func (qh *QueueHandler) stepWorktreeOrphanCleanup(s *scanState) {
 //   - the integration is already quarantined (manual operator state)
 //   - the command's UpdatedAt is within the threshold
 func (qh *QueueHandler) stepWorktreeFastTrackCleanup(s *scanState) {
-	if qh.worktreeManager == nil || qh.dependencyResolver.stateReader == nil {
+	if qh.worktreeManager == nil || !qh.dependencyResolver.HasStateReader() {
 		return
 	}
 	if !qh.config.Worktree.Enabled {
@@ -480,7 +480,7 @@ func (qh *QueueHandler) stepWorktreeFastTrackCleanup(s *scanState) {
 		if !allTerm {
 			continue
 		}
-		phases, err := qh.dependencyResolver.stateReader.GetCommandPhases(cmd.ID)
+		phases, err := qh.dependencyResolver.GetStateReader().GetCommandPhases(cmd.ID)
 		if err != nil {
 			// Non-phased commands are handled by collectWorktreePublishAndCleanup;
 			// other errors fail closed (do not force cleanup).
@@ -525,7 +525,7 @@ func (qh *QueueHandler) stepWorktreeFastTrackCleanup(s *scanState) {
 
 		applied := 0
 		for _, p := range stuck {
-			if err := qh.dependencyResolver.stateReader.ApplyPhaseTransition(
+			if err := qh.dependencyResolver.GetStateReader().ApplyPhaseTransition(
 				cmd.ID, p.ID, model.PhaseStatusFailed,
 			); err != nil {
 				qh.log(LogLevelWarn,
@@ -568,7 +568,7 @@ func (qh *QueueHandler) stepWorktreeFastTrackCleanup(s *scanState) {
 // integration is transitioned to Failed so the command is not re-detected
 // indefinitely.
 func (qh *QueueHandler) stepWorktreeStallDetection(s *scanState) {
-	if qh.worktreeManager == nil || qh.dependencyResolver.stateReader == nil {
+	if qh.worktreeManager == nil || !qh.dependencyResolver.HasStateReader() {
 		return
 	}
 	if !qh.config.Worktree.Enabled {
@@ -606,7 +606,7 @@ func (qh *QueueHandler) stepWorktreeStallDetection(s *scanState) {
 		// phases が一切定義されていない command が created のまま放置されている
 		// ケースは timeoutMin を待つ必要がない (case 5)。即時 stall シグナルを発火する。
 		if cmdState.Integration.Status == model.IntegrationStatusCreated {
-			phases, perr := qh.dependencyResolver.stateReader.GetCommandPhases(cmd.ID)
+			phases, perr := qh.dependencyResolver.GetStateReader().GetCommandPhases(cmd.ID)
 			noPhases := false
 			if perr != nil {
 				if errors.Is(perr, ErrStateNotFound) {
@@ -703,7 +703,7 @@ func (qh *QueueHandler) allPhasesAndTasksTerminal(commandID string, taskQueues m
 	if !allTerm {
 		return false
 	}
-	phases, err := qh.dependencyResolver.stateReader.GetCommandPhases(commandID)
+	phases, err := qh.dependencyResolver.GetStateReader().GetCommandPhases(commandID)
 	if err != nil {
 		// Non-phased commands surface ErrStateNotFound here; we still want
 		// stall detection in that case, so a not-found error is treated as
