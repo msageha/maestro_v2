@@ -18,6 +18,9 @@ func (qh *QueueHandler) periodicScanPhaseA() phaseAResult {
 
 	s := qh.initScanState()
 
+	// Reset admission control and record current in-flight tasks.
+	qh.stepAdmissionSync(&s)
+
 	// Execute steps in fixed order (matches original Step 0 through Step 1.5).
 	qh.stepDeadLetters(&s)
 	qh.stepCircuitBreaker(&s)
@@ -70,6 +73,23 @@ func (qh *QueueHandler) initScanState() scanState {
 }
 
 // --- Phase A step functions (executed in order) ---
+
+// stepAdmissionSync resets the admission controller and records in-flight tasks
+// at the start of each scan cycle, providing accurate slot counts for dispatch.
+func (qh *QueueHandler) stepAdmissionSync(s *scanState) {
+	if qh.admissionCtrl == nil {
+		return
+	}
+	var inProgress []*model.Task
+	for _, tq := range s.tasks {
+		for i := range tq.Queue.Tasks {
+			if tq.Queue.Tasks[i].Status == model.StatusInProgress {
+				inProgress = append(inProgress, &tq.Queue.Tasks[i])
+			}
+		}
+	}
+	qh.admissionCtrl.RecordInFlight(inProgress)
+}
 
 // stepDeadLetters — Step 0: Remove entries exceeding max retry attempts.
 func (qh *QueueHandler) stepDeadLetters(s *scanState) {

@@ -17,7 +17,9 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/msageha/maestro_v2/internal/daemon/admission"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
+	"github.com/msageha/maestro_v2/internal/daemon/fallback"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -53,6 +55,8 @@ type Daemon struct {
 	lockMap           *lock.MutexMap
 	qualityGateDaemon *QualityGateDaemon
 	circuitBreaker    *circuitbreaker.Handler
+	admissionCtrl     *admission.Controller
+	fallbackMgr       *fallback.Manager
 	worktreeManager   *WorktreeManager
 
 	eventBus    *events.Bus

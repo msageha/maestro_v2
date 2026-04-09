@@ -11,7 +11,9 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/daemon/admission"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
+	"github.com/msageha/maestro_v2/internal/daemon/fallback"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -47,6 +49,8 @@ type QueueHandler struct {
 	deadLetterProcessor *DeadLetterProcessor
 	metricsHandler      *MetricsHandler
 	circuitBreaker      *circuitbreaker.Handler
+	admissionCtrl       *admission.Controller
+	fallbackMgr         *fallback.Manager
 	worktreeManager     QueueWorktreeManager
 	lockMap             *lock.MutexMap
 
@@ -152,6 +156,22 @@ func (qh *QueueHandler) SetCircuitBreaker(cb *circuitbreaker.Handler) {
 	qh.scanRunMu.Lock()
 	defer qh.scanRunMu.Unlock()
 	qh.circuitBreaker = cb
+}
+
+// SetAdmissionController wires the admission controller for concurrency limiting.
+// Must be called before Run() starts.
+func (qh *QueueHandler) SetAdmissionController(ac *admission.Controller) {
+	qh.scanRunMu.Lock()
+	defer qh.scanRunMu.Unlock()
+	qh.admissionCtrl = ac
+}
+
+// SetFallbackManager wires the fallback manager for degraded-mode operation.
+// Must be called before Run() starts.
+func (qh *QueueHandler) SetFallbackManager(fm *fallback.Manager) {
+	qh.scanRunMu.Lock()
+	defer qh.scanRunMu.Unlock()
+	qh.fallbackMgr = fm
 }
 
 // SetWorktreeManager wires the worktree manager for worker isolation.
