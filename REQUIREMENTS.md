@@ -122,6 +122,140 @@ only レビュアー」としてアサインする [SHOULD]。
 
 ———
 
+## 4.5. 実装フェーズ C: 進化的品質最適化と自律改善（Sakana.ai 研究知見）
+
+Phase A-B の基盤が安定稼働した上で、Sakana.ai の研究知見（ShinkaEvolve, Darwin Gödel Machine, AI Scientist, AB-MCTS, Continuous Thought Machines）を統合し、システムの品質最適化能力と自律改善能力を段階的に拡張する。
+
+本フェーズは既存アーキテクチャとの親和性および実装難易度に基づき、以下の3段階で実装する。
+
+- **Phase C-α（既存拡張）**: C-2, C-3 — config/verify.yaml/learnings の拡張で実装可能
+- **Phase C-β（新規基盤）**: C-1, C-6 — Multi-rollout 拡張、複雑度推定基盤が必要
+- **Phase C-γ（長期研究）**: C-4, C-5 — 探索木管理、自己改善フレームワークが必要
+
+### C-1: Evolutionary Code Quality（進化的コード品質改善）[Phase C-β]
+
+**概要**: Multi-rollout（B-1）を進化的フレームワークに拡張し、変異→評価→選択サイクルによるコード品質の反復改善を実現する。
+
+**研究対応**:
+- ShinkaEvolve: LLM を変異演算子として活用し、diff/full/cross の3種変異パッチを生成。島モデルによる集団管理
+- Darwin Gödel Machine (DGM): アーカイブベース選択により、過去の成功パターンを stepping stone として保持
+
+**統合方法**: 既存 Multi-rollout 基盤（B-1）を進化的フレームワークとして拡張する。worktree を進化島、Fitness 関数（S1-2）を適応度関数として再利用し、rollout 数を条件付きで増加させる。
+
+**具体的機能**:
+- [C-1-1] 変異戦略の多様化: Worker に対し diff（差分パッチ）、full（全体再生成）、cross（複数候補の交叉）の3種の変異パッチ生成を指示可能とする [SHOULD]。変異種別の選択は Planner が過去の Fitness 結果に基づき決定する。
+- [C-1-2] 新規性フィルタ: コード埋め込みの類似度（閾値 0.99）により、既存候補と実質同一の変異を棄却する新規性棄却サンプリングを導入する [SHOULD]。冗長な rollout によるリソース浪費を防止する。
+- [C-1-3] 適応度評価の拡張: 既存 Fitness 関数（S1-2）の辞書式4軸に「コード品質スコア」軸を追加する [MAY]。品質スコアは静的解析ツール（lint 警告数、循環的複雑度等）の機械的出力に基づき算出し、LLM 判定に依存しない。
+
+**Anti-Requirements 整合**:
+- §5-1 準拠: Fitness 関数は機械的評価のみ。コード品質スコアも静的解析ツール出力に限定し、LLM による上書きを禁止する
+- §5-3 準拠: 変異候補の合成（Frankenstein マージ）は行わない。Winner-takes-all 原則を維持する
+- §5-6 準拠: verify.yaml が定義済みの場合のみ進化的サイクルを発動する
+
+### C-2: Adaptive Model Selection（適応的モデル選択）[Phase C-α]
+
+**概要**: UCB バンディットアルゴリズムによりタスク種別×モデル性能を追跡し、最適モデルを動的に選択する。
+
+**研究対応**:
+- ShinkaEvolve: UCB バンディットによる LLM 動的選択。コスト考慮係数による効率的なモデル配分
+- AB-MCTS: モデル選択を探索の第3次元として位置付け、複数 LLM の適応的選択を実現
+
+**統合方法**: config.yaml の worker models 設定を動的化する。Trace JSONL（S3-2）に蓄積されたタスク結果データを入力とし、モデル割当を最適化する。§5-7 の「最初からの Bandit アルゴリズム実装禁止」に留意し、**S3 の Trace ログ運用実績が十分に蓄積された後に解禁する** [MUST]。
+
+**具体的機能**:
+- [C-2-1] タスク種別別モデル性能トラッキング: タスク種別（bloom_level × persona）ごとに、各モデルの Fitness 結果（Pass率、Repair 回数、実行時間）を Trace JSONL から集計する [SHOULD]。
+- [C-2-2] UCB1 スコアに基づくモデル割当: 探索（未知モデルの試行）と活用（高性能モデルの優先）のバランスを UCB1 アルゴリズムで制御する [SHOULD]。
+- [C-2-3] コスト考慮係数: モデル選択時に API コスト（トークン単価 × 平均消費量）を考慮し、性能/コスト比を最適化する [MAY]。
+
+**Anti-Requirements 整合**:
+- §5-7 準拠: S3 の Trace ログ運用と古典的タグ検索による効果測定が確立された後に初めて導入する。Trace データ不足時は静的な config 設定にフォールバックする [MUST]
+- §5-1 準拠: モデル選択の評価指標は機械的 Fitness 結果のみ。LLM の自己評価を選択根拠としない
+
+### C-3: Autonomous Verification Loop（自律的検証改善ループ）[Phase C-α]
+
+**概要**: AI Scientist の自動査読＋リフレクション機構を verification フェーズに統合し、検証の多観点化と自律的な改善サイクルを実現する。
+
+**研究対応**:
+- AI Scientist: 5 独立レビュー＋5 リフレクションによる品質保証。NeurIPS Area Chair 方式の統合判定
+- Darwin Gödel Machine (DGM): 確率的デバッグ（debug_prob）による自動修正試行
+
+**統合方法**: 既存 verify.yaml（S1-1）と Planner 自己診断（A-3）を拡張する。検証観点を追加し、失敗時の自動修正試行を構造化する。
+
+**具体的機能**:
+- [C-3-1] 多観点アンサンブル検証: verify.yaml の build/lint/test/typecheck に加え、セキュリティ（依存脆弱性スキャン）およびパフォーマンス（ベンチマーク回帰）の検証観点を追加可能とする [SHOULD]。各観点は独立した検証コマンドとして定義され、結果は機械的に集約される。
+- [C-3-2] 確率的リトライと自動修正: Verify 失敗時に、Failure Fingerprint（S2-1）と照合した上で、同一指紋でない新規エラーに対し自動修正を試行する [SHOULD]。試行回数は definition_of_abort の max_repair_count と連携し、上限を超過した場合は paused_for_replan へ遷移する。
+- [C-3-3] 検証結果の重み付き集約: 複数検証観点の結果を重み付きで集約し、総合 Fitness スコアに反映する [MAY]。重みは検証観点ごとに config で静的に定義し、LLM による動的調整は行わない。
+
+**Anti-Requirements 整合**:
+- §5-1 準拠: 検証結果の集約は機械的な重み付き計算のみ。LLM による判定上書きを禁止する
+- §5-2 準拠: 多観点検証は多数決ではなく、各検証コマンドの Pass/Fail を独立に評価する
+- §5-6 準拠: verify.yaml 未定義タスクへの拡張検証適用を禁止する
+
+### C-4: Exploratory Search（探索的実装最適化）[Phase C-γ]
+
+**概要**: AB-MCTS の探索木構造を worktree 並列実行に適用し、複数の実装候補を木構造で展開して最良解を選択する。
+
+**研究対応**:
+- AB-MCTS: 「Wider or Deeper?」を Thompson Sampling で動的選択。Alpha-Beta 枝刈りによる低ポテンシャルブランチの早期削減
+- AI Scientist v2: Progressive Agentic Tree Search による複数実験パスの並列探索
+
+**統合方法**: Multi-rollout（B-1）を木構造探索に拡張する。Planner が探索戦略（展開・枝刈り判断）を管理し、各 worktree が探索ノードとして機能する。
+
+**具体的機能**:
+- [C-4-1] 探索木管理: 各 worktree を探索ノードとし、Planner が展開（新ノード生成）と枝刈り（低スコアノード打切り）を判断する探索木構造を導入する [MAY]。ノード間の親子関係は Planner が管理し、Worker 間の直接通信は発生しない。
+- [C-4-2] Thompson Sampling による探索戦略: 「幅（新アプローチの探索）」と「深さ（既存アプローチの改善）」の選択を Thompson Sampling で確率的に決定する [MAY]。探索の多様性と収束のバランスを自動調整する。
+- [C-4-3] Alpha-Beta 枝刈り: Fitness 関数（S1-2）のスコアに基づき、一定閾値を下回るブランチを早期に打ち切る [MAY]。リソース消費を抑制しつつ、有望な候補に計算資源を集中させる。
+- [C-4-4] Judge（B-2）との連携: 探索木の最終候補選択において、機械的 Fitness が Tie の場合に限り Judge 機構を Tie-breaker として活用する [MUST]。B-2 の制約を継承する。
+
+**Anti-Requirements 整合**:
+- §5-4 準拠: 探索ノード（Worker）間の直接通信を禁止する。全てのノード間情報伝達は Planner（Hub）経由の Hub-and-Spoke 型とする
+- §5-3 準拠: 探索結果の合成（Frankenstein マージ）を禁止する。最終選択は Winner-takes-all で1つの worktree を丸ごと採用する
+- §5-6 準拠: verify.yaml 未定義のタスクには探索的実装を適用しない
+
+### C-5: Self-Improvement Mechanism（自己改善メカニズム）[Phase C-γ]
+
+**概要**: Darwin Gödel Machine の自己改善パラダイムを応用し、システムが過去の実行結果から学習して戦略を自動改善する。
+
+**研究対応**:
+- Darwin Gödel Machine (DGM): エージェントが自身のコードを進化的に自己改善。アーカイブベース選択による stepping stone 保持
+- ShinkaEvolve: プロンプト進化、EVOLVE-BLOCK 的な進化対象領域の指定
+
+**統合方法**: 既存 learnings 機構を構造化強化し、Planner 自己診断（A-3）を拡張する。自己改善の対象は Planner/Worker のプロンプト・設定に限定し、Daemon 制御ロジックや状態遷移は改変対象としない。
+
+**具体的機能**:
+- [C-5-1] 構造化失敗パターン学習: Failure Fingerprint（S2-1）を活用し、失敗パターンを分類・構造化する [SHOULD]。類似パターンの再発時に過去の修復戦略を自動提案する。
+- [C-5-2] Planner プロンプト/ペルソナの進化的最適化: EVOLVE-BLOCK 的な進化対象指定により、Planner のプロンプトおよびペルソナ定義の特定領域を進化的に最適化する [MAY]。最適化の評価は Fitness 関数（S1-2）の結果に基づく。
+- [C-5-3] アーカイブベース戦略: 過去の成功パターン（高 Fitness スコアのタスク実行結果）を stepping stone として保持し、類似タスクの初期戦略として参照する [MAY]。
+
+**安全装置**:
+- Reward hacking 防止（DGM の教訓）: 自己改善が評価指標自体を操作するリスクに対し、Fitness 関数の機械的評価原則（§5-1）を安全弁として維持する [MUST]。Fitness 関数の定義・重み・閾値は自己改善の対象外とする [MUST]。
+- 改善対象の限定: 自己改善対象は Planner/Worker のプロンプト・設定・ペルソナ定義のみとする。Daemon 制御ロジック、状態遷移定義、Fitness 関数定義は改変禁止とする [MUST]。
+
+**Anti-Requirements 整合**:
+- §5-1 準拠: Fitness 関数の評価ロジック自体は自己改善の対象外。LLM が Fitness 判定を上書きすることを禁止する
+- §5-5 準拠: 自己改善で得た知見は learnings 機構経由で伝達する。共有可変状態を導入しない
+- §5-7 準拠: S3 の Trace ログ運用実績が蓄積された後に段階的に解禁する
+
+### C-6: Adaptive Computation Depth（適応的計算深度）[Phase C-β]
+
+**概要**: Continuous Thought Machines (CTM) の「内部刻み（Internal Ticks）」概念を応用し、タスクの複雑度に応じて Worker の推論ステップ数（サブタスク分割粒度）を動的に調整する。
+
+**研究対応**:
+- Continuous Thought Machines (CTM): タスク複雑度に応じた内部反復ステップ数の動的調整。確信度ベースの早期終了
+
+**統合方法**: bloom_level とタスク複雑度メトリクスに基づき、Worker への指示粒度（サブタスク分割の深さ）と検証深度を動的に調整する。
+
+**具体的機能**:
+- [C-6-1] タスク複雑度推定: bloom_level、content の構造（変更対象ファイル数、依存関係の深さ）、過去の類似タスクの Repair 率から複雑度スコアを機械的に算出する [SHOULD]。
+- [C-6-2] 推論ステップ数の動的調整: 複雑度スコアに基づき、単純タスクには浅い分割（単一 Worker 直接実行）、複雑タスクには深い分割（多段サブタスク）を Planner が自動選択する [SHOULD]。
+- [C-6-3] 確信度ベース早期終了: Worker が acceptance_criteria を十分な確度で満たした場合、追加の検証ステップ（拡張検証観点等）をスキップ可能とする [MAY]。確信度の判定は Fitness 関数のスコアマージンに基づき、LLM の自己申告に依存しない。
+
+**Anti-Requirements 整合**:
+- §5-1 準拠: 複雑度推定および確信度判定は機械的メトリクスに基づく。LLM の主観的判断に依存しない
+- §5-7 準拠: 複雑度推定の入力データは Trace JSONL（S3-2）の蓄積データを使用する。十分なデータ蓄積前はデフォルトの分割粒度にフォールバックする [MUST]
+
+———
+
 ## 5. やらないこと (Anti-Requirements / Out of Scope)
 
 システムの崩壊（観測不能・決定不能・暴走）を防ぐため、以下の実装は明確に禁止する。
@@ -156,3 +290,13 @@ only レビュアー」としてアサインする [SHOULD]。
     - 異種モデル Reviewer の指摘事項がマージをブロックせず、かつその採用率がデータとして蓄積されていること。
 - Phase B 完了基準:
     - 条件を満たしたMulti-rolloutタスクにおいて、LLMの主観によらず、定義されたFitness関数によって勝者が自動的に選定されること。
+- Phase C-α 完了基準:
+    - 適応的モデル選択（C-2）が稼働し、Trace JSONL のタスク結果データに基づきモデル割当が動的に最適化されていること。
+    - 自律的検証改善ループ（C-3）が verification フェーズに統合され、2回以上の自律的改善サイクル（検証→修正→再検証）を完了できること。
+- Phase C-β 完了基準:
+    - 進化的コード品質改善（C-1）が Multi-rollout（B-1）と統合され、変異→評価→選択の進化的サイクルが機能すること。
+    - Fitness 関数（S1-2）にコード品質スコア軸が追加され、静的解析ツール出力に基づく機械的評価が稼働していること。
+    - 適応的計算深度（C-6）により、bloom_level に応じたサブタスク分割粒度の動的調整が機能すること。
+- Phase C-γ 完了基準:
+    - 探索木管理（C-4）が worktree と統合され、Planner による展開・枝刈り判断に基づく木構造探索が機能すること。
+    - 自己改善メカニズム（C-5）が learnings 機構経由で機能し、Fitness 関数定義・Daemon 制御ロジックが改変対象から除外されていること。
