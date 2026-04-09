@@ -1,0 +1,118 @@
+package model
+
+import "testing"
+
+func TestValidateProfileLevel(t *testing.T) {
+	tests := []struct {
+		input string
+		want  bool
+	}{
+		{"simple", true},
+		{"standard", true},
+		{"complex", true},
+		{"critical", true},
+		{"unknown", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			if got := ValidateProfileLevel(tt.input); got != tt.want {
+				t.Errorf("ValidateProfileLevel(%q) = %v, want %v", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDefaultFeatureProfiles(t *testing.T) {
+	profiles := DefaultFeatureProfiles()
+
+	// Should have all 4 levels
+	for _, level := range []string{"simple", "standard", "complex", "critical"} {
+		if _, ok := profiles[level]; !ok {
+			t.Errorf("missing profile for level %q", level)
+		}
+	}
+
+	// Simple level: all features off
+	simple := profiles[ProfileLevelSimple]
+	if simple.EffectiveCrossAgentReview() != "false" {
+		t.Errorf("simple.CrossAgentReview = %q, want false", simple.EffectiveCrossAgentReview())
+	}
+	if simple.EffectiveExploratoryOptimization() {
+		t.Error("simple.ExploratoryOptimization should be false")
+	}
+
+	// Standard level: partial features
+	std := profiles[ProfileLevelStandard]
+	if std.EffectiveCrossAgentReview() != "optional" {
+		t.Errorf("standard.CrossAgentReview = %q, want optional", std.EffectiveCrossAgentReview())
+	}
+	if !std.EffectiveAdaptiveModelSelection() {
+		t.Error("standard.AdaptiveModelSelection should be true")
+	}
+	if !std.EffectiveAdaptiveDepth() {
+		t.Error("standard.AdaptiveDepth should be true")
+	}
+
+	// Complex level: most features on
+	complex := profiles[ProfileLevelComplex]
+	if complex.EffectiveCrossAgentReview() != "true" {
+		t.Errorf("complex.CrossAgentReview = %q, want true", complex.EffectiveCrossAgentReview())
+	}
+	if !complex.EffectiveEvolutionaryQuality() {
+		t.Error("complex.EvolutionaryQuality should be true")
+	}
+	if !complex.EffectiveSelfImprovement() {
+		t.Error("complex.SelfImprovement should be true")
+	}
+}
+
+func TestIsFeatureEnabled(t *testing.T) {
+	profiles := DefaultFeatureProfiles()
+
+	tests := []struct {
+		level   string
+		feature string
+		want    bool
+	}{
+		{"simple", "cross_agent_review", false},
+		{"simple", "exploratory_optimization", false},
+		{"standard", "adaptive_model_selection", true},
+		{"standard", "adaptive_depth", true},
+		{"standard", "evolutionary_quality", false},
+		{"complex", "cross_agent_review", true},
+		{"complex", "self_improvement", true},
+		{"critical", "evolutionary_quality", true},
+		{"unknown_level", "cross_agent_review", false},
+		{"simple", "unknown_feature", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.level+"_"+tt.feature, func(t *testing.T) {
+			if got := IsFeatureEnabled(profiles, tt.level, tt.feature); got != tt.want {
+				t.Errorf("IsFeatureEnabled(%q, %q) = %v, want %v", tt.level, tt.feature, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestFeatureProfile_Defaults(t *testing.T) {
+	fp := FeatureProfile{}
+	if fp.EffectiveCrossAgentReview() != "false" {
+		t.Errorf("default CrossAgentReview = %q, want false", fp.EffectiveCrossAgentReview())
+	}
+	if fp.EffectiveExploratoryOptimization() {
+		t.Error("default ExploratoryOptimization should be false")
+	}
+	if fp.EffectiveEvolutionaryQuality() {
+		t.Error("default EvolutionaryQuality should be false")
+	}
+	if fp.EffectiveAdaptiveModelSelection() {
+		t.Error("default AdaptiveModelSelection should be false")
+	}
+	if fp.EffectiveSelfImprovement() {
+		t.Error("default SelfImprovement should be false")
+	}
+	if fp.EffectiveAdaptiveDepth() {
+		t.Error("default AdaptiveDepth should be false")
+	}
+}
