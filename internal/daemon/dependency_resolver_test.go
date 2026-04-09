@@ -543,3 +543,55 @@ func TestCheckPhaseTransitions_StateNotFound(t *testing.T) {
 		t.Errorf("expected nil transitions when state not found, got: %v", transitions)
 	}
 }
+
+// TestCheckPhaseTransitions_SameCycleCascade verifies that when an active phase
+// completes and a pending phase depends on it, both transitions are returned in
+// the same CheckPhaseTransitions call. This is the two-pass fix for the bug where
+// stepWorktreeFastTrackCleanup killed pending phases in the same scan cycle that
+// their dependency phase completed — before they could activate.
+func TestCheckPhaseTransitions_SameCycleCascade(t *testing.T) {
+	reader := &mockStateReader{
+		taskStates: map[string]model.Status{
+			"cmd1:task1": model.StatusCompleted,
+		},
+		phases: map[string][]PhaseInfo{
+			"cmd1": {
+				{
+					ID:              "phase1",
+					Name:            "foundation",
+					Status:          model.PhaseStatusActive,
+					RequiredTaskIDs: []string{"task1"},
+				},
+				{
+					ID:        "phase2",
+					Name:      "features",
+					Status:    model.PhaseStatusPending,
+					DependsOn: []string{"phase1"},
+				},
+			},
+		},
+	}
+	dr := newTestDependencyResolver(reader)
+
+	transitions, err := dr.CheckPhaseTransitions("cmd1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(transitions) != 2 {
+		t.Fatalf("expected 2 transitions (phase1→completed, phase2→awaiting_fill), got %d: %v",
+			len(transitions), transitions)
+	}
+
+	byPhase := make(map[string]model.PhaseStatus, len(transitions))
+	for _, tr := range transitions {
+		byPhase[tr.PhaseID] = tr.NewStatus
+	}
+
+	if byPhase["phase1"] != model.PhaseStatusCompleted {
+		t.Errorf("phase1: expected completed, got %s", byPhase["phase1"])
+	}
+	if byPhase["phase2"] != model.PhaseStatusAwaitingFill {
+		t.Errorf("phase2: expected awaiting_fill, got %s", byPhase["phase2"])
+	}
+}

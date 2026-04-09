@@ -124,32 +124,47 @@ func (dr *DependencyResolver) CheckPhaseTransitions(commandID string) ([]PhaseTr
 
 	var transitions []PhaseTransitionResult
 
+	// Pass 1: process active and awaiting_fill phases.
+	// Active-phase transitions are reflected back into phaseMap so that pass 2
+	// can detect newly-eligible pending phases within the same scan cycle —
+	// preventing stepWorktreeFastTrackCleanup from killing a pending phase whose
+	// dependency phase completed in this very cycle before it could activate.
 	for _, phase := range phases {
 		switch phase.Status {
 		case model.PhaseStatusActive:
 			tr := dr.checkActivePhaseCompletion(commandID, phase)
 			if tr != nil {
 				transitions = append(transitions, *tr)
+				// Reflect the new status in phaseMap so pending dependents
+				// can detect the completion in pass 2.
+				if entry, ok := phaseMap[tr.PhaseID]; ok {
+					entry.Status = tr.NewStatus
+					phaseMap[tr.PhaseID] = entry
+				}
 			}
-
-		case model.PhaseStatusPending:
-			// Check for cascade cancel
-			tr := dr.checkPendingPhaseCascade(phaseMap, phase)
-			if tr != nil {
-				transitions = append(transitions, *tr)
-				continue
-			}
-			// Check for activation (all dependency phases completed)
-			tr = dr.checkPendingPhaseActivation(phaseMap, phase)
-			if tr != nil {
-				transitions = append(transitions, *tr)
-			}
-
 		case model.PhaseStatusAwaitingFill:
 			tr := dr.checkAwaitingFillTimeout(phase)
 			if tr != nil {
 				transitions = append(transitions, *tr)
 			}
+		}
+	}
+
+	// Pass 2: process pending phases with the now-updated phaseMap.
+	for _, phase := range phases {
+		if phase.Status != model.PhaseStatusPending {
+			continue
+		}
+		// Check for cascade cancel
+		tr := dr.checkPendingPhaseCascade(phaseMap, phase)
+		if tr != nil {
+			transitions = append(transitions, *tr)
+			continue
+		}
+		// Check for activation (all dependency phases completed)
+		tr = dr.checkPendingPhaseActivation(phaseMap, phase)
+		if tr != nil {
+			transitions = append(transitions, *tr)
 		}
 	}
 
