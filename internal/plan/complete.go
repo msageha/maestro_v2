@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
 
@@ -162,7 +161,7 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 		ResultStatus:  resultStatus,
 		PlanStatus:    derivedPlanStatus,
 		TaskResults:   taskResults,
-		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+		CreatedAt:     nowUTC(),
 	}
 	if err := writeCompleteIntent(opts.MaestroDir, intent); err != nil {
 		return nil, fmt.Errorf("write intent: %w", err)
@@ -231,7 +230,7 @@ func executeCompleteSteps(opts CompleteOptions, sm *StateManager, state *model.C
 	// Idempotent: state matches intent already, no-op. Otherwise update.
 	if state.PlanStatus != intent.PlanStatus {
 		state.PlanStatus = intent.PlanStatus
-		state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		state.UpdatedAt = nowUTC()
 		if err := sm.SaveState(state); err != nil {
 			return fmt.Errorf("save state: %w", err)
 		}
@@ -275,7 +274,7 @@ func reconcileCommandResultLocked(maestroDir string, commandID string, status mo
 		rf.FileType = "result_command"
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowUTC()
 	for i := range rf.Results {
 		if rf.Results[i].CommandID == commandID {
 			// Preserve ID; mutate status/summary/tasks. Reset Notified so
@@ -327,7 +326,7 @@ func reconcileCommandQueueEntryLocked(maestroDir string, commandID string, statu
 		return fmt.Errorf("parse planner queue: %w", err)
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowUTC()
 	for i := range cq.Commands {
 		if cq.Commands[i].ID == commandID {
 			if cq.Commands[i].Status == status {
@@ -493,7 +492,7 @@ func writeCommandResultLocked(maestroDir string, commandID string, status model.
 		return fmt.Errorf("generate result ID: %w", err)
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowUTC()
 	rf.Results = append(rf.Results, model.CommandResult{
 		ID:        resultID,
 		CommandID: commandID,
@@ -524,7 +523,7 @@ func updateCommandQueueEntryLocked(maestroDir string, commandID string, status m
 		return fmt.Errorf("parse planner queue: %w", err)
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowUTC()
 	found := false
 	for i := range cq.Commands {
 		if cq.Commands[i].ID == commandID {

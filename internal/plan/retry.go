@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
 
@@ -64,7 +63,7 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 	// Validate
 	rc, err := validateRetryRequest(sm, opts)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("validate retry: %w", err)
 	}
 	state := rc.state
 
@@ -87,7 +86,7 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 		return nil, fmt.Errorf("generate task ID: %w", err)
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowUTC()
 
 	// Load original task cache for cascade recovery and queue building
 	origTaskCache, err := loadOriginalTasksFromQueue(opts.MaestroDir, opts.CommandID)
@@ -100,7 +99,7 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 		state, opts, newTaskID, rc, now, workerStates, origTaskCache,
 	)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("apply retry state changes: %w", err)
 	}
 
 	// Write queue entry for the primary retry task
@@ -175,8 +174,8 @@ type retryContext struct {
 
 // validateRetryRequest loads and validates state, task status, phase membership, and blocked_by references.
 func validateRetryRequest(sm *StateManager, opts RetryOptions) (*retryContext, error) {
-	if opts.BloomLevel < 1 || opts.BloomLevel > 6 {
-		return nil, &PlanValidationError{Msg: fmt.Sprintf("bloom_level must be between 1 and 6, got %d", opts.BloomLevel)}
+	if opts.BloomLevel < BloomLevelMin || opts.BloomLevel > BloomLevelMax {
+		return nil, &PlanValidationError{Msg: fmt.Sprintf("bloom_level must be between %d and %d, got %d", BloomLevelMin, BloomLevelMax, opts.BloomLevel)}
 	}
 
 	state, err := sm.LoadState(opts.CommandID)
@@ -189,7 +188,7 @@ func validateRetryRequest(sm *StateManager, opts RetryOptions) (*retryContext, e
 	}
 
 	if err := ValidateNotCancelled(state); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("validate not cancelled: %w", err)
 	}
 
 	retryOfStatus, ok := state.TaskStates[opts.RetryOf]
@@ -224,7 +223,7 @@ func validateRetryRequest(sm *StateManager, opts RetryOptions) (*retryContext, e
 	// Validate blocked_by references
 	if len(blockedBy) > 0 {
 		if err := validateRetryBlockedBy(state, blockedBy, phase); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("validate blocked_by: %w", err)
 		}
 	}
 
@@ -496,7 +495,7 @@ func cascadeRecoverRecursive(
 		if phase, phaseIdx := findPhaseForTask(state, cancelledTaskID); phase != nil {
 			state.Phases[phaseIdx].TaskIDs = append(state.Phases[phaseIdx].TaskIDs, newTaskID)
 			if phase.Status == model.PhaseStatusFailed {
-				now := time.Now().UTC().Format(time.RFC3339)
+				now := nowUTC()
 				if err := reopenPhase(state, phaseIdx, now); err != nil {
 					return recovered, fmt.Errorf("reopen phase for cascade: %w", err)
 				}

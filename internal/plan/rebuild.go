@@ -140,7 +140,7 @@ func Rebuild(opts RebuildOptions) error {
 		state.AppliedResultIDs[taskID] = lr.resultID
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowUTC()
 	state.LastReconciledAt = &now
 	state.UpdatedAt = now
 
