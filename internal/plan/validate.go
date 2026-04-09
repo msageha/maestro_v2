@@ -23,6 +23,13 @@ const (
 	MaxTaskConstraintRunes         = 1024
 )
 
+// Limits for new schema fields.
+const (
+	MaxDefinitionOfDoneItems       = 20
+	MaxRepairCount                 = 100
+	MaxWallClockSec                = 86400 // 24 hours
+)
+
 // validateTaskSetCommon validates a slice of task inputs for field integrity,
 // name uniqueness, reserved-name prefixes, blocked_by references, self-references,
 // and DAG constraints. It collects task names, name set, and blocked_by mappings
@@ -277,6 +284,17 @@ func validateTaskFieldsCore(task TaskInput, fieldPrefix string, errs *Validation
 			errs.Add(fmt.Sprintf("%s.skill_refs[%d]", fieldPrefix, i), fmt.Sprintf("invalid skill_ref %q: must not contain '/', '\\', or null bytes", ref))
 		}
 	}
+
+	// Validate expected_paths.
+	validateExpectedPaths(task.ExpectedPaths, fieldPrefix+".expected_paths", errs)
+
+	// Validate definition_of_abort.
+	if task.DefinitionOfAbort != nil {
+		validateDefinitionOfAbort(task.DefinitionOfAbort, fieldPrefix+".definition_of_abort", errs)
+	}
+
+	// Validate definition_of_done.
+	validateDefinitionOfDone(task.DefinitionOfDone, fieldPrefix+".definition_of_done", errs)
 }
 
 func validateNameUniqueness(names []string, fieldPrefix string, errs *ValidationErrors) {
@@ -300,6 +318,56 @@ func validateSystemReservedNames(names []string, fieldPrefix string, errs *Valid
 func validateBloomLevel(level int, fieldPath string, errs *ValidationErrors) {
 	if level < BloomLevelMin || level > BloomLevelMax {
 		errs.Add(fieldPath, fmt.Sprintf("must be between %d and %d, got %d", BloomLevelMin, BloomLevelMax, level))
+	}
+}
+
+func validateExpectedPaths(paths []string, fieldPath string, errs *ValidationErrors) {
+	seen := make(map[string]bool, len(paths))
+	for i, p := range paths {
+		fp := fmt.Sprintf("%s[%d]", fieldPath, i)
+		if p == "" {
+			errs.Add(fp, "must not be empty")
+			continue
+		}
+		if strings.HasPrefix(p, "/") {
+			errs.Add(fp, fmt.Sprintf("must be a relative path, got %q", p))
+		}
+		if strings.Contains(p, "..") {
+			errs.Add(fp, fmt.Sprintf("must not contain '..', got %q", p))
+		}
+		if seen[p] {
+			errs.Add(fp, fmt.Sprintf("duplicate path %q", p))
+		}
+		seen[p] = true
+	}
+}
+
+func validateDefinitionOfAbort(d *model.DefinitionOfAbort, fieldPath string, errs *ValidationErrors) {
+	if d.MaxRepairCount <= 0 || d.MaxRepairCount > MaxRepairCount {
+		errs.Add(fieldPath+".max_repair_count",
+			fmt.Sprintf("must be between 1 and %d, got %d", MaxRepairCount, d.MaxRepairCount))
+	}
+	if d.MaxWallClockSec <= 0 || d.MaxWallClockSec > MaxWallClockSec {
+		errs.Add(fieldPath+".max_wall_clock_sec",
+			fmt.Sprintf("must be between 1 and %d, got %d", MaxWallClockSec, d.MaxWallClockSec))
+	}
+	for i, cond := range d.ExplicitFailureConditions {
+		if strings.TrimSpace(cond) == "" {
+			errs.Add(fmt.Sprintf("%s.explicit_failure_conditions[%d]", fieldPath, i),
+				"must not be empty")
+		}
+	}
+}
+
+func validateDefinitionOfDone(items []string, fieldPath string, errs *ValidationErrors) {
+	if len(items) > MaxDefinitionOfDoneItems {
+		errs.Add(fieldPath,
+			fmt.Sprintf("exceeds maximum of %d items, got %d", MaxDefinitionOfDoneItems, len(items)))
+	}
+	for i, item := range items {
+		if strings.TrimSpace(item) == "" {
+			errs.Add(fmt.Sprintf("%s[%d]", fieldPath, i), "must not be empty")
+		}
 	}
 }
 

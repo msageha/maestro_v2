@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -203,6 +204,173 @@ func TestValidateTasksInput_SkillRefsValidation(t *testing.T) {
 	}
 	if !strings.Contains(errs.Error(), "skill_refs") {
 		t.Errorf("expected error mentioning 'skill_refs', got: %s", errs.Error())
+	}
+}
+
+// --- expected_paths validation ---
+
+func TestValidateTasksInput_ExpectedPaths_Valid(t *testing.T) {
+	task := validTask("ep-valid")
+	task.ExpectedPaths = []string{"src/main.go", "internal/handler.go"}
+	errs := ValidateTasksInput([]TaskInput{task})
+	if errs != nil {
+		t.Errorf("unexpected error for valid expected_paths: %v", errs)
+	}
+}
+
+func TestValidateTasksInput_ExpectedPaths_AbsolutePath(t *testing.T) {
+	task := validTask("ep-abs")
+	task.ExpectedPaths = []string{"/etc/passwd"}
+	errs := ValidateTasksInput([]TaskInput{task})
+	if errs == nil {
+		t.Fatal("expected error for absolute path in expected_paths")
+	}
+	if !strings.Contains(errs.Error(), "relative path") {
+		t.Errorf("expected 'relative path' in error, got: %s", errs.Error())
+	}
+}
+
+func TestValidateTasksInput_ExpectedPaths_Traversal(t *testing.T) {
+	task := validTask("ep-trav")
+	task.ExpectedPaths = []string{"../secret/file"}
+	errs := ValidateTasksInput([]TaskInput{task})
+	if errs == nil {
+		t.Fatal("expected error for path traversal in expected_paths")
+	}
+	if !strings.Contains(errs.Error(), "..") {
+		t.Errorf("expected '..' in error, got: %s", errs.Error())
+	}
+}
+
+func TestValidateTasksInput_ExpectedPaths_Empty(t *testing.T) {
+	task := validTask("ep-empty")
+	task.ExpectedPaths = []string{""}
+	errs := ValidateTasksInput([]TaskInput{task})
+	if errs == nil {
+		t.Fatal("expected error for empty string in expected_paths")
+	}
+	if !strings.Contains(errs.Error(), "empty") {
+		t.Errorf("expected 'empty' in error, got: %s", errs.Error())
+	}
+}
+
+func TestValidateTasksInput_ExpectedPaths_Duplicate(t *testing.T) {
+	task := validTask("ep-dup")
+	task.ExpectedPaths = []string{"src/main.go", "src/main.go"}
+	errs := ValidateTasksInput([]TaskInput{task})
+	if errs == nil {
+		t.Fatal("expected error for duplicate expected_paths")
+	}
+	if !strings.Contains(errs.Error(), "duplicate") {
+		t.Errorf("expected 'duplicate' in error, got: %s", errs.Error())
+	}
+}
+
+// --- definition_of_abort validation ---
+
+func TestValidateTasksInput_DefinitionOfAbort_Valid(t *testing.T) {
+	task := validTask("doa-valid")
+	task.DefinitionOfAbort = &model.DefinitionOfAbort{
+		MaxRepairCount:  5,
+		MaxWallClockSec: 3600,
+	}
+	errs := ValidateTasksInput([]TaskInput{task})
+	if errs != nil {
+		t.Errorf("unexpected error for valid definition_of_abort: %v", errs)
+	}
+}
+
+func TestValidateTasksInput_DefinitionOfAbort_Boundaries(t *testing.T) {
+	tests := []struct {
+		name      string
+		repair    int
+		wall      int
+		wantError bool
+		errField  string
+	}{
+		{"repair=0", 0, 3600, true, "max_repair_count"},
+		{"repair=100", 100, 3600, false, ""},
+		{"repair=101", 101, 3600, true, "max_repair_count"},
+		{"wall=0", 5, 0, true, "max_wall_clock_sec"},
+		{"wall=86400", 5, 86400, false, ""},
+		{"wall=86401", 5, 86401, true, "max_wall_clock_sec"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := validTask("doa-boundary")
+			task.DefinitionOfAbort = &model.DefinitionOfAbort{
+				MaxRepairCount:  tt.repair,
+				MaxWallClockSec: tt.wall,
+			}
+			errs := ValidateTasksInput([]TaskInput{task})
+			if tt.wantError {
+				if errs == nil {
+					t.Fatalf("expected error for %s", tt.name)
+				}
+				if !strings.Contains(errs.Error(), tt.errField) {
+					t.Errorf("expected %q in error, got: %s", tt.errField, errs.Error())
+				}
+			} else {
+				if errs != nil {
+					t.Errorf("unexpected error: %v", errs)
+				}
+			}
+		})
+	}
+}
+
+func TestValidateTasksInput_DefinitionOfAbort_EmptyCondition(t *testing.T) {
+	task := validTask("doa-empty-cond")
+	task.DefinitionOfAbort = &model.DefinitionOfAbort{
+		MaxRepairCount:            5,
+		MaxWallClockSec:           3600,
+		ExplicitFailureConditions: []string{"valid condition", "  "},
+	}
+	errs := ValidateTasksInput([]TaskInput{task})
+	if errs == nil {
+		t.Fatal("expected error for empty failure condition")
+	}
+	if !strings.Contains(errs.Error(), "explicit_failure_conditions") {
+		t.Errorf("expected 'explicit_failure_conditions' in error, got: %s", errs.Error())
+	}
+}
+
+// --- definition_of_done validation ---
+
+func TestValidateTasksInput_DefinitionOfDone_Valid(t *testing.T) {
+	task := validTask("dod-valid")
+	task.DefinitionOfDone = []string{"tests pass", "no lint errors"}
+	errs := ValidateTasksInput([]TaskInput{task})
+	if errs != nil {
+		t.Errorf("unexpected error for valid definition_of_done: %v", errs)
+	}
+}
+
+func TestValidateTasksInput_DefinitionOfDone_EmptyItem(t *testing.T) {
+	task := validTask("dod-empty")
+	task.DefinitionOfDone = []string{"valid", ""}
+	errs := ValidateTasksInput([]TaskInput{task})
+	if errs == nil {
+		t.Fatal("expected error for empty item in definition_of_done")
+	}
+	if !strings.Contains(errs.Error(), "definition_of_done") {
+		t.Errorf("expected 'definition_of_done' in error, got: %s", errs.Error())
+	}
+}
+
+func TestValidateTasksInput_DefinitionOfDone_ExceedsMax(t *testing.T) {
+	task := validTask("dod-max")
+	items := make([]string, 21)
+	for i := range items {
+		items[i] = fmt.Sprintf("condition %d", i)
+	}
+	task.DefinitionOfDone = items
+	errs := ValidateTasksInput([]TaskInput{task})
+	if errs == nil {
+		t.Fatal("expected error for exceeding max definition_of_done items")
+	}
+	if !strings.Contains(errs.Error(), "exceeds maximum") {
+		t.Errorf("expected 'exceeds maximum' in error, got: %s", errs.Error())
 	}
 }
 
