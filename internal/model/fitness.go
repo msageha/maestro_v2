@@ -1,6 +1,9 @@
 package model
 
-import "time"
+import (
+	"context"
+	"time"
+)
 
 // FitnessScore はタスク実行結果の機械的評価スコアを表す。
 // 辞書式順序で比較され、候補の勝敗判定に使用される。
@@ -131,6 +134,29 @@ func SelectWinner(candidates []FitnessScore, th FitnessThresholds) (winnerIndex 
 	}
 
 	return best, allTie
+}
+
+// ResolveWinner は SelectWinner を呼び出し、Tie 時に judge を使って勝者を決定する。
+// isTie=false の場合は judge を呼ばない（機械的 Fitness が第一判断基準）。
+// isTie=true かつ judge=nil の場合は index 0 にフォールバックする。
+// isTie=true かつ judge がエラーを返した場合は index 0 にフォールバックし error を返す。
+func ResolveWinner(scores []FitnessScore, thresholds FitnessThresholds, judge JudgeFunc) (winnerIdx int, judgeUsed bool, err error) {
+	winner, isTie := SelectWinner(scores, thresholds)
+
+	if !isTie {
+		return winner, false, nil
+	}
+
+	if judge == nil {
+		return winner, false, nil
+	}
+
+	decision, judgeErr := judge(context.Background(), scores, nil)
+	if judgeErr != nil {
+		return winner, false, judgeErr
+	}
+
+	return decision.WinnerIndex, true, nil
 }
 
 func abs(n int) int {

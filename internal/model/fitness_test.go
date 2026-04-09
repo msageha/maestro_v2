@@ -1,6 +1,8 @@
 package model
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -257,5 +259,111 @@ func TestSelectWinner_AllFailed(t *testing.T) {
 	// All failed, but #1 has fewest repairs
 	if idx != 1 || tie {
 		t.Errorf("all failed: got idx=%d, tie=%v, want idx=1, tie=false", idx, tie)
+	}
+}
+
+// --- ResolveWinner tests ---
+
+func TestResolveWinner_NonTie_JudgeNotCalled(t *testing.T) {
+	th := FitnessThresholds{}
+	scores := []FitnessScore{
+		{Passed: true, RepairCount: 0},
+		{Passed: true, RepairCount: 5},
+	}
+
+	judgeCalled := false
+	judge := func(_ context.Context, _ []FitnessScore, _ []map[string]string) (JudgeDecision, error) {
+		judgeCalled = true
+		return JudgeDecision{WinnerIndex: 1}, nil
+	}
+
+	idx, used, err := ResolveWinner(scores, th, judge)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if judgeCalled {
+		t.Error("judge should not be called when there is a clear winner")
+	}
+	if used {
+		t.Error("judgeUsed should be false")
+	}
+	if idx != 0 {
+		t.Errorf("winnerIdx = %d, want 0", idx)
+	}
+}
+
+func TestResolveWinner_Tie_JudgeNil_Fallback(t *testing.T) {
+	th := DefaultFitnessThresholds()
+	a := FitnessScore{Passed: true, RepairCount: 1, DiffLinesChanged: 50, ExecutionTime: 10 * time.Second}
+	scores := []FitnessScore{a, a}
+
+	idx, used, err := ResolveWinner(scores, th, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if used {
+		t.Error("judgeUsed should be false when judge is nil")
+	}
+	if idx != 0 {
+		t.Errorf("winnerIdx = %d, want 0 (fallback)", idx)
+	}
+}
+
+func TestResolveWinner_Tie_JudgeSuccess(t *testing.T) {
+	th := DefaultFitnessThresholds()
+	a := FitnessScore{Passed: true, RepairCount: 1, DiffLinesChanged: 50, ExecutionTime: 10 * time.Second}
+	scores := []FitnessScore{a, a}
+
+	judge := func(_ context.Context, _ []FitnessScore, _ []map[string]string) (JudgeDecision, error) {
+		return JudgeDecision{WinnerIndex: 1, Reasoning: "cleaner diff", Model: "opus"}, nil
+	}
+
+	idx, used, err := ResolveWinner(scores, th, judge)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !used {
+		t.Error("judgeUsed should be true")
+	}
+	if idx != 1 {
+		t.Errorf("winnerIdx = %d, want 1 (judge decision)", idx)
+	}
+}
+
+func TestResolveWinner_Tie_JudgeError_Fallback(t *testing.T) {
+	th := DefaultFitnessThresholds()
+	a := FitnessScore{Passed: true, RepairCount: 1, DiffLinesChanged: 50, ExecutionTime: 10 * time.Second}
+	scores := []FitnessScore{a, a}
+
+	judgeErr := errors.New("judge timeout")
+	judge := func(_ context.Context, _ []FitnessScore, _ []map[string]string) (JudgeDecision, error) {
+		return JudgeDecision{}, judgeErr
+	}
+
+	idx, used, err := ResolveWinner(scores, th, judge)
+	if err == nil {
+		t.Fatal("expected error from judge")
+	}
+	if !errors.Is(err, judgeErr) {
+		t.Errorf("expected judgeErr, got: %v", err)
+	}
+	if used {
+		t.Error("judgeUsed should be false on error")
+	}
+	if idx != 0 {
+		t.Errorf("winnerIdx = %d, want 0 (fallback)", idx)
+	}
+}
+
+func TestResolveWinner_Empty(t *testing.T) {
+	idx, used, err := ResolveWinner(nil, DefaultFitnessThresholds(), nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if used {
+		t.Error("judgeUsed should be false")
+	}
+	if idx != -1 {
+		t.Errorf("winnerIdx = %d, want -1", idx)
 	}
 }
