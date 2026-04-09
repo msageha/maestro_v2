@@ -54,13 +54,32 @@ var (
 	ErrBusyUndecided = errors.New("agent busy: undecided_after_probes")
 )
 
-const (
-	promptReadyLines     = 12 // プロンプト検出+安定性ハッシュ用 (12 lines to accommodate status bars)
-	busyHintLines        = 5  // busy パターンマッチ用
-	stableCheckRounds    = 1  // 安定性判定に必要なラウンド数
-	defaultExecTimeout   = 5 * time.Minute  // Context未設定時のデフォルトタイムアウト
-	claudeLaunchTimeout  = 60 * time.Second // Claude再起動待ちタイムアウト
-)
+// ExecutorConfig holds tunable constants for Executor behavior.
+// Use DefaultExecutorConfig() to get production defaults; tests can
+// override individual fields for fast or deterministic runs.
+type ExecutorConfig struct {
+	// PromptReadyLines is the number of lines captured for prompt detection and stability hash.
+	PromptReadyLines int
+	// BusyHintLines is the number of lines captured for busy pattern matching.
+	BusyHintLines int
+	// StableCheckRounds is the number of consecutive stable hash rounds required.
+	StableCheckRounds int
+	// DefaultExecTimeout is the fallback timeout when ExecRequest.Context is nil.
+	DefaultExecTimeout time.Duration
+	// ClaudeLaunchTimeout is the timeout for waiting after re-launching Claude.
+	ClaudeLaunchTimeout time.Duration
+}
+
+// DefaultExecutorConfig returns production-safe defaults.
+func DefaultExecutorConfig() ExecutorConfig {
+	return ExecutorConfig{
+		PromptReadyLines:    12, // 12 lines to accommodate status bars
+		BusyHintLines:       5,
+		StableCheckRounds:   1,
+		DefaultExecTimeout:  5 * time.Minute,
+		ClaudeLaunchTimeout: 60 * time.Second,
+	}
+}
 
 // ExecRequest contains parameters for executing a message delivery.
 type ExecRequest struct {
@@ -108,8 +127,11 @@ func parseLogLevel(s string) logLevel {
 }
 
 // Executor handles message delivery to agents via tmux panes.
+// It delegates send/clear operations to messageDeliverer and busy detection
+// to busyDetector, acting as a facade for the overall dispatch workflow.
 type Executor struct {
 	maestroDir   string
+	execCfg      ExecutorConfig
 	config       model.WatcherConfig
 	logger       *log.Logger
 	logFile      io.Closer
@@ -117,6 +139,7 @@ type Executor struct {
 	paneIO       PaneIO
 	busyDetector *busyDetector
 	paneState    *paneStateManager
+	deliverer    *messageDeliverer
 }
 
 // NewExecutor creates a new Executor that logs to .maestro/logs/agent_executor.log.
@@ -126,11 +149,11 @@ func NewExecutor(maestroDir string, watcherCfg model.WatcherConfig, logLevel str
 	if err != nil {
 		return nil, fmt.Errorf("open log file %s: %w", logPath, err)
 	}
-	return newExecutor(maestroDir, watcherCfg, logLevel, logFile, logFile)
+	return newExecutor(maestroDir, watcherCfg, logLevel, logFile, logFile, DefaultExecutorConfig())
 }
 
 // newExecutor is the internal constructor accepting injectable writer/closer (used by NewExecutor and tests).
-func newExecutor(maestroDir string, watcherCfg model.WatcherConfig, logLevel string, w io.Writer, closer io.Closer) (*Executor, error) {
+func newExecutor(maestroDir string, watcherCfg model.WatcherConfig, logLevel string, w io.Writer, closer io.Closer, execCfg ExecutorConfig) (*Executor, error) {
 	var busyRegex *regexp.Regexp
 	if watcherCfg.BusyPatterns != "" {
 		re, err := regexp.Compile(watcherCfg.BusyPatterns)
@@ -144,23 +167,28 @@ func newExecutor(maestroDir string, watcherCfg model.WatcherConfig, logLevel str
 	logger := log.New(w, "", 0)
 	ll := parseLogLevel(logLevel)
 	paneIO := NewTmuxPaneIO()
+	ps := newPaneStateManager(paneIO)
 
 	bd := newBusyDetector(paneIO, busyRegex, busyDetectorConfig{
 		IdleStableSec:       cfg.IdleStableSec,
 		BusyCheckMaxRetries: cfg.BusyCheckMaxRetries,
 		BusyCheckInterval:   cfg.BusyCheckInterval,
+		BusyHintLines:       execCfg.BusyHintLines,
 	}, logger, ll)
 
-	return &Executor{
+	e := &Executor{
 		maestroDir:   maestroDir,
+		execCfg:      execCfg,
 		config:       cfg,
 		logger:       logger,
 		logFile:      closer,
 		logLevel:     ll,
 		paneIO:       paneIO,
 		busyDetector: bd,
-		paneState:    newPaneStateManager(paneIO),
-	}, nil
+		paneState:    ps,
+	}
+	e.deliverer = newMessageDeliverer(paneIO, ps, &e.config, execCfg, logger, ll)
+	return e, nil
 }
 
 // Close releases the log file handle.
@@ -208,7 +236,9 @@ func applyDefaults(cfg model.WatcherConfig) model.WatcherConfig {
 	return cfg
 }
 
-// sleepCtx sleeps for d or returns early if ctx is cancelled.
+// sleepCtx blocks until duration expires or context is cancelled.
+// Used to allow daemon shutdown to interrupt long-running waits
+// (e.g., retry cooldowns, prompt readiness polling).
 func sleepCtx(ctx context.Context, d time.Duration) error {
 	t := time.NewTimer(d)
 	defer t.Stop()
@@ -225,7 +255,7 @@ func (e *Executor) Execute(req ExecRequest) ExecResult {
 	ctx := req.Context
 	if ctx == nil {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(context.Background(), defaultExecTimeout)
+		ctx, cancel = context.WithTimeout(context.Background(), e.execCfg.DefaultExecTimeout)
 		defer cancel()
 	}
 	req.Context = ctx
@@ -506,220 +536,30 @@ func (e *Executor) execDeliver(ctx context.Context, req ExecRequest, paneTarget 
 	return e.sendAndConfirm(req, paneTarget)
 }
 
-// sendAndConfirm sends the message and updates @status to busy.
-// It includes a final shell guard to prevent sending to a bare shell if Claude
-// crashed between ensureClaudeRunning and delivery.
+// sendAndConfirm delegates to the messageDeliverer.
 func (e *Executor) sendAndConfirm(req ExecRequest, paneTarget string) ExecResult {
-	// Final shell guard: reject delivery if pane has fallen back to a shell.
-	// This closes the timing window between ensureClaudeRunning and here.
-	if cmd, err := e.paneIO.GetPaneCurrentCommand(paneTarget); err == nil {
-		if e.paneIO.IsShellCommand(cmd) {
-			e.log(logLevelError, "delivery_rejected agent_id=%s task_id=%s reason=pane_is_shell cmd=%s",
-				req.AgentID, req.TaskID, cmd)
-			return ExecResult{Error: fmt.Errorf("pane is shell (%s), Claude not running", cmd), Retryable: true}
-		}
-	}
-
-	// Send message via paste-buffer + Enter for reliable multi-line delivery
-	ctx := req.Context
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if err := e.paneIO.SendTextAndSubmit(ctx, paneTarget, req.Message); err != nil {
-		e.log(logLevelError, "delivery_error agent_id=%s task_id=%s error=send_text: %v",
-			req.AgentID, req.TaskID, err)
-		return ExecResult{Error: fmt.Errorf("send message: %w", err), Retryable: true}
-	}
-
-	// Update @status to busy
-	if err := e.paneState.SetStatus(paneTarget, "busy"); err != nil {
-		e.log(logLevelWarn, "set_status_failed agent_id=%s error=%v", req.AgentID, err)
-	}
-
-	e.log(logLevelInfo, "delivery_success agent_id=%s task_id=%s command_id=%s lease_epoch=%d",
-		req.AgentID, req.TaskID, req.CommandID, req.LeaseEpoch)
-	return ExecResult{Success: true}
+	return e.deliverer.sendAndConfirm(req, paneTarget)
 }
 
-// --- Clear Confirmation ---
-
-// clearAndConfirm sends /clear and confirms it was processed by the target application.
-// It retries up to ClearMaxAttempts times. Returns nil on confirmed clear, or an error
-// if all attempts fail (fail-closed: caller must NOT proceed with delivery).
-//
-// Confirmation checks (per poll):
-//  1. "/clear" text is NOT visible near the bottom of the pane (primary signal —
-//     directly detects the production failure mode where /clear remains as unprocessed
-//     text in the input field).
-//  2. Pane content hash has changed from pre-clear snapshot (secondary signal).
-//  3. Pane content is stable across two consecutive polls.
+// clearAndConfirm delegates to the messageDeliverer.
 func (e *Executor) clearAndConfirm(ctx context.Context, paneTarget string) error {
-	timeout := time.Duration(e.config.ClearConfirmTimeoutSec) * time.Second
-	pollInterval := time.Duration(e.config.ClearConfirmPollMs) * time.Millisecond
-	maxAttempts := e.config.ClearMaxAttempts
-	backoffMs := e.config.ClearRetryBackoffMs
-
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("clear_and_confirm cancelled before attempt %d: %w", attempt, err)
-		}
-
-		// Capture pre-clear hash
-		preClearContent, err := e.paneIO.CapturePaneJoined(paneTarget, promptReadyLines)
-		preClearHashValid := err == nil
-		if err != nil {
-			e.log(logLevelWarn, "clear_confirm pre_capture error=%v attempt=%d (hash check disabled)", err, attempt)
-		}
-		preClearHash := contentHash(preClearContent)
-
-		// Send /clear with double-enter for reliability
-		if err := e.paneIO.SendCommand(paneTarget, "/clear"); err != nil {
-			e.log(logLevelWarn, "clear_confirm send_clear error=%v attempt=%d", err, attempt)
-			if attempt < maxAttempts {
-				backoff := time.Duration(backoffMs*(1<<(attempt-1))) * time.Millisecond
-				if err := sleepCtx(ctx, backoff); err != nil {
-					return fmt.Errorf("clear_confirm backoff cancelled: %w", err)
-				}
-				continue
-			}
-			return fmt.Errorf("clear_confirm: send /clear failed after %d attempts: %w", maxAttempts, err)
-		}
-
-		// Wait before sending second Enter (configurable; default 500ms).
-		// Claude's /clear command may trigger a completion prompt, requiring a
-		// second Enter. The delay ensures the first Enter is processed.
-		secondEnterDelay := time.Duration(e.config.ClearSecondEnterDelayMs) * time.Millisecond
-		if err := sleepCtx(ctx, secondEnterDelay); err != nil {
-			return fmt.Errorf("clear_confirm: wait cancelled: %w", err)
-		}
-
-		// Send second Enter to ensure /clear execution.
-		if err := e.paneIO.SendKeys(paneTarget, "Enter"); err != nil {
-			e.log(logLevelWarn, "clear_confirm send_second_enter error=%v attempt=%d", err, attempt)
-			if attempt < maxAttempts {
-				backoff := time.Duration(backoffMs*(1<<(attempt-1))) * time.Millisecond
-				if err := sleepCtx(ctx, backoff); err != nil {
-					return fmt.Errorf("clear_confirm backoff cancelled: %w", err)
-				}
-				continue
-			}
-			return fmt.Errorf("clear_confirm: send second Enter failed after %d attempts: %w", maxAttempts, err)
-		}
-
-		// Poll for confirmation within timeout window
-		confirmed, err := e.pollClearConfirmation(ctx, paneTarget, preClearHash, preClearHashValid, timeout, pollInterval)
-		if err != nil {
-			return err // context cancelled
-		}
-		if confirmed {
-			e.log(logLevelDebug, "clear_confirm confirmed attempt=%d", attempt)
-			return nil
-		}
-
-		// Not confirmed — retry with backoff
-		e.log(logLevelWarn, "clear_confirm not_confirmed attempt=%d/%d", attempt, maxAttempts)
-		if attempt < maxAttempts {
-			backoff := time.Duration(backoffMs*(1<<(attempt-1))) * time.Millisecond
-			e.log(logLevelDebug, "clear_confirm retry_backoff=%v", backoff)
-			if err := sleepCtx(ctx, backoff); err != nil {
-				return fmt.Errorf("clear_confirm backoff cancelled: %w", err)
-			}
-		}
-	}
-
-	return fmt.Errorf("clear_confirm: /clear not confirmed after %d attempts", maxAttempts)
+	return e.deliverer.clearAndConfirm(ctx, paneTarget)
 }
 
-// pollClearConfirmation polls the pane within the timeout window to confirm /clear was processed.
-// Returns (true, nil) if confirmed, (false, nil) if timed out, or (false, err) if ctx cancelled.
-//
-// Confirmation requires ALL of:
-//  1. "/clear" text is NOT visible near the bottom of the pane (primary signal)
-//  2. Pane content hash has changed from pre-clear snapshot (mandatory when preClearHashValid)
-//  3. Pane content is stable across two consecutive polls (debounce)
-//
-// When preClearHashValid is false (pre-capture failed), hash change is not required but
-// stability (3 consecutive polls) is demanded as a stricter fallback.
-func (e *Executor) pollClearConfirmation(
-	ctx context.Context,
-	paneTarget string,
-	preClearHash string,
-	preClearHashValid bool,
-	timeout, pollInterval time.Duration,
-) (bool, error) {
-	deadline := time.Now().Add(timeout)
-	stableCount := 0
-	hashChanged := false
-	var prevPollHash string
-
-	for time.Now().Before(deadline) {
-		if err := sleepCtx(ctx, pollInterval); err != nil {
-			return false, fmt.Errorf("clear_confirm poll cancelled: %w", err)
-		}
-
-		content, err := e.paneIO.CapturePaneJoined(paneTarget, promptReadyLines)
-		if err != nil {
-			e.log(logLevelDebug, "clear_confirm poll capture error=%v", err)
-			stableCount = 0
-			prevPollHash = ""
-			hashChanged = false
-			continue
-		}
-
-		currentHash := contentHash(content)
-
-		// Check 1 (primary): "/clear" text must NOT be visible near the bottom of the pane.
-		if clearTextVisible(content) {
-			e.log(logLevelDebug, "clear_confirm /clear text still visible")
-			stableCount = 0
-			prevPollHash = currentHash
-			continue
-		}
-
-		// Check 2 (mandatory when valid): hash must differ from pre-clear state.
-		if preClearHashValid && currentHash != preClearHash {
-			hashChanged = true
-		}
-
-		// Check 3: stability — consecutive polls with same hash.
-		if prevPollHash != "" && currentHash == prevPollHash {
-			stableCount++
-		} else {
-			stableCount = 1
-		}
-		prevPollHash = currentHash
-
-		// Confirmation logic:
-		// - With valid pre-clear hash: require hash change + 2 stable polls (debounce)
-		// - Without valid pre-clear hash: require 3 stable polls (stricter debounce as fallback)
-		if preClearHashValid {
-			if hashChanged && stableCount >= 2 {
-				return true, nil
-			}
-		} else {
-			if stableCount >= 3 {
-				return true, nil
-			}
-		}
-	}
-
-	return false, nil
-}
-
-// waitStable confirms pane content is stable over stableCheckRounds consecutive
+// waitStable confirms pane content is stable over StableCheckRounds consecutive
 // rounds of hash comparison, then verifies the prompt is ready.
-// Worst-case duration: stableCheckRounds × IdleStableSec (default 1 × 5s = ~5s).
+// Worst-case duration: StableCheckRounds × IdleStableSec (default 1 × 5s = ~5s).
 //
 // softPromptCheck controls how prompt detection failure is handled:
 //   - true:  log a warning and proceed (safe when caller runs detectBusyWithRetry afterwards)
 //   - false: return an error (required when no subsequent busy detection exists)
 func (e *Executor) waitStable(ctx context.Context, paneTarget string, softPromptCheck bool) error {
-	for round := 0; round < stableCheckRounds; round++ {
+	for round := 0; round < e.execCfg.StableCheckRounds; round++ {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("wait_stable cancelled before round %d: %w", round, err)
 		}
 
-		content1, err := e.paneIO.CapturePaneJoined(paneTarget, promptReadyLines)
+		content1, err := e.paneIO.CapturePaneJoined(paneTarget, e.execCfg.PromptReadyLines)
 		if err != nil {
 			return fmt.Errorf("capture pane for stability round %d: %w", round, err)
 		}
@@ -729,7 +569,7 @@ func (e *Executor) waitStable(ctx context.Context, paneTarget string, softPrompt
 			return fmt.Errorf("wait_stable sleep cancelled (round %d): %w", round, err)
 		}
 
-		content2, err := e.paneIO.CapturePaneJoined(paneTarget, promptReadyLines)
+		content2, err := e.paneIO.CapturePaneJoined(paneTarget, e.execCfg.PromptReadyLines)
 		if err != nil {
 			return fmt.Errorf("capture pane for stability round %d: %w", round, err)
 		}
@@ -743,7 +583,7 @@ func (e *Executor) waitStable(ctx context.Context, paneTarget string, softPrompt
 
 	// Verify prompt is ready after stability confirmed.
 	// Uses CapturePane (no -J) to preserve line boundaries for prompt detection.
-	finalContent, err := e.paneIO.CapturePane(paneTarget, promptReadyLines)
+	finalContent, err := e.paneIO.CapturePane(paneTarget, e.execCfg.PromptReadyLines)
 	if err != nil {
 		if softPromptCheck {
 			e.log(logLevelWarn, "wait_stable prompt_check capture error=%v (non-fatal, soft mode)", err)
@@ -819,7 +659,7 @@ func (e *Executor) ensureClaudeRunning(ctx context.Context, paneTarget, agentID 
 	}
 
 	// Wait for Claude prompt readiness (fail-closed)
-	launchCtx, cancel := context.WithTimeout(ctx, claudeLaunchTimeout)
+	launchCtx, cancel := context.WithTimeout(ctx, e.execCfg.ClaudeLaunchTimeout)
 	defer cancel()
 	if waitErr := e.waitReadyStrict(launchCtx, paneTarget); waitErr != nil {
 		return fmt.Errorf("ensureClaudeRunning: wait for Claude ready: %w", waitErr)
@@ -876,7 +716,7 @@ func (e *Executor) ensureWorkingDir(ctx context.Context, paneTarget, workingDir 
 
 	// Step 4: Wait for Claude prompt readiness (fail-closed: error on timeout)
 	// Use a generous timeout since Claude startup can take a few seconds.
-	launchCtx, cancel := context.WithTimeout(ctx, claudeLaunchTimeout)
+	launchCtx, cancel := context.WithTimeout(ctx, e.execCfg.ClaudeLaunchTimeout)
 	defer cancel()
 	if err := e.waitReadyStrict(launchCtx, paneTarget); err != nil {
 		return fmt.Errorf("ensureWorkingDir: wait for Claude ready: %w", err)
@@ -958,7 +798,7 @@ func (e *Executor) waitReadyCore(ctx context.Context, paneTarget string) (bool, 
 			return false, fmt.Errorf("waitReadyCore cancelled at attempt %d: %w", i, err)
 		}
 
-		content, err := e.paneIO.CapturePane(paneTarget, promptReadyLines)
+		content, err := e.paneIO.CapturePane(paneTarget, e.execCfg.PromptReadyLines)
 		if err != nil {
 			e.log(logLevelDebug, "waitReadyCore capture error=%v attempt=%d", err, i)
 			if i < maxRetries {

@@ -163,25 +163,32 @@ func newCovExecutor(mock *covMockPaneIO) (*Executor, *bytes.Buffer) {
 		ClearRetryBackoffMs:    1,
 	}
 
+	execCfg := DefaultExecutorConfig()
+	ps := newPaneStateManager(mock)
+
 	bd := &busyDetector{
 		paneIO: mock,
 		config: busyDetectorConfig{
 			IdleStableSec:       0,
 			BusyCheckMaxRetries: 1,
 			BusyCheckInterval:   0,
+			BusyHintLines:       execCfg.BusyHintLines,
 		},
 		logger:   logger,
 		logLevel: logLevelDebug,
 	}
 
-	return &Executor{
+	e := &Executor{
+		execCfg:      execCfg,
 		config:       cfg,
 		logger:       logger,
 		logLevel:     logLevelDebug,
 		paneIO:       mock,
 		busyDetector: bd,
-		paneState:    newPaneStateManager(mock),
-	}, &buf
+		paneState:    ps,
+	}
+	e.deliverer = newMessageDeliverer(mock, ps, &e.config, execCfg, logger, logLevelDebug)
+	return e, &buf
 }
 
 // callsContain checks if the call log contains a specific entry.
