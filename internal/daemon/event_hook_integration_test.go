@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"log"
 	"os"
 	"path/filepath"
@@ -27,7 +28,7 @@ func TestEventHookIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	bus := events.NewBus(100)
+	bus := events.NewBus(context.Background(), 100)
 	defer bus.Close()
 
 	var mu sync.Mutex
@@ -196,7 +197,7 @@ func TestEventHookIntegration(t *testing.T) {
 
 // TestEventHookPerformance verifies that event hooks maintain 100ms loop performance.
 func TestEventHookPerformance(t *testing.T) {
-	bus := events.NewBus(100)
+	bus := events.NewBus(context.Background(), 100)
 	defer bus.Close()
 
 	// Add subscriber

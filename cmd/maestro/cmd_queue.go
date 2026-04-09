@@ -11,10 +11,6 @@ import (
 	"github.com/msageha/maestro_v2/internal/validate"
 )
 
-// queueWriteWarnOut is the destination for deprecation warnings emitted by
-// runQueueWrite. It defaults to os.Stderr and is overridden by tests.
-var queueWriteWarnOut io.Writer = os.Stderr
-
 // runQueue dispatches queue subcommands (currently: write).
 func runQueue(args []string) error {
 	if len(args) < 1 {
@@ -22,14 +18,15 @@ func runQueue(args []string) error {
 	}
 	switch args[0] {
 	case "write":
-		return runQueueWrite(args[1:])
+		return runQueueWrite(args[1:], os.Stderr)
 	default:
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue: unknown subcommand: %s\nusage: maestro queue write <target> [options]", args[0])}
 	}
 }
 
 // runQueueWrite enqueues a command, task, notification, or cancel-request via UDS.
-func runQueueWrite(args []string) error {
+// warnOut is the destination for deprecation warnings.
+func runQueueWrite(args []string, warnOut io.Writer) error {
 	if len(args) < 1 {
 		return &CLIError{Code: 1, Msg: "maestro queue write: missing target\nusage: maestro queue write <target> --type <command|task|notification|cancel-request> [options]"}
 	}
@@ -131,7 +128,7 @@ func runQueueWrite(args []string) error {
 		// daemon's queue_write(type=cancel-request) handler, but the
 		// queue-write surface is retained only for backward compatibility
 		// and emits a warning so operators migrate.
-		fmt.Fprintln(queueWriteWarnOut,
+		fmt.Fprintln(warnOut,
 			"maestro queue write: WARNING: --type cancel-request is deprecated; use `maestro plan request-cancel --command-id <id>` instead")
 	default:
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: unknown type: %s\nusage: maestro queue write <target> --type <command|task|notification|cancel-request> [options]", writeType)}

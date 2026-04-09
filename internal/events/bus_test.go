@@ -1,6 +1,7 @@
 package events
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -8,7 +9,7 @@ import (
 )
 
 func TestBus_PublishSubscribe(t *testing.T) {
-	bus := NewBus(10)
+	bus := NewBus(context.Background(), 10)
 	defer bus.Close()
 
 	var mu sync.Mutex
@@ -55,7 +56,7 @@ func TestBus_PublishSubscribe(t *testing.T) {
 }
 
 func TestBus_MultipleSubscribers(t *testing.T) {
-	bus := NewBus(10)
+	bus := NewBus(context.Background(), 10)
 	defer bus.Close()
 
 	var mu1, mu2 sync.Mutex
@@ -118,7 +119,7 @@ func TestBus_MultipleSubscribers(t *testing.T) {
 }
 
 func TestBus_NonBlocking(t *testing.T) {
-	bus := NewBus(1)
+	bus := NewBus(context.Background(), 1)
 	defer bus.Close()
 
 	// Subscribe with slow consumer
@@ -143,7 +144,7 @@ func TestBus_NonBlocking(t *testing.T) {
 }
 
 func TestBus_Unsubscribe(t *testing.T) {
-	bus := NewBus(10)
+	bus := NewBus(context.Background(), 10)
 	defer bus.Close()
 
 	var mu sync.Mutex
@@ -185,7 +186,7 @@ func TestBus_Unsubscribe(t *testing.T) {
 }
 
 func TestBus_PanicRecovery(t *testing.T) {
-	bus := NewBus(10)
+	bus := NewBus(context.Background(), 10)
 	defer bus.Close()
 
 	var mu sync.Mutex
@@ -227,7 +228,7 @@ func TestBus_PanicRecovery(t *testing.T) {
 }
 
 func TestBus_EventTypes(t *testing.T) {
-	bus := NewBus(10)
+	bus := NewBus(context.Background(), 10)
 	defer bus.Close()
 
 	var mu sync.Mutex
@@ -287,7 +288,7 @@ func TestBus_EventTypes(t *testing.T) {
 }
 
 func TestBus_SubscribeAfterClose(t *testing.T) {
-	bus := NewBus(10)
+	bus := NewBus(context.Background(), 10)
 	bus.Close()
 
 	called := false
@@ -311,7 +312,7 @@ func TestBus_SubscribeAfterClose(t *testing.T) {
 }
 
 func TestBus_PublishAfterClose(t *testing.T) {
-	bus := NewBus(10)
+	bus := NewBus(context.Background(), 10)
 
 	var mu sync.Mutex
 	count := 0
@@ -341,7 +342,7 @@ func TestBus_PublishAfterClose(t *testing.T) {
 }
 
 func TestBus_ConcurrentCloseAndPublish(t *testing.T) {
-	bus := NewBus(10)
+	bus := NewBus(context.Background(), 10)
 
 	var wg sync.WaitGroup
 
@@ -394,7 +395,7 @@ func TestBus_ConcurrentCloseAndPublish(t *testing.T) {
 }
 
 func TestBus_QueueWrittenEvent(t *testing.T) {
-	bus := NewBus(10)
+	bus := NewBus(context.Background(), 10)
 	defer bus.Close()
 
 	var mu sync.Mutex
@@ -439,7 +440,7 @@ func TestBus_QueueWrittenEvent(t *testing.T) {
 }
 
 func TestBus_QueueWrittenDoesNotAffectOtherSubscribers(t *testing.T) {
-	bus := NewBus(10)
+	bus := NewBus(context.Background(), 10)
 	defer bus.Close()
 
 	taskCount := 0
@@ -496,7 +497,7 @@ func TestBus_QueueWrittenDoesNotAffectOtherSubscribers(t *testing.T) {
 
 func TestBus_DoubleCloseNoPanic(t *testing.T) {
 	// Reproduce B1: unsubscribe() then Close() must not panic from double close.
-	bus := NewBus(10)
+	bus := NewBus(context.Background(), 10)
 
 	unsub := bus.Subscribe(EventTaskStarted, func(e Event) {})
 
@@ -509,7 +510,7 @@ func TestBus_DoubleCloseNoPanic(t *testing.T) {
 
 func TestBus_CloseBeforeUnsubscribeNoPanic(t *testing.T) {
 	// Reverse order: Close() first, then unsubscribe().
-	bus := NewBus(10)
+	bus := NewBus(context.Background(), 10)
 
 	unsub := bus.Subscribe(EventTaskStarted, func(e Event) {})
 
@@ -522,7 +523,7 @@ func TestBus_CloseBeforeUnsubscribeNoPanic(t *testing.T) {
 func TestBus_ConcurrentUnsubscribeAndClose(t *testing.T) {
 	// Stress test: concurrent unsubscribe and Close must not panic.
 	for iter := 0; iter < 100; iter++ {
-		bus := NewBus(10)
+		bus := NewBus(context.Background(), 10)
 		unsubs := make([]func(), 10)
 		for i := 0; i < 10; i++ {
 			unsubs[i] = bus.Subscribe(EventTaskStarted, func(e Event) {})
@@ -560,7 +561,7 @@ func TestBus_ConcurrentUnsubscribeAndClose(t *testing.T) {
 
 func TestBus_MultipleCloseNoPanic(t *testing.T) {
 	// Close() called multiple times must not panic (idempotent via CompareAndSwap).
-	bus := NewBus(10)
+	bus := NewBus(context.Background(), 10)
 
 	unsub := bus.Subscribe(EventTaskStarted, func(e Event) {})
 	defer unsub()
@@ -573,7 +574,7 @@ func TestBus_MultipleCloseNoPanic(t *testing.T) {
 func TestBus_ConcurrentMultipleClose(t *testing.T) {
 	// Stress test: multiple goroutines calling Close() concurrently.
 	for iter := 0; iter < 100; iter++ {
-		bus := NewBus(10)
+		bus := NewBus(context.Background(), 10)
 		for i := 0; i < 5; i++ {
 			bus.Subscribe(EventTaskStarted, func(e Event) {})
 		}
@@ -603,7 +604,7 @@ func TestBus_ConcurrentMultipleClose(t *testing.T) {
 
 func TestBus_DroppedCount(t *testing.T) {
 	// Buffer size 1 with a blocking subscriber → events beyond the first are dropped.
-	bus := NewBus(1)
+	bus := NewBus(context.Background(), 1)
 	defer bus.Close()
 
 	block := make(chan struct{})
@@ -640,7 +641,7 @@ func TestBus_DroppedCount(t *testing.T) {
 }
 
 func TestBus_SubscribeCoalesced(t *testing.T) {
-	bus := NewBus(1) // small buffer to cause drops on regular subscribers
+	bus := NewBus(context.Background(), 1) // small buffer to cause drops on regular subscribers
 	defer bus.Close()
 
 	callCount := atomic.Int64{}
@@ -670,7 +671,7 @@ func TestBus_SubscribeCoalesced(t *testing.T) {
 }
 
 func TestBus_SubscribeCoalescedBurst(t *testing.T) {
-	bus := NewBus(1)
+	bus := NewBus(context.Background(), 1)
 	defer bus.Close()
 
 	callCount := atomic.Int64{}
@@ -707,7 +708,7 @@ func TestBus_SubscribeCoalescedBurst(t *testing.T) {
 }
 
 func TestBus_SubscribeCoalescedAfterClose(t *testing.T) {
-	bus := NewBus(10)
+	bus := NewBus(context.Background(), 10)
 	bus.Close()
 
 	called := false
@@ -724,7 +725,7 @@ func TestBus_SubscribeCoalescedAfterClose(t *testing.T) {
 }
 
 func BenchmarkBus_Publish(b *testing.B) {
-	bus := NewBus(100)
+	bus := NewBus(context.Background(), 100)
 	defer bus.Close()
 
 	// Add some subscribers

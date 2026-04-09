@@ -156,7 +156,7 @@ func (d *Daemon) initComponents() error {
 		d.worktreeManager.Reconcile()
 	}
 
-	d.eventBus = events.NewBus(100)
+	d.eventBus = events.NewBus(d.ctx, 100)
 	d.handler.SetEventBus(d.eventBus)
 	if d.qualityGateDaemon != nil {
 		d.handler.SetQualityGate(d.qualityGateDaemon)
