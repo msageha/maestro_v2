@@ -199,9 +199,9 @@ func (l *Loader) validateCondition(condition *RuleCondition) error {
 			return fmt.Errorf("%s condition requires sub-conditions", condition.Type)
 		}
 		// Recursively validate sub-conditions
-		for _, subCond := range condition.Conditions {
+		for i, subCond := range condition.Conditions {
 			if err := l.validateCondition(&subCond); err != nil {
-				return err
+				return fmt.Errorf("validate sub-condition[%d]: %w", i, err)
 			}
 		}
 
@@ -210,7 +210,7 @@ func (l *Loader) validateCondition(condition *RuleCondition) error {
 			return fmt.Errorf("NOT condition must have exactly one sub-condition")
 		}
 		if err := l.validateCondition(&condition.Conditions[0]); err != nil {
-			return err
+			return fmt.Errorf("validate sub-condition[0]: %w", err)
 		}
 
 	case ConditionScript:
