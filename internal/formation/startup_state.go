@@ -24,9 +24,9 @@ func resetFormation(maestroDir string) error {
 	}
 
 	// Kill existing tmux session (best-effort, idempotent)
-	fmt.Println("[debug] resetFormation: killing existing tmux session (best-effort)")
+	log.Printf("[DEBUG] resetFormation: killing existing tmux session (best-effort)")
 	if err := tmux.KillSession(); err != nil {
-		log.Printf("warning: KillSession (resetFormation best-effort): %v", err)
+		log.Printf("[WARN] KillSession (resetFormation best-effort): %v", err)
 	}
 
 	// Clear queue/ YAML files
@@ -157,9 +157,9 @@ func validateAndRecoverYAML(maestroDir string) {
 				fileExpectedType = inferFileType(dir, entry.Name())
 			}
 			if err := yamlutil.ValidateSchemaHeader(filePath, fileExpectedType); err != nil {
-				fmt.Printf("Warning: corrupt YAML detected: %s (%v)\n", filePath, err)
+				log.Printf("[WARN] corrupt YAML detected: %s (%v)", filePath, err)
 				if recErr := yamlutil.RecoverCorruptedFile(maestroDir, filePath, inferFileType(dir, entry.Name())); recErr != nil {
-					fmt.Printf("Warning: recovery failed for %s: %v\n", filePath, recErr)
+					log.Printf("[WARN] recovery failed for %s: %v", filePath, recErr)
 				}
 			}
 		}
@@ -177,9 +177,9 @@ func validateAndRecoverYAML(maestroDir string) {
 			continue
 		}
 		if err := yamlutil.ValidateSchemaHeader(sf.path, sf.fileType); err != nil {
-			fmt.Printf("Warning: corrupt YAML detected: %s (%v)\n", sf.path, err)
+			log.Printf("[WARN] corrupt YAML detected: %s (%v)", sf.path, err)
 			if recErr := yamlutil.RecoverCorruptedFile(maestroDir, sf.path, sf.fileType); recErr != nil {
-				fmt.Printf("Warning: recovery failed for %s: %v\n", sf.path, recErr)
+				log.Printf("[WARN] recovery failed for %s: %v", sf.path, recErr)
 			}
 		}
 	}
@@ -223,7 +223,7 @@ func activateContinuousMode(maestroDir string, cfg model.Config) error {
 	data, err := os.ReadFile(continuousPath)
 	if err == nil {
 		if err := yamlv3.Unmarshal(data, &state); err != nil {
-			fmt.Printf("Warning: failed to parse %s: %v\n", continuousPath, err)
+			log.Printf("[WARN] failed to parse %s: %v", continuousPath, err)
 		}
 	}
 

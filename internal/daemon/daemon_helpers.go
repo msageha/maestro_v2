@@ -92,14 +92,14 @@ func (d *Daemon) log(level LogLevel, format string, args ...any) {
 	if level < d.logLevel {
 		return
 	}
-	levelStr := "INFO"
+	levelStr := "[INFO]"
 	switch level {
 	case LogLevelDebug:
-		levelStr = "DEBUG"
+		levelStr = "[DEBUG]"
 	case LogLevelWarn:
-		levelStr = "WARN"
+		levelStr = "[WARN]"
 	case LogLevelError:
-		levelStr = "ERROR"
+		levelStr = "[ERROR]"
 	}
 	msg := fmt.Sprintf(format, args...)
 	d.logger.Printf("%s %s daemon: %s", d.clock.Now().Format(time.RFC3339), levelStr, msg)

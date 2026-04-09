@@ -13,6 +13,11 @@ import (
 	"github.com/msageha/maestro_v2/internal/quality"
 )
 
+const (
+	qualityGateEventBufferSize = 100               // eventChan のバッファサイズ
+	defaultEvaluationTimeout   = 100 * time.Millisecond // ゲート評価のタイムアウト
+)
+
 // QualityGateEvent represents an event that triggers quality gate evaluation.
 type QualityGateEvent interface {
 	EventType() string
@@ -129,10 +134,10 @@ func NewQualityGateDaemon(
 		logger:            logger,
 		logLevel:          logLevel,
 		clock:             RealClock{},
-		eventChan:         make(chan QualityGateEvent, 100), // Buffered to prevent blocking
+		eventChan:         make(chan QualityGateEvent, qualityGateEventBufferSize),
 		metrics:           &QualityGateMetrics{},
 		engine:            quality.NewEngine(),
-		evaluationTimeout: 100 * time.Millisecond,
+		evaluationTimeout: defaultEvaluationTimeout,
 		ctx:               ctx,
 		cancel:            cancel,
 	}

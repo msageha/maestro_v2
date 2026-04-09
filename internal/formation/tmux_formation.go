@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
@@ -16,7 +15,7 @@ import (
 func createFormation(cfg model.Config) (retErr error) {
 	// Kill existing session if any
 	if tmux.SessionExists() {
-		fmt.Println("[debug] createFormation: killing pre-existing session before creation")
+		log.Printf("[DEBUG] createFormation: killing pre-existing session before creation")
 		if err := tmux.KillSession(); err != nil {
 			return fmt.Errorf("kill existing session: %w", err)
 		}
@@ -30,16 +29,16 @@ func createFormation(cfg model.Config) (retErr error) {
 	// Rollback: if any subsequent step fails, destroy the partially-created session
 	defer func() {
 		if retErr != nil {
-			log.Printf("WARN createFormation: rolling back due to error: %v", retErr)
+			log.Printf("[WARN] createFormation: rolling back due to error: %v", retErr)
 			if tmux.SessionExists() {
 				if killErr := tmux.KillSession(); killErr != nil {
-					log.Printf("WARN createFormation: rollback kill session failed: %v", killErr)
+					log.Printf("[WARN] createFormation: rollback kill session failed: %v", killErr)
 				}
 			}
 		}
 	}()
 
-	fmt.Println("[debug] createFormation: applying session hardening options")
+	log.Printf("[DEBUG] createFormation: applying session hardening options")
 
 	// Harden server: prevent tmux server from exiting when the last session is destroyed.
 	if err := tmux.SetServerOption("exit-empty", "off"); err != nil {
@@ -158,7 +157,7 @@ func waitForShellReady(ctx context.Context, pane string) error {
 		if err != nil {
 			consecutiveErrors++
 			lastErr = err
-			fmt.Fprintf(os.Stderr, "Warning: GetPaneCurrentCommand failed for pane %s (attempt %d/%d): %v\n",
+			log.Printf("[WARN] GetPaneCurrentCommand failed for pane %s (attempt %d/%d): %v",
 				pane, consecutiveErrors, maxConsecutiveErrors, err)
 			if consecutiveErrors >= maxConsecutiveErrors {
 				return fmt.Errorf("waitForShellReady: %d consecutive errors, last: %w", consecutiveErrors, lastErr)

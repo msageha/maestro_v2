@@ -14,6 +14,9 @@ import (
 const (
 	// maxScriptLength is the maximum allowed script length in bytes (4KB).
 	maxScriptLength = 4 * 1024
+
+	// defaultScriptTimeout is the default timeout for script condition evaluation.
+	defaultScriptTimeout = 30 * time.Second
 )
 
 // dangerousPatterns are compiled regexps that match shell commands which
@@ -401,7 +404,7 @@ func (e *scriptEvaluator) Evaluate(ctx context.Context, condition *RuleCondition
 	// Otherwise, execute the script as a shell command
 	timeout := time.Duration(condition.TimeoutSeconds) * time.Second
 	if timeout == 0 {
-		timeout = 30 * time.Second // Default timeout
+		timeout = defaultScriptTimeout
 	}
 
 	scriptCtx, cancel := context.WithTimeout(ctx, timeout)

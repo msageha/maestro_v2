@@ -55,10 +55,11 @@ var (
 )
 
 const (
-	promptReadyLines   = 12 // プロンプト検出+安定性ハッシュ用 (12 lines to accommodate status bars)
-	busyHintLines      = 5  // busy パターンマッチ用
-	stableCheckRounds  = 1  // 安定性判定に必要なラウンド数
-	defaultExecTimeout = 5 * time.Minute // Context未設定時のデフォルトタイムアウト
+	promptReadyLines     = 12 // プロンプト検出+安定性ハッシュ用 (12 lines to accommodate status bars)
+	busyHintLines        = 5  // busy パターンマッチ用
+	stableCheckRounds    = 1  // 安定性判定に必要なラウンド数
+	defaultExecTimeout   = 5 * time.Minute  // Context未設定時のデフォルトタイムアウト
+	claudeLaunchTimeout  = 60 * time.Second // Claude再起動待ちタイムアウト
 )
 
 // ExecRequest contains parameters for executing a message delivery.
@@ -352,7 +353,6 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 	}
 
 	// Handle working directory change (worktree mode).
-	// This may restart Claude in a different directory, resetting clear_ready.
 	if req.WorkingDir != "" {
 		if err := e.ensureWorkingDir(ctx, paneTarget, req.WorkingDir); err != nil {
 			e.log(LogLevelError, "working_dir_change_failed agent_id=%s error=%v", req.AgentID, err)
@@ -361,86 +361,104 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 	}
 
 	// Ensure Claude is actually running (not crashed back to shell).
-	// This catches cases where Claude exits but the pane PID stays the same.
 	if err := e.ensureClaudeRunning(ctx, paneTarget, req.AgentID); err != nil {
 		e.log(LogLevelError, "ensure_claude_running_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("ensure claude running: %w", err), Retryable: true}
 	}
 
 	// Check if pane process has been restarted (PID changed)
-	restarted, currentPID, err := e.paneState.DetectProcessRestart(paneTarget)
-	if err != nil {
-		e.log(LogLevelWarn, "detect_process_restart_error agent_id=%s error=%v", req.AgentID, err)
-		// Continue with default behavior — IsClearReady will re-check state
-	}
-	if restarted {
-		e.log(LogLevelInfo, "pane_process_restarted agent_id=%s new_pid=%s, resetting clear_ready",
-			req.AgentID, currentPID)
-	}
+	_, currentPID := e.checkProcessRestart(paneTarget, req.AgentID)
 
-	// Check if this worker pane is ready for /clear (has active conversation)
+	// First dispatch: skip /clear, use deliver mode
 	if !e.paneState.IsClearReady(paneTarget) {
-		// First dispatch: skip /clear, use deliver mode
-		e.log(LogLevelDebug, "first_dispatch agent_id=%s, using deliver mode", req.AgentID)
-
-		result := e.execDeliver(ctx, req, paneTarget)
-
-		// On success, mark this pane as clear-ready for future dispatches
-		if result.Success {
-			if err := e.paneState.SetClearReady(paneTarget, currentPID); err != nil {
-				e.log(LogLevelError, "set_clear_ready_failed agent_id=%s error=%v", req.AgentID, err)
-			}
-		}
-
-		return result
+		return e.execFirstDispatch(ctx, req, paneTarget, currentPID)
 	}
 
 	// Subsequent dispatches: use full /clear workflow
+	return e.execClearAndDeliver(ctx, req, paneTarget)
+}
+
+// checkProcessRestart detects pane process restarts and logs accordingly.
+// Returns (restarted, currentPID).
+func (e *Executor) checkProcessRestart(paneTarget, agentID string) (bool, string) {
+	restarted, currentPID, err := e.paneState.DetectProcessRestart(paneTarget)
+	if err != nil {
+		e.log(LogLevelWarn, "detect_process_restart_error agent_id=%s error=%v", agentID, err)
+		return false, currentPID
+	}
+	if restarted {
+		e.log(LogLevelInfo, "pane_process_restarted agent_id=%s new_pid=%s, resetting clear_ready",
+			agentID, currentPID)
+	}
+	return restarted, currentPID
+}
+
+// execFirstDispatch handles the first delivery to a worker pane (no /clear needed).
+func (e *Executor) execFirstDispatch(ctx context.Context, req ExecRequest, paneTarget, currentPID string) ExecResult {
+	e.log(LogLevelDebug, "first_dispatch agent_id=%s, using deliver mode", req.AgentID)
+	result := e.execDeliver(ctx, req, paneTarget)
+	if result.Success {
+		if err := e.paneState.SetClearReady(paneTarget, currentPID); err != nil {
+			e.log(LogLevelError, "set_clear_ready_failed agent_id=%s error=%v", req.AgentID, err)
+		}
+	}
+	return result
+}
+
+// execClearAndDeliver performs /clear, busy detection, and delivery for subsequent dispatches.
+func (e *Executor) execClearAndDeliver(ctx context.Context, req ExecRequest, paneTarget string) ExecResult {
 	// Step 1: Wait for prompt readiness
 	if err := e.waitReady(ctx, paneTarget); err != nil {
 		e.log(LogLevelWarn, "with_clear_wait_ready_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("wait ready before /clear: %w", err), Retryable: true}
 	}
 
-	// Step 2+3: /clear with confirmation (replaces send + cooldown + waitStable)
+	// Step 2+3: /clear with confirmation
 	e.log(LogLevelDebug, "clear_operation agent_id=%s mode=with_clear", req.AgentID)
 	if err := e.clearAndConfirm(ctx, paneTarget); err != nil {
-		e.log(LogLevelWarn, "delivery_failure agent_id=%s task_id=%s reason=clear_not_confirmed error=%v",
-			req.AgentID, req.TaskID, err)
-
-		// Reset clear_ready on /clear failure - conversation might have been lost
-		e.log(LogLevelInfo, "clear_failed_reset agent_id=%s, resetting clear_ready for next dispatch", req.AgentID)
-		if resetErr := e.paneState.ResetClearReady(paneTarget); resetErr != nil {
-			e.log(LogLevelError, "reset_clear_ready_failed agent_id=%s error=%v", req.AgentID, resetErr)
-			return ExecResult{Error: errors.Join(fmt.Errorf("with_clear: %w", err), fmt.Errorf("reset_clear_ready: %w", resetErr)), Retryable: true}
-		}
-
-		return ExecResult{Error: fmt.Errorf("with_clear: %w", err), Retryable: true}
+		return e.handleClearFailure(req, paneTarget, err)
 	}
 
 	// Step 4: Busy detection with retry
 	verdict := e.busyDetector.DetectBusyWithRetry(ctx, paneTarget, req.AgentID)
 	if verdict != VerdictIdle {
-		e.log(LogLevelWarn, "delivery_failure agent_id=%s task_id=%s verdict=%s",
-			req.AgentID, req.TaskID, verdict)
-
-		// Return sentinel error for VerdictUndecided (safe for immediate retry)
-		if verdict == VerdictUndecided {
-			return ExecResult{
-				Error:     fmt.Errorf("%w", ErrBusyUndecided),
-				Retryable: true,
-			}
-		}
-
-		// VerdictBusy: keep lease to prevent duplicate dispatch
-		return ExecResult{
-			Error:     fmt.Errorf("agent %s busy: timeout", req.AgentID),
-			Retryable: true,
-		}
+		return e.handleBusyVerdict(req, verdict)
 	}
 
 	// Step 5: Deliver
 	return e.sendAndConfirm(req, paneTarget)
+}
+
+// handleClearFailure processes a /clear confirmation failure, resetting clear_ready state.
+func (e *Executor) handleClearFailure(req ExecRequest, paneTarget string, clearErr error) ExecResult {
+	e.log(LogLevelWarn, "delivery_failure agent_id=%s task_id=%s reason=clear_not_confirmed error=%v",
+		req.AgentID, req.TaskID, clearErr)
+
+	e.log(LogLevelInfo, "clear_failed_reset agent_id=%s, resetting clear_ready for next dispatch", req.AgentID)
+	if resetErr := e.paneState.ResetClearReady(paneTarget); resetErr != nil {
+		e.log(LogLevelError, "reset_clear_ready_failed agent_id=%s error=%v", req.AgentID, resetErr)
+		return ExecResult{Error: errors.Join(fmt.Errorf("with_clear: %w", clearErr), fmt.Errorf("reset_clear_ready: %w", resetErr)), Retryable: true}
+	}
+
+	return ExecResult{Error: fmt.Errorf("with_clear: %w", clearErr), Retryable: true}
+}
+
+// handleBusyVerdict converts a non-idle busy verdict to an ExecResult.
+func (e *Executor) handleBusyVerdict(req ExecRequest, verdict BusyVerdict) ExecResult {
+	e.log(LogLevelWarn, "delivery_failure agent_id=%s task_id=%s verdict=%s",
+		req.AgentID, req.TaskID, verdict)
+
+	if verdict == VerdictUndecided {
+		return ExecResult{
+			Error:     fmt.Errorf("%w", ErrBusyUndecided),
+			Retryable: true,
+		}
+	}
+
+	return ExecResult{
+		Error:     fmt.Errorf("agent %s busy: timeout", req.AgentID),
+		Retryable: true,
+	}
 }
 
 // execDeliver delivers a message without /clear (Planner/Orchestrator).
@@ -801,7 +819,7 @@ func (e *Executor) ensureClaudeRunning(ctx context.Context, paneTarget, agentID 
 	}
 
 	// Wait for Claude prompt readiness (fail-closed)
-	launchCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	launchCtx, cancel := context.WithTimeout(ctx, claudeLaunchTimeout)
 	defer cancel()
 	if waitErr := e.waitReadyStrict(launchCtx, paneTarget); waitErr != nil {
 		return fmt.Errorf("ensureClaudeRunning: wait for Claude ready: %w", waitErr)
@@ -858,7 +876,7 @@ func (e *Executor) ensureWorkingDir(ctx context.Context, paneTarget, workingDir 
 
 	// Step 4: Wait for Claude prompt readiness (fail-closed: error on timeout)
 	// Use a generous timeout since Claude startup can take a few seconds.
-	launchCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	launchCtx, cancel := context.WithTimeout(ctx, claudeLaunchTimeout)
 	defer cancel()
 	if err := e.waitReadyStrict(launchCtx, paneTarget); err != nil {
 		return fmt.Errorf("ensureWorkingDir: wait for Claude ready: %w", err)
@@ -977,14 +995,14 @@ func logf(logger *log.Logger, minLevel, level LogLevel, component, format string
 	if level < minLevel {
 		return
 	}
-	levelStr := "INFO"
+	levelStr := "[INFO]"
 	switch level {
 	case LogLevelDebug:
-		levelStr = "DEBUG"
+		levelStr = "[DEBUG]"
 	case LogLevelWarn:
-		levelStr = "WARN"
+		levelStr = "[WARN]"
 	case LogLevelError:
-		levelStr = "ERROR"
+		levelStr = "[ERROR]"
 	}
 	msg := fmt.Sprintf(format, args...)
 	logger.Printf("%s %s %s: %s", time.Now().Format(time.RFC3339), levelStr, component, msg)
