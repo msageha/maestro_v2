@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -13,6 +14,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/admission"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
 	"github.com/msageha/maestro_v2/internal/daemon/fallback"
+	"github.com/msageha/maestro_v2/internal/daemon/reviewer"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
@@ -179,6 +181,24 @@ func (d *Daemon) initComponents() error {
 		d.worktreeManager.Reconcile()
 	}
 
+	// Review dispatcher: only when enabled
+	if d.config.Review.Enabled {
+		d.reviewDispatcher = reviewer.NewReviewDispatcher(d.config.Review)
+		d.reviewRequests = make(map[string]reviewTaskInfo)
+
+		stateDir := filepath.Join(d.maestroDir, "state")
+		tracker, err := reviewer.NewUsefulnessTracker(stateDir)
+		if err != nil {
+			d.log(LogLevelWarn, "usefulness_tracker_init_failed error=%v (reviews will run without tracking)", err)
+		} else {
+			d.usefulnessTracker = tracker
+		}
+		d.log(LogLevelInfo, "review_dispatcher enabled models=%v min_bloom=%d max_concurrent=%d",
+			d.config.Review.Models,
+			d.config.Review.EffectiveMinBloomLevel(),
+			d.config.Review.EffectiveMaxConcurrentReviews())
+	}
+
 	d.eventBus = events.NewBus(d.ctx, 100)
 	d.handler.SetEventBus(d.eventBus)
 	if d.qualityGateDaemon != nil {
@@ -211,5 +231,64 @@ func (d *Daemon) startRuntime() error {
 		}
 	}
 
+	// Start review results monitoring goroutine
+	if d.reviewDispatcher != nil {
+		d.eg.Go(func() error { d.monitorReviewResults(); return nil })
+	}
+
 	return nil
+}
+
+// monitorReviewResults drains the review dispatcher's results channel and
+// records each result in the usefulness tracker. Runs until the channel is
+// closed (by ReviewDispatcher.Close during shutdown).
+func (d *Daemon) monitorReviewResults() {
+	for result := range d.reviewDispatcher.Results() {
+		d.log(LogLevelInfo, "review_result_received request=%s model=%s status=%s findings=%d",
+			result.RequestID, result.ReviewerModel, result.Status, len(result.Findings))
+
+		if d.usefulnessTracker == nil {
+			continue
+		}
+
+		// Extract taskID from the requestID format "review-{taskID}-{nanoTimestamp}"
+		taskID := extractTaskIDFromRequestID(result.RequestID)
+
+		d.reviewReqMu.Lock()
+		info, ok := d.reviewRequests[taskID]
+		if ok {
+			delete(d.reviewRequests, taskID)
+		}
+		d.reviewReqMu.Unlock()
+
+		if !ok {
+			d.log(LogLevelWarn, "review_result_orphaned request=%s task=%s (no matching dispatch record)",
+				result.RequestID, taskID)
+			continue
+		}
+
+		// Convert to tracker format
+		trackerResult := reviewer.ReviewResult{
+			ReviewerModel: result.ReviewerModel,
+			TaskID:        info.taskID,
+			CommandID:     info.commandID,
+		}
+		for _, f := range result.Findings {
+			trackerResult.FindingIDs = append(trackerResult.FindingIDs, f.FilePath+":"+f.Message)
+		}
+
+		if err := d.usefulnessTracker.RecordResult(trackerResult, nil); err != nil {
+			d.log(LogLevelWarn, "usefulness_record_failed request=%s error=%v", result.RequestID, err)
+		}
+	}
+}
+
+// extractTaskIDFromRequestID extracts the taskID from a review request ID
+// with format "review-{taskID}-{nanoTimestamp}".
+func extractTaskIDFromRequestID(requestID string) string {
+	trimmed := strings.TrimPrefix(requestID, "review-")
+	if lastDash := strings.LastIndex(trimmed, "-"); lastDash > 0 {
+		return trimmed[:lastDash]
+	}
+	return trimmed
 }

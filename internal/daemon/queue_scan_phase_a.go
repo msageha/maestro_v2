@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/plan"
 )
 
 // periodicScanPhaseA runs under scanMu.Lock. It loads queues, performs fast
@@ -246,6 +247,24 @@ func (qh *QueueHandler) stepPhaseTransitions(s *scanState) {
 
 			now := qh.clock.Now().UTC().Format(time.RFC3339)
 			switch tr.NewStatus {
+			case model.PhaseStatusCompleted:
+				// A-3: Self-diagnosis on phase completion
+				diagPrompt := qh.diagnosePhaseTasks(cmd.ID, tr.PhaseID, tr.PhaseName, s.tasks)
+				if diagPrompt != "" {
+					msg := fmt.Sprintf("[maestro] kind:phase_diagnosis command_id:%s phase:%s\n%s",
+						cmd.ID, tr.PhaseName, diagPrompt)
+					qh.upsertPlannerSignal(&s.signals.Data, &s.signals.Dirty, model.PlannerSignal{
+						Kind:      "phase_diagnosis",
+						CommandID: cmd.ID,
+						PhaseID:   tr.PhaseID,
+						PhaseName: tr.PhaseName,
+						Message:   msg,
+						CreatedAt: now,
+						UpdatedAt: now,
+					}, s.signalIndex)
+					qh.log(LogLevelInfo, "phase_diagnosis_emitted command=%s phase=%s",
+						cmd.ID, tr.PhaseName)
+				}
 			case model.PhaseStatusAwaitingFill:
 				phase := PhaseInfo{ID: tr.PhaseID, Name: tr.PhaseName}
 				msg := qh.dependencyResolver.BuildAwaitingFillNotification(cmd.ID, phase)
@@ -878,4 +897,64 @@ func (qh *QueueHandler) stepDependencyFailures(s *scanState) {
 		s.work.interrupts = append(s.work.interrupts, interrupts...)
 		s.work.interrupts = append(s.work.interrupts, interrupts2...)
 	}
+}
+
+// diagnosePhaseTasks collects tasks belonging to a completed phase and runs
+// plan.DiagnosePhase to produce a diagnosis prompt. Returns the formatted
+// prompt string, or "" if diagnosis yields no actionable information.
+func (qh *QueueHandler) diagnosePhaseTasks(commandID, phaseID, phaseName string, taskQueues map[string]*taskQueueEntry) string {
+	if !qh.dependencyResolver.HasStateReader() {
+		return ""
+	}
+
+	phases, err := qh.dependencyResolver.GetStateReader().GetCommandPhases(commandID)
+	if err != nil {
+		qh.log(LogLevelWarn, "phase_diagnosis_skip command=%s phase=%s reason=get_phases_error: %v",
+			commandID, phaseID, err)
+		return ""
+	}
+
+	// Find the phase and its task IDs
+	var phaseTaskIDs []string
+	var phase model.Phase
+	for _, p := range phases {
+		if p.ID == phaseID {
+			phaseTaskIDs = p.RequiredTaskIDs
+			phase = model.Phase{
+				PhaseID: p.ID,
+				Name:    p.Name,
+				Status:  p.Status,
+			}
+			break
+		}
+	}
+
+	if len(phaseTaskIDs) == 0 {
+		return ""
+	}
+
+	// Build a set of task IDs for fast lookup
+	taskIDSet := make(map[string]bool, len(phaseTaskIDs))
+	for _, id := range phaseTaskIDs {
+		taskIDSet[id] = true
+	}
+
+	// Collect matching tasks from all task queues
+	var tasks []model.Task
+	for _, tq := range taskQueues {
+		for i := range tq.Queue.Tasks {
+			if taskIDSet[tq.Queue.Tasks[i].ID] {
+				tasks = append(tasks, tq.Queue.Tasks[i])
+			}
+		}
+	}
+
+	// Run diagnosis (results are empty — file-level detail will be added
+	// when result files are available in a future enhancement)
+	diag := plan.DiagnosePhase(phase, tasks, nil)
+	if diag == nil {
+		return ""
+	}
+
+	return plan.FormatDiagnosisPrompt(diag)
 }

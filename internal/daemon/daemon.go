@@ -20,6 +20,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/admission"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
 	"github.com/msageha/maestro_v2/internal/daemon/fallback"
+	"github.com/msageha/maestro_v2/internal/daemon/reviewer"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -58,6 +59,14 @@ type Daemon struct {
 	admissionCtrl     *admission.Controller
 	fallbackMgr       *fallback.Manager
 	worktreeManager   *WorktreeManager
+	reviewDispatcher  *reviewer.ReviewDispatcher
+	usefulnessTracker *reviewer.UsefulnessTracker
+
+	// reviewRequests maps review request IDs to their source task info,
+	// allowing the results monitoring goroutine to attribute results back
+	// to tasks for usefulness tracking.
+	reviewRequests map[string]reviewTaskInfo
+	reviewReqMu    sync.Mutex
 
 	eventBus    *events.Bus
 	tmuxLogFile io.Closer         // debug log for tmux operations
@@ -89,6 +98,12 @@ type Daemon struct {
 	api    *API
 	watch  *WatchLoop
 	bridge *EventBridge
+}
+
+// reviewTaskInfo tracks the source task of a dispatched review request.
+type reviewTaskInfo struct {
+	taskID    string
+	commandID string
 }
 
 // SetStateReader sets the state reader for dependency resolution (Phase 6).

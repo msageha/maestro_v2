@@ -38,6 +38,7 @@ type Config struct {
 	Skills           SkillsConfig     `yaml:"skills"`
 	AdmissionControl AdmissionControl `yaml:"admission_control"`
 	Fallback         Fallback         `yaml:"fallback"`
+	Review           ReviewConfig     `yaml:"review"`
 }
 
 // SkillsConfig controls the skill reference feature for tasks.
@@ -549,6 +550,42 @@ func (w WorktreeGCConfig) EffectiveMaxWorktrees() int {
 	return 32
 }
 
+// ReviewConfig controls asynchronous heterogeneous-model code review.
+type ReviewConfig struct {
+	Enabled              bool     `yaml:"enabled"`
+	Models               []string `yaml:"models"`
+	MinBloomLevel        *int     `yaml:"min_bloom_level"`
+	MaxConcurrentReviews *int     `yaml:"max_concurrent_reviews"`
+	TimeoutSec           *int     `yaml:"timeout_sec"`
+}
+
+// EffectiveMinBloomLevel returns the configured minimum Bloom level or 2 as default.
+// nil (unset) returns the default; explicit 0 returns 0.
+func (r ReviewConfig) EffectiveMinBloomLevel() int {
+	if r.MinBloomLevel != nil {
+		return *r.MinBloomLevel
+	}
+	return 2
+}
+
+// EffectiveMaxConcurrentReviews returns the configured concurrency limit or 2 as default.
+// nil (unset) returns the default; explicit 0 returns 0.
+func (r ReviewConfig) EffectiveMaxConcurrentReviews() int {
+	if r.MaxConcurrentReviews != nil {
+		return *r.MaxConcurrentReviews
+	}
+	return 2
+}
+
+// EffectiveTimeoutSec returns the configured timeout or 300 seconds as default.
+// nil (unset) returns the default; explicit 0 returns 0.
+func (r ReviewConfig) EffectiveTimeoutSec() int {
+	if r.TimeoutSec != nil {
+		return *r.TimeoutSec
+	}
+	return 300
+}
+
 // Validate checks all Config fields for consistency after yaml.Unmarshal.
 // Returns a joined error containing all validation failures with field paths.
 func (c Config) Validate() error {
@@ -721,6 +758,17 @@ func (c Config) Validate() error {
 	}
 	if c.Fallback.MinHealthyDurationSec < 0 {
 		errs = append(errs, fmt.Errorf("fallback.min_healthy_duration_sec: must be >= 0"))
+	}
+
+	// review
+	if c.Review.MinBloomLevel != nil && *c.Review.MinBloomLevel < 0 {
+		errs = append(errs, fmt.Errorf("review.min_bloom_level: must be >= 0"))
+	}
+	if c.Review.MaxConcurrentReviews != nil && *c.Review.MaxConcurrentReviews < 0 {
+		errs = append(errs, fmt.Errorf("review.max_concurrent_reviews: must be >= 0"))
+	}
+	if c.Review.TimeoutSec != nil && *c.Review.TimeoutSec < 0 {
+		errs = append(errs, fmt.Errorf("review.timeout_sec: must be >= 0"))
 	}
 
 	// quality_gates
