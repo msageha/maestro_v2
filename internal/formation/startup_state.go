@@ -117,8 +117,8 @@ func startupRecovery(maestroDir string) error {
 	// Clean stale PID file and socket while holding the lock (Fix #9:
 	// prevents another process from acquiring the lock between cleanup
 	// and unlock).
-	_ = os.Remove(filepath.Join(maestroDir, "daemon.pid"))
-	_ = os.Remove(filepath.Join(maestroDir, uds.DefaultSocketName))
+	removeIfExists(filepath.Join(maestroDir, "daemon.pid"))
+	removeIfExists(filepath.Join(maestroDir, uds.DefaultSocketName))
 	_ = fl.Unlock()
 
 	// YAML validation: scan all YAML files and quarantine corrupt ones

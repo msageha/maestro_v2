@@ -61,7 +61,7 @@ func RunDown(maestroDir string, cfg model.Config) error {
 		fmt.Printf("Warning: could not connect to daemon: %v\n", err)
 		fmt.Println("Cleaning up daemon and tmux session...")
 		cleanupStalePID(maestroDir)
-		_ = os.Remove(socketPath)
+		removeIfExists(socketPath)
 		log.Printf("[DEBUG] RunDown: killing session (daemon connection failed)")
 		if err := tmux.KillSession(); err != nil {
 			log.Printf("[WARN] KillSession (daemon connection failed): %v", err)
@@ -93,18 +93,18 @@ func RunDown(maestroDir string, cfg model.Config) error {
 		pid := validateDaemonPID(maestroDir)
 		pidPath := filepath.Join(maestroDir, "daemon.pid")
 		if pid > 0 {
-			origStartTime := procMgr.StartTime(pid)
+			origStartTime := procMgr().StartTime(pid)
 			sameProcess := daemonIdentityChecker(maestroDir, pid, origStartTime)
 			result, termErr := terminateProcess(pid, sameProcess, 5*time.Second)
 			if termErr != nil {
 				log.Printf("[WARN] terminateProcess failed for pid %d: %v", pid, termErr)
 			}
 			if result == terminateStopped {
-				_ = os.Remove(pidPath)
+				removeIfExists(pidPath)
 			}
 		}
 		// Clean up socket if daemon left it behind
-		_ = os.Remove(socketPath)
+		removeIfExists(socketPath)
 	}
 
 	// Kill tmux session (idempotent — safe even if already gone)
@@ -142,7 +142,7 @@ func restoreServerOptions(maestroDir string) {
 				options[k] = v
 			}
 		}
-		_ = os.Remove(backupPath)
+		removeIfExists(backupPath)
 	}
 
 	for name, value := range options {
@@ -178,18 +178,18 @@ func cleanupStalePID(maestroDir string) {
 	pid := validateDaemonPID(maestroDir)
 	pidPath := filepath.Join(maestroDir, "daemon.pid")
 	if pid <= 0 {
-		_ = os.Remove(pidPath) // Remove stale/invalid PID file
+		removeIfExists(pidPath) // Remove stale/invalid PID file
 		return
 	}
 	if !processAlive(pid) {
-		_ = os.Remove(pidPath)
+		removeIfExists(pidPath)
 		return
 	}
 
-	origStartTime := procMgr.StartTime(pid)
+	origStartTime := procMgr().StartTime(pid)
 	sameProcess := daemonIdentityChecker(maestroDir, pid, origStartTime)
 	result, _ := terminateProcess(pid, sameProcess, 5*time.Second)
 	if result == terminateStopped {
-		_ = os.Remove(pidPath)
+		removeIfExists(pidPath)
 	}
 }

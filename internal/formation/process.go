@@ -33,7 +33,7 @@ func terminateProcess(pid int, sameProcess func(int) bool, termTimeout time.Dura
 	if !sameProcess(pid) {
 		return terminateNotTarget, nil
 	}
-	_ = procMgr.Signal(pid, syscall.SIGTERM)
+	_ = procMgr().Signal(pid, syscall.SIGTERM)
 
 	// Poll for exit
 	termDeadline := time.Now().Add(termTimeout)
@@ -41,7 +41,7 @@ func terminateProcess(pid int, sameProcess func(int) bool, termTimeout time.Dura
 		if !processAlive(pid) {
 			return terminateStopped, nil
 		}
-		time.Sleep(processExitPollInterval)
+		time.Sleep(processExitPollInterval())
 	}
 
 	// Verify identity before SIGKILL
@@ -49,8 +49,8 @@ func terminateProcess(pid int, sameProcess func(int) bool, termTimeout time.Dura
 		return terminateNotTarget, nil
 	}
 	if processAlive(pid) {
-		_ = procMgr.Signal(pid, syscall.SIGKILL)
-		time.Sleep(postSignalWait)
+		_ = procMgr().Signal(pid, syscall.SIGKILL)
+		time.Sleep(postSignalWait())
 	}
 
 	if processAlive(pid) {
