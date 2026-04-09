@@ -18,26 +18,33 @@ type LeaseManager struct {
 	logLevel         LogLevel
 }
 
-// NewLeaseManager creates a new LeaseManager.
-func NewLeaseManager(cfg model.WatcherConfig, logger *log.Logger, logLevel LogLevel) *LeaseManager {
-	return NewLeaseManagerWithDeps(cfg, logger, logLevel, RealClock{})
+// LeaseManagerOption configures a LeaseManager.
+type LeaseManagerOption func(*LeaseManager)
+
+// WithLeaseManagerClock sets a custom Clock for the LeaseManager.
+func WithLeaseManagerClock(c Clock) LeaseManagerOption {
+	return func(lm *LeaseManager) { lm.clock = c }
 }
 
-// NewLeaseManagerWithDeps creates a LeaseManager with explicit dependencies.
-func NewLeaseManagerWithDeps(cfg model.WatcherConfig, logger *log.Logger, logLevel LogLevel, clock Clock) *LeaseManager {
+// NewLeaseManager creates a new LeaseManager.
+func NewLeaseManager(cfg model.WatcherConfig, logger *log.Logger, logLevel LogLevel, opts ...LeaseManagerOption) *LeaseManager {
 	dispatchLease := cfg.DispatchLeaseSec
 	if dispatchLease <= 0 {
 		dispatchLease = 300
 	}
 	maxInProgress := cfg.EffectiveMaxInProgressMin()
-	return &LeaseManager{
+	lm := &LeaseManager{
 		dispatchLeaseSec: dispatchLease,
 		maxInProgressMin: maxInProgress,
-		clock:            clock,
+		clock:            RealClock{},
 		dl:               NewDaemonLoggerFromLegacy("lease_manager", logger, logLevel),
 		logger:           logger,
 		logLevel:         logLevel,
 	}
+	for _, opt := range opts {
+		opt(lm)
+	}
+	return lm
 }
 
 // LeaseInfo represents lease metadata for a queue entry.

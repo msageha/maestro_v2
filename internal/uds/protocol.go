@@ -1,4 +1,3 @@
-// Package uds implements Unix Domain Socket based IPC between the CLI and daemon.
 package uds
 
 import (

@@ -29,7 +29,8 @@ func startDaemon() error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start daemon: %w", err)
 	}
-	// Don't wait — daemon runs in background
+	// Reap the child process in the background. cmd.Wait() returns when the
+	// daemon process exits, so this goroutine is guaranteed to terminate.
 	go func() {
 		_ = cmd.Wait()
 	}()

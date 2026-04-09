@@ -71,7 +71,6 @@ func (ch *ContinuousHandler) CheckAndAdvance(commandID string, commandStatus mod
 		return nil
 	}
 
-	// Increment iteration
 	state.CurrentIteration++
 	state.LastCommandID = &commandID
 	now := ch.clock.Now().UTC().Format(time.RFC3339)

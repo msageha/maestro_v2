@@ -21,12 +21,12 @@ const maxGateEvaluations = 1000
 type Dispatcher struct {
 	maestroDir        string
 	config            model.Config
-	leaseManager      *LeaseManager
+	leaseManager      QueueLeaseManager
 	dl                *DaemonLogger
 	logger            *log.Logger
 	logLevel          LogLevel
 	clock             Clock
-	execProvider      *ExecutorProvider
+	execProvider      ExecutorGetter
 	mu                sync.RWMutex // protects eventBus, qualityGate, worktreeManager
 	eventBus          *events.Bus
 	qualityGate       *QualityGateDaemon
@@ -39,8 +39,8 @@ type Dispatcher struct {
 // ExecutorFactory, AgentExecutor are defined in internal/daemon/core
 // and re-exported via core_aliases.go.
 
-// NewDispatcher creates a new Dispatcher with a shared ExecutorProvider.
-func NewDispatcher(maestroDir string, cfg model.Config, lm *LeaseManager, logger *log.Logger, logLevel LogLevel, ep *ExecutorProvider) *Dispatcher {
+// NewDispatcher creates a new Dispatcher.
+func NewDispatcher(maestroDir string, cfg model.Config, lm QueueLeaseManager, logger *log.Logger, logLevel LogLevel, ep ExecutorGetter, clock Clock) *Dispatcher {
 	dl := NewDaemonLoggerFromLegacy("dispatcher", logger, logLevel)
 	return &Dispatcher{
 		maestroDir:      maestroDir,
@@ -49,9 +49,9 @@ func NewDispatcher(maestroDir string, cfg model.Config, lm *LeaseManager, logger
 		dl:              dl,
 		logger:          logger,
 		logLevel:        logLevel,
-		clock:           ep.clock,
+		clock:           clock,
 		gateEvaluations: make(map[string]*model.QualityGateEvaluation),
-		execProvider: ep,
+		execProvider:    ep,
 	}
 }
 

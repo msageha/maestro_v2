@@ -259,15 +259,14 @@ func atomicWriteText(path string, content string) error {
 		return fmt.Errorf("create temp file: %w", err)
 	}
 	tmpName := tmp.Name()
-	defer func() {
-		_ = tmp.Close()
-		_ = os.Remove(tmpName)
-	}()
+	defer os.Remove(tmpName)
 
 	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
 		return fmt.Errorf("write temp file: %w", err)
 	}
 	if err := tmp.Sync(); err != nil {
+		tmp.Close()
 		return fmt.Errorf("sync temp file: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
