@@ -56,14 +56,14 @@ func (m *mockUDSSender) SendCommand(command string, params any) (*uds.Response, 
 
 // --- Test helpers ---
 
-func withMockProcess(t *testing.T, m ProcessManager) {
+func withMockProcess(t *testing.T, m processManager) {
 	t.Helper()
 	orig := procMgr
 	t.Cleanup(func() { procMgr = orig })
 	procMgr = m
 }
 
-func withMockUDS(t *testing.T, factory func(string, time.Duration) UDSSender) {
+func withMockUDS(t *testing.T, factory func(string, time.Duration) udsSender) {
 	t.Helper()
 	orig := newUDSClient
 	t.Cleanup(func() { newUDSClient = orig })
@@ -322,7 +322,7 @@ func TestStopDaemon_UDSShutdown_ProcessDies(t *testing.T) {
 	os.WriteFile(socketPath, []byte{}, 0644)
 	writePIDAndLock(t, maestroDir, 12345)
 
-	withMockUDS(t, func(string, time.Duration) UDSSender {
+	withMockUDS(t, func(string, time.Duration) udsSender {
 		return &mockUDSSender{sendCommand: func(string, any) (*uds.Response, error) {
 			return &uds.Response{Success: true}, nil
 		}}
@@ -355,7 +355,7 @@ func TestStopDaemon_UDSFails_TerminateAfterPoll(t *testing.T) {
 	os.WriteFile(socketPath, []byte{}, 0644)
 	writePIDAndLock(t, maestroDir, 12345)
 
-	withMockUDS(t, func(string, time.Duration) UDSSender {
+	withMockUDS(t, func(string, time.Duration) udsSender {
 		return &mockUDSSender{sendCommand: func(string, any) (*uds.Response, error) {
 			return nil, fmt.Errorf("connection refused")
 		}}
@@ -388,7 +388,7 @@ func TestStopDaemon_PIDReused_ReturnsNil(t *testing.T) {
 	os.WriteFile(socketPath, []byte{}, 0644)
 	writePIDAndLock(t, maestroDir, 12345)
 
-	withMockUDS(t, func(string, time.Duration) UDSSender {
+	withMockUDS(t, func(string, time.Duration) udsSender {
 		return &mockUDSSender{sendCommand: func(string, any) (*uds.Response, error) {
 			return nil, fmt.Errorf("connection refused")
 		}}
@@ -421,7 +421,7 @@ func TestStopDaemon_NoPID_LockAvailable(t *testing.T) {
 	socketPath := filepath.Join(maestroDir, uds.DefaultSocketName)
 	os.WriteFile(socketPath, []byte{}, 0644)
 
-	withMockUDS(t, func(string, time.Duration) UDSSender {
+	withMockUDS(t, func(string, time.Duration) udsSender {
 		return &mockUDSSender{sendCommand: func(string, any) (*uds.Response, error) {
 			return nil, fmt.Errorf("connection refused")
 		}}
@@ -448,7 +448,7 @@ func TestStopDaemon_NoPID_NoLockDir(t *testing.T) {
 	pidPath := filepath.Join(maestroDir, "daemon.pid")
 	os.WriteFile(pidPath, []byte("invalid"), 0644)
 
-	withMockUDS(t, func(string, time.Duration) UDSSender {
+	withMockUDS(t, func(string, time.Duration) udsSender {
 		return &mockUDSSender{sendCommand: func(string, any) (*uds.Response, error) {
 			return nil, fmt.Errorf("no socket")
 		}}
@@ -473,7 +473,7 @@ func TestStopDaemon_OnlyPIDFile(t *testing.T) {
 	os.WriteFile(lockPath, []byte("12345\n"), 0644)
 
 	withFastTimings(t)
-	withMockUDS(t, func(string, time.Duration) UDSSender {
+	withMockUDS(t, func(string, time.Duration) udsSender {
 		return &mockUDSSender{sendCommand: func(string, any) (*uds.Response, error) {
 			return nil, fmt.Errorf("no socket")
 		}}
@@ -556,7 +556,7 @@ func TestWaitDaemonReady(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			withFastTimings(t)
-			withMockUDS(t, func(string, time.Duration) UDSSender {
+			withMockUDS(t, func(string, time.Duration) udsSender {
 				return &mockUDSSender{sendCommand: tt.udsFunc}
 			})
 
@@ -632,7 +632,7 @@ func TestStopDaemon_NoPID_LockHeld_Timeout(t *testing.T) {
 	socketPath := filepath.Join(maestroDir, uds.DefaultSocketName)
 	os.WriteFile(socketPath, []byte{}, 0644)
 
-	withMockUDS(t, func(string, time.Duration) UDSSender {
+	withMockUDS(t, func(string, time.Duration) udsSender {
 		return &mockUDSSender{sendCommand: func(string, any) (*uds.Response, error) {
 			return nil, fmt.Errorf("no socket")
 		}}
@@ -740,5 +740,5 @@ func TestHasOtherMaestroSessions_NoTmuxServer(t *testing.T) {
 // --- Interface contract verification ---
 
 func TestOsProcessManager_ImplementsProcessManager(t *testing.T) {
-	var _ ProcessManager = &osProcessManager{}
+	var _ processManager = &osProcessManager{}
 }
