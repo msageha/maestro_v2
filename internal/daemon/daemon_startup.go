@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -14,7 +16,9 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/admission"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
 	"github.com/msageha/maestro_v2/internal/daemon/fallback"
+	"github.com/msageha/maestro_v2/internal/daemon/judge"
 	"github.com/msageha/maestro_v2/internal/daemon/reviewer"
+	"github.com/msageha/maestro_v2/internal/daemon/rollout"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
@@ -199,6 +203,8 @@ func (d *Daemon) initComponents() error {
 			d.config.Review.EffectiveMaxConcurrentReviews())
 	}
 
+	d.initPhaseB()
+
 	d.eventBus = events.NewBus(d.ctx, 100)
 	d.handler.SetEventBus(d.eventBus)
 	if d.qualityGateDaemon != nil {
@@ -281,6 +287,45 @@ func (d *Daemon) monitorReviewResults() {
 			d.log(LogLevelWarn, "usefulness_record_failed request=%s error=%v", result.RequestID, err)
 		}
 	}
+}
+
+// initPhaseB initializes Phase B components: rollout manager and judge.
+func (d *Daemon) initPhaseB() {
+	cfg := d.config
+
+	// Rollout Manager initialization
+	if cfg.Rollout.EffectiveEnabled() {
+		maxParallel := cfg.Rollout.EffectiveMaxParallelPerTask()
+		d.rolloutManager = rollout.NewManager(maxParallel)
+		d.log(LogLevelInfo, "rollout_manager initialized maxParallel=%d", maxParallel)
+	}
+
+	// Judge initialization
+	if cfg.Judge.EffectiveEnabled() {
+		timeout := time.Duration(cfg.Judge.EffectiveTimeoutSec()) * time.Second
+		model := cfg.Judge.EffectiveModel()
+		stubCaller := &logOnlyCaller{logger: d.logger}
+		d.judgeCaller = judge.NewJudge(stubCaller, model, timeout)
+		d.log(LogLevelInfo, "judge initialized model=%s timeout=%s", model, timeout)
+	}
+}
+
+// logOnlyCaller is a stub implementation of judge.Caller that logs the prompt
+// and returns a fallback JSON response. It will be replaced by a real LLM
+// client in a future phase.
+type logOnlyCaller struct {
+	logger *log.Logger
+}
+
+func (c *logOnlyCaller) Call(_ context.Context, prompt string) (string, error) {
+	if c.logger != nil {
+		c.logger.Printf("[INFO] judge_stub_call prompt_len=%d", len(prompt))
+	}
+	resp, _ := json.Marshal(map[string]any{
+		"winner_index": 0,
+		"reasoning":    "stub: no LLM backend configured",
+	})
+	return string(resp), nil
 }
 
 // extractTaskIDFromRequestID extracts the taskID from a review request ID

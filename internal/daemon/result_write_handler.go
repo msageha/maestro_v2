@@ -14,6 +14,8 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
+	"github.com/msageha/maestro_v2/internal/daemon/judge"
+	"github.com/msageha/maestro_v2/internal/daemon/rollout"
 	"github.com/msageha/maestro_v2/internal/daemon/skill"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
@@ -999,4 +1001,74 @@ func (d *Daemon) dispatchReviewIfEligible(params ResultWriteParams) {
 
 	d.log(LogLevelInfo, "review_dispatched task=%s command=%s bloom_level=%d",
 		params.TaskID, params.CommandID, task.BloomLevel)
+}
+
+// selectRolloutWinner determines the winning slot from a completed rollout group.
+// It uses FitnessScore-based mechanical selection first, and falls back to the
+// Judge only when there is a tie (Anti-Requirement §5-1, §5-2).
+func (d *Daemon) selectRolloutWinner(group *rollout.Group) (winnerIdx int, judgeUsed bool, err error) {
+	// Collect fitness scores for completed slots
+	var scores []model.FitnessScore
+	var slotIndices []int
+
+	for _, slot := range group.Slots {
+		if slot.Status == rollout.SlotCompleted {
+			// Default fitness for completed slots without detailed scores
+			scores = append(scores, model.FitnessScore{
+				Passed: true,
+			})
+			slotIndices = append(slotIndices, slot.Index)
+		}
+	}
+
+	if len(scores) == 0 {
+		// All slots failed
+		return -1, false, fmt.Errorf("all rollout slots failed for task %s", group.TaskID)
+	}
+
+	if len(scores) == 1 {
+		return slotIndices[0], false, nil
+	}
+
+	thresholds := model.DefaultFitnessThresholds()
+
+	// Build judge function if judge is available
+	var judgeFunc model.JudgeFunc
+	if d.judgeCaller != nil {
+		judgeFunc = func(ctx context.Context, fitnessScores []model.FitnessScore, metadata []map[string]string) (model.JudgeDecision, error) {
+			candidates := make([]judge.CandidateInfo, len(fitnessScores))
+			for i, fs := range fitnessScores {
+				candidates[i] = judge.CandidateInfo{
+					SlotIndex:   slotIndices[i],
+					FitnessDesc: fmt.Sprintf("passed=%v repair=%d diff_lines=%d", fs.Passed, fs.RepairCount, fs.DiffLinesChanged),
+				}
+				if metadata != nil && i < len(metadata) {
+					if wid, ok := metadata[i]["worker_id"]; ok {
+						candidates[i].WorkerID = wid
+					}
+				}
+			}
+			decision, judgeErr := d.judgeCaller.Evaluate(ctx, candidates)
+			if judgeErr != nil {
+				return model.JudgeDecision{}, judgeErr
+			}
+			return model.JudgeDecision{
+				WinnerIndex: decision.WinnerIndex,
+				Reasoning:   decision.Reasoning,
+				Model:       decision.Model,
+				Duration:    decision.Duration,
+			}, nil
+		}
+	}
+
+	winnerInScores, used, resolveErr := model.ResolveWinner(scores, thresholds, judgeFunc)
+	if resolveErr != nil {
+		d.log(LogLevelWarn, "rollout_judge_error task=%s error=%v (falling back to index 0)", group.TaskID, resolveErr)
+	}
+
+	if winnerInScores < 0 || winnerInScores >= len(slotIndices) {
+		return slotIndices[0], used, resolveErr
+	}
+
+	return slotIndices[winnerInScores], used, resolveErr
 }
