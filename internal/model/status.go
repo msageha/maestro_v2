@@ -11,6 +11,17 @@ const (
 	StatusFailed     Status = "failed"
 	StatusCancelled  Status = "cancelled"
 	StatusDeadLetter Status = "dead_letter"
+
+	// REQUIREMENTS.md §2.1: Extended task lifecycle states
+	StatusPlanned          Status = "planned"
+	StatusReady            Status = "ready"
+	StatusDispatched       Status = "dispatched"
+	StatusRunning          Status = "running"
+	StatusVerifyPending    Status = "verify_pending"
+	StatusRepairPending    Status = "repair_pending"
+	StatusPausedForReplan  Status = "paused_for_replan"
+	StatusPausedForHuman   Status = "paused_for_human"
+	StatusAborted          Status = "aborted"
 )
 
 type PlanStatus string
@@ -59,6 +70,7 @@ var terminalStatuses = map[Status]bool{
 	StatusFailed:     true,
 	StatusCancelled:  true,
 	StatusDeadLetter: true,
+	StatusAborted:    true,
 }
 
 var terminalPlanStatuses = map[PlanStatus]bool{
@@ -129,6 +141,53 @@ var validTaskStateTransitions = map[Status]map[Status]bool{
 		StatusCompleted: true,
 		StatusFailed:    true,
 		StatusCancelled: true,
+	},
+
+	// REQUIREMENTS.md §2.1: Extended task lifecycle transitions
+	StatusPlanned: {
+		StatusReady:          true,
+		StatusPausedForHuman: true,
+		StatusAborted:        true,
+	},
+	StatusReady: {
+		StatusDispatched:     true,
+		StatusCancelled:      true,
+		StatusPausedForHuman: true,
+		StatusAborted:        true,
+	},
+	StatusDispatched: {
+		StatusRunning:        true,
+		StatusCancelled:      true,
+		StatusPausedForHuman: true,
+		StatusAborted:        true,
+	},
+	StatusRunning: {
+		StatusVerifyPending:  true,
+		StatusFailed:         true,
+		StatusCancelled:      true,
+		StatusPausedForHuman: true,
+		StatusAborted:        true,
+	},
+	StatusVerifyPending: {
+		StatusCompleted:      true,
+		StatusRepairPending:  true,
+		StatusPausedForHuman: true,
+		StatusAborted:        true,
+	},
+	StatusRepairPending: {
+		StatusRunning:         true,
+		StatusPausedForReplan: true,
+		StatusPausedForHuman:  true,
+		StatusAborted:         true,
+	},
+	StatusPausedForReplan: {
+		StatusReady:          true,
+		StatusPausedForHuman: true,
+		StatusAborted:        true,
+	},
+	StatusPausedForHuman: {
+		StatusReady:   true,
+		StatusAborted: true,
 	},
 }
 
@@ -288,6 +347,28 @@ func IsTerminal(s Status) bool {
 	return terminalStatuses[s]
 }
 
+var activeStatuses = map[Status]bool{
+	StatusDispatched:    true,
+	StatusRunning:       true,
+	StatusVerifyPending: true,
+	StatusRepairPending: true,
+}
+
+// IsActiveStatus returns true for states where a task is actively being worked on.
+func IsActiveStatus(s Status) bool {
+	return activeStatuses[s]
+}
+
+var pausedStatuses = map[Status]bool{
+	StatusPausedForReplan: true,
+	StatusPausedForHuman:  true,
+}
+
+// IsPausedStatus returns true for states where a task is paused awaiting intervention.
+func IsPausedStatus(s Status) bool {
+	return pausedStatuses[s]
+}
+
 func IsPlanTerminal(s PlanStatus) bool {
 	return terminalPlanStatuses[s]
 }
@@ -335,6 +416,10 @@ func ValidateNotificationQueueTransition(from, to Status) error {
 func ValidateTaskStateTransition(from, to Status) error {
 	if IsTerminal(from) {
 		return fmt.Errorf("cannot transition from terminal status %q", from)
+	}
+	// §2.1: any non-terminal state can transition to paused_for_human or aborted
+	if to == StatusPausedForHuman || to == StatusAborted {
+		return nil
 	}
 	allowed, ok := validTaskStateTransitions[from]
 	if !ok {

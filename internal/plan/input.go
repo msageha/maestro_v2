@@ -1,5 +1,7 @@
 package plan
 
+import "github.com/msageha/maestro_v2/internal/model"
+
 // SubmitInput represents the top-level input for plan submission, containing either tasks or phases.
 type SubmitInput struct {
 	Tasks  []TaskInput  `yaml:"tasks"`
@@ -8,17 +10,20 @@ type SubmitInput struct {
 
 // TaskInput represents a single task definition provided by the planner agent.
 type TaskInput struct {
-	Name               string   `yaml:"name"`
-	Purpose            string   `yaml:"purpose"`
-	Content            string   `yaml:"content"`
-	AcceptanceCriteria string   `yaml:"acceptance_criteria"`
-	Constraints        []string `yaml:"constraints"`
-	BlockedBy          []string `yaml:"blocked_by"`
-	BloomLevel         int      `yaml:"bloom_level"`
-	Required           bool     `yaml:"required"`
-	ToolsHint          []string `yaml:"tools_hint"`
-	PersonaHint        string   `yaml:"persona_hint"`
-	SkillRefs          []string `yaml:"skill_refs"`
+	Name               string                   `yaml:"name"`
+	Purpose            string                   `yaml:"purpose"`
+	Content            string                   `yaml:"content"`
+	AcceptanceCriteria string                   `yaml:"acceptance_criteria"`
+	Constraints        []string                 `yaml:"constraints"`
+	BlockedBy          []string                 `yaml:"blocked_by"`
+	BloomLevel         int                      `yaml:"bloom_level"`
+	Required           bool                     `yaml:"required"`
+	ToolsHint          []string                 `yaml:"tools_hint"`
+	PersonaHint        string                   `yaml:"persona_hint"`
+	SkillRefs          []string                 `yaml:"skill_refs"`
+	ExpectedPaths      []string                 `yaml:"expected_paths,omitempty"`
+	DefinitionOfAbort  *model.DefinitionOfAbort `yaml:"definition_of_abort,omitempty"`
+	DefinitionOfDone   []string                 `yaml:"definition_of_done,omitempty"`
 }
 
 // PhaseInput represents a phase definition containing grouped tasks with ordering constraints.

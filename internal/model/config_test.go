@@ -184,3 +184,81 @@ func TestValidate_NegativeLearnings(t *testing.T) {
 	}
 }
 
+// --- AdmissionControl tests ---
+
+func TestValidate_AdmissionControl_Defaults(t *testing.T) {
+	ac := AdmissionControl{}
+	if v := ac.EffectiveMaxConcurrentVerify(); v != 2 {
+		t.Errorf("expected default verify=2, got %d", v)
+	}
+	if v := ac.EffectiveMaxConcurrentRepair(); v != 1 {
+		t.Errorf("expected default repair=1, got %d", v)
+	}
+	if v := ac.EffectiveMaxConcurrentRollout(); v != 1 {
+		t.Errorf("expected default rollout=1, got %d", v)
+	}
+}
+
+func TestValidate_AdmissionControl_Configured(t *testing.T) {
+	ac := AdmissionControl{
+		MaxConcurrentVerify:  4,
+		MaxConcurrentRepair:  2,
+		MaxConcurrentRollout: 3,
+	}
+	if v := ac.EffectiveMaxConcurrentVerify(); v != 4 {
+		t.Errorf("expected verify=4, got %d", v)
+	}
+	if v := ac.EffectiveMaxConcurrentRepair(); v != 2 {
+		t.Errorf("expected repair=2, got %d", v)
+	}
+	if v := ac.EffectiveMaxConcurrentRollout(); v != 3 {
+		t.Errorf("expected rollout=3, got %d", v)
+	}
+}
+
+func TestValidate_AdmissionControl_NegativeValues(t *testing.T) {
+	tests := []struct {
+		name    string
+		cfg     func(*Config)
+		errField string
+	}{
+		{
+			"negative verify",
+			func(c *Config) { c.AdmissionControl.MaxConcurrentVerify = -1 },
+			"admission_control.max_concurrent_verify",
+		},
+		{
+			"negative repair",
+			func(c *Config) { c.AdmissionControl.MaxConcurrentRepair = -1 },
+			"admission_control.max_concurrent_repair",
+		},
+		{
+			"negative rollout",
+			func(c *Config) { c.AdmissionControl.MaxConcurrentRollout = -1 },
+			"admission_control.max_concurrent_rollout",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			tt.cfg(&cfg)
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("expected error for %s", tt.name)
+			}
+			if !strings.Contains(err.Error(), tt.errField) {
+				t.Errorf("expected %q in error, got: %v", tt.errField, err)
+			}
+		})
+	}
+}
+
+func TestValidate_AdmissionControl_ZeroIsValid(t *testing.T) {
+	cfg := validConfig()
+	cfg.AdmissionControl = AdmissionControl{} // all zero
+	err := cfg.Validate()
+	if err != nil {
+		t.Fatalf("zero admission_control should be valid (defaults apply), got: %v", err)
+	}
+}
+

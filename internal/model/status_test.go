@@ -13,11 +13,81 @@ func TestIsTerminal(t *testing.T) {
 		{StatusFailed, true},
 		{StatusCancelled, true},
 		{StatusDeadLetter, true},
+		// §2.1 extended states
+		{StatusPlanned, false},
+		{StatusReady, false},
+		{StatusDispatched, false},
+		{StatusRunning, false},
+		{StatusVerifyPending, false},
+		{StatusRepairPending, false},
+		{StatusPausedForReplan, false},
+		{StatusPausedForHuman, false},
+		{StatusAborted, true},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.status), func(t *testing.T) {
 			if got := IsTerminal(tt.status); got != tt.terminal {
 				t.Errorf("IsTerminal(%q) = %v, want %v", tt.status, got, tt.terminal)
+			}
+		})
+	}
+}
+
+func TestIsActiveStatus(t *testing.T) {
+	tests := []struct {
+		status Status
+		active bool
+	}{
+		{StatusPending, false},
+		{StatusInProgress, false},
+		{StatusCompleted, false},
+		{StatusFailed, false},
+		{StatusCancelled, false},
+		{StatusDeadLetter, false},
+		{StatusPlanned, false},
+		{StatusReady, false},
+		{StatusDispatched, true},
+		{StatusRunning, true},
+		{StatusVerifyPending, true},
+		{StatusRepairPending, true},
+		{StatusPausedForReplan, false},
+		{StatusPausedForHuman, false},
+		{StatusAborted, false},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.status), func(t *testing.T) {
+			if got := IsActiveStatus(tt.status); got != tt.active {
+				t.Errorf("IsActiveStatus(%q) = %v, want %v", tt.status, got, tt.active)
+			}
+		})
+	}
+}
+
+func TestIsPausedStatus(t *testing.T) {
+	tests := []struct {
+		status Status
+		paused bool
+	}{
+		{StatusPending, false},
+		{StatusInProgress, false},
+		{StatusCompleted, false},
+		{StatusFailed, false},
+		{StatusCancelled, false},
+		{StatusDeadLetter, false},
+		{StatusPlanned, false},
+		{StatusReady, false},
+		{StatusDispatched, false},
+		{StatusRunning, false},
+		{StatusVerifyPending, false},
+		{StatusRepairPending, false},
+		{StatusPausedForReplan, true},
+		{StatusPausedForHuman, true},
+		{StatusAborted, false},
+	}
+	for _, tt := range tests {
+		t.Run(string(tt.status), func(t *testing.T) {
+			if got := IsPausedStatus(tt.status); got != tt.paused {
+				t.Errorf("IsPausedStatus(%q) = %v, want %v", tt.status, got, tt.paused)
 			}
 		})
 	}
@@ -148,11 +218,51 @@ func TestValidateTaskStateTransition(t *testing.T) {
 	valid := []struct {
 		from, to Status
 	}{
+		// Existing transitions
 		{StatusPending, StatusInProgress},
 		{StatusPending, StatusCancelled},
 		{StatusInProgress, StatusCompleted},
 		{StatusInProgress, StatusFailed},
 		{StatusInProgress, StatusCancelled},
+
+		// §2.1 extended transitions
+		{StatusPlanned, StatusReady},
+		{StatusReady, StatusDispatched},
+		{StatusReady, StatusCancelled},
+		{StatusDispatched, StatusRunning},
+		{StatusDispatched, StatusCancelled},
+		{StatusRunning, StatusVerifyPending},
+		{StatusRunning, StatusFailed},
+		{StatusRunning, StatusCancelled},
+		{StatusVerifyPending, StatusCompleted},
+		{StatusVerifyPending, StatusRepairPending},
+		{StatusRepairPending, StatusRunning},
+		{StatusRepairPending, StatusPausedForReplan},
+		{StatusPausedForReplan, StatusReady},
+		{StatusPausedForHuman, StatusReady},
+
+		// §2.1 wildcard: any non-terminal → paused_for_human
+		{StatusPlanned, StatusPausedForHuman},
+		{StatusReady, StatusPausedForHuman},
+		{StatusDispatched, StatusPausedForHuman},
+		{StatusRunning, StatusPausedForHuman},
+		{StatusVerifyPending, StatusPausedForHuman},
+		{StatusRepairPending, StatusPausedForHuman},
+		{StatusPausedForReplan, StatusPausedForHuman},
+		{StatusPending, StatusPausedForHuman},
+		{StatusInProgress, StatusPausedForHuman},
+
+		// §2.1 wildcard: any non-terminal → aborted
+		{StatusPlanned, StatusAborted},
+		{StatusReady, StatusAborted},
+		{StatusDispatched, StatusAborted},
+		{StatusRunning, StatusAborted},
+		{StatusVerifyPending, StatusAborted},
+		{StatusRepairPending, StatusAborted},
+		{StatusPausedForReplan, StatusAborted},
+		{StatusPausedForHuman, StatusAborted},
+		{StatusPending, StatusAborted},
+		{StatusInProgress, StatusAborted},
 	}
 	for _, tt := range valid {
 		t.Run(string(tt.from)+"→"+string(tt.to), func(t *testing.T) {
@@ -165,11 +275,31 @@ func TestValidateTaskStateTransition(t *testing.T) {
 	invalid := []struct {
 		from, to Status
 	}{
+		// Existing invalid transitions
 		{StatusCompleted, StatusPending},
 		{StatusFailed, StatusPending},
 		{StatusCancelled, StatusPending},
 		{StatusPending, StatusCompleted},
 		{StatusPending, StatusFailed},
+
+		// Terminal states cannot transition
+		{StatusAborted, StatusReady},
+		{StatusAborted, StatusPausedForHuman},
+		{StatusCompleted, StatusAborted},
+		{StatusFailed, StatusAborted},
+		{StatusCancelled, StatusAborted},
+		{StatusDeadLetter, StatusAborted},
+
+		// Invalid non-terminal transitions
+		{StatusPlanned, StatusDispatched},   // must go through ready
+		{StatusPlanned, StatusRunning},      // must go through ready → dispatched
+		{StatusReady, StatusRunning},        // must go through dispatched
+		{StatusReady, StatusCompleted},      // must go through dispatched → running → verify_pending
+		{StatusDispatched, StatusCompleted}, // must go through running → verify_pending
+		{StatusVerifyPending, StatusRunning},       // not allowed
+		{StatusPausedForReplan, StatusRunning},      // must go through ready → dispatched
+		{StatusPausedForHuman, StatusRunning},       // must go through ready → dispatched
+		{StatusPausedForHuman, StatusCompleted},     // not allowed
 	}
 	for _, tt := range invalid {
 		t.Run("invalid_"+string(tt.from)+"→"+string(tt.to), func(t *testing.T) {
