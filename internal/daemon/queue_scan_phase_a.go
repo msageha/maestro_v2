@@ -488,7 +488,13 @@ func (qh *QueueHandler) stepWorktreeFastTrackCleanup(s *scanState) {
 		}
 		var stuck []PhaseInfo
 		for _, p := range phases {
-			if !model.IsPhaseTerminal(p.Status) {
+			if !model.IsPhaseTerminal(p.Status) &&
+				p.Status != model.PhaseStatusAwaitingFill {
+				// awaiting_fill is a legitimate waiting state: the planner has
+				// been notified and is expected to submit tasks.  It has its own
+				// fill-deadline timeout (checkAwaitingFillTimeout) and must not
+				// be killed here.  Only truly stalled phases (pending, filling,
+				// active with no running tasks) should be force-failed.
 				stuck = append(stuck, p)
 			}
 		}

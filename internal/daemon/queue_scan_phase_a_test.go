@@ -650,3 +650,55 @@ func TestStepDispatchOrRecovery_Boundaries(t *testing.T) {
 		qh.stepDispatchOrRecovery(&s)
 	})
 }
+
+// TestStepWorktreeFastTrackCleanup_SkipsAwaitingFill verifies that a phase in
+// awaiting_fill status is NOT force-failed by the fast-track cleanup.  This
+// covers the race where Phase 1 completes and Phase 2 transitions to
+// awaiting_fill in the same scan cycle: the fast-track cleanup must not kill
+// Phase 2 before the planner receives its awaiting_fill notification.
+// awaiting_fill has its own fill-deadline timeout (checkAwaitingFillTimeout)
+// and is NOT a "stuck" phase.
+func TestStepWorktreeFastTrackCleanup_SkipsAwaitingFill(t *testing.T) {
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusCreated)
+
+	stalledAt := qh.clock.Now().Add(-30 * time.Minute)
+	writeCommandStateAt(t, maestroDir, "cmd1",
+		map[string]model.Status{
+			"t1": model.StatusCompleted,
+		},
+		[]model.Phase{
+			{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusCompleted},
+			{PhaseID: "p2", Name: "phase2", Status: model.PhaseStatusAwaitingFill},
+		},
+		stalledAt,
+	)
+
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{
+					{
+						ID:        "cmd1",
+						Status:    model.StatusInProgress,
+						CreatedAt: stalledAt.UTC().Format(time.RFC3339),
+						UpdatedAt: stalledAt.UTC().Format(time.RFC3339),
+					},
+				},
+			},
+		},
+		tasks: makeTaskQueues(map[string][]model.Task{
+			"worker1": {
+				{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
+			},
+		}),
+	}
+
+	qh.stepWorktreeFastTrackCleanup(&s)
+
+	if got := len(s.work.worktreeCleanups); got != 0 {
+		t.Fatalf("expected no fast-track cleanup for awaiting_fill phase, got %d", got)
+	}
+}
