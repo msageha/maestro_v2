@@ -254,8 +254,141 @@ Phase A-B の基盤が安定稼働した上で、Sakana.ai の研究知見（Shi
 - §5-1 準拠: 複雑度推定および確信度判定は機械的メトリクスに基づく。LLM の主観的判断に依存しない
 - §5-7 準拠: 複雑度推定の入力データは Trace JSONL（S3-2）の蓄積データを使用する。十分なデータ蓄積前はデフォルトの分割粒度にフォールバックする [MUST]
 
-———
+### C-7 マルチコーディングエージェントランタイム
 
+Worker の実行バックエンドとして claude code（デフォルト）に加え、codex および gemini を動的に起動・選択する機能を導入する。
+
+#### 基本要件
+
+1. **デフォルトランタイム**: 明示的な指定がない場合、Worker は常に claude code で実行される [MUST]。
+2. **タスク単位のエージェント指定**: Planner はタスク生成時に `runtime`（claude-code / codex / gemini）および `model` を指定できる [SHOULD]。未指定時はランタイムの `default_model` が適用される [MUST]。
+3. **動的起動**: Daemon は tmux Worker セッション内でタスクに応じたエージェントプロセスを動的に起動する [MUST]。ランタイム切替時は既存セッションの安全な終了を確認後に新プロセスを起動する [MUST]。
+4. **ランタイム無効化**: `enabled: false` の設定により、特定ランタイムの使用を禁止できる [MUST]。無効化されたランタイムを指定するタスクは Planner へ差し戻す [MUST]。
+5. **縮退動作**: 指定ランタイムの起動に失敗した場合、S0-2 の Single-worker Fallback に従い claude code へ縮退する [MUST]。
+
+#### config.yaml 設定例
+
+```yaml
+agents:
+  workers:
+    runtimes:
+      claude-code:
+        enabled: true
+        default: true
+        models: [sonnet, opus, haiku]
+        default_model: sonnet
+      codex:
+        enabled: true
+        models: [o3, o4-mini, o4-mini-high]
+        default_model: o4-mini
+      gemini:
+        enabled: true
+        models: [gemini-2.5-pro, gemini-2.5-flash]
+        default_model: gemini-2.5-flash
+```
+
+#### ユースケース
+
+- **MCTS 探索的実装最適化（C-4 統合）**: 複数 worktree で異なるエージェントが同一タスクの実装を並列探索し、Fitness 関数で最適解を選定する [MAY]。
+- **クロスエージェントレビュー**: 実装エージェントと異なるエージェントがレビュー・検証を担当し、異なる LLM バイアスの相互補完により品質を向上させる [SHOULD]。
+    - §5-4 との整合性: クロスエージェントレビューは Worker 間の直接通信ではなく、Planner 経由の DAG 依存関係として実現する [MUST]。
+- **適応的モデル選択（C-2）統合**: UCB バンディットの選択空間を「ランタイム × モデル」の2次元に拡張し、タスク特性に応じた最適な組み合わせを学習する [SHOULD]。
+- **修正時の別エージェント担当**: Repair タスクにおいて、元の実装エージェントと異なるエージェントを割り当て、同一 LLM のバイアスによる修正失敗を回避する [MAY]。
+
+#### Anti-Requirements 整合性
+
+- **§5-4（Worker 間直接通信禁止）**: 全てのエージェント間連携は Daemon 経由の非同期通信で行い、Worker 間の直接通信は発生しない [MUST]。
+- **§5-5（共有可変状態禁止）**: 各エージェントは独立した worktree で動作し、共有可変状態を持たない [MUST]。認識の同期は Planner によるインターフェースの先行定義と ReadOnly 参照で解決する。
+- **§5-3（Frankenstein マージ禁止）**: 異なるエージェントの出力を LLM が合成することは禁止し、Winner-takes-all を維持する [MUST NOT]。
+
+#### タスクスキーマ拡張
+
+§2.2 の最小データスキーマに以下のフィールドを追加する。既存フィールドとの後方互換性を維持する [MUST]。
+
+```yaml
+task:
+  id: string
+  title: string
+  blocked_by: [task_id]
+  expected_paths: [path_prefix]
+  definition_of_done: [string]
+  definition_of_abort:
+    max_repair_count: integer
+    max_wall_clock_sec: integer
+    explicit_failure_conditions: [string]
+  # Phase C 拡張フィールド
+  runtime: string            # claude-code | codex | gemini（未指定時: claude-code）[MAY]
+  model: string              # ランタイム固有のモデル名（未指定時: ランタイムの default_model）[MAY]
+  complexity_level: string   # simple | standard | complex | critical（未指定時: Planner が自動判定）[MAY]
+```
+
+- `runtime` および `model` は任意フィールド [MAY] とし、未指定時はデフォルト値が適用される [MUST]。
+- `complexity_level` は任意フィールド [MAY] とし、Planner が自動判定するが Orchestrator からの明示オーバーライドも受け付ける [MUST]。
+- 全拡張フィールドが未指定の場合、既存の Phase A-B 動作と完全に同一となる [MUST]。
+
+### C-8 Planner による適応的機能制御（Feature Gate）
+
+Phase C の各機能およびマルチエージェント機能を、Planner がタスク複雑度に応じて動的に On/Off 制御する仕組みを導入する。
+
+#### 基本要件
+
+1. **複雑度評価**: Planner はコマンド受付時にタスク複雑度を評価し、`complexity_level` を決定する [MUST]。
+2. **複雑度レベル別機能プロファイル**: 4段階の複雑度レベルに対応する機能プロファイルを定義する [MUST]。
+    - **Simple**: 基本実行のみ（claude code + デフォルトモデル、Phase C 機能は全て無効）
+    - **Standard**: C-3（自律的検証改善ループ）有効、クロスエージェントレビュー任意
+    - **Complex**: C-1, C-2, C-4 有効、マルチエージェント並列探索を積極活用
+    - **Critical**: 全機能フル稼働（C-5, C-6 含む）
+3. **判断根拠の透明性**: Planner は複雑度判定の根拠を planner.yaml に記録する [MUST]。
+4. **オーバーライド**: Orchestrator は `complexity_level` を明示的に指定して Planner の自動判定を上書きできる [MUST]。
+5. **タスク単位の粒度**: 同一コマンド内の異なるタスクに対して、それぞれ異なるプロファイルを適用できる [MUST]。
+6. **縮退動作**: 機能プロファイルの適用に失敗した場合、Simple プロファイルへフォールバックする [MUST]。
+
+#### config.yaml 設定例
+
+```yaml
+feature_profiles:
+  simple:
+    cross_agent_review: false
+    exploratory_optimization: false
+    evolutionary_quality: false
+    adaptive_model_selection: false
+  standard:
+    cross_agent_review: optional
+    exploratory_optimization: false
+    evolutionary_quality: false
+    adaptive_model_selection: true
+  complex:
+    cross_agent_review: true
+    exploratory_optimization: true
+    evolutionary_quality: true
+    adaptive_model_selection: true
+  critical:
+    cross_agent_review: true
+    exploratory_optimization: true
+    evolutionary_quality: true
+    adaptive_model_selection: true
+    self_improvement: true
+    adaptive_depth: true
+```
+
+#### 複雑度評価基準
+
+Planner は以下の基準を総合的に評価し、複雑度レベルを決定する [SHOULD]。
+
+| 評価軸 | Simple | Standard | Complex | Critical |
+|--------|--------|----------|---------|----------|
+| 影響範囲（変更ファイル数予測） | 1-3 ファイル | 4-10 ファイル | 11-30 ファイル | 30+ ファイル |
+| 依存関係の複雑さ | 単一モジュール内 | モジュール間参照あり | 複数モジュール横断 | システム全体に波及 |
+| アーキテクチャ変更 | なし | 軽微な拡張 | 新規パターン導入 | 基盤設計変更 |
+| テスト戦略 | 既存テスト修正のみ | 新規テスト追加 | 統合テスト必要 | E2E テスト必要 |
+| 既存コードとの統合難易度 | 追記のみ | 軽微なリファクタリング | API 変更を伴う | 後方互換性考慮必要 |
+
+#### Anti-Requirements 整合性
+
+- **§5-1（LLM による Fitness 判定上書き禁止）**: 複雑度評価は Planner の計画判断であり、Fitness 関数自体の変更は行わない [MUST NOT]。Feature Gate は「どの機能を有効化するか」を制御するのみであり、S1-2 の機械的評価基準は不変 [MUST]。
+- **§5-7（最初からの Bandit アルゴリズム禁止）**: 適応的モデル選択（C-2）は Standard 以上で有効化されるが、S3 トレースデータ蓄積が前提条件 [MUST]。Feature Gate はこの前提条件の充足を検証した上で機能を有効化する。
+
+———
 ## 5. やらないこと (Anti-Requirements / Out of Scope)
 
 システムの崩壊（観測不能・決定不能・暴走）を防ぐため、以下の実装は明確に禁止する。
@@ -291,12 +424,16 @@ Phase A-B の基盤が安定稼働した上で、Sakana.ai の研究知見（Shi
 - Phase B 完了基準:
     - 条件を満たしたMulti-rolloutタスクにおいて、LLMの主観によらず、定義されたFitness関数によって勝者が自動的に選定されること。
 - Phase C-α 完了基準:
-    - 適応的モデル選択（C-2）が稼働し、Trace JSONL のタスク結果データに基づきモデル割当が動的に最適化されていること。
-    - 自律的検証改善ループ（C-3）が verification フェーズに統合され、2回以上の自律的改善サイクル（検証→修正→再検証）を完了できること。
+    - 適応的モデル選択（C-2）が稼働し、Trace JSONL のタスク結果データに基づきモデル割当が動的に最適化されていること。デフォルトモデルへの縮退が正常に動作すること。
+    - 自律的検証改善ループ（C-3）が verification フェーズに統合され、2回以上の自律的改善サイクル（検証→修正→再検証）を完了できること。検証カバレッジの拡大方向でのみ改善を行い、基準の緩和が発生しないこと。
 - Phase C-β 完了基準:
-    - 進化的コード品質改善（C-1）が Multi-rollout（B-1）と統合され、変異→評価→選択の進化的サイクルが機能すること。
+    - 進化的コード品質改善（C-1）が Multi-rollout（B-1）と統合され、変異→評価→選択の進化的サイクルが機能すること。S1-2 の Fitness 関数による機械的選定が維持されていること。
     - Fitness 関数（S1-2）にコード品質スコア軸が追加され、静的解析ツール出力に基づく機械的評価が稼働していること。
-    - 適応的計算深度（C-6）により、bloom_level に応じたサブタスク分割粒度の動的調整が機能すること。
+    - 適応的計算深度（C-6）により、bloom_level に応じたサブタスク分割粒度の動的調整が機能すること。definition_of_abort の閾値を超えないこと。
 - Phase C-γ 完了基準:
-    - 探索木管理（C-4）が worktree と統合され、Planner による展開・枝刈り判断に基づく木構造探索が機能すること。
-    - 自己改善メカニズム（C-5）が learnings 機構経由で機能し、Fitness 関数定義・Daemon 制御ロジックが改変対象から除外されていること。
+    - 探索木管理（C-4）が worktree と統合され、Planner による展開・枝刈り判断に基づく木構造探索が機能すること。verify.yaml を持つタスクのみを対象とし、worktree 単位の独立評価で Winner-takes-all が機能すること。
+    - 自己改善メカニズム（C-5）が learnings 機構経由で機能し、Fitness 関数定義・Daemon 制御ロジック・Circuit Breaker が改変対象から除外されていること。
+- Phase C-7 完了基準:
+    - 複数ランタイム（claude code / codex / gemini）の動的起動が機能し、指定ランタイム障害時に claude code への縮退が正常に動作すること。全エージェント間通信が Daemon 経由の非同期通信で行われ、Worker 間直接通信が発生しないこと。
+- Phase C-8 完了基準:
+    - Planner が複雑度レベルに応じた機能プロファイルを正しく適用し、Orchestrator からの明示オーバーライドが機能すること。プロファイル適用失敗時に Simple へのフォールバックが正常に動作すること。
