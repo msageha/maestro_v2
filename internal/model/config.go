@@ -39,6 +39,8 @@ type Config struct {
 	AdmissionControl AdmissionControl `yaml:"admission_control"`
 	Fallback         Fallback         `yaml:"fallback"`
 	Review           ReviewConfig     `yaml:"review"`
+	Rollout          RolloutConfig    `yaml:"rollout"`
+	Judge            JudgeConfig      `yaml:"judge"`
 }
 
 // SkillsConfig controls the skill reference feature for tasks.
@@ -769,6 +771,28 @@ func (c Config) Validate() error {
 	}
 	if c.Review.TimeoutSec != nil && *c.Review.TimeoutSec < 0 {
 		errs = append(errs, fmt.Errorf("review.timeout_sec: must be >= 0"))
+	}
+
+	// rollout
+	if c.Rollout.MaxConcurrent != nil && *c.Rollout.MaxConcurrent < 0 {
+		errs = append(errs, fmt.Errorf("rollout.max_concurrent: must be >= 0"))
+	}
+	if c.Rollout.MaxParallelPerTask != nil && *c.Rollout.MaxParallelPerTask < 0 {
+		errs = append(errs, fmt.Errorf("rollout.max_parallel_per_task: must be >= 0"))
+	}
+	if c.Rollout.MinBloomLevel != nil && *c.Rollout.MinBloomLevel < 0 {
+		errs = append(errs, fmt.Errorf("rollout.min_bloom_level: must be >= 0"))
+	}
+	if c.Rollout.MaxExpectedPaths != nil && *c.Rollout.MaxExpectedPaths < 0 {
+		errs = append(errs, fmt.Errorf("rollout.max_expected_paths: must be >= 0"))
+	}
+	if c.Rollout.MinFailureCount != nil && *c.Rollout.MinFailureCount < 0 {
+		errs = append(errs, fmt.Errorf("rollout.min_failure_count: must be >= 0"))
+	}
+
+	// judge
+	if c.Judge.TimeoutSec != nil && *c.Judge.TimeoutSec < 0 {
+		errs = append(errs, fmt.Errorf("judge.timeout_sec: must be >= 0"))
 	}
 
 	// quality_gates
