@@ -72,13 +72,11 @@ func (a *API) handleQueueWrite(req *uds.Request) *uds.Response {
 
 func (a *API) handleQueueWriteCommand(params QueueWriteParams) *uds.Response {
 	d := a.d
-	if params.Content == "" {
-		return uds.ErrorResponse(uds.ErrCodeValidation, "content is required for command")
+	if resp := validateRequired(params.Content, "content", "command"); resp != nil {
+		return resp
 	}
-
-	if d.config.Limits.MaxEntryContentBytes > 0 && len(params.Content) > d.config.Limits.MaxEntryContentBytes {
-		return uds.ErrorResponse(uds.ErrCodeValidation,
-			fmt.Sprintf("content exceeds max size: %d > %d bytes", len(params.Content), d.config.Limits.MaxEntryContentBytes))
+	if resp := validateContentSize(params.Content, d.config.Limits.MaxEntryContentBytes); resp != nil {
+		return resp
 	}
 
 	a.acquireFileLock()
@@ -89,7 +87,7 @@ func (a *API) handleQueueWriteCommand(params QueueWriteParams) *uds.Response {
 	queuePath := filepath.Join(d.maestroDir, "queue", "planner.yaml")
 	cq, data, err := loadCommandQueueFile(queuePath)
 	if err != nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, err.Error())
+		return internalErrorf("%v", err)
 	}
 
 	// Backpressure: count pending commands only (spec: pending >= limit → reject)
@@ -111,7 +109,7 @@ func (a *API) handleQueueWriteCommand(params QueueWriteParams) *uds.Response {
 		if archived > 0 {
 			newData, err := yamlv3.Marshal(cq)
 			if err != nil {
-				return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("marshal queue after archive: %v", err))
+				return internalErrorf("marshal queue after archive: %v", err)
 			}
 			if checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(newData), len(params.Content)+200) != nil {
 				return resp
@@ -124,12 +122,12 @@ func (a *API) handleQueueWriteCommand(params QueueWriteParams) *uds.Response {
 
 	id, err := model.GenerateID(model.IDTypeCommand)
 	if err != nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("generate ID: %v", err))
+		return internalErrorf("generate ID: %v", err)
 	}
 
 	priority := params.Priority
 	if priority == 0 {
-		priority = 100
+		priority = model.DefaultPriority
 	}
 
 	now := d.clock.Now().UTC().Format(time.RFC3339)
@@ -144,7 +142,7 @@ func (a *API) handleQueueWriteCommand(params QueueWriteParams) *uds.Response {
 	})
 
 	if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write queue: %v", err))
+		return internalErrorf("write queue: %v", err)
 	}
 	a.notifySelfWrite(queuePath, "command", cq)
 
@@ -182,7 +180,7 @@ func (a *API) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 	queuePath := filepath.Join(d.maestroDir, "queue", params.Target+".yaml")
 	tq, data, err := loadTaskQueueFile(queuePath)
 	if err != nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, err.Error())
+		return internalErrorf("%v", err)
 	}
 
 	// Backpressure: count pending tasks only (spec: pending >= limit → reject)
@@ -204,7 +202,7 @@ func (a *API) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 		if archived > 0 {
 			newData, marshalErr := yamlv3.Marshal(tq)
 			if marshalErr != nil {
-				return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("marshal queue after archive: %v", marshalErr))
+				return internalErrorf("marshal queue after archive: %v", marshalErr)
 			}
 			if checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(newData), len(params.Content)+500) != nil {
 				return resp
@@ -217,7 +215,7 @@ func (a *API) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 
 	id, err := model.NewTaskID(model.TaskIDCaller(params.SystemCaller))
 	if err != nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("generate ID: %v", err))
+		return internalErrorf("generate ID: %v", err)
 	}
 
 	// Cycle detection: check if adding this task creates a circular dependency
@@ -229,7 +227,7 @@ func (a *API) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 
 	priority := params.Priority
 	if priority == 0 {
-		priority = 100
+		priority = model.DefaultPriority
 	}
 
 	now := d.clock.Now().UTC().Format(time.RFC3339)
@@ -252,7 +250,7 @@ func (a *API) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 	})
 
 	if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write queue: %v", err))
+		return internalErrorf("write queue: %v", err)
 	}
 	a.notifySelfWrite(queuePath, "task", tq)
 
@@ -262,19 +260,19 @@ func (a *API) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 
 func (a *API) handleQueueWriteNotification(params QueueWriteParams) *uds.Response {
 	d := a.d
-	if params.CommandID == "" {
-		return uds.ErrorResponse(uds.ErrCodeValidation, "command_id is required for notification")
+	if resp := validateRequired(params.CommandID, "command_id", "notification"); resp != nil {
+		return resp
 	}
-	if params.Content == "" {
-		return uds.ErrorResponse(uds.ErrCodeValidation, "content is required for notification")
+	if resp := validateRequired(params.Content, "content", "notification"); resp != nil {
+		return resp
 	}
-	if params.SourceResultID == "" {
-		return uds.ErrorResponse(uds.ErrCodeValidation, "source_result_id is required for notification")
+	if resp := validateRequired(params.SourceResultID, "source_result_id", "notification"); resp != nil {
+		return resp
 	}
 
 	// notification_type validation
-	if params.NotificationType == "" {
-		return uds.ErrorResponse(uds.ErrCodeValidation, "notification_type is required for notification")
+	if resp := validateRequired(params.NotificationType, "notification_type", "notification"); resp != nil {
+		return resp
 	}
 	notifType := model.NotificationType(params.NotificationType)
 	if !validNotificationTypes[notifType] {
@@ -282,9 +280,8 @@ func (a *API) handleQueueWriteNotification(params QueueWriteParams) *uds.Respons
 			fmt.Sprintf("invalid notification_type: %q, must be command_completed|command_failed|command_cancelled", notifType))
 	}
 
-	if d.config.Limits.MaxEntryContentBytes > 0 && len(params.Content) > d.config.Limits.MaxEntryContentBytes {
-		return uds.ErrorResponse(uds.ErrCodeValidation,
-			fmt.Sprintf("content exceeds max size: %d > %d bytes", len(params.Content), d.config.Limits.MaxEntryContentBytes))
+	if resp := validateContentSize(params.Content, d.config.Limits.MaxEntryContentBytes); resp != nil {
+		return resp
 	}
 
 	a.acquireFileLock()
@@ -295,7 +292,7 @@ func (a *API) handleQueueWriteNotification(params QueueWriteParams) *uds.Respons
 	queuePath := filepath.Join(d.maestroDir, "queue", "orchestrator.yaml")
 	nq, data, err := loadNotificationQueueFile(queuePath)
 	if err != nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, err.Error())
+		return internalErrorf("%v", err)
 	}
 
 	// Idempotency: dedup key is (source_result_id, type). When a re-delivery
@@ -325,7 +322,7 @@ func (a *API) handleQueueWriteNotification(params QueueWriteParams) *uds.Respons
 		nq.Notifications[i].LeaseExpiresAt = nil
 		nq.Notifications[i].UpdatedAt = now
 		if err := yamlutil.AtomicWrite(queuePath, nq); err != nil {
-			return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write queue: %v", err))
+			return internalErrorf("write queue: %v", err)
 		}
 		a.notifySelfWrite(queuePath, "notification", nq)
 		return uds.SuccessResponse(map[string]string{"id": nq.Notifications[i].ID, "superseded": "true"})
@@ -336,7 +333,7 @@ func (a *API) handleQueueWriteNotification(params QueueWriteParams) *uds.Respons
 		if archived > 0 {
 			newData, marshalErr := yamlv3.Marshal(nq)
 			if marshalErr != nil {
-				return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("marshal queue after archive: %v", marshalErr))
+				return internalErrorf("marshal queue after archive: %v", marshalErr)
 			}
 			if checkFileSizeLimit(d.config.Limits.MaxYAMLFileBytes, len(newData), len(params.Content)+300) != nil {
 				return resp
@@ -349,12 +346,12 @@ func (a *API) handleQueueWriteNotification(params QueueWriteParams) *uds.Respons
 
 	id, err := model.GenerateID(model.IDTypeNotification)
 	if err != nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("generate ID: %v", err))
+		return internalErrorf("generate ID: %v", err)
 	}
 
 	priority := params.Priority
 	if priority == 0 {
-		priority = 100
+		priority = model.DefaultPriority
 	}
 
 	nq.Notifications = append(nq.Notifications, model.Notification{
@@ -370,7 +367,7 @@ func (a *API) handleQueueWriteNotification(params QueueWriteParams) *uds.Respons
 	})
 
 	if err := yamlutil.AtomicWrite(queuePath, nq); err != nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write queue: %v", err))
+		return internalErrorf("write queue: %v", err)
 	}
 	a.notifySelfWrite(queuePath, "notification", nq)
 
@@ -396,8 +393,8 @@ func (a *API) handleQueueWriteNotification(params QueueWriteParams) *uds.Respons
 // the exact scenario where cancellation is most needed.
 func (a *API) handleQueueWriteCancelRequest(params QueueWriteParams) *uds.Response {
 	d := a.d
-	if params.CommandID == "" {
-		return uds.ErrorResponse(uds.ErrCodeValidation, "command_id is required for cancel-request")
+	if resp := validateRequired(params.CommandID, "command_id", "cancel-request"); resp != nil {
+		return resp
 	}
 	if err := validate.ValidateID(params.CommandID); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid command_id: %v", err))
@@ -428,12 +425,12 @@ func (a *API) cancelRequestSubmitted(params QueueWriteParams, statePath string) 
 
 	data, err := os.ReadFile(statePath)
 	if err != nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("read state: %v", err))
+		return internalErrorf("read state: %v", err)
 	}
 
 	var state model.CommandState
 	if err := yamlv3.Unmarshal(data, &state); err != nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("parse state: %v", err))
+		return internalErrorf("parse state: %v", err)
 	}
 
 	// Idempotent: already requested → skip
@@ -454,7 +451,7 @@ func (a *API) cancelRequestSubmitted(params QueueWriteParams, statePath string) 
 	state.UpdatedAt = now
 
 	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write state: %v", err))
+		return internalErrorf("write state: %v", err)
 	}
 
 	// Also update queue/planner.yaml cancel metadata (already under fileMu)
@@ -495,7 +492,7 @@ func (a *API) cancelRequestUnsubmitted(params QueueWriteParams) *uds.Response {
 	queuePath := filepath.Join(d.maestroDir, "queue", "planner.yaml")
 	cq, _, err := loadCommandQueueFile(queuePath)
 	if err != nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, err.Error())
+		return internalErrorf("%v", err)
 	}
 
 	now := d.clock.Now().UTC().Format(time.RFC3339)
@@ -530,12 +527,36 @@ func (a *API) cancelRequestUnsubmitted(params QueueWriteParams) *uds.Response {
 	}
 
 	if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write queue: %v", err))
+		return internalErrorf("write queue: %v", err)
 	}
 	a.notifySelfWrite(queuePath, "cancel-request", cq)
 
 	d.log(LogLevelInfo, "queue_write type=cancel-request command=%s submitted=false cancelled", params.CommandID)
 	return uds.SuccessResponse(map[string]string{"command_id": params.CommandID, "status": "cancelled"})
+}
+
+// --- Error response helpers ---
+
+// validateRequired returns a validation error response if field is empty.
+func validateRequired(field, name, entityType string) *uds.Response {
+	if field == "" {
+		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("%s is required for %s", name, entityType))
+	}
+	return nil
+}
+
+// validateContentSize returns a validation error response if content exceeds maxBytes.
+func validateContentSize(content string, maxBytes int) *uds.Response {
+	if maxBytes > 0 && len(content) > maxBytes {
+		return uds.ErrorResponse(uds.ErrCodeValidation,
+			fmt.Sprintf("content exceeds max size: %d > %d bytes", len(content), maxBytes))
+	}
+	return nil
+}
+
+// internalErrorf returns an internal error response with a formatted message.
+func internalErrorf(format string, args ...any) *uds.Response {
+	return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf(format, args...))
 }
 
 // --- Validation helpers ---
@@ -560,24 +581,23 @@ func validateTaskWriteParams(params QueueWriteParams, maxEntryContentBytes int) 
 	if err := validate.ValidateID(params.CommandID); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid command_id: %v", err))
 	}
-	if params.Content == "" {
-		return uds.ErrorResponse(uds.ErrCodeValidation, "content is required for task")
+	if resp := validateRequired(params.Content, "content", "task"); resp != nil {
+		return resp
 	}
-	if params.Purpose == "" {
-		return uds.ErrorResponse(uds.ErrCodeValidation, "purpose is required for task")
+	if resp := validateRequired(params.Purpose, "purpose", "task"); resp != nil {
+		return resp
 	}
-	if params.AcceptanceCriteria == "" {
-		return uds.ErrorResponse(uds.ErrCodeValidation, "acceptance_criteria is required for task")
+	if resp := validateRequired(params.AcceptanceCriteria, "acceptance_criteria", "task"); resp != nil {
+		return resp
 	}
 	if params.BloomLevel < 1 || params.BloomLevel > 6 {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("bloom_level must be 1-6, got %d", params.BloomLevel))
 	}
-	if params.Target == "" {
-		return uds.ErrorResponse(uds.ErrCodeValidation, "target is required for task")
+	if resp := validateRequired(params.Target, "target", "task"); resp != nil {
+		return resp
 	}
-	if maxEntryContentBytes > 0 && len(params.Content) > maxEntryContentBytes {
-		return uds.ErrorResponse(uds.ErrCodeValidation,
-			fmt.Sprintf("content exceeds max size: %d > %d bytes", len(params.Content), maxEntryContentBytes))
+	if resp := validateContentSize(params.Content, maxEntryContentBytes); resp != nil {
+		return resp
 	}
 	if resp := validateBlockedBy(params.BlockedBy); resp != nil {
 		return resp

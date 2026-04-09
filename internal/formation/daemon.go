@@ -15,6 +15,14 @@ import (
 	"github.com/msageha/maestro_v2/internal/uds"
 )
 
+// removeIfExists removes the file at path, ignoring "file not found" errors.
+// Non-fatal errors (e.g. permission denied) are logged as warnings.
+func removeIfExists(path string) {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		log.Printf("[WARN] removeIfExists: %s: %v", path, err)
+	}
+}
+
 // startDaemon starts the maestro daemon as a background process.
 func startDaemon() error {
 	execPath, err := os.Executable()
@@ -54,7 +62,7 @@ func stopDaemon(maestroDir string) error {
 	// Step 1: Request graceful shutdown via UDS
 	client := newUDSClient(socketPath, 5*time.Second)
 	if _, err := client.SendCommand("shutdown", nil); err != nil {
-		log.Printf("warning: shutdown command failed: %v", err)
+		log.Printf("[WARN] shutdown command failed: %v", err)
 	}
 
 	// Step 2: Read and validate PID from daemon.pid (cross-check with lock file)
@@ -62,16 +70,16 @@ func stopDaemon(maestroDir string) error {
 
 	if pid > 0 {
 		// Capture process start time to detect PID reuse (Fix #7)
-		origStartTime := procMgr.StartTime(pid)
+		origStartTime := procMgr().StartTime(pid)
 
 		// PID-based monitoring: poll process exit, then escalate
-		deadline := time.Now().Add(daemonPollTimeout)
+		deadline := time.Now().Add(daemonPollTimeout())
 		for time.Now().Before(deadline) {
 			if !processAlive(pid) {
-				_ = os.Remove(pidPath)
+				removeIfExists(pidPath)
 				return nil
 			}
-			time.Sleep(daemonPollInterval)
+			time.Sleep(daemonPollInterval())
 		}
 
 		// Use terminateProcess with PID + start time identity check (Fix #7, #8)
@@ -84,7 +92,7 @@ func stopDaemon(maestroDir string) error {
 		if err != nil {
 			return err
 		}
-		_ = os.Remove(pidPath)
+		removeIfExists(pidPath)
 		return nil
 	}
 
@@ -94,8 +102,8 @@ func stopDaemon(maestroDir string) error {
 
 	// If locks directory doesn't exist, no daemon has ever run
 	if _, err := os.Stat(lockDir); os.IsNotExist(err) {
-		_ = os.Remove(pidPath)
-		_ = os.Remove(socketPath)
+		removeIfExists(pidPath)
+		removeIfExists(socketPath)
 		return nil
 	}
 
@@ -103,26 +111,26 @@ func stopDaemon(maestroDir string) error {
 	if err := fl.TryLock(); err == nil {
 		// Lock acquired → no daemon holds it.
 		// Clean up stale files while holding the lock (Fix #9)
-		_ = os.Remove(pidPath)
-		_ = os.Remove(socketPath)
+		removeIfExists(pidPath)
+		removeIfExists(socketPath)
 		_ = fl.Unlock()
 		return nil
 	}
 
 	// Lock held but no valid PID: poll for daemon exit via lock release
-	deadline := time.Now().Add(daemonPollTimeout)
+	deadline := time.Now().Add(daemonPollTimeout())
 	for time.Now().Before(deadline) {
 		if err := fl.TryLock(); err == nil {
 			// Clean up while holding the lock (Fix #9)
-			_ = os.Remove(pidPath)
-			_ = os.Remove(socketPath)
+			removeIfExists(pidPath)
+			removeIfExists(socketPath)
 			_ = fl.Unlock()
 			return nil
 		}
-		time.Sleep(daemonPollInterval)
+		time.Sleep(daemonPollInterval())
 	}
 
-	_ = os.Remove(pidPath)
+	removeIfExists(pidPath)
 	return fmt.Errorf("could not confirm daemon stopped (no valid PID, lock still held after timeout)")
 }
 
@@ -137,7 +145,7 @@ func daemonIdentityChecker(maestroDir string, originalPID int, origStartTime str
 		}
 		// Check process start time hasn't changed (PID reuse detection)
 		if origStartTime != "" {
-			currentStartTime := procMgr.StartTime(pid)
+			currentStartTime := procMgr().StartTime(pid)
 			if currentStartTime == "" || currentStartTime != origStartTime {
 				return false
 			}
@@ -157,7 +165,7 @@ func waitDaemonReady(socketPath string, timeout time.Duration) error {
 		if err == nil && resp.Success {
 			return nil
 		}
-		time.Sleep(waitReadyPollInterval)
+		time.Sleep(waitReadyPollInterval())
 	}
 	return fmt.Errorf("daemon did not respond to ping within %s", timeout)
 }
@@ -187,7 +195,7 @@ func validateDaemonPID(maestroDir string) int {
 	lockPID := lock.ReadLockPID(lockPath)
 	// Lock file must be readable and match daemon.pid for the PID to be trusted.
 	if lockPID <= 0 || lockPID != pid {
-		_ = os.Remove(pidPath)
+		removeIfExists(pidPath)
 		return 0
 	}
 	return pid
@@ -196,5 +204,5 @@ func validateDaemonPID(maestroDir string) int {
 // processAlive checks whether a process with the given PID is still running.
 // Delegates to the package-level processManager for testability.
 func processAlive(pid int) bool {
-	return procMgr.Alive(pid)
+	return procMgr().Alive(pid)
 }

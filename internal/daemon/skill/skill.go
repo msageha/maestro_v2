@@ -13,11 +13,10 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/validate"
 	yamlv3 "gopkg.in/yaml.v3"
 )
-
-const defaultPriority = 100
 
 // SkillMetadata holds the parsed YAML frontmatter of a SKILL.md file.
 type SkillMetadata struct {
@@ -35,7 +34,7 @@ func (m SkillMetadata) EffectivePriority() int {
 	if m.Priority != nil {
 		return *m.Priority
 	}
-	return defaultPriority
+	return model.DefaultPriority
 }
 
 // SkillContent combines metadata with the body text of a skill file.

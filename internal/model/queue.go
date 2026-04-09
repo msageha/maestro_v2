@@ -1,5 +1,9 @@
 package model
 
+// DefaultPriority is the default priority value for commands, tasks, and notifications
+// when no explicit priority is specified. Lower values indicate higher priority.
+const DefaultPriority = 100
+
 // CommandQueue はコマンドキューファイルの YAML 構造を表す。
 // Daemon がコマンドのディスパッチとリース管理に使用する。
 type CommandQueue struct {

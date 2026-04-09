@@ -161,8 +161,10 @@ func (b *Bus) Subscribe(eventType EventType, fn subscriber) func() {
 					fn(event)
 				}()
 			case <-b.ctx.Done():
-				// Drain remaining buffered events from the channel to ensure
-				// the goroutine exits promptly after context cancellation.
+				// Drain remaining buffered events so the channel becomes empty
+				// and the goroutine exits promptly. Without this drain, the
+				// goroutine would block on <-sub.ch until Close() closes the
+				// channel, causing a goroutine leak if the subscriber is slow.
 				for range sub.ch {
 				}
 				return
@@ -334,29 +336,13 @@ func (b *Bus) Close() {
 	b.mu.Unlock()
 
 	// Wait for subscriber goroutines to finish with timeout.
-	// A goroutine is used because sync.WaitGroup.Wait is not cancellable.
-	// The goroutine is tracked via activeGoroutines and will self-terminate
-	// after the timeout even if wg.Wait blocks, preventing goroutine leaks.
+	// A single goroutine bridges sync.WaitGroup.Wait (which is not cancellable)
+	// to a channel select. It will self-terminate once all subscriber goroutines
+	// drain their already-closed channels, preventing goroutine leaks.
 	waitDone := make(chan struct{})
-	timeout := make(chan struct{})
-	b.activeGoroutines.Add(1)
 	go func() {
-		defer b.activeGoroutines.Add(-1)
-		wgDone := make(chan struct{})
-		b.activeGoroutines.Add(1)
-		go func() {
-			defer b.activeGoroutines.Add(-1)
-			b.wg.Wait()
-			close(wgDone)
-		}()
-		select {
-		case <-wgDone:
-			close(waitDone)
-		case <-timeout:
-			// Parent timed out; exit to avoid goroutine leak.
-			// The inner wg.Wait goroutine will finish on its own once
-			// subscriber goroutines drain their (already-closed) channels.
-		}
+		b.wg.Wait()
+		close(waitDone)
 	}()
 
 	timer := time.NewTimer(5 * time.Second)
@@ -365,7 +351,6 @@ func (b *Bus) Close() {
 	select {
 	case <-waitDone:
 	case <-timer.C:
-		close(timeout)
 		remaining := b.activeGoroutines.Load()
 		log.Printf("WARN event_bus: Close timed out waiting for %d subscriber goroutines",
 			remaining)

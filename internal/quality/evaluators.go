@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -19,44 +20,42 @@ const (
 	defaultScriptTimeout = 30 * time.Second
 )
 
-// dangerousPatterns are compiled regexps that match shell commands which
-// must never be executed by the quality-gate script evaluator.
-var dangerousPatterns = compileDangerousPatterns()
-
-func compileDangerousPatterns() []*regexp.Regexp {
-	raw := []string{
-		// Privilege escalation
+// Dangerous pattern categories: each group contains raw regex strings that
+// match shell/interpreter commands which must never be executed by the
+// quality-gate script evaluator.
+var (
+	// privilegeEscalationPatterns match commands that escalate privileges.
+	privilegeEscalationPatterns = []string{
 		`(?i)\b(?:sudo|su|doas|pkexec)\b`,
-		// Destructive file operations
-		`(?i)\brm\s+-[^\n;|&]*\brf?\b`,
-		// Disk-level destructive commands
-		`(?i)\b(?:mkfs(?:\.\w+)?|fdisk|parted|wipefs)\b`,
-		`(?i)\bdd\s+[^;\n]*\bof=/dev/`,
-		// System shutdown/reboot
-		`(?i)\b(?:shutdown|reboot|poweroff|halt|init\s+[06])\b`,
-		// Mass process kill
-		`(?i)\bkill\s+-9\s+-1\b`,
-		`(?i)\b(?:killall|pkill)\b`,
-		// Remote code execution via pipe
-		`(?i)\b(?:curl|wget)\b[^|\n]*\|\s*(?:bash|sh|zsh)\b`,
-		// Generic pipe to shell (bypasses bash --restricted)
-		`(?i)\|\s*(?:(?:/(?:usr/)?bin/)?(?:ba)?sh)\b`,
-		// Absolute path shell invocation (bypasses bash --restricted)
-		`(?i)(?:^|[;\r\n|&])\s*/(?:usr/)?bin/(?:ba)?sh\b`,
-		// Reverse shell patterns
-		`(?i)\b(?:nc|ncat|netcat|socat)\b[^;\n]*\s-e\s`,
-		`(?i)\b(?:bash|sh)\b[^;\n]*/dev/(?:tcp|udp)/`,
-		// Fork bomb
-		`:\(\)\s*\{\s*:\|:\s*&\s*\};:`,
-		// Modifying critical system files
-		`(?i)(?:>|>>|\btee\b)\s*/etc/(?:sudoers|passwd|shadow|group)\b`,
-		// Setuid/ownership changes
-		`(?i)\bchmod\s+(?:\+s|u\+s|[0-7]*4[0-7]{3})\b`,
-		`(?i)\bchown\s+(?:root\b|0(?::|0|\s))`,
+		`(?i)\bchmod\s+(?:\+s|u\+s|[0-7]*4[0-7]{3})\b`,   // setuid bit
+		`(?i)\bchown\s+(?:root\b|0(?::|0|\s))`,             // ownership to root
+	}
 
-		// --- Bypass prevention patterns ---
+	// destructiveCommandPatterns match commands that destroy files, disks, or system state.
+	destructiveCommandPatterns = []string{
+		`(?i)\brm\s+-[^\n;|&]*\brf?\b`,                     // recursive force remove
+		`(?i)\b(?:mkfs(?:\.\w+)?|fdisk|parted|wipefs)\b`,   // disk-level destructive
+		`(?i)\bdd\s+[^;\n]*\bof=/dev/`,                     // raw disk write
+		`(?i)\b(?:shutdown|reboot|poweroff|halt|init\s+[06])\b`, // system shutdown/reboot
+		`(?i)\bkill\s+-9\s+-1\b`,                           // mass kill all processes
+		`(?i)\b(?:killall|pkill)\b`,                         // mass process kill
+		`(?i)(?:>|>>|\btee\b)\s*/etc/(?:sudoers|passwd|shadow|group)\b`, // critical system files
+	}
 
-		// base64 decode (potential payload decoding)
+	// remoteCodeExecutionPatterns match commands that fetch and execute remote code
+	// or open reverse shells.
+	remoteCodeExecutionPatterns = []string{
+		`(?i)\b(?:curl|wget)\b[^|\n]*\|\s*(?:bash|sh|zsh)\b`, // pipe download to shell
+		`(?i)\|\s*(?:(?:/(?:usr/)?bin/)?(?:ba)?sh)\b`,         // generic pipe to shell
+		`(?i)(?:^|[;\r\n|&])\s*/(?:usr/)?bin/(?:ba)?sh\b`,    // absolute path shell invocation
+		`(?i)\b(?:nc|ncat|netcat|socat)\b[^;\n]*\s-e\s`,      // reverse shell via netcat
+		`(?i)\b(?:bash|sh)\b[^;\n]*/dev/(?:tcp|udp)/`,        // reverse shell via /dev/tcp
+		`:\(\)\s*\{\s*:\|:\s*&\s*\};:`,                       // fork bomb
+	}
+
+	// bypassPreventionPatterns match obfuscation and restricted-mode bypass techniques.
+	bypassPreventionPatterns = []string{
+		// Payload decoding
 		`(?i)\b(?:base64|openssl\s+base64)\b[^\n;]*(?:-d|--decode)`,
 		// eval with variable/substitution
 		`(?i)\b(?:eval|builtin\s+eval|command\s+eval)\b\s+\S`,
@@ -69,46 +68,63 @@ func compileDangerousPatterns() []*regexp.Regexp {
 		`(?i)\bnode(?:js)?\b[^\n;|&]*\s+(?:-e|--eval)\b`,
 		`(?i)\bphp\b[^\n;|&]*\s+-r\b`,
 		`(?i)\blua\b[^\n;|&]*\s+-e\b`,
-		// Shell variable expansion / obfuscation bypass prevention
+		// Shell variable expansion / obfuscation
 		`\$\{!`,                                      // indirect variable expansion (${!var})
-		`\$\{[^}]+:[0-9]`,                            // substring extraction (${var:0:1}) for char-by-char construction
-		`(?i)\bprintf\b[^\n;|&]*\\x[0-9a-fA-F]`,     // printf with hex escapes for command construction
-		`(?i)\bexport\s+PATH\b`,                      // PATH override attempts
-		`(?i)(?:^|[;\r\n|&])\s*source\s+\S`,               // source command for loading external scripts
-		`(?:^|[;\r\n|&]\s*)\.\s+\S`,                     // dot-source (. /path) for loading external scripts
+		`\$\{[^}]+:[0-9]`,                            // substring extraction (${var:0:1})
+		`(?i)\bprintf\b[^\n;|&]*\\x[0-9a-fA-F]`,     // printf with hex escapes
+		`(?i)\bexport\s+PATH\b`,                      // PATH override
+		`(?i)(?:^|[;\r\n|&])\s*source\s+\S`,               // source external scripts
+		`(?:^|[;\r\n|&]\s*)\.\s+\S`,                     // dot-source (. /path)
 		// Unrestricted shell spawning (bypasses bash --restricted)
-		`(?i)\bsh\b[^\n;|&]*\s+-c\b`,                   // sh -c '...' escapes restricted mode
-		`(?i)\bdash\b[^\n;|&]*\s+-c\b`,                 // dash -c '...' escapes restricted mode
-		`(?i)\bksh\b[^\n;|&]*\s+-c\b`,                  // ksh -c '...' escapes restricted mode
-		`(?i)\bzsh\b[^\n;|&]*\s+-c\b`,                  // zsh -c '...' escapes restricted mode
-		`(?i)\bbash\b[^\n;|&]*\s+-c\b`,                 // bash -c '...' spawns unrestricted bash
+		`(?i)\bsh\b[^\n;|&]*\s+-c\b`,
+		`(?i)\bdash\b[^\n;|&]*\s+-c\b`,
+		`(?i)\bksh\b[^\n;|&]*\s+-c\b`,
+		`(?i)\bzsh\b[^\n;|&]*\s+-c\b`,
+		`(?i)\bbash\b[^\n;|&]*\s+-c\b`,
 		// Interpreter system() calls
-		`(?i)\bawk\b[^\n;|&]*\bsystem\s*\(`,            // awk system() call
-		`(?i)\bgawk\b[^\n;|&]*\bsystem\s*\(`,           // gawk system() call
-		`(?i)\bmawk\b[^\n;|&]*\bsystem\s*\(`,           // mawk system() call
+		`(?i)\bawk\b[^\n;|&]*\bsystem\s*\(`,
+		`(?i)\bgawk\b[^\n;|&]*\bsystem\s*\(`,
+		`(?i)\bmawk\b[^\n;|&]*\bsystem\s*\(`,
+	}
 
-		// --- Python-specific dangerous patterns ---
-
-		// OS-level command execution
+	// pythonDangerousPatterns match Python-specific dangerous constructs.
+	pythonDangerousPatterns = []string{
 		`(?i)\bos\.(?:system|popen|exec[lv]*[pe]*)\s*\(`, // os.system(), os.popen(), os.exec*()
-		// subprocess module (subprocess.run, subprocess.Popen, etc.)
-		`(?i)\bsubprocess\b`,
-		// Dynamic import mechanisms
-		`(?i)\b__import__\s*\(`,
-		`(?i)\bimportlib\b`,
-		// eval/exec builtins
-		`(?i)\beval\s*\(`,
-		`(?i)\bexec\s*\(`,
-		// Raw socket creation
-		`(?i)\bsocket\.socket\s*\(`,
-		// ctypes FFI (arbitrary native code execution)
-		`(?i)\bctypes\b`,
+		`(?i)\bsubprocess\b`,                              // subprocess module
+		`(?i)\b__import__\s*\(`,                           // dynamic import
+		`(?i)\bimportlib\b`,                               // importlib
+		`(?i)\beval\s*\(`,                                 // eval builtin
+		`(?i)\bexec\s*\(`,                                 // exec builtin
+		`(?i)\bsocket\.socket\s*\(`,                       // raw socket creation
+		`(?i)\bctypes\b`,                                  // ctypes FFI
 	}
-	patterns := make([]*regexp.Regexp, 0, len(raw))
-	for _, r := range raw {
-		patterns = append(patterns, regexp.MustCompile(r))
-	}
-	return patterns
+)
+
+// dangerousPatterns are compiled regexps that match shell commands which
+// must never be executed by the quality-gate script evaluator.
+// Compiled once at init time via sync.Once.
+var dangerousPatterns []*regexp.Regexp
+
+var dangerousPatternsOnce sync.Once
+
+func initDangerousPatterns() {
+	dangerousPatternsOnce.Do(func() {
+		var raw []string
+		raw = append(raw, privilegeEscalationPatterns...)
+		raw = append(raw, destructiveCommandPatterns...)
+		raw = append(raw, remoteCodeExecutionPatterns...)
+		raw = append(raw, bypassPreventionPatterns...)
+		raw = append(raw, pythonDangerousPatterns...)
+
+		dangerousPatterns = make([]*regexp.Regexp, 0, len(raw))
+		for _, r := range raw {
+			dangerousPatterns = append(dangerousPatterns, regexp.MustCompile(r))
+		}
+	})
+}
+
+func init() {
+	initDangerousPatterns()
 }
 
 // fieldValidationEvaluator evaluates field validation conditions
@@ -120,84 +136,108 @@ func (e *fieldValidationEvaluator) Evaluate(ctx context.Context, condition *Rule
 
 	switch condition.Operator {
 	case OpExists:
-		return exists && value != nil && value != "", nil
-
+		return e.evalExists(value, exists), nil
 	case OpNotExists:
-		return !exists || value == nil || value == "", nil
-
+		return e.evalNotExists(value, exists), nil
 	case OpEquals:
-		if !exists {
-			return false, nil
-		}
-		return e.compareValues(value, condition.Value, true), nil
-
+		return e.evalEquals(value, condition.Value, exists), nil
 	case OpNotEquals:
-		if !exists {
-			return true, nil
-		}
-		return !e.compareValues(value, condition.Value, true), nil
-
+		return e.evalNotEquals(value, condition.Value, exists), nil
 	case OpContains:
-		if !exists {
-			return false, nil
-		}
-		return e.containsValue(value, condition.Value, condition.CaseSensitive), nil
-
+		return e.evalContains(value, condition.Value, condition.CaseSensitive, exists), nil
 	case OpNotContains:
-		if !exists {
-			return true, nil
-		}
-		return !e.containsValue(value, condition.Value, condition.CaseSensitive), nil
-
+		return e.evalNotContains(value, condition.Value, condition.CaseSensitive, exists), nil
 	case OpMatches, OpNotMatches:
-		if !exists {
-			return condition.Operator == OpNotMatches, nil
-		}
-
-		// Use pre-compiled regex if available
-		var re *regexp.Regexp
-		if condition.CompiledRegex != nil {
-			re = condition.CompiledRegex.(*regexp.Regexp)
-		} else {
-			// Compile on the fly (shouldn't happen with proper compilation)
-			pattern, ok := condition.Value.(string)
-			if !ok {
-				return false, fmt.Errorf("regex pattern must be string")
-			}
-			var err error
-			re, err = regexp.Compile(pattern)
-			if err != nil {
-				return false, fmt.Errorf("invalid regex: %w", err)
-			}
-		}
-
-		matched := re.MatchString(fmt.Sprintf("%v", value))
-		if condition.Operator == OpMatches {
-			return matched, nil
-		}
-		return !matched, nil
-
+		return e.evalMatches(value, condition, exists)
 	case OpGT, OpGTE, OpLT, OpLTE:
 		if !exists {
 			return false, nil
 		}
 		return e.compareNumeric(value, condition.Value, condition.Operator)
-
 	case OpIn:
-		if !exists {
-			return false, nil
-		}
-		return e.isInList(value, condition.Value), nil
-
+		return e.evalIn(value, condition.Value, exists), nil
 	case OpNotIn:
-		if !exists {
-			return true, nil
-		}
-		return !e.isInList(value, condition.Value), nil
-
+		return e.evalNotIn(value, condition.Value, exists), nil
 	default:
 		return false, fmt.Errorf("unknown operator: %s", condition.Operator)
 	}
+}
+
+func (e *fieldValidationEvaluator) evalExists(value interface{}, exists bool) bool {
+	return exists && value != nil && value != ""
+}
+
+func (e *fieldValidationEvaluator) evalNotExists(value interface{}, exists bool) bool {
+	return !exists || value == nil || value == ""
+}
+
+func (e *fieldValidationEvaluator) evalEquals(value, target interface{}, exists bool) bool {
+	if !exists {
+		return false
+	}
+	return e.compareValues(value, target, true)
+}
+
+func (e *fieldValidationEvaluator) evalNotEquals(value, target interface{}, exists bool) bool {
+	if !exists {
+		return true
+	}
+	return !e.compareValues(value, target, true)
+}
+
+func (e *fieldValidationEvaluator) evalContains(value, target interface{}, caseSensitive, exists bool) bool {
+	if !exists {
+		return false
+	}
+	return e.containsValue(value, target, caseSensitive)
+}
+
+func (e *fieldValidationEvaluator) evalNotContains(value, target interface{}, caseSensitive, exists bool) bool {
+	if !exists {
+		return true
+	}
+	return !e.containsValue(value, target, caseSensitive)
+}
+
+func (e *fieldValidationEvaluator) evalMatches(value interface{}, condition *RuleCondition, exists bool) (bool, error) {
+	if !exists {
+		return condition.Operator == OpNotMatches, nil
+	}
+
+	var re *regexp.Regexp
+	if condition.CompiledRegex != nil {
+		re = condition.CompiledRegex.(*regexp.Regexp)
+	} else {
+		pattern, ok := condition.Value.(string)
+		if !ok {
+			return false, fmt.Errorf("regex pattern must be string")
+		}
+		var err error
+		re, err = regexp.Compile(pattern)
+		if err != nil {
+			return false, fmt.Errorf("invalid regex: %w", err)
+		}
+	}
+
+	matched := re.MatchString(fmt.Sprintf("%v", value))
+	if condition.Operator == OpMatches {
+		return matched, nil
+	}
+	return !matched, nil
+}
+
+func (e *fieldValidationEvaluator) evalIn(value, list interface{}, exists bool) bool {
+	if !exists {
+		return false
+	}
+	return e.isInList(value, list)
+}
+
+func (e *fieldValidationEvaluator) evalNotIn(value, list interface{}, exists bool) bool {
+	if !exists {
+		return true
+	}
+	return !e.isInList(value, list)
 }
 
 // compareValues compares two values for equality

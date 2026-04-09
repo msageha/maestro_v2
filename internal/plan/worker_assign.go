@@ -3,8 +3,6 @@ package plan
 import (
 	"errors"
 	"fmt"
-	"log"
-	"math"
 	"os"
 	"path/filepath"
 
@@ -142,30 +140,23 @@ func BuildWorkerStates(maestroDir string, config model.WorkerConfig) ([]WorkerSt
 		workerModel := GetWorkerModel(workerID, config)
 
 		pendingCount := 0
-		workerAvailable := true
 		queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(workerID))
 		data, err := os.ReadFile(queueFile)
 		if err != nil {
 			if !errors.Is(err, os.ErrNotExist) {
-				log.Printf("[WARN] BuildWorkerStates: failed to read queue file %s: %v (marking worker unavailable)", queueFile, err)
-				workerAvailable = false
+				return nil, fmt.Errorf("read queue file %s: %w", queueFile, err)
 			}
 			// os.ErrNotExist → treat as empty queue (pendingCount=0)
 		} else {
 			var tq model.TaskQueue
 			if err := yamlv3.Unmarshal(data, &tq); err != nil {
-				log.Printf("[WARN] BuildWorkerStates: failed to parse queue file %s: %v (marking worker unavailable)", queueFile, err)
-				workerAvailable = false
-			} else {
-				for _, task := range tq.Tasks {
-					if task.Status == model.StatusPending {
-						pendingCount++
-					}
+				return nil, fmt.Errorf("parse queue file %s: %w", queueFile, err)
+			}
+			for _, task := range tq.Tasks {
+				if task.Status == model.StatusPending {
+					pendingCount++
 				}
 			}
-		}
-		if !workerAvailable {
-			pendingCount = math.MaxInt32 // mark as at capacity to prevent assignment
 		}
 
 		states = append(states, WorkerState{

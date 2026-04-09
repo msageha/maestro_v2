@@ -20,14 +20,15 @@ type PlanExecutorImpl struct {
 // parseAndExecute is a generic helper that unmarshals JSON params, executes a
 // function, and marshals the result. It eliminates the repeated
 // unmarshal→execute→marshal boilerplate across all PlanExecutorImpl methods.
-func parseAndExecute[P any, R any](data []byte, execute func(P) (R, error)) ([]byte, error) {
+// The op parameter names the operation for error context (e.g. "submit", "complete").
+func parseAndExecute[P any, R any](op string, data []byte, execute func(P) (R, error)) ([]byte, error) {
 	var params P
 	if err := json.Unmarshal(data, &params); err != nil {
-		return nil, fmt.Errorf("parse params: %w", err)
+		return nil, fmt.Errorf("%s: parse params: %w", op, err)
 	}
 	result, err := execute(params)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("%s: %w", op, err)
 	}
 	return json.Marshal(result)
 }
@@ -40,7 +41,7 @@ type submitParams struct {
 }
 
 func (pe *PlanExecutorImpl) Submit(params json.RawMessage) (json.RawMessage, error) {
-	return parseAndExecute(params, func(p submitParams) (*plan.SubmitResult, error) {
+	return parseAndExecute("submit", params, func(p submitParams) (*plan.SubmitResult, error) {
 		return plan.Submit(plan.SubmitOptions{
 			CommandID:  p.CommandID,
 			TasksFile:  p.TasksFile,
@@ -59,7 +60,7 @@ type completeParams struct {
 }
 
 func (pe *PlanExecutorImpl) Complete(params json.RawMessage) (json.RawMessage, error) {
-	return parseAndExecute(params, func(p completeParams) (*plan.CompleteResult, error) {
+	return parseAndExecute("complete", params, func(p completeParams) (*plan.CompleteResult, error) {
 		return plan.Complete(plan.CompleteOptions{
 			CommandID:  p.CommandID,
 			Summary:    p.Summary,
@@ -85,7 +86,7 @@ type retryParams struct {
 }
 
 func (pe *PlanExecutorImpl) AddRetryTask(params json.RawMessage) (json.RawMessage, error) {
-	return parseAndExecute(params, func(p retryParams) (*plan.RetryResult, error) {
+	return parseAndExecute("add_retry_task", params, func(p retryParams) (*plan.RetryResult, error) {
 		return plan.AddRetryTask(plan.RetryOptions{
 			CommandID:          p.CommandID,
 			RetryOf:            p.RetryOf,
@@ -115,7 +116,7 @@ type rebuildResult struct {
 }
 
 func (pe *PlanExecutorImpl) Rebuild(params json.RawMessage) (json.RawMessage, error) {
-	return parseAndExecute(params, func(p rebuildParams) (*rebuildResult, error) {
+	return parseAndExecute("rebuild", params, func(p rebuildParams) (*rebuildResult, error) {
 		err := plan.Rebuild(plan.RebuildOptions{
 			CommandID:  p.CommandID,
 			MaestroDir: pe.MaestroDir,

@@ -3,8 +3,6 @@ package plan
 import (
 	"fmt"
 	"log"
-	"time"
-
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -106,7 +104,37 @@ func submitInitial(opts SubmitOptions, input SubmitInput) (*SubmitResult, error)
 	return submitInitialTasks(opts, input.Tasks, sm)
 }
 
-func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm StateStore) (*SubmitResult, error) {
+// rollbackStateAndQueue performs the common rollback sequence for initial submissions:
+// remove partial queue entries, then delete the state file.
+func rollbackStateAndQueue(sm stateStore, maestroDir string, commandID string, tasks []TaskInput, nameToID map[string]string, assignMap map[string]WorkerAssignment, lockMap *lock.MutexMap) {
+	rollbackQueueEntries(maestroDir, tasks, nameToID, assignMap, lockMap)
+	if delErr := sm.DeleteState(commandID); delErr != nil {
+		log.Printf("rollback: delete state for command %s: %v", commandID, delErr)
+	}
+}
+
+// rollbackPhaseFillToAwaiting reverts a phase from filling to awaiting_fill and persists.
+func rollbackPhaseFillToAwaiting(sm stateStore, state *model.CommandState, phaseIdx int, commandID string) {
+	state.Phases[phaseIdx].Status = model.PhaseStatusAwaitingFill
+	state.UpdatedAt = nowUTC()
+	if saveErr := sm.SaveState(state); saveErr != nil {
+		log.Printf("rollback: save state for command %s: %v", commandID, saveErr)
+	}
+}
+
+// rollbackFullPhaseFill reverts queue entries, phase state, and task state additions,
+// then persists the rolled-back state.
+func rollbackFullPhaseFill(sm stateStore, state *model.CommandState, phaseIdx int, opts SubmitOptions, tasks []TaskInput, nameToID map[string]string, assignMap map[string]WorkerAssignment) {
+	rollbackQueueEntries(opts.MaestroDir, tasks, nameToID, assignMap, opts.LockMap)
+	state.Phases[phaseIdx].Status = model.PhaseStatusAwaitingFill
+	rollbackPhaseFillState(state, phaseIdx, tasks, nameToID)
+	state.UpdatedAt = nowUTC()
+	if saveErr := sm.SaveState(state); saveErr != nil {
+		log.Printf("rollback: save state for command %s: %v", opts.CommandID, saveErr)
+	}
+}
+
+func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm stateStore) (*SubmitResult, error) {
 	// Validation
 	if verrs := ValidateTasksInput(tasks); verrs != nil {
 		return nil, verrs
@@ -154,7 +182,7 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm StateStore) (*
 	}
 
 	// Build state
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowUTC()
 	state, err := buildCommandState(opts.CommandID, tasks, nameToID, nil, now)
 	if err != nil {
 		return nil, fmt.Errorf("build state: %w", err)
@@ -167,22 +195,16 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm StateStore) (*
 	}
 
 	if err := writeQueueEntries(opts.MaestroDir, assignments, tasks, nameToID, opts.CommandID, now, opts.LockMap); err != nil {
-		rollbackQueueEntries(opts.MaestroDir, tasks, nameToID, assignMap, opts.LockMap)
-		if delErr := sm.DeleteState(opts.CommandID); delErr != nil {
-			log.Printf("rollback: delete state for command %s: %v", opts.CommandID, delErr)
-		}
+		rollbackStateAndQueue(sm, opts.MaestroDir, opts.CommandID, tasks, nameToID, assignMap, opts.LockMap)
 		return nil, fmt.Errorf("write queue: %w", err)
 	}
 
 	// Seal
 	state.PlanStatus = model.PlanStatusSealed
 	state.PlanVersion = 1
-	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	state.UpdatedAt = nowUTC()
 	if err := sm.SaveState(state); err != nil {
-		rollbackQueueEntries(opts.MaestroDir, tasks, nameToID, assignMap, opts.LockMap)
-		if delErr := sm.DeleteState(opts.CommandID); delErr != nil {
-			log.Printf("rollback: delete state for command %s: %v", opts.CommandID, delErr)
-		}
+		rollbackStateAndQueue(sm, opts.MaestroDir, opts.CommandID, tasks, nameToID, assignMap, opts.LockMap)
 		return nil, fmt.Errorf("save state (sealed): %w", err)
 	}
 
@@ -200,7 +222,7 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm StateStore) (*
 	return result, nil
 }
 
-func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm StateStore) (*SubmitResult, error) {
+func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm stateStore) (*SubmitResult, error) {
 	// Validation
 	if verrs := ValidatePhasesInput(phases); verrs != nil {
 		return nil, verrs
@@ -214,7 +236,7 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm StateStore)
 		return &SubmitResult{Valid: true}, nil
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowUTC()
 
 	// Generate phase IDs
 	phaseNameToID := make(map[string]string)
@@ -253,22 +275,16 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm StateStore)
 
 	// Write queue entries for concrete phase tasks + system commit
 	if err := writeQueueEntries(opts.MaestroDir, cpd.assignments, cpd.tasks, cpd.nameToID, opts.CommandID, now, opts.LockMap); err != nil {
-		rollbackQueueEntries(opts.MaestroDir, cpd.tasks, cpd.nameToID, cpd.assignMap, opts.LockMap)
-		if delErr := sm.DeleteState(opts.CommandID); delErr != nil {
-			log.Printf("rollback: delete state for command %s: %v", opts.CommandID, delErr)
-		}
+		rollbackStateAndQueue(sm, opts.MaestroDir, opts.CommandID, cpd.tasks, cpd.nameToID, cpd.assignMap, opts.LockMap)
 		return nil, fmt.Errorf("write queue: %w", err)
 	}
 
 	// Seal
 	state.PlanStatus = model.PlanStatusSealed
 	state.PlanVersion = 1
-	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	state.UpdatedAt = nowUTC()
 	if err := sm.SaveState(state); err != nil {
-		rollbackQueueEntries(opts.MaestroDir, cpd.tasks, cpd.nameToID, cpd.assignMap, opts.LockMap)
-		if delErr := sm.DeleteState(opts.CommandID); delErr != nil {
-			log.Printf("rollback: delete state for command %s: %v", opts.CommandID, delErr)
-		}
+		rollbackStateAndQueue(sm, opts.MaestroDir, opts.CommandID, cpd.tasks, cpd.nameToID, cpd.assignMap, opts.LockMap)
 		return nil, fmt.Errorf("save state (sealed): %w", err)
 	}
 
@@ -332,7 +348,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 
 	// Transition to filling and persist to disk (R0b recovery depends on this)
 	state.Phases[targetPhaseIdx].Status = model.PhaseStatusFilling
-	nowStr := time.Now().UTC().Format(time.RFC3339)
+	nowStr := nowUTC()
 	state.Phases[targetPhaseIdx].FillingStartedAt = &nowStr
 	state.UpdatedAt = nowStr
 	if err := sm.SaveState(state); err != nil {
@@ -343,23 +359,13 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	// Generate IDs and assign workers
 	nameToID, err := resolveNames(input.Tasks)
 	if err != nil {
-		// Rollback filling → awaiting_fill
-		state.Phases[targetPhaseIdx].Status = model.PhaseStatusAwaitingFill
-		state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		if saveErr := sm.SaveState(state); saveErr != nil {
-			log.Printf("rollback: save state for command %s: %v", opts.CommandID, saveErr)
-		}
+		rollbackPhaseFillToAwaiting(sm, state, targetPhaseIdx, opts.CommandID)
 		return nil, fmt.Errorf("resolve names: %w", err)
 	}
 
 	workerStates, err := BuildWorkerStates(opts.MaestroDir, opts.Config.Agents.Workers)
 	if err != nil {
-		// Rollback filling → awaiting_fill
-		state.Phases[targetPhaseIdx].Status = model.PhaseStatusAwaitingFill
-		state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		if saveErr := sm.SaveState(state); saveErr != nil {
-			log.Printf("rollback: save state for command %s: %v", opts.CommandID, saveErr)
-		}
+		rollbackPhaseFillToAwaiting(sm, state, targetPhaseIdx, opts.CommandID)
 		return nil, fmt.Errorf("build worker states: %w", err)
 	}
 
@@ -370,11 +376,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 
 	assignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, workerStates, assignReqs)
 	if err != nil {
-		state.Phases[targetPhaseIdx].Status = model.PhaseStatusAwaitingFill
-		state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		if saveErr := sm.SaveState(state); saveErr != nil {
-			log.Printf("rollback: save state for command %s: %v", opts.CommandID, saveErr)
-		}
+		rollbackPhaseFillToAwaiting(sm, state, targetPhaseIdx, opts.CommandID)
 		return nil, fmt.Errorf("worker assignment: %w", err)
 	}
 
@@ -383,7 +385,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 		assignMap[a.TaskName] = a
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowUTC()
 	for _, t := range input.Tasks {
 		taskID := nameToID[t.Name]
 		state.Phases[targetPhaseIdx].TaskIDs = append(state.Phases[targetPhaseIdx].TaskIDs, taskID)
@@ -411,14 +413,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	state.ExpectedTaskCount = len(state.RequiredTaskIDs) + len(state.OptionalTaskIDs)
 
 	if err := writeQueueEntries(opts.MaestroDir, assignments, input.Tasks, nameToID, opts.CommandID, now, opts.LockMap); err != nil {
-		// Rollback: remove partial queue writes, revert state to awaiting_fill, and persist
-		rollbackQueueEntries(opts.MaestroDir, input.Tasks, nameToID, assignMap, opts.LockMap)
-		state.Phases[targetPhaseIdx].Status = model.PhaseStatusAwaitingFill
-		rollbackPhaseFillState(state, targetPhaseIdx, input.Tasks, nameToID)
-		state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		if saveErr := sm.SaveState(state); saveErr != nil {
-			log.Printf("rollback: save state for command %s: %v", opts.CommandID, saveErr)
-		}
+		rollbackFullPhaseFill(sm, state, targetPhaseIdx, opts, input.Tasks, nameToID, assignMap)
 		return nil, fmt.Errorf("write queue: %w", err)
 	}
 
@@ -429,13 +424,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	state.UpdatedAt = now
 
 	if err := sm.SaveState(state); err != nil {
-		state.Phases[targetPhaseIdx].Status = model.PhaseStatusAwaitingFill
-		rollbackQueueEntries(opts.MaestroDir, input.Tasks, nameToID, assignMap, opts.LockMap)
-		rollbackPhaseFillState(state, targetPhaseIdx, input.Tasks, nameToID)
-		state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		if saveErr := sm.SaveState(state); saveErr != nil {
-			log.Printf("rollback: save state for command %s: %v", opts.CommandID, saveErr)
-		}
+		rollbackFullPhaseFill(sm, state, targetPhaseIdx, opts, input.Tasks, nameToID, assignMap)
 		return nil, fmt.Errorf("save state: %w", err)
 	}
 

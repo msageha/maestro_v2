@@ -62,14 +62,24 @@ func (e *Engine) ExecuteDeferredNotifications(notifications []DeferredNotificati
 	}
 }
 
-func (e *Engine) notifyPlannerOfReFill(commandID string) {
+// createExecutor creates an AgentExecutor via the factory, logging and returning
+// an error if the factory fails or returns nil.
+func (e *Engine) createExecutor(label string) (core.AgentExecutor, error) {
 	exec, err := e.deps.ExecutorFactory(e.deps.MaestroDir, e.deps.Config.Watcher, e.deps.Config.Logging.Level)
 	if err != nil {
-		e.deps.DL.Logf(core.LogLevelWarn, "R0b notify_planner create_executor error=%v", err)
-		return
+		e.deps.DL.Logf(core.LogLevelWarn, "%s notify_planner create_executor error=%v", label, err)
+		return nil, err
 	}
 	if exec == nil {
-		e.deps.DL.Logf(core.LogLevelWarn, "R0b notify_planner create_executor returned nil")
+		e.deps.DL.Logf(core.LogLevelWarn, "%s notify_planner create_executor returned nil", label)
+		return nil, fmt.Errorf("executor factory returned nil")
+	}
+	return exec, nil
+}
+
+func (e *Engine) notifyPlannerOfReFill(commandID string) {
+	exec, err := e.createExecutor("R0b")
+	if err != nil {
 		return
 	}
 	defer func() { _ = exec.Close() }()
@@ -89,13 +99,8 @@ func (e *Engine) notifyPlannerOfReFill(commandID string) {
 }
 
 func (e *Engine) notifyPlannerOfReEvaluation(commandID, reason string) {
-	exec, err := e.deps.ExecutorFactory(e.deps.MaestroDir, e.deps.Config.Watcher, e.deps.Config.Logging.Level)
+	exec, err := e.createExecutor("R4")
 	if err != nil {
-		e.deps.DL.Logf(core.LogLevelWarn, "R4 notify_planner create_executor error=%v", err)
-		return
-	}
-	if exec == nil {
-		e.deps.DL.Logf(core.LogLevelWarn, "R4 notify_planner create_executor returned nil")
 		return
 	}
 	defer func() { _ = exec.Close() }()
@@ -115,13 +120,8 @@ func (e *Engine) notifyPlannerOfReEvaluation(commandID, reason string) {
 }
 
 func (e *Engine) notifyPlannerOfTimeout(commandID string, timedOutPhases map[string]bool) {
-	exec, err := e.deps.ExecutorFactory(e.deps.MaestroDir, e.deps.Config.Watcher, e.deps.Config.Logging.Level)
+	exec, err := e.createExecutor("R6")
 	if err != nil {
-		e.deps.DL.Logf(core.LogLevelWarn, "R6 notify_planner create_executor error=%v", err)
-		return
-	}
-	if exec == nil {
-		e.deps.DL.Logf(core.LogLevelWarn, "R6 notify_planner create_executor returned nil")
 		return
 	}
 	defer func() { _ = exec.Close() }()

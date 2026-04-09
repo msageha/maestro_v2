@@ -108,7 +108,7 @@ func RunUp(opts UpOptions) (err error) {
 		// Daemon failed to start — clean up
 		_ = stopDaemon(opts.MaestroDir)
 		if err := tmux.KillSession(); err != nil {
-			log.Printf("warning: KillSession (daemon not ready cleanup): %v", err)
+			log.Printf("[WARN] KillSession (daemon not ready cleanup): %v", err)
 		}
 		return fmt.Errorf("daemon not ready: %w", err)
 	}

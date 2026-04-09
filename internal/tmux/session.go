@@ -74,6 +74,13 @@ const defaultCmdTimeout = 5 * time.Second
 // exhaustion from extremely large payloads being loaded into tmux buffers.
 const maxMessageSize = 1 << 20 // 1 MB
 
+// bracketedPasteDelay is the pause between pasting content into a pane and
+// sending Enter to submit it. Claude Code's Ink-based TUI needs time to
+// process the bracketed paste into its input field; 100ms was empirically
+// too short under load, causing intermittent delivery failures. 500ms was
+// chosen as a safe margin through production testing.
+const bracketedPasteDelay = 500 * time.Millisecond
+
 // validUserVarName matches safe tmux user variable names (alphanumeric + underscore).
 // This prevents tmux format injection via names containing #( or #[.
 var validUserVarName = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
@@ -231,11 +238,9 @@ func SendTextAndSubmit(ctx context.Context, paneTarget, text string) error {
 	needCleanup = false
 
 	// Delay to let the target application finish processing the bracketed
-	// paste before we send Enter to submit. Claude Code's Ink-based TUI
-	// needs sufficient time to render the pasted content into its input field;
-	// 100ms is too short under load and causes intermittent delivery failures.
-	// Uses context-aware sleep so cancellation is respected.
-	if err := sleepCtx(ctx, 500*time.Millisecond); err != nil {
+	// paste before we send Enter to submit. Uses context-aware sleep so
+	// cancellation is respected. See bracketedPasteDelay for rationale.
+	if err := sleepCtx(ctx, bracketedPasteDelay); err != nil {
 		return &TmuxError{Kind: contextErrorKind(err), Op: "send-text-submit-sleep", Err: err}
 	}
 
@@ -256,6 +261,11 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 
 // sessionName stores the tmux session name. Access via GetSessionName()/SetSessionName().
 // Protected by atomic.Value to prevent data races across goroutines.
+//
+// This is a package-level variable rather than a struct field because the session
+// name is process-global state shared by all tmux operations. A SessionManager
+// struct would improve testability but require threading it through every caller;
+// the current design is intentional given the single-session-per-process model.
 var sessionName atomic.Value
 
 func init() {

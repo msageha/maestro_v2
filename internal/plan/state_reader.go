@@ -124,7 +124,7 @@ func (r *PlanStateReader) ApplyPhaseTransition(commandID, phaseID string, newSta
 		return err
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowUTC()
 	idx, found := state.PhaseIndex(phaseID)
 	if !found {
 		return fmt.Errorf("phase %s in command %s: %w", phaseID, commandID, core.ErrPhaseNotFound)
@@ -186,7 +186,7 @@ func (r *PlanStateReader) UpdateTaskState(commandID, taskID string, newStatus mo
 		state.CancelledReasons[taskID] = cancelledReason
 	}
 
-	state.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	state.UpdatedAt = nowUTC()
 	return r.stateManager.SaveState(state)
 }
 
@@ -277,7 +277,7 @@ func (r *PlanStateReader) TripCircuitBreaker(commandID string, reason string, pr
 		}
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowUTC()
 	state.CircuitBreaker.Tripped = true
 	state.CircuitBreaker.TrippedAt = &now
 	state.CircuitBreaker.TripReason = &reason

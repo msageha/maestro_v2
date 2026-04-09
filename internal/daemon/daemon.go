@@ -27,7 +27,9 @@ import (
 // LogLevel, Clock, DaemonLogger, StateReader, etc. are defined in
 // internal/daemon/core and re-exported via core_aliases.go.
 
-const fsSemaphoreBufferSize = 8 // WatchLoop のファイルシステムセマフォサイズ
+// fsSemaphoreBufferSize limits concurrent fsnotify handler goroutines to prevent
+// resource exhaustion (8 = practical limit for typical I/O concurrency).
+const fsSemaphoreBufferSize = 8
 
 // Daemon is the main maestro daemon process.
 // It acts as a composition root, owning API, WatchLoop, and EventBridge components.
