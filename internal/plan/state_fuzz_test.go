@@ -57,7 +57,7 @@ task_states:
 
 		// If parsing succeeds, validate schema constraints the same way
 		// loadAndParseState does. These should not panic.
-		if state.SchemaVersion > CurrentSchemaVersion {
+		if state.SchemaVersion > currentSchemaVersion {
 			return
 		}
 		if state.SchemaVersion < 1 {

@@ -116,7 +116,7 @@ func TestCanComplete_AwaitingFillFormatStderr(t *testing.T) {
 }
 
 // TestCanComplete_AwaitingFillIsNotRetryable verifies that ActionRequiredError is
-// distinct from RetryableError.
+// distinct from retryableError.
 func TestCanComplete_AwaitingFillIsNotRetryable(t *testing.T) {
 	state := &model.CommandState{
 		CommandID:         "cmd-af-003",
@@ -140,14 +140,14 @@ func TestCanComplete_AwaitingFillIsNotRetryable(t *testing.T) {
 		t.Fatal("expected error")
 	}
 
-	var retryErr *RetryableError
+	var retryErr *retryableError
 	if errors.As(err, &retryErr) {
-		t.Error("ActionRequiredError should NOT satisfy RetryableError")
+		t.Error("ActionRequiredError should NOT satisfy retryableError")
 	}
 }
 
 // TestCanComplete_FillingStillRetryable verifies that filling phase still
-// returns RetryableError (regression check).
+// returns retryableError (regression check).
 func TestCanComplete_FillingStillRetryable(t *testing.T) {
 	state := &model.CommandState{
 		CommandID:         "cmd-fill-001",
@@ -171,9 +171,9 @@ func TestCanComplete_FillingStillRetryable(t *testing.T) {
 		t.Fatal("expected error for filling phase")
 	}
 
-	var retryErr *RetryableError
+	var retryErr *retryableError
 	if !errors.As(err, &retryErr) {
-		t.Errorf("filling phase should return RetryableError, got %T: %v", err, err)
+		t.Errorf("filling phase should return retryableError, got %T: %v", err, err)
 	}
 }
 
