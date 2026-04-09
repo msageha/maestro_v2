@@ -13,6 +13,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
+	"github.com/msageha/maestro_v2/internal/validate"
 	"github.com/msageha/maestro_v2/internal/yaml"
 	yamlv3 "gopkg.in/yaml.v3"
 )
@@ -83,7 +84,7 @@ func (h *TaskHeartbeatHandler) Handle(params json.RawMessage) *uds.Response {
 		return uds.ErrorResponse(uds.ErrCodeValidation, "epoch must be non-negative")
 	}
 	// Validate worker ID to prevent path traversal
-	if filepath.Base(p.WorkerID) != p.WorkerID || p.WorkerID == "." || p.WorkerID == ".." {
+	if !validate.IsValidBaseName(p.WorkerID) {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid worker ID: %q", p.WorkerID))
 	}
 

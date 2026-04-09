@@ -3,6 +3,7 @@ package formation
 import (
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,7 +54,9 @@ func stopDaemon(maestroDir string) error {
 	// Step 1: Request graceful shutdown via UDS
 	client := uds.NewClient(socketPath)
 	client.SetTimeout(5 * time.Second)
-	_, _ = client.SendCommand("shutdown", nil)
+	if _, err := client.SendCommand("shutdown", nil); err != nil {
+		log.Printf("warning: shutdown command failed: %v", err)
+	}
 
 	// Step 2: Read and validate PID from daemon.pid (cross-check with lock file)
 	pid := validateDaemonPID(maestroDir)

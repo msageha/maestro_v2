@@ -208,7 +208,7 @@ func (a *API) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 	defer a.releaseFileLock()
 
 	// Sanitize target: prevent directory traversal (before acquiring per-target lock)
-	if filepath.Base(params.Target) != params.Target || params.Target == "." || params.Target == ".." {
+	if !validate.IsValidBaseName(params.Target) {
 		return uds.ErrorResponse(uds.ErrCodeValidation,
 			fmt.Sprintf("invalid target: %q", params.Target))
 	}
@@ -719,67 +719,51 @@ func detectCycleDFS(deps map[string][]string) []string {
 
 // --- File I/O helpers ---
 
-func loadCommandQueueFile(path string) (model.CommandQueue, []byte, error) {
-	var cq model.CommandQueue
+// loadQueueFile reads and unmarshals a YAML queue file. If the file does not
+// exist, it returns a zero-value T with defaults applied. setDefaults is
+// called on every successful path to ensure SchemaVersion/FileType are set.
+func loadQueueFile[T any](path string, setDefaults func(*T)) (T, []byte, error) {
+	var result T
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
+			setDefaults(&result)
+			return result, nil, nil
+		}
+		return result, nil, fmt.Errorf("read queue %s: %w", path, err)
+	}
+	if err := yamlv3.Unmarshal(data, &result); err != nil {
+		return result, data, fmt.Errorf("parse queue %s: %w", path, err)
+	}
+	setDefaults(&result)
+	return result, data, nil
+}
+
+func loadCommandQueueFile(path string) (model.CommandQueue, []byte, error) {
+	return loadQueueFile(path, func(cq *model.CommandQueue) {
+		if cq.SchemaVersion == 0 {
 			cq.SchemaVersion = 1
 			cq.FileType = "queue_command"
-			return cq, nil, nil
 		}
-		return cq, nil, fmt.Errorf("read queue %s: %w", path, err)
-	}
-	if err := yamlv3.Unmarshal(data, &cq); err != nil {
-		return cq, data, fmt.Errorf("parse queue %s: %w", path, err)
-	}
-	if cq.SchemaVersion == 0 {
-		cq.SchemaVersion = 1
-		cq.FileType = "queue_command"
-	}
-	return cq, data, nil
+	})
 }
 
 func loadTaskQueueFile(path string) (model.TaskQueue, []byte, error) {
-	var tq model.TaskQueue
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
+	return loadQueueFile(path, func(tq *model.TaskQueue) {
+		if tq.SchemaVersion == 0 {
 			tq.SchemaVersion = 1
 			tq.FileType = "queue_task"
-			return tq, nil, nil
 		}
-		return tq, nil, fmt.Errorf("read queue %s: %w", path, err)
-	}
-	if err := yamlv3.Unmarshal(data, &tq); err != nil {
-		return tq, data, fmt.Errorf("parse queue %s: %w", path, err)
-	}
-	if tq.SchemaVersion == 0 {
-		tq.SchemaVersion = 1
-		tq.FileType = "queue_task"
-	}
-	return tq, data, nil
+	})
 }
 
 func loadNotificationQueueFile(path string) (model.NotificationQueue, []byte, error) {
-	var nq model.NotificationQueue
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
+	return loadQueueFile(path, func(nq *model.NotificationQueue) {
+		if nq.SchemaVersion == 0 {
 			nq.SchemaVersion = 1
 			nq.FileType = "queue_notification"
-			return nq, nil, nil
 		}
-		return nq, nil, fmt.Errorf("read queue %s: %w", path, err)
-	}
-	if err := yamlv3.Unmarshal(data, &nq); err != nil {
-		return nq, data, fmt.Errorf("parse queue %s: %w", path, err)
-	}
-	if nq.SchemaVersion == 0 {
-		nq.SchemaVersion = 1
-		nq.FileType = "queue_notification"
-	}
-	return nq, data, nil
+	})
 }
 
 // archiveTerminalCommands removes terminal-status commands from the queue in-place.

@@ -285,7 +285,8 @@ func (e *Engine) evaluateUncached(ctx context.Context, gateType GateType, evalCt
 			if gateResult.Action == ActionBlock {
 				result.Action = ActionBlock
 				break // Stop evaluation on block
-			} else if gateResult.Action == ActionWarn && result.Action != ActionBlock {
+			}
+			if gateResult.Action == ActionWarn && result.Action != ActionBlock {
 				result.Action = ActionWarn
 			}
 		}
@@ -541,15 +542,15 @@ func (m *mapEvaluationContext) GetField(path string) (interface{}, bool) {
 		}
 
 		// Navigate deeper
-		if next, ok := current[part]; ok {
-			if nextMap, ok := next.(map[string]interface{}); ok {
-				current = nextMap
-			} else {
-				return nil, false
-			}
-		} else {
+		next, ok := current[part]
+		if !ok {
 			return nil, false
 		}
+		nextMap, ok := next.(map[string]interface{})
+		if !ok {
+			return nil, false
+		}
+		current = nextMap
 	}
 
 	return nil, false

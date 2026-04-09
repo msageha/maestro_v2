@@ -1668,7 +1668,7 @@ func TestIntegration_QualityGatePerformanceUnderLoad(t *testing.T) {
 
 // Scenario 25: Non-blocking rate-limited event flow under high load.
 func TestIntegration_LogSystemHighLoadStructuredAndRateLimited(t *testing.T) {
-	bus := events.NewBus(1)
+	bus := events.NewBus(context.Background(), 1)
 	defer bus.Close()
 
 	var consumed int64
@@ -1789,7 +1789,7 @@ func TestIntegration_EndToEndWithEventHooksAndQualityGate(t *testing.T) {
 	}
 	defer qg.Stop()
 
-	d.eventBus = events.NewBus(100)
+	d.eventBus = events.NewBus(context.Background(), 100)
 	defer d.eventBus.Close()
 	d.qualityGateDaemon = qg
 	d.handler.SetEventBus(d.eventBus)
@@ -1863,7 +1863,7 @@ func TestIntegration_EventHooksInvalidPayloadHandling(t *testing.T) {
 	}
 	defer qg.Stop()
 
-	d.eventBus = events.NewBus(100)
+	d.eventBus = events.NewBus(context.Background(), 100)
 	defer d.eventBus.Close()
 	d.qualityGateDaemon = qg
 	d.bridge.subscribeQualityGateEvents()

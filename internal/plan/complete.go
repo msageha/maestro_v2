@@ -13,6 +13,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/validate"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -67,7 +68,7 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 	}
 	// Validate commandID early (before any path construction) to prevent
 	// directory traversal via intent file paths.
-	if filepath.Base(opts.CommandID) != opts.CommandID || opts.CommandID == "" || opts.CommandID == "." || opts.CommandID == ".." {
+	if !validate.IsValidBaseName(opts.CommandID) {
 		return nil, fmt.Errorf("invalid command ID: %q", opts.CommandID)
 	}
 	sm := NewStateManager(opts.MaestroDir, opts.LockMap)

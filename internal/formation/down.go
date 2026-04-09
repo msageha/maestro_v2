@@ -23,7 +23,9 @@ func RunDown(maestroDir string, cfg model.Config) error {
 
 	// Initialize tmux debug logger for down process
 	logsDir := filepath.Join(maestroDir, "logs")
-	_ = os.MkdirAll(logsDir, 0o755)
+	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+		return fmt.Errorf("create logs directory: %w", err)
+	}
 	tmuxLogPath := filepath.Join(logsDir, "tmux_debug.log")
 	if tmuxLogFile, err := os.OpenFile(tmuxLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
 		tmuxLogger := log.New(tmuxLogFile, "", log.LstdFlags|log.Lmicroseconds)
