@@ -48,7 +48,7 @@ func (qh *QueueHandler) periodicScanPhaseA() phaseAResult {
 	}
 }
 
-// initScanState loads all queue files and initialises a scanState.
+// initScanState loads all queue files and initializes a scanState.
 func (qh *QueueHandler) initScanState() scanState {
 	scanStart := qh.clock.Now()
 	qh.scanCounters = ScanCounters{}

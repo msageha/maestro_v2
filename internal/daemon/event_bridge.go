@@ -105,7 +105,7 @@ func (eb *EventBridge) subscribeQueueWrittenEvents() {
 		if d.handler == nil || d.shuttingDown.Load() {
 			return
 		}
-		d.handler.debounceAndScan("event_bus:queue_written")
+		d.handler.debounce.Trigger("event_bus:queue_written")
 	})
 	eb.eventUnsubscribers = append(eb.eventUnsubscribers, unsub)
 }
