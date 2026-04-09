@@ -310,7 +310,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	}
 
 	if state.PlanStatus != model.PlanStatusSealed {
-		return nil, &PlanValidationError{Msg: fmt.Sprintf("plan_status must be sealed, got %s", state.PlanStatus)}
+		return nil, &planValidationError{Msg: fmt.Sprintf("plan_status must be sealed, got %s", state.PlanStatus)}
 	}
 
 	if err := ValidateNotCancelled(state); err != nil {
@@ -328,13 +328,13 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 		}
 	}
 	if targetPhase == nil {
-		return nil, &PlanValidationError{Msg: fmt.Sprintf("phase %q not found", opts.PhaseName)}
+		return nil, &planValidationError{Msg: fmt.Sprintf("phase %q not found", opts.PhaseName)}
 	}
 	if targetPhase.Type != "deferred" {
-		return nil, &PlanValidationError{Msg: fmt.Sprintf("phase %q is not deferred (type: %s)", opts.PhaseName, targetPhase.Type)}
+		return nil, &planValidationError{Msg: fmt.Sprintf("phase %q is not deferred (type: %s)", opts.PhaseName, targetPhase.Type)}
 	}
 	if targetPhase.Status != model.PhaseStatusAwaitingFill {
-		return nil, &PlanValidationError{Msg: fmt.Sprintf("phase %q status must be awaiting_fill, got %s", opts.PhaseName, targetPhase.Status)}
+		return nil, &planValidationError{Msg: fmt.Sprintf("phase %q status must be awaiting_fill, got %s", opts.PhaseName, targetPhase.Status)}
 	}
 
 	// Validate input against constraints

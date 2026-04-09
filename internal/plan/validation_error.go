@@ -5,25 +5,25 @@ import (
 	"strings"
 )
 
-// ValidationError represents a single field-level validation error with its path and message.
-type ValidationError struct {
+// validationError represents a single field-level validation error with its path and message.
+type validationError struct {
 	FieldPath string
 	Message   string
 }
 
 // Error returns a formatted string combining the field path and message.
-func (e ValidationError) Error() string {
+func (e validationError) Error() string {
 	return fmt.Sprintf("%s: %s", e.FieldPath, e.Message)
 }
 
 // ValidationErrors collects multiple field-level validation errors.
 type ValidationErrors struct {
-	Errors []ValidationError
+	Errors []validationError
 }
 
 // Add appends a new validation error for the given field path and message.
 func (ve *ValidationErrors) Add(fieldPath, message string) {
-	ve.Errors = append(ve.Errors, ValidationError{FieldPath: fieldPath, Message: message})
+	ve.Errors = append(ve.Errors, validationError{FieldPath: fieldPath, Message: message})
 }
 
 // HasErrors returns true if any validation errors have been recorded.
@@ -49,21 +49,21 @@ func (ve *ValidationErrors) FormatStderr() string {
 	return sb.String()
 }
 
-// PlanValidationError represents a plan-level validation error
+// planValidationError represents a plan-level validation error
 // (state precondition, cancel check, etc.) as opposed to field-level
 // ValidationErrors from task/phase input validation.
 // Satisfies the validationFormatter interface in daemon/plan_handler.go.
-type PlanValidationError struct {
+type planValidationError struct {
 	Msg string
 }
 
 // Error returns the validation error message.
-func (e *PlanValidationError) Error() string {
+func (e *planValidationError) Error() string {
 	return e.Msg
 }
 
 // FormatStderr returns the error formatted for stderr output.
-func (e *PlanValidationError) FormatStderr() string {
+func (e *planValidationError) FormatStderr() string {
 	return fmt.Sprintf("error: %s\n", e.Msg)
 }
 

@@ -257,9 +257,9 @@ func TestCanComplete_FillingPhase(t *testing.T) {
 		t.Fatalf("CanComplete returned nil error for filling phase")
 	}
 
-	var retryErr *RetryableError
+	var retryErr *retryableError
 	if !errors.As(err, &retryErr) {
-		t.Errorf("error is not RetryableError, got %T: %v", err, err)
+		t.Errorf("error is not retryableError, got %T: %v", err, err)
 	}
 }
 
@@ -658,11 +658,11 @@ func TestDeriveStatus_RequiredFailedOverridesOptionalPolicy(t *testing.T) {
 
 func TestLoadState_MigratorIntegration_CurrentVersion(t *testing.T) {
 	t.Parallel()
-	// When schema_version == CurrentSchemaVersion, no migration should be applied
+	// When schema_version == currentSchemaVersion, no migration should be applied
 	sm := newTestStateManager(t)
 
 	original := &model.CommandState{
-		SchemaVersion: CurrentSchemaVersion,
+		SchemaVersion: currentSchemaVersion,
 		FileType:      "state_command",
 		CommandID:     "cmd-current-ver",
 		PlanStatus:    model.PlanStatusPlanning,
@@ -677,8 +677,8 @@ func TestLoadState_MigratorIntegration_CurrentVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadState failed: %v", err)
 	}
-	if loaded.SchemaVersion != CurrentSchemaVersion {
-		t.Errorf("SchemaVersion = %d, want %d", loaded.SchemaVersion, CurrentSchemaVersion)
+	if loaded.SchemaVersion != currentSchemaVersion {
+		t.Errorf("SchemaVersion = %d, want %d", loaded.SchemaVersion, currentSchemaVersion)
 	}
 	if loaded.CommandID != "cmd-current-ver" {
 		t.Errorf("CommandID = %q, want %q", loaded.CommandID, "cmd-current-ver")
@@ -687,7 +687,7 @@ func TestLoadState_MigratorIntegration_CurrentVersion(t *testing.T) {
 
 func TestLoadState_MigratorIntegration_OlderVersion(t *testing.T) {
 	// Simulate an older schema version that needs migration.
-	// Temporarily bump CurrentSchemaVersion by using a custom migrator.
+	// Temporarily bump currentSchemaVersion by using a custom migrator.
 	sm := newTestStateManager(t)
 
 	// Save a state file with schema_version=1 directly (raw YAML)
@@ -697,23 +697,23 @@ func TestLoadState_MigratorIntegration_OlderVersion(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Only test when CurrentSchemaVersion > 1, otherwise skip
-	if CurrentSchemaVersion <= 1 {
-		// Save original DefaultMigrator, replace with test migrator
-		origMigrator := DefaultMigrator
+	// Only test when currentSchemaVersion > 1, otherwise skip
+	if currentSchemaVersion <= 1 {
+		// Save original defaultMigrator, replace with test migrator
+		origMigrator := defaultMigrator
 		testVersion := 2
-		testMigrator := NewMigrator(testVersion)
+		testMigrator := newMigrator(testVersion)
 		testMigrator.steps[1] = func(data map[string]interface{}) error {
 			// Simulate migration: add a field
 			data["migrated_from_v1"] = true
 			return nil
 		}
-		DefaultMigrator = testMigrator
-		origCurrentVersion := CurrentSchemaVersion
+		defaultMigrator = testMigrator
+		origCurrentVersion := currentSchemaVersion
 		// Temporarily override (package-level var)
 		defer func() {
-			DefaultMigrator = origMigrator
-			// CurrentSchemaVersion is const, can't restore; test validates behavior
+			defaultMigrator = origMigrator
+			// currentSchemaVersion is const, can't restore; test validates behavior
 			_ = origCurrentVersion
 		}()
 
@@ -723,7 +723,7 @@ func TestLoadState_MigratorIntegration_OlderVersion(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		// Since CurrentSchemaVersion is const=1, NeedsMigration(1) returns false.
+		// Since currentSchemaVersion is const=1, NeedsMigration(1) returns false.
 		// We can only fully test migration when schema evolves beyond v1.
 		// Verify that LoadState works with current version without error.
 		loaded, err := sm.LoadState("cmd-migrate")
@@ -736,7 +736,7 @@ func TestLoadState_MigratorIntegration_OlderVersion(t *testing.T) {
 		return
 	}
 
-	// When CurrentSchemaVersion > 1, test actual migration
+	// When currentSchemaVersion > 1, test actual migration
 	content := "schema_version: 1\nfile_type: state_command\ncommand_id: cmd-migrate\nplan_status: planning\ncreated_at: '2026-01-01T00:00:00Z'\nupdated_at: '2026-01-01T00:00:00Z'\n"
 	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
 		t.Fatal(err)
@@ -746,15 +746,15 @@ func TestLoadState_MigratorIntegration_OlderVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadState failed: %v", err)
 	}
-	if loaded.SchemaVersion != CurrentSchemaVersion {
-		t.Errorf("SchemaVersion = %d, want %d (should have been migrated)", loaded.SchemaVersion, CurrentSchemaVersion)
+	if loaded.SchemaVersion != currentSchemaVersion {
+		t.Errorf("SchemaVersion = %d, want %d (should have been migrated)", loaded.SchemaVersion, currentSchemaVersion)
 	}
 }
 
 func TestLoadState_MigratorIntegration_NeedsMigrationCalled(t *testing.T) {
 	t.Parallel()
 	// Verify that the migration path is connected by checking that
-	// DefaultMigrator.NeedsMigration is correctly invoked during LoadState.
+	// defaultMigrator.NeedsMigration is correctly invoked during LoadState.
 	sm := newTestStateManager(t)
 
 	original := &model.CommandState{
@@ -769,7 +769,7 @@ func TestLoadState_MigratorIntegration_NeedsMigrationCalled(t *testing.T) {
 		t.Fatalf("SaveState failed: %v", err)
 	}
 
-	// With CurrentSchemaVersion=1, NeedsMigration(1) should return false,
+	// With currentSchemaVersion=1, NeedsMigration(1) should return false,
 	// and LoadState should work without attempting migration.
 	loaded, err := sm.LoadState("cmd-needs-mig")
 	if err != nil {
@@ -779,8 +779,8 @@ func TestLoadState_MigratorIntegration_NeedsMigrationCalled(t *testing.T) {
 		t.Errorf("SchemaVersion = %d, want 1", loaded.SchemaVersion)
 	}
 
-	// Verify DefaultMigrator is properly configured
-	if DefaultMigrator.NeedsMigration(CurrentSchemaVersion) {
-		t.Error("NeedsMigration(CurrentSchemaVersion) should be false")
+	// Verify defaultMigrator is properly configured
+	if defaultMigrator.NeedsMigration(currentSchemaVersion) {
+		t.Error("NeedsMigration(currentSchemaVersion) should be false")
 	}
 }

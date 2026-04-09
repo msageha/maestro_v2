@@ -20,7 +20,7 @@ import (
 // from other I/O errors so that backup recovery is only attempted for corruption.
 var errYAMLCorrupted = errors.New("invalid command state YAML")
 
-// CurrentSchemaVersion is defined in migrator.go.
+// currentSchemaVersion is defined in migrator.go.
 
 // StateManager manages read/write access to command state files (state/commands/{id}.yaml).
 // All state mutations are serialized through LockCommand/UnlockCommand.
@@ -124,13 +124,13 @@ func (sm *StateManager) loadAndParseState(path, commandID string) (*model.Comman
 	if schemaVersion < 1 {
 		return nil, fmt.Errorf("invalid schema_version %d for state %s: %w", schemaVersion, commandID, errYAMLCorrupted)
 	}
-	if schemaVersion > CurrentSchemaVersion {
-		return nil, fmt.Errorf("unsupported schema_version %d for state %s (max %d): %w", schemaVersion, commandID, CurrentSchemaVersion, errYAMLCorrupted)
+	if schemaVersion > currentSchemaVersion {
+		return nil, fmt.Errorf("unsupported schema_version %d for state %s (max %d): %w", schemaVersion, commandID, currentSchemaVersion, errYAMLCorrupted)
 	}
 
 	// Apply migrations if needed
-	if DefaultMigrator.NeedsMigration(schemaVersion) {
-		if err := DefaultMigrator.Migrate(raw, schemaVersion); err != nil {
+	if defaultMigrator.NeedsMigration(schemaVersion) {
+		if err := defaultMigrator.Migrate(raw, schemaVersion); err != nil {
 			return nil, fmt.Errorf("migrate state %s from version %d: %w", commandID, schemaVersion, errors.Join(errYAMLCorrupted, err))
 		}
 		// Re-serialize migrated data for structured unmarshal
@@ -138,7 +138,7 @@ func (sm *StateManager) loadAndParseState(path, commandID string) (*model.Comman
 		if err != nil {
 			return nil, fmt.Errorf("re-serialize state %s after migration: %w", commandID, errors.Join(errYAMLCorrupted, err))
 		}
-		log.Printf("[INFO] loadAndParseState: migrated state %s from schema version %d to %d", commandID, schemaVersion, CurrentSchemaVersion)
+		log.Printf("[INFO] loadAndParseState: migrated state %s from schema version %d to %d", commandID, schemaVersion, currentSchemaVersion)
 	}
 
 	var state model.CommandState
@@ -187,16 +187,16 @@ func (sm *StateManager) UnlockCommand(commandID string) {
 	sm.lockMap.Unlock("state:" + commandID)
 }
 
-// RetryableError wraps an error that indicates the operation can be safely retried.
-type RetryableError struct {
+// retryableError wraps an error that indicates the operation can be safely retried.
+type retryableError struct {
 	Err error
 }
 
-func (e *RetryableError) Error() string {
+func (e *retryableError) Error() string {
 	return e.Err.Error()
 }
 
-func (e *RetryableError) Unwrap() error {
+func (e *retryableError) Unwrap() error {
 	return e.Err
 }
 
@@ -204,12 +204,12 @@ func (e *RetryableError) Unwrap() error {
 // Returns the derived PlanStatus or an error if the command is not ready.
 func CanComplete(state *model.CommandState) (model.PlanStatus, error) {
 	if state.PlanStatus != model.PlanStatusSealed {
-		return "", &PlanValidationError{Msg: fmt.Sprintf("plan_status must be sealed, got %s", state.PlanStatus)}
+		return "", &planValidationError{Msg: fmt.Sprintf("plan_status must be sealed, got %s", state.PlanStatus)}
 	}
 
 	totalExpected := len(state.RequiredTaskIDs) + len(state.OptionalTaskIDs)
 	if totalExpected != state.ExpectedTaskCount {
-		return "", &PlanValidationError{Msg: fmt.Sprintf("task count mismatch: required(%d) + optional(%d) = %d, expected %d",
+		return "", &planValidationError{Msg: fmt.Sprintf("task count mismatch: required(%d) + optional(%d) = %d, expected %d",
 			len(state.RequiredTaskIDs), len(state.OptionalTaskIDs), totalExpected, state.ExpectedTaskCount)}
 	}
 
@@ -217,7 +217,7 @@ func CanComplete(state *model.CommandState) (model.PlanStatus, error) {
 	if len(state.Phases) > 0 {
 		for _, phase := range state.Phases {
 			if phase.Status == model.PhaseStatusFilling {
-				return "", &RetryableError{
+				return "", &retryableError{
 					Err: fmt.Errorf("phase %q is in transient status filling, retry later", phase.Name),
 				}
 			}
@@ -233,7 +233,7 @@ func CanComplete(state *model.CommandState) (model.PlanStatus, error) {
 				}
 			}
 			if !model.IsPhaseTerminal(phase.Status) {
-				return "", &PlanValidationError{Msg: fmt.Sprintf("phase %q is not terminal (status: %s)", phase.Name, phase.Status)}
+				return "", &planValidationError{Msg: fmt.Sprintf("phase %q is not terminal (status: %s)", phase.Name, phase.Status)}
 			}
 		}
 	}
@@ -251,7 +251,7 @@ func CanComplete(state *model.CommandState) (model.PlanStatus, error) {
 		}
 	}
 	if len(nonTerminal) > 0 {
-		return "", &PlanValidationError{Msg: fmt.Sprintf("required tasks not terminal: %s", strings.Join(nonTerminal, ", "))}
+		return "", &planValidationError{Msg: fmt.Sprintf("required tasks not terminal: %s", strings.Join(nonTerminal, ", "))}
 	}
 
 	return DeriveStatus(state)

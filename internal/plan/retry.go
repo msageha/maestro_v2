@@ -175,7 +175,7 @@ type retryContext struct {
 // validateRetryRequest loads and validates state, task status, phase membership, and blocked_by references.
 func validateRetryRequest(sm *StateManager, opts RetryOptions) (*retryContext, error) {
 	if opts.BloomLevel < BloomLevelMin || opts.BloomLevel > BloomLevelMax {
-		return nil, &PlanValidationError{Msg: fmt.Sprintf("bloom_level must be between %d and %d, got %d", BloomLevelMin, BloomLevelMax, opts.BloomLevel)}
+		return nil, &planValidationError{Msg: fmt.Sprintf("bloom_level must be between %d and %d, got %d", BloomLevelMin, BloomLevelMax, opts.BloomLevel)}
 	}
 
 	state, err := sm.LoadState(opts.CommandID)
@@ -184,7 +184,7 @@ func validateRetryRequest(sm *StateManager, opts RetryOptions) (*retryContext, e
 	}
 
 	if state.PlanStatus != model.PlanStatusSealed {
-		return nil, &PlanValidationError{Msg: fmt.Sprintf("plan_status must be sealed, got %s", state.PlanStatus)}
+		return nil, &planValidationError{Msg: fmt.Sprintf("plan_status must be sealed, got %s", state.PlanStatus)}
 	}
 
 	if err := ValidateNotCancelled(state); err != nil {
@@ -193,17 +193,17 @@ func validateRetryRequest(sm *StateManager, opts RetryOptions) (*retryContext, e
 
 	retryOfStatus, ok := state.TaskStates[opts.RetryOf]
 	if !ok {
-		return nil, &PlanValidationError{Msg: fmt.Sprintf("task %s not found in state", opts.RetryOf)}
+		return nil, &planValidationError{Msg: fmt.Sprintf("task %s not found in state", opts.RetryOf)}
 	}
 	if retryOfStatus != model.StatusFailed {
-		return nil, &PlanValidationError{Msg: fmt.Sprintf("retry-of task %s must be failed, got %s", opts.RetryOf, retryOfStatus)}
+		return nil, &planValidationError{Msg: fmt.Sprintf("retry-of task %s must be failed, got %s", opts.RetryOf, retryOfStatus)}
 	}
 
 	// Find phase membership
 	phase, phaseIdx := findPhaseForTask(state, opts.RetryOf)
 	if phase != nil {
 		if phase.Status != model.PhaseStatusActive && phase.Status != model.PhaseStatusFailed {
-			return nil, &PlanValidationError{Msg: fmt.Sprintf("phase %q status must be active or failed, got %s",
+			return nil, &planValidationError{Msg: fmt.Sprintf("phase %q status must be active or failed, got %s",
 				phase.Name, phase.Status)}
 		}
 	}
@@ -246,7 +246,7 @@ func validateRetryBlockedBy(state *model.CommandState, blockedBy []string, phase
 		for _, dep := range blockedBy {
 			if !phaseTaskSet[dep] {
 				if state.SystemCommitTaskID == nil || dep != *state.SystemCommitTaskID {
-					return &PlanValidationError{Msg: fmt.Sprintf("blocked_by task %s is not in phase %q", dep, phase.Name)}
+					return &planValidationError{Msg: fmt.Sprintf("blocked_by task %s is not in phase %q", dep, phase.Name)}
 				}
 			}
 		}
@@ -254,7 +254,7 @@ func validateRetryBlockedBy(state *model.CommandState, blockedBy []string, phase
 		// No phase: blocked_by must exist in command's task states
 		for _, dep := range blockedBy {
 			if _, ok := state.TaskStates[dep]; !ok {
-				return &PlanValidationError{Msg: fmt.Sprintf("blocked_by task %s not found in command state", dep)}
+				return &planValidationError{Msg: fmt.Sprintf("blocked_by task %s not found in command state", dep)}
 			}
 		}
 	}
