@@ -85,6 +85,28 @@ func TestPrecheckGitRepo_Subdir(t *testing.T) {
 	}
 }
 
+func TestRunDown_FlagParsing(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"unknown flag", []string{"--unknown"}},
+		{"unexpected arg", []string{"extra"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := runDown(tt.args)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			var ce *CLIError
+			if !errors.As(err, &ce) {
+				t.Fatalf("expected CLIError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
 func TestRunUp_FlagParsing(t *testing.T) {
 	tests := []struct {
 		name    string

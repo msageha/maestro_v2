@@ -54,7 +54,7 @@ func runTaskHeartbeat(args []string) error {
 		"epoch":     epoch,
 	}
 
-	client := uds.NewClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := newUDSClient(filepath.Join(maestroDir, uds.DefaultSocketName))
 	resp, err := client.SendCommand("task_heartbeat", params)
 	if err != nil {
 		return fmt.Errorf("maestro task heartbeat: %w", err)
