@@ -39,7 +39,7 @@ const (
 type ContinuousStatus string
 
 const (
-	ContinuousStatusIdle    ContinuousStatus = "idle"
+	continuousStatusIdle    ContinuousStatus = "idle"
 	ContinuousStatusRunning ContinuousStatus = "running"
 	ContinuousStatusPaused  ContinuousStatus = "paused"
 	ContinuousStatusStopped ContinuousStatus = "stopped"
@@ -296,7 +296,7 @@ func IsPhaseTerminal(s PhaseStatus) bool {
 	return terminalPhaseStatuses[s]
 }
 
-func IsWorktreeTerminal(s WorktreeStatus) bool {
+func isWorktreeTerminal(s WorktreeStatus) bool {
 	return terminalWorktreeStatuses[s]
 }
 
@@ -365,7 +365,7 @@ func ValidatePhaseTransition(from, to PhaseStatus) error {
 }
 
 func ValidateWorktreeTransition(from, to WorktreeStatus) error {
-	if IsWorktreeTerminal(from) {
+	if isWorktreeTerminal(from) {
 		return fmt.Errorf("cannot transition from terminal worktree status %q", from)
 	}
 	allowed, ok := validWorktreeTransitions[from]

@@ -22,7 +22,7 @@ func (R2ResultState) Apply(run *Run) Outcome {
 	var repairs []Repair
 
 	resultsDir := filepath.Join(run.Deps.MaestroDir, "results")
-	entries, err := run.CachedReadDir(resultsDir)
+	entries, err := run.cachedReadDir(resultsDir)
 	if err != nil {
 		return Outcome{}
 	}
@@ -69,7 +69,7 @@ func (R2ResultState) Apply(run *Run) Outcome {
 			run.Deps.LockMap.Lock(lockKey)
 			defer run.Deps.LockMap.Unlock(lockKey)
 
-			state, err := run.LoadState(statePath)
+			state, err := run.loadState(statePath)
 			if err != nil {
 				return nil
 			}
@@ -86,7 +86,7 @@ func (R2ResultState) Apply(run *Run) Outcome {
 			for _, re := range results {
 				currentStatus, exists := state.TaskStates[re.TaskID]
 				if !exists {
-					run.Log(core.LogLevelWarn, "R2 skip_unknown_task command=%s task=%s result_status=%s (task not registered in state)",
+					run.log(core.LogLevelWarn, "R2 skip_unknown_task command=%s task=%s result_status=%s (task not registered in state)",
 						commandID, re.TaskID, re.Status)
 					continue
 				}
@@ -94,7 +94,7 @@ func (R2ResultState) Apply(run *Run) Outcome {
 					continue
 				}
 
-				run.Log(core.LogLevelWarn, "R2 result_terminal_state_nonterminal command=%s task=%s result_status=%s state_status=%s",
+				run.log(core.LogLevelWarn, "R2 result_terminal_state_nonterminal command=%s task=%s result_status=%s state_status=%s",
 					commandID, re.TaskID, re.Status, currentStatus)
 
 				state.TaskStates[re.TaskID] = re.Status
@@ -114,7 +114,7 @@ func (R2ResultState) Apply(run *Run) Outcome {
 				state.LastReconciledAt = &now
 				state.UpdatedAt = now
 				if err := yamlutil.AtomicWrite(statePath, state); err != nil {
-					run.Log(core.LogLevelError, "R2 write_state command=%s error=%v", commandID, err)
+					run.log(core.LogLevelError, "R2 write_state command=%s error=%v", commandID, err)
 					return nil
 				}
 			}

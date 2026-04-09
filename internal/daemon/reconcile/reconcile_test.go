@@ -128,14 +128,14 @@ func TestStuckThresholdSec(t *testing.T) {
 	t.Parallel()
 	deps := Deps{Config: model.Config{Watcher: model.WatcherConfig{DispatchLeaseSec: 100}}}
 	run := newRun(&deps)
-	if got := run.StuckThresholdSec(); got != 200 {
+	if got := run.stuckThresholdSec(); got != 200 {
 		t.Errorf("got %d, want 200", got)
 	}
 
 	// Zero defaults to 300
 	deps.Config.Watcher.DispatchLeaseSec = 0
 	run2 := newRun(&deps)
-	if got := run2.StuckThresholdSec(); got != 600 {
+	if got := run2.stuckThresholdSec(); got != 600 {
 		t.Errorf("got %d, want 600 (300*2)", got)
 	}
 }
@@ -148,7 +148,7 @@ func TestCachedReadDir(t *testing.T) {
 	deps := Deps{}
 	run := newRun(&deps)
 
-	entries1, err := run.CachedReadDir(dir)
+	entries1, err := run.cachedReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func TestCachedReadDir(t *testing.T) {
 
 	// Create another file — cached result should still return 1
 	os.WriteFile(filepath.Join(dir, "b.yaml"), []byte(""), 0644)
-	entries2, err := run.CachedReadDir(dir)
+	entries2, err := run.cachedReadDir(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestCachedReadDir_NonExistent(t *testing.T) {
 	t.Parallel()
 	deps := Deps{}
 	run := newRun(&deps)
-	_, err := run.CachedReadDir("/nonexistent/path")
+	_, err := run.cachedReadDir("/nonexistent/path")
 	if err == nil {
 		t.Error("expected error for non-existent directory")
 	}
@@ -2269,7 +2269,7 @@ func TestLoadState_CorruptedYAML(t *testing.T) {
 	path := filepath.Join(maestroDir, "state", "commands", "corrupt.yaml")
 	os.WriteFile(path, []byte("plan_status: [unterminated"), 0644)
 
-	_, err := run.LoadState(path)
+	_, err := run.loadState(path)
 	if err == nil {
 		t.Error("expected error for corrupted YAML")
 	}
@@ -2279,7 +2279,7 @@ func TestLoadState_NonExistent(t *testing.T) {
 	t.Parallel()
 	deps := Deps{}
 	run := newRun(&deps)
-	_, err := run.LoadState("/nonexistent/path.yaml")
+	_, err := run.loadState("/nonexistent/path.yaml")
 	if err == nil {
 		t.Error("expected error for non-existent file")
 	}
@@ -2289,7 +2289,7 @@ func TestLoadCommandResultFile_NonExistent(t *testing.T) {
 	t.Parallel()
 	deps := Deps{}
 	run := newRun(&deps)
-	rf, err := run.LoadCommandResultFile("/nonexistent/path.yaml")
+	rf, err := run.loadCommandResultFile("/nonexistent/path.yaml")
 	if err != nil {
 		t.Fatalf("expected no error for non-existent file, got %v", err)
 	}
@@ -2307,7 +2307,7 @@ func TestRemoveCommandFromPlannerQueue_NoQueueFile(t *testing.T) {
 	// No planner.yaml exists — should remove queue dir to test missing file
 	os.Remove(filepath.Join(maestroDir, "queue", "planner.yaml"))
 
-	err := run.RemoveCommandFromPlannerQueue("cmd_nonexistent")
+	err := run.removeCommandFromPlannerQueue("cmd_nonexistent")
 	if err != nil {
 		t.Errorf("expected nil error, got %v", err)
 	}
@@ -2327,7 +2327,7 @@ func TestRemoveCommandFromPlannerQueue_CommandNotFound(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "planner.yaml"), cq)
 
 	run := newRun(&deps)
-	err := run.RemoveCommandFromPlannerQueue("cmd_nonexistent")
+	err := run.removeCommandFromPlannerQueue("cmd_nonexistent")
 	if err != nil {
 		t.Errorf("expected nil error, got %v", err)
 	}

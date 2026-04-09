@@ -163,24 +163,24 @@ func newCovExecutor(mock *covMockPaneIO) (*Executor, *bytes.Buffer) {
 		ClearRetryBackoffMs:    1,
 	}
 
-	bd := &BusyDetector{
+	bd := &busyDetector{
 		paneIO: mock,
-		config: BusyDetectorConfig{
+		config: busyDetectorConfig{
 			IdleStableSec:       0,
 			BusyCheckMaxRetries: 1,
 			BusyCheckInterval:   0,
 		},
 		logger:   logger,
-		logLevel: LogLevelDebug,
+		logLevel: logLevelDebug,
 	}
 
 	return &Executor{
 		config:       cfg,
 		logger:       logger,
-		logLevel:     LogLevelDebug,
+		logLevel:     logLevelDebug,
 		paneIO:       mock,
 		busyDetector: bd,
-		paneState:    NewPaneStateManager(mock),
+		paneState:    newPaneStateManager(mock),
 	}, &buf
 }
 

@@ -12,7 +12,7 @@ type R3PlannerQueue struct{}
 
 func (R3PlannerQueue) Apply(run *Run) Outcome {
 	resultPath := filepath.Join(run.Deps.MaestroDir, "results", "planner.yaml")
-	rf, err := run.LoadCommandResultFile(resultPath)
+	rf, err := run.loadCommandResultFile(resultPath)
 	if err != nil {
 		return Outcome{}
 	}
@@ -34,7 +34,7 @@ func (R3PlannerQueue) Apply(run *Run) Outcome {
 	)
 
 	for commandID := range repairedCommands {
-		run.UpdateLastReconciledAt(commandID)
+		run.updateLastReconciledAt(commandID)
 	}
 
 	return Outcome{Repairs: repairs}
