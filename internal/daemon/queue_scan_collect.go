@@ -64,6 +64,21 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 			}
 		}
 
+		// Fallback: check if this worker is allowed in current mode
+		if qh.fallbackMgr != nil && !qh.fallbackMgr.IsWorkerAllowed(workerID) {
+			qh.log(LogLevelDebug, "fallback_worker_blocked worker=%s task=%s mode=%s", workerID, task.ID, qh.fallbackMgr.Mode())
+			break
+		}
+
+		// Admission control: check if task type has available slots
+		if qh.admissionCtrl != nil {
+			op := qh.admissionCtrl.ClassifyTask(task)
+			if !qh.admissionCtrl.TryAcquire(op) {
+				qh.log(LogLevelDebug, "admission_blocked worker=%s task=%s op=%s", workerID, task.ID, op)
+				continue
+			}
+		}
+
 		blocked, err := qh.dependencyResolver.IsTaskBlocked(task)
 		if err != nil {
 			qh.log(LogLevelWarn, "dependency_check_error task=%s error=%v", task.ID, err)

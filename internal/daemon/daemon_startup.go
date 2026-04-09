@@ -10,7 +10,9 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"golang.org/x/sync/errgroup"
 
+	"github.com/msageha/maestro_v2/internal/daemon/admission"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
+	"github.com/msageha/maestro_v2/internal/daemon/fallback"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
@@ -135,6 +137,27 @@ func (d *Daemon) initComponents() error {
 
 	if d.config.QualityGates.Enabled {
 		d.qualityGateDaemon = NewQualityGateDaemon(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel, d.ctx)
+	}
+
+	// Admission control: always initialized (uses effective defaults if unconfigured)
+	d.admissionCtrl = admission.NewController(d.config.AdmissionControl)
+	d.handler.SetAdmissionController(d.admissionCtrl)
+	d.log(LogLevelInfo, "admission_control initialized verify=%d repair=%d rollout=%d",
+		d.config.AdmissionControl.EffectiveMaxConcurrentVerify(),
+		d.config.AdmissionControl.EffectiveMaxConcurrentRepair(),
+		d.config.AdmissionControl.EffectiveMaxConcurrentRollout())
+
+	// Fallback manager: only when enabled
+	if d.config.Fallback.EffectiveEnabled() {
+		d.fallbackMgr = fallback.NewManager(fallback.Config{
+			Enabled:                     true,
+			ConsecutiveFailureThreshold: d.config.Fallback.EffectiveConsecutiveFailureThreshold(),
+			RecoveryCheckIntervalSec:    d.config.Fallback.EffectiveRecoveryCheckIntervalSec(),
+			MinHealthyDurationSec:       d.config.Fallback.EffectiveMinHealthyDurationSec(),
+		})
+		d.handler.SetFallbackManager(d.fallbackMgr)
+		d.log(LogLevelInfo, "fallback_manager enabled threshold=%d",
+			d.config.Fallback.EffectiveConsecutiveFailureThreshold())
 	}
 
 	if d.config.CircuitBreaker.Enabled {

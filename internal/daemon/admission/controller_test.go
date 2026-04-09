@@ -1,0 +1,170 @@
+package admission
+
+import (
+	"testing"
+
+	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/stretchr/testify/assert"
+)
+
+func defaultCfg() model.AdmissionControl {
+	return model.AdmissionControl{
+		MaxConcurrentVerify:  2,
+		MaxConcurrentRepair:  1,
+		MaxConcurrentRollout: 1,
+	}
+}
+
+func TestTryAcquire_RespectsLimits(t *testing.T) {
+	c := NewController(defaultCfg())
+
+	// Can acquire up to the limit (verify=2).
+	assert.True(t, c.TryAcquire(OpVerify), "first verify slot should succeed")
+	assert.True(t, c.TryAcquire(OpVerify), "second verify slot should succeed")
+
+	// Third acquisition must fail.
+	assert.False(t, c.TryAcquire(OpVerify), "third verify slot should be denied")
+}
+
+func TestRelease_AllowsReAcquire(t *testing.T) {
+	c := NewController(defaultCfg())
+
+	assert.True(t, c.TryAcquire(OpRepair))
+	assert.False(t, c.TryAcquire(OpRepair), "repair limit is 1")
+
+	c.Release(OpRepair)
+	assert.True(t, c.TryAcquire(OpRepair), "should succeed after release")
+}
+
+func TestRelease_DoesNotGoBelowZero(t *testing.T) {
+	c := NewController(defaultCfg())
+
+	// Release without prior acquire should not panic or go negative.
+	c.Release(OpVerify)
+	assert.Equal(t, 0, c.ActiveCount(OpVerify))
+}
+
+func TestOpType_Independence(t *testing.T) {
+	c := NewController(defaultCfg())
+
+	// Fill verify slots.
+	assert.True(t, c.TryAcquire(OpVerify))
+	assert.True(t, c.TryAcquire(OpVerify))
+	assert.False(t, c.TryAcquire(OpVerify))
+
+	// Repair should still be available.
+	assert.True(t, c.TryAcquire(OpRepair), "repair should not be blocked by full verify")
+}
+
+func TestSnapshot_Accuracy(t *testing.T) {
+	c := NewController(defaultCfg())
+
+	c.TryAcquire(OpVerify)
+	c.TryAcquire(OpVerify)
+	c.TryAcquire(OpRepair)
+
+	snap := c.Snapshot()
+	assert.Equal(t, 2, snap[OpVerify])
+	assert.Equal(t, 1, snap[OpRepair])
+	assert.Equal(t, 0, snap[OpRollout])
+
+	// Mutating the snapshot should not affect the controller.
+	snap[OpVerify] = 99
+	assert.Equal(t, 2, c.ActiveCount(OpVerify))
+}
+
+func TestClassifyTask(t *testing.T) {
+	c := NewController(defaultCfg())
+
+	tests := []struct {
+		name    string
+		purpose string
+		want    OpType
+	}{
+		{name: "verify lowercase", purpose: "verify implementation", want: OpVerify},
+		{name: "verify uppercase", purpose: "VERIFY results", want: OpVerify},
+		{name: "verification", purpose: "run verification suite", want: OpVerify},
+		{name: "Verification mixed case", purpose: "Verification of output", want: OpVerify},
+		{name: "repair", purpose: "repair broken tests", want: OpRepair},
+		{name: "Repair mixed case", purpose: "Repair the module", want: OpRepair},
+		{name: "rollout", purpose: "rollout new version", want: OpRollout},
+		{name: "Rollout mixed case", purpose: "Rollout changes to prod", want: OpRollout},
+		{name: "unknown generic", purpose: "implement feature X", want: OpUnknown},
+		{name: "empty purpose", purpose: "", want: OpUnknown},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := &model.Task{Purpose: tt.purpose}
+			got := c.ClassifyTask(task)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestOpUnknown_AlwaysPassesTryAcquire(t *testing.T) {
+	c := NewController(defaultCfg())
+
+	// OpUnknown should always succeed regardless of how many times we call it.
+	for i := 0; i < 100; i++ {
+		assert.True(t, c.TryAcquire(OpUnknown), "OpUnknown should always succeed (iteration %d)", i)
+	}
+}
+
+func TestReset_ClearsSlots(t *testing.T) {
+	c := NewController(defaultCfg())
+
+	c.TryAcquire(OpVerify)
+	c.TryAcquire(OpVerify)
+	c.TryAcquire(OpRepair)
+	c.TryAcquire(OpRollout)
+
+	c.Reset()
+
+	assert.Equal(t, 0, c.ActiveCount(OpVerify))
+	assert.Equal(t, 0, c.ActiveCount(OpRepair))
+	assert.Equal(t, 0, c.ActiveCount(OpRollout))
+
+	// After reset we should be able to acquire again.
+	assert.True(t, c.TryAcquire(OpVerify))
+	assert.True(t, c.TryAcquire(OpRepair))
+}
+
+func TestRecordInFlight(t *testing.T) {
+	c := NewController(defaultCfg())
+
+	// Pre-populate some slots that should be cleared.
+	c.TryAcquire(OpRollout)
+
+	tasks := []*model.Task{
+		{Purpose: "verify unit tests"},
+		{Purpose: "Verification of integration"},
+		{Purpose: "repair linting errors"},
+		{Purpose: "implement new feature"},
+	}
+
+	c.RecordInFlight(tasks)
+
+	assert.Equal(t, 2, c.ActiveCount(OpVerify))
+	assert.Equal(t, 1, c.ActiveCount(OpRepair))
+	assert.Equal(t, 0, c.ActiveCount(OpRollout), "rollout should be 0 after reset by RecordInFlight")
+}
+
+func TestOpType_String(t *testing.T) {
+	tests := []struct {
+		op   OpType
+		want string
+	}{
+		{OpVerify, "verify"},
+		{OpRepair, "repair"},
+		{OpRollout, "rollout"},
+		{OpUnknown, "unknown"},
+		{OpType(99), "unknown"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			assert.Equal(t, tt.want, tt.op.String())
+		})
+	}
+}
