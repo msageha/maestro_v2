@@ -109,10 +109,10 @@ func runUp(args []string) error {
 	if !detach {
 		if os.Getenv("TMUX") != "" {
 			fmt.Printf("Already inside tmux. Attach with: tmux switch-client -t %s\n", tmux.GetSessionName())
-		} else {
-			if err := tmux.AttachSession(); err != nil {
-				return fmt.Errorf("maestro up: attach: %w", err)
-			}
+			return nil
+		}
+		if err := tmux.AttachSession(); err != nil {
+			return fmt.Errorf("maestro up: attach: %w", err)
 		}
 	}
 	return nil

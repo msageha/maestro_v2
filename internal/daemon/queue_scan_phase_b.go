@@ -33,7 +33,15 @@ func classifyCommitError(err error) string {
 // Order: interrupts → busy checks → dispatches → signals (per Codex review).
 // SRE-002: accepts context for cancellation support during slow I/O.
 func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult) phaseBResult {
-	var result phaseBResult
+	result := phaseBResult{
+		busyChecks:        make([]busyCheckResult, 0, len(pa.work.busyChecks)),
+		dispatches:        make([]dispatchResult, 0, len(pa.work.dispatches)),
+		signals:           make([]signalDeliveryResult, 0, len(pa.work.signals)),
+		recoveryHints:     make([]string, 0, len(pa.work.signals)),
+		worktreeMerges:    make([]worktreeMergeResult, 0, len(pa.work.worktreeMerges)),
+		worktreePublishes: make([]worktreePublishResult, 0, len(pa.work.worktreePublishes)),
+		worktreeCleanups:  make([]worktreeCleanupResult, 0, len(pa.work.worktreeCleanups)+len(pa.work.worktreePublishes)),
+	}
 
 	// 1. Execute interrupts first (before dispatches to avoid killing new tasks).
 	// H4: discard the worker's uncommitted worktree changes ONLY after the
