@@ -6,6 +6,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/msageha/maestro_v2/internal/uds"
 )
 
 // TestRunQueueWrite_CancelRequestDeprecationWarning verifies that the
@@ -147,5 +149,179 @@ func TestRunQueueWrite_ErrorMessageFormat(t *testing.T) {
 		if !strings.HasPrefix(ce.Msg, "maestro queue write:") {
 			t.Errorf("expected 'maestro queue write:' prefix, got: %s", ce.Msg)
 		}
+	}
+}
+
+func TestRunQueue_Dispatcher(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    []string
+		wantErr string
+	}{
+		{"missing subcommand", nil, "missing subcommand"},
+		{"unknown subcommand", []string{"bogus"}, "unknown subcommand: bogus"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := runQueue(tt.args)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			var ce *CLIError
+			if !errors.As(err, &ce) {
+				t.Fatalf("expected CLIError, got %T: %v", err, err)
+			}
+			if !strings.Contains(ce.Msg, tt.wantErr) {
+				t.Errorf("error %q does not contain %q", ce.Msg, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestSendQueueWrite_UDSSuccess(t *testing.T) {
+	withMaestroDir(t)
+	withMockUDS(t, &mockUDSClient{
+		sendCommandFunc: func(command string, params any) (*uds.Response, error) {
+			if command != "queue_write" {
+				t.Errorf("expected command queue_write, got %s", command)
+			}
+			return successResponse(map[string]string{"id": "cmd_0000000001_abcdef01"}), nil
+		},
+	})
+
+	err := sendQueueWrite(map[string]any{"target": "planner", "type": "command", "content": "test"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSendQueueWrite_UDSBackpressure(t *testing.T) {
+	withMaestroDir(t)
+	withMockUDS(t, &mockUDSClient{
+		sendCommandFunc: func(string, any) (*uds.Response, error) {
+			return errorResponse("BACKPRESSURE", "server at capacity"), nil
+		},
+	})
+
+	err := sendQueueWrite(map[string]any{"target": "planner", "type": "command", "content": "test"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if ce.Code != 2 {
+		t.Errorf("expected exit code 2, got %d", ce.Code)
+	}
+}
+
+func TestSendQueueWrite_UDSOtherError(t *testing.T) {
+	withMaestroDir(t)
+	withMockUDS(t, &mockUDSClient{
+		sendCommandFunc: func(string, any) (*uds.Response, error) {
+			return errorResponse("VALIDATION_ERROR", "bad params"), nil
+		},
+	})
+
+	err := sendQueueWrite(map[string]any{"target": "planner", "type": "command", "content": "test"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if ce.Code != 1 {
+		t.Errorf("expected exit code 1, got %d", ce.Code)
+	}
+}
+
+func TestSendQueueWrite_UDSConnError(t *testing.T) {
+	withMaestroDir(t)
+	withMockUDS(t, &mockUDSClient{
+		sendCommandFunc: func(string, any) (*uds.Response, error) {
+			return nil, errors.New("connection refused")
+		},
+	})
+
+	err := sendQueueWrite(map[string]any{"target": "planner", "type": "command", "content": "test"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !strings.Contains(err.Error(), "connection refused") {
+		t.Errorf("expected connection error, got: %v", err)
+	}
+}
+
+func TestSendQueueWrite_UDSResponseWithCommandID(t *testing.T) {
+	withMaestroDir(t)
+	withMockUDS(t, &mockUDSClient{
+		sendCommandFunc: func(string, any) (*uds.Response, error) {
+			return successResponse(map[string]string{"command_id": "cmd_0000000001_abcdef01"}), nil
+		},
+	})
+
+	err := sendQueueWrite(map[string]any{"target": "planner", "type": "command", "content": "test"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSendQueueWrite_UDSResponseNoID(t *testing.T) {
+	withMaestroDir(t)
+	withMockUDS(t, &mockUDSClient{
+		sendCommandFunc: func(string, any) (*uds.Response, error) {
+			return successResponse(map[string]string{"other": "value"}), nil
+		},
+	})
+
+	// Should still succeed (falls through to JSON output)
+	err := sendQueueWrite(map[string]any{"target": "planner", "type": "command", "content": "test"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestSendQueueWrite_UDSNilErrorDetail(t *testing.T) {
+	withMaestroDir(t)
+	withMockUDS(t, &mockUDSClient{
+		sendCommandFunc: func(string, any) (*uds.Response, error) {
+			return &uds.Response{Success: false, Error: nil}, nil
+		},
+	})
+
+	err := sendQueueWrite(map[string]any{"target": "planner", "type": "command", "content": "test"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !strings.Contains(ce.Msg, "unknown error") {
+		t.Errorf("expected 'unknown error' in error, got: %s", ce.Msg)
+	}
+}
+
+func TestRunQueueWrite_NotificationMissingFields(t *testing.T) {
+	err := runQueueWrite([]string{"planner", "--type", "notification"}, io.Discard)
+	if err == nil {
+		t.Fatal("expected error for missing notification fields")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+}
+
+func TestRunQueueWrite_UnexpectedArg(t *testing.T) {
+	err := runQueueWrite([]string{"planner", "--type", "command", "--content", "test", "extra"}, io.Discard)
+	if err == nil {
+		t.Fatal("expected error for unexpected arg")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
 	}
 }
