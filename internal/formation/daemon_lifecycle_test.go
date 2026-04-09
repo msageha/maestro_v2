@@ -56,39 +56,43 @@ func (m *mockUDSSender) SendCommand(command string, params any) (*uds.Response, 
 
 // --- Test helpers ---
 
+// withTestConfig replaces the package-level defaultConfig and restores it on cleanup.
+func withTestConfig(t *testing.T, cfg *FormationConfig) {
+	t.Helper()
+	orig := defaultConfig
+	t.Cleanup(func() { defaultConfig = orig })
+	defaultConfig = cfg
+}
+
 func withMockProcess(t *testing.T, m processManager) {
 	t.Helper()
-	orig := procMgr
-	t.Cleanup(func() { procMgr = orig })
-	procMgr = m
+	orig := defaultConfig.ProcMgr
+	t.Cleanup(func() { defaultConfig.ProcMgr = orig })
+	defaultConfig.ProcMgr = m
 }
 
 func withMockUDS(t *testing.T, factory func(string, time.Duration) udsSender) {
 	t.Helper()
-	orig := newUDSClient
-	t.Cleanup(func() { newUDSClient = orig })
-	newUDSClient = factory
+	orig := defaultConfig.NewUDSClient
+	t.Cleanup(func() { defaultConfig.NewUDSClient = orig })
+	defaultConfig.NewUDSClient = factory
 }
 
 func withFastTimings(t *testing.T) {
 	t.Helper()
-	origPollTimeout := daemonPollTimeout
-	origPollInterval := daemonPollInterval
-	origExitInterval := processExitPollInterval
-	origPostSignal := postSignalWait
-	origReadyInterval := waitReadyPollInterval
+	orig := *defaultConfig
 	t.Cleanup(func() {
-		daemonPollTimeout = origPollTimeout
-		daemonPollInterval = origPollInterval
-		processExitPollInterval = origExitInterval
-		postSignalWait = origPostSignal
-		waitReadyPollInterval = origReadyInterval
+		defaultConfig.DaemonPollTimeout = orig.DaemonPollTimeout
+		defaultConfig.DaemonPollInterval = orig.DaemonPollInterval
+		defaultConfig.ProcessExitPollInterval = orig.ProcessExitPollInterval
+		defaultConfig.PostSignalWait = orig.PostSignalWait
+		defaultConfig.WaitReadyPollInterval = orig.WaitReadyPollInterval
 	})
-	daemonPollTimeout = 100 * time.Millisecond
-	daemonPollInterval = 10 * time.Millisecond
-	processExitPollInterval = 10 * time.Millisecond
-	postSignalWait = 10 * time.Millisecond
-	waitReadyPollInterval = 10 * time.Millisecond
+	defaultConfig.DaemonPollTimeout = 100 * time.Millisecond
+	defaultConfig.DaemonPollInterval = 10 * time.Millisecond
+	defaultConfig.ProcessExitPollInterval = 10 * time.Millisecond
+	defaultConfig.PostSignalWait = 10 * time.Millisecond
+	defaultConfig.WaitReadyPollInterval = 10 * time.Millisecond
 }
 
 func writePIDAndLock(t *testing.T, maestroDir string, pid int) {
