@@ -47,7 +47,7 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 	if params.Reporter == "" {
 		return uds.ErrorResponse(uds.ErrCodeValidation, "reporter is required")
 	}
-	if filepath.Base(params.Reporter) != params.Reporter || params.Reporter == "." || params.Reporter == ".." {
+	if !validate.IsValidBaseName(params.Reporter) {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid reporter: %q", params.Reporter))
 	}
 	if params.TaskID == "" {
