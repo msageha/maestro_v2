@@ -52,11 +52,11 @@ func (qh *QueueHandler) buildGlobalInFlightSet(taskQueues map[string]*taskQueueE
 // Only performs fast in-memory checks — all git I/O is deferred to Phase B.
 // Skips phases that have already been merged (tracked in worktree command state).
 func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string, taskQueues map[string]*taskQueueEntry) []worktreeMergeItem {
-	if qh.dependencyResolver.stateReader == nil || qh.worktreeManager == nil {
+	if !qh.dependencyResolver.HasStateReader() || qh.worktreeManager == nil {
 		return nil
 	}
 
-	phases, err := qh.dependencyResolver.stateReader.GetCommandPhases(commandID)
+	phases, err := qh.dependencyResolver.GetStateReader().GetCommandPhases(commandID)
 	if err != nil {
 		return nil
 	}
@@ -188,7 +188,7 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 
 	// For phased commands, also verify all phases are terminal.
 	// Errors fail closed (skip publish) to avoid premature publishing.
-	phases, err := qh.dependencyResolver.stateReader.GetCommandPhases(commandID)
+	phases, err := qh.dependencyResolver.GetStateReader().GetCommandPhases(commandID)
 	if err != nil {
 		if !errors.Is(err, ErrStateNotFound) {
 			qh.log(LogLevelWarn, "worktree_publish_phase_check_failed command=%s error=%v", commandID, err)

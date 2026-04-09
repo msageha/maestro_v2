@@ -1,19 +1,22 @@
 package uds
 
 import (
+	"context"
 	"encoding/json"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 func setupTestServer(t *testing.T) (*Server, *Client, string) {
 	t.Helper()
-	// Use /tmp directly to keep Unix socket path short (POSIX limit varies by OS)
-	dir, err := os.MkdirTemp("/tmp", "maestro-uds-test-*")
+	// Use os.MkdirTemp with empty dir to respect $TMPDIR (sandbox-friendly).
+	// Keep prefix short to stay within Unix socket 108-byte path limit.
+	dir, err := os.MkdirTemp("", "m-uds-*")
 	if err != nil {
 		t.Fatalf("create temp dir: %v", err)
 	}
@@ -30,7 +33,7 @@ func setupTestServer(t *testing.T) (*Server, *Client, string) {
 
 func shortTempSockPath(t *testing.T, name string) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "m-uds-*")
+	dir, err := os.MkdirTemp("", "m-uds-*")
 	if err != nil {
 		t.Fatalf("create temp dir: %v", err)
 	}
@@ -437,5 +440,391 @@ func TestSuccessResponse_NilData(t *testing.T) {
 	}
 	if resp.Data != nil {
 		t.Errorf("expected nil data, got %s", string(resp.Data))
+	}
+}
+
+// --- SendContext tests ---
+
+func TestSendContext_NormalOperation(t *testing.T) {
+	server, _, sockPath := setupTestServer(t)
+
+	server.Handle("ping", func(req *Request) *Response {
+		return SuccessResponse(map[string]string{"status": "pong"})
+	})
+
+	if err := server.Start(); err != nil {
+		t.Fatalf("server start: %v", err)
+	}
+	defer server.Stop()
+
+	client := NewClient(sockPath)
+	client.SetTimeout(5 * time.Second)
+
+	ctx := context.Background()
+	req, err := NewRequest("ping", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	resp, err := client.SendContext(ctx, req)
+	if err != nil {
+		t.Fatalf("send context: %v", err)
+	}
+	if !resp.Success {
+		t.Error("expected success")
+	}
+
+	var data map[string]string
+	json.Unmarshal(resp.Data, &data)
+	if data["status"] != "pong" {
+		t.Errorf("expected pong, got %q", data["status"])
+	}
+}
+
+func TestSendContext_NilContext(t *testing.T) {
+	server, _, sockPath := setupTestServer(t)
+
+	server.Handle("ping", func(req *Request) *Response {
+		return SuccessResponse(nil)
+	})
+
+	if err := server.Start(); err != nil {
+		t.Fatalf("server start: %v", err)
+	}
+	defer server.Stop()
+
+	client := NewClient(sockPath)
+	client.SetTimeout(5 * time.Second)
+
+	req, _ := NewRequest("ping", nil)
+	//nolint:staticcheck // testing nil context path intentionally
+	resp, err := client.SendContext(nil, req)
+	if err != nil {
+		t.Fatalf("send context nil: %v", err)
+	}
+	if !resp.Success {
+		t.Error("expected success")
+	}
+}
+
+func TestSendContext_CancelBeforeDial(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "no.sock")
+
+	client := NewClient(sockPath)
+	client.SetTimeout(5 * time.Second)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately
+
+	req, _ := NewRequest("ping", nil)
+	_, err := client.SendContext(ctx, req)
+	if err == nil {
+		t.Fatal("expected error for cancelled context")
+	}
+	if err != context.Canceled {
+		t.Errorf("expected context.Canceled, got: %v", err)
+	}
+}
+
+func TestSendContext_CancelDuringOperation(t *testing.T) {
+	server, _, sockPath := setupTestServer(t)
+
+	// Handler that blocks until context is done
+	server.Handle("slow", func(req *Request) *Response {
+		time.Sleep(5 * time.Second)
+		return SuccessResponse(nil)
+	})
+
+	if err := server.Start(); err != nil {
+		t.Fatalf("server start: %v", err)
+	}
+	defer server.Stop()
+
+	client := NewClient(sockPath)
+	client.SetTimeout(10 * time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	req, _ := NewRequest("slow", nil)
+	_, err := client.SendContext(ctx, req)
+	if err == nil {
+		t.Fatal("expected error for context timeout")
+	}
+	if err != context.DeadlineExceeded {
+		t.Errorf("expected context.DeadlineExceeded, got: %v", err)
+	}
+}
+
+func TestSendCommandContext_NormalOperation(t *testing.T) {
+	server, _, sockPath := setupTestServer(t)
+
+	server.Handle("echo", func(req *Request) *Response {
+		var params map[string]string
+		json.Unmarshal(req.Params, &params)
+		return SuccessResponse(params)
+	})
+
+	if err := server.Start(); err != nil {
+		t.Fatalf("server start: %v", err)
+	}
+	defer server.Stop()
+
+	client := NewClient(sockPath)
+	client.SetTimeout(5 * time.Second)
+
+	resp, err := client.SendCommandContext(context.Background(), "echo", map[string]string{"msg": "hi"})
+	if err != nil {
+		t.Fatalf("send command context: %v", err)
+	}
+	if !resp.Success {
+		t.Error("expected success")
+	}
+
+	var data map[string]string
+	json.Unmarshal(resp.Data, &data)
+	if data["msg"] != "hi" {
+		t.Errorf("expected 'hi', got %q", data["msg"])
+	}
+}
+
+func TestSendContext_ServerNotRunning(t *testing.T) {
+	dir := t.TempDir()
+	sockPath := filepath.Join(dir, "no.sock")
+
+	client := NewClient(sockPath)
+	client.SetTimeout(1 * time.Second)
+
+	ctx := context.Background()
+	req, _ := NewRequest("ping", nil)
+	_, err := client.SendContext(ctx, req)
+	if err == nil {
+		t.Fatal("expected error when server not running")
+	}
+	if !strings.Contains(err.Error(), "failed to connect to daemon") {
+		t.Errorf("expected daemon connection error, got: %v", err)
+	}
+}
+
+// --- Server lifecycle tests ---
+
+func TestServer_StartStopStart(t *testing.T) {
+	dir, err := os.MkdirTemp("", "m-uds-*")
+	if err != nil {
+		t.Fatalf("create temp dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+
+	sockPath := filepath.Join(dir, "t.sock")
+
+	// First lifecycle
+	server1 := NewServer(sockPath)
+	server1.Handle("ping", func(req *Request) *Response {
+		return SuccessResponse(map[string]string{"round": "1"})
+	})
+	if err := server1.Start(); err != nil {
+		t.Fatalf("start 1: %v", err)
+	}
+
+	client := NewClient(sockPath)
+	client.SetTimeout(2 * time.Second)
+
+	resp, err := client.SendCommand("ping", nil)
+	if err != nil {
+		t.Fatalf("round 1 send: %v", err)
+	}
+	if !resp.Success {
+		t.Error("round 1: expected success")
+	}
+
+	server1.Stop()
+
+	// Second lifecycle on same socket path
+	server2 := NewServer(sockPath)
+	server2.Handle("ping", func(req *Request) *Response {
+		return SuccessResponse(map[string]string{"round": "2"})
+	})
+	if err := server2.Start(); err != nil {
+		t.Fatalf("start 2: %v", err)
+	}
+	defer server2.Stop()
+
+	resp, err = client.SendCommand("ping", nil)
+	if err != nil {
+		t.Fatalf("round 2 send: %v", err)
+	}
+	if !resp.Success {
+		t.Error("round 2: expected success")
+	}
+
+	var data map[string]string
+	json.Unmarshal(resp.Data, &data)
+	if data["round"] != "2" {
+		t.Errorf("expected round 2, got %q", data["round"])
+	}
+}
+
+func TestServer_HandlerPanicRecovery(t *testing.T) {
+	server, client, _ := setupTestServer(t)
+
+	server.Handle("panic", func(req *Request) *Response {
+		panic("test panic")
+	})
+
+	server.Handle("ping", func(req *Request) *Response {
+		return SuccessResponse(nil)
+	})
+
+	if err := server.Start(); err != nil {
+		t.Fatalf("server start: %v", err)
+	}
+	defer server.Stop()
+
+	// Trigger panic handler
+	resp, err := client.SendCommand("panic", nil)
+	if err != nil {
+		t.Fatalf("panic send: %v", err)
+	}
+	if resp.Success {
+		t.Error("expected failure for panicking handler")
+	}
+	if resp.Error == nil {
+		t.Fatal("expected error detail")
+	}
+	if resp.Error.Code != ErrCodeInternal {
+		t.Errorf("expected code %q, got %q", ErrCodeInternal, resp.Error.Code)
+	}
+	if !strings.Contains(resp.Error.Message, "panic") {
+		t.Errorf("expected panic in error message, got: %q", resp.Error.Message)
+	}
+
+	// Server should still be responsive after panic
+	resp, err = client.SendCommand("ping", nil)
+	if err != nil {
+		t.Fatalf("post-panic send: %v", err)
+	}
+	if !resp.Success {
+		t.Error("expected success after panic recovery")
+	}
+}
+
+func TestServer_Backpressure(t *testing.T) {
+	dir, err := os.MkdirTemp("", "m-uds-*")
+	if err != nil {
+		t.Fatalf("create temp dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+
+	sockPath := filepath.Join(dir, "t.sock")
+
+	server := NewServer(sockPath)
+	// Set maxConns to 1 so we can easily trigger backpressure
+	server.maxConns = 1
+
+	blocker := make(chan struct{})
+	server.Handle("block", func(req *Request) *Response {
+		<-blocker
+		return SuccessResponse(nil)
+	})
+
+	if err := server.Start(); err != nil {
+		t.Fatalf("server start: %v", err)
+	}
+	defer server.Stop()
+
+	// First client occupies the single connection slot
+	c1 := NewClient(sockPath)
+	c1.SetTimeout(5 * time.Second)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		c1.SendCommand("block", nil)
+	}()
+
+	// Give time for first connection to be accepted
+	time.Sleep(100 * time.Millisecond)
+
+	// Second client should get backpressure response
+	c2 := NewClient(sockPath)
+	c2.SetTimeout(2 * time.Second)
+	resp, err := c2.SendCommand("block", nil)
+
+	// Unblock first client
+	close(blocker)
+	wg.Wait()
+
+	if err != nil {
+		t.Fatalf("backpressure client: %v", err)
+	}
+	if resp.Success {
+		t.Error("expected failure for backpressure")
+	}
+	if resp.Error == nil {
+		t.Fatal("expected error detail")
+	}
+	if resp.Error.Code != ErrCodeBackpressure {
+		t.Errorf("expected code %q, got %q", ErrCodeBackpressure, resp.Error.Code)
+	}
+}
+
+func TestClient_SendRetryOnTransientError(t *testing.T) {
+	dir, err := os.MkdirTemp("", "m-uds-*")
+	if err != nil {
+		t.Fatalf("create temp dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+
+	sockPath := filepath.Join(dir, "t.sock")
+
+	// Start server after a short delay to simulate transient ENOENT
+	server := NewServer(sockPath)
+	server.Handle("ping", func(req *Request) *Response {
+		return SuccessResponse(map[string]string{"status": "pong"})
+	})
+
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		server.Start()
+	}()
+	defer server.Stop()
+
+	client := NewClient(sockPath)
+	client.SetTimeout(5 * time.Second)
+
+	// Send will retry on ENOENT and eventually succeed once server starts
+	resp, err := client.SendCommand("ping", nil)
+	if err != nil {
+		t.Fatalf("expected retry success, got: %v", err)
+	}
+	if !resp.Success {
+		t.Error("expected success after retry")
+	}
+}
+
+func TestNewRequest_MarshalError(t *testing.T) {
+	// channels cannot be JSON marshalled
+	_, err := NewRequest("test", make(chan int))
+	if err == nil {
+		t.Fatal("expected error for unmarshallable params")
+	}
+	if !strings.Contains(err.Error(), "marshal params") {
+		t.Errorf("expected marshal error, got: %v", err)
+	}
+}
+
+func TestSuccessResponse_MarshalError(t *testing.T) {
+	// channels cannot be JSON marshalled
+	resp := SuccessResponse(make(chan int))
+	if resp.Success {
+		t.Error("expected failure for unmarshallable data")
+	}
+	if resp.Error == nil {
+		t.Fatal("expected error detail")
+	}
+	if resp.Error.Code != ErrCodeInternal {
+		t.Errorf("expected code %q, got %q", ErrCodeInternal, resp.Error.Code)
 	}
 }

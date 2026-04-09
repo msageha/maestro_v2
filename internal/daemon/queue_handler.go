@@ -38,16 +38,16 @@ type QueueHandler struct {
 	clock      Clock
 
 	execProvider        *ExecutorProvider // shared across dispatcher, resultHandler, cancelHandler
-	leaseManager        *LeaseManager
-	dispatcher          *Dispatcher
-	dependencyResolver  *DependencyResolver
+	leaseManager        QueueLeaseManager
+	dispatcher          QueueDispatcher
+	dependencyResolver  QueueDependencyResolver
 	cancelHandler       *CancelHandler
 	resultHandler       *ResultHandler
 	reconciler          *Reconciler
 	deadLetterProcessor *DeadLetterProcessor
 	metricsHandler      *MetricsHandler
 	circuitBreaker      *circuitbreaker.Handler
-	worktreeManager     *WorktreeManager
+	worktreeManager     QueueWorktreeManager
 	lockMap             *lock.MutexMap
 
 	// scanCounters accumulates counters during a single PeriodicScan cycle.

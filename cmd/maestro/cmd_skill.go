@@ -166,7 +166,7 @@ func runSkillApprove(args []string) error {
 		params["skill_name"] = skillName
 	}
 
-	client := uds.NewClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := newUDSClient(filepath.Join(maestroDir, uds.DefaultSocketName))
 	resp, err := client.SendCommand("skill_approve", params)
 	if err != nil {
 		return fmt.Errorf("maestro skill approve: %w", err)
@@ -221,7 +221,7 @@ func runSkillReject(args []string) error {
 		"candidate_id": candidateID,
 	}
 
-	client := uds.NewClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := newUDSClient(filepath.Join(maestroDir, uds.DefaultSocketName))
 	resp, err := client.SendCommand("skill_reject", params)
 	if err != nil {
 		return fmt.Errorf("maestro skill reject: %w", err)

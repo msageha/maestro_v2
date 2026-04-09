@@ -96,7 +96,7 @@ func runResultWrite(args []string) error {
 		params["skill_candidates"] = skillCandidates
 	}
 
-	client := uds.NewClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := newUDSClient(filepath.Join(maestroDir, uds.DefaultSocketName))
 	resp, err := client.SendCommand("result_write", params)
 	if err != nil {
 		return fmt.Errorf("maestro result write: %w", err)

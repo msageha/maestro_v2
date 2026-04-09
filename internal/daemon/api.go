@@ -13,6 +13,7 @@ import (
 // It holds a back-pointer to Daemon for access to shared state.
 type API struct {
 	d           *Daemon
+	fileStore   ResultFileStore
 	dashboardMu sync.Mutex // serializes concurrent dashboard generation
 }
 

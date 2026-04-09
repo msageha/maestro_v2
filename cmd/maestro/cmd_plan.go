@@ -476,7 +476,7 @@ func sendPlanCommand(cmd string, maestroDir string, params map[string]any) error
 	ctx, cancelTimeout := context.WithTimeout(ctx, planCommandTimeout)
 	defer cancelTimeout()
 
-	client := uds.NewClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := newUDSClient(filepath.Join(maestroDir, uds.DefaultSocketName))
 	resp, err := client.SendCommandContext(ctx, "plan", params)
 	if err != nil {
 		return fmt.Errorf("maestro %s: %w", cmd, err)

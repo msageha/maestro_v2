@@ -60,7 +60,7 @@ func runDashboard(args []string) error {
 		return err
 	}
 
-	client := uds.NewClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := newUDSClient(filepath.Join(maestroDir, uds.DefaultSocketName))
 	resp, err := client.SendCommand("dashboard", nil)
 	if err != nil {
 		return fmt.Errorf("maestro dashboard: %w", err)
