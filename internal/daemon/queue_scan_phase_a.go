@@ -851,13 +851,14 @@ func (qh *QueueHandler) stepDispatchOrRecovery(s *scanState) {
 		qh.collectPendingCommandDispatches(&s.commands.Data, &s.commands.Dirty, &s.work)
 
 		globalInFlight := qh.buildGlobalInFlightSet(s.tasks)
+		inFlightPaths := collectInFlightPaths(s.tasks, qh.leaseManager.IsLeaseExpired)
 		for queueFile, tq := range s.tasks {
 			workerID := workerIDFromPath(queueFile)
 			if workerID == "" {
 				qh.log(LogLevelWarn, "skip_dispatch cannot derive worker from %s", queueFile)
 				continue
 			}
-			dirty := qh.collectPendingTaskDispatches(tq, workerID, globalInFlight, &s.work)
+			dirty := qh.collectPendingTaskDispatches(tq, workerID, globalInFlight, inFlightPaths, &s.work)
 			if dirty {
 				s.taskDirty[queueFile] = true
 			}
