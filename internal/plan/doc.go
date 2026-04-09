@@ -30,7 +30,7 @@
 //     topological sort with DFS-based cycle detection and reporting.
 //   - WorkerAssignment: Assigns tasks to workers based on Bloom taxonomy
 //     levels and configured worker models.
-//   - Migrator: Sequential schema migration for state files from older
+//   - migrator: Sequential schema migration for state files from older
 //     versions to the current schema version.
 //   - Validation: Comprehensive field validation for task inputs including
 //     name uniqueness, length limits, reserved-name checks, and DAG integrity.

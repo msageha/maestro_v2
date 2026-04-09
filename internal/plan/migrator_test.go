@@ -5,7 +5,7 @@ import (
 )
 
 func TestMigrator_NoMigrationNeeded(t *testing.T) {
-	m := NewMigrator(1)
+	m := newMigrator(1)
 	data := map[string]interface{}{"schema_version": 1}
 
 	if err := m.Migrate(data, 1); err != nil {
@@ -14,7 +14,7 @@ func TestMigrator_NoMigrationNeeded(t *testing.T) {
 }
 
 func TestMigrator_NeedsMigration(t *testing.T) {
-	m := NewMigrator(3)
+	m := newMigrator(3)
 
 	if m.NeedsMigration(3) {
 		t.Error("NeedsMigration(3) = true, want false for current version")
@@ -31,7 +31,7 @@ func TestMigrator_NeedsMigration(t *testing.T) {
 }
 
 func TestMigrator_InvalidVersion(t *testing.T) {
-	m := NewMigrator(1)
+	m := newMigrator(1)
 
 	data := map[string]interface{}{}
 	if err := m.Migrate(data, 0); err == nil {
@@ -43,7 +43,7 @@ func TestMigrator_InvalidVersion(t *testing.T) {
 }
 
 func TestMigrator_FutureVersion(t *testing.T) {
-	m := NewMigrator(1)
+	m := newMigrator(1)
 
 	data := map[string]interface{}{"schema_version": 5}
 	if err := m.Migrate(data, 5); err == nil {
@@ -51,11 +51,11 @@ func TestMigrator_FutureVersion(t *testing.T) {
 	}
 }
 
-func TestDefaultMigrator(t *testing.T) {
-	if DefaultMigrator == nil {
-		t.Fatal("DefaultMigrator is nil")
+func Test_defaultMigrator(t *testing.T) {
+	if defaultMigrator == nil {
+		t.Fatal("defaultMigrator is nil")
 	}
-	if DefaultMigrator.current != CurrentSchemaVersion {
-		t.Errorf("DefaultMigrator.current = %d, want %d", DefaultMigrator.current, CurrentSchemaVersion)
+	if defaultMigrator.current != currentSchemaVersion {
+		t.Errorf("defaultMigrator.current = %d, want %d", defaultMigrator.current, currentSchemaVersion)
 	}
 }
