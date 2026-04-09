@@ -101,11 +101,13 @@ type Bus struct {
 }
 
 // NewBus creates a new event bus with the specified buffer size per subscriber.
-func NewBus(bufferSize int) *Bus {
+// The provided context controls the bus lifetime; cancelling it is equivalent
+// to calling Close and will stop all subscriber goroutines.
+func NewBus(ctx context.Context, bufferSize int) *Bus {
 	if bufferSize <= 0 {
 		bufferSize = 100
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	return &Bus{
 		subscribers:   make(map[EventType][]*subscriberChan),
 		coalescedSubs: make(map[EventType][]*coalescedSub),

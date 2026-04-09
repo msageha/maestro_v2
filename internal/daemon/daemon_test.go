@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"os"
 	"path/filepath"
@@ -337,7 +338,7 @@ func TestSelfWriteTracker_ExpiredConsumeReturnsFalse(t *testing.T) {
 
 func TestNotifySelfWrite_PublishesEvent(t *testing.T) {
 	d := newTestDaemon(t)
-	d.eventBus = events.NewBus(10)
+	d.eventBus = events.NewBus(context.Background(), 10)
 	defer d.eventBus.Close()
 
 	received := make(chan events.Event, 1)
@@ -378,7 +379,7 @@ func TestNotifySelfWrite_PublishesEvent(t *testing.T) {
 
 func TestRecordSelfWrite_NoEvent(t *testing.T) {
 	d := newTestDaemon(t)
-	d.eventBus = events.NewBus(10)
+	d.eventBus = events.NewBus(context.Background(), 10)
 	defer d.eventBus.Close()
 
 	received := make(chan events.Event, 1)

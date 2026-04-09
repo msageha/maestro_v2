@@ -119,7 +119,10 @@ func Launch(maestroDir string) error {
 	// (Ctrl+C → Ctrl+D) which relies on claude exiting cleanly back to the shell.
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT)
-	defer signal.Stop(sigCh)
+	defer func() {
+		signal.Stop(sigCh)
+		close(sigCh) // Unblock the drain goroutine so it can exit.
+	}()
 	go func() {
 		for range sigCh {
 			// Intentionally ignored — claude handles SIGINT directly.

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 )
@@ -12,9 +13,6 @@ import (
 // migration warning to stderr (H7: cancel route unification).
 func TestRunQueueWrite_CancelRequestDeprecationWarning(t *testing.T) {
 	var buf bytes.Buffer
-	prev := queueWriteWarnOut
-	queueWriteWarnOut = &buf
-	defer func() { queueWriteWarnOut = prev }()
 
 	// Use a valid command-id so we hit the deprecation warning emission path
 	// before the CLI tries to dial the daemon. The daemon dial will fail
@@ -22,7 +20,7 @@ func TestRunQueueWrite_CancelRequestDeprecationWarning(t *testing.T) {
 	_ = runQueueWrite([]string{"planner", "--type", "cancel-request",
 		"--command-id", "cmd_0000000001_abcdef01",
 		"--reason", "test",
-	})
+	}, &buf)
 
 	got := buf.String()
 	if !strings.Contains(got, "deprecated") {
@@ -34,7 +32,7 @@ func TestRunQueueWrite_CancelRequestDeprecationWarning(t *testing.T) {
 }
 
 func TestRunQueueWrite_MissingTarget(t *testing.T) {
-	err := runQueueWrite(nil)
+	err := runQueueWrite(nil, io.Discard)
 	if err == nil {
 		t.Fatal("expected error for missing target")
 	}
@@ -45,7 +43,7 @@ func TestRunQueueWrite_MissingTarget(t *testing.T) {
 }
 
 func TestRunQueueWrite_MissingType(t *testing.T) {
-	err := runQueueWrite([]string{"planner"})
+	err := runQueueWrite([]string{"planner"}, io.Discard)
 	if err == nil {
 		t.Fatal("expected error for missing --type")
 	}
@@ -56,7 +54,7 @@ func TestRunQueueWrite_MissingType(t *testing.T) {
 }
 
 func TestRunQueueWrite_UnknownFlag(t *testing.T) {
-	err := runQueueWrite([]string{"planner", "--unknown"})
+	err := runQueueWrite([]string{"planner", "--unknown"}, io.Discard)
 	if err == nil {
 		t.Fatal("expected error for unknown flag")
 	}
@@ -67,7 +65,7 @@ func TestRunQueueWrite_UnknownFlag(t *testing.T) {
 }
 
 func TestRunQueueWrite_UnknownType(t *testing.T) {
-	err := runQueueWrite([]string{"planner", "--type", "bogus"})
+	err := runQueueWrite([]string{"planner", "--type", "bogus"}, io.Discard)
 	if err == nil {
 		t.Fatal("expected error for unknown type")
 	}
@@ -78,7 +76,7 @@ func TestRunQueueWrite_UnknownType(t *testing.T) {
 }
 
 func TestRunQueueWrite_CommandMissingContent(t *testing.T) {
-	err := runQueueWrite([]string{"planner", "--type", "command"})
+	err := runQueueWrite([]string{"planner", "--type", "command"}, io.Discard)
 	if err == nil {
 		t.Fatal("expected error for missing --content")
 	}
@@ -98,7 +96,7 @@ func TestRunQueueWrite_TaskTypeRejectedFromCLI(t *testing.T) {
 		"--purpose", "test",
 		"--acceptance-criteria", "test",
 		"--bloom-level", "3",
-	})
+	}, io.Discard)
 	if err == nil {
 		t.Fatal("expected --type task to be rejected from CLI")
 	}
@@ -116,7 +114,7 @@ func TestRunQueueWrite_NotificationInvalidCommandID(t *testing.T) {
 		"--command-id", "../../bad",
 		"--content", "test",
 		"--source-result-id", "res1",
-	})
+	}, io.Discard)
 	if err == nil {
 		t.Fatal("expected error for invalid command-id")
 	}
@@ -132,7 +130,7 @@ func TestRunQueueWrite_NotificationInvalidCommandID(t *testing.T) {
 func TestRunQueueWrite_CancelRequestInvalidCommandID(t *testing.T) {
 	err := runQueueWrite([]string{"planner", "--type", "cancel-request",
 		"--command-id", "",
-	})
+	}, io.Discard)
 	if err == nil {
 		t.Fatal("expected error for empty command-id")
 	}
@@ -140,7 +138,7 @@ func TestRunQueueWrite_CancelRequestInvalidCommandID(t *testing.T) {
 
 func TestRunQueueWrite_ErrorMessageFormat(t *testing.T) {
 	// Verify error messages include "maestro queue write:" prefix
-	err := runQueueWrite([]string{"planner", "--type", "bogus"})
+	err := runQueueWrite([]string{"planner", "--type", "bogus"}, io.Discard)
 	if err == nil {
 		t.Fatal("expected error")
 	}
