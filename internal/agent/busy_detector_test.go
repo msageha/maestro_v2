@@ -12,7 +12,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// mockPaneIO implements PaneIO for testing BusyDetector.
+// mockPaneIO implements PaneIO for testing busyDetector.
 type mockPaneIO struct {
 	currentCommand   string
 	currentCommandFn func() (string, error)
@@ -73,21 +73,21 @@ func (m *mockPaneIO) IsShellCommand(cmd string) bool {
 
 func (m *mockPaneIO) RespawnPane(paneTarget, startDir string) error { return nil }
 
-// newTestBusyDetector creates a BusyDetector for testing.
-// Uses direct field assignment to bypass NewBusyDetector's default normalization,
+// newTestBusyDetector creates a busyDetector for testing.
+// Uses direct field assignment to bypass newBusyDetector's default normalization,
 // allowing zero-value IdleStableSec/BusyCheckInterval for instant test execution.
-func newTestBusyDetector(paneIO PaneIO, busyRegex *regexp.Regexp, cfg BusyDetectorConfig) *BusyDetector {
-	return &BusyDetector{
+func newTestBusyDetector(paneIO PaneIO, busyRegex *regexp.Regexp, cfg busyDetectorConfig) *busyDetector {
+	return &busyDetector{
 		paneIO:    paneIO,
 		busyRegex: busyRegex,
 		config:    cfg,
 		logger:    log.New(&bytes.Buffer{}, "", 0),
-		logLevel:  LogLevelDebug,
+		logLevel:  logLevelDebug,
 	}
 }
 
-func fastConfig() BusyDetectorConfig {
-	return BusyDetectorConfig{
+func fastConfig() busyDetectorConfig {
+	return busyDetectorConfig{
 		IdleStableSec:       0, // no sleep in tests
 		BusyCheckMaxRetries: 3,
 		BusyCheckInterval:   0,
@@ -221,7 +221,7 @@ func TestDetectBusy_ContextCancelled_ReturnsUndecided(t *testing.T) {
 		joinedContent:  []string{"content"},
 	}
 	// Use non-zero idle time to trigger sleep
-	cfg := BusyDetectorConfig{
+	cfg := busyDetectorConfig{
 		IdleStableSec:       1,
 		BusyCheckMaxRetries: 1,
 		BusyCheckInterval:   1,
@@ -284,7 +284,7 @@ func TestDetectBusyWithRetry_StaysBusy_ExhaustsRetries(t *testing.T) {
 			return fmt.Sprintf("changing-%d", callCount), nil
 		},
 	}
-	cfg := BusyDetectorConfig{
+	cfg := busyDetectorConfig{
 		IdleStableSec:       0,
 		BusyCheckMaxRetries: 2,
 		BusyCheckInterval:   0,
@@ -311,7 +311,7 @@ func TestDetectBusyWithRetry_ContextCancelled(t *testing.T) {
 			return fmt.Sprintf("changing-%d", callCount), nil
 		},
 	}
-	cfg := BusyDetectorConfig{
+	cfg := busyDetectorConfig{
 		IdleStableSec:       0,
 		BusyCheckMaxRetries: 100,
 		BusyCheckInterval:   1, // 1 second sleep per retry — ctx will cancel first
@@ -407,7 +407,7 @@ func TestDetectBusyWithRetry_BusyThenUndecidedThenIdle(t *testing.T) {
 	}
 }
 
-// --- BusyDetector Logging ---
+// --- busyDetector Logging ---
 
 func TestBusyDetector_LogPrefix(t *testing.T) {
 	var buf bytes.Buffer
@@ -415,7 +415,7 @@ func TestBusyDetector_LogPrefix(t *testing.T) {
 		currentCommand: "bash",
 		isShell:        true,
 	}
-	bd := NewBusyDetector(mock, nil, fastConfig(), log.New(&buf, "", 0), LogLevelDebug)
+	bd := newBusyDetector(mock, nil, fastConfig(), log.New(&buf, "", 0), logLevelDebug)
 
 	bd.DetectBusy(context.Background(), "%0")
 
@@ -441,10 +441,10 @@ func searchSubstring(s, substr string) bool {
 	return false
 }
 
-// --- NewBusyDetector defaults ---
+// --- newBusyDetector defaults ---
 
 func TestNewBusyDetector_ZeroConfigNormalized(t *testing.T) {
-	bd := NewBusyDetector(&mockPaneIO{}, nil, BusyDetectorConfig{}, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	bd := newBusyDetector(&mockPaneIO{}, nil, busyDetectorConfig{}, log.New(&bytes.Buffer{}, "", 0), logLevelDebug)
 
 	if bd.config.IdleStableSec != 5 {
 		t.Errorf("IdleStableSec: got %d, want 5", bd.config.IdleStableSec)
@@ -458,12 +458,12 @@ func TestNewBusyDetector_ZeroConfigNormalized(t *testing.T) {
 }
 
 func TestNewBusyDetector_ExplicitConfigPreserved(t *testing.T) {
-	cfg := BusyDetectorConfig{
+	cfg := busyDetectorConfig{
 		IdleStableSec:       10,
 		BusyCheckMaxRetries: 50,
 		BusyCheckInterval:   5,
 	}
-	bd := NewBusyDetector(&mockPaneIO{}, nil, cfg, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	bd := newBusyDetector(&mockPaneIO{}, nil, cfg, log.New(&bytes.Buffer{}, "", 0), logLevelDebug)
 
 	if bd.config.IdleStableSec != 10 {
 		t.Errorf("IdleStableSec: got %d, want 10", bd.config.IdleStableSec)
@@ -476,7 +476,7 @@ func TestNewBusyDetector_ExplicitConfigPreserved(t *testing.T) {
 	}
 }
 
-// --- Executor → BusyDetector wiring ---
+// --- Executor → busyDetector wiring ---
 
 func TestNewExecutor_WiresBusyDetectorConfig(t *testing.T) {
 	exec, err := newExecutor("", model.WatcherConfig{
@@ -517,7 +517,7 @@ func TestNewExecutor_DefaultConfig_WiresBusyDetectorDefaults(t *testing.T) {
 	if bd == nil {
 		t.Fatal("busyDetector should be initialized")
 	}
-	// applyDefaults normalizes WatcherConfig before BusyDetector construction
+	// applyDefaults normalizes WatcherConfig before busyDetector construction
 	if bd.config.IdleStableSec != 5 {
 		t.Errorf("IdleStableSec: got %d, want 5 (default)", bd.config.IdleStableSec)
 	}

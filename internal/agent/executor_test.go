@@ -106,18 +106,18 @@ func TestParseLogLevel(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		input    string
-		expected LogLevel
+		expected logLevel
 	}{
-		{"debug", LogLevelDebug},
-		{"DEBUG", LogLevelDebug},
-		{"info", LogLevelInfo},
-		{"INFO", LogLevelInfo},
-		{"warn", LogLevelWarn},
-		{"warning", LogLevelWarn},
-		{"error", LogLevelError},
-		{"ERROR", LogLevelError},
-		{"unknown", LogLevelInfo},
-		{"", LogLevelInfo},
+		{"debug", logLevelDebug},
+		{"DEBUG", logLevelDebug},
+		{"info", logLevelInfo},
+		{"INFO", logLevelInfo},
+		{"warn", logLevelWarn},
+		{"warning", logLevelWarn},
+		{"error", logLevelError},
+		{"ERROR", logLevelError},
+		{"unknown", logLevelInfo},
+		{"", logLevelInfo},
 	}
 
 	for _, tt := range tests {
@@ -135,7 +135,7 @@ func TestParseLogLevel(t *testing.T) {
 func TestBusyVerdictString(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		verdict  BusyVerdict
+		verdict  busyVerdict
 		expected string
 	}{
 		{VerdictIdle, "idle"},
@@ -203,20 +203,20 @@ func TestLogLevelFiltering(t *testing.T) {
 	}
 
 	// Debug and Info should be filtered
-	exec.log(LogLevelDebug, "debug message")
-	exec.log(LogLevelInfo, "info message")
+	exec.log(logLevelDebug, "debug message")
+	exec.log(logLevelInfo, "info message")
 	if buf.Len() != 0 {
 		t.Errorf("expected no output for debug/info at warn level, got: %s", buf.String())
 	}
 
 	// Warn and Error should pass
-	exec.log(LogLevelWarn, "warn message")
+	exec.log(logLevelWarn, "warn message")
 	if !strings.Contains(buf.String(), "WARN") {
 		t.Error("warn message should be logged")
 	}
 
 	buf.Reset()
-	exec.log(LogLevelError, "error message")
+	exec.log(logLevelError, "error message")
 	if !strings.Contains(buf.String(), "ERROR") {
 		t.Error("error message should be logged")
 	}
@@ -558,7 +558,7 @@ func TestPromptReadyLinesIncreased(t *testing.T) {
 // === Executor Integration Tests ===
 
 // execMockPaneIO provides a configurable PaneIO mock for Executor integration tests.
-// Unlike mockPaneIO (used by BusyDetector tests), this mock supports user variable
+// Unlike mockPaneIO (used by busyDetector tests), this mock supports user variable
 // tracking, text delivery tracking, and configurable error injection.
 type execMockPaneIO struct {
 	// FindPaneByAgentID
@@ -693,25 +693,25 @@ func newTestExecutorWithLog(paneIO PaneIO) (*Executor, *bytes.Buffer) {
 		ClearRetryBackoffMs:    10,
 	}
 
-	// BusyDetector with zero-sleep config (bypasses NewBusyDetector normalization)
-	bd := &BusyDetector{
+	// busyDetector with zero-sleep config (bypasses newBusyDetector normalization)
+	bd := &busyDetector{
 		paneIO: paneIO,
-		config: BusyDetectorConfig{
+		config: busyDetectorConfig{
 			IdleStableSec:       0,
 			BusyCheckMaxRetries: 1,
 			BusyCheckInterval:   0,
 		},
 		logger:   logger,
-		logLevel: LogLevelDebug,
+		logLevel: logLevelDebug,
 	}
 
 	exec := &Executor{
 		config:       cfg,
 		logger:       logger,
-		logLevel:     LogLevelDebug,
+		logLevel:     logLevelDebug,
 		paneIO:       paneIO,
 		busyDetector: bd,
-		paneState:    NewPaneStateManager(paneIO),
+		paneState:    newPaneStateManager(paneIO),
 	}
 
 	return exec, &buf

@@ -23,7 +23,7 @@ func (R6FillTimeout) Apply(run *Run) Outcome {
 	var notifications []DeferredNotification
 
 	stateDir := filepath.Join(run.Deps.MaestroDir, "state", "commands")
-	entries, err := run.CachedReadDir(stateDir)
+	entries, err := run.cachedReadDir(stateDir)
 	if err != nil {
 		return Outcome{}
 	}
@@ -41,10 +41,10 @@ func (R6FillTimeout) Apply(run *Run) Outcome {
 			run.Deps.LockMap.Lock(lockKey)
 			defer run.Deps.LockMap.Unlock(lockKey)
 
-			state, err := run.LoadState(statePath)
+			state, err := run.loadState(statePath)
 			if err != nil {
 				if !os.IsNotExist(err) {
-					run.Log(core.LogLevelError, "R6 load_state_corrupted command=%s file=%s error=%v", commandID, entry.Name(), err)
+					run.log(core.LogLevelError, "R6 load_state_corrupted command=%s file=%s error=%v", commandID, entry.Name(), err)
 				}
 				return false, nil, nil
 			}
@@ -75,7 +75,7 @@ func (R6FillTimeout) Apply(run *Run) Outcome {
 					continue
 				}
 
-				run.Log(core.LogLevelWarn, "R6 awaiting_fill_deadline_expired command=%s phase=%s deadline=%s",
+				run.log(core.LogLevelWarn, "R6 awaiting_fill_deadline_expired command=%s phase=%s deadline=%s",
 					commandID, phase.Name, *phase.FillDeadlineAt)
 
 				phase.Status = model.PhaseStatusTimedOut
@@ -105,7 +105,7 @@ func (R6FillTimeout) Apply(run *Run) Outcome {
 						}
 						for _, dep := range phase.DependsOnPhases {
 							if cancelledPhases[dep] {
-								run.Log(core.LogLevelWarn, "R6 cascade_cancel command=%s phase=%s (depends on %s)",
+								run.log(core.LogLevelWarn, "R6 cascade_cancel command=%s phase=%s (depends on %s)",
 									commandID, phase.Name, dep)
 								phase.Status = model.PhaseStatusCancelled
 								modified = true
@@ -132,7 +132,7 @@ func (R6FillTimeout) Apply(run *Run) Outcome {
 				state.LastReconciledAt = &now
 				state.UpdatedAt = now
 				if err := yamlutil.AtomicWrite(statePath, state); err != nil {
-					run.Log(core.LogLevelError, "R6 write_state command=%s error=%v", commandID, err)
+					run.log(core.LogLevelError, "R6 write_state command=%s error=%v", commandID, err)
 					return false, commandRepairs, timedOutPhases
 				}
 				return true, commandRepairs, timedOutPhases

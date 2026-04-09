@@ -27,16 +27,16 @@ const (
 	ModeClear     ExecMode = "clear"      // Context reset without delivery
 )
 
-// BusyVerdict is the result of busy detection.
-type BusyVerdict int
+// busyVerdict is the result of busy detection.
+type busyVerdict int
 
 const (
-	VerdictIdle BusyVerdict = iota
+	VerdictIdle busyVerdict = iota
 	VerdictBusy
 	VerdictUndecided
 )
 
-func (v BusyVerdict) String() string {
+func (v busyVerdict) String() string {
 	switch v {
 	case VerdictIdle:
 		return "idle"
@@ -82,28 +82,28 @@ type ExecResult struct {
 	Error     error
 }
 
-// LogLevel controls logging verbosity.
-type LogLevel int
+// logLevel controls logging verbosity.
+type logLevel int
 
 const (
-	LogLevelDebug LogLevel = iota
-	LogLevelInfo
-	LogLevelWarn
-	LogLevelError
+	logLevelDebug logLevel = iota
+	logLevelInfo
+	logLevelWarn
+	logLevelError
 )
 
-func parseLogLevel(s string) LogLevel {
+func parseLogLevel(s string) logLevel {
 	switch strings.ToLower(s) {
 	case "debug":
-		return LogLevelDebug
+		return logLevelDebug
 	case "info":
-		return LogLevelInfo
+		return logLevelInfo
 	case "warn", "warning":
-		return LogLevelWarn
+		return logLevelWarn
 	case "error":
-		return LogLevelError
+		return logLevelError
 	default:
-		return LogLevelInfo
+		return logLevelInfo
 	}
 }
 
@@ -113,10 +113,10 @@ type Executor struct {
 	config       model.WatcherConfig
 	logger       *log.Logger
 	logFile      io.Closer
-	logLevel     LogLevel
+	logLevel     logLevel
 	paneIO       PaneIO
-	busyDetector *BusyDetector
-	paneState    *PaneStateManager
+	busyDetector *busyDetector
+	paneState    *paneStateManager
 }
 
 // NewExecutor creates a new Executor that logs to .maestro/logs/agent_executor.log.
@@ -145,7 +145,7 @@ func newExecutor(maestroDir string, watcherCfg model.WatcherConfig, logLevel str
 	ll := parseLogLevel(logLevel)
 	paneIO := NewTmuxPaneIO()
 
-	bd := NewBusyDetector(paneIO, busyRegex, BusyDetectorConfig{
+	bd := newBusyDetector(paneIO, busyRegex, busyDetectorConfig{
 		IdleStableSec:       cfg.IdleStableSec,
 		BusyCheckMaxRetries: cfg.BusyCheckMaxRetries,
 		BusyCheckInterval:   cfg.BusyCheckInterval,
@@ -159,7 +159,7 @@ func newExecutor(maestroDir string, watcherCfg model.WatcherConfig, logLevel str
 		logLevel:     ll,
 		paneIO:       paneIO,
 		busyDetector: bd,
-		paneState:    NewPaneStateManager(paneIO),
+		paneState:    newPaneStateManager(paneIO),
 	}, nil
 }
 
@@ -232,14 +232,14 @@ func (e *Executor) Execute(req ExecRequest) ExecResult {
 
 	paneTarget, err := e.paneIO.FindPaneByAgentID(req.AgentID)
 	if err != nil {
-		e.log(LogLevelError, "delivery_error agent_id=%s error=pane_not_found: %v", req.AgentID, err)
+		e.log(logLevelError, "delivery_error agent_id=%s error=pane_not_found: %v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("find pane for %s: %w", req.AgentID, err)}
 	}
 
 	// Log delivery_start once for delivery-related modes (prevents duplication
 	// when execWithClear delegates to execDeliver).
 	if req.Mode == ModeWithClear || req.Mode == ModeDeliver {
-		e.log(LogLevelInfo, "delivery_start agent_id=%s task_id=%s command_id=%s lease_epoch=%d attempt=%d",
+		e.log(logLevelInfo, "delivery_start agent_id=%s task_id=%s command_id=%s lease_epoch=%d attempt=%d",
 			req.AgentID, req.TaskID, req.CommandID, req.LeaseEpoch, req.Attempt)
 	}
 
@@ -281,10 +281,10 @@ func (e *Executor) execIsBusy(ctx context.Context, paneTarget string) ExecResult
 
 // execClear sends /clear and waits for stability.
 func (e *Executor) execClear(ctx context.Context, req ExecRequest, paneTarget string) ExecResult {
-	e.log(LogLevelDebug, "clear_operation agent_id=%s mode=clear", req.AgentID)
+	e.log(logLevelDebug, "clear_operation agent_id=%s mode=clear", req.AgentID)
 
 	if err := e.waitReady(ctx, paneTarget); err != nil {
-		e.log(LogLevelWarn, "clear_wait_ready_failed agent_id=%s error=%v", req.AgentID, err)
+		e.log(logLevelWarn, "clear_wait_ready_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("wait ready before /clear: %w", err), Retryable: true}
 	}
 
@@ -294,7 +294,7 @@ func (e *Executor) execClear(ctx context.Context, req ExecRequest, paneTarget st
 
 	// Verify prompt readiness after clear (strict — no subsequent busy detection)
 	if err := e.waitStable(ctx, paneTarget, false); err != nil {
-		e.log(LogLevelWarn, "clear_post_stable_failed agent_id=%s error=%v", req.AgentID, err)
+		e.log(logLevelWarn, "clear_post_stable_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("clear: post-clear stability: %w", err), Retryable: true}
 	}
 	return ExecResult{Success: true}
@@ -302,11 +302,11 @@ func (e *Executor) execClear(ctx context.Context, req ExecRequest, paneTarget st
 
 // execInterrupt interrupts a running task: C-c → cooldown → /clear → cooldown → stability.
 func (e *Executor) execInterrupt(ctx context.Context, req ExecRequest, paneTarget string) ExecResult {
-	e.log(LogLevelInfo, "interrupt_start agent_id=%s task_id=%s lease_epoch=%d",
+	e.log(logLevelInfo, "interrupt_start agent_id=%s task_id=%s lease_epoch=%d",
 		req.AgentID, req.TaskID, req.LeaseEpoch)
 
 	if req.AgentID == "orchestrator" {
-		e.log(LogLevelError, "delivery_error agent_id=orchestrator error=cannot_interrupt_orchestrator")
+		e.log(logLevelError, "delivery_error agent_id=orchestrator error=cannot_interrupt_orchestrator")
 		return ExecResult{Error: fmt.Errorf("cannot interrupt orchestrator")}
 	}
 
@@ -320,7 +320,7 @@ func (e *Executor) execInterrupt(ctx context.Context, req ExecRequest, paneTarge
 
 	// Step 2: Wait for prompt readiness after C-c
 	if err := e.waitReady(ctx, paneTarget); err != nil {
-		e.log(LogLevelWarn, "interrupt_wait_ready_failed agent_id=%s error=%v", req.AgentID, err)
+		e.log(logLevelWarn, "interrupt_wait_ready_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("wait ready before /clear (interrupt): %w", err), Retryable: true}
 	}
 
@@ -331,16 +331,16 @@ func (e *Executor) execInterrupt(ctx context.Context, req ExecRequest, paneTarge
 
 	// Verify prompt readiness after clear (strict — no subsequent busy detection)
 	if err := e.waitStable(ctx, paneTarget, false); err != nil {
-		e.log(LogLevelWarn, "interrupt_post_stable_failed agent_id=%s error=%v", req.AgentID, err)
+		e.log(logLevelWarn, "interrupt_post_stable_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("interrupt: post-clear stability: %w", err), Retryable: true}
 	}
 
 	// Step 5: Set @status="idle" — the agent is now idle after interrupt.
 	if err := e.paneState.SetStatus(paneTarget, "idle"); err != nil {
-		e.log(LogLevelWarn, "set_status_idle_failed agent_id=%s error=%v", req.AgentID, err)
+		e.log(logLevelWarn, "set_status_idle_failed agent_id=%s error=%v", req.AgentID, err)
 	}
 
-	e.log(LogLevelInfo, "interrupt_success agent_id=%s task_id=%s lease_epoch=%d",
+	e.log(logLevelInfo, "interrupt_success agent_id=%s task_id=%s lease_epoch=%d",
 		req.AgentID, req.TaskID, req.LeaseEpoch)
 	return ExecResult{Success: true}
 }
@@ -355,14 +355,14 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 	// Handle working directory change (worktree mode).
 	if req.WorkingDir != "" {
 		if err := e.ensureWorkingDir(ctx, paneTarget, req.WorkingDir); err != nil {
-			e.log(LogLevelError, "working_dir_change_failed agent_id=%s error=%v", req.AgentID, err)
+			e.log(logLevelError, "working_dir_change_failed agent_id=%s error=%v", req.AgentID, err)
 			return ExecResult{Error: fmt.Errorf("ensure working dir: %w", err), Retryable: true}
 		}
 	}
 
 	// Ensure Claude is actually running (not crashed back to shell).
 	if err := e.ensureClaudeRunning(ctx, paneTarget, req.AgentID); err != nil {
-		e.log(LogLevelError, "ensure_claude_running_failed agent_id=%s error=%v", req.AgentID, err)
+		e.log(logLevelError, "ensure_claude_running_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("ensure claude running: %w", err), Retryable: true}
 	}
 
@@ -383,11 +383,11 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 func (e *Executor) checkProcessRestart(paneTarget, agentID string) (bool, string) {
 	restarted, currentPID, err := e.paneState.DetectProcessRestart(paneTarget)
 	if err != nil {
-		e.log(LogLevelWarn, "detect_process_restart_error agent_id=%s error=%v", agentID, err)
+		e.log(logLevelWarn, "detect_process_restart_error agent_id=%s error=%v", agentID, err)
 		return false, currentPID
 	}
 	if restarted {
-		e.log(LogLevelInfo, "pane_process_restarted agent_id=%s new_pid=%s, resetting clear_ready",
+		e.log(logLevelInfo, "pane_process_restarted agent_id=%s new_pid=%s, resetting clear_ready",
 			agentID, currentPID)
 	}
 	return restarted, currentPID
@@ -395,11 +395,11 @@ func (e *Executor) checkProcessRestart(paneTarget, agentID string) (bool, string
 
 // execFirstDispatch handles the first delivery to a worker pane (no /clear needed).
 func (e *Executor) execFirstDispatch(ctx context.Context, req ExecRequest, paneTarget, currentPID string) ExecResult {
-	e.log(LogLevelDebug, "first_dispatch agent_id=%s, using deliver mode", req.AgentID)
+	e.log(logLevelDebug, "first_dispatch agent_id=%s, using deliver mode", req.AgentID)
 	result := e.execDeliver(ctx, req, paneTarget)
 	if result.Success {
 		if err := e.paneState.SetClearReady(paneTarget, currentPID); err != nil {
-			e.log(LogLevelError, "set_clear_ready_failed agent_id=%s error=%v", req.AgentID, err)
+			e.log(logLevelError, "set_clear_ready_failed agent_id=%s error=%v", req.AgentID, err)
 		}
 	}
 	return result
@@ -409,12 +409,12 @@ func (e *Executor) execFirstDispatch(ctx context.Context, req ExecRequest, paneT
 func (e *Executor) execClearAndDeliver(ctx context.Context, req ExecRequest, paneTarget string) ExecResult {
 	// Step 1: Wait for prompt readiness
 	if err := e.waitReady(ctx, paneTarget); err != nil {
-		e.log(LogLevelWarn, "with_clear_wait_ready_failed agent_id=%s error=%v", req.AgentID, err)
+		e.log(logLevelWarn, "with_clear_wait_ready_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("wait ready before /clear: %w", err), Retryable: true}
 	}
 
 	// Step 2+3: /clear with confirmation
-	e.log(LogLevelDebug, "clear_operation agent_id=%s mode=with_clear", req.AgentID)
+	e.log(logLevelDebug, "clear_operation agent_id=%s mode=with_clear", req.AgentID)
 	if err := e.clearAndConfirm(ctx, paneTarget); err != nil {
 		return e.handleClearFailure(req, paneTarget, err)
 	}
@@ -431,12 +431,12 @@ func (e *Executor) execClearAndDeliver(ctx context.Context, req ExecRequest, pan
 
 // handleClearFailure processes a /clear confirmation failure, resetting clear_ready state.
 func (e *Executor) handleClearFailure(req ExecRequest, paneTarget string, clearErr error) ExecResult {
-	e.log(LogLevelWarn, "delivery_failure agent_id=%s task_id=%s reason=clear_not_confirmed error=%v",
+	e.log(logLevelWarn, "delivery_failure agent_id=%s task_id=%s reason=clear_not_confirmed error=%v",
 		req.AgentID, req.TaskID, clearErr)
 
-	e.log(LogLevelInfo, "clear_failed_reset agent_id=%s, resetting clear_ready for next dispatch", req.AgentID)
+	e.log(logLevelInfo, "clear_failed_reset agent_id=%s, resetting clear_ready for next dispatch", req.AgentID)
 	if resetErr := e.paneState.ResetClearReady(paneTarget); resetErr != nil {
-		e.log(LogLevelError, "reset_clear_ready_failed agent_id=%s error=%v", req.AgentID, resetErr)
+		e.log(logLevelError, "reset_clear_ready_failed agent_id=%s error=%v", req.AgentID, resetErr)
 		return ExecResult{Error: errors.Join(fmt.Errorf("with_clear: %w", clearErr), fmt.Errorf("reset_clear_ready: %w", resetErr)), Retryable: true}
 	}
 
@@ -444,8 +444,8 @@ func (e *Executor) handleClearFailure(req ExecRequest, paneTarget string, clearE
 }
 
 // handleBusyVerdict converts a non-idle busy verdict to an ExecResult.
-func (e *Executor) handleBusyVerdict(req ExecRequest, verdict BusyVerdict) ExecResult {
-	e.log(LogLevelWarn, "delivery_failure agent_id=%s task_id=%s verdict=%s",
+func (e *Executor) handleBusyVerdict(req ExecRequest, verdict busyVerdict) ExecResult {
+	e.log(logLevelWarn, "delivery_failure agent_id=%s task_id=%s verdict=%s",
 		req.AgentID, req.TaskID, verdict)
 
 	if verdict == VerdictUndecided {
@@ -467,13 +467,13 @@ func (e *Executor) execDeliver(ctx context.Context, req ExecRequest, paneTarget 
 	if req.AgentID == "orchestrator" {
 		// Ensure Claude is running for orchestrator too
 		if err := e.ensureClaudeRunning(ctx, paneTarget, req.AgentID); err != nil {
-			e.log(LogLevelError, "ensure_claude_running_failed agent_id=orchestrator error=%v", err)
+			e.log(logLevelError, "ensure_claude_running_failed agent_id=orchestrator error=%v", err)
 			return ExecResult{Error: fmt.Errorf("ensure claude running: %w", err), Retryable: true}
 		}
 		verdict := e.busyDetector.DetectBusy(ctx, paneTarget)
-		e.log(LogLevelDebug, "busy_detection agent_id=orchestrator verdict=%s", verdict)
+		e.log(logLevelDebug, "busy_detection agent_id=orchestrator verdict=%s", verdict)
 		if verdict != VerdictIdle {
-			e.log(LogLevelWarn, "delivery_failure agent_id=orchestrator reason=orchestrator_busy verdict=%s", verdict)
+			e.log(logLevelWarn, "delivery_failure agent_id=orchestrator reason=orchestrator_busy verdict=%s", verdict)
 			return ExecResult{
 				Error:     fmt.Errorf("orchestrator busy (verdict=%s)", verdict),
 				Retryable: true,
@@ -484,7 +484,7 @@ func (e *Executor) execDeliver(ctx context.Context, req ExecRequest, paneTarget 
 
 	// Planner/other: ensure Claude is running before delivery
 	if err := e.ensureClaudeRunning(ctx, paneTarget, req.AgentID); err != nil {
-		e.log(LogLevelError, "ensure_claude_running_failed agent_id=%s error=%v", req.AgentID, err)
+		e.log(logLevelError, "ensure_claude_running_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("ensure claude running: %w", err), Retryable: true}
 	}
 
@@ -495,7 +495,7 @@ func (e *Executor) execDeliver(ctx context.Context, req ExecRequest, paneTarget 
 		if verdict == VerdictUndecided {
 			reason = "undecided_after_probes"
 		}
-		e.log(LogLevelWarn, "delivery_failure agent_id=%s task_id=%s reason=%s",
+		e.log(logLevelWarn, "delivery_failure agent_id=%s task_id=%s reason=%s",
 			req.AgentID, req.TaskID, reason)
 		return ExecResult{
 			Error:     fmt.Errorf("agent %s busy: %s", req.AgentID, reason),
@@ -514,7 +514,7 @@ func (e *Executor) sendAndConfirm(req ExecRequest, paneTarget string) ExecResult
 	// This closes the timing window between ensureClaudeRunning and here.
 	if cmd, err := e.paneIO.GetPaneCurrentCommand(paneTarget); err == nil {
 		if e.paneIO.IsShellCommand(cmd) {
-			e.log(LogLevelError, "delivery_rejected agent_id=%s task_id=%s reason=pane_is_shell cmd=%s",
+			e.log(logLevelError, "delivery_rejected agent_id=%s task_id=%s reason=pane_is_shell cmd=%s",
 				req.AgentID, req.TaskID, cmd)
 			return ExecResult{Error: fmt.Errorf("pane is shell (%s), Claude not running", cmd), Retryable: true}
 		}
@@ -526,17 +526,17 @@ func (e *Executor) sendAndConfirm(req ExecRequest, paneTarget string) ExecResult
 		ctx = context.Background()
 	}
 	if err := e.paneIO.SendTextAndSubmit(ctx, paneTarget, req.Message); err != nil {
-		e.log(LogLevelError, "delivery_error agent_id=%s task_id=%s error=send_text: %v",
+		e.log(logLevelError, "delivery_error agent_id=%s task_id=%s error=send_text: %v",
 			req.AgentID, req.TaskID, err)
 		return ExecResult{Error: fmt.Errorf("send message: %w", err), Retryable: true}
 	}
 
 	// Update @status to busy
 	if err := e.paneState.SetStatus(paneTarget, "busy"); err != nil {
-		e.log(LogLevelWarn, "set_status_failed agent_id=%s error=%v", req.AgentID, err)
+		e.log(logLevelWarn, "set_status_failed agent_id=%s error=%v", req.AgentID, err)
 	}
 
-	e.log(LogLevelInfo, "delivery_success agent_id=%s task_id=%s command_id=%s lease_epoch=%d",
+	e.log(logLevelInfo, "delivery_success agent_id=%s task_id=%s command_id=%s lease_epoch=%d",
 		req.AgentID, req.TaskID, req.CommandID, req.LeaseEpoch)
 	return ExecResult{Success: true}
 }
@@ -568,13 +568,13 @@ func (e *Executor) clearAndConfirm(ctx context.Context, paneTarget string) error
 		preClearContent, err := e.paneIO.CapturePaneJoined(paneTarget, promptReadyLines)
 		preClearHashValid := err == nil
 		if err != nil {
-			e.log(LogLevelWarn, "clear_confirm pre_capture error=%v attempt=%d (hash check disabled)", err, attempt)
+			e.log(logLevelWarn, "clear_confirm pre_capture error=%v attempt=%d (hash check disabled)", err, attempt)
 		}
 		preClearHash := contentHash(preClearContent)
 
 		// Send /clear with double-enter for reliability
 		if err := e.paneIO.SendCommand(paneTarget, "/clear"); err != nil {
-			e.log(LogLevelWarn, "clear_confirm send_clear error=%v attempt=%d", err, attempt)
+			e.log(logLevelWarn, "clear_confirm send_clear error=%v attempt=%d", err, attempt)
 			if attempt < maxAttempts {
 				backoff := time.Duration(backoffMs*(1<<(attempt-1))) * time.Millisecond
 				if err := sleepCtx(ctx, backoff); err != nil {
@@ -595,7 +595,7 @@ func (e *Executor) clearAndConfirm(ctx context.Context, paneTarget string) error
 
 		// Send second Enter to ensure /clear execution.
 		if err := e.paneIO.SendKeys(paneTarget, "Enter"); err != nil {
-			e.log(LogLevelWarn, "clear_confirm send_second_enter error=%v attempt=%d", err, attempt)
+			e.log(logLevelWarn, "clear_confirm send_second_enter error=%v attempt=%d", err, attempt)
 			if attempt < maxAttempts {
 				backoff := time.Duration(backoffMs*(1<<(attempt-1))) * time.Millisecond
 				if err := sleepCtx(ctx, backoff); err != nil {
@@ -612,15 +612,15 @@ func (e *Executor) clearAndConfirm(ctx context.Context, paneTarget string) error
 			return err // context cancelled
 		}
 		if confirmed {
-			e.log(LogLevelDebug, "clear_confirm confirmed attempt=%d", attempt)
+			e.log(logLevelDebug, "clear_confirm confirmed attempt=%d", attempt)
 			return nil
 		}
 
 		// Not confirmed — retry with backoff
-		e.log(LogLevelWarn, "clear_confirm not_confirmed attempt=%d/%d", attempt, maxAttempts)
+		e.log(logLevelWarn, "clear_confirm not_confirmed attempt=%d/%d", attempt, maxAttempts)
 		if attempt < maxAttempts {
 			backoff := time.Duration(backoffMs*(1<<(attempt-1))) * time.Millisecond
-			e.log(LogLevelDebug, "clear_confirm retry_backoff=%v", backoff)
+			e.log(logLevelDebug, "clear_confirm retry_backoff=%v", backoff)
 			if err := sleepCtx(ctx, backoff); err != nil {
 				return fmt.Errorf("clear_confirm backoff cancelled: %w", err)
 			}
@@ -659,7 +659,7 @@ func (e *Executor) pollClearConfirmation(
 
 		content, err := e.paneIO.CapturePaneJoined(paneTarget, promptReadyLines)
 		if err != nil {
-			e.log(LogLevelDebug, "clear_confirm poll capture error=%v", err)
+			e.log(logLevelDebug, "clear_confirm poll capture error=%v", err)
 			stableCount = 0
 			prevPollHash = ""
 			hashChanged = false
@@ -670,7 +670,7 @@ func (e *Executor) pollClearConfirmation(
 
 		// Check 1 (primary): "/clear" text must NOT be visible near the bottom of the pane.
 		if clearTextVisible(content) {
-			e.log(LogLevelDebug, "clear_confirm /clear text still visible")
+			e.log(logLevelDebug, "clear_confirm /clear text still visible")
 			stableCount = 0
 			prevPollHash = currentHash
 			continue
@@ -738,7 +738,7 @@ func (e *Executor) waitStable(ctx context.Context, paneTarget string, softPrompt
 		if h1 != h2 {
 			return fmt.Errorf("pane content not stable after %ds (round %d)", e.config.IdleStableSec, round)
 		}
-		e.log(LogLevelDebug, "wait_stable round=%d passed", round)
+		e.log(logLevelDebug, "wait_stable round=%d passed", round)
 	}
 
 	// Verify prompt is ready after stability confirmed.
@@ -746,20 +746,20 @@ func (e *Executor) waitStable(ctx context.Context, paneTarget string, softPrompt
 	finalContent, err := e.paneIO.CapturePane(paneTarget, promptReadyLines)
 	if err != nil {
 		if softPromptCheck {
-			e.log(LogLevelWarn, "wait_stable prompt_check capture error=%v (non-fatal, soft mode)", err)
+			e.log(logLevelWarn, "wait_stable prompt_check capture error=%v (non-fatal, soft mode)", err)
 			return nil
 		}
 		return fmt.Errorf("capture pane for prompt check: %w", err)
 	}
 	if !isPromptReady(finalContent) {
 		if softPromptCheck {
-			e.log(LogLevelInfo, "wait_stable prompt_not_detected pane=%s last_line=%q (proceeding — detectBusy will guard delivery)",
+			e.log(logLevelInfo, "wait_stable prompt_not_detected pane=%s last_line=%q (proceeding — detectBusy will guard delivery)",
 				paneTarget, lastNonBlankLine(finalContent))
 			return nil
 		}
 		return fmt.Errorf("pane stable but no prompt detected (last line: %q)", lastNonBlankLine(finalContent))
 	}
-	e.log(LogLevelDebug, "wait_stable prompt confirmed")
+	e.log(logLevelDebug, "wait_stable prompt confirmed")
 	return nil
 }
 
@@ -779,7 +779,7 @@ func (e *Executor) waitReady(ctx context.Context, paneTarget string) error {
 	if !ready {
 		// Fallback: prompt not detected, but proceed with a warning.
 		// The subsequent detectBusyWithRetry() will catch if the agent is actually busy.
-		e.log(LogLevelInfo, "wait_ready prompt_fallback pane=%s: prompt not detected after retries, proceeding (detectBusy will guard)",
+		e.log(logLevelInfo, "wait_ready prompt_fallback pane=%s: prompt not detected after retries, proceeding (detectBusy will guard)",
 			paneTarget)
 	}
 	return nil
@@ -796,7 +796,7 @@ func (e *Executor) waitReady(ctx context.Context, paneTarget string) error {
 func (e *Executor) ensureClaudeRunning(ctx context.Context, paneTarget, agentID string) error {
 	cmd, err := e.paneIO.GetPaneCurrentCommand(paneTarget)
 	if err != nil {
-		e.log(LogLevelWarn, "ensure_claude_running_check_failed agent_id=%s error=%v", agentID, err)
+		e.log(logLevelWarn, "ensure_claude_running_check_failed agent_id=%s error=%v", agentID, err)
 		// Cannot determine state; proceed optimistically
 		return nil
 	}
@@ -806,11 +806,11 @@ func (e *Executor) ensureClaudeRunning(ctx context.Context, paneTarget, agentID 
 		return nil
 	}
 
-	e.log(LogLevelWarn, "claude_not_running agent_id=%s pane_command=%s, re-launching", agentID, cmd)
+	e.log(logLevelWarn, "claude_not_running agent_id=%s pane_command=%s, re-launching", agentID, cmd)
 
 	// Reset clear_ready since we are starting a fresh Claude session
 	if resetErr := e.paneState.ResetClearReady(paneTarget); resetErr != nil {
-		e.log(LogLevelError, "ensure_claude_running_reset_clear_ready agent_id=%s error=%v", agentID, resetErr)
+		e.log(logLevelError, "ensure_claude_running_reset_clear_ready agent_id=%s error=%v", agentID, resetErr)
 	}
 
 	// Re-launch Claude
@@ -825,7 +825,7 @@ func (e *Executor) ensureClaudeRunning(ctx context.Context, paneTarget, agentID 
 		return fmt.Errorf("ensureClaudeRunning: wait for Claude ready: %w", waitErr)
 	}
 
-	e.log(LogLevelInfo, "claude_relaunched agent_id=%s", agentID)
+	e.log(logLevelInfo, "claude_relaunched agent_id=%s", agentID)
 	return nil
 }
 
@@ -851,11 +851,11 @@ func (e *Executor) ensureWorkingDir(ctx context.Context, paneTarget, workingDir 
 	// Check current CWD from tmux user variable
 	currentCWD := e.paneState.GetCWD(paneTarget)
 	if currentCWD == workingDir {
-		e.log(LogLevelDebug, "working_dir unchanged cwd=%s", workingDir)
+		e.log(logLevelDebug, "working_dir unchanged cwd=%s", workingDir)
 		return nil
 	}
 
-	e.log(LogLevelInfo, "working_dir_change old=%q new=%q", currentCWD, workingDir)
+	e.log(logLevelInfo, "working_dir_change old=%q new=%q", currentCWD, workingDir)
 
 	// Step 1: Kill the current pane process and respawn a fresh shell in the
 	// target working directory. This replaces the fragile Ctrl+C → Ctrl+D →
@@ -884,15 +884,15 @@ func (e *Executor) ensureWorkingDir(ctx context.Context, paneTarget, workingDir 
 
 	// Step 5: Update CWD tracking and reset clear_ready state
 	if err := e.paneState.SetCWD(paneTarget, workingDir); err != nil {
-		e.log(LogLevelWarn, "set_cwd_failed cwd=%s error=%v", workingDir, err)
+		e.log(logLevelWarn, "set_cwd_failed cwd=%s error=%v", workingDir, err)
 	}
 	// Reset clear_ready since we started a fresh Claude session
 	if err := e.paneState.ResetClearReady(paneTarget); err != nil {
-		e.log(LogLevelError, "reset_clear_ready_failed error=%v", err)
+		e.log(logLevelError, "reset_clear_ready_failed error=%v", err)
 		return fmt.Errorf("ensureWorkingDir: reset_clear_ready: %w", err)
 	}
 
-	e.log(LogLevelInfo, "working_dir_changed cwd=%s", workingDir)
+	e.log(logLevelInfo, "working_dir_changed cwd=%s", workingDir)
 	return nil
 }
 
@@ -918,7 +918,7 @@ func (e *Executor) waitForShell(ctx context.Context, paneTarget string) error {
 		} else {
 			consecutiveErrors = 0
 			if e.paneIO.IsShellCommand(cmd) {
-				e.log(LogLevelDebug, "waitForShell detected shell command=%s", cmd)
+				e.log(logLevelDebug, "waitForShell detected shell command=%s", cmd)
 				return nil
 			}
 		}
@@ -960,7 +960,7 @@ func (e *Executor) waitReadyCore(ctx context.Context, paneTarget string) (bool, 
 
 		content, err := e.paneIO.CapturePane(paneTarget, promptReadyLines)
 		if err != nil {
-			e.log(LogLevelDebug, "waitReadyCore capture error=%v attempt=%d", err, i)
+			e.log(logLevelDebug, "waitReadyCore capture error=%v attempt=%d", err, i)
 			if i < maxRetries {
 				if err := sleepCtx(ctx, interval); err != nil {
 					return false, fmt.Errorf("waitReadyCore sleep cancelled: %w", err)
@@ -971,12 +971,12 @@ func (e *Executor) waitReadyCore(ctx context.Context, paneTarget string) (bool, 
 		}
 
 		if isPromptReady(content) {
-			e.log(LogLevelDebug, "waitReadyCore prompt detected attempt=%d", i)
+			e.log(logLevelDebug, "waitReadyCore prompt detected attempt=%d", i)
 			return true, nil
 		}
 
 		if i < maxRetries {
-			e.log(LogLevelDebug, "waitReadyCore not ready attempt=%d/%d", i, maxRetries)
+			e.log(logLevelDebug, "waitReadyCore not ready attempt=%d/%d", i, maxRetries)
 			if err := sleepCtx(ctx, interval); err != nil {
 				return false, fmt.Errorf("waitReadyCore sleep cancelled: %w", err)
 			}
@@ -988,26 +988,26 @@ func (e *Executor) waitReadyCore(ctx context.Context, paneTarget string) (bool, 
 
 // --- Logging ---
 
-// logf is the shared log formatting function used by Executor and BusyDetector.
+// logf is the shared log formatting function used by Executor and busyDetector.
 // It checks the level threshold, formats the message with timestamp, level, and
 // component prefix, then writes to the provided logger.
-func logf(logger *log.Logger, minLevel, level LogLevel, component, format string, args ...any) {
+func logf(logger *log.Logger, minLevel, level logLevel, component, format string, args ...any) {
 	if level < minLevel {
 		return
 	}
 	levelStr := "[INFO]"
 	switch level {
-	case LogLevelDebug:
+	case logLevelDebug:
 		levelStr = "[DEBUG]"
-	case LogLevelWarn:
+	case logLevelWarn:
 		levelStr = "[WARN]"
-	case LogLevelError:
+	case logLevelError:
 		levelStr = "[ERROR]"
 	}
 	msg := fmt.Sprintf(format, args...)
 	logger.Printf("%s %s %s: %s", time.Now().Format(time.RFC3339), levelStr, component, msg)
 }
 
-func (e *Executor) log(level LogLevel, format string, args ...any) {
+func (e *Executor) log(level logLevel, format string, args ...any) {
 	logf(e.logger, e.logLevel, level, "agent_executor", format, args...)
 }

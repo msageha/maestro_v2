@@ -593,7 +593,7 @@ func TestInputSeparation_ConcurrentPanes(t *testing.T) {
 
 	// Create additional panes via split
 	for i := 1; i < numPanes; i++ {
-		if err := SplitPane(session+":0", i%2 == 1); err != nil {
+		if err := splitPane(session+":0", i%2 == 1); err != nil {
 			t.Fatalf("split pane %d: %v", i, err)
 		}
 		logPaths[i] = filepath.Join(t.TempDir(), fmt.Sprintf("sub_%d.log", i))

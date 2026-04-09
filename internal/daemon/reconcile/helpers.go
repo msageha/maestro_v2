@@ -55,7 +55,7 @@ func reconcileTerminalQueueItems[T any](
 		commandID := accessor.CommandID(item)
 		taskID := accessor.TaskID(item)
 
-		run.Log(core.LogLevelWarn, "%s result_terminal_queue_mismatch queue=%s id=%s result_status=%s",
+		run.log(core.LogLevelWarn, "%s result_terminal_queue_mismatch queue=%s id=%s result_status=%s",
 			patternName, queueName, matchKey, resultStatus)
 
 		accessor.ApplyUpdate(item, resultStatus, now)
@@ -106,7 +106,7 @@ func reconcileTerminalQueue[Q any, T any](
 	if modified {
 		queue = setItems(queue, items)
 		if err := yamlutil.AtomicWrite(queuePath, queue); err != nil {
-			run.Log(core.LogLevelError, "%s write_queue queue=%s error=%v", patternName, queueName, err)
+			run.log(core.LogLevelError, "%s write_queue queue=%s error=%v", patternName, queueName, err)
 			return nil, nil
 		}
 	}

@@ -69,7 +69,7 @@ func TestR1ConsumeQueueWriteFailed_ClearsWhenQueueTerminal(t *testing.T) {
 		t.Errorf("unexpected repair: %+v", repairs[0])
 	}
 
-	got, err := run.LoadState(statePath)
+	got, err := run.loadState(statePath)
 	if err != nil {
 		t.Fatalf("reload state: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestR1ConsumeQueueWriteFailed_KeepsWhenQueueStillInProgress(t *testing.T) {
 	if len(repairs) != 0 {
 		t.Errorf("expected no repairs while queue is still in_progress, got %+v", repairs)
 	}
-	got, err := run.LoadState(statePath)
+	got, err := run.loadState(statePath)
 	if err != nil {
 		t.Fatalf("reload state: %v", err)
 	}
