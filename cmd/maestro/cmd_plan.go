@@ -261,7 +261,7 @@ func runPlanRequestCancel(args []string) error {
 		"reason":       reason,
 	}
 
-	client := uds.NewClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := newUDSClient(filepath.Join(maestroDir, uds.DefaultSocketName))
 	resp, err := client.SendCommand("queue_write", params)
 	if err != nil {
 		return fmt.Errorf("maestro plan request-cancel: %w", err)
