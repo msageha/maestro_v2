@@ -158,7 +158,7 @@ func TestNewExecutor_InvalidBusyPatterns(t *testing.T) {
 	t.Parallel()
 	_, err := newExecutor("", model.WatcherConfig{
 		BusyPatterns: "[invalid",
-	}, "info", &bytes.Buffer{}, nil)
+	}, "info", &bytes.Buffer{}, nil, DefaultExecutorConfig())
 	if err == nil {
 		t.Error("expected error for invalid regex")
 	}
@@ -168,7 +168,7 @@ func TestNewExecutor_ValidBusyPatterns(t *testing.T) {
 	t.Parallel()
 	exec, err := newExecutor("", model.WatcherConfig{
 		BusyPatterns: "Working|Thinking|Planning",
-	}, "info", &bytes.Buffer{}, nil)
+	}, "info", &bytes.Buffer{}, nil, DefaultExecutorConfig())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -182,7 +182,7 @@ func TestNewExecutor_ValidBusyPatterns(t *testing.T) {
 
 func TestNewExecutor_EmptyBusyPatterns(t *testing.T) {
 	t.Parallel()
-	exec, err := newExecutor("", model.WatcherConfig{}, "info", &bytes.Buffer{}, nil)
+	exec, err := newExecutor("", model.WatcherConfig{}, "info", &bytes.Buffer{}, nil, DefaultExecutorConfig())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -197,7 +197,7 @@ func TestNewExecutor_EmptyBusyPatterns(t *testing.T) {
 func TestLogLevelFiltering(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
-	exec, err := newExecutor("", model.WatcherConfig{}, "warn", &buf, nil)
+	exec, err := newExecutor("", model.WatcherConfig{}, "warn", &buf, nil, DefaultExecutorConfig())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestOrchestratorInterruptRejected(t *testing.T) {
 	// execInterrupt checks AgentID == "orchestrator" before any tmux call,
 	// so we can test the guard directly without a running tmux session.
 	var buf bytes.Buffer
-	exec, err := newExecutor("", model.WatcherConfig{}, "info", &buf, nil)
+	exec, err := newExecutor("", model.WatcherConfig{}, "info", &buf, nil, DefaultExecutorConfig())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -550,8 +550,9 @@ func TestPromptReadyLinesIncreased(t *testing.T) {
 	t.Parallel()
 	// Verify the capture depth has been increased from 5 to 12
 	// to accommodate Claude Code's status bars and improve prompt detection.
-	if promptReadyLines < 12 {
-		t.Errorf("promptReadyLines = %d, want >= 12 (increased for better prompt detection)", promptReadyLines)
+	cfg := DefaultExecutorConfig()
+	if cfg.PromptReadyLines < 12 {
+		t.Errorf("PromptReadyLines = %d, want >= 12 (increased for better prompt detection)", cfg.PromptReadyLines)
 	}
 }
 
@@ -693,6 +694,9 @@ func newTestExecutorWithLog(paneIO PaneIO) (*Executor, *bytes.Buffer) {
 		ClearRetryBackoffMs:    10,
 	}
 
+	execCfg := DefaultExecutorConfig()
+	ps := newPaneStateManager(paneIO)
+
 	// busyDetector with zero-sleep config (bypasses newBusyDetector normalization)
 	bd := &busyDetector{
 		paneIO: paneIO,
@@ -700,19 +704,22 @@ func newTestExecutorWithLog(paneIO PaneIO) (*Executor, *bytes.Buffer) {
 			IdleStableSec:       0,
 			BusyCheckMaxRetries: 1,
 			BusyCheckInterval:   0,
+			BusyHintLines:       execCfg.BusyHintLines,
 		},
 		logger:   logger,
 		logLevel: logLevelDebug,
 	}
 
 	exec := &Executor{
+		execCfg:      execCfg,
 		config:       cfg,
 		logger:       logger,
 		logLevel:     logLevelDebug,
 		paneIO:       paneIO,
 		busyDetector: bd,
-		paneState:    newPaneStateManager(paneIO),
+		paneState:    ps,
 	}
+	exec.deliverer = newMessageDeliverer(paneIO, ps, &exec.config, execCfg, logger, logLevelDebug)
 
 	return exec, &buf
 }

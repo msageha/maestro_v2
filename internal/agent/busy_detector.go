@@ -13,6 +13,7 @@ type busyDetectorConfig struct {
 	IdleStableSec       int
 	BusyCheckMaxRetries int
 	BusyCheckInterval   int
+	BusyHintLines       int
 }
 
 // busyDetector performs 3-stage busy detection on tmux panes.
@@ -39,6 +40,9 @@ func newBusyDetector(paneIO PaneIO, busyRegex *regexp.Regexp, cfg busyDetectorCo
 	}
 	if cfg.BusyCheckInterval <= 0 {
 		cfg.BusyCheckInterval = 2
+	}
+	if cfg.BusyHintLines <= 0 {
+		cfg.BusyHintLines = 5
 	}
 	return &busyDetector{
 		paneIO:    paneIO,
@@ -68,7 +72,7 @@ func (bd *busyDetector) DetectBusy(ctx context.Context, paneTarget string) busyV
 
 	// Stage 2: Pattern hint from last busyHintLines lines.
 	// Uses CapturePane (no -J) to preserve line boundaries for regex matching.
-	content, err := bd.paneIO.CapturePane(paneTarget, busyHintLines)
+	content, err := bd.paneIO.CapturePane(paneTarget, bd.config.BusyHintLines)
 	if err != nil {
 		bd.log(logLevelDebug, "busy_detection capture_pane error=%v", err)
 		return VerdictUndecided
@@ -84,7 +88,7 @@ func (bd *busyDetector) DetectBusy(ctx context.Context, paneTarget string) busyV
 
 	// Stage 3: Activity probe (hash comparison over idle_stable_sec).
 	// Uses CapturePaneJoined (-J) for width-independent hash stability.
-	joinedContent, err := bd.paneIO.CapturePaneJoined(paneTarget, busyHintLines)
+	joinedContent, err := bd.paneIO.CapturePaneJoined(paneTarget, bd.config.BusyHintLines)
 	if err != nil {
 		bd.log(logLevelDebug, "busy_detection joined capture error=%v", err)
 		return VerdictUndecided
@@ -95,7 +99,7 @@ func (bd *busyDetector) DetectBusy(ctx context.Context, paneTarget string) busyV
 		return VerdictUndecided
 	}
 
-	joinedContent2, err := bd.paneIO.CapturePaneJoined(paneTarget, busyHintLines)
+	joinedContent2, err := bd.paneIO.CapturePaneJoined(paneTarget, bd.config.BusyHintLines)
 	if err != nil {
 		bd.log(logLevelDebug, "busy_detection second capture error=%v", err)
 		return VerdictUndecided
