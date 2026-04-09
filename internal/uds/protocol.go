@@ -38,16 +38,16 @@ type Request struct {
 type Response struct {
 	Success bool            `json:"success"`
 	Data    json.RawMessage `json:"data,omitempty"`
-	Error   *ErrorDetail    `json:"error,omitempty"`
+	Error   *errorDetail    `json:"error,omitempty"`
 }
 
-// ErrorDetail contains a machine-readable error code and a human-readable message.
-type ErrorDetail struct {
+// errorDetail contains a machine-readable error code and a human-readable message.
+type errorDetail struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
 }
 
-// Error code constants used in ErrorDetail.Code to classify failures.
+// Error code constants used in errorDetail.Code to classify failures.
 const (
 	// ErrCodeProtocolMismatch indicates a protocol version mismatch between client and server.
 	ErrCodeProtocolMismatch = "PROTOCOL_MISMATCH"
@@ -71,8 +71,8 @@ const (
 	ErrCodeMaxRuntimeExceeded = "MAX_RUNTIME_EXCEEDED"
 )
 
-// NewRequest creates a new Request with the given command and optional params marshalled to JSON.
-func NewRequest(command string, params any) (*Request, error) {
+// newRequest creates a new Request with the given command and optional params marshalled to JSON.
+func newRequest(command string, params any) (*Request, error) {
 	req := &Request{
 		ProtocolVersion: ProtocolVersion,
 		Command:         command,
@@ -105,7 +105,7 @@ func SuccessResponse(data any) *Response {
 func ErrorResponse(code, message string) *Response {
 	return &Response{
 		Success: false,
-		Error: &ErrorDetail{
+		Error: &errorDetail{
 			Code:    code,
 			Message: message,
 		},
@@ -120,9 +120,9 @@ const DefaultSocketName = "daemon.sock"
 // 2 MB provides headroom for large task content while preventing runaway allocations.
 const maxFrameSize = 2 * 1024 * 1024
 
-// WriteFrame writes a length-prefixed JSON frame to the connection.
+// writeFrame writes a length-prefixed JSON frame to the connection.
 // Format: [4-byte BigEndian length][JSON payload]
-func WriteFrame(conn net.Conn, v any) error {
+func writeFrame(conn net.Conn, v any) error {
 	data, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Errorf("marshal frame: %w", err)
@@ -143,8 +143,8 @@ func WriteFrame(conn net.Conn, v any) error {
 	return nil
 }
 
-// ReadFrame reads a length-prefixed JSON frame from the connection.
-func ReadFrame(conn net.Conn, v any) error {
+// readFrame reads a length-prefixed JSON frame from the connection.
+func readFrame(conn net.Conn, v any) error {
 	var length uint32
 	if err := binary.Read(conn, binary.BigEndian, &length); err != nil {
 		return fmt.Errorf("read frame length: %w", err)

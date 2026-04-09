@@ -60,7 +60,7 @@ func TestFraming_RoundTrip(t *testing.T) {
 		defer conn.Close()
 
 		var req Request
-		if err := ReadFrame(conn, &req); err != nil {
+		if err := readFrame(conn, &req); err != nil {
 			t.Errorf("server ReadFrame: %v", err)
 			return
 		}
@@ -73,7 +73,7 @@ func TestFraming_RoundTrip(t *testing.T) {
 		}
 
 		resp := SuccessResponse(map[string]string{"result": "ok"})
-		if err := WriteFrame(conn, resp); err != nil {
+		if err := writeFrame(conn, resp); err != nil {
 			t.Errorf("server WriteFrame: %v", err)
 		}
 	}()
@@ -84,13 +84,13 @@ func TestFraming_RoundTrip(t *testing.T) {
 	}
 	defer conn.Close()
 
-	req, _ := NewRequest("test", nil)
-	if err := WriteFrame(conn, req); err != nil {
+	req, _ := newRequest("test", nil)
+	if err := writeFrame(conn, req); err != nil {
 		t.Fatalf("client WriteFrame: %v", err)
 	}
 
 	var resp Response
-	if err := ReadFrame(conn, &resp); err != nil {
+	if err := readFrame(conn, &resp); err != nil {
 		t.Fatalf("client ReadFrame: %v", err)
 	}
 
@@ -123,7 +123,7 @@ func TestFraming_LargePayload(t *testing.T) {
 		defer conn.Close()
 
 		var req Request
-		if err := ReadFrame(conn, &req); err != nil {
+		if err := readFrame(conn, &req); err != nil {
 			t.Errorf("server ReadFrame: %v", err)
 			return
 		}
@@ -135,7 +135,7 @@ func TestFraming_LargePayload(t *testing.T) {
 		}
 
 		resp := SuccessResponse(map[string]int{"length": len(params["content"])})
-		WriteFrame(conn, resp)
+		writeFrame(conn, resp)
 	}()
 
 	conn, err := net.Dial("unix", sockPath)
@@ -144,13 +144,13 @@ func TestFraming_LargePayload(t *testing.T) {
 	}
 	defer conn.Close()
 
-	req, _ := NewRequest("large_test", map[string]string{"content": largeContent})
-	if err := WriteFrame(conn, req); err != nil {
+	req, _ := newRequest("large_test", map[string]string{"content": largeContent})
+	if err := writeFrame(conn, req); err != nil {
 		t.Fatalf("client WriteFrame: %v", err)
 	}
 
 	var resp Response
-	if err := ReadFrame(conn, &resp); err != nil {
+	if err := readFrame(conn, &resp); err != nil {
 		t.Fatalf("client ReadFrame: %v", err)
 	}
 
@@ -179,7 +179,7 @@ func TestServer_ProtocolVersionMismatch(t *testing.T) {
 		Command:         "ping",
 	}
 
-	resp, err := client.Send(req)
+	resp, err := client.send(req)
 	if err != nil {
 		t.Fatalf("client send: %v", err)
 	}
@@ -461,12 +461,12 @@ func TestSendContext_NormalOperation(t *testing.T) {
 	client.SetTimeout(5 * time.Second)
 
 	ctx := context.Background()
-	req, err := NewRequest("ping", nil)
+	req, err := newRequest("ping", nil)
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}
 
-	resp, err := client.SendContext(ctx, req)
+	resp, err := client.sendContext(ctx, req)
 	if err != nil {
 		t.Fatalf("send context: %v", err)
 	}
@@ -496,9 +496,9 @@ func TestSendContext_NilContext(t *testing.T) {
 	client := NewClient(sockPath)
 	client.SetTimeout(5 * time.Second)
 
-	req, _ := NewRequest("ping", nil)
+	req, _ := newRequest("ping", nil)
 	//nolint:staticcheck // testing nil context path intentionally
-	resp, err := client.SendContext(nil, req)
+	resp, err := client.sendContext(nil, req)
 	if err != nil {
 		t.Fatalf("send context nil: %v", err)
 	}
@@ -517,8 +517,8 @@ func TestSendContext_CancelBeforeDial(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	req, _ := NewRequest("ping", nil)
-	_, err := client.SendContext(ctx, req)
+	req, _ := newRequest("ping", nil)
+	_, err := client.sendContext(ctx, req)
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
 	}
@@ -547,8 +547,8 @@ func TestSendContext_CancelDuringOperation(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	req, _ := NewRequest("slow", nil)
-	_, err := client.SendContext(ctx, req)
+	req, _ := newRequest("slow", nil)
+	_, err := client.sendContext(ctx, req)
 	if err == nil {
 		t.Fatal("expected error for context timeout")
 	}
@@ -597,8 +597,8 @@ func TestSendContext_ServerNotRunning(t *testing.T) {
 	client.SetTimeout(1 * time.Second)
 
 	ctx := context.Background()
-	req, _ := NewRequest("ping", nil)
-	_, err := client.SendContext(ctx, req)
+	req, _ := newRequest("ping", nil)
+	_, err := client.sendContext(ctx, req)
 	if err == nil {
 		t.Fatal("expected error when server not running")
 	}
@@ -806,7 +806,7 @@ func TestClient_SendRetryOnTransientError(t *testing.T) {
 
 func TestNewRequest_MarshalError(t *testing.T) {
 	// channels cannot be JSON marshalled
-	_, err := NewRequest("test", make(chan int))
+	_, err := newRequest("test", make(chan int))
 	if err == nil {
 		t.Fatal("expected error for unmarshallable params")
 	}

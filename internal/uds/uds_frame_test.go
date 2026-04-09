@@ -18,7 +18,7 @@ func pipeConn(t *testing.T) (client, server net.Conn) {
 	return client, server
 }
 
-// --- ReadFrame malformed input tests ---
+// --- readFrame malformed input tests ---
 
 func TestReadFrame_MalformedLength_TooShort(t *testing.T) {
 	client, server := pipeConn(t)
@@ -30,7 +30,7 @@ func TestReadFrame_MalformedLength_TooShort(t *testing.T) {
 	}()
 
 	var req Request
-	err := ReadFrame(server, &req)
+	err := readFrame(server, &req)
 	if err == nil {
 		t.Fatal("expected error for truncated length field")
 	}
@@ -48,7 +48,7 @@ func TestReadFrame_MalformedLength_Empty(t *testing.T) {
 	}()
 
 	var req Request
-	err := ReadFrame(server, &req)
+	err := readFrame(server, &req)
 	if err == nil {
 		t.Fatal("expected error for empty input")
 	}
@@ -65,7 +65,7 @@ func TestReadFrame_OversizeFrame(t *testing.T) {
 	}()
 
 	var req Request
-	err := ReadFrame(server, &req)
+	err := readFrame(server, &req)
 	if err == nil {
 		t.Fatal("expected error for oversize frame")
 	}
@@ -84,7 +84,7 @@ func TestReadFrame_OversizeFrame_MaxUint32(t *testing.T) {
 	}()
 
 	var req Request
-	err := ReadFrame(server, &req)
+	err := readFrame(server, &req)
 	if err == nil {
 		t.Fatal("expected error for max uint32 frame size")
 	}
@@ -104,7 +104,7 @@ func TestReadFrame_PartialPayload(t *testing.T) {
 	}()
 
 	var req Request
-	err := ReadFrame(server, &req)
+	err := readFrame(server, &req)
 	if err == nil {
 		t.Fatal("expected error for partial payload")
 	}
@@ -123,7 +123,7 @@ func TestReadFrame_ZeroLengthFrame(t *testing.T) {
 	}()
 
 	var req Request
-	err := ReadFrame(server, &req)
+	err := readFrame(server, &req)
 	if err == nil {
 		t.Fatal("expected error for zero-length frame (empty JSON)")
 	}
@@ -144,7 +144,7 @@ func TestReadFrame_InvalidJSON(t *testing.T) {
 	}()
 
 	var req Request
-	err := ReadFrame(server, &req)
+	err := readFrame(server, &req)
 	if err == nil {
 		t.Fatal("expected error for invalid JSON payload")
 	}
@@ -153,7 +153,7 @@ func TestReadFrame_InvalidJSON(t *testing.T) {
 	}
 }
 
-// --- WriteFrame edge case tests ---
+// --- writeFrame edge case tests ---
 
 func TestWriteFrame_EmptyPayload(t *testing.T) {
 	client, server := pipeConn(t)
@@ -161,16 +161,16 @@ func TestWriteFrame_EmptyPayload(t *testing.T) {
 	type empty struct{}
 
 	go func() {
-		if err := WriteFrame(client, &empty{}); err != nil {
-			t.Errorf("WriteFrame empty struct: %v", err)
+		if err := writeFrame(client, &empty{}); err != nil {
+			t.Errorf("writeFrame empty struct: %v", err)
 		}
 		client.Close()
 	}()
 
 	var result map[string]any
-	err := ReadFrame(server, &result)
+	err := readFrame(server, &result)
 	if err != nil {
-		t.Fatalf("ReadFrame of empty payload: %v", err)
+		t.Fatalf("readFrame of empty payload: %v", err)
 	}
 }
 
@@ -179,17 +179,17 @@ func TestWriteFrame_NilPayload(t *testing.T) {
 
 	// json.Marshal(nil) produces "null"
 	go func() {
-		if err := WriteFrame(client, nil); err != nil {
-			t.Errorf("WriteFrame nil: %v", err)
+		if err := writeFrame(client, nil); err != nil {
+			t.Errorf("writeFrame nil: %v", err)
 		}
 		client.Close()
 	}()
 
-	// "null" is valid JSON; ReadFrame into interface{} should succeed
+	// "null" is valid JSON; readFrame into interface{} should succeed
 	var result any
-	err := ReadFrame(server, &result)
+	err := readFrame(server, &result)
 	if err != nil {
-		t.Fatalf("ReadFrame of nil payload: %v", err)
+		t.Fatalf("readFrame of nil payload: %v", err)
 	}
 	if result != nil {
 		t.Errorf("expected nil result, got: %v", result)
@@ -207,21 +207,21 @@ func TestWriteFrame_MaxSizeBoundary(t *testing.T) {
 
 	errCh := make(chan error, 1)
 	go func() {
-		errCh <- WriteFrame(client, largeStr)
+		errCh <- writeFrame(client, largeStr)
 		client.Close()
 	}()
 
 	var result string
-	err := ReadFrame(server, &result)
+	err := readFrame(server, &result)
 	if err != nil {
-		t.Fatalf("ReadFrame at max boundary: %v", err)
+		t.Fatalf("readFrame at max boundary: %v", err)
 	}
 	if len(result) != contentSize {
 		t.Errorf("expected length %d, got %d", contentSize, len(result))
 	}
 
 	if writeErr := <-errCh; writeErr != nil {
-		t.Fatalf("WriteFrame at max boundary: %v", writeErr)
+		t.Fatalf("writeFrame at max boundary: %v", writeErr)
 	}
 }
 
@@ -232,7 +232,7 @@ func TestWriteFrame_ExceedsMaxSize(t *testing.T) {
 	contentSize := maxFrameSize // plus quotes = maxFrameSize + 2, which exceeds limit
 	largeStr := strings.Repeat("a", contentSize)
 
-	err := WriteFrame(client, largeStr)
+	err := writeFrame(client, largeStr)
 	if err == nil {
 		t.Fatal("expected error for oversize write")
 	}
