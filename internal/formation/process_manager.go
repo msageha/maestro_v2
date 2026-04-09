@@ -8,8 +8,8 @@ import (
 	"github.com/msageha/maestro_v2/internal/uds"
 )
 
-// ProcessManager abstracts OS-level process operations for testability.
-type ProcessManager interface {
+// processManager abstracts OS-level process operations for testability.
+type processManager interface {
 	// Alive reports whether the process with the given PID is running.
 	Alive(pid int) bool
 	// StartTime returns a token representing when pid was started.
@@ -19,14 +19,14 @@ type ProcessManager interface {
 	Signal(pid int, sig syscall.Signal) error
 }
 
-// UDSSender abstracts UDS client operations for testability.
-type UDSSender interface {
+// udsSender abstracts UDS client operations for testability.
+type udsSender interface {
 	SendCommand(command string, params any) (*uds.Response, error)
 }
 
 // newUDSClient creates a UDS client for the given socket path with the
 // specified timeout. Tests replace this to inject mocks.
-var newUDSClient = func(socketPath string, timeout time.Duration) UDSSender {
+var newUDSClient = func(socketPath string, timeout time.Duration) udsSender {
 	c := uds.NewClient(socketPath)
 	c.SetTimeout(timeout)
 	return c
@@ -34,7 +34,7 @@ var newUDSClient = func(socketPath string, timeout time.Duration) UDSSender {
 
 // procMgr is the package-level process manager used by daemon lifecycle
 // functions. Tests replace this to inject mocks.
-var procMgr ProcessManager = &osProcessManager{}
+var procMgr processManager = &osProcessManager{}
 
 // Timing configuration for daemon lifecycle operations.
 // Tests override these for faster execution.
@@ -46,7 +46,7 @@ var (
 	waitReadyPollInterval   = 200 * time.Millisecond
 )
 
-// osProcessManager implements ProcessManager using real OS system calls.
+// osProcessManager implements processManager using real OS system calls.
 type osProcessManager struct{}
 
 func (m *osProcessManager) Alive(pid int) bool {

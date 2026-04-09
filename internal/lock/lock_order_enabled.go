@@ -59,10 +59,10 @@ func parseLockOrderMode(v string) lockOrderMode {
 	}
 }
 
-// LevelForKey returns the canonical lock level for a key prefix.
+// levelForKey returns the canonical lock level for a key prefix.
 // Keys that do not match a known prefix return (0, false) and are
 // excluded from order checking.
-func LevelForKey(key string) (int, bool) {
+func levelForKey(key string) (int, bool) {
 	switch {
 	case strings.HasPrefix(key, "queue:"):
 		return 1, true
@@ -79,7 +79,7 @@ func (c *debugOrderChecker) BeforeLock(key string) {
 	if c.mode == lockOrderOff {
 		return
 	}
-	level, ok := LevelForKey(key)
+	level, ok := levelForKey(key)
 	if !ok {
 		return
 	}
@@ -108,7 +108,7 @@ func (c *debugOrderChecker) AfterLock(key string) {
 	if c.mode == lockOrderOff {
 		return
 	}
-	level, ok := LevelForKey(key)
+	level, ok := levelForKey(key)
 	if !ok {
 		return
 	}
@@ -123,7 +123,7 @@ func (c *debugOrderChecker) BeforeUnlock(key string) {
 	if c.mode == lockOrderOff {
 		return
 	}
-	if _, ok := LevelForKey(key); !ok {
+	if _, ok := levelForKey(key); !ok {
 		return
 	}
 	gid := currentGID()

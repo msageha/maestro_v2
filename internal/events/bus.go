@@ -33,8 +33,8 @@ type Event struct {
 	Data      map[string]interface{}
 }
 
-// Subscriber is a function that receives events.
-type Subscriber func(Event)
+// subscriber is a function that receives events.
+type subscriber func(Event)
 
 // subscriberChan wraps a subscriber channel with sync.Once to prevent double-close panics.
 type subscriberChan struct {
@@ -47,10 +47,10 @@ func (s *subscriberChan) safeClose() {
 	s.once.Do(func() { close(s.ch) })
 }
 
-// CoalescedSubscriber receives coalesced notifications.
+// coalescedSubscriber receives coalesced notifications.
 // Multiple rapid publishes are merged into a single callback invocation,
 // guaranteeing at least one callback after any publish.
-type CoalescedSubscriber func()
+type coalescedSubscriber func()
 
 // coalescedSub wraps a coalescing signal channel with sync.Once for safe close.
 type coalescedSub struct {
@@ -120,7 +120,7 @@ func NewBus(ctx context.Context, bufferSize int) *Bus {
 // Subscribe registers a subscriber for a specific event type.
 // The subscriber function is called asynchronously in a goroutine.
 // Returns an unsubscribe function.
-func (b *Bus) Subscribe(eventType EventType, fn Subscriber) func() {
+func (b *Bus) Subscribe(eventType EventType, fn subscriber) func() {
 	if b.closed.Load() {
 		return func() {}
 	}
@@ -184,7 +184,7 @@ func (b *Bus) Subscribe(eventType EventType, fn Subscriber) func() {
 // loss for notification-style events like EventQueueWritten where the payload
 // content does not matter—only the "something happened" signal.
 // Returns an unsubscribe function.
-func (b *Bus) SubscribeCoalesced(eventType EventType, fn CoalescedSubscriber) func() {
+func (b *Bus) SubscribeCoalesced(eventType EventType, fn coalescedSubscriber) func() {
 	if b.closed.Load() {
 		return func() {}
 	}

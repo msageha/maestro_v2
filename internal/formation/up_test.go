@@ -497,6 +497,6 @@ func TestProcessAlive_ZeroAndNegative(t *testing.T) {
 
 // NOTE: RunUp's session-exists guard depends on tmux.SessionExists which cannot
 // be mocked without a real tmux session or interface extraction. The guard logic
-// is covered by integration tests. ErrSessionExists is a simple sentinel error
+// is covered by integration tests. errSessionExists is a simple sentinel error
 // that does not require a dedicated test.
 

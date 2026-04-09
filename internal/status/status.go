@@ -17,25 +17,25 @@ import (
 	maestroyaml "github.com/msageha/maestro_v2/internal/yaml"
 )
 
-type FormationStatus struct {
-	Daemon DaemonStatus  `json:"daemon"`
-	Agents []AgentStatus `json:"agents,omitempty"`
-	Queues []QueueStatus `json:"queues,omitempty"`
+type formationStatus struct {
+	Daemon daemonStatus  `json:"daemon"`
+	Agents []agentStatus `json:"agents,omitempty"`
+	Queues []queueStatus `json:"queues,omitempty"`
 }
 
-type DaemonStatus struct {
+type daemonStatus struct {
 	Running bool   `json:"running"`
 	Pid     string `json:"pid,omitempty"`
 }
 
-type AgentStatus struct {
+type agentStatus struct {
 	ID     string `json:"id"`
 	Role   string `json:"role"`
 	Model  string `json:"model"`
 	Status string `json:"status"`
 }
 
-type QueueStatus struct {
+type queueStatus struct {
 	Name       string `json:"name"`
 	Pending    int    `json:"pending"`
 	InProgress int    `json:"in_progress"`
@@ -43,7 +43,7 @@ type QueueStatus struct {
 
 // Run checks the formation status and prints it.
 func Run(maestroDir string, jsonOutput bool) error {
-	status := FormationStatus{}
+	status := formationStatus{}
 
 	// Check daemon status via UDS ping
 	sockPath := filepath.Join(maestroDir, uds.DefaultSocketName)
@@ -65,25 +65,25 @@ func Run(maestroDir string, jsonOutput bool) error {
 	return nil
 }
 
-func checkDaemon(sockPath string) DaemonStatus {
+func checkDaemon(sockPath string) daemonStatus {
 	client := uds.NewClient(sockPath)
 	resp, err := client.SendCommand("ping", nil)
 	if err != nil {
-		return DaemonStatus{Running: false}
+		return daemonStatus{Running: false}
 	}
 	if resp.Success {
-		return DaemonStatus{Running: true}
+		return daemonStatus{Running: true}
 	}
-	return DaemonStatus{Running: false}
+	return daemonStatus{Running: false}
 }
 
-func getAgentStatuses() []AgentStatus {
+func getAgentStatuses() []agentStatus {
 	lines, err := tmux.ListAllPanes("#{@agent_id}\t#{@role}\t#{@model}\t#{@status}")
 	if err != nil {
 		return nil
 	}
 
-	var agents []AgentStatus
+	var agents []agentStatus
 	for _, line := range lines {
 		parts := strings.SplitN(line, "\t", 4)
 		if len(parts) < 4 {
@@ -92,7 +92,7 @@ func getAgentStatuses() []AgentStatus {
 		if parts[0] == "" {
 			continue
 		}
-		agents = append(agents, AgentStatus{
+		agents = append(agents, agentStatus{
 			ID:     parts[0],
 			Role:   parts[1],
 			Model:  parts[2],
@@ -112,14 +112,14 @@ type queueEntry struct {
 	Status string `yaml:"status"`
 }
 
-func getQueueDepths(maestroDir string) []QueueStatus {
+func getQueueDepths(maestroDir string) []queueStatus {
 	queueDir := filepath.Join(maestroDir, "queue")
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
 		return nil
 	}
 
-	var queues []QueueStatus
+	var queues []queueStatus
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
 			continue
@@ -173,7 +173,7 @@ func getQueueDepths(maestroDir string) []QueueStatus {
 		}
 
 		name := strings.TrimSuffix(entry.Name(), ".yaml")
-		queues = append(queues, QueueStatus{
+		queues = append(queues, queueStatus{
 			Name:       name,
 			Pending:    pending,
 			InProgress: inProgress,
@@ -183,7 +183,7 @@ func getQueueDepths(maestroDir string) []QueueStatus {
 	return queues
 }
 
-func printStatus(s FormationStatus) {
+func printStatus(s formationStatus) {
 	// Daemon
 	if s.Daemon.Running {
 		fmt.Println("Daemon: running")
