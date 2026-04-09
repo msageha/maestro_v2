@@ -99,10 +99,10 @@ func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap
 	ep := NewExecutorProvider(maestroDir, cfg.Watcher, cfg.Logging.Level, factory, clock)
 
 	lm := NewLeaseManager(cfg.Watcher, logger, logLevel)
-	dispatcher := NewDispatcher(maestroDir, cfg, lm, logger, logLevel, ep)
+	dispatcher := NewDispatcher(maestroDir, cfg, lm, logger, logLevel, ep, clock)
 	dr := NewDependencyResolver(nil, logger, logLevel) // StateReader wired in Phase 6
 	ch := NewCancelHandler(maestroDir, cfg, lockMap, logger, logLevel, ep)
-	rh := NewResultHandler(maestroDir, cfg, lockMap, logger, logLevel, ep)
+	rh := NewResultHandler(maestroDir, cfg, lockMap, logger, logLevel, ep, clock)
 	rec := NewReconciler(maestroDir, cfg, lockMap, logger, logLevel, rh, ep.Factory())
 	dlp := NewDeadLetterProcessor(maestroDir, cfg, lockMap, logger, logLevel)
 	mh := NewMetricsHandler(maestroDir, cfg, logger, logLevel)

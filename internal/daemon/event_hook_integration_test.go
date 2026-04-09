@@ -69,14 +69,15 @@ func TestEventHookIntegration(t *testing.T) {
 		}
 
 		logger := log.New(&bytes.Buffer{}, "", 0)
-		dispatcher := NewDispatcher(maestroDir, cfg, nil, logger, LogLevelInfo, newTestExecutorProvider(maestroDir, cfg))
+		ep := newTestExecutorProvider(maestroDir, cfg)
+		dispatcher := NewDispatcher(maestroDir, cfg, nil, logger, LogLevelInfo, ep, RealClock{})
 		dispatcher.SetEventBus(bus)
 
 		// Use mock executor
 		mockExec := &MockExecutor{
 			executeResult: agent.ExecResult{Error: nil, Retryable: false},
 		}
-		dispatcher.execProvider.SetFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+		ep.SetFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 			return mockExec, nil
 		})
 
@@ -127,14 +128,15 @@ func TestEventHookIntegration(t *testing.T) {
 		}
 
 		logger := log.New(&bytes.Buffer{}, "", 0)
-		dispatcher := NewDispatcher(maestroDir, cfg, nil, logger, LogLevelInfo, newTestExecutorProvider(maestroDir, cfg))
+		ep2 := newTestExecutorProvider(maestroDir, cfg)
+		dispatcher := NewDispatcher(maestroDir, cfg, nil, logger, LogLevelInfo, ep2, RealClock{})
 		dispatcher.SetEventBus(bus)
 
 		// Use mock executor
 		mockExec := &MockExecutor{
 			executeResult: agent.ExecResult{Error: nil, Retryable: false},
 		}
-		dispatcher.execProvider.SetFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+		ep2.SetFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 			return mockExec, nil
 		})
 
@@ -171,13 +173,14 @@ func TestEventHookIntegration(t *testing.T) {
 		}
 
 		logger := log.New(&bytes.Buffer{}, "", 0)
-		dispatcher := NewDispatcher(maestroDir, cfg, nil, logger, LogLevelInfo, newTestExecutorProvider(maestroDir, cfg))
+		ep3 := newTestExecutorProvider(maestroDir, cfg)
+		dispatcher := NewDispatcher(maestroDir, cfg, nil, logger, LogLevelInfo, ep3, RealClock{})
 		// Do NOT set event bus
 
 		mockExec := &MockExecutor{
 			executeResult: agent.ExecResult{Error: nil, Retryable: false},
 		}
-		dispatcher.execProvider.SetFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
+		ep3.SetFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 			return mockExec, nil
 		})
 

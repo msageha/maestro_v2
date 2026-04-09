@@ -316,7 +316,7 @@ func r1ProcessRetryEnqueueForCommand(run *Run, commandID, statePath string) []Re
 			continue
 		}
 
-		// Find the original task in the worker's queue and create a retry task
+		// Find the original task in the worker's queue to reconstruct retry metadata
 		originalTask := r1FindOriginalTask(run, workerID, commandID)
 		if originalTask == nil {
 			// Cannot reconstruct task → mark as failed

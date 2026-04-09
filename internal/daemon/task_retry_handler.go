@@ -31,22 +31,29 @@ type TaskRetryHandler struct {
 	logLevel   LogLevel
 }
 
-// NewTaskRetryHandler creates a new task retry handler.
-func NewTaskRetryHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel) *TaskRetryHandler {
-	return NewTaskRetryHandlerWithDeps(maestroDir, cfg, lockMap, logger, logLevel, RealClock{})
+// TaskRetryHandlerOption configures a TaskRetryHandler.
+type TaskRetryHandlerOption func(*TaskRetryHandler)
+
+// WithRetryHandlerClock sets a custom Clock for the TaskRetryHandler.
+func WithRetryHandlerClock(c Clock) TaskRetryHandlerOption {
+	return func(h *TaskRetryHandler) { h.clock = c }
 }
 
-// NewTaskRetryHandlerWithDeps creates a TaskRetryHandler with explicit dependencies.
-func NewTaskRetryHandlerWithDeps(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel, clock Clock) *TaskRetryHandler {
-	return &TaskRetryHandler{
+// NewTaskRetryHandler creates a new task retry handler.
+func NewTaskRetryHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel, opts ...TaskRetryHandlerOption) *TaskRetryHandler {
+	h := &TaskRetryHandler{
 		maestroDir: maestroDir,
 		config:     cfg,
 		lockMap:    lockMap,
-		clock:      clock,
+		clock:      RealClock{},
 		dl:         NewDaemonLoggerFromLegacy("task_retry", logger, logLevel),
 		logger:     logger,
 		logLevel:   logLevel,
 	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // ShouldRetryTask determines if a failed task should be retried.

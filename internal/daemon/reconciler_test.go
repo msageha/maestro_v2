@@ -26,7 +26,7 @@ func newTestReconciler(maestroDir string) *Reconciler {
 	lockMap := lock.NewMutexMap()
 	logger := log.New(&bytes.Buffer{}, "", 0)
 	ep := newTestExecutorProvider(maestroDir, cfg)
-	rh := NewResultHandler(maestroDir, cfg, lockMap, logger, LogLevelDebug, ep)
+	rh := NewResultHandler(maestroDir, cfg, lockMap, logger, LogLevelDebug, ep, RealClock{})
 	return NewReconciler(maestroDir, cfg, lockMap, logger, LogLevelDebug, rh, ep.Factory())
 }
 
@@ -37,7 +37,7 @@ func newTestReconcilerWithFactory(maestroDir string, factory ExecutorFactory) *R
 	lockMap := lock.NewMutexMap()
 	logger := log.New(&bytes.Buffer{}, "", 0)
 	ep := newTestExecutorProvider(maestroDir, cfg)
-	rh := NewResultHandler(maestroDir, cfg, lockMap, logger, LogLevelDebug, ep)
+	rh := NewResultHandler(maestroDir, cfg, lockMap, logger, LogLevelDebug, ep, RealClock{})
 	return NewReconciler(maestroDir, cfg, lockMap, logger, LogLevelDebug, rh, factory)
 }
 

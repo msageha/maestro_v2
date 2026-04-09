@@ -54,21 +54,22 @@ type ResultHandler struct {
 	logger            *log.Logger
 	logLevel          LogLevel
 	clock             Clock
-	execProvider      *ExecutorProvider
-	continuousHandler *ContinuousHandler
-	eventBus          *events.Bus
+	execProvider      ExecutorGetter
+	continuousHandler ContinuousAdvancer
+	eventBus          EventPublisher
 
 	mu sync.RWMutex // protects continuousHandler, eventBus
 }
 
-// NewResultHandler creates a new ResultHandler with a shared ExecutorProvider.
+// NewResultHandler creates a new ResultHandler.
 func NewResultHandler(
 	maestroDir string,
 	cfg model.Config,
 	lockMap *lock.MutexMap,
 	logger *log.Logger,
 	logLevel LogLevel,
-	ep *ExecutorProvider,
+	ep ExecutorGetter,
+	clock Clock,
 ) *ResultHandler {
 	return &ResultHandler{
 		maestroDir:   maestroDir,
@@ -77,7 +78,7 @@ func NewResultHandler(
 		dl:           NewDaemonLoggerFromLegacy("result_handler", logger, logLevel),
 		logger:       logger,
 		logLevel:     logLevel,
-		clock:        ep.clock,
+		clock:        clock,
 		execProvider: ep,
 	}
 }
@@ -90,28 +91,28 @@ func (rh *ResultHandler) getExecutor() (AgentExecutor, error) {
 }
 
 // SetContinuousHandler wires the continuous handler for iteration tracking.
-func (rh *ResultHandler) SetContinuousHandler(ch *ContinuousHandler) {
+func (rh *ResultHandler) SetContinuousHandler(ch ContinuousAdvancer) {
 	rh.mu.Lock()
 	defer rh.mu.Unlock()
 	rh.continuousHandler = ch
 }
 
 // SetEventBus sets the event bus for publishing events.
-func (rh *ResultHandler) SetEventBus(bus *events.Bus) {
+func (rh *ResultHandler) SetEventBus(bus EventPublisher) {
 	rh.mu.Lock()
 	defer rh.mu.Unlock()
 	rh.eventBus = bus
 }
 
 // getEventBus returns the event bus with proper synchronization.
-func (rh *ResultHandler) getEventBus() *events.Bus {
+func (rh *ResultHandler) getEventBus() EventPublisher {
 	rh.mu.RLock()
 	defer rh.mu.RUnlock()
 	return rh.eventBus
 }
 
 // getContinuousHandler returns the continuous handler with proper synchronization.
-func (rh *ResultHandler) getContinuousHandler() *ContinuousHandler {
+func (rh *ResultHandler) getContinuousHandler() ContinuousAdvancer {
 	rh.mu.RLock()
 	defer rh.mu.RUnlock()
 	return rh.continuousHandler

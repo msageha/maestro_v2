@@ -91,8 +91,8 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 			fmt.Sprintf("state update failed: %v (result %s committed, run 'maestro plan rebuild' to fix)", err, resultID))
 	}
 
-	// Phase A2: Retry registration (state then queue — correct lock order)
-	// This runs after phaseA has released queue+result locks, so acquiring
+	// Retry registration (state then queue — correct lock order).
+	// Runs after phaseA has released queue+result locks, so acquiring
 	// state(L2) then queue(L1) does not violate canonical order.
 	if resultWritePhaseAResult.retryTask != nil {
 		retryTask := resultWritePhaseAResult.retryTask
