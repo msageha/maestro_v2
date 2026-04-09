@@ -120,6 +120,81 @@ only レビュアー」としてアサインする [SHOULD]。
 - [B-3] Graph-based Schedulingの高度化 (将来拡張): 簡易ヒューリスティック(A-4)の運用実績蓄積後、グラフ彩色やシンボル単位の競合予測
 アルゴリズムの導入を検討する [MAY]。
 
+## 4.5. 実装フェーズ C: 責務境界と Daemon 移譲（Phase A〜B の前提整理）
+
+Phase A〜B の知能化機能を安全かつ効率的に実現するため、Agent（LLM）と Daemon（Go プロセス）の責務境界を明確化する。
+
+### 4.5.1 責務境界原則
+
+以下の原則に基づき、各機能の責務配置を決定する。
+
+1. **決定論的処理の Daemon 移譲 [MUST]**: LLM 推論を必要としない決定論的処理（数値計算、パターンマッチ、閾値比較等）は Daemon が担う。Agent にトークンを消費させてはならない。
+2. **Planner 責務の意味的判断への限定 [SHOULD]**: Planner の責務はタスク分解、品質評価の解釈、実装方針の選択等の意味的判断に限定する。構造的・数値的な前処理結果を Daemon から受け取り、判断に集中する。
+3. **構造的メトリクスの Daemon 前処理 [SHOULD]**: ファイル数、依存関係グラフ、変更行数、Diff サイズ等の構造的・数値的メトリクスの計算は Daemon が前処理し、Agent には結果のみ提供する。
+
+**根拠**: Daemon 移譲により以下のメリットが得られる。
+- **トークン浪費回避**: 決定論的計算に LLM トークンを消費しない
+- **レイテンシ改善**: Go プロセスによる μ 秒〜ms オーダーの処理（LLM 経由では秒〜数十秒）
+- **一貫性保証**: 機械的判定により結果のブレを排除
+
+### 4.5.2 C-1〜C-8 責務マトリクス
+
+Phase A〜B で導入予定の各機能について、LLM 依存度と Daemon 移譲推奨度を以下に定義する。
+
+| 機能 | 概要 | 判断主体 | 実行主体 | LLM 依存度 | Daemon 移譲推奨度 | 移譲先コンポーネント (SHOULD) | 移譲メリット |
+|------|------|---------|---------|-----------|-----------------|---------------------------|------------|
+| C-1 | 進化的コード品質改善 | Planner | Worker + Daemon | 高 | 中 | `quality/engine.go` 拡張 | Fitness 数値計算の LLM トークン節約 |
+| C-2 | 適応的モデル選択（UCB バンディット） | Daemon | Daemon | なし | 極高 | `worker_assign.go` の `GetModelForBloomLevel()` 置換 | LLM トークン完全不要、μ 秒オーダーレイテンシ、グローバル統計による最適化 |
+| C-3 | 自律的検証ループ | Planner | Worker + Daemon | 高 | 低〜中 | （リトライ閾値判定のみ） | リトライ判定レイテンシ改善 |
+| C-4 | 探索的実装最適化 | Daemon（木管理）+ Planner（方針） | Worker + Daemon | 混合 | 高 | `daemon/worktree/` との統合 | 探索判断 ms 化（Planner 経由なら数秒〜数十秒）、探索木管理で Planner 消費ゼロ |
+| C-5 | 自己改善（学習知見 DB） | Daemon（DB）+ Planner（最適化） | Daemon + Worker | 中 | 高（一部） | `daemon/learnings/` 拡張 | 失敗パターン即座マッチ |
+| C-6 | 適応的計算深度 | Daemon（前処理）+ Planner（判断） | Daemon + Worker | 中 | 中〜高 | 新コンポーネント (SHOULD) | 構造指標プリコンピュート |
+| C-7 | マルチランタイム対応 | Planner（選択）+ Daemon（起動） | Daemon | なし | 極高 | `formation/tmux_formation.go` + `agent/launcher.go` 拡張 | Daemon 既存責務（formation/）の自然な拡張、Worker 禁止操作（D006 tmux）との整合 |
+| C-8 | Feature Gate（機能ゲート） | Planner（レベル判断）+ Daemon（適用） | Daemon | 低〜中 | 高 | `quality/engine.go` の `RuleEvaluator` 拡張 | プロファイル適用（許可機能フィルタリング）の一貫性保証、Planner 判断の簡素化 |
+
+#### 責務境界の詳細
+
+**C-2（適応的モデル選択）**: UCB1 式（`avg_reward + c * sqrt(ln(N) / n_i)`）は純粋な数学計算であり、LLM トークンを消費する Agent に任せてはならない。Daemon が MUST 計算する。グローバルな統計情報（各モデルの成功率・使用回数）へのアクセスも Daemon が一元管理する。
+
+**C-7（マルチランタイム）**: ランタイム起動・tmux セッション管理は Daemon の既存責務（`formation/`）の延長であり、Agent が直接プロセス管理を行ってはならない。Worker の破壊的操作禁止ルール（D006: kill/tmux 操作禁止）とも整合する。Planner はランタイム種別の選択（意味的判断）のみを担う。
+
+**C-8（Feature Gate）**: プロファイル適用（許可機能フィルタリング）は機械的判定であり、Daemon が MUST 実行する。Planner はタスクの複雑度レベルの意味的判断のみを担う。これにより、プロファイル適用の一貫性が保証され、Planner の判断負荷が軽減される。
+
+### 4.5.3 Daemon 拡張方針
+
+移譲推奨度「高」以上の機能について、Daemon 側の具体的な拡張ポイントを以下に定義する。
+
+| 移譲推奨度 | 機能 | 拡張先 (SHOULD) | 拡張内容 |
+|-----------|------|----------------|---------|
+| 極高 | C-2 | `worker_assign.go` | `GetModelForBloomLevel()` を UCB1 ベースのアーム選択に置換。報酬テーブルを JSONL または SQLite で永続化 [SHOULD] |
+| 極高 | C-7 | `formation/tmux_formation.go`, `agent/launcher.go` | ランタイム定義テーブル（Node/Python/Rust 等）の追加。Planner 指定のランタイム種別に基づく tmux セッション・Worker 起動の拡張 [SHOULD] |
+| 高 | C-4 | `daemon/worktree/` | 探索木（Tree of Thought）の状態管理。分岐・剪定・選択の機械的操作を Daemon が実行し、Planner には方針設定 API のみ公開 [SHOULD] |
+| 高 | C-5 | `daemon/learnings/` | 学習知見 DB の拡張。失敗パターンのハッシュインデックス追加による即座マッチ機能 [SHOULD] |
+| 高 | C-8 | `quality/engine.go` | `RuleEvaluator` にプロファイルベースの機能ゲート判定を追加。Planner が設定した複雑度レベルに応じた許可機能リストの機械的フィルタリング [SHOULD] |
+
+### 4.5.4 Planner 負荷軽減方針
+
+Daemon への責務移譲により、Planner の負荷を以下の観点で軽減する [SHOULD]。
+
+1. **構造的指標の Daemon 前処理**: ファイル数、依存関係グラフ、変更行数等の構造的メトリクスを Daemon が事前計算し、Planner には集約結果のみ提供する。Planner はこれらの数値を基に意味的判断（タスク分割粒度、優先度等）に集中できる。
+2. **C-2 モデル選択の Daemon 完全移譲**: UCB バンディットによるモデル選択は Daemon が完全に自律実行する。Planner はモデル選択に関与せず、タスク設計に専念する。
+3. **C-4 探索木操作の Daemon 移譲**: 探索木の分岐・剪定・状態管理は Daemon が担う。Planner は探索方針（深さ優先/幅優先、最大分岐数等）の設定のみを行う。
+4. **C-8 プロファイル適用の Daemon 移譲**: Planner はタスクの複雑度レベル（Bloom Taxonomy 等）の判断のみを行い、そのレベルに応じた機能ゲートの適用は Daemon が実行する。
+
+### 4.5.5 Anti-Requirements（§5）整合性
+
+Phase C の各原則・機能が §5 の Anti-Requirements と矛盾しないことを以下に確認する。
+
+| §5 項目 | 整合性確認 |
+|---------|----------|
+| 1. LLM による Fitness 判定の上書き禁止 | C-1 の Fitness 数値計算を Daemon 移譲することで、LLM が Fitness を上書きする余地をさらに排除。**整合** |
+| 2. LLM 同士の多数決の採用禁止 | C-2 の UCB バンディットは統計的手法であり多数決ではない。判断は Daemon の数学計算に基づく。**整合** |
+| 3. Frankenstein マージ禁止 | C-4 の探索的実装は独立 Worktree で実行し、勝者を丸ごと採用。合成は行わない。**整合** |
+| 4. Worker 間の直接通信禁止 | C-7 のマルチランタイムも Daemon 経由の Hub-and-Spoke 型を維持。**整合** |
+| 5. 共有可変状態の導入禁止 | C-5 の学習知見 DB は Daemon が一元管理し、Agent は ReadOnly で参照。**整合** |
+| 6. Verify 不可タスクへの Multi-rollout 禁止 | C-4 の探索的実装は verify.yaml 必須を前提とする。**整合** |
+| 7. 初期段階での Embedding RAG・Bandit 禁止 | C-2 の UCB バンディットは Phase C（Phase S 完了後）で導入するため、§5-7 の「最初から」の制約と矛盾しない。ただし Phase S の Trace ログ蓄積（S3）が前提条件となる [MUST]。**整合** |
+
 ———
 
 ## 5. やらないこと (Anti-Requirements / Out of Scope)
@@ -156,3 +231,8 @@ only レビュアー」としてアサインする [SHOULD]。
     - 異種モデル Reviewer の指摘事項がマージをブロックせず、かつその採用率がデータとして蓄積されていること。
 - Phase B 完了基準:
     - 条件を満たしたMulti-rolloutタスクにおいて、LLMの主観によらず、定義されたFitness関数によって勝者が自動的に選定されること。
+- Phase C 完了基準:
+    - C-1〜C-8 の各機能について「判断主体」と「実行主体」が §4.5.2 のマトリクスに従い実装されていること。
+    - Daemon 移譲推奨度「極高」の機能（C-2, C-7）が Daemon 内で完結し、Agent の LLM トークンを消費しないこと。
+    - Daemon 移譲推奨度「高」の機能（C-4, C-5, C-8）の機械的処理部分が Daemon に移譲され、Planner は意味的判断のみを担っていること。
+    - §4.5.5 の Anti-Requirements 整合性が維持されていること（特に §5-7 との整合：Phase S の Trace ログ蓄積が C-2 導入の前提条件として検証済みであること）。
