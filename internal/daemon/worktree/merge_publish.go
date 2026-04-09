@@ -346,7 +346,12 @@ func (wm *Manager) SyncFromIntegration(commandID string, workerIDs []string) err
 			// Collect conflict files BEFORE aborting (abort clears unmerged state)
 			var conflictFiles []string
 			if hasConflict {
-				conflictFiles, _ = wm.getConflictFilesInDir(ws.Path)
+				var cfErr error
+				conflictFiles, cfErr = wm.getConflictFilesInDir(ws.Path)
+				if cfErr != nil {
+					wm.log(core.LogLevelWarn, "sync_get_conflict_files command=%s worker=%s error=%v",
+						commandID, workerID, cfErr)
+				}
 			}
 
 			// Abort the merge to restore worktree state

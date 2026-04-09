@@ -2,6 +2,7 @@ package quality
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
@@ -368,7 +369,11 @@ func validateFilePermissions(path string) error {
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}
-	defer f.Close()
+	defer func() {
+		if cerr := f.Close(); cerr != nil {
+			log.Printf("warning: close %s: %v", path, cerr)
+		}
+	}()
 
 	fi, err := f.Stat()
 	if err != nil {
