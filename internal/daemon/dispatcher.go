@@ -14,10 +14,8 @@ import (
 
 // errExecutorInit is re-exported from core via core_aliases.go.
 
-// maxGateEvaluations is the maximum number of gate evaluation entries kept in memory.
-const maxGateEvaluations = 1000
-
-// Dispatcher handles priority sorting and agent_executor dispatch.
+// Dispatcher handles priority sorting, agent_executor dispatch, quality gate
+// evaluation, worktree path resolution, and event publication.
 type Dispatcher struct {
 	maestroDir        string
 	config            model.Config
@@ -30,8 +28,7 @@ type Dispatcher struct {
 	mu                sync.RWMutex // protects eventBus, qualityGate, worktreeManager
 	eventBus          *events.Bus
 	qualityGate       *QualityGateDaemon
-	gateEvaluations   map[string]*model.QualityGateEvaluation // task_id -> evaluation
-	gateEvalMutex     sync.RWMutex
+	gateEvaluator     *QualityGateEvaluator
 
 	worktreeManager *WorktreeManager
 }
@@ -42,30 +39,22 @@ type Dispatcher struct {
 // NewDispatcher creates a new Dispatcher.
 func NewDispatcher(maestroDir string, cfg model.Config, lm QueueLeaseManager, logger *log.Logger, logLevel LogLevel, ep ExecutorGetter, clock Clock) *Dispatcher {
 	dl := NewDaemonLoggerFromLegacy("dispatcher", logger, logLevel)
-	return &Dispatcher{
-		maestroDir:      maestroDir,
-		config:          cfg,
-		leaseManager:    lm,
-		dl:              dl,
-		logger:          logger,
-		logLevel:        logLevel,
-		clock:           clock,
-		gateEvaluations: make(map[string]*model.QualityGateEvaluation),
-		execProvider:    ep,
+	disp := &Dispatcher{
+		maestroDir:   maestroDir,
+		config:       cfg,
+		leaseManager: lm,
+		dl:           dl,
+		logger:       logger,
+		logLevel:     logLevel,
+		clock:        clock,
+		execProvider: ep,
 	}
+	disp.gateEvaluator = NewQualityGateEvaluator(cfg, clock, dl, disp.getQualityGate)
+	return disp
 }
 
 // getExecutor returns the shared executor instance, creating it lazily on first call.
-// On failure, the error is NOT cached — subsequent calls will retry with exponential
-// backoff to avoid hammering a persistently broken resource.
-// The Executor is safe for concurrent use (log.Logger uses internal mutex,
-// os.File in append mode is POSIX-safe, all other fields are immutable).
-//
-// L-3: The exponential backoff (1s→2s→4s→8s→16s cap) and reset-on-success behavior
-// is intentional for testing and production use. ExecutorProvider.SetFactory resets
-// the backoff state to allow immediate retry with a new factory, which is the
-// expected behavior for test isolation. In production, the backoff prevents tight
-// retry loops when the underlying resource (e.g., log file) is persistently broken.
+// Retries with exponential backoff on failure; safe for concurrent use.
 func (disp *Dispatcher) getExecutor() (AgentExecutor, error) {
 	return disp.execProvider.GetExecutor()
 }
@@ -265,41 +254,24 @@ func (disp *Dispatcher) DispatchCommand(cmd *model.Command) error {
 // DispatchTask dispatches a task to a worker agent.
 func (disp *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 	// Pre-task quality gate check and record evaluation result
-	var gateEvaluation *model.QualityGateEvaluation
-	if disp.shouldEvaluateQualityGates() && disp.config.QualityGates.Enforcement.PreTaskCheck {
-		evaluation, err := disp.evaluatePreTaskGateWithResult(task, workerID)
-		gateEvaluation = evaluation
+	if disp.gateEvaluator.ShouldEvaluate() && disp.config.QualityGates.Enforcement.PreTaskCheck {
+		gateEvaluation, err := disp.gateEvaluator.EvaluatePreTask(task, workerID)
 
 		if err != nil {
 			if disp.config.QualityGates.Enforcement.FailureAction == "block" {
 				disp.log(LogLevelError, "dispatch_task_blocked_by_quality_gate id=%s worker=%s error=%v",
 					task.ID, workerID, err)
-				// Store evaluation result for later recording
-				disp.storeGateEvaluation(task.ID, gateEvaluation)
+				disp.gateEvaluator.StoreEvaluation(task.ID, gateEvaluation)
 				return fmt.Errorf("quality gate check failed: %w", err)
 			}
-			// If action is "warn", just log the violation
 			disp.log(LogLevelWarn, "dispatch_task_quality_gate_violation id=%s worker=%s error=%v",
 				task.ID, workerID, err)
 		}
-		// Store evaluation result for later recording
-		disp.storeGateEvaluation(task.ID, gateEvaluation)
+		disp.gateEvaluator.StoreEvaluation(task.ID, gateEvaluation)
 	} else if !disp.config.QualityGates.Enabled {
-		// Record that gates were skipped
-		gateEvaluation = &model.QualityGateEvaluation{
-			Passed:        true,
-			SkippedReason: "disabled",
-			EvaluatedAt:   disp.clock.Now().Format(time.RFC3339),
-		}
-		disp.storeGateEvaluation(task.ID, gateEvaluation)
+		disp.gateEvaluator.StoreEvaluation(task.ID, disp.gateEvaluator.SkippedEvaluation("disabled"))
 	} else if disp.config.QualityGates.SkipGates {
-		// Record that emergency mode was used
-		gateEvaluation = &model.QualityGateEvaluation{
-			Passed:        true,
-			SkippedReason: "emergency_mode",
-			EvaluatedAt:   disp.clock.Now().Format(time.RFC3339),
-		}
-		disp.storeGateEvaluation(task.ID, gateEvaluation)
+		disp.gateEvaluator.StoreEvaluation(task.ID, disp.gateEvaluator.SkippedEvaluation("emergency_mode"))
 	}
 
 	exec, err := disp.getExecutor()
@@ -406,134 +378,3 @@ func (disp *Dispatcher) log(level LogLevel, format string, args ...any) {
 	disp.dl.Logf(level, format, args...)
 }
 
-// shouldEvaluateQualityGates determines if quality gates should be evaluated
-func (disp *Dispatcher) shouldEvaluateQualityGates() bool {
-	// Skip if quality gates are disabled
-	if !disp.config.QualityGates.Enabled {
-		return false
-	}
-
-	// Skip if emergency mode is enabled (--skip-gates)
-	if disp.config.QualityGates.SkipGates {
-		disp.log(LogLevelInfo, "quality_gates_skipped reason=emergency_mode")
-		return false
-	}
-
-	// Skip if quality gate daemon is not available
-	if disp.getQualityGate() == nil {
-		disp.log(LogLevelDebug, "quality_gates_skipped reason=daemon_not_available")
-		return false
-	}
-
-	return true
-}
-
-// evaluatePreTaskGateWithResult evaluates quality gates before task execution and returns the result.
-//
-// L-7: There is a TOCTOU window between this pre-task gate check and actual task dispatch.
-// A gate condition could change between evaluation and dispatch. This is acceptable because:
-//   - Phase C's epoch fencing is the authoritative guard against stale dispatches.
-//   - The pre-task gate check is a best-effort early filter (advisory), not a guarantee.
-//   - Making the check and dispatch fully atomic would require holding scanMu across the
-//     entire dispatch path, which would serialize all dispatches and hurt throughput.
-//
-// The three-phase design (Phase A: scan, Phase B: dispatch, Phase C: commit with fencing)
-// ensures correctness even when pre-task checks are slightly stale.
-func (disp *Dispatcher) evaluatePreTaskGateWithResult(task *model.Task, workerID string) (*model.QualityGateEvaluation, error) {
-	qg := disp.getQualityGate()
-	if qg == nil {
-		return nil, nil
-	}
-
-	// NOTE: We do NOT emit TaskStartEvent here. The EventBus publish in
-	// DispatchTask (after successful dispatch) triggers the subscription
-	// in subscribeQualityGateEvents, which forwards the event to
-	// QualityGateDaemon. Emitting here would cause duplicate delivery.
-
-	// Perform synchronous evaluation
-	context := map[string]interface{}{
-		"task_id":    task.ID,
-		"command_id": task.CommandID,
-		"agent_id":   workerID,
-		"priority":   task.Priority,
-		"attempts":   task.Attempts,
-	}
-
-	// Use the evaluateGateWithResult method for synchronous evaluation
-	result, err := qg.evaluateGateWithResult("pre_task", context)
-
-	// Convert to model.QualityGateEvaluation
-	evaluation := &model.QualityGateEvaluation{
-		Passed:      result != nil && result.Passed,
-		EvaluatedAt: disp.clock.Now().Format(time.RFC3339),
-	}
-
-	if result != nil {
-		evaluation.Action = string(result.Action)
-		if len(result.FailedGates) > 0 {
-			evaluation.FailedGates = make([]string, len(result.FailedGates))
-			for i, gate := range result.FailedGates {
-				evaluation.FailedGates[i] = gate
-			}
-		}
-	}
-
-	if err != nil {
-		return evaluation, fmt.Errorf("evaluation failed: %w", err)
-	}
-
-	if result == nil {
-		return evaluation, fmt.Errorf("evaluation returned nil result")
-	}
-
-	if !result.Passed {
-		return evaluation, fmt.Errorf("quality gate check failed: %v", result.FailedGates)
-	}
-
-	return evaluation, nil
-}
-
-// storeGateEvaluation stores the gate evaluation for a task.
-// Evicts oldest entries when the map exceeds maxGateEvaluations.
-func (disp *Dispatcher) storeGateEvaluation(taskID string, evaluation *model.QualityGateEvaluation) {
-	if evaluation == nil {
-		return
-	}
-
-	disp.gateEvalMutex.Lock()
-	defer disp.gateEvalMutex.Unlock()
-	disp.gateEvaluations[taskID] = evaluation
-
-	if len(disp.gateEvaluations) > maxGateEvaluations {
-		disp.evictOldGateEvaluationsLocked()
-	}
-}
-
-// evictOldGateEvaluationsLocked removes the oldest gate evaluation entries to bring
-// the map back to maxGateEvaluations/2. Caller must hold gateEvalMutex.
-func (disp *Dispatcher) evictOldGateEvaluationsLocked() {
-	type entry struct {
-		taskID      string
-		evaluatedAt time.Time
-	}
-	entries := make([]entry, 0, len(disp.gateEvaluations))
-	for id, eval := range disp.gateEvaluations {
-		t, err := time.Parse(time.RFC3339, eval.EvaluatedAt)
-		if err != nil {
-			// Malformed timestamp — evict immediately
-			t = time.Time{}
-		}
-		entries = append(entries, entry{taskID: id, evaluatedAt: t})
-	}
-
-	// Sort oldest first
-	sort.Slice(entries, func(i, j int) bool {
-		return entries[i].evaluatedAt.Before(entries[j].evaluatedAt)
-	})
-
-	// Remove oldest entries until we reach half the cap
-	target := maxGateEvaluations / 2
-	for i := 0; i < len(entries) && len(disp.gateEvaluations) > target; i++ {
-		delete(disp.gateEvaluations, entries[i].taskID)
-	}
-}
