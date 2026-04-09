@@ -11,36 +11,65 @@ import (
 
 // --- Phase C apply methods ---
 
+// dispatchApplyOps abstracts type-specific dispatch result operations for the
+// unified fence-check + success/failure logic. Follows the same callback pattern
+// as busyCheckOps.
+type dispatchApplyOps struct {
+	kind           string
+	id             string
+	status         model.Status
+	leaseEpoch     int
+	leaseExpiresAt *string
+	onFailure      func(dr dispatchResult) // type-specific failure handling
+	onSuccess      func()                  // type-specific success handling
+	markDirty      func()
+}
+
+// applyDispatchCore contains the shared fence-stale check, success/failure
+// dispatch, and dirty-marking logic for command, task, and notification
+// dispatch results.
+func (qh *QueueHandler) applyDispatchCore(dr dispatchResult, ops dispatchApplyOps) {
+	if isFenceStale(ops.status, ops.leaseEpoch, ops.leaseExpiresAt, dr.Item.Epoch, dr.Item.ExpiresAt) {
+		qh.log(LogLevelWarn, "dispatch_fence_stale kind=%s id=%s epoch=%d/%d",
+			ops.kind, ops.id, ops.leaseEpoch, dr.Item.Epoch)
+		return
+	}
+	if !dr.Success {
+		ops.onFailure(dr)
+	} else {
+		ops.onSuccess()
+	}
+	ops.markDirty()
+}
+
 func (qh *QueueHandler) applyCommandDispatchResult(dr dispatchResult, cq *model.CommandQueue, dirty *bool) {
 	for i := range cq.Commands {
 		cmd := &cq.Commands[i]
 		if cmd.ID != dr.Item.Command.ID {
 			continue
 		}
-		// Epoch fencing: verify entry hasn't changed since Phase A
-		if isFenceStale(cmd.Status, cmd.LeaseEpoch, cmd.LeaseExpiresAt, dr.Item.Epoch, dr.Item.ExpiresAt) {
-			qh.log(LogLevelWarn, "dispatch_fence_stale kind=command id=%s epoch=%d/%d",
-				cmd.ID, cmd.LeaseEpoch, dr.Item.Epoch)
-			return
-		}
-		if !dr.Success {
-			// For transient busy detection errors, release lease to allow immediate retry
-			if errors.Is(dr.Error, agent.ErrBusyUndecided) {
-				qh.log(LogLevelWarn, "dispatch_failed_undecided_release type=command id=%s", cmd.ID)
-				if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
-					qh.log(LogLevelError, "release_command_lease_failed id=%s error=%v", cmd.ID, err)
-				} else {
-					qh.scanCounters.LeaseReleases++
+		qh.applyDispatchCore(dr, dispatchApplyOps{
+			kind:           "command",
+			id:             cmd.ID,
+			status:         cmd.Status,
+			leaseEpoch:     cmd.LeaseEpoch,
+			leaseExpiresAt: cmd.LeaseExpiresAt,
+			onFailure: func(dr dispatchResult) {
+				// For transient busy detection errors, release lease to allow immediate retry
+				if errors.Is(dr.Error, agent.ErrBusyUndecided) {
+					qh.log(LogLevelWarn, "dispatch_failed_undecided_release type=command id=%s", cmd.ID)
+					if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
+						qh.log(LogLevelError, "release_command_lease_failed id=%s error=%v", cmd.ID, err)
+					} else {
+						qh.scanCounters.LeaseReleases++
+					}
+					return
 				}
-				*dirty = true
-				return
-			}
-
-			qh.log(LogLevelWarn, "dispatch_failed_lease_kept type=command id=%s error=%v", cmd.ID, dr.Error)
-		} else {
-			qh.scanCounters.CommandsDispatched++
-		}
-		*dirty = true
+				qh.log(LogLevelWarn, "dispatch_failed_lease_kept type=command id=%s error=%v", cmd.ID, dr.Error)
+			},
+			onSuccess: func() { qh.scanCounters.CommandsDispatched++ },
+			markDirty: func() { *dirty = true },
+		})
 		return
 	}
 }
@@ -52,21 +81,22 @@ func (qh *QueueHandler) applyTaskDispatchResult(dr dispatchResult, taskQueues ma
 			if task.ID != dr.Item.Task.ID {
 				continue
 			}
-			if isFenceStale(task.Status, task.LeaseEpoch, task.LeaseExpiresAt, dr.Item.Epoch, dr.Item.ExpiresAt) {
-				qh.log(LogLevelWarn, "dispatch_fence_stale kind=task id=%s epoch=%d/%d",
-					task.ID, task.LeaseEpoch, dr.Item.Epoch)
-				return
-			}
-			if !dr.Success {
-				qh.log(LogLevelWarn, "dispatch_failed type=task id=%s error=%v", task.ID, dr.Error)
-				if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
-					qh.log(LogLevelError, "release_task_lease task=%s error=%v", task.ID, err)
-				}
-				qh.scanCounters.LeaseReleases++
-			} else {
-				qh.scanCounters.TasksDispatched++
-			}
-			taskDirty[queueFile] = true
+			qh.applyDispatchCore(dr, dispatchApplyOps{
+				kind:           "task",
+				id:             task.ID,
+				status:         task.Status,
+				leaseEpoch:     task.LeaseEpoch,
+				leaseExpiresAt: task.LeaseExpiresAt,
+				onFailure: func(dr dispatchResult) {
+					qh.log(LogLevelWarn, "dispatch_failed type=task id=%s error=%v", task.ID, dr.Error)
+					if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
+						qh.log(LogLevelError, "release_task_lease task=%s error=%v", task.ID, err)
+					}
+					qh.scanCounters.LeaseReleases++
+				},
+				onSuccess: func() { qh.scanCounters.TasksDispatched++ },
+				markDirty: func() { taskDirty[queueFile] = true },
+			})
 			return
 		}
 	}
@@ -78,21 +108,24 @@ func (qh *QueueHandler) applyNotificationDispatchResult(dr dispatchResult, nq *m
 		if ntf.ID != dr.Item.Notification.ID {
 			continue
 		}
-		if isFenceStale(ntf.Status, ntf.LeaseEpoch, ntf.LeaseExpiresAt, dr.Item.Epoch, dr.Item.ExpiresAt) {
-			qh.log(LogLevelWarn, "dispatch_fence_stale kind=notification id=%s epoch=%d/%d",
-				ntf.ID, ntf.LeaseEpoch, dr.Item.Epoch)
-			return
-		}
-		if !dr.Success {
-			qh.log(LogLevelWarn, "dispatch_failed type=notification id=%s error=%v", ntf.ID, dr.Error)
-			if err := qh.leaseManager.ReleaseNotificationLease(ntf); err != nil {
-				qh.log(LogLevelError, "release_notification_lease id=%s error=%v", ntf.ID, err)
-			}
-		} else {
-			ntf.Status = model.StatusCompleted
-			ntf.UpdatedAt = qh.clock.Now().UTC().Format(time.RFC3339)
-		}
-		*dirty = true
+		qh.applyDispatchCore(dr, dispatchApplyOps{
+			kind:           "notification",
+			id:             ntf.ID,
+			status:         ntf.Status,
+			leaseEpoch:     ntf.LeaseEpoch,
+			leaseExpiresAt: ntf.LeaseExpiresAt,
+			onFailure: func(dr dispatchResult) {
+				qh.log(LogLevelWarn, "dispatch_failed type=notification id=%s error=%v", ntf.ID, dr.Error)
+				if err := qh.leaseManager.ReleaseNotificationLease(ntf); err != nil {
+					qh.log(LogLevelError, "release_notification_lease id=%s error=%v", ntf.ID, err)
+				}
+			},
+			onSuccess: func() {
+				ntf.Status = model.StatusCompleted
+				ntf.UpdatedAt = qh.clock.Now().UTC().Format(time.RFC3339)
+			},
+			markDirty: func() { *dirty = true },
+		})
 		return
 	}
 }
