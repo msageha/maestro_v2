@@ -1,5 +1,7 @@
 package model
 
+// Metrics は Daemon が収集するシステム全体のメトリクスを表す。
+// キュー深度、カウンター、ヘルスチェック情報を格納する。
 type Metrics struct {
 	SchemaVersion   int             `yaml:"schema_version"`
 	FileType        string          `yaml:"file_type"`
@@ -15,12 +17,15 @@ type Metrics struct {
 	UpdatedAt       *string `yaml:"updated_at"`
 }
 
+// QueueDepth は各キューの現在の深度（未処理アイテム数）を表す。
 type QueueDepth struct {
 	Planner      int            `yaml:"planner"`
 	Orchestrator int            `yaml:"orchestrator"`
 	Workers      map[string]int `yaml:"workers"`
 }
 
+// MetricsCounters はシステム全体の累積カウンターを保持する。
+// ディスパッチ数、完了数、失敗数、リース操作数などを追跡する。
 type MetricsCounters struct {
 	CommandsDispatched    int `yaml:"commands_dispatched"`
 	TasksDispatched       int `yaml:"tasks_dispatched"`

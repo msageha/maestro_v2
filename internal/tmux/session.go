@@ -268,7 +268,11 @@ var unsafeSessionChars = regexp.MustCompile(`[^a-zA-Z0-9_-]`)
 
 // GetSessionName returns the current tmux session name (goroutine-safe).
 func GetSessionName() string {
-	return sessionName.Load().(string)
+	v, ok := sessionName.Load().(string)
+	if !ok {
+		return "maestro"
+	}
+	return v
 }
 
 // exactSessionTarget returns the session name prefixed with "=" to force

@@ -1,4 +1,3 @@
-// Package plan handles plan submission, validation, state management, and completion logic.
 package plan
 
 import (
@@ -167,7 +166,6 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm StateStore) (*
 		return nil, fmt.Errorf("save state (planning): %w", err)
 	}
 
-	// Write queue entries
 	if err := writeQueueEntries(opts.MaestroDir, assignments, tasks, nameToID, opts.CommandID, now, opts.LockMap); err != nil {
 		rollbackQueueEntries(opts.MaestroDir, tasks, nameToID, assignMap, opts.LockMap)
 		if delErr := sm.DeleteState(opts.CommandID); delErr != nil {
@@ -385,7 +383,6 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 		assignMap[a.TaskName] = a
 	}
 
-	// Update state
 	now := time.Now().UTC().Format(time.RFC3339)
 	for _, t := range input.Tasks {
 		taskID := nameToID[t.Name]
@@ -413,7 +410,6 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	}
 	state.ExpectedTaskCount = len(state.RequiredTaskIDs) + len(state.OptionalTaskIDs)
 
-	// Write queue entries
 	if err := writeQueueEntries(opts.MaestroDir, assignments, input.Tasks, nameToID, opts.CommandID, now, opts.LockMap); err != nil {
 		// Rollback: remove partial queue writes, revert state to awaiting_fill, and persist
 		rollbackQueueEntries(opts.MaestroDir, input.Tasks, nameToID, assignMap, opts.LockMap)

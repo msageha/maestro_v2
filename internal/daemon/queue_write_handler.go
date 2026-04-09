@@ -161,46 +161,9 @@ func (a *API) handleQueueWriteCommand(params QueueWriteParams) *uds.Response {
 // "Planner-bypass task injection" Critical issue.
 func (a *API) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 	d := a.d
-	// The queue_write task UDS path is reserved for system-internal/test
-	// callers ONLY. Planner / Daemon-retry callers must mint task IDs via
-	// model.NewTaskID directly inside their own packages — they must NOT
-	// reach the queue via this UDS entrypoint. Accepting only
-	// TaskIDCallerSystemInternal here makes "planner-submit" / "daemon-retry"
-	// values un-spoofable through UDS, which closes the Planner-bypass hole.
-	caller := model.TaskIDCaller(params.SystemCaller)
-	if caller != model.TaskIDCallerSystemInternal {
-		return uds.ErrorResponse(uds.ErrCodeValidation,
-			"queue_write type=task is internal-only; task creation must go through Planner (plan submit / plan retry-task). Only system-internal callers may use this path.")
-	}
-	if params.CommandID == "" {
-		return uds.ErrorResponse(uds.ErrCodeValidation, "command_id is required for task")
-	}
-	if err := validate.ValidateID(params.CommandID); err != nil {
-		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid command_id: %v", err))
-	}
-	if params.Content == "" {
-		return uds.ErrorResponse(uds.ErrCodeValidation, "content is required for task")
-	}
-	if params.Purpose == "" {
-		return uds.ErrorResponse(uds.ErrCodeValidation, "purpose is required for task")
-	}
-	if params.AcceptanceCriteria == "" {
-		return uds.ErrorResponse(uds.ErrCodeValidation, "acceptance_criteria is required for task")
-	}
-	if params.BloomLevel < 1 || params.BloomLevel > 6 {
-		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("bloom_level must be 1-6, got %d", params.BloomLevel))
-	}
-	if params.Target == "" {
-		return uds.ErrorResponse(uds.ErrCodeValidation, "target is required for task")
-	}
 
-	if d.config.Limits.MaxEntryContentBytes > 0 && len(params.Content) > d.config.Limits.MaxEntryContentBytes {
-		return uds.ErrorResponse(uds.ErrCodeValidation,
-			fmt.Sprintf("content exceeds max size: %d > %d bytes", len(params.Content), d.config.Limits.MaxEntryContentBytes))
-	}
-
-	// blocked_by validation: ID format and no duplicates
-	if resp := validateBlockedBy(params.BlockedBy); resp != nil {
+	// Validate all fields before acquiring locks
+	if resp := validateTaskWriteParams(params, d.config.Limits.MaxEntryContentBytes); resp != nil {
 		return resp
 	}
 
@@ -252,7 +215,7 @@ func (a *API) handleQueueWriteTask(params QueueWriteParams) *uds.Response {
 		}
 	}
 
-	id, err := model.NewTaskID(caller)
+	id, err := model.NewTaskID(model.TaskIDCaller(params.SystemCaller))
 	if err != nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("generate ID: %v", err))
 	}
@@ -576,6 +539,51 @@ func (a *API) cancelRequestUnsubmitted(params QueueWriteParams) *uds.Response {
 }
 
 // --- Validation helpers ---
+
+// validateTaskWriteParams validates all fields of a task queue_write request
+// before any file locks are acquired. Returns nil if all checks pass.
+func validateTaskWriteParams(params QueueWriteParams, maxEntryContentBytes int) *uds.Response {
+	// The queue_write task UDS path is reserved for system-internal/test
+	// callers ONLY. Planner / Daemon-retry callers must mint task IDs via
+	// model.NewTaskID directly inside their own packages — they must NOT
+	// reach the queue via this UDS entrypoint. Accepting only
+	// TaskIDCallerSystemInternal here makes "planner-submit" / "daemon-retry"
+	// values un-spoofable through UDS, which closes the Planner-bypass hole.
+	caller := model.TaskIDCaller(params.SystemCaller)
+	if caller != model.TaskIDCallerSystemInternal {
+		return uds.ErrorResponse(uds.ErrCodeValidation,
+			"queue_write type=task is internal-only; task creation must go through Planner (plan submit / plan retry-task). Only system-internal callers may use this path.")
+	}
+	if params.CommandID == "" {
+		return uds.ErrorResponse(uds.ErrCodeValidation, "command_id is required for task")
+	}
+	if err := validate.ValidateID(params.CommandID); err != nil {
+		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid command_id: %v", err))
+	}
+	if params.Content == "" {
+		return uds.ErrorResponse(uds.ErrCodeValidation, "content is required for task")
+	}
+	if params.Purpose == "" {
+		return uds.ErrorResponse(uds.ErrCodeValidation, "purpose is required for task")
+	}
+	if params.AcceptanceCriteria == "" {
+		return uds.ErrorResponse(uds.ErrCodeValidation, "acceptance_criteria is required for task")
+	}
+	if params.BloomLevel < 1 || params.BloomLevel > 6 {
+		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("bloom_level must be 1-6, got %d", params.BloomLevel))
+	}
+	if params.Target == "" {
+		return uds.ErrorResponse(uds.ErrCodeValidation, "target is required for task")
+	}
+	if maxEntryContentBytes > 0 && len(params.Content) > maxEntryContentBytes {
+		return uds.ErrorResponse(uds.ErrCodeValidation,
+			fmt.Sprintf("content exceeds max size: %d > %d bytes", len(params.Content), maxEntryContentBytes))
+	}
+	if resp := validateBlockedBy(params.BlockedBy); resp != nil {
+		return resp
+	}
+	return nil
+}
 
 func validateBlockedBy(blockedBy []string) *uds.Response {
 	seen := make(map[string]bool)

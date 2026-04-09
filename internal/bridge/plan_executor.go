@@ -17,6 +17,21 @@ type PlanExecutorImpl struct {
 	LockMap    *lock.MutexMap
 }
 
+// parseAndExecute is a generic helper that unmarshals JSON params, executes a
+// function, and marshals the result. It eliminates the repeated
+// unmarshal→execute→marshal boilerplate across all PlanExecutorImpl methods.
+func parseAndExecute[P any, R any](data []byte, execute func(P) (R, error)) ([]byte, error) {
+	var params P
+	if err := json.Unmarshal(data, &params); err != nil {
+		return nil, fmt.Errorf("parse params: %w", err)
+	}
+	result, err := execute(params)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(result)
+}
+
 type submitParams struct {
 	CommandID string `json:"command_id"`
 	TasksFile string `json:"tasks_file"`
@@ -25,24 +40,17 @@ type submitParams struct {
 }
 
 func (pe *PlanExecutorImpl) Submit(params json.RawMessage) (json.RawMessage, error) {
-	var p submitParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, fmt.Errorf("parse submit params: %w", err)
-	}
-
-	result, err := plan.Submit(plan.SubmitOptions{
-		CommandID:  p.CommandID,
-		TasksFile:  p.TasksFile,
-		PhaseName:  p.PhaseName,
-		DryRun:     p.DryRun,
-		MaestroDir: pe.MaestroDir,
-		Config:     pe.Config,
-		LockMap:    pe.LockMap,
+	return parseAndExecute(params, func(p submitParams) (*plan.SubmitResult, error) {
+		return plan.Submit(plan.SubmitOptions{
+			CommandID:  p.CommandID,
+			TasksFile:  p.TasksFile,
+			PhaseName:  p.PhaseName,
+			DryRun:     p.DryRun,
+			MaestroDir: pe.MaestroDir,
+			Config:     pe.Config,
+			LockMap:    pe.LockMap,
+		})
 	})
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(result)
 }
 
 type completeParams struct {
@@ -51,22 +59,15 @@ type completeParams struct {
 }
 
 func (pe *PlanExecutorImpl) Complete(params json.RawMessage) (json.RawMessage, error) {
-	var p completeParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, fmt.Errorf("parse complete params: %w", err)
-	}
-
-	result, err := plan.Complete(plan.CompleteOptions{
-		CommandID:  p.CommandID,
-		Summary:    p.Summary,
-		MaestroDir: pe.MaestroDir,
-		Config:     pe.Config,
-		LockMap:    pe.LockMap,
+	return parseAndExecute(params, func(p completeParams) (*plan.CompleteResult, error) {
+		return plan.Complete(plan.CompleteOptions{
+			CommandID:  p.CommandID,
+			Summary:    p.Summary,
+			MaestroDir: pe.MaestroDir,
+			Config:     pe.Config,
+			LockMap:    pe.LockMap,
+		})
 	})
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(result)
 }
 
 type retryParams struct {
@@ -84,50 +85,45 @@ type retryParams struct {
 }
 
 func (pe *PlanExecutorImpl) AddRetryTask(params json.RawMessage) (json.RawMessage, error) {
-	var p retryParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, fmt.Errorf("parse retry params: %w", err)
-	}
-
-	result, err := plan.AddRetryTask(plan.RetryOptions{
-		CommandID:          p.CommandID,
-		RetryOf:            p.RetryOf,
-		Purpose:            p.Purpose,
-		Content:            p.Content,
-		AcceptanceCriteria: p.AcceptanceCriteria,
-		Constraints:        p.Constraints,
-		BlockedBy:          p.BlockedBy,
-		BloomLevel:         p.BloomLevel,
-		ToolsHint:          p.ToolsHint,
-		PersonaHint:        p.PersonaHint,
-		SkillRefs:          p.SkillRefs,
-		MaestroDir:         pe.MaestroDir,
-		Config:             pe.Config,
-		LockMap:            pe.LockMap,
+	return parseAndExecute(params, func(p retryParams) (*plan.RetryResult, error) {
+		return plan.AddRetryTask(plan.RetryOptions{
+			CommandID:          p.CommandID,
+			RetryOf:            p.RetryOf,
+			Purpose:            p.Purpose,
+			Content:            p.Content,
+			AcceptanceCriteria: p.AcceptanceCriteria,
+			Constraints:        p.Constraints,
+			BlockedBy:          p.BlockedBy,
+			BloomLevel:         p.BloomLevel,
+			ToolsHint:          p.ToolsHint,
+			PersonaHint:        p.PersonaHint,
+			SkillRefs:          p.SkillRefs,
+			MaestroDir:         pe.MaestroDir,
+			Config:             pe.Config,
+			LockMap:            pe.LockMap,
+		})
 	})
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(result)
 }
 
 type rebuildParams struct {
 	CommandID string `json:"command_id"`
 }
 
-func (pe *PlanExecutorImpl) Rebuild(params json.RawMessage) (json.RawMessage, error) {
-	var p rebuildParams
-	if err := json.Unmarshal(params, &p); err != nil {
-		return nil, fmt.Errorf("parse rebuild params: %w", err)
-	}
+type rebuildResult struct {
+	CommandID string `json:"command_id"`
+	Status    string `json:"status"`
+}
 
-	err := plan.Rebuild(plan.RebuildOptions{
-		CommandID:  p.CommandID,
-		MaestroDir: pe.MaestroDir,
-		LockMap:    pe.LockMap,
+func (pe *PlanExecutorImpl) Rebuild(params json.RawMessage) (json.RawMessage, error) {
+	return parseAndExecute(params, func(p rebuildParams) (*rebuildResult, error) {
+		err := plan.Rebuild(plan.RebuildOptions{
+			CommandID:  p.CommandID,
+			MaestroDir: pe.MaestroDir,
+			LockMap:    pe.LockMap,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &rebuildResult{CommandID: p.CommandID, Status: "rebuilt"}, nil
 	})
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(map[string]string{"command_id": p.CommandID, "status": "rebuilt"})
 }

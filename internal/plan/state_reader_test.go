@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/msageha/maestro_v2/internal/daemon/core"
@@ -441,8 +440,8 @@ func TestUpdateTaskState_UnknownTaskID(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown task ID, got nil")
 	}
-	if !strings.Contains(err.Error(), "unknown task ID") {
-		t.Errorf("error = %q, want to contain %q", err.Error(), "unknown task ID")
+	if !errors.Is(err, model.ErrTaskNotFound) {
+		t.Errorf("error = %q, want errors.Is(err, model.ErrTaskNotFound) to be true", err.Error())
 	}
 }
 

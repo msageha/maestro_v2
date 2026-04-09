@@ -27,6 +27,8 @@ import (
 // LogLevel, Clock, DaemonLogger, StateReader, etc. are defined in
 // internal/daemon/core and re-exported via core_aliases.go.
 
+const fsSemaphoreBufferSize = 8 // WatchLoop のファイルシステムセマフォサイズ
+
 // Daemon is the main maestro daemon process.
 // It acts as a composition root, owning API, WatchLoop, and EventBridge components.
 type Daemon struct {
@@ -144,7 +146,7 @@ func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Close
 
 	// Initialize components with back-pointers
 	d.api = &API{d: d, fileStore: newFSResultFileStore(maestroDir)}
-	d.watch = &WatchLoop{d: d, fsSem: make(chan struct{}, 8)}
+	d.watch = &WatchLoop{d: d, fsSem: make(chan struct{}, fsSemaphoreBufferSize)}
 	d.bridge = &EventBridge{d: d}
 
 	return d, nil

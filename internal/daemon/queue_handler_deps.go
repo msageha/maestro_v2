@@ -13,7 +13,25 @@ var (
 	_ QueueDispatcher         = (*Dispatcher)(nil)
 	_ QueueDependencyResolver = (*DependencyResolver)(nil)
 	_ QueueWorktreeManager    = (*WorktreeManager)(nil)
+	_ ExecutorGetter          = (*ExecutorProvider)(nil)
+	_ ContinuousAdvancer      = (*ContinuousHandler)(nil)
+	_ EventPublisher          = (*events.Bus)(nil)
 )
+
+// ExecutorGetter provides lazy executor access.
+type ExecutorGetter interface {
+	GetExecutor() (AgentExecutor, error)
+}
+
+// ContinuousAdvancer checks and advances continuous mode iteration.
+type ContinuousAdvancer interface {
+	CheckAndAdvance(commandID string, status model.Status) error
+}
+
+// EventPublisher publishes events to subscribers.
+type EventPublisher interface {
+	Publish(eventType events.EventType, data map[string]interface{})
+}
 
 // QueueLeaseManager defines the lease operations used by QueueHandler.
 type QueueLeaseManager interface {

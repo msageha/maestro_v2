@@ -149,7 +149,7 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 	if err := sm.SaveState(state); err != nil {
 		// Best-effort restore of original task status in queue.
 		if restoreErr := restoreOriginalTaskInQueue(opts.MaestroDir, opts.RetryOf, opts.CommandID, model.StatusFailed, now, opts.LockMap); restoreErr != nil {
-			log.Printf("WARNING: failed to restore original task %s queue status: %v", opts.RetryOf, restoreErr)
+			log.Printf("[WARN] failed to restore original task %s queue status: %v", opts.RetryOf, restoreErr)
 		}
 		rollbackRetryQueueEntries(opts.MaestroDir, writtenQueueTaskIDs, opts.LockMap)
 		restoreState(state, origStateBytes)
@@ -567,7 +567,7 @@ func getLatestDescendant(taskID string, reverseLineage map[string]string) (strin
 	current := taskID
 	for {
 		if visited[current] {
-			log.Printf("WARNING: lineage cycle detected starting from task %s, revisited %s", taskID, current)
+			log.Printf("[WARN] lineage cycle detected starting from task %s, revisited %s", taskID, current)
 			return "", fmt.Errorf("lineage cycle detected: task %s revisited while resolving lineage from %s", current, taskID)
 		}
 		visited[current] = true
@@ -659,7 +659,7 @@ func loadOriginalTasksFromQueue(maestroDir string, commandID string) (map[string
 		}
 		var tq model.TaskQueue
 		if err := yamlv3.Unmarshal(data, &tq); err != nil {
-			log.Printf("loadOriginalTasksFromQueue: skipping corrupt queue file %s: %v", name, err)
+			log.Printf("[WARN] loadOriginalTasksFromQueue: skipping corrupt queue file %s: %v", name, err)
 			continue
 		}
 		for _, task := range tq.Tasks {
@@ -713,7 +713,7 @@ func rollbackRetryQueueEntries(maestroDir string, written []retryQueueTask, lock
 			}
 			tq.Tasks = kept
 			if writeErr := yamlutil.AtomicWrite(queueFile, tq); writeErr != nil {
-				log.Printf("rollback: write queue %s: %v", queueFile, writeErr)
+				log.Printf("[WARN] rollback: write queue %s: %v", queueFile, writeErr)
 			}
 		}()
 	}
@@ -726,7 +726,7 @@ func copyState(state *model.CommandState) ([]byte, error) {
 func restoreState(state *model.CommandState, data []byte) {
 	var restored model.CommandState
 	if err := yamlv3.Unmarshal(data, &restored); err != nil {
-		log.Printf("restoreState: failed to unmarshal state snapshot: %v", err)
+		log.Printf("[ERROR] restoreState: failed to unmarshal state snapshot: %v", err)
 		return
 	}
 	*state = restored

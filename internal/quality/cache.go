@@ -32,7 +32,6 @@ func newResultCache(maxSize int, ttl time.Duration) *resultCache {
 	}
 }
 
-// Get retrieves a value from the cache
 func (c *resultCache) Get(key *cacheKey) *EvaluationResult {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -59,7 +58,6 @@ func (c *resultCache) Get(key *cacheKey) *EvaluationResult {
 	return &result
 }
 
-// Set stores a value in the cache
 func (c *resultCache) Set(key *cacheKey, value *EvaluationResult) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

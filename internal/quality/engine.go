@@ -448,7 +448,12 @@ func (e *Engine) shouldTriggerGate(gate *compiledGate, evalCtx EvaluationContext
 // generatecacheKey generates a cache key for the evaluation
 func (e *Engine) generatecacheKey(gateType string, context map[string]interface{}) *cacheKey {
 	// Create a canonical JSON representation
-	contextData, _ := json.Marshal(context)
+	contextData, err := json.Marshal(context)
+	if err != nil {
+		// Fallback: use fmt.Sprintf to avoid hashing nil data which would
+		// produce an identical key for all failed marshals.
+		contextData = []byte(fmt.Sprintf("%v", context))
+	}
 	hash := sha256.Sum256(contextData)
 
 	return &cacheKey{

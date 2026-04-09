@@ -157,7 +157,7 @@ func (wm *Manager) DispatchConflictResolution(commandID, phaseID, workerID, conf
 	}
 	ws := wm.findWorker(state, workerID)
 	if ws == nil {
-		return fmt.Errorf("worker %s not found in command %s", workerID, commandID)
+		return fmt.Errorf("worker %s in command %s: %w", workerID, commandID, model.ErrWorkerNotFound)
 	}
 	now := wm.clock.Now().UTC().Format(time.RFC3339)
 	if err := wm.setWorkerStatus(ws, model.WorktreeStatusResolving, now); err != nil {

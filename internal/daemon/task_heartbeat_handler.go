@@ -31,26 +31,32 @@ type TaskHeartbeatHandler struct {
 	lockMap      *lock.MutexMap
 }
 
-// NewTaskHeartbeatHandler creates a new task heartbeat handler.
-func NewTaskHeartbeatHandler(maestroDir string, cfg model.Config, lm QueueLeaseManager,
-	logger *log.Logger, logLevel LogLevel, scanMu *sync.RWMutex, lockMap *lock.MutexMap) *TaskHeartbeatHandler {
-	return NewTaskHeartbeatHandlerWithDeps(maestroDir, cfg, lm, logger, logLevel, scanMu, lockMap, RealClock{})
+// TaskHeartbeatHandlerOption configures a TaskHeartbeatHandler.
+type TaskHeartbeatHandlerOption func(*TaskHeartbeatHandler)
+
+// WithHeartbeatClock sets a custom Clock for the TaskHeartbeatHandler.
+func WithHeartbeatClock(c Clock) TaskHeartbeatHandlerOption {
+	return func(h *TaskHeartbeatHandler) { h.clock = c }
 }
 
-// NewTaskHeartbeatHandlerWithDeps creates a TaskHeartbeatHandler with explicit dependencies.
-func NewTaskHeartbeatHandlerWithDeps(maestroDir string, cfg model.Config, lm QueueLeaseManager,
-	logger *log.Logger, logLevel LogLevel, scanMu *sync.RWMutex, lockMap *lock.MutexMap, clock Clock) *TaskHeartbeatHandler {
-	return &TaskHeartbeatHandler{
+// NewTaskHeartbeatHandler creates a new task heartbeat handler.
+func NewTaskHeartbeatHandler(maestroDir string, cfg model.Config, lm QueueLeaseManager,
+	logger *log.Logger, logLevel LogLevel, scanMu *sync.RWMutex, lockMap *lock.MutexMap, opts ...TaskHeartbeatHandlerOption) *TaskHeartbeatHandler {
+	h := &TaskHeartbeatHandler{
 		maestroDir:   maestroDir,
 		config:       cfg,
 		leaseManager: lm,
-		clock:        clock,
+		clock:        RealClock{},
 		dl:           NewDaemonLoggerFromLegacy("task_heartbeat", logger, logLevel),
 		logger:       logger,
 		logLevel:     logLevel,
 		scanMu:       scanMu,
 		lockMap:      lockMap,
 	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // TaskHeartbeatParams represents the parameters for a task heartbeat request.

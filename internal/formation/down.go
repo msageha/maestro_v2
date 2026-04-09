@@ -1,4 +1,3 @@
-// Package formation manages tmux session formation (up/down) for agents.
 package formation
 
 import (
@@ -32,7 +31,9 @@ func RunDown(maestroDir string, cfg model.Config) error {
 		tmux.SetDebugLogger(tmuxLogger)
 		defer func() {
 			tmux.SetDebugLogger(nil)
-			tmuxLogFile.Close()
+			if err := tmuxLogFile.Close(); err != nil {
+				log.Printf("[WARN] RunDown: close tmux log file: %v", err)
+			}
 		}()
 	}
 
@@ -42,9 +43,9 @@ func RunDown(maestroDir string, cfg model.Config) error {
 	if _, err := os.Stat(socketPath); os.IsNotExist(err) {
 		// Socket gone but PID file may linger from a crashed daemon
 		cleanupStalePID(maestroDir)
-		fmt.Println("[debug] RunDown: killing session (daemon socket missing)")
+		log.Printf("[DEBUG] RunDown: killing session (daemon socket missing)")
 		if err := tmux.KillSession(); err != nil {
-			log.Printf("warning: KillSession (daemon socket missing): %v", err)
+			log.Printf("[WARN] KillSession (daemon socket missing): %v", err)
 		}
 		restoreServerOptions(maestroDir)
 		fmt.Println("Daemon is not running. Formation stopped.")
@@ -61,9 +62,9 @@ func RunDown(maestroDir string, cfg model.Config) error {
 		fmt.Println("Cleaning up daemon and tmux session...")
 		cleanupStalePID(maestroDir)
 		_ = os.Remove(socketPath)
-		fmt.Println("[debug] RunDown: killing session (daemon connection failed)")
+		log.Printf("[DEBUG] RunDown: killing session (daemon connection failed)")
 		if err := tmux.KillSession(); err != nil {
-			log.Printf("warning: KillSession (daemon connection failed): %v", err)
+			log.Printf("[WARN] KillSession (daemon connection failed): %v", err)
 		}
 		restoreServerOptions(maestroDir)
 		fmt.Println("Maestro formation stopped.")
@@ -96,7 +97,7 @@ func RunDown(maestroDir string, cfg model.Config) error {
 			sameProcess := daemonIdentityChecker(maestroDir, pid, origStartTime)
 			result, termErr := terminateProcess(pid, sameProcess, 5*time.Second)
 			if termErr != nil {
-				log.Printf("Warning: terminateProcess failed for pid %d: %v", pid, termErr)
+				log.Printf("[WARN] terminateProcess failed for pid %d: %v", pid, termErr)
 			}
 			if result == terminateStopped {
 				_ = os.Remove(pidPath)
@@ -107,7 +108,7 @@ func RunDown(maestroDir string, cfg model.Config) error {
 	}
 
 	// Kill tmux session (idempotent — safe even if already gone)
-	fmt.Println("[debug] RunDown: killing session (normal shutdown path)")
+	log.Printf("[DEBUG] RunDown: killing session (normal shutdown path)")
 	if err := tmux.KillSession(); err != nil {
 		return fmt.Errorf("kill tmux session: %w", err)
 	}

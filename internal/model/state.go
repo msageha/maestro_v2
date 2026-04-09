@@ -1,5 +1,8 @@
 package model
 
+// CommandState は単一コマンドの実行状態を表す。
+// プランバージョン、フェーズ構成、タスク依存関係、完了ポリシーなど
+// コマンドのライフサイクル全体を管理する。
 type CommandState struct {
 	SchemaVersion      int                 `yaml:"schema_version"`
 	FileType           string              `yaml:"file_type"`
@@ -21,6 +24,7 @@ type CommandState struct {
 	RetryEnqueueFailed   map[string]string   `yaml:"retry_enqueue_failed,omitempty"` // task_id → worker_id; set when state registered but queue add failed
 	QueueWriteFailed     map[string]string   `yaml:"queue_write_failed,omitempty"`   // task_id → "workerID:resultID"; set when result committed but queue terminal write failed (H2 sticky error)
 	Phases             []Phase             `yaml:"phases"`
+	phaseIDIndex       map[string]int      `yaml:"-"` // cached phaseID→slice index; lazily built
 	LastReconciledAt   *string             `yaml:"last_reconciled_at"`
 	CreatedAt          string              `yaml:"created_at"`
 	UpdatedAt          string              `yaml:"updated_at"`
@@ -35,6 +39,8 @@ type CircuitBreakerState struct {
 	TripReason          *string `yaml:"trip_reason,omitempty"`
 }
 
+// CompletionPolicy はコマンドの完了判定ポリシーを定義する。
+// 必須・任意タスクの失敗時の挙動や依存関係失敗時のポリシーを指定する。
 type CompletionPolicy struct {
 	Mode                    string `yaml:"mode"`
 	AllowDynamicTasks       bool   `yaml:"allow_dynamic_tasks"`
@@ -44,6 +50,7 @@ type CompletionPolicy struct {
 	DependencyFailurePolicy string `yaml:"dependency_failure_policy"`
 }
 
+// CancelState はコマンドのキャンセル要求の状態を保持する。
 type CancelState struct {
 	Requested   bool    `yaml:"requested"`
 	RequestedAt *string `yaml:"requested_at"`
@@ -51,6 +58,8 @@ type CancelState struct {
 	Reason      *string `yaml:"reason"`
 }
 
+// Phase はコマンド実行計画内の単一フェーズを表す。
+// タスクのグルーピングと実行順序の制御に使用され、フェーズ間の依存関係を持つ。
 type Phase struct {
 	PhaseID         string            `yaml:"phase_id"`
 	Name            string            `yaml:"name"`
@@ -66,6 +75,24 @@ type Phase struct {
 	ReopenedAt      *string           `yaml:"reopened_at"`
 }
 
+// PhaseIndex returns the slice index for the given phaseID using a lazily
+// built cache. Returns (index, true) if found, (-1, false) otherwise.
+func (cs *CommandState) PhaseIndex(phaseID string) (int, bool) {
+	if cs.phaseIDIndex == nil {
+		cs.phaseIDIndex = make(map[string]int, len(cs.Phases))
+		for i := range cs.Phases {
+			cs.phaseIDIndex[cs.Phases[i].PhaseID] = i
+		}
+	}
+	idx, ok := cs.phaseIDIndex[phaseID]
+	if !ok {
+		return -1, false
+	}
+	return idx, true
+}
+
+// PhaseConstraints はフェーズに適用される制約条件を定義する。
+// 最大タスク数、許可される Bloom レベル、タイムアウトを指定する。
 type PhaseConstraints struct {
 	MaxTasks           int   `yaml:"max_tasks"`
 	AllowedBloomLevels []int `yaml:"allowed_bloom_levels"`
