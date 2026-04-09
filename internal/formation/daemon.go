@@ -194,7 +194,7 @@ func validateDaemonPID(maestroDir string) int {
 }
 
 // processAlive checks whether a process with the given PID is still running.
-// Delegates to the package-level ProcessManager for testability.
+// Delegates to the package-level processManager for testability.
 func processAlive(pid int) bool {
 	return procMgr.Alive(pid)
 }

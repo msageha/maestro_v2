@@ -26,8 +26,8 @@ type UpOptions struct {
 	ContinuousSet bool
 }
 
-// ErrSessionExists is returned when a maestro session already exists and --force is not set.
-var ErrSessionExists = fmt.Errorf("maestro session already exists (use --force to recreate)")
+// errSessionExists is returned when a maestro session already exists and --force is not set.
+var errSessionExists = fmt.Errorf("maestro session already exists (use --force to recreate)")
 
 // RunUp executes the 'maestro up' command.
 func RunUp(opts UpOptions) (err error) {
@@ -56,7 +56,7 @@ func RunUp(opts UpOptions) (err error) {
 
 	// Guard: refuse to destroy a running session unless --force is set
 	if tmux.SessionExists() && !opts.Force {
-		return ErrSessionExists
+		return errSessionExists
 	}
 
 	// Always reset state on startup

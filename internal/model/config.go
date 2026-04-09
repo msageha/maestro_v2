@@ -31,7 +31,7 @@ type Config struct {
 	Limits         LimitsConfig         `yaml:"limits"`
 	ShutdownTimeoutSec int              `yaml:"shutdown_timeout_sec"`
 	Logging        LoggingConfig        `yaml:"logging"`
-	QualityGates   QualityGatesConfig   `yaml:"quality_gates"`
+	QualityGates   qualityGatesConfig   `yaml:"quality_gates"`
 	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
 	Learnings      LearningsConfig      `yaml:"learnings"`
 	Worktree       WorktreeConfig       `yaml:"worktree"`
@@ -44,7 +44,7 @@ type SkillsConfig struct {
 	MaxRefsPerTask   *int              `yaml:"max_refs_per_task"`
 	MaxBodyChars     *int              `yaml:"max_body_chars"`
 	MissingRefPolicy string            `yaml:"missing_ref_policy"`
-	AutoCollect      AutoCollectConfig `yaml:"auto_collect"`
+	AutoCollect      autoCollectConfig `yaml:"auto_collect"`
 }
 
 // EffectiveMaxRefsPerTask returns the configured limit or 3 as default.
@@ -74,8 +74,8 @@ func (s SkillsConfig) EffectiveMissingRefPolicy() string {
 	return "warn"
 }
 
-// AutoCollectConfig controls automatic skill collection from learnings.
-type AutoCollectConfig struct {
+// autoCollectConfig controls automatic skill collection from learnings.
+type autoCollectConfig struct {
 	Enabled        bool `yaml:"enabled"`
 	MinOccurrences *int `yaml:"min_occurrences"`
 	MinCommands    *int `yaml:"min_commands"`
@@ -83,7 +83,7 @@ type AutoCollectConfig struct {
 
 // EffectiveMinOccurrences returns the configured minimum or 3 as default.
 // nil (unset) returns the default; explicit 0 returns 0.
-func (a AutoCollectConfig) EffectiveMinOccurrences() int {
+func (a autoCollectConfig) EffectiveMinOccurrences() int {
 	if a.MinOccurrences != nil {
 		return *a.MinOccurrences
 	}
@@ -92,7 +92,7 @@ func (a AutoCollectConfig) EffectiveMinOccurrences() int {
 
 // EffectiveMinCommands returns the configured minimum or 2 as default.
 // nil (unset) returns the default; explicit 0 returns 0.
-func (a AutoCollectConfig) EffectiveMinCommands() int {
+func (a autoCollectConfig) EffectiveMinCommands() int {
 	if a.MinCommands != nil {
 		return *a.MinCommands
 	}
@@ -246,17 +246,17 @@ type LoggingConfig struct {
 	Level string `yaml:"level"`
 }
 
-type QualityGatesConfig struct {
+type qualityGatesConfig struct {
 	Enabled       bool                       `yaml:"enabled"`
 	SkipGates     bool                       `yaml:"skip_gates"`      // 緊急モードフラグ
-	Thresholds    QualityGateThresholds      `yaml:"thresholds"`
-	Enforcement   QualityGateEnforcement     `yaml:"enforcement"`
+	Thresholds    qualityGateThresholds      `yaml:"thresholds"`
+	Enforcement   qualityGateEnforcement     `yaml:"enforcement"`
 }
 
-type QualityGateThresholds struct {
+type qualityGateThresholds struct {
 }
 
-type QualityGateEnforcement struct {
+type qualityGateEnforcement struct {
 	PreTaskCheck   bool   `yaml:"pre_task_check"`    // タスク実行前チェック
 	FailureAction  string `yaml:"failure_action"`    // 失敗時の動作: "warn", "block"
 }

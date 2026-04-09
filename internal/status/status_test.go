@@ -110,16 +110,16 @@ func TestCheckDaemon_NotRunning(t *testing.T) {
 
 func TestPrintStatus_DoesNotPanic(t *testing.T) {
 	// Verify printing works without panicking for all cases
-	s := FormationStatus{
-		Daemon: DaemonStatus{Running: false},
+	s := formationStatus{
+		Daemon: daemonStatus{Running: false},
 	}
 	printStatus(s)
 
 	s.Daemon.Running = true
-	s.Agents = []AgentStatus{
+	s.Agents = []agentStatus{
 		{ID: "orchestrator", Role: "orchestrator", Model: "opus", Status: "idle"},
 	}
-	s.Queues = []QueueStatus{
+	s.Queues = []queueStatus{
 		{Name: "planner", Pending: 3, InProgress: 1},
 	}
 	printStatus(s)

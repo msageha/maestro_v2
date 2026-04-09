@@ -23,12 +23,12 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 	var notifications []DeferredNotification
 
 	stateDir := filepath.Join(run.Deps.MaestroDir, "state", "commands")
-	entries, err := run.CachedReadDir(stateDir)
+	entries, err := run.cachedReadDir(stateDir)
 	if err != nil {
 		return Outcome{}
 	}
 
-	threshold := run.StuckThresholdSec()
+	threshold := run.stuckThresholdSec()
 
 	for _, entry := range entries {
 		if !strings.HasSuffix(entry.Name(), ".yaml") {
@@ -44,10 +44,10 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 			run.Deps.LockMap.Lock(lockKey)
 			defer run.Deps.LockMap.Unlock(lockKey)
 
-			state, err := run.LoadState(statePath)
+			state, err := run.loadState(statePath)
 			if err != nil {
 				if !os.IsNotExist(err) {
-					run.Log(core.LogLevelError, "R0b load_state_corrupted command=%s file=%s error=%v", commandID, entry.Name(), err)
+					run.log(core.LogLevelError, "R0b load_state_corrupted command=%s file=%s error=%v", commandID, entry.Name(), err)
 				}
 				return false
 			}
@@ -78,7 +78,7 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 					continue
 				}
 
-				run.Log(core.LogLevelWarn, "R0b filling_stuck command=%s phase=%s age_sec=%.0f",
+				run.log(core.LogLevelWarn, "R0b filling_stuck command=%s phase=%s age_sec=%.0f",
 					state.CommandID, phase.Name, ageSec)
 
 				taskIDsToRemove = append(taskIDsToRemove, phase.TaskIDs...)
@@ -107,7 +107,7 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 				state.LastReconciledAt = &now
 				state.UpdatedAt = now
 				if err := yamlutil.AtomicWrite(statePath, state); err != nil {
-					run.Log(core.LogLevelError, "R0b write_state command=%s error=%v", state.CommandID, err)
+					run.log(core.LogLevelError, "R0b write_state command=%s error=%v", state.CommandID, err)
 					return false
 				}
 				repairs = append(repairs, localRepairs...)
@@ -117,7 +117,7 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 		}()
 
 		if len(taskIDsToRemove) > 0 {
-			run.BatchRemoveTaskIDsFromQueues(taskIDsToRemove)
+			run.batchRemoveTaskIDsFromQueues(taskIDsToRemove)
 		}
 
 		if modified && run.Deps.ExecutorFactory != nil {

@@ -14,74 +14,74 @@ func TestClassifyGitError(t *testing.T) {
 	tests := []struct {
 		name string
 		err  error
-		want GitErrorClass
+		want gitErrorClass
 	}{
 		// Transient errors
 		{
 			name: "lock contention",
 			err:  errors.New("Unable to create '/path/to/repo/.git/index.lock': File exists"),
-			want: GitErrorTransient,
+			want: gitErrorTransient,
 		},
 		{
 			name: "dotlock file",
 			err:  errors.New("cannot create .lock file"),
-			want: GitErrorTransient,
+			want: gitErrorTransient,
 		},
 		{
 			name: "unable to create generic",
 			err:  errors.New("Unable to create temp file"),
-			want: GitErrorTransient,
+			want: gitErrorTransient,
 		},
 
 		// Permanent errors
 		{
 			name: "bad object",
 			err:  errors.New("fatal: bad object abc123"),
-			want: GitErrorPermanent,
+			want: gitErrorPermanent,
 		},
 		{
 			name: "corrupt repo",
 			err:  errors.New("error: object file is corrupt"),
-			want: GitErrorPermanent,
+			want: gitErrorPermanent,
 		},
 		{
 			name: "not a git repository",
 			err:  errors.New("fatal: not a git repository (or any parent up to mount point /)"),
-			want: GitErrorPermanent,
+			want: gitErrorPermanent,
 		},
 		{
 			name: "invalid reference",
 			err:  errors.New("fatal: invalid reference: refs/heads/nonexistent"),
-			want: GitErrorPermanent,
+			want: gitErrorPermanent,
 		},
 
 		// Timeout errors — must be Permanent (dirty worktree risk)
 		{
 			name: "context.DeadlineExceeded",
 			err:  context.DeadlineExceeded,
-			want: GitErrorPermanent,
+			want: gitErrorPermanent,
 		},
 		{
 			name: "wrapped DeadlineExceeded",
 			err:  fmt.Errorf("git merge: timeout after 30s: %w", context.DeadlineExceeded),
-			want: GitErrorPermanent,
+			want: gitErrorPermanent,
 		},
 		{
 			name: "timeout in error message",
 			err:  errors.New("connection timeout while fetching"),
-			want: GitErrorPermanent,
+			want: gitErrorPermanent,
 		},
 
 		// Unknown errors default to Permanent
 		{
 			name: "unknown error",
 			err:  errors.New("something completely unexpected happened"),
-			want: GitErrorPermanent,
+			want: gitErrorPermanent,
 		},
 		{
 			name: "nil error",
 			err:  nil,
-			want: GitErrorPermanent,
+			want: gitErrorPermanent,
 		},
 	}
 
@@ -91,10 +91,10 @@ func TestClassifyGitError(t *testing.T) {
 			if got != tt.want {
 				wantStr := "Permanent"
 				gotStr := "Permanent"
-				if tt.want == GitErrorTransient {
+				if tt.want == gitErrorTransient {
 					wantStr = "Transient"
 				}
-				if got == GitErrorTransient {
+				if got == gitErrorTransient {
 					gotStr = "Transient"
 				}
 				t.Errorf("classifyGitError(%v) = %s, want %s", tt.err, gotStr, wantStr)
@@ -120,7 +120,7 @@ func TestWrapGitOutputError_IncludesStderr(t *testing.T) {
 	}
 
 	// The error should be classified as Transient thanks to stderr content.
-	if classifyGitError(wrapped) != GitErrorTransient {
+	if classifyGitError(wrapped) != gitErrorTransient {
 		t.Error("expected classifyGitError to return Transient for stderr with lock pattern")
 	}
 }
@@ -144,27 +144,27 @@ func TestClassifyGitError_ExitErrorWithTransientStderr(t *testing.T) {
 	tests := []struct {
 		name   string
 		stderr string
-		want   GitErrorClass
+		want   gitErrorClass
 	}{
 		{
 			name:   "lock file in stderr",
 			stderr: "Unable to create '/repo/.git/index.lock': File exists",
-			want:   GitErrorTransient,
+			want:   gitErrorTransient,
 		},
 		{
 			name:   "dotlock in stderr",
 			stderr: "error: cannot lock ref 'refs/heads/main': is at abc123 but expected def456",
-			want:   GitErrorTransient,
+			want:   gitErrorTransient,
 		},
 		{
 			name:   "permanent error in stderr",
 			stderr: "fatal: bad object abc123",
-			want:   GitErrorPermanent,
+			want:   gitErrorPermanent,
 		},
 		{
 			name:   "unknown stderr content",
 			stderr: "exit status 128",
-			want:   GitErrorPermanent,
+			want:   gitErrorPermanent,
 		},
 	}
 
@@ -178,10 +178,10 @@ func TestClassifyGitError_ExitErrorWithTransientStderr(t *testing.T) {
 			if got != tt.want {
 				wantStr := "Permanent"
 				gotStr := "Permanent"
-				if tt.want == GitErrorTransient {
+				if tt.want == gitErrorTransient {
 					wantStr = "Transient"
 				}
-				if got == GitErrorTransient {
+				if got == gitErrorTransient {
 					gotStr = "Transient"
 				}
 				t.Errorf("classifyGitError(wrapped stderr=%q) = %s, want %s", tt.stderr, gotStr, wantStr)

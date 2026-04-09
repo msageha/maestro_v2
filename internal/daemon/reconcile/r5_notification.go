@@ -37,7 +37,7 @@ func (R5Notification) Apply(run *Run) Outcome {
 	}
 
 	resultPath := filepath.Join(run.Deps.MaestroDir, "results", "planner.yaml")
-	rf, err := run.LoadCommandResultFile(resultPath)
+	rf, err := run.loadCommandResultFile(resultPath)
 	if err != nil {
 		return Outcome{}
 	}
@@ -86,11 +86,11 @@ func (R5Notification) Apply(run *Run) Outcome {
 			continue
 		}
 
-		run.Log(core.LogLevelWarn, "R5 notified_result_no_orchestrator_notification command=%s result=%s",
+		run.log(core.LogLevelWarn, "R5 notified_result_no_orchestrator_notification command=%s result=%s",
 			result.CommandID, result.ID)
 
 		if err := run.Deps.ResultHandler.WriteNotificationToOrchestratorQueue(result.ID, result.CommandID, result.Status); err != nil {
-			run.Log(core.LogLevelError, "R5 write_notification command=%s error=%v", result.CommandID, err)
+			run.log(core.LogLevelError, "R5 write_notification command=%s error=%v", result.CommandID, err)
 			continue
 		}
 
@@ -103,7 +103,7 @@ func (R5Notification) Apply(run *Run) Outcome {
 	}
 
 	for commandID := range repairedCommands {
-		run.UpdateLastReconciledAt(commandID)
+		run.updateLastReconciledAt(commandID)
 	}
 
 	return Outcome{Repairs: repairs}

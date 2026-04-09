@@ -9,7 +9,7 @@
 //     exponential backoff for transient dial errors (ECONNREFUSED, EAGAIN,
 //     ENOENT).
 //   - Server: Listens on a Unix socket and dispatches incoming requests to
-//     registered [HandlerFunc] callbacks by command name. Enforces a
+//     registered [handlerFunc] callbacks by command name. Enforces a
 //     configurable concurrency limit via semaphore, returning a backpressure
 //     error when at capacity. Supports graceful shutdown with in-flight
 //     connection draining.

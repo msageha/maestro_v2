@@ -28,8 +28,8 @@ func newRun(deps *Deps) *Run {
 	}
 }
 
-// CachedReadDir returns cached directory entries for the given path within a single Reconcile scan.
-func (r *Run) CachedReadDir(dir string) ([]os.DirEntry, error) {
+// cachedReadDir returns cached directory entries for the given path within a single Reconcile scan.
+func (r *Run) cachedReadDir(dir string) ([]os.DirEntry, error) {
 	if entries, ok := r.dirCache[dir]; ok {
 		return entries, nil
 	}
@@ -41,8 +41,8 @@ func (r *Run) CachedReadDir(dir string) ([]os.DirEntry, error) {
 	return entries, nil
 }
 
-// LoadState loads and parses a command state YAML file.
-func (r *Run) LoadState(path string) (*model.CommandState, error) {
+// loadState loads and parses a command state YAML file.
+func (r *Run) loadState(path string) (*model.CommandState, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -54,8 +54,8 @@ func (r *Run) LoadState(path string) (*model.CommandState, error) {
 	return &state, nil
 }
 
-// StuckThresholdSec returns the threshold in seconds for considering a state "stuck".
-func (r *Run) StuckThresholdSec() int {
+// stuckThresholdSec returns the threshold in seconds for considering a state "stuck".
+func (r *Run) stuckThresholdSec() int {
 	leaseSec := r.Deps.Config.Watcher.DispatchLeaseSec
 	if leaseSec <= 0 {
 		leaseSec = 300
@@ -63,8 +63,8 @@ func (r *Run) StuckThresholdSec() int {
 	return leaseSec * 2
 }
 
-// LoadCommandResultFile loads results/planner.yaml.
-func (r *Run) LoadCommandResultFile(path string) (*model.CommandResultFile, error) {
+// loadCommandResultFile loads results/planner.yaml.
+func (r *Run) loadCommandResultFile(path string) (*model.CommandResultFile, error) {
 	var rf model.CommandResultFile
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -79,8 +79,8 @@ func (r *Run) LoadCommandResultFile(path string) (*model.CommandResultFile, erro
 	return &rf, nil
 }
 
-// QuarantineCommandResult removes a specific result from results/planner.yaml and writes it to quarantine/.
-func (r *Run) QuarantineCommandResult(resultPath string, result model.CommandResult) error {
+// quarantineCommandResult removes a specific result from results/planner.yaml and writes it to quarantine/.
+func (r *Run) quarantineCommandResult(resultPath string, result model.CommandResult) error {
 	quarantineDir := filepath.Join(r.Deps.MaestroDir, "quarantine")
 	if err := os.MkdirAll(quarantineDir, 0755); err != nil {
 		return fmt.Errorf("create quarantine dir: %w", err)
@@ -96,7 +96,7 @@ func (r *Run) QuarantineCommandResult(resultPath string, result model.CommandRes
 	r.Deps.LockMap.Lock("result:planner")
 	defer r.Deps.LockMap.Unlock("result:planner")
 
-	rf, err := r.LoadCommandResultFile(resultPath)
+	rf, err := r.loadCommandResultFile(resultPath)
 	if err != nil {
 		return fmt.Errorf("reload result file: %w", err)
 	}
@@ -116,8 +116,8 @@ func (r *Run) QuarantineCommandResult(resultPath string, result model.CommandRes
 	return nil
 }
 
-// RemoveCommandFromPlannerQueue removes a command from queue/planner.yaml entirely.
-func (r *Run) RemoveCommandFromPlannerQueue(commandID string) error {
+// removeCommandFromPlannerQueue removes a command from queue/planner.yaml entirely.
+func (r *Run) removeCommandFromPlannerQueue(commandID string) error {
 	r.Deps.LockMap.Lock("queue:planner")
 	defer r.Deps.LockMap.Unlock("queue:planner")
 
@@ -146,14 +146,14 @@ func (r *Run) RemoveCommandFromPlannerQueue(commandID string) error {
 	cq.Commands = filtered
 
 	if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
-		r.Log(core.LogLevelError, "R0 remove_command queue=%s error=%v", commandID, err)
+		r.log(core.LogLevelError, "R0 remove_command queue=%s error=%v", commandID, err)
 		return fmt.Errorf("write planner queue: %w", err)
 	}
 	return nil
 }
 
-// RemoveTasksFromWorkerQueues removes all tasks for a given command from all worker queues.
-func (r *Run) RemoveTasksFromWorkerQueues(commandID string) error {
+// removeTasksFromWorkerQueues removes all tasks for a given command from all worker queues.
+func (r *Run) removeTasksFromWorkerQueues(commandID string) error {
 	queueDir := filepath.Join(r.Deps.MaestroDir, "queue")
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
@@ -184,12 +184,12 @@ func (r *Run) RemoveTasksFromWorkerQueues(commandID string) error {
 				if os.IsNotExist(err) {
 					return nil
 				}
-				r.Log(core.LogLevelWarn, "R0 remove_tasks read_error file=%s command=%s error=%v", name, commandID, err)
+				r.log(core.LogLevelWarn, "R0 remove_tasks read_error file=%s command=%s error=%v", name, commandID, err)
 				return nil
 			}
 			var tq model.TaskQueue
 			if err := yamlv3.Unmarshal(data, &tq); err != nil {
-				r.Log(core.LogLevelWarn, "R0 remove_tasks parse_error file=%s command=%s error=%v", name, commandID, err)
+				r.log(core.LogLevelWarn, "R0 remove_tasks parse_error file=%s command=%s error=%v", name, commandID, err)
 				return nil
 			}
 
@@ -205,7 +205,7 @@ func (r *Run) RemoveTasksFromWorkerQueues(commandID string) error {
 			tq.Tasks = filtered
 
 			if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
-				r.Log(core.LogLevelError, "R0 remove_tasks file=%s command=%s error=%v", name, commandID, err)
+				r.log(core.LogLevelError, "R0 remove_tasks file=%s command=%s error=%v", name, commandID, err)
 				return fmt.Errorf("write %s: %w", name, err)
 			}
 			return nil
@@ -220,8 +220,8 @@ func (r *Run) RemoveTasksFromWorkerQueues(commandID string) error {
 	return nil
 }
 
-// BatchRemoveTaskIDsFromQueues removes multiple task IDs from all worker queues in a single pass.
-func (r *Run) BatchRemoveTaskIDsFromQueues(taskIDs []string) {
+// batchRemoveTaskIDsFromQueues removes multiple task IDs from all worker queues in a single pass.
+func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) {
 	if len(taskIDs) == 0 {
 		return
 	}
@@ -273,21 +273,21 @@ func (r *Run) BatchRemoveTaskIDsFromQueues(taskIDs []string) {
 			tq.Tasks = filtered
 
 			if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
-				r.Log(core.LogLevelError, "R0b batch_remove_tasks file=%s error=%v", name, err)
+				r.log(core.LogLevelError, "R0b batch_remove_tasks file=%s error=%v", name, err)
 			}
 		}()
 	}
 }
 
-// UpdateLastReconciledAt updates last_reconciled_at on a state file.
-func (r *Run) UpdateLastReconciledAt(commandID string) {
+// updateLastReconciledAt updates last_reconciled_at on a state file.
+func (r *Run) updateLastReconciledAt(commandID string) {
 	statePath := filepath.Join(r.Deps.MaestroDir, "state", "commands", commandID+".yaml")
 
 	lockKey := "state:" + commandID
 	r.Deps.LockMap.Lock(lockKey)
 	defer r.Deps.LockMap.Unlock(lockKey)
 
-	state, err := r.LoadState(statePath)
+	state, err := r.loadState(statePath)
 	if err != nil {
 		return
 	}
@@ -296,12 +296,12 @@ func (r *Run) UpdateLastReconciledAt(commandID string) {
 	state.LastReconciledAt = &now
 	state.UpdatedAt = now
 	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
-		r.Log(core.LogLevelError, "update_last_reconciled command=%s error=%v", commandID, err)
+		r.log(core.LogLevelError, "update_last_reconciled command=%s error=%v", commandID, err)
 	}
 }
 
-// Log writes a log message via the DaemonLogger.
-func (r *Run) Log(level core.LogLevel, format string, args ...any) {
+// log writes a log message via the DaemonLogger.
+func (r *Run) log(level core.LogLevel, format string, args ...any) {
 	r.Deps.DL.Logf(level, format, args...)
 }
 

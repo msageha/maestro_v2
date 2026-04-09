@@ -4,7 +4,7 @@ import "testing"
 
 func TestPaneStateManager_ClearReadyLifecycle(t *testing.T) {
 	mock := newExecMock()
-	psm := NewPaneStateManager(mock)
+	psm := newPaneStateManager(mock)
 	pane := "%0"
 
 	// Initially not clear-ready
@@ -43,7 +43,7 @@ func TestPaneStateManager_ClearReadyLifecycle(t *testing.T) {
 
 func TestPaneStateManager_DetectProcessRestart(t *testing.T) {
 	mock := newExecMock()
-	psm := NewPaneStateManager(mock)
+	psm := newPaneStateManager(mock)
 	pane := "%0"
 
 	// No stored PID — no restart detected
@@ -95,7 +95,7 @@ func TestPaneStateManager_DetectProcessRestart(t *testing.T) {
 
 func TestPaneStateManager_StatusAndCWD(t *testing.T) {
 	mock := newExecMock()
-	psm := NewPaneStateManager(mock)
+	psm := newPaneStateManager(mock)
 	pane := "%0"
 
 	// Set status

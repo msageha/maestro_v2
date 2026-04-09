@@ -720,15 +720,15 @@ func TestClassifyGitError_TransientVsPermanent(t *testing.T) {
 	tests := []struct {
 		name     string
 		err      error
-		expected GitErrorClass
+		expected gitErrorClass
 	}{
-		{"lock error is transient", fmt.Errorf("Unable to create index.lock"), GitErrorTransient},
-		{".lock file error is transient", fmt.Errorf("File exists: .lock"), GitErrorTransient},
-		{"bad object is permanent", fmt.Errorf("bad object 1234abc"), GitErrorPermanent},
-		{"corrupt repo is permanent", fmt.Errorf("corrupt loose object"), GitErrorPermanent},
-		{"not a git repo is permanent", fmt.Errorf("fatal: not a git repository"), GitErrorPermanent},
-		{"unknown error defaults to permanent", fmt.Errorf("some unknown error"), GitErrorPermanent},
-		{"nil error is permanent", nil, GitErrorPermanent},
+		{"lock error is transient", fmt.Errorf("Unable to create index.lock"), gitErrorTransient},
+		{".lock file error is transient", fmt.Errorf("File exists: .lock"), gitErrorTransient},
+		{"bad object is permanent", fmt.Errorf("bad object 1234abc"), gitErrorPermanent},
+		{"corrupt repo is permanent", fmt.Errorf("corrupt loose object"), gitErrorPermanent},
+		{"not a git repo is permanent", fmt.Errorf("fatal: not a git repository"), gitErrorPermanent},
+		{"unknown error defaults to permanent", fmt.Errorf("some unknown error"), gitErrorPermanent},
+		{"nil error is permanent", nil, gitErrorPermanent},
 	}
 
 	for _, tt := range tests {

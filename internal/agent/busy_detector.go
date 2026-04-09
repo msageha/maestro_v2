@@ -7,30 +7,30 @@ import (
 	"time"
 )
 
-// BusyDetectorConfig holds configuration for the BusyDetector.
+// busyDetectorConfig holds configuration for the busyDetector.
 // Values should be pre-normalized (non-zero) via applyDefaults before use.
-type BusyDetectorConfig struct {
+type busyDetectorConfig struct {
 	IdleStableSec       int
 	BusyCheckMaxRetries int
 	BusyCheckInterval   int
 }
 
-// BusyDetector performs 3-stage busy detection on tmux panes.
+// busyDetector performs 3-stage busy detection on tmux panes.
 //
 // Stage 1: pane_current_command — quick gate (shell → idle).
 // Stage 2: Pattern hint — regex match on last busyHintLines lines.
 // Stage 3: Activity probe — hash comparison over IdleStableSec.
-type BusyDetector struct {
+type busyDetector struct {
 	paneIO    PaneIO
 	busyRegex *regexp.Regexp
-	config    BusyDetectorConfig
+	config    busyDetectorConfig
 	logger    *log.Logger
-	logLevel  LogLevel
+	logLevel  logLevel
 }
 
-// NewBusyDetector creates a BusyDetector. Zero-value config fields are
+// newBusyDetector creates a busyDetector. Zero-value config fields are
 // normalized to safe defaults to prevent accidental tight loops.
-func NewBusyDetector(paneIO PaneIO, busyRegex *regexp.Regexp, cfg BusyDetectorConfig, logger *log.Logger, logLevel LogLevel) *BusyDetector {
+func newBusyDetector(paneIO PaneIO, busyRegex *regexp.Regexp, cfg busyDetectorConfig, logger *log.Logger, logLevel logLevel) *busyDetector {
 	if cfg.IdleStableSec <= 0 {
 		cfg.IdleStableSec = 5
 	}
@@ -40,7 +40,7 @@ func NewBusyDetector(paneIO PaneIO, busyRegex *regexp.Regexp, cfg BusyDetectorCo
 	if cfg.BusyCheckInterval <= 0 {
 		cfg.BusyCheckInterval = 2
 	}
-	return &BusyDetector{
+	return &busyDetector{
 		paneIO:    paneIO,
 		busyRegex: busyRegex,
 		config:    cfg,
@@ -51,18 +51,18 @@ func NewBusyDetector(paneIO PaneIO, busyRegex *regexp.Regexp, cfg BusyDetectorCo
 
 // DetectBusy performs one round of the 3-stage busy detection algorithm.
 // Returns VerdictUndecided if ctx is cancelled during the activity probe sleep.
-func (bd *BusyDetector) DetectBusy(ctx context.Context, paneTarget string) BusyVerdict {
+func (bd *busyDetector) DetectBusy(ctx context.Context, paneTarget string) busyVerdict {
 	// Stage 1: pane_current_command — quick gate
 	cmd, err := bd.paneIO.GetPaneCurrentCommand(paneTarget)
 	if err != nil {
-		bd.log(LogLevelDebug, "busy_detection pane_current_command error=%v", err)
+		bd.log(logLevelDebug, "busy_detection pane_current_command error=%v", err)
 		return VerdictUndecided
 	}
-	bd.log(LogLevelDebug, "busy_detection started; pane_current_command=%s", cmd)
+	bd.log(logLevelDebug, "busy_detection started; pane_current_command=%s", cmd)
 
 	// If the pane is running only a shell, no agent CLI is active → idle.
 	if bd.paneIO.IsShellCommand(cmd) {
-		bd.log(LogLevelDebug, "busy_detection pane running shell %q → idle", cmd)
+		bd.log(logLevelDebug, "busy_detection pane running shell %q → idle", cmd)
 		return VerdictIdle
 	}
 
@@ -70,7 +70,7 @@ func (bd *BusyDetector) DetectBusy(ctx context.Context, paneTarget string) BusyV
 	// Uses CapturePane (no -J) to preserve line boundaries for regex matching.
 	content, err := bd.paneIO.CapturePane(paneTarget, busyHintLines)
 	if err != nil {
-		bd.log(LogLevelDebug, "busy_detection capture_pane error=%v", err)
+		bd.log(logLevelDebug, "busy_detection capture_pane error=%v", err)
 		return VerdictUndecided
 	}
 
@@ -80,31 +80,31 @@ func (bd *BusyDetector) DetectBusy(ctx context.Context, paneTarget string) BusyV
 	if patternMatched {
 		hintStr = "matched"
 	}
-	bd.log(LogLevelDebug, "busy_detection busy_pattern_hint=%s", hintStr)
+	bd.log(logLevelDebug, "busy_detection busy_pattern_hint=%s", hintStr)
 
 	// Stage 3: Activity probe (hash comparison over idle_stable_sec).
 	// Uses CapturePaneJoined (-J) for width-independent hash stability.
 	joinedContent, err := bd.paneIO.CapturePaneJoined(paneTarget, busyHintLines)
 	if err != nil {
-		bd.log(LogLevelDebug, "busy_detection joined capture error=%v", err)
+		bd.log(logLevelDebug, "busy_detection joined capture error=%v", err)
 		return VerdictUndecided
 	}
 	hashA := contentHash(joinedContent)
 	if err := sleepCtx(ctx, time.Duration(bd.config.IdleStableSec)*time.Second); err != nil {
-		bd.log(LogLevelDebug, "busy_detection activity_probe sleep cancelled: %v", err)
+		bd.log(logLevelDebug, "busy_detection activity_probe sleep cancelled: %v", err)
 		return VerdictUndecided
 	}
 
 	joinedContent2, err := bd.paneIO.CapturePaneJoined(paneTarget, busyHintLines)
 	if err != nil {
-		bd.log(LogLevelDebug, "busy_detection second capture error=%v", err)
+		bd.log(logLevelDebug, "busy_detection second capture error=%v", err)
 		return VerdictUndecided
 	}
 	hashB := contentHash(joinedContent2)
 
 	hashChanged := hashA != hashB
 
-	var verdict BusyVerdict
+	var verdict busyVerdict
 	switch {
 	case hashChanged:
 		verdict = VerdictBusy
@@ -114,7 +114,7 @@ func (bd *BusyDetector) DetectBusy(ctx context.Context, paneTarget string) BusyV
 		verdict = VerdictUndecided
 	}
 
-	bd.log(LogLevelDebug, "busy_detection activity_probe hash_changed=%v verdict=%s",
+	bd.log(logLevelDebug, "busy_detection activity_probe hash_changed=%v verdict=%s",
 		hashChanged, verdict)
 	return verdict
 }
@@ -127,10 +127,10 @@ const undecidedImmediateRetries = 2
 // detectWithUndecidedRetry runs DetectBusy and, if the result is
 // VerdictUndecided, retries up to undecidedImmediateRetries times with no
 // sleep delay (targeting transient tmux capture errors that resolve instantly).
-func (bd *BusyDetector) detectWithUndecidedRetry(ctx context.Context, paneTarget, agentID string) BusyVerdict {
+func (bd *busyDetector) detectWithUndecidedRetry(ctx context.Context, paneTarget, agentID string) busyVerdict {
 	verdict := bd.DetectBusy(ctx, paneTarget)
 	for i := 0; i < undecidedImmediateRetries && verdict == VerdictUndecided; i++ {
-		bd.log(LogLevelDebug, "busy_undecided_retry retry=%d/%d agent_id=%s",
+		bd.log(logLevelDebug, "busy_undecided_retry retry=%d/%d agent_id=%s",
 			i+1, undecidedImmediateRetries, agentID)
 		verdict = bd.DetectBusy(ctx, paneTarget)
 	}
@@ -144,7 +144,7 @@ func (bd *BusyDetector) detectWithUndecidedRetry(ctx context.Context, paneTarget
 // still yield Undecided, it is returned as-is.
 // agentID is used only for log messages.
 // Returns VerdictUndecided if ctx is cancelled during retries.
-func (bd *BusyDetector) DetectBusyWithRetry(ctx context.Context, paneTarget, agentID string) BusyVerdict {
+func (bd *busyDetector) DetectBusyWithRetry(ctx context.Context, paneTarget, agentID string) busyVerdict {
 	verdict := bd.detectWithUndecidedRetry(ctx, paneTarget, agentID)
 
 	if verdict != VerdictBusy {
@@ -152,10 +152,10 @@ func (bd *BusyDetector) DetectBusyWithRetry(ctx context.Context, paneTarget, age
 	}
 
 	for i := 1; i <= bd.config.BusyCheckMaxRetries; i++ {
-		bd.log(LogLevelDebug, "busy_retry retry=%d/%d agent_id=%s verdict=%s",
+		bd.log(logLevelDebug, "busy_retry retry=%d/%d agent_id=%s verdict=%s",
 			i, bd.config.BusyCheckMaxRetries, agentID, verdict)
 		if err := sleepCtx(ctx, time.Duration(bd.config.BusyCheckInterval)*time.Second); err != nil {
-			bd.log(LogLevelDebug, "busy_retry sleep cancelled: %v", err)
+			bd.log(logLevelDebug, "busy_retry sleep cancelled: %v", err)
 			return VerdictUndecided
 		}
 
@@ -168,6 +168,6 @@ func (bd *BusyDetector) DetectBusyWithRetry(ctx context.Context, paneTarget, age
 	return VerdictBusy
 }
 
-func (bd *BusyDetector) log(level LogLevel, format string, args ...any) {
+func (bd *busyDetector) log(level logLevel, format string, args ...any) {
 	logf(bd.logger, bd.logLevel, level, "busy_detector", format, args...)
 }

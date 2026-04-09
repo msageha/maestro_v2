@@ -239,7 +239,7 @@ func SendTextAndSubmit(ctx context.Context, paneTarget, text string) error {
 		return &TmuxError{Kind: contextErrorKind(err), Op: "send-text-submit-sleep", Err: err}
 	}
 
-	return SendKeysCtx(ctx, paneTarget, "Enter")
+	return sendKeysCtx(ctx, paneTarget, "Enter")
 }
 
 // sleepCtx sleeps for d or returns early if ctx is cancelled.
@@ -376,9 +376,9 @@ func CreateWindow(name string) error {
 	return run("new-window", "-t", exactSessionTarget(), "-n", name)
 }
 
-// SplitPane splits the current pane in the given window horizontally or vertically.
+// splitPane splits the current pane in the given window horizontally or vertically.
 // horizontal=true splits left-right (-h), false splits top-bottom (-v).
-func SplitPane(windowTarget string, horizontal bool) error {
+func splitPane(windowTarget string, horizontal bool) error {
 	flag := "-v"
 	if horizontal {
 		flag = "-h"
@@ -434,8 +434,8 @@ func CapturePaneJoined(paneTarget string, lastN int) (string, error) {
 	return output(args...)
 }
 
-// SendKeysCtx sends keystrokes to a pane with context support.
-func SendKeysCtx(ctx context.Context, paneTarget string, keys ...string) error {
+// sendKeysCtx sends keystrokes to a pane with context support.
+func sendKeysCtx(ctx context.Context, paneTarget string, keys ...string) error {
 	args := make([]string, 0, 3+len(keys))
 	args = append(args, "send-keys", "-t", paneTarget)
 	args = append(args, keys...)
@@ -444,7 +444,7 @@ func SendKeysCtx(ctx context.Context, paneTarget string, keys ...string) error {
 
 // SendKeys sends keystrokes to a pane.
 func SendKeys(paneTarget string, keys ...string) error {
-	return SendKeysCtx(context.Background(), paneTarget, keys...)
+	return sendKeysCtx(context.Background(), paneTarget, keys...)
 }
 
 // ListPanes returns pane IDs for a window, formatted by the given format string.
@@ -539,7 +539,7 @@ func SetupWorkerGrid(windowTarget string, workerCount int) ([]string, error) {
 	firstPaneID := strings.TrimSpace(ids[0])
 
 	for i := 1; i < totalRows; i++ {
-		if err := SplitPane(firstPaneID, false); err != nil {
+		if err := splitPane(firstPaneID, false); err != nil {
 			return nil, fmt.Errorf("split row %d: %w", i, err)
 		}
 	}
@@ -553,7 +553,7 @@ func SetupWorkerGrid(windowTarget string, workerCount int) ([]string, error) {
 	// Step 2: Split each full row horizontally to create 2 columns.
 	// The last row is left unsplit when workerCount is odd.
 	for i := 0; i < fullRows; i++ {
-		if err := SplitPane(strings.TrimSpace(rowIDs[i]), true); err != nil {
+		if err := splitPane(strings.TrimSpace(rowIDs[i]), true); err != nil {
 			return nil, fmt.Errorf("split row %d cols: %w", i, err)
 		}
 	}

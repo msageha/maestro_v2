@@ -12,7 +12,7 @@ func init() {
 	os.Setenv("MAESTRO_LOCKORDER", "panic")
 }
 
-func TestLevelForKey(t *testing.T) {
+func Test_levelForKey(t *testing.T) {
 	tests := []struct {
 		key       string
 		wantLevel int
@@ -29,9 +29,9 @@ func TestLevelForKey(t *testing.T) {
 		{"", 0, false},
 	}
 	for _, tt := range tests {
-		level, ok := LevelForKey(tt.key)
+		level, ok := levelForKey(tt.key)
 		if level != tt.wantLevel || ok != tt.wantOK {
-			t.Errorf("LevelForKey(%q) = (%d, %v), want (%d, %v)",
+			t.Errorf("levelForKey(%q) = (%d, %v), want (%d, %v)",
 				tt.key, level, ok, tt.wantLevel, tt.wantOK)
 		}
 	}

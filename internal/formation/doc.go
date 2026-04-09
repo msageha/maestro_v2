@@ -15,7 +15,7 @@
 //   - startDaemon / stopDaemon: Manages the daemon process lifecycle
 //     including UDS-based graceful shutdown, PID file validation, and
 //     SIGTERM-to-SIGKILL escalation.
-//   - ProcessManager: Interface abstracting OS-level process operations
+//   - processManager: Interface abstracting OS-level process operations
 //     (alive check, signal sending, start time query) for testability.
 //   - StartupState: Manages formation startup state persistence, including
 //     reset of transient state files while preserving quarantine entries.
