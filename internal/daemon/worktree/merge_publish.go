@@ -17,10 +17,10 @@ import (
 // Manual operator intervention is required to recover from quarantine.
 const mergeFailureQuarantineThreshold = 3
 
-// ErrIntegrationQuarantined is returned when MergeToIntegration is called on an
+// errIntegrationQuarantined is returned when MergeToIntegration is called on an
 // integration that has been quarantined due to repeated unrecoverable failures.
 // Callers must surface this to operators rather than retrying.
-var ErrIntegrationQuarantined = errors.New("integration is quarantined; manual intervention required")
+var errIntegrationQuarantined = errors.New("integration is quarantined; manual intervention required")
 
 // recordMergeFailure increments the merge failure counter and either persists
 // IntegrationStatusFailed (when below threshold) or transitions to
@@ -61,7 +61,7 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 	// an operator has manually inspected and reset the state. Returning early
 	// without any git ops or state mutations breaks the H10 retry loop.
 	if state.Integration.Status == model.IntegrationStatusQuarantined {
-		return nil, fmt.Errorf("%w: command=%s reason=%s", ErrIntegrationQuarantined, commandID, state.Integration.QuarantineReason)
+		return nil, fmt.Errorf("%w: command=%s reason=%s", errIntegrationQuarantined, commandID, state.Integration.QuarantineReason)
 	}
 
 	integrationPath := wm.integrationWorktreePath(commandID)
@@ -218,7 +218,7 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 				}
 			}
 
-			if errClass == GitErrorTransient {
+			if errClass == gitErrorTransient {
 				// Transient error: skip this worker, continue loop
 				if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusFailed, now); tErr != nil {
 					wm.log(core.LogLevelWarn, "merge_transient_fail_transition command=%s worker=%s error=%v",

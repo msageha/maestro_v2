@@ -65,7 +65,7 @@ func TestRecordMergeFailure_TransitionsToQuarantine(t *testing.T) {
 }
 
 // TestMergeToIntegration_QuarantinedShortCircuits validates that calling
-// MergeToIntegration on a quarantined integration returns ErrIntegrationQuarantined
+// MergeToIntegration on a quarantined integration returns errIntegrationQuarantined
 // immediately without performing any git operations or state mutations.
 // This is the core fix for H10: prevents the infinite reconcile loop.
 func TestMergeToIntegration_QuarantinedShortCircuits(t *testing.T) {
@@ -92,14 +92,14 @@ func TestMergeToIntegration_QuarantinedShortCircuits(t *testing.T) {
 		t.Fatalf("saveState: %v", err)
 	}
 
-	// Call MergeToIntegration; it must return ErrIntegrationQuarantined
+	// Call MergeToIntegration; it must return errIntegrationQuarantined
 	// without modifying the persisted state.
 	conflicts, mergeErr := wm.MergeToIntegration(commandID, []string{"worker1"}, nil)
 	if mergeErr == nil {
-		t.Fatalf("MergeToIntegration returned nil err, want ErrIntegrationQuarantined")
+		t.Fatalf("MergeToIntegration returned nil err, want errIntegrationQuarantined")
 	}
-	if !errors.Is(mergeErr, ErrIntegrationQuarantined) {
-		t.Errorf("err=%v does not wrap ErrIntegrationQuarantined", mergeErr)
+	if !errors.Is(mergeErr, errIntegrationQuarantined) {
+		t.Errorf("err=%v does not wrap errIntegrationQuarantined", mergeErr)
 	}
 	if conflicts != nil {
 		t.Errorf("conflicts=%v want nil", conflicts)

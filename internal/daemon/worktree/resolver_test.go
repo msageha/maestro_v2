@@ -113,8 +113,8 @@ func TestDispatchConflictResolution_OK(t *testing.T) {
 func TestDispatchConflictResolution_CASMismatch(t *testing.T) {
 	wm, store, cmd, phase, worker := setupResolverTest(t, "good")
 	err := wm.DispatchConflictResolution(cmd, phase, worker, "bad")
-	if !errors.Is(err, ErrConflictGenerationMismatch) {
-		t.Fatalf("expected ErrConflictGenerationMismatch, got %v", err)
+	if !errors.Is(err, errConflictGenerationMismatch) {
+		t.Fatalf("expected errConflictGenerationMismatch, got %v", err)
 	}
 	state, _ := wm.loadState(cmd)
 	if got := wm.findWorker(state, worker).Status; got != model.WorktreeStatusConflict {
