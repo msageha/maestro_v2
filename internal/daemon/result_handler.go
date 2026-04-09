@@ -22,6 +22,8 @@ import (
 const (
 	// maxNotifyAttempts is the maximum number of notification delivery attempts
 	// before giving up. Prevents infinite retries when tmux is unavailable.
+	// Why: 5 attempts with exponential backoff covers ~31s of retries, enough
+	// to ride out transient tmux hangs without blocking the scan loop indefinitely.
 	maxNotifyAttempts = 5
 
 	// notifyBackoffInitial is the initial backoff delay after a failed notification.
@@ -29,6 +31,8 @@ const (
 	notifyBackoffInitial = 1 * time.Second
 
 	// notifyBackoffMax is the maximum backoff delay between retry attempts.
+	// Why: 30s cap prevents backoff from exceeding the typical scan interval,
+	// ensuring retries don't stall the entire notification pipeline.
 	notifyBackoffMax = 30 * time.Second
 
 	// maxResultLoopIterations is the maximum number of iterations allowed per
@@ -40,7 +44,15 @@ const (
 	// maxAtomicWriteFailures is the maximum number of consecutive AtomicWrite
 	// failures before the processing loop aborts. Prevents infinite loops when
 	// persistent write errors occur (e.g., disk full).
+	// Why: 3 retries is enough to distinguish transient I/O hiccups from
+	// persistent failures (e.g., disk full) without excessive delay.
 	maxAtomicWriteFailures = 3
+
+	// defaultNotificationPriority is the default priority assigned to new
+	// orchestrator notifications. Higher values are processed first.
+	// Why: 100 provides a mid-range default that leaves room for both
+	// higher-priority (urgent) and lower-priority (batch) notifications.
+	defaultNotificationPriority = 100
 )
 
 // ResultHandler monitors results/ and delivers notifications to agents.
@@ -565,7 +577,7 @@ func (rh *ResultHandler) writeNotificationToOrchestratorQueue(resultID, commandI
 			Type:           notifType,
 			SourceResultID: resultID,
 			Content:        content,
-			Priority:       100,
+			Priority:       defaultNotificationPriority,
 			Status:         model.StatusPending,
 			CreatedAt:      now,
 			UpdatedAt:      now,

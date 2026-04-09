@@ -146,7 +146,9 @@ func EffectivePriority(priority int, createdAt string, priorityAgingSec int) int
 	}
 	// Guard against Duration overflow for very large priorityAgingSec values.
 	// time.Duration is int64 nanoseconds; max safe seconds ≈ 9.2e9 (~292 years).
-	const maxSafeSec = 1<<53 - 1 // well within int64 nanosecond range
+	// Why: 2^53-1 is the largest integer exactly representable in float64,
+	// ensuring no precision loss when converting to time.Duration nanoseconds.
+	const maxSafeSec = 1<<53 - 1
 	if priorityAgingSec > maxSafeSec {
 		return priority
 	}

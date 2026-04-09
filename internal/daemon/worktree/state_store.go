@@ -12,7 +12,10 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
-const maxWorktreeStateBytes = 1 << 20 // 1MB
+// maxWorktreeStateBytes is the maximum worktree state file size (1MB).
+// Why: 1MB accommodates state files with hundreds of workers per command
+// while protecting against corrupted or adversarial files consuming unbounded memory.
+const maxWorktreeStateBytes = 1 << 20
 
 func (wm *Manager) saveState(commandID string, state *model.WorktreeCommandState) error {
 	stateDir := filepath.Join(wm.maestroDir, "state", "worktrees")
