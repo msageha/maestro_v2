@@ -28,7 +28,7 @@ func (qh *QueueHandler) processPlannerSignalsDeferred(sq *model.PlannerSignalQue
 			}
 		}
 
-		if qh.dependencyResolver.stateReader != nil && sig.PhaseID != "" {
+		if qh.dependencyResolver.HasStateReader() && sig.PhaseID != "" {
 			// Phase-level signals: check phase existence (orphan) and staleness
 			phaseStatus, err := qh.dependencyResolver.GetPhaseStatus(sig.CommandID, sig.PhaseID)
 			if err != nil {
@@ -57,9 +57,9 @@ func (qh *QueueHandler) processPlannerSignalsDeferred(sq *model.PlannerSignalQue
 				*dirty = true
 				continue
 			}
-		} else if qh.dependencyResolver.stateReader != nil && sig.PhaseID == "" {
+		} else if qh.dependencyResolver.HasStateReader() && sig.PhaseID == "" {
 			// Command-level signals (e.g. circuit_breaker_tripped): check command existence only
-			_, err := qh.dependencyResolver.stateReader.GetCommandPhases(sig.CommandID)
+			_, err := qh.dependencyResolver.GetStateReader().GetCommandPhases(sig.CommandID)
 			if err != nil {
 				if errors.Is(err, ErrStateNotFound) || os.IsNotExist(err) {
 					qh.log(LogLevelInfo, "signal_orphaned_removed kind=%s command=%s (command not found)",
@@ -144,7 +144,7 @@ func (qh *QueueHandler) upsertPlannerSignal(sq *model.PlannerSignalQueue, dirty 
 
 // deliverPlannerSignal attempts delivery to the planner using the shared executor.
 func (qh *QueueHandler) deliverPlannerSignal(ctx context.Context, commandID, message string) error {
-	exec, err := qh.dispatcher.getExecutor()
+	exec, err := qh.execProvider.GetExecutor()
 	if err != nil {
 		return fmt.Errorf("get executor: %w", err)
 	}
@@ -194,7 +194,7 @@ func (qh *QueueHandler) isAgentBusy(ctx context.Context, agentID string) (busy, 
 	}
 
 	// Default: use shared agent executor to probe busy state
-	exec, err := qh.dispatcher.getExecutor()
+	exec, err := qh.execProvider.GetExecutor()
 	if err != nil {
 		qh.log(LogLevelWarn, "busy_probe_executor_error agent=%s error=%v (treating as undecided)", agentID, err)
 		return false, true
@@ -217,7 +217,7 @@ func (qh *QueueHandler) isAgentBusy(ctx context.Context, agentID string) (busy, 
 
 // clearAgent sends /clear to the specified agent pane to reset a stuck session.
 func (qh *QueueHandler) clearAgent(ctx context.Context, agentID string) {
-	exec, err := qh.dispatcher.getExecutor()
+	exec, err := qh.execProvider.GetExecutor()
 	if err != nil {
 		qh.log(LogLevelWarn, "clear_agent create_executor error=%v", err)
 		return

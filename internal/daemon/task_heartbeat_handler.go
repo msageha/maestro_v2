@@ -22,7 +22,7 @@ import (
 type TaskHeartbeatHandler struct {
 	maestroDir   string
 	config       model.Config
-	leaseManager *LeaseManager
+	leaseManager QueueLeaseManager
 	clock        Clock
 	dl           *DaemonLogger
 	logger       *log.Logger
@@ -32,13 +32,13 @@ type TaskHeartbeatHandler struct {
 }
 
 // NewTaskHeartbeatHandler creates a new task heartbeat handler.
-func NewTaskHeartbeatHandler(maestroDir string, cfg model.Config, lm *LeaseManager,
+func NewTaskHeartbeatHandler(maestroDir string, cfg model.Config, lm QueueLeaseManager,
 	logger *log.Logger, logLevel LogLevel, scanMu *sync.RWMutex, lockMap *lock.MutexMap) *TaskHeartbeatHandler {
 	return NewTaskHeartbeatHandlerWithDeps(maestroDir, cfg, lm, logger, logLevel, scanMu, lockMap, RealClock{})
 }
 
 // NewTaskHeartbeatHandlerWithDeps creates a TaskHeartbeatHandler with explicit dependencies.
-func NewTaskHeartbeatHandlerWithDeps(maestroDir string, cfg model.Config, lm *LeaseManager,
+func NewTaskHeartbeatHandlerWithDeps(maestroDir string, cfg model.Config, lm QueueLeaseManager,
 	logger *log.Logger, logLevel LogLevel, scanMu *sync.RWMutex, lockMap *lock.MutexMap, clock Clock) *TaskHeartbeatHandler {
 	return &TaskHeartbeatHandler{
 		maestroDir:   maestroDir,

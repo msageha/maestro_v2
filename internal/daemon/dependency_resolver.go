@@ -380,6 +380,16 @@ func (dr *DependencyResolver) publishPhaseTransitionEvent(commandID string, tr P
 	}
 }
 
+// HasStateReader returns true if a StateReader has been wired.
+func (dr *DependencyResolver) HasStateReader() bool {
+	return dr.stateReader != nil
+}
+
+// GetStateReader returns the wired StateReader (may be nil).
+func (dr *DependencyResolver) GetStateReader() StateReader {
+	return dr.stateReader
+}
+
 func (dr *DependencyResolver) log(level LogLevel, format string, args ...any) {
 	dr.dl.Logf(level, format, args...)
 }
