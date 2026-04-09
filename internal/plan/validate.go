@@ -8,6 +8,12 @@ import (
 	"github.com/msageha/maestro_v2/internal/validate"
 )
 
+// BloomLevel range constants.
+const (
+	BloomLevelMin = 1
+	BloomLevelMax = 6
+)
+
 // Maximum lengths for task fields.
 const (
 	MaxTaskNameRunes               = 128
@@ -193,7 +199,7 @@ func ValidatePhaseFillInput(tasks []TaskInput, phase model.Phase) *ValidationErr
 			}
 		} else {
 			// Default: all levels allowed
-			for l := 1; l <= 6; l++ {
+			for l := BloomLevelMin; l <= BloomLevelMax; l++ {
 				allowedBloom[l] = true
 			}
 		}
@@ -292,8 +298,8 @@ func validateSystemReservedNames(names []string, fieldPrefix string, errs *Valid
 }
 
 func validateBloomLevel(level int, fieldPath string, errs *ValidationErrors) {
-	if level < 1 || level > 6 {
-		errs.Add(fieldPath, fmt.Sprintf("must be between 1 and 6, got %d", level))
+	if level < BloomLevelMin || level > BloomLevelMax {
+		errs.Add(fieldPath, fmt.Sprintf("must be between %d and %d, got %d", BloomLevelMin, BloomLevelMax, level))
 	}
 }
 
@@ -306,9 +312,9 @@ func validatePhaseConstraints(c *ConstraintInput, fieldPath string, errs *Valida
 	}
 	if len(c.AllowedBloomLevels) > 0 {
 		for i, l := range c.AllowedBloomLevels {
-			if l < 1 || l > 6 {
+			if l < BloomLevelMin || l > BloomLevelMax {
 				errs.Add(fmt.Sprintf("%s.allowed_bloom_levels[%d]", fieldPath, i),
-					fmt.Sprintf("must be between 1 and 6, got %d", l))
+					fmt.Sprintf("must be between %d and %d, got %d", BloomLevelMin, BloomLevelMax, l))
 			}
 		}
 	}

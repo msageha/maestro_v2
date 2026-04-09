@@ -5,12 +5,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
+
+// nowUTC returns the current time in UTC formatted as RFC3339.
+func nowUTC() string {
+	return time.Now().UTC().Format(time.RFC3339)
+}
 
 // readModifyWriteQueue performs the common read-modify-write pattern on a worker queue file.
 // It reads the existing queue, calls modifyFn to apply changes, and atomically writes the result.

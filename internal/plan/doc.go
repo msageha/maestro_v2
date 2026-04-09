@@ -14,8 +14,9 @@
 //   - StateManager: Manages read/write access to command state files
 //     (state/commands/{id}.yaml) with file-level locking, atomic writes, and
 //     automatic backup recovery for corrupted YAML.
-//   - StateStore: Interface abstracting state persistence operations, allowing
+//   - stateStore: Interface abstracting state persistence operations, allowing
 //     the submit flow to be decoupled from direct filesystem I/O.
+//   - commandLocker: Interface abstracting in-process locking for command state.
 //   - PlanStateReader: Read-only adapter that implements daemon.StateReader
 //     for querying task and command status from state files.
 //   - Complete: Handles command completion with WAL-based crash recovery

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -197,7 +198,7 @@ func (e *Engine) Evaluate(ctx context.Context, gateType GateType, evalCtx map[st
 	contextWrapper := &mapEvaluationContext{data: evalCtx}
 
 	// Generate cache key
-	cacheKey := e.generatecacheKey(string(gateType), evalCtx)
+	cacheKey := e.generateCacheKey(string(gateType), evalCtx)
 
 	// Try to get from cache
 	if cached := e.cache.Get(cacheKey); cached != nil {
@@ -402,7 +403,7 @@ func (e *Engine) shouldTriggerGate(gate *compiledGate, evalCtx EvaluationContext
 	if len(trigger.Roles) > 0 {
 		role, ok := evalCtx.GetField("agent.role")
 		roleStr, isStr := role.(string)
-		if !ok || !isStr || !contains(trigger.Roles, roleStr) {
+		if !ok || !isStr || !slices.Contains(trigger.Roles, roleStr) {
 			return false
 		}
 	}
@@ -410,7 +411,7 @@ func (e *Engine) shouldTriggerGate(gate *compiledGate, evalCtx EvaluationContext
 	// Check bloom level filter
 	if len(trigger.BloomLevels) > 0 {
 		bloomLevel, ok := evalCtx.GetField("task.bloom_level")
-		if !ok || !containsInt(trigger.BloomLevels, toInt(bloomLevel)) {
+		if !ok || !slices.Contains(trigger.BloomLevels, toInt(bloomLevel)) {
 			return false
 		}
 	}
@@ -419,7 +420,7 @@ func (e *Engine) shouldTriggerGate(gate *compiledGate, evalCtx EvaluationContext
 	if len(trigger.TaskTypes) > 0 {
 		taskType, ok := evalCtx.GetField("task.type")
 		taskTypeStr, isStr := taskType.(string)
-		if !ok || !isStr || !contains(trigger.TaskTypes, taskTypeStr) {
+		if !ok || !isStr || !slices.Contains(trigger.TaskTypes, taskTypeStr) {
 			return false
 		}
 	}
@@ -445,8 +446,8 @@ func (e *Engine) shouldTriggerGate(gate *compiledGate, evalCtx EvaluationContext
 	return true
 }
 
-// generatecacheKey generates a cache key for the evaluation
-func (e *Engine) generatecacheKey(gateType string, context map[string]interface{}) *cacheKey {
+// generateCacheKey generates a cache key for the evaluation
+func (e *Engine) generateCacheKey(gateType string, context map[string]interface{}) *cacheKey {
 	// Create a canonical JSON representation
 	contextData, err := json.Marshal(context)
 	if err != nil {
@@ -474,23 +475,6 @@ func (e *Engine) getEvaluator(condType ConditionType) (RuleEvaluator, bool) {
 }
 
 // Helper functions
-func contains(slice []string, item string) bool {
-	for _, s := range slice {
-		if s == item {
-			return true
-		}
-	}
-	return false
-}
-
-func containsInt(slice []int, item int) bool {
-	for _, i := range slice {
-		if i == item {
-			return true
-		}
-	}
-	return false
-}
 
 func toInt(v interface{}) int {
 	switch val := v.(type) {
