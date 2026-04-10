@@ -186,14 +186,15 @@ func (qh *QueueHandler) computeSignalBackoff(attempts int) time.Duration {
 	return jittered
 }
 
-// isAgentBusy probes agent busy state via executor.
+// isAgentBusy probes agent busy state via busyCheckFn.
 // Returns (busy, undecided). When undecided=true, busy is false.
 func (qh *QueueHandler) isAgentBusy(ctx context.Context, agentID string) (busy, undecided bool) {
-	if qh.busyChecker != nil {
-		return qh.busyChecker.IsBusy(agentID), false
-	}
+	return qh.busyCheckFn(ctx, agentID)
+}
 
-	// Default: use shared agent executor to probe busy state
+// defaultBusyCheck is the production busy-check implementation using the
+// shared agent executor to probe tmux pane state.
+func (qh *QueueHandler) defaultBusyCheck(ctx context.Context, agentID string) (busy, undecided bool) {
 	exec, err := qh.execProvider.GetExecutor()
 	if err != nil {
 		qh.log(LogLevelWarn, "busy_probe_executor_error agent=%s error=%v (treating as undecided)", agentID, err)
