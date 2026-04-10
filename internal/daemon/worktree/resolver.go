@@ -267,7 +267,7 @@ func (wm *Manager) assertWorktreeContained(path string) error {
 func (wm *Manager) resolverGitRunInDir(dir string, args ...string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), resolverGitTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", args...) //nolint:gosec // args are constructed internally from validated inputs
 	cmd.Dir = dir
 	output, err := cmd.CombinedOutput()
 	if err != nil {
