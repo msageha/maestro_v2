@@ -16,8 +16,8 @@
 //     automatic backup recovery for corrupted YAML.
 //   - stateStore: Interface abstracting state persistence operations, allowing
 //     the submit flow to be decoupled from direct filesystem I/O.
-//   - PlanStateReader: Read-only adapter that implements daemon.StateReader
-//     for querying task and command status from state files.
+//   - PlanStateReader: Adapter that implements core.StateManager
+//     for reading and writing task and command status from state files.
 //   - Complete: Handles command completion with WAL-based crash recovery
 //     (completeIntent) to ensure idempotent multi-step completion sequences.
 //   - Retry: Replaces a failed task with a new one, re-assigning to a worker

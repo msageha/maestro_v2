@@ -76,7 +76,7 @@ func (m *mockStateReader) IsSystemCommitReady(commandID, taskID string) (bool, b
 	return v[0], v[1], nil
 }
 
-func newTestDependencyResolver(reader StateReader) *DependencyResolver {
+func newTestDependencyResolver(reader StateManager) *DependencyResolver {
 	return NewDependencyResolver(reader, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
 }
 
