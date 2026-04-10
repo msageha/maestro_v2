@@ -1,10 +1,8 @@
 package daemon
 
 import (
-	"path"
-	"strings"
-
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/pathutil"
 )
 
 // HasPathOverlap reports whether two expected_paths entries overlap.
@@ -14,8 +12,8 @@ func HasPathOverlap(a, b string) bool {
 	if a == "" || b == "" {
 		return false
 	}
-	ca := normalizePath(a)
-	cb := normalizePath(b)
+	ca := pathutil.NormalizePath(a)
+	cb := pathutil.NormalizePath(b)
 	if ca == "" || cb == "" {
 		return false
 	}
@@ -23,21 +21,7 @@ func HasPathOverlap(a, b string) bool {
 		return true
 	}
 	// Check containment at directory boundary.
-	return isDescendant(cb, ca) || isDescendant(ca, cb)
-}
-
-// normalizePath strips trailing slashes and cleans the path.
-func normalizePath(p string) string {
-	cleaned := path.Clean(strings.TrimSuffix(p, "/"))
-	if cleaned == "." {
-		return ""
-	}
-	return cleaned
-}
-
-// isDescendant reports whether child is a descendant of dir at a "/" boundary.
-func isDescendant(child, dir string) bool {
-	return strings.HasPrefix(child, dir+"/")
+	return pathutil.IsDescendant(cb, ca) || pathutil.IsDescendant(ca, cb)
 }
 
 // HasTaskPathOverlap reports whether any expected_path in paths1 overlaps

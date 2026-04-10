@@ -267,7 +267,6 @@ func (ch *CancelHandler) WriteSyntheticResults(results []CancelledTaskResult, wo
 			Summary:                fmt.Sprintf("cancelled: %s", r.Reason),
 			PartialChangesPossible: true,
 			RetrySafe:              false,
-			Notified:               false,
 			CreatedAt:              now,
 		})
 	}

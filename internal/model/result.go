@@ -48,12 +48,7 @@ type TaskResult struct {
 	FilesChanged           []string               `yaml:"files_changed"`
 	PartialChangesPossible bool                   `yaml:"partial_changes_possible"`
 	RetrySafe              bool                   `yaml:"retry_safe"`
-	Notified               bool                   `yaml:"notified"`
-	NotifyAttempts         int                    `yaml:"notify_attempts"`
-	NotifyLeaseOwner       *string                `yaml:"notify_lease_owner"`
-	NotifyLeaseExpiresAt   *string                `yaml:"notify_lease_expires_at"`
-	NotifiedAt             *string                `yaml:"notified_at"`
-	NotifyLastError        *string                `yaml:"notify_last_error"`
+	NotifiableBase         `yaml:",inline"`
 	CreatedAt              string                 `yaml:"created_at"`
 	QualityGateEvaluation  *QualityGateEvaluation `yaml:"quality_gate_evaluation,omitempty"`
 }
@@ -69,18 +64,13 @@ type CommandResultFile struct {
 // CommandResult はコマンド全体の実行結果を表す。
 // 配下の全タスク結果を集約し、Orchestrator への通知状態を管理する。
 type CommandResult struct {
-	ID                   string              `yaml:"id"`
-	CommandID            string              `yaml:"command_id"`
-	Status               Status              `yaml:"status"`
-	Summary              string              `yaml:"summary"`
-	Tasks                []CommandResultTask `yaml:"tasks"`
-	Notified             bool                `yaml:"notified"`
-	NotifyAttempts       int                 `yaml:"notify_attempts"`
-	NotifyLeaseOwner     *string             `yaml:"notify_lease_owner"`
-	NotifyLeaseExpiresAt *string             `yaml:"notify_lease_expires_at"`
-	NotifiedAt           *string             `yaml:"notified_at"`
-	NotifyLastError      *string             `yaml:"notify_last_error"`
-	CreatedAt            string              `yaml:"created_at"`
+	ID             string              `yaml:"id"`
+	CommandID      string              `yaml:"command_id"`
+	Status         Status              `yaml:"status"`
+	Summary        string              `yaml:"summary"`
+	Tasks          []CommandResultTask `yaml:"tasks"`
+	NotifiableBase `yaml:",inline"`
+	CreatedAt      string `yaml:"created_at"`
 }
 
 // CommandResultTask holds per-task outcome information within a command result.
@@ -104,83 +94,56 @@ type Notifiable interface {
 	MarkNotifyFailure(errMsg, backoffOwner, backoffExpiresAt string)
 }
 
-// --- TaskResult implements Notifiable ---
+// NotifiableBase holds notification lease state and implements the shared
+// methods of the Notifiable interface. Embed in TaskResult and CommandResult.
+type NotifiableBase struct {
+	Notified             bool    `yaml:"notified"`
+	NotifyAttempts       int     `yaml:"notify_attempts"`
+	NotifyLeaseOwner     *string `yaml:"notify_lease_owner"`
+	NotifyLeaseExpiresAt *string `yaml:"notify_lease_expires_at"`
+	NotifiedAt           *string `yaml:"notified_at"`
+	NotifyLastError      *string `yaml:"notify_last_error"`
+}
+
+// IsNotified reports whether the notification for this result has been sent.
+func (n *NotifiableBase) IsNotified() bool { return n.Notified }
+
+// GetNotifyAttempts returns the number of notification delivery attempts made.
+func (n *NotifiableBase) GetNotifyAttempts() int { return n.NotifyAttempts }
+
+// GetNotifyLeaseOwner returns the owner of the current notification lease, or nil.
+func (n *NotifiableBase) GetNotifyLeaseOwner() *string { return n.NotifyLeaseOwner }
+
+// GetNotifyLeaseExpiresAt returns the expiry time of the current notification lease, or nil.
+func (n *NotifiableBase) GetNotifyLeaseExpiresAt() *string { return n.NotifyLeaseExpiresAt }
+
+// AcquireLease sets the notification lease owner and expiry, incrementing the attempt counter.
+func (n *NotifiableBase) AcquireLease(owner, expiresAt string) {
+	n.NotifyLeaseOwner = &owner
+	n.NotifyLeaseExpiresAt = &expiresAt
+	n.NotifyAttempts++
+}
+
+// MarkNotified marks the result as successfully notified at the given timestamp.
+func (n *NotifiableBase) MarkNotified(at string) {
+	n.Notified = true
+	n.NotifiedAt = &at
+	n.NotifyLeaseOwner = nil
+	n.NotifyLeaseExpiresAt = nil
+}
+
+// MarkNotifyFailure records a failed notification attempt and sets the backoff lease.
+func (n *NotifiableBase) MarkNotifyFailure(errMsg, backoffOwner, backoffExpiresAt string) {
+	n.NotifyLastError = &errMsg
+	n.NotifyLeaseOwner = &backoffOwner
+	n.NotifyLeaseExpiresAt = &backoffExpiresAt
+}
 
 // GetResultID returns the unique identifier of the task result.
 func (r *TaskResult) GetResultID() string { return r.ID }
 
-// IsNotified reports whether the notification for this result has been sent.
-func (r *TaskResult) IsNotified() bool { return r.Notified }
-
-// GetNotifyAttempts returns the number of notification delivery attempts made.
-func (r *TaskResult) GetNotifyAttempts() int { return r.NotifyAttempts }
-
-// GetNotifyLeaseOwner returns the owner of the current notification lease, or nil.
-func (r *TaskResult) GetNotifyLeaseOwner() *string { return r.NotifyLeaseOwner }
-
-// GetNotifyLeaseExpiresAt returns the expiry time of the current notification lease, or nil.
-func (r *TaskResult) GetNotifyLeaseExpiresAt() *string { return r.NotifyLeaseExpiresAt }
-
-// AcquireLease sets the notification lease owner and expiry, incrementing the attempt counter.
-func (r *TaskResult) AcquireLease(owner, expiresAt string) {
-	r.NotifyLeaseOwner = &owner
-	r.NotifyLeaseExpiresAt = &expiresAt
-	r.NotifyAttempts++
-}
-
-// MarkNotified marks the result as successfully notified at the given timestamp.
-func (r *TaskResult) MarkNotified(at string) {
-	r.Notified = true
-	r.NotifiedAt = &at
-	r.NotifyLeaseOwner = nil
-	r.NotifyLeaseExpiresAt = nil
-}
-
-// MarkNotifyFailure records a failed notification attempt and sets the backoff lease.
-func (r *TaskResult) MarkNotifyFailure(errMsg, backoffOwner, backoffExpiresAt string) {
-	r.NotifyLastError = &errMsg
-	r.NotifyLeaseOwner = &backoffOwner
-	r.NotifyLeaseExpiresAt = &backoffExpiresAt
-}
-
-// --- CommandResult implements Notifiable ---
-
 // GetResultID returns the unique identifier of the command result.
 func (r *CommandResult) GetResultID() string { return r.ID }
-
-// IsNotified reports whether the notification for this result has been sent.
-func (r *CommandResult) IsNotified() bool { return r.Notified }
-
-// GetNotifyAttempts returns the number of notification delivery attempts made.
-func (r *CommandResult) GetNotifyAttempts() int { return r.NotifyAttempts }
-
-// GetNotifyLeaseOwner returns the owner of the current notification lease, or nil.
-func (r *CommandResult) GetNotifyLeaseOwner() *string { return r.NotifyLeaseOwner }
-
-// GetNotifyLeaseExpiresAt returns the expiry time of the current notification lease, or nil.
-func (r *CommandResult) GetNotifyLeaseExpiresAt() *string { return r.NotifyLeaseExpiresAt }
-
-// AcquireLease sets the notification lease owner and expiry, incrementing the attempt counter.
-func (r *CommandResult) AcquireLease(owner, expiresAt string) {
-	r.NotifyLeaseOwner = &owner
-	r.NotifyLeaseExpiresAt = &expiresAt
-	r.NotifyAttempts++
-}
-
-// MarkNotified marks the result as successfully notified at the given timestamp.
-func (r *CommandResult) MarkNotified(at string) {
-	r.Notified = true
-	r.NotifiedAt = &at
-	r.NotifyLeaseOwner = nil
-	r.NotifyLeaseExpiresAt = nil
-}
-
-// MarkNotifyFailure records a failed notification attempt and sets the backoff lease.
-func (r *CommandResult) MarkNotifyFailure(errMsg, backoffOwner, backoffExpiresAt string) {
-	r.NotifyLastError = &errMsg
-	r.NotifyLeaseOwner = &backoffOwner
-	r.NotifyLeaseExpiresAt = &backoffExpiresAt
-}
 
 // QualityGateEvaluation records the quality gate evaluation result
 type QualityGateEvaluation struct {

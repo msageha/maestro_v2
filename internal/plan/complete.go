@@ -301,7 +301,6 @@ func reconcileCommandResultLocked(maestroDir string, commandID string, status mo
 		Status:    status,
 		Summary:   summary,
 		Tasks:     tasks,
-		Notified:  false,
 		CreatedAt: now,
 	})
 	return yamlutil.AtomicWrite(path, rf)
@@ -499,7 +498,6 @@ func writeCommandResultLocked(maestroDir string, commandID string, status model.
 		Status:    status,
 		Summary:   summary,
 		Tasks:     tasks,
-		Notified:  false,
 		CreatedAt: now,
 	})
 

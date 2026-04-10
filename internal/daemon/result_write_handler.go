@@ -451,7 +451,6 @@ func (a *API) appendResultEntry(rf *model.TaskResultFile, params ResultWritePara
 		FilesChanged:           params.FilesChanged,
 		PartialChangesPossible: params.PartialChangesPossible,
 		RetrySafe:              params.RetrySafe,
-		Notified:               false,
 		CreatedAt:              now,
 	})
 

@@ -787,12 +787,11 @@ func TestReconciler_R5_NotifiedResult_NoOrchestratorNotification(t *testing.T) {
 		SchemaVersion: 1, FileType: "result_command",
 		Results: []model.CommandResult{
 			{
-				ID:         "res_r5_missing",
-				CommandID:  "cmd_r5_test",
-				Status:     model.StatusCompleted,
-				Notified:   true,
-				NotifiedAt: &now,
-				CreatedAt:  now,
+				ID:             "res_r5_missing",
+				CommandID:      "cmd_r5_test",
+				Status:         model.StatusCompleted,
+				NotifiableBase: model.NotifiableBase{Notified: true, NotifiedAt: &now},
+				CreatedAt:      now,
 			},
 		},
 	}
@@ -845,7 +844,7 @@ func TestReconciler_R5_NotificationExists_NoRepair(t *testing.T) {
 		Results: []model.CommandResult{
 			{
 				ID: "res_r5_exists", CommandID: "cmd_r5_ok", Status: model.StatusCompleted,
-				Notified: true, NotifiedAt: &now, CreatedAt: now,
+				NotifiableBase: model.NotifiableBase{Notified: true, NotifiedAt: &now}, CreatedAt: now,
 			},
 		},
 	}
