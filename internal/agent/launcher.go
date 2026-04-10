@@ -104,7 +104,7 @@ func Launch(maestroDir string) error {
 	// Execute claude CLI.
 	// Clear CLAUDECODE env var to allow launching inside a parent Claude Code
 	// session (e.g. when maestro is invoked from Claude Code CLI).
-	cmd := exec.Command("claude", args...)
+	cmd := exec.Command("claude", args...) //nolint:gosec // "claude" is a fixed command; args are constructed from validated config
 	// Propagate the agent role to child processes via MAESTRO_AGENT_ROLE so
 	// that any maestro CLI invocations they spawn carry an authenticated role
 	// hint to the daemon (used for recovery API trust boundaries).
@@ -124,8 +124,7 @@ func Launch(maestroDir string) error {
 		close(sigCh) // Unblock the drain goroutine so it can exit.
 	}()
 	go func() {
-		for range sigCh {
-			// Intentionally ignored — claude handles SIGINT directly.
+		for range sigCh { //nolint:revive // intentional drain: claude handles SIGINT directly
 		}
 	}()
 
@@ -256,7 +255,7 @@ func currentPaneTarget() (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "tmux", "display-message", "-t", paneID, "-p", "#{session_name}:#{window_index}.#{pane_index}")
+	cmd := exec.CommandContext(ctx, "tmux", "display-message", "-t", paneID, "-p", "#{session_name}:#{window_index}.#{pane_index}") //nolint:gosec // "tmux" is a fixed command; paneID is from TMUX_PANE env var
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() != nil {

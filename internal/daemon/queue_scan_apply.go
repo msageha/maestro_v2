@@ -244,7 +244,7 @@ func (qh *QueueHandler) applyCommandBusyCheckResult(bc busyCheckResult, cq *mode
 
 func (qh *QueueHandler) applySignalResults(results []signalDeliveryResult, sq *model.PlannerSignalQueue, dirty *bool) {
 	now := qh.clock.Now().UTC()
-	var retained []model.PlannerSignal
+	retained := make([]model.PlannerSignal, 0, len(sq.Signals))
 	matched := make([]bool, len(results))
 
 	for _, sig := range sq.Signals {

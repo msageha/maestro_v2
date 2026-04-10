@@ -2,9 +2,9 @@ package plan
 
 import (
 	"fmt"
-	"log"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"log"
 )
 
 // SubmitOptions holds the configuration for a plan submission operation.
@@ -166,7 +166,7 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm stateStore) (*
 		return nil, fmt.Errorf("build worker states: %w", err)
 	}
 
-	var assignReqs []TaskAssignmentRequest
+	assignReqs := make([]TaskAssignmentRequest, 0, len(tasks))
 	for _, t := range tasks {
 		assignReqs = append(assignReqs, TaskAssignmentRequest{Name: t.Name, BloomLevel: t.BloomLevel})
 	}
@@ -369,7 +369,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 		return nil, fmt.Errorf("build worker states: %w", err)
 	}
 
-	var assignReqs []TaskAssignmentRequest
+	assignReqs := make([]TaskAssignmentRequest, 0, len(input.Tasks))
 	for _, t := range input.Tasks {
 		assignReqs = append(assignReqs, TaskAssignmentRequest{Name: t.Name, BloomLevel: t.BloomLevel})
 	}

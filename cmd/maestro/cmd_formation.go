@@ -71,7 +71,7 @@ func runUp(args []string) error {
 	}
 
 	// Validate project name before use in tmux session name
-	if err := validate.ValidateProjectName(cfg.Project.Name); err != nil {
+	if err := validate.ProjectName(cfg.Project.Name); err != nil {
 		return fmt.Errorf("maestro up: invalid project name: %w", err)
 	}
 	tmux.SetSessionName("maestro-" + cfg.Project.Name)

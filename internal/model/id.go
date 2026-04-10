@@ -8,14 +8,21 @@ import (
 	"time"
 )
 
+// IDType is the prefix used in generated IDs to identify their entity type.
 type IDType string
 
 const (
-	IDTypeCommand      IDType = "cmd"
-	IDTypeTask         IDType = "task"
-	IDTypePhase        IDType = "phase"
+	// IDTypeCommand identifies a command-scoped ID.
+	IDTypeCommand IDType = "cmd"
+	// IDTypeTask identifies a task-scoped ID.
+	IDTypeTask IDType = "task"
+	// IDTypePhase identifies a phase-scoped ID.
+	IDTypePhase IDType = "phase"
+	// IDTypeNotification identifies a notification-scoped ID.
 	IDTypeNotification IDType = "ntf"
-	IDTypeResult         IDType = "res"
+	// IDTypeResult identifies a result-scoped ID.
+	IDTypeResult IDType = "res"
+	// IDTypeSkillCandidate identifies a skill candidate ID.
 	IDTypeSkillCandidate IDType = "skc"
 )
 
@@ -30,6 +37,7 @@ var validIDTypes = map[IDType]bool{
 
 var idRegex = regexp.MustCompile(`^(cmd|task|phase|ntf|res|skc)_[0-9]{10}_[0-9a-f]{8}$`)
 
+// GenerateID creates a new unique ID with the given type prefix.
 func GenerateID(idType IDType) (string, error) {
 	if !validIDTypes[idType] {
 		return "", fmt.Errorf("invalid ID type: %s", idType)
@@ -84,10 +92,12 @@ func NewTaskID(caller TaskIDCaller) (string, error) {
 	return GenerateID(IDTypeTask)
 }
 
+// ValidateID reports whether id matches the expected ID format.
 func ValidateID(id string) bool {
 	return idRegex.MatchString(id)
 }
 
+// ParseIDType extracts the IDType prefix from a structured ID string.
 func ParseIDType(id string) (IDType, error) {
 	if !ValidateID(id) {
 		return "", fmt.Errorf("invalid ID format: %s", id)

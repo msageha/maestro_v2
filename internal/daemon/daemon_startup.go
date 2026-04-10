@@ -52,7 +52,7 @@ func (d *Daemon) prepareStartup() error {
 
 	// Write PID file
 	pidPath := filepath.Join(d.maestroDir, "daemon.pid")
-	if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0644); err != nil {
+	if err := os.WriteFile(pidPath, []byte(fmt.Sprintf("%d", os.Getpid())), 0600); err != nil {
 		if unlockErr := d.fileLock.Unlock(); unlockErr != nil {
 			d.log(LogLevelError, "startup file_unlock error=%v", unlockErr)
 		}
@@ -132,7 +132,7 @@ func (d *Daemon) cleanStaleTmpFiles() {
 
 // initComponents wires all daemon sub-components: handler, quality gate,
 // circuit breaker, worktree manager, and event bus subscriptions.
-func (d *Daemon) initComponents() error {
+func (d *Daemon) initComponents() {
 	d.handler = NewQueueHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
 	d.handler.SetShutdownGuard(d.ctx, &d.shuttingDown)
 
@@ -223,8 +223,6 @@ func (d *Daemon) initComponents() error {
 		d.bridge.subscribeQualityGateEvents()
 	}
 	d.bridge.subscribeQueueWrittenEvents()
-
-	return nil
 }
 
 // startRuntime starts the UDS server, background loops, and quality gate.

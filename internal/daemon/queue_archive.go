@@ -63,7 +63,7 @@ func (qh *QueueHandler) quarantineFile(data []byte, name string) {
 	}
 	ts := qh.clock.Now().UTC().Format("20060102T150405Z")
 	qPath := filepath.Join(quarantineDir, fmt.Sprintf("%s_%s", ts, name))
-	if err := os.WriteFile(qPath, data, 0644); err != nil {
+	if err := os.WriteFile(qPath, data, 0600); err != nil {
 		qh.log(LogLevelError, "quarantine_write error=%v", err)
 	} else {
 		qh.log(LogLevelInfo, "quarantined file=%s to=%s", name, qPath)

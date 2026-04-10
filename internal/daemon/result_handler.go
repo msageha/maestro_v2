@@ -424,7 +424,7 @@ func (rh *ResultHandler) notifyBackoff(attempts int) time.Duration {
 	if delay > notifyBackoffMax {
 		delay = notifyBackoffMax
 	}
-	jittered := time.Duration(float64(delay) * (0.75 + rand.Float64()*0.5))
+	jittered := time.Duration(float64(delay) * (0.75 + rand.Float64()*0.5)) //nolint:gosec // math/rand is appropriate for jitter
 	return jittered
 }
 

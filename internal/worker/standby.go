@@ -15,8 +15,8 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// WorkerStatus represents the status summary for a single worker.
-type WorkerStatus struct {
+// Status represents the status summary for a single worker.
+type Status struct {
 	WorkerID        string `json:"worker_id"`
 	Model           string `json:"model"`
 	PendingCount    int    `json:"pending_count"`
@@ -32,17 +32,17 @@ type StandbyOptions struct {
 }
 
 // Standby scans all worker queue files and returns a JSON-serializable summary.
-func Standby(opts StandbyOptions) ([]WorkerStatus, error) {
+func Standby(opts StandbyOptions) ([]Status, error) {
 	queueDir := filepath.Join(opts.MaestroDir, "queue")
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []WorkerStatus{}, nil
+			return []Status{}, nil
 		}
 		return nil, fmt.Errorf("read queue dir: %w", err)
 	}
 
-	var results []WorkerStatus
+	results := make([]Status, 0, len(entries))
 
 	for _, entry := range entries {
 		name := entry.Name()
@@ -65,7 +65,7 @@ func Standby(opts StandbyOptions) ([]WorkerStatus, error) {
 		data, err := readQueueFile(path, maxBytes)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "warning: %s: %v\n", name, err)
-			results = append(results, WorkerStatus{
+			results = append(results, Status{
 				WorkerID: workerID,
 				Model:    workerModel,
 				Status:   "error",
@@ -76,7 +76,7 @@ func Standby(opts StandbyOptions) ([]WorkerStatus, error) {
 		var tq model.TaskQueue
 		if err := yamlv3.Unmarshal(data, &tq); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: cannot parse %s: %v\n", name, err)
-			results = append(results, WorkerStatus{
+			results = append(results, Status{
 				WorkerID: workerID,
 				Model:    workerModel,
 				Status:   "error",
@@ -99,7 +99,7 @@ func Standby(opts StandbyOptions) ([]WorkerStatus, error) {
 			status = "busy"
 		}
 
-		results = append(results, WorkerStatus{
+		results = append(results, Status{
 			WorkerID:        workerID,
 			Model:           workerModel,
 			PendingCount:    pending,
@@ -113,7 +113,7 @@ func Standby(opts StandbyOptions) ([]WorkerStatus, error) {
 	})
 
 	if results == nil {
-		results = []WorkerStatus{}
+		results = []Status{}
 	}
 
 	return results, nil

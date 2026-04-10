@@ -255,50 +255,6 @@ func TestRolloutWinnerSelection_FitnessTie_JudgeError(t *testing.T) {
 	}
 }
 
-func TestRolloutWinnerSelection_OneFailed(t *testing.T) {
-	d := &Daemon{}
-	mgr := rollout.NewManager(3)
-	d.rolloutManager = mgr
-
-	group := &rollout.Group{
-		TaskID:    "task-one-failed",
-		CommandID: "cmd-1",
-		Slots: []rollout.Slot{
-			{Index: 0, Status: rollout.SlotFailed},
-			{Index: 1, Status: rollout.SlotCompleted},
-		},
-	}
-
-	winnerIdx, judgeUsed, err := d.selectRolloutWinner(group)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if judgeUsed {
-		t.Error("judge should not be used when only one slot completed")
-	}
-	if winnerIdx != 1 {
-		t.Errorf("expected winner slot 1 (the only completed slot), got %d", winnerIdx)
-	}
-}
-
-func TestRolloutWinnerSelection_AllFailed(t *testing.T) {
-	d := &Daemon{}
-
-	group := &rollout.Group{
-		TaskID:    "task-all-failed",
-		CommandID: "cmd-1",
-		Slots: []rollout.Slot{
-			{Index: 0, Status: rollout.SlotFailed},
-			{Index: 1, Status: rollout.SlotFailed},
-		},
-	}
-
-	_, _, err := d.selectRolloutWinner(group)
-	if err == nil {
-		t.Error("expected error when all slots failed")
-	}
-}
-
 // --- B-2: Anti-Requirements Tests ---
 
 func TestJudge_NeverOverridesFitness(t *testing.T) {
@@ -538,71 +494,6 @@ func TestRolloutManager_Integration(t *testing.T) {
 	_, ok = mgr.GetGroup("task-1")
 	if ok {
 		t.Error("group should be removed")
-	}
-}
-
-// --- Daemon selectRolloutWinner Integration Tests ---
-
-func TestRolloutWinnerSelection_DaemonIntegration_WithJudge(t *testing.T) {
-	judgeCalled := false
-	d := &Daemon{
-		judgeCaller: judge.NewJudge(&mockCaller{
-			callFn: func(_ context.Context, _ string) (string, error) {
-				judgeCalled = true
-				return `{"winner_index": 1, "reasoning": "slot 1 has better code"}`, nil
-			},
-		}, "test-model", 10*time.Second),
-	}
-
-	group := &rollout.Group{
-		TaskID:    "task-tie",
-		CommandID: "cmd-1",
-		Slots: []rollout.Slot{
-			{Index: 0, Status: rollout.SlotCompleted},
-			{Index: 1, Status: rollout.SlotCompleted},
-		},
-	}
-
-	// Both slots have default fitness (identical) → tie → judge called
-	winnerIdx, judgeUsed, err := d.selectRolloutWinner(group)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !judgeCalled {
-		t.Error("expected judge to be called for tied fitness scores")
-	}
-	if !judgeUsed {
-		t.Error("expected judgeUsed=true")
-	}
-	if winnerIdx != 1 {
-		t.Errorf("expected judge-selected winner 1, got %d", winnerIdx)
-	}
-}
-
-func TestRolloutWinnerSelection_DaemonIntegration_NoJudge(t *testing.T) {
-	d := &Daemon{
-		judgeCaller: nil, // No judge configured
-	}
-
-	group := &rollout.Group{
-		TaskID:    "task-no-judge",
-		CommandID: "cmd-1",
-		Slots: []rollout.Slot{
-			{Index: 0, Status: rollout.SlotCompleted},
-			{Index: 1, Status: rollout.SlotCompleted},
-		},
-	}
-
-	// Tie with no judge → fallback to index 0
-	winnerIdx, judgeUsed, err := d.selectRolloutWinner(group)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if judgeUsed {
-		t.Error("expected judgeUsed=false when no judge configured")
-	}
-	if winnerIdx != 0 {
-		t.Errorf("expected fallback winner 0, got %d", winnerIdx)
 	}
 }
 

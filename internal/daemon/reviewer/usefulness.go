@@ -146,7 +146,7 @@ func (t *UsefulnessTracker) load() error {
 		}
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
@@ -164,11 +164,11 @@ func (t *UsefulnessTracker) load() error {
 }
 
 func (t *UsefulnessTracker) appendToFile(rec UsefulnessRecord) error {
-	f, err := os.OpenFile(t.filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(t.filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	data, err := json.Marshal(rec)
 	if err != nil {

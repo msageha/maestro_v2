@@ -85,19 +85,20 @@ const bracketedPasteDelay = 500 * time.Millisecond
 // This prevents tmux format injection via names containing #( or #[.
 var validUserVarName = regexp.MustCompile(`^[a-zA-Z0-9_]+$`)
 
-// TmuxErrorKind categorizes tmux command failures.
-type TmuxErrorKind int
+// ErrorKind categorizes tmux command failures.
+type ErrorKind int
 
+// ErrorKind constants enumerate the categories of tmux command failures.
 const (
-	ErrKindServer   TmuxErrorKind = iota + 1 // tmux server unreachable
-	ErrKindSession                           // session not found
-	ErrKindPane                              // pane or window not found
-	ErrKindTimeout                           // command timed out
-	ErrKindCommand                           // other command error
-	ErrKindCanceled                          // context was canceled (not timeout)
+	ErrKindServer   ErrorKind = iota + 1 // tmux server unreachable
+	ErrKindSession                        // session not found
+	ErrKindPane                           // pane or window not found
+	ErrKindTimeout                        // command timed out
+	ErrKindCommand                        // other command error
+	ErrKindCanceled                       // context was canceled (not timeout)
 )
 
-func (k TmuxErrorKind) String() string {
+func (k ErrorKind) String() string {
 	switch k {
 	case ErrKindServer:
 		return "server"
@@ -116,26 +117,26 @@ func (k TmuxErrorKind) String() string {
 	}
 }
 
-// TmuxError is a classified tmux command error.
-type TmuxError struct {
-	Kind   TmuxErrorKind
+// Error is a classified tmux command error.
+type Error struct {
+	Kind   ErrorKind
 	Op     string // tmux subcommand (e.g., "send-keys")
 	Stderr string // raw stderr from tmux
 	Err    error  // underlying error
 }
 
-func (e *TmuxError) Error() string {
+func (e *Error) Error() string {
 	if e.Stderr != "" {
 		return fmt.Sprintf("tmux %s (%s): %v: %s", e.Op, e.Kind, e.Err, e.Stderr)
 	}
 	return fmt.Sprintf("tmux %s (%s): %v", e.Op, e.Kind, e.Err)
 }
 
-func (e *TmuxError) Unwrap() error { return e.Err }
+func (e *Error) Unwrap() error { return e.Err }
 
 // Is supports errors.Is() matching by Kind.
-func (e *TmuxError) Is(target error) bool {
-	t, ok := target.(*TmuxError)
+func (e *Error) Is(target error) bool {
+	t, ok := target.(*Error)
 	if !ok {
 		return false
 	}
@@ -144,15 +145,15 @@ func (e *TmuxError) Is(target error) bool {
 
 // Sentinel errors for use with errors.Is().
 var (
-	ErrTmuxServer  = &TmuxError{Kind: ErrKindServer}
-	ErrTmuxSession = &TmuxError{Kind: ErrKindSession}
+	ErrTmuxServer  = &Error{Kind: ErrKindServer}
+	ErrTmuxSession = &Error{Kind: ErrKindSession}
 )
 
-// classifyTmuxError parses tmux stderr to determine the error category.
-func classifyTmuxError(op, stderr string, err error) *TmuxError {
+// classifyError parses tmux stderr to determine the error category.
+func classifyError(op, stderr string, err error) *Error {
 	lower := strings.ToLower(stderr)
 
-	var kind TmuxErrorKind
+	var kind ErrorKind
 	switch {
 	case strings.Contains(lower, "no server running") ||
 		strings.Contains(lower, "server exited") ||
@@ -174,7 +175,7 @@ func classifyTmuxError(op, stderr string, err error) *TmuxError {
 		kind = ErrKindCommand
 	}
 
-	return &TmuxError{
+	return &Error{
 		Kind:   kind,
 		Op:     op,
 		Stderr: stderr,
@@ -184,7 +185,7 @@ func classifyTmuxError(op, stderr string, err error) *TmuxError {
 
 // contextErrorKind returns ErrKindTimeout for deadline exceeded and
 // ErrKindCanceled for all other context errors.
-func contextErrorKind(err error) TmuxErrorKind {
+func contextErrorKind(err error) ErrorKind {
 	if errors.Is(err, context.DeadlineExceeded) {
 		return ErrKindTimeout
 	}
@@ -208,14 +209,14 @@ func SendTextAndSubmit(ctx context.Context, paneTarget, text string) error {
 	// Load text into tmux buffer via stdin (handles arbitrary content safely)
 	loadCtx, loadCancel := context.WithTimeout(ctx, defaultCmdTimeout)
 	defer loadCancel()
-	cmd := exec.CommandContext(loadCtx, "tmux", "load-buffer", "-b", bufName, "-")
+	cmd := exec.CommandContext(loadCtx, "tmux", "load-buffer", "-b", bufName, "-") //nolint:gosec // "tmux" is a fixed command; bufName is an internal counter-based name
 	cmd.Stdin = strings.NewReader(text)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		stderr := strings.TrimSpace(string(out))
 		if loadCtx.Err() != nil {
-			return &TmuxError{Kind: contextErrorKind(loadCtx.Err()), Op: "load-buffer", Stderr: stderr, Err: loadCtx.Err()}
+			return &Error{Kind: contextErrorKind(loadCtx.Err()), Op: "load-buffer", Stderr: stderr, Err: loadCtx.Err()}
 		}
-		return classifyTmuxError("load-buffer", stderr, err)
+		return classifyError("load-buffer", stderr, err)
 	}
 
 	// Guard: ensure the buffer is deleted even if paste-buffer fails.
@@ -241,7 +242,7 @@ func SendTextAndSubmit(ctx context.Context, paneTarget, text string) error {
 	// paste before we send Enter to submit. Uses context-aware sleep so
 	// cancellation is respected. See bracketedPasteDelay for rationale.
 	if err := sleepCtx(ctx, bracketedPasteDelay); err != nil {
-		return &TmuxError{Kind: contextErrorKind(err), Op: "send-text-submit-sleep", Err: err}
+		return &Error{Kind: contextErrorKind(err), Op: "send-text-submit-sleep", Err: err}
 	}
 
 	return sendKeysCtx(ctx, paneTarget, "Enter")
@@ -305,7 +306,7 @@ func SetSessionName(name string) {
 func SessionExists() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), defaultCmdTimeout)
 	defer cancel()
-	err := exec.CommandContext(ctx, "tmux", "has-session", "-t", exactSessionTarget()).Run()
+	err := exec.CommandContext(ctx, "tmux", "has-session", "-t", exactSessionTarget()).Run() //nolint:gosec // "tmux" is a fixed command; target is derived from validated session name
 	exists := err == nil
 	debugLog("SessionExists session=%s exists=%v", GetSessionName(), exists)
 	return exists
@@ -353,7 +354,7 @@ func SessionHealthCheck() bool {
 
 	// Check session (use "=" prefix for exact name matching)
 	exactName := "=" + name
-	cmd := exec.CommandContext(ctx, "tmux", "has-session", "-t", exactName)
+	cmd := exec.CommandContext(ctx, "tmux", "has-session", "-t", exactName) //nolint:gosec // "tmux" is a fixed command; exactName is derived from validated session name
 	out, err := cmd.CombinedOutput()
 	if err == nil {
 		// Session alive — gather window/pane info for diagnostics
@@ -589,7 +590,7 @@ func SetServerOption(name, value string) error {
 func SetSessionOption(name, value string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := exec.CommandContext(ctx, "tmux", "has-session", "-t", exactSessionTarget()).Run(); err != nil {
+	if err := exec.CommandContext(ctx, "tmux", "has-session", "-t", exactSessionTarget()).Run(); err != nil { //nolint:gosec // "tmux" is a fixed command; target is derived from validated session name
 		return fmt.Errorf("set-option (session): session %q not found: %w", GetSessionName(), err)
 	}
 	return run("set-option", "-t", GetSessionName(), name, value)
@@ -623,7 +624,7 @@ func SelectWindow(windowTarget string) error {
 // AttachSession attaches the current terminal to the maestro tmux session.
 // This replaces the current process with tmux attach-session.
 func AttachSession() error {
-	cmd := exec.Command("tmux", "attach-session", "-t", exactSessionTarget())
+	cmd := exec.Command("tmux", "attach-session", "-t", exactSessionTarget()) //nolint:gosec // "tmux" is a fixed command; target is derived from validated session name
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -674,19 +675,19 @@ func runCtx(ctx context.Context, args ...string) error {
 	// Fast path: if context is already done, don't spawn a process.
 	if err := ctx.Err(); err != nil {
 		debugLog("runCtx SKIP (ctx done) args=%v err=%v", args, err)
-		return &TmuxError{Kind: contextErrorKind(err), Op: args[0], Err: err}
+		return &Error{Kind: contextErrorKind(err), Op: args[0], Err: err}
 	}
 	ctx, cancel := context.WithTimeout(ctx, defaultCmdTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "tmux", args...)
+	cmd := exec.CommandContext(ctx, "tmux", args...) //nolint:gosec // "tmux" is a fixed command; args are controlled internally
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		stderr := strings.TrimSpace(string(out))
 		if ctx.Err() != nil {
 			debugLog("runCtx TIMEOUT args=%v stderr=%q", args, stderr)
-			return &TmuxError{Kind: contextErrorKind(ctx.Err()), Op: args[0], Stderr: stderr, Err: ctx.Err()}
+			return &Error{Kind: contextErrorKind(ctx.Err()), Op: args[0], Stderr: stderr, Err: ctx.Err()}
 		}
-		classified := classifyTmuxError(args[0], stderr, err)
+		classified := classifyError(args[0], stderr, err)
 		debugLog("runCtx ERROR args=%v kind=%s stderr=%q", args, classified.Kind, stderr)
 		return classified
 	}
@@ -697,18 +698,18 @@ func runCtx(ctx context.Context, args ...string) error {
 func outputCtx(ctx context.Context, args ...string) (string, error) {
 	// Fast path: if context is already done, don't spawn a process.
 	if err := ctx.Err(); err != nil {
-		return "", &TmuxError{Kind: contextErrorKind(err), Op: args[0], Err: err}
+		return "", &Error{Kind: contextErrorKind(err), Op: args[0], Err: err}
 	}
 	ctx, cancel := context.WithTimeout(ctx, defaultCmdTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "tmux", args...)
+	cmd := exec.CommandContext(ctx, "tmux", args...) //nolint:gosec // "tmux" is a fixed command; args are controlled internally
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		stderr := strings.TrimSpace(string(out))
 		if ctx.Err() != nil {
-			return "", &TmuxError{Kind: contextErrorKind(ctx.Err()), Op: args[0], Stderr: stderr, Err: ctx.Err()}
+			return "", &Error{Kind: contextErrorKind(ctx.Err()), Op: args[0], Stderr: stderr, Err: ctx.Err()}
 		}
-		return "", classifyTmuxError(args[0], stderr, err)
+		return "", classifyError(args[0], stderr, err)
 	}
 	return string(out), nil
 }

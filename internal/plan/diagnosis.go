@@ -73,10 +73,10 @@ func DiagnosePhase(phase model.Phase, tasks []model.Task, results []model.TaskRe
 	for i := range tasks {
 		t := &tasks[i]
 
-		switch {
-		case t.Status == model.StatusCompleted:
+		switch t.Status {
+		case model.StatusCompleted:
 			diag.CompletedTasks++
-		case t.Status == model.StatusFailed || t.Status == model.StatusDeadLetter || t.Status == model.StatusAborted:
+		case model.StatusFailed, model.StatusDeadLetter, model.StatusAborted:
 			diag.FailedTasks++
 		}
 

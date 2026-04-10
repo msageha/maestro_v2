@@ -10,7 +10,9 @@ import (
 type Decision string
 
 const (
-	DecisionWiden  Decision = "widen"
+	// DecisionWiden directs the search to explore new branches.
+	DecisionWiden Decision = "widen"
+	// DecisionDeepen directs the search to improve an existing branch.
 	DecisionDeepen Decision = "deepen"
 )
 
@@ -90,7 +92,7 @@ func betaSample(alpha, beta float64) float64 {
 func gammaSample(alpha float64) float64 {
 	if alpha < 1 {
 		// For alpha < 1, use the relation: Gamma(alpha) = Gamma(alpha+1) * U^(1/alpha)
-		return gammaSample(alpha+1) * math.Pow(rand.Float64(), 1/alpha)
+		return gammaSample(alpha+1) * math.Pow(rand.Float64(), 1/alpha) //nolint:gosec // math/rand is appropriate for statistical sampling
 	}
 
 	d := alpha - 1.0/3.0
@@ -100,14 +102,14 @@ func gammaSample(alpha float64) float64 {
 		var x float64
 		var v float64
 		for {
-			x = rand.NormFloat64()
+			x = rand.NormFloat64() //nolint:gosec // math/rand is appropriate for statistical sampling
 			v = 1.0 + c*x
 			if v > 0 {
 				break
 			}
 		}
 		v = v * v * v
-		u := rand.Float64()
+		u := rand.Float64() //nolint:gosec // math/rand is appropriate for statistical sampling
 
 		if u < 1.0-0.0331*(x*x)*(x*x) {
 			return d * v

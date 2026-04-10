@@ -22,7 +22,7 @@ func readInput(tasksFile string) (*SubmitInput, error) {
 		}
 	} else {
 		// CRIT-05: Validate file path (no null bytes, clean path)
-		cleaned, pathErr := validate.ValidateFilePath(tasksFile)
+		cleaned, pathErr := validate.FilePath(tasksFile)
 		if pathErr != nil {
 			return nil, fmt.Errorf("invalid tasks file path: %w", pathErr)
 		}

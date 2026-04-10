@@ -59,13 +59,13 @@ func runResultWrite(args []string) error {
 	}
 
 	// Validate IDs
-	if err := validate.ValidateID(reporter); err != nil {
+	if err := validate.ID(reporter); err != nil {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro result write: invalid reporter: %v", err)}
 	}
-	if err := validate.ValidateID(taskID); err != nil {
+	if err := validate.ID(taskID); err != nil {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro result write: invalid --task-id: %v", err)}
 	}
-	if err := validate.ValidateID(commandID); err != nil {
+	if err := validate.ID(commandID); err != nil {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro result write: invalid --command-id: %v", err)}
 	}
 

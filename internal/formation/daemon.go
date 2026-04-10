@@ -29,7 +29,7 @@ func startDaemon() error {
 	if err != nil {
 		execPath = "maestro" // fallback to PATH lookup
 	}
-	cmd := exec.Command(execPath, "daemon")
+	cmd := exec.Command(execPath, "daemon") //nolint:gosec // execPath is the current binary path from os.Executable
 	cmd.Stdout = nil
 	cmd.Stderr = nil
 	// Create a new session so the daemon survives terminal closure (no SIGHUP).
@@ -172,7 +172,7 @@ func waitDaemonReady(socketPath string, timeout time.Duration) error {
 
 // readDaemonPID reads the daemon PID from the PID file. Returns 0 if unreadable.
 func readDaemonPID(pidPath string) int {
-	data, err := os.ReadFile(pidPath)
+	data, err := os.ReadFile(pidPath) //nolint:gosec // pidPath is derived from maestroDir; caller controls path
 	if err != nil {
 		return 0
 	}

@@ -36,9 +36,7 @@ func TestReviewDispatcher_InitializedWhenEnabled(t *testing.T) {
 	}
 	defer d.cancel()
 
-	if err := d.initComponents(); err != nil {
-		t.Fatalf("initComponents: %v", err)
-	}
+	d.initComponents()
 
 	// Cleanup event bus goroutines to avoid goleak
 	if d.eventBus != nil {
@@ -76,9 +74,7 @@ func TestReviewDispatcher_SkippedWhenDisabled(t *testing.T) {
 	}
 	defer d.cancel()
 
-	if err := d.initComponents(); err != nil {
-		t.Fatalf("initComponents: %v", err)
-	}
+	d.initComponents()
 
 	// Cleanup event bus goroutines to avoid goleak
 	if d.eventBus != nil {

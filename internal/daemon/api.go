@@ -20,11 +20,11 @@ type API struct {
 // registerHandlers registers UDS request handlers on the daemon's server.
 func (a *API) registerHandlers() {
 	d := a.d
-	d.server.Handle("ping", func(req *uds.Request) *uds.Response {
+	d.server.Handle("ping", func(_ *uds.Request) *uds.Response {
 		return uds.SuccessResponse(map[string]string{"status": "ok"})
 	})
 
-	d.server.Handle("scan", func(req *uds.Request) *uds.Response {
+	d.server.Handle("scan", func(_ *uds.Request) *uds.Response {
 		if d.handler == nil {
 			return uds.ErrorResponse(uds.ErrCodeInternal, "handler not initialized")
 		}
@@ -32,7 +32,7 @@ func (a *API) registerHandlers() {
 		return uds.SuccessResponse(map[string]string{"status": "scanned"})
 	})
 
-	d.server.Handle("shutdown", func(req *uds.Request) *uds.Response {
+	d.server.Handle("shutdown", func(_ *uds.Request) *uds.Response {
 		d.log(LogLevelInfo, "shutdown requested via UDS")
 		go func() { defer d.recoverPanic("shutdownHandler"); d.Shutdown() }()
 		return uds.SuccessResponse(map[string]string{"status": "shutdown_accepted"})

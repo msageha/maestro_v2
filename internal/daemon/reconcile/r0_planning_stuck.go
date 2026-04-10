@@ -15,9 +15,9 @@ import (
 // Action: delete state file + remove queue entry. Planner will resubmit on next dispatch.
 type R0PlanningStuck struct{}
 
+// Apply detects planning commands stuck in "planning" status and removes them
+// so the planner can resubmit on next dispatch.
 func (R0PlanningStuck) Apply(run *Run) Outcome {
-	var repairs []Repair
-
 	stateDir := filepath.Join(run.Deps.MaestroDir, "state", "commands")
 	entries, err := run.cachedReadDir(stateDir)
 	if err != nil {
@@ -27,6 +27,7 @@ func (R0PlanningStuck) Apply(run *Run) Outcome {
 		return Outcome{}
 	}
 
+	repairs := make([]Repair, 0, len(entries))
 	threshold := run.stuckThresholdSec()
 
 	for _, entry := range entries {

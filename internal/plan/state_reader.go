@@ -59,7 +59,7 @@ func (r *PlanStateReader) GetCommandPhases(commandID string) ([]core.PhaseInfo, 
 		phaseNameToID[sp.Name] = sp.PhaseID
 	}
 
-	var phases []core.PhaseInfo
+	phases := make([]core.PhaseInfo, 0, len(state.Phases))
 	for _, p := range state.Phases {
 		var depIDs []string
 		for _, depName := range p.DependsOnPhases {

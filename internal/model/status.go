@@ -2,56 +2,83 @@ package model
 
 import "fmt"
 
+// Status represents the lifecycle state of a task or queue entry.
 type Status string
 
 const (
-	StatusPending    Status = "pending"
+	// StatusPending indicates the item is waiting to be processed.
+	StatusPending Status = "pending"
+	// StatusInProgress indicates the item is currently being processed.
 	StatusInProgress Status = "in_progress"
-	StatusCompleted  Status = "completed"
-	StatusFailed     Status = "failed"
-	StatusCancelled  Status = "cancelled"
+	// StatusCompleted indicates the item finished successfully.
+	StatusCompleted Status = "completed"
+	// StatusFailed indicates the item terminated with an error.
+	StatusFailed Status = "failed"
+	// StatusCancelled indicates the item was cancelled before completion.
+	StatusCancelled Status = "cancelled"
+	// StatusDeadLetter indicates the item exceeded max attempts and was dead-lettered.
 	StatusDeadLetter Status = "dead_letter"
 
 	// REQUIREMENTS.md §2.1: Extended task lifecycle states
-	StatusPlanned          Status = "planned"
-	StatusReady            Status = "ready"
-	StatusDispatched       Status = "dispatched"
-	StatusRunning          Status = "running"
-	StatusVerifyPending    Status = "verify_pending"
-	StatusRepairPending    Status = "repair_pending"
-	StatusPausedForReplan  Status = "paused_for_replan"
-	StatusPausedForHuman   Status = "paused_for_human"
-	StatusAborted          Status = "aborted"
+
+	// StatusPlanned indicates a task has been planned but not yet ready to run.
+	StatusPlanned         Status = "planned"
+	StatusReady           Status = "ready"
+	StatusDispatched      Status = "dispatched"
+	StatusRunning         Status = "running"
+	StatusVerifyPending   Status = "verify_pending"
+	StatusRepairPending   Status = "repair_pending"
+	StatusPausedForReplan Status = "paused_for_replan"
+	StatusPausedForHuman  Status = "paused_for_human"
+	StatusAborted         Status = "aborted"
 )
 
+// PlanStatus represents the lifecycle state of a command plan.
 type PlanStatus string
 
 const (
-	PlanStatusPlanning  PlanStatus = "planning"
-	PlanStatusSealed    PlanStatus = "sealed"
+	// PlanStatusPlanning indicates the plan is being constructed.
+	PlanStatusPlanning PlanStatus = "planning"
+	// PlanStatusSealed indicates the plan has been finalized and is ready to execute.
+	PlanStatusSealed PlanStatus = "sealed"
+	// PlanStatusCompleted indicates all tasks in the plan have completed successfully.
 	PlanStatusCompleted PlanStatus = "completed"
-	PlanStatusFailed    PlanStatus = "failed"
+	// PlanStatusFailed indicates the plan terminated due to task failures.
+	PlanStatusFailed PlanStatus = "failed"
+	// PlanStatusCancelled indicates the plan was cancelled before completion.
 	PlanStatusCancelled PlanStatus = "cancelled"
 )
 
+// PhaseStatus represents the lifecycle state of a plan phase.
 type PhaseStatus string
 
 const (
-	PhaseStatusPending      PhaseStatus = "pending"
+	// PhaseStatusPending indicates the phase has not yet started.
+	PhaseStatusPending PhaseStatus = "pending"
+	// PhaseStatusAwaitingFill indicates the phase is waiting for worker slot allocation.
 	PhaseStatusAwaitingFill PhaseStatus = "awaiting_fill"
-	PhaseStatusFilling      PhaseStatus = "filling"
-	PhaseStatusActive       PhaseStatus = "active"
-	PhaseStatusCompleted    PhaseStatus = "completed"
-	PhaseStatusFailed       PhaseStatus = "failed"
-	PhaseStatusCancelled    PhaseStatus = "cancelled"
-	PhaseStatusTimedOut     PhaseStatus = "timed_out"
+	// PhaseStatusFilling indicates worker slots are being assigned to the phase.
+	PhaseStatusFilling PhaseStatus = "filling"
+	// PhaseStatusActive indicates the phase is executing with assigned workers.
+	PhaseStatusActive PhaseStatus = "active"
+	// PhaseStatusCompleted indicates all tasks in the phase completed successfully.
+	PhaseStatusCompleted PhaseStatus = "completed"
+	// PhaseStatusFailed indicates the phase terminated due to task failures.
+	PhaseStatusFailed PhaseStatus = "failed"
+	// PhaseStatusCancelled indicates the phase was cancelled before completion.
+	PhaseStatusCancelled PhaseStatus = "cancelled"
+	// PhaseStatusTimedOut indicates the phase's fill deadline expired.
+	PhaseStatusTimedOut PhaseStatus = "timed_out"
 )
 
+// ContinuousStatus represents the operational state of continuous mode.
 type ContinuousStatus string
 
 const (
-	continuousStatusIdle    ContinuousStatus = "idle"
+	continuousStatusIdle ContinuousStatus = "idle"
+	// ContinuousStatusRunning indicates continuous mode is actively running iterations.
 	ContinuousStatusRunning ContinuousStatus = "running"
+	// ContinuousStatusPaused indicates continuous mode is suspended pending human review.
 	ContinuousStatusPaused  ContinuousStatus = "paused"
 	ContinuousStatusStopped ContinuousStatus = "stopped"
 )
@@ -60,7 +87,9 @@ const (
 type NotificationType string
 
 const (
+	// NotificationTypeCommandCompleted is sent when a command finishes successfully.
 	NotificationTypeCommandCompleted NotificationType = "command_completed"
+	// NotificationTypeCommandFailed is sent when a command terminates with a failure.
 	NotificationTypeCommandFailed    NotificationType = "command_failed"
 	NotificationTypeCommandCancelled NotificationType = "command_cancelled"
 )
@@ -343,6 +372,7 @@ var validIntegrationTransitions = map[IntegrationStatus]map[IntegrationStatus]bo
 	},
 }
 
+// IsTerminal reports whether s is a terminal task/queue status.
 func IsTerminal(s Status) bool {
 	return terminalStatuses[s]
 }
@@ -369,10 +399,12 @@ func IsPausedStatus(s Status) bool {
 	return pausedStatuses[s]
 }
 
+// IsPlanTerminal reports whether s is a terminal plan status.
 func IsPlanTerminal(s PlanStatus) bool {
 	return terminalPlanStatuses[s]
 }
 
+// IsPhaseTerminal reports whether s is a terminal phase status.
 func IsPhaseTerminal(s PhaseStatus) bool {
 	return terminalPhaseStatuses[s]
 }
@@ -381,10 +413,12 @@ func isWorktreeTerminal(s WorktreeStatus) bool {
 	return terminalWorktreeStatuses[s]
 }
 
+// IsIntegrationTerminal reports whether s is a terminal integration status.
 func IsIntegrationTerminal(s IntegrationStatus) bool {
 	return terminalIntegrationStatuses[s]
 }
 
+// ValidateCommandTaskQueueTransition checks whether the from→to status transition is valid for command/task queues.
 func ValidateCommandTaskQueueTransition(from, to Status) error {
 	if IsTerminal(from) {
 		return fmt.Errorf("cannot transition from terminal status %q", from)
@@ -399,6 +433,7 @@ func ValidateCommandTaskQueueTransition(from, to Status) error {
 	return nil
 }
 
+// ValidateNotificationQueueTransition checks whether the from→to status transition is valid for notification queues.
 func ValidateNotificationQueueTransition(from, to Status) error {
 	if IsTerminal(from) {
 		return fmt.Errorf("cannot transition from terminal status %q", from)
@@ -413,6 +448,7 @@ func ValidateNotificationQueueTransition(from, to Status) error {
 	return nil
 }
 
+// ValidateTaskStateTransition checks whether the from→to status transition is valid for task state.
 func ValidateTaskStateTransition(from, to Status) error {
 	if IsTerminal(from) {
 		return fmt.Errorf("cannot transition from terminal status %q", from)
@@ -431,6 +467,7 @@ func ValidateTaskStateTransition(from, to Status) error {
 	return nil
 }
 
+// ValidatePhaseTransition checks whether the from→to phase status transition is valid.
 func ValidatePhaseTransition(from, to PhaseStatus) error {
 	// Special case: failed → active is allowed for add-retry-task
 	if from == PhaseStatusFailed && to == PhaseStatusActive {
@@ -449,6 +486,7 @@ func ValidatePhaseTransition(from, to PhaseStatus) error {
 	return nil
 }
 
+// ValidateWorktreeTransition checks whether the from→to worktree status transition is valid.
 func ValidateWorktreeTransition(from, to WorktreeStatus) error {
 	if isWorktreeTerminal(from) {
 		return fmt.Errorf("cannot transition from terminal worktree status %q", from)
@@ -463,6 +501,7 @@ func ValidateWorktreeTransition(from, to WorktreeStatus) error {
 	return nil
 }
 
+// ValidateIntegrationTransition checks whether the from→to integration status transition is valid.
 func ValidateIntegrationTransition(from, to IntegrationStatus) error {
 	if IsIntegrationTerminal(from) {
 		return fmt.Errorf("cannot transition from terminal integration status %q", from)
@@ -477,6 +516,7 @@ func ValidateIntegrationTransition(from, to IntegrationStatus) error {
 	return nil
 }
 
+// ValidateNotificationType reports whether t is a known notification type.
 func ValidateNotificationType(t NotificationType) error {
 	if !validNotificationTypes[t] {
 		return fmt.Errorf("invalid notification type: %q", t)

@@ -164,7 +164,7 @@ func EffectivePriority(priority int, createdAt string, priorityAgingSec int) int
 // sortPendingIndices filters pending items and returns their original indices
 // sorted by effective_priority ASC → created_at ASC → id ASC.
 func sortPendingIndices[T any](items []T, extract func(T) sortKey, priorityAgingSec int) []int {
-	var entries []sortableEntry
+	entries := make([]sortableEntry, 0, len(items))
 	for i, item := range items {
 		key := extract(item)
 		if key.Status != model.StatusPending {

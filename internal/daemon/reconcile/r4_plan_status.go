@@ -15,6 +15,7 @@ import (
 // Action: re-evaluate via plan.CanComplete. If OK, update plan_status. If NG, quarantine result.
 type R4PlanStatus struct{}
 
+// Apply detects non-terminal plan_status despite terminal planner result and updates or quarantines.
 func (R4PlanStatus) Apply(run *Run) Outcome {
 	var repairs []Repair
 	var notifications []DeferredNotification

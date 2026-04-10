@@ -77,7 +77,7 @@ func (dlp *DeadLetterProcessor) ProcessCommandDeadLetters(cq *model.CommandQueue
 		return nil
 	}
 
-	var results []DeadLetterResult
+	results := make([]DeadLetterResult, 0, len(cq.Commands))
 	var kept []model.Command
 
 	for i := range cq.Commands {
@@ -128,7 +128,7 @@ func (dlp *DeadLetterProcessor) ProcessTaskDeadLetters(tq *taskQueueEntry, dirty
 		return nil
 	}
 
-	var results []DeadLetterResult
+	results := make([]DeadLetterResult, 0, len(tq.Queue.Tasks))
 	var kept []model.Task
 
 	workerID := workerIDFromPath(tq.Path)
@@ -182,7 +182,7 @@ func (dlp *DeadLetterProcessor) ProcessNotificationDeadLetters(nq *model.Notific
 		return nil
 	}
 
-	var results []DeadLetterResult
+	results := make([]DeadLetterResult, 0, len(nq.Notifications))
 	var kept []model.Notification
 
 	for i := range nq.Notifications {
@@ -274,7 +274,7 @@ func (dlp *DeadLetterProcessor) pruneDeadLetterArchives(archiveDir string) {
 		modTime time.Time
 	}
 
-	var yamlFiles []fileWithTime
+	yamlFiles := make([]fileWithTime, 0, len(entries))
 	for _, e := range entries {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".yaml" {
 			continue

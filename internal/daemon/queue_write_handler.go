@@ -396,7 +396,7 @@ func (a *API) handleQueueWriteCancelRequest(params QueueWriteParams) *uds.Respon
 	if resp := validateRequired(params.CommandID, "command_id", "cancel-request"); resp != nil {
 		return resp
 	}
-	if err := validate.ValidateID(params.CommandID); err != nil {
+	if err := validate.ID(params.CommandID); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid command_id: %v", err))
 	}
 
@@ -578,7 +578,7 @@ func validateTaskWriteParams(params QueueWriteParams, maxEntryContentBytes int) 
 	if params.CommandID == "" {
 		return uds.ErrorResponse(uds.ErrCodeValidation, "command_id is required for task")
 	}
-	if err := validate.ValidateID(params.CommandID); err != nil {
+	if err := validate.ID(params.CommandID); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid command_id: %v", err))
 	}
 	if resp := validateRequired(params.Content, "content", "task"); resp != nil {

@@ -93,8 +93,8 @@ type Bus struct {
 	coalescedSubs    map[EventType][]*coalescedSub
 	bufferSize       int
 	wg               sync.WaitGroup
-	droppedCount     atomic.Int64   // global total for O(1) DroppedCount()
-	droppedByType    sync.Map       // EventType → *atomic.Int64
+	droppedCount     atomic.Int64 // global total for O(1) DroppedCount()
+	droppedByType    sync.Map     // EventType → *atomic.Int64
 	ctx              context.Context
 	cancel           context.CancelFunc
 	activeGoroutines atomic.Int64
@@ -107,7 +107,7 @@ func NewBus(ctx context.Context, bufferSize int) *Bus {
 	if bufferSize <= 0 {
 		bufferSize = 100
 	}
-	ctx, cancel := context.WithCancel(ctx)
+	ctx, cancel := context.WithCancel(ctx) //nolint:gosec // cancel is stored in Bus.cancel and called on Close
 	return &Bus{
 		subscribers:   make(map[EventType][]*subscriberChan),
 		coalescedSubs: make(map[EventType][]*coalescedSub),
@@ -165,7 +165,7 @@ func (b *Bus) Subscribe(eventType EventType, fn subscriber) func() {
 				// and the goroutine exits promptly. Without this drain, the
 				// goroutine would block on <-sub.ch until Close() closes the
 				// channel, causing a goroutine leak if the subscriber is slow.
-				for range sub.ch {
+				for range sub.ch { //nolint:revive // intentional drain loop
 				}
 				return
 			}
@@ -222,7 +222,7 @@ func (b *Bus) SubscribeCoalesced(eventType EventType, fn coalescedSubscriber) fu
 					fn()
 				}()
 			case <-b.ctx.Done():
-				for range sub.sig {
+				for range sub.sig { //nolint:revive // intentional drain loop
 				}
 				return
 			}
@@ -292,20 +292,6 @@ func (b *Bus) Publish(eventType EventType, data map[string]interface{}) {
 func (b *Bus) addDroppedByType(eventType EventType) int64 {
 	v, _ := b.droppedByType.LoadOrStore(eventType, &atomic.Int64{})
 	return v.(*atomic.Int64).Add(1)
-}
-
-// getDroppedCount returns the total number of events dropped due to full subscriber channels.
-func (b *Bus) getDroppedCount() int64 {
-	return b.droppedCount.Load()
-}
-
-// getDroppedCountByType returns the number of events dropped for a specific event type.
-func (b *Bus) getDroppedCountByType(eventType EventType) int64 {
-	v, ok := b.droppedByType.Load(eventType)
-	if !ok {
-		return 0
-	}
-	return v.(*atomic.Int64).Load()
 }
 
 // Close closes all subscriber channels, waits up to 5 seconds for goroutines to drain,

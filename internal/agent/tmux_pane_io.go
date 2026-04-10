@@ -35,54 +35,67 @@ func NewTmuxPaneIO() *TmuxPaneIO {
 	return &TmuxPaneIO{}
 }
 
+// FindPaneByAgentID delegates to tmux.FindPaneByAgentID.
 func (t *TmuxPaneIO) FindPaneByAgentID(agentID string) (string, error) {
 	return tmux.FindPaneByAgentID(agentID)
 }
 
+// SendCtrlC delegates to tmux.SendCtrlC.
 func (t *TmuxPaneIO) SendCtrlC(paneTarget string) error {
 	return tmux.SendCtrlC(paneTarget)
 }
 
+// SendKeys delegates to tmux.SendKeys.
 func (t *TmuxPaneIO) SendKeys(paneTarget string, keys ...string) error {
 	return tmux.SendKeys(paneTarget, keys...)
 }
 
+// SendCommand delegates to tmux.SendCommand.
 func (t *TmuxPaneIO) SendCommand(paneTarget, command string) error {
 	return tmux.SendCommand(paneTarget, command)
 }
 
+// SendTextAndSubmit delegates to tmux.SendTextAndSubmit.
 func (t *TmuxPaneIO) SendTextAndSubmit(ctx context.Context, paneTarget, text string) error {
 	return tmux.SendTextAndSubmit(ctx, paneTarget, text)
 }
 
+// SetUserVar delegates to tmux.SetUserVar.
 func (t *TmuxPaneIO) SetUserVar(paneTarget, name, value string) error {
 	return tmux.SetUserVar(paneTarget, name, value)
 }
 
+// GetUserVar delegates to tmux.GetUserVar.
 func (t *TmuxPaneIO) GetUserVar(paneTarget, name string) (string, error) {
 	return tmux.GetUserVar(paneTarget, name)
 }
 
+// GetPanePID delegates to tmux.GetPanePID.
 func (t *TmuxPaneIO) GetPanePID(paneTarget string) (string, error) {
 	return tmux.GetPanePID(paneTarget)
 }
 
+// GetPaneCurrentCommand delegates to tmux.GetPaneCurrentCommand.
 func (t *TmuxPaneIO) GetPaneCurrentCommand(paneTarget string) (string, error) {
 	return tmux.GetPaneCurrentCommand(paneTarget)
 }
 
+// CapturePane delegates to tmux.CapturePane.
 func (t *TmuxPaneIO) CapturePane(paneTarget string, lastN int) (string, error) {
 	return tmux.CapturePane(paneTarget, lastN)
 }
 
+// CapturePaneJoined delegates to tmux.CapturePaneJoined.
 func (t *TmuxPaneIO) CapturePaneJoined(paneTarget string, lastN int) (string, error) {
 	return tmux.CapturePaneJoined(paneTarget, lastN)
 }
 
+// IsShellCommand delegates to tmux.IsShellCommand.
 func (t *TmuxPaneIO) IsShellCommand(cmd string) bool {
 	return tmux.IsShellCommand(cmd)
 }
 
+// RespawnPane delegates to tmux.RespawnPane.
 func (t *TmuxPaneIO) RespawnPane(paneTarget, startDir string) error {
 	return tmux.RespawnPane(paneTarget, startDir)
 }

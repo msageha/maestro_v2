@@ -1,3 +1,4 @@
+// Package scheduler provides task dependency graph resolution and scheduling.
 package scheduler
 
 import (

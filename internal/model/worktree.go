@@ -4,19 +4,21 @@ package model
 type WorktreeStatus string
 
 const (
-	WorktreeStatusCreated      WorktreeStatus = "created"
-	WorktreeStatusActive       WorktreeStatus = "active"
-	WorktreeStatusCommitted    WorktreeStatus = "committed"
-	WorktreeStatusIntegrated   WorktreeStatus = "integrated"
-	WorktreeStatusPublished    WorktreeStatus = "published"
-	WorktreeStatusCleanupDone  WorktreeStatus = "cleanup_done"
-	WorktreeStatusConflict     WorktreeStatus = "conflict"
+	// WorktreeStatusCreated indicates the worktree has been initialized but not yet activated.
+	WorktreeStatusCreated WorktreeStatus = "created"
+	// WorktreeStatusActive indicates the worktree is actively receiving task work.
+	WorktreeStatusActive      WorktreeStatus = "active"
+	WorktreeStatusCommitted   WorktreeStatus = "committed"
+	WorktreeStatusIntegrated  WorktreeStatus = "integrated"
+	WorktreeStatusPublished   WorktreeStatus = "published"
+	WorktreeStatusCleanupDone WorktreeStatus = "cleanup_done"
+	WorktreeStatusConflict    WorktreeStatus = "conflict"
 	// WorktreeStatusResolving marks a worker that is in the conflict-resolution
 	// pipeline. The resolver agent has been dispatched and the daemon is
 	// waiting for it to commit (or fail). Reachable from conflict; can return
 	// to conflict on retryable failure or terminate via integrated/failed.
-	WorktreeStatusResolving WorktreeStatus = "resolving"
-	WorktreeStatusFailed       WorktreeStatus = "failed"
+	WorktreeStatusResolving     WorktreeStatus = "resolving"
+	WorktreeStatusFailed        WorktreeStatus = "failed"
 	WorktreeStatusCleanupFailed WorktreeStatus = "cleanup_failed"
 )
 
@@ -24,11 +26,13 @@ const (
 type IntegrationStatus string
 
 const (
-	IntegrationStatusCreated    IntegrationStatus = "created"
-	IntegrationStatusMerging    IntegrationStatus = "merging"
-	IntegrationStatusMerged     IntegrationStatus = "merged"
-	IntegrationStatusPublishing IntegrationStatus = "publishing"
-	IntegrationStatusPublished  IntegrationStatus = "published"
+	// IntegrationStatusCreated indicates the integration branch has been set up but not yet started.
+	IntegrationStatusCreated IntegrationStatus = "created"
+	// IntegrationStatusMerging indicates worker branches are being merged into the integration branch.
+	IntegrationStatusMerging      IntegrationStatus = "merging"
+	IntegrationStatusMerged       IntegrationStatus = "merged"
+	IntegrationStatusPublishing   IntegrationStatus = "publishing"
+	IntegrationStatusPublished    IntegrationStatus = "published"
 	IntegrationStatusConflict     IntegrationStatus = "conflict"
 	IntegrationStatusPartialMerge IntegrationStatus = "partial_merge"
 	IntegrationStatusFailed       IntegrationStatus = "failed"

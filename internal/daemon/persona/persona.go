@@ -22,7 +22,7 @@ func FormatPersonaSection(personaHint, maestroDir string) string {
 	}
 
 	diskPath := filepath.Join(maestroDir, "persona", personaHint+".md")
-	data, err := os.ReadFile(diskPath)
+	data, err := os.ReadFile(diskPath) //nolint:gosec // diskPath is validated via isValidPersonaHint before use
 	if err != nil {
 		return ""
 	}

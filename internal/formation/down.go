@@ -22,11 +22,11 @@ func RunDown(maestroDir string, cfg model.Config) error {
 
 	// Initialize tmux debug logger for down process
 	logsDir := filepath.Join(maestroDir, "logs")
-	if err := os.MkdirAll(logsDir, 0o755); err != nil {
+	if err := os.MkdirAll(logsDir, 0o750); err != nil {
 		return fmt.Errorf("create logs directory: %w", err)
 	}
 	tmuxLogPath := filepath.Join(logsDir, "tmux_debug.log")
-	if tmuxLogFile, err := os.OpenFile(tmuxLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+	if tmuxLogFile, err := os.OpenFile(tmuxLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600); err == nil {
 		tmuxLogger := log.New(tmuxLogFile, "", log.LstdFlags|log.Lmicroseconds)
 		tmux.SetDebugLogger(tmuxLogger)
 		defer func() {
@@ -134,7 +134,7 @@ func restoreServerOptions(maestroDir string) {
 	}
 
 	backupPath := filepath.Join(maestroDir, serverOptionsBackupFile)
-	data, err := os.ReadFile(backupPath)
+	data, err := os.ReadFile(backupPath) //nolint:gosec // backupPath is derived from maestroDir; caller controls path
 	if err == nil {
 		var saved map[string]string
 		if err := yamlv3.Unmarshal(data, &saved); err == nil {

@@ -29,27 +29,28 @@ func Float64Ptr(v float64) *float64 { return &v }
 // StringPtr returns a pointer to the given string value.
 func StringPtr(v string) *string { return &v }
 
+// Config is the root configuration structure loaded from config.yaml.
 type Config struct {
-	Project        ProjectConfig        `yaml:"project"`
-	Maestro        MaestroConfig        `yaml:"maestro"`
-	Agents         AgentsConfig         `yaml:"agents"`
-	Continuous     ContinuousConfig     `yaml:"continuous"`
-	Watcher        WatcherConfig        `yaml:"watcher"`
-	Retry          RetryConfig          `yaml:"retry"`
-	Queue          QueueConfig          `yaml:"queue"`
-	Limits         LimitsConfig         `yaml:"limits"`
-	ShutdownTimeoutSec int              `yaml:"shutdown_timeout_sec"`
-	Logging        LoggingConfig        `yaml:"logging"`
-	QualityGates   qualityGatesConfig   `yaml:"quality_gates"`
-	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
-	Learnings      LearningsConfig      `yaml:"learnings"`
-	Worktree       WorktreeConfig       `yaml:"worktree"`
-	Skills           SkillsConfig     `yaml:"skills"`
-	AdmissionControl AdmissionControl `yaml:"admission_control"`
-	Fallback         Fallback         `yaml:"fallback"`
-	Review           ReviewConfig     `yaml:"review"`
-	Rollout          RolloutConfig    `yaml:"rollout"`
-	Judge            JudgeConfig      `yaml:"judge"`
+	Project            ProjectConfig        `yaml:"project"`
+	Maestro            MaestroConfig        `yaml:"maestro"`
+	Agents             AgentsConfig         `yaml:"agents"`
+	Continuous         ContinuousConfig     `yaml:"continuous"`
+	Watcher            WatcherConfig        `yaml:"watcher"`
+	Retry              RetryConfig          `yaml:"retry"`
+	Queue              QueueConfig          `yaml:"queue"`
+	Limits             LimitsConfig         `yaml:"limits"`
+	ShutdownTimeoutSec int                  `yaml:"shutdown_timeout_sec"`
+	Logging            LoggingConfig        `yaml:"logging"`
+	QualityGates       qualityGatesConfig   `yaml:"quality_gates"`
+	CircuitBreaker     CircuitBreakerConfig `yaml:"circuit_breaker"`
+	Learnings          LearningsConfig      `yaml:"learnings"`
+	Worktree           WorktreeConfig       `yaml:"worktree"`
+	Skills             SkillsConfig         `yaml:"skills"`
+	AdmissionControl   AdmissionControl     `yaml:"admission_control"`
+	Fallback           Fallback             `yaml:"fallback"`
+	Review             ReviewConfig         `yaml:"review"`
+	Rollout            RolloutConfig        `yaml:"rollout"`
+	Judge              JudgeConfig          `yaml:"judge"`
 
 	// C-1 Evolution
 	Evolution EvolutionConfig `yaml:"evolution,omitempty"`
@@ -130,23 +131,27 @@ func (a autoCollectConfig) EffectiveMinCommands() int {
 	return 2
 }
 
+// ProjectConfig holds project identity information.
 type ProjectConfig struct {
 	Name        string `yaml:"name"`
 	Description string `yaml:"description"`
 }
 
+// MaestroConfig holds daemon version and workspace metadata.
 type MaestroConfig struct {
 	Version     string `yaml:"version"`
 	Created     string `yaml:"created"`
 	ProjectRoot string `yaml:"project_root"`
 }
 
+// AgentsConfig holds per-role agent configuration.
 type AgentsConfig struct {
 	Orchestrator AgentConfig  `yaml:"orchestrator"`
 	Planner      AgentConfig  `yaml:"planner"`
 	Workers      WorkerConfig `yaml:"workers"`
 }
 
+// AgentConfig holds configuration for a single agent role (orchestrator or planner).
 type AgentConfig struct {
 	ID             string `yaml:"id"`
 	Model          string `yaml:"model"`
@@ -162,6 +167,7 @@ func (a AgentConfig) EffectiveBasePromptMode() string {
 	return "append"
 }
 
+// WorkerConfig holds configuration for worker agents.
 type WorkerConfig struct {
 	Count          int               `yaml:"count"`
 	DefaultModel   string            `yaml:"default_model"`
@@ -179,6 +185,7 @@ func (w WorkerConfig) EffectiveBasePromptMode() string {
 	return "append"
 }
 
+// ContinuousConfig holds configuration for continuous mode operation.
 type ContinuousConfig struct {
 	Enabled        bool `yaml:"enabled"`
 	MaxIterations  int  `yaml:"max_iterations"` // 0 means unlimited (no iteration cap); positive value sets the cap
@@ -197,26 +204,27 @@ type ContinuousConfig struct {
 	MaxConsecutiveFailures int `yaml:"max_consecutive_failures"`
 }
 
+// WatcherConfig holds timing and polling configuration for the task dispatch watcher.
 type WatcherConfig struct {
-	DebounceSec         float64 `yaml:"debounce_sec"`
-	ScanIntervalSec     int     `yaml:"scan_interval_sec"`
-	DispatchLeaseSec    int     `yaml:"dispatch_lease_sec"`
-	MaxInProgressMin    *int    `yaml:"max_in_progress_min"`
-	BusyCheckInterval   int     `yaml:"busy_check_interval"`
-	BusyCheckMaxRetries int     `yaml:"busy_check_max_retries"`
-	BusyPatterns        string  `yaml:"busy_patterns"`
-	IdleStableSec       int     `yaml:"idle_stable_sec"`
-	CooldownAfterClear  int     `yaml:"cooldown_after_clear"`
-	NotifyLeaseSec      int     `yaml:"notify_lease_sec"`
-	WaitReadyIntervalSec int    `yaml:"wait_ready_interval_sec"`
-	WaitReadyMaxRetries  int    `yaml:"wait_ready_max_retries"`
+	DebounceSec          float64 `yaml:"debounce_sec"`
+	ScanIntervalSec      int     `yaml:"scan_interval_sec"`
+	DispatchLeaseSec     int     `yaml:"dispatch_lease_sec"`
+	MaxInProgressMin     *int    `yaml:"max_in_progress_min"`
+	BusyCheckInterval    int     `yaml:"busy_check_interval"`
+	BusyCheckMaxRetries  int     `yaml:"busy_check_max_retries"`
+	BusyPatterns         string  `yaml:"busy_patterns"`
+	IdleStableSec        int     `yaml:"idle_stable_sec"`
+	CooldownAfterClear   int     `yaml:"cooldown_after_clear"`
+	NotifyLeaseSec       int     `yaml:"notify_lease_sec"`
+	WaitReadyIntervalSec int     `yaml:"wait_ready_interval_sec"`
+	WaitReadyMaxRetries  int     `yaml:"wait_ready_max_retries"`
 
 	// Clear confirmation settings (used by clearAndConfirm)
-	ClearConfirmTimeoutSec int `yaml:"clear_confirm_timeout_sec"` // Per-attempt confirmation window (default 5s)
-	ClearConfirmPollMs     int `yaml:"clear_confirm_poll_ms"`     // Polling interval within confirmation window (default 250ms)
-	ClearMaxAttempts       int `yaml:"clear_max_attempts"`        // Total send attempts including initial (default 3)
-	ClearRetryBackoffMs      int `yaml:"clear_retry_backoff_ms"`      // Base backoff between attempts; doubles each retry (default 500ms)
-	ClearSecondEnterDelayMs  int `yaml:"clear_second_enter_delay_ms"` // Delay before sending second Enter after /clear (default 500ms)
+	ClearConfirmTimeoutSec  int `yaml:"clear_confirm_timeout_sec"`   // Per-attempt confirmation window (default 5s)
+	ClearConfirmPollMs      int `yaml:"clear_confirm_poll_ms"`       // Polling interval within confirmation window (default 250ms)
+	ClearMaxAttempts        int `yaml:"clear_max_attempts"`          // Total send attempts including initial (default 3)
+	ClearRetryBackoffMs     int `yaml:"clear_retry_backoff_ms"`      // Base backoff between attempts; doubles each retry (default 500ms)
+	ClearSecondEnterDelayMs int `yaml:"clear_second_enter_delay_ms"` // Delay before sending second Enter after /clear (default 500ms)
 }
 
 // EffectiveMaxInProgressMin returns the configured max in-progress timeout or 60 as default.
@@ -228,13 +236,15 @@ func (w WatcherConfig) EffectiveMaxInProgressMin() int {
 	return 60
 }
 
+// RetryConfig holds retry limits for the various dispatch and execution operations.
 type RetryConfig struct {
-	CommandDispatch                  int   `yaml:"command_dispatch"`
-	TaskDispatch                     int   `yaml:"task_dispatch"`
-	OrchestratorNotificationDispatch int   `yaml:"orchestrator_notification_dispatch"`
+	CommandDispatch                  int             `yaml:"command_dispatch"`
+	TaskDispatch                     int             `yaml:"task_dispatch"`
+	OrchestratorNotificationDispatch int             `yaml:"orchestrator_notification_dispatch"`
 	TaskExecution                    TaskRetryConfig `yaml:"task_execution"`
 }
 
+// TaskRetryConfig holds configuration for automatic task execution retries.
 type TaskRetryConfig struct {
 	Enabled            bool  `yaml:"enabled"`
 	RetryableExitCodes []int `yaml:"retryable_exit_codes"`
@@ -242,15 +252,17 @@ type TaskRetryConfig struct {
 	CooldownSec        int   `yaml:"cooldown_sec"`
 }
 
+// QueueConfig holds configuration for queue priority aging.
 type QueueConfig struct {
 	PriorityAgingSec int `yaml:"priority_aging_sec"`
 }
 
+// LimitsConfig holds resource limits enforced by the daemon.
 type LimitsConfig struct {
-	MaxPendingCommands       int  `yaml:"max_pending_commands"`
-	MaxPendingTasksPerWorker int  `yaml:"max_pending_tasks_per_worker"`
-	MaxEntryContentBytes     int  `yaml:"max_entry_content_bytes"`
-	MaxYAMLFileBytes         int  `yaml:"max_yaml_file_bytes"`
+	MaxPendingCommands        int  `yaml:"max_pending_commands"`
+	MaxPendingTasksPerWorker  int  `yaml:"max_pending_tasks_per_worker"`
+	MaxEntryContentBytes      int  `yaml:"max_entry_content_bytes"`
+	MaxYAMLFileBytes          int  `yaml:"max_yaml_file_bytes"`
 	MaxDeadLetterArchiveFiles *int `yaml:"max_dead_letter_archive_files"`
 	MaxQuarantineFiles        *int `yaml:"max_quarantine_files"`
 }
@@ -273,31 +285,32 @@ func (l LimitsConfig) EffectiveMaxQuarantineFiles() int {
 	return 100
 }
 
+// LoggingConfig holds logging verbosity settings.
 type LoggingConfig struct {
 	Level string `yaml:"level"`
 }
 
 type qualityGatesConfig struct {
-	Enabled       bool                       `yaml:"enabled"`
-	SkipGates     bool                       `yaml:"skip_gates"`      // 緊急モードフラグ
-	Thresholds    qualityGateThresholds      `yaml:"thresholds"`
-	Enforcement   qualityGateEnforcement     `yaml:"enforcement"`
+	Enabled     bool                   `yaml:"enabled"`
+	SkipGates   bool                   `yaml:"skip_gates"` // 緊急モードフラグ
+	Thresholds  qualityGateThresholds  `yaml:"thresholds"`
+	Enforcement qualityGateEnforcement `yaml:"enforcement"`
 }
 
 type qualityGateThresholds struct {
 }
 
 type qualityGateEnforcement struct {
-	PreTaskCheck   bool   `yaml:"pre_task_check"`    // タスク実行前チェック
-	FailureAction  string `yaml:"failure_action"`    // 失敗時の動作: "warn", "block"
+	PreTaskCheck  bool   `yaml:"pre_task_check"` // タスク実行前チェック
+	FailureAction string `yaml:"failure_action"` // 失敗時の動作: "warn", "block"
 }
 
 // CircuitBreakerConfig controls the command-level circuit breaker that auto-stops
 // commands after consecutive task failures.
 type CircuitBreakerConfig struct {
-	Enabled                bool `yaml:"enabled"`                   // opt-in, default: false
-	MaxConsecutiveFailures *int `yaml:"max_consecutive_failures"`  // default: 3
-	ProgressTimeoutMinutes *int `yaml:"progress_timeout_minutes"`  // default: 30, 0=disabled
+	Enabled                bool `yaml:"enabled"`                  // opt-in, default: false
+	MaxConsecutiveFailures *int `yaml:"max_consecutive_failures"` // default: 3
+	ProgressTimeoutMinutes *int `yaml:"progress_timeout_minutes"` // default: 30, 0=disabled
 }
 
 // EffectiveMaxConsecutiveFailures returns the configured threshold or 3 as default.

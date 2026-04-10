@@ -131,7 +131,7 @@ func (a *API) handlePlanWorktreeRecovery(operation string, data json.RawMessage)
 	if p.CommandID == "" {
 		return uds.ErrorResponse(uds.ErrCodeValidation, "command_id is required")
 	}
-	if err := validate.ValidateID(p.CommandID); err != nil {
+	if err := validate.ID(p.CommandID); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid command_id: %v", err))
 	}
 
@@ -160,13 +160,13 @@ func (a *API) handlePlanWorktreeRecovery(operation string, data json.RawMessage)
 		if p.PhaseID == "" {
 			return uds.ErrorResponse(uds.ErrCodeValidation, "phase_id is required")
 		}
-		if err := validate.ValidateID(p.PhaseID); err != nil {
+		if err := validate.ID(p.PhaseID); err != nil {
 			return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid phase_id: %v", err))
 		}
 		if p.WorkerID == "" {
 			return uds.ErrorResponse(uds.ErrCodeValidation, "worker_id is required")
 		}
-		if err := validate.ValidateID(p.WorkerID); err != nil {
+		if err := validate.ID(p.WorkerID); err != nil {
 			return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid worker_id: %v", err))
 		}
 		// conflicting_files is an optional operator-supplied hint about which

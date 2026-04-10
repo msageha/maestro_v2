@@ -10,17 +10,21 @@ import (
 
 // --- Logging aliases ---
 
+// LogLevel is an alias for core.LogLevel.
 type LogLevel = core.LogLevel
 
 const (
+	// LogLevelDebug enables verbose debug logging.
 	LogLevelDebug = core.LogLevelDebug
 	LogLevelInfo  = core.LogLevelInfo
 	LogLevelWarn  = core.LogLevelWarn
 	LogLevelError = core.LogLevelError
 )
 
+// DaemonLogger is an alias for core.DaemonLogger.
 type DaemonLogger = core.DaemonLogger
 
+// NewDaemonLogger is an alias for core.NewDaemonLogger.
 var (
 	NewDaemonLogger           = core.NewDaemonLogger
 	NewDaemonLoggerFromLegacy = core.NewDaemonLoggerFromLegacy
@@ -31,14 +35,21 @@ var parseLogLevel = core.ParseLogLevel
 
 // --- Clock aliases ---
 
+// Clock is an alias for core.Clock.
 type Clock = core.Clock
+
+// RealClock is an alias for core.RealClock.
 type RealClock = core.RealClock
 
 // --- State aliases ---
 
+// StateReader is an alias for core.StateReader.
 type StateReader = core.StateReader
+
+// PhaseInfo is an alias for core.PhaseInfo.
 type PhaseInfo = core.PhaseInfo
 
+// ErrStateNotFound is an alias for core.ErrStateNotFound.
 var (
 	ErrStateNotFound = core.ErrStateNotFound
 	ErrPhaseNotFound = core.ErrPhaseNotFound
@@ -46,22 +57,31 @@ var (
 
 // --- Executor aliases ---
 
+// ExecutorFactory is an alias for core.ExecutorFactory.
 type ExecutorFactory = core.ExecutorFactory
+
+// AgentExecutor is an alias for core.AgentExecutor.
 type AgentExecutor = core.AgentExecutor
 
 var errExecutorInit = core.ErrExecutorInit
 
 // --- Function type aliases ---
 
+// CanCompleteFunc is an alias for core.CanCompleteFunc.
 type CanCompleteFunc = core.CanCompleteFunc
+
+// PlanExecutor is an alias for core.PlanExecutor.
 type PlanExecutor = core.PlanExecutor
 
 // --- Worktree aliases ---
 
+// WorktreeManager is an alias for worktree.Manager.
 type WorktreeManager = worktree.Manager
 
+// NewWorktreeManager is an alias for worktree.NewManager.
 var NewWorktreeManager = worktree.NewManager
 
+// CommitPolicyViolation is an alias for worktree.CommitPolicyViolation.
 type CommitPolicyViolation = worktree.CommitPolicyViolation
 
 // --- Learnings aliases ---

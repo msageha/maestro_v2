@@ -20,6 +20,7 @@ import (
 type EventClass int
 
 const (
+	// EventClassTask classifies events related to task lifecycle changes.
 	EventClassTask    EventClass = 1 << iota // 1
 	EventClassError                          // 2
 	EventClassWarning                        // 4

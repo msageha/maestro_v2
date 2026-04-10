@@ -16,9 +16,9 @@ var idPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0
 // special in tmux target syntax). Length 1–64.
 var projectNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$`)
 
-// ValidateID checks that an ID string (command_id, worker_id, task_id, etc.)
+// ID checks that an ID string (command_id, worker_id, task_id, etc.)
 // contains only safe characters for use in file paths.
-func ValidateID(id string) error {
+func ID(id string) error {
 	if id == "" {
 		return fmt.Errorf("validate: ID must not be empty")
 	}
@@ -31,10 +31,10 @@ func ValidateID(id string) error {
 	return nil
 }
 
-// ValidateProjectName checks that a project name is safe for use as a tmux
+// ProjectName checks that a project name is safe for use as a tmux
 // session name. Dots and colons are excluded because tmux uses them in target
 // syntax (session:window.pane).
-func ValidateProjectName(name string) error {
+func ProjectName(name string) error {
 	if name == "" {
 		return fmt.Errorf("validate: project name must not be empty")
 	}
@@ -47,9 +47,9 @@ func ValidateProjectName(name string) error {
 	return nil
 }
 
-// ValidateFilePath checks that a file path is safe: non-empty, no null bytes,
+// FilePath checks that a file path is safe: non-empty, no null bytes,
 // no directory traversal (".."), and cleaned. Returns the cleaned path.
-func ValidateFilePath(path string) (string, error) {
+func FilePath(path string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("validate: file path must not be empty")
 	}

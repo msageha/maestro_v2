@@ -18,6 +18,7 @@ import (
 // Action: update task_states + applied_result_ids in state file.
 type R2ResultState struct{}
 
+// Apply detects worker result/state mismatches and updates task states in the command state file.
 func (R2ResultState) Apply(run *Run) Outcome {
 	var repairs []Repair
 

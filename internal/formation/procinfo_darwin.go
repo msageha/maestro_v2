@@ -10,7 +10,7 @@ import (
 // On macOS this uses `ps -o lstart= -p <pid>` to get the launch timestamp.
 // Returns "" if the process info is unavailable.
 func platformProcessStartTime(pid int) string {
-	out, err := exec.Command("ps", "-o", "lstart=", "-p", fmt.Sprintf("%d", pid)).Output()
+	out, err := exec.Command("ps", "-o", "lstart=", "-p", fmt.Sprintf("%d", pid)).Output() //nolint:gosec // "ps" is a fixed command; pid is a trusted integer
 	if err != nil {
 		return ""
 	}

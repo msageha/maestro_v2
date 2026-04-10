@@ -42,7 +42,7 @@ func ReadTopKLearnings(maestroDir string, cfg model.LearningsConfig, now time.Ti
 	injectCount := cfg.EffectiveInjectCount()
 
 	// Filter by TTL (0 = unlimited)
-	var valid []model.Learning
+	valid := make([]model.Learning, 0, len(lf.Learnings))
 	for _, l := range lf.Learnings {
 		if ttlHours > 0 {
 			created, err := time.Parse(time.RFC3339, l.CreatedAt)

@@ -10,9 +10,10 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
+// Quarantine moves a corrupted file to the quarantine directory and returns its new path.
 func Quarantine(maestroDir, filePath string) (string, error) {
 	quarantineDir := filepath.Join(maestroDir, "quarantine")
-	if err := os.MkdirAll(quarantineDir, 0755); err != nil {
+	if err := os.MkdirAll(quarantineDir, 0750); err != nil {
 		return "", fmt.Errorf("create quarantine dir: %w", err)
 	}
 
@@ -29,13 +30,14 @@ func Quarantine(maestroDir, filePath string) (string, error) {
 	return quarantinePath, nil
 }
 
+// RestoreFromBackup restores filePath from its .bak backup, validating YAML before overwriting.
 func RestoreFromBackup(filePath string) error {
 	bakPath := filePath + ".bak"
 	if _, err := os.Stat(bakPath); os.IsNotExist(err) {
 		return fmt.Errorf("no backup file: %s", bakPath)
 	}
 
-	content, err := os.ReadFile(bakPath)
+	content, err := os.ReadFile(bakPath) //nolint:gosec // bakPath is derived from filePath + ".bak"; caller controls path
 	if err != nil {
 		return fmt.Errorf("read backup: %w", err)
 	}
@@ -53,6 +55,7 @@ func RestoreFromBackup(filePath string) error {
 	return nil
 }
 
+// GenerateSkeleton writes a minimal valid YAML skeleton for fileType to filePath.
 func GenerateSkeleton(filePath string, fileType string) error {
 	skeleton := generateSkeletonForType(fileType)
 	content, err := yamlv3.Marshal(skeleton)
@@ -68,6 +71,7 @@ func GenerateSkeleton(filePath string, fileType string) error {
 	return nil
 }
 
+// RecoverCorruptedFile quarantines a corrupted file and recovers it via backup or skeleton.
 func RecoverCorruptedFile(maestroDir, filePath, fileType string) error {
 	// Step 1: Quarantine the corrupted file
 	quarantinePath, err := Quarantine(maestroDir, filePath)

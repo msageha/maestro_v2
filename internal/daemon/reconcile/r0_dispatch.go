@@ -18,6 +18,7 @@ import (
 // Action: Release lease and revert to pending for retry
 type R0Dispatch struct{}
 
+// Apply detects commands stuck in dispatch phase (no state file) and reverts them to pending.
 func (R0Dispatch) Apply(run *Run) Outcome {
 	var repairs []Repair
 

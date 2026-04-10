@@ -82,47 +82,6 @@ func isTransientGitError(err error) bool {
 	return classifyGitError(err) == gitErrorTransient
 }
 
-// gitRunWithRetry executes a git command via gitExecCombined with retry for transient errors.
-// Backoff starts at 50ms and doubles each attempt, capped at 1s.
-// maxRetries=0 means no retry (same as calling gitRunInDir directly).
-func (wm *Manager) gitRunWithRetry(dir string, maxRetries int, args ...string) error {
-	output, err := wm.gitExecCombined(dir, args...)
-	if err == nil {
-		return nil
-	}
-	firstErr := fmt.Errorf("git %s: %w\noutput: %s", strings.Join(args, " "), err, string(output))
-
-	if maxRetries <= 0 || !isTransientGitError(firstErr) {
-		return firstErr
-	}
-
-	backoff := 50 * time.Millisecond
-	const maxBackoff = 1 * time.Second
-
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		wm.log(core.LogLevelWarn, "git_retry attempt=%d/%d backoff=%s cmd=\"git %s\" error=%v",
-			attempt, maxRetries, backoff, strings.Join(args, " "), firstErr)
-
-		time.Sleep(backoff)
-		backoff *= 2
-		if backoff > maxBackoff {
-			backoff = maxBackoff
-		}
-
-		output, err = wm.gitExecCombined(dir, args...)
-		if err == nil {
-			return nil
-		}
-		firstErr = fmt.Errorf("git %s: %w\noutput: %s", strings.Join(args, " "), err, string(output))
-
-		if !isTransientGitError(firstErr) {
-			return firstErr
-		}
-	}
-
-	return firstErr
-}
-
 // wrapGitOutputError wraps a git exec error, including stderr from exec.ExitError
 // so that classifyGitError can match transient patterns in stderr content.
 func wrapGitOutputError(err error, args []string) error {
@@ -134,7 +93,7 @@ func wrapGitOutputError(err error, args []string) error {
 }
 
 // gitOutputWithRetry executes a git command via gitExecOutput with retry for transient errors.
-// Behaves like gitRunWithRetry but returns stdout on success.
+// Returns stdout on success.
 func (wm *Manager) gitOutputWithRetry(dir string, maxRetries int, args ...string) (string, error) {
 	output, err := wm.gitExecOutput(dir, args...)
 	if err == nil {
@@ -246,7 +205,8 @@ func (wm *Manager) gitRun(args ...string) error {
 func (wm *Manager) gitOutput(args ...string) (string, error) {
 	output, err := wm.gitExecOutput("", args...)
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			return "", fmt.Errorf("git %s: %w\nstderr: %s", strings.Join(args, " "), err, string(exitErr.Stderr))
 		}
 		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
@@ -267,7 +227,8 @@ func (wm *Manager) gitRunInDir(dir string, args ...string) error {
 func (wm *Manager) gitOutputInDir(dir string, args ...string) (string, error) {
 	output, err := wm.gitExecOutput(dir, args...)
 	if err != nil {
-		if exitErr, ok := err.(*exec.ExitError); ok {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) {
 			return "", fmt.Errorf("git -C %s %s: %w\nstderr: %s", dir, strings.Join(args, " "), err, string(exitErr.Stderr))
 		}
 		return "", fmt.Errorf("git -C %s %s: %w", dir, strings.Join(args, " "), err)
@@ -331,8 +292,9 @@ func (wm *Manager) stageNewFiles(dir string) error {
 		return fmt.Errorf("list untracked files: %w", err)
 	}
 
-	var toStage []string
-	for _, name := range strings.Split(output, "\x00") {
+	names := strings.Split(output, "\x00")
+	toStage := make([]string, 0, len(names))
+	for _, name := range names {
 		if name == "" {
 			continue
 		}

@@ -19,7 +19,7 @@ const maxWorktreeStateBytes = 1 << 20
 
 func (wm *Manager) saveState(commandID string, state *model.WorktreeCommandState) error {
 	stateDir := filepath.Join(wm.maestroDir, "state", "worktrees")
-	if err := os.MkdirAll(stateDir, 0755); err != nil {
+	if err := os.MkdirAll(stateDir, 0750); err != nil {
 		return fmt.Errorf("create state dir: %w", err)
 	}
 	statePath := filepath.Join(stateDir, commandID+".yaml")
@@ -42,7 +42,7 @@ func (wm *Manager) loadStateUnlocked(commandID string) (*model.WorktreeCommandSt
 	if fi.Size() > maxWorktreeStateBytes {
 		return nil, fmt.Errorf("worktree state file too large (%d bytes > %d max)", fi.Size(), maxWorktreeStateBytes)
 	}
-	data, err := os.ReadFile(statePath)
+	data, err := os.ReadFile(statePath) //nolint:gosec // statePath is derived from maestroDir + commandID; caller controls path
 	if err != nil {
 		return nil, err
 	}

@@ -11,6 +11,7 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
+// AtomicWrite marshals data as YAML and atomically writes it to path.
 func AtomicWrite(path string, data any) error {
 	content, err := yamlv3.Marshal(data)
 	if err != nil {
@@ -19,6 +20,7 @@ func AtomicWrite(path string, data any) error {
 	return AtomicWriteRaw(path, content)
 }
 
+// AtomicWriteRaw atomically writes raw bytes to path using a temp file and rename.
 func AtomicWriteRaw(path string, content []byte) error {
 	// Step 1: Create temp file and write content
 	dir := filepath.Dir(path)
@@ -53,7 +55,7 @@ func AtomicWriteRaw(path string, content []byte) error {
 	tmpClosed = true
 
 	// Step 2: Validate written content by re-reading temp file
-	written, err := os.ReadFile(tmpName)
+	written, err := os.ReadFile(tmpName) //nolint:gosec // tmpName is an internally generated temp file path
 	if err != nil {
 		return fmt.Errorf("read temp file for validation: %w", err)
 	}
@@ -84,7 +86,7 @@ func AtomicWriteRaw(path string, content []byte) error {
 
 // syncDir fsyncs a directory to ensure rename metadata durability.
 func syncDir(dir string) error {
-	d, err := os.Open(dir)
+	d, err := os.Open(dir) //nolint:gosec // dir is the parent of the atomic write target; caller controls path
 	if err != nil {
 		return err
 	}
@@ -102,7 +104,7 @@ func validateYAML(content []byte) error {
 }
 
 func copyFile(src, dst string) error {
-	in, err := os.Open(src)
+	in, err := os.Open(src) //nolint:gosec // src is an internally managed backup path; caller controls path
 	if err != nil {
 		return err
 	}

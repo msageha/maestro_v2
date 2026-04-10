@@ -45,7 +45,7 @@ func Run(projectDir, projectName string) error {
 		"instructions",
 	}
 	for _, d := range dirs {
-		if err := os.MkdirAll(filepath.Join(base, d), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(base, d), 0750); err != nil {
 			return fmt.Errorf("create directory %s: %w", d, err)
 		}
 	}
@@ -148,7 +148,7 @@ func copyTemplateDir(srcDir, dstDir string) error {
 		dst := filepath.Join(dstDir, filepath.FromSlash(rel))
 
 		if d.IsDir() {
-			return os.MkdirAll(dst, 0o755)
+			return os.MkdirAll(dst, 0o750)
 		}
 
 		// Skip if file already exists (protect user customizations).
@@ -162,7 +162,7 @@ func copyTemplateDir(srcDir, dstDir string) error {
 		if err != nil {
 			return fmt.Errorf("read template %s: %w", p, err)
 		}
-		if err := os.WriteFile(dst, data, 0o644); err != nil {
+		if err := os.WriteFile(dst, data, 0o644); err != nil { //nolint:gosec // template files are user-readable config/docs
 			return fmt.Errorf("write %s: %w", dst, err)
 		}
 		return nil
@@ -174,7 +174,7 @@ func copyTemplateFile(name, dst string) error {
 	if err != nil {
 		return fmt.Errorf("read template %s: %w", name, err)
 	}
-	if err := os.WriteFile(dst, data, 0644); err != nil {
+	if err := os.WriteFile(dst, data, 0644); err != nil { //nolint:gosec // template files are user-readable config/docs
 		return fmt.Errorf("write %s: %w", dst, err)
 	}
 	return nil

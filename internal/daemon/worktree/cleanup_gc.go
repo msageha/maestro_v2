@@ -132,7 +132,7 @@ func (wm *Manager) GC() error {
 		state     *model.WorktreeCommandState
 	}
 
-	var allStates []stateEntry
+	allStates := make([]stateEntry, 0, len(entries))
 
 	for _, entry := range entries {
 		if !strings.HasSuffix(entry.Name(), ".yaml") {
@@ -285,7 +285,7 @@ func (wm *Manager) gcBakFiles() {
 			}
 			yamlPath := strings.TrimSuffix(path, ".bak")
 			if _, statErr := os.Stat(yamlPath); os.IsNotExist(statErr) {
-				if rmErr := os.Remove(path); rmErr != nil {
+				if rmErr := os.Remove(path); rmErr != nil { //nolint:gosec // path is derived from trusted WalkDir traversal
 					wm.log(core.LogLevelWarn, "gc_bak_remove_orphan_failed path=%s error=%v", path, rmErr)
 				} else {
 					wm.log(core.LogLevelInfo, "gc_bak_orphan_removed path=%s", path)
@@ -293,7 +293,7 @@ func (wm *Manager) gcBakFiles() {
 				return nil
 			}
 			if now.Sub(info.ModTime()) > bakTTL {
-				if rmErr := os.Remove(path); rmErr != nil {
+				if rmErr := os.Remove(path); rmErr != nil { //nolint:gosec // path is derived from trusted WalkDir traversal
 					wm.log(core.LogLevelWarn, "gc_bak_remove_expired_failed path=%s error=%v", path, rmErr)
 				} else {
 					wm.log(core.LogLevelInfo, "gc_bak_expired_removed path=%s age=%s", path, now.Sub(info.ModTime()))

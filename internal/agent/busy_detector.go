@@ -59,14 +59,14 @@ func (bd *busyDetector) DetectBusy(ctx context.Context, paneTarget string) busyV
 	// Stage 1: pane_current_command — quick gate
 	cmd, err := bd.paneIO.GetPaneCurrentCommand(paneTarget)
 	if err != nil {
-		bd.log(logLevelDebug, "busy_detection pane_current_command error=%v", err)
+		bd.log("busy_detection pane_current_command error=%v", err)
 		return VerdictUndecided
 	}
-	bd.log(logLevelDebug, "busy_detection started; pane_current_command=%s", cmd)
+	bd.log("busy_detection started; pane_current_command=%s", cmd)
 
 	// If the pane is running only a shell, no agent CLI is active → idle.
 	if bd.paneIO.IsShellCommand(cmd) {
-		bd.log(logLevelDebug, "busy_detection pane running shell %q → idle", cmd)
+		bd.log("busy_detection pane running shell %q → idle", cmd)
 		return VerdictIdle
 	}
 
@@ -74,7 +74,7 @@ func (bd *busyDetector) DetectBusy(ctx context.Context, paneTarget string) busyV
 	// Uses CapturePane (no -J) to preserve line boundaries for regex matching.
 	content, err := bd.paneIO.CapturePane(paneTarget, bd.config.BusyHintLines)
 	if err != nil {
-		bd.log(logLevelDebug, "busy_detection capture_pane error=%v", err)
+		bd.log("busy_detection capture_pane error=%v", err)
 		return VerdictUndecided
 	}
 
@@ -84,24 +84,24 @@ func (bd *busyDetector) DetectBusy(ctx context.Context, paneTarget string) busyV
 	if patternMatched {
 		hintStr = "matched"
 	}
-	bd.log(logLevelDebug, "busy_detection busy_pattern_hint=%s", hintStr)
+	bd.log("busy_detection busy_pattern_hint=%s", hintStr)
 
 	// Stage 3: Activity probe (hash comparison over idle_stable_sec).
 	// Uses CapturePaneJoined (-J) for width-independent hash stability.
 	joinedContent, err := bd.paneIO.CapturePaneJoined(paneTarget, bd.config.BusyHintLines)
 	if err != nil {
-		bd.log(logLevelDebug, "busy_detection joined capture error=%v", err)
+		bd.log("busy_detection joined capture error=%v", err)
 		return VerdictUndecided
 	}
 	hashA := contentHash(joinedContent)
 	if err := sleepCtx(ctx, time.Duration(bd.config.IdleStableSec)*time.Second); err != nil {
-		bd.log(logLevelDebug, "busy_detection activity_probe sleep cancelled: %v", err)
+		bd.log("busy_detection activity_probe sleep cancelled: %v", err)
 		return VerdictUndecided
 	}
 
 	joinedContent2, err := bd.paneIO.CapturePaneJoined(paneTarget, bd.config.BusyHintLines)
 	if err != nil {
-		bd.log(logLevelDebug, "busy_detection second capture error=%v", err)
+		bd.log("busy_detection second capture error=%v", err)
 		return VerdictUndecided
 	}
 	hashB := contentHash(joinedContent2)
@@ -118,7 +118,7 @@ func (bd *busyDetector) DetectBusy(ctx context.Context, paneTarget string) busyV
 		verdict = VerdictUndecided
 	}
 
-	bd.log(logLevelDebug, "busy_detection activity_probe hash_changed=%v verdict=%s",
+	bd.log("busy_detection activity_probe hash_changed=%v verdict=%s",
 		hashChanged, verdict)
 	return verdict
 }
@@ -134,7 +134,7 @@ const undecidedImmediateRetries = 2
 func (bd *busyDetector) detectWithUndecidedRetry(ctx context.Context, paneTarget, agentID string) busyVerdict {
 	verdict := bd.DetectBusy(ctx, paneTarget)
 	for i := 0; i < undecidedImmediateRetries && verdict == VerdictUndecided; i++ {
-		bd.log(logLevelDebug, "busy_undecided_retry retry=%d/%d agent_id=%s",
+		bd.log("busy_undecided_retry retry=%d/%d agent_id=%s",
 			i+1, undecidedImmediateRetries, agentID)
 		verdict = bd.DetectBusy(ctx, paneTarget)
 	}
@@ -156,10 +156,10 @@ func (bd *busyDetector) DetectBusyWithRetry(ctx context.Context, paneTarget, age
 	}
 
 	for i := 1; i <= bd.config.BusyCheckMaxRetries; i++ {
-		bd.log(logLevelDebug, "busy_retry retry=%d/%d agent_id=%s verdict=%s",
+		bd.log("busy_retry retry=%d/%d agent_id=%s verdict=%s",
 			i, bd.config.BusyCheckMaxRetries, agentID, verdict)
 		if err := sleepCtx(ctx, time.Duration(bd.config.BusyCheckInterval)*time.Second); err != nil {
-			bd.log(logLevelDebug, "busy_retry sleep cancelled: %v", err)
+			bd.log("busy_retry sleep cancelled: %v", err)
 			return VerdictUndecided
 		}
 
@@ -172,6 +172,6 @@ func (bd *busyDetector) DetectBusyWithRetry(ctx context.Context, paneTarget, age
 	return VerdictBusy
 }
 
-func (bd *busyDetector) log(level logLevel, format string, args ...any) {
-	logf(bd.logger, bd.logLevel, level, "busy_detector", format, args...)
+func (bd *busyDetector) log(format string, args ...any) {
+	logf(bd.logger, bd.logLevel, logLevelDebug, "busy_detector", format, args...)
 }

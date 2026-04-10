@@ -140,7 +140,7 @@ func commandQueueAccessor() queueItemAccessor[model.Command] {
 		},
 		MatchKey:  func(c *model.Command) string { return c.ID },
 		CommandID: func(c *model.Command) string { return c.ID },
-		TaskID:    func(c *model.Command) string { return "" },
+		TaskID:    func(_ *model.Command) string { return "" },
 		ApplyUpdate: func(c *model.Command, status model.Status, now string) {
 			c.Status = status
 			c.LeaseOwner = nil

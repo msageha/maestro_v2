@@ -94,7 +94,7 @@ func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string, taskQueues 
 		return nil
 	}
 
-	var items []worktreeMergeItem
+	items := make([]worktreeMergeItem, 0, len(phases))
 	for _, phase := range phases {
 		if string(phase.Status) != "completed" {
 			continue
@@ -305,7 +305,7 @@ func (qh *QueueHandler) collectImplicitWorktreeMerge(
 		return nil
 	}
 
-	var workerIDs []string
+	workerIDs := make([]string, 0, len(cmdState.Workers))
 	for _, ws := range cmdState.Workers {
 		workerIDs = append(workerIDs, ws.WorkerID)
 	}

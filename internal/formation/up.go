@@ -36,10 +36,10 @@ func RunUp(opts UpOptions) (err error) {
 
 	// Initialize tmux debug logger for session lifecycle diagnostics.
 	tmuxLogPath := filepath.Join(opts.MaestroDir, "logs", "tmux_debug.log")
-	if mkErr := os.MkdirAll(filepath.Dir(tmuxLogPath), 0755); mkErr != nil {
+	if mkErr := os.MkdirAll(filepath.Dir(tmuxLogPath), 0750); mkErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to create tmux debug log directory: %v\n", mkErr)
 	} else {
-		tmuxLogFile, openErr := os.OpenFile(tmuxLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		tmuxLogFile, openErr := os.OpenFile(tmuxLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 		if openErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to open tmux debug log: %v\n", openErr)
 		} else {

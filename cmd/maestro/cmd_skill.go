@@ -139,7 +139,7 @@ func runSkillApprove(args []string) error {
 	}
 
 	candidateID := args[0]
-	if err := validate.ValidateID(candidateID); err != nil {
+	if err := validate.ID(candidateID); err != nil {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill approve: invalid candidate-id: %v", err)}
 	}
 
@@ -200,7 +200,7 @@ func runSkillReject(args []string) error {
 	}
 
 	candidateID := args[0]
-	if err := validate.ValidateID(candidateID); err != nil {
+	if err := validate.ID(candidateID); err != nil {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill reject: invalid candidate-id: %v", err)}
 	}
 

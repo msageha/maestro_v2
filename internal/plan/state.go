@@ -39,7 +39,7 @@ func NewStateManager(maestroDir string, lockMap *lock.MutexMap) *StateManager {
 
 // StatePath returns the filesystem path for a command's state file.
 func (sm *StateManager) StatePath(commandID string) (string, error) {
-	if err := validate.ValidateID(commandID); err != nil {
+	if err := validate.ID(commandID); err != nil {
 		return "", fmt.Errorf("invalid command ID for state path: %w", err)
 	}
 	return filepath.Join(sm.maestroDir, "state", "commands", commandID+".yaml"), nil
@@ -80,10 +80,10 @@ func (sm *StateManager) LoadState(commandID string) (*model.CommandState, error)
 	// because it would silently discard command progress.
 	log.Printf("[WARN] LoadState: YAML corrupted for command %s, attempting backup recovery", commandID)
 	if _, quarantineErr := yamlutil.Quarantine(sm.maestroDir, path); quarantineErr != nil {
-		return nil, fmt.Errorf("parse state %s (quarantine failed: %v): %w", commandID, quarantineErr, parseErr)
+		return nil, fmt.Errorf("parse state %s (quarantine failed: %s): %w", commandID, quarantineErr.Error(), parseErr)
 	}
 	if recoverErr := yamlutil.RestoreFromBackup(path); recoverErr != nil {
-		return nil, fmt.Errorf("parse state %s (backup recovery also failed: %v): %w", commandID, recoverErr, parseErr)
+		return nil, fmt.Errorf("parse state %s (backup recovery also failed: %s): %w", commandID, recoverErr.Error(), parseErr)
 	}
 
 	log.Printf("[INFO] LoadState: restored command %s from backup", commandID)

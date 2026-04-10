@@ -52,11 +52,11 @@ func recoverStateDir(stateDir string, logger stateLogger) {
 			continue
 		}
 		path := filepath.Join(stateDir, name)
-		if err := parseYAMLFile(path); err == nil {
+		parseErr := parseYAMLFile(path)
+		if parseErr == nil {
 			continue
-		} else {
-			logger.logf(LogLevelWarn, "state_recovery yaml_corrupt path=%s error=%v", path, err)
 		}
+		logger.logf(LogLevelWarn, "state_recovery yaml_corrupt path=%s error=%v", path, parseErr)
 
 		bakPath := path + ".bak"
 		if _, statErr := os.Stat(bakPath); statErr != nil {

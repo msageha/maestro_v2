@@ -93,9 +93,7 @@ func (e *QualityGateEvaluator) EvaluatePreTask(task *model.Task, workerID string
 		evaluation.Action = string(result.Action)
 		if len(result.FailedGates) > 0 {
 			evaluation.FailedGates = make([]string, len(result.FailedGates))
-			for i, gate := range result.FailedGates {
-				evaluation.FailedGates[i] = gate
-			}
+			copy(evaluation.FailedGates, result.FailedGates)
 		}
 	}
 

@@ -93,7 +93,7 @@ func (h *TaskRetryHandler) ShouldRetryTask(task *model.Task, exitCode int, retry
 }
 
 // CreateRetryTask creates a new task for retry with cooldown.
-func (h *TaskRetryHandler) CreateRetryTask(originalTask *model.Task, workerID string, exitCode int) (*model.Task, error) {
+func (h *TaskRetryHandler) CreateRetryTask(originalTask *model.Task, _ string, exitCode int) (*model.Task, error) {
 	retryConfig := h.config.Retry.TaskExecution
 
 	// Generate a proper task ID for the retry task via the audited entrypoint.

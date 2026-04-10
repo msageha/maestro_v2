@@ -70,7 +70,7 @@ func (ep *ExecutorProvider) GetExecutor() (AgentExecutor, error) {
 	if err != nil {
 		ep.execFailCount++
 		ep.execLastFailAt = ep.clock.Now()
-		return nil, fmt.Errorf("%w: %v", errExecutorInit, err)
+		return nil, fmt.Errorf("%w: %w", errExecutorInit, err)
 	}
 
 	ep.cachedExec = exec

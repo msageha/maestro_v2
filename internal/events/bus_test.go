@@ -602,44 +602,6 @@ func TestBus_ConcurrentMultipleClose(t *testing.T) {
 	}
 }
 
-func TestBus_DroppedCount(t *testing.T) {
-	// Buffer size 1 with a blocking subscriber → events beyond the first are dropped.
-	bus := NewBus(context.Background(), 1)
-	defer bus.Close()
-
-	block := make(chan struct{})
-	unsub := bus.Subscribe(EventTaskStarted, func(e Event) {
-		<-block // block until released
-	})
-	defer unsub()
-
-	// Initial state: no drops
-	if got := bus.getDroppedCount(); got != 0 {
-		t.Fatalf("expected 0 dropped before publish, got %d", got)
-	}
-
-	// Fill the buffer (size 1) and cause drops
-	for i := 0; i < 5; i++ {
-		bus.Publish(EventTaskStarted, map[string]interface{}{"id": i})
-	}
-
-	// At least some events should have been dropped (buffer is 1, subscriber is blocked)
-	if got := bus.getDroppedCount(); got == 0 {
-		t.Error("expected DroppedCount > 0 after publishing to full channel")
-	}
-
-	// Per-type counter should match total (only one event type used)
-	if byType := bus.getDroppedCountByType(EventTaskStarted); byType == 0 {
-		t.Error("expected DroppedCountByType > 0 for EventTaskStarted")
-	}
-	if byType := bus.getDroppedCountByType(EventTaskCompleted); byType != 0 {
-		t.Errorf("expected DroppedCountByType == 0 for EventTaskCompleted, got %d", byType)
-	}
-
-	// Unblock subscriber
-	close(block)
-}
-
 func TestBus_SubscribeCoalesced(t *testing.T) {
 	bus := NewBus(context.Background(), 1) // small buffer to cause drops on regular subscribers
 	defer bus.Close()

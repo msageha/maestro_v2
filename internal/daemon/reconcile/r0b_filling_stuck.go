@@ -16,8 +16,7 @@ import (
 // Action: revert to awaiting_fill, remove partially added tasks.
 type R0bFillingStuck struct{}
 
-
-
+// Apply detects phases stuck in "filling" and reverts them to awaiting_fill.
 func (R0bFillingStuck) Apply(run *Run) Outcome {
 	var repairs []Repair
 	var notifications []DeferredNotification

@@ -4,6 +4,7 @@ package reconcile
 type RepairPatternID string
 
 const (
+	// PatternR0 identifies repairs produced by the R0PlanningStuck reconciler.
 	PatternR0         RepairPatternID = "R0"
 	PatternR0Dispatch RepairPatternID = "R0-dispatch"
 	PatternR0b        RepairPatternID = "R0b"
@@ -19,8 +20,9 @@ const (
 type NotificationKind string
 
 const (
-	NotifyReFill     NotificationKind = "re_fill"
-	NotifyReEvaluate NotificationKind = "re_evaluate"
+	// NotifyReFill requests the planner to re-fill a phase's worker slots.
+	NotifyReFill      NotificationKind = "re_fill"
+	NotifyReEvaluate  NotificationKind = "re_evaluate"
 	NotifyFillTimeout NotificationKind = "fill_timeout"
 )
 

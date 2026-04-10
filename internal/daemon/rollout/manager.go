@@ -10,10 +10,14 @@ import (
 type SlotStatus string
 
 const (
-	SlotPending   SlotStatus = "pending"
-	SlotRunning   SlotStatus = "running"
+	// SlotPending indicates the slot has not yet started.
+	SlotPending SlotStatus = "pending"
+	// SlotRunning indicates the slot is actively executing.
+	SlotRunning SlotStatus = "running"
+	// SlotCompleted indicates the slot finished successfully.
 	SlotCompleted SlotStatus = "completed"
-	SlotFailed    SlotStatus = "failed"
+	// SlotFailed indicates the slot encountered an error.
+	SlotFailed SlotStatus = "failed"
 )
 
 // Slot represents a single rollout execution slot within a group.
@@ -29,10 +33,15 @@ type Slot struct {
 type GroupState string
 
 const (
-	GroupPending   GroupState = "pending"
-	GroupRunning   GroupState = "running"
+	// GroupPending indicates the group has not yet started.
+	GroupPending GroupState = "pending"
+	// GroupRunning indicates the group is actively executing slots.
+	GroupRunning GroupState = "running"
+	// GroupSelecting indicates the group is evaluating results to pick a winner.
 	GroupSelecting GroupState = "selecting"
+	// GroupCompleted indicates the group finished and a winner was selected.
 	GroupCompleted GroupState = "completed"
+	// GroupCancelled indicates the group was cancelled before completion.
 	GroupCancelled GroupState = "cancelled"
 )
 

@@ -85,7 +85,7 @@ func (ch *CancelHandler) IsCommandCancelRequested(cmd *model.Command) bool {
 // CancelPendingTasks transitions pending tasks of a cancelled command to cancelled.
 // Returns the number of tasks cancelled (periodic scan step 0.5).
 func (ch *CancelHandler) CancelPendingTasks(tasks []model.Task, commandID string) []CancelledTaskResult {
-	var results []CancelledTaskResult
+	results := make([]CancelledTaskResult, 0, len(tasks))
 
 	for i := range tasks {
 		task := &tasks[i]
@@ -136,8 +136,8 @@ func (ch *CancelHandler) CancelPendingTasks(tasks []model.Task, commandID string
 //     and apply ApplyCancelMark, which is a no-op for tasks that have already
 //     transitioned to a terminal state by the worker.
 func (ch *CancelHandler) CollectCancelInterruptItems(tasks []model.Task, commandID string, workerID string) ([]cancelMarkItem, []interruptItem) {
-	var marks []cancelMarkItem
-	var interrupts []interruptItem
+	marks := make([]cancelMarkItem, 0, len(tasks))
+	interrupts := make([]interruptItem, 0, len(tasks))
 
 	for i := range tasks {
 		task := &tasks[i]

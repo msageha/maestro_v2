@@ -18,8 +18,8 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
-// SkillMetadata holds the parsed YAML frontmatter of a SKILL.md file.
-type SkillMetadata struct {
+// Metadata holds the parsed YAML frontmatter of a SKILL.md file.
+type Metadata struct {
 	ID          string   `yaml:"-"`
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description"`
@@ -30,16 +30,16 @@ type SkillMetadata struct {
 }
 
 // EffectivePriority returns the priority value, defaulting to 100 if unset.
-func (m SkillMetadata) EffectivePriority() int {
+func (m Metadata) EffectivePriority() int {
 	if m.Priority != nil {
 		return *m.Priority
 	}
 	return model.DefaultPriority
 }
 
-// SkillContent combines metadata with the body text of a skill file.
-type SkillContent struct {
-	SkillMetadata
+// Content combines metadata with the body text of a skill file.
+type Content struct {
+	Metadata
 	Body string
 }
 
@@ -47,7 +47,7 @@ type SkillContent struct {
 // Skills are included in their original order. If the total body exceeds
 // maxBodyChars (measured in runes), lower-priority skills are dropped first.
 // A maxBodyChars of 0 or negative means no limit.
-func FormatSkillSection(skills []SkillContent, maxBodyChars int) string {
+func FormatSkillSection(skills []Content, maxBodyChars int) string {
 	if len(skills) == 0 {
 		return ""
 	}
@@ -85,7 +85,7 @@ func FormatSkillSection(skills []SkillContent, maxBodyChars int) string {
 		included[idx.origIdx] = false
 	}
 
-	var retained []SkillContent
+	var retained []Content
 	for i, s := range skills {
 		if included[i] {
 			retained = append(retained, s)
@@ -95,7 +95,7 @@ func FormatSkillSection(skills []SkillContent, maxBodyChars int) string {
 	return renderSkills(retained)
 }
 
-func renderSkills(skills []SkillContent) string {
+func renderSkills(skills []Content) string {
 	if len(skills) == 0 {
 		return ""
 	}
@@ -112,7 +112,7 @@ func renderSkills(skills []SkillContent) string {
 	return sb.String()
 }
 
-func totalRuneCount(skills []SkillContent, included []bool) int {
+func totalRuneCount(skills []Content, included []bool) int {
 	total := 0
 	for i, s := range skills {
 		if !included[i] {
@@ -137,7 +137,7 @@ func totalRuneCount(skills []SkillContent, included []bool) int {
 // The closing delimiter must be exactly `---` at the start of the line
 // (leading/trailing whitespace is trimmed). Indented `---` inside YAML
 // block scalars could be misdetected; keep frontmatter simple key-value.
-func parseFrontmatter(content string) (SkillMetadata, string, error) {
+func parseFrontmatter(content string) (Metadata, string, error) {
 	scanner := bufio.NewScanner(strings.NewReader(content))
 	// Enlarge buffer to handle long lines (1 MiB).
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
@@ -145,14 +145,14 @@ func parseFrontmatter(content string) (SkillMetadata, string, error) {
 	// Check for opening delimiter.
 	if !scanner.Scan() {
 		if err := scanner.Err(); err != nil {
-			return SkillMetadata{}, "", fmt.Errorf("reading skill file: %w", err)
+			return Metadata{}, "", fmt.Errorf("reading skill file: %w", err)
 		}
-		return SkillMetadata{}, "", nil
+		return Metadata{}, "", nil
 	}
 	firstLine := strings.TrimSpace(scanner.Text())
 	if firstLine != "---" {
 		// No frontmatter — entire content is body.
-		return SkillMetadata{}, content, nil
+		return Metadata{}, content, nil
 	}
 
 	// Collect frontmatter lines until closing `---`.
@@ -167,18 +167,18 @@ func parseFrontmatter(content string) (SkillMetadata, string, error) {
 		fmLines = append(fmLines, line)
 	}
 	if err := scanner.Err(); err != nil {
-		return SkillMetadata{}, "", fmt.Errorf("reading skill file: %w", err)
+		return Metadata{}, "", fmt.Errorf("reading skill file: %w", err)
 	}
 
 	if !closed {
-		return SkillMetadata{}, "", fmt.Errorf("unclosed frontmatter delimiter")
+		return Metadata{}, "", fmt.Errorf("unclosed frontmatter delimiter")
 	}
 
-	var meta SkillMetadata
+	var meta Metadata
 	if len(fmLines) > 0 {
 		fmData := strings.Join(fmLines, "\n")
 		if err := yamlv3.Unmarshal([]byte(fmData), &meta); err != nil {
-			return SkillMetadata{}, "", fmt.Errorf("invalid YAML in frontmatter: %w", err)
+			return Metadata{}, "", fmt.Errorf("invalid YAML in frontmatter: %w", err)
 		}
 	}
 
@@ -188,7 +188,7 @@ func parseFrontmatter(content string) (SkillMetadata, string, error) {
 		bodyLines = append(bodyLines, scanner.Text())
 	}
 	if err := scanner.Err(); err != nil {
-		return SkillMetadata{}, "", fmt.Errorf("reading skill file: %w", err)
+		return Metadata{}, "", fmt.Errorf("reading skill file: %w", err)
 	}
 	body := strings.Join(bodyLines, "\n")
 
@@ -204,9 +204,9 @@ func parseFrontmatter(content string) (SkillMetadata, string, error) {
 // The name-based fallback (step 3) allows callers to reference skills by
 // their frontmatter name, which is what "maestro skill list" displays.
 // Returns the first match found, or an error if none exist.
-func ReadSkillWithRole(skillsDir, skillName, role string) (SkillContent, error) {
+func ReadSkillWithRole(skillsDir, skillName, role string) (Content, error) {
 	if !validate.IsValidIdentifier(skillName) {
-		return SkillContent{}, fmt.Errorf("invalid skill name: %q", skillName)
+		return Content{}, fmt.Errorf("invalid skill name: %q", skillName)
 	}
 
 	// Fast path: try exact directory name match.
@@ -223,7 +223,7 @@ func ReadSkillWithRole(skillsDir, skillName, role string) (SkillContent, error) 
 
 		meta, body, err := parseFrontmatter(string(data))
 		if err != nil {
-			return SkillContent{}, fmt.Errorf("parse skill %q frontmatter: %w", skillName, err)
+			return Content{}, fmt.Errorf("parse skill %q frontmatter: %w", skillName, err)
 		}
 
 		meta.ID = skillName
@@ -231,8 +231,8 @@ func ReadSkillWithRole(skillsDir, skillName, role string) (SkillContent, error) 
 			meta.Name = skillName
 		}
 
-		return SkillContent{
-			SkillMetadata: meta,
+		return Content{
+			Metadata: meta,
 			Body:          body,
 		}, nil
 	}
@@ -242,12 +242,12 @@ func ReadSkillWithRole(skillsDir, skillName, role string) (SkillContent, error) 
 		return sc, nil
 	}
 
-	return SkillContent{}, fmt.Errorf("read skill %q: %w", skillName, os.ErrNotExist)
+	return Content{}, fmt.Errorf("read skill %q: %w", skillName, os.ErrNotExist)
 }
 
 // readSkillByFrontmatterName scans role-specific and shared directories for a
 // skill whose frontmatter "name" field matches the given skillName.
-func readSkillByFrontmatterName(skillsDir, skillName, role string) (SkillContent, error) {
+func readSkillByFrontmatterName(skillsDir, skillName, role string) (Content, error) {
 	var dirs []string
 	if role != "" {
 		dirs = append(dirs, filepath.Join(skillsDir, role))
@@ -274,15 +274,15 @@ func readSkillByFrontmatterName(skillsDir, skillName, role string) (SkillContent
 			}
 			if meta.Name == skillName {
 				meta.ID = e.Name()
-				return SkillContent{
-					SkillMetadata: meta,
+				return Content{
+					Metadata: meta,
 					Body:          body,
 				}, nil
 			}
 		}
 	}
 
-	return SkillContent{}, fmt.Errorf("read skill %q: %w", skillName, os.ErrNotExist)
+	return Content{}, fmt.Errorf("read skill %q: %w", skillName, os.ErrNotExist)
 }
 
 // ListSkillsWithRole lists skill metadata for a given role directory only.
@@ -290,12 +290,12 @@ func readSkillByFrontmatterName(skillsDir, skillName, role string) (SkillContent
 // This is because shared skills are auto-injected at dispatch time and
 // listing them alongside role-specific skills would be misleading.
 // Parse errors are logged as warnings and the skill is skipped.
-func ListSkillsWithRole(skillsDir, role string, logger *slog.Logger) ([]SkillMetadata, error) {
+func ListSkillsWithRole(skillsDir, role string, logger *slog.Logger) ([]Metadata, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	seen := make(map[string]struct{})
-	var skills []SkillMetadata
+	var skills []Metadata
 
 	// Scan only the role-specific directory.
 	// When role is "share", this naturally scans skills/share/.
@@ -347,15 +347,15 @@ func ListSkillsWithRole(skillsDir, role string, logger *slog.Logger) ([]SkillMet
 
 // ReadAllSkillsForRole reads all skill contents for a given role.
 // It scans skills/<role>/ and skills/share/ directories, returning the full
-// SkillContent (metadata + body) for each skill found. When duplicates exist,
+// Content (metadata + body) for each skill found. When duplicates exist,
 // the role-specific version takes priority over shared. Parse errors are logged
 // as warnings and the skill is skipped.
-func ReadAllSkillsForRole(skillsDir, role string, logger *slog.Logger) ([]SkillContent, error) {
+func ReadAllSkillsForRole(skillsDir, role string, logger *slog.Logger) ([]Content, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	seen := make(map[string]struct{})
-	var skills []SkillContent
+	var skills []Content
 
 	var dirs []string
 	if role != "" {
@@ -399,7 +399,7 @@ func ReadAllSkillsForRole(skillsDir, role string, logger *slog.Logger) ([]SkillC
 				meta.Name = name
 			}
 			seen[name] = struct{}{}
-			skills = append(skills, SkillContent{SkillMetadata: meta, Body: body})
+			skills = append(skills, Content{Metadata: meta, Body: body})
 		}
 	}
 

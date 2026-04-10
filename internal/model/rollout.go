@@ -6,11 +6,16 @@ import "time"
 type RolloutState string
 
 const (
-	RolloutStatePending    RolloutState = "pending"
-	RolloutStateRunning    RolloutState = "running"
-	RolloutStateSelecting  RolloutState = "selecting"
-	RolloutStateCompleted  RolloutState = "completed"
-	RolloutStateCancelled  RolloutState = "cancelled"
+	// RolloutStatePending indicates the rollout group has not yet started.
+	RolloutStatePending RolloutState = "pending"
+	// RolloutStateRunning indicates slots are actively executing.
+	RolloutStateRunning RolloutState = "running"
+	// RolloutStateSelecting indicates the group is evaluating candidates.
+	RolloutStateSelecting RolloutState = "selecting"
+	// RolloutStateCompleted indicates the rollout finished with a winner selected.
+	RolloutStateCompleted RolloutState = "completed"
+	// RolloutStateCancelled indicates the rollout was cancelled before completion.
+	RolloutStateCancelled RolloutState = "cancelled"
 )
 
 // IsTerminalRolloutState は状態が終端（completed または cancelled）かを返す。

@@ -23,8 +23,8 @@ const maxRetryEnqueueAttempts = 3
 // orphaned retry tasks or marking them as failed after max attempts.
 type R1ResultQueue struct{}
 
+// Apply detects result/queue terminal-in_progress mismatches and corrects queue state.
 func (R1ResultQueue) Apply(run *Run) Outcome {
-	var repairs []Repair
 	repairedCommands := make(map[string]bool)
 
 	// --- Phase 1: Original result/queue mismatch detection ---
@@ -34,6 +34,7 @@ func (R1ResultQueue) Apply(run *Run) Outcome {
 		return Outcome{}
 	}
 
+	repairs := make([]Repair, 0, len(entries))
 	for _, entry := range entries {
 		name := entry.Name()
 		if !strings.HasPrefix(name, "worker") || !strings.HasSuffix(name, ".yaml") {
@@ -108,7 +109,7 @@ func r1ConsumeQueueWriteFailed(run *Run) []Repair {
 		return nil
 	}
 
-	var repairs []Repair
+	repairs := make([]Repair, 0, len(entries))
 
 	for _, entry := range entries {
 		if !strings.HasSuffix(entry.Name(), ".yaml") {
@@ -245,7 +246,7 @@ func r1ConsumeRetryEnqueueFailed(run *Run) []Repair {
 		return nil
 	}
 
-	var repairs []Repair
+	repairs := make([]Repair, 0, len(entries))
 
 	for _, entry := range entries {
 		if !strings.HasSuffix(entry.Name(), ".yaml") {
@@ -276,7 +277,7 @@ func r1ProcessRetryEnqueueForCommand(run *Run, commandID, statePath string) []Re
 		return nil
 	}
 
-	var repairs []Repair
+	repairs := make([]Repair, 0, len(state.RetryEnqueueFailed))
 	modified := false
 
 	for taskID, value := range state.RetryEnqueueFailed {

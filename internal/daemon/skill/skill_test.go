@@ -23,9 +23,9 @@ func writeSkillFile(t *testing.T, skillsDir, skillName, content string) {
 }
 
 func TestFormatSkillSection_Multiple(t *testing.T) {
-	skills := []SkillContent{
-		{SkillMetadata: SkillMetadata{ID: "s1", Name: "Skill One"}, Body: "Body one"},
-		{SkillMetadata: SkillMetadata{ID: "s2", Name: "Skill Two"}, Body: "Body two"},
+	skills := []Content{
+		{Metadata: Metadata{ID: "s1", Name: "Skill One"}, Body: "Body one"},
+		{Metadata: Metadata{ID: "s2", Name: "Skill Two"}, Body: "Body two"},
 	}
 	result := FormatSkillSection(skills, 0)
 	if !strings.Contains(result, "スキル: Skill One") {
@@ -46,9 +46,9 @@ func TestFormatSkillSection_MaxBodyChars(t *testing.T) {
 	p1 := intPtr(1)  // high priority (keep)
 	p2 := intPtr(50) // lower priority (drop first)
 
-	skills := []SkillContent{
-		{SkillMetadata: SkillMetadata{ID: "important", Name: "Important", Priority: p1}, Body: "Keep me"},
-		{SkillMetadata: SkillMetadata{ID: "optional", Name: "Optional", Priority: p2}, Body: strings.Repeat("x", 1000)},
+	skills := []Content{
+		{Metadata: Metadata{ID: "important", Name: "Important", Priority: p1}, Body: "Keep me"},
+		{Metadata: Metadata{ID: "optional", Name: "Optional", Priority: p2}, Body: strings.Repeat("x", 1000)},
 	}
 
 	// Set a small budget that can't fit both
@@ -67,7 +67,7 @@ func TestFormatSkillSection_Empty(t *testing.T) {
 		t.Errorf("expected empty string, got %q", result)
 	}
 
-	result = FormatSkillSection([]SkillContent{}, 0)
+	result = FormatSkillSection([]Content{}, 0)
 	if result != "" {
 		t.Errorf("expected empty string, got %q", result)
 	}

@@ -1,3 +1,4 @@
+// Package evolution implements the evolutionary improvement engine for agent plans.
 package evolution
 
 import (
@@ -11,8 +12,11 @@ import (
 type Strategy string
 
 const (
-	StrategyDiff  Strategy = "diff"
-	StrategyFull  Strategy = "full"
+	// StrategyDiff selects the diff-based mutation strategy.
+	StrategyDiff Strategy = "diff"
+	// StrategyFull selects the full-replacement mutation strategy.
+	StrategyFull Strategy = "full"
+	// StrategyCross selects the crossover mutation strategy.
 	StrategyCross Strategy = "cross"
 )
 

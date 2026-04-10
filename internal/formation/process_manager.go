@@ -28,10 +28,10 @@ type udsSender interface {
 	SendCommand(command string, params any) (*uds.Response, error)
 }
 
-// FormationConfig holds the dependencies and tuning parameters for daemon
+// Config holds the dependencies and tuning parameters for daemon
 // lifecycle operations. Using a struct instead of package-level globals
 // enables parallel tests and explicit dependency injection.
-type FormationConfig struct {
+type Config struct {
 	// NewUDSClient creates a UDS client for the given socket path with the
 	// specified timeout.
 	NewUDSClient func(socketPath string, timeout time.Duration) udsSender
@@ -47,9 +47,9 @@ type FormationConfig struct {
 	WaitReadyPollInterval   time.Duration
 }
 
-// DefaultFormationConfig returns a FormationConfig with production defaults.
-func DefaultFormationConfig() *FormationConfig {
-	return &FormationConfig{
+// DefaultConfig returns a Config with production defaults.
+func DefaultConfig() *Config {
+	return &Config{
 		NewUDSClient: func(socketPath string, timeout time.Duration) udsSender {
 			c := uds.NewClient(socketPath)
 			c.SetTimeout(timeout)
@@ -66,7 +66,7 @@ func DefaultFormationConfig() *FormationConfig {
 
 // defaultConfig is the package-level configuration used by daemon lifecycle
 // functions. Tests replace this via withTestConfig to inject mocks and fast timings.
-var defaultConfig = DefaultFormationConfig()
+var defaultConfig = DefaultConfig()
 
 // Package-level accessors for backward compatibility with existing call sites.
 func newUDSClient(socketPath string, timeout time.Duration) udsSender {
@@ -78,10 +78,10 @@ func procMgr() processManager {
 }
 
 func daemonPollTimeout() time.Duration       { return defaultConfig.DaemonPollTimeout }
-func daemonPollInterval() time.Duration       { return defaultConfig.DaemonPollInterval }
-func processExitPollInterval() time.Duration  { return defaultConfig.ProcessExitPollInterval }
-func postSignalWait() time.Duration           { return defaultConfig.PostSignalWait }
-func waitReadyPollInterval() time.Duration    { return defaultConfig.WaitReadyPollInterval }
+func daemonPollInterval() time.Duration      { return defaultConfig.DaemonPollInterval }
+func processExitPollInterval() time.Duration { return defaultConfig.ProcessExitPollInterval }
+func postSignalWait() time.Duration          { return defaultConfig.PostSignalWait }
+func waitReadyPollInterval() time.Duration   { return defaultConfig.WaitReadyPollInterval }
 
 // osProcessManager implements processManager using real OS system calls.
 type osProcessManager struct{}

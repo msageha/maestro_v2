@@ -81,7 +81,7 @@ func AssignWorkers(
 		maxPending = 10
 	}
 
-	var assignments []WorkerAssignment
+	assignments := make([]WorkerAssignment, 0, len(tasks))
 	for _, task := range tasks {
 		requiredModel := GetModelForBloomLevel(task.BloomLevel, config.Boost)
 
@@ -135,7 +135,7 @@ func BuildWorkerStates(maestroDir string, config model.WorkerConfig) ([]WorkerSt
 
 	for i := 1; i <= config.Count; i++ {
 		workerID := fmt.Sprintf("worker%d", i)
-		if err := validate.ValidateID(workerID); err != nil {
+		if err := validate.ID(workerID); err != nil {
 			return nil, fmt.Errorf("invalid worker ID %q: %w", workerID, err)
 		}
 		workerModel := GetWorkerModel(workerID, config)

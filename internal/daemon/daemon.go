@@ -147,10 +147,10 @@ func (d *Daemon) LockMap() *lock.MutexMap {
 // New creates a new Daemon instance.
 func New(maestroDir string, cfg model.Config) (*Daemon, error) {
 	logPath := filepath.Join(maestroDir, "logs", "daemon.log")
-	if err := os.MkdirAll(filepath.Dir(logPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(logPath), 0750); err != nil {
 		return nil, fmt.Errorf("create log dir: %w", err)
 	}
-	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("open daemon log: %w", err)
 	}
@@ -160,7 +160,7 @@ func New(maestroDir string, cfg model.Config) (*Daemon, error) {
 
 // newDaemon is the internal constructor accepting injectable dependencies (used by NewDaemon and tests).
 func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Closer) (*Daemon, error) {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // cancel is stored in d.cancel and called on shutdown
 
 	socketPath := filepath.Join(maestroDir, uds.DefaultSocketName)
 	server := uds.NewServer(socketPath)
@@ -211,9 +211,7 @@ func (d *Daemon) Run() error {
 		return err
 	}
 
-	if err := d.initComponents(); err != nil {
-		return err
-	}
+	d.initComponents()
 
 	if err := d.startRuntime(); err != nil {
 		return err

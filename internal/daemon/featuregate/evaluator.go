@@ -7,9 +7,13 @@ import "sync"
 type ProfileLevel string
 
 const (
-	LevelSimple   ProfileLevel = "simple"
+	// LevelSimple is the lowest complexity profile level.
+	LevelSimple ProfileLevel = "simple"
+	// LevelStandard is the default complexity profile level.
 	LevelStandard ProfileLevel = "standard"
-	LevelComplex  ProfileLevel = "complex"
+	// LevelComplex is used for multi-step or high-risk tasks.
+	LevelComplex ProfileLevel = "complex"
+	// LevelCritical is used for the highest-risk tasks.
 	LevelCritical ProfileLevel = "critical"
 )
 
@@ -17,12 +21,18 @@ const (
 type Feature string
 
 const (
-	FeatureCrossAgentReview       Feature = "cross_agent_review"
-	FeatureExploratoryOpt         Feature = "exploratory_optimization"
-	FeatureEvolutionaryQuality    Feature = "evolutionary_quality"
+	// FeatureCrossAgentReview enables cross-agent review of task results.
+	FeatureCrossAgentReview Feature = "cross_agent_review"
+	// FeatureExploratoryOpt enables exploratory optimization passes.
+	FeatureExploratoryOpt Feature = "exploratory_optimization"
+	// FeatureEvolutionaryQuality enables evolutionary quality improvement.
+	FeatureEvolutionaryQuality Feature = "evolutionary_quality"
+	// FeatureAdaptiveModelSelection enables adaptive model selection per task.
 	FeatureAdaptiveModelSelection Feature = "adaptive_model_selection"
-	FeatureSelfImprovement        Feature = "self_improvement"
-	FeatureAdaptiveDepth          Feature = "adaptive_depth"
+	// FeatureSelfImprovement enables self-improvement learning loops.
+	FeatureSelfImprovement Feature = "self_improvement"
+	// FeatureAdaptiveDepth enables adaptive search depth adjustment.
+	FeatureAdaptiveDepth Feature = "adaptive_depth"
 )
 
 // allFeatures lists every known feature for default profile construction.

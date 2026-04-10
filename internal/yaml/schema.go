@@ -7,27 +7,30 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
+// CurrentSchemaVersion is the latest supported YAML schema version.
 const CurrentSchemaVersion = 1
 
 var validFileTypes = map[string]bool{
-	"queue_command":       true,
-	"queue_task":          true,
-	"queue_notification":  true,
+	"queue_command":        true,
+	"queue_task":           true,
+	"queue_notification":   true,
 	"planner_signal_queue": true,
-	"result_task":         true,
-	"result_command":      true,
-	"state_command":       true,
-	"state_metrics":       true,
-	"state_continuous":    true,
-	"state_learnings":    true,
-	"state_worktree":     true,
+	"result_task":          true,
+	"result_command":       true,
+	"state_command":        true,
+	"state_metrics":        true,
+	"state_continuous":     true,
+	"state_learnings":      true,
+	"state_worktree":       true,
 }
 
+// SchemaHeader holds the schema_version and file_type fields present in all managed YAML files.
 type SchemaHeader struct {
 	SchemaVersion int    `yaml:"schema_version"`
 	FileType      string `yaml:"file_type"`
 }
 
+// ValidateSchemaHeader reads the file at path and validates its schema_version and file_type fields.
 func ValidateSchemaHeader(path string, expectedFileType string) error {
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -36,6 +39,7 @@ func ValidateSchemaHeader(path string, expectedFileType string) error {
 	return ValidateSchemaHeaderFromBytes(content, expectedFileType)
 }
 
+// ValidateSchemaHeaderFromBytes validates the schema_version and file_type fields in content.
 func ValidateSchemaHeaderFromBytes(content []byte, expectedFileType string) error {
 	var header SchemaHeader
 	if err := yamlv3.Unmarshal(content, &header); err != nil {

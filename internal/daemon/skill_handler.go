@@ -96,7 +96,7 @@ func (a *API) handleSkillApprove(req *uds.Request) *uds.Response {
 
 	skillContent := daemonFormatSkillMD(skillName, candidate.Content)
 	skillPath := filepath.Join(skillDir, "SKILL.md")
-	if err := os.WriteFile(skillPath, []byte(skillContent), 0o644); err != nil {
+	if err := os.WriteFile(skillPath, []byte(skillContent), 0o644); err != nil { //nolint:gosec // skill files are user-readable documentation
 		_ = os.RemoveAll(skillDir)
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write SKILL.md: %v", err))
 	}

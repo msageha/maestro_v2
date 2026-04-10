@@ -10,6 +10,7 @@ import (
 // Action: update queue to terminal, clear lease. Update last_reconciled_at on state file.
 type R3PlannerQueue struct{}
 
+// Apply detects planner result/queue terminal-in_progress mismatches and corrects queue state.
 func (R3PlannerQueue) Apply(run *Run) Outcome {
 	resultPath := filepath.Join(run.Deps.MaestroDir, "results", "planner.yaml")
 	rf, err := run.loadCommandResultFile(resultPath)

@@ -78,7 +78,7 @@ func runAgentExec(args []string) error {
 		return fmt.Errorf("maestro agent exec: load config: %w", err)
 	}
 	// HIGH-16: Validate project name before use in tmux session name
-	if err := validate.ValidateProjectName(cfg.Project.Name); err != nil {
+	if err := validate.ProjectName(cfg.Project.Name); err != nil {
 		return fmt.Errorf("maestro agent exec: invalid project name: %w", err)
 	}
 	tmux.SetSessionName("maestro-" + cfg.Project.Name)

@@ -25,9 +25,9 @@ const (
 
 // Limits for new schema fields.
 const (
-	MaxDefinitionOfDoneItems       = 20
-	MaxRepairCount                 = 100
-	MaxWallClockSec                = 86400 // 24 hours
+	MaxDefinitionOfDoneItems = 20
+	MaxRepairCount           = 100
+	MaxWallClockSec          = 86400 // 24 hours
 )
 
 // validateTaskSetCommon validates a slice of task inputs for field integrity,

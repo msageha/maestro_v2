@@ -202,51 +202,6 @@ func TestIsTransientGitError(t *testing.T) {
 	}
 }
 
-func TestGitRunWithRetry_TransientRetries(t *testing.T) {
-	// Use a real git repo — run a command that will produce a transient-like error.
-	// We test the retry mechanism by verifying that gitRunWithRetry eventually
-	// succeeds or retries the expected number of times.
-	projectRoot := initTestGitRepo(t)
-	wm := newTestWorktreeManager(t, projectRoot)
-
-	// A command that succeeds should not retry.
-	err := wm.gitRunWithRetry(projectRoot, 3, "status")
-	if err != nil {
-		t.Fatalf("gitRunWithRetry on successful command: %v", err)
-	}
-}
-
-func TestGitRunWithRetry_PermanentNoRetry(t *testing.T) {
-	projectRoot := initTestGitRepo(t)
-	wm := newTestWorktreeManager(t, projectRoot)
-
-	// A command that produces a permanent error (bad revision) should not retry.
-	start := time.Now()
-	err := wm.gitRunWithRetry(projectRoot, 3, "log", "--oneline", "nonexistent_ref_abc123..HEAD")
-	elapsed := time.Since(start)
-
-	if err == nil {
-		t.Fatal("expected error for bad revision, got nil")
-	}
-
-	// If it retried 3 times with backoff (50+100+200=350ms minimum), elapsed would be >300ms.
-	// A permanent error should return immediately, so elapsed should be well under 300ms.
-	if elapsed > 300*time.Millisecond {
-		t.Errorf("gitRunWithRetry took %v, expected fast return for permanent error", elapsed)
-	}
-}
-
-func TestGitRunWithRetry_MaxRetriesZero(t *testing.T) {
-	projectRoot := initTestGitRepo(t)
-	wm := newTestWorktreeManager(t, projectRoot)
-
-	// maxRetries=0 should behave like a single attempt.
-	err := wm.gitRunWithRetry(projectRoot, 0, "status")
-	if err != nil {
-		t.Fatalf("gitRunWithRetry with maxRetries=0 on success: %v", err)
-	}
-}
-
 func TestGitOutputWithRetry_Success(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)

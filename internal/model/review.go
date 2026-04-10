@@ -6,9 +6,12 @@ import "time"
 type ReviewSeverity string
 
 const (
-	ReviewSeverityInfo    ReviewSeverity = "info"
+	// ReviewSeverityInfo is the lowest review severity, used for informational findings.
+	ReviewSeverityInfo ReviewSeverity = "info"
+	// ReviewSeverityWarning indicates a finding that should be addressed but is not blocking.
 	ReviewSeverityWarning ReviewSeverity = "warning"
-	ReviewSeverityError   ReviewSeverity = "error"
+	// ReviewSeverityError indicates a blocking finding that must be resolved.
+	ReviewSeverityError ReviewSeverity = "error"
 )
 
 // ValidReviewSeverities is the set of allowed ReviewSeverity values.
@@ -22,10 +25,14 @@ var ValidReviewSeverities = map[ReviewSeverity]bool{
 type ReviewStatus string
 
 const (
-	ReviewStatusPending    ReviewStatus = "pending"
+	// ReviewStatusPending indicates the review has not yet started.
+	ReviewStatusPending ReviewStatus = "pending"
+	// ReviewStatusInProgress indicates the review is currently being conducted.
 	ReviewStatusInProgress ReviewStatus = "in_progress"
-	ReviewStatusCompleted  ReviewStatus = "completed"
-	ReviewStatusSkipped    ReviewStatus = "skipped"
+	// ReviewStatusCompleted indicates the review finished successfully.
+	ReviewStatusCompleted ReviewStatus = "completed"
+	// ReviewStatusSkipped indicates the review was bypassed.
+	ReviewStatusSkipped ReviewStatus = "skipped"
 )
 
 // ValidReviewStatuses is the set of allowed ReviewStatus values.

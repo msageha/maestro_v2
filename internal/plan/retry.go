@@ -103,7 +103,7 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 	}
 
 	// Write queue entry for the primary retry task
-	var writtenQueueTaskIDs []retryQueueTask // track for rollback
+	writtenQueueTaskIDs := make([]retryQueueTask, 0, 1+len(cascadeRecovered)) // track for rollback
 	primaryTask := retryQueueTask{
 		taskID:             newTaskID,
 		commandID:          opts.CommandID,

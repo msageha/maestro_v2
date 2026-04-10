@@ -75,7 +75,7 @@ func runPlanSubmit(args []string) error {
 
 	// CRIT-05: Validate non-stdin file path before passing to daemon
 	if tasksFile != "-" && tasksFile != "/dev/stdin" {
-		cleaned, err := validate.ValidateFilePath(tasksFile)
+		cleaned, err := validate.FilePath(tasksFile)
 		if err != nil {
 			return fmt.Errorf("maestro plan submit: invalid tasks file: %w", err)
 		}
@@ -188,14 +188,14 @@ func runPlanAddRetryTask(args []string) error {
 		return &CLIError{Code: 1, Msg: "maestro plan add-retry-task: all required flags must be set\nusage: maestro plan add-retry-task --command-id <id> --retry-of <task_id> --purpose <text> --content <text> --acceptance-criteria <text> --bloom-level <n> [--blocked-by <task_id>]..."}
 	}
 
-	if err := validate.ValidateID(commandID); err != nil {
+	if err := validate.ID(commandID); err != nil {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan add-retry-task: invalid --command-id: %v", err)}
 	}
-	if err := validate.ValidateID(retryOf); err != nil {
+	if err := validate.ID(retryOf); err != nil {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan add-retry-task: invalid --retry-of: %v", err)}
 	}
 	for _, dep := range blockedBy {
-		if err := validate.ValidateID(dep); err != nil {
+		if err := validate.ID(dep); err != nil {
 			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan add-retry-task: invalid --blocked-by %q: %v", dep, err)}
 		}
 	}
@@ -331,7 +331,7 @@ func runPlanUnquarantine(args []string) error {
 	if commandID == "" {
 		return &CLIError{Code: 1, Msg: "maestro plan unquarantine: --command-id is required\n" + usage}
 	}
-	if err := validate.ValidateID(commandID); err != nil {
+	if err := validate.ID(commandID); err != nil {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan unquarantine: invalid --command-id: %v", err)}
 	}
 
@@ -367,7 +367,7 @@ func runPlanResumeMerge(args []string) error {
 	if commandID == "" {
 		return &CLIError{Code: 1, Msg: "maestro plan resume-merge: --command-id is required\n" + usage}
 	}
-	if err := validate.ValidateID(commandID); err != nil {
+	if err := validate.ID(commandID); err != nil {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan resume-merge: invalid --command-id: %v", err)}
 	}
 
@@ -419,19 +419,19 @@ func runResolveConflict(args []string) error {
 	if commandID == "" {
 		return &CLIError{Code: 1, Msg: "maestro resolve-conflict: --command-id is required\n" + usage}
 	}
-	if err := validate.ValidateID(commandID); err != nil {
+	if err := validate.ID(commandID); err != nil {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro resolve-conflict: invalid --command-id: %v", err)}
 	}
 	if phaseID == "" {
 		return &CLIError{Code: 1, Msg: "maestro resolve-conflict: --phase-id is required\n" + usage}
 	}
-	if err := validate.ValidateID(phaseID); err != nil {
+	if err := validate.ID(phaseID); err != nil {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro resolve-conflict: invalid --phase-id: %v", err)}
 	}
 	if workerID == "" {
 		return &CLIError{Code: 1, Msg: "maestro resolve-conflict: --worker-id is required\n" + usage}
 	}
-	if err := validate.ValidateID(workerID); err != nil {
+	if err := validate.ID(workerID); err != nil {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro resolve-conflict: invalid --worker-id: %v", err)}
 	}
 

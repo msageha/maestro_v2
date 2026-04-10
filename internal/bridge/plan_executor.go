@@ -40,6 +40,7 @@ type submitParams struct {
 	DryRun    bool   `json:"dry_run"`
 }
 
+// Submit implements core.PlanExecutor by parsing params and calling plan.Submit.
 func (pe *PlanExecutorImpl) Submit(params json.RawMessage) (json.RawMessage, error) {
 	return parseAndExecute("submit", params, func(p submitParams) (*plan.SubmitResult, error) {
 		return plan.Submit(plan.SubmitOptions{
@@ -59,6 +60,7 @@ type completeParams struct {
 	Summary   string `json:"summary"`
 }
 
+// Complete implements core.PlanExecutor by parsing params and calling plan.Complete.
 func (pe *PlanExecutorImpl) Complete(params json.RawMessage) (json.RawMessage, error) {
 	return parseAndExecute("complete", params, func(p completeParams) (*plan.CompleteResult, error) {
 		return plan.Complete(plan.CompleteOptions{
@@ -85,6 +87,7 @@ type retryParams struct {
 	SkillRefs          []string `json:"skill_refs"`
 }
 
+// AddRetryTask implements core.PlanExecutor by parsing params and calling plan.AddRetryTask.
 func (pe *PlanExecutorImpl) AddRetryTask(params json.RawMessage) (json.RawMessage, error) {
 	return parseAndExecute("add_retry_task", params, func(p retryParams) (*plan.RetryResult, error) {
 		return plan.AddRetryTask(plan.RetryOptions{
@@ -115,6 +118,7 @@ type rebuildResult struct {
 	Status    string `json:"status"`
 }
 
+// Rebuild implements core.PlanExecutor by parsing params and calling plan.Rebuild.
 func (pe *PlanExecutorImpl) Rebuild(params json.RawMessage) (json.RawMessage, error) {
 	return parseAndExecute("rebuild", params, func(p rebuildParams) (*rebuildResult, error) {
 		err := plan.Rebuild(plan.RebuildOptions{

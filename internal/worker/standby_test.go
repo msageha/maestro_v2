@@ -229,7 +229,7 @@ func TestStandbyJSON_Schema(t *testing.T) {
 	}
 
 	// Validate JSON structure
-	var statuses []WorkerStatus
+	var statuses []Status
 	if err := json.Unmarshal([]byte(output), &statuses); err != nil {
 		t.Fatalf("invalid JSON: %v\noutput: %s", err, output)
 	}
@@ -280,7 +280,7 @@ func TestStandbyJSON_EmptyArray(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	var statuses []WorkerStatus
+	var statuses []Status
 	if err := json.Unmarshal([]byte(output), &statuses); err != nil {
 		t.Fatalf("invalid JSON: %v\noutput: %s", err, output)
 	}

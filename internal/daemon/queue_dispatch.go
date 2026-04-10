@@ -15,7 +15,7 @@ import (
 // processPlannerSignalsDeferred evaluates signals but defers tmux delivery to Phase B.
 func (qh *QueueHandler) processPlannerSignalsDeferred(sq *model.PlannerSignalQueue, dirty *bool, work *deferredWork) {
 	now := qh.clock.Now().UTC()
-	var retained []model.PlannerSignal
+	retained := make([]model.PlannerSignal, 0, len(sq.Signals))
 
 	for i := range sq.Signals {
 		sig := &sq.Signals[i]
@@ -182,7 +182,7 @@ func (qh *QueueHandler) computeSignalBackoff(attempts int) time.Duration {
 		backoffSec = baseSec
 	}
 	base := time.Duration(backoffSec) * time.Second
-	jittered := time.Duration(float64(base) * (0.75 + rand.Float64()*0.5))
+	jittered := time.Duration(float64(base) * (0.75 + rand.Float64()*0.5)) //nolint:gosec // math/rand is appropriate for jitter
 	return jittered
 }
 

@@ -29,9 +29,9 @@ func notificationTypeForStatus(status model.Status) model.NotificationType {
 // Action: re-issue notification via writeNotificationToOrchestratorQueue.
 type R5Notification struct{}
 
+// Apply detects notified planner results without a corresponding orchestrator notification
+// and re-issues the notification via WriteNotificationToOrchestratorQueue.
 func (R5Notification) Apply(run *Run) Outcome {
-	var repairs []Repair
-
 	if run.Deps.ResultHandler == nil {
 		return Outcome{}
 	}
@@ -72,6 +72,7 @@ func (R5Notification) Apply(run *Run) Outcome {
 		existingKeys[dedupKey{SourceResultID: ntf.SourceResultID, Type: ntf.Type}] = true
 	}
 
+	repairs := make([]Repair, 0, len(rf.Results))
 	repairedCommands := make(map[string]bool)
 	for _, result := range rf.Results {
 		if !model.IsTerminal(result.Status) {

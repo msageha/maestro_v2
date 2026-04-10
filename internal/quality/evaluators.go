@@ -109,7 +109,7 @@ var dangerousPatternsOnce sync.Once
 
 func initDangerousPatterns() {
 	dangerousPatternsOnce.Do(func() {
-		var raw []string
+		raw := make([]string, 0, len(privilegeEscalationPatterns)+len(destructiveCommandPatterns)+len(remoteCodeExecutionPatterns)+len(bypassPreventionPatterns)+len(pythonDangerousPatterns))
 		raw = append(raw, privilegeEscalationPatterns...)
 		raw = append(raw, destructiveCommandPatterns...)
 		raw = append(raw, remoteCodeExecutionPatterns...)
@@ -131,7 +131,7 @@ func init() {
 type fieldValidationEvaluator struct{}
 
 // Evaluate checks if a field meets the specified condition
-func (e *fieldValidationEvaluator) Evaluate(ctx context.Context, condition *RuleCondition, evalCtx EvaluationContext) (bool, error) {
+func (e *fieldValidationEvaluator) Evaluate(_ context.Context, condition *RuleCondition, evalCtx EvaluationContext) (bool, error) {
 	value, exists := evalCtx.GetField(condition.Field)
 
 	switch condition.Operator {
@@ -453,12 +453,12 @@ func (e *scriptEvaluator) Evaluate(ctx context.Context, condition *RuleCondition
 	var cmd *exec.Cmd
 	switch condition.Language {
 	case "python":
-		cmd = exec.CommandContext(scriptCtx, "python", "-c", condition.Script)
+		cmd = exec.CommandContext(scriptCtx, "python", "-c", condition.Script) //nolint:gosec // script content is from trusted quality gate config
 	case "bash", "":
 		// Use restricted mode (-r) to prevent directory changes, PATH modification,
 		// commands with slashes, and output redirection. --noprofile/--norc prevent
 		// loading startup files that could override restrictions.
-		cmd = exec.CommandContext(scriptCtx, "bash", "--restricted", "--noprofile", "--norc", "-c", condition.Script)
+		cmd = exec.CommandContext(scriptCtx, "bash", "--restricted", "--noprofile", "--norc", "-c", condition.Script) //nolint:gosec // script content is from trusted quality gate config
 	default:
 		return false, fmt.Errorf("unsupported script language: %s", condition.Language)
 	}

@@ -3,6 +3,7 @@
 package core
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,9 +24,13 @@ import (
 type LogLevel int
 
 const (
+	// LogLevelDebug enables verbose debug logging.
 	LogLevelDebug LogLevel = iota
+	// LogLevelInfo enables informational logging.
 	LogLevelInfo
+	// LogLevelWarn enables warning and error logging only.
 	LogLevelWarn
+	// LogLevelError enables error logging only.
 	LogLevelError
 )
 
@@ -88,12 +93,12 @@ func NewDaemonLoggerFromLegacy(component string, logger *log.Logger, minLevel Lo
 
 // Logf logs a formatted message at the given level (migration shim for existing log() calls).
 func (dl *DaemonLogger) Logf(level LogLevel, format string, args ...any) {
-	dl.slogger.Log(nil, toSlogLevel(level), fmt.Sprintf(format, args...))
+	dl.slogger.Log(context.TODO(), toSlogLevel(level), fmt.Sprintf(format, args...))
 }
 
 // Log logs a message with structured attributes.
 func (dl *DaemonLogger) Log(level LogLevel, msg string, attrs ...slog.Attr) {
-	dl.slogger.LogAttrs(nil, toSlogLevel(level), msg, attrs...)
+	dl.slogger.LogAttrs(context.TODO(), toSlogLevel(level), msg, attrs...)
 }
 
 // With returns a new DaemonLogger with additional default attributes.

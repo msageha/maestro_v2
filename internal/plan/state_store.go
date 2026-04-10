@@ -15,10 +15,3 @@ type stateStore interface {
 	StateExists(commandID string) bool
 }
 
-// commandLocker abstracts in-process locking for command state.
-type commandLocker interface {
-	// LockCommand acquires the in-process mutex for a command's state.
-	LockCommand(commandID string)
-	// UnlockCommand releases the in-process mutex for a command's state.
-	UnlockCommand(commandID string)
-}

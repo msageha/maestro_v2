@@ -29,11 +29,11 @@ func validateSHA(s string) error {
 // validateIDs checks that commandID and optional workerIDs are safe for use
 // in file paths (defense-in-depth against path traversal).
 func validateIDs(commandID string, workerIDs ...string) error {
-	if err := validate.ValidateID(commandID); err != nil {
+	if err := validate.ID(commandID); err != nil {
 		return fmt.Errorf("invalid commandID: %w", err)
 	}
 	for _, wid := range workerIDs {
-		if err := validate.ValidateID(wid); err != nil {
+		if err := validate.ID(wid); err != nil {
 			return fmt.Errorf("invalid workerID: %w", err)
 		}
 	}
@@ -106,7 +106,7 @@ func (wm *Manager) EnsureWorkerWorktree(commandID, workerID string) error {
 
 		// Create integration worktree (H3: merge/publish ops happen here)
 		integrationPath := wm.integrationWorktreePath(commandID)
-		if err := os.MkdirAll(filepath.Dir(integrationPath), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Dir(integrationPath), 0750); err != nil {
 			_ = wm.gitRun("branch", "-D", integrationBranch)
 			return fmt.Errorf("create integration worktree parent dir: %w", err)
 		}
@@ -195,7 +195,7 @@ func (wm *Manager) addWorkerWorktreeUnlocked(state *model.WorktreeCommandState, 
 	workerBranch := fmt.Sprintf("maestro/%s/%s", commandID, workerID)
 	wtPath := filepath.Join(wm.projectRoot, wm.config.EffectivePathPrefix(), commandID, workerID)
 
-	if err := os.MkdirAll(filepath.Dir(wtPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(wtPath), 0750); err != nil {
 		return fmt.Errorf("create worktree parent dir: %w", err)
 	}
 

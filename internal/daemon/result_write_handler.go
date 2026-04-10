@@ -14,8 +14,6 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
-	"github.com/msageha/maestro_v2/internal/daemon/judge"
-	"github.com/msageha/maestro_v2/internal/daemon/rollout"
 	"github.com/msageha/maestro_v2/internal/daemon/skill"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
@@ -58,10 +56,10 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 	if params.CommandID == "" {
 		return uds.ErrorResponse(uds.ErrCodeValidation, "command_id is required")
 	}
-	if err := validate.ValidateID(params.CommandID); err != nil {
+	if err := validate.ID(params.CommandID); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid command_id: %v", err))
 	}
-	if err := validate.ValidateID(params.TaskID); err != nil {
+	if err := validate.ID(params.TaskID); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid task_id: %v", err))
 	}
 
@@ -95,9 +93,10 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 
 	// Fallback tracking: record success/failure for worker health monitoring.
 	if d.fallbackMgr != nil {
-		if resultStatus == model.StatusCompleted {
+		switch resultStatus {
+		case model.StatusCompleted:
 			d.fallbackMgr.RecordSuccess(params.Reporter)
-		} else if resultStatus == model.StatusFailed {
+		case model.StatusFailed:
 			d.fallbackMgr.RecordFailure(params.Reporter)
 		}
 	}
@@ -554,7 +553,7 @@ func (a *API) resultWritePhaseB(params ResultWriteParams, resultID string, resul
 		recordedStatus := resultStatus
 		existing, hadExisting := state.TaskStates[params.TaskID]
 		planFailedOrCancelled := state.PlanStatus == model.PlanStatusFailed || state.PlanStatus == model.PlanStatusCancelled
-		if planFailedOrCancelled && !(hadExisting && model.IsTerminal(existing)) {
+		if planFailedOrCancelled && (!hadExisting || !model.IsTerminal(existing)) {
 			d.log(LogLevelWarn,
 				"result_write late_after_plan_terminal task=%s command=%s plan_status=%s reported=%s coerced=cancelled",
 				params.TaskID, params.CommandID, state.PlanStatus, resultStatus)
@@ -758,9 +757,9 @@ func computeRejectionDedupKey(params ResultWriteParams, queueLeaseEpoch int) str
 	h.Write([]byte{0})
 	h.Write([]byte(params.Reporter))
 	h.Write([]byte{0})
-	fmt.Fprintf(h, "%d", params.LeaseEpoch)
+	_, _ = fmt.Fprintf(h, "%d", params.LeaseEpoch)
 	h.Write([]byte{0})
-	fmt.Fprintf(h, "%d", queueLeaseEpoch)
+	_, _ = fmt.Fprintf(h, "%d", queueLeaseEpoch)
 	h.Write([]byte{0})
 	h.Write([]byte(strings.Join(params.Learnings, "\x01")))
 	h.Write([]byte{0})
@@ -1003,72 +1002,3 @@ func (d *Daemon) dispatchReviewIfEligible(params ResultWriteParams) {
 		params.TaskID, params.CommandID, task.BloomLevel)
 }
 
-// selectRolloutWinner determines the winning slot from a completed rollout group.
-// It uses FitnessScore-based mechanical selection first, and falls back to the
-// Judge only when there is a tie (Anti-Requirement §5-1, §5-2).
-func (d *Daemon) selectRolloutWinner(group *rollout.Group) (winnerIdx int, judgeUsed bool, err error) {
-	// Collect fitness scores for completed slots
-	var scores []model.FitnessScore
-	var slotIndices []int
-
-	for _, slot := range group.Slots {
-		if slot.Status == rollout.SlotCompleted {
-			// Default fitness for completed slots without detailed scores
-			scores = append(scores, model.FitnessScore{
-				Passed: true,
-			})
-			slotIndices = append(slotIndices, slot.Index)
-		}
-	}
-
-	if len(scores) == 0 {
-		// All slots failed
-		return -1, false, fmt.Errorf("all rollout slots failed for task %s", group.TaskID)
-	}
-
-	if len(scores) == 1 {
-		return slotIndices[0], false, nil
-	}
-
-	thresholds := model.DefaultFitnessThresholds()
-
-	// Build judge function if judge is available
-	var judgeFunc model.JudgeFunc
-	if d.judgeCaller != nil {
-		judgeFunc = func(ctx context.Context, fitnessScores []model.FitnessScore, metadata []map[string]string) (model.JudgeDecision, error) {
-			candidates := make([]judge.CandidateInfo, len(fitnessScores))
-			for i, fs := range fitnessScores {
-				candidates[i] = judge.CandidateInfo{
-					SlotIndex:   slotIndices[i],
-					FitnessDesc: fmt.Sprintf("passed=%v repair=%d diff_lines=%d", fs.Passed, fs.RepairCount, fs.DiffLinesChanged),
-				}
-				if metadata != nil && i < len(metadata) {
-					if wid, ok := metadata[i]["worker_id"]; ok {
-						candidates[i].WorkerID = wid
-					}
-				}
-			}
-			decision, judgeErr := d.judgeCaller.Evaluate(ctx, candidates)
-			if judgeErr != nil {
-				return model.JudgeDecision{}, judgeErr
-			}
-			return model.JudgeDecision{
-				WinnerIndex: decision.WinnerIndex,
-				Reasoning:   decision.Reasoning,
-				Model:       decision.Model,
-				Duration:    decision.Duration,
-			}, nil
-		}
-	}
-
-	winnerInScores, used, resolveErr := model.ResolveWinner(scores, thresholds, judgeFunc)
-	if resolveErr != nil {
-		d.log(LogLevelWarn, "rollout_judge_error task=%s error=%v (falling back to index 0)", group.TaskID, resolveErr)
-	}
-
-	if winnerInScores < 0 || winnerInScores >= len(slotIndices) {
-		return slotIndices[0], used, resolveErr
-	}
-
-	return slotIndices[winnerInScores], used, resolveErr
-}

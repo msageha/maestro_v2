@@ -889,12 +889,11 @@ func (qh *QueueHandler) stepDispatchOrRecovery(s *scanState) {
 // stepDependencyFailures — Step 1.5: Check pending/in-progress tasks for dependency failures.
 func (qh *QueueHandler) stepDependencyFailures(s *scanState) {
 	for queueFile, tq := range s.tasks {
-		dirty, interrupts := qh.checkPendingDependencyFailuresDeferred(tq, workerIDFromPath(queueFile))
+		dirty := qh.checkPendingDependencyFailuresDeferred(tq, workerIDFromPath(queueFile))
 		dirty2, interrupts2 := qh.checkInProgressDependencyFailuresDeferred(tq, workerIDFromPath(queueFile))
 		if dirty || dirty2 {
 			s.taskDirty[queueFile] = true
 		}
-		s.work.interrupts = append(s.work.interrupts, interrupts...)
 		s.work.interrupts = append(s.work.interrupts, interrupts2...)
 	}
 }
@@ -902,7 +901,7 @@ func (qh *QueueHandler) stepDependencyFailures(s *scanState) {
 // diagnosePhaseTasks collects tasks belonging to a completed phase and runs
 // plan.DiagnosePhase to produce a diagnosis prompt. Returns the formatted
 // prompt string, or "" if diagnosis yields no actionable information.
-func (qh *QueueHandler) diagnosePhaseTasks(commandID, phaseID, phaseName string, taskQueues map[string]*taskQueueEntry) string {
+func (qh *QueueHandler) diagnosePhaseTasks(commandID, phaseID, _ string, taskQueues map[string]*taskQueueEntry) string {
 	if !qh.dependencyResolver.HasStateReader() {
 		return ""
 	}

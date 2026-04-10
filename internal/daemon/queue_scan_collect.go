@@ -2,11 +2,8 @@ package daemon
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"time"
 
-	"github.com/msageha/maestro_v2/internal/daemon/rollout"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -125,14 +122,6 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 			ExpiresAt: safeStr(task.LeaseExpiresAt),
 		})
 		globalInFlight[workerID] = true
-		// Add newly dispatched task's paths to in-flight set so subsequent
-		// iterations in the same scan cycle also respect them.
-		if len(task.ExpectedPaths) > 0 {
-			inFlightPaths = append(inFlightPaths, inFlightPathEntry{
-				TaskID:        task.ID,
-				ExpectedPaths: task.ExpectedPaths,
-			})
-		}
 		dirty = true
 		break
 	}
@@ -284,9 +273,9 @@ func (qh *QueueHandler) autoExtendExpiredCommandLeases(cq *model.CommandQueue, d
 
 // checkPendingDependencyFailuresDeferred checks pending tasks for dependency failures.
 // Same as checkPendingDependencyFailures but compatible with deferred interrupt pattern.
-func (qh *QueueHandler) checkPendingDependencyFailuresDeferred(tq *taskQueueEntry, workerID string) (bool, []interruptItem) {
+func (qh *QueueHandler) checkPendingDependencyFailuresDeferred(tq *taskQueueEntry, workerID string) bool {
 	dirty := false
-	var cancelledResults []CancelledTaskResult
+	cancelledResults := make([]CancelledTaskResult, 0, len(tq.Queue.Tasks))
 
 	for i := range tq.Queue.Tasks {
 		task := &tq.Queue.Tasks[i]
@@ -325,14 +314,14 @@ func (qh *QueueHandler) checkPendingDependencyFailuresDeferred(tq *taskQueueEntr
 		qh.cancelHandler.WriteSyntheticResults(cancelledResults, workerID)
 		qh.scanCounters.TasksCancelled += len(cancelledResults)
 	}
-	return dirty, nil // pending tasks have no interrupt items
+	return dirty // pending tasks have no interrupt items
 }
 
 // checkInProgressDependencyFailuresDeferred checks in-progress tasks and defers interrupts.
 func (qh *QueueHandler) checkInProgressDependencyFailuresDeferred(tq *taskQueueEntry, workerID string) (bool, []interruptItem) {
 	dirty := false
-	var cancelledResults []CancelledTaskResult
-	var interrupts []interruptItem
+	cancelledResults := make([]CancelledTaskResult, 0, len(tq.Queue.Tasks))
+	interrupts := make([]interruptItem, 0, len(tq.Queue.Tasks))
 
 	for i := range tq.Queue.Tasks {
 		task := &tq.Queue.Tasks[i]
@@ -388,43 +377,4 @@ func (qh *QueueHandler) checkInProgressDependencyFailuresDeferred(tq *taskQueueE
 		qh.scanCounters.TasksCancelled += len(cancelledResults)
 	}
 	return dirty, interrupts
-}
-
-// checkRolloutEligibility adapts model.Task fields into rollout.ConditionInput
-// and evaluates whether the task qualifies for multi-rollout dispatch.
-func (qh *QueueHandler) checkRolloutEligibility(task *model.Task, cfg model.Config) rollout.EligibilityResult {
-	// Determine HasVerifyConfig by checking if verify.yaml exists and has commands
-	hasVerify := false
-	verifyPath := filepath.Join(qh.maestroDir, "verify.yaml")
-	if vc, err := model.LoadVerifyConfig(verifyPath); err == nil && vc != nil {
-		hasVerify = len(vc.Build)+len(vc.Test) > 0
-	} else if os.IsNotExist(err) {
-		// Also check the project root if available
-		if cfg.Maestro.ProjectRoot != "" {
-			altPath := filepath.Join(cfg.Maestro.ProjectRoot, ".maestro", "verify.yaml")
-			if vc2, err2 := model.LoadVerifyConfig(altPath); err2 == nil && vc2 != nil {
-				hasVerify = len(vc2.Build)+len(vc2.Test) > 0
-			}
-		}
-	}
-
-	failureCount := task.ExecutionRetries
-	if failureCount == 0 && task.Attempts > 1 {
-		failureCount = task.Attempts - 1
-	}
-
-	input := rollout.ConditionInput{
-		HasVerifyConfig:   hasVerify,
-		FailureCount:      failureCount,
-		BloomLevel:        task.BloomLevel,
-		ExpectedPathCount: len(task.ExpectedPaths),
-	}
-
-	thresholds := rollout.ConditionThresholds{
-		MinBloomLevel:    cfg.Rollout.EffectiveMinBloomLevel(),
-		MaxExpectedPaths: cfg.Rollout.EffectiveMaxExpectedPaths(),
-		MinFailureCount:  cfg.Rollout.EffectiveMinFailureCount(),
-	}
-
-	return rollout.CheckEligibility(input, thresholds)
 }

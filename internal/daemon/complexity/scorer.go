@@ -7,9 +7,13 @@ package complexity
 type Level string
 
 const (
-	LevelSimple   Level = "simple"
+	// LevelSimple indicates a task with minimal structural complexity.
+	LevelSimple Level = "simple"
+	// LevelStandard indicates a task with typical structural complexity.
 	LevelStandard Level = "standard"
-	LevelComplex  Level = "complex"
+	// LevelComplex indicates a task requiring deeper decomposition.
+	LevelComplex Level = "complex"
+	// LevelCritical indicates a task at the maximum complexity threshold.
 	LevelCritical Level = "critical"
 )
 
@@ -136,13 +140,13 @@ func (s *Scorer) classify(raw float64) Level {
 	}
 }
 
-// normalize maps a value to [0, 1] by dividing by max.
-// Values exceeding max are capped at 1.0.
-func normalize(value, max float64) float64 {
-	if max <= 0 {
+// normalize maps a value to [0, 1] by dividing by maxVal.
+// Values exceeding maxVal are capped at 1.0.
+func normalize(value, maxVal float64) float64 {
+	if maxVal <= 0 {
 		return 0
 	}
-	return clamp(value/max, 0, 1)
+	return clamp(value/maxVal, 0, 1)
 }
 
 // clamp restricts v to [lo, hi].

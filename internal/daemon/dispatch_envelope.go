@@ -84,7 +84,7 @@ func (disp *Dispatcher) buildSkillsSection(skillRefs []string, entityID, role st
 	}
 
 	policy := disp.config.Skills.EffectiveMissingRefPolicy()
-	var loaded []skill.SkillContent
+	loaded := make([]skill.Content, 0, len(refs))
 	seen := make(map[string]struct{})
 	for _, ref := range refs {
 		sc, err := skill.ReadSkillWithRole(skillsDir, ref, role)

@@ -35,6 +35,7 @@ type MutexMap struct {
 	order   orderChecker
 }
 
+// NewMutexMap creates a new MutexMap ready for use.
 func NewMutexMap() *MutexMap {
 	return &MutexMap{
 		mutexes: make(map[string]*refMutex),
@@ -124,41 +125,44 @@ func (m *MutexMap) Remove(key string) bool {
 	return true
 }
 
-// len_ returns the number of keys currently tracked in the map.
-func (m *MutexMap) len_() int {
+// len returns the number of keys currently tracked in the map.
+func (m *MutexMap) len() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.mutexes)
 }
 
+// FileLock implements an exclusive file lock using flock(2).
 type FileLock struct {
 	path string
 	file *os.File
 }
 
+// NewFileLock creates a FileLock for the given path. The lock is not held until TryLock is called.
 func NewFileLock(path string) *FileLock {
 	return &FileLock{path: path}
 }
 
+// TryLock acquires an exclusive non-blocking flock on the file. Returns an error if another process holds the lock.
 func (fl *FileLock) TryLock() error {
 	f, err := os.OpenFile(fl.path, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return fmt.Errorf("open lock file: %w", err)
 	}
 
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil { //nolint:gosec // uintptr->int conversion for fd is safe on all supported platforms
 		_ = f.Close()
 		return fmt.Errorf("acquire lock (another daemon may be running): %w", err)
 	}
 
 	// Write PID to lock file
 	if err := f.Truncate(0); err != nil {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:gosec // uintptr->int conversion for fd is safe on all supported platforms
 		_ = f.Close()
 		return fmt.Errorf("truncate lock file: %w", err)
 	}
 	if _, err := f.Seek(0, 0); err != nil {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:gosec // uintptr->int conversion for fd is safe on all supported platforms
 		_ = f.Close()
 		return fmt.Errorf("seek lock file: %w", err)
 	}
@@ -177,6 +181,7 @@ func (fl *FileLock) TryLock() error {
 	return nil
 }
 
+// Unlock releases the flock and closes the lock file. It is a no-op if the lock is not held.
 func (fl *FileLock) Unlock() error {
 	if fl.file == nil {
 		return nil
@@ -202,7 +207,7 @@ func (fl *FileLock) Unlock() error {
 // ReadLockPID reads the PID from a lock file without acquiring the lock.
 // Returns 0 if the file is unreadable or does not contain a valid PID.
 func ReadLockPID(path string) int {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is a lock file path from maestroDir; caller controls path
 	if err != nil {
 		return 0
 	}

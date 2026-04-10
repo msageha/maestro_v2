@@ -1,3 +1,4 @@
+// Package judge evaluates worker outputs and selects the best result for rollout groups.
 package judge
 
 import (

@@ -100,7 +100,7 @@ func runQueueWrite(args []string, warnOut io.Writer) error {
 		if commandID == "" || content == "" || sourceResultID == "" {
 			return &CLIError{Code: 1, Msg: "maestro queue write: required for type=notification: --command-id, --content, --source-result-id"}
 		}
-		if err := validate.ValidateID(commandID); err != nil {
+		if err := validate.ID(commandID); err != nil {
 			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: invalid --command-id: %v", err)}
 		}
 		params["command_id"] = commandID
@@ -116,7 +116,7 @@ func runQueueWrite(args []string, warnOut io.Writer) error {
 		if commandID == "" {
 			return &CLIError{Code: 1, Msg: "maestro queue write: required for type=cancel-request: --command-id"}
 		}
-		if err := validate.ValidateID(commandID); err != nil {
+		if err := validate.ID(commandID); err != nil {
 			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: invalid --command-id: %v", err)}
 		}
 		params["command_id"] = commandID
@@ -128,7 +128,7 @@ func runQueueWrite(args []string, warnOut io.Writer) error {
 		// daemon's queue_write(type=cancel-request) handler, but the
 		// queue-write surface is retained only for backward compatibility
 		// and emits a warning so operators migrate.
-		fmt.Fprintln(warnOut,
+		_, _ = fmt.Fprintln(warnOut,
 			"maestro queue write: WARNING: --type cancel-request is deprecated; use `maestro plan request-cancel --command-id <id>` instead")
 	default:
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: unknown type: %s\nusage: maestro queue write <target> --type <command|task|notification|cancel-request> [options]", writeType)}

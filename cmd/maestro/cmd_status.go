@@ -34,7 +34,7 @@ func runStatus(args []string) error {
 		return fmt.Errorf("maestro status: load config: %w", err)
 	}
 	// HIGH-16: Validate project name before use in tmux session name
-	if err := validate.ValidateProjectName(cfg.Project.Name); err != nil {
+	if err := validate.ProjectName(cfg.Project.Name); err != nil {
 		return fmt.Errorf("maestro status: invalid project name: %w", err)
 	}
 	tmux.SetSessionName("maestro-" + cfg.Project.Name)

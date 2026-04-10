@@ -83,7 +83,7 @@ func getAgentStatuses() []agentStatus {
 		return nil
 	}
 
-	var agents []agentStatus
+	agents := make([]agentStatus, 0, len(lines))
 	for _, line := range lines {
 		parts := strings.SplitN(line, "\t", 4)
 		if len(parts) < 4 {
@@ -119,7 +119,7 @@ func getQueueDepths(maestroDir string) []queueStatus {
 		return nil
 	}
 
-	var queues []queueStatus
+	queues := make([]queueStatus, 0, len(entries))
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
 			continue

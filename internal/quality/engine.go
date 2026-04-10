@@ -490,7 +490,7 @@ func toInt(v interface{}) int {
 	case string:
 		// Try to parse string as int
 		var i int
-		fmt.Sscanf(val, "%d", &i)
+		_, _ = fmt.Sscanf(val, "%d", &i)
 		return i
 	default:
 		return 0
@@ -528,7 +528,7 @@ type FeatureGateRule struct {
 // Evaluate determines the complexity level and returns the corresponding feature profile.
 // If task.complexity_level is explicitly set, it overrides the computed level (§C-8 req-4).
 // On any failure the Simple profile is used as fallback (§C-8 req-6).
-func (r *FeatureGateRule) Evaluate(ctx context.Context, condition *RuleCondition, evalCtx EvaluationContext) (bool, error) {
+func (r *FeatureGateRule) Evaluate(_ context.Context, _ *RuleCondition, evalCtx EvaluationContext) (bool, error) {
 	var level featuregate.ProfileLevel
 
 	// §C-8 req-4: explicit complexity level override

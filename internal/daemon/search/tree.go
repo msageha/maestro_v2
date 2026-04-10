@@ -1,3 +1,4 @@
+// Package search provides tree-based search utilities for the daemon.
 package search
 
 import (
@@ -11,10 +12,14 @@ import (
 type NodeState string
 
 const (
+	// NodeUnexpanded is the initial state of a newly created search node.
 	NodeUnexpanded NodeState = "unexpanded"
-	NodeExpanded   NodeState = "expanded"
-	NodeTerminal   NodeState = "terminal"
-	NodePruned     NodeState = "pruned"
+	// NodeExpanded indicates the node has been visited and children generated.
+	NodeExpanded NodeState = "expanded"
+	// NodeTerminal indicates the node represents a final outcome.
+	NodeTerminal NodeState = "terminal"
+	// NodePruned indicates the node was discarded during search.
+	NodePruned NodeState = "pruned"
 )
 
 // Node represents a single node in the MCTS search tree.

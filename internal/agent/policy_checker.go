@@ -37,7 +37,7 @@ func (pc *PolicyChecker) WriteHookScript() (string, error) {
 	}
 
 	scriptPath := pc.hookScriptPath()
-	if err := os.WriteFile(scriptPath, []byte(hookScript), 0750); err != nil {
+	if err := os.WriteFile(scriptPath, []byte(hookScript), 0750); err != nil { //nolint:gosec // hook script requires execute permission
 		return "", fmt.Errorf("write hook script: %w", err)
 	}
 

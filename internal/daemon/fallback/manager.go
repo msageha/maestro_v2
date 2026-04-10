@@ -1,3 +1,5 @@
+// Package fallback implements the degraded-mode fallback manager that limits
+// worker dispatch when consecutive failures exceed a configured threshold.
 package fallback
 
 import (
@@ -77,7 +79,7 @@ func (m *Manager) IsWorkerAllowed(workerID string) bool {
 // It resets the consecutive failure counter, updates lastSuccessAt,
 // and handles mode transitions from degraded to recovering and from
 // recovering to normal.
-func (m *Manager) RecordSuccess(workerID string) {
+func (m *Manager) RecordSuccess(_ string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -99,7 +101,7 @@ func (m *Manager) RecordSuccess(workerID string) {
 // RecordFailure records a failed operation for the given worker.
 // It increments the consecutive failure counter and handles mode
 // transitions from normal to degraded and from recovering to degraded.
-func (m *Manager) RecordFailure(workerID string) {
+func (m *Manager) RecordFailure(_ string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

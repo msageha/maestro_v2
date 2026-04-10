@@ -117,7 +117,7 @@ type QualityGateDaemon struct {
 // parentCtx is used as the base context; cancelling it cascades to the daemon's
 // internal context, allowing the quality gate to shut down with the parent daemon.
 // Pass context.Background() if no parent context is available.
-func NewQualityGateDaemon(
+func NewQualityGateDaemon( //nolint:revive // context.Context intentionally last: callers established before this rule was enforced
 	maestroDir string,
 	cfg model.Config,
 	lockMap *lock.MutexMap,
@@ -125,7 +125,7 @@ func NewQualityGateDaemon(
 	logLevel LogLevel,
 	parentCtx context.Context,
 ) *QualityGateDaemon {
-	ctx, cancel := context.WithCancel(parentCtx)
+	ctx, cancel := context.WithCancel(parentCtx) //nolint:gosec // cancel is stored in the struct and called on shutdown
 	return &QualityGateDaemon{
 		maestroDir:        maestroDir,
 		config:            cfg,

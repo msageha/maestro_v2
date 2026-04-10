@@ -16,8 +16,8 @@ import (
 // Action: set phase to timed_out, cascade cancel downstream pending phases, defer Planner notification.
 type R6FillTimeout struct{}
 
-
-
+// Apply detects phases with an expired fill deadline and transitions them to timed_out,
+// cascading cancellations to dependent downstream phases.
 func (R6FillTimeout) Apply(run *Run) Outcome {
 	var repairs []Repair
 	var notifications []DeferredNotification

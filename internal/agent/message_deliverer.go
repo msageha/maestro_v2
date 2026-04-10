@@ -202,7 +202,7 @@ func newClearConfirmationPoller(
 }
 
 // pollUntilTimeout polls the pane within the timeout window to confirm /clear was processed.
-// Returns (true, nil) if confirmed, (false, nil) if timed out, or (false, err) if ctx cancelled.
+// Returns (true, nil) if confirmed, (false, nil) if timed out, or (false, err) if ctx is cancelled.
 func (p *clearConfirmationPoller) pollUntilTimeout(ctx context.Context, timeout, pollInterval time.Duration) (bool, error) {
 	deadline := time.Now().Add(timeout)
 
@@ -211,11 +211,7 @@ func (p *clearConfirmationPoller) pollUntilTimeout(ctx context.Context, timeout,
 			return false, fmt.Errorf("clear_confirm poll cancelled: %w", err)
 		}
 
-		confirmed, err := p.poll()
-		if err != nil {
-			return false, err
-		}
-		if confirmed {
+		if p.poll() {
 			return true, nil
 		}
 	}
@@ -225,12 +221,12 @@ func (p *clearConfirmationPoller) pollUntilTimeout(ctx context.Context, timeout,
 
 // poll captures the current pane state and evaluates confirmation criteria.
 // Returns true if /clear has been confirmed processed.
-func (p *clearConfirmationPoller) poll() (bool, error) {
+func (p *clearConfirmationPoller) poll() bool {
 	content, err := p.paneIO.CapturePaneJoined(p.paneTarget, p.promptReadyLines)
 	if err != nil {
 		p.log(logLevelDebug, "clear_confirm poll capture error=%v", err)
 		p.reset()
-		return false, nil
+		return false
 	}
 
 	currentHash := contentHash(content)
@@ -240,7 +236,7 @@ func (p *clearConfirmationPoller) poll() (bool, error) {
 		p.log(logLevelDebug, "clear_confirm /clear text still visible")
 		p.stableCount = 0
 		p.prevPollHash = currentHash
-		return false, nil
+		return false
 	}
 
 	// Check 2 (mandatory when valid): hash must differ from pre-clear state.
@@ -256,7 +252,7 @@ func (p *clearConfirmationPoller) poll() (bool, error) {
 	}
 	p.prevPollHash = currentHash
 
-	return p.isConfirmed(), nil
+	return p.isConfirmed()
 }
 
 // isConfirmed evaluates whether the confirmation criteria are met.

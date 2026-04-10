@@ -10,7 +10,9 @@ import (
 type GateType string
 
 const (
-	GateTypePreTask           GateType = "pre_task"
+	// GateTypePreTask is evaluated before a task begins execution.
+	GateTypePreTask GateType = "pre_task"
+	// GateTypePostTask is evaluated after a task completes execution.
 	GateTypePostTask          GateType = "post_task"
 	GateTypePhaseTransition   GateType = "phase_transition"
 	GateTypeCommandValidation GateType = "command_validation"
@@ -20,7 +22,9 @@ const (
 type Severity string
 
 const (
-	SeverityInfo     Severity = "info"
+	// SeverityInfo is the lowest quality gate severity level.
+	SeverityInfo Severity = "info"
+	// SeverityWarning indicates a non-blocking concern that should be reviewed.
 	SeverityWarning  Severity = "warning"
 	SeverityError    Severity = "error"
 	SeverityCritical Severity = "critical"
@@ -30,7 +34,9 @@ const (
 type ActionType string
 
 const (
-	ActionAllow    ActionType = "allow"
+	// ActionAllow permits the operation to proceed without interruption.
+	ActionAllow ActionType = "allow"
+	// ActionLog records the gate result without blocking the operation.
 	ActionLog      ActionType = "log"
 	ActionBlock    ActionType = "block"
 	ActionWarn     ActionType = "warn"
@@ -41,18 +47,22 @@ const (
 type ConditionType string
 
 const (
+	// ConditionFieldValidation checks a specific field value against an operator and value.
 	ConditionFieldValidation ConditionType = "field_validation"
+	// ConditionAnd requires all sub-conditions to be true.
 	ConditionAnd             ConditionType = "and"
 	ConditionOr              ConditionType = "or"
 	ConditionNot             ConditionType = "not"
-	ConditionScript ConditionType = "script"
+	ConditionScript          ConditionType = "script"
 )
 
 // FieldOperator represents comparison operators for field validation
 type FieldOperator string
 
 const (
-	OpExists      FieldOperator = "exists"
+	// OpExists checks that a field is present in the evaluation context.
+	OpExists FieldOperator = "exists"
+	// OpNotExists checks that a field is absent from the evaluation context.
 	OpNotExists   FieldOperator = "not_exists"
 	OpEquals      FieldOperator = "equals"
 	OpNotEquals   FieldOperator = "not_equals"

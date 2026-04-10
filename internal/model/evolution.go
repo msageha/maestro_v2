@@ -4,8 +4,11 @@ package model
 type MutationStrategy string
 
 const (
-	MutationStrategyDiff  MutationStrategy = "diff"
-	MutationStrategyFull  MutationStrategy = "full"
+	// MutationStrategyDiff applies mutations as diffs between versions.
+	MutationStrategyDiff MutationStrategy = "diff"
+	// MutationStrategyFull replaces the entire implementation as a mutation.
+	MutationStrategyFull MutationStrategy = "full"
+	// MutationStrategyCross creates mutations by combining multiple parent versions.
 	MutationStrategyCross MutationStrategy = "cross"
 )
 

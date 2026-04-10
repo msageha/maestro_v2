@@ -20,19 +20,27 @@ import (
 type ExecMode string
 
 const (
-	ModeDeliver   ExecMode = "deliver"    // Direct delivery with busy check (Planner/Orchestrator)
-	ModeWithClear ExecMode = "with_clear" // /clear + delivery (Workers)
-	ModeInterrupt ExecMode = "interrupt"  // Interrupt running task
-	ModeIsBusy    ExecMode = "is_busy"    // Query busy state only
-	ModeClear     ExecMode = "clear"      // Context reset without delivery
+	// ModeDeliver sends a message with busy check (used by Planner/Orchestrator).
+	ModeDeliver ExecMode = "deliver"
+	// ModeWithClear sends /clear before delivery (used by Workers).
+	ModeWithClear ExecMode = "with_clear"
+	// ModeInterrupt interrupts a running task.
+	ModeInterrupt ExecMode = "interrupt"
+	// ModeIsBusy queries the busy state without delivering.
+	ModeIsBusy ExecMode = "is_busy"
+	// ModeClear resets context without delivery.
+	ModeClear ExecMode = "clear"
 )
 
 // busyVerdict is the result of busy detection.
 type busyVerdict int
 
 const (
+	// VerdictIdle indicates the agent is not busy.
 	VerdictIdle busyVerdict = iota
+	// VerdictBusy indicates the agent is currently processing.
 	VerdictBusy
+	// VerdictUndecided indicates the busy state could not be determined.
 	VerdictUndecided
 )
 
@@ -145,7 +153,7 @@ type Executor struct {
 // NewExecutor creates a new Executor that logs to .maestro/logs/agent_executor.log.
 func NewExecutor(maestroDir string, watcherCfg model.WatcherConfig, logLevel string) (*Executor, error) {
 	logPath := filepath.Join(maestroDir, "logs", "agent_executor.log")
-	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("open log file %s: %w", logPath, err)
 	}

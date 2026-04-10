@@ -77,8 +77,8 @@ func (c *Controller) TryAcquire(op OpType) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	max := c.maxFor(op)
-	if c.slots[op] >= max {
+	limit := c.maxFor(op)
+	if c.slots[op] >= limit {
 		return false
 	}
 	c.slots[op]++

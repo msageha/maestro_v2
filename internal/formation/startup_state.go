@@ -46,7 +46,7 @@ func resetFormation(maestroDir string) error {
 
 	// Reset state/continuous.yaml
 	continuousPath := filepath.Join(maestroDir, "state", "continuous.yaml")
-	if err := os.MkdirAll(filepath.Dir(continuousPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(continuousPath), 0750); err != nil {
 		return err
 	}
 	if err := yamlutil.AtomicWrite(continuousPath, &model.Continuous{
@@ -103,7 +103,7 @@ func startupRecovery(maestroDir string) error {
 		"dead_letters", "quarantine", "locks",
 	}
 	for _, d := range dirs {
-		if err := os.MkdirAll(filepath.Join(maestroDir, d), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(maestroDir, d), 0750); err != nil {
 			return fmt.Errorf("ensure dir %s: %w", d, err)
 		}
 	}
@@ -214,7 +214,7 @@ func inferFileType(dir, filename string) string {
 // activateContinuousMode sets state/continuous.yaml status to running.
 func activateContinuousMode(maestroDir string, cfg model.Config) error {
 	continuousPath := filepath.Join(maestroDir, "state", "continuous.yaml")
-	if err := os.MkdirAll(filepath.Dir(continuousPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(continuousPath), 0750); err != nil {
 		return err
 	}
 

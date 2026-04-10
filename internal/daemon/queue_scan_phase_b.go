@@ -47,7 +47,7 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 	// H4: discard the worker's uncommitted worktree changes ONLY after the
 	// tmux interrupt has been delivered, so the worker process is no longer
 	// holding files in its working tree when the reset runs.
-	forEachUntilCanceled(ctx, pa.work.interrupts, func(item interruptItem) {
+	_ = forEachUntilCanceled(ctx, pa.work.interrupts, func(item interruptItem) {
 		if err := qh.cancelHandler.interruptAgent(item.WorkerID, item.TaskID, item.CommandID, item.Epoch); err != nil {
 			qh.log(LogLevelWarn, "phase_b_interrupt worker=%s task=%s error=%v", item.WorkerID, item.TaskID, err)
 		}
@@ -60,7 +60,7 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 	})
 
 	// 2. Execute busy probes for expired leases
-	forEachUntilCanceled(ctx, pa.work.busyChecks, func(item busyCheckItem) {
+	_ = forEachUntilCanceled(ctx, pa.work.busyChecks, func(item busyCheckItem) {
 		busy, undecided := qh.isAgentBusy(ctx, item.AgentID)
 		result.busyChecks = append(result.busyChecks, busyCheckResult{
 			Item:      item,
@@ -70,7 +70,7 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 	})
 
 	// 3. Execute dispatches
-	forEachUntilCanceled(ctx, pa.work.dispatches, func(item dispatchItem) {
+	_ = forEachUntilCanceled(ctx, pa.work.dispatches, func(item dispatchItem) {
 		var err error
 		switch item.Kind {
 		case "command":
@@ -88,7 +88,7 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 	})
 
 	// 4. Execute signal deliveries
-	forEachUntilCanceled(ctx, pa.work.signals, func(item signalDeliveryItem) {
+	_ = forEachUntilCanceled(ctx, pa.work.signals, func(item signalDeliveryItem) {
 		err := qh.deliverPlannerSignal(ctx, item.CommandID, item.Message)
 		result.signals = append(result.signals, signalDeliveryResult{
 			Item:    item,
@@ -123,12 +123,12 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 	}
 
 	// 5. Execute agent clears (fire-and-forget)
-	forEachUntilCanceled(ctx, pa.work.clears, func(agentID string) {
+	_ = forEachUntilCanceled(ctx, pa.work.clears, func(agentID string) {
 		qh.clearAgent(ctx, agentID)
 	})
 
 	// 6. Execute worktree merges (slow git I/O, outside scanMu.Lock)
-	forEachUntilCanceled(ctx, pa.work.worktreeMerges, func(item worktreeMergeItem) {
+	_ = forEachUntilCanceled(ctx, pa.work.worktreeMerges, func(item worktreeMergeItem) {
 		mr := worktreeMergeResult{Item: item}
 
 		// First commit worker changes, tracking failures

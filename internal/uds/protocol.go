@@ -132,7 +132,7 @@ func writeFrame(conn net.Conn, v any) error {
 		return fmt.Errorf("frame too large: %d bytes exceeds %d byte limit", len(data), maxFrameSize)
 	}
 
-	length := uint32(len(data))
+	length := uint32(len(data)) //nolint:gosec // len(data) is bounded by maxFrameSize check above
 	if err := binary.Write(conn, binary.BigEndian, length); err != nil {
 		return fmt.Errorf("write frame length: %w", err)
 	}

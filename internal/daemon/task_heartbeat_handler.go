@@ -111,10 +111,7 @@ func (h *TaskHeartbeatHandler) Handle(params json.RawMessage) *uds.Response {
 	defer h.scanMu.RUnlock()
 
 	// Acquire file lock for the queue file
-	unlock, err := h.acquireFileLock(queueFile)
-	if err != nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("acquire file lock: %v", err))
-	}
+	unlock := h.acquireFileLock(queueFile)
 	defer unlock()
 
 	// Read queue file
@@ -207,7 +204,7 @@ func (h *TaskHeartbeatHandler) Handle(params json.RawMessage) *uds.Response {
 }
 
 // acquireFileLock acquires a file-scoped lock and returns an unlock function.
-func (h *TaskHeartbeatHandler) acquireFileLock(file string) (func(), error) {
+func (h *TaskHeartbeatHandler) acquireFileLock(file string) func() {
 	// Extract worker ID from file path (queue/worker.yaml -> worker)
 	workerID := filepath.Base(file)
 	if idx := strings.LastIndex(workerID, ".yaml"); idx > 0 {
@@ -216,7 +213,7 @@ func (h *TaskHeartbeatHandler) acquireFileLock(file string) (func(), error) {
 	// Use consistent lock key format: "queue:{workerID}"
 	key := "queue:" + workerID
 	h.lockMap.Lock(key)
-	return func() { h.lockMap.Unlock(key) }, nil
+	return func() { h.lockMap.Unlock(key) }
 }
 
 func (h *TaskHeartbeatHandler) log(level LogLevel, format string, args ...interface{}) {

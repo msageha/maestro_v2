@@ -73,7 +73,7 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 	if dirtyErr != nil {
 		now := wm.clock.Now().UTC().Format(time.RFC3339)
 		if tErr := wm.recordMergeFailure(state, "status_check_failed", now); tErr != nil {
-			return nil, fmt.Errorf("check integration worktree status: %w (transition error: %v)", dirtyErr, tErr)
+			return nil, fmt.Errorf("check integration worktree status: %w (transition error: %s)", dirtyErr, tErr.Error())
 		}
 		state.UpdatedAt = now
 		_ = wm.saveState(commandID, state)
@@ -82,7 +82,7 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 	if strings.TrimSpace(dirtyOut) != "" {
 		now := wm.clock.Now().UTC().Format(time.RFC3339)
 		if tErr := wm.recordMergeFailure(state, "dirty_worktree", now); tErr != nil {
-			return nil, fmt.Errorf("integration worktree has uncommitted changes (transition error: %v)", tErr)
+			return nil, fmt.Errorf("integration worktree has uncommitted changes (transition error: %s)", tErr.Error())
 		}
 		state.UpdatedAt = now
 		_ = wm.saveState(commandID, state)

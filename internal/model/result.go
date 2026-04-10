@@ -83,6 +83,7 @@ type CommandResult struct {
 	CreatedAt            string              `yaml:"created_at"`
 }
 
+// CommandResultTask holds per-task outcome information within a command result.
 type CommandResultTask struct {
 	TaskID  string `yaml:"task_id"`
 	Worker  string `yaml:"worker"`
@@ -105,18 +106,29 @@ type Notifiable interface {
 
 // --- TaskResult implements Notifiable ---
 
-func (r *TaskResult) GetResultID() string              { return r.ID }
-func (r *TaskResult) IsNotified() bool                 { return r.Notified }
-func (r *TaskResult) GetNotifyAttempts() int            { return r.NotifyAttempts }
-func (r *TaskResult) GetNotifyLeaseOwner() *string      { return r.NotifyLeaseOwner }
-func (r *TaskResult) GetNotifyLeaseExpiresAt() *string  { return r.NotifyLeaseExpiresAt }
+// GetResultID returns the unique identifier of the task result.
+func (r *TaskResult) GetResultID() string { return r.ID }
 
+// IsNotified reports whether the notification for this result has been sent.
+func (r *TaskResult) IsNotified() bool { return r.Notified }
+
+// GetNotifyAttempts returns the number of notification delivery attempts made.
+func (r *TaskResult) GetNotifyAttempts() int { return r.NotifyAttempts }
+
+// GetNotifyLeaseOwner returns the owner of the current notification lease, or nil.
+func (r *TaskResult) GetNotifyLeaseOwner() *string { return r.NotifyLeaseOwner }
+
+// GetNotifyLeaseExpiresAt returns the expiry time of the current notification lease, or nil.
+func (r *TaskResult) GetNotifyLeaseExpiresAt() *string { return r.NotifyLeaseExpiresAt }
+
+// AcquireLease sets the notification lease owner and expiry, incrementing the attempt counter.
 func (r *TaskResult) AcquireLease(owner, expiresAt string) {
 	r.NotifyLeaseOwner = &owner
 	r.NotifyLeaseExpiresAt = &expiresAt
 	r.NotifyAttempts++
 }
 
+// MarkNotified marks the result as successfully notified at the given timestamp.
 func (r *TaskResult) MarkNotified(at string) {
 	r.Notified = true
 	r.NotifiedAt = &at
@@ -124,6 +136,7 @@ func (r *TaskResult) MarkNotified(at string) {
 	r.NotifyLeaseExpiresAt = nil
 }
 
+// MarkNotifyFailure records a failed notification attempt and sets the backoff lease.
 func (r *TaskResult) MarkNotifyFailure(errMsg, backoffOwner, backoffExpiresAt string) {
 	r.NotifyLastError = &errMsg
 	r.NotifyLeaseOwner = &backoffOwner
@@ -132,18 +145,29 @@ func (r *TaskResult) MarkNotifyFailure(errMsg, backoffOwner, backoffExpiresAt st
 
 // --- CommandResult implements Notifiable ---
 
-func (r *CommandResult) GetResultID() string              { return r.ID }
-func (r *CommandResult) IsNotified() bool                 { return r.Notified }
-func (r *CommandResult) GetNotifyAttempts() int            { return r.NotifyAttempts }
-func (r *CommandResult) GetNotifyLeaseOwner() *string      { return r.NotifyLeaseOwner }
-func (r *CommandResult) GetNotifyLeaseExpiresAt() *string  { return r.NotifyLeaseExpiresAt }
+// GetResultID returns the unique identifier of the command result.
+func (r *CommandResult) GetResultID() string { return r.ID }
 
+// IsNotified reports whether the notification for this result has been sent.
+func (r *CommandResult) IsNotified() bool { return r.Notified }
+
+// GetNotifyAttempts returns the number of notification delivery attempts made.
+func (r *CommandResult) GetNotifyAttempts() int { return r.NotifyAttempts }
+
+// GetNotifyLeaseOwner returns the owner of the current notification lease, or nil.
+func (r *CommandResult) GetNotifyLeaseOwner() *string { return r.NotifyLeaseOwner }
+
+// GetNotifyLeaseExpiresAt returns the expiry time of the current notification lease, or nil.
+func (r *CommandResult) GetNotifyLeaseExpiresAt() *string { return r.NotifyLeaseExpiresAt }
+
+// AcquireLease sets the notification lease owner and expiry, incrementing the attempt counter.
 func (r *CommandResult) AcquireLease(owner, expiresAt string) {
 	r.NotifyLeaseOwner = &owner
 	r.NotifyLeaseExpiresAt = &expiresAt
 	r.NotifyAttempts++
 }
 
+// MarkNotified marks the result as successfully notified at the given timestamp.
 func (r *CommandResult) MarkNotified(at string) {
 	r.Notified = true
 	r.NotifiedAt = &at
@@ -151,6 +175,7 @@ func (r *CommandResult) MarkNotified(at string) {
 	r.NotifyLeaseExpiresAt = nil
 }
 
+// MarkNotifyFailure records a failed notification attempt and sets the backoff lease.
 func (r *CommandResult) MarkNotifyFailure(errMsg, backoffOwner, backoffExpiresAt string) {
 	r.NotifyLastError = &errMsg
 	r.NotifyLeaseOwner = &backoffOwner
