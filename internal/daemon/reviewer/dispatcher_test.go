@@ -7,17 +7,16 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
-
-func intPtr(v int) *int { return &v }
 
 func defaultConfig() model.ReviewConfig {
 	return model.ReviewConfig{
 		Enabled:              true,
 		Models:               []string{"gpt-4"},
-		MinBloomLevel:        intPtr(2),
-		MaxConcurrentReviews: intPtr(2),
-		TimeoutSec:           intPtr(5),
+		MinBloomLevel:        ptr.Int(2),
+		MaxConcurrentReviews: ptr.Int(2),
+		TimeoutSec:           ptr.Int(5),
 	}
 }
 
@@ -63,7 +62,7 @@ func TestShouldReview_Disabled(t *testing.T) {
 
 func TestShouldReview_ConcurrentLimitReached(t *testing.T) {
 	cfg := defaultConfig()
-	cfg.MaxConcurrentReviews = intPtr(1)
+	cfg.MaxConcurrentReviews = ptr.Int(1)
 	d := NewReviewDispatcher(cfg)
 
 	// Simulate one active review.
@@ -78,7 +77,7 @@ func TestShouldReview_ConcurrentLimitReached(t *testing.T) {
 
 func TestShouldReview_ConcurrentLimitNotReached(t *testing.T) {
 	cfg := defaultConfig()
-	cfg.MaxConcurrentReviews = intPtr(2)
+	cfg.MaxConcurrentReviews = ptr.Int(2)
 	d := NewReviewDispatcher(cfg)
 
 	d.mu.Lock()
@@ -149,7 +148,7 @@ func TestDispatch_Disabled(t *testing.T) {
 
 func TestDispatch_Timeout_Skipped(t *testing.T) {
 	cfg := defaultConfig()
-	cfg.TimeoutSec = intPtr(0) // 0-second timeout → immediate expiry
+	cfg.TimeoutSec = ptr.Int(0) // 0-second timeout → immediate expiry
 
 	d := NewReviewDispatcher(cfg)
 	// Use an already-cancelled context to guarantee timeout.
@@ -193,7 +192,7 @@ func TestDispatch_ActiveReviews_Decremented(t *testing.T) {
 
 func TestDispatch_MultipleReviews(t *testing.T) {
 	cfg := defaultConfig()
-	cfg.MaxConcurrentReviews = intPtr(3)
+	cfg.MaxConcurrentReviews = ptr.Int(3)
 	d := NewReviewDispatcher(cfg)
 	ctx := context.Background()
 

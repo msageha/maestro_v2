@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 func TestIsFenceStale(t *testing.T) {
@@ -58,7 +59,7 @@ func TestIsFenceStale(t *testing.T) {
 			name:              "expires_at_mismatch",
 			status:            model.StatusInProgress,
 			leaseEpoch:        3,
-			leaseExpiresAt:    strPtr("2025-01-01T00:20:00Z"),
+			leaseExpiresAt:    ptr.String("2025-01-01T00:20:00Z"),
 			expectedEpoch:     3,
 			expectedExpiresAt: expires,
 			want:              true,
@@ -125,4 +126,3 @@ func TestIsMaxInProgressTimeout(t *testing.T) {
 	}
 }
 
-func strPtr(s string) *string { return &s }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 // mockStateReader implements core.StateReader for testing.
@@ -291,7 +292,7 @@ func TestCheckProgressTimeout_NilUsesDefault(t *testing.T) {
 	cb := NewHandler(cfg, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
 	reader := &mockCircuitBreakerStateReader{
 		cbStates: map[string]*model.CircuitBreakerState{
-			"cmd1": {LastProgressAt: strPtr(time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339))},
+			"cmd1": {LastProgressAt: ptr.String(time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339))},
 		},
 	}
 	cb.SetStateReader(reader)
@@ -306,7 +307,7 @@ func TestCheckProgressTimeout_NotExpired(t *testing.T) {
 	cb := newTestHandler(true, 3, 30)
 	reader := &mockCircuitBreakerStateReader{
 		cbStates: map[string]*model.CircuitBreakerState{
-			"cmd1": {LastProgressAt: strPtr(time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339))},
+			"cmd1": {LastProgressAt: ptr.String(time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339))},
 		},
 	}
 	cb.SetStateReader(reader)
@@ -321,7 +322,7 @@ func TestCheckProgressTimeout_Expired(t *testing.T) {
 	cb := newTestHandler(true, 3, 30)
 	reader := &mockCircuitBreakerStateReader{
 		cbStates: map[string]*model.CircuitBreakerState{
-			"cmd1": {LastProgressAt: strPtr(time.Now().Add(-31 * time.Minute).UTC().Format(time.RFC3339))},
+			"cmd1": {LastProgressAt: ptr.String(time.Now().Add(-31 * time.Minute).UTC().Format(time.RFC3339))},
 		},
 	}
 	cb.SetStateReader(reader)
@@ -356,7 +357,7 @@ func TestCheckProgressTimeout_AlreadyTripped(t *testing.T) {
 		cbStates: map[string]*model.CircuitBreakerState{
 			"cmd1": {
 				Tripped:        true,
-				LastProgressAt: strPtr(time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)),
+				LastProgressAt: ptr.String(time.Now().Add(-1 * time.Hour).UTC().Format(time.RFC3339)),
 			},
 		},
 	}
@@ -403,5 +404,3 @@ func TestConfigEffectiveProgressTimeoutMinutes(t *testing.T) {
 		}
 	}
 }
-
-func strPtr(s string) *string { return &s }

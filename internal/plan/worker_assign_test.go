@@ -6,16 +6,13 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/daemon/bandit"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 // newTestBanditSelector creates a bandit.Selector for testing.
 func newTestBanditSelector(cfg model.BanditConfig) BanditSelector {
 	return bandit.NewSelector(cfg.EffectiveExplorationCoeff())
 }
-
-func boolPtrPlan(v bool) *bool       { return &v }
-func float64Ptr(v float64) *float64   { return &v }
-func intPtr(v int) *int               { return &v }
 
 func TestGetModelForBloomLevel(t *testing.T) {
 	tests := []struct {
@@ -261,7 +258,7 @@ func TestAssignWorkers_BoostMode(t *testing.T) {
 
 func TestAdaptiveModelSelector_Disabled(t *testing.T) {
 	cfg := model.BanditConfig{
-		Enabled: boolPtrPlan(false),
+		Enabled: ptr.Bool(false),
 	}
 	sel := NewAdaptiveModelSelector(cfg, nil)
 
@@ -278,10 +275,10 @@ func TestAdaptiveModelSelector_Disabled(t *testing.T) {
 
 func TestAdaptiveModelSelector_InsufficientData_TraceRequirement(t *testing.T) {
 	cfg := model.BanditConfig{
-		Enabled:              boolPtrPlan(true),
-		ExplorationCoeff:     float64Ptr(1.41),
-		MinSamplesBeforeUse:  intPtr(2),
-		TraceDataRequirement: intPtr(10), // require 10 total pulls
+		Enabled:              ptr.Bool(true),
+		ExplorationCoeff:     ptr.Float64(1.41),
+		MinSamplesBeforeUse:  ptr.Int(2),
+		TraceDataRequirement: ptr.Int(10), // require 10 total pulls
 	}
 	sel := NewAdaptiveModelSelector(cfg, newTestBanditSelector(cfg))
 
@@ -299,10 +296,10 @@ func TestAdaptiveModelSelector_InsufficientData_TraceRequirement(t *testing.T) {
 
 func TestAdaptiveModelSelector_InsufficientData_MinSamples(t *testing.T) {
 	cfg := model.BanditConfig{
-		Enabled:              boolPtrPlan(true),
-		ExplorationCoeff:     float64Ptr(1.41),
-		MinSamplesBeforeUse:  intPtr(5),  // each arm needs 5
-		TraceDataRequirement: intPtr(3),  // total trace easily met
+		Enabled:              ptr.Bool(true),
+		ExplorationCoeff:     ptr.Float64(1.41),
+		MinSamplesBeforeUse:  ptr.Int(5),  // each arm needs 5
+		TraceDataRequirement: ptr.Int(3),  // total trace easily met
 	}
 	sel := NewAdaptiveModelSelector(cfg, newTestBanditSelector(cfg))
 
@@ -320,10 +317,10 @@ func TestAdaptiveModelSelector_InsufficientData_MinSamples(t *testing.T) {
 
 func TestAdaptiveModelSelector_SufficientData_BanditSelection(t *testing.T) {
 	cfg := model.BanditConfig{
-		Enabled:              boolPtrPlan(true),
-		ExplorationCoeff:     float64Ptr(0.0), // zero exploration → pure exploitation
-		MinSamplesBeforeUse:  intPtr(2),
-		TraceDataRequirement: intPtr(6),
+		Enabled:              ptr.Bool(true),
+		ExplorationCoeff:     ptr.Float64(0.0), // zero exploration → pure exploitation
+		MinSamplesBeforeUse:  ptr.Int(2),
+		TraceDataRequirement: ptr.Int(6),
 	}
 	sel := NewAdaptiveModelSelector(cfg, newTestBanditSelector(cfg))
 
@@ -344,8 +341,8 @@ func TestAdaptiveModelSelector_SufficientData_BanditSelection(t *testing.T) {
 
 func TestAdaptiveModelSelector_RecordResult(t *testing.T) {
 	cfg := model.BanditConfig{
-		Enabled:          boolPtrPlan(true),
-		ExplorationCoeff: float64Ptr(1.41),
+		Enabled:          ptr.Bool(true),
+		ExplorationCoeff: ptr.Float64(1.41),
 	}
 	sel := NewAdaptiveModelSelector(cfg, newTestBanditSelector(cfg))
 
@@ -370,7 +367,7 @@ func TestAdaptiveModelSelector_RecordResult(t *testing.T) {
 
 func TestAdaptiveModelSelector_RecordResult_Disabled(t *testing.T) {
 	cfg := model.BanditConfig{
-		Enabled: boolPtrPlan(false),
+		Enabled: ptr.Bool(false),
 	}
 	sel := NewAdaptiveModelSelector(cfg, nil)
 
@@ -383,10 +380,10 @@ func TestAdaptiveModelSelector_RecordResult_Disabled(t *testing.T) {
 
 func TestAdaptiveModelSelector_FallbackOnError(t *testing.T) {
 	cfg := model.BanditConfig{
-		Enabled:              boolPtrPlan(true),
-		ExplorationCoeff:     float64Ptr(1.41),
-		MinSamplesBeforeUse:  intPtr(0),
-		TraceDataRequirement: intPtr(0),
+		Enabled:              ptr.Bool(true),
+		ExplorationCoeff:     ptr.Float64(1.41),
+		MinSamplesBeforeUse:  ptr.Int(0),
+		TraceDataRequirement: ptr.Int(0),
 	}
 	sel := NewAdaptiveModelSelector(cfg, newTestBanditSelector(cfg))
 
