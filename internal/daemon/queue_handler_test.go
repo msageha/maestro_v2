@@ -44,13 +44,13 @@ func newTestExecutorProvider(maestroDir string, cfg model.Config) *ExecutorProvi
 	)
 }
 
-func newTestQueueHandler(maestroDir string) *QueueHandler {
+func newTestQueueHandler(maestroDir string, opts ...QueueHandlerOption) *QueueHandler {
 	cfg := model.Config{
 		Agents:  model.AgentsConfig{Workers: model.WorkerConfig{Count: 2}},
 		Watcher: model.WatcherConfig{DispatchLeaseSec: 300},
 		Queue:   model.QueueConfig{PriorityAgingSec: 60},
 	}
-	qh := NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	qh := NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, opts...)
 	// Use mock executor to avoid tmux dependency
 	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil

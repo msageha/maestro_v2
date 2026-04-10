@@ -35,6 +35,28 @@ type BusyCheckerFunc func(agentID string) bool
 // IsBusy calls the underlying function to check whether the given agent is busy.
 func (f BusyCheckerFunc) IsBusy(agentID string) bool { return f(agentID) }
 
+// QueueHandlerOption configures optional QueueHandler behaviour.
+// Used primarily in tests to inject stubs for busy-checking and worktree-stall marking.
+type QueueHandlerOption func(*QueueHandler)
+
+// WithBusyChecker injects a custom busy-check implementation, replacing the
+// default executor-based probe.  Typical usage in tests:
+//
+//	NewQueueHandler(..., WithBusyChecker(BusyCheckerFunc(func(id string) bool { return false })))
+func WithBusyChecker(fn BusyCheckerFunc) QueueHandlerOption {
+	return func(q *QueueHandler) {
+		q.busyCheckFn = func(_ context.Context, agentID string) (bool, bool) {
+			return fn.IsBusy(agentID), false
+		}
+	}
+}
+
+// WithWorktreeStallMarkFn injects a custom worktree-stall marking function,
+// replacing the default worktreeManager.MarkIntegrationStallSignaled.
+func WithWorktreeStallMarkFn(fn func(commandID string) error) QueueHandlerOption {
+	return func(q *QueueHandler) { q.worktreeStallMarkFn = fn }
+}
+
 // QueueHandler orchestrates fsnotify event routing and periodic scan execution.
 type QueueHandler struct {
 	maestroDir string
@@ -79,9 +101,10 @@ type QueueHandler struct {
 	// daemonPID for lease_owner format "daemon:{pid}" per spec §5.8.1.
 	daemonPID int
 
-	// busyChecker overrides the default executor-based busy probe.
-	// Used in tests to stub agent busy state. When nil, the real executor probe is used.
-	busyChecker BusyChecker
+	// busyCheckFn probes whether an agent is currently busy.
+	// Default: executor-based probe (set in NewQueueHandler).
+	// Tests inject a stub via WithBusyChecker.
+	busyCheckFn func(ctx context.Context, agentID string) (busy, undecided bool)
 
 	// phaseDiagnoser produces diagnosis prompts for completed phases.
 	// Injected via SetPhaseDiagnoser; nil means diagnosis is skipped.
@@ -100,7 +123,8 @@ type QueueHandler struct {
 // NewQueueHandler creates a new QueueHandler with all sub-modules.
 // A single shared ExecutorProvider is created and injected into all handlers
 // that need executor access (Dispatcher, ResultHandler, CancelHandler).
-func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel) *QueueHandler {
+// Optional QueueHandlerOption values override test-injectable fields.
+func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel, opts ...QueueHandlerOption) *QueueHandler {
 	clock := RealClock{}
 	factory := ExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 		return agent.NewExecutor(dir, wcfg, level)
@@ -136,6 +160,23 @@ func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap
 		lockMap:             lockMap,
 		daemonPID:           os.Getpid(),
 	}
+
+	// Apply options before setting defaults so that callers can override.
+	for _, opt := range opts {
+		opt(qh)
+	}
+
+	// Default busyCheckFn: executor-based probe (production path).
+	if qh.busyCheckFn == nil {
+		qh.busyCheckFn = qh.defaultBusyCheck
+	}
+	// Default worktreeStallMarkFn: delegates to worktreeManager at call time.
+	if qh.worktreeStallMarkFn == nil {
+		qh.worktreeStallMarkFn = func(commandID string) error {
+			return qh.worktreeManager.MarkIntegrationStallSignaled(commandID)
+		}
+	}
+
 	qh.debounce = NewDebounceController(cfg.Watcher.DebounceSec, dl, qh.PeriodicScanWithContext)
 	return qh
 }

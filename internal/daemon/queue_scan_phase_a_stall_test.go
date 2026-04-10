@@ -141,7 +141,7 @@ func TestStepWorktreeStallDetection_DeliveryFailureMarksIntegrationFailed(t *tes
 	qh, s := stallTestSetup(t, past, model.IntegrationStatusCreated, false)
 
 	// Inject a failing mark function to simulate signal persistence failure.
-	qh.worktreeStallMarkFn = func(string) error {
+	qh.worktreeStallMarkFn = func(commandID string) error {
 		return errors.New("inject: cannot persist stall flag")
 	}
 

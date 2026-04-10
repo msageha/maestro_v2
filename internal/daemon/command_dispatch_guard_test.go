@@ -248,8 +248,8 @@ func TestTaskLeaseExpiry_ReleaseToPending(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
-	// Override busyChecker to return false (agent not busy)
-	qh.busyChecker = BusyCheckerFunc(func(agentID string) bool { return false })
+	// Override busyCheckFn to return false (agent not busy)
+	WithBusyChecker(BusyCheckerFunc(func(agentID string) bool { return false }))(qh)
 
 	expiredTime := time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)
 	owner := "worker1"

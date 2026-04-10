@@ -23,13 +23,13 @@ func newBoundaryTestDaemon(t *testing.T) *Daemon {
 	d := newTestDaemon(t)
 	lockMap := lock.NewMutexMap()
 	reader := &integrationStateReader{maestroDir: d.maestroDir, lockMap: lockMap}
-	d.handler = NewQueueHandler(d.maestroDir, d.config, lockMap, d.logger, d.logLevel)
+	d.handler = NewQueueHandler(d.maestroDir, d.config, lockMap, d.logger, d.logLevel,
+		WithBusyChecker(BusyCheckerFunc(func(string) bool { return false })))
 	d.handler.SetStateReader(reader)
 	d.handler.SetCanComplete(testCanComplete)
 	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
 	})
-	d.handler.busyChecker = BusyCheckerFunc(func(string) bool { return false })
 	for _, sub := range []string{"dead_letters", "quarantine", "state"} {
 		os.MkdirAll(filepath.Join(d.maestroDir, sub), 0755)
 	}
@@ -412,13 +412,13 @@ func TestTaskLeaseExpiry_BusyAgent_MaxTimeout(t *testing.T) {
 	// Recreate handler with updated config
 	lockMap := d.handler.lockMap
 	reader := &integrationStateReader{maestroDir: d.maestroDir, lockMap: lockMap}
-	d.handler = NewQueueHandler(d.maestroDir, d.config, lockMap, d.logger, d.logLevel)
+	d.handler = NewQueueHandler(d.maestroDir, d.config, lockMap, d.logger, d.logLevel,
+		WithBusyChecker(BusyCheckerFunc(func(string) bool { return true }))) // always busy
 	d.handler.SetStateReader(reader)
 	d.handler.SetCanComplete(testCanComplete)
 	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
 	})
-	d.handler.busyChecker = BusyCheckerFunc(func(string) bool { return true }) // always busy
 
 	owner := "worker1"
 	expired := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
@@ -454,13 +454,13 @@ func TestTaskLeaseExpiry_BusyAgent_WithinLimit(t *testing.T) {
 	d.config.Watcher.MaxInProgressMin = model.IntPtr(60)
 	lockMap := d.handler.lockMap
 	reader := &integrationStateReader{maestroDir: d.maestroDir, lockMap: lockMap}
-	d.handler = NewQueueHandler(d.maestroDir, d.config, lockMap, d.logger, d.logLevel)
+	d.handler = NewQueueHandler(d.maestroDir, d.config, lockMap, d.logger, d.logLevel,
+		WithBusyChecker(BusyCheckerFunc(func(string) bool { return true })))
 	d.handler.SetStateReader(reader)
 	d.handler.SetCanComplete(testCanComplete)
 	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
 	})
-	d.handler.busyChecker = BusyCheckerFunc(func(string) bool { return true })
 
 	owner := "worker1"
 	expired := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
@@ -1585,8 +1585,8 @@ func TestNotificationDispatch_ExpiredLeaseUnblocks(t *testing.T) {
 // leases exist, dispatch is skipped and recovery is prioritized.
 func TestMixedQueue_ExpiredLeasesPrioritizeRecovery(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
-	qh := newTestQueueHandler(maestroDir)
-	qh.busyChecker = BusyCheckerFunc(func(string) bool { return false })
+	qh := newTestQueueHandler(maestroDir,
+		WithBusyChecker(BusyCheckerFunc(func(string) bool { return false })))
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	owner := "worker1"
