@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
-	"github.com/msageha/maestro_v2/internal/plan"
 )
 
 // periodicScanPhaseA runs under scanMu.Lock. It loads queues, performs fast
@@ -137,22 +136,22 @@ func (qh *QueueHandler) stepCircuitBreaker(s *scanState) {
 			continue
 		}
 
-		stateReader := qh.circuitBreaker.StateReader()
-		if stateReader == nil {
+		stateMgr := qh.circuitBreaker.StateManager()
+		if stateMgr == nil {
 			continue
 		}
 
 		shouldTrip, reason := qh.circuitBreaker.CheckProgressTimeout(cmd.ID)
 		if shouldTrip {
 			timeoutMin := qh.circuitBreaker.ProgressTimeoutMinutes()
-			if err := stateReader.TripCircuitBreaker(cmd.ID, reason, timeoutMin); err != nil {
+			if err := stateMgr.TripCircuitBreaker(cmd.ID, reason, timeoutMin); err != nil {
 				qh.log(LogLevelError, "circuit_breaker_trip_timeout command=%s error=%v", cmd.ID, err)
 			} else {
 				qh.log(LogLevelWarn, "circuit_breaker_tripped_timeout command=%s reason=%s", cmd.ID, reason)
 			}
 		}
 
-		cbState, err := stateReader.GetCircuitBreakerState(cmd.ID)
+		cbState, err := stateMgr.GetCircuitBreakerState(cmd.ID)
 		if err != nil {
 			continue
 		}
@@ -239,7 +238,7 @@ func (qh *QueueHandler) stepPhaseTransitions(s *scanState) {
 			qh.log(LogLevelInfo, "phase_transition command=%s phase=%s %s→%s reason=%s",
 				cmd.ID, tr.PhaseName, tr.OldStatus, tr.NewStatus, tr.Reason)
 
-			if err := qh.dependencyResolver.GetStateReader().ApplyPhaseTransition(cmd.ID, tr.PhaseID, tr.NewStatus); err != nil {
+			if err := qh.dependencyResolver.GetStateManager().ApplyPhaseTransition(cmd.ID, tr.PhaseID, tr.NewStatus); err != nil {
 				qh.log(LogLevelError, "phase_transition_apply command=%s phase=%s error=%v",
 					cmd.ID, tr.PhaseID, err)
 				continue
@@ -590,7 +589,7 @@ func (qh *QueueHandler) stepWorktreeFastTrackCleanup(s *scanState) {
 func (qh *QueueHandler) forceFailStuckPhases(commandID string, stuck []PhaseInfo, elapsed time.Duration) int {
 	applied := 0
 	for _, p := range stuck {
-		if err := qh.dependencyResolver.GetStateReader().ApplyPhaseTransition(
+		if err := qh.dependencyResolver.GetStateManager().ApplyPhaseTransition(
 			commandID, p.ID, model.PhaseStatusFailed,
 		); err != nil {
 			qh.log(LogLevelWarn,
@@ -898,11 +897,12 @@ func (qh *QueueHandler) stepDependencyFailures(s *scanState) {
 	}
 }
 
-// diagnosePhaseTasks collects tasks belonging to a completed phase and runs
-// plan.DiagnosePhase to produce a diagnosis prompt. Returns the formatted
-// prompt string, or "" if diagnosis yields no actionable information.
+// diagnosePhaseTasks collects tasks belonging to a completed phase and produces
+// a diagnosis prompt using the injected phaseDiagnoser. Returns the formatted
+// prompt string, or "" if diagnosis yields no actionable information or if
+// no diagnoser is configured.
 func (qh *QueueHandler) diagnosePhaseTasks(commandID, phaseID, _ string, taskQueues map[string]*taskQueueEntry) string {
-	if !qh.dependencyResolver.HasStateReader() {
+	if qh.phaseDiagnoser == nil || !qh.dependencyResolver.HasStateReader() {
 		return ""
 	}
 
@@ -948,12 +948,5 @@ func (qh *QueueHandler) diagnosePhaseTasks(commandID, phaseID, _ string, taskQue
 		}
 	}
 
-	// Run diagnosis (results are empty — file-level detail will be added
-	// when result files are available in a future enhancement)
-	diag := plan.DiagnosePhase(phase, tasks, nil)
-	if diag == nil {
-		return ""
-	}
-
-	return plan.FormatDiagnosisPrompt(diag)
+	return qh.phaseDiagnoser(phase, tasks, nil)
 }

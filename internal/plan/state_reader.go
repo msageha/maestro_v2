@@ -10,7 +10,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// PlanStateReader implements daemon.StateReader by reading state/commands/ YAML files.
+// PlanStateReader implements core.StateManager by reading/writing state/commands/ YAML files.
 // The name retains the Plan prefix for clarity at call sites outside this package.
 type PlanStateReader struct { //nolint:revive // stuttering name kept for clarity at external call sites
 	stateManager *StateManager

@@ -13,23 +13,20 @@ import (
 	"strings"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// ExecMode represents the agent execution mode.
-type ExecMode string
+// ExecMode is an alias for core.ExecMode.
+type ExecMode = core.ExecMode
 
+// Mode constants are re-exported from core for backward compatibility.
 const (
-	// ModeDeliver sends a message with busy check (used by Planner/Orchestrator).
-	ModeDeliver ExecMode = "deliver"
-	// ModeWithClear sends /clear before delivery (used by Workers).
-	ModeWithClear ExecMode = "with_clear"
-	// ModeInterrupt interrupts a running task.
-	ModeInterrupt ExecMode = "interrupt"
-	// ModeIsBusy queries the busy state without delivering.
-	ModeIsBusy ExecMode = "is_busy"
-	// ModeClear resets context without delivery.
-	ModeClear ExecMode = "clear"
+	ModeDeliver   = core.ModeDeliver
+	ModeWithClear = core.ModeWithClear
+	ModeInterrupt = core.ModeInterrupt
+	ModeIsBusy    = core.ModeIsBusy
+	ModeClear     = core.ModeClear
 )
 
 // busyVerdict is the result of busy detection.
@@ -89,25 +86,11 @@ func DefaultExecutorConfig() ExecutorConfig {
 	}
 }
 
-// ExecRequest contains parameters for executing a message delivery.
-type ExecRequest struct {
-	Context    context.Context // nil defaults to context.Background()
-	AgentID    string
-	Message    string
-	Mode       ExecMode
-	TaskID     string
-	CommandID  string
-	LeaseEpoch int
-	Attempt    int
-	WorkingDir string // Target working directory (worktree mode). Empty = no change.
-}
+// ExecRequest is an alias for core.ExecRequest.
+type ExecRequest = core.ExecRequest
 
-// ExecResult contains the outcome of an execution attempt.
-type ExecResult struct {
-	Success   bool
-	Retryable bool
-	Error     error
-}
+// ExecResult is an alias for core.ExecResult.
+type ExecResult = core.ExecResult
 
 // logLevel controls logging verbosity.
 type logLevel int

@@ -25,7 +25,7 @@ type CancelHandler struct {
 	logLevel        LogLevel
 	clock           Clock
 	execProvider    *ExecutorProvider
-	stateReader     StateReader
+	stateManager    StateManager
 	lockMap         *lock.MutexMap
 	worktreeManager *WorktreeManager
 }
@@ -51,9 +51,9 @@ func (ch *CancelHandler) getExecutor() (AgentExecutor, error) {
 	return ch.execProvider.GetExecutor()
 }
 
-// SetStateReader wires the state reader for updating task states on cancellation.
-func (ch *CancelHandler) SetStateReader(reader StateReader) {
-	ch.stateReader = reader
+// SetStateReader wires the state manager for reading and updating task states on cancellation.
+func (ch *CancelHandler) SetStateReader(reader StateManager) {
+	ch.stateManager = reader
 }
 
 // SetWorktreeManager wires the worktree manager for cleanup on cancellation (H4).
@@ -65,8 +65,8 @@ func (ch *CancelHandler) SetWorktreeManager(wm *WorktreeManager) {
 // For submitted commands, state/commands/ is the authoritative source (spec §4.3).
 // Queue metadata (cancel_*) is only used for unsubmitted commands (no state file).
 func (ch *CancelHandler) IsCommandCancelRequested(cmd *model.Command) bool {
-	if ch.stateReader != nil {
-		requested, err := ch.stateReader.IsCommandCancelRequested(cmd.ID)
+	if ch.stateManager != nil {
+		requested, err := ch.stateManager.IsCommandCancelRequested(cmd.ID)
 		if err == nil {
 			return requested
 		}
@@ -104,8 +104,8 @@ func (ch *CancelHandler) CancelPendingTasks(tasks []model.Task, commandID string
 		ch.log(LogLevelInfo, "cancel_pending task=%s command=%s", task.ID, commandID)
 
 		// Update state/commands/ with cancelled status + reason
-		if ch.stateReader != nil {
-			if err := ch.stateReader.UpdateTaskState(commandID, task.ID, model.StatusCancelled, "command_cancel_requested"); err != nil {
+		if ch.stateManager != nil {
+			if err := ch.stateManager.UpdateTaskState(commandID, task.ID, model.StatusCancelled, "command_cancel_requested"); err != nil {
 				ch.log(LogLevelWarn, "cancel_state_update task=%s error=%v", task.ID, err)
 			}
 		}
@@ -204,8 +204,8 @@ func (ch *CancelHandler) ApplyCancelMark(task *model.Task, expectedEpoch int) (C
 	task.UpdatedAt = ch.clock.Now().UTC().Format(time.RFC3339)
 	task.Status = model.StatusCancelled
 
-	if ch.stateReader != nil {
-		if err := ch.stateReader.UpdateTaskState(task.CommandID, task.ID, model.StatusCancelled, "command_cancel_requested"); err != nil {
+	if ch.stateManager != nil {
+		if err := ch.stateManager.UpdateTaskState(task.CommandID, task.ID, model.StatusCancelled, "command_cancel_requested"); err != nil {
 			ch.log(LogLevelWarn, "cancel_state_update task=%s error=%v", task.ID, err)
 		}
 	}

@@ -59,7 +59,7 @@ type Daemon struct {
 	ticker   *time.Ticker
 
 	handler           *QueueHandler
-	stateReader       StateReader
+	stateReader       StateManager
 	canComplete       CanCompleteFunc
 	planExecutor      PlanExecutor
 	lockMap           *lock.MutexMap
@@ -127,9 +127,9 @@ type reviewTaskInfo struct {
 	commandID string
 }
 
-// SetStateReader sets the state reader for dependency resolution (Phase 6).
+// SetStateReader sets the state manager for dependency resolution (Phase 6).
 // Must be called before Run().
-func (d *Daemon) SetStateReader(reader StateReader) {
+func (d *Daemon) SetStateReader(reader StateManager) {
 	d.stateReader = reader
 }
 
@@ -137,6 +137,12 @@ func (d *Daemon) SetStateReader(reader StateReader) {
 // Must be called before Run() to avoid import cycles (daemon→plan→daemon).
 func (d *Daemon) SetCanComplete(f CanCompleteFunc) {
 	d.canComplete = f
+}
+
+// SetPhaseDiagnoser wires the phase diagnosis function for completed phase analysis.
+// Must be called before Run() to avoid import cycles (daemon→plan).
+func (d *Daemon) SetPhaseDiagnoser(fn PhaseDiagnoserFunc) {
+	d.handler.SetPhaseDiagnoser(fn)
 }
 
 // LockMap returns the daemon's shared MutexMap for coordinating state locks.

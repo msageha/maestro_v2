@@ -19,6 +19,10 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
+// PhaseDiagnoserFunc produces a diagnosis prompt string from a completed phase's tasks.
+// Returns "" if diagnosis yields no actionable information.
+type PhaseDiagnoserFunc func(phase model.Phase, tasks []model.Task, results []model.TaskResult) string
+
 // BusyChecker probes whether an agent is currently busy.
 // Implementations are used to override the default executor-based probe in tests.
 type BusyChecker interface {
@@ -79,6 +83,10 @@ type QueueHandler struct {
 	// Used in tests to stub agent busy state. When nil, the real executor probe is used.
 	busyChecker BusyChecker
 
+	// phaseDiagnoser produces diagnosis prompts for completed phases.
+	// Injected via SetPhaseDiagnoser; nil means diagnosis is skipped.
+	phaseDiagnoser PhaseDiagnoserFunc
+
 	// worktreeStallMarkFn overrides the persistence step of stepWorktreeStallDetection.
 	// When nil, worktreeManager.MarkIntegrationStallSignaled is used. Tests inject a
 	// failing implementation to exercise the integration→Failed fallback path.
@@ -137,9 +145,9 @@ func (qh *QueueHandler) leaseOwnerID() string {
 	return fmt.Sprintf("daemon:%d", qh.daemonPID)
 }
 
-// SetStateReader wires the state reader for dependency resolution (Phase 6).
+// SetStateReader wires the state manager for dependency resolution (Phase 6).
 // Must be called before PeriodicScan starts.
-func (qh *QueueHandler) SetStateReader(reader StateReader) {
+func (qh *QueueHandler) SetStateReader(reader StateManager) {
 	qh.scanRunMu.Lock()
 	defer qh.scanRunMu.Unlock()
 	qh.dependencyResolver = NewDependencyResolver(reader, qh.logger, qh.logLevel)
@@ -173,6 +181,14 @@ func (qh *QueueHandler) SetFallbackManager(fm *fallback.Manager) {
 	qh.scanRunMu.Lock()
 	defer qh.scanRunMu.Unlock()
 	qh.fallbackMgr = fm
+}
+
+// SetPhaseDiagnoser wires the phase diagnosis function for completed phase analysis.
+// Must be called before Run() starts.
+func (qh *QueueHandler) SetPhaseDiagnoser(fn PhaseDiagnoserFunc) {
+	qh.scanRunMu.Lock()
+	defer qh.scanRunMu.Unlock()
+	qh.phaseDiagnoser = fn
 }
 
 // SetWorktreeManager wires the worktree manager for worker isolation.

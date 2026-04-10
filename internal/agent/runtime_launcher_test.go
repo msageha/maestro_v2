@@ -8,7 +8,7 @@ import (
 
 func TestNewRuntimeLauncher_DefaultsClaudeCodeEnabled(t *testing.T) {
 	rl := NewRuntimeLauncher(nil)
-	cmd, args, err := rl.GetCommand(model.RuntimeClaudeCode, "")
+	cmd, args, err := rl.GetCommand(model.RuntimeClaudeCode, RuntimeLaunchOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -24,7 +24,7 @@ func TestGetCommand_ClaudeCode(t *testing.T) {
 	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
 		model.RuntimeClaudeCode: {Enabled: model.BoolPtr(true)},
 	})
-	cmd, _, err := rl.GetCommand(model.RuntimeClaudeCode, "")
+	cmd, _, err := rl.GetCommand(model.RuntimeClaudeCode, RuntimeLaunchOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -37,12 +37,22 @@ func TestGetCommand_CodexEnabled(t *testing.T) {
 	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
 		model.RuntimeCodex: {Enabled: model.BoolPtr(true)},
 	})
-	cmd, _, err := rl.GetCommand(model.RuntimeCodex, "")
+	cmd, args, err := rl.GetCommand(model.RuntimeCodex, RuntimeLaunchOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cmd != "codex" {
 		t.Errorf("expected codex, got %s", cmd)
+	}
+	// Verify base args: exec -a never -s workspace-write
+	expected := []string{"exec", "-a", "never", "-s", "workspace-write"}
+	if len(args) != len(expected) {
+		t.Fatalf("expected args %v, got %v", expected, args)
+	}
+	for i, e := range expected {
+		if args[i] != e {
+			t.Errorf("args[%d]: expected %q, got %q", i, e, args[i])
+		}
 	}
 }
 
@@ -50,12 +60,22 @@ func TestGetCommand_GeminiEnabled(t *testing.T) {
 	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
 		model.RuntimeGemini: {Enabled: model.BoolPtr(true)},
 	})
-	cmd, _, err := rl.GetCommand(model.RuntimeGemini, "")
+	cmd, args, err := rl.GetCommand(model.RuntimeGemini, RuntimeLaunchOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if cmd != "gemini" {
 		t.Errorf("expected gemini, got %s", cmd)
+	}
+	// Verify base args: --approval-mode=yolo -s
+	expected := []string{"--approval-mode=yolo", "-s"}
+	if len(args) != len(expected) {
+		t.Fatalf("expected args %v, got %v", expected, args)
+	}
+	for i, e := range expected {
+		if args[i] != e {
+			t.Errorf("args[%d]: expected %q, got %q", i, e, args[i])
+		}
 	}
 }
 
@@ -63,7 +83,7 @@ func TestGetCommand_DisabledRuntime(t *testing.T) {
 	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
 		model.RuntimeCodex: {Enabled: model.BoolPtr(false)},
 	})
-	_, _, err := rl.GetCommand(model.RuntimeCodex, "")
+	_, _, err := rl.GetCommand(model.RuntimeCodex, RuntimeLaunchOptions{})
 	if err == nil {
 		t.Fatal("expected error for disabled runtime")
 	}
@@ -74,7 +94,7 @@ func TestGetCommand_DisabledRuntime(t *testing.T) {
 
 func TestGetCommand_UnknownRuntime(t *testing.T) {
 	rl := NewRuntimeLauncher(nil)
-	_, _, err := rl.GetCommand("unknown-runtime", "")
+	_, _, err := rl.GetCommand("unknown-runtime", RuntimeLaunchOptions{})
 	if err == nil {
 		t.Fatal("expected error for unknown runtime")
 	}
@@ -85,7 +105,7 @@ func TestGetCommand_UnknownRuntime(t *testing.T) {
 
 func TestGetCommand_EmptyRuntimeDefaultsToClaudeCode(t *testing.T) {
 	rl := NewRuntimeLauncher(nil)
-	cmd, _, err := rl.GetCommand("", "")
+	cmd, _, err := rl.GetCommand("", RuntimeLaunchOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -98,7 +118,7 @@ func TestGetCommand_WithModel(t *testing.T) {
 	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
 		model.RuntimeClaudeCode: {Enabled: model.BoolPtr(true)},
 	})
-	_, args, err := rl.GetCommand(model.RuntimeClaudeCode, "opus")
+	_, args, err := rl.GetCommand(model.RuntimeClaudeCode, RuntimeLaunchOptions{Model: "opus"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -126,9 +146,8 @@ func TestFallbackToDefault_EvenWhenCodexEnabled(t *testing.T) {
 }
 
 func TestBackwardCompat_NoRuntimeFieldDefaultBehavior(t *testing.T) {
-	// Simulate: Task.Runtime is empty, no runtimes configured
 	rl := NewRuntimeLauncher(nil)
-	cmd, args, err := rl.GetCommand("", "")
+	cmd, args, err := rl.GetCommand("", RuntimeLaunchOptions{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -141,41 +160,164 @@ func TestBackwardCompat_NoRuntimeFieldDefaultBehavior(t *testing.T) {
 }
 
 func TestGetCommand_CodexDisabledByDefault(t *testing.T) {
-	// Without config, codex and gemini are disabled
 	rl := NewRuntimeLauncher(nil)
 
-	_, _, err := rl.GetCommand(model.RuntimeCodex, "")
+	_, _, err := rl.GetCommand(model.RuntimeCodex, RuntimeLaunchOptions{})
 	if err == nil {
 		t.Error("expected error: codex should be disabled by default")
 	}
 
-	_, _, err = rl.GetCommand(model.RuntimeGemini, "")
+	_, _, err = rl.GetCommand(model.RuntimeGemini, RuntimeLaunchOptions{})
 	if err == nil {
 		t.Error("expected error: gemini should be disabled by default")
 	}
 }
 
 func TestNewRuntimeLauncher_IgnoresUnknownConfigRuntime(t *testing.T) {
-	// Unknown runtime names in config should be ignored gracefully
 	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
 		"unknown-agent": {Enabled: model.BoolPtr(true)},
 	})
-	_, _, err := rl.GetCommand("unknown-agent", "")
+	_, _, err := rl.GetCommand("unknown-agent", RuntimeLaunchOptions{})
 	if err == nil {
 		t.Error("expected error for unknown runtime not registered")
 	}
 }
 
 func TestGetCommand_ArgsIsolation(t *testing.T) {
-	// Verify that returned args are independent copies
 	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
 		model.RuntimeClaudeCode: {Enabled: model.BoolPtr(true)},
 	})
 
-	_, args1, _ := rl.GetCommand(model.RuntimeClaudeCode, "sonnet")
-	_, args2, _ := rl.GetCommand(model.RuntimeClaudeCode, "opus")
+	_, args1, _ := rl.GetCommand(model.RuntimeClaudeCode, RuntimeLaunchOptions{Model: "sonnet"})
+	_, args2, _ := rl.GetCommand(model.RuntimeClaudeCode, RuntimeLaunchOptions{Model: "opus"})
 
 	if len(args1) == len(args2) && len(args1) > 0 && args1[1] == args2[1] {
 		t.Error("args should be independent copies")
+	}
+}
+
+// --- New tests for multi-runtime arg building ---
+
+func TestGetCommand_CodexWithModel(t *testing.T) {
+	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
+		model.RuntimeCodex: {Enabled: model.BoolPtr(true)},
+	})
+	_, args, err := rl.GetCommand(model.RuntimeCodex, RuntimeLaunchOptions{Model: "o3-mini"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Base args + --model o3-mini
+	expected := []string{"exec", "-a", "never", "-s", "workspace-write", "--model", "o3-mini"}
+	if len(args) != len(expected) {
+		t.Fatalf("expected args %v, got %v", expected, args)
+	}
+	for i, e := range expected {
+		if args[i] != e {
+			t.Errorf("args[%d]: expected %q, got %q", i, e, args[i])
+		}
+	}
+}
+
+func TestGetCommand_GeminiWithModel(t *testing.T) {
+	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
+		model.RuntimeGemini: {Enabled: model.BoolPtr(true)},
+	})
+	_, args, err := rl.GetCommand(model.RuntimeGemini, RuntimeLaunchOptions{Model: "gemini-2.5-pro"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := []string{"--approval-mode=yolo", "-s", "--model", "gemini-2.5-pro"}
+	if len(args) != len(expected) {
+		t.Fatalf("expected args %v, got %v", expected, args)
+	}
+	for i, e := range expected {
+		if args[i] != e {
+			t.Errorf("args[%d]: expected %q, got %q", i, e, args[i])
+		}
+	}
+}
+
+func TestGetCommand_GeminiWithPrompt(t *testing.T) {
+	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
+		model.RuntimeGemini: {Enabled: model.BoolPtr(true)},
+	})
+	_, args, err := rl.GetCommand(model.RuntimeGemini, RuntimeLaunchOptions{
+		Model:  "gemini-2.5-pro",
+		Prompt: "You are a helpful assistant.",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := []string{"--approval-mode=yolo", "-s", "--model", "gemini-2.5-pro", "-p", "You are a helpful assistant."}
+	if len(args) != len(expected) {
+		t.Fatalf("expected args %v, got %v", expected, args)
+	}
+	for i, e := range expected {
+		if args[i] != e {
+			t.Errorf("args[%d]: expected %q, got %q", i, e, args[i])
+		}
+	}
+}
+
+func TestGetCommand_GeminiPromptWithoutModel(t *testing.T) {
+	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
+		model.RuntimeGemini: {Enabled: model.BoolPtr(true)},
+	})
+	_, args, err := rl.GetCommand(model.RuntimeGemini, RuntimeLaunchOptions{
+		Prompt: "system prompt only",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	expected := []string{"--approval-mode=yolo", "-s", "-p", "system prompt only"}
+	if len(args) != len(expected) {
+		t.Fatalf("expected args %v, got %v", expected, args)
+	}
+	for i, e := range expected {
+		if args[i] != e {
+			t.Errorf("args[%d]: expected %q, got %q", i, e, args[i])
+		}
+	}
+}
+
+func TestGetCommand_ClaudeCodeIgnoresPromptOption(t *testing.T) {
+	// Prompt option is only used by gemini; claude-code handles prompts via buildLaunchArgs.
+	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
+		model.RuntimeClaudeCode: {Enabled: model.BoolPtr(true)},
+	})
+	_, args, err := rl.GetCommand(model.RuntimeClaudeCode, RuntimeLaunchOptions{
+		Model:  "opus",
+		Prompt: "ignored prompt",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should only have --model, no -p
+	expected := []string{"--model", "opus"}
+	if len(args) != len(expected) {
+		t.Fatalf("expected args %v, got %v", expected, args)
+	}
+	for i, e := range expected {
+		if args[i] != e {
+			t.Errorf("args[%d]: expected %q, got %q", i, e, args[i])
+		}
+	}
+}
+
+func TestGetCommand_CodexArgsIsolation(t *testing.T) {
+	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
+		model.RuntimeCodex: {Enabled: model.BoolPtr(true)},
+	})
+
+	_, args1, _ := rl.GetCommand(model.RuntimeCodex, RuntimeLaunchOptions{Model: "o3-mini"})
+	_, args2, _ := rl.GetCommand(model.RuntimeCodex, RuntimeLaunchOptions{})
+
+	// args1 should have model appended, args2 should not
+	if len(args1) == len(args2) {
+		t.Error("args should differ: one has model, the other does not")
+	}
+	// Verify base args in args2 are not mutated
+	if len(args2) != 5 {
+		t.Errorf("expected 5 base args for codex without model, got %d: %v", len(args2), args2)
 	}
 }

@@ -8,10 +8,19 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
-	"github.com/msageha/maestro_v2/internal/daemon/bandit"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/validate"
 )
+
+// BanditSelector provides multi-armed bandit arm selection.
+// Implementations must be safe for concurrent use.
+type BanditSelector interface {
+	AddArm(name string)
+	SelectArm() (string, error)
+	UpdateReward(armName string, reward float64)
+	PullCounts() map[string]int
+	Reset()
+}
 
 // WorkerAssignment represents the result of assigning a task to a specific worker.
 type WorkerAssignment struct {
@@ -180,22 +189,22 @@ var defaultModelArms = []string{"sonnet", "opus", "haiku"}
 
 // AdaptiveModelSelector uses UCB1 bandit for model selection with static fallback.
 type AdaptiveModelSelector struct {
-	bandit     *bandit.Selector
+	bandit     BanditSelector
 	config     model.BanditConfig
 	enabled    bool
 	minSamples int
 }
 
 // NewAdaptiveModelSelector creates an AdaptiveModelSelector from BanditConfig.
-// When enabled, it initialises a UCB1 Selector and registers available model arms.
-func NewAdaptiveModelSelector(cfg model.BanditConfig) *AdaptiveModelSelector {
+// When enabled and selector is non-nil, it registers available model arms.
+func NewAdaptiveModelSelector(cfg model.BanditConfig, selector BanditSelector) *AdaptiveModelSelector {
 	s := &AdaptiveModelSelector{
 		config:     cfg,
 		enabled:    cfg.EffectiveEnabled(),
 		minSamples: cfg.EffectiveMinSamplesBeforeUse(),
 	}
-	if s.enabled {
-		s.bandit = bandit.NewSelector(cfg.EffectiveExplorationCoeff())
+	if s.enabled && selector != nil {
+		s.bandit = selector
 		for _, arm := range defaultModelArms {
 			s.bandit.AddArm(arm)
 		}
@@ -211,20 +220,20 @@ func (s *AdaptiveModelSelector) SelectModel(bloomLevel int, _ string) string {
 		return GetModelForBloomLevel(bloomLevel, false)
 	}
 
-	stats := s.bandit.GetStats()
+	pullCounts := s.bandit.PullCounts()
 
 	// §5-7: TraceDataRequirement — total pulls across all arms.
 	totalPulls := 0
-	for _, stat := range stats {
-		totalPulls += stat.PullCount
+	for _, count := range pullCounts {
+		totalPulls += count
 	}
 	if totalPulls < s.config.EffectiveTraceDataRequirement() {
 		return GetModelForBloomLevel(bloomLevel, false)
 	}
 
 	// MinSamplesBeforeUse — every arm must have enough observations.
-	for _, stat := range stats {
-		if stat.PullCount < s.minSamples {
+	for _, count := range pullCounts {
+		if count < s.minSamples {
 			return GetModelForBloomLevel(bloomLevel, false)
 		}
 	}

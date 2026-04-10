@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -153,17 +152,28 @@ type StateReader interface {
 	// all user phases (or user tasks for non-phased commands) are terminal.
 	// Returns (isSystemCommit=false, ready=false, nil) for non-system-commit tasks.
 	IsSystemCommitReady(commandID, taskID string) (isSystemCommit bool, ready bool, err error)
-	// ApplyPhaseTransition persists a phase status change to state/commands/.
-	ApplyPhaseTransition(commandID, phaseID string, newStatus model.PhaseStatus) error
-	// UpdateTaskState updates a single task's status and optionally records a cancelled reason.
-	UpdateTaskState(commandID, taskID string, newStatus model.Status, cancelledReason string) error
 	// IsCommandCancelRequested checks the state file for cancel.requested flag.
 	IsCommandCancelRequested(commandID string) (bool, error)
 	// GetCircuitBreakerState returns the circuit breaker state for a command.
 	GetCircuitBreakerState(commandID string) (*model.CircuitBreakerState, error)
+}
+
+// StateWriter provides write access to command state.
+type StateWriter interface {
+	// ApplyPhaseTransition persists a phase status change to state/commands/.
+	ApplyPhaseTransition(commandID, phaseID string, newStatus model.PhaseStatus) error
+	// UpdateTaskState updates a single task's status and optionally records a cancelled reason.
+	UpdateTaskState(commandID, taskID string, newStatus model.Status, cancelledReason string) error
 	// TripCircuitBreaker sets the circuit breaker to tripped and issues a cancel request on the command.
 	// progressTimeoutMinutes is re-validated under lock to prevent TOCTOU race; pass 0 to skip re-validation.
 	TripCircuitBreaker(commandID string, reason string, progressTimeoutMinutes int) error
+}
+
+// StateManager combines StateReader and StateWriter for components that need both
+// read and write access to command state.
+type StateManager interface {
+	StateReader
+	StateWriter
 }
 
 // PhaseInfo represents phase metadata from command state.
@@ -181,12 +191,48 @@ type PhaseInfo struct {
 // Executor
 // ---------------------------------------------------------------------------
 
+// ExecMode represents the agent execution mode.
+type ExecMode string
+
+const (
+	// ModeDeliver sends a message with busy check (used by Planner/Orchestrator).
+	ModeDeliver ExecMode = "deliver"
+	// ModeWithClear sends /clear before delivery (used by Workers).
+	ModeWithClear ExecMode = "with_clear"
+	// ModeInterrupt interrupts a running task.
+	ModeInterrupt ExecMode = "interrupt"
+	// ModeIsBusy queries the busy state without delivering.
+	ModeIsBusy ExecMode = "is_busy"
+	// ModeClear resets context without delivery.
+	ModeClear ExecMode = "clear"
+)
+
+// ExecRequest contains parameters for executing a message delivery.
+type ExecRequest struct {
+	Context    context.Context // nil defaults to context.Background()
+	AgentID    string
+	Message    string
+	Mode       ExecMode
+	TaskID     string
+	CommandID  string
+	LeaseEpoch int
+	Attempt    int
+	WorkingDir string // Target working directory (worktree mode). Empty = no change.
+}
+
+// ExecResult contains the outcome of an execution attempt.
+type ExecResult struct {
+	Success   bool
+	Retryable bool
+	Error     error
+}
+
 // ExecutorFactory creates agent executors. Allows testing without tmux.
 type ExecutorFactory func(maestroDir string, watcherCfg model.WatcherConfig, logLevel string) (AgentExecutor, error)
 
 // AgentExecutor is the interface for agent message delivery.
 type AgentExecutor interface {
-	Execute(req agent.ExecRequest) agent.ExecResult
+	Execute(req ExecRequest) ExecResult
 	Close() error
 }
 

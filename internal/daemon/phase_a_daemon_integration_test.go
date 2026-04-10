@@ -12,7 +12,17 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/reviewer"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/plan"
 )
+
+// testPhaseDiagnoser wraps plan.DiagnosePhase + plan.FormatDiagnosisPrompt for tests.
+func testPhaseDiagnoser(phase model.Phase, tasks []model.Task, results []model.TaskResult) string {
+	diag := plan.DiagnosePhase(phase, tasks, results)
+	if diag == nil {
+		return ""
+	}
+	return plan.FormatDiagnosisPrompt(diag)
+}
 
 // --- A-1: ReviewDispatcher integration tests ---
 
@@ -142,6 +152,7 @@ func TestDiagnosePhaseTasks_EmitsSignalOnCompletion(t *testing.T) {
 	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &mockExecutor{}, nil
 	})
+	qh.SetPhaseDiagnoser(testPhaseDiagnoser)
 
 	// Set up state reader with a completed phase containing tasks
 	reader := &phaseATestStateReader{
@@ -202,6 +213,7 @@ func TestDiagnosePhaseTasks_EmptyForCleanPhase(t *testing.T) {
 		Watcher: model.WatcherConfig{DispatchLeaseSec: 300},
 		Queue:   model.QueueConfig{PriorityAgingSec: 60},
 	}, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	qh.SetPhaseDiagnoser(testPhaseDiagnoser)
 
 	reader := &phaseATestStateReader{
 		phases: map[string][]PhaseInfo{

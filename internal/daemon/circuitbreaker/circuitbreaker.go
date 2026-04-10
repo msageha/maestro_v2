@@ -17,7 +17,7 @@ type Handler struct {
 	logger      *log.Logger
 	logLevel    core.LogLevel
 	clock       core.Clock
-	stateReader core.StateReader
+	stateManager core.StateManager
 }
 
 // NewHandler creates a new Handler.
@@ -31,9 +31,9 @@ func NewHandler(cfg model.Config, logger *log.Logger, logLevel core.LogLevel) *H
 	}
 }
 
-// SetStateReader wires the state reader.
-func (cb *Handler) SetStateReader(reader core.StateReader) {
-	cb.stateReader = reader
+// SetStateReader wires the state manager for circuit breaker state queries.
+func (cb *Handler) SetStateReader(reader core.StateManager) {
+	cb.stateManager = reader
 }
 
 // Enabled returns whether the circuit breaker is enabled in config.
@@ -120,7 +120,7 @@ func (cb *Handler) CheckProgressTimeout(commandID string) (bool, string) {
 	if !cb.config.CircuitBreaker.Enabled {
 		return false, ""
 	}
-	if cb.stateReader == nil {
+	if cb.stateManager == nil {
 		return false, ""
 	}
 
@@ -129,7 +129,7 @@ func (cb *Handler) CheckProgressTimeout(commandID string) (bool, string) {
 		return false, ""
 	}
 
-	cbState, err := cb.stateReader.GetCircuitBreakerState(commandID)
+	cbState, err := cb.stateManager.GetCircuitBreakerState(commandID)
 	if err != nil {
 		cb.log(core.LogLevelWarn, "circuit_breaker_state_read command=%s error=%v", commandID, err)
 		return false, ""
@@ -164,9 +164,14 @@ func (cb *Handler) ProgressTimeoutMinutes() int {
 	return cb.config.CircuitBreaker.EffectiveProgressTimeoutMinutes()
 }
 
-// StateReader returns the configured state reader (may be nil).
+// StateReader returns the configured state reader for read-only access (may be nil).
 func (cb *Handler) StateReader() core.StateReader {
-	return cb.stateReader
+	return cb.stateManager
+}
+
+// StateManager returns the configured state manager for read/write access (may be nil).
+func (cb *Handler) StateManager() core.StateManager {
+	return cb.stateManager
 }
 
 func (cb *Handler) log(level core.LogLevel, format string, args ...any) {

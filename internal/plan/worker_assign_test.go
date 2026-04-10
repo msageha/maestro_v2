@@ -4,8 +4,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/msageha/maestro_v2/internal/daemon/bandit"
 	"github.com/msageha/maestro_v2/internal/model"
 )
+
+// newTestBanditSelector creates a bandit.Selector for testing.
+func newTestBanditSelector(cfg model.BanditConfig) BanditSelector {
+	return bandit.NewSelector(cfg.EffectiveExplorationCoeff())
+}
 
 func boolPtrPlan(v bool) *bool       { return &v }
 func float64Ptr(v float64) *float64   { return &v }
@@ -257,7 +263,7 @@ func TestAdaptiveModelSelector_Disabled(t *testing.T) {
 	cfg := model.BanditConfig{
 		Enabled: boolPtrPlan(false),
 	}
-	sel := NewAdaptiveModelSelector(cfg)
+	sel := NewAdaptiveModelSelector(cfg, nil)
 
 	// Should fall back to static mapping regardless of data
 	got := sel.SelectModel(2, "implement")
@@ -277,7 +283,7 @@ func TestAdaptiveModelSelector_InsufficientData_TraceRequirement(t *testing.T) {
 		MinSamplesBeforeUse:  intPtr(2),
 		TraceDataRequirement: intPtr(10), // require 10 total pulls
 	}
-	sel := NewAdaptiveModelSelector(cfg)
+	sel := NewAdaptiveModelSelector(cfg, newTestBanditSelector(cfg))
 
 	// Seed a few observations — not enough to meet TraceDataRequirement(10)
 	for i := 0; i < 3; i++ {
@@ -298,7 +304,7 @@ func TestAdaptiveModelSelector_InsufficientData_MinSamples(t *testing.T) {
 		MinSamplesBeforeUse:  intPtr(5),  // each arm needs 5
 		TraceDataRequirement: intPtr(3),  // total trace easily met
 	}
-	sel := NewAdaptiveModelSelector(cfg)
+	sel := NewAdaptiveModelSelector(cfg, newTestBanditSelector(cfg))
 
 	// Give enough total but haiku has 0 pulls
 	for i := 0; i < 5; i++ {
@@ -319,7 +325,7 @@ func TestAdaptiveModelSelector_SufficientData_BanditSelection(t *testing.T) {
 		MinSamplesBeforeUse:  intPtr(2),
 		TraceDataRequirement: intPtr(6),
 	}
-	sel := NewAdaptiveModelSelector(cfg)
+	sel := NewAdaptiveModelSelector(cfg, newTestBanditSelector(cfg))
 
 	// Seed data: sonnet gets high reward, opus medium, haiku low
 	for i := 0; i < 5; i++ {
@@ -341,12 +347,14 @@ func TestAdaptiveModelSelector_RecordResult(t *testing.T) {
 		Enabled:          boolPtrPlan(true),
 		ExplorationCoeff: float64Ptr(1.41),
 	}
-	sel := NewAdaptiveModelSelector(cfg)
+	sel := NewAdaptiveModelSelector(cfg, newTestBanditSelector(cfg))
 
 	sel.RecordResult("sonnet", 1.0)
 	sel.RecordResult("sonnet", 0.6)
 
-	stats := sel.bandit.GetStats()
+	// Access underlying *bandit.Selector via type assertion for detailed stats
+	bs := sel.bandit.(*bandit.Selector)
+	stats := bs.GetStats()
 	arm, ok := stats["sonnet"]
 	if !ok {
 		t.Fatal("expected sonnet arm in stats")
@@ -364,7 +372,7 @@ func TestAdaptiveModelSelector_RecordResult_Disabled(t *testing.T) {
 	cfg := model.BanditConfig{
 		Enabled: boolPtrPlan(false),
 	}
-	sel := NewAdaptiveModelSelector(cfg)
+	sel := NewAdaptiveModelSelector(cfg, nil)
 
 	// Should not panic
 	sel.RecordResult("sonnet", 1.0)
@@ -380,7 +388,7 @@ func TestAdaptiveModelSelector_FallbackOnError(t *testing.T) {
 		MinSamplesBeforeUse:  intPtr(0),
 		TraceDataRequirement: intPtr(0),
 	}
-	sel := NewAdaptiveModelSelector(cfg)
+	sel := NewAdaptiveModelSelector(cfg, newTestBanditSelector(cfg))
 
 	// Remove all arms to force SelectArm error
 	sel.bandit.Reset()
