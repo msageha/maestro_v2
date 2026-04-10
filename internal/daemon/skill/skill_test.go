@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 	"github.com/msageha/maestro_v2/internal/validate"
 )
 
@@ -43,8 +44,8 @@ func TestFormatSkillSection_Multiple(t *testing.T) {
 }
 
 func TestFormatSkillSection_MaxBodyChars(t *testing.T) {
-	p1 := intPtr(1)  // high priority (keep)
-	p2 := intPtr(50) // lower priority (drop first)
+	p1 := ptr.Int(1)  // high priority (keep)
+	p2 := ptr.Int(50) // lower priority (drop first)
 
 	skills := []Content{
 		{Metadata: Metadata{ID: "important", Name: "Important", Priority: p1}, Body: "Keep me"},
@@ -485,8 +486,4 @@ func TestReadAllSkillsForRole_BrokenRoleSpecificBlocksSharedFallback(t *testing.
 			t.Error("broken role-specific skill should block shared fallback for same name")
 		}
 	}
-}
-
-func intPtr(v int) *int {
-	return &v
 }

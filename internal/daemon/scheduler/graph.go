@@ -2,9 +2,9 @@
 package scheduler
 
 import (
-	"path"
 	"sort"
-	"strings"
+
+	"github.com/msageha/maestro_v2/internal/pathutil"
 )
 
 // TaskNode represents a task in the conflict graph.
@@ -194,27 +194,13 @@ func pathOverlap(a, b string) bool {
 	if a == "" || b == "" {
 		return false
 	}
-	ca := normalizePath(a)
-	cb := normalizePath(b)
+	ca := pathutil.NormalizePath(a)
+	cb := pathutil.NormalizePath(b)
 	if ca == "" || cb == "" {
 		return false
 	}
 	if ca == cb {
 		return true
 	}
-	return isDescendant(cb, ca) || isDescendant(ca, cb)
-}
-
-// normalizePath strips trailing slashes and cleans the path.
-func normalizePath(p string) string {
-	cleaned := path.Clean(strings.TrimSuffix(p, "/"))
-	if cleaned == "." {
-		return ""
-	}
-	return cleaned
-}
-
-// isDescendant reports whether child is a descendant of dir at a "/" boundary.
-func isDescendant(child, dir string) bool {
-	return strings.HasPrefix(child, dir+"/")
+	return pathutil.IsDescendant(cb, ca) || pathutil.IsDescendant(ca, cb)
 }

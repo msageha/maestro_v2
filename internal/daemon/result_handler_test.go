@@ -48,7 +48,6 @@ func TestResultHandler_WorkerNotification_Basic(t *testing.T) {
 				CommandID: "cmd_0000000001_cccccccc",
 				Status:    model.StatusCompleted,
 				Summary:   "test done",
-				Notified:  false,
 				CreatedAt: time.Now().UTC().Format(time.RFC3339),
 			},
 		},
@@ -106,13 +105,12 @@ func TestResultHandler_WorkerNotification_AlreadyNotified(t *testing.T) {
 		FileType:      "result_task",
 		Results: []model.TaskResult{
 			{
-				ID:         "res_0000000001_aaaaaaaa",
-				TaskID:     "task_0000000001_bbbbbbbb",
-				CommandID:  "cmd_0000000001_cccccccc",
-				Status:     model.StatusCompleted,
-				Notified:   true,
-				NotifiedAt: &now,
-				CreatedAt:  now,
+				ID:             "res_0000000001_aaaaaaaa",
+				TaskID:         "task_0000000001_bbbbbbbb",
+				CommandID:      "cmd_0000000001_cccccccc",
+				Status:         model.StatusCompleted,
+				NotifiableBase: model.NotifiableBase{Notified: true, NotifiedAt: &now},
+				CreatedAt:      now,
 			},
 		},
 	}
@@ -139,14 +137,12 @@ func TestResultHandler_WorkerNotification_LeaseHeld(t *testing.T) {
 		FileType:      "result_task",
 		Results: []model.TaskResult{
 			{
-				ID:                   "res_0000000001_aaaaaaaa",
-				TaskID:               "task_0000000001_bbbbbbbb",
-				CommandID:            "cmd_0000000001_cccccccc",
-				Status:               model.StatusCompleted,
-				Notified:             false,
-				NotifyLeaseOwner:     &owner,
-				NotifyLeaseExpiresAt: &expiresAt,
-				CreatedAt:            time.Now().UTC().Format(time.RFC3339),
+				ID:             "res_0000000001_aaaaaaaa",
+				TaskID:         "task_0000000001_bbbbbbbb",
+				CommandID:      "cmd_0000000001_cccccccc",
+				Status:         model.StatusCompleted,
+				NotifiableBase: model.NotifiableBase{NotifyLeaseOwner: &owner, NotifyLeaseExpiresAt: &expiresAt},
+				CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 			},
 		},
 	}
@@ -173,15 +169,12 @@ func TestResultHandler_WorkerNotification_ExpiredLease(t *testing.T) {
 		FileType:      "result_task",
 		Results: []model.TaskResult{
 			{
-				ID:                   "res_0000000001_aaaaaaaa",
-				TaskID:               "task_0000000001_bbbbbbbb",
-				CommandID:            "cmd_0000000001_cccccccc",
-				Status:               model.StatusCompleted,
-				Notified:             false,
-				NotifyAttempts:       1,
-				NotifyLeaseOwner:     &owner,
-				NotifyLeaseExpiresAt: &expiresAt,
-				CreatedAt:            time.Now().UTC().Format(time.RFC3339),
+				ID:             "res_0000000001_aaaaaaaa",
+				TaskID:         "task_0000000001_bbbbbbbb",
+				CommandID:      "cmd_0000000001_cccccccc",
+				Status:         model.StatusCompleted,
+				NotifiableBase: model.NotifiableBase{NotifyAttempts: 1, NotifyLeaseOwner: &owner, NotifyLeaseExpiresAt: &expiresAt},
+				CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 			},
 		},
 	}
@@ -234,7 +227,6 @@ func TestResultHandler_WorkerNotification_Failure(t *testing.T) {
 				TaskID:    "task_0000000001_bbbbbbbb",
 				CommandID: "cmd_0000000001_cccccccc",
 				Status:    model.StatusCompleted,
-				Notified:  false,
 				CreatedAt: time.Now().UTC().Format(time.RFC3339),
 			},
 		},
@@ -294,7 +286,6 @@ func TestResultHandler_CommandNotification_Basic(t *testing.T) {
 				CommandID: "cmd_0000000001_cccccccc",
 				Status:    model.StatusCompleted,
 				Summary:   "all tasks done",
-				Notified:  false,
 				CreatedAt: time.Now().UTC().Format(time.RFC3339),
 			},
 		},
@@ -376,7 +367,6 @@ func TestResultHandler_CommandNotification_Idempotent(t *testing.T) {
 				ID:        "res_0000000001_dddddddd",
 				CommandID: "cmd_0000000001_cccccccc",
 				Status:    model.StatusCompleted,
-				Notified:  false,
 				CreatedAt: time.Now().UTC().Format(time.RFC3339),
 			},
 		},
@@ -456,7 +446,6 @@ func TestResultHandler_CommandNotification_SupersedeOnTypeChange(t *testing.T) {
 				ID:        "res_0000000001_dddddddd",
 				CommandID: "cmd_0000000001_cccccccc",
 				Status:    model.StatusCancelled,
-				Notified:  false,
 				CreatedAt: time.Now().UTC().Format(time.RFC3339),
 			},
 		},
@@ -529,12 +518,12 @@ func TestResultHandler_ScanAllResults(t *testing.T) {
 			{
 				ID: "res_0000000001_aaaaaaaa", TaskID: "task_0000000001_aaa11111",
 				CommandID: "cmd_0000000001_cccccccc", Status: model.StatusCompleted,
-				Notified: true, NotifiedAt: &now, CreatedAt: now,
+				NotifiableBase: model.NotifiableBase{Notified: true, NotifiedAt: &now}, CreatedAt: now,
 			},
 			{
 				ID: "res_0000000002_aaaaaaaa", TaskID: "task_0000000002_aaa22222",
 				CommandID: "cmd_0000000001_cccccccc", Status: model.StatusFailed,
-				Notified: false, CreatedAt: now,
+				CreatedAt: now,
 			},
 		},
 	}
@@ -548,7 +537,7 @@ func TestResultHandler_ScanAllResults(t *testing.T) {
 			{
 				ID: "res_0000000003_aaaaaaaa", TaskID: "task_0000000003_aaa33333",
 				CommandID: "cmd_0000000001_cccccccc", Status: model.StatusCompleted,
-				Notified: false, CreatedAt: now,
+				CreatedAt: now,
 			},
 		},
 	}
@@ -571,7 +560,7 @@ func TestResultHandler_HandleResultFileEvent(t *testing.T) {
 			{
 				ID: "res_0000000001_aaaaaaaa", TaskID: "task_0000000001_bbbbbbbb",
 				CommandID: "cmd_0000000001_cccccccc", Status: model.StatusCompleted,
-				Notified: false, CreatedAt: time.Now().UTC().Format(time.RFC3339),
+				CreatedAt: time.Now().UTC().Format(time.RFC3339),
 			},
 		},
 	}
@@ -612,8 +601,7 @@ func TestResultHandler_WorkerNotification_MaxRetryExhausted(t *testing.T) {
 				TaskID:         "task_0000000001_bbbbbbbb",
 				CommandID:      "cmd_0000000001_cccccccc",
 				Status:         model.StatusCompleted,
-				Notified:       false,
-				NotifyAttempts: maxNotifyAttempts, // already at max
+				NotifiableBase: model.NotifiableBase{NotifyAttempts: maxNotifyAttempts}, // already at max
 				CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 			},
 		},
@@ -657,7 +645,6 @@ func TestResultHandler_WorkerNotification_BackoffPreventsImmediateRetry(t *testi
 				TaskID:    "task_0000000001_bbbbbbbb",
 				CommandID: "cmd_0000000001_cccccccc",
 				Status:    model.StatusCompleted,
-				Notified:  false,
 				CreatedAt: time.Now().UTC().Format(time.RFC3339),
 			},
 		},
@@ -697,12 +684,12 @@ func TestResultHandler_MultipleResults_ProcessedInOrder(t *testing.T) {
 			{
 				ID: "res_0000000001_aaaaaaaa", TaskID: "task_0000000001_11111111",
 				CommandID: "cmd_0000000001_cccccccc", Status: model.StatusCompleted,
-				Notified: false, CreatedAt: now,
+				CreatedAt: now,
 			},
 			{
 				ID: "res_0000000002_aaaaaaaa", TaskID: "task_0000000002_22222222",
 				CommandID: "cmd_0000000001_cccccccc", Status: model.StatusFailed,
-				Notified: false, CreatedAt: now,
+				CreatedAt: now,
 			},
 		},
 	}

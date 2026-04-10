@@ -56,103 +56,41 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 		return nil, fmt.Errorf("LockMap is required")
 	}
 	sm := NewStateManager(opts.MaestroDir, opts.LockMap)
-
 	sm.LockCommand(opts.CommandID)
 	defer sm.UnlockCommand(opts.CommandID)
 
-	// Validate
 	rc, err := validateRetryRequest(sm, opts)
 	if err != nil {
 		return nil, fmt.Errorf("validate retry: %w", err)
 	}
-	state := rc.state
 
-	// Worker assignment
-	workerStates, err := BuildWorkerStates(opts.MaestroDir, opts.Config.Agents.Workers)
+	assignment, workerStates, err := assignWorkerForRetry(opts)
 	if err != nil {
-		return nil, fmt.Errorf("build worker states: %w", err)
+		return nil, err
 	}
 
-	assignReqs := []TaskAssignmentRequest{{Name: "__retry", BloomLevel: opts.BloomLevel}}
-	assignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, workerStates, assignReqs)
-	if err != nil {
-		return nil, fmt.Errorf("worker assignment: %w", err)
-	}
-	assignment := assignments[0]
-
-	// Generate new task ID
 	newTaskID, err := model.NewTaskID(model.TaskIDCallerPlannerRetry)
 	if err != nil {
 		return nil, fmt.Errorf("generate task ID: %w", err)
 	}
-
 	now := nowUTC()
-
-	// Load original task cache for cascade recovery and queue building
 	origTaskCache, err := loadOriginalTasksFromQueue(opts.MaestroDir, opts.CommandID)
 	if err != nil {
 		return nil, fmt.Errorf("load original tasks from queue: %w", err)
 	}
 
-	// Apply state changes and cascade recovery
 	cascadeRecovered, origStateBytes, err := applyRetryStateChanges(
-		state, opts, newTaskID, rc, now, workerStates, origTaskCache,
+		rc.state, opts, newTaskID, rc, now, workerStates, origTaskCache,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("apply retry state changes: %w", err)
 	}
 
-	// Write queue entry for the primary retry task
-	writtenQueueTaskIDs := make([]retryQueueTask, 0, 1+len(cascadeRecovered)) // track for rollback
-	primaryTask := retryQueueTask{
-		taskID:             newTaskID,
-		commandID:          opts.CommandID,
-		purpose:            opts.Purpose,
-		content:            opts.Content,
-		acceptanceCriteria: opts.AcceptanceCriteria,
-		constraints:        opts.Constraints,
-		blockedBy:          rc.blockedBy,
-		bloomLevel:         opts.BloomLevel,
-		toolsHint:          opts.ToolsHint,
-		personaHint:        opts.PersonaHint,
-		skillRefs:          opts.SkillRefs,
-		workerID:           assignment.WorkerID,
-	}
-
-	if err := writeRetryQueueEntry(opts.MaestroDir, primaryTask, now, opts.LockMap); err != nil {
-		restoreState(state, origStateBytes)
-		return nil, fmt.Errorf("write queue entry for %s: %w", newTaskID, err)
-	}
-	writtenQueueTaskIDs = append(writtenQueueTaskIDs, primaryTask)
-
-	// Write queue entries for cascade recovered tasks
-	for _, cr := range cascadeRecovered {
-		crTask := buildCascadeQueueTask(cr, opts, state, origTaskCache)
-		if err := writeRetryQueueEntry(opts.MaestroDir, crTask, now, opts.LockMap); err != nil {
-			rollbackRetryQueueEntries(opts.MaestroDir, writtenQueueTaskIDs, opts.LockMap)
-			restoreState(state, origStateBytes)
-			return nil, fmt.Errorf("write queue entry for cascade %s: %w", cr.TaskID, err)
-		}
-		writtenQueueTaskIDs = append(writtenQueueTaskIDs, crTask)
-	}
-
-	// Cancel the original task's queue entry so that checkCommandTasksTerminal
-	// does not count it as failed after the retry task supersedes it.
-	if err := cancelOriginalTaskInQueue(opts.MaestroDir, opts.RetryOf, opts.CommandID, now, opts.LockMap); err != nil {
-		rollbackRetryQueueEntries(opts.MaestroDir, writtenQueueTaskIDs, opts.LockMap)
-		restoreState(state, origStateBytes)
-		return nil, fmt.Errorf("cancel original task in queue: %w", err)
-	}
-
-	// Save state
-	if err := sm.SaveState(state); err != nil {
-		// Best-effort restore of original task status in queue.
-		if restoreErr := restoreOriginalTaskInQueue(opts.MaestroDir, opts.RetryOf, opts.CommandID, model.StatusFailed, now, opts.LockMap); restoreErr != nil {
-			log.Printf("[WARN] failed to restore original task %s queue status: %v", opts.RetryOf, restoreErr)
-		}
-		rollbackRetryQueueEntries(opts.MaestroDir, writtenQueueTaskIDs, opts.LockMap)
-		restoreState(state, origStateBytes)
-		return nil, fmt.Errorf("save state: %w", err)
+	primaryTask := buildPrimaryRetryTask(opts, newTaskID, rc.blockedBy, assignment.WorkerID)
+	if err := writeAndCommitRetryQueue(
+		sm, opts, rc.state, primaryTask, cascadeRecovered, origTaskCache, origStateBytes, now,
+	); err != nil {
+		return nil, err
 	}
 
 	return &RetryResult{
@@ -162,6 +100,81 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 		Replaced:         opts.RetryOf,
 		CascadeRecovered: cascadeRecovered,
 	}, nil
+}
+
+// assignWorkerForRetry builds worker states and assigns a worker for the retry task.
+func assignWorkerForRetry(opts RetryOptions) (WorkerAssignment, []WorkerState, error) {
+	workerStates, err := BuildWorkerStates(opts.MaestroDir, opts.Config.Agents.Workers)
+	if err != nil {
+		return WorkerAssignment{}, nil, fmt.Errorf("build worker states: %w", err)
+	}
+	assignReqs := []TaskAssignmentRequest{{Name: "__retry", BloomLevel: opts.BloomLevel}}
+	assignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, workerStates, assignReqs)
+	if err != nil {
+		return WorkerAssignment{}, nil, fmt.Errorf("worker assignment: %w", err)
+	}
+	return assignments[0], workerStates, nil
+}
+
+// buildPrimaryRetryTask constructs the retryQueueTask for the primary retry task.
+func buildPrimaryRetryTask(opts RetryOptions, taskID string, blockedBy []string, workerID string) retryQueueTask {
+	return retryQueueTask{
+		taskID:             taskID,
+		commandID:          opts.CommandID,
+		purpose:            opts.Purpose,
+		content:            opts.Content,
+		acceptanceCriteria: opts.AcceptanceCriteria,
+		constraints:        opts.Constraints,
+		blockedBy:          blockedBy,
+		bloomLevel:         opts.BloomLevel,
+		toolsHint:          opts.ToolsHint,
+		personaHint:        opts.PersonaHint,
+		skillRefs:          opts.SkillRefs,
+		workerID:           workerID,
+	}
+}
+
+// writeAndCommitRetryQueue writes all queue entries (primary + cascade), cancels the original task,
+// and saves state. On any failure, it performs a full rollback of queue entries and state.
+func writeAndCommitRetryQueue(
+	sm *StateManager, opts RetryOptions, state *model.CommandState,
+	primaryTask retryQueueTask, cascadeRecovered []CascadeRecoveredTask,
+	origTaskCache map[string]model.Task, origStateBytes []byte, now string,
+) error {
+	writtenTasks := make([]retryQueueTask, 0, 1+len(cascadeRecovered))
+
+	if err := writeRetryQueueEntry(opts.MaestroDir, primaryTask, now, opts.LockMap); err != nil {
+		restoreState(state, origStateBytes)
+		return fmt.Errorf("write queue entry for %s: %w", primaryTask.taskID, err)
+	}
+	writtenTasks = append(writtenTasks, primaryTask)
+
+	for _, cr := range cascadeRecovered {
+		crTask := buildCascadeQueueTask(cr, opts, state, origTaskCache)
+		if err := writeRetryQueueEntry(opts.MaestroDir, crTask, now, opts.LockMap); err != nil {
+			rollbackRetryQueueEntries(opts.MaestroDir, writtenTasks, opts.LockMap)
+			restoreState(state, origStateBytes)
+			return fmt.Errorf("write queue entry for cascade %s: %w", cr.TaskID, err)
+		}
+		writtenTasks = append(writtenTasks, crTask)
+	}
+
+	if err := cancelOriginalTaskInQueue(opts.MaestroDir, opts.RetryOf, opts.CommandID, now, opts.LockMap); err != nil {
+		rollbackRetryQueueEntries(opts.MaestroDir, writtenTasks, opts.LockMap)
+		restoreState(state, origStateBytes)
+		return fmt.Errorf("cancel original task in queue: %w", err)
+	}
+
+	if err := sm.SaveState(state); err != nil {
+		if restoreErr := restoreOriginalTaskInQueue(opts.MaestroDir, opts.RetryOf, opts.CommandID, model.StatusFailed, now, opts.LockMap); restoreErr != nil {
+			log.Printf("[WARN] failed to restore original task %s queue status: %v", opts.RetryOf, restoreErr)
+		}
+		rollbackRetryQueueEntries(opts.MaestroDir, writtenTasks, opts.LockMap)
+		restoreState(state, origStateBytes)
+		return fmt.Errorf("save state: %w", err)
+	}
+
+	return nil
 }
 
 // retryContext holds validated state and metadata for a retry operation.

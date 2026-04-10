@@ -883,13 +883,13 @@ func TestIntegration_ReconciliationR1(t *testing.T) {
 		FileType:      "result_task",
 		Results: []model.TaskResult{
 			{
-				ID:        "res_0000000009_aabbcc09",
-				TaskID:    taskID,
-				CommandID: commandID,
-				Status:    model.StatusCompleted,
-				Summary:   "done",
-				Notified:  true,
-				CreatedAt: "2026-01-01T00:00:00Z",
+				ID:             "res_0000000009_aabbcc09",
+				TaskID:         taskID,
+				CommandID:      commandID,
+				Status:         model.StatusCompleted,
+				Summary:        "done",
+				NotifiableBase: model.NotifiableBase{Notified: true},
+				CreatedAt:      "2026-01-01T00:00:00Z",
 			},
 		},
 	}
@@ -946,13 +946,13 @@ func TestIntegration_ReconciliationR2(t *testing.T) {
 		FileType:      "result_task",
 		Results: []model.TaskResult{
 			{
-				ID:        "res_0000000010_aabbcc10",
-				TaskID:    taskID,
-				CommandID: commandID,
-				Status:    model.StatusCompleted,
-				Summary:   "done",
-				Notified:  true,
-				CreatedAt: "2026-01-01T00:00:00Z",
+				ID:             "res_0000000010_aabbcc10",
+				TaskID:         taskID,
+				CommandID:      commandID,
+				Status:         model.StatusCompleted,
+				Summary:        "done",
+				NotifiableBase: model.NotifiableBase{Notified: true},
+				CreatedAt:      "2026-01-01T00:00:00Z",
 			},
 		},
 	}
