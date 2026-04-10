@@ -12,13 +12,13 @@ import (
 )
 
 // runQueue dispatches queue subcommands (currently: write).
-func runQueue(args []string) error {
+func (a *cliApp) runQueue(args []string) error {
 	if len(args) < 1 {
 		return &CLIError{Code: 1, Msg: "maestro queue: missing subcommand\nusage: maestro queue <write> [options]"}
 	}
 	switch args[0] {
 	case "write":
-		return runQueueWrite(args[1:], os.Stderr)
+		return a.runQueueWrite(args[1:], os.Stderr)
 	default:
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue: unknown subcommand: %s\nusage: maestro queue write <target> [options]", args[0])}
 	}
@@ -26,7 +26,7 @@ func runQueue(args []string) error {
 
 // runQueueWrite enqueues a command, task, notification, or cancel-request via UDS.
 // warnOut is the destination for deprecation warnings.
-func runQueueWrite(args []string, warnOut io.Writer) error {
+func (a *cliApp) runQueueWrite(args []string, warnOut io.Writer) error {
 	if len(args) < 1 {
 		return &CLIError{Code: 1, Msg: "maestro queue write: missing target\nusage: maestro queue write <target> --type <command|task|notification|cancel-request> [options]"}
 	}
@@ -134,17 +134,17 @@ func runQueueWrite(args []string, warnOut io.Writer) error {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: unknown type: %s\nusage: maestro queue write <target> --type <command|task|notification|cancel-request> [options]", writeType)}
 	}
 
-	return sendQueueWrite(params)
+	return a.sendQueueWrite(params)
 }
 
 // sendQueueWrite sends a queue_write request to the daemon via UDS.
-func sendQueueWrite(params map[string]any) error {
+func (a *cliApp) sendQueueWrite(params map[string]any) error {
 	maestroDir, err := requireMaestroDir("queue write")
 	if err != nil {
 		return err
 	}
 
-	client := newUDSClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := a.createClient(filepath.Join(maestroDir, uds.DefaultSocketName))
 	resp, err := client.SendCommand("queue_write", params)
 	if err != nil {
 		return fmt.Errorf("maestro queue write: %w", err)

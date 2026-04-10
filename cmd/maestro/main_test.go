@@ -143,11 +143,7 @@ func TestFindMaestroDir_Found(t *testing.T) {
 	}
 
 	// Change to leaf and find .maestro in ancestor
-	orig, _ := os.Getwd()
-	defer func() { _ = os.Chdir(orig) }()
-	if err := os.Chdir(leaf); err != nil {
-		t.Fatal(err)
-	}
+	t.Chdir(leaf)
 
 	got, err := findMaestroDir()
 	if err != nil {
@@ -165,11 +161,7 @@ func TestFindMaestroDir_NotFound(t *testing.T) {
 	root := t.TempDir()
 	// No .maestro directory anywhere
 
-	orig, _ := os.Getwd()
-	defer func() { _ = os.Chdir(orig) }()
-	if err := os.Chdir(root); err != nil {
-		t.Fatal(err)
-	}
+	t.Chdir(root)
 
 	got, err := findMaestroDir()
 	if err != nil {
@@ -187,11 +179,7 @@ func TestFindMaestroDir_InCurrentDir(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	orig, _ := os.Getwd()
-	defer func() { _ = os.Chdir(orig) }()
-	if err := os.Chdir(root); err != nil {
-		t.Fatal(err)
-	}
+	t.Chdir(root)
 
 	got, err := findMaestroDir()
 	if err != nil {
@@ -205,46 +193,35 @@ func TestFindMaestroDir_InCurrentDir(t *testing.T) {
 }
 
 func TestRun_UnknownCommand(t *testing.T) {
-	origArgs := os.Args
-	defer func() { os.Args = origArgs }()
-
-	os.Args = []string{"maestro", "nonexistent-command"}
-	code := run()
+	t.Parallel()
+	code := newCLIApp().run([]string{"nonexistent-command"})
 	if code != 1 {
 		t.Errorf("run() = %d, want 1 for unknown command", code)
 	}
 }
 
 func TestRun_NoArgs(t *testing.T) {
-	origArgs := os.Args
-	defer func() { os.Args = origArgs }()
-
-	os.Args = []string{"maestro"}
-	code := run()
+	t.Parallel()
+	code := newCLIApp().run(nil)
 	if code != 1 {
 		t.Errorf("run() = %d, want 1 for no args", code)
 	}
 }
 
 func TestRun_Version(t *testing.T) {
-	origArgs := os.Args
-	defer func() { os.Args = origArgs }()
-
-	os.Args = []string{"maestro", "version"}
-	code := run()
+	t.Parallel()
+	code := newCLIApp().run([]string{"version"})
 	if code != 0 {
 		t.Errorf("run() = %d, want 0 for version", code)
 	}
 }
 
 func TestRun_Help(t *testing.T) {
-	origArgs := os.Args
-	defer func() { os.Args = origArgs }()
-
+	t.Parallel()
 	for _, arg := range []string{"help", "--help", "-h"} {
 		t.Run(arg, func(t *testing.T) {
-			os.Args = []string{"maestro", arg}
-			code := run()
+			t.Parallel()
+			code := newCLIApp().run([]string{arg})
 			if code != 0 {
 				t.Errorf("run(%s) = %d, want 0", arg, code)
 			}

@@ -172,7 +172,7 @@ func TestWorktreeIntegration_CreateRollback(t *testing.T) {
 
 	// Verify rollback: worker1 and worker2 worktrees should be cleaned up
 	for _, wID := range []string{"worker1", "worker2"} {
-		wtPath := filepath.Join(projectRoot, ".maestro", "worktrees", "cmd_rollback_3w", wID)
+		wtPath := filepath.Join(projectRoot, wm.config.EffectivePathPrefix(), "cmd_rollback_3w", wID)
 		if _, err := os.Stat(wtPath); !os.IsNotExist(err) {
 			t.Errorf("%s worktree should have been cleaned up on rollback, but exists at %s", wID, wtPath)
 		}

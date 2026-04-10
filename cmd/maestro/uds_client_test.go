@@ -33,21 +33,14 @@ func withMaestroDir(t *testing.T) {
 	if err := os.MkdirAll(maestroDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	origDir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(origDir) })
+	t.Chdir(dir)
 }
 
-func withMockUDS(t *testing.T, client udsClientIface) {
-	t.Helper()
-	orig := newUDSClient
-	newUDSClient = func(string) udsClientIface { return client }
-	t.Cleanup(func() { newUDSClient = orig })
+// newTestApp creates a cliApp with a mock UDS client injected via constructor.
+func newTestApp(client udsClientIface) *cliApp {
+	return &cliApp{
+		createClient: func(string) udsClientIface { return client },
+	}
 }
 
 func successResponse(data any) *uds.Response {
