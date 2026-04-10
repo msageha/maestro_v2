@@ -659,7 +659,7 @@ func (a *API) persistLeaseRejection(params ResultWriteParams, advisoryReason str
 	queuePath := filepath.Join(d.maestroDir, "queue", params.Reporter+".yaml")
 	queueLeaseEpoch := -1
 	authoritativeReason := advisoryReason
-	if data, err := os.ReadFile(queuePath); err == nil {
+	if data, err := os.ReadFile(queuePath); err == nil { //nolint:gosec // queuePath is constructed from a controlled application queue directory
 		var tq model.TaskQueue
 		if perr := yamlv3.Unmarshal(data, &tq); perr == nil {
 			found := false
@@ -687,7 +687,7 @@ func (a *API) persistLeaseRejection(params ResultWriteParams, advisoryReason str
 
 	resultPath := filepath.Join(d.maestroDir, "results", params.Reporter+".yaml")
 	var rf model.TaskResultFile
-	if data, err := os.ReadFile(resultPath); err == nil {
+	if data, err := os.ReadFile(resultPath); err == nil { //nolint:gosec // resultPath is constructed from a controlled application results directory
 		if perr := yamlv3.Unmarshal(data, &rf); perr != nil {
 			return "", false, fmt.Errorf("parse results file: %w", perr)
 		}
@@ -774,7 +774,7 @@ func computeRejectionDedupKey(params ResultWriteParams, queueLeaseEpoch int) str
 func (a *API) checkLeaseEpochForBestEffort(params ResultWriteParams) (skip bool, reason string) {
 	d := a.d
 	queuePath := filepath.Join(d.maestroDir, "queue", params.Reporter+".yaml")
-	data, err := os.ReadFile(queuePath)
+	data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 	if err != nil {
 		return false, ""
 	}
@@ -810,7 +810,7 @@ func (a *API) writeLearnings(params ResultWriteParams, resultID string) error {
 
 	// Load existing file
 	var lf model.LearningsFile
-	data, err := os.ReadFile(learningsPath)
+	data, err := os.ReadFile(learningsPath) //nolint:gosec // learningsPath is constructed from a controlled application state directory
 	if err == nil {
 		if err := yamlv3.Unmarshal(data, &lf); err != nil {
 			// Corrupt file — recover via quarantine
@@ -819,7 +819,7 @@ func (a *API) writeLearnings(params ResultWriteParams, resultID string) error {
 				return fmt.Errorf("recover learnings file: %w", recErr)
 			}
 			// Re-read the recovered file (may have been restored from .bak)
-			if recovered, readErr := os.ReadFile(learningsPath); readErr == nil {
+			if recovered, readErr := os.ReadFile(learningsPath); readErr == nil { //nolint:gosec // learningsPath is constructed from a controlled application state directory
 				if parseErr := yamlv3.Unmarshal(recovered, &lf); parseErr != nil {
 					// Recovery produced an unreadable file — start fresh
 					lf = model.LearningsFile{SchemaVersion: 1, FileType: "state_learnings"}
@@ -948,7 +948,7 @@ func (a *API) writeSkillCandidates(params ResultWriteParams) error {
 func (d *Daemon) dispatchReviewIfEligible(params ResultWriteParams) {
 	// Load the task from the queue to get BloomLevel and other metadata
 	queuePath := filepath.Join(d.maestroDir, "queue", params.Reporter+".yaml")
-	data, err := os.ReadFile(queuePath)
+	data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 	if err != nil {
 		d.log(LogLevelDebug, "review_dispatch_skip task=%s reason=queue_read_error: %v", params.TaskID, err)
 		return
@@ -1001,4 +1001,3 @@ func (d *Daemon) dispatchReviewIfEligible(params ResultWriteParams) {
 	d.log(LogLevelInfo, "review_dispatched task=%s command=%s bloom_level=%d",
 		params.TaskID, params.CommandID, task.BloomLevel)
 }
-

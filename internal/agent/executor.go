@@ -153,7 +153,7 @@ type Executor struct {
 // NewExecutor creates a new Executor that logs to .maestro/logs/agent_executor.log.
 func NewExecutor(maestroDir string, watcherCfg model.WatcherConfig, logLevel string) (*Executor, error) {
 	logPath := filepath.Join(maestroDir, "logs", "agent_executor.log")
-	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600) //nolint:gosec // logPath is constructed from a controlled application log directory
 	if err != nil {
 		return nil, fmt.Errorf("open log file %s: %w", logPath, err)
 	}
@@ -747,8 +747,8 @@ func (e *Executor) ensureWorkingDir(ctx context.Context, paneTarget, workingDir 
 // waitForShell polls a tmux pane until its current command is a known shell,
 // indicating the pane has returned to the shell prompt (e.g., after Claude exits).
 func (e *Executor) waitForShell(ctx context.Context, paneTarget string) error {
-	const maxAttempts = 30        // 30 × 500ms = 15s max
-	const pollInterval = 500      // milliseconds
+	const maxAttempts = 30   // 30 × 500ms = 15s max
+	const pollInterval = 500 // milliseconds
 	const maxConsecutiveErrors = 5
 
 	consecutiveErrors := 0

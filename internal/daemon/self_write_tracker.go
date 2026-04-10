@@ -71,7 +71,7 @@ func (t *selfWriteTracker) Consume(path string) bool {
 	t.mu.Unlock()
 
 	// Phase 2: Read file outside lock (I/O)
-	content, err := os.ReadFile(path)
+	content, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 	if err != nil {
 		return false
 	}

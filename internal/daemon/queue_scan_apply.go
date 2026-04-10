@@ -133,8 +133,8 @@ func (qh *QueueHandler) applyNotificationDispatchResult(dr dispatchResult, nq *m
 // busyCheckOps abstracts lease operations for the unified busy check logic.
 // Each field corresponds to a type-specific lease operation (task vs command).
 type busyCheckOps struct {
-	kind         string                      // "task" or "command"
-	ownerLabel   string                      // e.g., "worker=worker1" or "owner=planner"
+	kind         string // "task" or "command"
+	ownerLabel   string // e.g., "worker=worker1" or "owner=planner"
 	releaseLease func() error
 	extendLease  func() error
 	extendGrace  func(time.Duration) error

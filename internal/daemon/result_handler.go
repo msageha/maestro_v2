@@ -305,7 +305,9 @@ func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
 		label:      label,
 		loadFile:   rh.loadTaskResultFile,
 		getResults: func(f *model.TaskResultFile) []model.TaskResult { return f.Results },
-		findByID:   func(f *model.TaskResultFile, id string) *model.TaskResult { return findResultByID[model.TaskResult, *model.TaskResult](f.Results, id) },
+		findByID: func(f *model.TaskResultFile, id string) *model.TaskResult {
+			return findResultByID[model.TaskResult, *model.TaskResult](f.Results, id)
+		},
 
 		notify: func(r *model.TaskResult) error {
 			return rh.notifyPlannerOfWorkerResult(r.CommandID, r.TaskID, workerID, string(r.Status))
@@ -346,7 +348,9 @@ func (rh *ResultHandler) processCommandResultFile() int {
 		label:      "planner",
 		loadFile:   rh.loadCommandResultFile,
 		getResults: func(f *model.CommandResultFile) []model.CommandResult { return f.Results },
-		findByID:   func(f *model.CommandResultFile, id string) *model.CommandResult { return findResultByID[model.CommandResult, *model.CommandResult](f.Results, id) },
+		findByID: func(f *model.CommandResultFile, id string) *model.CommandResult {
+			return findResultByID[model.CommandResult, *model.CommandResult](f.Results, id)
+		},
 
 		notify: func(r *model.CommandResult) error {
 			return rh.notifyOrchestratorOfCommandResult(r.ID, r.CommandID, r.Status)
@@ -604,8 +608,10 @@ func (rh *ResultHandler) loadCommandResultFile(path string) (*model.CommandResul
 }
 
 // loadResultFile is a generic file loader for result files.
-func loadResultFile[F interface{ *model.TaskResultFile | *model.CommandResultFile }](path, defaultFileType string, newFile func() F) (F, error) {
-	data, err := os.ReadFile(path)
+func loadResultFile[F interface {
+	*model.TaskResultFile | *model.CommandResultFile
+}](path, defaultFileType string, newFile func() F) (F, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 	if err != nil {
 		if os.IsNotExist(err) {
 			rf := newFile()

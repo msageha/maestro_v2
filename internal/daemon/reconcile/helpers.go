@@ -89,7 +89,7 @@ func reconcileTerminalQueue[Q any, T any](
 	run.Deps.LockMap.Lock("queue:" + queueName)
 	defer run.Deps.LockMap.Unlock("queue:" + queueName)
 
-	queueData, err := os.ReadFile(queuePath)
+	queueData, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 	if err != nil {
 		return nil, nil
 	}

@@ -220,7 +220,7 @@ func activateContinuousMode(maestroDir string, cfg model.Config) error {
 
 	// Load existing state if present, otherwise create new
 	var state model.Continuous
-	data, err := os.ReadFile(continuousPath)
+	data, err := os.ReadFile(continuousPath) //nolint:gosec // continuousPath is constructed from a controlled application state directory
 	if err == nil {
 		if err := yamlv3.Unmarshal(data, &state); err != nil {
 			log.Printf("[WARN] failed to parse %s: %v", continuousPath, err)

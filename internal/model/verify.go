@@ -89,7 +89,7 @@ func (v *VerifyConfig) Validate() error {
 
 // LoadVerifyConfig reads and parses a verify.yaml file.
 func LoadVerifyConfig(path string) (*VerifyConfig, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is a config file path from validated inputs
 	if err != nil {
 		return nil, fmt.Errorf("load verify config: %w", err)
 	}

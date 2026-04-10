@@ -9,9 +9,10 @@ import (
 	"strings"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/model"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // ReadTopKLearnings reads learnings.yaml and returns the most recent K entries
@@ -20,7 +21,7 @@ import (
 func ReadTopKLearnings(maestroDir string, cfg model.LearningsConfig, now time.Time) ([]model.Learning, error) {
 	learningsPath := filepath.Join(maestroDir, "state", "learnings.yaml")
 
-	data, err := os.ReadFile(learningsPath)
+	data, err := os.ReadFile(learningsPath) //nolint:gosec // learningsPath is constructed from a controlled application state directory
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil

@@ -77,7 +77,7 @@ func Rebuild(opts RebuildOptions) error {
 		}
 
 		path := filepath.Join(resultsDir, name)
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application results directory
 		if err != nil {
 			log.Printf("rebuild: skipping unreadable result file %s: %v", name, err)
 			skippedFiles++

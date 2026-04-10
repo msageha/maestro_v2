@@ -99,7 +99,7 @@ func (sm *StateManager) LoadState(commandID string) (*model.CommandState, error)
 // loadAndParseState reads and validates a state file. Returns errYAMLCorrupted
 // (wrapped) for YAML parse errors to distinguish from I/O errors.
 func (sm *StateManager) loadAndParseState(path, commandID string) (*model.CommandState, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application state directory
 	if err != nil {
 		// Preserve os.ErrNotExist for errors.Is() checks by callers
 		return nil, fmt.Errorf("read state %s: %w", commandID, err)
@@ -159,7 +159,7 @@ func (sm *StateManager) SaveState(state *model.CommandState) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil { //nolint:gosec // 0755 is appropriate for a state directory
 		return fmt.Errorf("create state dir: %w", err)
 	}
 	return yamlutil.AtomicWrite(path, state)

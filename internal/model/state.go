@@ -20,9 +20,9 @@ type CommandState struct {
 	CancelledReasons   map[string]string   `yaml:"cancelled_reasons"`
 	AppliedResultIDs   map[string]string   `yaml:"applied_result_ids"`
 	SystemCommitTaskID *string             `yaml:"system_commit_task_id"`
-	RetryLineage         map[string]string   `yaml:"retry_lineage"`
-	RetryEnqueueFailed   map[string]string   `yaml:"retry_enqueue_failed,omitempty"` // task_id → worker_id; set when state registered but queue add failed
-	QueueWriteFailed     map[string]string   `yaml:"queue_write_failed,omitempty"`   // task_id → "workerID:resultID"; set when result committed but queue terminal write failed (H2 sticky error)
+	RetryLineage       map[string]string   `yaml:"retry_lineage"`
+	RetryEnqueueFailed map[string]string   `yaml:"retry_enqueue_failed,omitempty"` // task_id → worker_id; set when state registered but queue add failed
+	QueueWriteFailed   map[string]string   `yaml:"queue_write_failed,omitempty"`   // task_id → "workerID:resultID"; set when result committed but queue terminal write failed (H2 sticky error)
 	Phases             []Phase             `yaml:"phases"`
 	phaseIDIndex       map[string]int      `yaml:"-"` // cached phaseID→slice index; lazily built
 	LastReconciledAt   *string             `yaml:"last_reconciled_at"`
@@ -61,18 +61,18 @@ type CancelState struct {
 // Phase はコマンド実行計画内の単一フェーズを表す。
 // タスクのグルーピングと実行順序の制御に使用され、フェーズ間の依存関係を持つ。
 type Phase struct {
-	PhaseID         string            `yaml:"phase_id"`
-	Name            string            `yaml:"name"`
-	Type            string            `yaml:"type"` // "concrete" or "deferred"
-	Status          PhaseStatus       `yaml:"status"`
-	DependsOnPhases []string          `yaml:"depends_on_phases"`
-	TaskIDs         []string          `yaml:"task_ids"`
-	Constraints     *PhaseConstraints `yaml:"constraints"`
-	ActivatedAt     *string           `yaml:"activated_at"`
-	CompletedAt     *string           `yaml:"completed_at"`
-	FillDeadlineAt  *string           `yaml:"fill_deadline_at"`
-	FillingStartedAt *string          `yaml:"filling_started_at,omitempty"`
-	ReopenedAt      *string           `yaml:"reopened_at"`
+	PhaseID          string            `yaml:"phase_id"`
+	Name             string            `yaml:"name"`
+	Type             string            `yaml:"type"` // "concrete" or "deferred"
+	Status           PhaseStatus       `yaml:"status"`
+	DependsOnPhases  []string          `yaml:"depends_on_phases"`
+	TaskIDs          []string          `yaml:"task_ids"`
+	Constraints      *PhaseConstraints `yaml:"constraints"`
+	ActivatedAt      *string           `yaml:"activated_at"`
+	CompletedAt      *string           `yaml:"completed_at"`
+	FillDeadlineAt   *string           `yaml:"fill_deadline_at"`
+	FillingStartedAt *string           `yaml:"filling_started_at,omitempty"`
+	ReopenedAt       *string           `yaml:"reopened_at"`
 }
 
 // PhaseIndex returns the slice index for the given phaseID using a lazily

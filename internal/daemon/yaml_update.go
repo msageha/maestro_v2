@@ -22,7 +22,7 @@ var errNoUpdate = errors.New("no file update needed")
 // If fn returns any other error, it is propagated to the caller.
 func updateYAMLFile[T any](path string, fn func(*T) error) error {
 	var v T
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read %s: %w", path, err)
 	}

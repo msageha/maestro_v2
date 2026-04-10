@@ -196,7 +196,7 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 
 	// 7. Execute worktree publishes (slow git I/O, outside scanMu.Lock)
 	var additionalCleanups []worktreeCleanupItem
-	forEachUntilCanceled(ctx, pa.work.worktreePublishes, func(item worktreePublishItem) {
+	if err := forEachUntilCanceled(ctx, pa.work.worktreePublishes, func(item worktreePublishItem) {
 		pr := worktreePublishResult{Item: item}
 		if qh.worktreeManager != nil {
 			cmdState, err := qh.worktreeManager.GetCommandState(item.CommandID)
@@ -221,17 +221,21 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 				Reason:    "success",
 			})
 		}
-	})
+	}); err != nil {
+		qh.log(LogLevelWarn, "worktree_publishes_canceled: %v", err)
+	}
 
 	// 8. Execute worktree cleanups (Phase A collected + post-publish)
 	allCleanups := append(pa.work.worktreeCleanups, additionalCleanups...)
-	forEachUntilCanceled(ctx, allCleanups, func(item worktreeCleanupItem) {
+	if err := forEachUntilCanceled(ctx, allCleanups, func(item worktreeCleanupItem) {
 		cr := worktreeCleanupResult{Item: item}
 		if qh.worktreeManager != nil {
 			cr.Error = qh.worktreeManager.CleanupCommand(item.CommandID)
 		}
 		result.worktreeCleanups = append(result.worktreeCleanups, cr)
-	})
+	}); err != nil {
+		qh.log(LogLevelWarn, "worktree_cleanups_canceled: %v", err)
+	}
 
 	return result
 }

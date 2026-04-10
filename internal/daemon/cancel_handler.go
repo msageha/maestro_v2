@@ -135,7 +135,7 @@ func (ch *CancelHandler) CancelPendingTasks(tasks []model.Task, commandID string
 //   - Phase C: re-validate each cancelMark against the freshly-loaded queue
 //     and apply ApplyCancelMark, which is a no-op for tasks that have already
 //     transitioned to a terminal state by the worker.
-func (ch *CancelHandler) CollectCancelInterruptItems(tasks []model.Task, commandID string, workerID string) ([]cancelMarkItem, []interruptItem) {
+func (ch *CancelHandler) CollectCancelInterruptItems(tasks []model.Task, commandID string, workerID string) ([]cancelMarkItem, []interruptItem) { //nolint:revive // unexported return types are intentional; callers are within the same package
 	marks := make([]cancelMarkItem, 0, len(tasks))
 	interrupts := make([]interruptItem, 0, len(tasks))
 
@@ -241,7 +241,7 @@ func (ch *CancelHandler) WriteSyntheticResults(results []CancelledTaskResult, wo
 	resultPath := filepath.Join(ch.maestroDir, "results", workerID+".yaml")
 	var rf model.TaskResultFile
 
-	data, err := os.ReadFile(resultPath)
+	data, err := os.ReadFile(resultPath) //nolint:gosec // resultPath is constructed from a controlled application results directory
 	if err == nil {
 		if unmarshalErr := yamlv3.Unmarshal(data, &rf); unmarshalErr != nil {
 			ch.log(LogLevelWarn, "unmarshal_result_file worker=%s error=%v", workerID, unmarshalErr)

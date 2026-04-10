@@ -41,7 +41,7 @@ func (d *Daemon) prepareStartup() error {
 
 	// Initialize tmux debug logger
 	tmuxLogPath := filepath.Join(d.maestroDir, "logs", "tmux_debug.log")
-	if tmuxLogFile, err := os.OpenFile(tmuxLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil {
+	if tmuxLogFile, err := os.OpenFile(tmuxLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644); err == nil { //nolint:gosec // 0644 is intentional for a log file that may be read by the owning user
 		tmuxLogger := log.New(tmuxLogFile, "", log.LstdFlags|log.Lmicroseconds)
 		tmux.SetDebugLogger(tmuxLogger)
 		d.log(LogLevelInfo, "tmux debug logger initialized at %s", tmuxLogPath)
@@ -84,7 +84,7 @@ func (d *Daemon) prepareStartup() error {
 	queueDir := filepath.Join(d.maestroDir, "queue")
 	resultsDir := filepath.Join(d.maestroDir, "results")
 	for _, dir := range []string{queueDir, resultsDir} {
-		if err := os.MkdirAll(dir, 0755); err != nil {
+		if err := os.MkdirAll(dir, 0755); err != nil { //nolint:gosec // 0755 is appropriate for queue/results directories
 			return fmt.Errorf("ensure dir %s: %w", dir, err)
 		}
 		if err := watcher.Add(dir); err != nil {
@@ -382,12 +382,12 @@ func (d *Daemon) initPhaseC() {
 		profiles := make(map[string]map[string]interface{}, len(cfg.FeatureProfiles))
 		for level, fp := range cfg.FeatureProfiles {
 			profiles[level] = map[string]interface{}{
-				"cross_agent_review":        fp.EffectiveCrossAgentReview() != "false",
-				"exploratory_optimization":  fp.EffectiveExploratoryOptimization(),
-				"evolutionary_quality":      fp.EffectiveEvolutionaryQuality(),
-				"adaptive_model_selection":  fp.EffectiveAdaptiveModelSelection(),
-				"self_improvement":          fp.EffectiveSelfImprovement(),
-				"adaptive_depth":            fp.EffectiveAdaptiveDepth(),
+				"cross_agent_review":       fp.EffectiveCrossAgentReview() != "false",
+				"exploratory_optimization": fp.EffectiveExploratoryOptimization(),
+				"evolutionary_quality":     fp.EffectiveEvolutionaryQuality(),
+				"adaptive_model_selection": fp.EffectiveAdaptiveModelSelection(),
+				"self_improvement":         fp.EffectiveSelfImprovement(),
+				"adaptive_depth":           fp.EffectiveAdaptiveDepth(),
 			}
 		}
 		d.featureEvaluator.LoadProfiles(profiles)

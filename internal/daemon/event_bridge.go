@@ -119,4 +119,3 @@ func (eb *EventBridge) unsubscribeAll() {
 	}
 	eb.eventUnsubscribers = nil
 }
-

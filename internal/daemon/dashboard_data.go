@@ -21,9 +21,11 @@ type EventClass int
 
 const (
 	// EventClassTask classifies events related to task lifecycle changes.
-	EventClassTask    EventClass = 1 << iota // 1
-	EventClassError                          // 2
-	EventClassWarning                        // 4
+	EventClassTask EventClass = 1 << iota // 1
+	// EventClassError classifies events that represent errors or failures.
+	EventClassError // 2
+	// EventClassWarning classifies events that represent warnings or non-fatal issues.
+	EventClassWarning // 4
 )
 
 // eventClassification maps known event types to their classification bitmask.
@@ -254,7 +256,7 @@ func (f *DashboardFormatter) collectTaskStatsFromState(data *DashboardData) {
 		}
 
 		filePath := filepath.Join(stateDir, entry.Name())
-		fileData, err := os.ReadFile(filePath)
+		fileData, err := os.ReadFile(filePath) //nolint:gosec // filePath is constructed from a controlled application state directory
 		if err != nil {
 			continue
 		}
@@ -317,7 +319,7 @@ func (f *DashboardFormatter) updateQueueStatus(data *DashboardData) {
 		info := QueueInfo{Name: queueName}
 
 		queuePath := filepath.Join(queueDir, entry.Name())
-		fileData, err := os.ReadFile(queuePath)
+		fileData, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 		if err != nil {
 			data.QueueStatus[queueName] = info
 			continue

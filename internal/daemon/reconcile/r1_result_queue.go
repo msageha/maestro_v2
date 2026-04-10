@@ -45,7 +45,7 @@ func (R1ResultQueue) Apply(run *Run) Outcome {
 		resultPath := filepath.Join(resultsDir, name)
 		queuePath := filepath.Join(run.Deps.MaestroDir, "queue", name)
 
-		resultData, err := os.ReadFile(resultPath)
+		resultData, err := os.ReadFile(resultPath) //nolint:gosec // resultPath is constructed from a controlled application results directory
 		if err != nil {
 			continue
 		}
@@ -221,7 +221,7 @@ func r1QueueTaskTerminal(run *Run, workerID, taskID string) bool {
 	run.Deps.LockMap.Lock("queue:" + workerID)
 	defer run.Deps.LockMap.Unlock("queue:" + workerID)
 
-	data, err := os.ReadFile(queuePath)
+	data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 	if err != nil {
 		return false
 	}
@@ -409,7 +409,7 @@ func r1TaskExistsInQueue(run *Run, workerID, taskID string) bool {
 	run.Deps.LockMap.Lock("queue:" + workerID)
 	defer run.Deps.LockMap.Unlock("queue:" + workerID)
 
-	data, err := os.ReadFile(queuePath)
+	data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 	if err != nil {
 		return false
 	}
@@ -434,7 +434,7 @@ func r1FindOriginalTask(run *Run, workerID, commandID string) *model.Task {
 	run.Deps.LockMap.Lock("queue:" + workerID)
 	defer run.Deps.LockMap.Unlock("queue:" + workerID)
 
-	data, err := os.ReadFile(queuePath)
+	data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 	if err != nil {
 		return nil
 	}
@@ -490,7 +490,7 @@ func r1AddTaskToQueue(run *Run, workerID string, task *model.Task) error {
 	run.Deps.LockMap.Lock("queue:" + workerID)
 	defer run.Deps.LockMap.Unlock("queue:" + workerID)
 
-	data, err := os.ReadFile(queuePath)
+	data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read queue: %w", err)
 	}

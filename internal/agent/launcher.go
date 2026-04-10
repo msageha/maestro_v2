@@ -195,14 +195,14 @@ func buildLaunchArgs(role, agentModel, systemPrompt, basePromptMode string) []st
 func buildSystemPrompt(maestroDir, role string) (string, error) {
 	// Read maestro.md
 	maestroPath := filepath.Join(maestroDir, "maestro.md")
-	maestroContent, err := os.ReadFile(maestroPath)
+	maestroContent, err := os.ReadFile(maestroPath) //nolint:gosec // maestroPath is constructed from a controlled application directory
 	if err != nil {
 		return "", fmt.Errorf("read maestro.md: %w", err)
 	}
 
 	// Read instructions/{role}.md
 	instructionsPath := filepath.Join(maestroDir, "instructions", role+".md")
-	instructionsContent, err := os.ReadFile(instructionsPath)
+	instructionsContent, err := os.ReadFile(instructionsPath) //nolint:gosec // instructionsPath is constructed from a controlled application directory
 	if err != nil {
 		return "", fmt.Errorf("read instructions/%s.md: %w", role, err)
 	}

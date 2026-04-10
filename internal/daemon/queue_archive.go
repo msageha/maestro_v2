@@ -18,7 +18,7 @@ func (qh *QueueHandler) loadCommandQueue() (model.CommandQueue, string) {
 	path := filepath.Join(qh.maestroDir, "queue", "planner.yaml")
 	var cq model.CommandQueue
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 	if err != nil {
 		if !os.IsNotExist(err) {
 			qh.log(LogLevelWarn, "load_commands error=%v", err)
@@ -57,13 +57,13 @@ func (qh *QueueHandler) loadCommandQueue() (model.CommandQueue, string) {
 // quarantineFile saves corrupted file data to the quarantine directory for later inspection.
 func (qh *QueueHandler) quarantineFile(data []byte, name string) {
 	quarantineDir := filepath.Join(qh.maestroDir, "quarantine")
-	if err := os.MkdirAll(quarantineDir, 0755); err != nil {
+	if err := os.MkdirAll(quarantineDir, 0755); err != nil { //nolint:gosec // 0755 is appropriate for a quarantine directory
 		qh.log(LogLevelError, "create_quarantine_dir error=%v", err)
 		return
 	}
 	ts := qh.clock.Now().UTC().Format("20060102T150405Z")
 	qPath := filepath.Join(quarantineDir, fmt.Sprintf("%s_%s", ts, name))
-	if err := os.WriteFile(qPath, data, 0600); err != nil {
+	if err := os.WriteFile(qPath, data, 0600); err != nil { //nolint:gosec // qPath is constructed from a validated quarantine directory and a timestamp
 		qh.log(LogLevelError, "quarantine_write error=%v", err)
 	} else {
 		qh.log(LogLevelInfo, "quarantined file=%s to=%s", name, qPath)
@@ -202,7 +202,7 @@ func (qh *QueueHandler) loadAllTaskQueues() map[string]*taskQueueEntry {
 		}
 
 		path := filepath.Join(queueDir, name)
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 		if err != nil {
 			qh.log(LogLevelWarn, "load_task_queue file=%s error=%v", name, err)
 			continue
@@ -223,7 +223,7 @@ func (qh *QueueHandler) loadNotificationQueue() (model.NotificationQueue, string
 	path := filepath.Join(qh.maestroDir, "queue", "orchestrator.yaml")
 	var nq model.NotificationQueue
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 	if err != nil {
 		if !os.IsNotExist(err) {
 			qh.log(LogLevelWarn, "load_notifications error=%v", err)
@@ -270,7 +270,7 @@ func (qh *QueueHandler) loadPlannerSignalQueue() (model.PlannerSignalQueue, stri
 	path := filepath.Join(qh.maestroDir, "queue", "planner_signals.yaml")
 	var sq model.PlannerSignalQueue
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 	if err != nil {
 		if !os.IsNotExist(err) {
 			qh.log(LogLevelWarn, "load_planner_signals error=%v", err)

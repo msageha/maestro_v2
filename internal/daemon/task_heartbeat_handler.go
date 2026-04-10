@@ -10,12 +10,13 @@ import (
 	"sync"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
 	"github.com/msageha/maestro_v2/internal/yaml"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // TaskHeartbeatHandler handles task heartbeat requests.
@@ -115,7 +116,7 @@ func (h *TaskHeartbeatHandler) Handle(params json.RawMessage) *uds.Response {
 	defer unlock()
 
 	// Read queue file
-	queueData, err := os.ReadFile(queuePath)
+	queueData, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 	if err != nil {
 		if os.IsNotExist(err) {
 			return uds.ErrorResponse(uds.ErrCodeNotFound, fmt.Sprintf("queue file not found: %s", queueFile))

@@ -39,7 +39,7 @@ func RunUp(opts UpOptions) (err error) {
 	if mkErr := os.MkdirAll(filepath.Dir(tmuxLogPath), 0750); mkErr != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to create tmux debug log directory: %v\n", mkErr)
 	} else {
-		tmuxLogFile, openErr := os.OpenFile(tmuxLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+		tmuxLogFile, openErr := os.OpenFile(tmuxLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600) //nolint:gosec // tmuxLogPath is constructed from a controlled application log directory
 		if openErr != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to open tmux debug log: %v\n", openErr)
 		} else {

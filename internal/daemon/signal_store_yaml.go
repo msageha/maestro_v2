@@ -44,7 +44,7 @@ func (s *YAMLSignalStore) UpdateMergeConflictSignal(commandID, phaseID, workerID
 	path := filepath.Join(s.maestroDir, "queue", "planner_signals.yaml")
 	var sq model.PlannerSignalQueue
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 	switch {
 	case err == nil:
 		if uerr := yamlv3.Unmarshal(data, &sq); uerr != nil {

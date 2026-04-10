@@ -146,7 +146,7 @@ func (wm *Manager) gitExecCombined(dir string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), wm.gitTimeout())
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", args...) //nolint:gosec // args are constructed internally from validated inputs
 	if dir != "" {
 		cmd.Dir = dir
 	} else {
@@ -171,7 +171,7 @@ func (wm *Manager) gitExecOutput(dir string, args ...string) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), wm.gitTimeout())
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "git", args...)
+	cmd := exec.CommandContext(ctx, "git", args...) //nolint:gosec // args are constructed internally from validated inputs
 	if dir != "" {
 		cmd.Dir = dir
 	} else {

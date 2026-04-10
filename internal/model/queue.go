@@ -19,19 +19,19 @@ type Command struct {
 	Content           string   `yaml:"content"`
 	SkillRefs         []string `yaml:"skill_refs,omitempty"`
 	Priority          int      `yaml:"priority"`
-	Status            Status  `yaml:"status"`
-	Attempts          int     `yaml:"attempts"`
-	LastError         *string `yaml:"last_error"`
-	DeadLetteredAt    *string `yaml:"dead_lettered_at"`
-	DeadLetterReason  *string `yaml:"dead_letter_reason"`
-	LeaseOwner        *string `yaml:"lease_owner"`
-	LeaseExpiresAt    *string `yaml:"lease_expires_at"`
-	LeaseEpoch        int     `yaml:"lease_epoch"`
-	CancelReason      *string `yaml:"cancel_reason"`
-	CancelRequestedAt *string `yaml:"cancel_requested_at"`
-	CancelRequestedBy *string `yaml:"cancel_requested_by"`
-	CreatedAt         string  `yaml:"created_at"`
-	UpdatedAt         string  `yaml:"updated_at"`
+	Status            Status   `yaml:"status"`
+	Attempts          int      `yaml:"attempts"`
+	LastError         *string  `yaml:"last_error"`
+	DeadLetteredAt    *string  `yaml:"dead_lettered_at"`
+	DeadLetterReason  *string  `yaml:"dead_letter_reason"`
+	LeaseOwner        *string  `yaml:"lease_owner"`
+	LeaseExpiresAt    *string  `yaml:"lease_expires_at"`
+	LeaseEpoch        int      `yaml:"lease_epoch"`
+	CancelReason      *string  `yaml:"cancel_reason"`
+	CancelRequestedAt *string  `yaml:"cancel_requested_at"`
+	CancelRequestedBy *string  `yaml:"cancel_requested_by"`
+	CreatedAt         string   `yaml:"created_at"`
+	UpdatedAt         string   `yaml:"updated_at"`
 }
 
 // TaskQueue はタスクキューファイルの YAML 構造を表す。
@@ -61,40 +61,40 @@ func DefaultDefinitionOfAbort() DefinitionOfAbort {
 // Task はコマンドから分解された単一の作業単位を表す。
 // Worker に配信され、実行・結果報告のライフサイクルを持つ。
 type Task struct {
-	ID                 string   `yaml:"id"`
-	CommandID          string   `yaml:"command_id"`
-	Purpose            string   `yaml:"purpose"`
-	Content            string   `yaml:"content"`
-	AcceptanceCriteria string   `yaml:"acceptance_criteria"`
-	DefinitionOfDone   []string `yaml:"definition_of_done,omitempty"`
-	Constraints        []string `yaml:"constraints"`
-	BlockedBy          []string `yaml:"blocked_by"`
-	BloomLevel         int      `yaml:"bloom_level"`
-	ToolsHint          []string `yaml:"tools_hint,omitempty"`
-	PersonaHint        string   `yaml:"persona_hint,omitempty"`
-	SkillRefs          []string `yaml:"skill_refs,omitempty"`
-	ExpectedPaths      []string          `yaml:"expected_paths,omitempty"`
+	ID                 string             `yaml:"id"`
+	CommandID          string             `yaml:"command_id"`
+	Purpose            string             `yaml:"purpose"`
+	Content            string             `yaml:"content"`
+	AcceptanceCriteria string             `yaml:"acceptance_criteria"`
+	DefinitionOfDone   []string           `yaml:"definition_of_done,omitempty"`
+	Constraints        []string           `yaml:"constraints"`
+	BlockedBy          []string           `yaml:"blocked_by"`
+	BloomLevel         int                `yaml:"bloom_level"`
+	ToolsHint          []string           `yaml:"tools_hint,omitempty"`
+	PersonaHint        string             `yaml:"persona_hint,omitempty"`
+	SkillRefs          []string           `yaml:"skill_refs,omitempty"`
+	ExpectedPaths      []string           `yaml:"expected_paths,omitempty"`
 	DefinitionOfAbort  *DefinitionOfAbort `yaml:"definition_of_abort,omitempty"`
-	Priority           int      `yaml:"priority"`
-	Status             Status   `yaml:"status"`
-	Attempts           int      `yaml:"attempts"`
-	ExecutionRetries   int      `yaml:"execution_retries,omitempty"` // Number of actual retry executions (not dispatch attempts)
-	OriginalTaskID     string   `yaml:"original_task_id,omitempty"`    // For tracking retry lineage
-	NotBefore          *string  `yaml:"not_before,omitempty"`          // RFC3339 timestamp for cooldown
-	LastError          *string  `yaml:"last_error"`
-	DeadLetteredAt     *string  `yaml:"dead_lettered_at"`
-	DeadLetterReason   *string  `yaml:"dead_letter_reason"`
-	LeaseOwner         *string  `yaml:"lease_owner"`
-	LeaseExpiresAt     *string  `yaml:"lease_expires_at"`
-	LeaseEpoch         int      `yaml:"lease_epoch"`
-	InProgressAt       *string  `yaml:"in_progress_at,omitempty"`
-	CreatedAt          string   `yaml:"created_at"`
-	UpdatedAt          string   `yaml:"updated_at"`
+	Priority           int                `yaml:"priority"`
+	Status             Status             `yaml:"status"`
+	Attempts           int                `yaml:"attempts"`
+	ExecutionRetries   int                `yaml:"execution_retries,omitempty"` // Number of actual retry executions (not dispatch attempts)
+	OriginalTaskID     string             `yaml:"original_task_id,omitempty"`  // For tracking retry lineage
+	NotBefore          *string            `yaml:"not_before,omitempty"`        // RFC3339 timestamp for cooldown
+	LastError          *string            `yaml:"last_error"`
+	DeadLetteredAt     *string            `yaml:"dead_lettered_at"`
+	DeadLetterReason   *string            `yaml:"dead_letter_reason"`
+	LeaseOwner         *string            `yaml:"lease_owner"`
+	LeaseExpiresAt     *string            `yaml:"lease_expires_at"`
+	LeaseEpoch         int                `yaml:"lease_epoch"`
+	InProgressAt       *string            `yaml:"in_progress_at,omitempty"`
+	CreatedAt          string             `yaml:"created_at"`
+	UpdatedAt          string             `yaml:"updated_at"`
 
 	// C-7: Runtime selection (claude-code|codex|gemini)
-	Runtime         string `yaml:"runtime,omitempty" json:"runtime,omitempty"`
+	Runtime string `yaml:"runtime,omitempty" json:"runtime,omitempty"`
 	// C-7: Runtime-specific model override
-	ModelOverride   string `yaml:"model_override,omitempty" json:"model_override,omitempty"`
+	ModelOverride string `yaml:"model_override,omitempty" json:"model_override,omitempty"`
 	// C-6/C-8: Complexity level (simple|standard|complex|critical)
 	ComplexityLevel string `yaml:"complexity_level,omitempty" json:"complexity_level,omitempty"`
 }
@@ -124,30 +124,30 @@ type NotificationQueue struct {
 // Notification はタスクまたはコマンドの結果に対する単一の通知エントリを表す。
 // Orchestrator / Planner への結果配信に使用される。
 type Notification struct {
-	ID               string  `yaml:"id"`
-	CommandID        string  `yaml:"command_id"`
+	ID               string           `yaml:"id"`
+	CommandID        string           `yaml:"command_id"`
 	Type             NotificationType `yaml:"type"`
-	SourceResultID   string  `yaml:"source_result_id"`
-	Content          string  `yaml:"content"`
-	Priority         int     `yaml:"priority"`
-	Status           Status  `yaml:"status"`
-	Attempts         int     `yaml:"attempts"`
-	LastError        *string `yaml:"last_error"`
-	DeadLetteredAt   *string `yaml:"dead_lettered_at"`
-	DeadLetterReason *string `yaml:"dead_letter_reason"`
-	LeaseOwner       *string `yaml:"lease_owner"`
-	LeaseExpiresAt   *string `yaml:"lease_expires_at"`
-	LeaseEpoch       int     `yaml:"lease_epoch"`
-	CreatedAt        string  `yaml:"created_at"`
-	UpdatedAt        string  `yaml:"updated_at"`
+	SourceResultID   string           `yaml:"source_result_id"`
+	Content          string           `yaml:"content"`
+	Priority         int              `yaml:"priority"`
+	Status           Status           `yaml:"status"`
+	Attempts         int              `yaml:"attempts"`
+	LastError        *string          `yaml:"last_error"`
+	DeadLetteredAt   *string          `yaml:"dead_lettered_at"`
+	DeadLetterReason *string          `yaml:"dead_letter_reason"`
+	LeaseOwner       *string          `yaml:"lease_owner"`
+	LeaseExpiresAt   *string          `yaml:"lease_expires_at"`
+	LeaseEpoch       int              `yaml:"lease_epoch"`
+	CreatedAt        string           `yaml:"created_at"`
+	UpdatedAt        string           `yaml:"updated_at"`
 }
 
 // PlannerSignalQueue は Planner 向けシグナルキューファイルの YAML 構造を表す。
 // フェーズ完了やコンフリクト検知などのイベントを Planner に伝達する。
 type PlannerSignalQueue struct {
-	SchemaVersion int              `yaml:"schema_version"`
-	FileType      string           `yaml:"file_type"`
-	Signals       []PlannerSignal  `yaml:"signals"`
+	SchemaVersion int             `yaml:"schema_version"`
+	FileType      string          `yaml:"file_type"`
+	Signals       []PlannerSignal `yaml:"signals"`
 }
 
 // PlannerSignal は Planner に送信される単一のシグナルを表す。
@@ -168,7 +168,7 @@ type PlannerSignal struct {
 	// WorkerID disambiguates per-worker signals (e.g. commit_failed) so multiple
 	// workers in the same phase each retain a distinct entry. Empty for
 	// phase-level signals — preserves the legacy dedup key.
-	WorkerID      string  `yaml:"worker_id,omitempty"`
+	WorkerID string `yaml:"worker_id,omitempty"`
 	// Reason is a structured machine-readable classification for the signal
 	// (e.g. "all_files_filtered", "policy_violation:max_files_exceeded",
 	// "generic:<message>"). Currently populated for commit_failed signals so
@@ -179,9 +179,9 @@ type PlannerSignal struct {
 	// underlying refs (base = common ancestor, ours = integration side,
 	// theirs = worker side). Empty for non-conflict signals. Added in MVP-1;
 	// the legacy free-form Message field is preserved for backward compat.
-	ConflictBaseRef   string   `yaml:"conflict_base_ref,omitempty"`
-	ConflictOursRef   string   `yaml:"conflict_ours_ref,omitempty"`
-	ConflictTheirsRef string   `yaml:"conflict_theirs_ref,omitempty"`
+	ConflictBaseRef   string `yaml:"conflict_base_ref,omitempty"`
+	ConflictOursRef   string `yaml:"conflict_ours_ref,omitempty"`
+	ConflictTheirsRef string `yaml:"conflict_theirs_ref,omitempty"`
 	// ConflictFiles lists the files reported in conflict by git for
 	// merge_conflict signals. Empty for non-conflict signals.
 	ConflictFiles []string `yaml:"conflict_files,omitempty"`

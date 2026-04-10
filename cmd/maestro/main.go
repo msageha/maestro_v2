@@ -27,6 +27,7 @@ func (e *CLIError) Error() string {
 	return "cli error"
 }
 
+// ExitCode returns the process exit code for this error.
 func (e *CLIError) ExitCode() int {
 	if e.Code == 0 {
 		return 1
@@ -53,7 +54,7 @@ type modeSetter struct {
 	val    string
 }
 
-func (m *modeSetter) String() string  { return "" }
+func (m *modeSetter) String() string   { return "" }
 func (m *modeSetter) Set(string) error { *m.target = m.val; return nil }
 func (m *modeSetter) IsBoolFlag() bool { return true }
 

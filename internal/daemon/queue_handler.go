@@ -28,6 +28,7 @@ type BusyChecker interface {
 // BusyCheckerFunc adapts a plain function to the BusyChecker interface.
 type BusyCheckerFunc func(agentID string) bool
 
+// IsBusy calls the underlying function to check whether the given agent is busy.
 func (f BusyCheckerFunc) IsBusy(agentID string) bool { return f(agentID) }
 
 // QueueHandler orchestrates fsnotify event routing and periodic scan execution.

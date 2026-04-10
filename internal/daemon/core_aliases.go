@@ -16,13 +16,17 @@ type LogLevel = core.LogLevel
 const (
 	// LogLevelDebug enables verbose debug logging.
 	LogLevelDebug = core.LogLevelDebug
-	LogLevelInfo  = core.LogLevelInfo
-	LogLevelWarn  = core.LogLevelWarn
+	// LogLevelInfo is the standard informational log level.
+	LogLevelInfo = core.LogLevelInfo
+	// LogLevelWarn indicates a potentially harmful situation.
+	LogLevelWarn = core.LogLevelWarn
+	// LogLevelError indicates a serious problem that requires attention.
 	LogLevelError = core.LogLevelError
 )
 
 // DaemonLogger is an alias for core.DaemonLogger.
-type DaemonLogger = core.DaemonLogger
+// The name retains the Daemon prefix for backward compatibility with existing callers.
+type DaemonLogger = core.DaemonLogger //nolint:revive // stuttering name kept for backward compatibility
 
 // NewDaemonLogger is an alias for core.NewDaemonLogger.
 var (

@@ -71,12 +71,12 @@ func (mh *MetricsHandler) UpdateMetrics(
 	gauges MetricsGauges,
 ) error {
 	metricsPath := filepath.Join(mh.maestroDir, "state", "metrics.yaml")
-	if err := os.MkdirAll(filepath.Dir(metricsPath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(metricsPath), 0755); err != nil { //nolint:gosec // 0755 is appropriate for a state directory
 		return fmt.Errorf("create state dir: %w", err)
 	}
 
 	var metrics model.Metrics
-	data, err := os.ReadFile(metricsPath)
+	data, err := os.ReadFile(metricsPath) //nolint:gosec // metricsPath is constructed from a controlled application state directory
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return fmt.Errorf("read metrics: %w", err)
@@ -194,7 +194,7 @@ func (mh *MetricsHandler) loadAllResultFiles() map[string]*model.TaskResultFile 
 		}
 
 		path := filepath.Join(resultsDir, name)
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 		if err != nil {
 			mh.log(LogLevelWarn, "read result file %s: %v", name, err)
 			continue

@@ -649,7 +649,7 @@ func loadOriginalTasksFromQueue(maestroDir string, commandID string) (map[string
 			continue
 		}
 		filePath := filepath.Join(queueDir, name)
-		data, err := os.ReadFile(filePath)
+		data, err := os.ReadFile(filePath) //nolint:gosec // filePath is constructed from a controlled application queue directory
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue // file removed between ReadDir and ReadFile; race-safe
@@ -696,7 +696,7 @@ func rollbackRetryQueueEntries(maestroDir string, written []retryQueueTask, lock
 			}
 
 			queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(rb.workerID))
-			data, err := os.ReadFile(queueFile)
+			data, err := os.ReadFile(queueFile) //nolint:gosec // queueFile is constructed from a controlled application queue directory
 			if err != nil {
 				return
 			}

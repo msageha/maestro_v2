@@ -23,10 +23,10 @@ func ValidateMutationStrategy(s string) bool {
 
 // MutationRequest represents a request to generate a mutation for a task.
 type MutationRequest struct {
-	TaskID        string         `yaml:"task_id" json:"task_id"`
-	Strategy      string         `yaml:"strategy" json:"strategy"`
-	ParentFitness *FitnessScore  `yaml:"parent_fitness,omitempty" json:"parent_fitness,omitempty"`
-	Constraints   []string       `yaml:"constraints,omitempty" json:"constraints,omitempty"`
+	TaskID        string        `yaml:"task_id" json:"task_id"`
+	Strategy      string        `yaml:"strategy" json:"strategy"`
+	ParentFitness *FitnessScore `yaml:"parent_fitness,omitempty" json:"parent_fitness,omitempty"`
+	Constraints   []string      `yaml:"constraints,omitempty" json:"constraints,omitempty"`
 }
 
 // MutationResult represents the outcome of a single mutation attempt.

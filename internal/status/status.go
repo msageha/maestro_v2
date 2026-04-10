@@ -138,7 +138,7 @@ func getQueueDepths(maestroDir string) []queueStatus {
 			continue
 		}
 
-		data, err := os.ReadFile(filePath)
+		data, err := os.ReadFile(filePath) //nolint:gosec // filePath is constructed from a controlled application state directory
 		if err != nil {
 			log.Printf("status: failed to read %s: %v", entry.Name(), err)
 			continue

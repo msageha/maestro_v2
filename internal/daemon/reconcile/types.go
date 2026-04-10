@@ -5,15 +5,23 @@ type RepairPatternID string
 
 const (
 	// PatternR0 identifies repairs produced by the R0PlanningStuck reconciler.
-	PatternR0         RepairPatternID = "R0"
+	PatternR0 RepairPatternID = "R0"
+	// PatternR0Dispatch identifies repairs produced by the R0 dispatch variant reconciler.
 	PatternR0Dispatch RepairPatternID = "R0-dispatch"
-	PatternR0b        RepairPatternID = "R0b"
-	PatternR1         RepairPatternID = "R1"
-	PatternR2         RepairPatternID = "R2"
-	PatternR3         RepairPatternID = "R3"
-	PatternR4         RepairPatternID = "R4"
-	PatternR5         RepairPatternID = "R5"
-	PatternR6         RepairPatternID = "R6"
+	// PatternR0b identifies repairs produced by the R0b reconciler.
+	PatternR0b RepairPatternID = "R0b"
+	// PatternR1 identifies repairs produced by the R1 reconciler.
+	PatternR1 RepairPatternID = "R1"
+	// PatternR2 identifies repairs produced by the R2 reconciler.
+	PatternR2 RepairPatternID = "R2"
+	// PatternR3 identifies repairs produced by the R3 reconciler.
+	PatternR3 RepairPatternID = "R3"
+	// PatternR4 identifies repairs produced by the R4 reconciler.
+	PatternR4 RepairPatternID = "R4"
+	// PatternR5 identifies repairs produced by the R5 reconciler.
+	PatternR5 RepairPatternID = "R5"
+	// PatternR6 identifies repairs produced by the R6 reconciler.
+	PatternR6 RepairPatternID = "R6"
 )
 
 // NotificationKind identifies the type of deferred Planner notification.
@@ -21,8 +29,10 @@ type NotificationKind string
 
 const (
 	// NotifyReFill requests the planner to re-fill a phase's worker slots.
-	NotifyReFill      NotificationKind = "re_fill"
-	NotifyReEvaluate  NotificationKind = "re_evaluate"
+	NotifyReFill NotificationKind = "re_fill"
+	// NotifyReEvaluate requests the planner to re-evaluate task eligibility.
+	NotifyReEvaluate NotificationKind = "re_evaluate"
+	// NotifyFillTimeout signals that a phase fill deadline has expired.
 	NotifyFillTimeout NotificationKind = "fill_timeout"
 )
 

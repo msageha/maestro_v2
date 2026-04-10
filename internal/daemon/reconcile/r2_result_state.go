@@ -42,7 +42,7 @@ func (R2ResultState) Apply(run *Run) Outcome {
 		}
 
 		resultPath := filepath.Join(resultsDir, name)
-		data, err := os.ReadFile(resultPath)
+		data, err := os.ReadFile(resultPath) //nolint:gosec // resultPath is constructed from a controlled application results directory
 		if err != nil {
 			continue
 		}

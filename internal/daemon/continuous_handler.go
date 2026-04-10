@@ -121,7 +121,7 @@ func (ch *ContinuousHandler) CheckAndAdvance(commandID string, commandStatus mod
 
 func (ch *ContinuousHandler) loadContinuousState() (*model.Continuous, error) {
 	statePath := filepath.Join(ch.maestroDir, "state", "continuous.yaml")
-	data, err := os.ReadFile(statePath)
+	data, err := os.ReadFile(statePath) //nolint:gosec // statePath is constructed from a controlled application state directory
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &model.Continuous{
@@ -142,7 +142,7 @@ func (ch *ContinuousHandler) loadContinuousState() (*model.Continuous, error) {
 
 func (ch *ContinuousHandler) saveContinuousState(state *model.Continuous) error {
 	statePath := filepath.Join(ch.maestroDir, "state", "continuous.yaml")
-	if err := os.MkdirAll(filepath.Dir(statePath), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(statePath), 0755); err != nil { //nolint:gosec // 0755 is appropriate for a state directory
 		return fmt.Errorf("create state dir: %w", err)
 	}
 	return yamlutil.AtomicWrite(statePath, state)

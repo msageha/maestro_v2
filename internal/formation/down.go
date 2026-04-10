@@ -26,7 +26,7 @@ func RunDown(maestroDir string, cfg model.Config) error {
 		return fmt.Errorf("create logs directory: %w", err)
 	}
 	tmuxLogPath := filepath.Join(logsDir, "tmux_debug.log")
-	if tmuxLogFile, err := os.OpenFile(tmuxLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600); err == nil {
+	if tmuxLogFile, err := os.OpenFile(tmuxLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600); err == nil { //nolint:gosec // tmuxLogPath is constructed from a controlled application log directory
 		tmuxLogger := log.New(tmuxLogFile, "", log.LstdFlags|log.Lmicroseconds)
 		tmux.SetDebugLogger(tmuxLogger)
 		defer func() {

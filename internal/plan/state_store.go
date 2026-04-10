@@ -14,4 +14,3 @@ type stateStore interface {
 	// StateExists returns true if a state file exists for the given command.
 	StateExists(commandID string) bool
 }
-

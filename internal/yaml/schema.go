@@ -32,7 +32,7 @@ type SchemaHeader struct {
 
 // ValidateSchemaHeader reads the file at path and validates its schema_version and file_type fields.
 func ValidateSchemaHeader(path string, expectedFileType string) error {
-	content, err := os.ReadFile(path)
+	content, err := os.ReadFile(path) //nolint:gosec // path comes from validated file path inputs
 	if err != nil {
 		return fmt.Errorf("read file: %w", err)
 	}

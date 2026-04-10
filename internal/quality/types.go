@@ -13,8 +13,10 @@ const (
 	// GateTypePreTask is evaluated before a task begins execution.
 	GateTypePreTask GateType = "pre_task"
 	// GateTypePostTask is evaluated after a task completes execution.
-	GateTypePostTask          GateType = "post_task"
-	GateTypePhaseTransition   GateType = "phase_transition"
+	GateTypePostTask GateType = "post_task"
+	// GateTypePhaseTransition is evaluated when transitioning between plan phases.
+	GateTypePhaseTransition GateType = "phase_transition"
+	// GateTypeCommandValidation is evaluated when validating an incoming command.
 	GateTypeCommandValidation GateType = "command_validation"
 )
 
@@ -25,8 +27,10 @@ const (
 	// SeverityInfo is the lowest quality gate severity level.
 	SeverityInfo Severity = "info"
 	// SeverityWarning indicates a non-blocking concern that should be reviewed.
-	SeverityWarning  Severity = "warning"
-	SeverityError    Severity = "error"
+	SeverityWarning Severity = "warning"
+	// SeverityError indicates a blocking failure that prevents the operation.
+	SeverityError Severity = "error"
+	// SeverityCritical indicates a critical failure requiring immediate attention.
 	SeverityCritical Severity = "critical"
 )
 
@@ -37,9 +41,12 @@ const (
 	// ActionAllow permits the operation to proceed without interruption.
 	ActionAllow ActionType = "allow"
 	// ActionLog records the gate result without blocking the operation.
-	ActionLog      ActionType = "log"
-	ActionBlock    ActionType = "block"
-	ActionWarn     ActionType = "warn"
+	ActionLog ActionType = "log"
+	// ActionBlock prevents the operation from proceeding.
+	ActionBlock ActionType = "block"
+	// ActionWarn records a warning without blocking the operation.
+	ActionWarn ActionType = "warn"
+	// ActionContinue allows the operation to continue despite a gate failure.
 	ActionContinue ActionType = "continue"
 )
 
@@ -50,10 +57,13 @@ const (
 	// ConditionFieldValidation checks a specific field value against an operator and value.
 	ConditionFieldValidation ConditionType = "field_validation"
 	// ConditionAnd requires all sub-conditions to be true.
-	ConditionAnd             ConditionType = "and"
-	ConditionOr              ConditionType = "or"
-	ConditionNot             ConditionType = "not"
-	ConditionScript          ConditionType = "script"
+	ConditionAnd ConditionType = "and"
+	// ConditionOr requires at least one sub-condition to be true.
+	ConditionOr ConditionType = "or"
+	// ConditionNot inverts the result of its sub-condition.
+	ConditionNot ConditionType = "not"
+	// ConditionScript evaluates an embedded script expression.
+	ConditionScript ConditionType = "script"
 )
 
 // FieldOperator represents comparison operators for field validation
@@ -63,19 +73,31 @@ const (
 	// OpExists checks that a field is present in the evaluation context.
 	OpExists FieldOperator = "exists"
 	// OpNotExists checks that a field is absent from the evaluation context.
-	OpNotExists   FieldOperator = "not_exists"
-	OpEquals      FieldOperator = "equals"
-	OpNotEquals   FieldOperator = "not_equals"
-	OpContains    FieldOperator = "contains"
+	OpNotExists FieldOperator = "not_exists"
+	// OpEquals checks that a field value equals the specified value.
+	OpEquals FieldOperator = "equals"
+	// OpNotEquals checks that a field value does not equal the specified value.
+	OpNotEquals FieldOperator = "not_equals"
+	// OpContains checks that a field value contains the specified substring.
+	OpContains FieldOperator = "contains"
+	// OpNotContains checks that a field value does not contain the specified substring.
 	OpNotContains FieldOperator = "not_contains"
-	OpMatches     FieldOperator = "matches"
-	OpNotMatches  FieldOperator = "not_matches"
-	OpGT          FieldOperator = "gt"
-	OpGTE         FieldOperator = "gte"
-	OpLT          FieldOperator = "lt"
-	OpLTE         FieldOperator = "lte"
-	OpIn          FieldOperator = "in"
-	OpNotIn       FieldOperator = "not_in"
+	// OpMatches checks that a field value matches the specified regular expression.
+	OpMatches FieldOperator = "matches"
+	// OpNotMatches checks that a field value does not match the specified regular expression.
+	OpNotMatches FieldOperator = "not_matches"
+	// OpGT checks that a field value is greater than the specified value.
+	OpGT FieldOperator = "gt"
+	// OpGTE checks that a field value is greater than or equal to the specified value.
+	OpGTE FieldOperator = "gte"
+	// OpLT checks that a field value is less than the specified value.
+	OpLT FieldOperator = "lt"
+	// OpLTE checks that a field value is less than or equal to the specified value.
+	OpLTE FieldOperator = "lte"
+	// OpIn checks that a field value is one of the specified values.
+	OpIn FieldOperator = "in"
+	// OpNotIn checks that a field value is not one of the specified values.
+	OpNotIn FieldOperator = "not_in"
 )
 
 // GateDefinition represents a single quality gate
@@ -93,11 +115,11 @@ type GateDefinition struct {
 
 // TriggerDefinition defines when a gate should be triggered
 type TriggerDefinition struct {
-	Roles       []string          `yaml:"roles"`
-	TaskTypes   []string          `yaml:"task_types"`
-	Phases      []string          `yaml:"phases"`
-	BloomLevels []int             `yaml:"bloom_levels"`
-	Patterns    []PatternTrigger  `yaml:"patterns"`
+	Roles       []string         `yaml:"roles"`
+	TaskTypes   []string         `yaml:"task_types"`
+	Phases      []string         `yaml:"phases"`
+	BloomLevels []int            `yaml:"bloom_levels"`
+	Patterns    []PatternTrigger `yaml:"patterns"`
 }
 
 // PatternTrigger defines pattern matching for triggers
@@ -118,15 +140,15 @@ type RuleDefinition struct {
 
 // RuleCondition represents the condition to evaluate
 type RuleCondition struct {
-	Type           ConditionType    `yaml:"type"`
-	Field          string           `yaml:"field"`
-	Operator       FieldOperator    `yaml:"operator"`
-	Value          interface{}      `yaml:"value"`
-	CaseSensitive  bool             `yaml:"case_sensitive"`
-	Conditions     []RuleCondition  `yaml:"conditions"`
-	Language       string           `yaml:"language"`
-	Script         string           `yaml:"script"`
-	TimeoutSeconds int              `yaml:"timeout_seconds"`
+	Type           ConditionType   `yaml:"type"`
+	Field          string          `yaml:"field"`
+	Operator       FieldOperator   `yaml:"operator"`
+	Value          interface{}     `yaml:"value"`
+	CaseSensitive  bool            `yaml:"case_sensitive"`
+	Conditions     []RuleCondition `yaml:"conditions"`
+	Language       string          `yaml:"language"`
+	Script         string          `yaml:"script"`
+	TimeoutSeconds int             `yaml:"timeout_seconds"`
 
 	// Compiled fields (not in YAML)
 	CompiledRegex  interface{} `yaml:"-"` // *regexp.Regexp after compilation
@@ -136,9 +158,9 @@ type RuleCondition struct {
 
 // ActionDefinition defines actions based on rule evaluation
 type ActionDefinition struct {
-	OnPass           ActionType       `yaml:"on_pass"`
-	OnFail           ActionType       `yaml:"on_fail"`
-	OnWarn           ActionType       `yaml:"on_warn"`
+	OnPass ActionType `yaml:"on_pass"`
+	OnFail ActionType `yaml:"on_fail"`
+	OnWarn ActionType `yaml:"on_warn"`
 }
 
 // GateConfiguration represents the full gate configuration file
@@ -190,7 +212,7 @@ type RuleEvaluator interface {
 
 // cacheKey represents a key for caching evaluation results
 type cacheKey struct {
-	GateID           string
-	GateVersionHash  string
+	GateID             string
+	GateVersionHash    string
 	ContextFingerprint string
 }

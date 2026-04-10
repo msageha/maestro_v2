@@ -3,10 +3,10 @@ package model
 // Metrics は Daemon が収集するシステム全体のメトリクスを表す。
 // キュー深度、カウンター、ヘルスチェック情報を格納する。
 type Metrics struct {
-	SchemaVersion   int             `yaml:"schema_version"`
-	FileType        string          `yaml:"file_type"`
-	QueueDepth      QueueDepth      `yaml:"queue_depth"`
-	Counters        MetricsCounters `yaml:"counters"`
+	SchemaVersion int             `yaml:"schema_version"`
+	FileType      string          `yaml:"file_type"`
+	QueueDepth    QueueDepth      `yaml:"queue_depth"`
+	Counters      MetricsCounters `yaml:"counters"`
 	// WorktreeCommandsStalled is a gauge: number of commands whose integration
 	// branch has been flagged as stalled by Phase A's stall detection step.
 	WorktreeCommandsStalled int `yaml:"worktree_commands_stalled"`

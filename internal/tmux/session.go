@@ -91,11 +91,11 @@ type ErrorKind int
 // ErrorKind constants enumerate the categories of tmux command failures.
 const (
 	ErrKindServer   ErrorKind = iota + 1 // tmux server unreachable
-	ErrKindSession                        // session not found
-	ErrKindPane                           // pane or window not found
-	ErrKindTimeout                        // command timed out
-	ErrKindCommand                        // other command error
-	ErrKindCanceled                       // context was canceled (not timeout)
+	ErrKindSession                       // session not found
+	ErrKindPane                          // pane or window not found
+	ErrKindTimeout                       // command timed out
+	ErrKindCommand                       // other command error
+	ErrKindCanceled                      // context was canceled (not timeout)
 )
 
 func (k ErrorKind) String() string {

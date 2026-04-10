@@ -28,7 +28,7 @@ func (R0Dispatch) Apply(run *Run) Outcome {
 	run.Deps.LockMap.Lock(lockKey)
 	defer run.Deps.LockMap.Unlock(lockKey)
 
-	data, err := os.ReadFile(queuePath)
+	data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 	if err != nil {
 		if !os.IsNotExist(err) {
 			run.log(core.LogLevelWarn, "R0-dispatch read_queue error=%v", err)

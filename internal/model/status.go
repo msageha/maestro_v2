@@ -22,15 +22,23 @@ const (
 	// REQUIREMENTS.md §2.1: Extended task lifecycle states
 
 	// StatusPlanned indicates a task has been planned but not yet ready to run.
-	StatusPlanned         Status = "planned"
-	StatusReady           Status = "ready"
-	StatusDispatched      Status = "dispatched"
-	StatusRunning         Status = "running"
-	StatusVerifyPending   Status = "verify_pending"
-	StatusRepairPending   Status = "repair_pending"
+	StatusPlanned Status = "planned"
+	// StatusReady indicates a task is eligible for dispatch.
+	StatusReady Status = "ready"
+	// StatusDispatched indicates a task has been dispatched to a worker.
+	StatusDispatched Status = "dispatched"
+	// StatusRunning indicates a task is actively being executed by a worker.
+	StatusRunning Status = "running"
+	// StatusVerifyPending indicates a task is awaiting quality gate verification.
+	StatusVerifyPending Status = "verify_pending"
+	// StatusRepairPending indicates a task is queued for repair after a failure.
+	StatusRepairPending Status = "repair_pending"
+	// StatusPausedForReplan indicates a task is paused pending replanning.
 	StatusPausedForReplan Status = "paused_for_replan"
-	StatusPausedForHuman  Status = "paused_for_human"
-	StatusAborted         Status = "aborted"
+	// StatusPausedForHuman indicates a task is paused pending human intervention.
+	StatusPausedForHuman Status = "paused_for_human"
+	// StatusAborted indicates a task was aborted without completing.
+	StatusAborted Status = "aborted"
 )
 
 // PlanStatus represents the lifecycle state of a command plan.
@@ -75,11 +83,11 @@ const (
 type ContinuousStatus string
 
 const (
-	continuousStatusIdle ContinuousStatus = "idle"
 	// ContinuousStatusRunning indicates continuous mode is actively running iterations.
 	ContinuousStatusRunning ContinuousStatus = "running"
 	// ContinuousStatusPaused indicates continuous mode is suspended pending human review.
-	ContinuousStatusPaused  ContinuousStatus = "paused"
+	ContinuousStatusPaused ContinuousStatus = "paused"
+	// ContinuousStatusStopped indicates continuous mode has been terminated.
 	ContinuousStatusStopped ContinuousStatus = "stopped"
 )
 
@@ -90,7 +98,8 @@ const (
 	// NotificationTypeCommandCompleted is sent when a command finishes successfully.
 	NotificationTypeCommandCompleted NotificationType = "command_completed"
 	// NotificationTypeCommandFailed is sent when a command terminates with a failure.
-	NotificationTypeCommandFailed    NotificationType = "command_failed"
+	NotificationTypeCommandFailed NotificationType = "command_failed"
+	// NotificationTypeCommandCancelled is sent when a command is cancelled before completion.
 	NotificationTypeCommandCancelled NotificationType = "command_cancelled"
 )
 
@@ -246,15 +255,16 @@ var validPhaseTransitions = map[PhaseStatus]map[PhaseStatus]bool{
 }
 
 // Worktree status transitions:
-//   created → active (sync), committed (commit without sync), conflict, failed, published (bulk publish), cleanup_done/cleanup_failed (cleanup)
-//   active → committed, conflict, failed, published, cleanup_done/cleanup_failed
-//   committed → active (sync back), integrated (merge success), conflict (merge conflict), failed, published, cleanup_done/cleanup_failed
-//   integrated → active (cross-phase sync), published, conflict, failed, cleanup_done/cleanup_failed
-//   published → cleanup_done, cleanup_failed
-//   conflict → active (resolved), failed, published (bulk publish), cleanup_done/cleanup_failed
-//   failed → published (bulk publish), cleanup_done, cleanup_failed
-//   cleanup_done → (terminal)
-//   cleanup_failed → cleanup_done (retry)
+//
+//	created → active (sync), committed (commit without sync), conflict, failed, published (bulk publish), cleanup_done/cleanup_failed (cleanup)
+//	active → committed, conflict, failed, published, cleanup_done/cleanup_failed
+//	committed → active (sync back), integrated (merge success), conflict (merge conflict), failed, published, cleanup_done/cleanup_failed
+//	integrated → active (cross-phase sync), published, conflict, failed, cleanup_done/cleanup_failed
+//	published → cleanup_done, cleanup_failed
+//	conflict → active (resolved), failed, published (bulk publish), cleanup_done/cleanup_failed
+//	failed → published (bulk publish), cleanup_done, cleanup_failed
+//	cleanup_done → (terminal)
+//	cleanup_failed → cleanup_done (retry)
 var validWorktreeTransitions = map[WorktreeStatus]map[WorktreeStatus]bool{
 	WorktreeStatusCreated: {
 		WorktreeStatusActive:        true,
@@ -324,12 +334,13 @@ var validWorktreeTransitions = map[WorktreeStatus]map[WorktreeStatus]bool{
 }
 
 // Integration status transitions:
-//   created → merging, failed
-//   merging → merged, conflict, failed
-//   merged → merging (re-merge for next phase), publishing, failed
-//   publishing → published, conflict, failed
-//   conflict → merging (retry), failed
-//   failed → merging (retry after failure)
+//
+//	created → merging, failed
+//	merging → merged, conflict, failed
+//	merged → merging (re-merge for next phase), publishing, failed
+//	publishing → published, conflict, failed
+//	conflict → merging (retry), failed
+//	failed → merging (retry after failure)
 var validIntegrationTransitions = map[IntegrationStatus]map[IntegrationStatus]bool{
 	IntegrationStatusCreated: {
 		IntegrationStatusMerging:     true,

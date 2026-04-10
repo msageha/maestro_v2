@@ -263,7 +263,7 @@ func reconcileCommandResultLocked(maestroDir string, commandID string, status mo
 	path := filepath.Join(maestroDir, "results", "planner.yaml")
 
 	var rf model.CommandResultFile
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 	if err == nil {
 		if perr := yamlv3.Unmarshal(data, &rf); perr != nil {
 			return fmt.Errorf("parse existing result file: %w", perr)
@@ -316,7 +316,7 @@ func reconcileCommandResultLocked(maestroDir string, commandID string, status mo
 func reconcileCommandQueueEntryLocked(maestroDir string, commandID string, status model.Status) error {
 	path := filepath.Join(maestroDir, "queue", "planner.yaml")
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 	if err != nil {
 		return fmt.Errorf("read planner queue: %w", err)
 	}
@@ -378,7 +378,7 @@ func completeIntentPath(maestroDir, commandID string) string {
 
 func writeCompleteIntent(maestroDir string, intent *completeIntent) error {
 	dir := filepath.Join(maestroDir, "intents")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0755); err != nil { //nolint:gosec // 0755 is appropriate for an intents directory
 		return fmt.Errorf("create intents dir: %w", err)
 	}
 	return yamlutil.AtomicWrite(completeIntentPath(maestroDir, intent.CommandID), intent)
@@ -386,7 +386,7 @@ func writeCompleteIntent(maestroDir string, intent *completeIntent) error {
 
 func readCompleteIntent(maestroDir, commandID string) (*completeIntent, error) {
 	path := completeIntentPath(maestroDir, commandID)
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
@@ -434,7 +434,7 @@ func aggregateTaskResults(maestroDir string, commandID string) ([]model.CommandR
 
 		workerID := strings.TrimSuffix(name, ".yaml")
 		path := filepath.Join(resultsDir, name)
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 		if err != nil {
 			log.Printf("[WARN] aggregateTaskResults: failed to read %s: %v (results may be partial)", path, err)
 			partial = true
@@ -469,7 +469,7 @@ func writeCommandResultLocked(maestroDir string, commandID string, status model.
 	path := filepath.Join(maestroDir, "results", "planner.yaml")
 
 	var rf model.CommandResultFile
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 	if err == nil {
 		if err := yamlv3.Unmarshal(data, &rf); err != nil {
 			return fmt.Errorf("parse existing result file: %w", err)
@@ -513,7 +513,7 @@ func writeCommandResultLocked(maestroDir string, commandID string, status model.
 func updateCommandQueueEntryLocked(maestroDir string, commandID string, status model.Status) error {
 	path := filepath.Join(maestroDir, "queue", "planner.yaml")
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 	if err != nil {
 		return fmt.Errorf("read planner queue: %w", err)
 	}

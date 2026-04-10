@@ -44,13 +44,13 @@ type Config struct {
 // Manager tracks consecutive failures and manages mode transitions
 // between normal, degraded, and recovering states.
 type Manager struct {
-	mode                 Mode
-	config               Config
-	consecutiveFailures  int
-	lastSuccessAt        time.Time
-	recoveringStartedAt  time.Time
-	mu                   sync.Mutex
-	nowFunc              func() time.Time
+	mode                Mode
+	config              Config
+	consecutiveFailures int
+	lastSuccessAt       time.Time
+	recoveringStartedAt time.Time
+	mu                  sync.Mutex
+	nowFunc             func() time.Time
 }
 
 // NewManager creates a new Manager initialized in ModeNormal.

@@ -142,7 +142,7 @@ func BuildWorkerStates(maestroDir string, config model.WorkerConfig) ([]WorkerSt
 
 		pendingCount := 0
 		queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(workerID))
-		data, err := os.ReadFile(queueFile)
+		data, err := os.ReadFile(queueFile) //nolint:gosec // queueFile is constructed from a controlled application queue directory
 		if err != nil {
 			if !errors.Is(err, os.ErrNotExist) {
 				return nil, fmt.Errorf("read queue file %s: %w", queueFile, err)
@@ -206,7 +206,7 @@ func NewAdaptiveModelSelector(cfg model.BanditConfig) *AdaptiveModelSelector {
 // SelectModel chooses a model via UCB1 when sufficient data exists, otherwise
 // falls back to the static GetModelForBloomLevel mapping.
 // LLM token consumption: zero — pure UCB1 math.
-func (s *AdaptiveModelSelector) SelectModel(bloomLevel int, taskType string) string {
+func (s *AdaptiveModelSelector) SelectModel(bloomLevel int, _ string) string {
 	if !s.enabled || s.bandit == nil {
 		return GetModelForBloomLevel(bloomLevel, false)
 	}

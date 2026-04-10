@@ -29,7 +29,7 @@ func precheckGitRepo(projectRoot, baseBranch string) error {
 	}
 
 	// 2. Base branch exists and points to a real commit?
-	cmd = exec.Command("git", "rev-parse", "--verify", "--quiet", "refs/heads/"+baseBranch)
+	cmd = exec.Command("git", "rev-parse", "--verify", "--quiet", "refs/heads/"+baseBranch) //nolint:gosec // baseBranch is validated before use
 	cmd.Dir = projectRoot
 	if err := cmd.Run(); err != nil {
 		// Distinguish "no commits yet" (HEAD unborn) from "branch missing".

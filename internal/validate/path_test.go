@@ -21,8 +21,8 @@ func TestValidateID(t *testing.T) {
 		"a1b2c3",
 	}
 	for _, id := range valid {
-		if err := ValidateID(id); err != nil {
-			t.Errorf("ValidateID(%q) returned error: %v", id, err)
+		if err := ID(id); err != nil {
+			t.Errorf("ID(%q) returned error: %v", id, err)
 		}
 	}
 }
@@ -53,8 +53,8 @@ func TestValidateID_Invalid(t *testing.T) {
 		{"a\tb", "contains tab"},
 	}
 	for _, tc := range invalid {
-		if err := ValidateID(tc.id); err == nil {
-			t.Errorf("ValidateID(%q) [%s] should have returned error", tc.id, tc.desc)
+		if err := ID(tc.id); err == nil {
+			t.Errorf("ID(%q) [%s] should have returned error", tc.id, tc.desc)
 		}
 	}
 }
@@ -69,8 +69,8 @@ func TestValidateProjectName(t *testing.T) {
 		"abc123",
 	}
 	for _, name := range valid {
-		if err := ValidateProjectName(name); err != nil {
-			t.Errorf("ValidateProjectName(%q) returned error: %v", name, err)
+		if err := ProjectName(name); err != nil {
+			t.Errorf("ProjectName(%q) returned error: %v", name, err)
 		}
 	}
 }
@@ -93,8 +93,8 @@ func TestValidateProjectName_Invalid(t *testing.T) {
 		{"café", "non-ASCII characters"},
 	}
 	for _, tc := range invalid {
-		if err := ValidateProjectName(tc.name); err == nil {
-			t.Errorf("ValidateProjectName(%q) [%s] should have returned error", tc.name, tc.desc)
+		if err := ProjectName(tc.name); err == nil {
+			t.Errorf("ProjectName(%q) [%s] should have returned error", tc.name, tc.desc)
 		}
 	}
 }
@@ -108,12 +108,12 @@ func TestValidateFilePath(t *testing.T) {
 		"relative/path/file.txt",
 	}
 	for _, path := range valid {
-		result, err := ValidateFilePath(path)
+		result, err := FilePath(path)
 		if err != nil {
-			t.Errorf("ValidateFilePath(%q) returned error: %v", path, err)
+			t.Errorf("FilePath(%q) returned error: %v", path, err)
 		}
 		if result != filepath.Clean(path) {
-			t.Errorf("ValidateFilePath(%q) = %q, want %q", path, result, filepath.Clean(path))
+			t.Errorf("FilePath(%q) = %q, want %q", path, result, filepath.Clean(path))
 		}
 	}
 }
@@ -131,9 +131,9 @@ func TestValidateFilePath_Invalid(t *testing.T) {
 		{"..", "bare parent"},
 	}
 	for _, tc := range invalid {
-		_, err := ValidateFilePath(tc.path)
+		_, err := FilePath(tc.path)
 		if err == nil {
-			t.Errorf("ValidateFilePath(%q) [%s] should have returned error", tc.path, tc.desc)
+			t.Errorf("FilePath(%q) [%s] should have returned error", tc.path, tc.desc)
 		}
 	}
 }

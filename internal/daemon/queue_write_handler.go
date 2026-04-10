@@ -423,7 +423,7 @@ func (a *API) cancelRequestSubmitted(params QueueWriteParams, statePath string) 
 	d.lockMap.Lock("state:" + params.CommandID)
 	defer d.lockMap.Unlock("state:" + params.CommandID)
 
-	data, err := os.ReadFile(statePath)
+	data, err := os.ReadFile(statePath) //nolint:gosec // statePath is constructed from a controlled application state directory
 	if err != nil {
 		return internalErrorf("read state: %v", err)
 	}
@@ -752,7 +752,7 @@ func detectCycleDFS(deps map[string][]string) []string {
 // called on every successful path to ensure SchemaVersion/FileType are set.
 func loadQueueFile[T any](path string, setDefaults func(*T)) (T, []byte, error) {
 	var result T
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 	if err != nil {
 		if os.IsNotExist(err) {
 			setDefaults(&result)
@@ -850,7 +850,7 @@ func (a *API) archiveTerminalTasks(tq *model.TaskQueue) int {
 // queue:{workerID}. Omitting the lock avoids the deadlock risk (CR-011).
 func (a *API) isCommandPlanTerminal(commandID string) bool {
 	statePath := filepath.Join(a.d.maestroDir, "state", "commands", commandID+".yaml")
-	data, err := os.ReadFile(statePath)
+	data, err := os.ReadFile(statePath) //nolint:gosec // statePath is constructed from a controlled application state directory
 	if err != nil {
 		return false
 	}

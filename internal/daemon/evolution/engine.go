@@ -37,8 +37,8 @@ type SlotResult struct {
 
 // CycleResult captures the outcome of one evolutionary cycle.
 type CycleResult struct {
-	Round        int
-	Slots        []SlotResult
+	Round         int
+	Slots         []SlotResult
 	BestSlotIndex int
 }
 

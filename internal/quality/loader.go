@@ -85,7 +85,7 @@ func (l *Loader) LoadConfiguration() (*GateConfiguration, error) {
 
 // loadFile loads a single configuration file
 func (l *Loader) loadFile(path string) (*GateConfiguration, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is a config file path provided by the operator
 	if err != nil {
 		return nil, err
 	}
@@ -365,7 +365,7 @@ func validateFilePermissions(path string) error {
 	}
 
 	// Open the file and stat via fd to avoid TOCTOU between stat and read
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // path is a config file path provided by the operator
 	if err != nil {
 		return fmt.Errorf("failed to open file: %w", err)
 	}

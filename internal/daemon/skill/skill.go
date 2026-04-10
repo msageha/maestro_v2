@@ -13,9 +13,10 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/validate"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // Metadata holds the parsed YAML frontmatter of a SKILL.md file.
@@ -24,7 +25,7 @@ type Metadata struct {
 	Name        string   `yaml:"name"`
 	Description string   `yaml:"description"`
 	Version     string   `yaml:"version"`
-	Tags []string `yaml:"tags"`
+	Tags        []string `yaml:"tags"`
 	Priority    *int     `yaml:"priority"`
 	Mode        string   `yaml:"mode"`
 }
@@ -216,7 +217,7 @@ func ReadSkillWithRole(skillsDir, skillName, role string) (Content, error) {
 	}
 
 	for _, path := range candidates {
-		data, err := os.ReadFile(path)
+		data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled skills directory
 		if err != nil {
 			continue
 		}
@@ -233,7 +234,7 @@ func ReadSkillWithRole(skillsDir, skillName, role string) (Content, error) {
 
 		return Content{
 			Metadata: meta,
-			Body:          body,
+			Body:     body,
 		}, nil
 	}
 
@@ -264,7 +265,7 @@ func readSkillByFrontmatterName(skillsDir, skillName, role string) (Content, err
 				continue
 			}
 			path := filepath.Join(dir, e.Name(), "SKILL.md")
-			data, err := os.ReadFile(path)
+			data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled skills directory
 			if err != nil {
 				continue
 			}
@@ -276,7 +277,7 @@ func readSkillByFrontmatterName(skillsDir, skillName, role string) (Content, err
 				meta.ID = e.Name()
 				return Content{
 					Metadata: meta,
-					Body:          body,
+					Body:     body,
 				}, nil
 			}
 		}
@@ -323,7 +324,7 @@ func ListSkillsWithRole(skillsDir, role string, logger *slog.Logger) ([]Metadata
 			// Read SKILL.md directly from the current directory instead of
 			// calling ReadSkillWithRole which redundantly searches all fallback paths.
 			path := filepath.Join(dir, name, "SKILL.md")
-			data, err := os.ReadFile(path)
+			data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled skills directory
 			if err != nil {
 				logger.Warn("ListSkillsWithRole: failed to read SKILL.md", "path", path, "error", err)
 				continue
@@ -380,7 +381,7 @@ func ReadAllSkillsForRole(skillsDir, role string, logger *slog.Logger) ([]Conten
 				continue
 			}
 			path := filepath.Join(dir, name, "SKILL.md")
-			data, err := os.ReadFile(path)
+			data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled skills directory
 			if err != nil {
 				logger.Warn("ReadAllSkillsForRole: failed to read SKILL.md", "path", path, "error", err)
 				continue
@@ -405,4 +406,3 @@ func ReadAllSkillsForRole(skillsDir, role string, logger *slog.Logger) ([]Conten
 
 	return skills, nil
 }
-

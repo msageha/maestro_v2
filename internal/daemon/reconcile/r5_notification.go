@@ -43,7 +43,7 @@ func (R5Notification) Apply(run *Run) Outcome {
 	}
 
 	nqPath := filepath.Join(run.Deps.MaestroDir, "queue", "orchestrator.yaml")
-	nqData, err := os.ReadFile(nqPath)
+	nqData, err := os.ReadFile(nqPath) //nolint:gosec // nqPath is constructed from a controlled application queue directory
 	if err != nil && !os.IsNotExist(err) {
 		return Outcome{}
 	}

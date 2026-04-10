@@ -70,7 +70,7 @@ func (a *API) handleTaskHeartbeat(req *uds.Request) *uds.Response {
 // state), so it does not require scanMu. Holding scanMu here would block
 // PeriodicScan for the duration of the file I/O. A dedicated dashboardMu
 // serializes concurrent dashboard writes to prevent temp-file clobbering.
-func (a *API) handleDashboard(req *uds.Request) *uds.Response {
+func (a *API) handleDashboard(_ *uds.Request) *uds.Response {
 	d := a.d
 	if d.handler == nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, "handler not initialized")

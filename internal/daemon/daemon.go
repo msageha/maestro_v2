@@ -93,10 +93,10 @@ type Daemon struct {
 	tmuxLogFile io.Closer         // debug log for tmux operations
 	selfWrites  *selfWriteTracker // tracks daemon-originated YAML writes for fsnotify filtering
 
-	ctx      context.Context
-	cancel   context.CancelFunc
-	eg       *errgroup.Group   // tracks all daemon goroutines (loops + handlers)
-	egCtx    context.Context   // errgroup-derived context; use inside eg.Go goroutines
+	ctx    context.Context
+	cancel context.CancelFunc
+	eg     *errgroup.Group // tracks all daemon goroutines (loops + handlers)
+	egCtx  context.Context // errgroup-derived context; use inside eg.Go goroutines
 	// egMu serializes admission of new goroutines via spawnTracked against the
 	// shutdown flag flip. Without it, an untracked caller (e.g. a UDS handler)
 	// could observe shuttingDown=false, then race with Shutdown's eg.Wait():
@@ -150,7 +150,7 @@ func New(maestroDir string, cfg model.Config) (*Daemon, error) {
 	if err := os.MkdirAll(filepath.Dir(logPath), 0750); err != nil {
 		return nil, fmt.Errorf("create log dir: %w", err)
 	}
-	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	logFile, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600) //nolint:gosec // logPath is constructed from a controlled application log directory
 	if err != nil {
 		return nil, fmt.Errorf("open daemon log: %w", err)
 	}

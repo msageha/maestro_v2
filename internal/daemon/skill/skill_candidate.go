@@ -8,14 +8,15 @@ import (
 	"slices"
 	"strings"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // ReadCandidates reads skill_candidates.yaml and returns the candidates list.
 func ReadCandidates(path string) ([]model.SkillCandidate, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is a config file path from validated inputs
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil

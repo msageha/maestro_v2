@@ -126,7 +126,7 @@ func (m *MutexMap) Remove(key string) bool {
 }
 
 // len returns the number of keys currently tracked in the map.
-func (m *MutexMap) len() int {
+func (m *MutexMap) len() int { //nolint:unused // used in tests; golangci-lint runs with tests:false
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return len(m.mutexes)
@@ -167,12 +167,12 @@ func (fl *FileLock) TryLock() error {
 		return fmt.Errorf("seek lock file: %w", err)
 	}
 	if _, err := fmt.Fprintf(f, "%d\n", os.Getpid()); err != nil {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:gosec // uintptr->int conversion for fd is safe on all supported platforms
 		_ = f.Close()
 		return fmt.Errorf("write PID to lock file: %w", err)
 	}
 	if err := f.Sync(); err != nil {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:gosec // uintptr->int conversion for fd is safe on all supported platforms
 		_ = f.Close()
 		return fmt.Errorf("sync lock file: %w", err)
 	}
@@ -187,7 +187,7 @@ func (fl *FileLock) Unlock() error {
 		return nil
 	}
 
-	if err := syscall.Flock(int(fl.file.Fd()), syscall.LOCK_UN); err != nil {
+	if err := syscall.Flock(int(fl.file.Fd()), syscall.LOCK_UN); err != nil { //nolint:gosec // uintptr->int conversion for fd is safe on all supported platforms
 		_ = fl.file.Close()
 		return fmt.Errorf("release lock: %w", err)
 	}

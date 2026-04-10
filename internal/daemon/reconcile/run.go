@@ -43,7 +43,7 @@ func (r *Run) cachedReadDir(dir string) ([]os.DirEntry, error) {
 
 // loadState loads and parses a command state YAML file.
 func (r *Run) loadState(path string) (*model.CommandState, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application state directory
 	if err != nil {
 		return nil, err
 	}
@@ -66,7 +66,7 @@ func (r *Run) stuckThresholdSec() int {
 // loadCommandResultFile loads results/planner.yaml.
 func (r *Run) loadCommandResultFile(path string) (*model.CommandResultFile, error) {
 	var rf model.CommandResultFile
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application results directory
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &rf, nil
@@ -82,7 +82,7 @@ func (r *Run) loadCommandResultFile(path string) (*model.CommandResultFile, erro
 // quarantineCommandResult removes a specific result from results/planner.yaml and writes it to quarantine/.
 func (r *Run) quarantineCommandResult(resultPath string, result model.CommandResult) error {
 	quarantineDir := filepath.Join(r.Deps.MaestroDir, "quarantine")
-	if err := os.MkdirAll(quarantineDir, 0755); err != nil {
+	if err := os.MkdirAll(quarantineDir, 0755); err != nil { //nolint:gosec // 0755 is appropriate for a quarantine directory
 		return fmt.Errorf("create quarantine dir: %w", err)
 	}
 
@@ -122,7 +122,7 @@ func (r *Run) removeCommandFromPlannerQueue(commandID string) error {
 	defer r.Deps.LockMap.Unlock("queue:planner")
 
 	queuePath := filepath.Join(r.Deps.MaestroDir, "queue", "planner.yaml")
-	data, err := os.ReadFile(queuePath)
+	data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -179,7 +179,7 @@ func (r *Run) removeTasksFromWorkerQueues(commandID string) error {
 			defer r.Deps.LockMap.Unlock("queue:" + workerID)
 
 			queuePath := filepath.Join(queueDir, name)
-			data, err := os.ReadFile(queuePath)
+			data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 			if err != nil {
 				if os.IsNotExist(err) {
 					return nil
@@ -252,7 +252,7 @@ func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) {
 			defer r.Deps.LockMap.Unlock("queue:" + workerID)
 
 			queuePath := filepath.Join(queueDir, name)
-			data, err := os.ReadFile(queuePath)
+			data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 			if err != nil {
 				return
 			}

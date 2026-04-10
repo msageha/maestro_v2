@@ -10,7 +10,7 @@ import (
 
 // LoadConfig reads, parses, and validates config.yaml from the given .maestro directory.
 func LoadConfig(maestroDir string) (Config, error) {
-	data, err := os.ReadFile(filepath.Join(maestroDir, "config.yaml"))
+	data, err := os.ReadFile(filepath.Join(maestroDir, "config.yaml")) //nolint:gosec // maestroDir is the application data directory, not user-controlled input
 	if err != nil {
 		return Config{}, fmt.Errorf("read config.yaml: %w", err)
 	}

@@ -24,8 +24,8 @@ type DebounceController struct {
 	mu           sync.Mutex
 	timer        *time.Timer
 	done         chan struct{} // closed when the in-flight callback finishes
-	firstTrigger time.Time    // tracks first trigger in a debounce window for maxWait
-	running      atomic.Bool  // true while debounced callback is executing
+	firstTrigger time.Time     // tracks first trigger in a debounce window for maxWait
+	running      atomic.Bool   // true while debounced callback is executing
 
 	// Shutdown guard: wired via SetShutdownGuard after construction.
 	shutdownCtx  context.Context

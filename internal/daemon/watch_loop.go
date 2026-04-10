@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/fsnotify/fsnotify"
+
 	"github.com/msageha/maestro_v2/internal/tmux"
 )
 

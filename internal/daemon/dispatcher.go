@@ -17,18 +17,18 @@ import (
 // Dispatcher handles priority sorting, agent_executor dispatch, quality gate
 // evaluation, worktree path resolution, and event publication.
 type Dispatcher struct {
-	maestroDir        string
-	config            model.Config
-	leaseManager      QueueLeaseManager
-	dl                *DaemonLogger
-	logger            *log.Logger
-	logLevel          LogLevel
-	clock             Clock
-	execProvider      ExecutorGetter
-	mu                sync.RWMutex // protects eventBus, qualityGate, worktreeManager
-	eventBus          *events.Bus
-	qualityGate       *QualityGateDaemon
-	gateEvaluator     *QualityGateEvaluator
+	maestroDir    string
+	config        model.Config
+	leaseManager  QueueLeaseManager
+	dl            *DaemonLogger
+	logger        *log.Logger
+	logLevel      LogLevel
+	clock         Clock
+	execProvider  ExecutorGetter
+	mu            sync.RWMutex // protects eventBus, qualityGate, worktreeManager
+	eventBus      *events.Bus
+	qualityGate   *QualityGateDaemon
+	gateEvaluator *QualityGateEvaluator
 
 	worktreeManager *WorktreeManager
 }
@@ -379,4 +379,3 @@ func (disp *Dispatcher) DispatchNotification(ntf *model.Notification) error {
 func (disp *Dispatcher) log(level LogLevel, format string, args ...any) {
 	disp.dl.Logf(level, format, args...)
 }
-

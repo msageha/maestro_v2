@@ -647,4 +647,3 @@ func (m *mapEvaluationContext) GetField(path string) (interface{}, bool) {
 
 	return nil, false
 }
-

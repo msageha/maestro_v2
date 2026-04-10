@@ -32,7 +32,7 @@ func (pc *PolicyChecker) hookScriptPath() string {
 // Returns the script path. The script is idempotently overwritten.
 func (pc *PolicyChecker) WriteHookScript() (string, error) {
 	dir := filepath.Join(pc.maestroDir, "hooks")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0755); err != nil { //nolint:gosec // 0755 is appropriate for a hooks directory
 		return "", fmt.Errorf("create hooks dir: %w", err)
 	}
 
@@ -60,19 +60,19 @@ type hookSettingsSandboxNetwork struct {
 }
 
 type hookSettingsHooks struct {
-	Notification *[]any      `json:"Notification,omitempty"`
-	PreToolUse   []hookMatcherGroup  `json:"PreToolUse,omitempty"`
+	Notification *[]any             `json:"Notification,omitempty"`
+	PreToolUse   []hookMatcherGroup `json:"PreToolUse,omitempty"`
 }
 
 type hookMatcherGroup struct {
-	Matcher string       `json:"matcher"`
-	Hooks   []hookEntry  `json:"hooks"`
+	Matcher string      `json:"matcher"`
+	Hooks   []hookEntry `json:"hooks"`
 }
 
 type hookEntry struct {
-	Type          string `json:"type"`
-	Command       string `json:"command"`
-	Timeout       int    `json:"timeout"`
+	Type    string `json:"type"`
+	Command string `json:"command"`
+	Timeout int    `json:"timeout"`
 }
 
 // HookSettings returns the --settings JSON string that configures the

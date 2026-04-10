@@ -227,7 +227,7 @@ func (dlp *DeadLetterProcessor) ProcessNotificationDeadLetters(nq *model.Notific
 // entryID is included in the filename to prevent same-second collisions.
 func (dlp *DeadLetterProcessor) archiveDeadLetter(queueType string, entryID string, entry interface{}, reason string) error {
 	archiveDir := filepath.Join(dlp.maestroDir, "dead_letters")
-	if err := os.MkdirAll(archiveDir, 0755); err != nil {
+	if err := os.MkdirAll(archiveDir, 0755); err != nil { //nolint:gosec // 0755 is appropriate for a dead_letters directory
 		return fmt.Errorf("create dead_letters dir: %w", err)
 	}
 
@@ -315,7 +315,7 @@ func (dlp *DeadLetterProcessor) commandDeadLetterPostProcess(commandID, reason s
 	dlp.lockMap.Lock(lockKey)
 	defer dlp.lockMap.Unlock(lockKey)
 
-	data, err := os.ReadFile(statePath)
+	data, err := os.ReadFile(statePath) //nolint:gosec // statePath is constructed from a controlled application state directory
 	if err != nil {
 		if !os.IsNotExist(err) {
 			dlp.log(LogLevelError, "dead_letter_post_process read_state command=%s error=%v", commandID, err)
@@ -389,7 +389,7 @@ func (dlp *DeadLetterProcessor) taskDeadLetterPostProcess(commandID, taskID, wor
 	defer dlp.lockMap.Unlock(lockKey)
 
 	// Phase 1: Update state — task_states[taskID] = failed
-	data, err := os.ReadFile(statePath)
+	data, err := os.ReadFile(statePath) //nolint:gosec // statePath is constructed from a controlled application state directory
 	if err == nil {
 		var state model.CommandState
 		if err := yamlv3.Unmarshal(data, &state); err == nil {
@@ -416,7 +416,7 @@ func (dlp *DeadLetterProcessor) taskDeadLetterPostProcess(commandID, taskID, wor
 	defer dlp.lockMap.Unlock(resultLockKey)
 
 	var rf model.TaskResultFile
-	resultData, err := os.ReadFile(resultPath)
+	resultData, err := os.ReadFile(resultPath) //nolint:gosec // resultPath is constructed from a controlled application results directory
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return

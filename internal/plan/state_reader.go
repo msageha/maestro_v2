@@ -11,7 +11,8 @@ import (
 )
 
 // PlanStateReader implements daemon.StateReader by reading state/commands/ YAML files.
-type PlanStateReader struct {
+// The name retains the Plan prefix for clarity at call sites outside this package.
+type PlanStateReader struct { //nolint:revive // stuttering name kept for clarity at external call sites
 	stateManager *StateManager
 }
 

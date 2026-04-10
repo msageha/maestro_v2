@@ -77,7 +77,7 @@ func (s *fsResultFileStore) SaveQueueFile(reporter string, tq model.TaskQueue) e
 func (s *fsResultFileStore) LoadCommandState(commandID string) (model.CommandState, error) {
 	var cs model.CommandState
 	path := filepath.Join(s.maestroDir, "state", "commands", commandID+".yaml")
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 	if err != nil {
 		return cs, err
 	}

@@ -68,7 +68,7 @@ func recoverStateDir(stateDir string, logger stateLogger) {
 			continue
 		}
 
-		bakContent, err := os.ReadFile(bakPath)
+		bakContent, err := os.ReadFile(bakPath) //nolint:gosec // bakPath is constructed from a controlled application state directory
 		if err != nil {
 			logger.logf(LogLevelWarn, "state_recovery bak_read_failed path=%s error=%v", bakPath, err)
 			continue
@@ -82,7 +82,7 @@ func recoverStateDir(stateDir string, logger stateLogger) {
 }
 
 func parseYAMLFile(path string) error {
-	content, err := os.ReadFile(path)
+	content, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 	if err != nil {
 		return fmt.Errorf("read: %w", err)
 	}

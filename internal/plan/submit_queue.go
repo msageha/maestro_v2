@@ -93,7 +93,7 @@ func rollbackQueueEntries(maestroDir string, tasks []TaskInput, nameToID map[str
 
 			queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(workerID))
 
-			data, err := os.ReadFile(queueFile)
+			data, err := os.ReadFile(queueFile) //nolint:gosec // queueFile is constructed from a controlled application queue directory
 			if err != nil {
 				return
 			}
@@ -153,7 +153,7 @@ func removeFromSlice(s []string, target string) []string {
 
 func checkCommandNotCancelled(maestroDir string, commandID string) error {
 	plannerQueuePath := filepath.Join(maestroDir, "queue", "planner.yaml")
-	data, err := os.ReadFile(plannerQueuePath)
+	data, err := os.ReadFile(plannerQueuePath) //nolint:gosec // plannerQueuePath is constructed from a controlled application queue directory
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil // no queue file = not cancelled

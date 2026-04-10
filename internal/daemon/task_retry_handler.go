@@ -9,10 +9,11 @@ import (
 	"strings"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/yaml"
-	yamlv3 "gopkg.in/yaml.v3"
 )
 
 const (
@@ -157,7 +158,7 @@ func (h *TaskRetryHandler) RegisterRetryTaskInState(task *model.Task, commandID 
 	defer h.lockMap.Unlock(stateLockKey)
 
 	statePath := filepath.Join(h.maestroDir, "state", "commands", commandID+".yaml")
-	stateData, err := os.ReadFile(statePath)
+	stateData, err := os.ReadFile(statePath) //nolint:gosec // statePath is constructed from a controlled application state directory
 	if err != nil {
 		return fmt.Errorf("read state file: %w", err)
 	}
@@ -199,7 +200,7 @@ func (h *TaskRetryHandler) addRetryTaskToQueueLocked(task *model.Task, workerID 
 	queuePath := filepath.Join(h.maestroDir, "queue", workerID+".yaml")
 
 	// Read existing queue
-	queueData, err := os.ReadFile(queuePath)
+	queueData, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 	if err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("read queue: %w", err)
 	}
@@ -237,7 +238,7 @@ func (h *TaskRetryHandler) MarkRetryEnqueueFailed(taskID, workerID, commandID st
 	defer h.lockMap.Unlock(stateLockKey)
 
 	statePath := filepath.Join(h.maestroDir, "state", "commands", commandID+".yaml")
-	stateData, err := os.ReadFile(statePath)
+	stateData, err := os.ReadFile(statePath) //nolint:gosec // statePath is constructed from a controlled application state directory
 	if err != nil {
 		return fmt.Errorf("read state file: %w", err)
 	}

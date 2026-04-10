@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	qualityGateEventBufferSize = 100               // eventChan のバッファサイズ
+	qualityGateEventBufferSize = 100                    // eventChan のバッファサイズ
 	defaultEvaluationTimeout   = 100 * time.Millisecond // ゲート評価のタイムアウト
 )
 
@@ -117,13 +117,13 @@ type QualityGateDaemon struct {
 // parentCtx is used as the base context; cancelling it cascades to the daemon's
 // internal context, allowing the quality gate to shut down with the parent daemon.
 // Pass context.Background() if no parent context is available.
-func NewQualityGateDaemon( //nolint:revive // context.Context intentionally last: callers established before this rule was enforced
+func NewQualityGateDaemon(
 	maestroDir string,
 	cfg model.Config,
 	lockMap *lock.MutexMap,
 	logger *log.Logger,
 	logLevel LogLevel,
-	parentCtx context.Context,
+	parentCtx context.Context, //nolint:revive // context.Context intentionally last: callers established before this rule was enforced
 ) *QualityGateDaemon {
 	ctx, cancel := context.WithCancel(parentCtx) //nolint:gosec // cancel is stored in the struct and called on shutdown
 	return &QualityGateDaemon{

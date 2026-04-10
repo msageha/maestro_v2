@@ -27,18 +27,18 @@ var (
 	// privilegeEscalationPatterns match commands that escalate privileges.
 	privilegeEscalationPatterns = []string{
 		`(?i)\b(?:sudo|su|doas|pkexec)\b`,
-		`(?i)\bchmod\s+(?:\+s|u\+s|[0-7]*4[0-7]{3})\b`,   // setuid bit
-		`(?i)\bchown\s+(?:root\b|0(?::|0|\s))`,             // ownership to root
+		`(?i)\bchmod\s+(?:\+s|u\+s|[0-7]*4[0-7]{3})\b`, // setuid bit
+		`(?i)\bchown\s+(?:root\b|0(?::|0|\s))`,         // ownership to root
 	}
 
 	// destructiveCommandPatterns match commands that destroy files, disks, or system state.
 	destructiveCommandPatterns = []string{
-		`(?i)\brm\s+-[^\n;|&]*\brf?\b`,                     // recursive force remove
-		`(?i)\b(?:mkfs(?:\.\w+)?|fdisk|parted|wipefs)\b`,   // disk-level destructive
-		`(?i)\bdd\s+[^;\n]*\bof=/dev/`,                     // raw disk write
-		`(?i)\b(?:shutdown|reboot|poweroff|halt|init\s+[06])\b`, // system shutdown/reboot
-		`(?i)\bkill\s+-9\s+-1\b`,                           // mass kill all processes
-		`(?i)\b(?:killall|pkill)\b`,                         // mass process kill
+		`(?i)\brm\s+-[^\n;|&]*\brf?\b`,                                  // recursive force remove
+		`(?i)\b(?:mkfs(?:\.\w+)?|fdisk|parted|wipefs)\b`,                // disk-level destructive
+		`(?i)\bdd\s+[^;\n]*\bof=/dev/`,                                  // raw disk write
+		`(?i)\b(?:shutdown|reboot|poweroff|halt|init\s+[06])\b`,         // system shutdown/reboot
+		`(?i)\bkill\s+-9\s+-1\b`,                                        // mass kill all processes
+		`(?i)\b(?:killall|pkill)\b`,                                     // mass process kill
 		`(?i)(?:>|>>|\btee\b)\s*/etc/(?:sudoers|passwd|shadow|group)\b`, // critical system files
 	}
 
@@ -46,7 +46,7 @@ var (
 	// or open reverse shells.
 	remoteCodeExecutionPatterns = []string{
 		`(?i)\b(?:curl|wget)\b[^|\n]*\|\s*(?:bash|sh|zsh)\b`, // pipe download to shell
-		`(?i)\|\s*(?:(?:/(?:usr/)?bin/)?(?:ba)?sh)\b`,         // generic pipe to shell
+		`(?i)\|\s*(?:(?:/(?:usr/)?bin/)?(?:ba)?sh)\b`,        // generic pipe to shell
 		`(?i)(?:^|[;\r\n|&])\s*/(?:usr/)?bin/(?:ba)?sh\b`,    // absolute path shell invocation
 		`(?i)\b(?:nc|ncat|netcat|socat)\b[^;\n]*\s-e\s`,      // reverse shell via netcat
 		`(?i)\b(?:bash|sh)\b[^;\n]*/dev/(?:tcp|udp)/`,        // reverse shell via /dev/tcp
@@ -69,12 +69,12 @@ var (
 		`(?i)\bphp\b[^\n;|&]*\s+-r\b`,
 		`(?i)\blua\b[^\n;|&]*\s+-e\b`,
 		// Shell variable expansion / obfuscation
-		`\$\{!`,                                      // indirect variable expansion (${!var})
-		`\$\{[^}]+:[0-9]`,                            // substring extraction (${var:0:1})
-		`(?i)\bprintf\b[^\n;|&]*\\x[0-9a-fA-F]`,     // printf with hex escapes
-		`(?i)\bexport\s+PATH\b`,                      // PATH override
-		`(?i)(?:^|[;\r\n|&])\s*source\s+\S`,               // source external scripts
-		`(?:^|[;\r\n|&]\s*)\.\s+\S`,                     // dot-source (. /path)
+		`\$\{!`,                                 // indirect variable expansion (${!var})
+		`\$\{[^}]+:[0-9]`,                       // substring extraction (${var:0:1})
+		`(?i)\bprintf\b[^\n;|&]*\\x[0-9a-fA-F]`, // printf with hex escapes
+		`(?i)\bexport\s+PATH\b`,                 // PATH override
+		`(?i)(?:^|[;\r\n|&])\s*source\s+\S`,     // source external scripts
+		`(?:^|[;\r\n|&]\s*)\.\s+\S`,             // dot-source (. /path)
 		// Unrestricted shell spawning (bypasses bash --restricted)
 		`(?i)\bsh\b[^\n;|&]*\s+-c\b`,
 		`(?i)\bdash\b[^\n;|&]*\s+-c\b`,
@@ -90,13 +90,13 @@ var (
 	// pythonDangerousPatterns match Python-specific dangerous constructs.
 	pythonDangerousPatterns = []string{
 		`(?i)\bos\.(?:system|popen|exec[lv]*[pe]*)\s*\(`, // os.system(), os.popen(), os.exec*()
-		`(?i)\bsubprocess\b`,                              // subprocess module
-		`(?i)\b__import__\s*\(`,                           // dynamic import
-		`(?i)\bimportlib\b`,                               // importlib
-		`(?i)\beval\s*\(`,                                 // eval builtin
-		`(?i)\bexec\s*\(`,                                 // exec builtin
-		`(?i)\bsocket\.socket\s*\(`,                       // raw socket creation
-		`(?i)\bctypes\b`,                                  // ctypes FFI
+		`(?i)\bsubprocess\b`,                             // subprocess module
+		`(?i)\b__import__\s*\(`,                          // dynamic import
+		`(?i)\bimportlib\b`,                              // importlib
+		`(?i)\beval\s*\(`,                                // eval builtin
+		`(?i)\bexec\s*\(`,                                // exec builtin
+		`(?i)\bsocket\.socket\s*\(`,                      // raw socket creation
+		`(?i)\bctypes\b`,                                 // ctypes FFI
 	}
 )
 
@@ -516,4 +516,3 @@ func scriptLanguage(lang string) string {
 	}
 	return lang
 }
-

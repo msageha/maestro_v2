@@ -24,7 +24,7 @@ func readModifyWriteQueue(maestroDir string, workerID string, modifyFn func(tq *
 	queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(workerID))
 
 	var tq model.TaskQueue
-	data, err := os.ReadFile(queueFile)
+	data, err := os.ReadFile(queueFile) //nolint:gosec // queueFile is constructed from a controlled application queue directory
 	if err == nil {
 		if err := yamlv3.Unmarshal(data, &tq); err != nil {
 			return fmt.Errorf("parse existing queue %s: %w", workerID, err)

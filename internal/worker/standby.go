@@ -135,7 +135,7 @@ func StandbyJSON(opts StandbyOptions) (string, error) {
 // readQueueFile opens, validates, and reads a queue YAML file.
 // Extracted from loop to allow proper defer-based resource cleanup.
 func readQueueFile(path string, maxBytes int) ([]byte, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // path is a queue file path from the application data directory
 	if err != nil {
 		return nil, err
 	}

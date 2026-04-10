@@ -37,7 +37,7 @@ func readInput(tasksFile string) (*SubmitInput, error) {
 			return nil, fmt.Errorf("tasks file exceeds maximum size of %d bytes (got %d)", model.DefaultMaxYAMLFileBytes, info.Size())
 		}
 
-		data, err = os.ReadFile(tasksFile)
+		data, err = os.ReadFile(tasksFile) //nolint:gosec // tasksFile is a user-specified config file path validated by the CLI
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read tasks file: %w", err)

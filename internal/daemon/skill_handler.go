@@ -90,7 +90,7 @@ func (a *API) handleSkillApprove(req *uds.Request) *uds.Response {
 	}
 
 	// Create skill directory and write SKILL.md
-	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+	if err := os.MkdirAll(skillDir, 0o755); err != nil { //nolint:gosec // 0755 is appropriate for a skills directory
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("create skill directory: %v", err))
 	}
 
@@ -188,7 +188,7 @@ func daemonSlugify(content string) string {
 func daemonFormatSkillMD(name, content string) string {
 	var sb strings.Builder
 	sb.WriteString("---\n")
-	sb.WriteString(fmt.Sprintf("name: %s\n", name))
+	fmt.Fprintf(&sb, "name: %s\n", name)
 	sb.WriteString("description: Auto-approved from skill candidate\n")
 	sb.WriteString("---\n")
 	sb.WriteString(content)
