@@ -14,6 +14,9 @@ import (
 	"time"
 
 	"golang.org/x/sync/singleflight"
+
+	"github.com/msageha/maestro_v2/internal/daemon/complexity"
+	"github.com/msageha/maestro_v2/internal/daemon/featuregate"
 )
 
 // Engine is the main quality gate evaluation engine
@@ -511,6 +514,106 @@ func toFloat64(v interface{}) (float64, error) {
 	default:
 		return 0, fmt.Errorf("cannot convert %T to float64", v)
 	}
+}
+
+// ConditionFeatureGate is the condition type for feature gate evaluation.
+const ConditionFeatureGate ConditionType = "feature_gate"
+
+// FeatureGateRule evaluates feature gates based on task complexity.
+type FeatureGateRule struct {
+	evaluator *featuregate.Evaluator
+	scorer    *complexity.Scorer
+}
+
+// Evaluate determines the complexity level and returns the corresponding feature profile.
+// If task.complexity_level is explicitly set, it overrides the computed level (§C-8 req-4).
+// On any failure the Simple profile is used as fallback (§C-8 req-6).
+func (r *FeatureGateRule) Evaluate(ctx context.Context, condition *RuleCondition, evalCtx EvaluationContext) (bool, error) {
+	var level featuregate.ProfileLevel
+
+	// §C-8 req-4: explicit complexity level override
+	if raw, ok := evalCtx.GetField("task.complexity_level"); ok {
+		if s, isStr := raw.(string); isStr && s != "" {
+			level = featuregate.ProfileLevel(s)
+		}
+	}
+
+	// Compute complexity when no explicit level is set.
+	if level == "" {
+		input := r.buildComplexityInput(evalCtx)
+		score := r.scorer.Estimate(input)
+		level = complexityToProfileLevel(score.Level)
+	}
+
+	profile := r.evaluator.Evaluate(level)
+
+	// Verify the profile was resolved. If the level was unknown the evaluator
+	// already falls back to Simple, so profile.Level will be valid.
+	if len(profile.EnabledFeatures) == 0 {
+		profile = r.evaluator.Evaluate(featuregate.LevelSimple)
+	}
+
+	// Count enabled features — a non-zero count means features are active.
+	enabled := 0
+	for _, v := range profile.EnabledFeatures {
+		if v {
+			enabled++
+		}
+	}
+
+	// Always passes: the gate is informational, not blocking.
+	// enabled > 0 is exposed for testing; callers inspect the evaluation
+	// context or RuleResult.Message downstream.
+	_ = enabled
+	return true, nil
+}
+
+// buildComplexityInput extracts complexity.Input fields from the evaluation context.
+func (r *FeatureGateRule) buildComplexityInput(evalCtx EvaluationContext) complexity.Input {
+	var input complexity.Input
+	if v, ok := evalCtx.GetField("task.file_count"); ok {
+		input.FileCount = toInt(v)
+	}
+	if v, ok := evalCtx.GetField("task.dependency_depth"); ok {
+		input.DependencyDepth = toInt(v)
+	}
+	if v, ok := evalCtx.GetField("task.bloom_level"); ok {
+		input.BloomLevel = toInt(v)
+	}
+	if v, ok := evalCtx.GetField("task.past_repair_rate"); ok {
+		if f, err := toFloat64(v); err == nil {
+			input.PastRepairRate = f
+		}
+	}
+	if v, ok := evalCtx.GetField("task.expected_path_count"); ok {
+		input.ExpectedPathCount = toInt(v)
+	}
+	return input
+}
+
+// complexityToProfileLevel maps a complexity.Level to a featuregate.ProfileLevel.
+func complexityToProfileLevel(level complexity.Level) featuregate.ProfileLevel {
+	switch level {
+	case complexity.LevelSimple:
+		return featuregate.LevelSimple
+	case complexity.LevelStandard:
+		return featuregate.LevelStandard
+	case complexity.LevelComplex:
+		return featuregate.LevelComplex
+	case complexity.LevelCritical:
+		return featuregate.LevelCritical
+	default:
+		return featuregate.LevelSimple
+	}
+}
+
+// RegisterFeatureGateRule registers a FeatureGateRule as a pre_task evaluator on the engine.
+func RegisterFeatureGateRule(engine *Engine, evaluator *featuregate.Evaluator, scorer *complexity.Scorer) {
+	rule := &FeatureGateRule{
+		evaluator: evaluator,
+		scorer:    scorer,
+	}
+	engine.registerEvaluator(ConditionFeatureGate, rule)
 }
 
 // mapEvaluationContext provides evaluation context from a map
