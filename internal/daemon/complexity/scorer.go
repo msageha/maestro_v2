@@ -75,25 +75,27 @@ func DefaultThresholds() Thresholds {
 // Confidence reflects data completeness: factors with zero value
 // reduce confidence proportionally.
 func (s *Scorer) Estimate(input Input) Score {
-	factors := map[string]float64{
-		"file_count":          normalize(float64(input.FileCount), 50),
-		"dependency_depth":    normalize(float64(input.DependencyDepth), 10),
-		"bloom_level":         normalize(float64(input.BloomLevel), 6),
-		"past_repair_rate":    clamp(input.PastRepairRate, 0, 1),
-		"expected_path_count": normalize(float64(input.ExpectedPathCount), 20),
+	// Fixed-order slice ensures deterministic floating-point summation.
+	// Map iteration order is random in Go, which causes non-deterministic
+	// results due to floating-point addition not being commutative.
+	type weightedFactor struct {
+		name   string
+		value  float64
+		weight float64
+	}
+	wfs := []weightedFactor{
+		{"file_count", normalize(float64(input.FileCount), 50), 0.3},
+		{"dependency_depth", normalize(float64(input.DependencyDepth), 10), 0.2},
+		{"bloom_level", normalize(float64(input.BloomLevel), 6), 0.2},
+		{"past_repair_rate", clamp(input.PastRepairRate, 0, 1), 0.2},
+		{"expected_path_count", normalize(float64(input.ExpectedPathCount), 20), 0.1},
 	}
 
-	weights := map[string]float64{
-		"file_count":          0.3,
-		"dependency_depth":    0.2,
-		"bloom_level":         0.2,
-		"past_repair_rate":    0.2,
-		"expected_path_count": 0.1,
-	}
-
+	factors := make(map[string]float64, len(wfs))
 	var raw float64
-	for k, w := range weights {
-		raw += w * factors[k]
+	for _, wf := range wfs {
+		factors[wf.name] = wf.value
+		raw += wf.weight * wf.value
 	}
 
 	confidence := computeConfidence(input)

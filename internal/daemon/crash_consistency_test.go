@@ -706,8 +706,9 @@ func TestConcurrentCrash_MultipleWorkers(t *testing.T) {
 					UpdatedAt:        time.Now().Format(time.RFC3339),
 				}
 
-				// Simulate retry creation
-				if err := simulateRetryCreation(maestroDir, originalTask, crashSim); err != nil {
+				// Simulate retry creation — use per-worker queue file to avoid
+				// concurrent write races (mirrors the real per-worker queue design).
+				if err := simulateRetryCreationForWorker(maestroDir, workerID, originalTask, crashSim); err != nil {
 					t.Logf("retry creation for worker %d: %v", workerID, err)
 				}
 			}(i)
@@ -824,6 +825,10 @@ func simulateTaskCreation(maestroDir string, crashSim *CrashSimulator) error {
 }
 
 func simulateRetryCreation(maestroDir string, originalTask *model.Task, crashSim *CrashSimulator) error {
+	return simulateRetryCreationForWorker(maestroDir, 1, originalTask, crashSim)
+}
+
+func simulateRetryCreationForWorker(maestroDir string, workerID int, originalTask *model.Task, crashSim *CrashSimulator) error {
 	// Check for crash during retry creation
 	if err := crashSim.CheckCrash(CrashPointDuringRetryCreation); err != nil {
 		return err
@@ -846,8 +851,9 @@ func simulateRetryCreation(maestroDir string, originalTask *model.Task, crashSim
 	cooldownTime := time.Now().Add(30 * time.Second).Format(time.RFC3339)
 	retryTask.NotBefore = &cooldownTime
 
-	// Load existing queue or create new
-	queuePath := filepath.Join(maestroDir, "queue", "worker1.yaml")
+	// Each worker uses its own queue file to avoid concurrent write races.
+	// This mirrors the real system where each worker owns its queue file.
+	queuePath := filepath.Join(maestroDir, "queue", fmt.Sprintf("worker%d.yaml", workerID))
 	var queue model.TaskQueue
 
 	data, err := os.ReadFile(queuePath)
