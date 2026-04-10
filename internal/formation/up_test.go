@@ -133,6 +133,101 @@ func TestResolveModel_WorkerDefaultModel(t *testing.T) {
 	}
 }
 
+// --- resolveRuntime tests (C-7) ---
+
+func TestResolveRuntime_Default(t *testing.T) {
+	cfg := model.Config{}
+	if r := resolveRuntime(cfg, "orchestrator"); r != "claude-code" {
+		t.Errorf("expected claude-code, got %s", r)
+	}
+	if r := resolveRuntime(cfg, "planner"); r != "claude-code" {
+		t.Errorf("expected claude-code, got %s", r)
+	}
+	if r := resolveRuntime(cfg, "worker1"); r != "claude-code" {
+		t.Errorf("expected claude-code, got %s", r)
+	}
+}
+
+func TestResolveRuntime_OrchestratorAlwaysClaudeCode(t *testing.T) {
+	cfg := model.Config{
+		Runtimes: map[string]model.RuntimeConfig{
+			"codex": {Enabled: model.BoolPtr(true), Default: model.BoolPtr(true)},
+		},
+	}
+	if r := resolveRuntime(cfg, "orchestrator"); r != "claude-code" {
+		t.Errorf("orchestrator must always use claude-code, got %s", r)
+	}
+}
+
+func TestResolveRuntime_PlannerAlwaysClaudeCode(t *testing.T) {
+	cfg := model.Config{
+		Runtimes: map[string]model.RuntimeConfig{
+			"codex": {Enabled: model.BoolPtr(true), Default: model.BoolPtr(true)},
+		},
+	}
+	if r := resolveRuntime(cfg, "planner"); r != "claude-code" {
+		t.Errorf("planner must always use claude-code, got %s", r)
+	}
+}
+
+func TestResolveRuntime_WorkerWithConfigDefault(t *testing.T) {
+	cfg := model.Config{
+		Runtimes: map[string]model.RuntimeConfig{
+			"codex": {Enabled: model.BoolPtr(true), Default: model.BoolPtr(true)},
+		},
+	}
+	if r := resolveRuntime(cfg, "worker1"); r != "codex" {
+		t.Errorf("expected codex (configured default), got %s", r)
+	}
+}
+
+func TestResolveRuntime_WorkerDisabledDefaultFallsBack(t *testing.T) {
+	cfg := model.Config{
+		Runtimes: map[string]model.RuntimeConfig{
+			"codex": {Enabled: model.BoolPtr(false), Default: model.BoolPtr(true)},
+		},
+	}
+	if r := resolveRuntime(cfg, "worker1"); r != "claude-code" {
+		t.Errorf("expected claude-code (disabled default ignored), got %s", r)
+	}
+}
+
+func TestSwitchRuntime_Valid(t *testing.T) {
+	cfg := model.Config{
+		Runtimes: map[string]model.RuntimeConfig{
+			"codex": {Enabled: model.BoolPtr(true)},
+		},
+	}
+	if err := SwitchRuntime("worker1", "codex", cfg); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+func TestSwitchRuntime_UnknownRuntime(t *testing.T) {
+	cfg := model.Config{}
+	if err := SwitchRuntime("worker1", "unknown", cfg); err == nil {
+		t.Error("expected error for unknown runtime")
+	}
+}
+
+func TestSwitchRuntime_DisabledRuntime(t *testing.T) {
+	cfg := model.Config{
+		Runtimes: map[string]model.RuntimeConfig{
+			"codex": {Enabled: model.BoolPtr(false)},
+		},
+	}
+	if err := SwitchRuntime("worker1", "codex", cfg); err == nil {
+		t.Error("expected error for disabled runtime")
+	}
+}
+
+func TestSwitchRuntime_ClaudeCodeAlwaysAllowed(t *testing.T) {
+	cfg := model.Config{}
+	if err := SwitchRuntime("worker1", "claude-code", cfg); err != nil {
+		t.Errorf("claude-code should always be allowed: %v", err)
+	}
+}
+
 func TestClearYAMLFiles(t *testing.T) {
 	dir := t.TempDir()
 
