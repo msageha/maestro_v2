@@ -674,11 +674,7 @@ func (qh *QueueHandler) stepWorktreeStallDetection(s *scanState) {
 					UpdatedAt: nowStr,
 				}, s.signalIndex)
 
-				markFn := qh.worktreeStallMarkFn
-				if markFn == nil {
-					markFn = qh.worktreeManager.MarkIntegrationStallSignaled
-				}
-				if err := markFn(cmd.ID); err != nil {
+				if err := qh.worktreeStallMarkFn(cmd.ID); err != nil {
 					qh.log(LogLevelWarn, "worktree_stall_mark_failed command=%s error=%v", cmd.ID, err)
 					if mfErr := qh.worktreeManager.MarkIntegrationFailed(cmd.ID); mfErr != nil {
 						qh.log(LogLevelError, "worktree_stall_integration_failed_transition command=%s error=%v",
@@ -721,11 +717,7 @@ func (qh *QueueHandler) stepWorktreeStallDetection(s *scanState) {
 			UpdatedAt: nowStr,
 		}, s.signalIndex)
 
-		markFn := qh.worktreeStallMarkFn
-		if markFn == nil {
-			markFn = qh.worktreeManager.MarkIntegrationStallSignaled
-		}
-		if err := markFn(cmd.ID); err != nil {
+		if err := qh.worktreeStallMarkFn(cmd.ID); err != nil {
 			qh.log(LogLevelWarn, "worktree_stall_mark_failed command=%s error=%v", cmd.ID, err)
 			if mfErr := qh.worktreeManager.MarkIntegrationFailed(cmd.ID); mfErr != nil {
 				qh.log(LogLevelError, "worktree_stall_integration_failed_transition command=%s error=%v",
