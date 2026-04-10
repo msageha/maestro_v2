@@ -7,6 +7,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/msageha/maestro_v2/internal/daemon/complexity"
+	"github.com/msageha/maestro_v2/internal/daemon/featuregate"
 )
 
 func TestEngine_LoadConfiguration(t *testing.T) {
@@ -581,4 +584,255 @@ func TestEngine_TriggerFilters(t *testing.T) {
 		require.NoError(t, err)
 		assert.True(t, result.Passed) // Passes because gate doesn't trigger
 	})
+}
+
+// --- FeatureGateRule tests ---
+
+func newFeatureGateEngine() (*Engine, *featuregate.Evaluator, *complexity.Scorer) {
+	engine := NewEngine()
+	evaluator := featuregate.NewEvaluator()
+	scorer := complexity.NewScorer(complexity.DefaultThresholds())
+	RegisterFeatureGateRule(engine, evaluator, scorer)
+	return engine, evaluator, scorer
+}
+
+func TestFeatureGateRule_LowComplexity_SimpleProfile(t *testing.T) {
+	engine, evaluator, _ := newFeatureGateEngine()
+
+	// Build a gate that uses the feature_gate condition type
+	config := &GateConfiguration{
+		SchemaVersion: "1.0.0",
+		Gates: []GateDefinition{
+			{
+				ID:       "feature_gate_test",
+				Name:     "Feature Gate Test",
+				Enabled:  boolPtr(true),
+				Type:     GateTypePreTask,
+				Priority: 5,
+				Rules: []RuleDefinition{
+					{
+						ID:          "fg_rule",
+						Description: "feature gate check",
+						Condition: RuleCondition{
+							Type: ConditionFeatureGate,
+						},
+						Severity: SeverityInfo,
+					},
+				},
+				Action: ActionDefinition{
+					OnPass: ActionAllow,
+					OnFail: ActionBlock,
+				},
+			},
+		},
+	}
+	require.NoError(t, engine.LoadConfiguration(config))
+
+	// Low complexity: file_count=1, dependency_depth=0, bloom=1 → simple
+	ctx := context.Background()
+	evalCtx := map[string]interface{}{
+		"task": map[string]interface{}{
+			"file_count":       1,
+			"dependency_depth": 0,
+			"bloom_level":      1,
+		},
+	}
+	result, err := engine.Evaluate(ctx, GateTypePreTask, evalCtx)
+	require.NoError(t, err)
+	assert.True(t, result.Passed)
+
+	// Verify the simple profile has all features disabled
+	profile := evaluator.Evaluate(featuregate.LevelSimple)
+	for feat, enabled := range profile.EnabledFeatures {
+		assert.False(t, enabled, "simple profile: feature %s should be disabled", feat)
+	}
+}
+
+func TestFeatureGateRule_HighComplexity_ComplexProfile(t *testing.T) {
+	engine, evaluator, _ := newFeatureGateEngine()
+
+	config := &GateConfiguration{
+		SchemaVersion: "1.0.0",
+		Gates: []GateDefinition{
+			{
+				ID:       "feature_gate_complex",
+				Name:     "Feature Gate Complex",
+				Enabled:  boolPtr(true),
+				Type:     GateTypePreTask,
+				Priority: 5,
+				Rules: []RuleDefinition{
+					{
+						ID:          "fg_rule",
+						Description: "feature gate check",
+						Condition: RuleCondition{
+							Type: ConditionFeatureGate,
+						},
+						Severity: SeverityInfo,
+					},
+				},
+				Action: ActionDefinition{
+					OnPass: ActionAllow,
+					OnFail: ActionBlock,
+				},
+			},
+		},
+	}
+	require.NoError(t, engine.LoadConfiguration(config))
+
+	// High complexity: many files, deep deps, high bloom → complex/critical
+	ctx := context.Background()
+	evalCtx := map[string]interface{}{
+		"task": map[string]interface{}{
+			"file_count":          30,
+			"dependency_depth":    8,
+			"bloom_level":         6,
+			"past_repair_rate":    0.5,
+			"expected_path_count": 15,
+		},
+	}
+	result, err := engine.Evaluate(ctx, GateTypePreTask, evalCtx)
+	require.NoError(t, err)
+	assert.True(t, result.Passed)
+
+	// The complex profile should have some features enabled
+	profile := evaluator.Evaluate(featuregate.LevelComplex)
+	assert.True(t, profile.EnabledFeatures[featuregate.FeatureAdaptiveModelSelection],
+		"complex profile: adaptive_model_selection should be enabled")
+	assert.True(t, profile.EnabledFeatures[featuregate.FeatureCrossAgentReview],
+		"complex profile: cross_agent_review should be enabled")
+}
+
+func TestFeatureGateRule_ExplicitComplexityLevel_Override(t *testing.T) {
+	engine, _, _ := newFeatureGateEngine()
+
+	config := &GateConfiguration{
+		SchemaVersion: "1.0.0",
+		Gates: []GateDefinition{
+			{
+				ID:       "feature_gate_override",
+				Name:     "Feature Gate Override",
+				Enabled:  boolPtr(true),
+				Type:     GateTypePreTask,
+				Priority: 5,
+				Rules: []RuleDefinition{
+					{
+						ID:          "fg_rule",
+						Description: "feature gate check",
+						Condition: RuleCondition{
+							Type: ConditionFeatureGate,
+						},
+						Severity: SeverityInfo,
+					},
+				},
+				Action: ActionDefinition{
+					OnPass: ActionAllow,
+					OnFail: ActionBlock,
+				},
+			},
+		},
+	}
+	require.NoError(t, engine.LoadConfiguration(config))
+
+	// Low structural complexity but explicit critical level override (§C-8 req-4)
+	ctx := context.Background()
+	evalCtx := map[string]interface{}{
+		"task": map[string]interface{}{
+			"file_count":       1,
+			"bloom_level":      1,
+			"complexity_level": "critical",
+		},
+	}
+	result, err := engine.Evaluate(ctx, GateTypePreTask, evalCtx)
+	require.NoError(t, err)
+	assert.True(t, result.Passed)
+}
+
+func TestFeatureGateRule_UnknownLevel_FallbackToSimple(t *testing.T) {
+	engine, _, _ := newFeatureGateEngine()
+
+	config := &GateConfiguration{
+		SchemaVersion: "1.0.0",
+		Gates: []GateDefinition{
+			{
+				ID:       "feature_gate_fallback",
+				Name:     "Feature Gate Fallback",
+				Enabled:  boolPtr(true),
+				Type:     GateTypePreTask,
+				Priority: 5,
+				Rules: []RuleDefinition{
+					{
+						ID:          "fg_rule",
+						Description: "feature gate check",
+						Condition: RuleCondition{
+							Type: ConditionFeatureGate,
+						},
+						Severity: SeverityInfo,
+					},
+				},
+				Action: ActionDefinition{
+					OnPass: ActionAllow,
+					OnFail: ActionBlock,
+				},
+			},
+		},
+	}
+	require.NoError(t, engine.LoadConfiguration(config))
+
+	// Unknown complexity level → should fallback to simple (§C-8 req-6)
+	ctx := context.Background()
+	evalCtx := map[string]interface{}{
+		"task": map[string]interface{}{
+			"complexity_level": "unknown_level",
+		},
+	}
+	result, err := engine.Evaluate(ctx, GateTypePreTask, evalCtx)
+	require.NoError(t, err)
+	assert.True(t, result.Passed, "unknown level should still pass (fallback to simple)")
+}
+
+func TestFeatureGateRule_DirectEvaluate(t *testing.T) {
+	evaluator := featuregate.NewEvaluator()
+	scorer := complexity.NewScorer(complexity.DefaultThresholds())
+	rule := &FeatureGateRule{evaluator: evaluator, scorer: scorer}
+
+	tests := []struct {
+		name    string
+		ctx     map[string]interface{}
+		wantOK  bool
+	}{
+		{
+			name: "simple complexity",
+			ctx: map[string]interface{}{
+				"task": map[string]interface{}{
+					"file_count":  1,
+					"bloom_level": 1,
+				},
+			},
+			wantOK: true,
+		},
+		{
+			name: "explicit override",
+			ctx: map[string]interface{}{
+				"task": map[string]interface{}{
+					"complexity_level": "critical",
+				},
+			},
+			wantOK: true,
+		},
+		{
+			name:   "empty context",
+			ctx:    map[string]interface{}{},
+			wantOK: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			evalCtx := &mapEvaluationContext{data: tt.ctx}
+			condition := &RuleCondition{Type: ConditionFeatureGate}
+			got, err := rule.Evaluate(context.Background(), condition, evalCtx)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantOK, got)
+		})
+	}
 }

@@ -7,6 +7,10 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
+func boolPtrPlan(v bool) *bool       { return &v }
+func float64Ptr(v float64) *float64   { return &v }
+func intPtr(v int) *int               { return &v }
+
 func TestGetModelForBloomLevel(t *testing.T) {
 	tests := []struct {
 		level int
@@ -244,5 +248,145 @@ func TestAssignWorkers_BoostMode(t *testing.T) {
 		if a.Model != "opus" {
 			t.Errorf("boost mode: task %q should use opus, got %q", a.TaskName, a.Model)
 		}
+	}
+}
+
+// --- AdaptiveModelSelector tests ---
+
+func TestAdaptiveModelSelector_Disabled(t *testing.T) {
+	cfg := model.BanditConfig{
+		Enabled: boolPtrPlan(false),
+	}
+	sel := NewAdaptiveModelSelector(cfg)
+
+	// Should fall back to static mapping regardless of data
+	got := sel.SelectModel(2, "implement")
+	if got != "sonnet" {
+		t.Errorf("disabled selector: SelectModel(2) = %q, want %q", got, "sonnet")
+	}
+	got = sel.SelectModel(5, "implement")
+	if got != "opus" {
+		t.Errorf("disabled selector: SelectModel(5) = %q, want %q", got, "opus")
+	}
+}
+
+func TestAdaptiveModelSelector_InsufficientData_TraceRequirement(t *testing.T) {
+	cfg := model.BanditConfig{
+		Enabled:              boolPtrPlan(true),
+		ExplorationCoeff:     float64Ptr(1.41),
+		MinSamplesBeforeUse:  intPtr(2),
+		TraceDataRequirement: intPtr(10), // require 10 total pulls
+	}
+	sel := NewAdaptiveModelSelector(cfg)
+
+	// Seed a few observations — not enough to meet TraceDataRequirement(10)
+	for i := 0; i < 3; i++ {
+		sel.RecordResult("sonnet", 1.0)
+		sel.RecordResult("opus", 0.8)
+	}
+	// total pulls = 6, TraceDataRequirement = 10 → fallback
+	got := sel.SelectModel(2, "implement")
+	if got != "sonnet" {
+		t.Errorf("insufficient trace data: SelectModel(2) = %q, want %q (static fallback)", got, "sonnet")
+	}
+}
+
+func TestAdaptiveModelSelector_InsufficientData_MinSamples(t *testing.T) {
+	cfg := model.BanditConfig{
+		Enabled:              boolPtrPlan(true),
+		ExplorationCoeff:     float64Ptr(1.41),
+		MinSamplesBeforeUse:  intPtr(5),  // each arm needs 5
+		TraceDataRequirement: intPtr(3),  // total trace easily met
+	}
+	sel := NewAdaptiveModelSelector(cfg)
+
+	// Give enough total but haiku has 0 pulls
+	for i := 0; i < 5; i++ {
+		sel.RecordResult("sonnet", 1.0)
+		sel.RecordResult("opus", 0.8)
+	}
+	// total=10 >= TraceDataRequirement(3), but haiku has 0 < MinSamples(5) → fallback
+	got := sel.SelectModel(2, "implement")
+	if got != "sonnet" {
+		t.Errorf("min samples not met: SelectModel(2) = %q, want %q (static fallback)", got, "sonnet")
+	}
+}
+
+func TestAdaptiveModelSelector_SufficientData_BanditSelection(t *testing.T) {
+	cfg := model.BanditConfig{
+		Enabled:              boolPtrPlan(true),
+		ExplorationCoeff:     float64Ptr(0.0), // zero exploration → pure exploitation
+		MinSamplesBeforeUse:  intPtr(2),
+		TraceDataRequirement: intPtr(6),
+	}
+	sel := NewAdaptiveModelSelector(cfg)
+
+	// Seed data: sonnet gets high reward, opus medium, haiku low
+	for i := 0; i < 5; i++ {
+		sel.RecordResult("sonnet", 1.0)
+		sel.RecordResult("opus", 0.5)
+		sel.RecordResult("haiku", 0.1)
+	}
+	// total=15 >= 6, each arm has 5 >= 2 → bandit should select
+
+	got := sel.SelectModel(2, "implement")
+	// With explorationCoeff=0, pure exploitation → highest avg reward = sonnet
+	if got != "sonnet" {
+		t.Errorf("bandit selection: SelectModel(2) = %q, want %q (highest reward)", got, "sonnet")
+	}
+}
+
+func TestAdaptiveModelSelector_RecordResult(t *testing.T) {
+	cfg := model.BanditConfig{
+		Enabled:          boolPtrPlan(true),
+		ExplorationCoeff: float64Ptr(1.41),
+	}
+	sel := NewAdaptiveModelSelector(cfg)
+
+	sel.RecordResult("sonnet", 1.0)
+	sel.RecordResult("sonnet", 0.6)
+
+	stats := sel.bandit.GetStats()
+	arm, ok := stats["sonnet"]
+	if !ok {
+		t.Fatal("expected sonnet arm in stats")
+	}
+	if arm.PullCount != 2 {
+		t.Errorf("PullCount = %d, want 2", arm.PullCount)
+	}
+	// AvgReward should be (1.0+0.6)/2 = 0.8
+	if arm.AvgReward < 0.79 || arm.AvgReward > 0.81 {
+		t.Errorf("AvgReward = %f, want ~0.8", arm.AvgReward)
+	}
+}
+
+func TestAdaptiveModelSelector_RecordResult_Disabled(t *testing.T) {
+	cfg := model.BanditConfig{
+		Enabled: boolPtrPlan(false),
+	}
+	sel := NewAdaptiveModelSelector(cfg)
+
+	// Should not panic
+	sel.RecordResult("sonnet", 1.0)
+	if sel.bandit != nil {
+		t.Error("bandit should be nil when disabled")
+	}
+}
+
+func TestAdaptiveModelSelector_FallbackOnError(t *testing.T) {
+	cfg := model.BanditConfig{
+		Enabled:              boolPtrPlan(true),
+		ExplorationCoeff:     float64Ptr(1.41),
+		MinSamplesBeforeUse:  intPtr(0),
+		TraceDataRequirement: intPtr(0),
+	}
+	sel := NewAdaptiveModelSelector(cfg)
+
+	// Remove all arms to force SelectArm error
+	sel.bandit.Reset()
+
+	got := sel.SelectModel(5, "implement")
+	if got != "opus" {
+		t.Errorf("error fallback: SelectModel(5) = %q, want %q (static fallback)", got, "opus")
 	}
 }
