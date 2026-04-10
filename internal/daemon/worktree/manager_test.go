@@ -34,8 +34,14 @@ func initTestGitRepo(t *testing.T) string {
 		}
 	}
 
-	// Create initial file and commit
+	// Create initial file and commit.
+	// .gitignore must include .maestro/worktrees/ so that git status --porcelain
+	// does not report the worktree directories as untracked (which would cause
+	// PublishToBase's dirty-check to abort). This mirrors the real project setup.
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Test\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".maestro/worktrees/\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
