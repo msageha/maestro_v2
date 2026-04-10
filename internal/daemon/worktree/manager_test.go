@@ -41,7 +41,11 @@ func initTestGitRepo(t *testing.T) string {
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Test\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".maestro/worktrees/\n"), 0644); err != nil {
+	// Gitignore the entire .maestro/ directory so that state files, queue
+	// files, and worktree directories created during the test do not appear
+	// as untracked changes when git status --porcelain is run in projectRoot
+	// (which would cause PublishToBase's dirty-check to abort).
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".maestro/\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
