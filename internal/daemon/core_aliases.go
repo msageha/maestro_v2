@@ -47,8 +47,14 @@ type RealClock = core.RealClock
 
 // --- State aliases ---
 
-// StateReader is an alias for core.StateReader.
+// StateReader is an alias for core.StateReader (read-only state access).
 type StateReader = core.StateReader
+
+// StateWriter is an alias for core.StateWriter (write-only state access).
+type StateWriter = core.StateWriter
+
+// StateManager is an alias for core.StateManager (combined read/write state access).
+type StateManager = core.StateManager
 
 // PhaseInfo is an alias for core.PhaseInfo.
 type PhaseInfo = core.PhaseInfo

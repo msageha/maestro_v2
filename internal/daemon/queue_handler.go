@@ -137,9 +137,9 @@ func (qh *QueueHandler) leaseOwnerID() string {
 	return fmt.Sprintf("daemon:%d", qh.daemonPID)
 }
 
-// SetStateReader wires the state reader for dependency resolution (Phase 6).
+// SetStateReader wires the state manager for dependency resolution (Phase 6).
 // Must be called before PeriodicScan starts.
-func (qh *QueueHandler) SetStateReader(reader StateReader) {
+func (qh *QueueHandler) SetStateReader(reader StateManager) {
 	qh.scanRunMu.Lock()
 	defer qh.scanRunMu.Unlock()
 	qh.dependencyResolver = NewDependencyResolver(reader, qh.logger, qh.logLevel)

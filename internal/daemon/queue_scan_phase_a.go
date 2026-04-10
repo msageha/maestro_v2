@@ -137,22 +137,22 @@ func (qh *QueueHandler) stepCircuitBreaker(s *scanState) {
 			continue
 		}
 
-		stateReader := qh.circuitBreaker.StateReader()
-		if stateReader == nil {
+		stateMgr := qh.circuitBreaker.StateManager()
+		if stateMgr == nil {
 			continue
 		}
 
 		shouldTrip, reason := qh.circuitBreaker.CheckProgressTimeout(cmd.ID)
 		if shouldTrip {
 			timeoutMin := qh.circuitBreaker.ProgressTimeoutMinutes()
-			if err := stateReader.TripCircuitBreaker(cmd.ID, reason, timeoutMin); err != nil {
+			if err := stateMgr.TripCircuitBreaker(cmd.ID, reason, timeoutMin); err != nil {
 				qh.log(LogLevelError, "circuit_breaker_trip_timeout command=%s error=%v", cmd.ID, err)
 			} else {
 				qh.log(LogLevelWarn, "circuit_breaker_tripped_timeout command=%s reason=%s", cmd.ID, reason)
 			}
 		}
 
-		cbState, err := stateReader.GetCircuitBreakerState(cmd.ID)
+		cbState, err := stateMgr.GetCircuitBreakerState(cmd.ID)
 		if err != nil {
 			continue
 		}
@@ -239,7 +239,7 @@ func (qh *QueueHandler) stepPhaseTransitions(s *scanState) {
 			qh.log(LogLevelInfo, "phase_transition command=%s phase=%s %s→%s reason=%s",
 				cmd.ID, tr.PhaseName, tr.OldStatus, tr.NewStatus, tr.Reason)
 
-			if err := qh.dependencyResolver.GetStateReader().ApplyPhaseTransition(cmd.ID, tr.PhaseID, tr.NewStatus); err != nil {
+			if err := qh.dependencyResolver.GetStateManager().ApplyPhaseTransition(cmd.ID, tr.PhaseID, tr.NewStatus); err != nil {
 				qh.log(LogLevelError, "phase_transition_apply command=%s phase=%s error=%v",
 					cmd.ID, tr.PhaseID, err)
 				continue
@@ -590,7 +590,7 @@ func (qh *QueueHandler) stepWorktreeFastTrackCleanup(s *scanState) {
 func (qh *QueueHandler) forceFailStuckPhases(commandID string, stuck []PhaseInfo, elapsed time.Duration) int {
 	applied := 0
 	for _, p := range stuck {
-		if err := qh.dependencyResolver.GetStateReader().ApplyPhaseTransition(
+		if err := qh.dependencyResolver.GetStateManager().ApplyPhaseTransition(
 			commandID, p.ID, model.PhaseStatusFailed,
 		); err != nil {
 			qh.log(LogLevelWarn,

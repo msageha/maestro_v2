@@ -16,7 +16,7 @@ import (
 
 // DependencyResolver handles blocked_by dependency checking and phase transitions.
 type DependencyResolver struct {
-	stateReader StateReader
+	stateManager StateManager
 	dl          *DaemonLogger
 	logger      *log.Logger
 	logLevel    LogLevel
@@ -26,9 +26,9 @@ type DependencyResolver struct {
 }
 
 // NewDependencyResolver creates a new DependencyResolver.
-func NewDependencyResolver(reader StateReader, logger *log.Logger, logLevel LogLevel) *DependencyResolver {
+func NewDependencyResolver(reader StateManager, logger *log.Logger, logLevel LogLevel) *DependencyResolver {
 	return &DependencyResolver{
-		stateReader: reader,
+		stateManager: reader,
 		dl:          NewDaemonLoggerFromLegacy("dependency_resolver", logger, logLevel),
 		logger:      logger,
 		logLevel:    logLevel,
@@ -50,13 +50,13 @@ func (dr *DependencyResolver) IsTaskBlocked(task *model.Task) (bool, error) {
 		return false, nil
 	}
 
-	if dr.stateReader == nil {
+	if dr.stateManager == nil {
 		// Without state reader, assume unblocked if blocked_by is empty
 		return len(task.BlockedBy) > 0, nil
 	}
 
 	for _, depTaskID := range task.BlockedBy {
-		status, err := dr.stateReader.GetTaskState(task.CommandID, depTaskID)
+		status, err := dr.stateManager.GetTaskState(task.CommandID, depTaskID)
 		if err != nil {
 			dr.log(LogLevelWarn, "dependency_check task=%s dep=%s error=%v", task.ID, depTaskID, err)
 			return true, err
@@ -75,12 +75,12 @@ func (dr *DependencyResolver) IsTaskBlocked(task *model.Task) (bool, error) {
 // CheckDependencyFailure checks if any of a task's dependencies have failed.
 // Returns the failed dependency ID and status, or empty string if none failed.
 func (dr *DependencyResolver) CheckDependencyFailure(task *model.Task) (string, model.Status, error) {
-	if len(task.BlockedBy) == 0 || dr.stateReader == nil {
+	if len(task.BlockedBy) == 0 || dr.stateManager == nil {
 		return "", "", nil
 	}
 
 	for _, depTaskID := range task.BlockedBy {
-		status, err := dr.stateReader.GetTaskState(task.CommandID, depTaskID)
+		status, err := dr.stateManager.GetTaskState(task.CommandID, depTaskID)
 		if err != nil {
 			return "", "", err
 		}
@@ -103,11 +103,11 @@ type PhaseTransitionResult struct {
 // CheckPhaseTransitions performs phase transition checks (periodic scan step 0.7).
 // Returns a list of phase transitions that should be applied.
 func (dr *DependencyResolver) CheckPhaseTransitions(commandID string) ([]PhaseTransitionResult, error) {
-	if dr.stateReader == nil {
+	if dr.stateManager == nil {
 		return nil, nil
 	}
 
-	phases, err := dr.stateReader.GetCommandPhases(commandID)
+	phases, err := dr.stateManager.GetCommandPhases(commandID)
 	if err != nil {
 		if errors.Is(err, ErrStateNotFound) {
 			// Command not yet submitted by planner - no phases to check
@@ -182,7 +182,7 @@ func (dr *DependencyResolver) checkActivePhaseCompletion(commandID string, phase
 	hasCancelled := false
 
 	for _, taskID := range phase.RequiredTaskIDs {
-		status, err := dr.stateReader.GetTaskState(commandID, taskID)
+		status, err := dr.stateManager.GetTaskState(commandID, taskID)
 		if err != nil {
 			dr.log(LogLevelWarn, "phase_check task_state error phase=%s task=%s error=%v",
 				phase.ID, taskID, err)
@@ -335,18 +335,18 @@ func (dr *DependencyResolver) checkAwaitingFillTimeout(phase PhaseInfo) *PhaseTr
 // IsSystemCommitReady checks if the given task is a system commit task and whether
 // all user phases/tasks are terminal (dispatch precondition for system commit tasks).
 func (dr *DependencyResolver) IsSystemCommitReady(commandID, taskID string) (bool, bool, error) {
-	if dr.stateReader == nil {
+	if dr.stateManager == nil {
 		return false, false, nil
 	}
-	return dr.stateReader.IsSystemCommitReady(commandID, taskID)
+	return dr.stateManager.IsSystemCommitReady(commandID, taskID)
 }
 
 // GetPhaseStatus returns the current status of a specific phase from state.
 func (dr *DependencyResolver) GetPhaseStatus(commandID, phaseID string) (model.PhaseStatus, error) {
-	if dr.stateReader == nil {
+	if dr.stateManager == nil {
 		return "", fmt.Errorf("no state reader")
 	}
-	phases, err := dr.stateReader.GetCommandPhases(commandID)
+	phases, err := dr.stateManager.GetCommandPhases(commandID)
 	if err != nil {
 		return "", err
 	}
@@ -382,12 +382,17 @@ func (dr *DependencyResolver) publishPhaseTransitionEvent(commandID string, tr P
 
 // HasStateReader returns true if a StateReader has been wired.
 func (dr *DependencyResolver) HasStateReader() bool {
-	return dr.stateReader != nil
+	return dr.stateManager != nil
 }
 
-// GetStateReader returns the wired StateReader (may be nil).
+// GetStateReader returns the wired StateReader for read-only access (may be nil).
 func (dr *DependencyResolver) GetStateReader() StateReader {
-	return dr.stateReader
+	return dr.stateManager
+}
+
+// GetStateManager returns the wired StateManager for read/write access (may be nil).
+func (dr *DependencyResolver) GetStateManager() StateManager {
+	return dr.stateManager
 }
 
 func (dr *DependencyResolver) log(level LogLevel, format string, args ...any) {

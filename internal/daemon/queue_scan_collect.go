@@ -297,7 +297,7 @@ func (qh *QueueHandler) checkPendingDependencyFailuresDeferred(tq *taskQueueEntr
 		dirty = true
 
 		if qh.dependencyResolver.HasStateReader() {
-			if err := qh.dependencyResolver.GetStateReader().UpdateTaskState(task.CommandID, task.ID, model.StatusCancelled, reason); err != nil {
+			if err := qh.dependencyResolver.GetStateManager().UpdateTaskState(task.CommandID, task.ID, model.StatusCancelled, reason); err != nil {
 				qh.log(LogLevelWarn, "dep_failure_state_update task=%s error=%v", task.ID, err)
 			}
 		}
@@ -359,7 +359,7 @@ func (qh *QueueHandler) checkInProgressDependencyFailuresDeferred(tq *taskQueueE
 		dirty = true
 
 		if qh.dependencyResolver.HasStateReader() {
-			if err := qh.dependencyResolver.GetStateReader().UpdateTaskState(task.CommandID, task.ID, model.StatusCancelled, reason); err != nil {
+			if err := qh.dependencyResolver.GetStateManager().UpdateTaskState(task.CommandID, task.ID, model.StatusCancelled, reason); err != nil {
 				qh.log(LogLevelWarn, "dep_failure_state_update task=%s error=%v", task.ID, err)
 			}
 		}
