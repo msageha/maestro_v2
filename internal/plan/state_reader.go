@@ -8,6 +8,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 // PlanStateReader implements core.StateManager by reading/writing state/commands/ YAML files.
@@ -287,15 +288,13 @@ func (r *PlanStateReader) TripCircuitBreaker(commandID string, reason string, pr
 	if !state.Cancel.Requested {
 		state.Cancel.Requested = true
 		state.Cancel.RequestedAt = &now
-		state.Cancel.RequestedBy = strPtr("circuit_breaker")
+		state.Cancel.RequestedBy = ptr.String("circuit_breaker")
 		state.Cancel.Reason = &reason
 	}
 
 	state.UpdatedAt = now
 	return r.stateManager.SaveState(state)
 }
-
-func strPtr(s string) *string { return &s }
 
 // isKnownTaskID checks whether taskID belongs to the command's known tasks
 // (required, optional, or system commit).

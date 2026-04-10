@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/msageha/maestro_v2/internal/ptr"
 	"gopkg.in/yaml.v3"
 )
 
@@ -261,7 +262,7 @@ func (l *Loader) applyDefaults(config *GateConfiguration) {
 
 		// Default enabled to true (only if not explicitly set in YAML)
 		if gate.Enabled == nil {
-			gate.Enabled = boolPtr(true)
+			gate.Enabled = ptr.Bool(true)
 		}
 
 		// Default priority
@@ -347,10 +348,6 @@ func setConditionSourceFile(condition *RuleCondition, path string) {
 	}
 }
 
-// boolPtr returns a pointer to the given bool value
-func boolPtr(b bool) *bool {
-	return &b
-}
 
 // validateFilePermissions checks that a config file is not writable by group or others.
 // This mitigates command injection via tampered config files (e.g., script conditions).

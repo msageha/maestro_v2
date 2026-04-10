@@ -6,9 +6,8 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
-
-func ptr(s string) *string { return &s }
 
 func TestDiagnosePhase_RepairHotspots(t *testing.T) {
 	now := time.Now().UTC()
@@ -19,7 +18,7 @@ func TestDiagnosePhase_RepairHotspots(t *testing.T) {
 		{
 			ID: "t1", Purpose: "TaskA", Status: model.StatusCompleted,
 			Attempts: 4, ExecutionRetries: 3,
-			LastError: ptr("compilation error"), ExpectedPaths: []string{"a.go"},
+			LastError: ptr.String("compilation error"), ExpectedPaths: []string{"a.go"},
 			CreatedAt: ts, UpdatedAt: ts,
 		},
 		{
@@ -30,7 +29,7 @@ func TestDiagnosePhase_RepairHotspots(t *testing.T) {
 		{
 			ID: "t3", Purpose: "TaskC", Status: model.StatusFailed,
 			Attempts: 3, ExecutionRetries: 2,
-			LastError: ptr("test failure"),
+			LastError: ptr.String("test failure"),
 			CreatedAt: ts, UpdatedAt: ts,
 		},
 	}
@@ -106,7 +105,7 @@ func TestDiagnosePhase_BlockedTasks(t *testing.T) {
 		{
 			ID: "t1", Purpose: "BlockedTask", Status: model.StatusCompleted,
 			Attempts: 1, BlockedBy: []string{"t0"},
-			InProgressAt: ptr(started.Format(time.RFC3339)),
+			InProgressAt: ptr.String(started.Format(time.RFC3339)),
 			CreatedAt:    created.Format(time.RFC3339),
 			UpdatedAt:    created.Format(time.RFC3339),
 		},

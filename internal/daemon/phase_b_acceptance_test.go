@@ -9,6 +9,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/judge"
 	"github.com/msageha/maestro_v2/internal/daemon/rollout"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 // --- B-1: Rollout Eligibility Tests ---
@@ -101,7 +102,7 @@ func TestRolloutEligibility_TooWideExpectedPaths(t *testing.T) {
 func TestRolloutEligibility_Disabled(t *testing.T) {
 	cfg := model.Config{
 		Rollout: model.RolloutConfig{
-			Enabled: boolPtr(false),
+			Enabled: ptr.Bool(false),
 		},
 	}
 	// When rollout is disabled, the daemon should not create a rollout manager
@@ -510,6 +511,3 @@ func (m *mockCaller) Call(ctx context.Context, prompt string) (string, error) {
 	return `{"winner_index": 0, "reasoning": "default mock"}`, nil
 }
 
-func boolPtr(b bool) *bool {
-	return &b
-}

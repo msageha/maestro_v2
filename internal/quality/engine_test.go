@@ -10,6 +10,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/daemon/complexity"
 	"github.com/msageha/maestro_v2/internal/daemon/featuregate"
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 func TestEngine_LoadConfiguration(t *testing.T) {
@@ -21,7 +22,7 @@ func TestEngine_LoadConfiguration(t *testing.T) {
 			{
 				ID:       "test_gate",
 				Name:     "Test Gate",
-				Enabled:  boolPtr(true),
+				Enabled:  ptr.Bool(true),
 				Type:     GateTypePreTask,
 				Priority: 10,
 				Rules: []RuleDefinition{
@@ -58,7 +59,7 @@ func TestEngine_Evaluate_SimpleFieldValidation(t *testing.T) {
 			{
 				ID:       "field_test",
 				Name:     "Field Test",
-				Enabled:  boolPtr(true),
+				Enabled:  ptr.Bool(true),
 				Type:     GateTypePreTask,
 				Priority: 10,
 				Rules: []RuleDefinition{
@@ -124,7 +125,7 @@ func TestEngine_Evaluate_LogicalOperators(t *testing.T) {
 			{
 				ID:       "logical_test",
 				Name:     "Logical Test",
-				Enabled:  boolPtr(true),
+				Enabled:  ptr.Bool(true),
 				Type:     GateTypePreTask,
 				Priority: 10,
 				Rules: []RuleDefinition{
@@ -194,7 +195,7 @@ func TestEngine_Evaluate_Caching(t *testing.T) {
 			{
 				ID:       "cache_test",
 				Name:     "Cache Test",
-				Enabled:  boolPtr(true),
+				Enabled:  ptr.Bool(true),
 				Type:     GateTypePreTask,
 				Priority: 10,
 				Rules: []RuleDefinition{
@@ -247,7 +248,7 @@ func TestEngine_Evaluate_Performance(t *testing.T) {
 			{
 				ID:       "perf_gate_1",
 				Name:     "Performance Gate 1",
-				Enabled:  boolPtr(true),
+				Enabled:  ptr.Bool(true),
 				Type:     GateTypePreTask,
 				Priority: 10,
 				Rules: []RuleDefinition{
@@ -279,7 +280,7 @@ func TestEngine_Evaluate_Performance(t *testing.T) {
 			{
 				ID:       "perf_gate_2",
 				Name:     "Performance Gate 2",
-				Enabled:  boolPtr(true),
+				Enabled:  ptr.Bool(true),
 				Type:     GateTypePreTask,
 				Priority: 20,
 				Rules: []RuleDefinition{
@@ -356,7 +357,7 @@ func TestEngine_Evaluate_Timeout(t *testing.T) {
 			{
 				ID:       "timeout_test",
 				Name:     "Timeout Test",
-				Enabled:  boolPtr(true),
+				Enabled:  ptr.Bool(true),
 				Type:     GateTypePreTask,
 				Priority: 1,
 				Rules: []RuleDefinition{
@@ -411,7 +412,7 @@ func TestEngine_CompileRegex(t *testing.T) {
 			{
 				ID:       "regex_test",
 				Name:     "Regex Test",
-				Enabled:  boolPtr(true),
+				Enabled:  ptr.Bool(true),
 				Type:     GateTypePreTask,
 				Priority: 10,
 				Rules: []RuleDefinition{
@@ -477,7 +478,7 @@ func TestEngine_TriggerFilters(t *testing.T) {
 			{
 				ID:       "role_filtered",
 				Name:     "Role Filtered Gate",
-				Enabled:  boolPtr(true),
+				Enabled:  ptr.Bool(true),
 				Type:     GateTypePreTask,
 				Priority: 10,
 				Trigger: TriggerDefinition{
@@ -502,7 +503,7 @@ func TestEngine_TriggerFilters(t *testing.T) {
 			{
 				ID:       "bloom_filtered",
 				Name:     "Bloom Level Filtered Gate",
-				Enabled:  boolPtr(true),
+				Enabled:  ptr.Bool(true),
 				Type:     GateTypePreTask,
 				Priority: 20,
 				Trigger: TriggerDefinition{
@@ -606,7 +607,7 @@ func TestFeatureGateRule_LowComplexity_SimpleProfile(t *testing.T) {
 			{
 				ID:       "feature_gate_test",
 				Name:     "Feature Gate Test",
-				Enabled:  boolPtr(true),
+				Enabled:  ptr.Bool(true),
 				Type:     GateTypePreTask,
 				Priority: 5,
 				Rules: []RuleDefinition{
@@ -657,7 +658,7 @@ func TestFeatureGateRule_HighComplexity_ComplexProfile(t *testing.T) {
 			{
 				ID:       "feature_gate_complex",
 				Name:     "Feature Gate Complex",
-				Enabled:  boolPtr(true),
+				Enabled:  ptr.Bool(true),
 				Type:     GateTypePreTask,
 				Priority: 5,
 				Rules: []RuleDefinition{
@@ -711,7 +712,7 @@ func TestFeatureGateRule_ExplicitComplexityLevel_Override(t *testing.T) {
 			{
 				ID:       "feature_gate_override",
 				Name:     "Feature Gate Override",
-				Enabled:  boolPtr(true),
+				Enabled:  ptr.Bool(true),
 				Type:     GateTypePreTask,
 				Priority: 5,
 				Rules: []RuleDefinition{
@@ -756,7 +757,7 @@ func TestFeatureGateRule_UnknownLevel_FallbackToSimple(t *testing.T) {
 			{
 				ID:       "feature_gate_fallback",
 				Name:     "Feature Gate Fallback",
-				Enabled:  boolPtr(true),
+				Enabled:  ptr.Bool(true),
 				Type:     GateTypePreTask,
 				Priority: 5,
 				Rules: []RuleDefinition{
