@@ -8,20 +8,20 @@ import (
 )
 
 // runTask dispatches task subcommands (currently: heartbeat).
-func runTask(args []string) error {
+func (a *cliApp) runTask(args []string) error {
 	if len(args) < 1 {
 		return &CLIError{Code: 1, Msg: "maestro task: missing subcommand\nusage: maestro task <heartbeat> [options]"}
 	}
 	switch args[0] {
 	case "heartbeat":
-		return runTaskHeartbeat(args[1:])
+		return a.runTaskHeartbeat(args[1:])
 	default:
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro task: unknown subcommand: %s\nusage: maestro task heartbeat [options]", args[0])}
 	}
 }
 
 // runTaskHeartbeat sends a heartbeat for an active task via UDS.
-func runTaskHeartbeat(args []string) error {
+func (a *cliApp) runTaskHeartbeat(args []string) error {
 	fs := newFlagSet("maestro task heartbeat")
 	var taskID, workerID string
 	var epoch int
@@ -54,7 +54,7 @@ func runTaskHeartbeat(args []string) error {
 		"epoch":     epoch,
 	}
 
-	client := newUDSClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := a.createClient(filepath.Join(maestroDir, uds.DefaultSocketName))
 	resp, err := client.SendCommand("task_heartbeat", params)
 	if err != nil {
 		return fmt.Errorf("maestro task heartbeat: %w", err)

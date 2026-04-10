@@ -9,7 +9,7 @@ import (
 )
 
 func TestRunResultWrite_MissingReporter(t *testing.T) {
-	err := runResultWrite(nil)
+	err := newCLIApp().runResultWrite(nil)
 	if err == nil {
 		t.Fatal("expected error for missing reporter")
 	}
@@ -20,7 +20,7 @@ func TestRunResultWrite_MissingReporter(t *testing.T) {
 }
 
 func TestRunResultWrite_MissingRequiredFlags(t *testing.T) {
-	err := runResultWrite([]string{"worker1"})
+	err := newCLIApp().runResultWrite([]string{"worker1"})
 	if err == nil {
 		t.Fatal("expected error for missing required flags")
 	}
@@ -31,7 +31,7 @@ func TestRunResultWrite_MissingRequiredFlags(t *testing.T) {
 }
 
 func TestRunResultWrite_UnknownFlag(t *testing.T) {
-	err := runResultWrite([]string{"worker1", "--unknown"})
+	err := newCLIApp().runResultWrite([]string{"worker1", "--unknown"})
 	if err == nil {
 		t.Fatal("expected error for unknown flag")
 	}
@@ -42,7 +42,7 @@ func TestRunResultWrite_UnknownFlag(t *testing.T) {
 }
 
 func TestRunResultWrite_UnexpectedArg(t *testing.T) {
-	err := runResultWrite([]string{"worker1", "--task-id", "t1", "--command-id", "c1", "--status", "completed", "extra"})
+	err := newCLIApp().runResultWrite([]string{"worker1", "--task-id", "t1", "--command-id", "c1", "--status", "completed", "extra"})
 	if err == nil {
 		t.Fatal("expected error for unexpected arg")
 	}
@@ -53,7 +53,7 @@ func TestRunResultWrite_UnexpectedArg(t *testing.T) {
 }
 
 func TestRunResultWrite_InvalidReporter(t *testing.T) {
-	err := runResultWrite([]string{"../evil",
+	err := newCLIApp().runResultWrite([]string{"../evil",
 		"--task-id", "task_0000000001_abcdef01",
 		"--command-id", "cmd_0000000001_abcdef01",
 		"--status", "completed",
@@ -71,7 +71,7 @@ func TestRunResultWrite_InvalidReporter(t *testing.T) {
 }
 
 func TestRunResultWrite_InvalidTaskID(t *testing.T) {
-	err := runResultWrite([]string{"worker1",
+	err := newCLIApp().runResultWrite([]string{"worker1",
 		"--task-id", "../bad",
 		"--command-id", "cmd_0000000001_abcdef01",
 		"--status", "completed",
@@ -89,7 +89,7 @@ func TestRunResultWrite_InvalidTaskID(t *testing.T) {
 }
 
 func TestRunResultWrite_InvalidCommandID(t *testing.T) {
-	err := runResultWrite([]string{"worker1",
+	err := newCLIApp().runResultWrite([]string{"worker1",
 		"--task-id", "task_0000000001_abcdef01",
 		"--command-id", "../../bad",
 		"--status", "completed",
@@ -108,7 +108,7 @@ func TestRunResultWrite_InvalidCommandID(t *testing.T) {
 
 func TestRunResultWrite_ErrorMessageFormat(t *testing.T) {
 	// Verify error messages include "maestro result write:" prefix
-	err := runResultWrite([]string{"worker1"})
+	err := newCLIApp().runResultWrite([]string{"worker1"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -131,7 +131,7 @@ func TestRunResult_Dispatcher(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := runResult(tt.args)
+			err := newCLIApp().runResult(tt.args)
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -148,7 +148,7 @@ func TestRunResult_Dispatcher(t *testing.T) {
 
 func TestRunResultWrite_UDSSuccess(t *testing.T) {
 	withMaestroDir(t)
-	withMockUDS(t, &mockUDSClient{
+	app := newTestApp(&mockUDSClient{
 		sendCommandFunc: func(command string, params any) (*uds.Response, error) {
 			if command != "result_write" {
 				t.Errorf("expected command result_write, got %s", command)
@@ -157,7 +157,7 @@ func TestRunResultWrite_UDSSuccess(t *testing.T) {
 		},
 	})
 
-	err := runResultWrite([]string{"worker1",
+	err := app.runResultWrite([]string{"worker1",
 		"--task-id", "task_0000000001_abcdef01",
 		"--command-id", "cmd_0000000001_abcdef01",
 		"--lease-epoch", "1",
@@ -174,13 +174,13 @@ func TestRunResultWrite_UDSSuccess(t *testing.T) {
 
 func TestRunResultWrite_UDSFencingReject(t *testing.T) {
 	withMaestroDir(t)
-	withMockUDS(t, &mockUDSClient{
+	app := newTestApp(&mockUDSClient{
 		sendCommandFunc: func(string, any) (*uds.Response, error) {
 			return errorResponse("FENCING_REJECT", "epoch mismatch"), nil
 		},
 	})
 
-	err := runResultWrite([]string{"worker1",
+	err := app.runResultWrite([]string{"worker1",
 		"--task-id", "task_0000000001_abcdef01",
 		"--command-id", "cmd_0000000001_abcdef01",
 		"--status", "completed",
@@ -199,13 +199,13 @@ func TestRunResultWrite_UDSFencingReject(t *testing.T) {
 
 func TestRunResultWrite_UDSOtherError(t *testing.T) {
 	withMaestroDir(t)
-	withMockUDS(t, &mockUDSClient{
+	app := newTestApp(&mockUDSClient{
 		sendCommandFunc: func(string, any) (*uds.Response, error) {
 			return errorResponse("NOT_FOUND", "task not found"), nil
 		},
 	})
 
-	err := runResultWrite([]string{"worker1",
+	err := app.runResultWrite([]string{"worker1",
 		"--task-id", "task_0000000001_abcdef01",
 		"--command-id", "cmd_0000000001_abcdef01",
 		"--status", "completed",
@@ -224,13 +224,13 @@ func TestRunResultWrite_UDSOtherError(t *testing.T) {
 
 func TestRunResultWrite_UDSConnError(t *testing.T) {
 	withMaestroDir(t)
-	withMockUDS(t, &mockUDSClient{
+	app := newTestApp(&mockUDSClient{
 		sendCommandFunc: func(string, any) (*uds.Response, error) {
 			return nil, errors.New("connection refused")
 		},
 	})
 
-	err := runResultWrite([]string{"worker1",
+	err := app.runResultWrite([]string{"worker1",
 		"--task-id", "task_0000000001_abcdef01",
 		"--command-id", "cmd_0000000001_abcdef01",
 		"--status", "completed",
@@ -245,13 +245,13 @@ func TestRunResultWrite_UDSConnError(t *testing.T) {
 
 func TestRunResultWrite_PartialChangesAndNoRetrySafe(t *testing.T) {
 	withMaestroDir(t)
-	withMockUDS(t, &mockUDSClient{
+	app := newTestApp(&mockUDSClient{
 		sendCommandFunc: func(command string, params any) (*uds.Response, error) {
 			return successResponse(map[string]string{"result_id": "res1"}), nil
 		},
 	})
 
-	err := runResultWrite([]string{"worker1",
+	err := app.runResultWrite([]string{"worker1",
 		"--task-id", "task_0000000001_abcdef01",
 		"--command-id", "cmd_0000000001_abcdef01",
 		"--status", "failed",

@@ -19,7 +19,7 @@ func TestRunQueueWrite_CancelRequestDeprecationWarning(t *testing.T) {
 	// Use a valid command-id so we hit the deprecation warning emission path
 	// before the CLI tries to dial the daemon. The daemon dial will fail
 	// (no socket in test env), but the warning is written before that.
-	_ = runQueueWrite([]string{"planner", "--type", "cancel-request",
+	_ = newCLIApp().runQueueWrite([]string{"planner", "--type", "cancel-request",
 		"--command-id", "cmd_0000000001_abcdef01",
 		"--reason", "test",
 	}, &buf)
@@ -34,7 +34,7 @@ func TestRunQueueWrite_CancelRequestDeprecationWarning(t *testing.T) {
 }
 
 func TestRunQueueWrite_MissingTarget(t *testing.T) {
-	err := runQueueWrite(nil, io.Discard)
+	err := newCLIApp().runQueueWrite(nil, io.Discard)
 	if err == nil {
 		t.Fatal("expected error for missing target")
 	}
@@ -45,7 +45,7 @@ func TestRunQueueWrite_MissingTarget(t *testing.T) {
 }
 
 func TestRunQueueWrite_MissingType(t *testing.T) {
-	err := runQueueWrite([]string{"planner"}, io.Discard)
+	err := newCLIApp().runQueueWrite([]string{"planner"}, io.Discard)
 	if err == nil {
 		t.Fatal("expected error for missing --type")
 	}
@@ -56,7 +56,7 @@ func TestRunQueueWrite_MissingType(t *testing.T) {
 }
 
 func TestRunQueueWrite_UnknownFlag(t *testing.T) {
-	err := runQueueWrite([]string{"planner", "--unknown"}, io.Discard)
+	err := newCLIApp().runQueueWrite([]string{"planner", "--unknown"}, io.Discard)
 	if err == nil {
 		t.Fatal("expected error for unknown flag")
 	}
@@ -67,7 +67,7 @@ func TestRunQueueWrite_UnknownFlag(t *testing.T) {
 }
 
 func TestRunQueueWrite_UnknownType(t *testing.T) {
-	err := runQueueWrite([]string{"planner", "--type", "bogus"}, io.Discard)
+	err := newCLIApp().runQueueWrite([]string{"planner", "--type", "bogus"}, io.Discard)
 	if err == nil {
 		t.Fatal("expected error for unknown type")
 	}
@@ -78,7 +78,7 @@ func TestRunQueueWrite_UnknownType(t *testing.T) {
 }
 
 func TestRunQueueWrite_CommandMissingContent(t *testing.T) {
-	err := runQueueWrite([]string{"planner", "--type", "command"}, io.Discard)
+	err := newCLIApp().runQueueWrite([]string{"planner", "--type", "command"}, io.Discard)
 	if err == nil {
 		t.Fatal("expected error for missing --content")
 	}
@@ -92,7 +92,7 @@ func TestRunQueueWrite_TaskTypeRejectedFromCLI(t *testing.T) {
 	// Task creation is the Planner's exclusive responsibility (audit C3).
 	// `maestro queue write --type task` must be rejected at the CLI surface
 	// to prevent Planner-bypass task injection.
-	err := runQueueWrite([]string{"worker1", "--type", "task",
+	err := newCLIApp().runQueueWrite([]string{"worker1", "--type", "task",
 		"--command-id", "cmd_0000000001_abcdef01",
 		"--content", "test",
 		"--purpose", "test",
@@ -112,7 +112,7 @@ func TestRunQueueWrite_TaskTypeRejectedFromCLI(t *testing.T) {
 }
 
 func TestRunQueueWrite_NotificationInvalidCommandID(t *testing.T) {
-	err := runQueueWrite([]string{"planner", "--type", "notification",
+	err := newCLIApp().runQueueWrite([]string{"planner", "--type", "notification",
 		"--command-id", "../../bad",
 		"--content", "test",
 		"--source-result-id", "res1",
@@ -130,7 +130,7 @@ func TestRunQueueWrite_NotificationInvalidCommandID(t *testing.T) {
 }
 
 func TestRunQueueWrite_CancelRequestInvalidCommandID(t *testing.T) {
-	err := runQueueWrite([]string{"planner", "--type", "cancel-request",
+	err := newCLIApp().runQueueWrite([]string{"planner", "--type", "cancel-request",
 		"--command-id", "",
 	}, io.Discard)
 	if err == nil {
@@ -140,7 +140,7 @@ func TestRunQueueWrite_CancelRequestInvalidCommandID(t *testing.T) {
 
 func TestRunQueueWrite_ErrorMessageFormat(t *testing.T) {
 	// Verify error messages include "maestro queue write:" prefix
-	err := runQueueWrite([]string{"planner", "--type", "bogus"}, io.Discard)
+	err := newCLIApp().runQueueWrite([]string{"planner", "--type", "bogus"}, io.Discard)
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -163,7 +163,7 @@ func TestRunQueue_Dispatcher(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := runQueue(tt.args)
+			err := newCLIApp().runQueue(tt.args)
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -180,7 +180,7 @@ func TestRunQueue_Dispatcher(t *testing.T) {
 
 func TestSendQueueWrite_UDSSuccess(t *testing.T) {
 	withMaestroDir(t)
-	withMockUDS(t, &mockUDSClient{
+	app := newTestApp(&mockUDSClient{
 		sendCommandFunc: func(command string, params any) (*uds.Response, error) {
 			if command != "queue_write" {
 				t.Errorf("expected command queue_write, got %s", command)
@@ -189,7 +189,7 @@ func TestSendQueueWrite_UDSSuccess(t *testing.T) {
 		},
 	})
 
-	err := sendQueueWrite(map[string]any{"target": "planner", "type": "command", "content": "test"})
+	err := app.sendQueueWrite(map[string]any{"target": "planner", "type": "command", "content": "test"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -197,13 +197,13 @@ func TestSendQueueWrite_UDSSuccess(t *testing.T) {
 
 func TestSendQueueWrite_UDSBackpressure(t *testing.T) {
 	withMaestroDir(t)
-	withMockUDS(t, &mockUDSClient{
+	app := newTestApp(&mockUDSClient{
 		sendCommandFunc: func(string, any) (*uds.Response, error) {
 			return errorResponse("BACKPRESSURE", "server at capacity"), nil
 		},
 	})
 
-	err := sendQueueWrite(map[string]any{"target": "planner", "type": "command", "content": "test"})
+	err := app.sendQueueWrite(map[string]any{"target": "planner", "type": "command", "content": "test"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -218,13 +218,13 @@ func TestSendQueueWrite_UDSBackpressure(t *testing.T) {
 
 func TestSendQueueWrite_UDSOtherError(t *testing.T) {
 	withMaestroDir(t)
-	withMockUDS(t, &mockUDSClient{
+	app := newTestApp(&mockUDSClient{
 		sendCommandFunc: func(string, any) (*uds.Response, error) {
 			return errorResponse("VALIDATION_ERROR", "bad params"), nil
 		},
 	})
 
-	err := sendQueueWrite(map[string]any{"target": "planner", "type": "command", "content": "test"})
+	err := app.sendQueueWrite(map[string]any{"target": "planner", "type": "command", "content": "test"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -239,13 +239,13 @@ func TestSendQueueWrite_UDSOtherError(t *testing.T) {
 
 func TestSendQueueWrite_UDSConnError(t *testing.T) {
 	withMaestroDir(t)
-	withMockUDS(t, &mockUDSClient{
+	app := newTestApp(&mockUDSClient{
 		sendCommandFunc: func(string, any) (*uds.Response, error) {
 			return nil, errors.New("connection refused")
 		},
 	})
 
-	err := sendQueueWrite(map[string]any{"target": "planner", "type": "command", "content": "test"})
+	err := app.sendQueueWrite(map[string]any{"target": "planner", "type": "command", "content": "test"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -256,13 +256,13 @@ func TestSendQueueWrite_UDSConnError(t *testing.T) {
 
 func TestSendQueueWrite_UDSResponseWithCommandID(t *testing.T) {
 	withMaestroDir(t)
-	withMockUDS(t, &mockUDSClient{
+	app := newTestApp(&mockUDSClient{
 		sendCommandFunc: func(string, any) (*uds.Response, error) {
 			return successResponse(map[string]string{"command_id": "cmd_0000000001_abcdef01"}), nil
 		},
 	})
 
-	err := sendQueueWrite(map[string]any{"target": "planner", "type": "command", "content": "test"})
+	err := app.sendQueueWrite(map[string]any{"target": "planner", "type": "command", "content": "test"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -270,14 +270,14 @@ func TestSendQueueWrite_UDSResponseWithCommandID(t *testing.T) {
 
 func TestSendQueueWrite_UDSResponseNoID(t *testing.T) {
 	withMaestroDir(t)
-	withMockUDS(t, &mockUDSClient{
+	app := newTestApp(&mockUDSClient{
 		sendCommandFunc: func(string, any) (*uds.Response, error) {
 			return successResponse(map[string]string{"other": "value"}), nil
 		},
 	})
 
 	// Should still succeed (falls through to JSON output)
-	err := sendQueueWrite(map[string]any{"target": "planner", "type": "command", "content": "test"})
+	err := app.sendQueueWrite(map[string]any{"target": "planner", "type": "command", "content": "test"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -285,13 +285,13 @@ func TestSendQueueWrite_UDSResponseNoID(t *testing.T) {
 
 func TestSendQueueWrite_UDSNilErrorDetail(t *testing.T) {
 	withMaestroDir(t)
-	withMockUDS(t, &mockUDSClient{
+	app := newTestApp(&mockUDSClient{
 		sendCommandFunc: func(string, any) (*uds.Response, error) {
 			return &uds.Response{Success: false, Error: nil}, nil
 		},
 	})
 
-	err := sendQueueWrite(map[string]any{"target": "planner", "type": "command", "content": "test"})
+	err := app.sendQueueWrite(map[string]any{"target": "planner", "type": "command", "content": "test"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -305,7 +305,7 @@ func TestSendQueueWrite_UDSNilErrorDetail(t *testing.T) {
 }
 
 func TestRunQueueWrite_NotificationMissingFields(t *testing.T) {
-	err := runQueueWrite([]string{"planner", "--type", "notification"}, io.Discard)
+	err := newCLIApp().runQueueWrite([]string{"planner", "--type", "notification"}, io.Discard)
 	if err == nil {
 		t.Fatal("expected error for missing notification fields")
 	}
@@ -316,7 +316,7 @@ func TestRunQueueWrite_NotificationMissingFields(t *testing.T) {
 }
 
 func TestRunQueueWrite_UnexpectedArg(t *testing.T) {
-	err := runQueueWrite([]string{"planner", "--type", "command", "--content", "test", "extra"}, io.Discard)
+	err := newCLIApp().runQueueWrite([]string{"planner", "--type", "command", "--content", "test", "extra"}, io.Discard)
 	if err == nil {
 		t.Fatal("expected error for unexpected arg")
 	}

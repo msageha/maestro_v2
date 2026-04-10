@@ -487,3 +487,133 @@ func TestReadAllSkillsForRole_BrokenRoleSpecificBlocksSharedFallback(t *testing.
 		}
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Permission denied error cases
+// ---------------------------------------------------------------------------
+
+func TestListSkillsWithRole_PermissionDenied(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Create a role directory that's not readable
+	roleDir := filepath.Join(dir, "worker")
+	if err := os.MkdirAll(roleDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeSkillFile(t, roleDir, "test-skill", "---\nname: Test\n---\nBody")
+
+	// Remove read permission
+	if err := os.Chmod(roleDir, 0000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(roleDir, 0755) })
+
+	_, err := ListSkillsWithRole(dir, "worker", nil)
+	if err == nil {
+		t.Fatal("expected error for permission denied directory")
+	}
+	if !strings.Contains(err.Error(), "read skills directory") {
+		t.Errorf("expected 'read skills directory' in error, got: %v", err)
+	}
+}
+
+func TestReadAllSkillsForRole_PermissionDenied(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Create a role directory that's not readable
+	roleDir := filepath.Join(dir, "worker")
+	if err := os.MkdirAll(roleDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeSkillFile(t, roleDir, "test-skill", "---\nname: Test\n---\nBody")
+
+	// Remove read permission
+	if err := os.Chmod(roleDir, 0000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(roleDir, 0755) })
+
+	_, err := ReadAllSkillsForRole(dir, "worker", nil)
+	if err == nil {
+		t.Fatal("expected error for permission denied directory")
+	}
+	if !strings.Contains(err.Error(), "read skills directory") {
+		t.Errorf("expected 'read skills directory' in error, got: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Empty directory (skill dir exists but no SKILL.md)
+// ---------------------------------------------------------------------------
+
+func TestReadSkillWithRole_EmptySkillDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Create skill directory without SKILL.md file
+	emptySkillDir := filepath.Join(dir, "worker", "empty-skill")
+	if err := os.MkdirAll(emptySkillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := ReadSkillWithRole(dir, "empty-skill", "worker")
+	if err == nil {
+		t.Fatal("expected error for skill directory without SKILL.md")
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("expected os.ErrNotExist, got: %v", err)
+	}
+}
+
+func TestReadAllSkillsForRole_EmptySkillDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Create role directory with a subdirectory that has no SKILL.md
+	roleDir := filepath.Join(dir, "worker")
+	emptySkillDir := filepath.Join(roleDir, "empty-skill")
+	if err := os.MkdirAll(emptySkillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Also add a valid skill to verify the empty one is skipped
+	writeSkillFile(t, roleDir, "valid-skill", "---\nname: Valid\n---\nBody")
+
+	skills, err := ReadAllSkillsForRole(dir, "worker", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// empty-skill should be skipped (no SKILL.md), only valid-skill returned
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(skills))
+	}
+	if skills[0].Name != "Valid" {
+		t.Errorf("expected 'Valid', got %q", skills[0].Name)
+	}
+}
+
+func TestListSkillsWithRole_EmptySkillDir(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	// Create role directory with a subdirectory that has no SKILL.md
+	roleDir := filepath.Join(dir, "worker")
+	emptySkillDir := filepath.Join(roleDir, "empty-skill")
+	if err := os.MkdirAll(emptySkillDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	writeSkillFile(t, roleDir, "valid-skill", "---\nname: Valid\n---\nBody")
+
+	skills, err := ListSkillsWithRole(dir, "worker", nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// empty-skill should be skipped, only valid-skill returned
+	if len(skills) != 1 {
+		t.Fatalf("expected 1 skill, got %d", len(skills))
+	}
+	if skills[0].Name != "Valid" {
+		t.Errorf("expected 'Valid', got %q", skills[0].Name)
+	}
+}

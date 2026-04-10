@@ -10,20 +10,20 @@ import (
 )
 
 // runResult dispatches result subcommands (currently: write).
-func runResult(args []string) error {
+func (a *cliApp) runResult(args []string) error {
 	if len(args) < 1 {
 		return &CLIError{Code: 1, Msg: "maestro result: missing subcommand\nusage: maestro result <write> [options]"}
 	}
 	switch args[0] {
 	case "write":
-		return runResultWrite(args[1:])
+		return a.runResultWrite(args[1:])
 	default:
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro result: unknown subcommand: %s\nusage: maestro result write <reporter> [options]", args[0])}
 	}
 }
 
 // runResultWrite reports task completion or failure via UDS.
-func runResultWrite(args []string) error {
+func (a *cliApp) runResultWrite(args []string) error {
 	if len(args) < 1 {
 		return &CLIError{Code: 1, Msg: "maestro result write: missing reporter\nusage: maestro result write <reporter> [options]"}
 	}
@@ -96,7 +96,7 @@ func runResultWrite(args []string) error {
 		params["skill_candidates"] = skillCandidates
 	}
 
-	client := newUDSClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := a.createClient(filepath.Join(maestroDir, uds.DefaultSocketName))
 	resp, err := client.SendCommand("result_write", params)
 	if err != nil {
 		return fmt.Errorf("maestro result write: %w", err)

@@ -19,7 +19,7 @@ func TestRunTask_Dispatcher(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := runTask(tt.args)
+			err := newCLIApp().runTask(tt.args)
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -47,7 +47,7 @@ func TestRunTaskHeartbeat_FlagParsing(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := runTaskHeartbeat(tt.args)
+			err := newCLIApp().runTaskHeartbeat(tt.args)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error")
@@ -63,7 +63,7 @@ func TestRunTaskHeartbeat_FlagParsing(t *testing.T) {
 
 func TestRunTaskHeartbeat_UDSSuccess(t *testing.T) {
 	withMaestroDir(t)
-	withMockUDS(t, &mockUDSClient{
+	app := newTestApp(&mockUDSClient{
 		sendCommandFunc: func(command string, params any) (*uds.Response, error) {
 			if command != "task_heartbeat" {
 				t.Errorf("expected command task_heartbeat, got %s", command)
@@ -72,7 +72,7 @@ func TestRunTaskHeartbeat_UDSSuccess(t *testing.T) {
 		},
 	})
 
-	err := runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "w1", "--epoch", "1"})
+	err := app.runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "w1", "--epoch", "1"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -80,13 +80,13 @@ func TestRunTaskHeartbeat_UDSSuccess(t *testing.T) {
 
 func TestRunTaskHeartbeat_UDSMaxRuntimeExceeded(t *testing.T) {
 	withMaestroDir(t)
-	withMockUDS(t, &mockUDSClient{
+	app := newTestApp(&mockUDSClient{
 		sendCommandFunc: func(string, any) (*uds.Response, error) {
 			return errorResponse(uds.ErrCodeMaxRuntimeExceeded, "max runtime exceeded"), nil
 		},
 	})
 
-	err := runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "w1"})
+	err := app.runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "w1"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -104,13 +104,13 @@ func TestRunTaskHeartbeat_UDSMaxRuntimeExceeded(t *testing.T) {
 
 func TestRunTaskHeartbeat_UDSOtherError(t *testing.T) {
 	withMaestroDir(t)
-	withMockUDS(t, &mockUDSClient{
+	app := newTestApp(&mockUDSClient{
 		sendCommandFunc: func(string, any) (*uds.Response, error) {
 			return errorResponse("FENCING_REJECT", "epoch mismatch"), nil
 		},
 	})
 
-	err := runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "w1"})
+	err := app.runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "w1"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -125,13 +125,13 @@ func TestRunTaskHeartbeat_UDSOtherError(t *testing.T) {
 
 func TestRunTaskHeartbeat_UDSGenericFailure(t *testing.T) {
 	withMaestroDir(t)
-	withMockUDS(t, &mockUDSClient{
+	app := newTestApp(&mockUDSClient{
 		sendCommandFunc: func(string, any) (*uds.Response, error) {
 			return &uds.Response{Success: false, Error: nil}, nil
 		},
 	})
 
-	err := runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "w1"})
+	err := app.runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "w1"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -146,13 +146,13 @@ func TestRunTaskHeartbeat_UDSGenericFailure(t *testing.T) {
 
 func TestRunTaskHeartbeat_UDSConnError(t *testing.T) {
 	withMaestroDir(t)
-	withMockUDS(t, &mockUDSClient{
+	app := newTestApp(&mockUDSClient{
 		sendCommandFunc: func(string, any) (*uds.Response, error) {
 			return nil, errors.New("connection refused")
 		},
 	})
 
-	err := runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "w1"})
+	err := app.runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "w1"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
