@@ -22,24 +22,76 @@ type mockPaneIO struct {
 	joinedIdx        int
 	joinedFn         func(paneTarget string, lastN int) (string, error)
 	isShell          bool
+
+	// Fn callback fields for all PaneIO methods — when non-nil, the callback
+	// is invoked instead of the default behaviour (nil return).
+	FindPaneByAgentIDFn func(agentID string) (string, error)
+	SendCtrlCFn         func(paneTarget string) error
+	SendKeysFn          func(paneTarget string, keys ...string) error
+	SendCommandFn       func(paneTarget, command string) error
+	SendTextAndSubmitFn func(ctx context.Context, paneTarget, text string) error
+	SetUserVarFn        func(paneTarget, name, value string) error
+	GetUserVarFn        func(paneTarget, name string) (string, error)
+	GetPanePIDFn        func(paneTarget string) (string, error)
+	IsShellCommandFn    func(cmd string) bool
+	RespawnPaneFn       func(paneTarget, startDir string) error
 }
 
 func (m *mockPaneIO) FindPaneByAgentID(agentID string) (string, error) {
+	if m.FindPaneByAgentIDFn != nil {
+		return m.FindPaneByAgentIDFn(agentID)
+	}
 	return "%0", nil
 }
-func (m *mockPaneIO) SendCtrlC(paneTarget string) error { return nil }
+
+func (m *mockPaneIO) SendCtrlC(paneTarget string) error {
+	if m.SendCtrlCFn != nil {
+		return m.SendCtrlCFn(paneTarget)
+	}
+	return nil
+}
+
 func (m *mockPaneIO) SendKeys(paneTarget string, keys ...string) error {
+	if m.SendKeysFn != nil {
+		return m.SendKeysFn(paneTarget, keys...)
+	}
 	return nil
 }
-func (m *mockPaneIO) SendCommand(paneTarget, command string) error { return nil }
+
+func (m *mockPaneIO) SendCommand(paneTarget, command string) error {
+	if m.SendCommandFn != nil {
+		return m.SendCommandFn(paneTarget, command)
+	}
+	return nil
+}
+
 func (m *mockPaneIO) SendTextAndSubmit(ctx context.Context, paneTarget, text string) error {
+	if m.SendTextAndSubmitFn != nil {
+		return m.SendTextAndSubmitFn(ctx, paneTarget, text)
+	}
 	return nil
 }
-func (m *mockPaneIO) SetUserVar(paneTarget, name, value string) error { return nil }
+
+func (m *mockPaneIO) SetUserVar(paneTarget, name, value string) error {
+	if m.SetUserVarFn != nil {
+		return m.SetUserVarFn(paneTarget, name, value)
+	}
+	return nil
+}
+
 func (m *mockPaneIO) GetUserVar(paneTarget, name string) (string, error) {
+	if m.GetUserVarFn != nil {
+		return m.GetUserVarFn(paneTarget, name)
+	}
 	return "", nil
 }
-func (m *mockPaneIO) GetPanePID(paneTarget string) (string, error) { return "12345", nil }
+
+func (m *mockPaneIO) GetPanePID(paneTarget string) (string, error) {
+	if m.GetPanePIDFn != nil {
+		return m.GetPanePIDFn(paneTarget)
+	}
+	return "12345", nil
+}
 
 func (m *mockPaneIO) GetPaneCurrentCommand(paneTarget string) (string, error) {
 	if m.currentCommandFn != nil {
@@ -68,10 +120,18 @@ func (m *mockPaneIO) CapturePaneJoined(paneTarget string, lastN int) (string, er
 }
 
 func (m *mockPaneIO) IsShellCommand(cmd string) bool {
+	if m.IsShellCommandFn != nil {
+		return m.IsShellCommandFn(cmd)
+	}
 	return m.isShell
 }
 
-func (m *mockPaneIO) RespawnPane(paneTarget, startDir string) error { return nil }
+func (m *mockPaneIO) RespawnPane(paneTarget, startDir string) error {
+	if m.RespawnPaneFn != nil {
+		return m.RespawnPaneFn(paneTarget, startDir)
+	}
+	return nil
+}
 
 // newTestBusyDetector creates a busyDetector for testing.
 // Uses direct field assignment to bypass newBusyDetector's default normalization,
@@ -526,5 +586,236 @@ func TestNewExecutor_DefaultConfig_WiresBusyDetectorDefaults(t *testing.T) {
 	}
 	if bd.config.BusyCheckInterval != 2 {
 		t.Errorf("BusyCheckInterval: got %d, want 2 (default)", bd.config.BusyCheckInterval)
+	}
+}
+
+// --- mockPaneIO Fn callback error injection ---
+
+func TestMockPaneIO_SendCtrlCFn_ErrorInjection(t *testing.T) {
+	injectedErr := fmt.Errorf("ctrl-c failed")
+	mock := &mockPaneIO{
+		SendCtrlCFn: func(paneTarget string) error {
+			return injectedErr
+		},
+	}
+	if err := mock.SendCtrlC("%0"); err != injectedErr {
+		t.Errorf("expected injected error, got %v", err)
+	}
+}
+
+func TestMockPaneIO_SendCtrlCFn_NilDefault(t *testing.T) {
+	mock := &mockPaneIO{}
+	if err := mock.SendCtrlC("%0"); err != nil {
+		t.Errorf("expected nil error when SendCtrlCFn is nil, got %v", err)
+	}
+}
+
+func TestMockPaneIO_SendCommandFn_ErrorInjection(t *testing.T) {
+	injectedErr := fmt.Errorf("send command failed")
+	mock := &mockPaneIO{
+		SendCommandFn: func(paneTarget, command string) error {
+			return injectedErr
+		},
+	}
+	if err := mock.SendCommand("%0", "echo hello"); err != injectedErr {
+		t.Errorf("expected injected error, got %v", err)
+	}
+}
+
+func TestMockPaneIO_SendCommandFn_NilDefault(t *testing.T) {
+	mock := &mockPaneIO{}
+	if err := mock.SendCommand("%0", "echo hello"); err != nil {
+		t.Errorf("expected nil error when SendCommandFn is nil, got %v", err)
+	}
+}
+
+func TestMockPaneIO_FindPaneByAgentIDFn_ErrorInjection(t *testing.T) {
+	injectedErr := fmt.Errorf("pane not found")
+	mock := &mockPaneIO{
+		FindPaneByAgentIDFn: func(agentID string) (string, error) {
+			return "", injectedErr
+		},
+	}
+	_, err := mock.FindPaneByAgentID("worker1")
+	if err != injectedErr {
+		t.Errorf("expected injected error, got %v", err)
+	}
+}
+
+func TestMockPaneIO_RespawnPaneFn_ErrorInjection(t *testing.T) {
+	injectedErr := fmt.Errorf("respawn failed")
+	mock := &mockPaneIO{
+		RespawnPaneFn: func(paneTarget, startDir string) error {
+			return injectedErr
+		},
+	}
+	if err := mock.RespawnPane("%0", "/tmp"); err != injectedErr {
+		t.Errorf("expected injected error, got %v", err)
+	}
+}
+
+func TestMockPaneIO_GetPanePIDFn_ErrorInjection(t *testing.T) {
+	injectedErr := fmt.Errorf("pid lookup failed")
+	mock := &mockPaneIO{
+		GetPanePIDFn: func(paneTarget string) (string, error) {
+			return "", injectedErr
+		},
+	}
+	_, err := mock.GetPanePID("%0")
+	if err != injectedErr {
+		t.Errorf("expected injected error, got %v", err)
+	}
+}
+
+func TestMockPaneIO_IsShellCommandFn_Override(t *testing.T) {
+	mock := &mockPaneIO{
+		isShell: false,
+		IsShellCommandFn: func(cmd string) bool {
+			return cmd == "zsh"
+		},
+	}
+	if !mock.IsShellCommand("zsh") {
+		t.Error("expected IsShellCommandFn to override isShell field")
+	}
+	if mock.IsShellCommand("claude") {
+		t.Error("expected false for non-shell command")
+	}
+}
+
+// --- busyDetector: multiple simultaneous errors ---
+
+func TestDetectBusy_CommandAndCaptureErrors_ReturnsUndecided(t *testing.T) {
+	// When GetPaneCurrentCommand errors, DetectBusy returns Undecided
+	// before CapturePane is ever called.
+	captureCallCount := 0
+	mock := &mockPaneIO{
+		currentCommandFn: func() (string, error) {
+			return "", fmt.Errorf("command error")
+		},
+		captureFn: func(paneTarget string, lastN int) (string, error) {
+			captureCallCount++
+			return "", fmt.Errorf("capture error")
+		},
+	}
+	bd := newTestBusyDetector(mock, nil, fastConfig())
+
+	verdict := bd.DetectBusy(context.Background(), "%0")
+	if verdict != VerdictUndecided {
+		t.Errorf("expected VerdictUndecided, got %s", verdict)
+	}
+	if captureCallCount != 0 {
+		t.Errorf("CapturePane should not be called after command error, got %d calls", captureCallCount)
+	}
+}
+
+func TestDetectBusy_CaptureAndJoinedErrors_ReturnsUndecided(t *testing.T) {
+	// CapturePane error → Undecided returned before CapturePaneJoined is called.
+	joinedCallCount := 0
+	mock := &mockPaneIO{
+		currentCommand: "claude",
+		isShell:        false,
+		captureFn: func(paneTarget string, lastN int) (string, error) {
+			return "", fmt.Errorf("capture error")
+		},
+		joinedFn: func(paneTarget string, lastN int) (string, error) {
+			joinedCallCount++
+			return "", fmt.Errorf("joined error")
+		},
+	}
+	bd := newTestBusyDetector(mock, nil, fastConfig())
+
+	verdict := bd.DetectBusy(context.Background(), "%0")
+	if verdict != VerdictUndecided {
+		t.Errorf("expected VerdictUndecided, got %s", verdict)
+	}
+	if joinedCallCount != 0 {
+		t.Errorf("CapturePaneJoined should not be called after capture error, got %d calls", joinedCallCount)
+	}
+}
+
+// --- busyDetector: error recovery paths ---
+
+func TestDetectBusyWithRetry_CaptureErrorThenRecovery_ReturnsIdle(t *testing.T) {
+	// First DetectBusy call: CapturePane errors → Undecided.
+	// Immediate retry: CapturePane succeeds, stable content → Idle.
+	callCount := 0
+	mock := &mockPaneIO{
+		currentCommand: "claude",
+		isShell:        false,
+		captureFn: func(paneTarget string, lastN int) (string, error) {
+			callCount++
+			if callCount == 1 {
+				return "", fmt.Errorf("transient capture error")
+			}
+			return "stable content", nil
+		},
+		joinedContent: []string{"stable", "stable"},
+	}
+	bd := newTestBusyDetector(mock, nil, fastConfig())
+
+	verdict := bd.DetectBusyWithRetry(context.Background(), "%0", "worker1")
+	if verdict != VerdictIdle {
+		t.Errorf("expected VerdictIdle after capture error recovery, got %s", verdict)
+	}
+}
+
+func TestDetectBusyWithRetry_JoinedErrorThenRecovery_ReturnsIdle(t *testing.T) {
+	// First DetectBusy: CapturePaneJoined errors → Undecided.
+	// Immediate retry: CapturePaneJoined succeeds, stable content → Idle.
+	callCount := 0
+	mock := &mockPaneIO{
+		currentCommand: "claude",
+		isShell:        false,
+		captureContent: "content",
+		joinedFn: func(paneTarget string, lastN int) (string, error) {
+			callCount++
+			if callCount == 1 {
+				return "", fmt.Errorf("transient joined error")
+			}
+			return "stable-content", nil
+		},
+	}
+	bd := newTestBusyDetector(mock, nil, fastConfig())
+
+	verdict := bd.DetectBusyWithRetry(context.Background(), "%0", "worker1")
+	if verdict != VerdictIdle {
+		t.Errorf("expected VerdictIdle after joined error recovery, got %s", verdict)
+	}
+}
+
+func TestDetectBusyWithRetry_CommandErrorThenRecovery_ReturnsIdle(t *testing.T) {
+	// First DetectBusy: GetPaneCurrentCommand errors → Undecided.
+	// Immediate retry: command succeeds, shell → Idle.
+	callCount := 0
+	mock := &mockPaneIO{
+		isShell: true,
+		currentCommandFn: func() (string, error) {
+			callCount++
+			if callCount == 1 {
+				return "", fmt.Errorf("transient command error")
+			}
+			return "bash", nil
+		},
+	}
+	bd := newTestBusyDetector(mock, nil, fastConfig())
+
+	verdict := bd.DetectBusyWithRetry(context.Background(), "%0", "worker1")
+	if verdict != VerdictIdle {
+		t.Errorf("expected VerdictIdle after command error recovery, got %s", verdict)
+	}
+}
+
+func TestDetectBusyWithRetry_AllRetriesFail_ReturnsUndecided(t *testing.T) {
+	// All DetectBusy calls error → persistent Undecided after exhausting retries.
+	mock := &mockPaneIO{
+		currentCommandFn: func() (string, error) {
+			return "", fmt.Errorf("persistent command error")
+		},
+	}
+	bd := newTestBusyDetector(mock, nil, fastConfig())
+
+	verdict := bd.DetectBusyWithRetry(context.Background(), "%0", "worker1")
+	if verdict != VerdictUndecided {
+		t.Errorf("expected VerdictUndecided when all retries fail, got %s", verdict)
 	}
 }
