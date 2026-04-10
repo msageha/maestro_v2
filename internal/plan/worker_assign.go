@@ -8,6 +8,7 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
+	"github.com/msageha/maestro_v2/internal/daemon/bandit"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/validate"
 )
@@ -172,4 +173,74 @@ func BuildWorkerStates(maestroDir string, config model.WorkerConfig) ([]WorkerSt
 func workerIDToQueueFile(workerID string) string {
 	// worker1 → worker1.yaml
 	return workerID + ".yaml"
+}
+
+// defaultModelArms lists the model arms registered for UCB1 selection.
+var defaultModelArms = []string{"sonnet", "opus", "haiku"}
+
+// AdaptiveModelSelector uses UCB1 bandit for model selection with static fallback.
+type AdaptiveModelSelector struct {
+	bandit     *bandit.Selector
+	config     model.BanditConfig
+	enabled    bool
+	minSamples int
+}
+
+// NewAdaptiveModelSelector creates an AdaptiveModelSelector from BanditConfig.
+// When enabled, it initialises a UCB1 Selector and registers available model arms.
+func NewAdaptiveModelSelector(cfg model.BanditConfig) *AdaptiveModelSelector {
+	s := &AdaptiveModelSelector{
+		config:     cfg,
+		enabled:    cfg.EffectiveEnabled(),
+		minSamples: cfg.EffectiveMinSamplesBeforeUse(),
+	}
+	if s.enabled {
+		s.bandit = bandit.NewSelector(cfg.EffectiveExplorationCoeff())
+		for _, arm := range defaultModelArms {
+			s.bandit.AddArm(arm)
+		}
+	}
+	return s
+}
+
+// SelectModel chooses a model via UCB1 when sufficient data exists, otherwise
+// falls back to the static GetModelForBloomLevel mapping.
+// LLM token consumption: zero — pure UCB1 math.
+func (s *AdaptiveModelSelector) SelectModel(bloomLevel int, taskType string) string {
+	if !s.enabled || s.bandit == nil {
+		return GetModelForBloomLevel(bloomLevel, false)
+	}
+
+	stats := s.bandit.GetStats()
+
+	// §5-7: TraceDataRequirement — total pulls across all arms.
+	totalPulls := 0
+	for _, stat := range stats {
+		totalPulls += stat.PullCount
+	}
+	if totalPulls < s.config.EffectiveTraceDataRequirement() {
+		return GetModelForBloomLevel(bloomLevel, false)
+	}
+
+	// MinSamplesBeforeUse — every arm must have enough observations.
+	for _, stat := range stats {
+		if stat.PullCount < s.minSamples {
+			return GetModelForBloomLevel(bloomLevel, false)
+		}
+	}
+
+	selected, err := s.bandit.SelectArm()
+	if err != nil {
+		return GetModelForBloomLevel(bloomLevel, false)
+	}
+	return selected
+}
+
+// RecordResult records a task outcome for the given model.
+// Reward calculation: Pass=1.0, Fail=0.0, with 0.2 deduction per repair.
+func (s *AdaptiveModelSelector) RecordResult(modelName string, reward float64) {
+	if !s.enabled || s.bandit == nil {
+		return
+	}
+	s.bandit.UpdateReward(modelName, reward)
 }

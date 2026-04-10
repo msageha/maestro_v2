@@ -262,3 +262,241 @@ func TestValidate_AdmissionControl_ZeroIsValid(t *testing.T) {
 	}
 }
 
+// --- C-1 EvolutionConfig tests ---
+
+func TestEvolutionConfig_Defaults(t *testing.T) {
+	ec := EvolutionConfig{}
+	if ec.EffectiveEnabled() {
+		t.Error("default Enabled should be false")
+	}
+	if v := ec.EffectiveMaxMutationsPerRound(); v != 3 {
+		t.Errorf("EffectiveMaxMutationsPerRound() = %d, want 3", v)
+	}
+	if v := ec.EffectiveNoveltyThreshold(); v != 0.99 {
+		t.Errorf("EffectiveNoveltyThreshold() = %v, want 0.99", v)
+	}
+	strategies := ec.EffectiveStrategies()
+	if len(strategies) != 3 || strategies[0] != "diff" || strategies[1] != "full" || strategies[2] != "cross" {
+		t.Errorf("EffectiveStrategies() = %v, want [diff full cross]", strategies)
+	}
+}
+
+func TestEvolutionConfig_Configured(t *testing.T) {
+	ec := EvolutionConfig{
+		Enabled:              BoolPtr(true),
+		MaxMutationsPerRound: IntPtr(5),
+		NoveltyThreshold:     Float64Ptr(0.8),
+		Strategies:           []string{"diff"},
+	}
+	if !ec.EffectiveEnabled() {
+		t.Error("Enabled should be true")
+	}
+	if v := ec.EffectiveMaxMutationsPerRound(); v != 5 {
+		t.Errorf("EffectiveMaxMutationsPerRound() = %d, want 5", v)
+	}
+	if v := ec.EffectiveNoveltyThreshold(); v != 0.8 {
+		t.Errorf("EffectiveNoveltyThreshold() = %v, want 0.8", v)
+	}
+	strategies := ec.EffectiveStrategies()
+	if len(strategies) != 1 || strategies[0] != "diff" {
+		t.Errorf("EffectiveStrategies() = %v, want [diff]", strategies)
+	}
+}
+
+// --- C-2 BanditConfig tests ---
+
+func TestBanditConfig_Defaults(t *testing.T) {
+	bc := BanditConfig{}
+	if bc.EffectiveEnabled() {
+		t.Error("default Enabled should be false")
+	}
+	if v := bc.EffectiveExplorationCoeff(); v != 1.41 {
+		t.Errorf("EffectiveExplorationCoeff() = %v, want 1.41", v)
+	}
+	if v := bc.EffectiveMinSamplesBeforeUse(); v != 10 {
+		t.Errorf("EffectiveMinSamplesBeforeUse() = %d, want 10", v)
+	}
+	if v := bc.EffectiveDecayFactor(); v != 0.95 {
+		t.Errorf("EffectiveDecayFactor() = %v, want 0.95", v)
+	}
+	if v := bc.EffectiveTraceDataRequirement(); v != 50 {
+		t.Errorf("EffectiveTraceDataRequirement() = %d, want 50", v)
+	}
+}
+
+func TestBanditConfig_Configured(t *testing.T) {
+	bc := BanditConfig{
+		Enabled:              BoolPtr(true),
+		ExplorationCoeff:     Float64Ptr(2.0),
+		MinSamplesBeforeUse:  IntPtr(20),
+		DecayFactor:          Float64Ptr(0.9),
+		TraceDataRequirement: IntPtr(100),
+	}
+	if !bc.EffectiveEnabled() {
+		t.Error("Enabled should be true")
+	}
+	if v := bc.EffectiveExplorationCoeff(); v != 2.0 {
+		t.Errorf("EffectiveExplorationCoeff() = %v, want 2.0", v)
+	}
+	if v := bc.EffectiveMinSamplesBeforeUse(); v != 20 {
+		t.Errorf("EffectiveMinSamplesBeforeUse() = %d, want 20", v)
+	}
+	if v := bc.EffectiveDecayFactor(); v != 0.9 {
+		t.Errorf("EffectiveDecayFactor() = %v, want 0.9", v)
+	}
+	if v := bc.EffectiveTraceDataRequirement(); v != 100 {
+		t.Errorf("EffectiveTraceDataRequirement() = %d, want 100", v)
+	}
+}
+
+// --- C-3 ExtendedVerificationConfig tests ---
+
+func TestExtendedVerificationConfig_Defaults(t *testing.T) {
+	ev := ExtendedVerificationConfig{}
+	if ev.EffectiveEnabled() {
+		t.Error("default Enabled should be false")
+	}
+	if ev.EffectiveSecurityCheck() {
+		t.Error("default SecurityCheck should be false")
+	}
+	if ev.EffectivePerformanceBench() {
+		t.Error("default PerformanceBench should be false")
+	}
+	weights := ev.EffectivePerspectiveWeights()
+	if weights["build"] != 1.0 || weights["test"] != 1.0 || weights["security"] != 0.5 {
+		t.Errorf("unexpected default weights: %v", weights)
+	}
+	if v := ev.EffectiveMaxAutoRetries(); v != 2 {
+		t.Errorf("EffectiveMaxAutoRetries() = %d, want 2", v)
+	}
+}
+
+func TestExtendedVerificationConfig_Configured(t *testing.T) {
+	ev := ExtendedVerificationConfig{
+		Enabled:            BoolPtr(true),
+		SecurityCheck:      BoolPtr(true),
+		PerformanceBench:   BoolPtr(true),
+		PerspectiveWeights: map[string]float64{"build": 2.0},
+		MaxAutoRetries:     IntPtr(5),
+	}
+	if !ev.EffectiveEnabled() {
+		t.Error("Enabled should be true")
+	}
+	if !ev.EffectiveSecurityCheck() {
+		t.Error("SecurityCheck should be true")
+	}
+	if !ev.EffectivePerformanceBench() {
+		t.Error("PerformanceBench should be true")
+	}
+	weights := ev.EffectivePerspectiveWeights()
+	if weights["build"] != 2.0 {
+		t.Errorf("weights[build] = %v, want 2.0", weights["build"])
+	}
+	if v := ev.EffectiveMaxAutoRetries(); v != 5 {
+		t.Errorf("EffectiveMaxAutoRetries() = %d, want 5", v)
+	}
+}
+
+// --- C-4 SearchConfig tests ---
+
+func TestSearchConfig_Defaults(t *testing.T) {
+	sc := SearchConfig{}
+	if sc.EffectiveEnabled() {
+		t.Error("default Enabled should be false")
+	}
+	if v := sc.EffectiveMaxDepth(); v != 3 {
+		t.Errorf("EffectiveMaxDepth() = %d, want 3", v)
+	}
+	if v := sc.EffectiveMaxBranching(); v != 4 {
+		t.Errorf("EffectiveMaxBranching() = %d, want 4", v)
+	}
+	if v := sc.EffectivePruneThreshold(); v != 0.3 {
+		t.Errorf("EffectivePruneThreshold() = %v, want 0.3", v)
+	}
+	if v := sc.EffectiveThompsonAlpha(); v != 1.0 {
+		t.Errorf("EffectiveThompsonAlpha() = %v, want 1.0", v)
+	}
+	if v := sc.EffectiveThompsonBeta(); v != 1.0 {
+		t.Errorf("EffectiveThompsonBeta() = %v, want 1.0", v)
+	}
+}
+
+func TestSearchConfig_Configured(t *testing.T) {
+	sc := SearchConfig{
+		Enabled:        BoolPtr(true),
+		MaxDepth:       IntPtr(5),
+		MaxBranching:   IntPtr(8),
+		PruneThreshold: Float64Ptr(0.5),
+		ThompsonAlpha:  Float64Ptr(2.0),
+		ThompsonBeta:   Float64Ptr(3.0),
+	}
+	if !sc.EffectiveEnabled() {
+		t.Error("Enabled should be true")
+	}
+	if v := sc.EffectiveMaxDepth(); v != 5 {
+		t.Errorf("EffectiveMaxDepth() = %d, want 5", v)
+	}
+	if v := sc.EffectiveMaxBranching(); v != 8 {
+		t.Errorf("EffectiveMaxBranching() = %d, want 8", v)
+	}
+	if v := sc.EffectivePruneThreshold(); v != 0.5 {
+		t.Errorf("EffectivePruneThreshold() = %v, want 0.5", v)
+	}
+	if v := sc.EffectiveThompsonAlpha(); v != 2.0 {
+		t.Errorf("EffectiveThompsonAlpha() = %v, want 2.0", v)
+	}
+	if v := sc.EffectiveThompsonBeta(); v != 3.0 {
+		t.Errorf("EffectiveThompsonBeta() = %v, want 3.0", v)
+	}
+}
+
+// --- C-5 SelfImprovementConfig tests ---
+
+func TestSelfImprovementConfig_Defaults(t *testing.T) {
+	si := SelfImprovementConfig{}
+	if si.EffectiveEnabled() {
+		t.Error("default Enabled should be false")
+	}
+	targets := si.EffectiveTargets()
+	if len(targets) != 3 {
+		t.Errorf("EffectiveTargets() count = %d, want 3", len(targets))
+	}
+	excludes := si.EffectiveExcludeTargets()
+	if len(excludes) != 3 {
+		t.Errorf("EffectiveExcludeTargets() count = %d, want 3", len(excludes))
+	}
+	if v := si.EffectiveArchiveMaxSize(); v != 100 {
+		t.Errorf("EffectiveArchiveMaxSize() = %d, want 100", v)
+	}
+}
+
+func TestSelfImprovementConfig_Configured(t *testing.T) {
+	si := SelfImprovementConfig{
+		Enabled:        BoolPtr(true),
+		Targets:        []string{"persona"},
+		ExcludeTargets: []string{"fitness"},
+		ArchiveMaxSize: IntPtr(50),
+	}
+	if !si.EffectiveEnabled() {
+		t.Error("Enabled should be true")
+	}
+	if targets := si.EffectiveTargets(); len(targets) != 1 || targets[0] != "persona" {
+		t.Errorf("EffectiveTargets() = %v, want [persona]", targets)
+	}
+	if excludes := si.EffectiveExcludeTargets(); len(excludes) != 1 || excludes[0] != "fitness" {
+		t.Errorf("EffectiveExcludeTargets() = %v, want [fitness]", excludes)
+	}
+	if v := si.EffectiveArchiveMaxSize(); v != 50 {
+		t.Errorf("EffectiveArchiveMaxSize() = %d, want 50", v)
+	}
+}
+
+// --- C-6 ComplexityConfig tests ---
+
+func TestComplexityConfig_Defaults(t *testing.T) {
+	cc := ComplexityConfig{}
+	if cc.EffectiveEnabled() {
+		t.Error("default Enabled should be false")
+	}
+}
+

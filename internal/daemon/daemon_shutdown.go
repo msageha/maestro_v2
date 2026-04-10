@@ -129,6 +129,14 @@ func (d *Daemon) Shutdown() {
 			d.reviewDispatcher.Close()
 		}
 
+		// Phase C cleanup: log stats for stateful components.
+		if d.searchTree != nil {
+			d.log(LogLevelInfo, "search tree cleanup nodes=%d", d.searchTree.NodeCount())
+		}
+		if d.fingerprintDB != nil {
+			d.log(LogLevelInfo, "fingerprint DB stats patterns=%d", d.fingerprintDB.Size())
+		}
+
 		// 3. Cancel context — forces loops and handlers to exit.
 		d.cancel()
 
