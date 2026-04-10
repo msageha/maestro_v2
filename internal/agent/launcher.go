@@ -37,86 +37,100 @@ var allowedToolsByRole = map[string][]string{
 // Launch reads tmux user variables for the current pane and launches the
 // appropriate Agent CLI (claude) with the correct model and system prompt.
 func Launch(maestroDir string) error {
-	// Determine current pane target
 	paneTarget, err := currentPaneTarget()
 	if err != nil {
 		return fmt.Errorf("determine pane: %w", err)
 	}
 
-	agentID, err := tmux.GetUserVar(paneTarget, "agent_id")
+	_, role, agentModel, err := readPaneVars(paneTarget)
 	if err != nil {
-		return fmt.Errorf("read @agent_id: %w", err)
-	}
-	if agentID == "" {
-		return fmt.Errorf("@agent_id is empty for pane %s", paneTarget)
+		return err
 	}
 
-	role, err := tmux.GetUserVar(paneTarget, "role")
-	if err != nil {
-		return fmt.Errorf("read @role: %w", err)
-	}
-	if role == "" {
-		return fmt.Errorf("@role is empty for pane %s", paneTarget)
-	}
-	if !validRoleName.MatchString(role) {
-		return fmt.Errorf("invalid role name %q: must be alphanumeric, underscore, or hyphen", role)
-	}
-
-	model, err := tmux.GetUserVar(paneTarget, "model")
-	if err != nil {
-		return fmt.Errorf("read @model: %w", err)
-	}
-	if model == "" {
-		return fmt.Errorf("@model is empty for pane %s", paneTarget)
-	}
-
-	// Build system prompt
 	systemPrompt, err := buildSystemPrompt(maestroDir, role)
 	if err != nil {
 		return fmt.Errorf("build system prompt: %w", err)
 	}
 
-	// Determine base_prompt_mode from config
 	basePromptMode := "append" // default
 	if cfg, err := loadBasePromptMode(maestroDir, role); err == nil {
 		basePromptMode = cfg
 	}
 
-	args := buildLaunchArgs(role, model, systemPrompt, basePromptMode)
+	args := buildLaunchArgs(role, agentModel, systemPrompt, basePromptMode)
 
-	// For workers, set up a single --settings containing both Notification
-	// disablement and PreToolUse policy hook. HookSettings produces the merged
-	// JSON so we do NOT add a separate --settings in buildLaunchArgs (workers
-	// are excluded from the Notification-only --settings there).
 	if role == "worker" {
-		pc := NewPolicyChecker(maestroDir)
-		scriptPath, err := pc.WriteHookScript()
+		args, err = applyWorkerPolicy(maestroDir, args)
 		if err != nil {
-			return fmt.Errorf("write policy hook script: %w", err)
+			return err
 		}
-		hookSettings, err := pc.HookSettings(scriptPath)
-		if err != nil {
-			return fmt.Errorf("build policy hook settings: %w", err)
-		}
-		args = append(args, "--settings", hookSettings)
 	}
 
 	// Execute claude CLI.
 	// Clear CLAUDECODE env var to allow launching inside a parent Claude Code
 	// session (e.g. when maestro is invoked from Claude Code CLI).
 	cmd := exec.Command("claude", args...) //nolint:gosec // "claude" is a fixed command; args are constructed from validated config
-	// Propagate the agent role to child processes via MAESTRO_AGENT_ROLE so
-	// that any maestro CLI invocations they spawn carry an authenticated role
-	// hint to the daemon (used for recovery API trust boundaries).
 	cmd.Env = append(filterEnv(os.Environ(), "CLAUDECODE"), uds.CallerRoleEnv+"="+role)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	// Ignore SIGINT so that only the child process (claude) handles Ctrl+C.
-	// Without this, the Go runtime terminates this process on SIGINT, orphaning
-	// the claude child and breaking the daemon's ensureWorkingDir exit sequence
-	// (Ctrl+C → Ctrl+D) which relies on claude exiting cleanly back to the shell.
+	return runIgnoringSIGINT(cmd)
+}
+
+// readPaneVars reads and validates the tmux user variables (agent_id, role, model)
+// from the given pane target.
+func readPaneVars(paneTarget string) (agentID, role, model string, err error) {
+	agentID, err = tmux.GetUserVar(paneTarget, "agent_id")
+	if err != nil {
+		return "", "", "", fmt.Errorf("read @agent_id: %w", err)
+	}
+	if agentID == "" {
+		return "", "", "", fmt.Errorf("@agent_id is empty for pane %s", paneTarget)
+	}
+
+	role, err = tmux.GetUserVar(paneTarget, "role")
+	if err != nil {
+		return "", "", "", fmt.Errorf("read @role: %w", err)
+	}
+	if role == "" {
+		return "", "", "", fmt.Errorf("@role is empty for pane %s", paneTarget)
+	}
+	if !validRoleName.MatchString(role) {
+		return "", "", "", fmt.Errorf("invalid role name %q: must be alphanumeric, underscore, or hyphen", role)
+	}
+
+	model, err = tmux.GetUserVar(paneTarget, "model")
+	if err != nil {
+		return "", "", "", fmt.Errorf("read @model: %w", err)
+	}
+	if model == "" {
+		return "", "", "", fmt.Errorf("@model is empty for pane %s", paneTarget)
+	}
+
+	return agentID, role, model, nil
+}
+
+// applyWorkerPolicy appends the worker-specific policy hook settings to the
+// CLI args. HookSettings produces merged JSON containing both Notification
+// disablement and PreToolUse policy hook.
+func applyWorkerPolicy(maestroDir string, args []string) ([]string, error) {
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		return nil, fmt.Errorf("write policy hook script: %w", err)
+	}
+	hookSettings, err := pc.HookSettings(scriptPath)
+	if err != nil {
+		return nil, fmt.Errorf("build policy hook settings: %w", err)
+	}
+	return append(args, "--settings", hookSettings), nil
+}
+
+// runIgnoringSIGINT runs the command while ignoring SIGINT so that only the
+// child process (claude) handles Ctrl+C. Without this, the Go runtime
+// terminates the parent on SIGINT, orphaning the child.
+func runIgnoringSIGINT(cmd *exec.Cmd) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT)
 	defer func() {
@@ -127,7 +141,6 @@ func Launch(maestroDir string) error {
 		for range sigCh { //nolint:revive // intentional drain: claude handles SIGINT directly
 		}
 	}()
-
 	return cmd.Run()
 }
 

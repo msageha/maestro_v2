@@ -100,9 +100,8 @@ func (d *messageDeliverer) clearAndConfirm(ctx context.Context, paneTarget strin
 		if err := d.paneIO.SendCommand(paneTarget, "/clear"); err != nil {
 			d.log(logLevelWarn, "clear_confirm send_clear error=%v attempt=%d", err, attempt)
 			if attempt < maxAttempts {
-				backoff := time.Duration(backoffMs*(1<<(attempt-1))) * time.Millisecond
-				if err := sleepCtx(ctx, backoff); err != nil {
-					return fmt.Errorf("clear_confirm backoff cancelled: %w", err)
+				if err := sleepWithBackoff(ctx, backoffMs, attempt); err != nil {
+					return err
 				}
 				continue
 			}
@@ -121,9 +120,8 @@ func (d *messageDeliverer) clearAndConfirm(ctx context.Context, paneTarget strin
 		if err := d.paneIO.SendKeys(paneTarget, "Enter"); err != nil {
 			d.log(logLevelWarn, "clear_confirm send_second_enter error=%v attempt=%d", err, attempt)
 			if attempt < maxAttempts {
-				backoff := time.Duration(backoffMs*(1<<(attempt-1))) * time.Millisecond
-				if err := sleepCtx(ctx, backoff); err != nil {
-					return fmt.Errorf("clear_confirm backoff cancelled: %w", err)
+				if err := sleepWithBackoff(ctx, backoffMs, attempt); err != nil {
+					return err
 				}
 				continue
 			}
@@ -147,10 +145,8 @@ func (d *messageDeliverer) clearAndConfirm(ctx context.Context, paneTarget strin
 		// Not confirmed -- retry with backoff
 		d.log(logLevelWarn, "clear_confirm not_confirmed attempt=%d/%d", attempt, maxAttempts)
 		if attempt < maxAttempts {
-			backoff := time.Duration(backoffMs*(1<<(attempt-1))) * time.Millisecond
-			d.log(logLevelDebug, "clear_confirm retry_backoff=%v", backoff)
-			if err := sleepCtx(ctx, backoff); err != nil {
-				return fmt.Errorf("clear_confirm backoff cancelled: %w", err)
+			if err := sleepWithBackoff(ctx, backoffMs, attempt); err != nil {
+				return err
 			}
 		}
 	}
@@ -274,4 +270,14 @@ func (p *clearConfirmationPoller) reset() {
 
 func (p *clearConfirmationPoller) log(level logLevel, format string, args ...any) {
 	logf(p.logger, p.logLevel, level, "clear_poller", format, args...)
+}
+
+// sleepWithBackoff sleeps for an exponentially increasing duration based on the
+// attempt number (1-indexed). baseMs is the base delay in milliseconds.
+func sleepWithBackoff(ctx context.Context, baseMs, attempt int) error {
+	backoff := time.Duration(baseMs*(1<<(attempt-1))) * time.Millisecond
+	if err := sleepCtx(ctx, backoff); err != nil {
+		return fmt.Errorf("clear_confirm backoff cancelled: %w", err)
+	}
+	return nil
 }
