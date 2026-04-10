@@ -218,3 +218,39 @@ func resolveModel(cfg model.Config, agentID string) string {
 	}
 	return "sonnet"
 }
+
+// resolveRuntime determines the runtime for a given agent (C-7).
+// Orchestrator and Planner always use claude-code. Workers use the default
+// runtime from config, or claude-code if unspecified.
+func resolveRuntime(cfg model.Config, agentID string) string {
+	switch agentID {
+	case "orchestrator", "planner":
+		return model.DefaultRuntime()
+	default:
+		// Check config for a default runtime
+		for name, rc := range cfg.Runtimes {
+			if rc.EffectiveDefault() && rc.EffectiveEnabled() && model.ValidateRuntime(name) {
+				return name
+			}
+		}
+		return model.DefaultRuntime()
+	}
+}
+
+// SwitchRuntime is a placeholder for C-7 requirement 3: runtime switching.
+// In the current implementation, it validates the target runtime and logs the
+// intent. Actual process management will be implemented when runtime lifecycle
+// management is added.
+func SwitchRuntime(workerID, newRuntime string, cfg model.Config) error {
+	if !model.ValidateRuntime(newRuntime) {
+		return fmt.Errorf("unknown runtime %q", newRuntime)
+	}
+
+	rc, ok := cfg.Runtimes[newRuntime]
+	if ok && !rc.EffectiveEnabled() {
+		return fmt.Errorf("runtime %q is disabled", newRuntime)
+	}
+
+	log.Printf("[INFO] SwitchRuntime: worker=%s target=%s (placeholder — process management not yet implemented)", workerID, newRuntime)
+	return nil
+}
