@@ -1537,7 +1537,7 @@ func TestR5Notification_NotNotified_Ignored(t *testing.T) {
 
 	rf := model.CommandResultFile{
 		Results: []model.CommandResult{
-			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, Notified: false, CreatedAt: now},
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
@@ -1559,7 +1559,7 @@ func TestR5Notification_WriteError(t *testing.T) {
 
 	rf := model.CommandResultFile{
 		Results: []model.CommandResult{
-			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, Notified: true, NotifiedAt: &now, CreatedAt: now},
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, NotifiableBase: model.NotifiableBase{Notified: true, NotifiedAt: &now}, CreatedAt: now},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
@@ -1587,7 +1587,7 @@ func TestR5Notification_HappyPath_ReissuesNotification(t *testing.T) {
 	// Result is terminal, notified, but no orchestrator notification exists
 	rf := model.CommandResultFile{
 		Results: []model.CommandResult{
-			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, Notified: true, NotifiedAt: &now, CreatedAt: now},
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, NotifiableBase: model.NotifiableBase{Notified: true, NotifiedAt: &now}, CreatedAt: now},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
@@ -1630,7 +1630,7 @@ func TestR5Notification_AlreadyInOrchestratorQueue_NoRepair(t *testing.T) {
 
 	rf := model.CommandResultFile{
 		Results: []model.CommandResult{
-			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, Notified: true, NotifiedAt: &now, CreatedAt: now},
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, NotifiableBase: model.NotifiableBase{Notified: true, NotifiedAt: &now}, CreatedAt: now},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
@@ -1663,7 +1663,7 @@ func TestR5Notification_Idempotent(t *testing.T) {
 
 	rf := model.CommandResultFile{
 		Results: []model.CommandResult{
-			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, Notified: true, NotifiedAt: &now, CreatedAt: now},
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, NotifiableBase: model.NotifiableBase{Notified: true, NotifiedAt: &now}, CreatedAt: now},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
@@ -1703,7 +1703,7 @@ func TestR5Notification_NonTerminalResult_Ignored(t *testing.T) {
 
 	rf := model.CommandResultFile{
 		Results: []model.CommandResult{
-			{ID: "res1", CommandID: "cmd1", Status: model.StatusInProgress, Notified: true, NotifiedAt: &now, CreatedAt: now},
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusInProgress, NotifiableBase: model.NotifiableBase{Notified: true, NotifiedAt: &now}, CreatedAt: now},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
@@ -1726,7 +1726,7 @@ func TestR5Notification_NoOrchestratorQueue_StillRepairs(t *testing.T) {
 
 	rf := model.CommandResultFile{
 		Results: []model.CommandResult{
-			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, Notified: true, NotifiedAt: &now, CreatedAt: now},
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, NotifiableBase: model.NotifiableBase{Notified: true, NotifiedAt: &now}, CreatedAt: now},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
@@ -1752,9 +1752,9 @@ func TestR5Notification_MultipleResults(t *testing.T) {
 
 	rf := model.CommandResultFile{
 		Results: []model.CommandResult{
-			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, Notified: true, NotifiedAt: &now, CreatedAt: now},
-			{ID: "res2", CommandID: "cmd2", Status: model.StatusFailed, Notified: true, NotifiedAt: &now, CreatedAt: now},
-			{ID: "res3", CommandID: "cmd3", Status: model.StatusCompleted, Notified: false, CreatedAt: now}, // not notified
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, NotifiableBase: model.NotifiableBase{Notified: true, NotifiedAt: &now}, CreatedAt: now},
+			{ID: "res2", CommandID: "cmd2", Status: model.StatusFailed, NotifiableBase: model.NotifiableBase{Notified: true, NotifiedAt: &now}, CreatedAt: now},
+			{ID: "res3", CommandID: "cmd3", Status: model.StatusCompleted, CreatedAt: now}, // not notified
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
@@ -1792,7 +1792,7 @@ func TestR5Notification_TypeMismatch_ReissuesForSupersede(t *testing.T) {
 	// Result has been promoted to failed (e.g. by H3 cancelled-on-failure path).
 	rf := model.CommandResultFile{
 		Results: []model.CommandResult{
-			{ID: "res1", CommandID: "cmd1", Status: model.StatusFailed, Notified: true, NotifiedAt: &now, CreatedAt: now},
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusFailed, NotifiableBase: model.NotifiableBase{Notified: true, NotifiedAt: &now}, CreatedAt: now},
 		},
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
