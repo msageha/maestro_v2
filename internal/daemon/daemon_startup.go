@@ -14,11 +14,18 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/msageha/maestro_v2/internal/daemon/admission"
+	"github.com/msageha/maestro_v2/internal/daemon/bandit"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
+	"github.com/msageha/maestro_v2/internal/daemon/complexity"
+	"github.com/msageha/maestro_v2/internal/daemon/evolution"
 	"github.com/msageha/maestro_v2/internal/daemon/fallback"
+	"github.com/msageha/maestro_v2/internal/daemon/featuregate"
 	"github.com/msageha/maestro_v2/internal/daemon/judge"
+	"github.com/msageha/maestro_v2/internal/daemon/learnings"
 	"github.com/msageha/maestro_v2/internal/daemon/reviewer"
 	"github.com/msageha/maestro_v2/internal/daemon/rollout"
+	"github.com/msageha/maestro_v2/internal/daemon/search"
+	"github.com/msageha/maestro_v2/internal/daemon/verification"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
@@ -204,6 +211,7 @@ func (d *Daemon) initComponents() error {
 	}
 
 	d.initPhaseB()
+	d.initPhaseC()
 
 	d.eventBus = events.NewBus(d.ctx, 100)
 	d.handler.SetEventBus(d.eventBus)
@@ -308,6 +316,102 @@ func (d *Daemon) initPhaseB() {
 		d.judgeCaller = judge.NewJudge(stubCaller, model, timeout)
 		d.log(LogLevelInfo, "judge initialized model=%s timeout=%s", model, timeout)
 	}
+}
+
+// initPhaseC initializes Phase C components: evolution engine, bandit selector,
+// ensemble verifier, search tree, fingerprint DB, complexity scorer, and feature evaluator.
+// Each component is conditionally initialized based on its config EffectiveEnabled() flag.
+func (d *Daemon) initPhaseC() {
+	cfg := d.config
+
+	// C-1 Evolution Engine
+	if cfg.Evolution.EffectiveEnabled() {
+		strategies := make([]evolution.Strategy, 0, len(cfg.Evolution.EffectiveStrategies()))
+		for _, s := range cfg.Evolution.EffectiveStrategies() {
+			strategies = append(strategies, evolution.Strategy(s))
+		}
+		d.evolutionEngine = evolution.NewEngine(strategies, cfg.Evolution.EffectiveNoveltyThreshold())
+		d.log(LogLevelInfo, "evolution engine initialized")
+	}
+
+	// C-2 Adaptive Model Selection (§4.5.1: Daemon集約, LLMトークン消費ゼロ)
+	if cfg.Bandit.EffectiveEnabled() {
+		d.banditSelector = bandit.NewSelector(cfg.Bandit.EffectiveExplorationCoeff())
+		for _, model := range d.getAvailableModels() {
+			d.banditSelector.AddArm(model)
+		}
+		d.log(LogLevelInfo, "bandit selector initialized arms=%d", len(d.banditSelector.GetStats()))
+	}
+
+	// C-3 Extended Verification
+	if cfg.ExtendedVerification.EffectiveEnabled() {
+		d.ensembleVerifier = verification.NewVerifier()
+		for _, p := range d.ensembleVerifier.DefaultPerspectives() {
+			d.ensembleVerifier.AddPerspective(p)
+		}
+		d.log(LogLevelInfo, "ensemble verifier initialized")
+	}
+
+	// C-4 Exploratory Search (§4.5.1: Daemon集約, MCTS木管理)
+	if cfg.Search.EffectiveEnabled() {
+		d.searchTree = search.NewTree(
+			cfg.Search.EffectiveMaxDepth(),
+			cfg.Search.EffectiveMaxBranching(),
+			cfg.Search.EffectivePruneThreshold(),
+		)
+		d.searchSampler = search.NewSampler(
+			cfg.Search.EffectiveThompsonAlpha(),
+			cfg.Search.EffectiveThompsonBeta(),
+		)
+		d.log(LogLevelInfo, "search tree initialized")
+	}
+
+	// C-5 FingerprintDB (Self-Improvement)
+	if cfg.SelfImprovement.EffectiveEnabled() {
+		d.fingerprintDB = learnings.NewFingerprintDB(cfg.SelfImprovement.EffectiveArchiveMaxSize())
+		d.log(LogLevelInfo, "fingerprint DB initialized")
+	}
+
+	// C-6 Complexity Scorer (§4.5.1: Daemon前処理)
+	if cfg.Complexity.EffectiveEnabled() {
+		d.complexityScorer = complexity.NewScorer(complexity.DefaultThresholds())
+		d.log(LogLevelInfo, "complexity scorer initialized")
+	}
+
+	// C-8 Feature Gate (§4.5.1: Daemon集約, 機械的判定)
+	d.featureEvaluator = featuregate.NewEvaluator()
+	if len(cfg.FeatureProfiles) > 0 {
+		profiles := make(map[string]map[string]interface{}, len(cfg.FeatureProfiles))
+		for level, fp := range cfg.FeatureProfiles {
+			profiles[level] = map[string]interface{}{
+				"cross_agent_review":        fp.EffectiveCrossAgentReview() != "false",
+				"exploratory_optimization":  fp.EffectiveExploratoryOptimization(),
+				"evolutionary_quality":      fp.EffectiveEvolutionaryQuality(),
+				"adaptive_model_selection":  fp.EffectiveAdaptiveModelSelection(),
+				"self_improvement":          fp.EffectiveSelfImprovement(),
+				"adaptive_depth":            fp.EffectiveAdaptiveDepth(),
+			}
+		}
+		d.featureEvaluator.LoadProfiles(profiles)
+		d.log(LogLevelInfo, "feature evaluator initialized with %d config profiles", len(cfg.FeatureProfiles))
+	} else {
+		d.log(LogLevelInfo, "feature evaluator initialized with default profiles")
+	}
+}
+
+// getAvailableModels returns the list of model names from worker config.
+func (d *Daemon) getAvailableModels() []string {
+	wc := d.config.Agents.Workers
+	models := make([]string, 0)
+	if wc.DefaultModel != "" {
+		models = append(models, wc.DefaultModel)
+	}
+	for name := range wc.Models {
+		if name != wc.DefaultModel {
+			models = append(models, name)
+		}
+	}
+	return models
 }
 
 // logOnlyCaller is a stub implementation of judge.Caller that logs the prompt
