@@ -49,6 +49,15 @@ func runDaemon(args []string) error {
 	d.SetStateReader(reader)
 	d.SetCanComplete(plan.CanComplete)
 
+	// Wire phase diagnoser to avoid daemon→plan import cycle
+	d.SetPhaseDiagnoser(func(phase model.Phase, tasks []model.Task, results []model.TaskResult) string {
+		diag := plan.DiagnosePhase(phase, tasks, results)
+		if diag == nil {
+			return ""
+		}
+		return plan.FormatDiagnosisPrompt(diag)
+	})
+
 	// Wire plan executor for UDS plan operations (shared lockMap)
 	d.SetPlanExecutor(&bridge.PlanExecutorImpl{
 		MaestroDir: maestroDir,

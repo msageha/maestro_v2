@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
-	"github.com/msageha/maestro_v2/internal/plan"
 )
 
 // periodicScanPhaseA runs under scanMu.Lock. It loads queues, performs fast
@@ -898,11 +897,12 @@ func (qh *QueueHandler) stepDependencyFailures(s *scanState) {
 	}
 }
 
-// diagnosePhaseTasks collects tasks belonging to a completed phase and runs
-// plan.DiagnosePhase to produce a diagnosis prompt. Returns the formatted
-// prompt string, or "" if diagnosis yields no actionable information.
+// diagnosePhaseTasks collects tasks belonging to a completed phase and produces
+// a diagnosis prompt using the injected phaseDiagnoser. Returns the formatted
+// prompt string, or "" if diagnosis yields no actionable information or if
+// no diagnoser is configured.
 func (qh *QueueHandler) diagnosePhaseTasks(commandID, phaseID, _ string, taskQueues map[string]*taskQueueEntry) string {
-	if !qh.dependencyResolver.HasStateReader() {
+	if qh.phaseDiagnoser == nil || !qh.dependencyResolver.HasStateReader() {
 		return ""
 	}
 
@@ -948,12 +948,5 @@ func (qh *QueueHandler) diagnosePhaseTasks(commandID, phaseID, _ string, taskQue
 		}
 	}
 
-	// Run diagnosis (results are empty — file-level detail will be added
-	// when result files are available in a future enhancement)
-	diag := plan.DiagnosePhase(phase, tasks, nil)
-	if diag == nil {
-		return ""
-	}
-
-	return plan.FormatDiagnosisPrompt(diag)
+	return qh.phaseDiagnoser(phase, tasks, nil)
 }
