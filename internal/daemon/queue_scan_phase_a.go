@@ -561,7 +561,7 @@ func (qh *QueueHandler) stepWorktreeFastTrackCleanup(s *scanState) {
 			continue
 		}
 
-		applied := qh.forceFailStuckPhases(cmd.ID, stuck, elapsed)
+		applied := qh.stepForceFailStuckPhases(cmd.ID, stuck, elapsed)
 		if applied == 0 {
 			continue
 		}
@@ -584,9 +584,9 @@ func (qh *QueueHandler) stepWorktreeFastTrackCleanup(s *scanState) {
 	}
 }
 
-// forceFailStuckPhases transitions each stuck phase to failed, logging each
+// stepForceFailStuckPhases transitions each stuck phase to failed, logging each
 // transition. Returns the number of phases successfully transitioned.
-func (qh *QueueHandler) forceFailStuckPhases(commandID string, stuck []PhaseInfo, elapsed time.Duration) int {
+func (qh *QueueHandler) stepForceFailStuckPhases(commandID string, stuck []PhaseInfo, elapsed time.Duration) int {
 	applied := 0
 	for _, p := range stuck {
 		if err := qh.dependencyResolver.GetStateManager().ApplyPhaseTransition(
@@ -839,7 +839,7 @@ func (qh *QueueHandler) stepCheckWorktreeConfigViolations(s *scanState) {
 // stepPlannerSignals — Step 0.8: Evaluate backoff/staleness, defer delivery.
 func (qh *QueueHandler) stepPlannerSignals(s *scanState) {
 	if len(s.signals.Data.Signals) > 0 {
-		qh.processPlannerSignalsDeferred(&s.signals.Data, &s.signals.Dirty, &s.work)
+		qh.stepPlannerSignalsDeferred(&s.signals.Data, &s.signals.Dirty, &s.work)
 	}
 }
 

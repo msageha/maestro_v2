@@ -12,8 +12,8 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// processPlannerSignalsDeferred evaluates signals but defers tmux delivery to Phase B.
-func (qh *QueueHandler) processPlannerSignalsDeferred(sq *model.PlannerSignalQueue, dirty *bool, work *deferredWork) {
+// stepPlannerSignalsDeferred evaluates signals but defers tmux delivery to Phase B.
+func (qh *QueueHandler) stepPlannerSignalsDeferred(sq *model.PlannerSignalQueue, dirty *bool, work *deferredWork) {
 	now := qh.clock.Now().UTC()
 	retained := make([]model.PlannerSignal, 0, len(sq.Signals))
 
