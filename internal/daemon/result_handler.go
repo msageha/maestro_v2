@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -58,19 +57,12 @@ const (
 // ResultHandler monitors results/ and delivers notifications to agents.
 // Worker results → Planner (side-channel via agent_executor).
 // Planner results → Orchestrator (queue write).
+// baseHandler.mu protects continuousHandler, eventBus.
 type ResultHandler struct {
-	maestroDir        string
-	config            model.Config
+	baseHandler
 	lockMap           *lock.MutexMap
-	dl                *DaemonLogger
-	logger            *log.Logger
-	logLevel          LogLevel
-	clock             Clock
-	execProvider      ExecutorGetter
 	continuousHandler ContinuousAdvancer
 	eventBus          EventPublisher
-
-	mu sync.RWMutex // protects continuousHandler, eventBus
 }
 
 // NewResultHandler creates a new ResultHandler.
@@ -84,22 +76,17 @@ func NewResultHandler(
 	clock Clock,
 ) *ResultHandler {
 	return &ResultHandler{
-		maestroDir:   maestroDir,
-		config:       cfg,
-		lockMap:      lockMap,
-		dl:           NewDaemonLoggerFromLegacy("result_handler", logger, logLevel),
-		logger:       logger,
-		logLevel:     logLevel,
-		clock:        clock,
-		execProvider: ep,
+		baseHandler: baseHandler{
+			maestroDir:   maestroDir,
+			config:       cfg,
+			dl:           NewDaemonLoggerFromLegacy("result_handler", logger, logLevel),
+			logger:       logger,
+			logLevel:     logLevel,
+			clock:        clock,
+			execProvider: ep,
+		},
+		lockMap: lockMap,
 	}
-}
-
-// getExecutor returns the shared executor instance, creating it lazily on first call.
-// The Executor is safe for concurrent use (log.Logger uses internal mutex,
-// os.File in append mode is POSIX-safe, all other fields are immutable).
-func (rh *ResultHandler) getExecutor() (AgentExecutor, error) {
-	return rh.execProvider.GetExecutor()
 }
 
 // SetContinuousHandler wires the continuous handler for iteration tracking.
@@ -635,8 +622,3 @@ func loadResultFile[F interface {
 	return rf, nil
 }
 
-// --- Logging ---
-
-func (rh *ResultHandler) log(level LogLevel, format string, args ...any) {
-	rh.dl.Logf(level, format, args...)
-}
