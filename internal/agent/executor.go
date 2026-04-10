@@ -118,19 +118,21 @@ func parseLogLevel(s string) logLevel {
 }
 
 // Executor handles message delivery to agents via tmux panes.
-// It delegates send/clear operations to messageDeliverer and busy detection
-// to busyDetector, acting as a facade for the overall dispatch workflow.
+// It delegates send/clear operations to messageDeliverer, busy detection
+// to busyDetector, and process lifecycle to ClaudeProcessManager,
+// acting as a facade for the overall dispatch workflow.
 type Executor struct {
-	maestroDir   string
-	execCfg      ExecutorConfig
-	config       model.WatcherConfig
-	logger       *log.Logger
-	logFile      io.Closer
-	logLevel     logLevel
-	paneIO       PaneIO
-	busyDetector *busyDetector
-	paneState    *paneStateManager
-	deliverer    *messageDeliverer
+	maestroDir     string
+	execCfg        ExecutorConfig
+	config         model.WatcherConfig
+	logger         *log.Logger
+	logFile        io.Closer
+	logLevel       logLevel
+	paneIO         PaneIO
+	busyDetector   *busyDetector
+	paneState      *paneStateManager
+	deliverer      *messageDeliverer
+	processManager *ClaudeProcessManager
 }
 
 // NewExecutor creates a new Executor that logs to .maestro/logs/agent_executor.log.
@@ -178,6 +180,7 @@ func newExecutor(maestroDir string, watcherCfg model.WatcherConfig, logLevel str
 		busyDetector: bd,
 		paneState:    ps,
 	}
+	e.processManager = newClaudeProcessManager(paneIO, ps, &e.config, execCfg, logger, ll)
 	e.deliverer = newMessageDeliverer(paneIO, ps, &e.config, execCfg, logger, ll)
 	return e, nil
 }
@@ -304,7 +307,7 @@ func (e *Executor) execIsBusy(ctx context.Context, paneTarget string) ExecResult
 func (e *Executor) execClear(ctx context.Context, req ExecRequest, paneTarget string) ExecResult {
 	e.log(logLevelDebug, "clear_operation agent_id=%s mode=clear", req.AgentID)
 
-	if err := e.waitReady(ctx, paneTarget); err != nil {
+	if err := e.processManager.waitReady(ctx, paneTarget); err != nil {
 		e.log(logLevelWarn, "clear_wait_ready_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("wait ready before /clear: %w", err), Retryable: true}
 	}
@@ -314,7 +317,7 @@ func (e *Executor) execClear(ctx context.Context, req ExecRequest, paneTarget st
 	}
 
 	// Verify prompt readiness after clear (strict — no subsequent busy detection)
-	if err := e.waitStable(ctx, paneTarget, false); err != nil {
+	if err := e.processManager.waitStable(ctx, paneTarget, false); err != nil {
 		e.log(logLevelWarn, "clear_post_stable_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("clear: post-clear stability: %w", err), Retryable: true}
 	}
@@ -340,7 +343,7 @@ func (e *Executor) execInterrupt(ctx context.Context, req ExecRequest, paneTarge
 	}
 
 	// Step 2: Wait for prompt readiness after C-c
-	if err := e.waitReady(ctx, paneTarget); err != nil {
+	if err := e.processManager.waitReady(ctx, paneTarget); err != nil {
 		e.log(logLevelWarn, "interrupt_wait_ready_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("wait ready before /clear (interrupt): %w", err), Retryable: true}
 	}
@@ -351,7 +354,7 @@ func (e *Executor) execInterrupt(ctx context.Context, req ExecRequest, paneTarge
 	}
 
 	// Verify prompt readiness after clear (strict — no subsequent busy detection)
-	if err := e.waitStable(ctx, paneTarget, false); err != nil {
+	if err := e.processManager.waitStable(ctx, paneTarget, false); err != nil {
 		e.log(logLevelWarn, "interrupt_post_stable_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("interrupt: post-clear stability: %w", err), Retryable: true}
 	}
@@ -375,14 +378,14 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 
 	// Handle working directory change (worktree mode).
 	if req.WorkingDir != "" {
-		if err := e.ensureWorkingDir(ctx, paneTarget, req.WorkingDir); err != nil {
+		if err := e.processManager.ensureWorkingDir(ctx, paneTarget, req.WorkingDir); err != nil {
 			e.log(logLevelError, "working_dir_change_failed agent_id=%s error=%v", req.AgentID, err)
 			return ExecResult{Error: fmt.Errorf("ensure working dir: %w", err), Retryable: true}
 		}
 	}
 
 	// Ensure Claude is actually running (not crashed back to shell).
-	if err := e.ensureClaudeRunning(ctx, paneTarget, req.AgentID); err != nil {
+	if err := e.processManager.ensureClaudeRunning(ctx, paneTarget, req.AgentID); err != nil {
 		e.log(logLevelError, "ensure_claude_running_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("ensure claude running: %w", err), Retryable: true}
 	}
@@ -429,7 +432,7 @@ func (e *Executor) execFirstDispatch(ctx context.Context, req ExecRequest, paneT
 // execClearAndDeliver performs /clear, busy detection, and delivery for subsequent dispatches.
 func (e *Executor) execClearAndDeliver(ctx context.Context, req ExecRequest, paneTarget string) ExecResult {
 	// Step 1: Wait for prompt readiness
-	if err := e.waitReady(ctx, paneTarget); err != nil {
+	if err := e.processManager.waitReady(ctx, paneTarget); err != nil {
 		e.log(logLevelWarn, "with_clear_wait_ready_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("wait ready before /clear: %w", err), Retryable: true}
 	}
@@ -487,7 +490,7 @@ func (e *Executor) execDeliver(ctx context.Context, req ExecRequest, paneTarget 
 	// Orchestrator: strict busy check, no retry, immediate failure if busy
 	if req.AgentID == "orchestrator" {
 		// Ensure Claude is running for orchestrator too
-		if err := e.ensureClaudeRunning(ctx, paneTarget, req.AgentID); err != nil {
+		if err := e.processManager.ensureClaudeRunning(ctx, paneTarget, req.AgentID); err != nil {
 			e.log(logLevelError, "ensure_claude_running_failed agent_id=orchestrator error=%v", err)
 			return ExecResult{Error: fmt.Errorf("ensure claude running: %w", err), Retryable: true}
 		}
@@ -504,7 +507,7 @@ func (e *Executor) execDeliver(ctx context.Context, req ExecRequest, paneTarget 
 	}
 
 	// Planner/other: ensure Claude is running before delivery
-	if err := e.ensureClaudeRunning(ctx, paneTarget, req.AgentID); err != nil {
+	if err := e.processManager.ensureClaudeRunning(ctx, paneTarget, req.AgentID); err != nil {
 		e.log(logLevelError, "ensure_claude_running_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("ensure claude running: %w", err), Retryable: true}
 	}
@@ -535,286 +538,6 @@ func (e *Executor) sendAndConfirm(req ExecRequest, paneTarget string) ExecResult
 // clearAndConfirm delegates to the messageDeliverer.
 func (e *Executor) clearAndConfirm(ctx context.Context, paneTarget string) error {
 	return e.deliverer.clearAndConfirm(ctx, paneTarget)
-}
-
-// waitStable confirms pane content is stable over StableCheckRounds consecutive
-// rounds of hash comparison, then verifies the prompt is ready.
-// Worst-case duration: StableCheckRounds × IdleStableSec (default 1 × 5s = ~5s).
-//
-// softPromptCheck controls how prompt detection failure is handled:
-//   - true:  log a warning and proceed (safe when caller runs detectBusyWithRetry afterwards)
-//   - false: return an error (required when no subsequent busy detection exists)
-func (e *Executor) waitStable(ctx context.Context, paneTarget string, softPromptCheck bool) error {
-	for round := 0; round < e.execCfg.StableCheckRounds; round++ {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("wait_stable cancelled before round %d: %w", round, err)
-		}
-
-		content1, err := e.paneIO.CapturePaneJoined(paneTarget, e.execCfg.PromptReadyLines)
-		if err != nil {
-			return fmt.Errorf("capture pane for stability round %d: %w", round, err)
-		}
-		h1 := contentHash(content1)
-
-		if err := sleepCtx(ctx, time.Duration(e.config.IdleStableSec)*time.Second); err != nil {
-			return fmt.Errorf("wait_stable sleep cancelled (round %d): %w", round, err)
-		}
-
-		content2, err := e.paneIO.CapturePaneJoined(paneTarget, e.execCfg.PromptReadyLines)
-		if err != nil {
-			return fmt.Errorf("capture pane for stability round %d: %w", round, err)
-		}
-		h2 := contentHash(content2)
-
-		if h1 != h2 {
-			return fmt.Errorf("pane content not stable after %ds (round %d)", e.config.IdleStableSec, round)
-		}
-		e.log(logLevelDebug, "wait_stable round=%d passed", round)
-	}
-
-	// Verify prompt is ready after stability confirmed.
-	// Uses CapturePane (no -J) to preserve line boundaries for prompt detection.
-	finalContent, err := e.paneIO.CapturePane(paneTarget, e.execCfg.PromptReadyLines)
-	if err != nil {
-		if softPromptCheck {
-			e.log(logLevelWarn, "wait_stable prompt_check capture error=%v (non-fatal, soft mode)", err)
-			return nil
-		}
-		return fmt.Errorf("capture pane for prompt check: %w", err)
-	}
-	if !isPromptReady(finalContent) {
-		if softPromptCheck {
-			e.log(logLevelInfo, "wait_stable prompt_not_detected pane=%s last_line=%q (proceeding — detectBusy will guard delivery)",
-				paneTarget, lastNonBlankLine(finalContent))
-			return nil
-		}
-		return fmt.Errorf("pane stable but no prompt detected (last line: %q)", lastNonBlankLine(finalContent))
-	}
-	e.log(logLevelDebug, "wait_stable prompt confirmed")
-	return nil
-}
-
-// waitReady polls until the pane shows a Claude Code prompt ('❯' or '>'), indicating readiness.
-// It uses WaitReadyIntervalSec and WaitReadyMaxRetries from config for timing.
-// Worst-case duration: (WaitReadyMaxRetries+1) × WaitReadyIntervalSec (default 16 × 2s = 32s).
-//
-// If prompt detection fails after all retries, the function logs at INFO level
-// and returns nil (proceeds) instead of blocking dispatch. The caller's
-// subsequent detectBusyWithRetry provides a safety net against delivering
-// to a busy agent.
-func (e *Executor) waitReady(ctx context.Context, paneTarget string) error {
-	ready, err := e.waitReadyCore(ctx, paneTarget)
-	if err != nil {
-		return err
-	}
-	if !ready {
-		// Fallback: prompt not detected, but proceed with a warning.
-		// The subsequent detectBusyWithRetry() will catch if the agent is actually busy.
-		e.log(logLevelInfo, "wait_ready prompt_fallback pane=%s: prompt not detected after retries, proceeding (detectBusy will guard)",
-			paneTarget)
-	}
-	return nil
-}
-
-// --- Claude Process Recovery ---
-
-// ensureClaudeRunning checks whether the pane is running a shell (indicating
-// Claude has crashed or exited) and re-launches Claude if necessary.
-// This guards against the scenario where Claude crashes back to the shell
-// but the pane PID stays the same (shell PID unchanged), which
-// DetectProcessRestart cannot detect.
-// Returns nil if Claude is confirmed running, or a retryable error on failure.
-func (e *Executor) ensureClaudeRunning(ctx context.Context, paneTarget, agentID string) error {
-	cmd, err := e.paneIO.GetPaneCurrentCommand(paneTarget)
-	if err != nil {
-		e.log(logLevelWarn, "ensure_claude_running_check_failed agent_id=%s error=%v", agentID, err)
-		// Cannot determine state; proceed optimistically
-		return nil
-	}
-
-	if !e.paneIO.IsShellCommand(cmd) {
-		// Not a shell — Claude (or another process) is running
-		return nil
-	}
-
-	e.log(logLevelWarn, "claude_not_running agent_id=%s pane_command=%s, re-launching", agentID, cmd)
-
-	// Reset clear_ready since we are starting a fresh Claude session
-	if resetErr := e.paneState.ResetClearReady(paneTarget); resetErr != nil {
-		e.log(logLevelError, "ensure_claude_running_reset_clear_ready agent_id=%s error=%v", agentID, resetErr)
-	}
-
-	// Re-launch Claude
-	if sendErr := e.paneIO.SendCommand(paneTarget, "maestro agent launch"); sendErr != nil {
-		return fmt.Errorf("ensureClaudeRunning: re-launch: %w", sendErr)
-	}
-
-	// Wait for Claude prompt readiness (fail-closed)
-	launchCtx, cancel := context.WithTimeout(ctx, e.execCfg.ClaudeLaunchTimeout)
-	defer cancel()
-	if waitErr := e.waitReadyStrict(launchCtx, paneTarget); waitErr != nil {
-		return fmt.Errorf("ensureClaudeRunning: wait for Claude ready: %w", waitErr)
-	}
-
-	e.log(logLevelInfo, "claude_relaunched agent_id=%s", agentID)
-	return nil
-}
-
-// --- Working Directory Management ---
-
-// ensureWorkingDir ensures the agent's Claude Code process is running in the
-// specified working directory. If the current CWD (tracked via @cwd tmux user
-// variable) differs from workingDir, the method exits the current Claude
-// process, changes the shell CWD, and re-launches Claude.
-//
-// This is called transparently by the executor before task delivery, so that
-// Workers run in their worktree directory without being aware of worktrees.
-func (e *Executor) ensureWorkingDir(ctx context.Context, paneTarget, workingDir string) error {
-	if workingDir == "" {
-		return nil
-	}
-
-	// Validate path: reject control characters to prevent injection via SendCommand
-	if containsControlChars(workingDir) {
-		return fmt.Errorf("ensureWorkingDir: working dir contains control characters: %q", workingDir)
-	}
-
-	// Check current CWD from tmux user variable
-	currentCWD := e.paneState.GetCWD(paneTarget)
-	if currentCWD == workingDir {
-		e.log(logLevelDebug, "working_dir unchanged cwd=%s", workingDir)
-		return nil
-	}
-
-	e.log(logLevelInfo, "working_dir_change old=%q new=%q", currentCWD, workingDir)
-
-	// Step 1: Kill the current pane process and respawn a fresh shell in the
-	// target working directory. This replaces the fragile Ctrl+C → Ctrl+D →
-	// waitForShell → cd sequence which broke when Claude did not exit cleanly.
-	if err := e.paneIO.RespawnPane(paneTarget, workingDir); err != nil {
-		return fmt.Errorf("ensureWorkingDir: respawn pane: %w", err)
-	}
-
-	// Step 2: Wait for the fresh shell to be ready
-	if err := e.waitForShell(ctx, paneTarget); err != nil {
-		return fmt.Errorf("ensureWorkingDir: wait for shell after respawn: %w", err)
-	}
-
-	// Step 3: Re-launch Claude
-	if err := e.paneIO.SendCommand(paneTarget, "maestro agent launch"); err != nil {
-		return fmt.Errorf("ensureWorkingDir: re-launch: %w", err)
-	}
-
-	// Step 4: Wait for Claude prompt readiness (fail-closed: error on timeout)
-	// Use a generous timeout since Claude startup can take a few seconds.
-	launchCtx, cancel := context.WithTimeout(ctx, e.execCfg.ClaudeLaunchTimeout)
-	defer cancel()
-	if err := e.waitReadyStrict(launchCtx, paneTarget); err != nil {
-		return fmt.Errorf("ensureWorkingDir: wait for Claude ready: %w", err)
-	}
-
-	// Step 5: Update CWD tracking and reset clear_ready state
-	if err := e.paneState.SetCWD(paneTarget, workingDir); err != nil {
-		e.log(logLevelWarn, "set_cwd_failed cwd=%s error=%v", workingDir, err)
-	}
-	// Reset clear_ready since we started a fresh Claude session
-	if err := e.paneState.ResetClearReady(paneTarget); err != nil {
-		e.log(logLevelError, "reset_clear_ready_failed error=%v", err)
-		return fmt.Errorf("ensureWorkingDir: reset_clear_ready: %w", err)
-	}
-
-	e.log(logLevelInfo, "working_dir_changed cwd=%s", workingDir)
-	return nil
-}
-
-// waitForShell polls a tmux pane until its current command is a known shell,
-// indicating the pane has returned to the shell prompt (e.g., after Claude exits).
-func (e *Executor) waitForShell(ctx context.Context, paneTarget string) error {
-	const maxAttempts = 30   // 30 × 500ms = 15s max
-	const pollInterval = 500 // milliseconds
-	const maxConsecutiveErrors = 5
-
-	consecutiveErrors := 0
-	for i := 0; i < maxAttempts; i++ {
-		if err := ctx.Err(); err != nil {
-			return fmt.Errorf("waitForShell cancelled: %w", err)
-		}
-
-		cmd, err := e.paneIO.GetPaneCurrentCommand(paneTarget)
-		if err != nil {
-			consecutiveErrors++
-			if consecutiveErrors >= maxConsecutiveErrors {
-				return fmt.Errorf("waitForShell: %d consecutive errors, last: %w", consecutiveErrors, err)
-			}
-		} else {
-			consecutiveErrors = 0
-			if e.paneIO.IsShellCommand(cmd) {
-				e.log(logLevelDebug, "waitForShell detected shell command=%s", cmd)
-				return nil
-			}
-		}
-
-		if err := sleepCtx(ctx, time.Duration(pollInterval)*time.Millisecond); err != nil {
-			return fmt.Errorf("waitForShell sleep cancelled: %w", err)
-		}
-	}
-
-	return fmt.Errorf("waitForShell: shell not detected after %d attempts", maxAttempts)
-}
-
-// waitReadyStrict is like waitReady but fail-closed: returns an error if the
-// prompt is not detected after all retries (instead of soft-proceeding).
-// Used after re-launching Claude where we must confirm the process started.
-func (e *Executor) waitReadyStrict(ctx context.Context, paneTarget string) error {
-	ready, err := e.waitReadyCore(ctx, paneTarget)
-	if err != nil {
-		return err
-	}
-	if !ready {
-		return fmt.Errorf("waitReadyStrict: Claude prompt not detected after %d attempts", e.config.WaitReadyMaxRetries+1)
-	}
-	return nil
-}
-
-// waitReadyCore is the shared retry loop for prompt detection. It returns
-// (true, nil) if the prompt was detected, (false, nil) if retries were
-// exhausted without detection, or (false, err) on hard failures (context
-// cancellation, persistent capture errors).
-func (e *Executor) waitReadyCore(ctx context.Context, paneTarget string) (bool, error) {
-	maxRetries := e.config.WaitReadyMaxRetries
-	interval := time.Duration(e.config.WaitReadyIntervalSec) * time.Second
-
-	for i := 0; i <= maxRetries; i++ {
-		if err := ctx.Err(); err != nil {
-			return false, fmt.Errorf("waitReadyCore cancelled at attempt %d: %w", i, err)
-		}
-
-		content, err := e.paneIO.CapturePane(paneTarget, e.execCfg.PromptReadyLines)
-		if err != nil {
-			e.log(logLevelDebug, "waitReadyCore capture error=%v attempt=%d", err, i)
-			if i < maxRetries {
-				if err := sleepCtx(ctx, interval); err != nil {
-					return false, fmt.Errorf("waitReadyCore sleep cancelled: %w", err)
-				}
-				continue
-			}
-			return false, fmt.Errorf("waitReadyCore: capture pane failed after %d attempts: %w", i+1, err)
-		}
-
-		if isPromptReady(content) {
-			e.log(logLevelDebug, "waitReadyCore prompt detected attempt=%d", i)
-			return true, nil
-		}
-
-		if i < maxRetries {
-			e.log(logLevelDebug, "waitReadyCore not ready attempt=%d/%d", i, maxRetries)
-			if err := sleepCtx(ctx, interval); err != nil {
-				return false, fmt.Errorf("waitReadyCore sleep cancelled: %w", err)
-			}
-		}
-	}
-
-	return false, nil
 }
 
 // --- Logging ---
