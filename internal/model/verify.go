@@ -3,12 +3,11 @@ package model
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
-
-	internalyaml "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 // VerifyConfig holds the verification commands defined in verify.yaml.
@@ -103,8 +102,32 @@ func LoadVerifyConfig(path string) (*VerifyConfig, error) {
 // SaveVerifyConfig writes a VerifyConfig to the given path atomically.
 func SaveVerifyConfig(path string, config *VerifyConfig) error {
 	f := verifyFile{Verify: *config}
-	if err := internalyaml.AtomicWrite(path, &f); err != nil {
-		return fmt.Errorf("save verify config: %w", err)
+	content, err := yamlv3.Marshal(&f)
+	if err != nil {
+		return fmt.Errorf("save verify config: yaml marshal: %w", err)
+	}
+
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".verify-tmp-*.yaml")
+	if err != nil {
+		return fmt.Errorf("save verify config: create temp: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) //nolint:errcheck // best-effort cleanup
+
+	if _, err := tmp.Write(content); err != nil {
+		tmp.Close()
+		return fmt.Errorf("save verify config: write temp: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("save verify config: sync temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("save verify config: close temp: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("save verify config: rename: %w", err)
 	}
 	return nil
 }

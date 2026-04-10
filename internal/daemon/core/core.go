@@ -12,7 +12,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -181,12 +180,48 @@ type PhaseInfo struct {
 // Executor
 // ---------------------------------------------------------------------------
 
+// ExecMode represents the agent execution mode.
+type ExecMode string
+
+const (
+	// ModeDeliver sends a message with busy check (used by Planner/Orchestrator).
+	ModeDeliver ExecMode = "deliver"
+	// ModeWithClear sends /clear before delivery (used by Workers).
+	ModeWithClear ExecMode = "with_clear"
+	// ModeInterrupt interrupts a running task.
+	ModeInterrupt ExecMode = "interrupt"
+	// ModeIsBusy queries the busy state without delivering.
+	ModeIsBusy ExecMode = "is_busy"
+	// ModeClear resets context without delivery.
+	ModeClear ExecMode = "clear"
+)
+
+// ExecRequest contains parameters for executing a message delivery.
+type ExecRequest struct {
+	Context    context.Context // nil defaults to context.Background()
+	AgentID    string
+	Message    string
+	Mode       ExecMode
+	TaskID     string
+	CommandID  string
+	LeaseEpoch int
+	Attempt    int
+	WorkingDir string // Target working directory (worktree mode). Empty = no change.
+}
+
+// ExecResult contains the outcome of an execution attempt.
+type ExecResult struct {
+	Success   bool
+	Retryable bool
+	Error     error
+}
+
 // ExecutorFactory creates agent executors. Allows testing without tmux.
 type ExecutorFactory func(maestroDir string, watcherCfg model.WatcherConfig, logLevel string) (AgentExecutor, error)
 
 // AgentExecutor is the interface for agent message delivery.
 type AgentExecutor interface {
-	Execute(req agent.ExecRequest) agent.ExecResult
+	Execute(req ExecRequest) ExecResult
 	Close() error
 }
 

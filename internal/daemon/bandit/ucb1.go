@@ -117,6 +117,17 @@ func (s *Selector) ucb1Score(arm *ArmStats) float64 {
 	return arm.AvgReward + exploration
 }
 
+// PullCounts returns a map of arm names to their pull counts.
+func (s *Selector) PullCounts() map[string]int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make(map[string]int, len(s.arms))
+	for name, arm := range s.arms {
+		result[name] = arm.PullCount
+	}
+	return result
+}
+
 // Reset clears all arm statistics.
 func (s *Selector) Reset() {
 	s.mu.Lock()

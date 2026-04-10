@@ -139,6 +139,12 @@ func (d *Daemon) SetCanComplete(f CanCompleteFunc) {
 	d.canComplete = f
 }
 
+// SetPhaseDiagnoser wires the phase diagnosis function for completed phase analysis.
+// Must be called before Run() to avoid import cycles (daemon→plan).
+func (d *Daemon) SetPhaseDiagnoser(fn PhaseDiagnoserFunc) {
+	d.handler.SetPhaseDiagnoser(fn)
+}
+
 // LockMap returns the daemon's shared MutexMap for coordinating state locks.
 func (d *Daemon) LockMap() *lock.MutexMap {
 	return d.lockMap
