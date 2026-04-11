@@ -409,7 +409,7 @@ func (dlp *DeadLetterProcessor) taskDeadLetterPostProcess(commandID, taskID, wor
 
 	// Phase 2: Write synthetic failed result to results/worker{N}.yaml
 	// Lock order: state:{commandID} (level 2, held above) → result:{workerID} (level 3)
-	resultPath := filepath.Join(dlp.maestroDir, "results", workerID+".yaml")
+	resultPath := resultFilePath(dlp.maestroDir, workerID)
 
 	resultLockKey := "result:" + workerID
 	dlp.lockMap.Lock(resultLockKey)

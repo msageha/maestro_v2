@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/msageha/maestro_v2/internal/daemon/worktree"
 	"github.com/msageha/maestro_v2/internal/uds"
@@ -155,8 +154,8 @@ func (h *PlanAPI) handlePlanWorktreeRecovery(operation string, data json.RawMess
 	// the file lock to avoid a TOCTOU window with concurrent queue scans.
 	// This distinguishes "no such command" from "command exists but never
 	// used worktree mode" so the CLI can surface accurate error messages.
-	commandStatePath := filepath.Join(h.maestroDir, "state", "commands", p.CommandID+".yaml")
-	if _, err := os.Stat(commandStatePath); err != nil {
+	cmdStatePath := commandStatePath(h.maestroDir, p.CommandID)
+	if _, err := os.Stat(cmdStatePath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return uds.ErrorResponse(uds.ErrCodeNotFound, fmt.Sprintf("command not found: %s", p.CommandID))
 		}
