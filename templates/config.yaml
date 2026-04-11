@@ -131,3 +131,44 @@ quality_gates:
   enforcement:
     pre_task_check: true # タスク実行前のチェック
     failure_action: "warn" # 失敗時の動作: "warn" or "block"
+
+# --- Admission Control ---
+# verify/repair/rollout フェーズの同時実行数制限。
+# admission_control:
+#   max_concurrent_verify: 2    # 検証フェーズの最大同時実行数 (default: 2)
+#   max_concurrent_repair: 1    # 修復フェーズの最大同時実行数 (default: 1)
+#   max_concurrent_rollout: 1   # ロールアウトフェーズの最大同時実行数 (default: 1)
+
+# --- Fallback ---
+# Worker の連続失敗時の縮退動作制御。
+# fallback:
+#   enabled: false                     # フォールバックモードの有効化フラグ (default: false)
+#   consecutive_failure_threshold: 5   # 縮退発動の連続失敗しきい値 (default: 5)
+#   recovery_check_interval_sec: 60    # 回復チェック間隔 秒 (default: 60)
+#   min_healthy_duration_sec: 120      # 正常復帰に必要な最小持続時間 秒 (default: 120)
+
+# --- Review ---
+# 非同期ヘテロジニアスモデルによるコードレビュー。
+# review:
+#   enabled: false                # レビュー機能の有効化フラグ (default: false)
+#   models: []                    # レビューに使用するモデルリスト
+#   min_bloom_level: 2            # 最小 Bloom レベル (default: 2)
+#   max_concurrent_reviews: 2     # 最大同時レビュー数 (default: 2)
+#   timeout_sec: 300              # レビュータイムアウト 秒 (default: 300)
+
+# --- Rollout ---
+# 複数候補の並列実行と勝者選定。
+# rollout:
+#   enabled: false                # ロールアウト機能の有効化フラグ (default: false)
+#   max_concurrent: 2             # 最大同時ロールアウトグループ数 (default: 2)
+#   max_parallel_per_task: 2      # タスクあたりの最大並列候補数 (default: 2)
+#   min_bloom_level: 4            # 最小 Bloom レベル (default: 4)
+#   max_expected_paths: 10        # 最大期待パス数 (default: 10)
+#   min_failure_count: 1          # ロールアウト対象の最小失敗回数 (default: 1)
+
+# --- Judge ---
+# ロールアウト候補の Tie-breaking 判定。
+# judge:
+#   enabled: false                # Judge 機能の有効化フラグ (default: false)
+#   model: "opus"                 # Judge に使用するモデル (default: "opus")
+#   timeout_sec: 60               # Judge タイムアウト 秒 (default: 60)
