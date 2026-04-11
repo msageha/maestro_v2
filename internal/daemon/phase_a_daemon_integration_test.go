@@ -13,6 +13,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/plan"
+	"github.com/msageha/maestro_v2/internal/testutil/mocks"
 )
 
 // testPhaseDiagnoser wraps plan.DiagnosePhase + plan.FormatDiagnosisPrompt for tests.
@@ -150,7 +151,7 @@ func TestDiagnosePhaseTasks_EmitsSignalOnCompletion(t *testing.T) {
 		Queue:   model.QueueConfig{PriorityAgingSec: 60},
 	}, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
 	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
-		return &mockExecutor{}, nil
+		return &mocks.MockExecutor{}, nil
 	})
 	qh.SetPhaseDiagnoser(testPhaseDiagnoser)
 

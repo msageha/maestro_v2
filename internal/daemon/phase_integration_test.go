@@ -16,6 +16,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -179,16 +180,7 @@ func (e *recordingExecutor) getCalls() []agent.ExecRequest {
 // setupPhaseIntegrationDir creates a temporary maestro directory for integration tests.
 func setupPhaseIntegrationDir(t *testing.T) string {
 	t.Helper()
-	tmpDir := t.TempDir()
-	maestroDir := filepath.Join(tmpDir, ".maestro")
-	for _, sub := range []string{
-		"queue", "results", "logs", "state/commands", "state/worktrees",
-	} {
-		if err := os.MkdirAll(filepath.Join(maestroDir, sub), 0755); err != nil {
-			t.Fatalf("create %s: %v", sub, err)
-		}
-	}
-	return maestroDir
+	return testutil.SetupDir(t)
 }
 
 // newPhaseIntegrationQH creates a QueueHandler wired with real file I/O and a mock executor.

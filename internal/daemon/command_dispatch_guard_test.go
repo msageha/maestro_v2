@@ -9,6 +9,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil/mocks"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -325,7 +326,7 @@ func TestCommandDispatchError_LeaseRetained(t *testing.T) {
 
 	// Mock executor that fails dispatch
 	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
-		return &mockExecutor{result: agent.ExecResult{
+		return &mocks.MockExecutor{Result: agent.ExecResult{
 			Success:   false,
 			Error:     fmt.Errorf("planner tmux pane not responding"),
 			Retryable: true,

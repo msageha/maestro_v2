@@ -15,26 +15,14 @@ import (
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil/mocks"
 )
 
-// mockExecutor implements AgentExecutor for testing.
-type mockExecutor struct {
-	calls  []agent.ExecRequest
-	result agent.ExecResult
-}
-
-func (m *mockExecutor) Execute(req agent.ExecRequest) agent.ExecResult {
-	m.calls = append(m.calls, req)
-	return m.result
-}
-
-func (m *mockExecutor) Close() error { return nil }
-
-func newTestCancelHandler() (*CancelHandler, *mockExecutor) {
+func newTestCancelHandler() (*CancelHandler, *mocks.MockExecutor) {
 	cfg := model.Config{}
 	ep := newTestExecutorProvider("", cfg)
 	ch := NewCancelHandler("", cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, ep)
-	mock := &mockExecutor{result: agent.ExecResult{Success: true}}
+	mock := &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}
 	ch.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return mock, nil
 	})
@@ -104,18 +92,13 @@ func TestCancelPendingTasks_AlreadyTerminal(t *testing.T) {
 }
 
 // newTestCancelHandlerWithDir creates a CancelHandler backed by a real temp directory.
-func newTestCancelHandlerWithDir(t *testing.T) (*CancelHandler, *mockExecutor, string) {
+func newTestCancelHandlerWithDir(t *testing.T) (*CancelHandler, *mocks.MockExecutor, string) {
 	t.Helper()
-	maestroDir := filepath.Join(t.TempDir(), ".maestro")
-	for _, sub := range []string{"results"} {
-		if err := os.MkdirAll(filepath.Join(maestroDir, sub), 0755); err != nil {
-			t.Fatalf("create dir %s: %v", sub, err)
-		}
-	}
+	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{}
 	ep := newTestExecutorProvider(maestroDir, cfg)
 	ch := NewCancelHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, ep)
-	mock := &mockExecutor{result: agent.ExecResult{Success: true}}
+	mock := &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}
 	ch.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return mock, nil
 	})

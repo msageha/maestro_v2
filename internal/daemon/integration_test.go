@@ -21,6 +21,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/quality"
+	"github.com/msageha/maestro_v2/internal/testutil/mocks"
 	"github.com/msageha/maestro_v2/internal/uds"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -295,7 +296,7 @@ func newIntegrationDaemon(t *testing.T) *Daemon {
 
 	// Mock executor: always succeeds delivery
 	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
-		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
 	})
 
 	// Ensure dead_letters and state dirs exist
@@ -718,7 +719,7 @@ func TestIntegration_DeadLetter(t *testing.T) {
 	d.handler.SetStateReader(reader)
 	d.handler.SetCanComplete(testCanComplete)
 	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
-		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
 	})
 
 	// Setup: command with attempts >= max
