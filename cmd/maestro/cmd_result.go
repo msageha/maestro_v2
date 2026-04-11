@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 
+	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
 )
@@ -67,6 +68,9 @@ func (a *cliApp) runResultWrite(args []string) error {
 	}
 	if err := validate.ID(commandID); err != nil {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro result write: invalid --command-id: %v", err)}
+	}
+	if err := validate.ContentLength("--summary", summary, model.DefaultMaxEntryContentBytes); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro result write: %v", err)}
 	}
 
 	maestroDir, err := requireMaestroDir("result write")

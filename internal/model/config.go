@@ -10,6 +10,10 @@ import (
 // DefaultMaxYAMLFileBytes is the default maximum size for YAML file reads (5MB).
 const DefaultMaxYAMLFileBytes = 5 * 1024 * 1024
 
+// DefaultMaxEntryContentBytes is the default maximum size for queue entry
+// content fields such as content, summary, purpose, and acceptance_criteria (64KB).
+const DefaultMaxEntryContentBytes = 64 * 1024
+
 // MinWorkers is the minimum allowed worker count.
 const MinWorkers = 1
 
