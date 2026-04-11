@@ -181,7 +181,11 @@ func (d *Daemon) initComponents() {
 		d.worktreeManager.SetSignalStore(NewYAMLSignalStore(d.maestroDir, d.lockMap))
 		d.handler.SetWorktreeManager(d.worktreeManager)
 		d.log(LogLevelInfo, "worktree isolation enabled base_branch=%s", d.config.Worktree.EffectiveBaseBranch())
-		d.worktreeManager.Reconcile()
+		// NOTE: Reconcile() is intentionally deferred to startRuntime() so it
+		// runs after the UDS server starts listening. Reconcile may spawn git
+		// subprocesses (worktree list / remove) that can take several seconds
+		// when orphaned worktrees exist, which would otherwise block the UDS
+		// server from starting and cause waitDaemonReady to time out.
 	}
 
 	// Review coordinator: groups dispatcher + usefulness tracker
@@ -213,6 +217,14 @@ func (d *Daemon) startRuntime() error {
 
 	d.eg.Go(func() error { d.watch.fsnotifyLoop(); return nil })
 	d.eg.Go(func() error { d.watch.tickerLoop(); return nil })
+
+	// Run worktree reconciliation after the UDS server starts so that ping
+	// requests can be answered while git operations (worktree list / remove)
+	// complete in the background. This prevents waitDaemonReady from timing
+	// out when orphaned worktrees cause Reconcile to take several seconds.
+	if d.worktreeManager != nil {
+		d.eg.Go(func() error { d.worktreeManager.Reconcile(); return nil })
+	}
 
 	if d.qualityGateDaemon != nil {
 		if err := d.qualityGateDaemon.Start(); err != nil {

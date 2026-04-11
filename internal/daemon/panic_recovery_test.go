@@ -5,6 +5,7 @@ import (
 	"context"
 	"log"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,13 +15,32 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
+// syncBuffer is a thread-safe bytes.Buffer for use in tests where a log.Logger
+// may write concurrently while the test reads the buffer.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (sb *syncBuffer) Write(p []byte) (n int, err error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.Write(p)
+}
+
+func (sb *syncBuffer) String() string {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.String()
+}
+
 // TestEventBridge_PanicRecoveryCallsShutdown verifies that a panic inside an
 // EventBridge callback is recovered, a stack trace is logged, and
 // Daemon.Shutdown is invoked (shuttingDown flag becomes true).
 func TestEventBridge_PanicRecoveryCallsShutdown(t *testing.T) {
 	t.Parallel()
 
-	var logBuf bytes.Buffer
+	var logBuf syncBuffer
 	tmpDir := t.TempDir()
 
 	ctx, cancel := context.WithCancel(context.Background())
