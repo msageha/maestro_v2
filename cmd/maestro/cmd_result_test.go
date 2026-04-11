@@ -41,6 +41,43 @@ func TestRunResultWrite_UnknownFlag(t *testing.T) {
 	}
 }
 
+func TestRunResultWrite_MissingLeaseEpoch(t *testing.T) {
+	err := newCLIApp().runResultWrite([]string{"worker1",
+		"--task-id", "task_0000000001_abcdef01",
+		"--command-id", "cmd_0000000001_abcdef01",
+		"--status", "completed",
+	})
+	if err == nil {
+		t.Fatal("expected error for missing --lease-epoch")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !strings.Contains(ce.Msg, "--lease-epoch") {
+		t.Errorf("expected '--lease-epoch' in error, got: %s", ce.Msg)
+	}
+}
+
+func TestRunResultWrite_LeaseEpochZeroIsValid(t *testing.T) {
+	withMaestroDir(t)
+	app := newTestApp(&mockUDSClient{
+		sendCommandFunc: func(command string, params any) (*uds.Response, error) {
+			return successResponse(map[string]string{"result_id": "res1"}), nil
+		},
+	})
+
+	err := app.runResultWrite([]string{"worker1",
+		"--task-id", "task_0000000001_abcdef01",
+		"--command-id", "cmd_0000000001_abcdef01",
+		"--lease-epoch", "0",
+		"--status", "completed",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: lease-epoch 0 should be valid: %v", err)
+	}
+}
+
 func TestRunResultWrite_UnexpectedArg(t *testing.T) {
 	err := newCLIApp().runResultWrite([]string{"worker1", "--task-id", "t1", "--command-id", "c1", "--status", "completed", "extra"})
 	if err == nil {
@@ -56,6 +93,7 @@ func TestRunResultWrite_InvalidReporter(t *testing.T) {
 	err := newCLIApp().runResultWrite([]string{"../evil",
 		"--task-id", "task_0000000001_abcdef01",
 		"--command-id", "cmd_0000000001_abcdef01",
+		"--lease-epoch", "1",
 		"--status", "completed",
 	})
 	if err == nil {
@@ -74,6 +112,7 @@ func TestRunResultWrite_InvalidTaskID(t *testing.T) {
 	err := newCLIApp().runResultWrite([]string{"worker1",
 		"--task-id", "../bad",
 		"--command-id", "cmd_0000000001_abcdef01",
+		"--lease-epoch", "1",
 		"--status", "completed",
 	})
 	if err == nil {
@@ -92,6 +131,7 @@ func TestRunResultWrite_InvalidCommandID(t *testing.T) {
 	err := newCLIApp().runResultWrite([]string{"worker1",
 		"--task-id", "task_0000000001_abcdef01",
 		"--command-id", "../../bad",
+		"--lease-epoch", "1",
 		"--status", "completed",
 	})
 	if err == nil {
@@ -111,6 +151,7 @@ func TestRunResultWrite_SummaryTooLong(t *testing.T) {
 	err := newCLIApp().runResultWrite([]string{"worker1",
 		"--task-id", "task_0000000001_abcdef01",
 		"--command-id", "cmd_0000000001_abcdef01",
+		"--lease-epoch", "1",
 		"--status", "completed",
 		"--summary", longSummary,
 	})
@@ -203,6 +244,7 @@ func TestRunResultWrite_UDSFencingReject(t *testing.T) {
 	err := app.runResultWrite([]string{"worker1",
 		"--task-id", "task_0000000001_abcdef01",
 		"--command-id", "cmd_0000000001_abcdef01",
+		"--lease-epoch", "1",
 		"--status", "completed",
 	})
 	if err == nil {
@@ -228,6 +270,7 @@ func TestRunResultWrite_UDSOtherError(t *testing.T) {
 	err := app.runResultWrite([]string{"worker1",
 		"--task-id", "task_0000000001_abcdef01",
 		"--command-id", "cmd_0000000001_abcdef01",
+		"--lease-epoch", "1",
 		"--status", "completed",
 	})
 	if err == nil {
@@ -253,6 +296,7 @@ func TestRunResultWrite_UDSConnError(t *testing.T) {
 	err := app.runResultWrite([]string{"worker1",
 		"--task-id", "task_0000000001_abcdef01",
 		"--command-id", "cmd_0000000001_abcdef01",
+		"--lease-epoch", "1",
 		"--status", "completed",
 	})
 	if err == nil {
@@ -274,6 +318,7 @@ func TestRunResultWrite_PartialChangesAndNoRetrySafe(t *testing.T) {
 	err := app.runResultWrite([]string{"worker1",
 		"--task-id", "task_0000000001_abcdef01",
 		"--command-id", "cmd_0000000001_abcdef01",
+		"--lease-epoch", "1",
 		"--status", "failed",
 		"--partial-changes",
 		"--no-retry-safe",

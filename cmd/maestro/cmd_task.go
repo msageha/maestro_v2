@@ -28,7 +28,7 @@ func (a *cliApp) runTaskHeartbeat(args []string) error {
 	var epoch int
 	fs.StringVar(&taskID, "task-id", "", "")
 	fs.StringVar(&workerID, "worker-id", "", "")
-	fs.IntVar(&epoch, "epoch", 0, "")
+	fs.IntVar(&epoch, "epoch", -1, "")
 
 	if err := fs.Parse(args); err != nil {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro task heartbeat: %v\nusage: maestro task heartbeat --task-id <id> --worker-id <id> --epoch <n>", err)}
@@ -42,6 +42,9 @@ func (a *cliApp) runTaskHeartbeat(args []string) error {
 	}
 	if workerID == "" {
 		return &CLIError{Code: 1, Msg: "maestro task heartbeat: --worker-id is required"}
+	}
+	if epoch < 0 {
+		return &CLIError{Code: 1, Msg: "maestro task heartbeat: --epoch is required"}
 	}
 	if err := validate.ID(taskID); err != nil {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro task heartbeat: invalid --task-id: %v", err)}
