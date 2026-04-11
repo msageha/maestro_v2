@@ -216,7 +216,6 @@ var validCallerRoles = map[string]bool{
 	"orchestrator": true,
 	"planner":      true,
 	"worker":       true,
-	"operator":     true,
 }
 
 // isValidCallerRole returns true if role is a known, non-empty caller role.
