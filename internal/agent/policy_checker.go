@@ -36,8 +36,14 @@ func (pc *PolicyChecker) WriteHookScript() (string, error) {
 		return "", fmt.Errorf("create hooks dir: %w", err)
 	}
 
+	projectRoot := filepath.Dir(pc.maestroDir)
+	if resolved, err := filepath.EvalSymlinks(projectRoot); err == nil {
+		projectRoot = resolved
+	}
+	script := strings.ReplaceAll(hookScript, "__PROJECT_ROOT__", projectRoot)
+
 	scriptPath := pc.hookScriptPath()
-	if err := os.WriteFile(scriptPath, []byte(hookScript), 0750); err != nil { //nolint:gosec // hook script requires execute permission
+	if err := os.WriteFile(scriptPath, []byte(script), 0750); err != nil { //nolint:gosec // hook script requires execute permission
 		return "", fmt.Errorf("write hook script: %w", err)
 	}
 
@@ -114,6 +120,12 @@ set -euo pipefail
 # Worker PreToolUse policy enforcement hook.
 # Blocks destructive operations defined in Tier 1/Tier 2 safety rules.
 
+# S3: jq dependency check - deny all if jq is unavailable (fail-safe)
+if ! command -v jq >/dev/null 2>&1; then
+  echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":"Policy hook requires jq but it is not installed. Denying for safety."}}'
+  exit 0
+fi
+
 input="$(cat)"
 tool_name="$(echo "$input" | jq -r '.tool_name // ""')"
 
@@ -132,6 +144,24 @@ if [ "$tool_name" = "Bash" ]; then
   if echo "$cmd" | grep -qiE 'rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+(/\s|/$|~|/Users)' || \
      echo "$cmd" | grep -qiE 'rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+(/\s|/$|~|/Users)'; then
     deny "D001: Blocked rm -rf targeting system/home directory"
+  fi
+
+  # D002: Recursive delete outside project root
+  if echo "$cmd" | grep -qE 'rm\s+(-[a-zA-Z]*[rR]|--recursive)'; then
+    project_root="__PROJECT_ROOT__"
+    set -f
+    for word in $cmd; do
+      case "$word" in
+        /*|~*|../*|*/../*) ;;
+        *) continue ;;
+      esac
+      resolved="$(realpath "$word" 2>/dev/null || echo "$word")"
+      case "$resolved" in
+        "$project_root"/*) ;;
+        *) deny "D002: Blocked recursive delete outside project root: $word" ;;
+      esac
+    done
+    set +f
   fi
 
   # Worker: git push is fully prohibited (all forms including --force-with-lease)
@@ -254,10 +284,13 @@ if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ]; then
   # Normalize to lowercase for case-insensitive FS (macOS)
   file_path_lower="$(echo "$file_path" | tr '[:upper:]' '[:lower:]')"
 
-  # Block writes to .maestro/ control plane
+  # Block writes to .maestro/ control plane (absolute and relative paths)
   case "$file_path_lower" in
     */.maestro/state/*|*/.maestro/queues/*|*/.maestro/results/*|*/.maestro/locks/*|*/.maestro/logs/*|*/.maestro/config.yaml)
       deny "Blocked write to .maestro/ control-plane path"
+      ;;
+    .maestro/state/*|.maestro/queues/*|.maestro/results/*|.maestro/locks/*|.maestro/logs/*|.maestro/config.yaml)
+      deny "Blocked write to .maestro/ control-plane path (relative)"
       ;;
   esac
 

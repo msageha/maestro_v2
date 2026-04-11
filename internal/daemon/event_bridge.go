@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"runtime/debug"
+
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -25,7 +27,7 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 	unsub1 := d.eventBus.Subscribe(events.EventTaskStarted, func(e events.Event) {
 		defer func() {
 			if r := recover(); r != nil {
-				d.log(LogLevelError, "panic in event_bridge callback type=task_started: %v", r)
+				d.log(LogLevelError, "panic in event_bridge callback type=task_started: %v\n%s", r, debug.Stack())
 				d.Shutdown()
 			}
 		}()
@@ -50,7 +52,7 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 	unsub2 := d.eventBus.Subscribe(events.EventTaskCompleted, func(e events.Event) {
 		defer func() {
 			if r := recover(); r != nil {
-				d.log(LogLevelError, "panic in event_bridge callback type=task_completed: %v", r)
+				d.log(LogLevelError, "panic in event_bridge callback type=task_completed: %v\n%s", r, debug.Stack())
 				d.Shutdown()
 			}
 		}()
@@ -87,7 +89,7 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 	unsub3 := d.eventBus.Subscribe(events.EventPhaseTransition, func(e events.Event) {
 		defer func() {
 			if r := recover(); r != nil {
-				d.log(LogLevelError, "panic in event_bridge callback type=phase_transition: %v", r)
+				d.log(LogLevelError, "panic in event_bridge callback type=phase_transition: %v\n%s", r, debug.Stack())
 				d.Shutdown()
 			}
 		}()
@@ -122,7 +124,7 @@ func (eb *EventBridge) subscribeQueueWrittenEvents() {
 	unsub := d.eventBus.SubscribeCoalesced(events.EventQueueWritten, func() {
 		defer func() {
 			if r := recover(); r != nil {
-				d.log(LogLevelError, "panic in event_bridge callback type=queue_written: %v", r)
+				d.log(LogLevelError, "panic in event_bridge callback type=queue_written: %v\n%s", r, debug.Stack())
 				d.Shutdown()
 			}
 		}()
