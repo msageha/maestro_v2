@@ -48,7 +48,7 @@ func startDaemon() error {
 // stopDaemon stops the daemon via UDS shutdown, then verifies it exited using
 // the PID file. Falls back to SIGTERM → SIGKILL if the daemon does not exit.
 // Returns an error if daemon death could not be confirmed.
-func stopDaemon(maestroDir string) error {
+func (c *Config) stopDaemon(maestroDir string) error {
 	socketPath := filepath.Join(maestroDir, uds.DefaultSocketName)
 	pidPath := filepath.Join(maestroDir, "daemon.pid")
 
@@ -60,7 +60,7 @@ func stopDaemon(maestroDir string) error {
 	}
 
 	// Step 1: Request graceful shutdown via UDS
-	client := newUDSClient(socketPath, 5*time.Second)
+	client := c.NewUDSClient(socketPath, 5*time.Second)
 	if _, err := client.SendCommand("shutdown", nil); err != nil {
 		log.Printf("[WARN] shutdown command failed: %v", err)
 	}
@@ -70,21 +70,21 @@ func stopDaemon(maestroDir string) error {
 
 	if pid > 0 {
 		// Capture process start time to detect PID reuse (Fix #7)
-		origStartTime := procMgr().StartTime(pid)
+		origStartTime := c.ProcMgr.StartTime(pid)
 
 		// PID-based monitoring: poll process exit, then escalate
-		deadline := time.Now().Add(daemonPollTimeout())
+		deadline := time.Now().Add(c.DaemonPollTimeout)
 		for time.Now().Before(deadline) {
-			if !processAlive(pid) {
+			if !c.ProcMgr.Alive(pid) {
 				removeIfExists(pidPath)
 				return nil
 			}
-			time.Sleep(daemonPollInterval())
+			time.Sleep(c.DaemonPollInterval)
 		}
 
 		// Use terminateProcess with PID + start time identity check (Fix #7, #8)
-		sameProcess := daemonIdentityChecker(maestroDir, pid, origStartTime)
-		result, err := terminateProcess(pid, sameProcess, 5*time.Second)
+		sameProcess := c.daemonIdentityChecker(maestroDir, pid, origStartTime)
+		result, err := c.terminateProcess(pid, sameProcess, 5*time.Second)
 		if result == terminateNotTarget {
 			// PID was reused by another process — don't clean up
 			return nil
@@ -118,7 +118,7 @@ func stopDaemon(maestroDir string) error {
 	}
 
 	// Lock held but no valid PID: poll for daemon exit via lock release
-	deadline := time.Now().Add(daemonPollTimeout())
+	deadline := time.Now().Add(c.DaemonPollTimeout)
 	for time.Now().Before(deadline) {
 		if err := fl.TryLock(); err == nil {
 			// Clean up while holding the lock (Fix #9)
@@ -127,17 +127,21 @@ func stopDaemon(maestroDir string) error {
 			_ = fl.Unlock()
 			return nil
 		}
-		time.Sleep(daemonPollInterval())
+		time.Sleep(c.DaemonPollInterval)
 	}
 
 	removeIfExists(pidPath)
 	return fmt.Errorf("could not confirm daemon stopped (no valid PID, lock still held after timeout)")
 }
 
+func stopDaemon(maestroDir string) error {
+	return defaultConfig.stopDaemon(maestroDir)
+}
+
 // daemonIdentityChecker returns a function that verifies a PID still belongs
 // to the original daemon by checking both the PID file cross-reference and
 // the process start time.
-func daemonIdentityChecker(maestroDir string, originalPID int, origStartTime string) func(int) bool {
+func (c *Config) daemonIdentityChecker(maestroDir string, originalPID int, origStartTime string) func(int) bool {
 	return func(pid int) bool {
 		// Check PID file still matches
 		if currentPID := validateDaemonPID(maestroDir); currentPID != originalPID {
@@ -145,7 +149,7 @@ func daemonIdentityChecker(maestroDir string, originalPID int, origStartTime str
 		}
 		// Check process start time hasn't changed (PID reuse detection)
 		if origStartTime != "" {
-			currentStartTime := procMgr().StartTime(pid)
+			currentStartTime := c.ProcMgr.StartTime(pid)
 			if currentStartTime == "" || currentStartTime != origStartTime {
 				return false
 			}
@@ -154,20 +158,28 @@ func daemonIdentityChecker(maestroDir string, originalPID int, origStartTime str
 	}
 }
 
+func daemonIdentityChecker(maestroDir string, originalPID int, origStartTime string) func(int) bool {
+	return defaultConfig.daemonIdentityChecker(maestroDir, originalPID, origStartTime)
+}
+
 // waitDaemonReady polls the daemon's UDS ping endpoint until it responds
 // successfully or the timeout is reached.
-func waitDaemonReady(socketPath string, timeout time.Duration) error {
+func (c *Config) waitDaemonReady(socketPath string, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
-	client := newUDSClient(socketPath, 1*time.Second)
+	client := c.NewUDSClient(socketPath, 1*time.Second)
 
 	for time.Now().Before(deadline) {
 		resp, err := client.SendCommand("ping", nil)
 		if err == nil && resp.Success {
 			return nil
 		}
-		time.Sleep(waitReadyPollInterval())
+		time.Sleep(c.WaitReadyPollInterval)
 	}
 	return fmt.Errorf("daemon did not respond to ping within %s", timeout)
+}
+
+func waitDaemonReady(socketPath string, timeout time.Duration) error {
+	return defaultConfig.waitDaemonReady(socketPath, timeout)
 }
 
 // readDaemonPID reads the daemon PID from the PID file. Returns 0 if unreadable.

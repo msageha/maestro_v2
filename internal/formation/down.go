@@ -174,22 +174,26 @@ func hasOtherMaestroSessions() bool {
 }
 
 // cleanupStalePID kills a lingering daemon process if daemon.pid exists.
-func cleanupStalePID(maestroDir string) {
+func (c *Config) cleanupStalePID(maestroDir string) {
 	pid := validateDaemonPID(maestroDir)
 	pidPath := filepath.Join(maestroDir, "daemon.pid")
 	if pid <= 0 {
 		removeIfExists(pidPath) // Remove stale/invalid PID file
 		return
 	}
-	if !processAlive(pid) {
+	if !c.ProcMgr.Alive(pid) {
 		removeIfExists(pidPath)
 		return
 	}
 
-	origStartTime := procMgr().StartTime(pid)
-	sameProcess := daemonIdentityChecker(maestroDir, pid, origStartTime)
-	result, _ := terminateProcess(pid, sameProcess, 5*time.Second)
+	origStartTime := c.ProcMgr.StartTime(pid)
+	sameProcess := c.daemonIdentityChecker(maestroDir, pid, origStartTime)
+	result, _ := c.terminateProcess(pid, sameProcess, 5*time.Second)
 	if result == terminateStopped {
 		removeIfExists(pidPath)
 	}
+}
+
+func cleanupStalePID(maestroDir string) {
+	defaultConfig.cleanupStalePID(maestroDir)
 }
