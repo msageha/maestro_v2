@@ -8,7 +8,7 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
-	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/envelope"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -148,7 +148,7 @@ func TestBuildWorkerEnvelope_SkillRefs_CommaSeparated(t *testing.T) {
 		SkillRefs:          []string{"go-testing", "code-review"},
 	}
 
-	envelope := agent.BuildWorkerEnvelope(task, "worker1", 1, 1)
+	envelope := envelope.BuildWorkerEnvelope(task, "worker1", 1, 1)
 
 	if !strings.Contains(envelope, "skill_refs: go-testing, code-review") {
 		t.Errorf("envelope should contain comma-separated skill_refs, got envelope:\n%s", envelope)
@@ -164,7 +164,7 @@ func TestBuildWorkerEnvelope_SkillRefs_Empty_ShowsNashi(t *testing.T) {
 		AcceptanceCriteria: "done",
 	}
 
-	envelope := agent.BuildWorkerEnvelope(task, "worker1", 1, 1)
+	envelope := envelope.BuildWorkerEnvelope(task, "worker1", 1, 1)
 
 	if !strings.Contains(envelope, "skill_refs: なし") {
 		t.Errorf("envelope should show 'なし' for empty skill_refs, got envelope:\n%s", envelope)

@@ -13,20 +13,19 @@ import (
 	"strings"
 	"time"
 
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// ExecMode is an alias for core.ExecMode.
-type ExecMode = core.ExecMode
+// ExecMode is an alias for model.ExecMode.
+type ExecMode = model.ExecMode
 
-// Mode constants are re-exported from core for backward compatibility.
+// Mode constants are re-exported from model for backward compatibility.
 const (
-	ModeDeliver   = core.ModeDeliver
-	ModeWithClear = core.ModeWithClear
-	ModeInterrupt = core.ModeInterrupt
-	ModeIsBusy    = core.ModeIsBusy
-	ModeClear     = core.ModeClear
+	ModeDeliver   = model.ModeDeliver
+	ModeWithClear = model.ModeWithClear
+	ModeInterrupt = model.ModeInterrupt
+	ModeIsBusy    = model.ModeIsBusy
+	ModeClear     = model.ModeClear
 )
 
 // busyVerdict is the result of busy detection.
@@ -86,11 +85,11 @@ func DefaultExecutorConfig() ExecutorConfig {
 	}
 }
 
-// ExecRequest is an alias for core.ExecRequest.
-type ExecRequest = core.ExecRequest
+// ExecRequest is an alias for model.ExecRequest.
+type ExecRequest = model.ExecRequest
 
-// ExecResult is an alias for core.ExecResult.
-type ExecResult = core.ExecResult
+// ExecResult is an alias for model.ExecResult.
+type ExecResult = model.ExecResult
 
 // logLevel controls logging verbosity.
 type logLevel int

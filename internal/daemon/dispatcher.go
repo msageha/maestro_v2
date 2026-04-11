@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/envelope"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -232,7 +233,7 @@ func (disp *Dispatcher) DispatchCommand(cmd *model.Command) error {
 	}
 	dispatchCmd.Content = enrichedContent
 
-	envelope := agent.BuildPlannerEnvelope(dispatchCmd, cmd.LeaseEpoch, cmd.Attempts)
+	envelope := envelope.BuildPlannerEnvelope(dispatchCmd, cmd.LeaseEpoch, cmd.Attempts)
 
 	result := exec.Execute(agent.ExecRequest{
 		AgentID:    "planner",
@@ -311,7 +312,7 @@ func (disp *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 		workingDir = wtPath
 	}
 
-	envelope := agent.BuildWorkerEnvelope(dispatchTask, workerID, task.LeaseEpoch, task.Attempts)
+	envelope := envelope.BuildWorkerEnvelope(dispatchTask, workerID, task.LeaseEpoch, task.Attempts)
 	if workingDir != "" {
 		envelope = fmt.Sprintf("%s\nworking_dir: %s", envelope, workingDir)
 	}
@@ -354,7 +355,7 @@ func (disp *Dispatcher) DispatchNotification(ntf *model.Notification) error {
 		return fmt.Errorf("create executor: %w", err)
 	}
 
-	envelope := agent.BuildOrchestratorNotificationEnvelope(ntf.CommandID, ntf.Type)
+	envelope := envelope.BuildOrchestratorNotificationEnvelope(ntf.CommandID, ntf.Type)
 
 	result := exec.Execute(agent.ExecRequest{
 		AgentID:    "orchestrator",

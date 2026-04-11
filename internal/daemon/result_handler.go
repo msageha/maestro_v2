@@ -13,6 +13,7 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/envelope"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -488,7 +489,7 @@ func (rh *ResultHandler) notifyPlannerOfWorkerResult(commandID, taskID, workerID
 		return fmt.Errorf("create executor: %w", err)
 	}
 
-	message := agent.BuildTaskResultNotification(commandID, taskID, workerID, taskStatus)
+	message := envelope.BuildTaskResultNotification(commandID, taskID, workerID, taskStatus)
 
 	result := exec.Execute(agent.ExecRequest{
 		AgentID:   "planner",

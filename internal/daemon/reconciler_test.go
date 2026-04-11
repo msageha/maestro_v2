@@ -16,6 +16,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/reconcile"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil/mocks"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -874,7 +875,7 @@ func TestReconciler_R6_AwaitingFill_DeadlineExpired(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	// Set a mock executor so notification doesn't fail
 	rec := newTestReconcilerWithFactory(maestroDir, func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
-		return &mockExecutorR6{}, nil
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
 	})
 
 	pastDeadline := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
@@ -962,14 +963,6 @@ func TestReconciler_R6_DeadlineNotExpired_NoRepair(t *testing.T) {
 	}
 }
 
-// mockExecutorR6 is a no-op executor for R6 Planner notification tests.
-type mockExecutorR6 struct{}
-
-func (m *mockExecutorR6) Execute(req agent.ExecRequest) agent.ExecResult {
-	return agent.ExecResult{Success: true}
-}
-func (m *mockExecutorR6) Close() error { return nil }
-
 func filterRepairs(repairs []ReconcileRepair, pattern reconcile.RepairPatternID) []ReconcileRepair {
 	var filtered []ReconcileRepair
 	for _, r := range repairs {
@@ -983,7 +976,7 @@ func filterRepairs(repairs []ReconcileRepair, pattern reconcile.RepairPatternID)
 func TestReconciler_R6_TransitiveCascade(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconcilerWithFactory(maestroDir, func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
-		return &mockExecutorR6{}, nil
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
 	})
 
 	pastDeadline := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)

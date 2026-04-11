@@ -10,6 +10,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil/mocks"
 )
 
 // createSkillFile creates a SKILL.md file under skillsDir/worker/<name>/SKILL.md with the given content.
@@ -25,11 +26,11 @@ func createSkillFile(t *testing.T, skillsDir, name, content string) {
 }
 
 // newSkillTestDispatcher creates a Dispatcher with a mock executor that captures the dispatched envelope.
-func newSkillTestDispatcher(t *testing.T, maestroDir string, cfg model.Config) (*Dispatcher, *mockExecutor) {
+func newSkillTestDispatcher(t *testing.T, maestroDir string, cfg model.Config) (*Dispatcher, *mocks.MockExecutor) {
 	t.Helper()
 	ep := newTestExecutorProvider(maestroDir, cfg)
 	d := NewDispatcher(maestroDir, cfg, nil, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, ep, RealClock{})
-	mock := &mockExecutor{result: agent.ExecResult{Success: true}}
+	mock := &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}
 	ep.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return mock, nil
 	})
@@ -58,11 +59,11 @@ func TestDispatchTask_SkillInjection_Success(t *testing.T) {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
-	if len(mock.calls) != 1 {
-		t.Fatalf("expected 1 call, got %d", len(mock.calls))
+	if len(mock.Calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(mock.Calls))
 	}
 
-	envelope := mock.calls[0].Message
+	envelope := mock.Calls[0].Message
 	if !strings.Contains(envelope, "original content") {
 		t.Error("envelope should contain original content")
 	}
@@ -97,7 +98,7 @@ func TestDispatchTask_SkillRefs_Empty_NoShared_NoInjection(t *testing.T) {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
-	envelope := mock.calls[0].Message
+	envelope := mock.Calls[0].Message
 	if strings.Contains(envelope, "スキル:") {
 		t.Error("envelope should NOT contain skill section when no shared skills and no skill_refs")
 	}
@@ -126,7 +127,7 @@ func TestDispatchTask_SharedSkills_AutoInjected(t *testing.T) {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
-	envelope := mock.calls[0].Message
+	envelope := mock.Calls[0].Message
 	if !strings.Contains(envelope, "スキル: Error Patterns") {
 		t.Error("envelope should contain auto-injected shared skill")
 	}
@@ -159,7 +160,7 @@ func TestDispatchTask_SharedSkills_DeduplicatedWithSkillRefs(t *testing.T) {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
-	envelope := mock.calls[0].Message
+	envelope := mock.Calls[0].Message
 	// Worker-specific version should be used (via ReadSkillWithRole fallback)
 	if !strings.Contains(envelope, "Worker Version") {
 		t.Error("envelope should contain worker-specific version of the skill")
@@ -195,7 +196,7 @@ func TestDispatchTask_SharedSkills_MixedWithSkillRefs(t *testing.T) {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
-	envelope := mock.calls[0].Message
+	envelope := mock.Calls[0].Message
 	if !strings.Contains(envelope, "スキル: Impl Skill") {
 		t.Error("envelope should contain explicitly referenced skill")
 	}
@@ -226,7 +227,7 @@ func TestDispatchTask_SkillsDisabled_NoInjection(t *testing.T) {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
-	envelope := mock.calls[0].Message
+	envelope := mock.Calls[0].Message
 	if strings.Contains(envelope, "スキル:") {
 		t.Error("envelope should NOT contain skill section when skills are disabled")
 	}
@@ -257,7 +258,7 @@ func TestDispatchTask_MissingRefPolicy_Warn(t *testing.T) {
 		t.Fatalf("dispatch should succeed with warn policy, got: %v", err)
 	}
 
-	envelope := mock.calls[0].Message
+	envelope := mock.Calls[0].Message
 	if strings.Contains(envelope, "スキル:") {
 		t.Error("envelope should NOT contain skill section when all refs are missing")
 	}
@@ -320,7 +321,7 @@ func TestDispatchTask_MaxRefsPerTask_Truncation(t *testing.T) {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
-	envelope := mock.calls[0].Message
+	envelope := mock.Calls[0].Message
 	// Should contain skill-a and skill-b (first 2), but NOT skill-c
 	if !strings.Contains(envelope, "Skill A") {
 		t.Error("envelope should contain Skill A")
@@ -356,7 +357,7 @@ func TestDispatchTask_SkillInjection_MultipleSkills(t *testing.T) {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
-	envelope := mock.calls[0].Message
+	envelope := mock.Calls[0].Message
 	if !strings.Contains(envelope, "Skill A") || !strings.Contains(envelope, "Skill B") {
 		t.Error("envelope should contain both skills")
 	}
@@ -402,11 +403,11 @@ func TestDispatchCommand_PlannerSkillInjection(t *testing.T) {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
-	if len(mock.calls) != 1 {
-		t.Fatalf("expected 1 call, got %d", len(mock.calls))
+	if len(mock.Calls) != 1 {
+		t.Fatalf("expected 1 call, got %d", len(mock.Calls))
 	}
 
-	envelope := mock.calls[0].Message
+	envelope := mock.Calls[0].Message
 	if !strings.Contains(envelope, "implement feature X") {
 		t.Error("envelope should contain original content")
 	}
@@ -445,7 +446,7 @@ func TestDispatchCommand_NoSkillRefs_OnlySharedInjected(t *testing.T) {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
-	envelope := mock.calls[0].Message
+	envelope := mock.Calls[0].Message
 	if strings.Contains(envelope, "Plan Skill") {
 		t.Error("envelope should NOT contain planner skill when not in skill_refs")
 	}
@@ -473,7 +474,7 @@ func TestDispatchCommand_SkillsDisabled_NoInjection(t *testing.T) {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
-	envelope := mock.calls[0].Message
+	envelope := mock.Calls[0].Message
 	if strings.Contains(envelope, "スキル:") {
 		t.Error("envelope should NOT contain skill section when skills are disabled")
 	}
@@ -497,7 +498,7 @@ func TestDispatchCommand_NoSkillsDir_NoError(t *testing.T) {
 		t.Fatalf("dispatch should succeed even without skills dir: %v", err)
 	}
 
-	envelope := mock.calls[0].Message
+	envelope := mock.Calls[0].Message
 	if strings.Contains(envelope, "スキル:") {
 		t.Error("envelope should NOT contain skill section when no skills exist")
 	}
@@ -524,7 +525,7 @@ func TestDispatchCommand_OnlyPlannerSkills_NotWorkerSkills(t *testing.T) {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
-	envelope := mock.calls[0].Message
+	envelope := mock.Calls[0].Message
 	if !strings.Contains(envelope, "スキル: Plan Skill") {
 		t.Error("envelope should contain planner skill")
 	}
@@ -558,7 +559,7 @@ func TestDispatchTask_MissingRefPolicy_Warn_PartialSkills(t *testing.T) {
 		t.Fatalf("dispatch should succeed with warn policy, got: %v", err)
 	}
 
-	envelope := mock.calls[0].Message
+	envelope := mock.Calls[0].Message
 	if !strings.Contains(envelope, "Existing Skill") {
 		t.Error("envelope should contain the existing skill")
 	}

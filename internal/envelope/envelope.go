@@ -1,4 +1,6 @@
-package agent
+// Package envelope provides functions for building delivery envelopes
+// and sanitizing user-supplied content for the maestro agent protocol.
+package envelope
 
 import (
 	"fmt"
