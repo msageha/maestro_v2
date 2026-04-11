@@ -2464,3 +2464,149 @@ func TestCommitWorkerChanges_PolicyViolationMaxFiles(t *testing.T) {
 		t.Errorf("expected max_files_exceeded violation, got %+v", policyErr.Violations)
 	}
 }
+
+// TestRollbackWorkerWorktree_ReturnsErrors tests that rollbackWorkerWorktree
+// returns errors when git cleanup operations fail (e.g., non-existent worktree/branch).
+func TestRollbackWorkerWorktree_ReturnsErrors(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	// Create a fake state with a worker pointing to non-existent path/branch
+	state := &model.WorktreeCommandState{
+		Workers: []model.WorktreeState{
+			{
+				WorkerID: "ghost",
+				Path:     filepath.Join(projectRoot, "nonexistent-worktree"),
+				Branch:   "maestro/nonexistent/ghost",
+			},
+		},
+	}
+
+	err := wm.rollbackWorkerWorktree("cmd_test", state, "ghost")
+	if err == nil {
+		t.Fatal("expected rollbackWorkerWorktree to return error for non-existent worktree/branch")
+	}
+
+	errMsg := err.Error()
+	if !strings.Contains(errMsg, "remove worktree") {
+		t.Errorf("error should contain worktree remove failure, got: %s", errMsg)
+	}
+	if !strings.Contains(errMsg, "delete branch") {
+		t.Errorf("error should contain branch delete failure, got: %s", errMsg)
+	}
+}
+
+// TestRollbackWorkerWorktree_NoErrorForMissingWorker tests that rollbackWorkerWorktree
+// returns nil when the workerID is not found in state (nothing to roll back).
+func TestRollbackWorkerWorktree_NoErrorForMissingWorker(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	state := &model.WorktreeCommandState{}
+	err := wm.rollbackWorkerWorktree("cmd_test", state, "nonexistent")
+	if err != nil {
+		t.Errorf("expected nil error for missing worker, got: %v", err)
+	}
+}
+
+// TestEnsureWorkerWorktree_RollbackSuccessReturnsOriginalError tests that when
+// rollback succeeds, only the original error is returned (no rollback error appended).
+func TestEnsureWorkerWorktree_RollbackSuccessReturnsOriginalError(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	// Pre-create a branch that will conflict with worker1's branch name
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = projectRoot
+	headSHA, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sha := strings.TrimSpace(string(headSHA))
+
+	cmd = exec.Command("git", "branch", "maestro/cmd_rb_success/worker1", sha)
+	cmd.Dir = projectRoot
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("create conflicting branch failed: %v\n%s", err, out)
+	}
+	defer func() {
+		cmd := exec.Command("git", "branch", "-D", "maestro/cmd_rb_success/worker1")
+		cmd.Dir = projectRoot
+		_ = cmd.Run()
+	}()
+
+	// EnsureWorkerWorktree should fail (branch conflict) and rollback integration.
+	// Since rollback succeeds, error should NOT contain "rollback also failed".
+	err = wm.EnsureWorkerWorktree("cmd_rb_success", "worker1")
+	if err == nil {
+		t.Fatal("expected EnsureWorkerWorktree to fail")
+	}
+
+	errMsg := err.Error()
+	if strings.Contains(errMsg, "rollback also failed") {
+		t.Errorf("error should NOT contain rollback failure when rollback succeeds, got: %s", errMsg)
+	}
+}
+
+// TestEnsureWorkerWorktree_RollbackFailurePropagation tests that when both
+// the original operation and rollback fail, the returned error contains both.
+func TestEnsureWorkerWorktree_RollbackFailurePropagation(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	// Create initial state with worker1 (existing state path)
+	if err := wm.EnsureWorkerWorktree("cmd_rb_fail", "worker1"); err != nil {
+		t.Fatalf("initial EnsureWorkerWorktree failed: %v", err)
+	}
+
+	// Make state directory read-only to force saveState failure.
+	// When EnsureWorkerWorktree tries to add worker2:
+	// 1. addWorkerWorktreeUnlocked succeeds (worktree created)
+	// 2. saveState fails (read-only dir)
+	// 3. rollbackWorkerWorktree succeeds (removes worktree)
+	// 4. restore saveState also fails (still read-only) → rollback error
+	stateDir := filepath.Join(projectRoot, ".maestro", "state", "worktrees")
+	if err := os.Chmod(stateDir, 0555); err != nil {
+		t.Fatalf("chmod failed: %v", err)
+	}
+	defer os.Chmod(stateDir, 0755) //nolint:errcheck // restore for cleanup
+
+	err := wm.EnsureWorkerWorktree("cmd_rb_fail", "worker2")
+	if err == nil {
+		t.Fatal("expected EnsureWorkerWorktree to fail")
+	}
+
+	errMsg := err.Error()
+
+	// Original error should be present
+	if !strings.Contains(errMsg, "save worktree state") {
+		t.Errorf("error should contain original error, got: %s", errMsg)
+	}
+
+	// Rollback error should be present
+	if !strings.Contains(errMsg, "rollback also failed") {
+		t.Errorf("error should contain rollback failure, got: %s", errMsg)
+	}
+
+	// The restore state failure should be mentioned
+	if !strings.Contains(errMsg, "restore state") {
+		t.Errorf("error should contain restore state failure detail, got: %s", errMsg)
+	}
+
+	// Restore permissions and verify original state is intact
+	if err := os.Chmod(stateDir, 0755); err != nil {
+		t.Fatalf("chmod restore failed: %v", err)
+	}
+	state, err := wm.GetCommandState("cmd_rb_fail")
+	if err != nil {
+		t.Fatalf("GetCommandState failed: %v", err)
+	}
+	// worker1 should still exist
+	if len(state.Workers) < 1 {
+		t.Errorf("expected at least 1 worker, got %d", len(state.Workers))
+	}
+}
