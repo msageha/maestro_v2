@@ -57,6 +57,7 @@ func NewReconciler(
 		reconcile.R4PlanStatus{},
 		reconcile.R5Notification{},
 		reconcile.R6FillTimeout{},
+		reconcile.R7MergeConflict{},
 	)
 
 	return &Reconciler{engine: engine}

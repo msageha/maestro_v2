@@ -62,9 +62,10 @@ type WorktreeState struct {
 	Path      string         `yaml:"path"`
 	Branch    string         `yaml:"branch"`
 	BaseSHA   string         `yaml:"base_sha"`
-	Status    WorktreeStatus `yaml:"status"`
-	CreatedAt string         `yaml:"created_at"`
-	UpdatedAt string         `yaml:"updated_at"`
+	Status                     WorktreeStatus `yaml:"status"`
+	ConflictResolutionAttempts int            `yaml:"conflict_resolution_attempts,omitempty"`
+	CreatedAt                  string         `yaml:"created_at"`
+	UpdatedAt                  string         `yaml:"updated_at"`
 }
 
 // IntegrationState tracks the lifecycle of an integration branch for a command.
