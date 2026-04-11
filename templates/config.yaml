@@ -1,174 +1,588 @@
+# =============================================================================
+# Maestro Configuration — Full Schema Reference
+# =============================================================================
+# 各設定項目の上に以下の情報をコメントで記載:
+#   説明 / type: 型 | default: デフォルト値 | range: 有効範囲
+# デフォルト値は config.go の DefaultXxx 定数に基づく。
+# 有効範囲は config.go の Validate() に基づく。
+# =============================================================================
+
+# --- Project ---
+# プロジェクトの識別情報。
 project:
+  # name: プロジェクト名
+  # type: string | default: なし (必須) | range: 空文字列不可
   name: ""
+  # description: プロジェクトの説明
+  # type: string | default: "" | range: 制限なし
   description: ""
 
+# --- Maestro ---
+# Daemon バージョンとワークスペースメタデータ。
 maestro:
+  # version: Maestro のバージョン
+  # type: string | default: なし (必須) | range: 空文字列不可
   version: "2.0.0"
+  # created: 初期化日時
+  # type: string | default: "" | range: 制限なし
   created: ""
+  # project_root: プロジェクトルートのパス
+  # type: string | default: "" | range: 制限なし
   project_root: ""
 
+# --- Agents ---
+# Agent ロールごとの設定。
 agents:
   orchestrator:
+    # id: Orchestrator Agent の識別子
+    # type: string | default: なし | range: 制限なし
     id: "orchestrator"
+    # model: 使用するモデル名
+    # type: string | default: なし | range: 制限なし
     model: "opus"
+    # base_prompt_mode: システムプロンプトの適用方法
+    # type: string | default: "append" | range: "replace" or "append"
     base_prompt_mode: "replace"
   planner:
+    # id: Planner Agent の識別子
+    # type: string | default: なし | range: 制限なし
     id: "planner"
+    # model: 使用するモデル名
+    # type: string | default: なし | range: 制限なし
     model: "opus"
+    # base_prompt_mode: システムプロンプトの適用方法
+    # type: string | default: "append" | range: "replace" or "append"
     base_prompt_mode: "replace"
   workers:
+    # count: Worker Agent の数
+    # type: int | default: なし | range: 1-8 (MinWorkers-MaxWorkers)
     count: 4
+    # default_model: Worker のデフォルトモデル名
+    # type: string | default: なし | range: 制限なし
     default_model: "sonnet"
+    # base_prompt_mode: システムプロンプトの適用方法
+    # type: string | default: "append" | range: "replace" or "append"
     base_prompt_mode: "append"
+    # models: Worker ごとのモデルオーバーライド (worker_id -> model_name)
+    # type: map[string]string | default: なし | range: 制限なし
     models:
       worker3: "opus"
       worker4: "opus"
+    # boost: Worker のブースト (高速) モード有効化
+    # type: bool | default: false | range: true/false
     boost: false
 
+# --- Continuous ---
+# 連続モードの設定。
 continuous:
+  # enabled: 連続モードの有効化フラグ
+  # type: bool | default: false | range: true/false
   enabled: false
+  # max_iterations: 最大イテレーション回数 (0=無制限)
+  # type: int | default: 0 | range: >= 0 (enabled 時)
   max_iterations: 10
+  # pause_on_failure: 失敗時に一時停止するか
+  # type: bool | default: false | range: true/false
   pause_on_failure: true
-  # Pre-generation gate: stop continuous mode after this many consecutive failed commands.
-  # 0 disables the gate. Independent of pause_on_failure.
-  # Note: existing config files upgraded from before this key existed will get 0 (disabled)
-  # because no non-zero default is synthesized at load time. Set explicitly to enable.
+  # max_consecutive_failures: 連続失敗でモード停止するしきい値 (0=無効)
+  # Pre-generation gate: pause_on_failure とは独立。
+  # 既存 config (このキー追加前) は 0 (無効) にデシリアライズされる。
+  # type: int | default: 0 | range: >= 0 (enabled 時)
   max_consecutive_failures: 3
 
+# --- Watcher ---
+# タスクディスパッチ Watcher のタイミング・ポーリング設定。
 watcher:
+  # debounce_sec: ファイル変更検知のデバウンス間隔 (秒)
+  # type: float64 | default: 0 | range: >= 0
   debounce_sec: 0.5
+  # scan_interval_sec: キュースキャンの間隔 (秒)
+  # type: int | default: 0 | range: >= 0
   scan_interval_sec: 60
+  # dispatch_lease_sec: ディスパッチリースの有効期間 (秒)
+  # type: int | default: 0 | range: 0-3600 (MaxDispatchLeaseSec)
   dispatch_lease_sec: 300
+  # max_in_progress_min: タスク in_progress 状態の最大持続時間 (分)
+  # type: *int | default: 60 (DefaultMaxInProgressMin) | range: 0-1440 (MaxMaxInProgressMin)
   max_in_progress_min: 30
+  # busy_check_interval: Agent ビジー状態チェックの間隔 (秒)
+  # type: int | default: 0 | range: >= 0
   busy_check_interval: 2
+  # busy_check_max_retries: Agent ビジーチェックの最大リトライ回数
+  # type: int | default: 0 | range: 0-1000 (MaxBusyCheckMaxRetries)
   busy_check_max_retries: 30
+  # busy_patterns: Agent がビジー状態かを判定する正規表現パターン ("|" 区切り)
+  # type: string | default: "" | range: 制限なし
   busy_patterns: "Working|Thinking|Planning|Sending|Searching"
+  # idle_stable_sec: Agent アイドル安定判定の持続時間 (秒)
+  # type: int | default: 0 | range: >= 0
   idle_stable_sec: 5
+  # cooldown_after_clear: /clear 後のクールダウン時間 (秒)
+  # type: int | default: 0 | range: >= 0
   cooldown_after_clear: 3
+  # notify_lease_sec: Orchestrator 通知リースの有効期間 (秒)
+  # type: int | default: 0 | range: >= 0
   notify_lease_sec: 120
-  wait_ready_interval_sec: 2 # Agent 準備完了待ちのポーリング間隔 (秒)
-  wait_ready_max_retries: 15 # Agent 準備完了待ちの最大リトライ回数
-  clear_confirm_timeout_sec: 5 # クリア確認の1回あたりタイムアウト (秒)
-  clear_confirm_poll_ms: 250 # クリア確認ウィンドウ内のポーリング間隔 (ms)
-  clear_max_attempts: 3 # クリア送信の最大試行回数 (初回含む)
-  clear_retry_backoff_ms: 500 # クリアリトライ間のベースバックオフ (ms、リトライ毎に倍増)
-  clear_second_enter_delay_ms: 500 # /clear 後の2回目 Enter 送信までの遅延 (ms)
+  # wait_ready_interval_sec: Agent 準備完了待ちのポーリング間隔 (秒)
+  # type: int | default: 0 | range: >= 0
+  wait_ready_interval_sec: 2
+  # wait_ready_max_retries: Agent 準備完了待ちの最大リトライ回数
+  # type: int | default: 0 | range: 0-1000 (MaxWaitReadyMaxRetries)
+  wait_ready_max_retries: 15
+  # clear_confirm_timeout_sec: クリア確認の1回あたりタイムアウト (秒)
+  # type: int | default: 0 | range: >= 0
+  clear_confirm_timeout_sec: 5
+  # clear_confirm_poll_ms: クリア確認ウィンドウ内のポーリング間隔 (ms)
+  # type: int | default: 0 | range: >= 0
+  clear_confirm_poll_ms: 250
+  # clear_max_attempts: クリア送信の最大試行回数 (初回含む)
+  # type: int | default: 0 | range: >= 0
+  clear_max_attempts: 3
+  # clear_retry_backoff_ms: クリアリトライ間のベースバックオフ (ms、リトライ毎に倍増)
+  # type: int | default: 0 | range: >= 0
+  clear_retry_backoff_ms: 500
+  # clear_second_enter_delay_ms: /clear 後の2回目 Enter 送信までの遅延 (ms)
+  # type: int | default: 0 | range: >= 0
+  clear_second_enter_delay_ms: 500
 
+# --- Retry ---
+# ディスパッチ・実行リトライの設定。
 retry:
+  # command_dispatch: コマンドディスパッチのリトライ回数
+  # type: int | default: 0 | range: >= 0
   command_dispatch: 5
+  # task_dispatch: タスクディスパッチのリトライ回数
+  # type: int | default: 0 | range: >= 0
   task_dispatch: 5
+  # orchestrator_notification_dispatch: Orchestrator 通知ディスパッチのリトライ回数
+  # type: int | default: 0 | range: >= 0
   orchestrator_notification_dispatch: 10
   task_execution:
+    # enabled: タスク実行の自動リトライの有効化フラグ
+    # type: bool | default: false | range: true/false
     enabled: true
+    # retryable_exit_codes: リトライ対象の終了コード一覧
+    # type: []int | default: [] | range: 制限なし
     retryable_exit_codes: [1, 124, 137] # general error, timeout, killed
+    # max_retries: 最大リトライ回数
+    # type: int | default: 0 | range: >= 0
     max_retries: 2
+    # cooldown_sec: リトライ間のクールダウン時間 (秒)
+    # type: int | default: 0 | range: >= 0
     cooldown_sec: 30
 
+# --- Queue ---
+# キュー優先度エージングの設定。
 queue:
+  # priority_aging_sec: 優先度エージングの間隔 (秒、待機中タスクの優先度を時間経過で引き上げる)
+  # type: int | default: 0 | range: >= 0
   priority_aging_sec: 300
 
+# --- Limits ---
+# Daemon が強制するリソース制限。
 limits:
+  # max_pending_commands: 保留中コマンドの最大数
+  # type: int | default: 0 | range: 0-1000 (MaxMaxPendingCommands)
   max_pending_commands: 20
+  # max_pending_tasks_per_worker: Worker あたりの保留中タスク最大数
+  # type: int | default: 0 | range: 0-100 (MaxMaxPendingTasksPerWorker)
   max_pending_tasks_per_worker: 10
+  # max_entry_content_bytes: キューエントリ content フィールドの最大バイト数
+  # type: int | default: 65536 (DefaultMaxEntryContentBytes=64KB) | range: >= 0
   max_entry_content_bytes: 65536
+  # max_yaml_file_bytes: YAML ファイル読み取りの最大バイト数
+  # type: int | default: 5242880 (DefaultMaxYAMLFileBytes=5MB) | range: 制限なし
   max_yaml_file_bytes: 5242880
-  max_dead_letter_archive_files: 100 # dead letter アーカイブの最大保持ファイル数 (default: 100)
-  max_quarantine_files: 100 # 隔離キューの最大保持ファイル数 (default: 100)
+  # max_dead_letter_archive_files: Dead letter アーカイブの最大保持ファイル数
+  # type: *int | default: 100 (DefaultMaxDeadLetterArchiveFiles) | range: 0-10000 (MaxMaxDeadLetterArchiveFiles)
+  max_dead_letter_archive_files: 100
+  # max_quarantine_files: 隔離キューの最大保持ファイル数
+  # type: *int | default: 100 (DefaultMaxQuarantineFiles) | range: 0-10000 (MaxMaxQuarantineFiles)
+  max_quarantine_files: 100
 
+# shutdown_timeout_sec: Daemon シャットダウンタイムアウト (秒)
+# type: int | default: 0 | range: 0-600 (MaxShutdownTimeoutSec)
 shutdown_timeout_sec: 90
 
+# --- Logging ---
+# ログ出力設定。
 logging:
+  # level: ログレベル
+  # type: string | default: "" | range: 制限なし (例: "debug", "info", "warn", "error")
   level: "info"
 
+# --- Circuit Breaker ---
+# コマンドレベルのサーキットブレーカー。連続タスク失敗時にコマンドを自動停止する。
 circuit_breaker:
-  enabled: false # サーキットブレーカーの有効化フラグ (opt-in)
-  max_consecutive_failures: 3 # 連続失敗でトリップするしきい値
-  progress_timeout_minutes: 30 # 最後の成功からのタイムアウト (分、0で無効)
+  # enabled: サーキットブレーカーの有効化フラグ (opt-in)
+  # type: bool | default: false | range: true/false
+  enabled: false
+  # max_consecutive_failures: トリップするまでの連続失敗しきい値
+  # type: *int | default: 3 (DefaultCBMaxConsecutiveFailures) | range: >= 0
+  max_consecutive_failures: 3
+  # progress_timeout_minutes: 最後の成功からのタイムアウト (分、0=無効)
+  # type: *int | default: 30 (DefaultProgressTimeoutMinutes) | range: >= 0
+  progress_timeout_minutes: 30
 
+# --- Learnings ---
+# 学習知見の蓄積機能。
 learnings:
-  enabled: false # 学習知見の蓄積 (opt-in)
-  max_entries: 100 # 蓄積上限件数
-  max_content_length: 500 # 1件あたりの最大文字数
-  inject_count: 5 # タスク配信時に注入する最新 K 件
-  ttl_hours: 72 # 学習知見の有効期限 (時間、0で無制限)
+  # enabled: 学習知見の蓄積有効化フラグ (opt-in)
+  # type: bool | default: false | range: true/false
+  enabled: false
+  # max_entries: 蓄積する学習知見の上限件数
+  # type: *int | default: 100 (DefaultLearningsMaxEntries) | range: >= 0
+  max_entries: 100
+  # max_content_length: 1件あたりの学習知見の最大文字数
+  # type: *int | default: 500 (DefaultLearningsMaxContentLength) | range: >= 0
+  max_content_length: 500
+  # inject_count: タスク配信時に注入する最新 top-K 件数
+  # type: *int | default: 5 (DefaultLearningsInjectCount) | range: >= 0
+  inject_count: 5
+  # ttl_hours: 学習知見の有効期限 (時間、0=無制限)
+  # type: int | default: 0 (EffectiveTTLHours はそのまま返却) | range: 制限なし
+  ttl_hours: 72
 
+# --- Worktree ---
+# Worker worktree 隔離の設定。
 worktree:
-  enabled: true # Worker worktree 隔離の有効化フラグ (default: true)
-  base_branch: "main" # worktree のベースブランチ
-  path_prefix: ".maestro/worktrees" # worktree 作成先ディレクトリ
-  auto_commit: true # Phase 完了時の自動コミット
-  auto_merge: true # Phase 境界での自動マージ
-  merge_strategy: "ort" # git merge 戦略
-  cleanup_on_success: true # コマンド成功時の自動クリーンアップ
-  cleanup_on_failure: false # コマンド失敗時のクリーンアップ (デフォルト: 保全)
-  git_timeout_sec: 120 # git コマンドのタイムアウト (秒)
-  stall_timeout_minutes: 30 # 全タスク terminal & integration={created,merged} のまま停滞した command を planner に通知するまでの分数 (default: 30, 0=無効)
-  fallback_merge_timeout_minutes: 60 # auto_commit/auto_merge 無効時に integration branch 未マージ警告を出すまでの分数 (default: 60, 0=無効)
-  stall_cleanup_after: "10m" # 全タスク terminal だが phase が pending/awaiting_fill/filling/active のまま停滞した command を fast-track 失敗扱いして worktree cleanup (merge スキップ) を発火するまでの時間 (default: 10m, "0s"=無効)
+  # enabled: Worker worktree 隔離の有効化フラグ
+  # type: bool | default: false | range: true/false
+  enabled: true
+  # base_branch: worktree のベースブランチ
+  # type: string | default: "main" (DefaultBaseBranch) | range: 制限なし
+  base_branch: "main"
+  # path_prefix: worktree 作成先ディレクトリプレフィックス
+  # type: string | default: ".maestro/worktrees" (DefaultPathPrefix) | range: 制限なし
+  path_prefix: ".maestro/worktrees"
+  # auto_commit: Phase 完了時の自動コミット
+  # type: bool | default: false | range: true/false
+  auto_commit: true
+  # auto_merge: Phase 境界での自動マージ
+  # type: bool | default: false | range: true/false
+  auto_merge: true
+  # merge_strategy: git merge 戦略
+  # type: string | default: "ort" (DefaultMergeStrategy) | range: "ort", "ours", "theirs", "recursive"
+  merge_strategy: "ort"
+  # cleanup_on_success: コマンド成功時の worktree 自動クリーンアップ
+  # type: bool | default: false | range: true/false
+  cleanup_on_success: true
+  # cleanup_on_failure: コマンド失敗時の worktree クリーンアップ (false=保全)
+  # type: bool | default: false | range: true/false
+  cleanup_on_failure: false
+  # git_timeout_sec: git コマンドのタイムアウト (秒)
+  # type: *int | default: 120 (DefaultGitTimeoutSec) | range: > 0
+  git_timeout_sec: 120
+  # stall_timeout_minutes: 全タスク terminal & integration 停滞時の planner 通知までの分数 (0=無効)
+  # type: *int | default: 30 (DefaultStallTimeoutMinutes) | range: 制限なし
+  stall_timeout_minutes: 30
+  # fallback_merge_timeout_minutes: auto_commit/auto_merge 無効時に未マージ警告を出すまでの分数 (0=無効)
+  # type: *int | default: 60 (DefaultFallbackMergeTimeoutMinutes) | range: 制限なし
+  fallback_merge_timeout_minutes: 60
+  # stall_cleanup_after: 全タスク terminal だが phase が非 terminal のまま停滞時の fast-track cleanup 発火までの時間
+  # type: string (duration) | default: "10m" (DefaultStallCleanupAfter) | range: time.ParseDuration 互換, "0s"=無効
+  stall_cleanup_after: "10m"
   commit_policy:
-    max_files: 60 # 1コミットあたりの最大ステージングファイル数 (0=無制限, default: 60)
-    require_gitignore: true # .gitignore の存在を要求する
-    message_pattern: "^.+" # コミットメッセージの正規表現バリデーション (空=チェックなし, ^.+=非空)
+    # max_files: 1コミットあたりの最大ステージングファイル数 (0=無制限)
+    # type: *int | default: 30 (DefaultCommitMaxFiles) | range: >= 0
+    max_files: 60
+    # require_gitignore: .gitignore の存在を要求する
+    # type: bool | default: false | range: true/false
+    require_gitignore: true
+    # message_pattern: コミットメッセージの正規表現バリデーション (空=チェックなし)
+    # type: string | default: "" | range: 制限なし (有効な正規表現)
+    message_pattern: "^.+"
   gc:
-    enabled: true # 定期 GC の有効化
-    ttl_hours: 24 # 古い worktree の TTL (時間)
-    max_worktrees: 32 # 最大 worktree 数
+    # enabled: 定期 GC の有効化
+    # type: bool | default: false | range: true/false
+    enabled: true
+    # ttl_hours: 古い worktree の TTL (時間)
+    # type: *int | default: 24 (DefaultGCTTLHours) | range: > 0 (enabled 時)
+    ttl_hours: 24
+    # max_worktrees: 最大 worktree 数
+    # type: *int | default: 32 (DefaultGCMaxWorktrees) | range: 1-256 (MaxMaxWorktrees, enabled 時)
+    max_worktrees: 32
 
+# --- Skills ---
+# スキル参照機能の設定。
 skills:
-  enabled: true # スキル参照機能の有効化フラグ (opt-in)
-  max_refs_per_task: 3 # タスクあたりの最大スキル参照数（roleスキルのみカウント）
-  max_body_chars: 0 # スキル本文の最大文字数（0で無制限）。共有スキルは自動注入されるため、サイズ制限は max_refs_per_task で制御する
-  missing_ref_policy: "warn" # 参照先スキルが見つからない場合の動作: "warn" or "error"
+  # enabled: スキル参照機能の有効化フラグ (opt-in)
+  # type: bool | default: false | range: true/false
+  enabled: true
+  # max_refs_per_task: タスクあたりの最大スキル参照数 (role スキルのみカウント)
+  # type: *int | default: 3 (DefaultMaxRefsPerTask) | range: >= 0
+  max_refs_per_task: 3
+  # max_body_chars: スキル本文の最大文字数 (0=無制限)
+  # type: *int | default: 0 (EffectiveMaxBodyChars) | range: >= 0
+  max_body_chars: 0
+  # missing_ref_policy: 参照先スキルが見つからない場合の動作
+  # type: string | default: "warn" (DefaultMissingRefPolicy) | range: "warn" or "error"
+  missing_ref_policy: "warn"
   auto_collect:
-    enabled: false # 学習知見からの自動スキル収集 (opt-in)
-    min_occurrences: 3 # 自動収集の最小出現回数
-    min_commands: 2 # 自動収集の最小コマンド数
+    # enabled: 学習知見からの自動スキル収集 (opt-in)
+    # type: bool | default: false | range: true/false
+    enabled: false
+    # min_occurrences: 自動収集の最小出現回数
+    # type: *int | default: 3 (DefaultAutoCollectMinOccurrences) | range: >= 0
+    min_occurrences: 3
+    # min_commands: 自動収集の最小コマンド数
+    # type: *int | default: 2 (DefaultAutoCollectMinCommands) | range: >= 0
+    min_commands: 2
 
+# --- Quality Gates ---
+# 品質ゲートの設定。
 quality_gates:
-  enabled: false # 品質ゲートの有効化フラグ
-  skip_gates: false # 緊急モード (--skip-gates フラグで有効化)
+  # enabled: 品質ゲートの有効化フラグ
+  # type: bool | default: false | range: true/false
+  enabled: false
+  # skip_gates: 緊急モード (--skip-gates フラグで有効化)
+  # type: bool | default: false | range: true/false
+  skip_gates: false
   thresholds: {}
   enforcement:
-    pre_task_check: true # タスク実行前のチェック
-    failure_action: "warn" # 失敗時の動作: "warn" or "block"
+    # pre_task_check: タスク実行前のチェック
+    # type: bool | default: false | range: true/false
+    pre_task_check: true
+    # failure_action: 失敗時の動作
+    # type: string | default: "" | range: "warn" or "block"
+    failure_action: "warn"
 
 # --- Admission Control ---
 # verify/repair/rollout フェーズの同時実行数制限。
 # admission_control:
-#   max_concurrent_verify: 2    # 検証フェーズの最大同時実行数 (default: 2)
-#   max_concurrent_repair: 1    # 修復フェーズの最大同時実行数 (default: 1)
-#   max_concurrent_rollout: 1   # ロールアウトフェーズの最大同時実行数 (default: 1)
+#   # max_concurrent_verify: 検証フェーズの最大同時実行数
+#   # type: int | default: 2 (DefaultMaxConcurrentVerify) | range: >= 0
+#   max_concurrent_verify: 2
+#   # max_concurrent_repair: 修復フェーズの最大同時実行数
+#   # type: int | default: 1 (DefaultMaxConcurrentRepair) | range: >= 0
+#   max_concurrent_repair: 1
+#   # max_concurrent_rollout: ロールアウトフェーズの最大同時実行数
+#   # type: int | default: 1 (DefaultMaxConcurrentRollout) | range: >= 0
+#   max_concurrent_rollout: 1
 
 # --- Fallback ---
 # Worker の連続失敗時の縮退動作制御。
 # fallback:
-#   enabled: false                     # フォールバックモードの有効化フラグ (default: false)
-#   consecutive_failure_threshold: 5   # 縮退発動の連続失敗しきい値 (default: 5)
-#   recovery_check_interval_sec: 60    # 回復チェック間隔 秒 (default: 60)
-#   min_healthy_duration_sec: 120      # 正常復帰に必要な最小持続時間 秒 (default: 120)
+#   # enabled: フォールバックモードの有効化フラグ
+#   # type: bool | default: false | range: true/false
+#   enabled: false
+#   # consecutive_failure_threshold: 縮退発動の連続失敗しきい値
+#   # type: int | default: 5 (DefaultConsecutiveFailureThreshold) | range: >= 0
+#   consecutive_failure_threshold: 5
+#   # recovery_check_interval_sec: 回復チェック間隔 (秒)
+#   # type: int | default: 60 (DefaultRecoveryCheckIntervalSec) | range: >= 0
+#   recovery_check_interval_sec: 60
+#   # min_healthy_duration_sec: 正常復帰に必要な最小持続時間 (秒)
+#   # type: int | default: 120 (DefaultMinHealthyDurationSec) | range: >= 0
+#   min_healthy_duration_sec: 120
 
 # --- Review ---
 # 非同期ヘテロジニアスモデルによるコードレビュー。
 # review:
-#   enabled: false                # レビュー機能の有効化フラグ (default: false)
-#   models: []                    # レビューに使用するモデルリスト
-#   min_bloom_level: 2            # 最小 Bloom レベル (default: 2)
-#   max_concurrent_reviews: 2     # 最大同時レビュー数 (default: 2)
-#   timeout_sec: 300              # レビュータイムアウト 秒 (default: 300)
+#   # enabled: レビュー機能の有効化フラグ
+#   # type: bool | default: false | range: true/false
+#   enabled: false
+#   # models: レビューに使用するモデルリスト
+#   # type: []string | default: [] | range: 制限なし
+#   models: []
+#   # min_bloom_level: 最小 Bloom レベル
+#   # type: *int | default: 2 (DefaultReviewMinBloomLevel) | range: >= 0
+#   min_bloom_level: 2
+#   # max_concurrent_reviews: 最大同時レビュー数
+#   # type: *int | default: 2 (DefaultReviewMaxConcurrentReviews) | range: >= 0
+#   max_concurrent_reviews: 2
+#   # timeout_sec: レビュータイムアウト (秒)
+#   # type: *int | default: 300 (DefaultReviewTimeoutSec) | range: >= 0
+#   timeout_sec: 300
 
 # --- Rollout ---
 # 複数候補の並列実行と勝者選定。
 # rollout:
-#   enabled: false                # ロールアウト機能の有効化フラグ (default: false)
-#   max_concurrent: 2             # 最大同時ロールアウトグループ数 (default: 2)
-#   max_parallel_per_task: 2      # タスクあたりの最大並列候補数 (default: 2)
-#   min_bloom_level: 4            # 最小 Bloom レベル (default: 4)
-#   max_expected_paths: 10        # 最大期待パス数 (default: 10)
-#   min_failure_count: 1          # ロールアウト対象の最小失敗回数 (default: 1)
+#   # enabled: ロールアウト機能の有効化フラグ
+#   # type: *bool | default: false | range: true/false
+#   enabled: false
+#   # max_concurrent: 最大同時ロールアウトグループ数
+#   # type: *int | default: 2 | range: >= 0
+#   max_concurrent: 2
+#   # max_parallel_per_task: タスクあたりの最大並列候補数
+#   # type: *int | default: 2 | range: >= 0
+#   max_parallel_per_task: 2
+#   # min_bloom_level: ロールアウト対象の最小 Bloom レベル
+#   # type: *int | default: 4 | range: >= 0
+#   min_bloom_level: 4
+#   # max_expected_paths: 最大期待パス数
+#   # type: *int | default: 10 | range: >= 0
+#   max_expected_paths: 10
+#   # min_failure_count: ロールアウト対象の最小失敗回数
+#   # type: *int | default: 1 | range: >= 0
+#   min_failure_count: 1
 
 # --- Judge ---
 # ロールアウト候補の Tie-breaking 判定。
 # judge:
-#   enabled: false                # Judge 機能の有効化フラグ (default: false)
-#   model: "opus"                 # Judge に使用するモデル (default: "opus")
-#   timeout_sec: 60               # Judge タイムアウト 秒 (default: 60)
+#   # enabled: Judge 機能の有効化フラグ
+#   # type: *bool | default: false | range: true/false
+#   enabled: false
+#   # model: Judge に使用するモデル
+#   # type: *string | default: "opus" | range: 制限なし
+#   model: "opus"
+#   # timeout_sec: Judge タイムアウト (秒)
+#   # type: *int | default: 60 | range: >= 0
+#   timeout_sec: 60
+
+# =============================================================================
+# Advanced / Experimental (C-1 ~ C-8)
+# 以下はオプショナルな拡張機能。必要に応じてコメントを外して有効化する。
+# =============================================================================
+
+# --- C-1: Evolution ---
+# 進化的品質改善機能。
+# evolution:
+#   # enabled: 進化機能の有効化フラグ
+#   # type: *bool | default: false | range: true/false
+#   enabled: false
+#   # max_mutations_per_round: 1ラウンドあたりの最大変異数
+#   # type: *int | default: 3 (DefaultMaxMutationsPerRound) | range: 制限なし
+#   max_mutations_per_round: 3
+#   # novelty_threshold: 新規性しきい値
+#   # type: *float64 | default: 0.99 (DefaultNoveltyThreshold) | range: 制限なし
+#   novelty_threshold: 0.99
+#   # strategies: 使用する戦略リスト
+#   # type: []string | default: ["diff", "full", "cross"] | range: 制限なし
+#   strategies: ["diff", "full", "cross"]
+
+# --- C-2: Bandit (Adaptive Model Selection) ---
+# UCB1 ベースの適応的モデル選択機能。
+# bandit:
+#   # enabled: バンディット機能の有効化フラグ
+#   # type: *bool | default: false | range: true/false
+#   enabled: false
+#   # exploration_coefficient: 探索係数 (UCB1)
+#   # type: *float64 | default: 1.41 (DefaultExplorationCoeff) | range: 制限なし
+#   exploration_coefficient: 1.41
+#   # min_samples_before_use: 使用開始前の最小サンプル数
+#   # type: *int | default: 10 (DefaultMinSamplesBeforeUse) | range: 制限なし
+#   min_samples_before_use: 10
+#   # decay_factor: 減衰係数
+#   # type: *float64 | default: 0.95 (DefaultDecayFactor) | range: 制限なし
+#   decay_factor: 0.95
+#   # trace_data_requirement: トレースデータ要件
+#   # type: *int | default: 50 (DefaultTraceDataRequirement) | range: 制限なし
+#   trace_data_requirement: 50
+
+# --- C-3: Extended Verification ---
+# 拡張検証パースペクティブ機能。
+# extended_verification:
+#   # enabled: 拡張検証の有効化フラグ
+#   # type: *bool | default: false | range: true/false
+#   enabled: false
+#   # security_check: セキュリティチェックの有効化
+#   # type: *bool | default: false | range: true/false
+#   security_check: false
+#   # performance_bench: パフォーマンスベンチマークの有効化
+#   # type: *bool | default: false | range: true/false
+#   performance_bench: false
+#   # perspective_weights: パースペクティブの重みマップ
+#   # type: map[string]float64 | default: {"build": 1.0, "test": 1.0, "security": 0.5} | range: 制限なし
+#   perspective_weights:
+#     build: 1.0
+#     test: 1.0
+#     security: 0.5
+#   # max_auto_retries: 自動リトライの最大回数
+#   # type: *int | default: 2 (DefaultMaxAutoRetries) | range: 制限なし
+#   max_auto_retries: 2
+
+# --- C-4: Search ---
+# 探索ベース最適化 (Alpha-Beta, Thompson Sampling)。
+# search:
+#   # enabled: 探索機能の有効化フラグ
+#   # type: *bool | default: false | range: true/false
+#   enabled: false
+#   # max_depth: 探索の最大深さ
+#   # type: *int | default: 3 (DefaultSearchMaxDepth) | range: 制限なし
+#   max_depth: 3
+#   # max_branching: 最大分岐数
+#   # type: *int | default: 4 (DefaultMaxBranching) | range: 制限なし
+#   max_branching: 4
+#   # prune_threshold: 枝刈りしきい値
+#   # type: *float64 | default: 0.3 (DefaultPruneThreshold) | range: 制限なし
+#   prune_threshold: 0.3
+#   # thompson_alpha: Thompson Sampling の alpha パラメータ
+#   # type: *float64 | default: 1.0 (DefaultThompsonAlpha) | range: 制限なし
+#   thompson_alpha: 1.0
+#   # thompson_beta: Thompson Sampling の beta パラメータ
+#   # type: *float64 | default: 1.0 (DefaultThompsonBeta) | range: 制限なし
+#   thompson_beta: 1.0
+
+# --- C-5: Self-Improvement ---
+# プロンプト・ペルソナの自己改善機能。
+# self_improvement:
+#   # enabled: 自己改善機能の有効化フラグ
+#   # type: *bool | default: false | range: true/false
+#   enabled: false
+#   # targets: 改善対象リスト
+#   # type: []string | default: ["planner_prompt", "persona", "worker_prompt"] | range: 制限なし
+#   targets: ["planner_prompt", "persona", "worker_prompt"]
+#   # exclude_targets: 改善対象から除外するリスト
+#   # type: []string | default: ["fitness", "daemon_logic", "circuit_breaker"] | range: 制限なし
+#   exclude_targets: ["fitness", "daemon_logic", "circuit_breaker"]
+#   # archive_max_size: アーカイブの最大サイズ
+#   # type: *int | default: 100 (DefaultArchiveMaxSize) | range: 制限なし
+#   archive_max_size: 100
+
+# --- C-6: Complexity ---
+# 適応的計算深度制御。
+# complexity:
+#   # enabled: 複雑度適応の有効化フラグ
+#   # type: *bool | default: false | range: true/false
+#   enabled: false
+#   thresholds:
+#     # simple_max_files: "simple" 判定の最大ファイル数
+#     # type: *int | default: 3 (DefaultSimpleMaxFiles) | range: 制限なし
+#     simple_max_files: 3
+#     # standard_max_files: "standard" 判定の最大ファイル数
+#     # type: *int | default: 10 (DefaultStandardMaxFiles) | range: 制限なし
+#     standard_max_files: 10
+#     # complex_max_files: "complex" 判定の最大ファイル数
+#     # type: *int | default: 30 (DefaultComplexMaxFiles) | range: 制限なし
+#     complex_max_files: 30
+
+# --- C-7: Runtimes ---
+# ランタイム設定 (キー名がランタイム識別子)。
+# runtimes:
+#   # <runtime_name>:
+#   #   # enabled: ランタイムの有効化フラグ
+#   #   # type: *bool | default: false | range: true/false
+#   #   enabled: false
+#   #   # default: デフォルトランタイムとして使用するか
+#   #   # type: *bool | default: false | range: true/false
+#   #   default: false
+#   #   # models: 利用可能なモデルリスト
+#   #   # type: []string | default: [] | range: 制限なし
+#   #   models: []
+#   #   # default_model: デフォルトモデル名
+#   #   # type: *string | default: "" | range: 制限なし
+#   #   default_model: ""
+
+# --- C-8: Feature Profiles ---
+# 複雑度レベル別の機能フラグプロファイル (キー名がプロファイル識別子)。
+# feature_profiles:
+#   # <profile_name>:
+#   #   # cross_agent_review: クロスエージェントレビューの設定
+#   #   # type: *string | default: "false" (DefaultCrossAgentReview) | range: 制限なし
+#   #   cross_agent_review: "false"
+#   #   # exploratory_optimization: 探索的最適化の有効化
+#   #   # type: *bool | default: false | range: true/false
+#   #   exploratory_optimization: false
+#   #   # evolutionary_quality: 進化的品質改善の有効化
+#   #   # type: *bool | default: false | range: true/false
+#   #   evolutionary_quality: false
+#   #   # adaptive_model_selection: 適応的モデル選択の有効化
+#   #   # type: *bool | default: false | range: true/false
+#   #   adaptive_model_selection: false
+#   #   # self_improvement: 自己改善の有効化
+#   #   # type: *bool | default: false | range: true/false
+#   #   self_improvement: false
+#   #   # adaptive_depth: 適応的深度制御の有効化
+#   #   # type: *bool | default: false | range: true/false
+#   #   adaptive_depth: false
