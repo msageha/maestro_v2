@@ -31,46 +31,43 @@ func (a *cliApp) runResultWrite(args []string) error {
 
 	reporter := args[0]
 
-	fs := newFlagSet("maestro result write")
+	cmd := NewCommand("maestro result write", "maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>] [--files-changed <file>]... [--learnings <text>]... [--skill-candidates <text>]... [--partial-changes] [--no-retry-safe]")
 	var taskID, commandID, resultStatus, summary string
 	var leaseEpoch int
 	var filesChanged, learnings, skillCandidates stringSliceFlag
 	var partialChangesPossible, noRetrySafe bool
 
-	fs.StringVar(&taskID, "task-id", "", "")
-	fs.StringVar(&commandID, "command-id", "", "")
-	fs.IntVar(&leaseEpoch, "lease-epoch", -1, "")
-	fs.StringVar(&resultStatus, "status", "", "")
-	fs.StringVar(&summary, "summary", "", "")
-	fs.Var(&filesChanged, "files-changed", "")
-	fs.Var(&learnings, "learnings", "")
-	fs.Var(&skillCandidates, "skill-candidates", "")
-	fs.BoolVar(&partialChangesPossible, "partial-changes", false, "")
-	fs.BoolVar(&noRetrySafe, "no-retry-safe", false, "")
+	cmd.StringVar(&taskID, "task-id", "", "")
+	cmd.StringVar(&commandID, "command-id", "", "")
+	cmd.IntVar(&leaseEpoch, "lease-epoch", -1, "")
+	cmd.StringVar(&resultStatus, "status", "", "")
+	cmd.StringVar(&summary, "summary", "", "")
+	cmd.Var(&filesChanged, "files-changed", "")
+	cmd.Var(&learnings, "learnings", "")
+	cmd.Var(&skillCandidates, "skill-candidates", "")
+	cmd.BoolVar(&partialChangesPossible, "partial-changes", false, "")
+	cmd.BoolVar(&noRetrySafe, "no-retry-safe", false, "")
 
-	if err := fs.Parse(args[1:]); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro result write: %v\nusage: maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>] [--files-changed <file>]... [--learnings <text>]... [--skill-candidates <text>]... [--partial-changes] [--no-retry-safe]", err)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro result write: unexpected argument: %s\nusage: maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>] [--files-changed <file>]... [--learnings <text>]... [--skill-candidates <text>]... [--partial-changes] [--no-retry-safe]", fs.Arg(0))}
-	}
+	cmd.AddCheck("--task-id, --command-id, --lease-epoch, and --status are required", func() bool {
+		return taskID != "" && commandID != "" && resultStatus != "" && leaseEpoch >= 0
+	})
 
-	if taskID == "" || commandID == "" || resultStatus == "" || leaseEpoch < 0 {
-		return &CLIError{Code: 1, Msg: "maestro result write: --task-id, --command-id, --lease-epoch, and --status are required\nusage: maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>]"}
+	if err := cmd.Parse(args[1:]); err != nil {
+		return err
 	}
 
 	// Validate IDs
 	if err := validate.ID(reporter); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro result write: invalid reporter: %v", err)}
+		return cmd.Errorf("invalid reporter: %v", err)
 	}
 	if err := validate.ID(taskID); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro result write: invalid --task-id: %v", err)}
+		return cmd.Errorf("invalid --task-id: %v", err)
 	}
 	if err := validate.ID(commandID); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro result write: invalid --command-id: %v", err)}
+		return cmd.Errorf("invalid --command-id: %v", err)
 	}
 	if err := validate.ContentLength("--summary", summary, model.DefaultMaxEntryContentBytes); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro result write: %v", err)}
+		return cmd.Errorf("%v", err)
 	}
 
 	maestroDir, err := requireMaestroDir("result write")

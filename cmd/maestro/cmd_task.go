@@ -23,34 +23,22 @@ func (a *cliApp) runTask(args []string) error {
 
 // runTaskHeartbeat sends a heartbeat for an active task via UDS.
 func (a *cliApp) runTaskHeartbeat(args []string) error {
-	fs := newFlagSet("maestro task heartbeat")
+	cmd := NewCommand("maestro task heartbeat", "maestro task heartbeat --task-id <id> --worker-id <id> --epoch <n>")
 	var taskID, workerID string
 	var epoch int
-	fs.StringVar(&taskID, "task-id", "", "")
-	fs.StringVar(&workerID, "worker-id", "", "")
-	fs.IntVar(&epoch, "epoch", -1, "")
+	cmd.RequiredString(&taskID, "task-id", "")
+	cmd.RequiredString(&workerID, "worker-id", "")
+	cmd.RequiredInt(&epoch, "epoch", -1, "")
 
-	if err := fs.Parse(args); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro task heartbeat: %v\nusage: maestro task heartbeat --task-id <id> --worker-id <id> --epoch <n>", err)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro task heartbeat: unexpected argument: %s\nusage: maestro task heartbeat --task-id <id> --worker-id <id> --epoch <n>", fs.Arg(0))}
+	if err := cmd.Parse(args); err != nil {
+		return err
 	}
 
-	if taskID == "" {
-		return &CLIError{Code: 1, Msg: "maestro task heartbeat: --task-id is required"}
-	}
-	if workerID == "" {
-		return &CLIError{Code: 1, Msg: "maestro task heartbeat: --worker-id is required"}
-	}
-	if epoch < 0 {
-		return &CLIError{Code: 1, Msg: "maestro task heartbeat: --epoch is required"}
-	}
 	if err := validate.ID(taskID); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro task heartbeat: invalid --task-id: %v", err)}
+		return cmd.Errorf("invalid --task-id: %v", err)
 	}
 	if err := validate.ID(workerID); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro task heartbeat: invalid --worker-id: %v", err)}
+		return cmd.Errorf("invalid --worker-id: %v", err)
 	}
 
 	maestroDir, err := requireMaestroDir("task heartbeat")

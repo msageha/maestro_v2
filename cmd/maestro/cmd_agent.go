@@ -26,12 +26,9 @@ func runAgent(args []string) error {
 
 // runAgentLaunch starts an agent process inside a tmux pane.
 func runAgentLaunch(args []string) error {
-	fs := newFlagSet("maestro agent launch")
-	if err := fs.Parse(args); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro agent launch: %v\nusage: maestro agent launch", err)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro agent launch: unexpected argument: %s\nusage: maestro agent launch", fs.Arg(0))}
+	cmd := NewCommand("maestro agent launch", "maestro agent launch")
+	if err := cmd.Parse(args); err != nil {
+		return err
 	}
 
 	maestroDir, err := requireMaestroDir("agent launch")
@@ -46,26 +43,19 @@ func runAgentLaunch(args []string) error {
 
 // runAgentExec sends a message to a running agent via the executor.
 func runAgentExec(args []string) error {
-	fs := newFlagSet("maestro agent exec")
+	cmd := NewCommand("maestro agent exec", "maestro agent exec --agent-id <id> [--mode <mode>] [--message <msg>]")
 	var agentID, message string
 	mode := "deliver"
-	fs.StringVar(&agentID, "agent-id", "", "")
-	fs.StringVar(&message, "message", "", "")
-	fs.StringVar(&mode, "mode", "deliver", "")
-	fs.Var(&modeSetter{target: &mode, val: "with_clear"}, "with-clear", "")
-	fs.Var(&modeSetter{target: &mode, val: "interrupt"}, "interrupt", "")
-	fs.Var(&modeSetter{target: &mode, val: "is_busy"}, "is-busy", "")
-	fs.Var(&modeSetter{target: &mode, val: "clear"}, "clear", "")
+	cmd.RequiredString(&agentID, "agent-id", "")
+	cmd.StringVar(&message, "message", "", "")
+	cmd.StringVar(&mode, "mode", "deliver", "")
+	cmd.Var(&modeSetter{target: &mode, val: "with_clear"}, "with-clear", "")
+	cmd.Var(&modeSetter{target: &mode, val: "interrupt"}, "interrupt", "")
+	cmd.Var(&modeSetter{target: &mode, val: "is_busy"}, "is-busy", "")
+	cmd.Var(&modeSetter{target: &mode, val: "clear"}, "clear", "")
 
-	if err := fs.Parse(args); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro agent exec: %v\nusage: maestro agent exec --agent-id <id> [--mode <mode>] [--message <msg>]", err)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro agent exec: unexpected argument: %s\nusage: maestro agent exec --agent-id <id> [--mode <mode>] [--message <msg>]", fs.Arg(0))}
-	}
-
-	if agentID == "" {
-		return &CLIError{Code: 1, Msg: "maestro agent exec: --agent-id is required\nusage: maestro agent exec --agent-id <id> [--mode <mode>] [--message <msg>]"}
+	if err := cmd.Parse(args); err != nil {
+		return err
 	}
 
 	maestroDir, err := requireMaestroDir("agent exec")

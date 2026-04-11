@@ -22,15 +22,12 @@ func runWorker(args []string) error {
 
 // runWorkerStandby lists idle workers in JSON format.
 func runWorkerStandby(args []string) error {
-	fs := newFlagSet("maestro worker standby")
+	cmd := NewCommand("maestro worker standby", "maestro worker standby [--model <model>]")
 	var modelFilter string
-	fs.StringVar(&modelFilter, "model", "", "")
+	cmd.StringVar(&modelFilter, "model", "", "")
 
-	if err := fs.Parse(args); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro worker standby: %v\nusage: maestro worker standby [--model <model>]", err)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro worker standby: unexpected argument: %s\nusage: maestro worker standby [--model <model>]", fs.Arg(0))}
+	if err := cmd.Parse(args); err != nil {
+		return err
 	}
 
 	maestroDir, err := requireMaestroDir("worker standby")
