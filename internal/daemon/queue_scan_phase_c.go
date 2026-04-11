@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/daemon/worktree"
+	"github.com/msageha/maestro_v2/internal/metrics"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -272,16 +273,17 @@ func (qh *QueueHandler) executeScanPhaseCBody(se *ScanPhaseExecutor, pa phaseARe
 	// Step 4: Metrics and dashboard (reuses queues loaded at phase start)
 	if qh.metricsHandler != nil {
 		scanDuration := qh.clock.Now().Sub(pa.scanStart)
-		gauges := MetricsGauges{
+		gauges := metrics.Gauges{
 			WorktreeCommandsStalled: qh.countWorktreeCommandsStalled(commandQueue),
 			BakFilesCount:           countBakFiles(qh.maestroDir),
 		}
-		if err := qh.metricsHandler.UpdateMetrics(commandQueue, taskQueues, notificationQueue, pa.scanStart, scanDuration, &se.scanCounters, gauges); err != nil {
+		snapshots := taskQueuesToSnapshots(taskQueues)
+		if err := qh.metricsHandler.UpdateMetrics(commandQueue, snapshots, notificationQueue, pa.scanStart, scanDuration, &se.scanCounters, gauges); err != nil {
 			qh.log(LogLevelError, "update_metrics error=%v", err)
 		}
-		if err := qh.metricsHandler.UpdateDashboard(commandQueue, taskQueues, notificationQueue); err != nil {
-			qh.log(LogLevelError, "update_dashboard error=%v", err)
-		}
+	}
+	if err := qh.updateDashboard(commandQueue, taskQueues, notificationQueue); err != nil {
+		qh.log(LogLevelError, "update_dashboard error=%v", err)
 	}
 
 	return deferredNotifs

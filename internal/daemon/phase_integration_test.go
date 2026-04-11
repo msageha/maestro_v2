@@ -15,6 +15,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/lock"
+	"github.com/msageha/maestro_v2/internal/metrics"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/testutil"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -325,7 +326,7 @@ func TestPhaseIntegration_EmptyStatesScan(t *testing.T) {
 	}
 
 	// Counters should be zero
-	if pa.counters != (ScanCounters{}) {
+	if pa.counters != (metrics.ScanCounters{}) {
 		t.Errorf("expected zero counters, got %+v", pa.counters)
 	}
 }
