@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -128,7 +129,7 @@ func TestReviewDispatcher_FailureDoesNotBlockMainFlow(t *testing.T) {
 	task := model.Task{ID: "t1", BloomLevel: 5}
 
 	// Dispatch on a disabled dispatcher should error but not panic
-	err := rd.Dispatch(nil, task, "diff content")
+	err := rd.Dispatch(context.Background(), task, "diff content")
 	if err == nil {
 		t.Error("expected error when dispatching on disabled dispatcher")
 	}

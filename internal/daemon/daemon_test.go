@@ -206,21 +206,16 @@ func TestSelfWriteTracker_StaleCleanupOnRecord(t *testing.T) {
 	tracker := newSelfWriteTracker()
 	dir := t.TempDir()
 
-	// Inject stale entries by directly manipulating the map
+	// Inject stale entries via SetStamp API
 	freshData := selfWriteTestData{Value: "fresh"}
 	freshContent, _ := yamlv3.Marshal(freshData)
 	freshPath := writeTestFile(t, dir, "fresh.yaml", freshData)
 
-	tracker.mu.Lock()
-	tracker.stamps["/stale1.yaml"] = writeStamp{Hash: sha256.Sum256([]byte("stale1")), Deadline: time.Now().Add(-60 * time.Second)}
-	tracker.stamps["/stale2.yaml"] = writeStamp{Hash: sha256.Sum256([]byte("stale2")), Deadline: time.Now().Add(-45 * time.Second)}
-	tracker.stamps[freshPath] = writeStamp{Hash: sha256.Sum256(freshContent), Deadline: time.Now().Add(30 * time.Second)}
-	tracker.mu.Unlock()
+	tracker.SetStamp("/stale1.yaml", writeStamp{Hash: sha256.Sum256([]byte("stale1")), Deadline: time.Now().Add(-60 * time.Second)})
+	tracker.SetStamp("/stale2.yaml", writeStamp{Hash: sha256.Sum256([]byte("stale2")), Deadline: time.Now().Add(-45 * time.Second)})
+	tracker.SetStamp(freshPath, writeStamp{Hash: sha256.Sum256(freshContent), Deadline: time.Now().Add(30 * time.Second)})
 
-	tracker.mu.Lock()
-	trackerLen := len(tracker.stamps)
-	tracker.mu.Unlock()
-	if trackerLen != 3 {
+	if trackerLen := tracker.Len(); trackerLen != 3 {
 		t.Fatalf("expected 3 entries, got %d", trackerLen)
 	}
 
@@ -230,10 +225,7 @@ func TestSelfWriteTracker_StaleCleanupOnRecord(t *testing.T) {
 	tracker.Record(newPath, newData)
 
 	// Stale entries should be cleaned, fresh + new should remain
-	tracker.mu.Lock()
-	trackerLen = len(tracker.stamps)
-	tracker.mu.Unlock()
-	if trackerLen != 2 {
+	if trackerLen := tracker.Len(); trackerLen != 2 {
 		t.Errorf("expected 2 entries after stale cleanup, got %d", trackerLen)
 	}
 
@@ -255,15 +247,10 @@ func TestSelfWriteTracker_StaleCleanupOnConsumeMiss(t *testing.T) {
 	freshPath := writeTestFile(t, dir, "fresh.yaml", freshData)
 
 	// Inject stale + fresh entries
-	tracker.mu.Lock()
-	tracker.stamps["/stale.yaml"] = writeStamp{Hash: sha256.Sum256([]byte("stale")), Deadline: time.Now().Add(-60 * time.Second)}
-	tracker.stamps[freshPath] = writeStamp{Hash: sha256.Sum256(freshContent), Deadline: time.Now().Add(30 * time.Second)}
-	tracker.mu.Unlock()
+	tracker.SetStamp("/stale.yaml", writeStamp{Hash: sha256.Sum256([]byte("stale")), Deadline: time.Now().Add(-60 * time.Second)})
+	tracker.SetStamp(freshPath, writeStamp{Hash: sha256.Sum256(freshContent), Deadline: time.Now().Add(30 * time.Second)})
 
-	tracker.mu.Lock()
-	trackerLen := len(tracker.stamps)
-	tracker.mu.Unlock()
-	if trackerLen != 2 {
+	if trackerLen := tracker.Len(); trackerLen != 2 {
 		t.Fatalf("expected 2 entries, got %d", trackerLen)
 	}
 
@@ -273,10 +260,7 @@ func TestSelfWriteTracker_StaleCleanupOnConsumeMiss(t *testing.T) {
 	}
 
 	// Stale entry should be cleaned up
-	tracker.mu.Lock()
-	trackerLen = len(tracker.stamps)
-	tracker.mu.Unlock()
-	if trackerLen != 1 {
+	if trackerLen := tracker.Len(); trackerLen != 1 {
 		t.Errorf("expected 1 entry after Consume cleanup, got %d", trackerLen)
 	}
 
@@ -295,10 +279,8 @@ func TestSelfWriteTracker_StaleCleanupOnConsumeHit(t *testing.T) {
 	targetPath := writeTestFile(t, dir, "target.yaml", targetData)
 
 	// Inject stale + target entries
-	tracker.mu.Lock()
-	tracker.stamps["/stale.yaml"] = writeStamp{Hash: sha256.Sum256([]byte("stale")), Deadline: time.Now().Add(-60 * time.Second)}
-	tracker.stamps[targetPath] = writeStamp{Hash: sha256.Sum256(targetContent), Deadline: time.Now().Add(30 * time.Second)}
-	tracker.mu.Unlock()
+	tracker.SetStamp("/stale.yaml", writeStamp{Hash: sha256.Sum256([]byte("stale")), Deadline: time.Now().Add(-60 * time.Second)})
+	tracker.SetStamp(targetPath, writeStamp{Hash: sha256.Sum256(targetContent), Deadline: time.Now().Add(30 * time.Second)})
 
 	// Consume the target — should also clean up stale
 	if !tracker.Consume(targetPath) {
@@ -306,10 +288,7 @@ func TestSelfWriteTracker_StaleCleanupOnConsumeHit(t *testing.T) {
 	}
 
 	// Stale entry should be cleaned
-	tracker.mu.Lock()
-	trackerLen := len(tracker.stamps)
-	tracker.mu.Unlock()
-	if trackerLen != 0 {
+	if trackerLen := tracker.Len(); trackerLen != 0 {
 		t.Errorf("expected 0 entries after consume+cleanup, got %d", trackerLen)
 	}
 }
@@ -318,9 +297,7 @@ func TestSelfWriteTracker_ExpiredConsumeReturnsFalse(t *testing.T) {
 	tracker := newSelfWriteTracker()
 
 	// Inject an entry with an expired deadline
-	tracker.mu.Lock()
-	tracker.stamps["/expired.yaml"] = writeStamp{Hash: sha256.Sum256([]byte("expired")), Deadline: time.Now().Add(-1 * time.Second)}
-	tracker.mu.Unlock()
+	tracker.SetStamp("/expired.yaml", writeStamp{Hash: sha256.Sum256([]byte("expired")), Deadline: time.Now().Add(-1 * time.Second)})
 
 	// Consume should return false since the deadline has passed
 	if tracker.Consume("/expired.yaml") {
@@ -328,10 +305,7 @@ func TestSelfWriteTracker_ExpiredConsumeReturnsFalse(t *testing.T) {
 	}
 
 	// Entry should be deleted after failed consume
-	tracker.mu.Lock()
-	trackerLen := len(tracker.stamps)
-	tracker.mu.Unlock()
-	if trackerLen != 0 {
+	if trackerLen := tracker.Len(); trackerLen != 0 {
 		t.Errorf("expected 0 entries after expired consume, got %d", trackerLen)
 	}
 }

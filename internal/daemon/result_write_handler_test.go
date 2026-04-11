@@ -14,6 +14,15 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
+func newTestDaemonWithCircuitBreaker(t *testing.T, threshold int) *Daemon {
+	t.Helper()
+	d := newTestDaemon(t)
+	d.config.CircuitBreaker.Enabled = true
+	d.config.CircuitBreaker.MaxConsecutiveFailures = &threshold
+	d.circuitBreaker = circuitbreaker.NewHandler(d.config, d.logger, d.logLevel)
+	return d
+}
+
 func makeResultWriteRequest(t *testing.T, params any) *uds.Request {
 	t.Helper()
 	data, err := json.Marshal(params)
@@ -604,12 +613,9 @@ func TestResultWrite_StateNotFound(t *testing.T) {
 // AppliedResultIDs idempotency check, causing duplicate failed-result
 // submissions to inflate consecutive_failures and trip the breaker spuriously.
 func TestResultWrite_Idempotency_CircuitBreakerNotDoubleCounted(t *testing.T) {
-	d := newTestDaemon(t)
 	// Enable circuit breaker with a low threshold so any double-count would trip it.
 	threshold := 2
-	d.config.CircuitBreaker.Enabled = true
-	d.config.CircuitBreaker.MaxConsecutiveFailures = &threshold
-	d.circuitBreaker = circuitbreaker.NewHandler(d.config, d.logger, d.logLevel)
+	d := newTestDaemonWithCircuitBreaker(t, threshold)
 
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
