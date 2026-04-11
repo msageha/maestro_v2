@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/daemon/learnings"
+	"github.com/msageha/maestro_v2/internal/envelope"
 	"github.com/msageha/maestro_v2/internal/daemon/persona"
 	"github.com/msageha/maestro_v2/internal/daemon/skill"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -18,7 +18,7 @@ func (disp *Dispatcher) BuildTaskContent(task *model.Task) (string, error) {
 	// Sanitize user-supplied content to escape DATA boundary markers BEFORE
 	// appending system-generated sections (skills, learnings) whose markers
 	// must remain intact.
-	content := agent.SanitizeUserContent(task.Content)
+	content := envelope.SanitizeUserContent(task.Content)
 
 	// Inject persona prompt (prepend)
 	if task.PersonaHint != "" {
@@ -56,7 +56,7 @@ func (disp *Dispatcher) BuildTaskContent(task *model.Task) (string, error) {
 // shared skills. Skills referenced in skill_refs are loaded from the "planner"
 // role directory with fallback to "share".
 func (disp *Dispatcher) BuildCommandContent(cmd *model.Command) (string, error) {
-	content := agent.SanitizeUserContent(cmd.Content)
+	content := envelope.SanitizeUserContent(cmd.Content)
 
 	if disp.config.Skills.Enabled {
 		skillContent, err := disp.buildSkillsSection(cmd.SkillRefs, cmd.ID, "planner")
