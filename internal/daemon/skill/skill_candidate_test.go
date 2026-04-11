@@ -9,6 +9,7 @@ import (
 )
 
 func TestReadCandidates_Normal(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "skill_candidates.yaml")
 
@@ -35,6 +36,7 @@ func TestReadCandidates_Normal(t *testing.T) {
 }
 
 func TestReadCandidates_NotExist(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "nonexistent.yaml")
 	got, err := ReadCandidates(path)
 	if err != nil {
@@ -46,6 +48,7 @@ func TestReadCandidates_NotExist(t *testing.T) {
 }
 
 func TestWriteReadCandidates_RoundTrip(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "candidates.yaml")
 
@@ -68,6 +71,7 @@ func TestWriteReadCandidates_RoundTrip(t *testing.T) {
 }
 
 func TestAddOrUpdateCandidate_NewCandidate(t *testing.T) {
+	t.Parallel()
 	var candidates []model.SkillCandidate
 	seq := 0
 	idFunc := func() (string, error) {
@@ -94,6 +98,7 @@ func TestAddOrUpdateCandidate_NewCandidate(t *testing.T) {
 }
 
 func TestAddOrUpdateCandidate_ExistingIncrement(t *testing.T) {
+	t.Parallel()
 	candidates := []model.SkillCandidate{
 		{ID: "sc1", Content: "reuse this", Occurrences: 1, CommandIDs: []string{"cmd1"}, Status: "pending"},
 	}
@@ -118,6 +123,7 @@ func TestAddOrUpdateCandidate_ExistingIncrement(t *testing.T) {
 }
 
 func TestAddOrUpdateCandidate_DuplicateCommandID(t *testing.T) {
+	t.Parallel()
 	candidates := []model.SkillCandidate{
 		{ID: "sc1", Content: "same content", Occurrences: 2, CommandIDs: []string{"cmd1", "cmd2"}, Status: "pending"},
 	}
@@ -136,6 +142,7 @@ func TestAddOrUpdateCandidate_DuplicateCommandID(t *testing.T) {
 }
 
 func TestAddOrUpdateCandidate_EmptyContent(t *testing.T) {
+	t.Parallel()
 	var candidates []model.SkillCandidate
 	idFunc := func() (string, error) { return "unused", nil }
 
@@ -149,6 +156,7 @@ func TestAddOrUpdateCandidate_EmptyContent(t *testing.T) {
 }
 
 func TestAddOrUpdateCandidate_NonPendingSkipped(t *testing.T) {
+	t.Parallel()
 	candidates := []model.SkillCandidate{
 		{ID: "sc1", Content: "approved skill", Occurrences: 1, CommandIDs: []string{"cmd1"}, Status: "approved"},
 	}

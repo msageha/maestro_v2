@@ -8,6 +8,7 @@ import (
 )
 
 func TestNewTree(t *testing.T) {
+	t.Parallel()
 	tree := NewTree(5, 3, 0.2)
 	if tree.NodeCount() != 0 {
 		t.Fatalf("expected 0 nodes, got %d", tree.NodeCount())
@@ -15,6 +16,7 @@ func TestNewTree(t *testing.T) {
 }
 
 func TestAddRootAndExpand(t *testing.T) {
+	t.Parallel()
 	tree := NewTree(5, 3, 0.2)
 	root := tree.AddRoot("root")
 	if root.ID != "root" {
@@ -62,6 +64,7 @@ func TestAddRootAndExpand(t *testing.T) {
 }
 
 func TestBackpropagate(t *testing.T) {
+	t.Parallel()
 	tree := NewTree(5, 4, 0.0)
 	tree.AddRoot("root")
 	_, err := tree.Expand("root", []string{"c1", "c2"})
@@ -108,6 +111,7 @@ func TestBackpropagate(t *testing.T) {
 }
 
 func TestUCT_UnvisitedInf(t *testing.T) {
+	t.Parallel()
 	tree := NewTree(5, 4, 0.0)
 	tree.AddRoot("root")
 	tree.Expand("root", []string{"c1", "c2"})
@@ -129,6 +133,7 @@ func TestUCT_UnvisitedInf(t *testing.T) {
 }
 
 func TestSelectBest(t *testing.T) {
+	t.Parallel()
 	tree := NewTree(5, 4, 0.0)
 	tree.AddRoot("root")
 	tree.Expand("root", []string{"c1", "c2", "c3"})
@@ -149,6 +154,7 @@ func TestSelectBest(t *testing.T) {
 }
 
 func TestSelectBest_PrefersUnvisited(t *testing.T) {
+	t.Parallel()
 	tree := NewTree(5, 4, 0.0)
 	tree.AddRoot("root")
 	tree.Expand("root", []string{"c1", "c2"})
@@ -167,6 +173,7 @@ func TestSelectBest_PrefersUnvisited(t *testing.T) {
 }
 
 func TestPrune(t *testing.T) {
+	t.Parallel()
 	tree := NewTree(5, 4, 0.5)
 	tree.AddRoot("root")
 	tree.Expand("root", []string{"c1", "c2"})
@@ -205,6 +212,7 @@ func TestPrune(t *testing.T) {
 }
 
 func TestPruneBelow(t *testing.T) {
+	t.Parallel()
 	tree := NewTree(5, 4, 0.0)
 	tree.AddRoot("root")
 	tree.Expand("root", []string{"c1", "c2", "c3"})
@@ -230,6 +238,7 @@ func TestPruneBelow(t *testing.T) {
 }
 
 func TestExpand_MaxBranchingExceeded(t *testing.T) {
+	t.Parallel()
 	tree := NewTree(5, 2, 0.0)
 	tree.AddRoot("root")
 
@@ -240,6 +249,7 @@ func TestExpand_MaxBranchingExceeded(t *testing.T) {
 }
 
 func TestExpand_MaxDepthExceeded(t *testing.T) {
+	t.Parallel()
 	tree := NewTree(1, 4, 0.0) // maxDepth=1
 	tree.AddRoot("root")
 	tree.Expand("root", []string{"c1"})
@@ -252,6 +262,7 @@ func TestExpand_MaxDepthExceeded(t *testing.T) {
 }
 
 func TestExpand_ParentNotFound(t *testing.T) {
+	t.Parallel()
 	tree := NewTree(5, 4, 0.0)
 	_, err := tree.Expand("nonexistent", []string{"c1"})
 	if err == nil {
@@ -260,6 +271,7 @@ func TestExpand_ParentNotFound(t *testing.T) {
 }
 
 func TestLeaves(t *testing.T) {
+	t.Parallel()
 	tree := NewTree(5, 4, 0.0)
 	tree.AddRoot("root")
 	tree.Expand("root", []string{"c1", "c2"})
@@ -286,6 +298,7 @@ func TestLeaves(t *testing.T) {
 }
 
 func TestSelectBest_NoChildren(t *testing.T) {
+	t.Parallel()
 	tree := NewTree(5, 4, 0.0)
 	tree.AddRoot("root")
 
@@ -296,6 +309,7 @@ func TestSelectBest_NoChildren(t *testing.T) {
 }
 
 func TestConcurrentSafety(t *testing.T) {
+	t.Parallel()
 	tree := NewTree(10, 100, 0.0)
 	tree.AddRoot("root")
 

@@ -5,6 +5,7 @@ import (
 )
 
 func TestSample_ReturnsValidDecision(t *testing.T) {
+	t.Parallel()
 	s := NewSampler(1.0, 1.0)
 
 	// Sample many times to ensure both decisions appear
@@ -34,6 +35,7 @@ func TestSample_ReturnsValidDecision(t *testing.T) {
 }
 
 func TestUpdate_WidenSuccess(t *testing.T) {
+	t.Parallel()
 	s := NewSampler(1.0, 1.0)
 
 	s.Update(DecisionWiden, true)
@@ -46,6 +48,7 @@ func TestUpdate_WidenSuccess(t *testing.T) {
 }
 
 func TestUpdate_DeepenSuccess(t *testing.T) {
+	t.Parallel()
 	s := NewSampler(1.0, 1.0)
 
 	s.Update(DecisionDeepen, true)
@@ -58,6 +61,7 @@ func TestUpdate_DeepenSuccess(t *testing.T) {
 }
 
 func TestUpdate_FailureNoChange(t *testing.T) {
+	t.Parallel()
 	s := NewSampler(1.0, 1.0)
 
 	s.Update(DecisionWiden, false)
@@ -67,6 +71,7 @@ func TestUpdate_FailureNoChange(t *testing.T) {
 }
 
 func TestSampler_BiasedAlpha(t *testing.T) {
+	t.Parallel()
 	// High alpha → should favor widen
 	s := NewSampler(100.0, 1.0)
 
@@ -87,6 +92,7 @@ func TestSampler_BiasedAlpha(t *testing.T) {
 }
 
 func TestSampler_BiasedBeta(t *testing.T) {
+	t.Parallel()
 	// High beta → should favor deepen
 	s := NewSampler(1.0, 100.0)
 
@@ -106,6 +112,7 @@ func TestSampler_BiasedBeta(t *testing.T) {
 }
 
 func TestSampler_UpdateShiftsBias(t *testing.T) {
+	t.Parallel()
 	s := NewSampler(1.0, 1.0)
 
 	// Simulate many widen successes

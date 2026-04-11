@@ -37,6 +37,7 @@ func initTestGitRepoResolved(t *testing.T) string {
 // restores tracked file modifications and removes untracked files.
 // DiscardWorkerChanges uses `git checkout -- .` followed by `git clean -fd`.
 func TestWorktreeIntegration_DiscardChanges(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -104,7 +105,9 @@ func TestWorktreeIntegration_DiscardChanges(t *testing.T) {
 
 // TestWorktreeIntegration_Reconcile tests the Reconcile method in 3 scenarios.
 func TestWorktreeIntegration_Reconcile(t *testing.T) {
+	t.Parallel()
 	t.Run("StateWithoutWorktree", func(t *testing.T) {
+		t.Parallel()
 		// State exists but worktree directory was deleted (simulates crash)
 		projectRoot := initTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
@@ -154,6 +157,7 @@ func TestWorktreeIntegration_Reconcile(t *testing.T) {
 	})
 
 	t.Run("WorktreeWithoutState", func(t *testing.T) {
+		t.Parallel()
 		// Worktree exists in git but has no state file (orphan)
 		// Use resolved path so git worktree list paths match wm.projectRoot
 		projectRoot := initTestGitRepoResolved(t)
@@ -212,6 +216,7 @@ func TestWorktreeIntegration_Reconcile(t *testing.T) {
 	})
 
 	t.Run("NormalState_Idempotent", func(t *testing.T) {
+		t.Parallel()
 		// Normal state — reconcile should not change anything
 		projectRoot := initTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
@@ -249,6 +254,7 @@ func TestWorktreeIntegration_Reconcile(t *testing.T) {
 // TestWorktreeIntegration_GC_TTLExpiry verifies that GC removes worktrees
 // whose age exceeds the configured TTL and preserves younger ones.
 func TestWorktreeIntegration_GC_TTLExpiry(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepoResolved(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -305,6 +311,7 @@ func TestWorktreeIntegration_GC_TTLExpiry(t *testing.T) {
 
 // TestWorktreeIntegration_GC_Disabled verifies that GC does nothing when disabled.
 func TestWorktreeIntegration_GC_Disabled(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepoResolved(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -358,6 +365,7 @@ func TestWorktreeIntegration_GC_Disabled(t *testing.T) {
 // TestWorktreeIntegration_DiscardStagedChanges verifies that DiscardWorkerChanges
 // correctly resets staged (git add) but uncommitted changes.
 func TestWorktreeIntegration_DiscardStagedChanges(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -420,6 +428,7 @@ func TestWorktreeIntegration_DiscardStagedChanges(t *testing.T) {
 // TestWorktreeIntegration_GCHealthCheck verifies that GC removes orphaned
 // worktrees but preserves normally managed ones.
 func TestWorktreeIntegration_GCHealthCheck(t *testing.T) {
+	t.Parallel()
 	// Use resolved path so git worktree list paths match wm.projectRoot
 	projectRoot := initTestGitRepoResolved(t)
 	wm := newTestWorktreeManager(t, projectRoot)

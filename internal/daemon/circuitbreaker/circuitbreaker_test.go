@@ -113,6 +113,7 @@ func newTestHandler(enabled bool, maxFailures, timeoutMin int) *Handler {
 }
 
 func TestUpdateCounterOnResult_Disabled(t *testing.T) {
+	t.Parallel()
 	cb := newTestHandler(false, 3, 30)
 	state := &model.CommandState{CommandID: "cmd1"}
 
@@ -126,6 +127,7 @@ func TestUpdateCounterOnResult_Disabled(t *testing.T) {
 }
 
 func TestUpdateCounterOnResult_IncrementOnFailure(t *testing.T) {
+	t.Parallel()
 	cb := newTestHandler(true, 3, 30)
 	state := &model.CommandState{CommandID: "cmd1"}
 
@@ -139,6 +141,7 @@ func TestUpdateCounterOnResult_IncrementOnFailure(t *testing.T) {
 }
 
 func TestUpdateCounterOnResult_ResetOnSuccess(t *testing.T) {
+	t.Parallel()
 	cb := newTestHandler(true, 3, 30)
 	state := &model.CommandState{
 		CommandID: "cmd1",
@@ -160,6 +163,7 @@ func TestUpdateCounterOnResult_ResetOnSuccess(t *testing.T) {
 }
 
 func TestUpdateCounterOnResult_TripOnThreshold(t *testing.T) {
+	t.Parallel()
 	cb := newTestHandler(true, 3, 30)
 	state := &model.CommandState{
 		CommandID: "cmd1",
@@ -181,6 +185,7 @@ func TestUpdateCounterOnResult_TripOnThreshold(t *testing.T) {
 }
 
 func TestUpdateCounterOnResult_IdempotentSkip(t *testing.T) {
+	t.Parallel()
 	cb := newTestHandler(true, 3, 30)
 	state := &model.CommandState{
 		CommandID: "cmd1",
@@ -200,6 +205,7 @@ func TestUpdateCounterOnResult_IdempotentSkip(t *testing.T) {
 }
 
 func TestTripBreaker_SetsStateFields(t *testing.T) {
+	t.Parallel()
 	cb := newTestHandler(true, 3, 30)
 	state := &model.CommandState{CommandID: "cmd1"}
 
@@ -224,6 +230,7 @@ func TestTripBreaker_SetsStateFields(t *testing.T) {
 }
 
 func TestTripBreaker_IdempotentWhenAlreadyTripped(t *testing.T) {
+	t.Parallel()
 	cb := newTestHandler(true, 3, 30)
 	firstTrippedAt := "2025-01-01T00:00:00Z"
 	state := &model.CommandState{
@@ -243,6 +250,7 @@ func TestTripBreaker_IdempotentWhenAlreadyTripped(t *testing.T) {
 }
 
 func TestTripBreaker_DoesNotOverwriteExistingCancel(t *testing.T) {
+	t.Parallel()
 	cb := newTestHandler(true, 3, 30)
 	existingBy := "user"
 	existingReason := "user cancelled"
@@ -265,6 +273,7 @@ func TestTripBreaker_DoesNotOverwriteExistingCancel(t *testing.T) {
 }
 
 func TestCheckProgressTimeout_Disabled(t *testing.T) {
+	t.Parallel()
 	cb := newTestHandler(false, 3, 30)
 	shouldTrip, _ := cb.CheckProgressTimeout("cmd1")
 	if shouldTrip {
@@ -273,6 +282,7 @@ func TestCheckProgressTimeout_Disabled(t *testing.T) {
 }
 
 func TestCheckProgressTimeout_NoStateReader(t *testing.T) {
+	t.Parallel()
 	cb := newTestHandler(true, 3, 30)
 	shouldTrip, _ := cb.CheckProgressTimeout("cmd1")
 	if shouldTrip {
@@ -281,6 +291,7 @@ func TestCheckProgressTimeout_NoStateReader(t *testing.T) {
 }
 
 func TestCheckProgressTimeout_NilUsesDefault(t *testing.T) {
+	t.Parallel()
 	// nil ProgressTimeoutMinutes should default to 30 minutes
 	cfg := model.Config{
 		CircuitBreaker: model.CircuitBreakerConfig{
@@ -304,6 +315,7 @@ func TestCheckProgressTimeout_NilUsesDefault(t *testing.T) {
 }
 
 func TestCheckProgressTimeout_NotExpired(t *testing.T) {
+	t.Parallel()
 	cb := newTestHandler(true, 3, 30)
 	reader := &mockCircuitBreakerStateReader{
 		cbStates: map[string]*model.CircuitBreakerState{
@@ -319,6 +331,7 @@ func TestCheckProgressTimeout_NotExpired(t *testing.T) {
 }
 
 func TestCheckProgressTimeout_Expired(t *testing.T) {
+	t.Parallel()
 	cb := newTestHandler(true, 3, 30)
 	reader := &mockCircuitBreakerStateReader{
 		cbStates: map[string]*model.CircuitBreakerState{
@@ -337,6 +350,7 @@ func TestCheckProgressTimeout_Expired(t *testing.T) {
 }
 
 func TestCheckProgressTimeout_NilLastProgressAt(t *testing.T) {
+	t.Parallel()
 	cb := newTestHandler(true, 3, 30)
 	reader := &mockCircuitBreakerStateReader{
 		cbStates: map[string]*model.CircuitBreakerState{
@@ -352,6 +366,7 @@ func TestCheckProgressTimeout_NilLastProgressAt(t *testing.T) {
 }
 
 func TestCheckProgressTimeout_AlreadyTripped(t *testing.T) {
+	t.Parallel()
 	cb := newTestHandler(true, 3, 30)
 	reader := &mockCircuitBreakerStateReader{
 		cbStates: map[string]*model.CircuitBreakerState{
@@ -370,6 +385,7 @@ func TestCheckProgressTimeout_AlreadyTripped(t *testing.T) {
 }
 
 func TestConfigEffectiveMaxConsecutiveFailures(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		value    *int
 		expected int
@@ -388,6 +404,7 @@ func TestConfigEffectiveMaxConsecutiveFailures(t *testing.T) {
 }
 
 func TestConfigEffectiveProgressTimeoutMinutes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		value    *int
 		expected int

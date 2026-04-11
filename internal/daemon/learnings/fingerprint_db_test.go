@@ -6,6 +6,7 @@ import (
 )
 
 func TestStoreAndQuery(t *testing.T) {
+	t.Parallel()
 	db := NewFingerprintDB(100)
 	db.Store("fp1", "compile_error", "fix imports")
 
@@ -28,6 +29,7 @@ func TestStoreAndQuery(t *testing.T) {
 }
 
 func TestQueryNotFound(t *testing.T) {
+	t.Parallel()
 	db := NewFingerprintDB(100)
 	_, ok := db.Query("nonexistent")
 	if ok {
@@ -36,6 +38,7 @@ func TestQueryNotFound(t *testing.T) {
 }
 
 func TestStoreDuplicate_IncreasesCount(t *testing.T) {
+	t.Parallel()
 	db := NewFingerprintDB(100)
 	db.Store("fp1", "compile_error", "fix imports")
 	db.Store("fp1", "compile_error", "fix imports")
@@ -51,6 +54,7 @@ func TestStoreDuplicate_IncreasesCount(t *testing.T) {
 }
 
 func TestMaxSizeEviction(t *testing.T) {
+	t.Parallel()
 	db := NewFingerprintDB(2)
 	db.Store("fp1", "cat1", "strat1")
 	db.Store("fp2", "cat2", "strat2")
@@ -72,6 +76,7 @@ func TestMaxSizeEviction(t *testing.T) {
 }
 
 func TestRecordSuccess_UpdatesSuccessRate(t *testing.T) {
+	t.Parallel()
 	db := NewFingerprintDB(100)
 	db.Store("fp1", "cat", "strat")
 	db.Store("fp1", "cat", "strat") // OccurrenceCount = 2
@@ -92,12 +97,14 @@ func TestRecordSuccess_UpdatesSuccessRate(t *testing.T) {
 }
 
 func TestRecordSuccess_NonexistentFingerprint(t *testing.T) {
+	t.Parallel()
 	db := NewFingerprintDB(100)
 	// Should not panic.
 	db.RecordSuccess("nonexistent")
 }
 
 func TestSuggestStrategy_KnownWithSuccess(t *testing.T) {
+	t.Parallel()
 	db := NewFingerprintDB(100)
 	db.Store("fp1", "cat", "retry with -race")
 	db.RecordSuccess("fp1")
@@ -112,6 +119,7 @@ func TestSuggestStrategy_KnownWithSuccess(t *testing.T) {
 }
 
 func TestSuggestStrategy_KnownNoSuccess(t *testing.T) {
+	t.Parallel()
 	db := NewFingerprintDB(100)
 	db.Store("fp1", "cat", "some strategy")
 
@@ -122,6 +130,7 @@ func TestSuggestStrategy_KnownNoSuccess(t *testing.T) {
 }
 
 func TestSuggestStrategy_Unknown(t *testing.T) {
+	t.Parallel()
 	db := NewFingerprintDB(100)
 	_, ok := db.SuggestStrategy("nonexistent")
 	if ok {
@@ -130,6 +139,7 @@ func TestSuggestStrategy_Unknown(t *testing.T) {
 }
 
 func TestFindSimilar(t *testing.T) {
+	t.Parallel()
 	db := NewFingerprintDB(100)
 	db.Store("compile_error_missing_import", "compile", "add import")
 	db.Store("compile_error_type_mismatch", "compile", "fix types")
@@ -148,6 +158,7 @@ func TestFindSimilar(t *testing.T) {
 }
 
 func TestFindSimilar_NoMatch(t *testing.T) {
+	t.Parallel()
 	db := NewFingerprintDB(100)
 	db.Store("aaaa", "cat", "strat")
 	results := db.FindSimilar("zzzz", 10)
@@ -157,6 +168,7 @@ func TestFindSimilar_NoMatch(t *testing.T) {
 }
 
 func TestSize(t *testing.T) {
+	t.Parallel()
 	db := NewFingerprintDB(100)
 	if db.Size() != 0 {
 		t.Errorf("expected size=0, got %d", db.Size())
@@ -169,6 +181,7 @@ func TestSize(t *testing.T) {
 }
 
 func TestPatterns(t *testing.T) {
+	t.Parallel()
 	db := NewFingerprintDB(100)
 	db.Store("fp1", "cat1", "strat1")
 	db.Store("fp2", "cat2", "strat2")
@@ -180,6 +193,7 @@ func TestPatterns(t *testing.T) {
 }
 
 func TestConcurrencySafety(t *testing.T) {
+	t.Parallel()
 	db := NewFingerprintDB(1000)
 	var wg sync.WaitGroup
 	const goroutines = 50

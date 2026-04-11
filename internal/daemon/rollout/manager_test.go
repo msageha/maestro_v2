@@ -6,6 +6,7 @@ import (
 )
 
 func TestCreateGroup_Normal(t *testing.T) {
+	t.Parallel()
 	m := NewManager(5)
 
 	g, err := m.CreateGroup("task1", "cmd1", 3)
@@ -43,6 +44,7 @@ func TestCreateGroup_Normal(t *testing.T) {
 }
 
 func TestCreateGroup_DuplicateTaskID(t *testing.T) {
+	t.Parallel()
 	m := NewManager(5)
 
 	_, err := m.CreateGroup("task1", "cmd1", 2)
@@ -57,6 +59,7 @@ func TestCreateGroup_DuplicateTaskID(t *testing.T) {
 }
 
 func TestCreateGroup_InvalidSlotCount(t *testing.T) {
+	t.Parallel()
 	m := NewManager(3)
 
 	_, err := m.CreateGroup("task1", "cmd1", 0)
@@ -71,6 +74,7 @@ func TestCreateGroup_InvalidSlotCount(t *testing.T) {
 }
 
 func TestUpdateSlotStatus_AndIsGroupComplete(t *testing.T) {
+	t.Parallel()
 	m := NewManager(5)
 	_, _ = m.CreateGroup("task1", "cmd1", 3)
 
@@ -93,6 +97,7 @@ func TestUpdateSlotStatus_AndIsGroupComplete(t *testing.T) {
 }
 
 func TestIsGroupComplete_MixedTerminal(t *testing.T) {
+	t.Parallel()
 	m := NewManager(5)
 	_, _ = m.CreateGroup("task1", "cmd1", 3)
 
@@ -106,6 +111,7 @@ func TestIsGroupComplete_MixedTerminal(t *testing.T) {
 }
 
 func TestIsGroupComplete_NonExistent(t *testing.T) {
+	t.Parallel()
 	m := NewManager(5)
 	if m.IsGroupComplete("nonexistent") {
 		t.Error("non-existent group should return false")
@@ -113,6 +119,7 @@ func TestIsGroupComplete_NonExistent(t *testing.T) {
 }
 
 func TestSetWinner(t *testing.T) {
+	t.Parallel()
 	m := NewManager(5)
 	_, _ = m.CreateGroup("task1", "cmd1", 3)
 
@@ -134,6 +141,7 @@ func TestSetWinner(t *testing.T) {
 }
 
 func TestSetWinner_InvalidIndex(t *testing.T) {
+	t.Parallel()
 	m := NewManager(5)
 	_, _ = m.CreateGroup("task1", "cmd1", 2)
 
@@ -144,6 +152,7 @@ func TestSetWinner_InvalidIndex(t *testing.T) {
 }
 
 func TestSetWinner_NonExistentGroup(t *testing.T) {
+	t.Parallel()
 	m := NewManager(5)
 	err := m.SetWinner("nonexistent", 0)
 	if err == nil {
@@ -152,6 +161,7 @@ func TestSetWinner_NonExistentGroup(t *testing.T) {
 }
 
 func TestCancelGroup(t *testing.T) {
+	t.Parallel()
 	m := NewManager(5)
 	_, _ = m.CreateGroup("task1", "cmd1", 3)
 
@@ -170,6 +180,7 @@ func TestCancelGroup(t *testing.T) {
 }
 
 func TestCancelGroup_NonExistent(t *testing.T) {
+	t.Parallel()
 	m := NewManager(5)
 	err := m.CancelGroup("nonexistent")
 	if err == nil {
@@ -178,6 +189,7 @@ func TestCancelGroup_NonExistent(t *testing.T) {
 }
 
 func TestActiveGroupCount(t *testing.T) {
+	t.Parallel()
 	m := NewManager(5)
 
 	if m.ActiveGroupCount() != 0 {
@@ -203,6 +215,7 @@ func TestActiveGroupCount(t *testing.T) {
 }
 
 func TestRemoveGroup(t *testing.T) {
+	t.Parallel()
 	m := NewManager(5)
 	_, _ = m.CreateGroup("task1", "cmd1", 2)
 
@@ -218,6 +231,7 @@ func TestRemoveGroup(t *testing.T) {
 }
 
 func TestListGroups(t *testing.T) {
+	t.Parallel()
 	m := NewManager(5)
 	_, _ = m.CreateGroup("task1", "cmd1", 2)
 	_, _ = m.CreateGroup("task2", "cmd2", 3)
@@ -229,6 +243,7 @@ func TestListGroups(t *testing.T) {
 }
 
 func TestUpdateSlotStatus_Errors(t *testing.T) {
+	t.Parallel()
 	m := NewManager(5)
 
 	err := m.UpdateSlotStatus("nonexistent", 0, SlotRunning)
@@ -248,6 +263,7 @@ func TestUpdateSlotStatus_Errors(t *testing.T) {
 }
 
 func TestIsTerminal(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		state    GroupState
 		terminal bool
@@ -267,6 +283,7 @@ func TestIsTerminal(t *testing.T) {
 }
 
 func TestConcurrentAccess(t *testing.T) {
+	t.Parallel()
 	m := NewManager(10)
 	const taskCount = 20
 	const goroutineCount = 50

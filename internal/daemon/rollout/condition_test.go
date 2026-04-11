@@ -5,6 +5,7 @@ import (
 )
 
 func TestCheckEligibility_AllConditionsMet(t *testing.T) {
+	t.Parallel()
 	input := ConditionInput{
 		HasVerifyConfig:   true,
 		FailureCount:      2,
@@ -21,6 +22,7 @@ func TestCheckEligibility_AllConditionsMet(t *testing.T) {
 }
 
 func TestCheckEligibility_NoVerifyConfig(t *testing.T) {
+	t.Parallel()
 	input := ConditionInput{
 		HasVerifyConfig:   false,
 		FailureCount:      2,
@@ -35,6 +37,7 @@ func TestCheckEligibility_NoVerifyConfig(t *testing.T) {
 }
 
 func TestCheckEligibility_NoFailuresLowBloom(t *testing.T) {
+	t.Parallel()
 	input := ConditionInput{
 		HasVerifyConfig:   true,
 		FailureCount:      0,
@@ -49,6 +52,7 @@ func TestCheckEligibility_NoFailuresLowBloom(t *testing.T) {
 }
 
 func TestCheckEligibility_NoFailuresHighBloom(t *testing.T) {
+	t.Parallel()
 	input := ConditionInput{
 		HasVerifyConfig:   true,
 		FailureCount:      0,
@@ -62,6 +66,7 @@ func TestCheckEligibility_NoFailuresHighBloom(t *testing.T) {
 }
 
 func TestCheckEligibility_FailuresMetLowBloom(t *testing.T) {
+	t.Parallel()
 	input := ConditionInput{
 		HasVerifyConfig:   true,
 		FailureCount:      2,
@@ -75,6 +80,7 @@ func TestCheckEligibility_FailuresMetLowBloom(t *testing.T) {
 }
 
 func TestCheckEligibility_TooManyExpectedPaths(t *testing.T) {
+	t.Parallel()
 	input := ConditionInput{
 		HasVerifyConfig:   true,
 		FailureCount:      2,
@@ -89,6 +95,7 @@ func TestCheckEligibility_TooManyExpectedPaths(t *testing.T) {
 }
 
 func TestCheckEligibility_ZeroExpectedPaths(t *testing.T) {
+	t.Parallel()
 	input := ConditionInput{
 		HasVerifyConfig:   true,
 		FailureCount:      2,
@@ -103,6 +110,7 @@ func TestCheckEligibility_ZeroExpectedPaths(t *testing.T) {
 }
 
 func TestCheckEligibility_CustomThresholds(t *testing.T) {
+	t.Parallel()
 	thresholds := ConditionThresholds{
 		MinBloomLevel:    2,
 		MaxExpectedPaths: 5,
@@ -130,6 +138,7 @@ func TestCheckEligibility_CustomThresholds(t *testing.T) {
 }
 
 func TestCheckEligibility_MultipleFailures(t *testing.T) {
+	t.Parallel()
 	input := ConditionInput{
 		HasVerifyConfig:   false,
 		FailureCount:      0,
@@ -146,6 +155,7 @@ func TestCheckEligibility_MultipleFailures(t *testing.T) {
 }
 
 func TestDefaultConditionThresholds(t *testing.T) {
+	t.Parallel()
 	th := DefaultConditionThresholds()
 	if th.MinBloomLevel != 4 {
 		t.Errorf("MinBloomLevel = %d, want 4", th.MinBloomLevel)

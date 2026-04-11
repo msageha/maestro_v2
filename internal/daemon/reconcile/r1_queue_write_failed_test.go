@@ -13,6 +13,7 @@ import (
 // cleared once the corresponding worker queue task has reached a terminal
 // state (e.g. after Phase 1 of R1 repaired the mismatch in an earlier scan).
 func TestR1ConsumeQueueWriteFailed_ClearsWhenQueueTerminal(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestDir(t)
 	deps := newTestDeps(t, maestroDir)
 
@@ -85,6 +86,7 @@ func TestR1ConsumeQueueWriteFailed_ClearsWhenQueueTerminal(t *testing.T) {
 // the marker is preserved when the queue task has not yet been repaired —
 // the next scan will retry the cleanup.
 func TestR1ConsumeQueueWriteFailed_KeepsWhenQueueStillInProgress(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestDir(t)
 	deps := newTestDeps(t, maestroDir)
 
@@ -144,6 +146,7 @@ func TestR1ConsumeQueueWriteFailed_KeepsWhenQueueStillInProgress(t *testing.T) {
 }
 
 func TestParseQueueWriteFailedValue(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		in           string
 		wantWorker   string

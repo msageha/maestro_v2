@@ -5,6 +5,7 @@ import (
 )
 
 func TestPlanMutations_AllStrategies(t *testing.T) {
+	t.Parallel()
 	e := NewEngine([]Strategy{StrategyDiff, StrategyFull, StrategyCross}, 0.5)
 	slots := e.PlanMutations(2)
 
@@ -29,6 +30,7 @@ func TestPlanMutations_AllStrategies(t *testing.T) {
 }
 
 func TestPlanMutations_SingleParent_NoCross(t *testing.T) {
+	t.Parallel()
 	e := NewEngine([]Strategy{StrategyDiff, StrategyFull, StrategyCross}, 0.5)
 	slots := e.PlanMutations(1)
 
@@ -45,6 +47,7 @@ func TestPlanMutations_SingleParent_NoCross(t *testing.T) {
 }
 
 func TestPlanMutations_OnlyDiff(t *testing.T) {
+	t.Parallel()
 	e := NewEngine([]Strategy{StrategyDiff}, 0.5)
 	slots := e.PlanMutations(3)
 
@@ -59,6 +62,7 @@ func TestPlanMutations_OnlyDiff(t *testing.T) {
 }
 
 func TestPlanMutations_IndicesSequential(t *testing.T) {
+	t.Parallel()
 	e := NewEngine([]Strategy{StrategyDiff, StrategyFull, StrategyCross}, 0.5)
 	slots := e.PlanMutations(2)
 
@@ -70,6 +74,7 @@ func TestPlanMutations_IndicesSequential(t *testing.T) {
 }
 
 func TestCheckNovelty_NewHash(t *testing.T) {
+	t.Parallel()
 	e := NewEngine(nil, 0.5)
 	existing := []string{
 		HashContent("hello"),
@@ -82,6 +87,7 @@ func TestCheckNovelty_NewHash(t *testing.T) {
 }
 
 func TestCheckNovelty_ExistingHash(t *testing.T) {
+	t.Parallel()
 	e := NewEngine(nil, 0.5)
 	h := HashContent("hello")
 	existing := []string{h, HashContent("world")}
@@ -92,6 +98,7 @@ func TestCheckNovelty_ExistingHash(t *testing.T) {
 }
 
 func TestCheckNovelty_EmptyExisting(t *testing.T) {
+	t.Parallel()
 	e := NewEngine(nil, 0.5)
 	if !e.CheckNovelty(HashContent("anything"), nil) {
 		t.Fatal("expected novel when no existing hashes")
@@ -99,6 +106,7 @@ func TestCheckNovelty_EmptyExisting(t *testing.T) {
 }
 
 func TestHashContent_Deterministic(t *testing.T) {
+	t.Parallel()
 	h1 := HashContent("test content")
 	h2 := HashContent("test content")
 	if h1 != h2 {
@@ -112,6 +120,7 @@ func TestHashContent_Deterministic(t *testing.T) {
 }
 
 func TestSelectSurvivors_TopN(t *testing.T) {
+	t.Parallel()
 	e := NewEngine(nil, 0.5)
 
 	results := []SlotResult{
@@ -136,6 +145,7 @@ func TestSelectSurvivors_TopN(t *testing.T) {
 }
 
 func TestSelectSurvivors_OnlyNovel(t *testing.T) {
+	t.Parallel()
 	e := NewEngine(nil, 0.5)
 
 	results := []SlotResult{
@@ -154,6 +164,7 @@ func TestSelectSurvivors_OnlyNovel(t *testing.T) {
 }
 
 func TestSelectSurvivors_NoNovel(t *testing.T) {
+	t.Parallel()
 	e := NewEngine(nil, 0.5)
 
 	results := []SlotResult{
@@ -167,6 +178,7 @@ func TestSelectSurvivors_NoNovel(t *testing.T) {
 }
 
 func TestSelectSurvivors_MaxLessThanCandidates(t *testing.T) {
+	t.Parallel()
 	e := NewEngine(nil, 0.5)
 
 	results := []SlotResult{

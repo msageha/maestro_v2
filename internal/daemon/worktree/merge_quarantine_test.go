@@ -11,6 +11,7 @@ import (
 // TestRecordMergeFailure_TransitionsToQuarantine validates that consecutive
 // unrecoverable failures escalate from Failed to Quarantined at the threshold.
 func TestRecordMergeFailure_TransitionsToQuarantine(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -69,6 +70,7 @@ func TestRecordMergeFailure_TransitionsToQuarantine(t *testing.T) {
 // immediately without performing any git operations or state mutations.
 // This is the core fix for H10: prevents the infinite reconcile loop.
 func TestMergeToIntegration_QuarantinedShortCircuits(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -121,6 +123,7 @@ func TestMergeToIntegration_QuarantinedShortCircuits(t *testing.T) {
 // TestQuarantinedIsTerminalIntegrationStatus validates the terminal-state
 // guarantee that prevents any transition out of Quarantined.
 func TestQuarantinedIsTerminalIntegrationStatus(t *testing.T) {
+	t.Parallel()
 	if !model.IsIntegrationTerminal(model.IntegrationStatusQuarantined) {
 		t.Errorf("IntegrationStatusQuarantined is not terminal")
 	}

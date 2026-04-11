@@ -13,6 +13,7 @@ import (
 // TestWorktreeIntegration_BasicLifecycle tests the full worktree lifecycle:
 // create → commit → merge → publish → cleanup.
 func TestWorktreeIntegration_BasicLifecycle(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -138,6 +139,7 @@ func TestWorktreeIntegration_BasicLifecycle(t *testing.T) {
 // TestWorktreeIntegration_CrossPhaseSync tests the cross-phase synchronization flow:
 // Phase1 workers commit and merge → sync to Phase2 workers → Phase2 commits and publishes.
 func TestWorktreeIntegration_CrossPhaseSync(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 

@@ -17,6 +17,7 @@ import (
 
 // TestCreateForCommand tests worktree creation for a command.
 func TestCreateForCommand(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -51,6 +52,7 @@ func TestCreateForCommand(t *testing.T) {
 
 // TestGetWorkerPath tests retrieving the worktree path for a worker.
 func TestGetWorkerPath(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -77,6 +79,7 @@ func TestGetWorkerPath(t *testing.T) {
 
 // TestCommitWorkerChanges tests auto-commit of worker changes.
 func TestCommitWorkerChanges(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -128,6 +131,7 @@ func TestCommitWorkerChanges(t *testing.T) {
 
 // TestMergeToIntegration tests merging worker branches to integration.
 func TestMergeToIntegration(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -187,6 +191,7 @@ func TestMergeToIntegration(t *testing.T) {
 
 // TestMergeConflict tests merge conflict detection.
 func TestMergeConflict(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -234,6 +239,7 @@ func TestMergeConflict(t *testing.T) {
 
 // TestPublishToBase tests publishing integration to base branch.
 func TestPublishToBase(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -297,6 +303,7 @@ func TestPublishToBase(t *testing.T) {
 
 // TestCleanupCommand tests worktree cleanup.
 func TestCleanupCommand(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -334,6 +341,7 @@ func TestCleanupCommand(t *testing.T) {
 
 // TestCleanupAll tests cleanup of all worktrees.
 func TestCleanupAll(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -362,6 +370,7 @@ func TestCleanupAll(t *testing.T) {
 
 // TestHasWorktrees tests the HasWorktrees check.
 func TestHasWorktrees(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -380,6 +389,7 @@ func TestHasWorktrees(t *testing.T) {
 
 // TestGC tests garbage collection of old worktrees.
 func TestGC(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -411,6 +421,7 @@ func TestGC(t *testing.T) {
 
 // TestWorktreeConfigDefaults tests default values for WorktreeConfig.
 func TestWorktreeConfigDefaults(t *testing.T) {
+	t.Parallel()
 	cfg := model.WorktreeConfig{}
 
 	if cfg.EffectiveBaseBranch() != "main" {
@@ -435,6 +446,7 @@ func TestWorktreeConfigDefaults(t *testing.T) {
 // TestCreateForCommand_RollbackOnWorktreeFailure tests that CreateForCommand
 // cleans up already-created worktrees when a subsequent worktree creation fails.
 func TestCreateForCommand_RollbackOnWorktreeFailure(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -502,6 +514,7 @@ func TestCreateForCommand_RollbackOnWorktreeFailure(t *testing.T) {
 // TestEnsureWorkerWorktree_RollbackOnFailure tests that EnsureWorkerWorktree
 // cleans up the integration branch when worker worktree creation fails.
 func TestEnsureWorkerWorktree_RollbackOnFailure(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -551,6 +564,7 @@ func TestEnsureWorkerWorktree_RollbackOnFailure(t *testing.T) {
 // TestEnsureWorkerWorktree_RollbackOnAddWorker tests rollback when adding a
 // worker to an existing command state fails.
 func TestEnsureWorkerWorktree_RollbackOnAddWorker(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -603,6 +617,7 @@ func TestEnsureWorkerWorktree_RollbackOnAddWorker(t *testing.T) {
 // TestEnsureWorkerWorktree_LazyCreation tests the initial creation path
 // when no state exists for the command.
 func TestEnsureWorkerWorktree_LazyCreation(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -642,6 +657,7 @@ func TestEnsureWorkerWorktree_LazyCreation(t *testing.T) {
 
 // TestEnsureWorkerWorktree_AddWorker tests adding a worker to an existing command state.
 func TestEnsureWorkerWorktree_AddWorker(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -682,6 +698,7 @@ func TestEnsureWorkerWorktree_AddWorker(t *testing.T) {
 // TestEnsureWorkerWorktree_Idempotent tests that calling EnsureWorkerWorktree
 // for an already-existing worker is a no-op.
 func TestEnsureWorkerWorktree_Idempotent(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -707,6 +724,7 @@ func TestEnsureWorkerWorktree_Idempotent(t *testing.T) {
 
 // TestMarkPhaseMerged_Basic tests that a phase merge is recorded correctly.
 func TestMarkPhaseMerged_Basic(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -733,6 +751,7 @@ func TestMarkPhaseMerged_Basic(t *testing.T) {
 // TestMarkPhaseMerged_DuplicatePhase tests that marking the same phase twice
 // overwrites the timestamp without creating duplicate entries.
 func TestMarkPhaseMerged_DuplicatePhase(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -771,6 +790,7 @@ func TestMarkPhaseMerged_DuplicatePhase(t *testing.T) {
 // TestMarkPhaseMerged_NonExistentCommand tests that MarkPhaseMerged returns
 // an error for a non-existent command.
 func TestMarkPhaseMerged_NonExistentCommand(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -782,6 +802,7 @@ func TestMarkPhaseMerged_NonExistentCommand(t *testing.T) {
 
 // TestSyncFromIntegration tests syncing integration to worker worktrees.
 func TestSyncFromIntegration(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -850,6 +871,7 @@ func gitRevParse(t *testing.T, dir, ref string) string {
 // TestMergeToIntegration_PreservesProjectRootHEAD verifies that
 // MergeToIntegration does not change projectRoot's HEAD.
 func TestMergeToIntegration_PreservesProjectRootHEAD(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -890,6 +912,7 @@ func TestMergeToIntegration_PreservesProjectRootHEAD(t *testing.T) {
 // TestPublishToBase_PreservesProjectRootHEAD verifies that
 // PublishToBase does not change projectRoot's symbolic ref.
 func TestPublishToBase_PreservesProjectRootHEAD(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -947,6 +970,7 @@ func TestPublishToBase_PreservesProjectRootHEAD(t *testing.T) {
 // --- C1 Test: PublishToBase rejects when projectRoot has uncommitted changes ---
 
 func TestPublishToBase_RejectsUncommittedChanges(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -993,6 +1017,7 @@ func TestPublishToBase_RejectsUncommittedChanges(t *testing.T) {
 // --- M2 Test: SyncFromIntegration skips conflict workers ---
 
 func TestSyncFromIntegration_SkipsConflictWorker(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1061,6 +1086,7 @@ func TestSyncFromIntegration_SkipsConflictWorker(t *testing.T) {
 // --- M3 Test: SyncFromIntegration skips dirty worktrees ---
 
 func TestSyncFromIntegration_SkipsDirtyWorktree(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1115,6 +1141,7 @@ func TestSyncFromIntegration_SkipsDirtyWorktree(t *testing.T) {
 // --- DiscardWorkerChanges Test ---
 
 func TestDiscardWorkerChanges(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1163,6 +1190,7 @@ func TestDiscardWorkerChanges(t *testing.T) {
 // --- Integration Worktree Creation Test ---
 
 func TestCreateForCommand_CreatesIntegrationWorktree(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1191,7 +1219,9 @@ func TestCreateForCommand_CreatesIntegrationWorktree(t *testing.T) {
 
 // TestCommitWorkerChanges_ErrorPaths tests error handling in CommitWorkerChanges.
 func TestCommitWorkerChanges_ErrorPaths(t *testing.T) {
+	t.Parallel()
 	t.Run("NonExistentCommand", func(t *testing.T) {
+		t.Parallel()
 		projectRoot := initTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1205,6 +1235,7 @@ func TestCommitWorkerChanges_ErrorPaths(t *testing.T) {
 	})
 
 	t.Run("NonExistentWorker", func(t *testing.T) {
+		t.Parallel()
 		projectRoot := initTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1222,6 +1253,7 @@ func TestCommitWorkerChanges_ErrorPaths(t *testing.T) {
 	})
 
 	t.Run("InvalidWorktreePath", func(t *testing.T) {
+		t.Parallel()
 		projectRoot := initTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1249,6 +1281,7 @@ func TestCommitWorkerChanges_ErrorPaths(t *testing.T) {
 	})
 
 	t.Run("EmptyCommitMessage", func(t *testing.T) {
+		t.Parallel()
 		projectRoot := initTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1277,6 +1310,7 @@ func TestCommitWorkerChanges_ErrorPaths(t *testing.T) {
 	})
 
 	t.Run("UnwritableStateDir", func(t *testing.T) {
+		t.Parallel()
 		if os.Getuid() == 0 {
 			t.Skip("skipping: running as root")
 		}
@@ -1321,6 +1355,7 @@ func TestCommitWorkerChanges_ErrorPaths(t *testing.T) {
 // (e.g., .env, *.key, *.pem) are not staged by CommitWorkerChanges even when
 // they are not covered by .gitignore.
 func TestCommitWorkerChanges_SensitiveFilesNotStaged(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1378,6 +1413,7 @@ func TestCommitWorkerChanges_SensitiveFilesNotStaged(t *testing.T) {
 // TestCommitWorkerChanges_TrackedModificationsStaged verifies that modifications
 // to already-tracked files are still properly staged and committed.
 func TestCommitWorkerChanges_TrackedModificationsStaged(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1415,6 +1451,7 @@ func TestCommitWorkerChanges_TrackedModificationsStaged(t *testing.T) {
 // TestCommitWorkerChanges_NewFileStagedWhenSafe verifies that new non-sensitive
 // files are staged and committed.
 func TestCommitWorkerChanges_NewFileStagedWhenSafe(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1462,6 +1499,7 @@ func TestCommitWorkerChanges_NewFileStagedWhenSafe(t *testing.T) {
 // --- Git Timeout Tests ---
 
 func TestGitTimeout_Default(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1473,6 +1511,7 @@ func TestGitTimeout_Default(t *testing.T) {
 }
 
 func TestGitTimeout_Custom(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 	wm.config.GitTimeoutSec = model.IntPtr(30)
@@ -1484,6 +1523,7 @@ func TestGitTimeout_Custom(t *testing.T) {
 }
 
 func TestGitRunUsesContext(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1494,6 +1534,7 @@ func TestGitRunUsesContext(t *testing.T) {
 }
 
 func TestGitOutputUsesContext(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1508,6 +1549,7 @@ func TestGitOutputUsesContext(t *testing.T) {
 }
 
 func TestGitRunInDirUsesContext(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1517,6 +1559,7 @@ func TestGitRunInDirUsesContext(t *testing.T) {
 }
 
 func TestGitOutputInDirUsesContext(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1530,6 +1573,7 @@ func TestGitOutputInDirUsesContext(t *testing.T) {
 }
 
 func TestEffectiveGitTimeout_Default(t *testing.T) {
+	t.Parallel()
 	cfg := model.WorktreeConfig{}
 	if cfg.EffectiveGitTimeout() != 120 {
 		t.Errorf("default EffectiveGitTimeout = %d, want 120", cfg.EffectiveGitTimeout())
@@ -1537,6 +1581,7 @@ func TestEffectiveGitTimeout_Default(t *testing.T) {
 }
 
 func TestEffectiveGitTimeout_Custom(t *testing.T) {
+	t.Parallel()
 	cfg := model.WorktreeConfig{GitTimeoutSec: model.IntPtr(60)}
 	if cfg.EffectiveGitTimeout() != 60 {
 		t.Errorf("custom EffectiveGitTimeout = %d, want 60", cfg.EffectiveGitTimeout())
@@ -1548,6 +1593,7 @@ func TestEffectiveGitTimeout_Custom(t *testing.T) {
 // TestCommitWorkerChanges_MaxFilesExceeded verifies that CommitWorkerChanges
 // rejects commits that exceed the configured max files limit.
 func TestCommitWorkerChanges_MaxFilesExceeded(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 	wm.config.CommitPolicy.MaxFiles = model.IntPtr(3) // Set a low limit for testing
@@ -1581,6 +1627,7 @@ func TestCommitWorkerChanges_MaxFilesExceeded(t *testing.T) {
 // TestCommitWorkerChanges_MaxFilesWithinLimit verifies that commits within the
 // file limit succeed.
 func TestCommitWorkerChanges_MaxFilesWithinLimit(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 	wm.config.CommitPolicy.MaxFiles = model.IntPtr(5)
@@ -1610,6 +1657,7 @@ func TestCommitWorkerChanges_MaxFilesWithinLimit(t *testing.T) {
 // TestCommitWorkerChanges_MissingGitignore verifies that CommitWorkerChanges
 // rejects commits when .gitignore is missing and RequireGitignore is true.
 func TestCommitWorkerChanges_MissingGitignore(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 	wm.config.CommitPolicy.RequireGitignore = true
@@ -1643,6 +1691,7 @@ func TestCommitWorkerChanges_MissingGitignore(t *testing.T) {
 // TestCommitWorkerChanges_GitignorePresent verifies that commits succeed when
 // .gitignore is present.
 func TestCommitWorkerChanges_GitignorePresent(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 	wm.config.CommitPolicy.RequireGitignore = true
@@ -1673,6 +1722,7 @@ func TestCommitWorkerChanges_GitignorePresent(t *testing.T) {
 // TestCommitWorkerChanges_MessageFormatInvalid verifies that commits with
 // invalid message format are rejected.
 func TestCommitWorkerChanges_MessageFormatInvalid(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 	wm.config.CommitPolicy.MessagePattern = `^.+`
@@ -1707,6 +1757,7 @@ func TestCommitWorkerChanges_MessageFormatInvalid(t *testing.T) {
 // TestCommitWorkerChanges_MessageFormatValid verifies that commits with valid
 // message format succeed.
 func TestCommitWorkerChanges_MessageFormatValid(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 	wm.config.CommitPolicy.MessagePattern = `^.+`
@@ -1736,6 +1787,7 @@ func TestCommitWorkerChanges_MessageFormatValid(t *testing.T) {
 // TestCommitWorkerChanges_RequireGitignoreDisabled verifies that commits succeed
 // without .gitignore when RequireGitignore is explicitly set to false.
 func TestCommitWorkerChanges_RequireGitignoreDisabled(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 	// Explicitly set a non-zero policy with RequireGitignore=false
@@ -1768,9 +1820,11 @@ func TestCommitWorkerChanges_RequireGitignoreDisabled(t *testing.T) {
 
 // TestCheckCommitPolicy_Unit tests the checkCommitPolicy method directly.
 func TestCheckCommitPolicy_Unit(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 
 	t.Run("all_checks_pass", func(t *testing.T) {
+		t.Parallel()
 		wm := newTestWorktreeManager(t, projectRoot)
 		wm.config.CommitPolicy.MaxFiles = model.IntPtr(30)
 		wm.config.CommitPolicy.MessagePattern = `^.+`
@@ -1783,6 +1837,7 @@ func TestCheckCommitPolicy_Unit(t *testing.T) {
 	})
 
 	t.Run("max_files_exceeded", func(t *testing.T) {
+		t.Parallel()
 		wm := newTestWorktreeManager(t, projectRoot)
 		wm.config.CommitPolicy.MaxFiles = model.IntPtr(2)
 		wm.config.CommitPolicy.MessagePattern = `^.+`
@@ -1795,6 +1850,7 @@ func TestCheckCommitPolicy_Unit(t *testing.T) {
 	})
 
 	t.Run("message_format_invalid", func(t *testing.T) {
+		t.Parallel()
 		wm := newTestWorktreeManager(t, projectRoot)
 		wm.config.CommitPolicy.MaxFiles = model.IntPtr(30)
 		wm.config.CommitPolicy.MessagePattern = `^.+`
@@ -1807,6 +1863,7 @@ func TestCheckCommitPolicy_Unit(t *testing.T) {
 	})
 
 	t.Run("multiple_violations", func(t *testing.T) {
+		t.Parallel()
 		wm := newTestWorktreeManager(t, projectRoot)
 		wm.config.CommitPolicy.MaxFiles = model.IntPtr(1)
 		wm.config.CommitPolicy.RequireGitignore = true
@@ -1824,7 +1881,9 @@ func TestCheckCommitPolicy_Unit(t *testing.T) {
 
 // TestSetWorkerStatus validates that status transitions are enforced via setWorkerStatus.
 func TestSetWorkerStatus(t *testing.T) {
+	t.Parallel()
 	t.Run("valid_transition", func(t *testing.T) {
+		t.Parallel()
 		projectRoot := initTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1846,6 +1905,7 @@ func TestSetWorkerStatus(t *testing.T) {
 	})
 
 	t.Run("invalid_transition_rejected", func(t *testing.T) {
+		t.Parallel()
 		projectRoot := initTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1865,6 +1925,7 @@ func TestSetWorkerStatus(t *testing.T) {
 	})
 
 	t.Run("created_to_integrated_rejected", func(t *testing.T) {
+		t.Parallel()
 		projectRoot := initTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1880,6 +1941,7 @@ func TestSetWorkerStatus(t *testing.T) {
 	})
 
 	t.Run("integrated_to_committed_allowed", func(t *testing.T) {
+		t.Parallel()
 		// Regression: cross-phase commit on a worker still in `integrated` state
 		// (e.g. verification phase reusing a worker from a previously merged phase)
 		// must be permitted instead of returning "invalid worktree transition".
@@ -1900,6 +1962,7 @@ func TestSetWorkerStatus(t *testing.T) {
 	})
 
 	t.Run("self_transition_committed", func(t *testing.T) {
+		t.Parallel()
 		projectRoot := initTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1916,7 +1979,9 @@ func TestSetWorkerStatus(t *testing.T) {
 
 // TestSetIntegrationStatus validates that integration status transitions are enforced.
 func TestSetIntegrationStatus(t *testing.T) {
+	t.Parallel()
 	t.Run("valid_transition", func(t *testing.T) {
+		t.Parallel()
 		projectRoot := initTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1937,6 +2002,7 @@ func TestSetIntegrationStatus(t *testing.T) {
 	})
 
 	t.Run("terminal_rejected", func(t *testing.T) {
+		t.Parallel()
 		projectRoot := initTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1957,6 +2023,7 @@ func TestSetIntegrationStatus(t *testing.T) {
 	})
 
 	t.Run("failed_to_merging_allowed", func(t *testing.T) {
+		t.Parallel()
 		projectRoot := initTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1973,6 +2040,7 @@ func TestSetIntegrationStatus(t *testing.T) {
 	})
 
 	t.Run("merged_to_merging_allowed", func(t *testing.T) {
+		t.Parallel()
 		projectRoot := initTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
@@ -1991,6 +2059,7 @@ func TestSetIntegrationStatus(t *testing.T) {
 
 // TestIsSensitiveFile tests the sensitive file pattern matching.
 func TestIsSensitiveFile(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		sensitive bool
@@ -2017,6 +2086,7 @@ func TestIsSensitiveFile(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := isSensitiveFile(tt.name)
 			if got != tt.sensitive {
 				t.Errorf("isSensitiveFile(%q) = %v, want %v", tt.name, got, tt.sensitive)
@@ -2029,6 +2099,7 @@ func TestIsSensitiveFile(t *testing.T) {
 // occurs, successfully merged workers are preserved (partial merge) and integration
 // status is set to partial_merge.
 func TestMergeToIntegration_PartialMergeOnConflict(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -2148,6 +2219,7 @@ func TestMergeToIntegration_PartialMergeOnConflict(t *testing.T) {
 // TestMergeToIntegration_AllConflict verifies that when all workers conflict,
 // integration status is set to "conflict" (not partial_merge).
 func TestMergeToIntegration_AllConflict(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -2212,6 +2284,7 @@ func TestMergeToIntegration_AllConflict(t *testing.T) {
 // the index/working tree are at the old commit while HEAD points to the new merge commit.
 // git stash create captures this divergence as a stash ref, which is saved as a durable ref.
 func TestPublishToBase_DurableStashRefCreated(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -2270,6 +2343,7 @@ func TestPublishToBase_DurableStashRefCreated(t *testing.T) {
 // fails (e.g., due to a corrupted index), PublishToBase still completes successfully.
 // This ensures stash create failure is non-fatal (the primary defense is CAS + dirty check).
 func TestPublishToBase_StashCreateFailureContinues(t *testing.T) {
+	t.Parallel()
 	// This test verifies the non-fatal path by doing a normal publish.
 	// In practice, stash create failure is rare (requires index corruption or similar).
 	// We test the happy path to confirm the stash create call doesn't break normal flow.
@@ -2317,6 +2391,7 @@ func TestPublishToBase_StashCreateFailureContinues(t *testing.T) {
 // files are sensitive (e.g. .env), CommitWorkerChanges returns
 // ErrAllFilesFiltered (wrapped) so callers can detect via errors.Is.
 func TestCommitWorkerChanges_AllFilesFiltered(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -2345,6 +2420,7 @@ func TestCommitWorkerChanges_AllFilesFiltered(t *testing.T) {
 // TestCommitWorkerChanges_PolicyViolationMaxFiles verifies that exceeding
 // CommitPolicy.MaxFiles returns *CommitPolicyViolationError detectable via errors.As.
 func TestCommitWorkerChanges_PolicyViolationMaxFiles(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	maestroDir := filepath.Join(projectRoot, ".maestro")
 	if err := os.MkdirAll(maestroDir, 0755); err != nil {
