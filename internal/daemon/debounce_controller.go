@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"sync"
+	"runtime/debug"
 	"sync/atomic"
 	"time"
 )
@@ -132,7 +133,7 @@ func (dc *DebounceController) Trigger(trigger string) {
 
 			defer func() {
 				if r := recover(); r != nil {
-					dc.dl.Logf(LogLevelError, "panic in debounceAndScan: %v", r)
+					dc.dl.Logf(LogLevelError, "panic in debounceAndScan: %v\n%s", r, debug.Stack())
 					if dc.shutdownFn != nil {
 						dc.shutdownFn()
 					}
