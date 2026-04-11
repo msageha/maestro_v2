@@ -1586,7 +1586,7 @@ func TestNotificationDispatch_ExpiredLeaseUnblocks(t *testing.T) {
 func TestMixedQueue_ExpiredLeasesPrioritizeRecovery(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
-	qh.busyChecker = BusyCheckerFunc(func(string) bool { return false })
+	qh.scanExecutor.busyChecker = BusyCheckerFunc(func(string) bool { return false })
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	owner := "worker1"

@@ -174,7 +174,7 @@ func (qh *QueueHandler) collectExpiredTaskBusyChecks(tq *taskQueueEntry, agentID
 			if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
 				qh.log(LogLevelError, "expire_release_failed type=task id=%s error=%v", task.ID, err)
 			}
-			qh.scanCounters.LeaseReleases++
+			qh.scanExecutor.scanCounters.LeaseReleases++
 			*dirty = true
 			continue
 		}
@@ -193,7 +193,7 @@ func (qh *QueueHandler) collectExpiredTaskBusyChecks(tq *taskQueueEntry, agentID
 			if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
 				qh.log(LogLevelError, "expire_release_failed type=task id=%s error=%v", task.ID, err)
 			}
-			qh.scanCounters.LeaseReleases++
+			qh.scanExecutor.scanCounters.LeaseReleases++
 			*dirty = true
 		}
 	}
@@ -217,7 +217,7 @@ func (qh *QueueHandler) preemptiveCommandRenewal(cq *model.CommandQueue, dirty *
 			if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
 				qh.log(LogLevelError, "expire_release_failed type=command id=%s error=%v", cmd.ID, err)
 			}
-			qh.scanCounters.LeaseReleases++
+			qh.scanExecutor.scanCounters.LeaseReleases++
 			*dirty = true
 			continue
 		}
@@ -226,7 +226,7 @@ func (qh *QueueHandler) preemptiveCommandRenewal(cq *model.CommandQueue, dirty *
 			continue
 		}
 		qh.log(LogLevelDebug, "command_lease_renewed id=%s epoch=%d", cmd.ID, cmd.LeaseEpoch)
-		qh.scanCounters.LeaseRenewals++
+		qh.scanExecutor.scanCounters.LeaseRenewals++
 		*dirty = true
 	}
 }
@@ -252,7 +252,7 @@ func (qh *QueueHandler) autoExtendExpiredCommandLeases(cq *model.CommandQueue, d
 			if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
 				qh.log(LogLevelError, "expire_release_failed type=command id=%s error=%v", cmd.ID, err)
 			}
-			qh.scanCounters.LeaseReleases++
+			qh.scanExecutor.scanCounters.LeaseReleases++
 			*dirty = true
 			continue
 		}
@@ -266,7 +266,7 @@ func (qh *QueueHandler) autoExtendExpiredCommandLeases(cq *model.CommandQueue, d
 			continue
 		}
 		qh.log(LogLevelDebug, "command_lease_auto_extend id=%s epoch=%d", cmd.ID, cmd.LeaseEpoch)
-		qh.scanCounters.LeaseExtensions++
+		qh.scanExecutor.scanCounters.LeaseExtensions++
 		*dirty = true
 	}
 }
@@ -312,7 +312,7 @@ func (qh *QueueHandler) checkPendingDependencyFailuresDeferred(tq *taskQueueEntr
 
 	if len(cancelledResults) > 0 && workerID != "" {
 		qh.cancelHandler.WriteSyntheticResults(cancelledResults, workerID)
-		qh.scanCounters.TasksCancelled += len(cancelledResults)
+		qh.scanExecutor.scanCounters.TasksCancelled += len(cancelledResults)
 	}
 	return dirty // pending tasks have no interrupt items
 }
@@ -374,7 +374,7 @@ func (qh *QueueHandler) checkInProgressDependencyFailuresDeferred(tq *taskQueueE
 
 	if len(cancelledResults) > 0 && workerID != "" {
 		qh.cancelHandler.WriteSyntheticResults(cancelledResults, workerID)
-		qh.scanCounters.TasksCancelled += len(cancelledResults)
+		qh.scanExecutor.scanCounters.TasksCancelled += len(cancelledResults)
 	}
 	return dirty, interrupts
 }

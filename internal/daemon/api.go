@@ -59,7 +59,7 @@ func (a *API) handleTaskHeartbeat(req *uds.Request) *uds.Response {
 		d.handler.leaseManager,
 		d.logger,
 		d.logLevel,
-		&d.handler.scanMu,
+		&d.handler.scanExecutor.scanMu,
 		d.lockMap,
 	)
 	return heartbeatHandler.Handle(req.Params)

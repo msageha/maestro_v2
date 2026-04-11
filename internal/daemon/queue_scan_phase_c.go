@@ -12,16 +12,10 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
-// periodicScanPhaseC runs under scanMu.Lock. It reloads queues from disk,
-// applies Phase B results with epoch fencing, flushes, and runs post-flush steps.
-// Returns deferred notifications from reconciliation that must be executed outside the lock.
-func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []DeferredNotification {
-	qh.scanMu.Lock()
-	defer qh.scanMu.Unlock()
-
-	// Restore counters accumulated during Phase A
-	qh.scanCounters = pa.counters
-
+// periodicScanPhaseC has been moved to ScanPhaseExecutor (scan_phase_executor.go).
+// executeScanPhaseCBody contains Phase C's logic, called by ScanPhaseExecutor
+// after lock acquisition and counter restoration.
+func (qh *QueueHandler) executeScanPhaseCBody(se *ScanPhaseExecutor, pa phaseAResult, pb phaseBResult) []DeferredNotification {
 	// Load queues once for the entire phase (reused by metrics step below)
 	commandQueue, commandPath := qh.loadCommandQueue()
 	taskQueues := qh.loadAllTaskQueues()
@@ -66,7 +60,7 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 					continue
 				}
 				taskDirty[m.QueueFile] = true
-				qh.scanCounters.TasksCancelled++
+				se.scanCounters.TasksCancelled++
 				if m.WorkerID != "" {
 					syntheticByWorker[m.WorkerID] = append(syntheticByWorker[m.WorkerID], res)
 				}
@@ -257,7 +251,7 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 	// Step 2.5: Result notification retry
 	if qh.resultHandler != nil {
 		n := qh.resultHandler.ScanAllResults()
-		qh.scanCounters.NotificationRetries += n
+		se.scanCounters.NotificationRetries += n
 		if n > 0 {
 			qh.log(LogLevelInfo, "result_notify_scan notified=%d", n)
 		}
@@ -268,7 +262,7 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 	if qh.reconciler != nil {
 		repairs, notifs := qh.reconciler.Reconcile()
 		deferredNotifs = notifs
-		qh.scanCounters.ReconciliationRepairs += len(repairs)
+		se.scanCounters.ReconciliationRepairs += len(repairs)
 		for _, repair := range repairs {
 			qh.log(LogLevelInfo, "reconciliation pattern=%s command=%s task=%s detail=%s",
 				repair.Pattern, repair.CommandID, repair.TaskID, repair.Detail)
@@ -282,7 +276,7 @@ func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []D
 			WorktreeCommandsStalled: qh.countWorktreeCommandsStalled(commandQueue),
 			BakFilesCount:           countBakFiles(qh.maestroDir),
 		}
-		if err := qh.metricsHandler.UpdateMetrics(commandQueue, taskQueues, notificationQueue, pa.scanStart, scanDuration, &qh.scanCounters, gauges); err != nil {
+		if err := qh.metricsHandler.UpdateMetrics(commandQueue, taskQueues, notificationQueue, pa.scanStart, scanDuration, &se.scanCounters, gauges); err != nil {
 			qh.log(LogLevelError, "update_metrics error=%v", err)
 		}
 		if err := qh.metricsHandler.UpdateDashboard(commandQueue, taskQueues, notificationQueue); err != nil {
