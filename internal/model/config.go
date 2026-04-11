@@ -20,6 +20,20 @@ const MinWorkers = 1
 // MaxWorkers is the maximum allowed worker count.
 const MaxWorkers = 8
 
+// Upper-bound constants for numeric config fields to prevent resource exhaustion.
+const (
+	MaxBusyCheckMaxRetries        = 1000
+	MaxWaitReadyMaxRetries        = 1000
+	MaxDispatchLeaseSec           = 3600
+	MaxMaxInProgressMin           = 1440
+	MaxShutdownTimeoutSec         = 600
+	MaxMaxPendingCommands         = 1000
+	MaxMaxPendingTasksPerWorker   = 100
+	MaxMaxDeadLetterArchiveFiles  = 10000
+	MaxMaxQuarantineFiles         = 10000
+	MaxMaxWorktrees               = 256
+)
+
 // IntPtr returns a pointer to the given int value.
 // Used for setting *int config fields in tests and struct literals.
 func IntPtr(v int) *int { return &v }
@@ -1042,8 +1056,8 @@ func (c Config) Validate() error {
 	if c.Watcher.BusyCheckInterval < 0 {
 		errs = append(errs, fmt.Errorf("watcher.busy_check_interval: must be >= 0"))
 	}
-	if c.Watcher.BusyCheckMaxRetries < 0 {
-		errs = append(errs, fmt.Errorf("watcher.busy_check_max_retries: must be >= 0"))
+	if c.Watcher.BusyCheckMaxRetries < 0 || c.Watcher.BusyCheckMaxRetries > MaxBusyCheckMaxRetries {
+		errs = append(errs, fmt.Errorf("watcher.busy_check_max_retries: must be between 0 and %d", MaxBusyCheckMaxRetries))
 	}
 	if c.Watcher.IdleStableSec < 0 {
 		errs = append(errs, fmt.Errorf("watcher.idle_stable_sec: must be >= 0"))
@@ -1051,11 +1065,11 @@ func (c Config) Validate() error {
 	if c.Watcher.ScanIntervalSec < 0 {
 		errs = append(errs, fmt.Errorf("watcher.scan_interval_sec: must be >= 0"))
 	}
-	if c.Watcher.DispatchLeaseSec < 0 {
-		errs = append(errs, fmt.Errorf("watcher.dispatch_lease_sec: must be >= 0"))
+	if c.Watcher.DispatchLeaseSec < 0 || c.Watcher.DispatchLeaseSec > MaxDispatchLeaseSec {
+		errs = append(errs, fmt.Errorf("watcher.dispatch_lease_sec: must be between 0 and %d", MaxDispatchLeaseSec))
 	}
-	if c.Watcher.MaxInProgressMin != nil && *c.Watcher.MaxInProgressMin < 0 {
-		errs = append(errs, fmt.Errorf("watcher.max_in_progress_min: must be >= 0"))
+	if c.Watcher.MaxInProgressMin != nil && (*c.Watcher.MaxInProgressMin < 0 || *c.Watcher.MaxInProgressMin > MaxMaxInProgressMin) {
+		errs = append(errs, fmt.Errorf("watcher.max_in_progress_min: must be between 0 and %d", MaxMaxInProgressMin))
 	}
 	if c.Watcher.DebounceSec < 0 {
 		errs = append(errs, fmt.Errorf("watcher.debounce_sec: must be >= 0"))
@@ -1069,8 +1083,8 @@ func (c Config) Validate() error {
 	if c.Watcher.WaitReadyIntervalSec < 0 {
 		errs = append(errs, fmt.Errorf("watcher.wait_ready_interval_sec: must be >= 0"))
 	}
-	if c.Watcher.WaitReadyMaxRetries < 0 {
-		errs = append(errs, fmt.Errorf("watcher.wait_ready_max_retries: must be >= 0"))
+	if c.Watcher.WaitReadyMaxRetries < 0 || c.Watcher.WaitReadyMaxRetries > MaxWaitReadyMaxRetries {
+		errs = append(errs, fmt.Errorf("watcher.wait_ready_max_retries: must be between 0 and %d", MaxWaitReadyMaxRetries))
 	}
 	if c.Watcher.ClearConfirmTimeoutSec < 0 {
 		errs = append(errs, fmt.Errorf("watcher.clear_confirm_timeout_sec: must be >= 0"))
@@ -1119,19 +1133,25 @@ func (c Config) Validate() error {
 	}
 
 	// limits
-	if c.Limits.MaxPendingCommands < 0 {
-		errs = append(errs, fmt.Errorf("limits.max_pending_commands: must be >= 0"))
+	if c.Limits.MaxPendingCommands < 0 || c.Limits.MaxPendingCommands > MaxMaxPendingCommands {
+		errs = append(errs, fmt.Errorf("limits.max_pending_commands: must be between 0 and %d", MaxMaxPendingCommands))
 	}
-	if c.Limits.MaxPendingTasksPerWorker < 0 {
-		errs = append(errs, fmt.Errorf("limits.max_pending_tasks_per_worker: must be >= 0"))
+	if c.Limits.MaxPendingTasksPerWorker < 0 || c.Limits.MaxPendingTasksPerWorker > MaxMaxPendingTasksPerWorker {
+		errs = append(errs, fmt.Errorf("limits.max_pending_tasks_per_worker: must be between 0 and %d", MaxMaxPendingTasksPerWorker))
+	}
+	if c.Limits.MaxDeadLetterArchiveFiles != nil && (*c.Limits.MaxDeadLetterArchiveFiles < 0 || *c.Limits.MaxDeadLetterArchiveFiles > MaxMaxDeadLetterArchiveFiles) {
+		errs = append(errs, fmt.Errorf("limits.max_dead_letter_archive_files: must be between 0 and %d", MaxMaxDeadLetterArchiveFiles))
+	}
+	if c.Limits.MaxQuarantineFiles != nil && (*c.Limits.MaxQuarantineFiles < 0 || *c.Limits.MaxQuarantineFiles > MaxMaxQuarantineFiles) {
+		errs = append(errs, fmt.Errorf("limits.max_quarantine_files: must be between 0 and %d", MaxMaxQuarantineFiles))
 	}
 	if c.Limits.MaxEntryContentBytes < 0 {
 		errs = append(errs, fmt.Errorf("limits.max_entry_content_bytes: must be >= 0"))
 	}
 
 	// shutdown_timeout_sec
-	if c.ShutdownTimeoutSec < 0 {
-		errs = append(errs, fmt.Errorf("shutdown_timeout_sec: must be >= 0"))
+	if c.ShutdownTimeoutSec < 0 || c.ShutdownTimeoutSec > MaxShutdownTimeoutSec {
+		errs = append(errs, fmt.Errorf("shutdown_timeout_sec: must be between 0 and %d", MaxShutdownTimeoutSec))
 	}
 
 	// circuit_breaker
@@ -1244,8 +1264,8 @@ func (c Config) Validate() error {
 		if c.Worktree.GC.TTLHours != nil && *c.Worktree.GC.TTLHours <= 0 {
 			errs = append(errs, fmt.Errorf("worktree.gc.ttl_hours: must be > 0 when gc is enabled"))
 		}
-		if c.Worktree.GC.MaxWorktrees != nil && *c.Worktree.GC.MaxWorktrees <= 0 {
-			errs = append(errs, fmt.Errorf("worktree.gc.max_worktrees: must be > 0 when gc is enabled"))
+		if c.Worktree.GC.MaxWorktrees != nil && (*c.Worktree.GC.MaxWorktrees <= 0 || *c.Worktree.GC.MaxWorktrees > MaxMaxWorktrees) {
+			errs = append(errs, fmt.Errorf("worktree.gc.max_worktrees: must be between 1 and %d when gc is enabled", MaxMaxWorktrees))
 		}
 	}
 

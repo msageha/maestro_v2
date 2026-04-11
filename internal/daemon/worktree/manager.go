@@ -381,6 +381,14 @@ func (wm *Manager) HasWorktrees(commandID string) bool {
 	if err := validateIDs(commandID); err != nil {
 		return false
 	}
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+	return wm.hasWorktreesUnlocked(commandID)
+}
+
+// hasWorktreesUnlocked is the lock-free version of HasWorktrees for use by
+// callers that already hold wm.mu.
+func (wm *Manager) hasWorktreesUnlocked(commandID string) bool {
 	statePath := filepath.Join(wm.maestroDir, "state", "worktrees", commandID+".yaml")
 	_, err := os.Stat(statePath)
 	return err == nil

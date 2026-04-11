@@ -61,8 +61,36 @@ func TestRunTaskHeartbeat_FlagParsing(t *testing.T) {
 	}
 }
 
+func TestRunTaskHeartbeat_MissingEpoch(t *testing.T) {
+	err := newCLIApp().runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "w1"})
+	if err == nil {
+		t.Fatal("expected error for missing --epoch")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !strings.Contains(ce.Msg, "--epoch is required") {
+		t.Errorf("expected '--epoch is required' in error, got: %s", ce.Msg)
+	}
+}
+
+func TestRunTaskHeartbeat_EpochZeroIsValid(t *testing.T) {
+	withMaestroDir(t)
+	app := newTestApp(&mockUDSClient{
+		sendCommandFunc: func(command string, params any) (*uds.Response, error) {
+			return successResponse(nil), nil
+		},
+	})
+
+	err := app.runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "w1", "--epoch", "0"})
+	if err != nil {
+		t.Fatalf("unexpected error: epoch 0 should be valid: %v", err)
+	}
+}
+
 func TestRunTaskHeartbeat_InvalidTaskID(t *testing.T) {
-	err := newCLIApp().runTaskHeartbeat([]string{"--task-id", "../evil", "--worker-id", "w1"})
+	err := newCLIApp().runTaskHeartbeat([]string{"--task-id", "../evil", "--worker-id", "w1", "--epoch", "1"})
 	if err == nil {
 		t.Fatal("expected error for invalid task-id")
 	}
@@ -76,7 +104,7 @@ func TestRunTaskHeartbeat_InvalidTaskID(t *testing.T) {
 }
 
 func TestRunTaskHeartbeat_InvalidWorkerID(t *testing.T) {
-	err := newCLIApp().runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "../evil"})
+	err := newCLIApp().runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "../evil", "--epoch", "1"})
 	if err == nil {
 		t.Fatal("expected error for invalid worker-id")
 	}
@@ -114,7 +142,7 @@ func TestRunTaskHeartbeat_UDSMaxRuntimeExceeded(t *testing.T) {
 		},
 	})
 
-	err := app.runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "w1"})
+	err := app.runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "w1", "--epoch", "1"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -138,7 +166,7 @@ func TestRunTaskHeartbeat_UDSOtherError(t *testing.T) {
 		},
 	})
 
-	err := app.runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "w1"})
+	err := app.runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "w1", "--epoch", "1"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -159,7 +187,7 @@ func TestRunTaskHeartbeat_UDSGenericFailure(t *testing.T) {
 		},
 	})
 
-	err := app.runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "w1"})
+	err := app.runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "w1", "--epoch", "1"})
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -180,7 +208,7 @@ func TestRunTaskHeartbeat_UDSConnError(t *testing.T) {
 		},
 	})
 
-	err := app.runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "w1"})
+	err := app.runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "w1", "--epoch", "1"})
 	if err == nil {
 		t.Fatal("expected error")
 	}

@@ -95,6 +95,11 @@ func (wm *Manager) CleanupCommand(commandID string) error {
 		log.Printf("WARN: failed to remove state file %s: %v", statePath, err)
 	}
 
+	// M5: Remove per-command resolver lock to prevent memory leak.
+	// Safe after cleanup: all worktrees/branches/state are gone; any future
+	// operation on the same commandID will allocate a fresh mutex via LoadOrStore.
+	wm.cmdLocks.Delete(commandID)
+
 	wm.Log(core.LogLevelInfo, "cleanup_complete command=%s", commandID)
 	return nil
 }
@@ -357,6 +362,9 @@ func (wm *Manager) cleanupCommandUnlocked(commandID string, state *model.Worktre
 	if err := os.Remove(statePath); err != nil {
 		log.Printf("WARN: failed to remove state file %s: %v", statePath, err)
 	}
+
+	// M5: Remove per-command resolver lock to prevent memory leak.
+	wm.cmdLocks.Delete(commandID)
 
 	return nil
 }
