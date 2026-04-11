@@ -55,7 +55,7 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 			state, err := run.loadWorktreeState(statePath)
 			if err != nil {
 				if !os.IsNotExist(err) {
-					run.log(core.LogLevelError, "R7 load_worktree_state command=%s error=%v", commandID, err)
+					run.Log(core.LogLevelError, "R7 load_worktree_state command=%s error=%v", commandID, err)
 				}
 				return nil, nil
 			}
@@ -75,7 +75,7 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 				}
 
 				if ws.ConflictResolutionAttempts >= maxConflictResolutionAttempts {
-					run.log(core.LogLevelWarn, "R7 conflict_escalation command=%s worker=%s attempts=%d",
+					run.Log(core.LogLevelWarn, "R7 conflict_escalation command=%s worker=%s attempts=%d",
 						commandID, ws.WorkerID, ws.ConflictResolutionAttempts)
 					commandNotifications = append(commandNotifications, DeferredNotification{
 						Kind:      NotifyConflictEscalation,
@@ -91,7 +91,7 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 					continue
 				}
 
-				run.log(core.LogLevelInfo, "R7 conflict_resolution command=%s worker=%s attempt=%d",
+				run.Log(core.LogLevelInfo, "R7 conflict_resolution command=%s worker=%s attempt=%d",
 					commandID, ws.WorkerID, ws.ConflictResolutionAttempts+1)
 				ws.ConflictResolutionAttempts++
 				ws.Status = model.WorktreeStatusResolving
@@ -115,7 +115,7 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 				now := run.Deps.Clock.Now().UTC().Format(time.RFC3339)
 				state.UpdatedAt = now
 				if err := yamlutil.AtomicWrite(statePath, state); err != nil {
-					run.log(core.LogLevelError, "R7 write_worktree_state command=%s error=%v", commandID, err)
+					run.Log(core.LogLevelError, "R7 write_worktree_state command=%s error=%v", commandID, err)
 					return commandRepairs, nil
 				}
 			}

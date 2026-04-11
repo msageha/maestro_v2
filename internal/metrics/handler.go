@@ -17,18 +17,18 @@ import (
 
 // Handler generates and persists metrics to state/metrics.yaml.
 type Handler struct {
+	core.LogMixin
 	maestroDir string
 	config     model.Config
-	dl         *core.DaemonLogger
 	clock      core.Clock
 }
 
 // NewHandler creates a new Handler.
 func NewHandler(maestroDir string, cfg model.Config, logger *log.Logger, logLevel core.LogLevel) *Handler {
 	return &Handler{
+		LogMixin:   core.LogMixin{DL: core.NewDaemonLoggerFromLegacy("metrics", logger, logLevel)},
 		maestroDir: maestroDir,
 		config:     cfg,
-		dl:         core.NewDaemonLoggerFromLegacy("metrics", logger, logLevel),
 		clock:      core.RealClock{},
 	}
 }
@@ -136,7 +136,7 @@ func (h *Handler) loadAllResultFiles() map[string]*model.TaskResultFile {
 	entries, err := os.ReadDir(resultsDir)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			h.log(core.LogLevelWarn, "read results dir: %v", err)
+			h.Log(core.LogLevelWarn, "read results dir: %v", err)
 		}
 		return nil
 	}
@@ -151,13 +151,13 @@ func (h *Handler) loadAllResultFiles() map[string]*model.TaskResultFile {
 		path := filepath.Join(resultsDir, name)
 		data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 		if err != nil {
-			h.log(core.LogLevelWarn, "read result file %s: %v", name, err)
+			h.Log(core.LogLevelWarn, "read result file %s: %v", name, err)
 			continue
 		}
 
 		var rf model.TaskResultFile
 		if err := yamlv3.Unmarshal(data, &rf); err != nil {
-			h.log(core.LogLevelWarn, "parse result file %s: %v", name, err)
+			h.Log(core.LogLevelWarn, "parse result file %s: %v", name, err)
 			continue
 		}
 
@@ -205,6 +205,3 @@ func (h *Handler) computeQueueDepth(
 	return depth
 }
 
-func (h *Handler) log(level core.LogLevel, format string, args ...any) {
-	h.dl.Logf(level, format, args...)
-}

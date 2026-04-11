@@ -64,7 +64,7 @@ func (wm *Manager) Unquarantine(commandID string, reason string) error {
 	state.Integration.StallSignaled = false
 	state.UpdatedAt = now
 
-	wm.log(core.LogLevelInfo, "unquarantine command=%s reason=%q", commandID, reason)
+	wm.Log(core.LogLevelInfo, "unquarantine command=%s reason=%q", commandID, reason)
 	if err := wm.saveState(commandID, state); err != nil {
 		return fmt.Errorf("save state: %w", err)
 	}
@@ -121,7 +121,7 @@ func (wm *Manager) ResumeMerge(commandID string) error {
 	state.Integration.MergeFailureCount = 0
 	state.UpdatedAt = now
 
-	wm.log(core.LogLevelInfo, "resume_merge command=%s prev_status=%s", commandID, s)
+	wm.Log(core.LogLevelInfo, "resume_merge command=%s prev_status=%s", commandID, s)
 	if err := wm.saveState(commandID, state); err != nil {
 		return fmt.Errorf("save state: %w", err)
 	}
@@ -182,7 +182,7 @@ func (wm *Manager) ResolveConflict(commandID, phaseID, workerID string) error {
 	}
 	state.UpdatedAt = now
 
-	wm.log(core.LogLevelInfo, "resolve_conflict command=%s phase=%s worker=%s", commandID, phaseID, workerID)
+	wm.Log(core.LogLevelInfo, "resolve_conflict command=%s phase=%s worker=%s", commandID, phaseID, workerID)
 	if err := wm.saveState(commandID, state); err != nil {
 		return fmt.Errorf("save state: %w", err)
 	}
@@ -200,7 +200,7 @@ func (wm *Manager) ResolveConflict(commandID, phaseID, workerID string) error {
 			sig.UpdatedAt = wm.clock.Now().UTC().Format(time.RFC3339)
 			return nil
 		}); serr != nil {
-			wm.log(core.LogLevelWarn, "resolve_conflict_signal_clear_failed command=%s worker=%s error=%v",
+			wm.Log(core.LogLevelWarn, "resolve_conflict_signal_clear_failed command=%s worker=%s error=%v",
 				commandID, workerID, serr)
 		}
 	}
