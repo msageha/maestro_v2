@@ -14,18 +14,10 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/msageha/maestro_v2/internal/daemon/admission"
-	"github.com/msageha/maestro_v2/internal/daemon/bandit"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
-	"github.com/msageha/maestro_v2/internal/daemon/complexity"
-	"github.com/msageha/maestro_v2/internal/daemon/evolution"
 	"github.com/msageha/maestro_v2/internal/daemon/fallback"
-	"github.com/msageha/maestro_v2/internal/daemon/featuregate"
 	"github.com/msageha/maestro_v2/internal/daemon/judge"
-	"github.com/msageha/maestro_v2/internal/daemon/learnings"
-	"github.com/msageha/maestro_v2/internal/daemon/reviewer"
 	"github.com/msageha/maestro_v2/internal/daemon/rollout"
-	"github.com/msageha/maestro_v2/internal/daemon/search"
-	"github.com/msageha/maestro_v2/internal/daemon/verification"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
@@ -192,26 +184,11 @@ func (d *Daemon) initComponents() {
 		d.worktreeManager.Reconcile()
 	}
 
-	// Review dispatcher: only when enabled
-	if d.config.Review.Enabled {
-		d.reviewDispatcher = reviewer.NewReviewDispatcher(d.config.Review)
-		d.reviewRequests = make(map[string]reviewTaskInfo)
-
-		stateDir := filepath.Join(d.maestroDir, "state")
-		tracker, err := reviewer.NewUsefulnessTracker(stateDir)
-		if err != nil {
-			d.log(LogLevelWarn, "usefulness_tracker_init_failed error=%v (reviews will run without tracking)", err)
-		} else {
-			d.usefulnessTracker = tracker
-		}
-		d.log(LogLevelInfo, "review_dispatcher enabled models=%v min_bloom=%d max_concurrent=%d",
-			d.config.Review.Models,
-			d.config.Review.EffectiveMinBloomLevel(),
-			d.config.Review.EffectiveMaxConcurrentReviews())
-	}
+	// Review coordinator: groups dispatcher + usefulness tracker
+	d.reviewCoord = newReviewCoordinator(d.config.Review, d.maestroDir, d.log)
 
 	d.initPhaseB()
-	d.initPhaseC()
+	d.phaseC = newPhaseCManager(d.config, d.getAvailableModels(), d.log)
 
 	d.eventBus = events.NewBus(d.ctx, 100)
 	d.handler.SetEventBus(d.eventBus)
@@ -244,55 +221,11 @@ func (d *Daemon) startRuntime() error {
 	}
 
 	// Start review results monitoring goroutine
-	if d.reviewDispatcher != nil {
-		d.eg.Go(func() error { d.monitorReviewResults(); return nil })
+	if d.reviewCoord.Enabled() {
+		d.eg.Go(func() error { d.reviewCoord.MonitorResults(); return nil })
 	}
 
 	return nil
-}
-
-// monitorReviewResults drains the review dispatcher's results channel and
-// records each result in the usefulness tracker. Runs until the channel is
-// closed (by ReviewDispatcher.Close during shutdown).
-func (d *Daemon) monitorReviewResults() {
-	for result := range d.reviewDispatcher.Results() {
-		d.log(LogLevelInfo, "review_result_received request=%s model=%s status=%s findings=%d",
-			result.RequestID, result.ReviewerModel, result.Status, len(result.Findings))
-
-		if d.usefulnessTracker == nil {
-			continue
-		}
-
-		// Extract taskID from the requestID format "review-{taskID}-{nanoTimestamp}"
-		taskID := extractTaskIDFromRequestID(result.RequestID)
-
-		d.reviewReqMu.Lock()
-		info, ok := d.reviewRequests[taskID]
-		if ok {
-			delete(d.reviewRequests, taskID)
-		}
-		d.reviewReqMu.Unlock()
-
-		if !ok {
-			d.log(LogLevelWarn, "review_result_orphaned request=%s task=%s (no matching dispatch record)",
-				result.RequestID, taskID)
-			continue
-		}
-
-		// Convert to tracker format
-		trackerResult := reviewer.ReviewResult{
-			ReviewerModel: result.ReviewerModel,
-			TaskID:        info.taskID,
-			CommandID:     info.commandID,
-		}
-		for _, f := range result.Findings {
-			trackerResult.FindingIDs = append(trackerResult.FindingIDs, f.FilePath+":"+f.Message)
-		}
-
-		if err := d.usefulnessTracker.RecordResult(trackerResult, nil); err != nil {
-			d.log(LogLevelWarn, "usefulness_record_failed request=%s error=%v", result.RequestID, err)
-		}
-	}
 }
 
 // initPhaseB initializes Phase B components: rollout manager and judge.
@@ -313,87 +246,6 @@ func (d *Daemon) initPhaseB() {
 		stubCaller := &logOnlyCaller{logger: d.logger}
 		d.judgeCaller = judge.NewJudge(stubCaller, model, timeout)
 		d.log(LogLevelInfo, "judge initialized model=%s timeout=%s", model, timeout)
-	}
-}
-
-// initPhaseC initializes Phase C components: evolution engine, bandit selector,
-// ensemble verifier, search tree, fingerprint DB, complexity scorer, and feature evaluator.
-// Each component is conditionally initialized based on its config EffectiveEnabled() flag.
-func (d *Daemon) initPhaseC() {
-	cfg := d.config
-
-	// C-1 Evolution Engine
-	if cfg.Evolution.EffectiveEnabled() {
-		strategies := make([]evolution.Strategy, 0, len(cfg.Evolution.EffectiveStrategies()))
-		for _, s := range cfg.Evolution.EffectiveStrategies() {
-			strategies = append(strategies, evolution.Strategy(s))
-		}
-		d.evolutionEngine = evolution.NewEngine(strategies, cfg.Evolution.EffectiveNoveltyThreshold())
-		d.log(LogLevelInfo, "evolution engine initialized")
-	}
-
-	// C-2 Adaptive Model Selection (§4.5.1: Daemon集約, LLMトークン消費ゼロ)
-	if cfg.Bandit.EffectiveEnabled() {
-		d.banditSelector = bandit.NewSelector(cfg.Bandit.EffectiveExplorationCoeff())
-		for _, model := range d.getAvailableModels() {
-			d.banditSelector.AddArm(model)
-		}
-		d.log(LogLevelInfo, "bandit selector initialized arms=%d", len(d.banditSelector.GetStats()))
-	}
-
-	// C-3 Extended Verification
-	if cfg.ExtendedVerification.EffectiveEnabled() {
-		d.ensembleVerifier = verification.NewVerifier()
-		for _, p := range d.ensembleVerifier.DefaultPerspectives() {
-			d.ensembleVerifier.AddPerspective(p)
-		}
-		d.log(LogLevelInfo, "ensemble verifier initialized")
-	}
-
-	// C-4 Exploratory Search (§4.5.1: Daemon集約, MCTS木管理)
-	if cfg.Search.EffectiveEnabled() {
-		d.searchTree = search.NewTree(
-			cfg.Search.EffectiveMaxDepth(),
-			cfg.Search.EffectiveMaxBranching(),
-			cfg.Search.EffectivePruneThreshold(),
-		)
-		d.searchSampler = search.NewSampler(
-			cfg.Search.EffectiveThompsonAlpha(),
-			cfg.Search.EffectiveThompsonBeta(),
-		)
-		d.log(LogLevelInfo, "search tree initialized")
-	}
-
-	// C-5 FingerprintDB (Self-Improvement)
-	if cfg.SelfImprovement.EffectiveEnabled() {
-		d.fingerprintDB = learnings.NewFingerprintDB(cfg.SelfImprovement.EffectiveArchiveMaxSize())
-		d.log(LogLevelInfo, "fingerprint DB initialized")
-	}
-
-	// C-6 Complexity Scorer (§4.5.1: Daemon前処理)
-	if cfg.Complexity.EffectiveEnabled() {
-		d.complexityScorer = complexity.NewScorer(complexity.DefaultThresholds())
-		d.log(LogLevelInfo, "complexity scorer initialized")
-	}
-
-	// C-8 Feature Gate (§4.5.1: Daemon集約, 機械的判定)
-	d.featureEvaluator = featuregate.NewEvaluator()
-	if len(cfg.FeatureProfiles) > 0 {
-		profiles := make(map[string]map[string]interface{}, len(cfg.FeatureProfiles))
-		for level, fp := range cfg.FeatureProfiles {
-			profiles[level] = map[string]interface{}{
-				"cross_agent_review":       fp.EffectiveCrossAgentReview() != "false",
-				"exploratory_optimization": fp.EffectiveExploratoryOptimization(),
-				"evolutionary_quality":     fp.EffectiveEvolutionaryQuality(),
-				"adaptive_model_selection": fp.EffectiveAdaptiveModelSelection(),
-				"self_improvement":         fp.EffectiveSelfImprovement(),
-				"adaptive_depth":           fp.EffectiveAdaptiveDepth(),
-			}
-		}
-		d.featureEvaluator.LoadProfiles(profiles)
-		d.log(LogLevelInfo, "feature evaluator initialized with %d config profiles", len(cfg.FeatureProfiles))
-	} else {
-		d.log(LogLevelInfo, "feature evaluator initialized with default profiles")
 	}
 }
 
