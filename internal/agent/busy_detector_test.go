@@ -503,17 +503,23 @@ func searchSubstring(s, substr string) bool {
 
 // --- newBusyDetector defaults ---
 
-func TestNewBusyDetector_ZeroConfigNormalized(t *testing.T) {
+func TestNewBusyDetector_ZeroConfig_BusyHintLinesNormalized(t *testing.T) {
 	bd := newBusyDetector(&mockPaneIO{}, nil, busyDetectorConfig{}, log.New(&bytes.Buffer{}, "", 0), logLevelDebug)
 
-	if bd.config.IdleStableSec != 5 {
-		t.Errorf("IdleStableSec: got %d, want 5", bd.config.IdleStableSec)
+	// BusyHintLines is the only field normalized by newBusyDetector
+	if bd.config.BusyHintLines != 5 {
+		t.Errorf("BusyHintLines: got %d, want 5", bd.config.BusyHintLines)
 	}
-	if bd.config.BusyCheckMaxRetries != 30 {
-		t.Errorf("BusyCheckMaxRetries: got %d, want 30", bd.config.BusyCheckMaxRetries)
+	// Other fields are expected to be pre-normalized via applyDefaults;
+	// newBusyDetector no longer normalizes them.
+	if bd.config.IdleStableSec != 0 {
+		t.Errorf("IdleStableSec: got %d, want 0 (not normalized by newBusyDetector)", bd.config.IdleStableSec)
 	}
-	if bd.config.BusyCheckInterval != 2 {
-		t.Errorf("BusyCheckInterval: got %d, want 2", bd.config.BusyCheckInterval)
+	if bd.config.BusyCheckMaxRetries != 0 {
+		t.Errorf("BusyCheckMaxRetries: got %d, want 0 (not normalized by newBusyDetector)", bd.config.BusyCheckMaxRetries)
+	}
+	if bd.config.BusyCheckInterval != 0 {
+		t.Errorf("BusyCheckInterval: got %d, want 0 (not normalized by newBusyDetector)", bd.config.BusyCheckInterval)
 	}
 }
 

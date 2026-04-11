@@ -123,19 +123,12 @@ func (d *Daemon) Shutdown() {
 			}
 		}
 
-		// Close review dispatcher: waits for in-flight reviews, then closes
-		// the results channel so monitorReviewResults exits cleanly.
-		if d.reviewDispatcher != nil {
-			d.reviewDispatcher.Close()
-		}
+		// Close review coordinator: waits for in-flight reviews, then closes
+		// the results channel so MonitorResults exits cleanly.
+		d.reviewCoord.Close()
 
 		// Phase C cleanup: log stats for stateful components.
-		if d.searchTree != nil {
-			d.log(LogLevelInfo, "search tree cleanup nodes=%d", d.searchTree.NodeCount())
-		}
-		if d.fingerprintDB != nil {
-			d.log(LogLevelInfo, "fingerprint DB stats patterns=%d", d.fingerprintDB.Size())
-		}
+		d.phaseC.LogShutdownStats(d.log)
 
 		// 3. Cancel context — forces loops and handlers to exit.
 		d.cancel()

@@ -353,15 +353,15 @@ func TestIsAgentBusy_WithChecker(t *testing.T) {
 	qh := newDispatchTestQH(10)
 
 	// Set a custom busy checker that returns busy for "worker1"
-	qh.busyCheckFn = func(_ context.Context, agentID string) (bool, bool) {
-		return agentID == "worker1", false
-	}
+	qh.scanExecutor.busyChecker = BusyCheckerFunc(func(agentID string) bool {
+		return agentID == "worker1"
+	})
 
-	busy1, _ := qh.isAgentBusy(nil, "worker1")
+	busy1, _ := qh.isAgentBusy(context.Background(), "worker1")
 	if !busy1 {
 		t.Error("worker1 should be busy")
 	}
-	busy2, _ := qh.isAgentBusy(nil, "worker2")
+	busy2, _ := qh.isAgentBusy(context.Background(), "worker2")
 	if busy2 {
 		t.Error("worker2 should not be busy")
 	}

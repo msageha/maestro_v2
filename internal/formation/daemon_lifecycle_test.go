@@ -56,14 +56,6 @@ func (m *mockUDSSender) SendCommand(command string, params any) (*uds.Response, 
 
 // --- Test helpers ---
 
-// withTestConfig replaces the package-level defaultConfig and restores it on cleanup.
-func withTestConfig(t *testing.T, cfg *Config) {
-	t.Helper()
-	orig := defaultConfig
-	t.Cleanup(func() { defaultConfig = orig })
-	defaultConfig = cfg
-}
-
 func withMockProcess(t *testing.T, m processManager) {
 	t.Helper()
 	orig := defaultConfig.ProcMgr

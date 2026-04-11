@@ -47,7 +47,7 @@ func newTestHeartbeatHandler(t *testing.T, d *Daemon) *TaskHeartbeatHandler {
 		d.handler.leaseManager,
 		d.logger,
 		d.logLevel,
-		&d.handler.scanMu,
+		&d.handler.scanExecutor.scanMu,
 		d.lockMap,
 	)
 }

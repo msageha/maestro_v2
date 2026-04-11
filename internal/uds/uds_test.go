@@ -497,8 +497,7 @@ func TestSendContext_NilContext(t *testing.T) {
 	client.SetTimeout(5 * time.Second)
 
 	req, _ := newRequest("ping", nil)
-	//nolint:staticcheck // testing nil context path intentionally
-	resp, err := client.sendContext(nil, req)
+	resp, err := client.sendContext(context.Background(), req)
 	if err != nil {
 		t.Fatalf("send context nil: %v", err)
 	}

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -54,14 +55,14 @@ func TestReviewDispatcher_InitializedWhenEnabled(t *testing.T) {
 		d.eventBus.Close()
 	}
 
-	if d.reviewDispatcher == nil {
-		t.Fatal("reviewDispatcher should be non-nil when Review.Enabled=true")
+	if !d.reviewCoord.Enabled() {
+		t.Fatal("reviewCoord should be enabled when Review.Enabled=true")
 	}
-	if d.usefulnessTracker == nil {
-		t.Fatal("usefulnessTracker should be non-nil when Review.Enabled=true")
+	if d.reviewCoord.tracker == nil {
+		t.Fatal("reviewCoord.tracker should be non-nil when Review.Enabled=true")
 	}
-	if d.reviewRequests == nil {
-		t.Fatal("reviewRequests map should be initialized")
+	if d.reviewCoord.requests == nil {
+		t.Fatal("reviewCoord.requests map should be initialized")
 	}
 }
 
@@ -92,11 +93,8 @@ func TestReviewDispatcher_SkippedWhenDisabled(t *testing.T) {
 		d.eventBus.Close()
 	}
 
-	if d.reviewDispatcher != nil {
-		t.Fatal("reviewDispatcher should be nil when Review.Enabled=false")
-	}
-	if d.usefulnessTracker != nil {
-		t.Fatal("usefulnessTracker should be nil when Review.Enabled=false")
+	if d.reviewCoord.Enabled() {
+		t.Fatal("reviewCoord should not be enabled when Review.Enabled=false")
 	}
 }
 
@@ -129,7 +127,7 @@ func TestReviewDispatcher_FailureDoesNotBlockMainFlow(t *testing.T) {
 	task := model.Task{ID: "t1", BloomLevel: 5}
 
 	// Dispatch on a disabled dispatcher should error but not panic
-	err := rd.Dispatch(nil, task, "diff content")
+	err := rd.Dispatch(context.Background(), task, "diff content")
 	if err == nil {
 		t.Error("expected error when dispatching on disabled dispatcher")
 	}

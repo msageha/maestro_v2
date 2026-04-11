@@ -29,24 +29,14 @@ func classifyCommitError(err error) string {
 	return "generic:" + err.Error()
 }
 
-// periodicScanPhaseB executes all slow tmux I/O operations without holding any lock.
-// Order: interrupts → busy checks → dispatches → signals (per Codex review).
-// SRE-002: accepts context for cancellation support during slow I/O.
-func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult) phaseBResult {
-	result := phaseBResult{
-		busyChecks:        make([]busyCheckResult, 0, len(pa.work.busyChecks)),
-		dispatches:        make([]dispatchResult, 0, len(pa.work.dispatches)),
-		signals:           make([]signalDeliveryResult, 0, len(pa.work.signals)),
-		recoveryHints:     make([]string, 0, len(pa.work.signals)),
-		worktreeMerges:    make([]worktreeMergeResult, 0, len(pa.work.worktreeMerges)),
-		worktreePublishes: make([]worktreePublishResult, 0, len(pa.work.worktreePublishes)),
-		worktreeCleanups:  make([]worktreeCleanupResult, 0, len(pa.work.worktreeCleanups)+len(pa.work.worktreePublishes)),
-	}
+// --- Phase B step functions (executed in order) ---
+// periodicScanPhaseB has been moved to ScanPhaseExecutor (scan_phase_executor.go).
+// Step functions below remain on QueueHandler as they access shared handler dependencies.
 
-	// 1. Execute interrupts first (before dispatches to avoid killing new tasks).
-	// H4: discard the worker's uncommitted worktree changes ONLY after the
-	// tmux interrupt has been delivered, so the worker process is no longer
-	// holding files in its working tree when the reset runs.
+// stepInterruptAgents executes interrupt requests before dispatches to avoid
+// killing newly dispatched tasks. After each interrupt, discards the worker's
+// uncommitted worktree changes (H4).
+func (qh *QueueHandler) stepInterruptAgents(ctx context.Context, pa *phaseAResult) {
 	_ = forEachUntilCanceled(ctx, pa.work.interrupts, func(item interruptItem) {
 		if err := qh.cancelHandler.interruptAgent(item.WorkerID, item.TaskID, item.CommandID, item.Epoch); err != nil {
 			qh.log(LogLevelWarn, "phase_b_interrupt worker=%s task=%s error=%v", item.WorkerID, item.TaskID, err)
@@ -58,8 +48,10 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 			}
 		}
 	})
+}
 
-	// 2. Execute busy probes for expired leases
+// stepProbeBusyAgents executes busy probes for expired leases.
+func (qh *QueueHandler) stepProbeBusyAgents(ctx context.Context, pa *phaseAResult, result *phaseBResult) {
 	_ = forEachUntilCanceled(ctx, pa.work.busyChecks, func(item busyCheckItem) {
 		busy, undecided := qh.isAgentBusy(ctx, item.AgentID)
 		result.busyChecks = append(result.busyChecks, busyCheckResult{
@@ -68,8 +60,10 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 			Undecided: undecided,
 		})
 	})
+}
 
-	// 3. Execute dispatches
+// stepDispatchWork executes command, task, and notification dispatches.
+func (qh *QueueHandler) stepDispatchWork(ctx context.Context, pa *phaseAResult, result *phaseBResult) {
 	_ = forEachUntilCanceled(ctx, pa.work.dispatches, func(item dispatchItem) {
 		var err error
 		switch item.Kind {
@@ -86,8 +80,10 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 			Error:   err,
 		})
 	})
+}
 
-	// 4. Execute signal deliveries
+// stepDeliverSignals executes planner signal deliveries via tmux.
+func (qh *QueueHandler) stepDeliverSignals(ctx context.Context, pa *phaseAResult, result *phaseBResult) {
 	_ = forEachUntilCanceled(ctx, pa.work.signals, func(item signalDeliveryItem) {
 		err := qh.deliverPlannerSignal(ctx, item.CommandID, item.Message)
 		result.signals = append(result.signals, signalDeliveryResult{
@@ -101,33 +97,41 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 				fmt.Sprintf("signal_delivery_failed command=%s: signal will be retried next scan, but planner may have stale view until then", item.CommandID))
 		}
 	})
+}
 
-	// Log partial failure summary: dispatches succeeded but related signals failed
-	if len(result.dispatches) > 0 || len(result.signals) > 0 {
-		failedDispatches := 0
-		for _, dr := range result.dispatches {
-			if !dr.Success {
-				failedDispatches++
-			}
-		}
-		failedSignals := 0
-		for _, sr := range result.signals {
-			if !sr.Success {
-				failedSignals++
-			}
-		}
-		if failedDispatches > 0 || failedSignals > 0 {
-			qh.log(LogLevelWarn, "phase_b_partial_failures dispatches_failed=%d/%d signals_failed=%d/%d",
-				failedDispatches, len(result.dispatches), failedSignals, len(result.signals))
+// stepLogPartialFailures logs a summary when dispatches or signals partially failed.
+func (qh *QueueHandler) stepLogPartialFailures(result *phaseBResult) {
+	if len(result.dispatches) == 0 && len(result.signals) == 0 {
+		return
+	}
+	failedDispatches := 0
+	for _, dr := range result.dispatches {
+		if !dr.Success {
+			failedDispatches++
 		}
 	}
+	failedSignals := 0
+	for _, sr := range result.signals {
+		if !sr.Success {
+			failedSignals++
+		}
+	}
+	if failedDispatches > 0 || failedSignals > 0 {
+		qh.log(LogLevelWarn, "phase_b_partial_failures dispatches_failed=%d/%d signals_failed=%d/%d",
+			failedDispatches, len(result.dispatches), failedSignals, len(result.signals))
+	}
+}
 
-	// 5. Execute agent clears (fire-and-forget)
+// stepClearAgents executes agent clear operations (fire-and-forget).
+func (qh *QueueHandler) stepClearAgents(ctx context.Context, pa *phaseAResult) {
 	_ = forEachUntilCanceled(ctx, pa.work.clears, func(agentID string) {
 		qh.clearAgent(ctx, agentID)
 	})
+}
 
-	// 6. Execute worktree merges (slow git I/O, outside scanMu.Lock)
+// stepCommitAndMergeWorktrees executes worktree commit and merge operations
+// (slow git I/O, outside scanMu.Lock).
+func (qh *QueueHandler) stepCommitAndMergeWorktrees(ctx context.Context, pa *phaseAResult, result *phaseBResult) {
 	_ = forEachUntilCanceled(ctx, pa.work.worktreeMerges, func(item worktreeMergeItem) {
 		mr := worktreeMergeResult{Item: item}
 
@@ -193,8 +197,11 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 
 		result.worktreeMerges = append(result.worktreeMerges, mr)
 	})
+}
 
-	// 7. Execute worktree publishes (slow git I/O, outside scanMu.Lock)
+// stepPublishWorktrees executes worktree publish operations (slow git I/O).
+// Returns additional cleanup items for successfully published commands.
+func (qh *QueueHandler) stepPublishWorktrees(ctx context.Context, pa *phaseAResult, result *phaseBResult) []worktreeCleanupItem {
 	var additionalCleanups []worktreeCleanupItem
 	if err := forEachUntilCanceled(ctx, pa.work.worktreePublishes, func(item worktreePublishItem) {
 		pr := worktreePublishResult{Item: item}
@@ -224,8 +231,12 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 	}); err != nil {
 		qh.log(LogLevelWarn, "worktree_publishes_canceled: %v", err)
 	}
+	return additionalCleanups
+}
 
-	// 8. Execute worktree cleanups (Phase A collected + post-publish)
+// stepCleanupWorktrees executes worktree cleanup operations
+// (Phase A collected items + post-publish additional cleanups).
+func (qh *QueueHandler) stepCleanupWorktrees(ctx context.Context, pa *phaseAResult, result *phaseBResult, additionalCleanups []worktreeCleanupItem) {
 	allCleanups := append(pa.work.worktreeCleanups, additionalCleanups...)
 	if err := forEachUntilCanceled(ctx, allCleanups, func(item worktreeCleanupItem) {
 		cr := worktreeCleanupResult{Item: item}
@@ -236,8 +247,6 @@ func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult)
 	}); err != nil {
 		qh.log(LogLevelWarn, "worktree_cleanups_canceled: %v", err)
 	}
-
-	return result
 }
 
 const autoCommitFallbackMessage = "auto-commit: worker changes"

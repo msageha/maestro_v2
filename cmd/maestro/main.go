@@ -59,51 +59,51 @@ func (m *modeSetter) Set(string) error { *m.target = m.val; return nil }
 func (m *modeSetter) IsBoolFlag() bool { return true }
 
 func main() {
-	os.Exit(run())
+	os.Exit(newCLIApp().run(os.Args[1:]))
 }
 
-func run() int {
-	if len(os.Args) < 2 {
+func (a *cliApp) run(args []string) int {
+	if len(args) < 1 {
 		printUsage()
 		return 1
 	}
 
 	var err error
-	switch os.Args[1] {
+	switch args[0] {
 	case "daemon":
-		err = runDaemon(os.Args[2:])
+		err = runDaemon(args[1:])
 	case "setup":
-		err = runSetup(os.Args[2:])
+		err = runSetup(args[1:])
 	case "up":
-		err = runUp(os.Args[2:])
+		err = runUp(args[1:])
 	case "down":
-		err = runDown(os.Args[2:])
+		err = runDown(args[1:])
 	case "status":
-		err = runStatus(os.Args[2:])
+		err = runStatus(args[1:])
 	case "queue":
-		err = runQueue(os.Args[2:])
+		err = a.runQueue(args[1:])
 	case "result":
-		err = runResult(os.Args[2:])
+		err = a.runResult(args[1:])
 	case "task":
-		err = runTask(os.Args[2:])
+		err = a.runTask(args[1:])
 	case "plan":
-		err = runPlan(os.Args[2:])
+		err = runPlan(args[1:])
 	case "resolve-conflict":
-		err = runResolveConflict(os.Args[2:])
+		err = runResolveConflict(args[1:])
 	case "agent":
-		err = runAgent(os.Args[2:])
+		err = runAgent(args[1:])
 	case "worker":
-		err = runWorker(os.Args[2:])
+		err = runWorker(args[1:])
 	case "skill":
-		err = runSkill(os.Args[2:])
+		err = runSkill(args[1:])
 	case "dashboard":
-		err = runDashboard(os.Args[2:])
+		err = runDashboard(args[1:])
 	case "version":
 		fmt.Printf("maestro %s\n", version)
 	case "help", "--help", "-h":
 		printUsage()
 	default:
-		fmt.Fprintf(os.Stderr, "maestro: unknown command: %s\n\n", os.Args[1])
+		fmt.Fprintf(os.Stderr, "maestro: unknown command: %s\n\n", args[0])
 		printUsage()
 		return 1
 	}

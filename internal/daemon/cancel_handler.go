@@ -18,13 +18,7 @@ import (
 
 // CancelHandler processes cancellation of commands and their tasks.
 type CancelHandler struct {
-	maestroDir      string
-	config          model.Config
-	dl              *DaemonLogger
-	logger          *log.Logger
-	logLevel        LogLevel
-	clock           Clock
-	execProvider    *ExecutorProvider
+	baseHandler
 	stateManager    StateManager
 	lockMap         *lock.MutexMap
 	worktreeManager *WorktreeManager
@@ -33,22 +27,17 @@ type CancelHandler struct {
 // NewCancelHandler creates a new CancelHandler with a shared ExecutorProvider.
 func NewCancelHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel, ep *ExecutorProvider) *CancelHandler {
 	return &CancelHandler{
-		maestroDir:   maestroDir,
-		config:       cfg,
-		dl:           NewDaemonLoggerFromLegacy("cancel_handler", logger, logLevel),
-		lockMap:      lockMap,
-		logger:       logger,
-		logLevel:     logLevel,
-		clock:        ep.clock,
-		execProvider: ep,
+		baseHandler: baseHandler{
+			maestroDir:   maestroDir,
+			config:       cfg,
+			dl:           NewDaemonLoggerFromLegacy("cancel_handler", logger, logLevel),
+			logger:       logger,
+			logLevel:     logLevel,
+			clock:        ep.clock,
+			execProvider: ep,
+		},
+		lockMap: lockMap,
 	}
-}
-
-// getExecutor returns the shared executor instance, creating it lazily on first call.
-// The Executor is safe for concurrent use (log.Logger uses internal mutex,
-// os.File in append mode is POSIX-safe, all other fields are immutable).
-func (ch *CancelHandler) getExecutor() (AgentExecutor, error) {
-	return ch.execProvider.GetExecutor()
 }
 
 // SetStateReader wires the state manager for reading and updating task states on cancellation.
@@ -297,6 +286,3 @@ func (ch *CancelHandler) interruptAgent(workerID, taskID, commandID string, leas
 	return nil
 }
 
-func (ch *CancelHandler) log(level LogLevel, format string, args ...any) {
-	ch.dl.Logf(level, format, args...)
-}

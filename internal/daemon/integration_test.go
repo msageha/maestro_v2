@@ -308,9 +308,9 @@ func newIntegrationDaemon(t *testing.T) *Daemon {
 	// handleResultWrite's Phase C spawns `go PeriodicScan()` which creates dashboard/metrics
 	// files asynchronously — wait for the full A/B/C cycle to finish, then remove.
 	t.Cleanup(func() {
-		d.handler.scanRunMu.Lock()   //nolint:staticcheck // SA2001: intentional barrier to wait for PeriodicScan cycle
-		d.handler.scanRunMu.Unlock() //nolint:staticcheck
+		d.handler.scanRunMu.Lock()
 		os.RemoveAll(d.maestroDir)
+		d.handler.scanRunMu.Unlock()
 	})
 
 	return d

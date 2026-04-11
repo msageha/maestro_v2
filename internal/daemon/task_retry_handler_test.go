@@ -1043,7 +1043,7 @@ func TestCreateRetryTask_CooldownMaxDuration(t *testing.T) {
 			}
 
 			expectedDelay := time.Duration(tt.cooldownSec) * time.Second
-			actualDelay := notBefore.Sub(time.Now())
+			actualDelay := time.Until(notBefore)
 
 			// Allow 2 second tolerance for test execution time
 			if actualDelay < expectedDelay-2*time.Second || actualDelay > expectedDelay+2*time.Second {

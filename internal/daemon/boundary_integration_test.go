@@ -36,8 +36,8 @@ func newBoundaryTestDaemon(t *testing.T) *Daemon {
 	}
 	t.Cleanup(func() {
 		d.handler.scanRunMu.Lock()
-		d.handler.scanRunMu.Unlock()
 		os.RemoveAll(d.maestroDir)
+		d.handler.scanRunMu.Unlock()
 	})
 	return d
 }
@@ -1622,8 +1622,8 @@ func TestNotificationDispatch_ExpiredLeaseUnblocks(t *testing.T) {
 func TestMixedQueue_ExpiredLeasesPrioritizeRecovery(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
-	qh := newTestQueueHandler(maestroDir,
-		WithBusyChecker(BusyCheckerFunc(func(string) bool { return false })))
+	qh := newTestQueueHandler(maestroDir)
+	qh.scanExecutor.busyChecker = BusyCheckerFunc(func(string) bool { return false })
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	owner := "worker1"

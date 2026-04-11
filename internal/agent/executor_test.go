@@ -719,6 +719,7 @@ func newTestExecutorWithLog(paneIO PaneIO) (*Executor, *bytes.Buffer) {
 		busyDetector: bd,
 		paneState:    ps,
 	}
+	exec.processManager = newClaudeProcessManager(paneIO, ps, &exec.config, execCfg, logger, logLevelDebug)
 	exec.deliverer = newMessageDeliverer(paneIO, ps, &exec.config, execCfg, logger, logLevelDebug)
 
 	return exec, &buf

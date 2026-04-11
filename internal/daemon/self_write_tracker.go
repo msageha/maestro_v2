@@ -102,6 +102,21 @@ func (t *selfWriteTracker) Consume(path string) bool {
 	return true
 }
 
+// SetStamp injects a stamp entry for a given path. Used by tests to set up
+// pre-conditions without directly accessing the internal mutex and map.
+func (t *selfWriteTracker) SetStamp(path string, stamp writeStamp) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.stamps[path] = stamp
+}
+
+// Len returns the number of tracked stamps.
+func (t *selfWriteTracker) Len() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.stamps)
+}
+
 // cleanStaleLocked removes entries past their deadline. Must be called with mu held.
 func (t *selfWriteTracker) cleanStaleLocked() {
 	now := time.Now()

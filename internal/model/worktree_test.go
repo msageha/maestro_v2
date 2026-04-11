@@ -275,7 +275,7 @@ func TestWorktreeCommandState_EmptyOptionals(t *testing.T) {
 	if len(decoded.Workers) != 0 {
 		t.Errorf("workers: expected empty, got %d", len(decoded.Workers))
 	}
-	if decoded.MergedPhases != nil && len(decoded.MergedPhases) != 0 {
+	if len(decoded.MergedPhases) != 0 {
 		t.Errorf("merged_phases: expected nil/empty, got %v", decoded.MergedPhases)
 	}
 }

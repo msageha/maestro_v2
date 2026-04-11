@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"time"
 
@@ -35,28 +34,6 @@ type BusyCheckerFunc func(agentID string) bool
 // IsBusy calls the underlying function to check whether the given agent is busy.
 func (f BusyCheckerFunc) IsBusy(agentID string) bool { return f(agentID) }
 
-// QueueHandlerOption configures optional QueueHandler behaviour.
-// Used primarily in tests to inject stubs for busy-checking and worktree-stall marking.
-type QueueHandlerOption func(*QueueHandler)
-
-// WithBusyChecker injects a custom busy-check implementation, replacing the
-// default executor-based probe.  Typical usage in tests:
-//
-//	NewQueueHandler(..., WithBusyChecker(BusyCheckerFunc(func(id string) bool { return false })))
-func WithBusyChecker(fn BusyCheckerFunc) QueueHandlerOption {
-	return func(q *QueueHandler) {
-		q.busyCheckFn = func(_ context.Context, agentID string) (bool, bool) {
-			return fn.IsBusy(agentID), false
-		}
-	}
-}
-
-// WithWorktreeStallMarkFn injects a custom worktree-stall marking function,
-// replacing the default worktreeManager.MarkIntegrationStallSignaled.
-func WithWorktreeStallMarkFn(fn func(commandID string) error) QueueHandlerOption {
-	return func(q *QueueHandler) { q.worktreeStallMarkFn = fn }
-}
-
 // QueueHandler orchestrates fsnotify event routing and periodic scan execution.
 type QueueHandler struct {
 	maestroDir string
@@ -81,39 +58,11 @@ type QueueHandler struct {
 	worktreeManager     QueueWorktreeManager
 	lockMap             *lock.MutexMap
 
-	// scanCounters accumulates counters during a single PeriodicScan cycle.
-	scanCounters ScanCounters
-
-	// debounce manages filesystem event coalescing and starvation protection.
-	debounce *DebounceController
-
-	// scanMu serializes PeriodicScan phases (exclusive) vs queue writes (shared RLock).
-	// Spec §5.6: per-agent mutex — queue writes hold RLock + per-target lockMap key.
-	scanMu sync.RWMutex
-
-	// scanRunMu serializes the full PeriodicScan cycle (Phase A → B → C).
-	// Prevents overlapping scans since Phase B releases scanMu.
-	scanRunMu sync.Mutex
-
-	// gcScanCounter counts periodic scans to trigger worktree GC at intervals.
-	gcScanCounter uint64
+	// scanExecutor handles periodic scan orchestration and scan-specific state.
+	scanExecutor *ScanPhaseExecutor
 
 	// daemonPID for lease_owner format "daemon:{pid}" per spec §5.8.1.
 	daemonPID int
-
-	// busyCheckFn probes whether an agent is currently busy.
-	// Default: executor-based probe (set in NewQueueHandler).
-	// Tests inject a stub via WithBusyChecker.
-	busyCheckFn func(ctx context.Context, agentID string) (busy, undecided bool)
-
-	// phaseDiagnoser produces diagnosis prompts for completed phases.
-	// Injected via SetPhaseDiagnoser; nil means diagnosis is skipped.
-	phaseDiagnoser PhaseDiagnoserFunc
-
-	// worktreeStallMarkFn overrides the persistence step of stepWorktreeStallDetection.
-	// When nil, worktreeManager.MarkIntegrationStallSignaled is used. Tests inject a
-	// failing implementation to exercise the integration→Failed fallback path.
-	worktreeStallMarkFn func(commandID string) error
 
 	// Shutdown guard: wired via SetShutdownGuard after construction.
 	shutdownCtx  context.Context
@@ -123,8 +72,7 @@ type QueueHandler struct {
 // NewQueueHandler creates a new QueueHandler with all sub-modules.
 // A single shared ExecutorProvider is created and injected into all handlers
 // that need executor access (Dispatcher, ResultHandler, CancelHandler).
-// Optional QueueHandlerOption values override test-injectable fields.
-func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel, opts ...QueueHandlerOption) *QueueHandler {
+func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel) *QueueHandler {
 	clock := RealClock{}
 	factory := ExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 		return agent.NewExecutor(dir, wcfg, level)
@@ -160,24 +108,9 @@ func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap
 		lockMap:             lockMap,
 		daemonPID:           os.Getpid(),
 	}
-
-	// Apply options before setting defaults so that callers can override.
-	for _, opt := range opts {
-		opt(qh)
-	}
-
-	// Default busyCheckFn: executor-based probe (production path).
-	if qh.busyCheckFn == nil {
-		qh.busyCheckFn = qh.defaultBusyCheck
-	}
-	// Default worktreeStallMarkFn: delegates to worktreeManager at call time.
-	if qh.worktreeStallMarkFn == nil {
-		qh.worktreeStallMarkFn = func(commandID string) error {
-			return qh.worktreeManager.MarkIntegrationStallSignaled(commandID)
-		}
-	}
-
-	qh.debounce = NewDebounceController(cfg.Watcher.DebounceSec, dl, qh.PeriodicScanWithContext)
+	se := newScanPhaseExecutor(qh)
+	se.debounce = NewDebounceController(cfg.Watcher.DebounceSec, dl, qh.PeriodicScanWithContext)
+	qh.scanExecutor = se
 	return qh
 }
 
@@ -189,8 +122,8 @@ func (qh *QueueHandler) leaseOwnerID() string {
 // SetStateReader wires the state manager for dependency resolution (Phase 6).
 // Must be called before PeriodicScan starts.
 func (qh *QueueHandler) SetStateReader(reader StateManager) {
-	qh.scanRunMu.Lock()
-	defer qh.scanRunMu.Unlock()
+	qh.scanExecutor.scanRunMu.Lock()
+	defer qh.scanExecutor.scanRunMu.Unlock()
 	qh.dependencyResolver = NewDependencyResolver(reader, qh.logger, qh.logLevel)
 	qh.cancelHandler.SetStateReader(reader)
 }
@@ -203,40 +136,40 @@ func (qh *QueueHandler) SetCanComplete(f CanCompleteFunc) {
 // SetCircuitBreaker wires the circuit breaker handler for periodic scan integration.
 // Must be called before Run() starts.
 func (qh *QueueHandler) SetCircuitBreaker(cb *circuitbreaker.Handler) {
-	qh.scanRunMu.Lock()
-	defer qh.scanRunMu.Unlock()
+	qh.scanExecutor.scanRunMu.Lock()
+	defer qh.scanExecutor.scanRunMu.Unlock()
 	qh.circuitBreaker = cb
 }
 
 // SetAdmissionController wires the admission controller for concurrency limiting.
 // Must be called before Run() starts.
 func (qh *QueueHandler) SetAdmissionController(ac *admission.Controller) {
-	qh.scanRunMu.Lock()
-	defer qh.scanRunMu.Unlock()
+	qh.scanExecutor.scanRunMu.Lock()
+	defer qh.scanExecutor.scanRunMu.Unlock()
 	qh.admissionCtrl = ac
 }
 
 // SetFallbackManager wires the fallback manager for degraded-mode operation.
 // Must be called before Run() starts.
 func (qh *QueueHandler) SetFallbackManager(fm *fallback.Manager) {
-	qh.scanRunMu.Lock()
-	defer qh.scanRunMu.Unlock()
+	qh.scanExecutor.scanRunMu.Lock()
+	defer qh.scanExecutor.scanRunMu.Unlock()
 	qh.fallbackMgr = fm
 }
 
 // SetPhaseDiagnoser wires the phase diagnosis function for completed phase analysis.
 // Must be called before Run() starts.
 func (qh *QueueHandler) SetPhaseDiagnoser(fn PhaseDiagnoserFunc) {
-	qh.scanRunMu.Lock()
-	defer qh.scanRunMu.Unlock()
-	qh.phaseDiagnoser = fn
+	qh.scanExecutor.scanRunMu.Lock()
+	defer qh.scanExecutor.scanRunMu.Unlock()
+	qh.scanExecutor.phaseDiagnoser = fn
 }
 
 // SetWorktreeManager wires the worktree manager for worker isolation.
 // Must be called before Run() starts.
 func (qh *QueueHandler) SetWorktreeManager(wm *WorktreeManager) {
-	qh.scanRunMu.Lock()
-	defer qh.scanRunMu.Unlock()
+	qh.scanExecutor.scanRunMu.Lock()
+	defer qh.scanExecutor.scanRunMu.Unlock()
 	qh.worktreeManager = wm
 	qh.dispatcher.SetWorktreeManager(wm)
 	qh.cancelHandler.SetWorktreeManager(wm)
@@ -246,11 +179,11 @@ func (qh *QueueHandler) SetWorktreeManager(wm *WorktreeManager) {
 // so that debounce callbacks respect context cancellation and shutdown state.
 // Must be called before Run() starts.
 func (qh *QueueHandler) SetShutdownGuard(ctx context.Context, shuttingDown *atomic.Bool) {
-	qh.scanRunMu.Lock()
-	defer qh.scanRunMu.Unlock()
+	qh.scanExecutor.scanRunMu.Lock()
+	defer qh.scanExecutor.scanRunMu.Unlock()
 	qh.shutdownCtx = ctx
 	qh.shuttingDown = shuttingDown
-	qh.debounce.SetShutdownGuard(ctx, shuttingDown)
+	qh.scanExecutor.debounce.SetShutdownGuard(ctx, shuttingDown)
 }
 
 // SetEventBus wires the event bus for all sub-components that publish events.
@@ -273,7 +206,7 @@ func (qh *QueueHandler) SetContinuousHandler(ch *ContinuousHandler) {
 // Stop cancels any pending debounce timer and waits for any in-flight
 // callback goroutine to finish, ensuring no goroutine leak on shutdown.
 func (qh *QueueHandler) Stop() {
-	qh.debounce.Stop()
+	qh.scanExecutor.Stop()
 }
 
 // HandleFileEvent routes an fsnotify event to the appropriate handler.
@@ -283,7 +216,7 @@ func (qh *QueueHandler) HandleFileEvent(filePath string) {
 
 	switch dir {
 	case "queue":
-		qh.debounce.Trigger(base)
+		qh.scanExecutor.debounce.Trigger(base)
 	case "results":
 		qh.log(LogLevelDebug, "result_event file=%s", base)
 		if qh.resultHandler != nil {
@@ -300,54 +233,20 @@ func (qh *QueueHandler) PeriodicScan() {
 	qh.PeriodicScanWithContext(context.Background())
 }
 
-// PeriodicScanWithContext executes all scan steps with context support for
-// cancellation during slow Phase B tmux I/O operations.
-//
-// Phase A (scanMu.Lock): Load queues, fast mutations, collect deferred work, flush.
-// Phase B (no lock): Execute slow tmux I/O (interrupts, busy probes, dispatch, signals).
-// Phase C (scanMu.Lock): Reload queues, apply Phase B results with fencing, flush, reconcile.
+// PeriodicScanWithContext delegates to ScanPhaseExecutor for the three-phase scan cycle.
 func (qh *QueueHandler) PeriodicScanWithContext(ctx context.Context) {
-	// scanRunMu serializes the full A/B/C cycle so that concurrent scan triggers
-	// wait for the current cycle to finish rather than overlapping with Phase B.
-	qh.scanRunMu.Lock()
-	defer qh.scanRunMu.Unlock()
-
-	qh.log(LogLevelDebug, "periodic_scan start")
-
-	pa := qh.periodicScanPhaseA()
-	pb := qh.periodicScanPhaseB(ctx, pa)
-	deferredNotifs := qh.periodicScanPhaseC(pa, pb)
-
-	// Execute deferred reconciler notifications outside scanMu.Lock
-	// to avoid blocking queue writes during slow tmux I/O.
-	if qh.reconciler != nil && len(deferredNotifs) > 0 {
-		qh.reconciler.ExecuteDeferredNotifications(deferredNotifs)
-	}
-
-	// Run worktree GC periodically as a safety net complementing the
-	// immediate cleanup triggered by CleanupOnSuccess/CleanupOnFailure.
-	// Why: 60 scans ≈ 5 minutes at default 5s interval, balancing GC
-	// freshness against the I/O cost of scanning worktree directories.
-	const gcInterval uint64 = 60
-	qh.gcScanCounter++
-	if qh.gcScanCounter%gcInterval == 0 && qh.worktreeManager != nil {
-		if err := qh.worktreeManager.GC(); err != nil {
-			qh.log(LogLevelWarn, "worktree_gc error=%v", err)
-		}
-	}
-
-	qh.log(LogLevelDebug, "periodic_scan complete")
+	qh.scanExecutor.Execute(ctx)
 }
 
 // LockFiles acquires a shared (read) lock for queue write handlers.
 // Multiple queue writes can proceed in parallel; PeriodicScan holds exclusive lock.
 func (qh *QueueHandler) LockFiles() {
-	qh.scanMu.RLock()
+	qh.scanExecutor.LockFiles()
 }
 
 // UnlockFiles releases the shared (read) lock for queue write handlers.
 func (qh *QueueHandler) UnlockFiles() {
-	qh.scanMu.RUnlock()
+	qh.scanExecutor.UnlockFiles()
 }
 
 func (qh *QueueHandler) log(level LogLevel, format string, args ...any) {

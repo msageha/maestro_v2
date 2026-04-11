@@ -29,18 +29,10 @@ type busyDetector struct {
 	logLevel  logLevel
 }
 
-// newBusyDetector creates a busyDetector. Zero-value config fields are
-// normalized to safe defaults to prevent accidental tight loops.
+// newBusyDetector creates a busyDetector. IdleStableSec, BusyCheckMaxRetries,
+// and BusyCheckInterval must be pre-normalized via applyDefaults before use.
+// Only BusyHintLines is normalized here (sourced from ExecutorConfig, not WatcherConfig).
 func newBusyDetector(paneIO PaneIO, busyRegex *regexp.Regexp, cfg busyDetectorConfig, logger *log.Logger, logLevel logLevel) *busyDetector {
-	if cfg.IdleStableSec <= 0 {
-		cfg.IdleStableSec = 5
-	}
-	if cfg.BusyCheckMaxRetries <= 0 {
-		cfg.BusyCheckMaxRetries = 30
-	}
-	if cfg.BusyCheckInterval <= 0 {
-		cfg.BusyCheckInterval = 2
-	}
 	if cfg.BusyHintLines <= 0 {
 		cfg.BusyHintLines = 5
 	}

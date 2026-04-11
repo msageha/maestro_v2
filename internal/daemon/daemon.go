@@ -18,18 +18,10 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/msageha/maestro_v2/internal/daemon/admission"
-	"github.com/msageha/maestro_v2/internal/daemon/bandit"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
-	"github.com/msageha/maestro_v2/internal/daemon/complexity"
-	"github.com/msageha/maestro_v2/internal/daemon/evolution"
 	"github.com/msageha/maestro_v2/internal/daemon/fallback"
-	"github.com/msageha/maestro_v2/internal/daemon/featuregate"
 	"github.com/msageha/maestro_v2/internal/daemon/judge"
-	"github.com/msageha/maestro_v2/internal/daemon/learnings"
-	"github.com/msageha/maestro_v2/internal/daemon/reviewer"
 	"github.com/msageha/maestro_v2/internal/daemon/rollout"
-	"github.com/msageha/maestro_v2/internal/daemon/search"
-	"github.com/msageha/maestro_v2/internal/daemon/verification"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -70,24 +62,12 @@ type Daemon struct {
 	worktreeManager   *WorktreeManager
 	rolloutManager    *rollout.Manager
 	judgeCaller       *judge.Judge
-	reviewDispatcher  *reviewer.ReviewDispatcher
-	usefulnessTracker *reviewer.UsefulnessTracker
 
-	// Phase C components
-	evolutionEngine  *evolution.Engine
-	banditSelector   *bandit.Selector
-	ensembleVerifier *verification.Verifier
-	searchTree       *search.Tree
-	searchSampler    *search.Sampler
-	fingerprintDB    *learnings.FingerprintDB
-	complexityScorer *complexity.Scorer
-	featureEvaluator *featuregate.Evaluator
+	// Phase C components (grouped in PhaseCManager)
+	phaseC *PhaseCManager
 
-	// reviewRequests maps review request IDs to their source task info,
-	// allowing the results monitoring goroutine to attribute results back
-	// to tasks for usefulness tracking.
-	reviewRequests map[string]reviewTaskInfo
-	reviewReqMu    sync.Mutex
+	// Review pipeline (grouped in ReviewCoordinator)
+	reviewCoord *ReviewCoordinator
 
 	eventBus    *events.Bus
 	tmuxLogFile io.Closer         // debug log for tmux operations

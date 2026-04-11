@@ -12,8 +12,8 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// processPlannerSignalsDeferred evaluates signals but defers tmux delivery to Phase B.
-func (qh *QueueHandler) processPlannerSignalsDeferred(sq *model.PlannerSignalQueue, dirty *bool, work *deferredWork) {
+// stepPlannerSignalsDeferred evaluates signals but defers tmux delivery to Phase B.
+func (qh *QueueHandler) stepPlannerSignalsDeferred(sq *model.PlannerSignalQueue, dirty *bool, work *deferredWork) {
 	now := qh.clock.Now().UTC()
 	retained := make([]model.PlannerSignal, 0, len(sq.Signals))
 
@@ -186,15 +186,14 @@ func (qh *QueueHandler) computeSignalBackoff(attempts int) time.Duration {
 	return jittered
 }
 
-// isAgentBusy probes agent busy state via busyCheckFn.
+// isAgentBusy probes agent busy state via executor.
 // Returns (busy, undecided). When undecided=true, busy is false.
 func (qh *QueueHandler) isAgentBusy(ctx context.Context, agentID string) (busy, undecided bool) {
-	return qh.busyCheckFn(ctx, agentID)
-}
+	if qh.scanExecutor.busyChecker != nil {
+		return qh.scanExecutor.busyChecker.IsBusy(agentID), false
+	}
 
-// defaultBusyCheck is the production busy-check implementation using the
-// shared agent executor to probe tmux pane state.
-func (qh *QueueHandler) defaultBusyCheck(ctx context.Context, agentID string) (busy, undecided bool) {
+	// Default: use shared agent executor to probe busy state
 	exec, err := qh.execProvider.GetExecutor()
 	if err != nil {
 		qh.log(LogLevelWarn, "busy_probe_executor_error agent=%s error=%v (treating as undecided)", agentID, err)

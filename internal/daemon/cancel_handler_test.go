@@ -21,11 +21,11 @@ import (
 func newTestCancelHandler() (*CancelHandler, *mocks.MockExecutor) {
 	cfg := model.Config{}
 	ep := newTestExecutorProvider("", cfg)
-	ch := NewCancelHandler("", cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, ep)
-	mock := &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}
-	ch.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	mock := &mockExecutor{result: agent.ExecResult{Success: true}}
+	ep.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return mock, nil
 	})
+	ch := NewCancelHandler("", cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, ep)
 	return ch, mock
 }
 
@@ -100,11 +100,11 @@ func newTestCancelHandlerWithDir(t *testing.T) (*CancelHandler, *mocks.MockExecu
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{}
 	ep := newTestExecutorProvider(maestroDir, cfg)
-	ch := NewCancelHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, ep)
-	mock := &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}
-	ch.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+	mock := &mockExecutor{result: agent.ExecResult{Success: true}}
+	ep.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return mock, nil
 	})
+	ch := NewCancelHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, ep)
 	return ch, mock, maestroDir
 }
 

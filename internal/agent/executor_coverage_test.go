@@ -187,6 +187,7 @@ func newCovExecutor(mock *covMockPaneIO) (*Executor, *bytes.Buffer) {
 		busyDetector: bd,
 		paneState:    ps,
 	}
+	e.processManager = newClaudeProcessManager(mock, ps, &e.config, execCfg, logger, logLevelDebug)
 	e.deliverer = newMessageDeliverer(mock, ps, &e.config, execCfg, logger, logLevelDebug)
 	return e, &buf
 }
@@ -342,7 +343,7 @@ func TestEnsureWorkingDir_ControlChars(t *testing.T) {
 	mock := newCovMock()
 	exec, _ := newCovExecutor(mock)
 
-	err := exec.ensureWorkingDir(context.Background(), "%0", "/tmp/\x00injected")
+	err := exec.processManager.ensureWorkingDir(context.Background(), "%0", "/tmp/\x00injected")
 	if err == nil {
 		t.Fatal("expected error for control characters")
 	}
@@ -356,7 +357,7 @@ func TestEnsureWorkingDir_EmptyPath(t *testing.T) {
 	mock := newCovMock()
 	exec, _ := newCovExecutor(mock)
 
-	err := exec.ensureWorkingDir(context.Background(), "%0", "")
+	err := exec.processManager.ensureWorkingDir(context.Background(), "%0", "")
 	if err != nil {
 		t.Fatalf("expected nil for empty path, got: %v", err)
 	}
@@ -368,7 +369,7 @@ func TestEnsureWorkingDir_SameCWD(t *testing.T) {
 	mock.userVars["cwd"] = "/project/worktree1"
 	exec, _ := newCovExecutor(mock)
 
-	err := exec.ensureWorkingDir(context.Background(), "%0", "/project/worktree1")
+	err := exec.processManager.ensureWorkingDir(context.Background(), "%0", "/project/worktree1")
 	if err != nil {
 		t.Fatalf("expected nil for same CWD, got: %v", err)
 	}
@@ -389,7 +390,7 @@ func TestEnsureWorkingDir_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
-	err := exec.ensureWorkingDir(ctx, "%0", "/new/dir")
+	err := exec.processManager.ensureWorkingDir(ctx, "%0", "/new/dir")
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
 	}
@@ -408,7 +409,7 @@ func TestEnsureWorkingDir_RespawnAndRelaunch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := exec.ensureWorkingDir(ctx, "%0", "/new/dir")
+	err := exec.processManager.ensureWorkingDir(ctx, "%0", "/new/dir")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -452,7 +453,7 @@ func TestEnsureWorkingDir_RespawnPaneFails(t *testing.T) {
 	mock.respawnPaneErr = fmt.Errorf("tmux respawn error")
 	exec, _ := newCovExecutor(mock)
 
-	err := exec.ensureWorkingDir(context.Background(), "%0", "/new/dir")
+	err := exec.processManager.ensureWorkingDir(context.Background(), "%0", "/new/dir")
 	if err == nil {
 		t.Fatal("expected error when RespawnPane fails")
 	}
@@ -588,7 +589,7 @@ func TestWaitStable_ContentStable_PromptReady(t *testing.T) {
 
 	exec, _ := newCovExecutor(mock)
 
-	err := exec.waitStable(context.Background(), "%0", false)
+	err := exec.processManager.waitStable(context.Background(), "%0", false)
 	if err != nil {
 		t.Fatalf("expected success, got: %v", err)
 	}
@@ -605,7 +606,7 @@ func TestWaitStable_ContentUnstable(t *testing.T) {
 
 	exec, _ := newCovExecutor(mock)
 
-	err := exec.waitStable(context.Background(), "%0", false)
+	err := exec.processManager.waitStable(context.Background(), "%0", false)
 	if err == nil {
 		t.Fatal("expected error for unstable content")
 	}
@@ -623,7 +624,7 @@ func TestWaitStable_CaptureError_FirstCapture(t *testing.T) {
 
 	exec, _ := newCovExecutor(mock)
 
-	err := exec.waitStable(context.Background(), "%0", false)
+	err := exec.processManager.waitStable(context.Background(), "%0", false)
 	if err == nil {
 		t.Fatal("expected error on capture failure")
 	}
@@ -642,7 +643,7 @@ func TestWaitStable_CaptureError_SecondCapture(t *testing.T) {
 
 	exec, _ := newCovExecutor(mock)
 
-	err := exec.waitStable(context.Background(), "%0", false)
+	err := exec.processManager.waitStable(context.Background(), "%0", false)
 	if err == nil {
 		t.Fatal("expected error on second capture failure")
 	}
@@ -664,7 +665,7 @@ func TestWaitStable_SoftPromptCheck_NoPrompt(t *testing.T) {
 	exec, _ := newCovExecutor(mock)
 
 	// softPromptCheck=true → should succeed despite no prompt
-	err := exec.waitStable(context.Background(), "%0", true)
+	err := exec.processManager.waitStable(context.Background(), "%0", true)
 	if err != nil {
 		t.Fatalf("expected nil with soft prompt check, got: %v", err)
 	}
@@ -684,7 +685,7 @@ func TestWaitStable_HardPromptCheck_NoPrompt(t *testing.T) {
 	exec, _ := newCovExecutor(mock)
 
 	// softPromptCheck=false → should fail
-	err := exec.waitStable(context.Background(), "%0", false)
+	err := exec.processManager.waitStable(context.Background(), "%0", false)
 	if err == nil {
 		t.Fatal("expected error with hard prompt check and no prompt")
 	}
@@ -708,7 +709,7 @@ func TestWaitStable_SoftPromptCheck_CaptureError(t *testing.T) {
 	exec, _ := newCovExecutor(mock)
 
 	// soft mode → should succeed despite capture error
-	err := exec.waitStable(context.Background(), "%0", true)
+	err := exec.processManager.waitStable(context.Background(), "%0", true)
 	if err != nil {
 		t.Fatalf("expected nil with soft prompt check + capture error, got: %v", err)
 	}
@@ -722,7 +723,7 @@ func TestWaitStable_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := exec.waitStable(ctx, "%0", false)
+	err := exec.processManager.waitStable(ctx, "%0", false)
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
 	}
@@ -740,7 +741,7 @@ func TestWaitReady_PromptDetectedImmediately(t *testing.T) {
 
 	exec, _ := newCovExecutor(mock)
 
-	err := exec.waitReady(context.Background(), "%0")
+	err := exec.processManager.waitReady(context.Background(), "%0")
 	if err != nil {
 		t.Fatalf("expected success, got: %v", err)
 	}
@@ -757,7 +758,7 @@ func TestWaitReady_PromptDetectedAfterRetries(t *testing.T) {
 
 	exec, _ := newCovExecutor(mock)
 
-	err := exec.waitReady(context.Background(), "%0")
+	err := exec.processManager.waitReady(context.Background(), "%0")
 	if err != nil {
 		t.Fatalf("expected success after retries, got: %v", err)
 	}
@@ -774,7 +775,7 @@ func TestWaitReady_FallbackProceeds(t *testing.T) {
 	exec, _ := newCovExecutor(mock)
 
 	// waitReady with fallback should return nil (proceeds)
-	err := exec.waitReady(context.Background(), "%0")
+	err := exec.processManager.waitReady(context.Background(), "%0")
 	if err != nil {
 		t.Fatalf("expected nil (fallback), got: %v", err)
 	}
@@ -790,7 +791,7 @@ func TestWaitReady_CaptureErrorsExhausted(t *testing.T) {
 
 	exec, _ := newCovExecutor(mock)
 
-	err := exec.waitReady(context.Background(), "%0")
+	err := exec.processManager.waitReady(context.Background(), "%0")
 	if err == nil {
 		t.Fatal("expected error when all captures fail")
 	}
@@ -810,7 +811,7 @@ func TestWaitReady_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := exec.waitReady(ctx, "%0")
+	err := exec.processManager.waitReady(ctx, "%0")
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
 	}
@@ -825,7 +826,7 @@ func TestWaitReadyStrict_PromptDetected(t *testing.T) {
 
 	exec, _ := newCovExecutor(mock)
 
-	err := exec.waitReadyStrict(context.Background(), "%0")
+	err := exec.processManager.waitReadyStrict(context.Background(), "%0")
 	if err != nil {
 		t.Fatalf("expected success, got: %v", err)
 	}
@@ -840,7 +841,7 @@ func TestWaitReadyStrict_NoPrompt_Fails(t *testing.T) {
 
 	exec, _ := newCovExecutor(mock)
 
-	err := exec.waitReadyStrict(context.Background(), "%0")
+	err := exec.processManager.waitReadyStrict(context.Background(), "%0")
 	if err == nil {
 		t.Fatal("expected error when prompt never detected (strict mode)")
 	}
@@ -859,7 +860,7 @@ func TestWaitForShell_Immediate(t *testing.T) {
 
 	exec, _ := newCovExecutor(mock)
 
-	err := exec.waitForShell(context.Background(), "%0")
+	err := exec.processManager.waitForShell(context.Background(), "%0")
 	if err != nil {
 		t.Fatalf("expected success, got: %v", err)
 	}
@@ -880,7 +881,7 @@ func TestWaitForShell_ShellAfterPolls(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err := exec.waitForShell(ctx, "%0")
+	err := exec.processManager.waitForShell(ctx, "%0")
 	if err != nil {
 		t.Fatalf("expected success after polls, got: %v", err)
 	}
@@ -902,7 +903,7 @@ func TestWaitForShell_ConsecutiveErrors(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err := exec.waitForShell(ctx, "%0")
+	err := exec.processManager.waitForShell(ctx, "%0")
 	if err == nil {
 		t.Fatal("expected error for consecutive errors")
 	}
@@ -927,7 +928,7 @@ func TestWaitForShell_ErrorRecovery(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	err := exec.waitForShell(ctx, "%0")
+	err := exec.processManager.waitForShell(ctx, "%0")
 	if err != nil {
 		t.Fatalf("expected success after error recovery, got: %v", err)
 	}
@@ -945,7 +946,7 @@ func TestWaitForShell_ContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	err := exec.waitForShell(ctx, "%0")
+	err := exec.processManager.waitForShell(ctx, "%0")
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
 	}
@@ -964,7 +965,7 @@ func TestWaitForShell_TimeoutViaContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	err := exec.waitForShell(ctx, "%0")
+	err := exec.processManager.waitForShell(ctx, "%0")
 	if err == nil {
 		t.Fatal("expected error when shell not detected")
 	}
@@ -1088,7 +1089,7 @@ func TestEnsureWorkingDir_ResetsClearReadyPID(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	err := exec.ensureWorkingDir(ctx, "%0", "/new/dir")
+	err := exec.processManager.ensureWorkingDir(ctx, "%0", "/new/dir")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1140,7 +1141,7 @@ func TestWaitStable_HardPromptCheck_CaptureError(t *testing.T) {
 	exec, _ := newCovExecutor(mock)
 
 	// softPromptCheck=false → capture error is fatal
-	err := exec.waitStable(context.Background(), "%0", false)
+	err := exec.processManager.waitStable(context.Background(), "%0", false)
 	if err == nil {
 		t.Fatal("expected error when prompt capture fails in hard mode")
 	}
@@ -1159,7 +1160,7 @@ func TestWaitReadyStrict_CaptureErrorsExhausted(t *testing.T) {
 
 	exec, _ := newCovExecutor(mock)
 
-	err := exec.waitReadyStrict(context.Background(), "%0")
+	err := exec.processManager.waitReadyStrict(context.Background(), "%0")
 	if err == nil {
 		t.Fatal("expected error when all captures fail in strict mode")
 	}
@@ -1196,7 +1197,7 @@ func TestEnsureClaudeRunning_ClaudeAlreadyRunning(t *testing.T) {
 	mock.isShellSeq = []bool{false}
 
 	exec, _ := newCovExecutor(mock)
-	err := exec.ensureClaudeRunning(context.Background(), "%0", "worker1")
+	err := exec.processManager.ensureClaudeRunning(context.Background(), "%0", "worker1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1215,7 +1216,7 @@ func TestEnsureClaudeRunning_ShellDetected_Relaunch(t *testing.T) {
 	mock.capturePaneSeq = []mockResp{{val: "output\n ❯ \n"}}
 
 	exec, _ := newCovExecutor(mock)
-	err := exec.ensureClaudeRunning(context.Background(), "%0", "worker1")
+	err := exec.processManager.ensureClaudeRunning(context.Background(), "%0", "worker1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1236,7 +1237,7 @@ func TestEnsureClaudeRunning_RelaunchFails(t *testing.T) {
 	mock.sendCmdErrSeq = []error{fmt.Errorf("tmux send error")}
 
 	exec, _ := newCovExecutor(mock)
-	err := exec.ensureClaudeRunning(context.Background(), "%0", "worker1")
+	err := exec.processManager.ensureClaudeRunning(context.Background(), "%0", "worker1")
 	if err == nil {
 		t.Fatal("expected error when re-launch fails")
 	}
@@ -1257,7 +1258,7 @@ func TestEnsureClaudeRunning_WaitReadyTimeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	err := exec.ensureClaudeRunning(ctx, "%0", "worker1")
+	err := exec.processManager.ensureClaudeRunning(ctx, "%0", "worker1")
 	if err == nil {
 		t.Fatal("expected error when waitReadyStrict times out")
 	}
@@ -1272,7 +1273,7 @@ func TestEnsureClaudeRunning_GetCmdError_ProceedsOptimistically(t *testing.T) {
 	mock.getCmdSeq = []mockResp{{err: fmt.Errorf("tmux error")}}
 
 	exec, _ := newCovExecutor(mock)
-	err := exec.ensureClaudeRunning(context.Background(), "%0", "worker1")
+	err := exec.processManager.ensureClaudeRunning(context.Background(), "%0", "worker1")
 	if err != nil {
 		t.Fatalf("should proceed optimistically on GetPaneCurrentCommand error, got: %v", err)
 	}

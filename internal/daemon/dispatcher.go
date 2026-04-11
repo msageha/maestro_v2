@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"sort"
-	"sync"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
@@ -17,20 +16,13 @@ import (
 
 // Dispatcher handles priority sorting, agent_executor dispatch, quality gate
 // evaluation, worktree path resolution, and event publication.
+// baseHandler.mu protects eventBus, qualityGate, worktreeManager.
 type Dispatcher struct {
-	maestroDir    string
-	config        model.Config
-	leaseManager  QueueLeaseManager
-	dl            *DaemonLogger
-	logger        *log.Logger
-	logLevel      LogLevel
-	clock         Clock
-	execProvider  ExecutorGetter
-	mu            sync.RWMutex // protects eventBus, qualityGate, worktreeManager
-	eventBus      *events.Bus
-	qualityGate   *QualityGateDaemon
-	gateEvaluator *QualityGateEvaluator
-
+	baseHandler
+	leaseManager    QueueLeaseManager
+	eventBus        *events.Bus
+	qualityGate     *QualityGateDaemon
+	gateEvaluator   *QualityGateEvaluator
 	worktreeManager *WorktreeManager
 }
 
@@ -41,23 +33,19 @@ type Dispatcher struct {
 func NewDispatcher(maestroDir string, cfg model.Config, lm QueueLeaseManager, logger *log.Logger, logLevel LogLevel, ep ExecutorGetter, clock Clock) *Dispatcher {
 	dl := NewDaemonLoggerFromLegacy("dispatcher", logger, logLevel)
 	disp := &Dispatcher{
-		maestroDir:   maestroDir,
-		config:       cfg,
+		baseHandler: baseHandler{
+			maestroDir:   maestroDir,
+			config:       cfg,
+			dl:           dl,
+			logger:       logger,
+			logLevel:     logLevel,
+			clock:        clock,
+			execProvider: ep,
+		},
 		leaseManager: lm,
-		dl:           dl,
-		logger:       logger,
-		logLevel:     logLevel,
-		clock:        clock,
-		execProvider: ep,
 	}
 	disp.gateEvaluator = NewQualityGateEvaluator(cfg, clock, dl, disp.getQualityGate)
 	return disp
-}
-
-// getExecutor returns the shared executor instance, creating it lazily on first call.
-// Retries with exponential backoff on failure; safe for concurrent use.
-func (disp *Dispatcher) getExecutor() (AgentExecutor, error) {
-	return disp.execProvider.GetExecutor()
 }
 
 // SetEventBus sets the event bus for publishing events.
@@ -377,6 +365,3 @@ func (disp *Dispatcher) DispatchNotification(ntf *model.Notification) error {
 	return nil
 }
 
-func (disp *Dispatcher) log(level LogLevel, format string, args ...any) {
-	disp.dl.Logf(level, format, args...)
-}

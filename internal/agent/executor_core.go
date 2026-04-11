@@ -117,19 +117,21 @@ func parseLogLevel(s string) logLevel {
 }
 
 // Executor handles message delivery to agents via tmux panes.
-// It delegates send/clear operations to messageDeliverer and busy detection
-// to busyDetector, acting as a facade for the overall dispatch workflow.
+// It delegates send/clear operations to messageDeliverer, busy detection
+// to busyDetector, and process lifecycle to ClaudeProcessManager,
+// acting as a facade for the overall dispatch workflow.
 type Executor struct {
-	maestroDir   string
-	execCfg      ExecutorConfig
-	config       model.WatcherConfig
-	logger       *log.Logger
-	logFile      io.Closer
-	logLevel     logLevel
-	paneIO       PaneIO
-	busyDetector *busyDetector
-	paneState    *paneStateManager
-	deliverer    *messageDeliverer
+	maestroDir     string
+	execCfg        ExecutorConfig
+	config         model.WatcherConfig
+	logger         *log.Logger
+	logFile        io.Closer
+	logLevel       logLevel
+	paneIO         PaneIO
+	busyDetector   *busyDetector
+	paneState      *paneStateManager
+	deliverer      *messageDeliverer
+	processManager *ClaudeProcessManager
 }
 
 // NewExecutor creates a new Executor that logs to .maestro/logs/agent_executor.log.
@@ -177,6 +179,7 @@ func newExecutor(maestroDir string, watcherCfg model.WatcherConfig, logLevel str
 		busyDetector: bd,
 		paneState:    ps,
 	}
+	e.processManager = newClaudeProcessManager(paneIO, ps, &e.config, execCfg, logger, ll)
 	e.deliverer = newMessageDeliverer(paneIO, ps, &e.config, execCfg, logger, ll)
 	return e, nil
 }
@@ -303,7 +306,7 @@ func (e *Executor) execIsBusy(ctx context.Context, paneTarget string) ExecResult
 func (e *Executor) execClear(ctx context.Context, req ExecRequest, paneTarget string) ExecResult {
 	e.log(logLevelDebug, "clear_operation agent_id=%s mode=clear", req.AgentID)
 
-	if err := e.waitReady(ctx, paneTarget); err != nil {
+	if err := e.processManager.waitReady(ctx, paneTarget); err != nil {
 		e.log(logLevelWarn, "clear_wait_ready_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("wait ready before /clear: %w", err), Retryable: true}
 	}
@@ -313,7 +316,7 @@ func (e *Executor) execClear(ctx context.Context, req ExecRequest, paneTarget st
 	}
 
 	// Verify prompt readiness after clear (strict — no subsequent busy detection)
-	if err := e.waitStable(ctx, paneTarget, false); err != nil {
+	if err := e.processManager.waitStable(ctx, paneTarget, false); err != nil {
 		e.log(logLevelWarn, "clear_post_stable_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("clear: post-clear stability: %w", err), Retryable: true}
 	}
@@ -339,7 +342,7 @@ func (e *Executor) execInterrupt(ctx context.Context, req ExecRequest, paneTarge
 	}
 
 	// Step 2: Wait for prompt readiness after C-c
-	if err := e.waitReady(ctx, paneTarget); err != nil {
+	if err := e.processManager.waitReady(ctx, paneTarget); err != nil {
 		e.log(logLevelWarn, "interrupt_wait_ready_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("wait ready before /clear (interrupt): %w", err), Retryable: true}
 	}
@@ -350,7 +353,7 @@ func (e *Executor) execInterrupt(ctx context.Context, req ExecRequest, paneTarge
 	}
 
 	// Verify prompt readiness after clear (strict — no subsequent busy detection)
-	if err := e.waitStable(ctx, paneTarget, false); err != nil {
+	if err := e.processManager.waitStable(ctx, paneTarget, false); err != nil {
 		e.log(logLevelWarn, "interrupt_post_stable_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("interrupt: post-clear stability: %w", err), Retryable: true}
 	}
@@ -374,14 +377,14 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 
 	// Handle working directory change (worktree mode).
 	if req.WorkingDir != "" {
-		if err := e.ensureWorkingDir(ctx, paneTarget, req.WorkingDir); err != nil {
+		if err := e.processManager.ensureWorkingDir(ctx, paneTarget, req.WorkingDir); err != nil {
 			e.log(logLevelError, "working_dir_change_failed agent_id=%s error=%v", req.AgentID, err)
 			return ExecResult{Error: fmt.Errorf("ensure working dir: %w", err), Retryable: true}
 		}
 	}
 
 	// Ensure Claude is actually running (not crashed back to shell).
-	if err := e.ensureClaudeRunning(ctx, paneTarget, req.AgentID); err != nil {
+	if err := e.processManager.ensureClaudeRunning(ctx, paneTarget, req.AgentID); err != nil {
 		e.log(logLevelError, "ensure_claude_running_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("ensure claude running: %w", err), Retryable: true}
 	}
@@ -428,7 +431,7 @@ func (e *Executor) execFirstDispatch(ctx context.Context, req ExecRequest, paneT
 // execClearAndDeliver performs /clear, busy detection, and delivery for subsequent dispatches.
 func (e *Executor) execClearAndDeliver(ctx context.Context, req ExecRequest, paneTarget string) ExecResult {
 	// Step 1: Wait for prompt readiness
-	if err := e.waitReady(ctx, paneTarget); err != nil {
+	if err := e.processManager.waitReady(ctx, paneTarget); err != nil {
 		e.log(logLevelWarn, "with_clear_wait_ready_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("wait ready before /clear: %w", err), Retryable: true}
 	}
@@ -486,7 +489,7 @@ func (e *Executor) execDeliver(ctx context.Context, req ExecRequest, paneTarget 
 	// Orchestrator: strict busy check, no retry, immediate failure if busy
 	if req.AgentID == "orchestrator" {
 		// Ensure Claude is running for orchestrator too
-		if err := e.ensureClaudeRunning(ctx, paneTarget, req.AgentID); err != nil {
+		if err := e.processManager.ensureClaudeRunning(ctx, paneTarget, req.AgentID); err != nil {
 			e.log(logLevelError, "ensure_claude_running_failed agent_id=orchestrator error=%v", err)
 			return ExecResult{Error: fmt.Errorf("ensure claude running: %w", err), Retryable: true}
 		}
@@ -503,7 +506,7 @@ func (e *Executor) execDeliver(ctx context.Context, req ExecRequest, paneTarget 
 	}
 
 	// Planner/other: ensure Claude is running before delivery
-	if err := e.ensureClaudeRunning(ctx, paneTarget, req.AgentID); err != nil {
+	if err := e.processManager.ensureClaudeRunning(ctx, paneTarget, req.AgentID); err != nil {
 		e.log(logLevelError, "ensure_claude_running_failed agent_id=%s error=%v", req.AgentID, err)
 		return ExecResult{Error: fmt.Errorf("ensure claude running: %w", err), Retryable: true}
 	}
