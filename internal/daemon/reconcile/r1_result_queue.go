@@ -177,7 +177,7 @@ func r1ConsumeQueueWriteFailed(run *Run) []Repair {
 				if _, ok := state.QueueWriteFailed[taskID]; ok {
 					delete(state.QueueWriteFailed, taskID)
 					modified = true
-					run.log(core.LogLevelInfo, "R1 queue_write_failed_cleared task=%s command=%s",
+					run.Log(core.LogLevelInfo, "R1 queue_write_failed_cleared task=%s command=%s",
 						taskID, commandID)
 					repairs = append(repairs, Repair{
 						Pattern:   PatternR1,
@@ -194,7 +194,7 @@ func r1ConsumeQueueWriteFailed(run *Run) []Repair {
 			state.LastReconciledAt = &now
 			state.UpdatedAt = now
 			if err := yamlutil.AtomicWrite(statePath, state); err != nil {
-				run.log(core.LogLevelError, "R1 write_state_queue_write_failed command=%s error=%v", commandID, err)
+				run.Log(core.LogLevelError, "R1 write_state_queue_write_failed command=%s error=%v", commandID, err)
 			}
 		}()
 	}
@@ -287,7 +287,7 @@ func r1ProcessRetryEnqueueForCommand(run *Run, commandID, statePath string) []Re
 		if r1TaskExistsInQueue(run, workerID, taskID) {
 			delete(state.RetryEnqueueFailed, taskID)
 			modified = true
-			run.log(core.LogLevelInfo, "R1 retry_enqueue_already_in_queue task=%s worker=%s command=%s",
+			run.Log(core.LogLevelInfo, "R1 retry_enqueue_already_in_queue task=%s worker=%s command=%s",
 				taskID, workerID, commandID)
 			repairs = append(repairs, Repair{
 				Pattern:   PatternR1,
@@ -306,7 +306,7 @@ func r1ProcessRetryEnqueueForCommand(run *Run, commandID, statePath string) []Re
 			state.TaskStates[taskID] = model.StatusFailed
 			delete(state.RetryEnqueueFailed, taskID)
 			modified = true
-			run.log(core.LogLevelError, "R1 retry_enqueue_max_retries task=%s worker=%s command=%s attempts=%d",
+			run.Log(core.LogLevelError, "R1 retry_enqueue_max_retries task=%s worker=%s command=%s attempts=%d",
 				taskID, workerID, commandID, retryCount)
 			repairs = append(repairs, Repair{
 				Pattern:   PatternR1,
@@ -327,7 +327,7 @@ func r1ProcessRetryEnqueueForCommand(run *Run, commandID, statePath string) []Re
 			state.TaskStates[taskID] = model.StatusFailed
 			delete(state.RetryEnqueueFailed, taskID)
 			modified = true
-			run.log(core.LogLevelError, "R1 retry_enqueue_no_original task=%s worker=%s command=%s (original task not found, marked failed)",
+			run.Log(core.LogLevelError, "R1 retry_enqueue_no_original task=%s worker=%s command=%s (original task not found, marked failed)",
 				taskID, workerID, commandID)
 			repairs = append(repairs, Repair{
 				Pattern:   PatternR1,
@@ -346,7 +346,7 @@ func r1ProcessRetryEnqueueForCommand(run *Run, commandID, statePath string) []Re
 			// Increment retry count
 			state.RetryEnqueueFailed[taskID] = formatRetryEnqueueValue(workerID, retryCount+1)
 			modified = true
-			run.log(core.LogLevelWarn, "R1 retry_enqueue_failed task=%s worker=%s command=%s attempt=%d error=%v",
+			run.Log(core.LogLevelWarn, "R1 retry_enqueue_failed task=%s worker=%s command=%s attempt=%d error=%v",
 				taskID, workerID, commandID, retryCount+1, err)
 			continue
 		}
@@ -354,7 +354,7 @@ func r1ProcessRetryEnqueueForCommand(run *Run, commandID, statePath string) []Re
 		// Success: clear entry
 		delete(state.RetryEnqueueFailed, taskID)
 		modified = true
-		run.log(core.LogLevelInfo, "R1 retry_enqueue_success task=%s worker=%s command=%s",
+		run.Log(core.LogLevelInfo, "R1 retry_enqueue_success task=%s worker=%s command=%s",
 			taskID, workerID, commandID)
 		repairs = append(repairs, Repair{
 			Pattern:   PatternR1,
@@ -369,7 +369,7 @@ func r1ProcessRetryEnqueueForCommand(run *Run, commandID, statePath string) []Re
 		state.LastReconciledAt = &now
 		state.UpdatedAt = now
 		if err := yamlutil.AtomicWrite(statePath, state); err != nil {
-			run.log(core.LogLevelError, "R1 write_state_retry_enqueue command=%s error=%v", commandID, err)
+			run.Log(core.LogLevelError, "R1 write_state_retry_enqueue command=%s error=%v", commandID, err)
 			return nil
 		}
 	}

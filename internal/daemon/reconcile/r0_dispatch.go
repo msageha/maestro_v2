@@ -31,14 +31,14 @@ func (R0Dispatch) Apply(run *Run) Outcome {
 	data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 	if err != nil {
 		if !os.IsNotExist(err) {
-			run.log(core.LogLevelWarn, "R0-dispatch read_queue error=%v", err)
+			run.Log(core.LogLevelWarn, "R0-dispatch read_queue error=%v", err)
 		}
 		return Outcome{}
 	}
 
 	var cq model.CommandQueue
 	if err := yamlv3.Unmarshal(data, &cq); err != nil {
-		run.log(core.LogLevelWarn, "R0-dispatch parse_queue error=%v", err)
+		run.Log(core.LogLevelWarn, "R0-dispatch parse_queue error=%v", err)
 		return Outcome{}
 	}
 
@@ -66,17 +66,17 @@ func (R0Dispatch) Apply(run *Run) Outcome {
 			statePath := filepath.Join(run.Deps.MaestroDir, "state", "commands", cmd.ID+".yaml")
 			if _, err := os.Stat(statePath); err != nil {
 				if !os.IsNotExist(err) {
-					run.log(core.LogLevelWarn, "R0-dispatch stat_error command=%s error=%v, skipping", cmd.ID, err)
+					run.Log(core.LogLevelWarn, "R0-dispatch stat_error command=%s error=%v, skipping", cmd.ID, err)
 					return nil
 				}
 			} else {
-				run.log(core.LogLevelDebug, "R0-dispatch state_exists_skip command=%s", cmd.ID)
+				run.Log(core.LogLevelDebug, "R0-dispatch state_exists_skip command=%s", cmd.ID)
 				return nil
 			}
 
 			updatedAt, err := time.Parse(time.RFC3339, cmd.UpdatedAt)
 			if err != nil {
-				run.log(core.LogLevelWarn, "R0-dispatch parse_updated_at command=%s error=%v", cmd.ID, err)
+				run.Log(core.LogLevelWarn, "R0-dispatch parse_updated_at command=%s error=%v", cmd.ID, err)
 				return nil
 			}
 
@@ -85,7 +85,7 @@ func (R0Dispatch) Apply(run *Run) Outcome {
 				return nil
 			}
 
-			run.log(core.LogLevelWarn, "R0-dispatch dispatch_deadlock command=%s age_sec=%.0f attempts=%d no_state_file",
+			run.Log(core.LogLevelWarn, "R0-dispatch dispatch_deadlock command=%s age_sec=%.0f attempts=%d no_state_file",
 				cmd.ID, age.Seconds(), cmd.Attempts)
 
 			cmd.Status = model.StatusPending
@@ -112,7 +112,7 @@ func (R0Dispatch) Apply(run *Run) Outcome {
 
 	if dirty {
 		if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
-			run.log(core.LogLevelError, "R0-dispatch write_queue error=%v", err)
+			run.Log(core.LogLevelError, "R0-dispatch write_queue error=%v", err)
 		}
 	}
 

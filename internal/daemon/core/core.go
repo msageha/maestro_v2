@@ -111,6 +111,21 @@ func (dl *DaemonLogger) Slog() *slog.Logger {
 }
 
 // ---------------------------------------------------------------------------
+// LogMixin
+// ---------------------------------------------------------------------------
+
+// LogMixin is an embeddable helper that provides a Log() convenience method
+// for daemon components. Embed it to eliminate repeated log() boilerplate.
+type LogMixin struct {
+	DL *DaemonLogger
+}
+
+// Log logs a formatted message at the given level.
+func (m *LogMixin) Log(level LogLevel, format string, args ...any) {
+	m.DL.Logf(level, format, args...)
+}
+
+// ---------------------------------------------------------------------------
 // Clock
 // ---------------------------------------------------------------------------
 

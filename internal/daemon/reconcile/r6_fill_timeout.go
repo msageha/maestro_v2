@@ -44,7 +44,7 @@ func (R6FillTimeout) Apply(run *Run) Outcome {
 			state, err := run.loadState(statePath)
 			if err != nil {
 				if !os.IsNotExist(err) {
-					run.log(core.LogLevelError, "R6 load_state_corrupted command=%s file=%s error=%v", commandID, entry.Name(), err)
+					run.Log(core.LogLevelError, "R6 load_state_corrupted command=%s file=%s error=%v", commandID, entry.Name(), err)
 				}
 				return false, nil, nil
 			}
@@ -75,7 +75,7 @@ func (R6FillTimeout) Apply(run *Run) Outcome {
 					continue
 				}
 
-				run.log(core.LogLevelWarn, "R6 awaiting_fill_deadline_expired command=%s phase=%s deadline=%s",
+				run.Log(core.LogLevelWarn, "R6 awaiting_fill_deadline_expired command=%s phase=%s deadline=%s",
 					commandID, phase.Name, *phase.FillDeadlineAt)
 
 				phase.Status = model.PhaseStatusTimedOut
@@ -105,7 +105,7 @@ func (R6FillTimeout) Apply(run *Run) Outcome {
 						}
 						for _, dep := range phase.DependsOnPhases {
 							if cancelledPhases[dep] {
-								run.log(core.LogLevelWarn, "R6 cascade_cancel command=%s phase=%s (depends on %s)",
+								run.Log(core.LogLevelWarn, "R6 cascade_cancel command=%s phase=%s (depends on %s)",
 									commandID, phase.Name, dep)
 								phase.Status = model.PhaseStatusCancelled
 								modified = true
@@ -132,7 +132,7 @@ func (R6FillTimeout) Apply(run *Run) Outcome {
 				state.LastReconciledAt = &now
 				state.UpdatedAt = now
 				if err := yamlutil.AtomicWrite(statePath, state); err != nil {
-					run.log(core.LogLevelError, "R6 write_state command=%s error=%v", commandID, err)
+					run.Log(core.LogLevelError, "R6 write_state command=%s error=%v", commandID, err)
 					return false, commandRepairs, timedOutPhases
 				}
 				return true, commandRepairs, timedOutPhases

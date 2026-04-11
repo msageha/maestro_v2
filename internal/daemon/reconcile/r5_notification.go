@@ -87,11 +87,11 @@ func (R5Notification) Apply(run *Run) Outcome {
 			continue
 		}
 
-		run.log(core.LogLevelWarn, "R5 notified_result_no_orchestrator_notification command=%s result=%s",
+		run.Log(core.LogLevelWarn, "R5 notified_result_no_orchestrator_notification command=%s result=%s",
 			result.CommandID, result.ID)
 
 		if err := run.Deps.ResultHandler.WriteNotificationToOrchestratorQueue(result.ID, result.CommandID, result.Status); err != nil {
-			run.log(core.LogLevelError, "R5 write_notification command=%s error=%v", result.CommandID, err)
+			run.Log(core.LogLevelError, "R5 write_notification command=%s error=%v", result.CommandID, err)
 			continue
 		}
 

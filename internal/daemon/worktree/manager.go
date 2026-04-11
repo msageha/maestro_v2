@@ -43,10 +43,10 @@ func validateIDs(commandID string, workerIDs ...string) error {
 // Manager manages git worktree lifecycle for Worker isolation.
 // All git operations are serialized through this manager (Single-Writer pattern).
 type Manager struct {
+	core.LogMixin
 	maestroDir  string
 	projectRoot string
 	config      model.WorktreeConfig
-	dl          *core.DaemonLogger
 	clock       core.Clock
 	mu          sync.Mutex // serializes all git operations
 
@@ -64,10 +64,10 @@ type Manager struct {
 func NewManager(maestroDir string, cfg model.WorktreeConfig, logger *log.Logger, logLevel core.LogLevel) *Manager {
 	projectRoot := filepath.Dir(maestroDir)
 	return &Manager{
+		LogMixin:    core.LogMixin{DL: core.NewDaemonLoggerFromLegacy("worktree_manager", logger, logLevel)},
 		maestroDir:  maestroDir,
 		projectRoot: projectRoot,
 		config:      cfg,
-		dl:          core.NewDaemonLoggerFromLegacy("worktree_manager", logger, logLevel),
 		clock:       core.RealClock{},
 	}
 }
@@ -118,7 +118,7 @@ func (wm *Manager) EnsureWorkerWorktree(commandID, workerID string) error {
 		rollbackIntegration := func() {
 			_ = wm.gitRun("worktree", "remove", "--force", integrationPath)
 			if rbErr := wm.gitRun("branch", "-D", integrationBranch); rbErr != nil {
-				wm.log(core.LogLevelWarn, "rollback_integration_branch command=%s error=%v", commandID, rbErr)
+				wm.Log(core.LogLevelWarn, "rollback_integration_branch command=%s error=%v", commandID, rbErr)
 			}
 		}
 
@@ -214,7 +214,7 @@ func (wm *Manager) addWorkerWorktreeUnlocked(state *model.WorktreeCommandState, 
 		UpdatedAt: now,
 	})
 
-	wm.log(core.LogLevelInfo, "worker_worktree_created command=%s worker=%s", commandID, workerID)
+	wm.Log(core.LogLevelInfo, "worker_worktree_created command=%s worker=%s", commandID, workerID)
 	return nil
 }
 
@@ -264,7 +264,7 @@ func (wm *Manager) CommitWorkerChanges(commandID, workerID, message string) erro
 		return fmt.Errorf("git status in %s: %w", ws.Path, err)
 	}
 	if strings.TrimSpace(statusOut) == "" {
-		wm.log(core.LogLevelDebug, "no_changes_to_commit command=%s worker=%s", commandID, workerID)
+		wm.Log(core.LogLevelDebug, "no_changes_to_commit command=%s worker=%s", commandID, workerID)
 		return nil
 	}
 
@@ -275,7 +275,7 @@ func (wm *Manager) CommitWorkerChanges(commandID, workerID, message string) erro
 
 	// Unstage any sensitive tracked files that were staged by git add -u
 	if err := wm.unstageSensitiveFiles(ws.Path); err != nil {
-		wm.log(core.LogLevelWarn, "unstage_sensitive_files_error command=%s worker=%s error=%v", commandID, workerID, err)
+		wm.Log(core.LogLevelWarn, "unstage_sensitive_files_error command=%s worker=%s error=%v", commandID, workerID, err)
 	}
 
 	// Stage untracked files that pass .gitignore and safety filters
@@ -290,23 +290,23 @@ func (wm *Manager) CommitWorkerChanges(commandID, workerID, message string) erro
 	}
 	if strings.TrimRight(stagedOut, "\x00") == "" {
 		// Worktree had dirty files but all were filtered — this is not a clean success.
-		wm.log(core.LogLevelWarn, "all_files_filtered command=%s worker=%s", commandID, workerID)
+		wm.Log(core.LogLevelWarn, "all_files_filtered command=%s worker=%s", commandID, workerID)
 		return fmt.Errorf("commit for worker %s in command %s: %w", workerID, commandID, ErrAllFilesFiltered)
 	}
 
 	// Commit policy checks
 	if violations := wm.checkCommitPolicy(ws.Path, message, stagedOut); len(violations) > 0 {
 		for _, v := range violations {
-			wm.log(core.LogLevelWarn, "commit_policy_violation command=%s worker=%s code=%s msg=%s",
+			wm.Log(core.LogLevelWarn, "commit_policy_violation command=%s worker=%s code=%s msg=%s",
 				commandID, workerID, v.Code, v.Message)
 		}
 		// Reset staged changes so the worktree is left in a clean index state.
 		// Note: dirty files remain in the worktree after reset.
 		if resetErr := wm.gitRunInDir(ws.Path, "reset", "HEAD"); resetErr != nil {
-			wm.log(core.LogLevelWarn, "git_reset_after_policy_violation command=%s worker=%s error=%v",
+			wm.Log(core.LogLevelWarn, "git_reset_after_policy_violation command=%s worker=%s error=%v",
 				commandID, workerID, resetErr)
 		}
-		wm.log(core.LogLevelWarn, "dirty_files_remain_after_policy_reset command=%s worker=%s",
+		wm.Log(core.LogLevelWarn, "dirty_files_remain_after_policy_reset command=%s worker=%s",
 			commandID, workerID)
 		return &CommitPolicyViolationError{Violations: violations}
 	}
@@ -325,7 +325,7 @@ func (wm *Manager) CommitWorkerChanges(commandID, workerID, message string) erro
 		return fmt.Errorf("save state: %w", err)
 	}
 
-	wm.log(core.LogLevelInfo, "worker_committed command=%s worker=%s", commandID, workerID)
+	wm.Log(core.LogLevelInfo, "worker_committed command=%s worker=%s", commandID, workerID)
 	return nil
 }
 
@@ -523,7 +523,7 @@ func (wm *Manager) DiscardWorkerChanges(commandID, workerID string) error {
 		return fmt.Errorf("clean untracked files in %s: %w", ws.Path, err)
 	}
 
-	wm.log(core.LogLevelInfo, "worker_changes_discarded command=%s worker=%s", commandID, workerID)
+	wm.Log(core.LogLevelInfo, "worker_changes_discarded command=%s worker=%s", commandID, workerID)
 	return nil
 }
 
@@ -539,7 +539,7 @@ func (wm *Manager) rollbackWorkerWorktree(commandID string, state *model.Worktre
 	for _, ws := range state.Workers {
 		if ws.WorkerID == workerID {
 			if rbErr := wm.gitRun("worktree", "remove", "--force", ws.Path); rbErr != nil {
-				wm.log(core.LogLevelWarn, "rollback_worktree_remove command=%s worker=%s error=%v", commandID, workerID, rbErr)
+				wm.Log(core.LogLevelWarn, "rollback_worktree_remove command=%s worker=%s error=%v", commandID, workerID, rbErr)
 			}
 			_ = wm.gitRun("branch", "-D", ws.Branch)
 			return
@@ -562,6 +562,3 @@ func (wm *Manager) AutoCommit() bool { return wm.config.AutoCommit }
 // AutoMerge returns whether auto-merge is enabled in the worktree config.
 func (wm *Manager) AutoMerge() bool { return wm.config.AutoMerge }
 
-func (wm *Manager) log(level core.LogLevel, format string, args ...any) {
-	wm.dl.Logf(level, format, args...)
-}

@@ -109,7 +109,7 @@ func (wm *Manager) gitOutputWithRetry(dir string, maxRetries int, args ...string
 	const maxBackoff = 1 * time.Second
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		wm.log(core.LogLevelWarn, "git_retry attempt=%d/%d backoff=%s cmd=\"git %s\" error=%v",
+		wm.Log(core.LogLevelWarn, "git_retry attempt=%d/%d backoff=%s cmd=\"git %s\" error=%v",
 			attempt, maxRetries, backoff, strings.Join(args, " "), firstErr)
 
 		time.Sleep(backoff)
@@ -299,7 +299,7 @@ func (wm *Manager) stageNewFiles(dir string) error {
 			continue
 		}
 		if isSensitiveFile(name) {
-			wm.log(core.LogLevelWarn, "skip_sensitive_file path=%s dir=%s", name, dir)
+			wm.Log(core.LogLevelWarn, "skip_sensitive_file path=%s dir=%s", name, dir)
 			continue
 		}
 		toStage = append(toStage, name)
@@ -331,7 +331,7 @@ func (wm *Manager) unstageSensitiveFiles(dir string) error {
 			continue
 		}
 		if isSensitiveFile(name) {
-			wm.log(core.LogLevelWarn, "unstage_sensitive_tracked_file path=%s dir=%s", name, dir)
+			wm.Log(core.LogLevelWarn, "unstage_sensitive_tracked_file path=%s dir=%s", name, dir)
 			toUnstage = append(toUnstage, name)
 		}
 	}
@@ -471,22 +471,22 @@ func (wm *Manager) getConflictFilesInDir(dir string) ([]string, error) {
 func (wm *Manager) recoverWorktreeAfterMerge(worktreePath, preMergeHEAD, commandID, workerID string) error {
 	// Tripwire: refuse to run destructive git ops outside the project root.
 	if err := ensureWithinProjectRoot(wm.projectRoot, worktreePath); err != nil {
-		wm.log(core.LogLevelError, "merge_abort_recovery_path_guard command=%s worker=%s error=%v",
+		wm.Log(core.LogLevelError, "merge_abort_recovery_path_guard command=%s worker=%s error=%v",
 			commandID, workerID, err)
 		return fmt.Errorf("worktree recovery refused: %w", err)
 	}
 	// Step 1: reset --hard is mandatory — it restores tracked content, index, and HEAD.
 	if resetErr := wm.gitRunInDir(worktreePath, "reset", "--hard", preMergeHEAD); resetErr != nil {
-		wm.log(core.LogLevelError, "merge_abort_recovery_reset_failed command=%s worker=%s error=%v",
+		wm.Log(core.LogLevelError, "merge_abort_recovery_reset_failed command=%s worker=%s error=%v",
 			commandID, workerID, resetErr)
 		return fmt.Errorf("worktree recovery failed: reset --hard: %w", resetErr)
 	}
-	wm.log(core.LogLevelInfo, "merge_abort_recovery_reset_ok command=%s worker=%s head=%s",
+	wm.Log(core.LogLevelInfo, "merge_abort_recovery_reset_ok command=%s worker=%s head=%s",
 		commandID, workerID, preMergeHEAD)
 
 	// Step 2: clean -fd to remove untracked files left by the failed merge.
 	if cleanErr := wm.gitRunInDir(worktreePath, "clean", "-fd"); cleanErr != nil {
-		wm.log(core.LogLevelWarn, "merge_abort_recovery_clean_failed command=%s worker=%s error=%v",
+		wm.Log(core.LogLevelWarn, "merge_abort_recovery_clean_failed command=%s worker=%s error=%v",
 			commandID, workerID, cleanErr)
 		// Not immediately fatal — check status below to confirm.
 	}
@@ -494,16 +494,16 @@ func (wm *Manager) recoverWorktreeAfterMerge(worktreePath, preMergeHEAD, command
 	// Step 3: verify the worktree is clean.
 	statusOut, statusErr := wm.gitOutputInDir(worktreePath, "status", "--porcelain")
 	if statusErr != nil {
-		wm.log(core.LogLevelError, "merge_abort_recovery_verify_failed command=%s worker=%s error=%v",
+		wm.Log(core.LogLevelError, "merge_abort_recovery_verify_failed command=%s worker=%s error=%v",
 			commandID, workerID, statusErr)
 		return fmt.Errorf("worktree recovery verification failed: %w", statusErr)
 	}
 	if strings.TrimSpace(statusOut) != "" {
-		wm.log(core.LogLevelError, "merge_abort_recovery_still_dirty command=%s worker=%s status=%q",
+		wm.Log(core.LogLevelError, "merge_abort_recovery_still_dirty command=%s worker=%s status=%q",
 			commandID, workerID, strings.TrimSpace(statusOut))
 		return fmt.Errorf("worktree still dirty after recovery: %s", strings.TrimSpace(statusOut))
 	}
 
-	wm.log(core.LogLevelInfo, "merge_abort_recovery_success command=%s worker=%s", commandID, workerID)
+	wm.Log(core.LogLevelInfo, "merge_abort_recovery_success command=%s worker=%s", commandID, workerID)
 	return nil
 }

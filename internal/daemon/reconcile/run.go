@@ -17,12 +17,14 @@ import (
 // Run is the per-scan context created by Engine.Reconcile().
 // It holds the directory cache and exposes helper methods used by patterns.
 type Run struct {
+	core.LogMixin
 	Deps     *Deps
 	dirCache map[string][]os.DirEntry
 }
 
 func newRun(deps *Deps) *Run {
 	return &Run{
+		LogMixin: core.LogMixin{DL: deps.DL},
 		Deps:     deps,
 		dirCache: make(map[string][]os.DirEntry, 4),
 	}
@@ -146,7 +148,7 @@ func (r *Run) removeCommandFromPlannerQueue(commandID string) error {
 	cq.Commands = filtered
 
 	if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
-		r.log(core.LogLevelError, "R0 remove_command queue=%s error=%v", commandID, err)
+		r.Log(core.LogLevelError, "R0 remove_command queue=%s error=%v", commandID, err)
 		return fmt.Errorf("write planner queue: %w", err)
 	}
 	return nil
@@ -184,12 +186,12 @@ func (r *Run) removeTasksFromWorkerQueues(commandID string) error {
 				if os.IsNotExist(err) {
 					return nil
 				}
-				r.log(core.LogLevelWarn, "R0 remove_tasks read_error file=%s command=%s error=%v", name, commandID, err)
+				r.Log(core.LogLevelWarn, "R0 remove_tasks read_error file=%s command=%s error=%v", name, commandID, err)
 				return nil
 			}
 			var tq model.TaskQueue
 			if err := yamlv3.Unmarshal(data, &tq); err != nil {
-				r.log(core.LogLevelWarn, "R0 remove_tasks parse_error file=%s command=%s error=%v", name, commandID, err)
+				r.Log(core.LogLevelWarn, "R0 remove_tasks parse_error file=%s command=%s error=%v", name, commandID, err)
 				return nil
 			}
 
@@ -205,7 +207,7 @@ func (r *Run) removeTasksFromWorkerQueues(commandID string) error {
 			tq.Tasks = filtered
 
 			if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
-				r.log(core.LogLevelError, "R0 remove_tasks file=%s command=%s error=%v", name, commandID, err)
+				r.Log(core.LogLevelError, "R0 remove_tasks file=%s command=%s error=%v", name, commandID, err)
 				return fmt.Errorf("write %s: %w", name, err)
 			}
 			return nil
@@ -273,7 +275,7 @@ func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) {
 			tq.Tasks = filtered
 
 			if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
-				r.log(core.LogLevelError, "R0b batch_remove_tasks file=%s error=%v", name, err)
+				r.Log(core.LogLevelError, "R0b batch_remove_tasks file=%s error=%v", name, err)
 			}
 		}()
 	}
@@ -296,14 +298,10 @@ func (r *Run) updateLastReconciledAt(commandID string) {
 	state.LastReconciledAt = &now
 	state.UpdatedAt = now
 	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
-		r.log(core.LogLevelError, "update_last_reconciled command=%s error=%v", commandID, err)
+		r.Log(core.LogLevelError, "update_last_reconciled command=%s error=%v", commandID, err)
 	}
 }
 
-// log writes a log message via the DaemonLogger.
-func (r *Run) log(level core.LogLevel, format string, args ...any) {
-	r.Deps.DL.Logf(level, format, args...)
-}
 
 // extractWorkerID extracts the worker ID from a queue filename.
 func extractWorkerID(filename string) string {

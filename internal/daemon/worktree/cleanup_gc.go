@@ -43,20 +43,20 @@ func (wm *Manager) CleanupCommand(commandID string) error {
 			if !strings.Contains(err.Error(), "not a working tree") {
 				errs = append(errs, fmt.Sprintf("remove worktree %s: %v", ws.WorkerID, err))
 				if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusCleanupFailed, now); tErr != nil {
-					wm.log(core.LogLevelWarn, "cleanup_failed_transition command=%s worker=%s error=%v",
+					wm.Log(core.LogLevelWarn, "cleanup_failed_transition command=%s worker=%s error=%v",
 						commandID, ws.WorkerID, tErr)
 				}
 				continue
 			}
 		}
 		if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusCleanupDone, now); tErr != nil {
-			wm.log(core.LogLevelWarn, "cleanup_done_transition command=%s worker=%s error=%v",
+			wm.Log(core.LogLevelWarn, "cleanup_done_transition command=%s worker=%s error=%v",
 				commandID, ws.WorkerID, tErr)
 		}
 
 		// Delete worker branch
 		if err := wm.gitRun("branch", "-D", ws.Branch); err != nil {
-			wm.log(core.LogLevelWarn, "delete_worker_branch_failed command=%s worker=%s branch=%s error=%v",
+			wm.Log(core.LogLevelWarn, "delete_worker_branch_failed command=%s worker=%s branch=%s error=%v",
 				commandID, ws.WorkerID, ws.Branch, err)
 		}
 	}
@@ -69,7 +69,7 @@ func (wm *Manager) CleanupCommand(commandID string) error {
 
 	// Delete integration branch
 	if err := wm.gitRun("branch", "-D", state.Integration.Branch); err != nil {
-		wm.log(core.LogLevelWarn, "delete_integration_branch_failed command=%s branch=%s error=%v",
+		wm.Log(core.LogLevelWarn, "delete_integration_branch_failed command=%s branch=%s error=%v",
 			commandID, state.Integration.Branch, err)
 	}
 
@@ -79,7 +79,7 @@ func (wm *Manager) CleanupCommand(commandID string) error {
 	if len(errs) > 0 {
 		state.UpdatedAt = now
 		if sErr := wm.saveState(commandID, state); sErr != nil {
-			wm.log(core.LogLevelWarn, "save_cleanup_failed_state command=%s error=%v", commandID, sErr)
+			wm.Log(core.LogLevelWarn, "save_cleanup_failed_state command=%s error=%v", commandID, sErr)
 		}
 		return fmt.Errorf("cleanup errors: %s", strings.Join(errs, "; "))
 	}
@@ -95,7 +95,7 @@ func (wm *Manager) CleanupCommand(commandID string) error {
 		log.Printf("WARN: failed to remove state file %s: %v", statePath, err)
 	}
 
-	wm.log(core.LogLevelInfo, "cleanup_complete command=%s", commandID)
+	wm.Log(core.LogLevelInfo, "cleanup_complete command=%s", commandID)
 	return nil
 }
 
@@ -146,11 +146,11 @@ func (wm *Manager) GC() error {
 
 		created, err := time.Parse(time.RFC3339, state.CreatedAt)
 		if err != nil {
-			wm.log(core.LogLevelWarn, "gc_created_at_parse_failed command=%s value=%q error=%v, falling back to mtime", commandID, state.CreatedAt, err)
+			wm.Log(core.LogLevelWarn, "gc_created_at_parse_failed command=%s value=%q error=%v, falling back to mtime", commandID, state.CreatedAt, err)
 			statePath := filepath.Join(stateDir, entry.Name())
 			info, statErr := os.Stat(statePath)
 			if statErr != nil {
-				wm.log(core.LogLevelWarn, "gc_mtime_fallback_failed command=%s error=%v, skipping", commandID, statErr)
+				wm.Log(core.LogLevelWarn, "gc_mtime_fallback_failed command=%s error=%v, skipping", commandID, statErr)
 				continue
 			}
 			created = info.ModTime()
@@ -158,9 +158,9 @@ func (wm *Manager) GC() error {
 
 		// TTL-based cleanup
 		if now.Sub(created) > ttl {
-			wm.log(core.LogLevelInfo, "gc_ttl_expired command=%s age=%s", commandID, now.Sub(created))
+			wm.Log(core.LogLevelInfo, "gc_ttl_expired command=%s age=%s", commandID, now.Sub(created))
 			if err := wm.cleanupCommandUnlocked(commandID, state); err != nil {
-				wm.log(core.LogLevelWarn, "gc_cleanup_failed command=%s error=%v", commandID, err)
+				wm.Log(core.LogLevelWarn, "gc_cleanup_failed command=%s error=%v", commandID, err)
 			}
 			continue
 		}
@@ -174,9 +174,9 @@ func (wm *Manager) GC() error {
 			return allStates[i].createdAt.Before(allStates[j].createdAt)
 		})
 		for i := 0; i < len(allStates)-maxWorktrees; i++ {
-			wm.log(core.LogLevelInfo, "gc_max_exceeded command=%s", allStates[i].commandID)
+			wm.Log(core.LogLevelInfo, "gc_max_exceeded command=%s", allStates[i].commandID)
 			if err := wm.cleanupCommandUnlocked(allStates[i].commandID, allStates[i].state); err != nil {
-				wm.log(core.LogLevelWarn, "gc_cleanup_failed command=%s error=%v", allStates[i].commandID, err)
+				wm.Log(core.LogLevelWarn, "gc_cleanup_failed command=%s error=%v", allStates[i].commandID, err)
 			}
 		}
 	}
@@ -184,7 +184,7 @@ func (wm *Manager) GC() error {
 	// M4: Health check — cross-reference git worktree list with state files
 	gitWorktrees, listErr := wm.listGitWorktreesUnlocked()
 	if listErr != nil {
-		wm.log(core.LogLevelWarn, "gc_worktree_list error=%v", listErr)
+		wm.Log(core.LogLevelWarn, "gc_worktree_list error=%v", listErr)
 		return nil
 	}
 
@@ -229,9 +229,9 @@ func (wm *Manager) GC() error {
 			continue
 		}
 		if !knownPaths[wtPath] {
-			wm.log(core.LogLevelInfo, "gc_orphan_worktree path=%s", wtPath)
+			wm.Log(core.LogLevelInfo, "gc_orphan_worktree path=%s", wtPath)
 			if rmErr := wm.gitRun("worktree", "remove", "--force", wtPath); rmErr != nil {
-				wm.log(core.LogLevelWarn, "gc_remove_orphan error=%v path=%s", rmErr, wtPath)
+				wm.Log(core.LogLevelWarn, "gc_remove_orphan error=%v path=%s", rmErr, wtPath)
 			}
 		}
 	}
@@ -241,7 +241,7 @@ func (wm *Manager) GC() error {
 		for _, ws := range st.Workers {
 			if _, statErr := os.Stat(ws.Path); os.IsNotExist(statErr) {
 				if ws.Status != model.WorktreeStatusCleanupDone && ws.Status != model.WorktreeStatusCleanupFailed {
-					wm.log(core.LogLevelWarn, "gc_state_without_worktree command=%s worker=%s path=%s",
+					wm.Log(core.LogLevelWarn, "gc_state_without_worktree command=%s worker=%s path=%s",
 						cmdID, ws.WorkerID, ws.Path)
 				}
 			}
@@ -277,7 +277,7 @@ func (wm *Manager) gcBakFiles() {
 		}
 		walkErr := filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
-				wm.log(core.LogLevelWarn, "gc_bak_walk_error path=%s error=%v", path, err)
+				wm.Log(core.LogLevelWarn, "gc_bak_walk_error path=%s error=%v", path, err)
 				return nil
 			}
 			if info.IsDir() || !strings.HasSuffix(path, ".bak") {
@@ -286,23 +286,23 @@ func (wm *Manager) gcBakFiles() {
 			yamlPath := strings.TrimSuffix(path, ".bak")
 			if _, statErr := os.Stat(yamlPath); os.IsNotExist(statErr) {
 				if rmErr := os.Remove(path); rmErr != nil { //nolint:gosec // path is derived from trusted WalkDir traversal
-					wm.log(core.LogLevelWarn, "gc_bak_remove_orphan_failed path=%s error=%v", path, rmErr)
+					wm.Log(core.LogLevelWarn, "gc_bak_remove_orphan_failed path=%s error=%v", path, rmErr)
 				} else {
-					wm.log(core.LogLevelInfo, "gc_bak_orphan_removed path=%s", path)
+					wm.Log(core.LogLevelInfo, "gc_bak_orphan_removed path=%s", path)
 				}
 				return nil
 			}
 			if now.Sub(info.ModTime()) > bakTTL {
 				if rmErr := os.Remove(path); rmErr != nil { //nolint:gosec // path is derived from trusted WalkDir traversal
-					wm.log(core.LogLevelWarn, "gc_bak_remove_expired_failed path=%s error=%v", path, rmErr)
+					wm.Log(core.LogLevelWarn, "gc_bak_remove_expired_failed path=%s error=%v", path, rmErr)
 				} else {
-					wm.log(core.LogLevelInfo, "gc_bak_expired_removed path=%s age=%s", path, now.Sub(info.ModTime()))
+					wm.Log(core.LogLevelInfo, "gc_bak_expired_removed path=%s age=%s", path, now.Sub(info.ModTime()))
 				}
 			}
 			return nil
 		})
 		if walkErr != nil {
-			wm.log(core.LogLevelWarn, "gc_bak_walk_failed root=%s error=%v", root, walkErr)
+			wm.Log(core.LogLevelWarn, "gc_bak_walk_failed root=%s error=%v", root, walkErr)
 		}
 	}
 }
@@ -322,7 +322,7 @@ func (wm *Manager) cleanupCommandUnlocked(commandID string, state *model.Worktre
 			}
 		}
 		if err := wm.gitRun("branch", "-D", ws.Branch); err != nil {
-			wm.log(core.LogLevelWarn, "delete_worker_branch_failed command=%s worker=%s branch=%s error=%v",
+			wm.Log(core.LogLevelWarn, "delete_worker_branch_failed command=%s worker=%s branch=%s error=%v",
 				commandID, ws.WorkerID, ws.Branch, err)
 		}
 	}
@@ -337,7 +337,7 @@ func (wm *Manager) cleanupCommandUnlocked(commandID string, state *model.Worktre
 	}
 
 	if err := wm.gitRun("branch", "-D", state.Integration.Branch); err != nil {
-		wm.log(core.LogLevelWarn, "delete_integration_branch_failed command=%s branch=%s error=%v",
+		wm.Log(core.LogLevelWarn, "delete_integration_branch_failed command=%s branch=%s error=%v",
 			commandID, state.Integration.Branch, err)
 	}
 
@@ -368,16 +368,16 @@ func (wm *Manager) Reconcile() {
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
-	wm.log(core.LogLevelInfo, "reconcile_start")
+	wm.Log(core.LogLevelInfo, "reconcile_start")
 
 	stateDir := filepath.Join(wm.maestroDir, "state", "worktrees")
 	entries, err := os.ReadDir(stateDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			wm.log(core.LogLevelDebug, "reconcile_skip no_state_dir")
+			wm.Log(core.LogLevelDebug, "reconcile_skip no_state_dir")
 			return
 		}
-		wm.log(core.LogLevelWarn, "reconcile_read_state_dir error=%v", err)
+		wm.Log(core.LogLevelWarn, "reconcile_read_state_dir error=%v", err)
 		return
 	}
 
@@ -391,7 +391,7 @@ func (wm *Manager) Reconcile() {
 		commandID := strings.TrimSuffix(entry.Name(), ".yaml")
 		state, loadErr := wm.loadStateUnlocked(commandID)
 		if loadErr != nil {
-			wm.log(core.LogLevelWarn, "reconcile_load_state command=%s error=%v", commandID, loadErr)
+			wm.Log(core.LogLevelWarn, "reconcile_load_state command=%s error=%v", commandID, loadErr)
 			continue
 		}
 
@@ -405,10 +405,10 @@ func (wm *Manager) Reconcile() {
 			// State exists but worktree directory is gone → mark cleanup_done
 			if _, statErr := os.Stat(ws.Path); os.IsNotExist(statErr) {
 				if ws.Status != model.WorktreeStatusCleanupDone && ws.Status != model.WorktreeStatusCleanupFailed {
-					wm.log(core.LogLevelWarn, "reconcile_stale_state command=%s worker=%s path=%s",
+					wm.Log(core.LogLevelWarn, "reconcile_stale_state command=%s worker=%s path=%s",
 						commandID, ws.WorkerID, ws.Path)
 					if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusCleanupDone, now); tErr != nil {
-						wm.log(core.LogLevelWarn, "reconcile_transition command=%s worker=%s error=%v",
+						wm.Log(core.LogLevelWarn, "reconcile_transition command=%s worker=%s error=%v",
 							commandID, ws.WorkerID, tErr)
 					}
 					stateChanged = true
@@ -423,7 +423,7 @@ func (wm *Manager) Reconcile() {
 		if stateChanged {
 			state.UpdatedAt = now
 			if saveErr := wm.saveState(commandID, state); saveErr != nil {
-				wm.log(core.LogLevelWarn, "reconcile_save_state command=%s error=%v", commandID, saveErr)
+				wm.Log(core.LogLevelWarn, "reconcile_save_state command=%s error=%v", commandID, saveErr)
 			}
 		}
 	}
@@ -431,7 +431,7 @@ func (wm *Manager) Reconcile() {
 	// Worktree exists in git but no state → remove it
 	gitWorktrees, listErr := wm.listGitWorktreesUnlocked()
 	if listErr != nil {
-		wm.log(core.LogLevelWarn, "reconcile_list_worktrees error=%v", listErr)
+		wm.Log(core.LogLevelWarn, "reconcile_list_worktrees error=%v", listErr)
 	} else {
 		pathPrefix := wm.config.EffectivePathPrefix()
 		for _, wtPath := range gitWorktrees {
@@ -440,9 +440,9 @@ func (wm *Manager) Reconcile() {
 				continue
 			}
 			if !knownPaths[wtPath] {
-				wm.log(core.LogLevelWarn, "reconcile_orphan_worktree path=%s", wtPath)
+				wm.Log(core.LogLevelWarn, "reconcile_orphan_worktree path=%s", wtPath)
 				if rmErr := wm.gitRun("worktree", "remove", "--force", wtPath); rmErr != nil {
-					wm.log(core.LogLevelWarn, "reconcile_remove_orphan error=%v path=%s", rmErr, wtPath)
+					wm.Log(core.LogLevelWarn, "reconcile_remove_orphan error=%v path=%s", rmErr, wtPath)
 				}
 			}
 		}
@@ -450,11 +450,11 @@ func (wm *Manager) Reconcile() {
 
 	// Prune stale git worktree entries
 	if pruneErr := wm.gitRun("worktree", "prune"); pruneErr != nil {
-		wm.log(core.LogLevelWarn, "reconcile_prune error=%v", pruneErr)
+		wm.Log(core.LogLevelWarn, "reconcile_prune error=%v", pruneErr)
 	}
 
 	// Sweep .bak orphan/expired files left behind by yaml.AtomicWrite.
 	wm.gcBakFiles()
 
-	wm.log(core.LogLevelInfo, "reconcile_complete")
+	wm.Log(core.LogLevelInfo, "reconcile_complete")
 }
