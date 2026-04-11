@@ -24,6 +24,7 @@ func newDispatchTestQH(scanIntervalSec int) *QueueHandler {
 // --- computeSignalBackoff ---
 
 func TestComputeSignalBackoff_FirstAttempt(t *testing.T) {
+	t.Parallel()
 	qh := newDispatchTestQH(60)
 	d := qh.computeSignalBackoff(1)
 	// base=5, 1<<0=1, backoff=5s, jitter [0.75, 1.25] → [3.75s, 6.25s]
@@ -33,6 +34,7 @@ func TestComputeSignalBackoff_FirstAttempt(t *testing.T) {
 }
 
 func TestComputeSignalBackoff_SecondAttempt(t *testing.T) {
+	t.Parallel()
 	qh := newDispatchTestQH(60)
 	d := qh.computeSignalBackoff(2)
 	// base=5, 1<<1=2, backoff=10s, jitter → [7.5s, 12.5s]
@@ -42,6 +44,7 @@ func TestComputeSignalBackoff_SecondAttempt(t *testing.T) {
 }
 
 func TestComputeSignalBackoff_ClampsToMax(t *testing.T) {
+	t.Parallel()
 	qh := newDispatchTestQH(10) // maxSec=10
 	d := qh.computeSignalBackoff(10)
 	// backoff = 5*(1<<9) = 2560 → clamped to 10s, jitter → [7.5s, 12.5s]
@@ -51,6 +54,7 @@ func TestComputeSignalBackoff_ClampsToMax(t *testing.T) {
 }
 
 func TestComputeSignalBackoff_ZeroAttempt(t *testing.T) {
+	t.Parallel()
 	qh := newDispatchTestQH(60)
 	d := qh.computeSignalBackoff(0)
 	// attempts < 1 → treated as 1 → backoff=5s
@@ -64,6 +68,7 @@ func TestComputeSignalBackoff_ZeroAttempt(t *testing.T) {
 // dedup index — each worker must retain its own entry. Other kinds remain
 // phase-level deduped (backwards compatible).
 func TestUpsertPlannerSignal_CommitFailedDedupPerWorker(t *testing.T) {
+	t.Parallel()
 	qh := newDispatchTestQH(60)
 	sq := &model.PlannerSignalQueue{}
 	dirty := false
@@ -142,6 +147,7 @@ func TestUpsertPlannerSignal_CommitFailedDedupPerWorker(t *testing.T) {
 }
 
 func TestComputeSignalBackoff_NegativeAttempt(t *testing.T) {
+	t.Parallel()
 	qh := newDispatchTestQH(60)
 	d := qh.computeSignalBackoff(-5)
 	// attempts < 1 → treated as 1 → backoff=5s
@@ -151,6 +157,7 @@ func TestComputeSignalBackoff_NegativeAttempt(t *testing.T) {
 }
 
 func TestComputeSignalBackoff_DefaultMaxSec(t *testing.T) {
+	t.Parallel()
 	qh := newDispatchTestQH(0) // scanIntervalSec=0 → default maxSec=10
 	d := qh.computeSignalBackoff(5)
 	// backoff = 5*(1<<4)=80 → clamped to 10s, jitter → [7.5s, 12.5s]
@@ -160,6 +167,7 @@ func TestComputeSignalBackoff_DefaultMaxSec(t *testing.T) {
 }
 
 func TestComputeSignalBackoff_ExponentialGrowth(t *testing.T) {
+	t.Parallel()
 	qh := newDispatchTestQH(600) // high max to allow growth
 	// Verify backoff grows: attempt 1 (5s) < attempt 2 (10s) < attempt 3 (20s)
 	// Use many samples to reduce jitter variance
@@ -185,6 +193,7 @@ func TestComputeSignalBackoff_ExponentialGrowth(t *testing.T) {
 // --- upsertPlannerSignal ---
 
 func TestUpsertPlannerSignal_Insert(t *testing.T) {
+	t.Parallel()
 	qh := newDispatchTestQH(10)
 	sq := &model.PlannerSignalQueue{}
 	dirty := false
@@ -215,6 +224,7 @@ func TestUpsertPlannerSignal_Insert(t *testing.T) {
 }
 
 func TestUpsertPlannerSignal_Dedup(t *testing.T) {
+	t.Parallel()
 	qh := newDispatchTestQH(10)
 	sq := &model.PlannerSignalQueue{}
 	dirty := false
@@ -249,6 +259,7 @@ func TestUpsertPlannerSignal_Dedup(t *testing.T) {
 }
 
 func TestUpsertPlannerSignal_DifferentKind(t *testing.T) {
+	t.Parallel()
 	qh := newDispatchTestQH(10)
 	sq := &model.PlannerSignalQueue{}
 	dirty := false
@@ -270,6 +281,7 @@ func TestUpsertPlannerSignal_DifferentKind(t *testing.T) {
 }
 
 func TestUpsertPlannerSignal_DifferentCommand(t *testing.T) {
+	t.Parallel()
 	qh := newDispatchTestQH(10)
 	sq := &model.PlannerSignalQueue{}
 	dirty := false
@@ -291,6 +303,7 @@ func TestUpsertPlannerSignal_DifferentCommand(t *testing.T) {
 }
 
 func TestUpsertPlannerSignal_DifferentPhase(t *testing.T) {
+	t.Parallel()
 	qh := newDispatchTestQH(10)
 	sq := &model.PlannerSignalQueue{}
 	dirty := false
@@ -312,6 +325,7 @@ func TestUpsertPlannerSignal_DifferentPhase(t *testing.T) {
 }
 
 func TestUpsertPlannerSignal_SchemaVersionPreserved(t *testing.T) {
+	t.Parallel()
 	qh := newDispatchTestQH(10)
 	sq := &model.PlannerSignalQueue{
 		SchemaVersion: 2,
@@ -335,6 +349,7 @@ func TestUpsertPlannerSignal_SchemaVersionPreserved(t *testing.T) {
 // --- isAgentBusy with busyChecker ---
 
 func TestIsAgentBusy_WithChecker(t *testing.T) {
+	t.Parallel()
 	qh := newDispatchTestQH(10)
 
 	// Set a custom busy checker that returns busy for "worker1"

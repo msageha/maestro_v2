@@ -24,6 +24,7 @@ import (
 // --- checkCommandTasksTerminal tests ---
 
 func TestCheckCommandTasksTerminal_AllCompleted(t *testing.T) {
+	t.Parallel()
 	qh := newMinimalQueueHandler(t)
 	tqs := makeTaskQueues(map[string][]model.Task{
 		"worker1": {
@@ -42,6 +43,7 @@ func TestCheckCommandTasksTerminal_AllCompleted(t *testing.T) {
 }
 
 func TestCheckCommandTasksTerminal_HasFailed(t *testing.T) {
+	t.Parallel()
 	qh := newMinimalQueueHandler(t)
 	tqs := makeTaskQueues(map[string][]model.Task{
 		"worker1": {
@@ -60,6 +62,7 @@ func TestCheckCommandTasksTerminal_HasFailed(t *testing.T) {
 }
 
 func TestCheckCommandTasksTerminal_HasDeadLetter(t *testing.T) {
+	t.Parallel()
 	qh := newMinimalQueueHandler(t)
 	tqs := makeTaskQueues(map[string][]model.Task{
 		"worker1": {
@@ -78,6 +81,7 @@ func TestCheckCommandTasksTerminal_HasDeadLetter(t *testing.T) {
 }
 
 func TestCheckCommandTasksTerminal_NotAllTerminal(t *testing.T) {
+	t.Parallel()
 	qh := newMinimalQueueHandler(t)
 	tqs := makeTaskQueues(map[string][]model.Task{
 		"worker1": {
@@ -93,6 +97,7 @@ func TestCheckCommandTasksTerminal_NotAllTerminal(t *testing.T) {
 }
 
 func TestCheckCommandTasksTerminal_NoTasks(t *testing.T) {
+	t.Parallel()
 	qh := newMinimalQueueHandler(t)
 	tqs := makeTaskQueues(map[string][]model.Task{
 		"worker1": {
@@ -107,6 +112,7 @@ func TestCheckCommandTasksTerminal_NoTasks(t *testing.T) {
 }
 
 func TestCheckCommandTasksTerminal_MixedCommands(t *testing.T) {
+	t.Parallel()
 	qh := newMinimalQueueHandler(t)
 	tqs := makeTaskQueues(map[string][]model.Task{
 		"worker1": {
@@ -128,6 +134,7 @@ func TestCheckCommandTasksTerminal_MixedCommands(t *testing.T) {
 }
 
 func TestCheckCommandTasksTerminal_AcrossWorkers(t *testing.T) {
+	t.Parallel()
 	qh := newMinimalQueueHandler(t)
 	tqs := makeTaskQueues(map[string][]model.Task{
 		"worker1": {
@@ -147,6 +154,7 @@ func TestCheckCommandTasksTerminal_AcrossWorkers(t *testing.T) {
 // --- collectWorktreePublishAndCleanup tests ---
 
 func TestCollectWorktreePublish_MergedIntegration(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{
 		Enabled:          true,
@@ -183,6 +191,7 @@ func TestCollectWorktreePublish_MergedIntegration(t *testing.T) {
 }
 
 func TestCollectWorktreePublish_SkipAlreadyPublished(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{
 		Enabled:          true,
@@ -214,6 +223,7 @@ func TestCollectWorktreePublish_SkipAlreadyPublished(t *testing.T) {
 }
 
 func TestCollectWorktreePublish_SkipOnFailedTasks(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{
 		Enabled:          true,
@@ -246,6 +256,7 @@ func TestCollectWorktreePublish_SkipOnFailedTasks(t *testing.T) {
 }
 
 func TestCollectWorktreePublish_NoCleanupOnFailureDisabled(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{
 		Enabled:          true,
@@ -273,6 +284,7 @@ func TestCollectWorktreePublish_NoCleanupOnFailureDisabled(t *testing.T) {
 }
 
 func TestCollectWorktreePublish_SkipNotReady(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{
 		Enabled: true,
@@ -303,6 +315,7 @@ func TestCollectWorktreePublish_SkipNotReady(t *testing.T) {
 // is blocked when worktree state still records workers whose auto-commit failed,
 // even if integration status reached Merged via the workers that did commit.
 func TestCollectWorktreePublish_BlockedByCommitFailedWorkers(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{
 		Enabled:          true,
@@ -344,6 +357,7 @@ func TestCollectWorktreePublish_BlockedByCommitFailedWorkers(t *testing.T) {
 }
 
 func TestCollectWorktreePublish_SkipConflict(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{
 		Enabled: true,
@@ -370,6 +384,7 @@ func TestCollectWorktreePublish_SkipConflict(t *testing.T) {
 }
 
 func TestCollectWorktreePublish_SkipNonTerminalPhases(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{
 		Enabled: true,
@@ -402,6 +417,7 @@ func TestCollectWorktreePublish_SkipNonTerminalPhases(t *testing.T) {
 }
 
 func TestCollectWorktreePublish_AllPhasesTerminal(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{
 		Enabled: true,
@@ -430,6 +446,7 @@ func TestCollectWorktreePublish_AllPhasesTerminal(t *testing.T) {
 }
 
 func TestCollectWorktreePublish_SkipNonTerminalTasks(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{
 		Enabled: true,
@@ -458,6 +475,7 @@ func TestCollectWorktreePublish_SkipNonTerminalTasks(t *testing.T) {
 }
 
 func TestCollectWorktreePublish_PhaseErrorFailsClosed(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{
 		Enabled: true,
@@ -703,6 +721,7 @@ func noPhasesFallbackFixture(
 }
 
 func TestCollectWorktreePhaseMerges_NoPhasesFallback(t *testing.T) {
+	t.Parallel()
 	qh, tqs := noPhasesFallbackFixture(t, model.IntegrationStatusCreated, map[string]model.Status{
 		"t1": model.StatusCompleted,
 		"t2": model.StatusCompleted,
@@ -724,6 +743,7 @@ func TestCollectWorktreePhaseMerges_NoPhasesFallback(t *testing.T) {
 }
 
 func TestCollectWorktreePhaseMerges_NoPhasesSkipsOnFailure(t *testing.T) {
+	t.Parallel()
 	qh, tqs := noPhasesFallbackFixture(t, model.IntegrationStatusCreated, map[string]model.Status{
 		"t1": model.StatusCompleted,
 		"t2": model.StatusFailed,
@@ -735,6 +755,7 @@ func TestCollectWorktreePhaseMerges_NoPhasesSkipsOnFailure(t *testing.T) {
 }
 
 func TestCollectWorktreePhaseMerges_NoPhasesSkipsWhenNotAllTerminal(t *testing.T) {
+	t.Parallel()
 	qh, tqs := noPhasesFallbackFixture(t, model.IntegrationStatusCreated, map[string]model.Status{
 		"t1": model.StatusCompleted,
 		"t2": model.StatusInProgress,
@@ -746,6 +767,7 @@ func TestCollectWorktreePhaseMerges_NoPhasesSkipsWhenNotAllTerminal(t *testing.T
 }
 
 func TestCollectWorktreePhaseMerges_NoPhasesSkipsWhenAlreadyMerged(t *testing.T) {
+	t.Parallel()
 	// Integration already merged → fallback should not produce a new item.
 	qh, tqs := noPhasesFallbackFixture(t, model.IntegrationStatusMerged, map[string]model.Status{
 		"t1": model.StatusCompleted,
@@ -760,6 +782,7 @@ func TestCollectWorktreePhaseMerges_NoPhasesSkipsWhenAlreadyMerged(t *testing.T)
 // fast-path: phase 0 件 + Integration.Status==created → 即時 stall シグナル発火
 // (timeoutMin を待たない).
 func TestStepWorktreeStallDetection_NoPhasesFastPath(t *testing.T) {
+	t.Parallel()
 	// recent updated_at: regular timeout path is NOT triggered.
 	recent := time.Now().Add(-1 * time.Minute).UTC().Format(time.RFC3339)
 	qh, s := stallTestSetup(t, recent, model.IntegrationStatusCreated, false)
@@ -793,6 +816,7 @@ func TestStepWorktreeStallDetection_NoPhasesFastPath(t *testing.T) {
 // --- classifyCommitError unit tests ---
 
 func TestClassifyCommitError(t *testing.T) {
+	t.Parallel()
 	wrappedFiltered := fmt.Errorf("commit for worker w in command c: %w", worktreepkg.ErrAllFilesFiltered)
 	policyErr := &worktreepkg.CommitPolicyViolationError{
 		Violations: []worktreepkg.CommitPolicyViolation{
@@ -814,6 +838,7 @@ func TestClassifyCommitError(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			got := classifyCommitError(tc.err)
 			if got != tc.want {
 				t.Errorf("classifyCommitError(%v) = %q, want %q", tc.err, got, tc.want)
@@ -834,6 +859,7 @@ func TestClassifyCommitError(t *testing.T) {
 //   - MarkPhaseMerged NOT recorded
 //   - commit_failed signal emitted with Reason populated
 func TestPhaseBC_CommitFailure_FlowTable(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name        string
 		mutateCfg   func(cfg *model.WorktreeConfig)
@@ -874,6 +900,7 @@ func TestPhaseBC_CommitFailure_FlowTable(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			projectRoot := initTestGitRepo(t)
 			maestroDir := filepath.Join(projectRoot, ".maestro")
 			for _, sub := range []string{"queue", "results", "logs", "state/commands", "state/worktrees"} {
@@ -979,6 +1006,7 @@ func TestPhaseBC_CommitFailure_FlowTable(t *testing.T) {
 // legacy free-form Message field continues to embed the same values for
 // backward compatibility with CSV-style consumers.
 func TestPeriodicScanPhaseC_MergeConflictSignalStructuredFields(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	wtCfg := model.WorktreeConfig{Enabled: false}
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, wtCfg)
@@ -1040,6 +1068,7 @@ func TestPeriodicScanPhaseC_MergeConflictSignalStructuredFields(t *testing.T) {
 // values stay omitted (preserving on-disk compatibility for non-conflict
 // signal kinds).
 func TestPlannerSignal_StructuredConflictFields_RoundTrip(t *testing.T) {
+	t.Parallel()
 	orig := model.PlannerSignal{
 		Kind:              "merge_conflict",
 		CommandID:         "cmd1",

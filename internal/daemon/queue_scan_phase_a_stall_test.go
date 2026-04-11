@@ -78,6 +78,7 @@ func stallTestSetup(t *testing.T, cmdUpdatedAt string, integrationStatus model.I
 }
 
 func TestStepWorktreeStallDetection_FiresAfterTimeout(t *testing.T) {
+	t.Parallel()
 	past := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
 	qh, s := stallTestSetup(t, past, model.IntegrationStatusCreated, false)
 
@@ -111,6 +112,7 @@ func TestStepWorktreeStallDetection_FiresAfterTimeout(t *testing.T) {
 }
 
 func TestStepWorktreeStallDetection_DoesNotFireWithinTimeout(t *testing.T) {
+	t.Parallel()
 	recent := time.Now().Add(-1 * time.Minute).UTC().Format(time.RFC3339)
 	qh, s := stallTestSetup(t, recent, model.IntegrationStatusCreated, false)
 
@@ -126,6 +128,7 @@ func TestStepWorktreeStallDetection_DoesNotFireWithinTimeout(t *testing.T) {
 }
 
 func TestStepWorktreeStallDetection_NoReFireWhenAlreadySignaled(t *testing.T) {
+	t.Parallel()
 	past := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
 	qh, s := stallTestSetup(t, past, model.IntegrationStatusCreated, true)
 
@@ -137,6 +140,7 @@ func TestStepWorktreeStallDetection_NoReFireWhenAlreadySignaled(t *testing.T) {
 }
 
 func TestStepWorktreeStallDetection_DeliveryFailureMarksIntegrationFailed(t *testing.T) {
+	t.Parallel()
 	past := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
 	qh, s := stallTestSetup(t, past, model.IntegrationStatusCreated, false)
 

@@ -81,6 +81,7 @@ func newTestDependencyResolver(reader StateManager) *DependencyResolver {
 }
 
 func TestIsTaskBlocked_NoDeps(t *testing.T) {
+	t.Parallel()
 	dr := newTestDependencyResolver(nil)
 	task := &model.Task{ID: "t1", BlockedBy: nil}
 
@@ -94,6 +95,7 @@ func TestIsTaskBlocked_NoDeps(t *testing.T) {
 }
 
 func TestIsTaskBlocked_AllCompleted(t *testing.T) {
+	t.Parallel()
 	reader := &mockStateReader{
 		taskStates: map[string]model.Status{
 			"cmd1:dep1": model.StatusCompleted,
@@ -117,6 +119,7 @@ func TestIsTaskBlocked_AllCompleted(t *testing.T) {
 }
 
 func TestIsTaskBlocked_DepPending(t *testing.T) {
+	t.Parallel()
 	reader := &mockStateReader{
 		taskStates: map[string]model.Status{
 			"cmd1:dep1": model.StatusCompleted,
@@ -140,6 +143,7 @@ func TestIsTaskBlocked_DepPending(t *testing.T) {
 }
 
 func TestCheckDependencyFailure(t *testing.T) {
+	t.Parallel()
 	reader := &mockStateReader{
 		taskStates: map[string]model.Status{
 			"cmd1:dep1": model.StatusCompleted,
@@ -166,6 +170,7 @@ func TestCheckDependencyFailure(t *testing.T) {
 }
 
 func TestCheckDependencyFailure_NoFailure(t *testing.T) {
+	t.Parallel()
 	reader := &mockStateReader{
 		taskStates: map[string]model.Status{
 			"cmd1:dep1": model.StatusCompleted,
@@ -188,6 +193,7 @@ func TestCheckDependencyFailure_NoFailure(t *testing.T) {
 }
 
 func TestCheckPhaseTransitions_ActiveCompleted(t *testing.T) {
+	t.Parallel()
 	reader := &mockStateReader{
 		taskStates: map[string]model.Status{
 			"cmd1:task1": model.StatusCompleted,
@@ -220,6 +226,7 @@ func TestCheckPhaseTransitions_ActiveCompleted(t *testing.T) {
 }
 
 func TestCheckPhaseTransitions_ActiveFailed(t *testing.T) {
+	t.Parallel()
 	reader := &mockStateReader{
 		taskStates: map[string]model.Status{
 			"cmd1:task1": model.StatusCompleted,
@@ -252,6 +259,7 @@ func TestCheckPhaseTransitions_ActiveFailed(t *testing.T) {
 }
 
 func TestCheckPhaseTransitions_PendingActivation(t *testing.T) {
+	t.Parallel()
 	reader := &mockStateReader{
 		phases: map[string][]PhaseInfo{
 			"cmd1": {
@@ -285,6 +293,7 @@ func TestCheckPhaseTransitions_PendingActivation(t *testing.T) {
 }
 
 func TestCheckPhaseTransitions_CascadeCancel(t *testing.T) {
+	t.Parallel()
 	reader := &mockStateReader{
 		phases: map[string][]PhaseInfo{
 			"cmd1": {
@@ -318,6 +327,7 @@ func TestCheckPhaseTransitions_CascadeCancel(t *testing.T) {
 }
 
 func TestCheckPhaseTransitions_AwaitingFillTimeout(t *testing.T) {
+	t.Parallel()
 	pastDeadline := time.Now().Add(-time.Hour).Format(time.RFC3339)
 	reader := &mockStateReader{
 		phases: map[string][]PhaseInfo{
@@ -347,6 +357,7 @@ func TestCheckPhaseTransitions_AwaitingFillTimeout(t *testing.T) {
 }
 
 func TestCheckPhaseTransitions_AwaitingFillNotExpired(t *testing.T) {
+	t.Parallel()
 	futureDeadline := time.Now().Add(time.Hour).Format(time.RFC3339)
 	reader := &mockStateReader{
 		phases: map[string][]PhaseInfo{
@@ -373,6 +384,7 @@ func TestCheckPhaseTransitions_AwaitingFillNotExpired(t *testing.T) {
 }
 
 func TestBuildAwaitingFillNotification(t *testing.T) {
+	t.Parallel()
 	dr := newTestDependencyResolver(nil)
 	phase := PhaseInfo{
 		ID:   "phase2",
@@ -390,6 +402,7 @@ func TestBuildAwaitingFillNotification(t *testing.T) {
 }
 
 func TestIsTaskBlocked_NilStateReader(t *testing.T) {
+	t.Parallel()
 	dr := newTestDependencyResolver(nil)
 	task := &model.Task{
 		ID:        "t1",
@@ -407,6 +420,7 @@ func TestIsTaskBlocked_NilStateReader(t *testing.T) {
 }
 
 func TestIsSystemCommitReady_NotSystemCommit(t *testing.T) {
+	t.Parallel()
 	reader := &mockStateReader{
 		systemCommitReady: nil, // no entries → all tasks are non-system-commit
 	}
@@ -425,6 +439,7 @@ func TestIsSystemCommitReady_NotSystemCommit(t *testing.T) {
 }
 
 func TestIsSystemCommitReady_PhasesNotTerminal(t *testing.T) {
+	t.Parallel()
 	reader := &mockStateReader{
 		systemCommitReady: map[string][2]bool{
 			"cmd1:sys_task": {true, false}, // is system commit, NOT ready
@@ -445,6 +460,7 @@ func TestIsSystemCommitReady_PhasesNotTerminal(t *testing.T) {
 }
 
 func TestIsSystemCommitReady_AllPhasesTerminal(t *testing.T) {
+	t.Parallel()
 	reader := &mockStateReader{
 		systemCommitReady: map[string][2]bool{
 			"cmd1:sys_task": {true, true}, // is system commit, ready
@@ -465,6 +481,7 @@ func TestIsSystemCommitReady_AllPhasesTerminal(t *testing.T) {
 }
 
 func TestIsSystemCommitReady_NilStateReader(t *testing.T) {
+	t.Parallel()
 	dr := newTestDependencyResolver(nil)
 
 	isSys, ready, err := dr.IsSystemCommitReady("cmd1", "sys_task")
@@ -531,6 +548,7 @@ func (m *mockStateReaderErrNotFound) IsSystemCommitReady(commandID, taskID strin
 // TestCheckPhaseTransitions_StateNotFound verifies that CheckPhaseTransitions
 // returns nil when state doesn't exist (command not yet submitted by planner).
 func TestCheckPhaseTransitions_StateNotFound(t *testing.T) {
+	t.Parallel()
 	reader := &mockStateReaderErrNotFound{}
 	dr := newTestDependencyResolver(reader)
 
@@ -550,6 +568,7 @@ func TestCheckPhaseTransitions_StateNotFound(t *testing.T) {
 // stepWorktreeFastTrackCleanup killed pending phases in the same scan cycle that
 // their dependency phase completed — before they could activate.
 func TestCheckPhaseTransitions_SameCycleCascade(t *testing.T) {
+	t.Parallel()
 	reader := &mockStateReader{
 		taskStates: map[string]model.Status{
 			"cmd1:task1": model.StatusCompleted,

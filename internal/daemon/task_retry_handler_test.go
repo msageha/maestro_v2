@@ -17,6 +17,7 @@ import (
 
 // TC-RT-001: Exit code によるリトライ判定テスト
 func TestShouldRetryTask_ExitCodes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name             string
 		exitCode         int
@@ -131,6 +132,7 @@ func TestShouldRetryTask_ExitCodes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			config := model.Config{
 				Retry: model.RetryConfig{
 					TaskExecution: model.TaskRetryConfig{
@@ -163,6 +165,7 @@ func TestShouldRetryTask_ExitCodes(t *testing.T) {
 
 // TC-RT-002: リトライタスクの生成とフィールド検証
 func TestCreateRetryTask_FieldValidation(t *testing.T) {
+	t.Parallel()
 	originalTask := &model.Task{
 		ID:                 "task_original",
 		CommandID:          "cmd_001",
@@ -284,6 +287,7 @@ func TestCreateRetryTask_FieldValidation(t *testing.T) {
 
 // TC-RT-003: リトライタスクの生成 - NotBefore計算テスト
 func TestCreateRetryTask_NotBeforeCalculation(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		cooldownSec int
@@ -296,6 +300,7 @@ func TestCreateRetryTask_NotBeforeCalculation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			originalTask := &model.Task{
 				ID:        "task_001",
 				CommandID: "cmd_001",
@@ -344,6 +349,7 @@ func TestCreateRetryTask_NotBeforeCalculation(t *testing.T) {
 
 // TC-RT-004: ExecutionRetriesカウンタのインクリメント
 func TestCreateRetryTask_ExecutionRetriesIncrement(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name             string
 		executionRetries int
@@ -356,6 +362,7 @@ func TestCreateRetryTask_ExecutionRetriesIncrement(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			originalTask := &model.Task{
 				ID:               "task_001",
 				CommandID:        "cmd_001",
@@ -390,6 +397,7 @@ func TestCreateRetryTask_ExecutionRetriesIncrement(t *testing.T) {
 
 // TC-RT-005: OriginalTaskIDの追跡
 func TestCreateRetryTask_OriginalTaskIDTracking(t *testing.T) {
+	t.Parallel()
 	config := model.Config{
 		Retry: model.RetryConfig{
 			TaskExecution: model.TaskRetryConfig{
@@ -456,6 +464,7 @@ func TestCreateRetryTask_OriginalTaskIDTracking(t *testing.T) {
 
 // TC-RT-006: リトライ可能性の最大リトライ数境界値テスト
 func TestShouldRetryTask_MaxRetriesBoundary(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name             string
 		executionRetries int
@@ -488,6 +497,7 @@ func TestShouldRetryTask_MaxRetriesBoundary(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			config := model.Config{
 				Retry: model.RetryConfig{
 					TaskExecution: model.TaskRetryConfig{
@@ -520,6 +530,7 @@ func TestShouldRetryTask_MaxRetriesBoundary(t *testing.T) {
 
 // TC-RT-007: リトライ無効時の動作
 func TestShouldRetryTask_DisabledRetry(t *testing.T) {
+	t.Parallel()
 	config := model.Config{
 		Retry: model.RetryConfig{
 			TaskExecution: model.TaskRetryConfig{
@@ -550,6 +561,7 @@ func TestShouldRetryTask_DisabledRetry(t *testing.T) {
 
 // TC-RT-008: RegisterRetryTaskInState のテスト
 func TestRegisterRetryTaskInState(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	commandID := "cmd_001"
 	taskID := "task_retry_001"
@@ -614,6 +626,7 @@ func TestRegisterRetryTaskInState(t *testing.T) {
 
 // TC-RT-009: AddRetryTaskToQueue のテスト
 func TestAddRetryTaskToQueue(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	workerID := "worker1"
 
@@ -691,6 +704,7 @@ func TestAddRetryTaskToQueue(t *testing.T) {
 
 // TC-RT-010: べき等性テスト - 重複失敗時のリトライタスク作成
 func TestRetryIdempotency(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	commandID := "cmd_001"
 	originalTaskID := "task_original"
@@ -798,6 +812,7 @@ func TestRetryIdempotency(t *testing.T) {
 
 // TC-RT-011: 並行リトライ作成の安全性
 func TestConcurrentRetryCreation(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	commandID := "cmd_001"
 	workerID := "worker1"
@@ -917,6 +932,7 @@ func TestConcurrentRetryCreation(t *testing.T) {
 
 // TC-RT-012: OOMキルのリトライテスト (exit code 137)
 func TestShouldRetryTask_OOMKill(t *testing.T) {
+	t.Parallel()
 	config := model.Config{
 		Retry: model.RetryConfig{
 			TaskExecution: model.TaskRetryConfig{
@@ -947,6 +963,7 @@ func TestShouldRetryTask_OOMKill(t *testing.T) {
 
 // TC-RT-013: Permission deniedのリトライ拒否テスト (exit code 126)
 func TestShouldRetryTask_PermissionDenied(t *testing.T) {
+	t.Parallel()
 	config := model.Config{
 		Retry: model.RetryConfig{
 			TaskExecution: model.TaskRetryConfig{
@@ -977,6 +994,7 @@ func TestShouldRetryTask_PermissionDenied(t *testing.T) {
 
 // TC-RT-014: クールダウン時間の最大値制限テスト
 func TestCreateRetryTask_CooldownMaxDuration(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name           string
 		cooldownSec    int
@@ -990,6 +1008,7 @@ func TestCreateRetryTask_CooldownMaxDuration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			config := model.Config{
 				Retry: model.RetryConfig{
 					TaskExecution: model.TaskRetryConfig{
@@ -1036,6 +1055,7 @@ func TestCreateRetryTask_CooldownMaxDuration(t *testing.T) {
 
 // TC-RT-015: 不正なクールダウン値の処理
 func TestCreateRetryTask_InvalidCooldownValues(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		cooldownSec int
@@ -1048,6 +1068,7 @@ func TestCreateRetryTask_InvalidCooldownValues(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			config := model.Config{
 				Retry: model.RetryConfig{
 					TaskExecution: model.TaskRetryConfig{
@@ -1083,6 +1104,7 @@ func TestCreateRetryTask_InvalidCooldownValues(t *testing.T) {
 
 // TC-RT-016: max_retries=0 の解釈テスト（無限リトライ vs 無効化）
 func TestShouldRetryTask_MaxRetriesZero(t *testing.T) {
+	t.Parallel()
 	// According to the implementation, max_retries=0 means unlimited retries
 	// (the check is: maxRetries > 0 && retries >= maxRetries)
 	config := model.Config{
@@ -1114,6 +1136,7 @@ func TestShouldRetryTask_MaxRetriesZero(t *testing.T) {
 
 // TC-RT-017: タスクフィールドの欠損処理テスト
 func TestCreateRetryTask_MissingFields(t *testing.T) {
+	t.Parallel()
 	config := model.Config{
 		Retry: model.RetryConfig{
 			TaskExecution: model.TaskRetryConfig{
@@ -1153,6 +1176,7 @@ func TestCreateRetryTask_MissingFields(t *testing.T) {
 
 // TC-RT-018: 非常に大きなExecutionRetriesのハンドリング
 func TestCreateRetryTask_LargeExecutionRetries(t *testing.T) {
+	t.Parallel()
 	config := model.Config{
 		Retry: model.RetryConfig{
 			TaskExecution: model.TaskRetryConfig{
@@ -1187,6 +1211,7 @@ func TestCreateRetryTask_LargeExecutionRetries(t *testing.T) {
 
 // TC-RT-019: Priority計算のオーバーフローテスト
 func TestCreateRetryTask_PriorityOverflow(t *testing.T) {
+	t.Parallel()
 	config := model.Config{
 		Retry: model.RetryConfig{
 			TaskExecution: model.TaskRetryConfig{
@@ -1224,6 +1249,7 @@ func TestCreateRetryTask_PriorityOverflow(t *testing.T) {
 
 // TC-RT-020: 複数のConstraintsがある場合のリトライメタデータ追加
 func TestCreateRetryTask_MultipleConstraints(t *testing.T) {
+	t.Parallel()
 	config := model.Config{
 		Retry: model.RetryConfig{
 			TaskExecution: model.TaskRetryConfig{
@@ -1283,6 +1309,7 @@ func TestCreateRetryTask_MultipleConstraints(t *testing.T) {
 
 // TC-RT-021: 空のリトライ設定でのリトライ無効確認
 func TestShouldRetryTask_EmptyRetryableExitCodes(t *testing.T) {
+	t.Parallel()
 	config := model.Config{
 		Retry: model.RetryConfig{
 			TaskExecution: model.TaskRetryConfig{
@@ -1314,6 +1341,7 @@ func TestShouldRetryTask_EmptyRetryableExitCodes(t *testing.T) {
 
 // TC-RT-022: CreatedAtとUpdatedAtのタイムスタンプ検証
 func TestCreateRetryTask_Timestamps(t *testing.T) {
+	t.Parallel()
 	config := model.Config{
 		Retry: model.RetryConfig{
 			TaskExecution: model.TaskRetryConfig{
@@ -1373,6 +1401,7 @@ func TestCreateRetryTask_Timestamps(t *testing.T) {
 
 // TC-RT-023: nilポインタフィールドの安全な処理
 func TestCreateRetryTask_NilPointerFields(t *testing.T) {
+	t.Parallel()
 	config := model.Config{
 		Retry: model.RetryConfig{
 			TaskExecution: model.TaskRetryConfig{
@@ -1420,6 +1449,7 @@ func TestCreateRetryTask_NilPointerFields(t *testing.T) {
 
 // TC-RT-024: RegisterRetryTaskInState の状態マージテスト
 func TestRegisterRetryTaskInState_ExistingTasks(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	commandID := "cmd_001"
 	taskID := "task_retry_002"
@@ -1499,6 +1529,7 @@ func TestRegisterRetryTaskInState_ExistingTasks(t *testing.T) {
 
 // TC-RT-025: AddRetryTaskToQueue の空キュー処理
 func TestAddRetryTaskToQueue_EmptyQueue(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	workerID := "worker_new"
 

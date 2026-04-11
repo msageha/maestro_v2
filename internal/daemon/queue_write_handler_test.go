@@ -84,6 +84,7 @@ func makeQueueWriteRequest(t *testing.T, params any) *uds.Request {
 }
 
 func TestQueueWriteCommand_Basic(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 
 	req := makeQueueWriteRequest(t, QueueWriteParams{
@@ -129,6 +130,7 @@ func TestQueueWriteCommand_Basic(t *testing.T) {
 }
 
 func TestQueueWriteCommand_SkillRefs(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 
 	req := makeQueueWriteRequest(t, QueueWriteParams{
@@ -165,6 +167,7 @@ func TestQueueWriteCommand_SkillRefs(t *testing.T) {
 }
 
 func TestQueueWriteCommand_NoSkillRefs(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 
 	req := makeQueueWriteRequest(t, QueueWriteParams{
@@ -196,6 +199,7 @@ func TestQueueWriteCommand_NoSkillRefs(t *testing.T) {
 }
 
 func TestQueueWriteCommand_Backpressure(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	d.config.Limits.MaxPendingCommands = 2
 
@@ -226,6 +230,7 @@ func TestQueueWriteCommand_Backpressure(t *testing.T) {
 }
 
 func TestQueueWriteCommand_BackpressureCountsPendingOnly(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	d.config.Limits.MaxPendingCommands = 1
 
@@ -264,6 +269,7 @@ func TestQueueWriteCommand_BackpressureCountsPendingOnly(t *testing.T) {
 }
 
 func TestQueueWriteCommand_ContentSizeLimit(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	d.config.Limits.MaxEntryContentBytes = 10
 
@@ -281,6 +287,7 @@ func TestQueueWriteCommand_ContentSizeLimit(t *testing.T) {
 }
 
 func TestQueueWriteCommand_MissingContent(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 
 	req := makeQueueWriteRequest(t, QueueWriteParams{
@@ -293,6 +300,7 @@ func TestQueueWriteCommand_MissingContent(t *testing.T) {
 }
 
 func TestQueueWriteTask_Basic(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 
 	req := makeQueueWriteRequest(t, QueueWriteParams{
@@ -344,6 +352,7 @@ func TestQueueWriteTask_Basic(t *testing.T) {
 }
 
 func TestQueueWriteTask_Backpressure(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	d.config.Limits.MaxPendingTasksPerWorker = 1
 
@@ -383,6 +392,7 @@ func TestQueueWriteTask_Backpressure(t *testing.T) {
 }
 
 func TestQueueWriteTask_ValidationErrors(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 
 	tests := []struct {
@@ -400,6 +410,7 @@ func TestQueueWriteTask_ValidationErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			req := makeQueueWriteRequest(t, tt.params)
 			resp := d.api.handleQueueWrite(req)
 			if resp.Success {
@@ -413,6 +424,7 @@ func TestQueueWriteTask_ValidationErrors(t *testing.T) {
 }
 
 func TestQueueWriteNotification_Basic(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 
 	req := makeQueueWriteRequest(t, QueueWriteParams{
@@ -458,6 +470,7 @@ func TestQueueWriteNotification_Basic(t *testing.T) {
 }
 
 func TestQueueWriteNotification_Idempotency(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 
 	params := QueueWriteParams{
@@ -511,6 +524,7 @@ func TestQueueWriteNotification_Idempotency(t *testing.T) {
 }
 
 func TestQueueWriteNotification_ValidationErrors(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 
 	tests := []struct {
@@ -526,6 +540,7 @@ func TestQueueWriteNotification_ValidationErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			req := makeQueueWriteRequest(t, tt.params)
 			resp := d.api.handleQueueWrite(req)
 			if resp.Success {
@@ -539,6 +554,7 @@ func TestQueueWriteNotification_ValidationErrors(t *testing.T) {
 }
 
 func TestQueueWrite_InvalidType(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 
 	req := makeQueueWriteRequest(t, QueueWriteParams{
@@ -552,6 +568,7 @@ func TestQueueWrite_InvalidType(t *testing.T) {
 }
 
 func TestQueueWriteTask_WithBlockedBy(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 
 	req := makeQueueWriteRequest(t, QueueWriteParams{
@@ -590,6 +607,7 @@ func TestQueueWriteTask_WithBlockedBy(t *testing.T) {
 }
 
 func TestQueueWriteTask_BlockedByValidation(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 
 	tests := []struct {
@@ -603,6 +621,7 @@ func TestQueueWriteTask_BlockedByValidation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			req := makeQueueWriteRequest(t, QueueWriteParams{
 				Type:               "task",
 		SystemCaller:       string(model.TaskIDCallerSystemInternal),
@@ -626,6 +645,7 @@ func TestQueueWriteTask_BlockedByValidation(t *testing.T) {
 }
 
 func TestQueueWriteCancelRequest_Unsubmitted(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 
 	// First create a command in planner queue
@@ -675,6 +695,7 @@ func TestQueueWriteCancelRequest_Unsubmitted(t *testing.T) {
 }
 
 func TestQueueWriteCancelRequest_Submitted(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 
 	commandID := "cmd_0000000001_abcdef01"
@@ -724,6 +745,7 @@ func TestQueueWriteCancelRequest_Submitted(t *testing.T) {
 }
 
 func TestQueueWriteCancelRequest_Idempotent(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 
 	commandID := "cmd_0000000001_abcdef01"
@@ -761,6 +783,7 @@ func TestQueueWriteCancelRequest_Idempotent(t *testing.T) {
 // "orchestrator") are the only observable difference, and both lead to a
 // single state.cancel.requested mutation through handleQueueWriteCancelRequest.
 func TestQueueWriteCancelRequest_UnifiedRoute(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name        string
 		requestedBy string
@@ -771,6 +794,7 @@ func TestQueueWriteCancelRequest_UnifiedRoute(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			d := newTestDaemon(t)
 			commandID := "cmd_0000000001_abcdef01"
 			setupCommandState(t, d, commandID, []string{"task_0000000001_abcdef01"})
@@ -816,6 +840,7 @@ func TestQueueWriteCancelRequest_UnifiedRoute(t *testing.T) {
 }
 
 func TestQueueWriteCommand_DefaultPriority(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 
 	req := makeQueueWriteRequest(t, QueueWriteParams{
@@ -842,6 +867,7 @@ func TestQueueWriteCommand_DefaultPriority(t *testing.T) {
 }
 
 func TestQueueWriteTask_CyclicDependencyDetection(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 
 	commandID := "cmd_0000000001_abcdef01"
@@ -946,6 +972,7 @@ func TestQueueWriteTask_CyclicDependencyDetection(t *testing.T) {
 }
 
 func TestQueueWriteTask_CyclicDependency_MutualBlockAB(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 
 	commandID := "cmd_0000000001_abcdef01"
@@ -1033,6 +1060,7 @@ func TestQueueWriteTask_CyclicDependency_MutualBlockAB(t *testing.T) {
 }
 
 func TestQueueWriteTask_NoCycleWithTerminalTasks(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 
 	commandID := "cmd_0000000001_abcdef01"
@@ -1114,6 +1142,7 @@ func TestQueueWriteTask_NoCycleWithTerminalTasks(t *testing.T) {
 }
 
 func TestDetectCycleDFS(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		deps     map[string][]string
@@ -1185,6 +1214,7 @@ func TestDetectCycleDFS(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			cycle := detectCycleDFS(tt.deps)
 			if tt.hasCycle && len(cycle) == 0 {
 				t.Error("expected cycle to be detected, got none")
@@ -1206,8 +1236,10 @@ func TestDetectCycleDFS(t *testing.T) {
 }
 
 func TestDetectCycleDFS_PathContent(t *testing.T) {
+	t.Parallel()
 	// Verify cycle path contains expected nodes
 	t.Run("A-B cycle contains both nodes", func(t *testing.T) {
+		t.Parallel()
 		deps := map[string][]string{
 			"A": {"B"},
 			"B": {"A"},
@@ -1231,6 +1263,7 @@ func TestDetectCycleDFS_PathContent(t *testing.T) {
 	})
 
 	t.Run("self-reference path", func(t *testing.T) {
+		t.Parallel()
 		deps := map[string][]string{
 			"X": {"X"},
 		}

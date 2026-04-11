@@ -6,6 +6,7 @@ import (
 )
 
 func TestSelectArm_NoArms_ReturnsError(t *testing.T) {
+	t.Parallel()
 	s := NewSelector(1.0)
 	_, err := s.SelectArm()
 	if err == nil {
@@ -14,6 +15,7 @@ func TestSelectArm_NoArms_ReturnsError(t *testing.T) {
 }
 
 func TestSelectArm_ExplorationPhase(t *testing.T) {
+	t.Parallel()
 	s := NewSelector(1.0)
 	s.AddArm("a")
 	s.AddArm("b")
@@ -38,6 +40,7 @@ func TestSelectArm_ExplorationPhase(t *testing.T) {
 }
 
 func TestSelectArm_UCB1AfterExploration(t *testing.T) {
+	t.Parallel()
 	s := NewSelector(1.0)
 	s.AddArm("low")
 	s.AddArm("high")
@@ -57,6 +60,7 @@ func TestSelectArm_UCB1AfterExploration(t *testing.T) {
 }
 
 func TestHighRewardArm_Convergence(t *testing.T) {
+	t.Parallel()
 	s := NewSelector(1.0)
 	s.AddArm("bad")
 	s.AddArm("good")
@@ -91,6 +95,7 @@ func TestHighRewardArm_Convergence(t *testing.T) {
 }
 
 func TestExplorationCoeff_Zero_PureGreedy(t *testing.T) {
+	t.Parallel()
 	s := NewSelector(0)
 	s.AddArm("low")
 	s.AddArm("high")
@@ -112,6 +117,7 @@ func TestExplorationCoeff_Zero_PureGreedy(t *testing.T) {
 }
 
 func TestExplorationCoeff_High_ExploresMore(t *testing.T) {
+	t.Parallel()
 	s := NewSelector(100.0) // Very high exploration coefficient.
 	s.AddArm("low")
 	s.AddArm("high")
@@ -138,6 +144,7 @@ func TestExplorationCoeff_High_ExploresMore(t *testing.T) {
 }
 
 func TestConcurrentSafety(t *testing.T) {
+	t.Parallel()
 	s := NewSelector(1.0)
 	s.AddArm("a")
 	s.AddArm("b")
@@ -168,6 +175,7 @@ func TestConcurrentSafety(t *testing.T) {
 }
 
 func TestBestArm_NoPulls_ReturnsError(t *testing.T) {
+	t.Parallel()
 	s := NewSelector(1.0)
 	s.AddArm("a")
 	_, _, err := s.BestArm()
@@ -177,6 +185,7 @@ func TestBestArm_NoPulls_ReturnsError(t *testing.T) {
 }
 
 func TestBestArm_ReturnsHighestAvg(t *testing.T) {
+	t.Parallel()
 	s := NewSelector(1.0)
 	s.AddArm("low")
 	s.AddArm("mid")
@@ -199,6 +208,7 @@ func TestBestArm_ReturnsHighestAvg(t *testing.T) {
 }
 
 func TestReset_ClearsAllState(t *testing.T) {
+	t.Parallel()
 	s := NewSelector(1.0)
 	s.AddArm("a")
 	s.UpdateReward("a", 1.0)
@@ -217,6 +227,7 @@ func TestReset_ClearsAllState(t *testing.T) {
 }
 
 func TestAddArm_Duplicate_NoOp(t *testing.T) {
+	t.Parallel()
 	s := NewSelector(1.0)
 	s.AddArm("a")
 	s.UpdateReward("a", 1.0)
@@ -229,6 +240,7 @@ func TestAddArm_Duplicate_NoOp(t *testing.T) {
 }
 
 func TestUCB1Score_ZeroPulls_ReturnsZero(t *testing.T) {
+	t.Parallel()
 	s := NewSelector(1.0)
 	arm := &ArmStats{Name: "test", PullCount: 0}
 	score := s.UCB1Score(arm)

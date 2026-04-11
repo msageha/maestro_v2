@@ -68,6 +68,7 @@ func readStateFile(t *testing.T, maestroDir, commandID string) []byte {
 }
 
 func TestUnquarantine_Success(t *testing.T) {
+	t.Parallel()
 	wm, _ := newRecoveryTestManager(t)
 	cmdID := "cmd_test_001"
 	writeWorktreeState(t, wm, quarantinedState(cmdID))
@@ -98,6 +99,7 @@ func TestUnquarantine_Success(t *testing.T) {
 }
 
 func TestUnquarantine_Idempotent(t *testing.T) {
+	t.Parallel()
 	wm, maestroDir := newRecoveryTestManager(t)
 	cmdID := "cmd_test_002"
 	writeWorktreeState(t, wm, quarantinedState(cmdID))
@@ -118,6 +120,7 @@ func TestUnquarantine_Idempotent(t *testing.T) {
 }
 
 func TestUnquarantine_NoWorktreeState(t *testing.T) {
+	t.Parallel()
 	wm, _ := newRecoveryTestManager(t)
 	err := wm.Unquarantine("cmd_test_missing", "")
 	if !errors.Is(err, ErrNoWorktreeState) {
@@ -126,6 +129,7 @@ func TestUnquarantine_NoWorktreeState(t *testing.T) {
 }
 
 func TestResumeMerge_FromConflict(t *testing.T) {
+	t.Parallel()
 	wm, _ := newRecoveryTestManager(t)
 	cmdID := "cmd_test_003"
 	st := quarantinedState(cmdID)
@@ -146,6 +150,7 @@ func TestResumeMerge_FromConflict(t *testing.T) {
 }
 
 func TestResumeMerge_FromFailedWithCount(t *testing.T) {
+	t.Parallel()
 	wm, _ := newRecoveryTestManager(t)
 	cmdID := "cmd_test_004"
 	st := quarantinedState(cmdID)
@@ -163,6 +168,7 @@ func TestResumeMerge_FromFailedWithCount(t *testing.T) {
 }
 
 func TestResumeMerge_Idempotent(t *testing.T) {
+	t.Parallel()
 	wm, maestroDir := newRecoveryTestManager(t)
 	cmdID := "cmd_test_005"
 	st := quarantinedState(cmdID)
@@ -186,6 +192,7 @@ func TestResumeMerge_Idempotent(t *testing.T) {
 }
 
 func TestResumeMerge_RejectsQuarantined(t *testing.T) {
+	t.Parallel()
 	wm, _ := newRecoveryTestManager(t)
 	cmdID := "cmd_test_006"
 	writeWorktreeState(t, wm, quarantinedState(cmdID))
@@ -197,6 +204,7 @@ func TestResumeMerge_RejectsQuarantined(t *testing.T) {
 }
 
 func TestResumeMerge_NoWorktreeState(t *testing.T) {
+	t.Parallel()
 	wm, _ := newRecoveryTestManager(t)
 	err := wm.ResumeMerge("cmd_test_missing_2")
 	if !errors.Is(err, ErrNoWorktreeState) {
@@ -218,6 +226,7 @@ func conflictWorkerState(commandID, workerID string, status model.IntegrationSta
 }
 
 func TestResolveConflict_FromConflict_ClearsSignal(t *testing.T) {
+	t.Parallel()
 	wm, _ := newRecoveryTestManager(t)
 	cmdID := "cmd_resolve_001"
 	phaseID := "phase_001"
@@ -269,6 +278,7 @@ func TestResolveConflict_FromConflict_ClearsSignal(t *testing.T) {
 }
 
 func TestResolveConflict_Idempotent(t *testing.T) {
+	t.Parallel()
 	wm, maestroDir := newRecoveryTestManager(t)
 	cmdID := "cmd_resolve_002"
 	phaseID := "phase_001"
@@ -291,6 +301,7 @@ func TestResolveConflict_Idempotent(t *testing.T) {
 }
 
 func TestResolveConflict_NoWorktreeState(t *testing.T) {
+	t.Parallel()
 	wm, _ := newRecoveryTestManager(t)
 	err := wm.ResolveConflict("cmd_missing_resolve", "phase_001", "worker_a")
 	if !errors.Is(err, ErrNoWorktreeState) {
@@ -299,6 +310,7 @@ func TestResolveConflict_NoWorktreeState(t *testing.T) {
 }
 
 func TestResolveConflict_FromPartialMerge(t *testing.T) {
+	t.Parallel()
 	wm, _ := newRecoveryTestManager(t)
 	cmdID := "cmd_resolve_004"
 	phaseID := "phase_001"
@@ -324,6 +336,7 @@ func TestResolveConflict_FromPartialMerge(t *testing.T) {
 // worker from CommitFailedWorkers and reset the failure counter without
 // requiring a status transition.
 func TestResolveConflict_AlreadyFailedJustClearsWorker(t *testing.T) {
+	t.Parallel()
 	wm, _ := newRecoveryTestManager(t)
 	cmdID := "cmd_resolve_005"
 	phaseID := "phase_001"
@@ -348,6 +361,7 @@ func TestResolveConflict_AlreadyFailedJustClearsWorker(t *testing.T) {
 // ResolveConflict with no signal store registered must still succeed
 // (signal clearing is best-effort and should not be a hard dependency).
 func TestResolveConflict_NoSignalStore(t *testing.T) {
+	t.Parallel()
 	wm, _ := newRecoveryTestManager(t)
 	cmdID := "cmd_resolve_006"
 	phaseID := "phase_001"

@@ -30,6 +30,7 @@ func newTestCancelHandler() (*CancelHandler, *mocks.MockExecutor) {
 }
 
 func TestIsCommandCancelRequested(t *testing.T) {
+	t.Parallel()
 	ch, _ := newTestCancelHandler()
 
 	// Not cancelled
@@ -47,6 +48,7 @@ func TestIsCommandCancelRequested(t *testing.T) {
 }
 
 func TestCancelPendingTasks(t *testing.T) {
+	t.Parallel()
 	ch, _ := newTestCancelHandler()
 
 	tasks := []model.Task{
@@ -78,6 +80,7 @@ func TestCancelPendingTasks(t *testing.T) {
 }
 
 func TestCancelPendingTasks_AlreadyTerminal(t *testing.T) {
+	t.Parallel()
 	ch, _ := newTestCancelHandler()
 
 	tasks := []model.Task{
@@ -150,6 +153,7 @@ func (s *stubStateReader) TripCircuitBreaker(commandID string, reason string, pr
 }
 
 func TestCancelHandler_WriteSyntheticResults_NewFile(t *testing.T) {
+	t.Parallel()
 	ch, _, maestroDir := newTestCancelHandlerWithDir(t)
 
 	results := []CancelledTaskResult{
@@ -201,6 +205,7 @@ func TestCancelHandler_WriteSyntheticResults_NewFile(t *testing.T) {
 }
 
 func TestCancelHandler_WriteSyntheticResults_AppendExisting(t *testing.T) {
+	t.Parallel()
 	ch, _, maestroDir := newTestCancelHandlerWithDir(t)
 
 	// Pre-populate with an existing result
@@ -253,6 +258,7 @@ func TestCancelHandler_WriteSyntheticResults_AppendExisting(t *testing.T) {
 }
 
 func TestCancelHandler_WriteSyntheticResults_EmptyInput(t *testing.T) {
+	t.Parallel()
 	ch, _, maestroDir := newTestCancelHandlerWithDir(t)
 
 	// Empty input → no-op, file should not be created
@@ -270,6 +276,7 @@ func TestCancelHandler_WriteSyntheticResults_EmptyInput(t *testing.T) {
 }
 
 func TestCancelHandler_CollectCancelInterruptItems_Basic(t *testing.T) {
+	t.Parallel()
 	ch, _, _ := newTestCancelHandlerWithDir(t)
 	sr := &stubStateReader{}
 	ch.SetStateReader(sr)
@@ -332,6 +339,7 @@ func TestCancelHandler_CollectCancelInterruptItems_Basic(t *testing.T) {
 }
 
 func TestCancelHandler_ApplyCancelMark(t *testing.T) {
+	t.Parallel()
 	ch, _, _ := newTestCancelHandlerWithDir(t)
 	sr := &stubStateReader{}
 	ch.SetStateReader(sr)
@@ -378,6 +386,7 @@ func TestCancelHandler_ApplyCancelMark(t *testing.T) {
 }
 
 func TestCancelHandler_IsCommandCancelRequested_ViaStateReader(t *testing.T) {
+	t.Parallel()
 	ch, _ := newTestCancelHandler()
 	cmd := &model.Command{ID: "cmd1"}
 
@@ -410,6 +419,7 @@ func TestCancelHandler_IsCommandCancelRequested_ViaStateReader(t *testing.T) {
 }
 
 func TestCancelHandler_CollectCancelInterruptItems_DoesNotTouchWorktree(t *testing.T) {
+	t.Parallel()
 	// H4: DiscardWorkerChanges has been moved out of CancelHandler into
 	// Phase B (queue_scan_phase_b.go), executed AFTER the tmux interrupt
 	// completes. Collection in Phase A must not touch the worktree.
@@ -449,6 +459,7 @@ func TestCancelHandler_CollectCancelInterruptItems_DoesNotTouchWorktree(t *testi
 }
 
 func TestCancelHandler_SetWorktreeManager(t *testing.T) {
+	t.Parallel()
 	ch, _ := newTestCancelHandler()
 	if ch.worktreeManager != nil {
 		t.Error("worktreeManager should be nil initially")

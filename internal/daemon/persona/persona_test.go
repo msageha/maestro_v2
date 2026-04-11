@@ -8,6 +8,7 @@ import (
 )
 
 func TestFormatPersonaSection_FileBasedPersona(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	personaDir := filepath.Join(dir, "persona")
 	os.MkdirAll(personaDir, 0o755)
@@ -23,6 +24,7 @@ func TestFormatPersonaSection_FileBasedPersona(t *testing.T) {
 }
 
 func TestFormatPersonaSection_MissingFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	os.MkdirAll(filepath.Join(dir, "persona"), 0o755)
 
@@ -33,6 +35,7 @@ func TestFormatPersonaSection_MissingFile(t *testing.T) {
 }
 
 func TestFormatPersonaSection_EmptyHint(t *testing.T) {
+	t.Parallel()
 	result := FormatPersonaSection("", "/some/dir")
 	if result != "" {
 		t.Errorf("expected empty string, got %q", result)
@@ -40,6 +43,7 @@ func TestFormatPersonaSection_EmptyHint(t *testing.T) {
 }
 
 func TestFormatPersonaSection_EmptyMaestroDir(t *testing.T) {
+	t.Parallel()
 	result := FormatPersonaSection("dev", "")
 	if result != "" {
 		t.Errorf("expected empty result with no maestroDir, got %q", result)
@@ -47,6 +51,7 @@ func TestFormatPersonaSection_EmptyMaestroDir(t *testing.T) {
 }
 
 func TestFormatPersonaSection_EmptyFileBody(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	personaDir := filepath.Join(dir, "persona")
 	os.MkdirAll(personaDir, 0o755)
@@ -59,6 +64,7 @@ func TestFormatPersonaSection_EmptyFileBody(t *testing.T) {
 }
 
 func TestFormatPersonaSection_PathTraversal(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	personaDir := filepath.Join(dir, "persona")
 	os.MkdirAll(personaDir, 0o755)
@@ -79,6 +85,7 @@ func TestFormatPersonaSection_PathTraversal(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			result := FormatPersonaSection(tt.hint, dir)
 			if result != "" {
 				t.Errorf("expected empty result for hint %q, got %q", tt.hint, result)
@@ -88,6 +95,7 @@ func TestFormatPersonaSection_PathTraversal(t *testing.T) {
 }
 
 func TestStripFrontmatter(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		input string
@@ -126,6 +134,7 @@ func TestStripFrontmatter(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := stripFrontmatter(tt.input)
 			if got != tt.want {
 				t.Errorf("stripFrontmatter(%q) = %q, want %q", tt.input, got, tt.want)

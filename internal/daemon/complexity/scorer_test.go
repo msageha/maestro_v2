@@ -6,6 +6,7 @@ import (
 )
 
 func TestEstimate_Simple(t *testing.T) {
+	t.Parallel()
 	s := NewScorer(DefaultThresholds())
 	score := s.Estimate(Input{
 		FileCount:         2,
@@ -20,6 +21,7 @@ func TestEstimate_Simple(t *testing.T) {
 }
 
 func TestEstimate_Standard(t *testing.T) {
+	t.Parallel()
 	s := NewScorer(DefaultThresholds())
 	score := s.Estimate(Input{
 		FileCount:         20,
@@ -34,6 +36,7 @@ func TestEstimate_Standard(t *testing.T) {
 }
 
 func TestEstimate_ComplexOrCritical(t *testing.T) {
+	t.Parallel()
 	s := NewScorer(DefaultThresholds())
 	score := s.Estimate(Input{
 		FileCount:         50,
@@ -48,6 +51,7 @@ func TestEstimate_ComplexOrCritical(t *testing.T) {
 }
 
 func TestEstimate_AllZero_LowConfidence(t *testing.T) {
+	t.Parallel()
 	s := NewScorer(DefaultThresholds())
 	score := s.Estimate(Input{})
 	if score.Confidence != 0 {
@@ -62,6 +66,7 @@ func TestEstimate_AllZero_LowConfidence(t *testing.T) {
 }
 
 func TestEstimateDepth(t *testing.T) {
+	t.Parallel()
 	s := NewScorer(DefaultThresholds())
 	tests := []struct {
 		level Level
@@ -81,6 +86,7 @@ func TestEstimateDepth(t *testing.T) {
 }
 
 func TestDefaultThresholds(t *testing.T) {
+	t.Parallel()
 	th := DefaultThresholds()
 	if th.SimpleMax != 0.25 {
 		t.Errorf("expected SimpleMax=0.25, got %f", th.SimpleMax)
@@ -94,6 +100,7 @@ func TestDefaultThresholds(t *testing.T) {
 }
 
 func TestEstimate_BoundaryValues(t *testing.T) {
+	t.Parallel()
 	s := NewScorer(DefaultThresholds())
 
 	// Exactly at SimpleMax boundary: raw = 0.25
@@ -115,6 +122,7 @@ func TestEstimate_BoundaryValues(t *testing.T) {
 }
 
 func TestEstimate_OverflowInputs(t *testing.T) {
+	t.Parallel()
 	s := NewScorer(DefaultThresholds())
 	// Very large inputs should be capped at 1.0 by normalize.
 	score := s.Estimate(Input{
@@ -133,6 +141,7 @@ func TestEstimate_OverflowInputs(t *testing.T) {
 }
 
 func TestEstimate_FactorsPopulated(t *testing.T) {
+	t.Parallel()
 	s := NewScorer(DefaultThresholds())
 	score := s.Estimate(Input{
 		FileCount:         10,
@@ -155,6 +164,7 @@ func TestEstimate_FactorsPopulated(t *testing.T) {
 }
 
 func TestEstimate_RawScoreFormula(t *testing.T) {
+	t.Parallel()
 	s := NewScorer(DefaultThresholds())
 	input := Input{
 		FileCount:         25,
@@ -178,6 +188,7 @@ func TestEstimate_RawScoreFormula(t *testing.T) {
 }
 
 func TestConfidence_PartialData(t *testing.T) {
+	t.Parallel()
 	s := NewScorer(DefaultThresholds())
 	// Only 2 out of 5 fields non-zero → Confidence = 0.4
 	score := s.Estimate(Input{

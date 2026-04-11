@@ -17,6 +17,7 @@ func defaultConfig() Config {
 }
 
 func TestNormalModeAllowsAllWorkers(t *testing.T) {
+	t.Parallel()
 	m := NewManager(defaultConfig())
 
 	workers := []string{"worker1", "worker2", "worker3", "worker99"}
@@ -27,6 +28,7 @@ func TestNormalModeAllowsAllWorkers(t *testing.T) {
 }
 
 func TestTransitionNormalToDegradedAfterThresholdFailures(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig()
 	cfg.ConsecutiveFailureThreshold = 3
 	m := NewManager(cfg)
@@ -42,6 +44,7 @@ func TestTransitionNormalToDegradedAfterThresholdFailures(t *testing.T) {
 }
 
 func TestDegradedModeOnlyAllowsWorker1(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		workerID string
@@ -55,6 +58,7 @@ func TestDegradedModeOnlyAllowsWorker1(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			cfg := defaultConfig()
 			cfg.ConsecutiveFailureThreshold = 1
 			m := NewManager(cfg)
@@ -69,6 +73,7 @@ func TestDegradedModeOnlyAllowsWorker1(t *testing.T) {
 }
 
 func TestTransitionDegradedToRecoveringOnSuccess(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig()
 	cfg.ConsecutiveFailureThreshold = 1
 	m := NewManager(cfg)
@@ -81,6 +86,7 @@ func TestTransitionDegradedToRecoveringOnSuccess(t *testing.T) {
 }
 
 func TestTransitionRecoveringToNormalAfterMinHealthyDuration(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig()
 	cfg.ConsecutiveFailureThreshold = 1
 	cfg.MinHealthyDurationSec = 10
@@ -108,6 +114,7 @@ func TestTransitionRecoveringToNormalAfterMinHealthyDuration(t *testing.T) {
 }
 
 func TestTransitionRecoveringToDegradedOnFailure(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig()
 	cfg.ConsecutiveFailureThreshold = 1
 	m := NewManager(cfg)
@@ -123,6 +130,7 @@ func TestTransitionRecoveringToDegradedOnFailure(t *testing.T) {
 }
 
 func TestNowFuncInjectionForDeterministicTests(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig()
 	cfg.ConsecutiveFailureThreshold = 1
 	cfg.MinHealthyDurationSec = 60
@@ -142,6 +150,7 @@ func TestNowFuncInjectionForDeterministicTests(t *testing.T) {
 }
 
 func TestConsecutiveFailuresResetOnSuccess(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig()
 	cfg.ConsecutiveFailureThreshold = 3
 	m := NewManager(cfg)
@@ -166,6 +175,7 @@ func TestConsecutiveFailuresResetOnSuccess(t *testing.T) {
 }
 
 func TestRecoveringModeOnlyAllowsWorker1(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig()
 	cfg.ConsecutiveFailureThreshold = 1
 	cfg.MinHealthyDurationSec = 60
@@ -180,6 +190,7 @@ func TestRecoveringModeOnlyAllowsWorker1(t *testing.T) {
 }
 
 func TestModeStringMethod(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		mode     Mode
 		expected string
@@ -192,6 +203,7 @@ func TestModeStringMethod(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.expected, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, tt.expected, tt.mode.String())
 		})
 	}

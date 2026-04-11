@@ -95,6 +95,7 @@ func setupResolverTest(t *testing.T, gen string) (*Manager, *fakeSignalStore, st
 }
 
 func TestDispatchConflictResolution_OK(t *testing.T) {
+	t.Parallel()
 	gen := "abc123"
 	wm, store, cmd, phase, worker := setupResolverTest(t, gen)
 
@@ -111,6 +112,7 @@ func TestDispatchConflictResolution_OK(t *testing.T) {
 }
 
 func TestDispatchConflictResolution_CASMismatch(t *testing.T) {
+	t.Parallel()
 	wm, store, cmd, phase, worker := setupResolverTest(t, "good")
 	err := wm.DispatchConflictResolution(cmd, phase, worker, "bad")
 	if !errors.Is(err, errConflictGenerationMismatch) {
@@ -126,6 +128,7 @@ func TestDispatchConflictResolution_CASMismatch(t *testing.T) {
 }
 
 func TestDiscardResolverEdits(t *testing.T) {
+	t.Parallel()
 	gen := "g6"
 	wm, _, cmd, _, worker := setupResolverTest(t, gen)
 

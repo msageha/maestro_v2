@@ -16,6 +16,7 @@ func defaultCfg() model.AdmissionControl {
 }
 
 func TestTryAcquire_RespectsLimits(t *testing.T) {
+	t.Parallel()
 	c := NewController(defaultCfg())
 
 	// Can acquire up to the limit (verify=2).
@@ -27,6 +28,7 @@ func TestTryAcquire_RespectsLimits(t *testing.T) {
 }
 
 func TestRelease_AllowsReAcquire(t *testing.T) {
+	t.Parallel()
 	c := NewController(defaultCfg())
 
 	assert.True(t, c.TryAcquire(OpRepair))
@@ -37,6 +39,7 @@ func TestRelease_AllowsReAcquire(t *testing.T) {
 }
 
 func TestRelease_DoesNotGoBelowZero(t *testing.T) {
+	t.Parallel()
 	c := NewController(defaultCfg())
 
 	// Release without prior acquire should not panic or go negative.
@@ -45,6 +48,7 @@ func TestRelease_DoesNotGoBelowZero(t *testing.T) {
 }
 
 func TestOpType_Independence(t *testing.T) {
+	t.Parallel()
 	c := NewController(defaultCfg())
 
 	// Fill verify slots.
@@ -57,6 +61,7 @@ func TestOpType_Independence(t *testing.T) {
 }
 
 func TestSnapshot_Accuracy(t *testing.T) {
+	t.Parallel()
 	c := NewController(defaultCfg())
 
 	c.TryAcquire(OpVerify)
@@ -74,6 +79,7 @@ func TestSnapshot_Accuracy(t *testing.T) {
 }
 
 func TestClassifyTask(t *testing.T) {
+	t.Parallel()
 	c := NewController(defaultCfg())
 
 	tests := []struct {
@@ -95,6 +101,7 @@ func TestClassifyTask(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			task := &model.Task{Purpose: tt.purpose}
 			got := c.ClassifyTask(task)
 			assert.Equal(t, tt.want, got)
@@ -103,6 +110,7 @@ func TestClassifyTask(t *testing.T) {
 }
 
 func TestOpUnknown_AlwaysPassesTryAcquire(t *testing.T) {
+	t.Parallel()
 	c := NewController(defaultCfg())
 
 	// OpUnknown should always succeed regardless of how many times we call it.
@@ -112,6 +120,7 @@ func TestOpUnknown_AlwaysPassesTryAcquire(t *testing.T) {
 }
 
 func TestReset_ClearsSlots(t *testing.T) {
+	t.Parallel()
 	c := NewController(defaultCfg())
 
 	c.TryAcquire(OpVerify)
@@ -131,6 +140,7 @@ func TestReset_ClearsSlots(t *testing.T) {
 }
 
 func TestRecordInFlight(t *testing.T) {
+	t.Parallel()
 	c := NewController(defaultCfg())
 
 	// Pre-populate some slots that should be cleared.
@@ -151,6 +161,7 @@ func TestRecordInFlight(t *testing.T) {
 }
 
 func TestOpType_String(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		op   OpType
 		want string
@@ -164,6 +175,7 @@ func TestOpType_String(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.want, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, tt.want, tt.op.String())
 		})
 	}

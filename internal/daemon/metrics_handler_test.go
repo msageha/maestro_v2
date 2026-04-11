@@ -20,6 +20,7 @@ func newTestMetricsHandler(maestroDir string) *MetricsHandler {
 }
 
 func TestMetricsHandler_UpdateMetrics_CreateNew(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	mh := newTestMetricsHandler(maestroDir)
 
@@ -95,6 +96,7 @@ func TestMetricsHandler_UpdateMetrics_CreateNew(t *testing.T) {
 }
 
 func TestCountBakFiles(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	mustWrite := func(p string) {
 		if err := os.MkdirAll(filepath.Dir(p), 0755); err != nil {
@@ -118,6 +120,7 @@ func TestCountBakFiles(t *testing.T) {
 }
 
 func TestCountWorktreeCommandsStalled_NoManager(t *testing.T) {
+	t.Parallel()
 	qh := &QueueHandler{}
 	cq := model.CommandQueue{Commands: []model.Command{{ID: "cmd_001"}}}
 	if got := qh.countWorktreeCommandsStalled(cq); got != 0 {
@@ -126,6 +129,7 @@ func TestCountWorktreeCommandsStalled_NoManager(t *testing.T) {
 }
 
 func TestMetricsHandler_UpdateMetrics_Additive(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	mh := newTestMetricsHandler(maestroDir)
 
@@ -167,6 +171,7 @@ func TestMetricsHandler_UpdateMetrics_Additive(t *testing.T) {
 }
 
 func TestMetricsHandler_UpdateDashboard(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	mh := newTestMetricsHandler(maestroDir)
 
@@ -223,6 +228,7 @@ func TestMetricsHandler_UpdateDashboard(t *testing.T) {
 }
 
 func TestMetricsHandler_ComputeQueueDepth(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	mh := newTestMetricsHandler(maestroDir)
 
@@ -275,6 +281,7 @@ func TestMetricsHandler_ComputeQueueDepth(t *testing.T) {
 }
 
 func TestMetricsHandler_PeriodicScanIntegration(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 

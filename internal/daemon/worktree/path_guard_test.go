@@ -8,6 +8,7 @@ import (
 )
 
 func TestEnsureWithinProjectRoot_Inside(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	sub := filepath.Join(root, "a", "b")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
@@ -22,6 +23,7 @@ func TestEnsureWithinProjectRoot_Inside(t *testing.T) {
 }
 
 func TestEnsureWithinProjectRoot_AbsoluteOutside(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	other := t.TempDir()
 	if err := ensureWithinProjectRoot(root, other); err == nil {
@@ -30,6 +32,7 @@ func TestEnsureWithinProjectRoot_AbsoluteOutside(t *testing.T) {
 }
 
 func TestEnsureWithinProjectRoot_SymlinkEscape(t *testing.T) {
+	t.Parallel()
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink semantics differ on windows")
 	}
@@ -49,6 +52,7 @@ func TestEnsureWithinProjectRoot_SymlinkEscape(t *testing.T) {
 }
 
 func TestEnsureWithinProjectRoot_EmptyArgs(t *testing.T) {
+	t.Parallel()
 	if err := ensureWithinProjectRoot("", "/tmp"); err == nil {
 		t.Fatalf("expected error for empty root")
 	}

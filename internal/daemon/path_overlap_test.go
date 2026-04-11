@@ -7,6 +7,7 @@ import (
 )
 
 func TestHasPathOverlap(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		a, b string
@@ -106,6 +107,7 @@ func TestHasPathOverlap(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := HasPathOverlap(tt.a, tt.b)
 			if got != tt.want {
 				t.Errorf("HasPathOverlap(%q, %q) = %v, want %v", tt.a, tt.b, got, tt.want)
@@ -115,6 +117,7 @@ func TestHasPathOverlap(t *testing.T) {
 }
 
 func TestHasTaskPathOverlap(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		paths1 []string
@@ -161,6 +164,7 @@ func TestHasTaskPathOverlap(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := HasTaskPathOverlap(tt.paths1, tt.paths2)
 			if got != tt.want {
 				t.Errorf("HasTaskPathOverlap() = %v, want %v", got, tt.want)
@@ -170,6 +174,7 @@ func TestHasTaskPathOverlap(t *testing.T) {
 }
 
 func TestFindOverlappingTask(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		candidate     *model.Task
@@ -240,6 +245,7 @@ func TestFindOverlappingTask(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			taskID, _, _ := findOverlappingTask(tt.candidate, tt.inFlight)
 			gotConflict := taskID != ""
 			if gotConflict != tt.wantConflict {
@@ -253,6 +259,7 @@ func TestFindOverlappingTask(t *testing.T) {
 }
 
 func TestCollectInFlightPaths(t *testing.T) {
+	t.Parallel()
 	neverExpired := func(_ *string) bool { return false }
 	alwaysExpired := func(_ *string) bool { return true }
 	expires := "2099-01-01T00:00:00Z"
@@ -297,6 +304,7 @@ func TestCollectInFlightPaths(t *testing.T) {
 	}
 
 	t.Run("collects_only_in_progress_with_paths", func(t *testing.T) {
+		t.Parallel()
 		entries := collectInFlightPaths(queues, neverExpired)
 		// Should collect task-1 and task-4 (in_progress with paths)
 		// task-2 is pending, task-3 has no paths
@@ -316,6 +324,7 @@ func TestCollectInFlightPaths(t *testing.T) {
 	})
 
 	t.Run("skips_expired_leases", func(t *testing.T) {
+		t.Parallel()
 		entries := collectInFlightPaths(queues, alwaysExpired)
 		if len(entries) != 0 {
 			t.Fatalf("got %d entries, want 0 (all expired)", len(entries))

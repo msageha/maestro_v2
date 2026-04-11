@@ -6,6 +6,7 @@ import (
 )
 
 func TestBuildMergeMessage(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name           string
 		workerID       string
@@ -58,6 +59,7 @@ func TestBuildMergeMessage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := buildMergeMessage(tt.workerID, tt.workerPurposes)
 			if got != tt.want {
 				t.Errorf("buildMergeMessage() = %q, want %q", got, tt.want)
@@ -73,6 +75,7 @@ func TestBuildMergeMessage(t *testing.T) {
 }
 
 func TestBuildPublishMessage(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name           string
 		publishMessage string
@@ -119,6 +122,7 @@ func TestBuildPublishMessage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := buildPublishMessage(tt.publishMessage, tt.baseBranch)
 			if got != tt.want {
 				t.Errorf("buildPublishMessage() = %q, want %q", got, tt.want)
@@ -134,6 +138,7 @@ func TestBuildPublishMessage(t *testing.T) {
 }
 
 func TestTruncateMessage(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		prefix string
@@ -180,6 +185,7 @@ func TestTruncateMessage(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := truncateMessage(tt.prefix, tt.body, tt.maxLen)
 			if got != tt.want {
 				t.Errorf("truncateMessage() = %q, want %q", got, tt.want)

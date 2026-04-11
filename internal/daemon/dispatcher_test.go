@@ -10,6 +10,7 @@ import (
 )
 
 func TestEffectivePriority(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 
 	tests := []struct {
@@ -48,6 +49,7 @@ func TestEffectivePriority(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := EffectivePriority(tt.priority, tt.createdAt, tt.priorityAgingSec)
 			if got != tt.expected {
 				t.Errorf("got %d, want %d", got, tt.expected)
@@ -57,6 +59,7 @@ func TestEffectivePriority(t *testing.T) {
 }
 
 func TestSortPendingTasks(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 
 	cfg := model.Config{
@@ -92,6 +95,7 @@ func TestSortPendingTasks(t *testing.T) {
 }
 
 func TestSortPendingTasks_TieBreakers(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 
 	cfg := model.Config{
@@ -112,6 +116,7 @@ func TestSortPendingTasks_TieBreakers(t *testing.T) {
 }
 
 func TestSortPendingTasks_IDTieBreaker(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	created := now.Format(time.RFC3339)
 
@@ -130,6 +135,7 @@ func TestSortPendingTasks_IDTieBreaker(t *testing.T) {
 }
 
 func TestSortPendingCommands(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 
 	cfg := model.Config{}
@@ -150,6 +156,7 @@ func TestSortPendingCommands(t *testing.T) {
 }
 
 func TestSortPendingNotifications(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 
 	cfg := model.Config{}
@@ -171,6 +178,7 @@ func TestSortPendingNotifications(t *testing.T) {
 }
 
 func TestEffectivePriority_Aging(t *testing.T) {
+	t.Parallel()
 	// 5 minutes old, aging every 60 seconds → effective = max(0, 3 - 5) = 0
 	created := time.Now().Add(-5 * time.Minute).Format(time.RFC3339)
 	ep := EffectivePriority(3, created, 60)
@@ -180,6 +188,7 @@ func TestEffectivePriority_Aging(t *testing.T) {
 }
 
 func TestSortPendingIndices_EmptySlice(t *testing.T) {
+	t.Parallel()
 	result := sortPendingIndices([]model.Task{}, func(t model.Task) sortKey {
 		return sortKey{Status: t.Status, Priority: t.Priority, CreatedAt: t.CreatedAt, ID: t.ID}
 	}, 0)
@@ -189,6 +198,7 @@ func TestSortPendingIndices_EmptySlice(t *testing.T) {
 }
 
 func TestSortPendingIndices_AllNonPending(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC().Format(time.RFC3339)
 	items := []model.Task{
 		{ID: "t1", Status: model.StatusInProgress, Priority: 1, CreatedAt: now},
@@ -204,6 +214,7 @@ func TestSortPendingIndices_AllNonPending(t *testing.T) {
 }
 
 func TestSortPendingIndices_MixedStatuses(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC().Format(time.RFC3339)
 	items := []model.Command{
 		{ID: "c1", Status: model.StatusInProgress, Priority: 1, CreatedAt: now},
@@ -227,6 +238,7 @@ func TestSortPendingIndices_MixedStatuses(t *testing.T) {
 }
 
 func TestSortPendingIndices_PreservesOriginalIndices(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC().Format(time.RFC3339)
 	items := []model.Notification{
 		{ID: "n_skip", Status: model.StatusCompleted, Priority: 0, CreatedAt: now},
@@ -250,6 +262,7 @@ func TestSortPendingIndices_PreservesOriginalIndices(t *testing.T) {
 }
 
 func TestSortPendingIndices_WithAging(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	items := []model.Task{
 		{ID: "t_new_high", Status: model.StatusPending, Priority: 5, CreatedAt: now.Format(time.RFC3339)},
@@ -268,6 +281,7 @@ func TestSortPendingIndices_WithAging(t *testing.T) {
 }
 
 func TestSortPendingIndices_ConsistentAcrossTypes(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC()
 	ts := now.Format(time.RFC3339)
 	ts2 := now.Add(time.Second).Format(time.RFC3339)

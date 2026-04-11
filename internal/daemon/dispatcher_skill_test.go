@@ -38,6 +38,7 @@ func newSkillTestDispatcher(t *testing.T, maestroDir string, cfg model.Config) (
 }
 
 func TestDispatchTask_SkillInjection_Success(t *testing.T) {
+	t.Parallel()
 	maestroDir := t.TempDir()
 	skillsDir := filepath.Join(maestroDir, "skills")
 	createSkillFile(t, skillsDir, "go-testing", "---\nname: Go Testing\n---\nAlways use t.Helper() in test helpers.\n")
@@ -76,6 +77,7 @@ func TestDispatchTask_SkillInjection_Success(t *testing.T) {
 }
 
 func TestDispatchTask_SkillRefs_Empty_NoShared_NoInjection(t *testing.T) {
+	t.Parallel()
 	maestroDir := t.TempDir()
 	skillsDir := filepath.Join(maestroDir, "skills")
 	// Only create a worker-specific skill (no shared skills)
@@ -105,6 +107,7 @@ func TestDispatchTask_SkillRefs_Empty_NoShared_NoInjection(t *testing.T) {
 }
 
 func TestDispatchTask_SharedSkills_AutoInjected(t *testing.T) {
+	t.Parallel()
 	maestroDir := t.TempDir()
 	skillsDir := filepath.Join(maestroDir, "skills")
 	// Create shared skill only (no skill_refs needed)
@@ -137,6 +140,7 @@ func TestDispatchTask_SharedSkills_AutoInjected(t *testing.T) {
 }
 
 func TestDispatchTask_SharedSkills_DeduplicatedWithSkillRefs(t *testing.T) {
+	t.Parallel()
 	maestroDir := t.TempDir()
 	skillsDir := filepath.Join(maestroDir, "skills")
 	// Create a shared skill and a worker-specific override with the same name
@@ -172,6 +176,7 @@ func TestDispatchTask_SharedSkills_DeduplicatedWithSkillRefs(t *testing.T) {
 }
 
 func TestDispatchTask_SharedSkills_MixedWithSkillRefs(t *testing.T) {
+	t.Parallel()
 	maestroDir := t.TempDir()
 	skillsDir := filepath.Join(maestroDir, "skills")
 	// Worker-specific skill
@@ -206,6 +211,7 @@ func TestDispatchTask_SharedSkills_MixedWithSkillRefs(t *testing.T) {
 }
 
 func TestDispatchTask_SkillsDisabled_NoInjection(t *testing.T) {
+	t.Parallel()
 	maestroDir := t.TempDir()
 	skillsDir := filepath.Join(maestroDir, "skills")
 	createSkillFile(t, skillsDir, "go-testing", "---\nname: Go Testing\n---\nBody\n")
@@ -234,6 +240,7 @@ func TestDispatchTask_SkillsDisabled_NoInjection(t *testing.T) {
 }
 
 func TestDispatchTask_MissingRefPolicy_Warn(t *testing.T) {
+	t.Parallel()
 	maestroDir := t.TempDir()
 	// No skills directory created — refs will be missing
 
@@ -265,6 +272,7 @@ func TestDispatchTask_MissingRefPolicy_Warn(t *testing.T) {
 }
 
 func TestDispatchTask_MissingRefPolicy_Error(t *testing.T) {
+	t.Parallel()
 	maestroDir := t.TempDir()
 	// No skills directory created — refs will be missing
 
@@ -295,6 +303,7 @@ func TestDispatchTask_MissingRefPolicy_Error(t *testing.T) {
 }
 
 func TestDispatchTask_MaxRefsPerTask_Truncation(t *testing.T) {
+	t.Parallel()
 	maestroDir := t.TempDir()
 	skillsDir := filepath.Join(maestroDir, "skills")
 	createSkillFile(t, skillsDir, "skill-a", "---\nname: Skill A\n---\nBody A\n")
@@ -335,6 +344,7 @@ func TestDispatchTask_MaxRefsPerTask_Truncation(t *testing.T) {
 }
 
 func TestDispatchTask_SkillInjection_MultipleSkills(t *testing.T) {
+	t.Parallel()
 	maestroDir := t.TempDir()
 	skillsDir := filepath.Join(maestroDir, "skills")
 	createSkillFile(t, skillsDir, "skill-a", "---\nname: Skill A\n---\nBody A content\n")
@@ -383,6 +393,7 @@ func createSkillFileForRole(t *testing.T, skillsDir, role, name, content string)
 }
 
 func TestDispatchCommand_PlannerSkillInjection(t *testing.T) {
+	t.Parallel()
 	maestroDir := t.TempDir()
 	skillsDir := filepath.Join(maestroDir, "skills")
 	createSkillFileForRole(t, skillsDir, "planner", "plan-skill", "---\nname: Plan Skill\n---\nPlanner skill body\n")
@@ -426,6 +437,7 @@ func TestDispatchCommand_PlannerSkillInjection(t *testing.T) {
 }
 
 func TestDispatchCommand_NoSkillRefs_OnlySharedInjected(t *testing.T) {
+	t.Parallel()
 	maestroDir := t.TempDir()
 	skillsDir := filepath.Join(maestroDir, "skills")
 	createSkillFileForRole(t, skillsDir, "planner", "plan-skill", "---\nname: Plan Skill\n---\nPlanner body\n")
@@ -456,6 +468,7 @@ func TestDispatchCommand_NoSkillRefs_OnlySharedInjected(t *testing.T) {
 }
 
 func TestDispatchCommand_SkillsDisabled_NoInjection(t *testing.T) {
+	t.Parallel()
 	maestroDir := t.TempDir()
 	skillsDir := filepath.Join(maestroDir, "skills")
 	createSkillFileForRole(t, skillsDir, "planner", "plan-skill", "---\nname: Plan Skill\n---\nBody\n")
@@ -481,6 +494,7 @@ func TestDispatchCommand_SkillsDisabled_NoInjection(t *testing.T) {
 }
 
 func TestDispatchCommand_NoSkillsDir_NoError(t *testing.T) {
+	t.Parallel()
 	maestroDir := t.TempDir()
 	// No skills directory
 
@@ -505,6 +519,7 @@ func TestDispatchCommand_NoSkillsDir_NoError(t *testing.T) {
 }
 
 func TestDispatchCommand_OnlyPlannerSkills_NotWorkerSkills(t *testing.T) {
+	t.Parallel()
 	maestroDir := t.TempDir()
 	skillsDir := filepath.Join(maestroDir, "skills")
 	createSkillFileForRole(t, skillsDir, "planner", "plan-skill", "---\nname: Plan Skill\n---\nPlanner body\n")
@@ -535,6 +550,7 @@ func TestDispatchCommand_OnlyPlannerSkills_NotWorkerSkills(t *testing.T) {
 }
 
 func TestDispatchTask_MissingRefPolicy_Warn_PartialSkills(t *testing.T) {
+	t.Parallel()
 	maestroDir := t.TempDir()
 	skillsDir := filepath.Join(maestroDir, "skills")
 	createSkillFile(t, skillsDir, "existing-skill", "---\nname: Existing Skill\n---\nExisting body\n")

@@ -37,6 +37,7 @@ func (discardWriter) Write(p []byte) (int, error) { return len(p), nil }
 // returned" or leak a goroutine past Wait. With egMu in place, every admitted
 // goroutine is fully tracked and Wait drains cleanly.
 func TestSpawnTracked_ShutdownRace(t *testing.T) {
+	t.Parallel()
 	for trial := 0; trial < 20; trial++ {
 		d := newSpawnTrackedTestDaemon(t)
 
@@ -91,6 +92,7 @@ func TestSpawnTracked_ShutdownRace(t *testing.T) {
 // TestSpawnTracked_AfterShutdown verifies that once shuttingDown is set, no
 // new goroutines are admitted to the errgroup.
 func TestSpawnTracked_AfterShutdown(t *testing.T) {
+	t.Parallel()
 	d := newSpawnTrackedTestDaemon(t)
 
 	d.egMu.Lock()
@@ -118,6 +120,7 @@ func TestSpawnTracked_AfterShutdown(t *testing.T) {
 // was never called and d.eg is nil. The fallback must still respect
 // shuttingDown.
 func TestSpawnTracked_NilEgFallback(t *testing.T) {
+	t.Parallel()
 	d := &Daemon{
 		logger:   log.New(&discardWriter{}, "", 0),
 		logLevel: LogLevelError,

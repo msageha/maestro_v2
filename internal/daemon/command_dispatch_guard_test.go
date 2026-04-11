@@ -17,6 +17,7 @@ import (
 // has an expired lease, new pending commands are still NOT dispatched.
 // The at-most-one guard blocks dispatch regardless of lease validity.
 func TestCommandDispatchGuard_ExpiredLease(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -95,6 +96,7 @@ func TestCommandDispatchGuard_ExpiredLease(t *testing.T) {
 // TestCommandDispatchGuard_ValidLease verifies the baseline at-most-one guard:
 // an in_progress command with a valid (non-expired) lease blocks new dispatches.
 func TestCommandDispatchGuard_ValidLease(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -166,6 +168,7 @@ func TestCommandDispatchGuard_ValidLease(t *testing.T) {
 // in Phase A (autoExtendExpiredCommandLeases) rather than released.
 // After a scan, the command should remain in_progress with a new future lease expiry.
 func TestCommandLeaseAutoExtend(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -246,6 +249,7 @@ func TestCommandLeaseAutoExtend(t *testing.T) {
 // are released back to pending when expired and the agent is not busy.
 // This confirms the asymmetric behavior: commands auto-extend, tasks release.
 func TestTaskLeaseExpiry_ReleaseToPending(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -321,6 +325,7 @@ func TestTaskLeaseExpiry_ReleaseToPending(t *testing.T) {
 // This prevents duplicate dispatch: the command stays in_progress and will be
 // auto-extended on the next scan cycle.
 func TestCommandDispatchError_LeaseRetained(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 

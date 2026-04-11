@@ -44,6 +44,7 @@ func newTestQualityGateEvaluator(enabled, skipGates bool, gateFn func() *Quality
 // Review/quality gate 評価結果がタスクのディスパッチ・完了をブロックしないことを検証する。
 
 func TestPhaseA_A1_GatesDisabled_ShouldNotEvaluate(t *testing.T) {
+	t.Parallel()
 	eval := newTestQualityGateEvaluator(false, false, func() *QualityGateDaemon { return nil })
 
 	if eval.ShouldEvaluate() {
@@ -52,6 +53,7 @@ func TestPhaseA_A1_GatesDisabled_ShouldNotEvaluate(t *testing.T) {
 }
 
 func TestPhaseA_A1_SkipGates_EmergencyMode(t *testing.T) {
+	t.Parallel()
 	eval := newTestQualityGateEvaluator(true, true, func() *QualityGateDaemon { return nil })
 
 	if eval.ShouldEvaluate() {
@@ -60,6 +62,7 @@ func TestPhaseA_A1_SkipGates_EmergencyMode(t *testing.T) {
 }
 
 func TestPhaseA_A1_GateDaemonNil_NoBlocking(t *testing.T) {
+	t.Parallel()
 	eval := newTestQualityGateEvaluator(true, false, func() *QualityGateDaemon { return nil })
 
 	// Even when enabled, nil daemon means no evaluation (no blocking).
@@ -69,6 +72,7 @@ func TestPhaseA_A1_GateDaemonNil_NoBlocking(t *testing.T) {
 }
 
 func TestPhaseA_A1_IntegrationDispatch_GatesOff_NotBlocked(t *testing.T) {
+	t.Parallel()
 	// Full Phase A→B→C: task dispatches without blocking when gates are disabled.
 	maestroDir := setupPhaseIntegrationDir(t)
 	exec := newRecordingExecutor(nil)
@@ -103,6 +107,7 @@ func TestPhaseA_A1_IntegrationDispatch_GatesOff_NotBlocked(t *testing.T) {
 }
 
 func TestPhaseA_A1_TaskCompletes_RegardlessOfGateState(t *testing.T) {
+	t.Parallel()
 	// A completed task (via result_write) is not blocked by gate evaluation state.
 	// This is verified by showing that the result_write path is independent of
 	// quality gate results — the gate evaluation only decorates the result.
@@ -137,6 +142,7 @@ func TestPhaseA_A1_TaskCompletes_RegardlessOfGateState(t *testing.T) {
 // 評価結果がタスク単位で蓄積され、モデルごとの統計が計算可能であることを検証する。
 
 func TestPhaseA_A2_EvaluationStored(t *testing.T) {
+	t.Parallel()
 	eval := newTestQualityGateEvaluator(false, false, func() *QualityGateDaemon { return nil })
 
 	evaluation := eval.SkippedEvaluation("disabled")
@@ -161,6 +167,7 @@ func TestPhaseA_A2_EvaluationStored(t *testing.T) {
 }
 
 func TestPhaseA_A2_MultipleEvaluations_PerTask(t *testing.T) {
+	t.Parallel()
 	eval := newTestQualityGateEvaluator(false, false, func() *QualityGateDaemon { return nil })
 
 	// Simulate evaluations from different tasks (different models/contexts)
@@ -204,6 +211,7 @@ func TestPhaseA_A2_MultipleEvaluations_PerTask(t *testing.T) {
 }
 
 func TestPhaseA_A2_AdoptionRate_Calculable(t *testing.T) {
+	t.Parallel()
 	// Verify that stored evaluations allow computing adoption rate statistics.
 	eval := newTestQualityGateEvaluator(false, false, func() *QualityGateDaemon { return nil })
 
@@ -235,6 +243,7 @@ func TestPhaseA_A2_AdoptionRate_Calculable(t *testing.T) {
 }
 
 func TestPhaseA_A2_EvictionOnOverflow(t *testing.T) {
+	t.Parallel()
 	eval := newTestQualityGateEvaluator(false, false, func() *QualityGateDaemon { return nil })
 
 	// Store more than maxGateEvaluations entries to trigger eviction.
@@ -264,6 +273,7 @@ func TestPhaseA_A2_EvictionOnOverflow(t *testing.T) {
 // PhaseDiagnostics が生成され、RepairHotspot 抽出と反省メモが機能することを検証する。
 
 func TestPhaseA_A3_PhaseDiagnostics_Generated(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	phase := model.Phase{PhaseID: "phase-a3-test", TaskIDs: []string{"t1", "t2", "t3"}}
@@ -296,6 +306,7 @@ func TestPhaseA_A3_PhaseDiagnostics_Generated(t *testing.T) {
 }
 
 func TestPhaseA_A3_HotspotExtraction_RepairCountGE2(t *testing.T) {
+	t.Parallel()
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	phase := model.Phase{PhaseID: "phase-hotspot"}
@@ -347,6 +358,7 @@ func TestPhaseA_A3_HotspotExtraction_RepairCountGE2(t *testing.T) {
 }
 
 func TestPhaseA_A3_ReflectionMemo_IncludesHotspots(t *testing.T) {
+	t.Parallel()
 	diag := &plan.PhaseDiagnostics{
 		PhaseID:        "phase-reflection",
 		TotalTasks:     5,
@@ -381,6 +393,7 @@ func TestPhaseA_A3_ReflectionMemo_IncludesHotspots(t *testing.T) {
 }
 
 func TestPhaseA_A3_ReflectionMemo_NextPhaseInput(t *testing.T) {
+	t.Parallel()
 	// Verify that the reflection memo is structured as Planner input
 	// for the next phase (REQUIREMENTS A-3).
 	diag := &plan.PhaseDiagnostics{
@@ -404,6 +417,7 @@ func TestPhaseA_A3_ReflectionMemo_NextPhaseInput(t *testing.T) {
 }
 
 func TestPhaseA_A3_DiagnosticsNilSafe(t *testing.T) {
+	t.Parallel()
 	memo := plan.FormatDiagnosisPrompt(nil)
 	if memo != "" {
 		t.Errorf("nil diagnostics should produce empty string, got %q", memo)
@@ -415,6 +429,7 @@ func TestPhaseA_A3_DiagnosticsNilSafe(t *testing.T) {
 // 現在の実装: worker 単位で 1 タスク/サイクル + worktree 分離により衝突回避。
 
 func TestPhaseA_A4_SingleTaskPerWorkerPerCycle(t *testing.T) {
+	t.Parallel()
 	// Verify: only one pending task per worker dispatched per scan cycle.
 	// Even tasks with overlapping expected_paths in the same worker queue
 	// are serialized — the second waits for the first to complete.
@@ -463,6 +478,7 @@ func TestPhaseA_A4_SingleTaskPerWorkerPerCycle(t *testing.T) {
 }
 
 func TestPhaseA_A4_PrefixContainment_SameWorker_Sequential(t *testing.T) {
+	t.Parallel()
 	// Prefix containment: internal/ contains internal/foo.go.
 	// Tasks with prefix-overlap in the same worker queue are serialized.
 	maestroDir := setupPhaseIntegrationDir(t)
@@ -504,6 +520,7 @@ func TestPhaseA_A4_PrefixContainment_SameWorker_Sequential(t *testing.T) {
 }
 
 func TestPhaseA_A4_NonOverlapping_DifferentWorkers_Parallel(t *testing.T) {
+	t.Parallel()
 	// Non-overlapping tasks on different workers dispatch in parallel.
 	maestroDir := setupPhaseIntegrationDir(t)
 	exec := newRecordingExecutor(nil)
@@ -548,6 +565,7 @@ func TestPhaseA_A4_NonOverlapping_DifferentWorkers_Parallel(t *testing.T) {
 }
 
 func TestPhaseA_A4_InProgressBlocks_NextDispatch(t *testing.T) {
+	t.Parallel()
 	// When a worker already has an in_progress task, no additional
 	// pending tasks dispatch to that worker (global in-flight guard).
 	maestroDir := setupPhaseIntegrationDir(t)
@@ -588,6 +606,7 @@ func TestPhaseA_A4_InProgressBlocks_NextDispatch(t *testing.T) {
 }
 
 func TestPhaseA_A4_AfterCompletion_NextTaskDispatches(t *testing.T) {
+	t.Parallel()
 	// After the first task completes (transitions to a terminal state),
 	// the next pending task dispatches on the subsequent scan cycle.
 	maestroDir := setupPhaseIntegrationDir(t)
@@ -629,6 +648,7 @@ func TestPhaseA_A4_AfterCompletion_NextTaskDispatches(t *testing.T) {
 // --- Full Pipeline Validation ---
 
 func TestPhaseA_FullPipeline_GatesDisabled_E2E(t *testing.T) {
+	t.Parallel()
 	// End-to-end: two workers with tasks dispatch, execute, and the pipeline
 	// completes without gate-related blocking.
 	maestroDir := setupPhaseIntegrationDir(t)

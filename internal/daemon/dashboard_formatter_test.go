@@ -14,6 +14,7 @@ import (
 )
 
 func TestDashboardFormatter_FormatDashboard(t *testing.T) {
+	t.Parallel()
 	// Create temp directory
 	tmpDir := t.TempDir()
 	logsDir := filepath.Join(tmpDir, "logs")
@@ -43,6 +44,7 @@ func TestDashboardFormatter_FormatDashboard(t *testing.T) {
 }
 
 func TestDashboardFormatter_ParseLogFile(t *testing.T) {
+	t.Parallel()
 	// Create temp directory
 	tmpDir := t.TempDir()
 	logsDir := filepath.Join(tmpDir, "logs")
@@ -81,6 +83,7 @@ func TestDashboardFormatter_ParseLogFile(t *testing.T) {
 }
 
 func TestDashboardFormatter_EventFiltering(t *testing.T) {
+	t.Parallel()
 	formatter := &DashboardFormatter{}
 
 	testCases := []struct {
@@ -101,6 +104,7 @@ func TestDashboardFormatter_EventFiltering(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			assert.Equal(t, tc.isTask, formatter.isTaskRelated(tc.eventType))
 			assert.Equal(t, tc.isError, formatter.isErrorEvent(tc.eventType))
 			assert.Equal(t, tc.isWarning, formatter.isWarningEvent(tc.eventType))
@@ -109,6 +113,7 @@ func TestDashboardFormatter_EventFiltering(t *testing.T) {
 }
 
 func TestDashboardFormatter_ExtractEvent(t *testing.T) {
+	t.Parallel()
 	formatter := &DashboardFormatter{}
 
 	entry := events.LogEntry{
@@ -135,6 +140,7 @@ func TestDashboardFormatter_ExtractEvent(t *testing.T) {
 }
 
 func TestDashboardFormatter_LimitEvents(t *testing.T) {
+	t.Parallel()
 	formatter := &DashboardFormatter{
 		maxEvents:   5,
 		maxErrors:   3,
@@ -155,6 +161,7 @@ func TestDashboardFormatter_LimitEvents(t *testing.T) {
 }
 
 func TestDashboardFormatter_UpdateDashboardFile(t *testing.T) {
+	t.Parallel()
 	// Create temp directory
 	tmpDir := t.TempDir()
 	logsDir := filepath.Join(tmpDir, "logs")
@@ -182,6 +189,7 @@ func TestDashboardFormatter_UpdateDashboardFile(t *testing.T) {
 }
 
 func TestDashboardFormatter_EmptyLogFile(t *testing.T) {
+	t.Parallel()
 	// Create temp directory without log file
 	tmpDir := t.TempDir()
 
@@ -200,6 +208,7 @@ func TestDashboardFormatter_EmptyLogFile(t *testing.T) {
 }
 
 func TestDashboardFormatter_CalculateStats(t *testing.T) {
+	t.Parallel()
 	formatter := &DashboardFormatter{}
 
 	data := &DashboardData{
@@ -315,6 +324,7 @@ task_states:
 
 // TestDashboardFormatter_SortEvents tests event sorting functionality
 func TestDashboardFormatter_SortEvents(t *testing.T) {
+	t.Parallel()
 	formatter := &DashboardFormatter{}
 
 	now := time.Now()
@@ -335,6 +345,7 @@ func TestDashboardFormatter_SortEvents(t *testing.T) {
 
 // TestDashboardFormatter_Template tests template rendering
 func TestDashboardFormatter_Template(t *testing.T) {
+	t.Parallel()
 	formatter := &DashboardFormatter{}
 
 	tmpl, err := formatter.getDashboardTemplate()

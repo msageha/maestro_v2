@@ -14,6 +14,7 @@ import (
 // --- C-2: Bandit Model Selection (Daemon-complete, no Planner/Worker involvement) ---
 
 func TestC2_BanditModelSelection_NoPlannerInvolvement(t *testing.T) {
+	t.Parallel()
 	// §6 C-2: Model assignment is determined by Daemon UCB bandit calculation.
 	// Planner/Worker must NOT participate in model selection.
 	// No LLM tokens consumed (§5-7 alignment).
@@ -59,6 +60,7 @@ func TestC2_BanditModelSelection_NoPlannerInvolvement(t *testing.T) {
 }
 
 func TestC2_BanditFallback_InsufficientData(t *testing.T) {
+	t.Parallel()
 	// §5-7: With insufficient trace data, static config fallback applies.
 	// New selector with no data should still return an arm (exploration phase).
 	sel := bandit.NewSelector(1.41)
@@ -90,6 +92,7 @@ func TestC2_BanditFallback_InsufficientData(t *testing.T) {
 // --- C-4: Search Tree (Daemon-complete, MCTS/UCT) ---
 
 func TestC4_SearchTree_DaemonComplete(t *testing.T) {
+	t.Parallel()
 	// §6 C-4: Search tree operations (MCTS/UCT, pruning) complete within Daemon.
 	tree := search.NewTree(5, 10, 0.2)
 
@@ -155,6 +158,7 @@ func TestC4_SearchTree_DaemonComplete(t *testing.T) {
 }
 
 func TestC4_SearchTree_FitnessBasedEvaluation(t *testing.T) {
+	t.Parallel()
 	// §6 C-4: Evaluation based on S1-2 mechanical Fitness.
 	// Backpropagate reward should correlate with FitnessScore.
 
@@ -180,6 +184,7 @@ func TestC4_SearchTree_FitnessBasedEvaluation(t *testing.T) {
 }
 
 func TestC4_ThompsonSampling_WidenDeepen(t *testing.T) {
+	t.Parallel()
 	// Thompson Sampler: probabilistic widen/deepen decisions.
 	sampler := search.NewSampler(1.0, 1.0) // uniform prior
 
@@ -219,6 +224,7 @@ func TestC4_ThompsonSampling_WidenDeepen(t *testing.T) {
 // --- C-7: Runtime Definitions ---
 
 func TestC7_RuntimeDefinitions(t *testing.T) {
+	t.Parallel()
 	// §6 C-7: Multi-runtime process management consolidated in Daemon.
 
 	// Verify runtime constants exist.
@@ -256,6 +262,7 @@ func TestC7_RuntimeDefinitions(t *testing.T) {
 // --- C-8: Feature Gate & Structural Metrics ---
 
 func TestC8_FeatureGate_StructuralMetrics(t *testing.T) {
+	t.Parallel()
 	// §6 C-8: Structural metric calculation as Daemon pre-processing.
 	// Complexity Scorer + Feature Evaluator complete within Daemon.
 
@@ -310,6 +317,7 @@ func TestC8_FeatureGate_StructuralMetrics(t *testing.T) {
 }
 
 func TestC8_FeatureGate_SimpleDefault(t *testing.T) {
+	t.Parallel()
 	// Simple profile: all features disabled.
 	evaluator := featuregate.NewEvaluator()
 	profile := evaluator.Evaluate(featuregate.LevelSimple)
@@ -325,6 +333,7 @@ func TestC8_FeatureGate_SimpleDefault(t *testing.T) {
 }
 
 func TestC8_FeatureGate_FallbackOnError(t *testing.T) {
+	t.Parallel()
 	// §C-8 basic requirement 6: profile application failure → Simple fallback.
 	evaluator := featuregate.NewEvaluator()
 
@@ -343,6 +352,7 @@ func TestC8_FeatureGate_FallbackOnError(t *testing.T) {
 // --- C-8: Complexity integration with depth estimation ---
 
 func TestC8_Complexity_DepthIntegration(t *testing.T) {
+	t.Parallel()
 	scorer := complexity.NewScorer(complexity.DefaultThresholds())
 
 	// Simple input → depth 1.
@@ -367,6 +377,7 @@ func TestC8_Complexity_DepthIntegration(t *testing.T) {
 // --- Model: FitnessScore.QualityScore in Compare ---
 
 func TestModel_FitnessQualityScore(t *testing.T) {
+	t.Parallel()
 	th := model.DefaultFitnessThresholds()
 
 	// QualityScore difference decides when all other axes are equal.
@@ -427,6 +438,7 @@ func TestModel_FitnessQualityScore(t *testing.T) {
 // --- Model: Task Extension Fields ---
 
 func TestModel_TaskExtensions(t *testing.T) {
+	t.Parallel()
 	// Verify Task struct has Runtime, ModelOverride, ComplexityLevel fields.
 	task := model.Task{
 		ID:              "test-task",

@@ -3,6 +3,7 @@ package featuregate
 import "testing"
 
 func TestDefaultProfiles_SimpleAllDisabled(t *testing.T) {
+	t.Parallel()
 	e := NewEvaluator()
 	p := e.Evaluate(LevelSimple)
 
@@ -14,6 +15,7 @@ func TestDefaultProfiles_SimpleAllDisabled(t *testing.T) {
 }
 
 func TestDefaultProfiles_CriticalAllEnabled(t *testing.T) {
+	t.Parallel()
 	e := NewEvaluator()
 	p := e.Evaluate(LevelCritical)
 
@@ -25,6 +27,7 @@ func TestDefaultProfiles_CriticalAllEnabled(t *testing.T) {
 }
 
 func TestEvaluate_UnknownLevel_FallsBackToSimple(t *testing.T) {
+	t.Parallel()
 	e := NewEvaluator()
 	p := e.Evaluate(ProfileLevel("unknown"))
 
@@ -39,6 +42,7 @@ func TestEvaluate_UnknownLevel_FallsBackToSimple(t *testing.T) {
 }
 
 func TestIsEnabled_StandardAdaptiveModelSelection(t *testing.T) {
+	t.Parallel()
 	e := NewEvaluator()
 	if !e.IsEnabled(LevelStandard, FeatureAdaptiveModelSelection) {
 		t.Error("standard: adaptive_model_selection should be enabled")
@@ -46,6 +50,7 @@ func TestIsEnabled_StandardAdaptiveModelSelection(t *testing.T) {
 }
 
 func TestIsEnabled_SimpleEvolutionaryQualityDisabled(t *testing.T) {
+	t.Parallel()
 	e := NewEvaluator()
 	if e.IsEnabled(LevelSimple, FeatureEvolutionaryQuality) {
 		t.Error("simple: evolutionary_quality should be disabled")
@@ -53,6 +58,7 @@ func TestIsEnabled_SimpleEvolutionaryQualityDisabled(t *testing.T) {
 }
 
 func TestIsEnabled_ComplexProfile(t *testing.T) {
+	t.Parallel()
 	e := NewEvaluator()
 
 	// Enabled in complex.
@@ -71,6 +77,7 @@ func TestIsEnabled_ComplexProfile(t *testing.T) {
 }
 
 func TestGetLevel_FileCountBased(t *testing.T) {
+	t.Parallel()
 	e := NewEvaluator()
 
 	tests := []struct {
@@ -99,6 +106,7 @@ func TestGetLevel_FileCountBased(t *testing.T) {
 }
 
 func TestLoadProfiles_CustomConfig(t *testing.T) {
+	t.Parallel()
 	e := NewEvaluator()
 
 	custom := map[string]map[string]interface{}{
@@ -128,6 +136,7 @@ func TestLoadProfiles_CustomConfig(t *testing.T) {
 }
 
 func TestOrchestratorOverrideSimulation(t *testing.T) {
+	t.Parallel()
 	e := NewEvaluator()
 
 	// Simulate orchestrator override: load custom profiles on top of defaults.
@@ -166,6 +175,7 @@ func TestOrchestratorOverrideSimulation(t *testing.T) {
 }
 
 func TestGetLevel_ZeroCounts(t *testing.T) {
+	t.Parallel()
 	e := NewEvaluator()
 	if got := e.GetLevel(0, 0); got != LevelSimple {
 		t.Errorf("GetLevel(0, 0) = %q, want simple", got)

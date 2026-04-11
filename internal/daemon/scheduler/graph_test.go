@@ -6,6 +6,7 @@ import (
 )
 
 func TestIndependentTasks_AllSameColor(t *testing.T) {
+	t.Parallel()
 	g := NewConflictGraph()
 	g.AddNode(TaskNode{ID: "a", ExpectedPaths: []string{"pkg/auth"}})
 	g.AddNode(TaskNode{ID: "b", ExpectedPaths: []string{"pkg/billing"}})
@@ -33,6 +34,7 @@ func TestIndependentTasks_AllSameColor(t *testing.T) {
 }
 
 func TestPathOverlap_DifferentColors(t *testing.T) {
+	t.Parallel()
 	g := NewConflictGraph()
 	g.AddNode(TaskNode{ID: "a", ExpectedPaths: []string{"internal/daemon"}})
 	g.AddNode(TaskNode{ID: "b", ExpectedPaths: []string{"internal/daemon/scheduler"}})
@@ -53,6 +55,7 @@ func TestPathOverlap_DifferentColors(t *testing.T) {
 }
 
 func TestCircularConflicts_ThreeOrMoreColors(t *testing.T) {
+	t.Parallel()
 	// A conflicts with B, B conflicts with C, C conflicts with A → needs 3 colors.
 	g := NewConflictGraph()
 	g.AddNode(TaskNode{ID: "a", ExpectedPaths: []string{"shared/x"}})
@@ -83,6 +86,7 @@ func TestCircularConflicts_ThreeOrMoreColors(t *testing.T) {
 }
 
 func TestDependency_DifferentColors(t *testing.T) {
+	t.Parallel()
 	g := NewConflictGraph()
 	g.AddNode(TaskNode{ID: "a", ExpectedPaths: []string{"pkg/foo"}, Dependencies: []string{"b"}})
 	g.AddNode(TaskNode{ID: "b", ExpectedPaths: []string{"pkg/bar"}})
@@ -98,6 +102,7 @@ func TestDependency_DifferentColors(t *testing.T) {
 }
 
 func TestEmptyGraph(t *testing.T) {
+	t.Parallel()
 	g := NewConflictGraph()
 	g.BuildEdges()
 	colors := g.ColorGraph()
@@ -118,6 +123,7 @@ func TestEmptyGraph(t *testing.T) {
 }
 
 func TestSingleNode(t *testing.T) {
+	t.Parallel()
 	g := NewConflictGraph()
 	g.AddNode(TaskNode{ID: "only", ExpectedPaths: []string{"src/main.go"}})
 	g.BuildEdges()
@@ -136,6 +142,7 @@ func TestSingleNode(t *testing.T) {
 }
 
 func TestPathOverlapBoundary(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name    string
 		pathsA  []string
@@ -200,6 +207,7 @@ func TestPathOverlapBoundary(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := hasPathOverlap(tt.pathsA, tt.pathsB)
 			if got != tt.overlap {
 				t.Errorf("hasPathOverlap(%v, %v) = %v, want %v", tt.pathsA, tt.pathsB, got, tt.overlap)
@@ -209,6 +217,7 @@ func TestPathOverlapBoundary(t *testing.T) {
 }
 
 func TestLargeGraph_ColoringValid(t *testing.T) {
+	t.Parallel()
 	g := NewConflictGraph()
 	// Create 20 nodes: nodes sharing the same "cluster" directory will conflict.
 	for i := 0; i < 20; i++ {
@@ -250,6 +259,7 @@ func TestLargeGraph_ColoringValid(t *testing.T) {
 }
 
 func TestLargeGraph_WithPathOverlap(t *testing.T) {
+	t.Parallel()
 	// Nodes sharing a parent directory should conflict.
 	g := NewConflictGraph()
 	for i := 0; i < 20; i++ {
@@ -283,6 +293,7 @@ func TestLargeGraph_WithPathOverlap(t *testing.T) {
 }
 
 func TestGetParallelGroups_SortedOutput(t *testing.T) {
+	t.Parallel()
 	g := NewConflictGraph()
 	g.AddNode(TaskNode{ID: "z", ExpectedPaths: []string{"shared"}})
 	g.AddNode(TaskNode{ID: "a", ExpectedPaths: []string{"shared"}})
