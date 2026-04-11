@@ -646,6 +646,282 @@ func TestValidate_WorktreeGitTimeout_Nil_OK(t *testing.T) {
 	}
 }
 
+// --- Upper-bound validation tests ---
+
+func TestValidate_UpperBound_BusyCheckMaxRetries(t *testing.T) {
+	tests := []struct {
+		name    string
+		val     int
+		wantErr bool
+	}{
+		{"at_max", MaxBusyCheckMaxRetries, false},
+		{"exceeds_max", MaxBusyCheckMaxRetries + 1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Watcher.BusyCheckMaxRetries = tt.val
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "watcher.busy_check_max_retries") {
+				t.Fatalf("expected field path in error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_UpperBound_WaitReadyMaxRetries(t *testing.T) {
+	tests := []struct {
+		name    string
+		val     int
+		wantErr bool
+	}{
+		{"at_max", MaxWaitReadyMaxRetries, false},
+		{"exceeds_max", MaxWaitReadyMaxRetries + 1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Watcher.WaitReadyMaxRetries = tt.val
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "watcher.wait_ready_max_retries") {
+				t.Fatalf("expected field path in error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_UpperBound_DispatchLeaseSec(t *testing.T) {
+	tests := []struct {
+		name    string
+		val     int
+		wantErr bool
+	}{
+		{"at_max", MaxDispatchLeaseSec, false},
+		{"exceeds_max", MaxDispatchLeaseSec + 1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Watcher.DispatchLeaseSec = tt.val
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "watcher.dispatch_lease_sec") {
+				t.Fatalf("expected field path in error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_UpperBound_MaxInProgressMin(t *testing.T) {
+	tests := []struct {
+		name    string
+		val     int
+		wantErr bool
+	}{
+		{"at_max", MaxMaxInProgressMin, false},
+		{"exceeds_max", MaxMaxInProgressMin + 1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Watcher.MaxInProgressMin = IntPtr(tt.val)
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "watcher.max_in_progress_min") {
+				t.Fatalf("expected field path in error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_UpperBound_MaxPendingCommands(t *testing.T) {
+	tests := []struct {
+		name    string
+		val     int
+		wantErr bool
+	}{
+		{"at_max", MaxMaxPendingCommands, false},
+		{"exceeds_max", MaxMaxPendingCommands + 1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Limits.MaxPendingCommands = tt.val
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "limits.max_pending_commands") {
+				t.Fatalf("expected field path in error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_UpperBound_MaxPendingTasksPerWorker(t *testing.T) {
+	tests := []struct {
+		name    string
+		val     int
+		wantErr bool
+	}{
+		{"at_max", MaxMaxPendingTasksPerWorker, false},
+		{"exceeds_max", MaxMaxPendingTasksPerWorker + 1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Limits.MaxPendingTasksPerWorker = tt.val
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "limits.max_pending_tasks_per_worker") {
+				t.Fatalf("expected field path in error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_UpperBound_MaxDeadLetterArchiveFiles(t *testing.T) {
+	tests := []struct {
+		name    string
+		val     int
+		wantErr bool
+	}{
+		{"at_max", MaxMaxDeadLetterArchiveFiles, false},
+		{"exceeds_max", MaxMaxDeadLetterArchiveFiles + 1, true},
+		{"negative", -1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Limits.MaxDeadLetterArchiveFiles = IntPtr(tt.val)
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "limits.max_dead_letter_archive_files") {
+				t.Fatalf("expected field path in error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_UpperBound_MaxQuarantineFiles(t *testing.T) {
+	tests := []struct {
+		name    string
+		val     int
+		wantErr bool
+	}{
+		{"at_max", MaxMaxQuarantineFiles, false},
+		{"exceeds_max", MaxMaxQuarantineFiles + 1, true},
+		{"negative", -1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Limits.MaxQuarantineFiles = IntPtr(tt.val)
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "limits.max_quarantine_files") {
+				t.Fatalf("expected field path in error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_UpperBound_ShutdownTimeoutSec(t *testing.T) {
+	tests := []struct {
+		name    string
+		val     int
+		wantErr bool
+	}{
+		{"at_max", MaxShutdownTimeoutSec, false},
+		{"exceeds_max", MaxShutdownTimeoutSec + 1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.ShutdownTimeoutSec = tt.val
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "shutdown_timeout_sec") {
+				t.Fatalf("expected field path in error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_UpperBound_MaxWorktrees(t *testing.T) {
+	tests := []struct {
+		name    string
+		val     int
+		wantErr bool
+	}{
+		{"at_max", MaxMaxWorktrees, false},
+		{"exceeds_max", MaxMaxWorktrees + 1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Worktree.GC.Enabled = true
+			cfg.Worktree.GC.TTLHours = IntPtr(24)
+			cfg.Worktree.GC.MaxWorktrees = IntPtr(tt.val)
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "worktree.gc.max_worktrees") {
+				t.Fatalf("expected field path in error, got: %v", err)
+			}
+		})
+	}
+}
+
 // --- C-6 ComplexityConfig tests ---
 
 func TestComplexityConfig_Defaults(t *testing.T) {
