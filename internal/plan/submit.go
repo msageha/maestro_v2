@@ -12,6 +12,7 @@ import (
 type SubmitOptions struct {
 	CommandID  string
 	TasksFile  string // path or "-" for stdin
+	TasksData  []byte // inline YAML data; takes precedence over TasksFile when non-empty
 	PhaseName  string // non-empty for phase fill
 	DryRun     bool
 	MaestroDir string
@@ -46,7 +47,13 @@ type SubmitPhaseResult struct {
 
 // Submit validates and persists a plan, assigning tasks to workers and writing queue entries.
 func Submit(opts SubmitOptions) (*SubmitResult, error) {
-	input, err := readInput(opts.TasksFile)
+	var input *SubmitInput
+	var err error
+	if len(opts.TasksData) > 0 {
+		input, err = parseInput(opts.TasksData)
+	} else {
+		input, err = readInput(opts.TasksFile)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read input: %w", err)
 	}

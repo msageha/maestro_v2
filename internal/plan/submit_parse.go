@@ -11,6 +11,18 @@ import (
 	"github.com/msageha/maestro_v2/internal/validate"
 )
 
+// parseInput parses YAML task data from raw bytes without file I/O.
+func parseInput(data []byte) (*SubmitInput, error) {
+	if len(data) > model.DefaultMaxYAMLFileBytes {
+		return nil, fmt.Errorf("input exceeds maximum size of %d bytes", model.DefaultMaxYAMLFileBytes)
+	}
+	var input SubmitInput
+	if err := yamlv3.Unmarshal(data, &input); err != nil {
+		return nil, fmt.Errorf("parse tasks YAML: %w", err)
+	}
+	return &input, nil
+}
+
 func readInput(tasksFile string) (*SubmitInput, error) {
 	var data []byte
 	var err error
@@ -43,11 +55,7 @@ func readInput(tasksFile string) (*SubmitInput, error) {
 		return nil, fmt.Errorf("read tasks file: %w", err)
 	}
 
-	var input SubmitInput
-	if err := yamlv3.Unmarshal(data, &input); err != nil {
-		return nil, fmt.Errorf("parse tasks YAML: %w", err)
-	}
-	return &input, nil
+	return parseInput(data)
 }
 
 // shouldInsertSystemCommit centralises the policy that determines whether the
