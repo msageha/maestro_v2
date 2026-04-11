@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -203,6 +204,24 @@ func (d *Daemon) initComponents() {
 		d.handler.SetQualityGate(d.qualityGateDaemon)
 	}
 
+	// Wire API handler dependencies that require initComponents artifacts.
+	d.api.shared.SetFileLockHolder(d.handler)
+	d.api.shared.SetEventBus(func() *events.Bus { return d.eventBus })
+	d.api.dashboard.handlerReady = func() bool { return d.handler != nil }
+	d.api.heartbeat.leaseManager = func() QueueLeaseManager { return d.handler.leaseManager }
+	d.api.heartbeat.scanMu = func() *sync.RWMutex { return &d.handler.scanExecutor.scanMu }
+	d.api.plan.planExecutor = d.planExecutor
+	d.api.plan.worktreeManager = d.worktreeManager
+	d.api.result.triggerScan = func(ctx context.Context) {
+		d.spawnTracked("resultWriteScan", func(scanCtx context.Context) {
+			if d.eg != nil {
+				d.handler.PeriodicScanWithContext(scanCtx)
+			} else {
+				d.handler.PeriodicScan()
+			}
+		})
+	}
+
 	if d.qualityGateDaemon != nil {
 		d.bridge.subscribeQualityGateEvents()
 	}
@@ -211,7 +230,20 @@ func (d *Daemon) initComponents() {
 
 // startRuntime starts the UDS server, background loops, and quality gate.
 func (d *Daemon) startRuntime() error {
-	d.api.registerHandlers()
+	d.api.registerHandlers(d.server, systemHandlers{
+		scan: func(_ *uds.Request) *uds.Response {
+			if d.handler == nil {
+				return uds.ErrorResponse(uds.ErrCodeInternal, "handler not initialized")
+			}
+			d.handler.PeriodicScanWithContext(d.ctx)
+			return uds.SuccessResponse(map[string]string{"status": "scanned"})
+		},
+		shutdown: func(_ *uds.Request) *uds.Response {
+			d.log(LogLevelInfo, "shutdown requested via UDS")
+			go func() { defer d.recoverPanic("shutdownHandler"); d.Shutdown() }()
+			return uds.SuccessResponse(map[string]string{"status": "shutdown_accepted"})
+		},
+	})
 
 	if err := d.server.Start(); err != nil {
 		return fmt.Errorf("start UDS server: %w", err)
