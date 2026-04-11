@@ -39,22 +39,22 @@ func (a *cliApp) runQueueWrite(args []string, warnOut io.Writer) error {
 	var bloomLevel, priority int
 	var blockedBy, constraints, toolsHint stringSliceFlag
 
-	cmd.RequiredString(&writeType, "type", "")
-	cmd.StringVar(&content, "content", "", "")
-	cmd.StringVar(&commandID, "command-id", "", "")
-	cmd.StringVar(&purpose, "purpose", "", "")
-	cmd.StringVar(&acceptanceCriteria, "acceptance-criteria", "", "")
-	cmd.IntVar(&bloomLevel, "bloom-level", 0, "")
-	cmd.IntVar(&priority, "priority", 0, "")
-	cmd.StringVar(&sourceResultID, "source-result-id", "", "")
-	cmd.StringVar(&notificationType, "notification-type", "", "")
-	cmd.Var(&blockedBy, "blocked-by", "")
-	cmd.Var(&constraints, "constraint", "")
-	cmd.Var(&toolsHint, "tools-hint", "")
-	cmd.StringVar(&personaHint, "persona-hint", "", "")
+	cmd.RequiredString(&writeType, "type", "Entry type: command, task, notification, or cancel-request")
+	cmd.StringVar(&content, "content", "", "Entry content text")
+	cmd.StringVar(&commandID, "command-id", "", "Parent command ID")
+	cmd.StringVar(&purpose, "purpose", "", "Task purpose description")
+	cmd.StringVar(&acceptanceCriteria, "acceptance-criteria", "", "Task acceptance criteria")
+	cmd.IntVar(&bloomLevel, "bloom-level", 0, "Bloom taxonomy level (1-6)")
+	cmd.IntVar(&priority, "priority", 0, "Entry priority (higher = more urgent)")
+	cmd.StringVar(&sourceResultID, "source-result-id", "", "Source result ID for notifications")
+	cmd.StringVar(&notificationType, "notification-type", "", "Notification type classifier")
+	cmd.Var(&blockedBy, "blocked-by", "Task ID dependency (repeatable)")
+	cmd.Var(&constraints, "constraint", "Task constraint (repeatable)")
+	cmd.Var(&toolsHint, "tools-hint", "Recommended tool hint (repeatable)")
+	cmd.StringVar(&personaHint, "persona-hint", "", "Persona hint for task execution")
 	var skillRefs stringSliceFlag
-	cmd.Var(&skillRefs, "skill-refs", "")
-	cmd.StringVar(&reason, "reason", "", "")
+	cmd.Var(&skillRefs, "skill-refs", "Skill reference (repeatable)")
+	cmd.StringVar(&reason, "reason", "", "Reason text for cancel requests")
 
 	if err := cmd.Parse(args[1:]); err != nil {
 		return err

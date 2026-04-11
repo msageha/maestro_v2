@@ -53,10 +53,10 @@ func runPlanSubmit(args []string) error {
 	cmd := NewCommand("maestro plan submit", "maestro plan submit --command-id <id> [--tasks-file <path>] [--phase <name>] [--dry-run]")
 	var commandID, tasksFile, phaseName string
 	var dryRun bool
-	cmd.RequiredString(&commandID, "command-id", "")
-	cmd.StringVar(&tasksFile, "tasks-file", "", "")
-	cmd.StringVar(&phaseName, "phase", "", "")
-	cmd.BoolVar(&dryRun, "dry-run", false, "")
+	cmd.RequiredString(&commandID, "command-id", "Parent command ID")
+	cmd.StringVar(&tasksFile, "tasks-file", "", "Path to tasks YAML file (default: stdin)")
+	cmd.StringVar(&phaseName, "phase", "", "Phase name for grouping tasks")
+	cmd.BoolVar(&dryRun, "dry-run", false, "Validate plan without submitting")
 
 	if err := cmd.Parse(args); err != nil {
 		return err
@@ -117,8 +117,8 @@ func runPlanSubmit(args []string) error {
 func runPlanComplete(args []string) error {
 	cmd := NewCommand("maestro plan complete", "maestro plan complete --command-id <id> --summary <text>")
 	var commandID, summary string
-	cmd.RequiredString(&commandID, "command-id", "")
-	cmd.StringVar(&summary, "summary", "", "")
+	cmd.RequiredString(&commandID, "command-id", "Parent command ID")
+	cmd.StringVar(&summary, "summary", "", "Completion summary text")
 
 	if err := cmd.Parse(args); err != nil {
 		return err
@@ -154,13 +154,13 @@ func runPlanAddRetryTask(args []string) error {
 	var bloomLevel int
 	var blockedBy stringSliceFlag
 
-	cmd.StringVar(&commandID, "command-id", "", "")
-	cmd.StringVar(&retryOf, "retry-of", "", "")
-	cmd.StringVar(&purpose, "purpose", "", "")
-	cmd.StringVar(&content, "content", "", "")
-	cmd.StringVar(&acceptanceCriteria, "acceptance-criteria", "", "")
-	cmd.IntVar(&bloomLevel, "bloom-level", 0, "")
-	cmd.Var(&blockedBy, "blocked-by", "")
+	cmd.StringVar(&commandID, "command-id", "", "Parent command ID")
+	cmd.StringVar(&retryOf, "retry-of", "", "Task ID of the failed task to retry")
+	cmd.StringVar(&purpose, "purpose", "", "Purpose description for the retry task")
+	cmd.StringVar(&content, "content", "", "Task content for the retry task")
+	cmd.StringVar(&acceptanceCriteria, "acceptance-criteria", "", "Acceptance criteria for the retry task")
+	cmd.IntVar(&bloomLevel, "bloom-level", 0, "Bloom taxonomy level (1-6)")
+	cmd.Var(&blockedBy, "blocked-by", "Task ID dependency (repeatable)")
 
 	cmd.AddCheck("all required flags must be set", func() bool {
 		return commandID != "" && retryOf != "" && purpose != "" && content != "" && acceptanceCriteria != "" && bloomLevel != 0
@@ -219,9 +219,9 @@ func runPlanAddRetryTask(args []string) error {
 func runPlanRequestCancel(args []string) error {
 	cmd := NewCommand("maestro plan request-cancel", "maestro plan request-cancel --command-id <id> [--requested-by <agent>] [--reason <text>]")
 	var commandID, requestedBy, reason string
-	cmd.RequiredString(&commandID, "command-id", "")
-	cmd.StringVar(&requestedBy, "requested-by", "", "")
-	cmd.StringVar(&reason, "reason", "", "")
+	cmd.RequiredString(&commandID, "command-id", "Command ID to cancel")
+	cmd.StringVar(&requestedBy, "requested-by", "", "Agent or user who requested cancellation")
+	cmd.StringVar(&reason, "reason", "", "Reason for cancellation")
 
 	if err := cmd.Parse(args); err != nil {
 		return err
@@ -273,7 +273,7 @@ func runPlanRequestCancel(args []string) error {
 func runPlanRebuild(args []string) error {
 	cmd := NewCommand("maestro plan rebuild", "maestro plan rebuild --command-id <id>")
 	var commandID string
-	cmd.RequiredString(&commandID, "command-id", "")
+	cmd.RequiredString(&commandID, "command-id", "Command ID to rebuild state for")
 
 	if err := cmd.Parse(args); err != nil {
 		return err
@@ -303,8 +303,8 @@ func runPlanRebuild(args []string) error {
 func runPlanUnquarantine(args []string) error {
 	cmd := NewCommand("maestro plan unquarantine", "maestro plan unquarantine --command-id <id> [--reason <text>]")
 	var commandID, reason string
-	cmd.RequiredString(&commandID, "command-id", "")
-	cmd.StringVar(&reason, "reason", "", "")
+	cmd.RequiredString(&commandID, "command-id", "Command ID to unquarantine")
+	cmd.StringVar(&reason, "reason", "", "Reason for unquarantine")
 
 	if err := cmd.Parse(args); err != nil {
 		return err
@@ -333,7 +333,7 @@ func runPlanUnquarantine(args []string) error {
 func runPlanResumeMerge(args []string) error {
 	cmd := NewCommand("maestro plan resume-merge", "maestro plan resume-merge --command-id <id>")
 	var commandID string
-	cmd.RequiredString(&commandID, "command-id", "")
+	cmd.RequiredString(&commandID, "command-id", "Command ID to resume merge for")
 
 	if err := cmd.Parse(args); err != nil {
 		return err

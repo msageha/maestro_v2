@@ -26,9 +26,9 @@ func (a *cliApp) runTaskHeartbeat(args []string) error {
 	cmd := NewCommand("maestro task heartbeat", "maestro task heartbeat --task-id <id> --worker-id <id> --epoch <n>")
 	var taskID, workerID string
 	var epoch int
-	cmd.RequiredString(&taskID, "task-id", "")
-	cmd.RequiredString(&workerID, "worker-id", "")
-	cmd.RequiredInt(&epoch, "epoch", -1, "")
+	cmd.RequiredString(&taskID, "task-id", "Task ID to send heartbeat for")
+	cmd.RequiredString(&workerID, "worker-id", "Worker ID that owns the task")
+	cmd.RequiredInt(&epoch, "epoch", -1, "Lease epoch number for fencing")
 
 	if err := cmd.Parse(args); err != nil {
 		return err
