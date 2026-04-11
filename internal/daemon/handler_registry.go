@@ -66,15 +66,16 @@ func (qh *QueueHandler) SetWorktreeManager(wm *WorktreeManager) {
 	qh.cancelHandler.SetWorktreeManager(wm)
 }
 
-// SetShutdownGuard wires the daemon's shutdown context and advisory flag
-// so that debounce callbacks respect context cancellation and shutdown state.
+// SetShutdownGuard wires the daemon's shutdown context, advisory flag, and
+// shutdown callback so that debounce callbacks respect context cancellation,
+// shutdown state, and trigger daemon shutdown on panic.
 // Must be called before Run() starts.
-func (qh *QueueHandler) SetShutdownGuard(ctx context.Context, shuttingDown *atomic.Bool) {
+func (qh *QueueHandler) SetShutdownGuard(ctx context.Context, shuttingDown *atomic.Bool, shutdownFn func()) {
 	qh.scanExecutor.scanRunMu.Lock()
 	defer qh.scanExecutor.scanRunMu.Unlock()
 	qh.shutdownCtx = ctx
 	qh.shuttingDown = shuttingDown
-	qh.scanExecutor.debounce.SetShutdownGuard(ctx, shuttingDown)
+	qh.scanExecutor.debounce.SetShutdownGuard(ctx, shuttingDown, shutdownFn)
 }
 
 // SetEventBus wires the event bus for all sub-components that publish events.

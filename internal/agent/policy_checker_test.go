@@ -118,7 +118,7 @@ func TestHookScript_ContainsDangerousPatternChecks(t *testing.T) {
 		text string
 	}{
 		{"D001", "D001"},
-		{"D003", "D003"},
+		{"Worker git push", "Worker git push is prohibited"},
 		{"D004", "D004"},
 		{"D005", "D005"},
 		{"D006", "D006"},
@@ -247,10 +247,13 @@ func TestHookScript_ProtectsMaestroControlPlanePaths(t *testing.T) {
 	}
 }
 
-func TestHookScript_AllowsForceWithLease(t *testing.T) {
-	// The script should NOT block git push --force-with-lease
-	if !strings.Contains(hookScript, "force-with-lease") {
-		t.Error("hook script should allow --force-with-lease as safe alternative")
+func TestHookScript_BlocksAllGitPush(t *testing.T) {
+	// Worker hook blocks ALL git push, including --force-with-lease
+	if !strings.Contains(hookScript, `git\s+push(\s|$)`) {
+		t.Error("hook script should block all git push for Workers")
+	}
+	if !strings.Contains(hookScript, "Worker git push is prohibited") {
+		t.Error("hook script should contain Worker git push prohibition message")
 	}
 }
 

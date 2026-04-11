@@ -126,7 +126,7 @@ func (d *Daemon) cleanStaleTmpFiles() {
 // circuit breaker, worktree manager, and event bus subscriptions.
 func (d *Daemon) initComponents() {
 	d.handler = NewQueueHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
-	d.handler.SetShutdownGuard(d.ctx, &d.shuttingDown)
+	d.handler.SetShutdownGuard(d.ctx, &d.shuttingDown, d.Shutdown)
 
 	if d.stateReader != nil {
 		d.handler.SetStateReader(d.stateReader)

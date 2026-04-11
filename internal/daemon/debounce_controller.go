@@ -30,6 +30,7 @@ type DebounceController struct {
 	// Shutdown guard: wired via SetShutdownGuard after construction.
 	shutdownCtx  context.Context
 	shuttingDown *atomic.Bool
+	shutdownFn   func() // triggers daemon shutdown on panic
 }
 
 // NewDebounceController creates a DebounceController.
@@ -46,13 +47,15 @@ func NewDebounceController(debounceSec float64, dl *DaemonLogger, scanFn func(ct
 	}
 }
 
-// SetShutdownGuard wires the daemon's shutdown context and advisory flag
-// so that debounce callbacks respect context cancellation and shutdown state.
-func (dc *DebounceController) SetShutdownGuard(ctx context.Context, shuttingDown *atomic.Bool) {
+// SetShutdownGuard wires the daemon's shutdown context, advisory flag, and
+// shutdown callback so that debounce callbacks respect context cancellation,
+// shutdown state, and trigger daemon shutdown on panic.
+func (dc *DebounceController) SetShutdownGuard(ctx context.Context, shuttingDown *atomic.Bool, shutdownFn func()) {
 	dc.mu.Lock()
 	defer dc.mu.Unlock()
 	dc.shutdownCtx = ctx
 	dc.shuttingDown = shuttingDown
+	dc.shutdownFn = shutdownFn
 }
 
 // Trigger starts or resets the debounce timer. When the timer fires, scanFn
@@ -130,6 +133,9 @@ func (dc *DebounceController) Trigger(trigger string) {
 			defer func() {
 				if r := recover(); r != nil {
 					dc.dl.Logf(LogLevelError, "panic in debounceAndScan: %v", r)
+					if dc.shutdownFn != nil {
+						dc.shutdownFn()
+					}
 				}
 			}()
 			dc.dl.Logf(LogLevelDebug, "debounced_scan trigger=%s", trigger)

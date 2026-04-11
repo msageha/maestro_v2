@@ -23,6 +23,12 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 
 	// Subscribe to task started events
 	unsub1 := d.eventBus.Subscribe(events.EventTaskStarted, func(e events.Event) {
+		defer func() {
+			if r := recover(); r != nil {
+				d.log(LogLevelError, "panic in event_bridge callback type=task_started: %v", r)
+				d.Shutdown()
+			}
+		}()
 		taskID, ok1 := e.Data["task_id"].(string)
 		commandID, ok2 := e.Data["command_id"].(string)
 		workerID, ok3 := e.Data["worker_id"].(string)
@@ -42,6 +48,12 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 
 	// Subscribe to task completed events
 	unsub2 := d.eventBus.Subscribe(events.EventTaskCompleted, func(e events.Event) {
+		defer func() {
+			if r := recover(); r != nil {
+				d.log(LogLevelError, "panic in event_bridge callback type=task_completed: %v", r)
+				d.Shutdown()
+			}
+		}()
 		taskID, ok1 := e.Data["task_id"].(string)
 		commandID, ok2 := e.Data["command_id"].(string)
 		workerID, ok3 := e.Data["worker_id"].(string)
@@ -73,6 +85,12 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 
 	// Subscribe to phase transition events
 	unsub3 := d.eventBus.Subscribe(events.EventPhaseTransition, func(e events.Event) {
+		defer func() {
+			if r := recover(); r != nil {
+				d.log(LogLevelError, "panic in event_bridge callback type=phase_transition: %v", r)
+				d.Shutdown()
+			}
+		}()
 		phaseID, ok1 := e.Data["phase_id"].(string)
 		commandID, ok2 := e.Data["command_id"].(string)
 		oldStatus, ok3 := e.Data["old_status"].(string)
@@ -102,6 +120,12 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 func (eb *EventBridge) subscribeQueueWrittenEvents() {
 	d := eb.d
 	unsub := d.eventBus.SubscribeCoalesced(events.EventQueueWritten, func() {
+		defer func() {
+			if r := recover(); r != nil {
+				d.log(LogLevelError, "panic in event_bridge callback type=queue_written: %v", r)
+				d.Shutdown()
+			}
+		}()
 		if d.handler == nil || d.shuttingDown.Load() {
 			return
 		}
