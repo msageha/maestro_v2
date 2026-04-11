@@ -54,14 +54,14 @@ func TestReviewDispatcher_InitializedWhenEnabled(t *testing.T) {
 		d.eventBus.Close()
 	}
 
-	if d.reviewDispatcher == nil {
-		t.Fatal("reviewDispatcher should be non-nil when Review.Enabled=true")
+	if !d.reviewCoord.Enabled() {
+		t.Fatal("reviewCoord should be enabled when Review.Enabled=true")
 	}
-	if d.usefulnessTracker == nil {
-		t.Fatal("usefulnessTracker should be non-nil when Review.Enabled=true")
+	if d.reviewCoord.tracker == nil {
+		t.Fatal("reviewCoord.tracker should be non-nil when Review.Enabled=true")
 	}
-	if d.reviewRequests == nil {
-		t.Fatal("reviewRequests map should be initialized")
+	if d.reviewCoord.requests == nil {
+		t.Fatal("reviewCoord.requests map should be initialized")
 	}
 }
 
@@ -92,11 +92,8 @@ func TestReviewDispatcher_SkippedWhenDisabled(t *testing.T) {
 		d.eventBus.Close()
 	}
 
-	if d.reviewDispatcher != nil {
-		t.Fatal("reviewDispatcher should be nil when Review.Enabled=false")
-	}
-	if d.usefulnessTracker != nil {
-		t.Fatal("usefulnessTracker should be nil when Review.Enabled=false")
+	if d.reviewCoord.Enabled() {
+		t.Fatal("reviewCoord should not be enabled when Review.Enabled=false")
 	}
 }
 
