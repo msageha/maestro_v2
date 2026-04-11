@@ -289,6 +289,6 @@ func withCappedRetryMeta(constraints []string, newMeta string) []string {
 	return out
 }
 
-func (h *TaskRetryHandler) log(level LogLevel, format string, args ...interface{}) {
+func (h *TaskRetryHandler) log(level LogLevel, format string, args ...any) {
 	h.dl.Logf(level, format, args...)
 }
