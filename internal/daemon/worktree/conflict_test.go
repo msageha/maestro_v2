@@ -14,6 +14,7 @@ import (
 // TestWorktreeIntegration_ConflictDetection tests the full conflict detection flow:
 // merge conflict → state verification → SyncFromIntegration skips conflict workers (M2).
 func TestWorktreeIntegration_ConflictDetection(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -146,6 +147,7 @@ func TestWorktreeIntegration_ConflictDetection(t *testing.T) {
 // all previously created worktrees when a subsequent worker creation fails.
 // Uses 3 workers where the 3rd fails to trigger rollback of workers 1 and 2.
 func TestWorktreeIntegration_CreateRollback(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -216,6 +218,7 @@ func TestWorktreeIntegration_CreateRollback(t *testing.T) {
 // TestWorktreeIntegration_DirtyWorktreeSkip tests that SyncFromIntegration
 // skips workers with uncommitted changes (M3) while syncing clean workers normally.
 func TestWorktreeIntegration_DirtyWorktreeSkip(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -300,6 +303,7 @@ func TestWorktreeIntegration_DirtyWorktreeSkip(t *testing.T) {
 // Verifies: error returned, integration status = conflict, temp-branch cleanup,
 // base ref unchanged, integration branch intact.
 func TestWorktreeIntegration_PublishToBaseConflict(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -454,6 +458,7 @@ func TestWorktreeIntegration_PublishToBaseConflict(t *testing.T) {
 // correctly handles merge conflicts: aborts the merge, preserves worktree state,
 // and continues syncing remaining workers.
 func TestWorktreeIntegration_SyncFromIntegrationConflict(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -589,6 +594,7 @@ func TestWorktreeIntegration_SyncFromIntegrationConflict(t *testing.T) {
 // TestMergeToIntegration_DirtyIntegrationWorktree tests that MergeToIntegration
 // returns an error when the integration worktree has uncommitted changes.
 func TestMergeToIntegration_DirtyIntegrationWorktree(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -641,6 +647,7 @@ func TestMergeToIntegration_DirtyIntegrationWorktree(t *testing.T) {
 // lock-file errors as transient. When a lock exists, merge --abort and recovery
 // also fail (same lock), so the worktree becomes stuck.
 func TestMergeToIntegration_TransientError(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -717,6 +724,7 @@ func TestMergeToIntegration_TransientError(t *testing.T) {
 
 // TestClassifyGitError_TransientVsPermanent tests the error classification logic.
 func TestClassifyGitError_TransientVsPermanent(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name     string
 		err      error
@@ -733,6 +741,7 @@ func TestClassifyGitError_TransientVsPermanent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := classifyGitError(tt.err)
 			if got != tt.expected {
 				t.Errorf("classifyGitError(%v) = %d, want %d", tt.err, got, tt.expected)
@@ -745,6 +754,7 @@ func TestClassifyGitError_TransientVsPermanent(t *testing.T) {
 // are merged and one has a conflict while another would have a non-conflict error,
 // the conflict worker is correctly classified before the loop halts on the non-conflict error.
 func TestMergeToIntegration_ConflictVsNonConflict(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -835,6 +845,7 @@ func TestMergeToIntegration_ConflictVsNonConflict(t *testing.T) {
 // TestPublishToBase_PreservesConflictWorkerStatus verifies that PublishToBase only
 // sets integrated workers to published, preserving conflict/failed worker statuses.
 func TestPublishToBase_PreservesConflictWorkerStatus(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -939,6 +950,7 @@ func TestPublishToBase_PreservesConflictWorkerStatus(t *testing.T) {
 // TestMergeToIntegration_SkippedWorkerCausesPartialMerge verifies that when a worker
 // is skipped due to a transient error, the integration status is partial_merge (not merged).
 func TestMergeToIntegration_SkippedWorkerCausesPartialMerge(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 

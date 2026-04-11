@@ -31,6 +31,7 @@ func taskWithBloom(level int) model.Task {
 // --- ShouldReview tests ---
 
 func TestShouldReview_Enabled_AboveMinBloom(t *testing.T) {
+	t.Parallel()
 	d := NewReviewDispatcher(defaultConfig())
 	if !d.ShouldReview(taskWithBloom(3)) {
 		t.Error("expected ShouldReview=true for bloom_level=3 with min=2")
@@ -38,6 +39,7 @@ func TestShouldReview_Enabled_AboveMinBloom(t *testing.T) {
 }
 
 func TestShouldReview_Enabled_AtMinBloom(t *testing.T) {
+	t.Parallel()
 	d := NewReviewDispatcher(defaultConfig())
 	if !d.ShouldReview(taskWithBloom(2)) {
 		t.Error("expected ShouldReview=true for bloom_level=2 with min=2")
@@ -45,6 +47,7 @@ func TestShouldReview_Enabled_AtMinBloom(t *testing.T) {
 }
 
 func TestShouldReview_BelowMinBloom(t *testing.T) {
+	t.Parallel()
 	d := NewReviewDispatcher(defaultConfig())
 	if d.ShouldReview(taskWithBloom(1)) {
 		t.Error("expected ShouldReview=false for bloom_level=1 with min=2")
@@ -52,6 +55,7 @@ func TestShouldReview_BelowMinBloom(t *testing.T) {
 }
 
 func TestShouldReview_Disabled(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig()
 	cfg.Enabled = false
 	d := NewReviewDispatcher(cfg)
@@ -61,6 +65,7 @@ func TestShouldReview_Disabled(t *testing.T) {
 }
 
 func TestShouldReview_ConcurrentLimitReached(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig()
 	cfg.MaxConcurrentReviews = ptr.Int(1)
 	d := NewReviewDispatcher(cfg)
@@ -76,6 +81,7 @@ func TestShouldReview_ConcurrentLimitReached(t *testing.T) {
 }
 
 func TestShouldReview_ConcurrentLimitNotReached(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig()
 	cfg.MaxConcurrentReviews = ptr.Int(2)
 	d := NewReviewDispatcher(cfg)
@@ -92,6 +98,7 @@ func TestShouldReview_ConcurrentLimitNotReached(t *testing.T) {
 // --- Dispatch tests ---
 
 func TestDispatch_Async_NonBlocking(t *testing.T) {
+	t.Parallel()
 	d := NewReviewDispatcher(defaultConfig())
 	ctx := context.Background()
 
@@ -110,6 +117,7 @@ func TestDispatch_Async_NonBlocking(t *testing.T) {
 }
 
 func TestDispatch_ResultReceived(t *testing.T) {
+	t.Parallel()
 	d := NewReviewDispatcher(defaultConfig())
 	ctx := context.Background()
 
@@ -136,6 +144,7 @@ func TestDispatch_ResultReceived(t *testing.T) {
 }
 
 func TestDispatch_Disabled(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig()
 	cfg.Enabled = false
 	d := NewReviewDispatcher(cfg)
@@ -147,6 +156,7 @@ func TestDispatch_Disabled(t *testing.T) {
 }
 
 func TestDispatch_Timeout_Skipped(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig()
 	cfg.TimeoutSec = ptr.Int(0) // 0-second timeout → immediate expiry
 
@@ -172,6 +182,7 @@ func TestDispatch_Timeout_Skipped(t *testing.T) {
 }
 
 func TestDispatch_ActiveReviews_Decremented(t *testing.T) {
+	t.Parallel()
 	d := NewReviewDispatcher(defaultConfig())
 	ctx := context.Background()
 
@@ -191,6 +202,7 @@ func TestDispatch_ActiveReviews_Decremented(t *testing.T) {
 }
 
 func TestDispatch_MultipleReviews(t *testing.T) {
+	t.Parallel()
 	cfg := defaultConfig()
 	cfg.MaxConcurrentReviews = ptr.Int(3)
 	d := NewReviewDispatcher(cfg)

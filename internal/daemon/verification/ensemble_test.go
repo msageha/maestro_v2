@@ -6,6 +6,7 @@ import (
 )
 
 func TestAggregate_AllPass(t *testing.T) {
+	t.Parallel()
 	v := NewVerifier()
 	results := []PerspectiveResult{
 		{Name: "build", Passed: true, Duration: time.Second},
@@ -23,6 +24,7 @@ func TestAggregate_AllPass(t *testing.T) {
 }
 
 func TestAggregate_CriticalWeightFailed(t *testing.T) {
+	t.Parallel()
 	v := NewVerifier()
 	// test has weight 1.0 — critical
 	results := []PerspectiveResult{
@@ -41,6 +43,7 @@ func TestAggregate_CriticalWeightFailed(t *testing.T) {
 }
 
 func TestAggregate_LintOnlyFailed(t *testing.T) {
+	t.Parallel()
 	v := NewVerifier()
 	// lint has weight 0.8 — not critical
 	results := []PerspectiveResult{
@@ -61,6 +64,7 @@ func TestAggregate_LintOnlyFailed(t *testing.T) {
 }
 
 func TestAggregate_EmptyResults(t *testing.T) {
+	t.Parallel()
 	v := NewVerifier()
 	agg := v.Aggregate(nil)
 	if !agg.Passed {
@@ -72,6 +76,7 @@ func TestAggregate_EmptyResults(t *testing.T) {
 }
 
 func TestShouldRetry_NewFingerprint(t *testing.T) {
+	t.Parallel()
 	v := NewVerifier()
 	result := AggregatedResult{Passed: false}
 	if !v.ShouldRetry(result, "abc123", []string{"def456", "ghi789"}) {
@@ -80,6 +85,7 @@ func TestShouldRetry_NewFingerprint(t *testing.T) {
 }
 
 func TestShouldRetry_KnownFingerprint(t *testing.T) {
+	t.Parallel()
 	v := NewVerifier()
 	result := AggregatedResult{Passed: false}
 	if v.ShouldRetry(result, "abc123", []string{"abc123", "def456"}) {
@@ -88,6 +94,7 @@ func TestShouldRetry_KnownFingerprint(t *testing.T) {
 }
 
 func TestShouldRetry_Passed(t *testing.T) {
+	t.Parallel()
 	v := NewVerifier()
 	result := AggregatedResult{Passed: true}
 	if v.ShouldRetry(result, "abc123", nil) {
@@ -96,6 +103,7 @@ func TestShouldRetry_Passed(t *testing.T) {
 }
 
 func TestDefaultPerspectives(t *testing.T) {
+	t.Parallel()
 	v := NewVerifier()
 	perspectives := v.DefaultPerspectives()
 	if len(perspectives) != 4 {
@@ -121,6 +129,7 @@ func TestDefaultPerspectives(t *testing.T) {
 }
 
 func TestAddPerspective(t *testing.T) {
+	t.Parallel()
 	v := NewVerifier()
 	initial := len(v.perspectives)
 	v.AddPerspective(Perspective{Name: "security", Commands: []string{"gosec ./..."}, Weight: 0.7})

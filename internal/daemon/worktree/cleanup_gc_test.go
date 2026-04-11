@@ -10,6 +10,7 @@ import (
 // TestGCBakFiles_OrphanRemoved verifies that a .bak file with no matching
 // .yaml is removed by gcBakFiles.
 func TestGCBakFiles_OrphanRemoved(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -32,6 +33,7 @@ func TestGCBakFiles_OrphanRemoved(t *testing.T) {
 // TestGCBakFiles_ExpiredRemoved verifies that a .bak file older than bakTTL
 // is removed even when its companion .yaml still exists.
 func TestGCBakFiles_ExpiredRemoved(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -66,6 +68,7 @@ func TestGCBakFiles_ExpiredRemoved(t *testing.T) {
 // TestGCBakFiles_FreshRetained verifies that a recent .bak with a matching
 // .yaml is preserved.
 func TestGCBakFiles_FreshRetained(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 

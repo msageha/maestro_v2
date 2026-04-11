@@ -11,6 +11,7 @@ import (
 )
 
 func TestClassifyGitError(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name string
 		err  error
@@ -87,6 +88,7 @@ func TestClassifyGitError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := classifyGitError(tt.err)
 			if got != tt.want {
 				wantStr := "Permanent"
@@ -104,6 +106,7 @@ func TestClassifyGitError(t *testing.T) {
 }
 
 func TestWrapGitOutputError_IncludesStderr(t *testing.T) {
+	t.Parallel()
 	// Simulate exec.ExitError with Stderr containing a transient pattern.
 	exitErr := &exec.ExitError{
 		ProcessState: nil, // not used by our code
@@ -126,6 +129,7 @@ func TestWrapGitOutputError_IncludesStderr(t *testing.T) {
 }
 
 func TestWrapGitOutputError_EmptyStderr(t *testing.T) {
+	t.Parallel()
 	exitErr := &exec.ExitError{
 		Stderr: []byte{},
 	}
@@ -139,6 +143,7 @@ func TestWrapGitOutputError_EmptyStderr(t *testing.T) {
 }
 
 func TestClassifyGitError_ExitErrorWithTransientStderr(t *testing.T) {
+	t.Parallel()
 	// When exec.ExitError is wrapped with stderr via wrapGitOutputError,
 	// classifyGitError should detect transient patterns.
 	tests := []struct {
@@ -170,6 +175,7 @@ func TestClassifyGitError_ExitErrorWithTransientStderr(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			exitErr := &exec.ExitError{
 				Stderr: []byte(tt.stderr),
 			}
@@ -191,6 +197,7 @@ func TestClassifyGitError_ExitErrorWithTransientStderr(t *testing.T) {
 }
 
 func TestIsTransientGitError(t *testing.T) {
+	t.Parallel()
 	if !isTransientGitError(errors.New("Unable to create lock")) {
 		t.Error("expected lock error to be transient")
 	}
@@ -203,6 +210,7 @@ func TestIsTransientGitError(t *testing.T) {
 }
 
 func TestGitOutputWithRetry_Success(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
@@ -216,6 +224,7 @@ func TestGitOutputWithRetry_Success(t *testing.T) {
 }
 
 func TestGitOutputWithRetry_PermanentNoRetry(t *testing.T) {
+	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
