@@ -95,6 +95,12 @@ type Daemon struct {
 	closeExecutorsOnce sync.Once
 	forceExit          atomic.Bool
 
+	// startupReconcileHook, when non-nil, is called instead of
+	// worktreeManager.Reconcile() in startRuntime(). It allows tests to inject
+	// slow reconciliation without a real git repository. Must be nil in
+	// production.
+	startupReconcileHook func()
+
 	// --- Components ---
 	api    *API
 	watch  *WatchLoop

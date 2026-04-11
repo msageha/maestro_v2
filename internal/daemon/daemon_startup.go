@@ -222,8 +222,16 @@ func (d *Daemon) startRuntime() error {
 	// requests can be answered while git operations (worktree list / remove)
 	// complete in the background. This prevents waitDaemonReady from timing
 	// out when orphaned worktrees cause Reconcile to take several seconds.
-	if d.worktreeManager != nil {
-		d.eg.Go(func() error { d.worktreeManager.Reconcile(); return nil })
+	// startupReconcileHook (when set in tests) replaces the real Reconcile.
+	if d.worktreeManager != nil || d.startupReconcileHook != nil {
+		d.eg.Go(func() error {
+			if d.startupReconcileHook != nil {
+				d.startupReconcileHook()
+			} else {
+				d.worktreeManager.Reconcile()
+			}
+			return nil
+		})
 	}
 
 	if d.qualityGateDaemon != nil {
