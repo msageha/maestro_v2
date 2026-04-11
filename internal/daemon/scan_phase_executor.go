@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 
+	"github.com/msageha/maestro_v2/internal/metrics"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -15,7 +16,7 @@ type ScanPhaseExecutor struct {
 	qh *QueueHandler // access to shared dependencies (handlers, managers, config)
 
 	// scanCounters accumulates counters during a single PeriodicScan cycle.
-	scanCounters ScanCounters
+	scanCounters metrics.ScanCounters
 
 	// debounce manages filesystem event coalescing and starvation protection.
 	debounce *DebounceController
@@ -136,7 +137,7 @@ func (se *ScanPhaseExecutor) periodicScanPhaseA() phaseAResult {
 func (se *ScanPhaseExecutor) initScanState() scanState {
 	qh := se.qh
 	scanStart := qh.clock.Now()
-	se.scanCounters = ScanCounters{}
+	se.scanCounters = metrics.ScanCounters{}
 
 	commandQueue, commandPath := qh.loadCommandQueue()
 	taskQueues := qh.loadAllTaskQueues()

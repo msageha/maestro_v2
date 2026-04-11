@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/fallback"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
+	"github.com/msageha/maestro_v2/internal/metrics"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -34,6 +36,16 @@ type BusyCheckerFunc func(agentID string) bool
 // IsBusy calls the underlying function to check whether the given agent is busy.
 func (f BusyCheckerFunc) IsBusy(agentID string) bool { return f(agentID) }
 
+// QueueHandlerOption configures a QueueHandler after construction.
+type QueueHandlerOption func(*QueueHandler)
+
+// WithBusyChecker injects a BusyChecker to override the default executor-based probe.
+func WithBusyChecker(bc BusyChecker) QueueHandlerOption {
+	return func(qh *QueueHandler) {
+		qh.scanExecutor.busyChecker = bc
+	}
+}
+
 // QueueHandler orchestrates fsnotify event routing and periodic scan execution.
 type QueueHandler struct {
 	maestroDir string
@@ -51,7 +63,7 @@ type QueueHandler struct {
 	resultHandler       *ResultHandler
 	reconciler          *Reconciler
 	deadLetterProcessor *DeadLetterProcessor
-	metricsHandler      *MetricsHandler
+	metricsHandler      *metrics.Handler
 	circuitBreaker      *circuitbreaker.Handler
 	admissionCtrl       *admission.Controller
 	fallbackMgr         *fallback.Manager
@@ -60,6 +72,9 @@ type QueueHandler struct {
 
 	// scanExecutor handles periodic scan orchestration and scan-specific state.
 	scanExecutor *ScanPhaseExecutor
+
+	// scanRunMu exposes the scan run mutex for test cleanup synchronization.
+	scanRunMu *sync.Mutex
 
 	// daemonPID for lease_owner format "daemon:{pid}" per spec §5.8.1.
 	daemonPID int
@@ -72,7 +87,7 @@ type QueueHandler struct {
 // NewQueueHandler creates a new QueueHandler with all sub-modules.
 // A single shared ExecutorProvider is created and injected into all handlers
 // that need executor access (Dispatcher, ResultHandler, CancelHandler).
-func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel) *QueueHandler {
+func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel, opts ...QueueHandlerOption) *QueueHandler {
 	clock := RealClock{}
 	factory := ExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 		return agent.NewExecutor(dir, wcfg, level)
@@ -86,7 +101,7 @@ func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap
 	rh := NewResultHandler(maestroDir, cfg, lockMap, logger, logLevel, ep, clock)
 	rec := NewReconciler(maestroDir, cfg, lockMap, logger, logLevel, rh, ep.Factory())
 	dlp := NewDeadLetterProcessor(maestroDir, cfg, lockMap, logger, logLevel)
-	mh := NewMetricsHandler(maestroDir, cfg, logger, logLevel)
+	mh := metrics.NewHandler(maestroDir, cfg, logger, logLevel)
 
 	dl := NewDaemonLoggerFromLegacy("queue_handler", logger, logLevel)
 	qh := &QueueHandler{
@@ -111,6 +126,10 @@ func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap
 	se := newScanPhaseExecutor(qh)
 	se.debounce = NewDebounceController(cfg.Watcher.DebounceSec, dl, qh.PeriodicScanWithContext)
 	qh.scanExecutor = se
+	qh.scanRunMu = &se.scanRunMu
+	for _, opt := range opts {
+		opt(qh)
+	}
 	return qh
 }
 
@@ -236,6 +255,21 @@ func (qh *QueueHandler) PeriodicScan() {
 // PeriodicScanWithContext delegates to ScanPhaseExecutor for the three-phase scan cycle.
 func (qh *QueueHandler) PeriodicScanWithContext(ctx context.Context) {
 	qh.scanExecutor.Execute(ctx)
+}
+
+// periodicScanPhaseA delegates to ScanPhaseExecutor for test access.
+func (qh *QueueHandler) periodicScanPhaseA() phaseAResult {
+	return qh.scanExecutor.periodicScanPhaseA()
+}
+
+// periodicScanPhaseB delegates to ScanPhaseExecutor for test access.
+func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult) phaseBResult {
+	return qh.scanExecutor.periodicScanPhaseB(ctx, pa)
+}
+
+// periodicScanPhaseC delegates to ScanPhaseExecutor for test access.
+func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []DeferredNotification {
+	return qh.scanExecutor.periodicScanPhaseC(pa, pb)
 }
 
 // LockFiles acquires a shared (read) lock for queue write handlers.
@@ -403,7 +437,7 @@ type signalDeliveryResult struct {
 type phaseAResult struct {
 	work      deferredWork
 	scanStart time.Time
-	counters  ScanCounters
+	counters  metrics.ScanCounters
 }
 
 // phaseBResult holds all results from Phase B for Phase C to apply.
