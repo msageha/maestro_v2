@@ -20,6 +20,9 @@ import (
 // validRoleName permits only alphanumeric, underscore, and hyphen characters.
 var validRoleName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
+// validTmuxPane matches the expected TMUX_PANE format: %<number> (e.g. %0, %1, %123).
+var validTmuxPane = regexp.MustCompile(`^%\d+$`)
+
 // allowedToolsByRole defines the tools each role is permitted to use.
 // Orchestrator and Planner are restricted to:
 //   - Bash(maestro:*) — only maestro CLI commands (no cat, echo, grep, etc.)
@@ -241,6 +244,25 @@ func filterEnv(environ []string, name string) []string {
 	return out
 }
 
+// sanitizeForLog truncates a string to maxLen and removes control characters
+// to prevent log injection when including untrusted values in error messages.
+func sanitizeForLog(s string) string {
+	const maxLen = 100
+	if len(s) > maxLen {
+		s = s[:maxLen] + "..."
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			b.WriteRune('?')
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // loadBasePromptMode loads config and returns the effective base_prompt_mode for the given role.
 func loadBasePromptMode(maestroDir, role string) (string, error) {
 	cfg, err := model.LoadConfig(maestroDir)
@@ -266,9 +288,12 @@ func currentPaneTarget() (string, error) {
 	if paneID == "" {
 		return "", fmt.Errorf("TMUX_PANE environment variable not set (not running inside tmux?)")
 	}
+	if !validTmuxPane.MatchString(paneID) {
+		return "", fmt.Errorf("invalid TMUX_PANE format: expected %%<number>, got: %s", sanitizeForLog(paneID))
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "tmux", "display-message", "-t", paneID, "-p", "#{session_name}:#{window_index}.#{pane_index}") //nolint:gosec // "tmux" is a fixed command; paneID is from TMUX_PANE env var
+	cmd := exec.CommandContext(ctx, "tmux", "display-message", "-t", paneID, "-p", "#{session_name}:#{window_index}.#{pane_index}")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() != nil {

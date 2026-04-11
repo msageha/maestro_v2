@@ -455,3 +455,85 @@ func TestBuildLaunchArgs_BasePromptModeDefault(t *testing.T) {
 		}
 	}
 }
+
+func TestValidTmuxPane(t *testing.T) {
+	valid := []string{"%0", "%1", "%123", "%9999"}
+	for _, v := range valid {
+		if !validTmuxPane.MatchString(v) {
+			t.Errorf("validTmuxPane should match %q", v)
+		}
+	}
+
+	invalid := []string{
+		"",
+		"0",
+		"%",
+		"%-1",
+		"%abc",
+		"$(cmd)",
+		"%0; malicious",
+		"%0\ninjection",
+		"%%0",
+		" %0",
+		"%0 ",
+		"`whoami`",
+	}
+	for _, v := range invalid {
+		if validTmuxPane.MatchString(v) {
+			t.Errorf("validTmuxPane should NOT match %q", v)
+		}
+	}
+}
+
+func TestSanitizeForLog(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"normal", "hello", "hello"},
+		{"control_chars", "ab\x00cd\x1f\x7f", "ab?cd??"},
+		{"newline_tab", "line1\nline2\ttab", "line1?line2?tab"},
+		{"truncate", strings.Repeat("a", 150), strings.Repeat("a", 100) + "..."},
+		{"empty", "", ""},
+		{"unicode", "日本語テスト", "日本語テスト"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeForLog(tt.input)
+			if got != tt.want {
+				t.Errorf("sanitizeForLog(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCurrentPaneTarget_InvalidTmuxPane(t *testing.T) {
+	invalid := []string{
+		"",
+		"0",
+		"%",
+		"%-1",
+		"%abc",
+		"$(cmd)",
+		"%0; malicious",
+	}
+	for _, v := range invalid {
+		t.Run(v, func(t *testing.T) {
+			t.Setenv("TMUX_PANE", v)
+			_, err := currentPaneTarget()
+			if err == nil {
+				t.Errorf("currentPaneTarget() should fail for TMUX_PANE=%q", v)
+			}
+			if v == "" {
+				if !strings.Contains(err.Error(), "not set") {
+					t.Errorf("empty TMUX_PANE error should mention 'not set', got: %v", err)
+				}
+			} else {
+				if !strings.Contains(err.Error(), "invalid TMUX_PANE format") {
+					t.Errorf("invalid TMUX_PANE error should mention 'invalid TMUX_PANE format', got: %v", err)
+				}
+			}
+		})
+	}
+}
