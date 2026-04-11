@@ -814,6 +814,154 @@ func TestNewRequest_MarshalError(t *testing.T) {
 	}
 }
 
+func TestValidateCallerRole(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		role    string
+		wantErr bool
+	}{
+		{"orchestrator", false},
+		{"planner", false},
+		{"worker", false},
+		{"cli", false},
+		{"", false}, // empty is allowed (normalized to "cli" by NormalizeCallerRole)
+		{"admin", true},
+		{"superuser", true},
+		{"ORCHESTRATOR", true}, // case-sensitive
+		{"Planner", true},
+		{"WORKER", true},
+		{" worker", true},   // leading space
+		{"worker ", true},   // trailing space
+		{"root", true},
+		{"operator", true},
+	}
+	for _, tt := range tests {
+		t.Run("role="+tt.role, func(t *testing.T) {
+			t.Parallel()
+			err := ValidateCallerRole(tt.role)
+			if tt.wantErr && err == nil {
+				t.Errorf("ValidateCallerRole(%q) = nil, want error", tt.role)
+			}
+			if !tt.wantErr && err != nil {
+				t.Errorf("ValidateCallerRole(%q) = %v, want nil", tt.role, err)
+			}
+		})
+	}
+}
+
+func TestNormalizeCallerRole(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		role string
+		want string
+	}{
+		{"", "cli"},
+		{"orchestrator", "orchestrator"},
+		{"planner", "planner"},
+		{"worker", "worker"},
+		{"cli", "cli"},
+	}
+	for _, tt := range tests {
+		t.Run("role="+tt.role, func(t *testing.T) {
+			t.Parallel()
+			got := NormalizeCallerRole(tt.role)
+			if got != tt.want {
+				t.Errorf("NormalizeCallerRole(%q) = %q, want %q", tt.role, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProcessRequest_InvalidCallerRole(t *testing.T) {
+	server, client, _ := setupTestServer(t)
+
+	server.Handle("ping", func(req *Request) *Response {
+		return SuccessResponse(map[string]string{"role": req.CallerRole})
+	})
+
+	if err := server.Start(); err != nil {
+		t.Fatalf("server start: %v", err)
+	}
+	defer server.Stop()
+
+	// Send request with invalid CallerRole directly (bypassing newRequest validation)
+	req := &Request{
+		ProtocolVersion: ProtocolVersion,
+		Command:         "ping",
+		CallerRole:      "admin",
+	}
+	resp, err := client.send(req)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if resp.Success {
+		t.Error("expected failure for invalid caller role")
+	}
+	if resp.Error == nil {
+		t.Fatal("expected error detail")
+	}
+	if resp.Error.Code != ErrCodeValidation {
+		t.Errorf("expected code %q, got %q", ErrCodeValidation, resp.Error.Code)
+	}
+	if !strings.Contains(resp.Error.Message, "invalid caller role") {
+		t.Errorf("expected invalid caller role in message, got: %q", resp.Error.Message)
+	}
+}
+
+func TestProcessRequest_EmptyCallerRoleNormalized(t *testing.T) {
+	server, client, _ := setupTestServer(t)
+
+	var receivedRole string
+	server.Handle("ping", func(req *Request) *Response {
+		receivedRole = req.CallerRole
+		return SuccessResponse(nil)
+	})
+
+	if err := server.Start(); err != nil {
+		t.Fatalf("server start: %v", err)
+	}
+	defer server.Stop()
+
+	// Send request with empty CallerRole — should be normalized to "cli"
+	req := &Request{
+		ProtocolVersion: ProtocolVersion,
+		Command:         "ping",
+		CallerRole:      "",
+	}
+	resp, err := client.send(req)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if !resp.Success {
+		t.Errorf("expected success, got error: %v", resp.Error)
+	}
+	if receivedRole != RoleCLI {
+		t.Errorf("expected CallerRole to be normalized to %q, got %q", RoleCLI, receivedRole)
+	}
+}
+
+func TestNewRequest_InvalidEnvRole(t *testing.T) {
+	t.Setenv(CallerRoleEnv, "admin")
+	_, err := newRequest("test", nil)
+	if err == nil {
+		t.Fatal("expected error for invalid MAESTRO_AGENT_ROLE")
+	}
+	if !strings.Contains(err.Error(), "invalid caller role") {
+		t.Errorf("expected invalid caller role error, got: %v", err)
+	}
+}
+
+func TestNewRequest_EmptyEnvRoleNormalized(t *testing.T) {
+	t.Setenv(CallerRoleEnv, "")
+	req, err := newRequest("test", nil)
+	if err != nil {
+		t.Fatalf("newRequest: %v", err)
+	}
+	if req.CallerRole != RoleCLI {
+		t.Errorf("expected CallerRole %q, got %q", RoleCLI, req.CallerRole)
+	}
+}
+
 func TestSuccessResponse_MarshalError(t *testing.T) {
 	// channels cannot be JSON marshalled
 	resp := SuccessResponse(make(chan int))

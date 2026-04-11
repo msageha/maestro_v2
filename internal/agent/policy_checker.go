@@ -40,7 +40,7 @@ func (pc *PolicyChecker) WriteHookScript() (string, error) {
 	if resolved, err := filepath.EvalSymlinks(projectRoot); err == nil {
 		projectRoot = resolved
 	}
-	script := strings.ReplaceAll(hookScript, "__PROJECT_ROOT__", projectRoot)
+	script := strings.ReplaceAll(hookScript, "__PROJECT_ROOT__", shellQuote(projectRoot))
 
 	scriptPath := pc.hookScriptPath()
 	if err := os.WriteFile(scriptPath, []byte(script), 0750); err != nil { //nolint:gosec // hook script requires execute permission
@@ -110,6 +110,14 @@ func (pc *PolicyChecker) HookSettings(scriptPath string) (string, error) {
 	return string(b), nil
 }
 
+// shellQuote safely quotes a string for embedding in a shell script.
+// It wraps the string in single quotes, escaping internal single quotes
+// using the standard '\'' technique (end quote, literal quote, start quote).
+// Inside single quotes all shell metacharacters ($, `, ", \, etc.) are literal.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 // hookScript is the shell script content for the PreToolUse policy hook.
 // It reads JSON from stdin, checks for dangerous patterns, and outputs
 // a deny decision if a violation is detected.
@@ -148,7 +156,7 @@ if [ "$tool_name" = "Bash" ]; then
 
   # D002: Recursive delete outside project root
   if echo "$cmd" | grep -qE 'rm\s+(-[a-zA-Z]*[rR]|--recursive)'; then
-    project_root="__PROJECT_ROOT__"
+    project_root=__PROJECT_ROOT__
     set -f
     for word in $cmd; do
       case "$word" in
