@@ -123,7 +123,7 @@ func TestHandlePlan_RecoveryRoleCheck(t *testing.T) {
 			assert.Contains(t, resp.Error.Message, "not permitted")
 			assert.Contains(t, resp.Error.Message, "worker")
 		})
-		for _, role := range []string{"", "cli", "unknown_role"} {
+		for _, role := range []string{"", "cli", "unknown_role", "admin", "root", "operator"} {
 			t.Run("invalid_role_rejected_"+op+"_"+role, func(t *testing.T) {
 				t.Parallel()
 				req := makePlanRequest(t, op, map[string]string{"command_id": "cmd_x"})
@@ -135,7 +135,7 @@ func TestHandlePlan_RecoveryRoleCheck(t *testing.T) {
 				assert.Contains(t, resp.Error.Message, "requires a valid caller role")
 			})
 		}
-		for _, role := range []string{"orchestrator", "planner", "operator"} {
+		for _, role := range []string{"orchestrator", "planner"} {
 			t.Run("valid_role_passes_"+op+"_"+role, func(t *testing.T) {
 				t.Parallel()
 				req := makePlanRequest(t, op, map[string]string{"command_id": "cmd_x"})
@@ -456,4 +456,28 @@ func TestSetPlanExecutor(t *testing.T) {
 	pe := &mockPlanExecutor{}
 	d.SetPlanExecutor(pe)
 	assert.NotNil(t, d.planExecutor)
+}
+
+func TestIsValidCallerRole(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		role string
+		want bool
+	}{
+		{"orchestrator", true},
+		{"planner", true},
+		{"worker", true},
+		{"", false},
+		{"admin", false},
+		{"root", false},
+		{"operator", false},
+		{"ORCHESTRATOR", false},
+		{" worker", false},
+	}
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("role=%q", tt.role), func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, isValidCallerRole(tt.role))
+		})
+	}
 }

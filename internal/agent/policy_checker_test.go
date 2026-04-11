@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -350,5 +351,223 @@ func TestHookScript_D001_BlocksAllFlagOrders(t *testing.T) {
 	}
 	if !strings.Contains(hookScript, `rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR]`) {
 		t.Error("D001: missing pattern for f before r/R (e.g., rm -fr, rm -fR)")
+	}
+}
+
+// requireJq skips the test if jq is not installed.
+func requireJq(t *testing.T) {
+	t.Helper()
+	if _, err := exec.LookPath("jq"); err != nil {
+		t.Skip("jq not installed, skipping functional hook test")
+	}
+}
+
+// runHookScript executes the hook script with the given JSON input and returns stdout.
+func runHookScript(t *testing.T, scriptPath, inputJSON string) string {
+	t.Helper()
+	cmd := exec.Command("bash", scriptPath)
+	cmd.Stdin = strings.NewReader(inputJSON)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("hook script failed: %v, output: %s", err, out)
+	}
+	return string(out)
+}
+
+// --- S1: D002 Recursive delete outside project root ---
+
+func TestHookScript_S1_D002_DeniesRecursiveDeleteOutsideProject(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	input := `{"tool_name":"Bash","tool_input":{"command":"rm -rf /home/user"}}`
+	output := runHookScript(t, scriptPath, input)
+	if !strings.Contains(output, "D002") || !strings.Contains(output, "deny") {
+		t.Errorf("expected D002 deny for rm -rf /home/user, got: %s", output)
+	}
+}
+
+func TestHookScript_S1_D002_AllowsRecursiveDeleteInsideProject(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	maestroDir := filepath.Join(dir, ".maestro")
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// Create a subdirectory inside the project so realpath can resolve it
+	subdir := filepath.Join(dir, "build", "tmp")
+	if err := os.MkdirAll(subdir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	input := `{"tool_name":"Bash","tool_input":{"command":"rm -rf ` + subdir + `"}}`
+	output := runHookScript(t, scriptPath, input)
+	if strings.Contains(output, "deny") {
+		t.Errorf("should allow rm -rf inside project, got: %s", output)
+	}
+}
+
+func TestHookScript_S1_D002_DeniesRecursiveDeleteWithDoubleDash(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	input := `{"tool_name":"Bash","tool_input":{"command":"rm --recursive /tmp/outside"}}`
+	output := runHookScript(t, scriptPath, input)
+	if !strings.Contains(output, "D002") || !strings.Contains(output, "deny") {
+		t.Errorf("expected D002 deny for rm --recursive /tmp/outside, got: %s", output)
+	}
+}
+
+func TestHookScript_S1_D002_ContainsPattern(t *testing.T) {
+	if !strings.Contains(hookScript, "D002") {
+		t.Error("hook script should contain D002 check")
+	}
+	if !strings.Contains(hookScript, "__PROJECT_ROOT__") {
+		t.Error("hook script template should contain __PROJECT_ROOT__ placeholder")
+	}
+}
+
+// --- S2: Relative path .maestro/ blocking ---
+
+func TestHookScript_S2_DeniesRelativePathMaestroWrite(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	input := `{"tool_name":"Write","tool_input":{"file_path":".maestro/config.yaml","content":"test"}}`
+	output := runHookScript(t, scriptPath, input)
+	if !strings.Contains(output, "deny") {
+		t.Errorf("expected deny for relative .maestro/config.yaml, got: %s", output)
+	}
+}
+
+func TestHookScript_S2_DeniesRelativePathMaestroState(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	input := `{"tool_name":"Edit","tool_input":{"file_path":".maestro/state/tasks.yaml","old_string":"a","new_string":"b"}}`
+	output := runHookScript(t, scriptPath, input)
+	if !strings.Contains(output, "deny") {
+		t.Errorf("expected deny for relative .maestro/state/tasks.yaml, got: %s", output)
+	}
+}
+
+func TestHookScript_S2_AllowsLegitimateFilePath(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	input := `{"tool_name":"Write","tool_input":{"file_path":"internal/service/user.go","content":"package service"}}`
+	output := runHookScript(t, scriptPath, input)
+	if strings.Contains(output, "deny") {
+		t.Errorf("should allow write to legitimate file, got: %s", output)
+	}
+}
+
+func TestHookScript_S2_ContainsRelativePatterns(t *testing.T) {
+	// Verify the script has both absolute and relative .maestro/ patterns
+	if !strings.Contains(hookScript, ".maestro/config.yaml)") {
+		t.Error("hook script should contain relative .maestro/config.yaml pattern")
+	}
+	if !strings.Contains(hookScript, "control-plane path (relative)") {
+		t.Error("hook script should contain relative path deny message")
+	}
+}
+
+// --- S3: jq unavailable fallback ---
+
+func TestHookScript_S3_DeniesWhenJqUnavailable(t *testing.T) {
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// Run with PATH pointing to an empty directory (no jq available)
+	emptyDir := t.TempDir()
+	cmd := exec.Command("bash", scriptPath)
+	cmd.Env = []string{"PATH=" + emptyDir, "HOME=" + os.Getenv("HOME")}
+	cmd.Stdin = strings.NewReader(`{"tool_name":"Bash","tool_input":{"command":"echo hello"}}`)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("script execution failed: %v, output: %s", err, out)
+	}
+	if !strings.Contains(string(out), "deny") || !strings.Contains(string(out), "jq") {
+		t.Errorf("expected deny with jq mention when jq unavailable, got: %s", out)
+	}
+}
+
+func TestHookScript_S3_AllowsWhenJqAvailable(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// Safe command should be allowed when jq is available
+	input := `{"tool_name":"Bash","tool_input":{"command":"echo hello"}}`
+	output := runHookScript(t, scriptPath, input)
+	if strings.Contains(output, "deny") {
+		t.Errorf("should allow safe command when jq available, got: %s", output)
+	}
+}
+
+func TestHookScript_S3_ContainsJqCheck(t *testing.T) {
+	if !strings.Contains(hookScript, "command -v jq") {
+		t.Error("hook script should contain jq availability check")
+	}
+	if !strings.Contains(hookScript, "jq but it is not installed") {
+		t.Error("hook script should contain jq unavailable deny message")
+	}
+}
+
+func TestHookScript_WriteHookScript_EmbedsProjectRoot(t *testing.T) {
+	dir := t.TempDir()
+	maestroDir := filepath.Join(dir, ".maestro")
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	content, err := os.ReadFile(scriptPath)
+	if err != nil {
+		t.Fatalf("read script: %v", err)
+	}
+	// The written script should have PROJECT_ROOT replaced with actual dir
+	if strings.Contains(string(content), "__PROJECT_ROOT__") {
+		t.Error("written script should not contain __PROJECT_ROOT__ placeholder")
+	}
+	if !strings.Contains(string(content), dir) {
+		t.Errorf("written script should contain project root %q", dir)
 	}
 }
