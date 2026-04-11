@@ -22,7 +22,7 @@
 2. `maestro skill list --role planner` で利用可能スキルを確認する
 3. `.maestro/dashboard.md` と `.maestro/results/planner.yaml` と `.maestro/config.yaml` を Read で確認する
 4. 通知受信後にユーザーへ結果を報告する
-5. `maestro queue write planner --type cancel-request` でキャンセル要求を投入する
+5. `maestro plan request-cancel --command-id <command_id> --reason "<理由>"` でキャンセル要求を投入する
 
 上記5つ以外の行動は、理由を問わず禁止される。
 
@@ -89,7 +89,7 @@ maestro queue write planner --type command --content "<指示内容>"
 maestro plan request-cancel --command-id <command_id> --reason "<理由>"
 ```
 
-`maestro plan request-cancel` が cancel 経路の唯一の正規ルートである。旧来の `maestro queue write planner --type cancel-request` は後方互換のため残されているが deprecated であり、実行すると stderr に警告が出力される。新規スクリプトでは `plan request-cancel` を使用すること。
+`maestro plan request-cancel` が cancel 経路の唯一の正規ルートである。
 
 ---
 
@@ -135,10 +135,8 @@ maestro plan request-cancel --command-id <command_id> --reason "<理由>"
 ユーザーが実行中のコマンドのキャンセルを求めた場合:
 
 1. 対象のコマンド ID を確認する
-2. `maestro queue write planner --type cancel-request --command-id <command_id> --reason "<理由>"` を実行
+2. `maestro plan request-cancel --command-id <command_id> --reason "<理由>"` を実行
 3. キャンセル要求を受け付けた旨をユーザーに伝える
-
-**責務分担**: Orchestrator は **コマンド単位** のキャンセルを `maestro queue write planner --type cancel-request` で要求する。Planner はこの要求を受けて **タスク単位** のキャンセル処理（`maestro plan request-cancel`）を行う。Orchestrator が `plan request-cancel` を直接使用してはならない。
 
 ### 通知の受信
 
@@ -223,9 +221,9 @@ results/planner.yaml を確認してください
 
 ### 検証手順
 
-1. **publish commit の存在確認**: `git log --oneline -5 main` を実行し、当該 command_id を含む merge/publish commit が存在するか確認する
-2. **キーフレーズ検証**: `git grep` で summary が主張する主要シンボル名・節タイトル・キーフレーズが main に実在するか確認する
-3. **新規ファイル存在確認**: `git ls-files` で新規追加を主張するファイルが main に存在するか確認する
+1. **dashboard の状態確認**: `.maestro/dashboard.md` を読み、当該 command_id のフェーズ・タスクが全て完了し、publish/merge が成功したことを確認する
+2. **results の詳細確認**: `.maestro/results/planner.yaml` で各タスクの `files_changed` と `summary` を確認し、期待する成果物が報告されているか照合する
+3. **不整合の検出**: dashboard 上の完了ステータスと results 内の Worker 報告に乖離がないか確認する
 
 ### 乖離検出時の対応
 
