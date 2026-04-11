@@ -16,7 +16,7 @@ import (
 func runStatus(args []string) error {
 	cmd := NewCommand("maestro status", "maestro status [--json]")
 	var jsonOutput bool
-	cmd.BoolVar(&jsonOutput, "json", false, "")
+	cmd.BoolVar(&jsonOutput, "json", false, "Output status in JSON format")
 	if err := cmd.Parse(args); err != nil {
 		return err
 	}

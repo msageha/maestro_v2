@@ -24,8 +24,8 @@ const (
 //
 // Returns terminateNotTarget if sameProcess returns false at any check point.
 // Returns an error only if the process survives SIGKILL.
-func terminateProcess(pid int, sameProcess func(int) bool, termTimeout time.Duration) (terminateResult, error) {
-	if !processAlive(pid) {
+func (c *Config) terminateProcess(pid int, sameProcess func(int) bool, termTimeout time.Duration) (terminateResult, error) {
+	if !c.ProcMgr.Alive(pid) {
 		return terminateStopped, nil
 	}
 
@@ -33,28 +33,32 @@ func terminateProcess(pid int, sameProcess func(int) bool, termTimeout time.Dura
 	if !sameProcess(pid) {
 		return terminateNotTarget, nil
 	}
-	_ = procMgr().Signal(pid, syscall.SIGTERM)
+	_ = c.ProcMgr.Signal(pid, syscall.SIGTERM)
 
 	// Poll for exit
 	termDeadline := time.Now().Add(termTimeout)
 	for time.Now().Before(termDeadline) {
-		if !processAlive(pid) {
+		if !c.ProcMgr.Alive(pid) {
 			return terminateStopped, nil
 		}
-		time.Sleep(processExitPollInterval())
+		time.Sleep(c.ProcessExitPollInterval)
 	}
 
 	// Verify identity before SIGKILL
 	if !sameProcess(pid) {
 		return terminateNotTarget, nil
 	}
-	if processAlive(pid) {
-		_ = procMgr().Signal(pid, syscall.SIGKILL)
-		time.Sleep(postSignalWait())
+	if c.ProcMgr.Alive(pid) {
+		_ = c.ProcMgr.Signal(pid, syscall.SIGKILL)
+		time.Sleep(c.PostSignalWait)
 	}
 
-	if processAlive(pid) {
+	if c.ProcMgr.Alive(pid) {
 		return terminateStopped, fmt.Errorf("process pid=%d still alive after SIGKILL", pid)
 	}
 	return terminateStopped, nil
+}
+
+func terminateProcess(pid int, sameProcess func(int) bool, termTimeout time.Duration) (terminateResult, error) {
+	return defaultConfig.terminateProcess(pid, sameProcess, termTimeout)
 }

@@ -743,18 +743,18 @@ func TestReconciler_R6_DeadlineParseError(t *testing.T) {
 }
 
 // TestReconciler_R6_DeadlineExactlyNow verifies R6 at the exact boundary.
-// The R6 check is: time.Now().UTC().Before(deadline) → continue (skip).
+// The R6 check is: clock.Now().UTC().Before(deadline) → continue (skip).
 // When deadline == now, Before returns false → R6 triggers.
-// We use time.Now() as the deadline itself to test this boundary precisely.
+// Uses a fake clock to avoid time.Sleep and flakiness.
 func TestReconciler_R6_DeadlineExactlyNow(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
-	now := time.Now().UTC().Format(time.RFC3339)
-	// Deadline is exactly now (truncated to seconds by RFC3339).
-	// time.Now().Before(deadline) will be false (now is not before itself) → R6 triggers.
-	deadlineNow := time.Now().UTC().Truncate(time.Second).Format(time.RFC3339)
+	// Set deadline to a fixed point in time
+	baseTime := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	deadlineStr := baseTime.Format(time.RFC3339)
+	nowStr := baseTime.Format(time.RFC3339)
 
 	stateDir := filepath.Join(maestroDir, "state", "commands")
 	os.MkdirAll(stateDir, 0755)
@@ -766,17 +766,17 @@ func TestReconciler_R6_DeadlineExactlyNow(t *testing.T) {
 			{
 				PhaseID: "p1", Name: "phase1",
 				Status:         model.PhaseStatusAwaitingFill,
-				FillDeadlineAt: &deadlineNow,
+				FillDeadlineAt: &deadlineStr,
 			},
 		},
-		CreatedAt: now, UpdatedAt: now,
+		CreatedAt: nowStr, UpdatedAt: nowStr,
 	}
 	if err := yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r6_now.yaml"), state); err != nil {
 		t.Fatalf("write command state: %v", err)
 	}
 
-	// Small sleep to ensure time.Now() is after the deadline (RFC3339 has second precision)
-	time.Sleep(1100 * time.Millisecond)
+	// Inject a fake clock that returns a time 2 seconds after the deadline
+	rec.SetClock(&testClock{now: baseTime.Add(2 * time.Second)})
 
 	repairs, _ := rec.Reconcile()
 	r6 := filterRepairs(repairs, reconcile.PatternR6)
@@ -784,6 +784,13 @@ func TestReconciler_R6_DeadlineExactlyNow(t *testing.T) {
 		t.Fatalf("expected 1 R6 repair for deadline at exact boundary, got %d", len(r6))
 	}
 }
+
+// testClock implements core.Clock for deterministic testing.
+type testClock struct {
+	now time.Time
+}
+
+func (tc *testClock) Now() time.Time { return tc.now }
 
 // =============================================================================
 // DeferredNotification Content Verification

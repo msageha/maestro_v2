@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 )
 
 // CommandBuilder provides common FlagSet creation, parsing, and validation
@@ -83,8 +86,12 @@ func (b *CommandBuilder) AddCheck(message string, test func() bool) {
 
 // Parse parses args, rejects unexpected positional args, and runs all
 // registered validation checks. Returns a CLIError on failure.
+// When -h or --help is passed, flag descriptions are included in the output.
 func (b *CommandBuilder) Parse(args []string) error {
 	if err := b.fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return b.helpMessage()
+		}
 		return b.withUsage(fmt.Sprintf("%v", err))
 	}
 	if b.fs.NArg() > 0 {
@@ -97,6 +104,9 @@ func (b *CommandBuilder) Parse(args []string) error {
 // Use NArg/Arg to inspect remaining positional args after calling this.
 func (b *CommandBuilder) ParsePositional(args []string) error {
 	if err := b.fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return b.helpMessage()
+		}
 		return b.withUsage(fmt.Sprintf("%v", err))
 	}
 	return nil
@@ -134,4 +144,18 @@ func (b *CommandBuilder) validate() error {
 
 func (b *CommandBuilder) withUsage(msg string) error {
 	return &CLIError{Code: 1, Msg: fmt.Sprintf("%s: %s\n%s", b.name, msg, b.usage)}
+}
+
+// helpMessage builds a help output with the usage string and flag descriptions.
+func (b *CommandBuilder) helpMessage() error {
+	var buf bytes.Buffer
+	b.fs.SetOutput(&buf)
+	b.fs.PrintDefaults()
+	b.fs.SetOutput(io.Discard)
+
+	msg := b.usage
+	if buf.Len() > 0 {
+		msg += "\n\nFlags:\n" + buf.String()
+	}
+	return &CLIError{Code: 1, Msg: msg}
 }

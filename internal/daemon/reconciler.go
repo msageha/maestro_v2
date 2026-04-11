@@ -68,6 +68,11 @@ func (r *Reconciler) SetCanComplete(f CanCompleteFunc) {
 	r.engine.SetCanComplete(f)
 }
 
+// SetClock replaces the clock used by reconciliation patterns (for testing).
+func (r *Reconciler) SetClock(c core.Clock) {
+	r.engine.SetClock(c)
+}
+
 // Reconcile runs all reconciliation patterns and returns repairs and deferred notifications.
 func (r *Reconciler) Reconcile() ([]ReconcileRepair, []DeferredNotification) {
 	return r.engine.Reconcile()

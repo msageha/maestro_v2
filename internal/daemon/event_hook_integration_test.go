@@ -36,12 +36,17 @@ func TestEventHookIntegration(t *testing.T) {
 	taskStartedEvents := []events.Event{}
 	taskCompletedEvents := []events.Event{}
 	phaseTransitionEvents := []events.Event{}
+	taskStartedCh := make(chan struct{}, 10)
 
 	// Subscribe to all event types
 	unsub1 := bus.Subscribe(events.EventTaskStarted, func(e events.Event) {
 		mu.Lock()
 		taskStartedEvents = append(taskStartedEvents, e)
 		mu.Unlock()
+		select {
+		case taskStartedCh <- struct{}{}:
+		default:
+		}
 	})
 	defer unsub1()
 
@@ -94,8 +99,12 @@ func TestEventHookIntegration(t *testing.T) {
 			t.Fatalf("DispatchTask failed: %v", err)
 		}
 
-		// Wait for async event delivery
-		time.Sleep(50 * time.Millisecond)
+		// Wait for async event delivery via channel
+		select {
+		case <-taskStartedCh:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for task_started event")
+		}
 
 		mu.Lock()
 		count := len(taskStartedEvents)

@@ -43,12 +43,17 @@ func TestResultCache_GetMiss(t *testing.T) {
 }
 
 func TestResultCache_TTLExpiry(t *testing.T) {
+	now := time.Now()
 	c := newResultCache(10, 10*time.Millisecond)
+	c.nowFunc = func() time.Time { return now }
+
 	key := &cacheKey{GateID: "g1", GateVersionHash: "v1", ContextFingerprint: "c1"}
 	val := &EvaluationResult{GateID: "g1", Passed: true}
 
 	c.Set(key, val)
-	time.Sleep(20 * time.Millisecond)
+
+	// Advance time past TTL
+	now = now.Add(20 * time.Millisecond)
 
 	got := c.Get(key)
 	if got != nil {
@@ -112,7 +117,10 @@ func TestResultCache_Clear(t *testing.T) {
 }
 
 func TestResultCache_Stats(t *testing.T) {
+	now := time.Now()
 	c := newResultCache(10, 10*time.Millisecond)
+	c.nowFunc = func() time.Time { return now }
+
 	key1 := &cacheKey{GateID: "g1", GateVersionHash: "v1", ContextFingerprint: "c1"}
 	key2 := &cacheKey{GateID: "g2", GateVersionHash: "v2", ContextFingerprint: "c2"}
 
@@ -130,7 +138,9 @@ func TestResultCache_Stats(t *testing.T) {
 		t.Errorf("Stats.Expired = %d, want 0 (items not yet expired)", stats.Expired)
 	}
 
-	time.Sleep(20 * time.Millisecond)
+	// Advance time past TTL
+	now = now.Add(20 * time.Millisecond)
+
 	stats = c.Stats()
 	if stats.Expired != 2 {
 		t.Errorf("Stats.Expired = %d, want 2 (items should be expired)", stats.Expired)
