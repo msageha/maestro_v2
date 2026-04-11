@@ -217,6 +217,6 @@ func (h *TaskHeartbeatHandler) acquireFileLock(file string) func() {
 	return func() { h.lockMap.Unlock(key) }
 }
 
-func (h *TaskHeartbeatHandler) log(level LogLevel, format string, args ...interface{}) {
+func (h *TaskHeartbeatHandler) log(level LogLevel, format string, args ...any) {
 	h.dl.Logf(level, format, args...)
 }
