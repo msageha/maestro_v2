@@ -80,7 +80,7 @@ const (
 	DefaultStallCleanupAfter           = 10 * time.Minute
 
 	// CommitPolicyConfig
-	DefaultCommitMaxFiles = 30
+	DefaultCommitMaxFiles = 60
 
 	// WorktreeGCConfig
 	DefaultGCTTLHours     = 24
@@ -508,10 +508,10 @@ func (w WorktreeConfig) EffectiveFallbackMergeTimeoutMinutes() int    { return e
 
 // CommitPolicyConfig enforces safety checks before committing worker changes.
 // Zero-valued config means no enforcement. Set fields explicitly via config.yaml
-// to enable checks. Recommended template values: MaxFiles=30, RequireGitignore=true,
+// to enable checks. Recommended template values: MaxFiles=60, RequireGitignore=true,
 // MessagePattern="^.+" (non-empty message).
 type CommitPolicyConfig struct {
-	MaxFiles         *int   `yaml:"max_files"`         // max staged files per commit; nil=default(30), 0=unlimited
+	MaxFiles         *int   `yaml:"max_files"`         // max staged files per commit; nil=default(60), 0=unlimited
 	RequireGitignore bool   `yaml:"require_gitignore"` // require .gitignore existence
 	MessagePattern   string `yaml:"message_pattern"`   // regex for commit message validation; empty=no check
 }
