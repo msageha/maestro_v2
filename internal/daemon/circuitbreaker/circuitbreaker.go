@@ -12,19 +12,19 @@ import (
 
 // Handler evaluates circuit breaker conditions for commands.
 type Handler struct {
-	config      model.Config
-	dl          *core.DaemonLogger
-	logger      *log.Logger
-	logLevel    core.LogLevel
-	clock       core.Clock
+	core.LogMixin
+	config       model.Config
+	logger       *log.Logger
+	logLevel     core.LogLevel
+	clock        core.Clock
 	stateManager core.StateManager
 }
 
 // NewHandler creates a new Handler.
 func NewHandler(cfg model.Config, logger *log.Logger, logLevel core.LogLevel) *Handler {
 	return &Handler{
+		LogMixin: core.LogMixin{DL: core.NewDaemonLoggerFromLegacy("circuit_breaker", logger, logLevel)},
 		config:   cfg,
-		dl:       core.NewDaemonLoggerFromLegacy("circuit_breaker", logger, logLevel),
 		logger:   logger,
 		logLevel: logLevel,
 		clock:    core.RealClock{},
@@ -74,7 +74,7 @@ func (cb *Handler) UpdateCounterOnResult(
 
 	case model.StatusFailed:
 		state.CircuitBreaker.ConsecutiveFailures++
-		cb.log(core.LogLevelInfo, "circuit_breaker_counter command=%s consecutive_failures=%d",
+		cb.Log(core.LogLevelInfo, "circuit_breaker_counter command=%s consecutive_failures=%d",
 			state.CommandID, state.CircuitBreaker.ConsecutiveFailures)
 
 		threshold := cb.config.CircuitBreaker.EffectiveMaxConsecutiveFailures()
@@ -111,7 +111,7 @@ func (cb *Handler) TripBreaker(state *model.CommandState, reason string, now tim
 		state.Cancel.Reason = &reason
 	}
 
-	cb.log(core.LogLevelWarn, "circuit_breaker_tripped command=%s reason=%s", state.CommandID, reason)
+	cb.Log(core.LogLevelWarn, "circuit_breaker_tripped command=%s reason=%s", state.CommandID, reason)
 }
 
 // CheckProgressTimeout checks if the progress timeout has been exceeded for a command.
@@ -131,7 +131,7 @@ func (cb *Handler) CheckProgressTimeout(commandID string) (bool, string) {
 
 	cbState, err := cb.stateManager.GetCircuitBreakerState(commandID)
 	if err != nil {
-		cb.log(core.LogLevelWarn, "circuit_breaker_state_read command=%s error=%v", commandID, err)
+		cb.Log(core.LogLevelWarn, "circuit_breaker_state_read command=%s error=%v", commandID, err)
 		return false, ""
 	}
 
@@ -145,7 +145,7 @@ func (cb *Handler) CheckProgressTimeout(commandID string) (bool, string) {
 
 	lastProgress, err := time.Parse(time.RFC3339, *cbState.LastProgressAt)
 	if err != nil {
-		cb.log(core.LogLevelWarn, "circuit_breaker_parse_time command=%s error=%v", commandID, err)
+		cb.Log(core.LogLevelWarn, "circuit_breaker_parse_time command=%s error=%v", commandID, err)
 		return false, ""
 	}
 
@@ -174,6 +174,3 @@ func (cb *Handler) StateManager() core.StateManager {
 	return cb.stateManager
 }
 
-func (cb *Handler) log(level core.LogLevel, format string, args ...any) {
-	cb.dl.Logf(level, format, args...)
-}

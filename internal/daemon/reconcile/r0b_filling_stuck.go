@@ -46,7 +46,7 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 			state, err := run.loadState(statePath)
 			if err != nil {
 				if !os.IsNotExist(err) {
-					run.log(core.LogLevelError, "R0b load_state_corrupted command=%s file=%s error=%v", commandID, entry.Name(), err)
+					run.Log(core.LogLevelError, "R0b load_state_corrupted command=%s file=%s error=%v", commandID, entry.Name(), err)
 				}
 				return false
 			}
@@ -77,7 +77,7 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 					continue
 				}
 
-				run.log(core.LogLevelWarn, "R0b filling_stuck command=%s phase=%s age_sec=%.0f",
+				run.Log(core.LogLevelWarn, "R0b filling_stuck command=%s phase=%s age_sec=%.0f",
 					state.CommandID, phase.Name, ageSec)
 
 				taskIDsToRemove = append(taskIDsToRemove, phase.TaskIDs...)
@@ -106,7 +106,7 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 				state.LastReconciledAt = &now
 				state.UpdatedAt = now
 				if err := yamlutil.AtomicWrite(statePath, state); err != nil {
-					run.log(core.LogLevelError, "R0b write_state command=%s error=%v", state.CommandID, err)
+					run.Log(core.LogLevelError, "R0b write_state command=%s error=%v", state.CommandID, err)
 					return false
 				}
 				repairs = append(repairs, localRepairs...)

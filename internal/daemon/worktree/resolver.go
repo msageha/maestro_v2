@@ -179,11 +179,11 @@ func (wm *Manager) DispatchConflictResolution(commandID, phaseID, workerID, conf
 			sig.UpdatedAt = wm.clock.Now().UTC().Format(time.RFC3339)
 			return nil
 		}); revErr != nil {
-			wm.log(core.LogLevelError, "signal_revert_after_save_failed command=%s worker=%s err=%v", commandID, workerID, revErr)
+			wm.Log(core.LogLevelError, "signal_revert_after_save_failed command=%s worker=%s err=%v", commandID, workerID, revErr)
 		}
 		return fmt.Errorf("save state: %w", err)
 	}
-	wm.log(core.LogLevelInfo, "conflict_resolution_dispatched command=%s phase=%s worker=%s", commandID, phaseID, workerID)
+	wm.Log(core.LogLevelInfo, "conflict_resolution_dispatched command=%s phase=%s worker=%s", commandID, phaseID, workerID)
 	return nil
 }
 
@@ -232,7 +232,7 @@ func (wm *Manager) DiscardResolverEdits(commandID, workerID string) error {
 	if err := wm.resolverGitRunInDir(intPath, "clean", "-fd"); err != nil {
 		return fmt.Errorf("clean: %w", err)
 	}
-	wm.log(core.LogLevelInfo, "resolver_edits_discarded command=%s worker=%s", commandID, workerID)
+	wm.Log(core.LogLevelInfo, "resolver_edits_discarded command=%s worker=%s", commandID, workerID)
 	return nil
 }
 

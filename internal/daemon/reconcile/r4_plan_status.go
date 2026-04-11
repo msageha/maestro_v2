@@ -48,7 +48,7 @@ func (R4PlanStatus) Apply(run *Run) Outcome {
 			state, err := run.loadState(statePath)
 			if err != nil {
 				if !os.IsNotExist(err) {
-					run.log(core.LogLevelError, "R4 load_state_corrupted command=%s error=%v", commandID, err)
+					run.Log(core.LogLevelError, "R4 load_state_corrupted command=%s error=%v", commandID, err)
 				}
 				return r4Outcome{}
 			}
@@ -61,17 +61,17 @@ func (R4PlanStatus) Apply(run *Run) Outcome {
 				return r4Outcome{}
 			}
 
-			run.log(core.LogLevelWarn, "R4 result_terminal_state_nonterminal command=%s result_status=%s plan_status=%s",
+			run.Log(core.LogLevelWarn, "R4 result_terminal_state_nonterminal command=%s result_status=%s plan_status=%s",
 				commandID, result.Status, state.PlanStatus)
 
 			if run.Deps.CanComplete == nil {
-				run.log(core.LogLevelWarn, "R4 skipped command=%s (canComplete not wired)", commandID)
+				run.Log(core.LogLevelWarn, "R4 skipped command=%s (canComplete not wired)", commandID)
 				return r4Outcome{}
 			}
 
 			derivedStatus, canCompleteErr := run.Deps.CanComplete(state)
 			if canCompleteErr != nil {
-				run.log(core.LogLevelWarn, "R4 can_complete_failed command=%s error=%v → quarantine result + notify planner",
+				run.Log(core.LogLevelWarn, "R4 can_complete_failed command=%s error=%v → quarantine result + notify planner",
 					commandID, canCompleteErr)
 				return r4Outcome{
 					quarantine: true,
@@ -93,7 +93,7 @@ func (R4PlanStatus) Apply(run *Run) Outcome {
 			state.LastReconciledAt = &now
 			state.UpdatedAt = now
 			if err := yamlutil.AtomicWrite(statePath, state); err != nil {
-				run.log(core.LogLevelError, "R4 write_state command=%s error=%v", commandID, err)
+				run.Log(core.LogLevelError, "R4 write_state command=%s error=%v", commandID, err)
 				return r4Outcome{}
 			}
 
@@ -108,7 +108,7 @@ func (R4PlanStatus) Apply(run *Run) Outcome {
 
 		if outcome.quarantine {
 			if err := run.quarantineCommandResult(resultPath, result); err != nil {
-				run.log(core.LogLevelError, "R4 quarantine command=%s error=%v", commandID, err)
+				run.Log(core.LogLevelError, "R4 quarantine command=%s error=%v", commandID, err)
 			}
 		}
 		if outcome.repair != nil {

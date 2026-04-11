@@ -56,7 +56,7 @@ func (wm *Manager) loadStateUnlocked(commandID string) (*model.WorktreeCommandSt
 // setWorkerStatus validates and applies a status transition for a worker.
 func (wm *Manager) setWorkerStatus(ws *model.WorktreeState, newStatus model.WorktreeStatus, now string) error {
 	if err := model.ValidateWorktreeTransition(ws.Status, newStatus); err != nil {
-		wm.log(core.LogLevelError, "invalid_worktree_transition worker=%s from=%s to=%s error=%v",
+		wm.Log(core.LogLevelError, "invalid_worktree_transition worker=%s from=%s to=%s error=%v",
 			ws.WorkerID, ws.Status, newStatus, err)
 		return fmt.Errorf("worker %s: %w", ws.WorkerID, err)
 	}
@@ -68,7 +68,7 @@ func (wm *Manager) setWorkerStatus(ws *model.WorktreeState, newStatus model.Work
 // setIntegrationStatus validates and applies a status transition for the integration branch.
 func (wm *Manager) setIntegrationStatus(state *model.WorktreeCommandState, newStatus model.IntegrationStatus, now string) error {
 	if err := model.ValidateIntegrationTransition(state.Integration.Status, newStatus); err != nil {
-		wm.log(core.LogLevelError, "invalid_integration_transition command=%s from=%s to=%s error=%v",
+		wm.Log(core.LogLevelError, "invalid_integration_transition command=%s from=%s to=%s error=%v",
 			state.CommandID, state.Integration.Status, newStatus, err)
 		return fmt.Errorf("integration %s: %w", state.CommandID, err)
 	}
