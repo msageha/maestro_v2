@@ -73,6 +73,45 @@ func TestClassifyGitError(t *testing.T) {
 			want: gitErrorPermanent,
 		},
 
+		// New transient patterns: git process lock
+		{
+			name: "another git process running",
+			err:  errors.New("Another git process seems to be running in this repository"),
+			want: gitErrorTransient,
+		},
+		// New transient patterns: network errors
+		{
+			name: "connection refused",
+			err:  errors.New("fatal: unable to access 'https://github.com/...': Connection refused"),
+			want: gitErrorTransient,
+		},
+		{
+			name: "could not resolve host",
+			err:  errors.New("fatal: unable to access 'https://github.com/...': Could not resolve host: github.com"),
+			want: gitErrorTransient,
+		},
+		{
+			name: "connection timed out is transient",
+			err:  errors.New("fatal: unable to access 'https://github.com/...': Connection timed out"),
+			want: gitErrorTransient,
+		},
+		{
+			name: "connection reset by peer",
+			err:  errors.New("fatal: the remote end hung up unexpectedly: Connection reset by peer"),
+			want: gitErrorTransient,
+		},
+		// New transient patterns: resource errors
+		{
+			name: "cannot allocate memory",
+			err:  errors.New("fatal: cannot allocate memory"),
+			want: gitErrorTransient,
+		},
+		{
+			name: "no space left on device",
+			err:  errors.New("error: No space left on device"),
+			want: gitErrorTransient,
+		},
+
 		// Unknown errors default to Permanent
 		{
 			name: "unknown error",

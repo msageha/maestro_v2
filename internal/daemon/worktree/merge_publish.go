@@ -66,6 +66,14 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 
 	integrationPath := wm.integrationWorktreePath(commandID)
 
+	// Tripwire: refuse to run destructive git ops outside the project root.
+	// MergeToIntegration's recovery paths may invoke reset --hard + clean -fd
+	// on the integration worktree, so verify containment upfront.
+	if err := ensureWithinProjectRoot(wm.projectRoot, integrationPath); err != nil {
+		wm.Log(core.LogLevelError, "merge_integration_path_guard command=%s error=%v", commandID, err)
+		return nil, fmt.Errorf("merge to integration refused: %w", err)
+	}
+
 	// Guard: ensure integration worktree is clean before merging.
 	// A dirty worktree (e.g., from incomplete merge abort) would cause unpredictable merge results.
 	// Persist IntegrationStatusFailed to prevent stale "merged" status from triggering publish.
