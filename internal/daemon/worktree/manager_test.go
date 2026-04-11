@@ -2610,3 +2610,229 @@ func TestEnsureWorkerWorktree_RollbackFailurePropagation(t *testing.T) {
 		t.Errorf("expected at least 1 worker, got %d", len(state.Workers))
 	}
 }
+
+// TestPublishToBase_ResetFailRollsBackRef verifies that when working tree sync
+// (reset --hard) fails after update-ref, the ref is CAS-rolled back to the
+// original baseSHA so the branch pointer doesn't advance without a matching
+// working tree.
+func TestPublishToBase_ResetFailRollsBackRef(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	currentBranch := "main"
+	wm.config.BaseBranch = currentBranch
+
+	// Record the base SHA before any changes.
+	cmd := exec.Command("git", "rev-parse", currentBranch)
+	cmd.Dir = projectRoot
+	baseSHAOut, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("get base SHA: %v", err)
+	}
+	baseSHA := strings.TrimSpace(string(baseSHAOut))
+
+	workers := []string{"worker1"}
+	if err := createForCommand(wm, "cmd_reset_fail", workers); err != nil {
+		t.Fatal(err)
+	}
+
+	wt1, err := wm.GetWorkerPath("cmd_reset_fail", "worker1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt1, "reset_test.txt"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges("cmd_reset_fail", "worker1", "add reset_test.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wm.MergeToIntegration("cmd_reset_fail", workers, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Inject a reset failure hook.
+	wm.testPublishResetHook = func() error {
+		return fmt.Errorf("simulated reset --hard failure")
+	}
+
+	// PublishToBase should return an error about the sync failure.
+	pubErr := wm.PublishToBase("cmd_reset_fail", "")
+	if pubErr == nil {
+		t.Fatal("expected PublishToBase to fail when reset --hard fails")
+	}
+	if !strings.Contains(pubErr.Error(), "working tree sync failed") {
+		t.Errorf("unexpected error message: %v", pubErr)
+	}
+	if !strings.Contains(pubErr.Error(), "ref rolled back") {
+		t.Errorf("expected 'ref rolled back' in error, got: %v", pubErr)
+	}
+
+	// Verify the branch ref has been restored to the original baseSHA.
+	cmd = exec.Command("git", "rev-parse", currentBranch)
+	cmd.Dir = projectRoot
+	afterSHAOut, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("rev-parse after publish: %v", err)
+	}
+	afterSHA := strings.TrimSpace(string(afterSHAOut))
+	if afterSHA != baseSHA {
+		t.Errorf("branch ref should be rolled back to %s, got %s", baseSHA, afterSHA)
+	}
+}
+
+// TestPublishToBase_ResetFailRollbackFailJoinsErrors verifies that when both
+// reset --hard and the CAS rollback of update-ref fail, both errors are
+// combined via errors.Join in the returned error.
+func TestPublishToBase_ResetFailRollbackFailJoinsErrors(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	currentBranch := "main"
+	wm.config.BaseBranch = currentBranch
+
+	workers := []string{"worker1"}
+	if err := createForCommand(wm, "cmd_double_fail", workers); err != nil {
+		t.Fatal(err)
+	}
+
+	wt1, err := wm.GetWorkerPath("cmd_double_fail", "worker1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt1, "double_fail.txt"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges("cmd_double_fail", "worker1", "add double_fail.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wm.MergeToIntegration("cmd_double_fail", workers, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a third commit so we can move the branch away from mergeSHA,
+	// causing the CAS rollback to fail.
+	thirdFile := filepath.Join(projectRoot, "third.txt")
+	if err := os.WriteFile(thirdFile, []byte("third"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"git", "add", "third.txt"},
+		{"git", "commit", "-m", "third commit"},
+	} {
+		c := exec.Command(args[0], args[1:]...)
+		c.Dir = projectRoot
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("setup third commit: %v\n%s", err, out)
+		}
+	}
+	thirdCmd := exec.Command("git", "rev-parse", "HEAD")
+	thirdCmd.Dir = projectRoot
+	thirdOut, err := thirdCmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	thirdSHA := strings.TrimSpace(string(thirdOut))
+
+	// Reset main back so PublishToBase can proceed (it will read baseSHA before our hook fires).
+	// We need to put main at a normal position first. Actually we'll use the hook to
+	// move the branch AFTER update-ref but BEFORE the CAS rollback.
+	// First, rewind main so PublishToBase's CAS succeeds.
+	resetCmd := exec.Command("git", "reset", "--hard", "HEAD~1")
+	resetCmd.Dir = projectRoot
+	if out, err := resetCmd.CombinedOutput(); err != nil {
+		t.Fatalf("reset main: %v\n%s", err, out)
+	}
+
+	// Inject a hook that simulates reset failure AND moves the branch to thirdSHA
+	// so the CAS rollback (expecting mergeSHA) will also fail.
+	wm.testPublishResetHook = func() error {
+		// Move the branch away from mergeSHA so the CAS rollback will mismatch.
+		mvCmd := exec.Command("git", "update-ref", fmt.Sprintf("refs/heads/%s", currentBranch), thirdSHA)
+		mvCmd.Dir = projectRoot
+		if out, mvErr := mvCmd.CombinedOutput(); mvErr != nil {
+			t.Logf("hook: move branch failed: %v\n%s", mvErr, out)
+		}
+		return fmt.Errorf("simulated reset failure")
+	}
+
+	pubErr := wm.PublishToBase("cmd_double_fail", "")
+	if pubErr == nil {
+		t.Fatal("expected PublishToBase to fail")
+	}
+
+	errMsg := pubErr.Error()
+	if !strings.Contains(errMsg, "working tree sync failed") {
+		t.Errorf("expected 'working tree sync failed' in error, got: %v", pubErr)
+	}
+	if !strings.Contains(errMsg, "CAS rollback of update-ref also failed") {
+		t.Errorf("expected 'CAS rollback' error in combined error, got: %v", pubErr)
+	}
+}
+
+// TestPublishToBase_NormalSuccessWithReset verifies the normal successful path
+// where update-ref and reset --hard both succeed (no rollback needed).
+func TestPublishToBase_NormalSuccessWithReset(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	currentBranch := "main"
+	wm.config.BaseBranch = currentBranch
+
+	cmd := exec.Command("git", "rev-parse", currentBranch)
+	cmd.Dir = projectRoot
+	baseSHAOut, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseSHA := strings.TrimSpace(string(baseSHAOut))
+
+	workers := []string{"worker1"}
+	if err := createForCommand(wm, "cmd_normal_reset", workers); err != nil {
+		t.Fatal(err)
+	}
+
+	wt1, err := wm.GetWorkerPath("cmd_normal_reset", "worker1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt1, "normal.txt"), []byte("normal"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges("cmd_normal_reset", "worker1", "add normal.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wm.MergeToIntegration("cmd_normal_reset", workers, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// No hook — normal path
+	if err := wm.PublishToBase("cmd_normal_reset", ""); err != nil {
+		t.Fatalf("PublishToBase failed: %v", err)
+	}
+
+	// Branch should have advanced past baseSHA
+	cmd = exec.Command("git", "rev-parse", currentBranch)
+	cmd.Dir = projectRoot
+	afterSHAOut, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	afterSHA := strings.TrimSpace(string(afterSHAOut))
+	if afterSHA == baseSHA {
+		t.Error("branch ref should have advanced after successful publish")
+	}
+
+	// Verify the file is on the base branch
+	lsCmd := exec.Command("git", "ls-tree", "--name-only", currentBranch)
+	lsCmd.Dir = projectRoot
+	lsOut, err := lsCmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(lsOut), "normal.txt") {
+		t.Error("normal.txt not found on base branch after publish")
+	}
+}

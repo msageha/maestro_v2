@@ -523,12 +523,30 @@ func (wm *Manager) PublishToBase(commandID string, publishMessage string) error 
 		}
 		// Uncommitted changes were already checked before update-ref above.
 		// Use git reset --hard to sync index + working tree to the new HEAD.
-		if resetErr := wm.gitRun("reset", "--hard", "HEAD"); resetErr != nil {
-			// Include recovery hint with durable ref path if stash was saved.
+		var resetErr error
+		if wm.testPublishResetHook != nil {
+			resetErr = wm.testPublishResetHook()
+		} else {
+			resetErr = wm.gitRun("reset", "--hard", "HEAD")
+		}
+		if resetErr != nil {
 			durableRef := fmt.Sprintf("refs/maestro/pre-publish-stash/%s", commandID)
-			wm.log(core.LogLevelWarn, "publish_reset_working_tree command=%s error=%v recovery_ref=%s", commandID, resetErr, durableRef)
-			// Non-fatal: the ref update succeeded, so the branch is at the right commit.
-			// The working tree mismatch can be fixed manually with `git reset --hard HEAD`.
+			wm.log(core.LogLevelWarn, "publish_reset_working_tree command=%s error=%v recovery_ref=%s — attempting CAS rollback",
+				commandID, resetErr, durableRef)
+
+			// CAS rollback: restore baseBranch to baseSHA only if still at mergeSHA.
+			refSpec := fmt.Sprintf("refs/heads/%s", baseBranch)
+			rollbackErr := wm.gitRun("update-ref", refSpec, baseSHA, mergeSHA)
+			if rollbackErr != nil {
+				wm.log(core.LogLevelError, "publish_ref_rollback_failed command=%s error=%v", commandID, rollbackErr)
+				return errors.Join(
+					fmt.Errorf("working tree sync failed: %w", resetErr),
+					fmt.Errorf("CAS rollback of update-ref also failed: %w", rollbackErr),
+				)
+			}
+			wm.log(core.LogLevelInfo, "publish_ref_rollback_success command=%s branch=%s restored_to=%s",
+				commandID, baseBranch, baseSHA)
+			return fmt.Errorf("working tree sync failed (ref rolled back to %s): %w", baseSHA, resetErr)
 		}
 	}
 
