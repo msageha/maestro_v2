@@ -13,6 +13,7 @@ type resultCache struct {
 	lru     *list.List
 	maxSize int
 	ttl     time.Duration
+	nowFunc func() time.Time
 }
 
 // cacheItem represents an item in the cache
@@ -29,6 +30,7 @@ func newResultCache(maxSize int, ttl time.Duration) *resultCache {
 		lru:     list.New(),
 		maxSize: maxSize,
 		ttl:     ttl,
+		nowFunc: time.Now,
 	}
 }
 
@@ -45,7 +47,7 @@ func (c *resultCache) Get(key *cacheKey) *EvaluationResult {
 	item := elem.Value.(*cacheItem)
 
 	// Check if expired and remove stale entry
-	if time.Now().After(item.expiresAt) {
+	if c.nowFunc().After(item.expiresAt) {
 		c.removeElement(elem)
 		return nil
 	}
@@ -70,7 +72,7 @@ func (c *resultCache) Set(key *cacheKey, value *EvaluationResult) {
 		c.lru.MoveToFront(elem)
 		item := elem.Value.(*cacheItem)
 		item.value = value
-		item.expiresAt = time.Now().Add(c.ttl)
+		item.expiresAt = c.nowFunc().Add(c.ttl)
 		return
 	}
 
@@ -78,7 +80,7 @@ func (c *resultCache) Set(key *cacheKey, value *EvaluationResult) {
 	item := &cacheItem{
 		key:       keyStr,
 		value:     value,
-		expiresAt: time.Now().Add(c.ttl),
+		expiresAt: c.nowFunc().Add(c.ttl),
 	}
 
 	elem := c.lru.PushFront(item)
@@ -121,7 +123,7 @@ func (c *resultCache) removeElement(elem *list.Element) {
 
 // cleanExpired removes expired items from the cache
 func (c *resultCache) cleanExpired() {
-	now := time.Now()
+	now := c.nowFunc()
 	for elem := c.lru.Back(); elem != nil; {
 		prev := elem.Prev()
 		item := elem.Value.(*cacheItem)
@@ -155,7 +157,7 @@ func (c *resultCache) Stats() cacheStats {
 	}
 
 	// Count expired items
-	now := time.Now()
+	now := c.nowFunc()
 	for elem := c.lru.Front(); elem != nil; elem = elem.Next() {
 		item := elem.Value.(*cacheItem)
 		if now.After(item.expiresAt) {
