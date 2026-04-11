@@ -109,10 +109,12 @@ func makePlanRequest(t *testing.T, op string, data any) *uds.Request {
 // pass the role gate and reach the next layer (here: "worktree manager not
 // configured" because the test daemon has none).
 func TestHandlePlan_RecoveryRoleCheck(t *testing.T) {
+	t.Parallel()
 	d := newPlanTestDaemon(t, &mockPlanExecutor{})
 	ops := []string{"unquarantine", "resume_merge", "resolve_conflict"}
 	for _, op := range ops {
 		t.Run("worker_rejected_"+op, func(t *testing.T) {
+			t.Parallel()
 			req := makePlanRequest(t, op, map[string]string{"command_id": "cmd_x"})
 			req.CallerRole = "worker"
 			resp := d.api.handlePlan(req)
@@ -124,6 +126,7 @@ func TestHandlePlan_RecoveryRoleCheck(t *testing.T) {
 		})
 		for _, role := range []string{"planner", "cli", ""} {
 			t.Run("role_passes_"+op+"_"+role, func(t *testing.T) {
+				t.Parallel()
 				req := makePlanRequest(t, op, map[string]string{"command_id": "cmd_x"})
 				req.CallerRole = role
 				resp := d.api.handlePlan(req)
@@ -138,6 +141,7 @@ func TestHandlePlan_RecoveryRoleCheck(t *testing.T) {
 }
 
 func TestHandlePlan_NilExecutor(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	// Do not set plan executor
 	req := makePlanRequest(t, "submit", nil)
@@ -151,6 +155,7 @@ func TestHandlePlan_NilExecutor(t *testing.T) {
 }
 
 func TestHandlePlan_InvalidJSON(t *testing.T) {
+	t.Parallel()
 	d := newPlanTestDaemon(t, &mockPlanExecutor{})
 	req := &uds.Request{Params: json.RawMessage(`{invalid`)}
 
@@ -163,6 +168,7 @@ func TestHandlePlan_InvalidJSON(t *testing.T) {
 }
 
 func TestHandlePlan_UnknownOperation(t *testing.T) {
+	t.Parallel()
 	d := newPlanTestDaemon(t, &mockPlanExecutor{})
 	req := makePlanRequest(t, "nonexistent", nil)
 
@@ -176,6 +182,7 @@ func TestHandlePlan_UnknownOperation(t *testing.T) {
 }
 
 func TestHandlePlan_SubmitSuccess(t *testing.T) {
+	t.Parallel()
 	pe := &mockPlanExecutor{
 		submitFunc: func(data json.RawMessage) (json.RawMessage, error) {
 			return json.RawMessage(`{"command_id":"cmd_001"}`), nil
@@ -192,6 +199,7 @@ func TestHandlePlan_SubmitSuccess(t *testing.T) {
 }
 
 func TestHandlePlan_CompleteSuccess(t *testing.T) {
+	t.Parallel()
 	pe := &mockPlanExecutor{
 		completeFunc: func(data json.RawMessage) (json.RawMessage, error) {
 			return json.RawMessage(`{"status":"completed"}`), nil
@@ -208,6 +216,7 @@ func TestHandlePlan_CompleteSuccess(t *testing.T) {
 }
 
 func TestHandlePlan_AddRetryTaskSuccess(t *testing.T) {
+	t.Parallel()
 	pe := &mockPlanExecutor{
 		addRetryTaskFunc: func(data json.RawMessage) (json.RawMessage, error) {
 			return json.RawMessage(`{"task_id":"task_retry_001"}`), nil
@@ -224,6 +233,7 @@ func TestHandlePlan_AddRetryTaskSuccess(t *testing.T) {
 }
 
 func TestHandlePlan_RebuildSuccess(t *testing.T) {
+	t.Parallel()
 	pe := &mockPlanExecutor{
 		rebuildFunc: func(data json.RawMessage) (json.RawMessage, error) {
 			return json.RawMessage(`{"rebuilt":true}`), nil
@@ -240,6 +250,7 @@ func TestHandlePlan_RebuildSuccess(t *testing.T) {
 }
 
 func TestHandlePlan_GenericError(t *testing.T) {
+	t.Parallel()
 	pe := &mockPlanExecutor{
 		submitFunc: func(data json.RawMessage) (json.RawMessage, error) {
 			return nil, fmt.Errorf("disk full")
@@ -257,6 +268,7 @@ func TestHandlePlan_GenericError(t *testing.T) {
 }
 
 func TestHandlePlan_ValidationError(t *testing.T) {
+	t.Parallel()
 	pe := &mockPlanExecutor{
 		submitFunc: func(data json.RawMessage) (json.RawMessage, error) {
 			return nil, &mockValidationError{
@@ -277,6 +289,7 @@ func TestHandlePlan_ValidationError(t *testing.T) {
 }
 
 func TestHandlePlan_CodedError(t *testing.T) {
+	t.Parallel()
 	pe := &mockPlanExecutor{
 		completeFunc: func(data json.RawMessage) (json.RawMessage, error) {
 			return nil, &mockCodedError{
@@ -298,6 +311,7 @@ func TestHandlePlan_CodedError(t *testing.T) {
 }
 
 func TestHandlePlan_CodedErrorPrecedesValidation(t *testing.T) {
+	t.Parallel()
 	// codedFormatter satisfies both interfaces; the coded branch should win
 	pe := &mockPlanExecutor{
 		submitFunc: func(data json.RawMessage) (json.RawMessage, error) {
@@ -319,10 +333,12 @@ func TestHandlePlan_CodedErrorPrecedesValidation(t *testing.T) {
 }
 
 func TestHandlePlan_AllOperations(t *testing.T) {
+	t.Parallel()
 	operations := []string{"submit", "complete", "add_retry_task", "rebuild"}
 
 	for _, op := range operations {
 		t.Run(op, func(t *testing.T) {
+			t.Parallel()
 			pe := &mockPlanExecutor{}
 			d := newPlanTestDaemon(t, pe)
 			req := makePlanRequest(t, op, nil)
@@ -336,6 +352,7 @@ func TestHandlePlan_AllOperations(t *testing.T) {
 }
 
 func TestHandlePlan_DataPassthrough(t *testing.T) {
+	t.Parallel()
 	var received json.RawMessage
 	pe := &mockPlanExecutor{
 		submitFunc: func(data json.RawMessage) (json.RawMessage, error) {
@@ -361,6 +378,7 @@ func TestHandlePlan_DataPassthrough(t *testing.T) {
 }
 
 func TestHandlePlan_EmptyParams(t *testing.T) {
+	t.Parallel()
 	d := newPlanTestDaemon(t, &mockPlanExecutor{})
 	// Empty JSON object — missing operation field
 	req := &uds.Request{Params: json.RawMessage(`{}`)}
@@ -374,6 +392,7 @@ func TestHandlePlan_EmptyParams(t *testing.T) {
 }
 
 func TestHandlePlan_NilParams(t *testing.T) {
+	t.Parallel()
 	d := newPlanTestDaemon(t, &mockPlanExecutor{})
 	req := &uds.Request{Params: nil}
 
@@ -384,6 +403,7 @@ func TestHandlePlan_NilParams(t *testing.T) {
 }
 
 func TestHandlePlan_ErrorAllOperations(t *testing.T) {
+	t.Parallel()
 	expectedErr := errors.New("some error")
 	operations := map[string]func(*mockPlanExecutor){
 		"submit": func(pe *mockPlanExecutor) {
@@ -402,6 +422,7 @@ func TestHandlePlan_ErrorAllOperations(t *testing.T) {
 
 	for op, setup := range operations {
 		t.Run(op, func(t *testing.T) {
+			t.Parallel()
 			pe := &mockPlanExecutor{}
 			setup(pe)
 			d := newPlanTestDaemon(t, pe)
@@ -417,6 +438,7 @@ func TestHandlePlan_ErrorAllOperations(t *testing.T) {
 }
 
 func TestSetPlanExecutor(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	assert.Nil(t, d.planExecutor)
 

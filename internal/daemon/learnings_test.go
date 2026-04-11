@@ -41,6 +41,7 @@ func readLearningsFile(t *testing.T, d *Daemon) model.LearningsFile {
 }
 
 func TestLearnings_BasicWrite(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -90,6 +91,7 @@ func TestLearnings_BasicWrite(t *testing.T) {
 }
 
 func TestLearnings_Disabled(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	// Learnings disabled by default
 	taskID := "task_0000000001_abcdef01"
@@ -122,6 +124,7 @@ func TestLearnings_Disabled(t *testing.T) {
 }
 
 func TestLearnings_DeduplicationByResultAndContent(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -185,6 +188,7 @@ func TestLearnings_DeduplicationByResultAndContent(t *testing.T) {
 }
 
 func TestLearnings_ContentTruncation(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
 	d.config.Learnings.MaxContentLength = model.IntPtr(10)
 
@@ -225,6 +229,7 @@ func TestLearnings_ContentTruncation(t *testing.T) {
 }
 
 func TestLearnings_ContentTruncation_UTF8(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
 	d.config.Learnings.MaxContentLength = model.IntPtr(5)
 
@@ -259,6 +264,7 @@ func TestLearnings_ContentTruncation_UTF8(t *testing.T) {
 }
 
 func TestLearnings_MaxEntriesFIFO(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
 	d.config.Learnings.MaxEntries = model.IntPtr(3)
 
@@ -318,6 +324,7 @@ func TestLearnings_MaxEntriesFIFO(t *testing.T) {
 }
 
 func TestLearnings_EmptyContentSkipped(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -352,6 +359,7 @@ func TestLearnings_EmptyContentSkipped(t *testing.T) {
 }
 
 func TestLearnings_WriteFailureDoesNotFailResultWrite(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -390,6 +398,7 @@ func TestLearnings_WriteFailureDoesNotFailResultWrite(t *testing.T) {
 }
 
 func TestLearnings_StartupValidation_CorruptFile(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
 
 	learningsPath := filepath.Join(d.maestroDir, "state", "learnings.yaml")
@@ -418,12 +427,14 @@ func TestLearnings_StartupValidation_CorruptFile(t *testing.T) {
 }
 
 func TestLearnings_StartupValidation_NoFile(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
 	// No learnings file — should be a no-op, no panic
 	d.validateLearningsFile()
 }
 
 func TestLearnings_StartupValidation_ValidFile(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
 
 	learningsPath := filepath.Join(d.maestroDir, "state", "learnings.yaml")
@@ -446,6 +457,7 @@ func TestLearnings_StartupValidation_ValidFile(t *testing.T) {
 }
 
 func TestLearnings_NoLearningsParam(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -478,6 +490,7 @@ func TestLearnings_NoLearningsParam(t *testing.T) {
 }
 
 func TestLearnings_MultipleLearningsSameContent(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -510,6 +523,7 @@ func TestLearnings_MultipleLearningsSameContent(t *testing.T) {
 }
 
 func TestTruncateRunes(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input    string
 		max      int
@@ -530,6 +544,7 @@ func TestTruncateRunes(t *testing.T) {
 }
 
 func TestLearningsConfig_Defaults(t *testing.T) {
+	t.Parallel()
 	cfg := model.LearningsConfig{}
 	if cfg.EffectiveMaxEntries() != 100 {
 		t.Errorf("EffectiveMaxEntries() = %d, want 100", cfg.EffectiveMaxEntries())
@@ -552,6 +567,7 @@ func TestLearningsConfig_Defaults(t *testing.T) {
 // TestLearningsIntegration_E2E_SanitizeSourceWorkerReadFormat exercises the full
 // write → sanitize (truncation) → SourceWorker assignment → ReadTopKLearnings → FormatLearningsSection pipeline.
 func TestLearningsIntegration_E2E_SanitizeSourceWorkerReadFormat(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
 	d.config.Learnings.MaxContentLength = model.IntPtr(15)
 	d.config.Learnings.InjectCount = model.IntPtr(5)
@@ -624,6 +640,7 @@ func TestLearningsIntegration_E2E_SanitizeSourceWorkerReadFormat(t *testing.T) {
 // TestLearningsIntegration_Dedup_TruncationCollision tests that two different long strings
 // which truncate to the same prefix under one resultID are correctly deduplicated.
 func TestLearningsIntegration_Dedup_TruncationCollision(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
 	d.config.Learnings.MaxContentLength = model.IntPtr(5)
 
@@ -663,6 +680,7 @@ func TestLearningsIntegration_Dedup_TruncationCollision(t *testing.T) {
 // TestLearningsIntegration_TTL_EndToEnd writes learnings via handleResultWrite, then reads
 // them back via ReadTopKLearnings with a TTL that excludes entries by timestamp.
 func TestLearningsIntegration_TTL_EndToEnd(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
 
 	taskID := "task_0000000001_abcdef01"
@@ -730,6 +748,7 @@ func TestLearningsIntegration_TTL_EndToEnd(t *testing.T) {
 // TestLearningsIntegration_InjectCount_EndToEnd writes multiple learnings via handleResultWrite,
 // then reads back with inject_count limit and verifies only the most recent K entries are returned.
 func TestLearningsIntegration_InjectCount_EndToEnd(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
 
 	commandID := "cmd_0000000001_abcdef01"
@@ -796,6 +815,7 @@ func TestLearningsIntegration_InjectCount_EndToEnd(t *testing.T) {
 }
 
 func TestLearnings_RecoveryPreservesBackupEntries(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
 
 	learningsPath := filepath.Join(d.maestroDir, "state", "learnings.yaml")

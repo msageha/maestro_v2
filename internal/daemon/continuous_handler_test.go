@@ -46,6 +46,7 @@ func readContinuousState(t *testing.T, maestroDir string) *model.Continuous {
 }
 
 func TestContinuous_Disabled(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Continuous: model.ContinuousConfig{Enabled: false},
@@ -65,6 +66,7 @@ func TestContinuous_Disabled(t *testing.T) {
 }
 
 func TestContinuous_NotRunning(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Continuous: model.ContinuousConfig{Enabled: true, MaxIterations: 10},
@@ -95,6 +97,7 @@ func TestContinuous_NotRunning(t *testing.T) {
 }
 
 func TestContinuous_Increment(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Continuous: model.ContinuousConfig{Enabled: true, MaxIterations: 10},
@@ -129,6 +132,7 @@ func TestContinuous_Increment(t *testing.T) {
 }
 
 func TestContinuous_Idempotency(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Continuous: model.ContinuousConfig{Enabled: true, MaxIterations: 10},
@@ -170,6 +174,7 @@ func TestContinuous_Idempotency(t *testing.T) {
 }
 
 func TestContinuous_MaxIterationsStop(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Continuous: model.ContinuousConfig{Enabled: true, MaxIterations: 5},
@@ -205,6 +210,7 @@ func TestContinuous_MaxIterationsStop(t *testing.T) {
 }
 
 func TestContinuous_PauseOnFailure(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Continuous: model.ContinuousConfig{Enabled: true, MaxIterations: 10, PauseOnFailure: true},
@@ -240,6 +246,7 @@ func TestContinuous_PauseOnFailure(t *testing.T) {
 }
 
 func TestContinuous_PauseOnFailure_Disabled(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Continuous: model.ContinuousConfig{Enabled: true, MaxIterations: 10, PauseOnFailure: false},
@@ -269,6 +276,7 @@ func TestContinuous_PauseOnFailure_Disabled(t *testing.T) {
 }
 
 func TestContinuous_NoStateFile(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Continuous: model.ContinuousConfig{Enabled: true, MaxIterations: 10},
@@ -292,6 +300,7 @@ func TestContinuous_NoStateFile(t *testing.T) {
 }
 
 func TestContinuous_PauseTakesPrecedenceOverStop(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Continuous: model.ContinuousConfig{Enabled: true, MaxIterations: 3, PauseOnFailure: true},
@@ -325,6 +334,7 @@ func TestContinuous_PauseTakesPrecedenceOverStop(t *testing.T) {
 }
 
 func TestContinuous_MaxConsecutiveFailures_Gate(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Continuous: model.ContinuousConfig{
@@ -376,6 +386,7 @@ func TestContinuous_MaxConsecutiveFailures_Gate(t *testing.T) {
 }
 
 func TestContinuous_ConsecutiveFailures_ResetOnSuccess(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Continuous: model.ContinuousConfig{
@@ -408,6 +419,7 @@ func TestContinuous_ConsecutiveFailures_ResetOnSuccess(t *testing.T) {
 }
 
 func TestContinuous_MaxConsecutiveFailures_Disabled(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Continuous: model.ContinuousConfig{
@@ -441,6 +453,7 @@ func TestContinuous_MaxConsecutiveFailures_Disabled(t *testing.T) {
 }
 
 func TestContinuous_MaxIterationsZero_Unlimited(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Continuous: model.ContinuousConfig{Enabled: true, MaxIterations: 0},

@@ -105,14 +105,12 @@ func setupTestQualityGate(t *testing.T) (*QualityGateDaemon, string) {
 }
 
 func TestQualityGateDaemon_Start_Stop(t *testing.T) {
+	t.Parallel()
 	qg, _ := setupTestQualityGate(t)
 
 	// Start the daemon
 	err := qg.Start()
 	assert.NoError(t, err)
-
-	// Verify it's running
-	time.Sleep(10 * time.Millisecond)
 
 	// Stop the daemon
 	err = qg.Stop()
@@ -120,6 +118,7 @@ func TestQualityGateDaemon_Start_Stop(t *testing.T) {
 }
 
 func TestQualityGateDaemon_EmitEvent(t *testing.T) {
+	t.Parallel()
 	qg, _ := setupTestQualityGate(t)
 
 	err := qg.Start()
@@ -136,8 +135,12 @@ func TestQualityGateDaemon_EmitEvent(t *testing.T) {
 
 	qg.EmitEvent(event)
 
-	// Give it time to process
-	time.Sleep(50 * time.Millisecond)
+	// Wait for the event to be processed rather than sleeping.
+	require.Eventually(t, func() bool {
+		qg.metrics.mu.RLock()
+		defer qg.metrics.mu.RUnlock()
+		return qg.metrics.evaluationCount > 0
+	}, 2*time.Second, 5*time.Millisecond, "evaluation should be recorded")
 
 	// Check metrics
 	qg.metrics.mu.RLock()
@@ -157,6 +160,7 @@ func TestQualityGateDaemon_EmitEvent(t *testing.T) {
 }
 
 func TestEvaluateGate_FieldValidation(t *testing.T) {
+	t.Parallel()
 	qg, _ := setupTestQualityGate(t)
 
 	testCases := []struct {
@@ -205,6 +209,7 @@ func TestEvaluateGate_FieldValidation(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			result, err := qg.evaluateGateWithResult(tc.gateType, tc.context)
 
 			if tc.expectError {
@@ -218,6 +223,7 @@ func TestEvaluateGate_FieldValidation(t *testing.T) {
 }
 
 func TestEvaluateGate_LogicalOperators(t *testing.T) {
+	t.Parallel()
 	qg, _ := setupTestQualityGate(t)
 
 	testCases := []struct {
@@ -259,6 +265,7 @@ func TestEvaluateGate_LogicalOperators(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			result, err := qg.evaluateGateWithResult("pre_task", tc.context)
 			require.NoError(t, err)
 			assert.Equal(t, tc.expectPass, result.Passed, "Result: %+v", result)
@@ -267,6 +274,7 @@ func TestEvaluateGate_LogicalOperators(t *testing.T) {
 }
 
 func TestEvaluateGate_Performance(t *testing.T) {
+	t.Parallel()
 	qg, _ := setupTestQualityGate(t)
 
 	// Create a context with many fields for a realistic test
@@ -308,6 +316,7 @@ func TestEvaluateGate_Performance(t *testing.T) {
 }
 
 func TestEvaluateGate_Caching(t *testing.T) {
+	t.Parallel()
 	qg, _ := setupTestQualityGate(t)
 
 	context := map[string]interface{}{
@@ -336,6 +345,7 @@ func TestEvaluateGate_Caching(t *testing.T) {
 }
 
 func TestEvaluateGate_Priority(t *testing.T) {
+	t.Parallel()
 	qg, _ := setupTestQualityGate(t)
 
 	// Context that would fail the dangerous command check (priority 5)
@@ -356,6 +366,7 @@ func TestEvaluateGate_Priority(t *testing.T) {
 }
 
 func TestEvaluateGate_Timeout(t *testing.T) {
+	t.Parallel()
 	qg, _ := setupTestQualityGate(t)
 
 	// Override the evaluation timeout for this test
@@ -407,6 +418,7 @@ gates:
 }
 
 func TestQualityGateMetrics(t *testing.T) {
+	t.Parallel()
 	metrics := &QualityGateMetrics{}
 
 	// Record some evaluations
@@ -515,6 +527,7 @@ func BenchmarkEvaluateGate_Complex(b *testing.B) {
 // TestQualityGateDaemon_ConcurrentStopEmit verifies that concurrent Stop() and
 // EmitEvent() calls do not race or panic. Run with -race to detect data races.
 func TestQualityGateDaemon_ConcurrentStopEmit(t *testing.T) {
+	t.Parallel()
 	qg, _ := setupTestQualityGate(t)
 
 	err := qg.Start()
@@ -574,6 +587,7 @@ func TestQualityGateDaemon_ConcurrentStopEmit(t *testing.T) {
 // TestQualityGateDaemon_StopIdempotent verifies that calling Stop() multiple
 // times is safe and does not panic or deadlock.
 func TestQualityGateDaemon_StopIdempotent(t *testing.T) {
+	t.Parallel()
 	qg, _ := setupTestQualityGate(t)
 
 	err := qg.Start()
@@ -599,6 +613,7 @@ func TestQualityGateDaemon_StopIdempotent(t *testing.T) {
 // TestQualityGateDaemon_EmitAfterStop verifies that events emitted after Stop()
 // are safely dropped without panic.
 func TestQualityGateDaemon_EmitAfterStop(t *testing.T) {
+	t.Parallel()
 	qg, _ := setupTestQualityGate(t)
 
 	err := qg.Start()

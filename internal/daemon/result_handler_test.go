@@ -35,6 +35,7 @@ func newTestResultHandler(maestroDir string) (*ResultHandler, *mocks.MockExecuto
 }
 
 func TestResultHandler_WorkerNotification_Basic(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rh, mock := newTestResultHandler(maestroDir)
 
@@ -97,6 +98,7 @@ func TestResultHandler_WorkerNotification_Basic(t *testing.T) {
 }
 
 func TestResultHandler_WorkerNotification_AlreadyNotified(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rh, mock := newTestResultHandler(maestroDir)
 
@@ -128,6 +130,7 @@ func TestResultHandler_WorkerNotification_AlreadyNotified(t *testing.T) {
 }
 
 func TestResultHandler_WorkerNotification_LeaseHeld(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rh, mock := newTestResultHandler(maestroDir)
 
@@ -160,6 +163,7 @@ func TestResultHandler_WorkerNotification_LeaseHeld(t *testing.T) {
 }
 
 func TestResultHandler_WorkerNotification_ExpiredLease(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rh, _ := newTestResultHandler(maestroDir)
 
@@ -202,6 +206,7 @@ func TestResultHandler_WorkerNotification_ExpiredLease(t *testing.T) {
 }
 
 func TestResultHandler_WorkerNotification_Failure(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Watcher: model.WatcherConfig{NotifyLeaseSec: 120},
@@ -272,6 +277,7 @@ func TestResultHandler_WorkerNotification_Failure(t *testing.T) {
 }
 
 func TestResultHandler_CommandNotification_Basic(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rh, _ := newTestResultHandler(maestroDir)
 
@@ -337,6 +343,7 @@ func TestResultHandler_CommandNotification_Basic(t *testing.T) {
 }
 
 func TestResultHandler_CommandNotification_Idempotent(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rh, _ := newTestResultHandler(maestroDir)
 
@@ -401,6 +408,7 @@ func TestResultHandler_CommandNotification_Idempotent(t *testing.T) {
 // the orchestrator picks up the corrected status. ID/CreatedAt/Priority are
 // preserved.
 func TestResultHandler_CommandNotification_SupersedeOnTypeChange(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rh, _ := newTestResultHandler(maestroDir)
 
@@ -505,6 +513,7 @@ func TestResultHandler_CommandNotification_SupersedeOnTypeChange(t *testing.T) {
 }
 
 func TestResultHandler_ScanAllResults(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rh, _ := newTestResultHandler(maestroDir)
 
@@ -551,6 +560,7 @@ func TestResultHandler_ScanAllResults(t *testing.T) {
 }
 
 func TestResultHandler_HandleResultFileEvent(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rh, mock := newTestResultHandler(maestroDir)
 
@@ -576,6 +586,7 @@ func TestResultHandler_HandleResultFileEvent(t *testing.T) {
 }
 
 func TestResultHandler_WorkerNotification_MaxRetryExhausted(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Watcher: model.WatcherConfig{NotifyLeaseSec: 120},
@@ -621,6 +632,7 @@ func TestResultHandler_WorkerNotification_MaxRetryExhausted(t *testing.T) {
 }
 
 func TestResultHandler_WorkerNotification_BackoffPreventsImmediateRetry(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Watcher: model.WatcherConfig{NotifyLeaseSec: 120},
@@ -674,6 +686,7 @@ func TestResultHandler_WorkerNotification_BackoffPreventsImmediateRetry(t *testi
 }
 
 func TestResultHandler_MultipleResults_ProcessedInOrder(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rh, mock := newTestResultHandler(maestroDir)
 

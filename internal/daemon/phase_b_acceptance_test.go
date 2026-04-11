@@ -15,6 +15,7 @@ import (
 // --- B-1: Rollout Eligibility Tests ---
 
 func TestRolloutEligibility_AllConditionsMet(t *testing.T) {
+	t.Parallel()
 	input := rollout.ConditionInput{
 		HasVerifyConfig:   true,
 		FailureCount:      2,
@@ -30,6 +31,7 @@ func TestRolloutEligibility_AllConditionsMet(t *testing.T) {
 }
 
 func TestRolloutEligibility_NoVerifyConfig(t *testing.T) {
+	t.Parallel()
 	input := rollout.ConditionInput{
 		HasVerifyConfig:   false,
 		FailureCount:      3,
@@ -55,6 +57,7 @@ func TestRolloutEligibility_NoVerifyConfig(t *testing.T) {
 }
 
 func TestRolloutEligibility_LowBloomNoFailure(t *testing.T) {
+	t.Parallel()
 	input := rollout.ConditionInput{
 		HasVerifyConfig:   true,
 		FailureCount:      0,
@@ -70,6 +73,7 @@ func TestRolloutEligibility_LowBloomNoFailure(t *testing.T) {
 }
 
 func TestRolloutEligibility_HighBloomNoFailure(t *testing.T) {
+	t.Parallel()
 	input := rollout.ConditionInput{
 		HasVerifyConfig:   true,
 		FailureCount:      0,
@@ -85,6 +89,7 @@ func TestRolloutEligibility_HighBloomNoFailure(t *testing.T) {
 }
 
 func TestRolloutEligibility_TooWideExpectedPaths(t *testing.T) {
+	t.Parallel()
 	input := rollout.ConditionInput{
 		HasVerifyConfig:   true,
 		FailureCount:      2,
@@ -100,6 +105,7 @@ func TestRolloutEligibility_TooWideExpectedPaths(t *testing.T) {
 }
 
 func TestRolloutEligibility_Disabled(t *testing.T) {
+	t.Parallel()
 	cfg := model.Config{
 		Rollout: model.RolloutConfig{
 			Enabled: ptr.Bool(false),
@@ -114,6 +120,7 @@ func TestRolloutEligibility_Disabled(t *testing.T) {
 // --- B-1+B-2: Fitness Winner Selection Tests ---
 
 func TestRolloutWinnerSelection_FitnessClear(t *testing.T) {
+	t.Parallel()
 	// Create a daemon with judge enabled
 	judgeCalls := 0
 	d := &Daemon{
@@ -179,6 +186,7 @@ func TestRolloutWinnerSelection_FitnessClear(t *testing.T) {
 }
 
 func TestRolloutWinnerSelection_FitnessTie_JudgeBreaks(t *testing.T) {
+	t.Parallel()
 	// Two identical fitness scores → tie → judge should be called
 	scoreA := model.FitnessScore{Passed: true, RepairCount: 0, DiffLinesChanged: 10}
 	scoreB := model.FitnessScore{Passed: true, RepairCount: 0, DiffLinesChanged: 10}
@@ -214,6 +222,7 @@ func TestRolloutWinnerSelection_FitnessTie_JudgeBreaks(t *testing.T) {
 }
 
 func TestRolloutWinnerSelection_FitnessTie_JudgeDisabled(t *testing.T) {
+	t.Parallel()
 	scoreA := model.FitnessScore{Passed: true, RepairCount: 0, DiffLinesChanged: 10}
 	scoreB := model.FitnessScore{Passed: true, RepairCount: 0, DiffLinesChanged: 10}
 
@@ -235,6 +244,7 @@ func TestRolloutWinnerSelection_FitnessTie_JudgeDisabled(t *testing.T) {
 }
 
 func TestRolloutWinnerSelection_FitnessTie_JudgeError(t *testing.T) {
+	t.Parallel()
 	scoreA := model.FitnessScore{Passed: true, RepairCount: 0, DiffLinesChanged: 10}
 	scoreB := model.FitnessScore{Passed: true, RepairCount: 0, DiffLinesChanged: 10}
 
@@ -259,6 +269,7 @@ func TestRolloutWinnerSelection_FitnessTie_JudgeError(t *testing.T) {
 // --- B-2: Anti-Requirements Tests ---
 
 func TestJudge_NeverOverridesFitness(t *testing.T) {
+	t.Parallel()
 	// When fitness has a clear winner, judge must not be called
 	// even if it's available (§5-1)
 	scoreClear := model.FitnessScore{Passed: true, RepairCount: 0, DiffLinesChanged: 5}
@@ -289,6 +300,7 @@ func TestJudge_NeverOverridesFitness(t *testing.T) {
 }
 
 func TestJudge_OnlyOnTie(t *testing.T) {
+	t.Parallel()
 	th := model.DefaultFitnessThresholds()
 
 	testCases := []struct {
@@ -332,6 +344,7 @@ func TestJudge_OnlyOnTie(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			called := false
 			var judgeFunc model.JudgeFunc = func(_ context.Context, _ []model.FitnessScore, _ []map[string]string) (model.JudgeDecision, error) {
 				called = true
@@ -350,6 +363,7 @@ func TestJudge_OnlyOnTie(t *testing.T) {
 // --- Model Integration Tests ---
 
 func TestResolveWinner_Integration(t *testing.T) {
+	t.Parallel()
 	// End-to-end test: SelectWinner → Judge delegation flow
 	scores := []model.FitnessScore{
 		{Passed: true, RepairCount: 0, DiffLinesChanged: 10, ExecutionTime: 5 * time.Second},
@@ -409,6 +423,7 @@ func TestResolveWinner_Integration(t *testing.T) {
 }
 
 func TestRolloutManager_Integration(t *testing.T) {
+	t.Parallel()
 	mgr := rollout.NewManager(3)
 
 	// Create group

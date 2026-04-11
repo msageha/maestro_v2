@@ -22,6 +22,7 @@ func newTestDeadLetterProcessor(maestroDir string, cfg model.Config) *DeadLetter
 }
 
 func TestDeadLetter_CommandDeadLetter(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Retry: model.RetryConfig{CommandDispatch: 3},
@@ -98,6 +99,7 @@ func TestDeadLetter_CommandDeadLetter(t *testing.T) {
 }
 
 func TestDeadLetter_CommandDeadLetter_WithState(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Retry: model.RetryConfig{CommandDispatch: 2},
@@ -168,6 +170,7 @@ func TestDeadLetter_CommandDeadLetter_WithState(t *testing.T) {
 }
 
 func TestDeadLetter_CommandDeadLetter_TerminalStateSkipped(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Retry: model.RetryConfig{CommandDispatch: 2},
@@ -222,6 +225,7 @@ func TestDeadLetter_CommandDeadLetter_TerminalStateSkipped(t *testing.T) {
 }
 
 func TestDeadLetter_TaskDeadLetter(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Retry: model.RetryConfig{TaskDispatch: 5},
@@ -305,6 +309,7 @@ func TestDeadLetter_TaskDeadLetter(t *testing.T) {
 }
 
 func TestDeadLetter_TaskDeadLetter_StateUpdate(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Retry: model.RetryConfig{TaskDispatch: 3},
@@ -366,6 +371,7 @@ func TestDeadLetter_TaskDeadLetter_StateUpdate(t *testing.T) {
 }
 
 func TestDeadLetter_NotificationDeadLetter(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Retry: model.RetryConfig{OrchestratorNotificationDispatch: 3},
@@ -421,6 +427,7 @@ func TestDeadLetter_NotificationDeadLetter(t *testing.T) {
 }
 
 func TestDeadLetter_MaxAttemptsZero_InfiniteRetries(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Retry: model.RetryConfig{
@@ -491,6 +498,7 @@ func TestDeadLetter_MaxAttemptsZero_InfiniteRetries(t *testing.T) {
 }
 
 func TestDeadLetter_NonPendingNotDeadLettered(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Retry: model.RetryConfig{CommandDispatch: 1},
@@ -527,6 +535,7 @@ func TestDeadLetter_NonPendingNotDeadLettered(t *testing.T) {
 }
 
 func TestDeadLetter_TaskDuplicateSyntheticResult(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Retry: model.RetryConfig{TaskDispatch: 2},
@@ -597,6 +606,7 @@ func TestDeadLetter_TaskDuplicateSyntheticResult(t *testing.T) {
 }
 
 func TestDeadLetter_PeriodicScanIntegration(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Agents:  model.AgentsConfig{Workers: model.WorkerConfig{Count: 2}},

@@ -78,6 +78,7 @@ func setupCommandState(t *testing.T, d *Daemon, commandID string, taskIDs []stri
 }
 
 func TestResultWrite_Basic(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -169,6 +170,7 @@ func TestResultWrite_Basic(t *testing.T) {
 }
 
 func TestResultWrite_FencingReject_EpochMismatch(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -195,6 +197,7 @@ func TestResultWrite_FencingReject_EpochMismatch(t *testing.T) {
 }
 
 func TestResultWrite_FencingReject_WrongOwner(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -218,6 +221,7 @@ func TestResultWrite_FencingReject_WrongOwner(t *testing.T) {
 }
 
 func TestResultWrite_FencingReject_NotInProgress(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -263,6 +267,7 @@ func TestResultWrite_FencingReject_NotInProgress(t *testing.T) {
 }
 
 func TestResultWrite_Idempotency_SameStatus(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -322,6 +327,7 @@ func TestResultWrite_Idempotency_SameStatus(t *testing.T) {
 }
 
 func TestResultWrite_Idempotency_DifferentStatus(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -362,6 +368,7 @@ func TestResultWrite_Idempotency_DifferentStatus(t *testing.T) {
 }
 
 func TestResultWrite_TaskNotFound(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 
 	req := makeResultWriteRequest(t, ResultWriteParams{
@@ -382,6 +389,7 @@ func TestResultWrite_TaskNotFound(t *testing.T) {
 }
 
 func TestResultWrite_ValidationErrors(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 
 	tests := []struct {
@@ -397,6 +405,7 @@ func TestResultWrite_ValidationErrors(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			req := makeResultWriteRequest(t, tt.params)
 			resp := d.api.handleResultWrite(req)
 			if resp.Success {
@@ -410,6 +419,7 @@ func TestResultWrite_ValidationErrors(t *testing.T) {
 }
 
 func TestResultWrite_Failed(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -464,6 +474,7 @@ func TestResultWrite_Failed(t *testing.T) {
 }
 
 func TestResultWrite_FilesChanged(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -508,6 +519,7 @@ func TestResultWrite_FilesChanged(t *testing.T) {
 }
 
 func TestResultWrite_CommandIDMismatch(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -536,6 +548,7 @@ func TestResultWrite_CommandIDMismatch(t *testing.T) {
 }
 
 func TestResultWrite_TaskNotRegisteredInState(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	taskID := "task_0000000001_abcdef01"
 	unregisteredTaskID := "task_0000000001_unreg001"
@@ -566,6 +579,7 @@ func TestResultWrite_TaskNotRegisteredInState(t *testing.T) {
 }
 
 func TestResultWrite_StateNotFound(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -604,6 +618,7 @@ func TestResultWrite_StateNotFound(t *testing.T) {
 // AppliedResultIDs idempotency check, causing duplicate failed-result
 // submissions to inflate consecutive_failures and trip the breaker spuriously.
 func TestResultWrite_Idempotency_CircuitBreakerNotDoubleCounted(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	// Enable circuit breaker with a low threshold so any double-count would trip it.
 	threshold := 2
@@ -687,6 +702,7 @@ func TestResultWrite_Idempotency_CircuitBreakerNotDoubleCounted(t *testing.T) {
 // an inconsistency that plan.Complete's idempotency skip path would not
 // re-validate (Critical #5 in repo audit 20260407).
 func TestResultWrite_LateAfterPlanTerminal(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name           string
 		planStatus     model.PlanStatus
@@ -698,6 +714,7 @@ func TestResultWrite_LateAfterPlanTerminal(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			d := newTestDaemon(t)
 			taskID := "task_0000000001_abcdef01"
 			commandID := "cmd_0000000001_abcdef01"
@@ -785,6 +802,7 @@ func TestResultWrite_LateAfterPlanTerminal(t *testing.T) {
 // result-terminal/queue-in_progress mismatch durably across daemon restarts.
 // Regression test for H2 (audit cmd_1775522508_05ee0f69).
 func TestResultWrite_QueueWriteFailed_StickyError(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"

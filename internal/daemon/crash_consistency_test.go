@@ -306,6 +306,7 @@ func (rm *RecoveryManager) reconcileState(t *testing.T) {
 
 // TestPartialFailureWindow_TaskCreation tests crash during task creation
 func TestPartialFailureWindow_TaskCreation(t *testing.T) {
+	t.Parallel()
 	maestroDir := t.TempDir()
 	testutil.PopulateDirs(t, maestroDir)
 
@@ -387,6 +388,7 @@ func TestPartialFailureWindow_TaskCreation(t *testing.T) {
 
 // TestPartialFailureWindow_RetryCreation tests crash during retry task creation
 func TestPartialFailureWindow_RetryCreation(t *testing.T) {
+	t.Parallel()
 	maestroDir := t.TempDir()
 	testutil.PopulateDirs(t, maestroDir)
 
@@ -450,6 +452,7 @@ func TestPartialFailureWindow_RetryCreation(t *testing.T) {
 
 // TestDataConsistency_AfterCrash tests data consistency after various crash scenarios
 func TestDataConsistency_AfterCrash(t *testing.T) {
+	t.Parallel()
 	maestroDir := t.TempDir()
 	testutil.PopulateDirs(t, maestroDir)
 
@@ -539,6 +542,7 @@ func TestDataConsistency_AfterCrash(t *testing.T) {
 
 // TestRecovery_IncompleteWrites tests recovery from incomplete writes
 func TestRecovery_IncompleteWrites(t *testing.T) {
+	t.Parallel()
 	maestroDir := t.TempDir()
 	testutil.PopulateDirs(t, maestroDir)
 
@@ -608,6 +612,7 @@ func TestRecovery_IncompleteWrites(t *testing.T) {
 
 // TestConcurrentCrash_MultipleWorkers tests crashes with multiple concurrent workers
 func TestConcurrentCrash_MultipleWorkers(t *testing.T) {
+	t.Parallel()
 	maestroDir := t.TempDir()
 	testutil.PopulateDirs(t, maestroDir)
 
@@ -918,6 +923,7 @@ func findRetryTasksForOriginal(maestroDir string, originalTaskID string) []*mode
 
 // TestRecoveryIdempotency ensures recovery can be run multiple times safely
 func TestRecoveryIdempotency(t *testing.T) {
+	t.Parallel()
 	maestroDir := t.TempDir()
 	testutil.PopulateDirs(t, maestroDir)
 

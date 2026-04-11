@@ -60,6 +60,7 @@ func readResultsFile(t *testing.T, d *Daemon, workerID string) model.TaskResultF
 // (a) be persisted as a RejectedSubmission audit record and
 // (b) surface a lease_rejection_id in the success response.
 func TestResultWrite_LeaseRevoke_PersistsRejection(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -193,6 +194,7 @@ func TestResultWrite_LeaseRevoke_PersistsRejection(t *testing.T) {
 // different flag values after its lease has been revoked. The idempotent
 // path must return the existing result unchanged.
 func TestResultWrite_LeaseRevoke_PartialAndRetrySafePropagation(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
 	taskID := "task_0000000002_abcdef02"
 	commandID := "cmd_0000000002_abcdef02"

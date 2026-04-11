@@ -16,6 +16,7 @@ import (
 // does not panic when the circuit breaker is enabled but no StateReader
 // has been wired (e.g. during early startup or in degraded configurations).
 func TestStepCircuitBreaker_NilStateReader(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupPhaseIntegrationDir(t)
 	exec := newRecordingExecutor(nil)
 	qh := newPhaseIntegrationQH(t, maestroDir, exec)
@@ -170,6 +171,7 @@ func writeCommandStateAt(t *testing.T, maestroDir, commandID string, taskStates 
 //   Then:   a worktreeCleanupItem with reason "fast_track_stall" is appended
 //           (the merge step is skipped — no publish item is generated either).
 func TestStepWorktreeFastTrackCleanup_TriggersWhenPhaseStallsPastThreshold(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
 
@@ -229,6 +231,7 @@ func TestStepWorktreeFastTrackCleanup_TriggersWhenPhaseStallsPastThreshold(t *te
 // that the fast-track path is silent when the elapsed time since the
 // command's last update is below worktree.stall_cleanup_after.
 func TestStepWorktreeFastTrackCleanup_DoesNotTriggerBeforeThreshold(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
 
@@ -277,6 +280,7 @@ func TestStepWorktreeFastTrackCleanup_DoesNotTriggerBeforeThreshold(t *testing.T
 // integration branch has stayed in a non-merged status past the fallback
 // timeout.
 func TestStepCheckWorktreeConfigViolations_DisabledAndTimedOut(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	wtCfg := wtConfigDisabledAutoMerge(60)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, wtCfg)
@@ -305,6 +309,7 @@ func TestStepCheckWorktreeConfigViolations_DisabledAndTimedOut(t *testing.T) {
 // TestStepCheckWorktreeConfigViolations_BothEnabled verifies the step is a
 // no-op when both AutoCommit and AutoMerge are enabled.
 func TestStepCheckWorktreeConfigViolations_BothEnabled(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	wtCfg := model.WorktreeConfig{
 		Enabled:                     true,
@@ -334,6 +339,7 @@ func TestStepCheckWorktreeConfigViolations_BothEnabled(t *testing.T) {
 // TestStepCheckWorktreeConfigViolations_DedupeAcrossCalls verifies upsert
 // dedup prevents a second notification for the same command.
 func TestStepCheckWorktreeConfigViolations_DedupeAcrossCalls(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	wtCfg := wtConfigDisabledAutoMerge(60)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, wtCfg)
@@ -353,6 +359,7 @@ func TestStepCheckWorktreeConfigViolations_DedupeAcrossCalls(t *testing.T) {
 // TestStepCheckWorktreeConfigViolations_WithinTimeout verifies no signal is
 // emitted before the fallback timeout elapses.
 func TestStepCheckWorktreeConfigViolations_WithinTimeout(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	wtCfg := wtConfigDisabledAutoMerge(60)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, wtCfg)
@@ -374,6 +381,7 @@ func TestStepCheckWorktreeConfigViolations_WithinTimeout(t *testing.T) {
 // a terminal (completed) command with HasWorktrees and integration.status=merged
 // still produces a publish item via the relaxed guard.
 func TestStepWorktreePublish_TerminalCmdMergedIntegrationCollects(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
 
@@ -413,6 +421,7 @@ func TestStepWorktreePublish_TerminalCmdMergedIntegrationCollects(t *testing.T) 
 // TestStepWorktreePublish_PendingCmdSkipped verifies the new guard still
 // skips pending commands (which have no worktrees yet).
 func TestStepWorktreePublish_PendingCmdSkipped(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
 
@@ -442,6 +451,7 @@ func TestStepWorktreePublish_PendingCmdSkipped(t *testing.T) {
 // canonical leak case: a non-phased command terminated past the threshold with
 // integration.status=created produces an orphan_terminal cleanup item.
 func TestStepWorktreeOrphanCleanup_NonPhasedTerminalCreatedFires(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
 
@@ -476,6 +486,7 @@ func TestStepWorktreeOrphanCleanup_NonPhasedTerminalCreatedFires(t *testing.T) {
 // TestStepWorktreeOrphanCleanup_BeforeThresholdSkipped verifies negative case
 // (elapsed < stall_cleanup_after).
 func TestStepWorktreeOrphanCleanup_BeforeThresholdSkipped(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
 
@@ -505,6 +516,7 @@ func TestStepWorktreeOrphanCleanup_BeforeThresholdSkipped(t *testing.T) {
 // integration.status=merged is handled by stepWorktreePublish, so the orphan
 // cleanup step must NOT also fire on the same command.
 func TestStepWorktreeOrphanCleanup_MergedSkipped(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
 
@@ -534,6 +546,7 @@ func TestStepWorktreeOrphanCleanup_MergedSkipped(t *testing.T) {
 // both stepWorktreePublish and stepWorktreeOrphanCleanup against the same
 // terminal command never enqueues two cleanup items for the same cmd.
 func TestStepWorktreeOrphanCleanup_NoDoubleFireWithPublish(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
 
@@ -581,7 +594,9 @@ func TestStepWorktreeOrphanCleanup_NoDoubleFireWithPublish(t *testing.T) {
 // regressed when new step branches were added without considering scans
 // that have nothing to dispatch and nothing to recover.
 func TestStepDispatchOrRecovery_Boundaries(t *testing.T) {
+	t.Parallel()
 	t.Run("empty_state", func(t *testing.T) {
+		t.Parallel()
 		qh := newMinimalQueueHandler(t)
 		s := scanState{
 			commands: fileState[model.CommandQueue]{Data: model.CommandQueue{}},
@@ -603,6 +618,7 @@ func TestStepDispatchOrRecovery_Boundaries(t *testing.T) {
 	})
 
 	t.Run("all_pending_no_expired", func(t *testing.T) {
+		t.Parallel()
 		qh := newMinimalQueueHandler(t)
 		s := scanState{
 			commands: fileState[model.CommandQueue]{
@@ -630,6 +646,7 @@ func TestStepDispatchOrRecovery_Boundaries(t *testing.T) {
 	})
 
 	t.Run("no_panic_on_nil_task_dirty_map", func(t *testing.T) {
+		t.Parallel()
 		qh := newMinimalQueueHandler(t)
 		// Defensive: fresh scanState with nil maps must not panic the dispatch
 		// branch (callers always go through initScanState, but the function
@@ -659,6 +676,7 @@ func TestStepDispatchOrRecovery_Boundaries(t *testing.T) {
 // awaiting_fill has its own fill-deadline timeout (checkAwaitingFillTimeout)
 // and is NOT a "stuck" phase.
 func TestStepWorktreeFastTrackCleanup_SkipsAwaitingFill(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
 

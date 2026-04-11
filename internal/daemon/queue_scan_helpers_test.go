@@ -9,6 +9,7 @@ import (
 )
 
 func TestIsFenceStale(t *testing.T) {
+	t.Parallel()
 	expires := "2025-01-01T00:10:00Z"
 	tests := []struct {
 		name              string
@@ -68,6 +69,7 @@ func TestIsFenceStale(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := isFenceStale(tt.status, tt.leaseEpoch, tt.leaseExpiresAt, tt.expectedEpoch, tt.expectedExpiresAt)
 			if got != tt.want {
 				t.Errorf("isFenceStale() = %v, want %v", got, tt.want)
@@ -77,6 +79,7 @@ func TestIsFenceStale(t *testing.T) {
 }
 
 func TestIsMaxInProgressTimeout(t *testing.T) {
+	t.Parallel()
 	now := time.Date(2025, 1, 1, 1, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name      string
@@ -118,6 +121,7 @@ func TestIsMaxInProgressTimeout(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			got := isMaxInProgressTimeout(now, tt.timestamp, tt.maxMin)
 			if got != tt.want {
 				t.Errorf("isMaxInProgressTimeout() = %v, want %v", got, tt.want)
