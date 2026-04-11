@@ -13,12 +13,9 @@ import (
 
 // runDaemon starts the maestro daemon process.
 func runDaemon(args []string) error {
-	fs := newFlagSet("maestro daemon")
-	if err := fs.Parse(args); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro daemon: %v\nusage: maestro daemon", err)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro daemon: unexpected argument: %s\nusage: maestro daemon", fs.Arg(0))}
+	cmd := NewCommand("maestro daemon", "maestro daemon")
+	if err := cmd.Parse(args); err != nil {
+		return err
 	}
 
 	maestroDir, err := requireMaestroDir("daemon")

@@ -32,19 +32,11 @@ func runSkill(args []string) error {
 
 // runSkillList lists all registered skills for a given role.
 func runSkillList(args []string) error {
-	fs := newFlagSet("maestro skill list")
+	cmd := NewCommand("maestro skill list", "maestro skill list --role <role>")
 	var role string
-	fs.StringVar(&role, "role", "", "Role name (required, e.g., worker, planner, orchestrator)")
-	if err := fs.Parse(args); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill list: %v\nusage: maestro skill list --role <role>", err)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill list: unexpected argument: %s", fs.Arg(0))}
-	}
-
-	// --role is required.
-	if role == "" {
-		return &CLIError{Code: 1, Msg: "maestro skill list: --role is required\nusage: maestro skill list --role <role>"}
+	cmd.RequiredString(&role, "role", "Role name (required, e.g., worker, planner, orchestrator)")
+	if err := cmd.Parse(args); err != nil {
+		return err
 	}
 
 	// Validate --role to prevent path traversal.
@@ -85,19 +77,16 @@ func runSkillList(args []string) error {
 
 // runSkillCandidates lists skill candidates from state/skill_candidates.yaml.
 func runSkillCandidates(args []string) error {
-	fs := newFlagSet("maestro skill candidates")
+	cmd := NewCommand("maestro skill candidates", "maestro skill candidates [--status pending|approved|rejected]")
 	var statusFilter string
-	fs.StringVar(&statusFilter, "status", "", "Filter by status: pending|approved|rejected")
+	cmd.StringVar(&statusFilter, "status", "", "Filter by status: pending|approved|rejected")
 
-	if err := fs.Parse(args); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill candidates: %v\nusage: maestro skill candidates [--status pending|approved|rejected]", err)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill candidates: unexpected argument: %s", fs.Arg(0))}
+	if err := cmd.Parse(args); err != nil {
+		return err
 	}
 
 	if statusFilter != "" && statusFilter != "pending" && statusFilter != "approved" && statusFilter != "rejected" {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill candidates: invalid --status value: %s (must be pending, approved, or rejected)", statusFilter)}
+		return cmd.Errorf("invalid --status value: %s (must be pending, approved, or rejected)", statusFilter)
 	}
 
 	maestroDir, err := requireMaestroDir("skill candidates")
@@ -143,15 +132,12 @@ func runSkillApprove(args []string) error {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill approve: invalid candidate-id: %v", err)}
 	}
 
-	fs := newFlagSet("maestro skill approve")
+	cmd := NewCommand("maestro skill approve", "maestro skill approve <candidate-id> [--name <skill-name>]")
 	var skillName string
-	fs.StringVar(&skillName, "name", "", "Skill name in kebab-case (a-z0-9 and hyphens, 1-64 chars)")
+	cmd.StringVar(&skillName, "name", "", "Skill name in kebab-case (a-z0-9 and hyphens, 1-64 chars)")
 
-	if err := fs.Parse(args[1:]); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill approve: %v\nusage: maestro skill approve <candidate-id> [--name <skill-name>]", err)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill approve: unexpected argument: %s", fs.Arg(0))}
+	if err := cmd.Parse(args[1:]); err != nil {
+		return err
 	}
 
 	maestroDir, err := requireMaestroDir("skill approve")
@@ -204,12 +190,9 @@ func runSkillReject(args []string) error {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill reject: invalid candidate-id: %v", err)}
 	}
 
-	fs := newFlagSet("maestro skill reject")
-	if err := fs.Parse(args[1:]); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill reject: %v", err)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill reject: unexpected argument: %s", fs.Arg(0))}
+	cmd := NewCommand("maestro skill reject", "maestro skill reject <candidate-id>")
+	if err := cmd.Parse(args[1:]); err != nil {
+		return err
 	}
 
 	maestroDir, err := requireMaestroDir("skill reject")
