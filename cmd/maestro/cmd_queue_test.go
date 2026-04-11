@@ -315,6 +315,58 @@ func TestRunQueueWrite_NotificationMissingFields(t *testing.T) {
 	}
 }
 
+func TestRunQueueWrite_CommandContentTooLong(t *testing.T) {
+	longContent := strings.Repeat("x", 65537)
+	err := newCLIApp().runQueueWrite([]string{"planner", "--type", "command", "--content", longContent}, io.Discard)
+	if err == nil {
+		t.Fatal("expected error for oversized content")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !strings.Contains(ce.Msg, "exceeds maximum size") {
+		t.Errorf("expected 'exceeds maximum size' in error, got: %s", ce.Msg)
+	}
+}
+
+func TestRunQueueWrite_NotificationContentTooLong(t *testing.T) {
+	longContent := strings.Repeat("x", 65537)
+	err := newCLIApp().runQueueWrite([]string{"planner", "--type", "notification",
+		"--command-id", "cmd_0000000001_abcdef01",
+		"--content", longContent,
+		"--source-result-id", "res1",
+	}, io.Discard)
+	if err == nil {
+		t.Fatal("expected error for oversized content")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !strings.Contains(ce.Msg, "exceeds maximum size") {
+		t.Errorf("expected 'exceeds maximum size' in error, got: %s", ce.Msg)
+	}
+}
+
+func TestRunQueueWrite_NotificationInvalidSourceResultID(t *testing.T) {
+	err := newCLIApp().runQueueWrite([]string{"planner", "--type", "notification",
+		"--command-id", "cmd_0000000001_abcdef01",
+		"--content", "test",
+		"--source-result-id", "../../bad",
+	}, io.Discard)
+	if err == nil {
+		t.Fatal("expected error for invalid source-result-id")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !strings.Contains(ce.Msg, "invalid --source-result-id") {
+		t.Errorf("expected 'invalid --source-result-id' in error, got: %s", ce.Msg)
+	}
+}
+
 func TestRunQueueWrite_UnexpectedArg(t *testing.T) {
 	err := newCLIApp().runQueueWrite([]string{"planner", "--type", "command", "--content", "test", "extra"}, io.Discard)
 	if err == nil {

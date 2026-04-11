@@ -311,6 +311,105 @@ func TestRunPlanRequestCancel_MissingCommandID(t *testing.T) {
 	}
 }
 
+func TestRunPlanSubmit_InvalidCommandID(t *testing.T) {
+	err := runPlanSubmit([]string{"--command-id", "../evil"})
+	if err == nil {
+		t.Fatal("expected error for invalid command-id")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !containsStr(ce.Msg, "invalid --command-id") {
+		t.Errorf("expected 'invalid --command-id' in error, got: %s", ce.Msg)
+	}
+}
+
+func TestRunPlanComplete_InvalidCommandID(t *testing.T) {
+	err := runPlanComplete([]string{"--command-id", "../evil"})
+	if err == nil {
+		t.Fatal("expected error for invalid command-id")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !containsStr(ce.Msg, "invalid --command-id") {
+		t.Errorf("expected 'invalid --command-id' in error, got: %s", ce.Msg)
+	}
+}
+
+func TestRunPlanComplete_SummaryTooLong(t *testing.T) {
+	longSummary := make([]byte, 65537)
+	for i := range longSummary {
+		longSummary[i] = 'x'
+	}
+	err := runPlanComplete([]string{"--command-id", "valid-cmd", "--summary", string(longSummary)})
+	if err == nil {
+		t.Fatal("expected error for oversized summary")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !containsStr(ce.Msg, "exceeds maximum size") {
+		t.Errorf("expected 'exceeds maximum size' in error, got: %s", ce.Msg)
+	}
+}
+
+func TestRunPlanAddRetryTask_ContentTooLong(t *testing.T) {
+	longContent := make([]byte, 65537)
+	for i := range longContent {
+		longContent[i] = 'x'
+	}
+	err := runPlanAddRetryTask([]string{
+		"--command-id", "valid-cmd",
+		"--retry-of", "valid-task",
+		"--purpose", "p",
+		"--content", string(longContent),
+		"--acceptance-criteria", "ac",
+		"--bloom-level", "3",
+	})
+	if err == nil {
+		t.Fatal("expected error for oversized content")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !containsStr(ce.Msg, "exceeds maximum size") {
+		t.Errorf("expected 'exceeds maximum size' in error, got: %s", ce.Msg)
+	}
+}
+
+func TestRunPlanRequestCancel_InvalidCommandID(t *testing.T) {
+	err := runPlanRequestCancel([]string{"--command-id", "../evil"})
+	if err == nil {
+		t.Fatal("expected error for invalid command-id")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !containsStr(ce.Msg, "invalid --command-id") {
+		t.Errorf("expected 'invalid --command-id' in error, got: %s", ce.Msg)
+	}
+}
+
+func TestRunPlanRebuild_InvalidCommandID(t *testing.T) {
+	err := runPlanRebuild([]string{"--command-id", "../evil"})
+	if err == nil {
+		t.Fatal("expected error for invalid command-id")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !containsStr(ce.Msg, "invalid --command-id") {
+		t.Errorf("expected 'invalid --command-id' in error, got: %s", ce.Msg)
+	}
+}
+
 func TestRunPlanRebuild_MissingCommandID(t *testing.T) {
 	err := runPlanRebuild(nil)
 	if err == nil {

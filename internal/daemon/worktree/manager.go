@@ -59,6 +59,10 @@ type Manager struct {
 	// serialize against scan and against each other. Locking order:
 	// scanMu (caller, outside this package) → cmdLocks[cmd] → wm.mu.
 	cmdLocks sync.Map
+
+	// testPublishResetHook, if non-nil, replaces git reset --hard HEAD during
+	// PublishToBase. Used only for testing error paths. Must be nil in production.
+	testPublishResetHook func() error
 }
 
 // NewManager creates a new Manager.

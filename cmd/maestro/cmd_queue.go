@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
 )
@@ -76,6 +77,9 @@ func (a *cliApp) runQueueWrite(args []string, warnOut io.Writer) error {
 		if content == "" {
 			return &CLIError{Code: 1, Msg: "maestro queue write: --content is required for type=command"}
 		}
+		if err := validate.ContentLength("--content", content, model.DefaultMaxEntryContentBytes); err != nil {
+			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: %v", err)}
+		}
 		params["content"] = content
 		if priority > 0 {
 			params["priority"] = priority
@@ -102,6 +106,12 @@ func (a *cliApp) runQueueWrite(args []string, warnOut io.Writer) error {
 		}
 		if err := validate.ID(commandID); err != nil {
 			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: invalid --command-id: %v", err)}
+		}
+		if err := validate.ID(sourceResultID); err != nil {
+			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: invalid --source-result-id: %v", err)}
+		}
+		if err := validate.ContentLength("--content", content, model.DefaultMaxEntryContentBytes); err != nil {
+			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: %v", err)}
 		}
 		params["command_id"] = commandID
 		params["content"] = content

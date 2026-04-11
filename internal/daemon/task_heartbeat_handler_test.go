@@ -692,6 +692,74 @@ func TestHeartbeatErrorMatrix(t *testing.T) {
 	}
 }
 
+// TestHeartbeat_NonInProgressStatuses verifies that heartbeat is rejected for all
+// non-in_progress statuses (cancelled, failed, pending, dead_letter) with proper
+// error code and log message.
+func TestHeartbeat_NonInProgressStatuses(t *testing.T) {
+	t.Parallel()
+
+	statuses := []struct {
+		name   string
+		status model.Status
+	}{
+		{"cancelled", model.StatusCancelled},
+		{"failed", model.StatusFailed},
+		{"pending", model.StatusPending},
+		{"dead_letter", model.StatusDeadLetter},
+	}
+
+	for _, tc := range statuses {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			d := newTestDaemon(t)
+			handler := newTestHeartbeatHandler(t, d)
+
+			taskID := "task_0000000001_abcdef01"
+			workerID := "worker1"
+			leaseEpoch := 1
+
+			tq := model.TaskQueue{
+				SchemaVersion: 1,
+				FileType:      "queue_task",
+				Tasks: []model.Task{
+					{
+						ID:         taskID,
+						CommandID:  "cmd_0000000001_abcdef01",
+						Purpose:    "test purpose",
+						Content:    "test content",
+						Status:     tc.status,
+						LeaseEpoch: leaseEpoch,
+						CreatedAt:  time.Now().Format(time.RFC3339),
+						UpdatedAt:  time.Now().Format(time.RFC3339),
+					},
+				},
+			}
+			path := filepath.Join(d.maestroDir, "queue", workerID+".yaml")
+			if err := yamlutil.AtomicWrite(path, tq); err != nil {
+				t.Fatalf("write worker queue: %v", err)
+			}
+
+			req := makeHeartbeatRequest(t, TaskHeartbeatParams{
+				TaskID:   taskID,
+				WorkerID: workerID,
+				Epoch:    leaseEpoch,
+			})
+
+			resp := handler.Handle(req.Params)
+
+			if resp.Success {
+				t.Errorf("heartbeat should have been rejected for %s task", tc.status)
+			}
+			if resp.Error == nil {
+				t.Fatalf("expected error response for %s task", tc.status)
+			}
+			if resp.Error.Code != uds.ErrCodeFencingReject {
+				t.Errorf("expected fencing reject error, got code=%s msg=%s", resp.Error.Code, resp.Error.Message)
+			}
+		})
+	}
+}
+
 // TestHeartbeatTimeout tests lease expiration scenarios
 func TestHeartbeatTimeout(t *testing.T) {
 	t.Parallel()

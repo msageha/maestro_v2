@@ -91,6 +91,44 @@ func mustWaitForOutput(t *testing.T, paneTarget, marker string, timeout time.Dur
 	}
 }
 
+// waitForCommand polls until the pane's current command matches expected.
+func waitForCommand(t *testing.T, paneTarget, expected string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		cmd, err := GetPaneCurrentCommand(paneTarget)
+		if err == nil && strings.Contains(cmd, expected) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Logf("WARNING: command %q not detected in pane %s, proceeding", expected, paneTarget)
+}
+
+// waitForStableContent polls until the pane content hash is stable for stableDuration.
+func waitForStableContent(t *testing.T, paneTarget string, stableDuration, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	var lastHash string
+	var stableSince time.Time
+	for time.Now().Before(deadline) {
+		content, err := CapturePaneJoined(paneTarget, 10)
+		if err == nil {
+			h := testContentHash(content)
+			if h == lastHash {
+				if time.Since(stableSince) >= stableDuration {
+					return
+				}
+			} else {
+				lastHash = h
+				stableSince = time.Now()
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Logf("WARNING: pane content not stable within %v, proceeding", timeout)
+}
+
 // parseSubmissionLog reads the inputrecorder log file and returns parsed entries.
 func parseSubmissionLog(t *testing.T, logPath string) []submissionEntry {
 	t.Helper()
@@ -176,15 +214,15 @@ func TestInputSeparation_Cat_BasicSeparation(t *testing.T) {
 	if err := SendCommand(pane, "cat"); err != nil {
 		t.Fatalf("start cat: %v", err)
 	}
-	time.Sleep(500 * time.Millisecond)
+	waitForCommand(t, pane, "cat", 5*time.Second)
 
 	// Send /clear via send-keys (same as execWithClear Step 2)
 	if err := SendCommand(pane, "/clear"); err != nil {
 		t.Fatalf("send /clear: %v", err)
 	}
 
-	// Cooldown (same as CooldownAfterClear default)
-	time.Sleep(3 * time.Second)
+	// Wait for pane to stabilize after /clear
+	waitForStableContent(t, pane, 500*time.Millisecond, 5*time.Second)
 
 	// Send instruction text via paste-buffer (same as sendAndConfirm)
 	instruction := "INSTRUCTION_MARKER_LINE1\nINSTRUCTION_LINE2"
@@ -240,7 +278,7 @@ func TestInputSeparation_Cat_TimingGaps(t *testing.T) {
 			if err := SendCommand(pane, "cat"); err != nil {
 				t.Fatalf("start cat: %v", err)
 			}
-			time.Sleep(500 * time.Millisecond)
+			waitForCommand(t, pane, "cat", 5*time.Second)
 
 			// Send /clear
 			if err := SendCommand(pane, "/clear"); err != nil {
@@ -315,8 +353,8 @@ func TestInputSeparation_BracketedPaste_BasicSeparation(t *testing.T) {
 		t.Log("WARNING: RECV[1] not detected in pane, proceeding")
 	}
 
-	// Cooldown (same as CooldownAfterClear)
-	time.Sleep(3 * time.Second)
+	// Wait for pane to stabilize after /clear
+	waitForStableContent(t, pane, 500*time.Millisecond, 5*time.Second)
 
 	// Send instruction via paste-buffer
 	if err := SendTextAndSubmit(context.Background(), pane, "INSTRUCTION_BASIC\nLINE2\nLINE3"); err != nil {
@@ -366,8 +404,8 @@ func TestInputSeparation_BracketedPaste_WithProcessingDelay(t *testing.T) {
 		t.Fatalf("send /clear: %v", err)
 	}
 
-	// CooldownAfterClear — the app is still processing /clear (2s delay)
-	time.Sleep(3 * time.Second)
+	// Wait for pane to stabilize after /clear
+	waitForStableContent(t, pane, 500*time.Millisecond, 5*time.Second)
 
 	// Send instruction
 	if err := SendTextAndSubmit(context.Background(), pane, "INSTRUCTION_DELAYED"); err != nil {
@@ -465,24 +503,8 @@ func TestInputSeparation_ExecWithClearFlow_BashPrompt(t *testing.T) {
 		t.Fatalf("send /clear: %v", err)
 	}
 
-	// Step 3: CooldownAfterClear
-	time.Sleep(3 * time.Second)
-
-	// Step 4: Simulate waitStable — hash comparison
-	content1, err := CapturePaneJoined(pane, 10)
-	if err != nil {
-		t.Fatalf("capture 1: %v", err)
-	}
-	h1 := testContentHash(content1)
-	time.Sleep(2 * time.Second)
-	content2, err := CapturePaneJoined(pane, 10)
-	if err != nil {
-		t.Fatalf("capture 2: %v", err)
-	}
-	h2 := testContentHash(content2)
-	if h1 != h2 {
-		t.Log("WARNING: pane content not stable after /clear, hashes differ")
-	}
+	// Step 3-4: Wait for pane to stabilize after /clear (replaces CooldownAfterClear + waitStable)
+	waitForStableContent(t, pane, 500*time.Millisecond, 5*time.Second)
 
 	// Step 5: Simulate detectBusy — check pane_current_command
 	cmd, err := GetPaneCurrentCommand(pane)
@@ -545,16 +567,8 @@ func TestInputSeparation_ExecWithClearFlow_InputRecorder(t *testing.T) {
 		t.Fatalf("send /clear: %v", err)
 	}
 
-	// Step 3: CooldownAfterClear (3s)
-	time.Sleep(3 * time.Second)
-
-	// Step 4: waitStable — hash comparison (simplified: just check stability)
-	c1, _ := CapturePaneJoined(pane, 10)
-	time.Sleep(2 * time.Second)
-	c2, _ := CapturePaneJoined(pane, 10)
-	if testContentHash(c1) != testContentHash(c2) {
-		t.Log("WARNING: pane not stable after /clear")
-	}
+	// Step 3-4: Wait for pane to stabilize after /clear (replaces CooldownAfterClear + waitStable)
+	waitForStableContent(t, pane, 500*time.Millisecond, 5*time.Second)
 
 	// Step 5: detectBusy — skip (inputrecorder is not a shell)
 
@@ -638,7 +652,7 @@ func TestInputSeparation_ConcurrentPanes(t *testing.T) {
 				t.Errorf("pane %d send /clear: %v", idx, err)
 				return
 			}
-			time.Sleep(3 * time.Second)
+			waitForStableContent(t, panes[idx], 500*time.Millisecond, 5*time.Second)
 
 			// Send instruction
 			msg := fmt.Sprintf("INSTRUCTION_PANE_%d", idx)
@@ -703,7 +717,7 @@ func TestInputSeparation_RepeatedDispatches(t *testing.T) {
 			if !waitForOutput(t, pane, readyMarker, 5*time.Second) {
 				t.Logf("WARNING: RECV marker for iteration %d not found, proceeding", i)
 			}
-			time.Sleep(500 * time.Millisecond)
+			waitForStableContent(t, pane, 200*time.Millisecond, 3*time.Second)
 		}
 
 		// Send /clear

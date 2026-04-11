@@ -68,6 +68,9 @@ func runPlanSubmit(args []string) error {
 	if commandID == "" {
 		return &CLIError{Code: 1, Msg: "maestro plan submit: --command-id is required\nusage: maestro plan submit --command-id <id> [--tasks-file <path>] [--phase <name>] [--dry-run]"}
 	}
+	if err := validate.ID(commandID); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan submit: invalid --command-id: %v", err)}
+	}
 
 	if tasksFile == "" {
 		tasksFile = "-" // default to stdin
@@ -133,6 +136,12 @@ func runPlanComplete(args []string) error {
 	if commandID == "" {
 		return &CLIError{Code: 1, Msg: "maestro plan complete: --command-id is required\nusage: maestro plan complete --command-id <id> --summary <text>"}
 	}
+	if err := validate.ID(commandID); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan complete: invalid --command-id: %v", err)}
+	}
+	if err := validate.ContentLength("--summary", summary, model.DefaultMaxEntryContentBytes); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan complete: %v", err)}
+	}
 
 	maestroDir, err := requireMaestroDir("plan complete")
 	if err != nil {
@@ -190,6 +199,15 @@ func runPlanAddRetryTask(args []string) error {
 	if bloomLevel < 1 || bloomLevel > 6 {
 		return &CLIError{Code: 1, Msg: "maestro plan add-retry-task: --bloom-level must be between 1 and 6"}
 	}
+	for _, pair := range []struct{ name, val string }{
+		{"--content", content},
+		{"--purpose", purpose},
+		{"--acceptance-criteria", acceptanceCriteria},
+	} {
+		if err := validate.ContentLength(pair.name, pair.val, model.DefaultMaxEntryContentBytes); err != nil {
+			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan add-retry-task: %v", err)}
+		}
+	}
 
 	maestroDir, err := requireMaestroDir("plan add-retry-task")
 	if err != nil {
@@ -229,6 +247,9 @@ func runPlanRequestCancel(args []string) error {
 
 	if commandID == "" {
 		return &CLIError{Code: 1, Msg: "maestro plan request-cancel: --command-id is required\nusage: maestro plan request-cancel --command-id <id> [--requested-by <agent>] [--reason <text>]"}
+	}
+	if err := validate.ID(commandID); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan request-cancel: invalid --command-id: %v", err)}
 	}
 
 	if requestedBy == "" {
@@ -284,6 +305,9 @@ func runPlanRebuild(args []string) error {
 
 	if commandID == "" {
 		return &CLIError{Code: 1, Msg: "maestro plan rebuild: --command-id is required\nusage: maestro plan rebuild --command-id <id>"}
+	}
+	if err := validate.ID(commandID); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan rebuild: invalid --command-id: %v", err)}
 	}
 
 	maestroDir, err := requireMaestroDir("plan rebuild")

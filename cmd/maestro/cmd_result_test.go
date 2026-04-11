@@ -106,6 +106,26 @@ func TestRunResultWrite_InvalidCommandID(t *testing.T) {
 	}
 }
 
+func TestRunResultWrite_SummaryTooLong(t *testing.T) {
+	longSummary := strings.Repeat("x", 65537)
+	err := newCLIApp().runResultWrite([]string{"worker1",
+		"--task-id", "task_0000000001_abcdef01",
+		"--command-id", "cmd_0000000001_abcdef01",
+		"--status", "completed",
+		"--summary", longSummary,
+	})
+	if err == nil {
+		t.Fatal("expected error for oversized summary")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !strings.Contains(ce.Msg, "exceeds maximum size") {
+		t.Errorf("expected 'exceeds maximum size' in error, got: %s", ce.Msg)
+	}
+}
+
 func TestRunResultWrite_ErrorMessageFormat(t *testing.T) {
 	// Verify error messages include "maestro result write:" prefix
 	err := newCLIApp().runResultWrite([]string{"worker1"})

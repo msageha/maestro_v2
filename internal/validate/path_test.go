@@ -118,6 +118,38 @@ func TestValidateFilePath(t *testing.T) {
 	}
 }
 
+func TestContentLength(t *testing.T) {
+	t.Run("within limit", func(t *testing.T) {
+		if err := ContentLength("--content", "short", 100); err != nil {
+			t.Errorf("ContentLength should accept short input: %v", err)
+		}
+	})
+	t.Run("exactly at limit", func(t *testing.T) {
+		val := string(make([]byte, 100))
+		if err := ContentLength("--content", val, 100); err != nil {
+			t.Errorf("ContentLength should accept input at exact limit: %v", err)
+		}
+	})
+	t.Run("exceeds limit", func(t *testing.T) {
+		val := string(make([]byte, 101))
+		err := ContentLength("--content", val, 100)
+		if err == nil {
+			t.Fatal("ContentLength should reject input exceeding limit")
+		}
+		if !testing.Short() {
+			expected := "validate: --content exceeds maximum size of 100 bytes (got 101 bytes)"
+			if err.Error() != expected {
+				t.Errorf("got error %q, want %q", err.Error(), expected)
+			}
+		}
+	})
+	t.Run("empty string", func(t *testing.T) {
+		if err := ContentLength("--content", "", 100); err != nil {
+			t.Errorf("ContentLength should accept empty string: %v", err)
+		}
+	})
+}
+
 func TestValidateFilePath_Invalid(t *testing.T) {
 	invalid := []struct {
 		path string
