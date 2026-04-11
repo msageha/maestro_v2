@@ -54,6 +54,7 @@ func newTestQueueHandler(maestroDir string, opts ...QueueHandlerOption) *QueueHa
 }
 
 func TestQueueHandler_PeriodicScan_Empty(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -62,6 +63,7 @@ func TestQueueHandler_PeriodicScan_Empty(t *testing.T) {
 }
 
 func TestQueueHandler_DispatchPendingTask(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -118,6 +120,7 @@ func TestQueueHandler_DispatchPendingTask(t *testing.T) {
 }
 
 func TestQueueHandler_DispatchPendingCommand(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -162,6 +165,7 @@ func TestQueueHandler_DispatchPendingCommand(t *testing.T) {
 }
 
 func TestQueueHandler_AtMostOneInFlight(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -218,6 +222,7 @@ func TestQueueHandler_AtMostOneInFlight(t *testing.T) {
 }
 
 func TestQueueHandler_CrossFileInFlight(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -283,6 +288,7 @@ func TestQueueHandler_CrossFileInFlight(t *testing.T) {
 }
 
 func TestQueueHandler_LeaseExpireRecovery(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -336,6 +342,7 @@ func TestQueueHandler_LeaseExpireRecovery(t *testing.T) {
 }
 
 func TestQueueHandler_CancelPendingTask(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -397,6 +404,7 @@ func TestQueueHandler_CancelPendingTask(t *testing.T) {
 }
 
 func TestQueueHandler_HandleFileEvent(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -407,6 +415,7 @@ func TestQueueHandler_HandleFileEvent(t *testing.T) {
 }
 
 func TestWorkerIDFromPath(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		path     string
 		expected string
@@ -427,6 +436,7 @@ func TestWorkerIDFromPath(t *testing.T) {
 }
 
 func TestQueueHandler_BuildGlobalInFlightSet(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -471,6 +481,7 @@ func TestQueueHandler_BuildGlobalInFlightSet(t *testing.T) {
 }
 
 func TestQueueHandler_DispatchNotification(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -513,6 +524,7 @@ func TestQueueHandler_DispatchNotification(t *testing.T) {
 }
 
 func TestQueueHandler_PhaseB_DoesNotBlockRLock(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -616,6 +628,7 @@ func (m *slowMockExecutor) Close() error {
 // by stable key (commandID+phaseID+kind), not by array index. This catches a bug
 // where stale-signal removal in Phase A compacted the array, causing index mismatch.
 func TestApplySignalResults_KeyMatch(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -659,6 +672,7 @@ func TestApplySignalResults_KeyMatch(t *testing.T) {
 // Phase C correctly rolls back the task from in_progress to pending.
 // Only the LLM Agent executor is mocked (returns error). All other components are real.
 func TestQueueHandler_DispatchFailure_Rollback(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -732,6 +746,7 @@ func TestQueueHandler_DispatchFailure_Rollback(t *testing.T) {
 // during Phase B (slow dispatch) is NOT lost when Phase C reloads and applies results.
 // Only the LLM Agent executor is mocked (slow). Queue writes use real file I/O + real locks.
 func TestQueueHandler_ConcurrentWriteDuringPhaseB(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 
 	cfg := model.Config{

@@ -17,10 +17,12 @@ import (
 // --- §4.5.1-1: Deterministic Daemon Processing ---
 
 func TestBoundary_DeterministicDaemonProcessing(t *testing.T) {
+	t.Parallel()
 	// §4.5.1-1: Deterministic processing consolidated in Daemon.
 	// Same input → same output for all computational components.
 
 	t.Run("UCB1_Deterministic", func(t *testing.T) {
+		t.Parallel()
 		// UCB1: same arms + same reward history → same BestArm.
 		for trial := 0; trial < 3; trial++ {
 			sel := bandit.NewSelector(1.41)
@@ -41,6 +43,7 @@ func TestBoundary_DeterministicDaemonProcessing(t *testing.T) {
 	})
 
 	t.Run("ComplexityScore_Deterministic", func(t *testing.T) {
+		t.Parallel()
 		scorer := complexity.NewScorer(complexity.DefaultThresholds())
 		input := complexity.Input{
 			FileCount:         15,
@@ -62,6 +65,7 @@ func TestBoundary_DeterministicDaemonProcessing(t *testing.T) {
 	})
 
 	t.Run("FeatureProfile_Deterministic", func(t *testing.T) {
+		t.Parallel()
 		evaluator := featuregate.NewEvaluator()
 		levels := []featuregate.ProfileLevel{
 			featuregate.LevelSimple,
@@ -87,6 +91,7 @@ func TestBoundary_DeterministicDaemonProcessing(t *testing.T) {
 // --- §4.5.1: No LLM Token Consumption ---
 
 func TestBoundary_NoLLMTokenConsumption(t *testing.T) {
+	t.Parallel()
 	// All Phase C packages operate as in-process Go computations.
 	// No external HTTP/LLM calls are made.
 
@@ -126,7 +131,9 @@ func TestBoundary_NoLLMTokenConsumption(t *testing.T) {
 // --- §5 Anti-Requirements ---
 
 func TestBoundary_AntiRequirements(t *testing.T) {
+	t.Parallel()
 	t.Run("S5_1_QualityScore_StaticAnalysis", func(t *testing.T) {
+		t.Parallel()
 		// §5-1: FitnessScore.QualityScore is static-analysis-based, no LLM override.
 		// QualityScore is a plain float64 field — no LLM accessor.
 		fs := model.FitnessScore{
@@ -144,6 +151,7 @@ func TestBoundary_AntiRequirements(t *testing.T) {
 	})
 
 	t.Run("S5_2_Ensemble_IndependentEvaluation", func(t *testing.T) {
+		t.Parallel()
 		// §5-2: Ensemble uses independent evaluation + weighted aggregation, NOT majority vote.
 		v := verification.NewVerifier()
 
@@ -167,6 +175,7 @@ func TestBoundary_AntiRequirements(t *testing.T) {
 	})
 
 	t.Run("S5_6_Evolution_VerifyConfigPrereq", func(t *testing.T) {
+		t.Parallel()
 		// §5-6: Evolution/Search presumes verify.yaml exists.
 		// VerifyConfig nil → evolution should not proceed blindly.
 		// Test at type level: model.DefinitionOfAbort has explicit conditions.
@@ -177,6 +186,7 @@ func TestBoundary_AntiRequirements(t *testing.T) {
 	})
 
 	t.Run("S5_7_Bandit_TraceDataPrereq", func(t *testing.T) {
+		t.Parallel()
 		// §5-7: Bandit presumes Trace data accumulation.
 		sel := bandit.NewSelector(1.41)
 		sel.AddArm("a")
@@ -201,7 +211,9 @@ func TestBoundary_AntiRequirements(t *testing.T) {
 // --- C-1: Evolution Mutation Strategies ---
 
 func TestC1_Evolution_MutationStrategies(t *testing.T) {
+	t.Parallel()
 	t.Run("PlanMutations_Distribution", func(t *testing.T) {
+		t.Parallel()
 		engine := evolution.NewEngine(
 			[]evolution.Strategy{evolution.StrategyDiff, evolution.StrategyFull, evolution.StrategyCross},
 			0.5,
@@ -224,6 +236,7 @@ func TestC1_Evolution_MutationStrategies(t *testing.T) {
 	})
 
 	t.Run("PlanMutations_NoCross_SingleParent", func(t *testing.T) {
+		t.Parallel()
 		engine := evolution.NewEngine(
 			[]evolution.Strategy{evolution.StrategyDiff, evolution.StrategyFull, evolution.StrategyCross},
 			0.5,
@@ -238,6 +251,7 @@ func TestC1_Evolution_MutationStrategies(t *testing.T) {
 	})
 
 	t.Run("CheckNovelty", func(t *testing.T) {
+		t.Parallel()
 		engine := evolution.NewEngine(nil, 0.5)
 		h1 := evolution.HashContent("hello")
 		h2 := evolution.HashContent("world")
@@ -253,6 +267,7 @@ func TestC1_Evolution_MutationStrategies(t *testing.T) {
 	})
 
 	t.Run("SelectSurvivors_WinnerTakesAll", func(t *testing.T) {
+		t.Parallel()
 		// §5-3: Winner-takes-all selection.
 		engine := evolution.NewEngine(nil, 0.5)
 		results := []evolution.SlotResult{
@@ -285,9 +300,11 @@ func TestC1_Evolution_MutationStrategies(t *testing.T) {
 // --- C-3: Verification Ensemble Aggregation ---
 
 func TestC3_Verification_EnsembleAggregation(t *testing.T) {
+	t.Parallel()
 	v := verification.NewVerifier()
 
 	t.Run("AllPass", func(t *testing.T) {
+		t.Parallel()
 		results := []verification.PerspectiveResult{
 			{Name: "build", Passed: true},
 			{Name: "lint", Passed: true},
@@ -304,6 +321,7 @@ func TestC3_Verification_EnsembleAggregation(t *testing.T) {
 	})
 
 	t.Run("CriticalFail", func(t *testing.T) {
+		t.Parallel()
 		results := []verification.PerspectiveResult{
 			{Name: "build", Passed: false}, // critical (weight 1.0)
 			{Name: "lint", Passed: true},
@@ -317,6 +335,7 @@ func TestC3_Verification_EnsembleAggregation(t *testing.T) {
 	})
 
 	t.Run("ShouldRetry_NewFingerprint", func(t *testing.T) {
+		t.Parallel()
 		failResult := verification.AggregatedResult{Passed: false}
 		seen := []string{"fp-old-1", "fp-old-2"}
 
@@ -339,6 +358,7 @@ func TestC3_Verification_EnsembleAggregation(t *testing.T) {
 // --- C-5: FingerprintDB Strategy Learning ---
 
 func TestC5_FingerprintDB_StrategyLearning(t *testing.T) {
+	t.Parallel()
 	db := learnings.NewFingerprintDB(100)
 
 	// Store → Query → SuggestStrategy flow.
@@ -388,6 +408,7 @@ func TestC5_FingerprintDB_StrategyLearning(t *testing.T) {
 // --- C-6: Complexity Depth Estimation ---
 
 func TestC6_Complexity_DepthEstimation(t *testing.T) {
+	t.Parallel()
 	scorer := complexity.NewScorer(complexity.DefaultThresholds())
 
 	tests := []struct {
@@ -419,6 +440,7 @@ func TestC6_Complexity_DepthEstimation(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			score := scorer.Estimate(tt.input)
 			depth := scorer.EstimateDepth(score)
 			if depth != tt.wantDepth {
@@ -440,6 +462,7 @@ func TestC6_Complexity_DepthEstimation(t *testing.T) {
 // --- Model: Task Extension Fields ---
 
 func TestModel_TaskExtensions_Boundary(t *testing.T) {
+	t.Parallel()
 	// Task.Runtime, Task.ModelOverride, Task.ComplexityLevel fields exist.
 	task := model.Task{
 		ID:              "boundary-test",
@@ -462,6 +485,7 @@ func TestModel_TaskExtensions_Boundary(t *testing.T) {
 // --- Model: FitnessScore QualityScore in Compare ---
 
 func TestModel_FitnessQualityScore_Boundary(t *testing.T) {
+	t.Parallel()
 	th := model.DefaultFitnessThresholds()
 
 	// QualityScore is the final comparison axis.

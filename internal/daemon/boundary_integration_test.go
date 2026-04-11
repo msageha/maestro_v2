@@ -49,6 +49,7 @@ func newBoundaryTestDaemon(t *testing.T) *Daemon {
 // TestGuard_AllTerminalCommands_PendingDispatched verifies that when all
 // existing commands are terminal, a new pending command IS dispatched.
 func TestGuard_AllTerminalCommands_PendingDispatched(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -95,6 +96,7 @@ func TestGuard_AllTerminalCommands_PendingDispatched(t *testing.T) {
 
 // TestGuard_EmptyQueue_NoPanic verifies empty queue doesn't cause issues.
 func TestGuard_EmptyQueue_NoPanic(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -110,6 +112,7 @@ func TestGuard_EmptyQueue_NoPanic(t *testing.T) {
 // guard: even if the queue is corrupted with 2 in_progress commands, no new
 // dispatches occur.
 func TestGuard_MultipleInProgressCommands_NoneDispatched(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -145,6 +148,7 @@ func TestGuard_MultipleInProgressCommands_NoneDispatched(t *testing.T) {
 // TestGuard_DeadLetterCommandNotBlockingDispatch verifies that dead_letter
 // status does not block dispatch (it's terminal).
 func TestGuard_DeadLetterCommandNotBlockingDispatch(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -180,6 +184,7 @@ func TestGuard_DeadLetterCommandNotBlockingDispatch(t *testing.T) {
 // TestCommandLeaseAutoExtend_ExactMaxTimeout verifies that a command at exactly
 // the max_in_progress_min boundary is released (not extended).
 func TestCommandLeaseAutoExtend_ExactMaxTimeout(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 	qh.config.Watcher.MaxInProgressMin = model.IntPtr(30)
@@ -220,6 +225,7 @@ func TestCommandLeaseAutoExtend_ExactMaxTimeout(t *testing.T) {
 // TestCommandLeaseAutoExtend_JustBeforeMaxTimeout verifies that a command
 // just before max_in_progress_min is auto-extended.
 func TestCommandLeaseAutoExtend_JustBeforeMaxTimeout(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 	qh.config.Watcher.MaxInProgressMin = model.IntPtr(30)
@@ -276,6 +282,7 @@ func TestCommandLeaseAutoExtend_JustBeforeMaxTimeout(t *testing.T) {
 // TestCommandLeaseAutoExtend_NilLeaseExpiresAt verifies that malformed entries
 // (nil lease_expires_at) are repaired via auto-extend.
 func TestCommandLeaseAutoExtend_NilLeaseExpiresAt(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -317,6 +324,7 @@ func TestCommandLeaseAutoExtend_NilLeaseExpiresAt(t *testing.T) {
 // TestCommandLeaseAutoExtend_DefaultMaxInProgressMin verifies the default
 // max_in_progress_min (60) is used when config value is 0.
 func TestCommandLeaseAutoExtend_DefaultMaxInProgressMin(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 	qh.config.Watcher.MaxInProgressMin = nil // should default to 60
@@ -369,6 +377,7 @@ func TestCommandLeaseAutoExtend_DefaultMaxInProgressMin(t *testing.T) {
 // TestTaskLeaseExpiry_NilLeaseExpiresAt verifies malformed task entries
 // (nil lease_expires_at) are released immediately in Phase A.
 func TestTaskLeaseExpiry_NilLeaseExpiresAt(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -408,6 +417,7 @@ func TestTaskLeaseExpiry_NilLeaseExpiresAt(t *testing.T) {
 // TestTaskLeaseExpiry_BusyAgent_MaxTimeout verifies that even a busy agent
 // is released when max_in_progress_min is exceeded.
 func TestTaskLeaseExpiry_BusyAgent_MaxTimeout(t *testing.T) {
+	t.Parallel()
 	d := newBoundaryTestDaemon(t)
 	d.config.Watcher.MaxInProgressMin = model.IntPtr(30)
 	// Recreate handler with updated config
@@ -451,6 +461,7 @@ func TestTaskLeaseExpiry_BusyAgent_MaxTimeout(t *testing.T) {
 // TestTaskLeaseExpiry_BusyAgent_WithinLimit verifies that a busy agent within
 // max_in_progress_min gets its lease extended.
 func TestTaskLeaseExpiry_BusyAgent_WithinLimit(t *testing.T) {
+	t.Parallel()
 	d := newBoundaryTestDaemon(t)
 	d.config.Watcher.MaxInProgressMin = model.IntPtr(60)
 	lockMap := d.handler.lockMap
@@ -504,6 +515,7 @@ func TestTaskLeaseExpiry_BusyAgent_WithinLimit(t *testing.T) {
 // TestTaskDispatchError_LeaseReleased verifies that when a TASK dispatch fails,
 // the lease IS released (unlike commands where it is retained).
 func TestTaskDispatchError_LeaseReleased(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -551,6 +563,7 @@ func TestTaskDispatchError_LeaseReleased(t *testing.T) {
 // TestCommandDispatchError_SecondScan_StaysInProgress verifies that after a
 // command dispatch fails, the next scan still keeps it in_progress (auto-extend).
 func TestCommandDispatchError_SecondScan_StaysInProgress(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -628,6 +641,7 @@ func TestCommandDispatchError_SecondScan_StaysInProgress(t *testing.T) {
 
 // TestDispatchResult_NormalPath verifies the normal dispatch→result→completed flow.
 func TestDispatchResult_NormalPath(t *testing.T) {
+	t.Parallel()
 	d := newBoundaryTestDaemon(t)
 
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -685,6 +699,7 @@ func TestDispatchResult_NormalPath(t *testing.T) {
 // TestEpochFencing_StaleDispatchResult verifies that applyTaskDispatchResult
 // rejects a dispatch result when epoch/lease fields don't match (stale fencing).
 func TestEpochFencing_StaleDispatchResult(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -736,6 +751,7 @@ func TestEpochFencing_StaleDispatchResult(t *testing.T) {
 // TestEpochFencing_StaleCommandDispatchResult verifies that
 // applyCommandDispatchResult rejects stale results for commands.
 func TestEpochFencing_StaleCommandDispatchResult(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -793,6 +809,7 @@ func TestEpochFencing_StaleCommandDispatchResult(t *testing.T) {
 
 // TestEpochFencing_StaleNotificationDispatchResult verifies stale fencing for notifications.
 func TestEpochFencing_StaleNotificationDispatchResult(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -840,6 +857,7 @@ func TestEpochFencing_StaleNotificationDispatchResult(t *testing.T) {
 // TestReconciler_R0_ExactThreshold verifies that R0 DOES trigger when
 // planning age is exactly at the threshold boundary (dispatch_lease_sec * 2).
 func TestReconciler_R0_ExactThreshold(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -866,6 +884,7 @@ func TestReconciler_R0_ExactThreshold(t *testing.T) {
 // TestReconciler_R0_JustBelowThreshold verifies that R0 does NOT trigger when
 // planning age is just below the threshold.
 func TestReconciler_R0_JustBelowThreshold(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -890,6 +909,7 @@ func TestReconciler_R0_JustBelowThreshold(t *testing.T) {
 
 // TestReconciler_R0_WithWorkerTasks verifies that R0 also cleans up worker tasks.
 func TestReconciler_R0_WithWorkerTasks(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -940,6 +960,7 @@ func TestReconciler_R0_WithWorkerTasks(t *testing.T) {
 
 // TestReconciler_R0b_NoTasks verifies R0b handles empty TaskIDs gracefully.
 func TestReconciler_R0b_NoTasks(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -966,6 +987,7 @@ func TestReconciler_R0b_NoTasks(t *testing.T) {
 
 // TestReconciler_R0b_MultiplePhases verifies R0b handles multiple stuck phases.
 func TestReconciler_R0b_MultiplePhases(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -999,6 +1021,7 @@ func TestReconciler_R0b_MultiplePhases(t *testing.T) {
 // TestReconciler_R4_CanCompleteReturnsFailed verifies R4 correctly propagates
 // failed status from canComplete.
 func TestReconciler_R4_CanCompleteReturnsFailed(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 	rec.SetCanComplete(func(state *model.CommandState) (model.PlanStatus, error) {
@@ -1043,6 +1066,7 @@ func TestReconciler_R4_CanCompleteReturnsFailed(t *testing.T) {
 // TestReconciler_R4_CanCompleteReturnsCancelled verifies R4 correctly propagates
 // cancelled status from canComplete.
 func TestReconciler_R4_CanCompleteReturnsCancelled(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 	rec.SetCanComplete(func(state *model.CommandState) (model.PlanStatus, error) {
@@ -1087,6 +1111,7 @@ func TestReconciler_R4_CanCompleteReturnsCancelled(t *testing.T) {
 // TestReconciler_R4_AlreadyTerminal_NoRepair verifies R4 skips commands
 // whose plan_status is already terminal.
 func TestReconciler_R4_AlreadyTerminal_NoRepair(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 	rec.SetCanComplete(func(state *model.CommandState) (model.PlanStatus, error) {
@@ -1129,6 +1154,7 @@ func TestReconciler_R4_AlreadyTerminal_NoRepair(t *testing.T) {
 // TestReconciler_R6_MultiplePhasesTimedOut verifies R6 with multiple timed-out
 // phases and their independent downstream cascades.
 func TestReconciler_R6_MultiplePhasesTimedOut(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconcilerWithFactory(maestroDir, func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
@@ -1184,6 +1210,7 @@ func TestReconciler_R6_MultiplePhasesTimedOut(t *testing.T) {
 // TestReconciler_R6_DiamondDependency verifies R6 cascade with diamond dependency:
 // p1 → p2, p1 → p3, p2+p3 → p4
 func TestReconciler_R6_DiamondDependency(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconcilerWithFactory(maestroDir, func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
@@ -1232,6 +1259,7 @@ func TestReconciler_R6_DiamondDependency(t *testing.T) {
 // TestReconciler_R6_ActivePhaseNotCancelled verifies that active phases
 // are NOT cancelled by R6 cascade (only pending/awaiting_fill).
 func TestReconciler_R6_ActivePhaseNotCancelled(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconcilerWithFactory(maestroDir, func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
@@ -1272,6 +1300,7 @@ func TestReconciler_R6_ActivePhaseNotCancelled(t *testing.T) {
 // TestReconciler_R6_NoDeadline_NoTimeout verifies that awaiting_fill phases
 // without fill_deadline_at are NOT timed out.
 func TestReconciler_R6_NoDeadline_NoTimeout(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -1304,6 +1333,7 @@ func TestReconciler_R6_NoDeadline_NoTimeout(t *testing.T) {
 // TestDependencyFailure_TransitivePending verifies that when taskA fails,
 // taskB (depends on taskA) and taskC (depends on taskB) are both cancelled.
 func TestDependencyFailure_TransitivePending(t *testing.T) {
+	t.Parallel()
 	d := newBoundaryTestDaemon(t)
 	commandID := "cmd_dep_trans"
 	taskA := "task_dep_a"
@@ -1368,6 +1398,7 @@ func TestDependencyFailure_TransitivePending(t *testing.T) {
 // TestDependencyFailure_InProgressTaskInterrupted verifies that an in-progress
 // task with a failed dependency gets cancelled and an interrupt is deferred.
 func TestDependencyFailure_InProgressTaskInterrupted(t *testing.T) {
+	t.Parallel()
 	d := newBoundaryTestDaemon(t)
 	commandID := "cmd_dep_inprog"
 	taskA := "task_depip_a"
@@ -1422,6 +1453,7 @@ func TestDependencyFailure_InProgressTaskInterrupted(t *testing.T) {
 // TestSignalProcessing_BackoffRespected verifies that signals with
 // NextAttemptAt in the future are not delivered.
 func TestSignalProcessing_BackoffRespected(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -1461,6 +1493,7 @@ func TestSignalProcessing_BackoffRespected(t *testing.T) {
 
 // TestSignalBackoff_Exponential verifies the exponential backoff computation.
 func TestSignalBackoff_Exponential(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 	qh.config.Watcher.ScanIntervalSec = 60
@@ -1496,6 +1529,7 @@ func TestSignalBackoff_Exponential(t *testing.T) {
 // TestNotificationDispatch_InProgressBlocks verifies that a valid in-progress
 // notification blocks dispatch of pending notifications.
 func TestNotificationDispatch_InProgressBlocks(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -1538,6 +1572,7 @@ func TestNotificationDispatch_InProgressBlocks(t *testing.T) {
 // TestNotificationDispatch_ExpiredLeaseUnblocks verifies that an expired
 // in-progress notification does NOT block new dispatches.
 func TestNotificationDispatch_ExpiredLeaseUnblocks(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -1585,6 +1620,7 @@ func TestNotificationDispatch_ExpiredLeaseUnblocks(t *testing.T) {
 // TestMixedQueue_ExpiredLeasesPrioritizeRecovery verifies that when expired
 // leases exist, dispatch is skipped and recovery is prioritized.
 func TestMixedQueue_ExpiredLeasesPrioritizeRecovery(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir,
 		WithBusyChecker(BusyCheckerFunc(func(string) bool { return false })))
@@ -1640,6 +1676,7 @@ func TestMixedQueue_ExpiredLeasesPrioritizeRecovery(t *testing.T) {
 // TestMultipleWorkersDispatch verifies that tasks on different workers can be
 // dispatched concurrently in the same scan.
 func TestMultipleWorkersDispatch(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -1681,6 +1718,7 @@ func TestMultipleWorkersDispatch(t *testing.T) {
 // =============================================================================
 
 func TestWorkerIDFromPath_EdgeCases(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		path string
 		want string
@@ -1711,6 +1749,7 @@ func TestWorkerIDFromPath_EdgeCases(t *testing.T) {
 // TestReconciler_R5_NotNotified_NoRepair verifies that R5 skips results where
 // notified=false (not yet processed by result handler).
 func TestReconciler_R5_NotNotified_NoRepair(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -1743,6 +1782,7 @@ func TestReconciler_R5_NotNotified_NoRepair(t *testing.T) {
 
 // TestReconciler_R5_NonTerminalResult_NoRepair verifies R5 skips non-terminal results.
 func TestReconciler_R5_NonTerminalResult_NoRepair(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -1779,6 +1819,7 @@ func TestReconciler_R5_NonTerminalResult_NoRepair(t *testing.T) {
 // =============================================================================
 
 func TestUpsertPlannerSignal_Deduplication(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -1821,6 +1862,7 @@ func TestUpsertPlannerSignal_Deduplication(t *testing.T) {
 // =============================================================================
 
 func TestHasExpiredLeases_NoLeases(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -1834,6 +1876,7 @@ func TestHasExpiredLeases_NoLeases(t *testing.T) {
 }
 
 func TestHasExpiredLeases_ValidLeases(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -1852,6 +1895,7 @@ func TestHasExpiredLeases_ValidLeases(t *testing.T) {
 }
 
 func TestHasExpiredLeases_ExpiredCommand(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -1870,6 +1914,7 @@ func TestHasExpiredLeases_ExpiredCommand(t *testing.T) {
 }
 
 func TestHasExpiredLeases_ExpiredNotification(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -1888,6 +1933,7 @@ func TestHasExpiredLeases_ExpiredNotification(t *testing.T) {
 }
 
 func TestHasExpiredLeases_PendingIgnored(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -1908,6 +1954,7 @@ func TestHasExpiredLeases_PendingIgnored(t *testing.T) {
 
 // TestHasExpiredLeases_ExpiredTask verifies the task branch of hasExpiredLeases.
 func TestHasExpiredLeases_ExpiredTask(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -1933,6 +1980,7 @@ func TestHasExpiredLeases_ExpiredTask(t *testing.T) {
 
 // TestHasExpiredLeases_ValidTaskNotExpired verifies valid task leases don't trigger.
 func TestHasExpiredLeases_ValidTaskNotExpired(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -1964,6 +2012,7 @@ func TestHasExpiredLeases_ValidTaskNotExpired(t *testing.T) {
 // notification with nil lease_expires_at does NOT block pending dispatch
 // (the blocking guard checks LeaseExpiresAt != nil).
 func TestNotificationDispatch_InProgressNilLease(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -2048,6 +2097,7 @@ func TestNotificationDispatch_InProgressNilLease(t *testing.T) {
 // TestBusyCheckFencing_StaleTask verifies that applyTaskBusyCheckResult
 // rejects results when the task has changed since Phase A.
 func TestBusyCheckFencing_StaleTask(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
@@ -2101,6 +2151,7 @@ func TestBusyCheckFencing_StaleTask(t *testing.T) {
 // TestReconciler_R4_CanCompleteNil_Skip verifies that R4 is skipped when
 // canComplete callback is not wired.
 func TestReconciler_R4_CanCompleteNil_Skip(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 	rec.SetCanComplete(nil) // explicitly unset
@@ -2166,6 +2217,7 @@ func TestReconciler_R4_CanCompleteNil_Skip(t *testing.T) {
 // TestReconciler_R6_DeadlineParseError verifies that R6 skips a phase with
 // an unparseable FillDeadlineAt.
 func TestReconciler_R6_DeadlineParseError(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -2203,6 +2255,7 @@ func TestReconciler_R6_DeadlineParseError(t *testing.T) {
 // When deadline == now, Before returns false → R6 triggers.
 // We use time.Now() as the deadline itself to test this boundary precisely.
 func TestReconciler_R6_DeadlineExactlyNow(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -2247,6 +2300,7 @@ func TestReconciler_R6_DeadlineExactlyNow(t *testing.T) {
 // TestDeferredNotification_R0b_ReFill verifies that R0b produces a "re_fill"
 // deferred notification with the correct CommandID.
 func TestDeferredNotification_R0b_ReFill(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -2308,6 +2362,7 @@ func TestDeferredNotification_R0b_ReFill(t *testing.T) {
 // TestDeferredNotification_R4_ReEvaluate verifies that R4 (canComplete error)
 // produces a "re_evaluate" deferred notification with the correct Reason.
 func TestDeferredNotification_R4_ReEvaluate(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -2370,6 +2425,7 @@ func TestDeferredNotification_R4_ReEvaluate(t *testing.T) {
 // TestDeferredNotification_R6_FillTimeout verifies that R6 produces a
 // "fill_timeout" deferred notification with the correct TimedOutPhases.
 func TestDeferredNotification_R6_FillTimeout(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconcilerWithFactory(maestroDir, func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil

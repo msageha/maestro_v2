@@ -30,6 +30,7 @@ func writeFile(t *testing.T, path, content string) {
 }
 
 func TestRecoverStateDir_ValidYAMLUnchanged(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cmd_1.yaml")
 	writeFile(t, path, validYAML)
@@ -44,6 +45,7 @@ func TestRecoverStateDir_ValidYAMLUnchanged(t *testing.T) {
 }
 
 func TestRecoverStateDir_CorruptYAMLRestoredFromBak(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cmd_1.yaml")
 	bak := path + ".bak"
@@ -60,6 +62,7 @@ func TestRecoverStateDir_CorruptYAMLRestoredFromBak(t *testing.T) {
 }
 
 func TestRecoverStateDir_BothCorruptKeepsFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cmd_1.yaml")
 	bak := path + ".bak"
@@ -76,6 +79,7 @@ func TestRecoverStateDir_BothCorruptKeepsFile(t *testing.T) {
 }
 
 func TestRecoverStateDir_NoBakKeepsFile(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "cmd_1.yaml")
 	writeFile(t, path, corruptYAML)
@@ -90,6 +94,7 @@ func TestRecoverStateDir_NoBakKeepsFile(t *testing.T) {
 }
 
 func TestRecoverStateDir_MissingDirIsNoop(t *testing.T) {
+	t.Parallel()
 	logger := &capturedLogger{}
 	recoverStateDir(filepath.Join(t.TempDir(), "does-not-exist"), logger)
 	require.Empty(t, logger.lines)

@@ -17,6 +17,7 @@ func newTestLeaseManager() *LeaseManager {
 }
 
 func TestAcquireCommandLease(t *testing.T) {
+	t.Parallel()
 	lm := newTestLeaseManager()
 	cmd := &model.Command{
 		ID:        "cmd_001",
@@ -43,6 +44,7 @@ func TestAcquireCommandLease(t *testing.T) {
 }
 
 func TestAcquireCommandLease_InvalidTransition(t *testing.T) {
+	t.Parallel()
 	lm := newTestLeaseManager()
 	cmd := &model.Command{
 		ID:     "cmd_001",
@@ -55,6 +57,7 @@ func TestAcquireCommandLease_InvalidTransition(t *testing.T) {
 }
 
 func TestReleaseCommandLease(t *testing.T) {
+	t.Parallel()
 	lm := newTestLeaseManager()
 	cmd := &model.Command{
 		ID:        "cmd_001",
@@ -83,6 +86,7 @@ func TestReleaseCommandLease(t *testing.T) {
 }
 
 func TestExtendCommandLease(t *testing.T) {
+	t.Parallel()
 	lm := newTestLeaseManager()
 	cmd := &model.Command{
 		ID:        "cmd_001",
@@ -91,11 +95,13 @@ func TestExtendCommandLease(t *testing.T) {
 	}
 
 	lm.AcquireCommandLease(cmd, "planner")
-	oldExpires, _ := time.Parse(time.RFC3339, *cmd.LeaseExpiresAt)
 	originalUpdatedAt := cmd.UpdatedAt
 
-	// Wait just enough for the new expiry to be after the old one
-	time.Sleep(1100 * time.Millisecond)
+	// Set the lease expiry to a past time so the extended expiry will be strictly after it.
+	pastExpires := time.Now().Add(-time.Hour).Format(time.RFC3339)
+	cmd.LeaseExpiresAt = &pastExpires
+	oldExpires, _ := time.Parse(time.RFC3339, *cmd.LeaseExpiresAt)
+
 	if err := lm.ExtendCommandLease(cmd); err != nil {
 		t.Fatalf("extend: %v", err)
 	}
@@ -112,6 +118,7 @@ func TestExtendCommandLease(t *testing.T) {
 }
 
 func TestExtendTaskLease_UpdatedAtUnchanged(t *testing.T) {
+	t.Parallel()
 	lm := newTestLeaseManager()
 	task := &model.Task{
 		ID:        "task_001",
@@ -124,7 +131,10 @@ func TestExtendTaskLease_UpdatedAtUnchanged(t *testing.T) {
 	}
 	originalUpdatedAt := task.UpdatedAt
 
-	time.Sleep(1100 * time.Millisecond)
+	// Set the lease expiry to a past time to avoid sleeping for the clock to advance.
+	pastExpires := time.Now().Add(-time.Hour).Format(time.RFC3339)
+	task.LeaseExpiresAt = &pastExpires
+
 	if err := lm.ExtendTaskLease(task); err != nil {
 		t.Fatalf("extend: %v", err)
 	}
@@ -136,6 +146,7 @@ func TestExtendTaskLease_UpdatedAtUnchanged(t *testing.T) {
 }
 
 func TestExtendCommandLease_NotInProgress(t *testing.T) {
+	t.Parallel()
 	lm := newTestLeaseManager()
 	cmd := &model.Command{ID: "cmd_001", Status: model.StatusPending}
 
@@ -145,6 +156,7 @@ func TestExtendCommandLease_NotInProgress(t *testing.T) {
 }
 
 func TestAcquireTaskLease(t *testing.T) {
+	t.Parallel()
 	lm := newTestLeaseManager()
 	task := &model.Task{
 		ID:        "task_001",
@@ -168,6 +180,7 @@ func TestAcquireTaskLease(t *testing.T) {
 }
 
 func TestReleaseTaskLease(t *testing.T) {
+	t.Parallel()
 	lm := newTestLeaseManager()
 	task := &model.Task{
 		ID:        "task_001",
@@ -186,6 +199,7 @@ func TestReleaseTaskLease(t *testing.T) {
 }
 
 func TestAcquireNotificationLease(t *testing.T) {
+	t.Parallel()
 	lm := newTestLeaseManager()
 	ntf := &model.Notification{
 		ID:        "ntf_001",
@@ -203,6 +217,7 @@ func TestAcquireNotificationLease(t *testing.T) {
 }
 
 func TestIsLeaseExpired(t *testing.T) {
+	t.Parallel()
 	lm := newTestLeaseManager()
 
 	// nil → expired
@@ -224,6 +239,7 @@ func TestIsLeaseExpired(t *testing.T) {
 }
 
 func TestExpireTasks(t *testing.T) {
+	t.Parallel()
 	lm := newTestLeaseManager()
 
 	past := time.Now().Add(-time.Hour).Format(time.RFC3339)
@@ -247,6 +263,7 @@ func TestExpireTasks(t *testing.T) {
 }
 
 func TestExpireCommands(t *testing.T) {
+	t.Parallel()
 	lm := newTestLeaseManager()
 
 	past := time.Now().Add(-time.Hour).Format(time.RFC3339)
@@ -264,6 +281,7 @@ func TestExpireCommands(t *testing.T) {
 }
 
 func TestLeaseEpochIncrement(t *testing.T) {
+	t.Parallel()
 	lm := newTestLeaseManager()
 	task := &model.Task{
 		ID:        "task_001",
@@ -291,6 +309,7 @@ func TestLeaseEpochIncrement(t *testing.T) {
 }
 
 func TestIsLeaseNearExpiry(t *testing.T) {
+	t.Parallel()
 	lm := newTestLeaseManager()
 
 	// nil → near expiry (treated as expired)
@@ -324,6 +343,7 @@ func TestIsLeaseNearExpiry(t *testing.T) {
 }
 
 func TestRenewableCommands(t *testing.T) {
+	t.Parallel()
 	lm := newTestLeaseManager()
 
 	soon := time.Now().UTC().Add(30 * time.Second).Format(time.RFC3339)

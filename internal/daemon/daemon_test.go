@@ -57,6 +57,7 @@ func TestDaemonShutdownIdempotent(t *testing.T) {
 }
 
 func TestParseLogLevel(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input    string
 		expected LogLevel
@@ -73,6 +74,7 @@ func TestParseLogLevel(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
+			t.Parallel()
 			got := parseLogLevel(tt.input)
 			if got != tt.expected {
 				t.Errorf("parseLogLevel(%q) = %d, want %d", tt.input, got, tt.expected)
@@ -82,6 +84,7 @@ func TestParseLogLevel(t *testing.T) {
 }
 
 func TestDaemonLog(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
 	cfg := model.Config{
 		Logging: model.LoggingConfig{Level: "warn"},
@@ -121,6 +124,7 @@ func writeTestFile(t *testing.T, dir, name string, data any) string {
 }
 
 func TestSelfWriteTracker_RecordAndConsume(t *testing.T) {
+	t.Parallel()
 	tracker := newSelfWriteTracker()
 	dir := t.TempDir()
 	data := selfWriteTestData{Value: "test"}
@@ -144,6 +148,7 @@ func TestSelfWriteTracker_RecordAndConsume(t *testing.T) {
 }
 
 func TestSelfWriteTracker_HashMismatch(t *testing.T) {
+	t.Parallel()
 	tracker := newSelfWriteTracker()
 	dir := t.TempDir()
 
@@ -161,6 +166,7 @@ func TestSelfWriteTracker_HashMismatch(t *testing.T) {
 }
 
 func TestSelfWriteTracker_MultiplePaths(t *testing.T) {
+	t.Parallel()
 	tracker := newSelfWriteTracker()
 	dir := t.TempDir()
 
@@ -181,6 +187,7 @@ func TestSelfWriteTracker_MultiplePaths(t *testing.T) {
 }
 
 func TestSelfWriteTracker_Concurrent(t *testing.T) {
+	t.Parallel()
 	tracker := newSelfWriteTracker()
 	dir := t.TempDir()
 	data := selfWriteTestData{Value: "concurrent"}
@@ -203,6 +210,7 @@ func TestSelfWriteTracker_Concurrent(t *testing.T) {
 }
 
 func TestSelfWriteTracker_StaleCleanupOnRecord(t *testing.T) {
+	t.Parallel()
 	tracker := newSelfWriteTracker()
 	dir := t.TempDir()
 
@@ -247,6 +255,7 @@ func TestSelfWriteTracker_StaleCleanupOnRecord(t *testing.T) {
 }
 
 func TestSelfWriteTracker_StaleCleanupOnConsumeMiss(t *testing.T) {
+	t.Parallel()
 	tracker := newSelfWriteTracker()
 	dir := t.TempDir()
 
@@ -287,6 +296,7 @@ func TestSelfWriteTracker_StaleCleanupOnConsumeMiss(t *testing.T) {
 }
 
 func TestSelfWriteTracker_StaleCleanupOnConsumeHit(t *testing.T) {
+	t.Parallel()
 	tracker := newSelfWriteTracker()
 	dir := t.TempDir()
 
@@ -315,6 +325,7 @@ func TestSelfWriteTracker_StaleCleanupOnConsumeHit(t *testing.T) {
 }
 
 func TestSelfWriteTracker_ExpiredConsumeReturnsFalse(t *testing.T) {
+	t.Parallel()
 	tracker := newSelfWriteTracker()
 
 	// Inject an entry with an expired deadline
@@ -337,6 +348,7 @@ func TestSelfWriteTracker_ExpiredConsumeReturnsFalse(t *testing.T) {
 }
 
 func TestNotifySelfWrite_PublishesEvent(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	d.eventBus = events.NewBus(context.Background(), 10)
 	defer d.eventBus.Close()
@@ -378,6 +390,7 @@ func TestNotifySelfWrite_PublishesEvent(t *testing.T) {
 }
 
 func TestRecordSelfWrite_NoEvent(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	d.eventBus = events.NewBus(context.Background(), 10)
 	defer d.eventBus.Close()
@@ -411,6 +424,7 @@ func TestRecordSelfWrite_NoEvent(t *testing.T) {
 }
 
 func TestDaemonNew_CreatesLogDir(t *testing.T) {
+	t.Parallel()
 	tmpDir := t.TempDir()
 	maestroDir := filepath.Join(tmpDir, ".maestro")
 	if err := os.MkdirAll(maestroDir, 0755); err != nil {

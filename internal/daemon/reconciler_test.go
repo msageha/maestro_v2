@@ -43,6 +43,7 @@ func newTestReconcilerWithFactory(maestroDir string, factory ExecutorFactory) *R
 }
 
 func TestReconciler_R0_PlanningStuck(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -108,6 +109,7 @@ func TestReconciler_R0_PlanningStuck(t *testing.T) {
 }
 
 func TestReconciler_R0_PlanningRecent_NoRepair(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -141,6 +143,7 @@ func TestReconciler_R0_PlanningRecent_NoRepair(t *testing.T) {
 }
 
 func TestReconciler_R0b_FillingStuck(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -220,6 +223,7 @@ func TestReconciler_R0b_FillingStuck(t *testing.T) {
 }
 
 func TestReconciler_R1_ResultTerminal_QueueInProgress(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -314,6 +318,7 @@ func TestReconciler_R1_ResultTerminal_QueueInProgress(t *testing.T) {
 }
 
 func TestReconciler_R2_ResultTerminal_StateNonTerminal(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -382,6 +387,7 @@ func TestReconciler_R2_ResultTerminal_StateNonTerminal(t *testing.T) {
 }
 
 func TestReconciler_R2_AlreadyTerminal_NoRepair(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -431,6 +437,7 @@ func TestReconciler_R2_AlreadyTerminal_NoRepair(t *testing.T) {
 }
 
 func TestReconciler_AllPatterns_Combined(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -520,6 +527,7 @@ func TestReconciler_AllPatterns_Combined(t *testing.T) {
 // --- R3 Tests ---
 
 func TestReconciler_R3_PlannerResultTerminal_QueueInProgress(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -597,6 +605,7 @@ func TestReconciler_R3_PlannerResultTerminal_QueueInProgress(t *testing.T) {
 }
 
 func TestReconciler_R3_QueueAlreadyTerminal_NoRepair(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -632,6 +641,7 @@ func TestReconciler_R3_QueueAlreadyTerminal_NoRepair(t *testing.T) {
 // --- R4 Tests ---
 
 func TestReconciler_R4_PlannerResultTerminal_StateSealed_CanComplete(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -681,6 +691,7 @@ func TestReconciler_R4_PlannerResultTerminal_StateSealed_CanComplete(t *testing.
 }
 
 func TestReconciler_R4_CanCompleteFails_Quarantine(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -738,6 +749,7 @@ func TestReconciler_R4_CanCompleteFails_Quarantine(t *testing.T) {
 }
 
 func TestReconciler_R4_PlanStatusPlanning_Skip(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 	rec.SetCanComplete(func(state *model.CommandState) (model.PlanStatus, error) {
@@ -776,6 +788,7 @@ func TestReconciler_R4_PlanStatusPlanning_Skip(t *testing.T) {
 // --- R5 Tests ---
 
 func TestReconciler_R5_NotifiedResult_NoOrchestratorNotification(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -833,6 +846,7 @@ func TestReconciler_R5_NotifiedResult_NoOrchestratorNotification(t *testing.T) {
 }
 
 func TestReconciler_R5_NotificationExists_NoRepair(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -872,6 +886,7 @@ func TestReconciler_R5_NotificationExists_NoRepair(t *testing.T) {
 // --- R6 Tests ---
 
 func TestReconciler_R6_AwaitingFill_DeadlineExpired(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	// Set a mock executor so notification doesn't fail
 	rec := newTestReconcilerWithFactory(maestroDir, func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
@@ -933,6 +948,7 @@ func TestReconciler_R6_AwaitingFill_DeadlineExpired(t *testing.T) {
 }
 
 func TestReconciler_R6_DeadlineNotExpired_NoRepair(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconciler(maestroDir)
 
@@ -974,6 +990,7 @@ func filterRepairs(repairs []ReconcileRepair, pattern reconcile.RepairPatternID)
 }
 
 func TestReconciler_R6_TransitiveCascade(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconcilerWithFactory(maestroDir, func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil

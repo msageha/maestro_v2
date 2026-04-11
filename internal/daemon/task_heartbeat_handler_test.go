@@ -53,6 +53,7 @@ func newTestHeartbeatHandler(t *testing.T, d *Daemon) *TaskHeartbeatHandler {
 }
 
 func TestHeartbeat_Success(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	handler := newTestHeartbeatHandler(t, d)
 
@@ -130,6 +131,7 @@ func TestHeartbeat_Success(t *testing.T) {
 }
 
 func TestHeartbeat_StaleEpoch(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	handler := newTestHeartbeatHandler(t, d)
 
@@ -183,6 +185,7 @@ func TestHeartbeat_StaleEpoch(t *testing.T) {
 }
 
 func TestHeartbeat_MaxRuntimeExceeded(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	handler := newTestHeartbeatHandler(t, d)
 
@@ -239,6 +242,7 @@ func TestHeartbeat_MaxRuntimeExceeded(t *testing.T) {
 }
 
 func TestHeartbeat_TaskNotInProgress(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	handler := newTestHeartbeatHandler(t, d)
 
@@ -288,6 +292,7 @@ func TestHeartbeat_TaskNotInProgress(t *testing.T) {
 }
 
 func TestHeartbeat_InvalidWorkerID(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	handler := newTestHeartbeatHandler(t, d)
 
@@ -303,6 +308,7 @@ func TestHeartbeat_InvalidWorkerID(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			req := makeHeartbeatRequest(t, TaskHeartbeatParams{
 				TaskID:   "task_0000000001_abcdef01",
 				WorkerID: tc.workerID,
@@ -323,6 +329,7 @@ func TestHeartbeat_InvalidWorkerID(t *testing.T) {
 
 // TestConcurrentHeartbeats tests concurrent heartbeat handling from multiple goroutines
 func TestConcurrentHeartbeats(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	handler := newTestHeartbeatHandler(t, d)
 
@@ -393,6 +400,7 @@ func TestConcurrentHeartbeats(t *testing.T) {
 
 // TestHeartbeatRaceCondition tests epoch racing with concurrent updates
 func TestHeartbeatRaceCondition(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	handler := newTestHeartbeatHandler(t, d)
 
@@ -469,6 +477,7 @@ func TestHeartbeatRaceCondition(t *testing.T) {
 
 // TestHeartbeatErrorMatrix tests all error code scenarios
 func TestHeartbeatErrorMatrix(t *testing.T) {
+	t.Parallel()
 	testCases := []struct {
 		name         string
 		setup        func(*testing.T, *Daemon) (TaskHeartbeatParams, string)
@@ -663,6 +672,7 @@ func TestHeartbeatErrorMatrix(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			d := newTestDaemon(t)
 			handler := newTestHeartbeatHandler(t, d)
 
@@ -684,6 +694,7 @@ func TestHeartbeatErrorMatrix(t *testing.T) {
 
 // TestHeartbeatTimeout tests lease expiration scenarios
 func TestHeartbeatTimeout(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	handler := newTestHeartbeatHandler(t, d)
 
@@ -754,6 +765,7 @@ func TestHeartbeatTimeout(t *testing.T) {
 
 // TestHeartbeatExtension tests lease extension boundary conditions
 func TestHeartbeatExtension(t *testing.T) {
+	t.Parallel()
 	d := newTestDaemon(t)
 	handler := newTestHeartbeatHandler(t, d)
 
@@ -828,6 +840,5 @@ func TestHeartbeatExtension(t *testing.T) {
 			t.Errorf("iteration %d: lease not properly extended: got %v, expected ~%v", i, newExpiry, expectedExpiry)
 		}
 
-		time.Sleep(100 * time.Millisecond) // Small delay between heartbeats
 	}
 }
