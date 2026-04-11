@@ -39,7 +39,7 @@ func (a *cliApp) runResultWrite(args []string) error {
 
 	fs.StringVar(&taskID, "task-id", "", "")
 	fs.StringVar(&commandID, "command-id", "", "")
-	fs.IntVar(&leaseEpoch, "lease-epoch", 0, "")
+	fs.IntVar(&leaseEpoch, "lease-epoch", -1, "")
 	fs.StringVar(&resultStatus, "status", "", "")
 	fs.StringVar(&summary, "summary", "", "")
 	fs.Var(&filesChanged, "files-changed", "")
@@ -55,8 +55,8 @@ func (a *cliApp) runResultWrite(args []string) error {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro result write: unexpected argument: %s\nusage: maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>] [--files-changed <file>]... [--learnings <text>]... [--skill-candidates <text>]... [--partial-changes] [--no-retry-safe]", fs.Arg(0))}
 	}
 
-	if taskID == "" || commandID == "" || resultStatus == "" {
-		return &CLIError{Code: 1, Msg: "maestro result write: --task-id, --command-id, and --status are required\nusage: maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>]"}
+	if taskID == "" || commandID == "" || resultStatus == "" || leaseEpoch < 0 {
+		return &CLIError{Code: 1, Msg: "maestro result write: --task-id, --command-id, --lease-epoch, and --status are required\nusage: maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>]"}
 	}
 
 	// Validate IDs
