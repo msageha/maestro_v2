@@ -153,7 +153,7 @@ reason: consecutive_failures=3 reached threshold=3
 
 ### キャンセル要求の処理
 
-Orchestrator からコマンド単位のキャンセル要求（`queue write planner --type cancel-request`）を受信した場合、Planner は `maestro plan request-cancel --command-id <id> --reason "<理由>"` で **タスク単位** のキャンセルを実行する。システムが各タスクの状態遷移を自動処理（pending → cancelled、in_progress → Worker 中断後 cancelled）。全 terminal 後に `plan complete`。
+Orchestrator からコマンド単位のキャンセル要求（`maestro plan request-cancel`）を受信した場合、システムが各タスクの状態遷移を自動処理する（pending → cancelled、in_progress → Worker 中断後 cancelled）。全タスクが terminal になった後に `plan complete` で報告する。
 
 ### deferred フェーズの処理
 
@@ -307,7 +307,7 @@ maestro skill list --role worker
 | 高リスク実験的タスク | required: false にするか、別 command に隔離 |
 
 - **独立性のないタスクの相乗り禁止**: 1 つの failed が全体を巻き添えにするため、相互独立な作業のみ同一 command に同梱する
-- **Planner 自身の完了報告前検証**: `git rev-parse main` および `git grep` で対象 command の成果が main に実在することを確認してから completed と報告する。未 publish の状態で completed と報告してはならない
+- **Planner 自身の完了報告前検証**: `.maestro/dashboard.md` および `.maestro/results/worker{N}.yaml` で各タスクの完了状態と `files_changed` を確認し、期待する成果物が報告されていることを検証してから completed と報告する。未 publish の状態で completed と報告してはならない
 
 **事故事例 (再発防止のための記録)**:
 - **cmd_1775542302**: foundation phase は完全成功し型定義・インターフェースが確立されたにもかかわらず、後続 implementation phase の Worker 失敗により command 全体が failed 判定となった。worktree mode の巻き添えで foundation の成果物（型定義ファイル等）も統合ブランチごと破棄され、main に何も残らない結果となった。以降は依存関係のある phase を 1 command にまとめず、foundation を別 command で確定させてから implementation を発注する運用とする。
@@ -485,7 +485,7 @@ conflict_files: path/to/file1.go, path/to/file2.go
 
 **現状の対応手順 (MVP-0 CLI):**
 
-1. 状況確認: `maestro plan status` で対象コマンド/フェーズの状態を把握する
+1. 状況確認: `.maestro/dashboard.md` を Read で確認し、対象コマンド/フェーズの状態を把握する
 2. 構造化情報 (`base`/`ours`/`theirs`/`conflict_files`) からどの worker のどのファイルが衝突したか特定する
 3. 手動解消が必要な場合は MVP-0 の CLI を使う:
    - `maestro plan unquarantine <command_id>` — quarantined 状態を解除
@@ -513,7 +513,7 @@ error: "..."
 
 1. `worker_id` のタスクをリトライ用に再発行する。`content` には `reason_code` と `error` を含めて再現条件を明示する
 2. リトライしても解決できない場合は `plan complete` で当該 worker のタスクを `failed` 扱いにする
-3. **重要**: コミット失敗時は worktree がダーティのまま残る。`config.yaml` の `worktree.cleanup_on_failure: true` の場合でも、commit 失敗単体では cleanup されない（タスク自体は `completed` のため）。タスクを失敗扱いに転じない限り worktree は手動で `maestro worktree clean` する必要がある
+3. **重要**: コミット失敗時は worktree がダーティのまま残る。`config.yaml` の `worktree.cleanup_on_failure: true` の場合でも、commit 失敗単体では cleanup されない（タスク自体は `completed` のため）。タスクを失敗扱いに転じない限り worktree のクリーンアップは Daemon に委ねる
 
 verification フェーズは main 上で実行。worktree 固有の考慮は不要。
 

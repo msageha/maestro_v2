@@ -134,14 +134,11 @@ if [ "$tool_name" = "Bash" ]; then
     deny "D001: Blocked rm -rf targeting system/home directory"
   fi
 
-  # D003: git push --force (without --force-with-lease)
-  if echo "$cmd" | grep -qE 'git\s+push\s+.*--force(\s|$)' && \
-     ! echo "$cmd" | grep -qE 'git\s+push\s+.*--force-with-lease'; then
-    deny "D003: Blocked git push --force (use --force-with-lease)"
-  fi
-  if echo "$cmd" | grep -qE 'git\s+push\s+(.*\s)?-f(\s|$)' && \
-     ! echo "$cmd" | grep -qE 'git\s+push\s+.*--force-with-lease'; then
-    deny "D003: Blocked git push -f (use --force-with-lease)"
+  # Worker: git push is fully prohibited (all forms including --force-with-lease)
+  # This supersedes D003 (git push --force) for Workers, as worker.md
+  # prohibits all git push operations without exception.
+  if echo "$cmd" | grep -qE 'git\s+push(\s|$)'; then
+    deny "Worker git push is prohibited (all git push operations are blocked for Workers)"
   fi
 
   # Note: git merge --abort is not listed in this hook. Workers never run
