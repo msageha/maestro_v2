@@ -491,6 +491,161 @@ func TestSelfImprovementConfig_Configured(t *testing.T) {
 	}
 }
 
+// --- Cross-field validation tests ---
+
+func TestValidate_ContinuousEnabled_NegativeMaxIterations(t *testing.T) {
+	cfg := validConfig()
+	cfg.Continuous.Enabled = true
+	cfg.Continuous.MaxIterations = -1
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for negative max_iterations when continuous enabled")
+	}
+	if !strings.Contains(err.Error(), "continuous.max_iterations") {
+		t.Fatalf("expected continuous.max_iterations in error, got: %v", err)
+	}
+}
+
+func TestValidate_ContinuousEnabled_NegativeMaxConsecutiveFailures(t *testing.T) {
+	cfg := validConfig()
+	cfg.Continuous.Enabled = true
+	cfg.Continuous.MaxConsecutiveFailures = -1
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for negative max_consecutive_failures when continuous enabled")
+	}
+	if !strings.Contains(err.Error(), "continuous.max_consecutive_failures") {
+		t.Fatalf("expected continuous.max_consecutive_failures in error, got: %v", err)
+	}
+}
+
+func TestValidate_ContinuousDisabled_NegativeFieldsOK(t *testing.T) {
+	cfg := validConfig()
+	cfg.Continuous.Enabled = false
+	cfg.Continuous.MaxIterations = -1
+	cfg.Continuous.MaxConsecutiveFailures = -1
+	err := cfg.Validate()
+	if err != nil {
+		t.Fatalf("expected no error when continuous disabled, got: %v", err)
+	}
+}
+
+func TestValidate_ContinuousEnabled_ZeroFieldsOK(t *testing.T) {
+	cfg := validConfig()
+	cfg.Continuous.Enabled = true
+	cfg.Continuous.MaxIterations = 0
+	cfg.Continuous.MaxConsecutiveFailures = 0
+	err := cfg.Validate()
+	if err != nil {
+		t.Fatalf("expected no error for zero values (unlimited), got: %v", err)
+	}
+}
+
+func TestValidate_WorktreeGC_Enabled_InvalidTTL(t *testing.T) {
+	cfg := validConfig()
+	cfg.Worktree.GC.Enabled = true
+	cfg.Worktree.GC.TTLHours = IntPtr(0)
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for zero ttl_hours when gc enabled")
+	}
+	if !strings.Contains(err.Error(), "worktree.gc.ttl_hours") {
+		t.Fatalf("expected worktree.gc.ttl_hours in error, got: %v", err)
+	}
+}
+
+func TestValidate_WorktreeGC_Enabled_InvalidMaxWorktrees(t *testing.T) {
+	cfg := validConfig()
+	cfg.Worktree.GC.Enabled = true
+	cfg.Worktree.GC.MaxWorktrees = IntPtr(-1)
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for negative max_worktrees when gc enabled")
+	}
+	if !strings.Contains(err.Error(), "worktree.gc.max_worktrees") {
+		t.Fatalf("expected worktree.gc.max_worktrees in error, got: %v", err)
+	}
+}
+
+func TestValidate_WorktreeGC_Disabled_InvalidFieldsOK(t *testing.T) {
+	cfg := validConfig()
+	cfg.Worktree.GC.Enabled = false
+	cfg.Worktree.GC.TTLHours = IntPtr(0)
+	cfg.Worktree.GC.MaxWorktrees = IntPtr(-1)
+	err := cfg.Validate()
+	if err != nil {
+		t.Fatalf("expected no error when gc disabled, got: %v", err)
+	}
+}
+
+func TestValidate_WorktreeGC_Enabled_ValidFields(t *testing.T) {
+	cfg := validConfig()
+	cfg.Worktree.GC.Enabled = true
+	cfg.Worktree.GC.TTLHours = IntPtr(24)
+	cfg.Worktree.GC.MaxWorktrees = IntPtr(5)
+	err := cfg.Validate()
+	if err != nil {
+		t.Fatalf("expected no error for valid gc config, got: %v", err)
+	}
+}
+
+func TestValidate_WorktreeMergeStrategy_Invalid(t *testing.T) {
+	cfg := validConfig()
+	cfg.Worktree.MergeStrategy = "invalid"
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for invalid merge_strategy")
+	}
+	if !strings.Contains(err.Error(), "worktree.merge_strategy") {
+		t.Fatalf("expected worktree.merge_strategy in error, got: %v", err)
+	}
+}
+
+func TestValidate_WorktreeMergeStrategy_ValidValues(t *testing.T) {
+	for _, ms := range []string{"ort", "ours", "theirs", "recursive", ""} {
+		t.Run("strategy_"+ms, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Worktree.MergeStrategy = ms
+			err := cfg.Validate()
+			if err != nil {
+				t.Fatalf("expected no error for merge_strategy %q, got: %v", ms, err)
+			}
+		})
+	}
+}
+
+func TestValidate_WorktreeGitTimeout_ZeroOrNegative(t *testing.T) {
+	tests := []struct {
+		name string
+		val  int
+	}{
+		{"zero", 0},
+		{"negative", -5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Worktree.GitTimeoutSec = IntPtr(tt.val)
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("expected error for git_timeout_sec=%d", tt.val)
+			}
+			if !strings.Contains(err.Error(), "worktree.git_timeout_sec") {
+				t.Fatalf("expected worktree.git_timeout_sec in error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_WorktreeGitTimeout_Nil_OK(t *testing.T) {
+	cfg := validConfig()
+	cfg.Worktree.GitTimeoutSec = nil
+	err := cfg.Validate()
+	if err != nil {
+		t.Fatalf("expected no error for nil git_timeout_sec, got: %v", err)
+	}
+}
+
 // --- C-6 ComplexityConfig tests ---
 
 func TestComplexityConfig_Defaults(t *testing.T) {
