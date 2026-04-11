@@ -342,6 +342,55 @@ func TestIsLeaseNearExpiry(t *testing.T) {
 	}
 }
 
+func TestExtendTaskLease_NotInProgress(t *testing.T) {
+	t.Parallel()
+	lm := newTestLeaseManager()
+
+	statuses := []struct {
+		name   string
+		status model.Status
+	}{
+		{"pending", model.StatusPending},
+		{"completed", model.StatusCompleted},
+		{"failed", model.StatusFailed},
+		{"cancelled", model.StatusCancelled},
+		{"dead_letter", model.StatusDeadLetter},
+	}
+	for _, tc := range statuses {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			task := &model.Task{ID: "task_001", Status: tc.status}
+			if err := lm.ExtendTaskLease(task); err == nil {
+				t.Errorf("expected error for extending %s task lease", tc.status)
+			}
+		})
+	}
+}
+
+func TestExtendTaskLeaseGrace_NotInProgress(t *testing.T) {
+	t.Parallel()
+	lm := newTestLeaseManager()
+
+	statuses := []struct {
+		name   string
+		status model.Status
+	}{
+		{"pending", model.StatusPending},
+		{"completed", model.StatusCompleted},
+		{"failed", model.StatusFailed},
+		{"cancelled", model.StatusCancelled},
+	}
+	for _, tc := range statuses {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			task := &model.Task{ID: "task_001", Status: tc.status}
+			if err := lm.ExtendTaskLeaseGrace(task, 30*time.Second); err == nil {
+				t.Errorf("expected error for grace-extending %s task lease", tc.status)
+			}
+		})
+	}
+}
+
 func TestRenewableCommands(t *testing.T) {
 	t.Parallel()
 	lm := newTestLeaseManager()
