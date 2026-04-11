@@ -418,6 +418,6 @@ func (qg *QualityGateDaemon) loadGateDefinitions() error {
 }
 
 // log writes a log message if the level is enabled.
-func (qg *QualityGateDaemon) log(level LogLevel, format string, args ...interface{}) {
+func (qg *QualityGateDaemon) log(level LogLevel, format string, args ...any) {
 	qg.dl.Logf(level, format, args...)
 }

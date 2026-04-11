@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"slices"
 	"sort"
 	"strings"
@@ -488,9 +489,7 @@ func toInt(v interface{}) int {
 	case float64:
 		return int(val)
 	case string:
-		// Try to parse string as int
-		var i int
-		_, _ = fmt.Sscanf(val, "%d", &i)
+		i, _ := strconv.Atoi(val)
 		return i
 	default:
 		return 0
@@ -553,18 +552,8 @@ func (r *FeatureGateRule) Evaluate(_ context.Context, _ *RuleCondition, evalCtx 
 		profile = r.evaluator.Evaluate(featuregate.LevelSimple)
 	}
 
-	// Count enabled features — a non-zero count means features are active.
-	enabled := 0
-	for _, v := range profile.EnabledFeatures {
-		if v {
-			enabled++
-		}
-	}
-
 	// Always passes: the gate is informational, not blocking.
-	// enabled > 0 is exposed for testing; callers inspect the evaluation
-	// context or RuleResult.Message downstream.
-	_ = enabled
+	// Callers inspect the evaluation context or RuleResult.Message downstream.
 	return true, nil
 }
 
