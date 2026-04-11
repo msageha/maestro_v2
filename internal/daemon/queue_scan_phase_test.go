@@ -975,7 +975,7 @@ func TestPhaseBC_CommitFailure_FlowTable(t *testing.T) {
 			// and MarkPhaseMerged was NOT called for the failing phase.
 			qh.periodicScanPhaseC(pa, pb)
 
-			signalQueue, _ := qh.loadPlannerSignalQueue()
+			signalQueue, _ := qh.queueStore.LoadPlannerSignalQueue()
 			var found *model.PlannerSignal
 			for i := range signalQueue.Signals {
 				s := &signalQueue.Signals[i]
@@ -1032,7 +1032,7 @@ func TestPeriodicScanPhaseC_MergeConflictSignalStructuredFields(t *testing.T) {
 
 	qh.periodicScanPhaseC(pa, pb)
 
-	signalQueue, _ := qh.loadPlannerSignalQueue()
+	signalQueue, _ := qh.queueStore.LoadPlannerSignalQueue()
 	var found *model.PlannerSignal
 	for i := range signalQueue.Signals {
 		s := &signalQueue.Signals[i]

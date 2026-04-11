@@ -53,6 +53,7 @@ type QueueHandler struct {
 	clock      Clock
 
 	execProvider        *ExecutorProvider // shared across dispatcher, resultHandler, cancelHandler
+	queueStore          QueueStore
 	leaseManager        QueueLeaseManager
 	dispatcher          QueueDispatcher
 	dependencyResolver  QueueDependencyResolver
@@ -101,6 +102,7 @@ func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap
 	mh := metrics.NewHandler(maestroDir, cfg, logger, logLevel)
 
 	dl := NewDaemonLoggerFromLegacy("queue_handler", logger, logLevel)
+	qs := NewQueueStore(maestroDir, cfg, clock, lockMap, dl)
 	qh := &QueueHandler{
 		maestroDir:          maestroDir,
 		config:              cfg,
@@ -109,6 +111,7 @@ func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap
 		logLevel:            logLevel,
 		clock:               clock,
 		execProvider:        ep,
+		queueStore:          qs,
 		leaseManager:        lm,
 		dispatcher:          dispatcher,
 		dependencyResolver:  dr,
