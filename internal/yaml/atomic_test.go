@@ -112,6 +112,37 @@ func TestAtomicWrite_NoTempFileLeftOnFailure(t *testing.T) {
 	}
 }
 
+func TestAtomicWrite_BackupPreservesPermissions(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+
+	// Write initial content
+	if err := AtomicWrite(path, map[string]string{"version": "1"}); err != nil {
+		t.Fatalf("first write failed: %v", err)
+	}
+
+	// Set restrictive permissions (0600) on the original file
+	if err := os.Chmod(path, 0600); err != nil {
+		t.Fatalf("chmod failed: %v", err)
+	}
+
+	// Write updated content — this triggers .bak creation
+	if err := AtomicWrite(path, map[string]string{"version": "2"}); err != nil {
+		t.Fatalf("second write failed: %v", err)
+	}
+
+	// Verify .bak file has the same permissions as the original
+	bakInfo, err := os.Stat(path + ".bak")
+	if err != nil {
+		t.Fatalf("stat .bak failed: %v", err)
+	}
+
+	bakPerm := bakInfo.Mode().Perm()
+	if bakPerm != 0600 {
+		t.Errorf("backup permissions: got %04o, want 0600", bakPerm)
+	}
+}
+
 func TestAtomicWrite_StructData(t *testing.T) {
 	type testStruct struct {
 		Name    string `yaml:"name"`

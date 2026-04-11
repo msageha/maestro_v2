@@ -36,7 +36,7 @@ func NewQueueStore(maestroDir string, cfg model.Config, clock Clock, lockMap *lo
 
 // LoadCommandQueue loads the command queue from .maestro/queue/planner.yaml.
 func (qs *QueueStoreImpl) LoadCommandQueue() (model.CommandQueue, string) {
-	path := filepath.Join(qs.maestroDir, "queue", "planner.yaml")
+	path := commandQueuePath(qs.maestroDir)
 	var cq model.CommandQueue
 
 	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
@@ -77,7 +77,7 @@ func (qs *QueueStoreImpl) LoadCommandQueue() (model.CommandQueue, string) {
 
 // LoadAllTaskQueues loads all worker task queues from .maestro/queue/worker*.yaml files.
 func (qs *QueueStoreImpl) LoadAllTaskQueues() map[string]*taskQueueEntry {
-	queueDir := filepath.Join(qs.maestroDir, "queue")
+	queueDir := queueDirPath(qs.maestroDir)
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
 		qs.log(LogLevelWarn, "read_queue_dir error=%v", err)
@@ -111,7 +111,7 @@ func (qs *QueueStoreImpl) LoadAllTaskQueues() map[string]*taskQueueEntry {
 
 // LoadNotificationQueue loads the notification queue from .maestro/queue/orchestrator.yaml.
 func (qs *QueueStoreImpl) LoadNotificationQueue() (model.NotificationQueue, string) {
-	path := filepath.Join(qs.maestroDir, "queue", "orchestrator.yaml")
+	path := notificationQueuePath(qs.maestroDir)
 	var nq model.NotificationQueue
 
 	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
@@ -158,7 +158,7 @@ func (qs *QueueStoreImpl) LoadNotificationQueue() (model.NotificationQueue, stri
 
 // LoadPlannerSignalQueue loads .maestro/queue/planner_signals.yaml.
 func (qs *QueueStoreImpl) LoadPlannerSignalQueue() (model.PlannerSignalQueue, string) {
-	path := filepath.Join(qs.maestroDir, "queue", "planner_signals.yaml")
+	path := signalQueuePath(qs.maestroDir)
 	var sq model.PlannerSignalQueue
 
 	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
@@ -208,7 +208,7 @@ func (qs *QueueStoreImpl) FlushQueues(
 	if signalsDirty {
 		p := signalPath
 		if p == "" {
-			p = filepath.Join(qs.maestroDir, "queue", "planner_signals.yaml")
+			p = signalQueuePath(qs.maestroDir)
 		}
 		if len(signalQueue.Signals) == 0 {
 			_ = os.Remove(p)
@@ -222,7 +222,7 @@ func (qs *QueueStoreImpl) FlushQueues(
 
 // quarantineFile saves corrupted file data to the quarantine directory for later inspection.
 func (qs *QueueStoreImpl) quarantineFile(data []byte, name string) {
-	quarantineDir := filepath.Join(qs.maestroDir, "quarantine")
+	quarantineDir := quarantineDirPath(qs.maestroDir)
 	if err := os.MkdirAll(quarantineDir, 0755); err != nil { //nolint:gosec // 0755 is appropriate for a quarantine directory
 		qs.log(LogLevelError, "create_quarantine_dir error=%v", err)
 		return

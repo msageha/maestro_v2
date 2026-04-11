@@ -114,6 +114,13 @@ func copyFile(src, dst string) error {
 		}
 	}()
 
+	// Stat the source to preserve its permissions on the backup.
+	srcInfo, err := in.Stat()
+	if err != nil {
+		return fmt.Errorf("stat source for permissions: %w", err)
+	}
+	srcMode := srcInfo.Mode().Perm()
+
 	dir := filepath.Dir(dst)
 	tmp, err := os.CreateTemp(dir, ".maestro-bak-tmp-*.yaml")
 	if err != nil {
@@ -138,6 +145,11 @@ func copyFile(src, dst string) error {
 	}
 	if err := tmp.Sync(); err != nil {
 		return err
+	}
+	// Match the backup file's permissions to the source file (e.g., 0600
+	// for state files) before rename so the .bak is never world-readable.
+	if err := tmp.Chmod(srcMode); err != nil {
+		return fmt.Errorf("chmod backup temp: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		return err

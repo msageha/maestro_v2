@@ -21,6 +21,26 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
+// sanitizeContentForLog truncates a string to maxLen and replaces control
+// characters with '?' to prevent log injection when including untrusted
+// content values (task content, skill candidates, summaries) in log messages.
+func sanitizeContentForLog(s string) string {
+	const maxLen = 200
+	if len(s) > maxLen {
+		s = s[:maxLen] + "..."
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			b.WriteRune('?')
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // fallbackRecorder records worker success/failure for health monitoring.
 type fallbackRecorder interface {
 	RecordSuccess(workerID string)
@@ -214,7 +234,7 @@ func (h *ResultWriteAPI) handleResultWrite(req *uds.Request) *uds.Response {
 
 	// Learnings: best-effort write after core phases succeed.
 	if bestEffortAllowed && len(params.Learnings) > 0 && h.config.Learnings.Enabled {
-		learningsPath := filepath.Join(h.maestroDir, "state", "learnings.yaml")
+		learningsPath := learningsFilePath(h.maestroDir)
 		if err := h.writeLearnings(params, resultID); err != nil {
 			h.logFn(LogLevelWarn, "learnings_write_failed result=%s task=%s command=%s path=%s count=%d error=%v "+
 				"(learnings data lost; core result already committed; manual recovery: re-submit result with same learnings)",
@@ -529,7 +549,7 @@ func (h *ResultWriteAPI) resultWritePhaseB(params ResultWriteParams, resultID st
 	h.lockMap.Lock(cmdLockKey)
 	defer h.lockMap.Unlock(cmdLockKey)
 
-	statePath := filepath.Join(h.maestroDir, "state", "commands", params.CommandID+".yaml")
+	statePath := commandStatePath(h.maestroDir, params.CommandID)
 
 	return updateYAMLFile(statePath, func(state *model.CommandState) error {
 		// Guard: if state was zero-value (file not found), the command state is missing
@@ -665,7 +685,7 @@ func (h *ResultWriteAPI) persistLeaseRejection(params ResultWriteParams, advisor
 	// If the queue file is unreadable / parse-fails / task is gone, fall
 	// back to the advisory reason captured by the caller — the data is
 	// still considered lost.
-	queuePath := filepath.Join(h.maestroDir, "queue", params.Reporter+".yaml")
+	queuePath := taskQueuePath(h.maestroDir, params.Reporter)
 	queueLeaseEpoch := -1
 	authoritativeReason := advisoryReason
 	if data, err := os.ReadFile(queuePath); err == nil { //nolint:gosec // queuePath is constructed from a controlled application queue directory
@@ -694,7 +714,7 @@ func (h *ResultWriteAPI) persistLeaseRejection(params ResultWriteParams, advisor
 		}
 	}
 
-	resultPath := filepath.Join(h.maestroDir, "results", params.Reporter+".yaml")
+	resultPath := resultFilePath(h.maestroDir, params.Reporter)
 	var rf model.TaskResultFile
 	if data, err := os.ReadFile(resultPath); err == nil { //nolint:gosec // resultPath is constructed from a controlled application results directory
 		if perr := yamlv3.Unmarshal(data, &rf); perr != nil {
@@ -781,7 +801,7 @@ func computeRejectionDedupKey(params ResultWriteParams, queueLeaseEpoch int) str
 // On I/O errors, parse errors, or task-not-found (task may have been archived
 // after completion), returns (skip=false, "") to allow writes to proceed.
 func (h *ResultWriteAPI) checkLeaseEpochForBestEffort(params ResultWriteParams) (skip bool, reason string) {
-	queuePath := filepath.Join(h.maestroDir, "queue", params.Reporter+".yaml")
+	queuePath := taskQueuePath(h.maestroDir, params.Reporter)
 	data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 	if err != nil {
 		return false, ""
@@ -811,7 +831,7 @@ func (h *ResultWriteAPI) writeLearnings(params ResultWriteParams, resultID strin
 	h.lockMap.Lock("state:learnings")
 	defer h.lockMap.Unlock("state:learnings")
 
-	learningsPath := filepath.Join(h.maestroDir, "state", "learnings.yaml")
+	learningsPath := learningsFilePath(h.maestroDir)
 	maxEntries := h.config.Learnings.EffectiveMaxEntries()
 	maxLen := h.config.Learnings.EffectiveMaxContentLength()
 
@@ -932,7 +952,7 @@ func (h *ResultWriteAPI) writeSkillCandidates(params ResultWriteParams) error {
 		before := len(candidates)
 		candidates, err = skill.AddOrUpdateCandidate(candidates, content, params.CommandID, now, idFunc)
 		if err != nil {
-			h.logFn(LogLevelError, "skill_candidate_add_failed content=%q: %v", content, err)
+			h.logFn(LogLevelError, "skill_candidate_add_failed content=%q: %v", sanitizeContentForLog(content), err)
 			continue
 		}
 		if len(candidates) > before {

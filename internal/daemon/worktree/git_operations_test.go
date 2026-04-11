@@ -73,6 +73,45 @@ func TestClassifyGitError(t *testing.T) {
 			want: gitErrorPermanent,
 		},
 
+		// New transient patterns: git process lock
+		{
+			name: "another git process running",
+			err:  errors.New("Another git process seems to be running in this repository"),
+			want: gitErrorTransient,
+		},
+		// New transient patterns: network errors
+		{
+			name: "connection refused",
+			err:  errors.New("fatal: unable to access 'https://github.com/...': Connection refused"),
+			want: gitErrorTransient,
+		},
+		{
+			name: "could not resolve host",
+			err:  errors.New("fatal: unable to access 'https://github.com/...': Could not resolve host: github.com"),
+			want: gitErrorTransient,
+		},
+		{
+			name: "connection timed out is transient",
+			err:  errors.New("fatal: unable to access 'https://github.com/...': Connection timed out"),
+			want: gitErrorTransient,
+		},
+		{
+			name: "connection reset by peer",
+			err:  errors.New("fatal: the remote end hung up unexpectedly: Connection reset by peer"),
+			want: gitErrorTransient,
+		},
+		// New transient patterns: resource errors
+		{
+			name: "cannot allocate memory",
+			err:  errors.New("fatal: cannot allocate memory"),
+			want: gitErrorTransient,
+		},
+		{
+			name: "no space left on device",
+			err:  errors.New("error: No space left on device"),
+			want: gitErrorTransient,
+		},
+
 		// Unknown errors default to Permanent
 		{
 			name: "unknown error",
@@ -220,6 +259,87 @@ func TestGitOutputWithRetry_Success(t *testing.T) {
 	}
 	if len(output) < 7 {
 		t.Errorf("expected SHA output, got %q", output)
+	}
+}
+
+func TestSanitizeGitStderr_StripsAbsolutePaths(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		input string
+		check func(t *testing.T, out string)
+	}{
+		{
+			name:  "absolute path stripped",
+			input: "Unable to create '/Users/mzk/project/.git/index.lock': File exists",
+			check: func(t *testing.T, out string) {
+				if strings.Contains(out, "/Users/mzk") {
+					t.Errorf("output still contains absolute path: %s", out)
+				}
+				if !strings.Contains(out, "Unable to create") {
+					t.Errorf("lost classification keyword 'Unable to create': %s", out)
+				}
+				if !strings.Contains(out, "index.lock") {
+					t.Errorf("lost basename 'index.lock': %s", out)
+				}
+			},
+		},
+		{
+			name:  "preserves non-path content",
+			input: "fatal: bad object abc123",
+			check: func(t *testing.T, out string) {
+				if out != "fatal: bad object abc123" {
+					t.Errorf("unexpected modification: %s", out)
+				}
+			},
+		},
+		{
+			name:  "truncates long output",
+			input: strings.Repeat("a", 300),
+			check: func(t *testing.T, out string) {
+				if len(out) > 260 { // 256 + "..."
+					t.Errorf("output not truncated, len=%d", len(out))
+				}
+				if !strings.HasSuffix(out, "...") {
+					t.Errorf("truncated output should end with '...': %s", out)
+				}
+			},
+		},
+		{
+			name:  "multiple paths stripped",
+			input: "error in /home/user/repo/.git and /tmp/git-merge-xxx/file.txt",
+			check: func(t *testing.T, out string) {
+				if strings.Contains(out, "/home/user") {
+					t.Errorf("first path not stripped: %s", out)
+				}
+				if strings.Contains(out, "/tmp/git-merge") {
+					t.Errorf("second path not stripped: %s", out)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			out := sanitizeGitStderr(tt.input)
+			tt.check(t, out)
+		})
+	}
+}
+
+func TestWrapGitOutputError_SanitizesStderr(t *testing.T) {
+	t.Parallel()
+	exitErr := &exec.ExitError{
+		Stderr: []byte("fatal: unable to access '/Users/secret/project/.git/': Permission denied"),
+	}
+	wrapped := wrapGitOutputError(exitErr, []string{"fetch", "origin"})
+	msg := wrapped.Error()
+	if strings.Contains(msg, "/Users/secret") {
+		t.Errorf("error message leaks internal path: %s", msg)
+	}
+	if !strings.Contains(msg, "git fetch origin") {
+		t.Errorf("error message missing command: %s", msg)
 	}
 }
 

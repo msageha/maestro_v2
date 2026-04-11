@@ -191,16 +191,25 @@ func buildLaunchArgs(role, agentModel, systemPrompt, basePromptMode string) []st
 			}, ","))
 	}
 
-	// Disable Notification hooks for non-orchestrator, non-worker roles.
-	// Workers get a merged --settings (Notification + PreToolUse) in Launch(),
-	// so we skip them here to avoid passing two --settings flags.
+	// Notification hooks: user-configured scripts that fire on Claude Code
+	// events (tool calls, errors, etc.). For internal agents (planner, worker),
+	// these are disabled to prevent interference with automated operation:
+	//   - User notification scripts may block or produce side effects
+	//   - Internal agents run autonomously and don't need user-facing alerts
+	//   - Orchestrator keeps user-configured hooks since it's the user-facing agent
+	//
+	// Worker Notification hooks are disabled in HookSettings() (policy_checker.go),
+	// merged with PreToolUse hooks into a single --settings flag.
 	// allowAllUnixSockets enables the daemon UDS connection (.maestro/daemon.sock).
 	switch role {
 	case "orchestrator":
 		args = append(args, "--settings", `{"sandbox":{"network":{"allowAllUnixSockets":true}}}`)
 	case "worker":
-		// Worker settings are handled via HookSettings() in Launch().
+		// Worker settings (Notification=[] + PreToolUse policy hook) are
+		// handled via HookSettings() in Launch() to produce a single
+		// merged --settings flag.
 	default:
+		// Planner and other internal roles: disable Notification hooks.
 		args = append(args, "--settings", `{"sandbox":{"network":{"allowAllUnixSockets":true}},"hooks":{"Notification":[]}}`)
 	}
 

@@ -143,7 +143,7 @@ func (rh *ResultHandler) HandleResultFileEvent(filePath string) {
 // ScanAllResults scans all results/ files for unnotified entries.
 // Called from QueueHandler.PeriodicScan (step 2.5).
 func (rh *ResultHandler) ScanAllResults() int {
-	resultsDir := filepath.Join(rh.maestroDir, "results")
+	resultsDir := resultsDirPath(rh.maestroDir)
 	entries, err := os.ReadDir(resultsDir)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -284,7 +284,7 @@ func processResultFile[T any, PT interface {
 // processWorkerResultFile processes worker results using the notification lease pattern.
 // Notifies Planner of each unnotified result.
 func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
-	resultPath := filepath.Join(rh.maestroDir, "results", workerID+".yaml")
+	resultPath := resultFilePath(rh.maestroDir, workerID)
 	label := "worker=" + workerID
 
 	return processResultFile(rh, resultFileSpec[model.TaskResult, *model.TaskResult, model.TaskResultFile]{
@@ -328,7 +328,7 @@ func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
 // processCommandResultFile processes planner results using the notification lease pattern.
 // Notifies Orchestrator via queue write.
 func (rh *ResultHandler) processCommandResultFile() int {
-	resultPath := filepath.Join(rh.maestroDir, "results", "planner.yaml")
+	resultPath := resultFilePath(rh.maestroDir, "planner")
 
 	return processResultFile(rh, resultFileSpec[model.CommandResult, *model.CommandResult, model.CommandResultFile]{
 		lockKey:    "result:planner",
@@ -503,7 +503,7 @@ func (rh *ResultHandler) notifyOrchestratorOfCommandResult(resultID, commandID s
 // writeNotificationToOrchestratorQueue directly writes a notification to queue/orchestrator.yaml.
 // Uses source_result_id idempotency to prevent duplicate notifications.
 func (rh *ResultHandler) writeNotificationToOrchestratorQueue(resultID, commandID string, status model.Status) error {
-	queuePath := filepath.Join(rh.maestroDir, "queue", "orchestrator.yaml")
+	queuePath := notificationQueuePath(rh.maestroDir)
 
 	// Serialize access to orchestrator queue file to prevent lost-update races
 	// between fsnotify event path (no fileMu) and PeriodicScan path.

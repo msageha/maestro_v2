@@ -4,6 +4,7 @@ package model
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 )
 
@@ -122,6 +123,36 @@ const (
 	// FeatureProfile
 	DefaultCrossAgentReview = "false"
 )
+
+// ValidAgentModels is the whitelist of recognized agent model name identifiers.
+// An empty string is always valid (uses the runtime default).
+var ValidAgentModels = map[string]struct{}{
+	// Claude short aliases
+	"sonnet": {},
+	"opus":   {},
+	"haiku":  {},
+	// Claude full model IDs
+	"claude-sonnet-4-6":         {},
+	"claude-opus-4-6":           {},
+	"claude-haiku-4-5-20251001": {},
+}
+
+// validModelNameRe validates the format of model name identifiers.
+// Names must start with a letter or digit and contain only letters, digits,
+// hyphens, dots, and underscores.
+var validModelNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
+
+// isValidModelName returns true if name is empty (use default) or is in the
+// whitelist or matches the valid model name format pattern.
+func isValidModelName(name string) bool {
+	if name == "" {
+		return true
+	}
+	if _, ok := ValidAgentModels[name]; ok {
+		return true
+	}
+	return validModelNameRe.MatchString(name)
+}
 
 // IntPtr returns a pointer to the given int value.
 // Used for setting *int config fields in tests and struct literals.
@@ -728,6 +759,22 @@ func (c Config) Validate() error {
 	// agents.workers.count
 	if c.Agents.Workers.Count < MinWorkers || c.Agents.Workers.Count > MaxWorkers {
 		errs = append(errs, fmt.Errorf("agents.workers.count: must be between %d and %d", MinWorkers, MaxWorkers))
+	}
+
+	// agents model name validation
+	if !isValidModelName(c.Agents.Orchestrator.Model) {
+		errs = append(errs, fmt.Errorf("agents.orchestrator.model: invalid model name %q", c.Agents.Orchestrator.Model))
+	}
+	if !isValidModelName(c.Agents.Planner.Model) {
+		errs = append(errs, fmt.Errorf("agents.planner.model: invalid model name %q", c.Agents.Planner.Model))
+	}
+	if !isValidModelName(c.Agents.Workers.DefaultModel) {
+		errs = append(errs, fmt.Errorf("agents.workers.default_model: invalid model name %q", c.Agents.Workers.DefaultModel))
+	}
+	for workerID, m := range c.Agents.Workers.Models {
+		if !isValidModelName(m) {
+			errs = append(errs, fmt.Errorf("agents.workers.models.%s: invalid model name %q", workerID, m))
+		}
 	}
 
 	// watcher fields: reject negative values; zero means "use runtime default"

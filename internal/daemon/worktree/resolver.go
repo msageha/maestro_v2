@@ -272,11 +272,11 @@ func (wm *Manager) resolverGitRunInDir(dir string, args ...string) error {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return fmt.Errorf("git -C %s %s: timeout after %s: %w",
-				dir, strings.Join(args, " "), resolverGitTimeout, ctx.Err())
+			return fmt.Errorf("git %s: timeout after %s: %w",
+				strings.Join(args, " "), resolverGitTimeout, ctx.Err())
 		}
-		return fmt.Errorf("git -C %s %s: %w\noutput: %s",
-			dir, strings.Join(args, " "), err, string(output))
+		return fmt.Errorf("git %s: %w\noutput: %s",
+			strings.Join(args, " "), err, sanitizeGitStderr(string(output)))
 	}
 	return nil
 }

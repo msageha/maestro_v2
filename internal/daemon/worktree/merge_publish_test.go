@@ -1,6 +1,9 @@
 package worktree
 
 import (
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -194,5 +197,46 @@ func TestTruncateMessage(t *testing.T) {
 				t.Errorf("truncateMessage() length %d exceeds max %d", len(got), tt.maxLen)
 			}
 		})
+	}
+}
+
+// TestMergeToIntegration_PathGuardRejectsEscape verifies that MergeToIntegration
+// refuses to operate when the integration worktree path escapes the project root
+// (e.g. via symlink). This is defense-in-depth for the recovery paths that use
+// git reset --hard + clean -fd.
+func TestMergeToIntegration_PathGuardRejectsEscape(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on windows")
+	}
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_pathguard"
+	workers := []string{"worker1"}
+	if err := createForCommand(wm, commandID, workers); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	// Replace the integration worktree with a symlink escaping projectRoot.
+	integrationPath := filepath.Join(projectRoot, ".maestro", "worktrees", commandID, "_integration")
+
+	// Remove the real git worktree first (gitRun does not take the mutex).
+	_ = wm.gitRun("worktree", "remove", "--force", integrationPath)
+	_ = os.RemoveAll(integrationPath)
+
+	// Create an outside directory and symlink to it.
+	outside := t.TempDir()
+	if err := os.Symlink(outside, integrationPath); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	// MergeToIntegration should refuse due to pathGuard.
+	_, err := wm.MergeToIntegration(commandID, workers, nil)
+	if err == nil {
+		t.Fatal("expected path guard error, got nil")
+	}
+	if !strings.Contains(err.Error(), "merge to integration refused") {
+		t.Errorf("expected path guard error message, got: %v", err)
 	}
 }

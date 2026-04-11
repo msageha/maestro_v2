@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"runtime/debug"
 	"time"
 
@@ -66,7 +65,7 @@ func (d *Daemon) recoverPanic(goroutine string) {
 // validateLearningsFile checks the learnings file on daemon startup.
 // If the file is corrupt, it uses the quarantine/recovery flow.
 func (d *Daemon) validateLearningsFile() {
-	learningsPath := filepath.Join(d.maestroDir, "state", "learnings.yaml")
+	learningsPath := learningsFilePath(d.maestroDir)
 	data, err := os.ReadFile(learningsPath) //nolint:gosec // learningsPath is constructed from a controlled application state directory
 	if os.IsNotExist(err) {
 		return // No file yet — will be created on first write

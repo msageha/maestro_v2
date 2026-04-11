@@ -111,12 +111,21 @@ func (pm *ClaudeProcessManager) ensureWorkingDir(ctx context.Context, paneTarget
 		return fmt.Errorf("ensureWorkingDir: wait for shell after respawn: %w", err)
 	}
 
-	// Step 3: Re-launch Claude
+	// Step 3: Reset clear_ready state before re-launching Claude.
+	// RespawnPane changes the pane PID, so clear_ready_pid is now stale.
+	// Reset early (matching ensureClaudeRunning) to prevent DetectProcessRestart
+	// from seeing a stale PID between here and the launch.
+	if err := pm.paneState.ResetClearReady(paneTarget); err != nil {
+		pm.log(logLevelError, "reset_clear_ready_after_respawn_failed error=%v", err)
+		return fmt.Errorf("ensureWorkingDir: reset_clear_ready after respawn: %w", err)
+	}
+
+	// Step 4: Re-launch Claude
 	if err := pm.paneIO.SendCommand(paneTarget, "maestro agent launch"); err != nil {
 		return fmt.Errorf("ensureWorkingDir: re-launch: %w", err)
 	}
 
-	// Step 4: Wait for Claude prompt readiness (fail-closed: error on timeout)
+	// Step 5: Wait for Claude prompt readiness (fail-closed: error on timeout)
 	// Use a generous timeout since Claude startup can take a few seconds.
 	launchCtx, cancel := context.WithTimeout(ctx, pm.execCfg.ClaudeLaunchTimeout)
 	defer cancel()
@@ -124,14 +133,9 @@ func (pm *ClaudeProcessManager) ensureWorkingDir(ctx context.Context, paneTarget
 		return fmt.Errorf("ensureWorkingDir: wait for Claude ready: %w", err)
 	}
 
-	// Step 5: Update CWD tracking and reset clear_ready state
+	// Step 6: Update CWD tracking (clear_ready was already reset in Step 3)
 	if err := pm.paneState.SetCWD(paneTarget, workingDir); err != nil {
 		pm.log(logLevelWarn, "set_cwd_failed cwd=%s error=%v", workingDir, err)
-	}
-	// Reset clear_ready since we started a fresh Claude session
-	if err := pm.paneState.ResetClearReady(paneTarget); err != nil {
-		pm.log(logLevelError, "reset_clear_ready_failed error=%v", err)
-		return fmt.Errorf("ensureWorkingDir: reset_clear_ready: %w", err)
 	}
 
 	pm.log(logLevelInfo, "working_dir_changed cwd=%s", workingDir)

@@ -26,9 +26,19 @@ const (
 
 // transientPatterns are substrings that indicate a transient git error.
 var transientPatterns = []string{
+	// Git lock contention
 	"lock",
 	"Unable to create",
 	".lock",
+	"Another git process seems to be running",
+	// Network transient errors
+	"Connection timed out",
+	"Connection refused",
+	"Could not resolve host",
+	"Connection reset by peer",
+	// Resource transient errors
+	"cannot allocate memory",
+	"No space left on device",
 }
 
 // permanentPatterns are substrings that indicate a permanent git error.
@@ -55,10 +65,6 @@ func classifyGitError(err error) gitErrorClass {
 
 	msg := err.Error()
 
-	if strings.Contains(msg, "timeout") {
-		return gitErrorPermanent
-	}
-
 	// Check permanent patterns first to avoid false transient matches
 	// (e.g. "invalid" should not be overridden by a transient pattern).
 	for _, p := range permanentPatterns {
@@ -73,6 +79,13 @@ func classifyGitError(err error) gitErrorClass {
 		}
 	}
 
+	// Generic "timeout" in error message — likely a git command timeout
+	// which may leave the worktree dirty. Specific network timeouts
+	// (e.g. "Connection timed out") are handled above by transientPatterns.
+	if strings.Contains(msg, "timeout") {
+		return gitErrorPermanent
+	}
+
 	// Unknown errors default to Permanent.
 	return gitErrorPermanent
 }
@@ -82,12 +95,29 @@ func isTransientGitError(err error) bool {
 	return classifyGitError(err) == gitErrorTransient
 }
 
-// wrapGitOutputError wraps a git exec error, including stderr from exec.ExitError
-// so that classifyGitError can match transient patterns in stderr content.
+// pathStripRe matches absolute paths and replaces them with "…/<basename>"
+// to prevent internal path leakage while preserving error classification
+// patterns like ".lock" or ".git".
+var pathStripRe = regexp.MustCompile(`/(?:[^\s'"]+/)([^\s'"]+)`)
+
+// sanitizeGitStderr sanitizes git stderr output by stripping absolute paths
+// and truncating to a reasonable length. Error classification keywords (like
+// "lock", "Unable to create") are preserved.
+func sanitizeGitStderr(s string) string {
+	const maxLen = 256
+	if len(s) > maxLen {
+		s = s[:maxLen] + "..."
+	}
+	return pathStripRe.ReplaceAllString(s, "…/$1")
+}
+
+// wrapGitOutputError wraps a git exec error, including sanitized stderr from
+// exec.ExitError so that classifyGitError can match transient patterns in
+// stderr content while preventing internal path leakage.
 func wrapGitOutputError(err error, args []string) error {
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) && len(exitErr.Stderr) > 0 {
-		return fmt.Errorf("git %s: %w\nstderr: %s", strings.Join(args, " "), err, string(exitErr.Stderr))
+		return fmt.Errorf("git %s: %w\nstderr: %s", strings.Join(args, " "), err, sanitizeGitStderr(string(exitErr.Stderr)))
 	}
 	return fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 }
@@ -155,12 +185,8 @@ func (wm *Manager) gitExecCombined(dir string, args ...string) ([]byte, error) {
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			dirLabel := wm.projectRoot
-			if dir != "" {
-				dirLabel = dir
-			}
-			return output, fmt.Errorf("git %s (in %s): timeout after %s: %w",
-				strings.Join(args, " "), dirLabel, wm.gitTimeout(), ctx.Err())
+			return output, fmt.Errorf("git %s: timeout after %s: %w",
+				strings.Join(args, " "), wm.gitTimeout(), ctx.Err())
 		}
 		return output, err
 	}
@@ -180,12 +206,8 @@ func (wm *Manager) gitExecOutput(dir string, args ...string) ([]byte, error) {
 	output, err := cmd.Output()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			dirLabel := wm.projectRoot
-			if dir != "" {
-				dirLabel = dir
-			}
-			return nil, fmt.Errorf("git %s (in %s): timeout after %s: %w",
-				strings.Join(args, " "), dirLabel, wm.gitTimeout(), ctx.Err())
+			return nil, fmt.Errorf("git %s: timeout after %s: %w",
+				strings.Join(args, " "), wm.gitTimeout(), ctx.Err())
 		}
 		return nil, err
 	}
@@ -196,7 +218,7 @@ func (wm *Manager) gitExecOutput(dir string, args ...string) ([]byte, error) {
 func (wm *Manager) gitRun(args ...string) error {
 	output, err := wm.gitExecCombined("", args...)
 	if err != nil {
-		return fmt.Errorf("git %s: %w\noutput: %s", strings.Join(args, " "), err, string(output))
+		return fmt.Errorf("git %s: %w\noutput: %s", strings.Join(args, " "), err, sanitizeGitStderr(string(output)))
 	}
 	return nil
 }
@@ -207,7 +229,7 @@ func (wm *Manager) gitOutput(args ...string) (string, error) {
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return "", fmt.Errorf("git %s: %w\nstderr: %s", strings.Join(args, " "), err, string(exitErr.Stderr))
+			return "", fmt.Errorf("git %s: %w\nstderr: %s", strings.Join(args, " "), err, sanitizeGitStderr(string(exitErr.Stderr)))
 		}
 		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
@@ -218,7 +240,7 @@ func (wm *Manager) gitOutput(args ...string) (string, error) {
 func (wm *Manager) gitRunInDir(dir string, args ...string) error {
 	output, err := wm.gitExecCombined(dir, args...)
 	if err != nil {
-		return fmt.Errorf("git -C %s %s: %w\noutput: %s", dir, strings.Join(args, " "), err, string(output))
+		return fmt.Errorf("git %s: %w\noutput: %s", strings.Join(args, " "), err, sanitizeGitStderr(string(output)))
 	}
 	return nil
 }
@@ -229,9 +251,9 @@ func (wm *Manager) gitOutputInDir(dir string, args ...string) (string, error) {
 	if err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
-			return "", fmt.Errorf("git -C %s %s: %w\nstderr: %s", dir, strings.Join(args, " "), err, string(exitErr.Stderr))
+			return "", fmt.Errorf("git %s: %w\nstderr: %s", strings.Join(args, " "), err, sanitizeGitStderr(string(exitErr.Stderr)))
 		}
-		return "", fmt.Errorf("git -C %s %s: %w", dir, strings.Join(args, " "), err)
+		return "", fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 	}
 	return string(output), nil
 }
@@ -481,12 +503,12 @@ func (wm *Manager) recoverWorktreeAfterMerge(worktreePath, preMergeHEAD, command
 			commandID, workerID, resetErr)
 		return fmt.Errorf("worktree recovery failed: reset --hard: %w", resetErr)
 	}
-	wm.Log(core.LogLevelInfo, "merge_abort_recovery_reset_ok command=%s worker=%s head=%s",
+	wm.Log(core.LogLevelDebug, "merge_abort_recovery_reset_ok command=%s worker=%s head=%s",
 		commandID, workerID, preMergeHEAD)
 
 	// Step 2: clean -fd to remove untracked files left by the failed merge.
 	if cleanErr := wm.gitRunInDir(worktreePath, "clean", "-fd"); cleanErr != nil {
-		wm.Log(core.LogLevelWarn, "merge_abort_recovery_clean_failed command=%s worker=%s error=%v",
+		wm.Log(core.LogLevelDebug, "merge_abort_recovery_clean_failed command=%s worker=%s error=%v",
 			commandID, workerID, cleanErr)
 		// Not immediately fatal — check status below to confirm.
 	}
@@ -504,6 +526,6 @@ func (wm *Manager) recoverWorktreeAfterMerge(worktreePath, preMergeHEAD, command
 		return fmt.Errorf("worktree still dirty after recovery: %s", strings.TrimSpace(statusOut))
 	}
 
-	wm.Log(core.LogLevelInfo, "merge_abort_recovery_success command=%s worker=%s", commandID, workerID)
+	wm.Log(core.LogLevelDebug, "merge_abort_recovery_success command=%s worker=%s", commandID, workerID)
 	return nil
 }
