@@ -21,7 +21,7 @@ import (
 func newTestCancelHandler() (*CancelHandler, *mocks.MockExecutor) {
 	cfg := model.Config{}
 	ep := newTestExecutorProvider("", cfg)
-	mock := &mockExecutor{result: agent.ExecResult{Success: true}}
+	mock := &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}
 	ep.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return mock, nil
 	})
@@ -100,7 +100,7 @@ func newTestCancelHandlerWithDir(t *testing.T) (*CancelHandler, *mocks.MockExecu
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{}
 	ep := newTestExecutorProvider(maestroDir, cfg)
-	mock := &mockExecutor{result: agent.ExecResult{Success: true}}
+	mock := &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}
 	ep.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return mock, nil
 	})
