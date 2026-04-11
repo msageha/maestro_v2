@@ -922,6 +922,129 @@ func TestValidate_UpperBound_MaxWorktrees(t *testing.T) {
 	}
 }
 
+// --- Generic helper function tests ---
+
+func TestEffectiveValue_Int(t *testing.T) {
+	tests := []struct {
+		name       string
+		ptr        *int
+		defaultVal int
+		want       int
+	}{
+		{"nil returns default", nil, 42, 42},
+		{"non-nil returns value", IntPtr(7), 42, 7},
+		{"zero value returns 0", IntPtr(0), 42, 0},
+		{"negative returns negative", IntPtr(-1), 42, -1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := effectiveValue(tt.ptr, tt.defaultVal); got != tt.want {
+				t.Errorf("effectiveValue() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEffectiveValue_Bool(t *testing.T) {
+	tests := []struct {
+		name       string
+		ptr        *bool
+		defaultVal bool
+		want       bool
+	}{
+		{"nil returns default false", nil, false, false},
+		{"nil returns default true", nil, true, true},
+		{"true ptr returns true", BoolPtr(true), false, true},
+		{"false ptr returns false", BoolPtr(false), true, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := effectiveValue(tt.ptr, tt.defaultVal); got != tt.want {
+				t.Errorf("effectiveValue() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEffectiveValue_Float64(t *testing.T) {
+	tests := []struct {
+		name       string
+		ptr        *float64
+		defaultVal float64
+		want       float64
+	}{
+		{"nil returns default", nil, 0.99, 0.99},
+		{"non-nil returns value", Float64Ptr(1.5), 0.99, 1.5},
+		{"zero returns 0", Float64Ptr(0.0), 0.99, 0.0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := effectiveValue(tt.ptr, tt.defaultVal); got != tt.want {
+				t.Errorf("effectiveValue() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEffectiveValue_String(t *testing.T) {
+	tests := []struct {
+		name       string
+		ptr        *string
+		defaultVal string
+		want       string
+	}{
+		{"nil returns default", nil, "opus", "opus"},
+		{"non-nil returns value", StringPtr("sonnet"), "opus", "sonnet"},
+		{"empty string returns empty", StringPtr(""), "opus", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := effectiveValue(tt.ptr, tt.defaultVal); got != tt.want {
+				t.Errorf("effectiveValue() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEffectiveNonZero_Int(t *testing.T) {
+	tests := []struct {
+		name       string
+		val        int
+		defaultVal int
+		want       int
+	}{
+		{"zero returns default", 0, 5, 5},
+		{"positive returns value", 3, 5, 3},
+		{"negative returns value", -1, 5, -1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := effectiveNonZero(tt.val, tt.defaultVal); got != tt.want {
+				t.Errorf("effectiveNonZero() = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEffectiveNonZero_String(t *testing.T) {
+	tests := []struct {
+		name       string
+		val        string
+		defaultVal string
+		want       string
+	}{
+		{"empty returns default", "", "warn", "warn"},
+		{"non-empty returns value", "error", "warn", "error"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := effectiveNonZero(tt.val, tt.defaultVal); got != tt.want {
+				t.Errorf("effectiveNonZero() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 // --- C-6 ComplexityConfig tests ---
 
 func TestComplexityConfig_Defaults(t *testing.T) {
