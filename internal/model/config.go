@@ -22,16 +22,105 @@ const MaxWorkers = 8
 
 // Upper-bound constants for numeric config fields to prevent resource exhaustion.
 const (
-	MaxBusyCheckMaxRetries        = 1000
-	MaxWaitReadyMaxRetries        = 1000
-	MaxDispatchLeaseSec           = 3600
-	MaxMaxInProgressMin           = 1440
-	MaxShutdownTimeoutSec         = 600
-	MaxMaxPendingCommands         = 1000
-	MaxMaxPendingTasksPerWorker   = 100
-	MaxMaxDeadLetterArchiveFiles  = 10000
-	MaxMaxQuarantineFiles         = 10000
-	MaxMaxWorktrees               = 256
+	MaxBusyCheckMaxRetries       = 1000
+	MaxWaitReadyMaxRetries       = 1000
+	MaxDispatchLeaseSec          = 3600
+	MaxMaxInProgressMin          = 1440
+	MaxShutdownTimeoutSec        = 600
+	MaxMaxPendingCommands        = 1000
+	MaxMaxPendingTasksPerWorker  = 100
+	MaxMaxDeadLetterArchiveFiles = 10000
+	MaxMaxQuarantineFiles        = 10000
+	MaxMaxWorktrees              = 256
+)
+
+// Default values for Effective*() methods.
+const (
+	// SkillsConfig
+	DefaultMaxRefsPerTask   = 3
+	DefaultMissingRefPolicy = "warn"
+
+	// autoCollectConfig
+	DefaultAutoCollectMinOccurrences = 3
+	DefaultAutoCollectMinCommands    = 2
+
+	// WatcherConfig
+	DefaultMaxInProgressMin = 60
+
+	// LimitsConfig
+	DefaultMaxDeadLetterArchiveFiles = 100
+	DefaultMaxQuarantineFiles        = 100
+
+	// CircuitBreakerConfig
+	DefaultCBMaxConsecutiveFailures = 3
+	DefaultProgressTimeoutMinutes   = 30
+
+	// LearningsConfig
+	DefaultLearningsMaxEntries       = 100
+	DefaultLearningsMaxContentLength = 500
+	DefaultLearningsInjectCount      = 5
+
+	// AdmissionControl
+	DefaultMaxConcurrentVerify  = 2
+	DefaultMaxConcurrentRepair  = 1
+	DefaultMaxConcurrentRollout = 1
+
+	// Fallback
+	DefaultConsecutiveFailureThreshold = 5
+	DefaultRecoveryCheckIntervalSec    = 60
+	DefaultMinHealthyDurationSec       = 120
+
+	// WorktreeConfig
+	DefaultBaseBranch                  = "main"
+	DefaultPathPrefix                  = ".maestro/worktrees"
+	DefaultMergeStrategy               = "ort"
+	DefaultGitTimeoutSec               = 120
+	DefaultStallTimeoutMinutes         = 30
+	DefaultFallbackMergeTimeoutMinutes = 60
+	DefaultStallCleanupAfter           = 10 * time.Minute
+
+	// CommitPolicyConfig
+	DefaultCommitMaxFiles = 30
+
+	// WorktreeGCConfig
+	DefaultGCTTLHours     = 24
+	DefaultGCMaxWorktrees = 32
+
+	// ReviewConfig
+	DefaultReviewMinBloomLevel        = 2
+	DefaultReviewMaxConcurrentReviews = 2
+	DefaultReviewTimeoutSec           = 300
+
+	// EvolutionConfig
+	DefaultMaxMutationsPerRound = 3
+	DefaultNoveltyThreshold     = 0.99
+
+	// BanditConfig
+	DefaultExplorationCoeff     = 1.41
+	DefaultMinSamplesBeforeUse  = 10
+	DefaultDecayFactor          = 0.95
+	DefaultTraceDataRequirement = 50
+
+	// ExtendedVerificationConfig
+	DefaultMaxAutoRetries = 2
+
+	// SearchConfig
+	DefaultSearchMaxDepth = 3
+	DefaultMaxBranching   = 4
+	DefaultPruneThreshold = 0.3
+	DefaultThompsonAlpha  = 1.0
+	DefaultThompsonBeta   = 1.0
+
+	// SelfImprovementConfig
+	DefaultArchiveMaxSize = 100
+
+	// ComplexityThresholds
+	DefaultSimpleMaxFiles   = 3
+	DefaultStandardMaxFiles = 10
+	DefaultComplexMaxFiles  = 30
+
+	// FeatureProfile
+	DefaultCrossAgentReview = "false"
 )
 
 // IntPtr returns a pointer to the given int value.
@@ -46,6 +135,23 @@ func Float64Ptr(v float64) *float64 { return &v }
 
 // StringPtr returns a pointer to the given string value.
 func StringPtr(v string) *string { return &v }
+
+// effectiveValue returns *ptr if ptr is non-nil, or defaultVal otherwise.
+func effectiveValue[T any](ptr *T, defaultVal T) T {
+	if ptr != nil {
+		return *ptr
+	}
+	return defaultVal
+}
+
+// effectiveNonZero returns val if it is not the zero value for its type, or defaultVal otherwise.
+func effectiveNonZero[T comparable](val, defaultVal T) T {
+	var zero T
+	if val != zero {
+		return val
+	}
+	return defaultVal
+}
 
 // Config is the root configuration structure loaded from config.yaml.
 type Config struct {
@@ -88,6 +194,8 @@ type Config struct {
 	FeatureProfiles map[string]FeatureProfile `yaml:"feature_profiles,omitempty"`
 }
 
+// --- SkillsConfig ---
+
 // SkillsConfig controls the skill reference feature for tasks.
 type SkillsConfig struct {
 	Enabled          bool              `yaml:"enabled"`
@@ -97,32 +205,9 @@ type SkillsConfig struct {
 	AutoCollect      autoCollectConfig `yaml:"auto_collect"`
 }
 
-// EffectiveMaxRefsPerTask returns the configured limit or 3 as default.
-// nil (unset) returns the default; explicit 0 returns 0.
-func (s SkillsConfig) EffectiveMaxRefsPerTask() int {
-	if s.MaxRefsPerTask != nil {
-		return *s.MaxRefsPerTask
-	}
-	return 3
-}
-
-// EffectiveMaxBodyChars returns the configured limit or 0 (no limit) as default.
-// Shared skills are auto-injected and should not be silently dropped by size limits.
-// Use max_refs_per_task to control the number of role-specific skills instead.
-func (s SkillsConfig) EffectiveMaxBodyChars() int {
-	if s.MaxBodyChars != nil {
-		return *s.MaxBodyChars
-	}
-	return 0
-}
-
-// EffectiveMissingRefPolicy returns the configured policy or "warn" as default.
-func (s SkillsConfig) EffectiveMissingRefPolicy() string {
-	if s.MissingRefPolicy != "" {
-		return s.MissingRefPolicy
-	}
-	return "warn"
-}
+func (s SkillsConfig) EffectiveMaxRefsPerTask() int      { return effectiveValue(s.MaxRefsPerTask, DefaultMaxRefsPerTask) }
+func (s SkillsConfig) EffectiveMaxBodyChars() int         { return effectiveValue(s.MaxBodyChars, 0) }
+func (s SkillsConfig) EffectiveMissingRefPolicy() string  { return effectiveNonZero(s.MissingRefPolicy, DefaultMissingRefPolicy) }
 
 // autoCollectConfig controls automatic skill collection from learnings.
 type autoCollectConfig struct {
@@ -131,23 +216,10 @@ type autoCollectConfig struct {
 	MinCommands    *int `yaml:"min_commands"`
 }
 
-// EffectiveMinOccurrences returns the configured minimum or 3 as default.
-// nil (unset) returns the default; explicit 0 returns 0.
-func (a autoCollectConfig) EffectiveMinOccurrences() int {
-	if a.MinOccurrences != nil {
-		return *a.MinOccurrences
-	}
-	return 3
-}
+func (a autoCollectConfig) EffectiveMinOccurrences() int { return effectiveValue(a.MinOccurrences, DefaultAutoCollectMinOccurrences) }
+func (a autoCollectConfig) EffectiveMinCommands() int    { return effectiveValue(a.MinCommands, DefaultAutoCollectMinCommands) }
 
-// EffectiveMinCommands returns the configured minimum or 2 as default.
-// nil (unset) returns the default; explicit 0 returns 0.
-func (a autoCollectConfig) EffectiveMinCommands() int {
-	if a.MinCommands != nil {
-		return *a.MinCommands
-	}
-	return 2
-}
+// --- ProjectConfig / MaestroConfig ---
 
 // ProjectConfig holds project identity information.
 type ProjectConfig struct {
@@ -161,6 +233,8 @@ type MaestroConfig struct {
 	Created     string `yaml:"created"`
 	ProjectRoot string `yaml:"project_root"`
 }
+
+// --- AgentsConfig ---
 
 // AgentsConfig holds per-role agent configuration.
 type AgentsConfig struct {
@@ -203,6 +277,8 @@ func (w WorkerConfig) EffectiveBasePromptMode() string {
 	return "append"
 }
 
+// --- ContinuousConfig ---
+
 // ContinuousConfig holds configuration for continuous mode operation.
 type ContinuousConfig struct {
 	Enabled        bool `yaml:"enabled"`
@@ -221,6 +297,8 @@ type ContinuousConfig struct {
 	// with no surprising hidden defaults.
 	MaxConsecutiveFailures int `yaml:"max_consecutive_failures"`
 }
+
+// --- WatcherConfig ---
 
 // WatcherConfig holds timing and polling configuration for the task dispatch watcher.
 type WatcherConfig struct {
@@ -245,14 +323,9 @@ type WatcherConfig struct {
 	ClearSecondEnterDelayMs int `yaml:"clear_second_enter_delay_ms"` // Delay before sending second Enter after /clear (default 500ms)
 }
 
-// EffectiveMaxInProgressMin returns the configured max in-progress timeout or 60 as default.
-// nil (unset) returns the default; explicit 0 returns 0 (no timeout).
-func (w WatcherConfig) EffectiveMaxInProgressMin() int {
-	if w.MaxInProgressMin != nil {
-		return *w.MaxInProgressMin
-	}
-	return 60
-}
+func (w WatcherConfig) EffectiveMaxInProgressMin() int { return effectiveValue(w.MaxInProgressMin, DefaultMaxInProgressMin) }
+
+// --- RetryConfig ---
 
 // RetryConfig holds retry limits for the various dispatch and execution operations.
 type RetryConfig struct {
@@ -270,10 +343,14 @@ type TaskRetryConfig struct {
 	CooldownSec        int   `yaml:"cooldown_sec"`
 }
 
+// --- QueueConfig ---
+
 // QueueConfig holds configuration for queue priority aging.
 type QueueConfig struct {
 	PriorityAgingSec int `yaml:"priority_aging_sec"`
 }
+
+// --- LimitsConfig ---
 
 // LimitsConfig holds resource limits enforced by the daemon.
 type LimitsConfig struct {
@@ -285,28 +362,17 @@ type LimitsConfig struct {
 	MaxQuarantineFiles        *int `yaml:"max_quarantine_files"`
 }
 
-// EffectiveMaxDeadLetterArchiveFiles returns the configured limit or 100 as default.
-// nil (unset) returns the default; explicit 0 returns 0.
-func (l LimitsConfig) EffectiveMaxDeadLetterArchiveFiles() int {
-	if l.MaxDeadLetterArchiveFiles != nil {
-		return *l.MaxDeadLetterArchiveFiles
-	}
-	return 100
-}
+func (l LimitsConfig) EffectiveMaxDeadLetterArchiveFiles() int { return effectiveValue(l.MaxDeadLetterArchiveFiles, DefaultMaxDeadLetterArchiveFiles) }
+func (l LimitsConfig) EffectiveMaxQuarantineFiles() int        { return effectiveValue(l.MaxQuarantineFiles, DefaultMaxQuarantineFiles) }
 
-// EffectiveMaxQuarantineFiles returns the configured limit or 100 as default.
-// nil (unset) returns the default; explicit 0 returns 0.
-func (l LimitsConfig) EffectiveMaxQuarantineFiles() int {
-	if l.MaxQuarantineFiles != nil {
-		return *l.MaxQuarantineFiles
-	}
-	return 100
-}
+// --- LoggingConfig ---
 
 // LoggingConfig holds logging verbosity settings.
 type LoggingConfig struct {
 	Level string `yaml:"level"`
 }
+
+// --- qualityGatesConfig ---
 
 type qualityGatesConfig struct {
 	Enabled     bool                   `yaml:"enabled"`
@@ -323,6 +389,8 @@ type qualityGateEnforcement struct {
 	FailureAction string `yaml:"failure_action"` // 失敗時の動作: "warn", "block"
 }
 
+// --- CircuitBreakerConfig ---
+
 // CircuitBreakerConfig controls the command-level circuit breaker that auto-stops
 // commands after consecutive task failures.
 type CircuitBreakerConfig struct {
@@ -331,23 +399,10 @@ type CircuitBreakerConfig struct {
 	ProgressTimeoutMinutes *int `yaml:"progress_timeout_minutes"` // default: 30, 0=disabled
 }
 
-// EffectiveMaxConsecutiveFailures returns the configured threshold or 3 as default.
-// nil (unset) returns the default; explicit 0 returns 0.
-func (c CircuitBreakerConfig) EffectiveMaxConsecutiveFailures() int {
-	if c.MaxConsecutiveFailures != nil {
-		return *c.MaxConsecutiveFailures
-	}
-	return 3
-}
+func (c CircuitBreakerConfig) EffectiveMaxConsecutiveFailures() int { return effectiveValue(c.MaxConsecutiveFailures, DefaultCBMaxConsecutiveFailures) }
+func (c CircuitBreakerConfig) EffectiveProgressTimeoutMinutes() int { return effectiveValue(c.ProgressTimeoutMinutes, DefaultProgressTimeoutMinutes) }
 
-// EffectiveProgressTimeoutMinutes returns the configured timeout or 30 as default.
-// nil (unset) returns the default; explicit 0 means disabled (no timeout).
-func (c CircuitBreakerConfig) EffectiveProgressTimeoutMinutes() int {
-	if c.ProgressTimeoutMinutes != nil {
-		return *c.ProgressTimeoutMinutes
-	}
-	return 30
-}
+// --- LearningsConfig ---
 
 // LearningsConfig controls the learning accumulation feature.
 type LearningsConfig struct {
@@ -358,38 +413,15 @@ type LearningsConfig struct {
 	TTLHours         int  `yaml:"ttl_hours"`          // learning expiry in hours, default: 72, 0=unlimited
 }
 
-// EffectiveMaxEntries returns the configured limit or 100 as default.
-// nil (unset) returns the default; explicit 0 returns 0.
-func (l LearningsConfig) EffectiveMaxEntries() int {
-	if l.MaxEntries != nil {
-		return *l.MaxEntries
-	}
-	return 100
-}
-
-// EffectiveMaxContentLength returns the configured limit or 500 as default.
-// nil (unset) returns the default; explicit 0 returns 0.
-func (l LearningsConfig) EffectiveMaxContentLength() int {
-	if l.MaxContentLength != nil {
-		return *l.MaxContentLength
-	}
-	return 500
-}
-
-// EffectiveInjectCount returns the configured inject count or 5 as default.
-// nil (unset) returns the default; explicit 0 returns 0 (no injection).
-func (l LearningsConfig) EffectiveInjectCount() int {
-	if l.InjectCount != nil {
-		return *l.InjectCount
-	}
-	return 5
-}
+func (l LearningsConfig) EffectiveMaxEntries() int       { return effectiveValue(l.MaxEntries, DefaultLearningsMaxEntries) }
+func (l LearningsConfig) EffectiveMaxContentLength() int  { return effectiveValue(l.MaxContentLength, DefaultLearningsMaxContentLength) }
+func (l LearningsConfig) EffectiveInjectCount() int       { return effectiveValue(l.InjectCount, DefaultLearningsInjectCount) }
 
 // EffectiveTTLHours returns the configured TTL in hours.
 // 0 means unlimited (no expiry). The template default is 72.
-func (l LearningsConfig) EffectiveTTLHours() int {
-	return l.TTLHours
-}
+func (l LearningsConfig) EffectiveTTLHours() int { return l.TTLHours }
+
+// --- AdmissionControl ---
 
 // AdmissionControl controls concurrency limits for verify/repair/rollout phases.
 type AdmissionControl struct {
@@ -398,32 +430,11 @@ type AdmissionControl struct {
 	MaxConcurrentRollout int `yaml:"max_concurrent_rollout"`
 }
 
-// EffectiveMaxConcurrentVerify returns the configured limit or 2 as default.
-// 0 means use default.
-func (a AdmissionControl) EffectiveMaxConcurrentVerify() int {
-	if a.MaxConcurrentVerify > 0 {
-		return a.MaxConcurrentVerify
-	}
-	return 2
-}
+func (a AdmissionControl) EffectiveMaxConcurrentVerify() int  { return effectiveNonZero(a.MaxConcurrentVerify, DefaultMaxConcurrentVerify) }
+func (a AdmissionControl) EffectiveMaxConcurrentRepair() int  { return effectiveNonZero(a.MaxConcurrentRepair, DefaultMaxConcurrentRepair) }
+func (a AdmissionControl) EffectiveMaxConcurrentRollout() int { return effectiveNonZero(a.MaxConcurrentRollout, DefaultMaxConcurrentRollout) }
 
-// EffectiveMaxConcurrentRepair returns the configured limit or 1 as default.
-// 0 means use default.
-func (a AdmissionControl) EffectiveMaxConcurrentRepair() int {
-	if a.MaxConcurrentRepair > 0 {
-		return a.MaxConcurrentRepair
-	}
-	return 1
-}
-
-// EffectiveMaxConcurrentRollout returns the configured limit or 1 as default.
-// 0 means use default.
-func (a AdmissionControl) EffectiveMaxConcurrentRollout() int {
-	if a.MaxConcurrentRollout > 0 {
-		return a.MaxConcurrentRollout
-	}
-	return 1
-}
+// --- Fallback ---
 
 // Fallback controls degraded-mode behavior when workers experience consecutive failures.
 type Fallback struct {
@@ -433,37 +444,12 @@ type Fallback struct {
 	MinHealthyDurationSec       int  `yaml:"min_healthy_duration_sec"`
 }
 
-// EffectiveEnabled returns the configured enabled flag (default false).
-func (f Fallback) EffectiveEnabled() bool {
-	return f.Enabled
-}
+func (f Fallback) EffectiveEnabled() bool                     { return f.Enabled }
+func (f Fallback) EffectiveConsecutiveFailureThreshold() int  { return effectiveNonZero(f.ConsecutiveFailureThreshold, DefaultConsecutiveFailureThreshold) }
+func (f Fallback) EffectiveRecoveryCheckIntervalSec() int     { return effectiveNonZero(f.RecoveryCheckIntervalSec, DefaultRecoveryCheckIntervalSec) }
+func (f Fallback) EffectiveMinHealthyDurationSec() int        { return effectiveNonZero(f.MinHealthyDurationSec, DefaultMinHealthyDurationSec) }
 
-// EffectiveConsecutiveFailureThreshold returns the configured threshold or 5 as default.
-// 0 means use default.
-func (f Fallback) EffectiveConsecutiveFailureThreshold() int {
-	if f.ConsecutiveFailureThreshold > 0 {
-		return f.ConsecutiveFailureThreshold
-	}
-	return 5
-}
-
-// EffectiveRecoveryCheckIntervalSec returns the configured interval or 60 as default.
-// 0 means use default.
-func (f Fallback) EffectiveRecoveryCheckIntervalSec() int {
-	if f.RecoveryCheckIntervalSec > 0 {
-		return f.RecoveryCheckIntervalSec
-	}
-	return 60
-}
-
-// EffectiveMinHealthyDurationSec returns the configured duration or 120 as default.
-// 0 means use default.
-func (f Fallback) EffectiveMinHealthyDurationSec() int {
-	if f.MinHealthyDurationSec > 0 {
-		return f.MinHealthyDurationSec
-	}
-	return 120
-}
+// --- WorktreeConfig ---
 
 // WorktreeConfig controls Worker worktree isolation (default enabled).
 type WorktreeConfig struct {
@@ -498,29 +484,27 @@ type WorktreeConfig struct {
 }
 
 // EffectiveStallCleanupAfter returns the configured fast-track stall cleanup
-// duration. Empty / unparseable input falls back to 10 minutes; an explicit
-// "0" / "0s" returns 0 (disabled).
+// duration. Empty / unparseable input falls back to DefaultStallCleanupAfter;
+// an explicit "0" / "0s" returns 0 (disabled).
 func (w WorktreeConfig) EffectiveStallCleanupAfter() time.Duration {
-	const defaultStallCleanupAfter = 10 * time.Minute
 	if w.StallCleanupAfter == "" {
-		return defaultStallCleanupAfter
+		return DefaultStallCleanupAfter
 	}
 	d, err := time.ParseDuration(w.StallCleanupAfter)
 	if err != nil {
-		return defaultStallCleanupAfter
+		return DefaultStallCleanupAfter
 	}
 	return d
 }
 
-// EffectiveFallbackMergeTimeoutMinutes returns the configured fallback merge
-// timeout in minutes, or 60 as default. nil (unset) returns the default;
-// explicit 0 disables the check.
-func (w WorktreeConfig) EffectiveFallbackMergeTimeoutMinutes() int {
-	if w.FallbackMergeTimeoutMinutes != nil {
-		return *w.FallbackMergeTimeoutMinutes
-	}
-	return 60
-}
+func (w WorktreeConfig) EffectiveBaseBranch() string                  { return effectiveNonZero(w.BaseBranch, DefaultBaseBranch) }
+func (w WorktreeConfig) EffectivePathPrefix() string                  { return effectiveNonZero(w.PathPrefix, DefaultPathPrefix) }
+func (w WorktreeConfig) EffectiveMergeStrategy() string               { return effectiveNonZero(w.MergeStrategy, DefaultMergeStrategy) }
+func (w WorktreeConfig) EffectiveGitTimeout() int                     { return effectiveValue(w.GitTimeoutSec, DefaultGitTimeoutSec) }
+func (w WorktreeConfig) EffectiveStallTimeoutMinutes() int            { return effectiveValue(w.StallTimeoutMinutes, DefaultStallTimeoutMinutes) }
+func (w WorktreeConfig) EffectiveFallbackMergeTimeoutMinutes() int    { return effectiveValue(w.FallbackMergeTimeoutMinutes, DefaultFallbackMergeTimeoutMinutes) }
+
+// --- CommitPolicyConfig ---
 
 // CommitPolicyConfig enforces safety checks before committing worker changes.
 // Zero-valued config means no enforcement. Set fields explicitly via config.yaml
@@ -532,14 +516,9 @@ type CommitPolicyConfig struct {
 	MessagePattern   string `yaml:"message_pattern"`   // regex for commit message validation; empty=no check
 }
 
-// EffectiveMaxFiles returns the configured max files or 30 as default.
-// nil (unset) returns the default; explicit 0 returns 0 (unlimited).
-func (c CommitPolicyConfig) EffectiveMaxFiles() int {
-	if c.MaxFiles != nil {
-		return *c.MaxFiles
-	}
-	return 30
-}
+func (c CommitPolicyConfig) EffectiveMaxFiles() int { return effectiveValue(c.MaxFiles, DefaultCommitMaxFiles) }
+
+// --- WorktreeGCConfig ---
 
 // WorktreeGCConfig controls periodic garbage collection of old worktrees.
 type WorktreeGCConfig struct {
@@ -548,66 +527,10 @@ type WorktreeGCConfig struct {
 	MaxWorktrees *int `yaml:"max_worktrees"`
 }
 
-// EffectiveBaseBranch returns the configured base branch or "main" as default.
-func (w WorktreeConfig) EffectiveBaseBranch() string {
-	if w.BaseBranch != "" {
-		return w.BaseBranch
-	}
-	return "main"
-}
+func (w WorktreeGCConfig) EffectiveTTLHours() int     { return effectiveValue(w.TTLHours, DefaultGCTTLHours) }
+func (w WorktreeGCConfig) EffectiveMaxWorktrees() int  { return effectiveValue(w.MaxWorktrees, DefaultGCMaxWorktrees) }
 
-// EffectivePathPrefix returns the configured path prefix or ".maestro/worktrees" as default.
-func (w WorktreeConfig) EffectivePathPrefix() string {
-	if w.PathPrefix != "" {
-		return w.PathPrefix
-	}
-	return ".maestro/worktrees"
-}
-
-// EffectiveMergeStrategy returns the configured merge strategy or "ort" as default.
-func (w WorktreeConfig) EffectiveMergeStrategy() string {
-	if w.MergeStrategy != "" {
-		return w.MergeStrategy
-	}
-	return "ort"
-}
-
-// EffectiveGitTimeout returns the configured git command timeout or 120 seconds as default.
-// nil (unset) returns the default; explicit 0 returns 0.
-func (w WorktreeConfig) EffectiveGitTimeout() int {
-	if w.GitTimeoutSec != nil {
-		return *w.GitTimeoutSec
-	}
-	return 120
-}
-
-// EffectiveStallTimeoutMinutes returns the configured worktree stall timeout
-// in minutes. nil (unset) returns the default of 30; explicit 0 returns 0
-// (disabled).
-func (w WorktreeConfig) EffectiveStallTimeoutMinutes() int {
-	if w.StallTimeoutMinutes != nil {
-		return *w.StallTimeoutMinutes
-	}
-	return 30
-}
-
-// EffectiveTTLHours returns the configured TTL or 24 hours as default.
-// nil (unset) returns the default; explicit 0 returns 0 (keep forever).
-func (w WorktreeGCConfig) EffectiveTTLHours() int {
-	if w.TTLHours != nil {
-		return *w.TTLHours
-	}
-	return 24
-}
-
-// EffectiveMaxWorktrees returns the configured max worktrees or 32 as default.
-// nil (unset) returns the default; explicit 0 returns 0.
-func (w WorktreeGCConfig) EffectiveMaxWorktrees() int {
-	if w.MaxWorktrees != nil {
-		return *w.MaxWorktrees
-	}
-	return 32
-}
+// --- ReviewConfig ---
 
 // ReviewConfig controls asynchronous heterogeneous-model code review.
 type ReviewConfig struct {
@@ -618,32 +541,9 @@ type ReviewConfig struct {
 	TimeoutSec           *int     `yaml:"timeout_sec"`
 }
 
-// EffectiveMinBloomLevel returns the configured minimum Bloom level or 2 as default.
-// nil (unset) returns the default; explicit 0 returns 0.
-func (r ReviewConfig) EffectiveMinBloomLevel() int {
-	if r.MinBloomLevel != nil {
-		return *r.MinBloomLevel
-	}
-	return 2
-}
-
-// EffectiveMaxConcurrentReviews returns the configured concurrency limit or 2 as default.
-// nil (unset) returns the default; explicit 0 returns 0.
-func (r ReviewConfig) EffectiveMaxConcurrentReviews() int {
-	if r.MaxConcurrentReviews != nil {
-		return *r.MaxConcurrentReviews
-	}
-	return 2
-}
-
-// EffectiveTimeoutSec returns the configured timeout or 300 seconds as default.
-// nil (unset) returns the default; explicit 0 returns 0.
-func (r ReviewConfig) EffectiveTimeoutSec() int {
-	if r.TimeoutSec != nil {
-		return *r.TimeoutSec
-	}
-	return 300
-}
+func (r ReviewConfig) EffectiveMinBloomLevel() int        { return effectiveValue(r.MinBloomLevel, DefaultReviewMinBloomLevel) }
+func (r ReviewConfig) EffectiveMaxConcurrentReviews() int { return effectiveValue(r.MaxConcurrentReviews, DefaultReviewMaxConcurrentReviews) }
+func (r ReviewConfig) EffectiveTimeoutSec() int           { return effectiveValue(r.TimeoutSec, DefaultReviewTimeoutSec) }
 
 // --- C-1 Evolution Config ---
 
@@ -655,29 +555,9 @@ type EvolutionConfig struct {
 	Strategies           []string `yaml:"strategies,omitempty"`
 }
 
-// EffectiveEnabled returns the configured enabled flag or false as default.
-func (e EvolutionConfig) EffectiveEnabled() bool {
-	if e.Enabled != nil {
-		return *e.Enabled
-	}
-	return false
-}
-
-// EffectiveMaxMutationsPerRound returns the configured limit or 3 as default.
-func (e EvolutionConfig) EffectiveMaxMutationsPerRound() int {
-	if e.MaxMutationsPerRound != nil {
-		return *e.MaxMutationsPerRound
-	}
-	return 3
-}
-
-// EffectiveNoveltyThreshold returns the configured threshold or 0.99 as default.
-func (e EvolutionConfig) EffectiveNoveltyThreshold() float64 {
-	if e.NoveltyThreshold != nil {
-		return *e.NoveltyThreshold
-	}
-	return 0.99
-}
+func (e EvolutionConfig) EffectiveEnabled() bool                { return effectiveValue(e.Enabled, false) }
+func (e EvolutionConfig) EffectiveMaxMutationsPerRound() int    { return effectiveValue(e.MaxMutationsPerRound, DefaultMaxMutationsPerRound) }
+func (e EvolutionConfig) EffectiveNoveltyThreshold() float64    { return effectiveValue(e.NoveltyThreshold, DefaultNoveltyThreshold) }
 
 // EffectiveStrategies returns the configured strategies or ["diff","full","cross"] as default.
 func (e EvolutionConfig) EffectiveStrategies() []string {
@@ -698,45 +578,11 @@ type BanditConfig struct {
 	TraceDataRequirement *int     `yaml:"trace_data_requirement,omitempty"`
 }
 
-// EffectiveEnabled returns the configured enabled flag or false as default.
-func (b BanditConfig) EffectiveEnabled() bool {
-	if b.Enabled != nil {
-		return *b.Enabled
-	}
-	return false
-}
-
-// EffectiveExplorationCoeff returns the configured UCB1 coefficient or 1.41 as default.
-func (b BanditConfig) EffectiveExplorationCoeff() float64 {
-	if b.ExplorationCoeff != nil {
-		return *b.ExplorationCoeff
-	}
-	return 1.41
-}
-
-// EffectiveMinSamplesBeforeUse returns the configured minimum or 10 as default.
-func (b BanditConfig) EffectiveMinSamplesBeforeUse() int {
-	if b.MinSamplesBeforeUse != nil {
-		return *b.MinSamplesBeforeUse
-	}
-	return 10
-}
-
-// EffectiveDecayFactor returns the configured decay factor or 0.95 as default.
-func (b BanditConfig) EffectiveDecayFactor() float64 {
-	if b.DecayFactor != nil {
-		return *b.DecayFactor
-	}
-	return 0.95
-}
-
-// EffectiveTraceDataRequirement returns the configured minimum trace count or 50 as default.
-func (b BanditConfig) EffectiveTraceDataRequirement() int {
-	if b.TraceDataRequirement != nil {
-		return *b.TraceDataRequirement
-	}
-	return 50
-}
+func (b BanditConfig) EffectiveEnabled() bool                { return effectiveValue(b.Enabled, false) }
+func (b BanditConfig) EffectiveExplorationCoeff() float64    { return effectiveValue(b.ExplorationCoeff, DefaultExplorationCoeff) }
+func (b BanditConfig) EffectiveMinSamplesBeforeUse() int     { return effectiveValue(b.MinSamplesBeforeUse, DefaultMinSamplesBeforeUse) }
+func (b BanditConfig) EffectiveDecayFactor() float64         { return effectiveValue(b.DecayFactor, DefaultDecayFactor) }
+func (b BanditConfig) EffectiveTraceDataRequirement() int    { return effectiveValue(b.TraceDataRequirement, DefaultTraceDataRequirement) }
 
 // --- C-3 Extended Verification Config ---
 
@@ -749,29 +595,10 @@ type ExtendedVerificationConfig struct {
 	MaxAutoRetries     *int               `yaml:"max_auto_retries,omitempty"`
 }
 
-// EffectiveEnabled returns the configured enabled flag or false as default.
-func (ev ExtendedVerificationConfig) EffectiveEnabled() bool {
-	if ev.Enabled != nil {
-		return *ev.Enabled
-	}
-	return false
-}
-
-// EffectiveSecurityCheck returns the configured flag or false as default.
-func (ev ExtendedVerificationConfig) EffectiveSecurityCheck() bool {
-	if ev.SecurityCheck != nil {
-		return *ev.SecurityCheck
-	}
-	return false
-}
-
-// EffectivePerformanceBench returns the configured flag or false as default.
-func (ev ExtendedVerificationConfig) EffectivePerformanceBench() bool {
-	if ev.PerformanceBench != nil {
-		return *ev.PerformanceBench
-	}
-	return false
-}
+func (ev ExtendedVerificationConfig) EffectiveEnabled() bool          { return effectiveValue(ev.Enabled, false) }
+func (ev ExtendedVerificationConfig) EffectiveSecurityCheck() bool    { return effectiveValue(ev.SecurityCheck, false) }
+func (ev ExtendedVerificationConfig) EffectivePerformanceBench() bool { return effectiveValue(ev.PerformanceBench, false) }
+func (ev ExtendedVerificationConfig) EffectiveMaxAutoRetries() int    { return effectiveValue(ev.MaxAutoRetries, DefaultMaxAutoRetries) }
 
 // EffectivePerspectiveWeights returns the configured weights or defaults.
 func (ev ExtendedVerificationConfig) EffectivePerspectiveWeights() map[string]float64 {
@@ -779,14 +606,6 @@ func (ev ExtendedVerificationConfig) EffectivePerspectiveWeights() map[string]fl
 		return ev.PerspectiveWeights
 	}
 	return map[string]float64{"build": 1.0, "test": 1.0, "security": 0.5}
-}
-
-// EffectiveMaxAutoRetries returns the configured limit or 2 as default.
-func (ev ExtendedVerificationConfig) EffectiveMaxAutoRetries() int {
-	if ev.MaxAutoRetries != nil {
-		return *ev.MaxAutoRetries
-	}
-	return 2
 }
 
 // --- C-4 Search Config ---
@@ -801,53 +620,12 @@ type SearchConfig struct {
 	ThompsonBeta   *float64 `yaml:"thompson_beta,omitempty"`
 }
 
-// EffectiveEnabled returns the configured enabled flag or false as default.
-func (s SearchConfig) EffectiveEnabled() bool {
-	if s.Enabled != nil {
-		return *s.Enabled
-	}
-	return false
-}
-
-// EffectiveMaxDepth returns the configured max depth or 3 as default.
-func (s SearchConfig) EffectiveMaxDepth() int {
-	if s.MaxDepth != nil {
-		return *s.MaxDepth
-	}
-	return 3
-}
-
-// EffectiveMaxBranching returns the configured max branching or 4 as default.
-func (s SearchConfig) EffectiveMaxBranching() int {
-	if s.MaxBranching != nil {
-		return *s.MaxBranching
-	}
-	return 4
-}
-
-// EffectivePruneThreshold returns the configured threshold or 0.3 as default.
-func (s SearchConfig) EffectivePruneThreshold() float64 {
-	if s.PruneThreshold != nil {
-		return *s.PruneThreshold
-	}
-	return 0.3
-}
-
-// EffectiveThompsonAlpha returns the configured alpha or 1.0 as default.
-func (s SearchConfig) EffectiveThompsonAlpha() float64 {
-	if s.ThompsonAlpha != nil {
-		return *s.ThompsonAlpha
-	}
-	return 1.0
-}
-
-// EffectiveThompsonBeta returns the configured beta or 1.0 as default.
-func (s SearchConfig) EffectiveThompsonBeta() float64 {
-	if s.ThompsonBeta != nil {
-		return *s.ThompsonBeta
-	}
-	return 1.0
-}
+func (s SearchConfig) EffectiveEnabled() bool            { return effectiveValue(s.Enabled, false) }
+func (s SearchConfig) EffectiveMaxDepth() int            { return effectiveValue(s.MaxDepth, DefaultSearchMaxDepth) }
+func (s SearchConfig) EffectiveMaxBranching() int        { return effectiveValue(s.MaxBranching, DefaultMaxBranching) }
+func (s SearchConfig) EffectivePruneThreshold() float64  { return effectiveValue(s.PruneThreshold, DefaultPruneThreshold) }
+func (s SearchConfig) EffectiveThompsonAlpha() float64   { return effectiveValue(s.ThompsonAlpha, DefaultThompsonAlpha) }
+func (s SearchConfig) EffectiveThompsonBeta() float64    { return effectiveValue(s.ThompsonBeta, DefaultThompsonBeta) }
 
 // --- C-5 Self-Improvement Config ---
 
@@ -859,13 +637,8 @@ type SelfImprovementConfig struct {
 	ArchiveMaxSize *int     `yaml:"archive_max_size,omitempty"`
 }
 
-// EffectiveEnabled returns the configured enabled flag or false as default.
-func (si SelfImprovementConfig) EffectiveEnabled() bool {
-	if si.Enabled != nil {
-		return *si.Enabled
-	}
-	return false
-}
+func (si SelfImprovementConfig) EffectiveEnabled() bool     { return effectiveValue(si.Enabled, false) }
+func (si SelfImprovementConfig) EffectiveArchiveMaxSize() int { return effectiveValue(si.ArchiveMaxSize, DefaultArchiveMaxSize) }
 
 // EffectiveTargets returns the configured targets or defaults.
 func (si SelfImprovementConfig) EffectiveTargets() []string {
@@ -883,14 +656,6 @@ func (si SelfImprovementConfig) EffectiveExcludeTargets() []string {
 	return []string{"fitness", "daemon_logic", "circuit_breaker"}
 }
 
-// EffectiveArchiveMaxSize returns the configured limit or 100 as default.
-func (si SelfImprovementConfig) EffectiveArchiveMaxSize() int {
-	if si.ArchiveMaxSize != nil {
-		return *si.ArchiveMaxSize
-	}
-	return 100
-}
-
 // --- C-6 Complexity Config ---
 
 // ComplexityConfig controls adaptive computation depth.
@@ -899,13 +664,7 @@ type ComplexityConfig struct {
 	Thresholds ComplexityThresholds `yaml:"thresholds,omitempty"`
 }
 
-// EffectiveEnabled returns the configured enabled flag or false as default.
-func (cc ComplexityConfig) EffectiveEnabled() bool {
-	if cc.Enabled != nil {
-		return *cc.Enabled
-	}
-	return false
-}
+func (cc ComplexityConfig) EffectiveEnabled() bool { return effectiveValue(cc.Enabled, false) }
 
 // ComplexityThresholds defines file count thresholds for complexity levels.
 type ComplexityThresholds struct {
@@ -914,29 +673,9 @@ type ComplexityThresholds struct {
 	ComplexMaxFiles  *int `yaml:"complex_max_files,omitempty"`
 }
 
-// EffectiveSimpleMaxFiles returns the configured limit or 3 as default.
-func (ct ComplexityThresholds) EffectiveSimpleMaxFiles() int {
-	if ct.SimpleMaxFiles != nil {
-		return *ct.SimpleMaxFiles
-	}
-	return 3
-}
-
-// EffectiveStandardMaxFiles returns the configured limit or 10 as default.
-func (ct ComplexityThresholds) EffectiveStandardMaxFiles() int {
-	if ct.StandardMaxFiles != nil {
-		return *ct.StandardMaxFiles
-	}
-	return 10
-}
-
-// EffectiveComplexMaxFiles returns the configured limit or 30 as default.
-func (ct ComplexityThresholds) EffectiveComplexMaxFiles() int {
-	if ct.ComplexMaxFiles != nil {
-		return *ct.ComplexMaxFiles
-	}
-	return 30
-}
+func (ct ComplexityThresholds) EffectiveSimpleMaxFiles() int   { return effectiveValue(ct.SimpleMaxFiles, DefaultSimpleMaxFiles) }
+func (ct ComplexityThresholds) EffectiveStandardMaxFiles() int { return effectiveValue(ct.StandardMaxFiles, DefaultStandardMaxFiles) }
+func (ct ComplexityThresholds) EffectiveComplexMaxFiles() int  { return effectiveValue(ct.ComplexMaxFiles, DefaultComplexMaxFiles) }
 
 // --- C-7 Runtime Config ---
 
@@ -948,29 +687,9 @@ type RuntimeConfig struct {
 	DefaultModel *string  `yaml:"default_model,omitempty"`
 }
 
-// EffectiveEnabled returns the configured enabled flag or false as default.
-func (rc RuntimeConfig) EffectiveEnabled() bool {
-	if rc.Enabled != nil {
-		return *rc.Enabled
-	}
-	return false
-}
-
-// EffectiveDefault returns the configured default flag or false as default.
-func (rc RuntimeConfig) EffectiveDefault() bool {
-	if rc.Default != nil {
-		return *rc.Default
-	}
-	return false
-}
-
-// EffectiveDefaultModel returns the configured default model or empty string.
-func (rc RuntimeConfig) EffectiveDefaultModel() string {
-	if rc.DefaultModel != nil {
-		return *rc.DefaultModel
-	}
-	return ""
-}
+func (rc RuntimeConfig) EffectiveEnabled() bool       { return effectiveValue(rc.Enabled, false) }
+func (rc RuntimeConfig) EffectiveDefault() bool       { return effectiveValue(rc.Default, false) }
+func (rc RuntimeConfig) EffectiveDefaultModel() string { return effectiveValue(rc.DefaultModel, "") }
 
 // --- C-8 Feature Profiles ---
 
@@ -984,53 +703,12 @@ type FeatureProfile struct {
 	AdaptiveDepth           *bool   `yaml:"adaptive_depth,omitempty"`
 }
 
-// EffectiveCrossAgentReview returns the configured value or "false" as default.
-func (fp FeatureProfile) EffectiveCrossAgentReview() string {
-	if fp.CrossAgentReview != nil {
-		return *fp.CrossAgentReview
-	}
-	return "false"
-}
-
-// EffectiveExploratoryOptimization returns the configured flag or false as default.
-func (fp FeatureProfile) EffectiveExploratoryOptimization() bool {
-	if fp.ExploratoryOptimization != nil {
-		return *fp.ExploratoryOptimization
-	}
-	return false
-}
-
-// EffectiveEvolutionaryQuality returns the configured flag or false as default.
-func (fp FeatureProfile) EffectiveEvolutionaryQuality() bool {
-	if fp.EvolutionaryQuality != nil {
-		return *fp.EvolutionaryQuality
-	}
-	return false
-}
-
-// EffectiveAdaptiveModelSelection returns the configured flag or false as default.
-func (fp FeatureProfile) EffectiveAdaptiveModelSelection() bool {
-	if fp.AdaptiveModelSelection != nil {
-		return *fp.AdaptiveModelSelection
-	}
-	return false
-}
-
-// EffectiveSelfImprovement returns the configured flag or false as default.
-func (fp FeatureProfile) EffectiveSelfImprovement() bool {
-	if fp.SelfImprovement != nil {
-		return *fp.SelfImprovement
-	}
-	return false
-}
-
-// EffectiveAdaptiveDepth returns the configured flag or false as default.
-func (fp FeatureProfile) EffectiveAdaptiveDepth() bool {
-	if fp.AdaptiveDepth != nil {
-		return *fp.AdaptiveDepth
-	}
-	return false
-}
+func (fp FeatureProfile) EffectiveCrossAgentReview() string        { return effectiveValue(fp.CrossAgentReview, DefaultCrossAgentReview) }
+func (fp FeatureProfile) EffectiveExploratoryOptimization() bool   { return effectiveValue(fp.ExploratoryOptimization, false) }
+func (fp FeatureProfile) EffectiveEvolutionaryQuality() bool       { return effectiveValue(fp.EvolutionaryQuality, false) }
+func (fp FeatureProfile) EffectiveAdaptiveModelSelection() bool    { return effectiveValue(fp.AdaptiveModelSelection, false) }
+func (fp FeatureProfile) EffectiveSelfImprovement() bool           { return effectiveValue(fp.SelfImprovement, false) }
+func (fp FeatureProfile) EffectiveAdaptiveDepth() bool             { return effectiveValue(fp.AdaptiveDepth, false) }
 
 // Validate checks all Config fields for consistency after yaml.Unmarshal.
 // Returns a joined error containing all validation failures with field paths.
