@@ -794,3 +794,96 @@ func TestMarkPhaseMerged_NonExistentCommand(t *testing.T) {
 		t.Error("expected error for non-existent command")
 	}
 }
+
+// TestCleanupCommand_DeletesCmdLocks verifies that CleanupCommand removes the
+// per-command mutex entry from cmdLocks (M5 memory leak fix).
+func TestCleanupCommand_DeletesCmdLocks(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_cmdlock_cleanup"
+	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand failed: %v", err)
+	}
+
+	// Populate cmdLocks by calling commandLock (simulates resolver usage)
+	_ = wm.commandLock(commandID)
+
+	// Verify cmdLocks has the entry
+	if _, ok := wm.cmdLocks.Load(commandID); !ok {
+		t.Fatal("cmdLocks should have an entry before cleanup")
+	}
+
+	if err := wm.CleanupCommand(commandID); err != nil {
+		t.Fatalf("CleanupCommand failed: %v", err)
+	}
+
+	// Verify cmdLocks entry was removed
+	if _, ok := wm.cmdLocks.Load(commandID); ok {
+		t.Error("cmdLocks entry should be deleted after CleanupCommand")
+	}
+}
+
+// TestCleanupCommand_CmdLocksReusable verifies that after CleanupCommand deletes
+// a cmdLocks entry, a new entry can be created for the same commandID.
+func TestCleanupCommand_CmdLocksReusable(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_cmdlock_reuse"
+	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand failed: %v", err)
+	}
+
+	// Populate and verify cmdLocks
+	lock1 := wm.commandLock(commandID)
+	if lock1 == nil {
+		t.Fatal("commandLock should return non-nil mutex")
+	}
+
+	if err := wm.CleanupCommand(commandID); err != nil {
+		t.Fatalf("CleanupCommand failed: %v", err)
+	}
+
+	// After cleanup, getting a commandLock should return a new instance
+	lock2 := wm.commandLock(commandID)
+	if lock2 == nil {
+		t.Fatal("commandLock should return non-nil mutex after cleanup")
+	}
+	if lock1 == lock2 {
+		t.Error("commandLock after cleanup should return a new mutex instance")
+	}
+}
+
+// TestGC_DeletesCmdLocks verifies that GC (via cleanupCommandUnlocked) also
+// removes cmdLocks entries for cleaned-up commands.
+func TestGC_DeletesCmdLocks(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	// Set max_worktrees to 1 so the second triggers GC
+	wm.config.GC.MaxWorktrees = model.IntPtr(1)
+
+	if err := createForCommand(wm, "cmd_gc_lock_1", []string{"worker1"}); err != nil {
+		t.Fatal(err)
+	}
+	// Populate cmdLocks for cmd_gc_lock_1
+	_ = wm.commandLock("cmd_gc_lock_1")
+
+	if err := createForCommand(wm, "cmd_gc_lock_2", []string{"worker1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// GC should remove cmd_gc_lock_1 (oldest)
+	if err := wm.GC(); err != nil {
+		t.Fatalf("GC failed: %v", err)
+	}
+
+	// Verify cmdLocks entry was removed for the GC'd command
+	if _, ok := wm.cmdLocks.Load("cmd_gc_lock_1"); ok {
+		t.Error("cmdLocks entry should be deleted after GC cleanup")
+	}
+}
