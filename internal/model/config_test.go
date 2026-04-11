@@ -184,6 +184,94 @@ func TestValidate_NegativeLearnings(t *testing.T) {
 	}
 }
 
+// --- Agent model name validation tests ---
+
+func TestValidate_ValidModelNames(t *testing.T) {
+	tests := []struct {
+		name  string
+		model string
+	}{
+		{"empty (default)", ""},
+		{"sonnet", "sonnet"},
+		{"opus", "opus"},
+		{"haiku", "haiku"},
+		{"full claude ID", "claude-sonnet-4-6"},
+		{"format with dots", "gemini-2.5-pro"},
+		{"format with underscore", "my_model_v2"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Agents.Orchestrator.Model = tt.model
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("expected no error for model %q, got: %v", tt.model, err)
+			}
+		})
+	}
+}
+
+func TestValidate_InvalidModelNames(t *testing.T) {
+	tests := []struct {
+		name     string
+		field    string
+		setup    func(*Config)
+		errField string
+	}{
+		{
+			"orchestrator with spaces",
+			"agents.orchestrator.model",
+			func(c *Config) { c.Agents.Orchestrator.Model = "bad model" },
+			"agents.orchestrator.model",
+		},
+		{
+			"planner with special chars",
+			"agents.planner.model",
+			func(c *Config) { c.Agents.Planner.Model = "model;rm -rf" },
+			"agents.planner.model",
+		},
+		{
+			"worker default with newline",
+			"agents.workers.default_model",
+			func(c *Config) { c.Agents.Workers.DefaultModel = "model\ninjection" },
+			"agents.workers.default_model",
+		},
+		{
+			"worker model override invalid",
+			"agents.workers.models.worker1",
+			func(c *Config) { c.Agents.Workers.Models = map[string]string{"worker1": "../escape"} },
+			"agents.workers.models.worker1",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			tt.setup(&cfg)
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected error for invalid model name")
+			}
+			if !strings.Contains(err.Error(), tt.errField) {
+				t.Errorf("expected %q in error, got: %v", tt.errField, err)
+			}
+		})
+	}
+}
+
+func TestIsValidModelName(t *testing.T) {
+	valid := []string{"", "sonnet", "opus", "haiku", "claude-sonnet-4-6", "o3-mini", "gemini-2.5-pro"}
+	for _, name := range valid {
+		if !isValidModelName(name) {
+			t.Errorf("expected %q to be valid", name)
+		}
+	}
+	invalid := []string{" ", "a b", ";cmd", "$var", "model\x00null"}
+	for _, name := range invalid {
+		if isValidModelName(name) {
+			t.Errorf("expected %q to be invalid", name)
+		}
+	}
+}
+
 // --- AdmissionControl tests ---
 
 func TestValidate_AdmissionControl_Defaults(t *testing.T) {

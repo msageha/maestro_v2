@@ -21,6 +21,26 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
+// sanitizeContentForLog truncates a string to maxLen and replaces control
+// characters with '?' to prevent log injection when including untrusted
+// content values (task content, skill candidates, summaries) in log messages.
+func sanitizeContentForLog(s string) string {
+	const maxLen = 200
+	if len(s) > maxLen {
+		s = s[:maxLen] + "..."
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			b.WriteRune('?')
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
 // fallbackRecorder records worker success/failure for health monitoring.
 type fallbackRecorder interface {
 	RecordSuccess(workerID string)
@@ -932,7 +952,7 @@ func (h *ResultWriteAPI) writeSkillCandidates(params ResultWriteParams) error {
 		before := len(candidates)
 		candidates, err = skill.AddOrUpdateCandidate(candidates, content, params.CommandID, now, idFunc)
 		if err != nil {
-			h.logFn(LogLevelError, "skill_candidate_add_failed content=%q: %v", content, err)
+			h.logFn(LogLevelError, "skill_candidate_add_failed content=%q: %v", sanitizeContentForLog(content), err)
 			continue
 		}
 		if len(candidates) > before {
