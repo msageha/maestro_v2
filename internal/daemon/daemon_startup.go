@@ -134,6 +134,9 @@ func (d *Daemon) initComponents() {
 	if d.canComplete != nil {
 		d.handler.SetCanComplete(d.canComplete)
 	}
+	if d.phaseDiagnoser != nil {
+		d.handler.SetPhaseDiagnoser(d.phaseDiagnoser)
+	}
 
 	if d.config.Continuous.Enabled {
 		ch := NewContinuousHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)

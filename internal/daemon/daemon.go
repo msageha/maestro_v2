@@ -53,6 +53,7 @@ type Daemon struct {
 	handler           *QueueHandler
 	stateReader       StateManager
 	canComplete       CanCompleteFunc
+	phaseDiagnoser    PhaseDiagnoserFunc
 	planExecutor      PlanExecutor
 	lockMap           *lock.MutexMap
 	qualityGateDaemon *QualityGateDaemon
@@ -128,7 +129,7 @@ func (d *Daemon) SetCanComplete(f CanCompleteFunc) {
 // SetPhaseDiagnoser wires the phase diagnosis function for completed phase analysis.
 // Must be called before Run() to avoid import cycles (daemon→plan).
 func (d *Daemon) SetPhaseDiagnoser(fn PhaseDiagnoserFunc) {
-	d.handler.SetPhaseDiagnoser(fn)
+	d.phaseDiagnoser = fn
 }
 
 // LockMap returns the daemon's shared MutexMap for coordinating state locks.
