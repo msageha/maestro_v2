@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -903,5 +904,59 @@ func TestResultWrite_QueueWriteFailed_StickyError(t *testing.T) {
 	}
 	if len(rf.Results) != 1 || rf.Results[0].TaskID != taskID || rf.Results[0].Status != model.StatusCompleted {
 		t.Errorf("result file unexpected: %+v", rf.Results)
+	}
+}
+
+func TestSanitizeContentForLog(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		check func(t *testing.T, out string)
+	}{
+		{
+			name:  "short string unchanged",
+			input: "simple content",
+			check: func(t *testing.T, out string) {
+				if out != "simple content" {
+					t.Errorf("expected unchanged, got %q", out)
+				}
+			},
+		},
+		{
+			name:  "truncated at 200 chars",
+			input: strings.Repeat("x", 250),
+			check: func(t *testing.T, out string) {
+				if len(out) != 203 { // 200 + "..."
+					t.Errorf("expected len 203, got %d", len(out))
+				}
+			},
+		},
+		{
+			name:  "control chars replaced",
+			input: "line1\nline2\ttab\x00null",
+			check: func(t *testing.T, out string) {
+				if strings.ContainsAny(out, "\n\t\x00") {
+					t.Errorf("output still contains control chars: %q", out)
+				}
+				if !strings.Contains(out, "line1?line2?tab?null") {
+					t.Errorf("expected control chars replaced with '?', got %q", out)
+				}
+			},
+		},
+		{
+			name:  "empty string",
+			input: "",
+			check: func(t *testing.T, out string) {
+				if out != "" {
+					t.Errorf("expected empty, got %q", out)
+				}
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			out := sanitizeContentForLog(tt.input)
+			tt.check(t, out)
+		})
 	}
 }
