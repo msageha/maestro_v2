@@ -56,35 +56,18 @@ func (m *mockUDSSender) SendCommand(command string, params any) (*uds.Response, 
 
 // --- Test helpers ---
 
-func withMockProcess(t *testing.T, m processManager) {
-	t.Helper()
-	orig := defaultConfig.ProcMgr
-	t.Cleanup(func() { defaultConfig.ProcMgr = orig })
-	defaultConfig.ProcMgr = m
-}
-
-func withMockUDS(t *testing.T, factory func(string, time.Duration) udsSender) {
-	t.Helper()
-	orig := defaultConfig.NewUDSClient
-	t.Cleanup(func() { defaultConfig.NewUDSClient = orig })
-	defaultConfig.NewUDSClient = factory
-}
-
-func withFastTimings(t *testing.T) {
-	t.Helper()
-	orig := *defaultConfig
-	t.Cleanup(func() {
-		defaultConfig.DaemonPollTimeout = orig.DaemonPollTimeout
-		defaultConfig.DaemonPollInterval = orig.DaemonPollInterval
-		defaultConfig.ProcessExitPollInterval = orig.ProcessExitPollInterval
-		defaultConfig.PostSignalWait = orig.PostSignalWait
-		defaultConfig.WaitReadyPollInterval = orig.WaitReadyPollInterval
-	})
-	defaultConfig.DaemonPollTimeout = 100 * time.Millisecond
-	defaultConfig.DaemonPollInterval = 10 * time.Millisecond
-	defaultConfig.ProcessExitPollInterval = 10 * time.Millisecond
-	defaultConfig.PostSignalWait = 10 * time.Millisecond
-	defaultConfig.WaitReadyPollInterval = 10 * time.Millisecond
+func testConfigWithFastTimings() *Config {
+	return &Config{
+		NewUDSClient: func(string, time.Duration) udsSender {
+			return &mockUDSSender{}
+		},
+		ProcMgr:                 &mockProcessManager{},
+		DaemonPollTimeout:       100 * time.Millisecond,
+		DaemonPollInterval:      10 * time.Millisecond,
+		ProcessExitPollInterval: 10 * time.Millisecond,
+		PostSignalWait:          10 * time.Millisecond,
+		WaitReadyPollInterval:   10 * time.Millisecond,
+	}
 }
 
 func writePIDAndLock(t *testing.T, maestroDir string, pid int) {
@@ -102,6 +85,7 @@ func writePIDAndLock(t *testing.T, maestroDir string, pid int) {
 // --- terminateProcess tests ---
 
 func TestTerminateProcess(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name        string
 		alive       func(pid int) bool
@@ -166,13 +150,14 @@ func TestTerminateProcess(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			withFastTimings(t)
-			withMockProcess(t, &mockProcessManager{
+			t.Parallel()
+			cfg := testConfigWithFastTimings()
+			cfg.ProcMgr = &mockProcessManager{
 				alive:  tt.alive,
 				signal: tt.signal,
-			})
+			}
 
-			result, err := terminateProcess(42, tt.sameProcess, tt.termTimeout)
+			result, err := cfg.terminateProcess(42, tt.sameProcess, tt.termTimeout)
 			if result != tt.wantResult {
 				t.Errorf("result = %v, want %v", result, tt.wantResult)
 			}
@@ -184,11 +169,12 @@ func TestTerminateProcess(t *testing.T) {
 }
 
 func TestTerminateProcess_SignalsCorrectPID(t *testing.T) {
-	withFastTimings(t)
+	t.Parallel()
 	var signaledPID int
 	var signaledSig syscall.Signal
 	var count int32
-	withMockProcess(t, &mockProcessManager{
+	cfg := testConfigWithFastTimings()
+	cfg.ProcMgr = &mockProcessManager{
 		alive: func(int) bool {
 			c := atomic.AddInt32(&count, 1)
 			return c <= 2
@@ -198,9 +184,9 @@ func TestTerminateProcess_SignalsCorrectPID(t *testing.T) {
 			signaledSig = sig
 			return nil
 		},
-	})
+	}
 
-	terminateProcess(12345, func(int) bool { return true }, time.Second)
+	cfg.terminateProcess(12345, func(int) bool { return true }, time.Second)
 
 	if signaledPID != 12345 {
 		t.Errorf("signaled PID = %d, want 12345", signaledPID)
@@ -211,14 +197,15 @@ func TestTerminateProcess_SignalsCorrectPID(t *testing.T) {
 }
 
 func TestTerminateProcess_EscalatesToSIGKILL(t *testing.T) {
-	withFastTimings(t)
+	t.Parallel()
 	var signals []syscall.Signal
-	withMockProcess(t, &mockProcessManager{
+	cfg := testConfigWithFastTimings()
+	cfg.ProcMgr = &mockProcessManager{
 		alive:  func(int) bool { return true },
 		signal: func(_ int, sig syscall.Signal) error { signals = append(signals, sig); return nil },
-	})
+	}
 
-	terminateProcess(42, func(int) bool { return true }, 50*time.Millisecond)
+	cfg.terminateProcess(42, func(int) bool { return true }, 50*time.Millisecond)
 
 	if len(signals) < 2 {
 		t.Fatalf("expected at least 2 signals, got %d", len(signals))
@@ -234,6 +221,7 @@ func TestTerminateProcess_EscalatesToSIGKILL(t *testing.T) {
 // --- daemonIdentityChecker tests ---
 
 func TestDaemonIdentityChecker(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name          string
 		pidInFile     int
@@ -286,13 +274,15 @@ func TestDaemonIdentityChecker(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 			maestroDir := setupTestMaestroDir(t)
 			writePIDAndLock(t, maestroDir, tt.pidInFile)
-			withMockProcess(t, &mockProcessManager{
+			cfg := testConfigWithFastTimings()
+			cfg.ProcMgr = &mockProcessManager{
 				startTime: func(int) string { return tt.mockStartTime },
-			})
+			}
 
-			checker := daemonIdentityChecker(maestroDir, tt.originalPID, tt.origStartTime)
+			checker := cfg.daemonIdentityChecker(maestroDir, tt.originalPID, tt.origStartTime)
 			got := checker(tt.originalPID)
 			if got != tt.want {
 				t.Errorf("checker() = %v, want %v", got, tt.want)
@@ -304,36 +294,38 @@ func TestDaemonIdentityChecker(t *testing.T) {
 // --- stopDaemon tests ---
 
 func TestStopDaemon_NoSocketNoPID_NoError(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
-	if err := stopDaemon(maestroDir); err != nil {
+	cfg := testConfigWithFastTimings()
+	if err := cfg.stopDaemon(maestroDir); err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 }
 
 func TestStopDaemon_UDSShutdown_ProcessDies(t *testing.T) {
-	withFastTimings(t)
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 
 	socketPath := filepath.Join(maestroDir, uds.DefaultSocketName)
 	os.WriteFile(socketPath, []byte{}, 0644)
 	writePIDAndLock(t, maestroDir, 12345)
 
-	withMockUDS(t, func(string, time.Duration) udsSender {
+	var aliveCount int32
+	cfg := testConfigWithFastTimings()
+	cfg.NewUDSClient = func(string, time.Duration) udsSender {
 		return &mockUDSSender{sendCommand: func(string, any) (*uds.Response, error) {
 			return &uds.Response{Success: true}, nil
 		}}
-	})
-
-	var aliveCount int32
-	withMockProcess(t, &mockProcessManager{
+	}
+	cfg.ProcMgr = &mockProcessManager{
 		alive: func(int) bool {
 			c := atomic.AddInt32(&aliveCount, 1)
 			return c <= 1
 		},
 		startTime: func(int) string { return "start" },
-	})
+	}
 
-	if err := stopDaemon(maestroDir); err != nil {
+	if err := cfg.stopDaemon(maestroDir); err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
@@ -344,21 +336,21 @@ func TestStopDaemon_UDSShutdown_ProcessDies(t *testing.T) {
 }
 
 func TestStopDaemon_UDSFails_TerminateAfterPoll(t *testing.T) {
-	withFastTimings(t)
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 
 	socketPath := filepath.Join(maestroDir, uds.DefaultSocketName)
 	os.WriteFile(socketPath, []byte{}, 0644)
 	writePIDAndLock(t, maestroDir, 12345)
 
-	withMockUDS(t, func(string, time.Duration) udsSender {
+	var sigReceived int32
+	cfg := testConfigWithFastTimings()
+	cfg.NewUDSClient = func(string, time.Duration) udsSender {
 		return &mockUDSSender{sendCommand: func(string, any) (*uds.Response, error) {
 			return nil, fmt.Errorf("connection refused")
 		}}
-	})
-
-	var sigReceived int32
-	withMockProcess(t, &mockProcessManager{
+	}
+	cfg.ProcMgr = &mockProcessManager{
 		alive: func(int) bool {
 			return atomic.LoadInt32(&sigReceived) == 0
 		},
@@ -369,30 +361,29 @@ func TestStopDaemon_UDSFails_TerminateAfterPoll(t *testing.T) {
 			}
 			return nil
 		},
-	})
+	}
 
-	if err := stopDaemon(maestroDir); err != nil {
+	if err := cfg.stopDaemon(maestroDir); err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 }
 
 func TestStopDaemon_PIDReused_ReturnsNil(t *testing.T) {
-	withFastTimings(t)
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 
 	socketPath := filepath.Join(maestroDir, uds.DefaultSocketName)
 	os.WriteFile(socketPath, []byte{}, 0644)
 	writePIDAndLock(t, maestroDir, 12345)
 
-	withMockUDS(t, func(string, time.Duration) udsSender {
+	var startTimeCallCount int32
+	cfg := testConfigWithFastTimings()
+	cfg.NewUDSClient = func(string, time.Duration) udsSender {
 		return &mockUDSSender{sendCommand: func(string, any) (*uds.Response, error) {
 			return nil, fmt.Errorf("connection refused")
 		}}
-	})
-
-	// Simulate PID reuse: StartTime returns different value on second+ call
-	var startTimeCallCount int32
-	withMockProcess(t, &mockProcessManager{
+	}
+	cfg.ProcMgr = &mockProcessManager{
 		alive: func(int) bool { return true },
 		startTime: func(int) string {
 			c := atomic.AddInt32(&startTimeCallCount, 1)
@@ -402,28 +393,30 @@ func TestStopDaemon_PIDReused_ReturnsNil(t *testing.T) {
 			return "different-time" // PID was reused
 		},
 		signal: func(int, syscall.Signal) error { return nil },
-	})
+	}
 
-	err := stopDaemon(maestroDir)
+	err := cfg.stopDaemon(maestroDir)
 	if err != nil {
 		t.Fatalf("expected no error (PID reuse → terminateNotTarget), got %v", err)
 	}
 }
 
 func TestStopDaemon_NoPID_LockAvailable(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 
 	// Socket exists but no valid PID (no matching lock)
 	socketPath := filepath.Join(maestroDir, uds.DefaultSocketName)
 	os.WriteFile(socketPath, []byte{}, 0644)
 
-	withMockUDS(t, func(string, time.Duration) udsSender {
+	cfg := testConfigWithFastTimings()
+	cfg.NewUDSClient = func(string, time.Duration) udsSender {
 		return &mockUDSSender{sendCommand: func(string, any) (*uds.Response, error) {
 			return nil, fmt.Errorf("connection refused")
 		}}
-	})
+	}
 
-	if err := stopDaemon(maestroDir); err != nil {
+	if err := cfg.stopDaemon(maestroDir); err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
@@ -433,6 +426,7 @@ func TestStopDaemon_NoPID_LockAvailable(t *testing.T) {
 }
 
 func TestStopDaemon_NoPID_NoLockDir(t *testing.T) {
+	t.Parallel()
 	// Special case: no locks directory means no daemon has ever run
 	maestroDir := setupTestMaestroDir(t)
 
@@ -444,13 +438,14 @@ func TestStopDaemon_NoPID_NoLockDir(t *testing.T) {
 	pidPath := filepath.Join(maestroDir, "daemon.pid")
 	os.WriteFile(pidPath, []byte("invalid"), 0644)
 
-	withMockUDS(t, func(string, time.Duration) udsSender {
+	cfg := testConfigWithFastTimings()
+	cfg.NewUDSClient = func(string, time.Duration) udsSender {
 		return &mockUDSSender{sendCommand: func(string, any) (*uds.Response, error) {
 			return nil, fmt.Errorf("no socket")
 		}}
-	})
+	}
 
-	if err := stopDaemon(maestroDir); err != nil {
+	if err := cfg.stopDaemon(maestroDir); err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
@@ -460,6 +455,7 @@ func TestStopDaemon_NoPID_NoLockDir(t *testing.T) {
 }
 
 func TestStopDaemon_OnlyPIDFile(t *testing.T) {
+	t.Parallel()
 	// PID file exists but no socket
 	maestroDir := setupTestMaestroDir(t)
 
@@ -468,23 +464,22 @@ func TestStopDaemon_OnlyPIDFile(t *testing.T) {
 	os.WriteFile(pidPath, []byte("12345"), 0644)
 	os.WriteFile(lockPath, []byte("12345\n"), 0644)
 
-	withFastTimings(t)
-	withMockUDS(t, func(string, time.Duration) udsSender {
+	var aliveCount int32
+	cfg := testConfigWithFastTimings()
+	cfg.NewUDSClient = func(string, time.Duration) udsSender {
 		return &mockUDSSender{sendCommand: func(string, any) (*uds.Response, error) {
 			return nil, fmt.Errorf("no socket")
 		}}
-	})
-
-	var aliveCount int32
-	withMockProcess(t, &mockProcessManager{
+	}
+	cfg.ProcMgr = &mockProcessManager{
 		alive: func(int) bool {
 			c := atomic.AddInt32(&aliveCount, 1)
 			return c <= 1
 		},
 		startTime: func(int) string { return "start" },
-	})
+	}
 
-	if err := stopDaemon(maestroDir); err != nil {
+	if err := cfg.stopDaemon(maestroDir); err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
 
@@ -496,6 +491,7 @@ func TestStopDaemon_OnlyPIDFile(t *testing.T) {
 // --- waitDaemonReady tests ---
 
 func TestWaitDaemonReady(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name      string
 		udsFunc   func(string, any) (*uds.Response, error)
@@ -551,12 +547,13 @@ func TestWaitDaemonReady(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			withFastTimings(t)
-			withMockUDS(t, func(string, time.Duration) udsSender {
+			t.Parallel()
+			cfg := testConfigWithFastTimings()
+			cfg.NewUDSClient = func(string, time.Duration) udsSender {
 				return &mockUDSSender{sendCommand: tt.udsFunc}
-			})
+			}
 
-			err := waitDaemonReady("/tmp/test.sock", tt.timeout)
+			err := cfg.waitDaemonReady("/tmp/test.sock", tt.timeout)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("err = %v, wantErr = %v", err, tt.wantErr)
 			}
@@ -570,12 +567,13 @@ func TestWaitDaemonReady(t *testing.T) {
 // --- cleanupStalePID tests ---
 
 func TestCleanupStalePID_ProcessAlive_TerminateSucceeds(t *testing.T) {
-	withFastTimings(t)
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	writePIDAndLock(t, maestroDir, 12345)
 
 	var sigReceived int32
-	withMockProcess(t, &mockProcessManager{
+	cfg := testConfigWithFastTimings()
+	cfg.ProcMgr = &mockProcessManager{
 		alive: func(int) bool {
 			return atomic.LoadInt32(&sigReceived) == 0
 		},
@@ -586,9 +584,9 @@ func TestCleanupStalePID_ProcessAlive_TerminateSucceeds(t *testing.T) {
 			}
 			return nil
 		},
-	})
+	}
 
-	cleanupStalePID(maestroDir)
+	cfg.cleanupStalePID(maestroDir)
 
 	pidPath := filepath.Join(maestroDir, "daemon.pid")
 	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
@@ -597,14 +595,16 @@ func TestCleanupStalePID_ProcessAlive_TerminateSucceeds(t *testing.T) {
 }
 
 func TestCleanupStalePID_ProcessDead(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	writePIDAndLock(t, maestroDir, 12345)
 
-	withMockProcess(t, &mockProcessManager{
+	cfg := testConfigWithFastTimings()
+	cfg.ProcMgr = &mockProcessManager{
 		alive: func(int) bool { return false },
-	})
+	}
 
-	cleanupStalePID(maestroDir)
+	cfg.cleanupStalePID(maestroDir)
 
 	pidPath := filepath.Join(maestroDir, "daemon.pid")
 	if _, err := os.Stat(pidPath); !os.IsNotExist(err) {
@@ -613,26 +613,29 @@ func TestCleanupStalePID_ProcessDead(t *testing.T) {
 }
 
 func TestCleanupStalePID_NoPIDFile(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 
+	cfg := testConfigWithFastTimings()
 	// No crash expected
-	cleanupStalePID(maestroDir)
+	cfg.cleanupStalePID(maestroDir)
 }
 
 // --- stopDaemon lock timeout tests ---
 
 func TestStopDaemon_NoPID_LockHeld_Timeout(t *testing.T) {
-	withFastTimings(t)
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 
 	socketPath := filepath.Join(maestroDir, uds.DefaultSocketName)
 	os.WriteFile(socketPath, []byte{}, 0644)
 
-	withMockUDS(t, func(string, time.Duration) udsSender {
+	cfg := testConfigWithFastTimings()
+	cfg.NewUDSClient = func(string, time.Duration) udsSender {
 		return &mockUDSSender{sendCommand: func(string, any) (*uds.Response, error) {
 			return nil, fmt.Errorf("no socket")
 		}}
-	})
+	}
 
 	// Hold the lock so stopDaemon cannot acquire it
 	lockPath := filepath.Join(maestroDir, "locks", "daemon.lock")
@@ -642,7 +645,7 @@ func TestStopDaemon_NoPID_LockHeld_Timeout(t *testing.T) {
 	}
 	t.Cleanup(func() { fl.Unlock() })
 
-	err := stopDaemon(maestroDir)
+	err := cfg.stopDaemon(maestroDir)
 	if err == nil {
 		t.Fatal("expected error when lock held and timeout expires")
 	}
@@ -654,6 +657,7 @@ func TestStopDaemon_NoPID_LockHeld_Timeout(t *testing.T) {
 // --- restoreServerOptions test ---
 
 func TestRestoreServerOptions_NoBackupFile(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	// No crash expected when backup file is missing
 	restoreServerOptions(maestroDir)
@@ -662,12 +666,14 @@ func TestRestoreServerOptions_NoBackupFile(t *testing.T) {
 // --- validateAndRecoverYAML tests ---
 
 func TestValidateAndRecoverYAML_EmptyDirs(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	// No crash expected when directories are empty
 	validateAndRecoverYAML(maestroDir)
 }
 
 func TestValidateAndRecoverYAML_ValidFiles(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 
 	// Create valid queue file
@@ -682,6 +688,7 @@ func TestValidateAndRecoverYAML_ValidFiles(t *testing.T) {
 }
 
 func TestValidateAndRecoverYAML_CorruptFile(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 
 	// Create corrupt YAML in queue
@@ -692,6 +699,7 @@ func TestValidateAndRecoverYAML_CorruptFile(t *testing.T) {
 }
 
 func TestValidateAndRecoverYAML_StateLevelFiles(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 
 	// Create valid continuous.yaml
@@ -706,6 +714,7 @@ func TestValidateAndRecoverYAML_StateLevelFiles(t *testing.T) {
 }
 
 func TestValidateAndRecoverYAML_SkipsNonYAMLFiles(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 
 	// Non-YAML files should be ignored
@@ -716,6 +725,7 @@ func TestValidateAndRecoverYAML_SkipsNonYAMLFiles(t *testing.T) {
 }
 
 func TestValidateAndRecoverYAML_SkipsSubdirectories(t *testing.T) {
+	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 
 	// Subdirectories should be skipped
@@ -727,6 +737,7 @@ func TestValidateAndRecoverYAML_SkipsSubdirectories(t *testing.T) {
 // --- hasOtherMaestroSessions tests ---
 
 func TestHasOtherMaestroSessions_NoTmuxServer(t *testing.T) {
+	t.Parallel()
 	// When tmux server isn't running, ListSessions returns ErrTmuxServer.
 	// Since this test environment may not have tmux running at all,
 	// we just verify the function doesn't panic.
@@ -736,5 +747,6 @@ func TestHasOtherMaestroSessions_NoTmuxServer(t *testing.T) {
 // --- Interface contract verification ---
 
 func TestOsProcessManager_ImplementsProcessManager(t *testing.T) {
+	t.Parallel()
 	var _ processManager = &osProcessManager{}
 }
