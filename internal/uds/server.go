@@ -173,6 +173,13 @@ func (s *Server) processRequest(req *Request) *Response {
 		)
 	}
 
+	// Validate and normalize CallerRole before dispatching to handlers.
+	// Empty CallerRole (direct CLI invocation) is normalized to "cli".
+	if err := ValidateCallerRole(req.CallerRole); err != nil {
+		return ErrorResponse(ErrCodeValidation, err.Error())
+	}
+	req.CallerRole = NormalizeCallerRole(req.CallerRole)
+
 	s.mu.RLock()
 	handler, ok := s.handlers[req.Command]
 	s.mu.RUnlock()

@@ -50,13 +50,15 @@ func (a *API) handlePlan(req *uds.Request) *uds.Response {
 	// blocked even if they bypass the launcher --disallowedTools and policy
 	// hook layers. Empty or unknown CallerRole is rejected to prevent
 	// unauthenticated shell invocations from reaching recovery endpoints.
+	// Note: the server-level processRequest already validates and normalizes
+	// CallerRole, but this check is defense-in-depth for direct handler calls.
 	switch params.Operation {
 	case "unquarantine", "resume_merge", "resolve_conflict":
-		if !isValidCallerRole(req.CallerRole) {
+		if !uds.ValidCallerRoles[req.CallerRole] {
 			return uds.ErrorResponse(uds.ErrCodeValidation,
 				fmt.Sprintf("operation %q requires a valid caller role, got %q", params.Operation, req.CallerRole))
 		}
-		if req.CallerRole == "worker" {
+		if req.CallerRole == uds.RoleWorker {
 			return uds.ErrorResponse(uds.ErrCodeValidation,
 				fmt.Sprintf("operation %q is not permitted for caller role %q", params.Operation, req.CallerRole))
 		}
@@ -209,16 +211,3 @@ func (a *API) handlePlanWorktreeRecovery(operation string, data json.RawMessage)
 	return &uds.Response{Success: true, Data: out}
 }
 
-// validCallerRoles is the authoritative set of roles that may invoke
-// operator-recovery plan operations. The set is intentionally small and
-// must be maintained explicitly — any new role requires a conscious addition.
-var validCallerRoles = map[string]bool{
-	"orchestrator": true,
-	"planner":      true,
-	"worker":       true,
-}
-
-// isValidCallerRole returns true if role is a known, non-empty caller role.
-func isValidCallerRole(role string) bool {
-	return validCallerRoles[role]
-}

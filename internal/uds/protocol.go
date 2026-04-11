@@ -16,6 +16,48 @@ import (
 // authenticated role hint to the daemon.
 const CallerRoleEnv = "MAESTRO_AGENT_ROLE"
 
+// CallerRole constants define the valid values for the MAESTRO_AGENT_ROLE
+// environment variable and the Request.CallerRole field.
+const (
+	RoleOrchestrator = "orchestrator"
+	RolePlanner      = "planner"
+	RoleWorker       = "worker"
+	RoleCLI          = "cli"
+)
+
+// ValidCallerRoles is the authoritative whitelist of caller roles accepted by
+// the system. Roles are case-sensitive lowercase strings. Any CallerRole value
+// not in this set is rejected at the protocol level.
+var ValidCallerRoles = map[string]bool{
+	RoleOrchestrator: true,
+	RolePlanner:      true,
+	RoleWorker:       true,
+	RoleCLI:          true,
+}
+
+// ValidateCallerRole checks that role is either empty (treated as RoleCLI for
+// direct CLI invocations where MAESTRO_AGENT_ROLE is unset) or a known role in
+// ValidCallerRoles. Returns an error for unknown or improperly-cased roles.
+func ValidateCallerRole(role string) error {
+	if role == "" {
+		return nil // empty is allowed; normalized to RoleCLI by NormalizeCallerRole
+	}
+	if !ValidCallerRoles[role] {
+		return fmt.Errorf("invalid caller role %q: must be one of orchestrator, planner, worker, cli", role)
+	}
+	return nil
+}
+
+// NormalizeCallerRole returns RoleCLI for an empty string (direct CLI
+// invocation without MAESTRO_AGENT_ROLE set), otherwise returns the role
+// unchanged. Call ValidateCallerRole first to reject unknown roles.
+func NormalizeCallerRole(role string) string {
+	if role == "" {
+		return RoleCLI
+	}
+	return role
+}
+
 // ProtocolVersion is the current version of the UDS wire protocol.
 const ProtocolVersion = 1
 
@@ -72,11 +114,17 @@ const (
 )
 
 // newRequest creates a new Request with the given command and optional params marshalled to JSON.
+// The CallerRole is read from the MAESTRO_AGENT_ROLE environment variable,
+// validated against ValidCallerRoles, and normalized (empty → "cli").
 func newRequest(command string, params any) (*Request, error) {
+	role := os.Getenv(CallerRoleEnv)
+	if err := ValidateCallerRole(role); err != nil {
+		return nil, err
+	}
 	req := &Request{
 		ProtocolVersion: ProtocolVersion,
 		Command:         command,
-		CallerRole:      os.Getenv(CallerRoleEnv),
+		CallerRole:      NormalizeCallerRole(role),
 	}
 	if params != nil {
 		data, err := json.Marshal(params)
