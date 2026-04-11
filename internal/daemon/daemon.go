@@ -179,8 +179,56 @@ func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Close
 		cancel:     cancel,
 	}
 
-	// Initialize components with back-pointers
-	d.api = &API{d: d, fileStore: newFSResultFileStore(maestroDir)}
+	// Initialize API with shared context and domain-specific handlers.
+	shared := &apiContext{
+		maestroDir: maestroDir,
+		config:     &d.config,
+		clock:      d.clock,
+		lockMap:    d.lockMap,
+		logFn:      d.log,
+		logger:     d.logger,
+		logLevel:   d.logLevel,
+		selfWrites: d.selfWrites,
+		fileStore:  newFSResultFileStore(maestroDir),
+		eventBus:   func() *events.Bus { return d.eventBus },
+	}
+	d.api = &API{
+		shared: shared,
+		result: &ResultWriteAPI{
+			apiContext: shared,
+			// Late-bound deps: closures capture Daemon fields so test-time
+			// assignments (e.g. d.circuitBreaker = ...) are visible at call time.
+			fallbackMgr:    func() fallbackRecorder { if d.fallbackMgr != nil { return d.fallbackMgr }; return nil },
+			circuitBreaker: func() circuitBreakerUpdater { if d.circuitBreaker != nil { return d.circuitBreaker }; return nil },
+			reviewCoord:    func() reviewDispatcher { if d.reviewCoord != nil { return d.reviewCoord }; return nil },
+			ctx:            func() context.Context { return d.ctx },
+			// Default triggerScan uses spawnTracked when d.handler is set.
+			// initComponents may override this with a more specific closure.
+			triggerScan: func(_ context.Context) {
+				if d.handler != nil {
+					d.spawnTracked("resultWriteScan", func(scanCtx context.Context) {
+						if d.eg != nil {
+							d.handler.PeriodicScanWithContext(scanCtx)
+						} else {
+							d.handler.PeriodicScan()
+						}
+					})
+				}
+			},
+		},
+		queue:     &QueueWriteAPI{apiContext: shared},
+		plan:      &PlanAPI{apiContext: shared},
+		heartbeat: &HeartbeatAPI{
+			maestroDir: maestroDir,
+			config:     &d.config,
+			logger:     d.logger,
+			logLevel:   d.logLevel,
+			lockMap:    d.lockMap,
+		},
+		dashboard: &DashboardAPI{apiContext: shared},
+		skill:     &SkillAPI{apiContext: shared},
+	}
+
 	d.watch = &WatchLoop{d: d, fsSem: make(chan struct{}, fsSemaphoreBufferSize)}
 	d.bridge = &EventBridge{d: d}
 

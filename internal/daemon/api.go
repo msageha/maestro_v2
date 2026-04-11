@@ -1,142 +1,90 @@
 package daemon
 
 import (
-	"fmt"
-	"path/filepath"
-	"sync"
-
-	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/uds"
 )
 
 // API groups all UDS request handler methods for the daemon.
-// It holds a back-pointer to Daemon for access to shared state.
+// It acts as a facade, delegating to domain-specific handler structs.
 type API struct {
-	d           *Daemon
-	fileStore   ResultFileStore
-	dashboardMu sync.Mutex // serializes concurrent dashboard generation
+	shared    *apiContext
+	result    *ResultWriteAPI
+	queue     *QueueWriteAPI
+	plan      *PlanAPI
+	heartbeat *HeartbeatAPI
+	dashboard *DashboardAPI
+	skill     *SkillAPI
 }
 
-// registerHandlers registers UDS request handlers on the daemon's server.
-func (a *API) registerHandlers() {
-	d := a.d
-	d.server.Handle("ping", func(_ *uds.Request) *uds.Response {
+// systemHandlers holds UDS handlers that require direct Daemon access.
+type systemHandlers struct {
+	scan     func(*uds.Request) *uds.Response
+	shutdown func(*uds.Request) *uds.Response
+}
+
+// registerHandlers registers UDS request handlers on the given server.
+func (a *API) registerHandlers(server *uds.Server, sysHandlers systemHandlers) {
+	server.Handle("ping", func(_ *uds.Request) *uds.Response {
 		return uds.SuccessResponse(map[string]string{"status": "ok"})
 	})
+	server.Handle("scan", sysHandlers.scan)
+	server.Handle("shutdown", sysHandlers.shutdown)
 
-	d.server.Handle("scan", func(_ *uds.Request) *uds.Response {
-		if d.handler == nil {
-			return uds.ErrorResponse(uds.ErrCodeInternal, "handler not initialized")
-		}
-		d.handler.PeriodicScanWithContext(d.ctx)
-		return uds.SuccessResponse(map[string]string{"status": "scanned"})
-	})
-
-	d.server.Handle("shutdown", func(_ *uds.Request) *uds.Response {
-		d.log(LogLevelInfo, "shutdown requested via UDS")
-		go func() { defer d.recoverPanic("shutdownHandler"); d.Shutdown() }()
-		return uds.SuccessResponse(map[string]string{"status": "shutdown_accepted"})
-	})
-
-	d.server.Handle("queue_write", a.handleQueueWrite)
-	d.server.Handle("result_write", a.handleResultWrite)
-	d.server.Handle("task_heartbeat", a.handleTaskHeartbeat)
-	d.server.Handle("plan", a.handlePlan)
-	d.server.Handle("dashboard", a.handleDashboard)
-	d.server.Handle("skill_approve", a.handleSkillApprove)
-	d.server.Handle("skill_reject", a.handleSkillReject)
+	server.Handle("queue_write", a.handleQueueWrite)
+	server.Handle("result_write", a.handleResultWrite)
+	server.Handle("task_heartbeat", a.handleTaskHeartbeat)
+	server.Handle("plan", a.handlePlan)
+	server.Handle("dashboard", a.handleDashboard)
+	server.Handle("skill_approve", a.handleSkillApprove)
+	server.Handle("skill_reject", a.handleSkillReject)
 }
 
-// handleTaskHeartbeat handles task heartbeat requests.
+// --- Delegation methods (preserve backward compatibility for tests) ---
+
+func (a *API) handleQueueWrite(req *uds.Request) *uds.Response {
+	return a.queue.handleQueueWrite(req)
+}
+
+func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
+	return a.result.handleResultWrite(req)
+}
+
 func (a *API) handleTaskHeartbeat(req *uds.Request) *uds.Response {
-	d := a.d
-	if d.handler == nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, "handler not initialized")
-	}
-	heartbeatHandler := NewTaskHeartbeatHandler(
-		d.maestroDir,
-		d.config,
-		d.handler.leaseManager,
-		d.logger,
-		d.logLevel,
-		&d.handler.scanExecutor.scanMu,
-		d.lockMap,
-	)
-	return heartbeatHandler.Handle(req.Params)
+	return a.heartbeat.handleTaskHeartbeat(req)
 }
 
-// handleDashboard triggers dashboard regeneration and returns the result.
-// DashboardFormatter reads state from on-disk YAML files (not in-memory scan
-// state), so it does not require scanMu. Holding scanMu here would block
-// PeriodicScan for the duration of the file I/O. A dedicated dashboardMu
-// serializes concurrent dashboard writes to prevent temp-file clobbering.
-func (a *API) handleDashboard(_ *uds.Request) *uds.Response {
-	d := a.d
-	if d.handler == nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, "handler not initialized")
-	}
-
-	a.dashboardMu.Lock()
-	defer a.dashboardMu.Unlock()
-
-	// Use the new dashboard formatter for human-readable output
-	formatter := NewDashboardFormatter(d.maestroDir)
-	if err := formatter.UpdateDashboardFile(); err != nil {
-		d.log(LogLevelError, "dashboard regeneration error=%v", err)
-		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("dashboard generation failed: %v", err))
-	}
-
-	dashboardPath := filepath.Join(d.maestroDir, "dashboard.md")
-	return uds.SuccessResponse(map[string]string{
-		"status": "regenerated",
-		"path":   dashboardPath,
-	})
+func (a *API) handlePlan(req *uds.Request) *uds.Response {
+	return a.plan.handlePlan(req)
 }
 
-// acquireFileLock acquires the shared file mutex to serialize with QueueHandler's PeriodicScan.
-func (a *API) acquireFileLock() {
-	if a.d.handler != nil {
-		a.d.handler.LockFiles()
-	}
+func (a *API) handleDashboard(req *uds.Request) *uds.Response {
+	return a.dashboard.handleDashboard(req)
 }
 
-// releaseFileLock releases the shared file mutex.
-func (a *API) releaseFileLock() {
-	if a.d.handler != nil {
-		a.d.handler.UnlockFiles()
-	}
+func (a *API) handleSkillApprove(req *uds.Request) *uds.Response {
+	return a.skill.handleSkillApprove(req)
 }
 
-// notifySelfWrite records a self-write for fsnotify filtering and publishes
-// an EventQueueWritten event to trigger processing via the event bus.
-// data is the object that was written (used to compute content hash).
+func (a *API) handleSkillReject(req *uds.Request) *uds.Response {
+	return a.skill.handleSkillReject(req)
+}
+
+// notifySelfWrite delegates to the shared apiContext.
 func (a *API) notifySelfWrite(queuePath, writeType string, data any) {
-	a.d.selfWrites.Record(queuePath, data)
-	if a.d.eventBus != nil {
-		a.d.eventBus.Publish(events.EventQueueWritten, map[string]interface{}{
-			"file":   filepath.Base(queuePath),
-			"source": "uds",
-			"type":   writeType,
-		})
-	}
+	a.shared.notifySelfWrite(queuePath, writeType, data)
 }
 
-// publishQueueWritten publishes an EventQueueWritten event to trigger an
-// immediate queue scan without recording a self-write hash. Use this when
-// queue files were written by an external package (e.g. plan.Submit) and
-// the exact written data is not available to the API layer.
-func (a *API) publishQueueWritten(source string) {
-	if a.d.eventBus != nil {
-		a.d.eventBus.Publish(events.EventQueueWritten, map[string]interface{}{
-			"source": source,
-			"type":   "plan",
-		})
-	}
-}
-
-// recordSelfWrite records a self-write for fsnotify filtering without
-// publishing an event (used when the caller already triggers processing directly).
-// data is the object that was written (used to compute content hash).
+// recordSelfWrite delegates to the shared apiContext.
 func (a *API) recordSelfWrite(path string, data any) {
-	a.d.selfWrites.Record(path, data)
+	a.shared.recordSelfWrite(path, data)
+}
+
+// publishQueueWritten delegates to the shared apiContext.
+func (a *API) publishQueueWritten(source string) {
+	a.shared.publishQueueWritten(source)
+}
+
+// writeLearnings delegates to the result write handler.
+func (a *API) writeLearnings(params ResultWriteParams, resultID string) error {
+	return a.result.writeLearnings(params, resultID)
 }

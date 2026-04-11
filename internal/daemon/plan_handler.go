@@ -28,14 +28,22 @@ type codedFormatter interface {
 
 // PlanExecutor is defined in internal/daemon/core and re-exported via core_aliases.go.
 
+// PlanAPI handles the "plan" UDS endpoint.
+type PlanAPI struct {
+	*apiContext
+	planExecutor    PlanExecutor
+	worktreeManager *WorktreeManager
+}
+
 // SetPlanExecutor wires the plan executor for UDS plan handlers.
 func (d *Daemon) SetPlanExecutor(pe PlanExecutor) {
 	d.planExecutor = pe
+	if d.api != nil && d.api.plan != nil {
+		d.api.plan.planExecutor = pe
+	}
 }
 
-func (a *API) handlePlan(req *uds.Request) *uds.Response {
-	d := a.d
-
+func (h *PlanAPI) handlePlan(req *uds.Request) *uds.Response {
 	var params struct {
 		Operation string          `json:"operation"`
 		Data      json.RawMessage `json:"data"`
@@ -62,35 +70,35 @@ func (a *API) handlePlan(req *uds.Request) *uds.Response {
 			return uds.ErrorResponse(uds.ErrCodeValidation,
 				fmt.Sprintf("operation %q is not permitted for caller role %q", params.Operation, req.CallerRole))
 		}
-		return a.handlePlanWorktreeRecovery(params.Operation, params.Data)
+		return h.handlePlanWorktreeRecovery(params.Operation, params.Data)
 	}
 
-	if d.planExecutor == nil {
+	if h.planExecutor == nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, "plan executor not configured")
 	}
 
-	a.acquireFileLock()
-	defer a.releaseFileLock()
+	h.acquireFileLock()
+	defer h.releaseFileLock()
 
 	var result json.RawMessage
 	var err error
 
 	switch params.Operation {
 	case "submit":
-		result, err = d.planExecutor.Submit(params.Data)
+		result, err = h.planExecutor.Submit(params.Data)
 	case "complete":
-		result, err = d.planExecutor.Complete(params.Data)
+		result, err = h.planExecutor.Complete(params.Data)
 	case "add_retry_task":
-		result, err = d.planExecutor.AddRetryTask(params.Data)
+		result, err = h.planExecutor.AddRetryTask(params.Data)
 	case "rebuild":
-		result, err = d.planExecutor.Rebuild(params.Data)
+		result, err = h.planExecutor.Rebuild(params.Data)
 	default:
 		return uds.ErrorResponse(uds.ErrCodeValidation,
 			fmt.Sprintf("unknown plan operation: %q", params.Operation))
 	}
 
 	if err != nil {
-		d.log(LogLevelWarn, "plan_%s error=%v", params.Operation, err)
+		h.logFn(LogLevelWarn, "plan_%s error=%v", params.Operation, err)
 		var cf codedFormatter
 		if errors.As(err, &cf) {
 			return uds.ErrorResponse(cf.ErrorCode(), cf.FormatStderr())
@@ -102,14 +110,14 @@ func (a *API) handlePlan(req *uds.Request) *uds.Response {
 		return uds.ErrorResponse(uds.ErrCodeInternal, err.Error())
 	}
 
-	d.log(LogLevelInfo, "plan_%s success", params.Operation)
+	h.logFn(LogLevelInfo, "plan_%s success", params.Operation)
 
 	// Trigger an immediate queue scan for operations that write to worker/planner
 	// queue files. Without this, the daemon relies on fsnotify (which may miss
 	// AtomicWrite's os.Rename on macOS) or the 60-second periodic scan, causing
 	// significant dispatch delay. "rebuild" only updates state and needs no scan.
 	if params.Operation != "rebuild" {
-		a.publishQueueWritten("plan_" + params.Operation)
+		h.publishQueueWritten("plan_" + params.Operation)
 	}
 
 	return &uds.Response{Success: true, Data: result}
@@ -118,9 +126,8 @@ func (a *API) handlePlan(req *uds.Request) *uds.Response {
 // handlePlanWorktreeRecovery serves the operator-recovery plan operations
 // (unquarantine, resume_merge). Both delegate to the worktree manager rather
 // than the plan executor and produce uniform error mapping for the CLI.
-func (a *API) handlePlanWorktreeRecovery(operation string, data json.RawMessage) *uds.Response {
-	d := a.d
-	if d.worktreeManager == nil {
+func (h *PlanAPI) handlePlanWorktreeRecovery(operation string, data json.RawMessage) *uds.Response {
+	if h.worktreeManager == nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, "worktree manager not configured (worktree.enabled=false?)")
 	}
 
@@ -141,14 +148,14 @@ func (a *API) handlePlanWorktreeRecovery(operation string, data json.RawMessage)
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid command_id: %v", err))
 	}
 
-	a.acquireFileLock()
-	defer a.releaseFileLock()
+	h.acquireFileLock()
+	defer h.releaseFileLock()
 
 	// Check that the command itself exists (state/commands/<id>.yaml) under
 	// the file lock to avoid a TOCTOU window with concurrent queue scans.
 	// This distinguishes "no such command" from "command exists but never
 	// used worktree mode" so the CLI can surface accurate error messages.
-	commandStatePath := filepath.Join(d.maestroDir, "state", "commands", p.CommandID+".yaml")
+	commandStatePath := filepath.Join(h.maestroDir, "state", "commands", p.CommandID+".yaml")
 	if _, err := os.Stat(commandStatePath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return uds.ErrorResponse(uds.ErrCodeNotFound, fmt.Sprintf("command not found: %s", p.CommandID))
@@ -159,9 +166,9 @@ func (a *API) handlePlanWorktreeRecovery(operation string, data json.RawMessage)
 	var opErr error
 	switch operation {
 	case "unquarantine":
-		opErr = d.worktreeManager.Unquarantine(p.CommandID, p.Reason)
+		opErr = h.worktreeManager.Unquarantine(p.CommandID, p.Reason)
 	case "resume_merge":
-		opErr = d.worktreeManager.ResumeMerge(p.CommandID)
+		opErr = h.worktreeManager.ResumeMerge(p.CommandID)
 	case "resolve_conflict":
 		if p.PhaseID == "" {
 			return uds.ErrorResponse(uds.ErrCodeValidation, "phase_id is required")
@@ -181,14 +188,14 @@ func (a *API) handlePlanWorktreeRecovery(operation string, data json.RawMessage)
 		// underlying worktree.ResolveConflict signature is intentionally not
 		// extended here (out of scope for this task).
 		if len(p.ConflictingFiles) > 0 {
-			d.log(LogLevelInfo, "plan_resolve_conflict command=%s phase=%s worker=%s conflicting_files=%v",
+			h.logFn(LogLevelInfo, "plan_resolve_conflict command=%s phase=%s worker=%s conflicting_files=%v",
 				p.CommandID, p.PhaseID, p.WorkerID, p.ConflictingFiles)
 		}
-		opErr = d.worktreeManager.ResolveConflict(p.CommandID, p.PhaseID, p.WorkerID)
+		opErr = h.worktreeManager.ResolveConflict(p.CommandID, p.PhaseID, p.WorkerID)
 	}
 
 	if opErr != nil {
-		d.log(LogLevelWarn, "plan_%s error=%v", operation, opErr)
+		h.logFn(LogLevelWarn, "plan_%s error=%v", operation, opErr)
 		switch {
 		case errors.Is(opErr, worktree.ErrNoWorktreeState):
 			return uds.ErrorResponse(uds.ErrCodeNotFound,
@@ -200,8 +207,8 @@ func (a *API) handlePlanWorktreeRecovery(operation string, data json.RawMessage)
 		}
 	}
 
-	d.log(LogLevelInfo, "plan_%s success command=%s", operation, p.CommandID)
-	a.publishQueueWritten("plan_" + operation)
+	h.logFn(LogLevelInfo, "plan_%s success command=%s", operation, p.CommandID)
+	h.publishQueueWritten("plan_" + operation)
 
 	out, _ := json.Marshal(map[string]string{
 		"command_id": p.CommandID,

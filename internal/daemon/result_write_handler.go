@@ -21,6 +21,36 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
+// fallbackRecorder records worker success/failure for health monitoring.
+type fallbackRecorder interface {
+	RecordSuccess(workerID string)
+	RecordFailure(workerID string)
+}
+
+// circuitBreakerUpdater updates circuit breaker counters on result.
+type circuitBreakerUpdater interface {
+	UpdateCounterOnResult(state *model.CommandState, resultStatus model.Status, resultID string, now time.Time) (bool, string)
+	TripBreaker(state *model.CommandState, reason string, now time.Time)
+}
+
+// reviewDispatcher dispatches review requests for completed tasks.
+type reviewDispatcher interface {
+	Enabled() bool
+	DispatchIfEligible(ctx context.Context, params ResultWriteParams)
+}
+
+// ResultWriteAPI handles the "result_write" UDS endpoint.
+type ResultWriteAPI struct {
+	*apiContext
+	// Domain-specific deps (late-bound via closures to support test wiring
+	// where Daemon fields are set after newDaemon returns).
+	fallbackMgr    func() fallbackRecorder
+	circuitBreaker func() circuitBreakerUpdater
+	reviewCoord    func() reviewDispatcher
+	triggerScan    scanTriggerFunc
+	ctx            func() context.Context
+}
+
 // ResultWriteParams is the request payload for the result_write UDS command.
 type ResultWriteParams struct {
 	Reporter               string   `json:"reporter"`
@@ -37,8 +67,7 @@ type ResultWriteParams struct {
 	SkillCandidates        []string `json:"skill_candidates,omitempty"`
 }
 
-func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
-	d := a.d
+func (h *ResultWriteAPI) handleResultWrite(req *uds.Request) *uds.Response {
 	var params ResultWriteParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid params: %v", err))
@@ -73,7 +102,7 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 	}
 
 	// Phase A: Shared file lock + per-worker mutex (results/ + queue/ updates)
-	resultWritePhaseAResult, err := a.resultWritePhaseA(params, resultStatus)
+	resultWritePhaseAResult, err := h.resultWritePhaseA(params, resultStatus)
 	if err != nil {
 		rErr := &resultWriteError{}
 		if errors.As(err, &rErr) {
@@ -84,20 +113,20 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 	resultID := resultWritePhaseAResult.resultID
 
 	// Phase B: Per-command mutex (state/ updates)
-	if err := a.resultWritePhaseB(params, resultID, resultStatus, resultWritePhaseAResult.queueWriteFailed); err != nil {
-		d.log(LogLevelError, "result_write phase_b error task=%s command=%s: %v",
+	if err := h.resultWritePhaseB(params, resultID, resultStatus, resultWritePhaseAResult.queueWriteFailed); err != nil {
+		h.logFn(LogLevelError, "result_write phase_b error task=%s command=%s: %v",
 			params.TaskID, params.CommandID, err)
 		return uds.ErrorResponse(uds.ErrCodeInternal,
 			fmt.Sprintf("state update failed: %v (result %s committed, run 'maestro plan rebuild' to fix)", err, resultID))
 	}
 
 	// Fallback tracking: record success/failure for worker health monitoring.
-	if d.fallbackMgr != nil {
+	if fm := h.fallbackMgr(); fm != nil {
 		switch resultStatus {
 		case model.StatusCompleted:
-			d.fallbackMgr.RecordSuccess(params.Reporter)
+			fm.RecordSuccess(params.Reporter)
 		case model.StatusFailed:
-			d.fallbackMgr.RecordFailure(params.Reporter)
+			fm.RecordFailure(params.Reporter)
 		}
 	}
 
@@ -106,11 +135,11 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 	// state(L2) then queue(L1) does not violate canonical order.
 	if resultWritePhaseAResult.retryTask != nil {
 		retryTask := resultWritePhaseAResult.retryTask
-		retryHandler := NewTaskRetryHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
+		retryHandler := NewTaskRetryHandler(h.maestroDir, *h.config, h.lockMap, h.logger, h.logLevel)
 
 		// First register in state (acquires state lock)
 		if err := retryHandler.RegisterRetryTaskInState(retryTask, params.CommandID); err != nil {
-			d.log(LogLevelError, "register_retry_task_failed task=%s command=%s error=%v", retryTask.ID, params.CommandID, err)
+			h.logFn(LogLevelError, "register_retry_task_failed task=%s command=%s error=%v", retryTask.ID, params.CommandID, err)
 		} else {
 			// Then add to queue (acquires queue lock independently)
 			if err := retryHandler.AddRetryTaskToQueue(retryTask, params.Reporter); err != nil {
@@ -124,15 +153,15 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 				// post-rename failure, we leave the state entry in place and mark
 				// it as RetryEnqueueFailed so the R1 reconciler can either
 				// re-enqueue it or transition it to dead_letter.
-				d.log(LogLevelError, "add_retry_task_failed task=%s worker=%s command=%s error=%v "+
+				h.logFn(LogLevelError, "add_retry_task_failed task=%s worker=%s command=%s error=%v "+
 					"(task registered in state but enqueue failed; R1 reconciler will re-enqueue or mark failed)",
 					retryTask.ID, params.Reporter, params.CommandID, err)
 				if markErr := retryHandler.MarkRetryEnqueueFailed(retryTask.ID, params.Reporter, params.CommandID); markErr != nil {
-					d.log(LogLevelError, "mark_retry_enqueue_failed task=%s command=%s error=%v",
+					h.logFn(LogLevelError, "mark_retry_enqueue_failed task=%s command=%s error=%v",
 						retryTask.ID, params.CommandID, markErr)
 				}
 			} else {
-				d.log(LogLevelInfo, "task_retry_scheduled task=%s retry_id=%s attempt=%d",
+				h.logFn(LogLevelInfo, "task_retry_scheduled task=%s retry_id=%s attempt=%d",
 					params.TaskID, retryTask.ID, retryTask.Attempts)
 			}
 		}
@@ -150,15 +179,15 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 	// disabled config-side, the learnings payload is not "lost" — it was
 	// never going to be written. Skill candidates have no enable flag, so
 	// any skill_candidates payload does count.
-	hasMeaningfulBestEffort := (len(params.Learnings) > 0 && d.config.Learnings.Enabled) ||
+	hasMeaningfulBestEffort := (len(params.Learnings) > 0 && h.config.Learnings.Enabled) ||
 		len(params.SkillCandidates) > 0
 	if hasMeaningfulBestEffort {
-		if skip, reason := a.checkLeaseEpochForBestEffort(params); skip {
-			d.log(LogLevelWarn, "best_effort_writes_skipped task=%s command=%s reason=%s",
+		if skip, reason := h.checkLeaseEpochForBestEffort(params); skip {
+			h.logFn(LogLevelWarn, "best_effort_writes_skipped task=%s command=%s reason=%s",
 				params.TaskID, params.CommandID, reason)
 			bestEffortAllowed = false
-			if id, persisted, perr := a.persistLeaseRejection(params, reason); perr != nil {
-				d.log(LogLevelError,
+			if id, persisted, perr := h.persistLeaseRejection(params, reason); perr != nil {
+				h.logFn(LogLevelError,
 					"lease_rejection_persist_failed task=%s command=%s reporter=%s error=%v "+
 						"(learnings/skill_candidates lost; not recorded in audit trail)",
 					params.TaskID, params.CommandID, params.Reporter, perr)
@@ -167,14 +196,14 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 				// the lock — the advisory read was racing a queue write.
 				// Re-allow the best-effort writes; the loss was a false
 				// positive.
-				d.log(LogLevelInfo,
+				h.logFn(LogLevelInfo,
 					"lease_rejection_recheck_cleared task=%s command=%s reporter=%s "+
 						"(advisory mismatch resolved under lock; best-effort writes re-enabled)",
 					params.TaskID, params.CommandID, params.Reporter)
 				bestEffortAllowed = true
 			} else {
 				rejectionID = id
-				d.log(LogLevelWarn,
+				h.logFn(LogLevelWarn,
 					"lease_rejection_persisted rejection_id=%s task=%s command=%s reporter=%s reason=%s "+
 						"learnings_count=%d skill_candidate_count=%d",
 					rejectionID, params.TaskID, params.CommandID, params.Reporter, reason,
@@ -184,10 +213,10 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 	}
 
 	// Learnings: best-effort write after core phases succeed.
-	if bestEffortAllowed && len(params.Learnings) > 0 && d.config.Learnings.Enabled {
-		learningsPath := filepath.Join(d.maestroDir, "state", "learnings.yaml")
-		if err := a.writeLearnings(params, resultID); err != nil {
-			d.log(LogLevelWarn, "learnings_write_failed result=%s task=%s command=%s path=%s count=%d error=%v "+
+	if bestEffortAllowed && len(params.Learnings) > 0 && h.config.Learnings.Enabled {
+		learningsPath := filepath.Join(h.maestroDir, "state", "learnings.yaml")
+		if err := h.writeLearnings(params, resultID); err != nil {
+			h.logFn(LogLevelWarn, "learnings_write_failed result=%s task=%s command=%s path=%s count=%d error=%v "+
 				"(learnings data lost; core result already committed; manual recovery: re-submit result with same learnings)",
 				resultID, params.TaskID, params.CommandID, learningsPath, len(params.Learnings), err)
 		}
@@ -195,9 +224,9 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 
 	// Skill candidates: best-effort write after core phases succeed.
 	if bestEffortAllowed && len(params.SkillCandidates) > 0 {
-		candidatesPath := filepath.Join(d.maestroDir, "state", "skill_candidates.yaml")
-		if err := a.writeSkillCandidates(params); err != nil {
-			d.log(LogLevelWarn, "skill_candidates_write_failed result=%s task=%s command=%s path=%s count=%d error=%v "+
+		candidatesPath := filepath.Join(h.maestroDir, "state", "skill_candidates.yaml")
+		if err := h.writeSkillCandidates(params); err != nil {
+			h.logFn(LogLevelWarn, "skill_candidates_write_failed result=%s task=%s command=%s path=%s count=%d error=%v "+
 				"(skill candidates lost; core result already committed; manual recovery: re-submit result with same skill_candidates)",
 				resultID, params.TaskID, params.CommandID, candidatesPath, len(params.SkillCandidates), err)
 		}
@@ -205,29 +234,16 @@ func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
 
 	// Advisory review dispatch: non-blocking, best-effort.
 	// Only dispatch for completed tasks when reviews are enabled and the task qualifies.
-	if resultStatus == model.StatusCompleted && d.reviewCoord.Enabled() {
-		d.reviewCoord.DispatchIfEligible(d.ctx, params)
+	if rc := h.reviewCoord(); resultStatus == model.StatusCompleted && rc != nil && rc.Enabled() {
+		rc.DispatchIfEligible(h.ctx(), params)
 	}
 
 	// Phase C: Trigger scan (best effort dependency unblocking).
-	// spawnTracked atomically checks shuttingDown and admits the goroutine to
-	// the errgroup under egMu, closing the race window where Shutdown could
-	// otherwise call eg.Wait() between this caller's check and the eg.Go()
-	// admission. See Daemon.spawnTracked / Shutdown for the synchronization
-	// contract.
-	if d.handler != nil {
-		d.spawnTracked("resultWriteScan", func(ctx context.Context) {
-			if d.eg != nil {
-				d.handler.PeriodicScanWithContext(ctx)
-			} else {
-				// Test/fallback path (Run() not called): preserve historical
-				// behaviour of invoking the no-context variant.
-				d.handler.PeriodicScan()
-			}
-		})
+	if h.triggerScan != nil {
+		h.triggerScan(h.ctx())
 	}
 
-	d.log(LogLevelInfo, "result_write result_id=%s task=%s command=%s status=%s reporter=%s",
+	h.logFn(LogLevelInfo, "result_write result_id=%s task=%s command=%s status=%s reporter=%s",
 		resultID, params.TaskID, params.CommandID, params.Status, params.Reporter)
 	respPayload := map[string]string{"result_id": resultID}
 	if rejectionID != "" {
@@ -254,11 +270,10 @@ type resultWritePhaseAResult struct {
 	queueWriteFailed bool        // true when result was committed but queue terminal write failed (H2 sticky error)
 }
 
-func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Status) (*resultWritePhaseAResult, error) {
-	d := a.d
+func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatus model.Status) (*resultWritePhaseAResult, error) {
 	// Acquire shared file lock to serialize with QueueHandler's PeriodicScan
-	a.acquireFileLock()
-	defer a.releaseFileLock()
+	h.acquireFileLock()
+	defer h.releaseFileLock()
 
 	// Lock queue file first (canonical order: queue → state → result).
 	// Without this, handleQueueWriteTask (which locks "queue:{target}") and
@@ -270,32 +285,32 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 	// (state + queue) is also handled by the caller after phaseA returns,
 	// ensuring the canonical lock order is maintained.
 	queueLockKey := "queue:" + params.Reporter
-	d.lockMap.Lock(queueLockKey)
-	defer d.lockMap.Unlock(queueLockKey)
+	h.lockMap.Lock(queueLockKey)
+	defer h.lockMap.Unlock(queueLockKey)
 
 	workerLockKey := "result:" + params.Reporter
-	d.lockMap.Lock(workerLockKey)
-	defer d.lockMap.Unlock(workerLockKey)
+	h.lockMap.Lock(workerLockKey)
+	defer h.lockMap.Unlock(workerLockKey)
 
 	// 1. Load result file and check idempotency
-	rf, err := a.fileStore.LoadResultFile(params.Reporter)
+	rf, err := h.fileStore.LoadResultFile(params.Reporter)
 	if err != nil {
 		return nil, &resultWriteError{uds.ErrCodeInternal, err.Error()}
 	}
 
-	if idempotentID, err := a.checkResultIdempotency(&rf, params, resultStatus); err != nil {
+	if idempotentID, err := h.checkResultIdempotency(&rf, params, resultStatus); err != nil {
 		return nil, err
 	} else if idempotentID != "" {
 		return &resultWritePhaseAResult{resultID: idempotentID}, nil
 	}
 
 	// 2. Fencing verification
-	tq, err := a.fileStore.LoadQueueFile(params.Reporter)
+	tq, err := h.fileStore.LoadQueueFile(params.Reporter)
 	if err != nil {
 		return nil, &resultWriteError{uds.ErrCodeInternal, err.Error()}
 	}
 
-	taskIdx, idempotentID, err := a.validateFencing(&tq, &rf, params, resultStatus)
+	taskIdx, idempotentID, err := h.validateFencing(&tq, &rf, params, resultStatus)
 	if err != nil {
 		return nil, err
 	}
@@ -304,22 +319,22 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 	}
 
 	// 3. Validate state existence and task registration
-	if err := a.validateStateRegistration(params); err != nil {
+	if err := h.validateStateRegistration(params); err != nil {
 		return nil, err
 	}
 
 	// 4. Append result entry
-	resultID, err := a.appendResultEntry(&rf, params, resultStatus)
+	resultID, err := h.appendResultEntry(&rf, params, resultStatus)
 	if err != nil {
 		return nil, err
 	}
 
 	// 5. Check for retry if task failed
-	retryTask := a.evaluateRetry(&tq.Tasks[taskIdx], params, resultStatus)
+	retryTask := h.evaluateRetry(&tq.Tasks[taskIdx], params, resultStatus)
 
 	// 6. Update queue entry to terminal
-	now := d.clock.Now().UTC().Format(time.RFC3339)
-	queueWriteFailed := a.updateQueueState(&tq, taskIdx, params, resultStatus, resultID, now)
+	now := h.clock.Now().UTC().Format(time.RFC3339)
+	queueWriteFailed := h.updateQueueState(&tq, taskIdx, params, resultStatus, resultID, now)
 
 	return &resultWritePhaseAResult{resultID: resultID, retryTask: retryTask, queueWriteFailed: queueWriteFailed}, nil
 }
@@ -327,7 +342,7 @@ func (a *API) resultWritePhaseA(params ResultWriteParams, resultStatus model.Sta
 // checkResultIdempotency checks whether a result for the given task already
 // exists in the result file. Returns the existing result ID for an idempotent
 // match, "" if no prior result exists, or an error for status conflicts.
-func (a *API) checkResultIdempotency(rf *model.TaskResultFile, params ResultWriteParams, resultStatus model.Status) (string, error) {
+func (h *ResultWriteAPI) checkResultIdempotency(rf *model.TaskResultFile, params ResultWriteParams, resultStatus model.Status) (string, error) {
 	for _, r := range rf.Results {
 		if r.TaskID == params.TaskID {
 			if r.Status == resultStatus {
@@ -345,7 +360,7 @@ func (a *API) checkResultIdempotency(rf *model.TaskResultFile, params ResultWrit
 // (command ID consistency, terminal idempotency, in_progress status, lease
 // epoch, lease ownership). Returns the task index and, for terminal-idempotent
 // matches, the existing result ID (caller should return early).
-func (a *API) validateFencing(tq *model.TaskQueue, rf *model.TaskResultFile, params ResultWriteParams, resultStatus model.Status) (int, string, error) {
+func (h *ResultWriteAPI) validateFencing(tq *model.TaskQueue, rf *model.TaskResultFile, params ResultWriteParams, resultStatus model.Status) (int, string, error) {
 	taskIdx := -1
 	for i, task := range tq.Tasks {
 		if task.ID == params.TaskID {
@@ -406,8 +421,8 @@ func (a *API) validateFencing(tq *model.TaskQueue, rf *model.TaskResultFile, par
 
 // validateStateRegistration verifies that the command state file exists and
 // the task is registered within it.
-func (a *API) validateStateRegistration(params ResultWriteParams) error {
-	preState, err := a.fileStore.LoadCommandState(params.CommandID)
+func (h *ResultWriteAPI) validateStateRegistration(params ResultWriteParams) error {
+	preState, err := h.fileStore.LoadCommandState(params.CommandID)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &resultWriteError{uds.ErrCodeValidation,
@@ -430,7 +445,7 @@ func (a *API) validateStateRegistration(params ResultWriteParams) error {
 
 // appendResultEntry generates a result ID, appends the new result entry to
 // the result file, and persists it to disk via the FileStore.
-func (a *API) appendResultEntry(rf *model.TaskResultFile, params ResultWriteParams, resultStatus model.Status) (string, error) {
+func (h *ResultWriteAPI) appendResultEntry(rf *model.TaskResultFile, params ResultWriteParams, resultStatus model.Status) (string, error) {
 	resultID, err := model.GenerateID(model.IDTypeResult)
 	if err != nil {
 		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("generate result ID: %v", err)}
@@ -441,7 +456,7 @@ func (a *API) appendResultEntry(rf *model.TaskResultFile, params ResultWritePara
 		rf.FileType = "result_task"
 	}
 
-	now := a.d.clock.Now().UTC().Format(time.RFC3339)
+	now := h.clock.Now().UTC().Format(time.RFC3339)
 	rf.Results = append(rf.Results, model.TaskResult{
 		ID:                     resultID,
 		TaskID:                 params.TaskID,
@@ -454,32 +469,31 @@ func (a *API) appendResultEntry(rf *model.TaskResultFile, params ResultWritePara
 		CreatedAt:              now,
 	})
 
-	if err := a.fileStore.SaveResultFile(params.Reporter, *rf); err != nil {
+	if err := h.fileStore.SaveResultFile(params.Reporter, *rf); err != nil {
 		return "", &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("write results file: %v", err)}
 	}
-	a.recordSelfWrite(a.fileStore.ResultFilePath(params.Reporter), *rf)
+	h.recordSelfWrite(h.fileStore.ResultFilePath(params.Reporter), *rf)
 
 	return resultID, nil
 }
 
 // evaluateRetry checks whether a failed task should be retried and creates
 // the retry task if so. Returns nil if no retry is warranted.
-func (a *API) evaluateRetry(queueTask *model.Task, params ResultWriteParams, resultStatus model.Status) *model.Task {
+func (h *ResultWriteAPI) evaluateRetry(queueTask *model.Task, params ResultWriteParams, resultStatus model.Status) *model.Task {
 	if resultStatus != model.StatusFailed || params.ExitCode == nil {
 		return nil
 	}
-	d := a.d
-	retryHandler := NewTaskRetryHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
+	retryHandler := NewTaskRetryHandler(h.maestroDir, *h.config, h.lockMap, h.logger, h.logLevel)
 	shouldRetry, reason := retryHandler.ShouldRetryTask(queueTask, *params.ExitCode, params.RetrySafe)
 
 	if !shouldRetry {
-		d.log(LogLevelInfo, "task_retry_skipped task=%s reason=%s", params.TaskID, reason)
+		h.logFn(LogLevelInfo, "task_retry_skipped task=%s reason=%s", params.TaskID, reason)
 		return nil
 	}
 
 	rt, err := retryHandler.CreateRetryTask(queueTask, params.Reporter, *params.ExitCode)
 	if err != nil {
-		d.log(LogLevelError, "create_retry_task_failed task=%s error=%v", params.TaskID, err)
+		h.logFn(LogLevelError, "create_retry_task_failed task=%s error=%v", params.TaskID, err)
 		return nil
 	}
 	return rt
@@ -488,36 +502,34 @@ func (a *API) evaluateRetry(queueTask *model.Task, params ResultWriteParams, res
 // updateQueueState transitions the queue task to its terminal status and
 // persists the queue file. Returns true if the queue write failed (H2 sticky
 // error scenario).
-func (a *API) updateQueueState(tq *model.TaskQueue, taskIdx int, params ResultWriteParams, resultStatus model.Status, resultID string, now string) bool {
-	d := a.d
+func (h *ResultWriteAPI) updateQueueState(tq *model.TaskQueue, taskIdx int, params ResultWriteParams, resultStatus model.Status, resultID string, now string) bool {
 	queueTask := &tq.Tasks[taskIdx]
 	queueTask.Status = resultStatus
 	queueTask.LeaseOwner = nil
 	queueTask.LeaseExpiresAt = nil
 	queueTask.UpdatedAt = now
 
-	if err := a.fileStore.SaveQueueFile(params.Reporter, *tq); err != nil {
+	if err := h.fileStore.SaveQueueFile(params.Reporter, *tq); err != nil {
 		// Result is already committed — retry queue write once before giving up.
-		d.log(LogLevelWarn, "result_write queue_write_failed task=%s, retrying: %v", params.TaskID, err)
-		if retryErr := a.fileStore.SaveQueueFile(params.Reporter, *tq); retryErr != nil {
-			d.log(LogLevelError, "result_write queue_write_retry_failed task=%s result=%s: %v (sticky error recorded; R1 reconciler will repair)",
+		h.logFn(LogLevelWarn, "result_write queue_write_failed task=%s, retrying: %v", params.TaskID, err)
+		if retryErr := h.fileStore.SaveQueueFile(params.Reporter, *tq); retryErr != nil {
+			h.logFn(LogLevelError, "result_write queue_write_retry_failed task=%s result=%s: %v (sticky error recorded; R1 reconciler will repair)",
 				params.TaskID, resultID, retryErr)
 			return true
 		}
-		a.recordSelfWrite(a.fileStore.QueueFilePath(params.Reporter), *tq)
+		h.recordSelfWrite(h.fileStore.QueueFilePath(params.Reporter), *tq)
 		return false
 	}
-	a.recordSelfWrite(a.fileStore.QueueFilePath(params.Reporter), *tq)
+	h.recordSelfWrite(h.fileStore.QueueFilePath(params.Reporter), *tq)
 	return false
 }
 
-func (a *API) resultWritePhaseB(params ResultWriteParams, resultID string, resultStatus model.Status, queueWriteFailed bool) error {
-	d := a.d
+func (h *ResultWriteAPI) resultWritePhaseB(params ResultWriteParams, resultID string, resultStatus model.Status, queueWriteFailed bool) error {
 	cmdLockKey := "state:" + params.CommandID
-	d.lockMap.Lock(cmdLockKey)
-	defer d.lockMap.Unlock(cmdLockKey)
+	h.lockMap.Lock(cmdLockKey)
+	defer h.lockMap.Unlock(cmdLockKey)
 
-	statePath := filepath.Join(d.maestroDir, "state", "commands", params.CommandID+".yaml")
+	statePath := filepath.Join(h.maestroDir, "state", "commands", params.CommandID+".yaml")
 
 	return updateYAMLFile(statePath, func(state *model.CommandState) error {
 		// Guard: if state was zero-value (file not found), the command state is missing
@@ -553,7 +565,7 @@ func (a *API) resultWritePhaseB(params ResultWriteParams, resultID string, resul
 		existing, hadExisting := state.TaskStates[params.TaskID]
 		planFailedOrCancelled := state.PlanStatus == model.PlanStatusFailed || state.PlanStatus == model.PlanStatusCancelled
 		if planFailedOrCancelled && (!hadExisting || !model.IsTerminal(existing)) {
-			d.log(LogLevelWarn,
+			h.logFn(LogLevelWarn,
 				"result_write late_after_plan_terminal task=%s command=%s plan_status=%s reported=%s coerced=cancelled",
 				params.TaskID, params.CommandID, state.PlanStatus, resultStatus)
 			recordedStatus = model.StatusCancelled
@@ -563,7 +575,7 @@ func (a *API) resultWritePhaseB(params ResultWriteParams, resultID string, resul
 		}
 		state.TaskStates[params.TaskID] = recordedStatus
 
-		now := d.clock.Now()
+		now := h.clock.Now()
 		state.UpdatedAt = now.UTC().Format(time.RFC3339)
 
 		// Task-unit idempotency: if this task already has a result recorded in
@@ -584,16 +596,16 @@ func (a *API) resultWritePhaseB(params ResultWriteParams, resultID string, resul
 			if recordedID != resultID {
 				// State drift: a different result_id is recorded. Skip the CB
 				// update to avoid spurious trips and log for diagnosis.
-				d.log(LogLevelWarn,
+				h.logFn(LogLevelWarn,
 					"result_write applied_result_ids drift task=%s command=%s recorded=%s incoming=%s (skipping CB counter update)",
 					params.TaskID, params.CommandID, recordedID, resultID)
 			}
 		}
 
-		if !alreadyApplied && d.circuitBreaker != nil {
-			tripped, reason := d.circuitBreaker.UpdateCounterOnResult(state, resultStatus, resultID, now)
+		if cb := h.circuitBreaker(); !alreadyApplied && cb != nil {
+			tripped, reason := cb.UpdateCounterOnResult(state, resultStatus, resultID, now)
 			if tripped {
-				d.circuitBreaker.TripBreaker(state, reason, now)
+				cb.TripBreaker(state, reason, now)
 			}
 		}
 
@@ -613,7 +625,7 @@ func (a *API) resultWritePhaseB(params ResultWriteParams, resultID string, resul
 				state.QueueWriteFailed = make(map[string]string)
 			}
 			state.QueueWriteFailed[params.TaskID] = params.Reporter + ":" + resultID
-			d.log(LogLevelWarn,
+			h.logFn(LogLevelWarn,
 				"result_write queue_write_failed_sticky task=%s command=%s worker=%s result=%s",
 				params.TaskID, params.CommandID, params.Reporter, resultID)
 		}
@@ -637,25 +649,23 @@ func (a *API) resultWritePhaseB(params ResultWriteParams, resultID string, resul
 // ("", nil) and the caller should treat best-effort writes as still
 // rejected — the original advisory check has already gated them and we
 // avoid creating a misleading audit record.
-func (a *API) persistLeaseRejection(params ResultWriteParams, advisoryReason string) (string, bool, error) {
-	d := a.d
-
-	a.acquireFileLock()
-	defer a.releaseFileLock()
+func (h *ResultWriteAPI) persistLeaseRejection(params ResultWriteParams, advisoryReason string) (string, bool, error) {
+	h.acquireFileLock()
+	defer h.releaseFileLock()
 
 	queueLockKey := "queue:" + params.Reporter
-	d.lockMap.Lock(queueLockKey)
-	defer d.lockMap.Unlock(queueLockKey)
+	h.lockMap.Lock(queueLockKey)
+	defer h.lockMap.Unlock(queueLockKey)
 
 	resultLockKey := "result:" + params.Reporter
-	d.lockMap.Lock(resultLockKey)
-	defer d.lockMap.Unlock(resultLockKey)
+	h.lockMap.Lock(resultLockKey)
+	defer h.lockMap.Unlock(resultLockKey)
 
 	// Re-verify lease epoch mismatch authoritatively under the queue lock.
 	// If the queue file is unreadable / parse-fails / task is gone, fall
 	// back to the advisory reason captured by the caller — the data is
 	// still considered lost.
-	queuePath := filepath.Join(d.maestroDir, "queue", params.Reporter+".yaml")
+	queuePath := filepath.Join(h.maestroDir, "queue", params.Reporter+".yaml")
 	queueLeaseEpoch := -1
 	authoritativeReason := advisoryReason
 	if data, err := os.ReadFile(queuePath); err == nil { //nolint:gosec // queuePath is constructed from a controlled application queue directory
@@ -684,7 +694,7 @@ func (a *API) persistLeaseRejection(params ResultWriteParams, advisoryReason str
 		}
 	}
 
-	resultPath := filepath.Join(d.maestroDir, "results", params.Reporter+".yaml")
+	resultPath := filepath.Join(h.maestroDir, "results", params.Reporter+".yaml")
 	var rf model.TaskResultFile
 	if data, err := os.ReadFile(resultPath); err == nil { //nolint:gosec // resultPath is constructed from a controlled application results directory
 		if perr := yamlv3.Unmarshal(data, &rf); perr != nil {
@@ -734,13 +744,13 @@ func (a *API) persistLeaseRejection(params ResultWriteParams, advisoryReason str
 		LostSkillCandidates: lostSkills,
 		OriginalSummary:     params.Summary,
 		DedupKey:            dedupKey,
-		CreatedAt:           d.clock.Now().UTC().Format(time.RFC3339),
+		CreatedAt:           h.clock.Now().UTC().Format(time.RFC3339),
 	})
 
 	if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
 		return "", false, fmt.Errorf("write results file: %w", err)
 	}
-	a.recordSelfWrite(resultPath, rf)
+	h.recordSelfWrite(resultPath, rf)
 	return rejectionID, true, nil
 }
 
@@ -770,9 +780,8 @@ func computeRejectionDedupKey(params ResultWriteParams, queueLeaseEpoch int) str
 // the queue file. Returns (skip=true, reason) only on definitive epoch mismatch.
 // On I/O errors, parse errors, or task-not-found (task may have been archived
 // after completion), returns (skip=false, "") to allow writes to proceed.
-func (a *API) checkLeaseEpochForBestEffort(params ResultWriteParams) (skip bool, reason string) {
-	d := a.d
-	queuePath := filepath.Join(d.maestroDir, "queue", params.Reporter+".yaml")
+func (h *ResultWriteAPI) checkLeaseEpochForBestEffort(params ResultWriteParams) (skip bool, reason string) {
+	queuePath := filepath.Join(h.maestroDir, "queue", params.Reporter+".yaml")
 	data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 	if err != nil {
 		return false, ""
@@ -795,17 +804,16 @@ func (a *API) checkLeaseEpochForBestEffort(params ResultWriteParams) (skip bool,
 
 // writeLearnings appends learning entries to .maestro/state/learnings.yaml.
 // Best-effort: errors are logged but do not fail the result_write.
-func (a *API) writeLearnings(params ResultWriteParams, resultID string) error {
-	d := a.d
+func (h *ResultWriteAPI) writeLearnings(params ResultWriteParams, resultID string) error {
 	// Lock order: leaf lock under the state:* namespace. See doc.go — must
 	// be acquired in isolation (no state:{commandID} held). Phase B has
 	// already released state:{commandID} by the time this is called.
-	d.lockMap.Lock("state:learnings")
-	defer d.lockMap.Unlock("state:learnings")
+	h.lockMap.Lock("state:learnings")
+	defer h.lockMap.Unlock("state:learnings")
 
-	learningsPath := filepath.Join(d.maestroDir, "state", "learnings.yaml")
-	maxEntries := d.config.Learnings.EffectiveMaxEntries()
-	maxLen := d.config.Learnings.EffectiveMaxContentLength()
+	learningsPath := filepath.Join(h.maestroDir, "state", "learnings.yaml")
+	maxEntries := h.config.Learnings.EffectiveMaxEntries()
+	maxLen := h.config.Learnings.EffectiveMaxContentLength()
 
 	// Load existing file
 	var lf model.LearningsFile
@@ -813,8 +821,8 @@ func (a *API) writeLearnings(params ResultWriteParams, resultID string) error {
 	if err == nil {
 		if err := yamlv3.Unmarshal(data, &lf); err != nil {
 			// Corrupt file — recover via quarantine
-			d.log(LogLevelWarn, "learnings_file_corrupt, recovering: %v", err)
-			if recErr := yamlutil.RecoverCorruptedFile(d.maestroDir, learningsPath, "state_learnings"); recErr != nil {
+			h.logFn(LogLevelWarn, "learnings_file_corrupt, recovering: %v", err)
+			if recErr := yamlutil.RecoverCorruptedFile(h.maestroDir, learningsPath, "state_learnings"); recErr != nil {
 				return fmt.Errorf("recover learnings file: %w", recErr)
 			}
 			// Re-read the recovered file (may have been restored from .bak)
@@ -846,7 +854,7 @@ func (a *API) writeLearnings(params ResultWriteParams, resultID string) error {
 		existing[dedupKey{l.ResultID, l.Content}] = true
 	}
 
-	now := d.clock.Now().UTC().Format(time.RFC3339)
+	now := h.clock.Now().UTC().Format(time.RFC3339)
 	added := 0
 	for _, content := range params.Learnings {
 		if content == "" {
@@ -882,7 +890,7 @@ func (a *API) writeLearnings(params ResultWriteParams, resultID string) error {
 		return fmt.Errorf("write learnings file: %w", err)
 	}
 
-	d.log(LogLevelInfo, "learnings_written result=%s added=%d total=%d", resultID, added, len(lf.Learnings))
+	h.logFn(LogLevelInfo, "learnings_written result=%s added=%d total=%d", resultID, added, len(lf.Learnings))
 	return nil
 }
 
@@ -897,16 +905,15 @@ func truncateRunes(s string, maxRunes int) string {
 
 // writeSkillCandidates merges skill candidate entries into .maestro/state/skill_candidates.yaml.
 // Best-effort: errors are logged but do not fail the result_write.
-func (a *API) writeSkillCandidates(params ResultWriteParams) error {
-	d := a.d
+func (h *ResultWriteAPI) writeSkillCandidates(params ResultWriteParams) error {
 	// Lock order: leaf lock under the state:* namespace. See doc.go — must
 	// be acquired in isolation (no state:{commandID} held). Phase B has
 	// already released state:{commandID} by the time this is called.
-	d.lockMap.Lock("state:skill_candidates")
-	defer d.lockMap.Unlock("state:skill_candidates")
+	h.lockMap.Lock("state:skill_candidates")
+	defer h.lockMap.Unlock("state:skill_candidates")
 
-	candidatesPath := filepath.Join(d.maestroDir, "state", "skill_candidates.yaml")
-	now := d.clock.Now().UTC().Format(time.RFC3339)
+	candidatesPath := filepath.Join(h.maestroDir, "state", "skill_candidates.yaml")
+	now := h.clock.Now().UTC().Format(time.RFC3339)
 
 	candidates, err := skill.ReadCandidates(candidatesPath)
 	if err != nil {
@@ -925,7 +932,7 @@ func (a *API) writeSkillCandidates(params ResultWriteParams) error {
 		before := len(candidates)
 		candidates, err = skill.AddOrUpdateCandidate(candidates, content, params.CommandID, now, idFunc)
 		if err != nil {
-			d.log(LogLevelError, "skill_candidate_add_failed content=%q: %v", content, err)
+			h.logFn(LogLevelError, "skill_candidate_add_failed content=%q: %v", content, err)
 			continue
 		}
 		if len(candidates) > before {
@@ -937,7 +944,7 @@ func (a *API) writeSkillCandidates(params ResultWriteParams) error {
 		return fmt.Errorf("write skill candidates: %w", err)
 	}
 
-	d.log(LogLevelInfo, "skill_candidates_written command=%s added=%d total=%d", params.CommandID, added, len(candidates))
+	h.logFn(LogLevelInfo, "skill_candidates_written command=%s added=%d total=%d", params.CommandID, added, len(candidates))
 	return nil
 }
 
