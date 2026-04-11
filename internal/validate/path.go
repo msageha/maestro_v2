@@ -47,6 +47,15 @@ func ProjectName(name string) error {
 	return nil
 }
 
+// ContentLength checks that a text field does not exceed maxBytes when
+// encoded as UTF-8. Returns an error describing the field name and the limit.
+func ContentLength(field, value string, maxBytes int) error {
+	if len(value) > maxBytes {
+		return fmt.Errorf("validate: %s exceeds maximum size of %d bytes (got %d bytes)", field, maxBytes, len(value))
+	}
+	return nil
+}
+
 // FilePath checks that a file path is safe: non-empty, no null bytes,
 // no directory traversal (".."), and cleaned. Returns the cleaned path.
 func FilePath(path string) (string, error) {

@@ -61,6 +61,34 @@ func TestRunTaskHeartbeat_FlagParsing(t *testing.T) {
 	}
 }
 
+func TestRunTaskHeartbeat_InvalidTaskID(t *testing.T) {
+	err := newCLIApp().runTaskHeartbeat([]string{"--task-id", "../evil", "--worker-id", "w1"})
+	if err == nil {
+		t.Fatal("expected error for invalid task-id")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !strings.Contains(ce.Msg, "invalid --task-id") {
+		t.Errorf("expected 'invalid --task-id' in error, got: %s", ce.Msg)
+	}
+}
+
+func TestRunTaskHeartbeat_InvalidWorkerID(t *testing.T) {
+	err := newCLIApp().runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "../evil"})
+	if err == nil {
+		t.Fatal("expected error for invalid worker-id")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !strings.Contains(ce.Msg, "invalid --worker-id") {
+		t.Errorf("expected 'invalid --worker-id' in error, got: %s", ce.Msg)
+	}
+}
+
 func TestRunTaskHeartbeat_UDSSuccess(t *testing.T) {
 	withMaestroDir(t)
 	app := newTestApp(&mockUDSClient{
