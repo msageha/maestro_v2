@@ -87,9 +87,14 @@ func runPlanSubmit(args []string) error {
 		return err
 	}
 
-	// If reading from stdin, materialize to a temp file so the daemon can read it
-	// (daemon's stdin is not the CLI's stdin when using UDS)
-	actualFile := tasksFile
+	// Build submit data. When reading from stdin, pass YAML inline via
+	// tasks_data to avoid a temp-file race where the CLI could remove the
+	// file before the daemon finishes reading it.
+	dataMap := map[string]any{
+		"command_id": commandID,
+		"phase_name": phaseName,
+		"dry_run":    dryRun,
+	}
 	if tasksFile == "-" || tasksFile == "/dev/stdin" {
 		data, err := io.ReadAll(io.LimitReader(os.Stdin, int64(model.DefaultMaxYAMLFileBytes)+1))
 		if err != nil {
@@ -98,31 +103,14 @@ func runPlanSubmit(args []string) error {
 		if len(data) > model.DefaultMaxYAMLFileBytes {
 			return fmt.Errorf("maestro plan submit: stdin input exceeds maximum size of %d bytes", model.DefaultMaxYAMLFileBytes)
 		}
-		tmpDir := filepath.Join(maestroDir, "tmp")
-		if err := os.MkdirAll(tmpDir, 0700); err != nil {
-			return fmt.Errorf("maestro plan submit: create temp directory: %w", err)
-		}
-		tmpFile, err := os.CreateTemp(tmpDir, "maestro-plan-submit-*.yaml")
-		if err != nil {
-			return fmt.Errorf("maestro plan submit: create temp file: %w", err)
-		}
-		defer func() { _ = os.Remove(tmpFile.Name()) }()
-		if _, err := tmpFile.Write(data); err != nil {
-			_ = tmpFile.Close()
-			return fmt.Errorf("maestro plan submit: write temp file: %w", err)
-		}
-		_ = tmpFile.Close()
-		actualFile = tmpFile.Name()
+		dataMap["tasks_data"] = string(data)
+	} else {
+		dataMap["tasks_file"] = tasksFile
 	}
 
 	params := map[string]any{
 		"operation": "submit",
-		"data": map[string]any{
-			"command_id": commandID,
-			"tasks_file": actualFile,
-			"phase_name": phaseName,
-			"dry_run":    dryRun,
-		},
+		"data":      dataMap,
 	}
 
 	return sendPlanCommand("plan submit", maestroDir, params)

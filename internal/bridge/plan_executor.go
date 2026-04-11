@@ -36,6 +36,7 @@ func parseAndExecute[P any, R any](op string, data []byte, execute func(P) (R, e
 type submitParams struct {
 	CommandID string `json:"command_id"`
 	TasksFile string `json:"tasks_file"`
+	TasksData string `json:"tasks_data,omitempty"`
 	PhaseName string `json:"phase_name"`
 	DryRun    bool   `json:"dry_run"`
 }
@@ -46,6 +47,7 @@ func (pe *PlanExecutorImpl) Submit(params json.RawMessage) (json.RawMessage, err
 		return plan.Submit(plan.SubmitOptions{
 			CommandID:  p.CommandID,
 			TasksFile:  p.TasksFile,
+			TasksData:  []byte(p.TasksData),
 			PhaseName:  p.PhaseName,
 			DryRun:     p.DryRun,
 			MaestroDir: pe.MaestroDir,
