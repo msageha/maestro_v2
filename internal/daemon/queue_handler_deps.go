@@ -13,6 +13,7 @@ var (
 	_ QueueDispatcher         = (*Dispatcher)(nil)
 	_ QueueDependencyResolver = (*DependencyResolver)(nil)
 	_ QueueWorktreeManager    = (*WorktreeManager)(nil)
+	_ QueueStore              = (*QueueStoreImpl)(nil)
 	_ ExecutorGetter          = (*ExecutorProvider)(nil)
 	_ ContinuousAdvancer      = (*ContinuousHandler)(nil)
 	_ EventPublisher          = (*events.Bus)(nil)
@@ -115,6 +116,34 @@ type QueueDependencyResolver interface {
 	HasStateReader() bool
 	GetStateReader() StateReader
 	GetStateManager() StateManager
+}
+
+// ---------------------------------------------------------------------------
+// QueueStore: split into QueueStoreReader + QueueStoreWriter
+// ---------------------------------------------------------------------------
+
+// QueueStoreReader provides read-only queue file loading operations.
+type QueueStoreReader interface {
+	LoadCommandQueue() (model.CommandQueue, string)
+	LoadAllTaskQueues() map[string]*taskQueueEntry
+	LoadNotificationQueue() (model.NotificationQueue, string)
+	LoadPlannerSignalQueue() (model.PlannerSignalQueue, string)
+}
+
+// QueueStoreWriter provides queue file flush operations.
+type QueueStoreWriter interface {
+	FlushQueues(
+		commandQueue model.CommandQueue, commandPath string, commandsDirty bool,
+		taskQueues map[string]*taskQueueEntry, taskDirty map[string]bool,
+		notificationQueue model.NotificationQueue, notificationPath string, notificationsDirty bool,
+		signalQueue model.PlannerSignalQueue, signalPath string, signalsDirty bool,
+	)
+}
+
+// QueueStore combines QueueStoreReader and QueueStoreWriter for queue file I/O.
+type QueueStore interface {
+	QueueStoreReader
+	QueueStoreWriter
 }
 
 // ---------------------------------------------------------------------------
