@@ -24,7 +24,7 @@ func runWorker(args []string) error {
 func runWorkerStandby(args []string) error {
 	cmd := NewCommand("maestro worker standby", "maestro worker standby [--model <model>]")
 	var modelFilter string
-	cmd.StringVar(&modelFilter, "model", "", "")
+	cmd.StringVar(&modelFilter, "model", "", "Filter workers by model name")
 
 	if err := cmd.Parse(args); err != nil {
 		return err

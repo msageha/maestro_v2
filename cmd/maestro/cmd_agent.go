@@ -46,13 +46,13 @@ func runAgentExec(args []string) error {
 	cmd := NewCommand("maestro agent exec", "maestro agent exec --agent-id <id> [--mode <mode>] [--message <msg>]")
 	var agentID, message string
 	mode := "deliver"
-	cmd.RequiredString(&agentID, "agent-id", "")
-	cmd.StringVar(&message, "message", "", "")
-	cmd.StringVar(&mode, "mode", "deliver", "")
-	cmd.Var(&modeSetter{target: &mode, val: "with_clear"}, "with-clear", "")
-	cmd.Var(&modeSetter{target: &mode, val: "interrupt"}, "interrupt", "")
-	cmd.Var(&modeSetter{target: &mode, val: "is_busy"}, "is-busy", "")
-	cmd.Var(&modeSetter{target: &mode, val: "clear"}, "clear", "")
+	cmd.RequiredString(&agentID, "agent-id", "Target agent ID")
+	cmd.StringVar(&message, "message", "", "Message to send to the agent")
+	cmd.StringVar(&mode, "mode", "deliver", "Delivery mode (deliver|with_clear|interrupt|is_busy|clear)")
+	cmd.Var(&modeSetter{target: &mode, val: "with_clear"}, "with-clear", "Set mode to with_clear (clear then deliver)")
+	cmd.Var(&modeSetter{target: &mode, val: "interrupt"}, "interrupt", "Set mode to interrupt")
+	cmd.Var(&modeSetter{target: &mode, val: "is_busy"}, "is-busy", "Set mode to is_busy (check if agent is busy)")
+	cmd.Var(&modeSetter{target: &mode, val: "clear"}, "clear", "Set mode to clear")
 
 	if err := cmd.Parse(args); err != nil {
 		return err

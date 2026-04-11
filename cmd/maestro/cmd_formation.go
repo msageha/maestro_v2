@@ -47,12 +47,12 @@ func precheckGitRepo(projectRoot, baseBranch string) error {
 func runUp(args []string) error {
 	cmd := NewCommand("maestro up", "maestro up [--boost] [--continuous] [--detach|-d] [--force|-f]")
 	var boost, continuous, detach, force bool
-	cmd.BoolVar(&boost, "boost", false, "")
-	cmd.BoolVar(&continuous, "continuous", false, "")
-	cmd.BoolVar(&detach, "detach", false, "")
-	cmd.BoolVar(&detach, "d", false, "")
-	cmd.BoolVar(&force, "force", false, "")
-	cmd.BoolVar(&force, "f", false, "")
+	cmd.BoolVar(&boost, "boost", false, "Enable boost mode for faster execution")
+	cmd.BoolVar(&continuous, "continuous", false, "Run in continuous mode")
+	cmd.BoolVar(&detach, "detach", false, "Run in background without attaching to tmux")
+	cmd.BoolVar(&detach, "d", false, "Shorthand for --detach")
+	cmd.BoolVar(&force, "force", false, "Force start even if formation is already running")
+	cmd.BoolVar(&force, "f", false, "Shorthand for --force")
 	if err := cmd.Parse(args); err != nil {
 		return err
 	}

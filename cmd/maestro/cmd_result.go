@@ -37,16 +37,16 @@ func (a *cliApp) runResultWrite(args []string) error {
 	var filesChanged, learnings, skillCandidates stringSliceFlag
 	var partialChangesPossible, noRetrySafe bool
 
-	cmd.StringVar(&taskID, "task-id", "", "")
-	cmd.StringVar(&commandID, "command-id", "", "")
-	cmd.IntVar(&leaseEpoch, "lease-epoch", -1, "")
-	cmd.StringVar(&resultStatus, "status", "", "")
-	cmd.StringVar(&summary, "summary", "", "")
-	cmd.Var(&filesChanged, "files-changed", "")
-	cmd.Var(&learnings, "learnings", "")
-	cmd.Var(&skillCandidates, "skill-candidates", "")
-	cmd.BoolVar(&partialChangesPossible, "partial-changes", false, "")
-	cmd.BoolVar(&noRetrySafe, "no-retry-safe", false, "")
+	cmd.StringVar(&taskID, "task-id", "", "Task ID to report result for")
+	cmd.StringVar(&commandID, "command-id", "", "Parent command ID")
+	cmd.IntVar(&leaseEpoch, "lease-epoch", -1, "Lease epoch number for fencing")
+	cmd.StringVar(&resultStatus, "status", "", "Result status: completed or failed")
+	cmd.StringVar(&summary, "summary", "", "Result summary text")
+	cmd.Var(&filesChanged, "files-changed", "Changed file path (repeatable)")
+	cmd.Var(&learnings, "learnings", "Learning insight for other tasks (repeatable)")
+	cmd.Var(&skillCandidates, "skill-candidates", "Skill candidate to report (repeatable)")
+	cmd.BoolVar(&partialChangesPossible, "partial-changes", false, "Partial changes remain in repo")
+	cmd.BoolVar(&noRetrySafe, "no-retry-safe", false, "Mark task as not safe to retry")
 
 	cmd.AddCheck("--task-id, --command-id, --lease-epoch, and --status are required", func() bool {
 		return taskID != "" && commandID != "" && resultStatus != "" && leaseEpoch >= 0
