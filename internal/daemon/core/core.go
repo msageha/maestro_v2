@@ -191,41 +191,23 @@ type PhaseInfo struct {
 // Executor
 // ---------------------------------------------------------------------------
 
-// ExecMode represents the agent execution mode.
-type ExecMode string
+// Deprecated: Use model.ExecMode directly.
+type ExecMode = model.ExecMode
 
+// Deprecated: Use model constants directly.
 const (
-	// ModeDeliver sends a message with busy check (used by Planner/Orchestrator).
-	ModeDeliver ExecMode = "deliver"
-	// ModeWithClear sends /clear before delivery (used by Workers).
-	ModeWithClear ExecMode = "with_clear"
-	// ModeInterrupt interrupts a running task.
-	ModeInterrupt ExecMode = "interrupt"
-	// ModeIsBusy queries the busy state without delivering.
-	ModeIsBusy ExecMode = "is_busy"
-	// ModeClear resets context without delivery.
-	ModeClear ExecMode = "clear"
+	ModeDeliver   = model.ModeDeliver
+	ModeWithClear = model.ModeWithClear
+	ModeInterrupt = model.ModeInterrupt
+	ModeIsBusy    = model.ModeIsBusy
+	ModeClear     = model.ModeClear
 )
 
-// ExecRequest contains parameters for executing a message delivery.
-type ExecRequest struct {
-	Context    context.Context // nil defaults to context.Background()
-	AgentID    string
-	Message    string
-	Mode       ExecMode
-	TaskID     string
-	CommandID  string
-	LeaseEpoch int
-	Attempt    int
-	WorkingDir string // Target working directory (worktree mode). Empty = no change.
-}
+// Deprecated: Use model.ExecRequest directly.
+type ExecRequest = model.ExecRequest
 
-// ExecResult contains the outcome of an execution attempt.
-type ExecResult struct {
-	Success   bool
-	Retryable bool
-	Error     error
-}
+// Deprecated: Use model.ExecResult directly.
+type ExecResult = model.ExecResult
 
 // ExecutorFactory creates agent executors. Allows testing without tmux.
 type ExecutorFactory func(maestroDir string, watcherCfg model.WatcherConfig, logLevel string) (AgentExecutor, error)
