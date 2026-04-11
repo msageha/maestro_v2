@@ -69,17 +69,20 @@ const (
 	TaskIDCallerPlannerRetry TaskIDCaller = "planner-retry"
 	// TaskIDCallerDaemonRetry — Daemon TaskRetryHandler (automatic retry).
 	TaskIDCallerDaemonRetry TaskIDCaller = "daemon-retry-handler"
+	// TaskIDCallerDaemonConflictResolution — Daemon R7 reconciler (conflict resolution dispatch).
+	TaskIDCallerDaemonConflictResolution TaskIDCaller = "daemon-conflict-resolution"
 	// TaskIDCallerSystemInternal — internal/test entrypoint for queue_write
 	// task path. NOT exposed via the maestro CLI.
 	TaskIDCallerSystemInternal TaskIDCaller = "system-internal"
 )
 
 var validTaskIDCallers = map[TaskIDCaller]bool{
-	TaskIDCallerPlannerSubmit:       true,
-	TaskIDCallerPlannerSystemCommit: true,
-	TaskIDCallerPlannerRetry:        true,
-	TaskIDCallerDaemonRetry:         true,
-	TaskIDCallerSystemInternal:      true,
+	TaskIDCallerPlannerSubmit:            true,
+	TaskIDCallerPlannerSystemCommit:      true,
+	TaskIDCallerPlannerRetry:             true,
+	TaskIDCallerDaemonRetry:              true,
+	TaskIDCallerDaemonConflictResolution: true,
+	TaskIDCallerSystemInternal:           true,
 }
 
 // NewTaskID is the single, audited entrypoint for minting task IDs. The
