@@ -865,7 +865,7 @@ func TestCommitPolicyConfig_EffectiveMaxFiles(t *testing.T) {
 		value *int
 		want  int
 	}{
-		{"nil returns default 30", nil, 30},
+		{"nil returns default 60", nil, 60},
 		{"zero returns 0", IntPtr(0), 0},
 		{"negative returns -1", IntPtr(-1), -1},
 		{"positive returns configured", IntPtr(50), 50},
