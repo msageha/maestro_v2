@@ -16,19 +16,14 @@ import (
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil"
+	"github.com/msageha/maestro_v2/internal/testutil/mocks"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 func setupTestMaestroDir(t *testing.T) string {
 	t.Helper()
-	tmpDir := t.TempDir()
-	maestroDir := filepath.Join(tmpDir, ".maestro")
-	for _, sub := range []string{"queue", "results", "logs"} {
-		if err := os.MkdirAll(filepath.Join(maestroDir, sub), 0755); err != nil {
-			t.Fatalf("create %s: %v", sub, err)
-		}
-	}
-	return maestroDir
+	return testutil.SetupDir(t)
 }
 
 // newTestExecutorProvider creates a no-op ExecutorProvider for tests.
@@ -53,7 +48,7 @@ func newTestQueueHandler(maestroDir string, opts ...QueueHandlerOption) *QueueHa
 	qh := NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, opts...)
 	// Use mock executor to avoid tmux dependency
 	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
-		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
 	})
 	return qh
 }
@@ -669,7 +664,7 @@ func TestQueueHandler_DispatchFailure_Rollback(t *testing.T) {
 
 	// Mock executor that fails dispatch
 	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
-		return &mockExecutor{result: agent.ExecResult{
+		return &mocks.MockExecutor{Result: agent.ExecResult{
 			Success:   false,
 			Error:     fmt.Errorf("tmux pane not found"),
 			Retryable: true,

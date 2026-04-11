@@ -11,6 +11,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -31,35 +32,7 @@ func testConfig() model.Config {
 
 func setupMaestroDir(t *testing.T) string {
 	t.Helper()
-	base := t.TempDir()
-	maestroDir := filepath.Join(base, ".maestro")
-
-	dirs := []string{
-		filepath.Join(maestroDir, "queue"),
-		filepath.Join(maestroDir, "results"),
-		filepath.Join(maestroDir, "state", "commands"),
-		filepath.Join(maestroDir, "logs"),
-	}
-	for _, d := range dirs {
-		if err := os.MkdirAll(d, 0755); err != nil {
-			t.Fatalf("mkdir %s: %v", d, err)
-		}
-	}
-
-	// Create empty worker queue files (1-indexed to match setup convention)
-	for i := 1; i <= 2; i++ {
-		tq := model.TaskQueue{
-			SchemaVersion: 1,
-			FileType:      "queue_task",
-			Tasks:         []model.Task{},
-		}
-		queueFile := filepath.Join(maestroDir, "queue", fmt.Sprintf("worker%d.yaml", i))
-		if err := yamlutil.AtomicWrite(queueFile, tq); err != nil {
-			t.Fatalf("write worker queue %d: %v", i, err)
-		}
-	}
-
-	return maestroDir
+	return testutil.SetupDirWithQueues(t, 2)
 }
 
 func workerQueueFilename(index int) string {

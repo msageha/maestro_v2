@@ -15,6 +15,8 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil"
+	"github.com/msageha/maestro_v2/internal/testutil/mocks"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -42,27 +44,9 @@ func (m *mockResultNotifier) WriteNotificationToOrchestratorQueue(resultID, comm
 	return m.err
 }
 
-type mockExecutor struct {
-	calls  []agent.ExecRequest
-	result agent.ExecResult
-}
-
-func (m *mockExecutor) Execute(req agent.ExecRequest) agent.ExecResult {
-	m.calls = append(m.calls, req)
-	return m.result
-}
-func (m *mockExecutor) Close() error { return nil }
-
 func setupTestDir(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	maestroDir := filepath.Join(dir, ".maestro")
-	for _, sub := range []string{"queue", "results", "state/commands", "logs"} {
-		if err := os.MkdirAll(filepath.Join(maestroDir, sub), 0755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return maestroDir
+	return testutil.SetupDir(t)
 }
 
 func newTestDeps(t *testing.T, maestroDir string) Deps {
@@ -229,7 +213,7 @@ func TestEngine_ExecuteDeferredNotifications_NilFactory(t *testing.T) {
 func TestEngine_ExecuteDeferredNotifications_AllKinds(t *testing.T) {
 	t.Parallel()
 	deps := newTestDeps(t, setupTestDir(t))
-	exec := &mockExecutor{result: agent.ExecResult{Success: true}}
+	exec := &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}
 	deps.ExecutorFactory = func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
 		return exec, nil
 	}
@@ -240,8 +224,8 @@ func TestEngine_ExecuteDeferredNotifications_AllKinds(t *testing.T) {
 		{Kind: NotifyFillTimeout, CommandID: "cmd3", TimedOutPhases: map[string]bool{"p1": true}},
 		{Kind: "unknown_kind", CommandID: "cmd4"},
 	})
-	if len(exec.calls) != 3 {
-		t.Errorf("expected 3 executor calls (unknown skipped), got %d", len(exec.calls))
+	if len(exec.Calls) != 3 {
+		t.Errorf("expected 3 executor calls (unknown skipped), got %d", len(exec.Calls))
 	}
 }
 
@@ -541,7 +525,7 @@ func TestR0bFillingStuck_GeneratesNotification(t *testing.T) {
 
 	// Set executor factory to trigger notification
 	deps.ExecutorFactory = func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
-		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
 	}
 
 	oldTime := now.Add(-10 * time.Minute).Format(time.RFC3339)
@@ -1904,7 +1888,7 @@ func TestR6FillTimeout_MultipleTimedOutPhases(t *testing.T) {
 	now := time.Now().UTC()
 	setClock(&deps, now)
 	deps.ExecutorFactory = func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
-		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
 	}
 
 	pastDeadline := now.Add(-1 * time.Hour).Format(time.RFC3339)

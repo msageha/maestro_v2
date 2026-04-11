@@ -8,23 +8,13 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 func setupTestMaestroDir(t *testing.T) string {
 	t.Helper()
-	tmpDir := t.TempDir()
-	maestroDir := filepath.Join(tmpDir, ".maestro")
-	dirs := []string{
-		"queue", "results", "state/commands", "logs",
-		"dead_letters", "quarantine", "locks",
-	}
-	for _, d := range dirs {
-		if err := os.MkdirAll(filepath.Join(maestroDir, d), 0755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return maestroDir
+	return testutil.SetupDir(t)
 }
 
 func writeConfig(t *testing.T, maestroDir string, cfg model.Config) {

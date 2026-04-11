@@ -13,6 +13,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil/mocks"
 )
 
 // TestEventHookIntegration verifies that event hooks are published correctly
@@ -74,8 +75,8 @@ func TestEventHookIntegration(t *testing.T) {
 		dispatcher.SetEventBus(bus)
 
 		// Use mock executor
-		mockExec := &MockExecutor{
-			executeResult: agent.ExecResult{Error: nil, Retryable: false},
+		mockExec := &mocks.MockExecutor{
+			Result: agent.ExecResult{Error: nil, Retryable: false},
 		}
 		ep.SetFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 			return mockExec, nil
@@ -133,8 +134,8 @@ func TestEventHookIntegration(t *testing.T) {
 		dispatcher.SetEventBus(bus)
 
 		// Use mock executor
-		mockExec := &MockExecutor{
-			executeResult: agent.ExecResult{Error: nil, Retryable: false},
+		mockExec := &mocks.MockExecutor{
+			Result: agent.ExecResult{Error: nil, Retryable: false},
 		}
 		ep2.SetFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 			return mockExec, nil
@@ -177,8 +178,8 @@ func TestEventHookIntegration(t *testing.T) {
 		dispatcher := NewDispatcher(maestroDir, cfg, nil, logger, LogLevelInfo, ep3, RealClock{})
 		// Do NOT set event bus
 
-		mockExec := &MockExecutor{
-			executeResult: agent.ExecResult{Error: nil, Retryable: false},
+		mockExec := &mocks.MockExecutor{
+			Result: agent.ExecResult{Error: nil, Retryable: false},
 		}
 		ep3.SetFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
 			return mockExec, nil
@@ -230,15 +231,3 @@ func TestEventHookPerformance(t *testing.T) {
 	}
 }
 
-// MockExecutor for testing - implements AgentExecutor interface
-type MockExecutor struct {
-	executeResult agent.ExecResult
-}
-
-func (m *MockExecutor) Execute(req agent.ExecRequest) agent.ExecResult {
-	return m.executeResult
-}
-
-func (m *MockExecutor) Close() error {
-	return nil
-}

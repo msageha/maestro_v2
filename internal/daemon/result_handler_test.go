@@ -15,10 +15,11 @@ import (
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil/mocks"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
-func newTestResultHandler(maestroDir string) (*ResultHandler, *mockExecutor) {
+func newTestResultHandler(maestroDir string) (*ResultHandler, *mocks.MockExecutor) {
 	cfg := model.Config{
 		Watcher: model.WatcherConfig{NotifyLeaseSec: 120},
 	}
@@ -26,7 +27,7 @@ func newTestResultHandler(maestroDir string) (*ResultHandler, *mockExecutor) {
 	ep := newTestExecutorProvider(maestroDir, cfg)
 	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, ep, RealClock{})
 
-	mock := &mockExecutor{result: agent.ExecResult{Success: true}}
+	mock := &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}
 	ep.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return mock, nil
 	})
@@ -63,10 +64,10 @@ func TestResultHandler_WorkerNotification_Basic(t *testing.T) {
 	}
 
 	// Verify executor was called with correct message
-	if len(mock.calls) != 1 {
-		t.Fatalf("expected 1 executor call, got %d", len(mock.calls))
+	if len(mock.Calls) != 1 {
+		t.Fatalf("expected 1 executor call, got %d", len(mock.Calls))
 	}
-	call := mock.calls[0]
+	call := mock.Calls[0]
 	if call.AgentID != "planner" {
 		t.Errorf("agent_id: got %s, want planner", call.AgentID)
 	}
@@ -121,8 +122,8 @@ func TestResultHandler_WorkerNotification_AlreadyNotified(t *testing.T) {
 	if n != 0 {
 		t.Fatalf("expected 0 notified, got %d", n)
 	}
-	if len(mock.calls) != 0 {
-		t.Fatalf("expected no executor calls, got %d", len(mock.calls))
+	if len(mock.Calls) != 0 {
+		t.Fatalf("expected no executor calls, got %d", len(mock.Calls))
 	}
 }
 
@@ -153,8 +154,8 @@ func TestResultHandler_WorkerNotification_LeaseHeld(t *testing.T) {
 	if n != 0 {
 		t.Fatalf("expected 0 (lease held), got %d", n)
 	}
-	if len(mock.calls) != 0 {
-		t.Fatalf("expected no executor calls, got %d", len(mock.calls))
+	if len(mock.Calls) != 0 {
+		t.Fatalf("expected no executor calls, got %d", len(mock.Calls))
 	}
 }
 
@@ -210,7 +211,7 @@ func TestResultHandler_WorkerNotification_Failure(t *testing.T) {
 	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, ep, RealClock{})
 
 	// Mock executor that fails
-	failMock := &mockExecutor{result: agent.ExecResult{
+	failMock := &mocks.MockExecutor{Result: agent.ExecResult{
 		Success: false,
 		Error:   fmt.Errorf("planner busy"),
 	}}
@@ -569,8 +570,8 @@ func TestResultHandler_HandleResultFileEvent(t *testing.T) {
 
 	rh.HandleResultFileEvent(resultPath)
 
-	if len(mock.calls) != 1 {
-		t.Fatalf("expected 1 executor call, got %d", len(mock.calls))
+	if len(mock.Calls) != 1 {
+		t.Fatalf("expected 1 executor call, got %d", len(mock.Calls))
 	}
 }
 
@@ -583,7 +584,7 @@ func TestResultHandler_WorkerNotification_MaxRetryExhausted(t *testing.T) {
 	ep := newTestExecutorProvider(maestroDir, cfg)
 	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, ep, RealClock{})
 
-	failMock := &mockExecutor{result: agent.ExecResult{
+	failMock := &mocks.MockExecutor{Result: agent.ExecResult{
 		Success: false,
 		Error:   fmt.Errorf("no server running"),
 	}}
@@ -614,8 +615,8 @@ func TestResultHandler_WorkerNotification_MaxRetryExhausted(t *testing.T) {
 		t.Fatalf("expected 0 (exhausted), got %d", n)
 	}
 	// No executor calls should be made for exhausted entries
-	if len(failMock.calls) != 0 {
-		t.Fatalf("expected no executor calls for exhausted entry, got %d", len(failMock.calls))
+	if len(failMock.Calls) != 0 {
+		t.Fatalf("expected no executor calls for exhausted entry, got %d", len(failMock.Calls))
 	}
 }
 
@@ -628,7 +629,7 @@ func TestResultHandler_WorkerNotification_BackoffPreventsImmediateRetry(t *testi
 	ep := newTestExecutorProvider(maestroDir, cfg)
 	rh := NewResultHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug, ep, RealClock{})
 
-	failMock := &mockExecutor{result: agent.ExecResult{
+	failMock := &mocks.MockExecutor{Result: agent.ExecResult{
 		Success: false,
 		Error:   fmt.Errorf("no server running"),
 	}}
@@ -657,18 +658,18 @@ func TestResultHandler_WorkerNotification_BackoffPreventsImmediateRetry(t *testi
 	if n != 0 {
 		t.Fatalf("expected 0 (failed), got %d", n)
 	}
-	if len(failMock.calls) != 1 {
-		t.Fatalf("expected 1 executor call, got %d", len(failMock.calls))
+	if len(failMock.Calls) != 1 {
+		t.Fatalf("expected 1 executor call, got %d", len(failMock.Calls))
 	}
 
 	// Second attempt immediately: should be skipped due to backoff
-	failMock.calls = nil
+	failMock.Calls = nil
 	n = rh.processWorkerResultFile("worker1")
 	if n != 0 {
 		t.Fatalf("expected 0 (backoff), got %d", n)
 	}
-	if len(failMock.calls) != 0 {
-		t.Fatalf("expected no executor calls during backoff, got %d", len(failMock.calls))
+	if len(failMock.Calls) != 0 {
+		t.Fatalf("expected no executor calls during backoff, got %d", len(failMock.Calls))
 	}
 }
 
@@ -700,8 +701,8 @@ func TestResultHandler_MultipleResults_ProcessedInOrder(t *testing.T) {
 	if n != 2 {
 		t.Fatalf("expected 2 notified, got %d", n)
 	}
-	if len(mock.calls) != 2 {
-		t.Fatalf("expected 2 executor calls, got %d", len(mock.calls))
+	if len(mock.Calls) != 2 {
+		t.Fatalf("expected 2 executor calls, got %d", len(mock.Calls))
 	}
 
 	// Verify both are marked notified

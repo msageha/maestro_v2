@@ -13,6 +13,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil/mocks"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -101,7 +102,7 @@ func TestSignal_AwaitingFillCreatesSignal(t *testing.T) {
 
 	// Mock executor that fails delivery (simulates busy planner)
 	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
-		return &mockExecutor{result: agent.ExecResult{
+		return &mocks.MockExecutor{Result: agent.ExecResult{
 			Success: false,
 			Error:   fmt.Errorf("busy_timeout"),
 		}}, nil
@@ -185,7 +186,7 @@ func TestSignal_SuccessfulDeliveryRemovesSignal(t *testing.T) {
 
 	// Mock executor: delivery succeeds
 	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
-		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
 	})
 
 	// Run scan — signal should be delivered and removed
@@ -250,7 +251,7 @@ func TestSignal_FailedDeliveryBackoff(t *testing.T) {
 
 	// Mock executor: delivery fails
 	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
-		return &mockExecutor{result: agent.ExecResult{
+		return &mocks.MockExecutor{Result: agent.ExecResult{
 			Success: false,
 			Error:   fmt.Errorf("busy_timeout"),
 		}}, nil
@@ -343,7 +344,7 @@ func TestSignal_BackoffSkipsDelivery(t *testing.T) {
 	called := false
 	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		called = true
-		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
 	})
 
 	// Run scan — signal should be skipped (backoff not elapsed)
@@ -521,7 +522,7 @@ func TestSignal_Deduplication(t *testing.T) {
 
 	// Mock executor: succeeds for normal dispatch, fails for signal
 	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
-		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
 	})
 
 	// Run scan — transition should upsert, but dedup should prevent duplicate
@@ -628,7 +629,7 @@ func TestSignal_FillTimeoutCreatesSignal(t *testing.T) {
 
 	// Mock executor: delivery fails (to keep signal in queue for inspection)
 	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
-		return &mockExecutor{result: agent.ExecResult{
+		return &mocks.MockExecutor{Result: agent.ExecResult{
 			Success: false,
 			Error:   fmt.Errorf("busy_timeout"),
 		}}, nil
@@ -717,7 +718,7 @@ func TestSignal_CircuitBreakerTrippedDelivered(t *testing.T) {
 
 	// Mock executor: delivery succeeds
 	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
-		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
 	})
 
 	// Run scan — signal should be delivered and removed (not orphan-pruned)

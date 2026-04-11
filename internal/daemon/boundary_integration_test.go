@@ -13,6 +13,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/reconcile"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil/mocks"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -28,7 +29,7 @@ func newBoundaryTestDaemon(t *testing.T) *Daemon {
 	d.handler.SetStateReader(reader)
 	d.handler.SetCanComplete(testCanComplete)
 	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
-		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
 	})
 	for _, sub := range []string{"dead_letters", "quarantine", "state"} {
 		os.MkdirAll(filepath.Join(d.maestroDir, sub), 0755)
@@ -417,7 +418,7 @@ func TestTaskLeaseExpiry_BusyAgent_MaxTimeout(t *testing.T) {
 	d.handler.SetStateReader(reader)
 	d.handler.SetCanComplete(testCanComplete)
 	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
-		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
 	})
 
 	owner := "worker1"
@@ -459,7 +460,7 @@ func TestTaskLeaseExpiry_BusyAgent_WithinLimit(t *testing.T) {
 	d.handler.SetStateReader(reader)
 	d.handler.SetCanComplete(testCanComplete)
 	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
-		return &mockExecutor{result: agent.ExecResult{Success: true}}, nil
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
 	})
 
 	owner := "worker1"
@@ -508,7 +509,7 @@ func TestTaskDispatchError_LeaseReleased(t *testing.T) {
 
 	// Mock executor that fails dispatch
 	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
-		return &mockExecutor{result: agent.ExecResult{
+		return &mocks.MockExecutor{Result: agent.ExecResult{
 			Success:   false,
 			Error:     fmt.Errorf("worker tmux pane not found"),
 			Retryable: true,
@@ -556,7 +557,7 @@ func TestCommandDispatchError_SecondScan_StaysInProgress(t *testing.T) {
 	dispatchCount := 0
 	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		dispatchCount++
-		return &mockExecutor{result: agent.ExecResult{
+		return &mocks.MockExecutor{Result: agent.ExecResult{
 			Success:   false,
 			Error:     fmt.Errorf("planner not responding"),
 			Retryable: true,
@@ -1130,7 +1131,7 @@ func TestReconciler_R4_AlreadyTerminal_NoRepair(t *testing.T) {
 func TestReconciler_R6_MultiplePhasesTimedOut(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconcilerWithFactory(maestroDir, func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
-		return &mockExecutorR6{}, nil
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
 	})
 
 	pastDeadline := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
@@ -1185,7 +1186,7 @@ func TestReconciler_R6_MultiplePhasesTimedOut(t *testing.T) {
 func TestReconciler_R6_DiamondDependency(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconcilerWithFactory(maestroDir, func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
-		return &mockExecutorR6{}, nil
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
 	})
 
 	pastDeadline := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
@@ -1233,7 +1234,7 @@ func TestReconciler_R6_DiamondDependency(t *testing.T) {
 func TestReconciler_R6_ActivePhaseNotCancelled(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconcilerWithFactory(maestroDir, func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
-		return &mockExecutorR6{}, nil
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
 	})
 
 	pastDeadline := time.Now().UTC().Add(-1 * time.Hour).Format(time.RFC3339)
@@ -2371,7 +2372,7 @@ func TestDeferredNotification_R4_ReEvaluate(t *testing.T) {
 func TestDeferredNotification_R6_FillTimeout(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	rec := newTestReconcilerWithFactory(maestroDir, func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
-		return &mockExecutorR6{}, nil
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
 	})
 
 	now := time.Now().UTC().Format(time.RFC3339)

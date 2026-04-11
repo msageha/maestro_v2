@@ -11,6 +11,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil"
 	"github.com/msageha/maestro_v2/internal/yaml"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -306,7 +307,7 @@ func (rm *RecoveryManager) reconcileState(t *testing.T) {
 // TestPartialFailureWindow_TaskCreation tests crash during task creation
 func TestPartialFailureWindow_TaskCreation(t *testing.T) {
 	maestroDir := t.TempDir()
-	require.NoError(t, setupTestDirectories(maestroDir))
+	testutil.PopulateDirs(t, maestroDir)
 
 	crashSim := NewCrashSimulator()
 	verifier := NewStateVerifier(maestroDir)
@@ -356,7 +357,7 @@ func TestPartialFailureWindow_TaskCreation(t *testing.T) {
 		t.Run(scenario.name, func(t *testing.T) {
 			// Clean up from previous run
 			cleanupTestData(maestroDir)
-			require.NoError(t, setupTestDirectories(maestroDir))
+			testutil.PopulateDirs(t, maestroDir)
 
 			// Set crash point
 			crashSim.SetCrashPoint(scenario.crashPoint)
@@ -387,7 +388,7 @@ func TestPartialFailureWindow_TaskCreation(t *testing.T) {
 // TestPartialFailureWindow_RetryCreation tests crash during retry task creation
 func TestPartialFailureWindow_RetryCreation(t *testing.T) {
 	maestroDir := t.TempDir()
-	require.NoError(t, setupTestDirectories(maestroDir))
+	testutil.PopulateDirs(t, maestroDir)
 
 	crashSim := NewCrashSimulator()
 	verifier := NewStateVerifier(maestroDir)
@@ -450,7 +451,7 @@ func TestPartialFailureWindow_RetryCreation(t *testing.T) {
 // TestDataConsistency_AfterCrash tests data consistency after various crash scenarios
 func TestDataConsistency_AfterCrash(t *testing.T) {
 	maestroDir := t.TempDir()
-	require.NoError(t, setupTestDirectories(maestroDir))
+	testutil.PopulateDirs(t, maestroDir)
 
 	verifier := NewStateVerifier(maestroDir)
 	recovery := NewRecoveryManager(maestroDir)
@@ -539,7 +540,7 @@ func TestDataConsistency_AfterCrash(t *testing.T) {
 // TestRecovery_IncompleteWrites tests recovery from incomplete writes
 func TestRecovery_IncompleteWrites(t *testing.T) {
 	maestroDir := t.TempDir()
-	require.NoError(t, setupTestDirectories(maestroDir))
+	testutil.PopulateDirs(t, maestroDir)
 
 	recovery := NewRecoveryManager(maestroDir)
 	verifier := NewStateVerifier(maestroDir)
@@ -608,7 +609,7 @@ func TestRecovery_IncompleteWrites(t *testing.T) {
 // TestConcurrentCrash_MultipleWorkers tests crashes with multiple concurrent workers
 func TestConcurrentCrash_MultipleWorkers(t *testing.T) {
 	maestroDir := t.TempDir()
-	require.NoError(t, setupTestDirectories(maestroDir))
+	testutil.PopulateDirs(t, maestroDir)
 
 	crashSim := NewCrashSimulator()
 	verifier := NewStateVerifier(maestroDir)
@@ -734,22 +735,6 @@ func TestConcurrentCrash_MultipleWorkers(t *testing.T) {
 }
 
 // Helper functions
-
-func setupTestDirectories(maestroDir string) error {
-	dirs := []string{
-		filepath.Join(maestroDir, "queue"),
-		filepath.Join(maestroDir, "state", "commands"),
-		filepath.Join(maestroDir, "results", "cmd_001"),
-	}
-
-	for _, dir := range dirs {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
 
 func cleanupTestData(maestroDir string) {
 	// Remove all test data
@@ -934,7 +919,7 @@ func findRetryTasksForOriginal(maestroDir string, originalTaskID string) []*mode
 // TestRecoveryIdempotency ensures recovery can be run multiple times safely
 func TestRecoveryIdempotency(t *testing.T) {
 	maestroDir := t.TempDir()
-	require.NoError(t, setupTestDirectories(maestroDir))
+	testutil.PopulateDirs(t, maestroDir)
 
 	recovery := NewRecoveryManager(maestroDir)
 	verifier := NewStateVerifier(maestroDir)
