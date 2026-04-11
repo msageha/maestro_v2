@@ -34,37 +34,30 @@ func (a *cliApp) runQueueWrite(args []string, warnOut io.Writer) error {
 
 	target := args[0]
 
-	fs := newFlagSet("maestro queue write")
+	cmd := NewCommand("maestro queue write", "maestro queue write <target> --type <command|task|notification|cancel-request> [options]")
 	var writeType, content, commandID, purpose, acceptanceCriteria, sourceResultID, notificationType, reason, personaHint string
 	var bloomLevel, priority int
 	var blockedBy, constraints, toolsHint stringSliceFlag
 
-	fs.StringVar(&writeType, "type", "", "")
-	fs.StringVar(&content, "content", "", "")
-	fs.StringVar(&commandID, "command-id", "", "")
-	fs.StringVar(&purpose, "purpose", "", "")
-	fs.StringVar(&acceptanceCriteria, "acceptance-criteria", "", "")
-	fs.IntVar(&bloomLevel, "bloom-level", 0, "")
-	fs.IntVar(&priority, "priority", 0, "")
-	fs.StringVar(&sourceResultID, "source-result-id", "", "")
-	fs.StringVar(&notificationType, "notification-type", "", "")
-	fs.Var(&blockedBy, "blocked-by", "")
-	fs.Var(&constraints, "constraint", "")
-	fs.Var(&toolsHint, "tools-hint", "")
-	fs.StringVar(&personaHint, "persona-hint", "", "")
+	cmd.RequiredString(&writeType, "type", "")
+	cmd.StringVar(&content, "content", "", "")
+	cmd.StringVar(&commandID, "command-id", "", "")
+	cmd.StringVar(&purpose, "purpose", "", "")
+	cmd.StringVar(&acceptanceCriteria, "acceptance-criteria", "", "")
+	cmd.IntVar(&bloomLevel, "bloom-level", 0, "")
+	cmd.IntVar(&priority, "priority", 0, "")
+	cmd.StringVar(&sourceResultID, "source-result-id", "", "")
+	cmd.StringVar(&notificationType, "notification-type", "", "")
+	cmd.Var(&blockedBy, "blocked-by", "")
+	cmd.Var(&constraints, "constraint", "")
+	cmd.Var(&toolsHint, "tools-hint", "")
+	cmd.StringVar(&personaHint, "persona-hint", "", "")
 	var skillRefs stringSliceFlag
-	fs.Var(&skillRefs, "skill-refs", "")
-	fs.StringVar(&reason, "reason", "", "")
+	cmd.Var(&skillRefs, "skill-refs", "")
+	cmd.StringVar(&reason, "reason", "", "")
 
-	if err := fs.Parse(args[1:]); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: %v\nusage: maestro queue write <target> --type <command|task|notification|cancel-request> [options]", err)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: unexpected argument: %s\nusage: maestro queue write <target> --type <command|task|notification|cancel-request> [options]", fs.Arg(0))}
-	}
-
-	if writeType == "" {
-		return &CLIError{Code: 1, Msg: "maestro queue write: --type is required\nusage: maestro queue write <target> --type <command|task|notification|cancel-request> [options]"}
+	if err := cmd.Parse(args[1:]); err != nil {
+		return err
 	}
 
 	params := map[string]any{

@@ -29,9 +29,12 @@ var daemonSkillNamePattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,62}[a-z
 // nonAlphaNumPattern matches any non-alphanumeric character.
 var nonAlphaNumPattern = regexp.MustCompile(`[^a-z0-9]+`)
 
-func (a *API) handleSkillApprove(req *uds.Request) *uds.Response {
-	d := a.d
+// SkillAPI handles the "skill_approve" and "skill_reject" UDS endpoints.
+type SkillAPI struct {
+	*apiContext
+}
 
+func (h *SkillAPI) handleSkillApprove(req *uds.Request) *uds.Response {
 	var params SkillApproveParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid params: %v", err))
@@ -44,10 +47,10 @@ func (a *API) handleSkillApprove(req *uds.Request) *uds.Response {
 	// Acquire skill_candidates lock to serialize with writeSkillCandidates in result_write.
 	// Lock order: leaf lock under the state:* namespace; see daemon/doc.go.
 	// Acquired in isolation — no state:{commandID} is held on this path.
-	d.lockMap.Lock("state:skill_candidates")
-	defer d.lockMap.Unlock("state:skill_candidates")
+	h.lockMap.Lock("state:skill_candidates")
+	defer h.lockMap.Unlock("state:skill_candidates")
 
-	candidatesPath := filepath.Join(d.maestroDir, "state", "skill_candidates.yaml")
+	candidatesPath := filepath.Join(h.maestroDir, "state", "skill_candidates.yaml")
 	candidates, err := skill.ReadCandidates(candidatesPath)
 	if err != nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("read candidates: %v", err))
@@ -83,7 +86,7 @@ func (a *API) handleSkillApprove(req *uds.Request) *uds.Response {
 	}
 
 	// Check for name collision
-	skillsDir := filepath.Join(d.maestroDir, "skills", "share")
+	skillsDir := filepath.Join(h.maestroDir, "skills", "share")
 	skillDir := filepath.Join(skillsDir, skillName)
 	if _, err := os.Stat(skillDir); err == nil {
 		return uds.ErrorResponse(uds.ErrCodeDuplicate, fmt.Sprintf("skill %q already exists; use a different name", skillName))
@@ -108,16 +111,14 @@ func (a *API) handleSkillApprove(req *uds.Request) *uds.Response {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("update candidates: %v", err))
 	}
 
-	d.log(LogLevelInfo, "skill_approved candidate=%s skill=%s", params.CandidateID, skillName)
+	h.logFn(LogLevelInfo, "skill_approved candidate=%s skill=%s", params.CandidateID, skillName)
 	return uds.SuccessResponse(map[string]string{
 		"candidate_id": params.CandidateID,
 		"skill_name":   skillName,
 	})
 }
 
-func (a *API) handleSkillReject(req *uds.Request) *uds.Response {
-	d := a.d
-
+func (h *SkillAPI) handleSkillReject(req *uds.Request) *uds.Response {
 	var params SkillRejectParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid params: %v", err))
@@ -130,10 +131,10 @@ func (a *API) handleSkillReject(req *uds.Request) *uds.Response {
 	// Acquire skill_candidates lock to serialize with writeSkillCandidates in result_write.
 	// Lock order: leaf lock under the state:* namespace; see daemon/doc.go.
 	// Acquired in isolation — no state:{commandID} is held on this path.
-	d.lockMap.Lock("state:skill_candidates")
-	defer d.lockMap.Unlock("state:skill_candidates")
+	h.lockMap.Lock("state:skill_candidates")
+	defer h.lockMap.Unlock("state:skill_candidates")
 
-	candidatesPath := filepath.Join(d.maestroDir, "state", "skill_candidates.yaml")
+	candidatesPath := filepath.Join(h.maestroDir, "state", "skill_candidates.yaml")
 	candidates, err := skill.ReadCandidates(candidatesPath)
 	if err != nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("read candidates: %v", err))
@@ -160,7 +161,7 @@ func (a *API) handleSkillReject(req *uds.Request) *uds.Response {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("update candidates: %v", err))
 	}
 
-	d.log(LogLevelInfo, "skill_rejected candidate=%s", params.CandidateID)
+	h.logFn(LogLevelInfo, "skill_rejected candidate=%s", params.CandidateID)
 	return uds.SuccessResponse(map[string]string{
 		"candidate_id": params.CandidateID,
 	})

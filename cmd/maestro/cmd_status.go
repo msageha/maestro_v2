@@ -14,14 +14,11 @@ import (
 
 // runStatus displays the current formation status.
 func runStatus(args []string) error {
-	fs := newFlagSet("maestro status")
+	cmd := NewCommand("maestro status", "maestro status [--json]")
 	var jsonOutput bool
-	fs.BoolVar(&jsonOutput, "json", false, "")
-	if err := fs.Parse(args); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro status: %v\nusage: maestro status [--json]", err)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro status: unexpected argument: %s\nusage: maestro status [--json]", fs.Arg(0))}
+	cmd.BoolVar(&jsonOutput, "json", false, "")
+	if err := cmd.Parse(args); err != nil {
+		return err
 	}
 
 	maestroDir, err := requireMaestroDir("status")
@@ -47,12 +44,9 @@ func runStatus(args []string) error {
 
 // runDashboard regenerates the dashboard.md file.
 func runDashboard(args []string) error {
-	fs := newFlagSet("maestro dashboard")
-	if err := fs.Parse(args); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro dashboard: %v\nusage: maestro dashboard", err)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro dashboard: unexpected argument: %s\nusage: maestro dashboard", fs.Arg(0))}
+	cmd := NewCommand("maestro dashboard", "maestro dashboard")
+	if err := cmd.Parse(args); err != nil {
+		return err
 	}
 
 	maestroDir, err := requireMaestroDir("dashboard")

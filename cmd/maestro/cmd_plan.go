@@ -50,26 +50,20 @@ func runPlan(args []string) error {
 
 // runPlanSubmit submits a task plan for a command.
 func runPlanSubmit(args []string) error {
-	fs := newFlagSet("maestro plan submit")
+	cmd := NewCommand("maestro plan submit", "maestro plan submit --command-id <id> [--tasks-file <path>] [--phase <name>] [--dry-run]")
 	var commandID, tasksFile, phaseName string
 	var dryRun bool
-	fs.StringVar(&commandID, "command-id", "", "")
-	fs.StringVar(&tasksFile, "tasks-file", "", "")
-	fs.StringVar(&phaseName, "phase", "", "")
-	fs.BoolVar(&dryRun, "dry-run", false, "")
+	cmd.RequiredString(&commandID, "command-id", "")
+	cmd.StringVar(&tasksFile, "tasks-file", "", "")
+	cmd.StringVar(&phaseName, "phase", "", "")
+	cmd.BoolVar(&dryRun, "dry-run", false, "")
 
-	if err := fs.Parse(args); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan submit: %v\nusage: maestro plan submit --command-id <id> [--tasks-file <path>] [--phase <name>] [--dry-run]", err)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan submit: unexpected argument: %s\nusage: maestro plan submit --command-id <id> [--tasks-file <path>] [--phase <name>] [--dry-run]", fs.Arg(0))}
+	if err := cmd.Parse(args); err != nil {
+		return err
 	}
 
-	if commandID == "" {
-		return &CLIError{Code: 1, Msg: "maestro plan submit: --command-id is required\nusage: maestro plan submit --command-id <id> [--tasks-file <path>] [--phase <name>] [--dry-run]"}
-	}
 	if err := validate.ID(commandID); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan submit: invalid --command-id: %v", err)}
+		return cmd.Errorf("invalid --command-id: %v", err)
 	}
 
 	if tasksFile == "" {
@@ -121,26 +115,20 @@ func runPlanSubmit(args []string) error {
 
 // runPlanComplete reports command completion to the daemon.
 func runPlanComplete(args []string) error {
-	fs := newFlagSet("maestro plan complete")
+	cmd := NewCommand("maestro plan complete", "maestro plan complete --command-id <id> --summary <text>")
 	var commandID, summary string
-	fs.StringVar(&commandID, "command-id", "", "")
-	fs.StringVar(&summary, "summary", "", "")
+	cmd.RequiredString(&commandID, "command-id", "")
+	cmd.StringVar(&summary, "summary", "", "")
 
-	if err := fs.Parse(args); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan complete: %v\nusage: maestro plan complete --command-id <id> --summary <text>", err)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan complete: unexpected argument: %s\nusage: maestro plan complete --command-id <id> --summary <text>", fs.Arg(0))}
+	if err := cmd.Parse(args); err != nil {
+		return err
 	}
 
-	if commandID == "" {
-		return &CLIError{Code: 1, Msg: "maestro plan complete: --command-id is required\nusage: maestro plan complete --command-id <id> --summary <text>"}
-	}
 	if err := validate.ID(commandID); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan complete: invalid --command-id: %v", err)}
+		return cmd.Errorf("invalid --command-id: %v", err)
 	}
 	if err := validate.ContentLength("--summary", summary, model.DefaultMaxEntryContentBytes); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan complete: %v", err)}
+		return cmd.Errorf("%v", err)
 	}
 
 	maestroDir, err := requireMaestroDir("plan complete")
@@ -161,43 +149,40 @@ func runPlanComplete(args []string) error {
 
 // runPlanAddRetryTask replaces a failed task with a new retry task.
 func runPlanAddRetryTask(args []string) error {
-	fs := newFlagSet("maestro plan add-retry-task")
+	cmd := NewCommand("maestro plan add-retry-task", "maestro plan add-retry-task --command-id <id> --retry-of <task_id> --purpose <text> --content <text> --acceptance-criteria <text> --bloom-level <n> [--blocked-by <task_id>]...")
 	var commandID, retryOf, purpose, content, acceptanceCriteria string
 	var bloomLevel int
 	var blockedBy stringSliceFlag
 
-	fs.StringVar(&commandID, "command-id", "", "")
-	fs.StringVar(&retryOf, "retry-of", "", "")
-	fs.StringVar(&purpose, "purpose", "", "")
-	fs.StringVar(&content, "content", "", "")
-	fs.StringVar(&acceptanceCriteria, "acceptance-criteria", "", "")
-	fs.IntVar(&bloomLevel, "bloom-level", 0, "")
-	fs.Var(&blockedBy, "blocked-by", "")
+	cmd.StringVar(&commandID, "command-id", "", "")
+	cmd.StringVar(&retryOf, "retry-of", "", "")
+	cmd.StringVar(&purpose, "purpose", "", "")
+	cmd.StringVar(&content, "content", "", "")
+	cmd.StringVar(&acceptanceCriteria, "acceptance-criteria", "", "")
+	cmd.IntVar(&bloomLevel, "bloom-level", 0, "")
+	cmd.Var(&blockedBy, "blocked-by", "")
 
-	if err := fs.Parse(args); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan add-retry-task: %v\nusage: maestro plan add-retry-task --command-id <id> --retry-of <task_id> --purpose <text> --content <text> --acceptance-criteria <text> --bloom-level <n> [--blocked-by <task_id>]...", err)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan add-retry-task: unexpected argument: %s\nusage: maestro plan add-retry-task --command-id <id> --retry-of <task_id> --purpose <text> --content <text> --acceptance-criteria <text> --bloom-level <n> [--blocked-by <task_id>]...", fs.Arg(0))}
-	}
+	cmd.AddCheck("all required flags must be set", func() bool {
+		return commandID != "" && retryOf != "" && purpose != "" && content != "" && acceptanceCriteria != "" && bloomLevel != 0
+	})
 
-	if commandID == "" || retryOf == "" || purpose == "" || content == "" || acceptanceCriteria == "" || bloomLevel == 0 {
-		return &CLIError{Code: 1, Msg: "maestro plan add-retry-task: all required flags must be set\nusage: maestro plan add-retry-task --command-id <id> --retry-of <task_id> --purpose <text> --content <text> --acceptance-criteria <text> --bloom-level <n> [--blocked-by <task_id>]..."}
+	if err := cmd.Parse(args); err != nil {
+		return err
 	}
 
 	if err := validate.ID(commandID); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan add-retry-task: invalid --command-id: %v", err)}
+		return cmd.Errorf("invalid --command-id: %v", err)
 	}
 	if err := validate.ID(retryOf); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan add-retry-task: invalid --retry-of: %v", err)}
+		return cmd.Errorf("invalid --retry-of: %v", err)
 	}
 	for _, dep := range blockedBy {
 		if err := validate.ID(dep); err != nil {
-			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan add-retry-task: invalid --blocked-by %q: %v", dep, err)}
+			return cmd.Errorf("invalid --blocked-by %q: %v", dep, err)
 		}
 	}
 	if bloomLevel < 1 || bloomLevel > 6 {
-		return &CLIError{Code: 1, Msg: "maestro plan add-retry-task: --bloom-level must be between 1 and 6"}
+		return cmd.Errorf("--bloom-level must be between 1 and 6")
 	}
 	for _, pair := range []struct{ name, val string }{
 		{"--content", content},
@@ -205,7 +190,7 @@ func runPlanAddRetryTask(args []string) error {
 		{"--acceptance-criteria", acceptanceCriteria},
 	} {
 		if err := validate.ContentLength(pair.name, pair.val, model.DefaultMaxEntryContentBytes); err != nil {
-			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan add-retry-task: %v", err)}
+			return cmd.Errorf("%v", err)
 		}
 	}
 
@@ -232,24 +217,18 @@ func runPlanAddRetryTask(args []string) error {
 
 // runPlanRequestCancel requests cancellation of an active command.
 func runPlanRequestCancel(args []string) error {
-	fs := newFlagSet("maestro plan request-cancel")
+	cmd := NewCommand("maestro plan request-cancel", "maestro plan request-cancel --command-id <id> [--requested-by <agent>] [--reason <text>]")
 	var commandID, requestedBy, reason string
-	fs.StringVar(&commandID, "command-id", "", "")
-	fs.StringVar(&requestedBy, "requested-by", "", "")
-	fs.StringVar(&reason, "reason", "", "")
+	cmd.RequiredString(&commandID, "command-id", "")
+	cmd.StringVar(&requestedBy, "requested-by", "", "")
+	cmd.StringVar(&reason, "reason", "", "")
 
-	if err := fs.Parse(args); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan request-cancel: %v\nusage: maestro plan request-cancel --command-id <id> [--requested-by <agent>] [--reason <text>]", err)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan request-cancel: unexpected argument: %s\nusage: maestro plan request-cancel --command-id <id> [--requested-by <agent>] [--reason <text>]", fs.Arg(0))}
+	if err := cmd.Parse(args); err != nil {
+		return err
 	}
 
-	if commandID == "" {
-		return &CLIError{Code: 1, Msg: "maestro plan request-cancel: --command-id is required\nusage: maestro plan request-cancel --command-id <id> [--requested-by <agent>] [--reason <text>]"}
-	}
 	if err := validate.ID(commandID); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan request-cancel: invalid --command-id: %v", err)}
+		return cmd.Errorf("invalid --command-id: %v", err)
 	}
 
 	if requestedBy == "" {
@@ -292,22 +271,16 @@ func runPlanRequestCancel(args []string) error {
 
 // runPlanRebuild rebuilds plan state from existing results.
 func runPlanRebuild(args []string) error {
-	fs := newFlagSet("maestro plan rebuild")
+	cmd := NewCommand("maestro plan rebuild", "maestro plan rebuild --command-id <id>")
 	var commandID string
-	fs.StringVar(&commandID, "command-id", "", "")
+	cmd.RequiredString(&commandID, "command-id", "")
 
-	if err := fs.Parse(args); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan rebuild: %v\nusage: maestro plan rebuild --command-id <id>", err)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan rebuild: unexpected argument: %s\nusage: maestro plan rebuild --command-id <id>", fs.Arg(0))}
+	if err := cmd.Parse(args); err != nil {
+		return err
 	}
 
-	if commandID == "" {
-		return &CLIError{Code: 1, Msg: "maestro plan rebuild: --command-id is required\nusage: maestro plan rebuild --command-id <id>"}
-	}
 	if err := validate.ID(commandID); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan rebuild: invalid --command-id: %v", err)}
+		return cmd.Errorf("invalid --command-id: %v", err)
 	}
 
 	maestroDir, err := requireMaestroDir("plan rebuild")
@@ -328,23 +301,16 @@ func runPlanRebuild(args []string) error {
 // runPlanUnquarantine clears quarantine state on a command's integration
 // branch so the next queue scan can re-enqueue merge attempts.
 func runPlanUnquarantine(args []string) error {
-	fs := newFlagSet("maestro plan unquarantine")
+	cmd := NewCommand("maestro plan unquarantine", "maestro plan unquarantine --command-id <id> [--reason <text>]")
 	var commandID, reason string
-	fs.StringVar(&commandID, "command-id", "", "")
-	fs.StringVar(&reason, "reason", "", "")
+	cmd.RequiredString(&commandID, "command-id", "")
+	cmd.StringVar(&reason, "reason", "", "")
 
-	usage := "usage: maestro plan unquarantine --command-id <id> [--reason <text>]"
-	if err := fs.Parse(args); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan unquarantine: %v\n%s", err, usage)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan unquarantine: unexpected argument: %s\n%s", fs.Arg(0), usage)}
-	}
-	if commandID == "" {
-		return &CLIError{Code: 1, Msg: "maestro plan unquarantine: --command-id is required\n" + usage}
+	if err := cmd.Parse(args); err != nil {
+		return err
 	}
 	if err := validate.ID(commandID); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan unquarantine: invalid --command-id: %v", err)}
+		return cmd.Errorf("invalid --command-id: %v", err)
 	}
 
 	maestroDir, err := requireMaestroDir("plan unquarantine")
@@ -365,22 +331,15 @@ func runPlanUnquarantine(args []string) error {
 // runPlanResumeMerge resets the merge failure counter and moves a stuck
 // integration (conflict / partial_merge / failed) back to a re-mergeable state.
 func runPlanResumeMerge(args []string) error {
-	fs := newFlagSet("maestro plan resume-merge")
+	cmd := NewCommand("maestro plan resume-merge", "maestro plan resume-merge --command-id <id>")
 	var commandID string
-	fs.StringVar(&commandID, "command-id", "", "")
+	cmd.RequiredString(&commandID, "command-id", "")
 
-	usage := "usage: maestro plan resume-merge --command-id <id>"
-	if err := fs.Parse(args); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan resume-merge: %v\n%s", err, usage)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan resume-merge: unexpected argument: %s\n%s", fs.Arg(0), usage)}
-	}
-	if commandID == "" {
-		return &CLIError{Code: 1, Msg: "maestro plan resume-merge: --command-id is required\n" + usage}
+	if err := cmd.Parse(args); err != nil {
+		return err
 	}
 	if err := validate.ID(commandID); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan resume-merge: invalid --command-id: %v", err)}
+		return cmd.Errorf("invalid --command-id: %v", err)
 	}
 
 	maestroDir, err := requireMaestroDir("plan resume-merge")
@@ -413,38 +372,25 @@ func runPlanResumeMerge(args []string) error {
 //	maestro resolve-conflict --command-id cmd_42 --phase-id ph_3 \
 //	    --worker-id worker2 --conflicting-files internal/a.go,internal/b.go
 func runResolveConflict(args []string) error {
-	fs := newFlagSet("maestro resolve-conflict")
+	cmd := NewCommand("maestro resolve-conflict", "maestro resolve-conflict --command-id <id> --phase-id <id> --worker-id <id> [--conflicting-files <path>[,<path>...]]...")
 	var commandID, phaseID, workerID string
 	var conflictingFiles stringSliceFlag
-	fs.StringVar(&commandID, "command-id", "", "parent command id")
-	fs.StringVar(&phaseID, "phase-id", "", "phase id containing the conflict")
-	fs.StringVar(&workerID, "worker-id", "", "worker id whose worktree conflicts")
-	fs.Var(&conflictingFiles, "conflicting-files", "conflicting file paths (repeat flag or comma-separated)")
+	cmd.RequiredString(&commandID, "command-id", "parent command id")
+	cmd.RequiredString(&phaseID, "phase-id", "phase id containing the conflict")
+	cmd.RequiredString(&workerID, "worker-id", "worker id whose worktree conflicts")
+	cmd.Var(&conflictingFiles, "conflicting-files", "conflicting file paths (repeat flag or comma-separated)")
 
-	usage := "usage: maestro resolve-conflict --command-id <id> --phase-id <id> --worker-id <id> [--conflicting-files <path>[,<path>...]]..."
-	if err := fs.Parse(args); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro resolve-conflict: %v\n%s", err, usage)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro resolve-conflict: unexpected argument: %s\n%s", fs.Arg(0), usage)}
-	}
-	if commandID == "" {
-		return &CLIError{Code: 1, Msg: "maestro resolve-conflict: --command-id is required\n" + usage}
+	if err := cmd.Parse(args); err != nil {
+		return err
 	}
 	if err := validate.ID(commandID); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro resolve-conflict: invalid --command-id: %v", err)}
-	}
-	if phaseID == "" {
-		return &CLIError{Code: 1, Msg: "maestro resolve-conflict: --phase-id is required\n" + usage}
+		return cmd.Errorf("invalid --command-id: %v", err)
 	}
 	if err := validate.ID(phaseID); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro resolve-conflict: invalid --phase-id: %v", err)}
-	}
-	if workerID == "" {
-		return &CLIError{Code: 1, Msg: "maestro resolve-conflict: --worker-id is required\n" + usage}
+		return cmd.Errorf("invalid --phase-id: %v", err)
 	}
 	if err := validate.ID(workerID); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro resolve-conflict: invalid --worker-id: %v", err)}
+		return cmd.Errorf("invalid --worker-id: %v", err)
 	}
 
 	// Allow comma-separated values inside a single --conflicting-files flag

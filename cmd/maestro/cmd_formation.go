@@ -45,19 +45,16 @@ func precheckGitRepo(projectRoot, baseBranch string) error {
 
 // runUp starts the formation (daemon + agents) and optionally attaches to tmux.
 func runUp(args []string) error {
-	fs := newFlagSet("maestro up")
+	cmd := NewCommand("maestro up", "maestro up [--boost] [--continuous] [--detach|-d] [--force|-f]")
 	var boost, continuous, detach, force bool
-	fs.BoolVar(&boost, "boost", false, "")
-	fs.BoolVar(&continuous, "continuous", false, "")
-	fs.BoolVar(&detach, "detach", false, "")
-	fs.BoolVar(&detach, "d", false, "")
-	fs.BoolVar(&force, "force", false, "")
-	fs.BoolVar(&force, "f", false, "")
-	if err := fs.Parse(args); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro up: %v\nusage: maestro up [--boost] [--continuous] [--detach|-d] [--force|-f]", err)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro up: unexpected argument: %s\nusage: maestro up [--boost] [--continuous] [--detach|-d] [--force|-f]", fs.Arg(0))}
+	cmd.BoolVar(&boost, "boost", false, "")
+	cmd.BoolVar(&continuous, "continuous", false, "")
+	cmd.BoolVar(&detach, "detach", false, "")
+	cmd.BoolVar(&detach, "d", false, "")
+	cmd.BoolVar(&force, "force", false, "")
+	cmd.BoolVar(&force, "f", false, "")
+	if err := cmd.Parse(args); err != nil {
+		return err
 	}
 
 	maestroDir, err := requireMaestroDir("up")
@@ -120,12 +117,9 @@ func runUp(args []string) error {
 
 // runDown gracefully shuts down the formation.
 func runDown(args []string) error {
-	fs := newFlagSet("maestro down")
-	if err := fs.Parse(args); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro down: %v\nusage: maestro down", err)}
-	}
-	if fs.NArg() > 0 {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro down: unexpected argument: %s\nusage: maestro down", fs.Arg(0))}
+	cmd := NewCommand("maestro down", "maestro down")
+	if err := cmd.Parse(args); err != nil {
+		return err
 	}
 
 	maestroDir, err := requireMaestroDir("down")

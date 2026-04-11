@@ -121,7 +121,7 @@ func (se *ScanPhaseExecutor) periodicScanPhaseA() phaseAResult {
 	qh.stepDependencyFailures(&s)
 
 	// Flush dirty queues to disk
-	qh.flushQueues(s.commands.Data, s.commands.Path, s.commands.Dirty,
+	qh.queueStore.FlushQueues(s.commands.Data, s.commands.Path, s.commands.Dirty,
 		s.tasks, s.taskDirty,
 		s.notifications.Data, s.notifications.Path, s.notifications.Dirty,
 		s.signals.Data, s.signals.Path, s.signals.Dirty)
@@ -139,10 +139,10 @@ func (se *ScanPhaseExecutor) initScanState() scanState {
 	scanStart := qh.clock.Now()
 	se.scanCounters = metrics.ScanCounters{}
 
-	commandQueue, commandPath := qh.loadCommandQueue()
-	taskQueues := qh.loadAllTaskQueues()
-	notificationQueue, notificationPath := qh.loadNotificationQueue()
-	signalQueue, signalPath := qh.loadPlannerSignalQueue()
+	commandQueue, commandPath := qh.queueStore.LoadCommandQueue()
+	taskQueues := qh.queueStore.LoadAllTaskQueues()
+	notificationQueue, notificationPath := qh.queueStore.LoadNotificationQueue()
+	signalQueue, signalPath := qh.queueStore.LoadPlannerSignalQueue()
 
 	return scanState{
 		commands:      fileState[model.CommandQueue]{Data: commandQueue, Path: commandPath},
