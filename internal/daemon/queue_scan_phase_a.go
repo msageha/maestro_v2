@@ -9,70 +9,10 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// periodicScanPhaseA runs under scanMu.Lock. It loads queues, performs fast
-// in-memory mutations (dead letter, cancel, phase transitions, dependency checks),
-// collects deferred work items for slow I/O, and flushes queues to disk.
-func (qh *QueueHandler) periodicScanPhaseA() phaseAResult {
-	qh.scanMu.Lock()
-	defer qh.scanMu.Unlock()
-
-	s := qh.initScanState()
-
-	// Reset admission control and record current in-flight tasks.
-	qh.stepAdmissionSync(&s)
-
-	// Execute steps in fixed order (matches original Step 0 through Step 1.5).
-	qh.stepDeadLetters(&s)
-	qh.stepCircuitBreaker(&s)
-	qh.stepCancelPending(&s)
-	qh.stepCancelInterrupt(&s)
-	qh.stepPhaseTransitions(&s)
-	qh.stepWorktreePhaseMerges(&s)
-	qh.stepWorktreePublish(&s)
-	qh.stepWorktreeFastTrackCleanup(&s)
-	qh.stepWorktreeOrphanCleanup(&s)
-	qh.stepWorktreeStallDetection(&s)
-	qh.stepCheckWorktreeConfigViolations(&s)
-	qh.stepPlannerSignals(&s)
-	qh.stepPreemptiveRenewal(&s)
-	qh.stepDispatchOrRecovery(&s)
-	qh.stepDependencyFailures(&s)
-
-	// Flush dirty queues to disk
-	qh.flushQueues(s.commands.Data, s.commands.Path, s.commands.Dirty,
-		s.tasks, s.taskDirty,
-		s.notifications.Data, s.notifications.Path, s.notifications.Dirty,
-		s.signals.Data, s.signals.Path, s.signals.Dirty)
-
-	return phaseAResult{
-		work:      s.work,
-		scanStart: s.scanStart,
-		counters:  qh.scanCounters,
-	}
-}
-
-// initScanState loads all queue files and initializes a scanState.
-func (qh *QueueHandler) initScanState() scanState {
-	scanStart := qh.clock.Now()
-	qh.scanCounters = ScanCounters{}
-
-	commandQueue, commandPath := qh.loadCommandQueue()
-	taskQueues := qh.loadAllTaskQueues()
-	notificationQueue, notificationPath := qh.loadNotificationQueue()
-	signalQueue, signalPath := qh.loadPlannerSignalQueue()
-
-	return scanState{
-		commands:      fileState[model.CommandQueue]{Data: commandQueue, Path: commandPath},
-		tasks:         taskQueues,
-		taskDirty:     make(map[string]bool),
-		notifications: fileState[model.NotificationQueue]{Data: notificationQueue, Path: notificationPath},
-		signals:       fileState[model.PlannerSignalQueue]{Data: signalQueue, Path: signalPath},
-		signalIndex:   buildSignalIndex(signalQueue.Signals),
-		scanStart:     scanStart,
-	}
-}
-
 // --- Phase A step functions (executed in order) ---
+// periodicScanPhaseA and initScanState have been moved to ScanPhaseExecutor
+// (scan_phase_executor.go). Step functions below remain on QueueHandler as they
+// access shared handler dependencies.
 
 // stepAdmissionSync resets the admission controller and records in-flight tasks
 // at the start of each scan cycle, providing accurate slot counts for dispatch.
@@ -104,10 +44,10 @@ func (qh *QueueHandler) stepDeadLetters(s *scanState) {
 		s.taskDirty[queueFile] = tqDirty
 	}
 	dlResults = append(dlResults, qh.deadLetterProcessor.ProcessNotificationDeadLetters(&s.notifications.Data, &s.notifications.Dirty)...)
-	qh.scanCounters.DeadLetters += len(dlResults)
+	qh.scanExecutor.scanCounters.DeadLetters += len(dlResults)
 	for _, dl := range dlResults {
 		if dl.TaskID != "" {
-			qh.scanCounters.TasksFailed++
+			qh.scanExecutor.scanCounters.TasksFailed++
 		}
 	}
 	if len(dlResults) > 0 {
@@ -183,7 +123,7 @@ func (qh *QueueHandler) stepCancelPending(s *scanState) {
 				results := qh.cancelHandler.CancelPendingTasks(tq.Queue.Tasks, cmd.ID)
 				if len(results) > 0 {
 					s.taskDirty[queueFile] = true
-					qh.scanCounters.TasksCancelled += len(results)
+					qh.scanExecutor.scanCounters.TasksCancelled += len(results)
 					wID := workerIDFromPath(queueFile)
 					if wID != "" {
 						qh.cancelHandler.WriteSyntheticResults(results, wID)
@@ -674,7 +614,7 @@ func (qh *QueueHandler) stepWorktreeStallDetection(s *scanState) {
 					UpdatedAt: nowStr,
 				}, s.signalIndex)
 
-				markFn := qh.worktreeStallMarkFn
+				markFn := qh.scanExecutor.worktreeStallMarkFn
 				if markFn == nil {
 					markFn = qh.worktreeManager.MarkIntegrationStallSignaled
 				}
@@ -721,7 +661,7 @@ func (qh *QueueHandler) stepWorktreeStallDetection(s *scanState) {
 			UpdatedAt: nowStr,
 		}, s.signalIndex)
 
-		markFn := qh.worktreeStallMarkFn
+		markFn := qh.scanExecutor.worktreeStallMarkFn
 		if markFn == nil {
 			markFn = qh.worktreeManager.MarkIntegrationStallSignaled
 		}
@@ -902,7 +842,7 @@ func (qh *QueueHandler) stepDependencyFailures(s *scanState) {
 // prompt string, or "" if diagnosis yields no actionable information or if
 // no diagnoser is configured.
 func (qh *QueueHandler) diagnosePhaseTasks(commandID, phaseID, _ string, taskQueues map[string]*taskQueueEntry) string {
-	if qh.phaseDiagnoser == nil || !qh.dependencyResolver.HasStateReader() {
+	if qh.scanExecutor.phaseDiagnoser == nil || !qh.dependencyResolver.HasStateReader() {
 		return ""
 	}
 
@@ -948,5 +888,5 @@ func (qh *QueueHandler) diagnosePhaseTasks(commandID, phaseID, _ string, taskQue
 		}
 	}
 
-	return qh.phaseDiagnoser(phase, tasks, nil)
+	return qh.scanExecutor.phaseDiagnoser(phase, tasks, nil)
 }

@@ -489,7 +489,7 @@ func TestPhaseIntegration_WorkerBusy_LeaseExtension(t *testing.T) {
 		return agent.ExecResult{Success: true}
 	})
 	qh := newPhaseIntegrationQH(t, maestroDir, exec)
-	qh.busyChecker = BusyCheckerFunc(func(agentID string) bool {
+	qh.scanExecutor.busyChecker = BusyCheckerFunc(func(agentID string) bool {
 		return true // all agents are busy
 	})
 
@@ -1506,7 +1506,7 @@ func TestPhaseIntegration_BusyFalse_LeaseRelease(t *testing.T) {
 		return agent.ExecResult{Success: true}
 	})
 	qh := newPhaseIntegrationQH(t, maestroDir, exec)
-	qh.busyChecker = BusyCheckerFunc(func(agentID string) bool {
+	qh.scanExecutor.busyChecker = BusyCheckerFunc(func(agentID string) bool {
 		return false // agent is NOT busy
 	})
 

@@ -61,13 +61,13 @@ func (qh *QueueHandler) applyCommandDispatchResult(dr dispatchResult, cq *model.
 					if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
 						qh.log(LogLevelError, "release_command_lease_failed id=%s error=%v", cmd.ID, err)
 					} else {
-						qh.scanCounters.LeaseReleases++
+						qh.scanExecutor.scanCounters.LeaseReleases++
 					}
 					return
 				}
 				qh.log(LogLevelWarn, "dispatch_failed_lease_kept type=command id=%s error=%v", cmd.ID, dr.Error)
 			},
-			onSuccess: func() { qh.scanCounters.CommandsDispatched++ },
+			onSuccess: func() { qh.scanExecutor.scanCounters.CommandsDispatched++ },
 			markDirty: func() { *dirty = true },
 		})
 		return
@@ -92,9 +92,9 @@ func (qh *QueueHandler) applyTaskDispatchResult(dr dispatchResult, taskQueues ma
 					if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
 						qh.log(LogLevelError, "release_task_lease task=%s error=%v", task.ID, err)
 					}
-					qh.scanCounters.LeaseReleases++
+					qh.scanExecutor.scanCounters.LeaseReleases++
 				},
-				onSuccess: func() { qh.scanCounters.TasksDispatched++ },
+				onSuccess: func() { qh.scanExecutor.scanCounters.TasksDispatched++ },
 				markDirty: func() { taskDirty[queueFile] = true },
 			})
 			return
@@ -163,7 +163,7 @@ func (qh *QueueHandler) applyBusyCheckCore(bc busyCheckResult, entryID string, s
 				qh.log(LogLevelError, "expire_release_failed type=%s id=%s error=%v", ops.kind, entryID, err)
 				return
 			}
-			qh.scanCounters.LeaseReleases++
+			qh.scanExecutor.scanCounters.LeaseReleases++
 			ops.markDirty()
 			return
 		}
@@ -173,7 +173,7 @@ func (qh *QueueHandler) applyBusyCheckCore(bc busyCheckResult, entryID string, s
 		if err := ops.extendGrace(graceTTL); err != nil {
 			qh.log(LogLevelError, "lease_grace_extend_failed type=%s id=%s error=%v", ops.kind, entryID, err)
 		}
-		qh.scanCounters.LeaseExtensions++
+		qh.scanExecutor.scanCounters.LeaseExtensions++
 		ops.markDirty()
 		return
 	}
@@ -186,7 +186,7 @@ func (qh *QueueHandler) applyBusyCheckCore(bc busyCheckResult, entryID string, s
 			if err := ops.extendLease(); err != nil {
 				qh.log(LogLevelError, "lease_extend_failed type=%s id=%s error=%v", ops.kind, entryID, err)
 			}
-			qh.scanCounters.LeaseExtensions++
+			qh.scanExecutor.scanCounters.LeaseExtensions++
 			ops.markDirty()
 			return
 		}
@@ -198,7 +198,7 @@ func (qh *QueueHandler) applyBusyCheckCore(bc busyCheckResult, entryID string, s
 		qh.log(LogLevelError, "expire_release_failed type=%s id=%s error=%v", ops.kind, entryID, err)
 		return
 	}
-	qh.scanCounters.LeaseReleases++
+	qh.scanExecutor.scanCounters.LeaseReleases++
 	ops.markDirty()
 }
 
@@ -279,7 +279,7 @@ func (qh *QueueHandler) applySignalResults(results []signalDeliveryResult, sq *m
 		if dlErr == nil {
 			qh.log(LogLevelInfo, "signal_delivered kind=%s command=%s phase=%s attempts=%d",
 				sig.Kind, sig.CommandID, sig.PhaseID, sig.Attempts)
-			qh.scanCounters.SignalDeliveries++
+			qh.scanExecutor.scanCounters.SignalDeliveries++
 			*dirty = true
 			continue
 		}
@@ -293,7 +293,7 @@ func (qh *QueueHandler) applySignalResults(results []signalDeliveryResult, sq *m
 
 		qh.log(LogLevelWarn, "signal_delivery_failed kind=%s command=%s phase=%s attempts=%d next_retry=%s error=%v",
 			sig.Kind, sig.CommandID, sig.PhaseID, sig.Attempts, nextAttemptStr, dlErr)
-		qh.scanCounters.SignalRetries++
+		qh.scanExecutor.scanCounters.SignalRetries++
 
 		retained = append(retained, sig)
 	}

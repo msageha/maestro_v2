@@ -29,35 +29,9 @@ func classifyCommitError(err error) string {
 	return "generic:" + err.Error()
 }
 
-// periodicScanPhaseB executes all slow tmux I/O operations without holding any lock.
-// Order: interrupts -> busy checks -> dispatches -> signals -> clears -> merges -> publishes -> cleanups (per Codex review).
-// SRE-002: accepts context for cancellation support during slow I/O.
-func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult) phaseBResult {
-	result := phaseBResult{
-		busyChecks:        make([]busyCheckResult, 0, len(pa.work.busyChecks)),
-		dispatches:        make([]dispatchResult, 0, len(pa.work.dispatches)),
-		signals:           make([]signalDeliveryResult, 0, len(pa.work.signals)),
-		recoveryHints:     make([]string, 0, len(pa.work.signals)),
-		worktreeMerges:    make([]worktreeMergeResult, 0, len(pa.work.worktreeMerges)),
-		worktreePublishes: make([]worktreePublishResult, 0, len(pa.work.worktreePublishes)),
-		worktreeCleanups:  make([]worktreeCleanupResult, 0, len(pa.work.worktreeCleanups)+len(pa.work.worktreePublishes)),
-	}
-
-	// Execute steps in fixed order.
-	qh.stepInterruptAgents(ctx, &pa)
-	qh.stepProbeBusyAgents(ctx, &pa, &result)
-	qh.stepDispatchWork(ctx, &pa, &result)
-	qh.stepDeliverSignals(ctx, &pa, &result)
-	qh.stepLogPartialFailures(&result)
-	qh.stepClearAgents(ctx, &pa)
-	qh.stepCommitAndMergeWorktrees(ctx, &pa, &result)
-	additionalCleanups := qh.stepPublishWorktrees(ctx, &pa, &result)
-	qh.stepCleanupWorktrees(ctx, &pa, &result, additionalCleanups)
-
-	return result
-}
-
 // --- Phase B step functions (executed in order) ---
+// periodicScanPhaseB has been moved to ScanPhaseExecutor (scan_phase_executor.go).
+// Step functions below remain on QueueHandler as they access shared handler dependencies.
 
 // stepInterruptAgents executes interrupt requests before dispatches to avoid
 // killing newly dispatched tasks. After each interrupt, discards the worker's
