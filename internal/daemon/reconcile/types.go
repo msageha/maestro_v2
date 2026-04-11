@@ -22,6 +22,8 @@ const (
 	PatternR5 RepairPatternID = "R5"
 	// PatternR6 identifies repairs produced by the R6 reconciler.
 	PatternR6 RepairPatternID = "R6"
+	// PatternR7 identifies repairs produced by the R7 merge conflict reconciler.
+	PatternR7 RepairPatternID = "R7"
 )
 
 // NotificationKind identifies the type of deferred Planner notification.
@@ -34,6 +36,10 @@ const (
 	NotifyReEvaluate NotificationKind = "re_evaluate"
 	// NotifyFillTimeout signals that a phase fill deadline has expired.
 	NotifyFillTimeout NotificationKind = "fill_timeout"
+	// NotifyConflictResolution requests the planner to generate a __conflict_resolution task.
+	NotifyConflictResolution NotificationKind = "conflict_resolution"
+	// NotifyConflictEscalation signals the planner that conflict resolution attempts are exhausted.
+	NotifyConflictEscalation NotificationKind = "conflict_escalation"
 )
 
 // Repair describes a single repair action performed by a reconciliation pattern.
@@ -48,8 +54,9 @@ type Repair struct {
 type DeferredNotification struct {
 	Kind           NotificationKind // notification type
 	CommandID      string           // target command
-	Reason         string           // human-readable reason (for re_evaluate)
+	Reason         string           // human-readable reason (for re_evaluate, conflict_escalation)
 	TimedOutPhases map[string]bool  // phase names (for fill_timeout)
+	WorkerID       string           // worker ID (for conflict_resolution, conflict_escalation)
 }
 
 // Outcome is the result of a single pattern's Apply call.

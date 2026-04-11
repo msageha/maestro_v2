@@ -300,6 +300,19 @@ func (r *Run) updateLastReconciledAt(commandID string) {
 	}
 }
 
+// loadWorktreeState loads and parses a worktree command state YAML file.
+func (r *Run) loadWorktreeState(path string) (*model.WorktreeCommandState, error) {
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application state directory
+	if err != nil {
+		return nil, err
+	}
+	var state model.WorktreeCommandState
+	if err := yamlv3.Unmarshal(data, &state); err != nil {
+		return nil, err
+	}
+	return &state, nil
+}
+
 // log writes a log message via the DaemonLogger.
 func (r *Run) log(level core.LogLevel, format string, args ...any) {
 	r.Deps.DL.Logf(level, format, args...)

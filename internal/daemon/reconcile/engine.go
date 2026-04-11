@@ -56,6 +56,10 @@ func (e *Engine) ExecuteDeferredNotifications(notifications []DeferredNotificati
 			e.notifyPlannerOfReEvaluation(n.CommandID, n.Reason)
 		case NotifyFillTimeout:
 			e.notifyPlannerOfTimeout(n.CommandID, n.TimedOutPhases)
+		case NotifyConflictResolution:
+			e.notifyPlannerOfConflictResolution(n.CommandID, n.WorkerID)
+		case NotifyConflictEscalation:
+			e.notifyPlannerOfConflictEscalation(n.CommandID, n.WorkerID)
 		default:
 			e.deps.DL.Logf(core.LogLevelWarn, "unknown deferred notification kind=%s command=%s", n.Kind, n.CommandID)
 		}
@@ -141,5 +145,47 @@ func (e *Engine) notifyPlannerOfTimeout(commandID string, timedOutPhases map[str
 	})
 	if result.Error != nil {
 		e.deps.DL.Logf(core.LogLevelWarn, "R6 notify_planner command=%s error=%v", commandID, result.Error)
+	}
+}
+
+func (e *Engine) notifyPlannerOfConflictResolution(commandID, workerID string) {
+	exec, err := e.createExecutor("R7")
+	if err != nil {
+		return
+	}
+	defer func() { _ = exec.Close() }()
+
+	message := fmt.Sprintf("[maestro] kind:conflict_resolution command_id:%s worker_id:%s\nmerge conflict detected — please generate a __conflict_resolution task",
+		commandID, workerID)
+
+	result := exec.Execute(agent.ExecRequest{
+		AgentID:   "planner",
+		Message:   message,
+		Mode:      agent.ModeDeliver,
+		CommandID: commandID,
+	})
+	if result.Error != nil {
+		e.deps.DL.Logf(core.LogLevelWarn, "R7 notify_planner_resolution command=%s worker=%s error=%v", commandID, workerID, result.Error)
+	}
+}
+
+func (e *Engine) notifyPlannerOfConflictEscalation(commandID, workerID string) {
+	exec, err := e.createExecutor("R7")
+	if err != nil {
+		return
+	}
+	defer func() { _ = exec.Close() }()
+
+	message := fmt.Sprintf("[maestro] kind:conflict_escalation command_id:%s worker_id:%s\nconflict resolution attempts exhausted — escalating to planner",
+		commandID, workerID)
+
+	result := exec.Execute(agent.ExecRequest{
+		AgentID:   "planner",
+		Message:   message,
+		Mode:      agent.ModeDeliver,
+		CommandID: commandID,
+	})
+	if result.Error != nil {
+		e.deps.DL.Logf(core.LogLevelWarn, "R7 notify_planner_escalation command=%s worker=%s error=%v", commandID, workerID, result.Error)
 	}
 }
