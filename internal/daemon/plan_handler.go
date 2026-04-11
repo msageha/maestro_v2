@@ -45,13 +45,17 @@ func (a *API) handlePlan(req *uds.Request) *uds.Response {
 	}
 
 	// Operations that route through the worktree manager rather than the
-	// plan executor (operator-recovery commands). Trust boundary: workers
-	// must not be allowed to invoke any of these even if they bypass the
-	// launcher --disallowedTools and policy hook layers, so we reject any
-	// caller that self-identifies as a worker. Empty CallerRole is allowed
-	// for shell/operator invocations and is treated as the trusted CLI path.
+	// plan executor (operator-recovery commands). Trust boundary: only
+	// known, authenticated roles may invoke these. Workers are explicitly
+	// blocked even if they bypass the launcher --disallowedTools and policy
+	// hook layers. Empty or unknown CallerRole is rejected to prevent
+	// unauthenticated shell invocations from reaching recovery endpoints.
 	switch params.Operation {
 	case "unquarantine", "resume_merge", "resolve_conflict":
+		if !isValidCallerRole(req.CallerRole) {
+			return uds.ErrorResponse(uds.ErrCodeValidation,
+				fmt.Sprintf("operation %q requires a valid caller role, got %q", params.Operation, req.CallerRole))
+		}
 		if req.CallerRole == "worker" {
 			return uds.ErrorResponse(uds.ErrCodeValidation,
 				fmt.Sprintf("operation %q is not permitted for caller role %q", params.Operation, req.CallerRole))
@@ -203,4 +207,19 @@ func (a *API) handlePlanWorktreeRecovery(operation string, data json.RawMessage)
 		"status":     "ok",
 	})
 	return &uds.Response{Success: true, Data: out}
+}
+
+// validCallerRoles is the authoritative set of roles that may invoke
+// operator-recovery plan operations. The set is intentionally small and
+// must be maintained explicitly — any new role requires a conscious addition.
+var validCallerRoles = map[string]bool{
+	"orchestrator": true,
+	"planner":      true,
+	"worker":       true,
+	"operator":     true,
+}
+
+// isValidCallerRole returns true if role is a known, non-empty caller role.
+func isValidCallerRole(role string) bool {
+	return validCallerRoles[role]
 }

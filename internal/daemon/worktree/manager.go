@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -146,7 +147,9 @@ func (wm *Manager) EnsureWorkerWorktree(commandID, workerID string) error {
 
 		if err := wm.saveState(commandID, state); err != nil {
 			// Rollback: remove worker worktree, branch, and integration
-			wm.rollbackWorkerWorktree(commandID, state, workerID)
+			if rbErr := wm.rollbackWorkerWorktree(commandID, state, workerID); rbErr != nil {
+				wm.log(core.LogLevelWarn, "rollback_worker_worktree command=%s worker=%s error=%v", commandID, workerID, rbErr)
+			}
 			rollbackIntegration()
 			statePath := filepath.Join(wm.maestroDir, "state", "worktrees", commandID+".yaml")
 			_ = os.Remove(statePath)
@@ -181,7 +184,9 @@ func (wm *Manager) EnsureWorkerWorktree(commandID, workerID string) error {
 	state.UpdatedAt = now
 	if err := wm.saveState(commandID, state); err != nil {
 		// Rollback: remove the just-created worker worktree
-		wm.rollbackWorkerWorktree(commandID, state, workerID)
+		if rbErr := wm.rollbackWorkerWorktree(commandID, state, workerID); rbErr != nil {
+			wm.log(core.LogLevelWarn, "rollback_worker_worktree command=%s worker=%s error=%v", commandID, workerID, rbErr)
+		}
 		// Restore original state to fix potential partial file write
 		state.Workers = origWorkers
 		state.UpdatedAt = origUpdatedAt
@@ -534,17 +539,25 @@ func (wm *Manager) integrationWorktreePath(commandID string) string {
 	return filepath.Join(wm.projectRoot, wm.config.EffectivePathPrefix(), commandID, "_integration")
 }
 
-// rollbackWorkerWorktree removes a worker's worktree and branch (best-effort cleanup).
-func (wm *Manager) rollbackWorkerWorktree(commandID string, state *model.WorktreeCommandState, workerID string) {
+// rollbackWorkerWorktree removes a worker's worktree and branch.
+// Returns an error if any cleanup step fails (caller should log but
+// not abort — Reconcile can recover from partial rollback state).
+func (wm *Manager) rollbackWorkerWorktree(commandID string, state *model.WorktreeCommandState, workerID string) error {
 	for _, ws := range state.Workers {
 		if ws.WorkerID == workerID {
+			var errs []error
 			if rbErr := wm.gitRun("worktree", "remove", "--force", ws.Path); rbErr != nil {
 				wm.log(core.LogLevelWarn, "rollback_worktree_remove command=%s worker=%s error=%v", commandID, workerID, rbErr)
+				errs = append(errs, fmt.Errorf("remove worktree %s: %w", ws.Path, rbErr))
 			}
-			_ = wm.gitRun("branch", "-D", ws.Branch)
-			return
+			if rbErr := wm.gitRun("branch", "-D", ws.Branch); rbErr != nil {
+				wm.log(core.LogLevelWarn, "rollback_branch_delete command=%s worker=%s branch=%s error=%v", commandID, workerID, ws.Branch, rbErr)
+				errs = append(errs, fmt.Errorf("delete branch %s: %w", ws.Branch, rbErr))
+			}
+			return errors.Join(errs...)
 		}
 	}
+	return nil
 }
 
 func (wm *Manager) findWorker(state *model.WorktreeCommandState, workerID string) *model.WorktreeState {
