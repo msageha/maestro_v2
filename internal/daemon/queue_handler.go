@@ -15,6 +15,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/fallback"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
+	"github.com/msageha/maestro_v2/internal/metrics"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -51,7 +52,7 @@ type QueueHandler struct {
 	resultHandler       *ResultHandler
 	reconciler          *Reconciler
 	deadLetterProcessor *DeadLetterProcessor
-	metricsHandler      *MetricsHandler
+	metricsHandler      *metrics.Handler
 	circuitBreaker      *circuitbreaker.Handler
 	admissionCtrl       *admission.Controller
 	fallbackMgr         *fallback.Manager
@@ -86,7 +87,7 @@ func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap
 	rh := NewResultHandler(maestroDir, cfg, lockMap, logger, logLevel, ep, clock)
 	rec := NewReconciler(maestroDir, cfg, lockMap, logger, logLevel, rh, ep.Factory())
 	dlp := NewDeadLetterProcessor(maestroDir, cfg, lockMap, logger, logLevel)
-	mh := NewMetricsHandler(maestroDir, cfg, logger, logLevel)
+	mh := metrics.NewHandler(maestroDir, cfg, logger, logLevel)
 
 	dl := NewDaemonLoggerFromLegacy("queue_handler", logger, logLevel)
 	qh := &QueueHandler{
@@ -403,7 +404,7 @@ type signalDeliveryResult struct {
 type phaseAResult struct {
 	work      deferredWork
 	scanStart time.Time
-	counters  ScanCounters
+	counters  metrics.ScanCounters
 }
 
 // phaseBResult holds all results from Phase B for Phase C to apply.
