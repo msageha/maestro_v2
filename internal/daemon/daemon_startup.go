@@ -74,8 +74,8 @@ func (d *Daemon) prepareStartup() error {
 	}
 
 	// Watch queue/ and results/ directories
-	queueDir := filepath.Join(d.maestroDir, "queue")
-	resultsDir := filepath.Join(d.maestroDir, "results")
+	queueDir := queueDirPath(d.maestroDir)
+	resultsDir := resultsDirPath(d.maestroDir)
 	for _, dir := range []string{queueDir, resultsDir} {
 		if err := os.MkdirAll(dir, 0755); err != nil { //nolint:gosec // 0755 is appropriate for queue/results directories
 			return fmt.Errorf("ensure dir %s: %w", dir, err)

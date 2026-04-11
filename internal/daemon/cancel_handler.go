@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -227,7 +226,7 @@ func (ch *CancelHandler) WriteSyntheticResults(results []CancelledTaskResult, wo
 	ch.lockMap.Lock(lockKey)
 	defer ch.lockMap.Unlock(lockKey)
 
-	resultPath := filepath.Join(ch.maestroDir, "results", workerID+".yaml")
+	resultPath := resultFilePath(ch.maestroDir, workerID)
 	var rf model.TaskResultFile
 
 	data, err := os.ReadFile(resultPath) //nolint:gosec // resultPath is constructed from a controlled application results directory

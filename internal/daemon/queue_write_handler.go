@@ -88,7 +88,7 @@ func (h *QueueWriteAPI) handleQueueWriteCommand(params QueueWriteParams) *uds.Re
 	h.lockMap.Lock("queue:planner")
 	defer h.lockMap.Unlock("queue:planner")
 
-	queuePath := filepath.Join(h.maestroDir, "queue", "planner.yaml")
+	queuePath := commandQueuePath(h.maestroDir)
 	cq, data, err := loadCommandQueueFile(queuePath)
 	if err != nil {
 		return internalErrorf("%v", err)
@@ -179,7 +179,7 @@ func (h *QueueWriteAPI) handleQueueWriteTask(params QueueWriteParams) *uds.Respo
 	h.lockMap.Lock("queue:" + params.Target)
 	defer h.lockMap.Unlock("queue:" + params.Target)
 
-	queuePath := filepath.Join(h.maestroDir, "queue", params.Target+".yaml")
+	queuePath := taskQueuePath(h.maestroDir, params.Target)
 	tq, data, err := loadTaskQueueFile(queuePath)
 	if err != nil {
 		return internalErrorf("%v", err)
@@ -290,7 +290,7 @@ func (h *QueueWriteAPI) handleQueueWriteNotification(params QueueWriteParams) *u
 	h.lockMap.Lock("queue:orchestrator")
 	defer h.lockMap.Unlock("queue:orchestrator")
 
-	queuePath := filepath.Join(h.maestroDir, "queue", "orchestrator.yaml")
+	queuePath := notificationQueuePath(h.maestroDir)
 	nq, data, err := loadNotificationQueueFile(queuePath)
 	if err != nil {
 		return internalErrorf("%v", err)
@@ -401,7 +401,7 @@ func (h *QueueWriteAPI) handleQueueWriteCancelRequest(params QueueWriteParams) *
 	}
 
 	// Check if state exists (submitted command)
-	statePath := filepath.Join(h.maestroDir, "state", "commands", params.CommandID+".yaml")
+	statePath := commandStatePath(h.maestroDir, params.CommandID)
 	if _, err := os.Stat(statePath); err == nil {
 		return h.cancelRequestSubmitted(params, statePath)
 	}
@@ -454,7 +454,7 @@ func (h *QueueWriteAPI) cancelRequestSubmitted(params QueueWriteParams, statePat
 	}
 
 	// Also update queue/planner.yaml cancel metadata (already under fileMu)
-	queuePath := filepath.Join(h.maestroDir, "queue", "planner.yaml")
+	queuePath := commandQueuePath(h.maestroDir)
 	cq, _, err := loadCommandQueueFile(queuePath)
 	if err == nil {
 		for i := range cq.Commands {
@@ -487,7 +487,7 @@ func (h *QueueWriteAPI) cancelRequestUnsubmitted(params QueueWriteParams) *uds.R
 	h.lockMap.Lock("queue:planner")
 	defer h.lockMap.Unlock("queue:planner")
 
-	queuePath := filepath.Join(h.maestroDir, "queue", "planner.yaml")
+	queuePath := commandQueuePath(h.maestroDir)
 	cq, _, err := loadCommandQueueFile(queuePath)
 	if err != nil {
 		return internalErrorf("%v", err)
@@ -645,7 +645,7 @@ func (h *QueueWriteAPI) detectCycleInDependencies(newTaskID string, newBlockedBy
 	}
 
 	// Collect non-terminal tasks from other worker queues (enumerate from disk)
-	queueDir := filepath.Join(h.maestroDir, "queue")
+	queueDir := queueDirPath(h.maestroDir)
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
 		h.logFn(LogLevelWarn, "cycle_detection read_queue_dir error=%v", err)
@@ -744,21 +744,13 @@ func detectCycleDFS(deps map[string][]string) []string {
 
 // --- File I/O helpers ---
 
-// loadQueueFile reads and unmarshals a YAML queue file. If the file does not
-// exist, it returns a zero-value T with defaults applied. setDefaults is
-// called on every successful path to ensure SchemaVersion/FileType are set.
+// loadQueueFile reads and unmarshals a YAML queue file via loadYAMLFile. If
+// the file does not exist, it returns a zero-value T with defaults applied.
+// setDefaults is called on every successful path to ensure SchemaVersion/FileType are set.
 func loadQueueFile[T any](path string, setDefaults func(*T)) (T, []byte, error) {
-	var result T
-	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
+	result, data, err := loadYAMLFile[T](path, true)
 	if err != nil {
-		if os.IsNotExist(err) {
-			setDefaults(&result)
-			return result, nil, nil
-		}
-		return result, nil, fmt.Errorf("read queue %s: %w", path, err)
-	}
-	if err := yamlv3.Unmarshal(data, &result); err != nil {
-		return result, data, fmt.Errorf("parse queue %s: %w", path, err)
+		return result, data, err
 	}
 	setDefaults(&result)
 	return result, data, nil
@@ -846,7 +838,7 @@ func (h *QueueWriteAPI) archiveTerminalTasks(tq *model.TaskQueue) int {
 // but other code paths (retry, submit) acquire state:{commandID} before
 // queue:{workerID}. Omitting the lock avoids the deadlock risk (CR-011).
 func (h *QueueWriteAPI) isCommandPlanTerminal(commandID string) bool {
-	statePath := filepath.Join(h.maestroDir, "state", "commands", commandID+".yaml")
+	statePath := commandStatePath(h.maestroDir, commandID)
 	data, err := os.ReadFile(statePath) //nolint:gosec // statePath is constructed from a controlled application state directory
 	if err != nil {
 		return false
