@@ -60,6 +60,68 @@ PLAN
 
 **検証（副作用なし）**: `maestro plan submit --dry-run --command-id <id> --tasks-file - <<'PLAN'`
 
+#### plan submit の stdout 出力形式
+
+成功時、stdout に JSON（インデント付き）が出力される。`task_id` は Daemon が採番するため、Planner が生成する必要はない。YAML 内の `blocked_by` には `name` を使用する。
+
+**タスクのみ（単一フェーズ）の場合:**
+
+```json
+{
+  "command_id": "cmd_xxx",
+  "tasks": [
+    {
+      "name": "login-api",
+      "task_id": "task_xxx",
+      "worker": "worker1",
+      "model": "sonnet"
+    }
+  ]
+}
+```
+
+**フェーズ付きの場合:**
+
+```json
+{
+  "command_id": "cmd_xxx",
+  "phases": [
+    {
+      "name": "foundation",
+      "phase_id": "phase_xxx",
+      "type": "concrete",
+      "status": "active",
+      "tasks": [
+        {
+          "name": "define-interfaces",
+          "task_id": "task_xxx",
+          "worker": "worker1",
+          "model": "opus"
+        }
+      ]
+    },
+    {
+      "name": "implementation",
+      "phase_id": "phase_yyy",
+      "type": "deferred",
+      "status": "pending"
+    }
+  ]
+}
+```
+
+**dry-run 時:** `{"valid": true}`（タスクは作成されない）
+
+| フィールド | 説明 |
+|---|---|
+| `command_id` | コマンド ID |
+| `tasks[].name` | YAML 内の name |
+| `tasks[].task_id` | Daemon が採番した task_id。`add-retry-task` の `--blocked-by` で使用 |
+| `tasks[].worker` | 割り当て Worker |
+| `tasks[].model` | 割り当てモデル（sonnet / opus） |
+| `phases[].phase_id` | Daemon が採番した phase_id |
+| `phases[].status` | concrete → `active`、deferred → `pending` |
+
 **完了報告**: `maestro plan complete --command-id <id> --summary "<要約>"`（未完了タスクがあると拒否）
 
 **失敗タスクのリトライ**:
@@ -183,7 +245,21 @@ Orchestrator からコマンド単位のキャンセル要求（`maestro plan re
 | L1-L3 | 記憶・理解・適用（定型コード、ドキュメント、既知パターン） | Sonnet |
 | L4-L6 | 分析・評価・創造（調査、設計レビュー、新規アーキテクチャ） | Opus |
 
-`config.yaml` の `boost: true` 時は全 Worker が Opus。
+`config.yaml` の `boost: true` 時は全レベルで Opus が使用される。
+
+### Bloom レベルとモデル/ペルソナのマッピング表
+
+| レベル | 認知プロセス | デフォルトモデル | 推奨ペルソナ例 |
+|--------|-------------|-----------------|---------------|
+| L1-L2 | 記憶・理解 | Sonnet | `implementer` |
+| L3 | 適用 | Sonnet | `implementer` |
+| L4 | 分析 | Opus | `researcher` / `architect` |
+| L5 | 評価 | Opus | `quality-assurance` |
+| L6 | 創造 | Opus | `architect` |
+
+- `boost: true` 時は全レベルで Opus となる
+- ペルソナとの対応は推奨であり強制ではない。タスクの性質に応じて Planner が判断する
+- `bloom_level` はモデル選択に直接影響する。`persona_hint` は Worker の行動モードを指定する独立した軸である
 
 ---
 
@@ -266,6 +342,24 @@ maestro skill list --role worker
 | `bloom_level` | "どの深さで" — 認知レベル・モデル選択 |
 
 3 つは独立して機能し組み合わせ可能。大半のタスクでは `skill_refs` は省略が適切。存在しないスキル名の挙動は `config.yaml` の `missing_ref_policy` に依存。
+
+---
+
+## 用語定義: Phase と Wave
+
+| 用語 | 定義 |
+|------|------|
+| **Phase** | タスク実行の段階。`concrete`（タスクを含み即座に実行開始）と `deferred`（依存フェーズ完了後に `awaiting_fill` 通知、Planner がタスクを投入）の 2 種類がある |
+| **Wave** | 同一フェーズ内で `blocked_by` による依存グラフが形成する並列実行グループ。Phase の利用パターンであり独立した概念ではない |
+
+**依存関係の表現方法:**
+
+| スコープ | 表現手段 | 説明 |
+|---------|---------|------|
+| 同一フェーズ内のタスク間 | `blocked_by` | YAML 内の `name` で参照。同一フェーズ内の先行タスクを指定 |
+| フェーズ間 | `depends_on_phases` | deferred フェーズの定義で依存先フェーズ名を指定 |
+
+Wave は明示的に宣言するものではなく、`blocked_by` の有無によって暗黙的に形成される。依存のないタスクが Wave 1（即時実行可能）、Wave 1 に `blocked_by` で依存するタスクが Wave 2、以降同様に連鎖する。
 
 ---
 
@@ -544,13 +638,45 @@ tasks:
 | `purpose` | 必須 | タスクが全体の中で果たす役割 |
 | `content` | 必須 | 実行すべき具体的な作業内容 |
 | `acceptance_criteria` | 必須 | 完了の検証条件（検証可能な形式） |
-| `constraints` | 任意 | 実行時の制約条件リスト |
+| `constraints` | 任意 | 実行時の制約条件リスト（下記「constraints の詳細」参照） |
 | `blocked_by` | 必須 | 先行タスクの name リスト（空配列で即時実行可能） |
 | `bloom_level` | 必須 | Bloom's Taxonomy レベル (1-6) |
 | `required` | 必須 | `true`: 失敗で command 失敗 / `false`: 影響なし |
 | `tools_hint` | 任意 | 推奨 MCP ツール名リスト |
 | `persona_hint` | 任意 | ペルソナ名（`.maestro/persona/{name}.md`） |
 | `skill_refs` | 任意 | スキル名リスト（`.maestro/skills/{role}/{name}/SKILL.md`） |
+
+#### constraints の詳細
+
+タスクの `constraints` は文字列リスト形式で、Worker への指示文として渡される。Worker は `content` と共にこれらの制約を遵守して作業する。
+
+```yaml
+constraints:
+  - "変更対象は internal/auth/ 以下のみ"
+  - "go vet ./internal/auth/... をパスすること"
+  - "外部パッケージの追加禁止"
+```
+
+**config.yaml の verification セクションとの連携:**
+
+`config.yaml` に `verification` セクションが定義されている場合、検証コマンドを `constraints` に含めることで Worker に基本検証を促せる。
+
+```yaml
+# 通常タスクの場合: basic_command を constraints に含める
+constraints:
+  - "go vet ./... をパスすること"
+
+# verification フェーズタスクの場合: full_command を content に記載
+content: |
+  以下の検証コマンドを実行する:
+  go test ./... -count=1 -timeout 300s
+```
+
+| 用途 | 参照元 | 含め先 |
+|------|--------|--------|
+| 通常タスクの基本検証 | `verification.basic_command` | `constraints` |
+| verification タスクの完全検証 | `verification.full_command` | `content` |
+| タイムアウト・リトライ | `verification.timeout_seconds` / `max_retries` | `constraints` |
 
 ### フェーズ付き（段階実行）
 
