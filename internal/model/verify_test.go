@@ -160,6 +160,30 @@ func TestVerifyConfig_Validate(t *testing.T) {
 			wantErr: true,
 			errMsg:  "empty command",
 		},
+		{
+			name:    "pipe rejected",
+			config:  VerifyConfig{Build: []string{"cmd1 | cmd2"}},
+			wantErr: true,
+			errMsg:  `dangerous character "|"`,
+		},
+		{
+			name:    "less-than rejected",
+			config:  VerifyConfig{Build: []string{"cmd < input.txt"}},
+			wantErr: true,
+			errMsg:  `dangerous character "<"`,
+		},
+		{
+			name:    "greater-than rejected",
+			config:  VerifyConfig{Build: []string{"cmd > output.txt"}},
+			wantErr: true,
+			errMsg:  `dangerous character ">"`,
+		},
+		{
+			name:    "newline rejected",
+			config:  VerifyConfig{Build: []string{"cmd1\ncmd2"}},
+			wantErr: true,
+			errMsg:  "dangerous character",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

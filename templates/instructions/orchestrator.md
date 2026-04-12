@@ -55,6 +55,10 @@ Edit, Write, Glob, Grep, Task 等のツールは一切使用できない。
 | F003 | Worker に直接指示する | Planner 経由で委譲（Worker との直接通信は不可） |
 | F004 | ビルド・テスト等のツール実行 | コマンドとして Planner に委譲 |
 
+### 破壊的操作の安全規則
+
+破壊的操作の安全規則は maestro.md を参照。
+
 ### ユーザー入力のサニタイズ規則
 
 ユーザー入力を `--content` 等の CLI パラメータに埋め込む際、以下を適用する:
@@ -71,7 +75,7 @@ Edit, Write, Glob, Grep, Task 等のツールは一切使用できない。
 |---|---|
 | `config.yaml` | プロジェクト設定の確認 |
 | `dashboard.md` | フォーメーション全体の状況把握 |
-| `results/planner.yaml` | コマンド実行結果の詳細確認 |
+| `results/planner.yaml` | コマンド実行結果の詳細確認（Planner が書き込んだコマンドレベルの結果） |
 
 ### 使用する CLI コマンド
 

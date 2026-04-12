@@ -1,6 +1,10 @@
 package model
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/msageha/maestro_v2/internal/ptr"
+)
 
 func TestValidateComplexityLevel(t *testing.T) {
 	tests := []struct {
@@ -61,9 +65,9 @@ func TestComplexityThresholds_Defaults(t *testing.T) {
 
 func TestComplexityThresholds_Configured(t *testing.T) {
 	ct := ComplexityThresholds{
-		SimpleMaxFiles:   IntPtr(5),
-		StandardMaxFiles: IntPtr(15),
-		ComplexMaxFiles:  IntPtr(50),
+		SimpleMaxFiles:   ptr.Int(5),
+		StandardMaxFiles: ptr.Int(15),
+		ComplexMaxFiles:  ptr.Int(50),
 	}
 	if v := ct.EffectiveSimpleMaxFiles(); v != 5 {
 		t.Errorf("EffectiveSimpleMaxFiles() = %d, want 5", v)

@@ -1,5 +1,7 @@
 package model
 
+import "github.com/msageha/maestro_v2/internal/ptr"
+
 // Profile level constants (matching complexity levels).
 const (
 	ProfileLevelSimple   = "simple"
@@ -25,35 +27,35 @@ func DefaultFeatureProfiles() map[string]FeatureProfile {
 	return map[string]FeatureProfile{
 		ProfileLevelSimple: {
 			CrossAgentReview:        &f,
-			ExploratoryOptimization: BoolPtr(false),
-			EvolutionaryQuality:     BoolPtr(false),
-			AdaptiveModelSelection:  BoolPtr(false),
-			SelfImprovement:         BoolPtr(false),
-			AdaptiveDepth:           BoolPtr(false),
+			ExploratoryOptimization: ptr.Bool(false),
+			EvolutionaryQuality:     ptr.Bool(false),
+			AdaptiveModelSelection:  ptr.Bool(false),
+			SelfImprovement:         ptr.Bool(false),
+			AdaptiveDepth:           ptr.Bool(false),
 		},
 		ProfileLevelStandard: {
 			CrossAgentReview:        &opt,
-			ExploratoryOptimization: BoolPtr(false),
-			EvolutionaryQuality:     BoolPtr(false),
-			AdaptiveModelSelection:  BoolPtr(true),
-			SelfImprovement:         BoolPtr(false),
-			AdaptiveDepth:           BoolPtr(true),
+			ExploratoryOptimization: ptr.Bool(false),
+			EvolutionaryQuality:     ptr.Bool(false),
+			AdaptiveModelSelection:  ptr.Bool(true),
+			SelfImprovement:         ptr.Bool(false),
+			AdaptiveDepth:           ptr.Bool(true),
 		},
 		ProfileLevelComplex: {
 			CrossAgentReview:        &tr,
-			ExploratoryOptimization: BoolPtr(true),
-			EvolutionaryQuality:     BoolPtr(true),
-			AdaptiveModelSelection:  BoolPtr(true),
-			SelfImprovement:         BoolPtr(true),
-			AdaptiveDepth:           BoolPtr(true),
+			ExploratoryOptimization: ptr.Bool(true),
+			EvolutionaryQuality:     ptr.Bool(true),
+			AdaptiveModelSelection:  ptr.Bool(true),
+			SelfImprovement:         ptr.Bool(true),
+			AdaptiveDepth:           ptr.Bool(true),
 		},
 		ProfileLevelCritical: {
 			CrossAgentReview:        &tr,
-			ExploratoryOptimization: BoolPtr(true),
-			EvolutionaryQuality:     BoolPtr(true),
-			AdaptiveModelSelection:  BoolPtr(true),
-			SelfImprovement:         BoolPtr(true),
-			AdaptiveDepth:           BoolPtr(true),
+			ExploratoryOptimization: ptr.Bool(true),
+			EvolutionaryQuality:     ptr.Bool(true),
+			AdaptiveModelSelection:  ptr.Bool(true),
+			SelfImprovement:         ptr.Bool(true),
+			AdaptiveDepth:           ptr.Bool(true),
 		},
 	}
 }
