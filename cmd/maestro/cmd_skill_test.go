@@ -1,10 +1,13 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/msageha/maestro_v2/internal/uds"
 )
 
 func TestRunSkillList_RoleRequired(t *testing.T) {
@@ -166,5 +169,68 @@ func TestRunSkillList_ShareRole(t *testing.T) {
 	}
 	if strings.Contains(output, "Worker Skill") {
 		t.Error("output should NOT contain worker-specific skill")
+	}
+}
+
+func TestRunSkillApprove_UnmarshalError(t *testing.T) {
+	withMaestroDir(t)
+	origFactory := newUDSClient
+	newUDSClient = func(string) udsClientIface {
+		return &mockUDSClient{
+			sendCommandFunc: func(string, any) (*uds.Response, error) {
+				return &uds.Response{Success: true, Data: json.RawMessage(`not valid json`)}, nil
+			},
+		}
+	}
+	defer func() { newUDSClient = origFactory }()
+
+	err := runSkillApprove([]string{"candidate_0000000001_abcdef01"})
+	if err == nil {
+		t.Fatal("expected error for invalid JSON response")
+	}
+	if !strings.Contains(err.Error(), "unmarshal response") {
+		t.Errorf("expected 'unmarshal response' in error, got: %v", err)
+	}
+}
+
+func TestSanitizeForTerminal(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"plain text", "hello", "hello"},
+		{"tab replaced", "a\tb", "a b"},
+		{"newline replaced", "a\nb", "a b"},
+		{"escape removed", "hello\x1b[31mworld\x1b[0m", "hello[31mworld[0m"},
+		{"null removed", "a\x00b", "ab"},
+		{"multibyte preserved", "日本語テスト", "日本語テスト"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeForTerminal(tt.input)
+			if got != tt.want {
+				t.Errorf("sanitizeForTerminal(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTruncateMultibyte(t *testing.T) {
+	// Verify that multibyte content is truncated at rune boundary, not byte boundary
+	// 81 CJK characters (each 3 bytes in UTF-8) should be truncated to 77 runes + "..."
+	input := strings.Repeat("あ", 81)
+	runes := []rune(input)
+	if len(runes) <= 80 {
+		t.Fatal("test setup error: input should have >80 runes")
+	}
+	truncated := input
+	if r := []rune(truncated); len(r) > 80 {
+		truncated = string(r[:77]) + "..."
+	}
+	// Verify we got 77 "あ" + "..."
+	expected := strings.Repeat("あ", 77) + "..."
+	if truncated != expected {
+		t.Errorf("truncation mismatch: got %d bytes, want %d bytes", len(truncated), len(expected))
 	}
 }

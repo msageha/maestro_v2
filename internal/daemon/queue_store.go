@@ -227,7 +227,7 @@ func (qs *QueueStoreImpl) quarantineFile(data []byte, name string) {
 		qs.log(LogLevelError, "create_quarantine_dir error=%v", err)
 		return
 	}
-	ts := qs.clock.Now().UTC().Format("20060102T150405Z")
+	ts := qs.clock.Now().UTC().Format("20060102T150405.000000000Z")
 	qPath := filepath.Join(quarantineDir, fmt.Sprintf("%s_%s", ts, name))
 	if err := os.WriteFile(qPath, data, 0600); err != nil { //nolint:gosec // qPath is constructed from a validated quarantine directory and a timestamp
 		qs.log(LogLevelError, "quarantine_write error=%v", err)

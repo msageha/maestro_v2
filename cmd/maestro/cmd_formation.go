@@ -20,6 +20,11 @@ import (
 // is not met — surface a clear error here before any tmux/daemon resources are
 // spun up.
 func precheckGitRepo(projectRoot, baseBranch string) error {
+	// 0. Validate branch name
+	if err := validateBranchName(baseBranch); err != nil {
+		return fmt.Errorf("invalid base branch name: %w", err)
+	}
+
 	// 1. Inside a git work tree?
 	cmd := exec.Command("git", "rev-parse", "--is-inside-work-tree")
 	cmd.Dir = projectRoot
@@ -136,6 +141,36 @@ func runDown(args []string) error {
 
 	if err := formation.RunDown(maestroDir, cfg); err != nil {
 		return fmt.Errorf("maestro down: %w", err)
+	}
+	return nil
+}
+
+// validateBranchName checks that a git branch name does not contain dangerous characters.
+func validateBranchName(name string) error {
+	if name == "" {
+		return fmt.Errorf("branch name must not be empty")
+	}
+	for _, r := range name {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("branch name contains control characters")
+		}
+	}
+	for _, bad := range []string{"..", "~", "^", ":", "\\", " ", "?", "*", "["} {
+		if strings.Contains(name, bad) {
+			return fmt.Errorf("branch name contains invalid character sequence %q", bad)
+		}
+	}
+	if strings.HasPrefix(name, "/") || strings.HasSuffix(name, "/") || strings.Contains(name, "//") {
+		return fmt.Errorf("branch name has invalid slash placement")
+	}
+	if strings.HasPrefix(name, "-") {
+		return fmt.Errorf("branch name must not start with a hyphen")
+	}
+	if strings.HasSuffix(name, ".lock") {
+		return fmt.Errorf("branch name must not end with .lock")
+	}
+	if strings.HasSuffix(name, ".") {
+		return fmt.Errorf("branch name must not end with a dot")
 	}
 	return nil
 }

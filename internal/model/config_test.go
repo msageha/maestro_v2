@@ -1142,3 +1142,37 @@ func TestComplexityConfig_Defaults(t *testing.T) {
 	}
 }
 
+func TestValidate_MaxYAMLFileBytes_Negative(t *testing.T) {
+	cfg := validConfig()
+	cfg.Limits.MaxYAMLFileBytes = -1
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for negative MaxYAMLFileBytes")
+	}
+	if !strings.Contains(err.Error(), "limits.max_yaml_file_bytes") {
+		t.Fatalf("expected limits.max_yaml_file_bytes in error, got: %v", err)
+	}
+}
+
+func TestValidate_MaxYAMLFileBytes_ExceedsMax(t *testing.T) {
+	cfg := validConfig()
+	cfg.Limits.MaxYAMLFileBytes = MaxMaxYAMLFileBytes + 1
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for MaxYAMLFileBytes exceeding max")
+	}
+	if !strings.Contains(err.Error(), "limits.max_yaml_file_bytes") {
+		t.Fatalf("expected limits.max_yaml_file_bytes in error, got: %v", err)
+	}
+}
+
+func TestValidate_MaxYAMLFileBytes_ValidValues(t *testing.T) {
+	for _, val := range []int{0, 1024, DefaultMaxYAMLFileBytes, MaxMaxYAMLFileBytes} {
+		cfg := validConfig()
+		cfg.Limits.MaxYAMLFileBytes = val
+		if err := cfg.Validate(); err != nil {
+			t.Errorf("MaxYAMLFileBytes=%d should be valid, got: %v", val, err)
+		}
+	}
+}
+
