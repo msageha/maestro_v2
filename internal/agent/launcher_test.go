@@ -348,6 +348,7 @@ func TestBuildLaunchArgs_WorkerDisallowsMaestroReads(t *testing.T) {
 		"Read(.maestro/locks/**)",
 		"Read(.maestro/logs/**)",
 		"Read(.maestro/config.yaml)",
+		"Read(.maestro/dashboard.md)",
 	}
 
 	for _, path := range controlPlanePaths {

@@ -205,6 +205,7 @@ func buildLaunchArgs(role, agentModel, systemPrompt, basePromptMode string) ([]s
 				"Read(.maestro/locks/**)",
 				"Read(.maestro/logs/**)",
 				"Read(.maestro/config.yaml)",
+				"Read(.maestro/dashboard.md)",
 			}, ","))
 	}
 
