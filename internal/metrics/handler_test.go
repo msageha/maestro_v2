@@ -148,6 +148,208 @@ func TestHandler_UpdateMetrics_Additive(t *testing.T) {
 	}
 }
 
+func TestHandler_UpdateMetrics_RecomputedCounters(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestMaestroDir(t)
+	h := newTestHandler(maestroDir)
+
+	cq := model.CommandQueue{}
+	snapshots := []TaskQueueSnapshot{}
+	nq := model.NotificationQueue{}
+
+	// Create result files with completed and failed tasks.
+	rf := model.TaskResultFile{
+		SchemaVersion: 1,
+		FileType:      "result_task",
+		Results: []model.TaskResult{
+			{ID: "r1", TaskID: "t1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: "2025-01-01T00:00:00Z"},
+			{ID: "r2", TaskID: "t2", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: "2025-01-01T00:00:00Z"},
+			{ID: "r3", TaskID: "t3", CommandID: "cmd1", Status: model.StatusFailed, CreatedAt: "2025-01-01T00:00:00Z"},
+		},
+	}
+	rfData, err := yamlv3.Marshal(rf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(maestroDir, "results", "worker1.yaml"), rfData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// First update
+	counters1 := &ScanCounters{CommandsDispatched: 1}
+	if err := h.UpdateMetrics(cq, snapshots, nq, time.Now(), time.Second, counters1, Gauges{}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(maestroDir, "state", "metrics.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var metrics model.Metrics
+	if err := yamlv3.Unmarshal(data, &metrics); err != nil {
+		t.Fatal(err)
+	}
+	if metrics.Counters.TasksCompleted != 2 {
+		t.Errorf("TasksCompleted: got %d, want 2", metrics.Counters.TasksCompleted)
+	}
+	if metrics.Counters.TasksFailed != 1 {
+		t.Errorf("TasksFailed: got %d, want 1", metrics.Counters.TasksFailed)
+	}
+
+	// Second update with same result files — re-computed counters should NOT accumulate.
+	counters2 := &ScanCounters{CommandsDispatched: 1}
+	if err := h.UpdateMetrics(cq, snapshots, nq, time.Now(), time.Second, counters2, Gauges{}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err = os.ReadFile(filepath.Join(maestroDir, "state", "metrics.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := yamlv3.Unmarshal(data, &metrics); err != nil {
+		t.Fatal(err)
+	}
+	// Pattern 1: re-computed — stays at 2, not 4
+	if metrics.Counters.TasksCompleted != 2 {
+		t.Errorf("TasksCompleted after second update: got %d, want 2 (re-computed, not accumulated)", metrics.Counters.TasksCompleted)
+	}
+	if metrics.Counters.TasksFailed != 1 {
+		t.Errorf("TasksFailed after second update: got %d, want 1 (re-computed, not accumulated)", metrics.Counters.TasksFailed)
+	}
+	// Pattern 2: incremental — should accumulate
+	if metrics.Counters.CommandsDispatched != 2 {
+		t.Errorf("CommandsDispatched: got %d, want 2 (1+1)", metrics.Counters.CommandsDispatched)
+	}
+}
+
+func TestHandler_LoadAllResultFiles_NonResultTaskIgnored(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestMaestroDir(t)
+	h := newTestHandler(maestroDir)
+
+	cq := model.CommandQueue{}
+	snapshots := []TaskQueueSnapshot{}
+	nq := model.NotificationQueue{}
+
+	// Create a result file with file_type != "result_task" (e.g. "result_command").
+	rf := model.TaskResultFile{
+		SchemaVersion: 1,
+		FileType:      "result_command",
+		Results: []model.TaskResult{
+			{ID: "r1", TaskID: "t1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: "2025-01-01T00:00:00Z"},
+		},
+	}
+	rfData, err := yamlv3.Marshal(rf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(maestroDir, "results", "planner.yaml"), rfData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	counters := &ScanCounters{}
+	if err := h.UpdateMetrics(cq, snapshots, nq, time.Now(), time.Second, counters, Gauges{}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(maestroDir, "state", "metrics.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var metrics model.Metrics
+	if err := yamlv3.Unmarshal(data, &metrics); err != nil {
+		t.Fatal(err)
+	}
+	// Non "result_task" entries must not be counted.
+	if metrics.Counters.TasksCompleted != 0 {
+		t.Errorf("TasksCompleted: got %d, want 0 (non-result_task files ignored)", metrics.Counters.TasksCompleted)
+	}
+}
+
+func TestHandler_LoadAllResultFiles_MalformedYAMLSkipped(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestMaestroDir(t)
+	h := newTestHandler(maestroDir)
+
+	cq := model.CommandQueue{}
+	snapshots := []TaskQueueSnapshot{}
+	nq := model.NotificationQueue{}
+
+	// Write a valid result file.
+	validRF := model.TaskResultFile{
+		SchemaVersion: 1,
+		FileType:      "result_task",
+		Results: []model.TaskResult{
+			{ID: "r1", TaskID: "t1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: "2025-01-01T00:00:00Z"},
+		},
+	}
+	validData, err := yamlv3.Marshal(validRF)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(maestroDir, "results", "worker1.yaml"), validData, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a malformed YAML result file alongside it.
+	if err := os.WriteFile(filepath.Join(maestroDir, "results", "worker2.yaml"), []byte("{{{{not valid yaml"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	counters := &ScanCounters{}
+	if err := h.UpdateMetrics(cq, snapshots, nq, time.Now(), time.Second, counters, Gauges{}); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(maestroDir, "state", "metrics.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var metrics model.Metrics
+	if err := yamlv3.Unmarshal(data, &metrics); err != nil {
+		t.Fatal(err)
+	}
+	// Valid file's completed task should still be counted; malformed file is skipped.
+	if metrics.Counters.TasksCompleted != 1 {
+		t.Errorf("TasksCompleted: got %d, want 1 (malformed file skipped, valid file counted)", metrics.Counters.TasksCompleted)
+	}
+}
+
+func TestHandler_LoadAllResultFiles_NoResultsDir(t *testing.T) {
+	t.Parallel()
+	// Create maestroDir without results/ subdirectory.
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "state"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	h := newTestHandler(dir)
+
+	cq := model.CommandQueue{}
+	snapshots := []TaskQueueSnapshot{}
+	nq := model.NotificationQueue{}
+	counters := &ScanCounters{}
+
+	// Should not error — missing results dir returns nil result map.
+	if err := h.UpdateMetrics(cq, snapshots, nq, time.Now(), time.Second, counters, Gauges{}); err != nil {
+		t.Fatalf("UpdateMetrics with missing results dir: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(dir, "state", "metrics.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var metrics model.Metrics
+	if err := yamlv3.Unmarshal(data, &metrics); err != nil {
+		t.Fatal(err)
+	}
+	if metrics.Counters.TasksCompleted != 0 {
+		t.Errorf("TasksCompleted: got %d, want 0", metrics.Counters.TasksCompleted)
+	}
+	if metrics.Counters.TasksFailed != 0 {
+		t.Errorf("TasksFailed: got %d, want 0", metrics.Counters.TasksFailed)
+	}
+}
+
 func TestHandler_ComputeQueueDepth(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)

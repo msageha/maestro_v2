@@ -430,6 +430,138 @@ func TestR0PlanningStuck_SealedState_Ignored(t *testing.T) {
 	}
 }
 
+func TestR0PlanningStuck_StuckCommand_Repaired(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC()
+	setClock(&deps, now)
+
+	commandID := "cmd_stuck_001"
+
+	// Create a planning state that is well past the threshold.
+	oldTime := now.Add(-20 * time.Minute).Format(time.RFC3339)
+	state := model.CommandState{
+		SchemaVersion:    1,
+		FileType:         "state_command",
+		CommandID:        commandID,
+		PlanStatus:       model.PlanStatusPlanning,
+		TaskDependencies: make(map[string][]string),
+		TaskStates:       make(map[string]model.Status),
+		CancelledReasons: make(map[string]string),
+		AppliedResultIDs: make(map[string]string),
+		RetryLineage:     make(map[string]string),
+		CreatedAt:        oldTime,
+		UpdatedAt:        oldTime,
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", commandID+".yaml"), state)
+
+	// Create planner queue with the stuck command.
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_command",
+		Commands: []model.Command{
+			{ID: commandID, Content: "stuck", Status: model.StatusInProgress, CreatedAt: oldTime, UpdatedAt: oldTime},
+			{ID: "cmd_other", Content: "other", Status: model.StatusPending, CreatedAt: oldTime, UpdatedAt: oldTime},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "planner.yaml"), cq)
+
+	// Create worker queue with tasks belonging to the stuck command.
+	tq := model.TaskQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_task",
+		Tasks: []model.Task{
+			{ID: "task_1", CommandID: commandID, Status: model.StatusPending},
+			{ID: "task_other", CommandID: "cmd_other", Status: model.StatusPending},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "worker1.yaml"), tq)
+
+	run := newRun(&deps)
+	outcome := R0PlanningStuck{}.Apply(run)
+
+	// Verify repair was reported.
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
+	}
+	if outcome.Repairs[0].CommandID != commandID {
+		t.Errorf("repair.CommandID = %q, want %q", outcome.Repairs[0].CommandID, commandID)
+	}
+	if outcome.Repairs[0].Pattern != PatternR0 {
+		t.Errorf("repair.Pattern = %q, want %q", outcome.Repairs[0].Pattern, PatternR0)
+	}
+
+	// Verify state file was deleted.
+	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Error("state file should have been deleted")
+	}
+
+	// Verify stuck command was removed from planner queue.
+	plannerData, err := os.ReadFile(filepath.Join(maestroDir, "queue", "planner.yaml"))
+	if err != nil {
+		t.Fatalf("read planner queue: %v", err)
+	}
+	var resultCQ model.CommandQueue
+	if err := yamlv3.Unmarshal(plannerData, &resultCQ); err != nil {
+		t.Fatalf("parse planner queue: %v", err)
+	}
+	if len(resultCQ.Commands) != 1 {
+		t.Fatalf("planner queue should have 1 command (other), got %d", len(resultCQ.Commands))
+	}
+	if resultCQ.Commands[0].ID != "cmd_other" {
+		t.Errorf("remaining command = %q, want %q", resultCQ.Commands[0].ID, "cmd_other")
+	}
+
+	// Verify stuck command's tasks were removed from worker queue.
+	workerData, err := os.ReadFile(filepath.Join(maestroDir, "queue", "worker1.yaml"))
+	if err != nil {
+		t.Fatalf("read worker queue: %v", err)
+	}
+	var resultTQ model.TaskQueue
+	if err := yamlv3.Unmarshal(workerData, &resultTQ); err != nil {
+		t.Fatalf("parse worker queue: %v", err)
+	}
+	if len(resultTQ.Tasks) != 1 {
+		t.Fatalf("worker queue should have 1 task (other), got %d", len(resultTQ.Tasks))
+	}
+	if resultTQ.Tasks[0].ID != "task_other" {
+		t.Errorf("remaining task = %q, want %q", resultTQ.Tasks[0].ID, "task_other")
+	}
+}
+
+func TestR0PlanningStuck_NotYetStuck_Ignored(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC()
+	setClock(&deps, now)
+
+	// Create a planning state that is recent (below threshold).
+	recentTime := now.Add(-10 * time.Second).Format(time.RFC3339)
+	state := model.CommandState{
+		SchemaVersion:    1,
+		FileType:         "state_command",
+		CommandID:        "cmd_recent",
+		PlanStatus:       model.PlanStatusPlanning,
+		TaskDependencies: make(map[string][]string),
+		TaskStates:       make(map[string]model.Status),
+		CancelledReasons: make(map[string]string),
+		AppliedResultIDs: make(map[string]string),
+		RetryLineage:     make(map[string]string),
+		CreatedAt:        recentTime,
+		UpdatedAt:        recentTime,
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_recent.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R0PlanningStuck{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Errorf("expected no repairs for recent planning state, got %d", len(outcome.Repairs))
+	}
+}
+
 // --- R0b filling stuck tests ---
 
 func TestR0bFillingStuck_WithFillingStartedAt(t *testing.T) {
