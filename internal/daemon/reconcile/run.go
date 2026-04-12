@@ -236,9 +236,9 @@ func (r *Run) removeTasksFromWorkerQueues(commandID string) error {
 }
 
 // batchRemoveTaskIDsFromQueues removes multiple task IDs from all worker queues in a single pass.
-func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) {
+func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) error {
 	if len(taskIDs) == 0 {
-		return
+		return nil
 	}
 
 	removeSet := make(map[string]struct{}, len(taskIDs))
@@ -249,9 +249,10 @@ func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) {
 	queueDir := filepath.Join(r.Deps.MaestroDir, "queue")
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
-		return
+		return fmt.Errorf("read queue dir: %w", err)
 	}
 
+	var writeErrs []error
 	for _, entry := range entries {
 		name := entry.Name()
 		if !strings.HasPrefix(name, "worker") || !strings.HasSuffix(name, ".yaml") {
@@ -262,18 +263,18 @@ func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) {
 		if workerID == "" {
 			continue
 		}
-		func() {
+		if err := func() error {
 			r.Deps.LockMap.Lock("queue:" + workerID)
 			defer r.Deps.LockMap.Unlock("queue:" + workerID)
 
 			queuePath := filepath.Join(queueDir, name)
 			data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 			if err != nil {
-				return
+				return fmt.Errorf("read %s: %w", name, err)
 			}
 			var tq model.TaskQueue
 			if err := yamlv3.Unmarshal(data, &tq); err != nil {
-				return
+				return fmt.Errorf("parse %s: %w", name, err)
 			}
 
 			filtered := make([]model.Task, 0, len(tq.Tasks))
@@ -283,15 +284,24 @@ func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) {
 				}
 			}
 			if len(filtered) == len(tq.Tasks) {
-				return
+				return nil
 			}
 			tq.Tasks = filtered
 
 			if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
 				r.Log(core.LogLevelError, "R0b batch_remove_tasks file=%s error=%v", name, err)
+				return fmt.Errorf("write %s: %w", name, err)
 			}
-		}()
+			return nil
+		}(); err != nil {
+			writeErrs = append(writeErrs, err)
+		}
 	}
+
+	if len(writeErrs) > 0 {
+		return writeErrs[0]
+	}
+	return nil
 }
 
 // updateLastReconciledAt updates last_reconciled_at on a state file.

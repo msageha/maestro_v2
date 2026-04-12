@@ -64,10 +64,14 @@ func (R1ResultQueue) Apply(run *Run) Outcome {
 			continue
 		}
 
-		workerRepairs, workerRepairedCommands := reconcileTerminalQueue(
+		workerRepairs, workerRepairedCommands, err := reconcileTerminalQueue(
 			run, PatternR1, workerID, queuePath, terminalResults,
 			unmarshalTaskQueue, setTaskQueueItems, taskQueueAccessor(),
 		)
+		if err != nil {
+			run.Log(core.LogLevelError, "R1 reconcile_terminal_queue worker=%s error=%v", workerID, err)
+			continue
+		}
 		repairs = append(repairs, workerRepairs...)
 		for cmdID := range workerRepairedCommands {
 			repairedCommands[cmdID] = true

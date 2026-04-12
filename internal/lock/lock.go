@@ -94,9 +94,9 @@ func (m *MutexMap) TryUnlock(key string) bool {
 	if rm.ref == 0 && m.mutexes[key] == rm {
 		delete(m.mutexes, key)
 	}
+	m.order.BeforeUnlock(key)
 	m.mu.Unlock()
 
-	m.order.BeforeUnlock(key)
 	rm.mu.Unlock()
 
 	return true
