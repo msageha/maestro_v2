@@ -139,6 +139,98 @@ func TestStepWorktreeStallDetection_NoReFireWhenAlreadySignaled(t *testing.T) {
 	}
 }
 
+// stallTestSetupNoPhases wires a QueueHandler similar to stallTestSetup but
+// does NOT write any command state file, so GetCommandPhases returns
+// ErrStateNotFound and the noPhases fast-path is triggered.
+func stallTestSetupNoPhases(t *testing.T, cmdUpdatedAt string, integrationStatus model.IntegrationStatus) (*QueueHandler, *scanState) {
+	t.Helper()
+	maestroDir := setupScanPhaseTestDir(t)
+
+	wtCfg := model.WorktreeConfig{
+		Enabled: true,
+	}
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, wtCfg)
+
+	// Seed worktree state
+	writeWorktreeState(t, maestroDir, "cmd1", integrationStatus)
+
+	// Do NOT write command state — GetCommandPhases will return ErrStateNotFound,
+	// triggering noPhases=true in the stall detection logic.
+
+	// Build in-memory task queue with a terminal task
+	taskQueues := makeTaskQueues(map[string][]model.Task{
+		"worker1": {
+			{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
+		},
+	})
+
+	s := &scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{
+					{
+						ID:        "cmd1",
+						Status:    model.StatusInProgress,
+						CreatedAt: cmdUpdatedAt,
+						UpdatedAt: cmdUpdatedAt,
+					},
+				},
+			},
+		},
+		tasks:       taskQueues,
+		taskDirty:   make(map[string]bool),
+		signals:     fileState[model.PlannerSignalQueue]{Data: model.PlannerSignalQueue{}},
+		signalIndex: make(map[signalKey]struct{}),
+	}
+	return qh, s
+}
+
+func TestStepWorktreeStallDetection_NoPhasesDoesNotFireWithinTimeout(t *testing.T) {
+	t.Parallel()
+	recent := time.Now().Add(-1 * time.Minute).UTC().Format(time.RFC3339)
+	qh, s := stallTestSetupNoPhases(t, recent, model.IntegrationStatusCreated)
+
+	qh.stepWorktreeStallDetection(s)
+
+	if len(s.signals.Data.Signals) != 0 {
+		t.Fatalf("expected 0 signals for noPhases within timeout, got %d", len(s.signals.Data.Signals))
+	}
+	state, _ := qh.worktreeManager.GetCommandState("cmd1")
+	if state.Integration.StallSignaled {
+		t.Errorf("StallSignaled should not be set within timeout")
+	}
+}
+
+func TestStepWorktreeStallDetection_NoPhasesFiresAfterTimeout(t *testing.T) {
+	t.Parallel()
+	past := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+	qh, s := stallTestSetupNoPhases(t, past, model.IntegrationStatusCreated)
+
+	qh.stepWorktreeStallDetection(s)
+
+	if len(s.signals.Data.Signals) != 1 {
+		t.Fatalf("expected 1 signal for noPhases after timeout, got %d", len(s.signals.Data.Signals))
+	}
+	sig := s.signals.Data.Signals[0]
+	if sig.Kind != "worktree_stalled" {
+		t.Errorf("kind = %q, want worktree_stalled", sig.Kind)
+	}
+	if sig.CommandID != "cmd1" {
+		t.Errorf("command_id = %q, want cmd1", sig.CommandID)
+	}
+	if sig.Reason != "integration_stalled_no_phases:created" {
+		t.Errorf("reason = %q, want integration_stalled_no_phases:created", sig.Reason)
+	}
+
+	state, err := qh.worktreeManager.GetCommandState("cmd1")
+	if err != nil {
+		t.Fatalf("get state: %v", err)
+	}
+	if !state.Integration.StallSignaled {
+		t.Errorf("StallSignaled flag was not persisted")
+	}
+}
+
 func TestStepWorktreeStallDetection_DeliveryFailureMarksIntegrationFailed(t *testing.T) {
 	t.Parallel()
 	past := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)

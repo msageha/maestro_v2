@@ -587,9 +587,11 @@ func (qh *QueueHandler) stepWorktreeStallDetection(s *scanState) {
 			continue
 		}
 
-		// Phase 0 件 + Integration.Status==created の早期 stall fast-path:
+		// Phase 0 件 + Integration.Status==created の stall fast-path:
 		// phases が一切定義されていない command が created のまま放置されている
-		// ケースは timeoutMin を待つ必要がない (case 5)。即時 stall シグナルを発火する。
+		// ケースも通常パスと同じ timeoutMin ベースのタイムアウトチェックを適用する。
+		// タイムアウト前に stall シグナルを発火しないことで、Planner がフェーズなしで
+		// フラットなタスクを submit した場合の誤検知を防ぐ。
 		if cmdState.Integration.Status == model.IntegrationStatusCreated {
 			phases, perr := qh.dependencyResolver.GetStateReader().GetCommandPhases(cmd.ID)
 			noPhases := false
@@ -601,6 +603,17 @@ func (qh *QueueHandler) stepWorktreeStallDetection(s *scanState) {
 				noPhases = true
 			}
 			if noPhases {
+				ref := cmd.UpdatedAt
+				if ref == "" {
+					ref = cmd.CreatedAt
+				}
+				refTime, parseErr := time.Parse(time.RFC3339, ref)
+				if parseErr != nil {
+					continue
+				}
+				if !refTime.Before(threshold) {
+					continue
+				}
 				reason := "integration_stalled_no_phases:created"
 				nowStr := now.UTC().Format(time.RFC3339)
 				msg := fmt.Sprintf("[maestro] kind:worktree_stalled command_id:%s\nreason: %s\nstalled_since: %s",

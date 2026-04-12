@@ -509,6 +509,12 @@ func checkWorktreePublished(maestroDir, commandID string, config model.Config) e
 		}
 	}
 
+	if len(wcs.CommitFailedWorkers) > 0 {
+		return &planValidationError{
+			Msg: fmt.Sprintf("cannot complete command: %d worker(s) have commit failures: %v", len(wcs.CommitFailedWorkers), wcs.CommitFailedWorkers),
+		}
+	}
+
 	return nil
 }
 
