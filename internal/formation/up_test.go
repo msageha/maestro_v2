@@ -8,6 +8,7 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 	"github.com/msageha/maestro_v2/internal/testutil"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -126,7 +127,7 @@ func TestResolveModel_WorkerDefaultModel(t *testing.T) {
 func TestSwitchRuntime_Valid(t *testing.T) {
 	cfg := model.Config{
 		Runtimes: map[string]model.RuntimeConfig{
-			"codex": {Enabled: model.BoolPtr(true)},
+			"codex": {Enabled: ptr.Bool(true)},
 		},
 	}
 	if err := SwitchRuntime("worker1", "codex", cfg); err != nil {
@@ -144,7 +145,7 @@ func TestSwitchRuntime_UnknownRuntime(t *testing.T) {
 func TestSwitchRuntime_DisabledRuntime(t *testing.T) {
 	cfg := model.Config{
 		Runtimes: map[string]model.RuntimeConfig{
-			"codex": {Enabled: model.BoolPtr(false)},
+			"codex": {Enabled: ptr.Bool(false)},
 		},
 	}
 	if err := SwitchRuntime("worker1", "codex", cfg); err == nil {

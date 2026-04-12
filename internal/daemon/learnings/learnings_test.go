@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 	yamlv3 "gopkg.in/yaml.v3"
 )
 
@@ -29,7 +30,7 @@ func writeLearningsFile(t *testing.T, dir string, lf model.LearningsFile) {
 func TestReadTopKLearnings_NoFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	cfg := model.LearningsConfig{InjectCount: model.IntPtr(5), TTLHours: 72}
+	cfg := model.LearningsConfig{InjectCount: ptr.Int(5), TTLHours: 72}
 	result, err := ReadTopKLearnings(dir, cfg, time.Now())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -47,7 +48,7 @@ func TestReadTopKLearnings_EmptyLearnings(t *testing.T) {
 		FileType:      "state_learnings",
 		Learnings:     []model.Learning{},
 	})
-	cfg := model.LearningsConfig{InjectCount: model.IntPtr(5), TTLHours: 72}
+	cfg := model.LearningsConfig{InjectCount: ptr.Int(5), TTLHours: 72}
 	result, err := ReadTopKLearnings(dir, cfg, time.Now())
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -76,7 +77,7 @@ func TestReadTopKLearnings_TopK(t *testing.T) {
 		Learnings:     learnings,
 	})
 
-	cfg := model.LearningsConfig{InjectCount: model.IntPtr(3), TTLHours: 72}
+	cfg := model.LearningsConfig{InjectCount: ptr.Int(3), TTLHours: 72}
 	result, err := ReadTopKLearnings(dir, cfg, now)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -108,7 +109,7 @@ func TestReadTopKLearnings_TTLFilter(t *testing.T) {
 		Learnings:     learnings,
 	})
 
-	cfg := model.LearningsConfig{InjectCount: model.IntPtr(5), TTLHours: 72}
+	cfg := model.LearningsConfig{InjectCount: ptr.Int(5), TTLHours: 72}
 	result, err := ReadTopKLearnings(dir, cfg, now)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -137,7 +138,7 @@ func TestReadTopKLearnings_TTLZeroUnlimited(t *testing.T) {
 	})
 
 	// TTLHours: 0 = unlimited (no expiry)
-	cfg := model.LearningsConfig{InjectCount: model.IntPtr(5), TTLHours: 0}
+	cfg := model.LearningsConfig{InjectCount: ptr.Int(5), TTLHours: 0}
 	result, err := ReadTopKLearnings(dir, cfg, now)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -162,7 +163,7 @@ func TestReadTopKLearnings_AllExpired(t *testing.T) {
 		Learnings:     learnings,
 	})
 
-	cfg := model.LearningsConfig{InjectCount: model.IntPtr(5), TTLHours: 72}
+	cfg := model.LearningsConfig{InjectCount: ptr.Int(5), TTLHours: 72}
 	result, err := ReadTopKLearnings(dir, cfg, now)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -187,7 +188,7 @@ func TestReadTopKLearnings_MalformedTimestamp(t *testing.T) {
 		Learnings:     learnings,
 	})
 
-	cfg := model.LearningsConfig{InjectCount: model.IntPtr(5), TTLHours: 72}
+	cfg := model.LearningsConfig{InjectCount: ptr.Int(5), TTLHours: 72}
 	result, err := ReadTopKLearnings(dir, cfg, now)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -211,7 +212,7 @@ func TestReadTopKLearnings_CorruptYAML(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := model.LearningsConfig{InjectCount: model.IntPtr(5), TTLHours: 72}
+	cfg := model.LearningsConfig{InjectCount: ptr.Int(5), TTLHours: 72}
 	result, err := ReadTopKLearnings(dir, cfg, time.Now())
 	if err == nil {
 		t.Fatal("corrupt YAML should return error")
@@ -310,7 +311,7 @@ func TestReadTopKLearnings_FewerThanK(t *testing.T) {
 		Learnings:     learnings,
 	})
 
-	cfg := model.LearningsConfig{InjectCount: model.IntPtr(5), TTLHours: 72}
+	cfg := model.LearningsConfig{InjectCount: ptr.Int(5), TTLHours: 72}
 	result, err := ReadTopKLearnings(dir, cfg, now)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -327,7 +328,7 @@ func TestEffectiveInjectCount_Defaults(t *testing.T) {
 		t.Errorf("expected default inject_count=5, got %d", cfg.EffectiveInjectCount())
 	}
 
-	cfg = model.LearningsConfig{InjectCount: model.IntPtr(10)}
+	cfg = model.LearningsConfig{InjectCount: ptr.Int(10)}
 	if cfg.EffectiveInjectCount() != 10 {
 		t.Errorf("expected inject_count=10, got %d", cfg.EffectiveInjectCount())
 	}

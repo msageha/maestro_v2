@@ -7,8 +7,6 @@ import (
 	"math"
 	"regexp"
 	"time"
-
-	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 // DefaultMaxYAMLFileBytes is the default maximum size for YAML file reads (5MB).
@@ -157,18 +155,6 @@ func isValidModelName(name string) bool {
 	}
 	return validModelNameRe.MatchString(name)
 }
-
-// Deprecated: Use ptr.Int instead.
-func IntPtr(v int) *int { return ptr.Int(v) }
-
-// Deprecated: Use ptr.Bool instead.
-func BoolPtr(v bool) *bool { return ptr.Bool(v) }
-
-// Deprecated: Use ptr.Float64 instead.
-func Float64Ptr(v float64) *float64 { return ptr.Float64(v) }
-
-// Deprecated: Use ptr.String instead.
-func StringPtr(v string) *string { return ptr.String(v) }
 
 // isFiniteFloat64Ptr reports whether a *float64 is nil or points to a finite value.
 func isFiniteFloat64Ptr(p *float64) bool {

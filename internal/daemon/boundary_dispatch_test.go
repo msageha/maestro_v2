@@ -10,6 +10,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 	"github.com/msageha/maestro_v2/internal/testutil/mocks"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -184,7 +185,7 @@ func TestCommandLeaseAutoExtend_ExactMaxTimeout(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
-	qh.config.Watcher.MaxInProgressMin = model.IntPtr(30)
+	qh.config.Watcher.MaxInProgressMin = ptr.Int(30)
 
 	owner := qh.leaseOwnerID()
 	expired := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
@@ -225,7 +226,7 @@ func TestCommandLeaseAutoExtend_JustBeforeMaxTimeout(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
-	qh.config.Watcher.MaxInProgressMin = model.IntPtr(30)
+	qh.config.Watcher.MaxInProgressMin = ptr.Int(30)
 
 	owner := qh.leaseOwnerID()
 	expired := time.Now().Add(-10 * time.Minute).UTC().Format(time.RFC3339)
@@ -416,7 +417,7 @@ func TestTaskLeaseExpiry_NilLeaseExpiresAt(t *testing.T) {
 func TestTaskLeaseExpiry_BusyAgent_MaxTimeout(t *testing.T) {
 	t.Parallel()
 	d := newBoundaryTestDaemon(t)
-	d.config.Watcher.MaxInProgressMin = model.IntPtr(30)
+	d.config.Watcher.MaxInProgressMin = ptr.Int(30)
 	// Recreate handler with updated config
 	lockMap := d.handler.lockMap
 	reader := &integrationStateReader{maestroDir: d.maestroDir, lockMap: lockMap}
@@ -460,7 +461,7 @@ func TestTaskLeaseExpiry_BusyAgent_MaxTimeout(t *testing.T) {
 func TestTaskLeaseExpiry_BusyAgent_WithinLimit(t *testing.T) {
 	t.Parallel()
 	d := newBoundaryTestDaemon(t)
-	d.config.Watcher.MaxInProgressMin = model.IntPtr(60)
+	d.config.Watcher.MaxInProgressMin = ptr.Int(60)
 	lockMap := d.handler.lockMap
 	reader := &integrationStateReader{maestroDir: d.maestroDir, lockMap: lockMap}
 	d.handler = NewQueueHandler(d.maestroDir, d.config, lockMap, d.logger, d.logLevel,

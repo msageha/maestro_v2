@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 // TestSyncFromIntegration tests syncing integration to worker worktrees.
@@ -725,7 +726,7 @@ func TestGitTimeout_Custom(t *testing.T) {
 	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
-	wm.config.GitTimeoutSec = model.IntPtr(30)
+	wm.config.GitTimeoutSec = ptr.Int(30)
 
 	timeout := wm.gitTimeout()
 	if timeout != 30*time.Second {
@@ -793,7 +794,7 @@ func TestEffectiveGitTimeout_Default(t *testing.T) {
 
 func TestEffectiveGitTimeout_Custom(t *testing.T) {
 	t.Parallel()
-	cfg := model.WorktreeConfig{GitTimeoutSec: model.IntPtr(60)}
+	cfg := model.WorktreeConfig{GitTimeoutSec: ptr.Int(60)}
 	if cfg.EffectiveGitTimeout() != 60 {
 		t.Errorf("custom EffectiveGitTimeout = %d, want 60", cfg.EffectiveGitTimeout())
 	}

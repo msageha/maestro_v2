@@ -9,6 +9,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -25,7 +26,7 @@ func TestStepCircuitBreaker_NilStateReader(t *testing.T) {
 	cfg := model.Config{
 		CircuitBreaker: model.CircuitBreakerConfig{
 			Enabled:                true,
-			ProgressTimeoutMinutes: model.IntPtr(30),
+			ProgressTimeoutMinutes: ptr.Int(30),
 		},
 	}
 	cb := circuitbreaker.NewHandler(cfg, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
@@ -117,7 +118,7 @@ func wtConfigDisabledAutoMerge(timeoutMin int) model.WorktreeConfig {
 		AutoCommit:                  true,
 		AutoMerge:                   false, // disabled → triggers check
 		MergeStrategy:               "ort",
-		FallbackMergeTimeoutMinutes: model.IntPtr(timeoutMin),
+		FallbackMergeTimeoutMinutes: ptr.Int(timeoutMin),
 	}
 }
 
@@ -318,7 +319,7 @@ func TestStepCheckWorktreeConfigViolations_BothEnabled(t *testing.T) {
 		AutoCommit:                  true,
 		AutoMerge:                   true,
 		MergeStrategy:               "ort",
-		FallbackMergeTimeoutMinutes: model.IntPtr(60),
+		FallbackMergeTimeoutMinutes: ptr.Int(60),
 	}
 	qh := newScanPhaseTestQueueHandler(t, maestroDir, wtCfg)
 

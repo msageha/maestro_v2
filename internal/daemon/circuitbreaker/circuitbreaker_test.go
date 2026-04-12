@@ -104,8 +104,8 @@ func newTestHandler(enabled bool, maxFailures, timeoutMin int) *Handler {
 	cfg := model.Config{
 		CircuitBreaker: model.CircuitBreakerConfig{
 			Enabled:                enabled,
-			MaxConsecutiveFailures: model.IntPtr(maxFailures),
-			ProgressTimeoutMinutes: model.IntPtr(timeoutMin),
+			MaxConsecutiveFailures: ptr.Int(maxFailures),
+			ProgressTimeoutMinutes: ptr.Int(timeoutMin),
 		},
 	}
 	cb := NewHandler(cfg, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
@@ -314,7 +314,7 @@ func TestCheckProgressTimeout_NilUsesDefault(t *testing.T) {
 	cfg := model.Config{
 		CircuitBreaker: model.CircuitBreakerConfig{
 			Enabled:                true,
-			MaxConsecutiveFailures: model.IntPtr(3),
+			MaxConsecutiveFailures: ptr.Int(3),
 			ProgressTimeoutMinutes: nil, // unset → default 30
 		},
 	}
@@ -409,8 +409,8 @@ func TestConfigEffectiveMaxConsecutiveFailures(t *testing.T) {
 		expected int
 	}{
 		{nil, 3}, // default
-		{model.IntPtr(1), 1},
-		{model.IntPtr(5), 5},
+		{ptr.Int(1), 1},
+		{ptr.Int(5), 5},
 	}
 	for _, tt := range tests {
 		cfg := model.CircuitBreakerConfig{MaxConsecutiveFailures: tt.value}
@@ -428,8 +428,8 @@ func TestConfigEffectiveProgressTimeoutMinutes(t *testing.T) {
 		expected int
 	}{
 		{nil, 30},              // nil returns default
-		{model.IntPtr(30), 30},
-		{model.IntPtr(60), 60},
+		{ptr.Int(30), 30},
+		{ptr.Int(60), 60},
 	}
 	for _, tt := range tests {
 		cfg := model.CircuitBreakerConfig{ProgressTimeoutMinutes: tt.value}

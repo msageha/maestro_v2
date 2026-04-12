@@ -12,6 +12,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 // --- CommitPolicy Tests ---
@@ -22,7 +23,7 @@ func TestCommitWorkerChanges_MaxFilesExceeded(t *testing.T) {
 	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
-	wm.config.CommitPolicy.MaxFiles = model.IntPtr(3) // Set a low limit for testing
+	wm.config.CommitPolicy.MaxFiles = ptr.Int(3) // Set a low limit for testing
 
 	if err := createForCommand(wm, "cmd_maxfiles", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
@@ -56,7 +57,7 @@ func TestCommitWorkerChanges_MaxFilesWithinLimit(t *testing.T) {
 	t.Parallel()
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
-	wm.config.CommitPolicy.MaxFiles = model.IntPtr(5)
+	wm.config.CommitPolicy.MaxFiles = ptr.Int(5)
 
 	if err := createForCommand(wm, "cmd_maxfiles_ok", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand failed: %v", err)
@@ -218,7 +219,7 @@ func TestCommitWorkerChanges_RequireGitignoreDisabled(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 	// Explicitly set a non-zero policy with RequireGitignore=false
 	wm.config.CommitPolicy = model.CommitPolicyConfig{
-		MaxFiles:         model.IntPtr(30),
+		MaxFiles:         ptr.Int(30),
 		RequireGitignore: false,
 		MessagePattern:   `^.+`,
 	}
@@ -252,7 +253,7 @@ func TestCheckCommitPolicy_Unit(t *testing.T) {
 	t.Run("all_checks_pass", func(t *testing.T) {
 		t.Parallel()
 		wm := newTestWorktreeManager(t, projectRoot)
-		wm.config.CommitPolicy.MaxFiles = model.IntPtr(30)
+		wm.config.CommitPolicy.MaxFiles = ptr.Int(30)
 		wm.config.CommitPolicy.MessagePattern = `^.+`
 
 		stagedNul := "file1.go\x00file2.go\x00"
@@ -265,7 +266,7 @@ func TestCheckCommitPolicy_Unit(t *testing.T) {
 	t.Run("max_files_exceeded", func(t *testing.T) {
 		t.Parallel()
 		wm := newTestWorktreeManager(t, projectRoot)
-		wm.config.CommitPolicy.MaxFiles = model.IntPtr(2)
+		wm.config.CommitPolicy.MaxFiles = ptr.Int(2)
 		wm.config.CommitPolicy.MessagePattern = `^.+`
 
 		stagedNul := "a.go\x00b.go\x00c.go\x00"
@@ -278,7 +279,7 @@ func TestCheckCommitPolicy_Unit(t *testing.T) {
 	t.Run("message_format_invalid", func(t *testing.T) {
 		t.Parallel()
 		wm := newTestWorktreeManager(t, projectRoot)
-		wm.config.CommitPolicy.MaxFiles = model.IntPtr(30)
+		wm.config.CommitPolicy.MaxFiles = ptr.Int(30)
 		wm.config.CommitPolicy.MessagePattern = `^.+`
 
 		stagedNul := "file.go\x00"
@@ -291,7 +292,7 @@ func TestCheckCommitPolicy_Unit(t *testing.T) {
 	t.Run("multiple_violations", func(t *testing.T) {
 		t.Parallel()
 		wm := newTestWorktreeManager(t, projectRoot)
-		wm.config.CommitPolicy.MaxFiles = model.IntPtr(1)
+		wm.config.CommitPolicy.MaxFiles = ptr.Int(1)
 		wm.config.CommitPolicy.RequireGitignore = true
 		wm.config.CommitPolicy.MessagePattern = `^.+`
 
@@ -860,7 +861,7 @@ func TestCommitWorkerChanges_PolicyViolationMaxFiles(t *testing.T) {
 		AutoMerge:     true,
 		MergeStrategy: "ort",
 		CommitPolicy: model.CommitPolicyConfig{
-			MaxFiles: model.IntPtr(2),
+			MaxFiles: ptr.Int(2),
 		},
 	}
 	wm := NewManager(maestroDir, cfg, log.New(os.Stderr, "", 0), core.LogLevelError)

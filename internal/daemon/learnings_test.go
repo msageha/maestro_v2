@@ -12,6 +12,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/daemon/learnings"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -20,8 +21,8 @@ func newTestDaemonWithLearnings(t *testing.T) *Daemon {
 	d := newTestDaemon(t)
 	d.config.Learnings = model.LearningsConfig{
 		Enabled:          true,
-		MaxEntries:       model.IntPtr(100),
-		MaxContentLength: model.IntPtr(500),
+		MaxEntries:       ptr.Int(100),
+		MaxContentLength: ptr.Int(500),
 	}
 	return d
 }
@@ -190,7 +191,7 @@ func TestLearnings_DeduplicationByResultAndContent(t *testing.T) {
 func TestLearnings_ContentTruncation(t *testing.T) {
 	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
-	d.config.Learnings.MaxContentLength = model.IntPtr(10)
+	d.config.Learnings.MaxContentLength = ptr.Int(10)
 
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -231,7 +232,7 @@ func TestLearnings_ContentTruncation(t *testing.T) {
 func TestLearnings_ContentTruncation_UTF8(t *testing.T) {
 	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
-	d.config.Learnings.MaxContentLength = model.IntPtr(5)
+	d.config.Learnings.MaxContentLength = ptr.Int(5)
 
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -266,7 +267,7 @@ func TestLearnings_ContentTruncation_UTF8(t *testing.T) {
 func TestLearnings_MaxEntriesFIFO(t *testing.T) {
 	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
-	d.config.Learnings.MaxEntries = model.IntPtr(3)
+	d.config.Learnings.MaxEntries = ptr.Int(3)
 
 	// Pre-populate with 2 existing learnings
 	lf := model.LearningsFile{
@@ -553,7 +554,7 @@ func TestLearningsConfig_Defaults(t *testing.T) {
 		t.Errorf("EffectiveMaxContentLength() = %d, want 500", cfg.EffectiveMaxContentLength())
 	}
 
-	cfg2 := model.LearningsConfig{MaxEntries: model.IntPtr(50), MaxContentLength: model.IntPtr(200)}
+	cfg2 := model.LearningsConfig{MaxEntries: ptr.Int(50), MaxContentLength: ptr.Int(200)}
 	if cfg2.EffectiveMaxEntries() != 50 {
 		t.Errorf("EffectiveMaxEntries() = %d, want 50", cfg2.EffectiveMaxEntries())
 	}
@@ -569,8 +570,8 @@ func TestLearningsConfig_Defaults(t *testing.T) {
 func TestLearningsIntegration_E2E_SanitizeSourceWorkerReadFormat(t *testing.T) {
 	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
-	d.config.Learnings.MaxContentLength = model.IntPtr(15)
-	d.config.Learnings.InjectCount = model.IntPtr(5)
+	d.config.Learnings.MaxContentLength = ptr.Int(15)
+	d.config.Learnings.InjectCount = ptr.Int(5)
 	d.config.Learnings.TTLHours = 72
 
 	taskID := "task_0000000001_abcdef01"
@@ -616,7 +617,7 @@ func TestLearningsIntegration_E2E_SanitizeSourceWorkerReadFormat(t *testing.T) {
 	}
 
 	// ReadTopKLearnings → FormatLearningsSection
-	cfg := model.LearningsConfig{InjectCount: model.IntPtr(5), TTLHours: 72}
+	cfg := model.LearningsConfig{InjectCount: ptr.Int(5), TTLHours: 72}
 	readBack, err := learnings.ReadTopKLearnings(d.maestroDir, cfg, time.Now())
 	if err != nil {
 		t.Fatalf("ReadTopKLearnings: %v", err)
@@ -642,7 +643,7 @@ func TestLearningsIntegration_E2E_SanitizeSourceWorkerReadFormat(t *testing.T) {
 func TestLearningsIntegration_Dedup_TruncationCollision(t *testing.T) {
 	t.Parallel()
 	d := newTestDaemonWithLearnings(t)
-	d.config.Learnings.MaxContentLength = model.IntPtr(5)
+	d.config.Learnings.MaxContentLength = ptr.Int(5)
 
 	taskID := "task_0000000001_abcdef01"
 	commandID := "cmd_0000000001_abcdef01"
@@ -723,7 +724,7 @@ func TestLearningsIntegration_TTL_EndToEnd(t *testing.T) {
 	}
 
 	// Read with TTL=72h → old entry (200h ago) should be excluded
-	cfg := model.LearningsConfig{InjectCount: model.IntPtr(10), TTLHours: 72}
+	cfg := model.LearningsConfig{InjectCount: ptr.Int(10), TTLHours: 72}
 	result, err := learnings.ReadTopKLearnings(d.maestroDir, cfg, time.Now())
 	if err != nil {
 		t.Fatalf("ReadTopKLearnings: %v", err)
@@ -785,7 +786,7 @@ func TestLearningsIntegration_InjectCount_EndToEnd(t *testing.T) {
 	}
 
 	// Read with inject_count=2 → should get last 2 entries
-	cfg := model.LearningsConfig{InjectCount: model.IntPtr(2), TTLHours: 0}
+	cfg := model.LearningsConfig{InjectCount: ptr.Int(2), TTLHours: 0}
 	result, err := learnings.ReadTopKLearnings(d.maestroDir, cfg, time.Now())
 	if err != nil {
 		t.Fatalf("ReadTopKLearnings: %v", err)
