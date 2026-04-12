@@ -35,7 +35,7 @@ var validIDTypes = map[IDType]bool{
 	IDTypeSkillCandidate: true,
 }
 
-var idRegex = regexp.MustCompile(`^(cmd|task|phase|ntf|res|skc)_[0-9]{10}_[0-9a-f]{8}$`)
+var idRegex = regexp.MustCompile(`^(cmd|task|phase|ntf|res|skc)_[0-9]{10}_[0-9a-f]{8}([0-9a-f]{8})?$`)
 
 // GenerateID creates a new unique ID with the given type prefix.
 func GenerateID(idType IDType) (string, error) {
@@ -44,7 +44,7 @@ func GenerateID(idType IDType) (string, error) {
 	}
 
 	timestamp := time.Now().Unix()
-	randomBytes := make([]byte, 4)
+	randomBytes := make([]byte, 8)
 	if _, err := rand.Read(randomBytes); err != nil {
 		return "", fmt.Errorf("failed to generate random bytes: %w", err)
 	}

@@ -1,6 +1,10 @@
 package model
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/msageha/maestro_v2/internal/ptr"
+)
 
 func TestValidateRuntime(t *testing.T) {
 	tests := []struct {
@@ -64,10 +68,10 @@ func TestRuntimeConfig_Defaults(t *testing.T) {
 
 func TestRuntimeConfig_Configured(t *testing.T) {
 	rc := RuntimeConfig{
-		Enabled:      BoolPtr(true),
-		Default:      BoolPtr(true),
+		Enabled:      ptr.Bool(true),
+		Default:      ptr.Bool(true),
 		Models:       []string{"opus", "sonnet"},
-		DefaultModel: StringPtr("opus"),
+		DefaultModel: ptr.String("opus"),
 	}
 	if !rc.EffectiveEnabled() {
 		t.Error("EffectiveEnabled() should be true")

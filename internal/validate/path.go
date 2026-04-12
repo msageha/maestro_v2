@@ -73,5 +73,17 @@ func FilePath(path string) (string, error) {
 			return "", fmt.Errorf("validate: file path %q contains directory traversal", path)
 		}
 	}
+
+	// Defense in depth: for relative paths, verify via filepath.Rel that the
+	// cleaned path does not escape the current directory. This catches edge
+	// cases where filepath.Clean may normalise away traversal indicators on
+	// certain platforms.
+	if !filepath.IsAbs(cleaned) {
+		rel, err := filepath.Rel(".", cleaned)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return "", fmt.Errorf("validate: file path %q contains directory traversal", path)
+		}
+	}
+
 	return cleaned, nil
 }
