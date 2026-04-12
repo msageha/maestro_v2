@@ -19,6 +19,7 @@ func TestDashboardFormatter_FormatDashboard(t *testing.T) {
 	tmpDir := t.TempDir()
 	logsDir := filepath.Join(tmpDir, "logs")
 	require.NoError(t, os.MkdirAll(logsDir, 0755))
+	fixTestDirPerms(t, tmpDir)
 
 	// Create sample JSONL log file
 	logPath := filepath.Join(logsDir, "maestro.jsonl")
@@ -49,6 +50,7 @@ func TestDashboardFormatter_ParseLogFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	logsDir := filepath.Join(tmpDir, "logs")
 	require.NoError(t, os.MkdirAll(logsDir, 0755))
+	fixTestDirPerms(t, tmpDir)
 
 	// Create sample JSONL log file
 	logPath := filepath.Join(logsDir, "maestro.jsonl")
@@ -166,6 +168,7 @@ func TestDashboardFormatter_UpdateDashboardFile(t *testing.T) {
 	tmpDir := t.TempDir()
 	logsDir := filepath.Join(tmpDir, "logs")
 	require.NoError(t, os.MkdirAll(logsDir, 0755))
+	fixTestDirPerms(t, tmpDir)
 
 	// Create sample JSONL log file
 	logPath := filepath.Join(logsDir, "maestro.jsonl")
@@ -302,6 +305,7 @@ func createSampleStateFiles(t *testing.T, maestroDir string) {
 	t.Helper()
 	stateDir := filepath.Join(maestroDir, "state", "commands")
 	require.NoError(t, os.MkdirAll(stateDir, 0755))
+	os.Chmod(stateDir, 0755)
 
 	// Command with task_001 (completed) and task_002 (in_progress after retry).
 	// task_002_orig is a retry ancestor kept in task_states but NOT in required_task_ids,

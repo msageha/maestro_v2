@@ -21,10 +21,13 @@ func newTestDaemon(t *testing.T) *Daemon {
 	for _, sub := range []string{
 		"queue", "results", "state/commands", "logs",
 	} {
-		if err := os.MkdirAll(filepath.Join(maestroDir, sub), 0755); err != nil {
+		p := filepath.Join(maestroDir, sub)
+		if err := os.MkdirAll(p, 0755); err != nil {
 			t.Fatalf("create dir %s: %v", sub, err)
 		}
 	}
+	// Ensure all directories have execute bit regardless of process-wide umask.
+	fixTestDirPerms(t, dir)
 
 	var buf bytes.Buffer
 	cfg := model.Config{

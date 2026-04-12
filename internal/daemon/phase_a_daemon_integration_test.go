@@ -36,6 +36,7 @@ func TestReviewDispatcher_InitializedWhenEnabled(t *testing.T) {
 			t.Fatalf("create %s: %v", sub, err)
 		}
 	}
+	fixTestDirPerms(t, tmpDir)
 
 	cfg := model.Config{
 		Review: model.ReviewConfig{Enabled: true, Models: []string{"test-model"}},
@@ -77,6 +78,7 @@ func TestReviewDispatcher_SkippedWhenDisabled(t *testing.T) {
 			t.Fatalf("create %s: %v", sub, err)
 		}
 	}
+	fixTestDirPerms(t, tmpDir)
 
 	cfg := model.Config{
 		Review: model.ReviewConfig{Enabled: false},

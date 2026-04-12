@@ -28,6 +28,7 @@ func TestEventHookIntegration(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(maestroDir, "results"), 0755); err != nil {
 		t.Fatal(err)
 	}
+	fixTestDirPerms(t, tmpDir)
 
 	bus := events.NewBus(context.Background(), 100)
 	defer bus.Close()

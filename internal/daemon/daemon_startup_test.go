@@ -32,6 +32,8 @@ func setupDaemonForStartRuntime(t *testing.T) (*Daemon, string) {
 	if err != nil {
 		t.Fatalf("create socket dir: %v", err)
 	}
+	// Ensure execute bit is set regardless of process-wide umask.
+	os.Chmod(sockDir, 0700)
 	t.Cleanup(func() { os.RemoveAll(sockDir) })
 	sockPath := filepath.Join(sockDir, "d.sock")
 	d.server = uds.NewServer(sockPath)

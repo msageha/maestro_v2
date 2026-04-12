@@ -23,7 +23,13 @@ import (
 
 func setupTestMaestroDir(t *testing.T) string {
 	t.Helper()
-	return testutil.SetupDir(t)
+	maestroDir := testutil.SetupDir(t)
+	// Guard against process-wide umask changes (e.g., syscall.Umask(0177)
+	// in daemon_startup_test.go via server.Start()) that can cause
+	// directories to be created with 0600 (no execute bit), leading to
+	// sporadic "mkdir: permission denied" in parallel tests.
+	fixTestDirPerms(t, filepath.Dir(maestroDir))
+	return maestroDir
 }
 
 // newTestExecutorProvider creates a no-op ExecutorProvider for tests.

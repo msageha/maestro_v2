@@ -27,6 +27,8 @@ func writeContinuousState(t *testing.T, maestroDir string, state *model.Continuo
 	if err := os.MkdirAll(stateDir, 0755); err != nil {
 		t.Fatal(err)
 	}
+	// Ensure execute bit is set regardless of process-wide umask.
+	os.Chmod(stateDir, 0755)
 	if err := yamlutil.AtomicWrite(filepath.Join(stateDir, "continuous.yaml"), state); err != nil {
 		t.Fatal(err)
 	}
