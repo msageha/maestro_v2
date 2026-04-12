@@ -22,18 +22,18 @@ import (
 const (
 	// maxNotifyAttempts is the maximum number of notification delivery attempts
 	// before giving up. Prevents infinite retries when tmux is unavailable.
-	// Why: 5 attempts with exponential backoff covers ~31s of retries, enough
-	// to ride out transient tmux hangs without blocking the scan loop indefinitely.
-	maxNotifyAttempts = 5
+	// Why: 3 attempts with exponential backoff covers ~7s of retries, enough
+	// to ride out transient tmux hangs without blocking the scan loop.
+	maxNotifyAttempts = 3
 
 	// notifyBackoffInitial is the initial backoff delay after a failed notification.
-	// Exponential backoff: 1s → 2s → 4s → 8s → 16s (capped at notifyBackoffMax).
+	// Exponential backoff: 1s → 2s → 4s (capped at notifyBackoffMax).
 	notifyBackoffInitial = 1 * time.Second
 
 	// notifyBackoffMax is the maximum backoff delay between retry attempts.
-	// Why: 30s cap prevents backoff from exceeding the typical scan interval,
-	// ensuring retries don't stall the entire notification pipeline.
-	notifyBackoffMax = 30 * time.Second
+	// Why: 5s cap keeps total retry time within ~7s, preventing backoff from
+	// exceeding the typical scan interval or stalling the notification pipeline.
+	notifyBackoffMax = 5 * time.Second
 
 	// maxResultLoopIterations is the maximum number of iterations allowed per
 	// processResultFile call. Prevents unbounded CPU/memory consumption when

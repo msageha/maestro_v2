@@ -294,6 +294,20 @@ func (b *Bus) addDroppedByType(eventType EventType) int64 {
 	return v.(*atomic.Int64).Add(1)
 }
 
+// DroppedCount returns the total number of dropped events across all types.
+func (b *Bus) DroppedCount() int64 {
+	return b.droppedCount.Load()
+}
+
+// DroppedByType returns the number of dropped events for a specific event type.
+func (b *Bus) DroppedByType(eventType EventType) int64 {
+	v, ok := b.droppedByType.Load(eventType)
+	if !ok {
+		return 0
+	}
+	return v.(*atomic.Int64).Load()
+}
+
 // Close closes all subscriber channels, waits up to 5 seconds for goroutines to drain,
 // and clears subscriptions. If the timeout expires, Close returns immediately; remaining
 // goroutines will finish asynchronously once their callbacks complete.

@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -14,6 +13,11 @@ import (
 	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
 )
+
+// shutdownOpTimeout is the maximum time allowed for individual shutdown
+// operations (e.g., watcher close, server stop). If an operation exceeds
+// this timeout, a warning is logged and shutdown proceeds to the next step.
+const shutdownOpTimeout = 10 * time.Second
 
 // waitSignals blocks until a shutdown signal or context cancellation is received.
 func (d *Daemon) waitSignals() {
@@ -42,7 +46,7 @@ func (d *Daemon) waitSignals() {
 				d.forceExit.Store(true)
 				if d.watcher != nil {
 					if err := d.watcher.Close(); err != nil {
-						log.Printf("DEBUG: failed to close watcher during force exit: %v", err)
+						d.log(LogLevelDebug, "shutdown force_exit watcher_close error=%v", err)
 					}
 				}
 				d.closeExecutors()
@@ -89,30 +93,26 @@ func (d *Daemon) Shutdown() {
 		d.egMu.Unlock()
 
 		// 2. Stop producers — no new work will be enqueued.
+		// Each operation has an individual timeout (shutdownOpTimeout) to prevent
+		// a single hung component from consuming the entire global timeout budget.
 		d.ticker.Stop()
 		if d.handler != nil {
 			d.handler.Stop()
 		}
 		if d.watcher != nil {
-			if err := d.watcher.Close(); err != nil {
-				d.log(LogLevelError, "shutdown watcher_close error=%v", err)
-			}
+			d.shutdownOp("watcher_close", func() error { return d.watcher.Close() })
 		}
 		if d.server != nil {
-			if err := d.server.Stop(); err != nil {
-				d.log(LogLevelError, "shutdown server_stop error=%v", err)
-			}
+			d.shutdownOp("server_stop", func() error { return d.server.Stop() })
 		}
 
 		// Unsubscribe from event bus and stop event processing.
 		d.bridge.unsubscribeAll()
 		if d.eventBus != nil {
-			d.eventBus.Close()
+			d.shutdownOp("event_bus_close", func() error { d.eventBus.Close(); return nil })
 		}
 		if d.qualityGateDaemon != nil {
-			if err := d.qualityGateDaemon.Stop(); err != nil {
-				log.Printf("DEBUG: failed to stop quality gate daemon during shutdown: %v", err)
-			}
+			d.shutdownOp("quality_gate_stop", func() error { return d.qualityGateDaemon.Stop() })
 		}
 
 		// Log warning for active rollout groups that will be abandoned.
@@ -164,6 +164,24 @@ func (d *Daemon) Shutdown() {
 		d.log(LogLevelInfo, "daemon stopped")
 		d.cleanup()
 	})
+}
+
+// shutdownOp runs fn with shutdownOpTimeout. If fn does not complete in time,
+// a warning is logged and control returns so the global shutdown timer can proceed.
+func (d *Daemon) shutdownOp(name string, fn func() error) {
+	done := make(chan error, 1)
+	go func() {
+		done <- fn()
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			d.log(LogLevelError, "shutdown %s error=%v", name, err)
+		}
+	case <-time.After(shutdownOpTimeout):
+		d.log(LogLevelWarn, "shutdown %s timed out after %s", name, shutdownOpTimeout)
+	}
 }
 
 // closeExecutors closes the shared executor instance to release log file handles.
