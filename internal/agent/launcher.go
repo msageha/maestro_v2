@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -22,6 +23,13 @@ var validRoleName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
 // validTmuxPane matches the expected TMUX_PANE format: %<number> (e.g. %0, %1, %123).
 var validTmuxPane = regexp.MustCompile(`^%\d+$`)
+
+// knownRoles lists all valid role names. Unknown roles are rejected (fail-closed).
+var knownRoles = map[string]bool{
+	"orchestrator": true,
+	"planner":      true,
+	"worker":       true,
+}
 
 // allowedToolsByRole defines the tools each role is permitted to use.
 // Orchestrator and Planner are restricted to:
@@ -58,9 +66,14 @@ func Launch(maestroDir string) error {
 	basePromptMode := "append" // default
 	if cfg, err := loadBasePromptMode(maestroDir, role); err == nil {
 		basePromptMode = cfg
+	} else {
+		log.Printf("warning: loadBasePromptMode: %v; using default %q", err, basePromptMode)
 	}
 
-	args := buildLaunchArgs(role, agentModel, systemPrompt, basePromptMode)
+	args, err := buildLaunchArgs(role, agentModel, systemPrompt, basePromptMode)
+	if err != nil {
+		return fmt.Errorf("build launch args: %w", err)
+	}
 
 	if role == "worker" {
 		args, err = applyWorkerPolicy(maestroDir, args)
@@ -150,7 +163,11 @@ func runIgnoringSIGINT(cmd *exec.Cmd) error {
 // buildLaunchArgs constructs the CLI arguments for the claude command.
 // basePromptMode controls the system prompt flag: "replace" uses --system-prompt,
 // "append" (or empty) uses --append-system-prompt.
-func buildLaunchArgs(role, agentModel, systemPrompt, basePromptMode string) []string {
+func buildLaunchArgs(role, agentModel, systemPrompt, basePromptMode string) ([]string, error) {
+	if !knownRoles[role] {
+		return nil, fmt.Errorf("unknown role %q: rejected (fail-closed)", role)
+	}
+
 	promptFlag := "--append-system-prompt"
 	if basePromptMode == "replace" {
 		promptFlag = "--system-prompt"
@@ -213,7 +230,7 @@ func buildLaunchArgs(role, agentModel, systemPrompt, basePromptMode string) []st
 		args = append(args, "--settings", `{"sandbox":{"network":{"allowAllUnixSockets":true}},"hooks":{"Notification":[]}}`)
 	}
 
-	return args
+	return args, nil
 }
 
 // buildSystemPrompt combines maestro.md + instructions/{role}.md.

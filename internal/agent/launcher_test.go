@@ -334,7 +334,10 @@ func TestBuildSystemPrompt_OrchestratorNoConfigYAML(t *testing.T) {
 }
 
 func TestBuildLaunchArgs_WorkerDisallowsMaestroReads(t *testing.T) {
-	args := buildLaunchArgs("worker", "sonnet", "system-prompt", "")
+	args, err := buildLaunchArgs("worker", "sonnet", "system-prompt", "")
+	if err != nil {
+		t.Fatalf("buildLaunchArgs: %v", err)
+	}
 	joined := strings.Join(args, " ")
 
 	// Worker should have --disallowedTools containing Read restrictions for .maestro/ control-plane paths
@@ -371,7 +374,10 @@ func TestBuildLaunchArgs_WorkerDisallowsMaestroReads(t *testing.T) {
 }
 
 func TestBuildLaunchArgs_WorkerDoesNotBlockWorktreeReads(t *testing.T) {
-	args := buildLaunchArgs("worker", "sonnet", "system-prompt", "")
+	args, err := buildLaunchArgs("worker", "sonnet", "system-prompt", "")
+	if err != nil {
+		t.Fatalf("buildLaunchArgs: %v", err)
+	}
 	joined := strings.Join(args, " ")
 
 	// Should NOT block .maestro/worktrees/** (workers need access to their worktree files)
@@ -398,7 +404,10 @@ func TestBuildLaunchArgs_NotificationDisabledForNonOrchestrator(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.role, func(t *testing.T) {
-			args := buildLaunchArgs(tt.role, "sonnet", "system-prompt", "")
+			args, err := buildLaunchArgs(tt.role, "sonnet", "system-prompt", "")
+			if err != nil {
+				t.Fatalf("buildLaunchArgs(%s): %v", tt.role, err)
+			}
 			joined := strings.Join(args, " ")
 
 			hasNotificationOff := strings.Contains(joined, `"Notification":[]`)
@@ -416,7 +425,10 @@ func TestBuildLaunchArgs_NotificationDisabledForNonOrchestrator(t *testing.T) {
 }
 
 func TestBuildLaunchArgs_BasePromptModeReplace(t *testing.T) {
-	args := buildLaunchArgs("orchestrator", "sonnet", "my-prompt", "replace")
+	args, err := buildLaunchArgs("orchestrator", "sonnet", "my-prompt", "replace")
+	if err != nil {
+		t.Fatalf("buildLaunchArgs: %v", err)
+	}
 	joined := strings.Join(args, " ")
 
 	if !strings.Contains(joined, "--system-prompt") {
@@ -428,7 +440,10 @@ func TestBuildLaunchArgs_BasePromptModeReplace(t *testing.T) {
 }
 
 func TestBuildLaunchArgs_BasePromptModeAppend(t *testing.T) {
-	args := buildLaunchArgs("worker", "sonnet", "my-prompt", "append")
+	args, err := buildLaunchArgs("worker", "sonnet", "my-prompt", "append")
+	if err != nil {
+		t.Fatalf("buildLaunchArgs: %v", err)
+	}
 	joined := strings.Join(args, " ")
 
 	if !strings.Contains(joined, "--append-system-prompt") {
@@ -443,7 +458,10 @@ func TestBuildLaunchArgs_BasePromptModeAppend(t *testing.T) {
 }
 
 func TestBuildLaunchArgs_BasePromptModeDefault(t *testing.T) {
-	args := buildLaunchArgs("worker", "sonnet", "my-prompt", "")
+	args, err := buildLaunchArgs("worker", "sonnet", "my-prompt", "")
+	if err != nil {
+		t.Fatalf("buildLaunchArgs: %v", err)
+	}
 	joined := strings.Join(args, " ")
 
 	if !strings.Contains(joined, "--append-system-prompt") {
@@ -453,6 +471,32 @@ func TestBuildLaunchArgs_BasePromptModeDefault(t *testing.T) {
 		if arg == "--system-prompt" {
 			t.Error("empty base_prompt_mode should NOT use --system-prompt")
 		}
+	}
+}
+
+func TestBuildLaunchArgs_UnknownRoleError(t *testing.T) {
+	unknownRoles := []string{"admin", "superuser", "root", "unknown", ""}
+	for _, role := range unknownRoles {
+		t.Run(role, func(t *testing.T) {
+			_, err := buildLaunchArgs(role, "sonnet", "system-prompt", "")
+			if err == nil {
+				t.Errorf("buildLaunchArgs(%q) should return error for unknown role", role)
+			}
+			if err != nil && !strings.Contains(err.Error(), "unknown role") {
+				t.Errorf("error should mention 'unknown role', got: %v", err)
+			}
+		})
+	}
+}
+
+func TestBuildLaunchArgs_KnownRolesSucceed(t *testing.T) {
+	for _, role := range []string{"orchestrator", "planner", "worker"} {
+		t.Run(role, func(t *testing.T) {
+			_, err := buildLaunchArgs(role, "sonnet", "system-prompt", "")
+			if err != nil {
+				t.Errorf("buildLaunchArgs(%q) should succeed, got: %v", role, err)
+			}
+		})
 	}
 }
 
