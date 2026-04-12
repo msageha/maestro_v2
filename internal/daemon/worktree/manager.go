@@ -92,6 +92,9 @@ func (wm *Manager) EnsureWorkerWorktree(commandID, workerID string) error {
 
 	state, err := wm.loadState(commandID)
 	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("load worktree state: %w", err)
+		}
 		// No state yet — create everything from scratch
 		baseBranch := wm.config.EffectiveBaseBranch()
 		baseSHA, err := wm.gitOutput("rev-parse", baseBranch)

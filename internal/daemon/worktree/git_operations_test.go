@@ -343,6 +343,24 @@ func TestWrapGitOutputError_SanitizesStderr(t *testing.T) {
 	}
 }
 
+// TestGitOutputWithRetry_EmptyOutputNilError tests that gitOutputWithRetry
+// correctly handles the case where git returns empty output with no error
+// (e.g., git status --porcelain in a clean repo).
+func TestGitOutputWithRetry_EmptyOutputNilError(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	// git status --porcelain returns empty output when the repo is clean
+	output, err := wm.gitOutputWithRetry(projectRoot, 3, "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("gitOutputWithRetry: unexpected error: %v", err)
+	}
+	if output != "" {
+		t.Errorf("expected empty output for clean repo, got %q", output)
+	}
+}
+
 func TestGitOutputWithRetry_PermanentNoRetry(t *testing.T) {
 	t.Parallel()
 	projectRoot := initTestGitRepo(t)

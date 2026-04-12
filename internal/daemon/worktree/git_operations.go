@@ -127,6 +127,9 @@ func wrapGitOutputError(err error, args []string) error {
 func (wm *Manager) gitOutputWithRetry(dir string, maxRetries int, args ...string) (string, error) {
 	output, err := wm.gitExecOutput(dir, args...)
 	if err == nil {
+		if output == nil {
+			return "", nil
+		}
 		return string(output), nil
 	}
 	firstErr := wrapGitOutputError(err, args)
@@ -150,6 +153,9 @@ func (wm *Manager) gitOutputWithRetry(dir string, maxRetries int, args ...string
 
 		output, err = wm.gitExecOutput(dir, args...)
 		if err == nil {
+			if output == nil {
+				return "", nil
+			}
 			return string(output), nil
 		}
 		firstErr = wrapGitOutputError(err, args)
