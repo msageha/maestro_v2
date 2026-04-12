@@ -3,6 +3,7 @@ package daemon
 import (
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/fsnotify/fsnotify"
 
@@ -12,8 +13,15 @@ import (
 // WatchLoop groups the fsnotify and ticker loop goroutines.
 // It holds a back-pointer to Daemon for access to shared state.
 type WatchLoop struct {
-	d     *Daemon
-	fsSem chan struct{} // bounds concurrent fsnotify handler goroutines
+	d            *Daemon
+	fsSem        chan struct{} // bounds concurrent fsnotify handler goroutines
+	droppedCount atomic.Int64 // events dropped due to semaphore full
+}
+
+// FsDroppedCount returns the total number of fsnotify events dropped due to
+// semaphore saturation.
+func (w *WatchLoop) FsDroppedCount() int64 {
+	return w.droppedCount.Load()
 }
 
 // fsnotifyLoop processes filesystem change events.
@@ -57,7 +65,10 @@ func (w *WatchLoop) fsnotifyLoop() {
 					case w.fsSem <- struct{}{}:
 						defer func() { <-w.fsSem }()
 					default:
-						d.log(LogLevelDebug, "fsnotify handler dropped (semaphore full) file=%s", name)
+						cnt := w.droppedCount.Add(1)
+						if cnt == 1 || cnt%100 == 0 {
+							d.log(LogLevelWarn, "fsnotify handler dropped (semaphore full) file=%s total_dropped=%d", name, cnt)
+						}
 						return nil
 					}
 					d.handler.HandleFileEvent(name)

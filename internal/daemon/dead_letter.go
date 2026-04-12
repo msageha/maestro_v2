@@ -429,12 +429,14 @@ func (dlp *DeadLetterProcessor) taskDeadLetterPostProcess(commandID, taskID, wor
 	resultData, err := os.ReadFile(resultPath) //nolint:gosec // resultPath is constructed from a controlled application results directory
 	if err != nil {
 		if !os.IsNotExist(err) {
+			dlp.log(LogLevelError, "dead_letter_read_result worker=%s task=%s error=%v", workerID, taskID, err)
 			return
 		}
 		rf.SchemaVersion = 1
 		rf.FileType = "result_task"
 	} else {
 		if err := yamlv3.Unmarshal(resultData, &rf); err != nil {
+			dlp.log(LogLevelError, "dead_letter_unmarshal_result worker=%s task=%s error=%v", workerID, taskID, err)
 			return
 		}
 	}
@@ -448,6 +450,7 @@ func (dlp *DeadLetterProcessor) taskDeadLetterPostProcess(commandID, taskID, wor
 
 	resID, err := model.GenerateID(model.IDTypeResult)
 	if err != nil {
+		dlp.log(LogLevelError, "dead_letter_generate_result_id worker=%s task=%s error=%v", workerID, taskID, err)
 		return
 	}
 

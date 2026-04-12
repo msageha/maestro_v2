@@ -40,7 +40,9 @@ func startDaemon() error {
 	// Reap the child process in the background. cmd.Wait() returns when the
 	// daemon process exits, so this goroutine is guaranteed to terminate.
 	go func() {
-		_ = cmd.Wait()
+		if err := cmd.Wait(); err != nil {
+			log.Printf("[WARN] daemon process exited with error: %v", err)
+		}
 	}()
 	return nil
 }
@@ -68,7 +70,7 @@ func (c *Config) stopDaemon(maestroDir string) error {
 	// Step 2: Read and validate PID from daemon.pid (cross-check with lock file)
 	pid := validateDaemonPID(maestroDir)
 
-	if pid > 0 {
+	if isValidPID(pid) {
 		// Capture process start time to detect PID reuse (Fix #7)
 		origStartTime := c.ProcMgr.StartTime(pid)
 
@@ -182,14 +184,19 @@ func waitDaemonReady(socketPath string, timeout time.Duration) error {
 	return defaultConfig.waitDaemonReady(socketPath, timeout)
 }
 
-// readDaemonPID reads the daemon PID from the PID file. Returns 0 if unreadable.
+// isValidPID reports whether pid is a valid process ID (positive integer).
+func isValidPID(pid int) bool {
+	return pid > 0
+}
+
+// readDaemonPID reads the daemon PID from the PID file. Returns 0 if unreadable or invalid.
 func readDaemonPID(pidPath string) int {
 	data, err := os.ReadFile(pidPath) //nolint:gosec // pidPath is derived from maestroDir; caller controls path
 	if err != nil {
 		return 0
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err != nil {
+	if err != nil || !isValidPID(pid) {
 		return 0
 	}
 	return pid
@@ -200,13 +207,13 @@ func readDaemonPID(pidPath string) int {
 func validateDaemonPID(maestroDir string) int {
 	pidPath := filepath.Join(maestroDir, "daemon.pid")
 	pid := readDaemonPID(pidPath)
-	if pid <= 0 {
+	if !isValidPID(pid) {
 		return 0
 	}
 	lockPath := filepath.Join(maestroDir, "locks", "daemon.lock")
 	lockPID := lock.ReadLockPID(lockPath)
 	// Lock file must be readable and match daemon.pid for the PID to be trusted.
-	if lockPID <= 0 || lockPID != pid {
+	if !isValidPID(lockPID) || lockPID != pid {
 		removeIfExists(pidPath)
 		return 0
 	}

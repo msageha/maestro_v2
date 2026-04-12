@@ -85,18 +85,21 @@ func reconcileTerminalQueue[Q any, T any](
 	unmarshalQueue func(data []byte) (Q, []T, error),
 	setItems func(Q, []T) Q,
 	accessor queueItemAccessor[T],
-) (repairs []Repair, repairedCommands map[string]bool) {
+) (repairs []Repair, repairedCommands map[string]bool, err error) {
 	run.Deps.LockMap.Lock("queue:" + queueName)
 	defer run.Deps.LockMap.Unlock("queue:" + queueName)
 
 	queueData, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 	if err != nil {
-		return nil, nil
+		if os.IsNotExist(err) {
+			return nil, nil, nil
+		}
+		return nil, nil, fmt.Errorf("read queue %s: %w", queueName, err)
 	}
 
 	queue, items, err := unmarshalQueue(queueData)
 	if err != nil {
-		return nil, nil
+		return nil, nil, fmt.Errorf("parse queue %s: %w", queueName, err)
 	}
 
 	modified, repairs, repairedCommands := reconcileTerminalQueueItems(
@@ -107,11 +110,11 @@ func reconcileTerminalQueue[Q any, T any](
 		queue = setItems(queue, items)
 		if err := yamlutil.AtomicWrite(queuePath, queue); err != nil {
 			run.Log(core.LogLevelError, "%s write_queue queue=%s error=%v", patternName, queueName, err)
-			return nil, nil
+			return nil, nil, fmt.Errorf("write queue %s: %w", queueName, err)
 		}
 	}
 
-	return repairs, repairedCommands
+	return repairs, repairedCommands, nil
 }
 
 // taskQueueAccessor returns a queueItemAccessor for model.Task items (used by R1).

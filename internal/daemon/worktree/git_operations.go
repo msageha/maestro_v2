@@ -36,9 +36,6 @@ var transientPatterns = []string{
 	"Connection refused",
 	"Could not resolve host",
 	"Connection reset by peer",
-	// Resource transient errors
-	"cannot allocate memory",
-	"No space left on device",
 }
 
 // permanentPatterns are substrings that indicate a permanent git error.
@@ -127,6 +124,9 @@ func wrapGitOutputError(err error, args []string) error {
 func (wm *Manager) gitOutputWithRetry(dir string, maxRetries int, args ...string) (string, error) {
 	output, err := wm.gitExecOutput(dir, args...)
 	if err == nil {
+		if output == nil {
+			return "", nil
+		}
 		return string(output), nil
 	}
 	firstErr := wrapGitOutputError(err, args)
@@ -150,6 +150,9 @@ func (wm *Manager) gitOutputWithRetry(dir string, maxRetries int, args ...string
 
 		output, err = wm.gitExecOutput(dir, args...)
 		if err == nil {
+			if output == nil {
+				return "", nil
+			}
 			return string(output), nil
 		}
 		firstErr = wrapGitOutputError(err, args)

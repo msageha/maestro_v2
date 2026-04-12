@@ -203,7 +203,7 @@ maestro result write <agent_id> \
   [--no-retry-safe]
 ```
 
-`<agent_id>`, `<task_id>`, `<command_id>`, `<epoch>` はタスク配信時の値をそのまま使用する。`--lease-epoch` は CLI 実装上のデフォルトは 0 だが、Daemon が lease epoch 一致を検証するため、配信された値を必ず指定すること（実質必須）。
+`<agent_id>`, `<task_id>`, `<command_id>`, `<epoch>` はタスク配信時の値をそのまま使用する。`--lease-epoch` は CLI 実装上のデフォルトは -1（未指定 sentinel）であり、未指定時はバリデーションエラーとなる。Daemon が lease epoch 一致を検証するため、配信された値を必ず指定すること（実質必須）。
 
 エラー時は stderr にメッセージが出力される（lease_epoch 不一致、task_id 不存在等）。エラーが発生した場合は stderr のメッセージを確認し、修正して再試行する。lease_epoch 不一致の詳細は下記「lease_epoch ライフサイクル」を参照。
 

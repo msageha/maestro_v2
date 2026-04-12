@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -547,5 +548,25 @@ func TestPlanExecutorImpl_RebuildSuccess(t *testing.T) {
 	}
 	if result.Status != "rebuilt" {
 		t.Errorf("Status = %q, want rebuilt", result.Status)
+	}
+}
+
+func TestParseAndExecute_MarshalErrorWrapped(t *testing.T) {
+	// Use a type that json.Marshal cannot serialize (e.g., channel) to trigger marshal error.
+	type unmarshalable struct {
+		Ch chan int `json:"ch"`
+	}
+
+	_, err := parseAndExecute("test_op", []byte(`{}`), func(_ struct{}) (unmarshalable, error) {
+		return unmarshalable{Ch: make(chan int)}, nil
+	})
+	if err == nil {
+		t.Fatal("expected error from marshal failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to marshal plan result") {
+		t.Errorf("error should contain 'failed to marshal plan result', got: %q", err)
+	}
+	if !strings.Contains(err.Error(), "test_op") {
+		t.Errorf("error should contain operation name 'test_op', got: %q", err)
 	}
 }

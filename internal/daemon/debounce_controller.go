@@ -168,6 +168,10 @@ func (dc *DebounceController) Stop() {
 	// Only wait if the timer had already fired (callback may be in-flight).
 	// If Stop() returned true the callback will never run, so waiting would hang.
 	if done != nil && !timerWasPending {
-		<-done
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			dc.dl.Logf(LogLevelWarn, "debounce_stop_timeout: callback did not finish within 5s")
+		}
 	}
 }

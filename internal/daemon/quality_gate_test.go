@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -561,8 +562,8 @@ func TestQualityGateDaemon_ConcurrentStopEmit(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		<-start
-		// Small delay so some emits are in flight
-		time.Sleep(time.Millisecond)
+		// Yield so some emits are in flight
+		runtime.Gosched()
 		_ = qg.Stop()
 	}()
 

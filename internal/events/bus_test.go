@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -122,9 +123,14 @@ func TestBus_NonBlocking(t *testing.T) {
 	bus := NewBus(context.Background(), 1)
 	defer bus.Close()
 
-	// Subscribe with slow consumer
+	// Subscribe with slow consumer (blocks on channel instead of sleeping)
+	slowConsumer := make(chan struct{})
+	t.Cleanup(func() { close(slowConsumer) })
 	unsub := bus.Subscribe(EventTaskStarted, func(e Event) {
-		time.Sleep(100 * time.Millisecond)
+		select {
+		case <-slowConsumer:
+		case <-time.After(100 * time.Millisecond):
+		}
 	})
 	defer unsub()
 
@@ -371,11 +377,11 @@ func TestBus_ConcurrentCloseAndPublish(t *testing.T) {
 		}()
 	}
 
-	// Close bus concurrently
+	// Close bus concurrently (yield to let other goroutines start)
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		time.Sleep(5 * time.Millisecond)
+		runtime.Gosched()
 		bus.Close()
 	}()
 
@@ -655,10 +661,26 @@ func TestBus_SubscribeCoalescedBurst(t *testing.T) {
 	// Release barrier to let first callback complete
 	close(barrier)
 
-	// Wait for processing
-	time.Sleep(50 * time.Millisecond)
+	// Poll until callCount stabilizes (instead of fixed sleep)
+	var got int64
+	deadline := time.Now().Add(3 * time.Second)
+	var lastCount int64
+	stableRounds := 0
+	for time.Now().Before(deadline) {
+		got = callCount.Load()
+		if got > 0 && got == lastCount {
+			stableRounds++
+			if stableRounds >= 3 {
+				break
+			}
+		} else {
+			stableRounds = 0
+		}
+		lastCount = got
+		time.Sleep(10 * time.Millisecond)
+	}
 
-	got := callCount.Load()
+	got = callCount.Load()
 	// Should have at least 1 call (coalesced), no drops
 	if got < 1 {
 		t.Errorf("expected at least 1 coalesced call after burst, got %d", got)

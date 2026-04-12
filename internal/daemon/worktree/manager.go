@@ -92,6 +92,9 @@ func (wm *Manager) EnsureWorkerWorktree(commandID, workerID string) error {
 
 	state, err := wm.loadState(commandID)
 	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("load worktree state: %w", err)
+		}
 		// No state yet — create everything from scratch
 		baseBranch := wm.config.EffectiveBaseBranch()
 		baseSHA, err := wm.gitOutput("rev-parse", baseBranch)
@@ -329,6 +332,18 @@ func (wm *Manager) CommitWorkerChanges(commandID, workerID, message string) erro
 		// Worktree had dirty files but all were filtered — this is not a clean success.
 		wm.Log(core.LogLevelWarn, "all_files_filtered command=%s worker=%s", commandID, workerID)
 		return fmt.Errorf("commit for worker %s in command %s: %w", workerID, commandID, ErrAllFilesFiltered)
+	}
+
+	// Pre-check: verify transition to Committed is valid before committing.
+	// This prevents git commit from succeeding with no way to rollback if the
+	// state transition is invalid.
+	if err := model.ValidateWorktreeTransition(ws.Status, model.WorktreeStatusCommitted); err != nil {
+		// Reset staged changes so the worktree is left in a clean index state.
+		if resetErr := wm.gitRunInDir(ws.Path, "reset", "HEAD"); resetErr != nil {
+			wm.Log(core.LogLevelWarn, "git_reset_after_transition_check command=%s worker=%s error=%v",
+				commandID, workerID, resetErr)
+		}
+		return fmt.Errorf("worker %s: cannot commit (invalid transition from %s to committed): %w", workerID, ws.Status, err)
 	}
 
 	// Commit policy checks

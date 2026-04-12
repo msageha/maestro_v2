@@ -52,7 +52,7 @@ func (r *PlanStateReader) GetCommandPhases(commandID string) ([]core.PhaseInfo, 
 	}
 
 	if len(state.Phases) == 0 {
-		return nil, nil
+		return []core.PhaseInfo{}, nil
 	}
 
 	// Build phase-name-to-ID lookup once (not per-phase)

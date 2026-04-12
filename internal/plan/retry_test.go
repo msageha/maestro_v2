@@ -1,11 +1,14 @@
 package plan
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
 
@@ -1013,6 +1016,70 @@ func TestAddRetryTask_Rollback_OnSaveStateFailure(t *testing.T) {
 	// The failed task should still be in the state (not replaced)
 	if stateAfter.TaskStates[newFailedTaskID] != model.StatusFailed {
 		t.Errorf("task %s state = %s after rollback, want failed", newFailedTaskID, stateAfter.TaskStates[newFailedTaskID])
+	}
+}
+
+func TestSaveStateWithContext_Success(t *testing.T) {
+	ctx := context.Background()
+	err := saveStateWithContext(ctx, func() error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+}
+
+func TestSaveStateWithContext_SaveError(t *testing.T) {
+	ctx := context.Background()
+	wantErr := fmt.Errorf("disk full")
+	err := saveStateWithContext(ctx, func() error {
+		return wantErr
+	})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if err.Error() != wantErr.Error() {
+		t.Errorf("error = %q, want %q", err, wantErr)
+	}
+}
+
+func TestSaveStateWithContext_Timeout(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	blocker := make(chan struct{})
+	t.Cleanup(func() { close(blocker) })
+	err := saveStateWithContext(ctx, func() error {
+		// Simulate a hung filesystem by blocking until context timeout
+		<-blocker
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected timeout error, got nil")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("expected DeadlineExceeded, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "state save timed out") {
+		t.Errorf("error should contain 'state save timed out', got: %q", err)
+	}
+}
+
+func TestSaveStateWithContext_CancelledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // pre-cancel
+
+	blocker := make(chan struct{})
+	t.Cleanup(func() { close(blocker) })
+	err := saveStateWithContext(ctx, func() error {
+		<-blocker
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected error from cancelled context, got nil")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("expected context.Canceled, got: %v", err)
 	}
 }
 

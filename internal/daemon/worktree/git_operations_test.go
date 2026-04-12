@@ -100,16 +100,16 @@ func TestClassifyGitError(t *testing.T) {
 			err:  errors.New("fatal: the remote end hung up unexpectedly: Connection reset by peer"),
 			want: gitErrorTransient,
 		},
-		// New transient patterns: resource errors
+		// Resource errors — permanent (won't resolve within backoff window)
 		{
 			name: "cannot allocate memory",
 			err:  errors.New("fatal: cannot allocate memory"),
-			want: gitErrorTransient,
+			want: gitErrorPermanent,
 		},
 		{
 			name: "no space left on device",
 			err:  errors.New("error: No space left on device"),
-			want: gitErrorTransient,
+			want: gitErrorPermanent,
 		},
 
 		// Unknown errors default to Permanent
@@ -340,6 +340,24 @@ func TestWrapGitOutputError_SanitizesStderr(t *testing.T) {
 	}
 	if !strings.Contains(msg, "git fetch origin") {
 		t.Errorf("error message missing command: %s", msg)
+	}
+}
+
+// TestGitOutputWithRetry_EmptyOutputNilError tests that gitOutputWithRetry
+// correctly handles the case where git returns empty output with no error
+// (e.g., git status --porcelain in a clean repo).
+func TestGitOutputWithRetry_EmptyOutputNilError(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	// git status --porcelain returns empty output when the repo is clean
+	output, err := wm.gitOutputWithRetry(projectRoot, 3, "status", "--porcelain")
+	if err != nil {
+		t.Fatalf("gitOutputWithRetry: unexpected error: %v", err)
+	}
+	if output != "" {
+		t.Errorf("expected empty output for clean repo, got %q", output)
 	}
 }
 

@@ -51,6 +51,9 @@ func (cb *Handler) UpdateCounterOnResult(
 	resultID string,
 	now time.Time,
 ) (bool, string) {
+	if state == nil {
+		return false, ""
+	}
 	if !cb.config.CircuitBreaker.Enabled {
 		return false, ""
 	}
@@ -95,6 +98,9 @@ func (cb *Handler) UpdateCounterOnResult(
 // Called from resultWritePhaseB where the state:{commandID} lock is already held.
 // The state pointer is mutated in-place and saved by the caller.
 func (cb *Handler) TripBreaker(state *model.CommandState, reason string, now time.Time) {
+	if state == nil {
+		return
+	}
 	if state.CircuitBreaker.Tripped {
 		return // already tripped
 	}
