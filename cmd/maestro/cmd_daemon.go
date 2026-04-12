@@ -42,7 +42,13 @@ func runDaemon(args []string) error {
 	// Wire Phase 6 state reader for dependency resolution (shared lockMap)
 	sharedLockMap := d.LockMap()
 	sm := plan.NewStateManager(maestroDir, sharedLockMap)
+	if sm == nil {
+		return fmt.Errorf("maestro daemon: failed to create state manager")
+	}
 	reader := plan.NewPlanStateReader(sm)
+	if reader == nil {
+		return fmt.Errorf("maestro daemon: failed to create plan state reader")
+	}
 	d.SetStateReader(reader)
 	d.SetCanComplete(plan.CanComplete)
 
@@ -56,11 +62,12 @@ func runDaemon(args []string) error {
 	})
 
 	// Wire plan executor for UDS plan operations (shared lockMap)
-	d.SetPlanExecutor(&bridge.PlanExecutorImpl{
+	executor := &bridge.PlanExecutorImpl{
 		MaestroDir: maestroDir,
 		Config:     cfg,
 		LockMap:    sharedLockMap,
-	})
+	}
+	d.SetPlanExecutor(executor)
 
 	if err := d.Run(); err != nil {
 		return fmt.Errorf("maestro daemon: %w", err)

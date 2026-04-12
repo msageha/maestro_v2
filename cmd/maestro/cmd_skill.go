@@ -172,6 +172,9 @@ func runSkillApprove(args []string) error {
 	if err := json.Unmarshal(resp.Data, &result); err != nil {
 		return fmt.Errorf("maestro skill approve: unmarshal response: %w", err)
 	}
+	if result == nil {
+		return &CLIError{Code: 1, Msg: "maestro skill approve: response missing skill_name"}
+	}
 	skillName, ok := result["skill_name"]
 	if !ok {
 		return &CLIError{Code: 1, Msg: "maestro skill approve: response missing skill_name"}
@@ -225,18 +228,3 @@ func runSkillReject(args []string) error {
 	return nil
 }
 
-// sanitizeForTerminal removes control characters to prevent terminal injection
-// and output spoofing. Tabs and newlines are replaced with spaces to prevent
-// multi-line output spoofing attacks.
-func sanitizeForTerminal(s string) string {
-	var sb strings.Builder
-	sb.Grow(len(s))
-	for _, r := range s {
-		if r == '\t' || r == '\n' {
-			sb.WriteByte(' ')
-		} else if r >= 0x20 && r != 0x7f {
-			sb.WriteRune(r)
-		}
-	}
-	return sb.String()
-}
