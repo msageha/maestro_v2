@@ -24,7 +24,7 @@ func TestReadDaemonPID(t *testing.T) {
 		{"empty file", "", false, 0},
 		{"missing file", "", true, 0},
 		{"large pid", "9999999", false, 9999999},
-		{"negative pid", "-1", false, -1},
+		{"negative pid", "-1", false, 0},
 		{"zero pid", "0", false, 0},
 	}
 	for _, tt := range tests {

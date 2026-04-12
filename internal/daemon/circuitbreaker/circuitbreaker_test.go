@@ -439,3 +439,25 @@ func TestConfigEffectiveProgressTimeoutMinutes(t *testing.T) {
 		}
 	}
 }
+
+func TestUpdateCounterOnResult_NilState(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandler(true, 3, 30)
+
+	// Must not panic with nil state.
+	tripped, reason := cb.UpdateCounterOnResult(nil, model.StatusFailed, "r1", time.Now())
+	if tripped {
+		t.Error("expected no trip on nil state")
+	}
+	if reason != "" {
+		t.Errorf("expected empty reason on nil state, got %q", reason)
+	}
+}
+
+func TestTripBreaker_NilState(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandler(true, 3, 30)
+
+	// Must not panic with nil state.
+	cb.TripBreaker(nil, "test reason", time.Now())
+}

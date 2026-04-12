@@ -20,6 +20,7 @@ type ExecutorProvider struct {
 	watcherCfg model.WatcherConfig
 	logLevel   string
 	clock      Clock
+	dl         *DaemonLogger
 
 	mu             sync.Mutex
 	factory        ExecutorFactory
@@ -43,6 +44,7 @@ func NewExecutorProvider(
 		logLevel:   logLevel,
 		factory:    factory,
 		clock:      clock,
+		dl:         NewDaemonLoggerFromLegacy("executor_provider", log.Default(), parseLogLevel(logLevel)),
 	}
 }
 
@@ -93,7 +95,7 @@ func (ep *ExecutorProvider) SetFactory(f ExecutorFactory) {
 
 	if old != nil {
 		if err := old.Close(); err != nil {
-			log.Printf("WARN: failed to close old executor: %v", err)
+			ep.dl.Logf(LogLevelWarn, "failed to close old executor: %v", err)
 		}
 	}
 }
@@ -118,7 +120,7 @@ func (ep *ExecutorProvider) CloseExecutor() {
 
 	if exec != nil {
 		if err := exec.Close(); err != nil {
-			log.Printf("WARN: failed to close executor: %v", err)
+			ep.dl.Logf(LogLevelWarn, "failed to close executor: %v", err)
 		}
 	}
 }
