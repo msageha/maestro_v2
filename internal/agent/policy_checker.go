@@ -139,7 +139,7 @@ tool_name="$(echo "$input" | jq -r '.tool_name // ""')"
 
 deny() {
   local reason="$1"
-  echo "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"$reason\"}}"
+  jq -nc --arg r "$reason" '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":$r}}'
   exit 0
 }
 
@@ -205,6 +205,11 @@ if [ "$tool_name" = "Bash" ]; then
   if echo "$cmd" | grep -qE '(^|;|\||&&)\s*su\s'; then
     deny "D005: Blocked su (privilege escalation)"
   fi
+  # D005: chmod -R targeting system paths (privilege escalation)
+  if echo "$cmd" | grep -qE 'chmod\s+(-[a-zA-Z]*R[a-zA-Z]*|-R)\s' && \
+     echo "$cmd" | grep -qiE '/(System|Library|Applications|usr|bin|sbin|etc)(/|\s|$)'; then
+    deny "D005: Blocked chmod -R targeting system path"
+  fi
 
   # D006: Process/infra destruction
   if echo "$cmd" | grep -qE '(^|;|\||&&)\s*kill(all)?\s'; then
@@ -267,10 +272,10 @@ if [ "$tool_name" = "Bash" ]; then
   fi
 
   # .maestro/ access via Bash (bypass prevention, case-insensitive for macOS)
-  if echo "$cmd" | grep -qiE '(cat|head|tail|less|more|vim|nano|sed|awk)\s+.*\.maestro/(state|queues|results|locks|logs|config)'; then
+  if echo "$cmd" | grep -qiE '(cat|head|tail|less|more|vim|nano|sed|awk)\s+.*\.maestro/(state|queues|results|locks|logs|config|dashboard)'; then
     deny "Blocked .maestro/ control-plane access via Bash"
   fi
-  if echo "$cmd" | grep -qiE '(ls|find|grep|rg)\s+.*\.maestro/(state|queues|results|locks|logs|config)'; then
+  if echo "$cmd" | grep -qiE '(ls|find|grep|rg)\s+.*\.maestro/(state|queues|results|locks|logs|config|dashboard)'; then
     deny "Blocked .maestro/ control-plane access via Bash"
   fi
   if echo "$cmd" | grep -qiE '(echo|printf|tee)\s.*>\s*\.maestro/'; then
@@ -294,10 +299,10 @@ if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ]; then
 
   # Block writes to .maestro/ control plane (absolute and relative paths)
   case "$file_path_lower" in
-    */.maestro/state/*|*/.maestro/queues/*|*/.maestro/results/*|*/.maestro/locks/*|*/.maestro/logs/*|*/.maestro/config.yaml)
+    */.maestro/state/*|*/.maestro/queues/*|*/.maestro/results/*|*/.maestro/locks/*|*/.maestro/logs/*|*/.maestro/config.yaml|*/.maestro/dashboard.md)
       deny "Blocked write to .maestro/ control-plane path"
       ;;
-    .maestro/state/*|.maestro/queues/*|.maestro/results/*|.maestro/locks/*|.maestro/logs/*|.maestro/config.yaml)
+    .maestro/state/*|.maestro/queues/*|.maestro/results/*|.maestro/locks/*|.maestro/logs/*|.maestro/config.yaml|.maestro/dashboard.md)
       deny "Blocked write to .maestro/ control-plane path (relative)"
       ;;
   esac

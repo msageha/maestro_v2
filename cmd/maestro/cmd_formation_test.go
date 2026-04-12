@@ -107,6 +107,57 @@ func TestRunDown_FlagParsing(t *testing.T) {
 	}
 }
 
+func TestValidateBranchName(t *testing.T) {
+	valid := []string{"main", "develop", "feature/foo", "release-1.0", "my-branch"}
+	for _, name := range valid {
+		if err := validateBranchName(name); err != nil {
+			t.Errorf("validateBranchName(%q) = %v, want nil", name, err)
+		}
+	}
+
+	invalid := []struct {
+		name    string
+		wantMsg string
+	}{
+		{"", "empty"},
+		{"foo..bar", ".."},
+		{"foo~bar", "~"},
+		{"foo^bar", "^"},
+		{"foo:bar", ":"},
+		{"foo\\bar", "\\"},
+		{"foo bar", " "},
+		{"foo?bar", "?"},
+		{"foo*bar", "*"},
+		{"-start", "hyphen"},
+		{"foo.lock", ".lock"},
+		{"foo.", "dot"},
+		{"/foo", "slash"},
+		{"foo/", "slash"},
+		{"foo//bar", "slash"},
+		{"foo\x01bar", "control"},
+	}
+	for _, tt := range invalid {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateBranchName(tt.name)
+			if err == nil {
+				t.Errorf("validateBranchName(%q) = nil, want error containing %q", tt.name, tt.wantMsg)
+			}
+		})
+	}
+}
+
+func TestPrecheckGitRepo_InvalidBranchName(t *testing.T) {
+	dir := t.TempDir()
+	gitInit(t, dir)
+	gitRun(t, dir, "checkout", "-q", "-b", "main")
+	gitRun(t, dir, "commit", "-q", "--allow-empty", "-m", "init")
+
+	err := precheckGitRepo(dir, "foo..bar")
+	if err == nil || !strings.Contains(err.Error(), "invalid base branch name") {
+		t.Fatalf("expected invalid branch name error, got %v", err)
+	}
+}
+
 func TestRunUp_FlagParsing(t *testing.T) {
 	tests := []struct {
 		name    string

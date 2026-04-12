@@ -398,6 +398,22 @@ func TestGC(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Mark both as terminal (published) so GC is allowed to clean them up.
+	// GC skips active (non-terminal) worktrees to prevent data loss.
+	for _, cmdID := range []string{"cmd_gc_001", "cmd_gc_002"} {
+		state, err := wm.GetCommandState(cmdID)
+		if err != nil {
+			t.Fatalf("GetCommandState(%s): %v", cmdID, err)
+		}
+		state.Integration.Status = model.IntegrationStatusPublished
+		wm.mu.Lock()
+		if err := wm.saveState(cmdID, state); err != nil {
+			wm.mu.Unlock()
+			t.Fatalf("saveState(%s): %v", cmdID, err)
+		}
+		wm.mu.Unlock()
+	}
+
 	// GC should remove the oldest (cmd_gc_001)
 	if err := wm.GC(); err != nil {
 		t.Fatalf("GC failed: %v", err)
@@ -409,8 +425,15 @@ func TestGC(t *testing.T) {
 	if err != nil && !os.IsNotExist(err) {
 		t.Fatalf("ReadDir failed: %v", err)
 	}
-	if len(entries) > 1 {
-		t.Errorf("expected at most 1 state file after GC (max_worktrees=1), got %d", len(entries))
+	// Count only .yaml files (ignore .bak backups from AtomicWrite)
+	var yamlCount int
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".yaml") {
+			yamlCount++
+		}
+	}
+	if yamlCount > 1 {
+		t.Errorf("expected at most 1 state file after GC (max_worktrees=1), got %d", yamlCount)
 	}
 }
 
@@ -875,6 +898,21 @@ func TestGC_DeletesCmdLocks(t *testing.T) {
 
 	if err := createForCommand(wm, "cmd_gc_lock_2", []string{"worker1"}); err != nil {
 		t.Fatal(err)
+	}
+
+	// Mark both as terminal so GC is allowed to clean them up
+	for _, cmdID := range []string{"cmd_gc_lock_1", "cmd_gc_lock_2"} {
+		state, err := wm.GetCommandState(cmdID)
+		if err != nil {
+			t.Fatalf("GetCommandState(%s): %v", cmdID, err)
+		}
+		state.Integration.Status = model.IntegrationStatusPublished
+		wm.mu.Lock()
+		if err := wm.saveState(cmdID, state); err != nil {
+			wm.mu.Unlock()
+			t.Fatalf("saveState(%s): %v", cmdID, err)
+		}
+		wm.mu.Unlock()
 	}
 
 	// GC should remove cmd_gc_lock_1 (oldest)

@@ -307,6 +307,49 @@ func TestRunResultWrite_UDSConnError(t *testing.T) {
 	}
 }
 
+func TestRunResultWrite_InvalidStatus(t *testing.T) {
+	for _, status := range []string{"pending", "running", "success", "", "COMPLETED"} {
+		t.Run(status, func(t *testing.T) {
+			args := []string{"worker1",
+				"--task-id", "task_0000000001_abcdef01",
+				"--command-id", "cmd_0000000001_abcdef01",
+				"--lease-epoch", "1",
+				"--status", status,
+			}
+			err := newCLIApp().runResultWrite(args)
+			if err == nil {
+				t.Fatalf("expected error for invalid status %q", status)
+			}
+			var ce *CLIError
+			if !errors.As(err, &ce) {
+				t.Fatalf("expected CLIError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
+func TestRunResultWrite_ValidStatuses(t *testing.T) {
+	for _, status := range []string{"completed", "failed"} {
+		t.Run(status, func(t *testing.T) {
+			withMaestroDir(t)
+			app := newTestApp(&mockUDSClient{
+				sendCommandFunc: func(string, any) (*uds.Response, error) {
+					return successResponse(map[string]string{"result_id": "res1"}), nil
+				},
+			})
+			err := app.runResultWrite([]string{"worker1",
+				"--task-id", "task_0000000001_abcdef01",
+				"--command-id", "cmd_0000000001_abcdef01",
+				"--lease-epoch", "1",
+				"--status", status,
+			})
+			if err != nil {
+				t.Fatalf("unexpected error for valid status %q: %v", status, err)
+			}
+		})
+	}
+}
+
 func TestRunResultWrite_PartialChangesAndNoRetrySafe(t *testing.T) {
 	withMaestroDir(t)
 	app := newTestApp(&mockUDSClient{

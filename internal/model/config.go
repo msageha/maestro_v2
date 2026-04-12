@@ -33,6 +33,7 @@ const (
 	MaxMaxDeadLetterArchiveFiles = 10000
 	MaxMaxQuarantineFiles        = 10000
 	MaxMaxWorktrees              = 256
+	MaxMaxYAMLFileBytes          = 50 * 1024 * 1024 // 50MB
 )
 
 // Default values for Effective*() methods.
@@ -872,6 +873,9 @@ func (c Config) Validate() error {
 	}
 	if c.Limits.MaxEntryContentBytes < 0 {
 		errs = append(errs, fmt.Errorf("limits.max_entry_content_bytes: must be >= 0"))
+	}
+	if c.Limits.MaxYAMLFileBytes < 0 || c.Limits.MaxYAMLFileBytes > MaxMaxYAMLFileBytes {
+		errs = append(errs, fmt.Errorf("limits.max_yaml_file_bytes: must be between 0 and %d", MaxMaxYAMLFileBytes))
 	}
 
 	// shutdown_timeout_sec

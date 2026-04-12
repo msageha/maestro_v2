@@ -165,7 +165,10 @@ func TestHookScript_OutputsValidDenyJSON(t *testing.T) {
 func TestBuildLaunchArgs_WorkerNoSettingsInBuildLaunchArgs(t *testing.T) {
 	// Worker args from buildLaunchArgs should NOT include --settings.
 	// Workers get a single merged --settings (Notification + PreToolUse) in Launch().
-	args := buildLaunchArgs("worker", "sonnet", "system-prompt", "")
+	args, err := buildLaunchArgs("worker", "sonnet", "system-prompt", "")
+	if err != nil {
+		t.Fatalf("buildLaunchArgs: %v", err)
+	}
 	joined := strings.Join(args, " ")
 
 	if strings.Contains(joined, "--settings") {
@@ -192,7 +195,10 @@ func TestHookSettings_WorkerMergedSettings(t *testing.T) {
 func TestBuildLaunchArgs_NonWorkerNoPreToolUseHook(t *testing.T) {
 	// Orchestrator and planner should NOT have PreToolUse hook settings
 	for _, role := range []string{"orchestrator", "planner"} {
-		args := buildLaunchArgs(role, "sonnet", "system-prompt", "")
+		args, err := buildLaunchArgs(role, "sonnet", "system-prompt", "")
+		if err != nil {
+			t.Fatalf("buildLaunchArgs(%s): %v", role, err)
+		}
 		joined := strings.Join(args, " ")
 
 		if strings.Contains(joined, "PreToolUse") {
@@ -206,7 +212,7 @@ func TestHookScript_DenyFunctionFormat(t *testing.T) {
 	if !strings.Contains(hookScript, `exit 0`) {
 		t.Error("deny function must exit 0 for structured JSON output")
 	}
-	if !strings.Contains(hookScript, `\"permissionDecision\":\"deny\"`) {
+	if !strings.Contains(hookScript, `"permissionDecision":"deny"`) {
 		t.Error("deny function must set permissionDecision to deny")
 	}
 }
@@ -492,7 +498,7 @@ func TestHookScript_S2_AllowsLegitimateFilePath(t *testing.T) {
 
 func TestHookScript_S2_ContainsRelativePatterns(t *testing.T) {
 	// Verify the script has both absolute and relative .maestro/ patterns
-	if !strings.Contains(hookScript, ".maestro/config.yaml)") {
+	if !strings.Contains(hookScript, ".maestro/config.yaml|") {
 		t.Error("hook script should contain relative .maestro/config.yaml pattern")
 	}
 	if !strings.Contains(hookScript, "control-plane path (relative)") {
@@ -641,6 +647,149 @@ func TestShellQuote_SafeInBash(t *testing.T) {
 				t.Errorf("bash evaluated to %q, want %q", string(out), tc.input)
 			}
 		})
+	}
+}
+
+// --- C3: dashboard.md Write/Edit blocking ---
+
+func TestHookScript_C3_DashboardMdWriteDenied(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"absolute Write", `{"tool_name":"Write","tool_input":{"file_path":"/project/.maestro/dashboard.md","content":"x"}}`},
+		{"relative Write", `{"tool_name":"Write","tool_input":{"file_path":".maestro/dashboard.md","content":"x"}}`},
+		{"absolute Edit", `{"tool_name":"Edit","tool_input":{"file_path":"/project/.maestro/dashboard.md","old_string":"a","new_string":"b"}}`},
+		{"relative Edit", `{"tool_name":"Edit","tool_input":{"file_path":".maestro/dashboard.md","old_string":"a","new_string":"b"}}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			output := runHookScript(t, scriptPath, tc.input)
+			if !strings.Contains(output, "deny") {
+				t.Errorf("expected deny for dashboard.md %s, got: %s", tc.name, output)
+			}
+		})
+	}
+}
+
+// --- Bash dashboard.md access blocking ---
+
+func TestHookScript_BashDashboardMdAccessDenied(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		cmd  string
+	}{
+		{"cat", `cat .maestro/dashboard.md`},
+		{"head", `head .maestro/dashboard.md`},
+		{"grep", `grep pattern .maestro/dashboard.md`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "deny") {
+				t.Errorf("expected deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+// --- deny() JSON escaping ---
+
+func TestHookScript_DenyJSONEscapesSpecialChars(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// Use a command that triggers D005 (sudo) — the deny reason contains
+	// fixed text, but the important thing is the output is valid JSON.
+	input := `{"tool_name":"Bash","tool_input":{"command":"sudo rm -rf /"}}`
+	output := runHookScript(t, scriptPath, input)
+
+	var parsed map[string]interface{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(output)), &parsed); err != nil {
+		t.Fatalf("deny output is not valid JSON: %v\noutput: %s", err, output)
+	}
+	hso, ok := parsed["hookSpecificOutput"].(map[string]interface{})
+	if !ok {
+		t.Fatal("missing hookSpecificOutput")
+	}
+	if hso["permissionDecision"] != "deny" {
+		t.Error("permissionDecision should be deny")
+	}
+}
+
+// --- D005: chmod -R system path blocking ---
+
+func TestHookScript_D005_ChmodRSystemPathDenied(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []string{
+		`chmod -R 755 /usr/local`,
+		`chmod -R 777 /etc/config`,
+		`chmod -Rv 755 /System/Library`,
+		`chmod -cR 755 /Library/Extensions`,
+	}
+	for _, cmd := range blocked {
+		t.Run(cmd, func(t *testing.T) {
+			input := `{"tool_name":"Bash","tool_input":{"command":"` + cmd + `"}}`
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "deny") || !strings.Contains(output, "D005") {
+				t.Errorf("expected D005 deny for %q, got: %s", cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_D005_ChmodRProjectPathAllowed(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// chmod -R on a project-local path should be allowed
+	input := `{"tool_name":"Bash","tool_input":{"command":"chmod -R 755 ./build/output"}}`
+	output := runHookScript(t, scriptPath, input)
+	if strings.Contains(output, "deny") {
+		t.Errorf("should allow chmod -R on project path, got: %s", output)
+	}
+}
+
+func TestHookScript_ContainsChmodRPattern(t *testing.T) {
+	if !strings.Contains(hookScript, "chmod") {
+		t.Error("hook script should contain chmod -R check")
+	}
+	if !strings.Contains(hookScript, "D005: Blocked chmod -R") {
+		t.Error("hook script should contain D005 chmod -R deny message")
 	}
 }
 

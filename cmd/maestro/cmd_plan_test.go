@@ -1,8 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"errors"
+	"os"
 	"testing"
+
+	"github.com/msageha/maestro_v2/internal/uds"
 )
 
 func TestRunPlan_NoSubcommand(t *testing.T) {
@@ -418,5 +423,49 @@ func TestRunPlanRebuild_MissingCommandID(t *testing.T) {
 	var ce *CLIError
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+}
+
+func TestSendPlanCommand_SanitizesValidationMessage(t *testing.T) {
+	withMaestroDir(t)
+
+	// Inject a mock that returns a VALIDATION_ERROR with ANSI escape codes
+	origFactory := newUDSClient
+	newUDSClient = func(string) udsClientIface {
+		return &mockUDSClient{
+			sendCommandContextFunc: func(_ context.Context, _ string, _ any) (*uds.Response, error) {
+				return uds.ErrorResponse(uds.ErrCodeValidation, "bad input\x1b[31m injected\x1b[0m"), nil
+			},
+		}
+	}
+	defer func() { newUDSClient = origFactory }()
+
+	// Capture stderr
+	oldStderr := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
+	err := sendPlanCommand("test", ".maestro", map[string]any{"operation": "test"})
+
+	w.Close()
+	os.Stderr = oldStderr
+
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	output := buf.String()
+
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) || !ce.Silent {
+		t.Fatalf("expected silent CLIError, got: %v", err)
+	}
+	// ANSI escape (0x1b) should be stripped
+	if bytes.ContainsRune([]byte(output), 0x1b) {
+		t.Errorf("stderr should not contain ANSI escape codes, got: %q", output)
+	}
+	if !containsStr(output, "bad input") {
+		t.Errorf("stderr should contain message text, got: %q", output)
 	}
 }

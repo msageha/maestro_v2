@@ -448,8 +448,8 @@ func sendPlanCommand(cmd string, maestroDir string, params map[string]any) error
 			msg = resp.Error.Message
 		}
 		if code == uds.ErrCodeValidation || code == uds.ErrCodeActionRequired {
-			// Validation messages may have custom formatting; print directly
-			fmt.Fprint(os.Stderr, msg)
+			// Validation messages may have custom formatting; sanitize to prevent terminal injection
+			fmt.Fprint(os.Stderr, sanitizeForTerminal(msg))
 			return &CLIError{Code: 1, Silent: true}
 		}
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro %s: [%s] %s", cmd, code, msg)}
