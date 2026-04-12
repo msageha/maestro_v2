@@ -100,14 +100,18 @@ func (h *SkillAPI) handleSkillApprove(req *uds.Request) *uds.Response {
 	skillContent := daemonFormatSkillMD(skillName, candidate.Content)
 	skillPath := filepath.Join(skillDir, "SKILL.md")
 	if err := os.WriteFile(skillPath, []byte(skillContent), 0o644); err != nil { //nolint:gosec // skill files are user-readable documentation
-		_ = os.RemoveAll(skillDir)
+		if removeErr := os.RemoveAll(skillDir); removeErr != nil {
+			h.logFn(LogLevelWarn, "skill_cleanup_failed dir=%s error=%v", skillDir, removeErr)
+		}
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write SKILL.md: %v", err))
 	}
 
 	// Update candidate status
 	candidate.Status = "approved"
 	if err := skill.WriteCandidates(candidatesPath, candidates); err != nil {
-		_ = os.RemoveAll(skillDir)
+		if removeErr := os.RemoveAll(skillDir); removeErr != nil {
+			h.logFn(LogLevelWarn, "skill_cleanup_failed dir=%s error=%v", skillDir, removeErr)
+		}
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("update candidates: %v", err))
 	}
 

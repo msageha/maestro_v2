@@ -75,12 +75,7 @@ func (rc *ReviewCoordinator) MonitorResults() {
 
 		taskID := extractTaskIDFromRequestID(result.RequestID)
 
-		rc.mu.Lock()
-		info, ok := rc.requests[taskID]
-		if ok {
-			delete(rc.requests, taskID)
-		}
-		rc.mu.Unlock()
+		info, ok := rc.popRequest(taskID)
 
 		if !ok {
 			rc.log(LogLevelWarn, "review_result_orphaned request=%s task=%s (no matching dispatch record)",
@@ -140,23 +135,44 @@ func (rc *ReviewCoordinator) DispatchIfEligible(ctx context.Context, params Resu
 		diffContent += "\n\nFiles changed: " + strings.Join(params.FilesChanged, ", ")
 	}
 
-	rc.mu.Lock()
-	rc.requests[params.TaskID] = reviewTaskInfo{
+	rc.registerRequest(params.TaskID, reviewTaskInfo{
 		taskID:    params.TaskID,
 		commandID: params.CommandID,
-	}
-	rc.mu.Unlock()
+	})
 
 	if err := rc.dispatcher.Dispatch(ctx, *task, diffContent); err != nil {
 		rc.log(LogLevelWarn, "review_dispatch_failed task=%s error=%v", params.TaskID, err)
-		rc.mu.Lock()
-		delete(rc.requests, params.TaskID)
-		rc.mu.Unlock()
+		rc.unregisterRequest(params.TaskID)
 		return
 	}
 
 	rc.log(LogLevelInfo, "review_dispatched task=%s command=%s bloom_level=%d",
 		params.TaskID, params.CommandID, task.BloomLevel)
+}
+
+// popRequest atomically removes and returns the request info for taskID.
+func (rc *ReviewCoordinator) popRequest(taskID string) (reviewTaskInfo, bool) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	info, ok := rc.requests[taskID]
+	if ok {
+		delete(rc.requests, taskID)
+	}
+	return info, ok
+}
+
+// registerRequest atomically stores a request entry for taskID.
+func (rc *ReviewCoordinator) registerRequest(taskID string, info reviewTaskInfo) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	rc.requests[taskID] = info
+}
+
+// unregisterRequest atomically removes the request entry for taskID.
+func (rc *ReviewCoordinator) unregisterRequest(taskID string) {
+	rc.mu.Lock()
+	defer rc.mu.Unlock()
+	delete(rc.requests, taskID)
 }
 
 // Close shuts down the review dispatcher, waiting for in-flight reviews
