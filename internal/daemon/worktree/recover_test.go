@@ -212,6 +212,91 @@ func TestResumeMerge_NoWorktreeState(t *testing.T) {
 	}
 }
 
+// TestResumeMerge_ResetsConflictWorkers verifies that ResumeMerge transitions
+// workers in conflict/resolving state back to active, enabling re-merge.
+func TestResumeMerge_ResetsConflictWorkers(t *testing.T) {
+	t.Parallel()
+	wm, _ := newRecoveryTestManager(t)
+	cmdID := "cmd_resume_workers"
+	st := quarantinedState(cmdID)
+	st.Integration.Status = model.IntegrationStatusConflict
+	st.Integration.MergeFailureCount = 2
+	st.Integration.QuarantinedAt = ""
+	st.Integration.QuarantineReason = ""
+	st.Workers = []model.WorktreeState{
+		{WorkerID: "worker1", Status: model.WorktreeStatusIntegrated},
+		{WorkerID: "worker2", Status: model.WorktreeStatusConflict},
+		{WorkerID: "worker3", Status: model.WorktreeStatusResolving},
+	}
+	writeWorktreeState(t, wm, st)
+
+	if err := wm.ResumeMerge(cmdID); err != nil {
+		t.Fatalf("ResumeMerge: %v", err)
+	}
+
+	got, err := wm.GetCommandState(cmdID)
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+
+	// Integration should be failed with reset failure count
+	if got.Integration.Status != model.IntegrationStatusFailed {
+		t.Errorf("integration status = %s, want failed", got.Integration.Status)
+	}
+	if got.Integration.MergeFailureCount != 0 {
+		t.Errorf("MergeFailureCount = %d, want 0", got.Integration.MergeFailureCount)
+	}
+
+	// worker1 (integrated) should remain unchanged
+	for _, ws := range got.Workers {
+		switch ws.WorkerID {
+		case "worker1":
+			if ws.Status != model.WorktreeStatusIntegrated {
+				t.Errorf("worker1 status = %s, want integrated", ws.Status)
+			}
+		case "worker2":
+			// conflict → active
+			if ws.Status != model.WorktreeStatusActive {
+				t.Errorf("worker2 status = %s, want active (reset from conflict)", ws.Status)
+			}
+		case "worker3":
+			// resolving → active
+			if ws.Status != model.WorktreeStatusActive {
+				t.Errorf("worker3 status = %s, want active (reset from resolving)", ws.Status)
+			}
+		default:
+			t.Errorf("unexpected worker: %s", ws.WorkerID)
+		}
+	}
+}
+
+// TestResumeMerge_IdempotentWithConflictWorkers verifies that a second
+// ResumeMerge call after workers have been reset returns ErrAlreadyResolved.
+func TestResumeMerge_IdempotentWithConflictWorkers(t *testing.T) {
+	t.Parallel()
+	wm, _ := newRecoveryTestManager(t)
+	cmdID := "cmd_resume_idem_workers"
+	st := quarantinedState(cmdID)
+	st.Integration.Status = model.IntegrationStatusConflict
+	st.Integration.MergeFailureCount = 1
+	st.Integration.QuarantinedAt = ""
+	st.Integration.QuarantineReason = ""
+	st.Workers = []model.WorktreeState{
+		{WorkerID: "worker1", Status: model.WorktreeStatusConflict},
+	}
+	writeWorktreeState(t, wm, st)
+
+	if err := wm.ResumeMerge(cmdID); err != nil {
+		t.Fatalf("first ResumeMerge: %v", err)
+	}
+
+	// Second call: workers are now active, integration is failed with count=0
+	err := wm.ResumeMerge(cmdID)
+	if !errors.Is(err, ErrAlreadyResolved) {
+		t.Fatalf("second ResumeMerge err = %v, want ErrAlreadyResolved", err)
+	}
+}
+
 // conflictWorkerState builds a state where a worker is recorded in
 // CommitFailedWorkers and the integration is in a recoverable state.
 func conflictWorkerState(commandID, workerID string, status model.IntegrationStatus, failures int) *model.WorktreeCommandState {

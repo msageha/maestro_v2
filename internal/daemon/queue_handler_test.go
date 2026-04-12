@@ -668,6 +668,117 @@ func TestApplySignalResults_KeyMatch(t *testing.T) {
 	}
 }
 
+func TestApplySignalResults_DeadLetterOnMaxRetries(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestMaestroDir(t)
+	qh := newTestQueueHandler(maestroDir)
+	qh.config.Retry.SignalDispatch = 3
+
+	sq := model.PlannerSignalQueue{
+		SchemaVersion: 1,
+		FileType:      "planner_signal_queue",
+		Signals: []model.PlannerSignal{
+			{Kind: "awaiting_fill", CommandID: "cmd_A", PhaseID: "phase_A", Message: "msg_A", Attempts: 2},
+		},
+	}
+
+	results := []signalDeliveryResult{
+		{
+			Item:    signalDeliveryItem{CommandID: "cmd_A", PhaseID: "phase_A", Kind: "awaiting_fill", Message: "msg_A"},
+			Success: false,
+			Error:   fmt.Errorf("agent planner busy: busy_timeout"),
+		},
+	}
+
+	dirty := false
+	qh.applySignalResults(results, &sq, &dirty)
+
+	if !dirty {
+		t.Error("expected dirty=true after dead letter")
+	}
+	if len(sq.Signals) != 0 {
+		t.Errorf("expected 0 signals after dead letter, got %d", len(sq.Signals))
+	}
+	if qh.scanExecutor.scanCounters.SignalDeadLetters != 1 {
+		t.Errorf("SignalDeadLetters = %d, want 1", qh.scanExecutor.scanCounters.SignalDeadLetters)
+	}
+}
+
+func TestApplySignalResults_RetryBelowMax(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestMaestroDir(t)
+	qh := newTestQueueHandler(maestroDir)
+	qh.config.Retry.SignalDispatch = 5
+
+	sq := model.PlannerSignalQueue{
+		SchemaVersion: 1,
+		FileType:      "planner_signal_queue",
+		Signals: []model.PlannerSignal{
+			{Kind: "awaiting_fill", CommandID: "cmd_A", PhaseID: "phase_A", Message: "msg_A", Attempts: 1},
+		},
+	}
+
+	results := []signalDeliveryResult{
+		{
+			Item:    signalDeliveryItem{CommandID: "cmd_A", PhaseID: "phase_A", Kind: "awaiting_fill", Message: "msg_A"},
+			Success: false,
+			Error:   fmt.Errorf("agent planner busy: busy_timeout"),
+		},
+	}
+
+	dirty := false
+	qh.applySignalResults(results, &sq, &dirty)
+
+	if len(sq.Signals) != 1 {
+		t.Fatalf("expected 1 signal retained, got %d", len(sq.Signals))
+	}
+	if sq.Signals[0].Attempts != 2 {
+		t.Errorf("attempts = %d, want 2", sq.Signals[0].Attempts)
+	}
+	if sq.Signals[0].NextAttemptAt == nil {
+		t.Error("expected next_attempt_at set for retry")
+	}
+	if qh.scanExecutor.scanCounters.SignalRetries != 1 {
+		t.Errorf("SignalRetries = %d, want 1", qh.scanExecutor.scanCounters.SignalRetries)
+	}
+	if qh.scanExecutor.scanCounters.SignalDeadLetters != 0 {
+		t.Errorf("SignalDeadLetters = %d, want 0", qh.scanExecutor.scanCounters.SignalDeadLetters)
+	}
+}
+
+func TestApplySignalResults_ZeroMaxNoDeadLetter(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestMaestroDir(t)
+	qh := newTestQueueHandler(maestroDir)
+	qh.config.Retry.SignalDispatch = 0 // disabled
+
+	sq := model.PlannerSignalQueue{
+		SchemaVersion: 1,
+		FileType:      "planner_signal_queue",
+		Signals: []model.PlannerSignal{
+			{Kind: "awaiting_fill", CommandID: "cmd_A", PhaseID: "phase_A", Message: "msg_A", Attempts: 50},
+		},
+	}
+
+	results := []signalDeliveryResult{
+		{
+			Item:    signalDeliveryItem{CommandID: "cmd_A", PhaseID: "phase_A", Kind: "awaiting_fill", Message: "msg_A"},
+			Success: false,
+			Error:   fmt.Errorf("agent planner busy: busy_timeout"),
+		},
+	}
+
+	dirty := false
+	qh.applySignalResults(results, &sq, &dirty)
+
+	if len(sq.Signals) != 1 {
+		t.Fatalf("expected 1 signal retained with unlimited retries, got %d", len(sq.Signals))
+	}
+	if qh.scanExecutor.scanCounters.SignalDeadLetters != 0 {
+		t.Errorf("SignalDeadLetters = %d, want 0", qh.scanExecutor.scanCounters.SignalDeadLetters)
+	}
+}
+
 // TestQueueHandler_DispatchFailure_Rollback verifies that when Phase B dispatch fails,
 // Phase C correctly rolls back the task from in_progress to pending.
 // Only the LLM Agent executor is mocked (returns error). All other components are real.

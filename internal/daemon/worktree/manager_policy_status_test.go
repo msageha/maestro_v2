@@ -1000,7 +1000,7 @@ func TestEnsureWorkerWorktree_RollbackFailurePropagation(t *testing.T) {
 	if err := os.Chmod(stateDir, 0555); err != nil {
 		t.Fatalf("chmod failed: %v", err)
 	}
-	defer os.Chmod(stateDir, 0755) //nolint:errcheck // restore for cleanup
+	t.Cleanup(func() { os.Chmod(stateDir, 0755) }) //nolint:errcheck // restore for cleanup
 
 	err := wm.EnsureWorkerWorktree("cmd_rb_fail", "worker2")
 	if err == nil {

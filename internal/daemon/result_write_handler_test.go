@@ -628,6 +628,7 @@ func TestResultWrite_StateNotFound(t *testing.T) {
 // AppliedResultIDs idempotency check, causing duplicate failed-result
 // submissions to inflate consecutive_failures and trip the breaker spuriously.
 func TestResultWrite_Idempotency_CircuitBreakerNotDoubleCounted(t *testing.T) {
+	t.Parallel()
 	// Enable circuit breaker with a low threshold so any double-count would trip it.
 	threshold := 2
 	d := newTestDaemonWithCircuitBreaker(t, threshold)
@@ -908,6 +909,7 @@ func TestResultWrite_QueueWriteFailed_StickyError(t *testing.T) {
 }
 
 func TestSanitizeContentForLog(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		input string

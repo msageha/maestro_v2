@@ -305,6 +305,34 @@ func (qh *QueueHandler) collectImplicitWorktreeMerge(
 	default:
 		return nil
 	}
+
+	// Gate: when integration has unresolved conflicts (conflict or partial_merge),
+	// skip collection unless there are workers in a mergeable state (created,
+	// active, committed, or failed). Workers in conflict/resolving must go
+	// through the resolution pipeline (DispatchConflictResolution + resume-merge)
+	// before being re-merged. Without this gate, MergeToIntegration would be
+	// called on every scan cycle only to skip all conflict/resolving workers,
+	// generating spurious logs and wasted git ops.
+	if cmdState.Integration.Status == model.IntegrationStatusConflict ||
+		cmdState.Integration.Status == model.IntegrationStatusPartialMerge {
+		hasMergeableWorker := false
+		for _, ws := range cmdState.Workers {
+			switch ws.Status {
+			case model.WorktreeStatusCreated,
+				model.WorktreeStatusActive,
+				model.WorktreeStatusCommitted,
+				model.WorktreeStatusFailed:
+				hasMergeableWorker = true
+			}
+			if hasMergeableWorker {
+				break
+			}
+		}
+		if !hasMergeableWorker {
+			return nil
+		}
+	}
+
 	// Prevent double-merge: if __implicit_phase is already in MergedPhases, skip.
 	if cmdState.MergedPhases != nil {
 		if _, merged := cmdState.MergedPhases["__implicit_phase"]; merged {

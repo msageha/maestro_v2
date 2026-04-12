@@ -16,6 +16,7 @@ type ScanCounters struct {
 	NotificationRetries   int
 	SignalDeliveries      int
 	SignalRetries         int
+	SignalDeadLetters     int
 	LeaseRenewals         int
 	LeaseExtensions       int
 	LeaseReleases         int

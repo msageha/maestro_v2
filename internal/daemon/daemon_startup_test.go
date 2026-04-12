@@ -68,7 +68,9 @@ func setupDaemonForStartRuntime(t *testing.T) (*Daemon, string) {
 //   - Ensure that startRuntime() starts Reconcile in a goroutine AFTER
 //     server.Start() returns.
 func TestStartRuntime_ServerAvailableWithoutWaitingForReconcile(t *testing.T) {
-	t.Parallel()
+	// NOT parallel: startRuntime → server.Start() calls syscall.Umask(0177)
+	// which is process-wide and races with t.TempDir() in other parallel tests,
+	// causing directories to be created with 0600 (no execute bit).
 
 	d, sockPath := setupDaemonForStartRuntime(t)
 
@@ -122,7 +124,8 @@ func TestStartRuntime_ServerAvailableWithoutWaitingForReconcile(t *testing.T) {
 // This is a companion to the above test: it verifies that the goroutinized
 // Reconcile does not block the server's accept loop.
 func TestStartRuntime_PingSucceedsWhileReconcileIsRunning(t *testing.T) {
-	t.Parallel()
+	// NOT parallel: startRuntime → server.Start() calls syscall.Umask(0177)
+	// which is process-wide and races with t.TempDir() in other parallel tests.
 
 	d, sockPath := setupDaemonForStartRuntime(t)
 

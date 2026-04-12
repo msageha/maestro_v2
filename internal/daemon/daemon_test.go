@@ -17,19 +17,25 @@ import (
 )
 
 func TestNewDaemon(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
+	maestroDir := filepath.Join(t.TempDir(), ".maestro")
 	cfg := model.Config{
 		Watcher: model.WatcherConfig{ScanIntervalSec: 5},
 		ShutdownTimeoutSec: 10,
 		Logging: model.LoggingConfig{Level: "debug"},
 	}
 
-	d, err := newDaemon("/tmp/test-maestro", cfg, &buf, nil)
+	d, err := newDaemon(maestroDir, cfg, &buf, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if d.maestroDir != "/tmp/test-maestro" {
-		t.Errorf("maestroDir: got %q, want %q", d.maestroDir, "/tmp/test-maestro")
+	t.Cleanup(func() {
+		d.ticker.Stop()
+		d.cancel()
+	})
+	if d.maestroDir != maestroDir {
+		t.Errorf("maestroDir: got %q, want %q", d.maestroDir, maestroDir)
 	}
 	if d.logLevel != LogLevelDebug {
 		t.Errorf("logLevel: got %d, want %d", d.logLevel, LogLevelDebug)
@@ -37,21 +43,20 @@ func TestNewDaemon(t *testing.T) {
 }
 
 func TestDaemonShutdownIdempotent(t *testing.T) {
+	t.Parallel()
 	var buf bytes.Buffer
+	maestroDir := filepath.Join(t.TempDir(), ".maestro")
 	cfg := model.Config{
 		Watcher: model.WatcherConfig{ScanIntervalSec: 1},
 		ShutdownTimeoutSec: 1,
 	}
 
-	d, err := newDaemon("/tmp/test-maestro-shutdown", cfg, &buf, nil)
+	d, err := newDaemon(maestroDir, cfg, &buf, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	// Create a ticker so Shutdown can stop it
-	d.ticker = time.NewTicker(time.Hour)
-
-	// Shutdown should be idempotent
+	// Shutdown should be idempotent (newDaemon already creates a ticker)
 	d.Shutdown()
 	d.Shutdown() // second call should not panic
 }
@@ -94,6 +99,10 @@ func TestDaemonLog(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	t.Cleanup(func() {
+		d.ticker.Stop()
+		d.cancel()
+	})
 
 	// Info should be filtered
 	d.log(LogLevelInfo, "should not appear")
@@ -410,9 +419,13 @@ func TestDaemonNew_CreatesLogDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	if d.logFile != nil {
-		d.logFile.Close()
-	}
+	t.Cleanup(func() {
+		d.ticker.Stop()
+		d.cancel()
+		if d.logFile != nil {
+			d.logFile.Close()
+		}
+	})
 
 	logDir := filepath.Join(maestroDir, "logs")
 	if _, err := os.Stat(logDir); err != nil {

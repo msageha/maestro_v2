@@ -851,3 +851,240 @@ func TestSignal_PhaseOrphanStillRemoved(t *testing.T) {
 		t.Fatalf("expected phase-orphaned signal removed, got %d signals", len(sq2.Signals))
 	}
 }
+
+// Scenario: Signal exceeding max retry attempts is dead-lettered and removed from queue.
+func TestSignal_DeadLetterAfterMaxRetries(t *testing.T) {
+	d := newIntegrationDaemon(t)
+	commandID := "cmd_sig_dl_aabbcc01"
+	implPhaseID := "phase-impl-dl01"
+
+	// Enable signal dead letter with max 3 attempts
+	d.handler.config.Retry.SignalDispatch = 3
+
+	// Setup: awaiting_fill phase
+	setupPhasedCommandState(t, d, commandID, "phase-research-dl01", implPhaseID, model.PhaseStatusAwaitingFill)
+
+	// Setup: command in planner queue
+	now := time.Now().UTC().Format(time.RFC3339)
+	plannerOwner := "planner"
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_command",
+		Commands: []model.Command{
+			{
+				ID:         commandID,
+				Content:    "dead letter test command",
+				Status:     model.StatusInProgress,
+				LeaseOwner: &plannerOwner,
+				LeaseEpoch: 1,
+				Attempts:   1,
+				CreatedAt:  now,
+				UpdatedAt:  now,
+			},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", "planner.yaml"), cq)
+
+	// Pre-populate signal that has already exhausted retries (attempts=3, max=3)
+	sq := model.PlannerSignalQueue{
+		SchemaVersion: 1,
+		FileType:      "planner_signal_queue",
+		Signals: []model.PlannerSignal{
+			{
+				Kind:      "awaiting_fill",
+				CommandID: commandID,
+				PhaseID:   implPhaseID,
+				PhaseName: "implementation",
+				Message:   "awaiting_fill signal",
+				Attempts:  2, // will become 3 after this attempt → dead letter
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", "planner_signals.yaml"), sq)
+
+	// Mock executor: delivery always fails (planner busy)
+	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+		return &mocks.MockExecutor{Result: agent.ExecResult{
+			Success: false,
+			Error:   fmt.Errorf("agent planner busy: busy_timeout"),
+		}}, nil
+	})
+
+	// Run scan
+	d.handler.PeriodicScan()
+
+	// Verify signal is dead-lettered (removed from queue)
+	sq2 := readPlannerSignals(t, d)
+	if len(sq2.Signals) != 0 {
+		t.Errorf("expected 0 signals after dead letter, got %d", len(sq2.Signals))
+	}
+
+	// Verify counter
+	if d.handler.scanExecutor.scanCounters.SignalDeadLetters != 1 {
+		t.Errorf("SignalDeadLetters = %d, want 1", d.handler.scanExecutor.scanCounters.SignalDeadLetters)
+	}
+}
+
+// Scenario: Signal below max retry is retained with backoff (not dead-lettered).
+func TestSignal_RetryBelowMaxNotDeadLettered(t *testing.T) {
+	d := newIntegrationDaemon(t)
+	commandID := "cmd_sig_retry_aabbcc01"
+	implPhaseID := "phase-impl-retry01"
+
+	// Enable signal dead letter with max 5 attempts
+	d.handler.config.Retry.SignalDispatch = 5
+
+	// Setup: awaiting_fill phase
+	setupPhasedCommandState(t, d, commandID, "phase-research-retry01", implPhaseID, model.PhaseStatusAwaitingFill)
+
+	// Setup: command in planner queue
+	now := time.Now().UTC().Format(time.RFC3339)
+	plannerOwner := "planner"
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_command",
+		Commands: []model.Command{
+			{
+				ID:         commandID,
+				Content:    "retry test command",
+				Status:     model.StatusInProgress,
+				LeaseOwner: &plannerOwner,
+				LeaseEpoch: 1,
+				Attempts:   1,
+				CreatedAt:  now,
+				UpdatedAt:  now,
+			},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", "planner.yaml"), cq)
+
+	// Pre-populate signal with 1 attempt (below max)
+	sq := model.PlannerSignalQueue{
+		SchemaVersion: 1,
+		FileType:      "planner_signal_queue",
+		Signals: []model.PlannerSignal{
+			{
+				Kind:      "awaiting_fill",
+				CommandID: commandID,
+				PhaseID:   implPhaseID,
+				PhaseName: "implementation",
+				Message:   "awaiting_fill signal",
+				Attempts:  1,
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", "planner_signals.yaml"), sq)
+
+	// Mock executor: delivery fails
+	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+		return &mocks.MockExecutor{Result: agent.ExecResult{
+			Success: false,
+			Error:   fmt.Errorf("agent planner busy: busy_timeout"),
+		}}, nil
+	})
+
+	// Run scan
+	d.handler.PeriodicScan()
+
+	// Verify signal retained (not dead-lettered)
+	sq2 := readPlannerSignals(t, d)
+	if len(sq2.Signals) != 1 {
+		t.Fatalf("expected 1 signal retained, got %d", len(sq2.Signals))
+	}
+
+	sig := sq2.Signals[0]
+	if sig.Attempts != 2 {
+		t.Errorf("attempts = %d, want 2", sig.Attempts)
+	}
+	if sig.NextAttemptAt == nil {
+		t.Error("expected next_attempt_at set for retry")
+	}
+
+	// Verify counters
+	if d.handler.scanExecutor.scanCounters.SignalRetries != 1 {
+		t.Errorf("SignalRetries = %d, want 1", d.handler.scanExecutor.scanCounters.SignalRetries)
+	}
+	if d.handler.scanExecutor.scanCounters.SignalDeadLetters != 0 {
+		t.Errorf("SignalDeadLetters = %d, want 0", d.handler.scanExecutor.scanCounters.SignalDeadLetters)
+	}
+}
+
+// Scenario: Signal with signal_dispatch=0 (disabled) retries indefinitely.
+func TestSignal_ZeroMaxRetriesNoDeadLetter(t *testing.T) {
+	d := newIntegrationDaemon(t)
+	commandID := "cmd_sig_inf_aabbcc01"
+	implPhaseID := "phase-impl-inf01"
+
+	// signal_dispatch=0 means unlimited
+	d.handler.config.Retry.SignalDispatch = 0
+
+	// Setup: awaiting_fill phase
+	setupPhasedCommandState(t, d, commandID, "phase-research-inf01", implPhaseID, model.PhaseStatusAwaitingFill)
+
+	// Setup: command in planner queue
+	now := time.Now().UTC().Format(time.RFC3339)
+	plannerOwner := "planner"
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_command",
+		Commands: []model.Command{
+			{
+				ID:         commandID,
+				Content:    "infinite retry test",
+				Status:     model.StatusInProgress,
+				LeaseOwner: &plannerOwner,
+				LeaseEpoch: 1,
+				Attempts:   1,
+				CreatedAt:  now,
+				UpdatedAt:  now,
+			},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", "planner.yaml"), cq)
+
+	// Pre-populate signal with high attempts
+	sq := model.PlannerSignalQueue{
+		SchemaVersion: 1,
+		FileType:      "planner_signal_queue",
+		Signals: []model.PlannerSignal{
+			{
+				Kind:      "awaiting_fill",
+				CommandID: commandID,
+				PhaseID:   implPhaseID,
+				PhaseName: "implementation",
+				Message:   "awaiting_fill signal",
+				Attempts:  100,
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", "planner_signals.yaml"), sq)
+
+	// Mock executor: delivery fails
+	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+		return &mocks.MockExecutor{Result: agent.ExecResult{
+			Success: false,
+			Error:   fmt.Errorf("agent planner busy: busy_timeout"),
+		}}, nil
+	})
+
+	// Run scan
+	d.handler.PeriodicScan()
+
+	// Verify signal retained (not dead-lettered because max=0)
+	sq2 := readPlannerSignals(t, d)
+	if len(sq2.Signals) != 1 {
+		t.Fatalf("expected 1 signal retained with unlimited retries, got %d", len(sq2.Signals))
+	}
+	if sq2.Signals[0].Attempts != 101 {
+		t.Errorf("attempts = %d, want 101", sq2.Signals[0].Attempts)
+	}
+	if d.handler.scanExecutor.scanCounters.SignalDeadLetters != 0 {
+		t.Errorf("SignalDeadLetters = %d, want 0", d.handler.scanExecutor.scanCounters.SignalDeadLetters)
+	}
+}

@@ -592,3 +592,100 @@ func TestMergeToIntegration_SkipAlreadyIntegrated(t *testing.T) {
 		t.Errorf("integration status = %q, want merged", cmdState.Integration.Status)
 	}
 }
+
+// TestMergeToIntegration_SkipConflictResolving verifies that workers in
+// conflict or resolving status are skipped during MergeToIntegration, avoiding
+// the invalid conflict→conflict worktree transition. When all workers are
+// conflict-skipped, the integration status should revert to pre-merge.
+func TestMergeToIntegration_SkipConflictResolving(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_skip_conflict"
+	workers := []string{"worker1", "worker2"}
+	if err := createForCommand(wm, commandID, workers); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	// Worker1: create a file and commit
+	wt1, err := wm.GetWorkerPath(commandID, "worker1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt1, "shared.txt"), []byte("worker1 version\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker1", "w1 add shared.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Worker2: create same file with different content (will conflict)
+	wt2, err := wm.GetWorkerPath(commandID, "worker2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt2, "shared.txt"), []byte("worker2 version\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker2", "w2 add shared.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	// First merge: merges both, worker1 succeeds, worker2 conflicts
+	conflicts, err := wm.MergeToIntegration(commandID, workers, nil)
+	if err != nil {
+		t.Fatalf("first MergeToIntegration: %v", err)
+	}
+	if len(conflicts) != 1 || conflicts[0].WorkerID != "worker2" {
+		t.Fatalf("expected 1 conflict for worker2, got: %v", conflicts)
+	}
+
+	// Verify worker2 is in conflict state
+	ws2, err := getState(wm, commandID, "worker2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws2.Status != model.WorktreeStatusConflict {
+		t.Fatalf("worker2 status = %q, want conflict", ws2.Status)
+	}
+
+	// Integration should be partial_merge (worker1 succeeded, worker2 conflicted)
+	cmdState, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmdState.Integration.Status != model.IntegrationStatusPartialMerge {
+		t.Fatalf("integration status = %q, want partial_merge", cmdState.Integration.Status)
+	}
+
+	// Second merge: re-merge both workers. Worker1 is integrated (skipped),
+	// worker2 is conflict (skipped by new logic). No invalid_worktree_transition.
+	conflicts, err = wm.MergeToIntegration(commandID, workers, nil)
+	if err != nil {
+		t.Fatalf("second MergeToIntegration should not error: %v", err)
+	}
+	if len(conflicts) != 0 {
+		t.Fatalf("expected no new conflicts, got: %v", conflicts)
+	}
+
+	// Worker2 should still be in conflict (not re-merged, not invalid transition)
+	ws2After, err := getState(wm, commandID, "worker2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws2After.Status != model.WorktreeStatusConflict {
+		t.Errorf("worker2 status after second merge = %q, want conflict (should be skipped)", ws2After.Status)
+	}
+
+	// Integration should revert to pre-merge status since only conflict workers remain
+	cmdStateAfter, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Pre-merge status was partial_merge; with only conflict-skipped workers,
+	// it should revert to partial_merge (not create new conflict/merged status)
+	if cmdStateAfter.Integration.Status != model.IntegrationStatusPartialMerge {
+		t.Errorf("integration status after second merge = %q, want partial_merge (reverted)", cmdStateAfter.Integration.Status)
+	}
+}

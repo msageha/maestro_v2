@@ -78,8 +78,15 @@ func (wm *Manager) Unquarantine(commandID string, reason string) error {
 // It is the milder sibling of Unquarantine and does not apply to integrations
 // that are already healthy or quarantined.
 //
+// In addition to resetting the integration status, ResumeMerge transitions
+// workers in conflict/resolving state back to active. This allows
+// MergeToIntegration to re-attempt the merge (conflict/resolving workers are
+// skipped during merge). Without this reset, the merge collection gate would
+// block indefinitely because no workers are in a mergeable state.
+//
 // Idempotency: a call when the integration is already Failed with
-// MergeFailureCount==0 returns ErrAlreadyResolved without modifying the file.
+// MergeFailureCount==0 and no conflict/resolving workers returns
+// ErrAlreadyResolved without modifying the file.
 func (wm *Manager) ResumeMerge(commandID string) error {
 	if err := validateIDs(commandID); err != nil {
 		return err
@@ -107,8 +114,18 @@ func (wm *Manager) ResumeMerge(commandID string) error {
 		return fmt.Errorf("%w: status=%s", ErrAlreadyResolved, s)
 	}
 
-	if s == model.IntegrationStatusFailed && state.Integration.MergeFailureCount == 0 {
-		return fmt.Errorf("%w: status=failed with no pending failures", ErrAlreadyResolved)
+	// Check if there's actually something to resume: either pending failures
+	// or workers stuck in conflict/resolving.
+	hasConflictWorkers := false
+	for _, ws := range state.Workers {
+		if ws.Status == model.WorktreeStatusConflict || ws.Status == model.WorktreeStatusResolving {
+			hasConflictWorkers = true
+			break
+		}
+	}
+
+	if s == model.IntegrationStatusFailed && state.Integration.MergeFailureCount == 0 && !hasConflictWorkers {
+		return fmt.Errorf("%w: status=failed with no pending failures and no conflict workers", ErrAlreadyResolved)
 	}
 
 	now := wm.clock.Now().UTC().Format(time.RFC3339)
@@ -120,9 +137,24 @@ func (wm *Manager) ResumeMerge(commandID string) error {
 		state.Integration.UpdatedAt = now
 	}
 	state.Integration.MergeFailureCount = 0
+
+	// Reset conflict/resolving workers to active so they are eligible for
+	// re-merge. MergeToIntegration skips conflict/resolving workers, so
+	// without this reset the merge gate would block indefinitely.
+	for i := range state.Workers {
+		ws := &state.Workers[i]
+		if ws.Status == model.WorktreeStatusConflict || ws.Status == model.WorktreeStatusResolving {
+			if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusActive, now); tErr != nil {
+				wm.Log(core.LogLevelWarn, "resume_merge_worker_reset command=%s worker=%s from=%s error=%v",
+					commandID, ws.WorkerID, ws.Status, tErr)
+			}
+		}
+	}
+
 	state.UpdatedAt = now
 
-	wm.Log(core.LogLevelInfo, "resume_merge command=%s prev_status=%s", commandID, s)
+	wm.Log(core.LogLevelInfo, "resume_merge command=%s prev_status=%s reset_conflict_workers=%v",
+		commandID, s, hasConflictWorkers)
 	if err := wm.saveState(commandID, state); err != nil {
 		return fmt.Errorf("save state: %w", err)
 	}

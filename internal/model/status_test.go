@@ -444,6 +444,7 @@ func TestValidateWorktreeTransition(t *testing.T) {
 		{WorktreeStatusConflict, WorktreeStatusCleanupDone},   // cleanup
 		{WorktreeStatusConflict, WorktreeStatusCleanupFailed}, // cleanup failure
 		{WorktreeStatusConflict, WorktreeStatusResolving},     // dispatch resolver
+		{WorktreeStatusResolving, WorktreeStatusActive},       // resume-merge resets resolving workers to active
 		{WorktreeStatusResolving, WorktreeStatusIntegrated},   // resolver commit success
 		{WorktreeStatusResolving, WorktreeStatusConflict},     // resolver retryable failure
 		{WorktreeStatusResolving, WorktreeStatusFailed},       // resolver permanent failure
@@ -473,7 +474,6 @@ func TestValidateWorktreeTransition(t *testing.T) {
 		{WorktreeStatusPublished, WorktreeStatusCommitted},   // only cleanup transitions allowed
 		{WorktreeStatusActive, WorktreeStatusResolving},      // resolving only reachable from conflict
 		{WorktreeStatusCommitted, WorktreeStatusResolving},   // resolving only reachable from conflict
-		{WorktreeStatusResolving, WorktreeStatusActive},      // no direct return to active
 		{WorktreeStatusResolving, WorktreeStatusCommitted},   // no direct return to committed
 	}
 	for _, tt := range invalid {

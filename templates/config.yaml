@@ -157,6 +157,11 @@ retry:
   # orchestrator_notification_dispatch: Orchestrator 通知ディスパッチのリトライ回数
   # type: int | default: 0 | range: >= 0
   orchestrator_notification_dispatch: 10
+  # signal_dispatch: Planner signal 配送のリトライ回数（0 = 無制限）
+  # Planner busy 時の exponential backoff 付きリトライ上限。
+  # 超過すると signal は dead letter 化されキューから除去される。
+  # type: int | default: 0 | range: >= 0
+  signal_dispatch: 10
   task_execution:
     # enabled: タスク実行の自動リトライの有効化フラグ
     # type: bool | default: false | range: true/false

@@ -577,17 +577,23 @@ conflict_files: path/to/file1.go, path/to/file2.go
 | `theirs` | worker ブランチ側（マージ元）の ref |
 | `conflict_files` | git が conflict と報告したファイル一覧（カンマ区切り） |
 
-**現状の対応手順 (MVP-0 CLI):**
+**対応手順 (ハイブリッド b+c 方式):**
 
-1. 状況確認: `.maestro/dashboard.md` を Read で確認し、対象コマンド/フェーズの状態を把握する
-2. 構造化情報 (`base`/`ours`/`theirs`/`conflict_files`) からどの worker のどのファイルが衝突したか特定する
-3. 手動解消が必要な場合は MVP-0 の CLI を使う:
-   - `maestro plan unquarantine <command_id>` — quarantined 状態を解除
-   - `maestro plan resume-merge <command_id>` — マージ再開を指示
-4. それでも解決できない場合は競合解決タスクを通常の `maestro plan submit` で発行し、`content` に上記 4 フィールドの値と解決方針を明記する。`acceptance_criteria` に競合マーカー不在を含める
-5. **最大リトライ: 2 回**。解決できなければ `plan complete` で報告
+Daemon が自動で conflict resolver を dispatch（worker の状態を `conflict` → `resolving` に遷移）する。Planner は以下の手順で復旧をコーディネートする:
 
-**Phase 1 以降:** Planner が LLM で自律的に競合を解消するフロー（resolver task の自動発行・lock 取得・abort 抑止）は別フェーズでの実装予定。MVP-1 ではあくまで構造化情報の伝達と MVP-0 CLI の手動運用が範囲である。
+1. **状況確認**: `.maestro/dashboard.md` を Read で確認し、対象コマンド/フェーズの状態を把握する
+2. **競合内容の特定**: 構造化情報 (`base`/`ours`/`theirs`/`conflict_files`) から、どの worker のどのファイルが衝突したか特定する
+3. **競合解決タスクの発行**: 競合した worker に対し `maestro plan submit` でタスクを発行する。`content` に以下を含める:
+   - 競合ファイル一覧と、統合ブランチ側の変更内容の説明
+   - 「競合を回避するようコードを修正する」という具体的な指示
+   - `acceptance_criteria` にコンパイル成功・テストパスを含める
+4. **再マージのトリガー**: worker がタスクを完了したら `maestro plan resume-merge --command-id <command_id>` を実行する。これにより:
+   - 統合ブランチのステータスが `failed` にリセットされる
+   - conflict/resolving 状態の worker が `active` にリセットされる
+   - 次回スキャンで Daemon が自動的に再マージを試行する
+5. **最大リトライ: 2 回**。再マージが再び失敗した場合は `plan complete` で報告する
+
+**`maestro plan unquarantine` について:** quarantined 状態の解除はオペレーター専用の操作であり、Planner は使用できない。quarantined 状態に遭遇した場合は `plan complete` で報告する。
 
 ### コミット失敗ハンドリング (commit_failed)
 

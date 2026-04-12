@@ -317,6 +317,7 @@ var validWorktreeTransitions = map[WorktreeStatus]map[WorktreeStatus]bool{
 		WorktreeStatusCleanupFailed: true,
 	},
 	WorktreeStatusResolving: {
+		WorktreeStatusActive:        true, // resume-merge resets resolving workers to active for re-merge
 		WorktreeStatusIntegrated:    true,
 		WorktreeStatusConflict:      true,
 		WorktreeStatusFailed:        true,

@@ -357,6 +357,7 @@ type RetryConfig struct {
 	CommandDispatch                  int             `yaml:"command_dispatch"`
 	TaskDispatch                     int             `yaml:"task_dispatch"`
 	OrchestratorNotificationDispatch int             `yaml:"orchestrator_notification_dispatch"`
+	SignalDispatch                   int             `yaml:"signal_dispatch"`
 	TaskExecution                    TaskRetryConfig `yaml:"task_execution"`
 }
 

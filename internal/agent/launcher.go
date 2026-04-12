@@ -185,11 +185,13 @@ func buildLaunchArgs(role, agentModel, systemPrompt, basePromptMode string) ([]s
 	// Planner has Bash(maestro:*) in allowedTools, which permits all maestro
 	// subcommands. These disallowedTools carve out the operator-only escape
 	// hatches that only Orchestrator should invoke.
+	// Note: resume-merge is intentionally NOT blocked for Planner — it is the
+	// Planner's primary mechanism for triggering re-merge after a worker has
+	// resolved a conflict (hybrid b+c conflict recovery path).
 	if role == "planner" {
 		args = append(args, "--disallowedTools",
 			strings.Join([]string{
 				"Bash(maestro plan unquarantine:*)",
-				"Bash(maestro plan resume-merge:*)",
 				"Bash(maestro plan add-retry-task:*)",
 			}, ","))
 	}

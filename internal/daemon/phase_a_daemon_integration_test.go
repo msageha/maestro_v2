@@ -46,7 +46,10 @@ func TestReviewDispatcher_InitializedWhenEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newDaemon: %v", err)
 	}
-	defer d.cancel()
+	t.Cleanup(func() {
+		d.ticker.Stop()
+		d.cancel()
+	})
 
 	d.initComponents()
 
@@ -84,7 +87,10 @@ func TestReviewDispatcher_SkippedWhenDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newDaemon: %v", err)
 	}
-	defer d.cancel()
+	t.Cleanup(func() {
+		d.ticker.Stop()
+		d.cancel()
+	})
 
 	d.initComponents()
 

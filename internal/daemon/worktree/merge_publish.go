@@ -119,6 +119,7 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 	var conflicts []model.MergeConflict
 	var mergedCount int
 	var skippedCount int
+	var conflictSkippedCount int
 
 	for _, workerID := range sorted {
 		ws := wm.findWorker(state, workerID)
@@ -134,22 +135,15 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 			continue
 		}
 
-		// For conflict/resolving workers whose changes are already on integration
-		// (e.g., conflict resolver committed directly on integration branch),
-		// check if the worker branch is an ancestor of integration HEAD.
-		// If so, skip re-merge and transition directly to integrated.
+		// Skip workers in conflict or resolving state. These must go through
+		// the resolution pipeline (DispatchConflictResolution → resume-merge)
+		// before being re-merged. Attempting to re-merge a conflict worker
+		// causes invalid_worktree_transition (conflict→conflict is not valid).
 		if ws.Status == model.WorktreeStatusConflict || ws.Status == model.WorktreeStatusResolving {
-			ancestorErr := wm.gitRunInDir(integrationPath, "merge-base", "--is-ancestor", ws.Branch, "HEAD")
-			if ancestorErr == nil {
-				// Worker branch is already contained in integration — no merge needed
-				if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusIntegrated, now); tErr != nil {
-					wm.Log(core.LogLevelWarn, "merge_resolved_skip_transition command=%s worker=%s error=%v",
-						commandID, workerID, tErr)
-				}
-				mergedCount++
-				wm.Log(core.LogLevelInfo, "worker_already_on_integration command=%s worker=%s", commandID, workerID)
-				continue
-			}
+			wm.Log(core.LogLevelInfo, "skip_conflict_resolving_worker command=%s worker=%s status=%s",
+				commandID, workerID, ws.Status)
+			conflictSkippedCount++
+			continue
 		}
 
 		// Check if worker branch has commits beyond base
@@ -301,30 +295,39 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 	}
 
 	// Determine final integration status:
-	// - mergedCount=0, conflicts=0, skipped=0 → no commits to merge; revert to pre-merge status
-	// - conflicts=0, skipped=0, merged>0 → Merged (all successful)
-	// - conflicts=0, skipped>0, merged>0 → PartialMerge (some skipped due to transient errors)
-	// - conflicts>0, merged>0 → PartialMerge (some succeeded, some conflicted; successful merges preserved)
+	// - mergedCount=0, conflicts=0, skipped=0, conflictSkipped=0 → no commits to merge; revert
+	// - conflicts=0, skipped=0, conflictSkipped=0, merged>0 → Merged (all successful)
+	// - conflicts=0, skipped=0, conflictSkipped>0, merged>0 → PartialMerge (some conflict-skipped)
+	// - conflicts>0, merged>0 → PartialMerge (some succeeded, some conflicted)
+	// - mergedCount=0, conflictSkipped>0, conflicts=0, skipped=0 → revert (only conflict workers, wait for resolver)
 	// - merged=0 (all conflict or skipped) → Conflict
-	// Any non-quarantine outcome (Merged / PartialMerge / Conflict) breaks the
-	// "consecutive unrecoverable failure" streak — reaching this point means
-	// recordMergeFailure was not invoked for any worker, so the loop did not
-	// hit a dirty-precheck, abort+recover failure, or permanent git error.
+	//
+	// conflictSkippedCount tracks workers intentionally skipped because they are
+	// in conflict/resolving state and must go through the resolution pipeline.
+	// These do not indicate new failures but existing unresolved conflicts.
+	//
 	// Reaching this point means no unrecoverable merge failure occurred
 	// (recordMergeFailure was never called), so reset the consecutive failure count.
 	state.Integration.MergeFailureCount = 0
 
-	if mergedCount == 0 && len(conflicts) == 0 && skippedCount == 0 {
+	if mergedCount == 0 && len(conflicts) == 0 && skippedCount == 0 && conflictSkippedCount == 0 {
 		// No worker had any commits to merge. Revert the Merging status to
 		// the pre-merge status to avoid a false Merged signal that would
 		// trigger a no-op publish.
 		wm.Log(core.LogLevelInfo, "no_commits_to_merge command=%s workers=%d", commandID, len(sorted))
 		state.Integration.Status = preMergeStatus
 		state.Integration.UpdatedAt = preMergeUpdatedAt
-	} else if len(conflicts) == 0 && skippedCount == 0 {
+	} else if len(conflicts) == 0 && skippedCount == 0 && conflictSkippedCount == 0 {
 		if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusMerged, now); tErr != nil {
 			wm.Log(core.LogLevelWarn, "merge_merged_integration_transition command=%s error=%v", commandID, tErr)
 		}
+	} else if mergedCount == 0 && conflictSkippedCount > 0 && len(conflicts) == 0 && skippedCount == 0 {
+		// Only conflict/resolving workers were present — nothing to merge.
+		// Revert to pre-merge status and wait for the resolution pipeline.
+		wm.Log(core.LogLevelInfo, "all_workers_conflict_skipped command=%s conflict_skipped=%d",
+			commandID, conflictSkippedCount)
+		state.Integration.Status = preMergeStatus
+		state.Integration.UpdatedAt = preMergeUpdatedAt
 	} else if mergedCount > 0 {
 		if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusPartialMerge, now); tErr != nil {
 			wm.Log(core.LogLevelWarn, "merge_partial_merge_integration_transition command=%s error=%v", commandID, tErr)

@@ -286,6 +286,17 @@ func (qh *QueueHandler) applySignalResults(results []signalDeliveryResult, sq *m
 
 		errStr := dlErr.Error()
 		sig.LastError = &errStr
+
+		// Dead letter: drop signal after max retry attempts
+		maxAttempts := qh.config.Retry.SignalDispatch
+		if maxAttempts > 0 && sig.Attempts >= maxAttempts {
+			qh.log(LogLevelWarn, "signal_dead_letter kind=%s command=%s phase=%s attempts=%d max=%d error=%v",
+				sig.Kind, sig.CommandID, sig.PhaseID, sig.Attempts, maxAttempts, dlErr)
+			qh.scanExecutor.scanCounters.SignalDeadLetters++
+			*dirty = true
+			continue
+		}
+
 		nextAttempt := qh.computeSignalBackoff(sig.Attempts)
 		nextAttemptStr := now.Add(nextAttempt).Format(time.RFC3339)
 		sig.NextAttemptAt = &nextAttemptStr

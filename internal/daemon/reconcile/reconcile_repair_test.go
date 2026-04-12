@@ -1156,7 +1156,7 @@ func TestR1ResultQueue_RetryEnqueueFailed_ReenqueueFails(t *testing.T) {
 	// Make queue directory read-only so AtomicWrite (CreateTemp) fails
 	queueDir := filepath.Join(maestroDir, "queue")
 	os.Chmod(queueDir, 0555)
-	defer os.Chmod(queueDir, 0755)
+	t.Cleanup(func() { os.Chmod(queueDir, 0755) })
 
 	run := newRun(&deps)
 	outcome := R1ResultQueue{}.Apply(run)

@@ -45,6 +45,10 @@ func newTestDaemon(t *testing.T) *Daemon {
 	if err != nil {
 		t.Fatalf("newDaemon: %v", err)
 	}
+	t.Cleanup(func() {
+		d.ticker.Stop()
+		d.cancel()
+	})
 
 	// Initialize worker queue files
 	for i := 1; i <= cfg.Agents.Workers.Count; i++ {

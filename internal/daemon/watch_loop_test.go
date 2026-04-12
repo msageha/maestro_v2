@@ -6,6 +6,7 @@ import (
 )
 
 func TestFsSemaphoreBufferSize_Dynamic(t *testing.T) {
+	t.Parallel()
 	size := fsSemaphoreBufferSize()
 
 	if size < 8 {
@@ -29,6 +30,7 @@ func TestFsSemaphoreBufferSize_Dynamic(t *testing.T) {
 }
 
 func TestWatchLoop_FsDroppedCount(t *testing.T) {
+	t.Parallel()
 	w := &WatchLoop{
 		fsSem: make(chan struct{}, 1),
 	}

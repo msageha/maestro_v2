@@ -373,7 +373,7 @@ func TestLearnings_WriteFailureDoesNotFailResultWrite(t *testing.T) {
 	// Make state dir read-only to force learnings write failure
 	stateDir := filepath.Join(d.maestroDir, "state")
 	os.Chmod(stateDir, 0555)
-	defer os.Chmod(stateDir, 0755)
+	t.Cleanup(func() { os.Chmod(stateDir, 0755) })
 
 	req := makeResultWriteRequest(t, ResultWriteParams{
 		Reporter:   workerID,

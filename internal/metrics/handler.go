@@ -113,6 +113,9 @@ func (h *Handler) UpdateMetrics(
 	metrics.Counters.DeadLetters += counters.DeadLetters
 	metrics.Counters.ReconciliationRepairs += counters.ReconciliationRepairs
 	metrics.Counters.NotificationRetries += counters.NotificationRetries
+	metrics.Counters.SignalDeliveries += counters.SignalDeliveries
+	metrics.Counters.SignalRetries += counters.SignalRetries
+	metrics.Counters.SignalDeadLetters += counters.SignalDeadLetters
 	metrics.Counters.LeaseRenewals += counters.LeaseRenewals
 	metrics.Counters.LeaseExtensions += counters.LeaseExtensions
 	metrics.Counters.LeaseReleases += counters.LeaseReleases

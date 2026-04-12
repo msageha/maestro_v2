@@ -14,6 +14,7 @@ type testYAMLStruct struct {
 }
 
 func TestLoadYAMLFile_Success(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.yaml")
 
@@ -39,6 +40,7 @@ func TestLoadYAMLFile_Success(t *testing.T) {
 }
 
 func TestLoadYAMLFile_MissingAllowed(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "nonexistent.yaml")
 
 	result, rawBytes, err := loadYAMLFile[testYAMLStruct](path, true)
@@ -54,6 +56,7 @@ func TestLoadYAMLFile_MissingAllowed(t *testing.T) {
 }
 
 func TestLoadYAMLFile_MissingNotAllowed(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "nonexistent.yaml")
 
 	_, _, err := loadYAMLFile[testYAMLStruct](path, false)
@@ -67,6 +70,7 @@ func TestLoadYAMLFile_MissingNotAllowed(t *testing.T) {
 }
 
 func TestLoadYAMLFile_InvalidYAML(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "bad.yaml")
 
@@ -84,6 +88,7 @@ func TestLoadYAMLFile_InvalidYAML(t *testing.T) {
 }
 
 func TestLoadQueueFile_WithDefaults(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "queue.yaml")
 
