@@ -192,8 +192,10 @@ func ValidatePhaseFillInput(tasks []TaskInput, phase model.Phase) *ValidationErr
 		return errs
 	}
 
-	// Validate against phase constraints
-	if phase.Constraints != nil {
+	// Validate against phase constraints (deferred phases must have constraints)
+	if phase.Constraints == nil {
+		errs.Add("constraints", fmt.Sprintf("phase %q has nil constraints; deferred phases require constraints for validation", phase.Name))
+	} else {
 		if len(tasks) > phase.Constraints.MaxTasks {
 			errs.Add("tasks", fmt.Sprintf("task count %d exceeds phase constraint max_tasks %d",
 				len(tasks), phase.Constraints.MaxTasks))

@@ -59,7 +59,7 @@ func buildCommandState(commandID string, tasks []TaskInput, nameToID map[string]
 
 // buildPhaseCommandState constructs the CommandState for a phase-based submission.
 func buildPhaseCommandState(opts SubmitOptions, phases []PhaseInput, phaseNameToID map[string]string,
-	cpd *concretePhaseData, systemCommitTaskID *string, now string) *model.CommandState {
+	cpd *concretePhaseData, systemCommitTaskID *string, now string) (*model.CommandState, error) {
 
 	state := &model.CommandState{
 		SchemaVersion:      1,
@@ -92,7 +92,10 @@ func buildPhaseCommandState(opts SubmitOptions, phases []PhaseInput, phaseNameTo
 			phaseModel.ActivatedAt = &now
 
 			for _, t := range p.Tasks {
-				taskID := cpd.nameToID[t.Name]
+				taskID, ok := cpd.nameToID[t.Name]
+				if !ok {
+					return nil, fmt.Errorf("task %q not found in nameToID map for phase %q", t.Name, p.Name)
+				}
 				phaseModel.TaskIDs = append(phaseModel.TaskIDs, taskID)
 
 				if t.Required {
@@ -107,7 +110,11 @@ func buildPhaseCommandState(opts SubmitOptions, phases []PhaseInput, phaseNameTo
 				if len(t.BlockedBy) > 0 {
 					depIDs := make([]string, 0, len(t.BlockedBy))
 					for _, depName := range t.BlockedBy {
-						depIDs = append(depIDs, cpd.nameToID[depName])
+						depID, ok := cpd.nameToID[depName]
+						if !ok {
+							return nil, fmt.Errorf("blocked_by references unknown task %q in phase %q", depName, p.Name)
+						}
+						depIDs = append(depIDs, depID)
 					}
 					state.TaskDependencies[taskID] = depIDs
 				}
@@ -139,7 +146,11 @@ func buildPhaseCommandState(opts SubmitOptions, phases []PhaseInput, phaseNameTo
 		depIDs := make([]string, 0, len(cpd.tasks)-1) // exclude __system_commit itself
 		for _, t := range cpd.tasks {
 			if t.Name != "__system_commit" {
-				depIDs = append(depIDs, cpd.nameToID[t.Name])
+				depID, ok := cpd.nameToID[t.Name]
+				if !ok {
+					return nil, fmt.Errorf("system commit dependency task %q not found in nameToID map", t.Name)
+				}
+				depIDs = append(depIDs, depID)
 			}
 		}
 		if len(depIDs) > 0 {
@@ -148,7 +159,7 @@ func buildPhaseCommandState(opts SubmitOptions, phases []PhaseInput, phaseNameTo
 	}
 
 	state.ExpectedTaskCount = len(state.RequiredTaskIDs) + len(state.OptionalTaskIDs)
-	return state
+	return state, nil
 }
 
 // buildPhaseSubmitResult constructs the SubmitResult for a phase-based submission.

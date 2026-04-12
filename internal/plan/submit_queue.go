@@ -3,7 +3,6 @@ package plan
 import (
 	"errors"
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 
@@ -28,7 +27,11 @@ func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks 
 
 		depIDs := make([]string, 0, len(t.BlockedBy))
 		for _, depName := range t.BlockedBy {
-			depIDs = append(depIDs, nameToID[depName])
+			depID, ok := nameToID[depName]
+			if !ok {
+				return fmt.Errorf("blocked_by references unknown task %q in queue entry for task %q", depName, a.TaskName)
+			}
+			depIDs = append(depIDs, depID)
 		}
 
 		queueTask := model.Task{
@@ -71,7 +74,7 @@ func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks 
 	return nil
 }
 
-func rollbackQueueEntries(maestroDir string, tasks []TaskInput, nameToID map[string]string, assignMap map[string]WorkerAssignment, lockMap *lock.MutexMap) {
+func rollbackQueueEntries(maestroDir string, tasks []TaskInput, nameToID map[string]string, assignMap map[string]WorkerAssignment, lockMap *lock.MutexMap) error {
 	taskIDs := make(map[string]bool)
 	for _, t := range tasks {
 		taskIDs[nameToID[t.Name]] = true
@@ -83,9 +86,11 @@ func rollbackQueueEntries(maestroDir string, tasks []TaskInput, nameToID map[str
 		workerFiles[a.WorkerID] = true
 	}
 
+	var errs []error
+
 	// CRIT-02: Lock per-queue to prevent concurrent read-modify-write data loss.
 	for workerID := range workerFiles {
-		func() {
+		if err := func() error {
 			if lockMap != nil {
 				lockMap.Lock("queue:" + workerID)
 				defer lockMap.Unlock("queue:" + workerID)
@@ -95,12 +100,12 @@ func rollbackQueueEntries(maestroDir string, tasks []TaskInput, nameToID map[str
 
 			data, err := os.ReadFile(queueFile) //nolint:gosec // queueFile is constructed from a controlled application queue directory
 			if err != nil {
-				return
+				return fmt.Errorf("read queue %s: %w", workerID, err)
 			}
 
 			var tq model.TaskQueue
 			if err := yamlv3.Unmarshal(data, &tq); err != nil {
-				return
+				return fmt.Errorf("parse queue %s: %w", workerID, err)
 			}
 
 			var kept []model.Task
@@ -112,10 +117,18 @@ func rollbackQueueEntries(maestroDir string, tasks []TaskInput, nameToID map[str
 			tq.Tasks = kept
 
 			if writeErr := yamlutil.AtomicWrite(queueFile, tq); writeErr != nil {
-				log.Printf("rollback: write queue %s: %v", workerID, writeErr)
+				return fmt.Errorf("write queue %s: %w", workerID, writeErr)
 			}
-		}()
+			return nil
+		}(); err != nil {
+			errs = append(errs, err)
+		}
 	}
+
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
 }
 
 func rollbackPhaseFillState(state *model.CommandState, phaseIdx int, tasks []TaskInput, nameToID map[string]string) {
