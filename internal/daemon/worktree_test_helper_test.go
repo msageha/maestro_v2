@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 // initTestGitRepo creates a temporary git repo with an initial commit.
@@ -71,8 +72,8 @@ func newTestWorktreeManager(t *testing.T, projectRoot string) *WorktreeManager {
 		CleanupOnFailure: false,
 		GC: model.WorktreeGCConfig{
 			Enabled:      true,
-			TTLHours:     model.IntPtr(24),
-			MaxWorktrees: model.IntPtr(32),
+			TTLHours:     ptr.Int(24),
+			MaxWorktrees: ptr.Int(32),
 		},
 		CommitPolicy: model.CommitPolicyConfig{},
 	}

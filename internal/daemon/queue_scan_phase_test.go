@@ -17,6 +17,7 @@ import (
 	worktreepkg "github.com/msageha/maestro_v2/internal/daemon/worktree"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 	"github.com/msageha/maestro_v2/internal/testutil"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -884,7 +885,7 @@ func TestPhaseBC_CommitFailure_FlowTable(t *testing.T) {
 		{
 			name: "policy_violation_max_files",
 			mutateCfg: func(cfg *model.WorktreeConfig) {
-				cfg.CommitPolicy = model.CommitPolicyConfig{MaxFiles: model.IntPtr(1)}
+				cfg.CommitPolicy = model.CommitPolicyConfig{MaxFiles: ptr.Int(1)}
 			},
 			writeDirty: func(t *testing.T, wtPath string) {
 				for i := 0; i < 4; i++ {

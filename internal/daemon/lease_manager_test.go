@@ -7,12 +7,13 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 func newTestLeaseManager() *LeaseManager {
 	return NewLeaseManager(model.WatcherConfig{
 		DispatchLeaseSec: 300,
-		MaxInProgressMin: model.IntPtr(60),
+		MaxInProgressMin: ptr.Int(60),
 	}, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
 }
 

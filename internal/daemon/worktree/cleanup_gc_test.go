@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 // TestGCBakFiles_OrphanRemoved verifies that a .bak file with no matching
@@ -107,7 +108,7 @@ func TestGC_SkipsActiveWorktree_TTL(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Set very short TTL so our worktree will exceed it
-	wm.config.GC.TTLHours = model.IntPtr(0)
+	wm.config.GC.TTLHours = ptr.Int(0)
 
 	commandID := "cmd_gc_active"
 	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
@@ -141,7 +142,7 @@ func TestGC_CleansTerminalWorktree_TTL(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
-	wm.config.GC.TTLHours = model.IntPtr(0)
+	wm.config.GC.TTLHours = ptr.Int(0)
 
 	commandID := "cmd_gc_terminal"
 	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
@@ -195,8 +196,8 @@ func TestGC_SkipsActiveWorktree_MaxWorktrees(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Set max_worktrees to 1 so that having 2 triggers eviction
-	wm.config.GC.MaxWorktrees = model.IntPtr(1)
-	wm.config.GC.TTLHours = model.IntPtr(999) // high TTL so no TTL-based cleanup
+	wm.config.GC.MaxWorktrees = ptr.Int(1)
+	wm.config.GC.TTLHours = ptr.Int(999) // high TTL so no TTL-based cleanup
 
 	// Create two commands — both active
 	for _, cmdID := range []string{"cmd_gc_max1", "cmd_gc_max2"} {

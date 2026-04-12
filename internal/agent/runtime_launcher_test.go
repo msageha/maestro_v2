@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 func TestNewRuntimeLauncher_DefaultsClaudeCodeEnabled(t *testing.T) {
@@ -22,7 +23,7 @@ func TestNewRuntimeLauncher_DefaultsClaudeCodeEnabled(t *testing.T) {
 
 func TestGetCommand_ClaudeCode(t *testing.T) {
 	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
-		model.RuntimeClaudeCode: {Enabled: model.BoolPtr(true)},
+		model.RuntimeClaudeCode: {Enabled: ptr.Bool(true)},
 	})
 	cmd, _, err := rl.GetCommand(model.RuntimeClaudeCode, RuntimeLaunchOptions{})
 	if err != nil {
@@ -35,7 +36,7 @@ func TestGetCommand_ClaudeCode(t *testing.T) {
 
 func TestGetCommand_CodexEnabled(t *testing.T) {
 	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
-		model.RuntimeCodex: {Enabled: model.BoolPtr(true)},
+		model.RuntimeCodex: {Enabled: ptr.Bool(true)},
 	})
 	cmd, args, err := rl.GetCommand(model.RuntimeCodex, RuntimeLaunchOptions{})
 	if err != nil {
@@ -58,7 +59,7 @@ func TestGetCommand_CodexEnabled(t *testing.T) {
 
 func TestGetCommand_GeminiEnabled(t *testing.T) {
 	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
-		model.RuntimeGemini: {Enabled: model.BoolPtr(true)},
+		model.RuntimeGemini: {Enabled: ptr.Bool(true)},
 	})
 	cmd, args, err := rl.GetCommand(model.RuntimeGemini, RuntimeLaunchOptions{})
 	if err != nil {
@@ -81,7 +82,7 @@ func TestGetCommand_GeminiEnabled(t *testing.T) {
 
 func TestGetCommand_DisabledRuntime(t *testing.T) {
 	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
-		model.RuntimeCodex: {Enabled: model.BoolPtr(false)},
+		model.RuntimeCodex: {Enabled: ptr.Bool(false)},
 	})
 	_, _, err := rl.GetCommand(model.RuntimeCodex, RuntimeLaunchOptions{})
 	if err == nil {
@@ -116,7 +117,7 @@ func TestGetCommand_EmptyRuntimeDefaultsToClaudeCode(t *testing.T) {
 
 func TestGetCommand_WithModel(t *testing.T) {
 	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
-		model.RuntimeClaudeCode: {Enabled: model.BoolPtr(true)},
+		model.RuntimeClaudeCode: {Enabled: ptr.Bool(true)},
 	})
 	_, args, err := rl.GetCommand(model.RuntimeClaudeCode, RuntimeLaunchOptions{Model: "opus"})
 	if err != nil {
@@ -137,7 +138,7 @@ func TestFallbackToDefault_AlwaysClaudeCode(t *testing.T) {
 
 func TestFallbackToDefault_EvenWhenCodexEnabled(t *testing.T) {
 	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
-		model.RuntimeCodex: {Enabled: model.BoolPtr(true)},
+		model.RuntimeCodex: {Enabled: ptr.Bool(true)},
 	})
 	cmd, _ := rl.FallbackToDefault()
 	if cmd != "claude" {
@@ -175,7 +176,7 @@ func TestGetCommand_CodexDisabledByDefault(t *testing.T) {
 
 func TestNewRuntimeLauncher_IgnoresUnknownConfigRuntime(t *testing.T) {
 	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
-		"unknown-agent": {Enabled: model.BoolPtr(true)},
+		"unknown-agent": {Enabled: ptr.Bool(true)},
 	})
 	_, _, err := rl.GetCommand("unknown-agent", RuntimeLaunchOptions{})
 	if err == nil {
@@ -185,7 +186,7 @@ func TestNewRuntimeLauncher_IgnoresUnknownConfigRuntime(t *testing.T) {
 
 func TestGetCommand_ArgsIsolation(t *testing.T) {
 	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
-		model.RuntimeClaudeCode: {Enabled: model.BoolPtr(true)},
+		model.RuntimeClaudeCode: {Enabled: ptr.Bool(true)},
 	})
 
 	_, args1, _ := rl.GetCommand(model.RuntimeClaudeCode, RuntimeLaunchOptions{Model: "sonnet"})
@@ -200,7 +201,7 @@ func TestGetCommand_ArgsIsolation(t *testing.T) {
 
 func TestGetCommand_CodexWithModel(t *testing.T) {
 	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
-		model.RuntimeCodex: {Enabled: model.BoolPtr(true)},
+		model.RuntimeCodex: {Enabled: ptr.Bool(true)},
 	})
 	_, args, err := rl.GetCommand(model.RuntimeCodex, RuntimeLaunchOptions{Model: "o3-mini"})
 	if err != nil {
@@ -220,7 +221,7 @@ func TestGetCommand_CodexWithModel(t *testing.T) {
 
 func TestGetCommand_GeminiWithModel(t *testing.T) {
 	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
-		model.RuntimeGemini: {Enabled: model.BoolPtr(true)},
+		model.RuntimeGemini: {Enabled: ptr.Bool(true)},
 	})
 	_, args, err := rl.GetCommand(model.RuntimeGemini, RuntimeLaunchOptions{Model: "gemini-2.5-pro"})
 	if err != nil {
@@ -239,7 +240,7 @@ func TestGetCommand_GeminiWithModel(t *testing.T) {
 
 func TestGetCommand_GeminiWithPrompt(t *testing.T) {
 	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
-		model.RuntimeGemini: {Enabled: model.BoolPtr(true)},
+		model.RuntimeGemini: {Enabled: ptr.Bool(true)},
 	})
 	_, args, err := rl.GetCommand(model.RuntimeGemini, RuntimeLaunchOptions{
 		Model:  "gemini-2.5-pro",
@@ -261,7 +262,7 @@ func TestGetCommand_GeminiWithPrompt(t *testing.T) {
 
 func TestGetCommand_GeminiPromptWithoutModel(t *testing.T) {
 	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
-		model.RuntimeGemini: {Enabled: model.BoolPtr(true)},
+		model.RuntimeGemini: {Enabled: ptr.Bool(true)},
 	})
 	_, args, err := rl.GetCommand(model.RuntimeGemini, RuntimeLaunchOptions{
 		Prompt: "system prompt only",
@@ -283,7 +284,7 @@ func TestGetCommand_GeminiPromptWithoutModel(t *testing.T) {
 func TestGetCommand_ClaudeCodeIgnoresPromptOption(t *testing.T) {
 	// Prompt option is only used by gemini; claude-code handles prompts via buildLaunchArgs.
 	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
-		model.RuntimeClaudeCode: {Enabled: model.BoolPtr(true)},
+		model.RuntimeClaudeCode: {Enabled: ptr.Bool(true)},
 	})
 	_, args, err := rl.GetCommand(model.RuntimeClaudeCode, RuntimeLaunchOptions{
 		Model:  "opus",
@@ -306,7 +307,7 @@ func TestGetCommand_ClaudeCodeIgnoresPromptOption(t *testing.T) {
 
 func TestGetCommand_CodexArgsIsolation(t *testing.T) {
 	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
-		model.RuntimeCodex: {Enabled: model.BoolPtr(true)},
+		model.RuntimeCodex: {Enabled: ptr.Bool(true)},
 	})
 
 	_, args1, _ := rl.GetCommand(model.RuntimeCodex, RuntimeLaunchOptions{Model: "o3-mini"})

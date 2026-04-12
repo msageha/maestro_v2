@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 	"github.com/msageha/maestro_v2/internal/uds"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 	yamlv3 "gopkg.in/yaml.v3"
@@ -35,7 +36,7 @@ func newTestHeartbeatHandler(t *testing.T, d *Daemon) *TaskHeartbeatHandler {
 		d.config.Watcher.DispatchLeaseSec = 120
 	}
 	if d.config.Watcher.MaxInProgressMin == nil {
-		d.config.Watcher.MaxInProgressMin = model.IntPtr(60)
+		d.config.Watcher.MaxInProgressMin = ptr.Int(60)
 	}
 	// Initialize handler if not set (newTestDaemon doesn't call Run)
 	if d.handler == nil {
