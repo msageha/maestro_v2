@@ -631,6 +631,73 @@ func TestEnsureWorkerWorktree_RollbackOnAddWorker(t *testing.T) {
 	_ = cmd.Run()
 }
 
+// TestEnsureWorkerWorktree_CorruptedStateReturnsError tests that a corrupted
+// YAML state file causes EnsureWorkerWorktree to return an error instead of
+// silently proceeding with the creation flow.
+func TestEnsureWorkerWorktree_CorruptedStateReturnsError(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	// Create the state directory and write a corrupted YAML file
+	stateDir := filepath.Join(projectRoot, ".maestro", "state", "worktrees")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(stateDir, "cmd_corrupted.yaml")
+	if err := os.WriteFile(statePath, []byte("{{invalid yaml content\n\t:::"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := wm.EnsureWorkerWorktree("cmd_corrupted", "worker1")
+	if err == nil {
+		t.Fatal("expected error for corrupted YAML state, got nil")
+	}
+	if !strings.Contains(err.Error(), "load worktree state") {
+		t.Errorf("error should mention 'load worktree state', got: %v", err)
+	}
+
+	// Verify no integration branch was created (creation flow was NOT entered)
+	cmd := exec.Command("git", "branch", "--list", "maestro/cmd_corrupted/integration")
+	cmd.Dir = projectRoot
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git branch --list: %v", err)
+	}
+	if strings.TrimSpace(string(out)) != "" {
+		t.Error("integration branch should NOT be created when state file is corrupted")
+	}
+}
+
+// TestEnsureWorkerWorktree_NotExistCreatesNew tests that when no state file
+// exists (os.ErrNotExist), EnsureWorkerWorktree proceeds with the creation flow.
+func TestEnsureWorkerWorktree_NotExistCreatesNew(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	// Ensure no state file exists for this command
+	stateDir := filepath.Join(projectRoot, ".maestro", "state", "worktrees")
+	statePath := filepath.Join(stateDir, "cmd_notexist.yaml")
+	if _, err := os.Stat(statePath); err == nil {
+		t.Fatal("precondition failed: state file should not exist")
+	}
+
+	// Should succeed — creates everything from scratch
+	if err := wm.EnsureWorkerWorktree("cmd_notexist", "worker1"); err != nil {
+		t.Fatalf("EnsureWorkerWorktree failed: %v", err)
+	}
+
+	// Verify state was created
+	state, err := wm.GetCommandState("cmd_notexist")
+	if err != nil {
+		t.Fatalf("GetCommandState failed: %v", err)
+	}
+	if len(state.Workers) != 1 || state.Workers[0].WorkerID != "worker1" {
+		t.Errorf("unexpected state: workers=%v", state.Workers)
+	}
+}
+
 // --- M5 Tests: EnsureWorkerWorktree ---
 
 // TestEnsureWorkerWorktree_LazyCreation tests the initial creation path
