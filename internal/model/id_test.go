@@ -56,12 +56,15 @@ func TestValidateID(t *testing.T) {
 		{"valid phase", "phase_1771722000_c3d4e5f6", true},
 		{"valid notification", "ntf_1771722600_d4e9f0a2", true},
 		{"valid result", "res_1771722300_e5f0c3d8", true},
+		{"valid command 16-char hex", "cmd_1771722000_a3f2b7c1d4e9f0a2", true},
+		{"valid task 16-char hex", "task_1771722060_b7c1d4e9a3f2b7c1", true},
 		{"invalid prefix", "xxx_1771722000_a3f2b7c1", false},
 		{"short timestamp", "cmd_177172200_a3f2b7c1", false},
 		{"long timestamp", "cmd_17717220001_a3f2b7c1", false},
 		{"uppercase hex", "cmd_1771722000_A3F2B7C1", false},
 		{"short hex", "cmd_1771722000_a3f2b7c", false},
 		{"long hex", "cmd_1771722000_a3f2b7c10", false},
+		{"12-char hex invalid", "cmd_1771722000_a3f2b7c1d4e9", false},
 		{"empty", "", false},
 		{"no separators", "cmd1771722000a3f2b7c1", false},
 	}
@@ -84,6 +87,7 @@ func TestParseIDType(t *testing.T) {
 		{"phase_1771722000_c3d4e5f6", IDTypePhase},
 		{"ntf_1771722600_d4e9f0a2", IDTypeNotification},
 		{"res_1771722300_e5f0c3d8", IDTypeResult},
+		{"cmd_1771722000_a3f2b7c1d4e9f0a2", IDTypeCommand},
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.expected), func(t *testing.T) {

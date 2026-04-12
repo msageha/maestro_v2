@@ -1,8 +1,11 @@
 package model
 
 import (
+	"math"
 	"strings"
 	"testing"
+
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 // validConfig returns a Config that passes all validation checks.
@@ -162,7 +165,7 @@ func TestValidate_NegativeDaemonTimeout(t *testing.T) {
 
 func TestValidate_NegativeCircuitBreaker(t *testing.T) {
 	cfg := validConfig()
-	cfg.CircuitBreaker.MaxConsecutiveFailures = IntPtr(-1)
+	cfg.CircuitBreaker.MaxConsecutiveFailures = ptr.Int(-1)
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected error for negative circuit breaker field")
@@ -174,7 +177,7 @@ func TestValidate_NegativeCircuitBreaker(t *testing.T) {
 
 func TestValidate_NegativeLearnings(t *testing.T) {
 	cfg := validConfig()
-	cfg.Learnings.MaxEntries = IntPtr(-1)
+	cfg.Learnings.MaxEntries = ptr.Int(-1)
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected error for negative learnings max_entries")
@@ -371,9 +374,9 @@ func TestEvolutionConfig_Defaults(t *testing.T) {
 
 func TestEvolutionConfig_Configured(t *testing.T) {
 	ec := EvolutionConfig{
-		Enabled:              BoolPtr(true),
-		MaxMutationsPerRound: IntPtr(5),
-		NoveltyThreshold:     Float64Ptr(0.8),
+		Enabled:              ptr.Bool(true),
+		MaxMutationsPerRound: ptr.Int(5),
+		NoveltyThreshold:     ptr.Float64(0.8),
 		Strategies:           []string{"diff"},
 	}
 	if !ec.EffectiveEnabled() {
@@ -414,11 +417,11 @@ func TestBanditConfig_Defaults(t *testing.T) {
 
 func TestBanditConfig_Configured(t *testing.T) {
 	bc := BanditConfig{
-		Enabled:              BoolPtr(true),
-		ExplorationCoeff:     Float64Ptr(2.0),
-		MinSamplesBeforeUse:  IntPtr(20),
-		DecayFactor:          Float64Ptr(0.9),
-		TraceDataRequirement: IntPtr(100),
+		Enabled:              ptr.Bool(true),
+		ExplorationCoeff:     ptr.Float64(2.0),
+		MinSamplesBeforeUse:  ptr.Int(20),
+		DecayFactor:          ptr.Float64(0.9),
+		TraceDataRequirement: ptr.Int(100),
 	}
 	if !bc.EffectiveEnabled() {
 		t.Error("Enabled should be true")
@@ -461,11 +464,11 @@ func TestExtendedVerificationConfig_Defaults(t *testing.T) {
 
 func TestExtendedVerificationConfig_Configured(t *testing.T) {
 	ev := ExtendedVerificationConfig{
-		Enabled:            BoolPtr(true),
-		SecurityCheck:      BoolPtr(true),
-		PerformanceBench:   BoolPtr(true),
+		Enabled:            ptr.Bool(true),
+		SecurityCheck:      ptr.Bool(true),
+		PerformanceBench:   ptr.Bool(true),
 		PerspectiveWeights: map[string]float64{"build": 2.0},
-		MaxAutoRetries:     IntPtr(5),
+		MaxAutoRetries:     ptr.Int(5),
 	}
 	if !ev.EffectiveEnabled() {
 		t.Error("Enabled should be true")
@@ -511,12 +514,12 @@ func TestSearchConfig_Defaults(t *testing.T) {
 
 func TestSearchConfig_Configured(t *testing.T) {
 	sc := SearchConfig{
-		Enabled:        BoolPtr(true),
-		MaxDepth:       IntPtr(5),
-		MaxBranching:   IntPtr(8),
-		PruneThreshold: Float64Ptr(0.5),
-		ThompsonAlpha:  Float64Ptr(2.0),
-		ThompsonBeta:   Float64Ptr(3.0),
+		Enabled:        ptr.Bool(true),
+		MaxDepth:       ptr.Int(5),
+		MaxBranching:   ptr.Int(8),
+		PruneThreshold: ptr.Float64(0.5),
+		ThompsonAlpha:  ptr.Float64(2.0),
+		ThompsonBeta:   ptr.Float64(3.0),
 	}
 	if !sc.EffectiveEnabled() {
 		t.Error("Enabled should be true")
@@ -560,10 +563,10 @@ func TestSelfImprovementConfig_Defaults(t *testing.T) {
 
 func TestSelfImprovementConfig_Configured(t *testing.T) {
 	si := SelfImprovementConfig{
-		Enabled:        BoolPtr(true),
+		Enabled:        ptr.Bool(true),
 		Targets:        []string{"persona"},
 		ExcludeTargets: []string{"fitness"},
-		ArchiveMaxSize: IntPtr(50),
+		ArchiveMaxSize: ptr.Int(50),
 	}
 	if !si.EffectiveEnabled() {
 		t.Error("Enabled should be true")
@@ -632,7 +635,7 @@ func TestValidate_ContinuousEnabled_ZeroFieldsOK(t *testing.T) {
 func TestValidate_WorktreeGC_Enabled_InvalidTTL(t *testing.T) {
 	cfg := validConfig()
 	cfg.Worktree.GC.Enabled = true
-	cfg.Worktree.GC.TTLHours = IntPtr(0)
+	cfg.Worktree.GC.TTLHours = ptr.Int(0)
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected error for zero ttl_hours when gc enabled")
@@ -645,7 +648,7 @@ func TestValidate_WorktreeGC_Enabled_InvalidTTL(t *testing.T) {
 func TestValidate_WorktreeGC_Enabled_InvalidMaxWorktrees(t *testing.T) {
 	cfg := validConfig()
 	cfg.Worktree.GC.Enabled = true
-	cfg.Worktree.GC.MaxWorktrees = IntPtr(-1)
+	cfg.Worktree.GC.MaxWorktrees = ptr.Int(-1)
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatal("expected error for negative max_worktrees when gc enabled")
@@ -658,8 +661,8 @@ func TestValidate_WorktreeGC_Enabled_InvalidMaxWorktrees(t *testing.T) {
 func TestValidate_WorktreeGC_Disabled_InvalidFieldsOK(t *testing.T) {
 	cfg := validConfig()
 	cfg.Worktree.GC.Enabled = false
-	cfg.Worktree.GC.TTLHours = IntPtr(0)
-	cfg.Worktree.GC.MaxWorktrees = IntPtr(-1)
+	cfg.Worktree.GC.TTLHours = ptr.Int(0)
+	cfg.Worktree.GC.MaxWorktrees = ptr.Int(-1)
 	err := cfg.Validate()
 	if err != nil {
 		t.Fatalf("expected no error when gc disabled, got: %v", err)
@@ -669,8 +672,8 @@ func TestValidate_WorktreeGC_Disabled_InvalidFieldsOK(t *testing.T) {
 func TestValidate_WorktreeGC_Enabled_ValidFields(t *testing.T) {
 	cfg := validConfig()
 	cfg.Worktree.GC.Enabled = true
-	cfg.Worktree.GC.TTLHours = IntPtr(24)
-	cfg.Worktree.GC.MaxWorktrees = IntPtr(5)
+	cfg.Worktree.GC.TTLHours = ptr.Int(24)
+	cfg.Worktree.GC.MaxWorktrees = ptr.Int(5)
 	err := cfg.Validate()
 	if err != nil {
 		t.Fatalf("expected no error for valid gc config, got: %v", err)
@@ -713,7 +716,7 @@ func TestValidate_WorktreeGitTimeout_ZeroOrNegative(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := validConfig()
-			cfg.Worktree.GitTimeoutSec = IntPtr(tt.val)
+			cfg.Worktree.GitTimeoutSec = ptr.Int(tt.val)
 			err := cfg.Validate()
 			if err == nil {
 				t.Fatalf("expected error for git_timeout_sec=%d", tt.val)
@@ -829,7 +832,7 @@ func TestValidate_UpperBound_MaxInProgressMin(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := validConfig()
-			cfg.Watcher.MaxInProgressMin = IntPtr(tt.val)
+			cfg.Watcher.MaxInProgressMin = ptr.Int(tt.val)
 			err := cfg.Validate()
 			if tt.wantErr && err == nil {
 				t.Fatal("expected error")
@@ -911,7 +914,7 @@ func TestValidate_UpperBound_MaxDeadLetterArchiveFiles(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := validConfig()
-			cfg.Limits.MaxDeadLetterArchiveFiles = IntPtr(tt.val)
+			cfg.Limits.MaxDeadLetterArchiveFiles = ptr.Int(tt.val)
 			err := cfg.Validate()
 			if tt.wantErr && err == nil {
 				t.Fatal("expected error")
@@ -939,7 +942,7 @@ func TestValidate_UpperBound_MaxQuarantineFiles(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := validConfig()
-			cfg.Limits.MaxQuarantineFiles = IntPtr(tt.val)
+			cfg.Limits.MaxQuarantineFiles = ptr.Int(tt.val)
 			err := cfg.Validate()
 			if tt.wantErr && err == nil {
 				t.Fatal("expected error")
@@ -994,8 +997,8 @@ func TestValidate_UpperBound_MaxWorktrees(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := validConfig()
 			cfg.Worktree.GC.Enabled = true
-			cfg.Worktree.GC.TTLHours = IntPtr(24)
-			cfg.Worktree.GC.MaxWorktrees = IntPtr(tt.val)
+			cfg.Worktree.GC.TTLHours = ptr.Int(24)
+			cfg.Worktree.GC.MaxWorktrees = ptr.Int(tt.val)
 			err := cfg.Validate()
 			if tt.wantErr && err == nil {
 				t.Fatal("expected error")
@@ -1020,9 +1023,9 @@ func TestEffectiveValue_Int(t *testing.T) {
 		want       int
 	}{
 		{"nil returns default", nil, 42, 42},
-		{"non-nil returns value", IntPtr(7), 42, 7},
-		{"zero value returns 0", IntPtr(0), 42, 0},
-		{"negative returns negative", IntPtr(-1), 42, -1},
+		{"non-nil returns value", ptr.Int(7), 42, 7},
+		{"zero value returns 0", ptr.Int(0), 42, 0},
+		{"negative returns negative", ptr.Int(-1), 42, -1},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1042,8 +1045,8 @@ func TestEffectiveValue_Bool(t *testing.T) {
 	}{
 		{"nil returns default false", nil, false, false},
 		{"nil returns default true", nil, true, true},
-		{"true ptr returns true", BoolPtr(true), false, true},
-		{"false ptr returns false", BoolPtr(false), true, false},
+		{"true ptr returns true", ptr.Bool(true), false, true},
+		{"false ptr returns false", ptr.Bool(false), true, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1062,8 +1065,8 @@ func TestEffectiveValue_Float64(t *testing.T) {
 		want       float64
 	}{
 		{"nil returns default", nil, 0.99, 0.99},
-		{"non-nil returns value", Float64Ptr(1.5), 0.99, 1.5},
-		{"zero returns 0", Float64Ptr(0.0), 0.99, 0.0},
+		{"non-nil returns value", ptr.Float64(1.5), 0.99, 1.5},
+		{"zero returns 0", ptr.Float64(0.0), 0.99, 0.0},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1082,8 +1085,8 @@ func TestEffectiveValue_String(t *testing.T) {
 		want       string
 	}{
 		{"nil returns default", nil, "opus", "opus"},
-		{"non-nil returns value", StringPtr("sonnet"), "opus", "sonnet"},
-		{"empty string returns empty", StringPtr(""), "opus", ""},
+		{"non-nil returns value", ptr.String("sonnet"), "opus", "sonnet"},
+		{"empty string returns empty", ptr.String(""), "opus", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1173,6 +1176,63 @@ func TestValidate_MaxYAMLFileBytes_ValidValues(t *testing.T) {
 		if err := cfg.Validate(); err != nil {
 			t.Errorf("MaxYAMLFileBytes=%d should be valid, got: %v", val, err)
 		}
+	}
+}
+
+// --- NaN/Inf rejection tests ---
+
+func TestValidate_DebounceSec_NaN(t *testing.T) {
+	cfg := validConfig()
+	cfg.Watcher.DebounceSec = math.NaN()
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for NaN debounce_sec")
+	}
+	if !strings.Contains(err.Error(), "watcher.debounce_sec") {
+		t.Fatalf("expected watcher.debounce_sec in error, got: %v", err)
+	}
+}
+
+func TestValidate_DebounceSec_Inf(t *testing.T) {
+	cfg := validConfig()
+	cfg.Watcher.DebounceSec = math.Inf(1)
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for +Inf debounce_sec")
+	}
+	if !strings.Contains(err.Error(), "watcher.debounce_sec") {
+		t.Fatalf("expected watcher.debounce_sec in error, got: %v", err)
+	}
+}
+
+func TestValidate_Float64Ptr_NaN_Inf(t *testing.T) {
+	nan := math.NaN()
+	inf := math.Inf(1)
+	tests := []struct {
+		name     string
+		setup    func(*Config)
+		errField string
+	}{
+		{"evolution novelty NaN", func(c *Config) { c.Evolution.NoveltyThreshold = &nan }, "evolution.novelty_threshold"},
+		{"evolution novelty Inf", func(c *Config) { c.Evolution.NoveltyThreshold = &inf }, "evolution.novelty_threshold"},
+		{"bandit exploration NaN", func(c *Config) { c.Bandit.ExplorationCoeff = &nan }, "bandit.exploration_coefficient"},
+		{"bandit decay Inf", func(c *Config) { c.Bandit.DecayFactor = &inf }, "bandit.decay_factor"},
+		{"search prune NaN", func(c *Config) { c.Search.PruneThreshold = &nan }, "search.prune_threshold"},
+		{"search alpha Inf", func(c *Config) { c.Search.ThompsonAlpha = &inf }, "search.thompson_alpha"},
+		{"search beta NaN", func(c *Config) { c.Search.ThompsonBeta = &nan }, "search.thompson_beta"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			tt.setup(&cfg)
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatal("expected error for NaN/Inf float64 field")
+			}
+			if !strings.Contains(err.Error(), tt.errField) {
+				t.Errorf("expected %q in error, got: %v", tt.errField, err)
+			}
+		})
 	}
 }
 

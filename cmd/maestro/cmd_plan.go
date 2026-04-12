@@ -24,32 +24,32 @@ import (
 const planCommandTimeout = 30 * time.Second
 
 // runPlan dispatches plan subcommands (submit, complete, add-retry-task, request-cancel, rebuild).
-func runPlan(args []string) error {
+func (a *cliApp) runPlan(args []string) error {
 	if len(args) < 1 {
 		return &CLIError{Code: 1, Msg: "maestro plan: missing subcommand\nusage: maestro plan <submit|complete|add-retry-task|request-cancel|rebuild|unquarantine|resume-merge> [options]"}
 	}
 	switch args[0] {
 	case "submit":
-		return runPlanSubmit(args[1:])
+		return a.runPlanSubmit(args[1:])
 	case "complete":
-		return runPlanComplete(args[1:])
+		return a.runPlanComplete(args[1:])
 	case "add-retry-task":
-		return runPlanAddRetryTask(args[1:])
+		return a.runPlanAddRetryTask(args[1:])
 	case "request-cancel":
-		return runPlanRequestCancel(args[1:])
+		return a.runPlanRequestCancel(args[1:])
 	case "rebuild":
-		return runPlanRebuild(args[1:])
+		return a.runPlanRebuild(args[1:])
 	case "unquarantine":
-		return runPlanUnquarantine(args[1:])
+		return a.runPlanUnquarantine(args[1:])
 	case "resume-merge":
-		return runPlanResumeMerge(args[1:])
+		return a.runPlanResumeMerge(args[1:])
 	default:
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan: unknown subcommand: %s\nusage: maestro plan <submit|complete|add-retry-task|request-cancel|rebuild|unquarantine|resume-merge> [options]", args[0])}
 	}
 }
 
 // runPlanSubmit submits a task plan for a command.
-func runPlanSubmit(args []string) error {
+func (a *cliApp) runPlanSubmit(args []string) error {
 	cmd := NewCommand("maestro plan submit", "maestro plan submit --command-id <id> [--tasks-file <path>] [--phase <name>] [--dry-run]")
 	var commandID, tasksFile, phaseName string
 	var dryRun bool
@@ -110,11 +110,11 @@ func runPlanSubmit(args []string) error {
 		"data":      dataMap,
 	}
 
-	return sendPlanCommand("plan submit", maestroDir, params)
+	return a.sendPlanCommand("plan submit", maestroDir, params)
 }
 
 // runPlanComplete reports command completion to the daemon.
-func runPlanComplete(args []string) error {
+func (a *cliApp) runPlanComplete(args []string) error {
 	cmd := NewCommand("maestro plan complete", "maestro plan complete --command-id <id> --summary <text>")
 	var commandID, summary string
 	cmd.RequiredString(&commandID, "command-id", "Parent command ID")
@@ -144,11 +144,11 @@ func runPlanComplete(args []string) error {
 		},
 	}
 
-	return sendPlanCommand("plan complete", maestroDir, params)
+	return a.sendPlanCommand("plan complete", maestroDir, params)
 }
 
 // runPlanAddRetryTask replaces a failed task with a new retry task.
-func runPlanAddRetryTask(args []string) error {
+func (a *cliApp) runPlanAddRetryTask(args []string) error {
 	cmd := NewCommand("maestro plan add-retry-task", "maestro plan add-retry-task --command-id <id> --retry-of <task_id> --purpose <text> --content <text> --acceptance-criteria <text> --bloom-level <n> [--blocked-by <task_id>]...")
 	var commandID, retryOf, purpose, content, acceptanceCriteria string
 	var bloomLevel int
@@ -212,11 +212,11 @@ func runPlanAddRetryTask(args []string) error {
 		},
 	}
 
-	return sendPlanCommand("plan add-retry-task", maestroDir, params)
+	return a.sendPlanCommand("plan add-retry-task", maestroDir, params)
 }
 
 // runPlanRequestCancel requests cancellation of an active command.
-func runPlanRequestCancel(args []string) error {
+func (a *cliApp) runPlanRequestCancel(args []string) error {
 	cmd := NewCommand("maestro plan request-cancel", "maestro plan request-cancel --command-id <id> [--requested-by <agent>] [--reason <text>]")
 	var commandID, requestedBy, reason string
 	cmd.RequiredString(&commandID, "command-id", "Command ID to cancel")
@@ -249,19 +249,14 @@ func runPlanRequestCancel(args []string) error {
 		"reason":       reason,
 	}
 
-	client := newUDSClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := a.createClient(filepath.Join(maestroDir, uds.DefaultSocketName))
 	resp, err := client.SendCommand("queue_write", params)
 	if err != nil {
 		return fmt.Errorf("maestro plan request-cancel: %w", err)
 	}
 
 	if !resp.Success {
-		code := ""
-		msg := "unknown error"
-		if resp.Error != nil {
-			code = resp.Error.Code
-			msg = resp.Error.Message
-		}
+		code, msg := udsErrorInfo(resp)
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan request-cancel: [%s] %s", code, msg)}
 	}
 
@@ -270,7 +265,7 @@ func runPlanRequestCancel(args []string) error {
 }
 
 // runPlanRebuild rebuilds plan state from existing results.
-func runPlanRebuild(args []string) error {
+func (a *cliApp) runPlanRebuild(args []string) error {
 	cmd := NewCommand("maestro plan rebuild", "maestro plan rebuild --command-id <id>")
 	var commandID string
 	cmd.RequiredString(&commandID, "command-id", "Command ID to rebuild state for")
@@ -295,12 +290,12 @@ func runPlanRebuild(args []string) error {
 		},
 	}
 
-	return sendPlanCommand("plan rebuild", maestroDir, params)
+	return a.sendPlanCommand("plan rebuild", maestroDir, params)
 }
 
 // runPlanUnquarantine clears quarantine state on a command's integration
 // branch so the next queue scan can re-enqueue merge attempts.
-func runPlanUnquarantine(args []string) error {
+func (a *cliApp) runPlanUnquarantine(args []string) error {
 	cmd := NewCommand("maestro plan unquarantine", "maestro plan unquarantine --command-id <id> [--reason <text>]")
 	var commandID, reason string
 	cmd.RequiredString(&commandID, "command-id", "Command ID to unquarantine")
@@ -325,12 +320,12 @@ func runPlanUnquarantine(args []string) error {
 			"reason":     reason,
 		},
 	}
-	return sendPlanCommand("plan unquarantine", maestroDir, params)
+	return a.sendPlanCommand("plan unquarantine", maestroDir, params)
 }
 
 // runPlanResumeMerge resets the merge failure counter and moves a stuck
 // integration (conflict / partial_merge / failed) back to a re-mergeable state.
-func runPlanResumeMerge(args []string) error {
+func (a *cliApp) runPlanResumeMerge(args []string) error {
 	cmd := NewCommand("maestro plan resume-merge", "maestro plan resume-merge --command-id <id>")
 	var commandID string
 	cmd.RequiredString(&commandID, "command-id", "Command ID to resume merge for")
@@ -353,7 +348,7 @@ func runPlanResumeMerge(args []string) error {
 			"command_id": commandID,
 		},
 	}
-	return sendPlanCommand("plan resume-merge", maestroDir, params)
+	return a.sendPlanCommand("plan resume-merge", maestroDir, params)
 }
 
 // runResolveConflict resolves a worker merge conflict by delegating to the
@@ -371,7 +366,7 @@ func runPlanResumeMerge(args []string) error {
 //
 //	maestro resolve-conflict --command-id cmd_42 --phase-id ph_3 \
 //	    --worker-id worker2 --conflicting-files internal/a.go,internal/b.go
-func runResolveConflict(args []string) error {
+func (a *cliApp) runResolveConflict(args []string) error {
 	cmd := NewCommand("maestro resolve-conflict", "maestro resolve-conflict --command-id <id> --phase-id <id> --worker-id <id> [--conflicting-files <path>[,<path>...]]...")
 	var commandID, phaseID, workerID string
 	var conflictingFiles stringSliceFlag
@@ -420,7 +415,7 @@ func runResolveConflict(args []string) error {
 			"conflicting_files": files,
 		},
 	}
-	return sendPlanCommand("resolve-conflict", maestroDir, params)
+	return a.sendPlanCommand("resolve-conflict", maestroDir, params)
 }
 
 // sendPlanCommand sends a plan operation to the daemon via UDS.
@@ -428,25 +423,20 @@ func runResolveConflict(args []string) error {
 // The request is bounded by [planCommandTimeout] and is interruptible by
 // SIGINT/SIGTERM so an operator can abort a hung CLI invocation with Ctrl-C
 // without leaving a stuck connection on the daemon side.
-func sendPlanCommand(cmd string, maestroDir string, params map[string]any) error {
+func (a *cliApp) sendPlanCommand(cmd string, maestroDir string, params map[string]any) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	ctx, cancelTimeout := context.WithTimeout(ctx, planCommandTimeout)
 	defer cancelTimeout()
 
-	client := newUDSClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := a.createClient(filepath.Join(maestroDir, uds.DefaultSocketName))
 	resp, err := client.SendCommandContext(ctx, "plan", params)
 	if err != nil {
 		return fmt.Errorf("maestro %s: %w", cmd, err)
 	}
 
 	if !resp.Success {
-		code := ""
-		msg := "unknown error"
-		if resp.Error != nil {
-			code = resp.Error.Code
-			msg = resp.Error.Message
-		}
+		code, msg := udsErrorInfo(resp)
 		if code == uds.ErrCodeValidation || code == uds.ErrCodeActionRequired {
 			// Validation messages may have custom formatting; sanitize to prevent terminal injection
 			fmt.Fprint(os.Stderr, sanitizeForTerminal(msg))

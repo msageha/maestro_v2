@@ -2,6 +2,7 @@
 package yaml
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -21,7 +22,7 @@ func AtomicWrite(path string, data any) error {
 }
 
 // AtomicWriteRaw atomically writes raw bytes to path using a temp file and rename.
-func AtomicWriteRaw(path string, content []byte) error {
+func AtomicWriteRaw(path string, content []byte) (retErr error) {
 	// Step 1: Create temp file and write content
 	dir := filepath.Dir(path)
 	tmp, err := os.CreateTemp(dir, ".maestro-tmp-*.yaml")
@@ -32,14 +33,13 @@ func AtomicWriteRaw(path string, content []byte) error {
 
 	var tmpClosed bool
 	defer func() {
-		// Clean up temp file on any failure
 		if !tmpClosed {
-			if err := tmp.Close(); err != nil {
-				log.Printf("WARN: failed to close temp file %s: %v", tmpName, err)
+			if closeErr := tmp.Close(); closeErr != nil {
+				retErr = errors.Join(retErr, fmt.Errorf("close temp file: %w", closeErr))
 			}
 		}
-		if err := os.Remove(tmpName); err != nil && !os.IsNotExist(err) {
-			log.Printf("WARN: failed to remove temp file %s: %v", tmpName, err)
+		if removeErr := os.Remove(tmpName); removeErr != nil && !os.IsNotExist(removeErr) {
+			retErr = errors.Join(retErr, fmt.Errorf("remove temp file: %w", removeErr))
 		}
 	}()
 
@@ -58,6 +58,9 @@ func AtomicWriteRaw(path string, content []byte) error {
 	written, err := os.ReadFile(tmpName) //nolint:gosec // tmpName is an internally generated temp file path
 	if err != nil {
 		return fmt.Errorf("read temp file for validation: %w", err)
+	}
+	if len(written) != len(content) {
+		return fmt.Errorf("write verification failed: wrote %d bytes, read back %d bytes", len(content), len(written))
 	}
 	if err := validateYAML(written); err != nil {
 		return fmt.Errorf("yaml validation failed: %w", err)

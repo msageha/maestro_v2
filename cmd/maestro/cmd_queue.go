@@ -154,12 +154,7 @@ func (a *cliApp) sendQueueWrite(params map[string]any) error {
 	}
 
 	if !resp.Success {
-		code := ""
-		msg := "unknown error"
-		if resp.Error != nil {
-			code = resp.Error.Code
-			msg = resp.Error.Message
-		}
+		code, msg := udsErrorInfo(resp)
 		if code == "BACKPRESSURE" {
 			return &CLIError{Code: 2, Msg: fmt.Sprintf("maestro queue write: [%s] %s", code, msg)}
 		}
@@ -176,6 +171,7 @@ func (a *cliApp) sendQueueWrite(params map[string]any) error {
 			fmt.Println(cid)
 			return nil
 		}
+		return &CLIError{Code: 1, Msg: "maestro queue write: response missing both id and command_id"}
 	}
 	out, err := json.MarshalIndent(resp.Data, "", "  ")
 	if err != nil {

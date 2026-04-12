@@ -4,6 +4,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/msageha/maestro_v2/internal/ptr"
 	"gopkg.in/yaml.v3"
 )
 
@@ -38,7 +39,7 @@ func TestConfigMarshalUnmarshal(t *testing.T) {
 			DebounceSec:         0.3,
 			ScanIntervalSec:     60,
 			DispatchLeaseSec:    120,
-			MaxInProgressMin:    IntPtr(30),
+			MaxInProgressMin:    ptr.Int(30),
 			BusyCheckInterval:   2,
 			BusyCheckMaxRetries: 30,
 			BusyPatterns:        "Working|Thinking|Planning|Sending|Searching",
@@ -490,11 +491,11 @@ func TestLimitsConfig_EffectiveMaxDeadLetterArchiveFiles(t *testing.T) {
 		want  int
 	}{
 		{"nil returns default 100", nil, 100},
-		{"zero returns 0", IntPtr(0), 0},
-		{"negative returns -1", IntPtr(-1), -1},
-		{"positive returns configured", IntPtr(50), 50},
-		{"one returns configured", IntPtr(1), 1},
-		{"large value returns configured", IntPtr(999), 999},
+		{"zero returns 0", ptr.Int(0), 0},
+		{"negative returns -1", ptr.Int(-1), -1},
+		{"positive returns configured", ptr.Int(50), 50},
+		{"one returns configured", ptr.Int(1), 1},
+		{"large value returns configured", ptr.Int(999), 999},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -516,10 +517,10 @@ func TestLimitsConfig_EffectiveMaxQuarantineFiles(t *testing.T) {
 		want  int
 	}{
 		{"nil returns default 100", nil, 100},
-		{"zero returns 0", IntPtr(0), 0},
-		{"negative returns -1", IntPtr(-1), -1},
-		{"positive returns configured", IntPtr(25), 25},
-		{"one returns configured", IntPtr(1), 1},
+		{"zero returns 0", ptr.Int(0), 0},
+		{"negative returns -1", ptr.Int(-1), -1},
+		{"positive returns configured", ptr.Int(25), 25},
+		{"one returns configured", ptr.Int(1), 1},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -541,10 +542,10 @@ func TestCircuitBreakerConfig_EffectiveMaxConsecutiveFailures(t *testing.T) {
 		want  int
 	}{
 		{"nil returns default 3", nil, 3},
-		{"zero returns 0", IntPtr(0), 0},
-		{"negative returns -1", IntPtr(-1), -1},
-		{"positive returns configured", IntPtr(10), 10},
-		{"one returns configured", IntPtr(1), 1},
+		{"zero returns 0", ptr.Int(0), 0},
+		{"negative returns -1", ptr.Int(-1), -1},
+		{"positive returns configured", ptr.Int(10), 10},
+		{"one returns configured", ptr.Int(1), 1},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -566,10 +567,10 @@ func TestCircuitBreakerConfig_EffectiveProgressTimeoutMinutes(t *testing.T) {
 		want  int
 	}{
 		{"nil returns default", nil, 30},
-		{"zero returns 0", IntPtr(0), 0},
-		{"negative returns -1", IntPtr(-1), -1},
-		{"positive returns configured", IntPtr(30), 30},
-		{"custom value", IntPtr(60), 60},
+		{"zero returns 0", ptr.Int(0), 0},
+		{"negative returns -1", ptr.Int(-1), -1},
+		{"positive returns configured", ptr.Int(30), 30},
+		{"custom value", ptr.Int(60), 60},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -591,10 +592,10 @@ func TestLearningsConfig_EffectiveMaxEntries(t *testing.T) {
 		want  int
 	}{
 		{"nil returns default 100", nil, 100},
-		{"zero returns 0", IntPtr(0), 0},
-		{"negative returns -1", IntPtr(-1), -1},
-		{"positive returns configured", IntPtr(200), 200},
-		{"one returns configured", IntPtr(1), 1},
+		{"zero returns 0", ptr.Int(0), 0},
+		{"negative returns -1", ptr.Int(-1), -1},
+		{"positive returns configured", ptr.Int(200), 200},
+		{"one returns configured", ptr.Int(1), 1},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -616,10 +617,10 @@ func TestLearningsConfig_EffectiveMaxContentLength(t *testing.T) {
 		want  int
 	}{
 		{"nil returns default 500", nil, 500},
-		{"zero returns 0", IntPtr(0), 0},
-		{"negative returns -1", IntPtr(-1), -1},
-		{"positive returns configured", IntPtr(1000), 1000},
-		{"one returns configured", IntPtr(1), 1},
+		{"zero returns 0", ptr.Int(0), 0},
+		{"negative returns -1", ptr.Int(-1), -1},
+		{"positive returns configured", ptr.Int(1000), 1000},
+		{"one returns configured", ptr.Int(1), 1},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -641,10 +642,10 @@ func TestLearningsConfig_EffectiveInjectCount(t *testing.T) {
 		want  int
 	}{
 		{"nil returns default 5", nil, 5},
-		{"zero returns 0", IntPtr(0), 0},
-		{"negative returns -1", IntPtr(-1), -1},
-		{"positive returns configured", IntPtr(10), 10},
-		{"one returns configured", IntPtr(1), 1},
+		{"zero returns 0", ptr.Int(0), 0},
+		{"negative returns -1", ptr.Int(-1), -1},
+		{"positive returns configured", ptr.Int(10), 10},
+		{"one returns configured", ptr.Int(1), 1},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -756,10 +757,10 @@ func TestWorktreeGCConfig_EffectiveTTLHours(t *testing.T) {
 		want  int
 	}{
 		{"nil returns default 24", nil, 24},
-		{"zero returns 0", IntPtr(0), 0},
-		{"negative returns -1", IntPtr(-1), -1},
-		{"positive returns configured", IntPtr(48), 48},
-		{"one returns configured", IntPtr(1), 1},
+		{"zero returns 0", ptr.Int(0), 0},
+		{"negative returns -1", ptr.Int(-1), -1},
+		{"positive returns configured", ptr.Int(48), 48},
+		{"one returns configured", ptr.Int(1), 1},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -781,11 +782,11 @@ func TestWorktreeConfig_EffectiveGitTimeout(t *testing.T) {
 		want  int
 	}{
 		{"nil returns default 120", nil, 120},
-		{"zero returns 0", IntPtr(0), 0},
-		{"negative returns -1", IntPtr(-1), -1},
-		{"positive returns configured", IntPtr(60), 60},
-		{"one returns configured", IntPtr(1), 1},
-		{"large value returns configured", IntPtr(300), 300},
+		{"zero returns 0", ptr.Int(0), 0},
+		{"negative returns -1", ptr.Int(-1), -1},
+		{"positive returns configured", ptr.Int(60), 60},
+		{"one returns configured", ptr.Int(1), 1},
+		{"large value returns configured", ptr.Int(300), 300},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -839,10 +840,10 @@ func TestWorktreeGCConfig_EffectiveMaxWorktrees(t *testing.T) {
 		want  int
 	}{
 		{"nil returns default 32", nil, 32},
-		{"zero returns 0", IntPtr(0), 0},
-		{"negative returns -1", IntPtr(-1), -1},
-		{"positive returns configured", IntPtr(16), 16},
-		{"one returns configured", IntPtr(1), 1},
+		{"zero returns 0", ptr.Int(0), 0},
+		{"negative returns -1", ptr.Int(-1), -1},
+		{"positive returns configured", ptr.Int(16), 16},
+		{"one returns configured", ptr.Int(1), 1},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -866,10 +867,10 @@ func TestCommitPolicyConfig_EffectiveMaxFiles(t *testing.T) {
 		want  int
 	}{
 		{"nil returns default 60", nil, 60},
-		{"zero returns 0", IntPtr(0), 0},
-		{"negative returns -1", IntPtr(-1), -1},
-		{"positive returns configured", IntPtr(50), 50},
-		{"one returns configured", IntPtr(1), 1},
+		{"zero returns 0", ptr.Int(0), 0},
+		{"negative returns -1", ptr.Int(-1), -1},
+		{"positive returns configured", ptr.Int(50), 50},
+		{"one returns configured", ptr.Int(1), 1},
 	}
 	for _, tt := range tests {
 		tt := tt
@@ -892,7 +893,7 @@ func TestCommitPolicyConfig_RequireGitignore(t *testing.T) {
 	}{
 		{"zero-valued struct is false", CommitPolicyConfig{}, false},
 		{"explicitly true", CommitPolicyConfig{RequireGitignore: true}, true},
-		{"explicitly false", CommitPolicyConfig{MaxFiles: IntPtr(30), RequireGitignore: false}, false},
+		{"explicitly false", CommitPolicyConfig{MaxFiles: ptr.Int(30), RequireGitignore: false}, false},
 	}
 	for _, tt := range tests {
 		tt := tt

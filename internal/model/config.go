@@ -4,8 +4,11 @@ package model
 import (
 	"errors"
 	"fmt"
+	"math"
 	"regexp"
 	"time"
+
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 // DefaultMaxYAMLFileBytes is the default maximum size for YAML file reads (5MB).
@@ -155,18 +158,22 @@ func isValidModelName(name string) bool {
 	return validModelNameRe.MatchString(name)
 }
 
-// IntPtr returns a pointer to the given int value.
-// Used for setting *int config fields in tests and struct literals.
-func IntPtr(v int) *int { return &v }
+// Deprecated: Use ptr.Int instead.
+func IntPtr(v int) *int { return ptr.Int(v) }
 
-// BoolPtr returns a pointer to the given bool value.
-func BoolPtr(v bool) *bool { return &v }
+// Deprecated: Use ptr.Bool instead.
+func BoolPtr(v bool) *bool { return ptr.Bool(v) }
 
-// Float64Ptr returns a pointer to the given float64 value.
-func Float64Ptr(v float64) *float64 { return &v }
+// Deprecated: Use ptr.Float64 instead.
+func Float64Ptr(v float64) *float64 { return ptr.Float64(v) }
 
-// StringPtr returns a pointer to the given string value.
-func StringPtr(v string) *string { return &v }
+// Deprecated: Use ptr.String instead.
+func StringPtr(v string) *string { return ptr.String(v) }
+
+// isFiniteFloat64Ptr reports whether a *float64 is nil or points to a finite value.
+func isFiniteFloat64Ptr(p *float64) bool {
+	return p == nil || (!math.IsNaN(*p) && !math.IsInf(*p, 0))
+}
 
 // effectiveValue returns *ptr if ptr is non-nil, or defaultVal otherwise.
 func effectiveValue[T any](ptr *T, defaultVal T) T {
@@ -797,8 +804,8 @@ func (c Config) Validate() error {
 	if c.Watcher.MaxInProgressMin != nil && (*c.Watcher.MaxInProgressMin < 0 || *c.Watcher.MaxInProgressMin > MaxMaxInProgressMin) {
 		errs = append(errs, fmt.Errorf("watcher.max_in_progress_min: must be between 0 and %d", MaxMaxInProgressMin))
 	}
-	if c.Watcher.DebounceSec < 0 {
-		errs = append(errs, fmt.Errorf("watcher.debounce_sec: must be >= 0"))
+	if c.Watcher.DebounceSec < 0 || math.IsNaN(c.Watcher.DebounceSec) || math.IsInf(c.Watcher.DebounceSec, 0) {
+		errs = append(errs, fmt.Errorf("watcher.debounce_sec: must be a finite value >= 0"))
 	}
 	if c.Watcher.CooldownAfterClear < 0 {
 		errs = append(errs, fmt.Errorf("watcher.cooldown_after_clear: must be >= 0"))
@@ -995,6 +1002,31 @@ func (c Config) Validate() error {
 		}
 		if c.Worktree.GC.MaxWorktrees != nil && (*c.Worktree.GC.MaxWorktrees <= 0 || *c.Worktree.GC.MaxWorktrees > MaxMaxWorktrees) {
 			errs = append(errs, fmt.Errorf("worktree.gc.max_worktrees: must be between 1 and %d when gc is enabled", MaxMaxWorktrees))
+		}
+	}
+
+	// float64 pointer fields: reject NaN/Inf
+	if !isFiniteFloat64Ptr(c.Evolution.NoveltyThreshold) {
+		errs = append(errs, fmt.Errorf("evolution.novelty_threshold: must be a finite value"))
+	}
+	if !isFiniteFloat64Ptr(c.Bandit.ExplorationCoeff) {
+		errs = append(errs, fmt.Errorf("bandit.exploration_coefficient: must be a finite value"))
+	}
+	if !isFiniteFloat64Ptr(c.Bandit.DecayFactor) {
+		errs = append(errs, fmt.Errorf("bandit.decay_factor: must be a finite value"))
+	}
+	if !isFiniteFloat64Ptr(c.Search.PruneThreshold) {
+		errs = append(errs, fmt.Errorf("search.prune_threshold: must be a finite value"))
+	}
+	if !isFiniteFloat64Ptr(c.Search.ThompsonAlpha) {
+		errs = append(errs, fmt.Errorf("search.thompson_alpha: must be a finite value"))
+	}
+	if !isFiniteFloat64Ptr(c.Search.ThompsonBeta) {
+		errs = append(errs, fmt.Errorf("search.thompson_beta: must be a finite value"))
+	}
+	for k, v := range c.ExtendedVerification.PerspectiveWeights {
+		if math.IsNaN(v) || math.IsInf(v, 0) {
+			errs = append(errs, fmt.Errorf("extended_verification.perspective_weights.%s: must be a finite value", k))
 		}
 	}
 

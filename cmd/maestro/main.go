@@ -87,9 +87,9 @@ func (a *cliApp) run(args []string) int {
 	case "task":
 		err = a.runTask(args[1:])
 	case "plan":
-		err = runPlan(args[1:])
+		err = a.runPlan(args[1:])
 	case "resolve-conflict":
-		err = runResolveConflict(args[1:])
+		err = a.runResolveConflict(args[1:])
 	case "agent":
 		err = runAgent(args[1:])
 	case "worker":

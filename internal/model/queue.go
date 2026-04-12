@@ -102,7 +102,7 @@ type Task struct {
 // GetDoneConditions は完了条件を返す。
 // DefinitionOfDone が設定されている場合はそちらを優先し、
 // 未設定の場合は AcceptanceCriteria を単一要素のスライスとして返す。
-// どちらも未設定の場合は nil を返す。
+// どちらも未設定の場合は nil を返す。呼び出し側は nil 返却を考慮すること。
 func (t *Task) GetDoneConditions() []string {
 	if len(t.DefinitionOfDone) > 0 {
 		return t.DefinitionOfDone

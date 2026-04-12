@@ -1,6 +1,10 @@
 package model
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/msageha/maestro_v2/internal/ptr"
+)
 
 func TestNewReviewResult_IsAdvisoryAlwaysTrue(t *testing.T) {
 	r := NewReviewResult("req-1", "claude-sonnet")
@@ -101,9 +105,9 @@ func TestReviewConfig_Configured(t *testing.T) {
 	rc := ReviewConfig{
 		Enabled:              true,
 		Models:               []string{"claude-sonnet", "gpt-4o"},
-		MinBloomLevel:        IntPtr(3),
-		MaxConcurrentReviews: IntPtr(4),
-		TimeoutSec:           IntPtr(600),
+		MinBloomLevel:        ptr.Int(3),
+		MaxConcurrentReviews: ptr.Int(4),
+		TimeoutSec:           ptr.Int(600),
 	}
 	if !rc.Enabled {
 		t.Error("expected Enabled to be true")

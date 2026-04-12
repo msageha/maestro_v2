@@ -91,7 +91,7 @@ func (sm *StateManager) LoadState(commandID string) (*model.CommandState, error)
 	// Re-read and validate the restored file
 	state, err = sm.loadAndParseState(path, commandID)
 	if err != nil {
-		return nil, fmt.Errorf("parse state %s after backup restore: %w", commandID, err)
+		return nil, fmt.Errorf("parse state %s after backup restore (primary was also corrupted): %w", commandID, errors.Join(parseErr, err))
 	}
 	return state, nil
 }
