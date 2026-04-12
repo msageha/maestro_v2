@@ -135,6 +135,45 @@ func TestRunResolveConflict_FlagParsing(t *testing.T) {
 	}
 }
 
+func TestRunResolveConflict_PhaseIDValidation(t *testing.T) {
+	tests := []struct {
+		name        string
+		phaseID     string
+		wantInvalid bool // true if "invalid --phase-id" error is expected
+	}{
+		{"internal phase id __implicit_phase", "__implicit_phase", false},
+		{"regular phase id", "phase1", false},
+		{"regular phase id with dots", "phase.1.2", false},
+		{"invalid phase-id with traversal", "../bad", true},
+		{"invalid phase-id with special chars", "phase@!", true},
+		{"invalid internal id with uppercase", "__ImplicitPhase", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			args := []string{
+				"--command-id", "cmd_1",
+				"--phase-id", tt.phaseID,
+				"--worker-id", "worker1",
+			}
+			err := newCLIApp().runResolveConflict(args)
+			if err == nil {
+				t.Fatal("expected error (at least from missing .maestro dir)")
+			}
+			var ce *CLIError
+			if !errors.As(err, &ce) {
+				t.Fatalf("expected CLIError, got %T: %v", err, err)
+			}
+			hasInvalidPhase := containsStr(ce.Msg, "invalid --phase-id")
+			if tt.wantInvalid && !hasInvalidPhase {
+				t.Errorf("expected 'invalid --phase-id' error, got: %s", ce.Msg)
+			}
+			if !tt.wantInvalid && hasInvalidPhase {
+				t.Errorf("did not expect 'invalid --phase-id' error, got: %s", ce.Msg)
+			}
+		})
+	}
+}
+
 func TestRunPlan_RecoverySubcommandsRouted(t *testing.T) {
 	// Sanity: runPlan should accept the new subcommand names without
 	// returning "unknown subcommand". They will fail flag parsing instead.

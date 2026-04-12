@@ -294,8 +294,22 @@ func (qh *QueueHandler) collectImplicitWorktreeMerge(
 	if cmdState == nil {
 		return nil
 	}
-	if cmdState.Integration.Status != model.IntegrationStatusCreated {
+	// Allow re-collection for created, partial_merge, conflict, and failed.
+	// The state transition table already permits these → merging.
+	switch cmdState.Integration.Status {
+	case model.IntegrationStatusCreated,
+		model.IntegrationStatusPartialMerge,
+		model.IntegrationStatusConflict,
+		model.IntegrationStatusFailed:
+		// eligible for (re-)merge collection
+	default:
 		return nil
+	}
+	// Prevent double-merge: if __implicit_phase is already in MergedPhases, skip.
+	if cmdState.MergedPhases != nil {
+		if _, merged := cmdState.MergedPhases["__implicit_phase"]; merged {
+			return nil
+		}
 	}
 	if len(cmdState.Workers) == 0 {
 		return nil

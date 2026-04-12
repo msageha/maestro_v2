@@ -487,3 +487,108 @@ func TestSyncFromIntegration_PreservesWorktreeOnFailure(t *testing.T) {
 		t.Errorf("worker2 HEAD should be different from initial (commit was made)")
 	}
 }
+
+// TestMergeToIntegration_SkipAlreadyIntegrated verifies that a worker already
+// in "integrated" status is not re-merged during a partial_merge recovery pass.
+// Worker1 is merged first (→integrated), then on the second MergeToIntegration
+// call (simulating re-merge after partial_merge), worker1 should be skipped
+// while worker2 is merged normally.
+func TestMergeToIntegration_SkipAlreadyIntegrated(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_skip_integrated"
+	workers := []string{"worker1", "worker2"}
+	if err := createForCommand(wm, commandID, workers); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	// Worker1: create and commit a file
+	wt1, err := wm.GetWorkerPath(commandID, "worker1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt1, "w1.txt"), []byte("worker1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker1", "w1 add file"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Worker2: create and commit a different file
+	wt2, err := wm.GetWorkerPath(commandID, "worker2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt2, "w2.txt"), []byte("worker2\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker2", "w2 add file"); err != nil {
+		t.Fatal(err)
+	}
+
+	// First merge: only worker1
+	conflicts, err := wm.MergeToIntegration(commandID, []string{"worker1"}, nil)
+	if err != nil {
+		t.Fatalf("first MergeToIntegration: %v", err)
+	}
+	if len(conflicts) > 0 {
+		t.Fatalf("unexpected conflicts on first merge: %v", conflicts)
+	}
+
+	// Verify worker1 is now integrated
+	ws1, err := getState(wm, commandID, "worker1")
+	if err != nil {
+		t.Fatalf("getState(worker1): %v", err)
+	}
+	if ws1.Status != model.WorktreeStatusIntegrated {
+		t.Fatalf("worker1 status = %q, want integrated", ws1.Status)
+	}
+
+	// Record integration HEAD before second merge
+	integrationPath := filepath.Join(projectRoot, ".maestro", "worktrees", commandID, "_integration")
+	headBeforeSecondMerge := gitRevParse(t, integrationPath, "HEAD")
+
+	// Second merge: both workers (simulates re-merge after partial_merge)
+	conflicts, err = wm.MergeToIntegration(commandID, workers, nil)
+	if err != nil {
+		t.Fatalf("second MergeToIntegration: %v", err)
+	}
+	if len(conflicts) > 0 {
+		t.Fatalf("unexpected conflicts on second merge: %v", conflicts)
+	}
+
+	// Integration HEAD should have advanced (worker2 was merged)
+	headAfterSecondMerge := gitRevParse(t, integrationPath, "HEAD")
+	if headAfterSecondMerge == headBeforeSecondMerge {
+		t.Error("integration HEAD should have advanced after merging worker2")
+	}
+
+	// Worker1 should still be integrated (not re-merged)
+	ws1After, err := getState(wm, commandID, "worker1")
+	if err != nil {
+		t.Fatalf("getState(worker1) after: %v", err)
+	}
+	if ws1After.Status != model.WorktreeStatusIntegrated {
+		t.Errorf("worker1 status after second merge = %q, want integrated", ws1After.Status)
+	}
+
+	// Worker2 should now be integrated
+	ws2After, err := getState(wm, commandID, "worker2")
+	if err != nil {
+		t.Fatalf("getState(worker2) after: %v", err)
+	}
+	if ws2After.Status != model.WorktreeStatusIntegrated {
+		t.Errorf("worker2 status after second merge = %q, want integrated", ws2After.Status)
+	}
+
+	// Final integration status should be Merged (all workers integrated, no conflicts)
+	cmdState, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	if cmdState.Integration.Status != model.IntegrationStatusMerged {
+		t.Errorf("integration status = %q, want merged", cmdState.Integration.Status)
+	}
+}

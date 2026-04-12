@@ -181,6 +181,19 @@ func buildLaunchArgs(role, agentModel, systemPrompt, basePromptMode string) ([]s
 		args = append(args, "--allowedTools", strings.Join(tools, ","))
 	}
 
+	// Planners: block operator-only recovery API commands.
+	// Planner has Bash(maestro:*) in allowedTools, which permits all maestro
+	// subcommands. These disallowedTools carve out the operator-only escape
+	// hatches that only Orchestrator should invoke.
+	if role == "planner" {
+		args = append(args, "--disallowedTools",
+			strings.Join([]string{
+				"Bash(maestro plan unquarantine:*)",
+				"Bash(maestro plan resume-merge:*)",
+				"Bash(maestro plan add-retry-task:*)",
+			}, ","))
+	}
+
 	// Workers: block destructive tmux commands and .maestro/ reads at the tool level.
 	// The textual prohibitions in worker.md (D006, .maestro/ access) are not
 	// enforced by Claude CLI; --disallowedTools provides a hard technical block.

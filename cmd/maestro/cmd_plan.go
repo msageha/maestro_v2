@@ -381,7 +381,7 @@ func (a *cliApp) runResolveConflict(args []string) error {
 	if err := validate.ID(commandID); err != nil {
 		return cmd.Errorf("invalid --command-id: %v", err)
 	}
-	if err := validate.ID(phaseID); err != nil {
+	if err := validate.PhaseID(phaseID); err != nil {
 		return cmd.Errorf("invalid --phase-id: %v", err)
 	}
 	if err := validate.ID(workerID); err != nil {

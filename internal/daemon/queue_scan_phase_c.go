@@ -186,6 +186,21 @@ func (qh *QueueHandler) executeScanPhaseCBody(se *ScanPhaseExecutor, pa phaseARe
 			}
 		}
 
+		// Pre-flush: write new signals to disk before C1 so that
+		// DispatchConflictResolution (which reads via YAMLSignalStore) can
+		// find freshly-created merge_conflict signals in this scan cycle.
+		// Without this, the first C1 dispatch always fails because the signal
+		// exists only in memory until the final flush at the end of Phase C.
+		if signalsDirty && qh.worktreeManager != nil {
+			p := signalPath
+			if p == "" {
+				p = filepath.Join(qh.maestroDir, "queue", "planner_signals.yaml")
+			}
+			if err := yamlutil.AtomicWrite(p, signalQueue); err != nil {
+				qh.log(LogLevelError, "write_planner_signals_pre_c1 error=%v", err)
+			}
+		}
+
 		// C1: opportunistically dispatch the conflict resolver pipeline for any
 		// merge_conflict signal that is still in its initial (empty) state.
 		// This is the minimal wiring that hands a freshly-detected conflict to

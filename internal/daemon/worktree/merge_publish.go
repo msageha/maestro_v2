@@ -126,6 +126,32 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 			continue
 		}
 
+		// Skip workers already integrated — avoids redundant re-merge on
+		// partial_merge/conflict recovery where some workers succeeded earlier.
+		if ws.Status == model.WorktreeStatusIntegrated {
+			wm.Log(core.LogLevelDebug, "skip_already_integrated command=%s worker=%s", commandID, workerID)
+			mergedCount++ // count as merged for final status determination
+			continue
+		}
+
+		// For conflict/resolving workers whose changes are already on integration
+		// (e.g., conflict resolver committed directly on integration branch),
+		// check if the worker branch is an ancestor of integration HEAD.
+		// If so, skip re-merge and transition directly to integrated.
+		if ws.Status == model.WorktreeStatusConflict || ws.Status == model.WorktreeStatusResolving {
+			ancestorErr := wm.gitRunInDir(integrationPath, "merge-base", "--is-ancestor", ws.Branch, "HEAD")
+			if ancestorErr == nil {
+				// Worker branch is already contained in integration — no merge needed
+				if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusIntegrated, now); tErr != nil {
+					wm.Log(core.LogLevelWarn, "merge_resolved_skip_transition command=%s worker=%s error=%v",
+						commandID, workerID, tErr)
+				}
+				mergedCount++
+				wm.Log(core.LogLevelInfo, "worker_already_on_integration command=%s worker=%s", commandID, workerID)
+				continue
+			}
+		}
+
 		// Check if worker branch has commits beyond base
 		logOut, err := wm.gitOutputWithRetry(integrationPath, 2, "log", "--oneline",
 			fmt.Sprintf("%s..%s", state.Integration.BaseSHA, ws.Branch))

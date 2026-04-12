@@ -333,6 +333,67 @@ func TestBuildSystemPrompt_OrchestratorNoConfigYAML(t *testing.T) {
 	}
 }
 
+func TestBuildLaunchArgs_PlannerDisallowsOperatorOnlyCommands(t *testing.T) {
+	args, err := buildLaunchArgs("planner", "sonnet", "system-prompt", "")
+	if err != nil {
+		t.Fatalf("buildLaunchArgs: %v", err)
+	}
+	joined := strings.Join(args, " ")
+
+	// Planner should have --disallowedTools blocking operator-only commands
+	for _, sub := range []string{
+		"Bash(maestro plan unquarantine:*)",
+		"Bash(maestro plan resume-merge:*)",
+		"Bash(maestro plan add-retry-task:*)",
+	} {
+		if !strings.Contains(joined, sub) {
+			t.Errorf("planner disallowedTools should contain %q", sub)
+		}
+	}
+}
+
+func TestBuildLaunchArgs_PlannerAllowsNormalCommands(t *testing.T) {
+	args, err := buildLaunchArgs("planner", "sonnet", "system-prompt", "")
+	if err != nil {
+		t.Fatalf("buildLaunchArgs: %v", err)
+	}
+	joined := strings.Join(args, " ")
+
+	// Planner must still have Bash(maestro:*) in allowedTools
+	if !strings.Contains(joined, "Bash(maestro:*)") {
+		t.Error("planner should still have Bash(maestro:*) in allowedTools")
+	}
+
+	// Normal planner commands (submit, complete) should NOT appear in disallowedTools
+	for _, safe := range []string{
+		"Bash(maestro plan submit:*)",
+		"Bash(maestro plan complete:*)",
+	} {
+		if strings.Contains(joined, safe) {
+			t.Errorf("planner disallowedTools should NOT contain %q", safe)
+		}
+	}
+}
+
+func TestBuildLaunchArgs_OrchestratorNoDisallowedOperatorCommands(t *testing.T) {
+	args, err := buildLaunchArgs("orchestrator", "sonnet", "system-prompt", "")
+	if err != nil {
+		t.Fatalf("buildLaunchArgs: %v", err)
+	}
+	joined := strings.Join(args, " ")
+
+	// Orchestrator should NOT block operator-only commands (it IS the operator)
+	for _, sub := range []string{
+		"maestro plan unquarantine",
+		"maestro plan resume-merge",
+		"maestro plan add-retry-task",
+	} {
+		if strings.Contains(joined, sub) {
+			t.Errorf("orchestrator should NOT block %q", sub)
+		}
+	}
+}
+
 func TestBuildLaunchArgs_WorkerDisallowsMaestroReads(t *testing.T) {
 	args, err := buildLaunchArgs("worker", "sonnet", "system-prompt", "")
 	if err != nil {

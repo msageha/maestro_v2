@@ -779,6 +779,48 @@ func TestCollectWorktreePhaseMerges_NoPhasesSkipsWhenAlreadyMerged(t *testing.T)
 	}
 }
 
+func TestCollectImplicitWorktreeMerge_PartialMerge(t *testing.T) {
+	t.Parallel()
+	qh, tqs := noPhasesFallbackFixture(t, model.IntegrationStatusPartialMerge, map[string]model.Status{
+		"t1": model.StatusCompleted,
+		"t2": model.StatusCompleted,
+	}, nil)
+	items := qh.collectWorktreePhaseMerges("cmd1", tqs)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 implicit merge item for partial_merge, got %d", len(items))
+	}
+	if items[0].PhaseID != "__implicit_phase" {
+		t.Errorf("PhaseID = %q, want __implicit_phase", items[0].PhaseID)
+	}
+}
+
+func TestCollectImplicitWorktreeMerge_Failed(t *testing.T) {
+	t.Parallel()
+	qh, tqs := noPhasesFallbackFixture(t, model.IntegrationStatusFailed, map[string]model.Status{
+		"t1": model.StatusCompleted,
+		"t2": model.StatusCompleted,
+	}, nil)
+	items := qh.collectWorktreePhaseMerges("cmd1", tqs)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 implicit merge item for failed, got %d", len(items))
+	}
+	if items[0].PhaseID != "__implicit_phase" {
+		t.Errorf("PhaseID = %q, want __implicit_phase", items[0].PhaseID)
+	}
+}
+
+func TestCollectImplicitWorktreeMerge_AlreadyMerged(t *testing.T) {
+	t.Parallel()
+	// __implicit_phase is already in MergedPhases → should skip even if status allows re-collection
+	qh, tqs := noPhasesFallbackFixture(t, model.IntegrationStatusPartialMerge, map[string]model.Status{
+		"t1": model.StatusCompleted,
+	}, map[string]string{"__implicit_phase": "2026-01-01T00:00:00Z"})
+	items := qh.collectWorktreePhaseMerges("cmd1", tqs)
+	if items != nil {
+		t.Errorf("expected nil items when __implicit_phase already merged, got %v", items)
+	}
+}
+
 // TestStepWorktreeStallDetection_NoPhasesFastPath verifies the case 5
 // fast-path: phase 0 件 + Integration.Status==created でタイムアウト経過後に
 // stall シグナルが発火する。タイムアウト前には発火しない。
@@ -1162,4 +1204,121 @@ func TestStepPlannerSignalsDeferred_ImplicitPhaseNotOrphaned(t *testing.T) {
 	if len(work.signals) != 1 {
 		t.Fatalf("expected 1 deferred signal, got %d", len(work.signals))
 	}
+}
+
+// TestPeriodicScanPhaseC_ConflictDispatchSucceedsOnFirstCycle verifies that
+// when a merge_conflict signal is created in the same Phase C cycle, the C1
+// opportunistic dispatch succeeds because signals are pre-flushed to disk
+// before DispatchConflictResolution reads them via YAMLSignalStore.
+func TestPeriodicScanPhaseC_ConflictDispatchSucceedsOnFirstCycle(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	wtCfg := model.WorktreeConfig{Enabled: true}
+	lockMap := lock.NewMutexMap()
+	cfg := model.Config{
+		Agents:   model.AgentsConfig{Workers: model.WorkerConfig{Count: 2}},
+		Watcher:  model.WatcherConfig{DispatchLeaseSec: 300},
+		Worktree: wtCfg,
+	}
+	qh := NewQueueHandler(maestroDir, cfg, lockMap, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+
+	reader := &scanPhaseStateReader{maestroDir: maestroDir}
+	qh.SetStateReader(reader)
+
+	wm := NewWorktreeManager(maestroDir, wtCfg, log.New(&bytes.Buffer{}, "", 0), LogLevelError)
+	wm.SetSignalStore(NewYAMLSignalStore(maestroDir, lockMap))
+	qh.SetWorktreeManager(wm)
+
+	commandID := "cmd_c1_dispatch"
+	workerID := "worker1"
+	phaseID := "phase1"
+
+	// Write worktree state with worker in conflict status so
+	// DispatchConflictResolution can transition it to resolving.
+	state := model.WorktreeCommandState{
+		SchemaVersion: 1,
+		FileType:      "state_worktree",
+		CommandID:     commandID,
+		Integration: model.IntegrationState{
+			CommandID: commandID,
+			Branch:    "maestro/" + commandID + "/integration",
+			BaseSHA:   "abc123",
+			Status:    model.IntegrationStatusConflict,
+			CreatedAt: "2026-01-01T00:00:00Z",
+			UpdatedAt: "2026-01-01T00:00:00Z",
+		},
+		Workers: []model.WorktreeState{
+			{
+				CommandID: commandID,
+				WorkerID:  workerID,
+				Path:      "/fake/worktree/" + workerID,
+				Branch:    "maestro/" + commandID + "/" + workerID,
+				BaseSHA:   "abc123",
+				Status:    model.WorktreeStatusConflict,
+				CreatedAt: "2026-01-01T00:00:00Z",
+				UpdatedAt: "2026-01-01T00:00:00Z",
+			},
+		},
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+	}
+	statePath := filepath.Join(maestroDir, "state", "worktrees", commandID+".yaml")
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write worktree state: %v", err)
+	}
+
+	// Simulate Phase B merge result that detects a conflict.
+	pa := phaseAResult{scanStart: time.Now()}
+	pb := phaseBResult{
+		worktreeMerges: []worktreeMergeResult{{
+			Item: worktreeMergeItem{
+				CommandID: commandID,
+				PhaseID:   phaseID,
+				WorkerIDs: []string{workerID},
+			},
+			Conflicts: []model.MergeConflict{{
+				WorkerID:      workerID,
+				ConflictFiles: []string{"a.go"},
+				BaseRef:       "base_sha",
+				OursRef:       "ours_sha",
+				TheirsRef:     "theirs_sha",
+			}},
+		}},
+	}
+
+	qh.periodicScanPhaseC(pa, pb)
+
+	// Verify: signal should exist on disk with ResolutionState = "dispatched"
+	// (C1 dispatch succeeded on the same cycle the signal was created).
+	signalQueue, _ := qh.queueStore.LoadPlannerSignalQueue()
+	var found *model.PlannerSignal
+	for i := range signalQueue.Signals {
+		s := &signalQueue.Signals[i]
+		if s.Kind == "merge_conflict" && s.CommandID == commandID {
+			found = s
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("merge_conflict signal not found in queue")
+	}
+	if found.ResolutionState != "dispatched" {
+		t.Errorf("ResolutionState = %q, want %q (C1 dispatch should succeed on first cycle)",
+			found.ResolutionState, "dispatched")
+	}
+
+	// Verify: worker should have transitioned from conflict to resolving.
+	wtState, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("load worktree state: %v", err)
+	}
+	for _, ws := range wtState.Workers {
+		if ws.WorkerID == workerID {
+			if ws.Status != model.WorktreeStatusResolving {
+				t.Errorf("worker status = %q, want %q", ws.Status, model.WorktreeStatusResolving)
+			}
+			return
+		}
+	}
+	t.Fatalf("worker %s not found in worktree state", workerID)
 }
