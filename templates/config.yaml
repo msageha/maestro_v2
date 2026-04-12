@@ -284,7 +284,7 @@ worktree:
   stall_cleanup_after: "10m"
   commit_policy:
     # max_files: 1コミットあたりの最大ステージングファイル数 (0=無制限)
-    # type: *int | default: 30 (DefaultCommitMaxFiles) | range: >= 0
+    # type: *int | default: 60 (DefaultCommitMaxFiles) | range: >= 0
     max_files: 60
     # require_gitignore: .gitignore の存在を要求する
     # type: bool | default: false | range: true/false
