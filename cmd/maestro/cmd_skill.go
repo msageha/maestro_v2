@@ -111,8 +111,8 @@ func runSkillCandidates(args []string) error {
 		}
 		// Truncate content for display
 		content := c.Content
-		if len(content) > 80 {
-			content = content[:77] + "..."
+		if runes := []rune(content); len(runes) > 80 {
+			content = string(runes[:77]) + "..."
 		}
 		// Replace newlines for single-line display and sanitize
 		content = strings.ReplaceAll(content, "\n", " ")
@@ -169,13 +169,14 @@ func runSkillApprove(args []string) error {
 	}
 
 	var result map[string]string
-	if err := json.Unmarshal(resp.Data, &result); err == nil {
-		skillName, ok := result["skill_name"]
-		if !ok {
-			return &CLIError{Code: 1, Msg: "maestro skill approve: response missing skill_name"}
-		}
-		fmt.Printf("approved %s as skill %q\n", candidateID, skillName)
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return fmt.Errorf("maestro skill approve: unmarshal response: %w", err)
 	}
+	skillName, ok := result["skill_name"]
+	if !ok {
+		return &CLIError{Code: 1, Msg: "maestro skill approve: response missing skill_name"}
+	}
+	fmt.Printf("approved %s as skill %q\n", candidateID, skillName)
 	return nil
 }
 

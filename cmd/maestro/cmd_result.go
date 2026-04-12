@@ -52,6 +52,10 @@ func (a *cliApp) runResultWrite(args []string) error {
 		return taskID != "" && commandID != "" && resultStatus != "" && leaseEpoch >= 0
 	})
 
+	cmd.AddCheck("--status must be 'completed' or 'failed'", func() bool {
+		return resultStatus == "" || resultStatus == "completed" || resultStatus == "failed"
+	})
+
 	if err := cmd.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -72,7 +76,7 @@ func (a *cliApp) runResultWrite(args []string) error {
 
 	maestroDir, err := requireMaestroDir("result write")
 	if err != nil {
-		return fmt.Errorf("failed to resolve maestro directory: %w", err)
+		return err
 	}
 
 	params := map[string]any{
