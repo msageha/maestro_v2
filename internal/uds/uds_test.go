@@ -532,9 +532,8 @@ func TestSendContext_CancelBeforeDial(t *testing.T) {
 func TestSendContext_CancelDuringOperation(t *testing.T) {
 	server, _, sockPath := setupTestServer(t)
 
-	// Handler that blocks until test cleanup
+	// Handler that blocks until blocker is closed
 	blocker := make(chan struct{})
-	t.Cleanup(func() { close(blocker) })
 	server.Handle("slow", func(req *Request) *Response {
 		<-blocker
 		return SuccessResponse(nil)
@@ -543,7 +542,10 @@ func TestSendContext_CancelDuringOperation(t *testing.T) {
 	if err := server.Start(); err != nil {
 		t.Fatalf("server start: %v", err)
 	}
-	defer server.Stop()
+	defer func() {
+		close(blocker)  // unblock handler goroutine before stopping server
+		server.Stop()
+	}()
 
 	client := NewClient(sockPath)
 	client.SetTimeout(10 * time.Second)

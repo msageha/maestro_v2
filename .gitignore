@@ -17,3 +17,10 @@ coverage.html
 
 # Maestro runtime files
 .maestro/dashboard.md
+
+# Sensitive files
+.env
+*.key
+credentials.*
+*.pem
+*.secret
