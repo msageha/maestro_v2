@@ -84,7 +84,9 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 			return nil, fmt.Errorf("check integration worktree status: %w (transition error: %s)", dirtyErr, tErr.Error())
 		}
 		state.UpdatedAt = now
-		_ = wm.saveState(commandID, state)
+		if saveErr := wm.saveState(commandID, state); saveErr != nil {
+			wm.Log(core.LogLevelWarn, "save_state_failed command=%s error=%v", commandID, saveErr)
+		}
 		return nil, fmt.Errorf("check integration worktree status: %w", dirtyErr)
 	}
 	if strings.TrimSpace(dirtyOut) != "" {
@@ -93,7 +95,9 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 			return nil, fmt.Errorf("integration worktree has uncommitted changes (transition error: %s)", tErr.Error())
 		}
 		state.UpdatedAt = now
-		_ = wm.saveState(commandID, state)
+		if saveErr := wm.saveState(commandID, state); saveErr != nil {
+			wm.Log(core.LogLevelWarn, "save_state_failed command=%s error=%v", commandID, saveErr)
+		}
 		return nil, fmt.Errorf("integration worktree has uncommitted changes; aborting merge to prevent corruption")
 	}
 
@@ -275,23 +279,21 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 	// "consecutive unrecoverable failure" streak — reaching this point means
 	// recordMergeFailure was not invoked for any worker, so the loop did not
 	// hit a dirty-precheck, abort+recover failure, or permanent git error.
+	// Reaching this point means no unrecoverable merge failure occurred
+	// (recordMergeFailure was never called), so reset the consecutive failure count.
+	state.Integration.MergeFailureCount = 0
+
 	if len(conflicts) == 0 && skippedCount == 0 {
 		if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusMerged, now); tErr != nil {
 			wm.Log(core.LogLevelWarn, "merge_merged_integration_transition command=%s error=%v", commandID, tErr)
-		} else {
-			state.Integration.MergeFailureCount = 0
 		}
 	} else if mergedCount > 0 {
 		if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusPartialMerge, now); tErr != nil {
 			wm.Log(core.LogLevelWarn, "merge_partial_merge_integration_transition command=%s error=%v", commandID, tErr)
-		} else {
-			state.Integration.MergeFailureCount = 0
 		}
 	} else {
 		if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusConflict, now); tErr != nil {
 			wm.Log(core.LogLevelWarn, "merge_conflict_integration_transition command=%s error=%v", commandID, tErr)
-		} else {
-			state.Integration.MergeFailureCount = 0
 		}
 	}
 	state.UpdatedAt = now
@@ -339,6 +341,14 @@ func (wm *Manager) SyncFromIntegration(commandID string, workerIDs []string) err
 			continue
 		}
 
+		// Capture pre-merge HEAD so we can recover if merge --abort fails
+		preMergeHEAD, headErr := wm.gitOutputInDir(ws.Path, "rev-parse", "HEAD")
+		if headErr != nil {
+			wm.Log(core.LogLevelWarn, "sync_pre_head_failed command=%s worker=%s error=%v", commandID, workerID, headErr)
+			continue
+		}
+		preMergeHEAD = strings.TrimSpace(preMergeHEAD)
+
 		// Merge integration branch into worker worktree (no retry — merge itself is not retried)
 		err := wm.gitRunInDir(ws.Path, "merge", state.Integration.Branch,
 			"-m", fmt.Sprintf("[maestro] sync integration into %s", workerID))
@@ -363,7 +373,20 @@ func (wm *Manager) SyncFromIntegration(commandID string, workerIDs []string) err
 			}
 
 			// Abort the merge to restore worktree state
-			_ = wm.gitRunInDir(ws.Path, "merge", "--abort")
+			if abortErr := wm.gitRunInDir(ws.Path, "merge", "--abort"); abortErr != nil {
+				wm.Log(core.LogLevelWarn, "sync_merge_abort_failed command=%s worker=%s error=%v",
+					commandID, workerID, abortErr)
+				// Fallback recovery: reset --hard + clean -fd + verify
+				if recoveryErr := wm.recoverWorktreeAfterMerge(ws.Path, preMergeHEAD, commandID, workerID); recoveryErr != nil {
+					wm.Log(core.LogLevelError, "sync_recovery_failed command=%s worker=%s error=%v",
+						commandID, workerID, recoveryErr)
+					if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusFailed, now); tErr != nil {
+						wm.Log(core.LogLevelWarn, "sync_recovery_fail_transition command=%s worker=%s error=%v",
+							commandID, workerID, tErr)
+					}
+					continue
+				}
+			}
 
 			if hasConflict {
 				wm.Log(core.LogLevelWarn, "sync_conflict command=%s worker=%s files=%v",

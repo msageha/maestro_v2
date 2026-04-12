@@ -38,6 +38,10 @@ func (wm *Manager) CleanupCommand(commandID string) error {
 		if ws.Status == model.WorktreeStatusCleanupDone {
 			continue
 		}
+		if err := ensureWithinProjectRoot(wm.projectRoot, ws.Path); err != nil {
+			errs = append(errs, fmt.Sprintf("path guard worktree %s: %v", ws.WorkerID, err))
+			continue
+		}
 		if err := wm.gitRun("worktree", "remove", "--force", ws.Path); err != nil {
 			// Treat "not a working tree" as success (already removed in prior attempt)
 			if !strings.Contains(err.Error(), "not a working tree") {
@@ -63,7 +67,9 @@ func (wm *Manager) CleanupCommand(commandID string) error {
 
 	// Remove integration worktree (must be before os.RemoveAll and branch deletion)
 	integrationPath := wm.integrationWorktreePath(commandID)
-	if err := wm.gitRun("worktree", "remove", "--force", integrationPath); err != nil {
+	if err := ensureWithinProjectRoot(wm.projectRoot, integrationPath); err != nil {
+		errs = append(errs, fmt.Sprintf("path guard integration worktree: %v", err))
+	} else if err := wm.gitRun("worktree", "remove", "--force", integrationPath); err != nil {
 		errs = append(errs, fmt.Sprintf("remove integration worktree: %v", err))
 	}
 
@@ -163,6 +169,12 @@ func (wm *Manager) GC() error {
 
 		// TTL-based cleanup
 		if now.Sub(created) > ttl {
+			if !model.IsIntegrationTerminal(state.Integration.Status) {
+				wm.Log(core.LogLevelInfo, "gc_ttl_skip_active command=%s status=%s age=%s",
+					commandID, state.Integration.Status, now.Sub(created))
+				allStates = append(allStates, stateEntry{commandID: commandID, createdAt: created, state: state})
+				continue
+			}
 			wm.Log(core.LogLevelInfo, "gc_ttl_expired command=%s age=%s", commandID, now.Sub(created))
 			if err := wm.cleanupCommandUnlocked(commandID, state); err != nil {
 				wm.Log(core.LogLevelWarn, "gc_cleanup_failed command=%s error=%v", commandID, err)
@@ -179,6 +191,11 @@ func (wm *Manager) GC() error {
 			return allStates[i].createdAt.Before(allStates[j].createdAt)
 		})
 		for i := 0; i < len(allStates)-maxWorktrees; i++ {
+			if !model.IsIntegrationTerminal(allStates[i].state.Integration.Status) {
+				wm.Log(core.LogLevelWarn, "gc_max_skip_active command=%s status=%s",
+					allStates[i].commandID, allStates[i].state.Integration.Status)
+				continue
+			}
 			wm.Log(core.LogLevelInfo, "gc_max_exceeded command=%s", allStates[i].commandID)
 			if err := wm.cleanupCommandUnlocked(allStates[i].commandID, allStates[i].state); err != nil {
 				wm.Log(core.LogLevelWarn, "gc_cleanup_failed command=%s error=%v", allStates[i].commandID, err)
@@ -319,6 +336,10 @@ func (wm *Manager) cleanupCommandUnlocked(commandID string, state *model.Worktre
 		if ws.Status == model.WorktreeStatusCleanupDone {
 			continue
 		}
+		if err := ensureWithinProjectRoot(wm.projectRoot, ws.Path); err != nil {
+			errs = append(errs, fmt.Sprintf("path guard worktree %s: %v", ws.WorkerID, err))
+			continue
+		}
 		if err := wm.gitRun("worktree", "remove", "--force", ws.Path); err != nil {
 			// Treat "not a working tree" as success (already removed)
 			if !strings.Contains(err.Error(), "not a working tree") {
@@ -334,7 +355,9 @@ func (wm *Manager) cleanupCommandUnlocked(commandID string, state *model.Worktre
 
 	// Remove integration worktree before branch deletion
 	integrationPath := wm.integrationWorktreePath(commandID)
-	if err := wm.gitRun("worktree", "remove", "--force", integrationPath); err != nil {
+	if err := ensureWithinProjectRoot(wm.projectRoot, integrationPath); err != nil {
+		errs = append(errs, fmt.Sprintf("path guard integration worktree: %v", err))
+	} else if err := wm.gitRun("worktree", "remove", "--force", integrationPath); err != nil {
 		// Treat "not a working tree" as success (already removed)
 		if !strings.Contains(err.Error(), "not a working tree") {
 			errs = append(errs, fmt.Sprintf("remove integration worktree: %v", err))
