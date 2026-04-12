@@ -68,7 +68,9 @@ func (cb *Handler) UpdateCounterOnResult(
 
 	switch resultStatus {
 	case model.StatusCompleted:
-		state.CircuitBreaker.ConsecutiveFailures = 0
+		if state.CircuitBreaker.ConsecutiveFailures > 0 {
+			state.CircuitBreaker.ConsecutiveFailures--
+		}
 		state.CircuitBreaker.LastProgressAt = &nowStr
 		return false, ""
 

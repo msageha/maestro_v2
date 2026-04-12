@@ -77,12 +77,12 @@ func (j *Judge) Evaluate(ctx context.Context, candidates []CandidateInfo) (Decis
 	elapsed := time.Since(start)
 
 	if err != nil {
-		return Decision{WinnerIndex: 0, Model: j.model, Duration: elapsed}, fmt.Errorf("judge: caller error: %w", err)
+		return Decision{WinnerIndex: -1, Model: j.model, Duration: elapsed}, fmt.Errorf("judge: caller error: %w", err)
 	}
 
 	var resp llmResponse
 	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &resp); err != nil {
-		return Decision{WinnerIndex: 0, Model: j.model, Duration: elapsed}, fmt.Errorf("judge: failed to parse response: %w", err)
+		return Decision{WinnerIndex: -1, Model: j.model, Duration: elapsed}, fmt.Errorf("judge: failed to parse response: %w", err)
 	}
 
 	return Decision{

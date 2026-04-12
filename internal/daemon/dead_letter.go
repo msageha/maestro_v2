@@ -132,6 +132,10 @@ func (dlp *DeadLetterProcessor) ProcessTaskDeadLetters(tq *taskQueueEntry, dirty
 	var kept []model.Task
 
 	workerID := workerIDFromPath(tq.Path)
+	if workerID == "" {
+		dlp.log(LogLevelError, "dead_letter_invalid_path path=%s: cannot extract worker ID", tq.Path)
+		return nil
+	}
 
 	for i := range tq.Queue.Tasks {
 		task := &tq.Queue.Tasks[i]
@@ -390,9 +394,15 @@ func (dlp *DeadLetterProcessor) taskDeadLetterPostProcess(commandID, taskID, wor
 
 	// Phase 1: Update state — task_states[taskID] = failed
 	data, err := os.ReadFile(statePath) //nolint:gosec // statePath is constructed from a controlled application state directory
-	if err == nil {
+	if err != nil {
+		if !os.IsNotExist(err) {
+			dlp.log(LogLevelError, "dead_letter_post_process read_state command=%s task=%s error=%v", commandID, taskID, err)
+		}
+	} else {
 		var state model.CommandState
-		if err := yamlv3.Unmarshal(data, &state); err == nil {
+		if err := yamlv3.Unmarshal(data, &state); err != nil {
+			dlp.log(LogLevelError, "dead_letter_post_process parse_state command=%s task=%s error=%v", commandID, taskID, err)
+		} else {
 			if state.TaskStates == nil {
 				state.TaskStates = make(map[string]model.Status)
 			}
