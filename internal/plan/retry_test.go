@@ -1047,9 +1047,11 @@ func TestSaveStateWithContext_Timeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
+	blocker := make(chan struct{})
+	t.Cleanup(func() { close(blocker) })
 	err := saveStateWithContext(ctx, func() error {
-		// Simulate a hung filesystem by blocking longer than the timeout
-		time.Sleep(5 * time.Second)
+		// Simulate a hung filesystem by blocking until context timeout
+		<-blocker
 		return nil
 	})
 	if err == nil {
@@ -1067,8 +1069,10 @@ func TestSaveStateWithContext_CancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // pre-cancel
 
+	blocker := make(chan struct{})
+	t.Cleanup(func() { close(blocker) })
 	err := saveStateWithContext(ctx, func() error {
-		time.Sleep(5 * time.Second)
+		<-blocker
 		return nil
 	})
 	if err == nil {

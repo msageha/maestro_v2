@@ -784,6 +784,59 @@ func TestGitOutputInDirUsesContext(t *testing.T) {
 	}
 }
 
+// TestCommitWorkerChanges_RejectsInvalidTransition verifies that CommitWorkerChanges
+// pre-checks the state transition to Committed and rejects it if invalid,
+// preventing a git commit that cannot be rolled back.
+func TestCommitWorkerChanges_RejectsInvalidTransition(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_reject_transition"
+	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	wtPath, err := wm.GetWorkerPath(commandID, "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath: %v", err)
+	}
+
+	// Create a file so there are changes
+	if err := os.WriteFile(filepath.Join(wtPath, "test.txt"), []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Commit successfully first
+	if err := wm.CommitWorkerChanges(commandID, "worker1", "first commit"); err != nil {
+		t.Fatalf("first CommitWorkerChanges: %v", err)
+	}
+
+	// Merge to integration to transition worker to "integrated"
+	if _, err := wm.MergeToIntegration(commandID, []string{"worker1"}, nil); err != nil {
+		t.Fatalf("MergeToIntegration: %v", err)
+	}
+
+	// Publish to transition worker to "published"
+	if err := wm.PublishToBase(commandID, ""); err != nil {
+		t.Fatalf("PublishToBase: %v", err)
+	}
+
+	// Worker is now "published". Transition to "committed" is NOT valid from "published".
+	// Create another file to trigger a dirty worktree
+	if err := os.WriteFile(filepath.Join(wtPath, "test2.txt"), []byte("data2"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err = wm.CommitWorkerChanges(commandID, "worker1", "should fail")
+	if err == nil {
+		t.Fatal("expected error for invalid transition from published to committed")
+	}
+	if !strings.Contains(err.Error(), "invalid transition") {
+		t.Errorf("expected 'invalid transition' error, got: %v", err)
+	}
+}
+
 func TestEffectiveGitTimeout_Default(t *testing.T) {
 	t.Parallel()
 	cfg := model.WorktreeConfig{}

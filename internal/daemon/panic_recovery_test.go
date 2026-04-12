@@ -89,7 +89,7 @@ func TestEventBridge_PanicRecoveryCallsShutdown(t *testing.T) {
 		if d.shuttingDown.Load() {
 			break
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
 
 	if !d.shuttingDown.Load() {
@@ -135,7 +135,7 @@ func TestDebounceController_PanicRecoveryCallsShutdown(t *testing.T) {
 		if shutdownCalled.Load() {
 			break
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
 
 	dc.Stop()

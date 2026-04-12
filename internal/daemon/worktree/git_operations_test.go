@@ -100,16 +100,16 @@ func TestClassifyGitError(t *testing.T) {
 			err:  errors.New("fatal: the remote end hung up unexpectedly: Connection reset by peer"),
 			want: gitErrorTransient,
 		},
-		// New transient patterns: resource errors
+		// Resource errors — permanent (won't resolve within backoff window)
 		{
 			name: "cannot allocate memory",
 			err:  errors.New("fatal: cannot allocate memory"),
-			want: gitErrorTransient,
+			want: gitErrorPermanent,
 		},
 		{
 			name: "no space left on device",
 			err:  errors.New("error: No space left on device"),
-			want: gitErrorTransient,
+			want: gitErrorPermanent,
 		},
 
 		// Unknown errors default to Permanent

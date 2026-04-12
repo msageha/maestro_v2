@@ -79,6 +79,14 @@ func (wm *Manager) CleanupCommand(commandID string) error {
 			commandID, state.Integration.Branch, err)
 	}
 
+	// Delete _publish temp branch if it leaked (e.g. crash after update-ref in PublishToBase)
+	publishBranch := fmt.Sprintf("maestro/%s/_publish", commandID)
+	if err := wm.gitRun("branch", "-D", publishBranch); err != nil {
+		// Expected to fail when the branch doesn't exist; only log at debug level.
+		wm.Log(core.LogLevelDebug, "delete_publish_branch_skipped command=%s branch=%s error=%v",
+			commandID, publishBranch, err)
+	}
+
 	// Only remove directory and state file if all worktree removals succeeded.
 	// If there were failures, save state with cleanup_failed markers so
 	// GC/Reconcile can retry later.
@@ -218,7 +226,10 @@ func (wm *Manager) GC() error {
 		cachedStates[se.commandID] = se.state
 	}
 	// Pick up entries not covered by allStates (they were TTL-cleaned or skipped)
-	remainingEntries, _ := os.ReadDir(stateDir)
+	remainingEntries, readErr := os.ReadDir(stateDir)
+	if readErr != nil {
+		wm.Log(core.LogLevelWarn, "gc_reread_state_dir error=%v", readErr)
+	}
 	for _, entry := range remainingEntries {
 		if !strings.HasSuffix(entry.Name(), ".yaml") {
 			continue
@@ -367,6 +378,13 @@ func (wm *Manager) cleanupCommandUnlocked(commandID string, state *model.Worktre
 	if err := wm.gitRun("branch", "-D", state.Integration.Branch); err != nil {
 		wm.Log(core.LogLevelWarn, "delete_integration_branch_failed command=%s branch=%s error=%v",
 			commandID, state.Integration.Branch, err)
+	}
+
+	// Delete _publish temp branch if it leaked (e.g. crash after update-ref in PublishToBase)
+	publishBranch := fmt.Sprintf("maestro/%s/_publish", commandID)
+	if err := wm.gitRun("branch", "-D", publishBranch); err != nil {
+		wm.Log(core.LogLevelDebug, "delete_publish_branch_skipped command=%s branch=%s error=%v",
+			commandID, publishBranch, err)
 	}
 
 	// Only remove directory and state file if all worktree removals succeeded.
