@@ -19,6 +19,24 @@ import (
 
 const maestroDir = ".maestro"
 
+// defaultGitignore is the content written to .gitignore when none exists.
+// It covers maestro internal directories and common secret file patterns
+// required by commit_policy.require_gitignore.
+const defaultGitignore = `# Maestro
+.maestro/worktrees/
+.maestro/state/
+.maestro/results/
+.maestro/queue/
+
+# Secrets
+.env
+.env.*
+*.key
+*.pem
+*.secret
+credentials.*
+`
+
 // Run initializes the .maestro/ directory structure in the given project directory.
 // projectName overrides the auto-detected name (defaults to directory basename if empty).
 func Run(projectDir, projectName string) error {
