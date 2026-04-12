@@ -482,12 +482,12 @@ content テンプレート:
 
 bloom_level: テスト実行中心 → L3、コード分析必要 → L4-L5
 
-#### config の検証コマンド活用
+#### 検証コマンドの指定
 
-`config.yaml` の `verification` セクションが有効時:
-- 通常タスクの `constraints` に `basic_command` を含める
-- verification タスクの `content` に `full_command` を使用
-- `timeout_seconds` / `max_retries` を `constraints` に含める
+検証コマンドはタスクの `constraints` または `content` に直接記載する:
+- 通常タスクの `constraints` に基本検証コマンドを含める
+- verification タスクの `content` に完全検証コマンドを記載する
+- タイムアウト・リトライ回数は `constraints` に含める
 
 #### 問題発見時の修正ループ
 
@@ -657,26 +657,26 @@ constraints:
   - "外部パッケージの追加禁止"
 ```
 
-**config.yaml の verification セクションとの連携:**
+**検証コマンドの指定:**
 
-`config.yaml` に `verification` セクションが定義されている場合、検証コマンドを `constraints` に含めることで Worker に基本検証を促せる。
+検証コマンドはタスクの `constraints` または `content` に直接記載する。
 
 ```yaml
-# 通常タスクの場合: basic_command を constraints に含める
+# 通常タスクの場合: constraints に基本検証コマンドを含める
 constraints:
   - "go vet ./... をパスすること"
 
-# verification フェーズタスクの場合: full_command を content に記載
+# verification フェーズタスクの場合: content に完全検証コマンドを記載
 content: |
   以下の検証コマンドを実行する:
   go test ./... -count=1 -timeout 300s
 ```
 
-| 用途 | 参照元 | 含め先 |
-|------|--------|--------|
-| 通常タスクの基本検証 | `verification.basic_command` | `constraints` |
-| verification タスクの完全検証 | `verification.full_command` | `content` |
-| タイムアウト・リトライ | `verification.timeout_seconds` / `max_retries` | `constraints` |
+| 用途 | 含め先 |
+|------|--------|
+| 通常タスクの基本検証 | `constraints` |
+| verification タスクの完全検証 | `content` |
+| タイムアウト・リトライ | `constraints` |
 
 ### フェーズ付き（段階実行）
 
