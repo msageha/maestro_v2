@@ -10,6 +10,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 	"github.com/msageha/maestro_v2/internal/testutil/mocks"
 )
 
@@ -313,7 +314,7 @@ func TestDispatchTask_MaxRefsPerTask_Truncation(t *testing.T) {
 	cfg := model.Config{
 		Skills: model.SkillsConfig{
 			Enabled:        true,
-			MaxRefsPerTask: model.IntPtr(2), // Only allow 2, but task has 3
+			MaxRefsPerTask: ptr.Int(2), // Only allow 2, but task has 3
 		},
 	}
 	d, mock := newSkillTestDispatcher(t, maestroDir, cfg)

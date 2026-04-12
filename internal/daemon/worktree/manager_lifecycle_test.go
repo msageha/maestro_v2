@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 // TestCreateForCommand tests worktree creation for a command.
@@ -389,7 +390,7 @@ func TestGC(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Set max_worktrees to 1 so the second one triggers GC
-	wm.config.GC.MaxWorktrees = model.IntPtr(1)
+	wm.config.GC.MaxWorktrees = ptr.Int(1)
 
 	if err := createForCommand(wm, "cmd_gc_001", []string{"worker1"}); err != nil {
 		t.Fatal(err)
@@ -888,7 +889,7 @@ func TestGC_DeletesCmdLocks(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Set max_worktrees to 1 so the second triggers GC
-	wm.config.GC.MaxWorktrees = model.IntPtr(1)
+	wm.config.GC.MaxWorktrees = ptr.Int(1)
 
 	if err := createForCommand(wm, "cmd_gc_lock_1", []string{"worker1"}); err != nil {
 		t.Fatal(err)

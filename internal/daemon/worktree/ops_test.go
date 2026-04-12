@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 // fakeClock implements core.Clock for deterministic testing.
@@ -261,8 +262,8 @@ func TestWorktreeIntegration_GC_TTLExpiry(t *testing.T) {
 	baseTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	fc := &fakeClock{now: baseTime}
 	wm.clock = fc
-	wm.config.GC.TTLHours = model.IntPtr(1)
-	wm.config.GC.MaxWorktrees = model.IntPtr(100) // high limit so max doesn't trigger
+	wm.config.GC.TTLHours = ptr.Int(1)
+	wm.config.GC.MaxWorktrees = ptr.Int(100) // high limit so max doesn't trigger
 
 	// Create "old" command at T=0
 	if err := createForCommand(wm, "cmd_ttl_old", []string{"worker1"}); err != nil {
@@ -332,8 +333,8 @@ func TestWorktreeIntegration_GC_Disabled(t *testing.T) {
 	fc := &fakeClock{now: baseTime}
 	wm.clock = fc
 	wm.config.GC.Enabled = false
-	wm.config.GC.TTLHours = model.IntPtr(1)
-	wm.config.GC.MaxWorktrees = model.IntPtr(1)
+	wm.config.GC.TTLHours = ptr.Int(1)
+	wm.config.GC.MaxWorktrees = ptr.Int(1)
 
 	// Create two commands (MaxWorktrees=1 would GC one if enabled)
 	if err := createForCommand(wm, "cmd_gc_dis_1", []string{"worker1"}); err != nil {
