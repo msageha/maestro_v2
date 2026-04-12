@@ -51,6 +51,11 @@ func Run(projectDir, projectName string) error {
 		return fmt.Errorf("%s already exists", base)
 	}
 
+	// Ensure .gitignore exists (required by commit_policy.require_gitignore)
+	if err := ensureGitignore(absDir); err != nil {
+		return fmt.Errorf("ensure .gitignore: %w", err)
+	}
+
 	// Create directory structure
 	dirs := []string{
 		"queue",
@@ -149,6 +154,21 @@ func Run(projectDir, projectName string) error {
 		return fmt.Errorf("create daemon.lock: %w", err)
 	}
 
+	return nil
+}
+
+// ensureGitignore creates a default .gitignore in projectDir if one does not
+// already exist. If the file is already present it is left untouched.
+func ensureGitignore(projectDir string) error {
+	p := filepath.Join(projectDir, ".gitignore")
+	if _, err := os.Stat(p); err == nil {
+		return nil // already exists — do not overwrite
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat .gitignore: %w", err)
+	}
+	if err := os.WriteFile(p, []byte(defaultGitignore), 0644); err != nil { //nolint:gosec // .gitignore is user-readable
+		return fmt.Errorf("write .gitignore: %w", err)
+	}
 	return nil
 }
 

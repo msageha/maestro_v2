@@ -780,13 +780,13 @@ func TestCollectWorktreePhaseMerges_NoPhasesSkipsWhenAlreadyMerged(t *testing.T)
 }
 
 // TestStepWorktreeStallDetection_NoPhasesFastPath verifies the case 5
-// fast-path: phase 0 件 + Integration.Status==created → 即時 stall シグナル発火
-// (timeoutMin を待たない).
+// fast-path: phase 0 件 + Integration.Status==created でタイムアウト経過後に
+// stall シグナルが発火する。タイムアウト前には発火しない。
 func TestStepWorktreeStallDetection_NoPhasesFastPath(t *testing.T) {
 	t.Parallel()
-	// recent updated_at: regular timeout path is NOT triggered.
-	recent := time.Now().Add(-1 * time.Minute).UTC().Format(time.RFC3339)
-	qh, s := stallTestSetup(t, recent, model.IntegrationStatusCreated, false)
+	// Use a timestamp beyond the stall timeout so the signal fires.
+	past := time.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)
+	qh, s := stallTestSetup(t, past, model.IntegrationStatusCreated, false)
 
 	// Overwrite command state with no phases.
 	writeCommandState(t, qh.maestroDir, "cmd1", map[string]model.Status{

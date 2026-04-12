@@ -323,6 +323,73 @@ func TestRun_CopiesSkillTemplates(t *testing.T) {
 	}
 }
 
+func TestRun_CreatesGitignoreWhenMissing(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "myproject")
+	os.Mkdir(projectDir, 0755)
+
+	if err := Run(projectDir, ""); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	gitignorePath := filepath.Join(projectDir, ".gitignore")
+	data, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatalf(".gitignore does not exist: %v", err)
+	}
+
+	content := string(data)
+
+	// Must contain maestro worktrees directory
+	if !contains(content, ".maestro/worktrees/") {
+		t.Error(".gitignore does not contain .maestro/worktrees/")
+	}
+
+	// Must contain .env
+	if !contains(content, ".env") {
+		t.Error(".gitignore does not contain .env")
+	}
+}
+
+func TestRun_DoesNotOverwriteExistingGitignore(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "myproject")
+	os.Mkdir(projectDir, 0755)
+
+	// Pre-create a custom .gitignore
+	existing := "# my custom gitignore\nnode_modules/\n"
+	gitignorePath := filepath.Join(projectDir, ".gitignore")
+	if err := os.WriteFile(gitignorePath, []byte(existing), 0644); err != nil {
+		t.Fatalf("write existing .gitignore: %v", err)
+	}
+
+	if err := Run(projectDir, ""); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	data, err := os.ReadFile(gitignorePath)
+	if err != nil {
+		t.Fatalf("read .gitignore: %v", err)
+	}
+
+	if string(data) != existing {
+		t.Errorf("existing .gitignore was modified: got %q, want %q", string(data), existing)
+	}
+}
+
+func contains(s, substr string) bool {
+	return len(s) >= len(substr) && searchString(s, substr)
+}
+
+func searchString(s, substr string) bool {
+	for i := 0; i <= len(s)-len(substr); i++ {
+		if s[i:i+len(substr)] == substr {
+			return true
+		}
+	}
+	return false
+}
+
 func TestRun_RejectsExistingDir(t *testing.T) {
 	dir := t.TempDir()
 	projectDir := filepath.Join(dir, "myproject")

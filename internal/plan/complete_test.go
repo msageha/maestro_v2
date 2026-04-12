@@ -841,3 +841,100 @@ func TestComplete_WorktreeEnabled_NoStateFile_Allowed(t *testing.T) {
 		t.Errorf("Status = %q, want %q", result.Status, model.PlanStatusCompleted)
 	}
 }
+
+// writeWorktreeStateWithFailedWorkers is a helper that writes a worktree state file
+// with the given integration status and commit_failed_workers list.
+func writeWorktreeStateWithFailedWorkers(t *testing.T, maestroDir, commandID string, integrationStatus model.IntegrationStatus, failedWorkers []string) {
+	t.Helper()
+	dir := filepath.Join(maestroDir, "state", "worktrees")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("create worktrees dir: %v", err)
+	}
+	wcs := model.WorktreeCommandState{
+		SchemaVersion: 1,
+		FileType:      "state_worktree",
+		CommandID:     commandID,
+		Integration: model.IntegrationState{
+			CommandID: commandID,
+			Branch:    "integration/" + commandID,
+			Status:    integrationStatus,
+			CreatedAt: "2025-01-01T00:00:00Z",
+			UpdatedAt: "2025-01-01T00:00:00Z",
+		},
+		CommitFailedWorkers: failedWorkers,
+		CreatedAt:           "2025-01-01T00:00:00Z",
+		UpdatedAt:           "2025-01-01T00:00:00Z",
+	}
+	path := filepath.Join(dir, commandID+".yaml")
+	if err := yamlutil.AtomicWrite(path, wcs); err != nil {
+		t.Fatalf("write worktree state: %v", err)
+	}
+}
+
+func TestComplete_WorktreeEnabled_CommitFailedWorkers_Rejected(t *testing.T) {
+	commandID := "cmd_0000000054_aabbccdd"
+	taskID1 := "task_0000000054_11111111"
+
+	taskStates := map[string]model.Status{
+		taskID1: model.StatusCompleted,
+	}
+	requiredIDs := []string{taskID1}
+
+	maestroDir := setupCompleteTest(t, commandID, taskStates, requiredIDs)
+	cfg := testConfig()
+	cfg.Worktree.Enabled = true
+
+	// Published but has commit_failed_workers — should be rejected
+	writeWorktreeStateWithFailedWorkers(t, maestroDir, commandID, model.IntegrationStatusPublished, []string{"worker2", "worker3"})
+
+	_, err := Complete(CompleteOptions{
+		CommandID:  commandID,
+		Summary:    "should be rejected",
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
+	})
+	if err == nil {
+		t.Fatal("Complete returned nil error, want error for commit_failed_workers")
+	}
+	if !strings.Contains(err.Error(), "commit failures") {
+		t.Errorf("error = %q, want to contain %q", err.Error(), "commit failures")
+	}
+	if !strings.Contains(err.Error(), "worker2") {
+		t.Errorf("error = %q, want to contain %q", err.Error(), "worker2")
+	}
+	if !strings.Contains(err.Error(), "2 worker(s)") {
+		t.Errorf("error = %q, want to contain %q", err.Error(), "2 worker(s)")
+	}
+}
+
+func TestComplete_WorktreeEnabled_Published_NoFailedWorkers_Allowed(t *testing.T) {
+	commandID := "cmd_0000000055_aabbccdd"
+	taskID1 := "task_0000000055_11111111"
+
+	taskStates := map[string]model.Status{
+		taskID1: model.StatusCompleted,
+	}
+	requiredIDs := []string{taskID1}
+
+	maestroDir := setupCompleteTest(t, commandID, taskStates, requiredIDs)
+	cfg := testConfig()
+	cfg.Worktree.Enabled = true
+
+	// Published with empty commit_failed_workers — should succeed
+	writeWorktreeStateWithFailedWorkers(t, maestroDir, commandID, model.IntegrationStatusPublished, nil)
+
+	result, err := Complete(CompleteOptions{
+		CommandID:  commandID,
+		Summary:    "should succeed",
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
+	})
+	if err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+	if result.Status != string(model.PlanStatusCompleted) {
+		t.Errorf("Status = %q, want %q", result.Status, model.PlanStatusCompleted)
+	}
+}
