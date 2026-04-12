@@ -177,13 +177,20 @@ func (wm *Manager) GC() error {
 
 		// TTL-based cleanup
 		if now.Sub(created) > ttl {
-			if !model.IsIntegrationTerminal(state.Integration.Status) {
+			isTerminal := model.IsIntegrationTerminal(state.Integration.Status)
+			isFailed := state.Integration.Status == model.IntegrationStatusFailed
+			if !isTerminal && !isFailed {
 				wm.Log(core.LogLevelInfo, "gc_ttl_skip_active command=%s status=%s age=%s",
 					commandID, state.Integration.Status, now.Sub(created))
 				allStates = append(allStates, stateEntry{commandID: commandID, createdAt: created, state: state})
 				continue
 			}
-			wm.Log(core.LogLevelInfo, "gc_ttl_expired command=%s age=%s", commandID, now.Sub(created))
+			if isFailed {
+				wm.Log(core.LogLevelInfo, "gc_cleanup_failed_worktree command=%s age=%s",
+					commandID, now.Sub(created))
+			} else {
+				wm.Log(core.LogLevelInfo, "gc_ttl_expired command=%s age=%s", commandID, now.Sub(created))
+			}
 			if err := wm.cleanupCommandUnlocked(commandID, state); err != nil {
 				wm.Log(core.LogLevelWarn, "gc_cleanup_failed command=%s error=%v", commandID, err)
 			}

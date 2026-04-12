@@ -220,6 +220,148 @@ func TestGC_SkipsActiveWorktree_MaxWorktrees(t *testing.T) {
 	}
 }
 
+// --- Failed worktree TTL-based cleanup ---
+
+// TestGC_CleansFailedWorktree_TTLExpired verifies that GC cleans up a worktree
+// whose integration status is "failed" (non-terminal) when TTL has expired.
+func TestGC_CleansFailedWorktree_TTLExpired(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	wm.config.GC.TTLHours = ptr.Int(0) // TTL=0 so everything is expired
+
+	commandID := "cmd_gc_failed_expired"
+	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	// Set integration status to "failed" by directly modifying state
+	wm.mu.Lock()
+	state, err := wm.loadState(commandID)
+	if err != nil {
+		wm.mu.Unlock()
+		t.Fatalf("loadState: %v", err)
+	}
+	state.Integration.Status = model.IntegrationStatusFailed
+	state.Integration.UpdatedAt = wm.clock.Now().UTC().Format(time.RFC3339)
+	if err := wm.saveState(commandID, state); err != nil {
+		wm.mu.Unlock()
+		t.Fatalf("saveState: %v", err)
+	}
+	wm.mu.Unlock()
+
+	// Verify failed is NOT terminal (precondition)
+	if model.IsIntegrationTerminal(model.IntegrationStatusFailed) {
+		t.Fatal("IntegrationStatusFailed should not be terminal")
+	}
+
+	// Run GC — should clean up the failed worktree since TTL expired
+	if err := wm.GC(); err != nil {
+		t.Fatalf("GC: %v", err)
+	}
+
+	// Verify worktree was cleaned up (state file removed)
+	statePath := filepath.Join(wm.maestroDir, "state", "worktrees", commandID+".yaml")
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Errorf("failed worktree state file should be removed after GC, stat err=%v", err)
+	}
+}
+
+// TestGC_RetainsFailedWorktree_TTLNotExpired verifies that GC preserves a
+// worktree whose integration status is "failed" when TTL has NOT expired,
+// allowing retry (failed → merging) to proceed.
+func TestGC_RetainsFailedWorktree_TTLNotExpired(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	wm.config.GC.TTLHours = ptr.Int(999) // high TTL so nothing expires
+
+	commandID := "cmd_gc_failed_retained"
+	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	// Set integration status to "failed"
+	wm.mu.Lock()
+	state, err := wm.loadState(commandID)
+	if err != nil {
+		wm.mu.Unlock()
+		t.Fatalf("loadState: %v", err)
+	}
+	state.Integration.Status = model.IntegrationStatusFailed
+	state.Integration.UpdatedAt = wm.clock.Now().UTC().Format(time.RFC3339)
+	if err := wm.saveState(commandID, state); err != nil {
+		wm.mu.Unlock()
+		t.Fatalf("saveState: %v", err)
+	}
+	wm.mu.Unlock()
+
+	// Run GC — should NOT clean up (TTL not expired)
+	if err := wm.GC(); err != nil {
+		t.Fatalf("GC: %v", err)
+	}
+
+	// Verify worktree was NOT cleaned up
+	if _, err := wm.GetCommandState(commandID); err != nil {
+		t.Errorf("failed worktree with unexpired TTL should still exist after GC, got error: %v", err)
+	}
+}
+
+// TestGC_TerminalStatusUnaffectedByFailedChange verifies that the existing
+// terminal status (published) cleanup is not impacted by the failed worktree
+// TTL cleanup logic.
+func TestGC_TerminalStatusUnaffectedByFailedChange(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	wm.config.GC.TTLHours = ptr.Int(0)
+
+	commandID := "cmd_gc_terminal_unaffected"
+	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	// Drive to published (terminal) state
+	wt1, err := wm.GetWorkerPath(commandID, "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(wt1, "gc_test.txt"), []byte("gc"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker1", "add gc_test.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wm.MergeToIntegration(commandID, []string{"worker1"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.PublishToBase(commandID, ""); err != nil {
+		t.Fatalf("PublishToBase: %v", err)
+	}
+
+	// Verify terminal
+	state, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	if state.Integration.Status != model.IntegrationStatusPublished {
+		t.Fatalf("expected published status, got %s", state.Integration.Status)
+	}
+
+	// Run GC — should still clean up terminal worktrees as before
+	if err := wm.GC(); err != nil {
+		t.Fatalf("GC: %v", err)
+	}
+
+	statePath := filepath.Join(wm.maestroDir, "state", "worktrees", commandID+".yaml")
+	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+		t.Errorf("terminal worktree state file should be removed after GC")
+	}
+}
+
 // --- _publish branch leak prevention ---
 
 // TestCleanupCommand_DeletesPublishBranch verifies that CleanupCommand deletes
