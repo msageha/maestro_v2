@@ -2,10 +2,15 @@ package daemon
 
 import (
 	"runtime/debug"
+	"time"
 
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
 )
+
+// eventBridgeCallbackTimeout is the maximum duration for a single event bridge
+// callback execution. Prevents a hung callback from blocking the event bus.
+const eventBridgeCallbackTimeout = 10 * time.Second
 
 // EventBridge bridges the generic event bus to typed daemon component events.
 // It holds a back-pointer to Daemon for access to shared state.
@@ -40,11 +45,13 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 			return
 		}
 
-		d.qualityGateDaemon.EmitEvent(TaskStartEvent{
-			TaskID:    taskID,
-			CommandID: commandID,
-			AgentID:   workerID,
-			StartedAt: e.Timestamp,
+		eb.runWithTimeout("task_started", func() {
+			d.qualityGateDaemon.EmitEvent(TaskStartEvent{
+				TaskID:    taskID,
+				CommandID: commandID,
+				AgentID:   workerID,
+				StartedAt: e.Timestamp,
+			})
 		})
 	})
 
@@ -76,12 +83,14 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 			return
 		}
 
-		d.qualityGateDaemon.EmitEvent(TaskCompleteEvent{
-			TaskID:      taskID,
-			CommandID:   commandID,
-			AgentID:     workerID,
-			Status:      status,
-			CompletedAt: e.Timestamp,
+		eb.runWithTimeout("task_completed", func() {
+			d.qualityGateDaemon.EmitEvent(TaskCompleteEvent{
+				TaskID:      taskID,
+				CommandID:   commandID,
+				AgentID:     workerID,
+				Status:      status,
+				CompletedAt: e.Timestamp,
+			})
 		})
 	})
 
@@ -103,12 +112,14 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 			return
 		}
 
-		d.qualityGateDaemon.EmitEvent(PhaseTransitionEvent{
-			PhaseID:        phaseID,
-			CommandID:      commandID,
-			OldStatus:      model.PhaseStatus(oldStatus),
-			NewStatus:      model.PhaseStatus(newStatus),
-			TransitionedAt: e.Timestamp,
+		eb.runWithTimeout("phase_transition", func() {
+			d.qualityGateDaemon.EmitEvent(PhaseTransitionEvent{
+				PhaseID:        phaseID,
+				CommandID:      commandID,
+				OldStatus:      model.PhaseStatus(oldStatus),
+				NewStatus:      model.PhaseStatus(newStatus),
+				TransitionedAt: e.Timestamp,
+			})
 		})
 	})
 
@@ -134,6 +145,31 @@ func (eb *EventBridge) subscribeQueueWrittenEvents() {
 		d.handler.scanExecutor.debounce.Trigger("event_bus:queue_written")
 	})
 	eb.eventUnsubscribers = append(eb.eventUnsubscribers, unsub)
+}
+
+// runWithTimeout executes fn with a timeout. Returns true if fn completed within
+// the deadline, false if it timed out. Panics inside fn are recovered, logged,
+// and trigger a daemon shutdown (matching the original callback behavior).
+func (eb *EventBridge) runWithTimeout(callbackName string, fn func()) bool {
+	done := make(chan struct{})
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				eb.d.log(LogLevelError, "panic in event_bridge callback type=%s: %v\n%s", callbackName, r, debug.Stack())
+				eb.d.Shutdown()
+			}
+			close(done)
+		}()
+		fn()
+	}()
+
+	select {
+	case <-done:
+		return true
+	case <-time.After(eventBridgeCallbackTimeout):
+		eb.d.log(LogLevelError, "event_bridge callback timeout type=%s timeout=%s", callbackName, eventBridgeCallbackTimeout)
+		return false
+	}
 }
 
 // unsubscribeAll unsubscribes all event bus subscriptions managed by this bridge.

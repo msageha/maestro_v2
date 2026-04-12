@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -31,9 +32,19 @@ import (
 // LogLevel, Clock, DaemonLogger, StateReader, etc. are defined in
 // internal/daemon/core and re-exported via core_aliases.go.
 
-// fsSemaphoreBufferSize limits concurrent fsnotify handler goroutines to prevent
-// resource exhaustion (8 = practical limit for typical I/O concurrency).
-const fsSemaphoreBufferSize = 8
+// fsSemaphoreBufferSize returns the semaphore capacity for concurrent fsnotify
+// handler goroutines, dynamically sized based on available CPUs.
+// Range: [8, 32] — clamped to prevent both starvation and excessive fan-out.
+func fsSemaphoreBufferSize() int {
+	n := runtime.NumCPU() * 2
+	if n < 8 {
+		return 8
+	}
+	if n > 32 {
+		return 32
+	}
+	return n
+}
 
 // Daemon is the main maestro daemon process.
 // It acts as a composition root, owning API, WatchLoop, and EventBridge components.
@@ -229,7 +240,7 @@ func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Close
 		skill:     &SkillAPI{apiContext: shared},
 	}
 
-	d.watch = &WatchLoop{d: d, fsSem: make(chan struct{}, fsSemaphoreBufferSize)}
+	d.watch = &WatchLoop{d: d, fsSem: make(chan struct{}, fsSemaphoreBufferSize())}
 	d.bridge = &EventBridge{d: d}
 
 	return d, nil
