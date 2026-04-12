@@ -91,7 +91,11 @@ func (e *Engine) notifyPlannerOfReFill(commandID string) {
 	if err != nil {
 		return
 	}
-	defer func() { _ = exec.Close() }()
+	defer func() {
+		if err := exec.Close(); err != nil {
+			e.deps.DL.Logf(core.LogLevelWarn, "close executor error=%v", err)
+		}
+	}()
 
 	message := fmt.Sprintf("[maestro] kind:re_fill command_id:%s\nphase filling was stuck, reverted to awaiting_fill — please re-submit tasks",
 		commandID)
@@ -112,7 +116,11 @@ func (e *Engine) notifyPlannerOfReEvaluation(commandID, reason string) {
 	if err != nil {
 		return
 	}
-	defer func() { _ = exec.Close() }()
+	defer func() {
+		if err := exec.Close(); err != nil {
+			e.deps.DL.Logf(core.LogLevelWarn, "close executor error=%v", err)
+		}
+	}()
 
 	message := fmt.Sprintf("[maestro] kind:re_evaluate command_id:%s\ncan_complete failed: %s — result quarantined, please re-evaluate",
 		commandID, reason)
@@ -133,7 +141,11 @@ func (e *Engine) notifyPlannerOfTimeout(commandID string, timedOutPhases map[str
 	if err != nil {
 		return
 	}
-	defer func() { _ = exec.Close() }()
+	defer func() {
+		if err := exec.Close(); err != nil {
+			e.deps.DL.Logf(core.LogLevelWarn, "close executor error=%v", err)
+		}
+	}()
 
 	phases := make([]string, 0, len(timedOutPhases))
 	for name := range timedOutPhases {
@@ -158,7 +170,11 @@ func (e *Engine) notifyPlannerOfConflictResolution(commandID, workerID string) {
 	if err != nil {
 		return
 	}
-	defer func() { _ = exec.Close() }()
+	defer func() {
+		if err := exec.Close(); err != nil {
+			e.deps.DL.Logf(core.LogLevelWarn, "close executor error=%v", err)
+		}
+	}()
 
 	message := fmt.Sprintf("[maestro] kind:conflict_resolution command_id:%s worker_id:%s\nmerge conflict detected — please generate a __conflict_resolution task",
 		commandID, workerID)
@@ -179,7 +195,11 @@ func (e *Engine) notifyPlannerOfConflictEscalation(commandID, workerID string) {
 	if err != nil {
 		return
 	}
-	defer func() { _ = exec.Close() }()
+	defer func() {
+		if err := exec.Close(); err != nil {
+			e.deps.DL.Logf(core.LogLevelWarn, "close executor error=%v", err)
+		}
+	}()
 
 	message := fmt.Sprintf("[maestro] kind:conflict_escalation command_id:%s worker_id:%s\nconflict resolution attempts exhausted — escalating to planner",
 		commandID, workerID)

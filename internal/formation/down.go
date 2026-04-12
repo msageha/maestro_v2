@@ -92,7 +92,7 @@ func RunDown(maestroDir string, cfg model.Config) error {
 		fmt.Println("Warning: daemon did not stop via UDS. Attempting PID-based kill...")
 		pid := validateDaemonPID(maestroDir)
 		pidPath := filepath.Join(maestroDir, "daemon.pid")
-		if pid > 0 {
+		if isValidPID(pid) {
 			origStartTime := procMgr().StartTime(pid)
 			sameProcess := daemonIdentityChecker(maestroDir, pid, origStartTime)
 			result, termErr := terminateProcess(pid, sameProcess, 5*time.Second)
@@ -177,7 +177,7 @@ func hasOtherMaestroSessions() bool {
 func (c *Config) cleanupStalePID(maestroDir string) {
 	pid := validateDaemonPID(maestroDir)
 	pidPath := filepath.Join(maestroDir, "daemon.pid")
-	if pid <= 0 {
+	if !isValidPID(pid) {
 		removeIfExists(pidPath) // Remove stale/invalid PID file
 		return
 	}

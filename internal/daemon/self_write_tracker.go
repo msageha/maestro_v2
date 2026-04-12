@@ -53,22 +53,30 @@ func (t *selfWriteTracker) Record(path string, data any) {
 // Uses snapshot/revalidate/consume to avoid TOCTOU: the stamp is only deleted
 // after the file hash is verified to match, preventing loss of valid stamps
 // when concurrent writes change the file between snapshot and read.
-func (t *selfWriteTracker) Consume(path string) bool {
-	// Phase 1: Snapshot stamp under lock
+// snapshotStamp retrieves a stamp for the given path under lock.
+// Returns the stamp and true if found and not expired, or zero value and false otherwise.
+func (t *selfWriteTracker) snapshotStamp(path string) (writeStamp, bool) {
 	t.mu.Lock()
+	defer t.mu.Unlock()
 	stamp, ok := t.stamps[path]
 	if !ok {
 		t.cleanStaleLocked()
-		t.mu.Unlock()
-		return false
+		return writeStamp{}, false
 	}
 	if time.Now().After(stamp.Deadline) {
 		delete(t.stamps, path)
 		t.cleanStaleLocked()
-		t.mu.Unlock()
+		return writeStamp{}, false
+	}
+	return stamp, true
+}
+
+func (t *selfWriteTracker) Consume(path string) bool {
+	// Phase 1: Snapshot stamp under lock
+	stamp, ok := t.snapshotStamp(path)
+	if !ok {
 		return false
 	}
-	t.mu.Unlock()
 
 	// Phase 2: Read file outside lock (I/O)
 	content, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory

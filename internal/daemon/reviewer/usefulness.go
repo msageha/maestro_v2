@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"sync"
 	"time"
@@ -146,7 +147,11 @@ func (t *UsefulnessTracker) load() error {
 		}
 		return err
 	}
-	defer func() { _ = f.Close() }()
+	defer func() {
+		if err := f.Close(); err != nil {
+			log.Printf("[WARN] close usefulness file: %v", err)
+		}
+	}()
 
 	scanner := bufio.NewScanner(f)
 	for scanner.Scan() {
@@ -168,7 +173,11 @@ func (t *UsefulnessTracker) appendToFile(rec UsefulnessRecord) error {
 	if err != nil {
 		return err
 	}
-	defer func() { _ = f.Close() }()
+	defer func() {
+		if err := f.Close(); err != nil {
+			log.Printf("[WARN] close usefulness file: %v", err)
+		}
+	}()
 
 	data, err := json.Marshal(rec)
 	if err != nil {

@@ -125,7 +125,7 @@ func (ch *ContinuousHandler) CheckAndAdvance(commandID string, commandStatus mod
 	}
 
 	if err := ch.saveContinuousState(state); err != nil {
-		return err
+		return fmt.Errorf("save continuous state: %w", err)
 	}
 
 	// Log status transitions after successful persist
