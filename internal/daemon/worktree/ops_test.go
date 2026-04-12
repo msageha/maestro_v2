@@ -273,6 +273,19 @@ func TestWorktreeIntegration_GC_TTLExpiry(t *testing.T) {
 		t.Fatalf("GetWorkerPath (old) failed: %v", err)
 	}
 
+	// Mark old command as terminal (published) so GC is allowed to clean it up
+	oldState, err := wm.GetCommandState("cmd_ttl_old")
+	if err != nil {
+		t.Fatalf("GetCommandState (old): %v", err)
+	}
+	oldState.Integration.Status = model.IntegrationStatusPublished
+	wm.mu.Lock()
+	if err := wm.saveState("cmd_ttl_old", oldState); err != nil {
+		wm.mu.Unlock()
+		t.Fatalf("saveState (old): %v", err)
+	}
+	wm.mu.Unlock()
+
 	// Create "new" command at T=50min
 	fc.now = baseTime.Add(50 * time.Minute)
 	if err := createForCommand(wm, "cmd_ttl_new", []string{"worker1"}); err != nil {
