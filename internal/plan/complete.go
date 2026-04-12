@@ -144,12 +144,12 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 
 	// Aggregate task results from results/worker{N}.yaml (lock-free: AtomicWrite
 	// guarantees consistent snapshots; worst case is a slightly stale read).
-	taskResults, partial, err := aggregateTaskResults(opts.MaestroDir, opts.CommandID)
+	taskResults, partialErrors, err := aggregateTaskResults(opts.MaestroDir, opts.CommandID)
 	if err != nil {
 		return nil, fmt.Errorf("aggregate results: %w", err)
 	}
-	if partial {
-		log.Printf("[WARN] Complete: partial task results for command %s (some worker result files were unreadable)", opts.CommandID)
+	if len(partialErrors) > 0 {
+		return nil, fmt.Errorf("aggregate results: partial task results for command %s: %w", opts.CommandID, errors.Join(partialErrors...))
 	}
 
 	// --- Write intent before the multi-step sequence (CR-019) ---
@@ -198,6 +198,20 @@ func executeCompleteSteps(opts CompleteOptions, sm *StateManager, state *model.C
 		if err != nil {
 			return fmt.Errorf("conflict reconcile: %w", err)
 		}
+
+		// Verify state consistency before reconciling artifacts: all required
+		// tasks must be in a terminal state to prevent writing artifacts for
+		// a state that is internally inconsistent.
+		for _, taskID := range state.RequiredTaskIDs {
+			ts, ok := state.TaskStates[taskID]
+			if !ok {
+				return fmt.Errorf("conflict reconcile: required task %s has no state entry", taskID)
+			}
+			if !model.IsTerminal(ts) {
+				return fmt.Errorf("conflict reconcile: required task %s is non-terminal (%s) but plan_status is %s", taskID, ts, state.PlanStatus)
+			}
+		}
+
 		log.Printf("[WARN] executeCompleteSteps: conflict — state=%s intent=%s for command %s; reconciling result/queue to state",
 			state.PlanStatus, intent.PlanStatus, intent.CommandID)
 
@@ -415,15 +429,15 @@ func removeCompleteIntent(maestroDir, commandID string) {
 	_ = os.Remove(completeIntentPath(maestroDir, commandID))
 }
 
-func aggregateTaskResults(maestroDir string, commandID string) ([]model.CommandResultTask, bool, error) {
+func aggregateTaskResults(maestroDir string, commandID string) ([]model.CommandResultTask, []error, error) {
 	resultsDir := filepath.Join(maestroDir, "results")
 	entries, err := os.ReadDir(resultsDir)
 	if err != nil {
-		return nil, false, fmt.Errorf("read results dir: %w", err)
+		return nil, nil, fmt.Errorf("read results dir: %w", err)
 	}
 
 	var taskResults []model.CommandResultTask
-	partial := false
+	var partialErrors []error
 
 	for _, entry := range entries {
 		name := entry.Name()
@@ -435,15 +449,13 @@ func aggregateTaskResults(maestroDir string, commandID string) ([]model.CommandR
 		path := filepath.Join(resultsDir, name)
 		data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 		if err != nil {
-			log.Printf("[WARN] aggregateTaskResults: failed to read %s: %v (results may be partial)", path, err)
-			partial = true
+			partialErrors = append(partialErrors, fmt.Errorf("read %s: %w", path, err))
 			continue
 		}
 
 		var rf model.TaskResultFile
 		if err := yamlv3.Unmarshal(data, &rf); err != nil {
-			log.Printf("[WARN] aggregateTaskResults: failed to parse %s: %v (results may be partial)", path, err)
-			partial = true
+			partialErrors = append(partialErrors, fmt.Errorf("parse %s: %w", path, err))
 			continue
 		}
 
@@ -459,7 +471,7 @@ func aggregateTaskResults(maestroDir string, commandID string) ([]model.CommandR
 		}
 	}
 
-	return taskResults, partial, nil
+	return taskResults, partialErrors, nil
 }
 
 // writeCommandResultLocked writes a command result to results/planner.yaml.

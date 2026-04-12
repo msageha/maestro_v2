@@ -20,7 +20,9 @@ func nowUTC() string {
 
 // readModifyWriteQueue performs the common read-modify-write pattern on a worker queue file.
 // It reads the existing queue, calls modifyFn to apply changes, and atomically writes the result.
-func readModifyWriteQueue(maestroDir string, workerID string, modifyFn func(tq *model.TaskQueue)) error {
+// If modifyFn panics, the original queue state is preserved (no write occurs) and the panic
+// is converted to an error.
+func readModifyWriteQueue(maestroDir string, workerID string, modifyFn func(tq *model.TaskQueue)) (retErr error) {
 	queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(workerID))
 
 	var tq model.TaskQueue
@@ -37,7 +39,19 @@ func readModifyWriteQueue(maestroDir string, workerID string, modifyFn func(tq *
 		tq.FileType = "queue_task"
 	}
 
-	modifyFn(&tq)
+	// Recover from panics in modifyFn to prevent queue corruption.
+	// The original queue data is not written back on panic.
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				retErr = fmt.Errorf("modifyFn panicked for queue %s: %v", workerID, r)
+			}
+		}()
+		modifyFn(&tq)
+	}()
+	if retErr != nil {
+		return retErr
+	}
 
 	if err := yamlutil.AtomicWrite(queueFile, tq); err != nil {
 		return fmt.Errorf("write queue %s: %w", workerID, err)
