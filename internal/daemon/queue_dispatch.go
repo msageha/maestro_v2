@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
@@ -28,7 +29,7 @@ func (qh *QueueHandler) stepPlannerSignalsDeferred(sq *model.PlannerSignalQueue,
 			}
 		}
 
-		if qh.dependencyResolver.HasStateReader() && sig.PhaseID != "" {
+		if qh.dependencyResolver.HasStateReader() && sig.PhaseID != "" && !strings.HasPrefix(sig.PhaseID, "__") {
 			// Phase-level signals: check phase existence (orphan) and staleness
 			phaseStatus, err := qh.dependencyResolver.GetPhaseStatus(sig.CommandID, sig.PhaseID)
 			if err != nil {
@@ -57,7 +58,7 @@ func (qh *QueueHandler) stepPlannerSignalsDeferred(sq *model.PlannerSignalQueue,
 				*dirty = true
 				continue
 			}
-		} else if qh.dependencyResolver.HasStateReader() && sig.PhaseID == "" {
+		} else if qh.dependencyResolver.HasStateReader() && (sig.PhaseID == "" || strings.HasPrefix(sig.PhaseID, "__")) {
 			// Command-level signals (e.g. circuit_breaker_tripped): check command existence only
 			_, err := qh.dependencyResolver.GetStateReader().GetCommandPhases(sig.CommandID)
 			if err != nil {

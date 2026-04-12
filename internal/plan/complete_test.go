@@ -688,3 +688,156 @@ func TestComplete_H3_ConflictRecovery_StateFailedIntentCompleted(t *testing.T) {
 	// Sanity: avoid unused-import lint when strings package is dropped.
 	_ = strings.TrimSpace
 }
+
+// --- Worktree publish guard tests ---
+
+// writeWorktreeState writes a WorktreeCommandState file for the given command.
+func writeWorktreeState(t *testing.T, maestroDir, commandID string, integrationStatus model.IntegrationStatus) {
+	t.Helper()
+	dir := filepath.Join(maestroDir, "state", "worktrees")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatalf("create worktrees dir: %v", err)
+	}
+	wcs := model.WorktreeCommandState{
+		SchemaVersion: 1,
+		FileType:      "state_worktree",
+		CommandID:     commandID,
+		Integration: model.IntegrationState{
+			CommandID: commandID,
+			Branch:    "integration/" + commandID,
+			Status:    integrationStatus,
+			CreatedAt: "2025-01-01T00:00:00Z",
+			UpdatedAt: "2025-01-01T00:00:00Z",
+		},
+		CreatedAt: "2025-01-01T00:00:00Z",
+		UpdatedAt: "2025-01-01T00:00:00Z",
+	}
+	path := filepath.Join(dir, commandID+".yaml")
+	if err := yamlutil.AtomicWrite(path, wcs); err != nil {
+		t.Fatalf("write worktree state: %v", err)
+	}
+}
+
+func TestComplete_WorktreeEnabled_PartialMerge_Rejected(t *testing.T) {
+	commandID := "cmd_0000000050_aabbccdd"
+	taskID1 := "task_0000000050_11111111"
+
+	taskStates := map[string]model.Status{
+		taskID1: model.StatusCompleted,
+	}
+	requiredIDs := []string{taskID1}
+
+	maestroDir := setupCompleteTest(t, commandID, taskStates, requiredIDs)
+	cfg := testConfig()
+	cfg.Worktree.Enabled = true
+
+	writeWorktreeState(t, maestroDir, commandID, model.IntegrationStatusPartialMerge)
+
+	_, err := Complete(CompleteOptions{
+		CommandID:  commandID,
+		Summary:    "should be rejected",
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
+	})
+	if err == nil {
+		t.Fatal("Complete returned nil error, want error for partial_merge worktree status")
+	}
+	if !strings.Contains(err.Error(), "partial_merge") {
+		t.Errorf("error = %q, want to contain %q", err.Error(), "partial_merge")
+	}
+	if !strings.Contains(err.Error(), "published") {
+		t.Errorf("error = %q, want to contain %q", err.Error(), "published")
+	}
+}
+
+func TestComplete_WorktreeEnabled_Published_Allowed(t *testing.T) {
+	commandID := "cmd_0000000051_aabbccdd"
+	taskID1 := "task_0000000051_11111111"
+
+	taskStates := map[string]model.Status{
+		taskID1: model.StatusCompleted,
+	}
+	requiredIDs := []string{taskID1}
+
+	maestroDir := setupCompleteTest(t, commandID, taskStates, requiredIDs)
+	cfg := testConfig()
+	cfg.Worktree.Enabled = true
+
+	writeWorktreeState(t, maestroDir, commandID, model.IntegrationStatusPublished)
+
+	result, err := Complete(CompleteOptions{
+		CommandID:  commandID,
+		Summary:    "should succeed",
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
+	})
+	if err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+	if result.Status != string(model.PlanStatusCompleted) {
+		t.Errorf("Status = %q, want %q", result.Status, model.PlanStatusCompleted)
+	}
+}
+
+func TestComplete_WorktreeDisabled_Allowed(t *testing.T) {
+	commandID := "cmd_0000000052_aabbccdd"
+	taskID1 := "task_0000000052_11111111"
+
+	taskStates := map[string]model.Status{
+		taskID1: model.StatusCompleted,
+	}
+	requiredIDs := []string{taskID1}
+
+	maestroDir := setupCompleteTest(t, commandID, taskStates, requiredIDs)
+	cfg := testConfig()
+	cfg.Worktree.Enabled = false
+
+	// Write worktree state with partial_merge — should be ignored because worktree is disabled
+	writeWorktreeState(t, maestroDir, commandID, model.IntegrationStatusPartialMerge)
+
+	result, err := Complete(CompleteOptions{
+		CommandID:  commandID,
+		Summary:    "should succeed despite partial_merge",
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
+	})
+	if err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+	if result.Status != string(model.PlanStatusCompleted) {
+		t.Errorf("Status = %q, want %q", result.Status, model.PlanStatusCompleted)
+	}
+}
+
+func TestComplete_WorktreeEnabled_NoStateFile_Allowed(t *testing.T) {
+	commandID := "cmd_0000000053_aabbccdd"
+	taskID1 := "task_0000000053_11111111"
+
+	taskStates := map[string]model.Status{
+		taskID1: model.StatusCompleted,
+	}
+	requiredIDs := []string{taskID1}
+
+	maestroDir := setupCompleteTest(t, commandID, taskStates, requiredIDs)
+	cfg := testConfig()
+	cfg.Worktree.Enabled = true
+
+	// No worktree state file written — should be allowed
+
+	result, err := Complete(CompleteOptions{
+		CommandID:  commandID,
+		Summary:    "should succeed without worktree state",
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
+	})
+	if err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+	if result.Status != string(model.PlanStatusCompleted) {
+		t.Errorf("Status = %q, want %q", result.Status, model.PlanStatusCompleted)
+	}
+}

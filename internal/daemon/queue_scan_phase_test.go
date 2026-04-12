@@ -1117,3 +1117,49 @@ func TestPlannerSignal_StructuredConflictFields_RoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestStepPlannerSignalsDeferred_ImplicitPhaseNotOrphaned verifies that signals
+// with __implicit_phase bypass the phase existence check and are retained as
+// long as the command itself exists.
+func TestStepPlannerSignalsDeferred_ImplicitPhaseNotOrphaned(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+
+	// Create command state without any phases (simulates no-phase command)
+	writeCommandState(t, maestroDir, "cmd1", map[string]model.Status{
+		"t1": model.StatusCompleted,
+	}, nil)
+
+	now := "2026-01-01T00:00:00Z"
+	sq := model.PlannerSignalQueue{
+		SchemaVersion: 1,
+		FileType:      "planner_signal_queue",
+		Signals: []model.PlannerSignal{
+			{
+				Kind:      "merge_conflict",
+				CommandID: "cmd1",
+				PhaseID:   "__implicit_phase",
+				Message:   "conflict in implicit phase",
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}
+
+	dirty := false
+	work := &deferredWork{}
+	qh.stepPlannerSignalsDeferred(&sq, &dirty, work)
+
+	// Signal must be retained (not orphaned)
+	if len(sq.Signals) != 1 {
+		t.Fatalf("expected 1 signal retained, got %d", len(sq.Signals))
+	}
+	if sq.Signals[0].PhaseID != "__implicit_phase" {
+		t.Errorf("PhaseID = %q, want __implicit_phase", sq.Signals[0].PhaseID)
+	}
+	// Signal must be deferred for delivery
+	if len(work.signals) != 1 {
+		t.Fatalf("expected 1 deferred signal, got %d", len(work.signals))
+	}
+}

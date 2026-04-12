@@ -129,6 +129,12 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 		return nil, err
 	}
 
+	// Worktree publish guard: when worktree mode is enabled, the integration
+	// branch must be published before the command can complete.
+	if err := checkWorktreePublished(opts.MaestroDir, opts.CommandID, opts.Config); err != nil {
+		return nil, err
+	}
+
 	// Map PlanStatus to Status for result
 	var resultStatus model.Status
 	switch derivedPlanStatus {
@@ -472,6 +478,38 @@ func aggregateTaskResults(maestroDir string, commandID string) ([]model.CommandR
 	}
 
 	return taskResults, partialErrors, nil
+}
+
+// checkWorktreePublished verifies that the worktree integration branch has been
+// published before allowing command completion. Returns nil if worktree mode is
+// disabled, the worktree state file does not exist, or the integration status is
+// "published".
+func checkWorktreePublished(maestroDir, commandID string, config model.Config) error {
+	if !config.Worktree.Enabled {
+		return nil
+	}
+
+	path := filepath.Join(maestroDir, "state", "worktrees", commandID+".yaml")
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("read worktree state: %w", err)
+	}
+
+	var wcs model.WorktreeCommandState
+	if err := yamlv3.Unmarshal(data, &wcs); err != nil {
+		return fmt.Errorf("parse worktree state: %w", err)
+	}
+
+	if wcs.Integration.Status != model.IntegrationStatusPublished {
+		return &planValidationError{
+			Msg: fmt.Sprintf("cannot complete command: worktree integration status is '%s', expected 'published'", wcs.Integration.Status),
+		}
+	}
+
+	return nil
 }
 
 // writeCommandResultLocked writes a command result to results/planner.yaml.

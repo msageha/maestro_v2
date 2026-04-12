@@ -11,6 +11,27 @@ import (
 // with alphanumeric, dot, underscore, or hyphen in between. Length 1–128.
 var idPattern = regexp.MustCompile(`^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,126}[A-Za-z0-9])?$`)
 
+// internalIDPattern matches system-internal IDs with double-underscore prefix
+// (e.g. "__implicit_phase"). Only lowercase letters and underscores after the prefix.
+var internalIDPattern = regexp.MustCompile(`^__[a-z][a-z_]*$`)
+
+// PhaseID validates a phase identifier. It accepts either a regular ID
+// (validated by idPattern) or a system-internal ID with a "__" prefix
+// (validated by internalIDPattern). This allows synthetic phase IDs like
+// "__implicit_phase" used for commands without explicit phases.
+func PhaseID(id string) error {
+	if id == "" {
+		return fmt.Errorf("validate: phase ID must not be empty")
+	}
+	if internalIDPattern.MatchString(id) {
+		return nil
+	}
+	if !idPattern.MatchString(id) {
+		return fmt.Errorf("validate: invalid phase ID %q: must be a valid ID or an internal __-prefixed identifier", id)
+	}
+	return nil
+}
+
 // projectNamePattern allows tmux-safe project names: alphanumeric start,
 // then alphanumeric, underscore, or hyphen. No dots or colons (which are
 // special in tmux target syntax). Length 1–64.

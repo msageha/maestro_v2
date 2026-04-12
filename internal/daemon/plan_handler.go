@@ -172,7 +172,7 @@ func (h *PlanAPI) handlePlanWorktreeRecovery(operation string, data json.RawMess
 		if p.PhaseID == "" {
 			return uds.ErrorResponse(uds.ErrCodeValidation, "phase_id is required")
 		}
-		if err := validate.ID(p.PhaseID); err != nil {
+		if err := validate.PhaseID(p.PhaseID); err != nil {
 			return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid phase_id: %v", err))
 		}
 		if p.WorkerID == "" {

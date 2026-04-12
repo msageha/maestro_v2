@@ -41,6 +41,18 @@ func validateIDs(commandID string, workerIDs ...string) error {
 	return nil
 }
 
+// validateCommandAndPhaseIDs checks that commandID is a valid ID and phaseID
+// is a valid phase ID (which permits __-prefixed internal identifiers).
+func validateCommandAndPhaseIDs(commandID, phaseID string) error {
+	if err := validate.ID(commandID); err != nil {
+		return fmt.Errorf("invalid commandID: %w", err)
+	}
+	if err := validate.PhaseID(phaseID); err != nil {
+		return fmt.Errorf("invalid phaseID: %w", err)
+	}
+	return nil
+}
+
 // Manager manages git worktree lifecycle for Worker isolation.
 // All git operations are serialized through this manager (Single-Writer pattern).
 type Manager struct {
@@ -470,7 +482,7 @@ func (wm *Manager) MarkIntegrationStallSignaled(commandID string) error {
 
 // MarkPhaseMerged records that a phase has been merged so it won't be re-merged.
 func (wm *Manager) MarkPhaseMerged(commandID, phaseID string) error {
-	if err := validateIDs(commandID, phaseID); err != nil {
+	if err := validateCommandAndPhaseIDs(commandID, phaseID); err != nil {
 		return err
 	}
 	wm.mu.Lock()

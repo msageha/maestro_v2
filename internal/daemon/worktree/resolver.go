@@ -15,6 +15,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/validate"
 )
 
 // resolverGitTimeout caps git operations issued by the resolver pipeline so a
@@ -121,8 +122,11 @@ func (wm *Manager) commandLock(commandID string) *sync.Mutex {
 // commit itself; the resolver agent (or operator) commits in the integration
 // worktree before invoking resolve_conflict.
 func (wm *Manager) DispatchConflictResolution(commandID, phaseID, workerID, conflictGen string) error {
-	if err := validateIDs(commandID, workerID); err != nil {
+	if err := validateCommandAndPhaseIDs(commandID, phaseID); err != nil {
 		return err
+	}
+	if err := validate.ID(workerID); err != nil {
+		return fmt.Errorf("invalid workerID: %w", err)
 	}
 	if wm.signalStore == nil {
 		return errSignalStoreUnavailable

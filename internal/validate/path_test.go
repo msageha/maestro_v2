@@ -99,6 +99,45 @@ func TestValidateProjectName_Invalid(t *testing.T) {
 	}
 }
 
+func TestValidatePhaseID(t *testing.T) {
+	valid := []string{
+		"__implicit_phase",
+		"__internal",
+		"__system_commit",
+		"foundation",
+		"phase_001",
+		"my-phase",
+		"a",
+		"A1",
+	}
+	for _, id := range valid {
+		if err := PhaseID(id); err != nil {
+			t.Errorf("PhaseID(%q) returned error: %v", id, err)
+		}
+	}
+}
+
+func TestValidatePhaseID_Invalid(t *testing.T) {
+	invalid := []struct {
+		id   string
+		desc string
+	}{
+		{"", "empty string"},
+		{"__", "only double underscore"},
+		{"__UPPER", "uppercase after prefix"},
+		{"__123", "digits after prefix"},
+		{"_single", "single underscore prefix"},
+		{"___triple", "triple underscore prefix"},
+		{"..", "double dot"},
+		{"../etc/passwd", "path traversal"},
+	}
+	for _, tc := range invalid {
+		if err := PhaseID(tc.id); err == nil {
+			t.Errorf("PhaseID(%q) [%s] should have returned error", tc.id, tc.desc)
+		}
+	}
+}
+
 func TestValidateFilePath(t *testing.T) {
 	valid := []string{
 		"/tmp/tasks.yaml",

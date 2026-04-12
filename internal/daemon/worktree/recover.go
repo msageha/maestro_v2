@@ -8,6 +8,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/validate"
 )
 
 // Sentinel errors returned by operator-recovery entry points (Unquarantine,
@@ -137,8 +138,11 @@ func (wm *Manager) ResumeMerge(commandID string) error {
 // Idempotency: returns ErrAlreadyResolved when the worker is not in the
 // commit-failed list and the integration is not in a recoverable state.
 func (wm *Manager) ResolveConflict(commandID, phaseID, workerID string) error {
-	if err := validateIDs(commandID, phaseID, workerID); err != nil {
+	if err := validateCommandAndPhaseIDs(commandID, phaseID); err != nil {
 		return err
+	}
+	if err := validate.ID(workerID); err != nil {
+		return fmt.Errorf("invalid workerID: %w", err)
 	}
 	wm.mu.Lock()
 	defer wm.mu.Unlock()

@@ -553,6 +553,51 @@ func TestSanitizeForLog(t *testing.T) {
 	}
 }
 
+func TestBuildLaunchEnv_ContainsSandboxed(t *testing.T) {
+	base := []string{"HOME=/home/test", "PATH=/usr/bin", "CLAUDECODE=something"}
+	env := buildLaunchEnv(base, "worker")
+
+	envMap := make(map[string]string)
+	for _, e := range env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+
+	// CLAUDE_CODE_SANDBOXED must be set to bypass workspace trust dialog.
+	if v, ok := envMap["CLAUDE_CODE_SANDBOXED"]; !ok || v != "1" {
+		t.Errorf("CLAUDE_CODE_SANDBOXED = %q (present=%v), want \"1\"", v, ok)
+	}
+
+	// CLAUDECODE must be removed.
+	if _, ok := envMap["CLAUDECODE"]; ok {
+		t.Error("CLAUDECODE should be filtered out")
+	}
+
+	// MAESTRO_AGENT_ROLE must be set.
+	if v, ok := envMap["MAESTRO_AGENT_ROLE"]; !ok || v != "worker" {
+		t.Errorf("MAESTRO_AGENT_ROLE = %q (present=%v), want \"worker\"", v, ok)
+	}
+}
+
+func TestBuildLaunchEnv_AllRoles(t *testing.T) {
+	for _, role := range []string{"orchestrator", "planner", "worker"} {
+		t.Run(role, func(t *testing.T) {
+			env := buildLaunchEnv([]string{}, role)
+			found := false
+			for _, e := range env {
+				if e == "CLAUDE_CODE_SANDBOXED=1" {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("role=%s: CLAUDE_CODE_SANDBOXED=1 not found in env", role)
+			}
+		})
+	}
+}
+
 func TestCurrentPaneTarget_InvalidTmuxPane(t *testing.T) {
 	invalid := []string{
 		"",

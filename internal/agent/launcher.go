@@ -83,10 +83,8 @@ func Launch(maestroDir string) error {
 	}
 
 	// Execute claude CLI.
-	// Clear CLAUDECODE env var to allow launching inside a parent Claude Code
-	// session (e.g. when maestro is invoked from Claude Code CLI).
 	cmd := exec.Command("claude", args...) //nolint:gosec // "claude" is a fixed command; args are constructed from validated config
-	cmd.Env = append(filterEnv(os.Environ(), "CLAUDECODE"), uds.CallerRoleEnv+"="+role)
+	cmd.Env = buildLaunchEnv(os.Environ(), role)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -257,6 +255,21 @@ func buildSystemPrompt(maestroDir, role string) (string, error) {
 	sb.Write(instructionsContent)
 
 	return sb.String(), nil
+}
+
+// buildLaunchEnv constructs the environment for the claude CLI process.
+//   - Clears CLAUDECODE to allow launching inside a parent Claude Code session
+//     (e.g. when maestro is invoked from Claude Code CLI).
+//   - Sets CLAUDE_CODE_SANDBOXED=1 to bypass the workspace trust dialog that
+//     otherwise blocks automated (headless) startup in every tmux pane. This is
+//     separate from --dangerously-skip-permissions which only skips per-tool
+//     permission checks; the trust dialog is an independent security layer that
+//     checks project-level trust state.
+func buildLaunchEnv(base []string, role string) []string {
+	env := filterEnv(base, "CLAUDECODE")
+	env = append(env, uds.CallerRoleEnv+"="+role)
+	env = append(env, "CLAUDE_CODE_SANDBOXED=1")
+	return env
 }
 
 // filterEnv returns a copy of environ with the named variable removed.

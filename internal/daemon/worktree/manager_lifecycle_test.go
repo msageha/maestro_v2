@@ -834,6 +834,33 @@ func TestMarkPhaseMerged_Basic(t *testing.T) {
 	}
 }
 
+// TestMarkPhaseMerged_ImplicitPhase tests that __implicit_phase is accepted
+// by MarkPhaseMerged via the new PhaseID validation.
+func TestMarkPhaseMerged_ImplicitPhase(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	if err := createForCommand(wm, "cmd_implicit", []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand failed: %v", err)
+	}
+
+	if err := wm.MarkPhaseMerged("cmd_implicit", "__implicit_phase"); err != nil {
+		t.Fatalf("MarkPhaseMerged with __implicit_phase failed: %v", err)
+	}
+
+	state, err := wm.GetCommandState("cmd_implicit")
+	if err != nil {
+		t.Fatalf("GetCommandState failed: %v", err)
+	}
+	if state.MergedPhases == nil {
+		t.Fatal("MergedPhases should not be nil")
+	}
+	if _, ok := state.MergedPhases["__implicit_phase"]; !ok {
+		t.Error("__implicit_phase should be in MergedPhases")
+	}
+}
+
 // TestMarkPhaseMerged_DuplicatePhase tests that marking the same phase twice
 // overwrites the timestamp without creating duplicate entries.
 func TestMarkPhaseMerged_DuplicatePhase(t *testing.T) {
