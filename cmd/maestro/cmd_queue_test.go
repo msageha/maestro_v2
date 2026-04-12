@@ -276,10 +276,17 @@ func TestSendQueueWrite_UDSResponseNoID(t *testing.T) {
 		},
 	})
 
-	// Should still succeed (falls through to JSON output)
+	// Should fail when both id and command_id are missing from response
 	err := app.sendQueueWrite(map[string]any{"target": "planner", "type": "command", "content": "test"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error when response missing both id and command_id")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !strings.Contains(ce.Msg, "missing both id and command_id") {
+		t.Errorf("expected 'missing both id and command_id' in error, got: %s", ce.Msg)
 	}
 }
 

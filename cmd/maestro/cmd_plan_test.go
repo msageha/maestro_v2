@@ -11,7 +11,7 @@ import (
 )
 
 func TestRunPlan_NoSubcommand(t *testing.T) {
-	err := runPlan(nil)
+	err := newCLIApp().runPlan(nil)
 	if err == nil {
 		t.Fatal("expected error for missing subcommand")
 	}
@@ -22,7 +22,7 @@ func TestRunPlan_NoSubcommand(t *testing.T) {
 }
 
 func TestRunPlan_UnknownSubcommand(t *testing.T) {
-	err := runPlan([]string{"bogus"})
+	err := newCLIApp().runPlan([]string{"bogus"})
 	if err == nil {
 		t.Fatal("expected error for unknown subcommand")
 	}
@@ -44,7 +44,7 @@ func TestRunPlanSubmit_FlagParsing(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := runPlanSubmit(tt.args)
+			err := newCLIApp().runPlanSubmit(tt.args)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error")
@@ -70,7 +70,7 @@ func TestRunPlanUnquarantine_FlagParsing(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := runPlanUnquarantine(tt.args)
+			err := newCLIApp().runPlanUnquarantine(tt.args)
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -94,7 +94,7 @@ func TestRunPlanResumeMerge_FlagParsing(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := runPlanResumeMerge(tt.args)
+			err := newCLIApp().runPlanResumeMerge(tt.args)
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -123,7 +123,7 @@ func TestRunResolveConflict_FlagParsing(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := runResolveConflict(tt.args)
+			err := newCLIApp().runResolveConflict(tt.args)
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -139,7 +139,7 @@ func TestRunPlan_RecoverySubcommandsRouted(t *testing.T) {
 	// Sanity: runPlan should accept the new subcommand names without
 	// returning "unknown subcommand". They will fail flag parsing instead.
 	for _, sub := range []string{"unquarantine", "resume-merge"} {
-		err := runPlan([]string{sub})
+		err := newCLIApp().runPlan([]string{sub})
 		if err == nil {
 			t.Fatalf("%s: expected error", sub)
 		}
@@ -174,7 +174,7 @@ func TestRunPlanComplete_FlagParsing(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := runPlanComplete(tt.args)
+			err := newCLIApp().runPlanComplete(tt.args)
 			if tt.wantErr {
 				if err == nil {
 					t.Fatal("expected error")
@@ -189,7 +189,7 @@ func TestRunPlanComplete_FlagParsing(t *testing.T) {
 }
 
 func TestRunPlanAddRetryTask_MissingFlags(t *testing.T) {
-	err := runPlanAddRetryTask([]string{"--command-id", "c1"})
+	err := newCLIApp().runPlanAddRetryTask([]string{"--command-id", "c1"})
 	if err == nil {
 		t.Fatal("expected error for missing required flags")
 	}
@@ -252,7 +252,7 @@ func TestRunPlanAddRetryTask_ValidateID(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := runPlanAddRetryTask(tt.args)
+			err := newCLIApp().runPlanAddRetryTask(tt.args)
 			if !tt.wantErr {
 				return
 			}
@@ -282,7 +282,7 @@ func TestRunPlanAddRetryTask_InvalidBlockedBy(t *testing.T) {
 		"--bloom-level", "3",
 		"--blocked-by", "../evil",
 	}
-	err := runPlanAddRetryTask(args)
+	err := newCLIApp().runPlanAddRetryTask(args)
 	if err == nil {
 		t.Fatal("expected error for invalid blocked-by")
 	}
@@ -306,7 +306,7 @@ func stringContains(s, substr string) bool {
 }
 
 func TestRunPlanRequestCancel_MissingCommandID(t *testing.T) {
-	err := runPlanRequestCancel(nil)
+	err := newCLIApp().runPlanRequestCancel(nil)
 	if err == nil {
 		t.Fatal("expected error for missing command-id")
 	}
@@ -317,7 +317,7 @@ func TestRunPlanRequestCancel_MissingCommandID(t *testing.T) {
 }
 
 func TestRunPlanSubmit_InvalidCommandID(t *testing.T) {
-	err := runPlanSubmit([]string{"--command-id", "../evil"})
+	err := newCLIApp().runPlanSubmit([]string{"--command-id", "../evil"})
 	if err == nil {
 		t.Fatal("expected error for invalid command-id")
 	}
@@ -331,7 +331,7 @@ func TestRunPlanSubmit_InvalidCommandID(t *testing.T) {
 }
 
 func TestRunPlanComplete_InvalidCommandID(t *testing.T) {
-	err := runPlanComplete([]string{"--command-id", "../evil"})
+	err := newCLIApp().runPlanComplete([]string{"--command-id", "../evil"})
 	if err == nil {
 		t.Fatal("expected error for invalid command-id")
 	}
@@ -349,7 +349,7 @@ func TestRunPlanComplete_SummaryTooLong(t *testing.T) {
 	for i := range longSummary {
 		longSummary[i] = 'x'
 	}
-	err := runPlanComplete([]string{"--command-id", "valid-cmd", "--summary", string(longSummary)})
+	err := newCLIApp().runPlanComplete([]string{"--command-id", "valid-cmd", "--summary", string(longSummary)})
 	if err == nil {
 		t.Fatal("expected error for oversized summary")
 	}
@@ -367,7 +367,7 @@ func TestRunPlanAddRetryTask_ContentTooLong(t *testing.T) {
 	for i := range longContent {
 		longContent[i] = 'x'
 	}
-	err := runPlanAddRetryTask([]string{
+	err := newCLIApp().runPlanAddRetryTask([]string{
 		"--command-id", "valid-cmd",
 		"--retry-of", "valid-task",
 		"--purpose", "p",
@@ -388,7 +388,7 @@ func TestRunPlanAddRetryTask_ContentTooLong(t *testing.T) {
 }
 
 func TestRunPlanRequestCancel_InvalidCommandID(t *testing.T) {
-	err := runPlanRequestCancel([]string{"--command-id", "../evil"})
+	err := newCLIApp().runPlanRequestCancel([]string{"--command-id", "../evil"})
 	if err == nil {
 		t.Fatal("expected error for invalid command-id")
 	}
@@ -402,7 +402,7 @@ func TestRunPlanRequestCancel_InvalidCommandID(t *testing.T) {
 }
 
 func TestRunPlanRebuild_InvalidCommandID(t *testing.T) {
-	err := runPlanRebuild([]string{"--command-id", "../evil"})
+	err := newCLIApp().runPlanRebuild([]string{"--command-id", "../evil"})
 	if err == nil {
 		t.Fatal("expected error for invalid command-id")
 	}
@@ -416,7 +416,7 @@ func TestRunPlanRebuild_InvalidCommandID(t *testing.T) {
 }
 
 func TestRunPlanRebuild_MissingCommandID(t *testing.T) {
-	err := runPlanRebuild(nil)
+	err := newCLIApp().runPlanRebuild(nil)
 	if err == nil {
 		t.Fatal("expected error for missing command-id")
 	}
@@ -429,23 +429,18 @@ func TestRunPlanRebuild_MissingCommandID(t *testing.T) {
 func TestSendPlanCommand_SanitizesValidationMessage(t *testing.T) {
 	withMaestroDir(t)
 
-	// Inject a mock that returns a VALIDATION_ERROR with ANSI escape codes
-	origFactory := newUDSClient
-	newUDSClient = func(string) udsClientIface {
-		return &mockUDSClient{
-			sendCommandContextFunc: func(_ context.Context, _ string, _ any) (*uds.Response, error) {
-				return uds.ErrorResponse(uds.ErrCodeValidation, "bad input\x1b[31m injected\x1b[0m"), nil
-			},
-		}
-	}
-	defer func() { newUDSClient = origFactory }()
+	app := newTestApp(&mockUDSClient{
+		sendCommandContextFunc: func(_ context.Context, _ string, _ any) (*uds.Response, error) {
+			return uds.ErrorResponse(uds.ErrCodeValidation, "bad input\x1b[31m injected\x1b[0m"), nil
+		},
+	})
 
 	// Capture stderr
 	oldStderr := os.Stderr
 	r, w, _ := os.Pipe()
 	os.Stderr = w
 
-	err := sendPlanCommand("test", ".maestro", map[string]any{"operation": "test"})
+	err := app.sendPlanCommand("test", ".maestro", map[string]any{"operation": "test"})
 
 	w.Close()
 	os.Stderr = oldStderr
