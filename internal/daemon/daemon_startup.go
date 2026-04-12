@@ -192,9 +192,6 @@ func (d *Daemon) initComponents() {
 		// server from starting and cause waitDaemonReady to time out.
 	}
 
-	// Review coordinator: groups dispatcher + usefulness tracker
-	d.reviewCoord = newReviewCoordinator(d.config.Review, d.maestroDir, d.log)
-
 	d.initPhaseB()
 	d.phaseC = newPhaseCManager(d.config, d.getAvailableModels(), d.log)
 
@@ -203,6 +200,10 @@ func (d *Daemon) initComponents() {
 	if d.qualityGateDaemon != nil {
 		d.handler.SetQualityGate(d.qualityGateDaemon)
 	}
+
+	// Review coordinator: groups dispatcher + usefulness tracker.
+	// Initialized after eventBus and other dependencies are ready.
+	d.reviewCoord = newReviewCoordinator(d.config.Review, d.maestroDir, d.log)
 
 	// Wire API handler dependencies that require initComponents artifacts.
 	d.api.shared.SetFileLockHolder(d.handler)

@@ -140,7 +140,7 @@ func TestUpdateCounterOnResult_IncrementOnFailure(t *testing.T) {
 	}
 }
 
-func TestUpdateCounterOnResult_ResetOnSuccess(t *testing.T) {
+func TestUpdateCounterOnResult_DecrementOnSuccess(t *testing.T) {
 	t.Parallel()
 	cb := newTestHandler(true, 3, 30)
 	state := &model.CommandState{
@@ -154,11 +154,29 @@ func TestUpdateCounterOnResult_ResetOnSuccess(t *testing.T) {
 	if tripped {
 		t.Error("expected no trip on success")
 	}
-	if state.CircuitBreaker.ConsecutiveFailures != 0 {
-		t.Errorf("expected 0 failures after success, got %d", state.CircuitBreaker.ConsecutiveFailures)
+	if state.CircuitBreaker.ConsecutiveFailures != 1 {
+		t.Errorf("expected 1 failure after decrement, got %d", state.CircuitBreaker.ConsecutiveFailures)
 	}
 	if state.CircuitBreaker.LastProgressAt == nil {
 		t.Error("expected LastProgressAt to be set")
+	}
+
+	// Second success decrements to 0
+	tripped, _ = cb.UpdateCounterOnResult(state, model.StatusCompleted, "r2", time.Now())
+	if tripped {
+		t.Error("expected no trip on success")
+	}
+	if state.CircuitBreaker.ConsecutiveFailures != 0 {
+		t.Errorf("expected 0 failures after second decrement, got %d", state.CircuitBreaker.ConsecutiveFailures)
+	}
+
+	// Third success stays at 0 (floor)
+	tripped, _ = cb.UpdateCounterOnResult(state, model.StatusCompleted, "r3", time.Now())
+	if tripped {
+		t.Error("expected no trip on success")
+	}
+	if state.CircuitBreaker.ConsecutiveFailures != 0 {
+		t.Errorf("expected 0 failures (floor), got %d", state.CircuitBreaker.ConsecutiveFailures)
 	}
 }
 

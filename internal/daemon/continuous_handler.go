@@ -71,18 +71,19 @@ func (ch *ContinuousHandler) CheckAndAdvance(commandID string, commandStatus mod
 		return nil
 	}
 
-	state.CurrentIteration++
-	state.LastCommandID = &commandID
-	now := ch.clock.Now().UTC().Format(time.RFC3339)
-	state.UpdatedAt = now
-
-	// Track consecutive failures for the pre-generation gate. Reset on any non-failed
-	// command so transient failures recover automatically.
+	// Compute new state values on a snapshot before applying mutations.
+	// This ensures all-or-nothing: either all fields are updated consistently
+	// and persisted, or the on-disk state remains unchanged.
+	newIteration := state.CurrentIteration + 1
+	newConsecutiveFailures := state.ConsecutiveFailures
 	if commandStatus == model.StatusFailed {
-		state.ConsecutiveFailures++
+		newConsecutiveFailures++
 	} else {
-		state.ConsecutiveFailures = 0
+		newConsecutiveFailures = 0
 	}
+
+	newStatus := state.Status
+	var newPausedReason *string
 
 	// Pre-generation gate: stop when consecutive failures reach the configured threshold.
 	// MaxConsecutiveFailures == 0 means disabled. This is checked BEFORE the
@@ -90,33 +91,56 @@ func (ch *ContinuousHandler) CheckAndAdvance(commandID string, commandStatus mod
 	// pause_on_failure (otherwise pause would short-circuit Status from Running
 	// to Paused and the gate guard would never fire on the threshold iteration).
 	if ch.config.Continuous.MaxConsecutiveFailures > 0 &&
-		state.ConsecutiveFailures >= ch.config.Continuous.MaxConsecutiveFailures {
-		state.Status = model.ContinuousStatusStopped
+		newConsecutiveFailures >= ch.config.Continuous.MaxConsecutiveFailures {
+		newStatus = model.ContinuousStatusStopped
 		reason := "max_consecutive_failures_reached"
-		state.PausedReason = &reason
-		ch.log(LogLevelInfo, "continuous_stop reason=%s iteration=%d consecutive_failures=%d max=%d",
-			reason, state.CurrentIteration, state.ConsecutiveFailures, ch.config.Continuous.MaxConsecutiveFailures)
+		newPausedReason = &reason
 	}
 
 	// Check pause_on_failure (only if still running — gate hard-stop takes precedence).
-	if state.Status == model.ContinuousStatusRunning &&
+	if newStatus == model.ContinuousStatusRunning &&
 		ch.config.Continuous.PauseOnFailure && commandStatus == model.StatusFailed {
-		state.Status = model.ContinuousStatusPaused
+		newStatus = model.ContinuousStatusPaused
 		reason := "task_failure"
-		state.PausedReason = &reason
-		ch.log(LogLevelInfo, "continuous_pause command=%s reason=%s iteration=%d", commandID, reason, state.CurrentIteration)
+		newPausedReason = &reason
 	}
 
 	// Check max_iterations (only if still running — pause takes precedence).
 	// MaxIterations == 0 means unlimited (no cap); only positive values enforce a stop.
-	if state.Status == model.ContinuousStatusRunning && state.MaxIterations > 0 && state.CurrentIteration >= state.MaxIterations {
-		state.Status = model.ContinuousStatusStopped
+	if newStatus == model.ContinuousStatusRunning && state.MaxIterations > 0 && newIteration >= state.MaxIterations {
+		newStatus = model.ContinuousStatusStopped
 		reason := "max_iterations_reached"
-		state.PausedReason = &reason
-		ch.log(LogLevelInfo, "continuous_stop reason=%s iteration=%d max=%d", reason, state.CurrentIteration, state.MaxIterations)
+		newPausedReason = &reason
 	}
 
-	return ch.saveContinuousState(state)
+	// Apply all mutations atomically
+	now := ch.clock.Now().UTC().Format(time.RFC3339)
+	state.CurrentIteration = newIteration
+	state.LastCommandID = &commandID
+	state.ConsecutiveFailures = newConsecutiveFailures
+	state.Status = newStatus
+	state.UpdatedAt = now
+	if newPausedReason != nil {
+		state.PausedReason = newPausedReason
+	}
+
+	if err := ch.saveContinuousState(state); err != nil {
+		return err
+	}
+
+	// Log status transitions after successful persist
+	if newPausedReason != nil {
+		switch newStatus {
+		case model.ContinuousStatusStopped:
+			ch.log(LogLevelInfo, "continuous_stop reason=%s iteration=%d consecutive_failures=%d",
+				*newPausedReason, newIteration, newConsecutiveFailures)
+		case model.ContinuousStatusPaused:
+			ch.log(LogLevelInfo, "continuous_pause command=%s reason=%s iteration=%d",
+				commandID, *newPausedReason, newIteration)
+		}
+	}
+
+	return nil
 }
 
 func (ch *ContinuousHandler) loadContinuousState() (*model.Continuous, error) {

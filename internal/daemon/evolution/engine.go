@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"sort"
+	"strconv"
 	"sync"
 )
 
@@ -146,8 +147,13 @@ func (e *Engine) SelectSurvivors(results []SlotResult, maxSurvivors int) []int {
 		}
 	}
 
-	// Sort by FitnessDesc descending (lexicographic — higher string = higher fitness)
+	// Sort by FitnessDesc descending (numeric comparison; lexicographic fallback)
 	sort.Slice(candidates, func(i, j int) bool {
+		fi, errI := strconv.ParseFloat(candidates[i].fitnessDesc, 64)
+		fj, errJ := strconv.ParseFloat(candidates[j].fitnessDesc, 64)
+		if errI == nil && errJ == nil {
+			return fi > fj
+		}
 		return candidates[i].fitnessDesc > candidates[j].fitnessDesc
 	})
 

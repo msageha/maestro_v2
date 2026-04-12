@@ -71,8 +71,8 @@ func TestEvaluate_CallerError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if d.WinnerIndex != 0 {
-		t.Errorf("fallback should return WinnerIndex 0, got %d", d.WinnerIndex)
+	if d.WinnerIndex != -1 {
+		t.Errorf("error fallback should return WinnerIndex -1, got %d", d.WinnerIndex)
 	}
 	if !strings.Contains(err.Error(), "caller error") {
 		t.Errorf("error should mention caller: %v", err)
@@ -89,8 +89,8 @@ func TestEvaluate_InvalidJSON(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected parse error")
 	}
-	if d.WinnerIndex != 0 {
-		t.Errorf("fallback should return WinnerIndex 0, got %d", d.WinnerIndex)
+	if d.WinnerIndex != -1 {
+		t.Errorf("error fallback should return WinnerIndex -1, got %d", d.WinnerIndex)
 	}
 	if !strings.Contains(err.Error(), "parse") {
 		t.Errorf("error should mention parse: %v", err)
@@ -106,8 +106,8 @@ func TestEvaluate_Timeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
-	if d.WinnerIndex != 0 {
-		t.Errorf("fallback should return WinnerIndex 0, got %d", d.WinnerIndex)
+	if d.WinnerIndex != -1 {
+		t.Errorf("error fallback should return WinnerIndex -1, got %d", d.WinnerIndex)
 	}
 	if !errors.Is(err, context.DeadlineExceeded) && !strings.Contains(err.Error(), "DeadlineExceeded") {
 		// The error is wrapped, so check the message as well.
