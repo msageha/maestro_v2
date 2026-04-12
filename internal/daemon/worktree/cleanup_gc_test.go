@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -216,6 +217,52 @@ func TestGC_SkipsActiveWorktree_MaxWorktrees(t *testing.T) {
 		if _, err := wm.GetCommandState(cmdID); err != nil {
 			t.Errorf("active worktree %s should still exist after GC, got error: %v", cmdID, err)
 		}
+	}
+}
+
+// --- _publish branch leak prevention ---
+
+// TestCleanupCommand_DeletesPublishBranch verifies that CleanupCommand deletes
+// the maestro/{commandID}/_publish temporary branch if it exists (leaked from
+// a crash during PublishToBase).
+func TestCleanupCommand_DeletesPublishBranch(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_publish_leak"
+	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	// Simulate a leaked _publish branch
+	baseSHA := gitRevParse(t, projectRoot, "HEAD")
+	publishBranch := fmt.Sprintf("maestro/%s/_publish", commandID)
+	if err := wm.gitRun("branch", publishBranch, baseSHA); err != nil {
+		t.Fatalf("create publish branch: %v", err)
+	}
+
+	// Verify the branch exists
+	branchOut, err := wm.gitOutput("branch", "--list", publishBranch)
+	if err != nil {
+		t.Fatalf("list branches: %v", err)
+	}
+	if !strings.Contains(branchOut, "_publish") {
+		t.Fatalf("publish branch should exist before cleanup, got: %q", branchOut)
+	}
+
+	// Cleanup should delete it
+	if err := wm.CleanupCommand(commandID); err != nil {
+		t.Fatalf("CleanupCommand: %v", err)
+	}
+
+	// Verify the branch is gone
+	branchOut, err = wm.gitOutput("branch", "--list", publishBranch)
+	if err != nil {
+		t.Fatalf("list branches after cleanup: %v", err)
+	}
+	if strings.Contains(branchOut, "_publish") {
+		t.Errorf("publish branch should be deleted after cleanup, got: %q", branchOut)
 	}
 }
 

@@ -228,7 +228,15 @@ func TestCapturePane(t *testing.T) {
 	if err := SendCommand(paneTarget, "echo "+marker); err != nil {
 		t.Fatalf("send echo command: %v", err)
 	}
-	time.Sleep(1 * time.Second)
+	// Poll until marker appears in pane output (instead of fixed sleep)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		content, err := CapturePane(paneTarget, 10)
+		if err == nil && strings.Contains(content, marker) {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 
 	content, err := CapturePane(paneTarget, 10)
 	if err != nil {
@@ -300,21 +308,40 @@ func TestSendTextAndSubmit(t *testing.T) {
 	if err := SendCommand(paneTarget, "cat"); err != nil {
 		t.Fatalf("start cat: %v", err)
 	}
-	time.Sleep(500 * time.Millisecond)
+	// Poll until cat command is running (instead of fixed sleep)
+	waitForCommand(t, paneTarget, "cat", 5*time.Second)
 
 	multiLine := "line1\nline2\nline3"
 	if err := SendTextAndSubmit(context.Background(), paneTarget, multiLine); err != nil {
 		t.Fatalf("SendTextAndSubmit: %v", err)
 	}
 
-	time.Sleep(1 * time.Second)
+	// Poll until all expected lines appear (instead of fixed sleep)
+	wants := []string{"line1", "line2", "line3"}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		content, err := CapturePane(paneTarget, 20)
+		if err == nil {
+			allFound := true
+			for _, w := range wants {
+				if !strings.Contains(content, w) {
+					allFound = false
+					break
+				}
+			}
+			if allFound {
+				break
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 
 	content, err := CapturePane(paneTarget, 20)
 	if err != nil {
 		t.Fatalf("capture pane: %v", err)
 	}
 
-	for _, want := range []string{"line1", "line2", "line3"} {
+	for _, want := range wants {
 		if !strings.Contains(content, want) {
 			t.Errorf("pane content missing %q\ncontent:\n%s", want, content)
 		}
@@ -336,13 +363,22 @@ func TestSendTextAndSubmit_SingleLine(t *testing.T) {
 	if err := SendCommand(paneTarget, "cat"); err != nil {
 		t.Fatalf("start cat: %v", err)
 	}
-	time.Sleep(500 * time.Millisecond)
+	// Poll until cat command is running (instead of fixed sleep)
+	waitForCommand(t, paneTarget, "cat", 5*time.Second)
 
 	if err := SendTextAndSubmit(context.Background(), paneTarget, "hello world"); err != nil {
 		t.Fatalf("SendTextAndSubmit: %v", err)
 	}
 
-	time.Sleep(1 * time.Second)
+	// Poll until expected output appears (instead of fixed sleep)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		content, err := CapturePane(paneTarget, 10)
+		if err == nil && strings.Contains(content, "hello world") {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 
 	content, err := CapturePane(paneTarget, 10)
 	if err != nil {

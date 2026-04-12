@@ -376,6 +376,54 @@ func TestSyncFromIntegration_MergeConflictRecovery(t *testing.T) {
 	}
 }
 
+// TestMergeToIntegration_NoCommitsRevertsStatus verifies that when all workers
+// have no commits to merge, the integration status is reverted to the pre-merge
+// status (not set to Merged) to prevent a no-op publish.
+func TestMergeToIntegration_NoCommitsRevertsStatus(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_no_commits"
+	workers := []string{"worker1", "worker2"}
+	if err := createForCommand(wm, commandID, workers); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	// Don't commit anything in any worker — all have zero commits beyond base.
+
+	// Verify initial status is Created
+	stateBefore, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	if stateBefore.Integration.Status != model.IntegrationStatusCreated {
+		t.Fatalf("initial status = %s, want created", stateBefore.Integration.Status)
+	}
+
+	// Merge — should find no commits and revert to Created
+	conflicts, err := wm.MergeToIntegration(commandID, workers, nil)
+	if err != nil {
+		t.Fatalf("MergeToIntegration: %v", err)
+	}
+	if len(conflicts) > 0 {
+		t.Fatalf("unexpected conflicts: %v", conflicts)
+	}
+
+	// Verify status was NOT set to Merged
+	stateAfter, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState after: %v", err)
+	}
+	if stateAfter.Integration.Status == model.IntegrationStatusMerged {
+		t.Error("integration status should NOT be Merged when no commits were merged")
+	}
+	// It should be reverted to the original status (Created)
+	if stateAfter.Integration.Status != model.IntegrationStatusCreated {
+		t.Errorf("integration status = %s, want created (reverted)", stateAfter.Integration.Status)
+	}
+}
+
 // TestSyncFromIntegration_CapturesPreMergeHEAD verifies that
 // SyncFromIntegration captures the pre-merge HEAD for recovery purposes.
 // The test verifies that after a failed sync, the worktree HEAD is preserved.

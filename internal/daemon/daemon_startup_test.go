@@ -101,7 +101,7 @@ func TestStartRuntime_ServerAvailableWithoutWaitingForReconcile(t *testing.T) {
 			pingOK = true
 			break
 		}
-		time.Sleep(20 * time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 
 	if !pingOK {

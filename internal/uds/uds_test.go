@@ -343,14 +343,17 @@ func TestServer_ConnectionTimeout(t *testing.T) {
 	}
 	defer conn.Close()
 
-	// Wait for server to timeout the connection
-	time.Sleep(800 * time.Millisecond)
-
-	// Verify the idle connection was closed by the server:
-	// Attempting to read from a server-closed connection should fail
+	// Poll until server closes the idle connection (instead of fixed sleep)
 	buf := make([]byte, 1)
-	conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
-	_, readErr := conn.Read(buf)
+	var readErr error
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+		_, readErr = conn.Read(buf)
+		if readErr != nil {
+			break
+		}
+	}
 	if readErr == nil {
 		t.Error("expected read error on timed-out connection, but read succeeded")
 	}
@@ -529,9 +532,11 @@ func TestSendContext_CancelBeforeDial(t *testing.T) {
 func TestSendContext_CancelDuringOperation(t *testing.T) {
 	server, _, sockPath := setupTestServer(t)
 
-	// Handler that blocks until context is done
+	// Handler that blocks until test cleanup
+	blocker := make(chan struct{})
+	t.Cleanup(func() { close(blocker) })
 	server.Handle("slow", func(req *Request) *Response {
-		time.Sleep(5 * time.Second)
+		<-blocker
 		return SuccessResponse(nil)
 	})
 
@@ -722,7 +727,12 @@ func TestServer_Backpressure(t *testing.T) {
 	server.maxConns = 1
 
 	blocker := make(chan struct{})
+	handlerStarted := make(chan struct{}, 1)
 	server.Handle("block", func(req *Request) *Response {
+		select {
+		case handlerStarted <- struct{}{}:
+		default:
+		}
 		<-blocker
 		return SuccessResponse(nil)
 	})
@@ -743,8 +753,12 @@ func TestServer_Backpressure(t *testing.T) {
 		c1.SendCommand("block", nil)
 	}()
 
-	// Give time for first connection to be accepted
-	time.Sleep(100 * time.Millisecond)
+	// Wait for first connection's handler to start
+	select {
+	case <-handlerStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for handler to start")
+	}
 
 	// Second client should get backpressure response
 	c2 := NewClient(sockPath)
@@ -784,10 +798,17 @@ func TestClient_SendRetryOnTransientError(t *testing.T) {
 		return SuccessResponse(map[string]string{"status": "pong"})
 	})
 
+	// Start server after first connection attempt fails (simulating transient ENOENT)
+	serverReady := make(chan struct{})
 	go func() {
-		time.Sleep(250 * time.Millisecond)
+		// Small delay to ensure client makes at least one failed attempt
+		time.Sleep(50 * time.Millisecond)
 		server.Start()
+		close(serverReady)
 	}()
+	t.Cleanup(func() {
+		<-serverReady // ensure server started before cleanup
+	})
 	defer server.Stop()
 
 	client := NewClient(sockPath)

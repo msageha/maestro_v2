@@ -1686,9 +1686,25 @@ func TestIntegration_LogSystemHighLoadStructuredAndRateLimited(t *testing.T) {
 	}
 	publishElapsed := time.Since(start)
 
-	// Allow subscriber to drain some buffered events.
-	time.Sleep(120 * time.Millisecond)
-	gotConsumed := atomic.LoadInt64(&consumed)
+	// Wait for subscriber to process some events (poll until consumed stabilizes)
+	var gotConsumed int64
+	deadline := time.Now().Add(3 * time.Second)
+	var lastConsumed int64
+	stableCount := 0
+	for time.Now().Before(deadline) {
+		gotConsumed = atomic.LoadInt64(&consumed)
+		if gotConsumed > 0 && gotConsumed == lastConsumed {
+			stableCount++
+			if stableCount >= 3 {
+				break
+			}
+		} else {
+			stableCount = 0
+		}
+		lastConsumed = gotConsumed
+		time.Sleep(10 * time.Millisecond)
+	}
+	gotConsumed = atomic.LoadInt64(&consumed)
 
 	if publishElapsed > 100*time.Millisecond {
 		t.Fatalf("publish path too slow under load: %v", publishElapsed)
@@ -1874,13 +1890,15 @@ func TestIntegration_EventHooksInvalidPayloadHandling(t *testing.T) {
 		"task_id":    "task_invalid",
 		"command_id": "cmd_invalid",
 	})
-	time.Sleep(30 * time.Millisecond)
-
-	qg.metrics.mu.RLock()
-	evalCount := qg.metrics.evaluationCount
-	qg.metrics.mu.RUnlock()
-	if evalCount != 0 {
-		t.Fatalf("expected no evaluations for invalid payload, got %d", evalCount)
+	// Verify event was dropped: poll multiple times to ensure no evaluation occurs
+	for i := 0; i < 6; i++ {
+		time.Sleep(5 * time.Millisecond)
+		qg.metrics.mu.RLock()
+		evalCount := qg.metrics.evaluationCount
+		qg.metrics.mu.RUnlock()
+		if evalCount != 0 {
+			t.Fatalf("expected no evaluations for invalid payload, got %d", evalCount)
+		}
 	}
 
 	// Valid payload should pass bridge and be evaluated.

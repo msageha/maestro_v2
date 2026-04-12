@@ -1208,11 +1208,16 @@ func TestPhaseIntegration_ConcurrentWriteDuringPhaseB(t *testing.T) {
 func TestPhaseIntegration_PhaseBContextCancellation(t *testing.T) {
 	maestroDir := setupPhaseIntegrationDir(t)
 
+	slowDispatch := make(chan struct{})
+	t.Cleanup(func() { close(slowDispatch) })
 	var dispatchCount int32
 	exec := newRecordingExecutor(func(req agent.ExecRequest) agent.ExecResult {
 		atomic.AddInt32(&dispatchCount, 1)
-		// Simulate slow dispatch
-		time.Sleep(50 * time.Millisecond)
+		// Simulate slow dispatch (block on channel with timeout)
+		select {
+		case <-slowDispatch:
+		case <-time.After(50 * time.Millisecond):
+		}
 		return agent.ExecResult{Success: true}
 	})
 	qh := newPhaseIntegrationQH(t, maestroDir, exec)

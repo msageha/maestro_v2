@@ -36,9 +36,6 @@ var transientPatterns = []string{
 	"Connection refused",
 	"Could not resolve host",
 	"Connection reset by peer",
-	// Resource transient errors
-	"cannot allocate memory",
-	"No space left on device",
 }
 
 // permanentPatterns are substrings that indicate a permanent git error.

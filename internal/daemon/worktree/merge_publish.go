@@ -101,6 +101,10 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 		return nil, fmt.Errorf("integration worktree has uncommitted changes; aborting merge to prevent corruption")
 	}
 
+	// Save the pre-merge status so we can revert if no commits are found.
+	preMergeStatus := state.Integration.Status
+	preMergeUpdatedAt := state.Integration.UpdatedAt
+
 	now := wm.clock.Now().UTC().Format(time.RFC3339)
 	if err := wm.setIntegrationStatus(state, model.IntegrationStatusMerging, now); err != nil {
 		return nil, err
@@ -271,6 +275,7 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 	}
 
 	// Determine final integration status:
+	// - mergedCount=0, conflicts=0, skipped=0 → no commits to merge; revert to pre-merge status
 	// - conflicts=0, skipped=0, merged>0 → Merged (all successful)
 	// - conflicts=0, skipped>0, merged>0 → PartialMerge (some skipped due to transient errors)
 	// - conflicts>0, merged>0 → PartialMerge (some succeeded, some conflicted; successful merges preserved)
@@ -283,7 +288,14 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 	// (recordMergeFailure was never called), so reset the consecutive failure count.
 	state.Integration.MergeFailureCount = 0
 
-	if len(conflicts) == 0 && skippedCount == 0 {
+	if mergedCount == 0 && len(conflicts) == 0 && skippedCount == 0 {
+		// No worker had any commits to merge. Revert the Merging status to
+		// the pre-merge status to avoid a false Merged signal that would
+		// trigger a no-op publish.
+		wm.Log(core.LogLevelInfo, "no_commits_to_merge command=%s workers=%d", commandID, len(sorted))
+		state.Integration.Status = preMergeStatus
+		state.Integration.UpdatedAt = preMergeUpdatedAt
+	} else if len(conflicts) == 0 && skippedCount == 0 {
 		if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusMerged, now); tErr != nil {
 			wm.Log(core.LogLevelWarn, "merge_merged_integration_transition command=%s error=%v", commandID, tErr)
 		}
