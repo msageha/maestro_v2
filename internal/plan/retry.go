@@ -1,12 +1,14 @@
 package plan
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
 
@@ -14,6 +16,27 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
+
+// stateSaveTimeout is the maximum duration allowed for a SaveState call
+// before it is considered hung and an error is returned.
+const stateSaveTimeout = 30 * time.Second
+
+// saveStateWithContext runs saveFn in a goroutine and returns its result,
+// or returns an error if ctx is cancelled/expired before saveFn completes.
+// This prevents a hung filesystem from blocking the caller indefinitely
+// while holding locks.
+func saveStateWithContext(ctx context.Context, saveFn func() error) error {
+	done := make(chan error, 1)
+	go func() {
+		done <- saveFn()
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return fmt.Errorf("state save timed out: %w", ctx.Err())
+	}
+}
 
 // RetryOptions holds the configuration for retrying a failed task.
 type RetryOptions struct {
@@ -165,7 +188,9 @@ func writeAndCommitRetryQueue(
 		return fmt.Errorf("cancel original task in queue: %w", err)
 	}
 
-	if err := sm.SaveState(state); err != nil {
+	saveCtx, saveCancel := context.WithTimeout(context.Background(), stateSaveTimeout)
+	defer saveCancel()
+	if err := saveStateWithContext(saveCtx, func() error { return sm.SaveState(state) }); err != nil {
 		if restoreErr := restoreOriginalTaskInQueue(opts.MaestroDir, opts.RetryOf, opts.CommandID, model.StatusFailed, now, opts.LockMap); restoreErr != nil {
 			log.Printf("[WARN] failed to restore original task %s queue status: %v", opts.RetryOf, restoreErr)
 		}

@@ -30,7 +30,11 @@ func parseAndExecute[P any, R any](op string, data []byte, execute func(P) (R, e
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", op, err)
 	}
-	return json.Marshal(result)
+	out, err := json.Marshal(result)
+	if err != nil {
+		return nil, fmt.Errorf("%s: failed to marshal plan result: %w", op, err)
+	}
+	return out, nil
 }
 
 type submitParams struct {
