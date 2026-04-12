@@ -466,7 +466,7 @@ func ListPanes(windowTarget, format string) ([]string, error) {
 	}
 	out = strings.TrimSpace(out)
 	if out == "" {
-		return nil, nil
+		return []string{}, nil
 	}
 	return strings.Split(out, "\n"), nil
 }
@@ -479,7 +479,7 @@ func ListAllPanes(format string) ([]string, error) {
 	}
 	out = strings.TrimSpace(out)
 	if out == "" {
-		return nil, nil
+		return []string{}, nil
 	}
 	return strings.Split(out, "\n"), nil
 }

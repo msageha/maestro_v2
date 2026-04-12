@@ -21,7 +21,7 @@ func ValidatePhaseDAG(phaseNames []string, dependsOn map[string][]string) ([]str
 // On cycle detection, uses DFS to find and report the cycle path.
 func validateDAG(nodeNames []string, edges map[string][]string) ([]string, error) {
 	if len(nodeNames) == 0 {
-		return nil, nil
+		return []string{}, nil
 	}
 
 	nodeSet := make(map[string]bool, len(nodeNames))

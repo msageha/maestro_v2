@@ -3,6 +3,7 @@ package reconcile
 import (
 	"path/filepath"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -29,10 +30,14 @@ func (R3PlannerQueue) Apply(run *Run) Outcome {
 	}
 
 	queuePath := filepath.Join(run.Deps.MaestroDir, "queue", "planner.yaml")
-	repairs, repairedCommands := reconcileTerminalQueue(
+	repairs, repairedCommands, err := reconcileTerminalQueue(
 		run, PatternR3, "planner", queuePath, terminalResults,
 		unmarshalCommandQueue, setCommandQueueItems, commandQueueAccessor(),
 	)
+	if err != nil {
+		run.Log(core.LogLevelError, "R3 reconcile_terminal_queue error=%v", err)
+		return Outcome{}
+	}
 
 	for commandID := range repairedCommands {
 		run.updateLastReconciledAt(commandID)

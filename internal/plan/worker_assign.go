@@ -75,7 +75,7 @@ func AssignWorkers(
 	tasks []TaskAssignmentRequest,
 ) ([]WorkerAssignment, error) {
 	if len(tasks) == 0 {
-		return nil, nil
+		return []WorkerAssignment{}, nil
 	}
 
 	// Build worker state map (copy to track incremental assignments)

@@ -238,16 +238,22 @@ func TestValidateDAG_EmptyInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected no error for empty input, got %v", err)
 	}
-	if sorted != nil {
-		t.Errorf("expected nil result for empty input, got %v", sorted)
+	if sorted == nil {
+		t.Errorf("expected non-nil empty slice for empty input, got nil")
+	}
+	if len(sorted) != 0 {
+		t.Errorf("expected empty slice for empty input, got %v", sorted)
 	}
 
 	sorted2, err2 := ValidatePhaseDAG([]string{}, map[string][]string{})
 	if err2 != nil {
 		t.Fatalf("expected no error for empty slice, got %v", err2)
 	}
-	if sorted2 != nil {
-		t.Errorf("expected nil result for empty slice, got %v", sorted2)
+	if sorted2 == nil {
+		t.Errorf("expected non-nil empty slice for empty slice input, got nil")
+	}
+	if len(sorted2) != 0 {
+		t.Errorf("expected empty slice for empty slice input, got %v", sorted2)
 	}
 }
 
