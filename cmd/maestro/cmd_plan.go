@@ -232,7 +232,7 @@ func (a *cliApp) runPlanAddRetryTask(args []string) error {
 // runPlanAddTask injects a new task into an existing sealed plan.
 func (a *cliApp) runPlanAddTask(args []string) error {
 	cmd := NewCommand("maestro plan add-task", "maestro plan add-task --command-id <id> --purpose <text> --content <text> --acceptance-criteria <text> --bloom-level <n> [--blocked-by <task_id>]... [--required]")
-	var commandID, purpose, content, acceptanceCriteria, personaHint string
+	var commandID, purpose, content, acceptanceCriteria, personaHint, workerID string
 	var bloomLevel int
 	var required bool
 	var blockedBy, toolsHint, constraints, skillRefs stringSliceFlag
@@ -248,6 +248,7 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 	cmd.Var(&toolsHint, "tools-hint", "Recommended tool (repeatable)")
 	cmd.StringVar(&personaHint, "persona-hint", "", "Persona hint")
 	cmd.Var(&skillRefs, "skill-refs", "Skill reference (repeatable)")
+	cmd.StringVar(&workerID, "worker-id", "", "Target worker for task assignment (optional; defaults to least-loaded)")
 
 	cmd.AddCheck("all required flags must be set", func() bool {
 		return commandID != "" && purpose != "" && content != "" && acceptanceCriteria != "" && bloomLevel != 0
@@ -267,6 +268,11 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 	}
 	if bloomLevel < 1 || bloomLevel > 6 {
 		return cmd.Errorf("--bloom-level must be between 1 and 6")
+	}
+	if workerID != "" {
+		if err := validate.ID(workerID); err != nil {
+			return cmd.Errorf("invalid --worker-id: %v", err)
+		}
 	}
 	for _, pair := range []struct{ name, val string }{
 		{"--content", content},
@@ -297,6 +303,7 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 			"tools_hint":          []string(toolsHint),
 			"persona_hint":        personaHint,
 			"skill_refs":          []string(skillRefs),
+			"worker_id":           workerID,
 		},
 	}
 

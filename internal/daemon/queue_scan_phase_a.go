@@ -157,6 +157,22 @@ func (qh *QueueHandler) stepCancelInterrupt(s *scanState) {
 	}
 }
 
+// stepCancelAutoComplete — Step 0.6.1: Auto-complete cancel-requested commands
+// when all tasks are already terminal. This closes the gap where stepCancelPending
+// and stepCancelInterrupt are both no-ops because no pending/in_progress tasks remain.
+func (qh *QueueHandler) stepCancelAutoComplete(s *scanState) {
+	for i := range s.commands.Data.Commands {
+		cmd := &s.commands.Data.Commands[i]
+		if !qh.cancelHandler.IsCommandCancelRequested(cmd) {
+			continue
+		}
+		item := qh.cancelHandler.AutoCompleteCancelledCommands(cmd, s.tasks)
+		if item != nil {
+			s.commands.Dirty = true
+		}
+	}
+}
+
 // stepPhaseTransitions — Step 0.7: Detect and persist phase transitions.
 func (qh *QueueHandler) stepPhaseTransitions(s *scanState) {
 	if !qh.dependencyResolver.HasStateReader() {
@@ -244,6 +260,11 @@ func (qh *QueueHandler) stepWorktreePhaseMerges(s *scanState) {
 	for i := range s.commands.Data.Commands {
 		cmd := &s.commands.Data.Commands[i]
 		if cmd.Status != model.StatusInProgress {
+			continue
+		}
+		// Skip cancel_requested commands to avoid wasted merge/commit work
+		// during the cancellation window.
+		if qh.cancelHandler != nil && qh.cancelHandler.IsCommandCancelRequested(cmd) {
 			continue
 		}
 		if !qh.worktreeManager.HasWorktrees(cmd.ID) {

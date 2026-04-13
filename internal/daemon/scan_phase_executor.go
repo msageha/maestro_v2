@@ -108,6 +108,7 @@ func (se *ScanPhaseExecutor) periodicScanPhaseA() phaseAResult {
 	qh.stepCircuitBreaker(&s)
 	qh.stepCancelPending(&s)
 	qh.stepCancelInterrupt(&s)
+	qh.stepCancelAutoComplete(&s)
 	qh.stepPhaseTransitions(&s)
 	qh.stepWorktreePhaseMerges(&s)
 	qh.stepWorktreePublish(&s)

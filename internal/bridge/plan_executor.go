@@ -127,6 +127,7 @@ type injectParams struct {
 	ToolsHint          []string `json:"tools_hint"`
 	PersonaHint        string   `json:"persona_hint"`
 	SkillRefs          []string `json:"skill_refs"`
+	WorkerID           string   `json:"worker_id"`
 }
 
 // AddTask implements core.PlanExecutor by parsing params and calling plan.AddTask.
@@ -144,6 +145,7 @@ func (pe *PlanExecutorImpl) AddTask(params json.RawMessage) (json.RawMessage, er
 			ToolsHint:          p.ToolsHint,
 			PersonaHint:        p.PersonaHint,
 			SkillRefs:          p.SkillRefs,
+			TargetWorkerID:     p.WorkerID,
 			MaestroDir:         pe.MaestroDir,
 			Config:             pe.Config,
 			LockMap:            pe.LockMap,

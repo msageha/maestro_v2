@@ -20,6 +20,7 @@ type InjectOptions struct {
 	ToolsHint          []string
 	PersonaHint        string
 	SkillRefs          []string
+	TargetWorkerID     string
 	MaestroDir         string
 	Config             model.Config
 	LockMap            *lock.MutexMap
@@ -54,16 +55,35 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 	}
 
 	// Assign worker
-	workerStates, err := BuildWorkerStates(opts.MaestroDir, opts.Config.Agents.Workers)
-	if err != nil {
-		return nil, fmt.Errorf("build worker states: %w", err)
+	var assignedWorkerID, assignedModel string
+	if opts.TargetWorkerID != "" {
+		// Validate the target worker exists in configuration
+		found := false
+		for i := 1; i <= opts.Config.Agents.Workers.Count; i++ {
+			wID := fmt.Sprintf("worker%d", i)
+			if wID == opts.TargetWorkerID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("target worker %q not found in configured workers (count=%d)", opts.TargetWorkerID, opts.Config.Agents.Workers.Count)
+		}
+		assignedWorkerID = opts.TargetWorkerID
+		assignedModel = GetWorkerModel(opts.TargetWorkerID, opts.Config.Agents.Workers)
+	} else {
+		workerStates, err := BuildWorkerStates(opts.MaestroDir, opts.Config.Agents.Workers)
+		if err != nil {
+			return nil, fmt.Errorf("build worker states: %w", err)
+		}
+		assignReqs := []TaskAssignmentRequest{{Name: "__inject", BloomLevel: opts.BloomLevel}}
+		assignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, workerStates, assignReqs)
+		if err != nil {
+			return nil, fmt.Errorf("worker assignment: %w", err)
+		}
+		assignedWorkerID = assignments[0].WorkerID
+		assignedModel = assignments[0].Model
 	}
-	assignReqs := []TaskAssignmentRequest{{Name: "__inject", BloomLevel: opts.BloomLevel}}
-	assignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, workerStates, assignReqs)
-	if err != nil {
-		return nil, fmt.Errorf("worker assignment: %w", err)
-	}
-	assignment := assignments[0]
 
 	// Generate task ID
 	newTaskID, err := model.NewTaskID(model.TaskIDCallerPlannerInject)
@@ -113,7 +133,7 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 		toolsHint:          opts.ToolsHint,
 		personaHint:        opts.PersonaHint,
 		skillRefs:          opts.SkillRefs,
-		workerID:           assignment.WorkerID,
+		workerID:           assignedWorkerID,
 	}
 	if err := writeRetryQueueEntry(opts.MaestroDir, task, now, opts.LockMap); err != nil {
 		restoreState(state, origStateBytes)
@@ -130,8 +150,8 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 
 	return &InjectResult{
 		TaskID: newTaskID,
-		Worker: assignment.WorkerID,
-		Model:  assignment.Model,
+		Worker: assignedWorkerID,
+		Model:  assignedModel,
 	}, nil
 }
 

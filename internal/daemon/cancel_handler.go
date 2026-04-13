@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -107,6 +108,99 @@ func (ch *CancelHandler) CancelPendingTasks(tasks []model.Task, commandID string
 	}
 
 	return results
+}
+
+// CancelAutoCompleteItem represents a command that was auto-completed due to cancel request
+// when all tasks were already terminal.
+type CancelAutoCompleteItem struct {
+	CommandID string
+}
+
+// AutoCompleteCancelledCommands transitions cancel-requested commands to cancelled
+// when all their tasks are already in terminal state. This closes the gap where
+// CancelPendingTasks and CollectCancelInterruptItems are both no-ops because no
+// tasks remain in pending or in_progress state.
+//
+// Returns an item for which auto-completion was performed (for notification buffering),
+// or nil if the command was not auto-completed.
+func (ch *CancelHandler) AutoCompleteCancelledCommands(
+	cmd *model.Command,
+	taskQueues map[string]*taskQueueEntry,
+) *CancelAutoCompleteItem {
+	if model.IsTerminal(cmd.Status) {
+		return nil
+	}
+
+	// Check if all tasks for this command are terminal
+	taskCount := 0
+	for _, tq := range taskQueues {
+		for _, task := range tq.Queue.Tasks {
+			if task.CommandID != cmd.ID {
+				continue
+			}
+			taskCount++
+			if !model.IsTerminal(task.Status) {
+				return nil
+			}
+		}
+	}
+
+	// No tasks found — don't auto-complete (may be a command that hasn't been planned yet)
+	if taskCount == 0 {
+		return nil
+	}
+
+	// All tasks terminal + cancel requested → transition command to cancelled
+	now := ch.clock.Now().UTC().Format(time.RFC3339)
+	cmd.Status = model.StatusCancelled
+	cmd.LeaseOwner = nil
+	cmd.LeaseExpiresAt = nil
+	cmd.UpdatedAt = now
+
+	ch.log(LogLevelInfo, "cancel_auto_complete command=%s task_count=%d", cmd.ID, taskCount)
+
+	// Update state file
+	ch.cancelAutoCompletePostProcess(cmd.ID)
+
+	return &CancelAutoCompleteItem{CommandID: cmd.ID}
+}
+
+// cancelAutoCompletePostProcess updates state for a cancel-auto-completed command.
+func (ch *CancelHandler) cancelAutoCompletePostProcess(commandID string) {
+	if ch.stateManager == nil {
+		return
+	}
+
+	statePath := filepath.Join(ch.maestroDir, "state", "commands", commandID+".yaml")
+
+	lockKey := "state:" + commandID
+	ch.lockMap.Lock(lockKey)
+	defer ch.lockMap.Unlock(lockKey)
+
+	data, err := os.ReadFile(statePath) //nolint:gosec // statePath is constructed from a controlled application state directory
+	if err != nil {
+		if !os.IsNotExist(err) {
+			ch.log(LogLevelWarn, "cancel_auto_complete_post read_state command=%s error=%v", commandID, err)
+		}
+		return
+	}
+
+	var state model.CommandState
+	if err := yamlv3.Unmarshal(data, &state); err != nil {
+		ch.log(LogLevelWarn, "cancel_auto_complete_post parse_state command=%s error=%v", commandID, err)
+		return
+	}
+
+	if model.IsPlanTerminal(state.PlanStatus) {
+		return
+	}
+
+	state.PlanStatus = model.PlanStatusCancelled
+	now := ch.clock.Now().UTC().Format(time.RFC3339)
+	state.UpdatedAt = now
+	if err := yamlutil.AtomicWrite(statePath, &state); err != nil {
+		ch.log(LogLevelError, "cancel_auto_complete_post write_state command=%s error=%v", commandID, err)
+	}
 }
 
 // CollectCancelInterruptItems inspects in_progress tasks for the cancelled

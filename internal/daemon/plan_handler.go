@@ -111,13 +111,29 @@ func (h *PlanAPI) handlePlan(req *uds.Request) *uds.Response {
 		return uds.ErrorResponse(uds.ErrCodeInternal, err.Error())
 	}
 
-	h.logFn(LogLevelInfo, "plan_%s success", params.Operation)
+	// Detect dry-run submissions to distinguish log output and skip unnecessary queue scan.
+	isDryRun := false
+	if params.Operation == "submit" {
+		var hint struct {
+			DryRun bool `json:"dry_run"`
+		}
+		if json.Unmarshal(params.Data, &hint) == nil && hint.DryRun {
+			isDryRun = true
+		}
+	}
+
+	if isDryRun {
+		h.logFn(LogLevelInfo, "plan_%s_dry_run success", params.Operation)
+	} else {
+		h.logFn(LogLevelInfo, "plan_%s success", params.Operation)
+	}
 
 	// Trigger an immediate queue scan for operations that write to worker/planner
 	// queue files. Without this, the daemon relies on fsnotify (which may miss
 	// AtomicWrite's os.Rename on macOS) or the 60-second periodic scan, causing
 	// significant dispatch delay. "rebuild" only updates state and needs no scan.
-	if params.Operation != "rebuild" {
+	// Dry-run submissions don't write queue entries, so skip scan for them too.
+	if params.Operation != "rebuild" && !isDryRun {
 		h.publishQueueWritten("plan_" + params.Operation)
 	}
 
