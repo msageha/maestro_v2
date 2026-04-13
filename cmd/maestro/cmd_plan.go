@@ -232,7 +232,7 @@ func (a *cliApp) runPlanAddRetryTask(args []string) error {
 // runPlanAddTask injects a new task into an existing sealed plan.
 func (a *cliApp) runPlanAddTask(args []string) error {
 	cmd := NewCommand("maestro plan add-task", "maestro plan add-task --command-id <id> --purpose <text> --content <text> --acceptance-criteria <text> --bloom-level <n> [--blocked-by <task_id>]... [--required]")
-	var commandID, purpose, content, acceptanceCriteria, personaHint, workerID string
+	var commandID, purpose, content, acceptanceCriteria, personaHint, workerID, idempotencyKey string
 	var bloomLevel int
 	var required bool
 	var blockedBy, toolsHint, constraints, skillRefs stringSliceFlag
@@ -249,6 +249,7 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 	cmd.StringVar(&personaHint, "persona-hint", "", "Persona hint")
 	cmd.Var(&skillRefs, "skill-refs", "Skill reference (repeatable)")
 	cmd.StringVar(&workerID, "worker-id", "", "Target worker for task assignment (optional; defaults to least-loaded)")
+	cmd.StringVar(&idempotencyKey, "idempotency-key", "", "Idempotency key to prevent duplicate task injection on retry")
 
 	cmd.AddCheck("all required flags must be set", func() bool {
 		return commandID != "" && purpose != "" && content != "" && acceptanceCriteria != "" && bloomLevel != 0
@@ -304,10 +305,14 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 			"persona_hint":        personaHint,
 			"skill_refs":          []string(skillRefs),
 			"worker_id":           workerID,
+			"idempotency_key":     idempotencyKey,
 		},
 	}
 
-	return a.sendPlanCommand("plan add-task", maestroDir, params, planCommandTimeout)
+	// add-task operates on sealed plans and contends with the daemon's
+	// PeriodicScan exclusive lock (scanMu), same as plan submit --phase.
+	// Use the extended timeout to avoid spurious timeouts under contention.
+	return a.sendPlanCommand("plan add-task", maestroDir, params, planPhaseFillTimeout)
 }
 
 // runPlanRequestCancel requests cancellation of an active command.

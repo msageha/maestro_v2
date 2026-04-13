@@ -422,3 +422,145 @@ func TestAddTask_OriginalTasksUnchanged(t *testing.T) {
 		t.Errorf("original task %s state = %s, want completed", originalTaskID2, state.TaskStates[originalTaskID2])
 	}
 }
+
+func TestAddTask_IdempotencyKey_Dedup(t *testing.T) {
+	maestroDir, commandID, completedTaskID := setupInjectFixture(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	opts := InjectOptions{
+		CommandID:          commandID,
+		Purpose:            "resolve merge conflict",
+		Content:            "fix conflicting files",
+		AcceptanceCriteria: "build passes",
+		BloomLevel:         3,
+		Required:           true,
+		BlockedBy:          []string{completedTaskID},
+		IdempotencyKey:     "conflict-resolution-abc123",
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	}
+
+	// First call: creates a new task
+	result1, err := AddTask(opts)
+	if err != nil {
+		t.Fatalf("first AddTask returned error: %v", err)
+	}
+	if result1.TaskID == "" {
+		t.Fatal("first AddTask returned empty TaskID")
+	}
+	if result1.Deduplicated {
+		t.Error("first AddTask should not be deduplicated")
+	}
+
+	// Second call with same idempotency key: should return existing task
+	result2, err := AddTask(opts)
+	if err != nil {
+		t.Fatalf("second AddTask returned error: %v", err)
+	}
+	if result2.TaskID != result1.TaskID {
+		t.Errorf("second AddTask returned different TaskID: got %s, want %s", result2.TaskID, result1.TaskID)
+	}
+	if !result2.Deduplicated {
+		t.Error("second AddTask should be deduplicated")
+	}
+	if result2.Worker == "" {
+		t.Error("second AddTask returned empty Worker")
+	}
+
+	// Verify state: only one task was created
+	sm := NewStateManager(maestroDir, lm)
+	state, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+
+	// ExpectedTaskCount should be 3 (2 original + 1 new), not 4
+	if state.ExpectedTaskCount != 3 {
+		t.Errorf("ExpectedTaskCount = %d, want 3 (should not double-count)", state.ExpectedTaskCount)
+	}
+
+	// Idempotency key should be recorded
+	if state.IdempotencyKeys == nil {
+		t.Fatal("IdempotencyKeys map is nil")
+	}
+	if state.IdempotencyKeys["conflict-resolution-abc123"] != result1.TaskID {
+		t.Errorf("IdempotencyKeys[key] = %s, want %s", state.IdempotencyKeys["conflict-resolution-abc123"], result1.TaskID)
+	}
+}
+
+func TestAddTask_IdempotencyKey_DifferentKeys(t *testing.T) {
+	maestroDir, commandID, completedTaskID := setupInjectFixture(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	baseOpts := InjectOptions{
+		CommandID:          commandID,
+		Purpose:            "resolve merge conflict",
+		Content:            "fix conflicting files",
+		AcceptanceCriteria: "build passes",
+		BloomLevel:         3,
+		Required:           true,
+		BlockedBy:          []string{completedTaskID},
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	}
+
+	// First call with key A
+	opts1 := baseOpts
+	opts1.IdempotencyKey = "key-A"
+	result1, err := AddTask(opts1)
+	if err != nil {
+		t.Fatalf("first AddTask returned error: %v", err)
+	}
+
+	// Second call with key B: should create a new task
+	opts2 := baseOpts
+	opts2.IdempotencyKey = "key-B"
+	result2, err := AddTask(opts2)
+	if err != nil {
+		t.Fatalf("second AddTask returned error: %v", err)
+	}
+
+	if result1.TaskID == result2.TaskID {
+		t.Error("different idempotency keys should create different tasks")
+	}
+	if result2.Deduplicated {
+		t.Error("second AddTask with different key should not be deduplicated")
+	}
+}
+
+func TestAddTask_NoIdempotencyKey_NoDedupe(t *testing.T) {
+	maestroDir, commandID, completedTaskID := setupInjectFixture(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	opts := InjectOptions{
+		CommandID:          commandID,
+		Purpose:            "resolve merge conflict",
+		Content:            "fix conflicting files",
+		AcceptanceCriteria: "build passes",
+		BloomLevel:         3,
+		Required:           true,
+		BlockedBy:          []string{completedTaskID},
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	}
+
+	// Two calls without idempotency key: both should create tasks
+	result1, err := AddTask(opts)
+	if err != nil {
+		t.Fatalf("first AddTask returned error: %v", err)
+	}
+	result2, err := AddTask(opts)
+	if err != nil {
+		t.Fatalf("second AddTask returned error: %v", err)
+	}
+
+	if result1.TaskID == result2.TaskID {
+		t.Error("calls without idempotency key should create separate tasks")
+	}
+}

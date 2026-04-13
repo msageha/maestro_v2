@@ -2,9 +2,11 @@ package plan
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	yaml "gopkg.in/yaml.v3"
 )
 
 // InjectOptions holds the configuration for injecting a new task into a sealed plan.
@@ -21,6 +23,7 @@ type InjectOptions struct {
 	PersonaHint        string
 	SkillRefs          []string
 	TargetWorkerID     string
+	IdempotencyKey     string
 	MaestroDir         string
 	Config             model.Config
 	LockMap            *lock.MutexMap
@@ -28,9 +31,10 @@ type InjectOptions struct {
 
 // InjectResult contains the outcome of a task injection.
 type InjectResult struct {
-	TaskID  string `json:"task_id"`
-	Worker  string `json:"worker"`
-	Model   string `json:"model"`
+	TaskID       string `json:"task_id"`
+	Worker       string `json:"worker"`
+	Model        string `json:"model"`
+	Deduplicated bool   `json:"deduplicated,omitempty"`
 }
 
 // AddTask injects a new task into an existing sealed plan. Unlike AddRetryTask,
@@ -52,6 +56,20 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 
 	if err := validateInjectRequest(state, opts); err != nil {
 		return nil, err
+	}
+
+	// Idempotency check: if the same key was already used, return the existing task
+	if opts.IdempotencyKey != "" && state.IdempotencyKeys != nil {
+		if existingTaskID, ok := state.IdempotencyKeys[opts.IdempotencyKey]; ok {
+			// Look up the assigned worker from queue files to populate the response
+			worker, mdl := lookupTaskAssignment(opts.MaestroDir, existingTaskID, opts.Config.Agents.Workers)
+			return &InjectResult{
+				TaskID:       existingTaskID,
+				Worker:       worker,
+				Model:        mdl,
+				Deduplicated: true,
+			}, nil
+		}
 	}
 
 	// Assign worker
@@ -114,6 +132,14 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 		if phase, phaseIdx := findPhaseForTask(state, opts.BlockedBy[0]); phase != nil {
 			state.Phases[phaseIdx].TaskIDs = append(state.Phases[phaseIdx].TaskIDs, newTaskID)
 		}
+	}
+
+	// Record idempotency key for deduplication on retry
+	if opts.IdempotencyKey != "" {
+		if state.IdempotencyKeys == nil {
+			state.IdempotencyKeys = make(map[string]string)
+		}
+		state.IdempotencyKeys[opts.IdempotencyKey] = newTaskID
 	}
 
 	now := nowUTC()
@@ -187,4 +213,27 @@ func validateInjectRequest(state *model.CommandState, opts InjectOptions) error 
 	}
 
 	return nil
+}
+
+// lookupTaskAssignment finds the worker and model assigned to a task by scanning queue files.
+// Used for idempotency dedup responses where the task already exists.
+func lookupTaskAssignment(maestroDir string, taskID string, workers model.WorkerConfig) (string, string) {
+	for i := 1; i <= workers.Count; i++ {
+		wID := fmt.Sprintf("worker%d", i)
+		queueFile := fmt.Sprintf("%s/queue/%s.yaml", maestroDir, wID)
+		data, err := os.ReadFile(queueFile)
+		if err != nil {
+			continue
+		}
+		var tq model.TaskQueue
+		if err := yaml.Unmarshal(data, &tq); err != nil {
+			continue
+		}
+		for _, task := range tq.Tasks {
+			if task.ID == taskID {
+				return wID, GetWorkerModel(wID, workers)
+			}
+		}
+	}
+	return "", ""
 }

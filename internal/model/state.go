@@ -23,6 +23,7 @@ type CommandState struct {
 	RetryLineage       map[string]string   `yaml:"retry_lineage"`
 	RetryEnqueueFailed map[string]string   `yaml:"retry_enqueue_failed,omitempty"` // task_id → worker_id; set when state registered but queue add failed
 	QueueWriteFailed   map[string]string   `yaml:"queue_write_failed,omitempty"`   // task_id → "workerID:resultID"; set when result committed but queue terminal write failed (H2 sticky error)
+	IdempotencyKeys    map[string]string   `yaml:"idempotency_keys,omitempty"`    // idempotency_key → task_id; prevents duplicate task injection on retry
 	Phases             []Phase             `yaml:"phases"`
 	phaseIDIndex       map[string]int      `yaml:"-"` // cached phaseID→slice index; lazily built
 	LastReconciledAt   *string             `yaml:"last_reconciled_at"`
