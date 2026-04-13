@@ -553,6 +553,15 @@ verification が `failed` の場合:
 
 これらを満たさないままタスクを発行するとマージ競合が発生し、`merge_conflict` シグナル経由の競合解決タスク（最大リトライ 2 回）に頼ることになる。**競合解決はあくまで例外パスであり、設計段階での回避を優先する。**
 
+### タスク content でのファイルパス指定
+
+**Worktree モードでは、タスク `content` 内のファイルパスはプロジェクトルート相対パスで記述すること。**
+
+- **正しい例**: `internal/agent/launcher.go`, `cmd/maestro/main.go`
+- **誤った例**: `/Users/mzk/.../maestro_v2/internal/agent/launcher.go`（絶対パス禁止）
+
+Worker の `working_dir` はシステムが自動設定する worktree パスである。Worker は `content` 内の相対パスを `working_dir` からの相対として解決する。タスク `content` にプロジェクトルートの絶対パスを埋め込むと、Worker が worktree ではなく repo 本体に書き込み、auto_commit が変更を検出できず integration がスタルする原因になる。
+
 ### フェーズとマージのライフサイクル
 
 1. フェーズ完了 → Daemon が各 Worker ブランチを統合ブランチにマージ

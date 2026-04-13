@@ -210,6 +210,11 @@ func TestResultHandler_WorkerNotification_Failure(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Watcher: model.WatcherConfig{NotifyLeaseSec: 120},
+		Retry: model.RetryConfig{
+			ResultNotifyInlineRetries:       1,
+			ResultNotifyInlineRetryDelaySec: 1,
+			ResultNotifyDeliveryTimeoutSec:  1,
+		},
 	}
 	lockMap := lock.NewMutexMap()
 	ep := newTestExecutorProvider(maestroDir, cfg)
@@ -636,6 +641,11 @@ func TestResultHandler_WorkerNotification_BackoffPreventsImmediateRetry(t *testi
 	maestroDir := setupTestMaestroDir(t)
 	cfg := model.Config{
 		Watcher: model.WatcherConfig{NotifyLeaseSec: 120},
+		Retry: model.RetryConfig{
+			ResultNotifyInlineRetries:       1, // minimize inline retries for test speed
+			ResultNotifyInlineRetryDelaySec: 1,
+			ResultNotifyDeliveryTimeoutSec:  1,
+		},
 	}
 	lockMap := lock.NewMutexMap()
 	ep := newTestExecutorProvider(maestroDir, cfg)
@@ -665,13 +675,14 @@ func TestResultHandler_WorkerNotification_BackoffPreventsImmediateRetry(t *testi
 	resultPath := filepath.Join(maestroDir, "results", "worker1.yaml")
 	yamlutil.AtomicWrite(resultPath, rf)
 
-	// First attempt: fails and sets backoff
+	// First attempt: inline retry exhausts all attempts (1 initial + 1 retry = 2 calls), then sets backoff
+	expectedCalls := 1 + cfg.Retry.EffectiveResultNotifyInlineRetries() // initial + inline retries
 	n := rh.processWorkerResultFile("worker1")
 	if n != 0 {
 		t.Fatalf("expected 0 (failed), got %d", n)
 	}
-	if len(failMock.Calls) != 1 {
-		t.Fatalf("expected 1 executor call, got %d", len(failMock.Calls))
+	if len(failMock.Calls) != expectedCalls {
+		t.Fatalf("expected %d executor calls (initial + inline retries), got %d", expectedCalls, len(failMock.Calls))
 	}
 
 	// Second attempt immediately: should be skipped due to backoff

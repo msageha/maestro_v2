@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"time"
 
 	"github.com/msageha/maestro_v2/internal/uds"
 )
@@ -10,6 +11,7 @@ import (
 type udsClientIface interface {
 	SendCommand(command string, params any) (*uds.Response, error)
 	SendCommandContext(ctx context.Context, command string, params any) (*uds.Response, error)
+	SetTimeout(d time.Duration)
 }
 
 // clientFactory creates UDS clients for the given socket path.

@@ -129,6 +129,11 @@ const (
 	DefaultSignalInlineRetries       = 2
 	DefaultSignalInlineRetryDelaySec = 3
 	DefaultSignalDeliveryTimeoutSec  = 15
+
+	// RetryConfig — result notification inline retry
+	DefaultResultNotifyInlineRetries       = 2
+	DefaultResultNotifyInlineRetryDelaySec = 3
+	DefaultResultNotifyDeliveryTimeoutSec  = 15
 )
 
 // ValidAgentModels is the whitelist of recognized agent model name identifiers.
@@ -366,6 +371,9 @@ type RetryConfig struct {
 	SignalInlineRetries              int             `yaml:"signal_inline_retries"`
 	SignalInlineRetryDelaySec        int             `yaml:"signal_inline_retry_delay_sec"`
 	SignalDeliveryTimeoutSec         int             `yaml:"signal_delivery_timeout_sec"`
+	ResultNotifyInlineRetries        int             `yaml:"result_notify_inline_retries"`
+	ResultNotifyInlineRetryDelaySec  int             `yaml:"result_notify_inline_retry_delay_sec"`
+	ResultNotifyDeliveryTimeoutSec   int             `yaml:"result_notify_delivery_timeout_sec"`
 	TaskExecution                    TaskRetryConfig `yaml:"task_execution"`
 }
 
@@ -379,6 +387,18 @@ func (r RetryConfig) EffectiveSignalInlineRetryDelaySec() int {
 
 func (r RetryConfig) EffectiveSignalDeliveryTimeoutSec() int {
 	return effectiveNonZero(r.SignalDeliveryTimeoutSec, DefaultSignalDeliveryTimeoutSec)
+}
+
+func (r RetryConfig) EffectiveResultNotifyInlineRetries() int {
+	return effectiveNonZero(r.ResultNotifyInlineRetries, DefaultResultNotifyInlineRetries)
+}
+
+func (r RetryConfig) EffectiveResultNotifyInlineRetryDelaySec() int {
+	return effectiveNonZero(r.ResultNotifyInlineRetryDelaySec, DefaultResultNotifyInlineRetryDelaySec)
+}
+
+func (r RetryConfig) EffectiveResultNotifyDeliveryTimeoutSec() int {
+	return effectiveNonZero(r.ResultNotifyDeliveryTimeoutSec, DefaultResultNotifyDeliveryTimeoutSec)
 }
 
 // TaskRetryConfig holds configuration for automatic task execution retries.

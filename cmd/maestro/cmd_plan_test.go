@@ -479,7 +479,7 @@ func TestSendPlanCommand_SanitizesValidationMessage(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stderr = w
 
-	err := app.sendPlanCommand("test", ".maestro", map[string]any{"operation": "test"})
+	err := app.sendPlanCommand("test", ".maestro", map[string]any{"operation": "test"}, planCommandTimeout)
 
 	w.Close()
 	os.Stderr = oldStderr

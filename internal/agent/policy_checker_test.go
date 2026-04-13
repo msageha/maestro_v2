@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -844,5 +845,121 @@ func TestHookScript_WriteHookScript_SafeWithSpecialChars(t *testing.T) {
 				t.Error("script should not contain __PROJECT_ROOT__ placeholder")
 			}
 		})
+	}
+}
+
+// runHookScriptInDir runs the hook script with stdin input from a specific working directory.
+func runHookScriptInDir(t *testing.T, scriptPath, inputJSON, dir string) string {
+	t.Helper()
+	cmd := exec.Command("bash", scriptPath)
+	cmd.Stdin = strings.NewReader(inputJSON)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("hook script failed: %v, output: %s", err, out)
+	}
+	return string(out)
+}
+
+// --- WT001: Worktree boundary enforcement ---
+
+func TestHookScript_WT001_DeniesWriteOutsideWorktree(t *testing.T) {
+	requireJq(t)
+	base := t.TempDir()
+
+	// Create a directory structure that mimics a worktree path
+	projectDir := filepath.Join(base, "project")
+	maestroDir := filepath.Join(projectDir, ".maestro")
+	worktreeDir := filepath.Join(maestroDir, "worktrees", "cmd_123", "worker1")
+	if err := os.MkdirAll(worktreeDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// Write to repo root (outside worktree) should be denied
+	input := fmt.Sprintf(`{"tool_name":"Write","tool_input":{"file_path":"%s/internal/foo.go","content":"package foo"}}`, projectDir)
+	output := runHookScriptInDir(t, scriptPath, input, worktreeDir)
+	if !strings.Contains(output, "WT001") || !strings.Contains(output, "deny") {
+		t.Errorf("expected WT001 deny for write outside worktree, got: %s", output)
+	}
+}
+
+func TestHookScript_WT001_AllowsWriteInsideWorktree(t *testing.T) {
+	requireJq(t)
+	base := t.TempDir()
+
+	projectDir := filepath.Join(base, "project")
+	maestroDir := filepath.Join(projectDir, ".maestro")
+	worktreeDir := filepath.Join(maestroDir, "worktrees", "cmd_123", "worker1")
+	if err := os.MkdirAll(worktreeDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// Write inside worktree should be allowed
+	input := fmt.Sprintf(`{"tool_name":"Write","tool_input":{"file_path":"%s/internal/foo.go","content":"package foo"}}`, worktreeDir)
+	output := runHookScriptInDir(t, scriptPath, input, worktreeDir)
+	if strings.Contains(output, "deny") {
+		t.Errorf("should allow write inside worktree, got: %s", output)
+	}
+}
+
+func TestHookScript_WT001_EditOutsideWorktreeDenied(t *testing.T) {
+	requireJq(t)
+	base := t.TempDir()
+
+	projectDir := filepath.Join(base, "project")
+	maestroDir := filepath.Join(projectDir, ".maestro")
+	worktreeDir := filepath.Join(maestroDir, "worktrees", "cmd_456", "worker2")
+	if err := os.MkdirAll(worktreeDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// Edit to repo root should be denied
+	input := fmt.Sprintf(`{"tool_name":"Edit","tool_input":{"file_path":"%s/cmd/main.go","old_string":"old","new_string":"new"}}`, projectDir)
+	output := runHookScriptInDir(t, scriptPath, input, worktreeDir)
+	if !strings.Contains(output, "WT001") || !strings.Contains(output, "deny") {
+		t.Errorf("expected WT001 deny for Edit outside worktree, got: %s", output)
+	}
+}
+
+func TestHookScript_WT001_NoEnforcementOutsideWorktree(t *testing.T) {
+	requireJq(t)
+	base := t.TempDir()
+
+	// When CWD is NOT inside .maestro/worktrees/, WT001 should not apply
+	projectDir := filepath.Join(base, "project")
+	maestroDir := filepath.Join(projectDir, ".maestro")
+	if err := os.MkdirAll(maestroDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// Write to project root when CWD is project root (non-worktree mode) should be allowed
+	input := fmt.Sprintf(`{"tool_name":"Write","tool_input":{"file_path":"%s/internal/foo.go","content":"package foo"}}`, projectDir)
+	output := runHookScriptInDir(t, scriptPath, input, projectDir)
+	if strings.Contains(output, "WT001") {
+		t.Errorf("WT001 should not apply when CWD is not inside worktrees, got: %s", output)
 	}
 }

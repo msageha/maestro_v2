@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"math/rand/v2"
@@ -298,7 +299,7 @@ func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
 		},
 
 		notify: func(r *model.TaskResult) error {
-			return rh.notifyPlannerOfWorkerResult(r.CommandID, r.TaskID, workerID, string(r.Status))
+			return rh.notifyPlannerOfWorkerResultWithRetry(r.CommandID, r.TaskID, workerID, string(r.Status))
 		},
 		onSuccess: func(r *model.TaskResult) {
 			if bus := rh.getEventBus(); bus != nil {
@@ -469,8 +470,42 @@ func (rh *ResultHandler) markNotifyFailure(r model.Notifiable, errMsg string) {
 
 // --- Notification delivery ---
 
+// notifyPlannerOfWorkerResultWithRetry attempts delivery to the planner with inline retries.
+// On transient failure (e.g., planner busy during recovery), retries up to
+// ResultNotifyInlineRetries times with a short delay between attempts, each bounded
+// by ResultNotifyDeliveryTimeoutSec. This mirrors deliverPlannerSignal's inline retry
+// pattern to avoid blocking for the full busy detection cycle on a single attempt.
+func (rh *ResultHandler) notifyPlannerOfWorkerResultWithRetry(commandID, taskID, workerID, taskStatus string) error {
+	maxRetries := rh.config.Retry.EffectiveResultNotifyInlineRetries()
+	retryDelay := time.Duration(rh.config.Retry.EffectiveResultNotifyInlineRetryDelaySec()) * time.Second
+	attemptTimeout := time.Duration(rh.config.Retry.EffectiveResultNotifyDeliveryTimeoutSec()) * time.Second
+
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			rh.log(LogLevelInfo, "result_notify_inline_retry attempt=%d/%d task=%s command=%s error=%v",
+				attempt+1, maxRetries+1, taskID, commandID, lastErr)
+			time.Sleep(retryDelay)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), attemptTimeout)
+		err := rh.notifyPlannerOfWorkerResult(ctx, commandID, taskID, workerID, taskStatus)
+		cancel()
+
+		if err == nil {
+			if attempt > 0 {
+				rh.log(LogLevelInfo, "result_notify_inline_retry_success task=%s command=%s total_attempts=%d",
+					taskID, commandID, attempt+1)
+			}
+			return nil
+		}
+		lastErr = err
+	}
+	return lastErr
+}
+
 // notifyPlannerOfWorkerResult sends a task_result notification to Planner via agent_executor.
-func (rh *ResultHandler) notifyPlannerOfWorkerResult(commandID, taskID, workerID, taskStatus string) error {
+func (rh *ResultHandler) notifyPlannerOfWorkerResult(ctx context.Context, commandID, taskID, workerID, taskStatus string) error {
 	exec, err := rh.getExecutor()
 	if err != nil {
 		return fmt.Errorf("create executor: %w", err)
@@ -479,6 +514,7 @@ func (rh *ResultHandler) notifyPlannerOfWorkerResult(commandID, taskID, workerID
 	message := envelope.BuildTaskResultNotification(commandID, taskID, workerID, taskStatus)
 
 	result := exec.Execute(agent.ExecRequest{
+		Context:   ctx,
 		AgentID:   "planner",
 		Message:   message,
 		Mode:      agent.ModeDeliver,

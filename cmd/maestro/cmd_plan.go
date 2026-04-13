@@ -23,6 +23,12 @@ import (
 // cancellation deterministic for operators.
 const planCommandTimeout = 30 * time.Second
 
+// planPhaseFillTimeout is an extended timeout for phase fill operations
+// (plan submit --phase). Phase fills during conflict recovery contend with
+// the daemon's PeriodicScan exclusive lock (scanMu), which can delay the
+// plan handler's shared lock acquisition beyond the standard 30s window.
+const planPhaseFillTimeout = 120 * time.Second
+
 // runPlan dispatches plan subcommands (submit, complete, add-retry-task, request-cancel, rebuild).
 func (a *cliApp) runPlan(args []string) error {
 	if len(args) < 1 {
@@ -110,7 +116,13 @@ func (a *cliApp) runPlanSubmit(args []string) error {
 		"data":      dataMap,
 	}
 
-	return a.sendPlanCommand("plan submit", maestroDir, params)
+	// Phase fill operations (conflict recovery) contend with the daemon's
+	// PeriodicScan exclusive lock, so they use an extended timeout.
+	timeout := planCommandTimeout
+	if phaseName != "" {
+		timeout = planPhaseFillTimeout
+	}
+	return a.sendPlanCommand("plan submit", maestroDir, params, timeout)
 }
 
 // runPlanComplete reports command completion to the daemon.
@@ -144,7 +156,7 @@ func (a *cliApp) runPlanComplete(args []string) error {
 		},
 	}
 
-	return a.sendPlanCommand("plan complete", maestroDir, params)
+	return a.sendPlanCommand("plan complete", maestroDir, params, planCommandTimeout)
 }
 
 // runPlanAddRetryTask replaces a failed task with a new retry task.
@@ -212,7 +224,7 @@ func (a *cliApp) runPlanAddRetryTask(args []string) error {
 		},
 	}
 
-	return a.sendPlanCommand("plan add-retry-task", maestroDir, params)
+	return a.sendPlanCommand("plan add-retry-task", maestroDir, params, planCommandTimeout)
 }
 
 // runPlanRequestCancel requests cancellation of an active command.
@@ -290,7 +302,7 @@ func (a *cliApp) runPlanRebuild(args []string) error {
 		},
 	}
 
-	return a.sendPlanCommand("plan rebuild", maestroDir, params)
+	return a.sendPlanCommand("plan rebuild", maestroDir, params, planCommandTimeout)
 }
 
 // runPlanUnquarantine clears quarantine state on a command's integration
@@ -320,7 +332,7 @@ func (a *cliApp) runPlanUnquarantine(args []string) error {
 			"reason":     reason,
 		},
 	}
-	return a.sendPlanCommand("plan unquarantine", maestroDir, params)
+	return a.sendPlanCommand("plan unquarantine", maestroDir, params, planCommandTimeout)
 }
 
 // runPlanResumeMerge resets the merge failure counter and moves a stuck
@@ -348,7 +360,7 @@ func (a *cliApp) runPlanResumeMerge(args []string) error {
 			"command_id": commandID,
 		},
 	}
-	return a.sendPlanCommand("plan resume-merge", maestroDir, params)
+	return a.sendPlanCommand("plan resume-merge", maestroDir, params, planCommandTimeout)
 }
 
 // runResolveConflict resolves a worker merge conflict by delegating to the
@@ -415,23 +427,29 @@ func (a *cliApp) runResolveConflict(args []string) error {
 			"conflicting_files": files,
 		},
 	}
-	return a.sendPlanCommand("resolve-conflict", maestroDir, params)
+	return a.sendPlanCommand("resolve-conflict", maestroDir, params, planCommandTimeout)
 }
 
 // sendPlanCommand sends a plan operation to the daemon via UDS.
 //
-// The request is bounded by [planCommandTimeout] and is interruptible by
+// The request is bounded by the given timeout and is interruptible by
 // SIGINT/SIGTERM so an operator can abort a hung CLI invocation with Ctrl-C
 // without leaving a stuck connection on the daemon side.
-func (a *cliApp) sendPlanCommand(cmd string, maestroDir string, params map[string]any) error {
+func (a *cliApp) sendPlanCommand(cmd string, maestroDir string, params map[string]any, timeout time.Duration) error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
-	ctx, cancelTimeout := context.WithTimeout(ctx, planCommandTimeout)
+	ctx, cancelTimeout := context.WithTimeout(ctx, timeout)
 	defer cancelTimeout()
 
 	client := a.createClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	// Align the UDS connection deadline with the operation timeout so that
+	// the socket does not expire before the context.
+	client.SetTimeout(timeout)
 	resp, err := client.SendCommandContext(ctx, "plan", params)
 	if err != nil {
+		if ctx.Err() != nil {
+			return fmt.Errorf("maestro %s: timed out after %v waiting for daemon response (the daemon may be busy with a scan cycle — consider retrying): %w", cmd, timeout, err)
+		}
 		return fmt.Errorf("maestro %s: %w", cmd, err)
 	}
 

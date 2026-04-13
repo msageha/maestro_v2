@@ -341,19 +341,20 @@ func TestBuildLaunchArgs_PlannerDisallowsOperatorOnlyCommands(t *testing.T) {
 	joined := strings.Join(args, " ")
 
 	// Planner should have --disallowedTools blocking operator-only commands
-	for _, sub := range []string{
-		"Bash(maestro plan unquarantine:*)",
-		"Bash(maestro plan add-retry-task:*)",
-	} {
-		if !strings.Contains(joined, sub) {
-			t.Errorf("planner disallowedTools should contain %q", sub)
-		}
+	if !strings.Contains(joined, "Bash(maestro plan unquarantine:*)") {
+		t.Error("planner disallowedTools should contain unquarantine")
 	}
 
 	// resume-merge is intentionally NOT blocked for Planner (hybrid b+c
 	// conflict recovery: Planner triggers re-merge after worker resolves)
 	if strings.Contains(joined, "Bash(maestro plan resume-merge:*)") {
 		t.Error("planner disallowedTools should NOT contain resume-merge (Planner needs it for conflict recovery)")
+	}
+
+	// add-retry-task is intentionally NOT blocked for Planner (Planner's
+	// standard mechanism for retrying failed tasks)
+	if strings.Contains(joined, "Bash(maestro plan add-retry-task:*)") {
+		t.Error("planner disallowedTools should NOT contain add-retry-task (Planner needs it for task retry)")
 	}
 }
 

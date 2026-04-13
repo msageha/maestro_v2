@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/msageha/maestro_v2/internal/uds"
 )
@@ -13,6 +14,7 @@ import (
 type mockUDSClient struct {
 	sendCommandFunc        func(command string, params any) (*uds.Response, error)
 	sendCommandContextFunc func(ctx context.Context, command string, params any) (*uds.Response, error)
+	timeout                time.Duration
 }
 
 func (m *mockUDSClient) SendCommand(command string, params any) (*uds.Response, error) {
@@ -24,6 +26,10 @@ func (m *mockUDSClient) SendCommandContext(ctx context.Context, command string, 
 		return m.sendCommandContextFunc(ctx, command, params)
 	}
 	return m.sendCommandFunc(command, params)
+}
+
+func (m *mockUDSClient) SetTimeout(d time.Duration) {
+	m.timeout = d
 }
 
 func withMaestroDir(t *testing.T) {

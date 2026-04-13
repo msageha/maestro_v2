@@ -313,6 +313,19 @@ if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ]; then
       deny "Blocked write to system directory: $file_path"
       ;;
   esac
+
+  # WT001: Worktree boundary enforcement.
+  # When the Worker's CWD is inside .maestro/worktrees/, all Write/Edit
+  # operations must target paths within that CWD. This prevents the Worker
+  # (Claude LLM) from writing to the repo root instead of the worktree,
+  # which would cause auto_commit to see no changes and integration to stall.
+  worker_cwd="$(pwd 2>/dev/null || echo "")"
+  if [ -n "$worker_cwd" ] && echo "$worker_cwd" | grep -qF '/.maestro/worktrees/'; then
+    case "$file_path" in
+      "$worker_cwd"/*) ;; # OK: within worktree
+      *) deny "WT001: Write outside worktree boundary: $file_path is not within working directory $worker_cwd" ;;
+    esac
+  fi
 fi
 
 # Allow: no output, exit 0
