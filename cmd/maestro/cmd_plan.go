@@ -29,10 +29,10 @@ const planCommandTimeout = 30 * time.Second
 // plan handler's shared lock acquisition beyond the standard 30s window.
 const planPhaseFillTimeout = 120 * time.Second
 
-// runPlan dispatches plan subcommands (submit, complete, add-retry-task, request-cancel, rebuild).
+// runPlan dispatches plan subcommands (submit, complete, add-retry-task, add-task, request-cancel, rebuild).
 func (a *cliApp) runPlan(args []string) error {
 	if len(args) < 1 {
-		return &CLIError{Code: 1, Msg: "maestro plan: missing subcommand\nusage: maestro plan <submit|complete|add-retry-task|request-cancel|rebuild|unquarantine|resume-merge> [options]"}
+		return &CLIError{Code: 1, Msg: "maestro plan: missing subcommand\nusage: maestro plan <submit|complete|add-retry-task|add-task|request-cancel|rebuild|unquarantine|resume-merge> [options]"}
 	}
 	switch args[0] {
 	case "submit":
@@ -41,6 +41,8 @@ func (a *cliApp) runPlan(args []string) error {
 		return a.runPlanComplete(args[1:])
 	case "add-retry-task":
 		return a.runPlanAddRetryTask(args[1:])
+	case "add-task":
+		return a.runPlanAddTask(args[1:])
 	case "request-cancel":
 		return a.runPlanRequestCancel(args[1:])
 	case "rebuild":
@@ -50,7 +52,7 @@ func (a *cliApp) runPlan(args []string) error {
 	case "resume-merge":
 		return a.runPlanResumeMerge(args[1:])
 	default:
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan: unknown subcommand: %s\nusage: maestro plan <submit|complete|add-retry-task|request-cancel|rebuild|unquarantine|resume-merge> [options]", args[0])}
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan: unknown subcommand: %s\nusage: maestro plan <submit|complete|add-retry-task|add-task|request-cancel|rebuild|unquarantine|resume-merge> [options]", args[0])}
 	}
 }
 
@@ -225,6 +227,80 @@ func (a *cliApp) runPlanAddRetryTask(args []string) error {
 	}
 
 	return a.sendPlanCommand("plan add-retry-task", maestroDir, params, planCommandTimeout)
+}
+
+// runPlanAddTask injects a new task into an existing sealed plan.
+func (a *cliApp) runPlanAddTask(args []string) error {
+	cmd := NewCommand("maestro plan add-task", "maestro plan add-task --command-id <id> --purpose <text> --content <text> --acceptance-criteria <text> --bloom-level <n> [--blocked-by <task_id>]... [--required]")
+	var commandID, purpose, content, acceptanceCriteria, personaHint string
+	var bloomLevel int
+	var required bool
+	var blockedBy, toolsHint, constraints, skillRefs stringSliceFlag
+
+	cmd.StringVar(&commandID, "command-id", "", "Parent command ID")
+	cmd.StringVar(&purpose, "purpose", "", "Purpose description for the task")
+	cmd.StringVar(&content, "content", "", "Task content")
+	cmd.StringVar(&acceptanceCriteria, "acceptance-criteria", "", "Acceptance criteria for the task")
+	cmd.IntVar(&bloomLevel, "bloom-level", 0, "Bloom taxonomy level (1-6)")
+	cmd.BoolVar(&required, "required", true, "Whether the task is required for command completion")
+	cmd.Var(&blockedBy, "blocked-by", "Task ID dependency (repeatable)")
+	cmd.Var(&constraints, "constraints", "Constraint (repeatable)")
+	cmd.Var(&toolsHint, "tools-hint", "Recommended tool (repeatable)")
+	cmd.StringVar(&personaHint, "persona-hint", "", "Persona hint")
+	cmd.Var(&skillRefs, "skill-refs", "Skill reference (repeatable)")
+
+	cmd.AddCheck("all required flags must be set", func() bool {
+		return commandID != "" && purpose != "" && content != "" && acceptanceCriteria != "" && bloomLevel != 0
+	})
+
+	if err := cmd.Parse(args); err != nil {
+		return err
+	}
+
+	if err := validate.ID(commandID); err != nil {
+		return cmd.Errorf("invalid --command-id: %v", err)
+	}
+	for _, dep := range blockedBy {
+		if err := validate.ID(dep); err != nil {
+			return cmd.Errorf("invalid --blocked-by %q: %v", dep, err)
+		}
+	}
+	if bloomLevel < 1 || bloomLevel > 6 {
+		return cmd.Errorf("--bloom-level must be between 1 and 6")
+	}
+	for _, pair := range []struct{ name, val string }{
+		{"--content", content},
+		{"--purpose", purpose},
+		{"--acceptance-criteria", acceptanceCriteria},
+	} {
+		if err := validate.ContentLength(pair.name, pair.val, model.DefaultMaxEntryContentBytes); err != nil {
+			return cmd.Errorf("%v", err)
+		}
+	}
+
+	maestroDir, err := requireMaestroDir("plan add-task")
+	if err != nil {
+		return err
+	}
+
+	params := map[string]any{
+		"operation": "add_task",
+		"data": map[string]any{
+			"command_id":          commandID,
+			"purpose":             purpose,
+			"content":             content,
+			"acceptance_criteria": acceptanceCriteria,
+			"constraints":         []string(constraints),
+			"blocked_by":          []string(blockedBy),
+			"bloom_level":         bloomLevel,
+			"required":            required,
+			"tools_hint":          []string(toolsHint),
+			"persona_hint":        personaHint,
+			"skill_refs":          []string(skillRefs),
+		},
+	}
+
+	return a.sendPlanCommand("plan add-task", maestroDir, params, planCommandTimeout)
 }
 
 // runPlanRequestCancel requests cancellation of an active command.

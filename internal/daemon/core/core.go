@@ -250,5 +250,6 @@ type PlanExecutor interface {
 	Submit(params json.RawMessage) (json.RawMessage, error)
 	Complete(params json.RawMessage) (json.RawMessage, error)
 	AddRetryTask(params json.RawMessage) (json.RawMessage, error)
+	AddTask(params json.RawMessage) (json.RawMessage, error)
 	Rebuild(params json.RawMessage) (json.RawMessage, error)
 }

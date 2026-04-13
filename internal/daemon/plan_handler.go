@@ -89,6 +89,8 @@ func (h *PlanAPI) handlePlan(req *uds.Request) *uds.Response {
 		result, err = h.planExecutor.Complete(params.Data)
 	case "add_retry_task":
 		result, err = h.planExecutor.AddRetryTask(params.Data)
+	case "add_task":
+		result, err = h.planExecutor.AddTask(params.Data)
 	case "rebuild":
 		result, err = h.planExecutor.Rebuild(params.Data)
 	default:

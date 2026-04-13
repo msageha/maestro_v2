@@ -115,6 +115,42 @@ func (pe *PlanExecutorImpl) AddRetryTask(params json.RawMessage) (json.RawMessag
 	})
 }
 
+type injectParams struct {
+	CommandID          string   `json:"command_id"`
+	Purpose            string   `json:"purpose"`
+	Content            string   `json:"content"`
+	AcceptanceCriteria string   `json:"acceptance_criteria"`
+	Constraints        []string `json:"constraints"`
+	BlockedBy          []string `json:"blocked_by"`
+	BloomLevel         int      `json:"bloom_level"`
+	Required           bool     `json:"required"`
+	ToolsHint          []string `json:"tools_hint"`
+	PersonaHint        string   `json:"persona_hint"`
+	SkillRefs          []string `json:"skill_refs"`
+}
+
+// AddTask implements core.PlanExecutor by parsing params and calling plan.AddTask.
+func (pe *PlanExecutorImpl) AddTask(params json.RawMessage) (json.RawMessage, error) {
+	return parseAndExecute("add_task", params, func(p injectParams) (*plan.InjectResult, error) {
+		return plan.AddTask(plan.InjectOptions{
+			CommandID:          p.CommandID,
+			Purpose:            p.Purpose,
+			Content:            p.Content,
+			AcceptanceCriteria: p.AcceptanceCriteria,
+			Constraints:        p.Constraints,
+			BlockedBy:          p.BlockedBy,
+			BloomLevel:         p.BloomLevel,
+			Required:           p.Required,
+			ToolsHint:          p.ToolsHint,
+			PersonaHint:        p.PersonaHint,
+			SkillRefs:          p.SkillRefs,
+			MaestroDir:         pe.MaestroDir,
+			Config:             pe.Config,
+			LockMap:            pe.LockMap,
+		})
+	})
+}
+
 type rebuildParams struct {
 	CommandID string `json:"command_id"`
 }

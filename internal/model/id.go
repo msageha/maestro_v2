@@ -67,6 +67,8 @@ const (
 	TaskIDCallerPlannerSystemCommit TaskIDCaller = "planner-system-commit"
 	// TaskIDCallerPlannerRetry — Planner.plan retry-task.
 	TaskIDCallerPlannerRetry TaskIDCaller = "planner-retry"
+	// TaskIDCallerPlannerInject — Planner.plan add-task (ad-hoc task injection into sealed plan).
+	TaskIDCallerPlannerInject TaskIDCaller = "planner-inject"
 	// TaskIDCallerDaemonRetry — Daemon TaskRetryHandler (automatic retry).
 	TaskIDCallerDaemonRetry TaskIDCaller = "daemon-retry-handler"
 	// TaskIDCallerDaemonConflictResolution — Daemon R7 reconciler (conflict resolution dispatch).
@@ -80,6 +82,7 @@ var validTaskIDCallers = map[TaskIDCaller]bool{
 	TaskIDCallerPlannerSubmit:            true,
 	TaskIDCallerPlannerSystemCommit:      true,
 	TaskIDCallerPlannerRetry:             true,
+	TaskIDCallerPlannerInject:            true,
 	TaskIDCallerDaemonRetry:              true,
 	TaskIDCallerDaemonConflictResolution: true,
 	TaskIDCallerSystemInternal:           true,

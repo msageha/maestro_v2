@@ -139,6 +139,25 @@ maestro plan add-retry-task \
 
 `--blocked-by` は `plan submit` 出力の task_id を指定（YAML 内の name ではない）。省略時は失敗タスクの依存関係を継承。依存先でキャンセルされた後続タスクも自動復旧する。
 
+**既存プランへのタスク追加**（conflict recovery 等で sealed プランに新規タスクを注入する場合）:
+
+```
+maestro plan add-task \
+  --command-id <command_id> \
+  --purpose "<目的>" \
+  --content "<作業内容>" \
+  --acceptance-criteria "<完了条件>" \
+  --bloom-level <1-6> \
+  [--blocked-by <task_id> ...] \
+  [--required] \
+  [--constraints "<制約>" ...] \
+  [--persona-hint "<persona>"] \
+  [--tools-hint "<tool>" ...] \
+  [--skill-refs "<skill>" ...]
+```
+
+`--blocked-by` は既存タスクの task_id を指定。`--required` はデフォルト true。`plan submit` と異なり、既に state が存在するコマンドに対してタスクを追加できる。`add-retry-task` と異なり、既存タスクの置換ではなく新規タスクの追加。
+
 **deferred フェーズへのタスク投入**: `maestro plan submit --command-id <id> --phase <phase_name> --tasks-file - <<'PLAN'`
 
 **キャンセル要求**:
@@ -592,10 +611,23 @@ Daemon が自動で conflict resolver を dispatch（worker の状態を `confli
 
 1. **状況確認**: `.maestro/dashboard.md` を Read で確認し、対象コマンド/フェーズの状態を把握する
 2. **競合内容の特定**: 構造化情報 (`base`/`ours`/`theirs`/`conflict_files`) から、どの worker のどのファイルが衝突したか特定する
-3. **競合解決タスクの発行**: 競合した worker に対し `maestro plan submit` でタスクを発行する。`content` に以下を含める:
+3. **競合解決タスクの発行**: `maestro plan add-task` で競合解決タスクを発行する。`content` に以下を含める:
    - 競合ファイル一覧と、統合ブランチ側の変更内容の説明
    - 「競合を回避するようコードを修正する」という具体的な指示
    - `acceptance_criteria` にコンパイル成功・テストパスを含める
+
+   ```
+   maestro plan add-task \
+     --command-id <command_id> \
+     --purpose "merge conflict 解決: <conflict_files>" \
+     --content "<競合ファイル・修正指示の詳細>" \
+     --acceptance-criteria "コンパイル成功・テストパス" \
+     --bloom-level 3 \
+     --persona-hint implementer
+   ```
+
+   **注意**: `plan submit` は既にプランが存在するコマンドには使用できない（double submit 拒否）。`add-retry-task` は失敗タスクの置換専用であり完了済みタスクには使用できない。`add-task` は sealed プランに新規タスクを追加する専用コマンドである。
+
 4. **再マージのトリガー**: worker がタスクを完了したら `maestro plan resume-merge --command-id <command_id>` を実行する。これにより:
    - 統合ブランチのステータスが `failed` にリセットされる
    - conflict/resolving 状態の worker が `active` にリセットされる

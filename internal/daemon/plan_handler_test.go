@@ -17,6 +17,7 @@ type mockPlanExecutor struct {
 	submitFunc       func(json.RawMessage) (json.RawMessage, error)
 	completeFunc     func(json.RawMessage) (json.RawMessage, error)
 	addRetryTaskFunc func(json.RawMessage) (json.RawMessage, error)
+	addTaskFunc      func(json.RawMessage) (json.RawMessage, error)
 	rebuildFunc      func(json.RawMessage) (json.RawMessage, error)
 }
 
@@ -37,6 +38,13 @@ func (m *mockPlanExecutor) Complete(params json.RawMessage) (json.RawMessage, er
 func (m *mockPlanExecutor) AddRetryTask(params json.RawMessage) (json.RawMessage, error) {
 	if m.addRetryTaskFunc != nil {
 		return m.addRetryTaskFunc(params)
+	}
+	return json.RawMessage(`{"ok":true}`), nil
+}
+
+func (m *mockPlanExecutor) AddTask(params json.RawMessage) (json.RawMessage, error) {
+	if m.addTaskFunc != nil {
+		return m.addTaskFunc(params)
 	}
 	return json.RawMessage(`{"ok":true}`), nil
 }

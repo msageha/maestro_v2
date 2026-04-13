@@ -1,0 +1,424 @@
+package plan
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"testing"
+
+	yamlv3 "gopkg.in/yaml.v3"
+
+	"github.com/msageha/maestro_v2/internal/lock"
+	"github.com/msageha/maestro_v2/internal/model"
+	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
+)
+
+// setupInjectFixture creates a maestro directory with a sealed state containing
+// completed tasks suitable for injecting new tasks. Returns (maestroDir, commandID, completedTaskID).
+func setupInjectFixture(t *testing.T) (string, string, string) {
+	t.Helper()
+	maestroDir := setupMaestroDir(t)
+	commandID := "cmd_0000000030_aabbccdd"
+	taskID1 := "task_0000000030_11111111"
+	taskID2 := "task_0000000030_22222222"
+
+	state := &model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanVersion:   1,
+		PlanStatus:    model.PlanStatusSealed,
+		CompletionPolicy: model.CompletionPolicy{
+			Mode:                    "all_required_completed",
+			OnRequiredFailed:        "fail_command",
+			OnRequiredCancelled:     "cancel_command",
+			OnOptionalFailed:        "ignore",
+			DependencyFailurePolicy: "cancel_dependents",
+		},
+		ExpectedTaskCount: 2,
+		RequiredTaskIDs:   []string{taskID1, taskID2},
+		OptionalTaskIDs:   []string{},
+		TaskDependencies: map[string][]string{
+			taskID1: {},
+			taskID2: {taskID1},
+		},
+		TaskStates: map[string]model.Status{
+			taskID1: model.StatusCompleted,
+			taskID2: model.StatusCompleted,
+		},
+		CancelledReasons: make(map[string]string),
+		AppliedResultIDs: make(map[string]string),
+		RetryLineage:     make(map[string]string),
+		CreatedAt:        "2025-01-01T00:00:00Z",
+		UpdatedAt:        "2025-01-01T00:00:00Z",
+	}
+
+	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	return maestroDir, commandID, taskID1
+}
+
+func TestAddTask_HappyPath(t *testing.T) {
+	maestroDir, commandID, completedTaskID := setupInjectFixture(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	result, err := AddTask(InjectOptions{
+		CommandID:          commandID,
+		Purpose:            "resolve merge conflict",
+		Content:            "fix conflicting files",
+		AcceptanceCriteria: "build passes",
+		BloomLevel:         3,
+		Required:           true,
+		BlockedBy:          []string{completedTaskID},
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err != nil {
+		t.Fatalf("AddTask returned error: %v", err)
+	}
+
+	if result.TaskID == "" {
+		t.Error("result.TaskID is empty")
+	}
+	if result.Worker == "" {
+		t.Error("result.Worker is empty")
+	}
+	if result.Model == "" {
+		t.Error("result.Model is empty")
+	}
+
+	// Verify state was persisted
+	sm := NewStateManager(maestroDir, lm)
+	state, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+
+	// New task should be in RequiredTaskIDs
+	found := false
+	for _, id := range state.RequiredTaskIDs {
+		if id == result.TaskID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("new task %s not in RequiredTaskIDs %v", result.TaskID, state.RequiredTaskIDs)
+	}
+
+	// ExpectedTaskCount should have increased
+	if state.ExpectedTaskCount != 3 {
+		t.Errorf("ExpectedTaskCount = %d, want 3", state.ExpectedTaskCount)
+	}
+
+	// New task should be pending
+	if state.TaskStates[result.TaskID] != model.StatusPending {
+		t.Errorf("new task state = %s, want pending", state.TaskStates[result.TaskID])
+	}
+
+	// Dependencies should be set
+	deps := state.TaskDependencies[result.TaskID]
+	if len(deps) != 1 || deps[0] != completedTaskID {
+		t.Errorf("dependencies = %v, want [%s]", deps, completedTaskID)
+	}
+
+	// PlanVersion should have incremented
+	if state.PlanVersion != 2 {
+		t.Errorf("PlanVersion = %d, want 2", state.PlanVersion)
+	}
+
+	// Queue entry written
+	totalQueueTasks := 0
+	for i := 1; i <= 2; i++ {
+		queueFile := filepath.Join(maestroDir, "queue", fmt.Sprintf("worker%d.yaml", i))
+		data, err := os.ReadFile(queueFile)
+		if err != nil {
+			continue
+		}
+		var tq model.TaskQueue
+		if yamlv3.Unmarshal(data, &tq) != nil {
+			continue
+		}
+		for _, task := range tq.Tasks {
+			if task.ID == result.TaskID {
+				totalQueueTasks++
+				if task.Status != model.StatusPending {
+					t.Errorf("queue task status = %s, want pending", task.Status)
+				}
+				if task.Purpose != "resolve merge conflict" {
+					t.Errorf("queue task purpose = %q, want %q", task.Purpose, "resolve merge conflict")
+				}
+			}
+		}
+	}
+	if totalQueueTasks != 1 {
+		t.Errorf("queue entries for new task = %d, want 1", totalQueueTasks)
+	}
+}
+
+func TestAddTask_Optional(t *testing.T) {
+	maestroDir, commandID, _ := setupInjectFixture(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	result, err := AddTask(InjectOptions{
+		CommandID:          commandID,
+		Purpose:            "optional cleanup",
+		Content:            "cleanup leftover files",
+		AcceptanceCriteria: "no leftover files",
+		BloomLevel:         2,
+		Required:           false,
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err != nil {
+		t.Fatalf("AddTask returned error: %v", err)
+	}
+
+	sm := NewStateManager(maestroDir, lm)
+	state, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+
+	// New task should be in OptionalTaskIDs, not RequiredTaskIDs
+	foundInOptional := false
+	for _, id := range state.OptionalTaskIDs {
+		if id == result.TaskID {
+			foundInOptional = true
+			break
+		}
+	}
+	if !foundInOptional {
+		t.Errorf("new task %s not in OptionalTaskIDs %v", result.TaskID, state.OptionalTaskIDs)
+	}
+
+	foundInRequired := false
+	for _, id := range state.RequiredTaskIDs {
+		if id == result.TaskID {
+			foundInRequired = true
+			break
+		}
+	}
+	if foundInRequired {
+		t.Errorf("optional task %s should not be in RequiredTaskIDs", result.TaskID)
+	}
+}
+
+func TestAddTask_NilLockMap(t *testing.T) {
+	_, err := AddTask(InjectOptions{
+		CommandID:  "cmd_0000000030_aabbccdd",
+		MaestroDir: t.TempDir(),
+		LockMap:    nil,
+	})
+	if err == nil {
+		t.Fatal("expected error for nil LockMap")
+	}
+}
+
+func TestAddTask_NotSealed(t *testing.T) {
+	maestroDir := setupMaestroDir(t)
+	commandID := "cmd_0000000031_aabbccdd"
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	state := &model.CommandState{
+		SchemaVersion:    1,
+		FileType:         "state_command",
+		CommandID:        commandID,
+		PlanVersion:      1,
+		PlanStatus:       model.PlanStatusCompleted,
+		ExpectedTaskCount: 0,
+		RequiredTaskIDs:  []string{},
+		OptionalTaskIDs:  []string{},
+		TaskDependencies: make(map[string][]string),
+		TaskStates:       make(map[string]model.Status),
+		CancelledReasons: make(map[string]string),
+		AppliedResultIDs: make(map[string]string),
+		RetryLineage:     make(map[string]string),
+		CreatedAt:        "2025-01-01T00:00:00Z",
+		UpdatedAt:        "2025-01-01T00:00:00Z",
+	}
+	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	_, err := AddTask(InjectOptions{
+		CommandID:          commandID,
+		Purpose:            "test",
+		Content:            "test",
+		AcceptanceCriteria: "test",
+		BloomLevel:         3,
+		Required:           true,
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err == nil {
+		t.Fatal("expected error for non-sealed plan")
+	}
+}
+
+func TestAddTask_InvalidBlockedBy(t *testing.T) {
+	maestroDir, commandID, _ := setupInjectFixture(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	_, err := AddTask(InjectOptions{
+		CommandID:          commandID,
+		Purpose:            "test",
+		Content:            "test",
+		AcceptanceCriteria: "test",
+		BloomLevel:         3,
+		Required:           true,
+		BlockedBy:          []string{"task_0000000099_nonexist"},
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid blocked_by reference")
+	}
+}
+
+func TestAddTask_InvalidBloomLevel(t *testing.T) {
+	maestroDir, commandID, _ := setupInjectFixture(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	_, err := AddTask(InjectOptions{
+		CommandID:          commandID,
+		Purpose:            "test",
+		Content:            "test",
+		AcceptanceCriteria: "test",
+		BloomLevel:         7,
+		Required:           true,
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid bloom level")
+	}
+}
+
+func TestAddTask_MissingRequiredFields(t *testing.T) {
+	maestroDir, commandID, _ := setupInjectFixture(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	tests := []struct {
+		name string
+		opts InjectOptions
+	}{
+		{
+			name: "missing purpose",
+			opts: InjectOptions{
+				CommandID: commandID, Content: "c", AcceptanceCriteria: "ac", BloomLevel: 3,
+				Required: true, MaestroDir: maestroDir, Config: cfg, LockMap: lm,
+			},
+		},
+		{
+			name: "missing content",
+			opts: InjectOptions{
+				CommandID: commandID, Purpose: "p", AcceptanceCriteria: "ac", BloomLevel: 3,
+				Required: true, MaestroDir: maestroDir, Config: cfg, LockMap: lm,
+			},
+		},
+		{
+			name: "missing acceptance_criteria",
+			opts: InjectOptions{
+				CommandID: commandID, Purpose: "p", Content: "c", BloomLevel: 3,
+				Required: true, MaestroDir: maestroDir, Config: cfg, LockMap: lm,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := AddTask(tt.opts)
+			if err == nil {
+				t.Fatalf("expected error for %s", tt.name)
+			}
+		})
+	}
+}
+
+func TestAddTask_NoDependencies(t *testing.T) {
+	maestroDir, commandID, _ := setupInjectFixture(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	result, err := AddTask(InjectOptions{
+		CommandID:          commandID,
+		Purpose:            "independent task",
+		Content:            "do something",
+		AcceptanceCriteria: "done",
+		BloomLevel:         2,
+		Required:           true,
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err != nil {
+		t.Fatalf("AddTask returned error: %v", err)
+	}
+
+	sm := NewStateManager(maestroDir, lm)
+	state, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+
+	// No dependencies should be set
+	deps := state.TaskDependencies[result.TaskID]
+	if len(deps) != 0 {
+		t.Errorf("dependencies = %v, want empty", deps)
+	}
+}
+
+func TestAddTask_OriginalTasksUnchanged(t *testing.T) {
+	maestroDir, commandID, completedTaskID := setupInjectFixture(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	_, err := AddTask(InjectOptions{
+		CommandID:          commandID,
+		Purpose:            "new task",
+		Content:            "new content",
+		AcceptanceCriteria: "new ac",
+		BloomLevel:         3,
+		Required:           true,
+		BlockedBy:          []string{completedTaskID},
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err != nil {
+		t.Fatalf("AddTask returned error: %v", err)
+	}
+
+	sm := NewStateManager(maestroDir, lm)
+	state, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+
+	// Original tasks should still be completed
+	if state.TaskStates[completedTaskID] != model.StatusCompleted {
+		t.Errorf("original task %s state = %s, want completed", completedTaskID, state.TaskStates[completedTaskID])
+	}
+
+	// Original required tasks should still be present
+	originalTaskID2 := "task_0000000030_22222222"
+	if state.TaskStates[originalTaskID2] != model.StatusCompleted {
+		t.Errorf("original task %s state = %s, want completed", originalTaskID2, state.TaskStates[originalTaskID2])
+	}
+}
