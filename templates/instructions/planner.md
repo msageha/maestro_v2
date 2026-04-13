@@ -153,10 +153,11 @@ maestro plan add-task \
   [--constraints "<制約>" ...] \
   [--persona-hint "<persona>"] \
   [--tools-hint "<tool>" ...] \
-  [--skill-refs "<skill>" ...]
+  [--skill-refs "<skill>" ...] \
+  [--worker-id <worker_id>]
 ```
 
-`--blocked-by` は既存タスクの task_id を指定。`--required` はデフォルト true。`plan submit` と異なり、既に state が存在するコマンドに対してタスクを追加できる。`add-retry-task` と異なり、既存タスクの置換ではなく新規タスクの追加。
+`--blocked-by` は既存タスクの task_id を指定。`--required` はデフォルト true。`plan submit` と異なり、既に state が存在するコマンドに対してタスクを追加できる。`add-retry-task` と異なり、既存タスクの置換ではなく新規タスクの追加。`--worker-id` は特定 worker にタスクを割り当てる（省略時は最も負荷の低い worker に自動割り当て）。
 
 **deferred フェーズへのタスク投入**: `maestro plan submit --command-id <id> --phase <phase_name> --tasks-file - <<'PLAN'`
 
@@ -600,6 +601,7 @@ conflict_files: path/to/file1.go, path/to/file2.go
 
 | フィールド | 意味 |
 |----|----|
+| `worker` | 競合を起こした worker の ID（例: `worker1`）。解決タスク発行時に `--worker-id` で指定する |
 | `base` | 競合の共通祖先 ref（merge-base） |
 | `ours` | 統合ブランチ側（マージ先）の ref |
 | `theirs` | worker ブランチ側（マージ元）の ref |
@@ -611,7 +613,7 @@ Daemon が自動で conflict resolver を dispatch（worker の状態を `confli
 
 1. **状況確認**: `.maestro/dashboard.md` を Read で確認し、対象コマンド/フェーズの状態を把握する
 2. **競合内容の特定**: 構造化情報 (`base`/`ours`/`theirs`/`conflict_files`) から、どの worker のどのファイルが衝突したか特定する
-3. **競合解決タスクの発行**: `maestro plan add-task` で競合解決タスクを発行する。`content` に以下を含める:
+3. **競合解決タスクの発行**: `maestro plan add-task` で競合解決タスクを発行する。**signal の `worker` フィールドから競合 worker の ID を取得し、`--worker-id` で指定する**ことで、競合を起こした worker 自身に解決タスクが割り当てられる。`content` に以下を含める:
    - 競合ファイル一覧と、統合ブランチ側の変更内容の説明
    - 「競合を回避するようコードを修正する」という具体的な指示
    - `acceptance_criteria` にコンパイル成功・テストパスを含める
@@ -623,8 +625,11 @@ Daemon が自動で conflict resolver を dispatch（worker の状態を `confli
      --content "<競合ファイル・修正指示の詳細>" \
      --acceptance-criteria "コンパイル成功・テストパス" \
      --bloom-level 3 \
-     --persona-hint implementer
+     --persona-hint implementer \
+     --worker-id <worker>
    ```
+
+   `<worker>` は signal メッセージの `worker:` フィールドの値（例: `worker1`）をそのまま使用する。
 
    **注意**: `plan submit` は既にプランが存在するコマンドには使用できない（double submit 拒否）。`add-retry-task` は失敗タスクの置換専用であり完了済みタスクには使用できない。`add-task` は sealed プランに新規タスクを追加する専用コマンドである。
 

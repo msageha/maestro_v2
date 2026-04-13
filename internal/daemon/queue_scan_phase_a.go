@@ -160,6 +160,8 @@ func (qh *QueueHandler) stepCancelInterrupt(s *scanState) {
 // stepCancelAutoComplete — Step 0.6.1: Auto-complete cancel-requested commands
 // when all tasks are already terminal. This closes the gap where stepCancelPending
 // and stepCancelInterrupt are both no-ops because no pending/in_progress tasks remain.
+// Also buffers a command_cancelled notification for the Orchestrator so it learns
+// about the cancellation (the normal planner-result path is bypassed here).
 func (qh *QueueHandler) stepCancelAutoComplete(s *scanState) {
 	for i := range s.commands.Data.Commands {
 		cmd := &s.commands.Data.Commands[i]
@@ -169,6 +171,42 @@ func (qh *QueueHandler) stepCancelAutoComplete(s *scanState) {
 		item := qh.cancelHandler.AutoCompleteCancelledCommands(cmd, s.tasks)
 		if item != nil {
 			s.commands.Dirty = true
+
+			// Buffer command_cancelled notification for Orchestrator.
+			// The normal path (planner result → result_handler → orchestrator
+			// queue) is bypassed when auto-completing, so we emit the
+			// notification directly into the orchestrator queue during Phase A.
+			notifID, err := model.GenerateID(model.IDTypeNotification)
+			if err != nil {
+				qh.log(LogLevelError, "cancel_auto_complete_notif_id command=%s error=%v", item.CommandID, err)
+				continue
+			}
+			syntheticResultID, err := model.GenerateID(model.IDTypeResult)
+			if err != nil {
+				qh.log(LogLevelError, "cancel_auto_complete_result_id command=%s error=%v", item.CommandID, err)
+				continue
+			}
+			now := qh.clock.Now().UTC().Format(time.RFC3339)
+			if s.notifications.Data.SchemaVersion == 0 {
+				s.notifications.Data.SchemaVersion = 1
+				s.notifications.Data.FileType = "queue_notification"
+			}
+			s.notifications.Data.Notifications = append(s.notifications.Data.Notifications, model.Notification{
+				ID:             notifID,
+				CommandID:      item.CommandID,
+				Type:           model.NotificationTypeCommandCancelled,
+				SourceResultID: syntheticResultID,
+				Content:        fmt.Sprintf("command %s cancelled", item.CommandID),
+				Priority:       defaultNotificationPriority,
+				Status:         model.StatusPending,
+				CreatedAt:      now,
+				UpdatedAt:      now,
+			})
+			s.notifications.Dirty = true
+			if s.notifications.Path == "" {
+				s.notifications.Path = filepath.Join(qh.maestroDir, "queue", "orchestrator.yaml")
+			}
+			qh.log(LogLevelInfo, "cancel_auto_complete_notification command=%s notif_id=%s", item.CommandID, notifID)
 		}
 	}
 }
