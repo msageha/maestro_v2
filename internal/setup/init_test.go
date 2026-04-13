@@ -3,6 +3,7 @@ package setup
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -388,6 +389,68 @@ func searchString(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// initGitRepo initialises a bare-minimum git repository so that
+// git add / git commit succeed during Run.
+func initGitRepo(t *testing.T, dir string) {
+	t.Helper()
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@test.local"},
+		{"config", "user.name", "Test"},
+		{"commit", "--allow-empty", "-m", "init"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = dir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s (%v)", args, out, err)
+		}
+	}
+}
+
+func TestRun_GitTracksGitignore(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "myproject")
+	os.Mkdir(projectDir, 0755)
+
+	initGitRepo(t, projectDir)
+
+	if err := Run(projectDir, ""); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// .gitignore should be tracked (git ls-files returns it).
+	cmd := exec.Command("git", "ls-files", ".gitignore")
+	cmd.Dir = projectDir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("git ls-files: %v", err)
+	}
+	if got := string(out); got == "" {
+		t.Error(".gitignore is not tracked by git after Run")
+	}
+}
+
+func TestRun_GitTracksGitignoreIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "myproject")
+	os.Mkdir(projectDir, 0755)
+
+	initGitRepo(t, projectDir)
+
+	// First run — creates and commits .gitignore.
+	if err := Run(projectDir, ""); err != nil {
+		t.Fatalf("Run (first): %v", err)
+	}
+
+	// Remove .maestro/ so Run can execute again.
+	os.RemoveAll(filepath.Join(projectDir, ".maestro"))
+
+	// Second run — .gitignore already tracked; should not error.
+	if err := Run(projectDir, ""); err != nil {
+		t.Fatalf("Run (second): %v", err)
+	}
 }
 
 func TestRun_RejectsExistingDir(t *testing.T) {

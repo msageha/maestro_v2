@@ -1034,3 +1034,89 @@ func TestSubmit_PhasedSubmit_NoSystemCommit_InWorktreeMode(t *testing.T) {
 		t.Errorf("SystemCommitTaskID = %v, want nil in worktree mode (phased)", *state.SystemCommitTaskID)
 	}
 }
+
+// TestParseInput_SpecialEscapeCharacters verifies that parseInput handles YAML
+// containing invalid escape sequences in double-quoted strings (e.g. \! and \:)
+// which Planner agents may produce via heredoc.
+func TestParseInput_SpecialEscapeCharacters(t *testing.T) {
+	// bs produces a literal backslash without Go escape ambiguity.
+	const bs = "\x5c"
+
+	tests := []struct {
+		name        string
+		yaml        string
+		wantContent string
+	}{
+		{
+			name: "backslash-bang in double-quoted content",
+			yaml: "tasks:\n" +
+				"  - name: t1\n" +
+				"    purpose: test\n" +
+				"    content: " + `"run ` + bs + `!cmd here"` + "\n" +
+				"    acceptance_criteria: done\n" +
+				"    bloom_level: 2\n" +
+				"    required: true\n",
+			wantContent: "run " + bs + "!cmd here",
+		},
+		{
+			name: "backslash-colon in double-quoted content",
+			yaml: "tasks:\n" +
+				"  - name: t1\n" +
+				"    purpose: test\n" +
+				"    content: " + `"check ` + bs + `:value"` + "\n" +
+				"    acceptance_criteria: done\n" +
+				"    bloom_level: 2\n" +
+				"    required: true\n",
+			wantContent: "check " + bs + ":value",
+		},
+		{
+			name: "multiple special chars in double-quoted content",
+			yaml: "tasks:\n" +
+				"  - name: t1\n" +
+				"    purpose: test\n" +
+				"    content: " + `"` + bs + `! and ` + bs + `: and ` + bs + `# mixed"` + "\n" +
+				"    acceptance_criteria: done\n" +
+				"    bloom_level: 2\n" +
+				"    required: true\n",
+			wantContent: bs + "! and " + bs + ": and " + bs + "# mixed",
+		},
+		{
+			name: "literal block scalar with backslash-bang preserved",
+			yaml: "tasks:\n" +
+				"  - name: t1\n" +
+				"    purpose: test\n" +
+				"    content: |\n" +
+				"      run " + bs + "!cmd here\n" +
+				"    acceptance_criteria: done\n" +
+				"    bloom_level: 2\n" +
+				"    required: true\n",
+			wantContent: "run " + bs + "!cmd here\n",
+		},
+		{
+			name: "valid escapes in double-quoted content preserved",
+			yaml: "tasks:\n" +
+				"  - name: t1\n" +
+				"    purpose: test\n" +
+				"    content: " + `"line1` + bs + `nline2"` + "\n" +
+				"    acceptance_criteria: done\n" +
+				"    bloom_level: 2\n" +
+				"    required: true\n",
+			wantContent: "line1\nline2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			input, err := parseInput([]byte(tt.yaml))
+			if err != nil {
+				t.Fatalf("parseInput failed: %v\nyaml: %q", err, tt.yaml)
+			}
+			if len(input.Tasks) != 1 {
+				t.Fatalf("expected 1 task, got %d", len(input.Tasks))
+			}
+			if input.Tasks[0].Content != tt.wantContent {
+				t.Errorf("Content = %q, want %q", input.Tasks[0].Content, tt.wantContent)
+			}
+		})
+	}
+}

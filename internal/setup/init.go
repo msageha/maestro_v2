@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -55,6 +57,10 @@ func Run(projectDir, projectName string) error {
 	if err := ensureGitignore(absDir); err != nil {
 		return fmt.Errorf("ensure .gitignore: %w", err)
 	}
+
+	// Track .gitignore in git so worktrees inherit it.
+	// Failures are non-fatal — log a warning and continue.
+	gitTrackGitignore(absDir)
 
 	// Create directory structure
 	dirs := []string{
@@ -170,6 +176,34 @@ func ensureGitignore(projectDir string) error {
 		return fmt.Errorf("write .gitignore: %w", err)
 	}
 	return nil
+}
+
+// gitTrackGitignore stages and commits .gitignore so that worktrees created
+// later will inherit it. It is intentionally non-fatal: if the project is not
+// a git repository or the file is already tracked, nothing bad happens.
+func gitTrackGitignore(projectDir string) {
+	// git add .gitignore
+	add := exec.Command("git", "add", ".gitignore")
+	add.Dir = projectDir
+	if out, err := add.CombinedOutput(); err != nil {
+		log.Printf("[maestro] warning: git add .gitignore: %s (%v)", out, err)
+		return
+	}
+
+	// Check whether there is anything staged for .gitignore.
+	// If there is no diff (already committed), skip the commit.
+	diff := exec.Command("git", "diff", "--cached", "--quiet", "--", ".gitignore")
+	diff.Dir = projectDir
+	if err := diff.Run(); err == nil {
+		// exit 0 means no staged changes — already tracked or nothing new.
+		return
+	}
+
+	commit := exec.Command("git", "commit", "-m", "maestro: initialize .gitignore", "--", ".gitignore")
+	commit.Dir = projectDir
+	if out, err := commit.CombinedOutput(); err != nil {
+		log.Printf("[maestro] warning: git commit .gitignore: %s (%v)", out, err)
+	}
 }
 
 func copyTemplateDir(srcDir, dstDir string) error {

@@ -339,7 +339,8 @@ var validWorktreeTransitions = map[WorktreeStatus]map[WorktreeStatus]bool{
 //	created → merging, failed
 //	merging → merged, conflict, failed
 //	merged → merging (re-merge for next phase), publishing, failed
-//	publishing → published, conflict, failed
+//	publishing → published, conflict, publish_failed, failed
+//	publish_failed → publishing (retry), failed, quarantined
 //	conflict → merging (retry), failed
 //	failed → merging (retry after failure)
 var validIntegrationTransitions = map[IntegrationStatus]map[IntegrationStatus]bool{
@@ -362,8 +363,14 @@ var validIntegrationTransitions = map[IntegrationStatus]map[IntegrationStatus]bo
 		IntegrationStatusQuarantined: true,
 	},
 	IntegrationStatusPublishing: {
-		IntegrationStatusPublished:   true,
-		IntegrationStatusConflict:    true,
+		IntegrationStatusPublished:      true,
+		IntegrationStatusConflict:       true,
+		IntegrationStatusPublishFailed:  true,
+		IntegrationStatusFailed:         true,
+		IntegrationStatusQuarantined:    true,
+	},
+	IntegrationStatusPublishFailed: {
+		IntegrationStatusPublishing:  true, // retry
 		IntegrationStatusFailed:      true,
 		IntegrationStatusQuarantined: true,
 	},

@@ -47,6 +47,8 @@ const (
 	IntegrationStatusConflict IntegrationStatus = "conflict"
 	// IntegrationStatusPartialMerge indicates some but not all worker branches were merged.
 	IntegrationStatusPartialMerge IntegrationStatus = "partial_merge"
+	// IntegrationStatusPublishFailed indicates that publishing the integration branch to the base branch failed.
+	IntegrationStatusPublishFailed IntegrationStatus = "publish_failed"
 	// IntegrationStatusFailed indicates the integration process failed.
 	IntegrationStatusFailed IntegrationStatus = "failed"
 	// IntegrationStatusQuarantined is a terminal state set when merge attempts

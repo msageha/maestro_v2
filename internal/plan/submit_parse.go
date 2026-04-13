@@ -9,6 +9,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/validate"
+	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 // parseInput parses YAML task data from raw bytes without file I/O.
@@ -16,6 +17,11 @@ func parseInput(data []byte) (*SubmitInput, error) {
 	if len(data) > model.DefaultMaxYAMLFileBytes {
 		return nil, fmt.Errorf("input exceeds maximum size of %d bytes", model.DefaultMaxYAMLFileBytes)
 	}
+	// Sanitise invalid backslash escape sequences in double-quoted strings
+	// before parsing. Planner agents may generate YAML with sequences like \!
+	// or \: inside double-quoted values, which yaml.v3 rejects as invalid.
+	data = yamlutil.SanitizeDoubleQuoteEscapes(data)
+
 	var input SubmitInput
 	if err := yamlv3.Unmarshal(data, &input); err != nil {
 		return nil, fmt.Errorf("parse tasks YAML: %w", err)

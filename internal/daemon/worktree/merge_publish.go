@@ -464,7 +464,7 @@ func (wm *Manager) SyncFromIntegration(commandID string, workerIDs []string) err
 // PublishToBase merges the integration branch into the base branch.
 // Uses a temporary branch in the integration worktree to avoid changing projectRoot HEAD (H3).
 // publishMessage is used as the commit message summary; falls back to a default if empty.
-func (wm *Manager) PublishToBase(commandID string, publishMessage string) error {
+func (wm *Manager) PublishToBase(commandID string, publishMessage string) (returnErr error) {
 	if err := validateIDs(commandID); err != nil {
 		return err
 	}
@@ -480,6 +480,25 @@ func (wm *Manager) PublishToBase(commandID string, publishMessage string) error 
 	if err := wm.setIntegrationStatus(state, model.IntegrationStatusPublishing, now); err != nil {
 		return err
 	}
+
+	// If PublishToBase returns an error while still in "publishing" state,
+	// transition to "publish_failed" and persist to disk. Without this,
+	// the on-disk state remains "merged" and Phase A re-collects the publish
+	// item on every scan, causing an infinite loop.
+	// The conflict path (which transitions to "conflict" and saves state itself)
+	// and the success path (which transitions to "published") are not affected
+	// because the status is no longer "publishing" when they return.
+	defer func() {
+		if returnErr != nil && state.Integration.Status == model.IntegrationStatusPublishing {
+			if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusPublishFailed, now); tErr != nil {
+				wm.Log(core.LogLevelWarn, "publish_failed_transition command=%s error=%v", commandID, tErr)
+			}
+			state.UpdatedAt = now
+			if sErr := wm.saveState(commandID, state); sErr != nil {
+				wm.Log(core.LogLevelWarn, "publish_failed_save command=%s error=%v", commandID, sErr)
+			}
+		}
+	}()
 
 	baseBranch := wm.config.EffectiveBaseBranch()
 	integrationPath := wm.integrationWorktreePath(commandID)
