@@ -667,12 +667,12 @@ func TestSignalBackoff_Exponential(t *testing.T) {
 		attempts int
 		baseSec  int // base value before jitter
 	}{
-		{0, 5},  // clamped to 1 → 5*(1<<0) = 5
-		{1, 5},  // 5*(1<<0) = 5
-		{2, 10}, // 5*(1<<1) = 10
-		{3, 20}, // 5*(1<<2) = 20
-		{4, 40}, // 5*(1<<3) = 40
-		{5, 60}, // 5*(1<<4) = 80, capped at ScanIntervalSec=60
+		{0, 2},  // clamped to 1, baseSec=2 (≤3) → 2*(1<<0) = 2
+		{1, 2},  // baseSec=2 (≤3) → 2*(1<<0) = 2
+		{2, 4},  // baseSec=2 (≤3) → 2*(1<<1) = 4
+		{3, 8},  // baseSec=2 (≤3) → 2*(1<<2) = 8
+		{4, 40}, // baseSec=5 (>3) → 5*(1<<3) = 40
+		{5, 60}, // baseSec=5 (>3) → 5*(1<<4) = 80, capped at ScanIntervalSec=60
 		{10, 60},
 	}
 

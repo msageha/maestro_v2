@@ -103,6 +103,11 @@ type Daemon struct {
 	// shuttingDown is an advisory flag read by spawners for fast-path rejection.
 	shuttingDown atomic.Bool
 
+	// sessionLost is set when the tmux session is detected as missing.
+	// When true, dispatch of new tasks/commands is paused to avoid futile
+	// delivery attempts. Cleared automatically when session recovery is detected.
+	sessionLost atomic.Bool
+
 	cleanupOnce        sync.Once
 	closeExecutorsOnce sync.Once
 	forceExit          atomic.Bool

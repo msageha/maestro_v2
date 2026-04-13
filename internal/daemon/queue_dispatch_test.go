@@ -27,9 +27,9 @@ func TestComputeSignalBackoff_FirstAttempt(t *testing.T) {
 	t.Parallel()
 	qh := newDispatchTestQH(60)
 	d := qh.computeSignalBackoff(1)
-	// base=5, 1<<0=1, backoff=5s, jitter [0.75, 1.25] → [3.75s, 6.25s]
-	if d < 3750*time.Millisecond || d > 6250*time.Millisecond {
-		t.Errorf("attempt=1: got %v, want [3.75s, 6.25s]", d)
+	// base=2 (≤3), 1<<0=1, backoff=2s, jitter [0.75, 1.25] → [1.5s, 2.5s]
+	if d < 1500*time.Millisecond || d > 2500*time.Millisecond {
+		t.Errorf("attempt=1: got %v, want [1.5s, 2.5s]", d)
 	}
 }
 
@@ -37,9 +37,9 @@ func TestComputeSignalBackoff_SecondAttempt(t *testing.T) {
 	t.Parallel()
 	qh := newDispatchTestQH(60)
 	d := qh.computeSignalBackoff(2)
-	// base=5, 1<<1=2, backoff=10s, jitter → [7.5s, 12.5s]
-	if d < 7500*time.Millisecond || d > 12500*time.Millisecond {
-		t.Errorf("attempt=2: got %v, want [7.5s, 12.5s]", d)
+	// base=2 (≤3), 1<<1=2, backoff=4s, jitter → [3s, 5s]
+	if d < 3000*time.Millisecond || d > 5000*time.Millisecond {
+		t.Errorf("attempt=2: got %v, want [3s, 5s]", d)
 	}
 }
 
@@ -57,9 +57,9 @@ func TestComputeSignalBackoff_ZeroAttempt(t *testing.T) {
 	t.Parallel()
 	qh := newDispatchTestQH(60)
 	d := qh.computeSignalBackoff(0)
-	// attempts < 1 → treated as 1 → backoff=5s
-	if d < 3750*time.Millisecond || d > 6250*time.Millisecond {
-		t.Errorf("attempt=0: got %v, want [3.75s, 6.25s]", d)
+	// attempts < 1 → treated as 1, baseSec=2 (≤3) → backoff=2s
+	if d < 1500*time.Millisecond || d > 2500*time.Millisecond {
+		t.Errorf("attempt=0: got %v, want [1.5s, 2.5s]", d)
 	}
 }
 
@@ -150,9 +150,9 @@ func TestComputeSignalBackoff_NegativeAttempt(t *testing.T) {
 	t.Parallel()
 	qh := newDispatchTestQH(60)
 	d := qh.computeSignalBackoff(-5)
-	// attempts < 1 → treated as 1 → backoff=5s
-	if d < 3750*time.Millisecond || d > 6250*time.Millisecond {
-		t.Errorf("attempt=-5: got %v, want [3.75s, 6.25s]", d)
+	// attempts < 1 → treated as 1, baseSec=2 (≤3) → backoff=2s
+	if d < 1500*time.Millisecond || d > 2500*time.Millisecond {
+		t.Errorf("attempt=-5: got %v, want [1.5s, 2.5s]", d)
 	}
 }
 

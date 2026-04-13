@@ -188,12 +188,12 @@ func buildLaunchArgs(role, agentModel, systemPrompt, basePromptMode string) ([]s
 	// Note: resume-merge is intentionally NOT blocked for Planner — it is the
 	// Planner's primary mechanism for triggering re-merge after a worker has
 	// resolved a conflict (hybrid b+c conflict recovery path).
+	// Note: add-retry-task is intentionally NOT blocked for Planner — it is
+	// the Planner's standard mechanism for retrying failed tasks (see
+	// planner.md "失敗タスクの処理" and verification loop sections).
 	if role == "planner" {
 		args = append(args, "--disallowedTools",
-			strings.Join([]string{
-				"Bash(maestro plan unquarantine:*)",
-				"Bash(maestro plan add-retry-task:*)",
-			}, ","))
+			"Bash(maestro plan unquarantine:*)")
 	}
 
 	// Workers: block destructive tmux commands and .maestro/ reads at the tool level.

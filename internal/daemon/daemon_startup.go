@@ -128,6 +128,7 @@ func (d *Daemon) cleanStaleTmpFiles() {
 func (d *Daemon) initComponents() {
 	d.handler = NewQueueHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
 	d.handler.SetShutdownGuard(d.ctx, &d.shuttingDown, d.Shutdown)
+	d.handler.SetSessionLostFlag(&d.sessionLost)
 
 	if d.stateReader != nil {
 		d.handler.SetStateReader(d.stateReader)

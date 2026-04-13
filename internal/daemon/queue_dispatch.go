@@ -143,8 +143,46 @@ func (qh *QueueHandler) upsertPlannerSignal(sq *model.PlannerSignalQueue, dirty 
 	*dirty = true
 }
 
-// deliverPlannerSignal attempts delivery to the planner using the shared executor.
+// deliverPlannerSignal attempts delivery to the planner with inline retries.
+// On transient failure (e.g., planner busy), retries up to SignalInlineRetries
+// times with a short delay between attempts, each bounded by SignalDeliveryTimeoutSec.
+// This avoids the full scan-cycle delay for the common case where the planner is
+// only briefly busy.
 func (qh *QueueHandler) deliverPlannerSignal(ctx context.Context, commandID, message string) error {
+	maxRetries := qh.config.Retry.EffectiveSignalInlineRetries()
+	retryDelay := time.Duration(qh.config.Retry.EffectiveSignalInlineRetryDelaySec()) * time.Second
+	attemptTimeout := time.Duration(qh.config.Retry.EffectiveSignalDeliveryTimeoutSec()) * time.Second
+
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			qh.log(LogLevelInfo, "signal_inline_retry attempt=%d/%d command=%s error=%v",
+				attempt+1, maxRetries+1, commandID, lastErr)
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("signal delivery cancelled: %w", ctx.Err())
+			case <-time.After(retryDelay):
+			}
+		}
+
+		attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
+		err := qh.deliverPlannerSignalOnce(attemptCtx, commandID, message)
+		cancel()
+
+		if err == nil {
+			if attempt > 0 {
+				qh.log(LogLevelInfo, "signal_inline_retry_success command=%s total_attempts=%d", commandID, attempt+1)
+				qh.scanExecutor.scanCounters.SignalInlineRetrySuccesses++
+			}
+			return nil
+		}
+		lastErr = err
+	}
+	return lastErr
+}
+
+// deliverPlannerSignalOnce performs a single delivery attempt using the shared executor.
+func (qh *QueueHandler) deliverPlannerSignalOnce(ctx context.Context, commandID, message string) error {
 	exec, err := qh.execProvider.GetExecutor()
 	if err != nil {
 		return fmt.Errorf("get executor: %w", err)
@@ -165,8 +203,13 @@ func (qh *QueueHandler) deliverPlannerSignal(ctx context.Context, commandID, mes
 
 // computeSignalBackoff returns the backoff duration for the given attempt count
 // with ±25% uniform jitter to prevent thundering herd on recovery.
+// Uses a shorter base (2s) for the first 3 attempts to recover faster from
+// transient planner-busy failures, then reverts to the standard 5s base.
 func (qh *QueueHandler) computeSignalBackoff(attempts int) time.Duration {
 	baseSec := 5
+	if attempts <= 3 {
+		baseSec = 2
+	}
 	maxSec := qh.config.Watcher.ScanIntervalSec
 	if maxSec <= 0 {
 		maxSec = 10

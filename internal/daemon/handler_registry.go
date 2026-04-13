@@ -78,6 +78,14 @@ func (qh *QueueHandler) SetShutdownGuard(ctx context.Context, shuttingDown *atom
 	qh.scanExecutor.debounce.SetShutdownGuard(ctx, shuttingDown, shutdownFn)
 }
 
+// SetSessionLostFlag wires the daemon's session-lost flag so that dispatch
+// is paused when the tmux session disappears. Must be called before Run() starts.
+func (qh *QueueHandler) SetSessionLostFlag(flag *atomic.Bool) {
+	qh.scanExecutor.scanRunMu.Lock()
+	defer qh.scanExecutor.scanRunMu.Unlock()
+	qh.sessionLost = flag
+}
+
 // SetEventBus wires the event bus for all sub-components that publish events.
 func (qh *QueueHandler) SetEventBus(bus *events.Bus) {
 	qh.dispatcher.SetEventBus(bus)

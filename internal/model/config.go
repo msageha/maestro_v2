@@ -124,6 +124,11 @@ const (
 
 	// FeatureProfile
 	DefaultCrossAgentReview = "false"
+
+	// RetryConfig — signal inline retry
+	DefaultSignalInlineRetries       = 2
+	DefaultSignalInlineRetryDelaySec = 3
+	DefaultSignalDeliveryTimeoutSec  = 15
 )
 
 // ValidAgentModels is the whitelist of recognized agent model name identifiers.
@@ -358,7 +363,22 @@ type RetryConfig struct {
 	TaskDispatch                     int             `yaml:"task_dispatch"`
 	OrchestratorNotificationDispatch int             `yaml:"orchestrator_notification_dispatch"`
 	SignalDispatch                   int             `yaml:"signal_dispatch"`
+	SignalInlineRetries              int             `yaml:"signal_inline_retries"`
+	SignalInlineRetryDelaySec        int             `yaml:"signal_inline_retry_delay_sec"`
+	SignalDeliveryTimeoutSec         int             `yaml:"signal_delivery_timeout_sec"`
 	TaskExecution                    TaskRetryConfig `yaml:"task_execution"`
+}
+
+func (r RetryConfig) EffectiveSignalInlineRetries() int {
+	return effectiveNonZero(r.SignalInlineRetries, DefaultSignalInlineRetries)
+}
+
+func (r RetryConfig) EffectiveSignalInlineRetryDelaySec() int {
+	return effectiveNonZero(r.SignalInlineRetryDelaySec, DefaultSignalInlineRetryDelaySec)
+}
+
+func (r RetryConfig) EffectiveSignalDeliveryTimeoutSec() int {
+	return effectiveNonZero(r.SignalDeliveryTimeoutSec, DefaultSignalDeliveryTimeoutSec)
 }
 
 // TaskRetryConfig holds configuration for automatic task execution retries.

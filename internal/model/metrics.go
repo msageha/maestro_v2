@@ -35,9 +35,10 @@ type MetricsCounters struct {
 	DeadLetters           int `yaml:"dead_letters"`
 	ReconciliationRepairs int `yaml:"reconciliation_repairs"`
 	NotificationRetries   int `yaml:"notification_retries"`
-	SignalDeliveries      int `yaml:"signal_deliveries"`
-	SignalRetries         int `yaml:"signal_retries"`
-	SignalDeadLetters     int `yaml:"signal_dead_letters"`
+	SignalDeliveries           int `yaml:"signal_deliveries"`
+	SignalRetries              int `yaml:"signal_retries"`
+	SignalDeadLetters          int `yaml:"signal_dead_letters"`
+	SignalInlineRetrySuccesses int `yaml:"signal_inline_retry_successes"`
 	LeaseRenewals         int `yaml:"lease_renewals"`
 	LeaseExtensions       int `yaml:"lease_extensions"`
 	LeaseReleases         int `yaml:"lease_releases"`

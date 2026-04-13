@@ -14,9 +14,10 @@ type ScanCounters struct {
 	DeadLetters           int
 	ReconciliationRepairs int
 	NotificationRetries   int
-	SignalDeliveries      int
-	SignalRetries         int
-	SignalDeadLetters     int
+	SignalDeliveries           int
+	SignalRetries              int
+	SignalDeadLetters          int
+	SignalInlineRetrySuccesses int
 	LeaseRenewals         int
 	LeaseExtensions       int
 	LeaseReleases         int

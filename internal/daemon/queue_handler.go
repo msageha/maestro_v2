@@ -80,6 +80,10 @@ type QueueHandler struct {
 	// Shutdown guard: wired via SetShutdownGuard after construction.
 	shutdownCtx  context.Context
 	shuttingDown *atomic.Bool
+
+	// sessionLost is set when the tmux session disappears. When true,
+	// dispatch of new tasks/commands is paused.
+	sessionLost *atomic.Bool
 }
 
 // NewQueueHandler creates a new QueueHandler with all sub-modules.

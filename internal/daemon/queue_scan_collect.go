@@ -14,6 +14,12 @@ import (
 // Planner processes one command at a time; expired leases are handled by busy-check
 // recovery (auto-extend for commands) and Reconciler R0 for stuck planning.
 func (qh *QueueHandler) collectPendingCommandDispatches(cq *model.CommandQueue, dirty *bool, work *deferredWork) {
+	// Skip dispatch when tmux session is lost — delivery would fail.
+	if qh.sessionLost != nil && qh.sessionLost.Load() {
+		qh.log(LogLevelDebug, "session_lost_guard: skipping command dispatch")
+		return
+	}
+
 	for _, cmd := range cq.Commands {
 		if cmd.Status == model.StatusInProgress {
 			qh.log(LogLevelDebug, "command_in_progress_guard id=%s epoch=%d blocking_dispatch", cmd.ID, cmd.LeaseEpoch)
@@ -46,6 +52,12 @@ func (qh *QueueHandler) collectPendingCommandDispatches(cq *model.CommandQueue, 
 // inFlightPaths contains expected_paths of all currently in-progress tasks across
 // all queues, used to prevent dispatching tasks with overlapping file paths.
 func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerID string, globalInFlight map[string]bool, inFlightPaths []inFlightPathEntry, work *deferredWork) bool {
+	// Skip dispatch when tmux session is lost — delivery would fail.
+	if qh.sessionLost != nil && qh.sessionLost.Load() {
+		qh.log(LogLevelDebug, "session_lost_guard: skipping task dispatch for worker=%s", workerID)
+		return false
+	}
+
 	dirty := false
 	sorted := qh.dispatcher.SortPendingTasks(tq.Queue.Tasks)
 
@@ -130,6 +142,12 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 
 // collectPendingNotificationDispatches acquires leases and records dispatch items (no tmux).
 func (qh *QueueHandler) collectPendingNotificationDispatches(nq *model.NotificationQueue, dirty *bool, work *deferredWork) {
+	// Skip dispatch when tmux session is lost — delivery would fail.
+	if qh.sessionLost != nil && qh.sessionLost.Load() {
+		qh.log(LogLevelDebug, "session_lost_guard: skipping notification dispatch")
+		return
+	}
+
 	for _, ntf := range nq.Notifications {
 		if ntf.Status == model.StatusInProgress && ntf.LeaseExpiresAt != nil {
 			if t, err := time.Parse(time.RFC3339, *ntf.LeaseExpiresAt); err == nil && t.After(qh.clock.Now()) {

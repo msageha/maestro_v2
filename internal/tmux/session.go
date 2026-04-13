@@ -344,42 +344,79 @@ func KillSession() error {
 	return nil
 }
 
+// SessionHealthResult contains diagnostic information from a session health check.
+type SessionHealthResult struct {
+	Alive          bool
+	ServerRunning  bool
+	OtherSessions  string // other sessions on the server (if server is running)
+	Stderr         string // stderr from has-session (if session is dead)
+	WindowInfo     string // window/pane info (if session is alive)
+	ServerOptions  string // server options (exit-empty, exit-unattached)
+	SessionOptions string // session options (destroy-unattached)
+}
+
 // SessionHealthCheck performs a detailed session health check and logs the result.
 // Returns true if the session is alive, false otherwise.
 // When the session is missing, it also checks if the tmux server is running.
 func SessionHealthCheck() bool {
+	result := SessionHealthCheckDetailed()
+	return result.Alive
+}
+
+// SessionHealthCheckDetailed performs a detailed session health check and returns
+// diagnostic information useful for debugging session loss events.
+func SessionHealthCheckDetailed() SessionHealthResult {
 	name := GetSessionName()
 	ctx, cancel := context.WithTimeout(context.Background(), defaultCmdTimeout)
 	defer cancel()
+
+	result := SessionHealthResult{}
 
 	// Check session (use "=" prefix for exact name matching)
 	exactName := "=" + name
 	cmd := exec.CommandContext(ctx, "tmux", "has-session", "-t", exactName) //nolint:gosec // "tmux" is a fixed command; exactName is derived from validated session name
 	out, err := cmd.CombinedOutput()
 	if err == nil {
+		result.Alive = true
+		result.ServerRunning = true
+
 		// Session alive — gather window/pane info for diagnostics
 		winOut, winErr := output("list-windows", "-t", exactName, "-F", "#{window_index}:#{window_name}:#{window_panes}")
 		if winErr == nil {
-			debugLog("SessionHealthCheck OK session=%s windows=[%s]", name, strings.TrimSpace(winOut))
+			result.WindowInfo = strings.TrimSpace(winOut)
+			debugLog("SessionHealthCheck OK session=%s windows=[%s]", name, result.WindowInfo)
 		} else {
 			debugLog("SessionHealthCheck OK session=%s (list-windows failed: %v)", name, winErr)
 		}
-		return true
+		return result
 	}
 
-	stderr := strings.TrimSpace(string(out))
-	debugLog("SessionHealthCheck DEAD session=%s stderr=%q", name, stderr)
+	result.Stderr = strings.TrimSpace(string(out))
+	debugLog("SessionHealthCheck DEAD session=%s stderr=%q", name, result.Stderr)
 
 	// Check if tmux server itself is running
 	serverCmd := exec.CommandContext(ctx, "tmux", "list-sessions")
 	serverOut, serverErr := serverCmd.CombinedOutput()
 	if serverErr != nil {
 		debugLog("SessionHealthCheck SERVER_DOWN stderr=%q", strings.TrimSpace(string(serverOut)))
+		result.ServerRunning = false
 	} else {
-		debugLog("SessionHealthCheck SERVER_OK other_sessions=%q", strings.TrimSpace(string(serverOut)))
+		result.ServerRunning = true
+		result.OtherSessions = strings.TrimSpace(string(serverOut))
+		debugLog("SessionHealthCheck SERVER_OK other_sessions=%q", result.OtherSessions)
 	}
 
-	return false
+	// Gather server options for diagnostics (only if server is running)
+	if result.ServerRunning {
+		if optOut, optErr := output("show-options", "-s", "-v", "exit-empty"); optErr == nil {
+			result.ServerOptions = "exit-empty=" + strings.TrimSpace(optOut)
+		}
+		if optOut, optErr := output("show-options", "-s", "-v", "exit-unattached"); optErr == nil {
+			result.ServerOptions += " exit-unattached=" + strings.TrimSpace(optOut)
+		}
+	}
+
+	return result
 }
 
 // CreateWindow creates a new window in the maestro session.

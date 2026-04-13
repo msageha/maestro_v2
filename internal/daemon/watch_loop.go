@@ -1,7 +1,10 @@
 package daemon
 
 import (
+	"fmt"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync/atomic"
 
@@ -98,9 +101,81 @@ func (w *WatchLoop) tickerLoop() {
 			d.handler.PeriodicScanWithContext(d.egCtx)
 
 			// Session health check: detect if tmux session disappeared
-			if !tmux.SessionHealthCheck() {
-				d.log(LogLevelError, "SESSION_LOST tmux session %q is no longer alive!", tmux.GetSessionName())
+			w.checkSessionHealth()
+		}
+	}
+}
+
+// checkSessionHealth performs a detailed session health check with recovery detection.
+// When the session disappears, it sets the sessionLost flag and logs diagnostics.
+// When a previously lost session reappears, it clears the flag and logs recovery.
+func (w *WatchLoop) checkSessionHealth() {
+	d := w.d
+	result := tmux.SessionHealthCheckDetailed()
+
+	if result.Alive {
+		// Session is alive — check if we're recovering from a lost state
+		if d.sessionLost.CompareAndSwap(true, false) {
+			d.log(LogLevelInfo, "SESSION_RECOVERED tmux session %q is alive again windows=[%s]",
+				tmux.GetSessionName(), result.WindowInfo)
+		}
+		return
+	}
+
+	// Session is dead — set the flag and log diagnostics
+	wasLost := d.sessionLost.Swap(true)
+
+	if !wasLost {
+		// First detection of session loss — log full diagnostics
+		d.log(LogLevelError, "SESSION_LOST tmux session %q is no longer alive!", tmux.GetSessionName())
+		d.log(LogLevelError, "SESSION_LOST_DIAG has_session_stderr=%q server_running=%v",
+			result.Stderr, result.ServerRunning)
+
+		if result.ServerRunning {
+			d.log(LogLevelError, "SESSION_LOST_DIAG other_sessions=%q server_options=%q",
+				result.OtherSessions, result.ServerOptions)
+		}
+
+		// Log system memory info for post-mortem analysis
+		if memInfo := getMemoryInfo(); memInfo != "" {
+			d.log(LogLevelError, "SESSION_LOST_DIAG system_memory=%s", memInfo)
+		}
+
+		d.log(LogLevelWarn, "SESSION_LOST dispatch paused — new task/command dispatch is suspended until session recovers")
+	} else {
+		// Subsequent detections — log at debug level to avoid log spam
+		d.log(LogLevelDebug, "SESSION_LOST (still) session=%q server_running=%v", tmux.GetSessionName(), result.ServerRunning)
+	}
+}
+
+// getMemoryInfo returns a summary of system memory usage for diagnostics.
+// Returns empty string if the information cannot be obtained.
+func getMemoryInfo() string {
+	var m runtime.MemStats
+	runtime.ReadMemStats(&m)
+	goInfo := fmt.Sprintf("go_alloc=%dMB go_sys=%dMB go_goroutines=%d",
+		m.Alloc/1024/1024, m.Sys/1024/1024, runtime.NumGoroutine())
+
+	// Attempt to get system-level memory info (macOS: vm_stat)
+	if runtime.GOOS == "darwin" {
+		out, err := exec.Command("vm_stat").Output() //nolint:gosec // "vm_stat" is a fixed system command
+		if err == nil {
+			lines := strings.Split(string(out), "\n")
+			if len(lines) > 1 {
+				// Extract just the first few lines (free/active/inactive)
+				var summary []string
+				for _, line := range lines[1:4] {
+					line = strings.TrimSpace(line)
+					if line != "" {
+						summary = append(summary, line)
+					}
+				}
+				if len(summary) > 0 {
+					return goInfo + " | " + strings.Join(summary, "; ")
+				}
 			}
 		}
 	}
+
+	return goInfo
 }
