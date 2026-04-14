@@ -1322,3 +1322,92 @@ func TestPeriodicScanPhaseC_ConflictDispatchSucceedsOnFirstCycle(t *testing.T) {
 	}
 	t.Fatalf("worker %s not found in worktree state", workerID)
 }
+
+// TestPeriodicScanPhaseC_PublishCompletedSignal verifies that a successful
+// worktree publish emits a publish_completed signal to the Planner so it can
+// call `plan complete` to finalise the command. This is the fix for the
+// "sealed stuck" bug where, after conflict recovery, the daemon published
+// successfully but never notified the Planner.
+func TestPeriodicScanPhaseC_PublishCompletedSignal(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	wtCfg := model.WorktreeConfig{Enabled: false}
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, wtCfg)
+
+	commandID := "cmd_pub_ok"
+	pa := phaseAResult{scanStart: time.Now()}
+	pb := phaseBResult{
+		worktreePublishes: []worktreePublishResult{{
+			Item:  worktreePublishItem{CommandID: commandID, PublishMessage: "test publish"},
+			Error: nil, // success
+		}},
+	}
+
+	qh.periodicScanPhaseC(pa, pb)
+
+	signalQueue, _ := qh.queueStore.LoadPlannerSignalQueue()
+	var found *model.PlannerSignal
+	for i := range signalQueue.Signals {
+		s := &signalQueue.Signals[i]
+		if s.Kind == "publish_completed" && s.CommandID == commandID {
+			found = s
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("publish_completed signal not found; signals: %+v", signalQueue.Signals)
+	}
+	if !strings.Contains(found.Message, "kind:publish_completed") {
+		t.Errorf("Message missing kind tag: %q", found.Message)
+	}
+	if !strings.Contains(found.Message, "command_id:"+commandID) {
+		t.Errorf("Message missing command_id: %q", found.Message)
+	}
+	if !strings.Contains(found.Message, "plan complete") {
+		t.Errorf("Message should instruct Planner to call plan complete: %q", found.Message)
+	}
+}
+
+// TestPeriodicScanPhaseC_PublishFailedSignal verifies that a failed worktree
+// publish still emits only a publish_failed signal (no publish_completed).
+func TestPeriodicScanPhaseC_PublishFailedSignal(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	wtCfg := model.WorktreeConfig{Enabled: false}
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, wtCfg)
+
+	commandID := "cmd_pub_fail"
+	pa := phaseAResult{scanStart: time.Now()}
+	pb := phaseBResult{
+		worktreePublishes: []worktreePublishResult{{
+			Item:  worktreePublishItem{CommandID: commandID, PublishMessage: "test publish"},
+			Error: fmt.Errorf("push rejected"),
+		}},
+	}
+
+	qh.periodicScanPhaseC(pa, pb)
+
+	signalQueue, _ := qh.queueStore.LoadPlannerSignalQueue()
+	var foundFailed, foundCompleted *model.PlannerSignal
+	for i := range signalQueue.Signals {
+		s := &signalQueue.Signals[i]
+		if s.CommandID != commandID {
+			continue
+		}
+		switch s.Kind {
+		case "publish_failed":
+			foundFailed = s
+		case "publish_completed":
+			foundCompleted = s
+		}
+	}
+	if foundFailed == nil {
+		t.Fatalf("publish_failed signal not found; signals: %+v", signalQueue.Signals)
+	}
+	if foundCompleted != nil {
+		t.Errorf("publish_completed signal should NOT be emitted on failure")
+	}
+	if !strings.Contains(foundFailed.Message, "push rejected") {
+		t.Errorf("publish_failed Message missing error detail: %q", foundFailed.Message)
+	}
+}

@@ -167,7 +167,7 @@ func (qh *QueueHandler) executeScanPhaseCBody(se *ScanPhaseExecutor, pa phaseARe
 			}
 		}
 
-		// Worktree publish results: emit signal on failure
+		// Worktree publish results: emit signal to Planner on success or failure
 		for _, pr := range pb.worktreePublishes {
 			if pr.Error != nil {
 				qh.log(LogLevelError, "worktree_publish_failed command=%s error=%v",
@@ -183,6 +183,23 @@ func (qh *QueueHandler) executeScanPhaseCBody(se *ScanPhaseExecutor, pa phaseARe
 				}, signalIndex)
 			} else {
 				qh.log(LogLevelInfo, "worktree_published command=%s", pr.Item.CommandID)
+				// Notify Planner so it can call `plan complete` now that the
+				// integration branch is published. Without this signal the
+				// command stays at plan_status:sealed when publish happens
+				// after the Planner's initial complete attempt (e.g. conflict
+				// recovery path where publish is deferred until after
+				// resume-merge succeeds).
+				msg := fmt.Sprintf("[maestro] kind:publish_completed command_id:%s\n"+
+					"The integration branch has been successfully published to the base branch. "+
+					"Call `maestro plan complete` to finalise the command.",
+					pr.Item.CommandID)
+				qh.upsertPlannerSignal(&signalQueue, &signalsDirty, model.PlannerSignal{
+					Kind:      "publish_completed",
+					CommandID: pr.Item.CommandID,
+					Message:   msg,
+					CreatedAt: now,
+					UpdatedAt: now,
+				}, signalIndex)
 			}
 		}
 
