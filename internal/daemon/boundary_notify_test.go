@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/daemon/reconcile"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -52,7 +54,7 @@ func TestNotificationDispatch_InProgressBlocks(t *testing.T) {
 
 	data, _ := os.ReadFile(nqPath)
 	var result model.NotificationQueue
-	parseYAML(data, &result)
+	yamlv3.Unmarshal(data, &result)
 
 	for _, ntf := range result.Notifications {
 		if ntf.ID == "ntf_pending" && ntf.Status != model.StatusPending {
@@ -95,7 +97,7 @@ func TestNotificationDispatch_ExpiredLeaseUnblocks(t *testing.T) {
 
 	data, _ := os.ReadFile(nqPath)
 	var result model.NotificationQueue
-	parseYAML(data, &result)
+	yamlv3.Unmarshal(data, &result)
 
 	// Expired notification should be released (pending)
 	for _, ntf := range result.Notifications {
@@ -151,7 +153,7 @@ func TestMixedQueue_ExpiredLeasesPrioritizeRecovery(t *testing.T) {
 	// Expired task should be recovered (pending)
 	data1, _ := os.ReadFile(filepath.Join(maestroDir, "queue", "worker1.yaml"))
 	var result1 model.TaskQueue
-	parseYAML(data1, &result1)
+	yamlv3.Unmarshal(data1, &result1)
 	if result1.Tasks[0].Status != model.StatusPending {
 		t.Errorf("task_exp: got %s, want pending (recovered)", result1.Tasks[0].Status)
 	}
@@ -159,7 +161,7 @@ func TestMixedQueue_ExpiredLeasesPrioritizeRecovery(t *testing.T) {
 	// Worker2's pending task should NOT have been dispatched (recovery takes priority)
 	data2, _ := os.ReadFile(filepath.Join(maestroDir, "queue", "worker2.yaml"))
 	var result2 model.TaskQueue
-	parseYAML(data2, &result2)
+	yamlv3.Unmarshal(data2, &result2)
 	if result2.Tasks[0].Status != model.StatusPending {
 		t.Errorf("task_wait: got %s, want pending (dispatch skipped during recovery)", result2.Tasks[0].Status)
 	}
@@ -195,7 +197,7 @@ func TestMultipleWorkersDispatch(t *testing.T) {
 	for i := 1; i <= 2; i++ {
 		data, _ := os.ReadFile(filepath.Join(maestroDir, "queue", fmt.Sprintf("worker%d.yaml", i)))
 		var result model.TaskQueue
-		parseYAML(data, &result)
+		yamlv3.Unmarshal(data, &result)
 		if result.Tasks[0].Status == model.StatusInProgress {
 			dispatched++
 		}
@@ -542,7 +544,7 @@ func TestNotificationDispatch_InProgressNilLease(t *testing.T) {
 		t.Fatalf("read notification queue: %v", err)
 	}
 	var result model.NotificationQueue
-	if err := parseYAML(data, &result); err != nil {
+	if err := yamlv3.Unmarshal(data, &result); err != nil {
 		t.Fatalf("parse notification queue: %v", err)
 	}
 

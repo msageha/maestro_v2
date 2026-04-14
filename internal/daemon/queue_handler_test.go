@@ -105,7 +105,7 @@ func TestQueueHandler_DispatchPendingTask(t *testing.T) {
 	}
 
 	var result model.TaskQueue
-	if err := parseYAML(data, &result); err != nil {
+	if err := yamlv3.Unmarshal(data, &result); err != nil {
 		t.Fatalf("parse worker queue: %v", err)
 	}
 
@@ -158,7 +158,7 @@ func TestQueueHandler_DispatchPendingCommand(t *testing.T) {
 	}
 
 	var result model.CommandQueue
-	if err := parseYAML(data, &result); err != nil {
+	if err := yamlv3.Unmarshal(data, &result); err != nil {
 		t.Fatalf("parse planner queue: %v", err)
 	}
 
@@ -217,7 +217,7 @@ func TestQueueHandler_AtMostOneInFlight(t *testing.T) {
 	}
 
 	var result model.TaskQueue
-	if err := parseYAML(data, &result); err != nil {
+	if err := yamlv3.Unmarshal(data, &result); err != nil {
 		t.Fatalf("parse worker queue: %v", err)
 	}
 
@@ -281,7 +281,7 @@ func TestQueueHandler_CrossFileInFlight(t *testing.T) {
 		t.Fatalf("read worker2 queue: %v", err)
 	}
 	var result model.TaskQueue
-	if err := parseYAML(data, &result); err != nil {
+	if err := yamlv3.Unmarshal(data, &result); err != nil {
 		t.Fatalf("parse worker queue: %v", err)
 	}
 
@@ -331,7 +331,7 @@ func TestQueueHandler_LeaseExpireRecovery(t *testing.T) {
 	}
 
 	var result model.TaskQueue
-	if err := parseYAML(data, &result); err != nil {
+	if err := yamlv3.Unmarshal(data, &result); err != nil {
 		t.Fatalf("parse worker queue: %v", err)
 	}
 
@@ -400,7 +400,7 @@ func TestQueueHandler_CancelPendingTask(t *testing.T) {
 	}
 
 	var result model.TaskQueue
-	if err := parseYAML(data, &result); err != nil {
+	if err := yamlv3.Unmarshal(data, &result); err != nil {
 		t.Fatalf("parse worker queue: %v", err)
 	}
 
@@ -520,7 +520,7 @@ func TestQueueHandler_DispatchNotification(t *testing.T) {
 	}
 
 	var result model.NotificationQueue
-	if err := parseYAML(data, &result); err != nil {
+	if err := yamlv3.Unmarshal(data, &result); err != nil {
 		t.Fatalf("parse orchestrator queue: %v", err)
 	}
 
@@ -832,7 +832,7 @@ func TestQueueHandler_DispatchFailure_Rollback(t *testing.T) {
 		t.Fatalf("read worker queue: %v", err)
 	}
 	var result model.TaskQueue
-	if err := parseYAML(data, &result); err != nil {
+	if err := yamlv3.Unmarshal(data, &result); err != nil {
 		t.Fatalf("parse worker queue: %v", err)
 	}
 
@@ -877,7 +877,11 @@ func TestQueueHandler_ConcurrentWriteDuringPhaseB(t *testing.T) {
 	// Executor with proceed channel: signals dispatch start, waits for proceed before returning.
 	dispatchStarted := make(chan struct{})
 	proceed := make(chan struct{})
-	var startOnce sync.Once
+	var startOnce, closeOnce sync.Once
+	closeProceed := func() { closeOnce.Do(func() { close(proceed) }) }
+	// Ensure the background goroutine is unblocked even if the test fails early.
+	t.Cleanup(closeProceed)
+
 	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
 		return &slowMockExecutor{
 			result:  agent.ExecResult{Success: true},
@@ -908,11 +912,10 @@ func TestQueueHandler_ConcurrentWriteDuringPhaseB(t *testing.T) {
 		t.Fatalf("write worker queue: %v", err)
 	}
 
-	// Start PeriodicScan in background
-	var scanDone sync.WaitGroup
-	scanDone.Add(1)
+	// Start PeriodicScan in background; use a channel to detect completion with timeout.
+	scanDone := make(chan struct{})
 	go func() {
-		defer scanDone.Done()
+		defer close(scanDone)
 		qh.PeriodicScan()
 	}()
 
@@ -962,10 +965,14 @@ func TestQueueHandler_ConcurrentWriteDuringPhaseB(t *testing.T) {
 	qh.UnlockFiles()
 
 	// Signal Phase B to complete — write is guaranteed to have happened before Phase C.
-	close(proceed)
+	closeProceed()
 
-	// Wait for scan to complete (Phase C)
-	scanDone.Wait()
+	// Wait for scan to complete (Phase C) with timeout.
+	select {
+	case <-scanDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for PeriodicScan to complete")
+	}
 
 	// Verify: both tasks exist in the final queue state
 	data, err = os.ReadFile(workerPath)
@@ -973,7 +980,7 @@ func TestQueueHandler_ConcurrentWriteDuringPhaseB(t *testing.T) {
 		t.Fatalf("read final worker queue: %v", err)
 	}
 	var finalTQ model.TaskQueue
-	if err := parseYAML(data, &finalTQ); err != nil {
+	if err := yamlv3.Unmarshal(data, &finalTQ); err != nil {
 		t.Fatalf("parse final worker queue: %v", err)
 	}
 
@@ -1005,7 +1012,3 @@ func TestQueueHandler_ConcurrentWriteDuringPhaseB(t *testing.T) {
 	}
 }
 
-// parseYAML is a test helper.
-func parseYAML(data []byte, v any) error {
-	return yamlv3.Unmarshal(data, v)
-}

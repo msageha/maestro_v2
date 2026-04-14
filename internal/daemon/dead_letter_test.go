@@ -619,8 +619,19 @@ func TestDeadLetter_PeriodicScanIntegration(t *testing.T) {
 		return &mocks.MockExecutor{}, nil
 	})
 
-	// Create state dir
-	if err := os.MkdirAll(filepath.Join(maestroDir, "state", "commands"), 0755); err != nil {
+	// Create state dir and seed a command state for cmd_dead so post-processing
+	// can update it to plan_status: failed.
+	stateDir := filepath.Join(maestroDir, "state", "commands")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	cmdDeadState := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "command_state",
+		CommandID:     "cmd_dead",
+		PlanStatus:    model.PlanStatusPlanning,
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_dead.yaml"), cmdDeadState); err != nil {
 		t.Fatal(err)
 	}
 
@@ -675,7 +686,7 @@ func TestDeadLetter_PeriodicScanIntegration(t *testing.T) {
 		t.Errorf("cmd_alive should be dispatched (in_progress), got %s", result.Commands[0].Status)
 	}
 
-	// Verify archive was created
+	// Verify archive was created and contains cmd_dead data
 	archiveDir := filepath.Join(maestroDir, "dead_letters")
 	entries, err := os.ReadDir(archiveDir)
 	if err != nil {
@@ -683,5 +694,44 @@ func TestDeadLetter_PeriodicScanIntegration(t *testing.T) {
 	}
 	if len(entries) != 1 {
 		t.Fatalf("expected 1 archive file, got %d", len(entries))
+	}
+
+	// Read archive content and verify it contains the dead-lettered command
+	archiveData, err := os.ReadFile(filepath.Join(archiveDir, entries[0].Name()))
+	if err != nil {
+		t.Fatalf("read archive file: %v", err)
+	}
+	var archive struct {
+		QueueType string `yaml:"queue_type"`
+		Entry     struct {
+			ID     string `yaml:"id"`
+			Status string `yaml:"status"`
+		} `yaml:"entry"`
+		Reason string `yaml:"reason"`
+	}
+	if err := yamlv3.Unmarshal(archiveData, &archive); err != nil {
+		t.Fatalf("unmarshal archive: %v", err)
+	}
+	if archive.QueueType != "planner" {
+		t.Errorf("archive queue_type: got %s, want planner", archive.QueueType)
+	}
+	if archive.Entry.ID != "cmd_dead" {
+		t.Errorf("archive entry id: got %s, want cmd_dead", archive.Entry.ID)
+	}
+	if archive.Reason == "" {
+		t.Error("archive reason should not be empty")
+	}
+
+	// Verify command state for cmd_dead was updated to plan_status: failed
+	stateData, err := os.ReadFile(filepath.Join(stateDir, "cmd_dead.yaml"))
+	if err != nil {
+		t.Fatalf("read cmd_dead state: %v", err)
+	}
+	var updatedState model.CommandState
+	if err := yamlv3.Unmarshal(stateData, &updatedState); err != nil {
+		t.Fatalf("unmarshal cmd_dead state: %v", err)
+	}
+	if updatedState.PlanStatus != model.PlanStatusFailed {
+		t.Errorf("cmd_dead plan_status: got %s, want failed", updatedState.PlanStatus)
 	}
 }

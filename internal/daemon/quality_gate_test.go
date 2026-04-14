@@ -134,14 +134,18 @@ func TestQualityGateDaemon_EmitEvent(t *testing.T) {
 		StartedAt: time.Now(),
 	}
 
+	// Set up notification channel for event-based synchronization.
+	qg.metrics.evalNotify = make(chan struct{}, 1)
+
 	qg.EmitEvent(event)
 
-	// Wait for the event to be processed rather than sleeping.
-	require.Eventually(t, func() bool {
-		qg.metrics.mu.RLock()
-		defer qg.metrics.mu.RUnlock()
-		return qg.metrics.evaluationCount > 0
-	}, 2*time.Second, 5*time.Millisecond, "evaluation should be recorded")
+	// Wait for the event to be processed via channel notification (no polling).
+	select {
+	case <-qg.metrics.evalNotify:
+		// evaluation recorded
+	case <-time.After(2 * time.Second):
+		t.Fatal("evaluation should be recorded within 2s")
+	}
 
 	// Check metrics
 	qg.metrics.mu.RLock()

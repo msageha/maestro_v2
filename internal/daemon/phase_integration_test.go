@@ -17,6 +17,8 @@ import (
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/metrics"
 	"github.com/msageha/maestro_v2/internal/model"
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/testutil"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -246,7 +248,7 @@ func piReadTaskQueue(t *testing.T, maestroDir, workerID string) model.TaskQueue 
 		t.Fatalf("read task queue %s: %v", workerID, err)
 	}
 	var tq model.TaskQueue
-	if err := parseYAML(data, &tq); err != nil {
+	if err := yamlv3.Unmarshal(data, &tq); err != nil {
 		t.Fatalf("parse task queue: %v", err)
 	}
 	return tq
@@ -260,7 +262,7 @@ func piReadCommandQueue(t *testing.T, maestroDir string) model.CommandQueue {
 		t.Fatalf("read command queue: %v", err)
 	}
 	var cq model.CommandQueue
-	if err := parseYAML(data, &cq); err != nil {
+	if err := yamlv3.Unmarshal(data, &cq); err != nil {
 		t.Fatalf("parse command queue: %v", err)
 	}
 	return cq
@@ -277,7 +279,7 @@ func piReadNotificationQueue(t *testing.T, maestroDir string) model.Notification
 		t.Fatalf("read notification queue: %v", err)
 	}
 	var nq model.NotificationQueue
-	if err := parseYAML(data, &nq); err != nil {
+	if err := yamlv3.Unmarshal(data, &nq); err != nil {
 		t.Fatalf("parse notification queue: %v", err)
 	}
 	return nq
@@ -1150,7 +1152,7 @@ func TestPhaseIntegration_ConcurrentWriteDuringPhaseB(t *testing.T) {
 		t.Fatalf("read during Phase B: %v", err)
 	}
 	var currentTQ model.TaskQueue
-	if err := parseYAML(data, &currentTQ); err != nil {
+	if err := yamlv3.Unmarshal(data, &currentTQ); err != nil {
 		lockMap.Unlock("queue:worker1")
 		qh.UnlockFiles()
 		t.Fatalf("parse during Phase B: %v", err)
@@ -1486,7 +1488,7 @@ func TestPhaseIntegration_PhaseA_B_C_CompletePipeline(t *testing.T) {
 	signalData, err := os.ReadFile(signalPath)
 	if err == nil {
 		var sqAfter model.PlannerSignalQueue
-		if err := parseYAML(signalData, &sqAfter); err == nil {
+		if err := yamlv3.Unmarshal(signalData, &sqAfter); err == nil {
 			for _, sig := range sqAfter.Signals {
 				if sig.Kind == "awaiting_fill" && sig.CommandID == "cmd_1772000015_00000001" {
 					t.Error("signal should have been removed from queue after successful delivery")
@@ -1688,7 +1690,7 @@ func TestPhaseIntegration_SignalDeliveryFailure_Retry(t *testing.T) {
 		t.Fatalf("read signal queue after Phase C: %v", err)
 	}
 	var sqAfter model.PlannerSignalQueue
-	if err := parseYAML(signalData, &sqAfter); err != nil {
+	if err := yamlv3.Unmarshal(signalData, &sqAfter); err != nil {
 		t.Fatalf("parse signal queue: %v", err)
 	}
 

@@ -31,6 +31,9 @@ func TestFsSemaphoreBufferSize_Dynamic(t *testing.T) {
 
 func TestWatchLoop_FsDroppedCount(t *testing.T) {
 	t.Parallel()
+	// Partial init is safe: FsDroppedCount() only accesses droppedCount (atomic.Int64,
+	// zero-value valid). d *Daemon is nil but never dereferenced in this test path.
+	// fsSem is initialized defensively in case future code paths touch it.
 	w := &WatchLoop{
 		fsSem: make(chan struct{}, 1),
 	}

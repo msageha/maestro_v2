@@ -373,6 +373,7 @@ func TestConcurrentHeartbeats(t *testing.T) {
 
 	// Execute: Send concurrent heartbeats
 	var wg sync.WaitGroup
+	var mu sync.Mutex
 	results := make([]bool, numWorkers*10) // 10 heartbeats per worker
 	for i := 0; i < numWorkers; i++ {
 		for j := 0; j < 10; j++ {
@@ -385,7 +386,9 @@ func TestConcurrentHeartbeats(t *testing.T) {
 					Epoch:    1,
 				})
 				resp := handler.Handle(req.Params)
+				mu.Lock()
 				results[workerIdx*10+iteration] = resp.Success
+				mu.Unlock()
 			}(i, j)
 		}
 	}

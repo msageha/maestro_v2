@@ -15,15 +15,15 @@ func TestValidateMutationStrategy(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
-			if got := ValidateMutationStrategy(tt.input); got != tt.want {
-				t.Errorf("ValidateMutationStrategy(%q) = %v, want %v", tt.input, got, tt.want)
+			if got := validateMutationStrategy(tt.input); got != tt.want {
+				t.Errorf("validateMutationStrategy(%q) = %v, want %v", tt.input, got, tt.want)
 			}
 		})
 	}
 }
 
 func TestMutationRequest_Fields(t *testing.T) {
-	req := MutationRequest{
+	req := mutationRequest{
 		TaskID:   "task-1",
 		Strategy: "diff",
 		ParentFitness: &FitnessScore{
@@ -45,9 +45,9 @@ func TestMutationRequest_Fields(t *testing.T) {
 
 func TestEvolutionCycle_Fields(t *testing.T) {
 	best := &FitnessScore{Passed: true, QualityScore: 0.9}
-	cycle := EvolutionCycle{
+	cycle := evolutionCycle{
 		Round: 1,
-		Mutations: []MutationResult{
+		Mutations: []mutationResult{
 			{SlotIndex: 0, Fitness: best, IsNovel: true},
 			{SlotIndex: 1, IsNovel: false},
 		},

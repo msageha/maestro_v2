@@ -176,6 +176,9 @@ func (b *Bus) Subscribe(eventType EventType, fn subscriber) func() {
 	return func() {
 		b.mu.Lock()
 		defer b.mu.Unlock()
+		if b.closed.Load() {
+			return
+		}
 		b.subscribers[eventType] = removeSubscriber(b.subscribers[eventType], sub)
 	}
 }
@@ -232,6 +235,9 @@ func (b *Bus) SubscribeCoalesced(eventType EventType, fn coalescedSubscriber) fu
 	return func() {
 		b.mu.Lock()
 		defer b.mu.Unlock()
+		if b.closed.Load() {
+			return
+		}
 		b.coalescedSubs[eventType] = removeSubscriber(b.coalescedSubs[eventType], sub)
 	}
 }

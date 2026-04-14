@@ -75,6 +75,7 @@ type QualityGateMetrics struct {
 	successCount          int64
 	failureCount          int64
 	totalEvaluationTimeMs int64
+	evalNotify            chan struct{} // optional channel for event-based test synchronization
 }
 
 // RecordEvaluation records a quality gate evaluation.
@@ -87,6 +88,12 @@ func (m *QualityGateMetrics) RecordEvaluation(success bool, durationMs int64) {
 		m.successCount++
 	} else {
 		m.failureCount++
+	}
+	if m.evalNotify != nil {
+		select {
+		case m.evalNotify <- struct{}{}:
+		default:
+		}
 	}
 }
 

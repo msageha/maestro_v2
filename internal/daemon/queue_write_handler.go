@@ -807,7 +807,7 @@ func (h *QueueWriteAPI) archiveTerminalTasks(tq *model.TaskQueue) int {
 		}
 		terminal, ok := planTerminalCache[task.CommandID]
 		if !ok {
-			terminal = h.isCommandPlanTerminal(task.CommandID)
+			terminal = readCommandPlanTerminal(h.maestroDir, task.CommandID)
 			planTerminalCache[task.CommandID] = terminal
 		}
 		if terminal {
@@ -820,7 +820,8 @@ func (h *QueueWriteAPI) archiveTerminalTasks(tq *model.TaskQueue) int {
 	return archived
 }
 
-// isCommandPlanTerminal checks if a command's plan_status is terminal.
+// readCommandPlanTerminal reads a command's state file and returns whether
+// plan_status is terminal.
 //
 // This is a read-only check and intentionally does NOT acquire the per-command
 // state lock. Because all state file writes use AtomicWrite (write-to-temp +
@@ -833,8 +834,8 @@ func (h *QueueWriteAPI) archiveTerminalTasks(tq *model.TaskQueue) int {
 // this function is called under queue:{target} (via archiveTerminalTasks),
 // but other code paths (retry, submit) acquire state:{commandID} before
 // queue:{workerID}. Omitting the lock avoids the deadlock risk (CR-011).
-func (h *QueueWriteAPI) isCommandPlanTerminal(commandID string) bool {
-	statePath := commandStatePath(h.maestroDir, commandID)
+func readCommandPlanTerminal(maestroDir, commandID string) bool {
+	statePath := commandStatePath(maestroDir, commandID)
 	data, err := os.ReadFile(statePath) //nolint:gosec // statePath is constructed from a controlled application state directory
 	if err != nil {
 		return false

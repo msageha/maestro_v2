@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/testutil/mocks"
@@ -63,7 +65,7 @@ func TestCommandDispatchGuard_ExpiredLease(t *testing.T) {
 	}
 
 	var result model.CommandQueue
-	if err := parseYAML(data, &result); err != nil {
+	if err := yamlv3.Unmarshal(data, &result); err != nil {
 		t.Fatalf("parse planner queue: %v", err)
 	}
 
@@ -142,7 +144,7 @@ func TestCommandDispatchGuard_ValidLease(t *testing.T) {
 	}
 
 	var result model.CommandQueue
-	if err := parseYAML(data, &result); err != nil {
+	if err := yamlv3.Unmarshal(data, &result); err != nil {
 		t.Fatalf("parse planner queue: %v", err)
 	}
 
@@ -207,7 +209,7 @@ func TestCommandLeaseAutoExtend(t *testing.T) {
 	}
 
 	var result model.CommandQueue
-	if err := parseYAML(data, &result); err != nil {
+	if err := yamlv3.Unmarshal(data, &result); err != nil {
 		t.Fatalf("parse planner queue: %v", err)
 	}
 
@@ -293,7 +295,7 @@ func TestTaskLeaseExpiry_ReleaseToPending(t *testing.T) {
 	}
 
 	var result model.TaskQueue
-	if err := parseYAML(data, &result); err != nil {
+	if err := yamlv3.Unmarshal(data, &result); err != nil {
 		t.Fatalf("parse worker queue: %v", err)
 	}
 
@@ -366,7 +368,7 @@ func TestCommandDispatchError_LeaseRetained(t *testing.T) {
 	}
 
 	var result model.CommandQueue
-	if err := parseYAML(data, &result); err != nil {
+	if err := yamlv3.Unmarshal(data, &result); err != nil {
 		t.Fatalf("parse planner queue: %v", err)
 	}
 

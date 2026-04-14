@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	yamlv3 "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/ptr"
@@ -48,7 +50,7 @@ func TestGuard_AllTerminalCommands_PendingDispatched(t *testing.T) {
 		t.Fatalf("read planner queue: %v", err)
 	}
 	var result model.CommandQueue
-	if err := parseYAML(data, &result); err != nil {
+	if err := yamlv3.Unmarshal(data, &result); err != nil {
 		t.Fatalf("parse planner queue: %v", err)
 	}
 
@@ -108,7 +110,7 @@ func TestGuard_MultipleInProgressCommands_NoneDispatched(t *testing.T) {
 
 	data, _ := os.ReadFile(plannerPath)
 	var result model.CommandQueue
-	parseYAML(data, &result)
+	yamlv3.Unmarshal(data, &result)
 
 	for _, cmd := range result.Commands {
 		if cmd.ID == "cmd_pending" && cmd.Status != model.StatusPending {
@@ -140,7 +142,7 @@ func TestGuard_DeadLetterCommandNotBlockingDispatch(t *testing.T) {
 
 	data, _ := os.ReadFile(plannerPath)
 	var result model.CommandQueue
-	parseYAML(data, &result)
+	yamlv3.Unmarshal(data, &result)
 
 	for _, cmd := range result.Commands {
 		if cmd.ID == "cmd_new" && cmd.Status != model.StatusInProgress {
@@ -185,7 +187,7 @@ func TestCommandLeaseAutoExtend_ExactMaxTimeout(t *testing.T) {
 
 	data, _ := os.ReadFile(plannerPath)
 	var result model.CommandQueue
-	parseYAML(data, &result)
+	yamlv3.Unmarshal(data, &result)
 
 	cmd := result.Commands[0]
 	// At exact boundary, time.Since(updatedAt) >= 30m should be true → release
@@ -236,7 +238,7 @@ func TestCommandLeaseAutoExtend_JustBeforeMaxTimeout(t *testing.T) {
 
 	data, _ := os.ReadFile(plannerPath)
 	var result model.CommandQueue
-	parseYAML(data, &result)
+	yamlv3.Unmarshal(data, &result)
 
 	cmd := result.Commands[0]
 	if cmd.Status != model.StatusInProgress {
@@ -281,7 +283,7 @@ func TestCommandLeaseAutoExtend_NilLeaseExpiresAt(t *testing.T) {
 
 	data, _ := os.ReadFile(plannerPath)
 	var result model.CommandQueue
-	parseYAML(data, &result)
+	yamlv3.Unmarshal(data, &result)
 
 	cmd := result.Commands[0]
 	// Malformed nil lease_expires_at → IsLeaseExpired returns true → auto-extend
@@ -335,7 +337,7 @@ func TestCommandLeaseAutoExtend_DefaultMaxInProgressMin(t *testing.T) {
 
 	data, _ := os.ReadFile(plannerPath)
 	var result model.CommandQueue
-	parseYAML(data, &result)
+	yamlv3.Unmarshal(data, &result)
 
 	if result.Commands[0].Status != model.StatusInProgress {
 		t.Errorf("got %s, want in_progress (within default 60m max)", result.Commands[0].Status)
@@ -375,7 +377,7 @@ func TestTaskLeaseExpiry_NilLeaseExpiresAt(t *testing.T) {
 
 	data, _ := os.ReadFile(workerPath)
 	var result model.TaskQueue
-	parseYAML(data, &result)
+	yamlv3.Unmarshal(data, &result)
 
 	task := result.Tasks[0]
 	if task.Status != model.StatusPending {
@@ -520,7 +522,7 @@ func TestTaskDispatchError_LeaseReleased(t *testing.T) {
 
 	data, _ := os.ReadFile(workerPath)
 	var result model.TaskQueue
-	parseYAML(data, &result)
+	yamlv3.Unmarshal(data, &result)
 
 	task := result.Tasks[0]
 	// Task dispatch failure → lease released → back to pending
@@ -574,7 +576,7 @@ func TestCommandDispatchError_SecondScan_StaysInProgress(t *testing.T) {
 		t.Fatalf("read planner queue after scan 1: %v", err)
 	}
 	var after1 model.CommandQueue
-	if err := parseYAML(data, &after1); err != nil {
+	if err := yamlv3.Unmarshal(data, &after1); err != nil {
 		t.Fatalf("parse planner queue after scan 1: %v", err)
 	}
 	if after1.Commands[0].Status != model.StatusInProgress {
@@ -594,7 +596,7 @@ func TestCommandDispatchError_SecondScan_StaysInProgress(t *testing.T) {
 		t.Fatalf("read planner queue after scan 2: %v", err)
 	}
 	var after2 model.CommandQueue
-	if err := parseYAML(data, &after2); err != nil {
+	if err := yamlv3.Unmarshal(data, &after2); err != nil {
 		t.Fatalf("parse planner queue after scan 2: %v", err)
 	}
 	if after2.Commands[0].Status != model.StatusInProgress {

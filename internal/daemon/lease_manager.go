@@ -54,158 +54,169 @@ type LeaseInfo struct {
 	LeaseEpoch     int
 }
 
-// AcquireCommandLease transitions a command from pending to in_progress with lease.
-func (lm *LeaseManager) AcquireCommandLease(cmd *model.Command, owner string) error {
-	if err := model.ValidateCommandTaskQueueTransition(cmd.Status, model.StatusInProgress); err != nil {
+// leaseRef provides unified pointer-based access to lease-related fields
+// across Command, Task, and Notification types, eliminating duplication
+// in acquire/release/extend operations.
+type leaseRef struct {
+	id             string
+	entityType     string
+	status         *model.Status
+	leaseOwner     **string
+	leaseExpiresAt **string
+	leaseEpoch     *int
+	updatedAt      *string
+	validate       func(model.Status, model.Status) error
+	postAcquire    func(nowStr string) // type-specific hook (e.g., Task.InProgressAt)
+	postRelease    func()              // type-specific hook (e.g., Task.InProgressAt)
+}
+
+func commandLeaseRef(cmd *model.Command) leaseRef {
+	return leaseRef{
+		id: cmd.ID, entityType: "command",
+		status: &cmd.Status, leaseOwner: &cmd.LeaseOwner,
+		leaseExpiresAt: &cmd.LeaseExpiresAt, leaseEpoch: &cmd.LeaseEpoch,
+		updatedAt: &cmd.UpdatedAt,
+		validate:  model.ValidateCommandTaskQueueTransition,
+	}
+}
+
+func taskLeaseRef(task *model.Task) leaseRef {
+	return leaseRef{
+		id: task.ID, entityType: "task",
+		status: &task.Status, leaseOwner: &task.LeaseOwner,
+		leaseExpiresAt: &task.LeaseExpiresAt, leaseEpoch: &task.LeaseEpoch,
+		updatedAt: &task.UpdatedAt,
+		validate:  model.ValidateCommandTaskQueueTransition,
+		postAcquire: func(nowStr string) {
+			if task.InProgressAt == nil {
+				task.InProgressAt = &nowStr
+			}
+		},
+		postRelease: func() {
+			// H5: clear InProgressAt so the next AcquireTaskLease records a fresh
+			// dispatch timestamp. Otherwise the original (stale) value would block
+			// max_in_progress_min checks from ever firing on the re-dispatched task.
+			task.InProgressAt = nil
+		},
+	}
+}
+
+func notificationLeaseRef(ntf *model.Notification) leaseRef {
+	return leaseRef{
+		id: ntf.ID, entityType: "notification",
+		status: &ntf.Status, leaseOwner: &ntf.LeaseOwner,
+		leaseExpiresAt: &ntf.LeaseExpiresAt, leaseEpoch: &ntf.LeaseEpoch,
+		updatedAt: &ntf.UpdatedAt,
+		validate:  model.ValidateNotificationQueueTransition,
+	}
+}
+
+// acquireLease transitions a queue entry from pending to in_progress with lease.
+func (lm *LeaseManager) acquireLease(ref leaseRef, owner string) error {
+	if err := ref.validate(*ref.status, model.StatusInProgress); err != nil {
 		return fmt.Errorf("cannot acquire lease: %w", err)
 	}
 
 	now := lm.clock.Now().UTC()
 	expires := now.Add(time.Duration(lm.dispatchLeaseSec) * time.Second)
 
-	cmd.Status = model.StatusInProgress
+	*ref.status = model.StatusInProgress
 	ownerStr := owner
-	cmd.LeaseOwner = &ownerStr
+	*ref.leaseOwner = &ownerStr
 	expiresStr := expires.Format(time.RFC3339)
-	cmd.LeaseExpiresAt = &expiresStr
-	cmd.LeaseEpoch++
-	cmd.UpdatedAt = now.Format(time.RFC3339)
+	*ref.leaseExpiresAt = &expiresStr
+	(*ref.leaseEpoch)++
+	nowStr := now.Format(time.RFC3339)
+	*ref.updatedAt = nowStr
 
-	lm.log(LogLevelInfo, "lease_acquire type=command id=%s owner=%s epoch=%d expires=%s",
-		cmd.ID, owner, cmd.LeaseEpoch, expiresStr)
+	if ref.postAcquire != nil {
+		ref.postAcquire(nowStr)
+	}
+
+	lm.log(LogLevelInfo, "lease_acquire type=%s id=%s owner=%s epoch=%d expires=%s",
+		ref.entityType, ref.id, owner, *ref.leaseEpoch, expiresStr)
 	return nil
+}
+
+// releaseLease transitions a queue entry from in_progress back to pending.
+func (lm *LeaseManager) releaseLease(ref leaseRef) error {
+	if err := ref.validate(*ref.status, model.StatusPending); err != nil {
+		return fmt.Errorf("cannot release lease: %w", err)
+	}
+
+	*ref.status = model.StatusPending
+	*ref.leaseOwner = nil
+	*ref.leaseExpiresAt = nil
+	*ref.updatedAt = lm.clock.Now().UTC().Format(time.RFC3339)
+
+	if ref.postRelease != nil {
+		ref.postRelease()
+	}
+
+	lm.log(LogLevelInfo, "lease_release type=%s id=%s epoch=%d", ref.entityType, ref.id, *ref.leaseEpoch)
+	return nil
+}
+
+// extendLeaseExpiry sets a new expiration time on an in_progress entry.
+// UpdatedAt is intentionally NOT updated — it must retain the original
+// dispatch timestamp so that max_in_progress_min checks work correctly.
+func (lm *LeaseManager) extendLeaseExpiry(ref leaseRef, ttl time.Duration) error {
+	if *ref.status != model.StatusInProgress {
+		return fmt.Errorf("cannot extend lease: %s %s is %s, not in_progress", ref.entityType, ref.id, *ref.status)
+	}
+	expires := lm.clock.Now().UTC().Add(ttl)
+	expiresStr := expires.Format(time.RFC3339)
+	*ref.leaseExpiresAt = &expiresStr
+	return nil
+}
+
+// AcquireCommandLease transitions a command from pending to in_progress with lease.
+func (lm *LeaseManager) AcquireCommandLease(cmd *model.Command, owner string) error {
+	return lm.acquireLease(commandLeaseRef(cmd), owner)
 }
 
 // AcquireTaskLease transitions a task from pending to in_progress with lease.
 func (lm *LeaseManager) AcquireTaskLease(task *model.Task, owner string) error {
-	if err := model.ValidateCommandTaskQueueTransition(task.Status, model.StatusInProgress); err != nil {
-		return fmt.Errorf("cannot acquire lease: %w", err)
-	}
-
-	now := lm.clock.Now().UTC()
-	expires := now.Add(time.Duration(lm.dispatchLeaseSec) * time.Second)
-
-	task.Status = model.StatusInProgress
-	ownerStr := owner
-	task.LeaseOwner = &ownerStr
-	expiresStr := expires.Format(time.RFC3339)
-	task.LeaseExpiresAt = &expiresStr
-	task.LeaseEpoch++
-	nowStr := now.Format(time.RFC3339)
-	if task.InProgressAt == nil {
-		task.InProgressAt = &nowStr
-	}
-	task.UpdatedAt = nowStr
-
-	lm.log(LogLevelInfo, "lease_acquire type=task id=%s owner=%s epoch=%d expires=%s",
-		task.ID, owner, task.LeaseEpoch, expiresStr)
-	return nil
+	return lm.acquireLease(taskLeaseRef(task), owner)
 }
 
 // AcquireNotificationLease transitions a notification from pending to in_progress with lease.
 func (lm *LeaseManager) AcquireNotificationLease(ntf *model.Notification, owner string) error {
-	if err := model.ValidateNotificationQueueTransition(ntf.Status, model.StatusInProgress); err != nil {
-		return fmt.Errorf("cannot acquire lease: %w", err)
-	}
-
-	now := lm.clock.Now().UTC()
-	expires := now.Add(time.Duration(lm.dispatchLeaseSec) * time.Second)
-
-	ntf.Status = model.StatusInProgress
-	ownerStr := owner
-	ntf.LeaseOwner = &ownerStr
-	expiresStr := expires.Format(time.RFC3339)
-	ntf.LeaseExpiresAt = &expiresStr
-	ntf.LeaseEpoch++
-	ntf.UpdatedAt = now.Format(time.RFC3339)
-
-	lm.log(LogLevelInfo, "lease_acquire type=notification id=%s owner=%s epoch=%d expires=%s",
-		ntf.ID, owner, ntf.LeaseEpoch, expiresStr)
-	return nil
+	return lm.acquireLease(notificationLeaseRef(ntf), owner)
 }
 
 // ReleaseCommandLease transitions a command from in_progress back to pending with cleared lease.
 func (lm *LeaseManager) ReleaseCommandLease(cmd *model.Command) error {
-	if err := model.ValidateCommandTaskQueueTransition(cmd.Status, model.StatusPending); err != nil {
-		return fmt.Errorf("cannot release lease: %w", err)
-	}
-
-	cmd.Status = model.StatusPending
-	cmd.LeaseOwner = nil
-	cmd.LeaseExpiresAt = nil
-	cmd.UpdatedAt = lm.clock.Now().UTC().Format(time.RFC3339)
-
-	lm.log(LogLevelInfo, "lease_release type=command id=%s epoch=%d", cmd.ID, cmd.LeaseEpoch)
-	return nil
+	return lm.releaseLease(commandLeaseRef(cmd))
 }
 
 // ReleaseTaskLease transitions a task from in_progress back to pending with cleared lease.
 func (lm *LeaseManager) ReleaseTaskLease(task *model.Task) error {
-	if err := model.ValidateCommandTaskQueueTransition(task.Status, model.StatusPending); err != nil {
-		return fmt.Errorf("cannot release lease: %w", err)
-	}
-
-	task.Status = model.StatusPending
-	task.LeaseOwner = nil
-	task.LeaseExpiresAt = nil
-	// H5: clear InProgressAt so the next AcquireTaskLease records a fresh
-	// dispatch timestamp. Otherwise the original (stale) value would block
-	// max_in_progress_min checks from ever firing on the re-dispatched task.
-	task.InProgressAt = nil
-	task.UpdatedAt = lm.clock.Now().UTC().Format(time.RFC3339)
-
-	lm.log(LogLevelInfo, "lease_release type=task id=%s epoch=%d", task.ID, task.LeaseEpoch)
-	return nil
+	return lm.releaseLease(taskLeaseRef(task))
 }
 
 // ReleaseNotificationLease transitions a notification back to pending with cleared lease.
 func (lm *LeaseManager) ReleaseNotificationLease(ntf *model.Notification) error {
-	if err := model.ValidateNotificationQueueTransition(ntf.Status, model.StatusPending); err != nil {
-		return fmt.Errorf("cannot release lease: %w", err)
-	}
-
-	ntf.Status = model.StatusPending
-	ntf.LeaseOwner = nil
-	ntf.LeaseExpiresAt = nil
-	ntf.UpdatedAt = lm.clock.Now().UTC().Format(time.RFC3339)
-
-	lm.log(LogLevelInfo, "lease_release type=notification id=%s epoch=%d", ntf.ID, ntf.LeaseEpoch)
-	return nil
+	return lm.releaseLease(notificationLeaseRef(ntf))
 }
 
 // ExtendCommandLease extends the lease expiration for an in_progress command.
-// NOTE: UpdatedAt is intentionally NOT updated here. It must retain the original
-// dispatch timestamp from AcquireCommandLease so that max_in_progress_min checks
-// in recoverExpiredCommandLeases work correctly.
 func (lm *LeaseManager) ExtendCommandLease(cmd *model.Command) error {
-	if cmd.Status != model.StatusInProgress {
-		return fmt.Errorf("cannot extend lease: command %s is %s, not in_progress", cmd.ID, cmd.Status)
+	if err := lm.extendLeaseExpiry(commandLeaseRef(cmd), time.Duration(lm.dispatchLeaseSec)*time.Second); err != nil {
+		return err
 	}
-
-	expires := lm.clock.Now().UTC().Add(time.Duration(lm.dispatchLeaseSec) * time.Second)
-	expiresStr := expires.Format(time.RFC3339)
-	cmd.LeaseExpiresAt = &expiresStr
-
 	lm.log(LogLevelDebug, "lease_extend type=command id=%s epoch=%d new_expires=%s",
-		cmd.ID, cmd.LeaseEpoch, expiresStr)
+		cmd.ID, cmd.LeaseEpoch, *cmd.LeaseExpiresAt)
 	return nil
 }
 
 // ExtendTaskLease extends the lease expiration for an in_progress task.
-// NOTE: UpdatedAt is intentionally NOT updated here. It must retain the original
-// dispatch timestamp from AcquireTaskLease so that max_in_progress_min checks
-// in recoverExpiredTaskLeases work correctly.
 func (lm *LeaseManager) ExtendTaskLease(task *model.Task) error {
-	if task.Status != model.StatusInProgress {
-		return fmt.Errorf("cannot extend lease: task %s is %s, not in_progress", task.ID, task.Status)
+	if err := lm.extendLeaseExpiry(taskLeaseRef(task), time.Duration(lm.dispatchLeaseSec)*time.Second); err != nil {
+		return err
 	}
-
-	expires := lm.clock.Now().UTC().Add(time.Duration(lm.dispatchLeaseSec) * time.Second)
-	expiresStr := expires.Format(time.RFC3339)
-	task.LeaseExpiresAt = &expiresStr
-
 	lm.log(LogLevelDebug, "lease_extend type=task id=%s epoch=%d new_expires=%s",
-		task.ID, task.LeaseEpoch, expiresStr)
+		task.ID, task.LeaseEpoch, *task.LeaseExpiresAt)
 	return nil
 }
 
@@ -239,27 +250,21 @@ func (lm *LeaseManager) GraceLeaseTTL(scanIntervalSec int) time.Duration {
 
 // ExtendCommandLeaseGrace extends the lease with a shorter grace TTL for undecided probes.
 func (lm *LeaseManager) ExtendCommandLeaseGrace(cmd *model.Command, graceTTL time.Duration) error {
-	if cmd.Status != model.StatusInProgress {
-		return fmt.Errorf("cannot extend lease: command %s is %s, not in_progress", cmd.ID, cmd.Status)
+	if err := lm.extendLeaseExpiry(commandLeaseRef(cmd), graceTTL); err != nil {
+		return err
 	}
-	expires := lm.clock.Now().UTC().Add(graceTTL)
-	expiresStr := expires.Format(time.RFC3339)
-	cmd.LeaseExpiresAt = &expiresStr
 	lm.log(LogLevelDebug, "lease_grace_extend type=command id=%s epoch=%d grace_ttl=%s new_expires=%s",
-		cmd.ID, cmd.LeaseEpoch, graceTTL, expiresStr)
+		cmd.ID, cmd.LeaseEpoch, graceTTL, *cmd.LeaseExpiresAt)
 	return nil
 }
 
 // ExtendTaskLeaseGrace extends the lease with a shorter grace TTL for undecided probes.
 func (lm *LeaseManager) ExtendTaskLeaseGrace(task *model.Task, graceTTL time.Duration) error {
-	if task.Status != model.StatusInProgress {
-		return fmt.Errorf("cannot extend lease: task %s is %s, not in_progress", task.ID, task.Status)
+	if err := lm.extendLeaseExpiry(taskLeaseRef(task), graceTTL); err != nil {
+		return err
 	}
-	expires := lm.clock.Now().UTC().Add(graceTTL)
-	expiresStr := expires.Format(time.RFC3339)
-	task.LeaseExpiresAt = &expiresStr
 	lm.log(LogLevelDebug, "lease_grace_extend type=task id=%s epoch=%d grace_ttl=%s new_expires=%s",
-		task.ID, task.LeaseEpoch, graceTTL, expiresStr)
+		task.ID, task.LeaseEpoch, graceTTL, *task.LeaseExpiresAt)
 	return nil
 }
 
