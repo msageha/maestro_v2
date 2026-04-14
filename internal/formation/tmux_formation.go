@@ -205,34 +205,8 @@ func resolveModel(cfg model.Config, agentID string) string {
 			return m
 		}
 	default:
-		// Worker: boost overrides all, then per-worker override, then default
-		if cfg.Agents.Workers.Boost {
-			return "opus"
-		}
-		if m, ok := cfg.Agents.Workers.Models[agentID]; ok {
-			return m
-		}
-		if m := cfg.Agents.Workers.DefaultModel; m != "" {
-			return m
-		}
+		return model.ResolveWorkerModel(agentID, cfg)
 	}
 	return "sonnet"
 }
 
-// SwitchRuntime is a placeholder for C-7 requirement 3: runtime switching.
-// In the current implementation, it validates the target runtime and logs the
-// intent. Actual process management will be implemented when runtime lifecycle
-// management is added.
-func SwitchRuntime(workerID, newRuntime string, cfg model.Config) error {
-	if !model.ValidateRuntime(newRuntime) {
-		return fmt.Errorf("unknown runtime %q", newRuntime)
-	}
-
-	rc, ok := cfg.Runtimes[newRuntime]
-	if ok && !rc.EffectiveEnabled() {
-		return fmt.Errorf("runtime %q is disabled", newRuntime)
-	}
-
-	log.Printf("[INFO] SwitchRuntime: worker=%s target=%s (placeholder — process management not yet implemented)", workerID, newRuntime)
-	return nil
-}

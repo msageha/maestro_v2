@@ -30,8 +30,11 @@ func SanitizeDoubleQuoteEscapes(data []byte) []byte {
 				i++
 				i = processDoubleQuoted(data, i, &out)
 			} else {
-				out = append(out, data[i])
+				// Not a value start, but still skip to the closing quote
+				// so that '#' inside is not misidentified as a comment.
+				out = append(out, '"')
 				i++
+				i = skipNonValueDoubleQuoted(data, i, &out)
 			}
 		case '\'':
 			// Skip single-quoted strings entirely (no escape processing).
@@ -96,6 +99,31 @@ func processDoubleQuoted(data []byte, i int, out *[]byte) int {
 				*out = append(*out, '\\', '\\')
 				i++ // advance past the backslash only; next char is re-examined.
 			}
+		} else if ch == '"' {
+			*out = append(*out, '"')
+			i++
+			return i
+		} else {
+			*out = append(*out, ch)
+			i++
+		}
+	}
+	return i
+}
+
+// skipNonValueDoubleQuoted copies bytes verbatim from inside a double-quoted
+// region that was not recognised as a YAML value start. This prevents '#'
+// characters inside the quotes from being misidentified as YAML comments.
+// It handles backslash-escaped closing quotes (e.g. \") but does NOT perform
+// the escape sanitisation that processDoubleQuoted does.
+func skipNonValueDoubleQuoted(data []byte, i int, out *[]byte) int {
+	n := len(data)
+	for i < n {
+		ch := data[i]
+		if ch == '\\' && i+1 < n {
+			// Copy escaped pair verbatim (handles \")
+			*out = append(*out, ch, data[i+1])
+			i += 2
 		} else if ch == '"' {
 			*out = append(*out, '"')
 			i++

@@ -2,7 +2,6 @@ package worktree
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -374,12 +373,12 @@ func (wm *Manager) cleanupCommandCore(commandID string, state *model.WorktreeCom
 	// All worktree removals succeeded — safe to remove directory and state file
 	wtDir := filepath.Join(wm.projectRoot, wm.config.EffectivePathPrefix(), commandID)
 	if err := os.RemoveAll(wtDir); err != nil {
-		log.Printf("WARN: failed to remove worktree directory %s: %v", wtDir, err)
+		wm.Log(core.LogLevelWarn, "failed to remove worktree directory %s: %v", wtDir, err)
 	}
 
 	statePath := filepath.Join(wm.maestroDir, "state", "worktrees", commandID+".yaml")
 	if err := os.Remove(statePath); err != nil {
-		log.Printf("WARN: failed to remove state file %s: %v", statePath, err)
+		wm.Log(core.LogLevelWarn, "failed to remove state file %s: %v", statePath, err)
 	}
 
 	return nil

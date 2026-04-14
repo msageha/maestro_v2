@@ -457,6 +457,8 @@ func (wm *Manager) SyncFromIntegration(commandID string, workerIDs []string) err
 
 	now := wm.clock.Now().UTC().Format(time.RFC3339)
 
+	var syncErrors []error
+
 	for _, workerID := range workerIDs {
 		ws := wm.findWorker(state, workerID)
 		if ws == nil {
@@ -521,6 +523,7 @@ func (wm *Manager) SyncFromIntegration(commandID string, workerIDs []string) err
 						wm.Log(core.LogLevelWarn, "sync_recovery_fail_transition command=%s worker=%s error=%v",
 							commandID, workerID, tErr)
 					}
+					syncErrors = append(syncErrors, fmt.Errorf("worker %s: sync recovery failed: %w", workerID, recoveryErr))
 					continue
 				}
 			}
@@ -552,6 +555,10 @@ func (wm *Manager) SyncFromIntegration(commandID string, workerIDs []string) err
 	state.UpdatedAt = now
 	if err := wm.saveState(commandID, state); err != nil {
 		return fmt.Errorf("save state: %w", err)
+	}
+
+	if len(syncErrors) > 0 {
+		return fmt.Errorf("sync failures: %w", errors.Join(syncErrors...))
 	}
 
 	return nil
@@ -642,6 +649,13 @@ func (wm *Manager) createTempPublishBranch(commandID, baseBranch string) (tempBr
 	return tempBranch, baseSHA, nil
 }
 
+// deleteTempBranch removes a temporary publish branch and logs a warning if deletion fails.
+func (wm *Manager) deleteTempBranch(tempBranch string) {
+	if err := wm.gitRun("branch", "-D", tempBranch); err != nil {
+		wm.Log(core.LogLevelWarn, "delete_temp_branch_failed branch=%s error=%v", tempBranch, err)
+	}
+}
+
 // performPublishMerge checks out the temp branch in the integration worktree,
 // merges the integration branch, gets the merge SHA, restores the integration
 // branch checkout, checks for dirty projectRoot, updates the base branch ref
@@ -653,7 +667,7 @@ func (wm *Manager) performPublishMerge(
 ) (mergeSHA string, baseBranchCheckedOut bool, err error) {
 	// Checkout temp branch in integration worktree
 	if err := wm.gitRunInDir(integrationPath, "checkout", tempBranch); err != nil {
-		_ = wm.gitRun("branch", "-D", tempBranch)
+		wm.deleteTempBranch(tempBranch)
 		return "", false, fmt.Errorf("checkout temp publish branch: %w", err)
 	}
 
@@ -677,9 +691,7 @@ func (wm *Manager) performPublishMerge(
 			wm.Log(core.LogLevelWarn, "publish_checkout_failed command=%s branch=%s error=%v", commandID, state.Integration.Branch, checkoutErr)
 			return "", false, fmt.Errorf("merge integration into %s: %w (checkout recovery also failed: %v)", baseBranch, err, checkoutErr)
 		}
-		if deleteErr := wm.gitRun("branch", "-D", tempBranch); deleteErr != nil {
-			wm.Log(core.LogLevelWarn, "publish_branch_delete_failed command=%s branch=%s error=%v", commandID, tempBranch, deleteErr)
-		}
+		wm.deleteTempBranch(tempBranch)
 		return "", false, fmt.Errorf("merge integration into %s: %w", baseBranch, err)
 	}
 
@@ -687,13 +699,17 @@ func (wm *Manager) performPublishMerge(
 	mergeSHAOut, err := wm.gitOutputInDir(integrationPath, "rev-parse", "HEAD")
 	if err != nil {
 		_ = wm.gitRunInDir(integrationPath, "checkout", state.Integration.Branch)
-		_ = wm.gitRun("branch", "-D", tempBranch)
+		wm.deleteTempBranch(tempBranch)
 		return "", false, fmt.Errorf("get merge commit SHA: %w", err)
 	}
 	mergeSHA = strings.TrimSpace(mergeSHAOut)
 
 	// Restore integration branch checkout before updating refs
-	_ = wm.gitRunInDir(integrationPath, "checkout", state.Integration.Branch)
+	if checkoutErr := wm.gitRunInDir(integrationPath, "checkout", state.Integration.Branch); checkoutErr != nil {
+		wm.Log(core.LogLevelWarn, "publish_restore_checkout_failed command=%s branch=%s error=%v", commandID, state.Integration.Branch, checkoutErr)
+		wm.deleteTempBranch(tempBranch)
+		return "", false, fmt.Errorf("restore integration branch checkout after publish: %w", checkoutErr)
+	}
 
 	// Check if baseBranch is currently checked out in projectRoot BEFORE updating the ref.
 	// We need this to know whether to sync the working tree afterwards.
@@ -705,11 +721,11 @@ func (wm *Manager) performPublishMerge(
 	if baseBranchCheckedOut {
 		statusOut, err := wm.gitOutput("status", "--porcelain")
 		if err != nil {
-			_ = wm.gitRun("branch", "-D", tempBranch)
+			wm.deleteTempBranch(tempBranch)
 			return "", false, fmt.Errorf("publish dirty check failed: %w", err)
 		}
 		if strings.TrimSpace(statusOut) != "" {
-			_ = wm.gitRun("branch", "-D", tempBranch)
+			wm.deleteTempBranch(tempBranch)
 			return "", false, fmt.Errorf("publish aborted: projectRoot has uncommitted changes that would be lost by reset; please commit or stash them first")
 		}
 	}
@@ -722,12 +738,12 @@ func (wm *Manager) performPublishMerge(
 	// Use compare-and-swap: update-ref will fail atomically if baseBranch
 	// has been modified since we read baseSHA, preventing TOCTOU races.
 	if err := wm.gitRun("update-ref", fmt.Sprintf("refs/heads/%s", baseBranch), mergeSHA, baseSHA); err != nil {
-		_ = wm.gitRun("branch", "-D", tempBranch)
+		wm.deleteTempBranch(tempBranch)
 		return "", false, fmt.Errorf("update base branch ref (CAS failed — branch may have been modified concurrently): %w", err)
 	}
 
 	// Clean up temp branch
-	_ = wm.gitRun("branch", "-D", tempBranch)
+	wm.deleteTempBranch(tempBranch)
 
 	return mergeSHA, baseBranchCheckedOut, nil
 }

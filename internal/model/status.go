@@ -428,7 +428,8 @@ func IsPhaseTerminal(s PhaseStatus) bool {
 	return terminalPhaseStatuses[s]
 }
 
-func isWorktreeTerminal(s WorktreeStatus) bool {
+// IsWorktreeTerminal reports whether s is a terminal worktree status.
+func IsWorktreeTerminal(s WorktreeStatus) bool {
 	return terminalWorktreeStatuses[s]
 }
 
@@ -507,7 +508,7 @@ func ValidatePhaseTransition(from, to PhaseStatus) error {
 
 // ValidateWorktreeTransition checks whether the from→to worktree status transition is valid.
 func ValidateWorktreeTransition(from, to WorktreeStatus) error {
-	if isWorktreeTerminal(from) {
+	if IsWorktreeTerminal(from) {
 		return fmt.Errorf("cannot transition from terminal worktree status %q", from)
 	}
 	allowed, ok := validWorktreeTransitions[from]

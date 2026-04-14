@@ -192,6 +192,13 @@ func (e *Executor) Close() error {
 	return nil
 }
 
+// CleanupPaneMutex removes the per-pane delivery mutex for the given pane target.
+// Call this when a pane is no longer in use to prevent unbounded growth of
+// the internal sync.Map.
+func (e *Executor) CleanupPaneMutex(paneTarget string) {
+	e.deliverer.removePaneMutex(paneTarget)
+}
+
 // Default values for WatcherConfig fields when unset or non-positive.
 const (
 	defaultBusyCheckInterval      = 2   // seconds between busy-detection probes
@@ -376,6 +383,7 @@ func (e *Executor) execInterrupt(ctx context.Context, req ExecRequest, paneTarge
 	// Step 5: Set @status="idle" — the agent is now idle after interrupt.
 	if err := e.paneState.SetStatus(paneTarget, "idle"); err != nil {
 		e.log(logLevelWarn, "set_status_idle_failed agent_id=%s error=%v", req.AgentID, err)
+		return ExecResult{Error: fmt.Errorf("interrupt succeeded but set_status failed: %w", err), Retryable: true}
 	}
 
 	e.log(logLevelInfo, "interrupt_success agent_id=%s task_id=%s lease_epoch=%d",
@@ -405,7 +413,10 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 	}
 
 	// Check if pane process has been restarted (PID changed)
-	_, currentPID := e.checkProcessRestart(paneTarget, req.AgentID)
+	_, currentPID, err := e.checkProcessRestart(paneTarget, req.AgentID)
+	if err != nil {
+		return ExecResult{Error: fmt.Errorf("check process restart: %w", err), Retryable: true}
+	}
 
 	// First dispatch: skip /clear, use deliver mode
 	if !e.paneState.IsClearReady(paneTarget) {
@@ -417,18 +428,18 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 }
 
 // checkProcessRestart detects pane process restarts and logs accordingly.
-// Returns (restarted, currentPID).
-func (e *Executor) checkProcessRestart(paneTarget, agentID string) (bool, string) {
+// Returns (restarted, currentPID, error).
+func (e *Executor) checkProcessRestart(paneTarget, agentID string) (bool, string, error) {
 	restarted, currentPID, err := e.paneState.DetectProcessRestart(paneTarget)
 	if err != nil {
 		e.log(logLevelWarn, "detect_process_restart_error agent_id=%s error=%v", agentID, err)
-		return false, currentPID
+		return restarted, currentPID, fmt.Errorf("detect process restart: %w", err)
 	}
 	if restarted {
 		e.log(logLevelInfo, "pane_process_restarted agent_id=%s new_pid=%s, resetting clear_ready",
 			agentID, currentPID)
 	}
-	return restarted, currentPID
+	return restarted, currentPID, nil
 }
 
 // execFirstDispatch handles the first delivery to a worker pane (no /clear needed).

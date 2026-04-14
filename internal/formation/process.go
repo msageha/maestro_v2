@@ -2,6 +2,7 @@ package formation
 
 import (
 	"fmt"
+	"log"
 	"syscall"
 	"time"
 )
@@ -33,7 +34,9 @@ func (c *Config) terminateProcess(pid int, sameProcess func(int) bool, termTimeo
 	if !sameProcess(pid) {
 		return terminateNotTarget, nil
 	}
-	_ = c.ProcMgr.Signal(pid, syscall.SIGTERM)
+	if err := c.ProcMgr.Signal(pid, syscall.SIGTERM); err != nil {
+		log.Printf("[WARN] SIGTERM pid=%d: %v", pid, err)
+	}
 
 	// Poll for exit
 	termDeadline := time.Now().Add(termTimeout)
@@ -49,7 +52,9 @@ func (c *Config) terminateProcess(pid int, sameProcess func(int) bool, termTimeo
 		return terminateNotTarget, nil
 	}
 	if c.ProcMgr.Alive(pid) {
-		_ = c.ProcMgr.Signal(pid, syscall.SIGKILL)
+		if err := c.ProcMgr.Signal(pid, syscall.SIGKILL); err != nil {
+			log.Printf("[WARN] SIGKILL pid=%d: %v", pid, err)
+		}
 		time.Sleep(c.PostSignalWait)
 	}
 

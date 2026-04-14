@@ -18,6 +18,54 @@ func nowUTC() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
+// readModifyWriteResultFile performs the common read-modify-write pattern on the planner result file.
+// It reads the existing result file, calls modifyFn to apply changes, and atomically writes the result.
+// If modifyFn returns an error, the write is skipped and the error is returned.
+func readModifyWriteResultFile(maestroDir string, modifyFn func(rf *model.CommandResultFile) error) error {
+	path := filepath.Join(maestroDir, "results", "planner.yaml")
+
+	var rf model.CommandResultFile
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
+	if err == nil {
+		if perr := yamlv3.Unmarshal(data, &rf); perr != nil {
+			return fmt.Errorf("parse existing result file: %w", perr)
+		}
+	}
+	if rf.SchemaVersion == 0 {
+		rf.SchemaVersion = 1
+		rf.FileType = "result_command"
+	}
+
+	if err := modifyFn(&rf); err != nil {
+		return err
+	}
+
+	return yamlutil.AtomicWrite(path, rf)
+}
+
+// readModifyWriteCommandQueue performs the common read-modify-write pattern on the planner queue file.
+// It reads the existing queue file, calls modifyFn to apply changes, and atomically writes the result.
+// If modifyFn returns false, the write is skipped (no-op).
+func readModifyWriteCommandQueue(maestroDir string, modifyFn func(cq *model.CommandQueue) (writeNeeded bool)) error {
+	path := filepath.Join(maestroDir, "queue", "planner.yaml")
+
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
+	if err != nil {
+		return fmt.Errorf("read planner queue: %w", err)
+	}
+
+	var cq model.CommandQueue
+	if err := yamlv3.Unmarshal(data, &cq); err != nil {
+		return fmt.Errorf("parse planner queue: %w", err)
+	}
+
+	if !modifyFn(&cq) {
+		return nil
+	}
+
+	return yamlutil.AtomicWrite(path, cq)
+}
+
 // readModifyWriteQueue performs the common read-modify-write pattern on a worker queue file.
 // It reads the existing queue, calls modifyFn to apply changes, and atomically writes the result.
 // If modifyFn panics, the original queue state is preserved (no write occurs) and the panic

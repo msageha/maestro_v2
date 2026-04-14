@@ -43,54 +43,26 @@ func (c Config) Validate() error {
 	}
 
 	// watcher fields: reject negative values; zero means "use runtime default"
-	if c.Watcher.BusyCheckInterval < 0 {
-		errs = append(errs, fmt.Errorf("watcher.busy_check_interval: must be >= 0"))
-	}
-	if c.Watcher.BusyCheckMaxRetries < 0 || c.Watcher.BusyCheckMaxRetries > MaxBusyCheckMaxRetries {
-		errs = append(errs, fmt.Errorf("watcher.busy_check_max_retries: must be between 0 and %d", MaxBusyCheckMaxRetries))
-	}
-	if c.Watcher.IdleStableSec < 0 {
-		errs = append(errs, fmt.Errorf("watcher.idle_stable_sec: must be >= 0"))
-	}
-	if c.Watcher.ScanIntervalSec < 0 {
-		errs = append(errs, fmt.Errorf("watcher.scan_interval_sec: must be >= 0"))
-	}
-	if c.Watcher.DispatchLeaseSec < 0 || c.Watcher.DispatchLeaseSec > MaxDispatchLeaseSec {
-		errs = append(errs, fmt.Errorf("watcher.dispatch_lease_sec: must be between 0 and %d", MaxDispatchLeaseSec))
-	}
+	validateNonNegInt(&errs, "watcher.busy_check_interval", c.Watcher.BusyCheckInterval)
+	validateIntRange(&errs, "watcher.busy_check_max_retries", c.Watcher.BusyCheckMaxRetries, MaxBusyCheckMaxRetries)
+	validateNonNegInt(&errs, "watcher.idle_stable_sec", c.Watcher.IdleStableSec)
+	validateNonNegInt(&errs, "watcher.scan_interval_sec", c.Watcher.ScanIntervalSec)
+	validateIntRange(&errs, "watcher.dispatch_lease_sec", c.Watcher.DispatchLeaseSec, MaxDispatchLeaseSec)
 	if c.Watcher.MaxInProgressMin != nil && (*c.Watcher.MaxInProgressMin < 0 || *c.Watcher.MaxInProgressMin > MaxMaxInProgressMin) {
 		errs = append(errs, fmt.Errorf("watcher.max_in_progress_min: must be between 0 and %d", MaxMaxInProgressMin))
 	}
 	if c.Watcher.DebounceSec < 0 || math.IsNaN(c.Watcher.DebounceSec) || math.IsInf(c.Watcher.DebounceSec, 0) {
 		errs = append(errs, fmt.Errorf("watcher.debounce_sec: must be a finite value >= 0"))
 	}
-	if c.Watcher.CooldownAfterClear < 0 {
-		errs = append(errs, fmt.Errorf("watcher.cooldown_after_clear: must be >= 0"))
-	}
-	if c.Watcher.NotifyLeaseSec < 0 {
-		errs = append(errs, fmt.Errorf("watcher.notify_lease_sec: must be >= 0"))
-	}
-	if c.Watcher.WaitReadyIntervalSec < 0 {
-		errs = append(errs, fmt.Errorf("watcher.wait_ready_interval_sec: must be >= 0"))
-	}
-	if c.Watcher.WaitReadyMaxRetries < 0 || c.Watcher.WaitReadyMaxRetries > MaxWaitReadyMaxRetries {
-		errs = append(errs, fmt.Errorf("watcher.wait_ready_max_retries: must be between 0 and %d", MaxWaitReadyMaxRetries))
-	}
-	if c.Watcher.ClearConfirmTimeoutSec < 0 {
-		errs = append(errs, fmt.Errorf("watcher.clear_confirm_timeout_sec: must be >= 0"))
-	}
-	if c.Watcher.ClearConfirmPollMs < 0 {
-		errs = append(errs, fmt.Errorf("watcher.clear_confirm_poll_ms: must be >= 0"))
-	}
-	if c.Watcher.ClearMaxAttempts < 0 {
-		errs = append(errs, fmt.Errorf("watcher.clear_max_attempts: must be >= 0"))
-	}
-	if c.Watcher.ClearRetryBackoffMs < 0 {
-		errs = append(errs, fmt.Errorf("watcher.clear_retry_backoff_ms: must be >= 0"))
-	}
-	if c.Watcher.ClearSecondEnterDelayMs < 0 {
-		errs = append(errs, fmt.Errorf("watcher.clear_second_enter_delay_ms: must be >= 0"))
-	}
+	validateNonNegInt(&errs, "watcher.cooldown_after_clear", c.Watcher.CooldownAfterClear)
+	validateNonNegInt(&errs, "watcher.notify_lease_sec", c.Watcher.NotifyLeaseSec)
+	validateNonNegInt(&errs, "watcher.wait_ready_interval_sec", c.Watcher.WaitReadyIntervalSec)
+	validateIntRange(&errs, "watcher.wait_ready_max_retries", c.Watcher.WaitReadyMaxRetries, MaxWaitReadyMaxRetries)
+	validateNonNegInt(&errs, "watcher.clear_confirm_timeout_sec", c.Watcher.ClearConfirmTimeoutSec)
+	validateNonNegInt(&errs, "watcher.clear_confirm_poll_ms", c.Watcher.ClearConfirmPollMs)
+	validateNonNegInt(&errs, "watcher.clear_max_attempts", c.Watcher.ClearMaxAttempts)
+	validateNonNegInt(&errs, "watcher.clear_retry_backoff_ms", c.Watcher.ClearRetryBackoffMs)
+	validateNonNegInt(&errs, "watcher.clear_second_enter_delay_ms", c.Watcher.ClearSecondEnterDelayMs)
 
 	// queue fields
 	if c.Queue.PriorityAgingSec < 0 {
@@ -291,4 +263,18 @@ func (c Config) Validate() error {
 		return nil
 	}
 	return errors.Join(errs...)
+}
+
+// validateNonNegInt appends an error if val is negative.
+func validateNonNegInt(errs *[]error, field string, val int) {
+	if val < 0 {
+		*errs = append(*errs, fmt.Errorf("%s: must be >= 0", field))
+	}
+}
+
+// validateIntRange appends an error if val is outside [0, max].
+func validateIntRange(errs *[]error, field string, val, max int) {
+	if val < 0 || val > max {
+		*errs = append(*errs, fmt.Errorf("%s: must be between 0 and %d", field, max))
+	}
 }

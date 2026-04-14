@@ -40,9 +40,12 @@ type ModelStats struct {
 	ReviewCount     int     `json:"review_count"`
 }
 
+const maxUsefulnessRecords = 10000
+
 // UsefulnessTracker records and aggregates reviewer usefulness data.
 type UsefulnessTracker struct {
 	mu       sync.Mutex
+	fileMu   sync.Mutex
 	records  []UsefulnessRecord
 	filePath string
 }
@@ -87,6 +90,9 @@ func (t *UsefulnessTracker) RecordResult(result ReviewResult, adoptedFindingIDs 
 	defer t.mu.Unlock()
 
 	t.records = append(t.records, rec)
+	if len(t.records) > maxUsefulnessRecords {
+		t.records = t.records[len(t.records)-maxUsefulnessRecords:]
+	}
 
 	if err := t.appendToFile(rec); err != nil {
 		return fmt.Errorf("persist usefulness record: %w", err)
@@ -171,6 +177,9 @@ func (t *UsefulnessTracker) load() error {
 }
 
 func (t *UsefulnessTracker) appendToFile(rec UsefulnessRecord) error {
+	t.fileMu.Lock()
+	defer t.fileMu.Unlock()
+
 	f, err := os.OpenFile(t.filePath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err

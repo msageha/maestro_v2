@@ -436,11 +436,30 @@ func splitPane(windowTarget string, horizontal bool) error {
 
 // SetUserVar sets a tmux user variable on a pane (pane-scoped via -p).
 // Format: tmux set-option -p -t <pane> @<name> <value>
+// Both name and value are validated to prevent format injection.
 func SetUserVar(paneTarget, name, value string) error {
 	if !validUserVarName.MatchString(name) {
 		return fmt.Errorf("invalid user variable name %q: must match [a-zA-Z0-9_]+", name)
 	}
+	if err := validateUserVarValue(value); err != nil {
+		return fmt.Errorf("invalid user variable value for %q: %w", name, err)
+	}
 	return run("set-option", "-p", "-t", paneTarget, "@"+name, value)
+}
+
+// validateUserVarValue checks that a user variable value does not contain
+// control characters (null bytes, newlines) that could interfere with tmux
+// command-line parsing.
+func validateUserVarValue(value string) error {
+	for i, ch := range value {
+		if ch == 0 {
+			return fmt.Errorf("null byte at position %d", i)
+		}
+		if ch == '\n' || ch == '\r' {
+			return fmt.Errorf("newline at position %d", i)
+		}
+	}
+	return nil
 }
 
 // GetUserVar reads a tmux user variable from a pane.

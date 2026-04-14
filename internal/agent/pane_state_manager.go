@@ -1,6 +1,9 @@
 package agent
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+)
 
 // paneStateManager centralizes management of tmux user variables that track
 // pane state (clear_ready, clear_ready_pid, cwd, status). This extracts the
@@ -41,15 +44,16 @@ func (m *paneStateManager) SetClearReady(paneTarget, pid string) error {
 
 // ResetClearReady clears both clear_ready and clear_ready_pid.
 // Used when a /clear fails, the process restarts, or the working directory changes.
+// Both errors are collected and returned via errors.Join so neither is discarded.
 func (m *paneStateManager) ResetClearReady(paneTarget string) error {
-	var firstErr error
+	var err1, err2 error
 	if err := m.paneIO.SetUserVar(paneTarget, "clear_ready", ""); err != nil {
-		firstErr = fmt.Errorf("reset clear_ready: %w", err)
+		err1 = fmt.Errorf("reset clear_ready: %w", err)
 	}
-	if err := m.paneIO.SetUserVar(paneTarget, "clear_ready_pid", ""); err != nil && firstErr == nil {
-		firstErr = fmt.Errorf("reset clear_ready_pid: %w", err)
+	if err := m.paneIO.SetUserVar(paneTarget, "clear_ready_pid", ""); err != nil {
+		err2 = fmt.Errorf("reset clear_ready_pid: %w", err)
 	}
-	return firstErr
+	return errors.Join(err1, err2)
 }
 
 // DetectProcessRestart checks if the pane's process PID has changed since

@@ -164,18 +164,6 @@ func readQueueFile(path string, maxBytes int) ([]byte, error) {
 }
 
 // resolveWorkerModel determines the model for a given worker ID from config.
-// When boost is enabled, all workers are promoted to opus.
 func resolveWorkerModel(workerID string, cfg model.Config) string {
-	if cfg.Agents.Workers.Boost {
-		return "opus"
-	}
-	if cfg.Agents.Workers.Models != nil {
-		if m, ok := cfg.Agents.Workers.Models[workerID]; ok {
-			return m
-		}
-	}
-	if cfg.Agents.Workers.DefaultModel != "" {
-		return cfg.Agents.Workers.DefaultModel
-	}
-	return "sonnet"
+	return model.ResolveWorkerModel(workerID, cfg)
 }

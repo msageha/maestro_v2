@@ -13,7 +13,6 @@ import (
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/validate"
-	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 // CompleteOptions holds the configuration for completing a command.
@@ -144,7 +143,7 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 
 	// --- Write intent before the multi-step sequence (CR-019) ---
 	intent = &completeIntent{
-		SchemaVersion: 1,
+		SchemaVersion: intentSchemaVersion,
 		FileType:      "intent_plan_complete",
 		CommandID:     opts.CommandID,
 		Summary:       opts.Summary,
@@ -261,53 +260,41 @@ func planStatusToResultStatus(ps model.PlanStatus) (model.Status, error) {
 // reconcileCommandResultLocked overwrites an existing command result entry's
 // status (preserving the result ID so downstream notification dedup keys
 // remain stable) when an H3 conflict is detected. If no entry exists yet,
-// a new one is appended via writeCommandResultLocked.
+// a new one is appended.
 // Precondition: caller holds "result:planner" lock.
 func reconcileCommandResultLocked(maestroDir string, commandID string, status model.Status, summary string, tasks []model.CommandResultTask) error {
-	path := filepath.Join(maestroDir, "results", "planner.yaml")
-
-	var rf model.CommandResultFile
-	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
-	if err == nil {
-		if perr := yamlv3.Unmarshal(data, &rf); perr != nil {
-			return fmt.Errorf("parse existing result file: %w", perr)
+	return readModifyWriteResultFile(maestroDir, func(rf *model.CommandResultFile) error {
+		now := nowUTC()
+		for i := range rf.Results {
+			if rf.Results[i].CommandID == commandID {
+				// Preserve ID; mutate status/summary/tasks. Reset Notified so
+				// the orchestrator notification path can resend the corrected
+				// result. Pending notifications referencing the original ID
+				// remain valid because the ID itself is unchanged.
+				rf.Results[i].Status = status
+				rf.Results[i].Summary = summary
+				rf.Results[i].Tasks = tasks
+				rf.Results[i].Notified = false
+				rf.Results[i].CreatedAt = now
+				return nil
+			}
 		}
-	}
-	if rf.SchemaVersion == 0 {
-		rf.SchemaVersion = 1
-		rf.FileType = "result_command"
-	}
 
-	now := nowUTC()
-	for i := range rf.Results {
-		if rf.Results[i].CommandID == commandID {
-			// Preserve ID; mutate status/summary/tasks. Reset Notified so
-			// the orchestrator notification path can resend the corrected
-			// result. Pending notifications referencing the original ID
-			// remain valid because the ID itself is unchanged.
-			rf.Results[i].Status = status
-			rf.Results[i].Summary = summary
-			rf.Results[i].Tasks = tasks
-			rf.Results[i].Notified = false
-			rf.Results[i].CreatedAt = now
-			return yamlutil.AtomicWrite(path, rf)
+		// No existing entry: fall back to a fresh append.
+		resultID, err := model.GenerateID(model.IDTypeResult)
+		if err != nil {
+			return fmt.Errorf("generate result ID: %w", err)
 		}
-	}
-
-	// No existing entry: fall back to a fresh append.
-	resultID, err := model.GenerateID(model.IDTypeResult)
-	if err != nil {
-		return fmt.Errorf("generate result ID: %w", err)
-	}
-	rf.Results = append(rf.Results, model.CommandResult{
-		ID:        resultID,
-		CommandID: commandID,
-		Status:    status,
-		Summary:   summary,
-		Tasks:     tasks,
-		CreatedAt: now,
+		rf.Results = append(rf.Results, model.CommandResult{
+			ID:        resultID,
+			CommandID: commandID,
+			Status:    status,
+			Summary:   summary,
+			Tasks:     tasks,
+			CreatedAt: now,
+		})
+		return nil
 	})
-	return yamlutil.AtomicWrite(path, rf)
 }
 
 // reconcileCommandQueueEntryLocked force-updates a command's status in
@@ -317,34 +304,23 @@ func reconcileCommandResultLocked(maestroDir string, commandID string, status mo
 // missing (already archived), this is a no-op.
 // Precondition: caller holds "queue:planner" lock.
 func reconcileCommandQueueEntryLocked(maestroDir string, commandID string, status model.Status) error {
-	path := filepath.Join(maestroDir, "queue", "planner.yaml")
-
-	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
-	if err != nil {
-		return fmt.Errorf("read planner queue: %w", err)
-	}
-
-	var cq model.CommandQueue
-	if err := yamlv3.Unmarshal(data, &cq); err != nil {
-		return fmt.Errorf("parse planner queue: %w", err)
-	}
-
-	now := nowUTC()
-	for i := range cq.Commands {
-		if cq.Commands[i].ID == commandID {
-			if cq.Commands[i].Status == status {
-				return nil
+	return readModifyWriteCommandQueue(maestroDir, func(cq *model.CommandQueue) bool {
+		now := nowUTC()
+		for i := range cq.Commands {
+			if cq.Commands[i].ID == commandID {
+				if cq.Commands[i].Status == status {
+					return false
+				}
+				cq.Commands[i].Status = status
+				cq.Commands[i].LeaseOwner = nil
+				cq.Commands[i].LeaseExpiresAt = nil
+				cq.Commands[i].UpdatedAt = now
+				return true
 			}
-			cq.Commands[i].Status = status
-			cq.Commands[i].LeaseOwner = nil
-			cq.Commands[i].LeaseExpiresAt = nil
-			cq.Commands[i].UpdatedAt = now
-			return yamlutil.AtomicWrite(path, cq)
 		}
-	}
-
-	log.Printf("[WARN] reconcileCommandQueueEntryLocked: command %s not found in planner queue (already archived)", commandID)
-	return nil
+		log.Printf("[WARN] reconcileCommandQueueEntryLocked: command %s not found in planner queue (already archived)", commandID)
+		return false
+	})
 }
 
 func aggregateTaskResults(maestroDir string, commandID string) ([]model.CommandResultTask, []error, error) {
@@ -433,43 +409,30 @@ func checkWorktreePublished(maestroDir, commandID string, config model.Config) e
 // writeCommandResultLocked writes a command result to results/planner.yaml.
 // Precondition: caller holds "result:planner" lock.
 func writeCommandResultLocked(maestroDir string, commandID string, status model.Status, summary string, tasks []model.CommandResultTask) error {
-	path := filepath.Join(maestroDir, "results", "planner.yaml")
-
-	var rf model.CommandResultFile
-	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
-	if err == nil {
-		if err := yamlv3.Unmarshal(data, &rf); err != nil {
-			return fmt.Errorf("parse existing result file: %w", err)
+	return readModifyWriteResultFile(maestroDir, func(rf *model.CommandResultFile) error {
+		// Idempotency: skip if a result for this commandID already exists
+		for _, existing := range rf.Results {
+			if existing.CommandID == commandID {
+				return nil
+			}
 		}
-	}
-	if rf.SchemaVersion == 0 {
-		rf.SchemaVersion = 1
-		rf.FileType = "result_command"
-	}
 
-	// Idempotency: skip if a result for this commandID already exists
-	for _, existing := range rf.Results {
-		if existing.CommandID == commandID {
-			return nil
+		resultID, err := model.GenerateID(model.IDTypeResult)
+		if err != nil {
+			return fmt.Errorf("generate result ID: %w", err)
 		}
-	}
 
-	resultID, err := model.GenerateID(model.IDTypeResult)
-	if err != nil {
-		return fmt.Errorf("generate result ID: %w", err)
-	}
-
-	now := nowUTC()
-	rf.Results = append(rf.Results, model.CommandResult{
-		ID:        resultID,
-		CommandID: commandID,
-		Status:    status,
-		Summary:   summary,
-		Tasks:     tasks,
-		CreatedAt: now,
+		now := nowUTC()
+		rf.Results = append(rf.Results, model.CommandResult{
+			ID:        resultID,
+			CommandID: commandID,
+			Status:    status,
+			Summary:   summary,
+			Tasks:     tasks,
+			CreatedAt: now,
+		})
+		return nil
 	})
-
-	return yamlutil.AtomicWrite(path, rf)
 }
 
 // updateCommandQueueEntryLocked updates a command's status in queue/planner.yaml.
@@ -477,41 +440,24 @@ func writeCommandResultLocked(maestroDir string, commandID string, status model.
 // Idempotent: if the command is already in a terminal status, this is a no-op
 // (safe for crash-recovery replay).
 func updateCommandQueueEntryLocked(maestroDir string, commandID string, status model.Status) error {
-	path := filepath.Join(maestroDir, "queue", "planner.yaml")
-
-	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
-	if err != nil {
-		return fmt.Errorf("read planner queue: %w", err)
-	}
-
-	var cq model.CommandQueue
-	if err := yamlv3.Unmarshal(data, &cq); err != nil {
-		return fmt.Errorf("parse planner queue: %w", err)
-	}
-
-	now := nowUTC()
-	found := false
-	for i := range cq.Commands {
-		if cq.Commands[i].ID == commandID {
-			// Idempotent: already terminal → no-op (recovery replay safe)
-			if model.IsTerminal(cq.Commands[i].Status) {
-				return nil
+	return readModifyWriteCommandQueue(maestroDir, func(cq *model.CommandQueue) bool {
+		now := nowUTC()
+		for i := range cq.Commands {
+			if cq.Commands[i].ID == commandID {
+				// Idempotent: already terminal → no-op (recovery replay safe)
+				if model.IsTerminal(cq.Commands[i].Status) {
+					return false
+				}
+				cq.Commands[i].Status = status
+				cq.Commands[i].LeaseOwner = nil
+				cq.Commands[i].LeaseExpiresAt = nil
+				cq.Commands[i].UpdatedAt = now
+				return true
 			}
-			cq.Commands[i].Status = status
-			cq.Commands[i].LeaseOwner = nil
-			cq.Commands[i].LeaseExpiresAt = nil
-			cq.Commands[i].UpdatedAt = now
-			found = true
-			break
 		}
-	}
-
-	if !found {
 		// Command may have been archived after a previous partial completion;
 		// treat as already handled (recovery safe).
 		log.Printf("[WARN] updateCommandQueueEntryLocked: command %s not found in planner queue (may be archived)", commandID)
-		return nil
-	}
-
-	return yamlutil.AtomicWrite(path, cq)
+		return false
+	})
 }

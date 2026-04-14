@@ -7,9 +7,11 @@ import (
 	"testing"
 )
 
-func init() {
-	// Force panic mode for these tests so violations are detected.
+func TestMain(m *testing.M) {
 	os.Setenv("MAESTRO_LOCKORDER", "panic")
+	code := m.Run()
+	os.Unsetenv("MAESTRO_LOCKORDER")
+	os.Exit(code)
 }
 
 func Test_levelForKey(t *testing.T) {

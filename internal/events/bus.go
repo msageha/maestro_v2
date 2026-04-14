@@ -68,16 +68,16 @@ type safeCloser interface {
 }
 
 // removeSubscriber removes a specific subscriber from a slice and closes it.
-// Returns the updated slice.
+// Returns a new slice (copy-on-write) so that concurrent readers iterating
+// over the old slice are not affected by the mutation.
 func removeSubscriber[T safeCloser](subs []T, target T) []T {
 	for i, s := range subs {
 		if any(s) == any(target) {
-			last := len(subs) - 1
-			subs[i] = subs[last]
-			var zero T
-			subs[last] = zero
+			newSubs := make([]T, 0, len(subs)-1)
+			newSubs = append(newSubs, subs[:i]...)
+			newSubs = append(newSubs, subs[i+1:]...)
 			target.safeClose()
-			return subs[:last]
+			return newSubs
 		}
 	}
 	return subs
@@ -297,7 +297,11 @@ func (b *Bus) Publish(eventType EventType, data map[string]interface{}) {
 // addDroppedByType atomically increments the per-type dropped counter and returns the new value.
 func (b *Bus) addDroppedByType(eventType EventType) int64 {
 	v, _ := b.droppedByType.LoadOrStore(eventType, &atomic.Int64{})
-	return v.(*atomic.Int64).Add(1)
+	counter, ok := v.(*atomic.Int64)
+	if !ok {
+		return 0
+	}
+	return counter.Add(1)
 }
 
 // DroppedCount returns the total number of dropped events across all types.
@@ -307,11 +311,15 @@ func (b *Bus) DroppedCount() int64 {
 
 // DroppedByType returns the number of dropped events for a specific event type.
 func (b *Bus) DroppedByType(eventType EventType) int64 {
-	v, ok := b.droppedByType.Load(eventType)
+	v, loaded := b.droppedByType.Load(eventType)
+	if !loaded {
+		return 0
+	}
+	counter, ok := v.(*atomic.Int64)
 	if !ok {
 		return 0
 	}
-	return v.(*atomic.Int64).Load()
+	return counter.Load()
 }
 
 // Close closes all subscriber channels, waits up to 5 seconds for goroutines to drain,

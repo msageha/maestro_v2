@@ -106,7 +106,8 @@ func (c *resultCache) Clear() {
 	c.lru = list.New()
 }
 
-// evictOldest removes the least recently used item
+// evictOldest removes the least recently used item.
+// Caller must hold c.mu.
 func (c *resultCache) evictOldest() {
 	elem := c.lru.Back()
 	if elem != nil {
@@ -114,14 +115,16 @@ func (c *resultCache) evictOldest() {
 	}
 }
 
-// removeElement removes an element from the cache
+// removeElement removes an element from the cache.
+// Caller must hold c.mu.
 func (c *resultCache) removeElement(elem *list.Element) {
 	c.lru.Remove(elem)
 	item := elem.Value.(*cacheItem)
 	delete(c.items, item.key)
 }
 
-// cleanExpired removes expired items from the cache
+// cleanExpired removes expired items from the cache.
+// Caller must hold c.mu.
 func (c *resultCache) cleanExpired() {
 	now := c.nowFunc()
 	for elem := c.lru.Back(); elem != nil; {

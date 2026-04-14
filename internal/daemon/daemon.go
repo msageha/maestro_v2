@@ -164,7 +164,12 @@ func New(maestroDir string, cfg model.Config) (*Daemon, error) {
 		return nil, fmt.Errorf("open daemon log: %w", err)
 	}
 
-	return newDaemon(maestroDir, cfg, logFile, logFile)
+	d, err := newDaemon(maestroDir, cfg, logFile, logFile)
+	if err != nil {
+		logFile.Close()
+		return nil, err
+	}
+	return d, nil
 }
 
 // newDaemon is the internal constructor accepting injectable dependencies (used by NewDaemon and tests).

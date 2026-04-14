@@ -147,67 +147,26 @@ func copyState(state *model.CommandState) ([]byte, error) {
 	return yamlv3.Marshal(state)
 }
 
-func restoreState(state *model.CommandState, data []byte) {
+func restoreState(state *model.CommandState, data []byte) error {
 	var restored model.CommandState
 	if err := yamlv3.Unmarshal(data, &restored); err != nil {
-		log.Printf("[ERROR] restoreState: failed to unmarshal state snapshot: %v", err)
-		return
+		return fmt.Errorf("restoreState: failed to unmarshal state snapshot: %w", err)
 	}
 	*state = restored
+	return nil
 }
 
-// cancelOriginalTaskInQueue scans all worker queues and sets the original
-// (retried) task's status to cancelled, preventing checkCommandTasksTerminal
-// from treating it as a failure after the retry supersedes it.
-func cancelOriginalTaskInQueue(maestroDir string, taskID string, commandID string, now string, lockMap *lock.MutexMap) error {
+// updateOriginalTaskInQueue scans all worker queues and sets the specified
+// task's status. Used both for cancelling the original task during retry
+// (preventing checkCommandTasksTerminal from treating it as a failure) and
+// for restoring the original status on rollback.
+func updateOriginalTaskInQueue(maestroDir string, taskID string, commandID string, status model.Status, now string, lockMap *lock.MutexMap) error {
 	queueDir := filepath.Join(maestroDir, "queue")
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
-		return fmt.Errorf("read queue directory: %w", err)
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if !strings.HasPrefix(name, "worker") || !strings.HasSuffix(name, ".yaml") {
-			continue
-		}
-		workerID := strings.TrimSuffix(name, ".yaml")
-
-		if lockMap != nil {
-			lockMap.Lock("queue:" + workerID)
-		}
-		found := false
-		err := readModifyWriteQueue(maestroDir, workerID, func(tq *model.TaskQueue) {
-			for i := range tq.Tasks {
-				if tq.Tasks[i].ID == taskID && tq.Tasks[i].CommandID == commandID {
-					tq.Tasks[i].Status = model.StatusCancelled
-					tq.Tasks[i].UpdatedAt = now
-					found = true
-					return
-				}
-			}
-		})
-		if lockMap != nil {
-			lockMap.Unlock("queue:" + workerID)
-		}
-		if err != nil {
-			return fmt.Errorf("cancel original task %s in queue %s: %w", taskID, workerID, err)
-		}
-		if found {
-			return nil
-		}
-	}
-	return nil // task not found — may have been archived or cleaned up
-}
-
-// restoreOriginalTaskInQueue is the rollback counterpart of cancelOriginalTaskInQueue.
-// It restores the original task's queue status (best-effort, used only on SaveState failure).
-func restoreOriginalTaskInQueue(maestroDir string, taskID string, commandID string, status model.Status, now string, lockMap *lock.MutexMap) error {
-	queueDir := filepath.Join(maestroDir, "queue")
-	entries, err := os.ReadDir(queueDir)
-	if err != nil {
 		return fmt.Errorf("read queue directory: %w", err)
 	}
 	for _, entry := range entries {
@@ -235,11 +194,11 @@ func restoreOriginalTaskInQueue(maestroDir string, taskID string, commandID stri
 			lockMap.Unlock("queue:" + workerID)
 		}
 		if err != nil {
-			return fmt.Errorf("restore task %s in queue %s: %w", taskID, workerID, err)
+			return fmt.Errorf("update task %s status to %s in queue %s: %w", taskID, status, workerID, err)
 		}
 		if found {
 			return nil
 		}
 	}
-	return nil
+	return nil // task not found — may have been archived or cleaned up
 }

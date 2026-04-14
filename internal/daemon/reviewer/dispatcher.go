@@ -110,8 +110,9 @@ func (d *ReviewDispatcher) reviewTask(ctx context.Context, req model.ReviewReque
 	default:
 	}
 
-	// Placeholder: future implementation will call the reviewer model here.
-	log.Printf("reviewer: executing review %s for task %s (model=%s)", req.ID, req.TaskID, req.ReviewerModel)
+	// TODO: implement actual review logic — invoke the reviewer model and populate findings.
+	// Currently a placeholder that marks the review as completed without performing analysis.
+	log.Printf("WARN: reviewer: review %s for task %s (model=%s) is a placeholder — no actual review performed", req.ID, req.TaskID, req.ReviewerModel)
 	result.Status = model.ReviewStatusCompleted
 	result.Findings = nil
 }

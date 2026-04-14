@@ -8,7 +8,6 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/model"
-	"github.com/msageha/maestro_v2/internal/ptr"
 	"github.com/msageha/maestro_v2/internal/testutil"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -121,42 +120,6 @@ func TestResolveModel_WorkerDefaultModel(t *testing.T) {
 	}
 	if m := resolveModel(cfg, "worker1"); m != "haiku" {
 		t.Errorf("expected haiku, got %s", m)
-	}
-}
-
-func TestSwitchRuntime_Valid(t *testing.T) {
-	cfg := model.Config{
-		Runtimes: map[string]model.RuntimeConfig{
-			"codex": {Enabled: ptr.Bool(true)},
-		},
-	}
-	if err := SwitchRuntime("worker1", "codex", cfg); err != nil {
-		t.Errorf("unexpected error: %v", err)
-	}
-}
-
-func TestSwitchRuntime_UnknownRuntime(t *testing.T) {
-	cfg := model.Config{}
-	if err := SwitchRuntime("worker1", "unknown", cfg); err == nil {
-		t.Error("expected error for unknown runtime")
-	}
-}
-
-func TestSwitchRuntime_DisabledRuntime(t *testing.T) {
-	cfg := model.Config{
-		Runtimes: map[string]model.RuntimeConfig{
-			"codex": {Enabled: ptr.Bool(false)},
-		},
-	}
-	if err := SwitchRuntime("worker1", "codex", cfg); err == nil {
-		t.Error("expected error for disabled runtime")
-	}
-}
-
-func TestSwitchRuntime_ClaudeCodeAlwaysAllowed(t *testing.T) {
-	cfg := model.Config{}
-	if err := SwitchRuntime("worker1", "claude-code", cfg); err != nil {
-		t.Errorf("claude-code should always be allowed: %v", err)
 	}
 }
 

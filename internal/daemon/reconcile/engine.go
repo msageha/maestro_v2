@@ -86,8 +86,9 @@ func (e *Engine) createExecutor(label string) (core.AgentExecutor, error) {
 	return exec, nil
 }
 
-func (e *Engine) notifyPlannerOfReFill(commandID string) {
-	exec, err := e.createExecutor("R0b")
+// withExecutor creates an executor via the factory, runs fn, and ensures cleanup.
+func (e *Engine) withExecutor(label string, fn func(exec core.AgentExecutor)) {
+	exec, err := e.createExecutor(label)
 	if err != nil {
 		return
 	}
@@ -96,121 +97,94 @@ func (e *Engine) notifyPlannerOfReFill(commandID string) {
 			e.deps.DL.Logf(core.LogLevelWarn, "close executor error=%v", err)
 		}
 	}()
+	fn(exec)
+}
 
-	message := fmt.Sprintf("[maestro] kind:re_fill command_id:%s\nphase filling was stuck, reverted to awaiting_fill — please re-submit tasks",
-		commandID)
+func (e *Engine) notifyPlannerOfReFill(commandID string) {
+	e.withExecutor("R0b", func(exec core.AgentExecutor) {
+		message := fmt.Sprintf("[maestro] kind:re_fill command_id:%s\nphase filling was stuck, reverted to awaiting_fill — please re-submit tasks",
+			commandID)
 
-	result := exec.Execute(agent.ExecRequest{
-		AgentID:   "planner",
-		Message:   message,
-		Mode:      agent.ModeDeliver,
-		CommandID: commandID,
+		result := exec.Execute(agent.ExecRequest{
+			AgentID:   "planner",
+			Message:   message,
+			Mode:      agent.ModeDeliver,
+			CommandID: commandID,
+		})
+		if result.Error != nil {
+			e.deps.DL.Logf(core.LogLevelWarn, "R0b notify_planner command=%s error=%v", commandID, result.Error)
+		}
 	})
-	if result.Error != nil {
-		e.deps.DL.Logf(core.LogLevelWarn, "R0b notify_planner command=%s error=%v", commandID, result.Error)
-	}
 }
 
 func (e *Engine) notifyPlannerOfReEvaluation(commandID, reason string) {
-	exec, err := e.createExecutor("R4")
-	if err != nil {
-		return
-	}
-	defer func() {
-		if err := exec.Close(); err != nil {
-			e.deps.DL.Logf(core.LogLevelWarn, "close executor error=%v", err)
+	e.withExecutor("R4", func(exec core.AgentExecutor) {
+		message := fmt.Sprintf("[maestro] kind:re_evaluate command_id:%s\ncan_complete failed: %s — result quarantined, please re-evaluate",
+			commandID, reason)
+
+		result := exec.Execute(agent.ExecRequest{
+			AgentID:   "planner",
+			Message:   message,
+			Mode:      agent.ModeDeliver,
+			CommandID: commandID,
+		})
+		if result.Error != nil {
+			e.deps.DL.Logf(core.LogLevelWarn, "R4 notify_planner command=%s error=%v", commandID, result.Error)
 		}
-	}()
-
-	message := fmt.Sprintf("[maestro] kind:re_evaluate command_id:%s\ncan_complete failed: %s — result quarantined, please re-evaluate",
-		commandID, reason)
-
-	result := exec.Execute(agent.ExecRequest{
-		AgentID:   "planner",
-		Message:   message,
-		Mode:      agent.ModeDeliver,
-		CommandID: commandID,
 	})
-	if result.Error != nil {
-		e.deps.DL.Logf(core.LogLevelWarn, "R4 notify_planner command=%s error=%v", commandID, result.Error)
-	}
 }
 
 func (e *Engine) notifyPlannerOfTimeout(commandID string, timedOutPhases map[string]bool) {
-	exec, err := e.createExecutor("R6")
-	if err != nil {
-		return
-	}
-	defer func() {
-		if err := exec.Close(); err != nil {
-			e.deps.DL.Logf(core.LogLevelWarn, "close executor error=%v", err)
+	e.withExecutor("R6", func(exec core.AgentExecutor) {
+		phases := make([]string, 0, len(timedOutPhases))
+		for name := range timedOutPhases {
+			phases = append(phases, name)
 		}
-	}()
+		message := fmt.Sprintf("[maestro] kind:fill_timeout command_id:%s phases:%s\nfill deadline expired, phases timed out",
+			commandID, strings.Join(phases, ","))
 
-	phases := make([]string, 0, len(timedOutPhases))
-	for name := range timedOutPhases {
-		phases = append(phases, name)
-	}
-	message := fmt.Sprintf("[maestro] kind:fill_timeout command_id:%s phases:%s\nfill deadline expired, phases timed out",
-		commandID, strings.Join(phases, ","))
-
-	result := exec.Execute(agent.ExecRequest{
-		AgentID:   "planner",
-		Message:   message,
-		Mode:      agent.ModeDeliver,
-		CommandID: commandID,
+		result := exec.Execute(agent.ExecRequest{
+			AgentID:   "planner",
+			Message:   message,
+			Mode:      agent.ModeDeliver,
+			CommandID: commandID,
+		})
+		if result.Error != nil {
+			e.deps.DL.Logf(core.LogLevelWarn, "R6 notify_planner command=%s error=%v", commandID, result.Error)
+		}
 	})
-	if result.Error != nil {
-		e.deps.DL.Logf(core.LogLevelWarn, "R6 notify_planner command=%s error=%v", commandID, result.Error)
-	}
 }
 
 func (e *Engine) notifyPlannerOfConflictResolution(commandID, workerID string) {
-	exec, err := e.createExecutor("R7")
-	if err != nil {
-		return
-	}
-	defer func() {
-		if err := exec.Close(); err != nil {
-			e.deps.DL.Logf(core.LogLevelWarn, "close executor error=%v", err)
+	e.withExecutor("R7", func(exec core.AgentExecutor) {
+		message := fmt.Sprintf("[maestro] kind:conflict_resolution command_id:%s worker_id:%s\nmerge conflict detected — please generate a __conflict_resolution task",
+			commandID, workerID)
+
+		result := exec.Execute(agent.ExecRequest{
+			AgentID:   "planner",
+			Message:   message,
+			Mode:      agent.ModeDeliver,
+			CommandID: commandID,
+		})
+		if result.Error != nil {
+			e.deps.DL.Logf(core.LogLevelWarn, "R7 notify_planner_resolution command=%s worker=%s error=%v", commandID, workerID, result.Error)
 		}
-	}()
-
-	message := fmt.Sprintf("[maestro] kind:conflict_resolution command_id:%s worker_id:%s\nmerge conflict detected — please generate a __conflict_resolution task",
-		commandID, workerID)
-
-	result := exec.Execute(agent.ExecRequest{
-		AgentID:   "planner",
-		Message:   message,
-		Mode:      agent.ModeDeliver,
-		CommandID: commandID,
 	})
-	if result.Error != nil {
-		e.deps.DL.Logf(core.LogLevelWarn, "R7 notify_planner_resolution command=%s worker=%s error=%v", commandID, workerID, result.Error)
-	}
 }
 
 func (e *Engine) notifyPlannerOfConflictEscalation(commandID, workerID string) {
-	exec, err := e.createExecutor("R7")
-	if err != nil {
-		return
-	}
-	defer func() {
-		if err := exec.Close(); err != nil {
-			e.deps.DL.Logf(core.LogLevelWarn, "close executor error=%v", err)
+	e.withExecutor("R7", func(exec core.AgentExecutor) {
+		message := fmt.Sprintf("[maestro] kind:conflict_escalation command_id:%s worker_id:%s\nconflict resolution attempts exhausted — escalating to planner",
+			commandID, workerID)
+
+		result := exec.Execute(agent.ExecRequest{
+			AgentID:   "planner",
+			Message:   message,
+			Mode:      agent.ModeDeliver,
+			CommandID: commandID,
+		})
+		if result.Error != nil {
+			e.deps.DL.Logf(core.LogLevelWarn, "R7 notify_planner_escalation command=%s worker=%s error=%v", commandID, workerID, result.Error)
 		}
-	}()
-
-	message := fmt.Sprintf("[maestro] kind:conflict_escalation command_id:%s worker_id:%s\nconflict resolution attempts exhausted — escalating to planner",
-		commandID, workerID)
-
-	result := exec.Execute(agent.ExecRequest{
-		AgentID:   "planner",
-		Message:   message,
-		Mode:      agent.ModeDeliver,
-		CommandID: commandID,
 	})
-	if result.Error != nil {
-		e.deps.DL.Logf(core.LogLevelWarn, "R7 notify_planner_escalation command=%s worker=%s error=%v", commandID, workerID, result.Error)
-	}
 }

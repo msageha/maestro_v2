@@ -131,24 +131,9 @@ func cascadeRecoverRecursive(
 		}
 		assignment := assignments[0]
 
-		// Update state
-		if err := replaceInRequiredOrOptional(state, cancelledTaskID, newTaskID); err != nil {
-			return recovered, fmt.Errorf("cascade replace in required/optional: %w", err)
-		}
-		state.RetryLineage[newTaskID] = cancelledTaskID
-		rewriteDependencies(state, cancelledTaskID, newTaskID)
-		state.TaskStates[newTaskID] = model.StatusPending
-		state.TaskDependencies[newTaskID] = newDeps
-
-		// Add to phase
-		if phase, phaseIdx := findPhaseForTask(state, cancelledTaskID); phase != nil {
-			state.Phases[phaseIdx].TaskIDs = append(state.Phases[phaseIdx].TaskIDs, newTaskID)
-			if phase.Status == model.PhaseStatusFailed {
-				now := nowUTC()
-				if err := reopenPhase(state, phaseIdx, now); err != nil {
-					return recovered, fmt.Errorf("reopen phase for cascade: %w", err)
-				}
-			}
+		// Apply state mutations for the recovered task
+		if err := updateTaskStateForCascade(state, cancelledTaskID, newTaskID, newDeps); err != nil {
+			return recovered, err
 		}
 
 		recovered = append(recovered, CascadeRecoveredTask{
@@ -178,6 +163,30 @@ func cascadeRecoverRecursive(
 	}
 
 	return recovered, nil
+}
+
+// updateTaskStateForCascade applies the state mutations needed when a cancelled
+// task is replaced by a new cascade-recovered task.
+func updateTaskStateForCascade(state *model.CommandState, cancelledTaskID, newTaskID string, newDeps []string) error {
+	if err := replaceInRequiredOrOptional(state, cancelledTaskID, newTaskID); err != nil {
+		return fmt.Errorf("cascade replace in required/optional: %w", err)
+	}
+	state.RetryLineage[newTaskID] = cancelledTaskID
+	rewriteDependencies(state, cancelledTaskID, newTaskID)
+	state.TaskStates[newTaskID] = model.StatusPending
+	state.TaskDependencies[newTaskID] = newDeps
+
+	// Add to phase
+	if phase, phaseIdx := findPhaseForTask(state, cancelledTaskID); phase != nil {
+		state.Phases[phaseIdx].TaskIDs = append(state.Phases[phaseIdx].TaskIDs, newTaskID)
+		if phase.Status == model.PhaseStatusFailed {
+			now := nowUTC()
+			if err := reopenPhase(state, phaseIdx, now); err != nil {
+				return fmt.Errorf("reopen phase for cascade: %w", err)
+			}
+		}
+	}
+	return nil
 }
 
 // purgeSupersededRetryEntries removes stale map entries for tasks that have

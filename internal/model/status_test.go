@@ -358,7 +358,7 @@ func TestValidatePhaseTransition(t *testing.T) {
 	}
 }
 
-func Test_isWorktreeTerminal(t *testing.T) {
+func TestIsWorktreeTerminal(t *testing.T) {
 	tests := []struct {
 		status   WorktreeStatus
 		terminal bool
@@ -375,8 +375,8 @@ func Test_isWorktreeTerminal(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(string(tt.status), func(t *testing.T) {
-			if got := isWorktreeTerminal(tt.status); got != tt.terminal {
-				t.Errorf("isWorktreeTerminal(%q) = %v, want %v", tt.status, got, tt.terminal)
+			if got := IsWorktreeTerminal(tt.status); got != tt.terminal {
+				t.Errorf("IsWorktreeTerminal(%q) = %v, want %v", tt.status, got, tt.terminal)
 			}
 		})
 	}

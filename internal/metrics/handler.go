@@ -33,17 +33,15 @@ type resultFileEntry struct {
 type Handler struct {
 	logger      Logger
 	maestroDir  string
-	config      model.Config
 	clock       Clock
 	resultCache map[string]*resultFileEntry
 }
 
 // NewHandler creates a new Handler.
-func NewHandler(maestroDir string, cfg model.Config, logger Logger, clock Clock) *Handler {
+func NewHandler(maestroDir string, _ model.Config, logger Logger, clock Clock) *Handler {
 	return &Handler{
 		logger:      logger,
 		maestroDir:  maestroDir,
-		config:      cfg,
 		clock:       clock,
 		resultCache: make(map[string]*resultFileEntry),
 	}

@@ -144,6 +144,11 @@ func (m *Manager) IsGroupComplete(taskID string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	return m.isGroupCompleteLocked(taskID)
+}
+
+// isGroupCompleteLocked checks completion without acquiring the mutex (caller must hold m.mu).
+func (m *Manager) isGroupCompleteLocked(taskID string) bool {
 	g, ok := m.groups[taskID]
 	if !ok {
 		return false
@@ -154,6 +159,28 @@ func (m *Manager) IsGroupComplete(taskID string) bool {
 			return false
 		}
 	}
+	return true
+}
+
+// TransitionToSelectingIfComplete atomically checks if all slots are terminal and,
+// if so, transitions the group state to GroupSelecting. Returns true if the transition occurred.
+func (m *Manager) TransitionToSelectingIfComplete(taskID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if !m.isGroupCompleteLocked(taskID) {
+		return false
+	}
+
+	g, ok := m.groups[taskID]
+	if !ok {
+		return false
+	}
+	if IsTerminal(g.State) {
+		return false
+	}
+
+	g.State = GroupSelecting
 	return true
 }
 

@@ -24,6 +24,8 @@ import (
 	"github.com/msageha/maestro_v2/internal/testutil/mocks"
 	"github.com/msageha/maestro_v2/internal/uds"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
+
+	"github.com/stretchr/testify/require"
 )
 
 // --- File-based StateReader for integration tests (avoids plan→daemon import cycle) ---
@@ -1552,20 +1554,12 @@ func writeIntegrationGateConfig(tb testing.TB, maestroDir, fileName, content str
 
 func waitForQualityGateEvaluations(t *testing.T, qg *QualityGateDaemon, wantAtLeast int64, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
+	require.Eventually(t, func() bool {
 		qg.metrics.mu.RLock()
 		evalCount := qg.metrics.evaluationCount
 		qg.metrics.mu.RUnlock()
-		if evalCount >= wantAtLeast {
-			return
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	qg.metrics.mu.RLock()
-	evalCount := qg.metrics.evaluationCount
-	qg.metrics.mu.RUnlock()
-	t.Fatalf("quality gate eval_count=%d, want >= %d", evalCount, wantAtLeast)
+		return evalCount >= wantAtLeast
+	}, timeout, 5*time.Millisecond, "quality gate eval_count did not reach %d", wantAtLeast)
 }
 
 // Scenario 23: Quality gate evaluator with multiple gates/criteria.
@@ -1700,24 +1694,22 @@ func TestIntegration_LogSystemHighLoadStructuredAndRateLimited(t *testing.T) {
 	publishElapsed := time.Since(start)
 
 	// Wait for subscriber to process some events (poll until consumed stabilizes)
-	var gotConsumed int64
-	deadline := time.Now().Add(3 * time.Second)
 	var lastConsumed int64
 	stableCount := 0
-	for time.Now().Before(deadline) {
-		gotConsumed = atomic.LoadInt64(&consumed)
+	require.Eventually(t, func() bool {
+		gotConsumed := atomic.LoadInt64(&consumed)
 		if gotConsumed > 0 && gotConsumed == lastConsumed {
 			stableCount++
 			if stableCount >= 3 {
-				break
+				return true
 			}
 		} else {
 			stableCount = 0
 		}
 		lastConsumed = gotConsumed
-		time.Sleep(10 * time.Millisecond)
-	}
-	gotConsumed = atomic.LoadInt64(&consumed)
+		return false
+	}, 3*time.Second, 10*time.Millisecond, "consumed events did not stabilize")
+	gotConsumed := atomic.LoadInt64(&consumed)
 
 	if publishElapsed > 100*time.Millisecond {
 		t.Fatalf("publish path too slow under load: %v", publishElapsed)
@@ -2013,10 +2005,4 @@ func BenchmarkIntegration_QualityGateEvaluation(b *testing.B) {
 			b.Fatalf("evaluate gate: %v", err)
 		}
 	}
-}
-
-
-func init() {
-	// Suppress unused import warnings if any test uses fmt
-	_ = fmt.Sprint
 }

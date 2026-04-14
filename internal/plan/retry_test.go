@@ -399,7 +399,9 @@ func TestCopyAndRestoreState(t *testing.T) {
 	state.TaskStates["t2"] = model.StatusFailed
 
 	// Restore
-	restoreState(state, backup)
+	if err := restoreState(state, backup); err != nil {
+		t.Fatalf("restoreState error: %v", err)
+	}
 
 	if state.TaskStates["t1"] != model.StatusPending {
 		t.Errorf("t1 status = %s after restore, want pending", state.TaskStates["t1"])

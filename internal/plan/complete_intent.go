@@ -12,6 +12,9 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
+// intentSchemaVersion is the current schema version for complete intent files.
+const intentSchemaVersion = 1
+
 // completeIntent is the WAL record written before the multi-step completion
 // sequence. If a crash occurs mid-sequence, the next Complete() call for the
 // same command will discover the intent and replay all steps idempotently
@@ -83,7 +86,7 @@ func readCompleteIntent(maestroDir, commandID string) (*completeIntent, error) {
 	}
 	// Structural validation (including status fields to prevent invalid values
 	// from being written to result/queue/state files during replay).
-	if intent.SchemaVersion != 1 || intent.FileType != "intent_plan_complete" || intent.CommandID == "" {
+	if intent.SchemaVersion != intentSchemaVersion || intent.FileType != "intent_plan_complete" || intent.CommandID == "" {
 		return nil, fmt.Errorf("invalid intent: schema_version=%d file_type=%q command_id=%q",
 			intent.SchemaVersion, intent.FileType, intent.CommandID)
 	}

@@ -113,7 +113,11 @@ func SaveVerifyConfig(path string, config *VerifyConfig) error {
 		return fmt.Errorf("save verify config: create temp: %w", err)
 	}
 	tmpName := tmp.Name()
-	defer os.Remove(tmpName) //nolint:errcheck // best-effort cleanup
+	defer func() {
+		if tmpName != "" {
+			os.Remove(tmpName) //nolint:errcheck // best-effort cleanup
+		}
+	}()
 
 	if _, err := tmp.Write(content); err != nil {
 		tmp.Close()
@@ -129,5 +133,6 @@ func SaveVerifyConfig(path string, config *VerifyConfig) error {
 	if err := os.Rename(tmpName, path); err != nil {
 		return fmt.Errorf("save verify config: rename: %w", err)
 	}
+	tmpName = "" // Rename succeeded; prevent deferred cleanup from removing the target.
 	return nil
 }

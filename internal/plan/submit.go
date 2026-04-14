@@ -163,26 +163,32 @@ func rollbackStateAndQueue(sm stateStore, maestroDir string, commandID string, t
 }
 
 // rollbackPhaseFillToAwaiting reverts a phase from filling to awaiting_fill and persists.
-func rollbackPhaseFillToAwaiting(sm stateStore, state *model.CommandState, phaseIdx int, commandID string) {
+func rollbackPhaseFillToAwaiting(sm stateStore, state *model.CommandState, phaseIdx int, commandID string) error {
 	state.Phases[phaseIdx].Status = model.PhaseStatusAwaitingFill
 	state.UpdatedAt = nowUTC()
 	if saveErr := sm.SaveState(state); saveErr != nil {
-		log.Printf("rollback: save state for command %s: %v", commandID, saveErr)
+		return fmt.Errorf("rollback: save state for command %s: %w", commandID, saveErr)
 	}
+	return nil
 }
 
 // rollbackFullPhaseFill reverts queue entries, phase state, and task state additions,
 // then persists the rolled-back state.
-func rollbackFullPhaseFill(sm stateStore, state *model.CommandState, phaseIdx int, opts SubmitOptions, tasks []TaskInput, nameToID map[string]string, assignMap map[string]WorkerAssignment) {
+func rollbackFullPhaseFill(sm stateStore, state *model.CommandState, phaseIdx int, opts SubmitOptions, tasks []TaskInput, nameToID map[string]string, assignMap map[string]WorkerAssignment) error {
+	var errs []error
 	if queueErr := rollbackQueueEntries(opts.MaestroDir, tasks, nameToID, assignMap, opts.LockMap); queueErr != nil {
-		log.Printf("rollback: queue entries for command %s: %v", opts.CommandID, queueErr)
+		errs = append(errs, fmt.Errorf("rollback: queue entries for command %s: %w", opts.CommandID, queueErr))
 	}
 	state.Phases[phaseIdx].Status = model.PhaseStatusAwaitingFill
 	rollbackPhaseFillState(state, phaseIdx, tasks, nameToID)
 	state.UpdatedAt = nowUTC()
 	if saveErr := sm.SaveState(state); saveErr != nil {
-		log.Printf("rollback: save state for command %s: %v", opts.CommandID, saveErr)
+		errs = append(errs, fmt.Errorf("rollback: save state for command %s: %w", opts.CommandID, saveErr))
 	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
 }
 
 func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm stateStore) (*SubmitResult, error) {
@@ -244,7 +250,10 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm stateStore) (*
 	// Build output
 	result := &SubmitResult{CommandID: opts.CommandID}
 	for _, t := range tasks {
-		a := assignMap[t.Name]
+		a, ok := assignMap[t.Name]
+		if !ok {
+			return nil, fmt.Errorf("no worker assignment found for task %q", t.Name)
+		}
 		result.Tasks = append(result.Tasks, SubmitTaskResult{
 			Name:   t.Name,
 			TaskID: nameToID[t.Name],
@@ -399,8 +408,36 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	// Generate IDs and assign workers
 	nameToID, assignments, assignMap, err := resolveAndAssignTasks(opts, input.Tasks)
 	if err != nil {
-		rollbackPhaseFillToAwaiting(sm, state, targetPhaseIdx, opts.CommandID)
+		if rbErr := rollbackPhaseFillToAwaiting(sm, state, targetPhaseIdx, opts.CommandID); rbErr != nil {
+			log.Printf("rollback also failed for command %s: %v", opts.CommandID, rbErr)
+		}
 		return nil, err
+	}
+
+	// Re-validate constraints at task insertion time (defense-in-depth)
+	if targetPhase.Constraints != nil {
+		if len(input.Tasks) > targetPhase.Constraints.MaxTasks {
+			if rbErr := rollbackPhaseFillToAwaiting(sm, state, targetPhaseIdx, opts.CommandID); rbErr != nil {
+				log.Printf("rollback also failed for command %s: %v", opts.CommandID, rbErr)
+			}
+			return nil, &planValidationError{Msg: fmt.Sprintf("task count %d exceeds phase constraint max_tasks %d for phase %q",
+				len(input.Tasks), targetPhase.Constraints.MaxTasks, opts.PhaseName)}
+		}
+		if len(targetPhase.Constraints.AllowedBloomLevels) > 0 {
+			allowedBloom := make(map[int]bool, len(targetPhase.Constraints.AllowedBloomLevels))
+			for _, l := range targetPhase.Constraints.AllowedBloomLevels {
+				allowedBloom[l] = true
+			}
+			for _, t := range input.Tasks {
+				if t.BloomLevel > 0 && !allowedBloom[t.BloomLevel] {
+					if rbErr := rollbackPhaseFillToAwaiting(sm, state, targetPhaseIdx, opts.CommandID); rbErr != nil {
+						log.Printf("rollback also failed for command %s: %v", opts.CommandID, rbErr)
+					}
+					return nil, &planValidationError{Msg: fmt.Sprintf("bloom_level %d not in allowed levels for phase %q",
+						t.BloomLevel, opts.PhaseName)}
+				}
+			}
+		}
 	}
 
 	now := nowUTC()
@@ -431,7 +468,9 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	state.ExpectedTaskCount = len(state.RequiredTaskIDs) + len(state.OptionalTaskIDs)
 
 	if err := writeQueueEntries(opts.MaestroDir, assignments, input.Tasks, nameToID, opts.CommandID, now, opts.LockMap); err != nil {
-		rollbackFullPhaseFill(sm, state, targetPhaseIdx, opts, input.Tasks, nameToID, assignMap)
+		if rbErr := rollbackFullPhaseFill(sm, state, targetPhaseIdx, opts, input.Tasks, nameToID, assignMap); rbErr != nil {
+			log.Printf("rollback also failed for command %s: %v", opts.CommandID, rbErr)
+		}
 		return nil, fmt.Errorf("write queue: %w", err)
 	}
 
@@ -442,14 +481,19 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	state.UpdatedAt = now
 
 	if err := sm.SaveState(state); err != nil {
-		rollbackFullPhaseFill(sm, state, targetPhaseIdx, opts, input.Tasks, nameToID, assignMap)
+		if rbErr := rollbackFullPhaseFill(sm, state, targetPhaseIdx, opts, input.Tasks, nameToID, assignMap); rbErr != nil {
+			log.Printf("rollback also failed for command %s: %v", opts.CommandID, rbErr)
+		}
 		return nil, fmt.Errorf("save state: %w", err)
 	}
 
 	// Build output
 	result := &SubmitResult{CommandID: opts.CommandID}
 	for _, t := range input.Tasks {
-		a := assignMap[t.Name]
+		a, ok := assignMap[t.Name]
+		if !ok {
+			return nil, fmt.Errorf("no worker assignment found for task %q", t.Name)
+		}
 		result.Tasks = append(result.Tasks, SubmitTaskResult{
 			Name:   t.Name,
 			TaskID: nameToID[t.Name],

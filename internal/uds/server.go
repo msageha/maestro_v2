@@ -19,6 +19,9 @@ type handlerFunc func(req *Request) *Response
 // defaultMaxConcurrentConns is the default maximum number of concurrent connections.
 const defaultMaxConcurrentConns = 64
 
+// maxCommandLength is the maximum allowed length for a command name in bytes.
+const maxCommandLength = 256
+
 // Server is a Unix Domain Socket server that dispatches incoming requests to registered handlers.
 type Server struct {
 	socketPath  string
@@ -123,17 +126,24 @@ func (s *Server) acceptLoop() {
 			conn.Close()
 			return
 		default:
-			log.Printf("connection rejected: max concurrent connections (%d) reached", s.maxConns)
-			// Set tight write deadline to prevent slow-write attacks on the rejection path
-			_ = conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
-			resp := ErrorResponse(ErrCodeBackpressure, "server at capacity, try again later")
-			if err := writeFrame(conn, resp); err != nil {
-				log.Printf("DEBUG: failed to write backpressure response: %v", err)
-			}
-			if err := conn.Close(); err != nil {
-				log.Printf("DEBUG: failed to close rejected connection: %v", err)
-			}
+			s.rejectConn(conn)
 		}
+	}
+}
+
+// rejectConn sends a backpressure error response and closes the connection.
+// Uses defer to guarantee conn.Close() even if writeFrame panics.
+func (s *Server) rejectConn(conn net.Conn) {
+	defer func() {
+		if err := conn.Close(); err != nil {
+			log.Printf("DEBUG: failed to close rejected connection: %v", err)
+		}
+	}()
+	log.Printf("connection rejected: max concurrent connections (%d) reached", s.maxConns)
+	_ = conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+	resp := ErrorResponse(ErrCodeBackpressure, "server at capacity, try again later")
+	if err := writeFrame(conn, resp); err != nil {
+		log.Printf("DEBUG: failed to write backpressure response: %v", err)
 	}
 }
 
@@ -141,16 +151,14 @@ func (s *Server) handleConn(conn net.Conn) {
 	defer s.wg.Done()
 	defer func() { <-s.connSem }()
 	defer func() {
-		if err := conn.Close(); err != nil {
-			log.Printf("DEBUG: failed to close handled connection: %v", err)
-		}
-	}()
-	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("panic in handleConn: %v\n%s", r, debug.Stack())
-			// Send an error response so the client does not wait indefinitely.
+			// Write error response before closing so the client does not wait indefinitely.
 			resp := ErrorResponse(ErrCodeInternal, fmt.Sprintf("internal server error: panic: %v", r))
 			_ = writeFrame(conn, resp)
+		}
+		if err := conn.Close(); err != nil {
+			log.Printf("DEBUG: failed to close handled connection: %v", err)
 		}
 	}()
 
@@ -174,6 +182,16 @@ func (s *Server) processRequest(req *Request) *Response {
 		return ErrorResponse(
 			ErrCodeProtocolMismatch,
 			fmt.Sprintf("protocol version mismatch: got %d, expected %d", req.ProtocolVersion, ProtocolVersion),
+		)
+	}
+
+	if req.Command == "" {
+		return ErrorResponse(ErrCodeValidation, "empty command")
+	}
+	if len(req.Command) > maxCommandLength {
+		return ErrorResponse(
+			ErrCodeValidation,
+			fmt.Sprintf("command too long: %d bytes exceeds %d byte limit", len(req.Command), maxCommandLength),
 		)
 	}
 

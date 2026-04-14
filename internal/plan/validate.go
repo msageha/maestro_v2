@@ -120,32 +120,12 @@ func ValidatePhasesInput(phases []PhaseInput) *ValidationErrors {
 			errs.Add(prefix+".type", fmt.Sprintf("must be 'concrete' or 'deferred', got %q", phase.Type))
 		}
 
-		if phase.Type == "concrete" {
+		switch phase.Type {
+		case "concrete":
 			hasConcretePhase = true
-			if len(phase.DependsOnPhases) > 0 {
-				errs.Add(prefix+".depends_on_phases", "concrete phases must have empty depends_on_phases")
-			}
-			if phase.Constraints != nil {
-				errs.Add(prefix+".constraints", "concrete phases must not have constraints")
-			}
-
-			if len(phase.Tasks) == 0 {
-				errs.Add(prefix+".tasks", "concrete phases must have at least one task")
-			} else {
-				// Validate tasks within concrete phase
-				validateTaskSetCommon(phase.Tasks, prefix+".tasks", errs)
-			}
-		}
-
-		if phase.Type == "deferred" {
-			if phase.Constraints == nil {
-				errs.Add(prefix+".constraints", "deferred phases must have constraints")
-			} else {
-				validatePhaseConstraints(phase.Constraints, prefix+".constraints", errs)
-			}
-			if len(phase.Tasks) > 0 {
-				errs.Add(prefix+".tasks", "deferred phases must not have tasks at submit time")
-			}
+			validateConcretePhase(phase, prefix, errs)
+		case "deferred":
+			validateDeferredPhase(phase, prefix, errs)
 		}
 
 		if len(phase.DependsOnPhases) > 0 {
@@ -181,6 +161,34 @@ func ValidatePhasesInput(phases []PhaseInput) *ValidationErrors {
 		return errs
 	}
 	return nil
+}
+
+// validateConcretePhase validates a single concrete phase's structure and tasks.
+func validateConcretePhase(phase PhaseInput, prefix string, errs *ValidationErrors) {
+	if len(phase.DependsOnPhases) > 0 {
+		errs.Add(prefix+".depends_on_phases", "concrete phases must have empty depends_on_phases")
+	}
+	if phase.Constraints != nil {
+		errs.Add(prefix+".constraints", "concrete phases must not have constraints")
+	}
+
+	if len(phase.Tasks) == 0 {
+		errs.Add(prefix+".tasks", "concrete phases must have at least one task")
+	} else {
+		validateTaskSetCommon(phase.Tasks, prefix+".tasks", errs)
+	}
+}
+
+// validateDeferredPhase validates a single deferred phase's structure and constraints.
+func validateDeferredPhase(phase PhaseInput, prefix string, errs *ValidationErrors) {
+	if phase.Constraints == nil {
+		errs.Add(prefix+".constraints", "deferred phases must have constraints")
+	} else {
+		validatePhaseConstraints(phase.Constraints, prefix+".constraints", errs)
+	}
+	if len(phase.Tasks) > 0 {
+		errs.Add(prefix+".tasks", "deferred phases must not have tasks at submit time")
+	}
 }
 
 // ValidatePhaseFillInput validates tasks submitted to fill a deferred phase against its constraints.

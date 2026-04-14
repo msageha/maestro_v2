@@ -194,7 +194,6 @@ func r1ProcessRetryEnqueueForCommand(run *Run, commandID, statePath string) []Re
 			state.UpdatedAt = now
 			if err := yamlutil.AtomicWrite(statePath, state); err != nil {
 				run.Log(core.LogLevelError, "R1 write_state_retry_enqueue command=%s error=%v", commandID, err)
-				repairs = nil
 			}
 		}
 	})

@@ -115,7 +115,9 @@ func (c *Config) stopDaemon(maestroDir string) error {
 		// Clean up stale files while holding the lock (Fix #9)
 		removeIfExists(pidPath)
 		removeIfExists(socketPath)
-		_ = fl.Unlock()
+		if err := fl.Unlock(); err != nil {
+			log.Printf("[WARN] daemon lock unlock: %v", err)
+		}
 		return nil
 	}
 
@@ -126,7 +128,9 @@ func (c *Config) stopDaemon(maestroDir string) error {
 			// Clean up while holding the lock (Fix #9)
 			removeIfExists(pidPath)
 			removeIfExists(socketPath)
-			_ = fl.Unlock()
+			if err := fl.Unlock(); err != nil {
+				log.Printf("[WARN] daemon lock unlock: %v", err)
+			}
 			return nil
 		}
 		time.Sleep(c.DaemonPollInterval)

@@ -112,6 +112,8 @@ func (db *FingerprintDB) FindSimilar(fp string, maxResults int) []FailurePattern
 
 // RecordSuccess increments the success count for a fingerprint and recomputes
 // SuccessRate as successCount / OccurrenceCount.
+// Both fields are read and written under db.mu (write lock) to ensure consistency
+// with Store(), which may concurrently increment OccurrenceCount.
 func (db *FingerprintDB) RecordSuccess(fp string) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
@@ -121,8 +123,9 @@ func (db *FingerprintDB) RecordSuccess(fp string) {
 		return
 	}
 	p.successCount++
-	if p.OccurrenceCount > 0 {
-		p.SuccessRate = float64(p.successCount) / float64(p.OccurrenceCount)
+	occurrences := p.OccurrenceCount
+	if occurrences > 0 {
+		p.SuccessRate = float64(p.successCount) / float64(occurrences)
 	}
 }
 

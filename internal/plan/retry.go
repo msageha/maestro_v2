@@ -160,7 +160,9 @@ func writeAndCommitRetryQueue(
 	writtenTasks := make([]retryQueueTask, 0, 1+len(cascadeRecovered))
 
 	if err := writeRetryQueueEntry(opts.MaestroDir, primaryTask, now, opts.LockMap); err != nil {
-		restoreState(state, origStateBytes)
+		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
+			log.Printf("[ERROR] %v", rsErr)
+		}
 		return fmt.Errorf("write queue entry for %s: %w", primaryTask.taskID, err)
 	}
 	writtenTasks = append(writtenTasks, primaryTask)
@@ -169,26 +171,32 @@ func writeAndCommitRetryQueue(
 		crTask := buildCascadeQueueTask(cr, opts, state, origTaskCache)
 		if err := writeRetryQueueEntry(opts.MaestroDir, crTask, now, opts.LockMap); err != nil {
 			rollbackRetryQueueEntries(opts.MaestroDir, writtenTasks, opts.LockMap)
-			restoreState(state, origStateBytes)
+			if rsErr := restoreState(state, origStateBytes); rsErr != nil {
+				log.Printf("[ERROR] %v", rsErr)
+			}
 			return fmt.Errorf("write queue entry for cascade %s: %w", cr.TaskID, err)
 		}
 		writtenTasks = append(writtenTasks, crTask)
 	}
 
-	if err := cancelOriginalTaskInQueue(opts.MaestroDir, opts.RetryOf, opts.CommandID, now, opts.LockMap); err != nil {
+	if err := updateOriginalTaskInQueue(opts.MaestroDir, opts.RetryOf, opts.CommandID, model.StatusCancelled, now, opts.LockMap); err != nil {
 		rollbackRetryQueueEntries(opts.MaestroDir, writtenTasks, opts.LockMap)
-		restoreState(state, origStateBytes)
+		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
+			log.Printf("[ERROR] %v", rsErr)
+		}
 		return fmt.Errorf("cancel original task in queue: %w", err)
 	}
 
 	saveCtx, saveCancel := context.WithTimeout(context.Background(), stateSaveTimeout)
 	defer saveCancel()
 	if err := saveStateWithContext(saveCtx, func() error { return sm.SaveState(state) }); err != nil {
-		if restoreErr := restoreOriginalTaskInQueue(opts.MaestroDir, opts.RetryOf, opts.CommandID, model.StatusFailed, now, opts.LockMap); restoreErr != nil {
+		if restoreErr := updateOriginalTaskInQueue(opts.MaestroDir, opts.RetryOf, opts.CommandID, model.StatusFailed, now, opts.LockMap); restoreErr != nil {
 			log.Printf("[WARN] failed to restore original task %s queue status: %v", opts.RetryOf, restoreErr)
 		}
 		rollbackRetryQueueEntries(opts.MaestroDir, writtenTasks, opts.LockMap)
-		restoreState(state, origStateBytes)
+		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
+			log.Printf("[ERROR] %v", rsErr)
+		}
 		return fmt.Errorf("save state: %w", err)
 	}
 
@@ -307,7 +315,9 @@ func applyRetryStateChanges(
 
 	// Replace in required/optional task IDs
 	if err := replaceInRequiredOrOptional(state, opts.RetryOf, newTaskID); err != nil {
-		restoreState(state, origStateBytes)
+		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
+			log.Printf("[ERROR] %v", rsErr)
+		}
 		return nil, nil, fmt.Errorf("replace in required/optional: %w", err)
 	}
 
@@ -328,7 +338,9 @@ func applyRetryStateChanges(
 		// Reopen phase if failed
 		if rc.phase.Status == model.PhaseStatusFailed {
 			if err := reopenPhase(state, rc.phaseIdx, now); err != nil {
-				restoreState(state, origStateBytes)
+				if rsErr := restoreState(state, origStateBytes); rsErr != nil {
+					log.Printf("[ERROR] %v", rsErr)
+				}
 				return nil, nil, fmt.Errorf("reopen phase: %w", err)
 			}
 		}
@@ -340,7 +352,9 @@ func applyRetryStateChanges(
 		opts.Config.Agents.Workers, opts.Config.Limits, workerStates, origTaskCache,
 	)
 	if err != nil {
-		restoreState(state, origStateBytes)
+		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
+			log.Printf("[ERROR] %v", rsErr)
+		}
 		return nil, nil, fmt.Errorf("cascade recovery: %w", err)
 	}
 
@@ -350,7 +364,9 @@ func applyRetryStateChanges(
 		allNames = append(allNames, k)
 	}
 	if _, err := ValidateTaskDAG(allNames, state.TaskDependencies); err != nil {
-		restoreState(state, origStateBytes)
+		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
+			log.Printf("[ERROR] %v", rsErr)
+		}
 		return nil, nil, fmt.Errorf("post-recovery DAG validation: %w", err)
 	}
 

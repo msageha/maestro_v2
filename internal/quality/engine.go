@@ -72,13 +72,11 @@ func (e *Engine) registerEvaluator(condType ConditionType, evaluator RuleEvaluat
 	e.evaluators[condType] = evaluator
 }
 
-// LoadConfiguration loads and compiles gate definitions
+// LoadConfiguration loads and compiles gate definitions.
+// Heavy work (JSON marshal, SHA-256 hash, regex compilation, sorting) is
+// performed outside the lock; only the final swap is done under mu.Lock.
 func (e *Engine) LoadConfiguration(config *GateConfiguration) error {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-
-	// Clear existing gates
-	e.gates = make(map[GateType][]*compiledGate)
+	// --- prepare phase (no lock) ---
 
 	// Calculate configuration checksum
 	configData, err := json.Marshal(config)
@@ -86,8 +84,10 @@ func (e *Engine) LoadConfiguration(config *GateConfiguration) error {
 		return fmt.Errorf("failed to marshal config: %w", err)
 	}
 	checksum := sha256.Sum256(configData)
-	e.configChecksum = hex.EncodeToString(checksum[:])
+	newChecksum := hex.EncodeToString(checksum[:])
+
 	// Compile and index gates by type
+	newGates := make(map[GateType][]*compiledGate)
 	for _, gateDef := range config.Gates {
 		if gateDef.Enabled != nil && !*gateDef.Enabled {
 			continue
@@ -99,15 +99,21 @@ func (e *Engine) LoadConfiguration(config *GateConfiguration) error {
 		}
 
 		gateType := gateDef.Type
-		e.gates[gateType] = append(e.gates[gateType], compiledGate)
+		newGates[gateType] = append(newGates[gateType], compiledGate)
 	}
 
 	// Sort gates by priority (lower number = higher priority)
-	for gateType := range e.gates {
-		sort.Slice(e.gates[gateType], func(i, j int) bool {
-			return e.gates[gateType][i].Priority < e.gates[gateType][j].Priority
+	for gateType := range newGates {
+		sort.Slice(newGates[gateType], func(i, j int) bool {
+			return newGates[gateType][i].Priority < newGates[gateType][j].Priority
 		})
 	}
+
+	// --- swap phase (under lock) ---
+	e.mu.Lock()
+	e.gates = newGates
+	e.configChecksum = newChecksum
+	e.mu.Unlock()
 
 	// Clear cache when configuration changes
 	e.cache.Clear()
@@ -541,17 +547,14 @@ func (r *FeatureGateRule) Evaluate(_ context.Context, _ *RuleCondition, evalCtx 
 		level = complexityToProfileLevel(result.Level)
 	}
 
-	profile := r.evaluator.Evaluate(level)
-
-	// Verify the profile was resolved. If the level was unknown the evaluator
-	// already falls back to Simple, so profile.Level will be valid.
-	if len(profile.EnabledFeatures) == 0 {
-		profile = r.evaluator.Evaluate(ProfileLevelSimple)
-	}
-
 	// Always passes: the gate is informational, not blocking.
 	// Callers inspect the evaluation context or RuleResult.Message downstream.
-	_ = profile
+	// The evaluator is invoked for its side effects (e.g. populating context);
+	// the returned profile is intentionally unused.
+	profile := r.evaluator.Evaluate(level)
+	if len(profile.EnabledFeatures) == 0 {
+		_ = r.evaluator.Evaluate(ProfileLevelSimple)
+	}
 	return true, nil
 }
 

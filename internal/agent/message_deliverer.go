@@ -42,6 +42,13 @@ func (d *messageDeliverer) getPaneMutex(paneTarget string) *sync.Mutex {
 	return mu.(*sync.Mutex)
 }
 
+// removePaneMutex deletes the per-pane mutex entry for the given pane target.
+// Call this when a pane is no longer in use to prevent unbounded growth of
+// the sync.Map.
+func (d *messageDeliverer) removePaneMutex(paneTarget string) {
+	d.paneMu.Delete(paneTarget)
+}
+
 // sendAndConfirm sends the message and updates @status to busy.
 // It includes a final shell guard to prevent sending to a bare shell if Claude
 // crashed between ensureClaudeRunning and delivery.
@@ -76,6 +83,7 @@ func (d *messageDeliverer) sendAndConfirm(req ExecRequest, paneTarget string) Ex
 	// Update @status to busy
 	if err := d.paneState.SetStatus(paneTarget, "busy"); err != nil {
 		d.log(logLevelWarn, "set_status_failed agent_id=%s error=%v", req.AgentID, err)
+		return ExecResult{Error: fmt.Errorf("delivery succeeded but set_status failed: %w", err)}
 	}
 
 	d.log(logLevelInfo, "delivery_success agent_id=%s task_id=%s command_id=%s lease_epoch=%d",

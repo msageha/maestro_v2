@@ -119,7 +119,9 @@ func startupRecovery(maestroDir string) error {
 	// and unlock).
 	removeIfExists(filepath.Join(maestroDir, "daemon.pid"))
 	removeIfExists(filepath.Join(maestroDir, uds.DefaultSocketName))
-	_ = fl.Unlock()
+	if err := fl.Unlock(); err != nil {
+		log.Printf("[WARN] startup lock unlock: %v", err)
+	}
 
 	// YAML validation: scan all YAML files and quarantine corrupt ones
 	validateAndRecoverYAML(maestroDir)

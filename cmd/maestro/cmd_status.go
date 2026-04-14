@@ -77,6 +77,6 @@ func (a *cliApp) runDashboard(args []string) error {
 	if !ok {
 		return &CLIError{Code: 1, Msg: "maestro dashboard: response missing path"}
 	}
-	fmt.Printf("Dashboard regenerated: %s\n", path)
+	fmt.Printf("Dashboard regenerated: %s\n", sanitizeForTerminal(path))
 	return nil
 }
