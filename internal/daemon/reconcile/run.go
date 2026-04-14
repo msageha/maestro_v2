@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -311,7 +312,7 @@ func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) error {
 	}
 
 	if len(writeErrs) > 0 {
-		return writeErrs[0]
+		return errors.Join(writeErrs...)
 	}
 	return nil
 }

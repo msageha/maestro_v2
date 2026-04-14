@@ -711,6 +711,82 @@ func TestR0bFillingStuck_NoExecutorFactory_NoNotification(t *testing.T) {
 	}
 }
 
+func TestR0bFillingStuck_InvalidFillingStartedAt(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		fillingStartedAt *string
+		updatedAt        string
+		wantRepairs      int
+		desc             string
+	}{
+		{
+			name:             "zero_value_time",
+			fillingStartedAt: strPtr("0001-01-01T00:00:00Z"),
+			wantRepairs:      1,
+			desc:             "zero time is far in the past, should be detected as stuck",
+		},
+		{
+			name:             "future_time",
+			fillingStartedAt: strPtr(time.Now().UTC().Add(1 * time.Hour).Format(time.RFC3339)),
+			wantRepairs:      0,
+			desc:             "future time should not be detected as stuck",
+		},
+		{
+			name:             "invalid_format",
+			fillingStartedAt: strPtr("not-a-valid-timestamp"),
+			wantRepairs:      0,
+			desc:             "invalid format should be skipped without panic",
+		},
+		{
+			name:             "empty_string",
+			fillingStartedAt: strPtr(""),
+			wantRepairs:      0,
+			desc:             "empty string should be skipped without panic",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			maestroDir := setupTestDir(t)
+			deps := newTestDeps(t, maestroDir)
+			now := time.Now().UTC()
+			setClock(&deps, now)
+
+			updatedAt := now.Add(-1 * time.Minute).Format(time.RFC3339)
+			state := model.CommandState{
+				CommandID:  "cmd_r0b_" + tt.name,
+				PlanStatus: model.PlanStatusSealed,
+				Phases: []model.Phase{
+					{
+						PhaseID:          "p1",
+						Name:             "phase-1",
+						Status:           model.PhaseStatusFilling,
+						FillingStartedAt: tt.fillingStartedAt,
+						TaskIDs:          []string{"task_1"},
+					},
+				},
+				TaskStates:       map[string]model.Status{"task_1": model.StatusPending},
+				RequiredTaskIDs:  []string{"task_1"},
+				TaskDependencies: map[string][]string{"task_1": {}},
+				CreatedAt:        updatedAt,
+				UpdatedAt:        updatedAt,
+			}
+			yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_r0b_"+tt.name+".yaml"), state)
+
+			run := newRun(&deps)
+			outcome := R0bFillingStuck{}.Apply(run)
+			if len(outcome.Repairs) != tt.wantRepairs {
+				t.Errorf("%s: expected %d repairs, got %d", tt.desc, tt.wantRepairs, len(outcome.Repairs))
+			}
+		})
+	}
+}
+
+func strPtr(s string) *string { return &s }
+
 // --- R1 result queue tests ---
 
 func TestR1ResultQueue_NoResultsDir(t *testing.T) {

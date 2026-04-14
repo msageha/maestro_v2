@@ -77,28 +77,35 @@ func (h *SkillAPI) handleSkillApprove(req *uds.Request) *uds.Response {
 		return uds.ErrorResponse(uds.ErrCodeDuplicate, fmt.Sprintf("skill %q already exists; use a different name", skillName))
 	}
 
-	// Create skill directory and write SKILL.md
+	// Create skill directory and write SKILL.md.
+	// Use defer-based cleanup to guarantee the directory is removed on any failure
+	// after creation, preventing resource leaks.
 	if err := os.MkdirAll(skillDir, 0o755); err != nil { //nolint:gosec // 0755 is appropriate for a skills directory
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("create skill directory: %v", err))
 	}
+	skillDirCreated := true
+	defer func() {
+		if skillDirCreated {
+			if removeErr := os.RemoveAll(skillDir); removeErr != nil {
+				h.logFn(LogLevelWarn, "skill_cleanup_failed dir=%s error=%v", skillDir, removeErr)
+			}
+		}
+	}()
 
 	skillContent := daemonFormatSkillMD(skillName, candidate.Content)
 	skillPath := filepath.Join(skillDir, "SKILL.md")
 	if err := os.WriteFile(skillPath, []byte(skillContent), 0o644); err != nil { //nolint:gosec // skill files are user-readable documentation
-		if removeErr := os.RemoveAll(skillDir); removeErr != nil {
-			h.logFn(LogLevelWarn, "skill_cleanup_failed dir=%s error=%v", skillDir, removeErr)
-		}
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write SKILL.md: %v", err))
 	}
 
 	// Update candidate status
 	candidate.Status = "approved"
 	if err := skill.WriteCandidates(candidatesPath, candidates); err != nil {
-		if removeErr := os.RemoveAll(skillDir); removeErr != nil {
-			h.logFn(LogLevelWarn, "skill_cleanup_failed dir=%s error=%v", skillDir, removeErr)
-		}
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("update candidates: %v", err))
 	}
+
+	// All operations succeeded; prevent cleanup from removing the directory.
+	skillDirCreated = false
 
 	h.logFn(LogLevelInfo, "skill_approved candidate=%s skill=%s", params.CandidateID, skillName)
 	return uds.SuccessResponse(map[string]string{

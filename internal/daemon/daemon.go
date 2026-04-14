@@ -218,19 +218,7 @@ func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Close
 			circuitBreaker: func() circuitBreakerUpdater { if d.circuitBreaker != nil { return d.circuitBreaker }; return nil },
 			reviewCoord:    func() reviewDispatcher { if d.reviewCoord != nil { return d.reviewCoord }; return nil },
 			ctx:            func() context.Context { return d.ctx },
-			// Default triggerScan uses spawnTracked when d.handler is set.
-			// initComponents may override this with a more specific closure.
-			triggerScan: func(_ context.Context) {
-				if d.handler != nil {
-					d.spawnTracked("resultWriteScan", func(scanCtx context.Context) {
-						if d.eg != nil {
-							d.handler.PeriodicScanWithContext(scanCtx)
-						} else {
-							d.handler.PeriodicScan()
-						}
-					})
-				}
-			},
+			triggerScan: d.triggerResultWriteScan,
 		},
 		queue:     &QueueWriteAPI{apiContext: shared},
 		plan:      &PlanAPI{apiContext: shared},

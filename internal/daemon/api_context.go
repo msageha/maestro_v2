@@ -53,17 +53,24 @@ func (c *apiContext) SetFileLockHolder(h fileLockHolder) {
 }
 
 // acquireFileLock acquires the shared file mutex to serialize with QueueHandler's PeriodicScan.
+// fileLockHolder is a late-bound dependency set via SetFileLockHolder after initComponents.
+// A nil value indicates the lock has not been wired yet, which is a programming error
+// in production but expected in unit tests that bypass initComponents.
 func (c *apiContext) acquireFileLock() {
-	if c.fileLockHolder != nil {
-		c.fileLockHolder.LockFiles()
+	if c.fileLockHolder == nil {
+		c.logFn(LogLevelWarn, "acquireFileLock called but fileLockHolder is nil (not wired); skipping lock")
+		return
 	}
+	c.fileLockHolder.LockFiles()
 }
 
 // releaseFileLock releases the shared file mutex.
 func (c *apiContext) releaseFileLock() {
-	if c.fileLockHolder != nil {
-		c.fileLockHolder.UnlockFiles()
+	if c.fileLockHolder == nil {
+		c.logFn(LogLevelWarn, "releaseFileLock called but fileLockHolder is nil (not wired); skipping unlock")
+		return
 	}
+	c.fileLockHolder.UnlockFiles()
 }
 
 // notifySelfWrite records a self-write for fsnotify filtering and publishes

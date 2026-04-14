@@ -333,6 +333,26 @@ func TestR7MergeConflict_ResolutionAttempt1_StillBelowThreshold(t *testing.T) {
 	}
 }
 
+func TestR7MergeConflict_EmptyWorkers_NoAction(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+
+	commandID := "cmd_0000000009_r7empty"
+	state := newWorktreeCommandState(commandID, model.IntegrationStatusConflict, []model.WorktreeState{})
+	writeWorktreeState(t, maestroDir, commandID, state)
+
+	run := newRun(&deps)
+	outcome := R7MergeConflict{}.Apply(run)
+
+	if len(outcome.Repairs) != 0 {
+		t.Errorf("expected 0 repairs for empty workers, got %d: %+v", len(outcome.Repairs), outcome.Repairs)
+	}
+	if len(outcome.Notifications) != 0 {
+		t.Errorf("expected 0 notifications for empty workers, got %d: %+v", len(outcome.Notifications), outcome.Notifications)
+	}
+}
+
 func TestR7MergeConflict_MultipleCommands(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupTestDir(t)

@@ -118,6 +118,17 @@ type sortKey struct {
 // EffectivePriority computes the aging-adjusted priority.
 // effective_priority = max(0, priority - floor(age_seconds / priority_aging_sec))
 //
+// Overflow prevention strategy:
+//   - Input clamping: negative priority is clamped to 0; non-positive priorityAgingSec
+//     disables aging entirely.
+//   - Duration overflow guard: priorityAgingSec > 2^53-1 is rejected to prevent
+//     precision loss in the Duration conversion (int64 nanoseconds).
+//   - Output clamping: the result is always in [0, priority], so it cannot exceed
+//     the input priority or go negative.
+//   - 32-bit safety: aging is derived from int64(age/interval) and compared against
+//     int64(priority) before the int() cast, guaranteeing no truncation on 32-bit
+//     platforms where int is 32 bits.
+//
 // L-6: Uses integer duration arithmetic instead of float64 to avoid overflow on
 // 32-bit systems and float rounding issues with extreme age values.
 func EffectivePriority(priority int, createdAt string, priorityAgingSec int) int {
@@ -126,12 +137,12 @@ func EffectivePriority(priority int, createdAt string, priorityAgingSec int) int
 	}
 	created, err := time.Parse(time.RFC3339, createdAt)
 	if err != nil {
-		return priority
+		return clampPriority(priority)
 	}
 	age := time.Since(created)
 	if age <= 0 {
 		// Future createdAt — no aging applied
-		return priority
+		return clampPriority(priority)
 	}
 	// Guard against Duration overflow for very large priorityAgingSec values.
 	// time.Duration is int64 nanoseconds; max safe seconds ≈ 9.2e9 (~292 years).
@@ -139,7 +150,7 @@ func EffectivePriority(priority int, createdAt string, priorityAgingSec int) int
 	// ensuring no precision loss when converting to time.Duration nanoseconds.
 	const maxSafeSec = 1<<53 - 1
 	if priorityAgingSec > maxSafeSec {
-		return priority
+		return clampPriority(priority)
 	}
 	interval := time.Duration(priorityAgingSec) * time.Second
 	// Integer division: equivalent to floor(age_seconds / priorityAgingSec)
@@ -147,7 +158,15 @@ func EffectivePriority(priority int, createdAt string, priorityAgingSec int) int
 	if aging >= int64(priority) {
 		return 0
 	}
-	return priority - int(aging)
+	return clampPriority(priority - int(aging))
+}
+
+// clampPriority ensures a priority value stays within [0, math.MaxInt].
+func clampPriority(p int) int {
+	if p < 0 {
+		return 0
+	}
+	return p
 }
 
 // sortPendingIndices filters pending items and returns their original indices
@@ -206,13 +225,27 @@ func (disp *Dispatcher) SortPendingNotifications(notifications []model.Notificat
 	}, disp.config.Queue.PriorityAgingSec)
 }
 
-// DispatchCommand dispatches a command to the planner agent.
-func (disp *Dispatcher) DispatchCommand(cmd *model.Command) error {
+// executeDispatch obtains an executor and runs the given request.
+// On failure it logs a structured error with the provided label and entity ID.
+// On success it logs a structured info message.
+func (disp *Dispatcher) executeDispatch(req agent.ExecRequest, logLabel, entityID, logExtra string) error {
 	exec, err := disp.getExecutor()
 	if err != nil {
 		return fmt.Errorf("create executor: %w", err)
 	}
+	result := exec.Execute(req)
+	if result.Error != nil {
+		disp.log(LogLevelError, "dispatch_%s_failed id=%s%s error=%v retryable=%v",
+			logLabel, entityID, logExtra, result.Error, result.Retryable)
+		return result.Error
+	}
+	disp.log(LogLevelInfo, "dispatch_%s_success id=%s%s epoch=%d",
+		logLabel, entityID, logExtra, req.LeaseEpoch)
+	return nil
+}
 
+// DispatchCommand dispatches a command to the planner agent.
+func (disp *Dispatcher) DispatchCommand(cmd *model.Command) error {
 	// Build enriched command content (planner skills injection)
 	dispatchCmd := *cmd
 	enrichedContent, err := disp.BuildCommandContent(cmd)
@@ -221,36 +254,20 @@ func (disp *Dispatcher) DispatchCommand(cmd *model.Command) error {
 	}
 	dispatchCmd.Content = enrichedContent
 
-	envelope := envelope.BuildPlannerEnvelope(dispatchCmd, cmd.LeaseEpoch, cmd.Attempts)
-
-	result := exec.Execute(agent.ExecRequest{
+	return disp.executeDispatch(agent.ExecRequest{
 		AgentID:    "planner",
-		Message:    envelope,
+		Message:    envelope.BuildPlannerEnvelope(dispatchCmd, cmd.LeaseEpoch, cmd.Attempts),
 		Mode:       agent.ModeDeliver,
 		CommandID:  cmd.ID,
 		LeaseEpoch: cmd.LeaseEpoch,
 		Attempt:    cmd.Attempts,
-	})
-
-	if result.Error != nil {
-		disp.log(LogLevelError, "dispatch_command_failed id=%s error=%v retryable=%v",
-			cmd.ID, result.Error, result.Retryable)
-		return result.Error
-	}
-
-	disp.log(LogLevelInfo, "dispatch_command_success id=%s epoch=%d", cmd.ID, cmd.LeaseEpoch)
-	return nil
+	}, "command", cmd.ID, "")
 }
 
 // DispatchTask dispatches a task to a worker agent.
 func (disp *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 	if err := disp.evaluateTaskQualityGate(task, workerID); err != nil {
 		return err
-	}
-
-	exec, err := disp.getExecutor()
-	if err != nil {
-		return fmt.Errorf("create executor: %w", err)
 	}
 
 	// Build enriched task content (persona, skills, learnings injection)
@@ -271,7 +288,7 @@ func (disp *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 		env = fmt.Sprintf("%s\nworking_dir: %s", env, workingDir)
 	}
 
-	result := exec.Execute(agent.ExecRequest{
+	if err := disp.executeDispatch(agent.ExecRequest{
 		AgentID:    workerID,
 		Message:    env,
 		Mode:       agent.ModeWithClear,
@@ -280,16 +297,9 @@ func (disp *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 		LeaseEpoch: task.LeaseEpoch,
 		Attempt:    task.Attempts,
 		WorkingDir: workingDir,
-	})
-
-	if result.Error != nil {
-		disp.log(LogLevelError, "dispatch_task_failed id=%s worker=%s error=%v retryable=%v",
-			task.ID, workerID, result.Error, result.Retryable)
-		return result.Error
+	}, "task", task.ID, fmt.Sprintf(" worker=%s", workerID)); err != nil {
+		return err
 	}
-
-	disp.log(LogLevelInfo, "dispatch_task_success id=%s worker=%s epoch=%d",
-		task.ID, workerID, task.LeaseEpoch)
 
 	disp.publishEvent(events.EventTaskStarted, map[string]interface{}{
 		"task_id":    task.ID,
@@ -353,30 +363,14 @@ func (disp *Dispatcher) resolveTaskWorkingDir(task *model.Task, workerID string)
 
 // DispatchNotification dispatches a notification to the orchestrator agent.
 func (disp *Dispatcher) DispatchNotification(ntf *model.Notification) error {
-	exec, err := disp.getExecutor()
-	if err != nil {
-		return fmt.Errorf("create executor: %w", err)
-	}
-
-	envelope := envelope.BuildOrchestratorNotificationEnvelope(ntf.CommandID, ntf.Type)
-
-	result := exec.Execute(agent.ExecRequest{
+	env := envelope.BuildOrchestratorNotificationEnvelope(ntf.CommandID, ntf.Type)
+	return disp.executeDispatch(agent.ExecRequest{
 		AgentID:    "orchestrator",
-		Message:    envelope,
+		Message:    env,
 		Mode:       agent.ModeDeliver,
 		CommandID:  ntf.CommandID,
 		LeaseEpoch: ntf.LeaseEpoch,
 		Attempt:    ntf.Attempts,
-	})
-
-	if result.Error != nil {
-		disp.log(LogLevelError, "dispatch_notification_failed id=%s error=%v retryable=%v",
-			ntf.ID, result.Error, result.Retryable)
-		return result.Error
-	}
-
-	disp.log(LogLevelInfo, "dispatch_notification_success id=%s type=%s epoch=%d",
-		ntf.ID, ntf.Type, ntf.LeaseEpoch)
-	return nil
+	}, "notification", ntf.ID, fmt.Sprintf(" type=%s", ntf.Type))
 }
 

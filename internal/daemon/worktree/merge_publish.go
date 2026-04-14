@@ -671,7 +671,11 @@ func (wm *Manager) performPublishMerge(
 			wm.Log(core.LogLevelWarn, "publish_merge_abort_failed command=%s error=%v", commandID, abortErr)
 		}
 		if checkoutErr := wm.gitRunInDir(integrationPath, "checkout", state.Integration.Branch); checkoutErr != nil {
+			// Checkout failed — branch state is indeterminate. Skip tempBranch
+			// deletion to avoid operating on an unexpected HEAD. The leaked
+			// tempBranch will be cleaned up by CleanupCommand/GC.
 			wm.Log(core.LogLevelWarn, "publish_checkout_failed command=%s branch=%s error=%v", commandID, state.Integration.Branch, checkoutErr)
+			return "", false, fmt.Errorf("merge integration into %s: %w (checkout recovery also failed: %v)", baseBranch, err, checkoutErr)
 		}
 		if deleteErr := wm.gitRun("branch", "-D", tempBranch); deleteErr != nil {
 			wm.Log(core.LogLevelWarn, "publish_branch_delete_failed command=%s branch=%s error=%v", commandID, tempBranch, deleteErr)

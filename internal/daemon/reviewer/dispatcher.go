@@ -54,10 +54,10 @@ func (d *ReviewDispatcher) Dispatch(ctx context.Context, task model.Task, diffCo
 		return fmt.Errorf("review dispatch: reviews are disabled")
 	}
 
-	reviewerModel := ""
-	if len(d.config.Models) > 0 {
-		reviewerModel = d.config.Models[0]
+	if len(d.config.Models) == 0 {
+		return fmt.Errorf("review dispatch: no reviewer models configured")
 	}
+	reviewerModel := d.config.Models[0]
 
 	req := model.ReviewRequest{
 		ID:            fmt.Sprintf("review-%s-%d", task.ID, time.Now().UnixNano()),

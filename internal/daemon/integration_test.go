@@ -281,27 +281,46 @@ func testCanComplete(state *model.CommandState) (model.PlanStatus, error) {
 
 // --- Integration test helpers ---
 
+// rewireIntegrationHandler replaces d.handler with a freshly created QueueHandler
+// wired with an integrationStateReader, testCanComplete, and a mock executor.
+// Use this after modifying d.config to pick up configuration changes, or when
+// setting up a new integration daemon. Additional QueueHandlerOption values can
+// be passed; if none are provided, a default BusyChecker (always-not-busy) is used.
+func rewireIntegrationHandler(t *testing.T, d *Daemon, opts ...QueueHandlerOption) {
+	t.Helper()
+	// Reuse existing lockMap if handler is already set (re-wire case);
+	// otherwise create a new one (initial setup from newIntegrationDaemon).
+	var lockMap *lock.MutexMap
+	if d.handler != nil {
+		lockMap = d.handler.lockMap
+	} else {
+		lockMap = lock.NewMutexMap()
+	}
+	reader := &integrationStateReader{maestroDir: d.maestroDir, lockMap: lockMap}
+	if len(opts) == 0 {
+		opts = []QueueHandlerOption{WithBusyChecker(BusyCheckerFunc(func(string) bool { return false }))}
+	}
+	d.handler = NewQueueHandler(d.maestroDir, d.config, lockMap, d.logger, d.logLevel, opts...)
+	d.handler.SetStateReader(reader)
+	d.handler.SetCanComplete(testCanComplete)
+	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
+	})
+}
+
 // newIntegrationDaemon creates a fully wired daemon with mock executor for integration tests.
 func newIntegrationDaemon(t *testing.T) *Daemon {
 	t.Helper()
 	d := newTestDaemon(t)
 
-	// Wire file-based state reader (avoids plan→daemon import cycle)
-	lockMap := lock.NewMutexMap()
-	reader := &integrationStateReader{maestroDir: d.maestroDir, lockMap: lockMap}
-	d.handler = NewQueueHandler(d.maestroDir, d.config, lockMap, d.logger, d.logLevel,
-		WithBusyChecker(BusyCheckerFunc(func(string) bool { return false })))
-	d.handler.SetStateReader(reader)
-	d.handler.SetCanComplete(testCanComplete)
+	// Wire file-based state reader, mock executor, and default busy checker
+	rewireIntegrationHandler(t, d)
 
-	// Mock executor: always succeeds delivery
-	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
-		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
-	})
-
-	// Ensure dead_letters and state dirs exist
-	for _, sub := range []string{"dead_letters", "quarantine", "state"} {
-		os.MkdirAll(filepath.Join(d.maestroDir, sub), 0755)
+	// Ensure dead_letters and quarantine dirs exist (state/ already created by newTestDaemon)
+	for _, sub := range []string{"dead_letters", "quarantine"} {
+		if err := os.MkdirAll(filepath.Join(d.maestroDir, sub), 0755); err != nil {
+			t.Fatalf("create dir %s: %v", sub, err)
+		}
 	}
 
 	// Clean up maestroDir before TempDir cleanup to prevent "directory not empty" errors.
@@ -712,15 +731,7 @@ func TestIntegration_DeadLetter(t *testing.T) {
 	d := newIntegrationDaemon(t)
 	d.config.Retry.CommandDispatch = 3
 	// Recreate handler with updated config so DeadLetterProcessor picks up retry config
-	lockMap := d.handler.lockMap
-	reader := &integrationStateReader{maestroDir: d.maestroDir, lockMap: lockMap}
-	d.handler = NewQueueHandler(d.maestroDir, d.config, lockMap, d.logger, d.logLevel,
-		WithBusyChecker(BusyCheckerFunc(func(string) bool { return false })))
-	d.handler.SetStateReader(reader)
-	d.handler.SetCanComplete(testCanComplete)
-	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
-		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
-	})
+	rewireIntegrationHandler(t, d)
 
 	// Setup: command with attempts >= max
 	cq := model.CommandQueue{
@@ -1376,7 +1387,9 @@ func TestIntegration_GracefulShutdown(t *testing.T) {
 
 	// Create lock file
 	lockDir := filepath.Join(d.maestroDir, "locks")
-	os.MkdirAll(lockDir, 0755)
+	if err := os.MkdirAll(lockDir, 0755); err != nil {
+		t.Fatalf("create locks dir: %v", err)
+	}
 
 	d.Shutdown()
 

@@ -56,32 +56,27 @@ func TestPathOverlap_DifferentColors(t *testing.T) {
 
 func TestCircularConflicts_ThreeOrMoreColors(t *testing.T) {
 	t.Parallel()
-	// A conflicts with B, B conflicts with C, C conflicts with A → needs 3 colors.
+	// Build a 3-clique:
+	//   a-b conflict via shared path "shared/x"
+	//   b-c conflict via shared path "shared/y"
+	//   a-c conflict via dependency edge (a depends on c)
+	// A 3-clique requires exactly 3 colors for a valid graph coloring.
 	g := NewConflictGraph()
-	g.AddNode(TaskNode{ID: "a", ExpectedPaths: []string{"shared/x"}})
+	g.AddNode(TaskNode{ID: "a", ExpectedPaths: []string{"shared/x"}, Dependencies: []string{"c"}})
 	g.AddNode(TaskNode{ID: "b", ExpectedPaths: []string{"shared/x", "shared/y"}})
-	g.AddNode(TaskNode{ID: "c", ExpectedPaths: []string{"shared/y", "shared/z"}})
-	// a-b overlap on shared/x, b-c overlap on shared/y.
-	// Add explicit overlap for c-a via dependency to form a 3-clique.
-	g.AddNode(TaskNode{ID: "a2", ExpectedPaths: nil}) // unused dummy to not conflict
-	// Rebuild: use dependencies to create the triangle.
-	g2 := NewConflictGraph()
-	g2.AddNode(TaskNode{ID: "a", ExpectedPaths: []string{"shared/x"}, Dependencies: []string{"c"}})
-	g2.AddNode(TaskNode{ID: "b", ExpectedPaths: []string{"shared/x", "shared/y"}})
-	g2.AddNode(TaskNode{ID: "c", ExpectedPaths: []string{"shared/y"}})
-	g2.BuildEdges()
-	colors := g2.ColorGraph()
+	g.AddNode(TaskNode{ID: "c", ExpectedPaths: []string{"shared/y"}})
+	g.BuildEdges()
+	colors := g.ColorGraph()
 
-	// a-b conflict (path), b-c conflict (path), a-c conflict (dependency) → 3-clique.
-	if g2.EdgeCount() != 3 {
-		t.Fatalf("expected 3 edges for triangle, got %d", g2.EdgeCount())
+	if g.EdgeCount() != 3 {
+		t.Fatalf("expected 3 edges for triangle, got %d", g.EdgeCount())
 	}
 	colorSet := map[int]bool{}
 	for _, c := range colors {
 		colorSet[c] = true
 	}
-	if len(colorSet) < 3 {
-		t.Errorf("3-clique should need at least 3 colors, got %d unique colors: %v", len(colorSet), colors)
+	if len(colorSet) != 3 {
+		t.Errorf("3-clique requires exactly 3 colors, got %d unique colors: %v", len(colorSet), colors)
 	}
 }
 

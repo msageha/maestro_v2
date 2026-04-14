@@ -20,6 +20,57 @@ type EventBridge struct {
 	eventUnsubscribers []func()
 }
 
+// subscribeWithRecovery subscribes to an event type with panic recovery.
+// The handler is wrapped with a deferred recover that logs the panic and
+// triggers a daemon shutdown, matching the original per-callback behavior.
+func (eb *EventBridge) subscribeWithRecovery(eventType events.EventType, callbackName string, handler func(events.Event)) func() {
+	return eb.d.eventBus.Subscribe(eventType, func(e events.Event) {
+		defer func() {
+			if r := recover(); r != nil {
+				eb.d.log(LogLevelError, "panic in event_bridge callback type=%s: %v\n%s", callbackName, r, debug.Stack())
+				eb.d.Shutdown()
+			}
+		}()
+		handler(e)
+	})
+}
+
+// extractStringFields extracts string values from an event data map for the given keys.
+// Returns the values in key order and false if any key is missing or not a string.
+func extractStringFields(data map[string]interface{}, keys []string) ([]string, bool) {
+	vals := make([]string, len(keys))
+	for i, k := range keys {
+		v, ok := data[k].(string)
+		if !ok {
+			return nil, false
+		}
+		vals[i] = v
+	}
+	return vals, true
+}
+
+// subscribeQualityGateTyped subscribes to an event type, extracts string fields,
+// validates them, and runs the handler with timeout. Reduces boilerplate across
+// quality gate event subscriptions.
+func (eb *EventBridge) subscribeQualityGateTyped(
+	eventType events.EventType,
+	name string,
+	keys []string,
+	handler func(vals []string, e events.Event),
+) func() {
+	d := eb.d
+	return eb.subscribeWithRecovery(eventType, name, func(e events.Event) {
+		vals, ok := extractStringFields(e.Data, keys)
+		if !ok {
+			d.log(LogLevelWarn, "quality_gate_event_invalid type=%s data=%v", name, e.Data)
+			return
+		}
+		eb.runWithTimeout(name, func(_ context.Context) {
+			handler(vals, e)
+		})
+	})
+}
+
 // subscribeQualityGateEvents subscribes the QualityGateDaemon to EventBus events.
 // It bridges the generic event bus to the quality gate daemon's typed event channel.
 // Uses safe type assertions with logging for dropped events.
@@ -29,102 +80,51 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 		return
 	}
 
-	// Subscribe to task started events
-	unsub1 := d.eventBus.Subscribe(events.EventTaskStarted, func(e events.Event) {
-		defer func() {
-			if r := recover(); r != nil {
-				d.log(LogLevelError, "panic in event_bridge callback type=task_started: %v\n%s", r, debug.Stack())
-				d.Shutdown()
-			}
-		}()
-		taskID, ok1 := e.Data["task_id"].(string)
-		commandID, ok2 := e.Data["command_id"].(string)
-		workerID, ok3 := e.Data["worker_id"].(string)
-
-		if !ok1 || !ok2 || !ok3 {
-			d.log(LogLevelWarn, "quality_gate_event_invalid type=task_started data=%v", e.Data)
-			return
-		}
-
-		eb.runWithTimeout("task_started", func(_ context.Context) {
+	unsub1 := eb.subscribeQualityGateTyped(events.EventTaskStarted, "task_started",
+		[]string{"task_id", "command_id", "worker_id"},
+		func(vals []string, e events.Event) {
 			d.qualityGateDaemon.EmitEvent(TaskStartEvent{
-				TaskID:    taskID,
-				CommandID: commandID,
-				AgentID:   workerID,
+				TaskID:    vals[0],
+				CommandID: vals[1],
+				AgentID:   vals[2],
 				StartedAt: e.Timestamp,
 			})
 		})
-	})
 
-	// Subscribe to task completed events
-	unsub2 := d.eventBus.Subscribe(events.EventTaskCompleted, func(e events.Event) {
-		defer func() {
-			if r := recover(); r != nil {
-				d.log(LogLevelError, "panic in event_bridge callback type=task_completed: %v\n%s", r, debug.Stack())
-				d.Shutdown()
+	unsub2 := eb.subscribeQualityGateTyped(events.EventTaskCompleted, "task_completed",
+		[]string{"task_id", "command_id", "worker_id"},
+		func(vals []string, e events.Event) {
+			// Status can be either model.Status or string
+			var status model.Status
+			if s, ok := e.Data["status"].(model.Status); ok {
+				status = s
+			} else if s, ok := e.Data["status"].(string); ok {
+				status = model.Status(s)
+			} else {
+				d.log(LogLevelWarn, "quality_gate_event_invalid type=task_completed status=%v", e.Data["status"])
+				return
 			}
-		}()
-		taskID, ok1 := e.Data["task_id"].(string)
-		commandID, ok2 := e.Data["command_id"].(string)
-		workerID, ok3 := e.Data["worker_id"].(string)
-
-		if !ok1 || !ok2 || !ok3 {
-			d.log(LogLevelWarn, "quality_gate_event_invalid type=task_completed data=%v", e.Data)
-			return
-		}
-
-		// Status can be either model.Status or string
-		var status model.Status
-		if s, ok := e.Data["status"].(model.Status); ok {
-			status = s
-		} else if s, ok := e.Data["status"].(string); ok {
-			status = model.Status(s)
-		} else {
-			d.log(LogLevelWarn, "quality_gate_event_invalid type=task_completed status=%v", e.Data["status"])
-			return
-		}
-
-		eb.runWithTimeout("task_completed", func(_ context.Context) {
 			d.qualityGateDaemon.EmitEvent(TaskCompleteEvent{
-				TaskID:      taskID,
-				CommandID:   commandID,
-				AgentID:     workerID,
+				TaskID:      vals[0],
+				CommandID:   vals[1],
+				AgentID:     vals[2],
 				Status:      status,
 				CompletedAt: e.Timestamp,
 			})
 		})
-	})
 
-	// Subscribe to phase transition events
-	unsub3 := d.eventBus.Subscribe(events.EventPhaseTransition, func(e events.Event) {
-		defer func() {
-			if r := recover(); r != nil {
-				d.log(LogLevelError, "panic in event_bridge callback type=phase_transition: %v\n%s", r, debug.Stack())
-				d.Shutdown()
-			}
-		}()
-		phaseID, ok1 := e.Data["phase_id"].(string)
-		commandID, ok2 := e.Data["command_id"].(string)
-		oldStatus, ok3 := e.Data["old_status"].(string)
-		newStatus, ok4 := e.Data["new_status"].(string)
-
-		if !ok1 || !ok2 || !ok3 || !ok4 {
-			d.log(LogLevelWarn, "quality_gate_event_invalid type=phase_transition data=%v", e.Data)
-			return
-		}
-
-		eb.runWithTimeout("phase_transition", func(_ context.Context) {
+	unsub3 := eb.subscribeQualityGateTyped(events.EventPhaseTransition, "phase_transition",
+		[]string{"phase_id", "command_id", "old_status", "new_status"},
+		func(vals []string, e events.Event) {
 			d.qualityGateDaemon.EmitEvent(PhaseTransitionEvent{
-				PhaseID:        phaseID,
-				CommandID:      commandID,
-				OldStatus:      model.PhaseStatus(oldStatus),
-				NewStatus:      model.PhaseStatus(newStatus),
+				PhaseID:        vals[0],
+				CommandID:      vals[1],
+				OldStatus:      model.PhaseStatus(vals[2]),
+				NewStatus:      model.PhaseStatus(vals[3]),
 				TransitionedAt: e.Timestamp,
 			})
 		})
-	})
 
-	// Store unsubscribe functions for cleanup
 	eb.eventUnsubscribers = []func(){unsub1, unsub2, unsub3}
 }
 

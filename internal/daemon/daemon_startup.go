@@ -214,15 +214,7 @@ func (d *Daemon) initComponents() {
 	d.api.heartbeat.scanMu = func() *sync.RWMutex { return &d.handler.scanExecutor.scanMu }
 	d.api.plan.planExecutor = d.planExecutor
 	d.api.plan.worktreeManager = d.worktreeManager
-	d.api.result.triggerScan = func(ctx context.Context) {
-		d.spawnTracked("resultWriteScan", func(scanCtx context.Context) {
-			if d.eg != nil {
-				d.handler.PeriodicScanWithContext(scanCtx)
-			} else {
-				d.handler.PeriodicScan()
-			}
-		})
-	}
+	// triggerScan is already wired in newDaemon; no re-assignment needed.
 
 	if d.qualityGateDaemon != nil {
 		d.bridge.subscribeQualityGateEvents()

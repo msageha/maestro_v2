@@ -9,6 +9,23 @@ import (
 	"github.com/msageha/maestro_v2/internal/uds"
 )
 
+// Lock ordering for result_write_phase_a.go
+//
+// This file participates in the daemon-wide canonical lock order defined in
+// doc.go (queue → state → result). The specific acquisition pattern is:
+//
+//   fileLock       — shared file mutex (serializes with PeriodicScan)
+//   queue:{worker} — level 1 per-worker queue lock
+//   result:{worker} — level 3 per-worker result lock
+//
+// State (level 2) is NOT acquired in this phase. It is deferred to
+// resultWritePhaseB (for state updates) and the caller's retry registration
+// (state + queue), both of which run after phaseA releases all locks.
+// This avoids holding queue + state simultaneously, consistent with the
+// reconcile package convention (see reconcile/run.go).
+//
+// See doc.go for the full canonical lock order and nesting rules.
+
 // resultWritePhaseAResult holds the output of resultWritePhaseA.
 type resultWritePhaseAResult struct {
 	resultID         string

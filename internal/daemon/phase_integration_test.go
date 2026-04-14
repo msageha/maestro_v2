@@ -759,15 +759,19 @@ func TestPhaseIntegration_EpochFencing_StaleResult(t *testing.T) {
 	}
 
 	// Simulate external modification: bump the task's epoch on disk
-	// (as if another scan or result write handler modified it)
+	// (as if another scan or result write handler modified it).
+	// Acquire the queue lock to avoid racing with Phase B's dispatch.
+	qh.lockMap.Lock("queue:worker1")
 	tq := piReadTaskQueue(t, maestroDir, "worker1")
 	tq.Tasks[0].LeaseEpoch = 99 // different from Phase A's epoch (1)
 	newExpiry := time.Now().Add(10 * time.Minute).UTC().Format(time.RFC3339)
 	tq.Tasks[0].LeaseExpiresAt = &newExpiry
 	path := filepath.Join(maestroDir, "queue", "worker1.yaml")
 	if err := yamlutil.AtomicWrite(path, tq); err != nil {
+		qh.lockMap.Unlock("queue:worker1")
 		t.Fatalf("overwrite task queue: %v", err)
 	}
+	qh.lockMap.Unlock("queue:worker1")
 
 	// Phase B: dispatch succeeds (but the result is now stale)
 	close(proceed) // let the executor proceed immediately

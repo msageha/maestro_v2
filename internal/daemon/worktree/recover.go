@@ -260,38 +260,47 @@ func (wm *Manager) attemptResolvedMerges(
 	}
 
 	for _, ws := range workers {
-		// Commit any uncommitted resolution changes in the worker's worktree
-		// before attempting the merge. When a worker resolves a conflict, their
-		// edits may remain uncommitted because the resolving→committed transition
-		// is not in the valid state machine. This commit ensures the worker
-		// branch HEAD reflects the resolved content so mergeResolvedWorker can
-		// use it via `git checkout <branch> -- <file>`.
-		if commitErr := wm.commitResolvedWorkerChanges(ws, commandID); commitErr != nil {
-			wm.Log(core.LogLevelWarn, "resume_merge_commit_resolved command=%s worker=%s error=%v",
-				commandID, ws.WorkerID, commitErr)
-			// Non-fatal: proceed with merge attempt using existing branch content.
-		}
+		wm.tryMergeWorker(integrationPath, ws, commandID, now)
+	}
+}
 
-		if mergeErr := wm.mergeResolvedWorker(integrationPath, ws, commandID); mergeErr != nil {
-			// Set the worker back to conflict (not active) to prevent an
-			// infinite loop: MergeToIntegration skips conflict workers, so
-			// the next scan will not re-merge this worker. Setting to active
-			// would cause MergeToIntegration to re-merge → same conflict →
-			// resolution pipeline → resume-merge → failure → active → loop.
-			wm.Log(core.LogLevelWarn, "resume_merge_resolved_failed command=%s worker=%s error=%v (reverting to conflict)",
-				commandID, ws.WorkerID, mergeErr)
-			if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusConflict, now); tErr != nil {
-				wm.Log(core.LogLevelWarn, "resume_merge_fallback_transition command=%s worker=%s error=%v",
-					commandID, ws.WorkerID, tErr)
-			}
-			continue
-		}
-		if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusIntegrated, now); tErr != nil {
-			wm.Log(core.LogLevelWarn, "resume_merge_integrated_transition command=%s worker=%s error=%v",
+// tryMergeWorker commits any uncommitted resolution changes and attempts to
+// merge a single conflict/resolving worker into the integration branch.
+// On success the worker is transitioned to integrated; on failure the worker
+// is reverted to conflict (not active) to prevent infinite re-merge loops.
+// Caller must hold wm.mu.
+func (wm *Manager) tryMergeWorker(integrationPath string, ws *model.WorktreeState, commandID, now string) {
+	// Commit any uncommitted resolution changes in the worker's worktree
+	// before attempting the merge. When a worker resolves a conflict, their
+	// edits may remain uncommitted because the resolving→committed transition
+	// is not in the valid state machine. This commit ensures the worker
+	// branch HEAD reflects the resolved content so mergeResolvedWorker can
+	// use it via `git checkout <branch> -- <file>`.
+	if commitErr := wm.commitResolvedWorkerChanges(ws, commandID); commitErr != nil {
+		wm.Log(core.LogLevelWarn, "resume_merge_commit_resolved command=%s worker=%s error=%v",
+			commandID, ws.WorkerID, commitErr)
+		// Non-fatal: proceed with merge attempt using existing branch content.
+	}
+
+	if mergeErr := wm.mergeResolvedWorker(integrationPath, ws, commandID); mergeErr != nil {
+		// Set the worker back to conflict (not active) to prevent an
+		// infinite loop: MergeToIntegration skips conflict workers, so
+		// the next scan will not re-merge this worker. Setting to active
+		// would cause MergeToIntegration to re-merge → same conflict →
+		// resolution pipeline → resume-merge → failure → active → loop.
+		wm.Log(core.LogLevelWarn, "resume_merge_resolved_failed command=%s worker=%s error=%v (reverting to conflict)",
+			commandID, ws.WorkerID, mergeErr)
+		if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusConflict, now); tErr != nil {
+			wm.Log(core.LogLevelWarn, "resume_merge_fallback_transition command=%s worker=%s error=%v",
 				commandID, ws.WorkerID, tErr)
 		}
-		wm.Log(core.LogLevelInfo, "resume_merge_worker_integrated command=%s worker=%s", commandID, ws.WorkerID)
+		return
 	}
+	if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusIntegrated, now); tErr != nil {
+		wm.Log(core.LogLevelWarn, "resume_merge_integrated_transition command=%s worker=%s error=%v",
+			commandID, ws.WorkerID, tErr)
+	}
+	wm.Log(core.LogLevelInfo, "resume_merge_worker_integrated command=%s worker=%s", commandID, ws.WorkerID)
 }
 
 // commitResolvedWorkerChanges commits any uncommitted changes in a

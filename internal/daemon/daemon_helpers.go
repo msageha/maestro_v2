@@ -48,6 +48,21 @@ func (d *Daemon) spawnTracked(name string, fn func(context.Context)) bool {
 	return true
 }
 
+// triggerResultWriteScan triggers an asynchronous queue scan after a result write.
+// Wired in newDaemon during construction. Safe to call when d.handler is nil (no-op).
+func (d *Daemon) triggerResultWriteScan(_ context.Context) {
+	if d.handler == nil {
+		return
+	}
+	d.spawnTracked("resultWriteScan", func(scanCtx context.Context) {
+		if d.eg != nil {
+			d.handler.PeriodicScanWithContext(scanCtx)
+		} else {
+			d.handler.PeriodicScan()
+		}
+	})
+}
+
 // recoverPanic catches panics in goroutines to prevent the daemon from crashing.
 // It logs the panic with a full stack trace and initiates a graceful shutdown.
 //
@@ -83,8 +98,22 @@ func (d *Daemon) validateLearningsFile() {
 		SchemaVersion int    `yaml:"schema_version"`
 		FileType      string `yaml:"file_type"`
 	}
-	if err := yamlv3.Unmarshal(data, &lf); err != nil || lf.FileType != "state_learnings" {
-		d.log(LogLevelWarn, "learnings_startup_corrupt, recovering")
+	if err := yamlv3.Unmarshal(data, &lf); err != nil {
+		d.log(LogLevelWarn, "learnings_startup_corrupt: yaml parse error: %v, recovering", err)
+		if recErr := yamlutil.RecoverCorruptedFile(d.maestroDir, learningsPath, "state_learnings"); recErr != nil {
+			d.log(LogLevelError, "learnings_startup_recovery_failed: %v", recErr)
+		}
+		return
+	}
+	if lf.FileType != "state_learnings" {
+		d.log(LogLevelWarn, "learnings_startup_corrupt: unexpected file_type=%q (expected \"state_learnings\"), recovering", lf.FileType)
+		if recErr := yamlutil.RecoverCorruptedFile(d.maestroDir, learningsPath, "state_learnings"); recErr != nil {
+			d.log(LogLevelError, "learnings_startup_recovery_failed: %v", recErr)
+		}
+		return
+	}
+	if lf.SchemaVersion < 1 {
+		d.log(LogLevelWarn, "learnings_startup_corrupt: invalid schema_version=%d (expected >= 1), recovering", lf.SchemaVersion)
 		if recErr := yamlutil.RecoverCorruptedFile(d.maestroDir, learningsPath, "state_learnings"); recErr != nil {
 			d.log(LogLevelError, "learnings_startup_recovery_failed: %v", recErr)
 		}

@@ -74,15 +74,7 @@ func (h *TaskRetryHandler) ShouldRetryTask(task *model.Task, exitCode int, retry
 	}
 
 	// Check if exit code is retryable
-	isRetryable := false
-	for _, code := range retryConfig.RetryableExitCodes {
-		if code == exitCode {
-			isRetryable = true
-			break
-		}
-	}
-
-	if !isRetryable {
+	if !slices.Contains(retryConfig.RetryableExitCodes, exitCode) {
 		return false, fmt.Sprintf("exit code %d not retryable", exitCode)
 	}
 
@@ -227,19 +219,25 @@ func (h *TaskRetryHandler) MarkRetryEnqueueFailed(taskID, workerID, commandID st
 	return nil
 }
 
+// partitionStrings splits ss into two groups based on pred.
+// Elements matching pred go to trueGroup; the rest go to falseGroup.
+func partitionStrings(ss []string, pred func(string) bool) (falseGroup, trueGroup []string) {
+	for _, s := range ss {
+		if pred(s) {
+			trueGroup = append(trueGroup, s)
+		} else {
+			falseGroup = append(falseGroup, s)
+		}
+	}
+	return
+}
+
 // withCappedRetryMeta returns a new constraints slice with retry metadata entries
 // capped at maxRetryMeta (keeping the newest). Non-retry constraints are preserved.
 func withCappedRetryMeta(constraints []string, newMeta string) []string {
-	plain := make([]string, 0, len(constraints)+1)
-	meta := make([]string, 0, maxRetryMeta)
-
-	for _, c := range constraints {
-		if strings.HasPrefix(c, retryMetaPrefix) {
-			meta = append(meta, c)
-		} else {
-			plain = append(plain, c)
-		}
-	}
+	plain, meta := partitionStrings(constraints, func(c string) bool {
+		return strings.HasPrefix(c, retryMetaPrefix)
+	})
 
 	// Keep only the most recent (maxRetryMeta-1) old entries
 	if len(meta) > maxRetryMeta-1 {

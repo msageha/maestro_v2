@@ -155,6 +155,18 @@ func TestDispatch_Disabled(t *testing.T) {
 	}
 }
 
+func TestDispatch_EmptyModels(t *testing.T) {
+	t.Parallel()
+	cfg := defaultConfig()
+	cfg.Models = nil
+	d := NewReviewDispatcher(cfg)
+
+	err := d.Dispatch(context.Background(), taskWithBloom(3), "diff")
+	if err == nil {
+		t.Error("expected error when no reviewer models configured")
+	}
+}
+
 func TestDispatch_Timeout_Skipped(t *testing.T) {
 	t.Parallel()
 	cfg := defaultConfig()

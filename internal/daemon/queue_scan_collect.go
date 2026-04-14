@@ -72,7 +72,9 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 		// Check if task is in cooldown period
 		if task.NotBefore != nil {
 			notBefore, err := time.Parse(time.RFC3339, *task.NotBefore)
-			if err == nil && qh.clock.Now().Before(notBefore) {
+			if err != nil {
+				qh.log(LogLevelWarn, "task_not_before_parse_failed task=%s not_before=%q error=%v (ignoring cooldown)", task.ID, *task.NotBefore, err)
+			} else if qh.clock.Now().Before(notBefore) {
 				qh.log(LogLevelDebug, "task_cooldown task=%s not_before=%s", task.ID, *task.NotBefore)
 				continue
 			}

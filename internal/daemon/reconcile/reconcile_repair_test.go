@@ -1266,3 +1266,106 @@ func TestRemoveCommandFromPlannerQueue_CommandNotFound(t *testing.T) {
 		t.Errorf("expected 1 command, got %d", len(updated.Commands))
 	}
 }
+
+// --- R4 planning status skip test ---
+
+func TestR4PlanStatus_PlanningStatus_Skipped(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	deps.CanComplete = func(*model.CommandState) (model.PlanStatus, error) {
+		t.Fatal("CanComplete should not be called for planning state")
+		return model.PlanStatusCompleted, nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.CommandResultFile{
+		Results: []model.CommandResult{
+			{ID: "res1", CommandID: "cmd_planning", Status: model.StatusCompleted, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+
+	state := model.CommandState{
+		CommandID:  "cmd_planning",
+		PlanStatus: model.PlanStatusPlanning,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_planning.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R4PlanStatus{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Errorf("expected no repairs for planning status, got %d", len(outcome.Repairs))
+	}
+	if len(outcome.Notifications) != 0 {
+		t.Errorf("expected no notifications for planning status, got %d", len(outcome.Notifications))
+	}
+}
+
+// --- R6 deep cascade test ---
+
+func TestR6FillTimeout_DeepCascade_ThreeLevelDependency(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC()
+	setClock(&deps, now)
+	deps.ExecutorFactory = func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
+	}
+
+	pastDeadline := now.Add(-1 * time.Hour).Format(time.RFC3339)
+	state := model.CommandState{
+		CommandID:  "cmd_deep_cascade",
+		PlanStatus: model.PlanStatusSealed,
+		Phases: []model.Phase{
+			{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusAwaitingFill, FillDeadlineAt: &pastDeadline},
+			{PhaseID: "p2", Name: "phase2", Status: model.PhaseStatusPending, DependsOnPhases: []string{"phase1"}},
+			{PhaseID: "p3", Name: "phase3", Status: model.PhaseStatusPending, DependsOnPhases: []string{"phase2"}},
+			{PhaseID: "p4", Name: "phase4", Status: model.PhaseStatusActive},
+		},
+		CreatedAt: now.Format(time.RFC3339),
+		UpdatedAt: now.Format(time.RFC3339),
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_deep_cascade.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R6FillTimeout{}.Apply(run)
+
+	// phase1: timed_out, phase2: cancelled (depends on phase1), phase3: cancelled (depends on phase2)
+	// phase4: active → unchanged
+	if len(outcome.Repairs) != 3 {
+		t.Fatalf("expected 3 repairs (1 timeout + 2 cascade), got %d: %+v", len(outcome.Repairs), outcome.Repairs)
+	}
+
+	// Verify state file
+	data, _ := os.ReadFile(filepath.Join(maestroDir, "state", "commands", "cmd_deep_cascade.yaml"))
+	var updated model.CommandState
+	yamlv3.Unmarshal(data, &updated)
+
+	expected := map[string]model.PhaseStatus{
+		"phase1": model.PhaseStatusTimedOut,
+		"phase2": model.PhaseStatusCancelled,
+		"phase3": model.PhaseStatusCancelled,
+		"phase4": model.PhaseStatusActive,
+	}
+	for _, phase := range updated.Phases {
+		want, ok := expected[phase.Name]
+		if !ok {
+			t.Errorf("unexpected phase %s", phase.Name)
+			continue
+		}
+		if phase.Status != want {
+			t.Errorf("phase %s: got %s, want %s", phase.Name, phase.Status, want)
+		}
+	}
+
+	if len(outcome.Notifications) != 1 {
+		t.Fatalf("expected 1 notification, got %d", len(outcome.Notifications))
+	}
+	if outcome.Notifications[0].Kind != NotifyFillTimeout {
+		t.Errorf("notification kind: got %s, want fill_timeout", outcome.Notifications[0].Kind)
+	}
+}

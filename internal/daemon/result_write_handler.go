@@ -79,29 +79,31 @@ type ResultWriteParams struct {
 	SkillCandidates        []string `json:"skill_candidates,omitempty"`
 }
 
-func (h *ResultWriteAPI) handleResultWrite(req *uds.Request) *uds.Response {
+// validateResultWriteParams parses and validates the result_write request parameters.
+// Returns the parsed params, the terminal status, or an error response if validation fails.
+func (h *ResultWriteAPI) validateResultWriteParams(req *uds.Request) (ResultWriteParams, model.Status, *uds.Response) {
 	var params ResultWriteParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
-		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid params: %v", err))
+		return params, "", uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid params: %v", err))
 	}
 
 	if params.Reporter == "" {
-		return uds.ErrorResponse(uds.ErrCodeValidation, "reporter is required")
+		return params, "", uds.ErrorResponse(uds.ErrCodeValidation, "reporter is required")
 	}
 	if !validate.IsValidBaseName(params.Reporter) {
-		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid reporter: %q", params.Reporter))
+		return params, "", uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid reporter: %q", params.Reporter))
 	}
 	if params.TaskID == "" {
-		return uds.ErrorResponse(uds.ErrCodeValidation, "task_id is required")
+		return params, "", uds.ErrorResponse(uds.ErrCodeValidation, "task_id is required")
 	}
 	if params.CommandID == "" {
-		return uds.ErrorResponse(uds.ErrCodeValidation, "command_id is required")
+		return params, "", uds.ErrorResponse(uds.ErrCodeValidation, "command_id is required")
 	}
 	if err := validate.ID(params.CommandID); err != nil {
-		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid command_id: %v", err))
+		return params, "", uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid command_id: %v", err))
 	}
 	if err := validate.ID(params.TaskID); err != nil {
-		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid task_id: %v", err))
+		return params, "", uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid task_id: %v", err))
 	}
 
 	resultStatus := model.Status(params.Status)
@@ -109,8 +111,29 @@ func (h *ResultWriteAPI) handleResultWrite(req *uds.Request) *uds.Response {
 	case model.StatusCompleted, model.StatusFailed:
 		// valid terminal statuses for worker result reporting
 	default:
-		return uds.ErrorResponse(uds.ErrCodeValidation,
+		return params, "", uds.ErrorResponse(uds.ErrCodeValidation,
 			fmt.Sprintf("status must be completed|failed, got %q", params.Status))
+	}
+
+	return params, resultStatus, nil
+}
+
+// recordFallback records worker success/failure for health monitoring.
+func (h *ResultWriteAPI) recordFallback(params ResultWriteParams, resultStatus model.Status) {
+	if fm := h.fallbackMgr(); fm != nil {
+		switch resultStatus {
+		case model.StatusCompleted:
+			fm.RecordSuccess(params.Reporter)
+		case model.StatusFailed:
+			fm.RecordFailure(params.Reporter)
+		}
+	}
+}
+
+func (h *ResultWriteAPI) handleResultWrite(req *uds.Request) *uds.Response {
+	params, resultStatus, errResp := h.validateResultWriteParams(req)
+	if errResp != nil {
+		return errResp
 	}
 
 	// Phase A: Shared file lock + per-worker mutex (results/ + queue/ updates)
@@ -132,15 +155,7 @@ func (h *ResultWriteAPI) handleResultWrite(req *uds.Request) *uds.Response {
 			fmt.Sprintf("state update failed: %v (result %s committed, run 'maestro plan rebuild' to fix)", err, resultID))
 	}
 
-	// Fallback tracking: record success/failure for worker health monitoring.
-	if fm := h.fallbackMgr(); fm != nil {
-		switch resultStatus {
-		case model.StatusCompleted:
-			fm.RecordSuccess(params.Reporter)
-		case model.StatusFailed:
-			fm.RecordFailure(params.Reporter)
-		}
-	}
+	h.recordFallback(params, resultStatus)
 
 	// Retry registration (state then queue — correct lock order).
 	h.handleRetryRegistration(resultWritePhaseAResult, params)

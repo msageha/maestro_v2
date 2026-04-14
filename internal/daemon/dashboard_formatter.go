@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"log"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -292,7 +293,10 @@ func (f *DashboardFormatter) UpdateDashboardFileWithQueues(
 	}
 
 	// Enrich with log-based statistics (best-effort)
-	data, _ := f.collectDashboardData()
+	data, dataErr := f.collectDashboardData()
+	if dataErr != nil {
+		log.Printf("[WARN] collectDashboardData: %v (continuing with partial data)", dataErr)
+	}
 	if data != nil {
 		if data.IsStale {
 			fmt.Fprintf(&sb, "\n> ⚠ [STALE] log data unavailable: %s\n", data.StaleReason)
