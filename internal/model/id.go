@@ -93,7 +93,7 @@ var validTaskIDCallers = map[TaskIDCaller]bool{
 // of every task ID is explicit and grep-able.
 func NewTaskID(caller TaskIDCaller) (string, error) {
 	if !validTaskIDCallers[caller] {
-		return "", fmt.Errorf("NewTaskID: unknown caller %q (must be one of TaskIDCaller constants)", caller)
+		return "", fmt.Errorf("unknown caller %q (must be one of TaskIDCaller constants)", caller)
 	}
 	return GenerateID(IDTypeTask)
 }

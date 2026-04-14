@@ -146,7 +146,9 @@ func restoreServerOptions(maestroDir string) {
 	}
 
 	for name, value := range options {
-		_ = tmux.SetServerOption(name, value)
+		if err := tmux.SetServerOption(name, value); err != nil {
+			log.Printf("[WARN] restoreServerOptions: set %s=%s: %v", name, value, err)
+		}
 	}
 }
 

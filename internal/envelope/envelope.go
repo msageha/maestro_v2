@@ -4,6 +4,7 @@ package envelope
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode"
 
@@ -29,15 +30,29 @@ func SanitizeEnvelopeField(s string) string {
 	}, s)
 }
 
+// boundaryMarkerPatterns matches DATA boundary markers case-insensitively
+// to prevent bypass via case variations (e.g., "--- begin learnings").
+var boundaryMarkerPatterns = []struct {
+	re          *regexp.Regexp
+	replacement string
+}{
+	{regexp.MustCompile(`(?i)---\s*BEGIN\s+LEARNINGS`), "--- BEGIN\\_LEARNINGS"},
+	{regexp.MustCompile(`(?i)---\s*END\s+LEARNINGS`), "--- END\\_LEARNINGS"},
+	{regexp.MustCompile(`(?i)---\s*BEGIN\s+SKILLS`), "--- BEGIN\\_SKILLS"},
+	{regexp.MustCompile(`(?i)---\s*END\s+SKILLS`), "--- END\\_SKILLS"},
+}
+
 // SanitizeUserContent escapes DATA boundary markers in user-supplied content
 // to prevent premature closing of LEARNINGS/SKILLS sections. This must be
 // called on user content BEFORE system-generated sections are appended,
 // so that the system's own markers remain intact.
+//
+// Matching is case-insensitive and tolerates variable whitespace between
+// tokens to prevent bypass via "--- begin learnings" or "---  BEGIN  SKILLS".
 func SanitizeUserContent(s string) string {
-	s = strings.ReplaceAll(s, "--- BEGIN LEARNINGS", "--- BEGIN\\_LEARNINGS")
-	s = strings.ReplaceAll(s, "--- END LEARNINGS", "--- END\\_LEARNINGS")
-	s = strings.ReplaceAll(s, "--- BEGIN SKILLS", "--- BEGIN\\_SKILLS")
-	s = strings.ReplaceAll(s, "--- END SKILLS", "--- END\\_SKILLS")
+	for _, bm := range boundaryMarkerPatterns {
+		s = bm.re.ReplaceAllString(s, bm.replacement)
+	}
 	return s
 }
 

@@ -192,39 +192,54 @@ func (e *Executor) Close() error {
 	return nil
 }
 
+// Default values for WatcherConfig fields when unset or non-positive.
+const (
+	defaultBusyCheckInterval      = 2   // seconds between busy-detection probes
+	defaultBusyCheckMaxRetries    = 30  // max busy-detection retry attempts
+	defaultIdleStableSec          = 5   // seconds of stability before declaring idle
+	defaultCooldownAfterClear     = 3   // seconds to wait after /clear
+	defaultWaitReadyIntervalSec   = 2   // seconds between prompt-readiness polls
+	defaultWaitReadyMaxRetries    = 15  // max prompt-readiness poll attempts
+	defaultClearConfirmTimeoutSec = 5   // seconds to wait for /clear confirmation
+	defaultClearConfirmPollMs     = 250 // milliseconds between /clear confirmation polls
+	defaultClearMaxAttempts       = 3   // max /clear retry attempts
+	defaultClearRetryBackoffMs    = 500 // milliseconds backoff between /clear retries
+	defaultClearSecondEnterDelayMs = 500 // milliseconds delay before second Enter after /clear
+)
+
 func applyDefaults(cfg model.WatcherConfig) model.WatcherConfig {
 	if cfg.BusyCheckInterval <= 0 {
-		cfg.BusyCheckInterval = 2
+		cfg.BusyCheckInterval = defaultBusyCheckInterval
 	}
 	if cfg.BusyCheckMaxRetries <= 0 {
-		cfg.BusyCheckMaxRetries = 30
+		cfg.BusyCheckMaxRetries = defaultBusyCheckMaxRetries
 	}
 	if cfg.IdleStableSec <= 0 {
-		cfg.IdleStableSec = 5
+		cfg.IdleStableSec = defaultIdleStableSec
 	}
 	if cfg.CooldownAfterClear <= 0 {
-		cfg.CooldownAfterClear = 3
+		cfg.CooldownAfterClear = defaultCooldownAfterClear
 	}
 	if cfg.WaitReadyIntervalSec <= 0 {
-		cfg.WaitReadyIntervalSec = 2
+		cfg.WaitReadyIntervalSec = defaultWaitReadyIntervalSec
 	}
 	if cfg.WaitReadyMaxRetries <= 0 {
-		cfg.WaitReadyMaxRetries = 15
+		cfg.WaitReadyMaxRetries = defaultWaitReadyMaxRetries
 	}
 	if cfg.ClearConfirmTimeoutSec <= 0 {
-		cfg.ClearConfirmTimeoutSec = 5
+		cfg.ClearConfirmTimeoutSec = defaultClearConfirmTimeoutSec
 	}
 	if cfg.ClearConfirmPollMs <= 0 {
-		cfg.ClearConfirmPollMs = 250
+		cfg.ClearConfirmPollMs = defaultClearConfirmPollMs
 	}
 	if cfg.ClearMaxAttempts <= 0 {
-		cfg.ClearMaxAttempts = 3
+		cfg.ClearMaxAttempts = defaultClearMaxAttempts
 	}
 	if cfg.ClearRetryBackoffMs <= 0 {
-		cfg.ClearRetryBackoffMs = 500
+		cfg.ClearRetryBackoffMs = defaultClearRetryBackoffMs
 	}
 	if cfg.ClearSecondEnterDelayMs <= 0 {
-		cfg.ClearSecondEnterDelayMs = 500
+		cfg.ClearSecondEnterDelayMs = defaultClearSecondEnterDelayMs
 	}
 	return cfg
 }
@@ -497,6 +512,12 @@ func (e *Executor) execDeliver(ctx context.Context, req ExecRequest, paneTarget 
 		e.log(logLevelDebug, "busy_detection agent_id=orchestrator verdict=%s", verdict)
 		if verdict != VerdictIdle {
 			e.log(logLevelWarn, "delivery_failure agent_id=orchestrator reason=orchestrator_busy verdict=%s", verdict)
+			if verdict == VerdictUndecided {
+				return ExecResult{
+					Error:     fmt.Errorf("orchestrator busy: %w", ErrBusyUndecided),
+					Retryable: true,
+				}
+			}
 			return ExecResult{
 				Error:     fmt.Errorf("orchestrator busy (verdict=%s)", verdict),
 				Retryable: true,
@@ -514,14 +535,18 @@ func (e *Executor) execDeliver(ctx context.Context, req ExecRequest, paneTarget 
 	// Planner/other: busy detection with retry
 	verdict := e.busyDetector.DetectBusyWithRetry(ctx, paneTarget, req.AgentID)
 	if verdict != VerdictIdle {
-		reason := "busy_timeout"
 		if verdict == VerdictUndecided {
-			reason = "undecided_after_probes"
+			e.log(logLevelWarn, "delivery_failure agent_id=%s task_id=%s reason=undecided_after_probes",
+				req.AgentID, req.TaskID)
+			return ExecResult{
+				Error:     fmt.Errorf("agent %s busy: %w", req.AgentID, ErrBusyUndecided),
+				Retryable: true,
+			}
 		}
-		e.log(logLevelWarn, "delivery_failure agent_id=%s task_id=%s reason=%s",
-			req.AgentID, req.TaskID, reason)
+		e.log(logLevelWarn, "delivery_failure agent_id=%s task_id=%s reason=busy_timeout",
+			req.AgentID, req.TaskID)
 		return ExecResult{
-			Error:     fmt.Errorf("agent %s busy: %s", req.AgentID, reason),
+			Error:     fmt.Errorf("agent %s busy: timeout", req.AgentID),
 			Retryable: true,
 		}
 	}

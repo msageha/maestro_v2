@@ -1,8 +1,6 @@
 package metrics
 
 import (
-	"bytes"
-	"log"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,9 +8,18 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 )
+
+// discardLogger is a no-op Logger for tests.
+type discardLogger struct{}
+
+func (discardLogger) Warnf(string, ...any) {}
+
+// testClock is a Clock that delegates to time.Now.
+type testClock struct{}
+
+func (testClock) Now() time.Time { return time.Now() }
 
 func setupTestMaestroDir(t *testing.T) string {
 	t.Helper()
@@ -27,7 +34,7 @@ func setupTestMaestroDir(t *testing.T) string {
 
 func newTestHandler(maestroDir string) *Handler {
 	cfg := model.Config{}
-	return NewHandler(maestroDir, cfg, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
+	return NewHandler(maestroDir, cfg, discardLogger{}, testClock{})
 }
 
 func TestHandler_UpdateMetrics_CreateNew(t *testing.T) {

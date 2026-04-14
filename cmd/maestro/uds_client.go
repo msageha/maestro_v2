@@ -31,9 +31,3 @@ func newCLIApp() *cliApp {
 		},
 	}
 }
-
-// newUDSClient creates a UDS client using the production default factory.
-// Used by functions not yet migrated to cliApp method receivers.
-var newUDSClient clientFactory = func(socketPath string) udsClientIface {
-	return uds.NewClient(socketPath)
-}

@@ -154,6 +154,14 @@ func TestSanitizeUserContent(t *testing.T) {
 		{"escapes BEGIN SKILLS", "--- BEGIN SKILLS (DATA ONLY) ---", "--- BEGIN\\_SKILLS (DATA ONLY) ---"},
 		{"escapes END SKILLS", "--- END SKILLS ---", "--- END\\_SKILLS ---"},
 		{"preserves other content", "no markers here", "no markers here"},
+		// Case-insensitive bypass prevention
+		{"lowercase begin learnings", "--- begin learnings (DATA ONLY) ---", "--- BEGIN\\_LEARNINGS (DATA ONLY) ---"},
+		{"mixed case end skills", "--- End Skills ---", "--- END\\_SKILLS ---"},
+		{"uppercase begin skills", "--- BEGIN SKILLS (DATA ONLY) ---", "--- BEGIN\\_SKILLS (DATA ONLY) ---"},
+		{"lowercase end learnings", "--- end learnings ---", "--- END\\_LEARNINGS ---"},
+		// Extra whitespace bypass prevention
+		{"extra whitespace begin", "---  BEGIN  LEARNINGS (DATA ONLY) ---", "--- BEGIN\\_LEARNINGS (DATA ONLY) ---"},
+		{"tab whitespace", "---\tBEGIN\tSKILLS ---", "--- BEGIN\\_SKILLS ---"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

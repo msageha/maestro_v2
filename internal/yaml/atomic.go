@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"os"
 	"path/filepath"
@@ -38,7 +39,7 @@ func AtomicWriteRaw(path string, content []byte) (retErr error) {
 				retErr = errors.Join(retErr, fmt.Errorf("close temp file: %w", closeErr))
 			}
 		}
-		if removeErr := os.Remove(tmpName); removeErr != nil && !os.IsNotExist(removeErr) {
+		if removeErr := os.Remove(tmpName); removeErr != nil && !errors.Is(removeErr, fs.ErrNotExist) {
 			retErr = errors.Join(retErr, fmt.Errorf("remove temp file: %w", removeErr))
 		}
 	}()
@@ -138,7 +139,7 @@ func copyFile(src, dst string) error {
 				log.Printf("WARN: failed to close backup temp file %s: %v", tmpName, err)
 			}
 		}
-		if err := os.Remove(tmpName); err != nil && !os.IsNotExist(err) {
+		if err := os.Remove(tmpName); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			log.Printf("WARN: failed to remove backup temp file %s: %v", tmpName, err)
 		}
 	}()

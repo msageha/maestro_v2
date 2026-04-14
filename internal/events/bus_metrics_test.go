@@ -3,7 +3,6 @@ package events
 import (
 	"context"
 	"testing"
-	"time"
 )
 
 func TestBus_DroppedCount(t *testing.T) {
@@ -11,17 +10,25 @@ func TestBus_DroppedCount(t *testing.T) {
 	bus := NewBus(context.Background(), 1)
 	defer bus.Close()
 
-	// Slow subscriber that blocks the channel
+	// Channels to coordinate: subscriber signals it started, then blocks until released.
+	started := make(chan struct{})
+	block := make(chan struct{})
+
 	unsub := bus.Subscribe(EventTaskStarted, func(e Event) {
-		time.Sleep(500 * time.Millisecond)
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-block
 	})
 	defer unsub()
 
-	// Wait for subscriber goroutine to start and pick up first event
+	// Publish first event and wait until the subscriber goroutine picks it up.
 	bus.Publish(EventTaskStarted, map[string]interface{}{"id": 0})
-	time.Sleep(20 * time.Millisecond)
+	<-started
 
-	// Publish enough events to fill the buffer and cause drops
+	// Now the subscriber is blocked and the channel buffer (size 1) is empty.
+	// Publish enough events to fill the buffer and cause drops.
 	for i := 1; i <= 5; i++ {
 		bus.Publish(EventTaskStarted, map[string]interface{}{"id": i})
 	}
@@ -29,15 +36,25 @@ func TestBus_DroppedCount(t *testing.T) {
 	if got := bus.DroppedCount(); got == 0 {
 		t.Error("expected DroppedCount > 0 after publishing to full buffer")
 	}
+
+	// Unblock the subscriber so the goroutine can exit cleanly.
+	close(block)
 }
 
 func TestBus_DroppedByType(t *testing.T) {
 	bus := NewBus(context.Background(), 1)
 	defer bus.Close()
 
-	// Slow subscriber on EventTaskStarted
+	// Channels to coordinate: subscriber signals it started, then blocks until released.
+	started := make(chan struct{})
+	block := make(chan struct{})
+
 	unsub1 := bus.Subscribe(EventTaskStarted, func(e Event) {
-		time.Sleep(500 * time.Millisecond)
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-block
 	})
 	defer unsub1()
 
@@ -45,9 +62,12 @@ func TestBus_DroppedByType(t *testing.T) {
 	unsub2 := bus.Subscribe(EventTaskCompleted, func(e Event) {})
 	defer unsub2()
 
-	// Fill up EventTaskStarted
+	// Publish first event and wait until the subscriber goroutine picks it up.
 	bus.Publish(EventTaskStarted, map[string]interface{}{"id": 0})
-	time.Sleep(20 * time.Millisecond)
+	<-started
+
+	// Now the subscriber is blocked and the channel buffer (size 1) is empty.
+	// Fill up EventTaskStarted.
 	for i := 1; i <= 5; i++ {
 		bus.Publish(EventTaskStarted, map[string]interface{}{"id": i})
 	}
@@ -69,4 +89,7 @@ func TestBus_DroppedByType(t *testing.T) {
 	if got := bus.DroppedByType(EventType("nonexistent")); got != 0 {
 		t.Errorf("expected DroppedByType for unknown type == 0, got %d", got)
 	}
+
+	// Unblock the subscriber so the goroutine can exit cleanly.
+	close(block)
 }

@@ -43,7 +43,7 @@ func runStatus(args []string) error {
 }
 
 // runDashboard regenerates the dashboard.md file.
-func runDashboard(args []string) error {
+func (a *cliApp) runDashboard(args []string) error {
 	cmd := NewCommand("maestro dashboard", "maestro dashboard")
 	if err := cmd.Parse(args); err != nil {
 		return err
@@ -54,7 +54,7 @@ func runDashboard(args []string) error {
 		return err
 	}
 
-	client := newUDSClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := a.createClient(filepath.Join(maestroDir, uds.DefaultSocketName))
 	resp, err := client.SendCommand("dashboard", nil)
 	if err != nil {
 		return fmt.Errorf("maestro dashboard: %w", err)

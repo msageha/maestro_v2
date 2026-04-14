@@ -341,7 +341,7 @@ func loadBasePromptMode(maestroDir, role string) (string, error) {
 func currentPaneTarget() (string, error) {
 	paneID := os.Getenv("TMUX_PANE")
 	if paneID == "" {
-		return "", fmt.Errorf("TMUX_PANE environment variable not set (not running inside tmux?)")
+		return "", fmt.Errorf("\"TMUX_PANE\" environment variable not set (not running inside tmux?)")
 	}
 	if !validTmuxPane.MatchString(paneID) {
 		return "", fmt.Errorf("invalid TMUX_PANE format: expected %%<number>, got: %s", sanitizeForLog(paneID))

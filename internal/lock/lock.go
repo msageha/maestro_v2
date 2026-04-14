@@ -102,6 +102,15 @@ func (m *MutexMap) TryUnlock(key string) bool {
 	return true
 }
 
+// WithLock acquires the mutex for key, executes fn, then releases the mutex.
+// This is a convenience wrapper around Lock/Unlock that ensures the lock is
+// always released, even if fn panics.
+func (m *MutexMap) WithLock(key string, fn func()) {
+	m.Lock(key)
+	defer m.Unlock(key)
+	fn()
+}
+
 // Remove drops the entry for key if no goroutine currently holds or is
 // waiting for the lock (ref == 0). It is a no-op when the entry is in use,
 // when the key has never been seen, or when the entry was already removed

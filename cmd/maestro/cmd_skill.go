@@ -12,7 +12,7 @@ import (
 )
 
 // runSkill dispatches skill subcommands.
-func runSkill(args []string) error {
+func (a *cliApp) runSkill(args []string) error {
 	if len(args) < 1 {
 		return &CLIError{Code: 1, Msg: "maestro skill: missing subcommand\nusage: maestro skill <list|candidates|approve|reject> [options]"}
 	}
@@ -22,9 +22,9 @@ func runSkill(args []string) error {
 	case "candidates":
 		return runSkillCandidates(args[1:])
 	case "approve":
-		return runSkillApprove(args[1:])
+		return a.runSkillApprove(args[1:])
 	case "reject":
-		return runSkillReject(args[1:])
+		return a.runSkillReject(args[1:])
 	default:
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill: unknown subcommand: %s\nusage: maestro skill <list|candidates|approve|reject> [options]", args[0])}
 	}
@@ -110,9 +110,10 @@ func runSkillCandidates(args []string) error {
 			continue
 		}
 		// Truncate content for display
+		const maxContentDisplayWidth = 80 // maximum rune width for candidate content display
 		content := c.Content
-		if runes := []rune(content); len(runes) > 80 {
-			content = string(runes[:77]) + "..."
+		if runes := []rune(content); len(runes) > maxContentDisplayWidth {
+			content = string(runes[:maxContentDisplayWidth-3]) + "..."
 		}
 		// Replace newlines for single-line display and sanitize
 		content = strings.ReplaceAll(content, "\n", " ")
@@ -122,7 +123,7 @@ func runSkillCandidates(args []string) error {
 }
 
 // runSkillApprove approves a skill candidate via the daemon UDS API.
-func runSkillApprove(args []string) error {
+func (a *cliApp) runSkillApprove(args []string) error {
 	if len(args) < 1 {
 		return &CLIError{Code: 1, Msg: "maestro skill approve: missing candidate-id\nusage: maestro skill approve <candidate-id> [--name <skill-name>]"}
 	}
@@ -152,19 +153,14 @@ func runSkillApprove(args []string) error {
 		params["skill_name"] = skillName
 	}
 
-	client := newUDSClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := a.createClient(filepath.Join(maestroDir, uds.DefaultSocketName))
 	resp, err := client.SendCommand("skill_approve", params)
 	if err != nil {
 		return fmt.Errorf("maestro skill approve: %w", err)
 	}
 
 	if !resp.Success {
-		code := ""
-		msg := "unknown error"
-		if resp.Error != nil {
-			code = resp.Error.Code
-			msg = resp.Error.Message
-		}
+		code, msg := udsErrorInfo(resp)
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill approve: [%s] %s", code, msg)}
 	}
 
@@ -184,7 +180,7 @@ func runSkillApprove(args []string) error {
 }
 
 // runSkillReject rejects a skill candidate via the daemon UDS API.
-func runSkillReject(args []string) error {
+func (a *cliApp) runSkillReject(args []string) error {
 	if len(args) < 1 {
 		return &CLIError{Code: 1, Msg: "maestro skill reject: missing candidate-id\nusage: maestro skill reject <candidate-id>"}
 	}
@@ -208,19 +204,14 @@ func runSkillReject(args []string) error {
 		"candidate_id": candidateID,
 	}
 
-	client := newUDSClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := a.createClient(filepath.Join(maestroDir, uds.DefaultSocketName))
 	resp, err := client.SendCommand("skill_reject", params)
 	if err != nil {
 		return fmt.Errorf("maestro skill reject: %w", err)
 	}
 
 	if !resp.Success {
-		code := ""
-		msg := "unknown error"
-		if resp.Error != nil {
-			code = resp.Error.Code
-			msg = resp.Error.Message
-		}
+		code, msg := udsErrorInfo(resp)
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro skill reject: [%s] %s", code, msg)}
 	}
 

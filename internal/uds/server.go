@@ -114,14 +114,18 @@ func (s *Server) acceptLoop() {
 			continue
 		}
 
-		// Non-blocking semaphore acquire: reject connection if at capacity
+		// Semaphore acquire with context awareness: reject connection if at capacity
 		select {
 		case s.connSem <- struct{}{}:
 			s.wg.Add(1)
 			go s.handleConn(conn)
+		case <-s.ctx.Done():
+			conn.Close()
+			return
 		default:
 			log.Printf("connection rejected: max concurrent connections (%d) reached", s.maxConns)
-			// Best-effort error response before closing
+			// Set tight write deadline to prevent slow-write attacks on the rejection path
+			_ = conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
 			resp := ErrorResponse(ErrCodeBackpressure, "server at capacity, try again later")
 			if err := writeFrame(conn, resp); err != nil {
 				log.Printf("DEBUG: failed to write backpressure response: %v", err)

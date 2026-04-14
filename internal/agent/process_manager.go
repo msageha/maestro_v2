@@ -41,9 +41,8 @@ func newClaudeProcessManager(paneIO PaneIO, paneState *paneStateManager, cfg *mo
 func (pm *ClaudeProcessManager) ensureClaudeRunning(ctx context.Context, paneTarget, agentID string) error {
 	cmd, err := pm.paneIO.GetPaneCurrentCommand(paneTarget)
 	if err != nil {
-		pm.log(logLevelWarn, "ensure_claude_running_check_failed agent_id=%s error=%v", agentID, err)
-		// Cannot determine state; proceed optimistically
-		return nil
+		pm.log(logLevelError, "ensure_claude_running_check_failed agent_id=%s error=%v", agentID, err)
+		return fmt.Errorf("check pane command: %w", err)
 	}
 
 	if !pm.paneIO.IsShellCommand(cmd) {
@@ -60,14 +59,14 @@ func (pm *ClaudeProcessManager) ensureClaudeRunning(ctx context.Context, paneTar
 
 	// Re-launch Claude
 	if sendErr := pm.paneIO.SendCommand(paneTarget, "maestro agent launch"); sendErr != nil {
-		return fmt.Errorf("ensureClaudeRunning: re-launch: %w", sendErr)
+		return fmt.Errorf("re-launch claude: %w", sendErr)
 	}
 
 	// Wait for Claude prompt readiness (fail-closed)
 	launchCtx, cancel := context.WithTimeout(ctx, pm.execCfg.ClaudeLaunchTimeout)
 	defer cancel()
 	if waitErr := pm.waitReadyStrict(launchCtx, paneTarget); waitErr != nil {
-		return fmt.Errorf("ensureClaudeRunning: wait for Claude ready: %w", waitErr)
+		return fmt.Errorf("wait for claude ready after re-launch: %w", waitErr)
 	}
 
 	pm.log(logLevelInfo, "claude_relaunched agent_id=%s", agentID)
@@ -88,7 +87,7 @@ func (pm *ClaudeProcessManager) ensureWorkingDir(ctx context.Context, paneTarget
 
 	// Validate path: reject control characters to prevent injection via SendCommand
 	if containsControlChars(workingDir) {
-		return fmt.Errorf("ensureWorkingDir: working dir contains control characters: %q", workingDir)
+		return fmt.Errorf("working dir contains control characters: %q", workingDir)
 	}
 
 	// Check current CWD from tmux user variable
@@ -103,12 +102,12 @@ func (pm *ClaudeProcessManager) ensureWorkingDir(ctx context.Context, paneTarget
 	// Step 1: Kill the current pane process and respawn a fresh shell in the
 	// target working directory.
 	if err := pm.paneIO.RespawnPane(paneTarget, workingDir); err != nil {
-		return fmt.Errorf("ensureWorkingDir: respawn pane: %w", err)
+		return fmt.Errorf("respawn pane: %w", err)
 	}
 
 	// Step 2: Wait for the fresh shell to be ready
 	if err := pm.waitForShell(ctx, paneTarget); err != nil {
-		return fmt.Errorf("ensureWorkingDir: wait for shell after respawn: %w", err)
+		return fmt.Errorf("wait for shell after respawn: %w", err)
 	}
 
 	// Step 3: Reset clear_ready state before re-launching Claude.
@@ -117,12 +116,12 @@ func (pm *ClaudeProcessManager) ensureWorkingDir(ctx context.Context, paneTarget
 	// from seeing a stale PID between here and the launch.
 	if err := pm.paneState.ResetClearReady(paneTarget); err != nil {
 		pm.log(logLevelError, "reset_clear_ready_after_respawn_failed error=%v", err)
-		return fmt.Errorf("ensureWorkingDir: reset_clear_ready after respawn: %w", err)
+		return fmt.Errorf("reset clear ready after respawn: %w", err)
 	}
 
 	// Step 4: Re-launch Claude
 	if err := pm.paneIO.SendCommand(paneTarget, "maestro agent launch"); err != nil {
-		return fmt.Errorf("ensureWorkingDir: re-launch: %w", err)
+		return fmt.Errorf("re-launch claude: %w", err)
 	}
 
 	// Step 5: Wait for Claude prompt readiness (fail-closed: error on timeout)
@@ -130,7 +129,7 @@ func (pm *ClaudeProcessManager) ensureWorkingDir(ctx context.Context, paneTarget
 	launchCtx, cancel := context.WithTimeout(ctx, pm.execCfg.ClaudeLaunchTimeout)
 	defer cancel()
 	if err := pm.waitReadyStrict(launchCtx, paneTarget); err != nil {
-		return fmt.Errorf("ensureWorkingDir: wait for Claude ready: %w", err)
+		return fmt.Errorf("wait for claude ready: %w", err)
 	}
 
 	// Step 6: Update CWD tracking (clear_ready was already reset in Step 3)

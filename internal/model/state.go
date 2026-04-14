@@ -92,6 +92,19 @@ func (cs *CommandState) PhaseIndex(phaseID string) (int, bool) {
 	return idx, true
 }
 
+// PhaseInfo represents phase metadata from command state.
+// Used by StateReader implementations to return phase data without exposing
+// the full Phase struct or YAML serialization details.
+type PhaseInfo struct {
+	ID               string
+	Name             string
+	Status           PhaseStatus
+	DependsOn        []string // phase IDs
+	FillDeadlineAt   *string
+	RequiredTaskIDs  []string
+	SystemCommitTask bool
+}
+
 // PhaseConstraints はフェーズに適用される制約条件を定義する。
 // 最大タスク数、許可される Bloom レベル、タイムアウトを指定する。
 type PhaseConstraints struct {

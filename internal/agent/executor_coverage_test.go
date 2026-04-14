@@ -1068,20 +1068,23 @@ func TestEnsureClaudeRunning_WaitReadyTimeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when waitReadyStrict times out")
 	}
-	if !strings.Contains(err.Error(), "wait for Claude ready") {
+	if !strings.Contains(err.Error(), "wait for claude ready") {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
 
-func TestEnsureClaudeRunning_GetCmdError_ProceedsOptimistically(t *testing.T) {
+func TestEnsureClaudeRunning_GetCmdError_ReturnsError(t *testing.T) {
 	t.Parallel()
 	mock := newCovMock()
 	mock.getCmdSeq = []mockResp{{err: fmt.Errorf("tmux error")}}
 
 	exec, _ := newCovExecutor(mock)
 	err := exec.processManager.ensureClaudeRunning(context.Background(), "%0", "worker1")
-	if err != nil {
-		t.Fatalf("should proceed optimistically on GetPaneCurrentCommand error, got: %v", err)
+	if err == nil {
+		t.Fatal("expected error when GetPaneCurrentCommand fails")
+	}
+	if !strings.Contains(err.Error(), "check pane command") {
+		t.Errorf("expected 'check pane command' in error, got: %v", err)
 	}
 	// Should not have attempted re-launch
 	if callsContain(mock.calls, "SendCommand:maestro agent launch") {

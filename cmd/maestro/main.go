@@ -95,9 +95,9 @@ func (a *cliApp) run(args []string) int {
 	case "worker":
 		err = runWorker(args[1:])
 	case "skill":
-		err = runSkill(args[1:])
+		err = a.runSkill(args[1:])
 	case "dashboard":
-		err = runDashboard(args[1:])
+		err = a.runDashboard(args[1:])
 	case "version":
 		fmt.Printf("maestro %s\n", version)
 	case "help", "--help", "-h":

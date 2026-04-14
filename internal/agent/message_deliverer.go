@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
@@ -19,6 +20,7 @@ type messageDeliverer struct {
 	execCfg   ExecutorConfig
 	logger    *log.Logger
 	logLevel  logLevel
+	paneMu    sync.Map // map[string]*sync.Mutex — per-pane delivery lock
 }
 
 func newMessageDeliverer(paneIO PaneIO, paneState *paneStateManager, cfg *model.WatcherConfig, execCfg ExecutorConfig, logger *log.Logger, ll logLevel) *messageDeliverer {
@@ -32,10 +34,24 @@ func newMessageDeliverer(paneIO PaneIO, paneState *paneStateManager, cfg *model.
 	}
 }
 
+// getPaneMutex returns the per-pane mutex for the given pane target, creating
+// one on first access. This serializes the shell guard check → send → status
+// update sequence to prevent concurrent deliveries from interleaving.
+func (d *messageDeliverer) getPaneMutex(paneTarget string) *sync.Mutex {
+	mu, _ := d.paneMu.LoadOrStore(paneTarget, &sync.Mutex{})
+	return mu.(*sync.Mutex)
+}
+
 // sendAndConfirm sends the message and updates @status to busy.
 // It includes a final shell guard to prevent sending to a bare shell if Claude
 // crashed between ensureClaudeRunning and delivery.
+// The entire check → send → status update sequence is protected by a per-pane
+// mutex to prevent concurrent deliveries from interleaving (TOCTOU guard).
 func (d *messageDeliverer) sendAndConfirm(req ExecRequest, paneTarget string) ExecResult {
+	mu := d.getPaneMutex(paneTarget)
+	mu.Lock()
+	defer mu.Unlock()
+
 	// Final shell guard: reject delivery if pane has fallen back to a shell.
 	// This closes the timing window between ensureClaudeRunning and here.
 	if cmd, err := d.paneIO.GetPaneCurrentCommand(paneTarget); err == nil {

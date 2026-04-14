@@ -174,17 +174,13 @@ func TestRunSkillList_ShareRole(t *testing.T) {
 
 func TestRunSkillApprove_UnmarshalError(t *testing.T) {
 	withMaestroDir(t)
-	origFactory := newUDSClient
-	newUDSClient = func(string) udsClientIface {
-		return &mockUDSClient{
-			sendCommandFunc: func(string, any) (*uds.Response, error) {
-				return &uds.Response{Success: true, Data: json.RawMessage(`not valid json`)}, nil
-			},
-		}
-	}
-	defer func() { newUDSClient = origFactory }()
+	app := newTestApp(&mockUDSClient{
+		sendCommandFunc: func(string, any) (*uds.Response, error) {
+			return &uds.Response{Success: true, Data: json.RawMessage(`not valid json`)}, nil
+		},
+	})
 
-	err := runSkillApprove([]string{"candidate_0000000001_abcdef01"})
+	err := app.runSkillApprove([]string{"candidate_0000000001_abcdef01"})
 	if err == nil {
 		t.Fatal("expected error for invalid JSON response")
 	}

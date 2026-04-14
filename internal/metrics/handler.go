@@ -2,7 +2,6 @@ package metrics
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,26 +9,43 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
+// Clock abstracts time.Now() for deterministic testing.
+type Clock interface {
+	Now() time.Time
+}
+
+// Logger provides warning-level logging for the metrics handler.
+type Logger interface {
+	Warnf(format string, args ...any)
+}
+
+// resultFileEntry holds cached result file data keyed by modtime.
+type resultFileEntry struct {
+	modTime time.Time
+	file    *model.TaskResultFile
+}
+
 // Handler generates and persists metrics to state/metrics.yaml.
 type Handler struct {
-	core.LogMixin
-	maestroDir string
-	config     model.Config
-	clock      core.Clock
+	logger      Logger
+	maestroDir  string
+	config      model.Config
+	clock       Clock
+	resultCache map[string]*resultFileEntry
 }
 
 // NewHandler creates a new Handler.
-func NewHandler(maestroDir string, cfg model.Config, logger *log.Logger, logLevel core.LogLevel) *Handler {
+func NewHandler(maestroDir string, cfg model.Config, logger Logger, clock Clock) *Handler {
 	return &Handler{
-		LogMixin:   core.LogMixin{DL: core.NewDaemonLoggerFromLegacy("metrics", logger, logLevel)},
-		maestroDir: maestroDir,
-		config:     cfg,
-		clock:      core.RealClock{},
+		logger:      logger,
+		maestroDir:  maestroDir,
+		config:      cfg,
+		clock:       clock,
+		resultCache: make(map[string]*resultFileEntry),
 	}
 }
 
@@ -135,39 +151,66 @@ func (h *Handler) UpdateMetrics(
 }
 
 // loadAllResultFiles loads all results/worker{N}.yaml and results/planner.yaml files.
+// It uses modtime-based caching to skip re-reading files that have not changed since the last call.
 func (h *Handler) loadAllResultFiles() map[string]*model.TaskResultFile {
 	resultsDir := filepath.Join(h.maestroDir, "results")
 	entries, err := os.ReadDir(resultsDir)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			h.Log(core.LogLevelWarn, "read results dir: %v", err)
+			h.logger.Warnf("read results dir: %v", err)
 		}
 		return nil
 	}
 
+	currentFiles := make(map[string]struct{})
 	result := make(map[string]*model.TaskResultFile)
 	for _, entry := range entries {
 		name := entry.Name()
 		if !strings.HasSuffix(name, ".yaml") {
 			continue
 		}
+		currentFiles[name] = struct{}{}
 
+		info, err := entry.Info()
+		if err != nil {
+			h.logger.Warnf("stat result file %s: %v", name, err)
+			continue
+		}
+		modTime := info.ModTime()
+
+		// Use cached entry if modtime is unchanged.
+		if cached, ok := h.resultCache[name]; ok && cached.modTime.Equal(modTime) {
+			wID := strings.TrimSuffix(name, ".yaml")
+			result[wID] = cached.file
+			continue
+		}
+
+		// Cache miss or stale: read and parse.
 		path := filepath.Join(resultsDir, name)
 		data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 		if err != nil {
-			h.Log(core.LogLevelWarn, "read result file %s: %v", name, err)
+			h.logger.Warnf("read result file %s: %v", name, err)
 			continue
 		}
 
 		var rf model.TaskResultFile
 		if err := yamlv3.Unmarshal(data, &rf); err != nil {
-			h.Log(core.LogLevelWarn, "parse result file %s: %v", name, err)
+			h.logger.Warnf("parse result file %s: %v", name, err)
 			continue
 		}
 
+		h.resultCache[name] = &resultFileEntry{modTime: modTime, file: &rf}
 		wID := strings.TrimSuffix(name, ".yaml")
 		result[wID] = &rf
 	}
+
+	// Evict cache entries for deleted files.
+	for name := range h.resultCache {
+		if _, exists := currentFiles[name]; !exists {
+			delete(h.resultCache, name)
+		}
+	}
+
 	return result
 }
 

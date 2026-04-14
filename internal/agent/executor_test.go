@@ -1155,3 +1155,49 @@ func TestExecutor_Close_WithLogFile(t *testing.T) {
 type closerFunc func() error
 
 func (f closerFunc) Close() error { return f() }
+
+// --- Fix: ErrBusyUndecided wrapping in execDeliver ---
+
+func TestExecute_ModeDeliver_Undecided_WrapsErrBusyUndecided(t *testing.T) {
+	t.Parallel()
+	mock := newExecMock()
+	mock.isShell = false
+	mock.currentCmd = "claude"
+	mock.captureContent = "working..."
+	mock.joinedContents = []string{"same-content", "same-content"} // stable → hash unchanged
+	exec, _ := newTestExecutorWithLog(mock)
+	exec.busyDetector.busyRegex = regexp.MustCompile(`working`)
+
+	result := exec.Execute(ExecRequest{
+		AgentID: "planner",
+		Message: "test message",
+		Mode:    ModeDeliver,
+	})
+	if result.Error == nil {
+		t.Fatal("expected error for undecided verdict")
+	}
+	if !errors.Is(result.Error, ErrBusyUndecided) {
+		t.Errorf("expected ErrBusyUndecided detectable via errors.Is(), got: %v", result.Error)
+	}
+	if !result.Retryable {
+		t.Error("expected Retryable=true for undecided verdict")
+	}
+}
+
+// --- Fix: Per-pane mutex in messageDeliverer ---
+
+func TestGetPaneMutex_Identity(t *testing.T) {
+	t.Parallel()
+	d := &messageDeliverer{}
+
+	mu1 := d.getPaneMutex("%0")
+	mu2 := d.getPaneMutex("%0")
+	if mu1 != mu2 {
+		t.Error("same pane target must return same mutex")
+	}
+
+	mu3 := d.getPaneMutex("%1")
+	if mu1 == mu3 {
+		t.Error("different pane targets must return different mutexes")
+	}
+}
