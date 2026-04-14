@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -213,12 +212,12 @@ func (d *Daemon) cleanup() {
 		tmux.SetDebugLogger(nil)
 		if d.tmuxLogFile != nil {
 			if err := d.tmuxLogFile.Close(); err != nil {
-				fmt.Fprintf(os.Stderr, "cleanup: close tmux log file: %v\n", err)
+				d.log(LogLevelError, "cleanup close_tmux_log error=%v", err)
 			}
 		}
 		if d.logFile != nil {
 			if err := d.logFile.Close(); err != nil {
-				fmt.Fprintf(os.Stderr, "cleanup: close log file: %v\n", err)
+				d.log(LogLevelError, "cleanup close_log error=%v", err)
 			}
 		}
 	})

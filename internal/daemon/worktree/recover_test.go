@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/msageha/maestro_v2/internal/daemon/core"
@@ -294,6 +295,62 @@ func TestResumeMerge_IdempotentWithConflictWorkers(t *testing.T) {
 	err := wm.ResumeMerge(cmdID)
 	if !errors.Is(err, ErrAlreadyResolved) {
 		t.Fatalf("second ResumeMerge err = %v, want ErrAlreadyResolved", err)
+	}
+}
+
+// TestCommitResolvedWorkerChanges_SkipsSensitiveFiles verifies that
+// commitResolvedWorkerChanges does not stage sensitive files (.env, *.key, etc.)
+// unlike the old git add -A approach.
+func TestCommitResolvedWorkerChanges_SkipsSensitiveFiles(t *testing.T) {
+	t.Parallel()
+	projectRoot := initTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	defer func() { _ = cleanupAll(wm) }()
+
+	cmdID := "cmd_recover_sensitive"
+	workerID := "worker1"
+	if err := createForCommand(wm, cmdID, []string{workerID}); err != nil {
+		t.Fatalf("createForCommand: %v", err)
+	}
+
+	ws, err := getState(wm, cmdID, workerID)
+	if err != nil {
+		t.Fatalf("getState: %v", err)
+	}
+
+	// Create normal and sensitive files in the worker worktree.
+	normalFile := filepath.Join(ws.Path, "resolved.go")
+	if err := os.WriteFile(normalFile, []byte("package resolved\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	sensitiveFiles := []string{".env", "server.key", "cert.pem", "credentials.json", "token.secret"}
+	for _, f := range sensitiveFiles {
+		if err := os.WriteFile(filepath.Join(ws.Path, f), []byte("SENSITIVE\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Set worker to conflict status (prerequisite for commitResolvedWorkerChanges).
+	wm.mu.Lock()
+	if err := wm.commitResolvedWorkerChanges(ws, cmdID); err != nil {
+		wm.mu.Unlock()
+		t.Fatalf("commitResolvedWorkerChanges: %v", err)
+	}
+	wm.mu.Unlock()
+
+	// Verify: check which files were committed.
+	committed, err := wm.gitOutputInDir(ws.Path, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
+	if err != nil {
+		t.Fatalf("diff-tree: %v", err)
+	}
+
+	if !strings.Contains(committed, "resolved.go") {
+		t.Errorf("resolved.go should be committed, got: %s", committed)
+	}
+	for _, f := range sensitiveFiles {
+		if strings.Contains(committed, f) {
+			t.Errorf("sensitive file %q should NOT be committed, got: %s", f, committed)
+		}
 	}
 }
 

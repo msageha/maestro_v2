@@ -1,15 +1,10 @@
 package daemon
 
 import (
-	"fmt"
-	"os"
 	"path/filepath"
-
-	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
-	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 // YAMLSignalStore is a file-backed implementation of worktree.SignalStore.
@@ -42,51 +37,37 @@ func (s *YAMLSignalStore) UpdateMergeConflictSignal(commandID, phaseID, workerID
 	defer s.lockMap.Unlock("queue:planner_signals")
 
 	path := filepath.Join(s.maestroDir, "queue", "planner_signals.yaml")
-	var sq model.PlannerSignalQueue
 
-	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
-	switch {
-	case err == nil:
-		if uerr := yamlv3.Unmarshal(data, &sq); uerr != nil {
-			return fmt.Errorf("parse planner_signals: %w", uerr)
+	return updateYAMLFile(path, func(sq *model.PlannerSignalQueue) error {
+		idx := -1
+		for i := range sq.Signals {
+			sig := &sq.Signals[i]
+			if sig.Kind == "merge_conflict" &&
+				sig.CommandID == commandID &&
+				sig.PhaseID == phaseID &&
+				sig.WorkerID == workerID {
+				idx = i
+				break
+			}
 		}
-	case os.IsNotExist(err):
-		// fall through with empty queue
-	default:
-		return fmt.Errorf("read planner_signals: %w", err)
-	}
 
-	idx := -1
-	for i := range sq.Signals {
-		sig := &sq.Signals[i]
-		if sig.Kind == "merge_conflict" &&
-			sig.CommandID == commandID &&
-			sig.PhaseID == phaseID &&
-			sig.WorkerID == workerID {
-			idx = i
-			break
+		var target *model.PlannerSignal
+		if idx >= 0 {
+			cp := sq.Signals[idx]
+			target = &cp
 		}
-	}
-
-	var target *model.PlannerSignal
-	if idx >= 0 {
-		cp := sq.Signals[idx]
-		target = &cp
-	}
-	if cbErr := fn(target); cbErr != nil {
-		return cbErr
-	}
-	if idx < 0 {
-		// No signal existed and fn accepted nil — nothing to persist.
+		if cbErr := fn(target); cbErr != nil {
+			return cbErr
+		}
+		if idx < 0 {
+			// No signal existed and fn accepted nil — nothing to persist.
+			return errNoUpdate
+		}
+		sq.Signals[idx] = *target
+		if sq.SchemaVersion == 0 {
+			sq.SchemaVersion = 1
+			sq.FileType = "planner_signal_queue"
+		}
 		return nil
-	}
-	sq.Signals[idx] = *target
-	if sq.SchemaVersion == 0 {
-		sq.SchemaVersion = 1
-		sq.FileType = "planner_signal_queue"
-	}
-	if err := yamlutil.AtomicWrite(path, sq); err != nil {
-		return fmt.Errorf("write planner_signals: %w", err)
-	}
-	return nil
+	})
 }

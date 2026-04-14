@@ -70,7 +70,7 @@ func (d *ReviewDispatcher) Dispatch(ctx context.Context, task model.Task, diffCo
 
 	d.mu.Lock()
 	d.activeReviews++
-	d.mu.Unlock()
+	defer d.mu.Unlock()
 
 	timeout := time.Duration(d.config.EffectiveTimeoutSec()) * time.Second
 	reviewCtx, cancel := context.WithTimeout(ctx, timeout)

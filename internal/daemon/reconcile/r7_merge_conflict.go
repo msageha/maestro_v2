@@ -47,21 +47,19 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 		commandID := strings.TrimSuffix(entry.Name(), ".yaml")
 		statePath := filepath.Join(worktreeDir, entry.Name())
 
-		lockKey := "worktree:" + commandID
-		r, n := func() ([]Repair, []DeferredNotification) {
-			run.Deps.LockMap.Lock(lockKey)
-			defer run.Deps.LockMap.Unlock(lockKey)
-
+		var r []Repair
+		var n []DeferredNotification
+		run.Deps.LockMap.WithLock("worktree:"+commandID, func() {
 			state, err := run.loadWorktreeState(statePath)
 			if err != nil {
 				if !os.IsNotExist(err) {
 					run.Log(core.LogLevelError, "R7 load_worktree_state command=%s error=%v", commandID, err)
 				}
-				return nil, nil
+				return
 			}
 
 			if state.Integration.Status != model.IntegrationStatusConflict {
-				return nil, nil
+				return
 			}
 
 			var commandRepairs []Repair
@@ -116,12 +114,14 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 				state.UpdatedAt = now
 				if err := yamlutil.AtomicWrite(statePath, state); err != nil {
 					run.Log(core.LogLevelError, "R7 write_worktree_state command=%s error=%v", commandID, err)
-					return commandRepairs, nil
+					r = commandRepairs
+					return
 				}
 			}
 
-			return commandRepairs, commandNotifications
-		}()
+			r = commandRepairs
+			n = commandNotifications
+		})
 
 		repairs = append(repairs, r...)
 		notifications = append(notifications, n...)

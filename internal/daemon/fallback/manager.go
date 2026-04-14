@@ -62,9 +62,14 @@ func NewManager(cfg Config) *Manager {
 	}
 }
 
+// essentialWorkerID is the worker allowed to operate in degraded/recovering mode.
+// In degraded mode, only this worker continues to receive dispatches to maintain
+// minimal system availability.
+const essentialWorkerID = "worker1"
+
 // IsWorkerAllowed reports whether the given worker is allowed to operate
 // in the current mode. In ModeNormal all workers are allowed. In
-// ModeDegraded and ModeRecovering only "worker1" is permitted.
+// ModeDegraded and ModeRecovering only essentialWorkerID is permitted.
 func (m *Manager) IsWorkerAllowed(workerID string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -72,7 +77,7 @@ func (m *Manager) IsWorkerAllowed(workerID string) bool {
 	if m.mode == ModeNormal {
 		return true
 	}
-	return workerID == "worker1"
+	return workerID == essentialWorkerID
 }
 
 // RecordSuccess records a successful operation for the given worker.

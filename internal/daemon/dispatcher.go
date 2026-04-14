@@ -244,25 +244,8 @@ func (disp *Dispatcher) DispatchCommand(cmd *model.Command) error {
 
 // DispatchTask dispatches a task to a worker agent.
 func (disp *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
-	// Pre-task quality gate check and record evaluation result
-	if disp.gateEvaluator.ShouldEvaluate() && disp.config.QualityGates.Enforcement.PreTaskCheck {
-		gateEvaluation, err := disp.gateEvaluator.EvaluatePreTask(task, workerID)
-
-		if err != nil {
-			if disp.config.QualityGates.Enforcement.FailureAction == "block" {
-				disp.log(LogLevelError, "dispatch_task_blocked_by_quality_gate id=%s worker=%s error=%v",
-					task.ID, workerID, err)
-				disp.gateEvaluator.StoreEvaluation(task.ID, gateEvaluation)
-				return fmt.Errorf("quality gate check failed: %w", err)
-			}
-			disp.log(LogLevelWarn, "dispatch_task_quality_gate_violation id=%s worker=%s error=%v",
-				task.ID, workerID, err)
-		}
-		disp.gateEvaluator.StoreEvaluation(task.ID, gateEvaluation)
-	} else if !disp.config.QualityGates.Enabled {
-		disp.gateEvaluator.StoreEvaluation(task.ID, disp.gateEvaluator.SkippedEvaluation("disabled"))
-	} else if disp.config.QualityGates.SkipGates {
-		disp.gateEvaluator.StoreEvaluation(task.ID, disp.gateEvaluator.SkippedEvaluation("emergency_mode"))
+	if err := disp.evaluateTaskQualityGate(task, workerID); err != nil {
+		return err
 	}
 
 	exec, err := disp.getExecutor()
@@ -278,36 +261,19 @@ func (disp *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 	}
 	dispatchTask.Content = enrichedContent
 
-	// Resolve working_dir for worktree-enabled commands (lazy creation)
-	var workingDir string
-	wm := disp.getWorktreeManager()
-	if wm != nil {
-		wtPath, err := wm.GetWorkerPath(task.CommandID, workerID)
-		if err != nil {
-			// Worktree doesn't exist yet — lazily create for this worker
-			if createErr := wm.EnsureWorkerWorktree(task.CommandID, workerID); createErr != nil {
-				disp.log(LogLevelError, "worktree_create_failed task=%s worker=%s error=%v",
-					task.ID, workerID, createErr)
-				return fmt.Errorf("worktree path resolution failed: %w", createErr)
-			}
-			wtPath, err = wm.GetWorkerPath(task.CommandID, workerID)
-		}
-		if err != nil {
-			disp.log(LogLevelError, "worktree_path_resolve_failed task=%s worker=%s error=%v",
-				task.ID, workerID, err)
-			return fmt.Errorf("worktree path resolution failed: %w", err)
-		}
-		workingDir = wtPath
+	workingDir, err := disp.resolveTaskWorkingDir(task, workerID)
+	if err != nil {
+		return err
 	}
 
-	envelope := envelope.BuildWorkerEnvelope(dispatchTask, workerID, task.LeaseEpoch, task.Attempts)
+	env := envelope.BuildWorkerEnvelope(dispatchTask, workerID, task.LeaseEpoch, task.Attempts)
 	if workingDir != "" {
-		envelope = fmt.Sprintf("%s\nworking_dir: %s", envelope, workingDir)
+		env = fmt.Sprintf("%s\nworking_dir: %s", env, workingDir)
 	}
 
 	result := exec.Execute(agent.ExecRequest{
 		AgentID:    workerID,
-		Message:    envelope,
+		Message:    env,
 		Mode:       agent.ModeWithClear,
 		TaskID:     task.ID,
 		CommandID:  task.CommandID,
@@ -325,7 +291,6 @@ func (disp *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 	disp.log(LogLevelInfo, "dispatch_task_success id=%s worker=%s epoch=%d",
 		task.ID, workerID, task.LeaseEpoch)
 
-	// Publish task_started event (non-blocking, best-effort)
 	disp.publishEvent(events.EventTaskStarted, map[string]interface{}{
 		"task_id":    task.ID,
 		"command_id": task.CommandID,
@@ -334,6 +299,56 @@ func (disp *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 	})
 
 	return nil
+}
+
+// evaluateTaskQualityGate runs the pre-task quality gate check and records
+// the evaluation result. Returns an error only when enforcement is "block".
+func (disp *Dispatcher) evaluateTaskQualityGate(task *model.Task, workerID string) error {
+	if disp.gateEvaluator.ShouldEvaluate() && disp.config.QualityGates.Enforcement.PreTaskCheck {
+		gateEvaluation, err := disp.gateEvaluator.EvaluatePreTask(task, workerID)
+		if err != nil {
+			if disp.config.QualityGates.Enforcement.FailureAction == "block" {
+				disp.log(LogLevelError, "dispatch_task_blocked_by_quality_gate id=%s worker=%s error=%v",
+					task.ID, workerID, err)
+				disp.gateEvaluator.StoreEvaluation(task.ID, gateEvaluation)
+				return fmt.Errorf("quality gate check failed: %w", err)
+			}
+			disp.log(LogLevelWarn, "dispatch_task_quality_gate_violation id=%s worker=%s error=%v",
+				task.ID, workerID, err)
+		}
+		disp.gateEvaluator.StoreEvaluation(task.ID, gateEvaluation)
+	} else if !disp.config.QualityGates.Enabled {
+		disp.gateEvaluator.StoreEvaluation(task.ID, disp.gateEvaluator.SkippedEvaluation("disabled"))
+	} else if disp.config.QualityGates.SkipGates {
+		disp.gateEvaluator.StoreEvaluation(task.ID, disp.gateEvaluator.SkippedEvaluation("emergency_mode"))
+	}
+	return nil
+}
+
+// resolveTaskWorkingDir resolves the working directory for a task, creating
+// the worktree lazily if needed. Returns empty string when worktree mode is
+// not active.
+func (disp *Dispatcher) resolveTaskWorkingDir(task *model.Task, workerID string) (string, error) {
+	wm := disp.getWorktreeManager()
+	if wm == nil {
+		return "", nil
+	}
+
+	wtPath, err := wm.GetWorkerPath(task.CommandID, workerID)
+	if err != nil {
+		if createErr := wm.EnsureWorkerWorktree(task.CommandID, workerID); createErr != nil {
+			disp.log(LogLevelError, "worktree_create_failed task=%s worker=%s error=%v",
+				task.ID, workerID, createErr)
+			return "", fmt.Errorf("worktree path resolution failed: %w", createErr)
+		}
+		wtPath, err = wm.GetWorkerPath(task.CommandID, workerID)
+	}
+	if err != nil {
+		disp.log(LogLevelError, "worktree_path_resolve_failed task=%s worker=%s error=%v",
+			task.ID, workerID, err)
+		return "", fmt.Errorf("worktree path resolution failed: %w", err)
+	}
+	return wtPath, nil
 }
 
 // DispatchNotification dispatches a notification to the orchestrator agent.

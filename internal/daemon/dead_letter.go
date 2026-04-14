@@ -8,8 +8,6 @@ import (
 	"sort"
 	"time"
 
-	yamlv3 "gopkg.in/yaml.v3"
-
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -319,32 +317,19 @@ func (dlp *DeadLetterProcessor) commandDeadLetterPostProcess(commandID, reason s
 	dlp.lockMap.Lock(lockKey)
 	defer dlp.lockMap.Unlock(lockKey)
 
-	data, err := os.ReadFile(statePath) //nolint:gosec // statePath is constructed from a controlled application state directory
-	if err != nil {
-		if !os.IsNotExist(err) {
-			dlp.log(LogLevelError, "dead_letter_post_process read_state command=%s error=%v", commandID, err)
+	if err := updateYAMLFile(statePath, func(state *model.CommandState) error {
+		// File didn't exist → zero-value, nothing to update
+		if state.SchemaVersion == 0 && state.CommandID == "" {
+			return errNoUpdate
 		}
-		// State missing or unreadable — still notify orchestrator
-		dlp.bufferDeadLetterOrchestratorNotification(commandID, reason)
-		return
-	}
-
-	var state model.CommandState
-	if err := yamlv3.Unmarshal(data, &state); err != nil {
-		dlp.log(LogLevelError, "dead_letter_post_process parse_state command=%s error=%v", commandID, err)
-		// Parse failure — still notify orchestrator
-		dlp.bufferDeadLetterOrchestratorNotification(commandID, reason)
-		return
-	}
-
-	if model.IsPlanTerminal(state.PlanStatus) {
-		return
-	}
-
-	state.PlanStatus = model.PlanStatusFailed
-	now := dlp.clock.Now().UTC().Format(time.RFC3339)
-	state.UpdatedAt = now
-	if err := yamlutil.AtomicWrite(statePath, &state); err != nil {
+		if model.IsPlanTerminal(state.PlanStatus) {
+			return errNoUpdate
+		}
+		state.PlanStatus = model.PlanStatusFailed
+		now := dlp.clock.Now().UTC().Format(time.RFC3339)
+		state.UpdatedAt = now
+		return nil
+	}); err != nil {
 		dlp.log(LogLevelError, "dead_letter_state_update command=%s error=%v", commandID, err)
 	}
 
@@ -393,28 +378,22 @@ func (dlp *DeadLetterProcessor) taskDeadLetterPostProcess(commandID, taskID, wor
 	defer dlp.lockMap.Unlock(lockKey)
 
 	// Phase 1: Update state — task_states[taskID] = failed
-	data, err := os.ReadFile(statePath) //nolint:gosec // statePath is constructed from a controlled application state directory
-	if err != nil {
-		if !os.IsNotExist(err) {
-			dlp.log(LogLevelError, "dead_letter_post_process read_state command=%s task=%s error=%v", commandID, taskID, err)
+	if err := updateYAMLFile(statePath, func(state *model.CommandState) error {
+		if state.SchemaVersion == 0 && state.CommandID == "" {
+			return errNoUpdate
 		}
-	} else {
-		var state model.CommandState
-		if err := yamlv3.Unmarshal(data, &state); err != nil {
-			dlp.log(LogLevelError, "dead_letter_post_process parse_state command=%s task=%s error=%v", commandID, taskID, err)
-		} else {
-			if state.TaskStates == nil {
-				state.TaskStates = make(map[string]model.Status)
-			}
-			if !model.IsTerminal(state.TaskStates[taskID]) {
-				state.TaskStates[taskID] = model.StatusFailed
-				now := dlp.clock.Now().UTC().Format(time.RFC3339)
-				state.UpdatedAt = now
-				if err := yamlutil.AtomicWrite(statePath, &state); err != nil {
-					dlp.log(LogLevelError, "dead_letter_state_task_update command=%s task=%s error=%v", commandID, taskID, err)
-				}
-			}
+		if state.TaskStates == nil {
+			state.TaskStates = make(map[string]model.Status)
 		}
+		if model.IsTerminal(state.TaskStates[taskID]) {
+			return errNoUpdate
+		}
+		state.TaskStates[taskID] = model.StatusFailed
+		now := dlp.clock.Now().UTC().Format(time.RFC3339)
+		state.UpdatedAt = now
+		return nil
+	}); err != nil {
+		dlp.log(LogLevelError, "dead_letter_state_task_update command=%s task=%s error=%v", commandID, taskID, err)
 	}
 
 	// Phase 2: Write synthetic failed result to results/worker{N}.yaml
@@ -425,46 +404,35 @@ func (dlp *DeadLetterProcessor) taskDeadLetterPostProcess(commandID, taskID, wor
 	dlp.lockMap.Lock(resultLockKey)
 	defer dlp.lockMap.Unlock(resultLockKey)
 
-	var rf model.TaskResultFile
-	resultData, err := os.ReadFile(resultPath) //nolint:gosec // resultPath is constructed from a controlled application results directory
-	if err != nil {
-		if !os.IsNotExist(err) {
-			dlp.log(LogLevelError, "dead_letter_read_result worker=%s task=%s error=%v", workerID, taskID, err)
-			return
+	if err := updateYAMLFile(resultPath, func(rf *model.TaskResultFile) error {
+		if rf.SchemaVersion == 0 {
+			rf.SchemaVersion = 1
+			rf.FileType = "result_task"
 		}
-		rf.SchemaVersion = 1
-		rf.FileType = "result_task"
-	} else {
-		if err := yamlv3.Unmarshal(resultData, &rf); err != nil {
-			dlp.log(LogLevelError, "dead_letter_unmarshal_result worker=%s task=%s error=%v", workerID, taskID, err)
-			return
+
+		// Check idempotency (don't add duplicate synthetic result)
+		for _, r := range rf.Results {
+			if r.TaskID == taskID && model.IsTerminal(r.Status) {
+				return errNoUpdate
+			}
 		}
-	}
 
-	// Check idempotency (don't add duplicate synthetic result)
-	for _, r := range rf.Results {
-		if r.TaskID == taskID && model.IsTerminal(r.Status) {
-			return
+		resID, err := model.GenerateID(model.IDTypeResult)
+		if err != nil {
+			return fmt.Errorf("generate result ID: %w", err)
 		}
-	}
 
-	resID, err := model.GenerateID(model.IDTypeResult)
-	if err != nil {
-		dlp.log(LogLevelError, "dead_letter_generate_result_id worker=%s task=%s error=%v", workerID, taskID, err)
-		return
-	}
-
-	now := dlp.clock.Now().UTC().Format(time.RFC3339)
-	rf.Results = append(rf.Results, model.TaskResult{
-		ID:        resID,
-		TaskID:    taskID,
-		CommandID: commandID,
-		Status:    model.StatusFailed,
-		Summary:   "dead-lettered: dispatch retry exhausted",
-		CreatedAt: now,
-	})
-
-	if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
+		now := dlp.clock.Now().UTC().Format(time.RFC3339)
+		rf.Results = append(rf.Results, model.TaskResult{
+			ID:        resID,
+			TaskID:    taskID,
+			CommandID: commandID,
+			Status:    model.StatusFailed,
+			Summary:   "dead-lettered: dispatch retry exhausted",
+			CreatedAt: now,
+		})
+		return nil
+	}); err != nil {
 		dlp.log(LogLevelError, "dead_letter_synthetic_result worker=%s task=%s error=%v", workerID, taskID, err)
 	}
 }

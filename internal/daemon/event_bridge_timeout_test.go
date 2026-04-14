@@ -24,7 +24,7 @@ func TestEventBridge_RunWithTimeout_FastCallback(t *testing.T) {
 
 	eb := &EventBridge{d: d}
 
-	ok := eb.runWithTimeout("test_fast", func() {
+	ok := eb.runWithTimeout("test_fast", func(_ context.Context) {
 		// completes instantly
 	})
 	if !ok {

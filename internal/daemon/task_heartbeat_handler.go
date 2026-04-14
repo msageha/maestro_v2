@@ -90,6 +90,10 @@ func (h *TaskHeartbeatHandler) Handle(params json.RawMessage) *uds.Response {
 	if p.Epoch < 0 {
 		return uds.ErrorResponse(uds.ErrCodeValidation, "epoch must be non-negative")
 	}
+	// Validate task ID format to reject path traversal and unsafe characters
+	if err := validate.ID(p.TaskID); err != nil {
+		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid task ID: %v", err))
+	}
 	// Validate worker ID to prevent path traversal
 	if !validate.IsValidBaseName(p.WorkerID) {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid worker ID: %q", p.WorkerID))
@@ -98,6 +102,11 @@ func (h *TaskHeartbeatHandler) Handle(params json.RawMessage) *uds.Response {
 	// Find the queue file for this worker
 	queueFile := fmt.Sprintf("queue/%s.yaml", p.WorkerID)
 	queuePath := filepath.Join(h.maestroDir, queueFile)
+
+	// Path boundary check: ensure constructed path stays within maestroDir
+	if rel, err := filepath.Rel(h.maestroDir, queuePath); err != nil || strings.HasPrefix(rel, "..") {
+		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("queue path escapes maestro directory: %q", p.WorkerID))
+	}
 
 	// M-2 fix: Use blocking RLock instead of TryRLock to prevent TOCTOU race.
 	// When Phase C holds scanMu exclusively, it rewrites worker queue files without

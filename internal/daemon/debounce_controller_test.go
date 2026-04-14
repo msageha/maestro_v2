@@ -8,6 +8,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestDebounceController_StopTimeout(t *testing.T) {
@@ -33,8 +35,10 @@ func TestDebounceController_StopTimeout(t *testing.T) {
 
 	dc.Trigger("test_trigger")
 
-	// Wait briefly for the timer to fire and the callback to start.
-	time.Sleep(100 * time.Millisecond)
+	// Poll until the callback is running instead of a fixed sleep.
+	require.Eventually(t, func() bool {
+		return dc.running.Load()
+	}, 5*time.Second, 10*time.Millisecond, "callback did not start running")
 
 	// Stop should return within ~5s due to the timeout, not block forever.
 	stopDone := make(chan struct{})
@@ -79,8 +83,13 @@ func TestDebounceController_StopNormalCompletion(t *testing.T) {
 
 	dc.Trigger("test_trigger")
 
-	// Wait for callback to finish.
-	time.Sleep(200 * time.Millisecond)
+	// Wait for callback to start, then finish, instead of a fixed sleep.
+	require.Eventually(t, func() bool {
+		return dc.running.Load()
+	}, 5*time.Second, 10*time.Millisecond, "callback did not start running")
+	require.Eventually(t, func() bool {
+		return !dc.running.Load()
+	}, 5*time.Second, 10*time.Millisecond, "callback did not finish")
 
 	dc.Stop()
 

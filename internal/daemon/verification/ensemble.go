@@ -97,10 +97,6 @@ func (v *Verifier) Aggregate(results []PerspectiveResult) AggregatedResult {
 			weightedSum += w
 		} else {
 			allPassed = false
-			if w >= 1.0 {
-				// Critical perspective failed — force overall failure.
-				allPassed = false
-			}
 		}
 	}
 

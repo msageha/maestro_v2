@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"runtime/debug"
 	"time"
 
@@ -45,7 +46,7 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 			return
 		}
 
-		eb.runWithTimeout("task_started", func() {
+		eb.runWithTimeout("task_started", func(_ context.Context) {
 			d.qualityGateDaemon.EmitEvent(TaskStartEvent{
 				TaskID:    taskID,
 				CommandID: commandID,
@@ -83,7 +84,7 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 			return
 		}
 
-		eb.runWithTimeout("task_completed", func() {
+		eb.runWithTimeout("task_completed", func(_ context.Context) {
 			d.qualityGateDaemon.EmitEvent(TaskCompleteEvent{
 				TaskID:      taskID,
 				CommandID:   commandID,
@@ -112,7 +113,7 @@ func (eb *EventBridge) subscribeQualityGateEvents() {
 			return
 		}
 
-		eb.runWithTimeout("phase_transition", func() {
+		eb.runWithTimeout("phase_transition", func(_ context.Context) {
 			d.qualityGateDaemon.EmitEvent(PhaseTransitionEvent{
 				PhaseID:        phaseID,
 				CommandID:      commandID,
@@ -148,9 +149,14 @@ func (eb *EventBridge) subscribeQueueWrittenEvents() {
 }
 
 // runWithTimeout executes fn with a timeout. Returns true if fn completed within
-// the deadline, false if it timed out. Panics inside fn are recovered, logged,
+// the deadline, false if it timed out. A context derived from the daemon's
+// context with the timeout applied is passed to fn, allowing it to observe
+// cancellation and exit promptly. Panics inside fn are recovered, logged,
 // and trigger a daemon shutdown (matching the original callback behavior).
-func (eb *EventBridge) runWithTimeout(callbackName string, fn func()) bool {
+func (eb *EventBridge) runWithTimeout(callbackName string, fn func(ctx context.Context)) bool {
+	ctx, cancel := context.WithTimeout(eb.d.ctx, eventBridgeCallbackTimeout)
+	defer cancel()
+
 	done := make(chan struct{})
 	go func() {
 		defer func() {
@@ -160,13 +166,13 @@ func (eb *EventBridge) runWithTimeout(callbackName string, fn func()) bool {
 			}
 			close(done)
 		}()
-		fn()
+		fn(ctx)
 	}()
 
 	select {
 	case <-done:
 		return true
-	case <-time.After(eventBridgeCallbackTimeout):
+	case <-ctx.Done():
 		eb.d.log(LogLevelError, "event_bridge callback timeout type=%s timeout=%s", callbackName, eventBridgeCallbackTimeout)
 		return false
 	}

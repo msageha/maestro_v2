@@ -377,3 +377,309 @@ func TestDashboardFormatter_Template(t *testing.T) {
 	assert.Contains(t, output, "Total Tasks | 10")
 	assert.Contains(t, output, "Completed | 7 (70.0%)")
 }
+
+func TestDashboardFormatter_CalculateStats_EdgeCases(t *testing.T) {
+	t.Parallel()
+	formatter := &DashboardFormatter{}
+
+	testCases := []struct {
+		name            string
+		total           int
+		completed       int
+		failed          int
+		expectedRate    float64
+	}{
+		{
+			name:         "zero total tasks",
+			total:        0,
+			completed:    0,
+			failed:       0,
+			expectedRate: 0,
+		},
+		{
+			name:         "all completed",
+			total:        10,
+			completed:    10,
+			failed:       0,
+			expectedRate: 100.0,
+		},
+		{
+			name:         "all failed",
+			total:        10,
+			completed:    0,
+			failed:       10,
+			expectedRate: 0,
+		},
+		{
+			name:         "mixed with large numbers",
+			total:        10000,
+			completed:    7777,
+			failed:       2223,
+			expectedRate: 77.77,
+		},
+		{
+			name:         "single task completed",
+			total:        1,
+			completed:    1,
+			failed:       0,
+			expectedRate: 100.0,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			data := &DashboardData{
+				Stats: DashboardStats{
+					TotalTasks:     tc.total,
+					CompletedTasks: tc.completed,
+					FailedTasks:    tc.failed,
+				},
+			}
+
+			formatter.calculateStats(data)
+
+			assert.InDelta(t, tc.expectedRate, data.Stats.TaskSuccessRate, 0.01,
+				"success rate mismatch for %s", tc.name)
+		})
+	}
+}
+
+func TestDashboardFormatter_ExtractEvent_MissingFields(t *testing.T) {
+	t.Parallel()
+	formatter := &DashboardFormatter{}
+
+	testCases := []struct {
+		name            string
+		entry           events.LogEntry
+		expectedStatus  string
+		expectedSummary string
+		expectedIsError bool
+		expectedIsWarn  bool
+	}{
+		{
+			name: "empty details map",
+			entry: events.LogEntry{
+				Timestamp: time.Now(),
+				EventType: "task_created",
+				TaskID:    "task_100",
+				Details:   map[string]interface{}{},
+			},
+			expectedStatus:  "",
+			expectedSummary: "",
+			expectedIsError: false,
+			expectedIsWarn:  false,
+		},
+		{
+			name: "nil details map",
+			entry: events.LogEntry{
+				Timestamp: time.Now(),
+				EventType: "task_started",
+				TaskID:    "task_200",
+				Details:   nil,
+			},
+			expectedStatus:  "",
+			expectedSummary: "",
+			expectedIsError: false,
+			expectedIsWarn:  false,
+		},
+		{
+			name: "only message key",
+			entry: events.LogEntry{
+				Timestamp: time.Now(),
+				EventType: "task_created",
+				TaskID:    "task_300",
+				Details: map[string]interface{}{
+					"message": "Something happened",
+				},
+			},
+			expectedStatus:  "",
+			expectedSummary: "Something happened",
+			expectedIsError: false,
+			expectedIsWarn:  false,
+		},
+		{
+			name: "only error key",
+			entry: events.LogEntry{
+				Timestamp: time.Now(),
+				EventType: "task_created",
+				TaskID:    "task_400",
+				Details: map[string]interface{}{
+					"error": "Connection refused",
+				},
+			},
+			expectedStatus:  "",
+			expectedSummary: "Connection refused",
+			expectedIsError: false,
+			expectedIsWarn:  false,
+		},
+		{
+			name: "task_failed sets IsError true",
+			entry: events.LogEntry{
+				Timestamp: time.Now(),
+				EventType: "task_failed",
+				TaskID:    "task_500",
+				Details: map[string]interface{}{
+					"error": "Disk full",
+				},
+			},
+			expectedStatus:  "",
+			expectedSummary: "Disk full",
+			expectedIsError: true,
+			expectedIsWarn:  false,
+		},
+		{
+			name: "lease_warning sets IsWarning true",
+			entry: events.LogEntry{
+				Timestamp: time.Now(),
+				EventType: "lease_warning",
+				TaskID:    "task_600",
+				Details: map[string]interface{}{
+					"message": "Lease expiring",
+				},
+			},
+			expectedStatus:  "",
+			expectedSummary: "Lease expiring",
+			expectedIsError: false,
+			expectedIsWarn:  true,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			event := formatter.extractEvent(tc.entry)
+
+			assert.Equal(t, tc.entry.Timestamp, event.Timestamp)
+			assert.Equal(t, tc.entry.EventType, event.EventType)
+			assert.Equal(t, tc.entry.TaskID, event.TaskID)
+			assert.Equal(t, tc.entry.AgentID, event.AgentID)
+			assert.Equal(t, tc.expectedStatus, event.Status)
+			assert.Equal(t, tc.expectedSummary, event.Summary)
+			assert.Equal(t, tc.expectedIsError, event.IsError)
+			assert.Equal(t, tc.expectedIsWarn, event.IsWarning)
+		})
+	}
+}
+
+func TestDashboardFormatter_LimitEvents_BelowMax(t *testing.T) {
+	t.Parallel()
+	formatter := &DashboardFormatter{
+		maxEvents:   10,
+		maxErrors:   10,
+		maxWarnings: 10,
+	}
+
+	data := &DashboardData{
+		RecentEvents:   make([]DashboardEvent, 3),
+		RecentErrors:   make([]DashboardEvent, 2),
+		RecentWarnings: make([]DashboardEvent, 1),
+	}
+
+	formatter.limitEvents(data)
+
+	assert.Len(t, data.RecentEvents, 3, "events should not be truncated when below max")
+	assert.Len(t, data.RecentErrors, 2, "errors should not be truncated when below max")
+	assert.Len(t, data.RecentWarnings, 1, "warnings should not be truncated when below max")
+}
+
+func TestDashboardFormatter_LimitEvents_ExactMax(t *testing.T) {
+	t.Parallel()
+	formatter := &DashboardFormatter{
+		maxEvents:   5,
+		maxErrors:   3,
+		maxWarnings: 4,
+	}
+
+	data := &DashboardData{
+		RecentEvents:   make([]DashboardEvent, 5),
+		RecentErrors:   make([]DashboardEvent, 3),
+		RecentWarnings: make([]DashboardEvent, 4),
+	}
+
+	formatter.limitEvents(data)
+
+	assert.Len(t, data.RecentEvents, 5, "events should not be truncated at exactly max")
+	assert.Len(t, data.RecentErrors, 3, "errors should not be truncated at exactly max")
+	assert.Len(t, data.RecentWarnings, 4, "warnings should not be truncated at exactly max")
+}
+
+func TestDashboardFormatter_FormatDashboard_WithStateFiles(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	logsDir := filepath.Join(tmpDir, "logs")
+	require.NoError(t, os.MkdirAll(logsDir, 0755))
+	fixTestDirPerms(t, tmpDir)
+
+	// Create both log file and state files
+	logPath := filepath.Join(logsDir, "maestro.jsonl")
+	createSampleLogFile(t, logPath)
+	createSampleStateFiles(t, tmpDir)
+
+	formatter := NewDashboardFormatter(tmpDir)
+
+	output, err := formatter.FormatDashboard()
+	require.NoError(t, err)
+	assert.NotEmpty(t, output)
+
+	// Verify specific stat values from state files (2 tasks: 1 completed, 1 in_progress)
+	assert.Contains(t, output, "Total Tasks | 2")
+	assert.Contains(t, output, "Completed | 1 (50.0%)")
+	assert.Contains(t, output, "Failed | 0")
+	assert.Contains(t, output, "In Progress | 1")
+
+	// Verify log-based events appear with concrete details
+	assert.Contains(t, output, "task_completed")
+	assert.Contains(t, output, "task_failed")
+	assert.Contains(t, output, "worker1")
+	assert.Contains(t, output, "worker2")
+
+	// Verify error and warning counts from log parsing
+	assert.Contains(t, output, "Errors | 1")
+	assert.Contains(t, output, "Warnings | 2")
+}
+
+func TestDashboardFormatter_SortEvents_AlreadySorted(t *testing.T) {
+	t.Parallel()
+	formatter := &DashboardFormatter{}
+
+	now := time.Now()
+	data := &DashboardData{
+		RecentEvents: []DashboardEvent{
+			{Timestamp: now, EventType: "first"},
+			{Timestamp: now.Add(-1 * time.Minute), EventType: "second"},
+			{Timestamp: now.Add(-2 * time.Minute), EventType: "third"},
+		},
+	}
+
+	formatter.sortEvents(data)
+
+	// Verify order is preserved (already most-recent-first)
+	assert.Equal(t, "first", data.RecentEvents[0].EventType)
+	assert.Equal(t, "second", data.RecentEvents[1].EventType)
+	assert.Equal(t, "third", data.RecentEvents[2].EventType)
+
+	// Verify timestamps remain in descending order
+	assert.True(t, data.RecentEvents[0].Timestamp.After(data.RecentEvents[1].Timestamp))
+	assert.True(t, data.RecentEvents[1].Timestamp.After(data.RecentEvents[2].Timestamp))
+}
+
+func TestDashboardFormatter_SortEvents_Empty(t *testing.T) {
+	t.Parallel()
+	formatter := &DashboardFormatter{}
+
+	data := &DashboardData{
+		RecentEvents:   []DashboardEvent{},
+		RecentErrors:   []DashboardEvent{},
+		RecentWarnings: []DashboardEvent{},
+	}
+
+	// Should not panic on empty slices
+	assert.NotPanics(t, func() {
+		formatter.sortEvents(data)
+	})
+
+	assert.Empty(t, data.RecentEvents)
+	assert.Empty(t, data.RecentErrors)
+	assert.Empty(t, data.RecentWarnings)
+}

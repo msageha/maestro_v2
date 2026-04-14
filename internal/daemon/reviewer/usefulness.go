@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 )
@@ -49,7 +50,7 @@ type UsefulnessTracker struct {
 // NewUsefulnessTracker creates a tracker that persists to dir/reviewer_usefulness.jsonl.
 // If the file already exists, existing records are loaded into memory.
 func NewUsefulnessTracker(dir string) (*UsefulnessTracker, error) {
-	filePath := dir + "/reviewer_usefulness.jsonl"
+	filePath := filepath.Join(dir, "reviewer_usefulness.jsonl")
 	t := &UsefulnessTracker{
 		filePath: filePath,
 	}
@@ -161,7 +162,8 @@ func (t *UsefulnessTracker) load() error {
 		}
 		var rec UsefulnessRecord
 		if err := json.Unmarshal(line, &rec); err != nil {
-			continue // skip malformed lines
+			log.Printf("[WARN] usefulness load: skipping malformed JSON line: %v", err)
+			continue
 		}
 		t.records = append(t.records, rec)
 	}

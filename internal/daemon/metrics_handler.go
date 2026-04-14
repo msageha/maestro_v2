@@ -2,12 +2,29 @@ package daemon
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/metrics"
 	"github.com/msageha/maestro_v2/internal/model"
 )
+
+// metricsLogAdapter adapts a core.DaemonLogger to the metrics.Logger interface.
+type metricsLogAdapter struct {
+	dl *core.DaemonLogger
+}
+
+func (a *metricsLogAdapter) Warnf(format string, args ...any) {
+	a.dl.Logf(core.LogLevelWarn, format, args...)
+}
+
+// newMetricsHandler creates a metrics.Handler bridging daemon logging to the metrics.Logger interface.
+func newMetricsHandler(maestroDir string, cfg model.Config, logger *log.Logger, logLevel core.LogLevel, clock metrics.Clock) *metrics.Handler {
+	dl := core.NewDaemonLoggerFromLegacy("metrics", logger, logLevel)
+	return metrics.NewHandler(maestroDir, cfg, &metricsLogAdapter{dl: dl}, clock)
+}
 
 // taskQueuesToSnapshots converts daemon-internal taskQueueEntry map to
 // a slice of metrics.TaskQueueSnapshot for the metrics package.

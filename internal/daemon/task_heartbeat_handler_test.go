@@ -832,6 +832,82 @@ func TestHeartbeatTimeout(t *testing.T) {
 	}
 }
 
+// TestHeartbeat_InvalidTaskID tests that task IDs with path traversal or
+// unsafe characters are rejected by validate.ID.
+func TestHeartbeat_InvalidTaskID(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	handler := newTestHeartbeatHandler(t, d)
+
+	testCases := []struct {
+		name   string
+		taskID string
+	}{
+		{"path traversal", "../task_evil"},
+		{"slash", "task/evil"},
+		{"null byte", "task\x00evil"},
+		{"empty spaces only", " "},
+		{"backslash", "task\\evil"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req := makeHeartbeatRequest(t, TaskHeartbeatParams{
+				TaskID:   tc.taskID,
+				WorkerID: "worker1",
+				Epoch:    1,
+			})
+
+			resp := handler.Handle(req.Params)
+
+			if resp.Success {
+				t.Errorf("heartbeat should have failed for invalid task ID: %q", tc.taskID)
+			}
+			if resp.Error == nil || resp.Error.Code != uds.ErrCodeValidation {
+				t.Errorf("expected validation error for invalid task ID, got: %v", resp.Error)
+			}
+		})
+	}
+}
+
+// TestHeartbeat_PathBoundaryCheck tests that the queue path stays within maestroDir.
+func TestHeartbeat_PathBoundaryCheck(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	handler := newTestHeartbeatHandler(t, d)
+
+	// Worker IDs that pass IsValidBaseName but could be suspicious
+	testCases := []struct {
+		name     string
+		workerID string
+	}{
+		{"dot dot", ".."},
+		{"path traversal", "../etc"},
+		{"with separator", "worker/../../etc"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req := makeHeartbeatRequest(t, TaskHeartbeatParams{
+				TaskID:   "task_0000000001_abcdef01",
+				WorkerID: tc.workerID,
+				Epoch:    1,
+			})
+
+			resp := handler.Handle(req.Params)
+
+			if resp.Success {
+				t.Errorf("heartbeat should have failed for worker ID %q", tc.workerID)
+			}
+			if resp.Error == nil || resp.Error.Code != uds.ErrCodeValidation {
+				t.Errorf("expected validation error, got: %v", resp.Error)
+			}
+		})
+	}
+}
+
 // TestHeartbeatExtension tests lease extension boundary conditions
 func TestHeartbeatExtension(t *testing.T) {
 	t.Parallel()

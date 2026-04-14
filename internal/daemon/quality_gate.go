@@ -188,9 +188,18 @@ func (qg *QualityGateDaemon) Stop() error {
 
 // EmitEvent sends an event to the quality gate daemon for processing.
 // This is a non-blocking operation; events are queued in a buffered channel.
-// Safe to call from multiple goroutines. Uses a two-stage select pattern to
-// prioritize ctx.Done() over channel send, eliminating the TOCTOU race between
-// the stopped flag check and the send operation.
+// Safe to call from multiple goroutines.
+//
+// Two-stage select pattern rationale:
+// A single select{case <-ctx.Done(); case ch<-event; default} would suffice
+// functionally, but Go's select picks a ready case at random. Under heavy load
+// this means ctx.Done() and the channel send compete with equal priority, so a
+// cancelled context may not be noticed promptly. The two-stage approach
+// eliminates this TOCTOU window:
+//   - Stage 1 (non-blocking ctx check): guarantees we observe cancellation that
+//     happened before we enter stage 2.
+//   - Stage 2 (ctx + send + default): handles cancellation that races with the
+//     send attempt itself.
 func (qg *QualityGateDaemon) EmitEvent(event QualityGateEvent) {
 	// Auxiliary guard: best-effort early exit when already stopped.
 	if qg.stopped.Load() {

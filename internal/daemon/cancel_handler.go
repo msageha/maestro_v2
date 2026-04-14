@@ -4,16 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"time"
-
-	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
-	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 // CancelHandler processes cancellation of commands and their tasks.
@@ -177,29 +173,20 @@ func (ch *CancelHandler) cancelAutoCompletePostProcess(commandID string) {
 	ch.lockMap.Lock(lockKey)
 	defer ch.lockMap.Unlock(lockKey)
 
-	data, err := os.ReadFile(statePath) //nolint:gosec // statePath is constructed from a controlled application state directory
-	if err != nil {
-		if !os.IsNotExist(err) {
-			ch.log(LogLevelWarn, "cancel_auto_complete_post read_state command=%s error=%v", commandID, err)
+	if err := updateYAMLFile(statePath, func(state *model.CommandState) error {
+		// File didn't exist → zero-value, nothing to update
+		if state.SchemaVersion == 0 && state.CommandID == "" {
+			return errNoUpdate
 		}
-		return
-	}
-
-	var state model.CommandState
-	if err := yamlv3.Unmarshal(data, &state); err != nil {
-		ch.log(LogLevelWarn, "cancel_auto_complete_post parse_state command=%s error=%v", commandID, err)
-		return
-	}
-
-	if model.IsPlanTerminal(state.PlanStatus) {
-		return
-	}
-
-	state.PlanStatus = model.PlanStatusCancelled
-	now := ch.clock.Now().UTC().Format(time.RFC3339)
-	state.UpdatedAt = now
-	if err := yamlutil.AtomicWrite(statePath, &state); err != nil {
-		ch.log(LogLevelError, "cancel_auto_complete_post write_state command=%s error=%v", commandID, err)
+		if model.IsPlanTerminal(state.PlanStatus) {
+			return errNoUpdate
+		}
+		state.PlanStatus = model.PlanStatusCancelled
+		now := ch.clock.Now().UTC().Format(time.RFC3339)
+		state.UpdatedAt = now
+		return nil
+	}); err != nil {
+		ch.log(LogLevelError, "cancel_auto_complete_post update_state command=%s error=%v", commandID, err)
 	}
 }
 
@@ -321,39 +308,33 @@ func (ch *CancelHandler) WriteSyntheticResults(results []CancelledTaskResult, wo
 	defer ch.lockMap.Unlock(lockKey)
 
 	resultPath := resultFilePath(ch.maestroDir, workerID)
-	var rf model.TaskResultFile
 
-	data, err := os.ReadFile(resultPath) //nolint:gosec // resultPath is constructed from a controlled application results directory
-	if err == nil {
-		if unmarshalErr := yamlv3.Unmarshal(data, &rf); unmarshalErr != nil {
-			ch.log(LogLevelWarn, "unmarshal_result_file worker=%s error=%v", workerID, unmarshalErr)
+	if err := updateYAMLFile(resultPath, func(rf *model.TaskResultFile) error {
+		if rf.SchemaVersion == 0 {
+			rf.SchemaVersion = 1
+			rf.FileType = "result_task"
 		}
-	}
-	if rf.SchemaVersion == 0 {
-		rf.SchemaVersion = 1
-		rf.FileType = "result_task"
-	}
 
-	now := ch.clock.Now().UTC().Format(time.RFC3339)
-	for _, r := range results {
-		resultID, err := model.GenerateID(model.IDTypeResult)
-		if err != nil {
-			ch.log(LogLevelError, "synthetic_result_id task=%s error=%v", r.TaskID, err)
-			continue
+		now := ch.clock.Now().UTC().Format(time.RFC3339)
+		for _, r := range results {
+			resultID, err := model.GenerateID(model.IDTypeResult)
+			if err != nil {
+				ch.log(LogLevelError, "synthetic_result_id task=%s error=%v", r.TaskID, err)
+				continue
+			}
+			rf.Results = append(rf.Results, model.TaskResult{
+				ID:                     resultID,
+				TaskID:                 r.TaskID,
+				CommandID:              r.CommandID,
+				Status:                 model.StatusCancelled,
+				Summary:                fmt.Sprintf("cancelled: %s", r.Reason),
+				PartialChangesPossible: true,
+				RetrySafe:              false,
+				CreatedAt:              now,
+			})
 		}
-		rf.Results = append(rf.Results, model.TaskResult{
-			ID:                     resultID,
-			TaskID:                 r.TaskID,
-			CommandID:              r.CommandID,
-			Status:                 model.StatusCancelled,
-			Summary:                fmt.Sprintf("cancelled: %s", r.Reason),
-			PartialChangesPossible: true,
-			RetrySafe:              false,
-			CreatedAt:              now,
-		})
-	}
-
-	if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
+		return nil
+	}); err != nil {
 		ch.log(LogLevelError, "synthetic_result_write worker=%s error=%v", workerID, err)
 	}
 }

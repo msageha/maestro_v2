@@ -221,7 +221,9 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 							wm.Log(core.LogLevelWarn, "merge_recovery_fail_transition command=%s error=%v", commandID, tErr)
 						}
 						state.UpdatedAt = now
-						_ = wm.saveState(commandID, state)
+						if saveErr := wm.saveState(commandID, state); saveErr != nil {
+							wm.Log(core.LogLevelError, "save_state_failed command=%s error=%v", commandID, saveErr)
+						}
 						return conflicts, fmt.Errorf("worktree stuck after merge abort failure for worker %s: %w", workerID, recoveryErr)
 					}
 				}
@@ -249,7 +251,9 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 						wm.Log(core.LogLevelWarn, "merge_recovery_fail_transition command=%s error=%v", commandID, tErr)
 					}
 					state.UpdatedAt = now
-					_ = wm.saveState(commandID, state)
+					if saveErr := wm.saveState(commandID, state); saveErr != nil {
+						wm.Log(core.LogLevelError, "save_state_failed command=%s error=%v", commandID, saveErr)
+					}
 					return conflicts, fmt.Errorf("worktree stuck after merge abort failure for worker %s: %w", workerID, recoveryErr)
 				}
 			}
@@ -532,10 +536,18 @@ func (wm *Manager) PublishToBase(commandID string, publishMessage string) (retur
 			wm.Log(core.LogLevelWarn, "publish_conflict_transition command=%s error=%v", commandID, tErr)
 		}
 		state.UpdatedAt = now
-		_ = wm.saveState(commandID, state)
-		_ = wm.gitRunInDir(integrationPath, "merge", "--abort")
-		_ = wm.gitRunInDir(integrationPath, "checkout", state.Integration.Branch)
-		_ = wm.gitRun("branch", "-D", tempBranch)
+		if saveErr := wm.saveState(commandID, state); saveErr != nil {
+			wm.Log(core.LogLevelError, "save_state_failed command=%s error=%v", commandID, saveErr)
+		}
+		if abortErr := wm.gitRunInDir(integrationPath, "merge", "--abort"); abortErr != nil {
+			wm.Log(core.LogLevelWarn, "publish_merge_abort_failed command=%s error=%v", commandID, abortErr)
+		}
+		if checkoutErr := wm.gitRunInDir(integrationPath, "checkout", state.Integration.Branch); checkoutErr != nil {
+			wm.Log(core.LogLevelWarn, "publish_checkout_failed command=%s branch=%s error=%v", commandID, state.Integration.Branch, checkoutErr)
+		}
+		if deleteErr := wm.gitRun("branch", "-D", tempBranch); deleteErr != nil {
+			wm.Log(core.LogLevelWarn, "publish_branch_delete_failed command=%s branch=%s error=%v", commandID, tempBranch, deleteErr)
+		}
 		return fmt.Errorf("merge integration into %s: %w", baseBranch, err)
 	}
 

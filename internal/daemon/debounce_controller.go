@@ -12,6 +12,10 @@ const (
 	// defaultDebounceSec is the fallback debounce delay when the config value
 	// is zero or negative. 500ms balances responsiveness with burst coalescing.
 	defaultDebounceSec = 0.5
+
+	// debounceStopTimeout is the maximum time Stop() waits for an in-flight
+	// callback to finish before logging a warning and returning.
+	debounceStopTimeout = 5 * time.Second
 )
 
 // DebounceController manages filesystem event debouncing for scan coalescing.
@@ -128,6 +132,12 @@ func (dc *DebounceController) Trigger(trigger string) {
 
 			// Reset first-trigger tracking for next debounce window.
 			dc.mu.Lock()
+			// Re-check shutdown under lock to close the TOCTOU window
+			// between the atomic check above and this critical section.
+			if dc.shuttingDown != nil && dc.shuttingDown.Load() {
+				dc.mu.Unlock()
+				return
+			}
 			dc.firstTrigger = time.Time{}
 			dc.mu.Unlock()
 
@@ -170,8 +180,8 @@ func (dc *DebounceController) Stop() {
 	if done != nil && !timerWasPending {
 		select {
 		case <-done:
-		case <-time.After(5 * time.Second):
-			dc.dl.Logf(LogLevelWarn, "debounce_stop_timeout: callback did not finish within 5s")
+		case <-time.After(debounceStopTimeout):
+			dc.dl.Logf(LogLevelWarn, "debounce_stop_timeout: callback did not finish within %s", debounceStopTimeout)
 		}
 	}
 }

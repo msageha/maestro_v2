@@ -1205,3 +1205,158 @@ func TestR2ResultState_NoStateFile_NoRepair(t *testing.T) {
 		t.Errorf("expected no repairs when state file missing, got %d", len(outcome.Repairs))
 	}
 }
+
+// --- R0-dispatch boundary condition tests ---
+
+func TestR0Dispatch_ThresholdBoundary_JustBelowThreshold_NoRepair(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	// DispatchLeaseSec=60 → threshold = max(60*2s=120s, 10m=600s) = 600s
+	deps.Config.Watcher.DispatchLeaseSec = 60
+	now := time.Now().UTC()
+	setClock(&deps, now)
+
+	// Age just below threshold (599s) — should NOT repair (age < threshold)
+	belowTime := now.Add(-599 * time.Second).Format(time.RFC3339)
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		Commands: []model.Command{
+			{ID: "cmd_below", Status: model.StatusInProgress, UpdatedAt: belowTime, CreatedAt: belowTime},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "planner.yaml"), cq)
+
+	run := newRun(&deps)
+	outcome := R0Dispatch{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Errorf("expected no repairs just below threshold, got %d", len(outcome.Repairs))
+	}
+}
+
+func TestR0Dispatch_ThresholdBoundary_ExactlyAtThreshold_Repairs(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	// DispatchLeaseSec=60 → threshold = max(60*2s=120s, 10m=600s) = 600s
+	deps.Config.Watcher.DispatchLeaseSec = 60
+	now := time.Now().UTC()
+	setClock(&deps, now)
+
+	// Age exactly at threshold (600s) — should repair (age >= threshold)
+	exactTime := now.Add(-600 * time.Second).Format(time.RFC3339)
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		Commands: []model.Command{
+			{ID: "cmd_exact", Status: model.StatusInProgress, UpdatedAt: exactTime, CreatedAt: exactTime},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "planner.yaml"), cq)
+
+	run := newRun(&deps)
+	outcome := R0Dispatch{}.Apply(run)
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair at exact threshold, got %d", len(outcome.Repairs))
+	}
+	if outcome.Repairs[0].Pattern != PatternR0Dispatch {
+		t.Errorf("pattern: got %s, want R0-dispatch", outcome.Repairs[0].Pattern)
+	}
+}
+
+func TestR0Dispatch_MinThresholdEnforced(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	// DispatchLeaseSec=10 → 10*2=20s < minDispatchThreshold(600s) → threshold clamped to 600s
+	deps.Config.Watcher.DispatchLeaseSec = 10
+	now := time.Now().UTC()
+	setClock(&deps, now)
+
+	// Age = 30s > 20s but < 600s (min threshold) → should NOT repair
+	oldTime := now.Add(-30 * time.Second).Format(time.RFC3339)
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		Commands: []model.Command{
+			{ID: "cmd_low_lease", Status: model.StatusInProgress, UpdatedAt: oldTime, CreatedAt: oldTime},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "planner.yaml"), cq)
+
+	run := newRun(&deps)
+	outcome := R0Dispatch{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Errorf("expected no repairs when min threshold enforced, got %d", len(outcome.Repairs))
+	}
+}
+
+func TestR0Dispatch_EmptyQueue_NoRepair(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+
+	// Empty queue with schema but no commands
+	cq := model.CommandQueue{SchemaVersion: 1, Commands: []model.Command{}}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "planner.yaml"), cq)
+
+	run := newRun(&deps)
+	outcome := R0Dispatch{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Errorf("expected no repairs for empty queue, got %d", len(outcome.Repairs))
+	}
+}
+
+// --- R2 result state boundary condition tests ---
+
+func TestR2ResultState_EmptyResultsDir_NoRepair(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+
+	// Results dir exists but is empty (no worker files)
+	run := newRun(&deps)
+	outcome := R2ResultState{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Errorf("expected no repairs for empty results dir, got %d", len(outcome.Repairs))
+	}
+}
+
+func TestR2ResultState_MixedTerminalAndNonTerminal(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	// Results: task1=completed (terminal), task2=in_progress (non-terminal in result)
+	rf := model.TaskResultFile{
+		Results: []model.TaskResult{
+			{ID: "res1", TaskID: "task1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+			{ID: "res2", TaskID: "task2", CommandID: "cmd1", Status: model.StatusInProgress, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
+
+	state := model.CommandState{
+		CommandID:  "cmd1",
+		PlanStatus: model.PlanStatusSealed,
+		TaskStates: map[string]model.Status{
+			"task1": model.StatusInProgress,
+			"task2": model.StatusInProgress,
+		},
+		AppliedResultIDs: map[string]string{},
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R2ResultState{}.Apply(run)
+	// Only task1 should be repaired (terminal in result, non-terminal in state)
+	// task2 is non-terminal in result, so R2 ignores it
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair (only terminal result matters), got %d", len(outcome.Repairs))
+	}
+	if outcome.Repairs[0].TaskID != "task1" {
+		t.Errorf("repaired task: got %s, want task1", outcome.Repairs[0].TaskID)
+	}
+}
+

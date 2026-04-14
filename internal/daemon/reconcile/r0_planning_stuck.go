@@ -43,29 +43,27 @@ func (R0PlanningStuck) Apply(run *Run) Outcome {
 		var stuckAgeSec float64
 
 		// Phase 1: Check if state is stuck (under state lock only).
-		needsRepair := func() bool {
-			run.Deps.LockMap.Lock(lockKey)
-			defer run.Deps.LockMap.Unlock(lockKey)
-
+		var needsRepair bool
+		run.Deps.LockMap.WithLock(lockKey, func() {
 			state, err := run.loadState(statePath)
 			if err != nil {
 				run.Log(core.LogLevelWarn, "R0 load_state file=%s error=%v", entry.Name(), err)
-				return false
+				return
 			}
 
 			if state.PlanStatus != model.PlanStatusPlanning {
-				return false
+				return
 			}
 
 			createdAt, err := time.Parse(time.RFC3339, state.CreatedAt)
 			if err != nil {
 				run.Log(core.LogLevelWarn, "R0 parse_created_at command=%s error=%v", state.CommandID, err)
-				return false
+				return
 			}
 
 			ageSec := run.Deps.Clock.Now().Sub(createdAt).Seconds()
 			if ageSec < float64(threshold) {
-				return false
+				return
 			}
 
 			run.Log(core.LogLevelWarn, "R0 planning_stuck command=%s age_sec=%.0f threshold=%d",
@@ -73,8 +71,8 @@ func (R0PlanningStuck) Apply(run *Run) Outcome {
 
 			stuckCommandID = state.CommandID
 			stuckAgeSec = ageSec
-			return true
-		}()
+			needsRepair = true
+		})
 
 		if !needsRepair {
 			continue
@@ -97,24 +95,27 @@ func (R0PlanningStuck) Apply(run *Run) Outcome {
 		}
 
 		// Phase 3: Re-verify and delete state file (under state lock).
-		repaired := func() bool {
-			run.Deps.LockMap.Lock(lockKey)
-			defer run.Deps.LockMap.Unlock(lockKey)
-
+		// Between Phase 1 and Phase 3 the state file may have been deleted
+		// or modified by another reconciler/handler, so re-check gracefully.
+		repaired := true
+		run.Deps.LockMap.WithLock(lockKey, func() {
 			state, err := run.loadState(statePath)
 			if err != nil {
-				return true
+				// State file was deleted or became unreadable between phases.
+				run.Log(core.LogLevelInfo, "R0 state_gone_before_delete command=%s error=%v", stuckCommandID, err)
+				repaired = false
+				return
 			}
 			if state.PlanStatus != model.PlanStatusPlanning {
-				return false
+				repaired = false
+				return
 			}
 
 			if err := os.Remove(statePath); err != nil {
 				run.Log(core.LogLevelError, "R0 delete_state command=%s error=%v", stuckCommandID, err)
-				return false
+				repaired = false
 			}
-			return true
-		}()
+		})
 
 		if !repaired {
 			continue

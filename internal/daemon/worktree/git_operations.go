@@ -14,6 +14,10 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 )
 
+// slowGitOperationThreshold is the duration above which a git operation
+// is logged at WARN level to aid hang detection and performance analysis.
+const slowGitOperationThreshold = 30 * time.Second
+
 // gitErrorClass classifies git errors for retry decisions.
 type gitErrorClass int
 
@@ -176,6 +180,14 @@ func (wm *Manager) gitTimeout() time.Duration {
 // Returns (stdout, combinedOutput, error). Callers that need only the exit
 // status use gitRun/gitRunInDir; callers that need stdout use gitOutput/gitOutputInDir.
 func (wm *Manager) gitExecCombined(dir string, args ...string) ([]byte, error) {
+	start := time.Now()
+	defer func() {
+		if duration := time.Since(start); duration >= slowGitOperationThreshold {
+			wm.Log(core.LogLevelWarn, "slow_git_operation duration=%s cmd=\"git %s\" dir=%s",
+				duration, strings.Join(args, " "), dir)
+		}
+	}()
+
 	ctx, cancel := context.WithTimeout(context.Background(), wm.gitTimeout())
 	defer cancel()
 
@@ -197,6 +209,14 @@ func (wm *Manager) gitExecCombined(dir string, args ...string) ([]byte, error) {
 }
 
 func (wm *Manager) gitExecOutput(dir string, args ...string) ([]byte, error) {
+	start := time.Now()
+	defer func() {
+		if duration := time.Since(start); duration >= slowGitOperationThreshold {
+			wm.Log(core.LogLevelWarn, "slow_git_operation duration=%s cmd=\"git %s\" dir=%s",
+				duration, strings.Join(args, " "), dir)
+		}
+	}()
+
 	ctx, cancel := context.WithTimeout(context.Background(), wm.gitTimeout())
 	defer cancel()
 

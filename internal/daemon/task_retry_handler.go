@@ -3,17 +3,13 @@ package daemon
 import (
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
-	yamlv3 "gopkg.in/yaml.v3"
-
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
-	"github.com/msageha/maestro_v2/internal/yaml"
 )
 
 const (
@@ -158,25 +154,15 @@ func (h *TaskRetryHandler) RegisterRetryTaskInState(task *model.Task, commandID 
 	defer h.lockMap.Unlock(stateLockKey)
 
 	statePath := filepath.Join(h.maestroDir, "state", "commands", commandID+".yaml")
-	stateData, err := os.ReadFile(statePath) //nolint:gosec // statePath is constructed from a controlled application state directory
-	if err != nil {
-		return fmt.Errorf("read state file: %w", err)
-	}
-
-	var state model.CommandState
-	if err := yamlv3.Unmarshal(stateData, &state); err != nil {
-		return fmt.Errorf("parse state file: %w", err)
-	}
-
-	// Register retry task in state
-	if state.TaskStates == nil {
-		state.TaskStates = make(map[string]model.Status)
-	}
-	state.TaskStates[task.ID] = model.StatusPending
-	state.UpdatedAt = h.clock.Now().UTC().Format(time.RFC3339)
-
-	if err := yaml.AtomicWrite(statePath, state); err != nil {
-		return fmt.Errorf("write state file: %w", err)
+	if err := updateYAMLFile(statePath, func(state *model.CommandState) error {
+		if state.TaskStates == nil {
+			state.TaskStates = make(map[string]model.Status)
+		}
+		state.TaskStates[task.ID] = model.StatusPending
+		state.UpdatedAt = h.clock.Now().UTC().Format(time.RFC3339)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("update state file: %w", err)
 	}
 
 	h.log(LogLevelInfo, "retry_task_registered task=%s command=%s",
@@ -199,28 +185,15 @@ func (h *TaskRetryHandler) AddRetryTaskToQueue(task *model.Task, workerID string
 func (h *TaskRetryHandler) addRetryTaskToQueueLocked(task *model.Task, workerID string) error {
 	queuePath := filepath.Join(h.maestroDir, "queue", workerID+".yaml")
 
-	// Read existing queue
-	queueData, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("read queue: %w", err)
-	}
-
-	var queue model.TaskQueue
-	if len(queueData) > 0 {
-		if err := yamlv3.Unmarshal(queueData, &queue); err != nil {
-			return fmt.Errorf("parse queue: %w", err)
+	if err := updateYAMLFile(queuePath, func(queue *model.TaskQueue) error {
+		if queue.SchemaVersion == 0 {
+			queue.SchemaVersion = 1
+			queue.FileType = "queue_task"
 		}
-	} else {
-		queue.SchemaVersion = 1
-		queue.FileType = "queue_task"
-	}
-
-	// Add retry task
-	queue.Tasks = append(queue.Tasks, *task)
-
-	// Write queue back
-	if err := yaml.AtomicWrite(queuePath, queue); err != nil {
-		return fmt.Errorf("write queue: %w", err)
+		queue.Tasks = append(queue.Tasks, *task)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("update queue: %w", err)
 	}
 
 	h.log(LogLevelInfo, "retry_task_added task=%s worker=%s attempt=%d",
@@ -238,24 +211,15 @@ func (h *TaskRetryHandler) MarkRetryEnqueueFailed(taskID, workerID, commandID st
 	defer h.lockMap.Unlock(stateLockKey)
 
 	statePath := filepath.Join(h.maestroDir, "state", "commands", commandID+".yaml")
-	stateData, err := os.ReadFile(statePath) //nolint:gosec // statePath is constructed from a controlled application state directory
-	if err != nil {
-		return fmt.Errorf("read state file: %w", err)
-	}
-
-	var state model.CommandState
-	if err := yamlv3.Unmarshal(stateData, &state); err != nil {
-		return fmt.Errorf("parse state file: %w", err)
-	}
-
-	if state.RetryEnqueueFailed == nil {
-		state.RetryEnqueueFailed = make(map[string]string)
-	}
-	state.RetryEnqueueFailed[taskID] = workerID
-	state.UpdatedAt = h.clock.Now().UTC().Format(time.RFC3339)
-
-	if err := yaml.AtomicWrite(statePath, state); err != nil {
-		return fmt.Errorf("write state file: %w", err)
+	if err := updateYAMLFile(statePath, func(state *model.CommandState) error {
+		if state.RetryEnqueueFailed == nil {
+			state.RetryEnqueueFailed = make(map[string]string)
+		}
+		state.RetryEnqueueFailed[taskID] = workerID
+		state.UpdatedAt = h.clock.Now().UTC().Format(time.RFC3339)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("update state file: %w", err)
 	}
 
 	h.log(LogLevelWarn, "retry_enqueue_failed_marked task=%s worker=%s command=%s "+

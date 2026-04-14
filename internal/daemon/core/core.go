@@ -92,12 +92,12 @@ func NewDaemonLoggerFromLegacy(component string, logger *log.Logger, minLevel Lo
 
 // Logf logs a formatted message at the given level (migration shim for existing log() calls).
 func (dl *DaemonLogger) Logf(level LogLevel, format string, args ...any) {
-	dl.slogger.Log(context.TODO(), toSlogLevel(level), fmt.Sprintf(format, args...))
+	dl.slogger.Log(context.Background(), toSlogLevel(level), fmt.Sprintf(format, args...))
 }
 
 // Log logs a message with structured attributes.
 func (dl *DaemonLogger) Log(level LogLevel, msg string, attrs ...slog.Attr) {
-	dl.slogger.LogAttrs(context.TODO(), toSlogLevel(level), msg, attrs...)
+	dl.slogger.LogAttrs(context.Background(), toSlogLevel(level), msg, attrs...)
 }
 
 // With returns a new DaemonLogger with additional default attributes.
@@ -144,15 +144,13 @@ func (RealClock) Now() time.Time { return time.Now() }
 // State
 // ---------------------------------------------------------------------------
 
-// ErrStateNotFound is returned by StateReader methods when the state file does not exist
-// (i.e., the command has not been submitted yet). Callers can use errors.Is to distinguish
-// this from other read errors (e.g., parse failures on an existing file).
-var ErrStateNotFound = errors.New("command state file not found")
+// ErrStateNotFound is an alias for model.ErrStateNotFound.
+// Kept for backward compatibility with existing callers.
+var ErrStateNotFound = model.ErrStateNotFound
 
-// ErrPhaseNotFound is returned when a specific phase ID is not present in a command's
-// phase list. Unlike ErrStateNotFound (state file missing), this means the state file
-// exists but the requested phase does not.
-var ErrPhaseNotFound = errors.New("command phase not found")
+// ErrPhaseNotFound is an alias for model.ErrPhaseNotFound.
+// Kept for backward compatibility with existing callers.
+var ErrPhaseNotFound = model.ErrPhaseNotFound
 
 // StateReader provides read access to command state (state/commands/{command_id}.yaml).
 // Phase 6 implements the concrete version; Phase 5 uses this interface for decoupling.
@@ -191,16 +189,9 @@ type StateManager interface {
 	StateWriter
 }
 
-// PhaseInfo represents phase metadata from command state.
-type PhaseInfo struct {
-	ID               string
-	Name             string
-	Status           model.PhaseStatus
-	DependsOn        []string // phase IDs
-	FillDeadlineAt   *string
-	RequiredTaskIDs  []string
-	SystemCommitTask bool
-}
+// PhaseInfo is an alias for model.PhaseInfo.
+// Kept for backward compatibility with existing callers.
+type PhaseInfo = model.PhaseInfo
 
 // ---------------------------------------------------------------------------
 // Executor

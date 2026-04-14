@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/daemon/core"
@@ -14,10 +15,20 @@ import (
 )
 
 // CleanupCommand removes all worktrees and branches for a command.
+//
+// Locking: acquires cmdLocks[commandID] → wm.mu to match the established
+// hierarchy (see manager.go). The per-command lock serializes against any
+// in-flight resolver operations for this command.
 func (wm *Manager) CleanupCommand(commandID string) error {
 	if err := validateIDs(commandID); err != nil {
 		return err
 	}
+	// Acquire per-command resolver lock before wm.mu to match the
+	// documented hierarchy: cmdLocks[cmd] → wm.mu.
+	cl := wm.commandLock(commandID)
+	cl.Lock()
+	defer cl.Unlock()
+
 	wm.mu.Lock()
 	defer wm.mu.Unlock()
 
@@ -412,7 +423,17 @@ func (wm *Manager) cleanupCommandUnlocked(commandID string, state *model.Worktre
 	}
 
 	// M5: Remove per-command resolver lock to prevent memory leak.
-	wm.cmdLocks.Delete(commandID)
+	// Use TryLock to avoid lock ordering violation: wm.mu is held by
+	// the caller (GC), so acquiring cmdLock directly would violate the
+	// cmdLocks → wm.mu hierarchy. If TryLock fails (resolver is active),
+	// skip deletion; it will be cleaned up in the next GC cycle.
+	if v, ok := wm.cmdLocks.Load(commandID); ok {
+		mu := v.(*sync.Mutex)
+		if mu.TryLock() {
+			wm.cmdLocks.Delete(commandID)
+			mu.Unlock()
+		}
+	}
 
 	return nil
 }

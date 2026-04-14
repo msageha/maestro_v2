@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/msageha/maestro_v2/internal/daemon/skill"
+	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 )
 
@@ -50,27 +51,11 @@ func (h *SkillAPI) handleSkillApprove(req *uds.Request) *uds.Response {
 	h.lockMap.Lock("state:skill_candidates")
 	defer h.lockMap.Unlock("state:skill_candidates")
 
-	candidatesPath := filepath.Join(h.maestroDir, "state", "skill_candidates.yaml")
-	candidates, err := skill.ReadCandidates(candidatesPath)
-	if err != nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("read candidates: %v", err))
+	candidates, candidatesPath, idx, errResp := h.findPendingCandidate(params.CandidateID)
+	if errResp != nil {
+		return errResp
 	}
-
-	idx := -1
-	for i, c := range candidates {
-		if c.ID == params.CandidateID {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		return uds.ErrorResponse(uds.ErrCodeNotFound, fmt.Sprintf("candidate not found: %s", params.CandidateID))
-	}
-
 	candidate := &candidates[idx]
-	if candidate.Status != "pending" {
-		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("candidate %s is already %s", params.CandidateID, candidate.Status))
-	}
 
 	// Determine skill name
 	skillName := params.SkillName
@@ -138,27 +123,11 @@ func (h *SkillAPI) handleSkillReject(req *uds.Request) *uds.Response {
 	h.lockMap.Lock("state:skill_candidates")
 	defer h.lockMap.Unlock("state:skill_candidates")
 
-	candidatesPath := filepath.Join(h.maestroDir, "state", "skill_candidates.yaml")
-	candidates, err := skill.ReadCandidates(candidatesPath)
-	if err != nil {
-		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("read candidates: %v", err))
+	candidates, candidatesPath, idx, errResp := h.findPendingCandidate(params.CandidateID)
+	if errResp != nil {
+		return errResp
 	}
-
-	idx := -1
-	for i, c := range candidates {
-		if c.ID == params.CandidateID {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		return uds.ErrorResponse(uds.ErrCodeNotFound, fmt.Sprintf("candidate not found: %s", params.CandidateID))
-	}
-
 	candidate := &candidates[idx]
-	if candidate.Status != "pending" {
-		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("candidate %s is already %s", params.CandidateID, candidate.Status))
-	}
 
 	candidate.Status = "rejected"
 	if err := skill.WriteCandidates(candidatesPath, candidates); err != nil {
@@ -169,6 +138,33 @@ func (h *SkillAPI) handleSkillReject(req *uds.Request) *uds.Response {
 	return uds.SuccessResponse(map[string]string{
 		"candidate_id": params.CandidateID,
 	})
+}
+
+// findPendingCandidate reads skill candidates, finds one by ID, and verifies
+// it is in "pending" status. Caller must hold the "state:skill_candidates" lock.
+func (h *SkillAPI) findPendingCandidate(candidateID string) ([]model.SkillCandidate, string, int, *uds.Response) {
+	candidatesPath := filepath.Join(h.maestroDir, "state", "skill_candidates.yaml")
+	candidates, err := skill.ReadCandidates(candidatesPath)
+	if err != nil {
+		return nil, "", -1, uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("read candidates: %v", err))
+	}
+
+	idx := -1
+	for i, c := range candidates {
+		if c.ID == candidateID {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return nil, "", -1, uds.ErrorResponse(uds.ErrCodeNotFound, fmt.Sprintf("candidate not found: %s", candidateID))
+	}
+
+	if candidates[idx].Status != "pending" {
+		return nil, "", -1, uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("candidate %s is already %s", candidateID, candidates[idx].Status))
+	}
+
+	return candidates, candidatesPath, idx, nil
 }
 
 // daemonSlugify generates a kebab-case skill name from content text.

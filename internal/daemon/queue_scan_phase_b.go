@@ -37,7 +37,7 @@ func classifyCommitError(err error) string {
 // killing newly dispatched tasks. After each interrupt, discards the worker's
 // uncommitted worktree changes (H4).
 func (qh *QueueHandler) stepInterruptAgents(ctx context.Context, pa *phaseAResult) {
-	_ = forEachUntilCanceled(ctx, pa.work.interrupts, func(item interruptItem) {
+	if err := forEachUntilCanceled(ctx, pa.work.interrupts, func(item interruptItem) {
 		if err := qh.cancelHandler.interruptAgent(item.WorkerID, item.TaskID, item.CommandID, item.Epoch); err != nil {
 			qh.log(LogLevelWarn, "phase_b_interrupt worker=%s task=%s error=%v", item.WorkerID, item.TaskID, err)
 		}
@@ -47,24 +47,28 @@ func (qh *QueueHandler) stepInterruptAgents(ctx context.Context, pa *phaseAResul
 					item.WorkerID, item.TaskID, err)
 			}
 		}
-	})
+	}); err != nil {
+		qh.log(LogLevelWarn, "phase_b_interrupts_canceled: %v", err)
+	}
 }
 
 // stepProbeBusyAgents executes busy probes for expired leases.
 func (qh *QueueHandler) stepProbeBusyAgents(ctx context.Context, pa *phaseAResult, result *phaseBResult) {
-	_ = forEachUntilCanceled(ctx, pa.work.busyChecks, func(item busyCheckItem) {
+	if err := forEachUntilCanceled(ctx, pa.work.busyChecks, func(item busyCheckItem) {
 		busy, undecided := qh.isAgentBusy(ctx, item.AgentID)
 		result.busyChecks = append(result.busyChecks, busyCheckResult{
 			Item:      item,
 			Busy:      busy,
 			Undecided: undecided,
 		})
-	})
+	}); err != nil {
+		qh.log(LogLevelWarn, "phase_b_busy_checks_canceled: %v", err)
+	}
 }
 
 // stepDispatchWork executes command, task, and notification dispatches.
 func (qh *QueueHandler) stepDispatchWork(ctx context.Context, pa *phaseAResult, result *phaseBResult) {
-	_ = forEachUntilCanceled(ctx, pa.work.dispatches, func(item dispatchItem) {
+	if err := forEachUntilCanceled(ctx, pa.work.dispatches, func(item dispatchItem) {
 		var err error
 		switch item.Kind {
 		case "command":
@@ -79,12 +83,14 @@ func (qh *QueueHandler) stepDispatchWork(ctx context.Context, pa *phaseAResult, 
 			Success: err == nil,
 			Error:   err,
 		})
-	})
+	}); err != nil {
+		qh.log(LogLevelWarn, "phase_b_dispatches_canceled: %v", err)
+	}
 }
 
 // stepDeliverSignals executes planner signal deliveries via tmux.
 func (qh *QueueHandler) stepDeliverSignals(ctx context.Context, pa *phaseAResult, result *phaseBResult) {
-	_ = forEachUntilCanceled(ctx, pa.work.signals, func(item signalDeliveryItem) {
+	if err := forEachUntilCanceled(ctx, pa.work.signals, func(item signalDeliveryItem) {
 		err := qh.deliverPlannerSignal(ctx, item.CommandID, item.Message)
 		result.signals = append(result.signals, signalDeliveryResult{
 			Item:    item,
@@ -96,7 +102,9 @@ func (qh *QueueHandler) stepDeliverSignals(ctx context.Context, pa *phaseAResult
 			result.recoveryHints = append(result.recoveryHints,
 				fmt.Sprintf("signal_delivery_failed command=%s: signal will be retried next scan, but planner may have stale view until then", item.CommandID))
 		}
-	})
+	}); err != nil {
+		qh.log(LogLevelWarn, "phase_b_signals_canceled: %v", err)
+	}
 }
 
 // stepLogPartialFailures logs a summary when dispatches or signals partially failed.
@@ -124,15 +132,17 @@ func (qh *QueueHandler) stepLogPartialFailures(result *phaseBResult) {
 
 // stepClearAgents executes agent clear operations (fire-and-forget).
 func (qh *QueueHandler) stepClearAgents(ctx context.Context, pa *phaseAResult) {
-	_ = forEachUntilCanceled(ctx, pa.work.clears, func(agentID string) {
+	if err := forEachUntilCanceled(ctx, pa.work.clears, func(agentID string) {
 		qh.clearAgent(ctx, agentID)
-	})
+	}); err != nil {
+		qh.log(LogLevelWarn, "phase_b_clears_canceled: %v", err)
+	}
 }
 
 // stepCommitAndMergeWorktrees executes worktree commit and merge operations
 // (slow git I/O, outside scanMu.Lock).
 func (qh *QueueHandler) stepCommitAndMergeWorktrees(ctx context.Context, pa *phaseAResult, result *phaseBResult) {
-	_ = forEachUntilCanceled(ctx, pa.work.worktreeMerges, func(item worktreeMergeItem) {
+	if err := forEachUntilCanceled(ctx, pa.work.worktreeMerges, func(item worktreeMergeItem) {
 		mr := worktreeMergeResult{Item: item}
 
 		// First commit worker changes, tracking failures
@@ -196,7 +206,9 @@ func (qh *QueueHandler) stepCommitAndMergeWorktrees(ctx context.Context, pa *pha
 		}
 
 		result.worktreeMerges = append(result.worktreeMerges, mr)
-	})
+	}); err != nil {
+		qh.log(LogLevelWarn, "phase_b_worktree_merges_canceled: %v", err)
+	}
 }
 
 // stepPublishWorktrees executes worktree publish operations (slow git I/O).

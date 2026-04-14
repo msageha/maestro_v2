@@ -68,8 +68,14 @@ type Manager struct {
 	// existing NewManager call sites do not need to change.
 	signalStore SignalStore
 	// cmdLocks holds per-commandID *sync.Mutex used by resolver methods to
-	// serialize against scan and against each other. Locking order:
-	// scanMu (caller, outside this package) → cmdLocks[cmd] → wm.mu.
+	// serialize against scan and against each other.
+	//
+	// Lock hierarchy (must be acquired in this order):
+	//   scanMu (caller, outside this package) → cmdLocks[cmd] → wm.mu
+	//
+	// All code paths that need both cmdLocks and wm.mu MUST acquire
+	// cmdLocks first. Code that already holds wm.mu (e.g. GC) must use
+	// TryLock on cmdLocks to avoid hierarchy violation.
 	cmdLocks sync.Map
 
 	// testPublishResetHook, if non-nil, replaces git reset --hard HEAD during

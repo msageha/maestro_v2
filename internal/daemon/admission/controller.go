@@ -103,17 +103,7 @@ func (c *Controller) Release(op OpType) {
 // ClassifyTask determines the OpType for a task based on keyword matching
 // against its Purpose field (case-insensitive).
 func (c *Controller) ClassifyTask(task *model.Task) OpType {
-	purpose := strings.ToLower(task.Purpose)
-	switch {
-	case strings.Contains(purpose, "verify"), strings.Contains(purpose, "verification"):
-		return OpVerify
-	case strings.Contains(purpose, "repair"):
-		return OpRepair
-	case strings.Contains(purpose, "rollout"):
-		return OpRollout
-	default:
-		return OpUnknown
-	}
+	return c.classifyTaskUnlocked(task)
 }
 
 // Reset clears all slot counts to zero.

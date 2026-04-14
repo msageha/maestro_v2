@@ -39,16 +39,14 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 		lockKey := "state:" + commandID
 
 		var taskIDsToRemove []string
-		modified := func() bool {
-			run.Deps.LockMap.Lock(lockKey)
-			defer run.Deps.LockMap.Unlock(lockKey)
-
+		var modified bool
+		run.Deps.LockMap.WithLock(lockKey, func() {
 			state, err := run.loadState(statePath)
 			if err != nil {
 				if !os.IsNotExist(err) {
 					run.Log(core.LogLevelError, "R0b load_state_corrupted command=%s file=%s error=%v", commandID, entry.Name(), err)
 				}
-				return false
+				return
 			}
 
 			localModified := false
@@ -107,13 +105,13 @@ func (R0bFillingStuck) Apply(run *Run) Outcome {
 				state.UpdatedAt = now
 				if err := yamlutil.AtomicWrite(statePath, state); err != nil {
 					run.Log(core.LogLevelError, "R0b write_state command=%s error=%v", state.CommandID, err)
-					return false
+					return
 				}
 				repairs = append(repairs, localRepairs...)
 			}
 
-			return localModified
-		}()
+			modified = localModified
+		})
 
 		if len(taskIDsToRemove) > 0 {
 			if err := run.batchRemoveTaskIDsFromQueues(taskIDsToRemove); err != nil {

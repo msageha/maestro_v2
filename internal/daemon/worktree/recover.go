@@ -317,9 +317,18 @@ func (wm *Manager) commitResolvedWorkerChanges(ws *model.WorktreeState, commandI
 		return nil // nothing to commit
 	}
 
-	// Stage all changes (tracked modifications + new files).
-	if err := wm.gitRunInDir(ws.Path, "add", "-A"); err != nil {
-		return fmt.Errorf("git add -A in %s: %w", ws.Path, err)
+	// Stage tracked file modifications/deletions (safe: never stages untracked files).
+	if err := wm.gitRunInDir(ws.Path, "add", "-u"); err != nil {
+		return fmt.Errorf("git add -u in %s: %w", ws.Path, err)
+	}
+	// Unstage any sensitive tracked files that were staged by git add -u.
+	if err := wm.unstageSensitiveFiles(ws.Path); err != nil {
+		wm.Log(core.LogLevelWarn, "resolve_unstage_sensitive command=%s worker=%s error=%v",
+			commandID, ws.WorkerID, err)
+	}
+	// Stage untracked files that pass .gitignore and sensitive file filters.
+	if err := wm.stageNewFiles(ws.Path); err != nil {
+		return fmt.Errorf("stage new files in %s: %w", ws.Path, err)
 	}
 	msg := fmt.Sprintf("[maestro] conflict resolution for %s", ws.WorkerID)
 	if err := wm.gitRunInDir(ws.Path, "commit", "-m", msg); err != nil {

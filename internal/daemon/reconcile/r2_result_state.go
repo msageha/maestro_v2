@@ -65,14 +65,11 @@ func (R2ResultState) Apply(run *Run) Outcome {
 	for commandID, results := range commandResults {
 		statePath := filepath.Join(run.Deps.MaestroDir, "state", "commands", commandID+".yaml")
 
-		lockKey := "state:" + commandID
-		commandRepairs := func() []Repair {
-			run.Deps.LockMap.Lock(lockKey)
-			defer run.Deps.LockMap.Unlock(lockKey)
-
+		var commandRepairs []Repair
+		run.Deps.LockMap.WithLock("state:"+commandID, func() {
 			state, err := run.loadState(statePath)
 			if err != nil {
-				return nil
+				return
 			}
 
 			if state.TaskStates == nil {
@@ -83,7 +80,6 @@ func (R2ResultState) Apply(run *Run) Outcome {
 			}
 
 			modified := false
-			var reps []Repair
 			for _, re := range results {
 				currentStatus, exists := state.TaskStates[re.TaskID]
 				if !exists {
@@ -102,7 +98,7 @@ func (R2ResultState) Apply(run *Run) Outcome {
 				state.AppliedResultIDs[re.TaskID] = re.ResultID
 				modified = true
 
-				reps = append(reps, Repair{
+				commandRepairs = append(commandRepairs, Repair{
 					Pattern:   PatternR2,
 					CommandID: commandID,
 					TaskID:    re.TaskID,
@@ -116,11 +112,10 @@ func (R2ResultState) Apply(run *Run) Outcome {
 				state.UpdatedAt = now
 				if err := yamlutil.AtomicWrite(statePath, state); err != nil {
 					run.Log(core.LogLevelError, "R2 write_state command=%s error=%v", commandID, err)
-					return nil
+					commandRepairs = nil
 				}
 			}
-			return reps
-		}()
+		})
 		repairs = append(repairs, commandRepairs...)
 	}
 

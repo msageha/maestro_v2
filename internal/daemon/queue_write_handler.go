@@ -422,35 +422,31 @@ func (h *QueueWriteAPI) cancelRequestSubmitted(params QueueWriteParams, statePat
 	h.lockMap.Lock("state:" + params.CommandID)
 	defer h.lockMap.Unlock("state:" + params.CommandID)
 
-	data, err := os.ReadFile(statePath) //nolint:gosec // statePath is constructed from a controlled application state directory
-	if err != nil {
-		return internalErrorf("read state: %v", err)
-	}
-
-	var state model.CommandState
-	if err := yamlv3.Unmarshal(data, &state); err != nil {
-		return internalErrorf("parse state: %v", err)
-	}
-
-	// Idempotent: already requested → skip
-	if state.Cancel.Requested {
-		h.logFn(LogLevelInfo, "queue_write type=cancel-request command=%s already_requested", params.CommandID)
-		return uds.SuccessResponse(map[string]string{"command_id": params.CommandID, "status": "already_requested"})
-	}
-
+	var alreadyRequested bool
 	now := h.clock.Now().UTC().Format(time.RFC3339)
 	requestedBy := params.RequestedBy
 	if requestedBy == "" {
 		requestedBy = "orchestrator"
 	}
-	state.Cancel.Requested = true
-	state.Cancel.RequestedAt = &now
-	state.Cancel.RequestedBy = &requestedBy
-	state.Cancel.Reason = &params.Reason
-	state.UpdatedAt = now
 
-	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
-		return internalErrorf("write state: %v", err)
+	if err := updateYAMLFile(statePath, func(state *model.CommandState) error {
+		if state.Cancel.Requested {
+			alreadyRequested = true
+			return errNoUpdate
+		}
+		state.Cancel.Requested = true
+		state.Cancel.RequestedAt = &now
+		state.Cancel.RequestedBy = &requestedBy
+		state.Cancel.Reason = &params.Reason
+		state.UpdatedAt = now
+		return nil
+	}); err != nil {
+		return internalErrorf("update state: %v", err)
+	}
+
+	if alreadyRequested {
+		h.logFn(LogLevelInfo, "queue_write type=cancel-request command=%s already_requested", params.CommandID)
+		return uds.SuccessResponse(map[string]string{"command_id": params.CommandID, "status": "already_requested"})
 	}
 
 	// Also update queue/planner.yaml cancel metadata (already under fileMu)

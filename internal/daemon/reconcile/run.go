@@ -16,6 +16,18 @@ import (
 
 // Run is the per-scan context created by Engine.Reconcile().
 // It holds the directory cache and exposes helper methods used by patterns.
+//
+// Lock ordering convention for the reconcile package:
+//
+//   state and queue locks MUST NOT be held simultaneously.
+//
+// When both are needed, use a three-phase pattern:
+//   Phase 1: acquire state lock → read/snapshot → release state lock
+//   Phase 2: acquire queue lock → inspect/modify → release queue lock
+//   Phase 3: acquire state lock → verify + apply changes → release state lock
+//
+// This avoids deadlocks between subsystems (e.g. reconcile vs. dispatch/result
+// handlers) that may acquire these locks in different contexts.
 type Run struct {
 	core.LogMixin
 	Deps     *Deps
@@ -308,21 +320,19 @@ func (r *Run) batchRemoveTaskIDsFromQueues(taskIDs []string) error {
 func (r *Run) updateLastReconciledAt(commandID string) {
 	statePath := filepath.Join(r.Deps.MaestroDir, "state", "commands", commandID+".yaml")
 
-	lockKey := "state:" + commandID
-	r.Deps.LockMap.Lock(lockKey)
-	defer r.Deps.LockMap.Unlock(lockKey)
+	r.Deps.LockMap.WithLock("state:"+commandID, func() {
+		state, err := r.loadState(statePath)
+		if err != nil {
+			return
+		}
 
-	state, err := r.loadState(statePath)
-	if err != nil {
-		return
-	}
-
-	now := r.Deps.Clock.Now().UTC().Format(time.RFC3339)
-	state.LastReconciledAt = &now
-	state.UpdatedAt = now
-	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
-		r.Log(core.LogLevelError, "update_last_reconciled command=%s error=%v", commandID, err)
-	}
+		now := r.Deps.Clock.Now().UTC().Format(time.RFC3339)
+		state.LastReconciledAt = &now
+		state.UpdatedAt = now
+		if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+			r.Log(core.LogLevelError, "update_last_reconciled command=%s error=%v", commandID, err)
+		}
+	})
 }
 
 

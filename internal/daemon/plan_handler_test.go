@@ -213,7 +213,6 @@ func TestHandlePlan_SubmitSuccess(t *testing.T) {
 	resp := d.api.handlePlan(req)
 
 	assert.True(t, resp.Success)
-	assert.Nil(t, resp.Error)
 	assert.Contains(t, string(resp.Data), "cmd_001")
 }
 
@@ -230,7 +229,6 @@ func TestHandlePlan_CompleteSuccess(t *testing.T) {
 	resp := d.api.handlePlan(req)
 
 	assert.True(t, resp.Success)
-	assert.Nil(t, resp.Error)
 	assert.Contains(t, string(resp.Data), "completed")
 }
 
@@ -247,7 +245,6 @@ func TestHandlePlan_AddRetryTaskSuccess(t *testing.T) {
 	resp := d.api.handlePlan(req)
 
 	assert.True(t, resp.Success)
-	assert.Nil(t, resp.Error)
 	assert.Contains(t, string(resp.Data), "task_retry_001")
 }
 
@@ -264,7 +261,6 @@ func TestHandlePlan_RebuildSuccess(t *testing.T) {
 	resp := d.api.handlePlan(req)
 
 	assert.True(t, resp.Success)
-	assert.Nil(t, resp.Error)
 	assert.Contains(t, string(resp.Data), "rebuilt")
 }
 
@@ -463,6 +459,326 @@ func TestSetPlanExecutor(t *testing.T) {
 
 	pe := &mockPlanExecutor{}
 	d.SetPlanExecutor(pe)
-	assert.NotNil(t, d.planExecutor)
+	assert.Equal(t, pe, d.planExecutor)
+}
+
+// TestHandlePlan_OperationDataPassthrough verifies that each operation forwards
+// the input data to the correct executor method without mutation.
+func TestHandlePlan_OperationDataPassthrough(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name      string
+		operation string
+		input     map[string]interface{}
+		setupMock func(pe *mockPlanExecutor, ch chan json.RawMessage)
+	}
+
+	cases := []testCase{
+		{
+			name:      "submit",
+			operation: "submit",
+			input:     map[string]interface{}{"purpose": "deploy", "version": 42},
+			setupMock: func(pe *mockPlanExecutor, ch chan json.RawMessage) {
+				pe.submitFunc = func(data json.RawMessage) (json.RawMessage, error) {
+					ch <- data
+					return json.RawMessage(`{}`), nil
+				}
+			},
+		},
+		{
+			name:      "complete",
+			operation: "complete",
+			input:     map[string]interface{}{"command_id": "cmd_abc", "final": true},
+			setupMock: func(pe *mockPlanExecutor, ch chan json.RawMessage) {
+				pe.completeFunc = func(data json.RawMessage) (json.RawMessage, error) {
+					ch <- data
+					return json.RawMessage(`{}`), nil
+				}
+			},
+		},
+		{
+			name:      "add_retry_task",
+			operation: "add_retry_task",
+			input:     map[string]interface{}{"task_id": "task_99", "attempt": 3},
+			setupMock: func(pe *mockPlanExecutor, ch chan json.RawMessage) {
+				pe.addRetryTaskFunc = func(data json.RawMessage) (json.RawMessage, error) {
+					ch <- data
+					return json.RawMessage(`{}`), nil
+				}
+			},
+		},
+		{
+			name:      "rebuild",
+			operation: "rebuild",
+			input:     map[string]interface{}{"command_id": "cmd_xyz", "force": false},
+			setupMock: func(pe *mockPlanExecutor, ch chan json.RawMessage) {
+				pe.rebuildFunc = func(data json.RawMessage) (json.RawMessage, error) {
+					ch <- data
+					return json.RawMessage(`{}`), nil
+				}
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ch := make(chan json.RawMessage, 1)
+			pe := &mockPlanExecutor{}
+			tc.setupMock(pe, ch)
+			d := newPlanTestDaemon(t, pe)
+
+			req := makePlanRequest(t, tc.operation, tc.input)
+			resp := d.api.handlePlan(req)
+
+			require.True(t, resp.Success, "operation %s should succeed", tc.operation)
+			assert.Nil(t, resp.Error)
+
+			// Verify the executor received the correct data.
+			received := <-ch
+			var got map[string]interface{}
+			require.NoError(t, json.Unmarshal(received, &got))
+
+			// Marshal+unmarshal the expected input through the same path so
+			// numeric types match (json.Number vs float64 is avoided by
+			// comparing canonical JSON bytes).
+			expectedBytes, err := json.Marshal(tc.input)
+			require.NoError(t, err)
+			var expected map[string]interface{}
+			require.NoError(t, json.Unmarshal(expectedBytes, &expected))
+
+			assert.Equal(t, expected, got,
+				"operation %s should forward input data unchanged", tc.operation)
+		})
+	}
+}
+
+// TestHandlePlan_ValidationErrorAllOperations verifies that a validationFormatter
+// error from any operation is mapped to ErrCodeValidation with the stderr message.
+func TestHandlePlan_ValidationErrorAllOperations(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name      string
+		operation string
+		errMsg    string
+		stderr    string
+		setupMock func(pe *mockPlanExecutor, ve *mockValidationError)
+	}
+
+	cases := []testCase{
+		{
+			name:      "submit_validation",
+			operation: "submit",
+			errMsg:    "submit validation failed",
+			stderr:    "missing field: purpose",
+			setupMock: func(pe *mockPlanExecutor, ve *mockValidationError) {
+				pe.submitFunc = func(json.RawMessage) (json.RawMessage, error) { return nil, ve }
+			},
+		},
+		{
+			name:      "complete_validation",
+			operation: "complete",
+			errMsg:    "complete validation failed",
+			stderr:    "command_id must not be empty",
+			setupMock: func(pe *mockPlanExecutor, ve *mockValidationError) {
+				pe.completeFunc = func(json.RawMessage) (json.RawMessage, error) { return nil, ve }
+			},
+		},
+		{
+			name:      "add_retry_task_validation",
+			operation: "add_retry_task",
+			errMsg:    "retry validation failed",
+			stderr:    "task_id is invalid",
+			setupMock: func(pe *mockPlanExecutor, ve *mockValidationError) {
+				pe.addRetryTaskFunc = func(json.RawMessage) (json.RawMessage, error) { return nil, ve }
+			},
+		},
+		{
+			name:      "rebuild_validation",
+			operation: "rebuild",
+			errMsg:    "rebuild validation failed",
+			stderr:    "no plan to rebuild",
+			setupMock: func(pe *mockPlanExecutor, ve *mockValidationError) {
+				pe.rebuildFunc = func(json.RawMessage) (json.RawMessage, error) { return nil, ve }
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ve := &mockValidationError{msg: tc.errMsg, stderr: tc.stderr}
+			pe := &mockPlanExecutor{}
+			tc.setupMock(pe, ve)
+			d := newPlanTestDaemon(t, pe)
+
+			req := makePlanRequest(t, tc.operation, nil)
+			resp := d.api.handlePlan(req)
+
+			assert.False(t, resp.Success)
+			require.NotNil(t, resp.Error)
+			assert.Equal(t, uds.ErrCodeValidation, resp.Error.Code,
+				"operation %s validation error should map to ErrCodeValidation", tc.operation)
+			assert.Equal(t, tc.stderr, resp.Error.Message,
+				"operation %s should use FormatStderr() as the error message", tc.operation)
+		})
+	}
+}
+
+// TestHandlePlan_CodedErrorAllOperations verifies that a codedFormatter error
+// from any operation preserves the custom error code and stderr message.
+func TestHandlePlan_CodedErrorAllOperations(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name      string
+		operation string
+		errMsg    string
+		stderr    string
+		code      string
+		setupMock func(pe *mockPlanExecutor, ce *mockCodedError)
+	}
+
+	cases := []testCase{
+		{
+			name:      "submit_coded",
+			operation: "submit",
+			errMsg:    "submit action required",
+			stderr:    "approve the plan first",
+			code:      uds.ErrCodeActionRequired,
+			setupMock: func(pe *mockPlanExecutor, ce *mockCodedError) {
+				pe.submitFunc = func(json.RawMessage) (json.RawMessage, error) { return nil, ce }
+			},
+		},
+		{
+			name:      "complete_coded",
+			operation: "complete",
+			errMsg:    "complete fencing",
+			stderr:    "stale fencing token",
+			code:      uds.ErrCodeFencingReject,
+			setupMock: func(pe *mockPlanExecutor, ce *mockCodedError) {
+				pe.completeFunc = func(json.RawMessage) (json.RawMessage, error) { return nil, ce }
+			},
+		},
+		{
+			name:      "add_retry_task_coded",
+			operation: "add_retry_task",
+			errMsg:    "retry not found",
+			stderr:    "original task does not exist",
+			code:      uds.ErrCodeNotFound,
+			setupMock: func(pe *mockPlanExecutor, ce *mockCodedError) {
+				pe.addRetryTaskFunc = func(json.RawMessage) (json.RawMessage, error) { return nil, ce }
+			},
+		},
+		{
+			name:      "rebuild_coded",
+			operation: "rebuild",
+			errMsg:    "rebuild duplicate",
+			stderr:    "plan already being rebuilt",
+			code:      uds.ErrCodeDuplicate,
+			setupMock: func(pe *mockPlanExecutor, ce *mockCodedError) {
+				pe.rebuildFunc = func(json.RawMessage) (json.RawMessage, error) { return nil, ce }
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ce := &mockCodedError{msg: tc.errMsg, stderr: tc.stderr, code: tc.code}
+			pe := &mockPlanExecutor{}
+			tc.setupMock(pe, ce)
+			d := newPlanTestDaemon(t, pe)
+
+			req := makePlanRequest(t, tc.operation, nil)
+			resp := d.api.handlePlan(req)
+
+			assert.False(t, resp.Success)
+			require.NotNil(t, resp.Error)
+			assert.Equal(t, tc.code, resp.Error.Code,
+				"operation %s coded error should preserve custom error code", tc.operation)
+			assert.Equal(t, tc.stderr, resp.Error.Message,
+				"operation %s should use FormatStderr() as the error message", tc.operation)
+		})
+	}
+}
+
+// TestHandlePlan_SuccessResponseStructure verifies that the response Data field
+// is exactly the JSON the mock returned, using deep equality rather than string
+// containment. Each operation returns a distinct, non-trivial structure.
+func TestHandlePlan_SuccessResponseStructure(t *testing.T) {
+	t.Parallel()
+
+	type testCase struct {
+		name       string
+		operation  string
+		mockReturn string
+		setupMock  func(pe *mockPlanExecutor, ret json.RawMessage)
+	}
+
+	cases := []testCase{
+		{
+			name:       "submit_response",
+			operation:  "submit",
+			mockReturn: `{"command_id":"cmd_777","plan_version":3,"tasks_created":5}`,
+			setupMock: func(pe *mockPlanExecutor, ret json.RawMessage) {
+				pe.submitFunc = func(json.RawMessage) (json.RawMessage, error) { return ret, nil }
+			},
+		},
+		{
+			name:       "complete_response",
+			operation:  "complete",
+			mockReturn: `{"status":"completed","completed_at":"2026-01-15T10:30:00Z","summary":"all tasks done"}`,
+			setupMock: func(pe *mockPlanExecutor, ret json.RawMessage) {
+				pe.completeFunc = func(json.RawMessage) (json.RawMessage, error) { return ret, nil }
+			},
+		},
+		{
+			name:       "add_retry_task_response",
+			operation:  "add_retry_task",
+			mockReturn: `{"task_id":"task_retry_042","original_task_id":"task_042","attempt":2}`,
+			setupMock: func(pe *mockPlanExecutor, ret json.RawMessage) {
+				pe.addRetryTaskFunc = func(json.RawMessage) (json.RawMessage, error) { return ret, nil }
+			},
+		},
+		{
+			name:       "rebuild_response",
+			operation:  "rebuild",
+			mockReturn: `{"rebuilt":true,"new_version":4,"removed_tasks":["task_old_1","task_old_2"]}`,
+			setupMock: func(pe *mockPlanExecutor, ret json.RawMessage) {
+				pe.rebuildFunc = func(json.RawMessage) (json.RawMessage, error) { return ret, nil }
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ret := json.RawMessage(tc.mockReturn)
+			pe := &mockPlanExecutor{}
+			tc.setupMock(pe, ret)
+			d := newPlanTestDaemon(t, pe)
+
+			req := makePlanRequest(t, tc.operation, map[string]string{"key": "value"})
+			resp := d.api.handlePlan(req)
+
+			require.True(t, resp.Success, "operation %s should succeed", tc.operation)
+			assert.Nil(t, resp.Error)
+
+			// Deep-compare the response Data against the mock return value.
+			var expectedData interface{}
+			require.NoError(t, json.Unmarshal([]byte(tc.mockReturn), &expectedData),
+				"mock return value should be valid JSON")
+
+			var actualData interface{}
+			require.NoError(t, json.Unmarshal(resp.Data, &actualData),
+				"response Data should be valid JSON")
+
+			assert.Equal(t, expectedData, actualData,
+				"operation %s response Data should exactly match the executor return value", tc.operation)
+		})
+	}
 }
 
