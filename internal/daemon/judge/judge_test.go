@@ -35,8 +35,8 @@ func TestEvaluate_Winner1(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if d.WinnerIndex != 1 {
-		t.Errorf("want WinnerIndex 1, got %d", d.WinnerIndex)
+	if d.WinnerIndex == nil || *d.WinnerIndex != 1 {
+		t.Errorf("want WinnerIndex 1, got %v", d.WinnerIndex)
 	}
 	if d.Reasoning != "B is cleaner" {
 		t.Errorf("unexpected reasoning: %s", d.Reasoning)
@@ -56,8 +56,8 @@ func TestEvaluate_Winner0(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if d.WinnerIndex != 0 {
-		t.Errorf("want WinnerIndex 0, got %d", d.WinnerIndex)
+	if d.WinnerIndex == nil || *d.WinnerIndex != 0 {
+		t.Errorf("want WinnerIndex 0, got %v", d.WinnerIndex)
 	}
 }
 
@@ -71,8 +71,8 @@ func TestEvaluate_CallerError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if d.WinnerIndex != -1 {
-		t.Errorf("error fallback should return WinnerIndex -1, got %d", d.WinnerIndex)
+	if d.WinnerIndex != nil {
+		t.Errorf("error fallback should return nil WinnerIndex, got %v", d.WinnerIndex)
 	}
 	if !strings.Contains(err.Error(), "caller error") {
 		t.Errorf("error should mention caller: %v", err)
@@ -89,8 +89,8 @@ func TestEvaluate_InvalidJSON(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected parse error")
 	}
-	if d.WinnerIndex != -1 {
-		t.Errorf("error fallback should return WinnerIndex -1, got %d", d.WinnerIndex)
+	if d.WinnerIndex != nil {
+		t.Errorf("error fallback should return nil WinnerIndex, got %v", d.WinnerIndex)
 	}
 	if !strings.Contains(err.Error(), "parse") {
 		t.Errorf("error should mention parse: %v", err)
@@ -106,8 +106,8 @@ func TestEvaluate_Timeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
-	if d.WinnerIndex != -1 {
-		t.Errorf("error fallback should return WinnerIndex -1, got %d", d.WinnerIndex)
+	if d.WinnerIndex != nil {
+		t.Errorf("error fallback should return nil WinnerIndex, got %v", d.WinnerIndex)
 	}
 	if !errors.Is(err, context.DeadlineExceeded) && !strings.Contains(err.Error(), "DeadlineExceeded") {
 		// The error is wrapped, so check the message as well.
@@ -151,8 +151,8 @@ func TestEvaluate_SingleCandidate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if d.WinnerIndex != 3 {
-		t.Errorf("single candidate should win, want 3 got %d", d.WinnerIndex)
+	if d.WinnerIndex == nil || *d.WinnerIndex != 3 {
+		t.Errorf("single candidate should win, want 3 got %v", d.WinnerIndex)
 	}
 }
 

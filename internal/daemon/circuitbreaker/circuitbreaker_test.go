@@ -117,7 +117,7 @@ func TestUpdateCounterOnResult_Disabled(t *testing.T) {
 	cb := newTestHandler(false, 3, 30)
 	state := &model.CommandState{CommandID: "cmd1"}
 
-	tripped, _ := cb.UpdateCounterOnResult(state, model.StatusFailed, "r1", time.Now())
+	tripped, _ := cb.UpdateCounterOnResult(state, model.StatusFailed, "t1", "r1", time.Now())
 	if tripped {
 		t.Error("expected no trip when circuit breaker is disabled")
 	}
@@ -131,7 +131,7 @@ func TestUpdateCounterOnResult_IncrementOnFailure(t *testing.T) {
 	cb := newTestHandler(true, 3, 30)
 	state := &model.CommandState{CommandID: "cmd1"}
 
-	tripped, _ := cb.UpdateCounterOnResult(state, model.StatusFailed, "r1", time.Now())
+	tripped, _ := cb.UpdateCounterOnResult(state, model.StatusFailed, "t1", "r1", time.Now())
 	if tripped {
 		t.Error("expected no trip on first failure")
 	}
@@ -150,7 +150,7 @@ func TestUpdateCounterOnResult_DecrementOnSuccess(t *testing.T) {
 		},
 	}
 
-	tripped, _ := cb.UpdateCounterOnResult(state, model.StatusCompleted, "r1", time.Now())
+	tripped, _ := cb.UpdateCounterOnResult(state, model.StatusCompleted, "t1", "r1", time.Now())
 	if tripped {
 		t.Error("expected no trip on success")
 	}
@@ -162,7 +162,7 @@ func TestUpdateCounterOnResult_DecrementOnSuccess(t *testing.T) {
 	}
 
 	// Second success decrements to 0
-	tripped, _ = cb.UpdateCounterOnResult(state, model.StatusCompleted, "r2", time.Now())
+	tripped, _ = cb.UpdateCounterOnResult(state, model.StatusCompleted, "t2", "r2", time.Now())
 	if tripped {
 		t.Error("expected no trip on success")
 	}
@@ -171,7 +171,7 @@ func TestUpdateCounterOnResult_DecrementOnSuccess(t *testing.T) {
 	}
 
 	// Third success stays at 0 (floor)
-	tripped, _ = cb.UpdateCounterOnResult(state, model.StatusCompleted, "r3", time.Now())
+	tripped, _ = cb.UpdateCounterOnResult(state, model.StatusCompleted, "t3", "r3", time.Now())
 	if tripped {
 		t.Error("expected no trip on success")
 	}
@@ -190,7 +190,7 @@ func TestUpdateCounterOnResult_TripOnThreshold(t *testing.T) {
 		},
 	}
 
-	tripped, reason := cb.UpdateCounterOnResult(state, model.StatusFailed, "r3", time.Now())
+	tripped, reason := cb.UpdateCounterOnResult(state, model.StatusFailed, "t3", "r3", time.Now())
 	if !tripped {
 		t.Error("expected trip at threshold")
 	}
@@ -212,8 +212,8 @@ func TestUpdateCounterOnResult_IdempotentSkip(t *testing.T) {
 		},
 	}
 
-	// Try to apply same result ID that already exists
-	tripped, _ := cb.UpdateCounterOnResult(state, model.StatusFailed, "r_existing", time.Now())
+	// Try to apply same result ID that already exists for this task
+	tripped, _ := cb.UpdateCounterOnResult(state, model.StatusFailed, "task1", "r_existing", time.Now())
 	if tripped {
 		t.Error("expected no trip on idempotent result")
 	}
@@ -445,7 +445,7 @@ func TestUpdateCounterOnResult_NilState(t *testing.T) {
 	cb := newTestHandler(true, 3, 30)
 
 	// Must not panic with nil state.
-	tripped, reason := cb.UpdateCounterOnResult(nil, model.StatusFailed, "r1", time.Now())
+	tripped, reason := cb.UpdateCounterOnResult(nil, model.StatusFailed, "t1", "r1", time.Now())
 	if tripped {
 		t.Error("expected no trip on nil state")
 	}

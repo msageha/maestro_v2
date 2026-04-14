@@ -27,17 +27,16 @@ func TestIsTerminalRolloutState(t *testing.T) {
 
 func TestRolloutGroup_Defaults(t *testing.T) {
 	g := RolloutGroup{
-		ID:          "rg-1",
-		TaskID:      "task-1",
-		CommandID:   "cmd-1",
-		Candidates:  nil,
-		State:       RolloutStatePending,
-		WinnerIndex: -1,
-		CreatedAt:   time.Now(),
+		ID:         "rg-1",
+		TaskID:     "task-1",
+		CommandID:  "cmd-1",
+		Candidates: nil,
+		State:      RolloutStatePending,
+		CreatedAt:  time.Now(),
 	}
 
-	if g.WinnerIndex != -1 {
-		t.Errorf("WinnerIndex = %d, want -1", g.WinnerIndex)
+	if g.WinnerIndex != nil {
+		t.Errorf("WinnerIndex = %v, want nil", g.WinnerIndex)
 	}
 	if g.CompletedAt != nil {
 		t.Error("CompletedAt should be nil for pending group")

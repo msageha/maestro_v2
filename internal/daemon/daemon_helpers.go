@@ -55,9 +55,13 @@ func (d *Daemon) spawnTracked(name string, fn func(context.Context)) bool {
 // recoverPanic runs inside errgroup goroutines, and Shutdown calls eg.Wait() to
 // drain the errgroup. Calling Shutdown synchronously here would deadlock because
 // the errgroup cannot finish while this goroutine is blocked waiting for itself.
+//
+// shuttingDown is set immediately (before the async Shutdown goroutine) so that
+// spawnTracked rejects new goroutines without waiting for Shutdown to acquire egMu.
 func (d *Daemon) recoverPanic(goroutine string) {
 	if r := recover(); r != nil {
 		d.log(LogLevelError, "panic in %s: %v\n%s", goroutine, r, debug.Stack())
+		d.shuttingDown.Store(true)
 		go d.Shutdown()
 	}
 }

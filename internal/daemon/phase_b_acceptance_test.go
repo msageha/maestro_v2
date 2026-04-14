@@ -161,7 +161,7 @@ func TestRolloutWinnerSelection_FitnessClear(t *testing.T) {
 	judgeCallCount := 0
 	var judgeFunc model.JudgeFunc = func(_ context.Context, _ []model.FitnessScore, _ []map[string]string) (model.JudgeDecision, error) {
 		judgeCallCount++
-		return model.JudgeDecision{WinnerIndex: 1}, nil
+		return model.JudgeDecision{WinnerIndex: ptr.Int(1)}, nil
 	}
 
 	winnerIdx, judgeUsed, err := model.ResolveWinner(
@@ -201,7 +201,7 @@ func TestRolloutWinnerSelection_FitnessTie_JudgeBreaks(t *testing.T) {
 	judgeCalled := false
 	var judgeFunc model.JudgeFunc = func(_ context.Context, _ []model.FitnessScore, _ []map[string]string) (model.JudgeDecision, error) {
 		judgeCalled = true
-		return model.JudgeDecision{WinnerIndex: 1, Reasoning: "candidate 2 has better style"}, nil
+		return model.JudgeDecision{WinnerIndex: ptr.Int(1), Reasoning: "candidate 2 has better style"}, nil
 	}
 
 	winnerIdx, judgeUsed, err := model.ResolveWinner(
@@ -279,7 +279,7 @@ func TestJudge_NeverOverridesFitness(t *testing.T) {
 	judgeCalled := false
 	var judgeFunc model.JudgeFunc = func(_ context.Context, _ []model.FitnessScore, _ []map[string]string) (model.JudgeDecision, error) {
 		judgeCalled = true
-		return model.JudgeDecision{WinnerIndex: 1, Reasoning: "I prefer the worse one"}, nil
+		return model.JudgeDecision{WinnerIndex: ptr.Int(1), Reasoning: "I prefer the worse one"}, nil
 	}
 
 	winnerIdx, judgeUsed, err := model.ResolveWinner(
@@ -348,7 +348,7 @@ func TestJudge_OnlyOnTie(t *testing.T) {
 			called := false
 			var judgeFunc model.JudgeFunc = func(_ context.Context, _ []model.FitnessScore, _ []map[string]string) (model.JudgeDecision, error) {
 				called = true
-				return model.JudgeDecision{WinnerIndex: 0}, nil
+				return model.JudgeDecision{WinnerIndex: ptr.Int(0)}, nil
 			}
 
 			model.ResolveWinner(tc.scores, th, judgeFunc)
@@ -385,7 +385,7 @@ func TestResolveWinner_Integration(t *testing.T) {
 
 	// Step 2: With judge → tie, judge picks 1
 	var judgeFunc model.JudgeFunc = func(_ context.Context, _ []model.FitnessScore, _ []map[string]string) (model.JudgeDecision, error) {
-		return model.JudgeDecision{WinnerIndex: 1, Reasoning: "better code quality"}, nil
+		return model.JudgeDecision{WinnerIndex: ptr.Int(1), Reasoning: "better code quality"}, nil
 	}
 
 	winnerIdx, judgeUsed, err = model.ResolveWinner(scores, th, judgeFunc)
@@ -407,7 +407,7 @@ func TestResolveWinner_Integration(t *testing.T) {
 	judgeCalled := false
 	var judgeFunc2 model.JudgeFunc = func(_ context.Context, _ []model.FitnessScore, _ []map[string]string) (model.JudgeDecision, error) {
 		judgeCalled = true
-		return model.JudgeDecision{WinnerIndex: 1}, nil
+		return model.JudgeDecision{WinnerIndex: ptr.Int(1)}, nil
 	}
 
 	winnerIdx, judgeUsed, err = model.ResolveWinner(clearScores, th, judgeFunc2)

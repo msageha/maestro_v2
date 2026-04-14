@@ -30,7 +30,7 @@ type RolloutGroup struct {
 	CommandID   string             `yaml:"command_id"`
 	Candidates  []RolloutCandidate `yaml:"candidates"`
 	State       RolloutState       `yaml:"state"`
-	WinnerIndex int                `yaml:"winner_index"`
+	WinnerIndex *int               `yaml:"winner_index"`
 	CreatedAt   time.Time          `yaml:"created_at"`
 	CompletedAt *time.Time         `yaml:"completed_at,omitempty"`
 }

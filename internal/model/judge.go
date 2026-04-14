@@ -6,8 +6,9 @@ import (
 )
 
 // JudgeDecision は Judge による勝者選定の結果を表す。
+// WinnerIndex は nil の場合、勝者が決定されなかったことを示す。
 type JudgeDecision struct {
-	WinnerIndex int           `yaml:"winner_index"`
+	WinnerIndex *int          `yaml:"winner_index"`
 	Reasoning   string        `yaml:"reasoning"`
 	Model       string        `yaml:"model"`
 	Duration    time.Duration `yaml:"duration"`

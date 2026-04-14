@@ -163,8 +163,11 @@ func (f *DashboardFormatter) parseLogFile(data *DashboardData) error {
 	}
 
 	for scanner.Scan() {
+		// Copy scanner bytes: the underlying buffer is reused across Scan calls.
+		line := append([]byte(nil), scanner.Bytes()...)
+
 		var entry events.LogEntry
-		if err := json.Unmarshal(scanner.Bytes(), &entry); err != nil {
+		if err := json.Unmarshal(line, &entry); err != nil {
 			continue // Skip malformed entries
 		}
 

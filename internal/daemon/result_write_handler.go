@@ -41,7 +41,7 @@ type fallbackRecorder interface {
 
 // circuitBreakerUpdater updates circuit breaker counters on result.
 type circuitBreakerUpdater interface {
-	UpdateCounterOnResult(state *model.CommandState, resultStatus model.Status, resultID string, now time.Time) (bool, string)
+	UpdateCounterOnResult(state *model.CommandState, resultStatus model.Status, taskID string, resultID string, now time.Time) (bool, string)
 	TripBreaker(state *model.CommandState, reason string, now time.Time)
 }
 

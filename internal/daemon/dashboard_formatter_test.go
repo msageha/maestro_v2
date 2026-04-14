@@ -639,29 +639,66 @@ func TestDashboardFormatter_FormatDashboard_WithStateFiles(t *testing.T) {
 	assert.Contains(t, output, "Warnings | 2")
 }
 
-func TestDashboardFormatter_SortEvents_AlreadySorted(t *testing.T) {
+func TestDashboardFormatter_SortEvents_SameTimestamp(t *testing.T) {
 	t.Parallel()
 	formatter := &DashboardFormatter{}
 
 	now := time.Now()
 	data := &DashboardData{
 		RecentEvents: []DashboardEvent{
-			{Timestamp: now, EventType: "first"},
-			{Timestamp: now.Add(-1 * time.Minute), EventType: "second"},
-			{Timestamp: now.Add(-2 * time.Minute), EventType: "third"},
+			{Timestamp: now, EventType: "a"},
+			{Timestamp: now, EventType: "b"},
+			{Timestamp: now, EventType: "c"},
+		},
+	}
+
+	// Should not panic; all elements remain present
+	assert.NotPanics(t, func() { formatter.sortEvents(data) })
+	assert.Len(t, data.RecentEvents, 3)
+}
+
+func TestDashboardFormatter_SortEvents_ReverseOrder(t *testing.T) {
+	t.Parallel()
+	formatter := &DashboardFormatter{}
+
+	now := time.Now()
+	data := &DashboardData{
+		RecentEvents: []DashboardEvent{
+			{Timestamp: now.Add(-3 * time.Minute), EventType: "oldest"},
+			{Timestamp: now.Add(-2 * time.Minute), EventType: "middle"},
+			{Timestamp: now.Add(-1 * time.Minute), EventType: "newest"},
 		},
 	}
 
 	formatter.sortEvents(data)
 
-	// Verify order is preserved (already most-recent-first)
-	assert.Equal(t, "first", data.RecentEvents[0].EventType)
-	assert.Equal(t, "second", data.RecentEvents[1].EventType)
-	assert.Equal(t, "third", data.RecentEvents[2].EventType)
+	assert.Equal(t, "newest", data.RecentEvents[0].EventType)
+	assert.Equal(t, "middle", data.RecentEvents[1].EventType)
+	assert.Equal(t, "oldest", data.RecentEvents[2].EventType)
+}
 
-	// Verify timestamps remain in descending order
-	assert.True(t, data.RecentEvents[0].Timestamp.After(data.RecentEvents[1].Timestamp))
-	assert.True(t, data.RecentEvents[1].Timestamp.After(data.RecentEvents[2].Timestamp))
+func TestDashboardFormatter_SortEvents_ErrorsAndWarnings(t *testing.T) {
+	t.Parallel()
+	formatter := &DashboardFormatter{}
+
+	now := time.Now()
+	data := &DashboardData{
+		RecentErrors: []DashboardEvent{
+			{Timestamp: now.Add(-2 * time.Minute), EventType: "old_err"},
+			{Timestamp: now, EventType: "new_err"},
+		},
+		RecentWarnings: []DashboardEvent{
+			{Timestamp: now.Add(-1 * time.Minute), EventType: "old_warn"},
+			{Timestamp: now, EventType: "new_warn"},
+		},
+	}
+
+	formatter.sortEvents(data)
+
+	assert.Equal(t, "new_err", data.RecentErrors[0].EventType)
+	assert.Equal(t, "old_err", data.RecentErrors[1].EventType)
+	assert.Equal(t, "new_warn", data.RecentWarnings[0].EventType)
+	assert.Equal(t, "old_warn", data.RecentWarnings[1].EventType)
 }
 
 func TestDashboardFormatter_SortEvents_Empty(t *testing.T) {

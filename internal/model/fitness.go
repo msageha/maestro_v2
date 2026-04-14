@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"fmt"
 	"time"
 )
 
@@ -171,7 +172,10 @@ func ResolveWinner(scores []FitnessScore, thresholds FitnessThresholds, judge Ju
 		return winner, false, judgeErr
 	}
 
-	return decision.WinnerIndex, true, nil
+	if decision.WinnerIndex == nil {
+		return winner, false, fmt.Errorf("judge returned nil WinnerIndex")
+	}
+	return *decision.WinnerIndex, true, nil
 }
 
 func abs(n int) int {

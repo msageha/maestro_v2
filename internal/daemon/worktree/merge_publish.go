@@ -41,6 +41,16 @@ func (wm *Manager) recordMergeFailure(state *model.WorktreeCommandState, reason 
 	return wm.setIntegrationStatus(state, model.IntegrationStatusFailed, now)
 }
 
+// mergeWorkerOutcome captures the result of merging a single worker branch.
+type mergeWorkerOutcome struct {
+	merged          bool                 // worker was successfully merged
+	skipped         bool                 // worker was skipped (nil, no commits, log error, etc.)
+	conflictSkipped bool                 // worker was skipped due to conflict/resolving state
+	transientFail   bool                 // transient error, worker was skipped
+	conflict        *model.MergeConflict // non-nil if merge conflict occurred
+	fatalErr        error                // non-nil if fatal error; caller must abort
+}
+
 // MergeToIntegration merges worker branches into the integration branch.
 // Returns any merge conflicts encountered. Workers are merged in deterministic order.
 // All merge operations happen in the integration worktree (H3: projectRoot HEAD is never changed).
@@ -75,30 +85,8 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 	}
 
 	// Guard: ensure integration worktree is clean before merging.
-	// A dirty worktree (e.g., from incomplete merge abort) would cause unpredictable merge results.
-	// Persist IntegrationStatusFailed to prevent stale "merged" status from triggering publish.
-	dirtyOut, dirtyErr := wm.gitOutputInDir(integrationPath, "status", "--porcelain")
-	if dirtyErr != nil {
-		now := wm.clock.Now().UTC().Format(time.RFC3339)
-		if tErr := wm.recordMergeFailure(state, "status_check_failed", now); tErr != nil {
-			return nil, fmt.Errorf("check integration worktree status: %w (transition error: %s)", dirtyErr, tErr.Error())
-		}
-		state.UpdatedAt = now
-		if saveErr := wm.saveState(commandID, state); saveErr != nil {
-			wm.Log(core.LogLevelWarn, "save_state_failed command=%s error=%v", commandID, saveErr)
-		}
-		return nil, fmt.Errorf("check integration worktree status: %w", dirtyErr)
-	}
-	if strings.TrimSpace(dirtyOut) != "" {
-		now := wm.clock.Now().UTC().Format(time.RFC3339)
-		if tErr := wm.recordMergeFailure(state, "dirty_worktree", now); tErr != nil {
-			return nil, fmt.Errorf("integration worktree has uncommitted changes (transition error: %s)", tErr.Error())
-		}
-		state.UpdatedAt = now
-		if saveErr := wm.saveState(commandID, state); saveErr != nil {
-			wm.Log(core.LogLevelWarn, "save_state_failed command=%s error=%v", commandID, saveErr)
-		}
-		return nil, fmt.Errorf("integration worktree has uncommitted changes; aborting merge to prevent corruption")
+	if err := wm.checkIntegrationWorktreeClean(state, commandID, integrationPath); err != nil {
+		return nil, err
 	}
 
 	// Save the pre-merge status so we can revert if no commits are found.
@@ -122,182 +110,292 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 	var conflictSkippedCount int
 
 	for _, workerID := range sorted {
-		ws := wm.findWorker(state, workerID)
-		if ws == nil {
-			continue
-		}
+		outcome := wm.mergeWorkerBranch(state, commandID, workerID, integrationPath, workerPurposes, now)
 
-		// Skip workers already integrated — avoids redundant re-merge on
-		// partial_merge/conflict recovery where some workers succeeded earlier.
-		if ws.Status == model.WorktreeStatusIntegrated {
-			wm.Log(core.LogLevelDebug, "skip_already_integrated command=%s worker=%s", commandID, workerID)
-			mergedCount++ // count as merged for final status determination
-			continue
-		}
-
-		// Skip workers in conflict or resolving state. These must go through
-		// the resolution pipeline (DispatchConflictResolution → resume-merge)
-		// before being re-merged. Attempting to re-merge a conflict worker
-		// causes invalid_worktree_transition (conflict→conflict is not valid).
-		if ws.Status == model.WorktreeStatusConflict || ws.Status == model.WorktreeStatusResolving {
-			wm.Log(core.LogLevelInfo, "skip_conflict_resolving_worker command=%s worker=%s status=%s",
-				commandID, workerID, ws.Status)
-			conflictSkippedCount++
-			continue
-		}
-
-		// Check if worker branch has commits beyond base
-		logOut, err := wm.gitOutputWithRetry(integrationPath, 2, "log", "--oneline",
-			fmt.Sprintf("%s..%s", state.Integration.BaseSHA, ws.Branch))
-		if err != nil {
-			wm.Log(core.LogLevelWarn, "merge_log_check command=%s worker=%s error=%v", commandID, workerID, err)
-			continue
-		}
-		if strings.TrimSpace(logOut) == "" {
-			wm.Log(core.LogLevelDebug, "no_commits_to_merge command=%s worker=%s", commandID, workerID)
-			continue
-		}
-
-		// Record per-worker pre-merge HEAD so abort recovery resets only this merge
-		perWorkerPreMergeHEAD, err := wm.gitOutputWithRetry(integrationPath, 2, "rev-parse", "HEAD")
-		if err != nil {
-			wm.Log(core.LogLevelWarn, "merge_pre_head_failed command=%s worker=%s error=%v", commandID, workerID, err)
-			continue
-		}
-		perWorkerPreMergeHEAD = strings.TrimSpace(perWorkerPreMergeHEAD)
-		if err := validateSHA(perWorkerPreMergeHEAD); err != nil {
-			wm.Log(core.LogLevelWarn, "merge_invalid_pre_head command=%s worker=%s error=%v", commandID, workerID, err)
-			continue
-		}
-
-		// Merge worker branch in integration worktree (not projectRoot)
-		strategy := wm.config.EffectiveMergeStrategy()
-		mergeMsg := buildMergeMessage(workerID, workerPurposes)
-
-		err = wm.gitRunInDir(integrationPath, "merge", "--no-ff", "-s", strategy, "-m", mergeMsg, ws.Branch)
-		if err != nil {
-			// Classify error: check for unmerged index entries to distinguish
-			// true merge conflicts from fatal git errors (bad ref, corrupt repo, etc.)
-			hasConflict, probeErr := wm.hasUnmergedFiles(integrationPath)
-			if probeErr != nil {
-				// Probe failed — can't classify reliably. Treat as non-conflict (fail-safe).
-				wm.Log(core.LogLevelWarn, "merge_probe_failed command=%s worker=%s probe_error=%v merge_error=%v",
-					commandID, workerID, probeErr, err)
-			}
-
-			if hasConflict {
-				// Collect conflict detail refs (base/ours/theirs) before aborting
-				conflictFiles, _ := wm.getConflictFilesInDir(integrationPath)
-				mc := model.MergeConflict{
-					WorkerID:      workerID,
-					ConflictFiles: conflictFiles,
-					Message:       fmt.Sprintf("merge conflict: %s → integration", workerID),
-				}
-				// Collect per-file base/ours/theirs refs via rev-parse of index stages
-				for _, cf := range conflictFiles {
-					baseRef, err1 := wm.gitOutputWithRetry(integrationPath, 1, "rev-parse", ":1:"+cf)
-					oursRef, err2 := wm.gitOutputWithRetry(integrationPath, 1, "rev-parse", ":2:"+cf)
-					theirsRef, err3 := wm.gitOutputWithRetry(integrationPath, 1, "rev-parse", ":3:"+cf)
-					if err1 == nil && err2 == nil && err3 == nil {
-						// Use refs from first conflict file as representative
-						mc.BaseRef = strings.TrimSpace(baseRef)
-						mc.OursRef = strings.TrimSpace(oursRef)
-						mc.TheirsRef = strings.TrimSpace(theirsRef)
-						break
-					}
-					// Binary files or missing stages — continue to next file
-				}
-				conflicts = append(conflicts, mc)
-
-				if abortErr := wm.gitRunInDir(integrationPath, "merge", "--abort"); abortErr != nil {
-					wm.Log(core.LogLevelWarn, "merge_abort_failed command=%s worker=%s error=%v",
-						commandID, workerID, abortErr)
-					// Fallback recovery: reset --hard + clean + verify (per-worker HEAD)
-					if recoveryErr := wm.recoverWorktreeAfterMerge(integrationPath, perWorkerPreMergeHEAD, commandID, workerID); recoveryErr != nil {
-						if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusConflict, now); tErr != nil {
-							wm.Log(core.LogLevelWarn, "merge_recovery_conflict_transition command=%s worker=%s error=%v", commandID, workerID, tErr)
-						}
-						if tErr := wm.recordMergeFailure(state, "abort_recover_failed_conflict", now); tErr != nil {
-							wm.Log(core.LogLevelWarn, "merge_recovery_fail_transition command=%s error=%v", commandID, tErr)
-						}
-						state.UpdatedAt = now
-						if saveErr := wm.saveState(commandID, state); saveErr != nil {
-							wm.Log(core.LogLevelError, "save_state_failed command=%s error=%v", commandID, saveErr)
-						}
-						return conflicts, fmt.Errorf("worktree stuck after merge abort failure for worker %s: %w", workerID, recoveryErr)
-					}
-				}
-
-				if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusConflict, now); tErr != nil {
-					wm.Log(core.LogLevelWarn, "merge_conflict_transition command=%s worker=%s error=%v",
-						commandID, workerID, tErr)
-				}
-				wm.Log(core.LogLevelWarn, "merge_conflict command=%s worker=%s files=%v",
-					commandID, workerID, conflictFiles)
-				continue
-			}
-
-			// Non-conflict error: classify as transient or permanent
-			errClass := classifyGitError(err)
-
-			if abortErr := wm.gitRunInDir(integrationPath, "merge", "--abort"); abortErr != nil {
-				wm.Log(core.LogLevelWarn, "merge_abort_failed command=%s worker=%s error=%v",
-					commandID, workerID, abortErr)
-				if recoveryErr := wm.recoverWorktreeAfterMerge(integrationPath, perWorkerPreMergeHEAD, commandID, workerID); recoveryErr != nil {
-					if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusFailed, now); tErr != nil {
-						wm.Log(core.LogLevelWarn, "merge_recovery_worker_fail_transition command=%s worker=%s error=%v", commandID, workerID, tErr)
-					}
-					if tErr := wm.recordMergeFailure(state, "abort_recover_failed_nonconflict", now); tErr != nil {
-						wm.Log(core.LogLevelWarn, "merge_recovery_fail_transition command=%s error=%v", commandID, tErr)
-					}
-					state.UpdatedAt = now
-					if saveErr := wm.saveState(commandID, state); saveErr != nil {
-						wm.Log(core.LogLevelError, "save_state_failed command=%s error=%v", commandID, saveErr)
-					}
-					return conflicts, fmt.Errorf("worktree stuck after merge abort failure for worker %s: %w", workerID, recoveryErr)
-				}
-			}
-
-			if errClass == gitErrorTransient {
-				// Transient error: skip this worker, continue loop
-				if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusFailed, now); tErr != nil {
-					wm.Log(core.LogLevelWarn, "merge_transient_fail_transition command=%s worker=%s error=%v",
-						commandID, workerID, tErr)
-				}
-				skippedCount++
-				wm.Log(core.LogLevelWarn, "merge_transient_error_skip command=%s worker=%s error=%v",
-					commandID, workerID, err)
-				continue
-			}
-
-			// Permanent error: halt merge loop — repo-level problem
-			if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusFailed, now); tErr != nil {
-				wm.Log(core.LogLevelWarn, "merge_fail_transition command=%s worker=%s error=%v",
-					commandID, workerID, tErr)
-			}
-			if tErr := wm.recordMergeFailure(state, "permanent_git_error", now); tErr != nil {
-				wm.Log(core.LogLevelWarn, "merge_integration_fail_transition command=%s error=%v",
-					commandID, tErr)
-			}
-			state.UpdatedAt = now
-
-			wm.Log(core.LogLevelError, "merge_non_conflict_error command=%s worker=%s error=%v",
-				commandID, workerID, err)
-
+		if outcome.fatalErr != nil {
+			// Fatal error: save state and return immediately
 			if saveErr := wm.saveState(commandID, state); saveErr != nil {
-				return conflicts, fmt.Errorf("save state after non-conflict merge error: %w", saveErr)
+				wm.Log(core.LogLevelError, "save_state_failed command=%s error=%v", commandID, saveErr)
 			}
-			return conflicts, fmt.Errorf("non-conflict merge error for worker %s: %w", workerID, err)
+			return conflicts, outcome.fatalErr
 		}
-
-		if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusIntegrated, now); tErr != nil {
-			wm.Log(core.LogLevelWarn, "merge_integrated_transition command=%s worker=%s error=%v",
-				commandID, workerID, tErr)
+		if outcome.conflict != nil {
+			conflicts = append(conflicts, *outcome.conflict)
 		}
-		mergedCount++
-		wm.Log(core.LogLevelInfo, "worker_merged command=%s worker=%s", commandID, workerID)
+		if outcome.merged {
+			mergedCount++
+		}
+		if outcome.skipped {
+			skippedCount++
+		}
+		if outcome.conflictSkipped {
+			conflictSkippedCount++
+		}
+		if outcome.transientFail {
+			skippedCount++
+		}
 	}
 
+	wm.determineMergeOutcome(state, commandID, mergedCount, skippedCount, conflictSkippedCount, len(sorted), conflicts, preMergeStatus, preMergeUpdatedAt, now)
+
+	if err := wm.saveState(commandID, state); err != nil {
+		return conflicts, fmt.Errorf("save state: %w", err)
+	}
+
+	return conflicts, nil
+}
+
+// checkIntegrationWorktreeClean verifies the integration worktree has no
+// uncommitted changes. A dirty worktree (e.g., from incomplete merge abort)
+// would cause unpredictable merge results. Persists IntegrationStatusFailed
+// to prevent stale "merged" status from triggering publish.
+func (wm *Manager) checkIntegrationWorktreeClean(state *model.WorktreeCommandState, commandID, integrationPath string) error {
+	dirtyOut, dirtyErr := wm.gitOutputInDir(integrationPath, "status", "--porcelain")
+	if dirtyErr != nil {
+		now := wm.clock.Now().UTC().Format(time.RFC3339)
+		if tErr := wm.recordMergeFailure(state, "status_check_failed", now); tErr != nil {
+			return fmt.Errorf("check integration worktree status: %w (transition error: %s)", dirtyErr, tErr.Error())
+		}
+		state.UpdatedAt = now
+		if saveErr := wm.saveState(commandID, state); saveErr != nil {
+			wm.Log(core.LogLevelWarn, "save_state_failed command=%s error=%v", commandID, saveErr)
+		}
+		return fmt.Errorf("check integration worktree status: %w", dirtyErr)
+	}
+	if strings.TrimSpace(dirtyOut) != "" {
+		now := wm.clock.Now().UTC().Format(time.RFC3339)
+		if tErr := wm.recordMergeFailure(state, "dirty_worktree", now); tErr != nil {
+			return fmt.Errorf("integration worktree has uncommitted changes (transition error: %s)", tErr.Error())
+		}
+		state.UpdatedAt = now
+		if saveErr := wm.saveState(commandID, state); saveErr != nil {
+			wm.Log(core.LogLevelWarn, "save_state_failed command=%s error=%v", commandID, saveErr)
+		}
+		return fmt.Errorf("integration worktree has uncommitted changes; aborting merge to prevent corruption")
+	}
+	return nil
+}
+
+// mergeWorkerBranch handles the merge of a single worker branch into the
+// integration branch. It performs skip checks, commit detection, the merge
+// itself, and delegates error handling to handleWorkerMergeConflict or
+// handleWorkerMergeNonConflictError.
+func (wm *Manager) mergeWorkerBranch(
+	state *model.WorktreeCommandState,
+	commandID, workerID, integrationPath string,
+	workerPurposes map[string]string,
+	now string,
+) mergeWorkerOutcome {
+	ws := wm.findWorker(state, workerID)
+	if ws == nil {
+		return mergeWorkerOutcome{}
+	}
+
+	// Skip workers already integrated — avoids redundant re-merge on
+	// partial_merge/conflict recovery where some workers succeeded earlier.
+	if ws.Status == model.WorktreeStatusIntegrated {
+		wm.Log(core.LogLevelDebug, "skip_already_integrated command=%s worker=%s", commandID, workerID)
+		return mergeWorkerOutcome{merged: true} // count as merged for final status determination
+	}
+
+	// Skip workers in conflict or resolving state. These must go through
+	// the resolution pipeline (DispatchConflictResolution → resume-merge)
+	// before being re-merged. Attempting to re-merge a conflict worker
+	// causes invalid_worktree_transition (conflict→conflict is not valid).
+	if ws.Status == model.WorktreeStatusConflict || ws.Status == model.WorktreeStatusResolving {
+		wm.Log(core.LogLevelInfo, "skip_conflict_resolving_worker command=%s worker=%s status=%s",
+			commandID, workerID, ws.Status)
+		return mergeWorkerOutcome{conflictSkipped: true}
+	}
+
+	// Check if worker branch has commits beyond base
+	logOut, err := wm.gitOutputWithRetry(integrationPath, 2, "log", "--oneline",
+		fmt.Sprintf("%s..%s", state.Integration.BaseSHA, ws.Branch))
+	if err != nil {
+		wm.Log(core.LogLevelWarn, "merge_log_check command=%s worker=%s error=%v", commandID, workerID, err)
+		return mergeWorkerOutcome{}
+	}
+	if strings.TrimSpace(logOut) == "" {
+		wm.Log(core.LogLevelDebug, "no_commits_to_merge command=%s worker=%s", commandID, workerID)
+		return mergeWorkerOutcome{}
+	}
+
+	// Record per-worker pre-merge HEAD so abort recovery resets only this merge
+	perWorkerPreMergeHEAD, err := wm.gitOutputWithRetry(integrationPath, 2, "rev-parse", "HEAD")
+	if err != nil {
+		wm.Log(core.LogLevelWarn, "merge_pre_head_failed command=%s worker=%s error=%v", commandID, workerID, err)
+		return mergeWorkerOutcome{}
+	}
+	perWorkerPreMergeHEAD = strings.TrimSpace(perWorkerPreMergeHEAD)
+	if err := validateSHA(perWorkerPreMergeHEAD); err != nil {
+		wm.Log(core.LogLevelWarn, "merge_invalid_pre_head command=%s worker=%s error=%v", commandID, workerID, err)
+		return mergeWorkerOutcome{}
+	}
+
+	// Merge worker branch in integration worktree (not projectRoot)
+	strategy := wm.config.EffectiveMergeStrategy()
+	mergeMsg := buildMergeMessage(workerID, workerPurposes)
+
+	err = wm.gitRunInDir(integrationPath, "merge", "--no-ff", "-s", strategy, "-m", mergeMsg, ws.Branch)
+	if err != nil {
+		// Classify error: check for unmerged index entries to distinguish
+		// true merge conflicts from fatal git errors (bad ref, corrupt repo, etc.)
+		hasConflict, probeErr := wm.hasUnmergedFiles(integrationPath)
+		if probeErr != nil {
+			// Probe failed — can't classify reliably. Treat as non-conflict (fail-safe).
+			wm.Log(core.LogLevelWarn, "merge_probe_failed command=%s worker=%s probe_error=%v merge_error=%v",
+				commandID, workerID, probeErr, err)
+		}
+
+		if hasConflict {
+			mc, conflictErr := wm.handleWorkerMergeConflict(state, commandID, workerID, integrationPath, perWorkerPreMergeHEAD, now, ws)
+			if conflictErr != nil {
+				return mergeWorkerOutcome{conflict: &mc, fatalErr: conflictErr}
+			}
+			return mergeWorkerOutcome{conflict: &mc}
+		}
+
+		transient, fatalErr := wm.handleWorkerMergeNonConflictError(state, commandID, workerID, integrationPath, perWorkerPreMergeHEAD, now, ws, err)
+		if fatalErr != nil {
+			return mergeWorkerOutcome{fatalErr: fatalErr}
+		}
+		if transient {
+			return mergeWorkerOutcome{transientFail: true}
+		}
+		// Should not reach here — handleWorkerMergeNonConflictError returns either transient or fatalErr
+		return mergeWorkerOutcome{}
+	}
+
+	if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusIntegrated, now); tErr != nil {
+		wm.Log(core.LogLevelWarn, "merge_integrated_transition command=%s worker=%s error=%v",
+			commandID, workerID, tErr)
+	}
+	wm.Log(core.LogLevelInfo, "worker_merged command=%s worker=%s", commandID, workerID)
+	return mergeWorkerOutcome{merged: true}
+}
+
+// handleWorkerMergeConflict handles a merge conflict for a single worker.
+// It collects conflict details, aborts the merge, and handles recovery if
+// the abort fails. Returns the MergeConflict and a non-nil error only if
+// the worktree is stuck and the caller must abort the entire merge loop.
+func (wm *Manager) handleWorkerMergeConflict(
+	state *model.WorktreeCommandState,
+	commandID, workerID, integrationPath, preMergeHEAD, now string,
+	ws *model.WorktreeState,
+) (model.MergeConflict, error) {
+	// Collect conflict detail refs (base/ours/theirs) before aborting
+	conflictFiles, _ := wm.getConflictFilesInDir(integrationPath)
+	mc := model.MergeConflict{
+		WorkerID:      workerID,
+		ConflictFiles: conflictFiles,
+		Message:       fmt.Sprintf("merge conflict: %s → integration", workerID),
+	}
+	// Collect per-file base/ours/theirs refs via rev-parse of index stages
+	for _, cf := range conflictFiles {
+		baseRef, err1 := wm.gitOutputWithRetry(integrationPath, 1, "rev-parse", ":1:"+cf)
+		oursRef, err2 := wm.gitOutputWithRetry(integrationPath, 1, "rev-parse", ":2:"+cf)
+		theirsRef, err3 := wm.gitOutputWithRetry(integrationPath, 1, "rev-parse", ":3:"+cf)
+		if err1 == nil && err2 == nil && err3 == nil {
+			// Use refs from first conflict file as representative
+			mc.BaseRef = strings.TrimSpace(baseRef)
+			mc.OursRef = strings.TrimSpace(oursRef)
+			mc.TheirsRef = strings.TrimSpace(theirsRef)
+			break
+		}
+		// Binary files or missing stages — continue to next file
+	}
+
+	if abortErr := wm.gitRunInDir(integrationPath, "merge", "--abort"); abortErr != nil {
+		wm.Log(core.LogLevelWarn, "merge_abort_failed command=%s worker=%s error=%v",
+			commandID, workerID, abortErr)
+		// Fallback recovery: reset --hard + clean + verify (per-worker HEAD)
+		if recoveryErr := wm.recoverWorktreeAfterMerge(integrationPath, preMergeHEAD, commandID, workerID); recoveryErr != nil {
+			if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusConflict, now); tErr != nil {
+				wm.Log(core.LogLevelWarn, "merge_recovery_conflict_transition command=%s worker=%s error=%v", commandID, workerID, tErr)
+			}
+			if tErr := wm.recordMergeFailure(state, "abort_recover_failed_conflict", now); tErr != nil {
+				wm.Log(core.LogLevelWarn, "merge_recovery_fail_transition command=%s error=%v", commandID, tErr)
+			}
+			state.UpdatedAt = now
+			return mc, fmt.Errorf("worktree stuck after merge abort failure for worker %s: %w", workerID, recoveryErr)
+		}
+	}
+
+	if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusConflict, now); tErr != nil {
+		wm.Log(core.LogLevelWarn, "merge_conflict_transition command=%s worker=%s error=%v",
+			commandID, workerID, tErr)
+	}
+	wm.Log(core.LogLevelWarn, "merge_conflict command=%s worker=%s files=%v",
+		commandID, workerID, conflictFiles)
+	return mc, nil
+}
+
+// handleWorkerMergeNonConflictError handles a merge error that is not a
+// conflict. It classifies the error, attempts abort/recovery, and returns
+// whether the error was transient (worker skipped, loop continues) or fatal
+// (caller must abort the merge loop).
+func (wm *Manager) handleWorkerMergeNonConflictError(
+	state *model.WorktreeCommandState,
+	commandID, workerID, integrationPath, preMergeHEAD, now string,
+	ws *model.WorktreeState,
+	mergeErr error,
+) (transient bool, fatalErr error) {
+	// Non-conflict error: classify as transient or permanent
+	errClass := classifyGitError(mergeErr)
+
+	if abortErr := wm.gitRunInDir(integrationPath, "merge", "--abort"); abortErr != nil {
+		wm.Log(core.LogLevelWarn, "merge_abort_failed command=%s worker=%s error=%v",
+			commandID, workerID, abortErr)
+		if recoveryErr := wm.recoverWorktreeAfterMerge(integrationPath, preMergeHEAD, commandID, workerID); recoveryErr != nil {
+			if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusFailed, now); tErr != nil {
+				wm.Log(core.LogLevelWarn, "merge_recovery_worker_fail_transition command=%s worker=%s error=%v", commandID, workerID, tErr)
+			}
+			if tErr := wm.recordMergeFailure(state, "abort_recover_failed_nonconflict", now); tErr != nil {
+				wm.Log(core.LogLevelWarn, "merge_recovery_fail_transition command=%s error=%v", commandID, tErr)
+			}
+			state.UpdatedAt = now
+			return false, fmt.Errorf("worktree stuck after merge abort failure for worker %s: %w", workerID, recoveryErr)
+		}
+	}
+
+	if errClass == gitErrorTransient {
+		// Transient error: skip this worker, continue loop
+		if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusFailed, now); tErr != nil {
+			wm.Log(core.LogLevelWarn, "merge_transient_fail_transition command=%s worker=%s error=%v",
+				commandID, workerID, tErr)
+		}
+		wm.Log(core.LogLevelWarn, "merge_transient_error_skip command=%s worker=%s error=%v",
+			commandID, workerID, mergeErr)
+		return true, nil
+	}
+
+	// Permanent error: halt merge loop — repo-level problem
+	if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusFailed, now); tErr != nil {
+		wm.Log(core.LogLevelWarn, "merge_fail_transition command=%s worker=%s error=%v",
+			commandID, workerID, tErr)
+	}
+	if tErr := wm.recordMergeFailure(state, "permanent_git_error", now); tErr != nil {
+		wm.Log(core.LogLevelWarn, "merge_integration_fail_transition command=%s error=%v",
+			commandID, tErr)
+	}
+	state.UpdatedAt = now
+
+	wm.Log(core.LogLevelError, "merge_non_conflict_error command=%s worker=%s error=%v",
+		commandID, workerID, mergeErr)
+
+	return false, fmt.Errorf("non-conflict merge error for worker %s: %w", workerID, mergeErr)
+}
+
+// determineMergeOutcome sets the final integration status based on the
+// accumulated merge results. It mutates state in place.
+func (wm *Manager) determineMergeOutcome(
+	state *model.WorktreeCommandState,
+	commandID string,
+	mergedCount, skippedCount, conflictSkippedCount, totalWorkers int,
+	conflicts []model.MergeConflict,
+	preMergeStatus model.IntegrationStatus,
+	preMergeUpdatedAt, now string,
+) {
 	// Determine final integration status:
 	// - mergedCount=0, conflicts=0, skipped=0, conflictSkipped=0 → no commits to merge; revert
 	// - conflicts=0, skipped=0, conflictSkipped=0, merged>0 → Merged (all successful)
@@ -318,7 +416,7 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 		// No worker had any commits to merge. Revert the Merging status to
 		// the pre-merge status to avoid a false Merged signal that would
 		// trigger a no-op publish.
-		wm.Log(core.LogLevelInfo, "no_commits_to_merge command=%s workers=%d", commandID, len(sorted))
+		wm.Log(core.LogLevelInfo, "no_commits_to_merge command=%s workers=%d", commandID, totalWorkers)
 		state.Integration.Status = preMergeStatus
 		state.Integration.UpdatedAt = preMergeUpdatedAt
 	} else if len(conflicts) == 0 && skippedCount == 0 && conflictSkippedCount == 0 {
@@ -342,12 +440,6 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 		}
 	}
 	state.UpdatedAt = now
-
-	if err := wm.saveState(commandID, state); err != nil {
-		return conflicts, fmt.Errorf("save state: %w", err)
-	}
-
-	return conflicts, nil
 }
 
 // SyncFromIntegration updates worker worktrees with the latest integration branch state.
@@ -507,26 +599,62 @@ func (wm *Manager) PublishToBase(commandID string, publishMessage string) (retur
 	baseBranch := wm.config.EffectiveBaseBranch()
 	integrationPath := wm.integrationWorktreePath(commandID)
 
+	tempBranch, baseSHA, err := wm.createTempPublishBranch(commandID, baseBranch)
+	if err != nil {
+		return err
+	}
+
+	mergeSHA, baseBranchCheckedOut, err := wm.performPublishMerge(state, commandID, integrationPath, tempBranch, baseBranch, baseSHA, publishMessage, now)
+	if err != nil {
+		return err
+	}
+
+	// If baseBranch is checked out in projectRoot, sync the working tree and index
+	// to match the updated ref. Without this, the working tree would remain at the
+	// old commit state, appearing as a staged revert of all published changes.
+	if baseBranchCheckedOut {
+		if err := wm.syncProjectRootAfterPublish(commandID, baseBranch, baseSHA, mergeSHA); err != nil {
+			return err
+		}
+	}
+
+	return wm.finalizePublishState(state, commandID, baseBranch, now)
+}
+
+// createTempPublishBranch creates a temporary branch from baseBranch for the
+// publish merge. Returns the temp branch name, the base SHA, or an error.
+func (wm *Manager) createTempPublishBranch(commandID, baseBranch string) (tempBranch, baseSHA string, err error) {
 	// Create a temporary branch from baseBranch for the merge.
 	// We cannot checkout baseBranch directly because it may be checked out in projectRoot.
-	tempBranch := fmt.Sprintf("maestro/%s/_publish", commandID)
-	baseSHA, err := wm.gitOutput("rev-parse", baseBranch)
+	tempBranch = fmt.Sprintf("maestro/%s/_publish", commandID)
+	baseSHA, err = wm.gitOutput("rev-parse", baseBranch)
 	if err != nil {
-		return fmt.Errorf("get base SHA for publish: %w", err)
+		return "", "", fmt.Errorf("get base SHA for publish: %w", err)
 	}
 	baseSHA = strings.TrimSpace(baseSHA)
 	if err := validateSHA(baseSHA); err != nil {
-		return fmt.Errorf("base SHA for publish: %w", err)
+		return "", "", fmt.Errorf("base SHA for publish: %w", err)
 	}
 
 	if err := wm.gitRun("branch", tempBranch, baseSHA); err != nil {
-		return fmt.Errorf("create temp publish branch: %w", err)
+		return "", "", fmt.Errorf("create temp publish branch: %w", err)
 	}
+	return tempBranch, baseSHA, nil
+}
 
+// performPublishMerge checks out the temp branch in the integration worktree,
+// merges the integration branch, gets the merge SHA, restores the integration
+// branch checkout, checks for dirty projectRoot, updates the base branch ref
+// via CAS, and cleans up the temp branch. Returns the merge SHA and whether
+// baseBranch is checked out in projectRoot.
+func (wm *Manager) performPublishMerge(
+	state *model.WorktreeCommandState,
+	commandID, integrationPath, tempBranch, baseBranch, baseSHA, publishMessage, now string,
+) (mergeSHA string, baseBranchCheckedOut bool, err error) {
 	// Checkout temp branch in integration worktree
 	if err := wm.gitRunInDir(integrationPath, "checkout", tempBranch); err != nil {
 		_ = wm.gitRun("branch", "-D", tempBranch)
-		return fmt.Errorf("checkout temp publish branch: %w", err)
+		return "", false, fmt.Errorf("checkout temp publish branch: %w", err)
 	}
 
 	// Merge integration branch into temp branch (at baseBranch's position)
@@ -548,17 +676,17 @@ func (wm *Manager) PublishToBase(commandID string, publishMessage string) (retur
 		if deleteErr := wm.gitRun("branch", "-D", tempBranch); deleteErr != nil {
 			wm.Log(core.LogLevelWarn, "publish_branch_delete_failed command=%s branch=%s error=%v", commandID, tempBranch, deleteErr)
 		}
-		return fmt.Errorf("merge integration into %s: %w", baseBranch, err)
+		return "", false, fmt.Errorf("merge integration into %s: %w", baseBranch, err)
 	}
 
 	// Get the merge commit SHA
-	mergeSHA, err := wm.gitOutputInDir(integrationPath, "rev-parse", "HEAD")
+	mergeSHAOut, err := wm.gitOutputInDir(integrationPath, "rev-parse", "HEAD")
 	if err != nil {
 		_ = wm.gitRunInDir(integrationPath, "checkout", state.Integration.Branch)
 		_ = wm.gitRun("branch", "-D", tempBranch)
-		return fmt.Errorf("get merge commit SHA: %w", err)
+		return "", false, fmt.Errorf("get merge commit SHA: %w", err)
 	}
-	mergeSHA = strings.TrimSpace(mergeSHA)
+	mergeSHA = strings.TrimSpace(mergeSHAOut)
 
 	// Restore integration branch checkout before updating refs
 	_ = wm.gitRunInDir(integrationPath, "checkout", state.Integration.Branch)
@@ -566,7 +694,7 @@ func (wm *Manager) PublishToBase(commandID string, publishMessage string) (retur
 	// Check if baseBranch is currently checked out in projectRoot BEFORE updating the ref.
 	// We need this to know whether to sync the working tree afterwards.
 	currentBranch, _ := wm.gitOutput("symbolic-ref", "--short", "HEAD")
-	baseBranchCheckedOut := strings.TrimSpace(currentBranch) == baseBranch
+	baseBranchCheckedOut = strings.TrimSpace(currentBranch) == baseBranch
 
 	// If baseBranch is checked out, we'll need to reset the working tree after update-ref.
 	// Check for uncommitted changes BEFORE update-ref to avoid data loss.
@@ -574,11 +702,11 @@ func (wm *Manager) PublishToBase(commandID string, publishMessage string) (retur
 		statusOut, err := wm.gitOutput("status", "--porcelain")
 		if err != nil {
 			_ = wm.gitRun("branch", "-D", tempBranch)
-			return fmt.Errorf("publish dirty check failed: %w", err)
+			return "", false, fmt.Errorf("publish dirty check failed: %w", err)
 		}
 		if strings.TrimSpace(statusOut) != "" {
 			_ = wm.gitRun("branch", "-D", tempBranch)
-			return fmt.Errorf("publish aborted: projectRoot has uncommitted changes that would be lost by reset; please commit or stash them first")
+			return "", false, fmt.Errorf("publish aborted: projectRoot has uncommitted changes that would be lost by reset; please commit or stash them first")
 		}
 	}
 
@@ -591,68 +719,75 @@ func (wm *Manager) PublishToBase(commandID string, publishMessage string) (retur
 	// has been modified since we read baseSHA, preventing TOCTOU races.
 	if err := wm.gitRun("update-ref", fmt.Sprintf("refs/heads/%s", baseBranch), mergeSHA, baseSHA); err != nil {
 		_ = wm.gitRun("branch", "-D", tempBranch)
-		return fmt.Errorf("update base branch ref (CAS failed — branch may have been modified concurrently): %w", err)
+		return "", false, fmt.Errorf("update base branch ref (CAS failed — branch may have been modified concurrently): %w", err)
 	}
 
 	// Clean up temp branch
 	_ = wm.gitRun("branch", "-D", tempBranch)
 
-	// If baseBranch is checked out in projectRoot, sync the working tree and index
-	// to match the updated ref. Without this, the working tree would remain at the
-	// old commit state, appearing as a staged revert of all published changes.
-	if baseBranchCheckedOut {
-		// Before reset --hard, create a durable ref to preserve any working tree state.
-		// git stash create builds a stash commit without modifying the working tree or index.
-		// If there are no changes (expected after dirty check above), stash create returns empty.
-		stashRef, stashErr := wm.gitOutput("stash", "create")
-		if stashErr != nil {
-			wm.Log(core.LogLevelWarn, "publish_stash_create_failed command=%s error=%v (continuing)", commandID, stashErr)
-		} else if ref := strings.TrimSpace(stashRef); ref != "" {
-			// Unexpected: dirty check passed but stash create found changes.
-			// Save as a durable ref so the data survives GC and can be recovered manually.
-			durableRef := fmt.Sprintf("refs/maestro/pre-publish-stash/%s", commandID)
-			if refErr := wm.gitRun("update-ref", durableRef, ref); refErr != nil {
-				wm.Log(core.LogLevelWarn, "publish_stash_save_failed command=%s ref=%s error=%v", commandID, durableRef, refErr)
-			} else {
-				wm.Log(core.LogLevelInfo, "publish_stash_saved command=%s ref=%s sha=%s", commandID, durableRef, ref)
-			}
-		}
+	return mergeSHA, baseBranchCheckedOut, nil
+}
 
-		// Tripwire: refuse to run destructive git ops outside the project root
-		// (projectRoot is the working tree target here since gitRun runs there).
-		if guardErr := ensureWithinProjectRoot(wm.projectRoot, wm.projectRoot); guardErr != nil {
-			wm.Log(core.LogLevelError, "publish_reset_path_guard command=%s error=%v", commandID, guardErr)
-			return fmt.Errorf("publish reset refused: %w", guardErr)
-		}
-		// Uncommitted changes were already checked before update-ref above.
-		// Use git reset --hard to sync index + working tree to the new HEAD.
-		var resetErr error
-		if wm.testPublishResetHook != nil {
-			resetErr = wm.testPublishResetHook()
+// syncProjectRootAfterPublish syncs the projectRoot working tree and index to
+// match the updated base branch ref. It creates a safety stash, runs
+// reset --hard, and rolls back the ref on failure.
+func (wm *Manager) syncProjectRootAfterPublish(commandID, baseBranch, baseSHA, mergeSHA string) error {
+	// Before reset --hard, create a durable ref to preserve any working tree state.
+	// git stash create builds a stash commit without modifying the working tree or index.
+	// If there are no changes (expected after dirty check above), stash create returns empty.
+	stashRef, stashErr := wm.gitOutput("stash", "create")
+	if stashErr != nil {
+		wm.Log(core.LogLevelWarn, "publish_stash_create_failed command=%s error=%v (continuing)", commandID, stashErr)
+	} else if ref := strings.TrimSpace(stashRef); ref != "" {
+		// Unexpected: dirty check passed but stash create found changes.
+		// Save as a durable ref so the data survives GC and can be recovered manually.
+		durableRef := fmt.Sprintf("refs/maestro/pre-publish-stash/%s", commandID)
+		if refErr := wm.gitRun("update-ref", durableRef, ref); refErr != nil {
+			wm.Log(core.LogLevelWarn, "publish_stash_save_failed command=%s ref=%s error=%v", commandID, durableRef, refErr)
 		} else {
-			resetErr = wm.gitRun("reset", "--hard", "HEAD")
-		}
-		if resetErr != nil {
-			durableRef := fmt.Sprintf("refs/maestro/pre-publish-stash/%s", commandID)
-			wm.Log(core.LogLevelWarn, "publish_reset_working_tree command=%s error=%v recovery_ref=%s — attempting CAS rollback",
-				commandID, resetErr, durableRef)
-
-			// CAS rollback: restore baseBranch to baseSHA only if still at mergeSHA.
-			refSpec := fmt.Sprintf("refs/heads/%s", baseBranch)
-			rollbackErr := wm.gitRun("update-ref", refSpec, baseSHA, mergeSHA)
-			if rollbackErr != nil {
-				wm.Log(core.LogLevelError, "publish_ref_rollback_failed command=%s error=%v", commandID, rollbackErr)
-				return errors.Join(
-					fmt.Errorf("working tree sync failed: %w", resetErr),
-					fmt.Errorf("CAS rollback of update-ref also failed: %w", rollbackErr),
-				)
-			}
-			wm.Log(core.LogLevelInfo, "publish_ref_rollback_success command=%s branch=%s restored_to=%s",
-				commandID, baseBranch, baseSHA)
-			return fmt.Errorf("working tree sync failed (ref rolled back to %s): %w", baseSHA, resetErr)
+			wm.Log(core.LogLevelInfo, "publish_stash_saved command=%s ref=%s sha=%s", commandID, durableRef, ref)
 		}
 	}
 
+	// Tripwire: refuse to run destructive git ops outside the project root
+	// (projectRoot is the working tree target here since gitRun runs there).
+	if guardErr := ensureWithinProjectRoot(wm.projectRoot, wm.projectRoot); guardErr != nil {
+		wm.Log(core.LogLevelError, "publish_reset_path_guard command=%s error=%v", commandID, guardErr)
+		return fmt.Errorf("publish reset refused: %w", guardErr)
+	}
+	// Uncommitted changes were already checked before update-ref above.
+	// Use git reset --hard to sync index + working tree to the new HEAD.
+	var resetErr error
+	if wm.testPublishResetHook != nil {
+		resetErr = wm.testPublishResetHook()
+	} else {
+		resetErr = wm.gitRun("reset", "--hard", "HEAD")
+	}
+	if resetErr != nil {
+		durableRef := fmt.Sprintf("refs/maestro/pre-publish-stash/%s", commandID)
+		wm.Log(core.LogLevelWarn, "publish_reset_working_tree command=%s error=%v recovery_ref=%s — attempting CAS rollback",
+			commandID, resetErr, durableRef)
+
+		// CAS rollback: restore baseBranch to baseSHA only if still at mergeSHA.
+		refSpec := fmt.Sprintf("refs/heads/%s", baseBranch)
+		rollbackErr := wm.gitRun("update-ref", refSpec, baseSHA, mergeSHA)
+		if rollbackErr != nil {
+			wm.Log(core.LogLevelError, "publish_ref_rollback_failed command=%s error=%v", commandID, rollbackErr)
+			return errors.Join(
+				fmt.Errorf("working tree sync failed: %w", resetErr),
+				fmt.Errorf("CAS rollback of update-ref also failed: %w", rollbackErr),
+			)
+		}
+		wm.Log(core.LogLevelInfo, "publish_ref_rollback_success command=%s branch=%s restored_to=%s",
+			commandID, baseBranch, baseSHA)
+		return fmt.Errorf("working tree sync failed (ref rolled back to %s): %w", baseSHA, resetErr)
+	}
+	return nil
+}
+
+// finalizePublishState sets the integration to published, marks integrated
+// workers as published, saves state, and logs completion.
+func (wm *Manager) finalizePublishState(state *model.WorktreeCommandState, commandID, baseBranch, now string) error {
 	if err := wm.setIntegrationStatus(state, model.IntegrationStatusPublished, now); err != nil {
 		return err
 	}

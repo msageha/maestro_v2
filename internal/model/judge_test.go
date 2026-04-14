@@ -4,17 +4,19 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 func TestJudgeDecision_Fields(t *testing.T) {
 	d := JudgeDecision{
-		WinnerIndex: 1,
+		WinnerIndex: ptr.Int(1),
 		Reasoning:   "candidate 1 has cleaner diff",
 		Model:       "opus",
 		Duration:    2 * time.Second,
 	}
-	if d.WinnerIndex != 1 {
-		t.Errorf("WinnerIndex = %d, want 1", d.WinnerIndex)
+	if d.WinnerIndex == nil || *d.WinnerIndex != 1 {
+		t.Errorf("WinnerIndex = %v, want 1", d.WinnerIndex)
 	}
 	if d.Reasoning == "" {
 		t.Error("Reasoning should not be empty")
@@ -29,7 +31,7 @@ func TestJudgeDecision_Fields(t *testing.T) {
 
 func TestJudgeFunc_Signature(t *testing.T) {
 	var fn JudgeFunc = func(_ context.Context, scores []FitnessScore, metadata []map[string]string) (JudgeDecision, error) {
-		return JudgeDecision{WinnerIndex: len(scores) - 1}, nil
+		return JudgeDecision{WinnerIndex: ptr.Int(len(scores) - 1)}, nil
 	}
 
 	scores := []FitnessScore{{Passed: true}, {Passed: true}}
@@ -37,8 +39,8 @@ func TestJudgeFunc_Signature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if decision.WinnerIndex != 1 {
-		t.Errorf("WinnerIndex = %d, want 1", decision.WinnerIndex)
+	if decision.WinnerIndex == nil || *decision.WinnerIndex != 1 {
+		t.Errorf("WinnerIndex = %v, want 1", decision.WinnerIndex)
 	}
 }
 

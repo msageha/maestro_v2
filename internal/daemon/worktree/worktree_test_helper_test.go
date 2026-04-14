@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,55 +12,13 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/ptr"
+	"github.com/msageha/maestro_v2/internal/testutil"
 )
 
-// initTestGitRepo creates a temporary git repo with an initial commit.
+// initTestGitRepo delegates to testutil.InitTestGitRepo.
 func initTestGitRepo(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-
-	cmds := [][]string{
-		{"git", "init", "-b", "main"},
-		{"git", "config", "user.email", "test@test.com"},
-		{"git", "config", "user.name", "Test"},
-	}
-
-	for _, args := range cmds {
-		cmd := exec.Command(args[0], args[1:]...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git init failed: %v\n%s", err, out)
-		}
-	}
-
-	// Create initial file and commit.
-	// .gitignore must include .maestro/worktrees/ so that git status --porcelain
-	// does not report the worktree directories as untracked (which would cause
-	// PublishToBase's dirty-check to abort). This mirrors the real project setup.
-	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Test\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-	// Gitignore the entire .maestro/ directory so that state files, queue
-	// files, and worktree directories created during the test do not appear
-	// as untracked changes when git status --porcelain is run in projectRoot
-	// (which would cause PublishToBase's dirty-check to abort).
-	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".maestro/\n"), 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	cmds = [][]string{
-		{"git", "add", "."},
-		{"git", "commit", "-m", "initial commit"},
-	}
-	for _, args := range cmds {
-		cmd := exec.Command(args[0], args[1:]...)
-		cmd.Dir = dir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git initial commit failed: %v\n%s", err, out)
-		}
-	}
-
-	return dir
+	return testutil.InitTestGitRepo(t)
 }
 
 func newTestWorktreeManager(t *testing.T, projectRoot string) *Manager {

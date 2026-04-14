@@ -77,6 +77,10 @@ type QueueHandler struct {
 	// daemonPID for lease_owner format "daemon:{pid}" per spec §5.8.1.
 	daemonPID int
 
+	// initMu protects Set* initialization methods independently from scan execution.
+	// All Set* methods in handler_registry.go acquire this mutex instead of scanRunMu.
+	initMu sync.Mutex
+
 	// Shutdown guard: wired via SetShutdownGuard after construction.
 	shutdownCtx  context.Context
 	shuttingDown *atomic.Bool

@@ -17,22 +17,18 @@ import (
 // DependencyResolver handles blocked_by dependency checking and phase transitions.
 type DependencyResolver struct {
 	stateManager StateManager
-	dl          *DaemonLogger
-	logger      *log.Logger
-	logLevel    LogLevel
-	clock       Clock
-	mu          sync.RWMutex // protects eventBus
-	eventBus    *events.Bus
+	dl           *DaemonLogger
+	clock        Clock
+	mu           sync.RWMutex // protects eventBus
+	eventBus     *events.Bus
 }
 
 // NewDependencyResolver creates a new DependencyResolver.
 func NewDependencyResolver(reader StateManager, logger *log.Logger, logLevel LogLevel) *DependencyResolver {
 	return &DependencyResolver{
 		stateManager: reader,
-		dl:          NewDaemonLoggerFromLegacy("dependency_resolver", logger, logLevel),
-		logger:      logger,
-		logLevel:    logLevel,
-		clock:       RealClock{},
+		dl:           NewDaemonLoggerFromLegacy("dependency_resolver", logger, logLevel),
+		clock:        RealClock{},
 	}
 }
 

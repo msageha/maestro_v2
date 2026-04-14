@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 func TestFitnessScore_IsFailed(t *testing.T) {
@@ -274,7 +276,7 @@ func TestResolveWinner_NonTie_JudgeNotCalled(t *testing.T) {
 	judgeCalled := false
 	judge := func(_ context.Context, _ []FitnessScore, _ []map[string]string) (JudgeDecision, error) {
 		judgeCalled = true
-		return JudgeDecision{WinnerIndex: 1}, nil
+		return JudgeDecision{WinnerIndex: ptr.Int(1)}, nil
 	}
 
 	idx, used, err := ResolveWinner(scores, th, judge)
@@ -315,7 +317,7 @@ func TestResolveWinner_Tie_JudgeSuccess(t *testing.T) {
 	scores := []FitnessScore{a, a}
 
 	judge := func(_ context.Context, _ []FitnessScore, _ []map[string]string) (JudgeDecision, error) {
-		return JudgeDecision{WinnerIndex: 1, Reasoning: "cleaner diff", Model: "opus"}, nil
+		return JudgeDecision{WinnerIndex: ptr.Int(1), Reasoning: "cleaner diff", Model: "opus"}, nil
 	}
 
 	idx, used, err := ResolveWinner(scores, th, judge)

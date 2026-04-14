@@ -48,6 +48,7 @@ func (cb *Handler) Enabled() bool {
 func (cb *Handler) UpdateCounterOnResult(
 	state *model.CommandState,
 	resultStatus model.Status,
+	taskID string,
 	resultID string,
 	now time.Time,
 ) (bool, string) {
@@ -58,13 +59,9 @@ func (cb *Handler) UpdateCounterOnResult(
 		return false, ""
 	}
 
-	// Idempotency guard: skip if this result was already applied
-	if state.AppliedResultIDs != nil {
-		for _, appliedID := range state.AppliedResultIDs {
-			if appliedID == resultID {
-				return false, ""
-			}
-		}
+	// Idempotency guard: skip if this result was already applied for this task (O(1) lookup)
+	if appliedID, ok := state.AppliedResultIDs[taskID]; ok && appliedID == resultID {
+		return false, ""
 	}
 
 	nowStr := now.UTC().Format(time.RFC3339)

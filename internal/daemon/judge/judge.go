@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 // CandidateInfo holds information about a single candidate for tie-breaking.
@@ -19,8 +21,9 @@ type CandidateInfo struct {
 }
 
 // Decision represents the judge's verdict.
+// WinnerIndex is nil when no winner could be determined (error cases).
 type Decision struct {
-	WinnerIndex int
+	WinnerIndex *int
 	Reasoning   string
 	Model       string
 	Duration    time.Duration
@@ -54,14 +57,14 @@ type llmResponse struct {
 }
 
 // Evaluate asks the LLM to pick the best candidate.
-// On any error the returned Decision has WinnerIndex 0 (fallback) and a non-nil error.
+// On any error the returned Decision has WinnerIndex nil and a non-nil error.
 func (j *Judge) Evaluate(ctx context.Context, candidates []CandidateInfo) (Decision, error) {
 	if len(candidates) == 0 {
-		return Decision{WinnerIndex: 0}, fmt.Errorf("judge: no candidates provided")
+		return Decision{}, fmt.Errorf("judge: no candidates provided")
 	}
 	if len(candidates) == 1 {
 		return Decision{
-			WinnerIndex: candidates[0].SlotIndex,
+			WinnerIndex: ptr.Int(candidates[0].SlotIndex),
 			Reasoning:   "single candidate — no tie-break needed",
 			Model:       j.model,
 		}, nil
@@ -77,16 +80,16 @@ func (j *Judge) Evaluate(ctx context.Context, candidates []CandidateInfo) (Decis
 	elapsed := time.Since(start)
 
 	if err != nil {
-		return Decision{WinnerIndex: -1, Model: j.model, Duration: elapsed}, fmt.Errorf("judge: caller error: %w", err)
+		return Decision{Model: j.model, Duration: elapsed}, fmt.Errorf("judge: caller error: %w", err)
 	}
 
 	var resp llmResponse
 	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &resp); err != nil {
-		return Decision{WinnerIndex: -1, Model: j.model, Duration: elapsed}, fmt.Errorf("judge: failed to parse response: %w", err)
+		return Decision{Model: j.model, Duration: elapsed}, fmt.Errorf("judge: failed to parse response: %w", err)
 	}
 
 	return Decision{
-		WinnerIndex: resp.WinnerIndex,
+		WinnerIndex: ptr.Int(resp.WinnerIndex),
 		Reasoning:   resp.Reasoning,
 		Model:       j.model,
 		Duration:    elapsed,

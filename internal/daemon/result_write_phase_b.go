@@ -150,7 +150,7 @@ func (h *ResultWriteAPI) updateCircuitBreaker(state *model.CommandState, params 
 	}
 
 	if cb := h.circuitBreaker(); cb != nil {
-		tripped, reason := cb.UpdateCounterOnResult(state, resultStatus, resultID, now)
+		tripped, reason := cb.UpdateCounterOnResult(state, resultStatus, params.TaskID, resultID, now)
 		if tripped {
 			cb.TripBreaker(state, reason, now)
 		}

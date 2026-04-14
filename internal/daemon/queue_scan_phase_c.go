@@ -23,83 +23,7 @@ func (qh *QueueHandler) executeScanPhaseCBody(se *ScanPhaseExecutor, pa phaseARe
 	notificationQueue, notificationPath := qh.queueStore.LoadNotificationQueue()
 
 	// --- Apply cancel marks + dispatch + busy check results (single load/flush) ---
-	if len(pb.dispatches) > 0 || len(pb.busyChecks) > 0 || len(pa.work.cancelMarks) > 0 {
-		commandsDirty := false
-		notificationsDirty := false
-		taskDirty := make(map[string]bool)
-
-		// M3+H4: apply deferred cancel marks first. Phase B has already
-		// interrupted the worker and discarded its worktree changes, so
-		// any task still observed as in_progress with the same lease_epoch
-		// can be safely transitioned to cancelled. Tasks that the worker
-		// raced to a terminal state are skipped — the real result wins.
-		var syntheticByWorker map[string][]CancelledTaskResult
-		if len(pa.work.cancelMarks) > 0 {
-			syntheticByWorker = make(map[string][]CancelledTaskResult)
-			for _, m := range pa.work.cancelMarks {
-				tq, ok := taskQueues[m.QueueFile]
-				if !ok {
-					qh.log(LogLevelInfo, "cancel_mark_skip_missing_queue file=%s task=%s",
-						m.QueueFile, m.TaskID)
-					continue
-				}
-				var target *model.Task
-				for i := range tq.Queue.Tasks {
-					if tq.Queue.Tasks[i].ID == m.TaskID {
-						target = &tq.Queue.Tasks[i]
-						break
-					}
-				}
-				if target == nil {
-					qh.log(LogLevelInfo, "cancel_mark_skip_missing_task task=%s", m.TaskID)
-					continue
-				}
-				res, applied := qh.cancelHandler.ApplyCancelMark(target, m.LeaseEpoch)
-				if !applied {
-					qh.log(LogLevelInfo, "cancel_mark_skip_raced task=%s status=%s epoch=%d expected_epoch=%d",
-						m.TaskID, target.Status, target.LeaseEpoch, m.LeaseEpoch)
-					continue
-				}
-				taskDirty[m.QueueFile] = true
-				se.scanCounters.TasksCancelled++
-				if m.WorkerID != "" {
-					syntheticByWorker[m.WorkerID] = append(syntheticByWorker[m.WorkerID], res)
-				}
-			}
-		}
-
-		for _, dr := range pb.dispatches {
-			switch dr.Item.Kind {
-			case "command":
-				qh.applyCommandDispatchResult(dr, &commandQueue, &commandsDirty)
-			case "task":
-				qh.applyTaskDispatchResult(dr, taskQueues, taskDirty)
-			case "notification":
-				qh.applyNotificationDispatchResult(dr, &notificationQueue, &notificationsDirty)
-			}
-		}
-
-		for _, bc := range pb.busyChecks {
-			switch bc.Item.Kind {
-			case "task":
-				qh.applyTaskBusyCheckResult(bc, taskQueues, taskDirty)
-			case "command":
-				qh.applyCommandBusyCheckResult(bc, &commandQueue, &commandsDirty)
-			}
-		}
-
-		// Single flush for cancel marks, dispatch, and busy check results
-		qh.queueStore.FlushQueues(commandQueue, commandPath, commandsDirty,
-			taskQueues, taskDirty,
-			notificationQueue, notificationPath, notificationsDirty,
-			model.PlannerSignalQueue{}, "", false)
-
-		// Write synthetic cancelled results after the queue flush so any
-		// concurrent reader observes queue state matching the result file.
-		for wID, results := range syntheticByWorker {
-			qh.cancelHandler.WriteSyntheticResults(results, wID)
-		}
-	}
+	qh.applyCancelDispatchAndBusyChecks(se, pa, pb, commandQueue, commandPath, taskQueues, notificationQueue, notificationPath)
 
 	// --- Apply worktree merge, publish, and signal delivery results (single load/flush) ---
 	hasSignalWork := len(pb.worktreeMerges) > 0 || len(pb.worktreePublishes) > 0 || len(pb.signals) > 0
@@ -109,162 +33,296 @@ func (qh *QueueHandler) executeScanPhaseCBody(se *ScanPhaseExecutor, pa phaseARe
 		signalIndex := buildSignalIndex(signalQueue.Signals)
 		now := qh.clock.Now().UTC().Format(time.RFC3339)
 
-		// Worktree merge results: emit commit failure signals, conflict signals, record merged phases
-		for _, mr := range pb.worktreeMerges {
-			for _, cf := range mr.CommitFailures {
-				qh.log(LogLevelError, "worktree_commit_failed command=%s phase=%s worker=%s reason=%s error=%v",
-					mr.Item.CommandID, mr.Item.PhaseID, cf.WorkerID, cf.Reason, cf.Error)
-				msg := fmt.Sprintf("[maestro] kind:commit_failed command_id:%s phase:%s worker:%s reason:%s\nerror: %v",
-					mr.Item.CommandID, mr.Item.PhaseID, cf.WorkerID, cf.Reason, cf.Error)
-				qh.upsertPlannerSignal(&signalQueue, &signalsDirty, model.PlannerSignal{
-					Kind:      "commit_failed",
-					CommandID: mr.Item.CommandID,
-					PhaseID:   mr.Item.PhaseID,
-					WorkerID:  cf.WorkerID,
-					Reason:    cf.Reason,
-					Message:   msg,
-					CreatedAt: now,
-					UpdatedAt: now,
-				}, signalIndex)
+		qh.applyWorktreeResultSignals(pb, &signalQueue, &signalsDirty, signalIndex, now)
+		qh.dispatchConflictsAndFlushSignals(pb, &signalQueue, signalPath, &signalsDirty, now)
+	}
+
+	// Post-scan maintenance: cleanup, reconciliation, metrics
+	return qh.runPostScanMaintenance(se, pa, pb, commandQueue, taskQueues, notificationQueue)
+}
+
+// applyCancelDispatchAndBusyChecks applies cancel marks, dispatch results, and
+// busy check results from Phase A and Phase B, then flushes all queue mutations
+// in a single write.
+func (qh *QueueHandler) applyCancelDispatchAndBusyChecks(
+	se *ScanPhaseExecutor,
+	pa phaseAResult,
+	pb phaseBResult,
+	commandQueue model.CommandQueue,
+	commandPath string,
+	taskQueues map[string]*taskQueueEntry,
+	notificationQueue model.NotificationQueue,
+	notificationPath string,
+) {
+	if len(pb.dispatches) == 0 && len(pb.busyChecks) == 0 && len(pa.work.cancelMarks) == 0 {
+		return
+	}
+
+	commandsDirty := false
+	notificationsDirty := false
+	taskDirty := make(map[string]bool)
+
+	// M3+H4: apply deferred cancel marks first. Phase B has already
+	// interrupted the worker and discarded its worktree changes, so
+	// any task still observed as in_progress with the same lease_epoch
+	// can be safely transitioned to cancelled. Tasks that the worker
+	// raced to a terminal state are skipped — the real result wins.
+	var syntheticByWorker map[string][]CancelledTaskResult
+	if len(pa.work.cancelMarks) > 0 {
+		syntheticByWorker = make(map[string][]CancelledTaskResult)
+		for _, m := range pa.work.cancelMarks {
+			tq, ok := taskQueues[m.QueueFile]
+			if !ok {
+				qh.log(LogLevelInfo, "cancel_mark_skip_missing_queue file=%s task=%s",
+					m.QueueFile, m.TaskID)
+				continue
 			}
-			if mr.Error != nil {
-				qh.log(LogLevelError, "worktree_merge_failed command=%s phase=%s error=%v",
-					mr.Item.CommandID, mr.Item.PhaseID, mr.Error)
-			}
-			for _, conflict := range mr.Conflicts {
-				// Append base/ours/theirs refs to the legacy message format so
-				// existing CSV-style consumers continue to parse it. New
-				// structured fields are also populated below for planners that
-				// understand the MVP-1 schema.
-				msg := fmt.Sprintf("[maestro] kind:merge_conflict command_id:%s phase:%s worker:%s base:%s ours:%s theirs:%s\nconflict_files: %s",
-					mr.Item.CommandID, mr.Item.PhaseID, conflict.WorkerID,
-					conflict.BaseRef, conflict.OursRef, conflict.TheirsRef,
-					strings.Join(conflict.ConflictFiles, ", "))
-				cg := worktree.ComputeConflictGeneration(
-					mr.Item.CommandID, mr.Item.PhaseID, conflict.WorkerID,
-					conflict.BaseRef, conflict.OursRef, conflict.TheirsRef,
-				)
-				qh.upsertPlannerSignal(&signalQueue, &signalsDirty, model.PlannerSignal{
-					Kind:               "merge_conflict",
-					CommandID:          mr.Item.CommandID,
-					PhaseID:            mr.Item.PhaseID,
-					WorkerID:           conflict.WorkerID,
-					Message:            msg,
-					ConflictBaseRef:    conflict.BaseRef,
-					ConflictOursRef:    conflict.OursRef,
-					ConflictTheirsRef:  conflict.TheirsRef,
-					ConflictFiles:      append([]string(nil), conflict.ConflictFiles...),
-					ConflictGeneration: cg,
-					CreatedAt:          now,
-					UpdatedAt:          now,
-				}, signalIndex)
-			}
-			if mr.Error == nil && len(mr.Conflicts) == 0 && len(mr.CommitFailures) == 0 && qh.worktreeManager != nil {
-				if err := qh.worktreeManager.MarkPhaseMerged(mr.Item.CommandID, mr.Item.PhaseID); err != nil {
-					qh.log(LogLevelWarn, "mark_phase_merged_failed command=%s phase=%s error=%v",
-						mr.Item.CommandID, mr.Item.PhaseID, err)
+			var target *model.Task
+			for i := range tq.Queue.Tasks {
+				if tq.Queue.Tasks[i].ID == m.TaskID {
+					target = &tq.Queue.Tasks[i]
+					break
 				}
 			}
-		}
-
-		// Worktree publish results: emit signal to Planner on success or failure
-		for _, pr := range pb.worktreePublishes {
-			if pr.Error != nil {
-				qh.log(LogLevelError, "worktree_publish_failed command=%s error=%v",
-					pr.Item.CommandID, pr.Error)
-				msg := fmt.Sprintf("[maestro] kind:publish_failed command_id:%s\nerror: %v",
-					pr.Item.CommandID, pr.Error)
-				qh.upsertPlannerSignal(&signalQueue, &signalsDirty, model.PlannerSignal{
-					Kind:      "publish_failed",
-					CommandID: pr.Item.CommandID,
-					Message:   msg,
-					CreatedAt: now,
-					UpdatedAt: now,
-				}, signalIndex)
-			} else {
-				qh.log(LogLevelInfo, "worktree_published command=%s", pr.Item.CommandID)
-				// Notify Planner so it can call `plan complete` now that the
-				// integration branch is published. Without this signal the
-				// command stays at plan_status:sealed when publish happens
-				// after the Planner's initial complete attempt (e.g. conflict
-				// recovery path where publish is deferred until after
-				// resume-merge succeeds).
-				msg := fmt.Sprintf("[maestro] kind:publish_completed command_id:%s\n"+
-					"The integration branch has been successfully published to the base branch. "+
-					"Call `maestro plan complete` to finalise the command.",
-					pr.Item.CommandID)
-				qh.upsertPlannerSignal(&signalQueue, &signalsDirty, model.PlannerSignal{
-					Kind:      "publish_completed",
-					CommandID: pr.Item.CommandID,
-					Message:   msg,
-					CreatedAt: now,
-					UpdatedAt: now,
-				}, signalIndex)
+			if target == nil {
+				qh.log(LogLevelInfo, "cancel_mark_skip_missing_task task=%s", m.TaskID)
+				continue
 			}
-		}
-
-		// Pre-flush: write new signals to disk before C1 so that
-		// DispatchConflictResolution (which reads via YAMLSignalStore) can
-		// find freshly-created merge_conflict signals in this scan cycle.
-		// Without this, the first C1 dispatch always fails because the signal
-		// exists only in memory until the final flush at the end of Phase C.
-		if signalsDirty && qh.worktreeManager != nil {
-			p := signalPath
-			if p == "" {
-				p = filepath.Join(qh.maestroDir, "queue", "planner_signals.yaml")
+			res, applied := qh.cancelHandler.ApplyCancelMark(target, m.LeaseEpoch)
+			if !applied {
+				qh.log(LogLevelInfo, "cancel_mark_skip_raced task=%s status=%s epoch=%d expected_epoch=%d",
+					m.TaskID, target.Status, target.LeaseEpoch, m.LeaseEpoch)
+				continue
 			}
-			if err := yamlutil.AtomicWrite(p, signalQueue); err != nil {
-				qh.log(LogLevelError, "write_planner_signals_pre_c1 error=%v", err)
-			}
-		}
-
-		// C1: opportunistically dispatch the conflict resolver pipeline for any
-		// merge_conflict signal that is still in its initial (empty) state.
-		// This is the minimal wiring that hands a freshly-detected conflict to
-		// the resolver pipeline; the resolver agent itself runs out-of-band
-		// and the operator-driven resolve_conflict CLI op (→
-		// recover.ResolveConflict) closes the loop by clearing
-		// CommitFailedWorkers, resetting MergeFailureCount, and clearing the
-		// merge_conflict signal.
-		if qh.worktreeManager != nil {
-			for i := range signalQueue.Signals {
-				sig := &signalQueue.Signals[i]
-				if sig.Kind != "merge_conflict" || sig.ResolutionState != "" || sig.ConflictGeneration == "" {
-					continue
-				}
-				if err := qh.worktreeManager.DispatchConflictResolution(
-					sig.CommandID, sig.PhaseID, sig.WorkerID, sig.ConflictGeneration,
-				); err != nil {
-					qh.log(LogLevelWarn, "conflict_dispatch_failed command=%s phase=%s worker=%s error=%v",
-						sig.CommandID, sig.PhaseID, sig.WorkerID, err)
-				} else {
-					// The store mutated the on-disk signal already; mirror the
-					// state on our in-memory copy so the next iteration sees it.
-					sig.ResolutionState = "dispatched"
-					sig.UpdatedAt = now
-				}
-			}
-		}
-
-		// Signal delivery results: remove delivered signals
-		qh.applySignalResults(pb.signals, &signalQueue, &signalsDirty)
-
-		// Single flush for all signal queue mutations
-		if signalsDirty {
-			p := signalPath
-			if p == "" {
-				p = filepath.Join(qh.maestroDir, "queue", "planner_signals.yaml")
-			}
-			if len(signalQueue.Signals) == 0 {
-				_ = os.Remove(p)
-			} else {
-				if err := yamlutil.AtomicWrite(p, signalQueue); err != nil {
-					qh.log(LogLevelError, "write_planner_signals error=%v", err)
-				}
+			taskDirty[m.QueueFile] = true
+			se.scanCounters.TasksCancelled++
+			if m.WorkerID != "" {
+				syntheticByWorker[m.WorkerID] = append(syntheticByWorker[m.WorkerID], res)
 			}
 		}
 	}
 
+	for _, dr := range pb.dispatches {
+		switch dr.Item.Kind {
+		case "command":
+			qh.applyCommandDispatchResult(dr, &commandQueue, &commandsDirty)
+		case "task":
+			qh.applyTaskDispatchResult(dr, taskQueues, taskDirty)
+		case "notification":
+			qh.applyNotificationDispatchResult(dr, &notificationQueue, &notificationsDirty)
+		}
+	}
+
+	for _, bc := range pb.busyChecks {
+		switch bc.Item.Kind {
+		case "task":
+			qh.applyTaskBusyCheckResult(bc, taskQueues, taskDirty)
+		case "command":
+			qh.applyCommandBusyCheckResult(bc, &commandQueue, &commandsDirty)
+		}
+	}
+
+	// Single flush for cancel marks, dispatch, and busy check results
+	qh.queueStore.FlushQueues(commandQueue, commandPath, commandsDirty,
+		taskQueues, taskDirty,
+		notificationQueue, notificationPath, notificationsDirty,
+		model.PlannerSignalQueue{}, "", false)
+
+	// Write synthetic cancelled results after the queue flush so any
+	// concurrent reader observes queue state matching the result file.
+	for wID, results := range syntheticByWorker {
+		qh.cancelHandler.WriteSyntheticResults(results, wID)
+	}
+}
+
+// applyWorktreeResultSignals processes worktree merge results and publish
+// results from Phase B, emitting commit failure signals, conflict signals, and
+// publish outcome signals into the planner signal queue.
+func (qh *QueueHandler) applyWorktreeResultSignals(
+	pb phaseBResult,
+	signalQueue *model.PlannerSignalQueue,
+	signalsDirty *bool,
+	signalIndex map[signalKey]struct{},
+	now string,
+) {
+	// Worktree merge results: emit commit failure signals, conflict signals, record merged phases
+	for _, mr := range pb.worktreeMerges {
+		for _, cf := range mr.CommitFailures {
+			qh.log(LogLevelError, "worktree_commit_failed command=%s phase=%s worker=%s reason=%s error=%v",
+				mr.Item.CommandID, mr.Item.PhaseID, cf.WorkerID, cf.Reason, cf.Error)
+			msg := fmt.Sprintf("[maestro] kind:commit_failed command_id:%s phase:%s worker:%s reason:%s\nerror: %v",
+				mr.Item.CommandID, mr.Item.PhaseID, cf.WorkerID, cf.Reason, cf.Error)
+			qh.upsertPlannerSignal(signalQueue, signalsDirty, model.PlannerSignal{
+				Kind:      "commit_failed",
+				CommandID: mr.Item.CommandID,
+				PhaseID:   mr.Item.PhaseID,
+				WorkerID:  cf.WorkerID,
+				Reason:    cf.Reason,
+				Message:   msg,
+				CreatedAt: now,
+				UpdatedAt: now,
+			}, signalIndex)
+		}
+		if mr.Error != nil {
+			qh.log(LogLevelError, "worktree_merge_failed command=%s phase=%s error=%v",
+				mr.Item.CommandID, mr.Item.PhaseID, mr.Error)
+		}
+		for _, conflict := range mr.Conflicts {
+			// Append base/ours/theirs refs to the legacy message format so
+			// existing CSV-style consumers continue to parse it. New
+			// structured fields are also populated below for planners that
+			// understand the MVP-1 schema.
+			msg := fmt.Sprintf("[maestro] kind:merge_conflict command_id:%s phase:%s worker:%s base:%s ours:%s theirs:%s\nconflict_files: %s",
+				mr.Item.CommandID, mr.Item.PhaseID, conflict.WorkerID,
+				conflict.BaseRef, conflict.OursRef, conflict.TheirsRef,
+				strings.Join(conflict.ConflictFiles, ", "))
+			cg := worktree.ComputeConflictGeneration(
+				mr.Item.CommandID, mr.Item.PhaseID, conflict.WorkerID,
+				conflict.BaseRef, conflict.OursRef, conflict.TheirsRef,
+			)
+			qh.upsertPlannerSignal(signalQueue, signalsDirty, model.PlannerSignal{
+				Kind:               "merge_conflict",
+				CommandID:          mr.Item.CommandID,
+				PhaseID:            mr.Item.PhaseID,
+				WorkerID:           conflict.WorkerID,
+				Message:            msg,
+				ConflictBaseRef:    conflict.BaseRef,
+				ConflictOursRef:    conflict.OursRef,
+				ConflictTheirsRef:  conflict.TheirsRef,
+				ConflictFiles:      append([]string(nil), conflict.ConflictFiles...),
+				ConflictGeneration: cg,
+				CreatedAt:          now,
+				UpdatedAt:          now,
+			}, signalIndex)
+		}
+		if mr.Error == nil && len(mr.Conflicts) == 0 && len(mr.CommitFailures) == 0 && qh.worktreeManager != nil {
+			if err := qh.worktreeManager.MarkPhaseMerged(mr.Item.CommandID, mr.Item.PhaseID); err != nil {
+				qh.log(LogLevelWarn, "mark_phase_merged_failed command=%s phase=%s error=%v",
+					mr.Item.CommandID, mr.Item.PhaseID, err)
+			}
+		}
+	}
+
+	// Worktree publish results: emit signal to Planner on success or failure
+	for _, pr := range pb.worktreePublishes {
+		if pr.Error != nil {
+			qh.log(LogLevelError, "worktree_publish_failed command=%s error=%v",
+				pr.Item.CommandID, pr.Error)
+			msg := fmt.Sprintf("[maestro] kind:publish_failed command_id:%s\nerror: %v",
+				pr.Item.CommandID, pr.Error)
+			qh.upsertPlannerSignal(signalQueue, signalsDirty, model.PlannerSignal{
+				Kind:      "publish_failed",
+				CommandID: pr.Item.CommandID,
+				Message:   msg,
+				CreatedAt: now,
+				UpdatedAt: now,
+			}, signalIndex)
+		} else {
+			qh.log(LogLevelInfo, "worktree_published command=%s", pr.Item.CommandID)
+			// Notify Planner so it can call `plan complete` now that the
+			// integration branch is published. Without this signal the
+			// command stays at plan_status:sealed when publish happens
+			// after the Planner's initial complete attempt (e.g. conflict
+			// recovery path where publish is deferred until after
+			// resume-merge succeeds).
+			msg := fmt.Sprintf("[maestro] kind:publish_completed command_id:%s\n"+
+				"The integration branch has been successfully published to the base branch. "+
+				"Call `maestro plan complete` to finalise the command.",
+				pr.Item.CommandID)
+			qh.upsertPlannerSignal(signalQueue, signalsDirty, model.PlannerSignal{
+				Kind:      "publish_completed",
+				CommandID: pr.Item.CommandID,
+				Message:   msg,
+				CreatedAt: now,
+				UpdatedAt: now,
+			}, signalIndex)
+		}
+	}
+}
+
+// dispatchConflictsAndFlushSignals performs the pre-flush for C1 conflict
+// dispatch, runs conflict resolution dispatch, applies signal delivery results,
+// and performs the final signal queue flush.
+func (qh *QueueHandler) dispatchConflictsAndFlushSignals(
+	pb phaseBResult,
+	signalQueue *model.PlannerSignalQueue,
+	signalPath string,
+	signalsDirty *bool,
+	now string,
+) {
+	// Pre-flush: write new signals to disk before C1 so that
+	// DispatchConflictResolution (which reads via YAMLSignalStore) can
+	// find freshly-created merge_conflict signals in this scan cycle.
+	// Without this, the first C1 dispatch always fails because the signal
+	// exists only in memory until the final flush at the end of Phase C.
+	if *signalsDirty && qh.worktreeManager != nil {
+		p := signalPath
+		if p == "" {
+			p = filepath.Join(qh.maestroDir, "queue", "planner_signals.yaml")
+		}
+		if err := yamlutil.AtomicWrite(p, *signalQueue); err != nil {
+			qh.log(LogLevelError, "write_planner_signals_pre_c1 error=%v", err)
+		}
+	}
+
+	// C1: opportunistically dispatch the conflict resolver pipeline for any
+	// merge_conflict signal that is still in its initial (empty) state.
+	// This is the minimal wiring that hands a freshly-detected conflict to
+	// the resolver pipeline; the resolver agent itself runs out-of-band
+	// and the operator-driven resolve_conflict CLI op (→
+	// recover.ResolveConflict) closes the loop by clearing
+	// CommitFailedWorkers, resetting MergeFailureCount, and clearing the
+	// merge_conflict signal.
+	if qh.worktreeManager != nil {
+		for i := range signalQueue.Signals {
+			sig := &signalQueue.Signals[i]
+			if sig.Kind != "merge_conflict" || sig.ResolutionState != "" || sig.ConflictGeneration == "" {
+				continue
+			}
+			if err := qh.worktreeManager.DispatchConflictResolution(
+				sig.CommandID, sig.PhaseID, sig.WorkerID, sig.ConflictGeneration,
+			); err != nil {
+				qh.log(LogLevelWarn, "conflict_dispatch_failed command=%s phase=%s worker=%s error=%v",
+					sig.CommandID, sig.PhaseID, sig.WorkerID, err)
+			} else {
+				// The store mutated the on-disk signal already; mirror the
+				// state on our in-memory copy so the next iteration sees it.
+				sig.ResolutionState = "dispatched"
+				sig.UpdatedAt = now
+			}
+		}
+	}
+
+	// Signal delivery results: remove delivered signals
+	qh.applySignalResults(pb.signals, signalQueue, signalsDirty)
+
+	// Single flush for all signal queue mutations
+	if *signalsDirty {
+		p := signalPath
+		if p == "" {
+			p = filepath.Join(qh.maestroDir, "queue", "planner_signals.yaml")
+		}
+		if len(signalQueue.Signals) == 0 {
+			_ = os.Remove(p)
+		} else {
+			if err := yamlutil.AtomicWrite(p, *signalQueue); err != nil {
+				qh.log(LogLevelError, "write_planner_signals error=%v", err)
+			}
+		}
+	}
+}
+
+// runPostScanMaintenance handles recovery hint logging, worktree cleanup
+// logging, result notification retry, reconciliation, metrics, and dashboard
+// updates.
+func (qh *QueueHandler) runPostScanMaintenance(
+	se *ScanPhaseExecutor,
+	pa phaseAResult,
+	pb phaseBResult,
+	commandQueue model.CommandQueue,
+	taskQueues map[string]*taskQueueEntry,
+	notificationQueue model.NotificationQueue,
+) []DeferredNotification {
 	// --- Log recovery hints from Phase B partial failures ---
 	for _, hint := range pb.recoveryHints {
 		qh.log(LogLevelWarn, "phase_b_recovery_hint %s", hint)

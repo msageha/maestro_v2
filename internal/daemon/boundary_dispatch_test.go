@@ -8,37 +8,11 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
-	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/ptr"
 	"github.com/msageha/maestro_v2/internal/testutil/mocks"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
-
-// newBoundaryTestDaemon creates a fully-wired integration daemon for boundary tests.
-// Uses the same pattern as newIntegrationDaemon but with configurable options.
-func newBoundaryTestDaemon(t *testing.T) *Daemon {
-	t.Helper()
-	d := newTestDaemon(t)
-	lockMap := lock.NewMutexMap()
-	reader := &integrationStateReader{maestroDir: d.maestroDir, lockMap: lockMap}
-	d.handler = NewQueueHandler(d.maestroDir, d.config, lockMap, d.logger, d.logLevel,
-		WithBusyChecker(BusyCheckerFunc(func(string) bool { return false })))
-	d.handler.SetStateReader(reader)
-	d.handler.SetCanComplete(testCanComplete)
-	d.handler.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
-		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
-	})
-	for _, sub := range []string{"dead_letters", "quarantine", "state"} {
-		os.MkdirAll(filepath.Join(d.maestroDir, sub), 0755)
-	}
-	t.Cleanup(func() {
-		d.handler.scanRunMu.Lock()
-		os.RemoveAll(d.maestroDir)
-		d.handler.scanRunMu.Unlock()
-	})
-	return d
-}
 
 // =============================================================================
 // Command Dispatch Guard — Boundary Tests
@@ -416,7 +390,7 @@ func TestTaskLeaseExpiry_NilLeaseExpiresAt(t *testing.T) {
 // is released when max_in_progress_min is exceeded.
 func TestTaskLeaseExpiry_BusyAgent_MaxTimeout(t *testing.T) {
 	t.Parallel()
-	d := newBoundaryTestDaemon(t)
+	d := newIntegrationDaemon(t)
 	d.config.Watcher.MaxInProgressMin = ptr.Int(30)
 	// Recreate handler with updated config
 	lockMap := d.handler.lockMap
@@ -460,7 +434,7 @@ func TestTaskLeaseExpiry_BusyAgent_MaxTimeout(t *testing.T) {
 // max_in_progress_min gets its lease extended.
 func TestTaskLeaseExpiry_BusyAgent_WithinLimit(t *testing.T) {
 	t.Parallel()
-	d := newBoundaryTestDaemon(t)
+	d := newIntegrationDaemon(t)
 	d.config.Watcher.MaxInProgressMin = ptr.Int(60)
 	lockMap := d.handler.lockMap
 	reader := &integrationStateReader{maestroDir: d.maestroDir, lockMap: lockMap}
@@ -640,7 +614,7 @@ func TestCommandDispatchError_SecondScan_StaysInProgress(t *testing.T) {
 // TestDispatchResult_NormalPath verifies the normal dispatch→result→completed flow.
 func TestDispatchResult_NormalPath(t *testing.T) {
 	t.Parallel()
-	d := newBoundaryTestDaemon(t)
+	d := newIntegrationDaemon(t)
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	tq := model.TaskQueue{

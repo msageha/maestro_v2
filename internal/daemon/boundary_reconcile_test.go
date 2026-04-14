@@ -499,7 +499,7 @@ func TestReconciler_R6_NoDeadline_NoTimeout(t *testing.T) {
 // taskB (depends on taskA) and taskC (depends on taskB) are both cancelled.
 func TestDependencyFailure_TransitivePending(t *testing.T) {
 	t.Parallel()
-	d := newBoundaryTestDaemon(t)
+	d := newIntegrationDaemon(t)
 	commandID := "cmd_dep_trans"
 	taskA := "task_dep_a"
 	taskB := "task_dep_b"
@@ -564,7 +564,7 @@ func TestDependencyFailure_TransitivePending(t *testing.T) {
 // task with a failed dependency gets cancelled and an interrupt is deferred.
 func TestDependencyFailure_InProgressTaskInterrupted(t *testing.T) {
 	t.Parallel()
-	d := newBoundaryTestDaemon(t)
+	d := newIntegrationDaemon(t)
 	commandID := "cmd_dep_inprog"
 	taskA := "task_depip_a"
 	taskB := "task_depip_b"
