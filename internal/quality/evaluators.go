@@ -140,9 +140,9 @@ func (e *fieldValidationEvaluator) Evaluate(_ context.Context, condition *RuleCo
 	case OpNotExists:
 		return e.evalNotExists(value, exists), nil
 	case OpEquals:
-		return e.evalEquals(value, condition.Value, exists), nil
+		return e.evalEquals(value, condition.Value, condition.CaseSensitive, exists), nil
 	case OpNotEquals:
-		return e.evalNotEquals(value, condition.Value, exists), nil
+		return e.evalNotEquals(value, condition.Value, condition.CaseSensitive, exists), nil
 	case OpContains:
 		return e.evalContains(value, condition.Value, condition.CaseSensitive, exists), nil
 	case OpNotContains:
@@ -155,9 +155,9 @@ func (e *fieldValidationEvaluator) Evaluate(_ context.Context, condition *RuleCo
 		}
 		return e.compareNumeric(value, condition.Value, condition.Operator)
 	case OpIn:
-		return e.evalIn(value, condition.Value, exists), nil
+		return e.evalIn(value, condition.Value, condition.CaseSensitive, exists), nil
 	case OpNotIn:
-		return e.evalNotIn(value, condition.Value, exists), nil
+		return e.evalNotIn(value, condition.Value, condition.CaseSensitive, exists), nil
 	default:
 		return false, fmt.Errorf("unknown operator: %s", condition.Operator)
 	}
@@ -171,18 +171,18 @@ func (e *fieldValidationEvaluator) evalNotExists(value interface{}, exists bool)
 	return !exists || value == nil || value == ""
 }
 
-func (e *fieldValidationEvaluator) evalEquals(value, target interface{}, exists bool) bool {
+func (e *fieldValidationEvaluator) evalEquals(value, target interface{}, caseSensitive, exists bool) bool {
 	if !exists {
 		return false
 	}
-	return e.compareValues(value, target, true)
+	return e.compareValues(value, target, caseSensitive)
 }
 
-func (e *fieldValidationEvaluator) evalNotEquals(value, target interface{}, exists bool) bool {
+func (e *fieldValidationEvaluator) evalNotEquals(value, target interface{}, caseSensitive, exists bool) bool {
 	if !exists {
 		return true
 	}
-	return !e.compareValues(value, target, true)
+	return !e.compareValues(value, target, caseSensitive)
 }
 
 func (e *fieldValidationEvaluator) evalContains(value, target interface{}, caseSensitive, exists bool) bool {
@@ -226,18 +226,18 @@ func (e *fieldValidationEvaluator) evalMatches(value interface{}, condition *Rul
 	return !matched, nil
 }
 
-func (e *fieldValidationEvaluator) evalIn(value, list interface{}, exists bool) bool {
+func (e *fieldValidationEvaluator) evalIn(value, list interface{}, caseSensitive, exists bool) bool {
 	if !exists {
 		return false
 	}
-	return e.isInList(value, list)
+	return e.isInList(value, list, caseSensitive)
 }
 
-func (e *fieldValidationEvaluator) evalNotIn(value, list interface{}, exists bool) bool {
+func (e *fieldValidationEvaluator) evalNotIn(value, list interface{}, caseSensitive, exists bool) bool {
 	if !exists {
 		return true
 	}
-	return !e.isInList(value, list)
+	return !e.isInList(value, list, caseSensitive)
 }
 
 // compareValues compares two values for equality
@@ -293,19 +293,26 @@ func (e *fieldValidationEvaluator) compareNumeric(a, b interface{}, op FieldOper
 }
 
 // isInList checks if value is in a list
-func (e *fieldValidationEvaluator) isInList(value, list interface{}) bool {
+func (e *fieldValidationEvaluator) isInList(value, list interface{}, caseSensitive bool) bool {
 	// Handle different list types
 	switch l := list.(type) {
 	case []interface{}:
 		for _, item := range l {
-			if e.compareValues(value, item, true) {
+			if e.compareValues(value, item, caseSensitive) {
 				return true
 			}
 		}
 	case []string:
 		valStr := fmt.Sprintf("%v", value)
+		if !caseSensitive {
+			valStr = strings.ToLower(valStr)
+		}
 		for _, item := range l {
-			if valStr == item {
+			itemStr := item
+			if !caseSensitive {
+				itemStr = strings.ToLower(itemStr)
+			}
+			if valStr == itemStr {
 				return true
 			}
 		}
@@ -314,8 +321,15 @@ func (e *fieldValidationEvaluator) isInList(value, list interface{}) bool {
 		listStr := fmt.Sprintf("%v", list)
 		items := strings.Split(listStr, ",")
 		valStr := fmt.Sprintf("%v", value)
+		if !caseSensitive {
+			valStr = strings.ToLower(valStr)
+		}
 		for _, item := range items {
-			if strings.TrimSpace(valStr) == strings.TrimSpace(item) {
+			itemStr := strings.TrimSpace(item)
+			if !caseSensitive {
+				itemStr = strings.ToLower(itemStr)
+			}
+			if strings.TrimSpace(valStr) == itemStr {
 				return true
 			}
 		}

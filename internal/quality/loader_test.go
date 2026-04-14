@@ -17,11 +17,16 @@ func writeGateFile(t *testing.T, configDir, name, content string) {
 	require.NoError(t, os.WriteFile(filepath.Join(gatesDir, name), []byte(content), 0644))
 }
 
-func TestLoader_ApplyDefaults(t *testing.T) {
-	tmpDir := t.TempDir()
-	loader := NewLoader(tmpDir)
-
-	yaml := `
+func TestLoader_DefaultsAndEnabledField(t *testing.T) {
+	tests := []struct {
+		name      string
+		yaml      string
+		gateCount int
+		verify    func(t *testing.T, gates []GateDefinition)
+	}{
+		{
+			name: "apply defaults when fields omitted",
+			yaml: `
 schema_version: "1.0.0"
 gates:
   - id: test_gate
@@ -35,25 +40,93 @@ gates:
           operator: exists
     action:
       on_fail: block
-`
-	writeGateFile(t, tmpDir, "test.yaml", yaml)
+`,
+			gateCount: 1,
+			verify: func(t *testing.T, gates []GateDefinition) {
+				gate := gates[0]
+				require.NotNil(t, gate.Enabled)
+				assert.True(t, *gate.Enabled)
+				assert.Equal(t, 50, gate.Priority)
+				assert.Equal(t, ActionAllow, gate.Action.OnPass)
+				assert.Equal(t, ActionContinue, gate.Action.OnWarn)
+				assert.Equal(t, SeverityError, gate.Rules[0].Severity)
+				assert.True(t, gate.Rules[0].Condition.CaseSensitive)
+			},
+		},
+		{
+			name: "enabled false preserved",
+			yaml: `
+schema_version: "1.0.0"
+gates:
+  - id: disabled_gate
+    name: "Disabled Gate"
+    enabled: false
+    type: pre_task
+    rules:
+      - id: rule1
+        condition:
+          type: field_validation
+          field: task.id
+          operator: exists
+    action:
+      on_pass: allow
+      on_fail: block
+  - id: enabled_gate
+    name: "Enabled Gate"
+    enabled: true
+    type: pre_task
+    rules:
+      - id: rule1
+        condition:
+          type: field_validation
+          field: task.id
+          operator: exists
+    action:
+      on_pass: allow
+      on_fail: block
+  - id: unset_gate
+    name: "Unset Gate"
+    type: pre_task
+    rules:
+      - id: rule1
+        condition:
+          type: field_validation
+          field: task.id
+          operator: exists
+    action:
+      on_pass: allow
+      on_fail: block
+`,
+			gateCount: 3,
+			verify: func(t *testing.T, gates []GateDefinition) {
+				// enabled: false should be preserved as false
+				require.NotNil(t, gates[0].Enabled)
+				assert.False(t, *gates[0].Enabled, "enabled: false must be preserved, not overwritten to true")
 
-	config, err := loader.LoadConfiguration()
-	require.NoError(t, err)
-	require.Len(t, config.Gates, 1)
+				// enabled: true should remain true
+				require.NotNil(t, gates[1].Enabled)
+				assert.True(t, *gates[1].Enabled)
 
-	gate := config.Gates[0]
+				// unset enabled should default to true
+				require.NotNil(t, gates[2].Enabled)
+				assert.True(t, *gates[2].Enabled, "unset enabled should default to true")
+			},
+		},
+	}
 
-	// Check defaults were applied
-	assert.NotNil(t, gate.Enabled)                   // Default to enabled
-	assert.True(t, *gate.Enabled)                    // Default to enabled
-	assert.Equal(t, 50, gate.Priority)              // Default priority
-	assert.Equal(t, ActionAllow, gate.Action.OnPass) // Default on_pass
-	assert.Equal(t, ActionContinue, gate.Action.OnWarn) // Default on_warn
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			loader := NewLoader(tmpDir)
+			writeGateFile(t, tmpDir, "test.yaml", tt.yaml)
 
-	// Check rule defaults
-	assert.Equal(t, SeverityError, gate.Rules[0].Severity)
-	assert.True(t, gate.Rules[0].Condition.CaseSensitive)
+			config, err := loader.LoadConfiguration()
+			require.NoError(t, err)
+			require.Len(t, config.Gates, tt.gateCount)
+
+			tt.verify(t, config.Gates)
+		})
+	}
 }
 
 func TestLoader_ValidationEdgeCases(t *testing.T) {
@@ -236,81 +309,10 @@ gates:
 	assert.Equal(t, ActionBlock, gate.Action.OnFail)
 }
 
-func TestLoader_EnabledFalsePreserved(t *testing.T) {
-	tmpDir := t.TempDir()
-	loader := NewLoader(tmpDir)
-
-	yaml := `
-schema_version: "1.0.0"
-gates:
-  - id: disabled_gate
-    name: "Disabled Gate"
-    enabled: false
-    type: pre_task
-    rules:
-      - id: rule1
-        condition:
-          type: field_validation
-          field: task.id
-          operator: exists
-    action:
-      on_pass: allow
-      on_fail: block
-  - id: enabled_gate
-    name: "Enabled Gate"
-    enabled: true
-    type: pre_task
-    rules:
-      - id: rule1
-        condition:
-          type: field_validation
-          field: task.id
-          operator: exists
-    action:
-      on_pass: allow
-      on_fail: block
-  - id: unset_gate
-    name: "Unset Gate"
-    type: pre_task
-    rules:
-      - id: rule1
-        condition:
-          type: field_validation
-          field: task.id
-          operator: exists
-    action:
-      on_pass: allow
-      on_fail: block
-`
-	writeGateFile(t, tmpDir, "test.yaml", yaml)
-
-	config, err := loader.LoadConfiguration()
-	require.NoError(t, err)
-	require.Len(t, config.Gates, 3)
-
-	// enabled: false should be preserved as false
-	disabledGate := config.Gates[0]
-	assert.Equal(t, "disabled_gate", disabledGate.ID)
-	require.NotNil(t, disabledGate.Enabled)
-	assert.False(t, *disabledGate.Enabled, "enabled: false must be preserved, not overwritten to true")
-
-	// enabled: true should remain true
-	enabledGate := config.Gates[1]
-	assert.Equal(t, "enabled_gate", enabledGate.ID)
-	require.NotNil(t, enabledGate.Enabled)
-	assert.True(t, *enabledGate.Enabled)
-
-	// unset enabled should default to true
-	unsetGate := config.Gates[2]
-	assert.Equal(t, "unset_gate", unsetGate.ID)
-	require.NotNil(t, unsetGate.Enabled)
-	assert.True(t, *unsetGate.Enabled, "unset enabled should default to true")
-}
-
 func TestValidateFilePermissions(t *testing.T) {
 	tmpDir, err := os.MkdirTemp("", "perms_test")
 	require.NoError(t, err)
-	defer os.RemoveAll(tmpDir)
+	t.Cleanup(func() { os.RemoveAll(tmpDir) })
 
 	t.Run("safe permissions", func(t *testing.T) {
 		safeFile := filepath.Join(tmpDir, "safe.yaml")

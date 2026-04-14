@@ -15,9 +15,6 @@ import (
 	"time"
 
 	"golang.org/x/sync/singleflight"
-
-	"github.com/msageha/maestro_v2/internal/daemon/complexity"
-	"github.com/msageha/maestro_v2/internal/daemon/featuregate"
 )
 
 // Engine is the main quality gate evaluation engine
@@ -520,28 +517,28 @@ const ConditionFeatureGate ConditionType = "feature_gate"
 
 // FeatureGateRule evaluates feature gates based on task complexity.
 type FeatureGateRule struct {
-	evaluator *featuregate.Evaluator
-	scorer    *complexity.Scorer
+	evaluator FeatureGateEvaluator
+	scorer    ComplexityAnalyzer
 }
 
 // Evaluate determines the complexity level and returns the corresponding feature profile.
 // If task.complexity_level is explicitly set, it overrides the computed level (§C-8 req-4).
 // On any failure the Simple profile is used as fallback (§C-8 req-6).
 func (r *FeatureGateRule) Evaluate(_ context.Context, _ *RuleCondition, evalCtx EvaluationContext) (bool, error) {
-	var level featuregate.ProfileLevel
+	var level FeatureProfileLevel
 
 	// §C-8 req-4: explicit complexity level override
 	if raw, ok := evalCtx.GetField("task.complexity_level"); ok {
 		if s, isStr := raw.(string); isStr && s != "" {
-			level = featuregate.ProfileLevel(s)
+			level = FeatureProfileLevel(s)
 		}
 	}
 
 	// Compute complexity when no explicit level is set.
 	if level == "" {
 		input := r.buildComplexityInput(evalCtx)
-		score := r.scorer.Estimate(input)
-		level = complexityToProfileLevel(score.Level)
+		result := r.scorer.Estimate(input)
+		level = complexityToProfileLevel(result.Level)
 	}
 
 	profile := r.evaluator.Evaluate(level)
@@ -549,17 +546,18 @@ func (r *FeatureGateRule) Evaluate(_ context.Context, _ *RuleCondition, evalCtx 
 	// Verify the profile was resolved. If the level was unknown the evaluator
 	// already falls back to Simple, so profile.Level will be valid.
 	if len(profile.EnabledFeatures) == 0 {
-		profile = r.evaluator.Evaluate(featuregate.LevelSimple)
+		profile = r.evaluator.Evaluate(ProfileLevelSimple)
 	}
 
 	// Always passes: the gate is informational, not blocking.
 	// Callers inspect the evaluation context or RuleResult.Message downstream.
+	_ = profile
 	return true, nil
 }
 
-// buildComplexityInput extracts complexity.Input fields from the evaluation context.
-func (r *FeatureGateRule) buildComplexityInput(evalCtx EvaluationContext) complexity.Input {
-	var input complexity.Input
+// buildComplexityInput extracts ComplexityInput fields from the evaluation context.
+func (r *FeatureGateRule) buildComplexityInput(evalCtx EvaluationContext) ComplexityInput {
+	var input ComplexityInput
 	if v, ok := evalCtx.GetField("task.file_count"); ok {
 		input.FileCount = toInt(v)
 	}
@@ -580,24 +578,24 @@ func (r *FeatureGateRule) buildComplexityInput(evalCtx EvaluationContext) comple
 	return input
 }
 
-// complexityToProfileLevel maps a complexity.Level to a featuregate.ProfileLevel.
-func complexityToProfileLevel(level complexity.Level) featuregate.ProfileLevel {
+// complexityToProfileLevel maps a ComplexityLevel to a FeatureProfileLevel.
+func complexityToProfileLevel(level ComplexityLevel) FeatureProfileLevel {
 	switch level {
-	case complexity.LevelSimple:
-		return featuregate.LevelSimple
-	case complexity.LevelStandard:
-		return featuregate.LevelStandard
-	case complexity.LevelComplex:
-		return featuregate.LevelComplex
-	case complexity.LevelCritical:
-		return featuregate.LevelCritical
+	case ComplexityLevelSimple:
+		return ProfileLevelSimple
+	case ComplexityLevelStandard:
+		return ProfileLevelStandard
+	case ComplexityLevelComplex:
+		return ProfileLevelComplex
+	case ComplexityLevelCritical:
+		return ProfileLevelCritical
 	default:
-		return featuregate.LevelSimple
+		return ProfileLevelSimple
 	}
 }
 
 // RegisterFeatureGateRule registers a FeatureGateRule as a pre_task evaluator on the engine.
-func RegisterFeatureGateRule(engine *Engine, evaluator *featuregate.Evaluator, scorer *complexity.Scorer) {
+func RegisterFeatureGateRule(engine *Engine, evaluator FeatureGateEvaluator, scorer ComplexityAnalyzer) {
 	rule := &FeatureGateRule{
 		evaluator: evaluator,
 		scorer:    scorer,

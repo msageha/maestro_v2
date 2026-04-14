@@ -72,9 +72,41 @@ func Submit(opts SubmitOptions) (*SubmitResult, error) {
 	return submitInitial(opts, *input)
 }
 
+// resolveAndAssignTasks generates task IDs, builds worker states, and assigns
+// tasks to workers. This is the shared pipeline used by both submitInitialTasks
+// and submitPhaseFill.
+func resolveAndAssignTasks(opts SubmitOptions, tasks []TaskInput) (nameToID map[string]string, assignments []WorkerAssignment, assignMap map[string]WorkerAssignment, err error) {
+	nameToID, err = resolveNames(tasks)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("resolve names: %w", err)
+	}
+
+	workerStates, err := BuildWorkerStates(opts.MaestroDir, opts.Config.Agents.Workers)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("build worker states: %w", err)
+	}
+
+	assignReqs := make([]TaskAssignmentRequest, 0, len(tasks))
+	for _, t := range tasks {
+		assignReqs = append(assignReqs, TaskAssignmentRequest{Name: t.Name, BloomLevel: t.BloomLevel})
+	}
+
+	assignments, err = AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, workerStates, assignReqs)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("worker assignment: %w", err)
+	}
+
+	assignMap = make(map[string]WorkerAssignment)
+	for _, a := range assignments {
+		assignMap[a.TaskName] = a
+	}
+
+	return nameToID, assignments, assignMap, nil
+}
+
 func submitInitial(opts SubmitOptions, input SubmitInput) (*SubmitResult, error) {
 	if opts.LockMap == nil {
-		return nil, fmt.Errorf("LockMap is required")
+		return nil, ErrLockMapRequired
 	}
 	sm := NewStateManager(opts.MaestroDir, opts.LockMap)
 
@@ -173,31 +205,9 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm stateStore) (*
 		}
 	}
 
-	// Generate IDs and resolve names
-	nameToID, err := resolveNames(tasks)
+	nameToID, assignments, assignMap, err := resolveAndAssignTasks(opts, tasks)
 	if err != nil {
-		return nil, fmt.Errorf("resolve names: %w", err)
-	}
-
-	// Build worker states and assign
-	workerStates, err := BuildWorkerStates(opts.MaestroDir, opts.Config.Agents.Workers)
-	if err != nil {
-		return nil, fmt.Errorf("build worker states: %w", err)
-	}
-
-	assignReqs := make([]TaskAssignmentRequest, 0, len(tasks))
-	for _, t := range tasks {
-		assignReqs = append(assignReqs, TaskAssignmentRequest{Name: t.Name, BloomLevel: t.BloomLevel})
-	}
-
-	assignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, workerStates, assignReqs)
-	if err != nil {
-		return nil, fmt.Errorf("worker assignment: %w", err)
-	}
-
-	assignMap := make(map[string]WorkerAssignment)
-	for _, a := range assignments {
-		assignMap[a.TaskName] = a
+		return nil, err
 	}
 
 	// Build state
@@ -327,7 +337,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	}
 
 	if opts.LockMap == nil {
-		return nil, fmt.Errorf("LockMap is required")
+		return nil, ErrLockMapRequired
 	}
 	sm := NewStateManager(opts.MaestroDir, opts.LockMap)
 
@@ -387,32 +397,10 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	}
 
 	// Generate IDs and assign workers
-	nameToID, err := resolveNames(input.Tasks)
+	nameToID, assignments, assignMap, err := resolveAndAssignTasks(opts, input.Tasks)
 	if err != nil {
 		rollbackPhaseFillToAwaiting(sm, state, targetPhaseIdx, opts.CommandID)
-		return nil, fmt.Errorf("resolve names: %w", err)
-	}
-
-	workerStates, err := BuildWorkerStates(opts.MaestroDir, opts.Config.Agents.Workers)
-	if err != nil {
-		rollbackPhaseFillToAwaiting(sm, state, targetPhaseIdx, opts.CommandID)
-		return nil, fmt.Errorf("build worker states: %w", err)
-	}
-
-	assignReqs := make([]TaskAssignmentRequest, 0, len(input.Tasks))
-	for _, t := range input.Tasks {
-		assignReqs = append(assignReqs, TaskAssignmentRequest{Name: t.Name, BloomLevel: t.BloomLevel})
-	}
-
-	assignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, workerStates, assignReqs)
-	if err != nil {
-		rollbackPhaseFillToAwaiting(sm, state, targetPhaseIdx, opts.CommandID)
-		return nil, fmt.Errorf("worker assignment: %w", err)
-	}
-
-	assignMap := make(map[string]WorkerAssignment)
-	for _, a := range assignments {
-		assignMap[a.TaskName] = a
+		return nil, err
 	}
 
 	now := nowUTC()

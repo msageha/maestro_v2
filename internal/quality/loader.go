@@ -36,26 +36,29 @@ func (l *Loader) LoadConfiguration() (*GateConfiguration, error) {
 		return config, nil
 	}
 
-	// Walk through the directory and load all YAML files
-	err := filepath.Walk(gatesDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
+	// Read YAML files from the gates directory (flat, no recursion needed)
+	entries, err := os.ReadDir(gatesDir)
+	if err != nil {
+		return nil, fmt.Errorf("read gates directory: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
 		}
-
-		// Skip directories and non-YAML files
-		if info.IsDir() || (!hasExtension(path, ".yaml") && !hasExtension(path, ".yml")) {
-			return nil
+		path := filepath.Join(gatesDir, entry.Name())
+		if !hasExtension(path, ".yaml") && !hasExtension(path, ".yml") {
+			continue
 		}
 
 		// Verify file permissions before loading
 		if err := validateFilePermissions(path); err != nil {
-			return fmt.Errorf("unsafe file permissions on %s: %w", path, err)
+			return nil, fmt.Errorf("unsafe file permissions on %s: %w", path, err)
 		}
 
 		// Load the file
 		fileConfig, err := l.loadFile(path)
 		if err != nil {
-			return fmt.Errorf("failed to load %s: %w", path, err)
+			return nil, fmt.Errorf("failed to load %s: %w", path, err)
 		}
 
 		// Merge gates
@@ -65,14 +68,7 @@ func (l *Loader) LoadConfiguration() (*GateConfiguration, error) {
 		if config.Metadata == nil && fileConfig.Metadata != nil {
 			config.Metadata = fileConfig.Metadata
 		}
-
-		return nil
-	})
-
-	if err != nil {
-		return nil, err
 	}
-
 	// Validate the configuration
 	if err := l.validateConfiguration(config); err != nil {
 		return nil, fmt.Errorf("configuration validation failed: %w", err)

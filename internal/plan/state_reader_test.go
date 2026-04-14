@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -237,7 +237,7 @@ func TestGetTaskState_StateNotFound(t *testing.T) {
 
 	// State file doesn't exist
 	_, err := reader.GetTaskState("nonexistent_cmd", "task1")
-	if !errors.Is(err, core.ErrStateNotFound) {
+	if !errors.Is(err, model.ErrStateNotFound) {
 		t.Errorf("expected ErrStateNotFound, got %v", err)
 	}
 }
@@ -247,7 +247,7 @@ func TestGetCommandPhases_StateNotFound(t *testing.T) {
 
 	// State file doesn't exist
 	_, err := reader.GetCommandPhases("nonexistent_cmd")
-	if !errors.Is(err, core.ErrStateNotFound) {
+	if !errors.Is(err, model.ErrStateNotFound) {
 		t.Errorf("expected ErrStateNotFound, got %v", err)
 	}
 }
@@ -257,7 +257,7 @@ func TestGetTaskDependencies_StateNotFound(t *testing.T) {
 
 	// State file doesn't exist
 	_, err := reader.GetTaskDependencies("nonexistent_cmd", "task1")
-	if !errors.Is(err, core.ErrStateNotFound) {
+	if !errors.Is(err, model.ErrStateNotFound) {
 		t.Errorf("expected ErrStateNotFound, got %v", err)
 	}
 }
@@ -267,7 +267,7 @@ func TestIsSystemCommitReady_StateNotFound(t *testing.T) {
 
 	// State file doesn't exist
 	_, _, err := reader.IsSystemCommitReady("nonexistent_cmd", "task1")
-	if !errors.Is(err, core.ErrStateNotFound) {
+	if !errors.Is(err, model.ErrStateNotFound) {
 		t.Errorf("expected ErrStateNotFound, got %v", err)
 	}
 }
@@ -277,7 +277,7 @@ func TestIsCommandCancelRequested_StateNotFound(t *testing.T) {
 
 	// State file doesn't exist
 	_, err := reader.IsCommandCancelRequested("nonexistent_cmd")
-	if !errors.Is(err, core.ErrStateNotFound) {
+	if !errors.Is(err, model.ErrStateNotFound) {
 		t.Errorf("expected ErrStateNotFound, got %v", err)
 	}
 }
@@ -386,8 +386,8 @@ func TestApplyPhaseTransition_UnknownPhaseID(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unknown phase ID, got nil")
 	}
-	if !errors.Is(err, core.ErrPhaseNotFound) {
-		t.Errorf("error = %v, want errors.Is(err, core.ErrPhaseNotFound)", err)
+	if !errors.Is(err, model.ErrPhaseNotFound) {
+		t.Errorf("error = %v, want errors.Is(err, model.ErrPhaseNotFound)", err)
 	}
 }
 
@@ -527,5 +527,251 @@ func TestUpdateTaskState_CancelledReason(t *testing.T) {
 	}
 	if state.CancelledReasons["task1"] != "dependency failed" {
 		t.Errorf("CancelledReasons[task1] = %q, want %q", state.CancelledReasons["task1"], "dependency failed")
+	}
+}
+
+// --- Cache tests ---
+
+func TestCache_ReadMethodsShareCachedState(t *testing.T) {
+	maestroDir, reader := setupStateReaderTest(t)
+	reader.SetCacheTTL(5 * time.Second)
+
+	writeState(t, maestroDir, &model.CommandState{
+		SchemaVersion:   1,
+		FileType:        "state_command",
+		CommandID:       "cmd1",
+		RequiredTaskIDs: []string{"task1"},
+		TaskStates: map[string]model.Status{
+			"task1": model.StatusPending,
+		},
+	})
+
+	// First call loads from disk
+	status, err := reader.GetTaskState("cmd1", "task1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != model.StatusPending {
+		t.Fatalf("expected pending, got %s", status)
+	}
+
+	// Modify file on disk directly (bypass cache)
+	writeState(t, maestroDir, &model.CommandState{
+		SchemaVersion:   1,
+		FileType:        "state_command",
+		CommandID:       "cmd1",
+		RequiredTaskIDs: []string{"task1"},
+		TaskStates: map[string]model.Status{
+			"task1": model.StatusInProgress,
+		},
+	})
+
+	// Second call within TTL should return cached (old) value
+	status, err = reader.GetTaskState("cmd1", "task1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != model.StatusPending {
+		t.Errorf("expected cached pending, got %s (cache not working)", status)
+	}
+}
+
+func TestCache_InvalidateCacheForcesFreshRead(t *testing.T) {
+	maestroDir, reader := setupStateReaderTest(t)
+	reader.SetCacheTTL(5 * time.Second)
+
+	writeState(t, maestroDir, &model.CommandState{
+		SchemaVersion:   1,
+		FileType:        "state_command",
+		CommandID:       "cmd1",
+		RequiredTaskIDs: []string{"task1"},
+		TaskStates: map[string]model.Status{
+			"task1": model.StatusPending,
+		},
+	})
+
+	// Populate cache
+	_, err := reader.GetTaskState("cmd1", "task1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Modify on disk
+	writeState(t, maestroDir, &model.CommandState{
+		SchemaVersion:   1,
+		FileType:        "state_command",
+		CommandID:       "cmd1",
+		RequiredTaskIDs: []string{"task1"},
+		TaskStates: map[string]model.Status{
+			"task1": model.StatusInProgress,
+		},
+	})
+
+	// Invalidate and re-read
+	reader.InvalidateCache("cmd1")
+	status, err := reader.GetTaskState("cmd1", "task1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != model.StatusInProgress {
+		t.Errorf("expected in_progress after invalidation, got %s", status)
+	}
+}
+
+func TestCache_InvalidateAllClearsAllEntries(t *testing.T) {
+	maestroDir, reader := setupStateReaderTest(t)
+	reader.SetCacheTTL(5 * time.Second)
+
+	writeState(t, maestroDir, &model.CommandState{
+		SchemaVersion:   1,
+		FileType:        "state_command",
+		CommandID:       "cmd1",
+		RequiredTaskIDs: []string{"task1"},
+		TaskStates: map[string]model.Status{
+			"task1": model.StatusPending,
+		},
+	})
+
+	// Populate cache
+	_, _ = reader.GetTaskState("cmd1", "task1")
+
+	// Modify on disk
+	writeState(t, maestroDir, &model.CommandState{
+		SchemaVersion:   1,
+		FileType:        "state_command",
+		CommandID:       "cmd1",
+		RequiredTaskIDs: []string{"task1"},
+		TaskStates: map[string]model.Status{
+			"task1": model.StatusInProgress,
+		},
+	})
+
+	reader.InvalidateAll()
+	status, err := reader.GetTaskState("cmd1", "task1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != model.StatusInProgress {
+		t.Errorf("expected in_progress after InvalidateAll, got %s", status)
+	}
+}
+
+func TestCache_WriteMethodInvalidatesCache(t *testing.T) {
+	maestroDir, reader := setupStateReaderTest(t)
+	reader.SetCacheTTL(5 * time.Second)
+
+	writeState(t, maestroDir, &model.CommandState{
+		SchemaVersion:   1,
+		FileType:        "state_command",
+		CommandID:       "cmd1",
+		PlanStatus:      model.PlanStatusSealed,
+		RequiredTaskIDs: []string{"task1"},
+		TaskStates: map[string]model.Status{
+			"task1": model.StatusPending,
+		},
+	})
+
+	// Populate cache
+	status, err := reader.GetTaskState("cmd1", "task1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != model.StatusPending {
+		t.Fatalf("expected pending, got %s", status)
+	}
+
+	// Write operation should invalidate cache
+	err = reader.UpdateTaskState("cmd1", "task1", model.StatusInProgress, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Subsequent read should see updated value (not cached pending)
+	status, err = reader.GetTaskState("cmd1", "task1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != model.StatusInProgress {
+		t.Errorf("expected in_progress after UpdateTaskState, got %s (cache not invalidated)", status)
+	}
+}
+
+func TestCache_ZeroTTLDisablesCaching(t *testing.T) {
+	maestroDir, reader := setupStateReaderTest(t)
+	reader.SetCacheTTL(0)
+
+	writeState(t, maestroDir, &model.CommandState{
+		SchemaVersion:   1,
+		FileType:        "state_command",
+		CommandID:       "cmd1",
+		RequiredTaskIDs: []string{"task1"},
+		TaskStates: map[string]model.Status{
+			"task1": model.StatusPending,
+		},
+	})
+
+	_, _ = reader.GetTaskState("cmd1", "task1")
+
+	// Modify on disk
+	writeState(t, maestroDir, &model.CommandState{
+		SchemaVersion:   1,
+		FileType:        "state_command",
+		CommandID:       "cmd1",
+		RequiredTaskIDs: []string{"task1"},
+		TaskStates: map[string]model.Status{
+			"task1": model.StatusInProgress,
+		},
+	})
+
+	// With TTL=0, should always read fresh
+	status, err := reader.GetTaskState("cmd1", "task1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if status != model.StatusInProgress {
+		t.Errorf("expected in_progress with caching disabled, got %s", status)
+	}
+}
+
+func TestCache_MultipleReadMethodsShareCache(t *testing.T) {
+	maestroDir, reader := setupStateReaderTest(t)
+	reader.SetCacheTTL(5 * time.Second)
+
+	writeState(t, maestroDir, &model.CommandState{
+		SchemaVersion:   1,
+		FileType:        "state_command",
+		CommandID:       "cmd1",
+		RequiredTaskIDs: []string{"task1"},
+		TaskStates: map[string]model.Status{
+			"task1": model.StatusPending,
+		},
+		Cancel: model.CancelState{Requested: false},
+	})
+
+	// Populate cache via GetTaskState
+	_, err := reader.GetTaskState("cmd1", "task1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Modify on disk to set cancel.requested = true
+	writeState(t, maestroDir, &model.CommandState{
+		SchemaVersion:   1,
+		FileType:        "state_command",
+		CommandID:       "cmd1",
+		RequiredTaskIDs: []string{"task1"},
+		TaskStates: map[string]model.Status{
+			"task1": model.StatusPending,
+		},
+		Cancel: model.CancelState{Requested: true},
+	})
+
+	// IsCommandCancelRequested should see cached (false) value
+	cancelled, err := reader.IsCommandCancelRequested("cmd1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cancelled {
+		t.Error("expected cached false for cancel.requested, got true (different read methods should share cache)")
 	}
 }

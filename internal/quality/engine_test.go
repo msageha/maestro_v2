@@ -13,6 +13,39 @@ import (
 	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
+// complexityScorerAdapter adapts *complexity.Scorer to the ComplexityAnalyzer interface.
+type complexityScorerAdapter struct {
+	scorer *complexity.Scorer
+}
+
+func (a *complexityScorerAdapter) Estimate(input ComplexityInput) ComplexityResult {
+	score := a.scorer.Estimate(complexity.Input{
+		FileCount:         input.FileCount,
+		DependencyDepth:   input.DependencyDepth,
+		BloomLevel:        input.BloomLevel,
+		PastRepairRate:    input.PastRepairRate,
+		ExpectedPathCount: input.ExpectedPathCount,
+	})
+	return ComplexityResult{Level: ComplexityLevel(score.Level)}
+}
+
+// featureGateAdapter adapts *featuregate.Evaluator to the FeatureGateEvaluator interface.
+type featureGateAdapter struct {
+	evaluator *featuregate.Evaluator
+}
+
+func (a *featureGateAdapter) Evaluate(level FeatureProfileLevel) FeatureProfile {
+	profile := a.evaluator.Evaluate(featuregate.ProfileLevel(level))
+	features := make(map[string]bool, len(profile.EnabledFeatures))
+	for k, v := range profile.EnabledFeatures {
+		features[string(k)] = v
+	}
+	return FeatureProfile{
+		Level:           FeatureProfileLevel(profile.Level),
+		EnabledFeatures: features,
+	}
+}
+
 func TestEngine_LoadConfiguration(t *testing.T) {
 	engine := NewEngine()
 
@@ -593,7 +626,10 @@ func newFeatureGateEngine() (*Engine, *featuregate.Evaluator, *complexity.Scorer
 	engine := NewEngine()
 	evaluator := featuregate.NewEvaluator()
 	scorer := complexity.NewScorer(complexity.DefaultThresholds())
-	RegisterFeatureGateRule(engine, evaluator, scorer)
+	RegisterFeatureGateRule(engine,
+		&featureGateAdapter{evaluator: evaluator},
+		&complexityScorerAdapter{scorer: scorer},
+	)
 	return engine, evaluator, scorer
 }
 
@@ -794,7 +830,10 @@ func TestFeatureGateRule_UnknownLevel_FallbackToSimple(t *testing.T) {
 func TestFeatureGateRule_DirectEvaluate(t *testing.T) {
 	evaluator := featuregate.NewEvaluator()
 	scorer := complexity.NewScorer(complexity.DefaultThresholds())
-	rule := &FeatureGateRule{evaluator: evaluator, scorer: scorer}
+	rule := &FeatureGateRule{
+		evaluator: &featureGateAdapter{evaluator: evaluator},
+		scorer:    &complexityScorerAdapter{scorer: scorer},
+	}
 
 	tests := []struct {
 		name    string

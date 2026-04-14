@@ -367,3 +367,145 @@ func TestScriptEvaluator_CompiledScriptTakesPrecedence(t *testing.T) {
 	assert.True(t, passed)
 	assert.True(t, called, "compiled script function should have been called")
 }
+
+// ---------------------------------------------------------------------------
+// fieldValidationEvaluator — CaseSensitive tests
+// ---------------------------------------------------------------------------
+
+func TestFieldValidation_CaseSensitiveEquals(t *testing.T) {
+	eval := &fieldValidationEvaluator{}
+	ctx := context.Background()
+
+	tests := []struct {
+		name          string
+		value         string
+		target        string
+		caseSensitive bool
+		want          bool
+	}{
+		{"case-sensitive match", "Hello", "Hello", true, true},
+		{"case-sensitive mismatch", "Hello", "hello", true, false},
+		{"case-insensitive match", "Hello", "hello", false, true},
+		{"case-insensitive match upper", "HELLO", "hello", false, true},
+		{"case-insensitive mismatch", "Hello", "world", false, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			evalCtx := &mapEvaluationContext{data: map[string]interface{}{"field": tt.value}}
+			cond := &RuleCondition{
+				Type:          ConditionFieldValidation,
+				Field:         "field",
+				Operator:      OpEquals,
+				Value:         tt.target,
+				CaseSensitive: tt.caseSensitive,
+			}
+			got, err := eval.Evaluate(ctx, cond, evalCtx)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestFieldValidation_CaseSensitiveNotEquals(t *testing.T) {
+	eval := &fieldValidationEvaluator{}
+	ctx := context.Background()
+
+	tests := []struct {
+		name          string
+		value         string
+		target        string
+		caseSensitive bool
+		want          bool
+	}{
+		{"case-sensitive different", "Hello", "hello", true, true},
+		{"case-sensitive same", "Hello", "Hello", true, false},
+		{"case-insensitive same", "Hello", "hello", false, false},
+		{"case-insensitive different", "Hello", "world", false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			evalCtx := &mapEvaluationContext{data: map[string]interface{}{"field": tt.value}}
+			cond := &RuleCondition{
+				Type:          ConditionFieldValidation,
+				Field:         "field",
+				Operator:      OpNotEquals,
+				Value:         tt.target,
+				CaseSensitive: tt.caseSensitive,
+			}
+			got, err := eval.Evaluate(ctx, cond, evalCtx)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestFieldValidation_CaseSensitiveIn(t *testing.T) {
+	eval := &fieldValidationEvaluator{}
+	ctx := context.Background()
+
+	tests := []struct {
+		name          string
+		value         string
+		list          interface{}
+		caseSensitive bool
+		want          bool
+	}{
+		{"case-sensitive found", "Hello", []interface{}{"Hello", "World"}, true, true},
+		{"case-sensitive not found", "hello", []interface{}{"Hello", "World"}, true, false},
+		{"case-insensitive found", "hello", []interface{}{"Hello", "World"}, false, true},
+		{"case-insensitive string list", "hello", []string{"Hello", "World"}, false, true},
+		{"case-insensitive comma list", "hello", "Hello,World", false, true},
+		{"case-sensitive comma not found", "hello", "Hello,World", true, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			evalCtx := &mapEvaluationContext{data: map[string]interface{}{"field": tt.value}}
+			cond := &RuleCondition{
+				Type:          ConditionFieldValidation,
+				Field:         "field",
+				Operator:      OpIn,
+				Value:         tt.list,
+				CaseSensitive: tt.caseSensitive,
+			}
+			got, err := eval.Evaluate(ctx, cond, evalCtx)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestFieldValidation_CaseSensitiveContains(t *testing.T) {
+	eval := &fieldValidationEvaluator{}
+	ctx := context.Background()
+
+	tests := []struct {
+		name          string
+		value         string
+		target        string
+		caseSensitive bool
+		want          bool
+	}{
+		{"case-sensitive found", "Hello World", "World", true, true},
+		{"case-sensitive not found", "Hello World", "world", true, false},
+		{"case-insensitive found", "Hello World", "world", false, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			evalCtx := &mapEvaluationContext{data: map[string]interface{}{"field": tt.value}}
+			cond := &RuleCondition{
+				Type:          ConditionFieldValidation,
+				Field:         "field",
+				Operator:      OpContains,
+				Value:         tt.target,
+				CaseSensitive: tt.caseSensitive,
+			}
+			got, err := eval.Evaluate(ctx, cond, evalCtx)
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

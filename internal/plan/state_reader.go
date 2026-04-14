@@ -4,31 +4,100 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sync"
 	"time"
 
-	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
-// PlanStateReader implements core.StateManager by reading/writing state/commands/ YAML files.
+const defaultCacheTTL = 2 * time.Second
+
+type cacheEntry struct {
+	state    *model.CommandState
+	loadedAt time.Time
+}
+
+// PlanStateReader implements the StateReader/StateWriter interfaces by reading/writing state/commands/ YAML files.
 // The name retains the Plan prefix for clarity at call sites outside this package.
+// Read methods use a TTL-based cache to avoid redundant LoadState calls within a single scan cycle.
 type PlanStateReader struct { //nolint:revive // stuttering name kept for clarity at external call sites
 	stateManager *StateManager
+
+	mu       sync.Mutex
+	cache    map[string]*cacheEntry
+	cacheTTL time.Duration
 }
 
 // NewPlanStateReader creates a PlanStateReader backed by the given StateManager.
 func NewPlanStateReader(sm *StateManager) *PlanStateReader {
-	return &PlanStateReader{stateManager: sm}
+	return &PlanStateReader{
+		stateManager: sm,
+		cache:        make(map[string]*cacheEntry),
+		cacheTTL:     defaultCacheTTL,
+	}
+}
+
+// SetCacheTTL sets the cache time-to-live. A TTL of 0 disables caching.
+func (r *PlanStateReader) SetCacheTTL(d time.Duration) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cacheTTL = d
+}
+
+// InvalidateCache removes the cached state for a specific command.
+func (r *PlanStateReader) InvalidateCache(commandID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.cache, commandID)
+}
+
+// InvalidateAll clears the entire state cache.
+func (r *PlanStateReader) InvalidateAll() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cache = make(map[string]*cacheEntry)
+}
+
+// loadStateWithCache returns the cached state if still within TTL, otherwise loads
+// from disk via StateManager and updates the cache.
+func (r *PlanStateReader) loadStateWithCache(commandID string) (*model.CommandState, error) {
+	now := time.Now()
+
+	r.mu.Lock()
+	if r.cacheTTL > 0 {
+		if entry, ok := r.cache[commandID]; ok {
+			if now.Sub(entry.loadedAt) < r.cacheTTL {
+				r.mu.Unlock()
+				return entry.state, nil
+			}
+		}
+	}
+	r.mu.Unlock()
+
+	state, err := r.stateManager.LoadState(commandID)
+	if err != nil {
+		return nil, err
+	}
+
+	r.mu.Lock()
+	if r.cacheTTL > 0 {
+		r.cache[commandID] = &cacheEntry{
+			state:    state,
+			loadedAt: now,
+		}
+	}
+	r.mu.Unlock()
+
+	return state, nil
 }
 
 // GetTaskState returns the status of a task from the command state file.
 func (r *PlanStateReader) GetTaskState(commandID, taskID string) (model.Status, error) {
-	state, err := r.stateManager.LoadState(commandID)
+	state, err := r.loadStateWithCache(commandID)
 	if err != nil {
-		// Use errors.Is() to detect not-found without masking other FS errors
 		if errors.Is(err, os.ErrNotExist) {
-			return "", core.ErrStateNotFound
+			return "", model.ErrStateNotFound
 		}
 		return "", err
 	}
@@ -41,18 +110,17 @@ func (r *PlanStateReader) GetTaskState(commandID, taskID string) (model.Status, 
 }
 
 // GetCommandPhases returns phase metadata for a command.
-func (r *PlanStateReader) GetCommandPhases(commandID string) ([]core.PhaseInfo, error) {
-	state, err := r.stateManager.LoadState(commandID)
+func (r *PlanStateReader) GetCommandPhases(commandID string) ([]model.PhaseInfo, error) {
+	state, err := r.loadStateWithCache(commandID)
 	if err != nil {
-		// Use errors.Is() to detect not-found without masking other FS errors
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, core.ErrStateNotFound
+			return nil, model.ErrStateNotFound
 		}
 		return nil, err
 	}
 
 	if len(state.Phases) == 0 {
-		return []core.PhaseInfo{}, nil
+		return []model.PhaseInfo{}, nil
 	}
 
 	// Build phase-name-to-ID lookup once (not per-phase)
@@ -61,7 +129,7 @@ func (r *PlanStateReader) GetCommandPhases(commandID string) ([]core.PhaseInfo, 
 		phaseNameToID[sp.Name] = sp.PhaseID
 	}
 
-	phases := make([]core.PhaseInfo, 0, len(state.Phases))
+	phases := make([]model.PhaseInfo, 0, len(state.Phases))
 	for _, p := range state.Phases {
 		var depIDs []string
 		for _, depName := range p.DependsOnPhases {
@@ -84,7 +152,7 @@ func (r *PlanStateReader) GetCommandPhases(commandID string) ([]core.PhaseInfo, 
 
 		isSystemCommit := state.SystemCommitTaskID != nil && phaseTaskSet[*state.SystemCommitTaskID]
 
-		phases = append(phases, core.PhaseInfo{
+		phases = append(phases, model.PhaseInfo{
 			ID:               p.PhaseID,
 			Name:             p.Name,
 			Status:           p.Status,
@@ -100,11 +168,10 @@ func (r *PlanStateReader) GetCommandPhases(commandID string) ([]core.PhaseInfo, 
 
 // GetTaskDependencies returns the task IDs that the given task depends on.
 func (r *PlanStateReader) GetTaskDependencies(commandID, taskID string) ([]string, error) {
-	state, err := r.stateManager.LoadState(commandID)
+	state, err := r.loadStateWithCache(commandID)
 	if err != nil {
-		// Use errors.Is() to detect not-found without masking other FS errors
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, core.ErrStateNotFound
+			return nil, model.ErrStateNotFound
 		}
 		return nil, err
 	}
@@ -129,7 +196,7 @@ func (r *PlanStateReader) ApplyPhaseTransition(commandID, phaseID string, newSta
 	now := nowUTC()
 	idx, found := state.PhaseIndex(phaseID)
 	if !found {
-		return fmt.Errorf("phase %s in command %s: %w", phaseID, commandID, core.ErrPhaseNotFound)
+		return fmt.Errorf("phase %s in command %s: %w", phaseID, commandID, model.ErrPhaseNotFound)
 	}
 
 	p := &state.Phases[idx]
@@ -151,7 +218,11 @@ func (r *PlanStateReader) ApplyPhaseTransition(commandID, phaseID string, newSta
 	}
 
 	state.UpdatedAt = now
-	return r.stateManager.SaveState(state)
+	if err := r.stateManager.SaveState(state); err != nil {
+		return err
+	}
+	r.InvalidateCache(commandID)
+	return nil
 }
 
 // UpdateTaskState updates a single task's status under the command lock.
@@ -189,16 +260,19 @@ func (r *PlanStateReader) UpdateTaskState(commandID, taskID string, newStatus mo
 	}
 
 	state.UpdatedAt = nowUTC()
-	return r.stateManager.SaveState(state)
+	if err := r.stateManager.SaveState(state); err != nil {
+		return err
+	}
+	r.InvalidateCache(commandID)
+	return nil
 }
 
 // IsCommandCancelRequested checks the cancel.requested flag in the state file.
 func (r *PlanStateReader) IsCommandCancelRequested(commandID string) (bool, error) {
-	state, err := r.stateManager.LoadState(commandID)
+	state, err := r.loadStateWithCache(commandID)
 	if err != nil {
-		// Use errors.Is() to detect not-found without masking other FS errors
 		if errors.Is(err, os.ErrNotExist) {
-			return false, core.ErrStateNotFound
+			return false, model.ErrStateNotFound
 		}
 		return false, err
 	}
@@ -208,11 +282,10 @@ func (r *PlanStateReader) IsCommandCancelRequested(commandID string) (bool, erro
 // IsSystemCommitReady checks if a task is a system commit task and whether
 // all user tasks/phases are terminal.
 func (r *PlanStateReader) IsSystemCommitReady(commandID, taskID string) (bool, bool, error) {
-	state, err := r.stateManager.LoadState(commandID)
+	state, err := r.loadStateWithCache(commandID)
 	if err != nil {
-		// Use errors.Is() to detect not-found without masking other FS errors
 		if errors.Is(err, os.ErrNotExist) {
-			return false, false, core.ErrStateNotFound
+			return false, false, model.ErrStateNotFound
 		}
 		return false, false, err
 	}
@@ -245,10 +318,10 @@ func (r *PlanStateReader) IsSystemCommitReady(commandID, taskID string) (bool, b
 
 // GetCircuitBreakerState returns the circuit breaker state for a command.
 func (r *PlanStateReader) GetCircuitBreakerState(commandID string) (*model.CircuitBreakerState, error) {
-	state, err := r.stateManager.LoadState(commandID)
+	state, err := r.loadStateWithCache(commandID)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, core.ErrStateNotFound
+			return nil, model.ErrStateNotFound
 		}
 		return nil, err
 	}
@@ -293,7 +366,11 @@ func (r *PlanStateReader) TripCircuitBreaker(commandID string, reason string, pr
 	}
 
 	state.UpdatedAt = now
-	return r.stateManager.SaveState(state)
+	if err := r.stateManager.SaveState(state); err != nil {
+		return err
+	}
+	r.InvalidateCache(commandID)
+	return nil
 }
 
 // isKnownTaskID checks whether taskID belongs to the command's known tasks

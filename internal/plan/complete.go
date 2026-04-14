@@ -63,7 +63,7 @@ type completeIntent struct {
 // for this command is recovered by replaying the steps idempotently.
 func Complete(opts CompleteOptions) (*CompleteResult, error) {
 	if opts.LockMap == nil {
-		return nil, fmt.Errorf("LockMap is required")
+		return nil, ErrLockMapRequired
 	}
 	// Validate commandID early (before any path construction) to prevent
 	// directory traversal via intent file paths.

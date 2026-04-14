@@ -24,7 +24,7 @@ type RebuildOptions struct {
 // Rebuild reconstructs the command state by scanning worker result files and applying the latest status for each task.
 func Rebuild(opts RebuildOptions) error {
 	if opts.LockMap == nil {
-		return fmt.Errorf("LockMap is required")
+		return ErrLockMapRequired
 	}
 	sm := NewStateManager(opts.MaestroDir, opts.LockMap)
 
@@ -79,14 +79,14 @@ func Rebuild(opts RebuildOptions) error {
 		path := filepath.Join(resultsDir, name)
 		data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application results directory
 		if err != nil {
-			log.Printf("rebuild: skipping unreadable result file %s: %v", name, err)
+			log.Printf("[WARN] rebuild: skipping unreadable result file %s: %v", name, err)
 			skippedFiles++
 			continue
 		}
 
 		var rf model.TaskResultFile
 		if err := yamlv3.Unmarshal(data, &rf); err != nil {
-			log.Printf("rebuild: skipping corrupt result file %s: %v", name, err)
+			log.Printf("[WARN] rebuild: skipping corrupt result file %s: %v", name, err)
 			skippedFiles++
 			continue
 		}
@@ -123,7 +123,7 @@ func Rebuild(opts RebuildOptions) error {
 	}
 
 	if skippedFiles > 0 {
-		log.Printf("rebuild: %d result file(s) skipped due to read/parse errors", skippedFiles)
+		log.Printf("[WARN] rebuild: %d result file(s) skipped due to read/parse errors", skippedFiles)
 	}
 
 	// Apply the latest result for each task with transition validation.

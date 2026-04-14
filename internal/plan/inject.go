@@ -43,7 +43,7 @@ type InjectResult struct {
 // resolution tasks after merge_conflict detection.
 func AddTask(opts InjectOptions) (*InjectResult, error) {
 	if opts.LockMap == nil {
-		return nil, fmt.Errorf("LockMap is required")
+		return nil, ErrLockMapRequired
 	}
 	sm := NewStateManager(opts.MaestroDir, opts.LockMap)
 	sm.LockCommand(opts.CommandID)

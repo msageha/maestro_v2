@@ -20,6 +20,9 @@ import (
 // from other I/O errors so that backup recovery is only attempted for corruption.
 var errYAMLCorrupted = errors.New("invalid command state YAML")
 
+// ErrLockMapRequired is returned when a LockMap is required but nil.
+var ErrLockMapRequired = errors.New("lockMap is required")
+
 // currentSchemaVersion is defined in migrator.go.
 
 // StateManager manages read/write access to command state files (state/commands/{id}.yaml).
@@ -257,6 +260,16 @@ func CanComplete(state *model.CommandState) (model.PlanStatus, error) {
 	return DeriveStatus(state)
 }
 
+// hasTaskWithStatus returns true if any task in taskIDs has the given status.
+func hasTaskWithStatus(taskIDs []string, taskStates map[string]model.Status, target model.Status) bool {
+	for _, taskID := range taskIDs {
+		if taskStates[taskID] == target {
+			return true
+		}
+	}
+	return false
+}
+
 // DeriveStatus determines the terminal PlanStatus based on task outcomes
 // and the command's CompletionPolicy.
 func DeriveStatus(state *model.CommandState) (model.PlanStatus, error) {
@@ -267,18 +280,8 @@ func DeriveStatus(state *model.CommandState) (model.PlanStatus, error) {
 		}
 	}
 
-	hasFailed := false
-	hasCancelled := false
-
-	for _, taskID := range state.RequiredTaskIDs {
-		status := state.TaskStates[taskID]
-		switch status {
-		case model.StatusFailed:
-			hasFailed = true
-		case model.StatusCancelled:
-			hasCancelled = true
-		}
-	}
+	hasFailed := hasTaskWithStatus(state.RequiredTaskIDs, state.TaskStates, model.StatusFailed)
+	hasCancelled := hasTaskWithStatus(state.RequiredTaskIDs, state.TaskStates, model.StatusCancelled)
 
 	// Apply CompletionPolicy for required task failures
 	onFailed := state.CompletionPolicy.OnRequiredFailed
@@ -317,14 +320,7 @@ func DeriveStatus(state *model.CommandState) (model.PlanStatus, error) {
 		onOptionalFailed = "ignore" // default: backwards-compatible
 	}
 
-	hasOptionalFailed := false
-	for _, taskID := range state.OptionalTaskIDs {
-		status := state.TaskStates[taskID]
-		if status == model.StatusFailed {
-			hasOptionalFailed = true
-			break
-		}
-	}
+	hasOptionalFailed := hasTaskWithStatus(state.OptionalTaskIDs, state.TaskStates, model.StatusFailed)
 
 	if hasOptionalFailed {
 		switch onOptionalFailed {

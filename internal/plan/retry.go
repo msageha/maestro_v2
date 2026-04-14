@@ -21,6 +21,10 @@ import (
 // before it is considered hung and an error is returned.
 const stateSaveTimeout = 30 * time.Second
 
+// maxCascadeRecoverDepth is the maximum recursion depth for cascade recovery.
+// This prevents stack overflow when corrupted state files contain circular references.
+const maxCascadeRecoverDepth = 10
+
 // saveStateWithContext runs saveFn in a goroutine and returns its result,
 // or returns an error if ctx is cancelled/expired before saveFn completes.
 // This prevents a hung filesystem from blocking the caller indefinitely
@@ -76,7 +80,7 @@ type CascadeRecoveredTask struct {
 // AddRetryTask creates a replacement task for a failed task, rewires dependencies, and performs cascade recovery.
 func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 	if opts.LockMap == nil {
-		return nil, fmt.Errorf("LockMap is required")
+		return nil, ErrLockMapRequired
 	}
 	sm := NewStateManager(opts.MaestroDir, opts.LockMap)
 	sm.LockCommand(opts.CommandID)
@@ -361,6 +365,9 @@ func applyRetryStateChanges(
 		return nil, nil, fmt.Errorf("post-recovery DAG validation: %w", err)
 	}
 
+	// Purge stale map entries for superseded tasks to prevent unbounded growth.
+	purgeSupersededRetryEntries(state)
+
 	state.UpdatedAt = now
 	return cascadeRecovered, origStateBytes, nil
 }
@@ -467,7 +474,7 @@ func cascadeRecover(
 	ws := make([]WorkerState, len(workerStates))
 	copy(ws, workerStates)
 	var recovered []CascadeRecoveredTask
-	return cascadeRecoverRecursive(state, failedTaskID, newRetryTaskID, workerConfig, limits, ws, recovered, origTaskCache)
+	return cascadeRecoverRecursive(state, failedTaskID, newRetryTaskID, workerConfig, limits, ws, recovered, origTaskCache, 0)
 }
 
 func cascadeRecoverRecursive(
@@ -478,7 +485,11 @@ func cascadeRecoverRecursive(
 	workerStates []WorkerState,
 	recovered []CascadeRecoveredTask,
 	origTaskCache map[string]model.Task,
+	depth int,
 ) ([]CascadeRecoveredTask, error) {
+	if depth >= maxCascadeRecoverDepth {
+		return recovered, fmt.Errorf("cascade recovery exceeded maximum depth %d (at task %s)", maxCascadeRecoverDepth, failedTaskID)
+	}
 	candidates := findCascadeCandidates(state, failedTaskID)
 
 	for _, cancelledTaskID := range candidates {
@@ -559,7 +570,7 @@ func cascadeRecoverRecursive(
 		var err2 error
 		recovered, err2 = cascadeRecoverRecursive(
 			state, cancelledTaskID, newTaskID,
-			workerConfig, limits, workerStates, recovered, origTaskCache,
+			workerConfig, limits, workerStates, recovered, origTaskCache, depth+1,
 		)
 		if err2 != nil {
 			return recovered, err2
@@ -567,6 +578,32 @@ func cascadeRecoverRecursive(
 	}
 
 	return recovered, nil
+}
+
+// purgeSupersededRetryEntries removes stale map entries for tasks that have
+// been superseded by retries. This prevents RetryLineage, TaskDependencies,
+// and CancelledReasons from growing without bound in long-running commands.
+// Only terminal tasks that appear as values in RetryLineage (i.e., have been
+// replaced) are cleaned up; cascade recovery has already processed them.
+func purgeSupersededRetryEntries(state *model.CommandState) {
+	if len(state.RetryLineage) == 0 {
+		return
+	}
+
+	// Collect superseded task IDs (old tasks replaced by new ones).
+	superseded := make(map[string]bool, len(state.RetryLineage))
+	for _, oldID := range state.RetryLineage {
+		superseded[oldID] = true
+	}
+
+	for oldID := range superseded {
+		status, exists := state.TaskStates[oldID]
+		if !exists || !model.IsTerminal(status) {
+			continue
+		}
+		delete(state.TaskDependencies, oldID)
+		delete(state.CancelledReasons, oldID)
+	}
 }
 
 func findCascadeCandidates(state *model.CommandState, failedTaskID string) []string {

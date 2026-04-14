@@ -1083,6 +1083,57 @@ func TestSaveStateWithContext_CancelledContext(t *testing.T) {
 	}
 }
 
+func TestCascadeRecoverRecursive_MaxDepthExceeded(t *testing.T) {
+	// Build a chain of cancelled tasks that exceeds maxCascadeRecoverDepth.
+	// Each task i is cancelled due to task i-1 failing.
+	depth := maxCascadeRecoverDepth + 2
+	taskIDs := make([]string, depth)
+	for i := range taskIDs {
+		taskIDs[i] = fmt.Sprintf("task_%010d_%08x", i, i)
+	}
+
+	taskStates := make(map[string]model.Status, depth)
+	cancelledReasons := make(map[string]string, depth)
+	taskDeps := make(map[string][]string, depth)
+	requiredIDs := make([]string, depth)
+
+	taskStates[taskIDs[0]] = model.StatusFailed
+	taskDeps[taskIDs[0]] = nil
+	requiredIDs[0] = taskIDs[0]
+
+	for i := 1; i < depth; i++ {
+		taskStates[taskIDs[i]] = model.StatusCancelled
+		cancelledReasons[taskIDs[i]] = fmt.Sprintf("blocked_dependency_terminal:%s", taskIDs[i-1])
+		taskDeps[taskIDs[i]] = []string{taskIDs[i-1]}
+		requiredIDs[i] = taskIDs[i]
+	}
+
+	state := &model.CommandState{
+		SchemaVersion:    1,
+		FileType:         "state_command",
+		CommandID:        "cmd_depth_test",
+		RequiredTaskIDs:  requiredIDs,
+		TaskStates:       taskStates,
+		TaskDependencies: taskDeps,
+		CancelledReasons: cancelledReasons,
+		RetryLineage:     make(map[string]string),
+	}
+
+	cfg := testConfig()
+	workerStates := []WorkerState{
+		{WorkerID: "worker1", Model: cfg.Agents.Workers.DefaultModel},
+		{WorkerID: "worker2", Model: "opus"},
+	}
+
+	_, err := cascadeRecover(state, taskIDs[0], "retry_0", cfg.Agents.Workers, cfg.Limits, workerStates, nil)
+	if err == nil {
+		t.Fatal("expected error for max depth exceeded, got nil")
+	}
+	if !strings.Contains(err.Error(), "exceeded maximum depth") {
+		t.Errorf("error = %q, want to contain %q", err.Error(), "exceeded maximum depth")
+	}
+}
+
 // sliceEqual compares two string slices for equality.
 func sliceEqual(a, b []string) bool {
 	if len(a) != len(b) {
