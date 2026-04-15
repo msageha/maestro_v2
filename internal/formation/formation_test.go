@@ -177,28 +177,27 @@ func TestReadDaemonPID_MaxIntOverflow(t *testing.T) {
 // Config package-level accessors — verify they delegate to defaultConfig
 // ---------------------------------------------------------------------------
 
-func TestPackageLevelAccessors_MatchDefaultConfig(t *testing.T) {
+func TestDefaultConfig_NonZeroValues(t *testing.T) {
 	t.Parallel()
 
-	// These accessors read from the package-level defaultConfig.
-	// Verify they return consistent, non-zero values.
-	if got := daemonPollTimeout(); got <= 0 {
-		t.Errorf("daemonPollTimeout() = %v, want > 0", got)
+	// Verify defaultConfig fields return consistent, non-zero values.
+	if got := defaultConfig.DaemonPollTimeout; got <= 0 {
+		t.Errorf("DaemonPollTimeout = %v, want > 0", got)
 	}
-	if got := daemonPollInterval(); got <= 0 {
-		t.Errorf("daemonPollInterval() = %v, want > 0", got)
+	if got := defaultConfig.DaemonPollInterval; got <= 0 {
+		t.Errorf("DaemonPollInterval = %v, want > 0", got)
 	}
-	if got := processExitPollInterval(); got <= 0 {
-		t.Errorf("processExitPollInterval() = %v, want > 0", got)
+	if got := defaultConfig.ProcessExitPollInterval; got <= 0 {
+		t.Errorf("ProcessExitPollInterval = %v, want > 0", got)
 	}
-	if got := postSignalWait(); got <= 0 {
-		t.Errorf("postSignalWait() = %v, want > 0", got)
+	if got := defaultConfig.PostSignalWait; got <= 0 {
+		t.Errorf("PostSignalWait = %v, want > 0", got)
 	}
-	if got := waitReadyPollInterval(); got <= 0 {
-		t.Errorf("waitReadyPollInterval() = %v, want > 0", got)
+	if got := defaultConfig.WaitReadyPollInterval; got <= 0 {
+		t.Errorf("WaitReadyPollInterval = %v, want > 0", got)
 	}
 
-	if pm := procMgr(); pm == nil {
-		t.Error("procMgr() should not be nil")
+	if defaultConfig.ProcMgr == nil {
+		t.Error("ProcMgr should not be nil")
 	}
 }

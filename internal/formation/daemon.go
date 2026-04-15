@@ -115,10 +115,13 @@ func (c *Config) stopDaemon(maestroDir string) error {
 	lockPath := filepath.Join(lockDir, "daemon.lock")
 
 	// If locks directory doesn't exist, no daemon has ever run
-	if _, err := os.Stat(lockDir); os.IsNotExist(err) {
-		removeIfExists(pidPath)
-		removeIfExists(socketPath)
-		return nil
+	if _, err := os.Stat(lockDir); err != nil {
+		if os.IsNotExist(err) {
+			removeIfExists(pidPath)
+			removeIfExists(socketPath)
+			return nil
+		}
+		return fmt.Errorf("stat locks directory: %w", err)
 	}
 
 	fl := lock.NewFileLock(lockPath)
@@ -227,5 +230,5 @@ func validateDaemonPID(maestroDir string) int {
 // processAlive checks whether a process with the given PID is still running.
 // Delegates to the package-level processManager for testability.
 func processAlive(pid int) bool {
-	return procMgr().Alive(pid)
+	return defaultConfig.ProcMgr.Alive(pid)
 }

@@ -2,6 +2,7 @@ package lock
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -331,5 +332,68 @@ func TestFileLock_DoubleUnlockSafe(t *testing.T) {
 	// Double unlock should be safe
 	if err := fl.Unlock(); err != nil {
 		t.Fatalf("double unlock should be safe, got: %v", err)
+	}
+}
+
+func TestFileLock_ConcurrentDifferentFiles(t *testing.T) {
+	dir := t.TempDir()
+	const N = 10
+	var wg sync.WaitGroup
+	errs := make(chan error, N)
+
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			lockPath := filepath.Join(dir, fmt.Sprintf("lock-%d.lock", i))
+			fl := NewFileLock(lockPath)
+			if err := fl.TryLock(); err != nil {
+				errs <- fmt.Errorf("goroutine %d TryLock: %w", i, err)
+				return
+			}
+			// Verify PID was written
+			pid := ReadLockPID(lockPath)
+			if pid != os.Getpid() {
+				errs <- fmt.Errorf("goroutine %d: PID mismatch: got %d, want %d", i, pid, os.Getpid())
+			}
+			if err := fl.Unlock(); err != nil {
+				errs <- fmt.Errorf("goroutine %d Unlock: %w", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Error(err)
+	}
+}
+
+func TestReadLockPID(t *testing.T) {
+	t.Parallel()
+
+	// Non-existent file
+	if pid := ReadLockPID("/nonexistent/path"); pid != 0 {
+		t.Errorf("expected 0 for non-existent file, got %d", pid)
+	}
+
+	// Valid PID file
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "test.lock")
+	fl := NewFileLock(lockPath)
+	if err := fl.TryLock(); err != nil {
+		t.Fatal(err)
+	}
+	defer fl.Unlock()
+
+	pid := ReadLockPID(lockPath)
+	if pid != os.Getpid() {
+		t.Errorf("ReadLockPID: got %d, want %d", pid, os.Getpid())
+	}
+
+	// Invalid content
+	invalidPath := filepath.Join(dir, "invalid.lock")
+	os.WriteFile(invalidPath, []byte("not-a-pid"), 0644)
+	if pid := ReadLockPID(invalidPath); pid != 0 {
+		t.Errorf("expected 0 for invalid content, got %d", pid)
 	}
 }

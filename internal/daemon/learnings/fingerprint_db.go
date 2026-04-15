@@ -103,6 +103,10 @@ func (db *FingerprintDB) Query(fp string) (*FailurePattern, bool) {
 // FindSimilar returns up to maxResults patterns whose fingerprint shares a
 // common prefix with fp. This is a placeholder for future similarity search
 // (e.g., Hamming distance).
+//
+// Performance: O(n) scan is acceptable here because the FingerprintDB is
+// bounded by maxSize (default 1000) and prefix overlap requires per-entry
+// comparison. A trie or embedding index would be needed for sub-linear lookup.
 func (db *FingerprintDB) FindSimilar(fp string, maxResults int) []FailurePattern {
 	db.mu.RLock()
 	defer db.mu.RUnlock()

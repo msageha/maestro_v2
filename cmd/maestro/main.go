@@ -28,6 +28,8 @@ func (e *CLIError) Error() string {
 }
 
 // ExitCode returns the process exit code for this error.
+// A CLIError with Code==0 is treated as a programming error (errors should
+// not be created for success cases), so it falls back to exit code 1.
 func (e *CLIError) ExitCode() int {
 	if e.Code == 0 {
 		return 1

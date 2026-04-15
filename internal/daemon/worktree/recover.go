@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -378,7 +379,7 @@ func (wm *Manager) mergeResolvedWorker(
 	commandID string,
 ) error {
 	// Record pre-merge HEAD for recovery if merge --abort fails.
-	preMergeHEAD, err := wm.gitOutputWithRetry(integrationPath, 2, "rev-parse", "HEAD")
+	preMergeHEAD, err := wm.gitOutputWithRetry(context.Background(), integrationPath, 2, "rev-parse", "HEAD")
 	if err != nil {
 		return fmt.Errorf("pre-merge HEAD: %w", err)
 	}
@@ -388,7 +389,7 @@ func (wm *Manager) mergeResolvedWorker(
 	}
 
 	// Check if the worker branch has commits to merge.
-	logOut, err := wm.gitOutputWithRetry(integrationPath, 2, "log", "--oneline",
+	logOut, err := wm.gitOutputWithRetry(context.Background(), integrationPath, 2, "log", "--oneline",
 		fmt.Sprintf("%s..%s", preMergeHEAD, ws.Branch))
 	if err != nil {
 		return fmt.Errorf("check worker commits: %w", err)

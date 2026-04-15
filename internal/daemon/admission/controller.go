@@ -43,6 +43,10 @@ func (o OpType) String() string {
 // Controller enforces per-operation-type concurrency limits. Each operation
 // type (verify, repair, rollout) has a maximum number of concurrent slots.
 // OpUnknown tasks are always admitted without limit.
+//
+// Note: There is no global "enabled" flag. The controller is always active
+// when instantiated; disable by not calling TryAcquire (i.e., bypass at the
+// call site).
 type Controller struct {
 	maxVerify  int
 	maxRepair  int
@@ -169,7 +173,8 @@ func (c *Controller) maxFor(op OpType) int {
 }
 
 // classifyTaskUnlocked performs classification without acquiring the mutex.
-// Caller must hold c.mu.
+// This method is stateless (reads only the task argument) and is safe to
+// call with or without holding c.mu.
 func (c *Controller) classifyTaskUnlocked(task *model.Task) OpType {
 	purpose := strings.ToLower(task.Purpose)
 	switch {

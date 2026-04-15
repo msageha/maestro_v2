@@ -154,6 +154,11 @@ if [ "$tool_name" = "Bash" ]; then
     deny "D001: Blocked rm -rf targeting system/home directory"
   fi
 
+  # D001: Long-form flags (--recursive --force / --force --recursive)
+  if echo "$cmd" | grep -qiE 'rm\s+.*--(recursive|force)\s+.*--(recursive|force).*\s+(/\s|/$|~|/Users)'; then
+    deny "D001: Blocked rm --recursive --force targeting system/home directory"
+  fi
+
   # D002: Recursive delete outside project root
   if echo "$cmd" | grep -qE 'rm\s+(-[a-zA-Z]*[rR]|--recursive)'; then
     project_root=__PROJECT_ROOT__
@@ -286,7 +291,7 @@ if [ "$tool_name" = "Bash" ]; then
   fi
 
   # macOS system directory protection (case-insensitive)
-  if echo "$cmd" | grep -qiE 'rm\s+-[a-zA-Z]*r.*/(System|Library|Applications)/'; then
+  if echo "$cmd" | grep -qiE 'rm\s+(-[a-zA-Z]*r|--recursive).*/(System|Library|Applications)/'; then
     deny "Blocked recursive delete targeting macOS system directory"
   fi
 fi

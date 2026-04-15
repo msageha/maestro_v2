@@ -92,6 +92,9 @@ type ExecRequest = model.ExecRequest
 type ExecResult = model.ExecResult
 
 // logLevel controls logging verbosity.
+// This is intentionally a private type within the agent package, separate from
+// core.LogLevel in the daemon package. The agent package does not import
+// daemon/core to maintain package boundary isolation.
 type logLevel int
 
 const (

@@ -586,6 +586,12 @@ func (wm *Manager) DiscardWorkerChanges(commandID, workerID string) error {
 		return fmt.Errorf("discard worker changes: %w", err)
 	}
 
+	// Verify worktree directory exists before running destructive commands.
+	if _, err := os.Stat(ws.Path); os.IsNotExist(err) {
+		wm.Log(core.LogLevelWarn, "discard_skip_missing_worktree command=%s worker=%s path=%s", commandID, workerID, ws.Path)
+		return nil // worktree already gone; nothing to discard
+	}
+
 	// Reset staged changes so checkout can fully restore tracked files
 	if err := wm.gitRunInDir(ws.Path, "reset", "HEAD"); err != nil {
 		return fmt.Errorf("reset staged changes in %s: %w", ws.Path, err)

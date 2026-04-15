@@ -4,6 +4,7 @@ package bandit
 import (
 	"errors"
 	"math"
+	"sort"
 	"sync"
 )
 
@@ -53,20 +54,28 @@ func (s *Selector) SelectArm() (string, error) {
 	}
 
 	// Exploration phase: select any arm with zero pulls.
-	for _, arm := range s.arms {
-		if arm.PullCount == 0 {
-			return arm.Name, nil
+	// Iterate in sorted order for deterministic tie-breaking.
+	names := make([]string, 0, len(s.arms))
+	for name := range s.arms {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	for _, name := range names {
+		if s.arms[name].PullCount == 0 {
+			return name, nil
 		}
 	}
 
 	// All arms pulled at least once: select by UCB1 score.
 	var bestName string
 	bestScore := math.Inf(-1)
-	for _, arm := range s.arms {
+	for _, name := range names {
+		arm := s.arms[name]
 		score := s.ucb1Score(arm)
 		if score > bestScore {
 			bestScore = score
-			bestName = arm.Name
+			bestName = name
 		}
 	}
 	return bestName, nil
@@ -109,6 +118,9 @@ func (s *Selector) UCB1Score(arm *ArmStats) float64 {
 }
 
 // ucb1Score is the internal lock-free implementation.
+// Design note: Returns 0 for unpulled arms (PullCount==0) rather than +Inf
+// because SelectArm handles exploration-phase selection separately. Callers
+// using UCB1Score (exported) on unpulled arms should be aware of this.
 func (s *Selector) ucb1Score(arm *ArmStats) float64 {
 	if arm.PullCount == 0 || s.totalPulls == 0 {
 		return 0
@@ -147,13 +159,20 @@ func (s *Selector) BestArm() (string, float64, error) {
 		return "", 0, errors.New("no arms available")
 	}
 
+	bestNames := make([]string, 0, len(s.arms))
+	for name := range s.arms {
+		bestNames = append(bestNames, name)
+	}
+	sort.Strings(bestNames)
+
 	var bestName string
 	bestAvg := math.Inf(-1)
 	found := false
-	for _, arm := range s.arms {
+	for _, name := range bestNames {
+		arm := s.arms[name]
 		if arm.PullCount > 0 && arm.AvgReward > bestAvg {
 			bestAvg = arm.AvgReward
-			bestName = arm.Name
+			bestName = name
 			found = true
 		}
 	}

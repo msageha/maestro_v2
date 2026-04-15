@@ -94,6 +94,10 @@ func (m *MutexMap) TryUnlock(key string) bool {
 	if rm.ref == 0 && m.mutexes[key] == rm {
 		delete(m.mutexes, key)
 	}
+	// BeforeUnlock updates goroutine-local lock-order tracking. Called under
+	// m.mu to ensure the tracked-key removal is atomic with ref-count
+	// decrement — the orderChecker does not acquire external locks, so
+	// holding m.mu here cannot deadlock.
 	m.order.BeforeUnlock(key)
 	m.mu.Unlock()
 
@@ -164,28 +168,29 @@ func (fl *FileLock) TryLock() error {
 		return fmt.Errorf("acquire lock (another daemon may be running): %w", err)
 	}
 
-	// Write PID to lock file
+	// On error after flock acquisition, release lock and close file.
+	success := false
+	defer func() {
+		if !success {
+			_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:gosec
+			_ = f.Close()
+		}
+	}()
+
 	if err := f.Truncate(0); err != nil {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:gosec // uintptr->int conversion for fd is safe on all supported platforms
-		_ = f.Close()
 		return fmt.Errorf("truncate lock file: %w", err)
 	}
 	if _, err := f.Seek(0, 0); err != nil {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:gosec // uintptr->int conversion for fd is safe on all supported platforms
-		_ = f.Close()
 		return fmt.Errorf("seek lock file: %w", err)
 	}
 	if _, err := fmt.Fprintf(f, "%d\n", os.Getpid()); err != nil {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:gosec // uintptr->int conversion for fd is safe on all supported platforms
-		_ = f.Close()
 		return fmt.Errorf("write PID to lock file: %w", err)
 	}
 	if err := f.Sync(); err != nil {
-		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:gosec // uintptr->int conversion for fd is safe on all supported platforms
-		_ = f.Close()
 		return fmt.Errorf("sync lock file: %w", err)
 	}
 
+	success = true
 	fl.file = f
 	return nil
 }

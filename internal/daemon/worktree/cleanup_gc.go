@@ -63,21 +63,31 @@ func (wm *Manager) CleanupCommand(commandID string) error {
 
 // GC removes old worktrees that exceed TTL or max_worktrees limit.
 //
-// Design: GC holds wm.mu for the entire operation to prevent concurrent
-// worktree creation/deletion from racing with GC's read-modify-delete cycle.
-// This is intentional — GC runs infrequently and the critical section is
-// bounded by the number of worktree state files, so lock contention is minimal.
+// Design: GC uses a three-stage snapshot→release→reacquire pattern to minimize
+// the time wm.mu is held, allowing concurrent worktree operations to proceed
+// between stages.
+//
+//   - Stage 1 (snapshot): Lock → read state entries + build snapshot → Unlock
+//   - Stage 2 (cleanup): For each cleanup target, lock → cleanup → unlock (per-command granularity)
+//   - Stage 3 (health check): Lock → orphan detection + bak sweep → Unlock
 func (wm *Manager) GC() error {
 	if !wm.config.GC.Enabled {
 		return nil
 	}
 
-	wm.mu.Lock()
-	defer wm.mu.Unlock()
+	// Stage 1: snapshot state entries under lock
+	type stateEntry struct {
+		commandID string
+		createdAt time.Time
+		state     *model.WorktreeCommandState
+	}
+	var allStates []stateEntry
 
+	wm.mu.Lock()
 	stateDir := filepath.Join(wm.maestroDir, "state", "worktrees")
 	entries, err := os.ReadDir(stateDir)
 	if err != nil {
+		wm.mu.Unlock()
 		if os.IsNotExist(err) {
 			return nil
 		}
@@ -88,27 +98,18 @@ func (wm *Manager) GC() error {
 	maxWorktrees := wm.config.GC.EffectiveMaxWorktrees()
 	now := wm.clock.Now()
 
-	type stateEntry struct {
-		commandID string
-		createdAt time.Time
-		state     *model.WorktreeCommandState
-	}
-
-	allStates := make([]stateEntry, 0, len(entries))
-
 	for _, entry := range entries {
 		if !strings.HasSuffix(entry.Name(), ".yaml") {
 			continue
 		}
 		commandID := strings.TrimSuffix(entry.Name(), ".yaml")
-		state, err := wm.loadStateUnlocked(commandID)
-		if err != nil {
+		state, loadErr := wm.loadStateUnlocked(commandID)
+		if loadErr != nil {
 			continue
 		}
-
-		created, err := time.Parse(time.RFC3339, state.CreatedAt)
-		if err != nil {
-			wm.Log(core.LogLevelWarn, "gc_created_at_parse_failed command=%s value=%q error=%v, falling back to mtime", commandID, state.CreatedAt, err)
+		created, parseErr := time.Parse(time.RFC3339, state.CreatedAt)
+		if parseErr != nil {
+			wm.Log(core.LogLevelWarn, "gc_created_at_parse_failed command=%s value=%q error=%v, falling back to mtime", commandID, state.CreatedAt, parseErr)
 			statePath := filepath.Join(stateDir, entry.Name())
 			info, statErr := os.Stat(statePath)
 			if statErr != nil {
@@ -117,94 +118,101 @@ func (wm *Manager) GC() error {
 			}
 			created = info.ModTime()
 		}
+		allStates = append(allStates, stateEntry{commandID: commandID, createdAt: created, state: state})
+	}
+	wm.mu.Unlock()
 
-		// TTL-based cleanup
-		if now.Sub(created) > ttl {
-			isTerminal := model.IsIntegrationTerminal(state.Integration.Status)
-			isFailed := state.Integration.Status == model.IntegrationStatusFailed
+	// Stage 2: cleanup without holding wm.mu for the entire duration
+	var remaining []stateEntry
+	for _, se := range allStates {
+		if now.Sub(se.createdAt) > ttl {
+			isTerminal := model.IsIntegrationTerminal(se.state.Integration.Status)
+			isFailed := se.state.Integration.Status == model.IntegrationStatusFailed
 			if !isTerminal && !isFailed {
 				wm.Log(core.LogLevelInfo, "gc_ttl_skip_active command=%s status=%s age=%s",
-					commandID, state.Integration.Status, now.Sub(created))
-				allStates = append(allStates, stateEntry{commandID: commandID, createdAt: created, state: state})
+					se.commandID, se.state.Integration.Status, now.Sub(se.createdAt))
+				remaining = append(remaining, se)
 				continue
 			}
 			if isFailed {
-				wm.Log(core.LogLevelInfo, "gc_cleanup_failed_worktree command=%s age=%s",
-					commandID, now.Sub(created))
+				wm.Log(core.LogLevelInfo, "gc_cleanup_failed_worktree command=%s age=%s", se.commandID, now.Sub(se.createdAt))
 			} else {
-				wm.Log(core.LogLevelInfo, "gc_ttl_expired command=%s age=%s", commandID, now.Sub(created))
+				wm.Log(core.LogLevelInfo, "gc_ttl_expired command=%s age=%s", se.commandID, now.Sub(se.createdAt))
 			}
-			if err := wm.cleanupCommandUnlocked(commandID, state); err != nil {
-				wm.Log(core.LogLevelWarn, "gc_cleanup_failed command=%s error=%v", commandID, err)
+			wm.mu.Lock()
+			if err := wm.cleanupCommandUnlocked(se.commandID, se.state); err != nil {
+				wm.Log(core.LogLevelWarn, "gc_cleanup_failed command=%s error=%v", se.commandID, err)
 			}
+			wm.mu.Unlock()
 			continue
 		}
-
-		allStates = append(allStates, stateEntry{commandID: commandID, createdAt: created, state: state})
+		remaining = append(remaining, se)
 	}
 
-	// Max worktrees limit: remove oldest first
-	if len(allStates) > maxWorktrees {
-		sort.Slice(allStates, func(i, j int) bool {
-			return allStates[i].createdAt.Before(allStates[j].createdAt)
+	// Max worktrees limit
+	if len(remaining) > maxWorktrees {
+		sort.Slice(remaining, func(i, j int) bool {
+			return remaining[i].createdAt.Before(remaining[j].createdAt)
 		})
-		for i := 0; i < len(allStates)-maxWorktrees; i++ {
-			if !model.IsIntegrationTerminal(allStates[i].state.Integration.Status) {
+		for i := 0; i < len(remaining)-maxWorktrees; i++ {
+			if !model.IsIntegrationTerminal(remaining[i].state.Integration.Status) {
 				wm.Log(core.LogLevelWarn, "gc_max_skip_active command=%s status=%s",
-					allStates[i].commandID, allStates[i].state.Integration.Status)
+					remaining[i].commandID, remaining[i].state.Integration.Status)
 				continue
 			}
-			wm.Log(core.LogLevelInfo, "gc_max_exceeded command=%s", allStates[i].commandID)
-			if err := wm.cleanupCommandUnlocked(allStates[i].commandID, allStates[i].state); err != nil {
-				wm.Log(core.LogLevelWarn, "gc_cleanup_failed command=%s error=%v", allStates[i].commandID, err)
+			wm.Log(core.LogLevelInfo, "gc_max_exceeded command=%s", remaining[i].commandID)
+			wm.mu.Lock()
+			if err := wm.cleanupCommandUnlocked(remaining[i].commandID, remaining[i].state); err != nil {
+				wm.Log(core.LogLevelWarn, "gc_cleanup_failed command=%s error=%v", remaining[i].commandID, err)
 			}
+			wm.mu.Unlock()
 		}
 	}
 
-	// M4: Health check — cross-reference git worktree list with state files
+	// Stage 3: health check under lock
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	wm.detectAndRemoveOrphanWorktrees()
+	wm.gcBakFiles()
+
+	return nil
+}
+
+// detectAndRemoveOrphanWorktrees cross-references git worktree list against
+// state files and removes orphaned worktrees. Caller must hold wm.mu.
+func (wm *Manager) detectAndRemoveOrphanWorktrees() {
 	gitWorktrees, listErr := wm.listGitWorktreesUnlocked()
 	if listErr != nil {
-		wm.Log(core.LogLevelWarn, "gc_worktree_list error=%v", listErr)
-		return nil
+		wm.Log(core.LogLevelWarn, "orphan_detection_worktree_list error=%v", listErr)
+		return
 	}
 
-	// Reuse already-loaded states from the first loop (TTL pass) and load any
-	// new entries that appeared since then (e.g. concurrent creation).
-	// This eliminates the second ReadDir + loadState round-trip.
-	cachedStates := make(map[string]*model.WorktreeCommandState, len(allStates))
-	for _, se := range allStates {
-		cachedStates[se.commandID] = se.state
+	stateDir := filepath.Join(wm.maestroDir, "state", "worktrees")
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			wm.Log(core.LogLevelWarn, "orphan_detection_read_state_dir error=%v", err)
+		}
+		return
 	}
-	// Pick up entries not covered by allStates (they were TTL-cleaned or skipped)
-	remainingEntries, readErr := os.ReadDir(stateDir)
-	if readErr != nil {
-		wm.Log(core.LogLevelWarn, "gc_reread_state_dir error=%v", readErr)
-	}
-	for _, entry := range remainingEntries {
+
+	knownPaths := make(map[string]bool)
+	for _, entry := range entries {
 		if !strings.HasSuffix(entry.Name(), ".yaml") {
 			continue
 		}
 		cmdID := strings.TrimSuffix(entry.Name(), ".yaml")
-		if _, exists := cachedStates[cmdID]; exists {
-			continue
-		}
 		st, loadErr := wm.loadStateUnlocked(cmdID)
 		if loadErr != nil {
 			continue
 		}
-		cachedStates[cmdID] = st
-	}
-
-	// Build known paths from cached states
-	knownPaths := make(map[string]bool)
-	for cmdID, st := range cachedStates {
 		for _, ws := range st.Workers {
 			knownPaths[ws.Path] = true
 		}
 		knownPaths[wm.integrationWorktreePath(cmdID)] = true
 	}
 
-	// Remove orphaned git worktrees not tracked in any state file
 	pathPrefix := wm.config.EffectivePathPrefix()
 	for _, wtPath := range gitWorktrees {
 		relPath, relErr := filepath.Rel(wm.projectRoot, wtPath)
@@ -212,29 +220,12 @@ func (wm *Manager) GC() error {
 			continue
 		}
 		if !knownPaths[wtPath] {
-			wm.Log(core.LogLevelInfo, "gc_orphan_worktree path=%s", wtPath)
+			wm.Log(core.LogLevelInfo, "orphan_worktree path=%s", wtPath)
 			if rmErr := wm.gitRun("worktree", "remove", "--force", wtPath); rmErr != nil {
-				wm.Log(core.LogLevelWarn, "gc_remove_orphan error=%v path=%s", rmErr, wtPath)
+				wm.Log(core.LogLevelWarn, "orphan_remove error=%v path=%s", rmErr, wtPath)
 			}
 		}
 	}
-
-	// Log state entries whose worktree directories don't exist (using cached states)
-	for cmdID, st := range cachedStates {
-		for _, ws := range st.Workers {
-			if _, statErr := os.Stat(ws.Path); os.IsNotExist(statErr) {
-				if ws.Status != model.WorktreeStatusCleanupDone && ws.Status != model.WorktreeStatusCleanupFailed {
-					wm.Log(core.LogLevelWarn, "gc_state_without_worktree command=%s worker=%s path=%s",
-						cmdID, ws.WorkerID, ws.Path)
-				}
-			}
-		}
-	}
-
-	// Sweep .bak orphan/expired files left behind by yaml.AtomicWrite.
-	wm.gcBakFiles()
-
-	return nil
 }
 
 // bakTTL is the maximum age a .bak file may live before GC removes it.
@@ -426,9 +417,6 @@ func (wm *Manager) Reconcile() {
 		return
 	}
 
-	// Collect all known worktree paths from state files
-	knownPaths := make(map[string]bool)
-
 	for _, entry := range entries {
 		if !strings.HasSuffix(entry.Name(), ".yaml") {
 			continue
@@ -445,7 +433,6 @@ func (wm *Manager) Reconcile() {
 
 		for i := range state.Workers {
 			ws := &state.Workers[i]
-			knownPaths[ws.Path] = true
 
 			// State exists but worktree directory is gone → mark cleanup_done
 			if _, statErr := os.Stat(ws.Path); os.IsNotExist(statErr) {
@@ -461,10 +448,6 @@ func (wm *Manager) Reconcile() {
 			}
 		}
 
-		// Track integration worktree path
-		integrationPath := wm.integrationWorktreePath(commandID)
-		knownPaths[integrationPath] = true
-
 		if stateChanged {
 			state.UpdatedAt = now
 			if saveErr := wm.saveState(commandID, state); saveErr != nil {
@@ -474,24 +457,7 @@ func (wm *Manager) Reconcile() {
 	}
 
 	// Worktree exists in git but no state → remove it
-	gitWorktrees, listErr := wm.listGitWorktreesUnlocked()
-	if listErr != nil {
-		wm.Log(core.LogLevelWarn, "reconcile_list_worktrees error=%v", listErr)
-	} else {
-		pathPrefix := wm.config.EffectivePathPrefix()
-		for _, wtPath := range gitWorktrees {
-			relPath, relErr := filepath.Rel(wm.projectRoot, wtPath)
-			if relErr != nil || !strings.HasPrefix(relPath, pathPrefix) {
-				continue
-			}
-			if !knownPaths[wtPath] {
-				wm.Log(core.LogLevelWarn, "reconcile_orphan_worktree path=%s", wtPath)
-				if rmErr := wm.gitRun("worktree", "remove", "--force", wtPath); rmErr != nil {
-					wm.Log(core.LogLevelWarn, "reconcile_remove_orphan error=%v path=%s", rmErr, wtPath)
-				}
-			}
-		}
-	}
+	wm.detectAndRemoveOrphanWorktrees()
 
 	// Prune stale git worktree entries
 	if pruneErr := wm.gitRun("worktree", "prune"); pruneErr != nil {

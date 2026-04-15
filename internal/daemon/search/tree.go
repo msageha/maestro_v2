@@ -4,6 +4,7 @@ package search
 import (
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"sync"
 )
@@ -121,6 +122,7 @@ func (t *Tree) Backpropagate(nodeID string, reward float64) {
 	for current != "" {
 		n, ok := t.nodes[current]
 		if !ok {
+			log.Printf("search/tree: Backpropagate: node %q not found, stopping propagation", current)
 			break
 		}
 		n.Visits++
@@ -263,7 +265,11 @@ func (t *Tree) GetNode(id string) (*Node, bool) {
 	defer t.mu.RUnlock()
 
 	n, ok := t.nodes[id]
-	return n, ok
+	if !ok {
+		return nil, false
+	}
+	cp := *n
+	return &cp, true
 }
 
 // NodeCount returns the total number of nodes in the tree.

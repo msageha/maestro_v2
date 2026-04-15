@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
@@ -19,8 +20,9 @@ type ReviewDispatcher struct {
 	config        model.ReviewConfig
 	mu            sync.RWMutex
 	activeReviews int
-	results       chan model.ReviewResult
-	wg            sync.WaitGroup
+	results        chan model.ReviewResult
+	wg             sync.WaitGroup
+	droppedResults atomic.Int64
 }
 
 // NewReviewDispatcher creates a new ReviewDispatcher with the given config.
@@ -99,6 +101,7 @@ func (d *ReviewDispatcher) reviewTask(ctx context.Context, req model.ReviewReque
 		select {
 		case d.results <- *result:
 		default:
+			d.droppedResults.Add(1)
 			log.Printf("reviewer: results channel full, dropping result for %s", req.ID)
 		}
 	}()
@@ -110,8 +113,12 @@ func (d *ReviewDispatcher) reviewTask(ctx context.Context, req model.ReviewReque
 	default:
 	}
 
-	// PLACEHOLDER: actual review logic not yet implemented.
-	// When implemented, this should invoke the reviewer model and populate findings.
+	// TODO(review): Implement actual model invocation for code review.
+	// Tracked in the review subsystem roadmap. When implemented, this should:
+	//   1. Invoke the reviewer model with the diff content from req.DiffContent
+	//   2. Parse the model response into []model.ReviewFinding
+	//   3. Populate result.Findings with the parsed findings
+	//   4. Set result.Status based on model response success/failure
 	log.Printf("WARN: reviewer/placeholder: review=%s task=%s model=%s — no analysis performed, returning empty result", req.ID, req.TaskID, req.ReviewerModel)
 	result.Status = model.ReviewStatusCompleted
 	result.Findings = nil
@@ -120,6 +127,11 @@ func (d *ReviewDispatcher) reviewTask(ctx context.Context, req model.ReviewReque
 // Results returns a read-only channel from which review results can be received.
 func (d *ReviewDispatcher) Results() <-chan model.ReviewResult {
 	return d.results
+}
+
+// DroppedResults returns the number of review results dropped due to a full channel.
+func (d *ReviewDispatcher) DroppedResults() int64 {
+	return d.droppedResults.Load()
 }
 
 // Close waits for all in-flight reviews to complete, then closes the results channel.

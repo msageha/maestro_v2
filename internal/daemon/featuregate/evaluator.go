@@ -4,6 +4,9 @@ package featuregate
 import "sync"
 
 // ProfileLevel represents task complexity classification.
+// Values are identical to model.ComplexityLevel* / model.ProfileLevel*
+// constants by convention. This package defines its own type to avoid
+// coupling the feature gate layer to the model package (DIP).
 type ProfileLevel string
 
 const (
@@ -99,6 +102,7 @@ func (e *Evaluator) DefaultProfiles() map[ProfileLevel]Profile {
 
 // LoadProfiles replaces profiles from an external config map.
 // The map key is the profile level string; value is a map of feature name → enabled bool.
+// Unknown levels are stored as-is; Evaluate() handles fallback to LevelSimple.
 func (e *Evaluator) LoadProfiles(profiles map[string]map[string]interface{}) {
 	e.mu.Lock()
 	defer e.mu.Unlock()

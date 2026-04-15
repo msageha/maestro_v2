@@ -4,6 +4,9 @@
 package complexity
 
 // Level represents a complexity classification.
+// Values are identical to model.ComplexityLevel* constants by convention.
+// This package defines its own type to avoid coupling the daemon scoring
+// layer to the model package (Dependency Inversion Principle).
 type Level string
 
 const (

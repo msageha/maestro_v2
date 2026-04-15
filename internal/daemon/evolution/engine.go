@@ -90,11 +90,6 @@ func (e *Engine) PlanMutations(parentCount int) []MutationSlot {
 		return nil
 	}
 
-	totalWeight := 0
-	for _, s := range active {
-		totalWeight += s.weight
-	}
-
 	var slots []MutationSlot
 	idx := 0
 	for _, s := range active {
@@ -113,12 +108,12 @@ func (e *Engine) PlanMutations(parentCount int) []MutationSlot {
 // CheckNovelty determines if a candidate is novel compared to existing candidates.
 // Currently uses SHA-256 hash exact match. Future: embedding-based similarity.
 func (e *Engine) CheckNovelty(candidateHash string, existingHashes []string) bool {
+	hashSet := make(map[string]struct{}, len(existingHashes))
 	for _, h := range existingHashes {
-		if h == candidateHash {
-			return false
-		}
+		hashSet[h] = struct{}{}
 	}
-	return true
+	_, found := hashSet[candidateHash]
+	return !found
 }
 
 // HashContent computes a SHA-256 hash of the given content for novelty comparison.

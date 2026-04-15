@@ -38,7 +38,7 @@ type Handler struct {
 }
 
 // NewHandler creates a new Handler.
-func NewHandler(maestroDir string, _ model.Config, logger Logger, clock Clock) *Handler {
+func NewHandler(maestroDir string, logger Logger, clock Clock) *Handler {
 	return &Handler{
 		logger:      logger,
 		maestroDir:  maestroDir,
@@ -53,7 +53,6 @@ func (h *Handler) UpdateMetrics(
 	taskSnapshots []TaskQueueSnapshot,
 	nq model.NotificationQueue,
 	scanStart time.Time,
-	_ time.Duration,
 	counters *ScanCounters,
 	gauges Gauges,
 ) error {
@@ -235,6 +234,9 @@ func (h *Handler) computeQueueDepth(
 	}
 
 	for _, snap := range taskSnapshots {
+		// WorkerID may be empty for task queues that have not yet been assigned
+		// to a specific worker (e.g., planner task queues). These are excluded
+		// from per-worker depth counts.
 		if snap.WorkerID == "" {
 			continue
 		}

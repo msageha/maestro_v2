@@ -3,6 +3,7 @@ package events
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"runtime/debug"
 	"sync"
@@ -277,8 +278,8 @@ func (b *Bus) Publish(eventType EventType, data map[string]interface{}) {
 			// Channel full, drop event and record
 			b.droppedCount.Add(1)
 			typeCount := b.addDroppedByType(eventType)
-			// Log on first drop per type, then sample every 100 drops to avoid log flooding
-			if typeCount == 1 || typeCount%100 == 0 {
+			// Log on first drop per type, then at exponential intervals (powers of 2)
+			if typeCount == 1 || typeCount&(typeCount-1) == 0 {
 				log.Printf("WARN event_bus: event dropped for type %s (type dropped: %d)", eventType, typeCount)
 			}
 		}
@@ -299,6 +300,7 @@ func (b *Bus) addDroppedByType(eventType EventType) int64 {
 	v, _ := b.droppedByType.LoadOrStore(eventType, &atomic.Int64{})
 	counter, ok := v.(*atomic.Int64)
 	if !ok {
+		log.Printf("ERROR event_bus: unexpected type in droppedByType map for %s: %T", eventType, v)
 		return 0
 	}
 	return counter.Add(1)
@@ -323,12 +325,12 @@ func (b *Bus) DroppedByType(eventType EventType) int64 {
 }
 
 // Close closes all subscriber channels, waits up to 5 seconds for goroutines to drain,
-// and clears subscriptions. If the timeout expires, Close returns immediately; remaining
-// goroutines will finish asynchronously once their callbacks complete.
-// Close is idempotent: calling it more than once is safe and subsequent calls are no-ops.
-func (b *Bus) Close() {
+// and clears subscriptions. Returns an error if the timeout expires before all goroutines
+// finish (remaining goroutines will finish asynchronously once their callbacks complete).
+// Close is idempotent: calling it more than once is safe and subsequent calls return nil.
+func (b *Bus) Close() error {
 	if !b.closed.CompareAndSwap(false, true) {
-		return
+		return nil
 	}
 
 	// Cancel context to signal subscriber goroutines to stop
@@ -364,9 +366,9 @@ func (b *Bus) Close() {
 
 	select {
 	case <-waitDone:
+		return nil
 	case <-timer.C:
 		remaining := b.activeGoroutines.Load()
-		log.Printf("WARN event_bus: Close timed out waiting for %d subscriber goroutines",
-			remaining)
+		return fmt.Errorf("event_bus: Close timed out waiting for %d subscriber goroutines", remaining)
 	}
 }

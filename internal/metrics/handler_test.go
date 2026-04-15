@@ -33,8 +33,7 @@ func setupTestMaestroDir(t *testing.T) string {
 }
 
 func newTestHandler(maestroDir string) *Handler {
-	cfg := model.Config{}
-	return NewHandler(maestroDir, cfg, discardLogger{}, testClock{})
+	return NewHandler(maestroDir, discardLogger{}, testClock{})
 }
 
 func TestHandler_UpdateMetrics_CreateNew(t *testing.T) {
@@ -67,7 +66,7 @@ func TestHandler_UpdateMetrics_CreateNew(t *testing.T) {
 		DeadLetters:        1,
 	}
 
-	if err := h.UpdateMetrics(cq, snapshots, nq, scanStart, time.Second, counters, Gauges{WorktreeCommandsStalled: 2, BakFilesCount: 3}); err != nil {
+	if err := h.UpdateMetrics(cq, snapshots, nq, scanStart, counters, Gauges{WorktreeCommandsStalled: 2, BakFilesCount: 3}); err != nil {
 		t.Fatalf("UpdateMetrics: %v", err)
 	}
 
@@ -124,13 +123,13 @@ func TestHandler_UpdateMetrics_Additive(t *testing.T) {
 
 	// First update
 	counters1 := &ScanCounters{CommandsDispatched: 3, TasksDispatched: 5}
-	if err := h.UpdateMetrics(cq, snapshots, nq, time.Now(), time.Second, counters1, Gauges{}); err != nil {
+	if err := h.UpdateMetrics(cq, snapshots, nq, time.Now(), counters1, Gauges{}); err != nil {
 		t.Fatal(err)
 	}
 
 	// Second update
 	counters2 := &ScanCounters{CommandsDispatched: 2, TasksDispatched: 1, DeadLetters: 4}
-	if err := h.UpdateMetrics(cq, snapshots, nq, time.Now(), time.Second, counters2, Gauges{}); err != nil {
+	if err := h.UpdateMetrics(cq, snapshots, nq, time.Now(), counters2, Gauges{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -184,7 +183,7 @@ func TestHandler_UpdateMetrics_RecomputedCounters(t *testing.T) {
 
 	// First update
 	counters1 := &ScanCounters{CommandsDispatched: 1}
-	if err := h.UpdateMetrics(cq, snapshots, nq, time.Now(), time.Second, counters1, Gauges{}); err != nil {
+	if err := h.UpdateMetrics(cq, snapshots, nq, time.Now(), counters1, Gauges{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -205,7 +204,7 @@ func TestHandler_UpdateMetrics_RecomputedCounters(t *testing.T) {
 
 	// Second update with same result files — re-computed counters should NOT accumulate.
 	counters2 := &ScanCounters{CommandsDispatched: 1}
-	if err := h.UpdateMetrics(cq, snapshots, nq, time.Now(), time.Second, counters2, Gauges{}); err != nil {
+	if err := h.UpdateMetrics(cq, snapshots, nq, time.Now(), counters2, Gauges{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -255,7 +254,7 @@ func TestHandler_LoadAllResultFiles_NonResultTaskIgnored(t *testing.T) {
 	}
 
 	counters := &ScanCounters{}
-	if err := h.UpdateMetrics(cq, snapshots, nq, time.Now(), time.Second, counters, Gauges{}); err != nil {
+	if err := h.UpdateMetrics(cq, snapshots, nq, time.Now(), counters, Gauges{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -304,7 +303,7 @@ func TestHandler_LoadAllResultFiles_MalformedYAMLSkipped(t *testing.T) {
 	}
 
 	counters := &ScanCounters{}
-	if err := h.UpdateMetrics(cq, snapshots, nq, time.Now(), time.Second, counters, Gauges{}); err != nil {
+	if err := h.UpdateMetrics(cq, snapshots, nq, time.Now(), counters, Gauges{}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -337,7 +336,7 @@ func TestHandler_LoadAllResultFiles_NoResultsDir(t *testing.T) {
 	counters := &ScanCounters{}
 
 	// Should not error — missing results dir returns nil result map.
-	if err := h.UpdateMetrics(cq, snapshots, nq, time.Now(), time.Second, counters, Gauges{}); err != nil {
+	if err := h.UpdateMetrics(cq, snapshots, nq, time.Now(), counters, Gauges{}); err != nil {
 		t.Fatalf("UpdateMetrics with missing results dir: %v", err)
 	}
 

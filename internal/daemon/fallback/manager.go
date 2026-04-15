@@ -39,6 +39,16 @@ type Config struct {
 	ConsecutiveFailureThreshold int
 	RecoveryCheckIntervalSec    int
 	MinHealthyDurationSec       int
+	EssentialWorkerID           string
+}
+
+// effectiveEssentialWorkerID returns the configured essential worker ID,
+// defaulting to "worker1" if unset.
+func (c Config) effectiveEssentialWorkerID() string {
+	if c.EssentialWorkerID != "" {
+		return c.EssentialWorkerID
+	}
+	return "worker1"
 }
 
 // Manager tracks consecutive failures and manages mode transitions
@@ -62,22 +72,21 @@ func NewManager(cfg Config) *Manager {
 	}
 }
 
-// essentialWorkerID is the worker allowed to operate in degraded/recovering mode.
-// In degraded mode, only this worker continues to receive dispatches to maintain
-// minimal system availability.
-const essentialWorkerID = "worker1"
-
 // IsWorkerAllowed reports whether the given worker is allowed to operate
-// in the current mode. In ModeNormal all workers are allowed. In
-// ModeDegraded and ModeRecovering only essentialWorkerID is permitted.
+// in the current mode. Returns true unconditionally when fallback is disabled.
+// In ModeNormal all workers are allowed. In ModeDegraded and ModeRecovering
+// only the configured essential worker is permitted.
 func (m *Manager) IsWorkerAllowed(workerID string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if !m.config.Enabled {
+		return true
+	}
 	if m.mode == ModeNormal {
 		return true
 	}
-	return workerID == essentialWorkerID
+	return workerID == m.config.effectiveEssentialWorkerID()
 }
 
 // RecordSuccess records a successful operation for the given worker.
@@ -87,6 +96,10 @@ func (m *Manager) IsWorkerAllowed(workerID string) bool {
 func (m *Manager) RecordSuccess(_ string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if !m.config.Enabled {
+		return
+	}
 
 	m.consecutiveFailures = 0
 	m.lastSuccessAt = m.nowFunc()
@@ -109,6 +122,10 @@ func (m *Manager) RecordSuccess(_ string) {
 func (m *Manager) RecordFailure(_ string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	if !m.config.Enabled {
+		return
+	}
 
 	m.consecutiveFailures++
 

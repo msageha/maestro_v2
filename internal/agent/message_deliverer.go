@@ -50,7 +50,9 @@ func (d *messageDeliverer) getPaneMutex(paneTarget string) *sync.Mutex {
 
 // removePaneMutex deletes the per-pane mutex entry for the given pane target.
 // Call this when a pane is no longer in use to prevent unbounded growth of
-// the sync.Map.
+// the sync.Map. Currently called when an agent is removed from the watcher's
+// tracked set. If new call sites are added that create pane entries, ensure
+// corresponding cleanup calls are added.
 func (d *messageDeliverer) removePaneMutex(paneTarget string) {
 	d.paneMu.Delete(paneTarget)
 }
@@ -184,6 +186,8 @@ func (d *messageDeliverer) clearAndConfirm(ctx context.Context, paneTarget strin
 	return fmt.Errorf("clear_confirm: /clear not confirmed after %d attempts", maxAttempts)
 }
 
+// log delegates to the package-level logf function which uses time.Now()
+// for timestamp formatting. This is acceptable for logging purposes.
 func (d *messageDeliverer) log(level logLevel, format string, args ...any) {
 	logf(d.logger, d.logLevel, level, "agent_executor", format, args...)
 }
@@ -193,10 +197,10 @@ func (d *messageDeliverer) log(level logLevel, format string, args ...any) {
 // clearConfirmationPoller encapsulates the state machine for polling pane
 // content to confirm that a /clear command was processed.
 //
-// Confirmation requires ALL of:
-//  1. "/clear" text is NOT visible near the bottom of the pane (primary signal)
-//  2. Pane content hash differs from pre-clear snapshot (when preClearHashValid)
-//  3. Pane content is stable across consecutive polls (debounce)
+// Wall clock: pollUntilTimeout uses time.Now() directly for deadline
+// calculation. For deterministic testing, a Clock interface (similar to
+// metrics.Clock) could be injected. Current test coverage uses real timers
+// via integration-style tests, which is acceptable given the I/O-bound nature.
 type clearConfirmationPoller struct {
 	paneIO            PaneIO
 	paneTarget        string

@@ -64,7 +64,7 @@ type Group struct {
 
 // Manager manages multi-rollout groups with thread-safe operations.
 type Manager struct {
-	mu          sync.Mutex
+	mu          sync.RWMutex
 	groups      map[string]*Group
 	maxParallel int
 }
@@ -115,8 +115,8 @@ func (m *Manager) CreateGroup(taskID, commandID string, slotCount int) (*Group, 
 
 // GetGroup returns the group for the given taskID.
 func (m *Manager) GetGroup(taskID string) (*Group, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
 	g, ok := m.groups[taskID]
 	return g, ok
@@ -141,8 +141,8 @@ func (m *Manager) UpdateSlotStatus(taskID string, slotIndex int, status SlotStat
 
 // IsGroupComplete returns true if all slots in the group have reached a terminal state.
 func (m *Manager) IsGroupComplete(taskID string) bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
 	return m.isGroupCompleteLocked(taskID)
 }
@@ -231,8 +231,8 @@ func (m *Manager) RemoveGroup(taskID string) {
 
 // ActiveGroupCount returns the number of non-terminal groups.
 func (m *Manager) ActiveGroupCount() int {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
 	count := 0
 	for _, g := range m.groups {
@@ -244,9 +244,12 @@ func (m *Manager) ActiveGroupCount() int {
 }
 
 // ListGroups returns all groups managed by this manager.
+// Note: Returns direct pointers to internal Group structs. Callers must not
+// modify the returned groups without holding appropriate synchronization.
+// A future improvement could return copies for full isolation.
 func (m *Manager) ListGroups() []*Group {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 
 	groups := make([]*Group, 0, len(m.groups))
 	for _, g := range m.groups {

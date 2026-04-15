@@ -100,26 +100,31 @@ func (a *cliApp) runQueueWrite(args []string, warnOut io.Writer) error {
 	target := args[0]
 
 	cmd := NewCommand("maestro queue write", "maestro queue write <target> --type <command|task|notification|cancel-request> [options]")
-	var writeType, content, commandID, purpose, acceptanceCriteria, sourceResultID, notificationType, reason, personaHint string
-	var bloomLevel, priority int
-	var blockedBy, constraints, toolsHint stringSliceFlag
+	var writeType, content, commandID, sourceResultID, notificationType, reason string
+	var priority int
 
 	cmd.RequiredString(&writeType, "type", "Entry type: command, task, notification, or cancel-request")
 	cmd.StringVar(&content, "content", "", "Entry content text")
 	cmd.StringVar(&commandID, "command-id", "", "Parent command ID")
-	cmd.StringVar(&purpose, "purpose", "", "Task purpose description")
-	cmd.StringVar(&acceptanceCriteria, "acceptance-criteria", "", "Task acceptance criteria")
-	cmd.IntVar(&bloomLevel, "bloom-level", 0, "Bloom taxonomy level (1-6)")
 	cmd.IntVar(&priority, "priority", 0, "Entry priority (higher = more urgent)")
 	cmd.StringVar(&sourceResultID, "source-result-id", "", "Source result ID for notifications")
 	cmd.StringVar(&notificationType, "notification-type", "", "Notification type classifier")
-	cmd.Var(&blockedBy, "blocked-by", "Task ID dependency (repeatable)")
-	cmd.Var(&constraints, "constraint", "Task constraint (repeatable)")
-	cmd.Var(&toolsHint, "tools-hint", "Recommended tool hint (repeatable)")
-	cmd.StringVar(&personaHint, "persona-hint", "", "Persona hint for task execution")
+	cmd.StringVar(&reason, "reason", "", "Reason text for cancel requests")
 	var skillRefs stringSliceFlag
 	cmd.Var(&skillRefs, "skill-refs", "Skill reference (repeatable)")
-	cmd.StringVar(&reason, "reason", "", "Reason text for cancel requests")
+
+	// Task-specific flags: registered for parse compatibility but tasks cannot
+	// be created via CLI (Planner exclusive; audit C3). See "task" case below.
+	var purpose, acceptanceCriteria, personaHint string
+	var bloomLevel int
+	var blockedBy, constraints, toolsHint stringSliceFlag
+	cmd.StringVar(&purpose, "purpose", "", "Task purpose description (task only)")
+	cmd.StringVar(&acceptanceCriteria, "acceptance-criteria", "", "Task acceptance criteria (task only)")
+	cmd.IntVar(&bloomLevel, "bloom-level", 0, "Bloom taxonomy level 1-6 (task only)")
+	cmd.Var(&blockedBy, "blocked-by", "Task ID dependency, repeatable (task only)")
+	cmd.Var(&constraints, "constraint", "Task constraint, repeatable (task only)")
+	cmd.Var(&toolsHint, "tools-hint", "Recommended tool hint, repeatable (task only)")
+	cmd.StringVar(&personaHint, "persona-hint", "", "Persona hint for task execution (task only)")
 
 	if err := cmd.Parse(args[1:]); err != nil {
 		return err
@@ -136,17 +141,9 @@ func (a *cliApp) runQueueWrite(args []string, warnOut io.Writer) error {
 			return err
 		}
 	case "task":
-		// Task creation is the Planner's exclusive responsibility. The
-		// queue_write task entrypoint is reserved for system-internal use
-		// and is intentionally not exposed via the CLI to prevent
-		// Planner-bypass task injection (audit C3).
-		_ = purpose
-		_ = acceptanceCriteria
-		_ = bloomLevel
-		_ = blockedBy
-		_ = constraints
-		_ = toolsHint
-		_ = personaHint
+		// Task creation is the Planner's exclusive responsibility (audit C3).
+		// Task-specific flags are registered for parse compatibility but
+		// intentionally unused here.
 		return &CLIError{Code: 1, Msg: "maestro queue write: --type task is not supported via CLI; tasks must be created through the Planner (maestro plan submit / maestro plan retry-task)"}
 	case "notification":
 		if err := buildNotificationWriteParams(params, commandID, content, sourceResultID, notificationType, priority); err != nil {

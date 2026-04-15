@@ -21,26 +21,23 @@ func RunDown(maestroDir string, cfg model.Config) error {
 	tmux.SetSessionName("maestro-" + cfg.Project.Name)
 
 	// Initialize tmux debug logger for down process
-	logsDir := filepath.Join(maestroDir, "logs")
-	if err := os.MkdirAll(logsDir, 0o750); err != nil {
-		return fmt.Errorf("create logs directory: %w", err)
+	tmuxLog, tmuxLogErr := initTmuxDebugLog(maestroDir)
+	if tmuxLogErr != nil {
+		log.Printf("[WARN] RunDown: %v", tmuxLogErr)
 	}
-	tmuxLogPath := filepath.Join(logsDir, "tmux_debug.log")
-	if tmuxLogFile, err := os.OpenFile(tmuxLogPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600); err == nil { //nolint:gosec // tmuxLogPath is constructed from a controlled application log directory
-		tmuxLogger := log.New(tmuxLogFile, "", log.LstdFlags|log.Lmicroseconds)
-		tmux.SetDebugLogger(tmuxLogger)
-		defer func() {
-			tmux.SetDebugLogger(nil)
-			if err := tmuxLogFile.Close(); err != nil {
-				log.Printf("[WARN] RunDown: close tmux log file: %v", err)
-			}
-		}()
-	}
+	defer func() {
+		if err := tmuxLog.Close(); err != nil {
+			log.Printf("[WARN] RunDown: close tmux log file: %v", err)
+		}
+	}()
 
 	socketPath := filepath.Join(maestroDir, uds.DefaultSocketName)
 
 	// Check if daemon socket exists
-	if _, err := os.Stat(socketPath); os.IsNotExist(err) {
+	if _, err := os.Stat(socketPath); err != nil {
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("stat daemon socket: %w", err)
+		}
 		// Socket gone but PID file may linger from a crashed daemon
 		cleanupStalePID(maestroDir)
 		log.Printf("[DEBUG] RunDown: killing session (daemon socket missing)")
@@ -53,7 +50,7 @@ func RunDown(maestroDir string, cfg model.Config) error {
 	}
 
 	// Send shutdown request to daemon
-	client := newUDSClient(socketPath, 5*time.Second)
+	client := defaultConfig.NewUDSClient(socketPath, 5*time.Second)
 
 	resp, err := client.SendCommand("shutdown", nil)
 	if err != nil {
@@ -93,7 +90,7 @@ func RunDown(maestroDir string, cfg model.Config) error {
 		pid := validateDaemonPID(maestroDir)
 		pidPath := filepath.Join(maestroDir, "daemon.pid")
 		if isValidPID(pid) {
-			origStartTime := procMgr().StartTime(pid)
+			origStartTime := defaultConfig.ProcMgr.StartTime(pid)
 			sameProcess := daemonIdentityChecker(maestroDir, pid, origStartTime)
 			result, termErr := terminateProcess(pid, sameProcess, 5*time.Second)
 			if termErr != nil {

@@ -123,9 +123,21 @@ func wrapGitOutputError(err error, args []string) error {
 	return fmt.Errorf("git %s: %w", strings.Join(args, " "), err)
 }
 
+// sleepCtx waits for the specified duration or until the context is cancelled.
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
 // gitOutputWithRetry executes a git command via gitExecOutput with retry for transient errors.
-// Returns stdout on success.
-func (wm *Manager) gitOutputWithRetry(dir string, maxRetries int, args ...string) (string, error) {
+// The ctx parameter allows callers to cancel retry waits. Returns stdout on success.
+func (wm *Manager) gitOutputWithRetry(ctx context.Context, dir string, maxRetries int, args ...string) (string, error) {
 	output, err := wm.gitExecOutput(dir, args...)
 	if err == nil {
 		if output == nil {
@@ -146,7 +158,9 @@ func (wm *Manager) gitOutputWithRetry(dir string, maxRetries int, args ...string
 		wm.Log(core.LogLevelWarn, "git_retry attempt=%d/%d backoff=%s cmd=\"git %s\" error=%v",
 			attempt, maxRetries, backoff, strings.Join(args, " "), firstErr)
 
-		time.Sleep(backoff)
+		if err := sleepCtx(ctx, backoff); err != nil {
+			return "", fmt.Errorf("git %s: retry cancelled: %w", strings.Join(args, " "), err)
+		}
 		backoff *= 2
 		if backoff > maxBackoff {
 			backoff = maxBackoff

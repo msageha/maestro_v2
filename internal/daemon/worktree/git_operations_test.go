@@ -253,7 +253,7 @@ func TestGitOutputWithRetry_Success(t *testing.T) {
 	projectRoot := initTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
-	output, err := wm.gitOutputWithRetry(projectRoot, 3, "rev-parse", "HEAD")
+	output, err := wm.gitOutputWithRetry(context.Background(), projectRoot, 3, "rev-parse", "HEAD")
 	if err != nil {
 		t.Fatalf("gitOutputWithRetry: %v", err)
 	}
@@ -352,7 +352,7 @@ func TestGitOutputWithRetry_EmptyOutputNilError(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// git status --porcelain returns empty output when the repo is clean
-	output, err := wm.gitOutputWithRetry(projectRoot, 3, "status", "--porcelain")
+	output, err := wm.gitOutputWithRetry(context.Background(), projectRoot, 3, "status", "--porcelain")
 	if err != nil {
 		t.Fatalf("gitOutputWithRetry: unexpected error: %v", err)
 	}
@@ -367,7 +367,7 @@ func TestGitOutputWithRetry_PermanentNoRetry(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	start := time.Now()
-	_, err := wm.gitOutputWithRetry(projectRoot, 3, "rev-parse", "nonexistent_ref_xyz999")
+	_, err := wm.gitOutputWithRetry(context.Background(), projectRoot, 3, "rev-parse", "nonexistent_ref_xyz999")
 	elapsed := time.Since(start)
 
 	if err == nil {

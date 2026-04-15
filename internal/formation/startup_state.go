@@ -124,7 +124,9 @@ func startupRecovery(maestroDir string) error {
 	}
 
 	// YAML validation: scan all YAML files and quarantine corrupt ones
-	validateAndRecoverYAML(maestroDir)
+	if err := validateAndRecoverYAML(maestroDir); err != nil {
+		return fmt.Errorf("validate YAML: %w", err)
+	}
 
 	// Oneshot reconciliation will happen automatically when daemon starts and runs PeriodicScan
 
@@ -132,7 +134,8 @@ func startupRecovery(maestroDir string) error {
 }
 
 // validateAndRecoverYAML scans all YAML files for syntax errors and quarantines corrupt ones.
-func validateAndRecoverYAML(maestroDir string) {
+// Returns an error if directory listing fails for a required directory.
+func validateAndRecoverYAML(maestroDir string) error {
 	yamlDirs := map[string]string{
 		filepath.Join(maestroDir, "queue"):             "",
 		filepath.Join(maestroDir, "results"):           "",
@@ -142,7 +145,10 @@ func validateAndRecoverYAML(maestroDir string) {
 	for dir, expectedType := range yamlDirs {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
-			continue
+			if os.IsNotExist(err) {
+				continue
+			}
+			return fmt.Errorf("read dir %s: %w", dir, err)
 		}
 		for _, entry := range entries {
 			if entry.IsDir() {
@@ -185,6 +191,7 @@ func validateAndRecoverYAML(maestroDir string) {
 			}
 		}
 	}
+	return nil
 }
 
 // inferFileType derives the expected file_type from directory and filename.

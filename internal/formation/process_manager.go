@@ -68,21 +68,6 @@ func DefaultConfig() *Config {
 // functions. Tests replace this via withTestConfig to inject mocks and fast timings.
 var defaultConfig = DefaultConfig()
 
-// Package-level accessors for backward compatibility with existing call sites.
-func newUDSClient(socketPath string, timeout time.Duration) udsSender {
-	return defaultConfig.NewUDSClient(socketPath, timeout)
-}
-
-func procMgr() processManager {
-	return defaultConfig.ProcMgr
-}
-
-func daemonPollTimeout() time.Duration       { return defaultConfig.DaemonPollTimeout }
-func daemonPollInterval() time.Duration      { return defaultConfig.DaemonPollInterval }
-func processExitPollInterval() time.Duration { return defaultConfig.ProcessExitPollInterval }
-func postSignalWait() time.Duration          { return defaultConfig.PostSignalWait }
-func waitReadyPollInterval() time.Duration   { return defaultConfig.WaitReadyPollInterval }
-
 // osProcessManager implements processManager using real OS system calls.
 type osProcessManager struct{}
 
