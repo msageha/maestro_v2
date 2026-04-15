@@ -231,6 +231,24 @@ gates:
 			wantErr: true,
 			errMsg:  "unknown condition type",
 		},
+		{
+			name: "feature_gate condition type is valid",
+			yaml: `
+schema_version: "1.0.0"
+gates:
+  - id: fg_gate
+    name: "Feature Gate"
+    type: pre_task
+    rules:
+      - id: fg_rule
+        condition:
+          type: feature_gate
+    action:
+      on_pass: allow
+      on_fail: block
+`,
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {

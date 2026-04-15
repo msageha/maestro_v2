@@ -424,10 +424,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 				len(input.Tasks), targetPhase.Constraints.MaxTasks, opts.PhaseName)}
 		}
 		if len(targetPhase.Constraints.AllowedBloomLevels) > 0 {
-			allowedBloom := make(map[int]bool, len(targetPhase.Constraints.AllowedBloomLevels))
-			for _, l := range targetPhase.Constraints.AllowedBloomLevels {
-				allowedBloom[l] = true
-			}
+			allowedBloom := buildAllowedBloomMap(targetPhase.Constraints.AllowedBloomLevels)
 			for _, t := range input.Tasks {
 				if t.BloomLevel > 0 && !allowedBloom[t.BloomLevel] {
 					if rbErr := rollbackPhaseFillToAwaiting(sm, state, targetPhaseIdx, opts.CommandID); rbErr != nil {

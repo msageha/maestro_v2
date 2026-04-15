@@ -123,6 +123,7 @@ func rollbackRetryQueueEntries(maestroDir string, written []retryQueueTask, lock
 			queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(rb.workerID))
 			data, err := os.ReadFile(queueFile) //nolint:gosec // queueFile is constructed from a controlled application queue directory
 			if err != nil {
+				log.Printf("[WARN] rollback: read queue %s: %v", queueFile, err)
 				return
 			}
 			var tq model.TaskQueue

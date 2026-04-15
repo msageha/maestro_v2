@@ -209,17 +209,7 @@ func ValidatePhaseFillInput(tasks []TaskInput, phase model.Phase) *ValidationErr
 				len(tasks), phase.Constraints.MaxTasks))
 		}
 
-		allowedBloom := make(map[int]bool)
-		if len(phase.Constraints.AllowedBloomLevels) > 0 {
-			for _, l := range phase.Constraints.AllowedBloomLevels {
-				allowedBloom[l] = true
-			}
-		} else {
-			// Default: all levels allowed
-			for l := BloomLevelMin; l <= BloomLevelMax; l++ {
-				allowedBloom[l] = true
-			}
-		}
+		allowedBloom := buildAllowedBloomMap(phase.Constraints.AllowedBloomLevels)
 
 		for i, task := range tasks {
 			if task.BloomLevel > 0 && !allowedBloom[task.BloomLevel] {

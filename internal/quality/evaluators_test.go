@@ -372,6 +372,168 @@ func TestScriptEvaluator_CompiledScriptTakesPrecedence(t *testing.T) {
 // fieldValidationEvaluator — CaseSensitive tests
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// validateScriptForLanguage — Python language-specific detection
+// ---------------------------------------------------------------------------
+
+func TestValidateScriptForLanguage_PythonDangerousPatterns(t *testing.T) {
+	dangerous := []struct {
+		name   string
+		script string
+	}{
+		{"os.system", `import os; os.system("id")`},
+		{"os.popen", `os.popen("ls")`},
+		{"subprocess", `import subprocess; subprocess.run(["ls"])`},
+		{"from subprocess", `from subprocess import check_output`},
+		{"__import__", `__import__('os').system('id')`},
+		{"importlib", `import importlib; importlib.import_module('os')`},
+		{"eval", `eval('1+1')`},
+		{"exec", `exec('print(1)')`},
+		{"socket.socket", `import socket; s = socket.socket()`},
+		{"ctypes", `import ctypes`},
+	}
+
+	for _, tc := range dangerous {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateScriptForLanguage(tc.script, "python")
+			require.Error(t, err, "expected Python dangerous pattern to be blocked: %s", tc.script)
+			assert.Contains(t, err.Error(), "dangerous command pattern")
+		})
+	}
+}
+
+func TestValidateScriptForLanguage_PythonSafeScripts(t *testing.T) {
+	safe := []string{
+		"print('hello world')",
+		"x = 1 + 2",
+		"import json; json.dumps({'key': 'value'})",
+		"import math; math.sqrt(4)",
+		"result = [i for i in range(10)]",
+	}
+
+	for _, s := range safe {
+		t.Run(s, func(t *testing.T) {
+			assert.NoError(t, validateScriptForLanguage(s, "python"))
+		})
+	}
+}
+
+func TestValidateScriptForLanguage_PythonCommonPatternsApply(t *testing.T) {
+	// Common dangerous patterns (privilege escalation, destructive commands)
+	// should still be checked for Python scripts even though they're shell-syntax
+	dangerous := []struct {
+		name   string
+		script string
+	}{
+		{"sudo in string", `os.system("sudo rm -rf /tmp")`},
+		{"rm -rf in string", `cmd = "rm -rf /var/data"`},
+	}
+
+	for _, tc := range dangerous {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateScriptForLanguage(tc.script, "python")
+			require.Error(t, err, "expected common dangerous pattern to be blocked in Python: %s", tc.script)
+		})
+	}
+}
+
+func TestValidateScriptForLanguage_ShellBypassNotAppliedToPython(t *testing.T) {
+	// Shell bypass patterns (like 'sh -c', heredocs) are not relevant for Python
+	// and should NOT be applied to Python scripts. Pure Python code that happens
+	// to contain these strings (e.g., in a string literal) should not be blocked
+	// if it doesn't match common or Python-specific patterns.
+	scripts := []string{
+		// Python code that contains 'sh -c' as data, not as a shell command
+		`config = {"shell": "sh -c echo test"}`,
+	}
+
+	for _, s := range scripts {
+		t.Run(s, func(t *testing.T) {
+			// Should pass for Python (shell bypass not applied)
+			assert.NoError(t, validateScriptForLanguage(s, "python"),
+				"shell bypass pattern should not block Python script")
+			// Should be blocked for shell (bypass pattern applies)
+			assert.Error(t, validateScriptForLanguage(s, "bash"),
+				"shell bypass pattern should block shell script")
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M28: Strengthened eval/bypass patterns
+// ---------------------------------------------------------------------------
+
+func TestValidateScript_QuotedEvalBlocked(t *testing.T) {
+	scripts := []struct {
+		name   string
+		script string
+	}{
+		{"single-quoted eval", `'eval' $PAYLOAD`},
+		{"double-quoted eval", `"eval" $PAYLOAD`},
+		{"eval with empty quotes", `eval'' $PAYLOAD`},
+	}
+
+	for _, tc := range scripts {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateScript(tc.script)
+			require.Error(t, err, "expected quoted eval to be blocked: %s", tc.script)
+			assert.Contains(t, err.Error(), "dangerous command pattern")
+		})
+	}
+}
+
+func TestValidateScript_SubstringExtractionWithSpace(t *testing.T) {
+	// ${var: 0:1} with space before digit should be caught
+	scripts := []string{
+		`${PATH: 0:1}`,
+		`${PATH:	0:1}`, // tab before digit
+	}
+
+	for _, s := range scripts {
+		t.Run(s, func(t *testing.T) {
+			err := validateScript(s)
+			require.Error(t, err, "expected substring extraction with space to be blocked: %s", s)
+			assert.Contains(t, err.Error(), "dangerous command pattern")
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// M27: Type-aware compareValues
+// ---------------------------------------------------------------------------
+
+func TestFieldValidation_CompareValuesTypeAware(t *testing.T) {
+	eval := &fieldValidationEvaluator{}
+
+	tests := []struct {
+		name          string
+		a, b          interface{}
+		caseSensitive bool
+		want          bool
+	}{
+		{"int vs int equal", 42, 42, true, true},
+		{"int vs float64 equal", 1, 1.0, true, true},
+		{"float64 vs float64 equal", 3.14, 3.14, true, true},
+		{"int vs float64 not equal", 1, 1.5, true, false},
+		{"bool true vs true", true, true, true, true},
+		{"bool true vs false", true, false, true, false},
+		{"bool vs string", true, "true", true, true},
+		{"string vs string", "abc", "abc", true, true},
+		{"int vs string representation", 42, "42", true, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := eval.compareValues(tt.a, tt.b, tt.caseSensitive)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// fieldValidationEvaluator — CaseSensitive tests
+// ---------------------------------------------------------------------------
+
 func TestFieldValidation_CaseSensitiveEquals(t *testing.T) {
 	eval := &fieldValidationEvaluator{}
 	ctx := context.Background()

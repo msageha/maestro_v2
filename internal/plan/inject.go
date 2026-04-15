@@ -64,6 +64,13 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 		if existingTaskID, ok := state.IdempotencyKeys[opts.IdempotencyKey]; ok {
 			// Look up the assigned worker from queue files to populate the response
 			worker, mdl := lookupTaskAssignment(opts.MaestroDir, existingTaskID, opts.Config.Agents.Workers)
+			// If lookup fails (queue archived/cleaned), provide sensible defaults
+			if worker == "" {
+				worker = "unknown"
+			}
+			if mdl == "" {
+				mdl = GetModelForBloomLevel(opts.BloomLevel, opts.Config.Agents.Workers.Boost)
+			}
 			return &InjectResult{
 				TaskID:       existingTaskID,
 				Worker:       worker,
@@ -128,11 +135,21 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 		state.TaskDependencies[newTaskID] = opts.BlockedBy
 	}
 
-	// Add to phase if the blocked_by tasks belong to one
+	// Add to phase: if blocked_by references exist, use the first dependency's phase;
+	// otherwise, add to the current (first non-terminal) phase or phase 0.
 	if len(opts.BlockedBy) > 0 {
 		if phase, phaseIdx := findPhaseForTask(state, opts.BlockedBy[0]); phase != nil {
 			state.Phases[phaseIdx].TaskIDs = append(state.Phases[phaseIdx].TaskIDs, newTaskID)
 		}
+	} else if len(state.Phases) > 0 {
+		targetIdx := 0
+		for i, p := range state.Phases {
+			if !model.IsPhaseTerminal(p.Status) {
+				targetIdx = i
+				break
+			}
+		}
+		state.Phases[targetIdx].TaskIDs = append(state.Phases[targetIdx].TaskIDs, newTaskID)
 	}
 
 	// Record idempotency key for deduplication on retry

@@ -238,6 +238,13 @@ func CanComplete(state *model.CommandState) (model.PlanStatus, error) {
 			if !model.IsPhaseTerminal(phase.Status) {
 				return "", &planValidationError{Msg: fmt.Sprintf("phase %q is not terminal (status: %s)", phase.Name, phase.Status)}
 			}
+
+			// Verify Phase-Task consistency: all tasks within a terminal phase must also be terminal
+			for _, tid := range phase.TaskIDs {
+				if ts, ok := state.TaskStates[tid]; ok && !model.IsTerminal(ts) {
+					return "", &planValidationError{Msg: fmt.Sprintf("phase %q is terminal (%s) but task %s is non-terminal (%s)", phase.Name, phase.Status, tid, ts)}
+				}
+			}
 		}
 	}
 

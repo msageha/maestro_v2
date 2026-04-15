@@ -43,14 +43,16 @@ type TaskAssignmentRequest struct {
 }
 
 // GetModelForBloomLevel returns the model name appropriate for the given Bloom taxonomy level.
+// BloomLevel 0 (unset/invalid) defaults to "sonnet" as a safe fallback.
+// BloomLevel 1-3 maps to "sonnet", 4-6 maps to "opus".
 func GetModelForBloomLevel(bloomLevel int, boost bool) string {
 	if boost {
 		return "opus"
 	}
-	if bloomLevel >= 1 && bloomLevel <= 3 {
-		return "sonnet"
+	if bloomLevel >= 4 && bloomLevel <= 6 {
+		return "opus"
 	}
-	return "opus"
+	return "sonnet"
 }
 
 // GetWorkerModel returns the model configured for the given worker, falling back to the default.
@@ -140,6 +142,10 @@ func AssignWorkers(
 
 // BuildWorkerStates reads queue files to build the current load state for each configured worker.
 func BuildWorkerStates(maestroDir string, config model.WorkerConfig) ([]WorkerState, error) {
+	if config.Count <= 0 {
+		return nil, fmt.Errorf("invalid worker count %d: must be greater than 0", config.Count)
+	}
+
 	var states []WorkerState
 
 	for i := 1; i <= config.Count; i++ {

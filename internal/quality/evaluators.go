@@ -57,8 +57,8 @@ var (
 	bypassPreventionPatterns = []string{
 		// Payload decoding
 		`(?i)\b(?:base64|openssl\s+base64)\b[^\n;]*(?:-d|--decode)`,
-		// eval with variable/substitution
-		`(?i)\b(?:eval|builtin\s+eval|command\s+eval)\b\s+\S`,
+		// eval with variable/substitution (also catches quoted eval like 'eval' $VAR)
+		`(?i)\b(?:eval|builtin\s+eval|command\s+eval)\b['"]*\s+\S`,
 		// Heredoc into shell or interpreter
 		`(?i)\b(?:bash|sh|zsh|dash|ksh|python[0-9.]*|perl|ruby|node)\b[^\n;|&]*<<-?\s*`,
 		// Inline interpreter code execution
@@ -70,7 +70,7 @@ var (
 		`(?i)\blua\b[^\n;|&]*\s+-e\b`,
 		// Shell variable expansion / obfuscation
 		`\$\{!`,                                 // indirect variable expansion (${!var})
-		`\$\{[^}]+:[0-9]`,                       // substring extraction (${var:0:1})
+		`\$\{[^}]+:\s*[0-9]`,                    // substring extraction (${var:0:1}, ${var: 0:1})
 		`(?i)\bprintf\b[^\n;|&]*\\x[0-9a-fA-F]`, // printf with hex escapes
 		`(?i)\bexport\s+PATH\b`,                 // PATH override
 		`(?i)(?:^|[;\r\n|&])\s*source\s+\S`,     // source external scripts
@@ -105,21 +105,44 @@ var (
 // Compiled once at init time via sync.Once.
 var dangerousPatterns []*regexp.Regexp
 
+// Language-specific compiled pattern sets for validateScriptForLanguage.
+var (
+	commonDangerousPatterns []*regexp.Regexp // privilege escalation, destructive, RCE
+	shellBypassPatterns     []*regexp.Regexp // shell-specific bypass prevention
+	pythonSpecificPatterns  []*regexp.Regexp // Python-specific dangers
+)
+
 var dangerousPatternsOnce sync.Once
+
+// compilePatterns compiles a slice of raw regex strings into []*regexp.Regexp.
+func compilePatterns(raw []string) []*regexp.Regexp {
+	patterns := make([]*regexp.Regexp, 0, len(raw))
+	for _, r := range raw {
+		patterns = append(patterns, regexp.MustCompile(r))
+	}
+	return patterns
+}
 
 func initDangerousPatterns() {
 	dangerousPatternsOnce.Do(func() {
-		raw := make([]string, 0, len(privilegeEscalationPatterns)+len(destructiveCommandPatterns)+len(remoteCodeExecutionPatterns)+len(bypassPreventionPatterns)+len(pythonDangerousPatterns))
-		raw = append(raw, privilegeEscalationPatterns...)
-		raw = append(raw, destructiveCommandPatterns...)
-		raw = append(raw, remoteCodeExecutionPatterns...)
-		raw = append(raw, bypassPreventionPatterns...)
-		raw = append(raw, pythonDangerousPatterns...)
+		// Common patterns (applicable to all languages)
+		commonRaw := make([]string, 0, len(privilegeEscalationPatterns)+len(destructiveCommandPatterns)+len(remoteCodeExecutionPatterns))
+		commonRaw = append(commonRaw, privilegeEscalationPatterns...)
+		commonRaw = append(commonRaw, destructiveCommandPatterns...)
+		commonRaw = append(commonRaw, remoteCodeExecutionPatterns...)
+		commonDangerousPatterns = compilePatterns(commonRaw)
 
-		dangerousPatterns = make([]*regexp.Regexp, 0, len(raw))
-		for _, r := range raw {
-			dangerousPatterns = append(dangerousPatterns, regexp.MustCompile(r))
-		}
+		// Shell-specific bypass prevention patterns
+		shellBypassPatterns = compilePatterns(bypassPreventionPatterns)
+
+		// Python-specific patterns
+		pythonSpecificPatterns = compilePatterns(pythonDangerousPatterns)
+
+		// Combined list (backward compatibility for validateScript)
+		dangerousPatterns = make([]*regexp.Regexp, 0, len(commonDangerousPatterns)+len(shellBypassPatterns)+len(pythonSpecificPatterns))
+		dangerousPatterns = append(dangerousPatterns, commonDangerousPatterns...)
+		dangerousPatterns = append(dangerousPatterns, shellBypassPatterns...)
+		dangerousPatterns = append(dangerousPatterns, pythonSpecificPatterns...)
 	})
 }
 
@@ -229,8 +252,25 @@ func (e *fieldValidationEvaluator) evalNotIn(value, list interface{}, caseSensit
 	return !e.isInList(value, list, caseSensitive)
 }
 
-// compareValues compares two values for equality
+// compareValues compares two values for equality with type-aware comparison.
+// Numeric types are compared numerically, booleans are compared directly,
+// and all other types fall back to string comparison.
 func (e *fieldValidationEvaluator) compareValues(a, b interface{}, caseSensitive bool) bool {
+	// Numeric comparison: avoids false mismatches like 1 (int) vs 1.0 (float64)
+	if aNum, aErr := toFloat64(a); aErr == nil {
+		if bNum, bErr := toFloat64(b); bErr == nil {
+			return aNum == bNum
+		}
+	}
+
+	// Boolean comparison: avoids "true" == true via string coercion
+	if aBool, aOk := a.(bool); aOk {
+		if bBool, bOk := b.(bool); bOk {
+			return aBool == bBool
+		}
+	}
+
+	// Fall back to string comparison
 	aStr := fmt.Sprintf("%v", a)
 	bStr := fmt.Sprintf("%v", b)
 
@@ -432,8 +472,8 @@ func (e *scriptEvaluator) Evaluate(ctx context.Context, condition *RuleCondition
 		}
 	}
 
-	// Validate script content
-	if err := validateScript(condition.Script); err != nil {
+	// Validate script content with language-specific patterns
+	if err := validateScriptForLanguage(condition.Script, condition.Language); err != nil {
 		return false, err
 	}
 
@@ -496,14 +536,39 @@ func (e *scriptEvaluator) Evaluate(ctx context.Context, condition *RuleCondition
 }
 
 // validateScript checks that the script content is safe to execute.
+// It applies all patterns regardless of language (backward compatibility).
 func validateScript(script string) error {
+	return validateScriptForLanguage(script, "")
+}
+
+// validateScriptForLanguage checks that the script content is safe for the
+// given language. Shell scripts are checked against common + shell bypass +
+// Python-invocation patterns. Python scripts are checked against common +
+// Python-specific patterns. This prevents Python scripts from bypassing
+// shell-oriented detection by using Python-native dangerous constructs.
+func validateScriptForLanguage(script, language string) error {
 	if strings.TrimSpace(script) == "" {
 		return fmt.Errorf("script must not be empty")
 	}
 	if len(script) > maxScriptLength {
 		return fmt.Errorf("script exceeds maximum length (%d > %d bytes)", len(script), maxScriptLength)
 	}
-	for _, pat := range dangerousPatterns {
+
+	initDangerousPatterns()
+
+	var patterns []*regexp.Regexp
+	switch language {
+	case "python":
+		// Python scripts: common dangers + Python-specific patterns
+		patterns = make([]*regexp.Regexp, 0, len(commonDangerousPatterns)+len(pythonSpecificPatterns))
+		patterns = append(patterns, commonDangerousPatterns...)
+		patterns = append(patterns, pythonSpecificPatterns...)
+	default:
+		// Shell scripts (bash, sh, empty): all patterns combined
+		patterns = dangerousPatterns
+	}
+
+	for _, pat := range patterns {
 		if pat.MatchString(script) {
 			log.Printf("quality/script: BLOCKED dangerous pattern %q in script", pat.String())
 			return fmt.Errorf("script contains dangerous command pattern: %s", pat.String())

@@ -148,6 +148,9 @@ func cascadeRecoverRecursive(
 		if err != nil {
 			return recovered, fmt.Errorf("worker assignment for cascade %s: %w", cancelledTaskID, err)
 		}
+		if len(assignments) == 0 {
+			return recovered, fmt.Errorf("worker assignment for cascade %s: no assignments returned", cancelledTaskID)
+		}
 		assignment := assignments[0]
 
 		// Apply state mutations for the recovered task
@@ -197,6 +200,9 @@ func updateTaskStateForCascade(state *model.CommandState, cancelledTaskID, newTa
 
 	// Add to phase
 	if phase, phaseIdx := findPhaseForTask(state, cancelledTaskID); phase != nil {
+		if phaseIdx < 0 || phaseIdx >= len(state.Phases) {
+			return fmt.Errorf("cascade state mutation: phaseIdx %d out of range [0, %d)", phaseIdx, len(state.Phases))
+		}
 		state.Phases[phaseIdx].TaskIDs = append(state.Phases[phaseIdx].TaskIDs, newTaskID)
 		if phase.Status == model.PhaseStatusFailed {
 			now := nowUTC()

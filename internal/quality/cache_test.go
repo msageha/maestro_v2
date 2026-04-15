@@ -163,6 +163,56 @@ func TestResultCache_GetReturnsCopy(t *testing.T) {
 	}
 }
 
+func TestResultCache_DeepCopySlices(t *testing.T) {
+	c := newResultCache(10, time.Minute)
+	key := &cacheKey{GateID: "g1", GateVersionHash: "v1", ContextFingerprint: "c1"}
+	orig := &EvaluationResult{
+		GateID: "g1",
+		Passed: false,
+		FailedGates: []string{"gate1", "gate2"},
+		RuleResults: []RuleResult{
+			{RuleID: "r1", Passed: true, Message: "ok"},
+			{RuleID: "r2", Passed: false, Message: "fail"},
+		},
+	}
+
+	c.Set(key, orig)
+
+	got := c.Get(key)
+
+	// Mutate the returned slices
+	got.FailedGates[0] = "mutated"
+	got.RuleResults[0].Message = "mutated"
+
+	// Verify the cache is not polluted
+	got2 := c.Get(key)
+	if got2.FailedGates[0] != "gate1" {
+		t.Errorf("FailedGates[0] = %q, want %q; cache was polluted by slice mutation", got2.FailedGates[0], "gate1")
+	}
+	if got2.RuleResults[0].Message != "ok" {
+		t.Errorf("RuleResults[0].Message = %q, want %q; cache was polluted by slice mutation", got2.RuleResults[0].Message, "ok")
+	}
+}
+
+func TestResultCache_SetDeepCopiesInput(t *testing.T) {
+	c := newResultCache(10, time.Minute)
+	key := &cacheKey{GateID: "g1", GateVersionHash: "v1", ContextFingerprint: "c1"}
+	orig := &EvaluationResult{
+		GateID:      "g1",
+		FailedGates: []string{"gate1"},
+	}
+
+	c.Set(key, orig)
+
+	// Mutate the original after Set
+	orig.FailedGates[0] = "mutated"
+
+	got := c.Get(key)
+	if got.FailedGates[0] != "gate1" {
+		t.Errorf("FailedGates[0] = %q, want %q; Set should deep copy input", got.FailedGates[0], "gate1")
+	}
+}
+
 func TestResultCache_ConcurrentAccess(t *testing.T) {
 	c := newResultCache(100, time.Minute)
 	var wg sync.WaitGroup

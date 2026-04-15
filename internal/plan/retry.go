@@ -268,6 +268,12 @@ func validateRetryRequest(sm *StateManager, opts RetryOptions) (*retryContext, e
 			if err != nil {
 				return nil, fmt.Errorf("resolve blocked_by via lineage: %w", err)
 			}
+			// Verify resolved dependencies still exist in task states
+			for _, dep := range blockedBy {
+				if _, ok := state.TaskStates[dep]; !ok {
+					return nil, &planValidationError{Msg: fmt.Sprintf("resolved dependency %s (via lineage) not found in command state", dep)}
+				}
+			}
 		}
 	}
 

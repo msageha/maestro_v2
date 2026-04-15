@@ -44,7 +44,11 @@ func (c *resultCache) Get(key *cacheKey) *EvaluationResult {
 		return nil
 	}
 
-	item := elem.Value.(*cacheItem)
+	item, ok := elem.Value.(*cacheItem)
+	if !ok {
+		c.removeElement(elem)
+		return nil
+	}
 
 	// Check if expired and remove stale entry
 	if c.nowFunc().After(item.expiresAt) {
@@ -55,9 +59,8 @@ func (c *resultCache) Get(key *cacheKey) *EvaluationResult {
 	// Move to front (most recently used)
 	c.lru.MoveToFront(elem)
 
-	// Return a copy to prevent modification
-	result := *item.value
-	return &result
+	// Return a deep copy to prevent cache pollution
+	return deepCopyResult(item.value)
 }
 
 func (c *resultCache) Set(key *cacheKey, value *EvaluationResult) {
@@ -66,20 +69,24 @@ func (c *resultCache) Set(key *cacheKey, value *EvaluationResult) {
 
 	keyStr := c.keyToString(key)
 
+	// Deep copy to prevent external mutation from polluting the cache
+	stored := deepCopyResult(value)
+
 	// Check if already exists
 	if elem, exists := c.items[keyStr]; exists {
 		// Update existing item
 		c.lru.MoveToFront(elem)
-		item := elem.Value.(*cacheItem)
-		item.value = value
-		item.expiresAt = c.nowFunc().Add(c.ttl)
+		if item, ok := elem.Value.(*cacheItem); ok {
+			item.value = stored
+			item.expiresAt = c.nowFunc().Add(c.ttl)
+		}
 		return
 	}
 
 	// Add new item
 	item := &cacheItem{
 		key:       keyStr,
-		value:     value,
+		value:     stored,
 		expiresAt: c.nowFunc().Add(c.ttl),
 	}
 
@@ -119,8 +126,9 @@ func (c *resultCache) evictOldest() {
 // Caller must hold c.mu.
 func (c *resultCache) removeElement(elem *list.Element) {
 	c.lru.Remove(elem)
-	item := elem.Value.(*cacheItem)
-	delete(c.items, item.key)
+	if item, ok := elem.Value.(*cacheItem); ok {
+		delete(c.items, item.key)
+	}
 }
 
 // cleanExpired removes expired items from the cache.
@@ -129,9 +137,10 @@ func (c *resultCache) cleanExpired() {
 	now := c.nowFunc()
 	for elem := c.lru.Back(); elem != nil; {
 		prev := elem.Prev()
-		item := elem.Value.(*cacheItem)
-		if now.After(item.expiresAt) {
-			c.removeElement(elem)
+		if item, ok := elem.Value.(*cacheItem); ok {
+			if now.After(item.expiresAt) {
+				c.removeElement(elem)
+			}
 		}
 		elem = prev
 	}
@@ -162,9 +171,10 @@ func (c *resultCache) Stats() cacheStats {
 	// Count expired items
 	now := c.nowFunc()
 	for elem := c.lru.Front(); elem != nil; elem = elem.Next() {
-		item := elem.Value.(*cacheItem)
-		if now.After(item.expiresAt) {
-			stats.Expired++
+		if item, ok := elem.Value.(*cacheItem); ok {
+			if now.After(item.expiresAt) {
+				stats.Expired++
+			}
 		}
 	}
 
@@ -176,4 +186,19 @@ type cacheStats struct {
 	Size    int
 	MaxSize int
 	Expired int
+}
+
+// deepCopyResult creates a deep copy of an EvaluationResult, including
+// its slice fields, to prevent cache pollution through shared backing arrays.
+func deepCopyResult(src *EvaluationResult) *EvaluationResult {
+	result := *src
+	if src.FailedGates != nil {
+		result.FailedGates = make([]string, len(src.FailedGates))
+		copy(result.FailedGates, src.FailedGates)
+	}
+	if src.RuleResults != nil {
+		result.RuleResults = make([]RuleResult, len(src.RuleResults))
+		copy(result.RuleResults, src.RuleResults)
+	}
+	return &result
 }

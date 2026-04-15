@@ -205,7 +205,11 @@ func (e *Engine) Evaluate(ctx context.Context, gateType GateType, evalCtx map[st
 	contextWrapper := &mapEvaluationContext{data: evalCtx}
 
 	// Generate cache key
-	cacheKey := e.generateCacheKey(string(gateType), evalCtx)
+	cacheKey, keyErr := e.generateCacheKey(string(gateType), evalCtx)
+	if keyErr != nil {
+		// Skip caching on marshal failure to avoid collisions
+		return e.evaluateUncached(ctx, gateType, contextWrapper)
+	}
 
 	// Try to get from cache
 	if cached := e.cache.Get(cacheKey); cached != nil {
@@ -421,7 +425,8 @@ func (e *Engine) shouldTriggerGate(gate *compiledGate, evalCtx EvaluationContext
 	// Check bloom level filter
 	if len(trigger.BloomLevels) > 0 {
 		bloomLevel, ok := evalCtx.GetField("task.bloom_level")
-		if !ok || !slices.Contains(trigger.BloomLevels, toInt(bloomLevel)) {
+		bloomInt, bloomErr := toInt(bloomLevel)
+		if !ok || bloomErr != nil || !slices.Contains(trigger.BloomLevels, bloomInt) {
 			return false
 		}
 	}
@@ -456,14 +461,14 @@ func (e *Engine) shouldTriggerGate(gate *compiledGate, evalCtx EvaluationContext
 	return true
 }
 
-// generateCacheKey generates a cache key for the evaluation
-func (e *Engine) generateCacheKey(gateType string, context map[string]interface{}) *cacheKey {
+// generateCacheKey generates a cache key for the evaluation.
+// Returns an error if the context cannot be deterministically serialized,
+// in which case the caller should skip caching to avoid collisions.
+func (e *Engine) generateCacheKey(gateType string, context map[string]interface{}) (*cacheKey, error) {
 	// Create a canonical JSON representation
 	contextData, err := json.Marshal(context)
 	if err != nil {
-		// Fallback: use fmt.Sprintf to avoid hashing nil data which would
-		// produce an identical key for all failed marshals.
-		contextData = []byte(fmt.Sprintf("%v", context))
+		return nil, fmt.Errorf("failed to marshal context for cache key: %w", err)
 	}
 	hash := sha256.Sum256(contextData)
 
@@ -471,7 +476,7 @@ func (e *Engine) generateCacheKey(gateType string, context map[string]interface{
 		GateID:             gateType,
 		GateVersionHash:    e.configChecksum,
 		ContextFingerprint: hex.EncodeToString(hash[:]),
-	}
+	}, nil
 }
 
 // getEvaluator retrieves a registered evaluator with proper read-lock protection.
@@ -486,19 +491,22 @@ func (e *Engine) getEvaluator(condType ConditionType) (RuleEvaluator, bool) {
 
 // Helper functions
 
-func toInt(v interface{}) int {
+func toInt(v interface{}) (int, error) {
 	switch val := v.(type) {
 	case int:
-		return val
+		return val, nil
 	case int64:
-		return int(val)
+		return int(val), nil
 	case float64:
-		return int(val)
+		return int(val), nil
 	case string:
-		i, _ := strconv.Atoi(val)
-		return i
+		i, err := strconv.Atoi(val)
+		if err != nil {
+			return 0, fmt.Errorf("cannot convert string %q to int: %w", val, err)
+		}
+		return i, nil
 	default:
-		return 0
+		return 0, fmt.Errorf("cannot convert %T to int", v)
 	}
 }
 
@@ -565,13 +573,19 @@ func (r *FeatureGateRule) Evaluate(_ context.Context, _ *RuleCondition, evalCtx 
 func (r *FeatureGateRule) buildComplexityInput(evalCtx EvaluationContext) ComplexityInput {
 	var input ComplexityInput
 	if v, ok := evalCtx.GetField("task.file_count"); ok {
-		input.FileCount = toInt(v)
+		if i, err := toInt(v); err == nil {
+			input.FileCount = i
+		}
 	}
 	if v, ok := evalCtx.GetField("task.dependency_depth"); ok {
-		input.DependencyDepth = toInt(v)
+		if i, err := toInt(v); err == nil {
+			input.DependencyDepth = i
+		}
 	}
 	if v, ok := evalCtx.GetField("task.bloom_level"); ok {
-		input.BloomLevel = toInt(v)
+		if i, err := toInt(v); err == nil {
+			input.BloomLevel = i
+		}
 	}
 	if v, ok := evalCtx.GetField("task.past_repair_rate"); ok {
 		if f, err := toFloat64(v); err == nil {
@@ -579,7 +593,9 @@ func (r *FeatureGateRule) buildComplexityInput(evalCtx EvaluationContext) Comple
 		}
 	}
 	if v, ok := evalCtx.GetField("task.expected_path_count"); ok {
-		input.ExpectedPathCount = toInt(v)
+		if i, err := toInt(v); err == nil {
+			input.ExpectedPathCount = i
+		}
 	}
 	return input
 }

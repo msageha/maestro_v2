@@ -61,6 +61,13 @@ func (r *PlanStateReader) InvalidateAll() {
 
 // loadStateWithCache returns the cached state if still within TTL, otherwise loads
 // from disk via StateManager and updates the cache.
+//
+// TOCTOU note: There is a deliberate window between the cache-miss unlock and the
+// disk read (LoadState) where another goroutine could load and cache the same command.
+// This is acceptable because (a) the cache is TTL-based and a duplicate load only wastes
+// a single extra read, and (b) state mutations go through StateManager under the command
+// lock, so the loaded data is always a consistent snapshot. Holding the mutex across the
+// disk read would serialize all readers and defeat the purpose of the cache.
 func (r *PlanStateReader) loadStateWithCache(commandID string) (*model.CommandState, error) {
 	now := time.Now()
 

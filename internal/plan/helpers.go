@@ -18,6 +18,22 @@ func nowUTC() string {
 	return time.Now().UTC().Format(time.RFC3339)
 }
 
+// buildAllowedBloomMap builds a set of allowed bloom levels from the given slice.
+// If the slice is empty, all levels from BloomLevelMin to BloomLevelMax are allowed.
+func buildAllowedBloomMap(allowedLevels []int) map[int]bool {
+	m := make(map[int]bool)
+	if len(allowedLevels) > 0 {
+		for _, l := range allowedLevels {
+			m[l] = true
+		}
+	} else {
+		for l := BloomLevelMin; l <= BloomLevelMax; l++ {
+			m[l] = true
+		}
+	}
+	return m
+}
+
 // readModifyWriteResultFile performs the common read-modify-write pattern on the planner result file.
 // It reads the existing result file, calls modifyFn to apply changes, and atomically writes the result.
 // If modifyFn returns an error, the write is skipped and the error is returned.
