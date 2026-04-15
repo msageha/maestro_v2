@@ -267,3 +267,14 @@ func TestTask_GetDoneConditions(t *testing.T) {
 		})
 	}
 }
+
+func TestTask_GetDoneConditions_NilReceiver(t *testing.T) {
+	t.Parallel()
+	var task *Task
+	defer func() {
+		if r := recover(); r == nil {
+			t.Error("expected panic on nil receiver, but did not panic")
+		}
+	}()
+	_ = task.GetDoneConditions()
+}

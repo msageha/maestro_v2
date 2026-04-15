@@ -2,21 +2,18 @@ package model
 
 import "github.com/msageha/maestro_v2/internal/ptr"
 
-// Profile level constants (matching complexity levels).
+// Profile level constants — aliases for the canonical ComplexityLevel* constants.
 const (
-	ProfileLevelSimple   = "simple"
-	ProfileLevelStandard = "standard"
-	ProfileLevelComplex  = "complex"
-	ProfileLevelCritical = "critical"
+	ProfileLevelSimple   = ComplexityLevelSimple
+	ProfileLevelStandard = ComplexityLevelStandard
+	ProfileLevelComplex  = ComplexityLevelComplex
+	ProfileLevelCritical = ComplexityLevelCritical
 )
 
 // ValidateProfileLevel reports whether s is a known profile level.
+// Delegates to ValidateComplexityLevel as both share the same valid values.
 func ValidateProfileLevel(s string) bool {
-	switch s {
-	case ProfileLevelSimple, ProfileLevelStandard, ProfileLevelComplex, ProfileLevelCritical:
-		return true
-	}
-	return false
+	return ValidateComplexityLevel(s)
 }
 
 // DefaultFeatureProfiles returns the default feature profiles for all complexity levels.

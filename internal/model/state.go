@@ -25,24 +25,21 @@ type RetryTracking struct {
 // PhaseTracking groups phase lifecycle fields within CommandState.
 // Embedded with yaml:",inline" to maintain flat YAML serialization.
 type PhaseTracking struct {
-	Phases       []Phase        `yaml:"phases"`
-	phaseIDIndex map[string]int `yaml:"-"` // cached phaseID→slice index; lazily built
+	Phases []Phase `yaml:"phases"`
 }
 
-// PhaseIndex returns the slice index for the given phaseID using a lazily
-// built cache. Returns (index, true) if found, (-1, false) otherwise.
+// PhaseIndex returns the slice index for the given phaseID by linear search.
+// Returns (index, true) if found, (-1, false) otherwise.
+// Linear search is used instead of caching because the number of phases per
+// command is typically small, and a cache would risk returning stale data
+// when the Phases slice is modified.
 func (pt *PhaseTracking) PhaseIndex(phaseID string) (int, bool) {
-	if pt.phaseIDIndex == nil {
-		pt.phaseIDIndex = make(map[string]int, len(pt.Phases))
-		for i := range pt.Phases {
-			pt.phaseIDIndex[pt.Phases[i].PhaseID] = i
+	for i := range pt.Phases {
+		if pt.Phases[i].PhaseID == phaseID {
+			return i, true
 		}
 	}
-	idx, ok := pt.phaseIDIndex[phaseID]
-	if !ok {
-		return -1, false
-	}
-	return idx, true
+	return -1, false
 }
 
 // CommandState は単一コマンドの実行状態を表す。

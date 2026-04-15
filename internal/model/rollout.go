@@ -63,53 +63,35 @@ type RolloutConfig struct {
 
 // EffectiveEnabled returns the configured enabled flag or false as default.
 func (r RolloutConfig) EffectiveEnabled() bool {
-	if r.Enabled != nil {
-		return *r.Enabled
-	}
-	return false
+	return effectiveValue(r.Enabled, false)
 }
 
 // EffectiveMaxConcurrent returns the configured limit or 2 as default.
 // nil (unset) returns the default; explicit 0 returns 0.
 func (r RolloutConfig) EffectiveMaxConcurrent() int {
-	if r.MaxConcurrent != nil {
-		return *r.MaxConcurrent
-	}
-	return 2
+	return effectiveValue(r.MaxConcurrent, 2)
 }
 
 // EffectiveMaxParallelPerTask returns the configured limit or 2 as default.
 // nil (unset) returns the default; explicit 0 returns 0.
 func (r RolloutConfig) EffectiveMaxParallelPerTask() int {
-	if r.MaxParallelPerTask != nil {
-		return *r.MaxParallelPerTask
-	}
-	return 2
+	return effectiveValue(r.MaxParallelPerTask, 2)
 }
 
 // EffectiveMinBloomLevel returns the configured minimum Bloom level or 4 as default.
 // nil (unset) returns the default; explicit 0 returns 0.
 func (r RolloutConfig) EffectiveMinBloomLevel() int {
-	if r.MinBloomLevel != nil {
-		return *r.MinBloomLevel
-	}
-	return 4
+	return effectiveValue(r.MinBloomLevel, 4)
 }
 
 // EffectiveMaxExpectedPaths returns the configured limit or 10 as default.
 // nil (unset) returns the default; explicit 0 returns 0.
 func (r RolloutConfig) EffectiveMaxExpectedPaths() int {
-	if r.MaxExpectedPaths != nil {
-		return *r.MaxExpectedPaths
-	}
-	return 10
+	return effectiveValue(r.MaxExpectedPaths, 10)
 }
 
 // EffectiveMinFailureCount returns the configured minimum or 1 as default.
 // nil (unset) returns the default; explicit 0 returns 0.
 func (r RolloutConfig) EffectiveMinFailureCount() int {
-	if r.MinFailureCount != nil {
-		return *r.MinFailureCount
-	}
-	return 1
+	return effectiveValue(r.MinFailureCount, 1)
 }

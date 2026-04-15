@@ -98,13 +98,18 @@ type AgentConfig struct {
 	BasePromptMode string `yaml:"base_prompt_mode"`
 }
 
-// EffectiveBasePromptMode returns the configured base prompt mode or "append" as default.
-// Valid values: "replace" (--system-prompt), "append" (--append-system-prompt).
-func (a AgentConfig) EffectiveBasePromptMode() string {
-	if a.BasePromptMode == "replace" {
+// effectiveBasePromptMode returns "replace" if mode equals "replace", or "append" otherwise.
+func effectiveBasePromptMode(mode string) string {
+	if mode == "replace" {
 		return "replace"
 	}
 	return "append"
+}
+
+// EffectiveBasePromptMode returns the configured base prompt mode or "append" as default.
+// Valid values: "replace" (--system-prompt), "append" (--append-system-prompt).
+func (a AgentConfig) EffectiveBasePromptMode() string {
+	return effectiveBasePromptMode(a.BasePromptMode)
 }
 
 // WorkerConfig holds configuration for worker agents.
@@ -119,10 +124,7 @@ type WorkerConfig struct {
 // EffectiveBasePromptMode returns the configured base prompt mode or "append" as default.
 // Valid values: "replace" (--system-prompt), "append" (--append-system-prompt).
 func (w WorkerConfig) EffectiveBasePromptMode() string {
-	if w.BasePromptMode == "replace" {
-		return "replace"
-	}
-	return "append"
+	return effectiveBasePromptMode(w.BasePromptMode)
 }
 
 // --- ContinuousConfig ---

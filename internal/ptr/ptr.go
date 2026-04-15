@@ -1,6 +1,8 @@
 package ptr
 
 // Ptr returns a pointer to the given value.
+// The type-specific helpers (Bool, String, Int, Float64) are retained for readability
+// at call sites even though the generic Ptr[T] can replace them.
 func Ptr[T any](v T) *T { return &v }
 
 // Bool returns a pointer to the given bool value.

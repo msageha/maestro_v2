@@ -12,10 +12,11 @@ import (
 )
 
 // SanitizeEnvelopeField neutralises prompt-injection vectors in user-supplied
-// envelope fields.  It performs two transformations:
+// envelope fields.  It performs three transformations:
 //  1. Escapes "[maestro]" → "\\[maestro]" so injected content cannot mimic
 //     system control headers.
-//  2. Strips control characters (U+0000–U+001F) except newline (\n) and tab (\t).
+//  2. Replaces newline (\n) with a space to prevent header injection.
+//  3. Strips control characters (U+0000–U+001F) except tab (\t).
 //
 // Note: DATA boundary markers (BEGIN/END LEARNINGS/SKILLS) are sanitized
 // separately via SanitizeUserContent before system sections are appended,
@@ -23,7 +24,10 @@ import (
 func SanitizeEnvelopeField(s string) string {
 	s = strings.ReplaceAll(s, "[maestro]", "\\[maestro]")
 	return strings.Map(func(r rune) rune {
-		if unicode.IsControl(r) && r != '\n' && r != '\t' {
+		if r == '\n' {
+			return ' '
+		}
+		if unicode.IsControl(r) && r != '\t' {
 			return -1 // drop
 		}
 		return r
@@ -127,7 +131,9 @@ func BuildPlannerEnvelope(cmd model.Command, leaseEpoch, attempt int) string {
 func BuildOrchestratorNotificationEnvelope(commandID string, notificationType model.NotificationType) string {
 	terminalStatus := mapNotificationTypeToStatus(notificationType)
 	return fmt.Sprintf("[maestro] kind:%s command_id:%s status:%s\nresults/planner.yaml を確認してください",
-		notificationType, commandID, terminalStatus)
+		SanitizeEnvelopeField(string(notificationType)),
+		SanitizeEnvelopeField(commandID),
+		terminalStatus)
 }
 
 func mapNotificationTypeToStatus(nt model.NotificationType) string {
@@ -146,5 +152,9 @@ func mapNotificationTypeToStatus(nt model.NotificationType) string {
 // BuildTaskResultNotification creates a side-channel notification for the Planner.
 func BuildTaskResultNotification(commandID, taskID, workerID, taskStatus string) string {
 	return fmt.Sprintf("[maestro] kind:task_result command_id:%s task_id:%s worker_id:%s status:%s\nresults/%s.yaml を確認してください",
-		commandID, taskID, workerID, taskStatus, workerID)
+		SanitizeEnvelopeField(commandID),
+		SanitizeEnvelopeField(taskID),
+		SanitizeEnvelopeField(workerID),
+		SanitizeEnvelopeField(taskStatus),
+		SanitizeEnvelopeField(workerID))
 }

@@ -184,6 +184,12 @@ func TestVerifyConfig_Validate(t *testing.T) {
 			wantErr: true,
 			errMsg:  "dangerous character",
 		},
+		{
+			name:    "carriage return rejected",
+			config:  VerifyConfig{Build: []string{"cmd1\rcmd2"}},
+			wantErr: true,
+			errMsg:  "dangerous character",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

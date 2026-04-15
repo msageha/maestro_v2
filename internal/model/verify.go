@@ -44,7 +44,7 @@ type verifyFile struct {
 }
 
 // dangerousChars are shell meta-characters that are rejected by Validate.
-var dangerousChars = []string{";", "&&", "||", "`", "$(", "${", "|", "<", ">", "\n"}
+var dangerousChars = []string{";", "&&", "||", "`", "$(", "${", "|", "<", ">", "\n", "\r"}
 
 // DefaultVerifyConfig returns a minimal verification config with safe defaults.
 func DefaultVerifyConfig() *VerifyConfig {

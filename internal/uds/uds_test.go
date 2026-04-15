@@ -129,7 +129,10 @@ func TestFraming_LargePayload(t *testing.T) {
 		}
 
 		var params map[string]string
-		json.Unmarshal(req.Params, &params)
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			t.Errorf("unmarshal params: %v", err)
+			return
+		}
 		if len(params["content"]) != 1024*1024 {
 			t.Errorf("expected content length %d, got %d", 1024*1024, len(params["content"]))
 		}
@@ -225,7 +228,9 @@ func TestServer_HandlerExecution(t *testing.T) {
 
 	server.Handle("echo", func(req *Request) *Response {
 		var params map[string]string
-		json.Unmarshal(req.Params, &params)
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			return ErrorResponse(ErrCodeInternal, err.Error())
+		}
 		return SuccessResponse(params)
 	})
 
@@ -244,7 +249,9 @@ func TestServer_HandlerExecution(t *testing.T) {
 	}
 
 	var pingData map[string]string
-	json.Unmarshal(resp.Data, &pingData)
+	if err := json.Unmarshal(resp.Data, &pingData); err != nil {
+		t.Fatalf("unmarshal ping data: %v", err)
+	}
 	if pingData["status"] != "pong" {
 		t.Errorf("ping: got %q", pingData["status"])
 	}
@@ -259,7 +266,9 @@ func TestServer_HandlerExecution(t *testing.T) {
 	}
 
 	var echoData map[string]string
-	json.Unmarshal(resp.Data, &echoData)
+	if err := json.Unmarshal(resp.Data, &echoData); err != nil {
+		t.Fatalf("unmarshal echo data: %v", err)
+	}
 	if echoData["msg"] != "hello" {
 		t.Errorf("echo: got %q", echoData["msg"])
 	}
@@ -430,7 +439,9 @@ func TestSuccessResponse_WithData(t *testing.T) {
 	}
 
 	var data map[string]int
-	json.Unmarshal(resp.Data, &data)
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
 	if data["count"] != 42 {
 		t.Errorf("count: got %d", data["count"])
 	}
@@ -478,7 +489,9 @@ func TestSendContext_NormalOperation(t *testing.T) {
 	}
 
 	var data map[string]string
-	json.Unmarshal(resp.Data, &data)
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
 	if data["status"] != "pong" {
 		t.Errorf("expected pong, got %q", data["status"])
 	}
@@ -568,7 +581,9 @@ func TestSendCommandContext_NormalOperation(t *testing.T) {
 
 	server.Handle("echo", func(req *Request) *Response {
 		var params map[string]string
-		json.Unmarshal(req.Params, &params)
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			return ErrorResponse(ErrCodeInternal, err.Error())
+		}
 		return SuccessResponse(params)
 	})
 
@@ -589,7 +604,9 @@ func TestSendCommandContext_NormalOperation(t *testing.T) {
 	}
 
 	var data map[string]string
-	json.Unmarshal(resp.Data, &data)
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
 	if data["msg"] != "hi" {
 		t.Errorf("expected 'hi', got %q", data["msg"])
 	}
@@ -665,7 +682,9 @@ func TestServer_StartStopStart(t *testing.T) {
 	}
 
 	var data map[string]string
-	json.Unmarshal(resp.Data, &data)
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
 	if data["round"] != "2" {
 		t.Errorf("expected round 2, got %q", data["round"])
 	}

@@ -11,12 +11,3 @@ const (
 	// MutationStrategyCross creates mutations by combining multiple parent versions.
 	MutationStrategyCross mutationStrategy = "cross"
 )
-
-// validateMutationStrategy reports whether s is a known mutation strategy.
-func validateMutationStrategy(s string) bool {
-	switch mutationStrategy(s) {
-	case MutationStrategyDiff, MutationStrategyFull, MutationStrategyCross:
-		return true
-	}
-	return false
-}

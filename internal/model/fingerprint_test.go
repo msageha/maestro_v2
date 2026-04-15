@@ -3,6 +3,7 @@ package model
 import (
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestNormalizeError_LineNumbers(t *testing.T) {
@@ -88,31 +89,31 @@ func TestNormalizeError_Combined(t *testing.T) {
 }
 
 func TestComputeFingerprint_SameError(t *testing.T) {
-	fp1 := ComputeFingerprint("error in handler", "build")
-	fp2 := ComputeFingerprint("error in handler", "build")
+	fp1 := ComputeFingerprint("error in handler", "build", time.Now())
+	fp2 := ComputeFingerprint("error in handler", "build", time.Now())
 	if fp1.Hash != fp2.Hash {
 		t.Errorf("same error should produce same hash: %s != %s", fp1.Hash, fp2.Hash)
 	}
 }
 
 func TestComputeFingerprint_DifferentError(t *testing.T) {
-	fp1 := ComputeFingerprint("error in handler", "build")
-	fp2 := ComputeFingerprint("error in parser", "build")
+	fp1 := ComputeFingerprint("error in handler", "build", time.Now())
+	fp2 := ComputeFingerprint("error in parser", "build", time.Now())
 	if fp1.Hash == fp2.Hash {
 		t.Error("different errors should produce different hashes")
 	}
 }
 
 func TestComputeFingerprint_DifferentCategory(t *testing.T) {
-	fp1 := ComputeFingerprint("error in handler", "build")
-	fp2 := ComputeFingerprint("error in handler", "test")
+	fp1 := ComputeFingerprint("error in handler", "build", time.Now())
+	fp2 := ComputeFingerprint("error in handler", "test", time.Now())
 	if fp1.Hash == fp2.Hash {
 		t.Error("same error with different category should produce different hashes")
 	}
 }
 
 func TestComputeFingerprint_Fields(t *testing.T) {
-	fp := ComputeFingerprint("normalized error text", "lint")
+	fp := ComputeFingerprint("normalized error text", "lint", time.Now())
 	if fp.Category != "lint" {
 		t.Errorf("Category = %q, want %q", fp.Category, "lint")
 	}
@@ -132,16 +133,24 @@ func TestComputeFingerprint_RawErrorTruncation(t *testing.T) {
 	for i := range longError {
 		longError[i] = 'a'
 	}
-	fp := ComputeFingerprint(string(longError), "build")
+	fp := ComputeFingerprint(string(longError), "build", time.Now())
 	if len(fp.RawError) != maxRawErrorLength {
 		t.Errorf("RawError length = %d, want %d", len(fp.RawError), maxRawErrorLength)
+	}
+}
+
+func TestComputeFingerprint_ClockParameter(t *testing.T) {
+	fixed := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+	fp := ComputeFingerprint("error", "build", fixed)
+	if !fp.CreatedAt.Equal(fixed) {
+		t.Errorf("CreatedAt = %v, want %v", fp.CreatedAt, fixed)
 	}
 }
 
 func TestConsecutiveFailureTracker_Record(t *testing.T) {
 	tracker := NewConsecutiveFailureTracker(3)
 	for i := 0; i < 5; i++ {
-		tracker.Record(ComputeFingerprint("error", "build"))
+		tracker.Record(ComputeFingerprint("error", "build", time.Now()))
 	}
 	tracker.mu.Lock()
 	count := len(tracker.fingerprints)
@@ -153,7 +162,7 @@ func TestConsecutiveFailureTracker_Record(t *testing.T) {
 
 func TestConsecutiveFailureTracker_IsConsecutiveDuplicate(t *testing.T) {
 	tracker := NewConsecutiveFailureTracker(10)
-	fp := ComputeFingerprint("same error", "build")
+	fp := ComputeFingerprint("same error", "build", time.Now())
 
 	// Record 3 identical fingerprints
 	for i := 0; i < 3; i++ {
@@ -171,9 +180,9 @@ func TestConsecutiveFailureTracker_IsConsecutiveDuplicate(t *testing.T) {
 func TestConsecutiveFailureTracker_IsConsecutiveDuplicate_Mixed(t *testing.T) {
 	tracker := NewConsecutiveFailureTracker(10)
 
-	tracker.Record(ComputeFingerprint("error a", "build"))
-	tracker.Record(ComputeFingerprint("error b", "build"))
-	tracker.Record(ComputeFingerprint("error a", "build"))
+	tracker.Record(ComputeFingerprint("error a", "build", time.Now()))
+	tracker.Record(ComputeFingerprint("error b", "build", time.Now()))
+	tracker.Record(ComputeFingerprint("error a", "build", time.Now()))
 
 	if tracker.IsConsecutiveDuplicate(2) {
 		t.Error("mixed fingerprints should not be consecutive duplicate")
@@ -183,10 +192,10 @@ func TestConsecutiveFailureTracker_IsConsecutiveDuplicate_Mixed(t *testing.T) {
 func TestConsecutiveFailureTracker_IsConsecutiveDuplicate_BreakThenConsecutive(t *testing.T) {
 	tracker := NewConsecutiveFailureTracker(10)
 
-	tracker.Record(ComputeFingerprint("error a", "build"))
-	tracker.Record(ComputeFingerprint("error b", "build"))
-	tracker.Record(ComputeFingerprint("error b", "build"))
-	tracker.Record(ComputeFingerprint("error b", "build"))
+	tracker.Record(ComputeFingerprint("error a", "build", time.Now()))
+	tracker.Record(ComputeFingerprint("error b", "build", time.Now()))
+	tracker.Record(ComputeFingerprint("error b", "build", time.Now()))
+	tracker.Record(ComputeFingerprint("error b", "build", time.Now()))
 
 	if !tracker.IsConsecutiveDuplicate(3) {
 		t.Error("last 3 are same, should be consecutive duplicate with threshold 3")
@@ -220,8 +229,8 @@ func TestConsecutiveFailureTracker_LastFingerprint(t *testing.T) {
 		t.Error("empty tracker should return nil")
 	}
 
-	expected := ComputeFingerprint("last error", "test")
-	tracker.Record(ComputeFingerprint("first error", "build"))
+	expected := ComputeFingerprint("last error", "test", time.Now())
+	tracker.Record(ComputeFingerprint("first error", "build", time.Now()))
 	tracker.Record(expected)
 
 	got := tracker.LastFingerprint()
@@ -235,7 +244,7 @@ func TestConsecutiveFailureTracker_LastFingerprint(t *testing.T) {
 
 func TestConsecutiveFailureTracker_Reset(t *testing.T) {
 	tracker := NewConsecutiveFailureTracker(10)
-	tracker.Record(ComputeFingerprint("error", "build"))
+	tracker.Record(ComputeFingerprint("error", "build", time.Now()))
 	tracker.Reset()
 
 	if fp := tracker.LastFingerprint(); fp != nil {
@@ -256,7 +265,7 @@ func TestConsecutiveFailureTracker_ThreadSafety(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 100; j++ {
-				tracker.Record(ComputeFingerprint("error", "build"))
+				tracker.Record(ComputeFingerprint("error", "build", time.Now()))
 			}
 		}()
 	}

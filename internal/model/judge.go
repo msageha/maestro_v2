@@ -27,25 +27,16 @@ type JudgeConfig struct {
 
 // EffectiveEnabled returns the configured enabled flag or false as default.
 func (j JudgeConfig) EffectiveEnabled() bool {
-	if j.Enabled != nil {
-		return *j.Enabled
-	}
-	return false
+	return effectiveValue(j.Enabled, false)
 }
 
 // EffectiveModel returns the configured model or "opus" as default.
 func (j JudgeConfig) EffectiveModel() string {
-	if j.Model != nil {
-		return *j.Model
-	}
-	return "opus"
+	return effectiveValue(j.Model, "opus")
 }
 
 // EffectiveTimeoutSec returns the configured timeout or 60 seconds as default.
 // nil (unset) returns the default; explicit 0 returns 0.
 func (j JudgeConfig) EffectiveTimeoutSec() int {
-	if j.TimeoutSec != nil {
-		return *j.TimeoutSec
-	}
-	return 60
+	return effectiveValue(j.TimeoutSec, 60)
 }

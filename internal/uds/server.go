@@ -9,7 +9,6 @@ import (
 	"os"
 	"runtime/debug"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -61,14 +60,17 @@ func (s *Server) Start() error {
 	// Remove stale socket file
 	_ = os.Remove(s.socketPath)
 
-	// Set umask before creating the socket so the file is created with 0600
-	// permissions atomically, eliminating the TOCTOU window between
-	// Listen and Chmod.
-	oldUmask := syscall.Umask(0177)
 	listener, err := net.Listen("unix", s.socketPath)
-	syscall.Umask(oldUmask)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", s.socketPath, err)
+	}
+
+	// Set socket permissions to 0600 after creation.
+	// This avoids using syscall.Umask which is process-global and affects
+	// concurrent goroutines.
+	if err := os.Chmod(s.socketPath, 0600); err != nil {
+		listener.Close()
+		return fmt.Errorf("chmod socket %s: %w", s.socketPath, err)
 	}
 
 	s.listener = listener

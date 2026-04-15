@@ -1366,3 +1366,71 @@ func TestValidate_Float64Ptr_NaN_Inf(t *testing.T) {
 	}
 }
 
+// --- NormalizeExperimentalConfig tests ---
+
+func TestNormalizeExperimentalConfig(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{}
+	NormalizeExperimentalConfig(cfg)
+
+	// C-1 Evolution
+	if cfg.Evolution.Enabled == nil || *cfg.Evolution.Enabled != false {
+		t.Error("Evolution.Enabled should default to false")
+	}
+	if cfg.Evolution.MaxMutationsPerRound == nil || *cfg.Evolution.MaxMutationsPerRound != DefaultMaxMutationsPerRound {
+		t.Errorf("Evolution.MaxMutationsPerRound = %v, want %d", cfg.Evolution.MaxMutationsPerRound, DefaultMaxMutationsPerRound)
+	}
+	if len(cfg.Evolution.Strategies) == 0 {
+		t.Error("Evolution.Strategies should have defaults")
+	}
+
+	// C-2 Bandit
+	if cfg.Bandit.Enabled == nil || *cfg.Bandit.Enabled != false {
+		t.Error("Bandit.Enabled should default to false")
+	}
+	if cfg.Bandit.ExplorationCoeff == nil || *cfg.Bandit.ExplorationCoeff != DefaultExplorationCoeff {
+		t.Errorf("Bandit.ExplorationCoeff = %v, want %f", cfg.Bandit.ExplorationCoeff, DefaultExplorationCoeff)
+	}
+
+	// C-3 Extended Verification
+	if cfg.ExtendedVerification.Enabled == nil || *cfg.ExtendedVerification.Enabled != false {
+		t.Error("ExtendedVerification.Enabled should default to false")
+	}
+
+	// C-4 Search
+	if cfg.Search.Enabled == nil || *cfg.Search.Enabled != false {
+		t.Error("Search.Enabled should default to false")
+	}
+	if cfg.Search.MaxDepth == nil || *cfg.Search.MaxDepth != DefaultSearchMaxDepth {
+		t.Errorf("Search.MaxDepth = %v, want %d", cfg.Search.MaxDepth, DefaultSearchMaxDepth)
+	}
+
+	// C-5 Self-Improvement
+	if cfg.SelfImprovement.Enabled == nil || *cfg.SelfImprovement.Enabled != false {
+		t.Error("SelfImprovement.Enabled should default to false")
+	}
+	if len(cfg.SelfImprovement.Targets) == 0 {
+		t.Error("SelfImprovement.Targets should have defaults")
+	}
+
+	// C-6 Complexity
+	if cfg.Complexity.Enabled == nil || *cfg.Complexity.Enabled != false {
+		t.Error("Complexity.Enabled should default to false")
+	}
+	if cfg.Complexity.Thresholds.SimpleMaxFiles == nil || *cfg.Complexity.Thresholds.SimpleMaxFiles != DefaultSimpleMaxFiles {
+		t.Errorf("Complexity.SimpleMaxFiles = %v, want %d", cfg.Complexity.Thresholds.SimpleMaxFiles, DefaultSimpleMaxFiles)
+	}
+}
+
+func TestNormalizeExperimentalConfig_Idempotent(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{}
+	NormalizeExperimentalConfig(cfg)
+	NormalizeExperimentalConfig(cfg)
+
+	// Should not change values on second call
+	if cfg.Evolution.MaxMutationsPerRound == nil || *cfg.Evolution.MaxMutationsPerRound != DefaultMaxMutationsPerRound {
+		t.Error("second normalization changed Evolution.MaxMutationsPerRound")
+	}
+}
+

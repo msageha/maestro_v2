@@ -78,7 +78,8 @@ func NormalizeError(raw string) string {
 }
 
 // ComputeFingerprint は正規化済みエラー文字列とカテゴリからフィンガープリントを生成する。
-func ComputeFingerprint(normalized string, category string) FailureFingerprint {
+// now にはフィンガープリントの作成時刻を渡す。テスト時には固定時刻を使用できる。
+func ComputeFingerprint(normalized string, category string, now time.Time) FailureFingerprint {
 	h := sha256.New()
 	h.Write([]byte(category))
 	h.Write([]byte{0}) // セパレータ
@@ -94,7 +95,7 @@ func ComputeFingerprint(normalized string, category string) FailureFingerprint {
 		Hash:      hash,
 		Category:  category,
 		RawError:  rawError,
-		CreatedAt: time.Now(),
+		CreatedAt: now,
 	}
 }
 

@@ -61,9 +61,11 @@ func (c *Client) dialWithRetry(ctx context.Context) (net.Conn, error) {
 			break
 		}
 		if attempt < maxDialRetries-1 {
+			timer := time.NewTimer(backoff)
 			select {
-			case <-time.After(backoff):
+			case <-timer.C:
 			case <-ctx.Done():
+				timer.Stop()
 				return nil, ctx.Err()
 			}
 			backoff *= 2

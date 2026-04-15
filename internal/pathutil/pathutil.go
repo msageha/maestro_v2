@@ -9,6 +9,8 @@ import (
 
 // NormalizePath strips trailing slashes and cleans the path.
 // Returns "" for empty or root-equivalent paths.
+// Uses path.Clean (not filepath.Clean) because queue paths are always
+// forward-slash-separated regardless of OS.
 func NormalizePath(p string) string {
 	cleaned := path.Clean(strings.TrimSuffix(p, "/"))
 	if cleaned == "." {
