@@ -23,12 +23,12 @@ func FuzzReadFrame(f *testing.F) {
 	addValidFrame(`{"success":false,"error":{"code":"INTERNAL_ERROR","message":"fail"}}`)
 
 	// Edge cases
-	f.Add([]byte{})                                    // empty
-	f.Add([]byte{0x00})                                // too short for length
-	f.Add([]byte{0x00, 0x00, 0x00, 0x00})              // zero length
-	f.Add([]byte{0x00, 0x00, 0x00, 0x01, '{'})         // invalid JSON
-	f.Add([]byte{0x00, 0x00, 0x00, 0x05, '{', '}'})    // length mismatch
-	f.Add([]byte{0xFF, 0xFF, 0xFF, 0xFF})               // max uint32 length
+	f.Add([]byte{})                                 // empty
+	f.Add([]byte{0x00})                             // too short for length
+	f.Add([]byte{0x00, 0x00, 0x00, 0x00})           // zero length
+	f.Add([]byte{0x00, 0x00, 0x00, 0x01, '{'})      // invalid JSON
+	f.Add([]byte{0x00, 0x00, 0x00, 0x05, '{', '}'}) // length mismatch
+	f.Add([]byte{0xFF, 0xFF, 0xFF, 0xFF})           // max uint32 length
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if len(data) > maxFrameSize+4 {

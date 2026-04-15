@@ -543,7 +543,7 @@ func TestSendContext_CancelDuringOperation(t *testing.T) {
 		t.Fatalf("server start: %v", err)
 	}
 	defer func() {
-		close(blocker)  // unblock handler goroutine before stopping server
+		close(blocker) // unblock handler goroutine before stopping server
 		server.Stop()
 	}()
 
@@ -853,8 +853,8 @@ func TestValidateCallerRole(t *testing.T) {
 		{"ORCHESTRATOR", true}, // case-sensitive
 		{"Planner", true},
 		{"WORKER", true},
-		{" worker", true},   // leading space
-		{"worker ", true},   // trailing space
+		{" worker", true}, // leading space
+		{"worker ", true}, // trailing space
 		{"root", true},
 		{"operator", true},
 	}
