@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log"
+	"strings"
 	"testing"
 	"time"
 )
@@ -35,5 +36,42 @@ func TestEventBridge_RunWithTimeout_FastCallback(t *testing.T) {
 func TestEventBridge_CallbackTimeoutConstant(t *testing.T) {
 	if eventBridgeCallbackTimeout != 10*time.Second {
 		t.Errorf("expected eventBridgeCallbackTimeout=10s, got %s", eventBridgeCallbackTimeout)
+	}
+}
+
+// TestEventBridge_RunWithTimeout_DrainGoroutineLogsCompletion verifies that
+// when a callback times out, a drain goroutine waits for it to finish and
+// logs the late completion. This prevents goroutine leaks (H-bug1).
+func TestEventBridge_RunWithTimeout_DrainGoroutineLogsCompletion(t *testing.T) {
+	t.Parallel()
+
+	var logBuf bytes.Buffer
+	logger := log.New(&logBuf, "", 0)
+
+	d := &Daemon{
+		logLevel: LogLevelDebug,
+		logger:   logger,
+		clock:    RealClock{},
+	}
+	// Very short parent context so the derived timeout fires quickly.
+	d.ctx, d.cancel = context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer d.cancel()
+
+	eb := &EventBridge{d: d}
+
+	unblock := make(chan struct{})
+	ok := eb.runWithTimeout("test_drain", func(_ context.Context) {
+		<-unblock // blocks until closed, ignoring ctx
+	})
+	if ok {
+		t.Fatal("expected timeout, got success")
+	}
+
+	// Unblock fn so the drain goroutine can observe completion.
+	close(unblock)
+	time.Sleep(100 * time.Millisecond)
+
+	if !strings.Contains(logBuf.String(), "completed after timeout") {
+		t.Errorf("expected drain goroutine log, got: %s", logBuf.String())
 	}
 }

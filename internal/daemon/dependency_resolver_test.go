@@ -411,8 +411,8 @@ func TestIsTaskBlocked_NilStateReader(t *testing.T) {
 	}
 
 	blocked, err := dr.IsTaskBlocked(task)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if err == nil {
+		t.Fatal("expected error for nil state manager, got nil")
 	}
 	if !blocked {
 		t.Error("task with deps and nil state reader should be blocked")

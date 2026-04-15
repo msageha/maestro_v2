@@ -107,7 +107,7 @@ func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap
 	rh := NewResultHandler(maestroDir, cfg, lockMap, logger, logLevel, ep, clock)
 	rec := NewReconciler(maestroDir, cfg, lockMap, logger, logLevel, rh, ep.Factory())
 	dlp := NewDeadLetterProcessor(maestroDir, cfg, lockMap, logger, logLevel)
-	mh := newMetricsHandler(maestroDir, cfg, logger, logLevel, clock)
+	mh := newMetricsHandler(maestroDir, logger, logLevel, clock)
 
 	dl := NewDaemonLoggerFromLegacy("queue_handler", logger, logLevel)
 	qs := NewQueueStore(maestroDir, cfg, clock, lockMap, dl)

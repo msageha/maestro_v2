@@ -1470,3 +1470,618 @@ func TestR2ResultState_MixedTerminalAndNonTerminal(t *testing.T) {
 	}
 }
 
+// --- H-bug3: R0b split-brain prevention test ---
+
+// TestR0bFillingStuck_BatchRemoveFails_StateNotUpdated verifies that when
+// batchRemoveTaskIDsFromQueues fails, the state file is NOT updated to
+// awaiting_fill, preventing split-brain (tasks in worker queues while state
+// says awaiting_fill).
+func TestR0bFillingStuck_BatchRemoveFails_StateNotUpdated(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC()
+	setClock(&deps, now)
+
+	oldTime := now.Add(-10 * time.Minute).Format(time.RFC3339)
+	state := model.CommandState{
+		CommandID:  "cmd_r0b_split",
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			TaskStates:       map[string]model.Status{"task_1": model.StatusPending},
+			RequiredTaskIDs:  []string{"task_1"},
+			TaskDependencies: map[string][]string{"task_1": {}},
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: "p1",
+					Name:    "phase-1",
+					Status:  model.PhaseStatusFilling,
+					TaskIDs: []string{"task_1"},
+				},
+			},
+		},
+		CreatedAt: oldTime,
+		UpdatedAt: oldTime,
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_r0b_split.yaml"), state)
+
+	// Corrupted worker queue → batchRemove fails on unmarshal.
+	os.WriteFile(filepath.Join(maestroDir, "queue", "worker1.yaml"), []byte("{{invalid"), 0644)
+
+	run := newRun(&deps)
+	outcome := R0bFillingStuck{}.Apply(run)
+
+	// No repairs reported — batchRemove failure skips state update.
+	if len(outcome.Repairs) != 0 {
+		t.Errorf("expected no repairs when batch remove fails, got %d", len(outcome.Repairs))
+	}
+
+	// State should remain in filling (split-brain prevented).
+	data, _ := os.ReadFile(filepath.Join(maestroDir, "state", "commands", "cmd_r0b_split.yaml"))
+	var updated model.CommandState
+	yamlv3.Unmarshal(data, &updated)
+	if updated.Phases[0].Status != model.PhaseStatusFilling {
+		t.Errorf("state should remain in filling, got %s", updated.Phases[0].Status)
+	}
+	if len(updated.TaskStates) != 1 {
+		t.Errorf("task_states should be unchanged, got %v", updated.TaskStates)
+	}
+}
+
+// --- H-bug4: ExecuteDeferredNotifications failure list tests ---
+
+// TestEngine_ExecuteDeferredNotifications_ReturnsFailedOnDeliveryError verifies
+// that notifications whose delivery fails are returned as a failed list.
+func TestEngine_ExecuteDeferredNotifications_ReturnsFailedOnDeliveryError(t *testing.T) {
+	t.Parallel()
+	deps := newTestDeps(t, setupTestDir(t))
+	exec := &mocks.MockExecutor{Result: agent.ExecResult{Error: fmt.Errorf("delivery failed")}}
+	deps.ExecutorFactory = func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+		return exec, nil
+	}
+	engine := NewEngine(deps)
+
+	notifications := []DeferredNotification{
+		{Kind: NotifyReFill, CommandID: "cmd1"},
+		{Kind: NotifyReEvaluate, CommandID: "cmd2", Reason: "test"},
+	}
+
+	failed := engine.ExecuteDeferredNotifications(notifications)
+	if len(failed) != 2 {
+		t.Errorf("expected 2 failed notifications, got %d", len(failed))
+	}
+}
+
+// TestEngine_ExecuteDeferredNotifications_NilFactory_ReturnsAllAsFailed verifies
+// that with no executor factory, all notifications are returned as failed.
+func TestEngine_ExecuteDeferredNotifications_NilFactory_ReturnsAllAsFailed(t *testing.T) {
+	t.Parallel()
+	deps := newTestDeps(t, setupTestDir(t))
+	engine := NewEngine(deps)
+
+	notifications := []DeferredNotification{
+		{Kind: NotifyReFill, CommandID: "cmd1"},
+		{Kind: NotifyReEvaluate, CommandID: "cmd2", Reason: "test"},
+	}
+
+	failed := engine.ExecuteDeferredNotifications(notifications)
+	if len(failed) != 2 {
+		t.Errorf("expected all 2 notifications returned as failed, got %d", len(failed))
+	}
+}
+
+// TestEngine_ExecuteDeferredNotifications_SuccessReturnsEmpty verifies that
+// successful delivery returns no failed notifications.
+func TestEngine_ExecuteDeferredNotifications_SuccessReturnsEmpty(t *testing.T) {
+	t.Parallel()
+	deps := newTestDeps(t, setupTestDir(t))
+	exec := &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}
+	deps.ExecutorFactory = func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+		return exec, nil
+	}
+	engine := NewEngine(deps)
+
+	notifications := []DeferredNotification{
+		{Kind: NotifyReFill, CommandID: "cmd1"},
+	}
+
+	failed := engine.ExecuteDeferredNotifications(notifications)
+	if len(failed) != 0 {
+		t.Errorf("expected no failures, got %d", len(failed))
+	}
+}
+
+// TestEngine_ExecuteDeferredNotifications_FactoryError_ReturnsFailed verifies
+// that executor creation failure causes the notification to be returned as failed.
+func TestEngine_ExecuteDeferredNotifications_FactoryError_ReturnsFailed(t *testing.T) {
+	t.Parallel()
+	deps := newTestDeps(t, setupTestDir(t))
+	deps.ExecutorFactory = func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+		return nil, fmt.Errorf("factory error")
+	}
+	engine := NewEngine(deps)
+
+	notifications := []DeferredNotification{
+		{Kind: NotifyReFill, CommandID: "cmd1"},
+	}
+
+	failed := engine.ExecuteDeferredNotifications(notifications)
+	if len(failed) != 1 {
+		t.Errorf("expected 1 failed notification, got %d", len(failed))
+	}
+}
+
+// --- M48: R5 orchestrator queue lock test ---
+
+// TestR5Notification_OrchestratorQueueLock verifies that R5 correctly reads the
+// orchestrator queue (the read now runs under queue:orchestrator lock).
+func TestR5Notification_OrchestratorQueueLock(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	notifier := &mockResultNotifier{}
+	deps.ResultHandler = notifier
+
+	// Result file: terminal + notified result
+	rf := model.CommandResultFile{
+		Results: []model.CommandResult{
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, NotifiableBase: model.NotifiableBase{Notified: true}, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+
+	// State file
+	state := model.CommandState{CommandID: "cmd1", PlanStatus: model.PlanStatusSealed, CreatedAt: now, UpdatedAt: now}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	// No orchestrator queue → notification should be re-issued
+	run := newRun(&deps)
+	outcome := R5Notification{}.Apply(run)
+
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
+	}
+	if outcome.Repairs[0].Pattern != PatternR5 {
+		t.Errorf("expected pattern R5, got %s", outcome.Repairs[0].Pattern)
+	}
+	if len(notifier.calls) != 1 {
+		t.Errorf("expected 1 notification write, got %d", len(notifier.calls))
+	}
+}
+
+// --- H-test1: R3 additional tests ---
+
+// TestR3PlannerQueue_PendingCommand_QueueInProgress_Repaired verifies R3 repairs
+// a command that is still pending in the queue when a terminal result exists.
+// This is subtly different from the HappyPath test in reconcile_repair_test.go
+// which uses in_progress. Here we test that any non-terminal queue status triggers repair.
+func TestR3PlannerQueue_PendingCommand_QueueInProgress_Repaired(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.CommandResultFile{
+		Results: []model.CommandResult{
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCompleted, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+
+	// Queue: pending (non-terminal, should be repaired)
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_command",
+		Commands: []model.Command{
+			{ID: "cmd1", Status: model.StatusPending, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "planner.yaml"), cq)
+
+	state := model.CommandState{CommandID: "cmd1", PlanStatus: model.PlanStatusSealed, CreatedAt: now, UpdatedAt: now}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R3PlannerQueue{}.Apply(run)
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair for pending queue with terminal result, got %d", len(outcome.Repairs))
+	}
+	if outcome.Repairs[0].Pattern != PatternR3 {
+		t.Errorf("pattern: got %s, want R3", outcome.Repairs[0].Pattern)
+	}
+
+	data, _ := os.ReadFile(filepath.Join(maestroDir, "queue", "planner.yaml"))
+	var updated model.CommandQueue
+	yamlv3.Unmarshal(data, &updated)
+	if updated.Commands[0].Status != model.StatusCompleted {
+		t.Errorf("queue status: got %s, want completed", updated.Commands[0].Status)
+	}
+}
+
+// TestR3PlannerQueue_CancelledResult verifies R3 handles cancelled result status correctly.
+func TestR3PlannerQueue_CancelledResult(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.CommandResultFile{
+		Results: []model.CommandResult{
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCancelled, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		Commands: []model.Command{
+			{ID: "cmd1", Status: model.StatusInProgress, CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "planner.yaml"), cq)
+
+	state := model.CommandState{CommandID: "cmd1", PlanStatus: model.PlanStatusSealed, CreatedAt: now, UpdatedAt: now}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R3PlannerQueue{}.Apply(run)
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
+	}
+
+	data, _ := os.ReadFile(filepath.Join(maestroDir, "queue", "planner.yaml"))
+	var updated model.CommandQueue
+	yamlv3.Unmarshal(data, &updated)
+	if updated.Commands[0].Status != model.StatusCancelled {
+		t.Errorf("queue status: got %s, want cancelled", updated.Commands[0].Status)
+	}
+}
+
+// --- H-test1: R5 additional tests ---
+
+// TestR5Notification_FailedStatus_CorrectNotificationType verifies that R5
+// uses the correct notification type for a failed result.
+func TestR5Notification_FailedStatus_CorrectNotificationType(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	notifier := &mockResultNotifier{}
+	deps.ResultHandler = notifier
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.CommandResultFile{
+		Results: []model.CommandResult{
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusFailed, NotifiableBase: model.NotifiableBase{Notified: true}, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+
+	// Orchestrator queue has command_completed for same result but result status is now failed
+	// R5 should re-issue because the dedup key (source_result_id, type) doesn't match
+	nq := model.NotificationQueue{
+		Notifications: []model.Notification{
+			{SourceResultID: "res1", Type: model.NotificationTypeCommandCompleted},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "queue", "orchestrator.yaml"), nq)
+
+	state := model.CommandState{CommandID: "cmd1", PlanStatus: model.PlanStatusSealed, CreatedAt: now, UpdatedAt: now}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R5Notification{}.Apply(run)
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair for type mismatch, got %d", len(outcome.Repairs))
+	}
+	if notifier.calls[0].status != model.StatusFailed {
+		t.Errorf("expected failed status in notification call, got %s", notifier.calls[0].status)
+	}
+}
+
+// TestR5Notification_CancelledStatus_NoExistingNotification verifies R5 re-issues
+// for a cancelled result when no matching notification exists.
+func TestR5Notification_CancelledStatus_NoExistingNotification(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	notifier := &mockResultNotifier{}
+	deps.ResultHandler = notifier
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.CommandResultFile{
+		Results: []model.CommandResult{
+			{ID: "res1", CommandID: "cmd1", Status: model.StatusCancelled, NotifiableBase: model.NotifiableBase{Notified: true}, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+
+	state := model.CommandState{CommandID: "cmd1", PlanStatus: model.PlanStatusSealed, CreatedAt: now, UpdatedAt: now}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R5Notification{}.Apply(run)
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
+	}
+	if notifier.calls[0].status != model.StatusCancelled {
+		t.Errorf("expected cancelled status, got %s", notifier.calls[0].status)
+	}
+}
+
+// --- H-test1: R6 additional tests ---
+
+// TestR6FillTimeout_NoStateDir verifies R6 handles a missing state directory gracefully.
+func TestR6FillTimeout_NoStateDir(t *testing.T) {
+	t.Parallel()
+	maestroDir := t.TempDir() // no subdirs
+	deps := newTestDeps(t, maestroDir)
+	run := newRun(&deps)
+	outcome := R6FillTimeout{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Errorf("expected no repairs, got %d", len(outcome.Repairs))
+	}
+}
+
+// TestR6FillTimeout_ExpiredDeadline_Repaired verifies a single phase with an
+// expired fill deadline is transitioned to timed_out.
+func TestR6FillTimeout_ExpiredDeadline_Repaired(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC()
+	setClock(&deps, now)
+
+	deadline := now.Add(-5 * time.Minute).Format(time.RFC3339)
+	recentTime := now.Add(-1 * time.Minute).Format(time.RFC3339)
+	state := model.CommandState{
+		CommandID:  "cmd_r6",
+		PlanStatus: model.PlanStatusSealed,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID:        "p1",
+					Name:           "phase-1",
+					Status:         model.PhaseStatusAwaitingFill,
+					FillDeadlineAt: &deadline,
+				},
+			},
+		},
+		CreatedAt: recentTime,
+		UpdatedAt: recentTime,
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_r6.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R6FillTimeout{}.Apply(run)
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
+	}
+	if outcome.Repairs[0].Pattern != PatternR6 {
+		t.Errorf("pattern: got %s, want R6", outcome.Repairs[0].Pattern)
+	}
+
+	// Verify state updated
+	data, _ := os.ReadFile(filepath.Join(maestroDir, "state", "commands", "cmd_r6.yaml"))
+	var updated model.CommandState
+	yamlv3.Unmarshal(data, &updated)
+	if updated.Phases[0].Status != model.PhaseStatusTimedOut {
+		t.Errorf("phase status: got %s, want timed_out", updated.Phases[0].Status)
+	}
+	if updated.LastReconciledAt == nil {
+		t.Error("expected last_reconciled_at to be set")
+	}
+}
+
+// TestR6FillTimeout_FutureDeadline_NoRepair verifies that a phase with a future
+// fill deadline is not repaired.
+func TestR6FillTimeout_FutureDeadline_NoRepair(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC()
+	setClock(&deps, now)
+
+	deadline := now.Add(5 * time.Minute).Format(time.RFC3339)
+	state := model.CommandState{
+		CommandID:  "cmd_r6_future",
+		PlanStatus: model.PlanStatusSealed,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID:        "p1",
+					Name:           "phase-1",
+					Status:         model.PhaseStatusAwaitingFill,
+					FillDeadlineAt: &deadline,
+				},
+			},
+		},
+		CreatedAt: now.Format(time.RFC3339),
+		UpdatedAt: now.Format(time.RFC3339),
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_r6_future.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R6FillTimeout{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Errorf("expected no repairs for future deadline, got %d", len(outcome.Repairs))
+	}
+}
+
+// TestR6FillTimeout_CascadeCancel verifies that a downstream pending phase
+// dependent on a timed-out phase gets cascade-cancelled.
+func TestR6FillTimeout_CascadeCancel(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC()
+	setClock(&deps, now)
+
+	deadline := now.Add(-5 * time.Minute).Format(time.RFC3339)
+	recentTime := now.Add(-1 * time.Minute).Format(time.RFC3339)
+	state := model.CommandState{
+		CommandID:  "cmd_r6_cascade",
+		PlanStatus: model.PlanStatusSealed,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID:        "p1",
+					Name:           "phase-1",
+					Status:         model.PhaseStatusAwaitingFill,
+					FillDeadlineAt: &deadline,
+				},
+				{
+					PhaseID:         "p2",
+					Name:            "phase-2",
+					Status:          model.PhaseStatusPending,
+					DependsOnPhases: []string{"phase-1"},
+				},
+			},
+		},
+		CreatedAt: recentTime,
+		UpdatedAt: recentTime,
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_r6_cascade.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R6FillTimeout{}.Apply(run)
+	// Should have 2 repairs: phase-1 timed_out + phase-2 cascade cancelled
+	if len(outcome.Repairs) != 2 {
+		t.Fatalf("expected 2 repairs (timeout + cascade), got %d", len(outcome.Repairs))
+	}
+
+	// Verify state
+	data, _ := os.ReadFile(filepath.Join(maestroDir, "state", "commands", "cmd_r6_cascade.yaml"))
+	var updated model.CommandState
+	yamlv3.Unmarshal(data, &updated)
+	if updated.Phases[0].Status != model.PhaseStatusTimedOut {
+		t.Errorf("phase-1 status: got %s, want timed_out", updated.Phases[0].Status)
+	}
+	if updated.Phases[1].Status != model.PhaseStatusCancelled {
+		t.Errorf("phase-2 status: got %s, want cancelled", updated.Phases[1].Status)
+	}
+}
+
+// TestR6FillTimeout_NonAwaitingFill_Ignored verifies that a phase in filling status
+// (not awaiting_fill) with an expired deadline is ignored by R6.
+func TestR6FillTimeout_NonAwaitingFill_Ignored(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC()
+	setClock(&deps, now)
+
+	deadline := now.Add(-5 * time.Minute).Format(time.RFC3339)
+	state := model.CommandState{
+		CommandID:  "cmd_r6_filling",
+		PlanStatus: model.PlanStatusSealed,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID:        "p1",
+					Name:           "phase-1",
+					Status:         model.PhaseStatusFilling, // not awaiting_fill
+					FillDeadlineAt: &deadline,
+				},
+			},
+		},
+		CreatedAt: now.Format(time.RFC3339),
+		UpdatedAt: now.Format(time.RFC3339),
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_r6_filling.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R6FillTimeout{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Errorf("expected no repairs for non-awaiting_fill phase, got %d", len(outcome.Repairs))
+	}
+}
+
+// TestR6FillTimeout_GeneratesNotification verifies that R6 generates a deferred
+// notification with the correct kind and timed-out phases when executor factory is set.
+func TestR6FillTimeout_GeneratesNotification(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC()
+	setClock(&deps, now)
+
+	deps.ExecutorFactory = func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
+		return &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}, nil
+	}
+
+	deadline := now.Add(-5 * time.Minute).Format(time.RFC3339)
+	state := model.CommandState{
+		CommandID:  "cmd_r6_notif",
+		PlanStatus: model.PlanStatusSealed,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID:        "p1",
+					Name:           "phase-1",
+					Status:         model.PhaseStatusAwaitingFill,
+					FillDeadlineAt: &deadline,
+				},
+			},
+		},
+		CreatedAt: now.Add(-1 * time.Minute).Format(time.RFC3339),
+		UpdatedAt: now.Add(-1 * time.Minute).Format(time.RFC3339),
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_r6_notif.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R6FillTimeout{}.Apply(run)
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
+	}
+	if len(outcome.Notifications) != 1 {
+		t.Fatalf("expected 1 notification, got %d", len(outcome.Notifications))
+	}
+	if outcome.Notifications[0].Kind != NotifyFillTimeout {
+		t.Errorf("notification kind: got %s, want fill_timeout", outcome.Notifications[0].Kind)
+	}
+	if outcome.Notifications[0].CommandID != "cmd_r6_notif" {
+		t.Errorf("notification commandID: got %s, want cmd_r6_notif", outcome.Notifications[0].CommandID)
+	}
+	if !outcome.Notifications[0].TimedOutPhases["phase-1"] {
+		t.Errorf("expected phase-1 in timed out phases, got %v", outcome.Notifications[0].TimedOutPhases)
+	}
+}
+
+// TestR6FillTimeout_NilDeadline_NoRepair verifies that a phase with nil FillDeadlineAt
+// is not repaired even if it is in awaiting_fill status.
+func TestR6FillTimeout_NilDeadline_NoRepair(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	now := time.Now().UTC()
+	setClock(&deps, now)
+
+	state := model.CommandState{
+		CommandID:  "cmd_r6_nil_deadline",
+		PlanStatus: model.PlanStatusSealed,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: "p1",
+					Name:    "phase-1",
+					Status:  model.PhaseStatusAwaitingFill,
+					// FillDeadlineAt is nil
+				},
+			},
+		},
+		CreatedAt: now.Format(time.RFC3339),
+		UpdatedAt: now.Format(time.RFC3339),
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_r6_nil_deadline.yaml"), state)
+
+	run := newRun(&deps)
+	outcome := R6FillTimeout{}.Apply(run)
+	if len(outcome.Repairs) != 0 {
+		t.Errorf("expected no repairs for nil deadline, got %d", len(outcome.Repairs))
+	}
+}
+

@@ -130,6 +130,8 @@ func (h *ResultWriteAPI) resolveRecordedStatus(state *model.CommandState, params
 		return model.StatusCancelled
 	}
 	if hadExisting && model.IsTerminal(existing) {
+		h.logFn(LogLevelInfo, "result_write idempotent_resubmission task=%s command=%s existing_status=%s reported_status=%s",
+			params.TaskID, params.CommandID, existing, resultStatus)
 		return existing
 	}
 	return resultStatus

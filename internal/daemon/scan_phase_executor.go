@@ -72,7 +72,10 @@ func (se *ScanPhaseExecutor) Execute(ctx context.Context) {
 	// Execute deferred reconciler notifications outside scanMu.Lock
 	// to avoid blocking queue writes during slow tmux I/O.
 	if se.qh.reconciler != nil && len(deferredNotifs) > 0 {
-		se.qh.reconciler.ExecuteDeferredNotifications(deferredNotifs)
+		failed := se.qh.reconciler.ExecuteDeferredNotifications(deferredNotifs)
+		if len(failed) > 0 {
+			se.qh.log(LogLevelWarn, "reconciler_notifications_failed count=%d", len(failed))
+		}
 	}
 
 	// Run worktree GC periodically as a safety net complementing the

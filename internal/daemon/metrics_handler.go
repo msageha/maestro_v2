@@ -21,9 +21,9 @@ func (a *metricsLogAdapter) Warnf(format string, args ...any) {
 }
 
 // newMetricsHandler creates a metrics.Handler bridging daemon logging to the metrics.Logger interface.
-func newMetricsHandler(maestroDir string, cfg model.Config, logger *log.Logger, logLevel core.LogLevel, clock metrics.Clock) *metrics.Handler {
+func newMetricsHandler(maestroDir string, logger *log.Logger, logLevel core.LogLevel, clock metrics.Clock) *metrics.Handler {
 	dl := core.NewDaemonLoggerFromLegacy("metrics", logger, logLevel)
-	return metrics.NewHandler(maestroDir, cfg, &metricsLogAdapter{dl: dl}, clock)
+	return metrics.NewHandler(maestroDir, &metricsLogAdapter{dl: dl}, clock)
 }
 
 // taskQueuesToSnapshots converts daemon-internal taskQueueEntry map to

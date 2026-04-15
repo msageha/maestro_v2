@@ -14,6 +14,9 @@ import (
 // memory usage. When exceeded, the oldest half is evicted (LRU-style).
 const maxGateEvaluations = 1000
 
+// evictTarget is the number of entries to retain after eviction (LRU half).
+const evictTarget = maxGateEvaluations / 2
+
 // QualityGateEvaluator encapsulates pre-task quality gate evaluation logic,
 // separating it from the Dispatcher's core dispatch responsibilities.
 type QualityGateEvaluator struct {
@@ -145,8 +148,7 @@ func (e *QualityGateEvaluator) evictOldEvaluationsLocked() {
 		return entries[i].evaluatedAt.Before(entries[j].evaluatedAt)
 	})
 
-	target := maxGateEvaluations / 2
-	for i := 0; i < len(entries) && len(e.evaluations) > target; i++ {
+	for i := 0; i < len(entries) && len(e.evaluations) > evictTarget; i++ {
 		delete(e.evaluations, entries[i].taskID)
 	}
 }

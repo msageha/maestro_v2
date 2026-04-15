@@ -45,6 +45,7 @@ func ParseLogLevel(s string) LogLevel {
 	case "error":
 		return LogLevelError
 	default:
+		log.Printf("unknown log level %q, defaulting to info", s)
 		return LogLevelInfo
 	}
 }
@@ -92,21 +93,33 @@ func NewDaemonLoggerFromLegacy(component string, logger *log.Logger, minLevel Lo
 
 // Logf logs a formatted message at the given level (migration shim for existing log() calls).
 func (dl *DaemonLogger) Logf(level LogLevel, format string, args ...any) {
+	if dl == nil || dl.slogger == nil {
+		return
+	}
 	dl.slogger.Log(context.Background(), toSlogLevel(level), fmt.Sprintf(format, args...))
 }
 
 // Log logs a message with structured attributes.
 func (dl *DaemonLogger) Log(level LogLevel, msg string, attrs ...slog.Attr) {
+	if dl == nil || dl.slogger == nil {
+		return
+	}
 	dl.slogger.LogAttrs(context.Background(), toSlogLevel(level), msg, attrs...)
 }
 
 // With returns a new DaemonLogger with additional default attributes.
 func (dl *DaemonLogger) With(args ...any) *DaemonLogger {
+	if dl == nil || dl.slogger == nil {
+		return nil
+	}
 	return &DaemonLogger{slogger: dl.slogger.With(args...)}
 }
 
 // Slog returns the underlying *slog.Logger for advanced use.
 func (dl *DaemonLogger) Slog() *slog.Logger {
+	if dl == nil || dl.slogger == nil {
+		return nil
+	}
 	return dl.slogger
 }
 
@@ -122,6 +135,9 @@ type LogMixin struct {
 
 // Log logs a formatted message at the given level.
 func (m *LogMixin) Log(level LogLevel, format string, args ...any) {
+	if m.DL == nil {
+		return
+	}
 	m.DL.Logf(level, format, args...)
 }
 
@@ -143,14 +159,6 @@ func (RealClock) Now() time.Time { return time.Now() }
 // ---------------------------------------------------------------------------
 // State
 // ---------------------------------------------------------------------------
-
-// ErrStateNotFound is an alias for model.ErrStateNotFound.
-// Kept for backward compatibility with existing callers.
-var ErrStateNotFound = model.ErrStateNotFound
-
-// ErrPhaseNotFound is an alias for model.ErrPhaseNotFound.
-// Kept for backward compatibility with existing callers.
-var ErrPhaseNotFound = model.ErrPhaseNotFound
 
 // StateReader provides read access to command state (state/commands/{command_id}.yaml).
 // Phase 6 implements the concrete version; Phase 5 uses this interface for decoupling.

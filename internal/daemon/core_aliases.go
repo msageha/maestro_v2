@@ -6,6 +6,7 @@ package daemon
 import (
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/daemon/worktree"
+	"github.com/msageha/maestro_v2/internal/model"
 )
 
 // --- Logging aliases ---
@@ -59,10 +60,10 @@ type StateManager = core.StateManager
 // PhaseInfo is an alias for core.PhaseInfo.
 type PhaseInfo = core.PhaseInfo
 
-// ErrStateNotFound is an alias for core.ErrStateNotFound.
+// ErrStateNotFound is an alias for model.ErrStateNotFound.
 var (
-	ErrStateNotFound = core.ErrStateNotFound
-	ErrPhaseNotFound = core.ErrPhaseNotFound
+	ErrStateNotFound = model.ErrStateNotFound
+	ErrPhaseNotFound = model.ErrPhaseNotFound
 )
 
 // --- Executor aliases ---

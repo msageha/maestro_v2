@@ -66,94 +66,69 @@ func (qh *QueueHandler) stepWorktreeStallDetection(s *scanState) {
 				noPhases = true
 			}
 			if noPhases {
-				ref := cmd.UpdatedAt
-				if ref == "" {
-					ref = cmd.CreatedAt
-				}
-				refTime, parseErr := time.Parse(time.RFC3339, ref)
-				if parseErr != nil {
+				if qh.emitWorktreeStallSignal(cmd, s, now, threshold, "integration_stalled_no_phases:created") {
 					continue
 				}
-				if !refTime.Before(threshold) {
-					continue
-				}
-				reason := "integration_stalled_no_phases:created"
-				nowStr := now.UTC().Format(time.RFC3339)
-				msg := fmt.Sprintf("[maestro] kind:worktree_stalled command_id:%s\nreason: %s\nstalled_since: %s",
-					cmd.ID, reason, nowStr)
-				qh.upsertPlannerSignal(&s.signals.Data, &s.signals.Dirty, model.PlannerSignal{
-					Kind:      "worktree_stalled",
-					CommandID: cmd.ID,
-					Reason:    reason,
-					Message:   msg,
-					CreatedAt: nowStr,
-					UpdatedAt: nowStr,
-				}, s.signalIndex)
-
-				markFn := qh.scanExecutor.worktreeStallMarkFn
-				if markFn == nil {
-					markFn = qh.worktreeManager.MarkIntegrationStallSignaled
-				}
-				if err := markFn(cmd.ID); err != nil {
-					qh.log(LogLevelWarn, "worktree_stall_mark_failed command=%s error=%v", cmd.ID, err)
-					if mfErr := qh.worktreeManager.MarkIntegrationFailed(cmd.ID); mfErr != nil {
-						qh.log(LogLevelError, "worktree_stall_integration_failed_transition command=%s error=%v",
-							cmd.ID, mfErr)
-					} else {
-						qh.log(LogLevelWarn, "worktree_stall_integration_marked_failed command=%s", cmd.ID)
-					}
-					continue
-				}
-				qh.log(LogLevelWarn, "worktree_stall_signal_emitted command=%s reason=%s stalled_since=%s",
-					cmd.ID, reason, nowStr)
 				continue
 			}
 		}
 
-		ref := cmd.UpdatedAt
-		if ref == "" {
-			ref = cmd.CreatedAt
-		}
-		refTime, err := time.Parse(time.RFC3339, ref)
-		if err != nil {
-			continue
-		}
-		if !refTime.Before(threshold) {
-			continue
-		}
-
 		reason := fmt.Sprintf("integration_stalled:%s", cmdState.Integration.Status)
-		stalledSince := refTime.UTC().Format(time.RFC3339)
-		nowStr := now.UTC().Format(time.RFC3339)
-		msg := fmt.Sprintf("[maestro] kind:worktree_stalled command_id:%s\nreason: %s\nstalled_since: %s",
-			cmd.ID, reason, stalledSince)
-
-		qh.upsertPlannerSignal(&s.signals.Data, &s.signals.Dirty, model.PlannerSignal{
-			Kind:      "worktree_stalled",
-			CommandID: cmd.ID,
-			Reason:    reason,
-			Message:   msg,
-			CreatedAt: nowStr,
-			UpdatedAt: nowStr,
-		}, s.signalIndex)
-
-		markFn := qh.scanExecutor.worktreeStallMarkFn
-		if markFn == nil {
-			markFn = qh.worktreeManager.MarkIntegrationStallSignaled
-		}
-		if err := markFn(cmd.ID); err != nil {
-			qh.log(LogLevelWarn, "worktree_stall_mark_failed command=%s error=%v", cmd.ID, err)
-			if mfErr := qh.worktreeManager.MarkIntegrationFailed(cmd.ID); mfErr != nil {
-				qh.log(LogLevelError, "worktree_stall_integration_failed_transition command=%s error=%v",
-					cmd.ID, mfErr)
-			} else {
-				qh.log(LogLevelWarn, "worktree_stall_integration_marked_failed command=%s", cmd.ID)
-			}
+		if qh.emitWorktreeStallSignal(cmd, s, now, threshold, reason) {
 			continue
 		}
-		qh.log(LogLevelWarn, "worktree_stall_signal_emitted command=%s reason=%s stalled_since=%s",
-			cmd.ID, reason, stalledSince)
 	}
+}
+
+// emitWorktreeStallSignal handles the common logic for worktree stall detection:
+// timestamp parsing from cmd.UpdatedAt/CreatedAt, threshold check, signal
+// emission, and MarkIntegrationStallSignaled with fallback to MarkIntegrationFailed.
+// Returns true if the signal was emitted or the command should be skipped
+// (caller should continue to the next command).
+func (qh *QueueHandler) emitWorktreeStallSignal(cmd *model.Command, s *scanState, now time.Time, threshold time.Time, reason string) bool {
+	ref := cmd.UpdatedAt
+	if ref == "" {
+		ref = cmd.CreatedAt
+	}
+	refTime, err := time.Parse(time.RFC3339, ref)
+	if err != nil {
+		return true // skip command on parse error
+	}
+	if !refTime.Before(threshold) {
+		return false // not stalled yet
+	}
+
+	stalledSince := refTime.UTC().Format(time.RFC3339)
+	nowStr := now.UTC().Format(time.RFC3339)
+	msg := fmt.Sprintf("[maestro] kind:worktree_stalled command_id:%s\nreason: %s\nstalled_since: %s",
+		cmd.ID, reason, stalledSince)
+
+	qh.upsertPlannerSignal(&s.signals.Data, &s.signals.Dirty, model.PlannerSignal{
+		Kind:      "worktree_stalled",
+		CommandID: cmd.ID,
+		Reason:    reason,
+		Message:   msg,
+		CreatedAt: nowStr,
+		UpdatedAt: nowStr,
+	}, s.signalIndex)
+
+	markFn := qh.scanExecutor.worktreeStallMarkFn
+	if markFn == nil {
+		markFn = qh.worktreeManager.MarkIntegrationStallSignaled
+	}
+	if err := markFn(cmd.ID); err != nil {
+		qh.log(LogLevelWarn, "worktree_stall_mark_failed command=%s error=%v", cmd.ID, err)
+		if mfErr := qh.worktreeManager.MarkIntegrationFailed(cmd.ID); mfErr != nil {
+			qh.log(LogLevelError, "worktree_stall_integration_failed_transition command=%s error=%v",
+				cmd.ID, mfErr)
+		} else {
+			qh.log(LogLevelWarn, "worktree_stall_integration_marked_failed command=%s", cmd.ID)
+		}
+		return true
+	}
+	qh.log(LogLevelWarn, "worktree_stall_signal_emitted command=%s reason=%s stalled_since=%s",
+		cmd.ID, reason, stalledSince)
+	return true
 }
 
 // allPhasesAndTasksTerminal returns true iff every task that belongs to the

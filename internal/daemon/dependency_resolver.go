@@ -47,8 +47,7 @@ func (dr *DependencyResolver) IsTaskBlocked(task *model.Task) (bool, error) {
 	}
 
 	if dr.stateManager == nil {
-		// Without state reader, assume unblocked if blocked_by is empty
-		return len(task.BlockedBy) > 0, nil
+		return len(task.BlockedBy) > 0, fmt.Errorf("state manager not configured; cannot resolve dependencies")
 	}
 
 	for _, depTaskID := range task.BlockedBy {

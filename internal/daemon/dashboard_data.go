@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"sort"
@@ -135,7 +134,7 @@ func (f *DashboardFormatter) parseLogFile(data *DashboardData) error {
 	}
 	defer func() {
 		if cerr := file.Close(); cerr != nil {
-			log.Printf("warning: close %s: %v", f.logPath, cerr)
+			f.dl.Logf(LogLevelWarn, "close %s: %v", f.logPath, cerr)
 		}
 	}()
 
@@ -165,46 +164,51 @@ func (f *DashboardFormatter) parseLogFile(data *DashboardData) error {
 	for scanner.Scan() {
 		// Copy scanner bytes: the underlying buffer is reused across Scan calls.
 		line := append([]byte(nil), scanner.Bytes()...)
-
-		var entry events.LogEntry
-		if err := json.Unmarshal(line, &entry); err != nil {
-			continue // Skip malformed entries
-		}
-
-		// Extract event information
-		event := f.extractEvent(entry)
-
-		// Filter task-related events
-		if f.isTaskRelated(entry.EventType) {
-			data.RecentEvents = append(data.RecentEvents, event)
-		}
-
-		// Collect errors and warnings
-		if event.IsError {
-			data.RecentErrors = append(data.RecentErrors, event)
-			data.Stats.ErrorCount++
-		}
-		if event.IsWarning {
-			data.RecentWarnings = append(data.RecentWarnings, event)
-			data.Stats.WarningCount++
-		}
-
-		// Update agent status
-		if event.AgentID != "" {
-			agent := data.AgentStatus[event.AgentID]
-			agent.ID = event.AgentID
-			agent.LastActivity = event.Timestamp
-			if event.TaskID != "" {
-				agent.CurrentTask = event.TaskID
-			}
-			if event.Status != "" {
-				agent.Status = event.Status
-			}
-			data.AgentStatus[event.AgentID] = agent
-		}
+		f.parseLogEntry(data, line)
 	}
 
 	return scanner.Err()
+}
+
+// parseLogEntry processes a single scanner line and updates dashboard data.
+func (f *DashboardFormatter) parseLogEntry(data *DashboardData, line []byte) {
+	var entry events.LogEntry
+	if err := json.Unmarshal(line, &entry); err != nil {
+		f.dl.Logf(LogLevelDebug, "parse_log_entry_skip error=%v", err)
+		return
+	}
+
+	// Extract event information
+	event := f.extractEvent(entry)
+
+	// Filter task-related events
+	if f.isTaskRelated(entry.EventType) {
+		data.RecentEvents = append(data.RecentEvents, event)
+	}
+
+	// Collect errors and warnings
+	if event.IsError {
+		data.RecentErrors = append(data.RecentErrors, event)
+		data.Stats.ErrorCount++
+	}
+	if event.IsWarning {
+		data.RecentWarnings = append(data.RecentWarnings, event)
+		data.Stats.WarningCount++
+	}
+
+	// Update agent status
+	if event.AgentID != "" {
+		agent := data.AgentStatus[event.AgentID]
+		agent.ID = event.AgentID
+		agent.LastActivity = event.Timestamp
+		if event.TaskID != "" {
+			agent.CurrentTask = event.TaskID
+		}
+		if event.Status != "" {
+			agent.Status = event.Status
+		}
+		data.AgentStatus[event.AgentID] = agent
+	}
 }
 
 // extractEvent extracts displayable event from log entry
@@ -243,6 +247,14 @@ func (f *DashboardFormatter) calculateStats(data *DashboardData) {
 	}
 }
 
+// commandStateSnapshot holds the parsed subset of a command state file needed
+// for dashboard task statistics.
+type commandStateSnapshot struct {
+	RequiredTaskIDs []string                `yaml:"required_task_ids"`
+	OptionalTaskIDs []string                `yaml:"optional_task_ids"`
+	TaskStates      map[string]model.Status `yaml:"task_states"`
+}
+
 // collectTaskStatsFromState reads command state files and aggregates task statistics.
 // Only tasks listed in required_task_ids and optional_task_ids are counted to avoid
 // double-counting retry history entries in task_states.
@@ -264,44 +276,46 @@ func (f *DashboardFormatter) collectTaskStatsFromState(data *DashboardData) {
 			continue
 		}
 
-		var cs struct {
-			RequiredTaskIDs []string                `yaml:"required_task_ids"`
-			OptionalTaskIDs []string                `yaml:"optional_task_ids"`
-			TaskStates      map[string]model.Status `yaml:"task_states"`
-		}
+		var cs commandStateSnapshot
 		if err := yaml.Unmarshal(fileData, &cs); err != nil {
 			continue
 		}
 
-		// Collect only current task IDs (required + optional), not retry history
-		currentTasks := make(map[string]struct{}, len(cs.RequiredTaskIDs)+len(cs.OptionalTaskIDs))
-		for _, id := range cs.RequiredTaskIDs {
-			currentTasks[id] = struct{}{}
-		}
-		for _, id := range cs.OptionalTaskIDs {
-			currentTasks[id] = struct{}{}
-		}
+		aggregateCommandTaskStats(data, &cs)
+	}
+}
 
-		for taskID := range currentTasks {
-			data.Stats.TotalTasks++
-			status, ok := cs.TaskStates[taskID]
-			if !ok {
-				// Task registered but no state yet — count as pending
-				data.Stats.PendingTasks++
-				continue
-			}
-			switch status {
-			case model.StatusCompleted:
-				data.Stats.CompletedTasks++
-			case model.StatusFailed, model.StatusDeadLetter:
-				data.Stats.FailedTasks++
-			case model.StatusInProgress:
-				data.Stats.InProgressTasks++
-			case model.StatusPending:
-				data.Stats.PendingTasks++
-			case model.StatusCancelled:
-				data.Stats.CancelledTasks++
-			}
+// aggregateCommandTaskStats aggregates task statistics from a single command state
+// snapshot into the dashboard data.
+func aggregateCommandTaskStats(data *DashboardData, cs *commandStateSnapshot) {
+	// Collect only current task IDs (required + optional), not retry history
+	currentTasks := make(map[string]struct{}, len(cs.RequiredTaskIDs)+len(cs.OptionalTaskIDs))
+	for _, id := range cs.RequiredTaskIDs {
+		currentTasks[id] = struct{}{}
+	}
+	for _, id := range cs.OptionalTaskIDs {
+		currentTasks[id] = struct{}{}
+	}
+
+	for taskID := range currentTasks {
+		data.Stats.TotalTasks++
+		status, ok := cs.TaskStates[taskID]
+		if !ok {
+			// Task registered but no state yet — count as pending
+			data.Stats.PendingTasks++
+			continue
+		}
+		switch status {
+		case model.StatusCompleted:
+			data.Stats.CompletedTasks++
+		case model.StatusFailed, model.StatusDeadLetter:
+			data.Stats.FailedTasks++
+		case model.StatusInProgress:
+			data.Stats.InProgressTasks++
+		case model.StatusPending:
+			data.Stats.PendingTasks++
+		case model.StatusCancelled:
+			data.Stats.CancelledTasks++
 		}
 	}
 }
@@ -332,60 +346,74 @@ func (f *DashboardFormatter) updateQueueStatus(data *DashboardData) {
 		// Only process known queue types; skip auxiliary files (e.g., planner_signals.yaml).
 		switch {
 		case queueName == "orchestrator":
-			var nq struct {
-				Notifications []struct {
-					Status string `yaml:"status"`
-				} `yaml:"notifications"`
-			}
-			if err := yaml.Unmarshal(fileData, &nq); err == nil {
-				for _, n := range nq.Notifications {
-					switch n.Status {
-					case "pending":
-						info.Pending++
-					case "in_progress":
-						info.InProgress++
-					}
-				}
-			}
+			countNotificationStatuses(fileData, &info)
 		case queueName == "planner":
-			var cq struct {
-				Commands []struct {
-					Status string `yaml:"status"`
-				} `yaml:"commands"`
-			}
-			if err := yaml.Unmarshal(fileData, &cq); err == nil {
-				for _, c := range cq.Commands {
-					switch c.Status {
-					case "pending":
-						info.Pending++
-					case "in_progress":
-						info.InProgress++
-					}
-				}
-			}
+			countCommandStatuses(fileData, &info)
 		case strings.HasPrefix(queueName, "worker"):
-			// Worker task queues
-			var tq struct {
-				Tasks []struct {
-					Status string `yaml:"status"`
-				} `yaml:"tasks"`
-			}
-			if err := yaml.Unmarshal(fileData, &tq); err == nil {
-				for _, t := range tq.Tasks {
-					switch t.Status {
-					case "pending":
-						info.Pending++
-					case "in_progress":
-						info.InProgress++
-					}
-				}
-			}
+			countTaskStatuses(fileData, &info)
 		default:
 			// Skip unknown queue files (e.g., planner_signals.yaml)
 			continue
 		}
 
 		data.QueueStatus[queueName] = info
+	}
+}
+
+// countNotificationStatuses counts pending/in_progress notifications in an orchestrator queue file.
+func countNotificationStatuses(fileData []byte, info *QueueInfo) {
+	var nq struct {
+		Notifications []struct {
+			Status string `yaml:"status"`
+		} `yaml:"notifications"`
+	}
+	if err := yaml.Unmarshal(fileData, &nq); err == nil {
+		for _, n := range nq.Notifications {
+			switch n.Status {
+			case "pending":
+				info.Pending++
+			case "in_progress":
+				info.InProgress++
+			}
+		}
+	}
+}
+
+// countCommandStatuses counts pending/in_progress commands in a planner queue file.
+func countCommandStatuses(fileData []byte, info *QueueInfo) {
+	var cq struct {
+		Commands []struct {
+			Status string `yaml:"status"`
+		} `yaml:"commands"`
+	}
+	if err := yaml.Unmarshal(fileData, &cq); err == nil {
+		for _, c := range cq.Commands {
+			switch c.Status {
+			case "pending":
+				info.Pending++
+			case "in_progress":
+				info.InProgress++
+			}
+		}
+	}
+}
+
+// countTaskStatuses counts pending/in_progress tasks in a worker queue file.
+func countTaskStatuses(fileData []byte, info *QueueInfo) {
+	var tq struct {
+		Tasks []struct {
+			Status string `yaml:"status"`
+		} `yaml:"tasks"`
+	}
+	if err := yaml.Unmarshal(fileData, &tq); err == nil {
+		for _, t := range tq.Tasks {
+			switch t.Status {
+			case "pending":
+				info.Pending++
+			case "in_progress":
+				info.InProgress++
+			}
+		}
 	}
 }
 

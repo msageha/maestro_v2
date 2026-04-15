@@ -43,15 +43,22 @@ func (R5Notification) Apply(run *Run) Outcome {
 	}
 
 	nqPath := filepath.Join(run.Deps.MaestroDir, "queue", "orchestrator.yaml")
-	nqData, err := os.ReadFile(nqPath) //nolint:gosec // nqPath is constructed from a controlled application queue directory
-	if err != nil && !os.IsNotExist(err) {
-		return Outcome{}
-	}
 	var nq model.NotificationQueue
-	if err == nil {
-		if err := yamlv3.Unmarshal(nqData, &nq); err != nil {
-			return Outcome{}
+	var nqReadErr bool
+	run.Deps.LockMap.WithLock("queue:orchestrator", func() {
+		nqData, err := os.ReadFile(nqPath) //nolint:gosec // nqPath is constructed from a controlled application queue directory
+		if err != nil {
+			if !os.IsNotExist(err) {
+				nqReadErr = true
+			}
+			return
 		}
+		if err := yamlv3.Unmarshal(nqData, &nq); err != nil {
+			nqReadErr = true
+		}
+	})
+	if nqReadErr {
+		return Outcome{}
 	}
 
 	// Dedup key is (source_result_id, type) to mirror the upsert logic in

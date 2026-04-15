@@ -102,7 +102,7 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 		}
 
 		if isSysCommit, ready, sErr := qh.dependencyResolver.IsSystemCommitReady(task.CommandID, task.ID); sErr != nil {
-			qh.log(LogLevelWarn, "system_commit_check task=%s error=%v", task.ID, sErr)
+			qh.log(LogLevelWarn, "system_commit_check_error task=%s error=%v", task.ID, sErr)
 			continue
 		} else if isSysCommit && !ready {
 			qh.log(LogLevelDebug, "system_commit_not_ready task=%s command=%s", task.ID, task.CommandID)

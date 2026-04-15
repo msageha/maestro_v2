@@ -98,69 +98,73 @@ func (dc *DebounceController) Trigger(trigger string) {
 	done := make(chan struct{})
 	dc.done = done
 
-	dc.timer = time.AfterFunc(
-		delay,
-		func() {
-			defer close(done)
+	dc.timer = time.AfterFunc(delay, func() {
+		dc.executeDebouncedScan(trigger, done)
+	})
+}
 
-			// Guard: if shutting down, bail out immediately.
-			if dc.shuttingDown != nil && dc.shuttingDown.Load() {
-				return
+// executeDebouncedScan is the timer callback extracted from Trigger. It handles
+// shutdown guards, running-state CAS, first-trigger reset, panic recovery, and
+// the actual scanFn invocation.
+func (dc *DebounceController) executeDebouncedScan(trigger string, done chan struct{}) {
+	defer close(done)
+
+	// Guard: if shutting down, bail out immediately.
+	if dc.shuttingDown != nil && dc.shuttingDown.Load() {
+		return
+	}
+
+	// Check context cancellation before starting the scan.
+	if dc.shutdownCtx != nil {
+		select {
+		case <-dc.shutdownCtx.Done():
+			return
+		default:
+		}
+	}
+
+	// Mark scan as running; if already running, skip.
+	if !dc.running.CompareAndSwap(false, true) {
+		dc.dl.Logf(LogLevelDebug, "debounce_scan_skipped reason=scan_already_running trigger=%s", trigger)
+		return
+	}
+	defer dc.running.Store(false)
+
+	// Re-check shutdown after CAS to narrow the TOCTOU window between
+	// the initial shuttingDown check and scan execution.
+	if dc.shuttingDown != nil && dc.shuttingDown.Load() {
+		return
+	}
+
+	// Reset first-trigger tracking for next debounce window.
+	dc.mu.Lock()
+	// Re-check shutdown under lock to close the TOCTOU window
+	// between the atomic check above and this critical section.
+	if dc.shuttingDown != nil && dc.shuttingDown.Load() {
+		dc.mu.Unlock()
+		return
+	}
+	dc.firstTrigger = time.Time{}
+	dc.mu.Unlock()
+
+	defer func() {
+		if r := recover(); r != nil {
+			dc.dl.Logf(LogLevelError, "panic in debounceAndScan: %v\n%s", r, debug.Stack())
+			if dc.shutdownFn != nil {
+				dc.shutdownFn()
 			}
+		}
+	}()
+	dc.dl.Logf(LogLevelDebug, "debounced_scan trigger=%s", trigger)
 
-			// Check context cancellation before starting the scan.
-			if dc.shutdownCtx != nil {
-				select {
-				case <-dc.shutdownCtx.Done():
-					return
-				default:
-				}
-			}
-
-			// Mark scan as running; if already running, skip.
-			if !dc.running.CompareAndSwap(false, true) {
-				dc.dl.Logf(LogLevelDebug, "debounce_scan_skipped reason=scan_already_running trigger=%s", trigger)
-				return
-			}
-			defer dc.running.Store(false)
-
-			// Re-check shutdown after CAS to narrow the TOCTOU window between
-			// the initial shuttingDown check and scan execution.
-			if dc.shuttingDown != nil && dc.shuttingDown.Load() {
-				return
-			}
-
-			// Reset first-trigger tracking for next debounce window.
-			dc.mu.Lock()
-			// Re-check shutdown under lock to close the TOCTOU window
-			// between the atomic check above and this critical section.
-			if dc.shuttingDown != nil && dc.shuttingDown.Load() {
-				dc.mu.Unlock()
-				return
-			}
-			dc.firstTrigger = time.Time{}
-			dc.mu.Unlock()
-
-			defer func() {
-				if r := recover(); r != nil {
-					dc.dl.Logf(LogLevelError, "panic in debounceAndScan: %v\n%s", r, debug.Stack())
-					if dc.shutdownFn != nil {
-						dc.shutdownFn()
-					}
-				}
-			}()
-			dc.dl.Logf(LogLevelDebug, "debounced_scan trigger=%s", trigger)
-
-			// shutdownCtx is nil only in unit tests where the controller is
-			// constructed without a full daemon context. context.Background()
-			// is a safe fallback.
-			ctx := dc.shutdownCtx
-			if ctx == nil {
-				ctx = context.Background()
-			}
-			dc.scanFn(ctx)
-		},
-	)
+	// shutdownCtx is nil only in unit tests where the controller is
+	// constructed without a full daemon context. context.Background()
+	// is a safe fallback.
+	ctx := dc.shutdownCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	dc.scanFn(ctx)
 }
 
 // Stop cancels any pending debounce timer and waits for any in-flight

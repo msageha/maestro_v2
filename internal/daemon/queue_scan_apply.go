@@ -245,24 +245,29 @@ func (qh *QueueHandler) applyCommandBusyCheckResult(bc busyCheckResult, cq *mode
 func (qh *QueueHandler) applySignalResults(results []signalDeliveryResult, sq *model.PlannerSignalQueue, dirty *bool) {
 	now := qh.clock.Now().UTC()
 	retained := make([]model.PlannerSignal, 0, len(sq.Signals))
-	matched := make([]bool, len(results))
+
+	// Build O(1) lookup map from (CommandID, PhaseID, Kind) → result,
+	// replacing the previous O(n*m) nested loop with O(n+m) lookups.
+	type signalMatchKey struct {
+		CommandID string
+		PhaseID   string
+		Kind      string
+	}
+	resultMap := make(map[signalMatchKey]signalDeliveryResult, len(results))
+	for _, r := range results {
+		key := signalMatchKey{r.Item.CommandID, r.Item.PhaseID, r.Item.Kind}
+		resultMap[key] = r
+	}
 
 	for _, sig := range sq.Signals {
 		var delivered bool
 		var dlErr error
-		for j, r := range results {
-			if matched[j] {
-				continue
-			}
-			if r.Item.CommandID == sig.CommandID &&
-				r.Item.PhaseID == sig.PhaseID &&
-				r.Item.Kind == sig.Kind {
-				delivered = true
-				matched[j] = true
-				if !r.Success {
-					dlErr = r.Error
-				}
-				break
+		key := signalMatchKey{sig.CommandID, sig.PhaseID, sig.Kind}
+		if r, ok := resultMap[key]; ok {
+			delivered = true
+			delete(resultMap, key)
+			if !r.Success {
+				dlErr = r.Error
 			}
 		}
 

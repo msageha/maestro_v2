@@ -70,17 +70,17 @@ func (h *SkillAPI) handleSkillApprove(req *uds.Request) *uds.Response {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid skill name %q: must be kebab-case (a-z0-9 and hyphens, 1-64 chars)", skillName))
 	}
 
-	// Check for name collision
+	// Create skill directory atomically. os.Mkdir fails with os.ErrExist if the
+	// directory already exists, avoiding the TOCTOU race between Stat and MkdirAll.
 	skillsDir := filepath.Join(h.maestroDir, "skills", "share")
-	skillDir := filepath.Join(skillsDir, skillName)
-	if _, err := os.Stat(skillDir); err == nil {
-		return uds.ErrorResponse(uds.ErrCodeDuplicate, fmt.Sprintf("skill %q already exists; use a different name", skillName))
+	if err := os.MkdirAll(skillsDir, 0o755); err != nil { //nolint:gosec // 0755 is appropriate for a skills directory
+		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("create skills directory: %v", err))
 	}
-
-	// Create skill directory and write SKILL.md.
-	// Use defer-based cleanup to guarantee the directory is removed on any failure
-	// after creation, preventing resource leaks.
-	if err := os.MkdirAll(skillDir, 0o755); err != nil { //nolint:gosec // 0755 is appropriate for a skills directory
+	skillDir := filepath.Join(skillsDir, skillName)
+	if err := os.Mkdir(skillDir, 0o755); err != nil { //nolint:gosec // 0755 is appropriate for a skills directory
+		if os.IsExist(err) {
+			return uds.ErrorResponse(uds.ErrCodeDuplicate, fmt.Sprintf("skill %q already exists; use a different name", skillName))
+		}
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("create skill directory: %v", err))
 	}
 	skillDirCreated := true

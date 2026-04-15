@@ -174,6 +174,13 @@ func (eb *EventBridge) runWithTimeout(callbackName string, fn func(ctx context.C
 		return true
 	case <-ctx.Done():
 		eb.d.log(LogLevelError, "event_bridge callback timeout type=%s timeout=%s", callbackName, eventBridgeCallbackTimeout)
+		// Drain goroutine: waits for fn to finish to prevent goroutine leak.
+		// fn SHOULD observe the passed context and exit promptly on cancellation;
+		// this goroutine is a safety net for callbacks that do not.
+		go func() {
+			<-done
+			eb.d.log(LogLevelWarn, "event_bridge callback completed after timeout type=%s", callbackName)
+		}()
 		return false
 	}
 }

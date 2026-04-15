@@ -155,16 +155,20 @@ func (ch *CancelHandler) AutoCompleteCancelledCommands(
 
 	ch.log(LogLevelInfo, "cancel_auto_complete command=%s task_count=%d", cmd.ID, taskCount)
 
-	// Update state file
-	ch.cancelAutoCompletePostProcess(cmd.ID)
+	// Update state file — post-processing failure is non-fatal (command already
+	// transitioned), but we log it so operators can investigate.
+	if err := ch.cancelAutoCompletePostProcess(cmd.ID); err != nil {
+		ch.log(LogLevelError, "cancel_auto_complete_post_failed command=%s error=%v", cmd.ID, err)
+	}
 
 	return &CancelAutoCompleteItem{CommandID: cmd.ID}
 }
 
 // cancelAutoCompletePostProcess updates state for a cancel-auto-completed command.
-func (ch *CancelHandler) cancelAutoCompletePostProcess(commandID string) {
+// Returns an error if the state file update fails.
+func (ch *CancelHandler) cancelAutoCompletePostProcess(commandID string) error {
 	if ch.stateManager == nil {
-		return
+		return nil
 	}
 
 	statePath := filepath.Join(ch.maestroDir, "state", "commands", commandID+".yaml")
@@ -186,8 +190,9 @@ func (ch *CancelHandler) cancelAutoCompletePostProcess(commandID string) {
 		state.UpdatedAt = now
 		return nil
 	}); err != nil {
-		ch.log(LogLevelError, "cancel_auto_complete_post update_state command=%s error=%v", commandID, err)
+		return fmt.Errorf("update_state command=%s: %w", commandID, err)
 	}
+	return nil
 }
 
 // CollectCancelInterruptItems inspects in_progress tasks for the cancelled

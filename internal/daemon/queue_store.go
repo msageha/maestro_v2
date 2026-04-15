@@ -237,49 +237,65 @@ func (qs *QueueStoreImpl) quarantineFile(data []byte, name string) {
 	qs.cleanupQuarantine(quarantineDir)
 }
 
+// salvageQueueEntries is a generic helper that recovers individual entries from
+// a corrupted YAML queue file by parsing the YAML node tree. It locates the
+// sequence node identified by listKey, attempts to unmarshal each entry
+// independently, validates it via the validate callback, and collects valid
+// entries. Invalid entries are logged via logSkip. This eliminates near-
+// identical logic previously duplicated in salvageCommandQueue and
+// salvageNotificationQueue.
+func salvageQueueEntries[T any](data []byte, listKey string, validate func(*T) bool, logSkip func(error), qs *QueueStoreImpl) []T {
+	var node yamlv3.Node
+	if err := yamlv3.Unmarshal(data, &node); err != nil {
+		return nil
+	}
+
+	if node.Kind != yamlv3.DocumentNode || len(node.Content) == 0 {
+		return nil
+	}
+	root := node.Content[0]
+	if root.Kind != yamlv3.MappingNode {
+		return nil
+	}
+
+	for i := 0; i+1 < len(root.Content); i += 2 {
+		if root.Content[i].Value == listKey {
+			seqNode := root.Content[i+1]
+			if seqNode.Kind != yamlv3.SequenceNode {
+				break
+			}
+			var results []T
+			for _, entryNode := range seqNode.Content {
+				entryBytes, err := yamlv3.Marshal(entryNode)
+				if err != nil {
+					continue
+				}
+				var entry T
+				if err := yamlv3.Unmarshal(entryBytes, &entry); err != nil {
+					logSkip(err)
+					continue
+				}
+				if validate(&entry) {
+					results = append(results, entry)
+				}
+			}
+			return results
+		}
+	}
+	return nil
+}
+
 // salvageCommandQueue attempts per-entry recovery from corrupted command queue YAML.
 func (qs *QueueStoreImpl) salvageCommandQueue(data []byte) model.CommandQueue {
 	result := model.CommandQueue{
 		SchemaVersion: 1,
 		FileType:      "command_queue",
 	}
-
-	var node yamlv3.Node
-	if err := yamlv3.Unmarshal(data, &node); err != nil {
-		return result
-	}
-
-	if node.Kind != yamlv3.DocumentNode || len(node.Content) == 0 {
-		return result
-	}
-	root := node.Content[0]
-	if root.Kind != yamlv3.MappingNode {
-		return result
-	}
-
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		if root.Content[i].Value == "commands" {
-			seqNode := root.Content[i+1]
-			if seqNode.Kind != yamlv3.SequenceNode {
-				break
-			}
-			for _, cmdNode := range seqNode.Content {
-				cmdBytes, err := yamlv3.Marshal(cmdNode)
-				if err != nil {
-					continue
-				}
-				var cmd model.Command
-				if err := yamlv3.Unmarshal(cmdBytes, &cmd); err != nil {
-					qs.log(LogLevelWarn, "salvage_command_skip error=%v", err)
-					continue
-				}
-				if cmd.ID != "" {
-					result.Commands = append(result.Commands, cmd)
-				}
-			}
-			break
-		}
-	}
+	result.Commands = salvageQueueEntries(data, "commands",
+		func(cmd *model.Command) bool { return cmd.ID != "" },
+		func(err error) { qs.log(LogLevelWarn, "salvage_command_skip error=%v", err) },
+		qs,
+	)
 	return result
 }
 
@@ -289,43 +305,13 @@ func (qs *QueueStoreImpl) salvageNotificationQueue(data []byte) model.Notificati
 		SchemaVersion: 1,
 		FileType:      "queue_notification",
 	}
-
-	var node yamlv3.Node
-	if err := yamlv3.Unmarshal(data, &node); err != nil {
-		return result
-	}
-
-	if node.Kind != yamlv3.DocumentNode || len(node.Content) == 0 {
-		return result
-	}
-	root := node.Content[0]
-	if root.Kind != yamlv3.MappingNode {
-		return result
-	}
-
-	for i := 0; i+1 < len(root.Content); i += 2 {
-		if root.Content[i].Value == "notifications" {
-			seqNode := root.Content[i+1]
-			if seqNode.Kind != yamlv3.SequenceNode {
-				break
-			}
-			for _, ntfNode := range seqNode.Content {
-				ntfBytes, err := yamlv3.Marshal(ntfNode)
-				if err != nil {
-					continue
-				}
-				var ntf model.Notification
-				if err := yamlv3.Unmarshal(ntfBytes, &ntf); err != nil {
-					qs.log(LogLevelWarn, "salvage_notification_skip error=%v", err)
-					continue
-				}
-				if ntf.ID != "" && ntf.CommandID != "" && ntf.SourceResultID != "" && model.ValidateNotificationType(ntf.Type) == nil {
-					result.Notifications = append(result.Notifications, ntf)
-				}
-			}
-			break
-		}
-	}
+	result.Notifications = salvageQueueEntries(data, "notifications",
+		func(ntf *model.Notification) bool {
+			return ntf.ID != "" && ntf.CommandID != "" && ntf.SourceResultID != "" && model.ValidateNotificationType(ntf.Type) == nil
+		},
+		func(err error) { qs.log(LogLevelWarn, "salvage_notification_skip error=%v", err) },
+		qs,
+	)
 	return result
 }
 

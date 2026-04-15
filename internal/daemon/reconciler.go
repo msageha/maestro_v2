@@ -79,6 +79,7 @@ func (r *Reconciler) Reconcile() ([]ReconcileRepair, []DeferredNotification) {
 }
 
 // ExecuteDeferredNotifications sends collected Planner notifications via agent executor.
-func (r *Reconciler) ExecuteDeferredNotifications(notifications []DeferredNotification) {
-	r.engine.ExecuteDeferredNotifications(notifications)
+// Returns notifications that failed to deliver, enabling the caller to retry.
+func (r *Reconciler) ExecuteDeferredNotifications(notifications []DeferredNotification) []DeferredNotification {
+	return r.engine.ExecuteDeferredNotifications(notifications)
 }

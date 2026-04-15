@@ -41,8 +41,17 @@ func isMaxInProgressTimeout(now time.Time, timestampRFC3339 string, maxMin int) 
 	return now.Sub(t) >= time.Duration(maxMin)*time.Minute
 }
 
-// buildGlobalInFlightSet scans ALL task queues to find workers with in_progress tasks
-// that have valid (non-expired) leases. Keyed by worker ID derived from queue file path.
+// buildGlobalInFlightSet scans ALL task queues to find workers with in_progress
+// tasks that have valid (non-expired) leases. The returned map is keyed by
+// worker ID (derived from queue file path); a true value means the worker has
+// at least one non-expired in_progress task and should not receive new dispatches.
+//
+// Preconditions:
+//   - Callers must hold scanMu.Lock or ensure taskQueues is a consistent
+//     snapshot (e.g., loaded atomically before the call). The function reads
+//     from the provided map without acquiring any locks itself.
+//
+// This function is read-only and does not modify taskQueues or acquire any locks.
 func (qh *QueueHandler) buildGlobalInFlightSet(taskQueues map[string]*taskQueueEntry) map[string]bool {
 	inFlight := make(map[string]bool)
 	for queueFile, tq := range taskQueues {

@@ -191,6 +191,116 @@ type resultFileSpec[T any, PT interface {
 	logFailure func(r PT, err error)
 }
 
+// phase1Result holds the outcome of processResultPhase1AcquireLease.
+type phase1Result[PT any] int
+
+const (
+	// phase1Proceed indicates the lease was acquired and notification should proceed.
+	phase1Proceed = iota
+	// phase1Done indicates no more unnotified results; the caller should return.
+	phase1Done
+	// phase1Error indicates a fatal error; the caller should return.
+	phase1Error
+)
+
+// processResultPhase1AcquireLease loads the result file, finds the next unnotified
+// entry, acquires a lease, and writes the file. The lock is held on entry and
+// released before returning. On phase1Proceed the caller should proceed to Phase 2;
+// on phase1Done/phase1Error the caller should return notified.
+func processResultPhase1AcquireLease[T any, PT interface {
+	*T
+	model.Notifiable
+}, F any](rh *ResultHandler, spec *resultFileSpec[T, PT, F], attempted map[string]bool) (PT, string, int) {
+	rf, err := spec.loadFile(spec.resultPath)
+	if err != nil {
+		rh.lockMap.Unlock(spec.lockKey)
+		rh.log(LogLevelWarn, "load_results %s error=%v", spec.label, err)
+		return nil, "", phase1Error
+	}
+
+	results := spec.getResults(rf)
+	idx := findUnnotifiedExcluding[T, PT](results, attempted, rh.isLeaseExpired)
+	if idx < 0 {
+		rh.lockMap.Unlock(spec.lockKey)
+		return nil, "", phase1Done
+	}
+
+	entry := PT(&results[idx])
+	resultID := entry.GetResultID()
+	attempted[resultID] = true
+
+	rh.acquireNotifyLease(entry)
+	if err := yamlutil.AtomicWrite(spec.resultPath, rf); err != nil {
+		rh.lockMap.Unlock(spec.lockKey)
+		rh.log(LogLevelError, "write_lease %s result=%s error=%v", spec.label, resultID, err)
+		return nil, "", phase1Error
+	}
+	rh.lockMap.Unlock(spec.lockKey)
+	return entry, resultID, phase1Proceed
+}
+
+// phase3Result holds the outcome of processResultPhase3UpdateResult.
+type phase3Result int
+
+const (
+	// phase3Continue indicates the loop should continue to the next iteration.
+	phase3Continue phase3Result = iota
+	// phase3Abort indicates a fatal write error; the caller should return.
+	phase3Abort
+	// phase3OK indicates success; the loop should continue normally.
+	phase3OK
+)
+
+// processResultPhase3UpdateResult reloads the result file, marks the entry as
+// success or failure, and writes it back. The lock is held on entry and released
+// before returning. Returns the updated writeFailures count, whether notification
+// succeeded (for incrementing notified), and a flow-control signal.
+func processResultPhase3UpdateResult[T any, PT interface {
+	*T
+	model.Notifiable
+}, F any](rh *ResultHandler, spec *resultFileSpec[T, PT, F], resultID string, notifyErr error, writeFailures int) (int, bool, phase3Result) {
+	rf, err := spec.loadFile(spec.resultPath)
+	if err != nil {
+		rh.lockMap.Unlock(spec.lockKey)
+		rh.log(LogLevelError, "reload_results %s error=%v", spec.label, err)
+		return writeFailures, false, phase3Abort
+	}
+
+	entry := spec.findByID(rf, resultID)
+	if entry == nil {
+		rh.lockMap.Unlock(spec.lockKey)
+		rh.log(LogLevelWarn, "result_disappeared %s result=%s", spec.label, resultID)
+		return writeFailures, false, phase3Continue
+	}
+
+	success := false
+	if notifyErr != nil {
+		rh.markNotifyFailure(entry, notifyErr.Error())
+		spec.logFailure(entry, notifyErr)
+	} else {
+		rh.markNotifySuccess(entry)
+		success = true
+		spec.logSuccess(entry)
+		if spec.onSuccess != nil {
+			spec.onSuccess(entry)
+		}
+	}
+
+	if err := yamlutil.AtomicWrite(spec.resultPath, rf); err != nil {
+		writeFailures++
+		rh.log(LogLevelError, "write_result %s error=%v failures=%d/%d", spec.label, err, writeFailures, maxAtomicWriteFailures)
+		if writeFailures >= maxAtomicWriteFailures {
+			rh.lockMap.Unlock(spec.lockKey)
+			rh.log(LogLevelError, "write_result_abort %s consecutive_failures=%d", spec.label, writeFailures)
+			return writeFailures, success, phase3Abort
+		}
+	} else {
+		writeFailures = 0
+	}
+	rh.lockMap.Unlock(spec.lockKey)
+	return writeFailures, success, phase3OK
+}
+
 // processResultFile is the generic notification processing loop shared by
 // processWorkerResultFile and processCommandResultFile.
 func processResultFile[T any, PT interface {
@@ -204,76 +314,25 @@ func processResultFile[T any, PT interface {
 	for iter := 0; iter < maxResultLoopIterations; iter++ {
 		// Phase 1: Acquire lease under lock
 		rh.lockMap.Lock(spec.lockKey)
-
-		rf, err := spec.loadFile(spec.resultPath)
-		if err != nil {
-			rh.lockMap.Unlock(spec.lockKey)
-			rh.log(LogLevelWarn, "load_results %s error=%v", spec.label, err)
+		entry, resultID, outcome := processResultPhase1AcquireLease[T, PT](rh, &spec, attempted)
+		if outcome != phase1Proceed {
 			return notified
 		}
-
-		results := spec.getResults(rf)
-		idx := findUnnotifiedExcluding[T, PT](results, attempted, rh.isLeaseExpired)
-		if idx < 0 {
-			rh.lockMap.Unlock(spec.lockKey)
-			return notified
-		}
-
-		entry := PT(&results[idx])
-		resultID := entry.GetResultID()
-		attempted[resultID] = true
-
-		rh.acquireNotifyLease(entry)
-		if err := yamlutil.AtomicWrite(spec.resultPath, rf); err != nil {
-			rh.lockMap.Unlock(spec.lockKey)
-			rh.log(LogLevelError, "write_lease %s result=%s error=%v", spec.label, resultID, err)
-			return notified
-		}
-		rh.lockMap.Unlock(spec.lockKey)
 
 		// Phase 2: Execute notification (outside lock)
 		notifyErr := spec.notify(entry)
 
 		// Phase 3: Update result under lock
 		rh.lockMap.Lock(spec.lockKey)
-		rf, err = spec.loadFile(spec.resultPath)
-		if err != nil {
-			rh.lockMap.Unlock(spec.lockKey)
-			rh.log(LogLevelError, "reload_results %s error=%v", spec.label, err)
+		var success bool
+		var p3 phase3Result
+		writeFailures, success, p3 = processResultPhase3UpdateResult[T, PT](rh, &spec, resultID, notifyErr, writeFailures)
+		if success {
+			notified++
+		}
+		if p3 == phase3Abort {
 			return notified
 		}
-
-		entry = spec.findByID(rf, resultID)
-		if entry == nil {
-			rh.lockMap.Unlock(spec.lockKey)
-			rh.log(LogLevelWarn, "result_disappeared %s result=%s", spec.label, resultID)
-			continue
-		}
-
-		if notifyErr != nil {
-			rh.markNotifyFailure(entry, notifyErr.Error())
-			spec.logFailure(entry, notifyErr)
-		} else {
-			rh.markNotifySuccess(entry)
-			notified++
-			spec.logSuccess(entry)
-			if spec.onSuccess != nil {
-				spec.onSuccess(entry)
-			}
-		}
-
-		if err := yamlutil.AtomicWrite(spec.resultPath, rf); err != nil {
-			writeFailures++
-			rh.log(LogLevelError, "write_result %s error=%v failures=%d/%d", spec.label, err, writeFailures, maxAtomicWriteFailures)
-			if writeFailures >= maxAtomicWriteFailures {
-				rh.lockMap.Unlock(spec.lockKey)
-				rh.log(LogLevelError, "write_result_abort %s consecutive_failures=%d", spec.label, writeFailures)
-				return notified
-			}
-		} else {
-			writeFailures = 0
-		}
-		rh.lockMap.Unlock(spec.lockKey)
 	}
 
 	if len(attempted) >= maxResultLoopIterations {

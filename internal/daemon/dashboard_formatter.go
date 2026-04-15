@@ -79,6 +79,7 @@ type DashboardFormatter struct {
 	maxErrors   int
 	maxWarnings int
 	clock       Clock
+	dl          *DaemonLogger
 
 	tmplOnce sync.Once
 	tmplVal  *template.Template
@@ -94,6 +95,7 @@ func NewDashboardFormatter(maestroDir string) *DashboardFormatter {
 		maxErrors:   10,
 		maxWarnings: 10,
 		clock:       RealClock{},
+		dl:          NewDaemonLoggerFromLegacy("dashboard", log.Default(), LogLevelDebug),
 	}
 }
 

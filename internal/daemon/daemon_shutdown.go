@@ -109,7 +109,7 @@ func (d *Daemon) Shutdown() {
 		// Unsubscribe from event bus and stop event processing.
 		d.bridge.unsubscribeAll()
 		if d.eventBus != nil {
-			d.shutdownOp("event_bus_close", func() error { d.eventBus.Close(); return nil })
+			d.shutdownOp("event_bus_close", func() error { return d.eventBus.Close() })
 		}
 		if d.qualityGateDaemon != nil {
 			d.shutdownOp("quality_gate_stop", func() error { return d.qualityGateDaemon.Stop() })

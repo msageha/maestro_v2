@@ -174,6 +174,14 @@ func (h *ResultWriteAPI) writeLearnings(params ResultWriteParams, resultID strin
 	// Pre-check: attempt corruption recovery if the file is unreadable.
 	// ReadModifyWrite returns a parse error when the file exists but is corrupt;
 	// we recover and then proceed with the normal RMW path.
+	//
+	// NOTE: This intentionally reads the file twice — once here to probe for
+	// corruption, and again inside updateYAMLFile for the RMW cycle. The double
+	// read is an accepted trade-off: recoverCorruptLearningsIfNeeded must verify
+	// file health (and quarantine if corrupt) before updateYAMLFile's RMW, and
+	// updateYAMLFile is a generic function shared by many callers that handles
+	// its own loading. The overhead is one extra file read for the normal
+	// (non-corrupt) case.
 	if err := h.recoverCorruptLearningsIfNeeded(learningsPath); err != nil {
 		return err
 	}
