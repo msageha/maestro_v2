@@ -29,9 +29,23 @@ func classifyCommitError(err error) string {
 	return "generic:" + err.Error()
 }
 
-// --- Phase B step functions (executed in order) ---
-// periodicScanPhaseB has been moved to ScanPhaseExecutor (scan_phase_executor.go).
-// Step functions below remain on QueueHandler as they access shared handler dependencies.
+// --- Phase B: entry point and step functions ---
+// periodicScanPhaseB lives in ScanPhaseExecutor (scan_phase_executor.go).
+// QueueHandler provides executePhaseBSteps as the single entry point.
+
+// executePhaseBSteps runs all Phase B steps in the prescribed order.
+// This is the single entry point called by ScanPhaseExecutor.periodicScanPhaseB.
+func (qh *QueueHandler) executePhaseBSteps(ctx context.Context, pa *phaseAResult, result *phaseBResult) {
+	qh.stepInterruptAgents(ctx, pa)
+	qh.stepProbeBusyAgents(ctx, pa, result)
+	qh.stepDispatchWork(ctx, pa, result)
+	qh.stepDeliverSignals(ctx, pa, result)
+	qh.stepLogPartialFailures(result)
+	qh.stepClearAgents(ctx, pa)
+	qh.stepCommitAndMergeWorktrees(ctx, pa, result)
+	additionalCleanups := qh.stepPublishWorktrees(ctx, pa, result)
+	qh.stepCleanupWorktrees(ctx, pa, result, additionalCleanups)
+}
 
 // stepInterruptAgents executes interrupt requests before dispatches to avoid
 // killing newly dispatched tasks. After each interrupt, discards the worker's
@@ -151,27 +165,8 @@ func (qh *QueueHandler) stepCommitAndMergeWorktrees(ctx context.Context, pa *pha
 			var succeeded []string
 			for _, workerID := range item.WorkerIDs {
 				msg := workerCommitMessage(item.WorkerPurposes, workerID)
-				if err := qh.worktreeManager.CommitWorkerChanges(item.CommandID, workerID, msg); err != nil {
-					reason := classifyCommitError(err)
-					qh.log(LogLevelWarn, "worktree_auto_commit command=%s worker=%s reason=%s error=%v",
-						item.CommandID, workerID, reason, err)
-					mr.CommitFailures = append(mr.CommitFailures, commitFailure{
-						WorkerID: workerID,
-						Error:    err,
-						Reason:   reason,
-					})
-					// Persist commit-failed marker so the publish gate blocks until cleared.
-					if recErr := qh.worktreeManager.AddCommitFailedWorker(item.CommandID, workerID); recErr != nil {
-						qh.log(LogLevelWarn, "worktree_record_commit_failed command=%s worker=%s error=%v",
-							item.CommandID, workerID, recErr)
-					}
-				} else {
+				if qh.handleWorkerCommit(item.CommandID, workerID, msg, &mr) {
 					succeeded = append(succeeded, workerID)
-					// Clear any prior commit-failed marker on successful retry.
-					if clrErr := qh.worktreeManager.RemoveCommitFailedWorker(item.CommandID, workerID); clrErr != nil {
-						qh.log(LogLevelWarn, "worktree_clear_commit_failed command=%s worker=%s error=%v",
-							item.CommandID, workerID, clrErr)
-					}
 				}
 			}
 			committedWorkerIDs = succeeded
@@ -259,6 +254,33 @@ func (qh *QueueHandler) stepCleanupWorktrees(ctx context.Context, pa *phaseAResu
 	}); err != nil {
 		qh.log(LogLevelWarn, "worktree_cleanups_canceled: %v", err)
 	}
+}
+
+// handleWorkerCommit commits a single worker's changes and manages the
+// commit-failed marker. Returns true if the commit succeeded.
+func (qh *QueueHandler) handleWorkerCommit(commandID, workerID, msg string, mr *worktreeMergeResult) bool {
+	if err := qh.worktreeManager.CommitWorkerChanges(commandID, workerID, msg); err != nil {
+		reason := classifyCommitError(err)
+		qh.log(LogLevelWarn, "worktree_auto_commit command=%s worker=%s reason=%s error=%v",
+			commandID, workerID, reason, err)
+		mr.CommitFailures = append(mr.CommitFailures, commitFailure{
+			WorkerID: workerID,
+			Error:    err,
+			Reason:   reason,
+		})
+		// Persist commit-failed marker so the publish gate blocks until cleared.
+		if recErr := qh.worktreeManager.AddCommitFailedWorker(commandID, workerID); recErr != nil {
+			qh.log(LogLevelWarn, "worktree_record_commit_failed command=%s worker=%s error=%v",
+				commandID, workerID, recErr)
+		}
+		return false
+	}
+	// Clear any prior commit-failed marker on successful retry.
+	if clrErr := qh.worktreeManager.RemoveCommitFailedWorker(commandID, workerID); clrErr != nil {
+		qh.log(LogLevelWarn, "worktree_clear_commit_failed command=%s worker=%s error=%v",
+			commandID, workerID, clrErr)
+	}
+	return true
 }
 
 const autoCommitFallbackMessage = "auto-commit: worker changes"

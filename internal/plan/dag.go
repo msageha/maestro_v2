@@ -3,6 +3,8 @@ package plan
 import (
 	"fmt"
 	"strings"
+
+	"github.com/msageha/maestro_v2/internal/model"
 )
 
 // ValidateTaskDAG validates that task dependencies form a directed acyclic graph
@@ -161,6 +163,97 @@ func ValidateSamePhaseRefs(blockedBy map[string][]string, validNames map[string]
 	}
 	if errs.HasErrors() {
 		return errs
+	}
+	return nil
+}
+
+// ValidateTaskDAGAfterMutation validates the task DAG after a state mutation
+// (e.g., rewriteDependencies during retry or cascade recovery). It checks
+// for cycles in the dependency graph and cross-phase dependency violations.
+func ValidateTaskDAGAfterMutation(state *model.CommandState) error {
+	allNames := make([]string, 0, len(state.TaskStates))
+	for k := range state.TaskStates {
+		allNames = append(allNames, k)
+	}
+	if _, err := ValidateTaskDAG(allNames, state.TaskDependencies); err != nil {
+		return fmt.Errorf("post-mutation DAG validation: %w", err)
+	}
+	if err := validateCrossPhaseRefs(state); err != nil {
+		return fmt.Errorf("cross-phase dependency violation: %w", err)
+	}
+	return nil
+}
+
+// validateCrossPhaseRefs checks that no task depends on a task in a phase
+// that the task's own phase does not (transitively) depend on.
+// Tasks within the same phase or tasks not assigned to any phase are skipped.
+func validateCrossPhaseRefs(state *model.CommandState) error {
+	if len(state.Phases) <= 1 {
+		return nil
+	}
+
+	// Build task→phaseIdx map.
+	taskPhase := make(map[string]int, len(state.TaskStates))
+	for i, phase := range state.Phases {
+		for _, tid := range phase.TaskIDs {
+			taskPhase[tid] = i
+		}
+	}
+
+	// Build phase name/ID → index lookup.
+	phaseIdx := make(map[string]int, len(state.Phases)*2)
+	for i, p := range state.Phases {
+		if p.Name != "" {
+			phaseIdx[p.Name] = i
+		}
+		if p.PhaseID != "" {
+			phaseIdx[p.PhaseID] = i
+		}
+	}
+
+	// Compute transitive reachability: reachable[i] contains all phase
+	// indices that phase i transitively depends on.
+	reachable := make([]map[int]bool, len(state.Phases))
+	for i, p := range state.Phases {
+		reachable[i] = make(map[int]bool)
+		for _, dep := range p.DependsOnPhases {
+			if idx, ok := phaseIdx[dep]; ok {
+				reachable[i][idx] = true
+			}
+		}
+	}
+	changed := true
+	for changed {
+		changed = false
+		for i := range reachable {
+			for j := range reachable[i] {
+				for k := range reachable[j] {
+					if !reachable[i][k] {
+						reachable[i][k] = true
+						changed = true
+					}
+				}
+			}
+		}
+	}
+
+	// Validate: each task dependency's phase must be the same phase or
+	// a phase reachable (transitively depended on) from the task's phase.
+	for taskID, deps := range state.TaskDependencies {
+		tPI, tInPhase := taskPhase[taskID]
+		if !tInPhase {
+			continue
+		}
+		for _, dep := range deps {
+			dPI, dInPhase := taskPhase[dep]
+			if !dInPhase || dPI == tPI {
+				continue
+			}
+			if !reachable[tPI][dPI] {
+				return fmt.Errorf("task %s (phase %q) depends on task %s (phase %q) without phase dependency",
+					taskID, state.Phases[tPI].Name, dep, state.Phases[dPI].Name)
+			}
+		}
 	}
 	return nil
 }

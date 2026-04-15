@@ -204,22 +204,11 @@ func (e *fieldValidationEvaluator) evalMatches(value interface{}, condition *Rul
 		return condition.Operator == OpNotMatches, nil
 	}
 
-	var re *regexp.Regexp
-	if condition.CompiledRegex != nil {
-		re = condition.CompiledRegex.(*regexp.Regexp)
-	} else {
-		pattern, ok := condition.Value.(string)
-		if !ok {
-			return false, fmt.Errorf("regex pattern must be string")
-		}
-		var err error
-		re, err = regexp.Compile(pattern)
-		if err != nil {
-			return false, fmt.Errorf("invalid regex: %w", err)
-		}
+	if condition.CompiledRegex == nil {
+		return false, fmt.Errorf("regex not pre-compiled for operator %s; this indicates a missing compileCondition call", condition.Operator)
 	}
 
-	matched := re.MatchString(fmt.Sprintf("%v", value))
+	matched := condition.CompiledRegex.MatchString(fmt.Sprintf("%v", value))
 	if condition.Operator == OpMatches {
 		return matched, nil
 	}
@@ -320,7 +309,7 @@ func (e *fieldValidationEvaluator) isInList(value, list interface{}, caseSensiti
 		// Try to parse as comma-separated string
 		listStr := fmt.Sprintf("%v", list)
 		items := strings.Split(listStr, ",")
-		valStr := fmt.Sprintf("%v", value)
+		valStr := strings.TrimSpace(fmt.Sprintf("%v", value))
 		if !caseSensitive {
 			valStr = strings.ToLower(valStr)
 		}
@@ -329,7 +318,7 @@ func (e *fieldValidationEvaluator) isInList(value, list interface{}, caseSensiti
 			if !caseSensitive {
 				itemStr = strings.ToLower(itemStr)
 			}
-			if strings.TrimSpace(valStr) == itemStr {
+			if valStr == itemStr {
 				return true
 			}
 		}

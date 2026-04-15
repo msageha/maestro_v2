@@ -151,7 +151,7 @@ type RuleCondition struct {
 	TimeoutSeconds int             `yaml:"timeout_seconds"`
 
 	// Compiled fields (not in YAML)
-	CompiledRegex  interface{} `yaml:"-"` // *regexp.Regexp after compilation
+	CompiledRegex  *regexp.Regexp `yaml:"-"`
 	CompiledScript interface{} `yaml:"-"` // Compiled script function
 	SourceFile     string      `yaml:"-"` // Source config file path for permission re-verification
 }

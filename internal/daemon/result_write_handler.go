@@ -199,31 +199,9 @@ func (h *ResultWriteAPI) handleRetryRegistration(phaseAResult *resultWritePhaseA
 	retryTask := phaseAResult.retryTask
 	retryHandler := NewTaskRetryHandler(h.maestroDir, *h.config, h.lockMap, h.logger, h.logLevel)
 
-	// First register in state (acquires state lock)
-	if err := retryHandler.RegisterRetryTaskInState(retryTask, params.CommandID); err != nil {
-		h.logFn(LogLevelError, "register_retry_task_failed task=%s command=%s error=%v", retryTask.ID, params.CommandID, err)
-		return
-	}
-
-	// Then add to queue (acquires queue lock independently)
-	if err := retryHandler.AddRetryTaskToQueue(retryTask, params.Reporter); err != nil {
-		// M2 note: A compensating delete on the state entry was considered
-		// but is unsafe. AddRetryTaskToQueue ultimately calls AtomicWrite,
-		// which can return an error after os.Rename has already committed
-		// the new queue file (e.g. when the post-rename syncDir() fails).
-		// In that case the queue would already contain the retry task and
-		// rolling back the state entry would orphan the queue entry. Since
-		// the daemon cannot distinguish a pre-rename failure from a
-		// post-rename failure, we leave the state entry in place and mark
-		// it as RetryEnqueueFailed so the R1 reconciler can either
-		// re-enqueue it or transition it to dead_letter.
-		h.logFn(LogLevelError, "add_retry_task_failed task=%s worker=%s command=%s error=%v "+
-			"(task registered in state but enqueue failed; R1 reconciler will re-enqueue or mark failed)",
+	if err := retryHandler.RetryTaskAtomically(retryTask, params.CommandID, params.Reporter); err != nil {
+		h.logFn(LogLevelError, "retry_task_atomic_failed task=%s worker=%s command=%s error=%v",
 			retryTask.ID, params.Reporter, params.CommandID, err)
-		if markErr := retryHandler.MarkRetryEnqueueFailed(retryTask.ID, params.Reporter, params.CommandID); markErr != nil {
-			h.logFn(LogLevelError, "mark_retry_enqueue_failed task=%s command=%s error=%v",
-				retryTask.ID, params.CommandID, markErr)
-		}
 	} else {
 		h.logFn(LogLevelInfo, "task_retry_scheduled task=%s retry_id=%s attempt=%d",
 			params.TaskID, retryTask.ID, retryTask.Attempts)

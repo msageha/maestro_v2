@@ -23,6 +23,18 @@ func removeIfExists(path string) {
 	}
 }
 
+// cleanupWithLock removes stale PID and socket files while holding the daemon
+// lock, then releases the lock. Used by stopDaemon to deduplicate the
+// lock-acquire-then-cleanup pattern.
+func cleanupWithLock(fl *lock.FileLock, pidPath, socketPath string) error {
+	removeIfExists(pidPath)
+	removeIfExists(socketPath)
+	if err := fl.Unlock(); err != nil {
+		log.Printf("[WARN] daemon lock unlock: %v", err)
+	}
+	return nil
+}
+
 // startDaemon starts the maestro daemon as a background process.
 func startDaemon() error {
 	execPath, err := os.Executable()
@@ -112,26 +124,14 @@ func (c *Config) stopDaemon(maestroDir string) error {
 	fl := lock.NewFileLock(lockPath)
 	if err := fl.TryLock(); err == nil {
 		// Lock acquired → no daemon holds it.
-		// Clean up stale files while holding the lock (Fix #9)
-		removeIfExists(pidPath)
-		removeIfExists(socketPath)
-		if err := fl.Unlock(); err != nil {
-			log.Printf("[WARN] daemon lock unlock: %v", err)
-		}
-		return nil
+		return cleanupWithLock(fl, pidPath, socketPath)
 	}
 
 	// Lock held but no valid PID: poll for daemon exit via lock release
 	deadline := time.Now().Add(c.DaemonPollTimeout)
 	for time.Now().Before(deadline) {
 		if err := fl.TryLock(); err == nil {
-			// Clean up while holding the lock (Fix #9)
-			removeIfExists(pidPath)
-			removeIfExists(socketPath)
-			if err := fl.Unlock(); err != nil {
-				log.Printf("[WARN] daemon lock unlock: %v", err)
-			}
-			return nil
+			return cleanupWithLock(fl, pidPath, socketPath)
 		}
 		time.Sleep(c.DaemonPollInterval)
 	}

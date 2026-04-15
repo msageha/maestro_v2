@@ -27,16 +27,18 @@ func TestStateManager_SaveAndLoad(t *testing.T) {
 	sm := newTestStateManager(t)
 
 	original := &model.CommandState{
-		SchemaVersion:     1,
-		FileType:          "state_command",
-		CommandID:         "cmd-save-load",
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 2,
-		RequiredTaskIDs:   []string{"t1"},
-		OptionalTaskIDs:   []string{"t2"},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
-			"t2": model.StatusCompleted,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd-save-load",
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 2,
+			RequiredTaskIDs:   []string{"t1"},
+			OptionalTaskIDs:   []string{"t2"},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+				"t2": model.StatusCompleted,
+			},
 		},
 		CreatedAt: "2026-01-01T00:00:00Z",
 		UpdatedAt: "2026-01-01T00:00:00Z",
@@ -119,14 +121,16 @@ func TestStateManager_DeleteState(t *testing.T) {
 func TestCanComplete_AllCompleted(t *testing.T) {
 	t.Parallel()
 	state := &model.CommandState{
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 3,
-		RequiredTaskIDs:   []string{"t1", "t2"},
-		OptionalTaskIDs:   []string{"t3"},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
-			"t2": model.StatusCompleted,
-			"t3": model.StatusCompleted,
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 3,
+			RequiredTaskIDs:   []string{"t1", "t2"},
+			OptionalTaskIDs:   []string{"t3"},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+				"t2": model.StatusCompleted,
+				"t3": model.StatusCompleted,
+			},
 		},
 	}
 
@@ -142,12 +146,14 @@ func TestCanComplete_AllCompleted(t *testing.T) {
 func TestCanComplete_HasFailed(t *testing.T) {
 	t.Parallel()
 	state := &model.CommandState{
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 2,
-		RequiredTaskIDs:   []string{"t1", "t2"},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
-			"t2": model.StatusFailed,
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 2,
+			RequiredTaskIDs:   []string{"t1", "t2"},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+				"t2": model.StatusFailed,
+			},
 		},
 	}
 
@@ -163,12 +169,14 @@ func TestCanComplete_HasFailed(t *testing.T) {
 func TestCanComplete_HasCancelled(t *testing.T) {
 	t.Parallel()
 	state := &model.CommandState{
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 2,
-		RequiredTaskIDs:   []string{"t1", "t2"},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
-			"t2": model.StatusCancelled,
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 2,
+			RequiredTaskIDs:   []string{"t1", "t2"},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+				"t2": model.StatusCancelled,
+			},
 		},
 	}
 
@@ -184,11 +192,13 @@ func TestCanComplete_HasCancelled(t *testing.T) {
 func TestCanComplete_NotSealed(t *testing.T) {
 	t.Parallel()
 	state := &model.CommandState{
-		PlanStatus:        model.PlanStatusPlanning,
-		ExpectedTaskCount: 1,
-		RequiredTaskIDs:   []string{"t1"},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
+		PlanStatus: model.PlanStatusPlanning,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 1,
+			RequiredTaskIDs:   []string{"t1"},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+			},
 		},
 	}
 
@@ -201,13 +211,15 @@ func TestCanComplete_NotSealed(t *testing.T) {
 func TestCanComplete_TaskCountMismatch(t *testing.T) {
 	t.Parallel()
 	state := &model.CommandState{
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 5,
-		RequiredTaskIDs:   []string{"t1"},
-		OptionalTaskIDs:   []string{"t2"},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
-			"t2": model.StatusCompleted,
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 5,
+			RequiredTaskIDs:   []string{"t1"},
+			OptionalTaskIDs:   []string{"t2"},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+				"t2": model.StatusCompleted,
+			},
 		},
 	}
 
@@ -220,12 +232,14 @@ func TestCanComplete_TaskCountMismatch(t *testing.T) {
 func TestCanComplete_NonTerminalTask(t *testing.T) {
 	t.Parallel()
 	state := &model.CommandState{
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 2,
-		RequiredTaskIDs:   []string{"t1", "t2"},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
-			"t2": model.StatusInProgress,
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 2,
+			RequiredTaskIDs:   []string{"t1", "t2"},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+				"t2": model.StatusInProgress,
+			},
 		},
 	}
 
@@ -238,16 +252,20 @@ func TestCanComplete_NonTerminalTask(t *testing.T) {
 func TestCanComplete_FillingPhase(t *testing.T) {
 	t.Parallel()
 	state := &model.CommandState{
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 1,
-		RequiredTaskIDs:   []string{"t1"},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 1,
+			RequiredTaskIDs:   []string{"t1"},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+			},
 		},
-		Phases: []model.Phase{
-			{
-				Name:   "phase-1",
-				Status: model.PhaseStatusFilling,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					Name:   "phase-1",
+					Status: model.PhaseStatusFilling,
+				},
 			},
 		},
 	}
@@ -266,16 +284,20 @@ func TestCanComplete_FillingPhase(t *testing.T) {
 func TestDeriveStatus_TimedOutPhase(t *testing.T) {
 	t.Parallel()
 	state := &model.CommandState{
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 1,
-		RequiredTaskIDs:   []string{"t1"},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 1,
+			RequiredTaskIDs:   []string{"t1"},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+			},
 		},
-		Phases: []model.Phase{
-			{
-				Name:   "phase-1",
-				Status: model.PhaseStatusTimedOut,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					Name:   "phase-1",
+					Status: model.PhaseStatusTimedOut,
+				},
 			},
 		},
 	}
@@ -292,16 +314,18 @@ func TestDeriveStatus_TimedOutPhase(t *testing.T) {
 func TestDeriveStatus_OnOptionalFailed_Ignore(t *testing.T) {
 	t.Parallel()
 	state := &model.CommandState{
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 2,
-		RequiredTaskIDs:   []string{"t1"},
-		OptionalTaskIDs:   []string{"t2"},
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 2,
+			RequiredTaskIDs:   []string{"t1"},
+			OptionalTaskIDs:   []string{"t2"},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+				"t2": model.StatusFailed,
+			},
+		},
 		CompletionPolicy: model.CompletionPolicy{
 			OnOptionalFailed: "ignore",
-		},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
-			"t2": model.StatusFailed,
 		},
 	}
 
@@ -318,13 +342,15 @@ func TestDeriveStatus_OnOptionalFailed_Default(t *testing.T) {
 	t.Parallel()
 	// Default (empty string) should behave as "ignore"
 	state := &model.CommandState{
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 2,
-		RequiredTaskIDs:   []string{"t1"},
-		OptionalTaskIDs:   []string{"t2"},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
-			"t2": model.StatusFailed,
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 2,
+			RequiredTaskIDs:   []string{"t1"},
+			OptionalTaskIDs:   []string{"t2"},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+				"t2": model.StatusFailed,
+			},
 		},
 	}
 
@@ -340,17 +366,19 @@ func TestDeriveStatus_OnOptionalFailed_Default(t *testing.T) {
 func TestDeriveStatus_OnOptionalFailed_Warn(t *testing.T) {
 	t.Parallel()
 	state := &model.CommandState{
-		CommandID:         "cmd-test-warn",
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 2,
-		RequiredTaskIDs:   []string{"t1"},
-		OptionalTaskIDs:   []string{"t2"},
+		CommandID:  "cmd-test-warn",
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 2,
+			RequiredTaskIDs:   []string{"t1"},
+			OptionalTaskIDs:   []string{"t2"},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+				"t2": model.StatusFailed,
+			},
+		},
 		CompletionPolicy: model.CompletionPolicy{
 			OnOptionalFailed: "warn",
-		},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
-			"t2": model.StatusFailed,
 		},
 	}
 
@@ -367,16 +395,18 @@ func TestDeriveStatus_OnOptionalFailed_Warn(t *testing.T) {
 func TestDeriveStatus_OnOptionalFailed_FailCommand(t *testing.T) {
 	t.Parallel()
 	state := &model.CommandState{
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 2,
-		RequiredTaskIDs:   []string{"t1"},
-		OptionalTaskIDs:   []string{"t2"},
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 2,
+			RequiredTaskIDs:   []string{"t1"},
+			OptionalTaskIDs:   []string{"t2"},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+				"t2": model.StatusFailed,
+			},
+		},
 		CompletionPolicy: model.CompletionPolicy{
 			OnOptionalFailed: "fail_command",
-		},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
-			"t2": model.StatusFailed,
 		},
 	}
 
@@ -393,16 +423,18 @@ func TestDeriveStatus_OnOptionalFailed_NoFailure(t *testing.T) {
 	t.Parallel()
 	// When optional tasks succeed, policy should not affect result
 	state := &model.CommandState{
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 2,
-		RequiredTaskIDs:   []string{"t1"},
-		OptionalTaskIDs:   []string{"t2"},
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 2,
+			RequiredTaskIDs:   []string{"t1"},
+			OptionalTaskIDs:   []string{"t2"},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+				"t2": model.StatusCompleted,
+			},
+		},
 		CompletionPolicy: model.CompletionPolicy{
 			OnOptionalFailed: "fail_command",
-		},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
-			"t2": model.StatusCompleted,
 		},
 	}
 
@@ -418,16 +450,18 @@ func TestDeriveStatus_OnOptionalFailed_NoFailure(t *testing.T) {
 func TestDeriveStatus_OnOptionalFailed_UnsupportedValue(t *testing.T) {
 	t.Parallel()
 	state := &model.CommandState{
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 2,
-		RequiredTaskIDs:   []string{"t1"},
-		OptionalTaskIDs:   []string{"t2"},
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 2,
+			RequiredTaskIDs:   []string{"t1"},
+			OptionalTaskIDs:   []string{"t2"},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+				"t2": model.StatusFailed,
+			},
+		},
 		CompletionPolicy: model.CompletionPolicy{
 			OnOptionalFailed: "invalid_policy",
-		},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
-			"t2": model.StatusFailed,
 		},
 	}
 
@@ -446,14 +480,16 @@ func TestDeriveStatus_DependencyFailurePolicy_Valid(t *testing.T) {
 		t.Run(policy, func(t *testing.T) {
 			t.Parallel()
 			state := &model.CommandState{
-				PlanStatus:        model.PlanStatusSealed,
-				ExpectedTaskCount: 1,
-				RequiredTaskIDs:   []string{"t1"},
+				PlanStatus: model.PlanStatusSealed,
+				TaskTracking: model.TaskTracking{
+					ExpectedTaskCount: 1,
+					RequiredTaskIDs:   []string{"t1"},
+					TaskStates: map[string]model.Status{
+						"t1": model.StatusCompleted,
+					},
+				},
 				CompletionPolicy: model.CompletionPolicy{
 					DependencyFailurePolicy: policy,
-				},
-				TaskStates: map[string]model.Status{
-					"t1": model.StatusCompleted,
 				},
 			}
 
@@ -471,14 +507,16 @@ func TestDeriveStatus_DependencyFailurePolicy_Valid(t *testing.T) {
 func TestDeriveStatus_DependencyFailurePolicy_Unsupported(t *testing.T) {
 	t.Parallel()
 	state := &model.CommandState{
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 1,
-		RequiredTaskIDs:   []string{"t1"},
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 1,
+			RequiredTaskIDs:   []string{"t1"},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+			},
+		},
 		CompletionPolicy: model.CompletionPolicy{
 			DependencyFailurePolicy: "invalid_policy",
-		},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
 		},
 	}
 
@@ -492,11 +530,13 @@ func TestDeriveStatus_DependencyFailurePolicy_Default(t *testing.T) {
 	t.Parallel()
 	// Empty string defaults to "cancel_dependents" — should not error
 	state := &model.CommandState{
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 1,
-		RequiredTaskIDs:   []string{"t1"},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 1,
+			RequiredTaskIDs:   []string{"t1"},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+			},
 		},
 	}
 
@@ -630,18 +670,20 @@ func TestDeriveStatus_RequiredFailedOverridesOptionalPolicy(t *testing.T) {
 	t.Parallel()
 	// Required failure should take precedence over optional failure policy
 	state := &model.CommandState{
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 3,
-		RequiredTaskIDs:   []string{"t1", "t2"},
-		OptionalTaskIDs:   []string{"t3"},
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 3,
+			RequiredTaskIDs:   []string{"t1", "t2"},
+			OptionalTaskIDs:   []string{"t3"},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+				"t2": model.StatusFailed,
+				"t3": model.StatusFailed,
+			},
+		},
 		CompletionPolicy: model.CompletionPolicy{
 			OnRequiredFailed: "fail_command",
 			OnOptionalFailed: "ignore",
-		},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
-			"t2": model.StatusFailed,
-			"t3": model.StatusFailed,
 		},
 	}
 

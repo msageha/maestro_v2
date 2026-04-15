@@ -90,39 +90,19 @@ func (se *ScanPhaseExecutor) Execute(ctx context.Context) {
 	se.qh.log(LogLevelDebug, "periodic_scan complete")
 }
 
-// periodicScanPhaseA runs under scanMu.Lock. It loads queues, performs fast
-// in-memory mutations (dead letter, cancel, phase transitions, dependency checks),
-// collects deferred work items for slow I/O, and flushes queues to disk.
+// periodicScanPhaseA runs under scanMu.Lock. It loads queues, delegates all
+// step execution to QueueHandler.executePhaseASteps, and flushes queues to disk.
 func (se *ScanPhaseExecutor) periodicScanPhaseA() phaseAResult {
 	se.scanMu.Lock()
 	defer se.scanMu.Unlock()
 
 	s := se.initScanState()
 
-	qh := se.qh
-	// Reset admission control and record current in-flight tasks.
-	qh.stepAdmissionSync(&s)
-
-	// Execute steps in fixed order (matches original Step 0 through Step 1.5).
-	qh.stepDeadLetters(&s)
-	qh.stepCircuitBreaker(&s)
-	qh.stepCancelPending(&s)
-	qh.stepCancelInterrupt(&s)
-	qh.stepCancelAutoComplete(&s)
-	qh.stepPhaseTransitions(&s)
-	qh.stepWorktreePhaseMerges(&s)
-	qh.stepWorktreePublish(&s)
-	qh.stepWorktreeFastTrackCleanup(&s)
-	qh.stepWorktreeOrphanCleanup(&s)
-	qh.stepWorktreeStallDetection(&s)
-	qh.stepCheckWorktreeConfigViolations(&s)
-	qh.stepPlannerSignals(&s)
-	qh.stepPreemptiveRenewal(&s)
-	qh.stepDispatchOrRecovery(&s)
-	qh.stepDependencyFailures(&s)
+	// Delegate all Phase A steps to QueueHandler's single entry point.
+	se.qh.executePhaseASteps(&s)
 
 	// Flush dirty queues to disk
-	qh.queueStore.FlushQueues(s.commands.Data, s.commands.Path, s.commands.Dirty,
+	se.qh.queueStore.FlushQueues(s.commands.Data, s.commands.Path, s.commands.Dirty,
 		s.tasks, s.taskDirty,
 		s.notifications.Data, s.notifications.Path, s.notifications.Dirty,
 		s.signals.Data, s.signals.Path, s.signals.Dirty)
@@ -169,17 +149,8 @@ func (se *ScanPhaseExecutor) periodicScanPhaseB(ctx context.Context, pa phaseARe
 		worktreeCleanups:  make([]worktreeCleanupResult, 0, len(pa.work.worktreeCleanups)+len(pa.work.worktreePublishes)),
 	}
 
-	qh := se.qh
-	// Execute steps in fixed order.
-	qh.stepInterruptAgents(ctx, &pa)
-	qh.stepProbeBusyAgents(ctx, &pa, &result)
-	qh.stepDispatchWork(ctx, &pa, &result)
-	qh.stepDeliverSignals(ctx, &pa, &result)
-	qh.stepLogPartialFailures(&result)
-	qh.stepClearAgents(ctx, &pa)
-	qh.stepCommitAndMergeWorktrees(ctx, &pa, &result)
-	additionalCleanups := qh.stepPublishWorktrees(ctx, &pa, &result)
-	qh.stepCleanupWorktrees(ctx, &pa, &result, additionalCleanups)
+	// Delegate all Phase B steps to QueueHandler's single entry point.
+	se.qh.executePhaseBSteps(ctx, &pa, &result)
 
 	return result
 }

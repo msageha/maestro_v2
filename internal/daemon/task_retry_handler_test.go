@@ -577,8 +577,10 @@ func TestRegisterRetryTaskInState(t *testing.T) {
 		SchemaVersion: 1,
 		FileType:      "command_state",
 		CommandID:     commandID,
-		TaskStates: map[string]model.Status{
-			"task_original": model.StatusFailed,
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				"task_original": model.StatusFailed,
+			},
 		},
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
@@ -722,9 +724,11 @@ func TestRetryIdempotency(t *testing.T) {
 		SchemaVersion: 1,
 		FileType:      "command_state",
 		CommandID:     commandID,
-		TaskStates:    map[string]model.Status{originalTaskID: model.StatusFailed},
-		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
-		UpdatedAt:     time.Now().UTC().Format(time.RFC3339),
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{originalTaskID: model.StatusFailed},
+		},
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
 		t.Fatalf("write state: %v", err)
@@ -830,9 +834,11 @@ func TestConcurrentRetryCreation(t *testing.T) {
 		SchemaVersion: 1,
 		FileType:      "command_state",
 		CommandID:     commandID,
-		TaskStates:    map[string]model.Status{},
-		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
-		UpdatedAt:     time.Now().UTC().Format(time.RFC3339),
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{},
+		},
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
 		t.Fatalf("write state: %v", err)
@@ -1466,10 +1472,12 @@ func TestRegisterRetryTaskInState_ExistingTasks(t *testing.T) {
 		SchemaVersion: 1,
 		FileType:      "command_state",
 		CommandID:     commandID,
-		TaskStates: map[string]model.Status{
-			"task_001": model.StatusCompleted,
-			"task_002": model.StatusFailed,
-			"task_003": model.StatusInProgress,
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				"task_001": model.StatusCompleted,
+				"task_002": model.StatusFailed,
+				"task_003": model.StatusInProgress,
+			},
 		},
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
@@ -1577,6 +1585,184 @@ func TestAddRetryTaskToQueue_EmptyQueue(t *testing.T) {
 	}
 	if queue.Tasks[0].ID != retryTask.ID {
 		t.Errorf("task ID mismatch: got %q, want %q", queue.Tasks[0].ID, retryTask.ID)
+	}
+}
+
+// TC-RT-020: RetryTaskAtomically — 成功ケース
+func TestRetryTaskAtomically_Success(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	commandID := "cmd_atomic_ok"
+	workerID := "worker1"
+
+	// Setup state directory with command state.
+	stateDir := filepath.Join(tmpDir, "state", "commands")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+	statePath := filepath.Join(stateDir, commandID+".yaml")
+	state := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "command_state",
+		CommandID:     commandID,
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{"t_orig": model.StatusFailed},
+		},
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	// Setup queue directory.
+	queueDir := filepath.Join(tmpDir, "queue")
+	if err := os.MkdirAll(queueDir, 0755); err != nil {
+		t.Fatalf("create queue dir: %v", err)
+	}
+
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	handler := NewTaskRetryHandler(tmpDir, model.Config{}, lock.NewMutexMap(), logger, LogLevelDebug)
+
+	retryTask := &model.Task{
+		ID:        "task_retry_atomic",
+		CommandID: commandID,
+		Purpose:   "atomic retry",
+		Status:    model.StatusPending,
+	}
+
+	err := handler.RetryTaskAtomically(retryTask, commandID, workerID)
+	if err != nil {
+		t.Fatalf("RetryTaskAtomically failed: %v", err)
+	}
+
+	// Verify state has the new task.
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var updated model.CommandState
+	if err := yamlv3.Unmarshal(stateData, &updated); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	if updated.TaskStates["task_retry_atomic"] != model.StatusPending {
+		t.Errorf("task not registered in state: %v", updated.TaskStates)
+	}
+
+	// Verify queue has the new task.
+	queueData, err := os.ReadFile(filepath.Join(queueDir, workerID+".yaml"))
+	if err != nil {
+		t.Fatalf("read queue: %v", err)
+	}
+	var queue model.TaskQueue
+	if err := yamlv3.Unmarshal(queueData, &queue); err != nil {
+		t.Fatalf("unmarshal queue: %v", err)
+	}
+	found := false
+	for _, task := range queue.Tasks {
+		if task.ID == "task_retry_atomic" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("retry task not found in queue")
+	}
+}
+
+// TC-RT-021: RetryTaskAtomically — state 登録失敗
+func TestRetryTaskAtomically_StateFailure(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	commandID := "cmd_atomic_state_fail"
+
+	// Don't create state directory — state registration will fail.
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	handler := NewTaskRetryHandler(tmpDir, model.Config{}, lock.NewMutexMap(), logger, LogLevelDebug)
+
+	retryTask := &model.Task{
+		ID:        "task_retry_fail",
+		CommandID: commandID,
+		Status:    model.StatusPending,
+	}
+
+	err := handler.RetryTaskAtomically(retryTask, commandID, "worker1")
+	if err == nil {
+		t.Fatal("expected error when state directory doesn't exist")
+	}
+}
+
+// TC-RT-022: RetryTaskAtomically — queue 追加失敗時に enqueue-failed マーク
+func TestRetryTaskAtomically_QueueFailureMarksEnqueueFailed(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	commandID := "cmd_atomic_qfail"
+	workerID := "worker1"
+
+	// Setup state directory.
+	stateDir := filepath.Join(tmpDir, "state", "commands")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+	statePath := filepath.Join(stateDir, commandID+".yaml")
+	state := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "command_state",
+		CommandID:     commandID,
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{"t_orig": model.StatusFailed},
+		},
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	// Setup queue directory as read-only to force queue write failure.
+	queueDir := filepath.Join(tmpDir, "queue")
+	if err := os.MkdirAll(queueDir, 0755); err != nil {
+		t.Fatalf("create queue dir: %v", err)
+	}
+	if err := os.Chmod(queueDir, 0555); err != nil {
+		t.Fatalf("chmod queue dir: %v", err)
+	}
+	defer os.Chmod(queueDir, 0755)
+
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	handler := NewTaskRetryHandler(tmpDir, model.Config{}, lock.NewMutexMap(), logger, LogLevelDebug)
+
+	retryTask := &model.Task{
+		ID:        "task_retry_qfail",
+		CommandID: commandID,
+		Status:    model.StatusPending,
+	}
+
+	err := handler.RetryTaskAtomically(retryTask, commandID, workerID)
+	if err == nil {
+		t.Fatal("expected error when queue directory is read-only")
+	}
+
+	// State should still have the task registered.
+	os.Chmod(queueDir, 0755)
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var updated model.CommandState
+	if err := yamlv3.Unmarshal(stateData, &updated); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	if updated.TaskStates["task_retry_qfail"] != model.StatusPending {
+		t.Errorf("task should still be registered in state after queue failure: %v", updated.TaskStates)
+	}
+
+	// RetryEnqueueFailed should be set.
+	if updated.RetryEnqueueFailed == nil || updated.RetryEnqueueFailed["task_retry_qfail"] != workerID {
+		t.Errorf("RetryEnqueueFailed should mark the task: %v", updated.RetryEnqueueFailed)
 	}
 }
 

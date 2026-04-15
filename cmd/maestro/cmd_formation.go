@@ -11,7 +11,6 @@ import (
 	"github.com/msageha/maestro_v2/internal/formation"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/tmux"
-	"github.com/msageha/maestro_v2/internal/validate"
 )
 
 // precheckGitRepo verifies that projectRoot is inside a git repository and that
@@ -72,11 +71,9 @@ func runUp(args []string) error {
 		return fmt.Errorf("maestro up: load config: %w", err)
 	}
 
-	// Validate project name before use in tmux session name
-	if err := validate.ProjectName(cfg.Project.Name); err != nil {
-		return fmt.Errorf("maestro up: invalid project name: %w", err)
+	if err := setupTmuxSession("up", cfg); err != nil {
+		return err
 	}
-	tmux.SetSessionName("maestro-" + cfg.Project.Name)
 
 	// Precheck: dispatcher creates per-worker worktrees from the base branch via
 	// `git worktree add`. If the project is not a git repo, or the base branch

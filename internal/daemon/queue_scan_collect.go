@@ -69,10 +69,9 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 			break
 		}
 
-		// Check if task is in cooldown period
+		// Cooldown period: skip tasks whose NotBefore time has not yet arrived.
 		if task.NotBefore != nil {
-			notBefore, err := time.Parse(time.RFC3339, *task.NotBefore)
-			if err != nil {
+			if notBefore, err := time.Parse(time.RFC3339, *task.NotBefore); err != nil {
 				qh.log(LogLevelWarn, "task_not_before_parse_failed task=%s not_before=%q error=%v (ignoring cooldown)", task.ID, *task.NotBefore, err)
 			} else if qh.clock.Now().Before(notBefore) {
 				qh.log(LogLevelDebug, "task_cooldown task=%s not_before=%s", task.ID, *task.NotBefore)
@@ -95,21 +94,17 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 			}
 		}
 
-		blocked, err := qh.dependencyResolver.IsTaskBlocked(task)
-		if err != nil {
+		if blocked, err := qh.dependencyResolver.IsTaskBlocked(task); err != nil {
 			qh.log(LogLevelWarn, "dependency_check_error task=%s error=%v", task.ID, err)
 			continue
-		}
-		if blocked {
+		} else if blocked {
 			continue
 		}
 
-		isSysCommit, ready, sErr := qh.dependencyResolver.IsSystemCommitReady(task.CommandID, task.ID)
-		if sErr != nil {
+		if isSysCommit, ready, sErr := qh.dependencyResolver.IsSystemCommitReady(task.CommandID, task.ID); sErr != nil {
 			qh.log(LogLevelWarn, "system_commit_check task=%s error=%v", task.ID, sErr)
 			continue
-		}
-		if isSysCommit && !ready {
+		} else if isSysCommit && !ready {
 			qh.log(LogLevelDebug, "system_commit_not_ready task=%s command=%s", task.ID, task.CommandID)
 			continue
 		}

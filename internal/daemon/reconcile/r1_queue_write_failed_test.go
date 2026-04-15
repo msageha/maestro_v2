@@ -48,9 +48,11 @@ func TestR1ConsumeQueueWriteFailed_ClearsWhenQueueTerminal(t *testing.T) {
 		FileType:      "state_command",
 		CommandID:     commandID,
 		PlanStatus:    model.PlanStatusSealed,
-		TaskStates:    map[string]model.Status{taskID: model.StatusCompleted},
-		QueueWriteFailed: map[string]string{
-			taskID: workerID + ":" + resultID,
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{taskID: model.StatusCompleted},
+			QueueWriteFailed: map[string]string{
+				taskID: workerID + ":" + resultID,
+			},
 		},
 		CreatedAt: "2026-01-01T00:00:00Z",
 		UpdatedAt: "2026-01-01T00:00:00Z",
@@ -118,9 +120,11 @@ func TestR1ConsumeQueueWriteFailed_KeepsWhenQueueStillInProgress(t *testing.T) {
 		FileType:      "state_command",
 		CommandID:     commandID,
 		PlanStatus:    model.PlanStatusSealed,
-		TaskStates:    map[string]model.Status{taskID: model.StatusCompleted},
-		QueueWriteFailed: map[string]string{
-			taskID: workerID + ":" + resultID,
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{taskID: model.StatusCompleted},
+			QueueWriteFailed: map[string]string{
+				taskID: workerID + ":" + resultID,
+			},
 		},
 		CreatedAt: "2026-01-01T00:00:00Z",
 		UpdatedAt: "2026-01-01T00:00:00Z",

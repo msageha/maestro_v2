@@ -1,10 +1,23 @@
 package main
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/msageha/maestro_v2/internal/uds"
 )
+
+// printJSONResponse marshals data as indented JSON and writes it to stdout.
+// cmd is used for error context (e.g. "plan submit", "result write").
+func printJSONResponse(data json.RawMessage, cmd string) error {
+	out, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		return fmt.Errorf("maestro %s: format response json: %w", cmd, err)
+	}
+	fmt.Println(string(out))
+	return nil
+}
 
 // sanitizeForTerminal removes control characters to prevent terminal injection
 // and output spoofing. Tabs and newlines are replaced with spaces to prevent

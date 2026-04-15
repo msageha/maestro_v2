@@ -3,13 +3,9 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/status"
-	"github.com/msageha/maestro_v2/internal/tmux"
-	"github.com/msageha/maestro_v2/internal/uds"
-	"github.com/msageha/maestro_v2/internal/validate"
 )
 
 // runStatus displays the current formation status.
@@ -30,11 +26,9 @@ func runStatus(args []string) error {
 	if err != nil {
 		return fmt.Errorf("maestro status: load config: %w", err)
 	}
-	// HIGH-16: Validate project name before use in tmux session name
-	if err := validate.ProjectName(cfg.Project.Name); err != nil {
-		return fmt.Errorf("maestro status: invalid project name: %w", err)
+	if err := setupTmuxSession("status", cfg); err != nil {
+		return err
 	}
-	tmux.SetSessionName("maestro-" + cfg.Project.Name)
 
 	if err := status.Run(maestroDir, jsonOutput); err != nil {
 		return fmt.Errorf("maestro status: %w", err)
@@ -54,7 +48,7 @@ func (a *cliApp) runDashboard(args []string) error {
 		return err
 	}
 
-	client := a.createClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := a.newDaemonClient(maestroDir)
 	resp, err := client.SendCommand("dashboard", nil)
 	if err != nil {
 		return fmt.Errorf("maestro dashboard: %w", err)

@@ -180,8 +180,8 @@ func TestHeartbeat_StaleEpoch(t *testing.T) {
 	if resp.Success {
 		t.Error("heartbeat should have failed with stale epoch")
 	}
-	if resp.Error == nil || resp.Error.Code != uds.ErrCodeFencingReject {
-		t.Errorf("expected fencing reject error, got: %v", resp.Error)
+	if resp.Error == nil || resp.Error.Code != uds.ErrCodeFencingRejectEpoch {
+		t.Errorf("expected fencing reject epoch error, got: %v", resp.Error)
 	}
 }
 
@@ -287,8 +287,8 @@ func TestHeartbeat_TaskNotInProgress(t *testing.T) {
 	if resp.Success {
 		t.Error("heartbeat should have failed for non-in_progress task")
 	}
-	if resp.Error == nil || resp.Error.Code != uds.ErrCodeFencingReject {
-		t.Errorf("expected fencing reject error, got: %v", resp.Error)
+	if resp.Error == nil || resp.Error.Code != uds.ErrCodeFencingRejectStatus {
+		t.Errorf("expected fencing reject status error, got: %v", resp.Error)
 	}
 }
 
@@ -449,8 +449,8 @@ func TestHeartbeatRaceCondition(t *testing.T) {
 	if oldResp.Success {
 		t.Error("old epoch heartbeat should be rejected")
 	}
-	if oldResp.Error == nil || oldResp.Error.Code != uds.ErrCodeFencingReject {
-		t.Errorf("expected fencing reject for old epoch, got: %v", oldResp.Error)
+	if oldResp.Error == nil || oldResp.Error.Code != uds.ErrCodeFencingRejectEpoch {
+		t.Errorf("expected fencing reject epoch for old epoch, got: %v", oldResp.Error)
 	}
 
 	// Test current epoch acceptance
@@ -474,8 +474,8 @@ func TestHeartbeatRaceCondition(t *testing.T) {
 	if futureResp.Success {
 		t.Error("future epoch heartbeat should be rejected")
 	}
-	if futureResp.Error == nil || futureResp.Error.Code != uds.ErrCodeFencingReject {
-		t.Errorf("expected fencing reject for future epoch, got: %v", futureResp.Error)
+	if futureResp.Error == nil || futureResp.Error.Code != uds.ErrCodeFencingRejectEpoch {
+		t.Errorf("expected fencing reject epoch for future epoch, got: %v", futureResp.Error)
 	}
 }
 
@@ -520,7 +520,7 @@ func TestHeartbeatErrorMatrix(t *testing.T) {
 			expectedCode: uds.ErrCodeNotFound,
 		},
 		{
-			name: "FENCING_REJECT - epoch mismatch",
+			name: "FENCING_REJECT_EPOCH - epoch mismatch",
 			setup: func(t *testing.T, d *Daemon) (TaskHeartbeatParams, string) {
 				workerID := "worker_fence"
 				taskID := "task_0000000001_abcdef01"
@@ -552,12 +552,12 @@ func TestHeartbeatErrorMatrix(t *testing.T) {
 					TaskID:   taskID,
 					WorkerID: workerID,
 					Epoch:    3, // Stale epoch
-				}, uds.ErrCodeFencingReject
+				}, uds.ErrCodeFencingRejectEpoch
 			},
-			expectedCode: uds.ErrCodeFencingReject,
+			expectedCode: uds.ErrCodeFencingRejectEpoch,
 		},
 		{
-			name: "FENCING_REJECT - task not in_progress",
+			name: "FENCING_REJECT_STATUS - task not in_progress",
 			setup: func(t *testing.T, d *Daemon) (TaskHeartbeatParams, string) {
 				workerID := "worker_completed"
 				taskID := "task_0000000001_abcdef01"
@@ -585,9 +585,9 @@ func TestHeartbeatErrorMatrix(t *testing.T) {
 					TaskID:   taskID,
 					WorkerID: workerID,
 					Epoch:    1,
-				}, uds.ErrCodeFencingReject
+				}, uds.ErrCodeFencingRejectStatus
 			},
-			expectedCode: uds.ErrCodeFencingReject,
+			expectedCode: uds.ErrCodeFencingRejectStatus,
 		},
 		{
 			name: "MAX_RUNTIME_EXCEEDED",
@@ -757,8 +757,8 @@ func TestHeartbeat_NonInProgressStatuses(t *testing.T) {
 			if resp.Error == nil {
 				t.Fatalf("expected error response for %s task", tc.status)
 			}
-			if resp.Error.Code != uds.ErrCodeFencingReject {
-				t.Errorf("expected fencing reject error, got code=%s msg=%s", resp.Error.Code, resp.Error.Message)
+			if resp.Error.Code != uds.ErrCodeFencingRejectStatus {
+				t.Errorf("expected fencing reject status error, got code=%s msg=%s", resp.Error.Code, resp.Error.Message)
 			}
 		})
 	}

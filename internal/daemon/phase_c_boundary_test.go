@@ -140,7 +140,12 @@ func TestBoundary_AntiRequirements(t *testing.T) {
 			Passed:       true,
 			QualityScore: 0.85,
 		}
-		th := model.DefaultFitnessThresholds()
+		th := model.FitnessThresholds{
+		RepairCountMargin:   0,
+		DiffSizeMargin:      10,
+		ExecutionTimeMargin: 30 * time.Second,
+		QualityScoreMargin:  0.05,
+	}
 
 		// Compare uses QualityScore mechanically without LLM evaluation.
 		lower := model.FitnessScore{Passed: true, QualityScore: 0.4}
@@ -179,9 +184,12 @@ func TestBoundary_AntiRequirements(t *testing.T) {
 		// §5-6: Evolution/Search presumes verify.yaml exists.
 		// VerifyConfig nil → evolution should not proceed blindly.
 		// Test at type level: model.DefinitionOfAbort has explicit conditions.
-		doa := model.DefaultDefinitionOfAbort()
+		doa := model.DefinitionOfAbort{
+			MaxRepairCount:  3,
+			MaxWallClockSec: 1800,
+		}
 		if doa.MaxRepairCount == 0 {
-			t.Error("DefaultDefinitionOfAbort.MaxRepairCount should be non-zero")
+			t.Error("DefinitionOfAbort.MaxRepairCount should be non-zero")
 		}
 	})
 
@@ -217,6 +225,7 @@ func TestC1_Evolution_MutationStrategies(t *testing.T) {
 		engine := evolution.NewEngine(
 			[]evolution.Strategy{evolution.StrategyDiff, evolution.StrategyFull, evolution.StrategyCross},
 			0.5,
+			nil,
 		)
 		// With parentCount >= 2, cross is active. Distribution: diff:full:cross = 2:1:1.
 		slots := engine.PlanMutations(3)
@@ -240,6 +249,7 @@ func TestC1_Evolution_MutationStrategies(t *testing.T) {
 		engine := evolution.NewEngine(
 			[]evolution.Strategy{evolution.StrategyDiff, evolution.StrategyFull, evolution.StrategyCross},
 			0.5,
+			nil,
 		)
 		// parentCount < 2 → cross excluded.
 		slots := engine.PlanMutations(1)
@@ -252,7 +262,7 @@ func TestC1_Evolution_MutationStrategies(t *testing.T) {
 
 	t.Run("CheckNovelty", func(t *testing.T) {
 		t.Parallel()
-		engine := evolution.NewEngine(nil, 0.5)
+		engine := evolution.NewEngine(nil, 0.5, nil)
 		h1 := evolution.HashContent("hello")
 		h2 := evolution.HashContent("world")
 
@@ -269,7 +279,7 @@ func TestC1_Evolution_MutationStrategies(t *testing.T) {
 	t.Run("SelectSurvivors_WinnerTakesAll", func(t *testing.T) {
 		t.Parallel()
 		// §5-3: Winner-takes-all selection.
-		engine := evolution.NewEngine(nil, 0.5)
+		engine := evolution.NewEngine(nil, 0.5, nil)
 		results := []evolution.SlotResult{
 			{Index: 0, Strategy: evolution.StrategyDiff, FitnessDesc: "0.3", IsNovel: true},
 			{Index: 1, Strategy: evolution.StrategyFull, FitnessDesc: "0.9", IsNovel: true},
@@ -486,7 +496,12 @@ func TestModel_TaskExtensions_Boundary(t *testing.T) {
 
 func TestModel_FitnessQualityScore_Boundary(t *testing.T) {
 	t.Parallel()
-	th := model.DefaultFitnessThresholds()
+	th := model.FitnessThresholds{
+		RepairCountMargin:   0,
+		DiffSizeMargin:      10,
+		ExecutionTimeMargin: 30 * time.Second,
+		QualityScoreMargin:  0.05,
+	}
 
 	// QualityScore is the final comparison axis.
 	// When all prior axes tie, QualityScore decides.

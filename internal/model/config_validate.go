@@ -234,6 +234,39 @@ func (c Config) Validate() error {
 		}
 	}
 
+	// --- Cross-field constraints ---
+
+	// circuit_breaker: if enabled, max_consecutive_failures=0 would never trigger the breaker
+	if c.CircuitBreaker.Enabled && c.CircuitBreaker.MaxConsecutiveFailures != nil && *c.CircuitBreaker.MaxConsecutiveFailures == 0 {
+		errs = append(errs, fmt.Errorf("circuit_breaker.max_consecutive_failures: must be > 0 when circuit_breaker is enabled (0 disables failure detection)"))
+	}
+
+	// worktree: gc.max_worktrees should be >= workers.count to avoid cleaning active worktrees
+	if c.Worktree.Enabled && c.Worktree.GC.Enabled && c.Worktree.GC.MaxWorktrees != nil &&
+		*c.Worktree.GC.MaxWorktrees > 0 && *c.Worktree.GC.MaxWorktrees < c.Agents.Workers.Count {
+		errs = append(errs, fmt.Errorf(
+			"worktree.gc.max_worktrees: value %d is less than agents.workers.count (%d); GC may remove active worktrees",
+			*c.Worktree.GC.MaxWorktrees, c.Agents.Workers.Count))
+	}
+
+	// worktree: if both stall_timeout and fallback_merge_timeout are explicitly disabled (0),
+	// stuck worktrees have no safety timeout
+	if c.Worktree.Enabled && c.Worktree.StallTimeoutMinutes != nil && *c.Worktree.StallTimeoutMinutes == 0 &&
+		c.Worktree.FallbackMergeTimeoutMinutes != nil && *c.Worktree.FallbackMergeTimeoutMinutes == 0 {
+		errs = append(errs, fmt.Errorf(
+			"worktree: both stall_timeout_minutes and fallback_merge_timeout_minutes are explicitly disabled (0); stuck worktrees will have no safety timeout"))
+	}
+
+	// retry + circuit_breaker: a single task's retries could trip the circuit breaker
+	if c.CircuitBreaker.Enabled && c.Retry.TaskExecution.Enabled && c.Retry.TaskExecution.MaxRetries > 0 {
+		cbLimit := c.CircuitBreaker.EffectiveMaxConsecutiveFailures()
+		if cbLimit > 0 && c.Retry.TaskExecution.MaxRetries >= cbLimit {
+			errs = append(errs, fmt.Errorf(
+				"retry.task_execution.max_retries (%d) >= circuit_breaker.max_consecutive_failures (%d): a single task's retries could trip the circuit breaker",
+				c.Retry.TaskExecution.MaxRetries, cbLimit))
+		}
+	}
+
 	// float64 pointer fields: reject NaN/Inf
 	if !isFiniteFloat64Ptr(c.Evolution.NoveltyThreshold) {
 		errs = append(errs, fmt.Errorf("evolution.novelty_threshold: must be a finite value"))

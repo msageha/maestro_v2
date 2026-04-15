@@ -1,17 +1,8 @@
 package model
 
-// CommandState は単一コマンドの実行状態を表す。
-// プランバージョン、フェーズ構成、タスク依存関係、完了ポリシーなど
-// コマンドのライフサイクル全体を管理する。
-type CommandState struct {
-	SchemaVersion      int                 `yaml:"schema_version"`
-	FileType           string              `yaml:"file_type"`
-	CommandID          string              `yaml:"command_id"`
-	PlanVersion        int                 `yaml:"plan_version"`
-	PlanStatus         PlanStatus          `yaml:"plan_status"`
-	CompletionPolicy   CompletionPolicy    `yaml:"completion_policy"`
-	Cancel             CancelState         `yaml:"cancel"`
-	CircuitBreaker     CircuitBreakerState `yaml:"circuit_breaker"`
+// TaskTracking groups task state management fields within CommandState.
+// Embedded with yaml:",inline" to maintain flat YAML serialization.
+type TaskTracking struct {
 	ExpectedTaskCount  int                 `yaml:"expected_task_count"`
 	RequiredTaskIDs    []string            `yaml:"required_task_ids"`
 	OptionalTaskIDs    []string            `yaml:"optional_task_ids"`
@@ -20,15 +11,60 @@ type CommandState struct {
 	CancelledReasons   map[string]string   `yaml:"cancelled_reasons"`
 	AppliedResultIDs   map[string]string   `yaml:"applied_result_ids"`
 	SystemCommitTaskID *string             `yaml:"system_commit_task_id"`
-	RetryLineage       map[string]string   `yaml:"retry_lineage"`
-	RetryEnqueueFailed map[string]string   `yaml:"retry_enqueue_failed,omitempty"` // task_id → worker_id; set when state registered but queue add failed
-	QueueWriteFailed   map[string]string   `yaml:"queue_write_failed,omitempty"`   // task_id → "workerID:resultID"; set when result committed but queue terminal write failed (H2 sticky error)
-	IdempotencyKeys    map[string]string   `yaml:"idempotency_keys,omitempty"`    // idempotency_key → task_id; prevents duplicate task injection on retry
-	Phases             []Phase             `yaml:"phases"`
-	phaseIDIndex       map[string]int      `yaml:"-"` // cached phaseID→slice index; lazily built
-	LastReconciledAt   *string             `yaml:"last_reconciled_at"`
-	CreatedAt          string              `yaml:"created_at"`
-	UpdatedAt          string              `yaml:"updated_at"`
+	QueueWriteFailed   map[string]string   `yaml:"queue_write_failed,omitempty"`  // task_id → "workerID:resultID"; set when result committed but queue terminal write failed (H2 sticky error)
+	IdempotencyKeys    map[string]string   `yaml:"idempotency_keys,omitempty"`   // idempotency_key → task_id; prevents duplicate task injection on retry
+}
+
+// RetryTracking groups retry-related fields within CommandState.
+// Embedded with yaml:",inline" to maintain flat YAML serialization.
+type RetryTracking struct {
+	RetryLineage       map[string]string `yaml:"retry_lineage"`
+	RetryEnqueueFailed map[string]string `yaml:"retry_enqueue_failed,omitempty"` // task_id → worker_id; set when state registered but queue add failed
+}
+
+// PhaseTracking groups phase lifecycle fields within CommandState.
+// Embedded with yaml:",inline" to maintain flat YAML serialization.
+type PhaseTracking struct {
+	Phases       []Phase        `yaml:"phases"`
+	phaseIDIndex map[string]int `yaml:"-"` // cached phaseID→slice index; lazily built
+}
+
+// PhaseIndex returns the slice index for the given phaseID using a lazily
+// built cache. Returns (index, true) if found, (-1, false) otherwise.
+func (pt *PhaseTracking) PhaseIndex(phaseID string) (int, bool) {
+	if pt.phaseIDIndex == nil {
+		pt.phaseIDIndex = make(map[string]int, len(pt.Phases))
+		for i := range pt.Phases {
+			pt.phaseIDIndex[pt.Phases[i].PhaseID] = i
+		}
+	}
+	idx, ok := pt.phaseIDIndex[phaseID]
+	if !ok {
+		return -1, false
+	}
+	return idx, true
+}
+
+// CommandState は単一コマンドの実行状態を表す。
+// プランバージョン、フェーズ構成、タスク依存関係、完了ポリシーなど
+// コマンドのライフサイクル全体を管理する。
+// サブ構造体は yaml:",inline" で埋め込まれ、YAML シリアライゼーションの
+// フラット構造を維持する。
+type CommandState struct {
+	SchemaVersion    int                 `yaml:"schema_version"`
+	FileType         string              `yaml:"file_type"`
+	CommandID        string              `yaml:"command_id"`
+	PlanVersion      int                 `yaml:"plan_version"`
+	PlanStatus       PlanStatus          `yaml:"plan_status"`
+	CompletionPolicy CompletionPolicy    `yaml:"completion_policy"`
+	Cancel           CancelState         `yaml:"cancel"`
+	CircuitBreaker   CircuitBreakerState `yaml:"circuit_breaker"`
+	TaskTracking     `yaml:",inline"`
+	RetryTracking    `yaml:",inline"`
+	PhaseTracking    `yaml:",inline"`
+	LastReconciledAt *string `yaml:"last_reconciled_at"`
+	CreatedAt        string  `yaml:"created_at"`
+	UpdatedAt        string  `yaml:"updated_at"`
 }
 
 // CircuitBreakerState tracks per-command circuit breaker counters.
@@ -74,22 +110,6 @@ type Phase struct {
 	FillDeadlineAt   *string           `yaml:"fill_deadline_at"`
 	FillingStartedAt *string           `yaml:"filling_started_at,omitempty"`
 	ReopenedAt       *string           `yaml:"reopened_at"`
-}
-
-// PhaseIndex returns the slice index for the given phaseID using a lazily
-// built cache. Returns (index, true) if found, (-1, false) otherwise.
-func (cs *CommandState) PhaseIndex(phaseID string) (int, bool) {
-	if cs.phaseIDIndex == nil {
-		cs.phaseIDIndex = make(map[string]int, len(cs.Phases))
-		for i := range cs.Phases {
-			cs.phaseIDIndex[cs.Phases[i].PhaseID] = i
-		}
-	}
-	idx, ok := cs.phaseIDIndex[phaseID]
-	if !ok {
-		return -1, false
-	}
-	return idx, true
 }
 
 // PhaseInfo represents phase metadata from command state.

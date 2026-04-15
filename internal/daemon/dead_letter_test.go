@@ -329,9 +329,11 @@ func TestDeadLetter_TaskDeadLetter_StateUpdate(t *testing.T) {
 		FileType:      "command_state",
 		CommandID:     "cmd_001",
 		PlanStatus:    model.PlanStatusSealed,
-		TaskStates:    map[string]model.Status{"task_001": model.StatusPending},
-		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
-		UpdatedAt:     time.Now().UTC().Format(time.RFC3339),
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{"task_001": model.StatusPending},
+		},
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	if err := yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_001.yaml"), &state); err != nil {
 		t.Fatal(err)

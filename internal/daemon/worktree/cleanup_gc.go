@@ -396,8 +396,8 @@ func (wm *Manager) cleanupCommandUnlocked(commandID string, state *model.Worktre
 	// cmdLocks → wm.mu hierarchy. If TryLock fails (resolver is active),
 	// skip deletion; it will be cleaned up in the next GC cycle.
 	if v, ok := wm.cmdLocks.Load(commandID); ok {
-		mu := v.(*sync.Mutex)
-		if mu.TryLock() {
+		mu, ok := v.(*sync.Mutex)
+		if ok && mu.TryLock() {
 			wm.cmdLocks.Delete(commandID)
 			mu.Unlock()
 		}

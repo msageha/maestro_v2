@@ -778,9 +778,11 @@ func simulateTaskCreation(maestroDir string, crashSim *CrashSimulator) error {
 
 	// Write to state
 	state := model.CommandState{
-		CommandID:  "cmd_001",
-		TaskStates: map[string]model.Status{task.ID: model.StatusPending},
-		UpdatedAt:  time.Now().Format(time.RFC3339),
+		CommandID: "cmd_001",
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{task.ID: model.StatusPending},
+		},
+		UpdatedAt: time.Now().Format(time.RFC3339),
 	}
 
 	statePath := filepath.Join(maestroDir, "state", "commands", "cmd_001.yaml")
@@ -874,9 +876,11 @@ func simulateRetryCreationForWorker(maestroDir string, workerID int, originalTas
 		yamlv3.Unmarshal(stateData, &state)
 	} else {
 		state = model.CommandState{
-			CommandID:  originalTask.CommandID,
-			TaskStates: make(map[string]model.Status),
-			UpdatedAt:  time.Now().Format(time.RFC3339),
+			CommandID: originalTask.CommandID,
+			TaskTracking: model.TaskTracking{
+				TaskStates: make(map[string]model.Status),
+			},
+			UpdatedAt: time.Now().Format(time.RFC3339),
 		}
 	}
 

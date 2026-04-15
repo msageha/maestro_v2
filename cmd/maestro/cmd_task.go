@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"path/filepath"
 
 	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
@@ -52,7 +51,7 @@ func (a *cliApp) runTaskHeartbeat(args []string) error {
 		"epoch":     epoch,
 	}
 
-	client := a.createClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := a.newDaemonClient(maestroDir)
 	resp, err := client.SendCommand("task_heartbeat", params)
 	if err != nil {
 		return fmt.Errorf("maestro task heartbeat: %w", err)

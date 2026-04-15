@@ -179,6 +179,15 @@ func BuildWorkerStates(maestroDir string, config model.WorkerConfig) ([]WorkerSt
 	return states, nil
 }
 
+// SnapshotWorkerStates creates an independent copy of worker states,
+// providing a consistent point-in-time snapshot safe to pass across
+// function boundaries without risk of concurrent mutation.
+func SnapshotWorkerStates(states []WorkerState) []WorkerState {
+	snapshot := make([]WorkerState, len(states))
+	copy(snapshot, states)
+	return snapshot
+}
+
 func workerIDToQueueFile(workerID string) string {
 	// worker1 → worker1.yaml
 	return workerID + ".yaml"

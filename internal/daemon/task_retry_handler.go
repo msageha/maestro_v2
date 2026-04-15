@@ -194,6 +194,44 @@ func (h *TaskRetryHandler) addRetryTaskToQueueLocked(task *model.Task, workerID 
 	return nil
 }
 
+// RetryTaskAtomically performs the complete retry task registration as a single
+// logical operation: register in command state, add to worker queue, and on
+// queue failure mark as enqueue-failed for reconciler recovery.
+//
+// This consolidates the previously separate RegisterRetryTaskInState +
+// AddRetryTaskToQueue + MarkRetryEnqueueFailed calls into a single method
+// with clear error handling and rollback semantics.
+//
+// Note: True filesystem-level atomicity across state and queue files is not
+// possible because AddRetryTaskToQueue uses AtomicWrite which may commit the
+// queue file before returning an error (post-rename syncDir failure). Therefore,
+// on queue write failure, we mark the task as RetryEnqueueFailed rather than
+// rolling back the state entry.
+func (h *TaskRetryHandler) RetryTaskAtomically(task *model.Task, commandID, workerID string) error {
+	// Step 1: Register in state
+	if err := h.RegisterRetryTaskInState(task, commandID); err != nil {
+		return fmt.Errorf("register retry task in state: %w", err)
+	}
+
+	// Step 2: Add to queue
+	if err := h.AddRetryTaskToQueue(task, workerID); err != nil {
+		// Step 3: Queue write failed — mark for reconciler recovery.
+		// Cannot safely roll back the state entry (see doc comment).
+		h.log(LogLevelError, "retry_atomic_queue_failed task=%s worker=%s command=%s error=%v",
+			task.ID, workerID, commandID, err)
+		if markErr := h.MarkRetryEnqueueFailed(task.ID, workerID, commandID); markErr != nil {
+			h.log(LogLevelError, "retry_atomic_mark_failed task=%s command=%s error=%v",
+				task.ID, commandID, markErr)
+			return fmt.Errorf("queue add failed (%w) and marking enqueue-failed also failed (%v)", err, markErr)
+		}
+		return fmt.Errorf("queue add failed (marked for reconciler recovery): %w", err)
+	}
+
+	h.log(LogLevelInfo, "retry_task_atomic_completed task=%s worker=%s command=%s",
+		task.ID, workerID, commandID)
+	return nil
+}
+
 // MarkRetryEnqueueFailed marks a retry task in the command state as having failed
 // to enqueue. This allows the R1 reconciler to detect the orphaned task and
 // either re-enqueue it or transition it to dead_letter.

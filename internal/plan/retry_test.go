@@ -28,9 +28,11 @@ func TestFindPhaseForTask(t *testing.T) {
 		{
 			name: "task in first phase",
 			state: &model.CommandState{
-				Phases: []model.Phase{
-					{Name: "phase1", TaskIDs: []string{"t1", "t2"}},
-					{Name: "phase2", TaskIDs: []string{"t3"}},
+				PhaseTracking: model.PhaseTracking{
+					Phases: []model.Phase{
+						{Name: "phase1", TaskIDs: []string{"t1", "t2"}},
+						{Name: "phase2", TaskIDs: []string{"t3"}},
+					},
 				},
 			},
 			taskID:    "t2",
@@ -40,9 +42,11 @@ func TestFindPhaseForTask(t *testing.T) {
 		{
 			name: "task in second phase",
 			state: &model.CommandState{
-				Phases: []model.Phase{
-					{Name: "phase1", TaskIDs: []string{"t1"}},
-					{Name: "phase2", TaskIDs: []string{"t2", "t3"}},
+				PhaseTracking: model.PhaseTracking{
+					Phases: []model.Phase{
+						{Name: "phase1", TaskIDs: []string{"t1"}},
+						{Name: "phase2", TaskIDs: []string{"t2", "t3"}},
+					},
 				},
 			},
 			taskID:    "t3",
@@ -52,8 +56,10 @@ func TestFindPhaseForTask(t *testing.T) {
 		{
 			name: "task not in any phase",
 			state: &model.CommandState{
-				Phases: []model.Phase{
-					{Name: "phase1", TaskIDs: []string{"t1"}},
+				PhaseTracking: model.PhaseTracking{
+					Phases: []model.Phase{
+						{Name: "phase1", TaskIDs: []string{"t1"}},
+					},
 				},
 			},
 			taskID:    "t99",
@@ -62,9 +68,7 @@ func TestFindPhaseForTask(t *testing.T) {
 		},
 		{
 			name: "no phases",
-			state: &model.CommandState{
-				Phases: nil,
-			},
+			state: &model.CommandState{},
 			taskID:    "t1",
 			wantPhase: "",
 			wantIdx:   -1,
@@ -134,8 +138,10 @@ func TestReplaceInRequiredOrOptional(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			state := &model.CommandState{
-				RequiredTaskIDs: append([]string{}, tt.requiredIDs...),
-				OptionalTaskIDs: append([]string{}, tt.optionalIDs...),
+				TaskTracking: model.TaskTracking{
+					RequiredTaskIDs: append([]string{}, tt.requiredIDs...),
+					OptionalTaskIDs: append([]string{}, tt.optionalIDs...),
+				},
 			}
 			err := replaceInRequiredOrOptional(state, tt.oldID, tt.newID)
 
@@ -155,9 +161,11 @@ func TestReplaceInRequiredOrOptional(t *testing.T) {
 func TestReplaceInRequiredOrOptional_SystemCommitTaskID(t *testing.T) {
 	commitID := "sys_commit_1"
 	state := &model.CommandState{
-		RequiredTaskIDs:    []string{"t1"},
-		OptionalTaskIDs:    []string{},
-		SystemCommitTaskID: &commitID,
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs:    []string{"t1"},
+			OptionalTaskIDs:    []string{},
+			SystemCommitTaskID: &commitID,
+		},
 	}
 	err := replaceInRequiredOrOptional(state, "sys_commit_1", "sys_commit_2")
 	if err != nil {
@@ -170,10 +178,12 @@ func TestReplaceInRequiredOrOptional_SystemCommitTaskID(t *testing.T) {
 
 func TestRewriteDependencies(t *testing.T) {
 	state := &model.CommandState{
-		TaskDependencies: map[string][]string{
-			"t2": {"t1"},
-			"t3": {"t1", "t2"},
-			"t4": {"t3"},
+		TaskTracking: model.TaskTracking{
+			TaskDependencies: map[string][]string{
+				"t2": {"t1"},
+				"t3": {"t1", "t2"},
+				"t4": {"t3"},
+			},
 		},
 	}
 
@@ -193,11 +203,13 @@ func TestRewriteDependencies(t *testing.T) {
 
 func TestFindCascadeCandidates(t *testing.T) {
 	state := &model.CommandState{
-		CancelledReasons: map[string]string{
-			"t2": "blocked_dependency_terminal:t1",
-			"t3": "blocked_dependency_terminal:t1",
-			"t4": "blocked_dependency_terminal:t5",
-			"t5": "command_cancel_requested",
+		TaskTracking: model.TaskTracking{
+			CancelledReasons: map[string]string{
+				"t2": "blocked_dependency_terminal:t1",
+				"t3": "blocked_dependency_terminal:t1",
+				"t4": "blocked_dependency_terminal:t5",
+				"t5": "command_cancel_requested",
+			},
 		},
 	}
 
@@ -358,8 +370,10 @@ func TestReopenPhase(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			state := &model.CommandState{
-				Phases: []model.Phase{
-					{Name: "p1", Status: tt.status},
+				PhaseTracking: model.PhaseTracking{
+					Phases: []model.Phase{
+						{Name: "p1", Status: tt.status},
+					},
 				},
 			}
 			err := reopenPhase(state, 0, now)
@@ -386,7 +400,9 @@ func TestCopyAndRestoreState(t *testing.T) {
 		SchemaVersion: 1,
 		FileType:      "state_command",
 		CommandID:     "cmd1",
-		TaskStates:    map[string]model.Status{"t1": model.StatusPending},
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{"t1": model.StatusPending},
+		},
 	}
 
 	backup, err := copyState(state)
@@ -447,22 +463,26 @@ func setupRetryFixture(t *testing.T) (string, string, string) {
 			OnOptionalFailed:        "ignore",
 			DependencyFailurePolicy: "cancel_dependents",
 		},
-		ExpectedTaskCount: 2,
-		RequiredTaskIDs:   []string{taskID1, taskID2},
-		OptionalTaskIDs:   []string{},
-		TaskDependencies: map[string][]string{
-			taskID1: {},
-			taskID2: {taskID1},
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 2,
+			RequiredTaskIDs:   []string{taskID1, taskID2},
+			OptionalTaskIDs:   []string{},
+			TaskDependencies: map[string][]string{
+				taskID1: {},
+				taskID2: {taskID1},
+			},
+			TaskStates: map[string]model.Status{
+				taskID1: model.StatusCompleted,
+				taskID2: model.StatusFailed,
+			},
+			CancelledReasons: make(map[string]string),
+			AppliedResultIDs: make(map[string]string),
 		},
-		TaskStates: map[string]model.Status{
-			taskID1: model.StatusCompleted,
-			taskID2: model.StatusFailed,
+		RetryTracking: model.RetryTracking{
+			RetryLineage: make(map[string]string),
 		},
-		CancelledReasons: make(map[string]string),
-		AppliedResultIDs: make(map[string]string),
-		RetryLineage:     make(map[string]string),
-		CreatedAt:        "2025-01-01T00:00:00Z",
-		UpdatedAt:        "2025-01-01T00:00:00Z",
+		CreatedAt: "2025-01-01T00:00:00Z",
+		UpdatedAt: "2025-01-01T00:00:00Z",
 	}
 
 	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
@@ -673,27 +693,31 @@ func TestAddRetryTask_CascadeRecover(t *testing.T) {
 			OnOptionalFailed:        "ignore",
 			DependencyFailurePolicy: "cancel_dependents",
 		},
-		ExpectedTaskCount: 3,
-		RequiredTaskIDs:   []string{taskA, taskB, taskC},
-		OptionalTaskIDs:   []string{},
-		TaskDependencies: map[string][]string{
-			taskA: {},
-			taskB: {taskA},
-			taskC: {taskB},
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 3,
+			RequiredTaskIDs:   []string{taskA, taskB, taskC},
+			OptionalTaskIDs:   []string{},
+			TaskDependencies: map[string][]string{
+				taskA: {},
+				taskB: {taskA},
+				taskC: {taskB},
+			},
+			TaskStates: map[string]model.Status{
+				taskA: model.StatusFailed,
+				taskB: model.StatusCancelled,
+				taskC: model.StatusCancelled,
+			},
+			CancelledReasons: map[string]string{
+				taskB: "blocked_dependency_terminal:" + taskA,
+				taskC: "blocked_dependency_terminal:" + taskB,
+			},
+			AppliedResultIDs: make(map[string]string),
 		},
-		TaskStates: map[string]model.Status{
-			taskA: model.StatusFailed,
-			taskB: model.StatusCancelled,
-			taskC: model.StatusCancelled,
+		RetryTracking: model.RetryTracking{
+			RetryLineage: make(map[string]string),
 		},
-		CancelledReasons: map[string]string{
-			taskB: "blocked_dependency_terminal:" + taskA,
-			taskC: "blocked_dependency_terminal:" + taskB,
-		},
-		AppliedResultIDs: make(map[string]string),
-		RetryLineage:     make(map[string]string),
-		CreatedAt:        "2025-01-01T00:00:00Z",
-		UpdatedAt:        "2025-01-01T00:00:00Z",
+		CreatedAt: "2025-01-01T00:00:00Z",
+		UpdatedAt: "2025-01-01T00:00:00Z",
 	}
 
 	// Write original tasks to queue so cascade can inherit content
@@ -800,17 +824,21 @@ func TestAddRetryTask_ValidationFailures(t *testing.T) {
 				maestroDir := setupMaestroDir(t)
 				commandID := "cmd_0000000030_aabbccdd"
 				state := &model.CommandState{
-					SchemaVersion:    1,
-					FileType:         "state_command",
-					CommandID:        commandID,
-					PlanStatus:       model.PlanStatusPlanning,
-					TaskStates:       map[string]model.Status{"t1": model.StatusFailed},
-					TaskDependencies: make(map[string][]string),
-					CancelledReasons: make(map[string]string),
-					AppliedResultIDs: make(map[string]string),
-					RetryLineage:     make(map[string]string),
-					CreatedAt:        "2025-01-01T00:00:00Z",
-					UpdatedAt:        "2025-01-01T00:00:00Z",
+					SchemaVersion: 1,
+					FileType:      "state_command",
+					CommandID:     commandID,
+					PlanStatus:    model.PlanStatusPlanning,
+					TaskTracking: model.TaskTracking{
+						TaskStates:       map[string]model.Status{"t1": model.StatusFailed},
+						TaskDependencies: make(map[string][]string),
+						CancelledReasons: make(map[string]string),
+						AppliedResultIDs: make(map[string]string),
+					},
+					RetryTracking: model.RetryTracking{
+						RetryLineage: make(map[string]string),
+					},
+					CreatedAt: "2025-01-01T00:00:00Z",
+					UpdatedAt: "2025-01-01T00:00:00Z",
 				}
 				statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
 				yamlutil.AtomicWrite(statePath, state)
@@ -841,13 +869,17 @@ func TestAddRetryTask_ValidationFailures(t *testing.T) {
 						RequestedBy: &cancelBy,
 						Reason:      &cancelReason,
 					},
-					TaskStates:       map[string]model.Status{"t1": model.StatusFailed},
-					TaskDependencies: make(map[string][]string),
-					CancelledReasons: make(map[string]string),
-					AppliedResultIDs: make(map[string]string),
-					RetryLineage:     make(map[string]string),
-					CreatedAt:        now,
-					UpdatedAt:        now,
+					TaskTracking: model.TaskTracking{
+						TaskStates:       map[string]model.Status{"t1": model.StatusFailed},
+						TaskDependencies: make(map[string][]string),
+						CancelledReasons: make(map[string]string),
+						AppliedResultIDs: make(map[string]string),
+					},
+					RetryTracking: model.RetryTracking{
+						RetryLineage: make(map[string]string),
+					},
+					CreatedAt: now,
+					UpdatedAt: now,
 				}
 				statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
 				yamlutil.AtomicWrite(statePath, state)
@@ -865,17 +897,21 @@ func TestAddRetryTask_ValidationFailures(t *testing.T) {
 				maestroDir := setupMaestroDir(t)
 				commandID := "cmd_0000000032_aabbccdd"
 				state := &model.CommandState{
-					SchemaVersion:    1,
-					FileType:         "state_command",
-					CommandID:        commandID,
-					PlanStatus:       model.PlanStatusSealed,
-					TaskStates:       map[string]model.Status{},
-					TaskDependencies: make(map[string][]string),
-					CancelledReasons: make(map[string]string),
-					AppliedResultIDs: make(map[string]string),
-					RetryLineage:     make(map[string]string),
-					CreatedAt:        "2025-01-01T00:00:00Z",
-					UpdatedAt:        "2025-01-01T00:00:00Z",
+					SchemaVersion: 1,
+					FileType:      "state_command",
+					CommandID:     commandID,
+					PlanStatus:    model.PlanStatusSealed,
+					TaskTracking: model.TaskTracking{
+						TaskStates:       map[string]model.Status{},
+						TaskDependencies: make(map[string][]string),
+						CancelledReasons: make(map[string]string),
+						AppliedResultIDs: make(map[string]string),
+					},
+					RetryTracking: model.RetryTracking{
+						RetryLineage: make(map[string]string),
+					},
+					CreatedAt: "2025-01-01T00:00:00Z",
+					UpdatedAt: "2025-01-01T00:00:00Z",
 				}
 				statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
 				yamlutil.AtomicWrite(statePath, state)
@@ -894,18 +930,22 @@ func TestAddRetryTask_ValidationFailures(t *testing.T) {
 				commandID := "cmd_0000000033_aabbccdd"
 				taskID := "task_0000000033_11111111"
 				state := &model.CommandState{
-					SchemaVersion:    1,
-					FileType:         "state_command",
-					CommandID:        commandID,
-					PlanStatus:       model.PlanStatusSealed,
-					RequiredTaskIDs:  []string{taskID},
-					TaskStates:       map[string]model.Status{taskID: model.StatusCompleted},
-					TaskDependencies: map[string][]string{taskID: {}},
-					CancelledReasons: make(map[string]string),
-					AppliedResultIDs: make(map[string]string),
-					RetryLineage:     make(map[string]string),
-					CreatedAt:        "2025-01-01T00:00:00Z",
-					UpdatedAt:        "2025-01-01T00:00:00Z",
+					SchemaVersion: 1,
+					FileType:      "state_command",
+					CommandID:     commandID,
+					PlanStatus:    model.PlanStatusSealed,
+					TaskTracking: model.TaskTracking{
+						RequiredTaskIDs:  []string{taskID},
+						TaskStates:       map[string]model.Status{taskID: model.StatusCompleted},
+						TaskDependencies: map[string][]string{taskID: {}},
+						CancelledReasons: make(map[string]string),
+						AppliedResultIDs: make(map[string]string),
+					},
+					RetryTracking: model.RetryTracking{
+						RetryLineage: make(map[string]string),
+					},
+					CreatedAt: "2025-01-01T00:00:00Z",
+					UpdatedAt: "2025-01-01T00:00:00Z",
 				}
 				statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
 				yamlutil.AtomicWrite(statePath, state)
@@ -1111,14 +1151,18 @@ func TestCascadeRecoverRecursive_MaxDepthExceeded(t *testing.T) {
 	}
 
 	state := &model.CommandState{
-		SchemaVersion:    1,
-		FileType:         "state_command",
-		CommandID:        "cmd_depth_test",
-		RequiredTaskIDs:  requiredIDs,
-		TaskStates:       taskStates,
-		TaskDependencies: taskDeps,
-		CancelledReasons: cancelledReasons,
-		RetryLineage:     make(map[string]string),
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd_depth_test",
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs:  requiredIDs,
+			TaskStates:       taskStates,
+			TaskDependencies: taskDeps,
+			CancelledReasons: cancelledReasons,
+		},
+		RetryTracking: model.RetryTracking{
+			RetryLineage: make(map[string]string),
+		},
 	}
 
 	cfg := testConfig()
@@ -1133,6 +1177,149 @@ func TestCascadeRecoverRecursive_MaxDepthExceeded(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "exceeded maximum depth") {
 		t.Errorf("error = %q, want to contain %q", err.Error(), "exceeded maximum depth")
+	}
+}
+
+func TestCascadeRecover_AllOrNothing(t *testing.T) {
+	// Verify that when cascadeRecoverRecursive fails partway through,
+	// the CommandState is fully restored to its pre-cascade state.
+	depth := maxCascadeRecoverDepth + 2
+	taskIDs := make([]string, depth)
+	for i := range taskIDs {
+		taskIDs[i] = fmt.Sprintf("task_%010d_%08x", i, i)
+	}
+
+	taskStates := make(map[string]model.Status, depth)
+	cancelledReasons := make(map[string]string, depth)
+	taskDeps := make(map[string][]string, depth)
+	requiredIDs := make([]string, depth)
+
+	taskStates[taskIDs[0]] = model.StatusFailed
+	taskDeps[taskIDs[0]] = nil
+	requiredIDs[0] = taskIDs[0]
+
+	for i := 1; i < depth; i++ {
+		taskStates[taskIDs[i]] = model.StatusCancelled
+		cancelledReasons[taskIDs[i]] = fmt.Sprintf("blocked_dependency_terminal:%s", taskIDs[i-1])
+		taskDeps[taskIDs[i]] = []string{taskIDs[i-1]}
+		requiredIDs[i] = taskIDs[i]
+	}
+
+	state := &model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd_aon_test",
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs:  append([]string{}, requiredIDs...),
+			TaskStates:       taskStates,
+			TaskDependencies: taskDeps,
+			CancelledReasons: cancelledReasons,
+		},
+		RetryTracking: model.RetryTracking{
+			RetryLineage: make(map[string]string),
+		},
+	}
+
+	// Snapshot pre-cascade state for comparison.
+	origRequiredLen := len(state.RequiredTaskIDs)
+	origTaskStatesLen := len(state.TaskStates)
+	origLineageLen := len(state.RetryLineage)
+
+	cfg := testConfig()
+	workerStates := []WorkerState{
+		{WorkerID: "worker1", Model: cfg.Agents.Workers.DefaultModel},
+		{WorkerID: "worker2", Model: "opus"},
+	}
+
+	_, err := cascadeRecover(state, taskIDs[0], "retry_0", cfg.Agents.Workers, cfg.Limits, workerStates, nil)
+	if err == nil {
+		t.Fatal("expected error for max depth exceeded, got nil")
+	}
+
+	// Verify all-or-nothing: state should be restored to pre-cascade values.
+	if len(state.RequiredTaskIDs) != origRequiredLen {
+		t.Errorf("RequiredTaskIDs length changed from %d to %d after failed cascade",
+			origRequiredLen, len(state.RequiredTaskIDs))
+	}
+	if len(state.TaskStates) != origTaskStatesLen {
+		t.Errorf("TaskStates length changed from %d to %d after failed cascade",
+			origTaskStatesLen, len(state.TaskStates))
+	}
+	if len(state.RetryLineage) != origLineageLen {
+		t.Errorf("RetryLineage length changed from %d to %d after failed cascade",
+			origLineageLen, len(state.RetryLineage))
+	}
+
+	// The original task states should still be intact.
+	if state.TaskStates[taskIDs[0]] != model.StatusFailed {
+		t.Errorf("task[0] status = %s, want failed", state.TaskStates[taskIDs[0]])
+	}
+	for i := 1; i < depth; i++ {
+		if state.TaskStates[taskIDs[i]] != model.StatusCancelled {
+			t.Errorf("task[%d] status = %s, want cancelled", i, state.TaskStates[taskIDs[i]])
+		}
+	}
+}
+
+func TestSnapshotWorkerStates_Isolation(t *testing.T) {
+	original := []WorkerState{
+		{WorkerID: "w1", Model: "sonnet", PendingCount: 2},
+		{WorkerID: "w2", Model: "opus", PendingCount: 5},
+	}
+	snapshot := SnapshotWorkerStates(original)
+
+	// Modify original.
+	original[0].PendingCount = 99
+
+	// Snapshot should be unaffected.
+	if snapshot[0].PendingCount != 2 {
+		t.Errorf("snapshot[0].PendingCount = %d, want 2 (should be isolated from original)", snapshot[0].PendingCount)
+	}
+}
+
+func TestGetLatestDescendant_CycleDetection(t *testing.T) {
+	// a -> b -> c -> a (cycle)
+	reverseLineage := map[string]string{
+		"a": "b",
+		"b": "c",
+		"c": "a",
+	}
+	_, err := getLatestDescendant("a", reverseLineage)
+	if err == nil {
+		t.Fatal("expected cycle detection error, got nil")
+	}
+	if !strings.Contains(err.Error(), "lineage cycle detected") {
+		t.Errorf("error = %q, want to contain %q", err.Error(), "lineage cycle detected")
+	}
+}
+
+func TestGetLatestDescendant_DepthLimit(t *testing.T) {
+	// Build a lineage chain longer than maxLineageDepth.
+	reverseLineage := make(map[string]string, maxLineageDepth+10)
+	for i := 0; i < maxLineageDepth+10; i++ {
+		reverseLineage[fmt.Sprintf("t%d", i)] = fmt.Sprintf("t%d", i+1)
+	}
+	_, err := getLatestDescendant("t0", reverseLineage)
+	if err == nil {
+		t.Fatal("expected depth limit error, got nil")
+	}
+	if !strings.Contains(err.Error(), "lineage depth exceeded") {
+		t.Errorf("error = %q, want to contain %q", err.Error(), "lineage depth exceeded")
+	}
+}
+
+func TestGetLatestDescendant_NormalResolution(t *testing.T) {
+	// a -> b -> c (no cycle, c is terminal)
+	reverseLineage := map[string]string{
+		"a": "b",
+		"b": "c",
+	}
+	got, err := getLatestDescendant("a", reverseLineage)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "c" {
+		t.Errorf("getLatestDescendant = %q, want %q", got, "c")
 	}
 }
 

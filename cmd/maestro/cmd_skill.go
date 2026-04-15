@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/msageha/maestro_v2/internal/daemon/skill"
-	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
 )
 
@@ -153,7 +152,7 @@ func (a *cliApp) runSkillApprove(args []string) error {
 		params["skill_name"] = skillName
 	}
 
-	client := a.createClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := a.newDaemonClient(maestroDir)
 	resp, err := client.SendCommand("skill_approve", params)
 	if err != nil {
 		return fmt.Errorf("maestro skill approve: %w", err)
@@ -204,7 +203,7 @@ func (a *cliApp) runSkillReject(args []string) error {
 		"candidate_id": candidateID,
 	}
 
-	client := a.createClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := a.newDaemonClient(maestroDir)
 	resp, err := client.SendCommand("skill_reject", params)
 	if err != nil {
 		return fmt.Errorf("maestro skill reject: %w", err)

@@ -136,8 +136,10 @@ func TestReconciler_R0b_NoTasks(t *testing.T) {
 	state := model.CommandState{
 		SchemaVersion: 1, FileType: "state_command",
 		CommandID: "cmd_r0b_empty", PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{PhaseID: "p1", Name: "empty-phase", Status: model.PhaseStatusFilling, TaskIDs: nil},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "p1", Name: "empty-phase", Status: model.PhaseStatusFilling, TaskIDs: nil},
+			},
 		},
 		CreatedAt: oldTime, UpdatedAt: oldTime,
 	}
@@ -163,10 +165,12 @@ func TestReconciler_R0b_MultiplePhases(t *testing.T) {
 	state := model.CommandState{
 		SchemaVersion: 1, FileType: "state_command",
 		CommandID: "cmd_r0b_multi", PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{PhaseID: "p1", Name: "phase-1", Status: model.PhaseStatusFilling, TaskIDs: []string{"t1"}},
-			{PhaseID: "p2", Name: "phase-2", Status: model.PhaseStatusCompleted}, // not filling
-			{PhaseID: "p3", Name: "phase-3", Status: model.PhaseStatusFilling, TaskIDs: []string{"t2", "t3"}},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "p1", Name: "phase-1", Status: model.PhaseStatusFilling, TaskIDs: []string{"t1"}},
+				{PhaseID: "p2", Name: "phase-2", Status: model.PhaseStatusCompleted}, // not filling
+				{PhaseID: "p3", Name: "phase-3", Status: model.PhaseStatusFilling, TaskIDs: []string{"t2", "t3"}},
+			},
 		},
 		CreatedAt: oldTime, UpdatedAt: oldTime,
 	}
@@ -337,11 +341,13 @@ func TestReconciler_R6_MultiplePhasesTimedOut(t *testing.T) {
 	state := model.CommandState{
 		SchemaVersion: 1, FileType: "state_command",
 		CommandID: "cmd_r6_multi", PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{PhaseID: "p1", Name: "branch1", Type: "deferred", Status: model.PhaseStatusAwaitingFill, FillDeadlineAt: &pastDeadline},
-			{PhaseID: "p2", Name: "branch2", Type: "deferred", Status: model.PhaseStatusAwaitingFill, FillDeadlineAt: &pastDeadline},
-			{PhaseID: "p3", Name: "downstream1", Type: "deferred", Status: model.PhaseStatusPending, DependsOnPhases: []string{"branch1"}},
-			{PhaseID: "p4", Name: "downstream2", Type: "deferred", Status: model.PhaseStatusPending, DependsOnPhases: []string{"branch2"}},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "p1", Name: "branch1", Type: "deferred", Status: model.PhaseStatusAwaitingFill, FillDeadlineAt: &pastDeadline},
+				{PhaseID: "p2", Name: "branch2", Type: "deferred", Status: model.PhaseStatusAwaitingFill, FillDeadlineAt: &pastDeadline},
+				{PhaseID: "p3", Name: "downstream1", Type: "deferred", Status: model.PhaseStatusPending, DependsOnPhases: []string{"branch1"}},
+				{PhaseID: "p4", Name: "downstream2", Type: "deferred", Status: model.PhaseStatusPending, DependsOnPhases: []string{"branch2"}},
+			},
 		},
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -390,11 +396,13 @@ func TestReconciler_R6_DiamondDependency(t *testing.T) {
 	state := model.CommandState{
 		SchemaVersion: 1, FileType: "state_command",
 		CommandID: "cmd_r6_diamond", PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{PhaseID: "p1", Name: "root", Type: "deferred", Status: model.PhaseStatusAwaitingFill, FillDeadlineAt: &pastDeadline},
-			{PhaseID: "p2", Name: "left", Type: "deferred", Status: model.PhaseStatusPending, DependsOnPhases: []string{"root"}},
-			{PhaseID: "p3", Name: "right", Type: "deferred", Status: model.PhaseStatusPending, DependsOnPhases: []string{"root"}},
-			{PhaseID: "p4", Name: "merge", Type: "deferred", Status: model.PhaseStatusPending, DependsOnPhases: []string{"left", "right"}},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "p1", Name: "root", Type: "deferred", Status: model.PhaseStatusAwaitingFill, FillDeadlineAt: &pastDeadline},
+				{PhaseID: "p2", Name: "left", Type: "deferred", Status: model.PhaseStatusPending, DependsOnPhases: []string{"root"}},
+				{PhaseID: "p3", Name: "right", Type: "deferred", Status: model.PhaseStatusPending, DependsOnPhases: []string{"root"}},
+				{PhaseID: "p4", Name: "merge", Type: "deferred", Status: model.PhaseStatusPending, DependsOnPhases: []string{"left", "right"}},
+			},
 		},
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -439,9 +447,11 @@ func TestReconciler_R6_ActivePhaseNotCancelled(t *testing.T) {
 	state := model.CommandState{
 		SchemaVersion: 1, FileType: "state_command",
 		CommandID: "cmd_r6_active", PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{PhaseID: "p1", Name: "timeout", Type: "deferred", Status: model.PhaseStatusAwaitingFill, FillDeadlineAt: &pastDeadline},
-			{PhaseID: "p2", Name: "active_phase", Type: "concrete", Status: model.PhaseStatusActive, DependsOnPhases: []string{"timeout"}},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "p1", Name: "timeout", Type: "deferred", Status: model.PhaseStatusAwaitingFill, FillDeadlineAt: &pastDeadline},
+				{PhaseID: "p2", Name: "active_phase", Type: "concrete", Status: model.PhaseStatusActive, DependsOnPhases: []string{"timeout"}},
+			},
 		},
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -477,8 +487,10 @@ func TestReconciler_R6_NoDeadline_NoTimeout(t *testing.T) {
 	state := model.CommandState{
 		SchemaVersion: 1, FileType: "state_command",
 		CommandID: "cmd_r6_nodeadline", PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{PhaseID: "p1", Name: "no_deadline", Type: "deferred", Status: model.PhaseStatusAwaitingFill, FillDeadlineAt: nil},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "p1", Name: "no_deadline", Type: "deferred", Status: model.PhaseStatusAwaitingFill, FillDeadlineAt: nil},
+			},
 		},
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -506,13 +518,15 @@ func TestDependencyFailure_TransitivePending(t *testing.T) {
 	taskC := "task_dep_c"
 
 	state := model.CommandState{
-		SchemaVersion:   1, FileType: "state_command",
-		CommandID:       commandID, PlanStatus: model.PlanStatusSealed,
-		RequiredTaskIDs: []string{taskA, taskB, taskC},
-		TaskStates:      map[string]model.Status{taskA: model.StatusFailed, taskB: model.StatusPending, taskC: model.StatusPending},
-		TaskDependencies: map[string][]string{
-			taskB: {taskA},
-			taskC: {taskB},
+		SchemaVersion: 1, FileType: "state_command",
+		CommandID: commandID, PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{taskA, taskB, taskC},
+			TaskStates:      map[string]model.Status{taskA: model.StatusFailed, taskB: model.StatusPending, taskC: model.StatusPending},
+			TaskDependencies: map[string][]string{
+				taskB: {taskA},
+				taskC: {taskB},
+			},
 		},
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
@@ -570,12 +584,14 @@ func TestDependencyFailure_InProgressTaskInterrupted(t *testing.T) {
 	taskB := "task_depip_b"
 
 	state := model.CommandState{
-		SchemaVersion:   1, FileType: "state_command",
-		CommandID:       commandID, PlanStatus: model.PlanStatusSealed,
-		RequiredTaskIDs: []string{taskA, taskB},
-		TaskStates:      map[string]model.Status{taskA: model.StatusFailed, taskB: model.StatusInProgress},
-		TaskDependencies: map[string][]string{
-			taskB: {taskA},
+		SchemaVersion: 1, FileType: "state_command",
+		CommandID: commandID, PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{taskA, taskB},
+			TaskStates:      map[string]model.Status{taskA: model.StatusFailed, taskB: model.StatusInProgress},
+			TaskDependencies: map[string][]string{
+				taskB: {taskA},
+			},
 		},
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),

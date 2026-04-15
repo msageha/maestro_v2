@@ -38,8 +38,14 @@ func newMessageDeliverer(paneIO PaneIO, paneState *paneStateManager, cfg *model.
 // one on first access. This serializes the shell guard check → send → status
 // update sequence to prevent concurrent deliveries from interleaving.
 func (d *messageDeliverer) getPaneMutex(paneTarget string) *sync.Mutex {
-	mu, _ := d.paneMu.LoadOrStore(paneTarget, &sync.Mutex{})
-	return mu.(*sync.Mutex)
+	v, _ := d.paneMu.LoadOrStore(paneTarget, &sync.Mutex{})
+	// Type assertion is safe: only *sync.Mutex values are stored in paneMu.
+	mu, ok := v.(*sync.Mutex)
+	if !ok {
+		mu = &sync.Mutex{}
+		d.paneMu.Store(paneTarget, mu)
+	}
+	return mu
 }
 
 // removePaneMutex deletes the per-pane mutex entry for the given pane target.

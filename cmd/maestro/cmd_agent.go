@@ -5,8 +5,6 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/model"
-	"github.com/msageha/maestro_v2/internal/tmux"
-	"github.com/msageha/maestro_v2/internal/validate"
 )
 
 // runAgent dispatches agent subcommands (launch, exec).
@@ -67,11 +65,9 @@ func runAgentExec(args []string) error {
 	if err != nil {
 		return fmt.Errorf("maestro agent exec: load config: %w", err)
 	}
-	// HIGH-16: Validate project name before use in tmux session name
-	if err := validate.ProjectName(cfg.Project.Name); err != nil {
-		return fmt.Errorf("maestro agent exec: invalid project name: %w", err)
+	if err := setupTmuxSession("agent exec", cfg); err != nil {
+		return err
 	}
-	tmux.SetSessionName("maestro-" + cfg.Project.Name)
 
 	exec, err := agent.NewExecutor(maestroDir, cfg.Watcher, cfg.Logging.Level)
 	if err != nil {

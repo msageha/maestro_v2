@@ -77,9 +77,11 @@ func setupCommandState(t *testing.T, d *Daemon, commandID string, taskIDs []stri
 		FileType:      "state_command",
 		CommandID:     commandID,
 		PlanStatus:    model.PlanStatusSealed,
-		TaskStates:    taskStates,
-		CreatedAt:     "2026-01-01T00:00:00Z",
-		UpdatedAt:     "2026-01-01T00:00:00Z",
+		TaskTracking: model.TaskTracking{
+			TaskStates: taskStates,
+		},
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
 	}
 	path := filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml")
 	if err := yamlutil.AtomicWrite(path, state); err != nil {
@@ -738,9 +740,11 @@ func TestResultWrite_LateAfterPlanTerminal(t *testing.T) {
 				FileType:      "state_command",
 				CommandID:     commandID,
 				PlanStatus:    tc.planStatus,
-				TaskStates:    map[string]model.Status{taskID: model.StatusInProgress},
-				CreatedAt:     "2026-01-01T00:00:00Z",
-				UpdatedAt:     "2026-01-01T00:00:00Z",
+				TaskTracking: model.TaskTracking{
+					TaskStates: map[string]model.Status{taskID: model.StatusInProgress},
+				},
+				CreatedAt: "2026-01-01T00:00:00Z",
+				UpdatedAt: "2026-01-01T00:00:00Z",
 			}
 			if err := yamlutil.AtomicWrite(statePath, state); err != nil {
 				t.Fatalf("write state: %v", err)

@@ -44,10 +44,12 @@ func (R2ResultState) Apply(run *Run) Outcome {
 		resultPath := filepath.Join(resultsDir, name)
 		data, err := os.ReadFile(resultPath) //nolint:gosec // resultPath is constructed from a controlled application results directory
 		if err != nil {
+			run.Log(core.LogLevelWarn, "R2 read_result_file file=%s error=%v", name, err)
 			continue
 		}
 		var rf model.TaskResultFile
 		if err := yamlv3.Unmarshal(data, &rf); err != nil {
+			run.Log(core.LogLevelWarn, "R2 parse_result_file file=%s error=%v", name, err)
 			continue
 		}
 

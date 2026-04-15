@@ -97,11 +97,17 @@ func (wm *Manager) SetSignalStore(s SignalStore) {
 // strictly above wm.mu in the lock hierarchy.
 func (wm *Manager) commandLock(commandID string) *sync.Mutex {
 	if v, ok := wm.cmdLocks.Load(commandID); ok {
-		return v.(*sync.Mutex)
+		// Type assertion is safe: only *sync.Mutex values are stored in cmdLocks.
+		if mu, ok := v.(*sync.Mutex); ok {
+			return mu
+		}
 	}
 	m := &sync.Mutex{}
 	actual, _ := wm.cmdLocks.LoadOrStore(commandID, m)
-	return actual.(*sync.Mutex)
+	if mu, ok := actual.(*sync.Mutex); ok {
+		return mu
+	}
+	return m
 }
 
 // DispatchConflictResolution transitions a worker from conflict→resolving and

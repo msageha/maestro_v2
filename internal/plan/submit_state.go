@@ -12,14 +12,20 @@ func buildCommandState(commandID string, tasks []TaskInput, nameToID map[string]
 		FileType:         "state_command",
 		CommandID:        commandID,
 		CompletionPolicy: defaultCompletionPolicy(),
-		TaskDependencies: make(map[string][]string),
-		TaskStates:       make(map[string]model.Status),
-		CancelledReasons: make(map[string]string),
-		AppliedResultIDs: make(map[string]string),
-		RetryLineage:     make(map[string]string),
-		Phases:           phases,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		TaskTracking: model.TaskTracking{
+			TaskDependencies: make(map[string][]string),
+			TaskStates:       make(map[string]model.Status),
+			CancelledReasons: make(map[string]string),
+			AppliedResultIDs: make(map[string]string),
+		},
+		RetryTracking: model.RetryTracking{
+			RetryLineage: make(map[string]string),
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: phases,
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 
 	var systemCommitTaskID *string
@@ -62,20 +68,24 @@ func buildPhaseCommandState(opts SubmitOptions, phases []PhaseInput, phaseNameTo
 	cpd *concretePhaseData, systemCommitTaskID *string, now string) (*model.CommandState, error) {
 
 	state := &model.CommandState{
-		SchemaVersion:      1,
-		FileType:           "state_command",
-		CommandID:          opts.CommandID,
-		PlanVersion:        0,
-		PlanStatus:         model.PlanStatusPlanning,
-		CompletionPolicy:   defaultCompletionPolicy(),
-		TaskDependencies:   make(map[string][]string),
-		TaskStates:         make(map[string]model.Status),
-		CancelledReasons:   make(map[string]string),
-		AppliedResultIDs:   make(map[string]string),
-		RetryLineage:       make(map[string]string),
-		SystemCommitTaskID: systemCommitTaskID,
-		CreatedAt:          now,
-		UpdatedAt:          now,
+		SchemaVersion:    1,
+		FileType:         "state_command",
+		CommandID:        opts.CommandID,
+		PlanVersion:      0,
+		PlanStatus:       model.PlanStatusPlanning,
+		CompletionPolicy: defaultCompletionPolicy(),
+		TaskTracking: model.TaskTracking{
+			TaskDependencies:   make(map[string][]string),
+			TaskStates:         make(map[string]model.Status),
+			CancelledReasons:   make(map[string]string),
+			AppliedResultIDs:   make(map[string]string),
+			SystemCommitTaskID: systemCommitTaskID,
+		},
+		RetryTracking: model.RetryTracking{
+			RetryLineage: make(map[string]string),
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 
 	// Build phases

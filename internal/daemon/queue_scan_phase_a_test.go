@@ -148,15 +148,19 @@ func writeCommandStateAt(t *testing.T, maestroDir, commandID string, taskStates 
 	}
 	ts := updatedAt.UTC().Format(time.RFC3339)
 	state := model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       commandID,
-		PlanStatus:      model.PlanStatusSealed,
-		RequiredTaskIDs: requiredIDs,
-		TaskStates:      taskStates,
-		Phases:          phases,
-		CreatedAt:       ts,
-		UpdatedAt:       ts,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: requiredIDs,
+			TaskStates:      taskStates,
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: phases,
+		},
+		CreatedAt: ts,
+		UpdatedAt: ts,
 	}
 	path := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
 	if err := yamlutil.AtomicWrite(path, state); err != nil {

@@ -156,12 +156,14 @@ func TestReconciler_R0b_FillingStuck(t *testing.T) {
 		FileType:      "state_command",
 		CommandID:     "cmd_0000000001_bbbbbbbb",
 		PlanStatus:    model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{
-				PhaseID: "phase_001",
-				Name:    "phase-1",
-				Status:  model.PhaseStatusFilling,
-				TaskIDs: []string{"task_0000000001_11111111", "task_0000000002_22222222"},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: "phase_001",
+					Name:    "phase-1",
+					Status:  model.PhaseStatusFilling,
+					TaskIDs: []string{"task_0000000001_11111111", "task_0000000002_22222222"},
+				},
 			},
 		},
 		CreatedAt: oldTime,
@@ -350,12 +352,14 @@ func TestReconciler_R2_ResultTerminal_StateNonTerminal(t *testing.T) {
 		FileType:      "state_command",
 		CommandID:     "cmd_0000000001_dddddddd",
 		PlanStatus:    model.PlanStatusSealed,
-		TaskStates: map[string]model.Status{
-			"task_0000000001_11111111": model.StatusInProgress,
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				"task_0000000001_11111111": model.StatusInProgress,
+			},
+			AppliedResultIDs: map[string]string{},
 		},
-		AppliedResultIDs: map[string]string{},
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	statePath := filepath.Join(stateDir, "cmd_0000000001_dddddddd.yaml")
 	yamlutil.AtomicWrite(statePath, state)
@@ -417,11 +421,13 @@ func TestReconciler_R2_AlreadyTerminal_NoRepair(t *testing.T) {
 		FileType:      "state_command",
 		CommandID:     "cmd_0000000001_eeeeeeee",
 		PlanStatus:    model.PlanStatusSealed,
-		TaskStates: map[string]model.Status{
-			"task_0000000001_11111111": model.StatusCompleted, // Already terminal
-		},
-		AppliedResultIDs: map[string]string{
-			"task_0000000001_11111111": "res_0000000001_aaaaaaaa",
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				"task_0000000001_11111111": model.StatusCompleted, // Already terminal
+			},
+			AppliedResultIDs: map[string]string{
+				"task_0000000001_11111111": "res_0000000001_aaaaaaaa",
+			},
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -463,8 +469,10 @@ func TestReconciler_AllPatterns_Combined(t *testing.T) {
 	state0b := model.CommandState{
 		SchemaVersion: 1, FileType: "state_command",
 		CommandID: "cmd_r0b_stuck", PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{PhaseID: "p1", Name: "phase-1", Status: model.PhaseStatusFilling, TaskIDs: []string{"task_partial"}},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "p1", Name: "phase-1", Status: model.PhaseStatusFilling, TaskIDs: []string{"task_partial"}},
+			},
 		},
 		CreatedAt: oldTime, UpdatedAt: oldTime,
 	}
@@ -497,9 +505,11 @@ func TestReconciler_AllPatterns_Combined(t *testing.T) {
 	state2 := model.CommandState{
 		SchemaVersion: 1, FileType: "state_command",
 		CommandID: "cmd_r2", PlanStatus: model.PlanStatusSealed,
-		TaskStates:       map[string]model.Status{"task_r2": model.StatusInProgress},
-		AppliedResultIDs: map[string]string{},
-		CreatedAt:        now, UpdatedAt: now,
+		TaskTracking: model.TaskTracking{
+			TaskStates:       map[string]model.Status{"task_r2": model.StatusInProgress},
+			AppliedResultIDs: map[string]string{},
+		},
+		CreatedAt: now, UpdatedAt: now,
 	}
 	yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r2.yaml"), state2)
 
@@ -902,21 +912,23 @@ func TestReconciler_R6_AwaitingFill_DeadlineExpired(t *testing.T) {
 	state := model.CommandState{
 		SchemaVersion: 1, FileType: "state_command",
 		CommandID: "cmd_r6_test", PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{
-				PhaseID: "p1", Name: "research", Type: "concrete",
-				Status: model.PhaseStatusCompleted,
-			},
-			{
-				PhaseID: "p2", Name: "implementation", Type: "deferred",
-				Status:          model.PhaseStatusAwaitingFill,
-				DependsOnPhases: []string{"research"},
-				FillDeadlineAt:  &pastDeadline,
-			},
-			{
-				PhaseID: "p3", Name: "testing", Type: "deferred",
-				Status:          model.PhaseStatusPending,
-				DependsOnPhases: []string{"implementation"},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: "p1", Name: "research", Type: "concrete",
+					Status: model.PhaseStatusCompleted,
+				},
+				{
+					PhaseID: "p2", Name: "implementation", Type: "deferred",
+					Status:          model.PhaseStatusAwaitingFill,
+					DependsOnPhases: []string{"research"},
+					FillDeadlineAt:  &pastDeadline,
+				},
+				{
+					PhaseID: "p3", Name: "testing", Type: "deferred",
+					Status:          model.PhaseStatusPending,
+					DependsOnPhases: []string{"implementation"},
+				},
 			},
 		},
 		CreatedAt: now, UpdatedAt: now,
@@ -961,11 +973,13 @@ func TestReconciler_R6_DeadlineNotExpired_NoRepair(t *testing.T) {
 	state := model.CommandState{
 		SchemaVersion: 1, FileType: "state_command",
 		CommandID: "cmd_r6_ok", PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{
-				PhaseID: "p1", Name: "impl", Type: "deferred",
-				Status:         model.PhaseStatusAwaitingFill,
-				FillDeadlineAt: &futureDeadline,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: "p1", Name: "impl", Type: "deferred",
+					Status:         model.PhaseStatusAwaitingFill,
+					FillDeadlineAt: &futureDeadline,
+				},
 			},
 		},
 		CreatedAt: now, UpdatedAt: now,
@@ -1007,21 +1021,23 @@ func TestReconciler_R6_TransitiveCascade(t *testing.T) {
 	state := model.CommandState{
 		SchemaVersion: 1, FileType: "state_command",
 		CommandID: "cmd_r6_trans", PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{
-				PhaseID: "p1", Name: "phase1", Type: "deferred",
-				Status:         model.PhaseStatusAwaitingFill,
-				FillDeadlineAt: &pastDeadline,
-			},
-			{
-				PhaseID: "p2", Name: "phase2", Type: "deferred",
-				Status:          model.PhaseStatusPending,
-				DependsOnPhases: []string{"phase1"},
-			},
-			{
-				PhaseID: "p3", Name: "phase3", Type: "deferred",
-				Status:          model.PhaseStatusPending,
-				DependsOnPhases: []string{"phase2"},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: "p1", Name: "phase1", Type: "deferred",
+					Status:         model.PhaseStatusAwaitingFill,
+					FillDeadlineAt: &pastDeadline,
+				},
+				{
+					PhaseID: "p2", Name: "phase2", Type: "deferred",
+					Status:          model.PhaseStatusPending,
+					DependsOnPhases: []string{"phase1"},
+				},
+				{
+					PhaseID: "p3", Name: "phase3", Type: "deferred",
+					Status:          model.PhaseStatusPending,
+					DependsOnPhases: []string{"phase2"},
+				},
 			},
 		},
 		CreatedAt: now, UpdatedAt: now,

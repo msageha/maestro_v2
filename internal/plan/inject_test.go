@@ -35,22 +35,26 @@ func setupInjectFixture(t *testing.T) (string, string, string) {
 			OnOptionalFailed:        "ignore",
 			DependencyFailurePolicy: "cancel_dependents",
 		},
-		ExpectedTaskCount: 2,
-		RequiredTaskIDs:   []string{taskID1, taskID2},
-		OptionalTaskIDs:   []string{},
-		TaskDependencies: map[string][]string{
-			taskID1: {},
-			taskID2: {taskID1},
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 2,
+			RequiredTaskIDs:   []string{taskID1, taskID2},
+			OptionalTaskIDs:   []string{},
+			TaskDependencies: map[string][]string{
+				taskID1: {},
+				taskID2: {taskID1},
+			},
+			TaskStates: map[string]model.Status{
+				taskID1: model.StatusCompleted,
+				taskID2: model.StatusCompleted,
+			},
+			CancelledReasons: make(map[string]string),
+			AppliedResultIDs: make(map[string]string),
 		},
-		TaskStates: map[string]model.Status{
-			taskID1: model.StatusCompleted,
-			taskID2: model.StatusCompleted,
+		RetryTracking: model.RetryTracking{
+			RetryLineage: make(map[string]string),
 		},
-		CancelledReasons: make(map[string]string),
-		AppliedResultIDs: make(map[string]string),
-		RetryLineage:     make(map[string]string),
-		CreatedAt:        "2025-01-01T00:00:00Z",
-		UpdatedAt:        "2025-01-01T00:00:00Z",
+		CreatedAt: "2025-01-01T00:00:00Z",
+		UpdatedAt: "2025-01-01T00:00:00Z",
 	}
 
 	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
@@ -229,21 +233,25 @@ func TestAddTask_NotSealed(t *testing.T) {
 	lm := lock.NewMutexMap()
 
 	state := &model.CommandState{
-		SchemaVersion:    1,
-		FileType:         "state_command",
-		CommandID:        commandID,
-		PlanVersion:      1,
-		PlanStatus:       model.PlanStatusCompleted,
-		ExpectedTaskCount: 0,
-		RequiredTaskIDs:  []string{},
-		OptionalTaskIDs:  []string{},
-		TaskDependencies: make(map[string][]string),
-		TaskStates:       make(map[string]model.Status),
-		CancelledReasons: make(map[string]string),
-		AppliedResultIDs: make(map[string]string),
-		RetryLineage:     make(map[string]string),
-		CreatedAt:        "2025-01-01T00:00:00Z",
-		UpdatedAt:        "2025-01-01T00:00:00Z",
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanVersion:   1,
+		PlanStatus:    model.PlanStatusCompleted,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 0,
+			RequiredTaskIDs:   []string{},
+			OptionalTaskIDs:   []string{},
+			TaskDependencies:  make(map[string][]string),
+			TaskStates:        make(map[string]model.Status),
+			CancelledReasons:  make(map[string]string),
+			AppliedResultIDs:  make(map[string]string),
+		},
+		RetryTracking: model.RetryTracking{
+			RetryLineage: make(map[string]string),
+		},
+		CreatedAt: "2025-01-01T00:00:00Z",
+		UpdatedAt: "2025-01-01T00:00:00Z",
 	}
 	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
 	if err := yamlutil.AtomicWrite(statePath, state); err != nil {

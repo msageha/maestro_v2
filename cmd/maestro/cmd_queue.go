@@ -5,10 +5,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
 	"github.com/msageha/maestro_v2/internal/model"
-	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
 )
 
@@ -23,6 +21,73 @@ func (a *cliApp) runQueue(args []string) error {
 	default:
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue: unknown subcommand: %s\nusage: maestro queue write <target> [options]", args[0])}
 	}
+}
+
+// buildCommandWriteParams validates and builds params for a command queue write.
+func buildCommandWriteParams(params map[string]any, content string, priority int, skillRefs []string) error {
+	if content == "" {
+		return &CLIError{Code: 1, Msg: "maestro queue write: --content is required for type=command"}
+	}
+	if err := validate.ContentLength("--content", content, model.DefaultMaxEntryContentBytes); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: %v", err)}
+	}
+	params["content"] = content
+	if priority > 0 {
+		params["priority"] = priority
+	}
+	if len(skillRefs) > 0 {
+		params["skill_refs"] = skillRefs
+	}
+	return nil
+}
+
+// buildNotificationWriteParams validates and builds params for a notification queue write.
+func buildNotificationWriteParams(params map[string]any, commandID, content, sourceResultID, notificationType string, priority int) error {
+	if commandID == "" || content == "" || sourceResultID == "" {
+		return &CLIError{Code: 1, Msg: "maestro queue write: required for type=notification: --command-id, --content, --source-result-id"}
+	}
+	if err := validate.ID(commandID); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: invalid --command-id: %v", err)}
+	}
+	if err := validate.ID(sourceResultID); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: invalid --source-result-id: %v", err)}
+	}
+	if err := validate.ContentLength("--content", content, model.DefaultMaxEntryContentBytes); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: %v", err)}
+	}
+	params["command_id"] = commandID
+	params["content"] = content
+	params["source_result_id"] = sourceResultID
+	if notificationType != "" {
+		params["notification_type"] = notificationType
+	}
+	if priority > 0 {
+		params["priority"] = priority
+	}
+	return nil
+}
+
+// buildCancelRequestWriteParams validates and builds params for a cancel-request queue write.
+// It also emits a deprecation warning to warnOut (H7).
+func buildCancelRequestWriteParams(params map[string]any, commandID, reason string, warnOut io.Writer) error {
+	if commandID == "" {
+		return &CLIError{Code: 1, Msg: "maestro queue write: required for type=cancel-request: --command-id"}
+	}
+	if err := validate.ID(commandID); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: invalid --command-id: %v", err)}
+	}
+	params["command_id"] = commandID
+	if reason != "" {
+		params["reason"] = reason
+	}
+	// H7: deprecated CLI surface. The canonical entrypoint is
+	// `maestro plan request-cancel`. Both routes converge at the
+	// daemon's queue_write(type=cancel-request) handler, but the
+	// queue-write surface is retained only for backward compatibility
+	// and emits a warning so operators migrate.
+	_, _ = fmt.Fprintln(warnOut,
+		"maestro queue write: WARNING: --type cancel-request is deprecated; use `maestro plan request-cancel --command-id <id>` instead")
+	return nil
 }
 
 // runQueueWrite enqueues a command, task, notification, or cancel-request via UDS.
@@ -67,18 +132,8 @@ func (a *cliApp) runQueueWrite(args []string, warnOut io.Writer) error {
 
 	switch writeType {
 	case "command":
-		if content == "" {
-			return &CLIError{Code: 1, Msg: "maestro queue write: --content is required for type=command"}
-		}
-		if err := validate.ContentLength("--content", content, model.DefaultMaxEntryContentBytes); err != nil {
-			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: %v", err)}
-		}
-		params["content"] = content
-		if priority > 0 {
-			params["priority"] = priority
-		}
-		if len(skillRefs) > 0 {
-			params["skill_refs"] = skillRefs
+		if err := buildCommandWriteParams(params, content, priority, []string(skillRefs)); err != nil {
+			return err
 		}
 	case "task":
 		// Task creation is the Planner's exclusive responsibility. The
@@ -94,45 +149,13 @@ func (a *cliApp) runQueueWrite(args []string, warnOut io.Writer) error {
 		_ = personaHint
 		return &CLIError{Code: 1, Msg: "maestro queue write: --type task is not supported via CLI; tasks must be created through the Planner (maestro plan submit / maestro plan retry-task)"}
 	case "notification":
-		if commandID == "" || content == "" || sourceResultID == "" {
-			return &CLIError{Code: 1, Msg: "maestro queue write: required for type=notification: --command-id, --content, --source-result-id"}
-		}
-		if err := validate.ID(commandID); err != nil {
-			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: invalid --command-id: %v", err)}
-		}
-		if err := validate.ID(sourceResultID); err != nil {
-			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: invalid --source-result-id: %v", err)}
-		}
-		if err := validate.ContentLength("--content", content, model.DefaultMaxEntryContentBytes); err != nil {
-			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: %v", err)}
-		}
-		params["command_id"] = commandID
-		params["content"] = content
-		params["source_result_id"] = sourceResultID
-		if notificationType != "" {
-			params["notification_type"] = notificationType
-		}
-		if priority > 0 {
-			params["priority"] = priority
+		if err := buildNotificationWriteParams(params, commandID, content, sourceResultID, notificationType, priority); err != nil {
+			return err
 		}
 	case "cancel-request":
-		if commandID == "" {
-			return &CLIError{Code: 1, Msg: "maestro queue write: required for type=cancel-request: --command-id"}
+		if err := buildCancelRequestWriteParams(params, commandID, reason, warnOut); err != nil {
+			return err
 		}
-		if err := validate.ID(commandID); err != nil {
-			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: invalid --command-id: %v", err)}
-		}
-		params["command_id"] = commandID
-		if reason != "" {
-			params["reason"] = reason
-		}
-		// H7: deprecated CLI surface. The canonical entrypoint is
-		// `maestro plan request-cancel`. Both routes converge at the
-		// daemon's queue_write(type=cancel-request) handler, but the
-		// queue-write surface is retained only for backward compatibility
-		// and emits a warning so operators migrate.
-		_, _ = fmt.Fprintln(warnOut,
-			"maestro queue write: WARNING: --type cancel-request is deprecated; use `maestro plan request-cancel --command-id <id>` instead")
 	default:
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: unknown type: %s\nusage: maestro queue write <target> --type <command|task|notification|cancel-request> [options]", writeType)}
 	}
@@ -147,7 +170,7 @@ func (a *cliApp) sendQueueWrite(params map[string]any) error {
 		return err
 	}
 
-	client := a.createClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := a.newDaemonClient(maestroDir)
 	resp, err := client.SendCommand("queue_write", params)
 	if err != nil {
 		return fmt.Errorf("maestro queue write: %w", err)
@@ -173,10 +196,5 @@ func (a *cliApp) sendQueueWrite(params map[string]any) error {
 		}
 		return &CLIError{Code: 1, Msg: "maestro queue write: response missing both id and command_id"}
 	}
-	out, err := json.MarshalIndent(resp.Data, "", "  ")
-	if err != nil {
-		return fmt.Errorf("maestro queue write: format response json: %w", err)
-	}
-	fmt.Println(string(out))
-	return nil
+	return printJSONResponse(resp.Data, "queue write")
 }

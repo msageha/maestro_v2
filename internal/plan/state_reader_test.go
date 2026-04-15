@@ -39,8 +39,10 @@ func TestIsSystemCommitReady_NotSystemCommitTask(t *testing.T) {
 		SchemaVersion: 1,
 		FileType:      "state_command",
 		CommandID:     "cmd1",
-		TaskStates: map[string]model.Status{
-			"task1": model.StatusCompleted,
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				"task1": model.StatusCompleted,
+			},
 		},
 	})
 
@@ -61,14 +63,16 @@ func TestIsSystemCommitReady_NonPhased_AllTerminal(t *testing.T) {
 
 	sysTaskID := "task_sys"
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:      1,
-		FileType:           "state_command",
-		CommandID:          "cmd1",
-		SystemCommitTaskID: &sysTaskID,
-		TaskStates: map[string]model.Status{
-			"task1":    model.StatusCompleted,
-			"task2":    model.StatusCompleted,
-			"task_sys": model.StatusPending,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		TaskTracking: model.TaskTracking{
+			SystemCommitTaskID: &sysTaskID,
+			TaskStates: map[string]model.Status{
+				"task1":    model.StatusCompleted,
+				"task2":    model.StatusCompleted,
+				"task_sys": model.StatusPending,
+			},
 		},
 	})
 
@@ -89,14 +93,16 @@ func TestIsSystemCommitReady_NonPhased_NotAllTerminal(t *testing.T) {
 
 	sysTaskID := "task_sys"
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:      1,
-		FileType:           "state_command",
-		CommandID:          "cmd1",
-		SystemCommitTaskID: &sysTaskID,
-		TaskStates: map[string]model.Status{
-			"task1":    model.StatusCompleted,
-			"task2":    model.StatusPending,
-			"task_sys": model.StatusPending,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		TaskTracking: model.TaskTracking{
+			SystemCommitTaskID: &sysTaskID,
+			TaskStates: map[string]model.Status{
+				"task1":    model.StatusCompleted,
+				"task2":    model.StatusPending,
+				"task_sys": model.StatusPending,
+			},
 		},
 	})
 
@@ -117,18 +123,22 @@ func TestIsSystemCommitReady_Phased_AllTerminal(t *testing.T) {
 
 	sysTaskID := "task_sys"
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:      1,
-		FileType:           "state_command",
-		CommandID:          "cmd1",
-		SystemCommitTaskID: &sysTaskID,
-		Phases: []model.Phase{
-			{PhaseID: "p1", Name: "research", Status: model.PhaseStatusCompleted},
-			{PhaseID: "p2", Name: "implement", Status: model.PhaseStatusCompleted},
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		TaskTracking: model.TaskTracking{
+			SystemCommitTaskID: &sysTaskID,
+			TaskStates: map[string]model.Status{
+				"task1":    model.StatusCompleted,
+				"task2":    model.StatusCompleted,
+				"task_sys": model.StatusPending,
+			},
 		},
-		TaskStates: map[string]model.Status{
-			"task1":    model.StatusCompleted,
-			"task2":    model.StatusCompleted,
-			"task_sys": model.StatusPending,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "p1", Name: "research", Status: model.PhaseStatusCompleted},
+				{PhaseID: "p2", Name: "implement", Status: model.PhaseStatusCompleted},
+			},
 		},
 	})
 
@@ -149,18 +159,22 @@ func TestIsSystemCommitReady_Phased_SomeNonTerminal(t *testing.T) {
 
 	sysTaskID := "task_sys"
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:      1,
-		FileType:           "state_command",
-		CommandID:          "cmd1",
-		SystemCommitTaskID: &sysTaskID,
-		Phases: []model.Phase{
-			{PhaseID: "p1", Name: "research", Status: model.PhaseStatusCompleted},
-			{PhaseID: "p2", Name: "implement", Status: model.PhaseStatusActive},
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		TaskTracking: model.TaskTracking{
+			SystemCommitTaskID: &sysTaskID,
+			TaskStates: map[string]model.Status{
+				"task1":    model.StatusCompleted,
+				"task2":    model.StatusPending,
+				"task_sys": model.StatusPending,
+			},
 		},
-		TaskStates: map[string]model.Status{
-			"task1":    model.StatusCompleted,
-			"task2":    model.StatusPending,
-			"task_sys": model.StatusPending,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "p1", Name: "research", Status: model.PhaseStatusCompleted},
+				{PhaseID: "p2", Name: "implement", Status: model.PhaseStatusActive},
+			},
 		},
 	})
 
@@ -181,18 +195,22 @@ func TestIsSystemCommitReady_Phased_FailedPhase(t *testing.T) {
 
 	sysTaskID := "task_sys"
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:      1,
-		FileType:           "state_command",
-		CommandID:          "cmd1",
-		SystemCommitTaskID: &sysTaskID,
-		Phases: []model.Phase{
-			{PhaseID: "p1", Name: "research", Status: model.PhaseStatusFailed},
-			{PhaseID: "p2", Name: "implement", Status: model.PhaseStatusCancelled},
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		TaskTracking: model.TaskTracking{
+			SystemCommitTaskID: &sysTaskID,
+			TaskStates: map[string]model.Status{
+				"task1":    model.StatusFailed,
+				"task2":    model.StatusCancelled,
+				"task_sys": model.StatusPending,
+			},
 		},
-		TaskStates: map[string]model.Status{
-			"task1":    model.StatusFailed,
-			"task2":    model.StatusCancelled,
-			"task_sys": model.StatusPending,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "p1", Name: "research", Status: model.PhaseStatusFailed},
+				{PhaseID: "p2", Name: "implement", Status: model.PhaseStatusCancelled},
+			},
 		},
 	})
 
@@ -212,12 +230,14 @@ func TestIsSystemCommitReady_NoSystemCommitField(t *testing.T) {
 	maestroDir, reader := setupStateReaderTest(t)
 
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:      1,
-		FileType:           "state_command",
-		CommandID:          "cmd1",
-		SystemCommitTaskID: nil,
-		TaskStates: map[string]model.Status{
-			"task1": model.StatusCompleted,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		TaskTracking: model.TaskTracking{
+			SystemCommitTaskID: nil,
+			TaskStates: map[string]model.Status{
+				"task1": model.StatusCompleted,
+			},
 		},
 	})
 
@@ -292,9 +312,13 @@ func TestApplyPhaseTransition_NormalTransition(t *testing.T) {
 		FileType:      "state_command",
 		CommandID:     "cmd1",
 		PlanStatus:    model.PlanStatusSealed,
-		TaskStates:    map[string]model.Status{},
-		Phases: []model.Phase{
-			{PhaseID: "p1", Name: "build", Type: "concrete", Status: model.PhaseStatusActive},
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{},
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "p1", Name: "build", Type: "concrete", Status: model.PhaseStatusActive},
+			},
 		},
 		UpdatedAt: "2025-01-01T00:00:00Z",
 	})
@@ -326,9 +350,13 @@ func TestApplyPhaseTransition_TerminalSetsCompletedAt(t *testing.T) {
 		FileType:      "state_command",
 		CommandID:     "cmd1",
 		PlanStatus:    model.PlanStatusSealed,
-		TaskStates:    map[string]model.Status{},
-		Phases: []model.Phase{
-			{PhaseID: "p1", Name: "build", Type: "concrete", Status: model.PhaseStatusActive},
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{},
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "p1", Name: "build", Type: "concrete", Status: model.PhaseStatusActive},
+			},
 		},
 	})
 
@@ -355,9 +383,13 @@ func TestApplyPhaseTransition_InvalidTransition(t *testing.T) {
 		FileType:      "state_command",
 		CommandID:     "cmd1",
 		PlanStatus:    model.PlanStatusSealed,
-		TaskStates:    map[string]model.Status{},
-		Phases: []model.Phase{
-			{PhaseID: "p1", Name: "build", Type: "deferred", Status: model.PhaseStatusPending},
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{},
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "p1", Name: "build", Type: "deferred", Status: model.PhaseStatusPending},
+			},
 		},
 	})
 
@@ -376,9 +408,13 @@ func TestApplyPhaseTransition_UnknownPhaseID(t *testing.T) {
 		FileType:      "state_command",
 		CommandID:     "cmd1",
 		PlanStatus:    model.PlanStatusSealed,
-		TaskStates:    map[string]model.Status{},
-		Phases: []model.Phase{
-			{PhaseID: "p1", Name: "build", Type: "concrete", Status: model.PhaseStatusActive},
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{},
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "p1", Name: "build", Type: "concrete", Status: model.PhaseStatusActive},
+			},
 		},
 	})
 
@@ -398,12 +434,14 @@ func TestUpdateTaskState_NilTaskStates(t *testing.T) {
 
 	// Write state with nil TaskStates to test initialization
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       "cmd1",
-		PlanStatus:      model.PlanStatusSealed,
-		RequiredTaskIDs: []string{"task1"},
-		TaskStates:      nil,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{"task1"},
+			TaskStates:      nil,
+		},
 	})
 
 	err := reader.UpdateTaskState("cmd1", "task1", model.StatusPending, "")
@@ -428,12 +466,14 @@ func TestUpdateTaskState_UnknownTaskID(t *testing.T) {
 	maestroDir, reader := setupStateReaderTest(t)
 
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       "cmd1",
-		PlanStatus:      model.PlanStatusSealed,
-		RequiredTaskIDs: []string{"task1"},
-		TaskStates:      map[string]model.Status{"task1": model.StatusPending},
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{"task1"},
+			TaskStates:      map[string]model.Status{"task1": model.StatusPending},
+		},
 	})
 
 	err := reader.UpdateTaskState("cmd1", "unknown_task", model.StatusPending, "")
@@ -449,13 +489,15 @@ func TestUpdateTaskState_NormalTransition(t *testing.T) {
 	maestroDir, reader := setupStateReaderTest(t)
 
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       "cmd1",
-		PlanStatus:      model.PlanStatusSealed,
-		RequiredTaskIDs: []string{"task1"},
-		TaskStates: map[string]model.Status{
-			"task1": model.StatusPending,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{"task1"},
+			TaskStates: map[string]model.Status{
+				"task1": model.StatusPending,
+			},
 		},
 		UpdatedAt: "2025-01-01T00:00:00Z",
 	})
@@ -482,13 +524,15 @@ func TestUpdateTaskState_InvalidTransition(t *testing.T) {
 	maestroDir, reader := setupStateReaderTest(t)
 
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       "cmd1",
-		PlanStatus:      model.PlanStatusSealed,
-		RequiredTaskIDs: []string{"task1"},
-		TaskStates: map[string]model.Status{
-			"task1": model.StatusPending,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{"task1"},
+			TaskStates: map[string]model.Status{
+				"task1": model.StatusPending,
+			},
 		},
 	})
 
@@ -503,13 +547,15 @@ func TestUpdateTaskState_CancelledReason(t *testing.T) {
 	maestroDir, reader := setupStateReaderTest(t)
 
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:    1,
-		FileType:         "state_command",
-		CommandID:        "cmd1",
-		PlanStatus:       model.PlanStatusSealed,
-		RequiredTaskIDs:  []string{"task1"},
-		TaskStates:       map[string]model.Status{"task1": model.StatusPending},
-		CancelledReasons: map[string]string{},
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs:  []string{"task1"},
+			TaskStates:       map[string]model.Status{"task1": model.StatusPending},
+			CancelledReasons: map[string]string{},
+		},
 	})
 
 	err := reader.UpdateTaskState("cmd1", "task1", model.StatusCancelled, "dependency failed")
@@ -537,12 +583,14 @@ func TestCache_ReadMethodsShareCachedState(t *testing.T) {
 	reader.SetCacheTTL(5 * time.Second)
 
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       "cmd1",
-		RequiredTaskIDs: []string{"task1"},
-		TaskStates: map[string]model.Status{
-			"task1": model.StatusPending,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{"task1"},
+			TaskStates: map[string]model.Status{
+				"task1": model.StatusPending,
+			},
 		},
 	})
 
@@ -557,12 +605,14 @@ func TestCache_ReadMethodsShareCachedState(t *testing.T) {
 
 	// Modify file on disk directly (bypass cache)
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       "cmd1",
-		RequiredTaskIDs: []string{"task1"},
-		TaskStates: map[string]model.Status{
-			"task1": model.StatusInProgress,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{"task1"},
+			TaskStates: map[string]model.Status{
+				"task1": model.StatusInProgress,
+			},
 		},
 	})
 
@@ -581,12 +631,14 @@ func TestCache_InvalidateCacheForcesFreshRead(t *testing.T) {
 	reader.SetCacheTTL(5 * time.Second)
 
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       "cmd1",
-		RequiredTaskIDs: []string{"task1"},
-		TaskStates: map[string]model.Status{
-			"task1": model.StatusPending,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{"task1"},
+			TaskStates: map[string]model.Status{
+				"task1": model.StatusPending,
+			},
 		},
 	})
 
@@ -598,12 +650,14 @@ func TestCache_InvalidateCacheForcesFreshRead(t *testing.T) {
 
 	// Modify on disk
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       "cmd1",
-		RequiredTaskIDs: []string{"task1"},
-		TaskStates: map[string]model.Status{
-			"task1": model.StatusInProgress,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{"task1"},
+			TaskStates: map[string]model.Status{
+				"task1": model.StatusInProgress,
+			},
 		},
 	})
 
@@ -623,12 +677,14 @@ func TestCache_InvalidateAllClearsAllEntries(t *testing.T) {
 	reader.SetCacheTTL(5 * time.Second)
 
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       "cmd1",
-		RequiredTaskIDs: []string{"task1"},
-		TaskStates: map[string]model.Status{
-			"task1": model.StatusPending,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{"task1"},
+			TaskStates: map[string]model.Status{
+				"task1": model.StatusPending,
+			},
 		},
 	})
 
@@ -637,12 +693,14 @@ func TestCache_InvalidateAllClearsAllEntries(t *testing.T) {
 
 	// Modify on disk
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       "cmd1",
-		RequiredTaskIDs: []string{"task1"},
-		TaskStates: map[string]model.Status{
-			"task1": model.StatusInProgress,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{"task1"},
+			TaskStates: map[string]model.Status{
+				"task1": model.StatusInProgress,
+			},
 		},
 	})
 
@@ -661,13 +719,15 @@ func TestCache_WriteMethodInvalidatesCache(t *testing.T) {
 	reader.SetCacheTTL(5 * time.Second)
 
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       "cmd1",
-		PlanStatus:      model.PlanStatusSealed,
-		RequiredTaskIDs: []string{"task1"},
-		TaskStates: map[string]model.Status{
-			"task1": model.StatusPending,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{"task1"},
+			TaskStates: map[string]model.Status{
+				"task1": model.StatusPending,
+			},
 		},
 	})
 
@@ -701,12 +761,14 @@ func TestCache_ZeroTTLDisablesCaching(t *testing.T) {
 	reader.SetCacheTTL(0)
 
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       "cmd1",
-		RequiredTaskIDs: []string{"task1"},
-		TaskStates: map[string]model.Status{
-			"task1": model.StatusPending,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{"task1"},
+			TaskStates: map[string]model.Status{
+				"task1": model.StatusPending,
+			},
 		},
 	})
 
@@ -714,12 +776,14 @@ func TestCache_ZeroTTLDisablesCaching(t *testing.T) {
 
 	// Modify on disk
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       "cmd1",
-		RequiredTaskIDs: []string{"task1"},
-		TaskStates: map[string]model.Status{
-			"task1": model.StatusInProgress,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{"task1"},
+			TaskStates: map[string]model.Status{
+				"task1": model.StatusInProgress,
+			},
 		},
 	})
 
@@ -738,12 +802,14 @@ func TestCache_MultipleReadMethodsShareCache(t *testing.T) {
 	reader.SetCacheTTL(5 * time.Second)
 
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       "cmd1",
-		RequiredTaskIDs: []string{"task1"},
-		TaskStates: map[string]model.Status{
-			"task1": model.StatusPending,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{"task1"},
+			TaskStates: map[string]model.Status{
+				"task1": model.StatusPending,
+			},
 		},
 		Cancel: model.CancelState{Requested: false},
 	})
@@ -756,12 +822,14 @@ func TestCache_MultipleReadMethodsShareCache(t *testing.T) {
 
 	// Modify on disk to set cancel.requested = true
 	writeState(t, maestroDir, &model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       "cmd1",
-		RequiredTaskIDs: []string{"task1"},
-		TaskStates: map[string]model.Status{
-			"task1": model.StatusPending,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{"task1"},
+			TaskStates: map[string]model.Status{
+				"task1": model.StatusPending,
+			},
 		},
 		Cancel: model.CancelState{Requested: true},
 	})

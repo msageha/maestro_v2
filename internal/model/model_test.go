@@ -334,23 +334,27 @@ func TestCommandStateMarshalUnmarshal(t *testing.T) {
 		Cancel: CancelState{
 			Requested: false,
 		},
-		ExpectedTaskCount: 2,
-		RequiredTaskIDs:   []string{"task_1771722060_b7c1d4e9", "task_1771722120_c2d3e5f0"},
-		OptionalTaskIDs:   []string{},
-		TaskDependencies: map[string][]string{
-			"task_1771722060_b7c1d4e9": {},
-			"task_1771722120_c2d3e5f0": {"task_1771722060_b7c1d4e9"},
+		TaskTracking: TaskTracking{
+			ExpectedTaskCount: 2,
+			RequiredTaskIDs:   []string{"task_1771722060_b7c1d4e9", "task_1771722120_c2d3e5f0"},
+			OptionalTaskIDs:   []string{},
+			TaskDependencies: map[string][]string{
+				"task_1771722060_b7c1d4e9": {},
+				"task_1771722120_c2d3e5f0": {"task_1771722060_b7c1d4e9"},
+			},
+			TaskStates: map[string]Status{
+				"task_1771722060_b7c1d4e9": StatusPending,
+				"task_1771722120_c2d3e5f0": StatusPending,
+			},
+			CancelledReasons:   map[string]string{},
+			AppliedResultIDs:   map[string]string{},
+			SystemCommitTaskID: &commitTaskID,
 		},
-		TaskStates: map[string]Status{
-			"task_1771722060_b7c1d4e9": StatusPending,
-			"task_1771722120_c2d3e5f0": StatusPending,
+		RetryTracking: RetryTracking{
+			RetryLineage: map[string]string{},
 		},
-		CancelledReasons:   map[string]string{},
-		AppliedResultIDs:   map[string]string{},
-		SystemCommitTaskID: &commitTaskID,
-		RetryLineage:       map[string]string{},
-		CreatedAt:          "2026-02-23T10:00:00+09:00",
-		UpdatedAt:          "2026-02-23T10:00:00+09:00",
+		CreatedAt: "2026-02-23T10:00:00+09:00",
+		UpdatedAt: "2026-02-23T10:00:00+09:00",
 	}
 
 	data, err := yaml.Marshal(&s)
@@ -395,35 +399,41 @@ func TestCommandStateWithPhasesMarshalUnmarshal(t *testing.T) {
 			DependencyFailurePolicy: "cancel_dependents",
 		},
 		Cancel: CancelState{Requested: false},
-		Phases: []Phase{
-			{
-				PhaseID:         "phase_1771722000_c3d4e5f6",
-				Name:            "research",
-				Type:            "concrete",
-				Status:          PhaseStatusActive,
-				DependsOnPhases: []string{},
-				TaskIDs:         []string{"task_1771722060_b7c1d4e9"},
-			},
-			{
-				PhaseID:         "phase_1771722000_d4e5f6a7",
-				Name:            "implementation",
-				Type:            "deferred",
-				Status:          PhaseStatusPending,
-				DependsOnPhases: []string{"research"},
-				TaskIDs:         []string{},
-				Constraints: &PhaseConstraints{
-					MaxTasks:           6,
-					AllowedBloomLevels: []int{1, 2, 3, 4, 5, 6},
-					TimeoutMinutes:     60,
+		TaskTracking: TaskTracking{
+			TaskStates:       map[string]Status{"task_1771722060_b7c1d4e9": StatusPending},
+			CancelledReasons: map[string]string{},
+			AppliedResultIDs: map[string]string{},
+		},
+		RetryTracking: RetryTracking{
+			RetryLineage: map[string]string{},
+		},
+		PhaseTracking: PhaseTracking{
+			Phases: []Phase{
+				{
+					PhaseID:         "phase_1771722000_c3d4e5f6",
+					Name:            "research",
+					Type:            "concrete",
+					Status:          PhaseStatusActive,
+					DependsOnPhases: []string{},
+					TaskIDs:         []string{"task_1771722060_b7c1d4e9"},
+				},
+				{
+					PhaseID:         "phase_1771722000_d4e5f6a7",
+					Name:            "implementation",
+					Type:            "deferred",
+					Status:          PhaseStatusPending,
+					DependsOnPhases: []string{"research"},
+					TaskIDs:         []string{},
+					Constraints: &PhaseConstraints{
+						MaxTasks:           6,
+						AllowedBloomLevels: []int{1, 2, 3, 4, 5, 6},
+						TimeoutMinutes:     60,
+					},
 				},
 			},
 		},
-		TaskStates:       map[string]Status{"task_1771722060_b7c1d4e9": StatusPending},
-		CancelledReasons: map[string]string{},
-		AppliedResultIDs: map[string]string{},
-		RetryLineage:     map[string]string{},
-		CreatedAt:        "2026-02-23T10:00:00+09:00",
-		UpdatedAt:        "2026-02-23T10:00:00+09:00",
+		CreatedAt: "2026-02-23T10:00:00+09:00",
+		UpdatedAt: "2026-02-23T10:00:00+09:00",
 	}
 
 	data, err := yaml.Marshal(&s)

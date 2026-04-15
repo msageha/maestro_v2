@@ -80,18 +80,22 @@ type QueueDispatcherConfigurer interface {
 	SetWorktreeManager(wm *WorktreeManager)
 }
 
-// QueueDispatcher defines the dispatch operations used by QueueHandler.
-// Embeds QueueDispatcherConfigurer for backward compatibility; new code
-// that only needs dispatch operations can accept QueueDispatcherConfigurer
-// or QueueDispatcher separately.
-type QueueDispatcher interface {
-	QueueDispatcherConfigurer
+// QueueDispatcherOperator defines runtime dispatch and sorting operations.
+type QueueDispatcherOperator interface {
 	DispatchCommand(cmd *model.Command) error
 	DispatchTask(task *model.Task, workerID string) error
 	DispatchNotification(ntf *model.Notification) error
 	SortPendingCommands(commands []model.Command) []int
 	SortPendingTasks(tasks []model.Task) []int
 	SortPendingNotifications(notifications []model.Notification) []int
+}
+
+// QueueDispatcher combines QueueDispatcherConfigurer and QueueDispatcherOperator
+// for backward compatibility. New code that only needs dispatch operations
+// can accept QueueDispatcherOperator separately.
+type QueueDispatcher interface {
+	QueueDispatcherConfigurer
+	QueueDispatcherOperator
 }
 
 // ---------------------------------------------------------------------------
@@ -147,36 +151,36 @@ type QueueStore interface {
 }
 
 // ---------------------------------------------------------------------------
-// QueueWorktreeManager: split into WorktreeReader + WorktreeWriter
+// QueueWorktreeManager: split into WorktreeGitOps + WorktreeStateManager
 // ---------------------------------------------------------------------------
 
-// WorktreeReader provides read-only worktree state queries.
-type WorktreeReader interface {
-	GC() error
-	GetCommandState(commandID string) (*model.WorktreeCommandState, error)
-	HasWorktrees(commandID string) bool
-	AutoCommit() bool
-	AutoMerge() bool
-}
-
-// WorktreeWriter provides worktree mutation operations.
-type WorktreeWriter interface {
-	MarkIntegrationFailed(commandID string) error
-	MarkIntegrationStallSignaled(commandID string) error
-	MarkPhaseMerged(commandID, phaseID string) error
+// WorktreeGitOps provides Git and filesystem operations on worktrees.
+type WorktreeGitOps interface {
 	CommitWorkerChanges(commandID, workerID, message string) error
 	DiscardWorkerChanges(commandID, workerID string) error
-	AddCommitFailedWorker(commandID, workerID string) error
-	RemoveCommitFailedWorker(commandID, workerID string) error
 	MergeToIntegration(commandID string, workerIDs []string, workerPurposes map[string]string) ([]model.MergeConflict, error)
 	SyncFromIntegration(commandID string, workerIDs []string) error
 	PublishToBase(commandID string, publishMessage string) error
 	CleanupCommand(commandID string) error
 	DispatchConflictResolution(commandID, phaseID, workerID, conflictGen string) error
+	GC() error
 }
 
-// QueueWorktreeManager combines WorktreeReader and WorktreeWriter for backward compatibility.
+// WorktreeStateManager provides state queries and updates for worktrees.
+type WorktreeStateManager interface {
+	GetCommandState(commandID string) (*model.WorktreeCommandState, error)
+	HasWorktrees(commandID string) bool
+	AutoCommit() bool
+	AutoMerge() bool
+	MarkIntegrationFailed(commandID string) error
+	MarkIntegrationStallSignaled(commandID string) error
+	MarkPhaseMerged(commandID, phaseID string) error
+	AddCommitFailedWorker(commandID, workerID string) error
+	RemoveCommitFailedWorker(commandID, workerID string) error
+}
+
+// QueueWorktreeManager combines WorktreeGitOps and WorktreeStateManager for backward compatibility.
 type QueueWorktreeManager interface {
-	WorktreeReader
-	WorktreeWriter
+	WorktreeGitOps
+	WorktreeStateManager
 }

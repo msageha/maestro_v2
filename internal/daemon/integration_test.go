@@ -558,14 +558,16 @@ func TestIntegration_CancelFlow(t *testing.T) {
 
 	// Setup: command state with 2 tasks
 	state := model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       commandID,
-		PlanStatus:      model.PlanStatusSealed,
-		RequiredTaskIDs: []string{taskID1, taskID2},
-		TaskStates:      map[string]model.Status{taskID1: model.StatusPending, taskID2: model.StatusInProgress},
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{taskID1, taskID2},
+			TaskStates:      map[string]model.Status{taskID1: model.StatusPending, taskID2: model.StatusInProgress},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	statePath := filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml")
 	yamlutil.AtomicWrite(statePath, state)
@@ -611,14 +613,16 @@ func TestIntegration_DependencyFailurePropagation(t *testing.T) {
 
 	// Setup state
 	state := model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       commandID,
-		PlanStatus:      model.PlanStatusSealed,
-		RequiredTaskIDs: []string{taskA, taskB},
-		TaskStates:      map[string]model.Status{taskA: model.StatusFailed, taskB: model.StatusPending},
-		TaskDependencies: map[string][]string{
-			taskB: {taskA},
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{taskA, taskB},
+			TaskStates:      map[string]model.Status{taskA: model.StatusFailed, taskB: model.StatusPending},
+			TaskDependencies: map[string][]string{
+				taskB: {taskA},
+			},
 		},
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
@@ -932,15 +936,17 @@ func TestIntegration_ReconciliationR2(t *testing.T) {
 
 	// State says in_progress
 	state := model.CommandState{
-		SchemaVersion:    1,
-		FileType:         "state_command",
-		CommandID:        commandID,
-		PlanStatus:       model.PlanStatusSealed,
-		RequiredTaskIDs:  []string{taskID},
-		TaskStates:       map[string]model.Status{taskID: model.StatusInProgress},
-		AppliedResultIDs: map[string]string{},
-		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
-		UpdatedAt:        time.Now().UTC().Format(time.RFC3339),
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs:  []string{taskID},
+			TaskStates:       map[string]model.Status{taskID: model.StatusInProgress},
+			AppliedResultIDs: map[string]string{},
+		},
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml"), state)
 
@@ -1208,17 +1214,19 @@ func TestIntegration_FullPipeline(t *testing.T) {
 
 	// 3. Simulate plan submit (create state + task queue entry)
 	state := model.CommandState{
-		SchemaVersion:     1,
-		FileType:          "state_command",
-		CommandID:         commandID,
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 1,
-		RequiredTaskIDs:   []string{taskID},
-		TaskStates:        map[string]model.Status{taskID: model.StatusPending},
-		TaskDependencies:  map[string][]string{},
-		AppliedResultIDs:  map[string]string{},
-		CreatedAt:         time.Now().UTC().Format(time.RFC3339),
-		UpdatedAt:         time.Now().UTC().Format(time.RFC3339),
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 1,
+			RequiredTaskIDs:   []string{taskID},
+			TaskStates:        map[string]model.Status{taskID: model.StatusPending},
+			TaskDependencies:  map[string][]string{},
+			AppliedResultIDs:  map[string]string{},
+		},
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml"), state)
 
@@ -1824,14 +1832,16 @@ func TestIntegration_EndToEndWithEventHooksAndQualityGate(t *testing.T) {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	state := model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       commandID,
-		PlanStatus:      model.PlanStatusSealed,
-		RequiredTaskIDs: []string{taskID},
-		TaskStates:      map[string]model.Status{taskID: model.StatusPending},
-		CreatedAt:       now,
-		UpdatedAt:       now,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{taskID},
+			TaskStates:      map[string]model.Status{taskID: model.StatusPending},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	if err := yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml"), state); err != nil {
 		t.Fatalf("write command state: %v", err)

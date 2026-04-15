@@ -91,39 +91,10 @@ func (R6FillTimeout) Apply(run *Run) Outcome {
 
 			// Cascade cancel
 			if len(timedOutPhases) > 0 {
-				cancelledPhases := make(map[string]bool)
-				for name := range timedOutPhases {
-					cancelledPhases[name] = true
-				}
-
-				for {
-					changed := false
-					for i := range state.Phases {
-						phase := &state.Phases[i]
-						if phase.Status != model.PhaseStatusPending && phase.Status != model.PhaseStatusAwaitingFill {
-							continue
-						}
-						for _, dep := range phase.DependsOnPhases {
-							if cancelledPhases[dep] {
-								run.Log(core.LogLevelWarn, "R6 cascade_cancel command=%s phase=%s (depends on %s)",
-									commandID, phase.Name, dep)
-								phase.Status = model.PhaseStatusCancelled
-								modified = true
-								changed = true
-								cancelledPhases[phase.Name] = true
-
-								commandRepairs = append(commandRepairs, Repair{
-									Pattern:   PatternR6,
-									CommandID: commandID,
-									Detail:    fmt.Sprintf("phase %s cancelled (cascade from %s)", phase.Name, dep),
-								})
-								break
-							}
-						}
-					}
-					if !changed {
-						break
-					}
+				cascadeModified, cascadeRepairs, _ := cascadeCancelTimedOutPhases(state, timedOutPhases, run, commandID)
+				if cascadeModified {
+					modified = true
+					commandRepairs = append(commandRepairs, cascadeRepairs...)
 				}
 			}
 
@@ -154,4 +125,49 @@ func (R6FillTimeout) Apply(run *Run) Outcome {
 	}
 
 	return Outcome{Repairs: repairs, Notifications: notifications}
+}
+
+// cascadeCancelTimedOutPhases propagates cancellation from timedOutPhases to all
+// transitively dependent pending/awaiting_fill phases. Returns true if any phase
+// was cancelled, along with the accumulated repairs and full set of cancelled phase names.
+func cascadeCancelTimedOutPhases(state *model.CommandState, timedOutPhases map[string]bool, run *Run, commandID string) (bool, []Repair, map[string]bool) {
+	cancelledPhases := make(map[string]bool, len(timedOutPhases))
+	for name := range timedOutPhases {
+		cancelledPhases[name] = true
+	}
+
+	modified := false
+	var repairs []Repair
+
+	for {
+		changed := false
+		for i := range state.Phases {
+			phase := &state.Phases[i]
+			if phase.Status != model.PhaseStatusPending && phase.Status != model.PhaseStatusAwaitingFill {
+				continue
+			}
+			for _, dep := range phase.DependsOnPhases {
+				if cancelledPhases[dep] {
+					run.Log(core.LogLevelWarn, "R6 cascade_cancel command=%s phase=%s (depends on %s)",
+						commandID, phase.Name, dep)
+					phase.Status = model.PhaseStatusCancelled
+					modified = true
+					changed = true
+					cancelledPhases[phase.Name] = true
+
+					repairs = append(repairs, Repair{
+						Pattern:   PatternR6,
+						CommandID: commandID,
+						Detail:    fmt.Sprintf("phase %s cancelled (cascade from %s)", phase.Name, dep),
+					})
+					break
+				}
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+
+	return modified, repairs, cancelledPhases
 }

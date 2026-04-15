@@ -40,7 +40,11 @@ func newPhaseCManager(cfg model.Config, availableModels []string, log logFunc) *
 		for _, s := range cfg.Evolution.EffectiveStrategies() {
 			strategies = append(strategies, evolution.Strategy(s))
 		}
-		m.EvolutionEngine = evolution.NewEngine(strategies, cfg.Evolution.EffectiveNoveltyThreshold())
+		weights := make(map[evolution.Strategy]int)
+		for k, v := range cfg.Evolution.EffectiveStrategyWeights() {
+			weights[evolution.Strategy(k)] = v
+		}
+		m.EvolutionEngine = evolution.NewEngine(strategies, cfg.Evolution.EffectiveNoveltyThreshold(), weights)
 		log(LogLevelInfo, "evolution engine initialized")
 	}
 

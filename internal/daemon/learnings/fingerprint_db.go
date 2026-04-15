@@ -27,9 +27,12 @@ type FailurePattern struct {
 // FingerprintDB is an in-memory store of failure patterns keyed by fingerprint.
 // It enforces a maximum size and evicts the oldest entry when full.
 type FingerprintDB struct {
-	patterns map[string]*FailurePattern
-	maxSize  int
-	mu       sync.RWMutex
+	patterns    map[string]*FailurePattern
+	maxSize     int
+	mu          sync.RWMutex
+	oldestKey   string    // cached oldest entry key for O(1) eviction
+	oldestTime  time.Time // cached oldest LastSeen timestamp
+	oldestValid bool      // whether the cached oldest entry is up-to-date
 }
 
 // NewFingerprintDB creates an empty FingerprintDB with the given maximum capacity.
@@ -59,6 +62,9 @@ func (db *FingerprintDB) Store(fp string, category string, strategy string) {
 		if strategy != "" {
 			existing.RepairStrategy = strategy
 		}
+		if fp == db.oldestKey {
+			db.oldestValid = false
+		}
 		return
 	}
 
@@ -67,12 +73,18 @@ func (db *FingerprintDB) Store(fp string, category string, strategy string) {
 		db.evictOldest()
 	}
 
+	now := time.Now()
 	db.patterns[fp] = &FailurePattern{
 		Fingerprint:     fp,
 		ErrorCategory:   category,
 		RepairStrategy:  strategy,
 		OccurrenceCount: 1,
-		LastSeen:        time.Now(),
+		LastSeen:        now,
+	}
+	if !db.oldestValid || now.Before(db.oldestTime) {
+		db.oldestKey = fp
+		db.oldestTime = now
+		db.oldestValid = true
 	}
 }
 
@@ -167,6 +179,11 @@ func (db *FingerprintDB) Patterns() []FailurePattern {
 // evictOldest removes the entry with the oldest LastSeen timestamp.
 // Caller must hold db.mu write lock.
 func (db *FingerprintDB) evictOldest() {
+	if db.oldestValid {
+		delete(db.patterns, db.oldestKey)
+		db.oldestValid = false
+		return
+	}
 	var oldestKey string
 	var oldestTime time.Time
 	first := true

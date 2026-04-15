@@ -3,6 +3,8 @@ package plan
 import (
 	"strings"
 	"testing"
+
+	"github.com/msageha/maestro_v2/internal/model"
 )
 
 func TestValidateTaskDAG_LinearChain(t *testing.T) {
@@ -254,6 +256,124 @@ func TestValidateDAG_EmptyInput(t *testing.T) {
 	}
 	if len(sorted2) != 0 {
 		t.Errorf("expected empty slice for empty slice input, got %v", sorted2)
+	}
+}
+
+func TestValidateTaskDAGAfterMutation_Valid(t *testing.T) {
+	state := &model.CommandState{
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+				"t2": model.StatusPending,
+				"t3": model.StatusPending,
+			},
+			TaskDependencies: map[string][]string{
+				"t1": {},
+				"t2": {"t1"},
+				"t3": {"t2"},
+			},
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{Name: "phase1", TaskIDs: []string{"t1", "t2", "t3"}},
+			},
+		},
+	}
+	if err := ValidateTaskDAGAfterMutation(state); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+}
+
+func TestValidateTaskDAGAfterMutation_Cycle(t *testing.T) {
+	state := &model.CommandState{
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusPending,
+				"t2": model.StatusPending,
+			},
+			TaskDependencies: map[string][]string{
+				"t1": {"t2"},
+				"t2": {"t1"},
+			},
+		},
+	}
+	err := ValidateTaskDAGAfterMutation(state)
+	if err == nil {
+		t.Fatal("expected error for cycle, got nil")
+	}
+	if !strings.Contains(err.Error(), "circular dependency") {
+		t.Errorf("expected 'circular dependency' in error, got %q", err.Error())
+	}
+}
+
+func TestValidateTaskDAGAfterMutation_CrossPhaseViolation(t *testing.T) {
+	// phase2 does NOT depend on phase1, but t3 (in phase1) depends on t2 (in phase2).
+	state := &model.CommandState{
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusPending,
+				"t2": model.StatusPending,
+				"t3": model.StatusPending,
+			},
+			TaskDependencies: map[string][]string{
+				"t1": {},
+				"t2": {},
+				"t3": {"t2"}, // t3 in phase1 depends on t2 in phase2 — violation
+			},
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{Name: "phase1", TaskIDs: []string{"t1", "t3"}},
+				{Name: "phase2", TaskIDs: []string{"t2"}},
+			},
+		},
+	}
+	err := ValidateTaskDAGAfterMutation(state)
+	if err == nil {
+		t.Fatal("expected cross-phase error, got nil")
+	}
+	if !strings.Contains(err.Error(), "cross-phase") {
+		t.Errorf("expected 'cross-phase' in error, got %q", err.Error())
+	}
+}
+
+func TestValidateTaskDAGAfterMutation_CrossPhaseValid(t *testing.T) {
+	// phase2 depends on phase1, so t3 (in phase2) depending on t1 (in phase1) is valid.
+	state := &model.CommandState{
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusPending,
+				"t2": model.StatusPending,
+				"t3": model.StatusPending,
+			},
+			TaskDependencies: map[string][]string{
+				"t1": {},
+				"t2": {},
+				"t3": {"t1"}, // t3 in phase2 depends on t1 in phase1 — valid
+			},
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{Name: "phase1", PhaseID: "p1", TaskIDs: []string{"t1", "t2"}},
+				{Name: "phase2", PhaseID: "p2", DependsOnPhases: []string{"p1"}, TaskIDs: []string{"t3"}},
+			},
+		},
+	}
+	if err := ValidateTaskDAGAfterMutation(state); err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+}
+
+func TestValidateCrossPhaseRefs_SinglePhase(t *testing.T) {
+	state := &model.CommandState{
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{Name: "only-phase", TaskIDs: []string{"t1", "t2"}},
+			},
+		},
+	}
+	if err := validateCrossPhaseRefs(state); err != nil {
+		t.Fatalf("single phase should have no cross-phase violations, got %v", err)
 	}
 }
 

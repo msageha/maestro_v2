@@ -676,8 +676,10 @@ func TestReconciler_R4_CanCompleteNil_Skip(t *testing.T) {
 		SchemaVersion: 1, FileType: "state_command",
 		CommandID:  "cmd_r4_nil",
 		PlanStatus: model.PlanStatusSealed,
-		TaskStates: map[string]model.Status{"task_1": model.StatusPending},
-		CreatedAt:  now, UpdatedAt: now,
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{"task_1": model.StatusPending},
+		},
+		CreatedAt: now, UpdatedAt: now,
 	}
 	if err := yamlutil.AtomicWrite(filepath.Join(stateDir, "cmd_r4_nil.yaml"), state); err != nil {
 		t.Fatalf("write command state: %v", err)
@@ -724,11 +726,13 @@ func TestReconciler_R6_DeadlineParseError(t *testing.T) {
 		SchemaVersion: 1, FileType: "state_command",
 		CommandID:  "cmd_r6_parse",
 		PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{
-				PhaseID: "p1", Name: "phase1",
-				Status:         model.PhaseStatusAwaitingFill,
-				FillDeadlineAt: &badDeadline,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: "p1", Name: "phase1",
+					Status:         model.PhaseStatusAwaitingFill,
+					FillDeadlineAt: &badDeadline,
+				},
 			},
 		},
 		CreatedAt: now, UpdatedAt: now,
@@ -764,11 +768,13 @@ func TestReconciler_R6_DeadlineExactlyNow(t *testing.T) {
 		SchemaVersion: 1, FileType: "state_command",
 		CommandID:  "cmd_r6_now",
 		PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{
-				PhaseID: "p1", Name: "phase1",
-				Status:         model.PhaseStatusAwaitingFill,
-				FillDeadlineAt: &deadlineStr,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: "p1", Name: "phase1",
+					Status:         model.PhaseStatusAwaitingFill,
+					FillDeadlineAt: &deadlineStr,
+				},
 			},
 		},
 		CreatedAt: nowStr, UpdatedAt: nowStr,
@@ -813,11 +819,13 @@ func TestDeferredNotification_R0b_ReFill(t *testing.T) {
 		SchemaVersion: 1, FileType: "state_command",
 		CommandID:  "cmd_r0b_notif",
 		PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{
-				PhaseID: "p1", Name: "stuck-phase",
-				Status:  model.PhaseStatusFilling,
-				TaskIDs: []string{"task_stuck"},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: "p1", Name: "stuck-phase",
+					Status:  model.PhaseStatusFilling,
+					TaskIDs: []string{"task_stuck"},
+				},
 			},
 		},
 		CreatedAt: oldTime, UpdatedAt: oldTime,
@@ -942,16 +950,18 @@ func TestDeferredNotification_R6_FillTimeout(t *testing.T) {
 		SchemaVersion: 1, FileType: "state_command",
 		CommandID:  "cmd_r6_ntf",
 		PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{
-				PhaseID: "p1", Name: "research", Type: "concrete",
-				Status: model.PhaseStatusCompleted,
-			},
-			{
-				PhaseID: "p2", Name: "implementation", Type: "deferred",
-				Status:          model.PhaseStatusAwaitingFill,
-				DependsOnPhases: []string{"research"},
-				FillDeadlineAt:  &pastDeadline,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: "p1", Name: "research", Type: "concrete",
+					Status: model.PhaseStatusCompleted,
+				},
+				{
+					PhaseID: "p2", Name: "implementation", Type: "deferred",
+					Status:          model.PhaseStatusAwaitingFill,
+					DependsOnPhases: []string{"research"},
+					FillDeadlineAt:  &pastDeadline,
+				},
 			},
 		},
 		CreatedAt: now, UpdatedAt: now,

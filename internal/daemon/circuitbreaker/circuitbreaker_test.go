@@ -207,8 +207,10 @@ func TestUpdateCounterOnResult_IdempotentSkip(t *testing.T) {
 	cb := newTestHandler(true, 3, 30)
 	state := &model.CommandState{
 		CommandID: "cmd1",
-		AppliedResultIDs: map[string]string{
-			"task1": "r_existing",
+		TaskTracking: model.TaskTracking{
+			AppliedResultIDs: map[string]string{
+				"task1": "r_existing",
+			},
 		},
 	}
 

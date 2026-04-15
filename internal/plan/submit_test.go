@@ -466,40 +466,46 @@ func setupAwaitingFillFixture(t *testing.T) (string, *model.CommandState, string
 		PlanVersion:      1,
 		PlanStatus:       model.PlanStatusSealed,
 		CompletionPolicy: defaultCompletionPolicy(),
-		TaskDependencies: make(map[string][]string),
-		TaskStates: map[string]model.Status{
-			"task_0000000001_aaaaaaaa": model.StatusCompleted,
-		},
-		CancelledReasons: make(map[string]string),
-		AppliedResultIDs: make(map[string]string),
-		RetryLineage:     make(map[string]string),
-		RequiredTaskIDs:  []string{"task_0000000001_aaaaaaaa"},
-		Phases: []model.Phase{
-			{
-				PhaseID:     "phase_0000000001_aaaaaaaa",
-				Name:        "phase_build",
-				Type:        "concrete",
-				Status:      model.PhaseStatusCompleted,
-				TaskIDs:     []string{"task_0000000001_aaaaaaaa"},
-				ActivatedAt: &now,
-				CompletedAt: &now,
+		TaskTracking: model.TaskTracking{
+			TaskDependencies: make(map[string][]string),
+			TaskStates: map[string]model.Status{
+				"task_0000000001_aaaaaaaa": model.StatusCompleted,
 			},
-			{
-				PhaseID:         "phase_0000000002_bbbbbbbb",
-				Name:            "phase_review",
-				Type:            "deferred",
-				Status:          model.PhaseStatusAwaitingFill,
-				DependsOnPhases: []string{"phase_build"},
-				Constraints: &model.PhaseConstraints{
-					MaxTasks:           5,
-					TimeoutMinutes:     30,
-					AllowedBloomLevels: []int{1, 2, 3},
+			CancelledReasons: make(map[string]string),
+			AppliedResultIDs: make(map[string]string),
+			RequiredTaskIDs:  []string{"task_0000000001_aaaaaaaa"},
+			ExpectedTaskCount: 1,
+		},
+		RetryTracking: model.RetryTracking{
+			RetryLineage: make(map[string]string),
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID:     "phase_0000000001_aaaaaaaa",
+					Name:        "phase_build",
+					Type:        "concrete",
+					Status:      model.PhaseStatusCompleted,
+					TaskIDs:     []string{"task_0000000001_aaaaaaaa"},
+					ActivatedAt: &now,
+					CompletedAt: &now,
+				},
+				{
+					PhaseID:         "phase_0000000002_bbbbbbbb",
+					Name:            "phase_review",
+					Type:            "deferred",
+					Status:          model.PhaseStatusAwaitingFill,
+					DependsOnPhases: []string{"phase_build"},
+					Constraints: &model.PhaseConstraints{
+						MaxTasks:           5,
+						TimeoutMinutes:     30,
+						AllowedBloomLevels: []int{1, 2, 3},
+					},
 				},
 			},
 		},
-		ExpectedTaskCount: 1,
-		CreatedAt:         now,
-		UpdatedAt:         now,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 
 	if err := sm.SaveState(state); err != nil {
@@ -691,9 +697,13 @@ func TestSubmit_PhaseFill_Preconditions(t *testing.T) {
 					FileType:      "state_command",
 					CommandID:     cmdID,
 					PlanStatus:    model.PlanStatusPlanning,
-					TaskStates:    make(map[string]model.Status),
-					Phases: []model.Phase{
-						{PhaseID: "p1", Name: "phase_a", Type: "deferred", Status: model.PhaseStatusAwaitingFill},
+					TaskTracking: model.TaskTracking{
+						TaskStates: make(map[string]model.Status),
+					},
+					PhaseTracking: model.PhaseTracking{
+						Phases: []model.Phase{
+							{PhaseID: "p1", Name: "phase_a", Type: "deferred", Status: model.PhaseStatusAwaitingFill},
+						},
 					},
 				}
 				if err := sm.SaveState(state); err != nil {
@@ -717,13 +727,17 @@ func TestSubmit_PhaseFill_Preconditions(t *testing.T) {
 					FileType:      "state_command",
 					CommandID:     cmdID,
 					PlanStatus:    model.PlanStatusSealed,
-					TaskStates:    make(map[string]model.Status),
+					TaskTracking: model.TaskTracking{
+						TaskStates: make(map[string]model.Status),
+					},
 					Cancel: model.CancelState{
 						Requested:   true,
 						RequestedAt: &now,
 					},
-					Phases: []model.Phase{
-						{PhaseID: "p1", Name: "phase_a", Type: "deferred", Status: model.PhaseStatusAwaitingFill},
+					PhaseTracking: model.PhaseTracking{
+						Phases: []model.Phase{
+							{PhaseID: "p1", Name: "phase_a", Type: "deferred", Status: model.PhaseStatusAwaitingFill},
+						},
 					},
 				}
 				if err := sm.SaveState(state); err != nil {
@@ -746,9 +760,13 @@ func TestSubmit_PhaseFill_Preconditions(t *testing.T) {
 					FileType:      "state_command",
 					CommandID:     cmdID,
 					PlanStatus:    model.PlanStatusSealed,
-					TaskStates:    make(map[string]model.Status),
-					Phases: []model.Phase{
-						{PhaseID: "p1", Name: "phase_a", Type: "deferred", Status: model.PhaseStatusAwaitingFill},
+					TaskTracking: model.TaskTracking{
+						TaskStates: make(map[string]model.Status),
+					},
+					PhaseTracking: model.PhaseTracking{
+						Phases: []model.Phase{
+							{PhaseID: "p1", Name: "phase_a", Type: "deferred", Status: model.PhaseStatusAwaitingFill},
+						},
 					},
 				}
 				if err := sm.SaveState(state); err != nil {
@@ -771,9 +789,13 @@ func TestSubmit_PhaseFill_Preconditions(t *testing.T) {
 					FileType:      "state_command",
 					CommandID:     cmdID,
 					PlanStatus:    model.PlanStatusSealed,
-					TaskStates:    make(map[string]model.Status),
-					Phases: []model.Phase{
-						{PhaseID: "p1", Name: "phase_a", Type: "concrete", Status: model.PhaseStatusActive},
+					TaskTracking: model.TaskTracking{
+						TaskStates: make(map[string]model.Status),
+					},
+					PhaseTracking: model.PhaseTracking{
+						Phases: []model.Phase{
+							{PhaseID: "p1", Name: "phase_a", Type: "concrete", Status: model.PhaseStatusActive},
+						},
 					},
 				}
 				if err := sm.SaveState(state); err != nil {
@@ -796,9 +818,13 @@ func TestSubmit_PhaseFill_Preconditions(t *testing.T) {
 					FileType:      "state_command",
 					CommandID:     cmdID,
 					PlanStatus:    model.PlanStatusSealed,
-					TaskStates:    make(map[string]model.Status),
-					Phases: []model.Phase{
-						{PhaseID: "p1", Name: "phase_a", Type: "deferred", Status: model.PhaseStatusPending},
+					TaskTracking: model.TaskTracking{
+						TaskStates: make(map[string]model.Status),
+					},
+					PhaseTracking: model.PhaseTracking{
+						Phases: []model.Phase{
+							{PhaseID: "p1", Name: "phase_a", Type: "deferred", Status: model.PhaseStatusPending},
+						},
 					},
 				}
 				if err := sm.SaveState(state); err != nil {

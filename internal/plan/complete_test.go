@@ -32,16 +32,20 @@ func setupCompleteTest(t *testing.T, commandID string, taskStates map[string]mod
 			OnOptionalFailed:        "ignore",
 			DependencyFailurePolicy: "cancel_dependents",
 		},
-		ExpectedTaskCount: len(requiredIDs),
-		RequiredTaskIDs:   requiredIDs,
-		OptionalTaskIDs:   []string{},
-		TaskDependencies:  make(map[string][]string),
-		TaskStates:        taskStates,
-		CancelledReasons:  make(map[string]string),
-		AppliedResultIDs:  make(map[string]string),
-		RetryLineage:      make(map[string]string),
-		CreatedAt:         "2025-01-01T00:00:00Z",
-		UpdatedAt:         "2025-01-01T00:00:00Z",
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: len(requiredIDs),
+			RequiredTaskIDs:   requiredIDs,
+			OptionalTaskIDs:   []string{},
+			TaskDependencies:  make(map[string][]string),
+			TaskStates:        taskStates,
+			CancelledReasons:  make(map[string]string),
+			AppliedResultIDs:  make(map[string]string),
+		},
+		RetryTracking: model.RetryTracking{
+			RetryLineage: make(map[string]string),
+		},
+		CreatedAt: "2025-01-01T00:00:00Z",
+		UpdatedAt: "2025-01-01T00:00:00Z",
 	}
 
 	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
@@ -242,16 +246,20 @@ func TestComplete_NotSealed(t *testing.T) {
 			OnOptionalFailed:        "ignore",
 			DependencyFailurePolicy: "cancel_dependents",
 		},
-		ExpectedTaskCount: 0,
-		RequiredTaskIDs:   []string{},
-		OptionalTaskIDs:   []string{},
-		TaskDependencies:  make(map[string][]string),
-		TaskStates:        make(map[string]model.Status),
-		CancelledReasons:  make(map[string]string),
-		AppliedResultIDs:  make(map[string]string),
-		RetryLineage:      make(map[string]string),
-		CreatedAt:         "2025-01-01T00:00:00Z",
-		UpdatedAt:         "2025-01-01T00:00:00Z",
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 0,
+			RequiredTaskIDs:   []string{},
+			OptionalTaskIDs:   []string{},
+			TaskDependencies:  make(map[string][]string),
+			TaskStates:        make(map[string]model.Status),
+			CancelledReasons:  make(map[string]string),
+			AppliedResultIDs:  make(map[string]string),
+		},
+		RetryTracking: model.RetryTracking{
+			RetryLineage: make(map[string]string),
+		},
+		CreatedAt: "2025-01-01T00:00:00Z",
+		UpdatedAt: "2025-01-01T00:00:00Z",
 	}
 
 	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")

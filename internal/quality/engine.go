@@ -224,7 +224,10 @@ func (e *Engine) Evaluate(ctx context.Context, gateType GateType, evalCtx map[st
 		return nil, err
 	}
 
-	evalResult := result.(*EvaluationResult)
+	evalResult, ok := result.(*EvaluationResult)
+	if !ok {
+		return nil, fmt.Errorf("unexpected singleflight result type: %T", result)
+	}
 
 	// Cache successful evaluations
 	if evalResult.Error == nil && !evalResult.TimedOut {

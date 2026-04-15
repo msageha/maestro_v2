@@ -56,6 +56,22 @@ func (m *migrator) Migrate(data map[string]interface{}, fromVersion int) error {
 
 // defaultMigrator is the global migrator for state_command files.
 // Additional migrations are registered here as the schema evolves.
+//
 // TODO: Register migration steps when currentSchemaVersion is bumped above 1.
-// Example: defaultMigrator.steps[1] = func(data map[string]interface{}) error { ... }
+//
+// Migration procedure:
+//  1. Increment currentSchemaVersion (e.g., 1 → 2).
+//  2. Register a migration function for the previous version:
+//     defaultMigrator.steps[1] = func(data map[string]interface{}) error {
+//         // Transform data from schema v1 to v2.
+//         // - Add new fields with default values.
+//         // - Rename or restructure existing fields.
+//         // - Remove deprecated fields.
+//         return nil
+//     }
+//  3. Each migration function receives the raw YAML map and mutates it in place.
+//     The framework automatically updates data["schema_version"] after each step.
+//  4. Migrations are applied sequentially (v1→v2→v3…) so each step only handles
+//     a single version increment.
+//  5. Add tests in migrator_test.go verifying the migration from N to N+1.
 var defaultMigrator = newMigrator(currentSchemaVersion)

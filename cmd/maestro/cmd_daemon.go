@@ -7,8 +7,6 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/plan"
-	"github.com/msageha/maestro_v2/internal/tmux"
-	"github.com/msageha/maestro_v2/internal/validate"
 )
 
 // runDaemon starts the maestro daemon process.
@@ -28,11 +26,9 @@ func runDaemon(args []string) error {
 		return fmt.Errorf("maestro daemon: load config: %w", err)
 	}
 
-	// HIGH-16: Validate project name before use in tmux session name
-	if err := validate.ProjectName(cfg.Project.Name); err != nil {
-		return fmt.Errorf("maestro daemon: invalid project name: %w", err)
+	if err := setupTmuxSession("daemon", cfg); err != nil {
+		return err
 	}
-	tmux.SetSessionName("maestro-" + cfg.Project.Name)
 
 	d, err := daemon.New(maestroDir, cfg)
 	if err != nil {

@@ -119,6 +119,8 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 }
 
 // assignWorkerForRetry builds worker states and assigns a worker for the retry task.
+// The returned workerStates reflect the primary assignment's PendingCount increment
+// so that downstream consumers (e.g., cascade recovery) see a consistent snapshot.
 func assignWorkerForRetry(opts RetryOptions) (WorkerAssignment, []WorkerState, error) {
 	workerStates, err := BuildWorkerStates(opts.MaestroDir, opts.Config.Agents.Workers)
 	if err != nil {
@@ -129,6 +131,16 @@ func assignWorkerForRetry(opts RetryOptions) (WorkerAssignment, []WorkerState, e
 	if err != nil {
 		return WorkerAssignment{}, nil, fmt.Errorf("worker assignment: %w", err)
 	}
+
+	// Reflect the primary assignment in workerStates so that cascade recovery
+	// sees the correct PendingCount and avoids overloading the same worker.
+	for i := range workerStates {
+		if workerStates[i].WorkerID == assignments[0].WorkerID {
+			workerStates[i].PendingCount++
+			break
+		}
+	}
+
 	return assignments[0], workerStates, nil
 }
 
@@ -331,6 +343,14 @@ func applyRetryStateChanges(
 	state.TaskStates[newTaskID] = model.StatusPending
 	state.TaskDependencies[newTaskID] = rc.blockedBy
 
+	// Re-validate DAG after dependency rewriting for the primary retry task.
+	if err := ValidateTaskDAGAfterMutation(state); err != nil {
+		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
+			log.Printf("[ERROR] %v", rsErr)
+		}
+		return nil, nil, fmt.Errorf("post-rewrite DAG validation: %w", err)
+	}
+
 	// Add to phase
 	if rc.phase != nil {
 		state.Phases[rc.phaseIdx].TaskIDs = append(state.Phases[rc.phaseIdx].TaskIDs, newTaskID)
@@ -358,12 +378,8 @@ func applyRetryStateChanges(
 		return nil, nil, fmt.Errorf("cascade recovery: %w", err)
 	}
 
-	// Post-recovery DAG validation
-	allNames := make([]string, 0, len(state.TaskStates))
-	for k := range state.TaskStates {
-		allNames = append(allNames, k)
-	}
-	if _, err := ValidateTaskDAG(allNames, state.TaskDependencies); err != nil {
+	// Post-recovery DAG validation (covers both cycle detection and cross-phase refs).
+	if err := ValidateTaskDAGAfterMutation(state); err != nil {
 		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
 			log.Printf("[ERROR] %v", rsErr)
 		}

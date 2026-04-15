@@ -1179,6 +1179,136 @@ func TestValidate_MaxYAMLFileBytes_ValidValues(t *testing.T) {
 	}
 }
 
+// --- Cross-field constraint tests ---
+
+func TestValidate_CircuitBreaker_EnabledWithZeroFailures(t *testing.T) {
+	cfg := validConfig()
+	cfg.CircuitBreaker.Enabled = true
+	cfg.CircuitBreaker.MaxConsecutiveFailures = ptr.Int(0)
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error when circuit_breaker.enabled with max_consecutive_failures=0")
+	}
+	if !strings.Contains(err.Error(), "circuit_breaker.max_consecutive_failures") {
+		t.Fatalf("expected circuit_breaker.max_consecutive_failures in error, got: %v", err)
+	}
+}
+
+func TestValidate_CircuitBreaker_EnabledWithPositiveFailures_OK(t *testing.T) {
+	cfg := validConfig()
+	cfg.CircuitBreaker.Enabled = true
+	cfg.CircuitBreaker.MaxConsecutiveFailures = ptr.Int(3)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+func TestValidate_CircuitBreaker_EnabledWithNilFailures_OK(t *testing.T) {
+	cfg := validConfig()
+	cfg.CircuitBreaker.Enabled = true
+	cfg.CircuitBreaker.MaxConsecutiveFailures = nil // uses default
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected no error for nil (uses default), got: %v", err)
+	}
+}
+
+func TestValidate_Worktree_GCMaxWorktreesLessThanWorkers(t *testing.T) {
+	cfg := validConfig()
+	cfg.Worktree.Enabled = true
+	cfg.Worktree.GC.Enabled = true
+	cfg.Worktree.GC.TTLHours = ptr.Int(24)
+	cfg.Worktree.GC.MaxWorktrees = ptr.Int(1) // less than workers.count=2
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error when gc.max_worktrees < workers.count")
+	}
+	if !strings.Contains(err.Error(), "worktree.gc.max_worktrees") {
+		t.Fatalf("expected worktree.gc.max_worktrees in error, got: %v", err)
+	}
+}
+
+func TestValidate_Worktree_GCMaxWorktreesEqualWorkers_OK(t *testing.T) {
+	cfg := validConfig()
+	cfg.Worktree.Enabled = true
+	cfg.Worktree.GC.Enabled = true
+	cfg.Worktree.GC.TTLHours = ptr.Int(24)
+	cfg.Worktree.GC.MaxWorktrees = ptr.Int(2) // equal to workers.count=2
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+}
+
+func TestValidate_Worktree_BothTimeoutsDisabled(t *testing.T) {
+	cfg := validConfig()
+	cfg.Worktree.Enabled = true
+	cfg.Worktree.StallTimeoutMinutes = ptr.Int(0)
+	cfg.Worktree.FallbackMergeTimeoutMinutes = ptr.Int(0)
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error when both stall and fallback_merge timeouts are disabled")
+	}
+	if !strings.Contains(err.Error(), "stall_timeout_minutes") {
+		t.Fatalf("expected stall_timeout_minutes in error, got: %v", err)
+	}
+}
+
+func TestValidate_Worktree_OneTimeoutEnabled_OK(t *testing.T) {
+	cfg := validConfig()
+	cfg.Worktree.Enabled = true
+	cfg.Worktree.StallTimeoutMinutes = ptr.Int(0)         // disabled
+	cfg.Worktree.FallbackMergeTimeoutMinutes = ptr.Int(60) // enabled
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected no error when one timeout is enabled, got: %v", err)
+	}
+}
+
+func TestValidate_Worktree_Disabled_IgnoresCrossField(t *testing.T) {
+	cfg := validConfig()
+	cfg.Worktree.Enabled = false
+	cfg.Worktree.StallTimeoutMinutes = ptr.Int(0)
+	cfg.Worktree.FallbackMergeTimeoutMinutes = ptr.Int(0)
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected no error when worktree disabled, got: %v", err)
+	}
+}
+
+func TestValidate_RetryVsCircuitBreaker_Interaction(t *testing.T) {
+	cfg := validConfig()
+	cfg.CircuitBreaker.Enabled = true
+	cfg.CircuitBreaker.MaxConsecutiveFailures = ptr.Int(3)
+	cfg.Retry.TaskExecution.Enabled = true
+	cfg.Retry.TaskExecution.MaxRetries = 5 // >= circuit_breaker threshold
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error when task retries >= circuit_breaker threshold")
+	}
+	if !strings.Contains(err.Error(), "retry.task_execution.max_retries") {
+		t.Fatalf("expected retry.task_execution.max_retries in error, got: %v", err)
+	}
+}
+
+func TestValidate_RetryVsCircuitBreaker_BelowThreshold_OK(t *testing.T) {
+	cfg := validConfig()
+	cfg.CircuitBreaker.Enabled = true
+	cfg.CircuitBreaker.MaxConsecutiveFailures = ptr.Int(5)
+	cfg.Retry.TaskExecution.Enabled = true
+	cfg.Retry.TaskExecution.MaxRetries = 2 // below threshold
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected no error when retries < threshold, got: %v", err)
+	}
+}
+
+func TestValidate_RetryVsCircuitBreaker_RetryDisabled_OK(t *testing.T) {
+	cfg := validConfig()
+	cfg.CircuitBreaker.Enabled = true
+	cfg.CircuitBreaker.MaxConsecutiveFailures = ptr.Int(3)
+	cfg.Retry.TaskExecution.Enabled = false
+	cfg.Retry.TaskExecution.MaxRetries = 10 // doesn't matter when disabled
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("expected no error when retry disabled, got: %v", err)
+	}
+}
+
 // --- NaN/Inf rejection tests ---
 
 func TestValidate_DebounceSec_NaN(t *testing.T) {

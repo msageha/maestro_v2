@@ -11,6 +11,11 @@ import (
 // This prevents stack overflow when corrupted state files contain circular references.
 const maxCascadeRecoverDepth = 10
 
+// maxLineageDepth is the upper bound on the number of entries the visited map
+// in getLatestDescendant may accumulate. It prevents unbounded memory growth
+// when lineage chains become excessively long (e.g. due to repeated retries).
+const maxLineageDepth = 1000
+
 func findPhaseForTask(state *model.CommandState, taskID string) (*model.Phase, int) {
 	for i := range state.Phases {
 		for _, tid := range state.Phases[i].TaskIDs {
@@ -69,12 +74,26 @@ func cascadeRecover(
 	workerStates []WorkerState,
 	origTaskCache map[string]model.Task,
 ) ([]CascadeRecoveredTask, error) {
-	// CR-020: Work on a copy of workerStates so that on failure the caller's
-	// slice is not left in a partially-mutated state.
-	ws := make([]WorkerState, len(workerStates))
-	copy(ws, workerStates)
+	// All-or-nothing: snapshot CommandState before mutations so we can
+	// restore it entirely if cascadeRecoverRecursive fails partway through.
+	stateSnapshot, err := copyState(state)
+	if err != nil {
+		return nil, fmt.Errorf("cascade recovery state snapshot: %w", err)
+	}
+
+	// CR-020: Work on an immutable snapshot of workerStates so that on failure
+	// the caller's slice is not left in a partially-mutated state.
+	ws := SnapshotWorkerStates(workerStates)
 	var recovered []CascadeRecoveredTask
-	return cascadeRecoverRecursive(state, failedTaskID, newRetryTaskID, workerConfig, limits, ws, recovered, origTaskCache, 0)
+	recovered, err = cascadeRecoverRecursive(state, failedTaskID, newRetryTaskID, workerConfig, limits, ws, recovered, origTaskCache, 0)
+	if err != nil {
+		// Restore state to pre-cascade snapshot (all-or-nothing).
+		if rsErr := restoreState(state, stateSnapshot); rsErr != nil {
+			log.Printf("[ERROR] cascade recovery rollback failed: %v", rsErr)
+		}
+		return nil, err
+	}
+	return recovered, nil
 }
 
 func cascadeRecoverRecursive(
@@ -186,6 +205,12 @@ func updateTaskStateForCascade(state *model.CommandState, cancelledTaskID, newTa
 			}
 		}
 	}
+
+	// Re-validate DAG after dependency rewriting to catch cycles or
+	// cross-phase violations introduced by the mutation.
+	if err := ValidateTaskDAGAfterMutation(state); err != nil {
+		return fmt.Errorf("cascade state mutation validation: %w", err)
+	}
 	return nil
 }
 
@@ -252,6 +277,10 @@ func getLatestDescendant(taskID string, reverseLineage map[string]string) (strin
 		if visited[current] {
 			log.Printf("[WARN] lineage cycle detected starting from task %s, revisited %s", taskID, current)
 			return "", fmt.Errorf("lineage cycle detected: task %s revisited while resolving lineage from %s", current, taskID)
+		}
+		if len(visited) >= maxLineageDepth {
+			log.Printf("[WARN] lineage depth exceeded %d starting from task %s", maxLineageDepth, taskID)
+			return "", fmt.Errorf("lineage depth exceeded maximum %d starting from task %s", maxLineageDepth, taskID)
 		}
 		visited[current] = true
 		next, ok := reverseLineage[current]

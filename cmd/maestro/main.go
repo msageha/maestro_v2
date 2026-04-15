@@ -88,8 +88,6 @@ func (a *cliApp) run(args []string) int {
 		err = a.runTask(args[1:])
 	case "plan":
 		err = a.runPlan(args[1:])
-	case "resolve-conflict":
-		err = a.runResolveConflict(args[1:])
 	case "agent":
 		err = runAgent(args[1:])
 	case "worker":
@@ -174,6 +172,7 @@ Agent Commands (CLI → Daemon):
   plan add-retry-task [options]    Replace failed task
   plan request-cancel [options]    Request cancellation
   plan rebuild [options]           Rebuild state from results
+  plan resolve-conflict [options]  Resolve a worker merge conflict
 
 Internal:
   daemon            Run daemon process
@@ -190,12 +189,11 @@ Skill Management:
 Utilities:
   worker standby     Show idle workers
   dashboard          Regenerate dashboard.md
-  resolve-conflict   Resolve a worker merge conflict (operator-only)
   version            Show version
   help               Show this help
 
 Examples:
-  maestro resolve-conflict --command-id cmd_42 --phase-id ph_3 \
+  maestro plan resolve-conflict --command-id cmd_42 --phase-id ph_3 \
       --worker-id worker2 --conflicting-files internal/a.go,internal/b.go
 
 `, version)

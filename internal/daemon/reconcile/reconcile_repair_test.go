@@ -782,8 +782,10 @@ func TestR6FillTimeout_NoDeadline_NoRepair(t *testing.T) {
 	state := model.CommandState{
 		CommandID:  "cmd1",
 		PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusAwaitingFill},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusAwaitingFill},
+			},
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -808,8 +810,10 @@ func TestR6FillTimeout_ActivePhase_Ignored(t *testing.T) {
 	state := model.CommandState{
 		CommandID:  "cmd1",
 		PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusActive, FillDeadlineAt: &pastDeadline},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusActive, FillDeadlineAt: &pastDeadline},
+			},
 		},
 		CreatedAt: now.Format(time.RFC3339),
 		UpdatedAt: now.Format(time.RFC3339),
@@ -837,9 +841,11 @@ func TestR6FillTimeout_MultipleTimedOutPhases(t *testing.T) {
 	state := model.CommandState{
 		CommandID:  "cmd1",
 		PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusAwaitingFill, FillDeadlineAt: &pastDeadline},
-			{PhaseID: "p2", Name: "phase2", Status: model.PhaseStatusAwaitingFill, FillDeadlineAt: &pastDeadline},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusAwaitingFill, FillDeadlineAt: &pastDeadline},
+				{PhaseID: "p2", Name: "phase2", Status: model.PhaseStatusAwaitingFill, FillDeadlineAt: &pastDeadline},
+			},
 		},
 		CreatedAt: now.Format(time.RFC3339),
 		UpdatedAt: now.Format(time.RFC3339),
@@ -867,8 +873,10 @@ func TestR6FillTimeout_NoExecutorFactory_NoNotification(t *testing.T) {
 	state := model.CommandState{
 		CommandID:  "cmd1",
 		PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusAwaitingFill, FillDeadlineAt: &pastDeadline},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusAwaitingFill, FillDeadlineAt: &pastDeadline},
+			},
 		},
 		CreatedAt: now.Format(time.RFC3339),
 		UpdatedAt: now.Format(time.RFC3339),
@@ -897,8 +905,10 @@ func TestR1ResultQueue_RetryEnqueueFailed_AlreadyInQueue(t *testing.T) {
 	state := model.CommandState{
 		CommandID:  "cmd1",
 		PlanStatus: model.PlanStatusSealed,
-		RetryEnqueueFailed: map[string]string{
-			"retry_task1": "worker1",
+		RetryTracking: model.RetryTracking{
+			RetryEnqueueFailed: map[string]string{
+				"retry_task1": "worker1",
+			},
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -948,8 +958,10 @@ func TestR1ResultQueue_RetryEnqueueFailed_MaxAttemptsExceeded(t *testing.T) {
 	state := model.CommandState{
 		CommandID:  "cmd1",
 		PlanStatus: model.PlanStatusSealed,
-		RetryEnqueueFailed: map[string]string{
-			"retry_task1": formatRetryEnqueueValue("worker1", 3),
+		RetryTracking: model.RetryTracking{
+			RetryEnqueueFailed: map[string]string{
+				"retry_task1": formatRetryEnqueueValue("worker1", 3),
+			},
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -992,8 +1004,10 @@ func TestR1ResultQueue_RetryEnqueueFailed_OriginalTaskNotFound(t *testing.T) {
 	state := model.CommandState{
 		CommandID:  "cmd1",
 		PlanStatus: model.PlanStatusSealed,
-		RetryEnqueueFailed: map[string]string{
-			"retry_task1": "worker1",
+		RetryTracking: model.RetryTracking{
+			RetryEnqueueFailed: map[string]string{
+				"retry_task1": "worker1",
+			},
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -1044,8 +1058,10 @@ func TestR1ResultQueue_RetryEnqueueFailed_ReenqueueSuccess(t *testing.T) {
 	state := model.CommandState{
 		CommandID:  "cmd1",
 		PlanStatus: model.PlanStatusSealed,
-		RetryEnqueueFailed: map[string]string{
-			"retry_task1": "worker1",
+		RetryTracking: model.RetryTracking{
+			RetryEnqueueFailed: map[string]string{
+				"retry_task1": "worker1",
+			},
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -1129,8 +1145,10 @@ func TestR1ResultQueue_RetryEnqueueFailed_ReenqueueFails(t *testing.T) {
 	state := model.CommandState{
 		CommandID:  "cmd1",
 		PlanStatus: model.PlanStatusSealed,
-		RetryEnqueueFailed: map[string]string{
-			"retry_task1": formatRetryEnqueueValue("worker1", 1),
+		RetryTracking: model.RetryTracking{
+			RetryEnqueueFailed: map[string]string{
+				"retry_task1": formatRetryEnqueueValue("worker1", 1),
+			},
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -1320,11 +1338,13 @@ func TestR6FillTimeout_DeepCascade_ThreeLevelDependency(t *testing.T) {
 	state := model.CommandState{
 		CommandID:  "cmd_deep_cascade",
 		PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusAwaitingFill, FillDeadlineAt: &pastDeadline},
-			{PhaseID: "p2", Name: "phase2", Status: model.PhaseStatusPending, DependsOnPhases: []string{"phase1"}},
-			{PhaseID: "p3", Name: "phase3", Status: model.PhaseStatusPending, DependsOnPhases: []string{"phase2"}},
-			{PhaseID: "p4", Name: "phase4", Status: model.PhaseStatusActive},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusAwaitingFill, FillDeadlineAt: &pastDeadline},
+				{PhaseID: "p2", Name: "phase2", Status: model.PhaseStatusPending, DependsOnPhases: []string{"phase1"}},
+				{PhaseID: "p3", Name: "phase3", Status: model.PhaseStatusPending, DependsOnPhases: []string{"phase2"}},
+				{PhaseID: "p4", Name: "phase4", Status: model.PhaseStatusActive},
+			},
 		},
 		CreatedAt: now.Format(time.RFC3339),
 		UpdatedAt: now.Format(time.RFC3339),

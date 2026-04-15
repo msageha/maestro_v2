@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -168,6 +169,9 @@ func (d *Daemon) Shutdown() {
 // shutdownOp runs fn with shutdownOpTimeout. If fn does not complete in time,
 // a warning is logged and control returns so the global shutdown timer can proceed.
 func (d *Daemon) shutdownOp(name string, fn func() error) {
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownOpTimeout)
+	defer cancel()
+
 	done := make(chan error, 1)
 	go func() {
 		done <- fn()
@@ -178,8 +182,11 @@ func (d *Daemon) shutdownOp(name string, fn func() error) {
 		if err != nil {
 			d.log(LogLevelError, "shutdown %s error=%v", name, err)
 		}
-	case <-time.After(shutdownOpTimeout):
+	case <-ctx.Done():
 		d.log(LogLevelWarn, "shutdown %s timed out after %s", name, shutdownOpTimeout)
+		// Drain in background so the fn goroutine can complete and be GC'd
+		// instead of leaking due to a blocked channel send.
+		go func() { <-done }()
 	}
 }
 

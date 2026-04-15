@@ -642,8 +642,10 @@ func TestDispatchResult_NormalPath(t *testing.T) {
 		SchemaVersion: 1, FileType: "state_command",
 		CommandID:  "cmd_fence",
 		PlanStatus: model.PlanStatusSealed,
-		TaskStates: map[string]model.Status{
-			"task_fence": model.StatusPending,
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				"task_fence": model.StatusPending,
+			},
 		},
 		CreatedAt: now, UpdatedAt: now,
 	}

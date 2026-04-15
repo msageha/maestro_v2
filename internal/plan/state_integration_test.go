@@ -14,25 +14,29 @@ import (
 // ActionRequiredError when a phase is in awaiting_fill status.
 func TestCanComplete_AwaitingFillPhase(t *testing.T) {
 	state := &model.CommandState{
-		CommandID:         "cmd-af-001",
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 2,
-		RequiredTaskIDs:   []string{"t1", "t2"},
-		OptionalTaskIDs:   []string{},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
-			"t2": model.StatusCompleted,
-		},
-		Phases: []model.Phase{
-			{
-				PhaseID: "phase-research",
-				Name:    "research",
-				Status:  model.PhaseStatusCompleted,
+		CommandID:  "cmd-af-001",
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 2,
+			RequiredTaskIDs:   []string{"t1", "t2"},
+			OptionalTaskIDs:   []string{},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+				"t2": model.StatusCompleted,
 			},
-			{
-				PhaseID: "phase-impl",
-				Name:    "implementation",
-				Status:  model.PhaseStatusAwaitingFill,
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: "phase-research",
+					Name:    "research",
+					Status:  model.PhaseStatusCompleted,
+				},
+				{
+					PhaseID: "phase-impl",
+					Name:    "implementation",
+					Status:  model.PhaseStatusAwaitingFill,
+				},
 			},
 		},
 	}
@@ -71,18 +75,22 @@ func TestCanComplete_AwaitingFillPhase(t *testing.T) {
 // contains all key-value pairs that LLM agents can parse.
 func TestCanComplete_AwaitingFillFormatStderr(t *testing.T) {
 	state := &model.CommandState{
-		CommandID:         "cmd-af-002",
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 1,
-		RequiredTaskIDs:   []string{"t1"},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
+		CommandID:  "cmd-af-002",
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 1,
+			RequiredTaskIDs:   []string{"t1"},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+			},
 		},
-		Phases: []model.Phase{
-			{
-				PhaseID: "ph-impl",
-				Name:    "implementation",
-				Status:  model.PhaseStatusAwaitingFill,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: "ph-impl",
+					Name:    "implementation",
+					Status:  model.PhaseStatusAwaitingFill,
+				},
 			},
 		},
 	}
@@ -119,18 +127,22 @@ func TestCanComplete_AwaitingFillFormatStderr(t *testing.T) {
 // distinct from retryableError.
 func TestCanComplete_AwaitingFillIsNotRetryable(t *testing.T) {
 	state := &model.CommandState{
-		CommandID:         "cmd-af-003",
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 1,
-		RequiredTaskIDs:   []string{"t1"},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
+		CommandID:  "cmd-af-003",
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 1,
+			RequiredTaskIDs:   []string{"t1"},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+			},
 		},
-		Phases: []model.Phase{
-			{
-				PhaseID: "ph-1",
-				Name:    "phase-1",
-				Status:  model.PhaseStatusAwaitingFill,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: "ph-1",
+					Name:    "phase-1",
+					Status:  model.PhaseStatusAwaitingFill,
+				},
 			},
 		},
 	}
@@ -150,18 +162,22 @@ func TestCanComplete_AwaitingFillIsNotRetryable(t *testing.T) {
 // returns retryableError (regression check).
 func TestCanComplete_FillingStillRetryable(t *testing.T) {
 	state := &model.CommandState{
-		CommandID:         "cmd-fill-001",
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 1,
-		RequiredTaskIDs:   []string{"t1"},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
+		CommandID:  "cmd-fill-001",
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 1,
+			RequiredTaskIDs:   []string{"t1"},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+			},
 		},
-		Phases: []model.Phase{
-			{
-				PhaseID: "ph-1",
-				Name:    "phase-1",
-				Status:  model.PhaseStatusFilling,
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: "ph-1",
+					Name:    "phase-1",
+					Status:  model.PhaseStatusFilling,
+				},
 			},
 		},
 	}
@@ -181,17 +197,21 @@ func TestCanComplete_FillingStillRetryable(t *testing.T) {
 // do not trigger ActionRequiredError.
 func TestCanComplete_CompletedPhasesNoError(t *testing.T) {
 	state := &model.CommandState{
-		CommandID:         "cmd-ok-001",
-		PlanStatus:        model.PlanStatusSealed,
-		ExpectedTaskCount: 2,
-		RequiredTaskIDs:   []string{"t1", "t2"},
-		TaskStates: map[string]model.Status{
-			"t1": model.StatusCompleted,
-			"t2": model.StatusCompleted,
+		CommandID:  "cmd-ok-001",
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 2,
+			RequiredTaskIDs:   []string{"t1", "t2"},
+			TaskStates: map[string]model.Status{
+				"t1": model.StatusCompleted,
+				"t2": model.StatusCompleted,
+			},
 		},
-		Phases: []model.Phase{
-			{PhaseID: "ph-1", Name: "research", Status: model.PhaseStatusCompleted},
-			{PhaseID: "ph-2", Name: "implementation", Status: model.PhaseStatusCompleted},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "ph-1", Name: "research", Status: model.PhaseStatusCompleted},
+				{PhaseID: "ph-2", Name: "implementation", Status: model.PhaseStatusCompleted},
+			},
 		},
 	}
 

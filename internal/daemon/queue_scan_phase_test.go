@@ -669,15 +669,19 @@ func writeCommandState(t *testing.T, maestroDir, commandID string, taskStates ma
 		requiredIDs = append(requiredIDs, id)
 	}
 	state := model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       commandID,
-		PlanStatus:      model.PlanStatusSealed,
-		RequiredTaskIDs: requiredIDs,
-		TaskStates:      taskStates,
-		Phases:          phases,
-		CreatedAt:       "2026-01-01T00:00:00Z",
-		UpdatedAt:       "2026-01-01T00:00:00Z",
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: requiredIDs,
+			TaskStates:      taskStates,
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: phases,
+		},
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
 	}
 	path := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
 	if err := yamlutil.AtomicWrite(path, state); err != nil {

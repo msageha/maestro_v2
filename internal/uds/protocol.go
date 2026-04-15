@@ -105,6 +105,10 @@ const (
 	ErrCodeNotFound = "NOT_FOUND"
 	// ErrCodeFencingReject indicates the request was rejected due to a fencing token conflict.
 	ErrCodeFencingReject = "FENCING_REJECT"
+	// ErrCodeFencingRejectStatus indicates the request was rejected because the task status is not in_progress.
+	ErrCodeFencingRejectStatus = "FENCING_REJECT_STATUS"
+	// ErrCodeFencingRejectEpoch indicates the request was rejected due to a lease epoch mismatch.
+	ErrCodeFencingRejectEpoch = "FENCING_REJECT_EPOCH"
 	// ErrCodeDuplicate indicates a duplicate resource or operation was detected.
 	ErrCodeDuplicate = "DUPLICATE"
 	// ErrCodeActionRequired indicates the caller must take an action before retrying.

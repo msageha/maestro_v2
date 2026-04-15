@@ -4,6 +4,7 @@ package learnings
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -48,7 +49,8 @@ func ReadTopKLearnings(maestroDir string, cfg model.LearningsConfig, now time.Ti
 		if ttlHours > 0 {
 			created, err := time.Parse(time.RFC3339, l.CreatedAt)
 			if err != nil {
-				// Malformed timestamp — skip entry
+				slog.Warn("ReadTopKLearnings: malformed timestamp, skipping entry",
+					"result_id", l.ResultID, "created_at", l.CreatedAt, "error", err)
 				continue
 			}
 			if now.Sub(created) > time.Duration(ttlHours)*time.Hour {

@@ -153,6 +153,18 @@ func (d *Daemon) LockMap() *lock.MutexMap {
 	return d.lockMap
 }
 
+// --- Late-bound accessors for API dependency injection ---
+// These methods return interface-typed values or nil, allowing API handlers to
+// access Daemon components that may be initialized after newDaemon returns.
+// Using named methods instead of inline closures makes the initialization
+// dependency graph explicit and testable.
+
+func (d *Daemon) eventBusAccessor() *events.Bus            { return d.eventBus }
+func (d *Daemon) fallbackAccessor() fallbackRecorder       { if d.fallbackMgr != nil { return d.fallbackMgr }; return nil }
+func (d *Daemon) circuitBreakerAccessor() circuitBreakerUpdater { if d.circuitBreaker != nil { return d.circuitBreaker }; return nil }
+func (d *Daemon) reviewCoordAccessor() reviewDispatcher     { if d.reviewCoord != nil { return d.reviewCoord }; return nil }
+func (d *Daemon) contextAccessor() context.Context          { return d.ctx }
+
 // New creates a new Daemon instance.
 func New(maestroDir string, cfg model.Config) (*Daemon, error) {
 	logPath := filepath.Join(maestroDir, "logs", "daemon.log")
@@ -200,7 +212,10 @@ func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Close
 		cancel:     cancel,
 	}
 
-	// Initialize API with shared context and domain-specific handlers.
+	// --- Phase 1: Shared API context ---
+	// Provides common dependencies to all API handlers. Components that are
+	// initialized later (eventBus, circuitBreaker, etc.) are accessed via
+	// late-bound methods on Daemon, not direct field references.
 	shared := &apiContext{
 		maestroDir: maestroDir,
 		config:     &d.config,
@@ -211,19 +226,23 @@ func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Close
 		logLevel:   d.logLevel,
 		selfWrites: d.selfWrites,
 		fileStore:  newFSResultFileStore(maestroDir),
-		eventBus:   func() *events.Bus { return d.eventBus },
+		eventBus:   d.eventBusAccessor,
 	}
+
+	// --- Phase 2: Domain-specific API handlers ---
+	// ResultWriteAPI uses late-bound accessors because fallbackMgr,
+	// circuitBreaker, and reviewCoord are wired in initComponents()
+	// (called from Run), not here. The accessor pattern ensures test-time
+	// assignments (e.g. d.circuitBreaker = ...) are visible at call time.
 	d.api = &API{
 		shared: shared,
 		result: &ResultWriteAPI{
-			apiContext: shared,
-			// Late-bound deps: closures capture Daemon fields so test-time
-			// assignments (e.g. d.circuitBreaker = ...) are visible at call time.
-			fallbackMgr:    func() fallbackRecorder { if d.fallbackMgr != nil { return d.fallbackMgr }; return nil },
-			circuitBreaker: func() circuitBreakerUpdater { if d.circuitBreaker != nil { return d.circuitBreaker }; return nil },
-			reviewCoord:    func() reviewDispatcher { if d.reviewCoord != nil { return d.reviewCoord }; return nil },
-			ctx:            func() context.Context { return d.ctx },
-			triggerScan: d.triggerResultWriteScan,
+			apiContext:     shared,
+			fallbackMgr:    d.fallbackAccessor,
+			circuitBreaker: d.circuitBreakerAccessor,
+			reviewCoord:    d.reviewCoordAccessor,
+			ctx:            d.contextAccessor,
+			triggerScan:    d.triggerResultWriteScan,
 		},
 		queue:     &QueueWriteAPI{apiContext: shared},
 		plan:      &PlanAPI{apiContext: shared},
@@ -238,6 +257,7 @@ func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Close
 		skill:     &SkillAPI{apiContext: shared},
 	}
 
+	// --- Phase 3: Watch loop and event bridge ---
 	d.watch = &WatchLoop{d: d, fsSem: make(chan struct{}, fsSemaphoreBufferSize())}
 	d.bridge = &EventBridge{d: d}
 

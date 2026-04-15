@@ -2,10 +2,8 @@ package main
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
-	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
 )
 
@@ -43,7 +41,7 @@ func (a *cliApp) runPlanRequestCancel(args []string) error {
 		"reason":       reason,
 	}
 
-	client := a.createClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := a.newDaemonClient(maestroDir)
 	resp, err := client.SendCommand("queue_write", params)
 	if err != nil {
 		return fmt.Errorf("maestro plan request-cancel: %w", err)

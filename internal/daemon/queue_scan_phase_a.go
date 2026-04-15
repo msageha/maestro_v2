@@ -8,10 +8,34 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// --- Phase A step functions (executed in order) ---
-// periodicScanPhaseA and initScanState have been moved to ScanPhaseExecutor
-// (scan_phase_executor.go). Step functions below remain on QueueHandler as they
-// access shared handler dependencies.
+// --- Phase A: entry point and step functions ---
+// periodicScanPhaseA and initScanState live in ScanPhaseExecutor
+// (scan_phase_executor.go) which owns lock lifecycle and counters.
+// QueueHandler provides the single entry point executePhaseASteps that
+// aggregates all Phase A step calls; ScanPhaseExecutor invokes only this
+// entry point, keeping QueueHandler as the coordinator for phase logic.
+
+// executePhaseASteps runs all Phase A steps in the prescribed order.
+// This is the single entry point called by ScanPhaseExecutor.periodicScanPhaseA.
+func (qh *QueueHandler) executePhaseASteps(s *scanState) {
+	qh.stepAdmissionSync(s)
+	qh.stepDeadLetters(s)
+	qh.stepCircuitBreaker(s)
+	qh.stepCancelPending(s)
+	qh.stepCancelInterrupt(s)
+	qh.stepCancelAutoComplete(s)
+	qh.stepPhaseTransitions(s)
+	qh.stepWorktreePhaseMerges(s)
+	qh.stepWorktreePublish(s)
+	qh.stepWorktreeFastTrackCleanup(s)
+	qh.stepWorktreeOrphanCleanup(s)
+	qh.stepWorktreeStallDetection(s)
+	qh.stepCheckWorktreeConfigViolations(s)
+	qh.stepPlannerSignals(s)
+	qh.stepPreemptiveRenewal(s)
+	qh.stepDispatchOrRecovery(s)
+	qh.stepDependencyFailures(s)
+}
 
 // stepAdmissionSync resets the admission controller and records in-flight tasks
 // at the start of each scan cycle, providing accurate slot counts for dispatch.

@@ -4,15 +4,24 @@ package model
 
 // EvolutionConfig controls evolutionary quality improvement.
 type EvolutionConfig struct {
-	Enabled              *bool    `yaml:"enabled,omitempty"`
-	MaxMutationsPerRound *int     `yaml:"max_mutations_per_round,omitempty"`
-	NoveltyThreshold     *float64 `yaml:"novelty_threshold,omitempty"`
-	Strategies           []string `yaml:"strategies,omitempty"`
+	Enabled              *bool          `yaml:"enabled,omitempty"`
+	MaxMutationsPerRound *int           `yaml:"max_mutations_per_round,omitempty"`
+	NoveltyThreshold     *float64       `yaml:"novelty_threshold,omitempty"`
+	Strategies           []string       `yaml:"strategies,omitempty"`
+	StrategyWeights      map[string]int `yaml:"strategy_weights,omitempty"`
 }
 
 func (e EvolutionConfig) EffectiveEnabled() bool                { return effectiveValue(e.Enabled, false) }
 func (e EvolutionConfig) EffectiveMaxMutationsPerRound() int    { return effectiveValue(e.MaxMutationsPerRound, DefaultMaxMutationsPerRound) }
 func (e EvolutionConfig) EffectiveNoveltyThreshold() float64    { return effectiveValue(e.NoveltyThreshold, DefaultNoveltyThreshold) }
+
+// EffectiveStrategyWeights returns the configured strategy weights or defaults (diff:2, full:1, cross:1).
+func (e EvolutionConfig) EffectiveStrategyWeights() map[string]int {
+	if len(e.StrategyWeights) > 0 {
+		return e.StrategyWeights
+	}
+	return map[string]int{"diff": 2, "full": 1, "cross": 1}
+}
 
 // EffectiveStrategies returns the configured strategies or ["diff","full","cross"] as default.
 func (e EvolutionConfig) EffectiveStrategies() []string {
@@ -164,3 +173,95 @@ func (fp FeatureProfile) EffectiveEvolutionaryQuality() bool       { return effe
 func (fp FeatureProfile) EffectiveAdaptiveModelSelection() bool    { return effectiveValue(fp.AdaptiveModelSelection, false) }
 func (fp FeatureProfile) EffectiveSelfImprovement() bool           { return effectiveValue(fp.SelfImprovement, false) }
 func (fp FeatureProfile) EffectiveAdaptiveDepth() bool             { return effectiveValue(fp.AdaptiveDepth, false) }
+
+// NormalizeExperimentalConfig fills nil pointer fields in experimental config sections (C-1 through C-8)
+// with their default values. Call once after unmarshalling config.yaml so that EffectiveXxx() methods
+// are guaranteed to find non-nil values. Slice/map fields are also populated with defaults when empty.
+func NormalizeExperimentalConfig(cfg *Config) {
+	normalizeEvolution(&cfg.Evolution)
+	normalizeBandit(&cfg.Bandit)
+	normalizeExtendedVerification(&cfg.ExtendedVerification)
+	normalizeSearch(&cfg.Search)
+	normalizeSelfImprovement(&cfg.SelfImprovement)
+	normalizeComplexity(&cfg.Complexity)
+	for name, rc := range cfg.Runtimes {
+		normalizeRuntime(&rc)
+		cfg.Runtimes[name] = rc
+	}
+	for name, fp := range cfg.FeatureProfiles {
+		normalizeFeatureProfile(&fp)
+		cfg.FeatureProfiles[name] = fp
+	}
+}
+
+func normalizeEvolution(e *EvolutionConfig) {
+	resolvePtr(&e.Enabled, false)
+	resolvePtr(&e.MaxMutationsPerRound, DefaultMaxMutationsPerRound)
+	resolvePtr(&e.NoveltyThreshold, DefaultNoveltyThreshold)
+	if len(e.Strategies) == 0 {
+		e.Strategies = []string{"diff", "full", "cross"}
+	}
+	if len(e.StrategyWeights) == 0 {
+		e.StrategyWeights = map[string]int{"diff": 2, "full": 1, "cross": 1}
+	}
+}
+
+func normalizeBandit(b *BanditConfig) {
+	resolvePtr(&b.Enabled, false)
+	resolvePtr(&b.ExplorationCoeff, DefaultExplorationCoeff)
+	resolvePtr(&b.MinSamplesBeforeUse, DefaultMinSamplesBeforeUse)
+	resolvePtr(&b.DecayFactor, DefaultDecayFactor)
+	resolvePtr(&b.TraceDataRequirement, DefaultTraceDataRequirement)
+}
+
+func normalizeExtendedVerification(ev *ExtendedVerificationConfig) {
+	resolvePtr(&ev.Enabled, false)
+	resolvePtr(&ev.SecurityCheck, false)
+	resolvePtr(&ev.PerformanceBench, false)
+	resolvePtr(&ev.MaxAutoRetries, DefaultMaxAutoRetries)
+	if len(ev.PerspectiveWeights) == 0 {
+		ev.PerspectiveWeights = map[string]float64{"build": 1.0, "test": 1.0, "security": 0.5}
+	}
+}
+
+func normalizeSearch(s *SearchConfig) {
+	resolvePtr(&s.Enabled, false)
+	resolvePtr(&s.MaxDepth, DefaultSearchMaxDepth)
+	resolvePtr(&s.MaxBranching, DefaultMaxBranching)
+	resolvePtr(&s.PruneThreshold, DefaultPruneThreshold)
+	resolvePtr(&s.ThompsonAlpha, DefaultThompsonAlpha)
+	resolvePtr(&s.ThompsonBeta, DefaultThompsonBeta)
+}
+
+func normalizeSelfImprovement(si *SelfImprovementConfig) {
+	resolvePtr(&si.Enabled, false)
+	resolvePtr(&si.ArchiveMaxSize, DefaultArchiveMaxSize)
+	if len(si.Targets) == 0 {
+		si.Targets = []string{"planner_prompt", "persona", "worker_prompt"}
+	}
+	if len(si.ExcludeTargets) == 0 {
+		si.ExcludeTargets = []string{"fitness", "daemon_logic", "circuit_breaker"}
+	}
+}
+
+func normalizeComplexity(cc *ComplexityConfig) {
+	resolvePtr(&cc.Enabled, false)
+	resolvePtr(&cc.Thresholds.SimpleMaxFiles, DefaultSimpleMaxFiles)
+	resolvePtr(&cc.Thresholds.StandardMaxFiles, DefaultStandardMaxFiles)
+	resolvePtr(&cc.Thresholds.ComplexMaxFiles, DefaultComplexMaxFiles)
+}
+
+func normalizeRuntime(rc *RuntimeConfig) {
+	resolvePtr(&rc.Enabled, false)
+	resolvePtr(&rc.Default, false)
+	resolvePtr(&rc.DefaultModel, "")
+}
+
+func normalizeFeatureProfile(fp *FeatureProfile) {
+	resolvePtr(&fp.CrossAgentReview, DefaultCrossAgentReview)
+	resolvePtr(&fp.ExploratoryOptimization, false)
+	resolvePtr(&fp.EvolutionaryQuality, false)
+	resolvePtr(&fp.AdaptiveModelSelection, false)
+	resolvePtr(&fp.SelfImprovement, false)
+	resolvePtr(&fp.AdaptiveDepth, false)
+}

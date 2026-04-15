@@ -7,14 +7,27 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
+// leaseInvalidReason checks the core lease invariants shared between Phase C
+// fencing and heartbeat validation: task must be in_progress with a matching
+// epoch. Returns "" if valid, or "status"/"epoch" describing the failure.
+func leaseInvalidReason(status model.Status, leaseEpoch, expectedEpoch int) string {
+	if status != model.StatusInProgress {
+		return "status"
+	}
+	if leaseEpoch != expectedEpoch {
+		return "epoch"
+	}
+	return ""
+}
+
 // isFenceStale checks whether a queue entry has been modified since Phase A
 // by comparing lease epoch, status, and expiry. Used by Phase C apply methods
 // for both dispatch results and busy-check results.
 func isFenceStale(status model.Status, leaseEpoch int, leaseExpiresAt *string, expectedEpoch int, expectedExpiresAt string) bool {
-	return leaseEpoch != expectedEpoch ||
-		status != model.StatusInProgress ||
-		leaseExpiresAt == nil ||
-		*leaseExpiresAt != expectedExpiresAt
+	if leaseInvalidReason(status, leaseEpoch, expectedEpoch) != "" {
+		return true
+	}
+	return leaseExpiresAt == nil || *leaseExpiresAt != expectedExpiresAt
 }
 
 // isMaxInProgressTimeout checks whether the elapsed time since the given

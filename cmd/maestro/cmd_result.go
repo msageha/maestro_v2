@@ -1,12 +1,9 @@
 package main
 
 import (
-	"encoding/json"
 	"fmt"
-	"path/filepath"
 
 	"github.com/msageha/maestro_v2/internal/model"
-	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
 )
 
@@ -101,7 +98,7 @@ func (a *cliApp) runResultWrite(args []string) error {
 		params["skill_candidates"] = skillCandidates
 	}
 
-	client := a.createClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := a.newDaemonClient(maestroDir)
 	resp, err := client.SendCommand("result_write", params)
 	if err != nil {
 		return fmt.Errorf("maestro result write: %w", err)
@@ -115,10 +112,5 @@ func (a *cliApp) runResultWrite(args []string) error {
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro result write: [%s] %s", code, msg)}
 	}
 
-	out, err := json.MarshalIndent(resp.Data, "", "  ")
-	if err != nil {
-		return fmt.Errorf("maestro result write: format response json: %w", err)
-	}
-	fmt.Println(string(out))
-	return nil
+	return printJSONResponse(resp.Data, "result write")
 }

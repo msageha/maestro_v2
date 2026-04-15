@@ -151,19 +151,19 @@ func (h *TaskHeartbeatHandler) Handle(params json.RawMessage) *uds.Response {
 		return uds.ErrorResponse(uds.ErrCodeNotFound, fmt.Sprintf("task %s not found in queue %s", p.TaskID, queueFile))
 	}
 
-	// Validate task status
-	if task.Status != model.StatusInProgress {
-		h.log(LogLevelWarn, "heartbeat_rejected task=%s status=%s (not in_progress)", p.TaskID, task.Status)
-		return uds.ErrorResponse(uds.ErrCodeFencingReject,
-			fmt.Sprintf("task %s is %s, not in_progress", p.TaskID, task.Status))
-	}
-
-	// Validate epoch to prevent stale heartbeats
-	if task.LeaseEpoch != p.Epoch {
-		h.log(LogLevelWarn, "heartbeat_rejected task=%s epoch_mismatch queue=%d request=%d",
-			p.TaskID, task.LeaseEpoch, p.Epoch)
-		return uds.ErrorResponse(uds.ErrCodeFencingReject,
-			fmt.Sprintf("task %s epoch mismatch: queue=%d, request=%d", p.TaskID, task.LeaseEpoch, p.Epoch))
+	// Validate lease: task must be in_progress with matching epoch
+	if reason := leaseInvalidReason(task.Status, task.LeaseEpoch, p.Epoch); reason != "" {
+		switch reason {
+		case "status":
+			h.log(LogLevelWarn, "heartbeat_rejected task=%s status=%s (not in_progress)", p.TaskID, task.Status)
+			return uds.ErrorResponse(uds.ErrCodeFencingRejectStatus,
+				fmt.Sprintf("task %s is %s, not in_progress", p.TaskID, task.Status))
+		case "epoch":
+			h.log(LogLevelWarn, "heartbeat_rejected task=%s epoch_mismatch queue=%d request=%d",
+				p.TaskID, task.LeaseEpoch, p.Epoch)
+			return uds.ErrorResponse(uds.ErrCodeFencingRejectEpoch,
+				fmt.Sprintf("task %s epoch mismatch: queue=%d, request=%d", p.TaskID, task.LeaseEpoch, p.Epoch))
+		}
 	}
 
 	// Check max_in_progress_min limit using InProgressAt (set when task was dispatched).

@@ -362,16 +362,20 @@ func TestPlanExecutorImpl_CompleteSuccess(t *testing.T) {
 			OnOptionalFailed:        "ignore",
 			DependencyFailurePolicy: "cancel_dependents",
 		},
-		ExpectedTaskCount: 1,
-		RequiredTaskIDs:   []string{taskID1},
-		OptionalTaskIDs:   []string{},
-		TaskDependencies:  make(map[string][]string),
-		TaskStates:        map[string]model.Status{taskID1: model.StatusCompleted},
-		CancelledReasons:  make(map[string]string),
-		AppliedResultIDs:  make(map[string]string),
-		RetryLineage:      make(map[string]string),
-		CreatedAt:         "2025-01-01T00:00:00Z",
-		UpdatedAt:         "2025-01-01T00:00:00Z",
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 1,
+			RequiredTaskIDs:   []string{taskID1},
+			OptionalTaskIDs:   []string{},
+			TaskDependencies:  make(map[string][]string),
+			TaskStates:        map[string]model.Status{taskID1: model.StatusCompleted},
+			CancelledReasons:  make(map[string]string),
+			AppliedResultIDs:  make(map[string]string),
+		},
+		RetryTracking: model.RetryTracking{
+			RetryLineage: make(map[string]string),
+		},
+		CreatedAt: "2025-01-01T00:00:00Z",
+		UpdatedAt: "2025-01-01T00:00:00Z",
 	}
 	writeBridgeState(t, maestroDir, state)
 
@@ -446,22 +450,26 @@ func TestPlanExecutorImpl_AddRetryTaskSuccess(t *testing.T) {
 			OnOptionalFailed:        "ignore",
 			DependencyFailurePolicy: "cancel_dependents",
 		},
-		ExpectedTaskCount: 2,
-		RequiredTaskIDs:   []string{taskID1, taskID2},
-		OptionalTaskIDs:   []string{},
-		TaskDependencies: map[string][]string{
-			taskID1: {},
-			taskID2: {taskID1},
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 2,
+			RequiredTaskIDs:   []string{taskID1, taskID2},
+			OptionalTaskIDs:   []string{},
+			TaskDependencies: map[string][]string{
+				taskID1: {},
+				taskID2: {taskID1},
+			},
+			TaskStates: map[string]model.Status{
+				taskID1: model.StatusCompleted,
+				taskID2: model.StatusFailed,
+			},
+			CancelledReasons: make(map[string]string),
+			AppliedResultIDs: make(map[string]string),
 		},
-		TaskStates: map[string]model.Status{
-			taskID1: model.StatusCompleted,
-			taskID2: model.StatusFailed,
+		RetryTracking: model.RetryTracking{
+			RetryLineage: make(map[string]string),
 		},
-		CancelledReasons: make(map[string]string),
-		AppliedResultIDs: make(map[string]string),
-		RetryLineage:     make(map[string]string),
-		CreatedAt:        "2025-01-01T00:00:00Z",
-		UpdatedAt:        "2025-01-01T00:00:00Z",
+		CreatedAt: "2025-01-01T00:00:00Z",
+		UpdatedAt: "2025-01-01T00:00:00Z",
 	}
 	writeBridgeState(t, maestroDir, state)
 
@@ -510,13 +518,15 @@ func TestPlanExecutorImpl_RebuildSuccess(t *testing.T) {
 	commandID := "cmd_0000000030_aabbccdd"
 
 	state := &model.CommandState{
-		SchemaVersion:    1,
-		FileType:         "state_command",
-		CommandID:        commandID,
-		TaskStates:       map[string]model.Status{"task1": model.StatusPending},
-		AppliedResultIDs: make(map[string]string),
-		CreatedAt:        time.Now().UTC().Format(time.RFC3339),
-		UpdatedAt:        time.Now().UTC().Format(time.RFC3339),
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		TaskTracking: model.TaskTracking{
+			TaskStates:       map[string]model.Status{"task1": model.StatusPending},
+			AppliedResultIDs: make(map[string]string),
+		},
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
 	data, err := yamlv3.Marshal(state)

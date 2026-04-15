@@ -17,7 +17,7 @@ import (
 // heterogeneous models. All reviews are advisory and non-blocking.
 type ReviewDispatcher struct {
 	config        model.ReviewConfig
-	mu            sync.Mutex
+	mu            sync.RWMutex
 	activeReviews int
 	results       chan model.ReviewResult
 	wg            sync.WaitGroup
@@ -41,8 +41,8 @@ func (d *ReviewDispatcher) ShouldReview(task model.Task) bool {
 	if task.BloomLevel < d.config.EffectiveMinBloomLevel() {
 		return false
 	}
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	d.mu.RLock()
+	defer d.mu.RUnlock()
 	return d.activeReviews < d.config.EffectiveMaxConcurrentReviews()
 }
 
@@ -110,9 +110,9 @@ func (d *ReviewDispatcher) reviewTask(ctx context.Context, req model.ReviewReque
 	default:
 	}
 
-	// TODO: implement actual review logic — invoke the reviewer model and populate findings.
-	// Currently a placeholder that marks the review as completed without performing analysis.
-	log.Printf("WARN: reviewer: review %s for task %s (model=%s) is a placeholder — no actual review performed", req.ID, req.TaskID, req.ReviewerModel)
+	// PLACEHOLDER: actual review logic not yet implemented.
+	// When implemented, this should invoke the reviewer model and populate findings.
+	log.Printf("WARN: reviewer/placeholder: review=%s task=%s model=%s — no analysis performed, returning empty result", req.ID, req.TaskID, req.ReviewerModel)
 	result.Status = model.ReviewStatusCompleted
 	result.Findings = nil
 }

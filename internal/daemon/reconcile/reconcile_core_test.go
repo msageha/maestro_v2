@@ -442,17 +442,21 @@ func TestR0PlanningStuck_StuckCommand_Repaired(t *testing.T) {
 	// Create a planning state that is well past the threshold.
 	oldTime := now.Add(-20 * time.Minute).Format(time.RFC3339)
 	state := model.CommandState{
-		SchemaVersion:    1,
-		FileType:         "state_command",
-		CommandID:        commandID,
-		PlanStatus:       model.PlanStatusPlanning,
-		TaskDependencies: make(map[string][]string),
-		TaskStates:       make(map[string]model.Status),
-		CancelledReasons: make(map[string]string),
-		AppliedResultIDs: make(map[string]string),
-		RetryLineage:     make(map[string]string),
-		CreatedAt:        oldTime,
-		UpdatedAt:        oldTime,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanStatus:    model.PlanStatusPlanning,
+		TaskTracking: model.TaskTracking{
+			TaskDependencies: make(map[string][]string),
+			TaskStates:       make(map[string]model.Status),
+			CancelledReasons: make(map[string]string),
+			AppliedResultIDs: make(map[string]string),
+		},
+		RetryTracking: model.RetryTracking{
+			RetryLineage: make(map[string]string),
+		},
+		CreatedAt: oldTime,
+		UpdatedAt: oldTime,
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", commandID+".yaml"), state)
 
@@ -541,17 +545,21 @@ func TestR0PlanningStuck_NotYetStuck_Ignored(t *testing.T) {
 	// Create a planning state that is recent (below threshold).
 	recentTime := now.Add(-10 * time.Second).Format(time.RFC3339)
 	state := model.CommandState{
-		SchemaVersion:    1,
-		FileType:         "state_command",
-		CommandID:        "cmd_recent",
-		PlanStatus:       model.PlanStatusPlanning,
-		TaskDependencies: make(map[string][]string),
-		TaskStates:       make(map[string]model.Status),
-		CancelledReasons: make(map[string]string),
-		AppliedResultIDs: make(map[string]string),
-		RetryLineage:     make(map[string]string),
-		CreatedAt:        recentTime,
-		UpdatedAt:        recentTime,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd_recent",
+		PlanStatus:    model.PlanStatusPlanning,
+		TaskTracking: model.TaskTracking{
+			TaskDependencies: make(map[string][]string),
+			TaskStates:       make(map[string]model.Status),
+			CancelledReasons: make(map[string]string),
+			AppliedResultIDs: make(map[string]string),
+		},
+		RetryTracking: model.RetryTracking{
+			RetryLineage: make(map[string]string),
+		},
+		CreatedAt: recentTime,
+		UpdatedAt: recentTime,
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_recent.yaml"), state)
 
@@ -576,20 +584,24 @@ func TestR0bFillingStuck_WithFillingStartedAt(t *testing.T) {
 	state := model.CommandState{
 		CommandID:  "cmd_r0b_fill_started",
 		PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{
-				PhaseID:          "p1",
-				Name:             "phase-1",
-				Status:           model.PhaseStatusFilling,
-				FillingStartedAt: &fillingStarted,
-				TaskIDs:          []string{"task_1"},
+		TaskTracking: model.TaskTracking{
+			TaskStates:       map[string]model.Status{"task_1": model.StatusPending},
+			RequiredTaskIDs:  []string{"task_1"},
+			TaskDependencies: map[string][]string{"task_1": {}},
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID:          "p1",
+					Name:             "phase-1",
+					Status:           model.PhaseStatusFilling,
+					FillingStartedAt: &fillingStarted,
+					TaskIDs:          []string{"task_1"},
+				},
 			},
 		},
-		TaskStates:       map[string]model.Status{"task_1": model.StatusPending},
-		RequiredTaskIDs:  []string{"task_1"},
-		TaskDependencies: map[string][]string{"task_1": {}},
-		CreatedAt:        recentUpdate,
-		UpdatedAt:        recentUpdate,
+		CreatedAt: recentUpdate,
+		UpdatedAt: recentUpdate,
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_r0b_fill_started.yaml"), state)
 
@@ -627,13 +639,15 @@ func TestR0bFillingStuck_RecentFilling_NoRepair(t *testing.T) {
 	state := model.CommandState{
 		CommandID:  "cmd_r0b_recent",
 		PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{
-				PhaseID:          "p1",
-				Name:             "phase-1",
-				Status:           model.PhaseStatusFilling,
-				FillingStartedAt: &fillingStarted,
-				TaskIDs:          []string{"task_1"},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID:          "p1",
+					Name:             "phase-1",
+					Status:           model.PhaseStatusFilling,
+					FillingStartedAt: &fillingStarted,
+					TaskIDs:          []string{"task_1"},
+				},
 			},
 		},
 		CreatedAt: now.Format(time.RFC3339),
@@ -664,8 +678,10 @@ func TestR0bFillingStuck_GeneratesNotification(t *testing.T) {
 	state := model.CommandState{
 		CommandID:  "cmd_r0b_notif",
 		PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{PhaseID: "p1", Name: "phase-1", Status: model.PhaseStatusFilling, TaskIDs: []string{"t1"}},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "p1", Name: "phase-1", Status: model.PhaseStatusFilling, TaskIDs: []string{"t1"}},
+			},
 		},
 		CreatedAt: oldTime,
 		UpdatedAt: oldTime,
@@ -693,8 +709,10 @@ func TestR0bFillingStuck_NoExecutorFactory_NoNotification(t *testing.T) {
 	state := model.CommandState{
 		CommandID:  "cmd_r0b_noexec",
 		PlanStatus: model.PlanStatusSealed,
-		Phases: []model.Phase{
-			{PhaseID: "p1", Name: "phase-1", Status: model.PhaseStatusFilling, TaskIDs: []string{"t1"}},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{PhaseID: "p1", Name: "phase-1", Status: model.PhaseStatusFilling, TaskIDs: []string{"t1"}},
+			},
 		},
 		CreatedAt: oldTime,
 		UpdatedAt: oldTime,
@@ -759,20 +777,24 @@ func TestR0bFillingStuck_InvalidFillingStartedAt(t *testing.T) {
 			state := model.CommandState{
 				CommandID:  "cmd_r0b_" + tt.name,
 				PlanStatus: model.PlanStatusSealed,
-				Phases: []model.Phase{
-					{
-						PhaseID:          "p1",
-						Name:             "phase-1",
-						Status:           model.PhaseStatusFilling,
-						FillingStartedAt: tt.fillingStartedAt,
-						TaskIDs:          []string{"task_1"},
+				TaskTracking: model.TaskTracking{
+					TaskStates:       map[string]model.Status{"task_1": model.StatusPending},
+					RequiredTaskIDs:  []string{"task_1"},
+					TaskDependencies: map[string][]string{"task_1": {}},
+				},
+				PhaseTracking: model.PhaseTracking{
+					Phases: []model.Phase{
+						{
+							PhaseID:          "p1",
+							Name:             "phase-1",
+							Status:           model.PhaseStatusFilling,
+							FillingStartedAt: tt.fillingStartedAt,
+							TaskIDs:          []string{"task_1"},
+						},
 					},
 				},
-				TaskStates:       map[string]model.Status{"task_1": model.StatusPending},
-				RequiredTaskIDs:  []string{"task_1"},
-				TaskDependencies: map[string][]string{"task_1": {}},
-				CreatedAt:        updatedAt,
-				UpdatedAt:        updatedAt,
+				CreatedAt: updatedAt,
+				UpdatedAt: updatedAt,
 			}
 			yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_r0b_"+tt.name+".yaml"), state)
 
@@ -1036,12 +1058,14 @@ func TestR2ResultState_UnknownTask_Skipped(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
 
 	state := model.CommandState{
-		CommandID:        "cmd1",
-		PlanStatus:       model.PlanStatusSealed,
-		TaskStates:       map[string]model.Status{},
-		AppliedResultIDs: map[string]string{},
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		CommandID:  "cmd1",
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			TaskStates:       map[string]model.Status{},
+			AppliedResultIDs: map[string]string{},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
 
@@ -1116,12 +1140,14 @@ func TestR2ResultState_HappyPath_UpdatesStateToTerminal(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
 
 	state := model.CommandState{
-		CommandID:        "cmd1",
-		PlanStatus:       model.PlanStatusSealed,
-		TaskStates:       map[string]model.Status{"task1": model.StatusInProgress},
-		AppliedResultIDs: map[string]string{},
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		CommandID:  "cmd1",
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			TaskStates:       map[string]model.Status{"task1": model.StatusInProgress},
+			AppliedResultIDs: map[string]string{},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
 
@@ -1163,12 +1189,14 @@ func TestR2ResultState_Idempotent(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
 
 	state := model.CommandState{
-		CommandID:        "cmd1",
-		PlanStatus:       model.PlanStatusSealed,
-		TaskStates:       map[string]model.Status{"task1": model.StatusInProgress},
-		AppliedResultIDs: map[string]string{},
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		CommandID:  "cmd1",
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			TaskStates:       map[string]model.Status{"task1": model.StatusInProgress},
+			AppliedResultIDs: map[string]string{},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
 
@@ -1201,12 +1229,14 @@ func TestR2ResultState_AlreadyTerminal_NoRepair(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "worker1.yaml"), rf)
 
 	state := model.CommandState{
-		CommandID:        "cmd1",
-		PlanStatus:       model.PlanStatusSealed,
-		TaskStates:       map[string]model.Status{"task1": model.StatusCompleted},
-		AppliedResultIDs: map[string]string{"task1": "res1"},
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		CommandID:  "cmd1",
+		PlanStatus: model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			TaskStates:       map[string]model.Status{"task1": model.StatusCompleted},
+			AppliedResultIDs: map[string]string{"task1": "res1"},
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
 
@@ -1234,13 +1264,15 @@ func TestR2ResultState_MultipleTasks(t *testing.T) {
 	state := model.CommandState{
 		CommandID:  "cmd1",
 		PlanStatus: model.PlanStatusSealed,
-		TaskStates: map[string]model.Status{
-			"task1": model.StatusInProgress,
-			"task2": model.StatusInProgress,
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				"task1": model.StatusInProgress,
+				"task2": model.StatusInProgress,
+			},
+			AppliedResultIDs: map[string]string{},
 		},
-		AppliedResultIDs: map[string]string{},
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
 
@@ -1414,13 +1446,15 @@ func TestR2ResultState_MixedTerminalAndNonTerminal(t *testing.T) {
 	state := model.CommandState{
 		CommandID:  "cmd1",
 		PlanStatus: model.PlanStatusSealed,
-		TaskStates: map[string]model.Status{
-			"task1": model.StatusInProgress,
-			"task2": model.StatusInProgress,
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				"task1": model.StatusInProgress,
+				"task2": model.StatusInProgress,
+			},
+			AppliedResultIDs: map[string]string{},
 		},
-		AppliedResultIDs: map[string]string{},
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
 

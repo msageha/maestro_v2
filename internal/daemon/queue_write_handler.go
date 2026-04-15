@@ -83,50 +83,86 @@ func (h *QueueWriteAPI) handleQueueWriteCommand(params QueueWriteParams) *uds.Re
 		return resp
 	}
 
-	h.acquireFileLock()
-	defer h.releaseFileLock()
-	h.lockMap.Lock("queue:planner")
-	defer h.lockMap.Unlock("queue:planner")
+	return h.withQueueLocks([]string{"queue:planner"}, func() *uds.Response {
+		return h.executeCommandWrite(params)
+	})
+}
 
+// executeCommandWrite performs the locked portion of command queue write.
+func (h *QueueWriteAPI) executeCommandWrite(params QueueWriteParams) *uds.Response {
 	queuePath := commandQueuePath(h.maestroDir)
 	cq, data, err := loadCommandQueueFile(queuePath)
 	if err != nil {
 		return internalErrorf("%v", err)
 	}
 
-	// Backpressure: count pending commands only (spec: pending >= limit → reject)
-	if h.config.Limits.MaxPendingCommands > 0 {
-		pending := 0
-		for _, cmd := range cq.Commands {
-			if cmd.Status == model.StatusPending {
-				pending++
-			}
-		}
-		if pending >= h.config.Limits.MaxPendingCommands {
-			return uds.ErrorResponse(uds.ErrCodeBackpressure,
-				fmt.Sprintf("pending commands limit reached: %d/%d", pending, h.config.Limits.MaxPendingCommands))
-		}
+	if resp := checkCommandBackpressure(cq.Commands, h.config.Limits.MaxPendingCommands); resp != nil {
+		return resp
 	}
 
-	if resp := checkFileSizeLimit(h.config.Limits.MaxYAMLFileBytes, len(data), len(params.Content)+200); resp != nil {
-		archived := archiveTerminalCommands(&cq)
-		if archived > 0 {
-			newData, err := yamlv3.Marshal(cq)
-			if err != nil {
-				return internalErrorf("marshal queue after archive: %v", err)
-			}
-			if checkFileSizeLimit(h.config.Limits.MaxYAMLFileBytes, len(newData), len(params.Content)+200) != nil {
-				return resp
-			}
-			h.logFn(LogLevelInfo, "queue_write archive_commands archived=%d", archived)
-		} else {
-			return resp
-		}
+	if resp := ensureCommandCapacity(h, &cq, data, len(params.Content)+200); resp != nil {
+		return resp
 	}
 
-	id, err := model.GenerateID(model.IDTypeCommand)
+	entry, err := buildCommandEntry(params, h.clock)
 	if err != nil {
 		return internalErrorf("generate ID: %v", err)
+	}
+	cq.Commands = append(cq.Commands, entry)
+
+	if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
+		return internalErrorf("write queue: %v", err)
+	}
+	h.notifySelfWrite(queuePath, "command", cq)
+
+	h.logFn(LogLevelInfo, "queue_write type=command id=%s", entry.ID)
+	return uds.SuccessResponse(map[string]string{"id": entry.ID})
+}
+
+// checkCommandBackpressure rejects if pending commands reach the configured limit.
+func checkCommandBackpressure(commands []model.Command, maxPending int) *uds.Response {
+	if maxPending <= 0 {
+		return nil
+	}
+	pending := 0
+	for _, cmd := range commands {
+		if cmd.Status == model.StatusPending {
+			pending++
+		}
+	}
+	if pending >= maxPending {
+		return uds.ErrorResponse(uds.ErrCodeBackpressure,
+			fmt.Sprintf("pending commands limit reached: %d/%d", pending, maxPending))
+	}
+	return nil
+}
+
+// ensureCommandCapacity checks file size limit and archives terminal commands if needed.
+func ensureCommandCapacity(h *QueueWriteAPI, cq *model.CommandQueue, data []byte, estimatedAddition int) *uds.Response {
+	resp := checkFileSizeLimit(h.config.Limits.MaxYAMLFileBytes, len(data), estimatedAddition)
+	if resp == nil {
+		return nil
+	}
+	archived := archiveTerminalCommands(cq)
+	if archived == 0 {
+		return resp
+	}
+	newData, err := yamlv3.Marshal(*cq)
+	if err != nil {
+		return internalErrorf("marshal queue after archive: %v", err)
+	}
+	if checkFileSizeLimit(h.config.Limits.MaxYAMLFileBytes, len(newData), estimatedAddition) != nil {
+		return resp
+	}
+	h.logFn(LogLevelInfo, "queue_write archive_commands archived=%d", archived)
+	return nil
+}
+
+// buildCommandEntry constructs a new model.Command from the given params.
+func buildCommandEntry(params QueueWriteParams, clock Clock) (model.Command, error) {
+	id, err := model.GenerateID(model.IDTypeCommand)
+	if err != nil {
+		return model.Command{}, err
 	}
 
 	priority := params.Priority
@@ -134,8 +170,8 @@ func (h *QueueWriteAPI) handleQueueWriteCommand(params QueueWriteParams) *uds.Re
 		priority = model.DefaultPriority
 	}
 
-	now := h.clock.Now().UTC().Format(time.RFC3339)
-	cq.Commands = append(cq.Commands, model.Command{
+	now := clock.Now().UTC().Format(time.RFC3339)
+	return model.Command{
 		ID:        id,
 		Content:   params.Content,
 		SkillRefs: params.SkillRefs,
@@ -143,15 +179,7 @@ func (h *QueueWriteAPI) handleQueueWriteCommand(params QueueWriteParams) *uds.Re
 		Status:    model.StatusPending,
 		CreatedAt: now,
 		UpdatedAt: now,
-	})
-
-	if err := yamlutil.AtomicWrite(queuePath, cq); err != nil {
-		return internalErrorf("write queue: %v", err)
-	}
-	h.notifySelfWrite(queuePath, "command", cq)
-
-	h.logFn(LogLevelInfo, "queue_write type=command id=%s", id)
-	return uds.SuccessResponse(map[string]string{"id": id})
+	}, nil
 }
 
 // handleQueueWriteTask is an INTERNAL entrypoint for the queue_write "task"
@@ -167,18 +195,19 @@ func (h *QueueWriteAPI) handleQueueWriteTask(params QueueWriteParams) *uds.Respo
 		return resp
 	}
 
-	h.acquireFileLock()
-	defer h.releaseFileLock()
-
 	// Sanitize target: prevent directory traversal (before acquiring per-target lock)
 	if !validate.IsValidBaseName(params.Target) {
 		return uds.ErrorResponse(uds.ErrCodeValidation,
 			fmt.Sprintf("invalid target: %q", params.Target))
 	}
 
-	h.lockMap.Lock("queue:" + params.Target)
-	defer h.lockMap.Unlock("queue:" + params.Target)
+	return h.withQueueLocks([]string{"queue:" + params.Target}, func() *uds.Response {
+		return h.executeTaskWrite(params)
+	})
+}
 
+// executeTaskWrite performs the locked portion of task queue write.
+func (h *QueueWriteAPI) executeTaskWrite(params QueueWriteParams) *uds.Response {
 	queuePath := taskQueuePath(h.maestroDir, params.Target)
 	tq, data, err := loadTaskQueueFile(queuePath)
 	if err != nil {
@@ -285,11 +314,13 @@ func (h *QueueWriteAPI) handleQueueWriteNotification(params QueueWriteParams) *u
 		return resp
 	}
 
-	h.acquireFileLock()
-	defer h.releaseFileLock()
-	h.lockMap.Lock("queue:orchestrator")
-	defer h.lockMap.Unlock("queue:orchestrator")
+	return h.withQueueLocks([]string{"queue:orchestrator"}, func() *uds.Response {
+		return h.executeNotificationWrite(params, notifType)
+	})
+}
 
+// executeNotificationWrite performs the locked portion of notification queue write.
+func (h *QueueWriteAPI) executeNotificationWrite(params QueueWriteParams, notifType model.NotificationType) *uds.Response {
 	queuePath := notificationQueuePath(h.maestroDir)
 	nq, data, err := loadNotificationQueueFile(queuePath)
 	if err != nil {
@@ -414,14 +445,13 @@ func (h *QueueWriteAPI) handleQueueWriteCancelRequest(params QueueWriteParams) *
 // Sets cancel.requested=true on the state file (idempotent).
 // Lock order: scanMu.RLock → queue:planner → state:{cmd} (consistent with PeriodicScan).
 func (h *QueueWriteAPI) cancelRequestSubmitted(params QueueWriteParams, statePath string) *uds.Response {
-	h.acquireFileLock()
-	defer h.releaseFileLock()
-	h.lockMap.Lock("queue:planner")
-	defer h.lockMap.Unlock("queue:planner")
+	return h.withQueueLocks([]string{"queue:planner", "state:" + params.CommandID}, func() *uds.Response {
+		return h.executeCancelSubmitted(params, statePath)
+	})
+}
 
-	h.lockMap.Lock("state:" + params.CommandID)
-	defer h.lockMap.Unlock("state:" + params.CommandID)
-
+// executeCancelSubmitted performs the locked portion of submitted cancel-request.
+func (h *QueueWriteAPI) executeCancelSubmitted(params QueueWriteParams, statePath string) *uds.Response {
 	var alreadyRequested bool
 	now := h.clock.Now().UTC().Format(time.RFC3339)
 	requestedBy := params.RequestedBy
@@ -478,11 +508,13 @@ func (h *QueueWriteAPI) cancelRequestSubmitted(params QueueWriteParams, statePat
 // cancelRequestUnsubmitted handles cancel-request for un-submitted commands.
 // Directly cancels the command in queue/planner.yaml.
 func (h *QueueWriteAPI) cancelRequestUnsubmitted(params QueueWriteParams) *uds.Response {
-	h.acquireFileLock()
-	defer h.releaseFileLock()
-	h.lockMap.Lock("queue:planner")
-	defer h.lockMap.Unlock("queue:planner")
+	return h.withQueueLocks([]string{"queue:planner"}, func() *uds.Response {
+		return h.executeCancelUnsubmitted(params)
+	})
+}
 
+// executeCancelUnsubmitted performs the locked portion of unsubmitted cancel-request.
+func (h *QueueWriteAPI) executeCancelUnsubmitted(params QueueWriteParams) *uds.Response {
 	queuePath := commandQueuePath(h.maestroDir)
 	cq, _, err := loadCommandQueueFile(queuePath)
 	if err != nil {
@@ -527,6 +559,21 @@ func (h *QueueWriteAPI) cancelRequestUnsubmitted(params QueueWriteParams) *uds.R
 
 	h.logFn(LogLevelInfo, "queue_write type=cancel-request command=%s submitted=false cancelled", params.CommandID)
 	return uds.SuccessResponse(map[string]string{"command_id": params.CommandID, "status": "cancelled"})
+}
+
+// --- Lock helpers ---
+
+// withQueueLocks acquires the shared file lock and all per-resource lockMap keys,
+// executes fn, then releases everything in reverse order via defer.
+// This consolidates the acquireFileLock + lockMap.Lock pattern used by all write handlers.
+func (h *QueueWriteAPI) withQueueLocks(targets []string, fn func() *uds.Response) *uds.Response {
+	h.acquireFileLock()
+	defer h.releaseFileLock()
+	for _, t := range targets {
+		h.lockMap.Lock(t)
+		defer h.lockMap.Unlock(t)
+	}
+	return fn()
 }
 
 // --- Error response helpers ---

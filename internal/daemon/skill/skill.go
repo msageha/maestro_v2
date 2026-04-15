@@ -271,6 +271,8 @@ func readSkillByFrontmatterName(skillsDir, skillName, role string) (Content, err
 			}
 			meta, body, err := parseFrontmatter(string(data))
 			if err != nil {
+				slog.Warn("readSkillByFrontmatterName: failed to parse frontmatter",
+					"path", path, "skill", e.Name(), "error", err)
 				continue
 			}
 			if meta.Name == skillName {

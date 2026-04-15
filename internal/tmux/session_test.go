@@ -394,11 +394,24 @@ func TestSendTextAndSubmit_SingleLine(t *testing.T) {
 func TestSetupWorkerGrid_InvalidCount(t *testing.T) {
 	_, err := SetupWorkerGrid("dummy", 0)
 	if err == nil {
-		t.Error("expected error for count 0")
+		t.Fatal("expected error for count 0")
 	}
+	if !strings.Contains(err.Error(), "1-8") {
+		t.Errorf("error for count 0 should mention valid range 1-8, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "0") {
+		t.Errorf("error for count 0 should mention the invalid value, got: %v", err)
+	}
+
 	_, err = SetupWorkerGrid("dummy", 9)
 	if err == nil {
-		t.Error("expected error for count 9")
+		t.Fatal("expected error for count 9")
+	}
+	if !strings.Contains(err.Error(), "1-8") {
+		t.Errorf("error for count 9 should mention valid range 1-8, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "9") {
+		t.Errorf("error for count 9 should mention the invalid value, got: %v", err)
 	}
 }
 

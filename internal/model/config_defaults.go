@@ -185,3 +185,11 @@ func effectiveNonZero[T comparable](val, defaultVal T) T {
 	}
 	return defaultVal
 }
+
+// resolvePtr sets *ptr to &defaultVal when *ptr is nil, ensuring the pointer is always non-nil after normalization.
+func resolvePtr[T any](ptr **T, defaultVal T) {
+	if *ptr == nil {
+		v := defaultVal
+		*ptr = &v
+	}
+}

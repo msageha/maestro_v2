@@ -46,14 +46,16 @@ type CycleResult struct {
 // Engine manages evolutionary mutation planning, novelty checking, and survivor selection.
 type Engine struct {
 	strategies       []Strategy
+	strategyWeights  map[Strategy]int
 	noveltyThreshold float64
 	mu               sync.Mutex
 }
 
-// NewEngine creates a new evolution engine with the given strategies and novelty threshold.
-func NewEngine(strategies []Strategy, noveltyThreshold float64) *Engine {
+// NewEngine creates a new evolution engine with the given strategies, novelty threshold, and optional strategy weights.
+func NewEngine(strategies []Strategy, noveltyThreshold float64, weights map[Strategy]int) *Engine {
 	return &Engine{
 		strategies:       strategies,
+		strategyWeights:  weights,
 		noveltyThreshold: noveltyThreshold,
 	}
 }
@@ -75,13 +77,13 @@ func (e *Engine) PlanMutations(parentCount int) []MutationSlot {
 
 	var active []stratWeight
 	if hasDiff {
-		active = append(active, stratWeight{StrategyDiff, 2})
+		active = append(active, stratWeight{StrategyDiff, e.weightFor(StrategyDiff)})
 	}
 	if hasFull {
-		active = append(active, stratWeight{StrategyFull, 1})
+		active = append(active, stratWeight{StrategyFull, e.weightFor(StrategyFull)})
 	}
 	if hasCross {
-		active = append(active, stratWeight{StrategyCross, 1})
+		active = append(active, stratWeight{StrategyCross, e.weightFor(StrategyCross)})
 	}
 
 	if len(active) == 0 {
@@ -167,6 +169,27 @@ func (e *Engine) SelectSurvivors(results []SlotResult, maxSurvivors int) []int {
 		survivors[i] = candidates[i].originalIndex
 	}
 	return survivors
+}
+
+// defaultStrategyWeights are the built-in weights used when no custom weights are configured.
+var defaultStrategyWeights = map[Strategy]int{
+	StrategyDiff:  2,
+	StrategyFull:  1,
+	StrategyCross: 1,
+}
+
+// weightFor returns the configured weight for a strategy, defaulting to 1.
+func (e *Engine) weightFor(s Strategy) int {
+	if len(e.strategyWeights) > 0 {
+		if w, ok := e.strategyWeights[s]; ok && w > 0 {
+			return w
+		}
+		return 1
+	}
+	if w, ok := defaultStrategyWeights[s]; ok {
+		return w
+	}
+	return 1
 }
 
 func (e *Engine) hasStrategy(s Strategy) bool {

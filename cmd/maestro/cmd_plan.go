@@ -2,12 +2,10 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -31,7 +29,7 @@ const planPhaseFillTimeout = 120 * time.Second
 // runPlan dispatches plan subcommands (submit, complete, add-retry-task, add-task, request-cancel, rebuild).
 func (a *cliApp) runPlan(args []string) error {
 	if len(args) < 1 {
-		return &CLIError{Code: 1, Msg: "maestro plan: missing subcommand\nusage: maestro plan <submit|complete|add-retry-task|add-task|request-cancel|rebuild|unquarantine|resume-merge> [options]"}
+		return &CLIError{Code: 1, Msg: "maestro plan: missing subcommand\nusage: maestro plan <submit|complete|add-retry-task|add-task|request-cancel|rebuild|unquarantine|resume-merge|resolve-conflict> [options]"}
 	}
 	switch args[0] {
 	case "submit":
@@ -50,8 +48,10 @@ func (a *cliApp) runPlan(args []string) error {
 		return a.runPlanUnquarantine(args[1:])
 	case "resume-merge":
 		return a.runPlanResumeMerge(args[1:])
+	case "resolve-conflict":
+		return a.runResolveConflict(args[1:])
 	default:
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan: unknown subcommand: %s\nusage: maestro plan <submit|complete|add-retry-task|add-task|request-cancel|rebuild|unquarantine|resume-merge> [options]", args[0])}
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan: unknown subcommand: %s\nusage: maestro plan <submit|complete|add-retry-task|add-task|request-cancel|rebuild|unquarantine|resume-merge|resolve-conflict> [options]", args[0])}
 	}
 }
 
@@ -171,7 +171,7 @@ func (a *cliApp) sendPlanCommand(cmd string, maestroDir string, params map[strin
 	ctx, cancelTimeout := context.WithTimeout(ctx, timeout)
 	defer cancelTimeout()
 
-	client := a.createClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	client := a.newDaemonClient(maestroDir)
 	// Align the UDS connection deadline with the operation timeout so that
 	// the socket does not expire before the context.
 	client.SetTimeout(timeout)
@@ -193,10 +193,5 @@ func (a *cliApp) sendPlanCommand(cmd string, maestroDir string, params map[strin
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro %s: [%s] %s", cmd, code, msg)}
 	}
 
-	out, err := json.MarshalIndent(resp.Data, "", "  ")
-	if err != nil {
-		return fmt.Errorf("maestro %s: format response json: %w", cmd, err)
-	}
-	fmt.Println(string(out))
-	return nil
+	return printJSONResponse(resp.Data, cmd)
 }

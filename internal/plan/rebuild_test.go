@@ -82,9 +82,11 @@ func TestRebuild_NoResults(t *testing.T) {
 		SchemaVersion: 1,
 		FileType:      "state_command",
 		CommandID:     "cmd_test_1",
-		TaskStates:    map[string]model.Status{"task1": model.StatusPending},
-		CreatedAt:     time.Now().UTC().Format(time.RFC3339),
-		UpdatedAt:     time.Now().UTC().Format(time.RFC3339),
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{"task1": model.StatusPending},
+		},
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
 	writeRebuildState(t, dir, state)
 
@@ -112,13 +114,15 @@ func TestRebuild_AppliesLatestResult(t *testing.T) {
 
 	now := time.Now().UTC()
 	state := &model.CommandState{
-		SchemaVersion:  1,
-		FileType:       "state_command",
-		CommandID:      "cmd_test_2",
-		TaskStates:     map[string]model.Status{"task1": model.StatusPending},
-		AppliedResultIDs: make(map[string]string),
-		CreatedAt:      now.Format(time.RFC3339),
-		UpdatedAt:      now.Format(time.RFC3339),
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd_test_2",
+		TaskTracking: model.TaskTracking{
+			TaskStates:       map[string]model.Status{"task1": model.StatusPending},
+			AppliedResultIDs: make(map[string]string),
+		},
+		CreatedAt: now.Format(time.RFC3339),
+		UpdatedAt: now.Format(time.RFC3339),
 	}
 	writeRebuildState(t, dir, state)
 
@@ -176,9 +180,11 @@ func TestRebuild_IgnoresUnknownTasks(t *testing.T) {
 		SchemaVersion: 1,
 		FileType:      "state_command",
 		CommandID:     "cmd_test_3",
-		TaskStates:    map[string]model.Status{"task1": model.StatusPending},
-		CreatedAt:     now.Format(time.RFC3339),
-		UpdatedAt:     now.Format(time.RFC3339),
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{"task1": model.StatusPending},
+		},
+		CreatedAt: now.Format(time.RFC3339),
+		UpdatedAt: now.Format(time.RFC3339),
 	}
 	writeRebuildState(t, dir, state)
 
@@ -219,9 +225,11 @@ func TestRebuild_IgnoresOtherCommands(t *testing.T) {
 		SchemaVersion: 1,
 		FileType:      "state_command",
 		CommandID:     "cmd_test_4",
-		TaskStates:    map[string]model.Status{"task1": model.StatusPending},
-		CreatedAt:     now.Format(time.RFC3339),
-		UpdatedAt:     now.Format(time.RFC3339),
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{"task1": model.StatusPending},
+		},
+		CreatedAt: now.Format(time.RFC3339),
+		UpdatedAt: now.Format(time.RFC3339),
 	}
 	writeRebuildState(t, dir, state)
 
@@ -260,13 +268,15 @@ func TestRebuild_DeterministicTieBreak(t *testing.T) {
 
 	sameTime := time.Now().UTC().Format(time.RFC3339)
 	state := &model.CommandState{
-		SchemaVersion:  1,
-		FileType:       "state_command",
-		CommandID:      "cmd_test_5",
-		TaskStates:     map[string]model.Status{"task1": model.StatusPending},
-		AppliedResultIDs: make(map[string]string),
-		CreatedAt:      sameTime,
-		UpdatedAt:      sameTime,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd_test_5",
+		TaskTracking: model.TaskTracking{
+			TaskStates:       map[string]model.Status{"task1": model.StatusPending},
+			AppliedResultIDs: make(map[string]string),
+		},
+		CreatedAt: sameTime,
+		UpdatedAt: sameTime,
 	}
 	writeRebuildState(t, dir, state)
 
@@ -316,10 +326,12 @@ func TestRebuild_PrunesStaleAppliedResultIDs(t *testing.T) {
 		SchemaVersion: 1,
 		FileType:      "state_command",
 		CommandID:     "cmd_test_stale",
-		TaskStates:    map[string]model.Status{"task_live": model.StatusPending},
-		AppliedResultIDs: map[string]string{
-			"task_live":    "res_live_old",
-			"task_deleted": "res_ghost", // task no longer in TaskStates
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{"task_live": model.StatusPending},
+			AppliedResultIDs: map[string]string{
+				"task_live":    "res_live_old",
+				"task_deleted": "res_ghost", // task no longer in TaskStates
+			},
 		},
 		CreatedAt: now,
 		UpdatedAt: now,
@@ -367,13 +379,15 @@ func TestRebuild_NilAppliedResultIDs(t *testing.T) {
 
 	now := time.Now().UTC().Format(time.RFC3339)
 	state := &model.CommandState{
-		SchemaVersion:  1,
-		FileType:       "state_command",
-		CommandID:      "cmd_test_6",
-		TaskStates:     map[string]model.Status{"task1": model.StatusPending},
-		AppliedResultIDs: nil, // explicitly nil
-		CreatedAt:      now,
-		UpdatedAt:      now,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd_test_6",
+		TaskTracking: model.TaskTracking{
+			TaskStates:       map[string]model.Status{"task1": model.StatusPending},
+			AppliedResultIDs: nil, // explicitly nil
+		},
+		CreatedAt: now,
+		UpdatedAt: now,
 	}
 	writeRebuildState(t, dir, state)
 

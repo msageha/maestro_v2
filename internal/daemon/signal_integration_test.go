@@ -38,26 +38,30 @@ func setupPhasedCommandState(t *testing.T, d *Daemon, commandID, researchPhaseID
 	t.Helper()
 	now := time.Now().UTC().Format(time.RFC3339)
 	state := model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       commandID,
-		PlanStatus:      model.PlanStatusSealed,
-		RequiredTaskIDs: []string{"t1-research"},
-		TaskStates:      map[string]model.Status{"t1-research": model.StatusCompleted},
-		Phases: []model.Phase{
-			{
-				PhaseID: researchPhaseID,
-				Name:    "research",
-				Type:    "concrete",
-				Status:  model.PhaseStatusCompleted,
-				TaskIDs: []string{"t1-research"},
-			},
-			{
-				PhaseID:         implPhaseID,
-				Name:            "implementation",
-				Type:            "deferred",
-				Status:          implStatus,
-				DependsOnPhases: []string{"research"},
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{"t1-research"},
+			TaskStates:      map[string]model.Status{"t1-research": model.StatusCompleted},
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: researchPhaseID,
+					Name:    "research",
+					Type:    "concrete",
+					Status:  model.PhaseStatusCompleted,
+					TaskIDs: []string{"t1-research"},
+				},
+				{
+					PhaseID:         implPhaseID,
+					Name:            "implementation",
+					Type:            "deferred",
+					Status:          implStatus,
+					DependsOnPhases: []string{"research"},
+				},
 			},
 		},
 		CreatedAt: now,
@@ -579,27 +583,31 @@ func TestSignal_FillTimeoutCreatesSignal(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339)
 
 	state := model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       commandID,
-		PlanStatus:      model.PlanStatusSealed,
-		RequiredTaskIDs: []string{"t1-research"},
-		TaskStates:      map[string]model.Status{"t1-research": model.StatusCompleted},
-		Phases: []model.Phase{
-			{
-				PhaseID: "phase-research-009",
-				Name:    "research",
-				Type:    "concrete",
-				Status:  model.PhaseStatusCompleted,
-				TaskIDs: []string{"t1-research"},
-			},
-			{
-				PhaseID:         implPhaseID,
-				Name:            "implementation",
-				Type:            "deferred",
-				Status:          model.PhaseStatusAwaitingFill,
-				DependsOnPhases: []string{"research"},
-				FillDeadlineAt:  &pastDeadline,
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{"t1-research"},
+			TaskStates:      map[string]model.Status{"t1-research": model.StatusCompleted},
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: "phase-research-009",
+					Name:    "research",
+					Type:    "concrete",
+					Status:  model.PhaseStatusCompleted,
+					TaskIDs: []string{"t1-research"},
+				},
+				{
+					PhaseID:         implPhaseID,
+					Name:            "implementation",
+					Type:            "deferred",
+					Status:          model.PhaseStatusAwaitingFill,
+					DependsOnPhases: []string{"research"},
+					FillDeadlineAt:  &pastDeadline,
+				},
 			},
 		},
 		CreatedAt: now,
@@ -662,12 +670,14 @@ func TestSignal_CircuitBreakerTrippedDelivered(t *testing.T) {
 	now := time.Now().UTC().Format(time.RFC3339)
 	tripReason := "consecutive_failures=3 reached threshold=3"
 	state := model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       commandID,
-		PlanStatus:      model.PlanStatusSealed,
-		RequiredTaskIDs: []string{"t1"},
-		TaskStates:      map[string]model.Status{"t1": model.StatusFailed},
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{"t1"},
+			TaskStates:      map[string]model.Status{"t1": model.StatusFailed},
+		},
 		CircuitBreaker: model.CircuitBreakerState{
 			ConsecutiveFailures: 3,
 			Tripped:             true,
@@ -783,19 +793,23 @@ func TestSignal_PhaseOrphanStillRemoved(t *testing.T) {
 	// Setup: command state exists but WITHOUT the referenced phase
 	now := time.Now().UTC().Format(time.RFC3339)
 	state := model.CommandState{
-		SchemaVersion:   1,
-		FileType:        "state_command",
-		CommandID:       commandID,
-		PlanStatus:      model.PlanStatusSealed,
-		RequiredTaskIDs: []string{"t1"},
-		TaskStates:      map[string]model.Status{"t1": model.StatusCompleted},
-		Phases: []model.Phase{
-			{
-				PhaseID: "phase-real",
-				Name:    "real-phase",
-				Type:    "concrete",
-				Status:  model.PhaseStatusCompleted,
-				TaskIDs: []string{"t1"},
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			RequiredTaskIDs: []string{"t1"},
+			TaskStates:      map[string]model.Status{"t1": model.StatusCompleted},
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: "phase-real",
+					Name:    "real-phase",
+					Type:    "concrete",
+					Status:  model.PhaseStatusCompleted,
+					TaskIDs: []string{"t1"},
+				},
 			},
 		},
 		CreatedAt: now,
