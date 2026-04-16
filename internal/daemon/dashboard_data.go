@@ -163,9 +163,10 @@ func (f *DashboardFormatter) parseLogFile(data *DashboardData) error {
 	}
 
 	for scanner.Scan() {
-		// Copy scanner bytes: the underlying buffer is reused across Scan calls.
-		line := append([]byte(nil), scanner.Bytes()...)
-		f.parseLogEntry(data, line)
+		// scanner.Bytes() is valid until the next Scan call; parseLogEntry
+		// processes the slice synchronously (json.Unmarshal does not retain
+		// a reference), so no copy is needed.
+		f.parseLogEntry(data, scanner.Bytes())
 	}
 
 	return scanner.Err()
@@ -414,28 +415,31 @@ func dynamicTailBytes(fileSize int64) int64 {
 	return tail
 }
 
+// sortEventsByTimestampDesc sorts a DashboardEvent slice by timestamp descending (most recent first).
+func sortEventsByTimestampDesc(events []DashboardEvent) {
+	sort.Slice(events, func(i, j int) bool {
+		return events[i].Timestamp.After(events[j].Timestamp)
+	})
+}
+
+// truncateEvents returns events truncated to max length. If len(events) <= max, returns events unchanged.
+func truncateEvents(events []DashboardEvent, max int) []DashboardEvent {
+	if len(events) > max {
+		return events[:max]
+	}
+	return events
+}
+
 // sortEvents sorts all event lists by timestamp (most recent first)
 func (f *DashboardFormatter) sortEvents(data *DashboardData) {
-	sort.Slice(data.RecentEvents, func(i, j int) bool {
-		return data.RecentEvents[i].Timestamp.After(data.RecentEvents[j].Timestamp)
-	})
-	sort.Slice(data.RecentErrors, func(i, j int) bool {
-		return data.RecentErrors[i].Timestamp.After(data.RecentErrors[j].Timestamp)
-	})
-	sort.Slice(data.RecentWarnings, func(i, j int) bool {
-		return data.RecentWarnings[i].Timestamp.After(data.RecentWarnings[j].Timestamp)
-	})
+	sortEventsByTimestampDesc(data.RecentEvents)
+	sortEventsByTimestampDesc(data.RecentErrors)
+	sortEventsByTimestampDesc(data.RecentWarnings)
 }
 
 // limitEvents limits event lists to maximum counts
 func (f *DashboardFormatter) limitEvents(data *DashboardData) {
-	if len(data.RecentEvents) > f.maxEvents {
-		data.RecentEvents = data.RecentEvents[:f.maxEvents]
-	}
-	if len(data.RecentErrors) > f.maxErrors {
-		data.RecentErrors = data.RecentErrors[:f.maxErrors]
-	}
-	if len(data.RecentWarnings) > f.maxWarnings {
-		data.RecentWarnings = data.RecentWarnings[:f.maxWarnings]
-	}
+	data.RecentEvents = truncateEvents(data.RecentEvents, f.maxEvents)
+	data.RecentErrors = truncateEvents(data.RecentErrors, f.maxErrors)
+	data.RecentWarnings = truncateEvents(data.RecentWarnings, f.maxWarnings)
 }

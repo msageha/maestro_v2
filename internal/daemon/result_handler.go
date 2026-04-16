@@ -17,6 +17,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/validate"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -291,7 +292,7 @@ func processResultPhase3UpdateResult[T any, PT interface {
 		rh.log(LogLevelError, "write_result %s error=%v failures=%d/%d", spec.label, err, writeFailures, maxAtomicWriteFailures)
 		if writeFailures >= maxAtomicWriteFailures {
 			rh.lockMap.Unlock(spec.lockKey)
-			rh.log(LogLevelError, "write_result_abort %s consecutive_failures=%d", spec.label, writeFailures)
+			rh.log(LogLevelWarn, "write_result_abort %s consecutive_failures=%d threshold_reached", spec.label, writeFailures)
 			return writeFailures, success, phase3Abort
 		}
 	} else {
@@ -344,6 +345,10 @@ func processResultFile[T any, PT interface {
 // processWorkerResultFile processes worker results using the notification lease pattern.
 // Notifies Planner of each unnotified result.
 func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
+	if !validate.IsValidBaseName(workerID) {
+		rh.log(LogLevelWarn, "process_worker_result invalid_worker_id=%q", workerID)
+		return 0
+	}
 	resultPath := resultFilePath(rh.maestroDir, workerID)
 	label := "worker=" + workerID
 

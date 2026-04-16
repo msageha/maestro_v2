@@ -116,6 +116,11 @@ func (w *WatchLoop) tickerLoop() {
 // checkSessionHealth performs a detailed session health check with recovery detection.
 // When the session disappears, it sets the sessionLost flag and logs diagnostics.
 // When a previously lost session reappears, it clears the flag and logs recovery.
+//
+// Concurrency: d.sessionLost is an atomic.Bool accessed from tickerLoop (this
+// goroutine) and read by dispatch paths to suppress new task dispatch while the
+// session is lost. CompareAndSwap/Swap provide lock-free state transitions
+// without requiring d.mu, avoiding contention on the hot dispatch path.
 func (w *WatchLoop) checkSessionHealth() {
 	d := w.d
 	result := tmux.SessionHealthCheckDetailed()

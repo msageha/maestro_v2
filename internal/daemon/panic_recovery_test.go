@@ -15,6 +15,15 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
+const (
+	// panicRecoveryTimeout is the maximum time to wait for panic recovery
+	// side effects (shutdown flag, shutdownFn call) to propagate.
+	panicRecoveryTimeout = 5 * time.Second
+	// panicRecoveryPollInterval is the polling interval while waiting for
+	// panic recovery side effects.
+	panicRecoveryPollInterval = 5 * time.Millisecond
+)
+
 // syncBuffer is a thread-safe bytes.Buffer for use in tests where a log.Logger
 // may write concurrently while the test reads the buffer.
 type syncBuffer struct {
@@ -38,6 +47,9 @@ func (sb *syncBuffer) String() string {
 // EventBridge callback is recovered, a stack trace is logged, and
 // Daemon.Shutdown is invoked (shuttingDown flag becomes true).
 func TestEventBridge_PanicRecoveryCallsShutdown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping panic recovery test in short mode")
+	}
 	t.Parallel()
 
 	var logBuf syncBuffer
@@ -47,7 +59,11 @@ func TestEventBridge_PanicRecoveryCallsShutdown(t *testing.T) {
 	defer cancel()
 
 	bus := events.NewBus(ctx, 10)
-	defer bus.Close()
+	t.Cleanup(func() {
+		if err := bus.Close(); err != nil {
+			t.Errorf("bus.Close() error: %v", err)
+		}
+	})
 
 	d := &Daemon{
 		maestroDir: tmpDir,
@@ -84,12 +100,12 @@ func TestEventBridge_PanicRecoveryCallsShutdown(t *testing.T) {
 	})
 
 	// Wait for Shutdown to set the advisory flag.
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(panicRecoveryTimeout)
 	for time.Now().Before(deadline) {
 		if d.shuttingDown.Load() {
 			break
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(panicRecoveryPollInterval)
 	}
 
 	if !d.shuttingDown.Load() {
@@ -109,6 +125,9 @@ func TestEventBridge_PanicRecoveryCallsShutdown(t *testing.T) {
 // the debounced scanFn is recovered, a stack trace is logged, and the
 // configured shutdownFn is called.
 func TestDebounceController_PanicRecoveryCallsShutdown(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping panic recovery test in short mode")
+	}
 	t.Parallel()
 
 	var logBuf bytes.Buffer
@@ -130,12 +149,12 @@ func TestDebounceController_PanicRecoveryCallsShutdown(t *testing.T) {
 	dc.Trigger("test_trigger")
 
 	// Wait for the debounce timer to fire and the recovery to call shutdownFn.
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(panicRecoveryTimeout)
 	for time.Now().Before(deadline) {
 		if shutdownCalled.Load() {
 			break
 		}
-		time.Sleep(5 * time.Millisecond)
+		time.Sleep(panicRecoveryPollInterval)
 	}
 
 	dc.Stop()

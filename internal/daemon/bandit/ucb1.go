@@ -12,7 +12,7 @@ import (
 type ArmStats struct {
 	Name        string
 	TotalReward float64
-	PullCount   int
+	PullCount   int64
 	AvgReward   float64
 }
 
@@ -130,10 +130,10 @@ func (s *Selector) ucb1Score(arm *ArmStats) float64 {
 }
 
 // PullCounts returns a map of arm names to their pull counts.
-func (s *Selector) PullCounts() map[string]int {
+func (s *Selector) PullCounts() map[string]int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	result := make(map[string]int, len(s.arms))
+	result := make(map[string]int64, len(s.arms))
 	for name, arm := range s.arms {
 		result[name] = arm.PullCount
 	}

@@ -21,9 +21,10 @@ import (
 )
 
 // --- Test Helpers ---
-// TODO(DRY): fakeClock, setupTestDir, and newTestDeps are common test patterns
-// shared across reconcile and daemon test files. Consider consolidating into
-// a shared test helper package when the reconcile test suite stabilizes.
+// TODO(DRY): fakeClock, setupTestDir, newTestDeps are duplicated test patterns.
+// Duplicated in: daemon/queue_handler_test.go, daemon/worktree_test_helper_test.go
+// Target: internal/testutil/daemon.go (shared test helper package)
+// Prerequisite: reconcile and daemon test suite structure stabilization
 
 type fakeClock struct {
 	now time.Time

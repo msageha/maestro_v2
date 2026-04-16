@@ -114,6 +114,10 @@ func (d *ReviewDispatcher) reviewTask(ctx context.Context, req model.ReviewReque
 	}
 
 	// TODO(review): Implement actual model invocation for code review.
+	// Guard: the entire dispatch path is behind the review.enabled config flag.
+	//   - ShouldReview() returns false when !config.Enabled
+	//   - Dispatch() returns error when !config.Enabled
+	//   - newReviewCoordinator() returns nil when !cfg.Enabled
 	// Tracked in the review subsystem roadmap. When implemented, this should:
 	//   1. Invoke the reviewer model with the diff content from req.DiffContent
 	//   2. Parse the model response into []model.ReviewFinding

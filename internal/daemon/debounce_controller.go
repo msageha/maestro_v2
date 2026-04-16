@@ -137,6 +137,11 @@ func (dc *DebounceController) executeDebouncedScan(trigger string, done chan str
 	}
 
 	// Reset first-trigger tracking for next debounce window.
+	// Note on concurrency: firstTrigger is reset while running==true (CAS
+	// succeeded above). Any concurrent Trigger() call sees running==true and
+	// returns early, so no Trigger can observe a stale firstTrigger between
+	// the CAS and this reset. The mu lock here serializes against Trigger
+	// calls that arrive after running is cleared (deferred Store(false)).
 	dc.mu.Lock()
 	// Re-check shutdown under lock to close the TOCTOU window
 	// between the atomic check above and this critical section.

@@ -1,3 +1,8 @@
+// TODO(coverage): The following agent package files lack dedicated unit tests:
+//   - message_deliverer.go: sendAndConfirm, clearAndConfirm logic (currently
+//     tested indirectly via executor coverage tests, but no isolated unit tests)
+//   - executor_core.go: Core execution orchestration
+//   - process_manager.go: Claude process lifecycle management
 package agent
 
 import (

@@ -87,6 +87,11 @@ func removeSubscriber[T safeCloser](subs []T, target T) []T {
 // Bus is a non-blocking event bus using Publish/Subscribe pattern.
 // Events are delivered asynchronously via buffered channels.
 // If a subscriber's channel is full, the event is dropped and counted.
+//
+// NOTE: Bus uses the standard log package instead of DaemonLogger because
+// it is a generic event infrastructure component in the events package.
+// Introducing a daemon dependency would create a circular import
+// (daemon → events → daemon).
 type Bus struct {
 	mu               sync.RWMutex
 	closed           atomic.Bool
@@ -94,8 +99,9 @@ type Bus struct {
 	coalescedSubs    map[EventType][]*coalescedSub
 	bufferSize       int
 	wg               sync.WaitGroup
-	droppedCount     atomic.Int64 // global total for O(1) DroppedCount()
-	droppedByType    sync.Map     // EventType → *atomic.Int64
+	closeWg          sync.WaitGroup // tracks the waitDone goroutine spawned by Close()
+	droppedCount     atomic.Int64   // global total for O(1) DroppedCount()
+	droppedByType    sync.Map       // EventType → *atomic.Int64
 	ctx              context.Context
 	cancel           context.CancelFunc
 	activeGoroutines atomic.Int64
@@ -247,6 +253,15 @@ func (b *Bus) SubscribeCoalesced(eventType EventType, fn coalescedSubscriber) fu
 // Uses select with default to ensure non-blocking behavior.
 // If a subscriber's channel is full, the event is dropped for that subscriber.
 func (b *Bus) Publish(eventType EventType, data map[string]interface{}) {
+	// Defensive recover: catches send-on-closed-channel panics as a safety net
+	// beyond the double-check pattern, guarding against edge-case TOCTOU between
+	// Publish and Close.
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("WARN event_bus: recovered from panic in Publish for type %s: %v", eventType, r)
+		}
+	}()
+
 	if b.closed.Load() {
 		return
 	}
@@ -280,7 +295,7 @@ func (b *Bus) Publish(eventType EventType, data map[string]interface{}) {
 			typeCount := b.addDroppedByType(eventType)
 			// Log on first drop per type, then at exponential intervals (powers of 2)
 			if typeCount == 1 || typeCount&(typeCount-1) == 0 {
-				log.Printf("WARN event_bus: event dropped for type %s (type dropped: %d)", eventType, typeCount)
+				log.Printf("WARN event_bus: event dropped for type %s (type dropped: %d, buffer_size: %d)", eventType, typeCount, b.bufferSize)
 			}
 		}
 	}
@@ -356,10 +371,12 @@ func (b *Bus) Close() error {
 
 	// Wait for subscriber goroutines to finish with timeout.
 	// A single goroutine bridges sync.WaitGroup.Wait (which is not cancellable)
-	// to a channel select. It will self-terminate once all subscriber goroutines
-	// drain their already-closed channels, preventing goroutine leaks.
+	// to a channel select. It is tracked by closeWg so that callers can verify
+	// cleanup is complete even after Close returns on timeout.
 	waitDone := make(chan struct{})
+	b.closeWg.Add(1)
 	go func() {
+		defer b.closeWg.Done()
 		b.wg.Wait()
 		close(waitDone)
 	}()

@@ -3,11 +3,17 @@ package daemon
 import (
 	"context"
 	"runtime/debug"
+	"sync/atomic"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
 )
+
+// maxDrainGoroutines is the maximum number of concurrent drain goroutines
+// allowed per EventBridge. Exceeding this limit logs a warning indicating
+// callbacks are consistently failing to observe context cancellation.
+const maxDrainGoroutines int32 = 10
 
 // eventBridgeCallbackTimeout is the maximum duration for a single event bridge
 // callback execution. Prevents a hung callback from blocking the event bus.
@@ -18,6 +24,7 @@ const eventBridgeCallbackTimeout = 10 * time.Second
 type EventBridge struct {
 	d                  *Daemon
 	eventUnsubscribers []func()
+	activeDrains       atomic.Int32
 }
 
 // subscribeWithRecovery subscribes to an event type with panic recovery.
@@ -178,6 +185,11 @@ func (eb *EventBridge) runWithTimeout(callbackName string, fn func(ctx context.C
 		// fn SHOULD observe the passed context and exit promptly on cancellation;
 		// this goroutine is a safety net for callbacks that do not.
 		go func() {
+			current := eb.activeDrains.Add(1)
+			defer eb.activeDrains.Add(-1)
+			if current > maxDrainGoroutines {
+				eb.d.log(LogLevelWarn, "event_bridge drain goroutine count=%d exceeds limit=%d type=%s", current, maxDrainGoroutines, callbackName)
+			}
 			<-done
 			eb.d.log(LogLevelWarn, "event_bridge callback completed after timeout type=%s", callbackName)
 		}()

@@ -74,6 +74,9 @@ func (se *ScanPhaseExecutor) Execute(ctx context.Context) {
 	if se.qh.reconciler != nil && len(deferredNotifs) > 0 {
 		failed := se.qh.reconciler.ExecuteDeferredNotifications(deferredNotifs)
 		if len(failed) > 0 {
+			for _, n := range failed {
+				se.qh.log(LogLevelWarn, "reconciler_notification_failed kind=%s command_id=%s", n.Kind, n.CommandID)
+			}
 			se.qh.log(LogLevelWarn, "reconciler_notifications_failed count=%d", len(failed))
 		}
 	}

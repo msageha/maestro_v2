@@ -18,7 +18,7 @@ type BanditSelector interface {
 	AddArm(name string)
 	SelectArm() (string, error)
 	UpdateReward(armName string, reward float64)
-	PullCounts() map[string]int
+	PullCounts() map[string]int64
 	Reset()
 }
 
@@ -238,17 +238,17 @@ func (s *AdaptiveModelSelector) SelectModel(bloomLevel int, _ string) string {
 	pullCounts := s.bandit.PullCounts()
 
 	// §5-7: TraceDataRequirement — total pulls across all arms.
-	totalPulls := 0
+	var totalPulls int64
 	for _, count := range pullCounts {
 		totalPulls += count
 	}
-	if totalPulls < s.config.EffectiveTraceDataRequirement() {
+	if totalPulls < int64(s.config.EffectiveTraceDataRequirement()) {
 		return GetModelForBloomLevel(bloomLevel, false)
 	}
 
 	// MinSamplesBeforeUse — every arm must have enough observations.
 	for _, count := range pullCounts {
-		if count < s.minSamples {
+		if count < int64(s.minSamples) {
 			return GetModelForBloomLevel(bloomLevel, false)
 		}
 	}

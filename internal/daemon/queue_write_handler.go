@@ -10,6 +10,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
+	"github.com/msageha/maestro_v2/internal/validate"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -208,6 +209,9 @@ func (h *QueueWriteAPI) archiveTerminalTasks(tq *model.TaskQueue) int {
 // but other code paths (retry, submit) acquire state:{commandID} before
 // queue:{workerID}. Omitting the lock avoids the deadlock risk (CR-011).
 func readCommandPlanTerminal(maestroDir, commandID string) bool {
+	if err := validate.ID(commandID); err != nil {
+		return false
+	}
 	statePath := commandStatePath(maestroDir, commandID)
 	data, err := os.ReadFile(statePath) //nolint:gosec // statePath is constructed from a controlled application state directory
 	if err != nil {

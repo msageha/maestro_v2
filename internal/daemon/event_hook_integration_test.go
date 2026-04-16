@@ -31,7 +31,11 @@ func TestEventHookIntegration(t *testing.T) {
 	fixTestDirPerms(t, tmpDir)
 
 	bus := events.NewBus(context.Background(), 100)
-	defer bus.Close()
+	t.Cleanup(func() {
+		if err := bus.Close(); err != nil {
+			t.Errorf("bus.Close() error: %v", err)
+		}
+	})
 
 	var mu sync.Mutex
 	taskStartedEvents := []events.Event{}
@@ -212,7 +216,11 @@ func TestEventHookIntegration(t *testing.T) {
 // TestEventHookPerformance verifies that event hooks maintain 100ms loop performance.
 func TestEventHookPerformance(t *testing.T) {
 	bus := events.NewBus(context.Background(), 100)
-	defer bus.Close()
+	t.Cleanup(func() {
+		if err := bus.Close(); err != nil {
+			t.Errorf("bus.Close() error: %v", err)
+		}
+	})
 
 	// Add subscriber
 	unsub := bus.Subscribe(events.EventTaskStarted, func(e events.Event) {

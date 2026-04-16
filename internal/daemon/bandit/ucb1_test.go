@@ -165,7 +165,7 @@ func TestConcurrentSafety(t *testing.T) {
 	wg.Wait()
 
 	stats := s.GetStats()
-	total := 0
+	var total int64
 	for _, stat := range stats {
 		total += stat.PullCount
 	}

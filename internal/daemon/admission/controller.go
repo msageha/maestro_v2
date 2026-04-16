@@ -115,7 +115,7 @@ func (c *Controller) TryAcquire(op OpType) bool {
 	limit := c.maxFor(op)
 	if c.slots[op] >= limit {
 		c.consecutiveRejects[op]++
-		if c.saturationThreshold > 0 && c.consecutiveRejects[op] == c.saturationThreshold {
+		if c.saturationThreshold > 0 && c.consecutiveRejects[op]%c.saturationThreshold == 0 {
 			if c.logger != nil {
 				c.logger.Printf("[WARN] admission_persistent_saturation op=%s consecutive_rejects=%d limit=%d active=%d",
 					op, c.consecutiveRejects[op], limit, c.slots[op])

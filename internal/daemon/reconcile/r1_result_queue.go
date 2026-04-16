@@ -146,10 +146,19 @@ func r1ConsumeQueueWriteFailed(run *Run) []Repair {
 		}
 
 		// Inspect queue without state lock.
-		clearable := make(map[string]bool)
+		// Group pending items by workerID to read each queue file at most once,
+		// replacing per-item O(n) linear scans with a single map lookup per task.
+		byWorker := make(map[string][]string) // workerID → []taskID
 		for _, p := range snapshot {
-			if r1QueueTaskTerminal(run, p.workerID, p.taskID) {
-				clearable[p.taskID] = true
+			byWorker[p.workerID] = append(byWorker[p.workerID], p.taskID)
+		}
+		clearable := make(map[string]bool)
+		for wID, taskIDs := range byWorker {
+			terminalTasks := r1LoadQueueTerminalTasks(run, wID)
+			for _, tid := range taskIDs {
+				if terminalTasks[tid] {
+					clearable[tid] = true
+				}
 			}
 		}
 
@@ -206,10 +215,11 @@ func parseQueueWriteFailedValue(value string) (workerID, resultID string) {
 	return value[:idx], value[idx+1:]
 }
 
-// r1QueueTaskTerminal reports whether the named task is currently terminal in
-// the worker's queue. Acquires queue lock internally. Returns false on any
-// I/O or parse error (caller will retry on the next scan).
-func r1QueueTaskTerminal(run *Run, workerID, taskID string) bool {
+// r1LoadQueueTerminalTasks reads a worker's queue file once and returns a set
+// of task IDs that are in terminal state. Acquires queue lock internally.
+// Returns nil on any I/O or parse error (caller will retry on the next scan).
+// Used to batch-check multiple tasks against a single queue read.
+func r1LoadQueueTerminalTasks(run *Run, workerID string) map[string]bool {
 	queuePath := filepath.Join(run.Deps.MaestroDir, "queue", workerID+".yaml")
 
 	run.Deps.LockMap.Lock("queue:" + workerID)
@@ -217,16 +227,17 @@ func r1QueueTaskTerminal(run *Run, workerID, taskID string) bool {
 
 	data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 	if err != nil {
-		return false
+		return nil
 	}
 	var tq model.TaskQueue
 	if err := yamlv3.Unmarshal(data, &tq); err != nil {
-		return false
+		return nil
 	}
+	result := make(map[string]bool, len(tq.Tasks))
 	for _, task := range tq.Tasks {
-		if task.ID == taskID {
-			return model.IsTerminal(task.Status)
+		if model.IsTerminal(task.Status) {
+			result[task.ID] = true
 		}
 	}
-	return false
+	return result
 }

@@ -57,9 +57,12 @@ func (m *migrator) Migrate(data map[string]interface{}, fromVersion int) error {
 // defaultMigrator is the global migrator for state_command files.
 // Additional migrations are registered here as the schema evolves.
 //
-// TODO: Register migration steps when currentSchemaVersion is bumped above 1.
+// TODO(schema): Register migration steps when currentSchemaVersion is bumped above 1.
 //
-// Migration procedure:
+// Status: currentSchemaVersion=1, no migrations registered yet.
+// Prerequisite: a schema-breaking change to state_command YAML structure.
+//
+// Migration procedure (checklist for future developers):
 //  1. Increment currentSchemaVersion (e.g., 1 → 2).
 //  2. Register a migration function for the previous version:
 //     defaultMigrator.steps[1] = func(data map[string]interface{}) error {

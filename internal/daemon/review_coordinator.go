@@ -102,6 +102,9 @@ func (rc *ReviewCoordinator) MonitorResults() {
 // advisory review and dispatches it asynchronously. Failures are logged but
 // never block the caller.
 func (rc *ReviewCoordinator) DispatchIfEligible(ctx context.Context, params ResultWriteParams) {
+	if rc.dispatcher == nil {
+		return
+	}
 	queuePath := filepath.Join(rc.maestroDir, "queue", params.Reporter+".yaml")
 	data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 	if err != nil {
@@ -130,10 +133,13 @@ func (rc *ReviewCoordinator) DispatchIfEligible(ctx context.Context, params Resu
 		return
 	}
 
-	diffContent := params.Summary
+	var sb strings.Builder
+	sb.WriteString(params.Summary)
 	if len(params.FilesChanged) > 0 {
-		diffContent += "\n\nFiles changed: " + strings.Join(params.FilesChanged, ", ")
+		sb.WriteString("\n\nFiles changed: ")
+		sb.WriteString(strings.Join(params.FilesChanged, ", "))
 	}
+	diffContent := sb.String()
 
 	rc.registerRequest(params.TaskID, reviewTaskInfo{
 		taskID:    params.TaskID,

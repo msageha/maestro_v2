@@ -1685,7 +1685,11 @@ func TestIntegration_QualityGatePerformanceUnderLoad(t *testing.T) {
 // Scenario 25: Non-blocking rate-limited event flow under high load.
 func TestIntegration_LogSystemHighLoadStructuredAndRateLimited(t *testing.T) {
 	bus := events.NewBus(context.Background(), 1)
-	defer bus.Close()
+	t.Cleanup(func() {
+		if err := bus.Close(); err != nil {
+			t.Errorf("bus.Close() error: %v", err)
+		}
+	})
 
 	var consumed int64
 	unsub := bus.Subscribe(events.EventTaskStarted, func(e events.Event) {

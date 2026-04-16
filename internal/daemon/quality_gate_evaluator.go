@@ -144,9 +144,13 @@ func (e *QualityGateEvaluator) evictOldEvaluationsLocked() {
 		entries = append(entries, entry{taskID: id, evaluatedAt: t})
 	}
 
-	sort.Slice(entries, func(i, j int) bool {
+	if !sort.SliceIsSorted(entries, func(i, j int) bool {
 		return entries[i].evaluatedAt.Before(entries[j].evaluatedAt)
-	})
+	}) {
+		sort.Slice(entries, func(i, j int) bool {
+			return entries[i].evaluatedAt.Before(entries[j].evaluatedAt)
+		})
+	}
 
 	for i := 0; i < len(entries) && len(e.evaluations) > evictTarget; i++ {
 		delete(e.evaluations, entries[i].taskID)

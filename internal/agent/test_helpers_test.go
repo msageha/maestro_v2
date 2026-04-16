@@ -11,6 +11,23 @@ import (
 )
 
 // === mockPaneIO: callback-based PaneIO mock (used by busyDetector tests) ===
+//
+// Design intent: mockPaneIO provides per-method callback overrides (Fn fields)
+// so each test can inject exactly the behavior it needs without a monolithic
+// fake. Default behavior (nil callback) returns zero-value success, making it
+// safe to use in tests that only care about a subset of PaneIO methods.
+//
+// Constraints & trade-offs:
+//   - Callback-based design means mock state is scattered across test functions
+//     rather than centralized. This is acceptable for focused unit tests but
+//     makes complex integration scenarios harder to follow.
+//   - No call recording — use covMockPaneIO below when you need to assert
+//     call sequences or argument values.
+//
+// TODO: Consider consolidating mockPaneIO and covMockPaneIO into a unified
+// testutil package (e.g., testutil/mocks/pane_io.go) to reduce duplication
+// across agent package tests. The two mocks serve different patterns
+// (callback vs sequence) but share the same interface.
 
 // mockPaneIO implements PaneIO for testing busyDetector.
 type mockPaneIO struct {
@@ -155,6 +172,21 @@ func fastConfig() busyDetectorConfig {
 }
 
 // === covMockPaneIO: sequence-based PaneIO mock (used by executor coverage tests) ===
+//
+// Design intent: covMockPaneIO records all calls (in the `calls` slice) and
+// returns pre-configured response sequences (e.g., capturePaneSeq, getCmdSeq).
+// This enables tests to assert both the order of PaneIO interactions and the
+// Executor's behavior under specific response patterns (errors, shell detection).
+//
+// Constraints & trade-offs:
+//   - Sequence-based responses require test authors to predict exact call order,
+//     making tests brittle if Executor internals change call patterns.
+//   - seqIdx clamps to the last element when the sequence is exhausted, which
+//     silently repeats the final response rather than failing — intentional for
+//     robustness but can mask missing sequence entries.
+//
+// TODO: Consider extracting into testutil/mocks alongside mockPaneIO for
+// reuse in other packages that depend on PaneIO.
 
 // covMockPaneIO supports sequence-based responses for thorough coverage tests.
 type covMockPaneIO struct {

@@ -100,7 +100,7 @@ func readPaneVars(paneTarget string) (agentID, role, model string, err error) {
 		return "", "", "", fmt.Errorf("read @agent_id: %w", err)
 	}
 	if agentID == "" {
-		return "", "", "", fmt.Errorf("@agent_id is empty for pane %s", paneTarget)
+		return "", "", "", fmt.Errorf("@agent_id is empty for pane %s", sanitizeForLog(paneTarget))
 	}
 
 	role, err = tmux.GetUserVar(paneTarget, "role")
@@ -108,10 +108,10 @@ func readPaneVars(paneTarget string) (agentID, role, model string, err error) {
 		return "", "", "", fmt.Errorf("read @role: %w", err)
 	}
 	if role == "" {
-		return "", "", "", fmt.Errorf("@role is empty for pane %s", paneTarget)
+		return "", "", "", fmt.Errorf("@role is empty for pane %s", sanitizeForLog(paneTarget))
 	}
 	if !validRoleName.MatchString(role) {
-		return "", "", "", fmt.Errorf("invalid role name %q: must be alphanumeric, underscore, or hyphen", role)
+		return "", "", "", fmt.Errorf("invalid role name %q: must be alphanumeric, underscore, or hyphen", sanitizeForLog(role))
 	}
 
 	model, err = tmux.GetUserVar(paneTarget, "model")
@@ -119,7 +119,7 @@ func readPaneVars(paneTarget string) (agentID, role, model string, err error) {
 		return "", "", "", fmt.Errorf("read @model: %w", err)
 	}
 	if model == "" {
-		return "", "", "", fmt.Errorf("@model is empty for pane %s", paneTarget)
+		return "", "", "", fmt.Errorf("@model is empty for pane %s", sanitizeForLog(paneTarget))
 	}
 
 	return agentID, role, model, nil

@@ -155,9 +155,14 @@ if [ "$tool_name" = "Bash" ]; then
   fi
 
   # Block ANSI-C quoting ($'...' can encode arbitrary bytes to bypass pattern checks)
-  _ansi_re="(^|[[:space:]])[$]'"
+  _ansi_re="(^|[[:space:];|&({])[$]'"
   if echo "$cmd" | grep -qE "$_ansi_re"; then
     deny "C1: Blocked command containing ANSI-C quoting"
+  fi
+
+  # H-1: Block process substitution <(cmd) and >(cmd)
+  if echo "$cmd" | grep -qE '[<>]\('; then
+    deny "H1-PS: Blocked process substitution (<(cmd) or >(cmd))"
   fi
 
   # Block unsafe $(...) command substitution (allowlist approach)
@@ -175,13 +180,13 @@ if [ "$tool_name" = "Bash" ]; then
 
   # D001: OS/home/root destruction (case-insensitive for macOS)
   # Match both rm -rf and rm -fr (and variants like -fR, -Rf, -rRf, etc.)
-  if echo "$cmd" | grep -qiE 'rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+(/\s|/$|~|/Users)' || \
-     echo "$cmd" | grep -qiE 'rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+(/\s|/$|~|/Users)'; then
+  if echo "$cmd" | grep -qiE 'rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+(/\s|/$|~|/Users|/home|/root|/opt)' || \
+     echo "$cmd" | grep -qiE 'rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR][a-zA-Z]*\s+(/\s|/$|~|/Users|/home|/root|/opt)'; then
     deny "D001: Blocked rm -rf targeting system/home directory"
   fi
 
   # D001: Long-form flags (--recursive --force / --force --recursive)
-  if echo "$cmd" | grep -qiE 'rm\s+.*--(recursive|force)\s+.*--(recursive|force).*\s+(/\s|/$|~|/Users)'; then
+  if echo "$cmd" | grep -qiE 'rm\s+.*--(recursive|force)\s+.*--(recursive|force).*\s+(/\s|/$|~|/Users|/home|/root|/opt)'; then
     deny "D001: Blocked rm --recursive --force targeting system/home directory"
   fi
 
@@ -190,7 +195,7 @@ if [ "$tool_name" = "Bash" ]; then
   if echo "$cmd" | grep -qE 'rm\s' && \
      echo "$cmd" | grep -qE '(-[a-zA-Z]*[rR]|--recursive)' && \
      echo "$cmd" | grep -qE '(-[a-zA-Z]*f|--force)' && \
-     echo "$cmd" | grep -qE '(/\s|/$|~|/Users)'; then
+     echo "$cmd" | grep -qE '(/\s|/$|~|/Users|/home|/root|/opt)'; then
     deny "D001: Blocked rm with recursive+force targeting system/home directory"
   fi
 
@@ -350,6 +355,10 @@ if [ "$tool_name" = "Bash" ]; then
   if echo "$cmd" | grep -qE 'perl\s.*-[eE]\s.*\b(unlink|rmdir|rmtree|remove_tree)\b'; then
     deny "M-AGT1: Blocked destructive file operation via perl"
   fi
+  # M-PERL1: Perl indirect execution via eval/system/exec (variable indirection bypass)
+  if echo "$cmd" | grep -qE 'perl\s.*-[eE]\s.*\b(eval|system|exec)\b'; then
+    deny "M-PERL1: Blocked perl indirect command execution (eval/system/exec)"
+  fi
   if echo "$cmd" | grep -qE 'python[23]?\s.*-c\s.*\b(os\.remove|os\.unlink|os\.rmdir|shutil\.rmtree)\b'; then
     deny "M-AGT1: Blocked destructive file operation via python"
   fi
@@ -435,8 +444,10 @@ if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ]; then
     if echo "$_wt_check" | grep -qF '..'; then
       deny "WT001: Write outside worktree boundary: $file_path contains path traversal"
     fi
-    case "$_wt_check" in
-      "$worker_cwd"/*) ;; # OK: within worktree
+    _wt_lower="$(echo "$_wt_check" | tr '[:upper:]' '[:lower:]')"
+    _cwd_lower="$(echo "$worker_cwd" | tr '[:upper:]' '[:lower:]')"
+    case "$_wt_lower" in
+      "$_cwd_lower"/*) ;; # OK: within worktree (case-insensitive)
       *) deny "WT001: Write outside worktree boundary: $file_path is not within working directory $worker_cwd" ;;
     esac
   fi

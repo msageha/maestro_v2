@@ -12,6 +12,17 @@ import (
 // detected. Used as a tripwire before destructive filesystem operations
 // (e.g. `git clean -fd`, `git checkout -- .`, `git reset --hard`) to ensure
 // those operations cannot affect files outside the project tree.
+//
+// TOCTOU caveat: There is a race window between EvalSymlinks and the
+// subsequent filesystem operation — a symlink could be replaced between
+// the check and the use. This is acceptable because:
+//   - The check is defense-in-depth against misconfigured paths, not a
+//     security boundary against a hostile local attacker.
+//   - The worktree paths are created and managed by Manager, so symlink
+//     replacement between check and use is not a realistic attack vector
+//     in the intended deployment model.
+//   - Fully eliminating the TOCTOU would require O_NOFOLLOW + openat(2)
+//     on every path component, which is disproportionate to the threat.
 func ensureWithinProjectRoot(root, target string) error {
 	if root == "" {
 		return fmt.Errorf("project root is empty")

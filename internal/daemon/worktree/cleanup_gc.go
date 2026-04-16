@@ -175,8 +175,34 @@ func (wm *Manager) GC() error {
 
 	wm.detectAndRemoveOrphanWorktrees()
 	wm.gcBakFiles()
+	wm.gcOrphanedCmdLocks()
 
 	return nil
+}
+
+// gcOrphanedCmdLocks removes cmdLocks entries for commands whose state files
+// no longer exist. This handles the memory leak when cleanupCommandUnlocked's
+// TryLock fails (resolver is active): after the resolver completes, the entry
+// remains because the state file has already been removed. Caller must hold wm.mu.
+func (wm *Manager) gcOrphanedCmdLocks() {
+	stateDir := filepath.Join(wm.maestroDir, "state", "worktrees")
+	wm.cmdLocks.Range(func(key, value any) bool {
+		commandID, ok := key.(string)
+		if !ok {
+			return true
+		}
+		statePath := filepath.Join(stateDir, commandID+".yaml")
+		if _, err := os.Stat(statePath); os.IsNotExist(err) {
+			mu, ok := value.(*sync.Mutex)
+			if ok && mu.TryLock() {
+				wm.cmdLocks.Delete(commandID)
+				mu.Unlock()
+				wm.Log(core.LogLevelDebug, "gc_orphaned_cmd_lock command=%s", commandID)
+			}
+			// TryLock failure: resolver still active; will be cleaned up next GC cycle.
+		}
+		return true
+	})
 }
 
 // detectAndRemoveOrphanWorktrees cross-references git worktree list against

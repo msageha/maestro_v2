@@ -37,6 +37,11 @@ func newResultCache(maxSize int, ttl time.Duration) *resultCache {
 // Get retrieves a cached result by key. Uses an exclusive lock (not RLock)
 // because the method mutates internal state: MoveToFront updates the LRU
 // ordering, and expired entries are removed in place.
+//
+// Alternative considered: RWMutex with deferred LRU update (skip MoveToFront
+// under RLock, batch reordering on next write) would reduce contention under
+// read-heavy workloads but adds complexity. The current approach is chosen
+// for simplicity given the bounded cache size and moderate concurrency.
 func (c *resultCache) Get(key *cacheKey) *EvaluationResult {
 	c.mu.Lock()
 	defer c.mu.Unlock()

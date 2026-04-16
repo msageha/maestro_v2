@@ -3,13 +3,20 @@ package daemon
 import (
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
+
+// resolveRequestedBy returns val if non-empty, otherwise returns defaultVal.
+func resolveRequestedBy(val, defaultVal string) string {
+	if val == "" {
+		return defaultVal
+	}
+	return val
+}
 
 // handleQueueWriteCancelRequest processes cancel-request queue writes.
 //
@@ -57,11 +64,8 @@ func (h *QueueWriteAPI) cancelRequestSubmitted(params QueueWriteParams, statePat
 // executeCancelSubmitted performs the locked portion of submitted cancel-request.
 func (h *QueueWriteAPI) executeCancelSubmitted(params QueueWriteParams, statePath string) *uds.Response {
 	var alreadyRequested bool
-	now := h.clock.Now().UTC().Format(time.RFC3339)
-	requestedBy := params.RequestedBy
-	if requestedBy == "" {
-		requestedBy = "orchestrator"
-	}
+	now := formatNowUTC(h.clock)
+	requestedBy := resolveRequestedBy(params.RequestedBy, "orchestrator")
 
 	if err := updateYAMLFile(statePath, func(state *model.CommandState) error {
 		if state.Cancel.Requested {
@@ -125,11 +129,8 @@ func (h *QueueWriteAPI) executeCancelUnsubmitted(params QueueWriteParams) *uds.R
 		return internalErrorf("%v", err)
 	}
 
-	now := h.clock.Now().UTC().Format(time.RFC3339)
-	requestedBy := params.RequestedBy
-	if requestedBy == "" {
-		requestedBy = "orchestrator"
-	}
+	now := formatNowUTC(h.clock)
+	requestedBy := resolveRequestedBy(params.RequestedBy, "orchestrator")
 	found := false
 
 	for i := range cq.Commands {

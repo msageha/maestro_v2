@@ -1,3 +1,8 @@
+// TODO(coverage): The following plan package files lack dedicated unit tests:
+//   - submit_parse.go, submit_state.go, submit_assign.go: Plan submission pipeline
+//   - state_store.go: Plan state persistence (state_reader_test exists, store untested)
+//   - helpers.go, input.go: Utility functions
+//   - retry_cascade.go, retry_queue.go: Retry logic
 package plan
 
 import (

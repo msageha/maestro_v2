@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -404,10 +405,10 @@ func TestHookScript_S1_D002_DeniesRecursiveDeleteOutsideProject(t *testing.T) {
 		t.Fatalf("WriteHookScript: %v", err)
 	}
 
-	input := `{"tool_name":"Bash","tool_input":{"command":"rm -rf /home/user"}}`
+	input := `{"tool_name":"Bash","tool_input":{"command":"rm -rf /var/data"}}`
 	output := runHookScript(t, scriptPath, input)
 	if !strings.Contains(output, "D002") || !strings.Contains(output, "deny") {
-		t.Errorf("expected D002 deny for rm -rf /home/user, got: %s", output)
+		t.Errorf("expected D002 deny for rm -rf /var/data, got: %s", output)
 	}
 }
 
@@ -1621,6 +1622,267 @@ func TestHookScript_LegitimateCommandsNotBlocked(t *testing.T) {
 			output := runHookScript(t, scriptPath, input)
 			if strings.Contains(output, "deny") {
 				t.Errorf("BLOCKED legitimate command %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// C-1: ANSI-C quoting after shell operators
+// =============================================================================
+
+func TestHookScript_C1_BlocksAnsiCQuotingAfterOperators(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"after semicolon", "echo hello;$'\\x72\\x6d' -rf /"},
+		{"after pipe", "echo hello|$'cmd' arg"},
+		{"after double ampersand", "true&&$'cmd' arg"},
+		{"after open paren", "($'cmd' arg)"},
+		{"after open brace", "{$'cmd' arg;}"},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "C1") || !strings.Contains(output, "deny") {
+				t.Errorf("expected C1 deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_C1_AnsiCQuotingRegexContainsOperators(t *testing.T) {
+	// Verify the expanded anchor includes shell operators
+	if !strings.Contains(hookScript, `[[:space:];|&({]`) {
+		t.Error("ANSI-C quoting regex should include shell operator anchors ;|&({")
+	}
+}
+
+// =============================================================================
+// H-1: Process substitution blocking
+// =============================================================================
+
+func TestHookScript_H1PS_BlocksProcessSubstitution(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"input process sub", "diff <(sort file1) <(sort file2)"},
+		{"output process sub", "tee >(grep error > errors.log)"},
+		{"single input sub", "cat <(echo hello)"},
+		{"single output sub", "echo hello > >(cat)"},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "H1-PS") || !strings.Contains(output, "deny") {
+				t.Errorf("expected H1-PS deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_H1PS_AllowsNormalRedirects(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	allowed := []struct {
+		name string
+		cmd  string
+	}{
+		{"output redirect", "echo hello > output.txt"},
+		{"append redirect", "echo hello >> output.txt"},
+		{"input redirect", "sort < input.txt"},
+		{"stderr redirect", "go test ./... 2>&1"},
+		{"null redirect", "go build ./... > /dev/null 2>&1"},
+	}
+	for _, tc := range allowed {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if strings.Contains(output, "H1-PS") {
+				t.Errorf("should allow %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// H-2: D001 Linux path coverage
+// =============================================================================
+
+func TestHookScript_D001_BlocksLinuxPaths(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"rm -rf /home", "rm -rf /home"},
+		{"rm -rf /root", "rm -rf /root"},
+		{"rm -rf /opt", "rm -rf /opt"},
+		{"rm -fr /home", "rm -fr /home"},
+		{"rm --recursive --force /home", "rm --recursive --force /home"},
+		{"rm -r -f /root", "rm -r -f /root"},
+		{"rm -f -r /opt", "rm -f -r /opt"},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "D001") || !strings.Contains(output, "deny") {
+				t.Errorf("expected D001 deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_D001_LinuxPathsInRegex(t *testing.T) {
+	if !strings.Contains(hookScript, "/home") {
+		t.Error("D001 regex should include /home")
+	}
+	if !strings.Contains(hookScript, "/root") {
+		t.Error("D001 regex should include /root")
+	}
+	if !strings.Contains(hookScript, "/opt") {
+		t.Error("D001 regex should include /opt")
+	}
+}
+
+// =============================================================================
+// M-WT001: Case-insensitive worktree path comparison
+// =============================================================================
+
+func TestHookScript_WT001_ContainsCaseNormalization(t *testing.T) {
+	if !strings.Contains(hookScript, `_wt_lower`) {
+		t.Error("WT001 should use _wt_lower for case-insensitive path comparison")
+	}
+	if !strings.Contains(hookScript, `_cwd_lower`) {
+		t.Error("WT001 should use _cwd_lower for case-insensitive CWD comparison")
+	}
+	if !strings.Contains(hookScript, `tr '[:upper:]' '[:lower:]'`) {
+		t.Error("WT001 should use tr for case normalization")
+	}
+}
+
+func TestHookScript_WT001_CaseInsensitiveOnMacOS(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("case-insensitive FS test only applicable on macOS")
+	}
+	requireJq(t)
+	base := t.TempDir()
+
+	projectDir := filepath.Join(base, "project")
+	maestroDir := filepath.Join(projectDir, ".maestro")
+	worktreeDir := filepath.Join(maestroDir, "worktrees", "cmd_123", "worker1")
+	if err := os.MkdirAll(filepath.Join(worktreeDir, "internal"), 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// Use uppercase version of worktree path in file_path.
+	// On macOS (case-insensitive APFS/HFS+), these refer to the same directory.
+	upperWorktreeDir := strings.ToUpper(worktreeDir)
+	filePath := upperWorktreeDir + "/internal/foo.go"
+
+	input := fmt.Sprintf(`{"tool_name":"Write","tool_input":{"file_path":"%s","content":"package foo"}}`, filePath)
+	output := runHookScriptInDir(t, scriptPath, input, worktreeDir)
+	if strings.Contains(output, "WT001") {
+		t.Errorf("should allow case-different path on macOS (case-insensitive FS), got: %s", output)
+	}
+}
+
+// =============================================================================
+// M-PERL1: Perl indirect execution
+// =============================================================================
+
+func TestHookScript_MPERL1_BlocksPerlIndirectExecution(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"perl eval", `perl -e 'eval("print 42")'`},
+		{"perl system", `perl -e 'system("echo hello")'`},
+		{"perl exec", `perl -e 'exec("ls", "-la")'`},
+		{"perl -E eval", `perl -E 'eval("code")'`},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "M-PERL1") || !strings.Contains(output, "deny") {
+				t.Errorf("expected M-PERL1 deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_MPERL1_AllowsSafePerlOperations(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	allowed := []struct {
+		name string
+		cmd  string
+	}{
+		{"perl print", "perl -e 'print 42'"},
+		{"perl no -e", "perl script.pl"},
+		{"perl regex", "perl -e 'print if /pattern/'"},
+	}
+	for _, tc := range allowed {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if strings.Contains(output, "M-PERL1") {
+				t.Errorf("should allow %q, got: %s", tc.cmd, output)
 			}
 		})
 	}

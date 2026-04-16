@@ -73,9 +73,20 @@ type Manager struct {
 	// Lock hierarchy (must be acquired in this order):
 	//   scanMu (caller, outside this package) → cmdLocks[cmd] → wm.mu
 	//
-	// All code paths that need both cmdLocks and wm.mu MUST acquire
-	// cmdLocks first. Code that already holds wm.mu (e.g. GC) must use
-	// TryLock on cmdLocks to avoid hierarchy violation.
+	// Invariants:
+	//   1. All code paths that need both cmdLocks and wm.mu MUST acquire
+	//      cmdLocks first. Violating this order causes deadlock.
+	//   2. Code that already holds wm.mu (e.g. GC) must use TryLock on
+	//      cmdLocks to avoid hierarchy violation. TryLock failure means a
+	//      resolver is active; the operation should be deferred.
+	//   3. cmdLocks entries are cleaned up by CleanupCommand (direct delete)
+	//      and GC (TryLock+delete in cleanupCommandUnlocked, plus
+	//      gcOrphanedCmdLocks sweep for entries missed by TryLock).
+	//
+	// When adding new code paths: if the new code acquires wm.mu and also
+	// needs a per-command lock, it must release wm.mu first, acquire
+	// cmdLocks[cmd], then reacquire wm.mu. Alternatively, use TryLock
+	// and defer the operation on failure.
 	cmdLocks sync.Map
 
 	// testPublishResetHook, if non-nil, replaces git reset --hard HEAD during
@@ -319,7 +330,7 @@ func (wm *Manager) CommitWorkerChanges(commandID, workerID, message string) erro
 	// Check if there are changes to commit
 	statusOut, err := wm.gitOutputInDir(ws.Path, "status", "--porcelain")
 	if err != nil {
-		return fmt.Errorf("git status in %s: %w", ws.Path, err)
+		return fmt.Errorf("git status (worker=%s, command=%s): %w", workerID, commandID, err)
 	}
 	if strings.TrimSpace(statusOut) == "" {
 		wm.Log(core.LogLevelDebug, "no_changes_to_commit command=%s worker=%s", commandID, workerID)
@@ -328,7 +339,7 @@ func (wm *Manager) CommitWorkerChanges(commandID, workerID, message string) erro
 
 	// Stage tracked file modifications/deletions (safe: never stages untracked files)
 	if err := wm.gitRunInDir(ws.Path, "add", "-u"); err != nil {
-		return fmt.Errorf("git add -u in %s: %w", ws.Path, err)
+		return fmt.Errorf("git add -u (worker=%s, command=%s): %w", workerID, commandID, err)
 	}
 
 	// Unstage any sensitive tracked files that were staged by git add -u
@@ -338,13 +349,13 @@ func (wm *Manager) CommitWorkerChanges(commandID, workerID, message string) erro
 
 	// Stage untracked files that pass .gitignore and safety filters
 	if err := wm.stageNewFiles(ws.Path); err != nil {
-		return fmt.Errorf("stage new files in %s: %w", ws.Path, err)
+		return fmt.Errorf("stage new files (worker=%s, command=%s): %w", workerID, commandID, err)
 	}
 
 	// Re-check if there is anything staged after filtering
 	stagedOut, err := wm.gitOutputInDir(ws.Path, "diff", "--cached", "--name-only", "-z")
 	if err != nil {
-		return fmt.Errorf("git diff --cached in %s: %w", ws.Path, err)
+		return fmt.Errorf("git diff --cached (worker=%s, command=%s): %w", workerID, commandID, err)
 	}
 	if strings.TrimRight(stagedOut, "\x00") == "" {
 		// Worktree had dirty files but all were filtered — this is not a clean success.
@@ -382,7 +393,7 @@ func (wm *Manager) CommitWorkerChanges(commandID, workerID, message string) erro
 	}
 
 	if err := wm.gitRunInDir(ws.Path, "commit", "-m", message); err != nil {
-		return fmt.Errorf("git commit in %s: %w", ws.Path, err)
+		return fmt.Errorf("git commit (worker=%s, command=%s): %w", workerID, commandID, err)
 	}
 
 	now := wm.clock.Now().UTC().Format(time.RFC3339)
@@ -594,17 +605,17 @@ func (wm *Manager) DiscardWorkerChanges(commandID, workerID string) error {
 
 	// Reset staged changes so checkout can fully restore tracked files
 	if err := wm.gitRunInDir(ws.Path, "reset", "HEAD"); err != nil {
-		return fmt.Errorf("reset staged changes in %s: %w", ws.Path, err)
+		return fmt.Errorf("reset staged changes (worker=%s, command=%s): %w", workerID, commandID, err)
 	}
 
 	// Discard tracked file changes
 	if err := wm.gitRunInDir(ws.Path, "checkout", "--", "."); err != nil {
-		return fmt.Errorf("discard changes in %s: %w", ws.Path, err)
+		return fmt.Errorf("discard changes (worker=%s, command=%s): %w", workerID, commandID, err)
 	}
 
 	// Remove untracked files (but not .gitignore'd files)
 	if err := wm.gitRunInDir(ws.Path, "clean", "-fd"); err != nil {
-		return fmt.Errorf("clean untracked files in %s: %w", ws.Path, err)
+		return fmt.Errorf("clean untracked files (worker=%s, command=%s): %w", workerID, commandID, err)
 	}
 
 	wm.Log(core.LogLevelInfo, "worker_changes_discarded command=%s worker=%s", commandID, workerID)

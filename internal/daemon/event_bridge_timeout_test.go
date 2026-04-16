@@ -5,9 +5,29 @@ import (
 	"context"
 	"log"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+// safeBuffer wraps bytes.Buffer with a mutex for concurrent access.
+// Prevents DATA RACE between log writes (drain goroutine) and test reads.
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (sb *safeBuffer) Write(p []byte) (n int, err error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.Write(p)
+}
+
+func (sb *safeBuffer) String() string {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.String()
+}
 
 func TestEventBridge_RunWithTimeout_FastCallback(t *testing.T) {
 	t.Parallel()
@@ -45,7 +65,7 @@ func TestEventBridge_CallbackTimeoutConstant(t *testing.T) {
 func TestEventBridge_RunWithTimeout_DrainGoroutineLogsCompletion(t *testing.T) {
 	t.Parallel()
 
-	var logBuf bytes.Buffer
+	var logBuf safeBuffer
 	logger := log.New(&logBuf, "", 0)
 
 	d := &Daemon{
