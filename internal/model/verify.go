@@ -1,7 +1,9 @@
 package model
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,6 +86,20 @@ func (v *VerifyConfig) Validate() error {
 		}
 	}
 	return nil
+}
+
+// LoadOrDefaultVerifyConfig reads and parses a verify.yaml file.
+// If the file does not exist, it returns DefaultVerifyConfig() as a fallback.
+// If the file exists but cannot be parsed, it returns an error.
+func LoadOrDefaultVerifyConfig(path string) (*VerifyConfig, error) {
+	cfg, err := LoadVerifyConfig(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return DefaultVerifyConfig(), nil
+		}
+		return nil, err
+	}
+	return cfg, nil
 }
 
 // LoadVerifyConfig reads and parses a verify.yaml file.

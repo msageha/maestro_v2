@@ -73,8 +73,8 @@ type Task struct {
 	ToolsHint          []string           `yaml:"tools_hint,omitempty"`
 	PersonaHint        string             `yaml:"persona_hint,omitempty"`
 	SkillRefs          []string           `yaml:"skill_refs,omitempty"`
-	ExpectedPaths      []string           `yaml:"expected_paths,omitempty"`
-	DefinitionOfAbort  *DefinitionOfAbort `yaml:"definition_of_abort,omitempty"`
+	ExpectedPaths      []string           `yaml:"expected_paths"`
+	DefinitionOfAbort  *DefinitionOfAbort `yaml:"definition_of_abort"`
 	Priority           int                `yaml:"priority"`
 	Status             Status             `yaml:"status"`
 	Attempts           int                `yaml:"attempts"`

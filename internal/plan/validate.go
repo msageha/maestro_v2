@@ -285,11 +285,17 @@ func validateTaskFieldsCore(task TaskInput, fieldPrefix string, errs *Validation
 		}
 	}
 
-	// Validate expected_paths.
-	validateExpectedPaths(task.ExpectedPaths, fieldPrefix+".expected_paths", errs)
+	// Validate expected_paths (required after auto-completion).
+	if task.ExpectedPaths == nil {
+		errs.Add(fieldPrefix+".expected_paths", "required field is missing")
+	} else {
+		validateExpectedPaths(task.ExpectedPaths, fieldPrefix+".expected_paths", errs)
+	}
 
-	// Validate definition_of_abort.
-	if task.DefinitionOfAbort != nil {
+	// Validate definition_of_abort (required after auto-completion).
+	if task.DefinitionOfAbort == nil {
+		errs.Add(fieldPrefix+".definition_of_abort", "required field is missing")
+	} else {
 		validateDefinitionOfAbort(task.DefinitionOfAbort, fieldPrefix+".definition_of_abort", errs)
 	}
 

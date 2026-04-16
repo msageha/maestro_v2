@@ -192,6 +192,9 @@ func rollbackFullPhaseFill(sm stateStore, state *model.CommandState, phaseIdx in
 }
 
 func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm stateStore) (*SubmitResult, error) {
+	// Auto-complete defaults before validation
+	ApplyTaskDefaults(tasks)
+
 	// Validation
 	if verrs := ValidateTasksInput(tasks); verrs != nil {
 		return nil, verrs
@@ -265,6 +268,11 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm stateStore) (*
 }
 
 func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm stateStore) (*SubmitResult, error) {
+	// Auto-complete defaults for tasks within phases before validation
+	for i := range phases {
+		ApplyTaskDefaults(phases[i].Tasks)
+	}
+
 	// Validation
 	if verrs := ValidatePhasesInput(phases); verrs != nil {
 		return nil, verrs
@@ -385,6 +393,9 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	if targetPhase.Status != model.PhaseStatusAwaitingFill {
 		return nil, &planValidationError{Msg: fmt.Sprintf("phase %q status must be awaiting_fill, got %s", opts.PhaseName, targetPhase.Status)}
 	}
+
+	// Auto-complete defaults before validation
+	ApplyTaskDefaults(input.Tasks)
 
 	// Validate input against constraints
 	if verrs := ValidatePhaseFillInput(input.Tasks, *targetPhase); verrs != nil {

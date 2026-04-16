@@ -13,6 +13,22 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
+// ApplyTaskDefaults fills in default values for required fields that may be
+// omitted in Planner input for backward compatibility.
+// ExpectedPaths is set to an empty slice if nil; DefinitionOfAbort is set to
+// DefaultDefinitionOfAbort() if nil.
+func ApplyTaskDefaults(tasks []TaskInput) {
+	for i := range tasks {
+		if tasks[i].ExpectedPaths == nil {
+			tasks[i].ExpectedPaths = []string{}
+		}
+		if tasks[i].DefinitionOfAbort == nil {
+			d := model.DefaultDefinitionOfAbort()
+			tasks[i].DefinitionOfAbort = &d
+		}
+	}
+}
+
 func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks []TaskInput, nameToID map[string]string, commandID string, now string, lockMap *lock.MutexMap) error {
 	// Group tasks by worker
 	workerTasks := make(map[string][]model.Task)
@@ -46,6 +62,8 @@ func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks 
 			ToolsHint:          t.ToolsHint,
 			PersonaHint:        t.PersonaHint,
 			SkillRefs:          t.SkillRefs,
+			ExpectedPaths:      t.ExpectedPaths,
+			DefinitionOfAbort:  t.DefinitionOfAbort,
 			Priority:           100,
 			Status:             model.StatusPending,
 			CreatedAt:          now,

@@ -42,28 +42,37 @@ func TestDefaultFeatureProfiles(t *testing.T) {
 		t.Error("simple.ExploratoryOptimization should be false")
 	}
 
-	// Standard level: partial features
+	// Standard level: adaptive_model_selection only
 	std := profiles[ProfileLevelStandard]
-	if std.EffectiveCrossAgentReview() != "optional" {
-		t.Errorf("standard.CrossAgentReview = %q, want optional", std.EffectiveCrossAgentReview())
+	if std.EffectiveCrossAgentReview() != "false" {
+		t.Errorf("standard.CrossAgentReview = %q, want false", std.EffectiveCrossAgentReview())
 	}
 	if !std.EffectiveAdaptiveModelSelection() {
 		t.Error("standard.AdaptiveModelSelection should be true")
 	}
-	if !std.EffectiveAdaptiveDepth() {
-		t.Error("standard.AdaptiveDepth should be true")
+	if std.EffectiveAdaptiveDepth() {
+		t.Error("standard.AdaptiveDepth should be false")
 	}
 
-	// Complex level: most features on
-	complex := profiles[ProfileLevelComplex]
-	if complex.EffectiveCrossAgentReview() != "true" {
-		t.Errorf("complex.CrossAgentReview = %q, want true", complex.EffectiveCrossAgentReview())
+	// Complex level: adaptive_model_selection, cross_agent_review, adaptive_depth
+	cplx := profiles[ProfileLevelComplex]
+	if cplx.EffectiveCrossAgentReview() != "true" {
+		t.Errorf("complex.CrossAgentReview = %q, want true", cplx.EffectiveCrossAgentReview())
 	}
-	if !complex.EffectiveEvolutionaryQuality() {
-		t.Error("complex.EvolutionaryQuality should be true")
+	if !cplx.EffectiveAdaptiveModelSelection() {
+		t.Error("complex.AdaptiveModelSelection should be true")
 	}
-	if !complex.EffectiveSelfImprovement() {
-		t.Error("complex.SelfImprovement should be true")
+	if !cplx.EffectiveAdaptiveDepth() {
+		t.Error("complex.AdaptiveDepth should be true")
+	}
+	if cplx.EffectiveExploratoryOptimization() {
+		t.Error("complex.ExploratoryOptimization should be false")
+	}
+	if cplx.EffectiveEvolutionaryQuality() {
+		t.Error("complex.EvolutionaryQuality should be false")
+	}
+	if cplx.EffectiveSelfImprovement() {
+		t.Error("complex.SelfImprovement should be false")
 	}
 }
 
@@ -78,11 +87,18 @@ func TestIsFeatureEnabled(t *testing.T) {
 		{"simple", "cross_agent_review", false},
 		{"simple", "exploratory_optimization", false},
 		{"standard", "adaptive_model_selection", true},
-		{"standard", "adaptive_depth", true},
+		{"standard", "adaptive_depth", false},
+		{"standard", "cross_agent_review", false},
 		{"standard", "evolutionary_quality", false},
 		{"complex", "cross_agent_review", true},
-		{"complex", "self_improvement", true},
+		{"complex", "adaptive_model_selection", true},
+		{"complex", "adaptive_depth", true},
+		{"complex", "self_improvement", false},
+		{"complex", "exploratory_optimization", false},
+		{"complex", "evolutionary_quality", false},
 		{"critical", "evolutionary_quality", true},
+		{"critical", "self_improvement", true},
+		{"critical", "exploratory_optimization", true},
 		{"unknown_level", "cross_agent_review", false},
 		{"simple", "unknown_feature", false},
 	}

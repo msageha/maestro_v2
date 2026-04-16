@@ -17,9 +17,14 @@ func ValidateProfileLevel(s string) bool {
 }
 
 // DefaultFeatureProfiles returns the default feature profiles for all complexity levels.
+// SSOT is daemon/featuregate.Evaluator.DefaultProfiles(); keep in sync.
+//
+//	simple:   all features disabled
+//	standard: adaptive_model_selection only
+//	complex:  adaptive_model_selection, cross_agent_review, adaptive_depth
+//	critical: all features enabled
 func DefaultFeatureProfiles() map[string]FeatureProfile {
 	f := "false"
-	opt := "optional"
 	tr := "true"
 	return map[string]FeatureProfile{
 		ProfileLevelSimple: {
@@ -31,19 +36,19 @@ func DefaultFeatureProfiles() map[string]FeatureProfile {
 			AdaptiveDepth:           ptr.Bool(false),
 		},
 		ProfileLevelStandard: {
-			CrossAgentReview:        &opt,
+			CrossAgentReview:        &f,
 			ExploratoryOptimization: ptr.Bool(false),
 			EvolutionaryQuality:     ptr.Bool(false),
 			AdaptiveModelSelection:  ptr.Bool(true),
 			SelfImprovement:         ptr.Bool(false),
-			AdaptiveDepth:           ptr.Bool(true),
+			AdaptiveDepth:           ptr.Bool(false),
 		},
 		ProfileLevelComplex: {
 			CrossAgentReview:        &tr,
-			ExploratoryOptimization: ptr.Bool(true),
-			EvolutionaryQuality:     ptr.Bool(true),
+			ExploratoryOptimization: ptr.Bool(false),
+			EvolutionaryQuality:     ptr.Bool(false),
 			AdaptiveModelSelection:  ptr.Bool(true),
-			SelfImprovement:         ptr.Bool(true),
+			SelfImprovement:         ptr.Bool(false),
 			AdaptiveDepth:           ptr.Bool(true),
 		},
 		ProfileLevelCritical: {

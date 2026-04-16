@@ -243,7 +243,7 @@ func TestHookScript_ChecksWriteEditToolNames(t *testing.T) {
 func TestHookScript_ProtectsMaestroControlPlanePaths(t *testing.T) {
 	controlPaths := []string{
 		".maestro/state",
-		".maestro/queues",
+		".maestro/queue",
 		".maestro/results",
 		".maestro/locks",
 		".maestro/logs",
@@ -1525,7 +1525,7 @@ func TestHookScript_MAGT2_BlocksFileOpsOnMaestro(t *testing.T) {
 	}{
 		{"cp to maestro", "cp file.txt .maestro/state/tasks.yaml"},
 		{"mv to maestro", "mv file.txt .maestro/config.yaml"},
-		{"rsync to maestro", "rsync file.txt .maestro/queues/"},
+		{"rsync to maestro", "rsync file.txt .maestro/queue/"},
 		{"ln to maestro state", "ln -s /tmp/x .maestro/state/link"},
 		{"cp read maestro", "cp .maestro/state/tasks.yaml /tmp/"},
 		{"install to maestro", "install -m 644 file.txt .maestro/locks/"},
@@ -1830,6 +1830,85 @@ func TestHookScript_WT001_CaseInsensitiveOnMacOS(t *testing.T) {
 // =============================================================================
 // M-PERL1: Perl indirect execution
 // =============================================================================
+
+// =============================================================================
+// L1: .maestro/queue/ (singular) access blocking tests
+// =============================================================================
+
+func TestHookScript_L1_BlocksBashAccessToMaestroQueue(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"cat queue", "cat .maestro/queue/pending.yaml"},
+		{"ls queue", "ls .maestro/queue/"},
+		{"grep queue", "grep pattern .maestro/queue/tasks.yaml"},
+		{"cp queue", "cp .maestro/queue/pending.yaml /tmp/"},
+		{"mv to queue", "mv file.txt .maestro/queue/"},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "deny") {
+				t.Errorf("expected deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_L1_BlocksWriteEditToMaestroQueue(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"absolute Write queue", `{"tool_name":"Write","tool_input":{"file_path":"/project/.maestro/queue/pending.yaml","content":"x"}}`},
+		{"relative Write queue", `{"tool_name":"Write","tool_input":{"file_path":".maestro/queue/pending.yaml","content":"x"}}`},
+		{"absolute Edit queue", `{"tool_name":"Edit","tool_input":{"file_path":"/project/.maestro/queue/tasks.yaml","old_string":"a","new_string":"b"}}`},
+		{"relative Edit queue", `{"tool_name":"Edit","tool_input":{"file_path":".maestro/queue/tasks.yaml","old_string":"a","new_string":"b"}}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			output := runHookScript(t, scriptPath, tc.input)
+			if !strings.Contains(output, "deny") {
+				t.Errorf("expected deny for %s, got: %s", tc.name, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_L1_LauncherBlocksReadMaestroQueue(t *testing.T) {
+	// Verify launcher.go has Read(.maestro/queue/**) in disallowedTools for worker
+	args, err := buildLaunchArgs("worker", "sonnet", "system-prompt", "")
+	if err != nil {
+		t.Fatalf("buildLaunchArgs: %v", err)
+	}
+	joined := strings.Join(args, " ")
+
+	if !strings.Contains(joined, "Read(.maestro/queue/**)") {
+		t.Error("worker disallowedTools should contain Read(.maestro/queue/**)")
+	}
+	// Ensure the old plural form is NOT present
+	if strings.Contains(joined, "Read(.maestro/queues/**)") {
+		t.Error("worker disallowedTools should NOT contain old Read(.maestro/queues/**)")
+	}
+}
 
 func TestHookScript_MPERL1_BlocksPerlIndirectExecution(t *testing.T) {
 	requireJq(t)

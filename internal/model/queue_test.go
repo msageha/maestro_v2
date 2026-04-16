@@ -142,9 +142,16 @@ func TestTask_NewFields_Omitempty(t *testing.T) {
 		t.Fatalf("Unmarshal failed: %v", err)
 	}
 
-	if decoded.ExpectedPaths != nil {
-		t.Errorf("expected_paths: got %v, want nil", decoded.ExpectedPaths)
+	// expected_paths is no longer omitempty: nil marshals as "expected_paths: []",
+	// which round-trips to an empty (non-nil) slice.
+	if decoded.ExpectedPaths == nil {
+		t.Errorf("expected_paths: got nil, want empty slice")
 	}
+	if len(decoded.ExpectedPaths) != 0 {
+		t.Errorf("expected_paths: got %v, want empty", decoded.ExpectedPaths)
+	}
+	// definition_of_abort: nil pointer marshals as "definition_of_abort: null",
+	// which round-trips back to nil.
 	if decoded.DefinitionOfAbort != nil {
 		t.Errorf("definition_of_abort: got %v, want nil", decoded.DefinitionOfAbort)
 	}

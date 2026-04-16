@@ -75,6 +75,9 @@ type Daemon struct {
 	rolloutManager    *rollout.Manager
 	judgeCaller       *judge.Judge
 
+	// Verify config loaded at startup (always non-nil due to fallback)
+	verifyConfig *model.VerifyConfig
+
 	// Phase C components (grouped in PhaseCManager)
 	phaseC *PhaseCManager
 
@@ -82,6 +85,7 @@ type Daemon struct {
 	reviewCoord *ReviewCoordinator
 
 	eventBus    *events.Bus
+	traceWriter *TraceWriter      // JSONL trace writer for event persistence
 	tmuxLogFile io.Closer         // debug log for tmux operations
 	selfWrites  *selfWriteTracker // tracks daemon-originated YAML writes for fsnotify filtering
 

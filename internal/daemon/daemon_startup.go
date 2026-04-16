@@ -20,6 +20,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/judge"
 	"github.com/msageha/maestro_v2/internal/daemon/rollout"
 	"github.com/msageha/maestro_v2/internal/events"
+	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
 )
@@ -126,6 +127,15 @@ func (d *Daemon) cleanStaleTmpFiles() {
 // initComponents wires all daemon sub-components: handler, quality gate,
 // circuit breaker, worktree manager, and event bus subscriptions.
 func (d *Daemon) initComponents() {
+	// Load verify config with fallback to defaults
+	vcfg, err := model.LoadOrDefaultVerifyConfig(verifyConfigPath(d.maestroDir))
+	if err != nil {
+		d.log(LogLevelWarn, "verify_config load error=%v, using defaults", err)
+		vcfg = model.DefaultVerifyConfig()
+	}
+	d.verifyConfig = vcfg
+	d.log(LogLevelInfo, "verify_config loaded commands=%d", len(vcfg.AllCommands()))
+
 	d.handler = NewQueueHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
 	d.handler.SetShutdownGuard(d.ctx, &d.shuttingDown, d.Shutdown)
 	d.handler.SetSessionLostFlag(&d.sessionLost)
@@ -198,6 +208,23 @@ func (d *Daemon) initComponents() {
 
 	d.eventBus = events.NewBus(d.ctx, 100)
 	d.handler.SetEventBus(d.eventBus)
+
+	// Trace writer: persist all events to JSONL for post-mortem analysis.
+	tracePath := filepath.Join(d.maestroDir, "logs", "trace.jsonl")
+	if tw, err := NewTraceWriter(tracePath); err != nil {
+		d.log(LogLevelWarn, "trace writer disabled: %v", err)
+	} else {
+		d.traceWriter = tw
+		for _, et := range []events.EventType{
+			events.EventTaskStarted,
+			events.EventTaskCompleted,
+			events.EventPhaseTransition,
+			events.EventQueueWritten,
+		} {
+			d.eventBus.Subscribe(et, tw.HandleEvent)
+		}
+	}
+
 	if d.qualityGateDaemon != nil {
 		d.handler.SetQualityGate(d.qualityGateDaemon)
 	}

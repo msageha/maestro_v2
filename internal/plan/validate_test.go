@@ -9,6 +9,7 @@ import (
 )
 
 func validTask(name string) TaskInput {
+	d := model.DefaultDefinitionOfAbort()
 	return TaskInput{
 		Name:               name,
 		Purpose:            "test purpose",
@@ -16,6 +17,8 @@ func validTask(name string) TaskInput {
 		AcceptanceCriteria: "test criteria",
 		BloomLevel:         3,
 		Required:           true,
+		ExpectedPaths:      []string{},
+		DefinitionOfAbort:  &d,
 	}
 }
 
@@ -109,6 +112,7 @@ func TestValidateTasksInput_BloomLevelRange(t *testing.T) {
 }
 
 func TestValidateTasksInput_DAGCycle(t *testing.T) {
+	d := model.DefaultDefinitionOfAbort()
 	tasks := []TaskInput{
 		{
 			Name:               "a",
@@ -117,6 +121,8 @@ func TestValidateTasksInput_DAGCycle(t *testing.T) {
 			AcceptanceCriteria: "ac",
 			BloomLevel:         1,
 			BlockedBy:          []string{"b"},
+			ExpectedPaths:      []string{},
+			DefinitionOfAbort:  &d,
 		},
 		{
 			Name:               "b",
@@ -125,6 +131,8 @@ func TestValidateTasksInput_DAGCycle(t *testing.T) {
 			AcceptanceCriteria: "ac",
 			BloomLevel:         1,
 			BlockedBy:          []string{"a"},
+			ExpectedPaths:      []string{},
+			DefinitionOfAbort:  &d,
 		},
 	}
 
@@ -139,6 +147,7 @@ func TestValidateTasksInput_DAGCycle(t *testing.T) {
 }
 
 func TestValidateTasksInput_CrossRef(t *testing.T) {
+	d := model.DefaultDefinitionOfAbort()
 	tasks := []TaskInput{
 		{
 			Name:               "a",
@@ -147,6 +156,8 @@ func TestValidateTasksInput_CrossRef(t *testing.T) {
 			AcceptanceCriteria: "ac",
 			BloomLevel:         1,
 			BlockedBy:          []string{"nonexistent"},
+			ExpectedPaths:      []string{},
+			DefinitionOfAbort:  &d,
 		},
 	}
 
@@ -204,6 +215,38 @@ func TestValidateTasksInput_SkillRefsValidation(t *testing.T) {
 	}
 	if !strings.Contains(errs.Error(), "skill_refs") {
 		t.Errorf("expected error mentioning 'skill_refs', got: %s", errs.Error())
+	}
+}
+
+// --- nil checks for required fields ---
+
+func TestValidateTasksInput_ExpectedPaths_NilRejected(t *testing.T) {
+	task := validTask("ep-nil")
+	task.ExpectedPaths = nil
+	errs := ValidateTasksInput([]TaskInput{task})
+	if errs == nil {
+		t.Fatal("expected error for nil expected_paths")
+	}
+	if !strings.Contains(errs.Error(), "expected_paths") {
+		t.Errorf("expected 'expected_paths' in error, got: %s", errs.Error())
+	}
+	if !strings.Contains(errs.Error(), "required") {
+		t.Errorf("expected 'required' in error, got: %s", errs.Error())
+	}
+}
+
+func TestValidateTasksInput_DefinitionOfAbort_NilRejected(t *testing.T) {
+	task := validTask("doa-nil")
+	task.DefinitionOfAbort = nil
+	errs := ValidateTasksInput([]TaskInput{task})
+	if errs == nil {
+		t.Fatal("expected error for nil definition_of_abort")
+	}
+	if !strings.Contains(errs.Error(), "definition_of_abort") {
+		t.Errorf("expected 'definition_of_abort' in error, got: %s", errs.Error())
+	}
+	if !strings.Contains(errs.Error(), "required") {
+		t.Errorf("expected 'required' in error, got: %s", errs.Error())
 	}
 }
 

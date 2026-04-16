@@ -213,7 +213,7 @@ func buildLaunchArgs(role, agentModel, systemPrompt, basePromptMode string) ([]s
 				"Bash(maestro plan resume-merge:*)",
 				"Bash(maestro resolve-conflict:*)",
 				"Read(.maestro/state/**)",
-				"Read(.maestro/queues/**)",
+				"Read(.maestro/queue/**)",
 				"Read(.maestro/results/**)",
 				"Read(.maestro/locks/**)",
 				"Read(.maestro/logs/**)",

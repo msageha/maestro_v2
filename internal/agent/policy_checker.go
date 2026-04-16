@@ -370,14 +370,14 @@ if [ "$tool_name" = "Bash" ]; then
   fi
 
   # .maestro/ access via Bash (bypass prevention, case-insensitive for macOS)
-  if echo "$cmd" | grep -qiE '(cat|head|tail|less|more|vim|nano|sed|awk)\s+.*\.maestro/(state|queues|results|locks|logs|config|dashboard)'; then
+  if echo "$cmd" | grep -qiE '(cat|head|tail|less|more|vim|nano|sed|awk)\s+.*\.maestro/(state|queue|results|locks|logs|config|dashboard)'; then
     deny "Blocked .maestro/ control-plane access via Bash"
   fi
-  if echo "$cmd" | grep -qiE '(ls|find|grep|rg)\s+.*\.maestro/(state|queues|results|locks|logs|config|dashboard)'; then
+  if echo "$cmd" | grep -qiE '(ls|find|grep|rg)\s+.*\.maestro/(state|queue|results|locks|logs|config|dashboard)'; then
     deny "Blocked .maestro/ control-plane access via Bash"
   fi
   # M-AGT2: File manipulation commands accessing .maestro/ control-plane
-  if echo "$cmd" | grep -qiE '(cp|mv|rsync|ln|install|tar|zip)\s+.*\.maestro/(state|queues|results|locks|logs|config|dashboard)'; then
+  if echo "$cmd" | grep -qiE '(cp|mv|rsync|ln|install|tar|zip)\s+.*\.maestro/(state|queue|results|locks|logs|config|dashboard)'; then
     deny "Blocked .maestro/ control-plane access via Bash"
   fi
   # M-AGT2: Write operations targeting .maestro/ directory
@@ -408,10 +408,10 @@ if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ]; then
 
   # Block writes to .maestro/ control plane (absolute and relative paths)
   case "$file_path_lower" in
-    */.maestro/state/*|*/.maestro/queues/*|*/.maestro/results/*|*/.maestro/locks/*|*/.maestro/logs/*|*/.maestro/hooks/*|*/.maestro/config.yaml|*/.maestro/dashboard.md)
+    */.maestro/state/*|*/.maestro/queue/*|*/.maestro/results/*|*/.maestro/locks/*|*/.maestro/logs/*|*/.maestro/hooks/*|*/.maestro/config.yaml|*/.maestro/dashboard.md)
       deny "Blocked write to .maestro/ control-plane path"
       ;;
-    .maestro/state/*|.maestro/queues/*|.maestro/results/*|.maestro/locks/*|.maestro/logs/*|.maestro/hooks/*|.maestro/config.yaml|.maestro/dashboard.md)
+    .maestro/state/*|.maestro/queue/*|.maestro/results/*|.maestro/locks/*|.maestro/logs/*|.maestro/hooks/*|.maestro/config.yaml|.maestro/dashboard.md)
       deny "Blocked write to .maestro/ control-plane path (relative)"
       ;;
   esac

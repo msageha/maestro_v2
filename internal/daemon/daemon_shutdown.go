@@ -111,6 +111,9 @@ func (d *Daemon) Shutdown() {
 		if d.eventBus != nil {
 			d.shutdownOp("event_bus_close", func() error { return d.eventBus.Close() })
 		}
+		if d.traceWriter != nil {
+			d.shutdownOp("trace_writer_close", func() error { return d.traceWriter.Close() })
+		}
 		if d.qualityGateDaemon != nil {
 			d.shutdownOp("quality_gate_stop", func() error { return d.qualityGateDaemon.Stop() })
 		}
