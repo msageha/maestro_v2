@@ -44,62 +44,90 @@ func (h *ResultWriteAPI) persistLeaseRejection(params ResultWriteParams, advisor
 	defer h.lockMap.Unlock(resultLockKey)
 
 	// Re-verify lease epoch mismatch authoritatively under the queue lock.
-	// If the queue file is unreadable / parse-fails / task is gone, fall
-	// back to the advisory reason captured by the caller — the data is
-	// still considered lost.
+	queueLeaseEpoch, authoritativeReason, falsePositive := h.reVerifyLeaseEpoch(params, advisoryReason)
+	if falsePositive {
+		return "", false, nil
+	}
+
+	rf, resultPath, err := h.loadOrInitResultFile(params.Reporter)
+	if err != nil {
+		return "", false, err
+	}
+
+	return h.deduplicateAndPersistRejection(params, rf, resultPath, queueLeaseEpoch, authoritativeReason)
+}
+
+// reVerifyLeaseEpoch re-reads the task queue under the lock and checks whether
+// the lease epoch mismatch still holds. Returns the authoritative queue epoch,
+// the reason string, and a boolean indicating false positive (epoch now matches).
+func (h *ResultWriteAPI) reVerifyLeaseEpoch(params ResultWriteParams, advisoryReason string) (int, string, bool) {
 	queuePath := taskQueuePath(h.maestroDir, params.Reporter)
 	queueLeaseEpoch := -1
 	authoritativeReason := advisoryReason
-	if data, err := os.ReadFile(queuePath); err == nil { //nolint:gosec // queuePath is constructed from a controlled application queue directory
-		var tq model.TaskQueue
-		if perr := yamlv3.Unmarshal(data, &tq); perr == nil {
-			found := false
-			for _, task := range tq.Tasks {
-				if task.ID == params.TaskID {
-					found = true
-					queueLeaseEpoch = task.LeaseEpoch
-					if task.LeaseEpoch == params.LeaseEpoch {
-						// Race: epoch matches under the lock. Tell the
-						// caller this was a false positive so it can
-						// re-enable best-effort writes.
-						return "", false, nil
-					}
-					authoritativeReason = fmt.Sprintf(
-						"lease_epoch_mismatch_under_lock: queue=%d request=%d",
-						task.LeaseEpoch, params.LeaseEpoch)
-					break
-				}
-			}
-			if !found {
-				authoritativeReason = "task_archived_after_lease_revoke"
-			}
-		}
+
+	data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
+	if err != nil {
+		return queueLeaseEpoch, authoritativeReason, false
 	}
 
-	resultPath := resultFilePath(h.maestroDir, params.Reporter)
+	var tq model.TaskQueue
+	if perr := yamlv3.Unmarshal(data, &tq); perr != nil {
+		return queueLeaseEpoch, authoritativeReason, false
+	}
+
+	found := false
+	for _, task := range tq.Tasks {
+		if task.ID == params.TaskID {
+			found = true
+			queueLeaseEpoch = task.LeaseEpoch
+			if task.LeaseEpoch == params.LeaseEpoch {
+				// Race: epoch matches under the lock — false positive.
+				return queueLeaseEpoch, "", true
+			}
+			authoritativeReason = fmt.Sprintf(
+				"lease_epoch_mismatch_under_lock: queue=%d request=%d",
+				task.LeaseEpoch, params.LeaseEpoch)
+			break
+		}
+	}
+	if !found {
+		authoritativeReason = "task_archived_after_lease_revoke"
+	}
+	return queueLeaseEpoch, authoritativeReason, false
+}
+
+// loadOrInitResultFile loads the reporter's result file, initializing schema
+// defaults if the file doesn't exist yet.
+func (h *ResultWriteAPI) loadOrInitResultFile(reporter string) (model.TaskResultFile, string, error) {
+	resultPath := resultFilePath(h.maestroDir, reporter)
 	var rf model.TaskResultFile
 	if data, err := os.ReadFile(resultPath); err == nil { //nolint:gosec // resultPath is constructed from a controlled application results directory
 		if perr := yamlv3.Unmarshal(data, &rf); perr != nil {
-			return "", false, fmt.Errorf("parse results file: %w", perr)
+			return rf, resultPath, fmt.Errorf("parse results file: %w", perr)
 		}
 	} else if !os.IsNotExist(err) {
-		return "", false, fmt.Errorf("read results file: %w", err)
+		return rf, resultPath, fmt.Errorf("read results file: %w", err)
 	}
 
 	if rf.SchemaVersion == 0 {
 		rf.SchemaVersion = 1
 		rf.FileType = "result_task"
 	}
+	return rf, resultPath, nil
+}
 
-	// Dedup key includes queueLeaseEpoch so that a fresh revoke against
-	// the same payload (e.g. queue epoch advanced 2→3) produces a new
-	// audit record rather than collapsing into a stale one.
+// deduplicateAndPersistRejection checks for duplicate rejections and, if none
+// found, creates and persists a new RejectedSubmission entry.
+func (h *ResultWriteAPI) deduplicateAndPersistRejection(
+	params ResultWriteParams,
+	rf model.TaskResultFile,
+	resultPath string,
+	queueLeaseEpoch int,
+	authoritativeReason string,
+) (string, bool, error) {
 	dedupKey := computeRejectionDedupKey(params, queueLeaseEpoch)
 	for _, existing := range rf.RejectedSubmissions {
 		if existing.DedupKey == dedupKey {
-			// Identical stale retry against the same authoritative queue
-			// epoch — return the existing record's ID, don't grow the
-			// audit log.
 			return existing.ID, true, nil
 		}
 	}

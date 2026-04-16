@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,7 +37,7 @@ func TestSyncFromIntegration(t *testing.T) {
 	}
 
 	// Merge worker1 to integration
-	if _, err := wm.MergeToIntegration("cmd_test_sync", []string{"worker1"}, nil); err != nil {
+	if _, err := wm.MergeToIntegration(context.Background(), "cmd_test_sync", []string{"worker1"}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -106,7 +107,7 @@ func TestMergeToIntegration_PreservesProjectRootHEAD(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := wm.MergeToIntegration("cmd_h3_merge", workers, nil); err != nil {
+	if _, err := wm.MergeToIntegration(context.Background(), "cmd_h3_merge", workers, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -154,7 +155,7 @@ func TestPublishToBase_PreservesProjectRootHEAD(t *testing.T) {
 	if err := wm.CommitWorkerChanges("cmd_h3_pub", "worker1", "add pub_test.txt"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := wm.MergeToIntegration("cmd_h3_pub", workers, nil); err != nil {
+	if _, err := wm.MergeToIntegration(context.Background(), "cmd_h3_pub", workers, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -207,7 +208,7 @@ func TestPublishToBase_RejectsUncommittedChanges(t *testing.T) {
 	}
 
 	// Merge to integration
-	if _, err := wm.MergeToIntegration("cmd_dirty", workers, nil); err != nil {
+	if _, err := wm.MergeToIntegration(context.Background(), "cmd_dirty", workers, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -263,7 +264,7 @@ func TestSyncFromIntegration_SkipsConflictWorker(t *testing.T) {
 	}
 
 	// Merge — worker2 will conflict
-	conflicts, err := wm.MergeToIntegration("cmd_m2", workers, nil)
+	conflicts, err := wm.MergeToIntegration(context.Background(), "cmd_m2", workers, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +321,7 @@ func TestSyncFromIntegration_SkipsDirtyWorktree(t *testing.T) {
 	}
 
 	// Merge worker1 to integration
-	if _, err := wm.MergeToIntegration("cmd_m3", []string{"worker1"}, nil); err != nil {
+	if _, err := wm.MergeToIntegration(context.Background(), "cmd_m3", []string{"worker1"}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -813,7 +814,7 @@ func TestCommitWorkerChanges_RejectsInvalidTransition(t *testing.T) {
 	}
 
 	// Merge to integration to transition worker to "integrated"
-	if _, err := wm.MergeToIntegration(commandID, []string{"worker1"}, nil); err != nil {
+	if _, err := wm.MergeToIntegration(context.Background(), commandID, []string{"worker1"}, nil); err != nil {
 		t.Fatalf("MergeToIntegration: %v", err)
 	}
 

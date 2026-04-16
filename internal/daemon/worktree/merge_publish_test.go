@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -235,7 +236,7 @@ func TestMergeToIntegration_PathGuardRejectsEscape(t *testing.T) {
 	}
 
 	// MergeToIntegration should refuse due to pathGuard.
-	_, err := wm.MergeToIntegration(commandID, workers, nil)
+	_, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil)
 	if err == nil {
 		t.Fatal("expected path guard error, got nil")
 	}
@@ -286,7 +287,7 @@ func TestMergeToIntegration_MergeFailureCountResetOnSuccess(t *testing.T) {
 	}
 
 	// Merge should succeed
-	conflicts, err := wm.MergeToIntegration(commandID, workers, nil)
+	conflicts, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration: %v", err)
 	}
@@ -334,7 +335,7 @@ func TestSyncFromIntegration_MergeConflictRecovery(t *testing.T) {
 	}
 
 	// Merge worker1 to integration
-	if _, err := wm.MergeToIntegration(commandID, []string{"worker1"}, nil); err != nil {
+	if _, err := wm.MergeToIntegration(context.Background(), commandID, []string{"worker1"}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -402,7 +403,7 @@ func TestMergeToIntegration_NoCommitsRevertsStatus(t *testing.T) {
 	}
 
 	// Merge — should find no commits and revert to Created
-	conflicts, err := wm.MergeToIntegration(commandID, workers, nil)
+	conflicts, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration: %v", err)
 	}
@@ -451,7 +452,7 @@ func TestSyncFromIntegration_PreservesWorktreeOnFailure(t *testing.T) {
 	}
 
 	// Merge worker1 to integration
-	if _, err := wm.MergeToIntegration(commandID, []string{"worker1"}, nil); err != nil {
+	if _, err := wm.MergeToIntegration(context.Background(), commandID, []string{"worker1"}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -529,7 +530,7 @@ func TestMergeToIntegration_SkipAlreadyIntegrated(t *testing.T) {
 	}
 
 	// First merge: only worker1
-	conflicts, err := wm.MergeToIntegration(commandID, []string{"worker1"}, nil)
+	conflicts, err := wm.MergeToIntegration(context.Background(), commandID, []string{"worker1"}, nil)
 	if err != nil {
 		t.Fatalf("first MergeToIntegration: %v", err)
 	}
@@ -551,7 +552,7 @@ func TestMergeToIntegration_SkipAlreadyIntegrated(t *testing.T) {
 	headBeforeSecondMerge := gitRevParse(t, integrationPath, "HEAD")
 
 	// Second merge: both workers (simulates re-merge after partial_merge)
-	conflicts, err = wm.MergeToIntegration(commandID, workers, nil)
+	conflicts, err = wm.MergeToIntegration(context.Background(), commandID, workers, nil)
 	if err != nil {
 		t.Fatalf("second MergeToIntegration: %v", err)
 	}
@@ -633,7 +634,7 @@ func TestMergeToIntegration_SkipConflictResolving(t *testing.T) {
 	}
 
 	// First merge: merges both, worker1 succeeds, worker2 conflicts
-	conflicts, err := wm.MergeToIntegration(commandID, workers, nil)
+	conflicts, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil)
 	if err != nil {
 		t.Fatalf("first MergeToIntegration: %v", err)
 	}
@@ -661,7 +662,7 @@ func TestMergeToIntegration_SkipConflictResolving(t *testing.T) {
 
 	// Second merge: re-merge both workers. Worker1 is integrated (skipped),
 	// worker2 is conflict (skipped by new logic). No invalid_worktree_transition.
-	conflicts, err = wm.MergeToIntegration(commandID, workers, nil)
+	conflicts, err = wm.MergeToIntegration(context.Background(), commandID, workers, nil)
 	if err != nil {
 		t.Fatalf("second MergeToIntegration should not error: %v", err)
 	}

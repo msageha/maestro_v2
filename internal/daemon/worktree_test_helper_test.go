@@ -11,6 +11,10 @@ import (
 	"github.com/msageha/maestro_v2/internal/testutil"
 )
 
+// TODO(DRY): initTestGitRepo and newTestWorktreeManager are duplicated
+// across daemon and worktree test packages. Consider consolidating into
+// a shared internal/testutil/worktree.go helper once the test structure stabilizes.
+
 // initTestGitRepo delegates to testutil.InitTestGitRepo.
 func initTestGitRepo(t *testing.T) string {
 	t.Helper()

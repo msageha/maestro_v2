@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -506,8 +507,8 @@ func TestIsSensitiveFile(t *testing.T) {
 		{"config.yaml", false},
 		{"Makefile", false},
 		{".gitignore", false},
-		{"keys.go", false},       // .go, not .key
-		{"env_test.go", false},   // not .env
+		{"keys.go", false},     // .go, not .key
+		{"env_test.go", false}, // not .env
 		{"secret_handler.go", false},
 	}
 
@@ -577,7 +578,7 @@ func TestMergeToIntegration_PartialMergeOnConflict(t *testing.T) {
 	}
 
 	// Merge — worker1 succeeds, worker2 conflicts → partial merge expected
-	conflicts, err := wm.MergeToIntegration("cmd_rollback", workers, nil)
+	conflicts, err := wm.MergeToIntegration(context.Background(), "cmd_rollback", workers, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration failed: %v", err)
 	}
@@ -688,7 +689,7 @@ func TestMergeToIntegration_AllConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	conflicts, err := wm.MergeToIntegration("cmd_allconflict", workers, nil)
+	conflicts, err := wm.MergeToIntegration(context.Background(), "cmd_allconflict", workers, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration failed: %v", err)
 	}
@@ -733,7 +734,7 @@ func TestPublishToBase_DurableStashRefCreated(t *testing.T) {
 	if err := wm.CommitWorkerChanges("cmd_stash_ref", "worker1", "add stash_test.txt"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := wm.MergeToIntegration("cmd_stash_ref", workers, nil); err != nil {
+	if _, err := wm.MergeToIntegration(context.Background(), "cmd_stash_ref", workers, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -795,7 +796,7 @@ func TestPublishToBase_StashCreateFailureContinues(t *testing.T) {
 	if err := wm.CommitWorkerChanges("cmd_stash_fail", "worker1", "add resilience.txt"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := wm.MergeToIntegration("cmd_stash_fail", workers, nil); err != nil {
+	if _, err := wm.MergeToIntegration(context.Background(), "cmd_stash_fail", workers, nil); err != nil {
 		t.Fatal(err)
 	}
 

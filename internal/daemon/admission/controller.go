@@ -4,11 +4,16 @@
 package admission
 
 import (
+	"log"
 	"strings"
 	"sync"
 
 	"github.com/msageha/maestro_v2/internal/model"
 )
+
+// defaultSaturationThreshold is the number of consecutive rejections for the
+// same OpType that triggers a persistent saturation warning log.
+const defaultSaturationThreshold = 5
 
 // OpType classifies a task into one of the known operation categories.
 type OpType int
@@ -48,26 +53,52 @@ func (o OpType) String() string {
 // when instantiated; disable by not calling TryAcquire (i.e., bypass at the
 // call site).
 type Controller struct {
-	maxVerify  int
-	maxRepair  int
-	maxRollout int
-	slots      map[OpType]int
-	mu         sync.Mutex
+	maxVerify           int
+	maxRepair           int
+	maxRollout          int
+	slots               map[OpType]int
+	consecutiveRejects  map[OpType]int
+	saturationThreshold int
+	logger              *log.Logger
+	mu                  sync.Mutex
 }
 
 // NewController creates a Controller using the effective limits from the
 // supplied AdmissionControl configuration.
-func NewController(cfg model.AdmissionControl) *Controller {
-	return &Controller{
-		maxVerify:  cfg.EffectiveMaxConcurrentVerify(),
-		maxRepair:  cfg.EffectiveMaxConcurrentRepair(),
-		maxRollout: cfg.EffectiveMaxConcurrentRollout(),
+func NewController(cfg model.AdmissionControl, opts ...ControllerOption) *Controller {
+	c := &Controller{
+		maxVerify:           cfg.EffectiveMaxConcurrentVerify(),
+		maxRepair:           cfg.EffectiveMaxConcurrentRepair(),
+		maxRollout:          cfg.EffectiveMaxConcurrentRollout(),
+		saturationThreshold: defaultSaturationThreshold,
 		slots: map[OpType]int{
 			OpVerify:  0,
 			OpRepair:  0,
 			OpRollout: 0,
 		},
+		consecutiveRejects: map[OpType]int{
+			OpVerify:  0,
+			OpRepair:  0,
+			OpRollout: 0,
+		},
 	}
+	for _, opt := range opts {
+		opt(c)
+	}
+	return c
+}
+
+// ControllerOption configures a Controller.
+type ControllerOption func(*Controller)
+
+// WithLogger sets the logger for saturation warnings.
+func WithLogger(l *log.Logger) ControllerOption {
+	return func(c *Controller) { c.logger = l }
+}
+
+// WithSaturationThreshold sets the consecutive rejection count that triggers a warning.
+func WithSaturationThreshold(n int) ControllerOption {
+	return func(c *Controller) { c.saturationThreshold = n }
 }
 
 // TryAcquire attempts to acquire a concurrency slot for the given operation
@@ -83,8 +114,16 @@ func (c *Controller) TryAcquire(op OpType) bool {
 
 	limit := c.maxFor(op)
 	if c.slots[op] >= limit {
+		c.consecutiveRejects[op]++
+		if c.saturationThreshold > 0 && c.consecutiveRejects[op] == c.saturationThreshold {
+			if c.logger != nil {
+				c.logger.Printf("[WARN] admission_persistent_saturation op=%s consecutive_rejects=%d limit=%d active=%d",
+					op, c.consecutiveRejects[op], limit, c.slots[op])
+			}
+		}
 		return false
 	}
+	c.consecutiveRejects[op] = 0
 	c.slots[op]++
 	return true
 }

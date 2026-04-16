@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -65,7 +66,7 @@ func TestWorktreeIntegration_BasicLifecycle(t *testing.T) {
 	}
 
 	// Step 5: Merge to integration
-	conflicts, err := wm.MergeToIntegration(commandID, workerIDs, nil)
+	conflicts, err := wm.MergeToIntegration(context.Background(), commandID, workerIDs, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration: %v", err)
 	}
@@ -193,7 +194,7 @@ func TestWorktreeIntegration_CrossPhaseSync(t *testing.T) {
 	}
 
 	// Step 4: Merge Phase1 workers to integration
-	conflicts, err := wm.MergeToIntegration(commandID, []string{"worker1", "worker2"}, nil)
+	conflicts, err := wm.MergeToIntegration(context.Background(), commandID, []string{"worker1", "worker2"}, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration(phase1): %v", err)
 	}
@@ -231,7 +232,7 @@ func TestWorktreeIntegration_CrossPhaseSync(t *testing.T) {
 	}
 
 	// Step 9: Merge Phase2 to integration
-	conflicts, err = wm.MergeToIntegration(commandID, []string{"worker3"}, nil)
+	conflicts, err = wm.MergeToIntegration(context.Background(), commandID, []string{"worker3"}, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration(phase2): %v", err)
 	}

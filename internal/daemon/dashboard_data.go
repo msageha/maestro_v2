@@ -139,12 +139,13 @@ func (f *DashboardFormatter) parseLogFile(data *DashboardData) error {
 	}()
 
 	// Tail-read optimization: only read the last portion of the file
-	// to avoid O(n) full scans as log files grow.
-	const maxTailBytes int64 = 512 * 1024 // 512KB
+	// to avoid O(n) full scans as log files grow. Use a dynamic buffer
+	// size based on file size: minimum 64KB, maximum 2MB.
 	info, err := file.Stat()
 	if err != nil {
 		return err
 	}
+	maxTailBytes := dynamicTailBytes(info.Size())
 	if info.Size() > maxTailBytes {
 		if _, err := file.Seek(-maxTailBytes, io.SeekEnd); err != nil {
 			return err
@@ -360,61 +361,57 @@ func (f *DashboardFormatter) updateQueueStatus(data *DashboardData) {
 	}
 }
 
-// countNotificationStatuses counts pending/in_progress notifications in an orchestrator queue file.
-func countNotificationStatuses(fileData []byte, info *QueueInfo) {
-	var nq struct {
-		Notifications []struct {
-			Status string `yaml:"status"`
-		} `yaml:"notifications"`
+// countQueueStatuses is a parameterized helper that counts pending/in_progress
+// entries in a queue YAML file. listKey is the top-level YAML key containing the
+// entry list (e.g. "notifications", "commands", "tasks").
+func countQueueStatuses(fileData []byte, listKey string, info *QueueInfo) {
+	// Generic structure: map with a single list key containing status entries.
+	var raw map[string][]struct {
+		Status string `yaml:"status"`
 	}
-	if err := yaml.Unmarshal(fileData, &nq); err == nil {
-		for _, n := range nq.Notifications {
-			switch n.Status {
-			case "pending":
-				info.Pending++
-			case "in_progress":
-				info.InProgress++
-			}
+	if err := yaml.Unmarshal(fileData, &raw); err != nil {
+		return
+	}
+	for _, entry := range raw[listKey] {
+		switch entry.Status {
+		case "pending":
+			info.Pending++
+		case "in_progress":
+			info.InProgress++
 		}
 	}
+}
+
+// countNotificationStatuses counts pending/in_progress notifications in an orchestrator queue file.
+func countNotificationStatuses(fileData []byte, info *QueueInfo) {
+	countQueueStatuses(fileData, "notifications", info)
 }
 
 // countCommandStatuses counts pending/in_progress commands in a planner queue file.
 func countCommandStatuses(fileData []byte, info *QueueInfo) {
-	var cq struct {
-		Commands []struct {
-			Status string `yaml:"status"`
-		} `yaml:"commands"`
-	}
-	if err := yaml.Unmarshal(fileData, &cq); err == nil {
-		for _, c := range cq.Commands {
-			switch c.Status {
-			case "pending":
-				info.Pending++
-			case "in_progress":
-				info.InProgress++
-			}
-		}
-	}
+	countQueueStatuses(fileData, "commands", info)
 }
 
 // countTaskStatuses counts pending/in_progress tasks in a worker queue file.
 func countTaskStatuses(fileData []byte, info *QueueInfo) {
-	var tq struct {
-		Tasks []struct {
-			Status string `yaml:"status"`
-		} `yaml:"tasks"`
+	countQueueStatuses(fileData, "tasks", info)
+}
+
+// dynamicTailBytes returns the number of bytes to tail-read from a log file
+// based on its total size. Minimum 64KB, maximum 2MB.
+func dynamicTailBytes(fileSize int64) int64 {
+	const minTail int64 = 64 * 1024   // 64KB
+	const maxTail int64 = 2048 * 1024 // 2MB
+
+	// Use ~25% of file size, clamped to [minTail, maxTail].
+	tail := fileSize / 4
+	if tail < minTail {
+		return minTail
 	}
-	if err := yaml.Unmarshal(fileData, &tq); err == nil {
-		for _, t := range tq.Tasks {
-			switch t.Status {
-			case "pending":
-				info.Pending++
-			case "in_progress":
-				info.InProgress++
-			}
-		}
+	if tail > maxTail {
+		return maxTail
 	}
+	return tail
 }
 
 // sortEvents sorts all event lists by timestamp (most recent first)

@@ -113,13 +113,17 @@ func (m *Manager) CreateGroup(taskID, commandID string, slotCount int) (*Group, 
 	return group, nil
 }
 
-// GetGroup returns the group for the given taskID.
+// GetGroup returns a shallow copy of the group for the given taskID.
+// The returned Group is safe to read after the lock is released.
 func (m *Manager) GetGroup(taskID string) (*Group, bool) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	g, ok := m.groups[taskID]
-	return g, ok
+	if !ok {
+		return nil, false
+	}
+	return g.shallowCopy(), true
 }
 
 // UpdateSlotStatus updates the status of a specific slot in a group.
@@ -221,6 +225,19 @@ func (m *Manager) CancelGroup(taskID string) error {
 	return nil
 }
 
+// shallowCopy returns a copy of the Group with independently owned Slots slice
+// and CompletedAt pointer so callers cannot mutate internal state.
+func (g *Group) shallowCopy() *Group {
+	cp := *g
+	cp.Slots = make([]Slot, len(g.Slots))
+	copy(cp.Slots, g.Slots)
+	if g.CompletedAt != nil {
+		t := *g.CompletedAt
+		cp.CompletedAt = &t
+	}
+	return &cp
+}
+
 // RemoveGroup removes a group from the manager.
 func (m *Manager) RemoveGroup(taskID string) {
 	m.mu.Lock()
@@ -243,17 +260,15 @@ func (m *Manager) ActiveGroupCount() int {
 	return count
 }
 
-// ListGroups returns all groups managed by this manager.
-// Note: Returns direct pointers to internal Group structs. Callers must not
-// modify the returned groups without holding appropriate synchronization.
-// A future improvement could return copies for full isolation.
+// ListGroups returns shallow copies of all groups managed by this manager.
+// The returned Groups are safe to read after the lock is released.
 func (m *Manager) ListGroups() []*Group {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	groups := make([]*Group, 0, len(m.groups))
 	for _, g := range m.groups {
-		groups = append(groups, g)
+		groups = append(groups, g.shallowCopy())
 	}
 	return groups
 }

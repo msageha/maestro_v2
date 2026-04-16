@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -51,7 +52,7 @@ func TestMergeConflict_Detection(t *testing.T) {
 	}
 
 	// Merge both — sorted order: worker1 first (succeeds), worker2 conflicts
-	conflicts, err := wm.MergeToIntegration(commandID, workers, nil)
+	conflicts, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration: %v", err)
 	}
@@ -123,7 +124,7 @@ func TestMergeConflict_EscalationFlow(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	conflicts, err := wm.MergeToIntegration(commandID, workers, nil)
+	conflicts, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration: %v", err)
 	}
@@ -215,7 +216,7 @@ func TestMergeConflict_RefExtraction(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	conflicts, err := wm.MergeToIntegration(commandID, workers, nil)
+	conflicts, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration: %v", err)
 	}
@@ -307,7 +308,7 @@ func TestMergeConflict_BinaryFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	conflicts, err := wm.MergeToIntegration(commandID, workers, nil)
+	conflicts, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration: %v", err)
 	}
@@ -421,7 +422,7 @@ func TestMergeConflict_ConflictFilesAccuracy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	conflicts, err := wm.MergeToIntegration(commandID, workers, nil)
+	conflicts, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration: %v", err)
 	}
@@ -490,7 +491,7 @@ func TestResumeMerge_AddAddConflictResolution(t *testing.T) {
 	}
 
 	// Step 2: Merge — worker1 succeeds, worker2 conflicts (add/add)
-	conflicts, err := wm.MergeToIntegration(commandID, workers, nil)
+	conflicts, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration: %v", err)
 	}
@@ -540,7 +541,7 @@ func TestResumeMerge_AddAddConflictResolution(t *testing.T) {
 
 	// Step 5: ResumeMerge — should commit the resolution to worker2's branch
 	// and then merge successfully into integration.
-	if err := wm.ResumeMerge(commandID); err != nil {
+	if err := wm.ResumeMerge(context.Background(), commandID); err != nil {
 		t.Fatalf("ResumeMerge: %v", err)
 	}
 
@@ -622,7 +623,7 @@ func TestResumeMerge_AddAddConflict_XTheirs(t *testing.T) {
 	}
 
 	// Merge — worker1 succeeds, worker2 conflicts.
-	conflicts, err := wm.MergeToIntegration(commandID, workers, nil)
+	conflicts, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration: %v", err)
 	}
@@ -662,7 +663,7 @@ func TestResumeMerge_AddAddConflict_XTheirs(t *testing.T) {
 
 	// ResumeMerge — with -X theirs, git should resolve the add/add
 	// conflict automatically by preferring the worker's committed version.
-	if err := wm.ResumeMerge(commandID); err != nil {
+	if err := wm.ResumeMerge(context.Background(), commandID); err != nil {
 		t.Fatalf("ResumeMerge: %v", err)
 	}
 
@@ -731,7 +732,7 @@ func TestResumeMerge_FallbackRevertsToConflict(t *testing.T) {
 	}
 	writeWorktreeState(t, wm, st)
 
-	if err := wm.ResumeMerge(cmdID); err != nil {
+	if err := wm.ResumeMerge(context.Background(), cmdID); err != nil {
 		t.Fatalf("ResumeMerge: %v", err)
 	}
 
@@ -787,7 +788,7 @@ func TestResumeMerge_NoConflictAfterWorkerCommit(t *testing.T) {
 	}
 
 	// Merge — worker1 succeeds, worker2 conflicts
-	conflicts, err := wm.MergeToIntegration(commandID, workers, nil)
+	conflicts, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration: %v", err)
 	}
@@ -813,7 +814,7 @@ func TestResumeMerge_NoConflictAfterWorkerCommit(t *testing.T) {
 	}
 
 	// ResumeMerge
-	if err := wm.ResumeMerge(commandID); err != nil {
+	if err := wm.ResumeMerge(context.Background(), commandID); err != nil {
 		t.Fatalf("ResumeMerge: %v", err)
 	}
 
@@ -864,7 +865,7 @@ func TestResumeMerge_NormalMergeUnaffected(t *testing.T) {
 	}
 
 	// Normal merge — no conflicts
-	conflicts, err := wm.MergeToIntegration(commandID, workers, nil)
+	conflicts, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration: %v", err)
 	}

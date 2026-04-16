@@ -62,7 +62,7 @@ func (qh *QueueHandler) stepInterruptAgents(ctx context.Context, pa *phaseAResul
 			}
 		}
 	}); err != nil {
-		qh.log(LogLevelWarn, "phase_b_interrupts_canceled: %v", err)
+		qh.log(LogLevelInfo, "phase_b_interrupts_canceled: %v", err)
 	}
 }
 
@@ -76,7 +76,7 @@ func (qh *QueueHandler) stepProbeBusyAgents(ctx context.Context, pa *phaseAResul
 			Undecided: undecided,
 		})
 	}); err != nil {
-		qh.log(LogLevelWarn, "phase_b_busy_checks_canceled: %v", err)
+		qh.log(LogLevelInfo, "phase_b_busy_checks_canceled: %v", err)
 	}
 }
 
@@ -98,7 +98,7 @@ func (qh *QueueHandler) stepDispatchWork(ctx context.Context, pa *phaseAResult, 
 			Error:   err,
 		})
 	}); err != nil {
-		qh.log(LogLevelWarn, "phase_b_dispatches_canceled: %v", err)
+		qh.log(LogLevelInfo, "phase_b_dispatches_canceled: %v", err)
 	}
 }
 
@@ -117,7 +117,7 @@ func (qh *QueueHandler) stepDeliverSignals(ctx context.Context, pa *phaseAResult
 				fmt.Sprintf("signal_delivery_failed command=%s: signal will be retried next scan, but planner may have stale view until then", item.CommandID))
 		}
 	}); err != nil {
-		qh.log(LogLevelWarn, "phase_b_signals_canceled: %v", err)
+		qh.log(LogLevelInfo, "phase_b_signals_canceled: %v", err)
 	}
 }
 
@@ -149,7 +149,7 @@ func (qh *QueueHandler) stepClearAgents(ctx context.Context, pa *phaseAResult) {
 	if err := forEachUntilCanceled(ctx, pa.work.clears, func(agentID string) {
 		qh.clearAgent(ctx, agentID)
 	}); err != nil {
-		qh.log(LogLevelWarn, "phase_b_clears_canceled: %v", err)
+		qh.log(LogLevelInfo, "phase_b_clears_canceled: %v", err)
 	}
 }
 
@@ -174,7 +174,7 @@ func (qh *QueueHandler) stepCommitAndMergeWorktrees(ctx context.Context, pa *pha
 
 		// Then merge to integration (only workers that committed successfully)
 		if qh.worktreeManager != nil && qh.worktreeManager.AutoMerge() && len(committedWorkerIDs) > 0 {
-			conflicts, err := qh.worktreeManager.MergeToIntegration(item.CommandID, committedWorkerIDs, item.WorkerPurposes)
+			conflicts, err := qh.worktreeManager.MergeToIntegration(ctx, item.CommandID, committedWorkerIDs, item.WorkerPurposes)
 			mr.Conflicts = conflicts
 			mr.Error = err
 
@@ -184,7 +184,7 @@ func (qh *QueueHandler) stepCommitAndMergeWorktrees(ctx context.Context, pa *pha
 				// because their dirty worktrees would block the merge anyway
 				// and we do not want to advance their state.
 				if syncErr := qh.worktreeManager.SyncFromIntegration(item.CommandID, committedWorkerIDs); syncErr != nil {
-					qh.log(LogLevelWarn, "worktree_sync_failed command=%s error=%v", item.CommandID, syncErr)
+					qh.log(LogLevelWarn, "worktree_sync_failed command=%s workers=%v error=%v", item.CommandID, committedWorkerIDs, syncErr)
 				}
 			}
 		}
@@ -202,7 +202,7 @@ func (qh *QueueHandler) stepCommitAndMergeWorktrees(ctx context.Context, pa *pha
 
 		result.worktreeMerges = append(result.worktreeMerges, mr)
 	}); err != nil {
-		qh.log(LogLevelWarn, "phase_b_worktree_merges_canceled: %v", err)
+		qh.log(LogLevelInfo, "phase_b_worktree_merges_canceled: %v", err)
 	}
 }
 
@@ -215,7 +215,7 @@ func (qh *QueueHandler) stepPublishWorktrees(ctx context.Context, pa *phaseAResu
 		if qh.worktreeManager != nil {
 			cmdState, err := qh.worktreeManager.GetCommandState(item.CommandID)
 			if err != nil || cmdState.Integration.Status != model.IntegrationStatusMerged {
-				qh.log(LogLevelWarn, "worktree_publish_skip_stale command=%s status=%v err=%v",
+				qh.log(LogLevelInfo, "worktree_publish_skip_stale command=%s status=%v err=%v",
 					item.CommandID, func() string {
 						if cmdState != nil {
 							return string(cmdState.Integration.Status)
@@ -236,7 +236,7 @@ func (qh *QueueHandler) stepPublishWorktrees(ctx context.Context, pa *phaseAResu
 			})
 		}
 	}); err != nil {
-		qh.log(LogLevelWarn, "worktree_publishes_canceled: %v", err)
+		qh.log(LogLevelInfo, "worktree_publishes_canceled: %v", err)
 	}
 	return additionalCleanups
 }
@@ -252,7 +252,7 @@ func (qh *QueueHandler) stepCleanupWorktrees(ctx context.Context, pa *phaseAResu
 		}
 		result.worktreeCleanups = append(result.worktreeCleanups, cr)
 	}); err != nil {
-		qh.log(LogLevelWarn, "worktree_cleanups_canceled: %v", err)
+		qh.log(LogLevelInfo, "worktree_cleanups_canceled: %v", err)
 	}
 }
 

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/events"
@@ -158,7 +159,7 @@ type QueueStore interface {
 type WorktreeGitOps interface {
 	CommitWorkerChanges(commandID, workerID, message string) error
 	DiscardWorkerChanges(commandID, workerID string) error
-	MergeToIntegration(commandID string, workerIDs []string, workerPurposes map[string]string) ([]model.MergeConflict, error)
+	MergeToIntegration(ctx context.Context, commandID string, workerIDs []string, workerPurposes map[string]string) ([]model.MergeConflict, error)
 	SyncFromIntegration(commandID string, workerIDs []string) error
 	PublishToBase(commandID string, publishMessage string) error
 	CleanupCommand(commandID string) error

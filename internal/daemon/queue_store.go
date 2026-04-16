@@ -199,11 +199,15 @@ func (qs *QueueStoreImpl) FlushQueues(
 		// lockMap is required here even though callers hold scanMu.Lock():
 		// ResultHandler writes orchestrator.yaml via lockMap without scanMu,
 		// so lockMap prevents concurrent atomic rewrites and lost updates.
-		qs.lockMap.Lock("queue:orchestrator")
-		if err := yamlutil.AtomicWrite(notificationPath, notificationQueue); err != nil {
-			qs.log(LogLevelError, "write_notifications error=%v", err)
-		}
-		qs.lockMap.Unlock("queue:orchestrator")
+		// Uses a closure+defer to match the lockMap pattern used by worker
+		// queue writes (withQueueLocks), ensuring Unlock on panic.
+		func() {
+			qs.lockMap.Lock("queue:orchestrator")
+			defer qs.lockMap.Unlock("queue:orchestrator")
+			if err := yamlutil.AtomicWrite(notificationPath, notificationQueue); err != nil {
+				qs.log(LogLevelError, "write_notifications error=%v", err)
+			}
+		}()
 	}
 	if signalsDirty {
 		p := signalPath

@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"errors"
 	"log"
 	"os"
@@ -138,7 +139,7 @@ func TestResumeMerge_FromConflict(t *testing.T) {
 	st.Integration.MergeFailureCount = 2
 	writeWorktreeState(t, wm, st)
 
-	if err := wm.ResumeMerge(cmdID); err != nil {
+	if err := wm.ResumeMerge(context.Background(), cmdID); err != nil {
 		t.Fatalf("ResumeMerge: %v", err)
 	}
 	got, _ := wm.GetCommandState(cmdID)
@@ -159,7 +160,7 @@ func TestResumeMerge_FromFailedWithCount(t *testing.T) {
 	st.Integration.MergeFailureCount = 3
 	writeWorktreeState(t, wm, st)
 
-	if err := wm.ResumeMerge(cmdID); err != nil {
+	if err := wm.ResumeMerge(context.Background(), cmdID); err != nil {
 		t.Fatalf("ResumeMerge: %v", err)
 	}
 	got, _ := wm.GetCommandState(cmdID)
@@ -177,12 +178,12 @@ func TestResumeMerge_Idempotent(t *testing.T) {
 	st.Integration.MergeFailureCount = 1
 	writeWorktreeState(t, wm, st)
 
-	if err := wm.ResumeMerge(cmdID); err != nil {
+	if err := wm.ResumeMerge(context.Background(), cmdID); err != nil {
 		t.Fatalf("first ResumeMerge: %v", err)
 	}
 	first := readStateFile(t, maestroDir, cmdID)
 
-	err := wm.ResumeMerge(cmdID)
+	err := wm.ResumeMerge(context.Background(), cmdID)
 	if !errors.Is(err, ErrAlreadyResolved) {
 		t.Fatalf("second ResumeMerge err = %v, want ErrAlreadyResolved", err)
 	}
@@ -198,7 +199,7 @@ func TestResumeMerge_RejectsQuarantined(t *testing.T) {
 	cmdID := "cmd_test_006"
 	writeWorktreeState(t, wm, quarantinedState(cmdID))
 
-	err := wm.ResumeMerge(cmdID)
+	err := wm.ResumeMerge(context.Background(), cmdID)
 	if !errors.Is(err, ErrAlreadyResolved) {
 		t.Errorf("err = %v, want ErrAlreadyResolved", err)
 	}
@@ -207,7 +208,7 @@ func TestResumeMerge_RejectsQuarantined(t *testing.T) {
 func TestResumeMerge_NoWorktreeState(t *testing.T) {
 	t.Parallel()
 	wm, _ := newRecoveryTestManager(t)
-	err := wm.ResumeMerge("cmd_test_missing_2")
+	err := wm.ResumeMerge(context.Background(), "cmd_test_missing_2")
 	if !errors.Is(err, ErrNoWorktreeState) {
 		t.Errorf("err = %v, want ErrNoWorktreeState", err)
 	}
@@ -231,7 +232,7 @@ func TestResumeMerge_ResetsConflictWorkers(t *testing.T) {
 	}
 	writeWorktreeState(t, wm, st)
 
-	if err := wm.ResumeMerge(cmdID); err != nil {
+	if err := wm.ResumeMerge(context.Background(), cmdID); err != nil {
 		t.Fatalf("ResumeMerge: %v", err)
 	}
 
@@ -287,12 +288,12 @@ func TestResumeMerge_IdempotentWithConflictWorkers(t *testing.T) {
 	}
 	writeWorktreeState(t, wm, st)
 
-	if err := wm.ResumeMerge(cmdID); err != nil {
+	if err := wm.ResumeMerge(context.Background(), cmdID); err != nil {
 		t.Fatalf("first ResumeMerge: %v", err)
 	}
 
 	// Second call: workers are now active, integration is failed with count=0
-	err := wm.ResumeMerge(cmdID)
+	err := wm.ResumeMerge(context.Background(), cmdID)
 	if !errors.Is(err, ErrAlreadyResolved) {
 		t.Fatalf("second ResumeMerge err = %v, want ErrAlreadyResolved", err)
 	}

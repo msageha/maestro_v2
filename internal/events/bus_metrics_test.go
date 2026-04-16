@@ -8,7 +8,11 @@ import (
 func TestBus_DroppedCount(t *testing.T) {
 	// Buffer size 1 so events get dropped quickly
 	bus := NewBus(context.Background(), 1)
-	defer bus.Close()
+	defer func() {
+		if err := bus.Close(); err != nil {
+			t.Errorf("bus.Close: %v", err)
+		}
+	}()
 
 	// Channels to coordinate: subscriber signals it started, then blocks until released.
 	started := make(chan struct{})
@@ -43,7 +47,11 @@ func TestBus_DroppedCount(t *testing.T) {
 
 func TestBus_DroppedByType(t *testing.T) {
 	bus := NewBus(context.Background(), 1)
-	defer bus.Close()
+	defer func() {
+		if err := bus.Close(); err != nil {
+			t.Errorf("bus.Close: %v", err)
+		}
+	}()
 
 	// Channels to coordinate: subscriber signals it started, then blocks until released.
 	started := make(chan struct{})

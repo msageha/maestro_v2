@@ -21,6 +21,9 @@ import (
 )
 
 // --- Test Helpers ---
+// TODO(DRY): fakeClock, setupTestDir, and newTestDeps are common test patterns
+// shared across reconcile and daemon test files. Consider consolidating into
+// a shared test helper package when the reconcile test suite stabilizes.
 
 type fakeClock struct {
 	now time.Time
@@ -175,9 +178,16 @@ func TestEngine_Reconcile_EmptyPatterns(t *testing.T) {
 
 type fakePattern struct {
 	outcome Outcome
+	called  bool
 }
 
-func (f *fakePattern) Apply(*Run) Outcome { return f.outcome }
+func (f *fakePattern) Apply(*Run) Outcome {
+	if f.called {
+		return Outcome{} // converge: no repairs on subsequent passes
+	}
+	f.called = true
+	return f.outcome
+}
 
 func TestEngine_Reconcile_AggregatesPatterns(t *testing.T) {
 	t.Parallel()

@@ -9,6 +9,14 @@ import (
 )
 
 // LeaseManager handles lease lifecycle for queue entries.
+//
+// Clock skew assumptions: all lease operations use a single Clock instance
+// (lm.clock) scoped to the daemon process. Since both lease acquisition and
+// expiration checks run within the same process, cross-host clock skew is not
+// a concern. However, large NTP corrections or manual clock changes on the
+// host could cause premature lease expiration or delayed detection. The
+// dispatch_lease_sec value should be chosen with sufficient margin to tolerate
+// minor monotonic clock adjustments.
 type LeaseManager struct {
 	dispatchLeaseSec int
 	maxInProgressMin int

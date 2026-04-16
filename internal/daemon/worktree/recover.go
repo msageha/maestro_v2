@@ -91,7 +91,7 @@ func (wm *Manager) Unquarantine(commandID string, reason string) error {
 // Idempotency: a call when the integration is already Failed with
 // MergeFailureCount==0 and no conflict/resolving workers returns
 // ErrAlreadyResolved without modifying the file.
-func (wm *Manager) ResumeMerge(commandID string) error {
+func (wm *Manager) ResumeMerge(ctx context.Context, commandID string) error {
 	if err := validateIDs(commandID); err != nil {
 		return err
 	}
@@ -145,7 +145,7 @@ func (wm *Manager) ResumeMerge(commandID string) error {
 
 	// Attempt merge with resolution for conflict/resolving workers.
 	if len(toResolve) > 0 {
-		wm.attemptResolvedMerges(state, commandID, toResolve, now)
+		wm.attemptResolvedMerges(ctx, state, commandID, toResolve, now)
 	}
 
 	// Check merge outcomes to decide MergeFailureCount handling.
@@ -231,6 +231,7 @@ func (wm *Manager) ResumeMerge(commandID string) error {
 // where MergeToIntegration would re-merge and reproduce the same conflict.
 // Caller must hold wm.mu.
 func (wm *Manager) attemptResolvedMerges(
+	ctx context.Context,
 	state *model.WorktreeCommandState,
 	commandID string,
 	workers []*model.WorktreeState,
@@ -261,7 +262,7 @@ func (wm *Manager) attemptResolvedMerges(
 	}
 
 	for _, ws := range workers {
-		wm.tryMergeWorker(integrationPath, ws, commandID, now)
+		wm.tryMergeWorker(ctx, integrationPath, ws, commandID, now)
 	}
 }
 
@@ -270,7 +271,7 @@ func (wm *Manager) attemptResolvedMerges(
 // On success the worker is transitioned to integrated; on failure the worker
 // is reverted to conflict (not active) to prevent infinite re-merge loops.
 // Caller must hold wm.mu.
-func (wm *Manager) tryMergeWorker(integrationPath string, ws *model.WorktreeState, commandID, now string) {
+func (wm *Manager) tryMergeWorker(ctx context.Context, integrationPath string, ws *model.WorktreeState, commandID, now string) {
 	// Commit any uncommitted resolution changes in the worker's worktree
 	// before attempting the merge. When a worker resolves a conflict, their
 	// edits may remain uncommitted because the resolving→committed transition
@@ -283,7 +284,7 @@ func (wm *Manager) tryMergeWorker(integrationPath string, ws *model.WorktreeStat
 		// Non-fatal: proceed with merge attempt using existing branch content.
 	}
 
-	if mergeErr := wm.mergeResolvedWorker(integrationPath, ws, commandID); mergeErr != nil {
+	if mergeErr := wm.mergeResolvedWorker(ctx, integrationPath, ws, commandID); mergeErr != nil {
 		// Set the worker back to conflict (not active) to prevent an
 		// infinite loop: MergeToIntegration skips conflict workers, so
 		// the next scan will not re-merge this worker. Setting to active
@@ -374,12 +375,13 @@ func (wm *Manager) resetWorkersToActive(workers []*model.WorktreeState, now, com
 // its pre-merge state.
 // Caller must hold wm.mu.
 func (wm *Manager) mergeResolvedWorker(
+	ctx context.Context,
 	integrationPath string,
 	ws *model.WorktreeState,
 	commandID string,
 ) error {
 	// Record pre-merge HEAD for recovery if merge --abort fails.
-	preMergeHEAD, err := wm.gitOutputWithRetry(context.Background(), integrationPath, 2, "rev-parse", "HEAD")
+	preMergeHEAD, err := wm.gitOutputWithRetry(ctx, integrationPath, 2, "rev-parse", "HEAD")
 	if err != nil {
 		return fmt.Errorf("pre-merge HEAD: %w", err)
 	}
@@ -389,7 +391,7 @@ func (wm *Manager) mergeResolvedWorker(
 	}
 
 	// Check if the worker branch has commits to merge.
-	logOut, err := wm.gitOutputWithRetry(context.Background(), integrationPath, 2, "log", "--oneline",
+	logOut, err := wm.gitOutputWithRetry(ctx, integrationPath, 2, "log", "--oneline",
 		fmt.Sprintf("%s..%s", preMergeHEAD, ws.Branch))
 	if err != nil {
 		return fmt.Errorf("check worker commits: %w", err)

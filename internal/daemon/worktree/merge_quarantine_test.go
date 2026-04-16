@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -96,7 +97,7 @@ func TestMergeToIntegration_QuarantinedShortCircuits(t *testing.T) {
 
 	// Call MergeToIntegration; it must return errIntegrationQuarantined
 	// without modifying the persisted state.
-	conflicts, mergeErr := wm.MergeToIntegration(commandID, []string{"worker1"}, nil)
+	conflicts, mergeErr := wm.MergeToIntegration(context.Background(), commandID, []string{"worker1"}, nil)
 	if mergeErr == nil {
 		t.Fatalf("MergeToIntegration returned nil err, want errIntegrationQuarantined")
 	}

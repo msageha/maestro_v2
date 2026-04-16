@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -161,7 +162,7 @@ func TestGC_CleansTerminalWorktree_TTL(t *testing.T) {
 	if err := wm.CommitWorkerChanges(commandID, "worker1", "add gc_test.txt"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := wm.MergeToIntegration(commandID, []string{"worker1"}, nil); err != nil {
+	if _, err := wm.MergeToIntegration(context.Background(), commandID, []string{"worker1"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := wm.PublishToBase(commandID, ""); err != nil {
@@ -335,7 +336,7 @@ func TestGC_TerminalStatusUnaffectedByFailedChange(t *testing.T) {
 	if err := wm.CommitWorkerChanges(commandID, "worker1", "add gc_test.txt"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := wm.MergeToIntegration(commandID, []string{"worker1"}, nil); err != nil {
+	if _, err := wm.MergeToIntegration(context.Background(), commandID, []string{"worker1"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if err := wm.PublishToBase(commandID, ""); err != nil {

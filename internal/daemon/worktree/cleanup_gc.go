@@ -220,9 +220,13 @@ func (wm *Manager) detectAndRemoveOrphanWorktrees() {
 			continue
 		}
 		if !knownPaths[wtPath] {
-			wm.Log(core.LogLevelInfo, "orphan_worktree path=%s", wtPath)
+			wm.Log(core.LogLevelInfo, "orphan_worktree detected path=%s rel=%s", wtPath, relPath)
 			if rmErr := wm.gitRun("worktree", "remove", "--force", wtPath); rmErr != nil {
-				wm.Log(core.LogLevelWarn, "orphan_remove error=%v path=%s", rmErr, wtPath)
+				wm.Log(core.LogLevelWarn, "orphan_remove_retry path=%s first_error=%v", wtPath, rmErr)
+				// Single retry: transient lock/filesystem errors may resolve on second attempt
+				if retryErr := wm.gitRun("worktree", "remove", "--force", wtPath); retryErr != nil {
+					wm.Log(core.LogLevelError, "orphan_remove_failed path=%s error=%v", wtPath, retryErr)
+				}
 			}
 		}
 	}

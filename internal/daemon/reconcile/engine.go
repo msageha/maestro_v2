@@ -32,17 +32,41 @@ func (e *Engine) SetClock(c core.Clock) {
 	e.deps.Clock = c
 }
 
-// Reconcile runs all reconciliation patterns and returns repairs and deferred notifications.
-func (e *Engine) Reconcile() ([]Repair, []DeferredNotification) {
-	run := newRun(&e.deps)
+// maxReconcilePasses is the upper bound on fixpoint re-execution to prevent
+// infinite loops. If repairs are still being generated after this many passes,
+// the loop terminates and returns all accumulated results.
+const maxReconcilePasses = 3
 
+// Reconcile runs all reconciliation patterns with bounded fixpoint iteration.
+// After the initial pass, if any repairs were generated, re-runs all patterns
+// up to maxReconcilePasses total. The loop terminates early when a pass produces
+// no repairs (fixpoint reached).
+//
+// Note: Individual patterns (e.g. R4PlanStatus) may implement their own backoff
+// for repeatedly failing operations. The fixpoint loop handles cross-pattern
+// convergence, while pattern-level backoff prevents hammering failing evaluators.
+func (e *Engine) Reconcile() ([]Repair, []DeferredNotification) {
 	var allRepairs []Repair
 	var allNotifications []DeferredNotification
 
-	for _, p := range e.patterns {
-		outcome := p.Apply(run)
-		allRepairs = append(allRepairs, outcome.Repairs...)
-		allNotifications = append(allNotifications, outcome.Notifications...)
+	for pass := 0; pass < maxReconcilePasses; pass++ {
+		run := newRun(&e.deps)
+		var passRepairs []Repair
+
+		for _, p := range e.patterns {
+			outcome := p.Apply(run)
+			passRepairs = append(passRepairs, outcome.Repairs...)
+			allNotifications = append(allNotifications, outcome.Notifications...)
+		}
+
+		allRepairs = append(allRepairs, passRepairs...)
+
+		if len(passRepairs) == 0 {
+			break // fixpoint reached — no further repairs needed
+		}
+		if pass > 0 {
+			e.deps.DL.Logf(core.LogLevelInfo, "reconcile_fixpoint pass=%d repairs=%d", pass+1, len(passRepairs))
+		}
 	}
 
 	return allRepairs, allNotifications

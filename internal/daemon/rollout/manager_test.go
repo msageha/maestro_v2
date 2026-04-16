@@ -347,6 +347,54 @@ func TestConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
+func TestGetGroup_ReturnsCopy(t *testing.T) {
+	t.Parallel()
+	m := NewManager(5)
+	_, _ = m.CreateGroup("task1", "cmd1", 3)
+
+	g, ok := m.GetGroup("task1")
+	if !ok {
+		t.Fatal("expected group to exist")
+	}
+
+	// Mutate the returned copy.
+	g.State = GroupCancelled
+	g.Slots[0].Status = SlotFailed
+
+	// Verify internal state is unchanged.
+	orig, _ := m.GetGroup("task1")
+	if orig.State != GroupPending {
+		t.Errorf("internal State mutated: got %q, want %q", orig.State, GroupPending)
+	}
+	if orig.Slots[0].Status != SlotPending {
+		t.Errorf("internal Slot[0].Status mutated: got %q, want %q", orig.Slots[0].Status, SlotPending)
+	}
+}
+
+func TestListGroups_ReturnsCopies(t *testing.T) {
+	t.Parallel()
+	m := NewManager(5)
+	_, _ = m.CreateGroup("task1", "cmd1", 2)
+
+	groups := m.ListGroups()
+	if len(groups) != 1 {
+		t.Fatalf("len(ListGroups) = %d, want 1", len(groups))
+	}
+
+	// Mutate the returned copy.
+	groups[0].State = GroupCancelled
+	groups[0].Slots[0].Status = SlotFailed
+
+	// Verify internal state is unchanged.
+	orig, _ := m.GetGroup("task1")
+	if orig.State != GroupPending {
+		t.Errorf("internal State mutated via ListGroups: got %q, want %q", orig.State, GroupPending)
+	}
+	if orig.Slots[0].Status != SlotPending {
+		t.Errorf("internal Slot[0].Status mutated via ListGroups: got %q, want %q", orig.Slots[0].Status, SlotPending)
+	}
+}
+
 // itoa converts an int to string without importing strconv.
 func itoa(n int) string {
 	if n == 0 {

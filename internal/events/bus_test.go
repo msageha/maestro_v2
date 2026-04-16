@@ -11,7 +11,11 @@ import (
 
 func TestBus_PublishSubscribe(t *testing.T) {
 	bus := NewBus(context.Background(), 10)
-	defer bus.Close()
+	defer func() {
+		if err := bus.Close(); err != nil {
+			t.Errorf("bus.Close: %v", err)
+		}
+	}()
 
 	var mu sync.Mutex
 	received := []Event{}
@@ -58,7 +62,11 @@ func TestBus_PublishSubscribe(t *testing.T) {
 
 func TestBus_MultipleSubscribers(t *testing.T) {
 	bus := NewBus(context.Background(), 10)
-	defer bus.Close()
+	defer func() {
+		if err := bus.Close(); err != nil {
+			t.Errorf("bus.Close: %v", err)
+		}
+	}()
 
 	var mu1, mu2 sync.Mutex
 	received1 := []Event{}
@@ -121,7 +129,11 @@ func TestBus_MultipleSubscribers(t *testing.T) {
 
 func TestBus_NonBlocking(t *testing.T) {
 	bus := NewBus(context.Background(), 1)
-	defer bus.Close()
+	defer func() {
+		if err := bus.Close(); err != nil {
+			t.Errorf("bus.Close: %v", err)
+		}
+	}()
 
 	// Subscribe with slow consumer (blocks on channel instead of sleeping)
 	slowConsumer := make(chan struct{})
@@ -151,7 +163,11 @@ func TestBus_NonBlocking(t *testing.T) {
 
 func TestBus_Unsubscribe(t *testing.T) {
 	bus := NewBus(context.Background(), 10)
-	defer bus.Close()
+	defer func() {
+		if err := bus.Close(); err != nil {
+			t.Errorf("bus.Close: %v", err)
+		}
+	}()
 
 	var mu sync.Mutex
 	count := 0
@@ -193,7 +209,11 @@ func TestBus_Unsubscribe(t *testing.T) {
 
 func TestBus_PanicRecovery(t *testing.T) {
 	bus := NewBus(context.Background(), 10)
-	defer bus.Close()
+	defer func() {
+		if err := bus.Close(); err != nil {
+			t.Errorf("bus.Close: %v", err)
+		}
+	}()
 
 	var mu sync.Mutex
 	received := false
@@ -235,7 +255,11 @@ func TestBus_PanicRecovery(t *testing.T) {
 
 func TestBus_EventTypes(t *testing.T) {
 	bus := NewBus(context.Background(), 10)
-	defer bus.Close()
+	defer func() {
+		if err := bus.Close(); err != nil {
+			t.Errorf("bus.Close: %v", err)
+		}
+	}()
 
 	var mu sync.Mutex
 	taskStarted := 0
@@ -402,7 +426,11 @@ func TestBus_ConcurrentCloseAndPublish(t *testing.T) {
 
 func TestBus_QueueWrittenEvent(t *testing.T) {
 	bus := NewBus(context.Background(), 10)
-	defer bus.Close()
+	defer func() {
+		if err := bus.Close(); err != nil {
+			t.Errorf("bus.Close: %v", err)
+		}
+	}()
 
 	var mu sync.Mutex
 	received := []Event{}
@@ -447,7 +475,11 @@ func TestBus_QueueWrittenEvent(t *testing.T) {
 
 func TestBus_QueueWrittenDoesNotAffectOtherSubscribers(t *testing.T) {
 	bus := NewBus(context.Background(), 10)
-	defer bus.Close()
+	defer func() {
+		if err := bus.Close(); err != nil {
+			t.Errorf("bus.Close: %v", err)
+		}
+	}()
 
 	taskCount := 0
 	queueCount := 0
@@ -610,7 +642,11 @@ func TestBus_ConcurrentMultipleClose(t *testing.T) {
 
 func TestBus_SubscribeCoalesced(t *testing.T) {
 	bus := NewBus(context.Background(), 1) // small buffer to cause drops on regular subscribers
-	defer bus.Close()
+	defer func() {
+		if err := bus.Close(); err != nil {
+			t.Errorf("bus.Close: %v", err)
+		}
+	}()
 
 	callCount := atomic.Int64{}
 	done := make(chan struct{}, 1)
@@ -640,7 +676,11 @@ func TestBus_SubscribeCoalesced(t *testing.T) {
 
 func TestBus_SubscribeCoalescedBurst(t *testing.T) {
 	bus := NewBus(context.Background(), 1)
-	defer bus.Close()
+	defer func() {
+		if err := bus.Close(); err != nil {
+			t.Errorf("bus.Close: %v", err)
+		}
+	}()
 
 	callCount := atomic.Int64{}
 	barrier := make(chan struct{})
@@ -710,7 +750,11 @@ func TestBus_SubscribeCoalescedAfterClose(t *testing.T) {
 
 func BenchmarkBus_Publish(b *testing.B) {
 	bus := NewBus(context.Background(), 100)
-	defer bus.Close()
+	defer func() {
+		if err := bus.Close(); err != nil {
+			b.Errorf("bus.Close: %v", err)
+		}
+	}()
 
 	// Add some subscribers
 	for i := 0; i < 5; i++ {

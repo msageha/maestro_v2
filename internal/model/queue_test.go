@@ -268,6 +268,9 @@ func TestTask_GetDoneConditions(t *testing.T) {
 	}
 }
 
+// TestTask_GetDoneConditions_NilReceiver verifies that calling GetDoneConditions
+// on a nil *Task pointer panics (nil dereference). This documents the expected
+// behavior so that callers know they must nil-check before calling the method.
 func TestTask_GetDoneConditions_NilReceiver(t *testing.T) {
 	t.Parallel()
 	var task *Task

@@ -147,6 +147,32 @@ deny() {
 if [ "$tool_name" = "Bash" ]; then
   cmd="$(echo "$input" | jq -r '.tool_input.command // ""')"
 
+  # C1: Shell expansion bypass prevention (deny-by-default + allowlist)
+  # Block backtick command substitution (legacy syntax, use $() instead)
+  _bt=$(printf '\x60')
+  if printf '%s' "$cmd" | grep -qF "$_bt"; then
+    deny "C1: Blocked command containing backtick command substitution"
+  fi
+
+  # Block ANSI-C quoting ($'...' can encode arbitrary bytes to bypass pattern checks)
+  _ansi_re="(^|[[:space:]])[$]'"
+  if echo "$cmd" | grep -qE "$_ansi_re"; then
+    deny "C1: Blocked command containing ANSI-C quoting"
+  fi
+
+  # Block unsafe $(...) command substitution (allowlist approach)
+  if echo "$cmd" | grep -qF '$('; then
+    cmd_check="$(echo "$cmd" | sed -E '
+      s/\$\(\([^)]*\)\)/__ASAFE__/g
+      s/\$\((go (env|list|version)|pwd|dirname|basename|realpath|which|type|command -v|uname|date|hostname|mktemp|nproc|getconf|id|whoami)[^)]*\)/__SAFE__/g
+      s/\$\(git (rev-parse|log|diff|status|branch|describe|remote|tag|show|ls-files|ls-tree|cat-file|config|symbolic-ref|name-rev|for-each-ref|merge-base)[^)]*\)/__SAFE__/g
+      s/\$\((wc|sort|tr|cut)[^)]*\)/__SAFE__/g
+    ')"
+    if echo "$cmd_check" | grep -qF '$('; then
+      deny "C1: Blocked command substitution with non-allowlisted command"
+    fi
+  fi
+
   # D001: OS/home/root destruction (case-insensitive for macOS)
   # Match both rm -rf and rm -fr (and variants like -fR, -Rf, -rRf, etc.)
   if echo "$cmd" | grep -qiE 'rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f[a-zA-Z]*\s+(/\s|/$|~|/Users)' || \
@@ -159,16 +185,39 @@ if [ "$tool_name" = "Bash" ]; then
     deny "D001: Blocked rm --recursive --force targeting system/home directory"
   fi
 
+  # C2: D001 with separated flags (rm -r -f /, rm -v -r -f /, etc.)
+  # Catches cases where -r and -f are in separate arguments
+  if echo "$cmd" | grep -qE 'rm\s' && \
+     echo "$cmd" | grep -qE '(-[a-zA-Z]*[rR]|--recursive)' && \
+     echo "$cmd" | grep -qE '(-[a-zA-Z]*f|--force)' && \
+     echo "$cmd" | grep -qE '(/\s|/$|~|/Users)'; then
+    deny "D001: Blocked rm with recursive+force targeting system/home directory"
+  fi
+
   # D002: Recursive delete outside project root
   if echo "$cmd" | grep -qE 'rm\s+(-[a-zA-Z]*[rR]|--recursive)'; then
     project_root=__PROJECT_ROOT__
     set -f
     for word in $cmd; do
       case "$word" in
-        /*|~*|../*|*/../*) ;;
-        *) continue ;;
+        rm|*/rm|-*) continue ;;
       esac
-      resolved="$(realpath "$word" 2>/dev/null || echo "$word")"
+      # H3: Resolve symlinks for existing paths
+      if [ -e "$word" ] || [ -L "$word" ]; then
+        resolved="$(realpath "$word" 2>/dev/null || echo "$word")"
+      else
+        # For non-existent paths, only check those that look like filesystem paths
+        case "$word" in
+          /*|~/*|~|../*|*/../*) ;;
+          *) continue ;;
+        esac
+        case "$word" in
+          /*) resolved="$word" ;;
+          ~/*) resolved="$HOME/${word#\~/}" ;;
+          ~) resolved="$HOME" ;;
+          *) resolved="$(pwd)/$word" ;;
+        esac
+      fi
       case "$resolved" in
         "$project_root"/*) ;;
         *) deny "D002: Blocked recursive delete outside project root: $word" ;;
@@ -276,12 +325,58 @@ if [ "$tool_name" = "Bash" ]; then
     deny "B004: Blocked absolute path shell invocation"
   fi
 
+  # H1: Absolute path invocation of dangerous commands
+  if echo "$cmd" | grep -qE '(^|[;|&(])\s*(/usr(/local)?)?/s?bin/(rm|kill|killall|pkill|mkfs|fdisk|dd|diskutil|chmod|chown)\b'; then
+    deny "H1: Blocked absolute path invocation of dangerous command"
+  fi
+
+  # H1: Wrapper commands executing dangerous programs (env, command, exec, xargs)
+  if echo "$cmd" | grep -qE '(^|[;|&])\s*(env|command|exec)\s+(-[^ ]+\s+)*([A-Za-z_][A-Za-z0-9_]*=[^ ]*\s+)*(rm|kill|killall|pkill|sudo|su|mkfs|dd|fdisk|diskutil)\b'; then
+    deny "H1: Blocked dangerous command via wrapper (env/command/exec)"
+  fi
+  if echo "$cmd" | grep -qE '\|\s*xargs\s+(-[^ ]+\s+)*(rm|kill|killall|pkill|sudo|mkfs|dd|fdisk|diskutil)\b'; then
+    deny "H1: Blocked dangerous command via xargs"
+  fi
+
+  # M-AGT1: find with destructive actions
+  if echo "$cmd" | grep -qE 'find\s.*\s-delete(\s|$)'; then
+    deny "M-AGT1: Blocked find with -delete flag"
+  fi
+  if echo "$cmd" | grep -qE 'find\s.*-exec\s+(rm|shred|srm)\s'; then
+    deny "M-AGT1: Blocked find with -exec calling destructive command"
+  fi
+
+  # M-AGT1: Scripting language destructive file operations
+  if echo "$cmd" | grep -qE 'perl\s.*-[eE]\s.*\b(unlink|rmdir|rmtree|remove_tree)\b'; then
+    deny "M-AGT1: Blocked destructive file operation via perl"
+  fi
+  if echo "$cmd" | grep -qE 'python[23]?\s.*-c\s.*\b(os\.remove|os\.unlink|os\.rmdir|shutil\.rmtree)\b'; then
+    deny "M-AGT1: Blocked destructive file operation via python"
+  fi
+  if echo "$cmd" | grep -qE 'node\s.*-e\s.*\b(unlinkSync|rmdirSync|rmSync)\b'; then
+    deny "M-AGT1: Blocked destructive file operation via node"
+  fi
+  if echo "$cmd" | grep -qE 'ruby\s.*-e\s.*\b(File\.delete|FileUtils\.rm|FileUtils\.rm_rf)\b'; then
+    deny "M-AGT1: Blocked destructive file operation via ruby"
+  fi
+
   # .maestro/ access via Bash (bypass prevention, case-insensitive for macOS)
   if echo "$cmd" | grep -qiE '(cat|head|tail|less|more|vim|nano|sed|awk)\s+.*\.maestro/(state|queues|results|locks|logs|config|dashboard)'; then
     deny "Blocked .maestro/ control-plane access via Bash"
   fi
   if echo "$cmd" | grep -qiE '(ls|find|grep|rg)\s+.*\.maestro/(state|queues|results|locks|logs|config|dashboard)'; then
     deny "Blocked .maestro/ control-plane access via Bash"
+  fi
+  # M-AGT2: File manipulation commands accessing .maestro/ control-plane
+  if echo "$cmd" | grep -qiE '(cp|mv|rsync|ln|install|tar|zip)\s+.*\.maestro/(state|queues|results|locks|logs|config|dashboard)'; then
+    deny "Blocked .maestro/ control-plane access via Bash"
+  fi
+  # M-AGT2: Write operations targeting .maestro/ directory
+  if echo "$cmd" | grep -qiE '(cp|mv|rsync|install)\s+.+\s+[^ ]*\.maestro/'; then
+    deny "Blocked write to .maestro/ via file copy/move"
+  fi
+  if echo "$cmd" | grep -qiE 'ln\s+(-[a-zA-Z]*\s+)*[^ ]+\s+[^ ]*\.maestro/'; then
+    deny "Blocked symlink creation in .maestro/ via Bash"
   fi
   if echo "$cmd" | grep -qiE '(echo|printf|tee)\s.*>\s*\.maestro/'; then
     deny "Blocked write to .maestro/ via Bash"
@@ -326,7 +421,21 @@ if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ]; then
   # which would cause auto_commit to see no changes and integration to stall.
   worker_cwd="$(pwd 2>/dev/null || echo "")"
   if [ -n "$worker_cwd" ] && echo "$worker_cwd" | grep -qF '/.maestro/worktrees/'; then
+    # H4: Normalize file_path (resolve relative paths and symlinks)
+    _wt_check="$file_path"
     case "$file_path" in
+      /*) ;; # absolute path, use as-is
+      *) _wt_check="$worker_cwd/$file_path" ;;
+    esac
+    # Resolve symlinks for existing paths
+    if [ -e "$_wt_check" ] || [ -L "$_wt_check" ]; then
+      _wt_check="$(realpath "$_wt_check" 2>/dev/null || echo "$_wt_check")"
+    fi
+    # Reject paths with unresolved traversal (..)
+    if echo "$_wt_check" | grep -qF '..'; then
+      deny "WT001: Write outside worktree boundary: $file_path contains path traversal"
+    fi
+    case "$_wt_check" in
       "$worker_cwd"/*) ;; # OK: within worktree
       *) deny "WT001: Write outside worktree boundary: $file_path is not within working directory $worker_cwd" ;;
     esac

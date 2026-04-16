@@ -20,7 +20,7 @@ type ArmStats struct {
 type Selector struct {
 	arms             map[string]*ArmStats
 	explorationCoeff float64
-	totalPulls       int
+	totalPulls       int64
 	mu               sync.RWMutex
 }
 
@@ -94,7 +94,7 @@ func (s *Selector) UpdateReward(armName string, reward float64) {
 	arm.PullCount++
 	arm.TotalReward += reward
 	s.totalPulls++
-	arm.AvgReward += (reward - arm.AvgReward) / float64(arm.PullCount)
+	arm.AvgReward += (reward - arm.AvgReward) / float64(arm.PullCount) //nolint:gosec // PullCount is bounded by usage
 }
 
 // GetStats returns a snapshot of all arm statistics.
@@ -125,7 +125,7 @@ func (s *Selector) ucb1Score(arm *ArmStats) float64 {
 	if arm.PullCount == 0 || s.totalPulls == 0 {
 		return 0
 	}
-	exploration := s.explorationCoeff * math.Sqrt(math.Log(float64(s.totalPulls))/float64(arm.PullCount))
+	exploration := s.explorationCoeff * math.Sqrt(math.Log(float64(s.totalPulls))/float64(arm.PullCount)) //nolint:gosec // totalPulls (int64) fits float64 for practical usage
 	return arm.AvgReward + exploration
 }
 

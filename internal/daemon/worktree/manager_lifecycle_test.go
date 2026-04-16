@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -161,7 +162,7 @@ func TestMergeToIntegration(t *testing.T) {
 	}
 
 	// Merge both to integration
-	conflicts, err := wm.MergeToIntegration("cmd_test_004", workers, nil)
+	conflicts, err := wm.MergeToIntegration(context.Background(), "cmd_test_004", workers, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration failed: %v", err)
 	}
@@ -221,7 +222,7 @@ func TestMergeConflict(t *testing.T) {
 	}
 
 	// Merge — should detect conflict on worker2 (worker1 merges first)
-	conflicts, err := wm.MergeToIntegration("cmd_test_005", workers, nil)
+	conflicts, err := wm.MergeToIntegration(context.Background(), "cmd_test_005", workers, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration failed: %v", err)
 	}
@@ -267,7 +268,7 @@ func TestPublishToBase(t *testing.T) {
 	}
 
 	// Merge to integration
-	if _, err := wm.MergeToIntegration("cmd_test_006", workers, nil); err != nil {
+	if _, err := wm.MergeToIntegration(context.Background(), "cmd_test_006", workers, nil); err != nil {
 		t.Fatal(err)
 	}
 

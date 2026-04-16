@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
+	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 // QueueWriteParams is the request payload for the queue_write UDS command.
@@ -231,6 +233,66 @@ func archiveTerminalNotifications(nq *model.NotificationQueue) int {
 	}
 	nq.Notifications = kept
 	return archived
+}
+
+// writeAndNotify atomically writes a queue file, notifies self-write, and
+// returns an error response on failure. This consolidates the repeated
+// AtomicWrite + notifySelfWrite pattern used by command, task, and notification
+// write handlers.
+func (h *QueueWriteAPI) writeAndNotify(queuePath, queueType string, data any) *uds.Response {
+	if err := yamlutil.AtomicWrite(queuePath, data); err != nil {
+		return internalErrorf("write queue: %v", err)
+	}
+	h.notifySelfWrite(queuePath, queueType, data)
+	return nil
+}
+
+// ensureCapacityWithArchive checks whether the queue file can accommodate
+// estimatedAddition bytes. If it cannot, it calls archiveFn to remove terminal
+// entries, re-marshals the queue, and re-checks. Returns nil when the write is
+// safe, or an error response when the file remains too large.
+//
+// This consolidates the repeated "check → archive → re-marshal → re-check"
+// pattern used by command, task, and notification write handlers.
+func ensureCapacityWithArchive(
+	maxYAMLBytes int,
+	currentData []byte,
+	estimatedAddition int,
+	archiveFn func() int,
+	marshalFn func() ([]byte, error),
+	logFn func(string, ...any),
+	label string,
+) *uds.Response {
+	resp := checkFileSizeLimit(maxYAMLBytes, len(currentData), estimatedAddition)
+	if resp == nil {
+		return nil
+	}
+	archived := archiveFn()
+	if archived == 0 {
+		return resp
+	}
+	newData, err := marshalFn()
+	if err != nil {
+		return internalErrorf("marshal queue after archive: %v", err)
+	}
+	if checkFileSizeLimit(maxYAMLBytes, len(newData), estimatedAddition) != nil {
+		return resp
+	}
+	logFn("queue_write archive_%s archived=%d", label, archived)
+	return nil
+}
+
+// resolvePriority returns the given priority, or model.DefaultPriority if zero.
+func resolvePriority(priority int) int {
+	if priority == 0 {
+		return model.DefaultPriority
+	}
+	return priority
+}
+
+// formatNowUTC returns the current UTC time formatted as RFC3339.
+func formatNowUTC(c Clock) string {
+	return c.Now().UTC().Format(time.RFC3339)
 }
 
 func checkFileSizeLimit(maxBytes, currentSize, estimatedAddition int) *uds.Response {

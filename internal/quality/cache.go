@@ -34,6 +34,9 @@ func newResultCache(maxSize int, ttl time.Duration) *resultCache {
 	}
 }
 
+// Get retrieves a cached result by key. Uses an exclusive lock (not RLock)
+// because the method mutates internal state: MoveToFront updates the LRU
+// ordering, and expired entries are removed in place.
 func (c *resultCache) Get(key *cacheKey) *EvaluationResult {
 	c.mu.Lock()
 	defer c.mu.Unlock()

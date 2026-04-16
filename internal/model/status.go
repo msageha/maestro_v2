@@ -20,8 +20,12 @@ const (
 	StatusDeadLetter Status = "dead_letter"
 
 	// REQUIREMENTS.md §2.1: Extended task lifecycle states
+	// Note: These extended statuses are used in task state transitions (validTaskStateTransitions)
+	// only; they do NOT appear in queue entry transitions (validCommandTaskQueueTransitions).
 
 	// StatusPlanned indicates a task has been planned but not yet ready to run.
+	// It is the initial state in the extended lifecycle and transitions to ready,
+	// paused_for_human, or aborted. Not used in queue entries.
 	StatusPlanned Status = "planned"
 	// StatusReady indicates a task is eligible for dispatch.
 	StatusReady Status = "ready"

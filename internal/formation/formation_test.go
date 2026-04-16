@@ -128,8 +128,8 @@ func TestReadDaemonPID_MultipleLines(t *testing.T) {
 	dir := t.TempDir()
 	pidPath := filepath.Join(dir, "daemon.pid")
 
-	// Only the first trimmed value matters; extra lines are trimmed by TrimSpace
-	// but Atoi will fail on multi-line content.
+	// TrimSpace only removes leading/trailing whitespace, not internal newlines.
+	// Multi-line content like "123\n456" remains unchanged, so Atoi rejects it.
 	if err := os.WriteFile(pidPath, []byte("123\n456"), 0644); err != nil {
 		t.Fatal(err)
 	}

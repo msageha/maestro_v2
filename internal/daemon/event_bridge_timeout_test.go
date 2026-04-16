@@ -69,9 +69,18 @@ func TestEventBridge_RunWithTimeout_DrainGoroutineLogsCompletion(t *testing.T) {
 
 	// Unblock fn so the drain goroutine can observe completion.
 	close(unblock)
-	time.Sleep(100 * time.Millisecond)
 
-	if !strings.Contains(logBuf.String(), "completed after timeout") {
-		t.Errorf("expected drain goroutine log, got: %s", logBuf.String())
+	// Poll for the drain goroutine's log message instead of sleeping a fixed duration.
+	deadline := time.After(5 * time.Second)
+	for {
+		if strings.Contains(logBuf.String(), "completed after timeout") {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for drain goroutine log, got: %s", logBuf.String())
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
 	}
 }

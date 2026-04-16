@@ -369,6 +369,18 @@ func requireJq(t *testing.T) {
 	}
 }
 
+// makeBashInput creates a properly JSON-encoded input for Bash tool.
+func makeBashInput(command string) string {
+	m := map[string]interface{}{
+		"tool_name": "Bash",
+		"tool_input": map[string]interface{}{
+			"command": command,
+		},
+	}
+	b, _ := json.Marshal(m)
+	return string(b)
+}
+
 // runHookScript executes the hook script with the given JSON input and returns stdout.
 func runHookScript(t *testing.T, scriptPath, inputJSON string) string {
 	t.Helper()
@@ -961,5 +973,655 @@ func TestHookScript_WT001_NoEnforcementOutsideWorktree(t *testing.T) {
 	output := runHookScriptInDir(t, scriptPath, input, projectDir)
 	if strings.Contains(output, "WT001") {
 		t.Errorf("WT001 should not apply when CWD is not inside worktrees, got: %s", output)
+	}
+}
+
+// =============================================================================
+// C1: Shell variable expansion bypass tests
+// =============================================================================
+
+func TestHookScript_C1_BlocksBacktickSubstitution(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"backtick rm", "echo `rm -rf /`"},
+		{"backtick echo", "`echo rm` -rf /"},
+		{"backtick in middle", "ls `pwd`/src"},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			// Must escape backticks in JSON
+			escaped := strings.ReplaceAll(tc.cmd, "`", "` + \"`\" + `")
+			// Use raw construction to avoid backtick issues
+			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
+			output := runHookScript(t, scriptPath, input)
+			_ = escaped
+			if !strings.Contains(output, "C1") || !strings.Contains(output, "deny") {
+				t.Errorf("expected C1 deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_C1_BlocksAnsiCQuoting(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"ansi-c simple", "$'hello' arg"},
+		{"ansi-c with space", "echo $'test'"},
+		{"ansi-c at start", "$'cmd' -rf /"},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "C1") || !strings.Contains(output, "deny") {
+				t.Errorf("expected C1 deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_C1_BlocksUnsafeCommandSubstitution(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"echo subst", "$(echo rm) -rf /"},
+		{"printf subst", "$(printf '%s' rm) -rf /"},
+		{"arbitrary subst", "$(cat /tmp/cmd) -rf /"},
+		{"bash subst", "$(bash -c 'echo rm') -rf /"},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "C1") || !strings.Contains(output, "deny") {
+				t.Errorf("expected C1 deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_C1_AllowsSafeSubstitution(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	allowed := []struct {
+		name string
+		cmd  string
+	}{
+		{"go env", "echo $(go env GOROOT)"},
+		{"pwd subst", "ls $(pwd)/src"},
+		{"git rev-parse", "cd $(git rev-parse --show-toplevel)"},
+		{"git log", "echo $(git log --oneline -1)"},
+		{"which", "$(which go) version"},
+		{"uname", "echo $(uname -s)"},
+		{"arithmetic", "echo $(( 1 + 2 ))"},
+		{"wc", "echo $(wc -l < file.txt)"},
+		{"env var ref", "echo $HOME"},
+		{"env var brace", "echo ${TMPDIR}"},
+		{"go test plain", "go test -v ./..."},
+		{"git status", "git status"},
+		{"grep plain", "grep -r pattern src/"},
+		{"plain echo", "echo hello world"},
+	}
+	for _, tc := range allowed {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
+			output := runHookScript(t, scriptPath, input)
+			if strings.Contains(output, "C1") {
+				t.Errorf("should allow %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// C2: D001 regex flag separation bypass tests
+// =============================================================================
+
+func TestHookScript_C2_BlocksSeparatedFlags(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"separated r f", "rm -r -f /"},
+		{"separated f r", "rm -f -r /"},
+		{"with verbose", "rm -v -r -f /"},
+		{"long recursive short force", "rm --recursive -f /"},
+		{"short recursive long force", "rm -r --force /"},
+		{"long both", "rm --recursive --force /"},
+		{"target tilde", "rm -r -f ~"},
+		{"target Users", "rm -r -f /Users"},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "D001") || !strings.Contains(output, "deny") {
+				t.Errorf("expected D001 deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_C2_AllowsSafeRm(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	maestroDir := filepath.Join(dir, ".maestro")
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// Create subdirs for rm targets
+	for _, sub := range []string{"build", "tmp"} {
+		if err := os.MkdirAll(filepath.Join(dir, sub), 0755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+	}
+
+	allowed := []struct {
+		name string
+		cmd  string
+	}{
+		{"rm file only", "rm -f file.txt"},
+		{"rm dir only", "rm -r " + filepath.Join(dir, "build")},
+		{"rm no force", "rm -r " + filepath.Join(dir, "tmp")},
+	}
+	for _, tc := range allowed {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
+			output := runHookScript(t, scriptPath, input)
+			if strings.Contains(output, "D001") {
+				t.Errorf("should allow %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// H1: Absolute path / wrapper bypass tests
+// =============================================================================
+
+func TestHookScript_H1_BlocksAbsolutePathDangerousCommands(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"usr bin kill", "/usr/bin/kill 1234"},
+		{"bin kill", "/bin/kill 1234"},
+		{"usr sbin fdisk", "/usr/sbin/fdisk /dev/sda"},
+		{"usr bin chmod", "/usr/bin/chmod 777 /etc/passwd"},
+		{"sbin mkfs", "/sbin/mkfs.ext4 /dev/sda1"},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "H1") || !strings.Contains(output, "deny") {
+				t.Errorf("expected H1 deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_H1_BlocksWrapperCommands(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"env kill", "env kill 1234"},
+		{"command kill", "command kill 1234"},
+		{"exec kill", "exec kill 1234"},
+		{"env with var kill", "env FOO=bar kill 1234"},
+		{"env with flag kill", "env -i kill 1234"},
+		{"env sudo", "env sudo apt install foo"},
+		{"xargs kill", "echo 123 | xargs kill"},
+		{"xargs rm", "echo file | xargs rm"},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "H1") || !strings.Contains(output, "deny") {
+				t.Errorf("expected H1 deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_H1_AllowsSafeCommands(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	allowed := []struct {
+		name string
+		cmd  string
+	}{
+		{"env go test", "env GO111MODULE=on go test ./..."},
+		{"command go", "command go version"},
+		{"usr bin grep", "/usr/bin/grep pattern file.txt"},
+		{"env with var go", "env CGO_ENABLED=0 go build ./..."},
+	}
+	for _, tc := range allowed {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
+			output := runHookScript(t, scriptPath, input)
+			if strings.Contains(output, "H1") {
+				t.Errorf("should allow %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// H3: Symlink D002 bypass tests
+// =============================================================================
+
+func TestHookScript_H3_BlocksSymlinkOutsideProject(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	maestroDir := filepath.Join(dir, ".maestro")
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// Create a symlink inside the project that points outside
+	outsideDir := t.TempDir()
+	symlinkPath := filepath.Join(dir, "sneaky_link")
+	if err := os.Symlink(outsideDir, symlinkPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	input := `{"tool_name":"Bash","tool_input":{"command":"rm -rf ` + symlinkPath + `"}}`
+	output := runHookScript(t, scriptPath, input)
+	if !strings.Contains(output, "D002") || !strings.Contains(output, "deny") {
+		t.Errorf("expected D002 deny for symlink outside project, got: %s", output)
+	}
+}
+
+func TestHookScript_H3_AllowsSymlinkInsideProject(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	maestroDir := filepath.Join(dir, ".maestro")
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// Create a symlink inside the project that points to another dir inside project
+	targetDir := filepath.Join(dir, "target")
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	symlinkPath := filepath.Join(dir, "internal_link")
+	if err := os.Symlink(targetDir, symlinkPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	input := `{"tool_name":"Bash","tool_input":{"command":"rm -rf ` + symlinkPath + `"}}`
+	output := runHookScript(t, scriptPath, input)
+	if strings.Contains(output, "deny") {
+		t.Errorf("should allow symlink inside project, got: %s", output)
+	}
+}
+
+// =============================================================================
+// H4: WT001 relative path bypass tests
+// =============================================================================
+
+func TestHookScript_H4_AllowsRelativePathInsideWorktree(t *testing.T) {
+	requireJq(t)
+	base := t.TempDir()
+
+	projectDir := filepath.Join(base, "project")
+	maestroDir := filepath.Join(projectDir, ".maestro")
+	worktreeDir := filepath.Join(maestroDir, "worktrees", "cmd_123", "worker1")
+	if err := os.MkdirAll(worktreeDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// Relative path inside worktree should be allowed
+	input := `{"tool_name":"Write","tool_input":{"file_path":"internal/foo.go","content":"package foo"}}`
+	output := runHookScriptInDir(t, scriptPath, input, worktreeDir)
+	if strings.Contains(output, "deny") {
+		t.Errorf("should allow relative path inside worktree, got: %s", output)
+	}
+}
+
+func TestHookScript_H4_BlocksRelativePathEscapingWorktree(t *testing.T) {
+	requireJq(t)
+	base := t.TempDir()
+
+	projectDir := filepath.Join(base, "project")
+	maestroDir := filepath.Join(projectDir, ".maestro")
+	worktreeDir := filepath.Join(maestroDir, "worktrees", "cmd_123", "worker1")
+	if err := os.MkdirAll(worktreeDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// Relative path with .. that escapes worktree should be denied
+	input := `{"tool_name":"Write","tool_input":{"file_path":"../../internal/foo.go","content":"package foo"}}`
+	output := runHookScriptInDir(t, scriptPath, input, worktreeDir)
+	if !strings.Contains(output, "WT001") || !strings.Contains(output, "deny") {
+		t.Errorf("expected WT001 deny for relative path escaping worktree, got: %s", output)
+	}
+}
+
+func TestHookScript_H4_BlocksRelativePathEdit(t *testing.T) {
+	requireJq(t)
+	base := t.TempDir()
+
+	projectDir := filepath.Join(base, "project")
+	maestroDir := filepath.Join(projectDir, ".maestro")
+	worktreeDir := filepath.Join(maestroDir, "worktrees", "cmd_456", "worker2")
+	if err := os.MkdirAll(worktreeDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// Edit with path traversal should be denied
+	input := `{"tool_name":"Edit","tool_input":{"file_path":"../../../cmd/main.go","old_string":"old","new_string":"new"}}`
+	output := runHookScriptInDir(t, scriptPath, input, worktreeDir)
+	if !strings.Contains(output, "WT001") || !strings.Contains(output, "deny") {
+		t.Errorf("expected WT001 deny for Edit with path traversal, got: %s", output)
+	}
+}
+
+// =============================================================================
+// M-AGT1: Alternative destructive tools tests
+// =============================================================================
+
+func TestHookScript_MAGT1_BlocksFindDelete(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"find delete", "find /tmp -name '*.tmp' -delete"},
+		{"find exec rm", `find . -exec rm {} \;`},
+		{"find exec shred", `find . -name '*.log' -exec shred {} \;`},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "M-AGT1") || !strings.Contains(output, "deny") {
+				t.Errorf("expected M-AGT1 deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_MAGT1_BlocksScriptingDestructiveOps(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"perl unlink", `perl -e 'unlink("file.txt")'`},
+		{"python os.remove", `python -c 'import os; os.remove("file.txt")'`},
+		{"python3 rmtree", `python3 -c 'import shutil; shutil.rmtree("dir")'`},
+		{"node unlinkSync", `node -e 'require("fs").unlinkSync("file")'`},
+		{"node rmSync", `node -e 'require("fs").rmSync("dir", {recursive: true})'`},
+		{"ruby File.delete", `ruby -e 'File.delete("file.txt")'`},
+		{"ruby rm_rf", `ruby -e 'FileUtils.rm_rf("dir")'`},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "M-AGT1") || !strings.Contains(output, "deny") {
+				t.Errorf("expected M-AGT1 deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_MAGT1_AllowsSafeFindAndScripting(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	allowed := []struct {
+		name string
+		cmd  string
+	}{
+		{"find no delete", "find . -name '*.go'"},
+		{"find type f", "find . -type f -name '*.txt'"},
+		{"python print", "python -c 'print(42)'"},
+		{"node console", "node -e 'console.log(42)'"},
+		{"perl print", "perl -e 'print 42'"},
+	}
+	for _, tc := range allowed {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
+			output := runHookScript(t, scriptPath, input)
+			if strings.Contains(output, "M-AGT1") {
+				t.Errorf("should allow %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// M-AGT2: .maestro access check expansion tests
+// =============================================================================
+
+func TestHookScript_MAGT2_BlocksFileOpsOnMaestro(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"cp to maestro", "cp file.txt .maestro/state/tasks.yaml"},
+		{"mv to maestro", "mv file.txt .maestro/config.yaml"},
+		{"rsync to maestro", "rsync file.txt .maestro/queues/"},
+		{"ln to maestro state", "ln -s /tmp/x .maestro/state/link"},
+		{"cp read maestro", "cp .maestro/state/tasks.yaml /tmp/"},
+		{"install to maestro", "install -m 644 file.txt .maestro/locks/"},
+		{"tar maestro", "tar czf backup.tar.gz .maestro/state/"},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "deny") {
+				t.Errorf("expected deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_MAGT2_AllowsSafeFileOps(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	allowed := []struct {
+		name string
+		cmd  string
+	}{
+		{"cp normal files", "cp src/file.go dst/file.go"},
+		{"mv normal files", "mv old.txt new.txt"},
+		{"ln normal", "ln -s src/lib dst/lib"},
+		{"rsync normal", "rsync -av src/ dst/"},
+	}
+	for _, tc := range allowed {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
+			output := runHookScript(t, scriptPath, input)
+			if strings.Contains(output, "deny") {
+				t.Errorf("should allow %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Legitimate commands should NOT be blocked (comprehensive safety check)
+// =============================================================================
+
+func TestHookScript_LegitimateCommandsNotBlocked(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	legitimate := []struct {
+		name string
+		cmd  string
+	}{
+		{"go test", "go test -v -count=1 ./..."},
+		{"go test race", "go test -race ./internal/..."},
+		{"go test run", "go test -run TestFoo ./..."},
+		{"go build", "go build ./..."},
+		{"go vet", "go vet ./..."},
+		{"go mod tidy", "go mod tidy"},
+		{"git status", "git status"},
+		{"git diff", "git diff --stat"},
+		{"git log", "git log --oneline -10"},
+		{"git branch", "git branch -a"},
+		{"grep pattern", "grep -rn 'func main' ."},
+		{"cat file", "cat go.mod"},
+		{"ls dir", "ls -la internal/"},
+		{"echo string", "echo hello world"},
+		{"echo env var", "echo $HOME $PATH"},
+		{"make build", "make build"},
+		{"npm test", "npm test"},
+		{"npm install", "npm install"},
+		{"mkdir dir", "mkdir -p build/output"},
+		{"touch file", "touch build/output/.gitkeep"},
+		{"head file", "head -20 README.md"},
+		{"tail file", "tail -f /dev/null"},
+		{"wc file", "wc -l internal/agent/*.go"},
+		{"sort file", "sort -u names.txt"},
+		{"diff files", "diff file1.txt file2.txt"},
+		{"chmod project", "chmod +x scripts/build.sh"},
+		{"chmod R project", "chmod -R 755 ./build/output"},
+	}
+	for _, tc := range legitimate {
+		t.Run(tc.name, func(t *testing.T) {
+			input := `{"tool_name":"Bash","tool_input":{"command":"` + tc.cmd + `"}}`
+			output := runHookScript(t, scriptPath, input)
+			if strings.Contains(output, "deny") {
+				t.Errorf("BLOCKED legitimate command %q, got: %s", tc.cmd, output)
+			}
+		})
 	}
 }

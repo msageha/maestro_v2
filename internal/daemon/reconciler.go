@@ -54,7 +54,7 @@ func NewReconciler(
 		reconcile.R1ResultQueue{},
 		reconcile.R2ResultState{},
 		reconcile.R3PlannerQueue{},
-		reconcile.R4PlanStatus{},
+		&reconcile.R4PlanStatus{},
 		reconcile.R5Notification{},
 		reconcile.R6FillTimeout{},
 		reconcile.R7MergeConflict{},

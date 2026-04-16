@@ -186,10 +186,13 @@ type RetryConfig struct {
 	SignalInlineRetries              int             `yaml:"signal_inline_retries"`
 	SignalInlineRetryDelaySec        int             `yaml:"signal_inline_retry_delay_sec"`
 	SignalDeliveryTimeoutSec         int             `yaml:"signal_delivery_timeout_sec"`
-	ResultNotifyInlineRetries        int             `yaml:"result_notify_inline_retries"`
-	ResultNotifyInlineRetryDelaySec  int             `yaml:"result_notify_inline_retry_delay_sec"`
-	ResultNotifyDeliveryTimeoutSec   int             `yaml:"result_notify_delivery_timeout_sec"`
-	TaskExecution                    TaskRetryConfig `yaml:"task_execution"`
+	ResultNotifyInlineRetries            int             `yaml:"result_notify_inline_retries"`
+	ResultNotifyInlineRetryDelaySec      int             `yaml:"result_notify_inline_retry_delay_sec"`
+	ResultNotifyDeliveryTimeoutSec       int             `yaml:"result_notify_delivery_timeout_sec"`
+	CommandDispatchInlineRetries         int             `yaml:"command_dispatch_inline_retries"`
+	CommandDispatchInlineRetryDelaySec   int             `yaml:"command_dispatch_inline_retry_delay_sec"`
+	CommandDispatchTimeoutSec            int             `yaml:"command_dispatch_timeout_sec"`
+	TaskExecution                        TaskRetryConfig `yaml:"task_execution"`
 }
 
 func (r RetryConfig) EffectiveSignalInlineRetries() int {
@@ -210,6 +213,18 @@ func (r RetryConfig) EffectiveResultNotifyInlineRetries() int {
 
 func (r RetryConfig) EffectiveResultNotifyInlineRetryDelaySec() int {
 	return effectiveNonZero(r.ResultNotifyInlineRetryDelaySec, DefaultResultNotifyInlineRetryDelaySec)
+}
+
+func (r RetryConfig) EffectiveCommandDispatchInlineRetries() int {
+	return effectiveNonZero(r.CommandDispatchInlineRetries, DefaultCommandDispatchInlineRetries)
+}
+
+func (r RetryConfig) EffectiveCommandDispatchInlineRetryDelaySec() int {
+	return effectiveNonZero(r.CommandDispatchInlineRetryDelaySec, DefaultCommandDispatchInlineRetryDelaySec)
+}
+
+func (r RetryConfig) EffectiveCommandDispatchTimeoutSec() int {
+	return effectiveNonZero(r.CommandDispatchTimeoutSec, DefaultCommandDispatchTimeoutSec)
 }
 
 func (r RetryConfig) EffectiveResultNotifyDeliveryTimeoutSec() int {

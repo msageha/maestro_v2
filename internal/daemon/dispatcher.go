@@ -244,7 +244,9 @@ func (disp *Dispatcher) executeDispatch(req agent.ExecRequest, logLabel, entityI
 	return nil
 }
 
-// DispatchCommand dispatches a command to the planner agent.
+// DispatchCommand dispatches a command to the planner agent with inline retry.
+// On transient failure, retries up to CommandDispatchInlineRetries times with
+// exponential backoff to avoid the full scan-cycle delay.
 func (disp *Dispatcher) DispatchCommand(cmd *model.Command) error {
 	// Build enriched command content (planner skills injection)
 	dispatchCmd := *cmd
@@ -254,14 +256,36 @@ func (disp *Dispatcher) DispatchCommand(cmd *model.Command) error {
 	}
 	dispatchCmd.Content = enrichedContent
 
-	return disp.executeDispatch(agent.ExecRequest{
+	req := agent.ExecRequest{
 		AgentID:    "planner",
 		Message:    envelope.BuildPlannerEnvelope(dispatchCmd, cmd.LeaseEpoch, cmd.Attempts),
 		Mode:       agent.ModeDeliver,
 		CommandID:  cmd.ID,
 		LeaseEpoch: cmd.LeaseEpoch,
 		Attempt:    cmd.Attempts,
-	}, "command", cmd.ID, "")
+	}
+
+	maxRetries := disp.config.Retry.EffectiveCommandDispatchInlineRetries()
+	retryDelay := time.Duration(disp.config.Retry.EffectiveCommandDispatchInlineRetryDelaySec()) * time.Second
+
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			disp.log(LogLevelInfo, "command_dispatch_inline_retry attempt=%d/%d id=%s error=%v",
+				attempt+1, maxRetries+1, cmd.ID, lastErr)
+			time.Sleep(retryDelay)
+			retryDelay = retryDelay * 2 // exponential backoff
+		}
+		err := disp.executeDispatch(req, "command", cmd.ID, "")
+		if err == nil {
+			if attempt > 0 {
+				disp.log(LogLevelInfo, "command_dispatch_retry_success id=%s total_attempts=%d", cmd.ID, attempt+1)
+			}
+			return nil
+		}
+		lastErr = err
+	}
+	return lastErr
 }
 
 // DispatchTask dispatches a task to a worker agent.

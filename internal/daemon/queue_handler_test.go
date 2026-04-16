@@ -21,6 +21,9 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
+// TODO(DRY): setupTestMaestroDir, newTestExecutorProvider, and newTestQueueHandler
+// are common setup patterns duplicated across daemon test files. Consider extracting
+// into a shared internal/daemon/testhelper_test.go when the test suite structure stabilizes.
 func setupTestMaestroDir(t *testing.T) string {
 	t.Helper()
 	maestroDir := testutil.SetupDir(t)

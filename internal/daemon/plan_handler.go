@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -185,7 +186,7 @@ func (h *PlanAPI) handlePlanWorktreeRecovery(operation string, data json.RawMess
 	case "unquarantine":
 		opErr = h.worktreeManager.Unquarantine(p.CommandID, p.Reason)
 	case "resume_merge":
-		opErr = h.worktreeManager.ResumeMerge(p.CommandID)
+		opErr = h.worktreeManager.ResumeMerge(context.Background(), p.CommandID)
 	case "resolve_conflict":
 		if p.PhaseID == "" {
 			return uds.ErrorResponse(uds.ErrCodeValidation, "phase_id is required")

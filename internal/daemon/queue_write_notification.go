@@ -2,13 +2,11 @@ package daemon
 
 import (
 	"fmt"
-	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
-	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 func (h *QueueWriteAPI) handleQueueWriteNotification(params QueueWriteParams) *uds.Response {
@@ -54,7 +52,7 @@ func (h *QueueWriteAPI) executeNotificationWrite(params QueueWriteParams, notifT
 	// (e.g. H3 reconcile forced a previously-completed result to cancelled),
 	// supersede the existing entry in place: reset delivery state so the
 	// orchestrator picks it up again. ID/CreatedAt/Priority are preserved.
-	now := h.clock.Now().UTC().Format(time.RFC3339)
+	now := formatNowUTC(h.clock)
 	for i := range nq.Notifications {
 		if nq.Notifications[i].SourceResultID != params.SourceResultID {
 			continue
@@ -75,27 +73,20 @@ func (h *QueueWriteAPI) executeNotificationWrite(params QueueWriteParams, notifT
 		nq.Notifications[i].LeaseOwner = nil
 		nq.Notifications[i].LeaseExpiresAt = nil
 		nq.Notifications[i].UpdatedAt = now
-		if err := yamlutil.AtomicWrite(queuePath, nq); err != nil {
-			return internalErrorf("write queue: %v", err)
+		if resp := h.writeAndNotify(queuePath, "notification", nq); resp != nil {
+			return resp
 		}
-		h.notifySelfWrite(queuePath, "notification", nq)
 		return uds.SuccessResponse(map[string]string{"id": nq.Notifications[i].ID, "superseded": "true"})
 	}
 
-	if resp := checkFileSizeLimit(h.config.Limits.MaxYAMLFileBytes, len(data), len(params.Content)+300); resp != nil {
-		archived := archiveTerminalNotifications(&nq)
-		if archived > 0 {
-			newData, marshalErr := yamlv3.Marshal(nq)
-			if marshalErr != nil {
-				return internalErrorf("marshal queue after archive: %v", marshalErr)
-			}
-			if checkFileSizeLimit(h.config.Limits.MaxYAMLFileBytes, len(newData), len(params.Content)+300) != nil {
-				return resp
-			}
-			h.logFn(LogLevelInfo, "queue_write archive_notifications archived=%d", archived)
-		} else {
-			return resp
-		}
+	if resp := ensureCapacityWithArchive(
+		h.config.Limits.MaxYAMLFileBytes, data, len(params.Content)+300,
+		func() int { return archiveTerminalNotifications(&nq) },
+		func() ([]byte, error) { return yamlv3.Marshal(nq) },
+		func(f string, a ...any) { h.logFn(LogLevelInfo, f, a...) },
+		"notifications",
+	); resp != nil {
+		return resp
 	}
 
 	id, err := model.GenerateID(model.IDTypeNotification)
@@ -103,10 +94,7 @@ func (h *QueueWriteAPI) executeNotificationWrite(params QueueWriteParams, notifT
 		return internalErrorf("generate ID: %v", err)
 	}
 
-	priority := params.Priority
-	if priority == 0 {
-		priority = model.DefaultPriority
-	}
+	priority := resolvePriority(params.Priority)
 
 	nq.Notifications = append(nq.Notifications, model.Notification{
 		ID:             id,
@@ -120,10 +108,9 @@ func (h *QueueWriteAPI) executeNotificationWrite(params QueueWriteParams, notifT
 		UpdatedAt:      now,
 	})
 
-	if err := yamlutil.AtomicWrite(queuePath, nq); err != nil {
-		return internalErrorf("write queue: %v", err)
+	if resp := h.writeAndNotify(queuePath, "notification", nq); resp != nil {
+		return resp
 	}
-	h.notifySelfWrite(queuePath, "notification", nq)
 
 	h.logFn(LogLevelInfo, "queue_write type=notification id=%s command_id=%s source_result_id=%s", id, params.CommandID, params.SourceResultID)
 	return uds.SuccessResponse(map[string]string{"id": id})

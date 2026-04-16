@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -189,7 +190,7 @@ func TestConcurrentMergeOperations(t *testing.T) {
 		wg.Add(1)
 		go func(idx int, cid string) {
 			defer wg.Done()
-			conflicts, err := wm.MergeToIntegration(cid, []string{"w1"}, nil)
+			conflicts, err := wm.MergeToIntegration(context.Background(), cid, []string{"w1"}, nil)
 			mergeErrs[idx] = err
 			if len(conflicts) > 0 {
 				mergeConflicts[idx] = make([]interface{}, len(conflicts))

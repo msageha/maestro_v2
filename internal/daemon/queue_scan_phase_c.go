@@ -145,8 +145,20 @@ func (qh *QueueHandler) applyWorktreeResultSignals(
 	signalIndex map[signalKey]struct{},
 	now string,
 ) {
-	// Worktree merge results: emit commit failure signals, conflict signals, record merged phases
-	for _, mr := range pb.worktreeMerges {
+	qh.applyMergeResultSignals(pb.worktreeMerges, signalQueue, signalsDirty, signalIndex, now)
+	qh.applyPublishResultSignals(pb.worktreePublishes, signalQueue, signalsDirty, signalIndex, now)
+}
+
+// applyMergeResultSignals emits commit failure signals, conflict signals, and
+// records merged phases for each worktree merge result from Phase B.
+func (qh *QueueHandler) applyMergeResultSignals(
+	merges []worktreeMergeResult,
+	signalQueue *model.PlannerSignalQueue,
+	signalsDirty *bool,
+	signalIndex map[signalKey]struct{},
+	now string,
+) {
+	for _, mr := range merges {
 		for _, cf := range mr.CommitFailures {
 			qh.log(LogLevelError, "worktree_commit_failed command=%s phase=%s worker=%s reason=%s error=%v",
 				mr.Item.CommandID, mr.Item.PhaseID, cf.WorkerID, cf.Reason, cf.Error)
@@ -202,9 +214,18 @@ func (qh *QueueHandler) applyWorktreeResultSignals(
 			}
 		}
 	}
+}
 
-	// Worktree publish results: emit signal to Planner on success or failure
-	for _, pr := range pb.worktreePublishes {
+// applyPublishResultSignals emits publish_completed or publish_failed signals
+// for each worktree publish result from Phase B.
+func (qh *QueueHandler) applyPublishResultSignals(
+	publishes []worktreePublishResult,
+	signalQueue *model.PlannerSignalQueue,
+	signalsDirty *bool,
+	signalIndex map[signalKey]struct{},
+	now string,
+) {
+	for _, pr := range publishes {
 		if pr.Error != nil {
 			qh.log(LogLevelError, "worktree_publish_failed command=%s error=%v",
 				pr.Item.CommandID, pr.Error)

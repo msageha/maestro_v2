@@ -56,7 +56,7 @@ type mergeWorkerOutcome struct {
 // Returns any merge conflicts encountered. Workers are merged in deterministic order.
 // All merge operations happen in the integration worktree (H3: projectRoot HEAD is never changed).
 // workerPurposes maps workerID to the task purpose for descriptive commit messages.
-func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, workerPurposes map[string]string) ([]model.MergeConflict, error) {
+func (wm *Manager) MergeToIntegration(ctx context.Context, commandID string, workerIDs []string, workerPurposes map[string]string) ([]model.MergeConflict, error) {
 	if err := validateIDs(commandID, workerIDs...); err != nil {
 		return nil, err
 	}
@@ -111,7 +111,7 @@ func (wm *Manager) MergeToIntegration(commandID string, workerIDs []string, work
 	var conflictSkippedCount int
 
 	for _, workerID := range sorted {
-		outcome := wm.mergeWorkerBranch(state, commandID, workerID, integrationPath, workerPurposes, now)
+		outcome := wm.mergeWorkerBranch(ctx, state, commandID, workerID, integrationPath, workerPurposes, now)
 
 		if outcome.fatalErr != nil {
 			// Fatal error: save state and return immediately
@@ -182,6 +182,7 @@ func (wm *Manager) checkIntegrationWorktreeClean(state *model.WorktreeCommandSta
 // itself, and delegates error handling to handleWorkerMergeConflict or
 // handleWorkerMergeNonConflictError.
 func (wm *Manager) mergeWorkerBranch(
+	ctx context.Context,
 	state *model.WorktreeCommandState,
 	commandID, workerID, integrationPath string,
 	workerPurposes map[string]string,
@@ -210,7 +211,7 @@ func (wm *Manager) mergeWorkerBranch(
 	}
 
 	// Check if worker branch has commits beyond base
-	logOut, err := wm.gitOutputWithRetry(context.Background(), integrationPath, 2, "log", "--oneline",
+	logOut, err := wm.gitOutputWithRetry(ctx, integrationPath, 2, "log", "--oneline",
 		fmt.Sprintf("%s..%s", state.Integration.BaseSHA, ws.Branch))
 	if err != nil {
 		wm.Log(core.LogLevelWarn, "merge_log_check command=%s worker=%s error=%v", commandID, workerID, err)
@@ -222,7 +223,7 @@ func (wm *Manager) mergeWorkerBranch(
 	}
 
 	// Record per-worker pre-merge HEAD so abort recovery resets only this merge
-	perWorkerPreMergeHEAD, err := wm.gitOutputWithRetry(context.Background(), integrationPath, 2, "rev-parse", "HEAD")
+	perWorkerPreMergeHEAD, err := wm.gitOutputWithRetry(ctx, integrationPath, 2, "rev-parse", "HEAD")
 	if err != nil {
 		wm.Log(core.LogLevelWarn, "merge_pre_head_failed command=%s worker=%s error=%v", commandID, workerID, err)
 		return mergeWorkerOutcome{}
@@ -249,7 +250,7 @@ func (wm *Manager) mergeWorkerBranch(
 		}
 
 		if hasConflict {
-			mc, conflictErr := wm.handleWorkerMergeConflict(state, commandID, workerID, integrationPath, perWorkerPreMergeHEAD, now, ws)
+			mc, conflictErr := wm.handleWorkerMergeConflict(ctx, state, commandID, workerID, integrationPath, perWorkerPreMergeHEAD, now, ws)
 			if conflictErr != nil {
 				return mergeWorkerOutcome{conflict: &mc, fatalErr: conflictErr}
 			}
@@ -280,6 +281,7 @@ func (wm *Manager) mergeWorkerBranch(
 // the abort fails. Returns the MergeConflict and a non-nil error only if
 // the worktree is stuck and the caller must abort the entire merge loop.
 func (wm *Manager) handleWorkerMergeConflict(
+	ctx context.Context,
 	state *model.WorktreeCommandState,
 	commandID, workerID, integrationPath, preMergeHEAD, now string,
 	ws *model.WorktreeState,
@@ -293,9 +295,9 @@ func (wm *Manager) handleWorkerMergeConflict(
 	}
 	// Collect per-file base/ours/theirs refs via rev-parse of index stages
 	for _, cf := range conflictFiles {
-		baseRef, err1 := wm.gitOutputWithRetry(context.Background(), integrationPath, 1, "rev-parse", ":1:"+cf)
-		oursRef, err2 := wm.gitOutputWithRetry(context.Background(), integrationPath, 1, "rev-parse", ":2:"+cf)
-		theirsRef, err3 := wm.gitOutputWithRetry(context.Background(), integrationPath, 1, "rev-parse", ":3:"+cf)
+		baseRef, err1 := wm.gitOutputWithRetry(ctx, integrationPath, 1, "rev-parse", ":1:"+cf)
+		oursRef, err2 := wm.gitOutputWithRetry(ctx, integrationPath, 1, "rev-parse", ":2:"+cf)
+		theirsRef, err3 := wm.gitOutputWithRetry(ctx, integrationPath, 1, "rev-parse", ":3:"+cf)
 		if err1 == nil && err2 == nil && err3 == nil {
 			// Use refs from first conflict file as representative
 			mc.BaseRef = strings.TrimSpace(baseRef)

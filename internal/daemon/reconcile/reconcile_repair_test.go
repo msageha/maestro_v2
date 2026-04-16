@@ -287,7 +287,7 @@ func TestR4PlanStatus_CanCompleteNil_Skipped(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
 
 	run := newRun(&deps)
-	outcome := R4PlanStatus{}.Apply(run)
+	outcome := (&R4PlanStatus{}).Apply(run)
 	if len(outcome.Repairs) != 0 {
 		t.Errorf("expected no repairs when CanComplete is nil, got %d", len(outcome.Repairs))
 	}
@@ -318,7 +318,7 @@ func TestR4PlanStatus_AlreadyTerminal_Skipped(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
 
 	run := newRun(&deps)
-	outcome := R4PlanStatus{}.Apply(run)
+	outcome := (&R4PlanStatus{}).Apply(run)
 	if len(outcome.Repairs) != 0 {
 		t.Errorf("expected no repairs for already terminal state, got %d", len(outcome.Repairs))
 	}
@@ -349,7 +349,7 @@ func TestR4PlanStatus_CanCompleteSuccess(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
 
 	run := newRun(&deps)
-	outcome := R4PlanStatus{}.Apply(run)
+	outcome := (&R4PlanStatus{}).Apply(run)
 	if len(outcome.Repairs) != 1 {
 		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
 	}
@@ -391,7 +391,7 @@ func TestR4PlanStatus_CanCompleteFails_QuarantineAndNotify(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
 
 	run := newRun(&deps)
-	outcome := R4PlanStatus{}.Apply(run)
+	outcome := (&R4PlanStatus{}).Apply(run)
 	if len(outcome.Repairs) != 1 {
 		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
 	}
@@ -434,7 +434,7 @@ func TestR4PlanStatus_StateNotFound_NoRepair(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
 
 	run := newRun(&deps)
-	outcome := R4PlanStatus{}.Apply(run)
+	outcome := (&R4PlanStatus{}).Apply(run)
 	if len(outcome.Repairs) != 0 {
 		t.Errorf("expected no repairs when state file missing, got %d", len(outcome.Repairs))
 	}
@@ -1313,12 +1313,181 @@ func TestR4PlanStatus_PlanningStatus_Skipped(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_planning.yaml"), state)
 
 	run := newRun(&deps)
-	outcome := R4PlanStatus{}.Apply(run)
+	outcome := (&R4PlanStatus{}).Apply(run)
 	if len(outcome.Repairs) != 0 {
 		t.Errorf("expected no repairs for planning status, got %d", len(outcome.Repairs))
 	}
 	if len(outcome.Notifications) != 0 {
 		t.Errorf("expected no notifications for planning status, got %d", len(outcome.Notifications))
+	}
+}
+
+// --- R4 backoff tests ---
+
+func TestR4PlanStatus_BackoffExponential(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	callCount := 0
+	deps.CanComplete = func(*model.CommandState) (model.PlanStatus, error) {
+		callCount++
+		return "", fmt.Errorf("still incomplete")
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.CommandResultFile{
+		Results: []model.CommandResult{
+			{ID: "res1", CommandID: "cmd_bo", Status: model.StatusCompleted, CreatedAt: now},
+		},
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+
+	state := model.CommandState{
+		CommandID:  "cmd_bo",
+		PlanStatus: model.PlanStatusSealed,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_bo.yaml"), state)
+
+	r4 := &R4PlanStatus{}
+
+	// Cycle 1: should call CanComplete (fails), enters backoff skip=1
+	run1 := newRun(&deps)
+	r4.Apply(run1)
+	if callCount != 1 {
+		t.Fatalf("cycle 1: expected 1 call, got %d", callCount)
+	}
+
+	// Re-create result file (quarantined by cycle 1)
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+
+	// Cycle 2: backoff ticks to 0, should call CanComplete again (fails), skip=2
+	run2 := newRun(&deps)
+	r4.Apply(run2)
+	if callCount != 2 {
+		t.Fatalf("cycle 2: expected 2 calls, got %d", callCount)
+	}
+
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+
+	// Cycle 3: backoff ticks to 1, should skip
+	run3 := newRun(&deps)
+	r4.Apply(run3)
+	if callCount != 2 {
+		t.Fatalf("cycle 3: expected 2 calls (skipped), got %d", callCount)
+	}
+
+	// Cycle 4: backoff ticks to 0, should call CanComplete (fails), skip=4
+	run4 := newRun(&deps)
+	r4.Apply(run4)
+	if callCount != 3 {
+		t.Fatalf("cycle 4: expected 3 calls, got %d", callCount)
+	}
+
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+
+	// Cycles 5-7: should all skip (skip=4 → 3 → 2 → 1)
+	for cycle := 5; cycle <= 7; cycle++ {
+		run := newRun(&deps)
+		r4.Apply(run)
+		if callCount != 3 {
+			t.Fatalf("cycle %d: expected 3 calls (skipped), got %d", cycle, callCount)
+		}
+	}
+
+	// Cycle 8: backoff ticks to 0, should call CanComplete
+	run8 := newRun(&deps)
+	r4.Apply(run8)
+	if callCount != 4 {
+		t.Fatalf("cycle 8: expected 4 calls, got %d", callCount)
+	}
+}
+
+func TestR4PlanStatus_BackoffClearedOnSuccess(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestDir(t)
+	deps := newTestDeps(t, maestroDir)
+	callCount := 0
+	shouldFail := true
+	deps.CanComplete = func(*model.CommandState) (model.PlanStatus, error) {
+		callCount++
+		if shouldFail {
+			return "", fmt.Errorf("incomplete")
+		}
+		return model.PlanStatusCompleted, nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.CommandResultFile{
+		Results: []model.CommandResult{
+			{ID: "res1", CommandID: "cmd_clear", Status: model.StatusCompleted, CreatedAt: now},
+		},
+	}
+	state := model.CommandState{
+		CommandID:  "cmd_clear",
+		PlanStatus: model.PlanStatusSealed,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_clear.yaml"), state)
+
+	r4 := &R4PlanStatus{}
+
+	// Cycle 1: fails, enters backoff
+	r4.Apply(newRun(&deps))
+	if callCount != 1 {
+		t.Fatalf("expected 1 call, got %d", callCount)
+	}
+
+	// Cycle 2: backoff expires, succeeds → clears backoff
+	shouldFail = false
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_clear.yaml"), state)
+	r4.Apply(newRun(&deps))
+	if callCount != 2 {
+		t.Fatalf("expected 2 calls, got %d", callCount)
+	}
+
+	// Verify backoff was cleared: next failure should start from skip=1 (not higher)
+	shouldFail = true
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_clear.yaml"), state)
+	r4.Apply(newRun(&deps))
+	if callCount != 3 {
+		t.Fatalf("expected 3 calls, got %d", callCount)
+	}
+
+	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+
+	// Next cycle should retry (skip=1 → tick to 0)
+	r4.Apply(newRun(&deps))
+	if callCount != 4 {
+		t.Fatalf("expected 4 calls (backoff reset to 1 cycle), got %d", callCount)
+	}
+}
+
+func TestR4BackoffCycles(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		failures int
+		want     int
+	}{
+		{0, 0},
+		{1, 1},
+		{2, 2},
+		{3, 4},
+		{4, 8},
+		{5, 8}, // capped at 8
+		{10, 8},
+	}
+	for _, tt := range tests {
+		got := r4BackoffCycles(tt.failures)
+		if got != tt.want {
+			t.Errorf("r4BackoffCycles(%d) = %d, want %d", tt.failures, got, tt.want)
+		}
 	}
 }
 

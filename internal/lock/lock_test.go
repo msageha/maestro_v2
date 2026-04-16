@@ -10,6 +10,7 @@ import (
 )
 
 func TestMutexMap_LockUnlock(t *testing.T) {
+	t.Parallel()
 	m := NewMutexMap()
 
 	m.Lock("agent1")
@@ -21,6 +22,7 @@ func TestMutexMap_LockUnlock(t *testing.T) {
 }
 
 func TestMutexMap_DifferentKeys(t *testing.T) {
+	t.Parallel()
 	m := NewMutexMap()
 
 	done := make(chan struct{})
@@ -38,6 +40,7 @@ func TestMutexMap_DifferentKeys(t *testing.T) {
 }
 
 func TestMutexMap_Concurrent(t *testing.T) {
+	t.Parallel()
 	m := NewMutexMap()
 	var counter int64
 
@@ -59,6 +62,7 @@ func TestMutexMap_Concurrent(t *testing.T) {
 }
 
 func TestMutexMap_AutoCleanup(t *testing.T) {
+	t.Parallel()
 	m := NewMutexMap()
 
 	// Lock and unlock several keys — all entries should be cleaned up.
@@ -74,6 +78,7 @@ func TestMutexMap_AutoCleanup(t *testing.T) {
 }
 
 func TestMutexMap_Remove(t *testing.T) {
+	t.Parallel()
 	m := NewMutexMap()
 
 	// Remove on a never-seen key is a safe no-op.
@@ -101,6 +106,7 @@ func TestMutexMap_Remove(t *testing.T) {
 }
 
 func TestMutexMap_AutoCleanupConcurrent(t *testing.T) {
+	t.Parallel()
 	m := NewMutexMap()
 
 	var wg sync.WaitGroup
@@ -120,6 +126,7 @@ func TestMutexMap_AutoCleanupConcurrent(t *testing.T) {
 }
 
 func TestMutexMap_TryUnlock(t *testing.T) {
+	t.Parallel()
 	m := NewMutexMap()
 
 	m.Lock("key1")
@@ -135,6 +142,7 @@ func TestMutexMap_TryUnlock(t *testing.T) {
 }
 
 func TestMutexMap_TryUnlockNonExistent(t *testing.T) {
+	t.Parallel()
 	m := NewMutexMap()
 
 	// TryUnlock on a key that was never locked should return false, not panic.
@@ -144,6 +152,7 @@ func TestMutexMap_TryUnlockNonExistent(t *testing.T) {
 }
 
 func TestMutexMap_DoubleUnlockSafe(t *testing.T) {
+	t.Parallel()
 	m := NewMutexMap()
 
 	m.Lock("key1")
@@ -159,6 +168,7 @@ func TestMutexMap_DoubleUnlockSafe(t *testing.T) {
 }
 
 func TestMutexMap_UnlockNeverLocked(t *testing.T) {
+	t.Parallel()
 	m := NewMutexMap()
 
 	// Unlock on a key that was never locked must not panic.
@@ -170,6 +180,7 @@ func TestMutexMap_UnlockNeverLocked(t *testing.T) {
 }
 
 func TestMutexMap_RelockAfterAutoCleanup(t *testing.T) {
+	t.Parallel()
 	m := NewMutexMap()
 
 	// Lock, unlock, verify cleanup, then lock again.
@@ -193,6 +204,7 @@ func TestMutexMap_RelockAfterAutoCleanup(t *testing.T) {
 }
 
 func TestMutexMap_ConcurrentTryUnlock(t *testing.T) {
+	t.Parallel()
 	m := NewMutexMap()
 
 	m.Lock("key1")
@@ -222,6 +234,7 @@ func TestMutexMap_ConcurrentTryUnlock(t *testing.T) {
 }
 
 func TestMutexMap_ConcurrentMultiKeyCleanup(t *testing.T) {
+	t.Parallel()
 	m := NewMutexMap()
 
 	// Concurrent lock/unlock across many distinct keys.
@@ -244,6 +257,7 @@ func TestMutexMap_ConcurrentMultiKeyCleanup(t *testing.T) {
 }
 
 func TestMutexMap_ConcurrentDoubleUnlock(t *testing.T) {
+	t.Parallel()
 	m := NewMutexMap()
 
 	// Ensure concurrent double-unlock calls don't panic or corrupt state.
@@ -276,6 +290,7 @@ func TestMutexMap_ConcurrentDoubleUnlock(t *testing.T) {
 }
 
 func TestFileLock_TryLock(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	lockPath := filepath.Join(dir, "daemon.lock")
 
@@ -287,6 +302,7 @@ func TestFileLock_TryLock(t *testing.T) {
 }
 
 func TestFileLock_DoubleLockRejected(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	lockPath := filepath.Join(dir, "daemon.lock")
 
@@ -304,6 +320,7 @@ func TestFileLock_DoubleLockRejected(t *testing.T) {
 }
 
 func TestFileLock_UnlockAllowsRelock(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	lockPath := filepath.Join(dir, "daemon.lock")
 
@@ -323,6 +340,7 @@ func TestFileLock_UnlockAllowsRelock(t *testing.T) {
 }
 
 func TestFileLock_DoubleUnlockSafe(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	lockPath := filepath.Join(dir, "daemon.lock")
 
@@ -336,6 +354,7 @@ func TestFileLock_DoubleUnlockSafe(t *testing.T) {
 }
 
 func TestFileLock_ConcurrentDifferentFiles(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	const N = 10
 	var wg sync.WaitGroup

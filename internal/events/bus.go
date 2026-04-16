@@ -296,11 +296,14 @@ func (b *Bus) Publish(eventType EventType, data map[string]interface{}) {
 }
 
 // addDroppedByType atomically increments the per-type dropped counter and returns the new value.
+// The sync.Map only stores *atomic.Int64 values (via LoadOrStore above), so the
+// type assertion should always succeed. The !ok branch is a defensive fallback
+// that logs the anomaly and returns a safe default rather than panicking.
 func (b *Bus) addDroppedByType(eventType EventType) int64 {
 	v, _ := b.droppedByType.LoadOrStore(eventType, &atomic.Int64{})
 	counter, ok := v.(*atomic.Int64)
 	if !ok {
-		log.Printf("ERROR event_bus: unexpected type in droppedByType map for %s: %T", eventType, v)
+		log.Printf("ERROR event_bus: unexpected type in droppedByType map for %s: %T (expected *atomic.Int64)", eventType, v)
 		return 0
 	}
 	return counter.Add(1)

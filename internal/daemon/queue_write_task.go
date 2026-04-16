@@ -5,14 +5,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
-	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 // handleQueueWriteTask is an INTERNAL entrypoint for the queue_write "task"
@@ -61,20 +59,14 @@ func (h *QueueWriteAPI) executeTaskWrite(params QueueWriteParams) *uds.Response 
 		}
 	}
 
-	if resp := checkFileSizeLimit(h.config.Limits.MaxYAMLFileBytes, len(data), len(params.Content)+500); resp != nil {
-		archived := h.archiveTerminalTasks(&tq)
-		if archived > 0 {
-			newData, marshalErr := yamlv3.Marshal(tq)
-			if marshalErr != nil {
-				return internalErrorf("marshal queue after archive: %v", marshalErr)
-			}
-			if checkFileSizeLimit(h.config.Limits.MaxYAMLFileBytes, len(newData), len(params.Content)+500) != nil {
-				return resp
-			}
-			h.logFn(LogLevelInfo, "queue_write archive_tasks worker=%s archived=%d", params.Target, archived)
-		} else {
-			return resp
-		}
+	if resp := ensureCapacityWithArchive(
+		h.config.Limits.MaxYAMLFileBytes, data, len(params.Content)+500,
+		func() int { return h.archiveTerminalTasks(&tq) },
+		func() ([]byte, error) { return yamlv3.Marshal(tq) },
+		func(f string, a ...any) { h.logFn(LogLevelInfo, f, a...) },
+		fmt.Sprintf("tasks worker=%s", params.Target),
+	); resp != nil {
+		return resp
 	}
 
 	id, err := model.NewTaskID(model.TaskIDCaller(params.SystemCaller))
@@ -89,12 +81,8 @@ func (h *QueueWriteAPI) executeTaskWrite(params QueueWriteParams) *uds.Response 
 		}
 	}
 
-	priority := params.Priority
-	if priority == 0 {
-		priority = model.DefaultPriority
-	}
-
-	now := h.clock.Now().UTC().Format(time.RFC3339)
+	priority := resolvePriority(params.Priority)
+	now := formatNowUTC(h.clock)
 	tq.Tasks = append(tq.Tasks, model.Task{
 		ID:                 id,
 		CommandID:          params.CommandID,
@@ -113,10 +101,9 @@ func (h *QueueWriteAPI) executeTaskWrite(params QueueWriteParams) *uds.Response 
 		UpdatedAt:          now,
 	})
 
-	if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
-		return internalErrorf("write queue: %v", err)
+	if resp := h.writeAndNotify(queuePath, "task", tq); resp != nil {
+		return resp
 	}
-	h.notifySelfWrite(queuePath, "task", tq)
 
 	h.logFn(LogLevelInfo, "queue_write type=task id=%s command_id=%s worker=%s", id, params.CommandID, params.Target)
 	return uds.SuccessResponse(map[string]string{"id": id})

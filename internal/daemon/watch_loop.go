@@ -17,8 +17,9 @@ import (
 // It holds a back-pointer to Daemon for access to shared state.
 type WatchLoop struct {
 	d            *Daemon
-	fsSem        chan struct{} // bounds concurrent fsnotify handler goroutines
-	droppedCount atomic.Int64 // events dropped due to semaphore full
+	fsSem        chan struct{}  // bounds concurrent fsnotify handler goroutines
+	droppedCount atomic.Int64  // events dropped due to semaphore full
+	fsDirty      atomic.Bool   // set when events are dropped; cleared after catch-up scan
 }
 
 // FsDroppedCount returns the total number of fsnotify events dropped due to
@@ -69,6 +70,7 @@ func (w *WatchLoop) fsnotifyLoop() {
 						defer func() { <-w.fsSem }()
 					default:
 						cnt := w.droppedCount.Add(1)
+						w.fsDirty.Store(true)
 						if cnt == 1 || cnt%100 == 0 {
 							d.log(LogLevelWarn, "fsnotify handler dropped (semaphore full) file=%s total_dropped=%d", name, cnt)
 						}
@@ -97,6 +99,11 @@ func (w *WatchLoop) tickerLoop() {
 		case <-d.egCtx.Done():
 			return
 		case <-d.ticker.C:
+			// Catch-up scan: if fsnotify events were dropped due to
+			// semaphore saturation, force a scan to process missed changes.
+			if w.fsDirty.CompareAndSwap(true, false) {
+				d.log(LogLevelInfo, "catch_up_scan triggered (fsnotify events were dropped)")
+			}
 			d.log(LogLevelDebug, "periodic scan triggered")
 			d.handler.PeriodicScanWithContext(d.egCtx)
 

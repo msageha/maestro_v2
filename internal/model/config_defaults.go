@@ -137,6 +137,11 @@ const (
 	DefaultResultNotifyInlineRetries       = 2
 	DefaultResultNotifyInlineRetryDelaySec = 3
 	DefaultResultNotifyDeliveryTimeoutSec  = 15
+
+	// RetryConfig — command dispatch inline retry
+	DefaultCommandDispatchInlineRetries       = 2
+	DefaultCommandDispatchInlineRetryDelaySec = 2
+	DefaultCommandDispatchTimeoutSec          = 30
 )
 
 // ValidAgentModels is the whitelist of recognized agent model name identifiers.
