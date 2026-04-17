@@ -28,28 +28,6 @@ func TestValidateComplexityLevel(t *testing.T) {
 	}
 }
 
-func TestComplexityScore_Fields(t *testing.T) {
-	cs := ComplexityScore{
-		Level:           ComplexityLevelComplex,
-		FileCount:       15,
-		DependencyDepth: 4,
-		PastRepairRate:  0.3,
-		Confidence:      0.85,
-	}
-	if cs.Level != "complex" {
-		t.Errorf("Level = %q, want complex", cs.Level)
-	}
-	if cs.FileCount != 15 {
-		t.Errorf("FileCount = %d, want 15", cs.FileCount)
-	}
-	if cs.DependencyDepth != 4 {
-		t.Errorf("DependencyDepth = %d, want 4", cs.DependencyDepth)
-	}
-	if cs.Confidence != 0.85 {
-		t.Errorf("Confidence = %v, want 0.85", cs.Confidence)
-	}
-}
-
 func TestComplexityThresholds_Defaults(t *testing.T) {
 	ct := ComplexityThresholds{}
 	if v := ct.EffectiveSimpleMaxFiles(); v != 3 {

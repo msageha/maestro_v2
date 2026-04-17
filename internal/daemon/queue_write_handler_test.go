@@ -1284,3 +1284,57 @@ func TestDetectCycleDFS_PathContent(t *testing.T) {
 	})
 }
 
+// --- Self-write detection tests (Fix 4: self-write notification race) ---
+
+func TestWriteAndNotify_SelfWriteRecordedBeforeWrite(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+
+	queuePath := filepath.Join(d.maestroDir, "queue", "test_selfwrite.yaml")
+	data := model.CommandQueue{SchemaVersion: 1, FileType: "queue_command"}
+
+	// writeAndNotify should record the self-write BEFORE the file write.
+	// Verify by checking that the self-write tracker has the entry after the call.
+	resp := d.api.queue.writeAndNotify(queuePath, "command", data)
+	if resp != nil {
+		t.Fatalf("writeAndNotify returned error: %v", resp)
+	}
+
+	// The file should exist
+	if _, err := os.Stat(queuePath); err != nil {
+		t.Fatalf("expected file to exist: %v", err)
+	}
+
+	// Self-write should have been consumed by notifySelfWrite (re-record + publish),
+	// but a fresh Consume should still match since notifySelfWrite records the same hash.
+	if !d.selfWrites.Consume(queuePath) {
+		t.Error("expected self-write to be recorded and consumable")
+	}
+}
+
+func TestWriteAndNotify_SelfWriteHashMatchesFile(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+
+	queuePath := filepath.Join(d.maestroDir, "queue", "test_hash.yaml")
+	data := model.TaskQueue{SchemaVersion: 1, FileType: "queue_task"}
+
+	resp := d.api.queue.writeAndNotify(queuePath, "task", data)
+	if resp != nil {
+		t.Fatalf("writeAndNotify returned error: %v", resp)
+	}
+
+	// Verify file content matches what was written
+	content, err := os.ReadFile(queuePath)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	expected, err := yamlv3.Marshal(data)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !bytes.Equal(content, expected) {
+		t.Error("file content does not match expected YAML")
+	}
+}
+

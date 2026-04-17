@@ -1062,6 +1062,63 @@ func TestSubmit_PhasedSubmit_NoSystemCommit_InWorktreeMode(t *testing.T) {
 	}
 }
 
+// --- C-A3 / TOCTOU: Concurrent double-submit prevention ---
+
+func TestSubmit_ConcurrentDoubleSubmit(t *testing.T) {
+	// Launch multiple goroutines submitting with the same command ID.
+	// Exactly one should succeed; all others should fail with ErrDoubleSubmit.
+	maestroDir := setupMaestroDir(t)
+	cfg := testConfig()
+	commandID := "cmd_0000000060_aabbccdd"
+	lm := lock.NewMutexMap()
+
+	writePlannerQueue(t, maestroDir, commandID, model.StatusInProgress)
+
+	const goroutines = 5
+	results := make(chan error, goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func(idx int) {
+			tasksFile := writeTasksFile(t, []TaskInput{
+				{
+					Name:               fmt.Sprintf("task_concurrent_%d", idx),
+					Purpose:            "concurrent test",
+					Content:            "concurrent implementation",
+					AcceptanceCriteria: "works correctly",
+					BloomLevel:         2,
+					Required:           true,
+				},
+			})
+			_, err := Submit(SubmitOptions{
+				CommandID:  commandID,
+				TasksFile:  tasksFile,
+				MaestroDir: maestroDir,
+				Config:     cfg,
+				LockMap:    lm,
+			})
+			results <- err
+		}(i)
+	}
+
+	var successes, doubleSubmits int
+	for i := 0; i < goroutines; i++ {
+		err := <-results
+		if err == nil {
+			successes++
+		} else if errors.Is(err, ErrDoubleSubmit) {
+			doubleSubmits++
+		} else {
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+	if successes != 1 {
+		t.Errorf("successes = %d, want exactly 1", successes)
+	}
+	if doubleSubmits != goroutines-1 {
+		t.Errorf("doubleSubmits = %d, want %d", doubleSubmits, goroutines-1)
+	}
+}
+
 // TestParseInput_SpecialEscapeCharacters verifies that parseInput handles YAML
 // containing invalid escape sequences in double-quoted strings (e.g. \! and \:)
 // which Planner agents may produce via heredoc.

@@ -61,27 +61,6 @@ func TestRolloutCandidate_Fields(t *testing.T) {
 	}
 }
 
-func TestRolloutEligibility(t *testing.T) {
-	e := RolloutEligibility{Eligible: true}
-	if !e.Eligible {
-		t.Error("expected Eligible=true")
-	}
-	if len(e.Reasons) != 0 {
-		t.Error("expected empty Reasons")
-	}
-
-	e2 := RolloutEligibility{
-		Eligible: false,
-		Reasons:  []string{"bloom level too low", "no prior failures"},
-	}
-	if e2.Eligible {
-		t.Error("expected Eligible=false")
-	}
-	if len(e2.Reasons) != 2 {
-		t.Errorf("Reasons length = %d, want 2", len(e2.Reasons))
-	}
-}
-
 func TestRolloutConfig_Defaults(t *testing.T) {
 	var cfg RolloutConfig
 

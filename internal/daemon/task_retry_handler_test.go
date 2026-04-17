@@ -1694,8 +1694,8 @@ func TestRetryTaskAtomically_StateFailure(t *testing.T) {
 	}
 }
 
-// TC-RT-022: RetryTaskAtomically — queue 追加失敗時に enqueue-failed マーク
-func TestRetryTaskAtomically_QueueFailureMarksEnqueueFailed(t *testing.T) {
+// TC-RT-022: RetryTaskAtomically — queue 追加失敗時に state ロールバック
+func TestRetryTaskAtomically_QueueFailureRollsBackState(t *testing.T) {
 	t.Parallel()
 	tmpDir := t.TempDir()
 	commandID := "cmd_atomic_qfail"
@@ -1746,7 +1746,7 @@ func TestRetryTaskAtomically_QueueFailureMarksEnqueueFailed(t *testing.T) {
 		t.Fatal("expected error when queue directory is read-only")
 	}
 
-	// State should still have the task registered.
+	// C-A7: State should be rolled back — the retry task should no longer exist.
 	os.Chmod(queueDir, 0755)
 	stateData, err := os.ReadFile(statePath)
 	if err != nil {
@@ -1756,13 +1756,111 @@ func TestRetryTaskAtomically_QueueFailureMarksEnqueueFailed(t *testing.T) {
 	if err := yamlv3.Unmarshal(stateData, &updated); err != nil {
 		t.Fatalf("unmarshal state: %v", err)
 	}
-	if updated.TaskStates["task_retry_qfail"] != model.StatusPending {
-		t.Errorf("task should still be registered in state after queue failure: %v", updated.TaskStates)
+	if _, exists := updated.TaskStates["task_retry_qfail"]; exists {
+		t.Errorf("retry task should have been rolled back from state, but found: %v", updated.TaskStates)
 	}
 
-	// RetryEnqueueFailed should be set.
-	if updated.RetryEnqueueFailed == nil || updated.RetryEnqueueFailed["task_retry_qfail"] != workerID {
-		t.Errorf("RetryEnqueueFailed should mark the task: %v", updated.RetryEnqueueFailed)
+	// Original task should still be present.
+	if updated.TaskStates["t_orig"] != model.StatusFailed {
+		t.Errorf("original task should be preserved: %v", updated.TaskStates)
+	}
+
+	// RetryEnqueueFailed should NOT be set (rollback succeeded).
+	if len(updated.RetryEnqueueFailed) != 0 {
+		t.Errorf("RetryEnqueueFailed should be empty after successful rollback: %v", updated.RetryEnqueueFailed)
+	}
+}
+
+// TC-RT-022b: RetryTaskAtomically — queue失敗+rollback失敗時に enqueue-failed マーク
+func TestRetryTaskAtomically_QueueAndRollbackFailureMarksEnqueueFailed(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	commandID := "cmd_atomic_double_fail"
+	workerID := "worker1"
+
+	// Setup state directory.
+	stateDir := filepath.Join(tmpDir, "state", "commands")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatalf("create state dir: %v", err)
+	}
+	statePath := filepath.Join(stateDir, commandID+".yaml")
+	state := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "command_state",
+		CommandID:     commandID,
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{"t_orig": model.StatusFailed},
+		},
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	// Setup queue directory as read-only to force queue write failure.
+	queueDir := filepath.Join(tmpDir, "queue")
+	if err := os.MkdirAll(queueDir, 0755); err != nil {
+		t.Fatalf("create queue dir: %v", err)
+	}
+	if err := os.Chmod(queueDir, 0555); err != nil {
+		t.Fatalf("chmod queue dir: %v", err)
+	}
+	defer os.Chmod(queueDir, 0755)
+
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+	handler := NewTaskRetryHandler(tmpDir, model.Config{}, lock.NewMutexMap(), logger, LogLevelDebug)
+
+	retryTask := &model.Task{
+		ID:        "task_retry_double_fail",
+		CommandID: commandID,
+		Status:    model.StatusPending,
+	}
+
+	// First call: RegisterRetryTaskInState succeeds (state dir writable).
+	// Then queue add fails (queue dir read-only).
+	// Now make state dir read-only to force rollback failure.
+	// We need a custom approach: use a hook via the lockMap to make state
+	// dir read-only after the initial registration but before rollback.
+	//
+	// Simpler approach: directly register the task in state, make state dir
+	// read-only, then call RetryTaskAtomically which will re-register (no-op
+	// since already present), fail queue add, fail rollback, then mark enqueue-failed.
+
+	// Pre-register the task so the state lock registration succeeds even with
+	// read-only dir (updateYAMLFile succeeds because file already has the entry).
+	if err := handler.RegisterRetryTaskInState(retryTask, commandID); err != nil {
+		t.Fatalf("pre-register: %v", err)
+	}
+
+	// Now make state dir read-only so rollback fails.
+	if err := os.Chmod(stateDir, 0555); err != nil {
+		t.Fatalf("chmod state dir: %v", err)
+	}
+	defer os.Chmod(stateDir, 0755)
+
+	err := handler.RetryTaskAtomically(retryTask, commandID, workerID)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+
+	// Restore permissions and verify.
+	os.Chmod(stateDir, 0755)
+	os.Chmod(queueDir, 0755)
+
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var updated model.CommandState
+	if err := yamlv3.Unmarshal(stateData, &updated); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+
+	// Task should remain in state (rollback failed).
+	if updated.TaskStates["task_retry_double_fail"] != model.StatusPending {
+		t.Errorf("task should remain in state when rollback fails: %v", updated.TaskStates)
 	}
 }
 

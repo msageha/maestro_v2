@@ -979,19 +979,28 @@ func TestR1ResultQueue_RetryEnqueueFailed_MaxAttemptsExceeded(t *testing.T) {
 	if len(outcome.Repairs) != 1 {
 		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
 	}
-	if outcome.Repairs[0].Detail != fmt.Sprintf("retry_enqueue_failed max attempts (%d) exceeded, marked failed", 3) {
+	if outcome.Repairs[0].Detail != fmt.Sprintf("retry_enqueue_failed max attempts (%d) exceeded, dead-lettered", 3) {
 		t.Errorf("unexpected detail: %s", outcome.Repairs[0].Detail)
 	}
 
-	// Verify state: entry removed, task marked failed
+	// Verify state: entry removed, task marked dead_letter
 	data, _ := os.ReadFile(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"))
 	var updated model.CommandState
 	yamlv3.Unmarshal(data, &updated)
 	if len(updated.RetryEnqueueFailed) != 0 {
 		t.Errorf("expected RetryEnqueueFailed empty, got %v", updated.RetryEnqueueFailed)
 	}
-	if updated.TaskStates["retry_task1"] != model.StatusFailed {
-		t.Errorf("expected task status failed, got %s", updated.TaskStates["retry_task1"])
+	if updated.TaskStates["retry_task1"] != model.StatusDeadLetter {
+		t.Errorf("expected task status dead_letter, got %s", updated.TaskStates["retry_task1"])
+	}
+
+	// Verify dead-letter archive was written
+	dlEntries, err := os.ReadDir(filepath.Join(maestroDir, "dead_letters"))
+	if err != nil {
+		t.Fatalf("read dead_letters dir: %v", err)
+	}
+	if len(dlEntries) != 1 {
+		t.Errorf("expected 1 dead-letter archive, got %d", len(dlEntries))
 	}
 }
 

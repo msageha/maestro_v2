@@ -610,14 +610,26 @@ func TestValidate_ContinuousEnabled_NegativeMaxConsecutiveFailures(t *testing.T)
 	}
 }
 
-func TestValidate_ContinuousDisabled_NegativeFieldsOK(t *testing.T) {
+func TestValidate_ContinuousDisabled_NegativeMaxIterations(t *testing.T) {
 	cfg := validConfig()
 	cfg.Continuous.Enabled = false
 	cfg.Continuous.MaxIterations = -1
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for negative max_iterations even when continuous disabled")
+	}
+	if !strings.Contains(err.Error(), "continuous.max_iterations") {
+		t.Fatalf("expected continuous.max_iterations in error, got: %v", err)
+	}
+}
+
+func TestValidate_ContinuousDisabled_NegativeMaxConsecutiveFailuresOK(t *testing.T) {
+	cfg := validConfig()
+	cfg.Continuous.Enabled = false
 	cfg.Continuous.MaxConsecutiveFailures = -1
 	err := cfg.Validate()
 	if err != nil {
-		t.Fatalf("expected no error when continuous disabled, got: %v", err)
+		t.Fatalf("expected no error for negative max_consecutive_failures when continuous disabled, got: %v", err)
 	}
 }
 
@@ -806,6 +818,7 @@ func TestValidate_UpperBound_DispatchLeaseSec(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := validConfig()
 			cfg.Watcher.DispatchLeaseSec = tt.val
+			cfg.Watcher.MaxInProgressMin = ptr.Int(MaxMaxInProgressMin) // avoid cross-field constraint
 			err := cfg.Validate()
 			if tt.wantErr && err == nil {
 				t.Fatal("expected error")
@@ -1431,6 +1444,141 @@ func TestNormalizeExperimentalConfig_Idempotent(t *testing.T) {
 	// Should not change values on second call
 	if cfg.Evolution.MaxMutationsPerRound == nil || *cfg.Evolution.MaxMutationsPerRound != DefaultMaxMutationsPerRound {
 		t.Error("second normalization changed Evolution.MaxMutationsPerRound")
+	}
+}
+
+// --- New validation rule tests ---
+
+func TestValidate_QueuePriorityAgingSec_UpperBound(t *testing.T) {
+	tests := []struct {
+		name    string
+		val     int
+		wantErr bool
+	}{
+		{"at_max", MaxPriorityAgingSec, false},
+		{"exceeds_max", MaxPriorityAgingSec + 1, true},
+		{"negative", -1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Queue.PriorityAgingSec = tt.val
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "queue.priority_aging_sec") {
+				t.Fatalf("expected field path in error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_RetryCommandDispatch_UpperBound(t *testing.T) {
+	tests := []struct {
+		name    string
+		val     int
+		wantErr bool
+	}{
+		{"at_max", MaxCommandDispatchRetries, false},
+		{"exceeds_max", MaxCommandDispatchRetries + 1, true},
+		{"negative", -1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Retry.CommandDispatch = tt.val
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "retry.command_dispatch") {
+				t.Fatalf("expected field path in error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_RetryTaskDispatch_UpperBound(t *testing.T) {
+	tests := []struct {
+		name    string
+		val     int
+		wantErr bool
+	}{
+		{"at_max", MaxTaskDispatchRetries, false},
+		{"exceeds_max", MaxTaskDispatchRetries + 1, true},
+		{"negative", -1, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Retry.TaskDispatch = tt.val
+			err := cfg.Validate()
+			if tt.wantErr && err == nil {
+				t.Fatal("expected error")
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantErr && !strings.Contains(err.Error(), "retry.task_dispatch") {
+				t.Fatalf("expected field path in error, got: %v", err)
+			}
+		})
+	}
+}
+
+func TestValidate_ContinuousMaxIterations_AlwaysValidated(t *testing.T) {
+	cfg := validConfig()
+	cfg.Continuous.Enabled = false
+	cfg.Continuous.MaxIterations = -5
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for negative max_iterations even when disabled")
+	}
+	if !strings.Contains(err.Error(), "continuous.max_iterations") {
+		t.Fatalf("expected continuous.max_iterations in error, got: %v", err)
+	}
+}
+
+func TestValidate_DispatchLeaseVsMaxInProgress(t *testing.T) {
+	tests := []struct {
+		name             string
+		dispatchLeaseSec int
+		maxInProgressMin *int
+		wantErr          bool
+	}{
+		{"lease_exceeds_runtime", 3600, ptr.Int(30), true},        // 3600 >= 30*60=1800 -> true (3600 >= 1800)
+		{"lease_equals_runtime", 1800, ptr.Int(30), true},         // 1800 >= 1800 -> error
+		{"lease_below_runtime", 1799, ptr.Int(30), false},         // 1799 < 1800 -> ok
+		{"lease_zero_skips_check", 0, ptr.Int(1), false},          // dispatch_lease_sec=0 -> skip
+		{"runtime_zero_skips_check", 300, ptr.Int(0), false},      // maxInProgressSec=0 -> skip
+		{"nil_runtime_uses_default", 300, nil, false},             // default=60min=3600s, 300<3600 -> ok
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Watcher.DispatchLeaseSec = tt.dispatchLeaseSec
+			cfg.Watcher.MaxInProgressMin = tt.maxInProgressMin
+			err := cfg.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error")
+				}
+				if !strings.Contains(err.Error(), "watcher.dispatch_lease_sec") {
+					t.Fatalf("expected watcher.dispatch_lease_sec in error, got: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			}
+		})
 	}
 }
 

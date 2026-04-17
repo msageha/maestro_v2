@@ -318,19 +318,3 @@ func TestLoadOrDefaultVerifyConfig_ParseError(t *testing.T) {
 	assert.Contains(t, err.Error(), "load verify config")
 }
 
-func TestVerifyReport_Fields(t *testing.T) {
-	report := VerifyReport{
-		TaskID: "task_123",
-		Results: []VerifyResult{
-			{Category: "build", Command: "go build ./...", Passed: true, ExitCode: 0},
-			{Category: "test", Command: "go test ./...", Passed: false, ExitCode: 1, Output: "FAIL"},
-		},
-		AllPassed: false,
-	}
-
-	assert.Equal(t, "task_123", report.TaskID)
-	assert.Len(t, report.Results, 2)
-	assert.True(t, report.Results[0].Passed)
-	assert.False(t, report.Results[1].Passed)
-	assert.False(t, report.AllPassed)
-}

@@ -137,30 +137,33 @@ func TestBus_NonBlocking(t *testing.T) {
 		}
 	}()
 
-	// Subscribe with slow consumer (blocks on channel instead of sleeping)
+	// Subscribe with slow consumer (blocks on channel until released)
 	slowConsumer := make(chan struct{})
-	t.Cleanup(func() { close(slowConsumer) })
 	unsub := bus.Subscribe(EventTaskStarted, func(e Event) {
-		select {
-		case <-slowConsumer:
-		case <-time.After(100 * time.Millisecond):
-		}
+		<-slowConsumer
 	})
 	defer unsub()
 
-	// Publish multiple events rapidly
-	start := time.Now()
-	for i := 0; i < 10; i++ {
-		bus.Publish(EventTaskStarted, map[string]interface{}{
-			"id": i,
-		})
-	}
-	elapsed := time.Since(start)
+	// Publish multiple events rapidly — must complete without blocking
+	done := make(chan struct{})
+	go func() {
+		for i := 0; i < 10; i++ {
+			bus.Publish(EventTaskStarted, map[string]interface{}{
+				"id": i,
+			})
+		}
+		close(done)
+	}()
 
-	// Publishing should complete quickly even though consumer is slow
-	if elapsed > 50*time.Millisecond {
-		t.Errorf("publish blocked for %v, expected non-blocking", elapsed)
+	select {
+	case <-done:
+		// Publishing completed without blocking — success
+	case <-time.After(5 * time.Second):
+		t.Fatal("publish blocked: expected non-blocking even with slow consumer")
 	}
+
+	// Release slow consumer so bus.Close() can finish
+	close(slowConsumer)
 }
 
 func TestBus_Unsubscribe(t *testing.T) {

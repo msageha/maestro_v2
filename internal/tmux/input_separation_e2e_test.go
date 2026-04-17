@@ -59,7 +59,7 @@ func buildInputRecorder(t *testing.T) string {
 // Returns the session name. Cleanup is registered automatically.
 func createTestSession(t *testing.T, name string) string {
 	t.Helper()
-	sessionName := fmt.Sprintf("test-input-%s-%d", name, time.Now().UnixNano()%100000)
+	sessionName := fmt.Sprintf("test-%s-%d", name, time.Now().UnixNano())
 	cmd := exec.Command("tmux", "new-session", "-d", "-s", sessionName, "-n", "test", "-x", "120", "-y", "40")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("create test session %s: %v\n%s", sessionName, err, out)

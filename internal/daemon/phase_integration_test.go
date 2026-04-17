@@ -1219,10 +1219,10 @@ func TestPhaseIntegration_PhaseBContextCancellation(t *testing.T) {
 	var dispatchCount int32
 	exec := newRecordingExecutor(func(req agent.ExecRequest) agent.ExecResult {
 		atomic.AddInt32(&dispatchCount, 1)
-		// Simulate slow dispatch (block on channel with timeout)
+		// Simulate slow dispatch (block on channel with generous fallback timeout)
 		select {
 		case <-slowDispatch:
-		case <-time.After(50 * time.Millisecond):
+		case <-time.After(5 * time.Second):
 		}
 		return agent.ExecResult{Success: true}
 	})

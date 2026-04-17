@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -806,13 +807,11 @@ func TestResultWrite_LateAfterPlanTerminal(t *testing.T) {
 	}
 }
 
-// TestResultWrite_QueueWriteFailed_StickyError verifies that when phaseA's
-// queue write fails on both attempts (queue dir made read-only after the
-// result file is committed), the sticky error marker is persisted to
-// state.QueueWriteFailed so the R1 reconciler can repair the
-// result-terminal/queue-in_progress mismatch durably across daemon restarts.
-// Regression test for H2 (audit cmd_1775522508_05ee0f69).
-func TestResultWrite_QueueWriteFailed_StickyError(t *testing.T) {
+// TestResultWrite_QueueWriteFailed_RollbackSucceeds verifies that when phaseA's
+// queue write fails on both attempts but the result rollback succeeds, an error
+// is returned (the result entry is cleaned up). This is the atomicity recovery
+// path: queue and result stay consistent (neither committed).
+func TestResultWrite_QueueWriteFailed_RollbackSucceeds(t *testing.T) {
 	t.Parallel()
 	d := newTestDaemon(t)
 	taskID := "task_0000000001_abcdef01"
@@ -824,8 +823,8 @@ func TestResultWrite_QueueWriteFailed_StickyError(t *testing.T) {
 	setupCommandState(t, d, commandID, []string{taskID})
 
 	// Make the queue directory read-only so AtomicWrite (tempfile + rename in
-	// the same dir) fails on both attempts in phaseA. Reads still work because
-	// 0500 grants r-x.
+	// the same dir) fails on both attempts in phaseA. Results dir is still
+	// writable, so rollback succeeds.
 	queueDir := filepath.Join(d.maestroDir, "queue")
 	if err := os.Chmod(queueDir, 0o500); err != nil {
 		t.Fatalf("chmod queue dir: %v", err)
@@ -844,25 +843,23 @@ func TestResultWrite_QueueWriteFailed_StickyError(t *testing.T) {
 	})
 
 	resp := d.api.handleResultWrite(req)
-	if !resp.Success {
-		t.Fatalf("expected success (result file committed), got error: %v", resp.Error)
+	// With atomicity recovery, rollback succeeds → error is returned.
+	if resp.Success {
+		t.Fatal("expected error (queue write failed, result rolled back)")
 	}
-	var result map[string]string
-	if err := json.Unmarshal(resp.Data, &result); err != nil {
-		t.Fatalf("unmarshal response: %v", err)
+	if resp.Error.Code != uds.ErrCodeInternal {
+		t.Errorf("error code = %q, want %q", resp.Error.Code, uds.ErrCodeInternal)
 	}
-	resultID := result["result_id"]
-	if resultID == "" {
-		t.Fatal("expected non-empty result_id")
+	if !strings.Contains(resp.Error.Message, "result rolled back successfully") {
+		t.Errorf("error message should mention rollback: %q", resp.Error.Message)
 	}
 
-	// Restore perms before reading queue file (read alone is fine but we want
-	// to leave the dir in a clean state for any later assertions/cleanup).
+	// Restore perms for cleanup.
 	if err := os.Chmod(queueDir, 0o755); err != nil {
 		t.Fatalf("restore queue dir perms: %v", err)
 	}
 
-	// Queue should still be in_progress on disk (the writes failed).
+	// Queue should still be in_progress on disk (queue write was blocked).
 	queuePath := filepath.Join(d.maestroDir, "queue", workerID+".yaml")
 	qdata, err := os.ReadFile(queuePath)
 	if err != nil {
@@ -876,6 +873,95 @@ func TestResultWrite_QueueWriteFailed_StickyError(t *testing.T) {
 		t.Errorf("queue status = %q, want %q (writes were blocked)",
 			tq.Tasks[0].Status, model.StatusInProgress)
 	}
+
+	// Result file should be empty or have no entries (rolled back).
+	resultPath := filepath.Join(d.maestroDir, "results", workerID+".yaml")
+	if rdata, err := os.ReadFile(resultPath); err == nil {
+		var rf model.TaskResultFile
+		if err := yamlv3.Unmarshal(rdata, &rf); err == nil && len(rf.Results) > 0 {
+			t.Errorf("result file should have no entries after rollback, got %d", len(rf.Results))
+		}
+	}
+	// File not existing is also acceptable (was never written or was cleaned up).
+}
+
+// failingSaveFileStore wraps a real ResultFileStore with failure injection for
+// testing queue write failure + rollback failure scenarios.
+type failingSaveFileStore struct {
+	ResultFileStore
+	saveQueueErr        error // if non-nil, SaveQueueFile always returns this error
+	saveResultFailAfter int   // fail SaveResultFile after N successful calls (0 = never fail)
+	saveResultCalls     int
+}
+
+func (f *failingSaveFileStore) SaveQueueFile(reporter string, tq model.TaskQueue) error {
+	if f.saveQueueErr != nil {
+		return f.saveQueueErr
+	}
+	return f.ResultFileStore.SaveQueueFile(reporter, tq)
+}
+
+func (f *failingSaveFileStore) SaveResultFile(reporter string, rf model.TaskResultFile) error {
+	f.saveResultCalls++
+	if f.saveResultFailAfter > 0 && f.saveResultCalls > f.saveResultFailAfter {
+		return fmt.Errorf("injected result save failure (call %d)", f.saveResultCalls)
+	}
+	return f.ResultFileStore.SaveResultFile(reporter, rf)
+}
+
+// TestResultWrite_QueueWriteFailed_RollbackFailed_OrphanedMarker verifies that
+// when phaseA's queue write fails AND the result rollback also fails, the result
+// is committed as an orphaned entry: a sticky error marker is recorded in state,
+// and an orphaned marker sidecar file is written for R1 reconciler detection.
+func TestResultWrite_QueueWriteFailed_RollbackFailed_OrphanedMarker(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	taskID := "task_0000000001_abcdef01"
+	commandID := "cmd_0000000001_abcdef01"
+	workerID := "worker1"
+	leaseEpoch := 1
+
+	setupWorkerQueue(t, d, workerID, taskID, commandID, leaseEpoch)
+	setupCommandState(t, d, commandID, []string{taskID})
+
+	// Inject a FileStore that fails SaveQueueFile and fails SaveResultFile on
+	// the 2nd call (rollback). The 1st SaveResultFile call (appendResultEntry)
+	// succeeds normally.
+	realStore := d.api.shared.fileStore
+	mock := &failingSaveFileStore{
+		ResultFileStore:     realStore,
+		saveQueueErr:        fmt.Errorf("injected queue write failure"),
+		saveResultFailAfter: 1, // 1st call succeeds (commit), 2nd fails (rollback)
+	}
+	d.api.shared.fileStore = mock
+	t.Cleanup(func() { d.api.shared.fileStore = realStore })
+
+	req := makeResultWriteRequest(t, ResultWriteParams{
+		Reporter:   workerID,
+		TaskID:     taskID,
+		CommandID:  commandID,
+		LeaseEpoch: leaseEpoch,
+		Status:     "completed",
+		Summary:    "task done but both queue write and rollback fail",
+	})
+
+	resp := d.api.handleResultWrite(req)
+	// When rollback also fails, phaseA proceeds with queueWriteFailed=true.
+	// PhaseB records the sticky error. handleResultWrite returns success.
+	if !resp.Success {
+		t.Fatalf("expected success (orphaned result committed), got error: %v", resp.Error)
+	}
+	var result map[string]string
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	resultID := result["result_id"]
+	if resultID == "" {
+		t.Fatal("expected non-empty result_id")
+	}
+
+	// Restore real store for state reads.
+	d.api.shared.fileStore = realStore
 
 	// State should carry the sticky marker keyed by task_id.
 	statePath := filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml")
@@ -897,7 +983,7 @@ func TestResultWrite_QueueWriteFailed_StickyError(t *testing.T) {
 		t.Errorf("state.QueueWriteFailed[%s] = %q, want %q", taskID, got, want)
 	}
 
-	// Result file should still be committed (the durable record).
+	// Result file should still have the committed entry (rollback failed).
 	resultPath := filepath.Join(d.maestroDir, "results", workerID+".yaml")
 	rdata, err := os.ReadFile(resultPath)
 	if err != nil {
@@ -907,8 +993,328 @@ func TestResultWrite_QueueWriteFailed_StickyError(t *testing.T) {
 	if err := yamlv3.Unmarshal(rdata, &rf); err != nil {
 		t.Fatalf("unmarshal result: %v", err)
 	}
-	if len(rf.Results) != 1 || rf.Results[0].TaskID != taskID || rf.Results[0].Status != model.StatusCompleted {
-		t.Errorf("result file unexpected: %+v", rf.Results)
+	if len(rf.Results) != 1 || rf.Results[0].TaskID != taskID {
+		t.Errorf("orphaned result entry should remain: got %+v", rf.Results)
+	}
+
+	// Orphaned marker file should exist.
+	orphanPath := realStore.ResultFilePath(workerID) + ".orphaned"
+	odata, err := os.ReadFile(orphanPath)
+	if err != nil {
+		t.Fatalf("orphaned marker file should exist: %v", err)
+	}
+	orphanContent := string(odata)
+	if !strings.Contains(orphanContent, resultID) {
+		t.Errorf("orphaned marker should contain result_id %s, got: %q", resultID, orphanContent)
+	}
+	if !strings.Contains(orphanContent, taskID) {
+		t.Errorf("orphaned marker should contain task_id %s, got: %q", taskID, orphanContent)
+	}
+}
+
+// TestResultWrite_PhaseBIdempotency_ConflictRejected verifies that when Phase B
+// detects a different result_id already applied for the same task_id (TOCTOU
+// race between two concurrent Phase A writes), the second result is rejected
+// and the state is not updated. This closes the TOCTOU window between Phase A's
+// optimistic idempotency check and Phase B's authoritative state update.
+func TestResultWrite_PhaseBIdempotency_ConflictRejected(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	taskID := "task_0000000001_abcdef01"
+	commandID := "cmd_0000000001_abcdef01"
+
+	// Set up state with a pre-existing AppliedResultIDs entry (simulating a
+	// prior Phase B completion for a different result_id).
+	existingResultID := "res_0000000001_existing1"
+	statePath := filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml")
+	state := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			TaskStates:       map[string]model.Status{taskID: model.StatusCompleted},
+			AppliedResultIDs: map[string]string{taskID: existingResultID},
+		},
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+	}
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	params := ResultWriteParams{
+		Reporter:   "worker1",
+		TaskID:     taskID,
+		CommandID:  commandID,
+		LeaseEpoch: 1,
+		Status:     "completed",
+		Summary:    "conflicting result",
+	}
+
+	// Call Phase B directly with a different result_id.
+	incomingResultID := "res_0000000001_incoming2"
+	err := d.api.result.resultWritePhaseB(params, incomingResultID, model.StatusCompleted, false, "")
+	// updateYAMLFile converts errNoUpdate to nil, so no error is returned.
+	if err != nil {
+		t.Fatalf("expected nil error (errNoUpdate), got %v", err)
+	}
+
+	// Verify state was NOT updated — AppliedResultIDs still has the old value.
+	sdata, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var got model.CommandState
+	if err := yamlv3.Unmarshal(sdata, &got); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	if applied, ok := got.AppliedResultIDs[taskID]; !ok || applied != existingResultID {
+		t.Errorf("AppliedResultIDs[%s] = %q, want %q (should not be overwritten)",
+			taskID, applied, existingResultID)
+	}
+}
+
+// TestResultWrite_RetryLineage_OriginalTaskSuperseded verifies that when a
+// retry task's result is written, the original task's state is updated to
+// cancelled (superseded) in the command state.
+func TestResultWrite_RetryLineage_OriginalTaskSuperseded(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	originalTaskID := "task_0000000001_original1"
+	retryTaskID := "task_0000000001_retry0001"
+	commandID := "cmd_0000000001_abcdef01"
+	workerID := "worker1"
+	leaseEpoch := 1
+
+	// Create queue with retry task that has OriginalTaskID set.
+	owner := workerID
+	tq := model.TaskQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_task",
+		Tasks: []model.Task{
+			{
+				ID:             retryTaskID,
+				CommandID:      commandID,
+				Purpose:        "retry of original",
+				Content:        "retry content",
+				BloomLevel:     3,
+				Status:         model.StatusInProgress,
+				LeaseOwner:     &owner,
+				LeaseEpoch:     leaseEpoch,
+				OriginalTaskID: originalTaskID,
+				CreatedAt:      "2026-01-01T00:00:00Z",
+				UpdatedAt:      "2026-01-01T00:00:00Z",
+			},
+		},
+	}
+	queuePath := filepath.Join(d.maestroDir, "queue", workerID+".yaml")
+	if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
+		t.Fatalf("write queue: %v", err)
+	}
+
+	// State has both original (in_progress) and retry task registered.
+	statePath := filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml")
+	state := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				originalTaskID: model.StatusInProgress,
+				retryTaskID:    model.StatusInProgress,
+			},
+		},
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+	}
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	req := makeResultWriteRequest(t, ResultWriteParams{
+		Reporter:   workerID,
+		TaskID:     retryTaskID,
+		CommandID:  commandID,
+		LeaseEpoch: leaseEpoch,
+		Status:     "completed",
+		Summary:    "retry task succeeded",
+	})
+
+	resp := d.api.handleResultWrite(req)
+	if !resp.Success {
+		t.Fatalf("expected success, got error: %v", resp.Error)
+	}
+
+	// Verify original task state is cancelled (superseded).
+	sdata, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var got model.CommandState
+	if err := yamlv3.Unmarshal(sdata, &got); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	if got.TaskStates[originalTaskID] != model.StatusCancelled {
+		t.Errorf("original task state = %q, want %q (superseded by retry)",
+			got.TaskStates[originalTaskID], model.StatusCancelled)
+	}
+	if got.TaskStates[retryTaskID] != model.StatusCompleted {
+		t.Errorf("retry task state = %q, want %q",
+			got.TaskStates[retryTaskID], model.StatusCompleted)
+	}
+}
+
+// TestResultWrite_RetryLineage_OriginalAlreadyTerminal verifies that when the
+// original task is already in a terminal state (e.g. failed), the retry
+// lineage update is skipped (no overwrite).
+func TestResultWrite_RetryLineage_OriginalAlreadyTerminal(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	originalTaskID := "task_0000000001_original1"
+	retryTaskID := "task_0000000001_retry0001"
+	commandID := "cmd_0000000001_abcdef01"
+	workerID := "worker1"
+	leaseEpoch := 1
+
+	// Create queue with retry task.
+	owner := workerID
+	tq := model.TaskQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_task",
+		Tasks: []model.Task{
+			{
+				ID:             retryTaskID,
+				CommandID:      commandID,
+				Purpose:        "retry of original",
+				Content:        "retry content",
+				BloomLevel:     3,
+				Status:         model.StatusInProgress,
+				LeaseOwner:     &owner,
+				LeaseEpoch:     leaseEpoch,
+				OriginalTaskID: originalTaskID,
+				CreatedAt:      "2026-01-01T00:00:00Z",
+				UpdatedAt:      "2026-01-01T00:00:00Z",
+			},
+		},
+	}
+	queuePath := filepath.Join(d.maestroDir, "queue", workerID+".yaml")
+	if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
+		t.Fatalf("write queue: %v", err)
+	}
+
+	// State has original already terminal (failed) — should not be overwritten.
+	statePath := filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml")
+	state := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				originalTaskID: model.StatusFailed, // already terminal
+				retryTaskID:    model.StatusInProgress,
+			},
+		},
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+	}
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	req := makeResultWriteRequest(t, ResultWriteParams{
+		Reporter:   workerID,
+		TaskID:     retryTaskID,
+		CommandID:  commandID,
+		LeaseEpoch: leaseEpoch,
+		Status:     "completed",
+		Summary:    "retry succeeded but original already terminal",
+	})
+
+	resp := d.api.handleResultWrite(req)
+	if !resp.Success {
+		t.Fatalf("expected success, got error: %v", resp.Error)
+	}
+
+	// Verify original task state is unchanged (still failed, not overwritten).
+	sdata, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var got model.CommandState
+	if err := yamlv3.Unmarshal(sdata, &got); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	if got.TaskStates[originalTaskID] != model.StatusFailed {
+		t.Errorf("original task state = %q, want %q (should remain unchanged)",
+			got.TaskStates[originalTaskID], model.StatusFailed)
+	}
+}
+
+// TestResultWrite_AdvisoryLock_Contention verifies that the lease epoch
+// advisory check correctly handles lock contention by skipping the check
+// (allowing writes to proceed) when the queue lock is held by another operation.
+func TestResultWrite_AdvisoryLock_Contention(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	workerID := "worker1"
+	taskID := "task_0000000001_abcdef01"
+	commandID := "cmd_0000000001_abcdef01"
+	leaseEpoch := 1
+
+	setupWorkerQueue(t, d, workerID, taskID, commandID, leaseEpoch)
+
+	// Hold the queue lock to simulate contention from a concurrent Phase A.
+	lockKey := "queue:" + workerID
+	d.lockMap.Lock(lockKey)
+	defer d.lockMap.Unlock(lockKey)
+
+	params := ResultWriteParams{
+		Reporter:   workerID,
+		TaskID:     taskID,
+		CommandID:  commandID,
+		LeaseEpoch: leaseEpoch,
+	}
+
+	// checkLeaseEpochForBestEffort should detect lock contention and return
+	// (false, "") — meaning "allow writes, don't skip".
+	skip, reason := d.api.result.checkLeaseEpochForBestEffort(params)
+	if skip {
+		t.Error("expected skip=false when lock contention (writes should proceed)")
+	}
+	if reason != "" {
+		t.Errorf("expected empty reason on lock contention, got %q", reason)
+	}
+}
+
+// TestResultWrite_AdvisoryLock_EpochMismatch verifies that the advisory lease
+// check detects epoch mismatches and returns skip=true when the queue task's
+// lease epoch differs from the request.
+func TestResultWrite_AdvisoryLock_EpochMismatch(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	workerID := "worker1"
+	taskID := "task_0000000001_abcdef01"
+	commandID := "cmd_0000000001_abcdef01"
+
+	// Queue has epoch=3
+	setupWorkerQueue(t, d, workerID, taskID, commandID, 3)
+
+	params := ResultWriteParams{
+		Reporter:   workerID,
+		TaskID:     taskID,
+		CommandID:  commandID,
+		LeaseEpoch: 1, // stale epoch
+	}
+
+	skip, reason := d.api.result.checkLeaseEpochForBestEffort(params)
+	if !skip {
+		t.Error("expected skip=true for epoch mismatch")
+	}
+	if !strings.Contains(reason, "lease_epoch_mismatch") {
+		t.Errorf("expected reason to contain 'lease_epoch_mismatch', got %q", reason)
 	}
 }
 

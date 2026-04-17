@@ -198,6 +198,84 @@ func TestExtractLeaseEpochs(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// computeEpochFloor boundary value tests
+// =============================================================================
+
+func TestComputeEpochFloor(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		epochs     []int
+		want       int
+		warnSubstr string // if non-empty, expect this substring in logger output
+	}{
+		// Empty input
+		{"empty_input", nil, 0, ""},
+		{"empty_slice", []int{}, 0, ""},
+
+		// epoch = 0 (unset/default — should be ignored)
+		{"all_zeros", []int{0, 0, 0}, 0, ""},
+		{"zero_and_valid", []int{0, 5, 0}, 5, ""},
+		{"single_zero", []int{0}, 0, ""},
+
+		// epoch = 1 (minimum valid)
+		{"single_one", []int{1}, 1, ""},
+		{"one_and_zero", []int{0, 1}, 1, ""},
+		{"one_is_max", []int{1, 1, 1}, 1, ""},
+
+		// Normal positive values
+		{"single_positive", []int{5}, 5, ""},
+		{"multiple_positive", []int{3, 7, 5}, 7, ""},
+		{"large_value", []int{1, 999999999}, 999999999, ""},
+
+		// epoch = max int (near overflow boundary)
+		{"max_int", []int{1, int(^uint(0) >> 1)}, int(^uint(0) >> 1), ""},
+
+		// Negative values (invalid — should warn and treat as 1)
+		{"single_negative", []int{-1}, 1, "invalid_epoch"},
+		{"negative_with_valid", []int{-5, 10}, 10, "invalid_epoch"},
+		{"all_negative", []int{-1, -2, -3}, 1, "invalid_epoch"},
+		{"negative_and_zero", []int{-1, 0}, 1, "invalid_epoch"},
+
+		// Mixed edge cases
+		{"zero_negative_valid", []int{0, -1, 3}, 3, "invalid_epoch"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			logger := &capturedLogger{}
+			got := computeEpochFloor(tc.epochs, logger)
+			require.Equal(t, tc.want, got, "computeEpochFloor(%v)", tc.epochs)
+			if tc.warnSubstr != "" {
+				require.Contains(t, logger.joined(), tc.warnSubstr)
+			}
+		})
+	}
+}
+
+// TestComputeEpochFloor_ConcurrentRecovery verifies that computeEpochFloor is
+// deterministic: calling it with the same inputs always produces the same floor,
+// simulating concurrent recovery where multiple goroutines might compute the
+// floor from the same snapshot of files.
+func TestComputeEpochFloor_ConcurrentRecovery(t *testing.T) {
+	t.Parallel()
+	epochs := []int{3, 7, 0, 5, -1, 10, 0}
+
+	const goroutines = 20
+	results := make(chan int, goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			logger := &capturedLogger{}
+			results <- computeEpochFloor(epochs, logger)
+		}()
+	}
+	for i := 0; i < goroutines; i++ {
+		got := <-results
+		require.Equal(t, 10, got, "concurrent call should produce deterministic result")
+	}
+}
+
 func TestClampLeaseEpoch(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

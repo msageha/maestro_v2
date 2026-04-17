@@ -221,12 +221,14 @@ func TestValidateTaskStateTransition(t *testing.T) {
 		// Existing transitions
 		{StatusPending, StatusInProgress},
 		{StatusPending, StatusCancelled},
+		{StatusPending, StatusDeadLetter}, // symmetric with queue transitions
 		{StatusInProgress, StatusCompleted},
 		{StatusInProgress, StatusFailed},
 		{StatusInProgress, StatusCancelled},
 
 		// §2.1 extended transitions
 		{StatusPlanned, StatusReady},
+		{StatusPlanned, StatusCancelled},    // command cancellation
 		{StatusReady, StatusDispatched},
 		{StatusReady, StatusCancelled},
 		{StatusDispatched, StatusRunning},
@@ -236,10 +238,14 @@ func TestValidateTaskStateTransition(t *testing.T) {
 		{StatusRunning, StatusCancelled},
 		{StatusVerifyPending, StatusCompleted},
 		{StatusVerifyPending, StatusRepairPending},
+		{StatusVerifyPending, StatusCancelled},   // command cancellation during verification
 		{StatusRepairPending, StatusRunning},
+		{StatusRepairPending, StatusCancelled},   // command cancellation during repair wait
 		{StatusRepairPending, StatusPausedForReplan},
 		{StatusPausedForReplan, StatusReady},
+		{StatusPausedForReplan, StatusCancelled}, // command cancellation during replan
 		{StatusPausedForHuman, StatusReady},
+		{StatusPausedForHuman, StatusCancelled},  // command cancellation during human review
 
 		// §2.1 wildcard: any non-terminal → paused_for_human
 		{StatusPlanned, StatusPausedForHuman},

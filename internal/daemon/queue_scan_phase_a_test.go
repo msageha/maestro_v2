@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"log"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/admission"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/ptr"
@@ -53,6 +55,210 @@ func TestStepCircuitBreaker_NilStateReader(t *testing.T) {
 		}
 	}()
 	qh.stepCircuitBreaker(&s)
+}
+
+// cbMockStateManager implements core.StateManager for circuit breaker tests.
+// It records TripCircuitBreaker calls and lets tests control GetCircuitBreakerState.
+type cbMockStateManager struct {
+	trippedCalls []cbTripCall                                      // recorded TripCircuitBreaker calls
+	cbStates     map[string]*model.CircuitBreakerState             // GetCircuitBreakerState results
+	getCBCalled  map[string]int                                    // tracks GetCircuitBreakerState call count
+	tripErr      error                                             // error to return from TripCircuitBreaker
+}
+
+type cbTripCall struct {
+	CommandID             string
+	Reason                string
+	ProgressTimeoutMinutes int
+}
+
+func (m *cbMockStateManager) GetTaskState(string, string) (model.Status, error)          { return "", nil }
+func (m *cbMockStateManager) GetCommandPhases(string) ([]model.PhaseInfo, error)         { return nil, nil }
+func (m *cbMockStateManager) GetTaskDependencies(string, string) ([]string, error)       { return nil, nil }
+func (m *cbMockStateManager) IsSystemCommitReady(string, string) (bool, bool, error)     { return false, false, nil }
+func (m *cbMockStateManager) IsCommandCancelRequested(string) (bool, error)              { return false, nil }
+func (m *cbMockStateManager) ApplyPhaseTransition(string, string, model.PhaseStatus) error { return nil }
+func (m *cbMockStateManager) UpdateTaskState(string, string, model.Status, string) error   { return nil }
+
+func (m *cbMockStateManager) GetCircuitBreakerState(commandID string) (*model.CircuitBreakerState, error) {
+	if m.getCBCalled == nil {
+		m.getCBCalled = make(map[string]int)
+	}
+	m.getCBCalled[commandID]++
+	if s, ok := m.cbStates[commandID]; ok {
+		return s, nil
+	}
+	return &model.CircuitBreakerState{}, nil
+}
+
+func (m *cbMockStateManager) TripCircuitBreaker(commandID, reason string, progressTimeoutMinutes int) error {
+	m.trippedCalls = append(m.trippedCalls, cbTripCall{
+		CommandID:              commandID,
+		Reason:                 reason,
+		ProgressTimeoutMinutes: progressTimeoutMinutes,
+	})
+	return m.tripErr
+}
+
+// TestStepCircuitBreaker_SignalEmittedAtomicallyWithTrip verifies that when
+// TripCircuitBreaker succeeds, the planner signal is emitted using the reason
+// from CheckProgressTimeout — not by re-reading state via GetCircuitBreakerState.
+// This eliminates the TOCTOU window between trip and signal emission.
+func TestStepCircuitBreaker_SignalEmittedAtomicallyWithTrip(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupPhaseIntegrationDir(t)
+	exec := newRecordingExecutor(nil)
+	qh := newPhaseIntegrationQH(t, maestroDir, exec)
+
+	// Create a mock state manager that returns a *different* reason on
+	// GetCircuitBreakerState than what CheckProgressTimeout produces.
+	// If the signal contains the GetCircuitBreakerState reason, the TOCTOU
+	// race is still present.
+	staleReason := "stale_reason_from_reread"
+	mock := &cbMockStateManager{
+		cbStates: map[string]*model.CircuitBreakerState{
+			"cmd1": {
+				Tripped:         false,
+				LastProgressAt:  ptr.String(qh.clock.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)),
+				TripReason:      &staleReason,
+			},
+		},
+	}
+
+	cfg := model.Config{
+		CircuitBreaker: model.CircuitBreakerConfig{
+			Enabled:                true,
+			ProgressTimeoutMinutes: ptr.Int(30),
+		},
+	}
+	cb := circuitbreaker.NewHandler(cfg, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	cb.SetStateReader(mock)
+	qh.SetCircuitBreaker(cb)
+
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{
+					{ID: "cmd1", Status: model.StatusInProgress},
+				},
+			},
+		},
+		signals: fileState[model.PlannerSignalQueue]{
+			Data: model.PlannerSignalQueue{},
+			Path: filepath.Join(maestroDir, "queue", "signals.yaml"),
+		},
+		signalIndex: buildSignalIndex(nil),
+	}
+
+	qh.stepCircuitBreaker(&s)
+
+	// 1. TripCircuitBreaker must have been called exactly once.
+	if got := len(mock.trippedCalls); got != 1 {
+		t.Fatalf("expected 1 TripCircuitBreaker call, got %d", got)
+	}
+	if mock.trippedCalls[0].CommandID != "cmd1" {
+		t.Errorf("TripCircuitBreaker CommandID = %q, want cmd1", mock.trippedCalls[0].CommandID)
+	}
+
+	// 2. A signal must have been emitted.
+	if got := len(s.signals.Data.Signals); got != 1 {
+		t.Fatalf("expected 1 planner signal, got %d", got)
+	}
+	sig := s.signals.Data.Signals[0]
+	if sig.Kind != "circuit_breaker_tripped" {
+		t.Errorf("signal kind = %q, want circuit_breaker_tripped", sig.Kind)
+	}
+	if sig.CommandID != "cmd1" {
+		t.Errorf("signal CommandID = %q, want cmd1", sig.CommandID)
+	}
+
+	// 3. The signal message must contain the reason from CheckProgressTimeout
+	//    (which includes "progress_timeout="), NOT the stale reason from
+	//    GetCircuitBreakerState re-read.
+	if strings.Contains(sig.Message, staleReason) {
+		t.Errorf("signal message contains stale reason from re-read %q; TOCTOU race still present", staleReason)
+	}
+	if !strings.Contains(sig.Message, "progress_timeout=") {
+		t.Errorf("signal message should contain progress_timeout reason from CheckProgressTimeout, got: %s", sig.Message)
+	}
+
+	// 4. GetCircuitBreakerState must NOT have been called for cmd1 in the
+	//    trip path — the signal was emitted atomically with the trip decision.
+	if mock.getCBCalled["cmd1"] > 0 {
+		// Note: CheckProgressTimeout internally calls GetCircuitBreakerState once.
+		// The refactored code should NOT call it again after a successful trip.
+		// CheckProgressTimeout calls it once → count should be exactly 1.
+		if mock.getCBCalled["cmd1"] > 1 {
+			t.Errorf("GetCircuitBreakerState called %d times for cmd1 (expected at most 1 from CheckProgressTimeout); extra call indicates TOCTOU re-read",
+				mock.getCBCalled["cmd1"])
+		}
+	}
+
+	if !s.signals.Dirty {
+		t.Error("expected signals.Dirty to be true")
+	}
+}
+
+// TestStepCircuitBreaker_ExternalTripEmitsSignalViaReread verifies that when
+// the breaker was tripped by another path (e.g. result-write consecutive failures),
+// stepCircuitBreaker still emits a signal by reading the current state.
+func TestStepCircuitBreaker_ExternalTripEmitsSignalViaReread(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupPhaseIntegrationDir(t)
+	exec := newRecordingExecutor(nil)
+	qh := newPhaseIntegrationQH(t, maestroDir, exec)
+
+	externalReason := "consecutive_failures=5 reached threshold=5"
+	mock := &cbMockStateManager{
+		cbStates: map[string]*model.CircuitBreakerState{
+			"cmd1": {
+				Tripped:    true, // already tripped by another path
+				TripReason: &externalReason,
+			},
+		},
+	}
+
+	cfg := model.Config{
+		CircuitBreaker: model.CircuitBreakerConfig{
+			Enabled:                true,
+			ProgressTimeoutMinutes: ptr.Int(30),
+		},
+	}
+	cb := circuitbreaker.NewHandler(cfg, log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	cb.SetStateReader(mock)
+	qh.SetCircuitBreaker(cb)
+
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{
+					{ID: "cmd1", Status: model.StatusInProgress},
+				},
+			},
+		},
+		signals: fileState[model.PlannerSignalQueue]{
+			Data: model.PlannerSignalQueue{},
+			Path: filepath.Join(maestroDir, "queue", "signals.yaml"),
+		},
+		signalIndex: buildSignalIndex(nil),
+	}
+
+	qh.stepCircuitBreaker(&s)
+
+	// TripCircuitBreaker should NOT have been called (CheckProgressTimeout
+	// returns false when already tripped).
+	if got := len(mock.trippedCalls); got != 0 {
+		t.Fatalf("expected 0 TripCircuitBreaker calls (already tripped), got %d", got)
+	}
+
+	// A signal must still be emitted via the re-read path.
+	if got := len(s.signals.Data.Signals); got != 1 {
+		t.Fatalf("expected 1 planner signal from external trip, got %d", got)
+	}
+	sig := s.signals.Data.Signals[0]
+	if !strings.Contains(sig.Message, externalReason) {
+		t.Errorf("signal message should contain external reason %q, got: %s", externalReason, sig.Message)
+	}
 }
 
 // writeWorktreeStateAt writes a minimal worktree state file with a custom
@@ -723,5 +929,118 @@ func TestStepWorktreeFastTrackCleanup_SkipsAwaitingFill(t *testing.T) {
 
 	if got := len(s.work.worktreeCleanups); got != 0 {
 		t.Fatalf("expected no fast-track cleanup for awaiting_fill phase, got %d", got)
+	}
+}
+
+// --- stepAdmissionSync tests ---
+
+// TestStepAdmissionSync_NilController verifies that stepAdmissionSync is a
+// no-op when no admission controller is configured.
+func TestStepAdmissionSync_NilController(t *testing.T) {
+	t.Parallel()
+	qh := newMinimalQueueHandler(t)
+	qh.admissionCtrl = nil
+
+	s := scanState{
+		tasks: makeTaskQueues(map[string][]model.Task{
+			"worker1": {
+				{ID: "t1", CommandID: "cmd1", Status: model.StatusInProgress},
+			},
+		}),
+	}
+	// Must not panic.
+	qh.stepAdmissionSync(&s)
+}
+
+// TestStepAdmissionSync_WithController verifies that stepAdmissionSync
+// passes in_progress tasks to the admission controller without panicking.
+func TestStepAdmissionSync_WithController(t *testing.T) {
+	t.Parallel()
+	qh := newMinimalQueueHandler(t)
+
+	ac := admission.NewController(model.AdmissionControl{})
+	qh.SetAdmissionController(ac)
+
+	s := scanState{
+		tasks: makeTaskQueues(map[string][]model.Task{
+			"worker1": {
+				{ID: "t1", CommandID: "cmd1", Status: model.StatusInProgress},
+				{ID: "t2", CommandID: "cmd1", Status: model.StatusPending},
+				{ID: "t3", CommandID: "cmd1", Status: model.StatusCompleted},
+			},
+			"worker2": {
+				{ID: "t4", CommandID: "cmd1", Status: model.StatusInProgress},
+			},
+		}),
+	}
+
+	// Must not panic and should successfully record in-flight tasks
+	qh.stepAdmissionSync(&s)
+}
+
+// TestStepAdmissionSync_EmptyTasks verifies no panic with empty task queues
+// and an active admission controller.
+func TestStepAdmissionSync_EmptyTasks(t *testing.T) {
+	t.Parallel()
+	qh := newMinimalQueueHandler(t)
+
+	ac := admission.NewController(model.AdmissionControl{})
+	qh.SetAdmissionController(ac)
+
+	s := scanState{
+		tasks: map[string]*taskQueueEntry{},
+	}
+	// Must not panic
+	qh.stepAdmissionSync(&s)
+}
+
+// --- diagnosePhaseTasks tests ---
+
+// TestDiagnosePhaseTasks_NoDiagnoser verifies that diagnosePhaseTasks returns
+// empty string when phaseDiagnoser is nil.
+func TestDiagnosePhaseTasks_NoDiagnoser(t *testing.T) {
+	t.Parallel()
+	qh := newMinimalQueueHandler(t)
+	qh.scanExecutor.phaseDiagnoser = nil
+
+	// Even with a state reader, should return empty when no diagnoser
+	reader := newPhaseIntegrationStateReader()
+	reader.setPhases("cmd1", []PhaseInfo{
+		{ID: "p1", Name: "phase1", Status: model.PhaseStatusCompleted, RequiredTaskIDs: []string{"t1"}},
+	})
+	qh.SetStateReader(reader)
+
+	result := qh.diagnosePhaseTasks("cmd1", "p1", "phase1", makeTaskQueues(map[string][]model.Task{
+		"worker1": {{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted}},
+	}))
+	if result != "" {
+		t.Errorf("expected empty string with nil diagnoser, got %q", result)
+	}
+}
+
+// TestDiagnosePhaseTasks_EmptyPhaseTaskIDs verifies that diagnosePhaseTasks
+// returns empty string when the phase has no required task IDs.
+func TestDiagnosePhaseTasks_EmptyPhaseTaskIDs(t *testing.T) {
+	t.Parallel()
+	qh := newMinimalQueueHandler(t)
+
+	called := false
+	qh.scanExecutor.phaseDiagnoser = func(phase model.Phase, tasks []model.Task, _ []model.TaskResult) string {
+		called = true
+		return "diagnosis"
+	}
+
+	reader := newPhaseIntegrationStateReader()
+	reader.setPhases("cmd1", []PhaseInfo{
+		{ID: "p1", Name: "phase1", Status: model.PhaseStatusCompleted, RequiredTaskIDs: nil},
+	})
+	qh.SetStateReader(reader)
+
+	result := qh.diagnosePhaseTasks("cmd1", "p1", "phase1", nil)
+	if result != "" {
+		t.Errorf("expected empty string for phase with no task IDs, got %q", result)
+	}
+	if called {
+		t.Error("diagnoser should not be called when phase has no task IDs")
 	}
 }

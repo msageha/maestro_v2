@@ -1022,7 +1022,7 @@ func TestPhaseBC_CommitFailure_FlowTable(t *testing.T) {
 			// and MarkPhaseMerged was NOT called for the failing phase.
 			qh.periodicScanPhaseC(pa, pb)
 
-			signalQueue, _ := qh.queueStore.LoadPlannerSignalQueue()
+			signalQueue, _, _ := qh.queueStore.LoadPlannerSignalQueue()
 			var found *model.PlannerSignal
 			for i := range signalQueue.Signals {
 				s := &signalQueue.Signals[i]
@@ -1079,7 +1079,7 @@ func TestPeriodicScanPhaseC_MergeConflictSignalStructuredFields(t *testing.T) {
 
 	qh.periodicScanPhaseC(pa, pb)
 
-	signalQueue, _ := qh.queueStore.LoadPlannerSignalQueue()
+	signalQueue, _, _ := qh.queueStore.LoadPlannerSignalQueue()
 	var found *model.PlannerSignal
 	for i := range signalQueue.Signals {
 		s := &signalQueue.Signals[i]
@@ -1294,7 +1294,7 @@ func TestPeriodicScanPhaseC_ConflictDispatchSucceedsOnFirstCycle(t *testing.T) {
 
 	// Verify: signal should exist on disk with ResolutionState = "dispatched"
 	// (C1 dispatch succeeded on the same cycle the signal was created).
-	signalQueue, _ := qh.queueStore.LoadPlannerSignalQueue()
+	signalQueue, _, _ := qh.queueStore.LoadPlannerSignalQueue()
 	var found *model.PlannerSignal
 	for i := range signalQueue.Signals {
 		s := &signalQueue.Signals[i]
@@ -1349,7 +1349,7 @@ func TestPeriodicScanPhaseC_PublishCompletedSignal(t *testing.T) {
 
 	qh.periodicScanPhaseC(pa, pb)
 
-	signalQueue, _ := qh.queueStore.LoadPlannerSignalQueue()
+	signalQueue, _, _ := qh.queueStore.LoadPlannerSignalQueue()
 	var found *model.PlannerSignal
 	for i := range signalQueue.Signals {
 		s := &signalQueue.Signals[i]
@@ -1391,7 +1391,7 @@ func TestPeriodicScanPhaseC_PublishFailedSignal(t *testing.T) {
 
 	qh.periodicScanPhaseC(pa, pb)
 
-	signalQueue, _ := qh.queueStore.LoadPlannerSignalQueue()
+	signalQueue, _, _ := qh.queueStore.LoadPlannerSignalQueue()
 	var foundFailed, foundCompleted *model.PlannerSignal
 	for i := range signalQueue.Signals {
 		s := &signalQueue.Signals[i]

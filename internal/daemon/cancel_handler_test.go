@@ -473,3 +473,96 @@ func TestCancelHandler_SetWorktreeManager(t *testing.T) {
 		t.Error("worktreeManager should be set after SetWorktreeManager")
 	}
 }
+
+// --- Cancel cache tests (Fix 1 & 3: cancel-dispatch race) ---
+
+func TestCancelCache_MarkAndCheck(t *testing.T) {
+	t.Parallel()
+	c := newCancelCache()
+
+	if c.IsMarked("cmd1") {
+		t.Error("expected cmd1 not marked initially")
+	}
+
+	c.Mark("cmd1")
+	if !c.IsMarked("cmd1") {
+		t.Error("expected cmd1 marked after Mark()")
+	}
+	if c.IsMarked("cmd2") {
+		t.Error("expected cmd2 not marked")
+	}
+
+	c.Remove("cmd1")
+	if c.IsMarked("cmd1") {
+		t.Error("expected cmd1 not marked after Remove()")
+	}
+}
+
+func TestCancelCache_ConcurrentAccess(t *testing.T) {
+	t.Parallel()
+	c := newCancelCache()
+	done := make(chan struct{})
+
+	// Concurrent writers
+	for i := 0; i < 10; i++ {
+		go func(id int) {
+			defer func() { done <- struct{}{} }()
+			cmdID := "cmd_" + string(rune('A'+id))
+			c.Mark(cmdID)
+			_ = c.IsMarked(cmdID)
+			c.Remove(cmdID)
+		}(i)
+	}
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+}
+
+func TestCancelHandler_CacheCancelRequest(t *testing.T) {
+	t.Parallel()
+	ch, _ := newTestCancelHandler()
+
+	if ch.IsDispatchBlocked("cmd1") {
+		t.Error("expected not blocked initially")
+	}
+
+	ch.CacheCancelRequest("cmd1")
+	if !ch.IsDispatchBlocked("cmd1") {
+		t.Error("expected blocked after CacheCancelRequest")
+	}
+
+	ch.ClearCancelCache("cmd1")
+	if ch.IsDispatchBlocked("cmd1") {
+		t.Error("expected not blocked after ClearCancelCache")
+	}
+}
+
+func TestCancelPendingTasks_UpdatesCache(t *testing.T) {
+	t.Parallel()
+	ch, _ := newTestCancelHandler()
+
+	tasks := []model.Task{
+		{ID: "task1", CommandID: "cmd1", Status: model.StatusPending},
+	}
+	ch.CancelPendingTasks(tasks, "cmd1")
+
+	// After CancelPendingTasks, the cache should be marked
+	if !ch.IsDispatchBlocked("cmd1") {
+		t.Error("expected cache marked after CancelPendingTasks")
+	}
+}
+
+func TestCollectCancelInterruptItems_UpdatesCache(t *testing.T) {
+	t.Parallel()
+	ch, _ := newTestCancelHandler()
+
+	owner := "daemon:1234"
+	tasks := []model.Task{
+		{ID: "task1", CommandID: "cmd1", Status: model.StatusInProgress, LeaseOwner: &owner, LeaseEpoch: 1},
+	}
+	ch.CollectCancelInterruptItems(tasks, "cmd1", "worker1")
+
+	if !ch.IsDispatchBlocked("cmd1") {
+		t.Error("expected cache marked after CollectCancelInterruptItems")
+	}
+}

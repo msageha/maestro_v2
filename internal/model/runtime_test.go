@@ -32,27 +32,6 @@ func TestDefaultRuntime(t *testing.T) {
 	}
 }
 
-func TestRuntimeDefinition_Fields(t *testing.T) {
-	rd := RuntimeDefinition{
-		Name:    "codex",
-		Command: "codex",
-		Args:    []string{"--model", "o4-mini"},
-		EnvVars: map[string]string{"CODEX_TOKEN": "xxx"},
-	}
-	if rd.Name != "codex" {
-		t.Errorf("Name = %q, want codex", rd.Name)
-	}
-	if rd.Command != "codex" {
-		t.Errorf("Command = %q, want codex", rd.Command)
-	}
-	if len(rd.Args) != 2 {
-		t.Errorf("Args count = %d, want 2", len(rd.Args))
-	}
-	if rd.EnvVars["CODEX_TOKEN"] != "xxx" {
-		t.Error("EnvVars should contain CODEX_TOKEN")
-	}
-}
-
 func TestRuntimeConfig_Defaults(t *testing.T) {
 	rc := RuntimeConfig{}
 	if rc.EffectiveEnabled() {

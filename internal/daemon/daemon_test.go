@@ -406,11 +406,31 @@ func TestRecordSelfWrite_NoEvent(t *testing.T) {
 		t.Error("expected self-write to be recorded")
 	}
 
-	// Verify NO event was published (recordSelfWrite does not publish)
+	// Use a fence event to verify NO EventQueueWritten was published.
+	// Publish a sentinel event after recordSelfWrite; once we receive it,
+	// we know that any EventQueueWritten published before the fence would
+	// have been delivered too (same bus, same goroutine dispatch order).
+	fence := make(chan struct{}, 1)
+	unsubFence := d.eventBus.Subscribe(events.EventTaskStarted, func(e events.Event) {
+		select {
+		case fence <- struct{}{}:
+		default:
+		}
+	})
+	defer unsubFence()
+
+	d.eventBus.Publish(events.EventTaskStarted, map[string]interface{}{"fence": true})
+	select {
+	case <-fence:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for fence event")
+	}
+
+	// If EventQueueWritten had been published, it would have arrived before the fence
 	select {
 	case <-received:
 		t.Error("expected no EventQueueWritten for recordSelfWrite")
-	case <-time.After(100 * time.Millisecond):
+	default:
 		// expected: no event
 	}
 }

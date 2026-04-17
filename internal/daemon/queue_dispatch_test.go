@@ -366,3 +366,136 @@ func TestIsAgentBusy_WithChecker(t *testing.T) {
 		t.Error("worker2 should not be busy")
 	}
 }
+
+// --- Undecided tracker tests (Fix 2: BusyChecker undecided handling) ---
+
+func TestUndecidedTracker_IncrementAndReset(t *testing.T) {
+	t.Parallel()
+	tr := newUndecidedTracker()
+
+	if tr.Count("worker1") != 0 {
+		t.Error("expected 0 initially")
+	}
+
+	c1 := tr.Increment("worker1")
+	if c1 != 1 {
+		t.Errorf("expected 1 after first increment, got %d", c1)
+	}
+	c2 := tr.Increment("worker1")
+	if c2 != 2 {
+		t.Errorf("expected 2 after second increment, got %d", c2)
+	}
+
+	// Different agent is independent
+	c3 := tr.Increment("worker2")
+	if c3 != 1 {
+		t.Errorf("expected 1 for worker2, got %d", c3)
+	}
+
+	tr.Reset("worker1")
+	if tr.Count("worker1") != 0 {
+		t.Error("expected 0 after reset")
+	}
+	if tr.Count("worker2") != 1 {
+		t.Error("expected worker2 unaffected by worker1 reset")
+	}
+}
+
+func TestUndecidedTracker_ConcurrentAccess(t *testing.T) {
+	t.Parallel()
+	tr := newUndecidedTracker()
+	done := make(chan struct{})
+
+	for i := 0; i < 10; i++ {
+		go func(id int) {
+			defer func() { done <- struct{}{} }()
+			agentID := "worker1"
+			tr.Increment(agentID)
+			_ = tr.Count(agentID)
+			tr.Reset(agentID)
+		}(i)
+	}
+	for i := 0; i < 10; i++ {
+		<-done
+	}
+}
+
+func TestIsAgentBusy_WithChecker_ResetsUndecided(t *testing.T) {
+	t.Parallel()
+	qh := newDispatchTestQH(10)
+
+	// Pre-populate undecided count
+	qh.undecidedTracker.Increment("worker1")
+	qh.undecidedTracker.Increment("worker1")
+
+	// Set a custom busy checker (deterministic result resets tracker)
+	qh.scanExecutor.busyChecker = BusyCheckerFunc(func(agentID string) bool {
+		return true
+	})
+
+	qh.isAgentBusy(context.Background(), "worker1")
+
+	if qh.undecidedTracker.Count("worker1") != 0 {
+		t.Error("expected undecided count reset after definitive busy check")
+	}
+}
+
+// --- Cancel dispatch guard tests (Fix 1: cancel-dispatch race) ---
+
+func TestIsTaskDispatchCancelled_ViaDeferredWork(t *testing.T) {
+	t.Parallel()
+	qh := newDispatchTestQH(10)
+
+	pa := &phaseAResult{
+		work: deferredWork{
+			cancelledCommandIDs: map[string]struct{}{
+				"cmd_cancelled": {},
+			},
+		},
+	}
+
+	item := dispatchItem{
+		Kind: "task",
+		Task: &model.Task{ID: "task1", CommandID: "cmd_cancelled"},
+	}
+	if !qh.isTaskDispatchCancelled(item, pa) {
+		t.Error("expected dispatch blocked via cancelledCommandIDs")
+	}
+
+	itemOK := dispatchItem{
+		Kind: "task",
+		Task: &model.Task{ID: "task2", CommandID: "cmd_ok"},
+	}
+	if qh.isTaskDispatchCancelled(itemOK, pa) {
+		t.Error("expected dispatch not blocked for non-cancelled command")
+	}
+}
+
+func TestIsTaskDispatchCancelled_ViaCancelCache(t *testing.T) {
+	t.Parallel()
+	qh := newDispatchTestQH(10)
+
+	pa := &phaseAResult{work: deferredWork{}}
+
+	// Mark cancel in the handler's cache (simulates cancel arriving during Phase B)
+	qh.cancelHandler.CacheCancelRequest("cmd_late_cancel")
+
+	item := dispatchItem{
+		Kind: "task",
+		Task: &model.Task{ID: "task1", CommandID: "cmd_late_cancel"},
+	}
+	if !qh.isTaskDispatchCancelled(item, pa) {
+		t.Error("expected dispatch blocked via cancel cache")
+	}
+}
+
+func TestIsTaskDispatchCancelled_NilTask(t *testing.T) {
+	t.Parallel()
+	qh := newDispatchTestQH(10)
+	pa := &phaseAResult{work: deferredWork{}}
+
+	item := dispatchItem{Kind: "command", Task: nil}
+	if qh.isTaskDispatchCancelled(item, pa) {
+		t.Error("expected false for nil task")
+	}
+}

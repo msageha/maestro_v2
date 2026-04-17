@@ -393,6 +393,153 @@ func TestExtendTaskLeaseGrace_NotInProgress(t *testing.T) {
 	}
 }
 
+func TestIsTaskMaxInProgressTimeout(t *testing.T) {
+	t.Parallel()
+	lm := newTestManager() // maxInProgressMin = 60
+
+	now := time.Now().UTC()
+	recent := now.Add(-30 * time.Minute).Format(time.RFC3339)
+	old := now.Add(-61 * time.Minute).Format(time.RFC3339)
+	exact := now.Add(-60 * time.Minute).Format(time.RFC3339)
+
+	tests := []struct {
+		name         string
+		inProgressAt *string
+		updatedAt    string
+		want         bool
+	}{
+		{
+			name:         "InProgressAt_recent_not_timeout",
+			inProgressAt: &recent,
+			updatedAt:    old, // should be ignored; InProgressAt takes priority
+			want:         false,
+		},
+		{
+			name:         "InProgressAt_old_timeout",
+			inProgressAt: &old,
+			updatedAt:    recent, // should be ignored
+			want:         true,
+		},
+		{
+			name:         "InProgressAt_exact_boundary_timeout",
+			inProgressAt: &exact,
+			updatedAt:    recent,
+			want:         true,
+		},
+		{
+			name:         "InProgressAt_nil_fallback_to_UpdatedAt_recent",
+			inProgressAt: nil,
+			updatedAt:    recent,
+			want:         false,
+		},
+		{
+			name:         "InProgressAt_nil_fallback_to_UpdatedAt_old",
+			inProgressAt: nil,
+			updatedAt:    old,
+			want:         true,
+		},
+		{
+			name:         "InProgressAt_empty_fallback_to_UpdatedAt",
+			inProgressAt: ptr.String(""),
+			updatedAt:    old,
+			want:         true,
+		},
+		{
+			name:         "InProgressAt_malformed_not_timeout",
+			inProgressAt: ptr.String("not-a-date"),
+			updatedAt:    old,
+			want:         false,
+		},
+		{
+			name:         "UpdatedAt_malformed_not_timeout",
+			inProgressAt: nil,
+			updatedAt:    "not-a-date",
+			want:         false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			task := &model.Task{
+				ID:           "task_test",
+				Status:       model.StatusInProgress,
+				InProgressAt: tt.inProgressAt,
+				UpdatedAt:    tt.updatedAt,
+			}
+			got := lm.IsTaskMaxInProgressTimeout(task)
+			if got != tt.want {
+				t.Errorf("IsTaskMaxInProgressTimeout() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsTaskMaxInProgressTimeout_Disabled(t *testing.T) {
+	t.Parallel()
+	// maxInProgressMin = 0 → disabled
+	lm := New(model.WatcherConfig{
+		DispatchLeaseSec: 300,
+		MaxInProgressMin: ptr.Int(0),
+	}, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
+
+	old := time.Now().UTC().Add(-120 * time.Minute).Format(time.RFC3339)
+	task := &model.Task{
+		ID:           "task_test",
+		Status:       model.StatusInProgress,
+		InProgressAt: &old,
+		UpdatedAt:    old,
+	}
+	if lm.IsTaskMaxInProgressTimeout(task) {
+		t.Error("expected false when maxInProgressMin is 0 (disabled)")
+	}
+}
+
+func TestAcquireTaskLease_SetsInProgressAt(t *testing.T) {
+	t.Parallel()
+	lm := newTestManager()
+	task := &model.Task{
+		ID:        "task_001",
+		Status:    model.StatusPending,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	if err := lm.AcquireTaskLease(task, "worker1"); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+	if task.InProgressAt == nil {
+		t.Fatal("InProgressAt should be set after AcquireTaskLease")
+	}
+	// InProgressAt should be close to now
+	ts, err := time.Parse(time.RFC3339, *task.InProgressAt)
+	if err != nil {
+		t.Fatalf("parse InProgressAt: %v", err)
+	}
+	if time.Since(ts) > 5*time.Second {
+		t.Errorf("InProgressAt too far from now: %v", ts)
+	}
+}
+
+func TestReleaseTaskLease_ClearsInProgressAt(t *testing.T) {
+	t.Parallel()
+	lm := newTestManager()
+	task := &model.Task{
+		ID:        "task_001",
+		Status:    model.StatusPending,
+		CreatedAt: time.Now().UTC().Format(time.RFC3339),
+	}
+
+	lm.AcquireTaskLease(task, "worker1")
+	if task.InProgressAt == nil {
+		t.Fatal("InProgressAt should be set after acquire")
+	}
+
+	lm.ReleaseTaskLease(task)
+	if task.InProgressAt != nil {
+		t.Error("InProgressAt should be nil after ReleaseTaskLease (H5)")
+	}
+}
+
 func TestRenewableCommands(t *testing.T) {
 	t.Parallel()
 	lm := newTestManager()
