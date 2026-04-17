@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -573,8 +574,8 @@ func TestParseAndExecute_MarshalErrorWrapped(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from marshal failure, got nil")
 	}
-	if !strings.Contains(err.Error(), "failed to marshal plan result") {
-		t.Errorf("error should contain 'failed to marshal plan result', got: %q", err)
+	if !errors.Is(err, ErrMarshalPlanResult) {
+		t.Errorf("expected ErrMarshalPlanResult in error chain, got: %v", err)
 	}
 	if !strings.Contains(err.Error(), "test_op") {
 		t.Errorf("error should contain operation name 'test_op', got: %q", err)

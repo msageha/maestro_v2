@@ -4,7 +4,7 @@ package status
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -130,29 +130,29 @@ func getQueueDepths(maestroDir string) []queueStatus {
 		// Size guard: skip files exceeding the maximum YAML file size to prevent OOM
 		info, err := entry.Info()
 		if err != nil {
-			log.Printf("status: failed to stat %s: %v", entry.Name(), err)
+			slog.Warn("status: failed to stat file", "file", entry.Name(), "error", err)
 			continue
 		}
 		if info.Size() > int64(model.DefaultMaxYAMLFileBytes) {
-			log.Printf("status: skipping %s: file too large (%d bytes)", entry.Name(), info.Size())
+			slog.Warn("status: skipping file too large", "file", entry.Name(), "size_bytes", info.Size())
 			continue
 		}
 
 		data, err := os.ReadFile(filePath) //nolint:gosec // filePath is constructed from a controlled application state directory
 		if err != nil {
-			log.Printf("status: failed to read %s: %v", entry.Name(), err)
+			slog.Warn("status: failed to read file", "file", entry.Name(), "error", err)
 			continue
 		}
 
 		// Validate schema header (accept any queue file type)
 		if err := maestroyaml.ValidateSchemaHeaderFromBytes(data, ""); err != nil {
-			log.Printf("status: invalid schema in %s: %v", entry.Name(), err)
+			slog.Warn("status: invalid schema", "file", entry.Name(), "error", err)
 			continue
 		}
 
 		var qf queueFile
 		if err := yaml.Unmarshal(data, &qf); err != nil {
-			log.Printf("status: failed to parse %s: %v", entry.Name(), err)
+			slog.Warn("status: failed to parse file", "file", entry.Name(), "error", err)
 			continue
 		}
 

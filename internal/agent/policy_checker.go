@@ -155,7 +155,7 @@ if [ "$tool_name" = "Bash" ]; then
   fi
 
   # Block ANSI-C quoting ($'...' can encode arbitrary bytes to bypass pattern checks)
-  _ansi_re="(^|[[:space:];|&({])[$]'"
+  _ansi_re="(^|[[:space:];|&({\"'=])[$]'"
   if echo "$cmd" | grep -qE "$_ansi_re"; then
     deny "C1: Blocked command containing ANSI-C quoting"
   fi
@@ -170,7 +170,7 @@ if [ "$tool_name" = "Bash" ]; then
     cmd_check="$(echo "$cmd" | sed -E '
       s/\$\(\([^)]*\)\)/__ASAFE__/g
       s/\$\((go (env|list|version)|pwd|dirname|basename|realpath|which|type|command -v|uname|date|hostname|mktemp|nproc|getconf|id|whoami)[^)]*\)/__SAFE__/g
-      s/\$\(git (rev-parse|log|diff|status|branch|describe|remote|tag|show|ls-files|ls-tree|cat-file|config|symbolic-ref|name-rev|for-each-ref|merge-base)[^)]*\)/__SAFE__/g
+      s/\$\(git (rev-parse|log|diff|status|branch|describe|remote|tag|ls-files|ls-tree|cat-file|config|symbolic-ref|name-rev|for-each-ref|merge-base)[^)]*\)/__SAFE__/g
       s/\$\((wc|sort|tr|cut)[^)]*\)/__SAFE__/g
     ')"
     if echo "$cmd_check" | grep -qF '$('; then
@@ -208,8 +208,11 @@ if [ "$tool_name" = "Bash" ]; then
         rm|*/rm|-*) continue ;;
       esac
       # H3: Resolve symlinks for existing paths
+      # TOCTOU note: a race exists between this check and the actual rm execution.
+      # An attacker could swap the path between realpath and rm. This is a best-effort
+      # mitigation; full protection requires kernel-level enforcement (e.g., O_NOFOLLOW).
       if [ -e "$word" ] || [ -L "$word" ]; then
-        resolved="$(realpath "$word" 2>/dev/null || echo "$word")"
+        resolved="$(realpath -P "$word" 2>/dev/null || realpath "$word" 2>/dev/null || echo "$word")"
       else
         # For non-existent paths, only check those that look like filesystem paths
         case "$word" in
@@ -369,6 +372,17 @@ if [ "$tool_name" = "Bash" ]; then
     deny "M-AGT1: Blocked destructive file operation via ruby"
   fi
 
+  # SEC-2: Script language indirect code execution
+  if echo "$cmd" | grep -qE 'python[23]?\s.*-c\s.*\b(exec|eval|compile|getattr|__import__)\b'; then
+    deny "SEC2: Blocked python indirect code execution (exec/eval/compile/getattr/__import__)"
+  fi
+  if echo "$cmd" | grep -qE 'node\s.*-e\s.*\b(child_process|require\s*\(\s*["'"'"']child_process)\b'; then
+    deny "SEC2: Blocked node child_process access"
+  fi
+  if echo "$cmd" | grep -qE 'ruby\s.*-e\s.*\b(system|Kernel\.system|exec)\b'; then
+    deny "SEC2: Blocked ruby indirect command execution (system/Kernel.system/exec)"
+  fi
+
   # .maestro/ access via Bash (bypass prevention, case-insensitive for macOS)
   if echo "$cmd" | grep -qiE '(cat|head|tail|less|more|vim|nano|sed|awk)\s+.*\.maestro/(state|queue|results|locks|logs|config|dashboard)'; then
     deny "Blocked .maestro/ control-plane access via Bash"
@@ -437,8 +451,10 @@ if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ]; then
       *) _wt_check="$worker_cwd/$file_path" ;;
     esac
     # Resolve symlinks for existing paths
+    # TOCTOU note: a race exists between this check and the actual write.
+    # Best-effort mitigation; full protection requires kernel-level enforcement.
     if [ -e "$_wt_check" ] || [ -L "$_wt_check" ]; then
-      _wt_check="$(realpath "$_wt_check" 2>/dev/null || echo "$_wt_check")"
+      _wt_check="$(realpath -P "$_wt_check" 2>/dev/null || realpath "$_wt_check" 2>/dev/null || echo "$_wt_check")"
     fi
     # Reject paths with unresolved traversal (..)
     if echo "$_wt_check" | grep -qF '..'; then

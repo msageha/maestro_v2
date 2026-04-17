@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
@@ -108,9 +109,10 @@ func TestReconciler_R0_WithWorkerTasks(t *testing.T) {
 	}
 
 	// Verify only the target command's tasks were removed
-	data, _ := os.ReadFile(filepath.Join(queueDir, "worker1.yaml"))
+	data, err := os.ReadFile(filepath.Join(queueDir, "worker1.yaml"))
+	require.NoError(t, err)
 	var updatedTQ model.TaskQueue
-	yamlv3.Unmarshal(data, &updatedTQ)
+	require.NoError(t, yamlv3.Unmarshal(data, &updatedTQ))
 	if len(updatedTQ.Tasks) != 1 {
 		t.Fatalf("expected 1 remaining task (other command), got %d", len(updatedTQ.Tasks))
 	}

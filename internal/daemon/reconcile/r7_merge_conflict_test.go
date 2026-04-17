@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -56,7 +57,7 @@ func newWorkerState(commandID, workerID string, status model.WorktreeStatus, att
 
 func TestR7MergeConflict_ConflictDetected_DispatchesResolution(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 
 	commandID := "cmd_0000000001_r7test01"
@@ -110,7 +111,7 @@ func TestR7MergeConflict_ConflictDetected_DispatchesResolution(t *testing.T) {
 
 func TestR7MergeConflict_Escalation_WhenAttemptsExceeded(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 
 	commandID := "cmd_0000000002_r7test02"
@@ -164,7 +165,7 @@ func TestR7MergeConflict_Escalation_WhenAttemptsExceeded(t *testing.T) {
 
 func TestR7MergeConflict_NoConflict_NoAction(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 
 	commandID := "cmd_0000000003_r7test03"
@@ -186,7 +187,7 @@ func TestR7MergeConflict_NoConflict_NoAction(t *testing.T) {
 
 func TestR7MergeConflict_IntegrationConflict_WorkerNotConflict_NoAction(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 
 	commandID := "cmd_0000000004_r7test04"
@@ -209,7 +210,7 @@ func TestR7MergeConflict_IntegrationConflict_WorkerNotConflict_NoAction(t *testi
 
 func TestR7MergeConflict_MultipleWorkers_MixedResolutionAndEscalation(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 
 	commandID := "cmd_0000000005_r7test05"
@@ -282,7 +283,7 @@ func TestR7MergeConflict_MultipleWorkers_MixedResolutionAndEscalation(t *testing
 
 func TestR7MergeConflict_NoWorktreeStateFiles_NoAction(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 
 	// Don't create any worktree state files.
@@ -299,7 +300,7 @@ func TestR7MergeConflict_NoWorktreeStateFiles_NoAction(t *testing.T) {
 
 func TestR7MergeConflict_ResolutionAttempt1_StillBelowThreshold(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 
 	commandID := "cmd_0000000006_r7test06"
@@ -335,7 +336,7 @@ func TestR7MergeConflict_ResolutionAttempt1_StillBelowThreshold(t *testing.T) {
 
 func TestR7MergeConflict_EmptyWorkers_NoAction(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 
 	commandID := "cmd_0000000009_r7empty"
@@ -355,7 +356,7 @@ func TestR7MergeConflict_EmptyWorkers_NoAction(t *testing.T) {
 
 func TestR7MergeConflict_MultipleCommands(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 
 	cmd1 := "cmd_0000000007_r7test07"

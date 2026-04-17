@@ -42,7 +42,7 @@ func (pm *ClaudeProcessManager) ensureClaudeRunning(ctx context.Context, paneTar
 	cmd, err := pm.paneIO.GetPaneCurrentCommand(paneTarget)
 	if err != nil {
 		pm.log(logLevelError, "ensure_claude_running_check_failed agent_id=%s error=%v", agentID, err)
-		return fmt.Errorf("check pane command: %w", err)
+		return fmt.Errorf("%w: %w", ErrCheckPaneCommand, err)
 	}
 
 	if !pm.paneIO.IsShellCommand(cmd) {
@@ -59,14 +59,14 @@ func (pm *ClaudeProcessManager) ensureClaudeRunning(ctx context.Context, paneTar
 
 	// Re-launch Claude
 	if sendErr := pm.paneIO.SendCommand(paneTarget, "maestro agent launch"); sendErr != nil {
-		return fmt.Errorf("re-launch claude: %w", sendErr)
+		return fmt.Errorf("%w: %w", ErrRelaunch, sendErr)
 	}
 
 	// Wait for Claude prompt readiness (fail-closed)
 	launchCtx, cancel := context.WithTimeout(ctx, pm.execCfg.ClaudeLaunchTimeout)
 	defer cancel()
 	if waitErr := pm.waitReadyStrict(launchCtx, paneTarget); waitErr != nil {
-		return fmt.Errorf("wait for claude ready after re-launch: %w", waitErr)
+		return fmt.Errorf("%w after re-launch: %w", ErrWaitClaudeReady, waitErr)
 	}
 
 	pm.log(logLevelInfo, "claude_relaunched agent_id=%s", agentID)
@@ -87,7 +87,7 @@ func (pm *ClaudeProcessManager) ensureWorkingDir(ctx context.Context, paneTarget
 
 	// Validate path: reject control characters to prevent injection via SendCommand
 	if containsControlChars(workingDir) {
-		return fmt.Errorf("working dir contains control characters: %q", workingDir)
+		return fmt.Errorf("%w: %q", ErrControlChars, workingDir)
 	}
 
 	// Check current CWD from tmux user variable
@@ -102,7 +102,7 @@ func (pm *ClaudeProcessManager) ensureWorkingDir(ctx context.Context, paneTarget
 	// Step 1: Kill the current pane process and respawn a fresh shell in the
 	// target working directory.
 	if err := pm.paneIO.RespawnPane(paneTarget, workingDir); err != nil {
-		return fmt.Errorf("respawn pane: %w", err)
+		return fmt.Errorf("%w: %w", ErrRespawnPane, err)
 	}
 
 	// Step 2: Wait for the fresh shell to be ready
@@ -158,7 +158,7 @@ func (pm *ClaudeProcessManager) waitForShell(ctx context.Context, paneTarget str
 		if err != nil {
 			consecutiveErrors++
 			if consecutiveErrors >= maxConsecutiveErrors {
-				return fmt.Errorf("waitForShell: %d consecutive errors, last: %w", consecutiveErrors, err)
+				return fmt.Errorf("waitForShell: %d %w, last: %w", consecutiveErrors, ErrConsecutiveErrors, err)
 			}
 		} else {
 			consecutiveErrors = 0
@@ -191,7 +191,7 @@ func (pm *ClaudeProcessManager) waitStable(ctx context.Context, paneTarget strin
 
 		content1, err := pm.paneIO.CapturePaneJoined(paneTarget, pm.execCfg.PromptReadyLines)
 		if err != nil {
-			return fmt.Errorf("capture pane for stability round %d: %w", round, err)
+			return fmt.Errorf("%w for stability round %d: %w", ErrCapturePane, round, err)
 		}
 		h1 := contentHash(content1)
 
@@ -201,12 +201,12 @@ func (pm *ClaudeProcessManager) waitStable(ctx context.Context, paneTarget strin
 
 		content2, err := pm.paneIO.CapturePaneJoined(paneTarget, pm.execCfg.PromptReadyLines)
 		if err != nil {
-			return fmt.Errorf("capture pane for stability round %d: %w", round, err)
+			return fmt.Errorf("%w for stability round %d: %w", ErrCapturePane, round, err)
 		}
 		h2 := contentHash(content2)
 
 		if h1 != h2 {
-			return fmt.Errorf("pane content not stable after %ds (round %d)", pm.config.IdleStableSec, round)
+			return fmt.Errorf("%w after %ds (round %d)", ErrNotStable, pm.config.IdleStableSec, round)
 		}
 		pm.log(logLevelDebug, "wait_stable round=%d passed", round)
 	}
@@ -219,7 +219,7 @@ func (pm *ClaudeProcessManager) waitStable(ctx context.Context, paneTarget strin
 			pm.log(logLevelWarn, "wait_stable prompt_check capture error=%v (non-fatal, soft mode)", err)
 			return nil
 		}
-		return fmt.Errorf("capture pane for prompt check: %w", err)
+		return fmt.Errorf("%w for prompt check: %w", ErrCapturePane, err)
 	}
 	if !isPromptReady(finalContent) {
 		if softPromptCheck {
@@ -227,7 +227,7 @@ func (pm *ClaudeProcessManager) waitStable(ctx context.Context, paneTarget strin
 				paneTarget, lastNonBlankLine(finalContent))
 			return nil
 		}
-		return fmt.Errorf("pane stable but no prompt detected (last line: %q)", lastNonBlankLine(finalContent))
+		return fmt.Errorf("pane stable but %w (last line: %q)", ErrNoPrompt, lastNonBlankLine(finalContent))
 	}
 	pm.log(logLevelDebug, "wait_stable prompt confirmed")
 	return nil
@@ -264,7 +264,7 @@ func (pm *ClaudeProcessManager) waitReadyStrict(ctx context.Context, paneTarget 
 		return err
 	}
 	if !ready {
-		return fmt.Errorf("waitReadyStrict: Claude prompt not detected after %d attempts", pm.config.WaitReadyMaxRetries+1)
+		return fmt.Errorf("waitReadyStrict: Claude %w after %d attempts", ErrPromptNotDetected, pm.config.WaitReadyMaxRetries+1)
 	}
 	return nil
 }
@@ -291,7 +291,7 @@ func (pm *ClaudeProcessManager) waitReadyCore(ctx context.Context, paneTarget st
 				}
 				continue
 			}
-			return false, fmt.Errorf("waitReadyCore: capture pane failed after %d attempts: %w", i+1, err)
+			return false, fmt.Errorf("waitReadyCore: %w failed after %d attempts: %w", ErrCapturePane, i+1, err)
 		}
 
 		if isPromptReady(content) {

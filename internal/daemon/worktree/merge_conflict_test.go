@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil"
 )
 
 // TestMergeConflict_Detection verifies that MergeToIntegration correctly detects
@@ -18,7 +19,7 @@ import (
 // Verifies: conflict count, correct worker identified, integration worktree clean after abort.
 func TestMergeConflict_Detection(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_mc_detect"
@@ -92,7 +93,7 @@ func TestMergeConflict_Detection(t *testing.T) {
 // - MergeConflict struct is fully populated with WorkerID, ConflictFiles, and Message
 func TestMergeConflict_EscalationFlow(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_mc_escalation"
@@ -182,7 +183,7 @@ func TestMergeConflict_EscalationFlow(t *testing.T) {
 // All three refs should be valid SHA-1 hashes and mutually distinct.
 func TestMergeConflict_RefExtraction(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_mc_refs"
@@ -256,7 +257,7 @@ func TestMergeConflict_RefExtraction(t *testing.T) {
 // empty refs when the base version exists).
 func TestMergeConflict_BinaryFile(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Add a binary file to the base commit so all 3 stages will exist during conflict
@@ -362,7 +363,7 @@ func TestMergeConflict_BinaryFile(t *testing.T) {
 // as conflicting — no more, no less.
 func TestMergeConflict_ConflictFilesAccuracy(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Create base files that both workers will modify
@@ -457,7 +458,7 @@ func TestMergeConflict_ConflictFilesAccuracy(t *testing.T) {
 // reproduce the same conflict indefinitely.
 func TestResumeMerge_AddAddConflictResolution(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_resume_addadd"
@@ -596,7 +597,7 @@ func TestResumeMerge_AddAddConflictResolution(t *testing.T) {
 // worker to active, causing MergeToIntegration to re-merge and loop.
 func TestResumeMerge_AddAddConflict_XTheirs(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_xtheirs"
@@ -759,7 +760,7 @@ func TestResumeMerge_FallbackRevertsToConflict(t *testing.T) {
 // integration), the merge proceeds without conflict.
 func TestResumeMerge_NoConflictAfterWorkerCommit(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_resume_noclash"
@@ -837,7 +838,7 @@ func TestResumeMerge_NoConflictAfterWorkerCommit(t *testing.T) {
 // merge flow is not broken by the conflict resolution changes.
 func TestResumeMerge_NormalMergeUnaffected(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_normal_merge"

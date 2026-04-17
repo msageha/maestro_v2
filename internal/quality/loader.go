@@ -2,7 +2,7 @@ package quality
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -368,7 +368,7 @@ func validateFilePermissions(path string) error {
 	}
 	defer func() {
 		if cerr := f.Close(); cerr != nil {
-			log.Printf("warning: close %s: %v", path, cerr)
+			slog.Warn("failed to close file", "path", path, "error", cerr)
 		}
 	}()
 

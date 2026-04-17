@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/dispatch"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -77,8 +78,8 @@ type QueueLeaseManager interface {
 // QueueDispatcherConfigurer defines configuration/wiring operations for the dispatcher.
 type QueueDispatcherConfigurer interface {
 	SetEventBus(bus *events.Bus)
-	SetQualityGate(qg *QualityGateDaemon)
-	SetWorktreeManager(wm *WorktreeManager)
+	SetQualityGate(qg dispatch.GateChecker)
+	SetWorktreeManager(wm dispatch.WorktreeResolver)
 }
 
 // QueueDispatcherOperator defines runtime dispatch and sorting operations.

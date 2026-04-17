@@ -5,7 +5,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
@@ -156,7 +156,7 @@ func (t *UsefulnessTracker) load() error {
 	}
 	defer func() {
 		if err := f.Close(); err != nil {
-			log.Printf("[WARN] close usefulness file: %v", err)
+			slog.Warn("close usefulness file failed", "error", err)
 		}
 	}()
 
@@ -168,7 +168,7 @@ func (t *UsefulnessTracker) load() error {
 		}
 		var rec UsefulnessRecord
 		if err := json.Unmarshal(line, &rec); err != nil {
-			log.Printf("[WARN] usefulness load: skipping malformed JSON line: %v", err)
+			slog.Warn("usefulness load: skipping malformed JSON line", "error", err)
 			continue
 		}
 		t.records = append(t.records, rec)
@@ -186,7 +186,7 @@ func (t *UsefulnessTracker) appendToFile(rec UsefulnessRecord) error {
 	}
 	defer func() {
 		if err := f.Close(); err != nil {
-			log.Printf("[WARN] close usefulness file: %v", err)
+			slog.Warn("close usefulness file failed", "error", err)
 		}
 	}()
 

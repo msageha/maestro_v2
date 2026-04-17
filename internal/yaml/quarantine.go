@@ -2,7 +2,7 @@ package yaml
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -26,7 +26,7 @@ func Quarantine(maestroDir, filePath string) (string, error) {
 		return "", fmt.Errorf("move to quarantine: %w", err)
 	}
 
-	log.Printf("quarantined corrupted file: %s → %s", filePath, quarantinePath)
+	slog.Info("quarantined corrupted file", "source", filePath, "destination", quarantinePath)
 	return quarantinePath, nil
 }
 
@@ -51,7 +51,7 @@ func RestoreFromBackup(filePath string) error {
 		return fmt.Errorf("restore from backup: %w", err)
 	}
 
-	log.Printf("restored from backup: %s → %s", bakPath, filePath)
+	slog.Info("restored from backup", "source", bakPath, "destination", filePath)
 	return nil
 }
 
@@ -67,7 +67,7 @@ func GenerateSkeleton(filePath string, fileType string) error {
 		return fmt.Errorf("write skeleton: %w", err)
 	}
 
-	log.Printf("generated skeleton: %s (type: %s)", filePath, fileType)
+	slog.Info("generated skeleton", "path", filePath, "type", fileType)
 	return nil
 }
 
@@ -81,7 +81,7 @@ func RecoverCorruptedFile(maestroDir, filePath, fileType string) error {
 
 	// Step 2: Try to restore from .bak
 	if err := RestoreFromBackup(filePath); err != nil {
-		log.Printf("backup restore failed for %s: %v — falling back to skeleton generation", filePath, err)
+		slog.Warn("backup restore failed, falling back to skeleton generation", "path", filePath, "error", err)
 	} else {
 		return nil
 	}

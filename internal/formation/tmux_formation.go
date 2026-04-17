@@ -3,7 +3,7 @@ package formation
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
@@ -15,7 +15,7 @@ import (
 func createFormation(cfg model.Config) (retErr error) {
 	// Kill existing session if any
 	if tmux.SessionExists() {
-		log.Printf("[DEBUG] createFormation: killing pre-existing session before creation")
+		slog.Debug("createFormation: killing pre-existing session before creation")
 		if err := tmux.KillSession(); err != nil {
 			return fmt.Errorf("kill existing session: %w", err)
 		}
@@ -29,16 +29,16 @@ func createFormation(cfg model.Config) (retErr error) {
 	// Rollback: if any subsequent step fails, destroy the partially-created session
 	defer func() {
 		if retErr != nil {
-			log.Printf("[WARN] createFormation: rolling back due to error: %v", retErr)
+			slog.Warn("createFormation: rolling back due to error", "error", retErr)
 			if tmux.SessionExists() {
 				if killErr := tmux.KillSession(); killErr != nil {
-					log.Printf("[WARN] createFormation: rollback kill session failed: %v", killErr)
+					slog.Warn("createFormation: rollback kill session failed", "error", killErr)
 				}
 			}
 		}
 	}()
 
-	log.Printf("[DEBUG] createFormation: applying session hardening options")
+	slog.Debug("createFormation: applying session hardening options")
 
 	// Harden server: prevent tmux server from exiting when the last session is destroyed.
 	if err := tmux.SetServerOption("exit-empty", "off"); err != nil {
@@ -157,8 +157,7 @@ func waitForShellReady(ctx context.Context, pane string) error {
 		if err != nil {
 			consecutiveErrors++
 			lastErr = err
-			log.Printf("[WARN] GetPaneCurrentCommand failed for pane %s (attempt %d/%d): %v",
-				pane, consecutiveErrors, maxConsecutiveErrors, err)
+			slog.Warn("GetPaneCurrentCommand failed", "pane", pane, "attempt", consecutiveErrors, "max_attempts", maxConsecutiveErrors, "error", err)
 			if consecutiveErrors >= maxConsecutiveErrors {
 				return fmt.Errorf("waitForShellReady: %d consecutive errors, last: %w", consecutiveErrors, lastErr)
 			}

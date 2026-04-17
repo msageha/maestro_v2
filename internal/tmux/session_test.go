@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // testSessionSeq provides unique suffixes for test session names.
@@ -228,23 +230,12 @@ func TestCapturePane(t *testing.T) {
 	if err := SendCommand(paneTarget, "echo "+marker); err != nil {
 		t.Fatalf("send echo command: %v", err)
 	}
-	// Poll until marker appears in pane output (instead of fixed sleep)
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		content, err := CapturePane(paneTarget, 10)
-		if err == nil && strings.Contains(content, marker) {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	content, err := CapturePane(paneTarget, 10)
-	if err != nil {
-		t.Fatalf("capture pane: %v", err)
-	}
-	if !strings.Contains(content, marker) {
-		t.Errorf("CapturePane content does not contain marker %q\ncontent:\n%s", marker, content)
-	}
+	var content string
+	require.Eventually(t, func() bool {
+		var err error
+		content, err = CapturePane(paneTarget, 10)
+		return err == nil && strings.Contains(content, marker)
+	}, 5*time.Second, 100*time.Millisecond, "pane should contain marker %q", marker)
 }
 
 func TestFindPaneByAgentID(t *testing.T) {
@@ -279,18 +270,14 @@ func TestFindPaneByAgentID(t *testing.T) {
 // waitForShell waits until the shell is ready by polling CapturePane for the prompt.
 func waitForShell(t *testing.T, paneTarget string) {
 	t.Helper()
-	for i := 0; i < 20; i++ {
-		time.Sleep(250 * time.Millisecond)
+	require.Eventually(t, func() bool {
 		content, err := CapturePane(paneTarget, 5)
 		if err != nil {
-			continue
+			return false
 		}
 		// Fish/zsh/bash shell prompts typically contain $ or > or %
-		if strings.Contains(content, "$") || strings.Contains(content, ">") || strings.Contains(content, "%") {
-			return
-		}
-	}
-	t.Log("shell prompt not detected; proceeding anyway")
+		return strings.Contains(content, "$") || strings.Contains(content, ">") || strings.Contains(content, "%")
+	}, 5*time.Second, 250*time.Millisecond, "shell prompt not detected in pane %s", paneTarget)
 }
 
 func TestSendTextAndSubmit(t *testing.T) {
@@ -316,36 +303,21 @@ func TestSendTextAndSubmit(t *testing.T) {
 		t.Fatalf("SendTextAndSubmit: %v", err)
 	}
 
-	// Poll until all expected lines appear (instead of fixed sleep)
 	wants := []string{"line1", "line2", "line3"}
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		content, err := CapturePane(paneTarget, 20)
-		if err == nil {
-			allFound := true
-			for _, w := range wants {
-				if !strings.Contains(content, w) {
-					allFound = false
-					break
-				}
-			}
-			if allFound {
-				break
+	var content string
+	require.Eventually(t, func() bool {
+		var err error
+		content, err = CapturePane(paneTarget, 20)
+		if err != nil {
+			return false
+		}
+		for _, w := range wants {
+			if !strings.Contains(content, w) {
+				return false
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	content, err := CapturePane(paneTarget, 20)
-	if err != nil {
-		t.Fatalf("capture pane: %v", err)
-	}
-
-	for _, want := range wants {
-		if !strings.Contains(content, want) {
-			t.Errorf("pane content missing %q\ncontent:\n%s", want, content)
-		}
-	}
+		return true
+	}, 5*time.Second, 100*time.Millisecond, "pane should contain all expected lines")
 	t.Logf("pane content:\n%s", content)
 }
 
@@ -370,24 +342,12 @@ func TestSendTextAndSubmit_SingleLine(t *testing.T) {
 		t.Fatalf("SendTextAndSubmit: %v", err)
 	}
 
-	// Poll until expected output appears (instead of fixed sleep)
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		content, err := CapturePane(paneTarget, 10)
-		if err == nil && strings.Contains(content, "hello world") {
-			break
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	content, err := CapturePane(paneTarget, 10)
-	if err != nil {
-		t.Fatalf("capture pane: %v", err)
-	}
-
-	if !strings.Contains(content, "hello world") {
-		t.Errorf("pane content missing 'hello world'\ncontent:\n%s", content)
-	}
+	var content string
+	require.Eventually(t, func() bool {
+		var err error
+		content, err = CapturePane(paneTarget, 10)
+		return err == nil && strings.Contains(content, "hello world")
+	}, 5*time.Second, 100*time.Millisecond, "pane should contain 'hello world'")
 	t.Logf("pane content:\n%s", content)
 }
 

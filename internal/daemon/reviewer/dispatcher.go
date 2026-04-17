@@ -6,7 +6,7 @@ package reviewer
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -102,7 +102,7 @@ func (d *ReviewDispatcher) reviewTask(ctx context.Context, req model.ReviewReque
 		case d.results <- *result:
 		default:
 			d.droppedResults.Add(1)
-			log.Printf("reviewer: results channel full, dropping result for %s", req.ID)
+			slog.Warn("reviewer: results channel full, dropping result", "review_id", req.ID)
 		}
 	}()
 
@@ -123,7 +123,7 @@ func (d *ReviewDispatcher) reviewTask(ctx context.Context, req model.ReviewReque
 	//   2. Parse the model response into []model.ReviewFinding
 	//   3. Populate result.Findings with the parsed findings
 	//   4. Set result.Status based on model response success/failure
-	log.Printf("WARN: reviewer/placeholder: review=%s task=%s model=%s — no analysis performed, returning empty result", req.ID, req.TaskID, req.ReviewerModel)
+	slog.Warn("reviewer/placeholder: no analysis performed, returning empty result", "review_id", req.ID, "task_id", req.TaskID, "model", req.ReviewerModel)
 	result.Status = model.ReviewStatusCompleted
 	result.Findings = nil
 }

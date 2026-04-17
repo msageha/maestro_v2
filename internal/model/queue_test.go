@@ -275,6 +275,117 @@ func TestTask_GetDoneConditions(t *testing.T) {
 	}
 }
 
+func TestDispatchID_YAMLRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	t.Run("command dispatch_id", func(t *testing.T) {
+		t.Parallel()
+		cmd := Command{
+			ID:         "cmd_001",
+			DispatchID: "dsp_1234567890_abcdef0123456789",
+			Content:    "test",
+			Status:     StatusPending,
+			CreatedAt:  "2026-04-10T10:00:00+09:00",
+			UpdatedAt:  "2026-04-10T10:00:00+09:00",
+		}
+
+		data, err := yaml.Marshal(&cmd)
+		if err != nil {
+			t.Fatalf("Marshal failed: %v", err)
+		}
+
+		var decoded Command
+		if err := yaml.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("Unmarshal failed: %v", err)
+		}
+		if decoded.DispatchID != "dsp_1234567890_abcdef0123456789" {
+			t.Errorf("dispatch_id: got %q, want %q", decoded.DispatchID, "dsp_1234567890_abcdef0123456789")
+		}
+	})
+
+	t.Run("task dispatch_id", func(t *testing.T) {
+		t.Parallel()
+		task := Task{
+			ID:         "task_001",
+			CommandID:  "cmd_001",
+			DispatchID: "dsp_1234567890_abcdef0123456789",
+			Status:     StatusPending,
+			CreatedAt:  "2026-04-10T10:00:00+09:00",
+			UpdatedAt:  "2026-04-10T10:00:00+09:00",
+		}
+
+		data, err := yaml.Marshal(&task)
+		if err != nil {
+			t.Fatalf("Marshal failed: %v", err)
+		}
+
+		var decoded Task
+		if err := yaml.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("Unmarshal failed: %v", err)
+		}
+		if decoded.DispatchID != "dsp_1234567890_abcdef0123456789" {
+			t.Errorf("dispatch_id: got %q, want %q", decoded.DispatchID, "dsp_1234567890_abcdef0123456789")
+		}
+	})
+
+	t.Run("dispatch_id omitted when empty", func(t *testing.T) {
+		t.Parallel()
+		cmd := Command{
+			ID:        "cmd_002",
+			Status:    StatusPending,
+			CreatedAt: "2026-04-10T10:00:00+09:00",
+			UpdatedAt: "2026-04-10T10:00:00+09:00",
+		}
+
+		data, err := yaml.Marshal(&cmd)
+		if err != nil {
+			t.Fatalf("Marshal failed: %v", err)
+		}
+
+		yamlStr := string(data)
+		if testing.Verbose() {
+			t.Logf("YAML output:\n%s", yamlStr)
+		}
+
+		var decoded Command
+		if err := yaml.Unmarshal(data, &decoded); err != nil {
+			t.Fatalf("Unmarshal failed: %v", err)
+		}
+		if decoded.DispatchID != "" {
+			t.Errorf("expected empty dispatch_id, got %q", decoded.DispatchID)
+		}
+	})
+}
+
+func TestDispatchID_Generation(t *testing.T) {
+	t.Parallel()
+
+	id1, err := GenerateID(IDTypeDispatch)
+	if err != nil {
+		t.Fatalf("GenerateID(IDTypeDispatch) failed: %v", err)
+	}
+	if !ValidateID(id1) {
+		t.Errorf("generated dispatch ID %q failed validation", id1)
+	}
+
+	idType, err := ParseIDType(id1)
+	if err != nil {
+		t.Fatalf("ParseIDType(%q) failed: %v", id1, err)
+	}
+	if idType != IDTypeDispatch {
+		t.Errorf("expected IDTypeDispatch, got %s", idType)
+	}
+
+	// Uniqueness check
+	id2, err := GenerateID(IDTypeDispatch)
+	if err != nil {
+		t.Fatalf("GenerateID(IDTypeDispatch) second call failed: %v", err)
+	}
+	if id1 == id2 {
+		t.Errorf("expected unique IDs, got %q twice", id1)
+	}
+}
+
 // TestTask_GetDoneConditions_NilReceiver verifies that calling GetDoneConditions
 // on a nil *Task pointer panics (nil dereference). This documents the expected
 // behavior so that callers know they must nil-check before calling the method.

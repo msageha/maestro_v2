@@ -3,7 +3,7 @@ package plan
 import (
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,15 +73,15 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 		// Corrupt/unreadable intent: log and quarantine by removing the broken
 		// file so it doesn't block future calls. The normal flow will re-derive
 		// the correct status from state.
-		log.Printf("[WARN] Complete: corrupt intent file for command %s, removing: %v", opts.CommandID, intentErr)
+		slog.Warn("Complete: corrupt intent file, removing", "command_id", opts.CommandID, "error", intentErr)
 		removeCompleteIntent(opts.MaestroDir, opts.CommandID)
 	} else if intent != nil {
 		// Validate intent matches the current command (defense against file corruption)
 		if intent.CommandID != opts.CommandID {
-			log.Printf("[WARN] Complete: intent command_id mismatch (intent=%s, opts=%s), removing corrupt intent", intent.CommandID, opts.CommandID)
+			slog.Warn("Complete: intent command_id mismatch, removing corrupt intent", "intent_command_id", intent.CommandID, "opts_command_id", opts.CommandID)
 			removeCompleteIntent(opts.MaestroDir, opts.CommandID)
 		} else {
-			log.Printf("[INFO] Complete: recovering stale intent for command %s", opts.CommandID)
+			slog.Info("Complete: recovering stale intent", "command_id", opts.CommandID)
 			actualStatus, err := replayCompleteIntent(opts, sm, intent)
 			if err != nil {
 				return nil, fmt.Errorf("intent recovery: %w", err)
@@ -201,8 +201,7 @@ func executeCompleteSteps(opts CompleteOptions, sm *StateManager, state *model.C
 			}
 		}
 
-		log.Printf("[WARN] executeCompleteSteps: conflict — state=%s intent=%s for command %s; reconciling result/queue to state",
-			state.PlanStatus, intent.PlanStatus, intent.CommandID)
+		slog.Warn("executeCompleteSteps: conflict, reconciling result/queue to state", "state_status", string(state.PlanStatus), "intent_status", string(intent.PlanStatus), "command_id", intent.CommandID)
 
 		opts.LockMap.Lock("result:planner")
 		rerr := reconcileCommandResultLocked(opts.MaestroDir, intent.CommandID, actualStatus, intent.Summary, intent.TaskResults)
@@ -318,7 +317,7 @@ func reconcileCommandQueueEntryLocked(maestroDir string, commandID string, statu
 				return true
 			}
 		}
-		log.Printf("[WARN] reconcileCommandQueueEntryLocked: command %s not found in planner queue (already archived)", commandID)
+		slog.Warn("reconcileCommandQueueEntryLocked: command not found in planner queue", "command_id", commandID)
 		return false
 	})
 }
@@ -457,7 +456,7 @@ func updateCommandQueueEntryLocked(maestroDir string, commandID string, status m
 		}
 		// Command may have been archived after a previous partial completion;
 		// treat as already handled (recovery safe).
-		log.Printf("[WARN] updateCommandQueueEntryLocked: command %s not found in planner queue (may be archived)", commandID)
+		slog.Warn("updateCommandQueueEntryLocked: command not found in planner queue", "command_id", commandID)
 		return false
 	})
 }

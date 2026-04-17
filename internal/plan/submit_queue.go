@@ -199,7 +199,7 @@ func checkCommandNotCancelled(maestroDir string, commandID string) error {
 
 	for _, cmd := range cq.Commands {
 		if cmd.ID == commandID && cmd.Status == model.StatusCancelled {
-			return fmt.Errorf("command %s has been cancelled in queue", commandID)
+			return fmt.Errorf("%w: command %s", ErrCommandCancelled, commandID)
 		}
 	}
 	return nil

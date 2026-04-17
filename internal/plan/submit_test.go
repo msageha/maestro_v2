@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -291,8 +292,8 @@ func TestSubmit_DoubleSubmit(t *testing.T) {
 	if err == nil {
 		t.Fatalf("second Submit returned nil error, want double submit error")
 	}
-	if !strings.Contains(err.Error(), "double submit") {
-		t.Errorf("error = %q, want to contain %q", err.Error(), "double submit")
+	if !errors.Is(err, ErrDoubleSubmit) {
+		t.Errorf("error = %v, want ErrDoubleSubmit in chain", err)
 	}
 }
 
@@ -325,8 +326,8 @@ func TestSubmit_CancelledCommand(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Submit returned nil error, want cancelled error")
 	}
-	if !strings.Contains(err.Error(), "cancelled") {
-		t.Errorf("error = %q, want to contain %q", err.Error(), "cancelled")
+	if !errors.Is(err, ErrCommandCancelled) {
+		t.Errorf("error = %v, want ErrCommandCancelled in chain", err)
 	}
 }
 

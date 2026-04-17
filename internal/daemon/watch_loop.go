@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 
 	"github.com/fsnotify/fsnotify"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/msageha/maestro_v2/internal/tmux"
 )
@@ -17,9 +18,9 @@ import (
 // It holds a back-pointer to Daemon for access to shared state.
 type WatchLoop struct {
 	d            *Daemon
-	fsSem        chan struct{}  // bounds concurrent fsnotify handler goroutines
-	droppedCount atomic.Int64  // events dropped due to semaphore full
-	fsDirty      atomic.Bool   // set when events are dropped; cleared after catch-up scan
+	fsEg         errgroup.Group // bounds concurrent fsnotify handler goroutines via SetLimit
+	droppedCount atomic.Int64   // events dropped due to limit full
+	fsDirty      atomic.Bool    // set when events are dropped; cleared after catch-up scan
 }
 
 // FsDroppedCount returns the total number of fsnotify events dropped due to
@@ -32,6 +33,7 @@ func (w *WatchLoop) FsDroppedCount() int64 {
 func (w *WatchLoop) fsnotifyLoop() {
 	d := w.d
 	defer d.recoverPanic("fsnotifyLoop")
+	defer w.fsEg.Wait() //nolint:errcheck // handlers always return nil
 
 	for {
 		select {
@@ -53,32 +55,25 @@ func (w *WatchLoop) fsnotifyLoop() {
 					continue
 				}
 				d.log(LogLevelDebug, "fsnotify event=%s file=%s", event.Op, event.Name)
-				// Advisory check: skip if shutting down. No mutex needed because
-				// eg.Go from within this eg.Go goroutine is safe (eg.Wait cannot
-				// return while this goroutine is running).
+				// Advisory check: skip if shutting down.
 				if d.shuttingDown.Load() {
 					continue
 				}
 				name := event.Name
-				d.eg.Go(func() error {
+				// Bound concurrency via errgroup.SetLimit to prevent goroutine
+				// fan-out during fsnotify bursts. TryGo returns false when the
+				// limit is reached (non-blocking); periodic scan will catch up.
+				if !w.fsEg.TryGo(func() error {
 					defer d.recoverPanic("fsnotifyHandler")
-					// Bound concurrency to prevent goroutine fan-out
-					// during fsnotify bursts. Drop events that exceed
-					// the semaphore; periodic scan will catch up.
-					select {
-					case w.fsSem <- struct{}{}:
-						defer func() { <-w.fsSem }()
-					default:
-						cnt := w.droppedCount.Add(1)
-						w.fsDirty.Store(true)
-						if cnt == 1 || cnt%100 == 0 {
-							d.log(LogLevelWarn, "fsnotify handler dropped (semaphore full) file=%s total_dropped=%d", name, cnt)
-						}
-						return nil
-					}
 					d.handler.HandleFileEvent(name)
 					return nil
-				})
+				}) {
+					cnt := w.droppedCount.Add(1)
+					w.fsDirty.Store(true)
+					if cnt == 1 || cnt%100 == 0 {
+						d.log(LogLevelWarn, "fsnotify handler dropped (limit full) file=%s total_dropped=%d", name, cnt)
+					}
+				}
 			}
 		case err, ok := <-d.watcher.Errors:
 			if !ok {

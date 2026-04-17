@@ -2,7 +2,7 @@ package plan
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,7 +47,7 @@ func Rebuild(opts RebuildOptions) error {
 	// checks key off ghost task_ids and incorrectly drop legitimate writes.
 	for taskID := range state.AppliedResultIDs {
 		if _, ok := state.TaskStates[taskID]; !ok {
-			log.Printf("rebuild: pruning stale applied_result_id for unknown task %s", taskID)
+			slog.Info("rebuild: pruning stale applied_result_id for unknown task", "task_id", taskID)
 			delete(state.AppliedResultIDs, taskID)
 		}
 	}
@@ -79,14 +79,14 @@ func Rebuild(opts RebuildOptions) error {
 		path := filepath.Join(resultsDir, name)
 		data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application results directory
 		if err != nil {
-			log.Printf("[WARN] rebuild: skipping unreadable result file %s: %v", name, err)
+			slog.Warn("rebuild: skipping unreadable result file", "file", name, "error", err)
 			skippedFiles++
 			continue
 		}
 
 		var rf model.TaskResultFile
 		if err := yamlv3.Unmarshal(data, &rf); err != nil {
-			log.Printf("[WARN] rebuild: skipping corrupt result file %s: %v", name, err)
+			slog.Warn("rebuild: skipping corrupt result file", "file", name, "error", err)
 			skippedFiles++
 			continue
 		}
@@ -123,7 +123,7 @@ func Rebuild(opts RebuildOptions) error {
 	}
 
 	if skippedFiles > 0 {
-		log.Printf("[WARN] rebuild: %d result file(s) skipped due to read/parse errors", skippedFiles)
+		slog.Warn("rebuild: result files skipped due to read/parse errors", "skipped_count", skippedFiles)
 	}
 
 	// Apply the latest result for each task with transition validation.
@@ -132,8 +132,7 @@ func Rebuild(opts RebuildOptions) error {
 	for taskID, lr := range latestByTask {
 		currentStatus := state.TaskStates[taskID]
 		if model.IsTerminal(currentStatus) {
-			log.Printf("rebuild: skipping task %s: current status %q is terminal, cannot transition to %q",
-				taskID, currentStatus, lr.status)
+			slog.Info("rebuild: skipping task with terminal status", "task_id", taskID, "current_status", string(currentStatus), "target_status", string(lr.status))
 			continue
 		}
 		state.TaskStates[taskID] = lr.status

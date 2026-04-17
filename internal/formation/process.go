@@ -2,7 +2,7 @@ package formation
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"syscall"
 	"time"
 )
@@ -35,7 +35,7 @@ func (c *Config) terminateProcess(pid int, sameProcess func(int) bool, termTimeo
 		return terminateNotTarget, nil
 	}
 	if err := c.ProcMgr.Signal(pid, syscall.SIGTERM); err != nil {
-		log.Printf("[WARN] SIGTERM pid=%d: %v", pid, err)
+		slog.Warn("SIGTERM failed", "pid", pid, "error", err)
 	}
 
 	// Poll for exit
@@ -53,7 +53,7 @@ func (c *Config) terminateProcess(pid int, sameProcess func(int) bool, termTimeo
 	}
 	if c.ProcMgr.Alive(pid) {
 		if err := c.ProcMgr.Signal(pid, syscall.SIGKILL); err != nil {
-			log.Printf("[WARN] SIGKILL pid=%d: %v", pid, err)
+			slog.Warn("SIGKILL failed", "pid", pid, "error", err)
 		}
 		time.Sleep(c.PostSignalWait)
 	}

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/dispatch"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/plan"
 )
@@ -32,7 +33,7 @@ import (
 func paStrPtr(s string) *string { return &s }
 
 // newTestQualityGateEvaluator creates a QualityGateEvaluator for unit tests.
-func newTestQualityGateEvaluator(enabled, skipGates bool, gateFn func() *QualityGateDaemon) *QualityGateEvaluator {
+func newTestQualityGateEvaluator(enabled, skipGates bool, gateFn func() dispatch.GateChecker) *QualityGateEvaluator {
 	var cfg model.Config
 	cfg.QualityGates.Enabled = enabled
 	cfg.QualityGates.SkipGates = skipGates
@@ -45,7 +46,7 @@ func newTestQualityGateEvaluator(enabled, skipGates bool, gateFn func() *Quality
 
 func TestPhaseA_A1_GatesDisabled_ShouldNotEvaluate(t *testing.T) {
 	t.Parallel()
-	eval := newTestQualityGateEvaluator(false, false, func() *QualityGateDaemon { return nil })
+	eval := newTestQualityGateEvaluator(false, false, func() dispatch.GateChecker { return nil })
 
 	if eval.ShouldEvaluate() {
 		t.Error("ShouldEvaluate must return false when gates are disabled")
@@ -54,7 +55,7 @@ func TestPhaseA_A1_GatesDisabled_ShouldNotEvaluate(t *testing.T) {
 
 func TestPhaseA_A1_SkipGates_EmergencyMode(t *testing.T) {
 	t.Parallel()
-	eval := newTestQualityGateEvaluator(true, true, func() *QualityGateDaemon { return nil })
+	eval := newTestQualityGateEvaluator(true, true, func() dispatch.GateChecker { return nil })
 
 	if eval.ShouldEvaluate() {
 		t.Error("ShouldEvaluate must return false in emergency mode (skip_gates=true)")
@@ -63,7 +64,7 @@ func TestPhaseA_A1_SkipGates_EmergencyMode(t *testing.T) {
 
 func TestPhaseA_A1_GateDaemonNil_NoBlocking(t *testing.T) {
 	t.Parallel()
-	eval := newTestQualityGateEvaluator(true, false, func() *QualityGateDaemon { return nil })
+	eval := newTestQualityGateEvaluator(true, false, func() dispatch.GateChecker { return nil })
 
 	// Even when enabled, nil daemon means no evaluation (no blocking).
 	if eval.ShouldEvaluate() {
@@ -111,7 +112,7 @@ func TestPhaseA_A1_TaskCompletes_RegardlessOfGateState(t *testing.T) {
 	// A completed task (via result_write) is not blocked by gate evaluation state.
 	// This is verified by showing that the result_write path is independent of
 	// quality gate results — the gate evaluation only decorates the result.
-	eval := newTestQualityGateEvaluator(false, false, func() *QualityGateDaemon { return nil })
+	eval := newTestQualityGateEvaluator(false, false, func() dispatch.GateChecker { return nil })
 
 	// Store a failing evaluation
 	eval.StoreEvaluation("task_fail_gate", &model.QualityGateEvaluation{
@@ -123,9 +124,7 @@ func TestPhaseA_A1_TaskCompletes_RegardlessOfGateState(t *testing.T) {
 	// The evaluation is stored but does not affect task completion flow.
 	// Quality gate failures with action="warn" only log; they never block
 	// result_write or status transitions.
-	eval.evalMutex.RLock()
-	stored := eval.evaluations["task_fail_gate"]
-	eval.evalMutex.RUnlock()
+	stored := eval.GetEvaluation("task_fail_gate")
 
 	if stored == nil {
 		t.Fatal("evaluation should be stored")
@@ -143,16 +142,14 @@ func TestPhaseA_A1_TaskCompletes_RegardlessOfGateState(t *testing.T) {
 
 func TestPhaseA_A2_EvaluationStored(t *testing.T) {
 	t.Parallel()
-	eval := newTestQualityGateEvaluator(false, false, func() *QualityGateDaemon { return nil })
+	eval := newTestQualityGateEvaluator(false, false, func() dispatch.GateChecker { return nil })
 
 	evaluation := eval.SkippedEvaluation("disabled")
 	eval.StoreEvaluation("task_001", evaluation)
 
-	eval.evalMutex.RLock()
-	stored, ok := eval.evaluations["task_001"]
-	eval.evalMutex.RUnlock()
+	stored := eval.GetEvaluation("task_001")
 
-	if !ok {
+	if stored == nil {
 		t.Fatal("evaluation should be stored for task_001")
 	}
 	if !stored.Passed {
@@ -168,7 +165,7 @@ func TestPhaseA_A2_EvaluationStored(t *testing.T) {
 
 func TestPhaseA_A2_MultipleEvaluations_PerTask(t *testing.T) {
 	t.Parallel()
-	eval := newTestQualityGateEvaluator(false, false, func() *QualityGateDaemon { return nil })
+	eval := newTestQualityGateEvaluator(false, false, func() dispatch.GateChecker { return nil })
 
 	// Simulate evaluations from different tasks (different models/contexts)
 	eval.StoreEvaluation("task_model_a", &model.QualityGateEvaluation{
@@ -186,12 +183,10 @@ func TestPhaseA_A2_MultipleEvaluations_PerTask(t *testing.T) {
 		EvaluatedAt: time.Now().Format(time.RFC3339),
 	})
 
-	eval.evalMutex.RLock()
-	count := len(eval.evaluations)
-	modelA := eval.evaluations["task_model_a"]
-	modelB := eval.evaluations["task_model_b"]
-	modelC := eval.evaluations["task_model_c"]
-	eval.evalMutex.RUnlock()
+	count := eval.EvaluationCount()
+	modelA := eval.GetEvaluation("task_model_a")
+	modelB := eval.GetEvaluation("task_model_b")
+	modelC := eval.GetEvaluation("task_model_c")
 
 	if count != 3 {
 		t.Errorf("expected 3 evaluations, got %d", count)
@@ -213,7 +208,7 @@ func TestPhaseA_A2_MultipleEvaluations_PerTask(t *testing.T) {
 func TestPhaseA_A2_AdoptionRate_Calculable(t *testing.T) {
 	t.Parallel()
 	// Verify that stored evaluations allow computing adoption rate statistics.
-	eval := newTestQualityGateEvaluator(false, false, func() *QualityGateDaemon { return nil })
+	eval := newTestQualityGateEvaluator(false, false, func() dispatch.GateChecker { return nil })
 
 	// 3 evaluations: 2 passed, 1 failed
 	for i := 0; i < 3; i++ {
@@ -223,18 +218,16 @@ func TestPhaseA_A2_AdoptionRate_Calculable(t *testing.T) {
 		})
 	}
 
-	eval.evalMutex.RLock()
-	var passed, total int
-	for _, e := range eval.evaluations {
-		total++
-		if e.Passed {
-			passed++
-		}
-	}
-	eval.evalMutex.RUnlock()
-
+	total := eval.EvaluationCount()
 	if total != 3 {
 		t.Fatalf("total=%d, want 3", total)
+	}
+	var passed int
+	for i := 0; i < 3; i++ {
+		e := eval.GetEvaluation(fmt.Sprintf("task_%03d", i))
+		if e != nil && e.Passed {
+			passed++
+		}
 	}
 	rate := float64(passed) / float64(total) * 100
 	if rate < 66.0 || rate > 67.0 {
@@ -244,10 +237,10 @@ func TestPhaseA_A2_AdoptionRate_Calculable(t *testing.T) {
 
 func TestPhaseA_A2_EvictionOnOverflow(t *testing.T) {
 	t.Parallel()
-	eval := newTestQualityGateEvaluator(false, false, func() *QualityGateDaemon { return nil })
+	eval := newTestQualityGateEvaluator(false, false, func() dispatch.GateChecker { return nil })
 
-	// Store more than maxGateEvaluations entries to trigger eviction.
-	for i := 0; i < maxGateEvaluations+10; i++ {
+	// Store more than MaxGateEvaluations entries to trigger eviction.
+	for i := 0; i < dispatch.MaxGateEvaluations+10; i++ {
 		eval.StoreEvaluation(
 			fmt.Sprintf("task_%05d", i),
 			&model.QualityGateEvaluation{
@@ -257,12 +250,10 @@ func TestPhaseA_A2_EvictionOnOverflow(t *testing.T) {
 		)
 	}
 
-	eval.evalMutex.RLock()
-	count := len(eval.evaluations)
-	eval.evalMutex.RUnlock()
+	count := eval.EvaluationCount()
 
-	if count > maxGateEvaluations {
-		t.Errorf("evaluations=%d, expected <= %d after eviction", count, maxGateEvaluations)
+	if count > dispatch.MaxGateEvaluations {
+		t.Errorf("evaluations=%d, expected <= %d after eviction", count, dispatch.MaxGateEvaluations)
 	}
 	if count == 0 {
 		t.Error("evaluations should not be empty after eviction")

@@ -13,13 +13,14 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/ptr"
+	"github.com/msageha/maestro_v2/internal/testutil"
 )
 
 // TestGCBakFiles_OrphanRemoved verifies that a .bak file with no matching
 // .yaml is removed by gcBakFiles.
 func TestGCBakFiles_OrphanRemoved(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	stateDir := filepath.Join(wm.maestroDir, "state")
@@ -42,7 +43,7 @@ func TestGCBakFiles_OrphanRemoved(t *testing.T) {
 // is removed even when its companion .yaml still exists.
 func TestGCBakFiles_ExpiredRemoved(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	queuesDir := filepath.Join(wm.maestroDir, "queues")
@@ -77,7 +78,7 @@ func TestGCBakFiles_ExpiredRemoved(t *testing.T) {
 // .yaml is preserved.
 func TestGCBakFiles_FreshRetained(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	resultsDir := filepath.Join(wm.maestroDir, "results")
@@ -106,7 +107,7 @@ func TestGCBakFiles_FreshRetained(t *testing.T) {
 // whose integration status is non-terminal even when the TTL has expired.
 func TestGC_SkipsActiveWorktree_TTL(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Set very short TTL so our worktree will exceed it
@@ -141,7 +142,7 @@ func TestGC_SkipsActiveWorktree_TTL(t *testing.T) {
 // whose integration status is terminal (published) when TTL has expired.
 func TestGC_CleansTerminalWorktree_TTL(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	wm.config.GC.TTLHours = ptr.Int(0)
@@ -194,7 +195,7 @@ func TestGC_CleansTerminalWorktree_TTL(t *testing.T) {
 // does not evict active (non-terminal) worktrees.
 func TestGC_SkipsActiveWorktree_MaxWorktrees(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Set max_worktrees to 1 so that having 2 triggers eviction
@@ -227,7 +228,7 @@ func TestGC_SkipsActiveWorktree_MaxWorktrees(t *testing.T) {
 // whose integration status is "failed" (non-terminal) when TTL has expired.
 func TestGC_CleansFailedWorktree_TTLExpired(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	wm.config.GC.TTLHours = ptr.Int(0) // TTL=0 so everything is expired
@@ -274,7 +275,7 @@ func TestGC_CleansFailedWorktree_TTLExpired(t *testing.T) {
 // allowing retry (failed → merging) to proceed.
 func TestGC_RetainsFailedWorktree_TTLNotExpired(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	wm.config.GC.TTLHours = ptr.Int(999) // high TTL so nothing expires
@@ -315,7 +316,7 @@ func TestGC_RetainsFailedWorktree_TTLNotExpired(t *testing.T) {
 // TTL cleanup logic.
 func TestGC_TerminalStatusUnaffectedByFailedChange(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	wm.config.GC.TTLHours = ptr.Int(0)
@@ -370,7 +371,7 @@ func TestGC_TerminalStatusUnaffectedByFailedChange(t *testing.T) {
 // a crash during PublishToBase).
 func TestCleanupCommand_DeletesPublishBranch(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_publish_leak"
@@ -418,7 +419,7 @@ func TestCleanupCommand_PathGuardRejectsEscape(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink semantics differ on windows")
 	}
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_pathguard_cleanup"
@@ -462,7 +463,7 @@ func TestCleanupCommandUnlocked_PathGuardRejectsEscape(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink semantics differ on windows")
 	}
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_pathguard_unlocked"

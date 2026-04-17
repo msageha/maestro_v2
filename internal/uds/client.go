@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"sync"
 	"syscall"
@@ -113,7 +113,7 @@ func (c *Client) sendContext(ctx context.Context, req *Request) (*Response, erro
 	closeConn := func() {
 		closeOnce.Do(func() {
 			if err := conn.Close(); err != nil {
-				log.Printf("WARN: failed to close client connection: %v", err)
+				slog.Warn("failed to close client connection", "error", err)
 			}
 		})
 	}

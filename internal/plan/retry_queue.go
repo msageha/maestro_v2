@@ -3,7 +3,7 @@ package plan
 import (
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -83,7 +83,7 @@ func loadOriginalTasksFromQueue(maestroDir string, commandID string) (map[string
 		}
 		var tq model.TaskQueue
 		if err := yamlv3.Unmarshal(data, &tq); err != nil {
-			log.Printf("[WARN] loadOriginalTasksFromQueue: skipping corrupt queue file %s: %v", name, err)
+			slog.Warn("loadOriginalTasksFromQueue: skipping corrupt queue file", "file", name, "error", err)
 			continue
 		}
 		for _, task := range tq.Tasks {
@@ -123,7 +123,7 @@ func rollbackRetryQueueEntries(maestroDir string, written []retryQueueTask, lock
 			queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(rb.workerID))
 			data, err := os.ReadFile(queueFile) //nolint:gosec // queueFile is constructed from a controlled application queue directory
 			if err != nil {
-				log.Printf("[WARN] rollback: read queue %s: %v", queueFile, err)
+				slog.Warn("rollback: failed to read queue", "file", queueFile, "error", err)
 				return
 			}
 			var tq model.TaskQueue
@@ -138,7 +138,7 @@ func rollbackRetryQueueEntries(maestroDir string, written []retryQueueTask, lock
 			}
 			tq.Tasks = kept
 			if writeErr := yamlutil.AtomicWrite(queueFile, tq); writeErr != nil {
-				log.Printf("[WARN] rollback: write queue %s: %v", queueFile, writeErr)
+				slog.Warn("rollback: failed to write queue", "file", queueFile, "error", writeErr)
 			}
 		}()
 	}

@@ -11,12 +11,13 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/ptr"
+	"github.com/msageha/maestro_v2/internal/testutil"
 )
 
 // TestSyncFromIntegration tests syncing integration to worker worktrees.
 func TestSyncFromIntegration(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	workers := []string{"worker1", "worker2"}
@@ -85,7 +86,7 @@ func gitRevParse(t *testing.T, dir, ref string) string {
 // MergeToIntegration does not change projectRoot's HEAD.
 func TestMergeToIntegration_PreservesProjectRootHEAD(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	headRefBefore := gitSymbolicRef(t, projectRoot)
@@ -126,7 +127,7 @@ func TestMergeToIntegration_PreservesProjectRootHEAD(t *testing.T) {
 // PublishToBase does not change projectRoot's symbolic ref.
 func TestPublishToBase_PreservesProjectRootHEAD(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	cmd := exec.Command("git", "branch", "--show-current")
@@ -184,7 +185,7 @@ func TestPublishToBase_PreservesProjectRootHEAD(t *testing.T) {
 
 func TestPublishToBase_RejectsUncommittedChanges(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	currentBranch := "main"
@@ -231,7 +232,7 @@ func TestPublishToBase_RejectsUncommittedChanges(t *testing.T) {
 
 func TestSyncFromIntegration_SkipsConflictWorker(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	workers := []string{"worker1", "worker2"}
@@ -300,7 +301,7 @@ func TestSyncFromIntegration_SkipsConflictWorker(t *testing.T) {
 
 func TestSyncFromIntegration_SkipsDirtyWorktree(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	workers := []string{"worker1", "worker2"}
@@ -355,7 +356,7 @@ func TestSyncFromIntegration_SkipsDirtyWorktree(t *testing.T) {
 
 func TestDiscardWorkerChanges(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	if err := createForCommand(wm, "cmd_discard", []string{"worker1"}); err != nil {
@@ -404,7 +405,7 @@ func TestDiscardWorkerChanges(t *testing.T) {
 
 func TestCreateForCommand_CreatesIntegrationWorktree(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	if err := createForCommand(wm, "cmd_int_wt", []string{"worker1"}); err != nil {
@@ -435,7 +436,7 @@ func TestCommitWorkerChanges_ErrorPaths(t *testing.T) {
 	t.Parallel()
 	t.Run("NonExistentCommand", func(t *testing.T) {
 		t.Parallel()
-		projectRoot := initTestGitRepo(t)
+		projectRoot := testutil.InitTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
 		err := wm.CommitWorkerChanges("nonexistent_cmd", "worker1", "msg")
@@ -449,7 +450,7 @@ func TestCommitWorkerChanges_ErrorPaths(t *testing.T) {
 
 	t.Run("NonExistentWorker", func(t *testing.T) {
 		t.Parallel()
-		projectRoot := initTestGitRepo(t)
+		projectRoot := testutil.InitTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
 		if err := createForCommand(wm, "cmd_err_worker", []string{"worker1"}); err != nil {
@@ -467,7 +468,7 @@ func TestCommitWorkerChanges_ErrorPaths(t *testing.T) {
 
 	t.Run("InvalidWorktreePath", func(t *testing.T) {
 		t.Parallel()
-		projectRoot := initTestGitRepo(t)
+		projectRoot := testutil.InitTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
 		if err := createForCommand(wm, "cmd_err_path", []string{"worker1"}); err != nil {
@@ -495,7 +496,7 @@ func TestCommitWorkerChanges_ErrorPaths(t *testing.T) {
 
 	t.Run("EmptyCommitMessage", func(t *testing.T) {
 		t.Parallel()
-		projectRoot := initTestGitRepo(t)
+		projectRoot := testutil.InitTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
 		if err := createForCommand(wm, "cmd_err_commit", []string{"worker1"}); err != nil {
@@ -528,7 +529,7 @@ func TestCommitWorkerChanges_ErrorPaths(t *testing.T) {
 			t.Skip("skipping: running as root")
 		}
 
-		projectRoot := initTestGitRepo(t)
+		projectRoot := testutil.InitTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
 		if err := createForCommand(wm, "cmd_err_save", []string{"worker1"}); err != nil {
@@ -569,7 +570,7 @@ func TestCommitWorkerChanges_ErrorPaths(t *testing.T) {
 // they are not covered by .gitignore.
 func TestCommitWorkerChanges_SensitiveFilesNotStaged(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	if err := createForCommand(wm, "cmd_sensitive", []string{"worker1"}); err != nil {
@@ -627,7 +628,7 @@ func TestCommitWorkerChanges_SensitiveFilesNotStaged(t *testing.T) {
 // to already-tracked files are still properly staged and committed.
 func TestCommitWorkerChanges_TrackedModificationsStaged(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	if err := createForCommand(wm, "cmd_tracked", []string{"worker1"}); err != nil {
@@ -665,7 +666,7 @@ func TestCommitWorkerChanges_TrackedModificationsStaged(t *testing.T) {
 // files are staged and committed.
 func TestCommitWorkerChanges_NewFileStagedWhenSafe(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	if err := createForCommand(wm, "cmd_newfile", []string{"worker1"}); err != nil {
@@ -713,7 +714,7 @@ func TestCommitWorkerChanges_NewFileStagedWhenSafe(t *testing.T) {
 
 func TestGitTimeout_Default(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Default should be 120 seconds (from EffectiveGitTimeout)
@@ -725,7 +726,7 @@ func TestGitTimeout_Default(t *testing.T) {
 
 func TestGitTimeout_Custom(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 	wm.config.GitTimeoutSec = ptr.Int(30)
 
@@ -737,7 +738,7 @@ func TestGitTimeout_Custom(t *testing.T) {
 
 func TestGitRunUsesContext(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Normal git command should succeed within timeout
@@ -748,7 +749,7 @@ func TestGitRunUsesContext(t *testing.T) {
 
 func TestGitOutputUsesContext(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Normal git output should succeed
@@ -763,7 +764,7 @@ func TestGitOutputUsesContext(t *testing.T) {
 
 func TestGitRunInDirUsesContext(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	if err := wm.gitRunInDir(projectRoot, "status"); err != nil {
@@ -773,7 +774,7 @@ func TestGitRunInDirUsesContext(t *testing.T) {
 
 func TestGitOutputInDirUsesContext(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	output, err := wm.gitOutputInDir(projectRoot, "rev-parse", "HEAD")
@@ -790,7 +791,7 @@ func TestGitOutputInDirUsesContext(t *testing.T) {
 // preventing a git commit that cannot be rolled back.
 func TestCommitWorkerChanges_RejectsInvalidTransition(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_reject_transition"

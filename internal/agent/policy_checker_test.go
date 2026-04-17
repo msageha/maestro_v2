@@ -1662,9 +1662,9 @@ func TestHookScript_C1_BlocksAnsiCQuotingAfterOperators(t *testing.T) {
 }
 
 func TestHookScript_C1_AnsiCQuotingRegexContainsOperators(t *testing.T) {
-	// Verify the expanded anchor includes shell operators
-	if !strings.Contains(hookScript, `[[:space:];|&({]`) {
-		t.Error("ANSI-C quoting regex should include shell operator anchors ;|&({")
+	// Verify the expanded anchor includes shell operators and quotes/equals (SEC-4)
+	if !strings.Contains(hookScript, `[[:space:];|&({\"'=]`) {
+		t.Error("ANSI-C quoting regex should include shell operator anchors ;|&({\"'=")
 	}
 }
 
@@ -1962,6 +1962,218 @@ func TestHookScript_MPERL1_AllowsSafePerlOperations(t *testing.T) {
 			output := runHookScript(t, scriptPath, input)
 			if strings.Contains(output, "M-PERL1") {
 				t.Errorf("should allow %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// SEC-1: git show removed from allowlist
+// =============================================================================
+
+func TestHookScript_SEC1_GitShowNotInAllowlist(t *testing.T) {
+	// Verify git show is NOT in the $() command substitution allowlist
+	if strings.Contains(hookScript, "|show|") {
+		t.Error("SEC-1: git show should be removed from allowlist")
+	}
+	// Verify the allowlist still contains other safe git subcommands
+	for _, sub := range []string{"rev-parse", "log", "diff", "status", "branch"} {
+		if !strings.Contains(hookScript, sub) {
+			t.Errorf("SEC-1: git %s should remain in allowlist", sub)
+		}
+	}
+}
+
+func TestHookScript_SEC1_BlocksGitShowSubstitution(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"git show HEAD:file", "echo $(git show HEAD:secret.key)"},
+		{"git show commit", "echo $(git show abc123)"},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "C1") || !strings.Contains(output, "deny") {
+				t.Errorf("SEC-1: expected C1 deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// SEC-2: Script language indirect execution
+// =============================================================================
+
+func TestHookScript_SEC2_BlocksPythonIndirectExecution(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"python exec", `python3 -c "exec('import os')"` },
+		{"python eval", `python -c "eval('1+1')"` },
+		{"python compile", `python3 -c "compile('code','f','exec')"` },
+		{"python __import__", `python3 -c "__import__('os').system('ls')"` },
+		{"python getattr", `python3 -c "getattr(__builtins__,'eval')('1')"` },
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "SEC2") || !strings.Contains(output, "deny") {
+				t.Errorf("SEC-2: expected SEC2 deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_SEC2_BlocksNodeChildProcess(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"node child_process", `node -e "require('child_process').exec('ls')"`},
+		{"node child_process ref", `node -e "const cp = require('child_process')"`},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "SEC2") || !strings.Contains(output, "deny") {
+				t.Errorf("SEC-2: expected SEC2 deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_SEC2_BlocksRubySystemExec(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"ruby system", `ruby -e 'system("ls -la")'`},
+		{"ruby Kernel.system", `ruby -e 'Kernel.system("ls")'`},
+		{"ruby exec", `ruby -e 'exec("ls")'`},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "SEC2") || !strings.Contains(output, "deny") {
+				t.Errorf("SEC-2: expected SEC2 deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_SEC2_AllowsSafeScriptingOperations(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	allowed := []struct {
+		name string
+		cmd  string
+	}{
+		{"python print", `python3 -c "print('hello')"`},
+		{"python json", `python3 -c "import json; print(json.dumps({'a':1}))"`},
+		{"node console", `node -e "console.log('hello')"`},
+		{"node fs", `node -e "require('fs').readFileSync('x')"`},
+		{"ruby puts", `ruby -e 'puts "hello"'`},
+		{"ruby File.read", `ruby -e 'File.read("x")'`},
+	}
+	for _, tc := range allowed {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if strings.Contains(output, "SEC2") {
+				t.Errorf("SEC-2: should allow %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// SEC-3: realpath -P and TOCTOU documentation
+// =============================================================================
+
+func TestHookScript_SEC3_RealpathUsesPhysicalFlag(t *testing.T) {
+	if !strings.Contains(hookScript, "realpath -P") {
+		t.Error("SEC-3: realpath should use -P flag for physical path resolution")
+	}
+}
+
+func TestHookScript_SEC3_TOCTOUCommentExists(t *testing.T) {
+	if !strings.Contains(hookScript, "TOCTOU") {
+		t.Error("SEC-3: hook script should contain TOCTOU documentation comment")
+	}
+}
+
+// =============================================================================
+// SEC-4: ANSI-C quoting detection after quotes and equals
+// =============================================================================
+
+func TestHookScript_SEC4_BlocksAnsiCQuotingAfterQuotesAndEquals(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"after equals", `var=$'\x72\x6d' && $var -rf /`},
+		{"after double quote", `echo "$'\x72\x6d'" arg`},
+		{"at line start", `$'\x72\x6d' -rf /tmp`},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "C1") || !strings.Contains(output, "deny") {
+				t.Errorf("SEC-4: expected C1 deny for %q, got: %s", tc.cmd, output)
 			}
 		})
 	}

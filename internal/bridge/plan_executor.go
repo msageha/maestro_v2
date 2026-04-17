@@ -32,7 +32,7 @@ func parseAndExecute[P any, R any](op string, data []byte, execute func(P) (R, e
 	}
 	out, err := json.Marshal(result)
 	if err != nil {
-		return nil, fmt.Errorf("%s: failed to marshal plan result: %w", op, err)
+		return nil, fmt.Errorf("%s: %w: %w", op, ErrMarshalPlanResult, err)
 	}
 	return out, nil
 }

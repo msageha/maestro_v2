@@ -9,13 +9,14 @@ import (
 	"testing"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil"
 )
 
 // TestWorktreeIntegration_BasicLifecycle tests the full worktree lifecycle:
 // create → commit → merge → publish → cleanup.
 func TestWorktreeIntegration_BasicLifecycle(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Detect actual branch name (main or master)
@@ -141,7 +142,7 @@ func TestWorktreeIntegration_BasicLifecycle(t *testing.T) {
 // Phase1 workers commit and merge → sync to Phase2 workers → Phase2 commits and publishes.
 func TestWorktreeIntegration_CrossPhaseSync(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Detect actual branch name

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/dispatch"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -189,8 +190,8 @@ func TestEffectivePriority_Aging(t *testing.T) {
 
 func TestSortPendingIndices_EmptySlice(t *testing.T) {
 	t.Parallel()
-	result := sortPendingIndices([]model.Task{}, func(t model.Task) sortKey {
-		return sortKey{Status: t.Status, Priority: t.Priority, CreatedAt: t.CreatedAt, ID: t.ID}
+	result := dispatch.SortPendingIndices([]model.Task{}, func(t model.Task) dispatch.SortKey {
+		return dispatch.SortKey{Status: t.Status, Priority: t.Priority, CreatedAt: t.CreatedAt, ID: t.ID}
 	}, 0)
 	if len(result) != 0 {
 		t.Errorf("expected empty result, got %d", len(result))
@@ -205,8 +206,8 @@ func TestSortPendingIndices_AllNonPending(t *testing.T) {
 		{ID: "t2", Status: model.StatusCompleted, Priority: 2, CreatedAt: now},
 		{ID: "t3", Status: model.StatusFailed, Priority: 3, CreatedAt: now},
 	}
-	result := sortPendingIndices(items, func(t model.Task) sortKey {
-		return sortKey{Status: t.Status, Priority: t.Priority, CreatedAt: t.CreatedAt, ID: t.ID}
+	result := dispatch.SortPendingIndices(items, func(t model.Task) dispatch.SortKey {
+		return dispatch.SortKey{Status: t.Status, Priority: t.Priority, CreatedAt: t.CreatedAt, ID: t.ID}
 	}, 0)
 	if len(result) != 0 {
 		t.Errorf("expected no pending items, got %d", len(result))
@@ -222,8 +223,8 @@ func TestSortPendingIndices_MixedStatuses(t *testing.T) {
 		{ID: "c3", Status: model.StatusPending, Priority: 1, CreatedAt: now},
 		{ID: "c4", Status: model.StatusCompleted, Priority: 0, CreatedAt: now},
 	}
-	result := sortPendingIndices(items, func(c model.Command) sortKey {
-		return sortKey{Status: c.Status, Priority: c.Priority, CreatedAt: c.CreatedAt, ID: c.ID}
+	result := dispatch.SortPendingIndices(items, func(c model.Command) dispatch.SortKey {
+		return dispatch.SortKey{Status: c.Status, Priority: c.Priority, CreatedAt: c.CreatedAt, ID: c.ID}
 	}, 0)
 	if len(result) != 2 {
 		t.Fatalf("expected 2 pending, got %d", len(result))
@@ -246,8 +247,8 @@ func TestSortPendingIndices_PreservesOriginalIndices(t *testing.T) {
 		{ID: "n_skip2", Status: model.StatusInProgress, Priority: 0, CreatedAt: now},
 		{ID: "n_low", Status: model.StatusPending, Priority: 1, CreatedAt: now},
 	}
-	result := sortPendingIndices(items, func(n model.Notification) sortKey {
-		return sortKey{Status: n.Status, Priority: n.Priority, CreatedAt: n.CreatedAt, ID: n.ID}
+	result := dispatch.SortPendingIndices(items, func(n model.Notification) dispatch.SortKey {
+		return dispatch.SortKey{Status: n.Status, Priority: n.Priority, CreatedAt: n.CreatedAt, ID: n.ID}
 	}, 0)
 	if len(result) != 2 {
 		t.Fatalf("expected 2, got %d", len(result))
@@ -269,8 +270,8 @@ func TestSortPendingIndices_WithAging(t *testing.T) {
 		{ID: "t_old_high", Status: model.StatusPending, Priority: 5, CreatedAt: now.Add(-3 * time.Minute).Format(time.RFC3339)},
 	}
 	// With aging every 60s: t_old_high effective = max(0, 5-3) = 2, t_new_high effective = 5
-	result := sortPendingIndices(items, func(t model.Task) sortKey {
-		return sortKey{Status: t.Status, Priority: t.Priority, CreatedAt: t.CreatedAt, ID: t.ID}
+	result := dispatch.SortPendingIndices(items, func(t model.Task) dispatch.SortKey {
+		return dispatch.SortKey{Status: t.Status, Priority: t.Priority, CreatedAt: t.CreatedAt, ID: t.ID}
 	}, 60)
 	if len(result) != 2 {
 		t.Fatalf("expected 2, got %d", len(result))
@@ -288,25 +289,25 @@ func TestSortPendingIndices_ConsistentAcrossTypes(t *testing.T) {
 
 	// Verify that tasks, commands, and notifications produce identical ordering
 	// for the same priority/created_at/id combinations
-	taskResult := sortPendingIndices([]model.Task{
+	taskResult := dispatch.SortPendingIndices([]model.Task{
 		{ID: "b", Status: model.StatusPending, Priority: 1, CreatedAt: ts2},
 		{ID: "a", Status: model.StatusPending, Priority: 1, CreatedAt: ts},
-	}, func(t model.Task) sortKey {
-		return sortKey{Status: t.Status, Priority: t.Priority, CreatedAt: t.CreatedAt, ID: t.ID}
+	}, func(t model.Task) dispatch.SortKey {
+		return dispatch.SortKey{Status: t.Status, Priority: t.Priority, CreatedAt: t.CreatedAt, ID: t.ID}
 	}, 0)
 
-	cmdResult := sortPendingIndices([]model.Command{
+	cmdResult := dispatch.SortPendingIndices([]model.Command{
 		{ID: "b", Status: model.StatusPending, Priority: 1, CreatedAt: ts2},
 		{ID: "a", Status: model.StatusPending, Priority: 1, CreatedAt: ts},
-	}, func(c model.Command) sortKey {
-		return sortKey{Status: c.Status, Priority: c.Priority, CreatedAt: c.CreatedAt, ID: c.ID}
+	}, func(c model.Command) dispatch.SortKey {
+		return dispatch.SortKey{Status: c.Status, Priority: c.Priority, CreatedAt: c.CreatedAt, ID: c.ID}
 	}, 0)
 
-	ntfResult := sortPendingIndices([]model.Notification{
+	ntfResult := dispatch.SortPendingIndices([]model.Notification{
 		{ID: "b", Status: model.StatusPending, Priority: 1, CreatedAt: ts2},
 		{ID: "a", Status: model.StatusPending, Priority: 1, CreatedAt: ts},
-	}, func(n model.Notification) sortKey {
-		return sortKey{Status: n.Status, Priority: n.Priority, CreatedAt: n.CreatedAt, ID: n.ID}
+	}, func(n model.Notification) dispatch.SortKey {
+		return dispatch.SortKey{Status: n.Status, Priority: n.Priority, CreatedAt: n.CreatedAt, ID: n.ID}
 	}, 0)
 
 	// All should sort "a" (earlier created_at) first → index 1

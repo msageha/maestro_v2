@@ -4,7 +4,7 @@ package search
 import (
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"math"
 	"sync"
 )
@@ -122,7 +122,7 @@ func (t *Tree) Backpropagate(nodeID string, reward float64) {
 	for current != "" {
 		n, ok := t.nodes[current]
 		if !ok {
-			log.Printf("search/tree: Backpropagate: node %q not found, stopping propagation", current)
+			slog.Warn("search/tree: Backpropagate: node not found, stopping propagation", "node_id", current)
 			break
 		}
 		n.Visits++

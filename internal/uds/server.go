@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"os"
 	"runtime/debug"
@@ -87,12 +87,12 @@ func (s *Server) Stop() error {
 	s.cancel()
 	if s.listener != nil {
 		if err := s.listener.Close(); err != nil {
-			log.Printf("DEBUG: failed to close listener during stop: %v", err)
+			slog.Debug("failed to close listener during stop", "error", err)
 		}
 	}
 	s.wg.Wait()
 	if err := os.Remove(s.socketPath); err != nil && !os.IsNotExist(err) {
-		log.Printf("DEBUG: failed to remove socket file during stop: %v", err)
+		slog.Debug("failed to remove socket file during stop", "error", err)
 	}
 	return nil
 }
@@ -111,11 +111,11 @@ func (s *Server) acceptLoop() {
 			}
 			// Exit on permanent listener errors (e.g. listener closed)
 			if errors.Is(err, net.ErrClosed) {
-				log.Printf("listener closed, stopping accept loop: %v", err)
+				slog.Info("listener closed, stopping accept loop", "error", err)
 				return
 			}
 			// Temporary errors: log and continue
-			log.Printf("accept error: %v", err)
+			slog.Error("accept error", "error", err)
 			continue
 		}
 
@@ -138,14 +138,14 @@ func (s *Server) acceptLoop() {
 func (s *Server) rejectConn(conn net.Conn) {
 	defer func() {
 		if err := conn.Close(); err != nil {
-			log.Printf("DEBUG: failed to close rejected connection: %v", err)
+			slog.Debug("failed to close rejected connection", "error", err)
 		}
 	}()
-	log.Printf("connection rejected: max concurrent connections (%d) reached", s.maxConns)
+	slog.Warn("connection rejected: max concurrent connections reached", "max_conns", s.maxConns)
 	_ = conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
 	resp := ErrorResponse(ErrCodeBackpressure, "server at capacity, try again later")
 	if err := writeFrame(conn, resp); err != nil {
-		log.Printf("DEBUG: failed to write backpressure response: %v", err)
+		slog.Debug("failed to write backpressure response", "error", err)
 	}
 }
 
@@ -154,13 +154,13 @@ func (s *Server) handleConn(conn net.Conn) {
 	defer func() { <-s.connSem }()
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("panic in handleConn: %v\n%s", r, debug.Stack())
+			slog.Error("panic in handleConn", "panic", r, "stack", string(debug.Stack()))
 			// Write error response before closing so the client does not wait indefinitely.
 			resp := ErrorResponse(ErrCodeInternal, fmt.Sprintf("internal server error: panic: %v", r))
 			_ = writeFrame(conn, resp)
 		}
 		if err := conn.Close(); err != nil {
-			log.Printf("DEBUG: failed to close handled connection: %v", err)
+			slog.Debug("failed to close handled connection", "error", err)
 		}
 	}()
 
@@ -168,14 +168,14 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	var req Request
 	if err := readFrame(conn, &req); err != nil {
-		log.Printf("read request error: %v", err)
+		slog.Error("read request error", "error", err)
 		return
 	}
 
 	resp := s.processRequest(&req)
 
 	if err := writeFrame(conn, resp); err != nil {
-		log.Printf("write response error: %v", err)
+		slog.Error("write response error", "error", err)
 	}
 }
 

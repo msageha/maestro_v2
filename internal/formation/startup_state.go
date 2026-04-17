@@ -2,7 +2,7 @@ package formation
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -24,9 +24,9 @@ func resetFormation(maestroDir string) error {
 	}
 
 	// Kill existing tmux session (best-effort, idempotent)
-	log.Printf("[DEBUG] resetFormation: killing existing tmux session (best-effort)")
+	slog.Debug("resetFormation: killing existing tmux session")
 	if err := tmux.KillSession(); err != nil {
-		log.Printf("[WARN] KillSession (resetFormation best-effort): %v", err)
+		slog.Warn("KillSession failed during resetFormation", "error", err)
 	}
 
 	// Clear queue/ YAML files
@@ -120,7 +120,7 @@ func startupRecovery(maestroDir string) error {
 	removeIfExists(filepath.Join(maestroDir, "daemon.pid"))
 	removeIfExists(filepath.Join(maestroDir, uds.DefaultSocketName))
 	if err := fl.Unlock(); err != nil {
-		log.Printf("[WARN] startup lock unlock: %v", err)
+		slog.Warn("startup lock unlock failed", "error", err)
 	}
 
 	// YAML validation: scan all YAML files and quarantine corrupt ones
@@ -165,9 +165,9 @@ func validateAndRecoverYAML(maestroDir string) error {
 				fileExpectedType = inferFileType(dir, entry.Name())
 			}
 			if err := yamlutil.ValidateSchemaHeader(filePath, fileExpectedType); err != nil {
-				log.Printf("[WARN] corrupt YAML detected: %s (%v)", filePath, err)
+				slog.Warn("corrupt YAML detected", "path", filePath, "error", err)
 				if recErr := yamlutil.RecoverCorruptedFile(maestroDir, filePath, inferFileType(dir, entry.Name())); recErr != nil {
-					log.Printf("[WARN] recovery failed for %s: %v", filePath, recErr)
+					slog.Warn("recovery failed", "path", filePath, "error", recErr)
 				}
 			}
 		}
@@ -185,9 +185,9 @@ func validateAndRecoverYAML(maestroDir string) error {
 			continue
 		}
 		if err := yamlutil.ValidateSchemaHeader(sf.path, sf.fileType); err != nil {
-			log.Printf("[WARN] corrupt YAML detected: %s (%v)", sf.path, err)
+			slog.Warn("corrupt YAML detected", "path", sf.path, "error", err)
 			if recErr := yamlutil.RecoverCorruptedFile(maestroDir, sf.path, sf.fileType); recErr != nil {
-				log.Printf("[WARN] recovery failed for %s: %v", sf.path, recErr)
+				slog.Warn("recovery failed", "path", sf.path, "error", recErr)
 			}
 		}
 	}
@@ -232,7 +232,7 @@ func activateContinuousMode(maestroDir string, cfg model.Config) error {
 	data, err := os.ReadFile(continuousPath) //nolint:gosec // continuousPath is constructed from a controlled application state directory
 	if err == nil {
 		if err := yamlv3.Unmarshal(data, &state); err != nil {
-			log.Printf("[WARN] failed to parse %s: %v", continuousPath, err)
+			slog.Warn("failed to parse continuous state", "path", continuousPath, "error", err)
 		}
 	}
 

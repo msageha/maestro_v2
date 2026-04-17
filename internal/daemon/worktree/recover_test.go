@@ -11,6 +11,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil"
 )
 
 // newRecoveryTestManager builds a Manager backed by a temp .maestro directory
@@ -304,7 +305,7 @@ func TestResumeMerge_IdempotentWithConflictWorkers(t *testing.T) {
 // unlike the old git add -A approach.
 func TestCommitResolvedWorkerChanges_SkipsSensitiveFiles(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 	defer func() { _ = cleanupAll(wm) }()
 

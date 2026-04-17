@@ -192,6 +192,8 @@ type RetryConfig struct {
 	CommandDispatchInlineRetries         int             `yaml:"command_dispatch_inline_retries"`
 	CommandDispatchInlineRetryDelaySec   int             `yaml:"command_dispatch_inline_retry_delay_sec"`
 	CommandDispatchTimeoutSec            int             `yaml:"command_dispatch_timeout_sec"`
+	TaskDispatchInlineRetries            int             `yaml:"task_dispatch_inline_retries"`
+	TaskDispatchInlineRetryDelaySec      int             `yaml:"task_dispatch_inline_retry_delay_sec"`
 	TaskExecution                        TaskRetryConfig `yaml:"task_execution"`
 }
 
@@ -225,6 +227,14 @@ func (r RetryConfig) EffectiveCommandDispatchInlineRetryDelaySec() int {
 
 func (r RetryConfig) EffectiveCommandDispatchTimeoutSec() int {
 	return effectiveNonZero(r.CommandDispatchTimeoutSec, DefaultCommandDispatchTimeoutSec)
+}
+
+func (r RetryConfig) EffectiveTaskDispatchInlineRetries() int {
+	return effectiveNonZero(r.TaskDispatchInlineRetries, DefaultTaskDispatchInlineRetries)
+}
+
+func (r RetryConfig) EffectiveTaskDispatchInlineRetryDelaySec() int {
+	return effectiveNonZero(r.TaskDispatchInlineRetryDelaySec, DefaultTaskDispatchInlineRetryDelaySec)
 }
 
 func (r RetryConfig) EffectiveResultNotifyDeliveryTimeoutSec() int {

@@ -137,7 +137,7 @@ func (d *messageDeliverer) clearAndConfirm(ctx context.Context, paneTarget strin
 				}
 				continue
 			}
-			return fmt.Errorf("clear_confirm: send /clear failed after %d attempts: %w", maxAttempts, err)
+			return fmt.Errorf("clear_confirm: %w after %d attempts: %w", ErrClearSendFailed, maxAttempts, err)
 		}
 
 		// Wait before sending second Enter (configurable; default 500ms).
@@ -157,7 +157,7 @@ func (d *messageDeliverer) clearAndConfirm(ctx context.Context, paneTarget strin
 				}
 				continue
 			}
-			return fmt.Errorf("clear_confirm: send second Enter failed after %d attempts: %w", maxAttempts, err)
+			return fmt.Errorf("clear_confirm: %w after %d attempts: %w", ErrSecondEnterFailed, maxAttempts, err)
 		}
 
 		// Poll for confirmation within timeout window
@@ -183,7 +183,7 @@ func (d *messageDeliverer) clearAndConfirm(ctx context.Context, paneTarget strin
 		}
 	}
 
-	return fmt.Errorf("clear_confirm: /clear not confirmed after %d attempts", maxAttempts)
+	return fmt.Errorf("clear_confirm: %w after %d attempts", ErrClearNotConfirmed, maxAttempts)
 }
 
 // log delegates to the package-level logf function which uses time.Now()

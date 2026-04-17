@@ -56,10 +56,14 @@ type CircuitBreakerConfig struct {
 	Enabled                bool `yaml:"enabled"`                  // opt-in, default: false
 	MaxConsecutiveFailures *int `yaml:"max_consecutive_failures"` // default: 3
 	ProgressTimeoutMinutes *int `yaml:"progress_timeout_minutes"` // default: 30, 0=disabled
+	HalfOpenDelaySec       *int `yaml:"half_open_delay_sec"`      // default: 60, delay before open→half-open transition
 }
 
 func (c CircuitBreakerConfig) EffectiveMaxConsecutiveFailures() int { return effectiveValue(c.MaxConsecutiveFailures, DefaultCBMaxConsecutiveFailures) }
 func (c CircuitBreakerConfig) EffectiveProgressTimeoutMinutes() int { return effectiveValue(c.ProgressTimeoutMinutes, DefaultProgressTimeoutMinutes) }
+
+// EffectiveHalfOpenDelaySec returns the configured half-open delay or the default (60s).
+func (c CircuitBreakerConfig) EffectiveHalfOpenDelaySec() int { return effectiveValue(c.HalfOpenDelaySec, DefaultCBHalfOpenDelaySec) }
 
 // --- LearningsConfig ---
 

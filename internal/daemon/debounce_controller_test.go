@@ -71,7 +71,7 @@ func TestDebounceController_StopNormalCompletion(t *testing.T) {
 
 	// scanFn completes quickly.
 	dc := NewDebounceController(0.01, dl, func(_ context.Context) {
-		time.Sleep(50 * time.Millisecond)
+		time.Sleep(50 * time.Millisecond) // essential: simulates scanFn processing time
 	})
 
 	shuttingDown := atomic.Bool{}

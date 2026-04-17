@@ -10,23 +10,15 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/ptr"
+	"github.com/msageha/maestro_v2/internal/testutil"
 )
-
-// fakeClock implements core.Clock for deterministic testing.
-type fakeClock struct {
-	now time.Time
-}
-
-func (fc *fakeClock) Now() time.Time {
-	return fc.now
-}
 
 // initTestGitRepoResolved creates a test git repo and resolves symlinks.
 // On macOS, t.TempDir() returns /var/folders/... but git resolves to /private/var/folders/...
 // This causes filepath.Rel mismatches in orphan detection (Reconcile/GC).
 func initTestGitRepoResolved(t *testing.T) string {
 	t.Helper()
-	raw := initTestGitRepo(t)
+	raw := testutil.InitTestGitRepo(t)
 	resolved, err := filepath.EvalSymlinks(raw)
 	if err != nil {
 		t.Fatalf("EvalSymlinks failed: %v", err)
@@ -39,7 +31,7 @@ func initTestGitRepoResolved(t *testing.T) string {
 // DiscardWorkerChanges uses `git checkout -- .` followed by `git clean -fd`.
 func TestWorktreeIntegration_DiscardChanges(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	if err := createForCommand(wm, "cmd_discard_int", []string{"worker1"}); err != nil {
@@ -110,7 +102,7 @@ func TestWorktreeIntegration_Reconcile(t *testing.T) {
 	t.Run("StateWithoutWorktree", func(t *testing.T) {
 		t.Parallel()
 		// State exists but worktree directory was deleted (simulates crash)
-		projectRoot := initTestGitRepo(t)
+		projectRoot := testutil.InitTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
 		if err := createForCommand(wm, "cmd_reconcile_a", []string{"worker1"}); err != nil {
@@ -219,7 +211,7 @@ func TestWorktreeIntegration_Reconcile(t *testing.T) {
 	t.Run("NormalState_Idempotent", func(t *testing.T) {
 		t.Parallel()
 		// Normal state — reconcile should not change anything
-		projectRoot := initTestGitRepo(t)
+		projectRoot := testutil.InitTestGitRepo(t)
 		wm := newTestWorktreeManager(t, projectRoot)
 
 		if err := createForCommand(wm, "cmd_reconcile_c", []string{"worker1"}); err != nil {
@@ -260,7 +252,7 @@ func TestWorktreeIntegration_GC_TTLExpiry(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	baseTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	fc := &fakeClock{now: baseTime}
+	fc := &testutil.FakeClock{NowValue: baseTime}
 	wm.clock = fc
 	wm.config.GC.TTLHours = ptr.Int(1)
 	wm.config.GC.MaxWorktrees = ptr.Int(100) // high limit so max doesn't trigger
@@ -288,7 +280,7 @@ func TestWorktreeIntegration_GC_TTLExpiry(t *testing.T) {
 	wm.mu.Unlock()
 
 	// Create "new" command at T=50min
-	fc.now = baseTime.Add(50 * time.Minute)
+	fc.NowValue = baseTime.Add(50 * time.Minute)
 	if err := createForCommand(wm, "cmd_ttl_new", []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand (new) failed: %v", err)
 	}
@@ -300,7 +292,7 @@ func TestWorktreeIntegration_GC_TTLExpiry(t *testing.T) {
 	// Advance clock to T=70min
 	// Old: 70min > 60min TTL → expired
 	// New: 20min < 60min TTL → survives
-	fc.now = baseTime.Add(70 * time.Minute)
+	fc.NowValue = baseTime.Add(70 * time.Minute)
 
 	if err := wm.GC(); err != nil {
 		t.Fatalf("GC failed: %v", err)
@@ -330,7 +322,7 @@ func TestWorktreeIntegration_GC_Disabled(t *testing.T) {
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	baseTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	fc := &fakeClock{now: baseTime}
+	fc := &testutil.FakeClock{NowValue: baseTime}
 	wm.clock = fc
 	wm.config.GC.Enabled = false
 	wm.config.GC.TTLHours = ptr.Int(1)
@@ -354,7 +346,7 @@ func TestWorktreeIntegration_GC_Disabled(t *testing.T) {
 	}
 
 	// Advance clock past TTL
-	fc.now = baseTime.Add(2 * time.Hour)
+	fc.NowValue = baseTime.Add(2 * time.Hour)
 
 	// GC should do nothing (disabled)
 	if err := wm.GC(); err != nil {
@@ -380,7 +372,7 @@ func TestWorktreeIntegration_GC_Disabled(t *testing.T) {
 // correctly resets staged (git add) but uncommitted changes.
 func TestWorktreeIntegration_DiscardStagedChanges(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	if err := createForCommand(wm, "cmd_staged", []string{"worker1"}); err != nil {

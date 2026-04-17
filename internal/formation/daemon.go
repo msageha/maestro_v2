@@ -2,7 +2,7 @@ package formation
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,7 +19,7 @@ import (
 // Non-fatal errors (e.g. permission denied) are logged as warnings.
 func removeIfExists(path string) {
 	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		log.Printf("[WARN] removeIfExists: %s: %v", path, err)
+		slog.Warn("removeIfExists failed", "path", path, "error", err)
 	}
 }
 
@@ -30,7 +30,7 @@ func cleanupWithLock(fl *lock.FileLock, pidPath, socketPath string) error {
 	removeIfExists(pidPath)
 	removeIfExists(socketPath)
 	if err := fl.Unlock(); err != nil {
-		log.Printf("[WARN] daemon lock unlock: %v", err)
+		slog.Warn("daemon lock unlock failed", "error", err)
 	}
 	return nil
 }
@@ -53,7 +53,7 @@ func startDaemon() error {
 	// daemon process exits, so this goroutine is guaranteed to terminate.
 	go func() {
 		if err := cmd.Wait(); err != nil {
-			log.Printf("[WARN] daemon process exited with error: %v", err)
+			slog.Warn("daemon process exited with error", "error", err)
 		}
 	}()
 	return nil
@@ -76,7 +76,7 @@ func (c *Config) stopDaemon(maestroDir string) error {
 	// Step 1: Request graceful shutdown via UDS
 	client := c.NewUDSClient(socketPath, 5*time.Second)
 	if _, err := client.SendCommand("shutdown", nil); err != nil {
-		log.Printf("[WARN] shutdown command failed: %v", err)
+		slog.Warn("shutdown command failed", "error", err)
 	}
 
 	// Step 2: Read and validate PID from daemon.pid (cross-check with lock file)

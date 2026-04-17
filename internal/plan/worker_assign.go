@@ -122,11 +122,11 @@ func AssignWorkers(
 				}
 			}
 			if !hasMatchingModel {
-				return nil, fmt.Errorf("no available worker for task %q (model=%s): no workers configured for model %q (bloom_level=%d requires %s; use bloom_level 1-3 for sonnet or enable boost mode for opus)",
-					task.Name, requiredModel, requiredModel, task.BloomLevel, requiredModel)
+				return nil, fmt.Errorf("%w for task %q (model=%s): no workers configured for model %q (bloom_level=%d requires %s; use bloom_level 1-3 for sonnet or enable boost mode for opus)",
+					ErrNoAvailableWorker, task.Name, requiredModel, requiredModel, task.BloomLevel, requiredModel)
 			}
-			return nil, fmt.Errorf("no available worker for task %q (model=%s): all %s workers at capacity (max_pending_tasks_per_worker=%d)",
-				task.Name, requiredModel, requiredModel, maxPending)
+			return nil, fmt.Errorf("%w for task %q (model=%s): all %s workers at capacity (max_pending_tasks_per_worker=%d)",
+				ErrNoAvailableWorker, task.Name, requiredModel, requiredModel, maxPending)
 		}
 
 		assignments = append(assignments, WorkerAssignment{

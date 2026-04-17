@@ -463,3 +463,383 @@ func TestTripBreaker_NilState(t *testing.T) {
 	// Must not panic with nil state.
 	cb.TripBreaker(nil, "test reason", time.Now())
 }
+
+func newTestHandlerWithHalfOpenDelay(enabled bool, maxFailures, timeoutMin, halfOpenDelaySec int) *Handler {
+	cfg := model.Config{
+		CircuitBreaker: model.CircuitBreakerConfig{
+			Enabled:                enabled,
+			MaxConsecutiveFailures: ptr.Int(maxFailures),
+			ProgressTimeoutMinutes: ptr.Int(timeoutMin),
+			HalfOpenDelaySec:       ptr.Int(halfOpenDelaySec),
+		},
+	}
+	return NewHandler(cfg, log.New(&bytes.Buffer{}, "", 0), core.LogLevelDebug)
+}
+
+func TestCheckHalfOpenTransition_NotTripped(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandlerWithHalfOpenDelay(true, 3, 30, 10)
+	state := &model.CommandState{CommandID: "cmd1"}
+
+	transitioned := cb.CheckHalfOpenTransition(state, time.Now())
+	if transitioned {
+		t.Error("expected no transition when breaker is not tripped")
+	}
+}
+
+func TestCheckHalfOpenTransition_TooEarly(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandlerWithHalfOpenDelay(true, 3, 30, 60)
+	now := time.Now()
+	trippedAt := now.Add(-30 * time.Second).UTC().Format(time.RFC3339) // 30s ago, delay is 60s
+	state := &model.CommandState{
+		CommandID: "cmd1",
+		CircuitBreaker: model.CircuitBreakerState{
+			Tripped:   true,
+			TrippedAt: &trippedAt,
+		},
+	}
+
+	transitioned := cb.CheckHalfOpenTransition(state, now)
+	if transitioned {
+		t.Error("expected no transition before half-open delay expires")
+	}
+}
+
+func TestCheckHalfOpenTransition_Success(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandlerWithHalfOpenDelay(true, 3, 30, 10)
+	now := time.Now()
+	trippedAt := now.Add(-15 * time.Second).UTC().Format(time.RFC3339) // 15s ago, delay is 10s
+	state := &model.CommandState{
+		CommandID: "cmd1",
+		CircuitBreaker: model.CircuitBreakerState{
+			Tripped:   true,
+			TrippedAt: &trippedAt,
+		},
+	}
+
+	transitioned := cb.CheckHalfOpenTransition(state, now)
+	if !transitioned {
+		t.Error("expected transition to half-open after delay")
+	}
+	if !state.CircuitBreaker.HalfOpen {
+		t.Error("expected HalfOpen=true")
+	}
+	if state.CircuitBreaker.HalfOpenAt == nil {
+		t.Error("expected HalfOpenAt to be set")
+	}
+	if state.CircuitBreaker.HalfOpenProbeActive {
+		t.Error("expected HalfOpenProbeActive=false initially")
+	}
+}
+
+func TestCheckHalfOpenTransition_AlreadyHalfOpen(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandlerWithHalfOpenDelay(true, 3, 30, 10)
+	now := time.Now()
+	trippedAt := now.Add(-15 * time.Second).UTC().Format(time.RFC3339)
+	halfOpenAt := now.Add(-5 * time.Second).UTC().Format(time.RFC3339)
+	state := &model.CommandState{
+		CommandID: "cmd1",
+		CircuitBreaker: model.CircuitBreakerState{
+			Tripped:   true,
+			TrippedAt: &trippedAt,
+			HalfOpen:  true,
+			HalfOpenAt: &halfOpenAt,
+		},
+	}
+
+	transitioned := cb.CheckHalfOpenTransition(state, now)
+	if transitioned {
+		t.Error("expected no transition when already half-open")
+	}
+}
+
+func TestCheckHalfOpenTransition_Disabled(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandlerWithHalfOpenDelay(false, 3, 30, 10)
+	state := &model.CommandState{CommandID: "cmd1"}
+
+	transitioned := cb.CheckHalfOpenTransition(state, time.Now())
+	if transitioned {
+		t.Error("expected no transition when disabled")
+	}
+}
+
+func TestCheckHalfOpenTransition_NilState(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandlerWithHalfOpenDelay(true, 3, 30, 10)
+
+	transitioned := cb.CheckHalfOpenTransition(nil, time.Now())
+	if transitioned {
+		t.Error("expected no transition on nil state")
+	}
+}
+
+func TestAllowProbe_HalfOpen(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandlerWithHalfOpenDelay(true, 3, 30, 10)
+	state := &model.CommandState{
+		CommandID: "cmd1",
+		CircuitBreaker: model.CircuitBreakerState{
+			HalfOpen: true,
+		},
+	}
+
+	allowed := cb.AllowProbe(state)
+	if !allowed {
+		t.Error("expected probe allowed in half-open state")
+	}
+	if !state.CircuitBreaker.HalfOpenProbeActive {
+		t.Error("expected HalfOpenProbeActive=true after AllowProbe")
+	}
+
+	// Second call should be rejected (probe already active)
+	allowed = cb.AllowProbe(state)
+	if allowed {
+		t.Error("expected probe rejected when already active")
+	}
+}
+
+func TestAllowProbe_NotHalfOpen(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandlerWithHalfOpenDelay(true, 3, 30, 10)
+	state := &model.CommandState{CommandID: "cmd1"}
+
+	allowed := cb.AllowProbe(state)
+	if allowed {
+		t.Error("expected probe not allowed when not half-open")
+	}
+}
+
+func TestAllowProbe_NilState(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandlerWithHalfOpenDelay(true, 3, 30, 10)
+
+	allowed := cb.AllowProbe(nil)
+	if allowed {
+		t.Error("expected probe not allowed on nil state")
+	}
+}
+
+func TestHalfOpenProbe_Success_ClosesBreaker(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandler(true, 3, 30)
+	now := time.Now()
+	trippedAt := now.Add(-1 * time.Minute).UTC().Format(time.RFC3339)
+	halfOpenAt := now.Add(-5 * time.Second).UTC().Format(time.RFC3339)
+	reason := "consecutive_failures=3 reached threshold=3"
+	state := &model.CommandState{
+		CommandID: "cmd1",
+		CircuitBreaker: model.CircuitBreakerState{
+			Tripped:             true,
+			TrippedAt:           &trippedAt,
+			TripReason:          &reason,
+			ConsecutiveFailures: 3,
+			HalfOpen:            true,
+			HalfOpenAt:          &halfOpenAt,
+			HalfOpenProbeActive: true,
+		},
+	}
+
+	tripped, _ := cb.UpdateCounterOnResult(state, model.StatusCompleted, "probe_task", "r_probe", now)
+	if tripped {
+		t.Error("expected no trip on probe success")
+	}
+	if state.CircuitBreaker.Tripped {
+		t.Error("expected Tripped=false after probe success")
+	}
+	if state.CircuitBreaker.HalfOpen {
+		t.Error("expected HalfOpen=false after probe success")
+	}
+	if state.CircuitBreaker.HalfOpenProbeActive {
+		t.Error("expected HalfOpenProbeActive=false after probe success")
+	}
+	if state.CircuitBreaker.ConsecutiveFailures != 0 {
+		t.Errorf("expected 0 failures after probe success, got %d", state.CircuitBreaker.ConsecutiveFailures)
+	}
+	if state.CircuitBreaker.TrippedAt != nil {
+		t.Error("expected TrippedAt=nil after probe success")
+	}
+	if state.CircuitBreaker.TripReason != nil {
+		t.Error("expected TripReason=nil after probe success")
+	}
+}
+
+func TestHalfOpenProbe_Failure_ReopensBreaker(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandler(true, 3, 30)
+	now := time.Now()
+	trippedAt := now.Add(-1 * time.Minute).UTC().Format(time.RFC3339)
+	halfOpenAt := now.Add(-5 * time.Second).UTC().Format(time.RFC3339)
+	state := &model.CommandState{
+		CommandID: "cmd1",
+		CircuitBreaker: model.CircuitBreakerState{
+			Tripped:             true,
+			TrippedAt:           &trippedAt,
+			ConsecutiveFailures: 3,
+			HalfOpen:            true,
+			HalfOpenAt:          &halfOpenAt,
+			HalfOpenProbeActive: true,
+		},
+	}
+
+	tripped, _ := cb.UpdateCounterOnResult(state, model.StatusFailed, "probe_task", "r_probe", now)
+	if tripped {
+		t.Error("expected no trip signal on probe failure (already tripped)")
+	}
+	if !state.CircuitBreaker.Tripped {
+		t.Error("expected Tripped=true (breaker stays tripped)")
+	}
+	if state.CircuitBreaker.HalfOpen {
+		t.Error("expected HalfOpen=false after probe failure (re-opened)")
+	}
+	if state.CircuitBreaker.HalfOpenProbeActive {
+		t.Error("expected HalfOpenProbeActive=false after probe failure")
+	}
+	// TrippedAt should be reset to enable next half-open timer
+	if state.CircuitBreaker.TrippedAt == nil {
+		t.Error("expected TrippedAt to be reset for next half-open cycle")
+	}
+	if state.CircuitBreaker.TripReason == nil || *state.CircuitBreaker.TripReason != "half_open_probe_failed" {
+		t.Errorf("expected TripReason='half_open_probe_failed', got %v", state.CircuitBreaker.TripReason)
+	}
+}
+
+func TestTripBreaker_ResetsHalfOpenState(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandler(true, 3, 30)
+	halfOpenAt := time.Now().UTC().Format(time.RFC3339)
+	state := &model.CommandState{
+		CommandID: "cmd1",
+		CircuitBreaker: model.CircuitBreakerState{
+			HalfOpen:            true,
+			HalfOpenAt:          &halfOpenAt,
+			HalfOpenProbeActive: true,
+		},
+	}
+
+	cb.TripBreaker(state, "new trip reason", time.Now())
+
+	if state.CircuitBreaker.HalfOpen {
+		t.Error("expected HalfOpen=false after trip")
+	}
+	if state.CircuitBreaker.HalfOpenAt != nil {
+		t.Error("expected HalfOpenAt=nil after trip")
+	}
+	if state.CircuitBreaker.HalfOpenProbeActive {
+		t.Error("expected HalfOpenProbeActive=false after trip")
+	}
+}
+
+func TestCheckHalfOpenTransition_DefaultDelay(t *testing.T) {
+	t.Parallel()
+	// nil HalfOpenDelaySec should use default (60s)
+	cb := newTestHandler(true, 3, 30) // uses nil HalfOpenDelaySec
+	now := time.Now()
+	trippedAt := now.Add(-61 * time.Second).UTC().Format(time.RFC3339)
+	state := &model.CommandState{
+		CommandID: "cmd1",
+		CircuitBreaker: model.CircuitBreakerState{
+			Tripped:   true,
+			TrippedAt: &trippedAt,
+		},
+	}
+
+	transitioned := cb.CheckHalfOpenTransition(state, now)
+	if !transitioned {
+		t.Error("expected transition with default 60s delay (61s elapsed)")
+	}
+}
+
+func TestCheckHalfOpenTransition_DefaultDelay_TooEarly(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandler(true, 3, 30) // uses nil HalfOpenDelaySec → default 60s
+	now := time.Now()
+	trippedAt := now.Add(-30 * time.Second).UTC().Format(time.RFC3339)
+	state := &model.CommandState{
+		CommandID: "cmd1",
+		CircuitBreaker: model.CircuitBreakerState{
+			Tripped:   true,
+			TrippedAt: &trippedAt,
+		},
+	}
+
+	transitioned := cb.CheckHalfOpenTransition(state, now)
+	if transitioned {
+		t.Error("expected no transition before default 60s delay (30s elapsed)")
+	}
+}
+
+func TestEffectiveHalfOpenDelaySec(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		value    *int
+		expected int
+	}{
+		{nil, 60},            // default
+		{ptr.Int(10), 10},
+		{ptr.Int(120), 120},
+	}
+	for _, tt := range tests {
+		cfg := model.CircuitBreakerConfig{HalfOpenDelaySec: tt.value}
+		got := cfg.EffectiveHalfOpenDelaySec()
+		if got != tt.expected {
+			t.Errorf("EffectiveHalfOpenDelaySec(%v) = %d, want %d", tt.value, got, tt.expected)
+		}
+	}
+}
+
+func TestFullHalfOpenLifecycle(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandlerWithHalfOpenDelay(true, 3, 30, 5)
+	now := time.Now()
+
+	// Step 1: Build up failures to trip the breaker
+	state := &model.CommandState{CommandID: "cmd1"}
+	for i := 0; i < 3; i++ {
+		tripped, reason := cb.UpdateCounterOnResult(state, model.StatusFailed, fmt.Sprintf("t%d", i), fmt.Sprintf("r%d", i), now)
+		if i < 2 && tripped {
+			t.Fatalf("unexpected trip at failure %d", i+1)
+		}
+		if i == 2 {
+			if !tripped {
+				t.Fatal("expected trip at 3rd failure")
+			}
+			cb.TripBreaker(state, reason, now)
+		}
+	}
+
+	// Step 2: Verify tripped state
+	if !state.CircuitBreaker.Tripped {
+		t.Fatal("expected Tripped=true")
+	}
+
+	// Step 3: Too early for half-open
+	transitioned := cb.CheckHalfOpenTransition(state, now.Add(3*time.Second))
+	if transitioned {
+		t.Fatal("expected no transition at 3s (delay=5s)")
+	}
+
+	// Step 4: After delay, transition to half-open
+	transitioned = cb.CheckHalfOpenTransition(state, now.Add(6*time.Second))
+	if !transitioned {
+		t.Fatal("expected transition to half-open at 6s")
+	}
+
+	// Step 5: Allow probe
+	allowed := cb.AllowProbe(state)
+	if !allowed {
+		t.Fatal("expected probe allowed")
+	}
+
+	// Step 6: Probe success → close breaker
+	tripped, _ := cb.UpdateCounterOnResult(state, model.StatusCompleted, "probe1", "rp1", now.Add(7*time.Second))
+	if tripped {
+		t.Fatal("unexpected trip on probe success")
+	}
+	if state.CircuitBreaker.Tripped || state.CircuitBreaker.HalfOpen {
+		t.Fatal("expected breaker closed after probe success")
+	}
+}

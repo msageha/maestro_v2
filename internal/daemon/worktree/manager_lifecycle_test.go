@@ -10,12 +10,13 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/ptr"
+	"github.com/msageha/maestro_v2/internal/testutil"
 )
 
 // TestCreateForCommand tests worktree creation for a command.
 func TestCreateForCommand(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	workerIDs := []string{"worker1", "worker2"}
@@ -50,7 +51,7 @@ func TestCreateForCommand(t *testing.T) {
 // TestGetWorkerPath tests retrieving the worktree path for a worker.
 func TestGetWorkerPath(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	if err := createForCommand(wm, "cmd_test_002", []string{"worker1"}); err != nil {
@@ -77,7 +78,7 @@ func TestGetWorkerPath(t *testing.T) {
 // TestCommitWorkerChanges tests auto-commit of worker changes.
 func TestCommitWorkerChanges(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	if err := createForCommand(wm, "cmd_test_003", []string{"worker1"}); err != nil {
@@ -129,7 +130,7 @@ func TestCommitWorkerChanges(t *testing.T) {
 // TestMergeToIntegration tests merging worker branches to integration.
 func TestMergeToIntegration(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	workers := []string{"worker1", "worker2"}
@@ -189,7 +190,7 @@ func TestMergeToIntegration(t *testing.T) {
 // TestMergeConflict tests merge conflict detection.
 func TestMergeConflict(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	workers := []string{"worker1", "worker2"}
@@ -237,7 +238,7 @@ func TestMergeConflict(t *testing.T) {
 // TestPublishToBase tests publishing integration to base branch.
 func TestPublishToBase(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Check current branch name (could be main or master)
@@ -301,7 +302,7 @@ func TestPublishToBase(t *testing.T) {
 // TestCleanupCommand tests worktree cleanup.
 func TestCleanupCommand(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	workers := []string{"worker1", "worker2"}
@@ -339,7 +340,7 @@ func TestCleanupCommand(t *testing.T) {
 // TestCleanupAll tests cleanup of all worktrees.
 func TestCleanupAll(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Create worktrees for two commands
@@ -368,7 +369,7 @@ func TestCleanupAll(t *testing.T) {
 // TestHasWorktrees tests the HasWorktrees check.
 func TestHasWorktrees(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	if wm.HasWorktrees("nonexistent") {
@@ -387,7 +388,7 @@ func TestHasWorktrees(t *testing.T) {
 // TestGC tests garbage collection of old worktrees.
 func TestGC(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Set max_worktrees to 1 so the second one triggers GC
@@ -467,7 +468,7 @@ func TestWorktreeConfigDefaults(t *testing.T) {
 // cleans up already-created worktrees when a subsequent worktree creation fails.
 func TestCreateForCommand_RollbackOnWorktreeFailure(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// First, create worktrees for worker1 successfully
@@ -535,7 +536,7 @@ func TestCreateForCommand_RollbackOnWorktreeFailure(t *testing.T) {
 // cleans up the integration branch when worker worktree creation fails.
 func TestEnsureWorkerWorktree_RollbackOnFailure(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Pre-create a branch that will conflict with the worker's branch name
@@ -585,7 +586,7 @@ func TestEnsureWorkerWorktree_RollbackOnFailure(t *testing.T) {
 // worker to an existing command state fails.
 func TestEnsureWorkerWorktree_RollbackOnAddWorker(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Create initial state with worker1
@@ -637,7 +638,7 @@ func TestEnsureWorkerWorktree_RollbackOnAddWorker(t *testing.T) {
 // silently proceeding with the creation flow.
 func TestEnsureWorkerWorktree_CorruptedStateReturnsError(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Create the state directory and write a corrupted YAML file
@@ -674,7 +675,7 @@ func TestEnsureWorkerWorktree_CorruptedStateReturnsError(t *testing.T) {
 // exists (os.ErrNotExist), EnsureWorkerWorktree proceeds with the creation flow.
 func TestEnsureWorkerWorktree_NotExistCreatesNew(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Ensure no state file exists for this command
@@ -705,7 +706,7 @@ func TestEnsureWorkerWorktree_NotExistCreatesNew(t *testing.T) {
 // when no state exists for the command.
 func TestEnsureWorkerWorktree_LazyCreation(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	if err := wm.EnsureWorkerWorktree("cmd_lazy", "worker1"); err != nil {
@@ -745,7 +746,7 @@ func TestEnsureWorkerWorktree_LazyCreation(t *testing.T) {
 // TestEnsureWorkerWorktree_AddWorker tests adding a worker to an existing command state.
 func TestEnsureWorkerWorktree_AddWorker(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Create initial worker
@@ -786,7 +787,7 @@ func TestEnsureWorkerWorktree_AddWorker(t *testing.T) {
 // for an already-existing worker is a no-op.
 func TestEnsureWorkerWorktree_Idempotent(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	if err := wm.EnsureWorkerWorktree("cmd_idem", "worker1"); err != nil {
@@ -812,7 +813,7 @@ func TestEnsureWorkerWorktree_Idempotent(t *testing.T) {
 // TestMarkPhaseMerged_Basic tests that a phase merge is recorded correctly.
 func TestMarkPhaseMerged_Basic(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	if err := createForCommand(wm, "cmd_phase", []string{"worker1"}); err != nil {
@@ -839,7 +840,7 @@ func TestMarkPhaseMerged_Basic(t *testing.T) {
 // by MarkPhaseMerged via the new PhaseID validation.
 func TestMarkPhaseMerged_ImplicitPhase(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	if err := createForCommand(wm, "cmd_implicit", []string{"worker1"}); err != nil {
@@ -866,7 +867,7 @@ func TestMarkPhaseMerged_ImplicitPhase(t *testing.T) {
 // overwrites the timestamp without creating duplicate entries.
 func TestMarkPhaseMerged_DuplicatePhase(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	if err := createForCommand(wm, "cmd_phase_dup", []string{"worker1"}); err != nil {
@@ -905,7 +906,7 @@ func TestMarkPhaseMerged_DuplicatePhase(t *testing.T) {
 // an error for a non-existent command.
 func TestMarkPhaseMerged_NonExistentCommand(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	err := wm.MarkPhaseMerged("nonexistent_command", "phase_001")
@@ -918,7 +919,7 @@ func TestMarkPhaseMerged_NonExistentCommand(t *testing.T) {
 // per-command mutex entry from cmdLocks (M5 memory leak fix).
 func TestCleanupCommand_DeletesCmdLocks(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_cmdlock_cleanup"
@@ -948,7 +949,7 @@ func TestCleanupCommand_DeletesCmdLocks(t *testing.T) {
 // a cmdLocks entry, a new entry can be created for the same commandID.
 func TestCleanupCommand_CmdLocksReusable(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_cmdlock_reuse"
@@ -980,7 +981,7 @@ func TestCleanupCommand_CmdLocksReusable(t *testing.T) {
 // removes cmdLocks entries for cleaned-up commands.
 func TestGC_DeletesCmdLocks(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Set max_worktrees to 1 so the second triggers GC

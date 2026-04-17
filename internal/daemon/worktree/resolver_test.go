@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil"
 )
 
 // fakeSignalStore is an in-memory SignalStore for resolver tests.
@@ -53,7 +54,7 @@ func (f *fakeSignalStore) UpdateMergeConflictSignal(cmd, phase, worker string, f
 // signal store seeded with a merge_conflict signal carrying the given gen.
 func setupResolverTest(t *testing.T, gen string) (*Manager, *fakeSignalStore, string, string, string) {
 	t.Helper()
-	dir := initTestGitRepo(t)
+	dir := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, dir)
 	cmdID := "cmdR"
 	workerID := "workerA"

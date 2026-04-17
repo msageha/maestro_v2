@@ -45,7 +45,7 @@ func ParseLogLevel(s string) LogLevel {
 	case "error":
 		return LogLevelError
 	default:
-		log.Printf("unknown log level %q, defaulting to info", s)
+		slog.Warn("unknown log level, defaulting to info", "level", s)
 		return LogLevelInfo
 	}
 }

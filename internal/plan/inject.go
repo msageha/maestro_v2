@@ -2,7 +2,7 @@ package plan
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 
 	"github.com/msageha/maestro_v2/internal/lock"
@@ -181,7 +181,7 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 	}
 	if err := writeRetryQueueEntry(opts.MaestroDir, task, now, opts.LockMap); err != nil {
 		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-			log.Printf("[ERROR] %v", rsErr)
+			slog.Error("state restore failed", "error", rsErr)
 		}
 		return nil, fmt.Errorf("write queue entry: %w", err)
 	}
@@ -191,7 +191,7 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 		// Rollback queue entry
 		rollbackRetryQueueEntries(opts.MaestroDir, []retryQueueTask{task}, opts.LockMap)
 		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-			log.Printf("[ERROR] %v", rsErr)
+			slog.Error("state restore failed", "error", rsErr)
 		}
 		return nil, fmt.Errorf("save state: %w", err)
 	}

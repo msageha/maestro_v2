@@ -7,13 +7,15 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+
+	"github.com/msageha/maestro_v2/internal/testutil"
 )
 
 // TestConcurrentEnsureWorkerWorktree verifies that multiple goroutines can
 // call EnsureWorkerWorktree concurrently without data races or corruption.
 func TestConcurrentEnsureWorkerWorktree(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	const numWorkers = 8
@@ -61,7 +63,7 @@ func TestConcurrentEnsureWorkerWorktree(t *testing.T) {
 // CleanupCommand can run concurrently on different commands without races.
 func TestConcurrentEnsureAndCleanup(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Pre-create a command that will be cleaned up
@@ -122,7 +124,7 @@ func TestConcurrentEnsureAndCleanup(t *testing.T) {
 // for the same worker ID from multiple goroutines is idempotent and safe.
 func TestConcurrentSameWorkerEnsure(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_conc_same"
@@ -161,7 +163,7 @@ func TestConcurrentSameWorkerEnsure(t *testing.T) {
 // other state-mutating operations can run concurrently on different commands.
 func TestConcurrentMergeOperations(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// Set up two independent commands with committed worker changes
@@ -228,7 +230,7 @@ func TestConcurrentMergeOperations(t *testing.T) {
 // (EnsureWorkerWorktree) do not race.
 func TestConcurrentReadWriteOperations(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_conc_rw"

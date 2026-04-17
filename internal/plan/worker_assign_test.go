@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -162,8 +163,8 @@ func TestAssignWorkers_Backpressure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when all workers at capacity, got nil")
 	}
-	if !strings.Contains(err.Error(), "no available worker") {
-		t.Errorf("expected error containing 'no available worker', got %q", err.Error())
+	if !errors.Is(err, ErrNoAvailableWorker) {
+		t.Errorf("expected ErrNoAvailableWorker in error chain, got %v", err)
 	}
 	if !strings.Contains(err.Error(), "task_overflow") {
 		t.Errorf("expected error mentioning task name 'task_overflow', got %q", err.Error())

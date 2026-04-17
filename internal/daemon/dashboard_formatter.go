@@ -3,6 +3,7 @@ package daemon
 import (
 	"fmt"
 	"log"
+	"log/slog"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -297,7 +298,7 @@ func (f *DashboardFormatter) UpdateDashboardFileWithQueues(
 	// Enrich with log-based statistics (best-effort)
 	data, dataErr := f.collectDashboardData()
 	if dataErr != nil {
-		log.Printf("[WARN] collectDashboardData: %v (continuing with partial data)", dataErr)
+		slog.Warn("collectDashboardData failed, continuing with partial data", "error", dataErr)
 	}
 	if data != nil {
 		if data.IsStale {

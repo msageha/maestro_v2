@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
@@ -14,7 +15,7 @@ import (
 // state (e.g. after Phase 1 of R1 repaired the mismatch in an earlier scan).
 func TestR1ConsumeQueueWriteFailed_ClearsWhenQueueTerminal(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 
 	commandID := "cmd_0000000001_abcdef01"
@@ -89,7 +90,7 @@ func TestR1ConsumeQueueWriteFailed_ClearsWhenQueueTerminal(t *testing.T) {
 // the next scan will retry the cleanup.
 func TestR1ConsumeQueueWriteFailed_KeepsWhenQueueStillInProgress(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 
 	commandID := "cmd_0000000002_abcdef02"

@@ -3,7 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"sync"
 
@@ -50,12 +50,12 @@ func (tw *TraceWriter) HandleEvent(event events.Event) {
 
 	data, err := json.Marshal(entry)
 	if err != nil {
-		log.Printf("[WARN] trace_writer: marshal event: %v", err)
+		slog.Warn("trace_writer: marshal event failed", "error", err)
 		return
 	}
 	data = append(data, '\n')
 	if _, err := tw.file.Write(data); err != nil {
-		log.Printf("[WARN] trace_writer: write event: %v", err)
+		slog.Warn("trace_writer: write event failed", "error", err)
 	}
 }
 

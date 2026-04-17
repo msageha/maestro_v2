@@ -24,6 +24,8 @@ const (
 	IDTypeResult IDType = "res"
 	// IDTypeSkillCandidate identifies a skill candidate ID.
 	IDTypeSkillCandidate IDType = "skc"
+	// IDTypeDispatch identifies a dispatch-scoped ID.
+	IDTypeDispatch IDType = "dsp"
 )
 
 var validIDTypes = map[IDType]bool{
@@ -33,9 +35,10 @@ var validIDTypes = map[IDType]bool{
 	IDTypeNotification:   true,
 	IDTypeResult:         true,
 	IDTypeSkillCandidate: true,
+	IDTypeDispatch:       true,
 }
 
-var idRegex = regexp.MustCompile(`^(cmd|task|phase|ntf|res|skc)_[0-9]{10}_[0-9a-f]{8}([0-9a-f]{8})?$`)
+var idRegex = regexp.MustCompile(`^(cmd|task|phase|ntf|res|skc|dsp)_[0-9]{10}_[0-9a-f]{8}([0-9a-f]{8})?$`)
 
 // GenerateID creates a new unique ID with the given type prefix.
 func GenerateID(idType IDType) (string, error) {

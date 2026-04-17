@@ -3,7 +3,7 @@ package plan
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/lock"
@@ -173,7 +173,7 @@ func writeAndCommitRetryQueue(
 
 	if err := writeRetryQueueEntry(opts.MaestroDir, primaryTask, now, opts.LockMap); err != nil {
 		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-			log.Printf("[ERROR] %v", rsErr)
+			slog.Error("state restore failed", "error", rsErr)
 		}
 		return fmt.Errorf("write queue entry for %s: %w", primaryTask.taskID, err)
 	}
@@ -184,7 +184,7 @@ func writeAndCommitRetryQueue(
 		if err := writeRetryQueueEntry(opts.MaestroDir, crTask, now, opts.LockMap); err != nil {
 			rollbackRetryQueueEntries(opts.MaestroDir, writtenTasks, opts.LockMap)
 			if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-				log.Printf("[ERROR] %v", rsErr)
+				slog.Error("state restore failed", "error", rsErr)
 			}
 			return fmt.Errorf("write queue entry for cascade %s: %w", cr.TaskID, err)
 		}
@@ -194,7 +194,7 @@ func writeAndCommitRetryQueue(
 	if err := updateOriginalTaskInQueue(opts.MaestroDir, opts.RetryOf, opts.CommandID, model.StatusCancelled, now, opts.LockMap); err != nil {
 		rollbackRetryQueueEntries(opts.MaestroDir, writtenTasks, opts.LockMap)
 		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-			log.Printf("[ERROR] %v", rsErr)
+			slog.Error("state restore failed", "error", rsErr)
 		}
 		return fmt.Errorf("cancel original task in queue: %w", err)
 	}
@@ -203,11 +203,11 @@ func writeAndCommitRetryQueue(
 	defer saveCancel()
 	if err := saveStateWithContext(saveCtx, func() error { return sm.SaveState(state) }); err != nil {
 		if restoreErr := updateOriginalTaskInQueue(opts.MaestroDir, opts.RetryOf, opts.CommandID, model.StatusFailed, now, opts.LockMap); restoreErr != nil {
-			log.Printf("[WARN] failed to restore original task %s queue status: %v", opts.RetryOf, restoreErr)
+			slog.Warn("failed to restore original task queue status", "task_id", opts.RetryOf, "error", restoreErr)
 		}
 		rollbackRetryQueueEntries(opts.MaestroDir, writtenTasks, opts.LockMap)
 		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-			log.Printf("[ERROR] %v", rsErr)
+			slog.Error("state restore failed", "error", rsErr)
 		}
 		return fmt.Errorf("save state: %w", err)
 	}
@@ -334,7 +334,7 @@ func applyRetryStateChanges(
 	// Replace in required/optional task IDs
 	if err := replaceInRequiredOrOptional(state, opts.RetryOf, newTaskID); err != nil {
 		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-			log.Printf("[ERROR] %v", rsErr)
+			slog.Error("state restore failed", "error", rsErr)
 		}
 		return nil, nil, fmt.Errorf("replace in required/optional: %w", err)
 	}
@@ -352,7 +352,7 @@ func applyRetryStateChanges(
 	// Re-validate DAG after dependency rewriting for the primary retry task.
 	if err := ValidateTaskDAGAfterMutation(state); err != nil {
 		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-			log.Printf("[ERROR] %v", rsErr)
+			slog.Error("state restore failed", "error", rsErr)
 		}
 		return nil, nil, fmt.Errorf("post-rewrite DAG validation: %w", err)
 	}
@@ -365,7 +365,7 @@ func applyRetryStateChanges(
 		if rc.phase.Status == model.PhaseStatusFailed {
 			if err := reopenPhase(state, rc.phaseIdx, now); err != nil {
 				if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-					log.Printf("[ERROR] %v", rsErr)
+					slog.Error("state restore failed", "error", rsErr)
 				}
 				return nil, nil, fmt.Errorf("reopen phase: %w", err)
 			}
@@ -379,7 +379,7 @@ func applyRetryStateChanges(
 	)
 	if err != nil {
 		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-			log.Printf("[ERROR] %v", rsErr)
+			slog.Error("state restore failed", "error", rsErr)
 		}
 		return nil, nil, fmt.Errorf("cascade recovery: %w", err)
 	}
@@ -387,7 +387,7 @@ func applyRetryStateChanges(
 	// Post-recovery DAG validation (covers both cycle detection and cross-phase refs).
 	if err := ValidateTaskDAGAfterMutation(state); err != nil {
 		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-			log.Printf("[ERROR] %v", rsErr)
+			slog.Error("state restore failed", "error", rsErr)
 		}
 		return nil, nil, fmt.Errorf("post-recovery DAG validation: %w", err)
 	}

@@ -3,7 +3,7 @@ package plan
 import (
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -135,7 +135,7 @@ func submitInitial(opts SubmitOptions, input SubmitInput) (*SubmitResult, error)
 
 	// Double submit prevention (now under lock)
 	if sm.StateExists(opts.CommandID) {
-		return nil, fmt.Errorf("state already exists for command %s (double submit)", opts.CommandID)
+		return nil, fmt.Errorf("%w: state already exists for command %s", ErrDoubleSubmit, opts.CommandID)
 	}
 
 	// Route by input type
@@ -234,7 +234,7 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm stateStore) (*
 
 	if err := writeQueueEntries(opts.MaestroDir, assignments, tasks, nameToID, opts.CommandID, now, opts.LockMap); err != nil {
 		if rbErr := rollbackStateAndQueue(sm, opts.MaestroDir, opts.CommandID, tasks, nameToID, assignMap, opts.LockMap); rbErr != nil {
-			log.Printf("rollback also failed for command %s: %v", opts.CommandID, rbErr)
+			slog.Error("rollback also failed", "command_id", opts.CommandID, "error", rbErr)
 		}
 		return nil, fmt.Errorf("write queue: %w", err)
 	}
@@ -245,7 +245,7 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm stateStore) (*
 	state.UpdatedAt = nowUTC()
 	if err := sm.SaveState(state); err != nil {
 		if rbErr := rollbackStateAndQueue(sm, opts.MaestroDir, opts.CommandID, tasks, nameToID, assignMap, opts.LockMap); rbErr != nil {
-			log.Printf("rollback also failed for command %s: %v", opts.CommandID, rbErr)
+			slog.Error("rollback also failed", "command_id", opts.CommandID, "error", rbErr)
 		}
 		return nil, fmt.Errorf("save state (sealed): %w", err)
 	}
@@ -329,7 +329,7 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm stateStore)
 	// Write queue entries for concrete phase tasks + system commit
 	if err := writeQueueEntries(opts.MaestroDir, cpd.assignments, cpd.tasks, cpd.nameToID, opts.CommandID, now, opts.LockMap); err != nil {
 		if rbErr := rollbackStateAndQueue(sm, opts.MaestroDir, opts.CommandID, cpd.tasks, cpd.nameToID, cpd.assignMap, opts.LockMap); rbErr != nil {
-			log.Printf("rollback also failed for command %s: %v", opts.CommandID, rbErr)
+			slog.Error("rollback also failed", "command_id", opts.CommandID, "error", rbErr)
 		}
 		return nil, fmt.Errorf("write queue: %w", err)
 	}
@@ -340,7 +340,7 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm stateStore)
 	state.UpdatedAt = nowUTC()
 	if err := sm.SaveState(state); err != nil {
 		if rbErr := rollbackStateAndQueue(sm, opts.MaestroDir, opts.CommandID, cpd.tasks, cpd.nameToID, cpd.assignMap, opts.LockMap); rbErr != nil {
-			log.Printf("rollback also failed for command %s: %v", opts.CommandID, rbErr)
+			slog.Error("rollback also failed", "command_id", opts.CommandID, "error", rbErr)
 		}
 		return nil, fmt.Errorf("save state (sealed): %w", err)
 	}
@@ -420,7 +420,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	nameToID, assignments, assignMap, err := resolveAndAssignTasks(opts, input.Tasks)
 	if err != nil {
 		if rbErr := rollbackPhaseFillToAwaiting(sm, state, targetPhaseIdx, opts.CommandID); rbErr != nil {
-			log.Printf("rollback also failed for command %s: %v", opts.CommandID, rbErr)
+			slog.Error("rollback also failed", "command_id", opts.CommandID, "error", rbErr)
 		}
 		return nil, err
 	}
@@ -429,7 +429,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	if targetPhase.Constraints != nil {
 		if len(input.Tasks) > targetPhase.Constraints.MaxTasks {
 			if rbErr := rollbackPhaseFillToAwaiting(sm, state, targetPhaseIdx, opts.CommandID); rbErr != nil {
-				log.Printf("rollback also failed for command %s: %v", opts.CommandID, rbErr)
+				slog.Error("rollback also failed", "command_id", opts.CommandID, "error", rbErr)
 			}
 			return nil, &planValidationError{Msg: fmt.Sprintf("task count %d exceeds phase constraint max_tasks %d for phase %q",
 				len(input.Tasks), targetPhase.Constraints.MaxTasks, opts.PhaseName)}
@@ -439,7 +439,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 			for _, t := range input.Tasks {
 				if t.BloomLevel > 0 && !allowedBloom[t.BloomLevel] {
 					if rbErr := rollbackPhaseFillToAwaiting(sm, state, targetPhaseIdx, opts.CommandID); rbErr != nil {
-						log.Printf("rollback also failed for command %s: %v", opts.CommandID, rbErr)
+						slog.Error("rollback also failed", "command_id", opts.CommandID, "error", rbErr)
 					}
 					return nil, &planValidationError{Msg: fmt.Sprintf("bloom_level %d not in allowed levels for phase %q",
 						t.BloomLevel, opts.PhaseName)}
@@ -477,7 +477,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 
 	if err := writeQueueEntries(opts.MaestroDir, assignments, input.Tasks, nameToID, opts.CommandID, now, opts.LockMap); err != nil {
 		if rbErr := rollbackFullPhaseFill(sm, state, targetPhaseIdx, opts, input.Tasks, nameToID, assignMap); rbErr != nil {
-			log.Printf("rollback also failed for command %s: %v", opts.CommandID, rbErr)
+			slog.Error("rollback also failed", "command_id", opts.CommandID, "error", rbErr)
 		}
 		return nil, fmt.Errorf("write queue: %w", err)
 	}
@@ -490,7 +490,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 
 	if err := sm.SaveState(state); err != nil {
 		if rbErr := rollbackFullPhaseFill(sm, state, targetPhaseIdx, opts, input.Tasks, nameToID, assignMap); rbErr != nil {
-			log.Printf("rollback also failed for command %s: %v", opts.CommandID, rbErr)
+			slog.Error("rollback also failed", "command_id", opts.CommandID, "error", rbErr)
 		}
 		return nil, fmt.Errorf("save state: %w", err)
 	}

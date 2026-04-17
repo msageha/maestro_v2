@@ -3,7 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -67,7 +67,7 @@ func Launch(maestroDir string) error {
 	if cfg, err := loadBasePromptMode(maestroDir, role); err == nil {
 		basePromptMode = cfg
 	} else {
-		log.Printf("warning: loadBasePromptMode: %v; using default %q", err, basePromptMode)
+		slog.Warn("loadBasePromptMode failed, using default", "error", err, "default", basePromptMode)
 	}
 
 	args, err := buildLaunchArgs(role, agentModel, systemPrompt, basePromptMode)

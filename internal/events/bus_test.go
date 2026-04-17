@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestBus_PublishSubscribe(t *testing.T) {
@@ -701,26 +703,12 @@ func TestBus_SubscribeCoalescedBurst(t *testing.T) {
 	// Release barrier to let first callback complete
 	close(barrier)
 
-	// Poll until callCount stabilizes (instead of fixed sleep)
-	var got int64
-	deadline := time.Now().Add(3 * time.Second)
-	var lastCount int64
-	stableRounds := 0
-	for time.Now().Before(deadline) {
-		got = callCount.Load()
-		if got > 0 && got == lastCount {
-			stableRounds++
-			if stableRounds >= 3 {
-				break
-			}
-		} else {
-			stableRounds = 0
-		}
-		lastCount = got
-		time.Sleep(10 * time.Millisecond)
-	}
+	// Wait for at least one coalesced callback to complete
+	require.Eventually(t, func() bool {
+		return callCount.Load() > 0
+	}, 3*time.Second, 10*time.Millisecond, "expected at least 1 coalesced call after burst")
 
-	got = callCount.Load()
+	got := callCount.Load()
 	// Should have at least 1 call (coalesced), no drops
 	if got < 1 {
 		t.Errorf("expected at least 1 coalesced call after burst, got %d", got)

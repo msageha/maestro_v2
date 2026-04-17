@@ -1,0 +1,324 @@
+package dispatch
+
+import (
+	"fmt"
+	"log"
+	"sync"
+	"time"
+
+	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/daemon/core"
+	"github.com/msageha/maestro_v2/internal/envelope"
+	"github.com/msageha/maestro_v2/internal/events"
+	"github.com/msageha/maestro_v2/internal/model"
+)
+
+// Dispatcher handles priority sorting, agent_executor dispatch, quality gate
+// evaluation, worktree path resolution, and event publication.
+// mu protects eventBus, qualityGate, worktreeManager, gateEvaluator.
+type Dispatcher struct {
+	maestroDir   string
+	config       model.Config
+	dl           *core.DaemonLogger
+	logger       *log.Logger
+	logLevel     core.LogLevel
+	clock        core.Clock
+	execProvider ExecutorGetter
+	mu           sync.RWMutex
+
+	eventBus        *events.Bus
+	qualityGate     GateChecker
+	gateEvaluator   PreTaskGateEvaluator
+	worktreeManager WorktreeResolver
+}
+
+// New creates a new Dispatcher.
+func New(maestroDir string, cfg model.Config, logger *log.Logger, logLevel core.LogLevel, ep ExecutorGetter, clock core.Clock) *Dispatcher {
+	dl := core.NewDaemonLoggerFromLegacy("dispatcher", logger, logLevel)
+	disp := &Dispatcher{
+		maestroDir:   maestroDir,
+		config:       cfg,
+		dl:           dl,
+		logger:       logger,
+		logLevel:     logLevel,
+		clock:        clock,
+		execProvider: ep,
+	}
+	disp.gateEvaluator = NewQualityGateEvaluator(cfg, clock, dl, disp.getQualityGate)
+	return disp
+}
+
+// SetEventBus sets the event bus for publishing events.
+func (disp *Dispatcher) SetEventBus(bus *events.Bus) {
+	disp.mu.Lock()
+	defer disp.mu.Unlock()
+	disp.eventBus = bus
+}
+
+// SetQualityGate sets the quality gate checker for the dispatcher.
+func (disp *Dispatcher) SetQualityGate(qg GateChecker) {
+	disp.mu.Lock()
+	defer disp.mu.Unlock()
+	disp.qualityGate = qg
+}
+
+// SetWorktreeManager wires the worktree resolver for worker path resolution during dispatch.
+func (disp *Dispatcher) SetWorktreeManager(wm WorktreeResolver) {
+	disp.mu.Lock()
+	defer disp.mu.Unlock()
+	disp.worktreeManager = wm
+}
+
+// getEventBus returns the event bus with proper synchronization.
+// May return nil if SetEventBus has not been called yet.
+func (disp *Dispatcher) getEventBus() *events.Bus {
+	disp.mu.RLock()
+	defer disp.mu.RUnlock()
+	return disp.eventBus
+}
+
+// publishEvent publishes an event to the event bus if available.
+// Safe to call when eventBus is nil (no-op).
+func (disp *Dispatcher) publishEvent(eventType events.EventType, data map[string]interface{}) {
+	if bus := disp.getEventBus(); bus != nil {
+		bus.Publish(eventType, data)
+	}
+}
+
+// getQualityGate returns the quality gate checker with proper synchronization.
+func (disp *Dispatcher) getQualityGate() GateChecker {
+	disp.mu.RLock()
+	defer disp.mu.RUnlock()
+	return disp.qualityGate
+}
+
+// getWorktreeManager returns the worktree resolver with proper synchronization.
+func (disp *Dispatcher) getWorktreeManager() WorktreeResolver {
+	disp.mu.RLock()
+	defer disp.mu.RUnlock()
+	return disp.worktreeManager
+}
+
+// SortPendingTasks sorts tasks by effective_priority ASC → created_at ASC → id ASC.
+func (disp *Dispatcher) SortPendingTasks(tasks []model.Task) []int {
+	return SortPendingIndices(tasks, func(t model.Task) SortKey {
+		return SortKey{Status: t.Status, Priority: t.Priority, CreatedAt: t.CreatedAt, ID: t.ID}
+	}, disp.config.Queue.PriorityAgingSec)
+}
+
+// SortPendingCommands sorts commands by effective_priority ASC → created_at ASC → id ASC.
+func (disp *Dispatcher) SortPendingCommands(commands []model.Command) []int {
+	return SortPendingIndices(commands, func(c model.Command) SortKey {
+		return SortKey{Status: c.Status, Priority: c.Priority, CreatedAt: c.CreatedAt, ID: c.ID}
+	}, disp.config.Queue.PriorityAgingSec)
+}
+
+// SortPendingNotifications sorts notifications by effective_priority ASC → created_at ASC → id ASC.
+func (disp *Dispatcher) SortPendingNotifications(notifications []model.Notification) []int {
+	return SortPendingIndices(notifications, func(n model.Notification) SortKey {
+		return SortKey{Status: n.Status, Priority: n.Priority, CreatedAt: n.CreatedAt, ID: n.ID}
+	}, disp.config.Queue.PriorityAgingSec)
+}
+
+// executeDispatch obtains an executor and runs the given request.
+// On failure it logs a structured error with the provided label and entity ID.
+// On success it logs a structured info message.
+func (disp *Dispatcher) executeDispatch(req agent.ExecRequest, logLabel, entityID, logExtra string) error {
+	exec, err := disp.execProvider.GetExecutor()
+	if err != nil {
+		return fmt.Errorf("create executor: %w", err)
+	}
+	result := exec.Execute(req)
+	if result.Error != nil {
+		disp.dl.Logf(core.LogLevelError, "dispatch_%s_failed id=%s%s error=%v retryable=%v",
+			logLabel, entityID, logExtra, result.Error, result.Retryable)
+		return result.Error
+	}
+	disp.dl.Logf(core.LogLevelInfo, "dispatch_%s_success id=%s%s epoch=%d",
+		logLabel, entityID, logExtra, req.LeaseEpoch)
+	return nil
+}
+
+// DispatchCommand dispatches a command to the planner agent with inline retry.
+// On transient failure, retries up to CommandDispatchInlineRetries times with
+// exponential backoff to avoid the full scan-cycle delay.
+func (disp *Dispatcher) DispatchCommand(cmd *model.Command) error {
+	// Build enriched command content (planner skills injection)
+	dispatchCmd := *cmd
+	dispatchID, err := model.GenerateID(model.IDTypeDispatch)
+	if err != nil {
+		return fmt.Errorf("generate dispatch_id for command %s: %w", cmd.ID, err)
+	}
+	dispatchCmd.DispatchID = dispatchID
+	enrichedContent, err := disp.BuildCommandContent(cmd)
+	if err != nil {
+		return fmt.Errorf("build command envelope for %s: %w", cmd.ID, err)
+	}
+	dispatchCmd.Content = enrichedContent
+
+	req := agent.ExecRequest{
+		AgentID:    "planner",
+		Message:    envelope.BuildPlannerEnvelope(dispatchCmd, cmd.LeaseEpoch, cmd.Attempts),
+		Mode:       agent.ModeDeliver,
+		CommandID:  cmd.ID,
+		LeaseEpoch: cmd.LeaseEpoch,
+		Attempt:    cmd.Attempts,
+	}
+
+	maxRetries := disp.config.Retry.EffectiveCommandDispatchInlineRetries()
+	retryDelay := time.Duration(disp.config.Retry.EffectiveCommandDispatchInlineRetryDelaySec()) * time.Second
+
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			disp.dl.Logf(core.LogLevelInfo, "command_dispatch_inline_retry attempt=%d/%d id=%s error=%v",
+				attempt+1, maxRetries+1, cmd.ID, lastErr)
+			time.Sleep(retryDelay)
+			retryDelay = retryDelay * 2 // exponential backoff
+		}
+		err := disp.executeDispatch(req, "command", cmd.ID, "")
+		if err == nil {
+			if attempt > 0 {
+				disp.dl.Logf(core.LogLevelInfo, "command_dispatch_retry_success id=%s total_attempts=%d", cmd.ID, attempt+1)
+			}
+			return nil
+		}
+		lastErr = err
+	}
+	return lastErr
+}
+
+// DispatchTask dispatches a task to a worker agent.
+func (disp *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
+	if err := disp.evaluateTaskQualityGate(task, workerID); err != nil {
+		return err
+	}
+
+	// Build enriched task content (persona, skills, learnings injection)
+	dispatchTask := *task
+	dispatchID, err := model.GenerateID(model.IDTypeDispatch)
+	if err != nil {
+		return fmt.Errorf("generate dispatch_id for task %s: %w", task.ID, err)
+	}
+	dispatchTask.DispatchID = dispatchID
+	enrichedContent, err := disp.BuildTaskContent(task)
+	if err != nil {
+		return fmt.Errorf("build task envelope for %s: %w", task.ID, err)
+	}
+	dispatchTask.Content = enrichedContent
+
+	workingDir, err := disp.resolveTaskWorkingDir(task, workerID)
+	if err != nil {
+		return err
+	}
+
+	env := envelope.BuildWorkerEnvelope(dispatchTask, workerID, task.LeaseEpoch, task.Attempts)
+	if workingDir != "" {
+		env = fmt.Sprintf("%s\nworking_dir: %s", env, workingDir)
+	}
+
+	req := agent.ExecRequest{
+		AgentID:    workerID,
+		Message:    env,
+		Mode:       agent.ModeWithClear,
+		TaskID:     task.ID,
+		CommandID:  task.CommandID,
+		LeaseEpoch: task.LeaseEpoch,
+		Attempt:    task.Attempts,
+		WorkingDir: workingDir,
+	}
+
+	maxRetries := disp.config.Retry.EffectiveTaskDispatchInlineRetries()
+	retryDelay := time.Duration(disp.config.Retry.EffectiveTaskDispatchInlineRetryDelaySec()) * time.Second
+
+	var lastErr error
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			disp.dl.Logf(core.LogLevelInfo, "task_dispatch_inline_retry attempt=%d/%d id=%s worker=%s error=%v",
+				attempt+1, maxRetries+1, task.ID, workerID, lastErr)
+			time.Sleep(retryDelay)
+			retryDelay = retryDelay * 2 // exponential backoff
+		}
+		err := disp.executeDispatch(req, "task", task.ID, fmt.Sprintf(" worker=%s", workerID))
+		if err == nil {
+			if attempt > 0 {
+				disp.dl.Logf(core.LogLevelInfo, "task_dispatch_retry_success id=%s worker=%s total_attempts=%d",
+					task.ID, workerID, attempt+1)
+			}
+
+			disp.publishEvent(events.EventTaskStarted, map[string]interface{}{
+				"task_id":    task.ID,
+				"command_id": task.CommandID,
+				"worker_id":  workerID,
+				"epoch":      task.LeaseEpoch,
+			})
+
+			return nil
+		}
+		lastErr = err
+	}
+	return lastErr
+}
+
+// evaluateTaskQualityGate runs the pre-task quality gate check and records
+// the evaluation result. Returns an error only when enforcement is "block".
+func (disp *Dispatcher) evaluateTaskQualityGate(task *model.Task, workerID string) error {
+	if disp.gateEvaluator.ShouldEvaluate() && disp.config.QualityGates.Enforcement.PreTaskCheck {
+		gateEvaluation, err := disp.gateEvaluator.EvaluatePreTask(task, workerID)
+		if err != nil {
+			if disp.config.QualityGates.Enforcement.FailureAction == "block" {
+				disp.dl.Logf(core.LogLevelError, "dispatch_task_blocked_by_quality_gate id=%s worker=%s error=%v",
+					task.ID, workerID, err)
+				disp.gateEvaluator.StoreEvaluation(task.ID, gateEvaluation)
+				return fmt.Errorf("quality gate check failed: %w", err)
+			}
+			disp.dl.Logf(core.LogLevelWarn, "dispatch_task_quality_gate_violation id=%s worker=%s error=%v",
+				task.ID, workerID, err)
+		}
+		disp.gateEvaluator.StoreEvaluation(task.ID, gateEvaluation)
+	} else if !disp.config.QualityGates.Enabled {
+		disp.gateEvaluator.StoreEvaluation(task.ID, disp.gateEvaluator.SkippedEvaluation("disabled"))
+	} else if disp.config.QualityGates.SkipGates {
+		disp.gateEvaluator.StoreEvaluation(task.ID, disp.gateEvaluator.SkippedEvaluation("emergency_mode"))
+	}
+	return nil
+}
+
+// resolveTaskWorkingDir resolves the working directory for a task, creating
+// the worktree lazily if needed. Returns empty string when worktree mode is
+// not active.
+func (disp *Dispatcher) resolveTaskWorkingDir(task *model.Task, workerID string) (string, error) {
+	wm := disp.getWorktreeManager()
+	if wm == nil {
+		return "", nil
+	}
+
+	wtPath, err := wm.GetWorkerPath(task.CommandID, workerID)
+	if err != nil {
+		if createErr := wm.EnsureWorkerWorktree(task.CommandID, workerID); createErr != nil {
+			disp.dl.Logf(core.LogLevelError, "worktree_create_failed task=%s worker=%s error=%v",
+				task.ID, workerID, createErr)
+			return "", fmt.Errorf("worktree path resolution failed: %w", createErr)
+		}
+		wtPath, err = wm.GetWorkerPath(task.CommandID, workerID)
+	}
+	if err != nil {
+		disp.dl.Logf(core.LogLevelError, "worktree_path_resolve_failed task=%s worker=%s error=%v",
+			task.ID, workerID, err)
+		return "", fmt.Errorf("worktree path resolution failed: %w", err)
+	}
+	return wtPath, nil
+}
+
+// DispatchNotification dispatches a notification to the orchestrator agent.
+func (disp *Dispatcher) DispatchNotification(ntf *model.Notification) error {
+	env := envelope.BuildOrchestratorNotificationEnvelope(ntf.CommandID, ntf.Type)
+	return disp.executeDispatch(agent.ExecRequest{
+		AgentID:    "orchestrator",
+		Message:    env,
+		Mode:       agent.ModeDeliver,
+		CommandID:  ntf.CommandID,
+		LeaseEpoch: ntf.LeaseEpoch,
+		Attempt:    ntf.Attempts,
+	}, "notification", ntf.ID, fmt.Sprintf(" type=%s", ntf.Type))
+}

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/msageha/maestro_v2/internal/testutil"
 )
 
 func TestClassifyGitError(t *testing.T) {
@@ -250,7 +252,7 @@ func TestIsTransientGitError(t *testing.T) {
 
 func TestGitOutputWithRetry_Success(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	output, err := wm.gitOutputWithRetry(context.Background(), projectRoot, 3, "rev-parse", "HEAD")
@@ -348,7 +350,7 @@ func TestWrapGitOutputError_SanitizesStderr(t *testing.T) {
 // (e.g., git status --porcelain in a clean repo).
 func TestGitOutputWithRetry_EmptyOutputNilError(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	// git status --porcelain returns empty output when the repo is clean
@@ -363,7 +365,7 @@ func TestGitOutputWithRetry_EmptyOutputNilError(t *testing.T) {
 
 func TestGitOutputWithRetry_PermanentNoRetry(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	start := time.Now()

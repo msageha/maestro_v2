@@ -262,7 +262,9 @@ func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Close
 	}
 
 	// --- Phase 3: Watch loop and event bridge ---
-	d.watch = &WatchLoop{d: d, fsSem: make(chan struct{}, fsSemaphoreBufferSize())}
+	watch := &WatchLoop{d: d}
+	watch.fsEg.SetLimit(fsSemaphoreBufferSize())
+	d.watch = watch
 	d.bridge = &EventBridge{d: d}
 
 	return d, nil

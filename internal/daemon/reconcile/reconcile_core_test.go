@@ -21,16 +21,6 @@ import (
 )
 
 // --- Test Helpers ---
-// TODO(DRY): fakeClock, setupTestDir, newTestDeps are duplicated test patterns.
-// Duplicated in: daemon/queue_handler_test.go, daemon/worktree_test_helper_test.go
-// Target: internal/testutil/daemon.go (shared test helper package)
-// Prerequisite: reconcile and daemon test suite structure stabilization
-
-type fakeClock struct {
-	now time.Time
-}
-
-func (f *fakeClock) Now() time.Time { return f.now }
 
 type mockResultNotifier struct {
 	calls []struct {
@@ -48,11 +38,6 @@ func (m *mockResultNotifier) WriteNotificationToOrchestratorQueue(resultID, comm
 	return m.err
 }
 
-func setupTestDir(t *testing.T) string {
-	t.Helper()
-	return testutil.SetupDir(t)
-}
-
 func newTestDeps(t *testing.T, maestroDir string) Deps {
 	t.Helper()
 	logger := log.New(&bytes.Buffer{}, "", 0)
@@ -61,12 +46,12 @@ func newTestDeps(t *testing.T, maestroDir string) Deps {
 		Config:     model.Config{Watcher: model.WatcherConfig{DispatchLeaseSec: 60}},
 		LockMap:    lock.NewMutexMap(),
 		DL:         core.NewDaemonLoggerFromLegacy("test", logger, core.LogLevelDebug),
-		Clock:      &fakeClock{now: time.Now().UTC()},
+		Clock:      &testutil.FakeClock{NowValue: time.Now().UTC()},
 	}
 }
 
 func setClock(deps *Deps, t time.Time) {
-	deps.Clock = &fakeClock{now: t}
+	deps.Clock = &testutil.FakeClock{NowValue: t}
 }
 
 // --- Run helper tests ---
@@ -169,7 +154,7 @@ func TestCachedReadDir_NonExistent(t *testing.T) {
 
 func TestEngine_Reconcile_EmptyPatterns(t *testing.T) {
 	t.Parallel()
-	deps := newTestDeps(t, setupTestDir(t))
+	deps := newTestDeps(t, testutil.SetupDir(t))
 	engine := NewEngine(deps)
 	repairs, notifications := engine.Reconcile()
 	if len(repairs) != 0 || len(notifications) != 0 {
@@ -192,7 +177,7 @@ func (f *fakePattern) Apply(*Run) Outcome {
 
 func TestEngine_Reconcile_AggregatesPatterns(t *testing.T) {
 	t.Parallel()
-	deps := newTestDeps(t, setupTestDir(t))
+	deps := newTestDeps(t, testutil.SetupDir(t))
 	p1 := &fakePattern{outcome: Outcome{
 		Repairs: []Repair{{Pattern: "P1", Detail: "repair1"}},
 	}}
@@ -213,7 +198,7 @@ func TestEngine_Reconcile_AggregatesPatterns(t *testing.T) {
 
 func TestEngine_ExecuteDeferredNotifications_NilFactory(t *testing.T) {
 	t.Parallel()
-	deps := newTestDeps(t, setupTestDir(t))
+	deps := newTestDeps(t, testutil.SetupDir(t))
 	engine := NewEngine(deps)
 	// Should not panic
 	engine.ExecuteDeferredNotifications([]DeferredNotification{
@@ -223,7 +208,7 @@ func TestEngine_ExecuteDeferredNotifications_NilFactory(t *testing.T) {
 
 func TestEngine_ExecuteDeferredNotifications_AllKinds(t *testing.T) {
 	t.Parallel()
-	deps := newTestDeps(t, setupTestDir(t))
+	deps := newTestDeps(t, testutil.SetupDir(t))
 	exec := &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}
 	deps.ExecutorFactory = func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
 		return exec, nil
@@ -242,7 +227,7 @@ func TestEngine_ExecuteDeferredNotifications_AllKinds(t *testing.T) {
 
 func TestEngine_ExecuteDeferredNotifications_FactoryError(t *testing.T) {
 	t.Parallel()
-	deps := newTestDeps(t, setupTestDir(t))
+	deps := newTestDeps(t, testutil.SetupDir(t))
 	deps.ExecutorFactory = func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
 		return nil, fmt.Errorf("factory error")
 	}
@@ -255,7 +240,7 @@ func TestEngine_ExecuteDeferredNotifications_FactoryError(t *testing.T) {
 
 func TestEngine_SetCanComplete(t *testing.T) {
 	t.Parallel()
-	deps := newTestDeps(t, setupTestDir(t))
+	deps := newTestDeps(t, testutil.SetupDir(t))
 	engine := NewEngine(deps)
 	if engine.deps.CanComplete != nil {
 		t.Error("expected nil CanComplete initially")
@@ -272,7 +257,7 @@ func TestEngine_SetCanComplete(t *testing.T) {
 
 func TestR0Dispatch_NoQueueFile(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	run := newRun(&deps)
 	outcome := R0Dispatch{}.Apply(run)
@@ -283,7 +268,7 @@ func TestR0Dispatch_NoQueueFile(t *testing.T) {
 
 func TestR0Dispatch_StuckCommand(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC()
 	setClock(&deps, now)
@@ -334,7 +319,7 @@ func TestR0Dispatch_StuckCommand(t *testing.T) {
 
 func TestR0Dispatch_StateFileExists_NoRepair(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC()
 	setClock(&deps, now)
@@ -361,7 +346,7 @@ func TestR0Dispatch_StateFileExists_NoRepair(t *testing.T) {
 
 func TestR0Dispatch_RecentCommand_NoRepair(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC()
 	setClock(&deps, now)
@@ -384,7 +369,7 @@ func TestR0Dispatch_RecentCommand_NoRepair(t *testing.T) {
 
 func TestR0Dispatch_PendingStatus_Ignored(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC()
 	setClock(&deps, now)
@@ -420,7 +405,7 @@ func TestR0PlanningStuck_NoStateDir(t *testing.T) {
 
 func TestR0PlanningStuck_SealedState_Ignored(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC()
 	setClock(&deps, now)
@@ -443,7 +428,7 @@ func TestR0PlanningStuck_SealedState_Ignored(t *testing.T) {
 
 func TestR0PlanningStuck_StuckCommand_Repaired(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC()
 	setClock(&deps, now)
@@ -548,7 +533,7 @@ func TestR0PlanningStuck_StuckCommand_Repaired(t *testing.T) {
 
 func TestR0PlanningStuck_NotYetStuck_Ignored(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC()
 	setClock(&deps, now)
@@ -585,7 +570,7 @@ func TestR0PlanningStuck_NotYetStuck_Ignored(t *testing.T) {
 
 func TestR0bFillingStuck_WithFillingStartedAt(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC()
 	setClock(&deps, now)
@@ -641,7 +626,7 @@ func TestR0bFillingStuck_WithFillingStartedAt(t *testing.T) {
 
 func TestR0bFillingStuck_RecentFilling_NoRepair(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC()
 	setClock(&deps, now)
@@ -675,7 +660,7 @@ func TestR0bFillingStuck_RecentFilling_NoRepair(t *testing.T) {
 
 func TestR0bFillingStuck_GeneratesNotification(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC()
 	setClock(&deps, now)
@@ -711,7 +696,7 @@ func TestR0bFillingStuck_GeneratesNotification(t *testing.T) {
 
 func TestR0bFillingStuck_NoExecutorFactory_NoNotification(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC()
 	setClock(&deps, now)
@@ -779,7 +764,7 @@ func TestR0bFillingStuck_InvalidFillingStartedAt(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			maestroDir := setupTestDir(t)
+			maestroDir := testutil.SetupDir(t)
 			deps := newTestDeps(t, maestroDir)
 			now := time.Now().UTC()
 			setClock(&deps, now)
@@ -835,7 +820,7 @@ func TestR1ResultQueue_NoResultsDir(t *testing.T) {
 
 func TestR1ResultQueue_TaskNotInProgress_Ignored(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -862,7 +847,7 @@ func TestR1ResultQueue_TaskNotInProgress_Ignored(t *testing.T) {
 
 func TestR1ResultQueue_HappyPath_RepairsInProgressTask(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -914,7 +899,7 @@ func TestR1ResultQueue_HappyPath_RepairsInProgressTask(t *testing.T) {
 
 func TestR1ResultQueue_Idempotent(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -953,7 +938,7 @@ func TestR1ResultQueue_Idempotent(t *testing.T) {
 
 func TestR1ResultQueue_FailedResult(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -990,7 +975,7 @@ func TestR1ResultQueue_FailedResult(t *testing.T) {
 
 func TestR1ResultQueue_MultipleWorkers(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -1034,7 +1019,7 @@ func TestR1ResultQueue_MultipleWorkers(t *testing.T) {
 
 func TestR1ResultQueue_NoQueueFile_NoRepair(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -1057,7 +1042,7 @@ func TestR1ResultQueue_NoQueueFile_NoRepair(t *testing.T) {
 
 func TestR2ResultState_UnknownTask_Skipped(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -1089,7 +1074,7 @@ func TestR2ResultState_UnknownTask_Skipped(t *testing.T) {
 
 func TestR2ResultState_NilTaskStates_InitializedAndSkipped(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -1119,7 +1104,7 @@ func TestR2ResultState_NilTaskStates_InitializedAndSkipped(t *testing.T) {
 
 func TestR2ResultState_NonTerminalResult_Ignored(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -1139,7 +1124,7 @@ func TestR2ResultState_NonTerminalResult_Ignored(t *testing.T) {
 
 func TestR2ResultState_HappyPath_UpdatesStateToTerminal(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -1188,7 +1173,7 @@ func TestR2ResultState_HappyPath_UpdatesStateToTerminal(t *testing.T) {
 
 func TestR2ResultState_Idempotent(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -1228,7 +1213,7 @@ func TestR2ResultState_Idempotent(t *testing.T) {
 
 func TestR2ResultState_AlreadyTerminal_NoRepair(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -1260,7 +1245,7 @@ func TestR2ResultState_AlreadyTerminal_NoRepair(t *testing.T) {
 
 func TestR2ResultState_MultipleTasks(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -1306,7 +1291,7 @@ func TestR2ResultState_MultipleTasks(t *testing.T) {
 
 func TestR2ResultState_NoStateFile_NoRepair(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -1329,7 +1314,7 @@ func TestR2ResultState_NoStateFile_NoRepair(t *testing.T) {
 
 func TestR0Dispatch_ThresholdBoundary_JustBelowThreshold_NoRepair(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	// DispatchLeaseSec=60 → threshold = max(60*2s=120s, 10m=600s) = 600s
 	deps.Config.Watcher.DispatchLeaseSec = 60
@@ -1355,7 +1340,7 @@ func TestR0Dispatch_ThresholdBoundary_JustBelowThreshold_NoRepair(t *testing.T) 
 
 func TestR0Dispatch_ThresholdBoundary_ExactlyAtThreshold_Repairs(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	// DispatchLeaseSec=60 → threshold = max(60*2s=120s, 10m=600s) = 600s
 	deps.Config.Watcher.DispatchLeaseSec = 60
@@ -1384,7 +1369,7 @@ func TestR0Dispatch_ThresholdBoundary_ExactlyAtThreshold_Repairs(t *testing.T) {
 
 func TestR0Dispatch_MinThresholdEnforced(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	// DispatchLeaseSec=10 → 10*2=20s < minDispatchThreshold(600s) → threshold clamped to 600s
 	deps.Config.Watcher.DispatchLeaseSec = 10
@@ -1410,7 +1395,7 @@ func TestR0Dispatch_MinThresholdEnforced(t *testing.T) {
 
 func TestR0Dispatch_EmptyQueue_NoRepair(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 
 	// Empty queue with schema but no commands
@@ -1428,7 +1413,7 @@ func TestR0Dispatch_EmptyQueue_NoRepair(t *testing.T) {
 
 func TestR2ResultState_EmptyResultsDir_NoRepair(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 
 	// Results dir exists but is empty (no worker files)
@@ -1441,7 +1426,7 @@ func TestR2ResultState_EmptyResultsDir_NoRepair(t *testing.T) {
 
 func TestR2ResultState_MixedTerminalAndNonTerminal(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -1489,7 +1474,7 @@ func TestR2ResultState_MixedTerminalAndNonTerminal(t *testing.T) {
 // says awaiting_fill).
 func TestR0bFillingStuck_BatchRemoveFails_StateNotUpdated(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC()
 	setClock(&deps, now)
@@ -1547,7 +1532,7 @@ func TestR0bFillingStuck_BatchRemoveFails_StateNotUpdated(t *testing.T) {
 // that notifications whose delivery fails are returned as a failed list.
 func TestEngine_ExecuteDeferredNotifications_ReturnsFailedOnDeliveryError(t *testing.T) {
 	t.Parallel()
-	deps := newTestDeps(t, setupTestDir(t))
+	deps := newTestDeps(t, testutil.SetupDir(t))
 	exec := &mocks.MockExecutor{Result: agent.ExecResult{Error: fmt.Errorf("delivery failed")}}
 	deps.ExecutorFactory = func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
 		return exec, nil
@@ -1569,7 +1554,7 @@ func TestEngine_ExecuteDeferredNotifications_ReturnsFailedOnDeliveryError(t *tes
 // that with no executor factory, all notifications are returned as failed.
 func TestEngine_ExecuteDeferredNotifications_NilFactory_ReturnsAllAsFailed(t *testing.T) {
 	t.Parallel()
-	deps := newTestDeps(t, setupTestDir(t))
+	deps := newTestDeps(t, testutil.SetupDir(t))
 	engine := NewEngine(deps)
 
 	notifications := []DeferredNotification{
@@ -1587,7 +1572,7 @@ func TestEngine_ExecuteDeferredNotifications_NilFactory_ReturnsAllAsFailed(t *te
 // successful delivery returns no failed notifications.
 func TestEngine_ExecuteDeferredNotifications_SuccessReturnsEmpty(t *testing.T) {
 	t.Parallel()
-	deps := newTestDeps(t, setupTestDir(t))
+	deps := newTestDeps(t, testutil.SetupDir(t))
 	exec := &mocks.MockExecutor{Result: agent.ExecResult{Success: true}}
 	deps.ExecutorFactory = func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
 		return exec, nil
@@ -1608,7 +1593,7 @@ func TestEngine_ExecuteDeferredNotifications_SuccessReturnsEmpty(t *testing.T) {
 // that executor creation failure causes the notification to be returned as failed.
 func TestEngine_ExecuteDeferredNotifications_FactoryError_ReturnsFailed(t *testing.T) {
 	t.Parallel()
-	deps := newTestDeps(t, setupTestDir(t))
+	deps := newTestDeps(t, testutil.SetupDir(t))
 	deps.ExecutorFactory = func(string, model.WatcherConfig, string) (core.AgentExecutor, error) {
 		return nil, fmt.Errorf("factory error")
 	}
@@ -1630,7 +1615,7 @@ func TestEngine_ExecuteDeferredNotifications_FactoryError_ReturnsFailed(t *testi
 // orchestrator queue (the read now runs under queue:orchestrator lock).
 func TestR5Notification_OrchestratorQueueLock(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -1672,7 +1657,7 @@ func TestR5Notification_OrchestratorQueueLock(t *testing.T) {
 // which uses in_progress. Here we test that any non-terminal queue status triggers repair.
 func TestR3PlannerQueue_PendingCommand_QueueInProgress_Repaired(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -1716,7 +1701,7 @@ func TestR3PlannerQueue_PendingCommand_QueueInProgress_Repaired(t *testing.T) {
 // TestR3PlannerQueue_CancelledResult verifies R3 handles cancelled result status correctly.
 func TestR3PlannerQueue_CancelledResult(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -1758,7 +1743,7 @@ func TestR3PlannerQueue_CancelledResult(t *testing.T) {
 // uses the correct notification type for a failed result.
 func TestR5Notification_FailedStatus_CorrectNotificationType(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	notifier := &mockResultNotifier{}
 	deps.ResultHandler = notifier
@@ -1797,7 +1782,7 @@ func TestR5Notification_FailedStatus_CorrectNotificationType(t *testing.T) {
 // for a cancelled result when no matching notification exists.
 func TestR5Notification_CancelledStatus_NoExistingNotification(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	notifier := &mockResultNotifier{}
 	deps.ResultHandler = notifier
@@ -1841,7 +1826,7 @@ func TestR6FillTimeout_NoStateDir(t *testing.T) {
 // expired fill deadline is transitioned to timed_out.
 func TestR6FillTimeout_ExpiredDeadline_Repaired(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC()
 	setClock(&deps, now)
@@ -1891,7 +1876,7 @@ func TestR6FillTimeout_ExpiredDeadline_Repaired(t *testing.T) {
 // fill deadline is not repaired.
 func TestR6FillTimeout_FutureDeadline_NoRepair(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC()
 	setClock(&deps, now)
@@ -1926,7 +1911,7 @@ func TestR6FillTimeout_FutureDeadline_NoRepair(t *testing.T) {
 // dependent on a timed-out phase gets cascade-cancelled.
 func TestR6FillTimeout_CascadeCancel(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC()
 	setClock(&deps, now)
@@ -1980,7 +1965,7 @@ func TestR6FillTimeout_CascadeCancel(t *testing.T) {
 // (not awaiting_fill) with an expired deadline is ignored by R6.
 func TestR6FillTimeout_NonAwaitingFill_Ignored(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC()
 	setClock(&deps, now)
@@ -2015,7 +2000,7 @@ func TestR6FillTimeout_NonAwaitingFill_Ignored(t *testing.T) {
 // notification with the correct kind and timed-out phases when executor factory is set.
 func TestR6FillTimeout_GeneratesNotification(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC()
 	setClock(&deps, now)
@@ -2066,7 +2051,7 @@ func TestR6FillTimeout_GeneratesNotification(t *testing.T) {
 // is not repaired even if it is in awaiting_fill status.
 func TestR6FillTimeout_NilDeadline_NoRepair(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC()
 	setClock(&deps, now)

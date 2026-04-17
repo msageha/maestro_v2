@@ -401,6 +401,12 @@ func (qg *QualityGateDaemon) evaluateGate(gateType string, evalContext map[strin
 	return nil
 }
 
+// EvaluateGateWithResult performs synchronous gate evaluation and returns the full result.
+// Satisfies dispatch.GateChecker interface.
+func (qg *QualityGateDaemon) EvaluateGateWithResult(gateType string, evalContext map[string]interface{}) (*quality.EvaluationResult, error) {
+	return qg.evaluateGateWithResult(gateType, evalContext)
+}
+
 // evaluateGateWithResult performs synchronous gate evaluation and returns the full result. Called from dispatcher.go for pre_task gating.
 func (qg *QualityGateDaemon) evaluateGateWithResult(gateType string, evalContext map[string]interface{}) (*quality.EvaluationResult, error) {
 	qualityGateType, err := mapGateType(gateType)

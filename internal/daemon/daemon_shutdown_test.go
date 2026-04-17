@@ -176,7 +176,7 @@ func TestShutdownOp_TableDriven(t *testing.T) {
 		{
 			name:         "fast completion",
 			opName:       "op_fast",
-			fn:           func() error { time.Sleep(5 * time.Millisecond); return nil },
+			fn:           func() error { time.Sleep(5 * time.Millisecond); return nil }, // essential: simulates non-instant completion
 			wantNotInLog: []string{"timed out"},
 			maxDuration:  1 * time.Second,
 		},

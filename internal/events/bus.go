@@ -4,7 +4,7 @@ package events
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -88,7 +88,7 @@ func removeSubscriber[T safeCloser](subs []T, target T) []T {
 // Events are delivered asynchronously via buffered channels.
 // If a subscriber's channel is full, the event is dropped and counted.
 //
-// NOTE: Bus uses the standard log package instead of DaemonLogger because
+// NOTE: Bus uses the standard log/slog package instead of DaemonLogger because
 // it is a generic event infrastructure component in the events package.
 // Introducing a daemon dependency would create a circular import
 // (daemon → events → daemon).
@@ -161,8 +161,7 @@ func (b *Bus) Subscribe(eventType EventType, fn subscriber) func() {
 				func() {
 					defer func() {
 						if r := recover(); r != nil {
-							log.Printf("ERROR event_bus: subscriber panic for event %s: %v\n%s",
-								event.Type, r, debug.Stack())
+							slog.Error("event_bus: subscriber panic", "event_type", string(event.Type), "panic", r, "stack", string(debug.Stack()))
 						}
 					}()
 					fn(event)
@@ -225,8 +224,7 @@ func (b *Bus) SubscribeCoalesced(eventType EventType, fn coalescedSubscriber) fu
 				func() {
 					defer func() {
 						if r := recover(); r != nil {
-							log.Printf("ERROR event_bus: coalesced subscriber panic for event %s: %v\n%s",
-								eventType, r, debug.Stack())
+							slog.Error("event_bus: coalesced subscriber panic", "event_type", string(eventType), "panic", r, "stack", string(debug.Stack()))
 						}
 					}()
 					fn()
@@ -258,7 +256,7 @@ func (b *Bus) Publish(eventType EventType, data map[string]interface{}) {
 	// Publish and Close.
 	defer func() {
 		if r := recover(); r != nil {
-			log.Printf("WARN event_bus: recovered from panic in Publish for type %s: %v", eventType, r)
+			slog.Warn("event_bus: recovered from panic in Publish", "event_type", string(eventType), "panic", r)
 		}
 	}()
 
@@ -295,7 +293,7 @@ func (b *Bus) Publish(eventType EventType, data map[string]interface{}) {
 			typeCount := b.addDroppedByType(eventType)
 			// Log on first drop per type, then at exponential intervals (powers of 2)
 			if typeCount == 1 || typeCount&(typeCount-1) == 0 {
-				log.Printf("WARN event_bus: event dropped for type %s (type dropped: %d, buffer_size: %d)", eventType, typeCount, b.bufferSize)
+				slog.Warn("event_bus: event dropped", "event_type", string(eventType), "type_dropped", typeCount, "buffer_size", b.bufferSize)
 			}
 		}
 	}
@@ -318,7 +316,7 @@ func (b *Bus) addDroppedByType(eventType EventType) int64 {
 	v, _ := b.droppedByType.LoadOrStore(eventType, &atomic.Int64{})
 	counter, ok := v.(*atomic.Int64)
 	if !ok {
-		log.Printf("ERROR event_bus: unexpected type in droppedByType map for %s: %T (expected *atomic.Int64)", eventType, v)
+		slog.Error("event_bus: unexpected type in droppedByType map", "event_type", string(eventType), "actual_type", fmt.Sprintf("%T", v))
 		return 0
 	}
 	return counter.Add(1)

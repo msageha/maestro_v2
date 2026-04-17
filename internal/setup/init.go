@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
-	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -186,7 +186,7 @@ func gitTrackGitignore(projectDir string) {
 	add := exec.Command("git", "add", ".gitignore")
 	add.Dir = projectDir
 	if out, err := add.CombinedOutput(); err != nil {
-		log.Printf("[maestro] warning: git add .gitignore: %s (%v)", out, err)
+		slog.Warn("git add .gitignore failed", "output", string(out), "error", err)
 		return
 	}
 
@@ -202,7 +202,7 @@ func gitTrackGitignore(projectDir string) {
 	commit := exec.Command("git", "commit", "-m", "maestro: initialize .gitignore", "--", ".gitignore")
 	commit.Dir = projectDir
 	if out, err := commit.CombinedOutput(); err != nil {
-		log.Printf("[maestro] warning: git commit .gitignore: %s (%v)", out, err)
+		slog.Warn("git commit .gitignore failed", "output", string(out), "error", err)
 	}
 }
 

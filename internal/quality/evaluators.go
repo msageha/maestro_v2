@@ -3,7 +3,7 @@ package quality
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/exec"
 	"regexp"
@@ -517,8 +517,7 @@ func (e *scriptEvaluator) Evaluate(ctx context.Context, condition *RuleCondition
 	cmd.Dir = tmpDir
 
 	// Audit log: record script execution
-	log.Printf("quality/script: executing %s script (len=%d, timeout=%v, dir=%s)",
-		scriptLanguage(condition.Language), len(condition.Script), timeout, tmpDir)
+	slog.Info("quality/script: executing script", "language", scriptLanguage(condition.Language), "script_len", len(condition.Script), "timeout", timeout, "dir", tmpDir)
 
 	// Run the script
 	err := cmd.Run()
@@ -570,7 +569,7 @@ func validateScriptForLanguage(script, language string) error {
 
 	for _, pat := range patterns {
 		if pat.MatchString(script) {
-			log.Printf("quality/script: BLOCKED dangerous pattern %q in script", pat.String())
+			slog.Warn("quality/script: BLOCKED dangerous pattern in script", "pattern", pat.String())
 			return fmt.Errorf("script contains dangerous command pattern: %s", pat.String())
 		}
 	}

@@ -822,7 +822,7 @@ func TestClient_SendRetryOnTransientError(t *testing.T) {
 	// Start server after first connection attempt fails (simulating transient ENOENT)
 	serverReady := make(chan struct{})
 	go func() {
-		// Small delay to ensure client makes at least one failed attempt
+		// essential: delays server start to ensure client encounters at least one ENOENT before retry succeeds
 		time.Sleep(50 * time.Millisecond)
 		server.Start()
 		close(serverReady)

@@ -2,7 +2,7 @@ package plan
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -89,7 +89,7 @@ func cascadeRecover(
 	if err != nil {
 		// Restore state to pre-cascade snapshot (all-or-nothing).
 		if rsErr := restoreState(state, stateSnapshot); rsErr != nil {
-			log.Printf("[ERROR] cascade recovery rollback failed: %v", rsErr)
+			slog.Error("cascade recovery rollback failed", "error", rsErr)
 		}
 		return nil, err
 	}
@@ -281,11 +281,11 @@ func getLatestDescendant(taskID string, reverseLineage map[string]string) (strin
 	current := taskID
 	for {
 		if visited[current] {
-			log.Printf("[WARN] lineage cycle detected starting from task %s, revisited %s", taskID, current)
+			slog.Warn("lineage cycle detected", "start_task_id", taskID, "revisited_task_id", current)
 			return "", fmt.Errorf("lineage cycle detected: task %s revisited while resolving lineage from %s", current, taskID)
 		}
 		if len(visited) >= maxLineageDepth {
-			log.Printf("[WARN] lineage depth exceeded %d starting from task %s", maxLineageDepth, taskID)
+			slog.Warn("lineage depth exceeded", "max_depth", maxLineageDepth, "start_task_id", taskID)
 			return "", fmt.Errorf("lineage depth exceeded maximum %d starting from task %s", maxLineageDepth, taskID)
 		}
 		visited[current] = true

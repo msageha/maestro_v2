@@ -71,6 +71,9 @@ type CircuitBreakerState struct {
 	Tripped             bool    `yaml:"tripped"`
 	TrippedAt           *string `yaml:"tripped_at,omitempty"`
 	TripReason          *string `yaml:"trip_reason,omitempty"`
+	HalfOpen            bool    `yaml:"half_open,omitempty"`
+	HalfOpenAt          *string `yaml:"half_open_at,omitempty"`
+	HalfOpenProbeActive bool    `yaml:"half_open_probe_active,omitempty"`
 }
 
 // CompletionPolicy はコマンドの完了判定ポリシーを定義する。

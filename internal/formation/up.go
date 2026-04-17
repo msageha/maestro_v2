@@ -3,7 +3,7 @@ package formation
 import (
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"time"
@@ -99,7 +99,7 @@ func RunUp(opts UpOptions) (err error) {
 		// Daemon failed to start — clean up
 		_ = stopDaemon(opts.MaestroDir)
 		if err := tmux.KillSession(); err != nil {
-			log.Printf("[WARN] KillSession (daemon not ready cleanup): %v", err)
+			slog.Warn("KillSession failed during daemon not ready cleanup", "error", err)
 		}
 		return fmt.Errorf("daemon not ready: %w", err)
 	}

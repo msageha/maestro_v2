@@ -4,12 +4,17 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 
 	yamlv3 "gopkg.in/yaml.v3"
 
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
+
+// leaseEpochRe matches "lease_epoch: <number>" in YAML content.
+var leaseEpochRe = regexp.MustCompile(`(?m)^(\s*lease_epoch:\s*)(\d+)(.*)$`)
 
 // stateLogger is the minimal logging interface used by recoverStateFiles so
 // the routine can be exercised from tests without a full Daemon.
@@ -43,6 +48,11 @@ func recoverStateDir(stateDir string, logger stateLogger) {
 		return
 	}
 
+	// ORC-3: Collect max lease_epoch from all valid YAML files before recovery.
+	// This prevents .bak restoration from rolling back epoch values, which could
+	// cause fencing violations (stale epoch accepted as current).
+	epochFloor := collectMaxLeaseEpoch(stateDir, entries, logger)
+
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -73,12 +83,74 @@ func recoverStateDir(stateDir string, logger stateLogger) {
 			logger.logf(LogLevelWarn, "state_recovery bak_read_failed path=%s error=%v", bakPath, err)
 			continue
 		}
+
+		// ORC-3: Clamp lease_epoch values in restored content to the floor.
+		bakContent = clampLeaseEpoch(bakContent, epochFloor, logger, path)
+
 		if err := yamlutil.AtomicWriteRaw(path, bakContent); err != nil {
 			logger.logf(LogLevelWarn, "state_recovery restore_failed path=%s error=%v", path, err)
 			continue
 		}
 		logger.logf(LogLevelInfo, "state_recovery restored path=%s from=%s", path, bakPath)
 	}
+}
+
+// collectMaxLeaseEpoch scans all valid YAML files in the directory and returns
+// the maximum lease_epoch value found. Returns 0 if none found.
+func collectMaxLeaseEpoch(stateDir string, entries []os.DirEntry, logger stateLogger) int {
+	maxEpoch := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".yaml") || strings.HasSuffix(name, ".bak") {
+			continue
+		}
+		path := filepath.Join(stateDir, name)
+		content, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled directory
+		if err != nil {
+			continue
+		}
+		for _, epoch := range extractLeaseEpochs(content) {
+			if epoch > maxEpoch {
+				maxEpoch = epoch
+			}
+		}
+	}
+	return maxEpoch
+}
+
+// extractLeaseEpochs returns all lease_epoch integer values found in YAML content.
+func extractLeaseEpochs(content []byte) []int {
+	matches := leaseEpochRe.FindAllSubmatch(content, -1)
+	epochs := make([]int, 0, len(matches))
+	for _, m := range matches {
+		if v, err := strconv.Atoi(string(m[2])); err == nil {
+			epochs = append(epochs, v)
+		}
+	}
+	return epochs
+}
+
+// clampLeaseEpoch replaces any lease_epoch value below floor with floor in the
+// raw YAML content, preserving formatting. Returns the (possibly modified) content.
+func clampLeaseEpoch(content []byte, floor int, logger stateLogger, path string) []byte {
+	if floor <= 0 {
+		return content
+	}
+	return leaseEpochRe.ReplaceAllFunc(content, func(match []byte) []byte {
+		parts := leaseEpochRe.FindSubmatch(match)
+		v, err := strconv.Atoi(string(parts[2]))
+		if err != nil {
+			return match
+		}
+		if v < floor {
+			logger.logf(LogLevelWarn, "state_recovery epoch_clamped path=%s old_epoch=%d floor=%d", path, v, floor)
+			return []byte(string(parts[1]) + strconv.Itoa(floor) + string(parts[3]))
+		}
+		return match
+	})
 }
 
 func parseYAMLFile(path string) error {

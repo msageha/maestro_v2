@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -96,7 +96,7 @@ func syncDir(dir string) error {
 	}
 	defer func() {
 		if err := d.Close(); err != nil {
-			log.Printf("WARN: failed to close directory %s: %v", dir, err)
+			slog.Warn("failed to close directory", "dir", dir, "error", err)
 		}
 	}()
 	return d.Sync()
@@ -114,7 +114,7 @@ func copyFile(src, dst string) error {
 	}
 	defer func() {
 		if err := in.Close(); err != nil {
-			log.Printf("WARN: failed to close source file %s: %v", src, err)
+			slog.Warn("failed to close source file", "path", src, "error", err)
 		}
 	}()
 
@@ -136,11 +136,11 @@ func copyFile(src, dst string) error {
 	defer func() {
 		if !tmpClosed {
 			if err := tmp.Close(); err != nil {
-				log.Printf("WARN: failed to close backup temp file %s: %v", tmpName, err)
+				slog.Warn("failed to close backup temp file", "path", tmpName, "error", err)
 			}
 		}
 		if err := os.Remove(tmpName); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			log.Printf("WARN: failed to remove backup temp file %s: %v", tmpName, err)
+			slog.Warn("failed to remove backup temp file", "path", tmpName, "error", err)
 		}
 	}()
 

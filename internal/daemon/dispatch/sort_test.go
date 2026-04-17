@@ -1,0 +1,200 @@
+package dispatch
+
+import (
+	"testing"
+	"time"
+
+	"github.com/msageha/maestro_v2/internal/model"
+)
+
+func TestEffectivePriority(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+
+	tests := []struct {
+		name             string
+		priority         int
+		createdAt        string
+		priorityAgingSec int
+		expected         int
+	}{
+		{
+			"no aging",
+			5, now.Format(time.RFC3339), 0,
+			5,
+		},
+		{
+			"fresh entry",
+			5, now.Format(time.RFC3339), 60,
+			5,
+		},
+		{
+			"aged 2 intervals",
+			5, now.Add(-120 * time.Second).Format(time.RFC3339), 60,
+			3,
+		},
+		{
+			"aged beyond zero clamps to 0",
+			2, now.Add(-300 * time.Second).Format(time.RFC3339), 60,
+			0,
+		},
+		{
+			"invalid time",
+			5, "invalid", 60,
+			5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := EffectivePriority(tt.priority, tt.createdAt, tt.priorityAgingSec)
+			if got != tt.expected {
+				t.Errorf("got %d, want %d", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestEffectivePriority_Aging(t *testing.T) {
+	t.Parallel()
+	// 5 minutes old, aging every 60 seconds → effective = max(0, 3 - 5) = 0
+	created := time.Now().Add(-5 * time.Minute).Format(time.RFC3339)
+	ep := EffectivePriority(3, created, 60)
+	if ep != 0 {
+		t.Errorf("expected 0, got %d", ep)
+	}
+}
+
+func TestSortPendingIndices_EmptySlice(t *testing.T) {
+	t.Parallel()
+	result := SortPendingIndices([]model.Task{}, func(t model.Task) SortKey {
+		return SortKey{Status: t.Status, Priority: t.Priority, CreatedAt: t.CreatedAt, ID: t.ID}
+	}, 0)
+	if len(result) != 0 {
+		t.Errorf("expected empty result, got %d", len(result))
+	}
+}
+
+func TestSortPendingIndices_AllNonPending(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC().Format(time.RFC3339)
+	items := []model.Task{
+		{ID: "t1", Status: model.StatusInProgress, Priority: 1, CreatedAt: now},
+		{ID: "t2", Status: model.StatusCompleted, Priority: 2, CreatedAt: now},
+		{ID: "t3", Status: model.StatusFailed, Priority: 3, CreatedAt: now},
+	}
+	result := SortPendingIndices(items, func(t model.Task) SortKey {
+		return SortKey{Status: t.Status, Priority: t.Priority, CreatedAt: t.CreatedAt, ID: t.ID}
+	}, 0)
+	if len(result) != 0 {
+		t.Errorf("expected no pending items, got %d", len(result))
+	}
+}
+
+func TestSortPendingIndices_MixedStatuses(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC().Format(time.RFC3339)
+	items := []model.Command{
+		{ID: "c1", Status: model.StatusInProgress, Priority: 1, CreatedAt: now},
+		{ID: "c2", Status: model.StatusPending, Priority: 3, CreatedAt: now},
+		{ID: "c3", Status: model.StatusPending, Priority: 1, CreatedAt: now},
+		{ID: "c4", Status: model.StatusCompleted, Priority: 0, CreatedAt: now},
+	}
+	result := SortPendingIndices(items, func(c model.Command) SortKey {
+		return SortKey{Status: c.Status, Priority: c.Priority, CreatedAt: c.CreatedAt, ID: c.ID}
+	}, 0)
+	if len(result) != 2 {
+		t.Fatalf("expected 2 pending, got %d", len(result))
+	}
+	// c3 (priority 1) before c2 (priority 3)
+	if items[result[0]].ID != "c3" {
+		t.Errorf("first: got %s, want c3", items[result[0]].ID)
+	}
+	if items[result[1]].ID != "c2" {
+		t.Errorf("second: got %s, want c2", items[result[1]].ID)
+	}
+}
+
+func TestSortPendingIndices_PreservesOriginalIndices(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC().Format(time.RFC3339)
+	items := []model.Notification{
+		{ID: "n_skip", Status: model.StatusCompleted, Priority: 0, CreatedAt: now},
+		{ID: "n_high", Status: model.StatusPending, Priority: 5, CreatedAt: now},
+		{ID: "n_skip2", Status: model.StatusInProgress, Priority: 0, CreatedAt: now},
+		{ID: "n_low", Status: model.StatusPending, Priority: 1, CreatedAt: now},
+	}
+	result := SortPendingIndices(items, func(n model.Notification) SortKey {
+		return SortKey{Status: n.Status, Priority: n.Priority, CreatedAt: n.CreatedAt, ID: n.ID}
+	}, 0)
+	if len(result) != 2 {
+		t.Fatalf("expected 2, got %d", len(result))
+	}
+	// Verify original indices are preserved correctly
+	if result[0] != 3 { // n_low is at index 3
+		t.Errorf("first index: got %d, want 3", result[0])
+	}
+	if result[1] != 1 { // n_high is at index 1
+		t.Errorf("second index: got %d, want 1", result[1])
+	}
+}
+
+func TestSortPendingIndices_WithAging(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	items := []model.Task{
+		{ID: "t_new_high", Status: model.StatusPending, Priority: 5, CreatedAt: now.Format(time.RFC3339)},
+		{ID: "t_old_high", Status: model.StatusPending, Priority: 5, CreatedAt: now.Add(-3 * time.Minute).Format(time.RFC3339)},
+	}
+	// With aging every 60s: t_old_high effective = max(0, 5-3) = 2, t_new_high effective = 5
+	result := SortPendingIndices(items, func(t model.Task) SortKey {
+		return SortKey{Status: t.Status, Priority: t.Priority, CreatedAt: t.CreatedAt, ID: t.ID}
+	}, 60)
+	if len(result) != 2 {
+		t.Fatalf("expected 2, got %d", len(result))
+	}
+	if items[result[0]].ID != "t_old_high" {
+		t.Errorf("first: got %s, want t_old_high (aged priority should be lower)", items[result[0]].ID)
+	}
+}
+
+func TestSortPendingIndices_ConsistentAcrossTypes(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	ts := now.Format(time.RFC3339)
+	ts2 := now.Add(time.Second).Format(time.RFC3339)
+
+	// Verify that tasks, commands, and notifications produce identical ordering
+	// for the same priority/created_at/id combinations
+	taskResult := SortPendingIndices([]model.Task{
+		{ID: "b", Status: model.StatusPending, Priority: 1, CreatedAt: ts2},
+		{ID: "a", Status: model.StatusPending, Priority: 1, CreatedAt: ts},
+	}, func(t model.Task) SortKey {
+		return SortKey{Status: t.Status, Priority: t.Priority, CreatedAt: t.CreatedAt, ID: t.ID}
+	}, 0)
+
+	cmdResult := SortPendingIndices([]model.Command{
+		{ID: "b", Status: model.StatusPending, Priority: 1, CreatedAt: ts2},
+		{ID: "a", Status: model.StatusPending, Priority: 1, CreatedAt: ts},
+	}, func(c model.Command) SortKey {
+		return SortKey{Status: c.Status, Priority: c.Priority, CreatedAt: c.CreatedAt, ID: c.ID}
+	}, 0)
+
+	ntfResult := SortPendingIndices([]model.Notification{
+		{ID: "b", Status: model.StatusPending, Priority: 1, CreatedAt: ts2},
+		{ID: "a", Status: model.StatusPending, Priority: 1, CreatedAt: ts},
+	}, func(n model.Notification) SortKey {
+		return SortKey{Status: n.Status, Priority: n.Priority, CreatedAt: n.CreatedAt, ID: n.ID}
+	}, 0)
+
+	// All should sort "a" (earlier created_at) first → index 1
+	for name, result := range map[string][]int{"task": taskResult, "command": cmdResult, "notification": ntfResult} {
+		if len(result) != 2 {
+			t.Fatalf("%s: expected 2, got %d", name, len(result))
+		}
+		if result[0] != 1 {
+			t.Errorf("%s: first should be index 1 (id=a), got %d", name, result[0])
+		}
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil"
 	"github.com/msageha/maestro_v2/internal/testutil/mocks"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -20,7 +21,7 @@ import (
 
 func TestR3PlannerQueue_NoResultFile(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	run := newRun(&deps)
 	outcome := R3PlannerQueue{}.Apply(run)
@@ -31,7 +32,7 @@ func TestR3PlannerQueue_NoResultFile(t *testing.T) {
 
 func TestR3PlannerQueue_NoTerminalResults(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -51,7 +52,7 @@ func TestR3PlannerQueue_NoTerminalResults(t *testing.T) {
 
 func TestR3PlannerQueue_HappyPath_RepairsNonTerminalCommand(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -103,7 +104,7 @@ func TestR3PlannerQueue_HappyPath_RepairsNonTerminalCommand(t *testing.T) {
 
 func TestR3PlannerQueue_Idempotent(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -142,7 +143,7 @@ func TestR3PlannerQueue_Idempotent(t *testing.T) {
 
 func TestR3PlannerQueue_AlreadyTerminalQueue_NoRepair(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -170,7 +171,7 @@ func TestR3PlannerQueue_AlreadyTerminalQueue_NoRepair(t *testing.T) {
 
 func TestR3PlannerQueue_FailedResult(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -208,7 +209,7 @@ func TestR3PlannerQueue_FailedResult(t *testing.T) {
 
 func TestR3PlannerQueue_MultipleCommands(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -244,7 +245,7 @@ func TestR3PlannerQueue_MultipleCommands(t *testing.T) {
 
 func TestR3PlannerQueue_NoQueueFile_NoRepair(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -267,7 +268,7 @@ func TestR3PlannerQueue_NoQueueFile_NoRepair(t *testing.T) {
 
 func TestR4PlanStatus_CanCompleteNil_Skipped(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -295,7 +296,7 @@ func TestR4PlanStatus_CanCompleteNil_Skipped(t *testing.T) {
 
 func TestR4PlanStatus_AlreadyTerminal_Skipped(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	deps.CanComplete = func(*model.CommandState) (model.PlanStatus, error) {
 		return model.PlanStatusCompleted, nil
@@ -326,7 +327,7 @@ func TestR4PlanStatus_AlreadyTerminal_Skipped(t *testing.T) {
 
 func TestR4PlanStatus_CanCompleteSuccess(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	deps.CanComplete = func(*model.CommandState) (model.PlanStatus, error) {
 		return model.PlanStatusCompleted, nil
@@ -368,7 +369,7 @@ func TestR4PlanStatus_CanCompleteSuccess(t *testing.T) {
 
 func TestR4PlanStatus_CanCompleteFails_QuarantineAndNotify(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	deps.CanComplete = func(*model.CommandState) (model.PlanStatus, error) {
 		return "", fmt.Errorf("tasks incomplete")
@@ -419,7 +420,7 @@ func TestR4PlanStatus_CanCompleteFails_QuarantineAndNotify(t *testing.T) {
 
 func TestR4PlanStatus_StateNotFound_NoRepair(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	deps.CanComplete = func(*model.CommandState) (model.PlanStatus, error) {
 		return model.PlanStatusCompleted, nil
@@ -444,7 +445,7 @@ func TestR4PlanStatus_StateNotFound_NoRepair(t *testing.T) {
 
 func TestR5Notification_NilResultHandler(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	// ResultHandler is nil
 	run := newRun(&deps)
@@ -456,7 +457,7 @@ func TestR5Notification_NilResultHandler(t *testing.T) {
 
 func TestR5Notification_NotNotified_Ignored(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	deps.ResultHandler = &mockResultNotifier{}
 	now := time.Now().UTC().Format(time.RFC3339)
@@ -477,7 +478,7 @@ func TestR5Notification_NotNotified_Ignored(t *testing.T) {
 
 func TestR5Notification_WriteError(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	notifier := &mockResultNotifier{err: fmt.Errorf("write failed")}
 	deps.ResultHandler = notifier
@@ -504,7 +505,7 @@ func TestR5Notification_WriteError(t *testing.T) {
 
 func TestR5Notification_HappyPath_ReissuesNotification(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	notifier := &mockResultNotifier{}
 	deps.ResultHandler = notifier
@@ -548,7 +549,7 @@ func TestR5Notification_HappyPath_ReissuesNotification(t *testing.T) {
 
 func TestR5Notification_AlreadyInOrchestratorQueue_NoRepair(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	notifier := &mockResultNotifier{}
 	deps.ResultHandler = notifier
@@ -581,7 +582,7 @@ func TestR5Notification_AlreadyInOrchestratorQueue_NoRepair(t *testing.T) {
 
 func TestR5Notification_Idempotent(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	notifier := &mockResultNotifier{}
 	deps.ResultHandler = notifier
@@ -621,7 +622,7 @@ func TestR5Notification_Idempotent(t *testing.T) {
 
 func TestR5Notification_NonTerminalResult_Ignored(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	notifier := &mockResultNotifier{}
 	deps.ResultHandler = notifier
@@ -644,7 +645,7 @@ func TestR5Notification_NonTerminalResult_Ignored(t *testing.T) {
 
 func TestR5Notification_NoOrchestratorQueue_StillRepairs(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	notifier := &mockResultNotifier{}
 	deps.ResultHandler = notifier
@@ -670,7 +671,7 @@ func TestR5Notification_NoOrchestratorQueue_StillRepairs(t *testing.T) {
 
 func TestR5Notification_MultipleResults(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	notifier := &mockResultNotifier{}
 	deps.ResultHandler = notifier
@@ -709,7 +710,7 @@ func TestR5Notification_MultipleResults(t *testing.T) {
 // for the new type instead of dropping it.
 func TestR5Notification_TypeMismatch_ReissuesForSupersede(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	notifier := &mockResultNotifier{}
 	deps.ResultHandler = notifier
@@ -754,7 +755,7 @@ func TestR5Notification_TypeMismatch_ReissuesForSupersede(t *testing.T) {
 
 func TestR6FillTimeout_NoPhases_NoRepair(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -775,7 +776,7 @@ func TestR6FillTimeout_NoPhases_NoRepair(t *testing.T) {
 
 func TestR6FillTimeout_NoDeadline_NoRepair(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -801,7 +802,7 @@ func TestR6FillTimeout_NoDeadline_NoRepair(t *testing.T) {
 
 func TestR6FillTimeout_ActivePhase_Ignored(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC()
 	setClock(&deps, now)
@@ -829,7 +830,7 @@ func TestR6FillTimeout_ActivePhase_Ignored(t *testing.T) {
 
 func TestR6FillTimeout_MultipleTimedOutPhases(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC()
 	setClock(&deps, now)
@@ -864,7 +865,7 @@ func TestR6FillTimeout_MultipleTimedOutPhases(t *testing.T) {
 
 func TestR6FillTimeout_NoExecutorFactory_NoNotification(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC()
 	setClock(&deps, now)
@@ -897,7 +898,7 @@ func TestR6FillTimeout_NoExecutorFactory_NoNotification(t *testing.T) {
 
 func TestR1ResultQueue_RetryEnqueueFailed_AlreadyInQueue(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -950,7 +951,7 @@ func TestR1ResultQueue_RetryEnqueueFailed_AlreadyInQueue(t *testing.T) {
 
 func TestR1ResultQueue_RetryEnqueueFailed_MaxAttemptsExceeded(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -996,7 +997,7 @@ func TestR1ResultQueue_RetryEnqueueFailed_MaxAttemptsExceeded(t *testing.T) {
 
 func TestR1ResultQueue_RetryEnqueueFailed_OriginalTaskNotFound(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -1048,7 +1049,7 @@ func TestR1ResultQueue_RetryEnqueueFailed_OriginalTaskNotFound(t *testing.T) {
 
 func TestR1ResultQueue_RetryEnqueueFailed_ReenqueueSuccess(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	fixedTime := time.Date(2024, 1, 15, 10, 0, 0, 0, time.UTC)
 	deps := newTestDeps(t, maestroDir)
 	setClock(&deps, fixedTime)
@@ -1137,7 +1138,7 @@ func TestR1ResultQueue_RetryEnqueueFailed_ReenqueueFails(t *testing.T) {
 		t.Skip("skipping: running as root")
 	}
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -1206,7 +1207,7 @@ func TestR1ResultQueue_RetryEnqueueFailed_ReenqueueFails(t *testing.T) {
 
 func TestLoadState_CorruptedYAML(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	run := newRun(&deps)
 
@@ -1244,7 +1245,7 @@ func TestLoadCommandResultFile_NonExistent(t *testing.T) {
 
 func TestRemoveCommandFromPlannerQueue_NoQueueFile(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	run := newRun(&deps)
 
@@ -1259,7 +1260,7 @@ func TestRemoveCommandFromPlannerQueue_NoQueueFile(t *testing.T) {
 
 func TestRemoveCommandFromPlannerQueue_CommandNotFound(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC().Format(time.RFC3339)
 
@@ -1289,7 +1290,7 @@ func TestRemoveCommandFromPlannerQueue_CommandNotFound(t *testing.T) {
 
 func TestR4PlanStatus_PlanningStatus_Skipped(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	deps.CanComplete = func(*model.CommandState) (model.PlanStatus, error) {
 		t.Fatal("CanComplete should not be called for planning state")
@@ -1326,7 +1327,7 @@ func TestR4PlanStatus_PlanningStatus_Skipped(t *testing.T) {
 
 func TestR4PlanStatus_BackoffExponential(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	callCount := 0
 	deps.CanComplete = func(*model.CommandState) (model.PlanStatus, error) {
@@ -1406,7 +1407,7 @@ func TestR4PlanStatus_BackoffExponential(t *testing.T) {
 
 func TestR4PlanStatus_BackoffClearedOnSuccess(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	callCount := 0
 	shouldFail := true
@@ -1495,7 +1496,7 @@ func TestR4BackoffCycles(t *testing.T) {
 
 func TestR6FillTimeout_DeepCascade_ThreeLevelDependency(t *testing.T) {
 	t.Parallel()
-	maestroDir := setupTestDir(t)
+	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
 	now := time.Now().UTC()
 	setClock(&deps, now)

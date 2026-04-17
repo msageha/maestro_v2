@@ -4,7 +4,7 @@ package lock
 
 import (
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"runtime"
 	"strconv"
@@ -151,7 +151,7 @@ func (c *debugOrderChecker) BeforeUnlock(key string) {
 // panics to surface ordering bugs early.
 func (c *debugOrderChecker) violate(msg string) {
 	if c.mode == lockOrderWarn {
-		log.Printf("LOCKORDER: %s", msg)
+		slog.Warn("lock order violation", "detail", msg)
 		return
 	}
 	panic(msg)

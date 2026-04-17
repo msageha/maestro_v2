@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
@@ -108,9 +109,10 @@ func TestGuard_MultipleInProgressCommands_NoneDispatched(t *testing.T) {
 
 	qh.PeriodicScan()
 
-	data, _ := os.ReadFile(plannerPath)
+	data, err := os.ReadFile(plannerPath)
+	require.NoError(t, err)
 	var result model.CommandQueue
-	yamlv3.Unmarshal(data, &result)
+	require.NoError(t, yamlv3.Unmarshal(data, &result))
 
 	for _, cmd := range result.Commands {
 		if cmd.ID == "cmd_pending" && cmd.Status != model.StatusPending {
@@ -140,9 +142,10 @@ func TestGuard_DeadLetterCommandNotBlockingDispatch(t *testing.T) {
 
 	qh.PeriodicScan()
 
-	data, _ := os.ReadFile(plannerPath)
+	data, err := os.ReadFile(plannerPath)
+	require.NoError(t, err)
 	var result model.CommandQueue
-	yamlv3.Unmarshal(data, &result)
+	require.NoError(t, yamlv3.Unmarshal(data, &result))
 
 	for _, cmd := range result.Commands {
 		if cmd.ID == "cmd_new" && cmd.Status != model.StatusInProgress {
@@ -185,9 +188,10 @@ func TestCommandLeaseAutoExtend_ExactMaxTimeout(t *testing.T) {
 
 	qh.PeriodicScan()
 
-	data, _ := os.ReadFile(plannerPath)
+	data, err := os.ReadFile(plannerPath)
+	require.NoError(t, err)
 	var result model.CommandQueue
-	yamlv3.Unmarshal(data, &result)
+	require.NoError(t, yamlv3.Unmarshal(data, &result))
 
 	cmd := result.Commands[0]
 	// At exact boundary, time.Since(updatedAt) >= 30m should be true → release
@@ -236,9 +240,10 @@ func TestCommandLeaseAutoExtend_JustBeforeMaxTimeout(t *testing.T) {
 
 	qh.PeriodicScan()
 
-	data, _ := os.ReadFile(plannerPath)
+	data, err := os.ReadFile(plannerPath)
+	require.NoError(t, err)
 	var result model.CommandQueue
-	yamlv3.Unmarshal(data, &result)
+	require.NoError(t, yamlv3.Unmarshal(data, &result))
 
 	cmd := result.Commands[0]
 	if cmd.Status != model.StatusInProgress {
@@ -281,9 +286,10 @@ func TestCommandLeaseAutoExtend_NilLeaseExpiresAt(t *testing.T) {
 
 	qh.PeriodicScan()
 
-	data, _ := os.ReadFile(plannerPath)
+	data, err := os.ReadFile(plannerPath)
+	require.NoError(t, err)
 	var result model.CommandQueue
-	yamlv3.Unmarshal(data, &result)
+	require.NoError(t, yamlv3.Unmarshal(data, &result))
 
 	cmd := result.Commands[0]
 	// Malformed nil lease_expires_at → IsLeaseExpired returns true → auto-extend
@@ -335,9 +341,10 @@ func TestCommandLeaseAutoExtend_DefaultMaxInProgressMin(t *testing.T) {
 
 	qh.PeriodicScan()
 
-	data, _ := os.ReadFile(plannerPath)
+	data, err := os.ReadFile(plannerPath)
+	require.NoError(t, err)
 	var result model.CommandQueue
-	yamlv3.Unmarshal(data, &result)
+	require.NoError(t, yamlv3.Unmarshal(data, &result))
 
 	if result.Commands[0].Status != model.StatusInProgress {
 		t.Errorf("got %s, want in_progress (within default 60m max)", result.Commands[0].Status)
@@ -375,9 +382,10 @@ func TestTaskLeaseExpiry_NilLeaseExpiresAt(t *testing.T) {
 
 	qh.PeriodicScan()
 
-	data, _ := os.ReadFile(workerPath)
+	data, err := os.ReadFile(workerPath)
+	require.NoError(t, err)
 	var result model.TaskQueue
-	yamlv3.Unmarshal(data, &result)
+	require.NoError(t, yamlv3.Unmarshal(data, &result))
 
 	task := result.Tasks[0]
 	if task.Status != model.StatusPending {
@@ -520,9 +528,10 @@ func TestTaskDispatchError_LeaseReleased(t *testing.T) {
 
 	qh.PeriodicScan()
 
-	data, _ := os.ReadFile(workerPath)
+	data, err := os.ReadFile(workerPath)
+	require.NoError(t, err)
 	var result model.TaskQueue
-	yamlv3.Unmarshal(data, &result)
+	require.NoError(t, yamlv3.Unmarshal(data, &result))
 
 	task := result.Tasks[0]
 	// Task dispatch failure → lease released → back to pending

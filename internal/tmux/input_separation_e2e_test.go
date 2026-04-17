@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 // testContentHash returns a hex SHA-256 hash of s (local version for this test file).
@@ -69,6 +71,8 @@ func createTestSession(t *testing.T, name string) string {
 }
 
 // waitForOutput polls the pane until the marker string appears or timeout expires.
+// Returns bool so callers can handle non-fatal timeouts; time.Sleep polling is
+// intentional here because require.Eventually would fatal on timeout.
 func waitForOutput(t *testing.T, paneTarget, marker string, timeout time.Duration) bool {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -77,21 +81,23 @@ func waitForOutput(t *testing.T, paneTarget, marker string, timeout time.Duratio
 		if err == nil && strings.Contains(content, marker) {
 			return true
 		}
-		time.Sleep(200 * time.Millisecond)
+		time.Sleep(200 * time.Millisecond) // polling interval for e2e tmux interaction
 	}
 	return false
 }
 
-// mustWaitForOutput is like waitForOutput but calls t.Fatal on timeout.
+// mustWaitForOutput polls until marker appears in the pane, fataling on timeout.
 func mustWaitForOutput(t *testing.T, paneTarget, marker string, timeout time.Duration) {
 	t.Helper()
-	if !waitForOutput(t, paneTarget, marker, timeout) {
-		content, _ := CapturePane(paneTarget, 30)
-		t.Fatalf("timeout waiting for %q in pane %s\ncontent:\n%s", marker, paneTarget, content)
-	}
+	require.Eventually(t, func() bool {
+		content, err := CapturePane(paneTarget, 30)
+		return err == nil && strings.Contains(content, marker)
+	}, timeout, 200*time.Millisecond, "timeout waiting for %q in pane %s", marker, paneTarget)
 }
 
 // waitForCommand polls until the pane's current command matches expected.
+// Uses time.Sleep polling because this is a best-effort e2e helper that
+// logs a warning and proceeds on timeout rather than fataling.
 func waitForCommand(t *testing.T, paneTarget, expected string, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -100,12 +106,15 @@ func waitForCommand(t *testing.T, paneTarget, expected string, timeout time.Dura
 		if err == nil && strings.Contains(cmd, expected) {
 			return
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond) // polling interval for e2e tmux interaction
 	}
 	t.Logf("WARNING: command %q not detected in pane %s, proceeding", expected, paneTarget)
 }
 
 // waitForStableContent polls until the pane content hash is stable for stableDuration.
+// Uses time.Sleep polling because this is a best-effort e2e helper that logs a
+// warning and proceeds on timeout. The stability-check logic (comparing successive
+// hashes over a duration) does not map to require.Eventually's simple bool predicate.
 func waitForStableContent(t *testing.T, paneTarget string, stableDuration, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -124,7 +133,7 @@ func waitForStableContent(t *testing.T, paneTarget string, stableDuration, timeo
 				stableSince = time.Now()
 			}
 		}
-		time.Sleep(100 * time.Millisecond)
+		time.Sleep(100 * time.Millisecond) // polling interval for e2e tmux interaction
 	}
 	t.Logf("WARNING: pane content not stable within %v, proceeding", timeout)
 }

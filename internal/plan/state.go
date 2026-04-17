@@ -3,7 +3,7 @@ package plan
 import (
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,7 +81,7 @@ func (sm *StateManager) LoadState(commandID string) (*model.CommandState, error)
 	// (which uses AtomicWriteRaw) does not overwrite the good .bak with the
 	// corrupted primary. Skeleton generation is NOT used for state_command
 	// because it would silently discard command progress.
-	log.Printf("[WARN] LoadState: YAML corrupted for command %s, attempting backup recovery", commandID)
+	slog.Warn("LoadState: YAML corrupted, attempting backup recovery", "command_id", commandID)
 	if _, quarantineErr := yamlutil.Quarantine(sm.maestroDir, path); quarantineErr != nil {
 		return nil, fmt.Errorf("parse state %s (quarantine failed: %s): %w", commandID, quarantineErr.Error(), parseErr)
 	}
@@ -89,7 +89,7 @@ func (sm *StateManager) LoadState(commandID string) (*model.CommandState, error)
 		return nil, fmt.Errorf("parse state %s (backup recovery also failed: %s): %w", commandID, recoverErr.Error(), parseErr)
 	}
 
-	log.Printf("[INFO] LoadState: restored command %s from backup", commandID)
+	slog.Info("LoadState: restored command from backup", "command_id", commandID)
 
 	// Re-read and validate the restored file
 	state, err = sm.loadAndParseState(path, commandID)
@@ -141,7 +141,7 @@ func (sm *StateManager) loadAndParseState(path, commandID string) (*model.Comman
 		if err != nil {
 			return nil, fmt.Errorf("re-serialize state %s after migration: %w", commandID, errors.Join(errYAMLCorrupted, err))
 		}
-		log.Printf("[INFO] loadAndParseState: migrated state %s from schema version %d to %d", commandID, schemaVersion, currentSchemaVersion)
+		slog.Info("loadAndParseState: migrated state", "command_id", commandID, "from_version", schemaVersion, "to_version", currentSchemaVersion)
 	}
 
 	var state model.CommandState
@@ -334,7 +334,7 @@ func DeriveStatus(state *model.CommandState) (model.PlanStatus, error) {
 		case "ignore":
 			// do nothing, succeed
 		case "warn":
-			log.Printf("[WARN] DeriveStatus: optional task(s) failed for command %s (policy: warn)", state.CommandID)
+			slog.Warn("DeriveStatus: optional task(s) failed", "command_id", state.CommandID, "policy", "warn")
 		case "fail_command":
 			return model.PlanStatusFailed, nil
 		default:

@@ -16,6 +16,7 @@ type CommandQueue struct {
 // Planner によるタスク分解とライフサイクル管理の単位となる。
 type Command struct {
 	ID                string   `yaml:"id"`
+	DispatchID        string   `yaml:"dispatch_id,omitempty"`
 	Content           string   `yaml:"content"`
 	SkillRefs         []string `yaml:"skill_refs,omitempty"`
 	Priority          int      `yaml:"priority"`
@@ -62,6 +63,7 @@ func DefaultDefinitionOfAbort() DefinitionOfAbort {
 // Worker に配信され、実行・結果報告のライフサイクルを持つ。
 type Task struct {
 	ID                 string             `yaml:"id"`
+	DispatchID         string             `yaml:"dispatch_id,omitempty"`
 	CommandID          string             `yaml:"command_id"`
 	Purpose            string             `yaml:"purpose"`
 	Content            string             `yaml:"content"`

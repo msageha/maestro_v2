@@ -2,8 +2,8 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 )
@@ -153,7 +153,7 @@ func TestEnsureWorkingDir_ControlChars(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for control characters")
 	}
-	if !strings.Contains(err.Error(), "control characters") {
+	if !errors.Is(err, ErrControlChars) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -263,7 +263,7 @@ func TestEnsureWorkingDir_RespawnPaneFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when RespawnPane fails")
 	}
-	if !strings.Contains(err.Error(), "respawn pane") {
+	if !errors.Is(err, ErrRespawnPane) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -288,7 +288,7 @@ func TestClearAndConfirm_SendCommandFailsAllAttempts(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when all send attempts fail")
 	}
-	if !strings.Contains(err.Error(), "send /clear failed after") {
+	if !errors.Is(err, ErrClearSendFailed) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -305,7 +305,7 @@ func TestClearAndConfirm_ContextCancelledBeforeAttempt(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
 	}
-	if !strings.Contains(err.Error(), "cancelled") {
+	if !errors.Is(err, context.Canceled) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -334,7 +334,7 @@ func TestClearAndConfirm_NotConfirmedAfterMaxAttempts(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when /clear not confirmed")
 	}
-	if !strings.Contains(err.Error(), "not confirmed after") {
+	if !errors.Is(err, ErrClearNotConfirmed) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -373,7 +373,7 @@ func TestClearAndConfirm_SendKeysFailsRetries(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when SendKeys fails")
 	}
-	if !strings.Contains(err.Error(), "send second Enter failed") {
+	if !errors.Is(err, ErrSecondEnterFailed) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -416,7 +416,7 @@ func TestWaitStable_ContentUnstable(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for unstable content")
 	}
-	if !strings.Contains(err.Error(), "not stable") {
+	if !errors.Is(err, ErrNotStable) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -434,7 +434,7 @@ func TestWaitStable_CaptureError_FirstCapture(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on capture failure")
 	}
-	if !strings.Contains(err.Error(), "capture pane for stability") {
+	if !errors.Is(err, ErrCapturePane) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -495,7 +495,7 @@ func TestWaitStable_HardPromptCheck_NoPrompt(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error with hard prompt check and no prompt")
 	}
-	if !strings.Contains(err.Error(), "no prompt detected") {
+	if !errors.Is(err, ErrNoPrompt) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -533,7 +533,7 @@ func TestWaitStable_ContextCancelled(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
 	}
-	if !strings.Contains(err.Error(), "cancelled") {
+	if !errors.Is(err, context.Canceled) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -601,7 +601,7 @@ func TestWaitReady_CaptureErrorsExhausted(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when all captures fail")
 	}
-	if !strings.Contains(err.Error(), "capture pane failed") {
+	if !errors.Is(err, ErrCapturePane) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -651,7 +651,7 @@ func TestWaitReadyStrict_NoPrompt_Fails(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when prompt never detected (strict mode)")
 	}
-	if !strings.Contains(err.Error(), "prompt not detected") {
+	if !errors.Is(err, ErrPromptNotDetected) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -713,7 +713,7 @@ func TestWaitForShell_ConsecutiveErrors(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for consecutive errors")
 	}
-	if !strings.Contains(err.Error(), "consecutive errors") {
+	if !errors.Is(err, ErrConsecutiveErrors) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -951,7 +951,7 @@ func TestWaitStable_HardPromptCheck_CaptureError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when prompt capture fails in hard mode")
 	}
-	if !strings.Contains(err.Error(), "capture pane for prompt check") {
+	if !errors.Is(err, ErrCapturePane) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -970,7 +970,7 @@ func TestWaitReadyStrict_CaptureErrorsExhausted(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when all captures fail in strict mode")
 	}
-	if !strings.Contains(err.Error(), "capture pane failed") {
+	if !errors.Is(err, ErrCapturePane) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -1047,7 +1047,7 @@ func TestEnsureClaudeRunning_RelaunchFails(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when re-launch fails")
 	}
-	if !strings.Contains(err.Error(), "re-launch") {
+	if !errors.Is(err, ErrRelaunch) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -1068,7 +1068,7 @@ func TestEnsureClaudeRunning_WaitReadyTimeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when waitReadyStrict times out")
 	}
-	if !strings.Contains(err.Error(), "wait for claude ready") {
+	if !errors.Is(err, ErrWaitClaudeReady) {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -1083,8 +1083,8 @@ func TestEnsureClaudeRunning_GetCmdError_ReturnsError(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when GetPaneCurrentCommand fails")
 	}
-	if !strings.Contains(err.Error(), "check pane command") {
-		t.Errorf("expected 'check pane command' in error, got: %v", err)
+	if !errors.Is(err, ErrCheckPaneCommand) {
+		t.Errorf("expected ErrCheckPaneCommand in error chain, got: %v", err)
 	}
 	// Should not have attempted re-launch
 	if callsContain(mock.calls, "SendCommand:maestro agent launch") {

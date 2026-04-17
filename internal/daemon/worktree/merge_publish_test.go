@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil"
 )
 
 func TestBuildMergeMessage(t *testing.T) {
@@ -213,7 +214,7 @@ func TestMergeToIntegration_PathGuardRejectsEscape(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink semantics differ on windows")
 	}
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_pathguard"
@@ -252,7 +253,7 @@ func TestMergeToIntegration_PathGuardRejectsEscape(t *testing.T) {
 // this point after a previous failure count > 0.
 func TestMergeToIntegration_MergeFailureCountResetOnSuccess(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_m3_reset"
@@ -313,7 +314,7 @@ func TestMergeToIntegration_MergeFailureCountResetOnSuccess(t *testing.T) {
 // is left in a clean state after the conflict is handled.
 func TestSyncFromIntegration_MergeConflictRecovery(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_m1_recovery"
@@ -382,7 +383,7 @@ func TestSyncFromIntegration_MergeConflictRecovery(t *testing.T) {
 // status (not set to Merged) to prevent a no-op publish.
 func TestMergeToIntegration_NoCommitsRevertsStatus(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_no_commits"
@@ -430,7 +431,7 @@ func TestMergeToIntegration_NoCommitsRevertsStatus(t *testing.T) {
 // The test verifies that after a failed sync, the worktree HEAD is preserved.
 func TestSyncFromIntegration_PreservesWorktreeOnFailure(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_m1_prehead"
@@ -496,7 +497,7 @@ func TestSyncFromIntegration_PreservesWorktreeOnFailure(t *testing.T) {
 // while worker2 is merged normally.
 func TestMergeToIntegration_SkipAlreadyIntegrated(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_skip_integrated"
@@ -600,7 +601,7 @@ func TestMergeToIntegration_SkipAlreadyIntegrated(t *testing.T) {
 // conflict-skipped, the integration status should revert to pre-merge.
 func TestMergeToIntegration_SkipConflictResolving(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_skip_conflict"

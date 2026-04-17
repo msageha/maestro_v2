@@ -7,13 +7,14 @@ import (
 	"testing"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/testutil"
 )
 
 // TestRecordMergeFailure_TransitionsToQuarantine validates that consecutive
 // unrecoverable failures escalate from Failed to Quarantined at the threshold.
 func TestRecordMergeFailure_TransitionsToQuarantine(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	state := &model.WorktreeCommandState{
@@ -72,7 +73,7 @@ func TestRecordMergeFailure_TransitionsToQuarantine(t *testing.T) {
 // This is the core fix for H10: prevents the infinite reconcile loop.
 func TestMergeToIntegration_QuarantinedShortCircuits(t *testing.T) {
 	t.Parallel()
-	projectRoot := initTestGitRepo(t)
+	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	commandID := "cmd_quarantined_test"

@@ -60,6 +60,7 @@ const (
 	// CircuitBreakerConfig
 	DefaultCBMaxConsecutiveFailures = 3
 	DefaultProgressTimeoutMinutes   = 30
+	DefaultCBHalfOpenDelaySec       = 60
 
 	// LearningsConfig
 	DefaultLearningsMaxEntries       = 100
@@ -142,6 +143,10 @@ const (
 	DefaultCommandDispatchInlineRetries       = 2
 	DefaultCommandDispatchInlineRetryDelaySec = 2
 	DefaultCommandDispatchTimeoutSec          = 30
+
+	// RetryConfig — task dispatch inline retry
+	DefaultTaskDispatchInlineRetries       = 5
+	DefaultTaskDispatchInlineRetryDelaySec = 1
 )
 
 // ValidAgentModels is the whitelist of recognized agent model name identifiers.
