@@ -648,6 +648,85 @@ func TestBuildLaunchEnv_ContainsSandboxed(t *testing.T) {
 	}
 }
 
+func TestBuildLaunchEnv_FiltersDangerousEnvVars(t *testing.T) {
+	base := []string{
+		"HOME=/home/test",
+		"PATH=/usr/bin",
+		"DYLD_INSERT_LIBRARIES=/evil/lib.dylib",
+		"DYLD_LIBRARY_PATH=/evil",
+		"LD_PRELOAD=/evil/lib.so",
+		"LD_LIBRARY_PATH=/evil",
+		"GIT_EXEC_PATH=/evil/git",
+		"GIT_DIR=/evil/.git",
+		"SAFE_VAR=keep",
+	}
+	env := buildLaunchEnv(base, "worker")
+
+	envMap := make(map[string]string)
+	for _, e := range env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+
+	// Dangerous env vars must be filtered.
+	dangerous := []string{
+		"DYLD_INSERT_LIBRARIES",
+		"DYLD_LIBRARY_PATH",
+		"LD_PRELOAD",
+		"LD_LIBRARY_PATH",
+		"GIT_EXEC_PATH",
+		"GIT_DIR",
+	}
+	for _, key := range dangerous {
+		if _, ok := envMap[key]; ok {
+			t.Errorf("%s should be filtered out", key)
+		}
+	}
+
+	// Safe vars must be preserved.
+	safe := []string{"HOME", "PATH", "SAFE_VAR"}
+	for _, key := range safe {
+		if _, ok := envMap[key]; !ok {
+			t.Errorf("%s should be preserved", key)
+		}
+	}
+}
+
+func TestFilterDangerousEnv_PrefixMatching(t *testing.T) {
+	tests := []struct {
+		name     string
+		envVar   string
+		filtered bool
+	}{
+		{"DYLD_INSERT_LIBRARIES", "DYLD_INSERT_LIBRARIES=/evil", true},
+		{"DYLD_FORCE_FLAT_NAMESPACE", "DYLD_FORCE_FLAT_NAMESPACE=1", true},
+		{"LD_PRELOAD exact", "LD_PRELOAD=/evil.so", true},
+		{"LD_PRELOAD_32", "LD_PRELOAD_32=/evil.so", true},
+		{"LD_LIBRARY_PATH exact", "LD_LIBRARY_PATH=/evil", true},
+		{"LD_LIBRARY_PATH_64", "LD_LIBRARY_PATH_64=/evil", true},
+		{"GIT_EXEC_PATH", "GIT_EXEC_PATH=/evil", true},
+		{"GIT_DIR", "GIT_DIR=/evil", true},
+		{"safe DYLD_unrelated suffix", "MYDYLD_VAR=ok", false},
+		{"safe LD_unrelated", "MYLD_PRELOAD=ok", false},
+		{"safe GIT_AUTHOR_NAME", "GIT_AUTHOR_NAME=test", false},
+		{"HOME", "HOME=/home/user", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := filterDangerousEnv([]string{tt.envVar})
+			if tt.filtered && len(result) != 0 {
+				t.Errorf("expected %q to be filtered, but it was kept", tt.envVar)
+			}
+			if !tt.filtered && len(result) == 0 {
+				t.Errorf("expected %q to be kept, but it was filtered", tt.envVar)
+			}
+		})
+	}
+}
+
 func TestBuildLaunchEnv_AllRoles(t *testing.T) {
 	for _, role := range []string{"orchestrator", "planner", "worker"} {
 		t.Run(role, func(t *testing.T) {

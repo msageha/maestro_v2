@@ -2178,3 +2178,374 @@ func TestHookScript_SEC4_BlocksAnsiCQuotingAfterQuotesAndEquals(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// WT-GIT: Worktree git change command blocking
+// =============================================================================
+
+func TestHookScript_WTGIT_BlocksGitChangeCommandsInWorktree(t *testing.T) {
+	requireJq(t)
+	base := t.TempDir()
+
+	projectDir := filepath.Join(base, "project")
+	maestroDir := filepath.Join(projectDir, ".maestro")
+	worktreeDir := filepath.Join(maestroDir, "worktrees", "cmd_123", "worker1")
+	if err := os.MkdirAll(worktreeDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"git commit", "git commit -m 'test'"},
+		{"git add", "git add file.go"},
+		{"git merge", "git merge feature"},
+		{"git rebase", "git rebase main"},
+		{"git cherry-pick", "git cherry-pick abc123"},
+		{"git revert", "git revert HEAD"},
+		{"git stash", "git stash"},
+		{"git restore", "git restore file.go"},
+		{"git fetch", "git fetch origin"},
+		{"git pull", "git pull"},
+		{"git worktree", "git worktree add ../new-wt"},
+		{"git tag", "git tag v1.0"},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScriptInDir(t, scriptPath, input, worktreeDir)
+			if !strings.Contains(output, "WT-GIT") || !strings.Contains(output, "deny") {
+				t.Errorf("expected WT-GIT deny for %q in worktree, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_WTGIT_AllowsReadOnlyGitInWorktree(t *testing.T) {
+	requireJq(t)
+	base := t.TempDir()
+
+	projectDir := filepath.Join(base, "project")
+	maestroDir := filepath.Join(projectDir, ".maestro")
+	worktreeDir := filepath.Join(maestroDir, "worktrees", "cmd_123", "worker1")
+	if err := os.MkdirAll(worktreeDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	allowed := []struct {
+		name string
+		cmd  string
+	}{
+		{"git status", "git status"},
+		{"git diff", "git diff --stat"},
+		{"git log", "git log --oneline -10"},
+	}
+	for _, tc := range allowed {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScriptInDir(t, scriptPath, input, worktreeDir)
+			if strings.Contains(output, "WT-GIT") {
+				t.Errorf("should allow %q in worktree, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_WTGIT_NoEnforcementOutsideWorktree(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// git add outside worktree should not be blocked by WT-GIT
+	input := makeBashInput("git add file.go")
+	output := runHookScriptInDir(t, scriptPath, input, dir)
+	if strings.Contains(output, "WT-GIT") {
+		t.Errorf("WT-GIT should not apply outside worktree, got: %s", output)
+	}
+}
+
+// =============================================================================
+// M2: Decode command bypass prevention
+// =============================================================================
+
+func TestHookScript_M2_BlocksDecodeCommands(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"base64 -d", "base64 -d encoded.txt"},
+		{"base64 --decode", "base64 --decode encoded.txt"},
+		{"echo pipe base64 -d", "echo cGF5bG9hZA== | base64 -d"},
+		{"xxd -r", "xxd -r hex.txt"},
+		{"xxd -rp", "xxd -rp hex.txt"},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "M2") || !strings.Contains(output, "deny") {
+				t.Errorf("expected M2 deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_M2_AllowsSafeEncodeCommands(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	allowed := []struct {
+		name string
+		cmd  string
+	}{
+		{"base64 encode", "base64 file.txt"},
+		{"xxd hex dump", "xxd file.bin"},
+		{"xxd -i include", "xxd -i file.bin"},
+	}
+	for _, tc := range allowed {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if strings.Contains(output, "M2") {
+				t.Errorf("should allow %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// M3: Shell variable manipulation bypass prevention
+// =============================================================================
+
+func TestHookScript_M3_BlocksShellVariableBypass(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"IFS assignment", "IFS=/ cmd arg"},
+		{"IFS after semicolon", "echo hello; IFS=x cmd"},
+		{"indirect ref", "echo ${!myvar}"},
+		{"declare -n", "declare -n ref=myvar"},
+		{"declare -rn", "declare -rn ref=myvar"},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "M3") || !strings.Contains(output, "deny") {
+				t.Errorf("expected M3 deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_M3_AllowsNormalVariableUse(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	allowed := []struct {
+		name string
+		cmd  string
+	}{
+		{"normal declare", "declare -r myvar=hello"},
+		{"declare -i", "declare -i num=42"},
+		{"env var brace", "echo ${HOME}"},
+		{"env var simple", "echo $PATH"},
+	}
+	for _, tc := range allowed {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if strings.Contains(output, "M3") {
+				t.Errorf("should allow %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// m3: rsync --remove-source-files
+// =============================================================================
+
+func TestHookScript_m3_BlocksRsyncRemoveSourceFiles(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"rsync remove-source-files", "rsync --remove-source-files src/ dst/"},
+		{"rsync with other flags", "rsync -av --remove-source-files src/ dst/"},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "m3") || !strings.Contains(output, "deny") {
+				t.Errorf("expected m3 deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_m3_AllowsNormalRsync(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	allowed := []struct {
+		name string
+		cmd  string
+	}{
+		{"rsync normal", "rsync -av src/ dst/"},
+		{"rsync delete", "rsync -av --delete src/ dst/"},
+	}
+	for _, tc := range allowed {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if strings.Contains(output, "m3") {
+				t.Errorf("should allow %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// m5: Perl open()/qx//
+// =============================================================================
+
+func TestHookScript_m5_BlocksPerlOpenAndQx(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"perl open pipe", `perl -e 'open(FH, "| cmd")'`},
+		{"perl qx", `perl -e 'my $out = qx(ls -la)'`},
+		{"perl -E open", `perl -E 'open(my $fh, "<", "file")'`},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "m5") || !strings.Contains(output, "deny") {
+				t.Errorf("expected m5 deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+func TestHookScript_m5_AllowsSafePerlOperations(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	allowed := []struct {
+		name string
+		cmd  string
+	}{
+		{"perl print", "perl -e 'print 42'"},
+		{"perl no -e", "perl script.pl"},
+		{"perl regex", "perl -e 'print if /pattern/'"},
+	}
+	for _, tc := range allowed {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if strings.Contains(output, "m5") {
+				t.Errorf("should allow %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Static pattern presence checks for new rules
+// =============================================================================
+
+func TestHookScript_ContainsNewPatternChecks(t *testing.T) {
+	checks := []struct {
+		id   string
+		text string
+	}{
+		{"WT-GIT", "WT-GIT: Blocked git change command"},
+		{"M2 base64", "M2: Blocked base64 decode"},
+		{"M2 xxd", "M2: Blocked xxd reverse"},
+		{"M3 IFS", "M3: Blocked IFS variable manipulation"},
+		{"M3 indirect", "M3: Blocked indirect variable reference"},
+		{"M3 declare", "M3: Blocked declare -n nameref"},
+		{"m3 rsync", "m3: Blocked rsync --remove-source-files"},
+		{"m5 perl", "m5: Blocked perl open()/qx//"},
+	}
+
+	for _, tc := range checks {
+		if !strings.Contains(hookScript, tc.text) {
+			t.Errorf("hook script missing check for %s (expected to find %q)", tc.id, tc.text)
+		}
+	}
+}

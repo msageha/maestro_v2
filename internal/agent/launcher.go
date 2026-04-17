@@ -82,8 +82,14 @@ func Launch(maestroDir string) error {
 		}
 	}
 
+	// Resolve claude to an absolute path to avoid PATH-hijacking attacks.
+	claudePath, err := exec.LookPath("claude")
+	if err != nil {
+		return fmt.Errorf("resolve claude executable: %w", err)
+	}
+
 	// Execute claude CLI.
-	cmd := exec.Command("claude", args...) //nolint:gosec // "claude" is a fixed command; args are constructed from validated config
+	cmd := exec.Command(claudePath, args...) //nolint:gosec // claudePath is resolved via LookPath; args are constructed from validated config
 	cmd.Env = buildLaunchEnv(os.Environ(), role)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
@@ -280,11 +286,49 @@ func buildSystemPrompt(maestroDir, role string) (string, error) {
 //     separate from --dangerously-skip-permissions which only skips per-tool
 //     permission checks; the trust dialog is an independent security layer that
 //     checks project-level trust state.
+// dangerousEnvPrefixes lists environment variable prefixes that must be
+// stripped from child processes to prevent library injection or path hijacking.
+var dangerousEnvPrefixes = []string{
+	"DYLD_",           // macOS dynamic linker injection (DYLD_INSERT_LIBRARIES, etc.)
+	"LD_PRELOAD",      // Linux shared library injection
+	"LD_LIBRARY_PATH", // Linux library path override
+	"GIT_EXEC_PATH",   // git executable path override
+	"GIT_DIR",         // git directory override (could redirect operations)
+}
+
 func buildLaunchEnv(base []string, role string) []string {
 	env := filterEnv(base, "CLAUDECODE")
+	env = filterDangerousEnv(env)
 	env = append(env, uds.CallerRoleEnv+"="+role)
 	env = append(env, "CLAUDE_CODE_SANDBOXED=1")
 	return env
+}
+
+// filterDangerousEnv removes environment variables matching dangerousEnvPrefixes
+// to prevent library injection and path hijacking in child processes.
+// Each entry in dangerousEnvPrefixes is matched as a prefix against the variable
+// name (the part before "="). For example, "DYLD_" matches "DYLD_INSERT_LIBRARIES",
+// and "LD_PRELOAD" matches both "LD_PRELOAD" and "LD_PRELOAD_32".
+func filterDangerousEnv(environ []string) []string {
+	out := make([]string, 0, len(environ))
+	for _, e := range environ {
+		// Extract variable name (everything before the first "=").
+		name := e
+		if idx := strings.IndexByte(e, '='); idx >= 0 {
+			name = e[:idx]
+		}
+		dangerous := false
+		for _, prefix := range dangerousEnvPrefixes {
+			if strings.HasPrefix(name, prefix) {
+				dangerous = true
+				break
+			}
+		}
+		if !dangerous {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 // filterEnv returns a copy of environ with the named variable removed.

@@ -1,6 +1,9 @@
 # Build binary
 /maestro
 
+# Test binaries
+*.test
+
 # Test coverage
 coverage.out
 coverage.html

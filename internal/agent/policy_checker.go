@@ -241,6 +241,15 @@ if [ "$tool_name" = "Bash" ]; then
     deny "Worker git push is prohibited (all git push operations are blocked for Workers)"
   fi
 
+  # WT-GIT: Block git change commands in worktree mode
+  # When CWD is inside .maestro/worktrees/, only read-only git commands are allowed
+  _wt_cwd="$(pwd 2>/dev/null || echo "")"
+  if [ -n "$_wt_cwd" ] && echo "$_wt_cwd" | grep -qF '/.maestro/worktrees/'; then
+    if echo "$cmd" | grep -qE 'git\s+(commit|add|merge|rebase|cherry-pick|revert|stash|restore|fetch|pull|worktree|tag)(\s|$)'; then
+      deny "WT-GIT: Blocked git change command in worktree mode (only read-only git commands allowed)"
+    fi
+  fi
+
   # Note: git merge --abort is not listed in this hook. Workers never run
   # git merge themselves -- merge orchestration (and any abort) is performed
   # by the daemon via the worktree manager (resolve_conflict / resume_merge
@@ -333,6 +342,25 @@ if [ "$tool_name" = "Bash" ]; then
     deny "B004: Blocked absolute path shell invocation"
   fi
 
+  # M2: Decode command bypass prevention (base64/xxd can reconstruct dangerous commands)
+  if echo "$cmd" | grep -qE 'base64\s+(-d|--decode)'; then
+    deny "M2: Blocked base64 decode (potential command reconstruction bypass)"
+  fi
+  if echo "$cmd" | grep -qE 'xxd\s+-[a-zA-Z]*r'; then
+    deny "M2: Blocked xxd reverse (potential command reconstruction bypass)"
+  fi
+
+  # M3: Shell variable manipulation bypass prevention
+  if echo "$cmd" | grep -qE '(^|[;|&[:space:]])IFS='; then
+    deny "M3: Blocked IFS variable manipulation (potential bypass vector)"
+  fi
+  if echo "$cmd" | grep -qE '\$\{![a-zA-Z_]'; then
+    deny "M3: Blocked indirect variable reference (potential bypass vector)"
+  fi
+  if echo "$cmd" | grep -qE 'declare\s+-[a-zA-Z]*n'; then
+    deny "M3: Blocked declare -n nameref (potential bypass vector)"
+  fi
+
   # H1: Absolute path invocation of dangerous commands
   if echo "$cmd" | grep -qE '(^|[;|&(])\s*(/usr(/local)?)?/s?bin/(rm|kill|killall|pkill|mkfs|fdisk|dd|diskutil|chmod|chown)\b'; then
     deny "H1: Blocked absolute path invocation of dangerous command"
@@ -381,6 +409,16 @@ if [ "$tool_name" = "Bash" ]; then
   fi
   if echo "$cmd" | grep -qE 'ruby\s.*-e\s.*\b(system|Kernel\.system|exec)\b'; then
     deny "SEC2: Blocked ruby indirect command execution (system/Kernel.system/exec)"
+  fi
+
+  # m3: rsync destructive operation
+  if echo "$cmd" | grep -qE 'rsync\s.*--remove-source-files'; then
+    deny "m3: Blocked rsync --remove-source-files (destructive file operation)"
+  fi
+
+  # m5: Perl indirect file/command execution via open() and qx//
+  if echo "$cmd" | grep -qE 'perl\s.*-[eE]\s.*\b(open|qx)\b'; then
+    deny "m5: Blocked perl open()/qx// (indirect file/command execution)"
   fi
 
   # .maestro/ access via Bash (bypass prevention, case-insensitive for macOS)

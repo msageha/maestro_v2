@@ -8,20 +8,51 @@ import (
 	"strings"
 	"unicode"
 
+	"golang.org/x/text/unicode/norm"
+
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
+// zeroWidthChars contains Unicode zero-width and invisible formatting characters
+// that could be used to bypass text-based pattern matching.
+var zeroWidthChars = strings.NewReplacer(
+	"\u200B", "", // ZERO WIDTH SPACE
+	"\u200C", "", // ZERO WIDTH NON-JOINER
+	"\u200D", "", // ZERO WIDTH JOINER
+	"\uFEFF", "", // ZERO WIDTH NO-BREAK SPACE (BOM)
+	"\u2060", "", // WORD JOINER
+	"\u00AD", "", // SOFT HYPHEN
+	"\u180E", "", // MONGOLIAN VOWEL SEPARATOR
+	"\u200E", "", // LEFT-TO-RIGHT MARK
+	"\u200F", "", // RIGHT-TO-LEFT MARK
+	"\u202A", "", // LEFT-TO-RIGHT EMBEDDING
+	"\u202B", "", // RIGHT-TO-LEFT EMBEDDING
+	"\u202C", "", // POP DIRECTIONAL FORMATTING
+	"\u202D", "", // LEFT-TO-RIGHT OVERRIDE
+	"\u202E", "", // RIGHT-TO-LEFT OVERRIDE
+	"\u2066", "", // LEFT-TO-RIGHT ISOLATE
+	"\u2067", "", // RIGHT-TO-LEFT ISOLATE
+	"\u2068", "", // FIRST STRONG ISOLATE
+	"\u2069", "", // POP DIRECTIONAL ISOLATE
+)
+
 // SanitizeEnvelopeField neutralises prompt-injection vectors in user-supplied
-// envelope fields.  It performs three transformations:
-//  1. Escapes "[maestro]" → "\\[maestro]" so injected content cannot mimic
+// envelope fields.  It performs the following transformations:
+//  1. Applies NFKC Unicode normalization to canonicalize homoglyphs and
+//     compatibility characters.
+//  2. Removes zero-width and invisible formatting characters that could
+//     bypass pattern matching.
+//  3. Escapes "[maestro]" → "\\[maestro]" so injected content cannot mimic
 //     system control headers.
-//  2. Replaces newline (\n) with a space to prevent header injection.
-//  3. Strips control characters (U+0000–U+001F) except tab (\t).
+//  4. Replaces newline (\n) with a space to prevent header injection.
+//  5. Strips control characters (U+0000–U+001F) except tab (\t).
 //
-// Note: DATA boundary markers (BEGIN/END LEARNINGS/SKILLS) are sanitized
-// separately via SanitizeUserContent before system sections are appended,
-// to avoid escaping the system's own markers.
+// Note: DATA boundary markers (BEGIN/END LEARNINGS/SKILLS/PERSONA) are
+// sanitized separately via SanitizeUserContent before system sections are
+// appended, to avoid escaping the system's own markers.
 func SanitizeEnvelopeField(s string) string {
+	s = norm.NFKC.String(s)
+	s = zeroWidthChars.Replace(s)
 	s = strings.ReplaceAll(s, "[maestro]", "\\[maestro]")
 	return strings.Map(func(r rune) rune {
 		if r == '\n' {
@@ -44,11 +75,13 @@ var boundaryMarkerPatterns = []struct {
 	{regexp.MustCompile(`(?i)---\s*END\s+LEARNINGS`), "--- END\\_LEARNINGS"},
 	{regexp.MustCompile(`(?i)---\s*BEGIN\s+SKILLS`), "--- BEGIN\\_SKILLS"},
 	{regexp.MustCompile(`(?i)---\s*END\s+SKILLS`), "--- END\\_SKILLS"},
+	{regexp.MustCompile(`(?i)---\s*BEGIN\s+PERSONA`), "--- BEGIN\\_PERSONA"},
+	{regexp.MustCompile(`(?i)---\s*END\s+PERSONA`), "--- END\\_PERSONA"},
 }
 
 // SanitizeUserContent escapes DATA boundary markers in user-supplied content
-// to prevent premature closing of LEARNINGS/SKILLS sections. This must be
-// called on user content BEFORE system-generated sections are appended,
+// to prevent premature closing of LEARNINGS/SKILLS/PERSONA sections. This must
+// be called on user content BEFORE system-generated sections are appended,
 // so that the system's own markers remain intact.
 //
 // Matching is case-insensitive and tolerates variable whitespace between

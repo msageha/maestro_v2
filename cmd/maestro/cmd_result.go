@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/validate"
@@ -71,6 +72,11 @@ func (a *cliApp) runResultWrite(args []string) error {
 		return cmd.Errorf("%v", err)
 	}
 
+	// Validate and truncate individual entries for repeatable flags.
+	truncateEntries("--learnings", learnings, model.DefaultMaxEntryContentBytes)
+	truncateEntries("--skill-candidates", skillCandidates, model.DefaultMaxEntryContentBytes)
+	truncateEntries("--files-changed", filesChanged, model.DefaultMaxEntryContentBytes)
+
 	maestroDir, err := requireMaestroDir("result write")
 	if err != nil {
 		return err
@@ -113,4 +119,22 @@ func (a *cliApp) runResultWrite(args []string) error {
 	}
 
 	return printJSONResponse(resp.Data, "result write")
+}
+
+// truncateEntries checks each entry in entries against maxBytes and truncates
+// oversized entries in place with a warning log. This is a graceful approach:
+// oversized entries are truncated rather than rejected, allowing the command
+// to proceed while alerting operators via logs.
+func truncateEntries(flag string, entries stringSliceFlag, maxBytes int) {
+	for i, entry := range entries {
+		if len(entry) > maxBytes {
+			slog.Warn("truncating oversized entry",
+				"flag", flag,
+				"index", i,
+				"original_bytes", len(entry),
+				"max_bytes", maxBytes,
+			)
+			entries[i] = entry[:maxBytes]
+		}
+	}
 }

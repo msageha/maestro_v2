@@ -370,3 +370,93 @@ func TestRunResultWrite_PartialChangesAndNoRetrySafe(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestRunResultWrite_OversizedLearningTruncated(t *testing.T) {
+	withMaestroDir(t)
+	var capturedParams any
+	app := newTestApp(&mockUDSClient{
+		sendCommandFunc: func(command string, params any) (*uds.Response, error) {
+			capturedParams = params
+			return successResponse(map[string]string{"result_id": "res1"}), nil
+		},
+	})
+
+	oversized := strings.Repeat("x", 65537) // > DefaultMaxEntryContentBytes (64KB)
+	err := app.runResultWrite([]string{"worker1",
+		"--task-id", "task_0000000001_abcdef01",
+		"--command-id", "cmd_0000000001_abcdef01",
+		"--lease-epoch", "1",
+		"--status", "completed",
+		"--learnings", oversized,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify the learning was truncated, not rejected.
+	m, ok := capturedParams.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map params, got %T", capturedParams)
+	}
+	learnings, ok := m["learnings"]
+	if !ok {
+		t.Fatal("expected learnings in params")
+	}
+	entries, ok := learnings.(stringSliceFlag)
+	if !ok {
+		t.Fatalf("expected stringSliceFlag, got %T", learnings)
+	}
+	if len(entries[0]) != 65536 {
+		t.Errorf("expected truncated to 65536 bytes, got %d", len(entries[0]))
+	}
+}
+
+func TestRunResultWrite_OversizedFilesChangedTruncated(t *testing.T) {
+	withMaestroDir(t)
+	app := newTestApp(&mockUDSClient{
+		sendCommandFunc: func(command string, params any) (*uds.Response, error) {
+			return successResponse(map[string]string{"result_id": "res1"}), nil
+		},
+	})
+
+	oversized := strings.Repeat("a", 65537)
+	err := app.runResultWrite([]string{"worker1",
+		"--task-id", "task_0000000001_abcdef01",
+		"--command-id", "cmd_0000000001_abcdef01",
+		"--lease-epoch", "1",
+		"--status", "completed",
+		"--files-changed", oversized,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error (should truncate, not reject): %v", err)
+	}
+}
+
+func TestRunResultWrite_NormalEntriesNotTruncated(t *testing.T) {
+	withMaestroDir(t)
+	var capturedParams any
+	app := newTestApp(&mockUDSClient{
+		sendCommandFunc: func(command string, params any) (*uds.Response, error) {
+			capturedParams = params
+			return successResponse(map[string]string{"result_id": "res1"}), nil
+		},
+	})
+
+	normalLearning := "this is a normal-sized learning"
+	err := app.runResultWrite([]string{"worker1",
+		"--task-id", "task_0000000001_abcdef01",
+		"--command-id", "cmd_0000000001_abcdef01",
+		"--lease-epoch", "1",
+		"--status", "completed",
+		"--learnings", normalLearning,
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	m := capturedParams.(map[string]any)
+	entries := m["learnings"].(stringSliceFlag)
+	if entries[0] != normalLearning {
+		t.Errorf("expected unchanged learning, got %q", entries[0])
+	}
+}
