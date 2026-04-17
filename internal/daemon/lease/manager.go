@@ -168,8 +168,11 @@ func (lm *Manager) releaseLease(ref leaseRef) error {
 }
 
 // extendLeaseExpiry sets a new expiration time on an in_progress entry.
-// UpdatedAt is intentionally NOT updated — it must retain the original
-// dispatch timestamp so that max_in_progress_min checks work correctly.
+// UpdatedAt is intentionally NOT updated because lease extension is not a
+// status change. For max_in_progress_min timeout checks on tasks, the
+// canonical dispatch timestamp is InProgressAt (set by postAcquire in
+// taskLeaseRef); callers should use IsTaskMaxInProgressTimeout which
+// consults InProgressAt with UpdatedAt as a backward-compatibility fallback.
 func (lm *Manager) extendLeaseExpiry(ref leaseRef, ttl time.Duration) error {
 	if *ref.status != model.StatusInProgress {
 		return fmt.Errorf("cannot extend lease: %s %s is %s, not in_progress", ref.entityType, ref.id, *ref.status)
@@ -364,6 +367,31 @@ func (lm *Manager) ExpireNotifications(notifications []model.Notification) []int
 		}
 	}
 	return expired
+}
+
+// IsTaskMaxInProgressTimeout checks whether a task has exceeded the
+// max_in_progress_min timeout. Uses InProgressAt (the canonical dispatch
+// timestamp set by AcquireTaskLease) as the primary source; falls back to
+// UpdatedAt for backward compatibility with pre-migration tasks that lack
+// InProgressAt. Returns false if maxInProgressMin is 0 (disabled) or the
+// timestamp cannot be parsed (scan-safe: parse errors are treated as
+// "not timed out").
+func (lm *Manager) IsTaskMaxInProgressTimeout(task *model.Task) bool {
+	if lm.maxInProgressMin <= 0 {
+		return false
+	}
+	var timestamp string
+	if task.InProgressAt != nil && *task.InProgressAt != "" {
+		timestamp = *task.InProgressAt
+	} else {
+		// Fallback: UpdatedAt for pre-migration tasks without InProgressAt.
+		timestamp = task.UpdatedAt
+	}
+	t, err := time.Parse(time.RFC3339, timestamp)
+	if err != nil {
+		return false
+	}
+	return lm.clock.Now().UTC().Sub(t) >= time.Duration(lm.maxInProgressMin)*time.Minute
 }
 
 func ptrStr(s *string) string {

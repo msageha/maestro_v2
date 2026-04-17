@@ -148,7 +148,7 @@ func (h *ResultWriteAPI) handleResultWrite(req *uds.Request) *uds.Response {
 	resultID := resultWritePhaseAResult.resultID
 
 	// Phase B: Per-command mutex (state/ updates)
-	if err := h.resultWritePhaseB(params, resultID, resultStatus, resultWritePhaseAResult.queueWriteFailed); err != nil {
+	if err := h.resultWritePhaseB(params, resultID, resultStatus, resultWritePhaseAResult.queueWriteFailed, resultWritePhaseAResult.originalTaskID); err != nil {
 		h.logFn(LogLevelError, "result_write phase_b error task=%s command=%s: %v",
 			params.TaskID, params.CommandID, err)
 		return uds.ErrorResponse(uds.ErrCodeInternal,

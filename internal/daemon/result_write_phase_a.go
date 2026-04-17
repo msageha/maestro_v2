@@ -31,6 +31,7 @@ type resultWritePhaseAResult struct {
 	resultID         string
 	retryTask        *model.Task // non-nil if a retry should be scheduled (caller handles registration)
 	queueWriteFailed bool        // true when result was committed but queue terminal write failed (H2 sticky error)
+	originalTaskID   string      // non-empty if this task is a retry of another (for lineage update in Phase B)
 }
 
 func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatus model.Status) (*resultWritePhaseAResult, error) {
@@ -89,8 +90,18 @@ func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatu
 	}
 
 	// 4. Validate state existence and task registration
-	if err := h.validateStateRegistration(params); err != nil {
+	preState, err := h.validateStateRegistration(params)
+	if err != nil {
 		return nil, err
+	}
+
+	// 4b. Check AppliedResultIDs for duplicate (defense-in-depth against TOCTOU)
+	if preState.AppliedResultIDs != nil {
+		if existingResultID, ok := preState.AppliedResultIDs[params.TaskID]; ok {
+			h.logFn(LogLevelWarn, "duplicate_result_skipped task=%s existing_result=%s command=%s",
+				params.TaskID, existingResultID, params.CommandID)
+			return &resultWritePhaseAResult{resultID: existingResultID}, nil
+		}
 	}
 
 	// 5. Append result entry
@@ -102,11 +113,39 @@ func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatu
 	// 6. Check for retry if task failed
 	retryTask := h.evaluateRetry(&tq.Tasks[taskIdx], params, resultStatus)
 
+	// 6b. Extract original task ID for retry lineage (Pass to Phase B)
+	originalTaskID := tq.Tasks[taskIdx].OriginalTaskID
+
 	// 7. Update queue entry to terminal
 	now := h.clock.Now().UTC().Format(time.RFC3339)
 	queueWriteFailed := h.updateQueueState(&tq, taskIdx, params, resultStatus, resultID, now)
 
-	return &resultWritePhaseAResult{resultID: resultID, retryTask: retryTask, queueWriteFailed: queueWriteFailed}, nil
+	// 8. Rollback result if queue write failed (atomicity recovery)
+	if queueWriteFailed {
+		if rollbackErr := h.rollbackResultEntry(&rf, resultID, params); rollbackErr != nil {
+			// Rollback also failed — result is orphaned. Log with full context
+			// for R1 reconciler detection and proceed with sticky error path.
+			h.logFn(LogLevelError,
+				"result_write rollback_failed result_id=%s task=%s queue=%s error=%v "+
+					"(orphaned result; R1 reconciler will repair)",
+				resultID, params.TaskID, h.fileStore.QueueFilePath(params.Reporter), rollbackErr)
+			// Write orphaned marker file so R1 reconciler can detect and repair
+			// without cross-referencing state.QueueWriteFailed.
+			h.writeOrphanedMarker(params.Reporter, resultID, params.TaskID)
+		} else {
+			// Rollback succeeded — return clean error so caller can retry.
+			return nil, &resultWriteError{uds.ErrCodeInternal,
+				fmt.Sprintf("queue write failed for task %s after result %s committed; result rolled back successfully",
+					params.TaskID, resultID)}
+		}
+	}
+
+	return &resultWritePhaseAResult{
+		resultID:         resultID,
+		retryTask:        retryTask,
+		queueWriteFailed: queueWriteFailed,
+		originalTaskID:   originalTaskID,
+	}, nil
 }
 
 // checkResultIdempotency checks whether a result for the given task already
@@ -190,27 +229,28 @@ func (h *ResultWriteAPI) validateFencing(tq *model.TaskQueue, rf *model.TaskResu
 }
 
 // validateStateRegistration verifies that the command state file exists and
-// the task is registered within it.
-func (h *ResultWriteAPI) validateStateRegistration(params ResultWriteParams) error {
+// the task is registered within it. Returns the loaded state for additional
+// idempotency checks by the caller.
+func (h *ResultWriteAPI) validateStateRegistration(params ResultWriteParams) (*model.CommandState, error) {
 	preState, err := h.fileStore.LoadCommandState(params.CommandID)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return &resultWriteError{uds.ErrCodeValidation,
+			return nil, &resultWriteError{uds.ErrCodeValidation,
 				fmt.Sprintf("state not found for command %s", params.CommandID)}
 		}
-		return &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("read state: %v", err)}
+		return nil, &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("read state: %v", err)}
 	}
 	if preState.TaskStates == nil {
-		return &resultWriteError{uds.ErrCodeValidation,
+		return nil, &resultWriteError{uds.ErrCodeValidation,
 			fmt.Sprintf("task %s not registered in state for command %s (no tasks registered)",
 				params.TaskID, params.CommandID)}
 	}
 	if _, registered := preState.TaskStates[params.TaskID]; !registered {
-		return &resultWriteError{uds.ErrCodeValidation,
+		return nil, &resultWriteError{uds.ErrCodeValidation,
 			fmt.Sprintf("task %s not registered in state for command %s",
 				params.TaskID, params.CommandID)}
 	}
-	return nil
+	return &preState, nil
 }
 
 // appendResultEntry generates a result ID, appends the new result entry to
@@ -247,6 +287,27 @@ func (h *ResultWriteAPI) appendResultEntry(rf *model.TaskResultFile, params Resu
 	return resultID, nil
 }
 
+// rollbackResultEntry removes a previously appended result entry from the
+// result file. Called when the queue write fails after the result was committed,
+// to restore atomicity between result and queue state.
+func (h *ResultWriteAPI) rollbackResultEntry(rf *model.TaskResultFile, resultID string, params ResultWriteParams) error {
+	filtered := make([]model.TaskResult, 0, len(rf.Results))
+	for _, r := range rf.Results {
+		if r.ID != resultID {
+			filtered = append(filtered, r)
+		}
+	}
+	rf.Results = filtered
+	if err := h.fileStore.SaveResultFile(params.Reporter, *rf); err != nil {
+		return fmt.Errorf("rollback save: %w", err)
+	}
+	h.recordSelfWrite(h.fileStore.ResultFilePath(params.Reporter), *rf)
+	h.logFn(LogLevelWarn,
+		"result_write result_rolled_back result_id=%s task=%s reporter=%s",
+		resultID, params.TaskID, params.Reporter)
+	return nil
+}
+
 // evaluateRetry checks whether a failed task should be retried and creates
 // the retry task if so. Returns nil if no retry is warranted.
 func (h *ResultWriteAPI) evaluateRetry(queueTask *model.Task, params ResultWriteParams, resultStatus model.Status) *model.Task {
@@ -267,6 +328,28 @@ func (h *ResultWriteAPI) evaluateRetry(queueTask *model.Task, params ResultWrite
 		return nil
 	}
 	return rt
+}
+
+// writeOrphanedMarker writes a sidecar marker file when a result entry cannot
+// be rolled back after a queue write failure. The marker enables the R1
+// reconciler to detect orphaned results without cross-referencing
+// state.QueueWriteFailed. Each line contains: result_id task_id orphaned_at.
+func (h *ResultWriteAPI) writeOrphanedMarker(reporter, resultID, taskID string) {
+	orphanPath := h.fileStore.ResultFilePath(reporter) + ".orphaned"
+	f, err := os.OpenFile(orphanPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644) //nolint:gosec // orphanPath is constructed from controlled result file directory
+	if err != nil {
+		h.logFn(LogLevelError,
+			"orphaned_marker_create_failed reporter=%s result=%s task=%s error=%v",
+			reporter, resultID, taskID, err)
+		return
+	}
+	defer f.Close()
+	now := h.clock.Now().UTC().Format(time.RFC3339)
+	if _, wErr := fmt.Fprintf(f, "%s %s %s\n", resultID, taskID, now); wErr != nil {
+		h.logFn(LogLevelError,
+			"orphaned_marker_write_failed reporter=%s result=%s task=%s error=%v",
+			reporter, resultID, taskID, wErr)
+	}
 }
 
 // updateQueueState transitions the queue task to its terminal status and

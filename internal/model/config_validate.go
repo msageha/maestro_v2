@@ -91,14 +91,14 @@ func (c Config) validateWatcher(errs *[]error) {
 }
 
 func (c Config) validateQueue(errs *[]error) {
-	if c.Queue.PriorityAgingSec < 0 {
-		*errs = append(*errs, fmt.Errorf("queue.priority_aging_sec: must be >= 0"))
+	if c.Queue.PriorityAgingSec < 0 || c.Queue.PriorityAgingSec > MaxPriorityAgingSec {
+		*errs = append(*errs, fmt.Errorf("queue.priority_aging_sec: must be between 0 and %d", MaxPriorityAgingSec))
 	}
 }
 
 func (c Config) validateContinuous(errs *[]error) {
-	if c.Continuous.Enabled && c.Continuous.MaxIterations < 0 {
-		*errs = append(*errs, fmt.Errorf("continuous.max_iterations: must be >= 0 when continuous is enabled"))
+	if c.Continuous.MaxIterations < 0 {
+		*errs = append(*errs, fmt.Errorf("continuous.max_iterations: must be >= 0"))
 	}
 	if c.Continuous.Enabled && c.Continuous.MaxConsecutiveFailures < 0 {
 		*errs = append(*errs, fmt.Errorf("continuous.max_consecutive_failures: must be >= 0 when continuous is enabled"))
@@ -106,11 +106,11 @@ func (c Config) validateContinuous(errs *[]error) {
 }
 
 func (c Config) validateRetry(errs *[]error) {
-	if c.Retry.CommandDispatch < 0 {
-		*errs = append(*errs, fmt.Errorf("retry.command_dispatch: must be >= 0"))
+	if c.Retry.CommandDispatch < 0 || c.Retry.CommandDispatch > MaxCommandDispatchRetries {
+		*errs = append(*errs, fmt.Errorf("retry.command_dispatch: must be between 0 and %d", MaxCommandDispatchRetries))
 	}
-	if c.Retry.TaskDispatch < 0 {
-		*errs = append(*errs, fmt.Errorf("retry.task_dispatch: must be >= 0"))
+	if c.Retry.TaskDispatch < 0 || c.Retry.TaskDispatch > MaxTaskDispatchRetries {
+		*errs = append(*errs, fmt.Errorf("retry.task_dispatch: must be between 0 and %d", MaxTaskDispatchRetries))
 	}
 	if c.Retry.OrchestratorNotificationDispatch < 0 {
 		*errs = append(*errs, fmt.Errorf("retry.orchestrator_notification_dispatch: must be >= 0"))
@@ -295,6 +295,17 @@ func (c Config) validateCrossFieldConstraints(errs *[]error) {
 		c.Worktree.FallbackMergeTimeoutMinutes != nil && *c.Worktree.FallbackMergeTimeoutMinutes == 0 {
 		*errs = append(*errs, fmt.Errorf(
 			"worktree: both stall_timeout_minutes and fallback_merge_timeout_minutes are explicitly disabled (0); stuck worktrees will have no safety timeout"))
+	}
+
+	// watcher: dispatch_lease_sec should be less than max_in_progress_min (converted to seconds)
+	// to ensure tasks can be re-dispatched before they are considered stalled.
+	if c.Watcher.DispatchLeaseSec > 0 {
+		maxInProgressSec := c.Watcher.EffectiveMaxInProgressMin() * 60
+		if maxInProgressSec > 0 && c.Watcher.DispatchLeaseSec >= maxInProgressSec {
+			*errs = append(*errs, fmt.Errorf(
+				"watcher.dispatch_lease_sec (%d) >= watcher.max_in_progress_min (%d) in seconds (%d): lease must be shorter than max runtime",
+				c.Watcher.DispatchLeaseSec, c.Watcher.EffectiveMaxInProgressMin(), maxInProgressSec))
+		}
 	}
 
 	// retry + circuit_breaker: a single task's retries could trip the circuit breaker

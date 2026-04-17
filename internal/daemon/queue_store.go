@@ -35,7 +35,7 @@ func NewQueueStore(maestroDir string, cfg model.Config, clock Clock, lockMap *lo
 }
 
 // LoadCommandQueue loads the command queue from .maestro/queue/planner.yaml.
-func (qs *QueueStoreImpl) LoadCommandQueue() (model.CommandQueue, string) {
+func (qs *QueueStoreImpl) LoadCommandQueue() (model.CommandQueue, string, error) {
 	path := commandQueuePath(qs.maestroDir)
 	var cq model.CommandQueue
 
@@ -44,7 +44,7 @@ func (qs *QueueStoreImpl) LoadCommandQueue() (model.CommandQueue, string) {
 		if !os.IsNotExist(err) {
 			qs.log(LogLevelWarn, "load_commands error=%v", err)
 		}
-		return cq, ""
+		return cq, "", nil
 	}
 
 	if err := yamlv3.Unmarshal(data, &cq); err != nil {
@@ -58,30 +58,29 @@ func (qs *QueueStoreImpl) LoadCommandQueue() (model.CommandQueue, string) {
 			if writeErr := yamlutil.AtomicWrite(path, salvaged); writeErr != nil {
 				qs.log(LogLevelError, "write_salvaged_queue error=%v", writeErr)
 			}
-			return salvaged, path
+			return salvaged, path, nil
 		}
-		// No entries salvaged — reset to empty
-		emptyCQ := model.CommandQueue{
-			SchemaVersion: 1,
-			FileType:      "command_queue",
+		// No entries salvaged — attempt backup recovery
+		recovered, recoverErr := qs.recoverFromBackup(path, "planner.yaml")
+		if recoverErr != nil {
+			return cq, "", fmt.Errorf("command queue corrupted and recovery failed: %w", recoverErr)
 		}
-		if writeErr := yamlutil.AtomicWrite(path, emptyCQ); writeErr != nil {
-			qs.log(LogLevelError, "overwrite_corrupted_queue error=%v", writeErr)
-		} else {
-			qs.log(LogLevelInfo, "corrupted_queue_reset path=%s", path)
+		if err := yamlv3.Unmarshal(recovered, &cq); err != nil {
+			return cq, "", fmt.Errorf("command queue backup unmarshal failed: %w", err)
 		}
-		return cq, ""
+		qs.log(LogLevelWarn, "command_queue_restored_from_backup path=%s", path)
+		return cq, path, nil
 	}
-	return cq, path
+	return cq, path, nil
 }
 
 // LoadAllTaskQueues loads all worker task queues from .maestro/queue/worker*.yaml files.
-func (qs *QueueStoreImpl) LoadAllTaskQueues() map[string]*taskQueueEntry {
+func (qs *QueueStoreImpl) LoadAllTaskQueues() (map[string]*taskQueueEntry, error) {
 	queueDir := queueDirPath(qs.maestroDir)
 	entries, err := os.ReadDir(queueDir)
 	if err != nil {
 		qs.log(LogLevelWarn, "read_queue_dir error=%v", err)
-		return nil
+		return nil, nil
 	}
 
 	result := make(map[string]*taskQueueEntry)
@@ -101,16 +100,26 @@ func (qs *QueueStoreImpl) LoadAllTaskQueues() map[string]*taskQueueEntry {
 		var tq model.TaskQueue
 		if err := yamlv3.Unmarshal(data, &tq); err != nil {
 			qs.log(LogLevelError, "parse_task_queue file=%s error=%v", name, err)
-			continue
+			// Quarantine original corrupted file
+			qs.quarantineFile(data, name)
+			// Attempt backup recovery
+			recovered, recoverErr := qs.recoverFromBackup(path, name)
+			if recoverErr != nil {
+				return nil, fmt.Errorf("task queue %s corrupted and recovery failed: %w", name, recoverErr)
+			}
+			if err := yamlv3.Unmarshal(recovered, &tq); err != nil {
+				return nil, fmt.Errorf("task queue %s backup unmarshal failed: %w", name, err)
+			}
+			qs.log(LogLevelWarn, "task_queue_restored_from_backup file=%s", name)
 		}
 
 		result[path] = &taskQueueEntry{Queue: tq, Path: path}
 	}
-	return result
+	return result, nil
 }
 
 // LoadNotificationQueue loads the notification queue from .maestro/queue/orchestrator.yaml.
-func (qs *QueueStoreImpl) LoadNotificationQueue() (model.NotificationQueue, string) {
+func (qs *QueueStoreImpl) LoadNotificationQueue() (model.NotificationQueue, string, error) {
 	path := notificationQueuePath(qs.maestroDir)
 	var nq model.NotificationQueue
 
@@ -119,7 +128,7 @@ func (qs *QueueStoreImpl) LoadNotificationQueue() (model.NotificationQueue, stri
 		if !os.IsNotExist(err) {
 			qs.log(LogLevelWarn, "load_notifications error=%v", err)
 		}
-		return nq, ""
+		return nq, "", nil
 	}
 
 	if err := yamlv3.Unmarshal(data, &nq); err != nil {
@@ -136,28 +145,24 @@ func (qs *QueueStoreImpl) LoadNotificationQueue() (model.NotificationQueue, stri
 			if writeErr != nil {
 				qs.log(LogLevelError, "write_salvaged_notifications error=%v", writeErr)
 			}
-			return salvaged, path
+			return salvaged, path, nil
 		}
-		// No entries salvaged — reset to empty
-		emptyNQ := model.NotificationQueue{
-			SchemaVersion: 1,
-			FileType:      "queue_notification",
+		// No entries salvaged — attempt backup recovery
+		recovered, recoverErr := qs.recoverFromBackup(path, "orchestrator.yaml")
+		if recoverErr != nil {
+			return nq, "", fmt.Errorf("notification queue corrupted and recovery failed: %w", recoverErr)
 		}
-		qs.lockMap.Lock("queue:orchestrator")
-		writeErr := yamlutil.AtomicWrite(path, emptyNQ)
-		qs.lockMap.Unlock("queue:orchestrator")
-		if writeErr != nil {
-			qs.log(LogLevelError, "overwrite_corrupted_notifications error=%v", writeErr)
-		} else {
-			qs.log(LogLevelInfo, "corrupted_notifications_reset path=%s", path)
+		if err := yamlv3.Unmarshal(recovered, &nq); err != nil {
+			return nq, "", fmt.Errorf("notification queue backup unmarshal failed: %w", err)
 		}
-		return emptyNQ, path
+		qs.log(LogLevelWarn, "notification_queue_restored_from_backup path=%s", path)
+		return nq, path, nil
 	}
-	return nq, path
+	return nq, path, nil
 }
 
 // LoadPlannerSignalQueue loads .maestro/queue/planner_signals.yaml.
-func (qs *QueueStoreImpl) LoadPlannerSignalQueue() (model.PlannerSignalQueue, string) {
+func (qs *QueueStoreImpl) LoadPlannerSignalQueue() (model.PlannerSignalQueue, string, error) {
 	path := signalQueuePath(qs.maestroDir)
 	var sq model.PlannerSignalQueue
 
@@ -166,17 +171,48 @@ func (qs *QueueStoreImpl) LoadPlannerSignalQueue() (model.PlannerSignalQueue, st
 		if !os.IsNotExist(err) {
 			qs.log(LogLevelWarn, "load_planner_signals error=%v", err)
 		}
-		return sq, ""
+		return sq, "", nil
 	}
 
 	if err := yamlv3.Unmarshal(data, &sq); err != nil {
-		qs.log(LogLevelError, "parse_planner_signals error=%v", err)
-		return sq, ""
+		qs.log(LogLevelError, "parse_planner_signals error=%v path=%s", err, path)
+		// Quarantine original corrupted file
+		qs.quarantineFile(data, "planner_signals.yaml")
+		// Attempt backup recovery
+		recovered, recoverErr := qs.recoverFromBackup(path, "planner_signals.yaml")
+		if recoverErr != nil {
+			return sq, "", fmt.Errorf("planner signal queue corrupted and recovery failed: %w", recoverErr)
+		}
+		if err := yamlv3.Unmarshal(recovered, &sq); err != nil {
+			return sq, "", fmt.Errorf("planner signal queue backup unmarshal failed: %w", err)
+		}
+		qs.log(LogLevelWarn, "planner_signal_queue_restored_from_backup path=%s", path)
+		return sq, path, nil
 	}
-	return sq, path
+	return sq, path, nil
+}
+
+// recoverFromBackup attempts to restore a queue file from its .bak backup.
+// Returns the raw backup content on success, or an error if no backup exists
+// or the backup is also corrupted.
+func (qs *QueueStoreImpl) recoverFromBackup(path, name string) ([]byte, error) {
+	if err := yamlutil.RestoreFromBackup(path); err != nil {
+		qs.log(LogLevelError, "backup_recovery_failed file=%s error=%v", name, err)
+		return nil, fmt.Errorf("backup recovery for %s: %w", name, err)
+	}
+	restored, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
+	if err != nil {
+		return nil, fmt.Errorf("read restored file %s: %w", name, err)
+	}
+	return restored, nil
 }
 
 // FlushQueues writes dirty queues to disk atomically.
+//
+// Lock order (see doc.go): queue:{worker} is level 1, so all queue:* locks
+// are peers. Within FlushQueues the acquisition order is:
+//   queue:planner → queue:{worker}… → queue:orchestrator → queue:planner_signals
+// This is consistent with the write-handler ordering (queue_write_handler.go).
 func (qs *QueueStoreImpl) FlushQueues(
 	commandQueue model.CommandQueue, commandPath string, commandsDirty bool,
 	taskQueues map[string]*taskQueueEntry, taskDirty map[string]bool,
@@ -184,15 +220,32 @@ func (qs *QueueStoreImpl) FlushQueues(
 	signalQueue model.PlannerSignalQueue, signalPath string, signalsDirty bool,
 ) {
 	if commandsDirty && commandPath != "" {
-		if err := yamlutil.AtomicWrite(commandPath, commandQueue); err != nil {
-			qs.log(LogLevelError, "write_commands error=%v", err)
-		}
+		// lockMap protects against concurrent writes from queue_write_command
+		// which acquires queue:planner via withQueueLocks.
+		func() {
+			qs.lockMap.Lock("queue:planner")
+			defer qs.lockMap.Unlock("queue:planner")
+			if err := yamlutil.AtomicWrite(commandPath, commandQueue); err != nil {
+				qs.log(LogLevelError, "write_commands error=%v", err)
+			}
+		}()
 	}
 	for queueFile, tq := range taskQueues {
 		if taskDirty[queueFile] {
-			if err := yamlutil.AtomicWrite(queueFile, tq.Queue); err != nil {
-				qs.log(LogLevelError, "write_tasks file=%s error=%v", queueFile, err)
-			}
+			// lockMap protects against concurrent writes from queue_write_task
+			// which acquires queue:{workerID} via withQueueLocks.
+			func() {
+				workerID := workerIDFromPath(queueFile)
+				if workerID == "" {
+					qs.log(LogLevelError, "write_tasks cannot determine worker ID from path=%s", queueFile)
+					return
+				}
+				qs.lockMap.Lock("queue:" + workerID)
+				defer qs.lockMap.Unlock("queue:" + workerID)
+				if err := yamlutil.AtomicWrite(queueFile, tq.Queue); err != nil {
+					qs.log(LogLevelError, "write_tasks file=%s error=%v", queueFile, err)
+				}
+			}()
 		}
 	}
 	if notificationsDirty && notificationPath != "" {
@@ -214,13 +267,19 @@ func (qs *QueueStoreImpl) FlushQueues(
 		if p == "" {
 			p = signalQueuePath(qs.maestroDir)
 		}
-		if len(signalQueue.Signals) == 0 {
-			_ = os.Remove(p)
-		} else {
-			if err := yamlutil.AtomicWrite(p, signalQueue); err != nil {
-				qs.log(LogLevelError, "write_planner_signals error=%v", err)
+		// lockMap protects against concurrent writes from signal_store_yaml
+		// which acquires queue:planner_signals.
+		func() {
+			qs.lockMap.Lock("queue:planner_signals")
+			defer qs.lockMap.Unlock("queue:planner_signals")
+			if len(signalQueue.Signals) == 0 {
+				_ = os.Remove(p)
+			} else {
+				if err := yamlutil.AtomicWrite(p, signalQueue); err != nil {
+					qs.log(LogLevelError, "write_planner_signals error=%v", err)
+				}
 			}
-		}
+		}()
 	}
 }
 

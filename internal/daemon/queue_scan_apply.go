@@ -29,9 +29,9 @@ type dispatchApplyOps struct {
 // dispatch, and dirty-marking logic for command, task, and notification
 // dispatch results.
 func (qh *QueueHandler) applyDispatchCore(dr dispatchResult, ops dispatchApplyOps) {
-	if isFenceStale(ops.status, ops.leaseEpoch, ops.leaseExpiresAt, dr.Item.Epoch, dr.Item.ExpiresAt) {
-		qh.log(LogLevelWarn, "dispatch_fence_stale kind=%s id=%s epoch=%d/%d",
-			ops.kind, ops.id, ops.leaseEpoch, dr.Item.Epoch)
+	if rej := checkResultFencing(ops.status, ops.leaseEpoch, ops.leaseExpiresAt, dr.Item.Epoch, dr.Item.ExpiresAt); rej.Stale() {
+		qh.log(LogLevelWarn, "dispatch_fence_stale kind=%s id=%s epoch=%d/%d reason=%s",
+			ops.kind, ops.id, ops.leaseEpoch, dr.Item.Epoch, rej.Reason)
 		return
 	}
 	if !dr.Success {
@@ -145,9 +145,9 @@ type busyCheckOps struct {
 // for both task and command entries. Callers provide type-specific operations
 // via busyCheckOps callbacks.
 func (qh *QueueHandler) applyBusyCheckCore(bc busyCheckResult, entryID string, status model.Status, leaseEpoch int, leaseExpiresAt *string, ops busyCheckOps) {
-	if isFenceStale(status, leaseEpoch, leaseExpiresAt, bc.Item.Epoch, bc.Item.ExpiresAt) {
-		qh.log(LogLevelWarn, "busy_check_fence_stale kind=%s id=%s epoch=%d/%d",
-			ops.kind, entryID, leaseEpoch, bc.Item.Epoch)
+	if rej := checkResultFencing(status, leaseEpoch, leaseExpiresAt, bc.Item.Epoch, bc.Item.ExpiresAt); rej.Stale() {
+		qh.log(LogLevelWarn, "busy_check_fence_stale kind=%s id=%s epoch=%d/%d reason=%s",
+			ops.kind, entryID, leaseEpoch, bc.Item.Epoch, rej.Reason)
 		return
 	}
 
@@ -159,6 +159,20 @@ func (qh *QueueHandler) applyBusyCheckCore(bc busyCheckResult, entryID string, s
 		if isMaxInProgressTimeout(qh.clock.Now(), bc.Item.UpdatedAt, maxMin) {
 			qh.log(LogLevelWarn, "lease_undecided_max_timeout type=%s id=%s %s max=%dm, releasing",
 				ops.kind, entryID, ops.ownerLabel, maxMin)
+			if err := ops.releaseLease(); err != nil {
+				qh.log(LogLevelError, "expire_release_failed type=%s id=%s error=%v", ops.kind, entryID, err)
+				return
+			}
+			qh.scanExecutor.scanCounters.LeaseReleases++
+			ops.markDirty()
+			return
+		}
+		// Grace lease limit: cumulative grace extensions must not exceed a fraction of max_in_progress_min
+		graceLimit := maxGraceLeaseDuration(maxMin, qh.config.Watcher.ScanIntervalSec)
+		dispatchDuration := time.Duration(qh.config.Watcher.DispatchLeaseSec) * time.Second
+		if isGraceLeaseExceeded(qh.clock.Now(), bc.Item.UpdatedAt, dispatchDuration, graceLimit) {
+			qh.log(LogLevelWarn, "lease_grace_limit_exceeded type=%s id=%s %s grace_limit=%s, releasing as stale",
+				ops.kind, entryID, ops.ownerLabel, graceLimit)
 			if err := ops.releaseLease(); err != nil {
 				qh.log(LogLevelError, "expire_release_failed type=%s id=%s error=%v", ops.kind, entryID, err)
 				return

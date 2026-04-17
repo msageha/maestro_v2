@@ -88,6 +88,9 @@ type QueueHandler struct {
 	// sessionLost is set when the tmux session disappears. When true,
 	// dispatch of new tasks/commands is paused.
 	sessionLost *atomic.Bool
+
+	// undecidedTracker tracks consecutive undecided busy-probe results per agent.
+	undecidedTracker *undecidedTracker
 }
 
 // NewQueueHandler creates a new QueueHandler with all sub-modules.
@@ -131,6 +134,7 @@ func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap
 		lockMap:             lockMap,
 		daemonPID:           os.Getpid(),
 	}
+	qh.undecidedTracker = newUndecidedTracker()
 	se := newScanPhaseExecutor(qh)
 	se.debounce = NewDebounceController(cfg.Watcher.DebounceSec, dl, qh.PeriodicScanWithContext)
 	qh.scanExecutor = se

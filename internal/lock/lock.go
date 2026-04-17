@@ -43,6 +43,38 @@ func NewMutexMap() *MutexMap {
 	}
 }
 
+// TryLock attempts to acquire the mutex for key without blocking. Returns true
+// if the lock was successfully acquired, false if it was already held by
+// another goroutine. The caller must call Unlock exactly once if TryLock
+// returns true.
+//
+// Lock ordering is not enforced for TryLock — it is intended for advisory,
+// best-effort paths where contention is expected and acceptable.
+func (m *MutexMap) TryLock(key string) bool {
+	m.mu.Lock()
+	rm, ok := m.mutexes[key]
+	if !ok {
+		rm = &refMutex{}
+		m.mutexes[key] = rm
+	}
+	rm.ref++
+	m.mu.Unlock()
+
+	if !rm.mu.TryLock() {
+		// Failed to acquire — decrement ref and clean up.
+		m.mu.Lock()
+		rm.ref--
+		if rm.ref == 0 && m.mutexes[key] == rm {
+			delete(m.mutexes, key)
+		}
+		m.mu.Unlock()
+		return false
+	}
+
+	atomic.StoreInt32(&rm.locked, 1)
+	return true
+}
+
 // Lock acquires the mutex for key, creating it if necessary. The caller must
 // call Unlock (or TryUnlock) exactly once when done.
 func (m *MutexMap) Lock(key string) {

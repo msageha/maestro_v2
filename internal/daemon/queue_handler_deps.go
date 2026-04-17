@@ -130,10 +130,10 @@ type QueueDependencyResolver interface {
 
 // QueueStoreReader provides read-only queue file loading operations.
 type QueueStoreReader interface {
-	LoadCommandQueue() (model.CommandQueue, string)
-	LoadAllTaskQueues() map[string]*taskQueueEntry
-	LoadNotificationQueue() (model.NotificationQueue, string)
-	LoadPlannerSignalQueue() (model.PlannerSignalQueue, string)
+	LoadCommandQueue() (model.CommandQueue, string, error)
+	LoadAllTaskQueues() (map[string]*taskQueueEntry, error)
+	LoadNotificationQueue() (model.NotificationQueue, string, error)
+	LoadPlannerSignalQueue() (model.PlannerSignalQueue, string, error)
 }
 
 // QueueStoreWriter provides queue file flush operations.

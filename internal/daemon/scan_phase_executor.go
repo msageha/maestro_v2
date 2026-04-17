@@ -126,10 +126,22 @@ func (se *ScanPhaseExecutor) initScanState() scanState {
 	scanStart := qh.clock.Now()
 	se.scanCounters = metrics.ScanCounters{}
 
-	commandQueue, commandPath := qh.queueStore.LoadCommandQueue()
-	taskQueues := qh.queueStore.LoadAllTaskQueues()
-	notificationQueue, notificationPath := qh.queueStore.LoadNotificationQueue()
-	signalQueue, signalPath := qh.queueStore.LoadPlannerSignalQueue()
+	commandQueue, commandPath, err := qh.queueStore.LoadCommandQueue()
+	if err != nil {
+		qh.log(LogLevelError, "load_command_queue_failed error=%v", err)
+	}
+	taskQueues, err := qh.queueStore.LoadAllTaskQueues()
+	if err != nil {
+		qh.log(LogLevelError, "load_task_queues_failed error=%v", err)
+	}
+	notificationQueue, notificationPath, err := qh.queueStore.LoadNotificationQueue()
+	if err != nil {
+		qh.log(LogLevelError, "load_notification_queue_failed error=%v", err)
+	}
+	signalQueue, signalPath, err := qh.queueStore.LoadPlannerSignalQueue()
+	if err != nil {
+		qh.log(LogLevelError, "load_signal_queue_failed error=%v", err)
+	}
 
 	return scanState{
 		commands:      fileState[model.CommandQueue]{Data: commandQueue, Path: commandPath},

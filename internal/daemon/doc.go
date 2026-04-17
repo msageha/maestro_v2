@@ -19,6 +19,33 @@
 //	level 2d  state:continuous            — global state/continuous.yaml
 //	level 3   result:{worker}             — per-worker results file
 //
+// All queue:* keys are level-1 peers. Within this level a fixed sub-ordering
+// MUST be followed whenever multiple queue locks are accessed in the same
+// code path (even if acquired and released sequentially):
+//
+//	queue:planner → queue:{worker1} → … → queue:{workerN} → queue:orchestrator → queue:planner_signals
+//
+// Worker queues are ordered lexicographically by worker ID when more than one
+// must be accessed.
+//
+// Sub-ordering enforcement points:
+//
+//   - FlushQueues (queue_store.go): iterates queues in the canonical order
+//     above. Each queue:* key is acquired and released in its own
+//     closure+defer block, so they are never held simultaneously.
+//   - PeriodicScan Phase A (queue_scan_collect.go): reads all queues under
+//     scanMu.Lock; individual queue locks are not held during collection.
+//   - PeriodicScan Phase C (queue_scan_apply.go): writes back dirty queues;
+//     acquires queue locks in the canonical order.
+//   - Write handlers (queue_write_command.go, queue_write_task.go, etc.):
+//     acquire a single queue lock per handler invocation. Concurrent handlers
+//     respect the sub-ordering via scanMu.RLock + per-target lockMap key.
+//
+// queue:planner_signals (added in Phase 1) is positioned last in the sub-
+// ordering. Signal delivery (queue_write_signal.go) acquires only this lock,
+// and Phase A holds scanMu.Lock (not individual queue locks), so no deadlock
+// with the planner_signals position is possible.
+//
 // The four state:* sub-locks (2a–2d) are siblings under the same coarse
 // level-2 bucket, but the order shown above is the only permitted nesting
 // order. Concretely this means:
@@ -47,4 +74,20 @@
 // New code that introduces another state:* sub-namespace MUST update this
 // comment, assign the new key a position in the ordering, and add a
 // reference comment at every acquisition site.
+//
+// # Signal deduplication key ordering
+//
+// PlannerSignal deduplication uses a composite key (signalKey) with fields
+// evaluated in the following order for equality:
+//
+//	CommandID → PhaseID → Kind → WorkerID → ConflictGeneration
+//
+// Two signals are considered duplicates if and only if all five fields match.
+// WorkerID scopes per-worker signals (commit_failed, merge_conflict, etc.)
+// so that distinct workers retain separate entries. Phase-level signals leave
+// WorkerID empty. ConflictGeneration ensures a re-detected merge conflict
+// against a different integration HEAD registers as a fresh signal rather than
+// being suppressed by a stale entry.
+//
+// See signalKey and signalDedupKey in queue_dispatch.go for the implementation.
 package daemon

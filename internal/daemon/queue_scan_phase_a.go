@@ -111,28 +111,42 @@ func (qh *QueueHandler) stepCircuitBreaker(s *scanState) {
 				qh.log(LogLevelError, "circuit_breaker_trip_timeout command=%s error=%v", cmd.ID, err)
 			} else {
 				qh.log(LogLevelWarn, "circuit_breaker_tripped_timeout command=%s reason=%s", cmd.ID, reason)
+				// Emit signal immediately using the reason we already have,
+				// avoiding a TOCTOU race between trip and signal emission.
+				now := qh.clock.Now().UTC().Format(time.RFC3339)
+				msg := fmt.Sprintf("[maestro] kind:circuit_breaker_tripped command_id:%s\nreason: %s",
+					cmd.ID, reason)
+				qh.upsertPlannerSignal(&s.signals.Data, &s.signals.Dirty, model.PlannerSignal{
+					Kind:      "circuit_breaker_tripped",
+					CommandID: cmd.ID,
+					Message:   msg,
+					CreatedAt: now,
+					UpdatedAt: now,
+				}, s.signalIndex)
 			}
-		}
-
-		cbState, err := stateMgr.GetCircuitBreakerState(cmd.ID)
-		if err != nil {
-			continue
-		}
-		if cbState.Tripped {
-			now := qh.clock.Now().UTC().Format(time.RFC3339)
-			tripReason := "unknown"
-			if cbState.TripReason != nil {
-				tripReason = *cbState.TripReason
+		} else {
+			// The breaker may have been tripped by another path (e.g. result-write
+			// handler via consecutive failures). Read current state to detect this.
+			cbState, err := stateMgr.GetCircuitBreakerState(cmd.ID)
+			if err != nil {
+				continue
 			}
-			msg := fmt.Sprintf("[maestro] kind:circuit_breaker_tripped command_id:%s\nreason: %s",
-				cmd.ID, tripReason)
-			qh.upsertPlannerSignal(&s.signals.Data, &s.signals.Dirty, model.PlannerSignal{
-				Kind:      "circuit_breaker_tripped",
-				CommandID: cmd.ID,
-				Message:   msg,
-				CreatedAt: now,
-				UpdatedAt: now,
-			}, s.signalIndex)
+			if cbState.Tripped {
+				now := qh.clock.Now().UTC().Format(time.RFC3339)
+				tripReason := "unknown"
+				if cbState.TripReason != nil {
+					tripReason = *cbState.TripReason
+				}
+				msg := fmt.Sprintf("[maestro] kind:circuit_breaker_tripped command_id:%s\nreason: %s",
+					cmd.ID, tripReason)
+				qh.upsertPlannerSignal(&s.signals.Data, &s.signals.Dirty, model.PlannerSignal{
+					Kind:      "circuit_breaker_tripped",
+					CommandID: cmd.ID,
+					Message:   msg,
+					CreatedAt: now,
+					UpdatedAt: now,
+				}, s.signalIndex)
+			}
 		}
 	}
 }
@@ -168,6 +182,10 @@ func (qh *QueueHandler) stepCancelInterrupt(s *scanState) {
 		if !qh.cancelHandler.IsCommandCancelRequested(cmd) {
 			continue
 		}
+		if s.work.cancelledCommandIDs == nil {
+			s.work.cancelledCommandIDs = make(map[string]struct{})
+		}
+		s.work.cancelledCommandIDs[cmd.ID] = struct{}{}
 		for queueFile, tq := range s.tasks {
 			wID := workerIDFromPath(queueFile)
 			marks, interrupts := qh.cancelHandler.CollectCancelInterruptItems(tq.Queue.Tasks, cmd.ID, wID)

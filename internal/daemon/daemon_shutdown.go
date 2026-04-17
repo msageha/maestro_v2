@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
 )
@@ -77,7 +78,7 @@ func (d *Daemon) Shutdown() {
 
 		totalTimeout := d.config.ShutdownTimeoutSec
 		if totalTimeout <= 0 {
-			totalTimeout = 30
+			totalTimeout = model.DefaultShutdownTimeoutSec
 		}
 		totalDuration := time.Duration(totalTimeout) * time.Second
 

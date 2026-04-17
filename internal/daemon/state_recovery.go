@@ -98,7 +98,7 @@ func recoverStateDir(stateDir string, logger stateLogger) {
 // collectMaxLeaseEpoch scans all valid YAML files in the directory and returns
 // the maximum lease_epoch value found. Returns 0 if none found.
 func collectMaxLeaseEpoch(stateDir string, entries []os.DirEntry, logger stateLogger) int {
-	maxEpoch := 0
+	var allEpochs []int
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
@@ -112,11 +112,59 @@ func collectMaxLeaseEpoch(stateDir string, entries []os.DirEntry, logger stateLo
 		if err != nil {
 			continue
 		}
-		for _, epoch := range extractLeaseEpochs(content) {
-			if epoch > maxEpoch {
-				maxEpoch = epoch
-			}
+		allEpochs = append(allEpochs, extractLeaseEpochs(content)...)
+	}
+	return computeEpochFloor(allEpochs, logger)
+}
+
+// computeEpochFloor derives the epoch floor from a collected set of epoch values.
+//
+// Edge cases:
+//   - Empty input: returns 0 (no floor enforcement needed).
+//   - epoch = 0: ignored. Zero is the default/unset value and should not
+//     influence the floor.
+//   - epoch < 0: invalid. Logged as a warning and treated as 1 (the minimum
+//     valid epoch). This prevents negative values from silently lowering the floor.
+//   - epoch = 1: the minimum valid epoch. Included normally.
+//   - Very large values (e.g. near math.MaxInt): included normally. Go's int
+//     comparison is well-defined for all values; overflow only occurs during
+//     arithmetic which this function does not perform.
+//   - All values invalid (negative/zero): returns 1 as a safe fallback when
+//     at least one epoch was encountered, ensuring .bak restoration cannot
+//     introduce epoch 0.
+func computeEpochFloor(epochs []int, logger stateLogger) int {
+	if len(epochs) == 0 {
+		return 0
+	}
+
+	maxEpoch := 0
+	hasValidEpoch := false
+
+	for _, v := range epochs {
+		switch {
+		case v < 0:
+			// Invalid: negative epoch detected. Reset to 1 as fallback.
+			logger.logf(LogLevelWarn, "state_recovery invalid_epoch value=%d (negative, treating as 1)", v)
+			v = 1
+		case v == 0:
+			// Unset/default — skip.
+			continue
 		}
+
+		hasValidEpoch = true
+		if v > maxEpoch {
+			maxEpoch = v
+		}
+	}
+
+	// If we saw epochs but all were zero, return 0 (no floor needed).
+	// If we saw at least one non-zero (including corrected negatives), ensure
+	// floor is at least 1.
+	if !hasValidEpoch {
+		return 0
+	}
+	if maxEpoch < 1 {
+		return 1
 	}
 	return maxEpoch
 }

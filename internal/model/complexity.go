@@ -17,11 +17,3 @@ func ValidateComplexityLevel(s string) bool {
 	return false
 }
 
-// ComplexityScore captures the assessed complexity of a task.
-type ComplexityScore struct {
-	Level           string  `yaml:"level" json:"level"`
-	FileCount       int     `yaml:"file_count" json:"file_count"`
-	DependencyDepth int     `yaml:"dependency_depth" json:"dependency_depth"`
-	PastRepairRate  float64 `yaml:"past_repair_rate" json:"past_repair_rate"`
-	Confidence      float64 `yaml:"confidence" json:"confidence"`
-}

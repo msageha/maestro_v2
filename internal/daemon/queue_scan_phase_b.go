@@ -81,6 +81,8 @@ func (qh *QueueHandler) stepProbeBusyAgents(ctx context.Context, pa *phaseAResul
 }
 
 // stepDispatchWork executes command, task, and notification dispatches.
+// It tracks per-kind success/failure counts and appends a recovery hint
+// when partial dispatch is detected (some succeeded, some failed).
 func (qh *QueueHandler) stepDispatchWork(ctx context.Context, pa *phaseAResult, result *phaseBResult) {
 	if err := forEachUntilCanceled(ctx, pa.work.dispatches, func(item dispatchItem) {
 		var err error
@@ -88,7 +90,11 @@ func (qh *QueueHandler) stepDispatchWork(ctx context.Context, pa *phaseAResult, 
 		case "command":
 			err = qh.dispatcher.DispatchCommand(item.Command)
 		case "task":
-			err = qh.dispatcher.DispatchTask(item.Task, item.WorkerID)
+			if qh.isTaskDispatchCancelled(item, pa) {
+				err = fmt.Errorf("dispatch blocked: command %s cancel-requested", item.Task.CommandID)
+			} else {
+				err = qh.dispatcher.DispatchTask(item.Task, item.WorkerID)
+			}
 		case "notification":
 			err = qh.dispatcher.DispatchNotification(item.Notification)
 		}
@@ -100,6 +106,61 @@ func (qh *QueueHandler) stepDispatchWork(ctx context.Context, pa *phaseAResult, 
 	}); err != nil {
 		qh.log(LogLevelInfo, "phase_b_dispatches_canceled: %v", err)
 	}
+
+	qh.trackPartialDispatch(result)
+}
+
+// trackPartialDispatch examines dispatch results and, when some dispatches
+// succeeded while others failed, logs a detailed warning per kind and appends
+// a recovery hint so Phase C and downstream logging can reference the state.
+func (qh *QueueHandler) trackPartialDispatch(result *phaseBResult) {
+	if len(result.dispatches) == 0 {
+		return
+	}
+
+	type kindCounts struct {
+		succeeded int
+		failed    int
+	}
+	counts := make(map[string]*kindCounts)
+	totalSucceeded := 0
+	totalFailed := 0
+
+	for _, dr := range result.dispatches {
+		kc, ok := counts[dr.Item.Kind]
+		if !ok {
+			kc = &kindCounts{}
+			counts[dr.Item.Kind] = kc
+		}
+		if dr.Success {
+			kc.succeeded++
+			totalSucceeded++
+		} else {
+			kc.failed++
+			totalFailed++
+		}
+	}
+
+	// Only log and add recovery hints when partial dispatch is detected:
+	// some succeeded AND some failed.
+	if totalSucceeded == 0 || totalFailed == 0 {
+		return
+	}
+
+	total := totalSucceeded + totalFailed
+	qh.log(LogLevelWarn, "phase_b_partial_dispatch: total=%d succeeded=%d failed=%d", total, totalSucceeded, totalFailed)
+	for kind, kc := range counts {
+		if kc.failed > 0 {
+			qh.log(LogLevelWarn, "phase_b_partial_dispatch_detail: kind=%s succeeded=%d failed=%d", kind, kc.succeeded, kc.failed)
+		}
+	}
+
+	hint := fmt.Sprintf("partial_dispatch: total=%d succeeded=%d failed=%d", total, totalSucceeded, totalFailed)
+	for kind, kc := range counts {
+		hint += fmt.Sprintf(" %s_ok=%d %s_fail=%d", kind, kc.succeeded, kind, kc.failed)
+	}
+	hint += "; failed dispatches will be retried in the next scan cycle"
+	result.recoveryHints = append(result.recoveryHints, hint)
 }
 
 // stepDeliverSignals executes planner signal deliveries via tmux.

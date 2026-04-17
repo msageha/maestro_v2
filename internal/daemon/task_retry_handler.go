@@ -196,17 +196,15 @@ func (h *TaskRetryHandler) addRetryTaskToQueueLocked(task *model.Task, workerID 
 
 // RetryTaskAtomically performs the complete retry task registration as a single
 // logical operation: register in command state, add to worker queue, and on
-// queue failure mark as enqueue-failed for reconciler recovery.
+// queue failure attempt rollback before falling back to reconciler recovery.
 //
-// This consolidates the previously separate RegisterRetryTaskInState +
-// AddRetryTaskToQueue + MarkRetryEnqueueFailed calls into a single method
-// with clear error handling and rollback semantics.
+// Error handling strategy (C-A7):
+//   (a) Register retry task in state, then immediately attempt queue add.
+//   (b) On queue failure, rollback the state entry (delete the retry task).
+//   (c) If rollback also fails, mark as RetryEnqueueFailed for R1 reconciler.
 //
-// Note: True filesystem-level atomicity across state and queue files is not
-// possible because AddRetryTaskToQueue uses AtomicWrite which may commit the
-// queue file before returning an error (post-rename syncDir failure). Therefore,
-// on queue write failure, we mark the task as RetryEnqueueFailed rather than
-// rolling back the state entry.
+// This minimises the window where an orphaned state entry exists without
+// a corresponding queue entry.
 func (h *TaskRetryHandler) RetryTaskAtomically(task *model.Task, commandID, workerID string) error {
 	// Step 1: Register in state
 	if err := h.RegisterRetryTaskInState(task, commandID); err != nil {
@@ -215,20 +213,50 @@ func (h *TaskRetryHandler) RetryTaskAtomically(task *model.Task, commandID, work
 
 	// Step 2: Add to queue
 	if err := h.AddRetryTaskToQueue(task, workerID); err != nil {
-		// Step 3: Queue write failed — mark for reconciler recovery.
-		// Cannot safely roll back the state entry (see doc comment).
 		h.log(LogLevelError, "retry_atomic_queue_failed task=%s worker=%s command=%s error=%v",
 			task.ID, workerID, commandID, err)
-		if markErr := h.MarkRetryEnqueueFailed(task.ID, workerID, commandID); markErr != nil {
-			h.log(LogLevelError, "retry_atomic_mark_failed task=%s command=%s error=%v",
-				task.ID, commandID, markErr)
-			return fmt.Errorf("queue add failed (%w) and marking enqueue-failed also failed (%v)", err, markErr)
+
+		// Step 3a: Attempt to rollback state entry
+		if rollbackErr := h.rollbackRetryTaskFromState(task.ID, commandID); rollbackErr != nil {
+			// Step 3b: Rollback failed — mark for R1 reconciler recovery
+			h.log(LogLevelError, "retry_atomic_rollback_failed task=%s command=%s error=%v",
+				task.ID, commandID, rollbackErr)
+			if markErr := h.MarkRetryEnqueueFailed(task.ID, workerID, commandID); markErr != nil {
+				h.log(LogLevelError, "retry_atomic_mark_failed task=%s command=%s error=%v",
+					task.ID, commandID, markErr)
+				return fmt.Errorf("queue add failed (%w), rollback failed (%v), marking enqueue-failed also failed (%v)", err, rollbackErr, markErr)
+			}
+			return fmt.Errorf("queue add failed (rollback failed, marked for reconciler recovery): %w", err)
 		}
-		return fmt.Errorf("queue add failed (marked for reconciler recovery): %w", err)
+
+		h.log(LogLevelInfo, "retry_atomic_state_rolled_back task=%s command=%s",
+			task.ID, commandID)
+		return fmt.Errorf("queue add failed (state rolled back): %w", err)
 	}
 
 	h.log(LogLevelInfo, "retry_task_atomic_completed task=%s worker=%s command=%s",
 		task.ID, workerID, commandID)
+	return nil
+}
+
+// rollbackRetryTaskFromState removes a retry task entry from the command state.
+// Used when queue add fails after state registration to restore consistency.
+func (h *TaskRetryHandler) rollbackRetryTaskFromState(taskID, commandID string) error {
+	stateLockKey := fmt.Sprintf("state:%s", commandID)
+	h.lockMap.Lock(stateLockKey)
+	defer h.lockMap.Unlock(stateLockKey)
+
+	statePath := filepath.Join(h.maestroDir, "state", "commands", commandID+".yaml")
+	if err := updateYAMLFile(statePath, func(state *model.CommandState) error {
+		if state.TaskStates != nil {
+			delete(state.TaskStates, taskID)
+		}
+		state.UpdatedAt = h.clock.Now().UTC().Format(time.RFC3339)
+		return nil
+	}); err != nil {
+		return fmt.Errorf("rollback state file: %w", err)
+	}
+
 	return nil
 }
 

@@ -21,10 +21,3 @@ func DefaultRuntime() string {
 	return RuntimeClaudeCode
 }
 
-// RuntimeDefinition describes how to invoke a runtime.
-type RuntimeDefinition struct {
-	Name    string            `yaml:"name" json:"name"`
-	Command string            `yaml:"command" json:"command"`
-	Args    []string          `yaml:"args,omitempty" json:"args,omitempty"`
-	EnvVars map[string]string `yaml:"env_vars,omitempty" json:"env_vars,omitempty"`
-}

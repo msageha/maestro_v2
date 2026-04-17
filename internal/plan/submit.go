@@ -4,6 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"syscall"
 
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -128,12 +131,22 @@ func submitInitial(opts SubmitOptions, input SubmitInput) (*SubmitResult, error)
 	opts.LockMap.Unlock("queue:planner")
 	defer sm.UnlockCommand(opts.CommandID)
 
+	// TOCTOU fix: Acquire file-level lock for cross-process double-submit
+	// prevention. The in-process MutexMap above protects within a single daemon;
+	// this flock protects against concurrent CLI invocations submitting the
+	// same command_id.
+	stateFlock, flockErr := acquireStateFlock(opts.MaestroDir, opts.CommandID)
+	if flockErr != nil {
+		return nil, flockErr
+	}
+	defer releaseFlock(stateFlock)
+
 	// Re-check cancellation under state lock to close any remaining race
 	if cancelErr := checkCommandNotCancelled(opts.MaestroDir, opts.CommandID); cancelErr != nil {
 		return nil, cancelErr
 	}
 
-	// Double submit prevention (now under lock)
+	// Double submit prevention (now under both in-process lock and flock)
 	if sm.StateExists(opts.CommandID) {
 		return nil, fmt.Errorf("%w: state already exists for command %s", ErrDoubleSubmit, opts.CommandID)
 	}
@@ -510,4 +523,11 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 		})
 	}
 	return result, nil
+}
+
+// acquireStateFlock acquires a file-level exclusive lock for a command's state,
+// providing cross-process mutual exclusion for double-submit prevention.
+func acquireStateFlock(maestroDir, commandID string) (*os.File, error) {
+	lockPath := filepath.Join(maestroDir, "locks", "state_"+commandID+".flock")
+	return acquireFlock(lockPath, syscall.LOCK_EX)
 }

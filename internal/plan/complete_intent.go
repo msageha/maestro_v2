@@ -3,6 +3,7 @@ package plan
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 
@@ -21,21 +22,41 @@ const intentSchemaVersion = 1
 // (CR-019). Note: intents for other commands are not recovered here; daemon
 // startup should scan the intents directory for broader recovery.
 type completeIntent struct {
-	SchemaVersion int                       `yaml:"schema_version"`
-	FileType      string                    `yaml:"file_type"`
-	CommandID     string                    `yaml:"command_id"`
-	Summary       string                    `yaml:"summary"`
-	ResultStatus  model.Status              `yaml:"result_status"`
-	PlanStatus    model.PlanStatus          `yaml:"plan_status"`
-	TaskResults   []model.CommandResultTask `yaml:"task_results"`
-	CreatedAt     string                    `yaml:"created_at"`
+	SchemaVersion       int                       `yaml:"schema_version"`
+	FileType            string                    `yaml:"file_type"`
+	CommandID           string                    `yaml:"command_id"`
+	Summary             string                    `yaml:"summary"`
+	ResultStatus        model.Status              `yaml:"result_status"`
+	PlanStatus          model.PlanStatus          `yaml:"plan_status"`
+	TaskResults         []model.CommandResultTask `yaml:"task_results"`
+	CreatedAt           string                    `yaml:"created_at"`
+	ProcessingStartedAt string                    `yaml:"processing_started_at,omitempty"`
 }
 
 // replayCompleteIntent recovers a stale intent by re-running all 3 steps.
 // Returns the actual final plan_status (which may differ from the intent's
 // plan_status if the state was independently transitioned to a different
 // terminal status).
+//
+// Precondition: caller holds both queue:planner and state:{commandID} locks,
+// which blocks new result writes and state mutations for the duration of
+// recovery (C-A2).
 func replayCompleteIntent(opts CompleteOptions, sm *StateManager, intent *completeIntent) (model.PlanStatus, error) {
+	// C-A2: Detect abandoned recovery — if ProcessingStartedAt is already set,
+	// a previous recovery attempt crashed before cleanup.
+	if intent.ProcessingStartedAt != "" {
+		slog.Warn("replayCompleteIntent: previous processing attempt detected",
+			"command_id", intent.CommandID,
+			"previous_started_at", intent.ProcessingStartedAt)
+	}
+
+	// Stamp processing_started_at so concurrent observers (e.g. daemon startup
+	// scanner) can detect a stale/abandoned recovery.
+	intent.ProcessingStartedAt = nowUTC()
+	if err := writeCompleteIntent(opts.MaestroDir, intent); err != nil {
+		return "", fmt.Errorf("stamp intent processing: %w", err)
+	}
+
 	state, err := sm.LoadState(intent.CommandID)
 	if err != nil {
 		return "", fmt.Errorf("load state for recovery: %w", err)

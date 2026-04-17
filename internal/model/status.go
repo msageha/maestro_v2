@@ -145,8 +145,24 @@ var validNotificationTypes = map[NotificationType]bool{
 	NotificationTypeCommandCancelled: true,
 }
 
-// Queue entry status transitions for command/task: pending ↔ in_progress → terminal
-// dead_letter only from pending (daemon detects attempts >= max_attempts before dispatch)
+// Queue entry status transitions for command/task: pending ↔ in_progress → terminal.
+// dead_letter only from pending (daemon detects attempts >= max_attempts before dispatch).
+//
+// Transition triggers:
+//   pending → in_progress:  LeaseManager.AcquireLease (daemon dispatch)
+//   pending → cancelled:    cancel handler (orchestrator cancellation request)
+//   pending → dead_letter:  daemon queue scan (attempts >= max_attempts before dispatch)
+//   in_progress → pending:  LeaseManager.ReleaseLease (lease timeout / explicit release)
+//   in_progress → completed: result_write_handler (worker/planner reports success)
+//   in_progress → failed:    result_write_handler (worker/planner reports failure)
+//   in_progress → cancelled: cancel handler (orchestrator cancellation during execution)
+//
+// Symmetry with validTaskStateTransitions:
+//   - Queue allows in_progress → pending (lease release); task state does NOT,
+//     because task state tracks logical lifecycle, not queue position.
+//   - Both share pending → {in_progress, cancelled, dead_letter}.
+//   - Task state has extended lifecycle states (planned, ready, dispatched, etc.)
+//     that exist only in task state, not in queue transitions.
 var validCommandTaskQueueTransitions = map[Status]map[Status]bool{
 	StatusPending: {
 		StatusInProgress: true,
@@ -161,7 +177,17 @@ var validCommandTaskQueueTransitions = map[Status]map[Status]bool{
 	},
 }
 
-// Notification queue transitions: terminal states are completed|dead_letter only
+// Notification queue transitions: terminal states are completed|dead_letter only.
+//
+// Transition triggers:
+//   pending → in_progress:  LeaseManager.AcquireNotificationLease (daemon dispatch)
+//   pending → dead_letter:  daemon queue scan (attempts >= max_attempts)
+//   in_progress → pending:  LeaseManager.ReleaseNotificationLease (lease timeout)
+//   in_progress → completed: notification delivery handler (successful delivery)
+//
+// Asymmetries with command/task queue transitions (intentional):
+//   - No cancelled: notifications are not individually cancellable.
+//   - No failed: notification delivery either succeeds or is retried/dead-lettered.
 var validNotificationQueueTransitions = map[Status]map[Status]bool{
 	StatusPending: {
 		StatusInProgress: true,
@@ -173,11 +199,31 @@ var validNotificationQueueTransitions = map[Status]map[Status]bool{
 	},
 }
 
-// Task state transitions (in state/commands/)
+// Task state transitions (in state/commands/).
+// These track the logical task lifecycle, separate from queue entry position.
+//
+// Basic lifecycle transitions:
+//   pending → in_progress:  daemon dispatch (AcquireTaskLease)
+//   pending → cancelled:    command cancellation before dispatch
+//   pending → dead_letter:  daemon dead-letters when queue attempts >= max_attempts
+//   in_progress → completed: result_write_handler (worker reports success)
+//   in_progress → failed:    result_write_handler (worker reports failure)
+//   in_progress → cancelled: command cancellation during execution
+//
+// Symmetry with queue transitions (validCommandTaskQueueTransitions):
+//   - Queue allows in_progress → pending (lease release); task state does NOT
+//     because logical task lifecycle does not regress to pending.
+//   - Both share pending → {in_progress, cancelled, dead_letter}.
+//   - Extended states below exist only in task state.
+//
+// Universal transitions (handled in ValidateTaskStateTransition before map lookup):
+//   - Any non-terminal → paused_for_human (operator intervention)
+//   - Any non-terminal → aborted (task abort)
 var validTaskStateTransitions = map[Status]map[Status]bool{
 	StatusPending: {
 		StatusInProgress: true,
 		StatusCancelled:  true,
+		StatusDeadLetter: true, // daemon dead-letters task (symmetric with queue transitions)
 	},
 	StatusInProgress: {
 		StatusCompleted: true,
@@ -185,51 +231,58 @@ var validTaskStateTransitions = map[Status]map[Status]bool{
 		StatusCancelled: true,
 	},
 
-	// REQUIREMENTS.md §2.1: Extended task lifecycle transitions
+	// REQUIREMENTS.md §2.1: Extended task lifecycle transitions.
+	// cancelled is allowed from every non-terminal extended state for command
+	// cancellation symmetry (a cancelled command must cancel all its tasks).
 	StatusPlanned: {
-		StatusReady:          true,
+		StatusReady:          true, // planner marks task as ready for dispatch
+		StatusCancelled:      true, // command cancellation before task is ready
 		StatusPausedForHuman: true,
 		StatusAborted:        true,
 	},
 	StatusReady: {
-		StatusDispatched:     true,
-		StatusCancelled:      true,
+		StatusDispatched:     true, // daemon dispatches task to worker
+		StatusCancelled:      true, // command cancellation before dispatch
 		StatusPausedForHuman: true,
 		StatusAborted:        true,
 	},
 	StatusDispatched: {
-		StatusRunning:        true,
-		StatusCancelled:      true,
+		StatusRunning:        true, // worker begins execution
+		StatusCancelled:      true, // command cancellation after dispatch
 		StatusPausedForHuman: true,
 		StatusAborted:        true,
 	},
 	StatusRunning: {
-		StatusVerifyPending:  true,
-		StatusFailed:         true,
-		StatusCancelled:      true,
+		StatusVerifyPending:  true, // worker completes, awaiting verification
+		StatusFailed:         true, // worker reports failure
+		StatusCancelled:      true, // command cancellation during execution
 		StatusPausedForHuman: true,
 		StatusAborted:        true,
 	},
 	StatusVerifyPending: {
-		StatusCompleted:      true,
-		StatusRepairPending:  true,
+		StatusCompleted:      true, // verification passed
+		StatusRepairPending:  true, // verification failed, needs repair
+		StatusCancelled:      true, // command cancellation during verification
 		StatusPausedForHuman: true,
 		StatusAborted:        true,
 	},
 	StatusRepairPending: {
-		StatusRunning:         true,
-		StatusPausedForReplan: true,
+		StatusRunning:         true, // repair task dispatched
+		StatusCancelled:       true, // command cancellation during repair wait
+		StatusPausedForReplan: true, // repair requires replanning
 		StatusPausedForHuman:  true,
 		StatusAborted:         true,
 	},
 	StatusPausedForReplan: {
-		StatusReady:          true,
+		StatusReady:          true, // replanning complete, task re-enters ready
+		StatusCancelled:      true, // command cancellation during replan
 		StatusPausedForHuman: true,
 		StatusAborted:        true,
 	},
 	StatusPausedForHuman: {
-		StatusReady:   true,
-		StatusAborted: true,
+		StatusReady:     true, // human approves, task re-enters ready
+		StatusCancelled: true, // command cancellation during human review
+		StatusAborted:   true,
 	},
 }
 

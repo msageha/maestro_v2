@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 
 	yamlv3 "gopkg.in/yaml.v3"
 
@@ -12,6 +13,41 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
+
+// queueFlockPath returns the flock file path for cross-process locking of a
+// queue file. Lock files are kept separate from data files so that
+// AtomicWrite's temp→rename does not invalidate the flock inode.
+func queueFlockPath(maestroDir, queueFilename string) string {
+	return filepath.Join(maestroDir, "locks", queueFilename+".flock")
+}
+
+// acquireFlock opens (or creates) a lock file and acquires a flock of the
+// given type (syscall.LOCK_EX or syscall.LOCK_SH). The returned *os.File
+// must be passed to releaseFlock when the protected section ends.
+func acquireFlock(lockPath string, lockType int) (*os.File, error) {
+	dir := filepath.Dir(lockPath)
+	if err := os.MkdirAll(dir, 0755); err != nil { //nolint:gosec // 0755 is appropriate for a locks directory
+		return nil, fmt.Errorf("create lock dir: %w", err)
+	}
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return nil, fmt.Errorf("open flock %s: %w", lockPath, err)
+	}
+	if err := syscall.Flock(int(f.Fd()), lockType); err != nil { //nolint:gosec // uintptr→int conversion for fd is safe
+		_ = f.Close()
+		return nil, fmt.Errorf("acquire flock %s: %w", lockPath, err)
+	}
+	return f, nil
+}
+
+// releaseFlock releases the flock and closes the file. Safe to call with nil.
+func releaseFlock(f *os.File) {
+	if f == nil {
+		return
+	}
+	_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:gosec // uintptr→int conversion for fd is safe
+	_ = f.Close()
+}
 
 // ApplyTaskDefaults fills in default values for required fields that may be
 // omitted in Planner input for backward compatibility.
@@ -75,12 +111,23 @@ func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks 
 
 	// CRIT-02: Write to each worker's queue file under per-queue lock
 	// to prevent concurrent read-modify-write data loss.
+	// C-A3: flock(LOCK_EX) provides cross-process protection in addition
+	// to the in-process MutexMap lock.
 	for workerID, newTasks := range workerTasks {
 		if err := func() error {
 			if lockMap != nil {
 				lockMap.Lock("queue:" + workerID)
 				defer lockMap.Unlock("queue:" + workerID)
 			}
+			flockFile, flockErr := acquireFlock(
+				queueFlockPath(maestroDir, workerIDToQueueFile(workerID)),
+				syscall.LOCK_EX,
+			)
+			if flockErr != nil {
+				return flockErr
+			}
+			defer releaseFlock(flockFile)
+
 			return readModifyWriteQueue(maestroDir, workerID, func(tq *model.TaskQueue) {
 				tq.Tasks = append(tq.Tasks, newTasks...)
 			})
@@ -107,12 +154,21 @@ func rollbackQueueEntries(maestroDir string, tasks []TaskInput, nameToID map[str
 	var errs []error
 
 	// CRIT-02: Lock per-queue to prevent concurrent read-modify-write data loss.
+	// C-A3: flock(LOCK_EX) provides cross-process protection.
 	for workerID := range workerFiles {
 		if err := func() error {
 			if lockMap != nil {
 				lockMap.Lock("queue:" + workerID)
 				defer lockMap.Unlock("queue:" + workerID)
 			}
+			flockFile, flockErr := acquireFlock(
+				queueFlockPath(maestroDir, workerIDToQueueFile(workerID)),
+				syscall.LOCK_EX,
+			)
+			if flockErr != nil {
+				return flockErr
+			}
+			defer releaseFlock(flockFile)
 
 			queueFile := filepath.Join(maestroDir, "queue", workerIDToQueueFile(workerID))
 
@@ -184,6 +240,20 @@ func removeFromSlice(s []string, target string) []string {
 
 func checkCommandNotCancelled(maestroDir string, commandID string) error {
 	plannerQueuePath := filepath.Join(maestroDir, "queue", "planner.yaml")
+
+	// C-A4: Acquire shared file-level lock for consistent reads.
+	// AtomicWrite (temp→rename) already guarantees no partial reads on POSIX;
+	// LOCK_SH provides an additional safety layer at negligible overhead,
+	// ensuring we do not read during the brief rename window.
+	flockFile, flockErr := acquireFlock(
+		queueFlockPath(maestroDir, "planner.yaml"),
+		syscall.LOCK_SH,
+	)
+	if flockErr != nil {
+		return flockErr
+	}
+	defer releaseFlock(flockFile)
+
 	data, err := os.ReadFile(plannerQueuePath) //nolint:gosec // plannerQueuePath is constructed from a controlled application queue directory
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

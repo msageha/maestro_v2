@@ -171,6 +171,9 @@ type WatcherConfig struct {
 	ClearMaxAttempts        int `yaml:"clear_max_attempts"`          // Total send attempts including initial (default 3)
 	ClearRetryBackoffMs     int `yaml:"clear_retry_backoff_ms"`      // Base backoff between attempts; doubles each retry (default 500ms)
 	ClearSecondEnterDelayMs int `yaml:"clear_second_enter_delay_ms"` // Delay before sending second Enter after /clear (default 500ms)
+
+	// Shell readiness timeout for formation startup (default 10s)
+	ShellReadyTimeoutSec int `yaml:"shell_ready_timeout_sec"`
 }
 
 func (w WatcherConfig) EffectiveMaxInProgressMin() int { return effectiveValue(w.MaxInProgressMin, DefaultMaxInProgressMin) }
@@ -249,28 +252,3 @@ type TaskRetryConfig struct {
 	CooldownSec        int   `yaml:"cooldown_sec"`
 }
 
-// --- Config convenience methods for deep access chains ---
-
-// EffectiveSimpleMaxFiles returns Complexity.Thresholds.EffectiveSimpleMaxFiles().
-func (c Config) EffectiveSimpleMaxFiles() int { return c.Complexity.Thresholds.EffectiveSimpleMaxFiles() }
-
-// EffectiveStandardMaxFiles returns Complexity.Thresholds.EffectiveStandardMaxFiles().
-func (c Config) EffectiveStandardMaxFiles() int { return c.Complexity.Thresholds.EffectiveStandardMaxFiles() }
-
-// EffectiveComplexMaxFiles returns Complexity.Thresholds.EffectiveComplexMaxFiles().
-func (c Config) EffectiveComplexMaxFiles() int { return c.Complexity.Thresholds.EffectiveComplexMaxFiles() }
-
-// EffectiveGCTTLHours returns Worktree.GC.EffectiveTTLHours().
-func (c Config) EffectiveGCTTLHours() int { return c.Worktree.GC.EffectiveTTLHours() }
-
-// EffectiveGCMaxWorktrees returns Worktree.GC.EffectiveMaxWorktrees().
-func (c Config) EffectiveGCMaxWorktrees() int { return c.Worktree.GC.EffectiveMaxWorktrees() }
-
-// EffectiveCommitMaxFiles returns Worktree.CommitPolicy.EffectiveMaxFiles().
-func (c Config) EffectiveCommitMaxFiles() int { return c.Worktree.CommitPolicy.EffectiveMaxFiles() }
-
-// EffectiveAutoCollectMinOccurrences returns Skills.AutoCollect.EffectiveMinOccurrences().
-func (c Config) EffectiveAutoCollectMinOccurrences() int { return c.Skills.AutoCollect.EffectiveMinOccurrences() }
-
-// EffectiveAutoCollectMinCommands returns Skills.AutoCollect.EffectiveMinCommands().
-func (c Config) EffectiveAutoCollectMinCommands() int { return c.Skills.AutoCollect.EffectiveMinCommands() }

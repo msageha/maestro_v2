@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
@@ -18,6 +19,39 @@ type CancelHandler struct {
 	stateManager    StateManager
 	lockMap         *lock.MutexMap
 	worktreeManager *WorktreeManager
+	cache           *cancelCache
+}
+
+// cancelCache provides thread-safe in-memory tracking of cancel-requested
+// command IDs. This closes the race window where a cancel request arrives
+// during Phase B (no lock held) after Phase A has already collected dispatch
+// items. Phase B's dispatch step checks this cache before dispatching.
+type cancelCache struct {
+	mu  sync.RWMutex
+	ids map[string]struct{}
+}
+
+func newCancelCache() *cancelCache {
+	return &cancelCache{ids: make(map[string]struct{})}
+}
+
+func (c *cancelCache) Mark(commandID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ids[commandID] = struct{}{}
+}
+
+func (c *cancelCache) IsMarked(commandID string) bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	_, ok := c.ids[commandID]
+	return ok
+}
+
+func (c *cancelCache) Remove(commandID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.ids, commandID)
 }
 
 // NewCancelHandler creates a new CancelHandler with a shared ExecutorProvider.
@@ -33,6 +67,7 @@ func NewCancelHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMa
 			execProvider: ep,
 		},
 		lockMap: lockMap,
+		cache:   newCancelCache(),
 	}
 }
 
@@ -44,6 +79,26 @@ func (ch *CancelHandler) SetStateReader(reader StateManager) {
 // SetWorktreeManager wires the worktree manager for cleanup on cancellation (H4).
 func (ch *CancelHandler) SetWorktreeManager(wm *WorktreeManager) {
 	ch.worktreeManager = wm
+}
+
+// CacheCancelRequest immediately records a command as cancel-requested
+// in the in-memory cache. Called by the UDS cancel handler so that
+// Phase B dispatch can detect cancellation without waiting for Phase C.
+func (ch *CancelHandler) CacheCancelRequest(commandID string) {
+	ch.cache.Mark(commandID)
+}
+
+// IsDispatchBlocked returns true if the given command has a pending
+// cancel request in the in-memory cache. Phase B dispatch checks this
+// before executing each task dispatch.
+func (ch *CancelHandler) IsDispatchBlocked(commandID string) bool {
+	return ch.cache.IsMarked(commandID)
+}
+
+// ClearCancelCache removes a command from the cancel cache.
+// Called when cancellation processing is fully complete.
+func (ch *CancelHandler) ClearCancelCache(commandID string) {
+	ch.cache.Remove(commandID)
 }
 
 // IsCommandCancelRequested checks if a command has been marked for cancellation.
@@ -70,6 +125,7 @@ func (ch *CancelHandler) IsCommandCancelRequested(cmd *model.Command) bool {
 // CancelPendingTasks transitions pending tasks of a cancelled command to cancelled.
 // Returns the number of tasks cancelled (periodic scan step 0.5).
 func (ch *CancelHandler) CancelPendingTasks(tasks []model.Task, commandID string) []CancelledTaskResult {
+	ch.cache.Mark(commandID)
 	results := make([]CancelledTaskResult, 0, len(tasks))
 
 	for i := range tasks {
@@ -210,6 +266,7 @@ func (ch *CancelHandler) cancelAutoCompletePostProcess(commandID string) error {
 //     and apply ApplyCancelMark, which is a no-op for tasks that have already
 //     transitioned to a terminal state by the worker.
 func (ch *CancelHandler) CollectCancelInterruptItems(tasks []model.Task, commandID string, workerID string) ([]cancelMarkItem, []interruptItem) { //nolint:revive // unexported return types are intentional; callers are within the same package
+	ch.cache.Mark(commandID)
 	marks := make([]cancelMarkItem, 0, len(tasks))
 	interrupts := make([]interruptItem, 0, len(tasks))
 

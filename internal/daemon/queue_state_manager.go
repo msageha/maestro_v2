@@ -121,15 +121,16 @@ type worktreeCleanupResult struct {
 
 // deferredWork collects all slow I/O operations for Phase B execution.
 type deferredWork struct {
-	dispatches        []dispatchItem
-	interrupts        []interruptItem
-	cancelMarks       []cancelMarkItem
-	busyChecks        []busyCheckItem
-	signals           []signalDeliveryItem
-	clears            []string // agent IDs to /clear
-	worktreeMerges    []worktreeMergeItem
-	worktreePublishes []worktreePublishItem
-	worktreeCleanups  []worktreeCleanupItem
+	dispatches          []dispatchItem
+	interrupts          []interruptItem
+	cancelMarks         []cancelMarkItem
+	busyChecks          []busyCheckItem
+	signals             []signalDeliveryItem
+	clears              []string // agent IDs to /clear
+	worktreeMerges      []worktreeMergeItem
+	worktreePublishes   []worktreePublishItem
+	worktreeCleanups    []worktreeCleanupItem
+	cancelledCommandIDs map[string]struct{} // in-memory set of cancel-requested commands for Phase B dispatch guard
 }
 
 // dispatchResult captures the outcome of a Phase B dispatch.

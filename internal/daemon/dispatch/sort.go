@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"log/slog"
 	"sort"
 	"time"
 
@@ -45,6 +46,7 @@ func EffectivePriority(priority int, createdAt string, priorityAgingSec int) int
 	}
 	created, err := time.Parse(time.RFC3339, createdAt)
 	if err != nil {
+		slog.Warn("priority_aging createdAt parse failed", "priority", priority, "createdAt", createdAt, "error", err)
 		return clampPriority(priority)
 	}
 	age := time.Since(created)

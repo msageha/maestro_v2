@@ -32,14 +32,6 @@ type VerifyResult struct {
 	ExitCode int           `yaml:"exit_code"`
 }
 
-// VerifyReport aggregates all verification results for a task.
-type VerifyReport struct {
-	TaskID    string         `yaml:"task_id"`
-	Results   []VerifyResult `yaml:"results"`
-	AllPassed bool           `yaml:"all_passed"`
-	CreatedAt time.Time      `yaml:"created_at"`
-}
-
 // verifyFile is the on-disk YAML wrapper for verify.yaml.
 type verifyFile struct {
 	Verify VerifyConfig `yaml:"verify"`

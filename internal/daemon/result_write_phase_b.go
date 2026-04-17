@@ -75,7 +75,7 @@ func (h *ResultWriteAPI) handleBestEffortWrites(params ResultWriteParams, result
 	return rejectionID
 }
 
-func (h *ResultWriteAPI) resultWritePhaseB(params ResultWriteParams, resultID string, resultStatus model.Status, queueWriteFailed bool) error {
+func (h *ResultWriteAPI) resultWritePhaseB(params ResultWriteParams, resultID string, resultStatus model.Status, queueWriteFailed bool, originalTaskID string) error {
 	cmdLockKey := "state:" + params.CommandID
 	h.lockMap.Lock(cmdLockKey)
 	defer h.lockMap.Unlock(cmdLockKey)
@@ -88,6 +88,23 @@ func (h *ResultWriteAPI) resultWritePhaseB(params ResultWriteParams, resultID st
 		}
 		if state.TaskStates == nil {
 			state.TaskStates = make(map[string]model.Status)
+		}
+
+		// Idempotency check under state lock — closes the TOCTOU window between
+		// Phase A's result-file check and Phase B's state update.
+		if state.AppliedResultIDs != nil {
+			if existingID, ok := state.AppliedResultIDs[params.TaskID]; ok {
+				if existingID == resultID {
+					h.logFn(LogLevelWarn, "duplicate_result_skipped task=%s result=%s command=%s (state lock idempotency)",
+						params.TaskID, resultID, params.CommandID)
+					return errNoUpdate
+				}
+				h.logFn(LogLevelWarn,
+					"result_write applied_result_ids_conflict task=%s command=%s existing=%s incoming=%s "+
+						"(TOCTOU race detected; incoming result rejected to preserve idempotency)",
+					params.TaskID, params.CommandID, existingID, resultID)
+				return errNoUpdate
+			}
 		}
 
 		recordedStatus := h.resolveRecordedStatus(state, params, resultStatus)
@@ -104,6 +121,18 @@ func (h *ResultWriteAPI) resultWritePhaseB(params ResultWriteParams, resultID st
 		state.AppliedResultIDs[params.TaskID] = resultID
 
 		h.recordQueueWriteFailedSticky(state, params, resultID, queueWriteFailed)
+
+		// Update original task state for retry lineage consistency.
+		if originalTaskID != "" {
+			if existing, ok := state.TaskStates[originalTaskID]; ok {
+				if !model.IsTerminal(existing) {
+					state.TaskStates[originalTaskID] = model.StatusCancelled
+					h.logFn(LogLevelInfo,
+						"retry_lineage_superseded original_task=%s retry_task=%s command=%s",
+						originalTaskID, params.TaskID, params.CommandID)
+				}
+			}
+		}
 
 		return nil
 	})
@@ -178,7 +207,20 @@ func (h *ResultWriteAPI) recordQueueWriteFailedSticky(state *model.CommandState,
 // the queue file. Returns (skip=true, reason) only on definitive epoch mismatch.
 // On I/O errors, parse errors, or task-not-found (task may have been archived
 // after completion), returns (skip=false, "") to allow writes to proceed.
+//
+// A try-lock on the queue key is acquired to prevent reading a partially-written
+// queue file. If the lock cannot be acquired (concurrent Phase A write in
+// progress), the check is skipped and writes are allowed — the next scan cycle
+// will reconcile.
 func (h *ResultWriteAPI) checkLeaseEpochForBestEffort(params ResultWriteParams) (skip bool, reason string) {
+	queueLockKey := "queue:" + params.Reporter
+	if !h.lockMap.TryLock(queueLockKey) {
+		h.logFn(LogLevelInfo, "advisory_lease_check lock_contention reporter=%s task=%s (skipping; next scan will reconcile)",
+			params.Reporter, params.TaskID)
+		return false, ""
+	}
+	defer h.lockMap.Unlock(queueLockKey)
+
 	queuePath := taskQueuePath(h.maestroDir, params.Reporter)
 	data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is constructed from a controlled application queue directory
 	if err != nil {

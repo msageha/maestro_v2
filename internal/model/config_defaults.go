@@ -33,6 +33,9 @@ const (
 	MaxMaxQuarantineFiles        = 10000
 	MaxMaxWorktrees              = 256
 	MaxMaxYAMLFileBytes          = 50 * 1024 * 1024 // 50MB
+	MaxPriorityAgingSec          = 86400             // 24 hours
+	MaxCommandDispatchRetries    = 100
+	MaxTaskDispatchRetries       = 100
 )
 
 // Default values for Effective*() methods.
@@ -85,6 +88,9 @@ const (
 	DefaultStallTimeoutMinutes         = 30
 	DefaultFallbackMergeTimeoutMinutes = 60
 	DefaultStallCleanupAfter           = 10 * time.Minute
+
+	// ShutdownConfig
+	DefaultShutdownTimeoutSec = 30
 
 	// CommitPolicyConfig
 	DefaultCommitMaxFiles = 60

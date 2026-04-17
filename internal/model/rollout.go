@@ -45,12 +45,6 @@ type RolloutCandidate struct {
 	Status     string        `yaml:"status"`
 }
 
-// RolloutEligibility はタスクがロールアウト対象かどうかの判定結果を表す。
-type RolloutEligibility struct {
-	Eligible bool     `yaml:"eligible"`
-	Reasons  []string `yaml:"reasons,omitempty"`
-}
-
 // RolloutConfig はロールアウト機能の設定を保持する。
 type RolloutConfig struct {
 	Enabled            *bool `yaml:"enabled,omitempty"`

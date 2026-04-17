@@ -2,10 +2,55 @@ package daemon
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
 )
+
+// phaseTransitionPriority returns an integer priority for a phase status.
+// Lower values indicate higher priority. The ordering ensures that terminal
+// failure states are applied before success or awaiting states when multiple
+// transitions target the same phase.
+func phaseTransitionPriority(status model.PhaseStatus) int {
+	switch status {
+	case model.PhaseStatusFailed:
+		return 0
+	case model.PhaseStatusCancelled:
+		return 1
+	case model.PhaseStatusTimedOut:
+		return 2
+	case model.PhaseStatusCompleted:
+		return 3
+	case model.PhaseStatusAwaitingFill:
+		return 4
+	default:
+		return 5
+	}
+}
+
+// sortPhaseTransitions sorts transitions by priority (lowest number first)
+// using a stable sort to preserve original order among equal priorities.
+func sortPhaseTransitions(transitions []PhaseTransitionResult) {
+	sort.SliceStable(transitions, func(i, j int) bool {
+		return phaseTransitionPriority(transitions[i].NewStatus) < phaseTransitionPriority(transitions[j].NewStatus)
+	})
+}
+
+// deduplicatePhaseTransitions removes duplicate transitions targeting the same
+// phase ID, keeping only the first occurrence (highest priority after sorting).
+func deduplicatePhaseTransitions(transitions []PhaseTransitionResult) []PhaseTransitionResult {
+	seen := make(map[string]bool, len(transitions))
+	out := make([]PhaseTransitionResult, 0, len(transitions))
+	for _, tr := range transitions {
+		if seen[tr.PhaseID] {
+			continue
+		}
+		seen[tr.PhaseID] = true
+		out = append(out, tr)
+	}
+	return out
+}
 
 // stepPhaseTransitions — Step 0.7: Detect and persist phase transitions.
 func (qh *QueueHandler) stepPhaseTransitions(s *scanState) {
@@ -23,6 +68,9 @@ func (qh *QueueHandler) stepPhaseTransitions(s *scanState) {
 			qh.log(LogLevelWarn, "phase_transition_check command=%s error=%v", cmd.ID, err)
 			continue
 		}
+
+		sortPhaseTransitions(transitions)
+		transitions = deduplicatePhaseTransitions(transitions)
 
 		for _, tr := range transitions {
 			qh.log(LogLevelInfo, "phase_transition command=%s phase=%s %s→%s reason=%s",

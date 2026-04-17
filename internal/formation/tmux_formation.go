@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os/exec"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
@@ -118,17 +119,18 @@ func createFormation(cfg model.Config) (retErr error) {
 	allPanes = append(allPanes, orchPane, plannerPane)
 	allPanes = append(allPanes, panes...)
 
-	// Wait for each pane's shell to be ready before sending commands
-	for _, pane := range allPanes {
-		paneCtx, paneCancel := context.WithTimeout(context.Background(), 10*time.Second)
-		err := waitForShellReady(paneCtx, pane)
-		paneCancel()
-		if err != nil {
-			return fmt.Errorf("pane %s shell not ready: %w", pane, err)
-		}
+	// Wait for each pane's shell to be ready before sending commands.
+	// Orchestrator + planner are required; worker panes are best-effort
+	// with automatic cleanup on failure.
+	requiredPanes := allPanes[:2] // orchestrator + planner
+	optionalPanes := allPanes[2:] // workers
+	timeout := shellReadyTimeout(cfg)
+	readyPanes, err := preparePanes(requiredPanes, optionalPanes, timeout, waitForShellReady, killPaneByTarget)
+	if err != nil {
+		return err
 	}
 
-	for _, pane := range allPanes {
+	for _, pane := range readyPanes {
 		if err := tmux.SendCommand(pane, "maestro agent launch"); err != nil {
 			return fmt.Errorf("launch agent in %s: %w", pane, err)
 		}
@@ -190,6 +192,74 @@ func setAgentVars(pane, agentID, role, agentModel string) error {
 		}
 	}
 	return nil
+}
+
+const defaultShellReadyTimeoutSec = 10
+
+// shellReadyTimeout returns the configured shell readiness timeout or the default (10s).
+func shellReadyTimeout(cfg model.Config) time.Duration {
+	if cfg.Watcher.ShellReadyTimeoutSec > 0 {
+		return time.Duration(cfg.Watcher.ShellReadyTimeoutSec) * time.Second
+	}
+	return defaultShellReadyTimeoutSec * time.Second
+}
+
+// killPaneByTarget kills a tmux pane by its target identifier.
+// Best-effort: errors are logged but not propagated.
+// Package-level variable for test overriding.
+var killPaneByTarget = func(pane string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := exec.CommandContext(ctx, "tmux", "kill-pane", "-t", pane).Run(); err != nil { //nolint:gosec // "tmux" is a fixed command; pane target is derived from internal formation setup
+		slog.Warn("kill-pane failed", "pane", pane, "error", err)
+	}
+}
+
+// preparePanes waits for panes to become ready with automatic cleanup of failed panes.
+// Required panes (orchestrator + planner) must all succeed; optional panes (workers)
+// are killed on failure and excluded from the result. Returns the list of ready panes.
+func preparePanes(
+	requiredPanes []string,
+	optionalPanes []string,
+	timeout time.Duration,
+	waitFn func(ctx context.Context, pane string) error,
+	killFn func(pane string),
+) ([]string, error) {
+	readyPanes := make([]string, 0, len(requiredPanes)+len(optionalPanes))
+
+	// Required panes must all succeed
+	for _, pane := range requiredPanes {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		err := waitFn(ctx, pane)
+		cancel()
+		if err != nil {
+			return nil, fmt.Errorf("required pane %s not ready: %w", pane, err)
+		}
+		readyPanes = append(readyPanes, pane)
+	}
+
+	// Optional panes: cleanup on failure, continue with remaining
+	var failedCount int
+	for _, pane := range optionalPanes {
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		err := waitFn(ctx, pane)
+		cancel()
+		if err != nil {
+			slog.Warn("worker pane not ready, cleaning up", "pane", pane, "error", err)
+			killFn(pane)
+			failedCount++
+			continue
+		}
+		readyPanes = append(readyPanes, pane)
+	}
+
+	if failedCount > 0 {
+		slog.Warn("formation started with partial workers",
+			"ready_workers", len(readyPanes)-len(requiredPanes),
+			"failed_workers", failedCount)
+	}
+
+	return readyPanes, nil
 }
 
 // resolveModel determines the model for a given agent.

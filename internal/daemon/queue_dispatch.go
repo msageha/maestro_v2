@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
@@ -234,13 +235,23 @@ func (qh *QueueHandler) computeSignalBackoff(attempts int) time.Duration {
 // Returns (busy, undecided). When undecided=true, busy is false.
 func (qh *QueueHandler) isAgentBusy(ctx context.Context, agentID string) (busy, undecided bool) {
 	if qh.scanExecutor.busyChecker != nil {
-		return qh.scanExecutor.busyChecker.IsBusy(agentID), false
+		busy := qh.scanExecutor.busyChecker.IsBusy(agentID)
+		if qh.undecidedTracker != nil {
+			qh.undecidedTracker.Reset(agentID)
+		}
+		return busy, false
 	}
 
-	// Default: use shared agent executor to probe busy state
 	exec, err := qh.execProvider.GetExecutor()
 	if err != nil {
 		qh.log(LogLevelWarn, "busy_probe_executor_error agent=%s error=%v (treating as undecided)", agentID, err)
+		count := 0
+		if qh.undecidedTracker != nil {
+			count = qh.undecidedTracker.Increment(agentID)
+		}
+		if count >= undecidedWarnThreshold {
+			qh.log(LogLevelWarn, "busy_probe_undecided_consecutive agent=%s count=%d scheduling_health_check", agentID, count)
+		}
 		return false, true
 	}
 
@@ -250,13 +261,22 @@ func (qh *QueueHandler) isAgentBusy(ctx context.Context, agentID string) (busy, 
 		Mode:    agent.ModeIsBusy,
 	})
 
-	// VerdictUndecided: neither extend nor release; defer to next scan cycle.
 	if result.Error != nil && errors.Is(result.Error, agent.ErrBusyUndecided) {
-		qh.log(LogLevelInfo, "busy_probe_undecided agent=%s", agentID)
+		count := 0
+		if qh.undecidedTracker != nil {
+			count = qh.undecidedTracker.Increment(agentID)
+		}
+		if count >= undecidedWarnThreshold {
+			qh.log(LogLevelWarn, "busy_probe_undecided_consecutive agent=%s count=%d scheduling_health_check", agentID, count)
+		}
+		qh.log(LogLevelInfo, "busy_probe_undecided agent=%s consecutive=%d", agentID, count)
 		return false, true
 	}
 
-	return result.Success, false // Success=true means busy
+	if qh.undecidedTracker != nil {
+		qh.undecidedTracker.Reset(agentID)
+	}
+	return result.Success, false
 }
 
 // clearAgent sends /clear to the specified agent pane to reset a stuck session.
@@ -277,4 +297,57 @@ func (qh *QueueHandler) clearAgent(ctx context.Context, agentID string) {
 	} else {
 		qh.log(LogLevelInfo, "clear_agent agent=%s success", agentID)
 	}
+}
+
+// isTaskDispatchCancelled checks whether a task's command has been
+// cancel-requested, using both the Phase A deferred work set and the
+// CancelHandler's in-memory cache (which catches cancel requests that
+// arrived after Phase A collected dispatch items).
+func (qh *QueueHandler) isTaskDispatchCancelled(item dispatchItem, pa *phaseAResult) bool {
+	if item.Task == nil {
+		return false
+	}
+	cmdID := item.Task.CommandID
+	if pa.work.cancelledCommandIDs != nil {
+		if _, ok := pa.work.cancelledCommandIDs[cmdID]; ok {
+			return true
+		}
+	}
+	return qh.cancelHandler.IsDispatchBlocked(cmdID)
+}
+
+// undecidedTracker tracks consecutive undecided busy-probe results per agent.
+// When the count exceeds the threshold, a warning is logged and a health
+// check (/clear) is scheduled for the next scan cycle.
+type undecidedTracker struct {
+	mu     sync.Mutex
+	counts map[string]int
+}
+
+const undecidedWarnThreshold = 3
+
+func newUndecidedTracker() *undecidedTracker {
+	return &undecidedTracker{counts: make(map[string]int)}
+}
+
+// Increment records an undecided result and returns the new consecutive count.
+func (t *undecidedTracker) Increment(agentID string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.counts[agentID]++
+	return t.counts[agentID]
+}
+
+// Reset clears the consecutive undecided count for an agent.
+func (t *undecidedTracker) Reset(agentID string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	delete(t.counts, agentID)
+}
+
+// Count returns the current consecutive undecided count for an agent.
+func (t *undecidedTracker) Count(agentID string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.counts[agentID]
 }

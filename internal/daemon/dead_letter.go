@@ -93,7 +93,8 @@ func (dlp *DeadLetterProcessor) ProcessCommandDeadLetters(cq *model.CommandQueue
 		cmd.DeadLetterReason = &reason
 
 		// Archive
-		if err := dlp.archiveDeadLetter("planner", cmd.ID, cmd, reason); err != nil {
+		archivePath, err := dlp.archiveDeadLetter("planner", cmd.ID, cmd, reason)
+		if err != nil {
 			dlp.log(LogLevelError, "archive_dead_letter planner command=%s error=%v", cmd.ID, err)
 			dlp.log(LogLevelWarn, "archive_failed_entry_details queue=planner command=%s status=%s attempts=%d reason=%s",
 				cmd.ID, cmd.Status, cmd.Attempts, reason)
@@ -109,7 +110,7 @@ func (dlp *DeadLetterProcessor) ProcessCommandDeadLetters(cq *model.CommandQueue
 			Reason:    reason,
 		})
 
-		dlp.log(LogLevelWarn, "dead_letter planner command=%s attempts=%d reason=%s", cmd.ID, cmd.Attempts, reason)
+		dlp.log(LogLevelWarn, "dead_letter planner command=%s attempts=%d reason=%s archive=%s timestamp=%s", cmd.ID, cmd.Attempts, reason, archivePath, now)
 	}
 
 	if len(results) > 0 {
@@ -150,7 +151,8 @@ func (dlp *DeadLetterProcessor) ProcessTaskDeadLetters(tq *taskQueueEntry, dirty
 		task.DeadLetterReason = &reason
 
 		// Archive
-		if err := dlp.archiveDeadLetter(workerID, task.ID, task, reason); err != nil {
+		archivePath, err := dlp.archiveDeadLetter(workerID, task.ID, task, reason)
+		if err != nil {
 			dlp.log(LogLevelError, "archive_dead_letter %s task=%s error=%v", workerID, task.ID, err)
 			dlp.log(LogLevelWarn, "archive_failed_entry_details queue=%s task=%s command=%s status=%s attempts=%d reason=%s",
 				workerID, task.ID, task.CommandID, task.Status, task.Attempts, reason)
@@ -167,7 +169,7 @@ func (dlp *DeadLetterProcessor) ProcessTaskDeadLetters(tq *taskQueueEntry, dirty
 			Reason:    reason,
 		})
 
-		dlp.log(LogLevelWarn, "dead_letter %s task=%s command=%s attempts=%d", workerID, task.ID, task.CommandID, task.Attempts)
+		dlp.log(LogLevelWarn, "dead_letter %s task=%s command=%s attempts=%d reason=%s archive=%s timestamp=%s", workerID, task.ID, task.CommandID, task.Attempts, reason, archivePath, now)
 	}
 
 	if len(results) > 0 {
@@ -202,7 +204,8 @@ func (dlp *DeadLetterProcessor) ProcessNotificationDeadLetters(nq *model.Notific
 		ntf.DeadLetterReason = &reason
 
 		// Archive
-		if err := dlp.archiveDeadLetter("orchestrator", ntf.ID, ntf, reason); err != nil {
+		archivePath, err := dlp.archiveDeadLetter("orchestrator", ntf.ID, ntf, reason)
+		if err != nil {
 			dlp.log(LogLevelError, "archive_dead_letter orchestrator notification=%s error=%v", ntf.ID, err)
 			dlp.log(LogLevelWarn, "archive_failed_entry_details queue=orchestrator notification=%s command=%s status=%s attempts=%d reason=%s",
 				ntf.ID, ntf.CommandID, ntf.Status, ntf.Attempts, reason)
@@ -215,7 +218,7 @@ func (dlp *DeadLetterProcessor) ProcessNotificationDeadLetters(nq *model.Notific
 			Reason:    reason,
 		})
 
-		dlp.log(LogLevelWarn, "dead_letter orchestrator notification=%s command=%s attempts=%d", ntf.ID, ntf.CommandID, ntf.Attempts)
+		dlp.log(LogLevelWarn, "dead_letter orchestrator notification=%s command=%s attempts=%d reason=%s archive=%s timestamp=%s", ntf.ID, ntf.CommandID, ntf.Attempts, reason, archivePath, now)
 	}
 
 	if len(results) > 0 {
@@ -225,12 +228,12 @@ func (dlp *DeadLetterProcessor) ProcessNotificationDeadLetters(nq *model.Notific
 	return results
 }
 
-// archiveDeadLetter writes a dead-letter archive file.
+// archiveDeadLetter writes a dead-letter archive file and returns the archive path.
 // entryID is included in the filename to prevent same-second collisions.
-func (dlp *DeadLetterProcessor) archiveDeadLetter(queueType string, entryID string, entry interface{}, reason string) error {
+func (dlp *DeadLetterProcessor) archiveDeadLetter(queueType string, entryID string, entry interface{}, reason string) (string, error) {
 	archiveDir := filepath.Join(dlp.maestroDir, "dead_letters")
 	if err := os.MkdirAll(archiveDir, 0755); err != nil { //nolint:gosec // 0755 is appropriate for a dead_letters directory
-		return fmt.Errorf("create dead_letters dir: %w", err)
+		return "", fmt.Errorf("create dead_letters dir: %w", err)
 	}
 
 	type archiveEntry struct {
@@ -256,11 +259,11 @@ func (dlp *DeadLetterProcessor) archiveDeadLetter(queueType string, entryID stri
 	archivePath := filepath.Join(archiveDir, filename)
 
 	if err := yamlutil.AtomicWrite(archivePath, archive); err != nil {
-		return err
+		return "", err
 	}
 
 	dlp.pruneDeadLetterArchives(archiveDir)
-	return nil
+	return archivePath, nil
 }
 
 // pruneDeadLetterArchives removes the oldest archive files when the count exceeds the limit.

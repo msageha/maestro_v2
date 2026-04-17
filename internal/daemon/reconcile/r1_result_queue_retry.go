@@ -2,6 +2,7 @@ package reconcile
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -153,12 +154,28 @@ func r1ProcessRetryEnqueueForCommand(run *Run, commandID, statePath string) []Re
 				if state.TaskStates == nil {
 					state.TaskStates = make(map[string]model.Status)
 				}
-				state.TaskStates[r.entry.taskID] = model.StatusFailed
+				state.TaskStates[r.entry.taskID] = model.StatusDeadLetter
 				delete(state.RetryEnqueueFailed, r.entry.taskID)
 				modified = true
+
+				// Write dead-letter archive for exhausted retry enqueue.
+				reason := fmt.Sprintf("retry_enqueue attempts (%d) >= max (%d)", r.entry.retryCount, maxRetryEnqueueAttempts)
+				if err := r1WriteDeadLetterArchive(run, r.entry.workerID, r.entry.taskID, commandID, reason); err != nil {
+					run.Log(core.LogLevelError, "R1 dead_letter_archive_failed task=%s command=%s error=%v",
+						r.entry.taskID, commandID, err)
+				}
+
+				slog.Error("R1 retry_enqueue_dead_lettered",
+					"task_id", r.entry.taskID,
+					"command_id", commandID,
+					"worker_id", r.entry.workerID,
+					"retry_count", r.entry.retryCount,
+					"reason", reason,
+				)
+
 				repairs = append(repairs, Repair{
 					Pattern: PatternR1, CommandID: commandID, TaskID: r.entry.taskID,
-					Detail: fmt.Sprintf("retry_enqueue_failed max attempts (%d) exceeded, marked failed", r.entry.retryCount),
+					Detail: fmt.Sprintf("retry_enqueue_failed max attempts (%d) exceeded, dead-lettered", r.entry.retryCount),
 				})
 
 			case actionNoOriginalFailed:
@@ -336,4 +353,39 @@ func r1AddTaskToQueue(run *Run, workerID string, task *model.Task) error {
 	}
 
 	return nil
+}
+
+// r1WriteDeadLetterArchive writes a dead-letter archive entry for a retry task
+// whose enqueue attempts have been exhausted.
+func r1WriteDeadLetterArchive(run *Run, workerID, taskID, commandID, reason string) error {
+	archiveDir := filepath.Join(run.Deps.MaestroDir, "dead_letters")
+	if err := os.MkdirAll(archiveDir, 0755); err != nil { //nolint:gosec // 0755 is appropriate for a dead_letters directory
+		return fmt.Errorf("create dead_letters dir: %w", err)
+	}
+
+	type deadLetterEntry struct {
+		SchemaVersion  int    `yaml:"schema_version"`
+		FileType       string `yaml:"file_type"`
+		QueueType      string `yaml:"queue_type"`
+		TaskID         string `yaml:"task_id"`
+		CommandID      string `yaml:"command_id"`
+		DeadLetteredAt string `yaml:"dead_lettered_at"`
+		Reason         string `yaml:"reason"`
+	}
+
+	now := run.Deps.Clock.Now().UTC()
+	entry := deadLetterEntry{
+		SchemaVersion:  1,
+		FileType:       "dead_letter",
+		QueueType:      workerID,
+		TaskID:         taskID,
+		CommandID:      commandID,
+		DeadLetteredAt: now.Format(time.RFC3339),
+		Reason:         reason,
+	}
+
+	filename := fmt.Sprintf("%s_%s_%s.yaml", workerID, now.Format("20060102T150405Z"), taskID)
+	archivePath := filepath.Join(archiveDir, filename)
+
+	return yamlutil.AtomicWrite(archivePath, entry)
 }

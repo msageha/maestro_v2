@@ -18,9 +18,18 @@ import (
 // after lock acquisition and counter restoration.
 func (qh *QueueHandler) executeScanPhaseCBody(se *ScanPhaseExecutor, pa phaseAResult, pb phaseBResult) []DeferredNotification {
 	// Load queues once for the entire phase (reused by metrics step below)
-	commandQueue, commandPath := qh.queueStore.LoadCommandQueue()
-	taskQueues := qh.queueStore.LoadAllTaskQueues()
-	notificationQueue, notificationPath := qh.queueStore.LoadNotificationQueue()
+	commandQueue, commandPath, err := qh.queueStore.LoadCommandQueue()
+	if err != nil {
+		qh.log(LogLevelError, "phase_c_load_command_queue error=%v", err)
+	}
+	taskQueues, err := qh.queueStore.LoadAllTaskQueues()
+	if err != nil {
+		qh.log(LogLevelError, "phase_c_load_task_queues error=%v", err)
+	}
+	notificationQueue, notificationPath, err := qh.queueStore.LoadNotificationQueue()
+	if err != nil {
+		qh.log(LogLevelError, "phase_c_load_notification_queue error=%v", err)
+	}
 
 	// --- Apply cancel marks + dispatch + busy check results (single load/flush) ---
 	qh.applyCancelDispatchAndBusyChecks(se, pa, pb, commandQueue, commandPath, taskQueues, notificationQueue, notificationPath)
@@ -28,7 +37,10 @@ func (qh *QueueHandler) executeScanPhaseCBody(se *ScanPhaseExecutor, pa phaseARe
 	// --- Apply worktree merge, publish, and signal delivery results (single load/flush) ---
 	hasSignalWork := len(pb.worktreeMerges) > 0 || len(pb.worktreePublishes) > 0 || len(pb.signals) > 0
 	if hasSignalWork {
-		signalQueue, signalPath := qh.queueStore.LoadPlannerSignalQueue()
+		signalQueue, signalPath, err := qh.queueStore.LoadPlannerSignalQueue()
+		if err != nil {
+			qh.log(LogLevelError, "phase_c_load_signal_queue error=%v", err)
+		}
 		signalsDirty := false
 		signalIndex := buildSignalIndex(signalQueue.Signals)
 		now := qh.clock.Now().UTC().Format(time.RFC3339)

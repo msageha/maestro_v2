@@ -30,6 +30,42 @@ func isFenceStale(status model.Status, leaseEpoch int, leaseExpiresAt *string, e
 	return leaseExpiresAt == nil || *leaseExpiresAt != expectedExpiresAt
 }
 
+// FenceRejection describes why a Phase C fence check rejected an apply.
+// A zero value (Reason == "") means the fence is valid.
+type FenceRejection struct {
+	Reason string // "status", "epoch", "expiry", or "" (valid)
+}
+
+// Stale returns true if the fence was rejected for any reason.
+func (fr FenceRejection) Stale() bool { return fr.Reason != "" }
+
+// String returns a human-readable description suitable for structured logs.
+func (fr FenceRejection) String() string {
+	if fr.Reason == "" {
+		return "valid"
+	}
+	return fr.Reason
+}
+
+// checkResultFencing performs the same fence check as isFenceStale but returns
+// a FenceRejection that indicates the specific reason for rejection. This
+// allows callers to produce more actionable log messages.
+func checkResultFencing(status model.Status, leaseEpoch int, leaseExpiresAt *string, expectedEpoch int, expectedExpiresAt string) FenceRejection {
+	if reason := leaseInvalidReason(status, leaseEpoch, expectedEpoch); reason != "" {
+		return FenceRejection{Reason: reason}
+	}
+	if leaseExpiresAt == nil || *leaseExpiresAt != expectedExpiresAt {
+		return FenceRejection{Reason: "expiry"}
+	}
+	return FenceRejection{}
+}
+
+// isEpochStale performs epoch-only validation for cases where only the epoch
+// matters (e.g., lightweight pre-checks that don't need full fence validation).
+func isEpochStale(leaseEpoch, expectedEpoch int) bool {
+	return leaseEpoch != expectedEpoch
+}
+
 // isMaxInProgressTimeout checks whether the elapsed time since the given
 // RFC3339 timestamp exceeds maxMin minutes. Returns false if the timestamp
 // cannot be parsed (scan-safe: parse errors are treated as "not timed out").
@@ -39,6 +75,31 @@ func isMaxInProgressTimeout(now time.Time, timestampRFC3339 string, maxMin int) 
 		return false
 	}
 	return now.Sub(t) >= time.Duration(maxMin)*time.Minute
+}
+
+// maxGraceLeaseDuration returns the maximum cumulative duration for grace lease
+// extensions. Computed as max_in_progress_min / 3, with a floor of
+// scanInterval * 3 to allow at least a few scan cycles.
+func maxGraceLeaseDuration(maxInProgressMin, scanIntervalSec int) time.Duration {
+	graceMin := maxInProgressMin / 3
+	grace := time.Duration(graceMin) * time.Minute
+	floor := time.Duration(scanIntervalSec*3) * time.Second
+	if grace < floor {
+		return floor
+	}
+	return grace
+}
+
+// isGraceLeaseExceeded checks whether the cumulative grace lease extension
+// period has exceeded the given limit. Grace period starts approximately at
+// updatedAt + dispatchLease (when the original lease first expired).
+func isGraceLeaseExceeded(now time.Time, updatedAtRFC3339 string, dispatchLease, graceLimit time.Duration) bool {
+	t, err := time.Parse(time.RFC3339, updatedAtRFC3339)
+	if err != nil {
+		return false
+	}
+	graceStart := t.Add(dispatchLease)
+	return now.Sub(graceStart) >= graceLimit
 }
 
 // buildGlobalInFlightSet scans ALL task queues to find workers with in_progress

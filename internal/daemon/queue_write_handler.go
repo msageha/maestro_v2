@@ -244,6 +244,10 @@ func archiveTerminalNotifications(nq *model.NotificationQueue) int {
 // AtomicWrite + notifySelfWrite pattern used by command, task, and notification
 // write handlers.
 func (h *QueueWriteAPI) writeAndNotify(queuePath, queueType string, data any) *uds.Response {
+	// Pre-record self-write hash BEFORE the file write to close the race
+	// window where fsnotify observes the AtomicWrite before Record() runs.
+	// notifySelfWrite() below will re-record (idempotent) and publish the event.
+	h.recordSelfWrite(queuePath, data)
 	if err := yamlutil.AtomicWrite(queuePath, data); err != nil {
 		return internalErrorf("write queue: %v", err)
 	}
