@@ -1,4 +1,5 @@
-.PHONY: all build test lint format clean install help ensure-lint check-deps
+.PHONY: all build test lint format clean install help ensure-lint check-deps \
+        docker-build docker-run docker-shell
 
 BINARY    := maestro
 CMD_DIR   := ./cmd/maestro
@@ -91,4 +92,51 @@ format: ensure-lint ## gofmt + goimports でフォーマット
 
 help: ## このヘルプを表示
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
-		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
+		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
+
+## ─── Docker ───────────────────────────────────────────────────────────────────
+
+DOCKER_IMAGE := maestro-env
+DOCKER_TAG   := latest
+DOCKER_FILE  := docker/Dockerfile
+
+# マウントするリポジトリ (デフォルト: カレントディレクトリ)
+# 例: make docker-run DIR=/Users/mzk/Works/src/github.com/dope-corp/2048
+DIR ?= $(CURDIR)
+
+# ホストの git ユーザー情報を取得
+GIT_USER_NAME  := $(shell git config --global user.name 2>/dev/null || true)
+GIT_USER_EMAIL := $(shell git config --global user.email 2>/dev/null || true)
+
+docker-build: ## Docker 開発環境イメージをビルド
+	docker build -t $(DOCKER_IMAGE):$(DOCKER_TAG) -f $(DOCKER_FILE) .
+
+docker-run: ## 指定ディレクトリで maestro を起動 (make docker-run DIR=/path/to/repo)
+	@mkdir -p "$(HOME)/.claude" "$(HOME)/.codex" "$(HOME)/.gemini"
+	docker run --rm -it \
+		-v "$(DIR):$(DIR)" \
+		-v "$(HOME)/.claude:/root/.claude" \
+		-v "$(HOME)/.codex:/root/.codex" \
+		-v "$(HOME)/.gemini:/root/.gemini" \
+		-e "GIT_USER_NAME=$(GIT_USER_NAME)" \
+		-e "GIT_USER_EMAIL=$(GIT_USER_EMAIL)" \
+		-e "ANTHROPIC_API_KEY=$(ANTHROPIC_API_KEY)" \
+		-e "OPENAI_API_KEY=$(OPENAI_API_KEY)" \
+		-e "GOOGLE_API_KEY=$(GOOGLE_API_KEY)" \
+		-w "$(DIR)" \
+		$(DOCKER_IMAGE):$(DOCKER_TAG)
+
+docker-shell: ## 指定ディレクトリで bash を起動 (make docker-shell DIR=/path/to/repo)
+	@mkdir -p "$(HOME)/.claude" "$(HOME)/.codex" "$(HOME)/.gemini"
+	docker run --rm -it \
+		-v "$(DIR):$(DIR)" \
+		-v "$(HOME)/.claude:/root/.claude" \
+		-v "$(HOME)/.codex:/root/.codex" \
+		-v "$(HOME)/.gemini:/root/.gemini" \
+		-e "GIT_USER_NAME=$(GIT_USER_NAME)" \
+		-e "GIT_USER_EMAIL=$(GIT_USER_EMAIL)" \
+		-e "ANTHROPIC_API_KEY=$(ANTHROPIC_API_KEY)" \
+		-e "OPENAI_API_KEY=$(OPENAI_API_KEY)" \
+		-e "GOOGLE_API_KEY=$(GOOGLE_API_KEY)" \
+		-w "$(DIR)" \
+		$(DOCKER_IMAGE):$(DOCKER_TAG) bash
