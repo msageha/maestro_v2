@@ -428,6 +428,7 @@ var validIntegrationTransitions = map[IntegrationStatus]map[IntegrationStatus]bo
 	},
 	IntegrationStatusPublishFailed: {
 		IntegrationStatusPublishing:  true, // retry
+		IntegrationStatusMerged:      true, // retry-publish recovery
 		IntegrationStatusFailed:      true,
 		IntegrationStatusQuarantined: true,
 	},

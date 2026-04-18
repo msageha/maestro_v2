@@ -48,10 +48,12 @@ func (a *cliApp) runPlan(args []string) error {
 		return a.runPlanUnquarantine(args[1:])
 	case "resume-merge":
 		return a.runPlanResumeMerge(args[1:])
+	case "retry-publish":
+		return a.runPlanRetryPublish(args[1:])
 	case "resolve-conflict":
 		return a.runResolveConflict(args[1:])
 	default:
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan: unknown subcommand: %s\nusage: maestro plan <submit|complete|add-retry-task|add-task|request-cancel|rebuild|unquarantine|resume-merge|resolve-conflict> [options]", args[0])}
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan: unknown subcommand: %s\nusage: maestro plan <submit|complete|add-retry-task|add-task|request-cancel|rebuild|unquarantine|resume-merge|retry-publish|resolve-conflict> [options]", args[0])}
 	}
 }
 

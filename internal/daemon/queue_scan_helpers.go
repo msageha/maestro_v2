@@ -303,8 +303,13 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 	switch cmdState.Integration.Status {
 	case model.IntegrationStatusQuarantined:
 		// Quarantined integrations must not be published; operator intervention required.
+		// Worktrees are preserved for inspection, but clean up any leaked _publish
+		// temp branch so it doesn't accumulate across quarantine cycles.
 		qh.log(LogLevelWarn, "worktree_publish_quarantined command=%s reason=%s",
 			commandID, cmdState.Integration.QuarantineReason)
+		if qh.worktreeManager != nil {
+			qh.worktreeManager.CleanupTempPublishBranch(commandID)
+		}
 		return publishes, cleanups
 	case model.IntegrationStatusMerged:
 		// Block publish if any worker had an unresolved auto-commit failure.

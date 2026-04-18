@@ -243,7 +243,7 @@ func TestDetectBusyWithRetry_ContextCancelled(t *testing.T) {
 	}
 }
 
-func TestDetectBusyWithRetry_UndecidedRetriesThenReturns(t *testing.T) {
+func TestDetectBusyWithRetry_UndecidedRetriesThenPromotedToIdle(t *testing.T) {
 	callCount := 0
 	mock := &mockPaneIO{
 		currentCommand: "claude",
@@ -257,14 +257,16 @@ func TestDetectBusyWithRetry_UndecidedRetriesThenReturns(t *testing.T) {
 	bd := newTestBusyDetector(mock, nil, fastConfig())
 
 	verdict := bd.DetectBusyWithRetry(context.Background(), "%0", "worker1")
-	if verdict != VerdictUndecided {
-		t.Errorf("expected VerdictUndecided after retries, got %s", verdict)
+	// Persistent undecided across soft retries is promoted to idle.
+	if verdict != VerdictIdle {
+		t.Errorf("expected VerdictIdle (promoted) after soft retries, got %s", verdict)
 	}
-	// 1 initial + undecidedImmediateRetries retries = 3 total calls
-	expectedCalls := 1 + undecidedImmediateRetries
+	// Calls: initial detectWithUndecidedRetry (1+2=3) +
+	//        soft retries × detectWithUndecidedRetry (2 × 3 = 6) = 9 total
+	immediateRound := 1 + undecidedImmediateRetries
+	expectedCalls := immediateRound + undecidedSoftRetries*immediateRound
 	if callCount != expectedCalls {
-		t.Errorf("expected %d captureFn calls (1 initial + %d retries), got %d",
-			expectedCalls, undecidedImmediateRetries, callCount)
+		t.Errorf("expected %d captureFn calls, got %d", expectedCalls, callCount)
 	}
 }
 
@@ -657,8 +659,9 @@ func TestDetectBusyWithRetry_CommandErrorThenRecovery_ReturnsIdle(t *testing.T) 
 	}
 }
 
-func TestDetectBusyWithRetry_AllRetriesFail_ReturnsUndecided(t *testing.T) {
-	// All DetectBusy calls error → persistent Undecided after exhausting retries.
+func TestDetectBusyWithRetry_AllRetriesFail_PromotedToIdle(t *testing.T) {
+	// All DetectBusy calls error → persistent Undecided → soft retries also fail
+	// → promoted to VerdictIdle (sustained undecided = likely idle with stale output).
 	mock := &mockPaneIO{
 		currentCommandFn: func() (string, error) {
 			return "", fmt.Errorf("persistent command error")
@@ -667,7 +670,155 @@ func TestDetectBusyWithRetry_AllRetriesFail_ReturnsUndecided(t *testing.T) {
 	bd := newTestBusyDetector(mock, nil, fastConfig())
 
 	verdict := bd.DetectBusyWithRetry(context.Background(), "%0", "worker1")
+	if verdict != VerdictIdle {
+		t.Errorf("expected VerdictIdle (promoted) after all retries fail, got %s", verdict)
+	}
+}
+
+// --- Soft Retry for VerdictUndecided ---
+
+func TestSoftRetryUndecided_ResolvesToIdle(t *testing.T) {
+	// Simulates: pattern matched + stable → Undecided initially,
+	// then on soft retry the pattern clears → Idle.
+	detectCount := 0
+	busyRegex := regexp.MustCompile("Working|Thinking")
+	mock := &mockPaneIO{
+		currentCommand: "claude",
+		isShell:        false,
+		captureFn: func(paneTarget string, lastN int) (string, error) {
+			detectCount++
+			// First 3 calls (initial + immediate retries): pattern matches
+			if detectCount <= 1+undecidedImmediateRetries {
+				return "Working on task...", nil
+			}
+			// Soft retry: pattern no longer matches
+			return "❯ ", nil
+		},
+		joinedContent: []string{"stable-content", "stable-content"},
+	}
+	bd := newTestBusyDetector(mock, busyRegex, fastConfig())
+
+	verdict := bd.DetectBusyWithRetry(context.Background(), "%0", "worker1")
+	if verdict != VerdictIdle {
+		t.Errorf("expected VerdictIdle after pattern clears on soft retry, got %s", verdict)
+	}
+}
+
+func TestSoftRetryUndecided_ResolvesToBusy(t *testing.T) {
+	// Simulates: undecided initially (pattern + stable), then on soft retry
+	// content starts changing → Busy.
+	detectCount := 0
+	busyRegex := regexp.MustCompile("Working")
+	mock := &mockPaneIO{
+		currentCommand: "claude",
+		isShell:        false,
+		captureContent: "Working on task...",
+		joinedFn: func(paneTarget string, lastN int) (string, error) {
+			detectCount++
+			// First 6 calls (initial round 3 × 2 captures each): stable content
+			if detectCount <= 2*(1+undecidedImmediateRetries) {
+				return "Working on task...", nil
+			}
+			// Soft retry: content starts changing
+			return fmt.Sprintf("Working output %d", detectCount), nil
+		},
+	}
+	bd := newTestBusyDetector(mock, busyRegex, fastConfig())
+
+	verdict := bd.DetectBusyWithRetry(context.Background(), "%0", "worker1")
+	if verdict != VerdictBusy {
+		t.Errorf("expected VerdictBusy when content starts changing on soft retry, got %s", verdict)
+	}
+}
+
+func TestSoftRetryUndecided_PersistentUndecidedPromotedToIdle(t *testing.T) {
+	// Pattern matched + stable content persists through all soft retries
+	// → promoted to VerdictIdle.
+	busyRegex := regexp.MustCompile("Working")
+	mock := &mockPaneIO{
+		currentCommand: "claude",
+		isShell:        false,
+		captureContent: "Working on task...",
+		joinedContent:  []string{"stable-content", "stable-content"},
+	}
+	bd := newTestBusyDetector(mock, busyRegex, fastConfig())
+
+	verdict := bd.DetectBusyWithRetry(context.Background(), "%0", "worker1")
+	if verdict != VerdictIdle {
+		t.Errorf("expected VerdictIdle (promoted) for persistent undecided, got %s", verdict)
+	}
+}
+
+func TestSoftRetryUndecided_ContextCancelled(t *testing.T) {
+	// Context cancelled during soft retry sleep → returns VerdictUndecided.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+
+	busyRegex := regexp.MustCompile("Working")
+	mock := &mockPaneIO{
+		currentCommand: "claude",
+		isShell:        false,
+		captureContent: "Working on task...",
+		joinedContent:  []string{"stable-content", "stable-content"},
+	}
+	cfg := busyDetectorConfig{
+		IdleStableSec:       0,
+		BusyCheckMaxRetries: 3,
+		BusyCheckInterval:   2, // soft retry interval = max(1, 2/2) = 1 second → ctx will cancel
+	}
+	bd := newTestBusyDetector(mock, busyRegex, cfg)
+
+	verdict := bd.DetectBusyWithRetry(ctx, "%0", "worker1")
 	if verdict != VerdictUndecided {
-		t.Errorf("expected VerdictUndecided when all retries fail, got %s", verdict)
+		t.Errorf("expected VerdictUndecided on context cancel during soft retry, got %s", verdict)
+	}
+}
+
+func TestSoftRetryUndecided_BusyDetectionPreserved(t *testing.T) {
+	// Truly busy agents (content changing) are still detected as busy,
+	// not affected by the soft retry path.
+	callCount := 0
+	mock := &mockPaneIO{
+		currentCommand: "claude",
+		isShell:        false,
+		captureContent: "content",
+		joinedFn: func(paneTarget string, lastN int) (string, error) {
+			callCount++
+			return fmt.Sprintf("changing-%d", callCount), nil
+		},
+	}
+	cfg := busyDetectorConfig{
+		IdleStableSec:       0,
+		BusyCheckMaxRetries: 2,
+		BusyCheckInterval:   0,
+	}
+	bd := newTestBusyDetector(mock, nil, cfg)
+
+	verdict := bd.DetectBusyWithRetry(context.Background(), "%0", "worker1")
+	if verdict != VerdictBusy {
+		t.Errorf("expected VerdictBusy for truly busy agent, got %s", verdict)
+	}
+}
+
+func TestUndecidedSoftRetryInterval(t *testing.T) {
+	tests := []struct {
+		name              string
+		busyCheckInterval int
+		want              time.Duration
+	}{
+		{"default interval 2s", 2, 1 * time.Second},
+		{"large interval 10s", 10, 5 * time.Second},
+		{"zero interval uses min", 0, 1 * time.Second},
+		{"interval 1 uses min", 1, 1 * time.Second},
+		{"interval 3 rounds down", 3, 1 * time.Second},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bd := &busyDetector{config: busyDetectorConfig{BusyCheckInterval: tt.busyCheckInterval}}
+			got := bd.undecidedSoftRetryInterval()
+			if got != tt.want {
+				t.Errorf("undecidedSoftRetryInterval() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

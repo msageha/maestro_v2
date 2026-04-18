@@ -74,6 +74,76 @@ func (wm *Manager) Unquarantine(commandID string, reason string) error {
 	return nil
 }
 
+// RetryPublish resets publish failure state (PublishFailureCount,
+// NextPublishRetryAt, PublishConflictFiles) and transitions the integration
+// from publish_failed or quarantined (publish-related) back to merged so the
+// next Phase A scan re-enqueues the publish attempt.
+//
+// This is the Planner-accessible recovery path for publish conflicts. After
+// the Planner dispatches workers to resolve conflicts on the integration
+// branch, it calls this command to trigger a re-publish.
+//
+// Idempotency: a call when the integration is already merged returns
+// ErrAlreadyResolved without touching the state file.
+func (wm *Manager) RetryPublish(commandID string) error {
+	if err := validateIDs(commandID); err != nil {
+		return err
+	}
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	state, err := wm.loadState(commandID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ErrNoWorktreeState
+		}
+		return fmt.Errorf("load state: %w", err)
+	}
+
+	s := state.Integration.Status
+	switch s {
+	case model.IntegrationStatusPublishFailed:
+		// recoverable
+	case model.IntegrationStatusQuarantined:
+		if !strings.Contains(state.Integration.QuarantineReason, "publish") {
+			return fmt.Errorf("%w: quarantine is not publish-related; use unquarantine", ErrAlreadyResolved)
+		}
+		// publish-related quarantine — allow recovery
+	case model.IntegrationStatusMerged:
+		return fmt.Errorf("%w: integration is already merged", ErrAlreadyResolved)
+	default:
+		return fmt.Errorf("%w: status=%s is not recoverable by retry-publish", ErrAlreadyResolved, s)
+	}
+
+	now := wm.clock.Now().UTC().Format(time.RFC3339)
+
+	// Transition to merged so Phase A re-enqueues publish.
+	// For quarantined, bypass the state machine (same pattern as Unquarantine).
+	if s == model.IntegrationStatusQuarantined {
+		state.Integration.Status = model.IntegrationStatusMerged
+		state.Integration.QuarantinedAt = ""
+		state.Integration.QuarantineReason = ""
+		state.Integration.StallSignaled = false
+	} else {
+		if err := wm.setIntegrationStatus(state, model.IntegrationStatusMerged, now); err != nil {
+			return err
+		}
+	}
+
+	state.Integration.PublishFailureCount = 0
+	state.Integration.NextPublishRetryAt = ""
+	state.Integration.PublishConflictFiles = nil
+	state.Integration.PublishConflictSignaled = false
+	state.Integration.UpdatedAt = now
+	state.UpdatedAt = now
+
+	wm.Log(core.LogLevelInfo, "retry_publish command=%s prev_status=%s", commandID, s)
+	if err := wm.saveState(commandID, state); err != nil {
+		return fmt.Errorf("save state: %w", err)
+	}
+	return nil
+}
+
 // ResumeMerge attempts to merge conflict-resolved workers directly into the
 // integration branch using -X theirs to prefer the worker's committed
 // resolution for conflicting hunks. This handles add/add and other structural
