@@ -40,6 +40,9 @@ func (d *ReviewDispatcher) ShouldReview(task model.Task) bool {
 	if !d.config.Enabled {
 		return false
 	}
+	if len(d.config.Models) == 0 {
+		return false
+	}
 	if task.BloomLevel < d.config.EffectiveMinBloomLevel() {
 		return false
 	}
