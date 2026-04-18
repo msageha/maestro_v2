@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -811,16 +810,21 @@ func TestExecute_ModeIsBusy_Undecided(t *testing.T) {
 	mock.isShell = false
 	mock.currentCmd = "claude"
 	mock.captureContent = "working..."
-	mock.joinedContents = []string{"same-content", "same-content"} // stable → hash unchanged
+	mock.joinedContents = []string{"same-content", "same-content"}
 	exec, _ := newTestExecutorWithLog(mock)
-	// Set busyRegex to match "working..." so patternMatched=true
-	exec.busyDetector.busyRegex = regexp.MustCompile(`working`)
+	// Use non-zero IdleStableSec so Stage 3 has a sleep that context
+	// cancellation can interrupt, producing VerdictUndecided.
+	exec.busyDetector.config.IdleStableSec = 5
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel immediately so sleepCtx fails during Stage 3
 
 	result := exec.Execute(ExecRequest{
+		Context: ctx,
 		AgentID: "worker1",
 		Mode:    ModeIsBusy,
 	})
-	// VerdictUndecided: hashChanged=false, patternMatched=true
+	// VerdictUndecided: context cancelled during activity probe sleep
 	if result.Success {
 		t.Error("expected Success=false for undecided verdict")
 	}
@@ -1170,13 +1174,15 @@ func TestExecute_ModeDeliver_Undecided_WrapsErrBusyUndecided(t *testing.T) {
 	mock.isShell = false
 	mock.currentCmd = "claude"
 	mock.captureContent = "working..."
-	mock.joinedContents = []string{"same-content", "same-content"} // stable → hash unchanged
+	mock.joinedContents = []string{"same-content", "same-content"}
 	exec, _ := newTestExecutorWithLog(mock)
-	exec.busyDetector.busyRegex = regexp.MustCompile(`working`)
+	// Use non-zero IdleStableSec so Stage 3 has a sleep that context
+	// cancellation can interrupt, producing VerdictUndecided.
+	exec.busyDetector.config.IdleStableSec = 5
 
-	// Use a short context timeout so the soft retry sleep (1s with
-	// BusyCheckInterval=0) is cancelled, producing VerdictUndecided.
-	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	// Short timeout: ensureClaudeRunning completes fast, then DetectBusy's
+	// Stage 3 sleep(5s) is cancelled by the 10ms timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
 	result := exec.Execute(ExecRequest{

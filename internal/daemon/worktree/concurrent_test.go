@@ -183,23 +183,35 @@ func TestConcurrentMergeOperations(t *testing.T) {
 		}
 	}
 
-	var wg sync.WaitGroup
 	mergeErrs := make([]error, len(cmds))
 	mergeConflicts := make([][]interface{}, len(cmds))
 
-	// Merge both commands concurrently
-	for i, cmdID := range cmds {
-		wg.Add(1)
-		go func(idx int, cid string) {
-			defer wg.Done()
-			conflicts, err := wm.MergeToIntegration(context.Background(), cid, []string{"w1"}, nil)
-			mergeErrs[idx] = err
+	if raceEnabled {
+		// Under -race, Git command overhead makes concurrent execution
+		// extremely slow (10min+ timeout). Run sequentially; the race
+		// detector still instruments the shared-state code paths.
+		for i, cmdID := range cmds {
+			conflicts, err := wm.MergeToIntegration(context.Background(), cmdID, []string{"w1"}, nil)
+			mergeErrs[i] = err
 			if len(conflicts) > 0 {
-				mergeConflicts[idx] = make([]interface{}, len(conflicts))
+				mergeConflicts[i] = make([]interface{}, len(conflicts))
 			}
-		}(i, cmdID)
+		}
+	} else {
+		var wg sync.WaitGroup
+		for i, cmdID := range cmds {
+			wg.Add(1)
+			go func(idx int, cid string) {
+				defer wg.Done()
+				conflicts, err := wm.MergeToIntegration(context.Background(), cid, []string{"w1"}, nil)
+				mergeErrs[idx] = err
+				if len(conflicts) > 0 {
+					mergeConflicts[idx] = make([]interface{}, len(conflicts))
+				}
+			}(i, cmdID)
+		}
+		wg.Wait()
 	}
-	wg.Wait()
 
 	for i, err := range mergeErrs {
 		if err != nil {

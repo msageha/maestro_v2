@@ -68,6 +68,7 @@ type CommandResult struct {
 	CommandID      string              `yaml:"command_id"`
 	Status         Status              `yaml:"status"`
 	Summary        string              `yaml:"summary"`
+	TaskStats      TaskStats           `yaml:"task_stats"`
 	Tasks          []CommandResultTask `yaml:"tasks"`
 	NotifiableBase `yaml:",inline"`
 	CreatedAt      string `yaml:"created_at"`
@@ -79,6 +80,32 @@ type CommandResultTask struct {
 	Worker  string `yaml:"worker"`
 	Status  Status `yaml:"status"`
 	Summary string `yaml:"summary"`
+}
+
+// TaskStats holds aggregated task statistics derived from the actual task
+// results. This provides a reliable, machine-readable source of truth for
+// task counts, independent of the free-text Summary field.
+type TaskStats struct {
+	Total     int `yaml:"total" json:"total"`
+	Completed int `yaml:"completed" json:"completed"`
+	Failed    int `yaml:"failed" json:"failed"`
+	Cancelled int `yaml:"cancelled" json:"cancelled"`
+}
+
+// ComputeTaskStats derives TaskStats from a slice of CommandResultTask.
+func ComputeTaskStats(tasks []CommandResultTask) TaskStats {
+	stats := TaskStats{Total: len(tasks)}
+	for _, t := range tasks {
+		switch t.Status {
+		case StatusCompleted:
+			stats.Completed++
+		case StatusFailed:
+			stats.Failed++
+		case StatusCancelled:
+			stats.Cancelled++
+		}
+	}
+	return stats
 }
 
 // Notifiable provides access to the notification lease fields shared by TaskResult and CommandResult.

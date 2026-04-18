@@ -156,6 +156,16 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 		return nil, fmt.Errorf("aggregate results: partial task results for command %s: %w", opts.CommandID, errors.Join(partialErrors...))
 	}
 
+	// Warn if aggregated task result count diverges from expected_task_count
+	// in state. This detects cases where the Planner's summary text may claim
+	// a different number of tasks than actually exist.
+	if len(taskResults) != state.ExpectedTaskCount {
+		slog.Warn("Complete: task result count does not match expected_task_count",
+			"command_id", opts.CommandID,
+			"aggregated_results", len(taskResults),
+			"expected_task_count", state.ExpectedTaskCount)
+	}
+
 	// --- Write intent before the multi-step sequence (CR-019) ---
 	intent = &completeIntent{
 		SchemaVersion: intentSchemaVersion,
@@ -287,6 +297,7 @@ func reconcileCommandResultLocked(maestroDir string, commandID string, status mo
 				// remain valid because the ID itself is unchanged.
 				rf.Results[i].Status = status
 				rf.Results[i].Summary = summary
+				rf.Results[i].TaskStats = model.ComputeTaskStats(tasks)
 				rf.Results[i].Tasks = tasks
 				rf.Results[i].Notified = false
 				rf.Results[i].CreatedAt = now
@@ -304,6 +315,7 @@ func reconcileCommandResultLocked(maestroDir string, commandID string, status mo
 			CommandID: commandID,
 			Status:    status,
 			Summary:   summary,
+			TaskStats: model.ComputeTaskStats(tasks),
 			Tasks:     tasks,
 			CreatedAt: now,
 		})
@@ -442,6 +454,7 @@ func writeCommandResultLocked(maestroDir string, commandID string, status model.
 			CommandID: commandID,
 			Status:    status,
 			Summary:   summary,
+			TaskStats: model.ComputeTaskStats(tasks),
 			Tasks:     tasks,
 			CreatedAt: now,
 		})
