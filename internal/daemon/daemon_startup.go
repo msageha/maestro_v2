@@ -146,6 +146,9 @@ func (d *Daemon) initComponents() {
 	if d.canComplete != nil {
 		d.handler.SetCanComplete(d.canComplete)
 	}
+	if d.deferredPlanCompleter != nil {
+		d.handler.SetDeferredPlanCompleter(d.deferredPlanCompleter)
+	}
 	if d.phaseDiagnoser != nil {
 		d.handler.SetPhaseDiagnoser(d.phaseDiagnoser)
 	}

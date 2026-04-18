@@ -115,6 +115,21 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 	// Worktree publish guard: when worktree mode is enabled, the integration
 	// branch must be published before the command can complete.
 	if err := checkWorktreePublished(opts.MaestroDir, opts.CommandID, opts.Config); err != nil {
+		var notPub *worktreeNotPublishedError
+		if errors.As(err, &notPub) {
+			// Publish hasn't completed yet. Write a deferred intent so the
+			// daemon can auto-complete after publish, and return a non-error
+			// "deferred_publish" result to the caller.
+			if writeErr := WriteDeferredComplete(opts.MaestroDir, opts.CommandID, opts.Summary); writeErr != nil {
+				return nil, fmt.Errorf("write deferred complete: %w", writeErr)
+			}
+			slog.Info("Complete: deferred until worktree publish",
+				"command_id", opts.CommandID, "integration_status", notPub.IntegrationStatus)
+			return &CompleteResult{
+				CommandID: opts.CommandID,
+				Status:    "deferred_publish",
+			}, nil
+		}
 		return nil, err
 	}
 
@@ -391,8 +406,8 @@ func checkWorktreePublished(maestroDir, commandID string, config model.Config) e
 	}
 
 	if wcs.Integration.Status != model.IntegrationStatusPublished {
-		return &planValidationError{
-			Msg: fmt.Sprintf("cannot complete command: worktree integration status is '%s', expected 'published'", wcs.Integration.Status),
+		return &worktreeNotPublishedError{
+			IntegrationStatus: string(wcs.Integration.Status),
 		}
 	}
 

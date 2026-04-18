@@ -139,7 +139,10 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 	// Add to phase:
 	// 1. If TargetPhase is specified, place into that phase (conflict resolution use case).
 	// 2. If blocked_by references exist, use the first dependency's phase.
-	// 3. Otherwise, add to the current (first non-terminal) phase or phase 0.
+	// 3. If TargetWorkerID is set, find the latest phase containing that worker's
+	//    existing tasks (conflict resolution fallback — the task should land in the
+	//    same phase where the conflict originated).
+	// 4. Otherwise, add to the current (first non-terminal) phase or phase 0.
 	if opts.TargetPhase != "" {
 		// TargetPhase is validated in validateInjectRequest, so PhaseIndex will always succeed here.
 		if phaseIdx, ok := state.PhaseIndex(opts.TargetPhase); ok {
@@ -148,6 +151,20 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 	} else if len(opts.BlockedBy) > 0 {
 		if phase, phaseIdx := findPhaseForTask(state, opts.BlockedBy[0]); phase != nil {
 			state.Phases[phaseIdx].TaskIDs = append(state.Phases[phaseIdx].TaskIDs, newTaskID)
+		}
+	} else if opts.TargetWorkerID != "" {
+		if phaseIdx := findPhaseForWorker(state, opts.MaestroDir, opts.TargetWorkerID); phaseIdx >= 0 {
+			state.Phases[phaseIdx].TaskIDs = append(state.Phases[phaseIdx].TaskIDs, newTaskID)
+		} else if len(state.Phases) > 0 {
+			// Worker has no existing tasks; fall through to generic fallback.
+			targetIdx := 0
+			for i, p := range state.Phases {
+				if !model.IsPhaseTerminal(p.Status) {
+					targetIdx = i
+					break
+				}
+			}
+			state.Phases[targetIdx].TaskIDs = append(state.Phases[targetIdx].TaskIDs, newTaskID)
 		}
 	} else if len(state.Phases) > 0 {
 		targetIdx := 0
@@ -250,6 +267,42 @@ func validateInjectRequest(state *model.CommandState, opts InjectOptions) error 
 	}
 
 	return nil
+}
+
+// findPhaseForWorker scans the target worker's queue file for tasks belonging
+// to the same command and returns the index of the latest phase that contains
+// one of those tasks. Returns -1 if no match is found.
+// This is used as a fallback when TargetPhase and BlockedBy are both unset but
+// TargetWorkerID is specified (e.g. conflict resolution tasks).
+func findPhaseForWorker(state *model.CommandState, maestroDir string, workerID string) int {
+	queueFile := fmt.Sprintf("%s/queue/%s.yaml", maestroDir, workerID)
+	data, err := os.ReadFile(queueFile)
+	if err != nil {
+		return -1
+	}
+	var tq model.TaskQueue
+	if err := yaml.Unmarshal(data, &tq); err != nil {
+		return -1
+	}
+	workerTaskIDs := make(map[string]struct{})
+	for _, task := range tq.Tasks {
+		if task.CommandID == state.CommandID {
+			workerTaskIDs[task.ID] = struct{}{}
+		}
+	}
+	if len(workerTaskIDs) == 0 {
+		return -1
+	}
+	bestIdx := -1
+	for i, phase := range state.Phases {
+		for _, taskID := range phase.TaskIDs {
+			if _, ok := workerTaskIDs[taskID]; ok {
+				bestIdx = i
+				break
+			}
+		}
+	}
+	return bestIdx
 }
 
 // lookupTaskAssignment finds the worker and model assigned to a task by scanning queue files.

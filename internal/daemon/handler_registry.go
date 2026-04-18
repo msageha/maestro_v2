@@ -24,6 +24,14 @@ func (qh *QueueHandler) SetCanComplete(f CanCompleteFunc) {
 	qh.reconciler.SetCanComplete(f)
 }
 
+// SetDeferredPlanCompleter wires the function that auto-completes a plan
+// after worktree publish succeeds. Must be called before Run() starts.
+func (qh *QueueHandler) SetDeferredPlanCompleter(f DeferredPlanCompleterFunc) {
+	qh.initMu.Lock()
+	defer qh.initMu.Unlock()
+	qh.deferredPlanCompleter = f
+}
+
 // SetCircuitBreaker wires the circuit breaker handler for periodic scan integration.
 // Must be called before Run() starts.
 func (qh *QueueHandler) SetCircuitBreaker(cb *circuitbreaker.Handler) {

@@ -34,6 +34,12 @@ func (qh *QueueHandler) executeScanPhaseCBody(se *ScanPhaseExecutor, pa phaseARe
 	// --- Apply cancel marks + dispatch + busy check results (single load/flush) ---
 	qh.applyCancelDispatchAndBusyChecks(se, pa, pb, commandQueue, commandPath, taskQueues, notificationQueue, notificationPath)
 
+	// Sync agent idle status after applying dispatch results. Phase A's
+	// stepIdleStatusSync runs before Phase B dispatches, so agents whose work
+	// completed in this cycle still show @status="busy". This ensures
+	// dashboard and `maestro status` are consistent within the same scan.
+	qh.syncIdleAfterPhaseC(commandQueue, taskQueues, notificationQueue)
+
 	// --- Apply worktree merge, publish, and signal delivery results (single load/flush) ---
 	hasSignalWork := len(pb.worktreeMerges) > 0 || len(pb.worktreePublishes) > 0 || len(pb.signals) > 0
 	if hasSignalWork {
@@ -263,6 +269,21 @@ func (qh *QueueHandler) applyPublishResultSignals(
 			qh.emitPublishConflictSignalIfNeeded(pr.Item.CommandID, signalQueue, signalsDirty, signalIndex, now)
 		} else {
 			qh.log(LogLevelInfo, "worktree_published command=%s", pr.Item.CommandID)
+
+			// Try deferred auto-completion: if the Planner already called
+			// plan complete (which was deferred because publish hadn't
+			// finished), the daemon can now finalize it without a round-trip.
+			if qh.deferredPlanCompleter != nil {
+				completed, err := qh.deferredPlanCompleter(pr.Item.CommandID)
+				if err != nil {
+					qh.log(LogLevelWarn, "deferred_complete_failed command=%s error=%v (falling back to signal)",
+						pr.Item.CommandID, err)
+				} else if completed {
+					qh.log(LogLevelInfo, "deferred_complete_success command=%s", pr.Item.CommandID)
+					continue
+				}
+			}
+
 			// Skip the publish_completed signal if the command is already
 			// terminal — the Planner has already called plan complete and
 			// sending the signal would cause a redundant second invocation.
