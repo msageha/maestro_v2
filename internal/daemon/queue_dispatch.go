@@ -15,7 +15,10 @@ import (
 )
 
 // stepPlannerSignalsDeferred evaluates signals but defers tmux delivery to Phase B.
-func (qh *QueueHandler) stepPlannerSignalsDeferred(sq *model.PlannerSignalQueue, dirty *bool, work *deferredWork) {
+// commandQueue is used to suppress stale publish_completed signals for commands
+// that have already reached a terminal status (e.g. plan complete was called
+// between signal creation and the current evaluation).
+func (qh *QueueHandler) stepPlannerSignalsDeferred(sq *model.PlannerSignalQueue, dirty *bool, work *deferredWork, commandQueue model.CommandQueue) {
 	now := qh.clock.Now().UTC()
 	retained := make([]model.PlannerSignal, 0, len(sq.Signals))
 
@@ -72,6 +75,17 @@ func (qh *QueueHandler) stepPlannerSignalsDeferred(sq *model.PlannerSignalQueue,
 				qh.log(LogLevelWarn, "signal_command_check command=%s error=%v",
 					sig.CommandID, err)
 				retained = append(retained, *sig)
+				continue
+			}
+
+			// Suppress publish_completed signals for commands that are already
+			// terminal. This closes the race window where plan complete is called
+			// between Phase C signal creation and Phase A signal evaluation,
+			// preventing the Planner from issuing a redundant second plan complete.
+			if sig.Kind == "publish_completed" && isCommandTerminalInQueue(commandQueue, sig.CommandID) {
+				qh.log(LogLevelInfo, "signal_stale_removed kind=%s command=%s (command already terminal)",
+					sig.Kind, sig.CommandID)
+				*dirty = true
 				continue
 			}
 		}

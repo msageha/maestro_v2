@@ -136,7 +136,7 @@ func (qh *QueueHandler) stepPhaseTransitions(s *scanState) {
 // stepPlannerSignals — Step 0.8: Evaluate backoff/staleness, defer delivery.
 func (qh *QueueHandler) stepPlannerSignals(s *scanState) {
 	if len(s.signals.Data.Signals) > 0 {
-		qh.stepPlannerSignalsDeferred(&s.signals.Data, &s.signals.Dirty, &s.work)
+		qh.stepPlannerSignalsDeferred(&s.signals.Data, &s.signals.Dirty, &s.work, s.commands.Data)
 	}
 }
 

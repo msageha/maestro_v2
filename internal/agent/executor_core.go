@@ -515,14 +515,16 @@ func (e *Executor) handleBusyVerdict(req ExecRequest, verdict busyVerdict) ExecR
 
 // execDeliver delivers a message without /clear (Planner/Orchestrator).
 func (e *Executor) execDeliver(ctx context.Context, req ExecRequest, paneTarget string) ExecResult {
-	// Orchestrator: strict busy check, no retry, immediate failure if busy
+	// Orchestrator: busy check with retry to avoid false-positive busy
+	// detection during transient state transitions (e.g., screen updates
+	// right after becoming idle).
 	if req.AgentID == "orchestrator" {
 		// Ensure Claude is running for orchestrator too
 		if err := e.processManager.ensureClaudeRunning(ctx, paneTarget, req.AgentID); err != nil {
 			e.log(logLevelError, "ensure_claude_running_failed agent_id=orchestrator error=%v", err)
 			return ExecResult{Error: fmt.Errorf("ensure claude running: %w", err), Retryable: true}
 		}
-		verdict := e.busyDetector.DetectBusy(ctx, paneTarget)
+		verdict := e.busyDetector.DetectBusyWithRetry(ctx, paneTarget, req.AgentID)
 		e.log(logLevelDebug, "busy_detection agent_id=orchestrator verdict=%s", verdict)
 		if verdict != VerdictIdle {
 			e.log(logLevelWarn, "delivery_failure agent_id=orchestrator reason=orchestrator_busy verdict=%s", verdict)
