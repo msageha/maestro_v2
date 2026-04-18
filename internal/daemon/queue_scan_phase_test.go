@@ -1372,9 +1372,14 @@ func TestPeriodicScanPhaseC_PublishCompletedSignal(t *testing.T) {
 	}
 }
 
-// TestPeriodicScanPhaseC_PublishFailedSignal verifies that a failed worktree
-// publish still emits only a publish_failed signal (no publish_completed).
-func TestPeriodicScanPhaseC_PublishFailedSignal(t *testing.T) {
+// TestPeriodicScanPhaseC_PublishFailedNoSignal verifies that a failed worktree
+// publish does NOT emit any signal (neither publish_failed nor publish_completed).
+// The Daemon handles publish retries automatically via recordPublishFailure /
+// backoff, and R8 (NotifyPublishQuarantined) escalates to the Planner when
+// retries are exhausted. Emitting publish_failed would cause the Planner to
+// attempt plan_submit / add_retry_task which fails because the Worker task
+// already completed successfully.
+func TestPeriodicScanPhaseC_PublishFailedNoSignal(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	wtCfg := model.WorktreeConfig{Enabled: false}
@@ -1392,27 +1397,16 @@ func TestPeriodicScanPhaseC_PublishFailedSignal(t *testing.T) {
 	qh.periodicScanPhaseC(pa, pb)
 
 	signalQueue, _, _ := qh.queueStore.LoadPlannerSignalQueue()
-	var foundFailed, foundCompleted *model.PlannerSignal
-	for i := range signalQueue.Signals {
-		s := &signalQueue.Signals[i]
+	for _, s := range signalQueue.Signals {
 		if s.CommandID != commandID {
 			continue
 		}
-		switch s.Kind {
-		case "publish_failed":
-			foundFailed = s
-		case "publish_completed":
-			foundCompleted = s
+		if s.Kind == "publish_failed" {
+			t.Errorf("publish_failed signal should NOT be emitted (daemon handles retry); got: %+v", s)
 		}
-	}
-	if foundFailed == nil {
-		t.Fatalf("publish_failed signal not found; signals: %+v", signalQueue.Signals)
-	}
-	if foundCompleted != nil {
-		t.Errorf("publish_completed signal should NOT be emitted on failure")
-	}
-	if !strings.Contains(foundFailed.Message, "push rejected") {
-		t.Errorf("publish_failed Message missing error detail: %q", foundFailed.Message)
+		if s.Kind == "publish_completed" {
+			t.Errorf("publish_completed signal should NOT be emitted on failure; got: %+v", s)
+		}
 	}
 }
 
@@ -1510,6 +1504,105 @@ func TestStepPlannerSignalsDeferred_PublishCompletedStaleWhenTerminal(t *testing
 	// Signal must NOT be deferred for delivery
 	if len(work.signals) != 0 {
 		t.Errorf("expected 0 deferred signals, got %d", len(work.signals))
+	}
+}
+
+// TestStepPlannerSignalsDeferred_PublishFailedSuppressed verifies that a
+// publish_failed signal is removed from the queue and NOT deferred for delivery.
+// The Daemon handles publish retries internally; delivering publish_failed to
+// the Planner would cause plan_submit / add_retry_task errors.
+func TestStepPlannerSignalsDeferred_PublishFailedSuppressed(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+
+	// Create command state so orphan check passes
+	writeCommandState(t, maestroDir, "cmd_pub", map[string]model.Status{
+		"t1": model.StatusCompleted,
+	}, nil)
+
+	now := "2026-01-01T00:00:00Z"
+	sq := model.PlannerSignalQueue{
+		SchemaVersion: 1,
+		FileType:      "planner_signal_queue",
+		Signals: []model.PlannerSignal{
+			{
+				Kind:      "publish_failed",
+				CommandID: "cmd_pub",
+				Message:   "[maestro] kind:publish_failed command_id:cmd_pub\nerror: merge conflict",
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}
+
+	dirty := false
+	work := &deferredWork{}
+	qh.stepPlannerSignalsDeferred(&sq, &dirty, work, model.CommandQueue{})
+
+	// Signal must be removed
+	if len(sq.Signals) != 0 {
+		t.Errorf("expected 0 signals (publish_failed suppressed), got %d: %+v", len(sq.Signals), sq.Signals)
+	}
+	if !dirty {
+		t.Error("expected dirty=true after suppressing publish_failed signal")
+	}
+	// Signal must NOT be deferred for delivery
+	if len(work.signals) != 0 {
+		t.Errorf("expected 0 deferred signals, got %d", len(work.signals))
+	}
+}
+
+// TestStepPlannerSignalsDeferred_PublishFailedSuppressedWithOtherSignalsRetained
+// verifies that suppressing publish_failed does not affect other signal types.
+func TestStepPlannerSignalsDeferred_PublishFailedSuppressedWithOtherSignalsRetained(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+
+	writeCommandState(t, maestroDir, "cmd_mix", map[string]model.Status{
+		"t1": model.StatusCompleted,
+	}, nil)
+
+	now := "2026-01-01T00:00:00Z"
+	sq := model.PlannerSignalQueue{
+		SchemaVersion: 1,
+		FileType:      "planner_signal_queue",
+		Signals: []model.PlannerSignal{
+			{
+				Kind:      "publish_failed",
+				CommandID: "cmd_mix",
+				Message:   "publish failed",
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+			{
+				Kind:      "circuit_breaker_tripped",
+				CommandID: "cmd_mix",
+				Message:   "progress timeout",
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}
+
+	dirty := false
+	work := &deferredWork{}
+	qh.stepPlannerSignalsDeferred(&sq, &dirty, work, model.CommandQueue{})
+
+	// Only publish_failed should be removed; circuit_breaker_tripped retained
+	if len(sq.Signals) != 1 {
+		t.Fatalf("expected 1 signal retained, got %d: %+v", len(sq.Signals), sq.Signals)
+	}
+	if sq.Signals[0].Kind != "circuit_breaker_tripped" {
+		t.Errorf("retained signal kind = %q, want circuit_breaker_tripped", sq.Signals[0].Kind)
+	}
+	// Only circuit_breaker_tripped should be deferred for delivery
+	if len(work.signals) != 1 {
+		t.Fatalf("expected 1 deferred signal, got %d", len(work.signals))
+	}
+	if work.signals[0].Kind != "circuit_breaker_tripped" {
+		t.Errorf("deferred signal kind = %q, want circuit_breaker_tripped", work.signals[0].Kind)
 	}
 }
 

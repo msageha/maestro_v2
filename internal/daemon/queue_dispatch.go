@@ -88,6 +88,19 @@ func (qh *QueueHandler) stepPlannerSignalsDeferred(sq *model.PlannerSignalQueue,
 				*dirty = true
 				continue
 			}
+
+			// Suppress publish_failed signals — the Daemon handles publish
+			// failure retries automatically (recordPublishFailure / backoff).
+			// R8 (NotifyPublishQuarantined) escalates to the Planner only
+			// when retries are exhausted. Delivering publish_failed to the
+			// Planner causes it to attempt plan_submit / add_retry_task
+			// which fails because the Worker task completed successfully.
+			if sig.Kind == "publish_failed" {
+				qh.log(LogLevelInfo, "signal_suppressed kind=%s command=%s (daemon handles publish retry)",
+					sig.Kind, sig.CommandID)
+				*dirty = true
+				continue
+			}
 		}
 
 		// Defer delivery to Phase B
