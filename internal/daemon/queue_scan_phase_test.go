@@ -1720,3 +1720,85 @@ func TestStepPlannerSignalsDeferred_PublishCompletedRetainedWhenNonTerminal(t *t
 		t.Errorf("deferred signal kind = %q, want publish_completed", work.signals[0].Kind)
 	}
 }
+
+// TestPeriodicScanPhaseC_DeferredComplete verifies that when a deferred plan
+// complete intent exists for a command, a successful publish triggers
+// auto-completion instead of emitting a publish_completed signal.
+func TestPeriodicScanPhaseC_DeferredComplete(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	wtCfg := model.WorktreeConfig{Enabled: false}
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, wtCfg)
+
+	commandID := "cmd_deferred_ok"
+
+	// Wire a deferred plan completer that records the call and returns success
+	completedCommands := make(map[string]bool)
+	qh.deferredPlanCompleter = func(cmdID string) (bool, error) {
+		completedCommands[cmdID] = true
+		return true, nil
+	}
+
+	pa := phaseAResult{scanStart: time.Now()}
+	pb := phaseBResult{
+		worktreePublishes: []worktreePublishResult{{
+			Item:  worktreePublishItem{CommandID: commandID, PublishMessage: "test"},
+			Error: nil,
+		}},
+	}
+
+	qh.periodicScanPhaseC(pa, pb)
+
+	// Deferred completer should have been called
+	if !completedCommands[commandID] {
+		t.Error("deferredPlanCompleter was not called for the command")
+	}
+
+	// publish_completed signal should NOT be emitted (deferred completion handled it)
+	signalQueue, _, _ := qh.queueStore.LoadPlannerSignalQueue()
+	for _, s := range signalQueue.Signals {
+		if s.Kind == "publish_completed" && s.CommandID == commandID {
+			t.Errorf("publish_completed signal should not be emitted when deferred complete succeeds; got: %+v", s)
+		}
+	}
+}
+
+// TestPeriodicScanPhaseC_DeferredComplete_Fallback verifies that when the
+// deferred plan completer returns (false, nil) — meaning no deferred intent
+// exists — the daemon falls back to emitting a publish_completed signal.
+func TestPeriodicScanPhaseC_DeferredComplete_Fallback(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	wtCfg := model.WorktreeConfig{Enabled: false}
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, wtCfg)
+
+	commandID := "cmd_no_deferred"
+
+	// Wire a deferred plan completer that returns false (no deferred intent)
+	qh.deferredPlanCompleter = func(cmdID string) (bool, error) {
+		return false, nil
+	}
+
+	pa := phaseAResult{scanStart: time.Now()}
+	pb := phaseBResult{
+		worktreePublishes: []worktreePublishResult{{
+			Item:  worktreePublishItem{CommandID: commandID, PublishMessage: "test"},
+			Error: nil,
+		}},
+	}
+
+	qh.periodicScanPhaseC(pa, pb)
+
+	// publish_completed signal SHOULD be emitted as fallback
+	signalQueue, _, _ := qh.queueStore.LoadPlannerSignalQueue()
+	var found bool
+	for _, s := range signalQueue.Signals {
+		if s.Kind == "publish_completed" && s.CommandID == commandID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("publish_completed signal should be emitted when no deferred intent exists")
+	}
+}

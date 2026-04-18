@@ -65,8 +65,9 @@ type QueueHandler struct {
 	circuitBreaker      *circuitbreaker.Handler
 	admissionCtrl       *admission.Controller
 	fallbackMgr         *fallback.Manager
-	worktreeManager     QueueWorktreeManager
-	lockMap             *lock.MutexMap
+	worktreeManager          QueueWorktreeManager
+	deferredPlanCompleter    DeferredPlanCompleterFunc
+	lockMap                  *lock.MutexMap
 
 	// scanExecutor handles periodic scan orchestration and scan-specific state.
 	scanExecutor *ScanPhaseExecutor

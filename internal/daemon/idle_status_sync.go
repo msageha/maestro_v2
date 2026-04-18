@@ -61,6 +61,34 @@ func hasInProgressNotifications(notifications []model.Notification) bool {
 	return false
 }
 
+// syncIdleAfterPhaseC re-checks agent idle status after Phase C has applied
+// dispatch and busy-check results. Phase A's stepIdleStatusSync runs before
+// Phase B dispatches, so agents whose dispatches completed in Phase C still
+// have @status="busy" in tmux. This additional sync ensures the tmux status
+// reflects the post-Phase-C queue state, keeping dashboard and `maestro status`
+// consistent within the same scan cycle.
+func (qh *QueueHandler) syncIdleAfterPhaseC(
+	commandQueue model.CommandQueue,
+	taskQueues map[string]*taskQueueEntry,
+	notificationQueue model.NotificationQueue,
+) {
+	for queueFile, tq := range taskQueues {
+		workerID := workerIDFromPath(queueFile)
+		if workerID == "" {
+			continue
+		}
+		if !hasInProgressTasks(tq.Queue.Tasks) {
+			syncAgentIdle(workerID, qh)
+		}
+	}
+	if !hasInProgressCommands(commandQueue.Commands) {
+		syncAgentIdle("planner", qh)
+	}
+	if !hasInProgressNotifications(notificationQueue.Notifications) {
+		syncAgentIdle("orchestrator", qh)
+	}
+}
+
 // syncAgentIdle sets the @status tmux user variable to "idle" for the given
 // agent. Best-effort: errors are logged at debug level to avoid log noise
 // during normal operation (e.g. agent pane not found after shutdown).

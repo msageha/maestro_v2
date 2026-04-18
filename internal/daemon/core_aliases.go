@@ -81,6 +81,9 @@ var errExecutorInit = core.ErrExecutorInit
 // CanCompleteFunc is an alias for core.CanCompleteFunc.
 type CanCompleteFunc = core.CanCompleteFunc
 
+// DeferredPlanCompleterFunc is an alias for core.DeferredPlanCompleterFunc.
+type DeferredPlanCompleterFunc = core.DeferredPlanCompleterFunc
+
 // PlanExecutor is an alias for core.PlanExecutor.
 type PlanExecutor = core.PlanExecutor
 

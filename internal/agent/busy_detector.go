@@ -48,6 +48,14 @@ func newBusyDetector(paneIO PaneIO, busyRegex *regexp.Regexp, cfg busyDetectorCo
 // DetectBusy performs one round of the 3-stage busy detection algorithm.
 // Returns VerdictUndecided if ctx is cancelled during the activity probe sleep.
 func (bd *busyDetector) DetectBusy(ctx context.Context, paneTarget string) busyVerdict {
+	return bd.detectBusy(ctx, paneTarget, bd.config.IdleStableSec)
+}
+
+// detectBusy is the internal implementation with configurable activity probe
+// duration. stableSec controls the Stage 3 sleep duration; callers use the full
+// IdleStableSec for initial probes and a shorter value for soft retries where
+// content stability has already been confirmed.
+func (bd *busyDetector) detectBusy(ctx context.Context, paneTarget string, stableSec int) busyVerdict {
 	// Stage 1: pane_current_command — quick gate
 	cmd, err := bd.paneIO.GetPaneCurrentCommand(paneTarget)
 	if err != nil {
@@ -78,7 +86,7 @@ func (bd *busyDetector) DetectBusy(ctx context.Context, paneTarget string) busyV
 	}
 	bd.log("busy_detection busy_pattern_hint=%s", hintStr)
 
-	// Stage 3: Activity probe (hash comparison over idle_stable_sec).
+	// Stage 3: Activity probe (hash comparison over stableSec).
 	// Uses CapturePaneJoined (-J) for width-independent hash stability.
 	joinedContent, err := bd.paneIO.CapturePaneJoined(paneTarget, bd.config.BusyHintLines)
 	if err != nil {
@@ -86,7 +94,7 @@ func (bd *busyDetector) DetectBusy(ctx context.Context, paneTarget string) busyV
 		return VerdictUndecided
 	}
 	hashA := contentHash(joinedContent)
-	if err := sleepCtx(ctx, time.Duration(bd.config.IdleStableSec)*time.Second); err != nil {
+	if err := sleepCtx(ctx, time.Duration(stableSec)*time.Second); err != nil {
 		bd.log("busy_detection activity_probe sleep cancelled: %v", err)
 		return VerdictUndecided
 	}
@@ -115,19 +123,26 @@ func (bd *busyDetector) DetectBusy(ctx context.Context, paneTarget string) busyV
 	return verdict
 }
 
-// undecidedImmediateRetries is the number of immediate retries for
-// VerdictUndecided before the main busy-retry loop. These retries have no
-// sleep delay, targeting transient tmux capture errors that resolve instantly.
-const undecidedImmediateRetries = 2
+// undecidedImmediateRetries is set to 0: each DetectBusy call includes an
+// IdleStableSec sleep for the activity probe, so "immediate" retries actually
+// take IdleStableSec seconds each — far from instant. The softRetryUndecided
+// mechanism handles both tmux error recovery and stale-pattern promotion
+// more efficiently using shorter activity probes (softRetryStableSec).
+const undecidedImmediateRetries = 0
 
 // undecidedSoftRetries is the number of soft retries when VerdictUndecided
-// persists after immediate retries. Each soft retry waits a short interval
-// (half of BusyCheckInterval, min 1s) before re-probing, giving the agent
-// pane time to update its display during state transitions (e.g., awaiting_fill,
-// publish). If all soft retries still return Undecided (pattern matched + stable
-// content across multiple probes), the verdict is promoted to VerdictIdle —
-// sustained stable content strongly suggests the agent is idle with stale output.
+// persists after the initial probe. Each soft retry waits a short interval
+// (half of BusyCheckInterval, min 1s) before re-probing with a shorter
+// activity probe (softRetryStableSec instead of IdleStableSec), giving the
+// agent pane time to update its display during state transitions. If all soft
+// retries still return Undecided, the verdict is promoted to VerdictIdle.
 const undecidedSoftRetries = 2
+
+// softRetryStableSec is the activity probe duration for soft retries.
+// Shorter than IdleStableSec because the initial probe already confirmed
+// content stability over the full interval; soft retries only need a quick
+// re-check. Bounded by IdleStableSec at runtime to respect test configurations.
+const softRetryStableSec = 1
 
 // detectWithUndecidedRetry runs DetectBusy and, if the result is
 // VerdictUndecided, retries up to undecidedImmediateRetries times with no
@@ -179,6 +194,9 @@ func (bd *busyDetector) DetectBusyWithRetry(ctx context.Context, paneTarget, age
 		}
 
 		verdict = bd.detectWithUndecidedRetry(ctx, paneTarget, agentID)
+		if verdict == VerdictUndecided {
+			return bd.softRetryUndecided(ctx, paneTarget, agentID)
+		}
 		if verdict != VerdictBusy {
 			return verdict
 		}
@@ -188,19 +206,26 @@ func (bd *busyDetector) DetectBusyWithRetry(ctx context.Context, paneTarget, age
 }
 
 // softRetryUndecided performs soft retries for VerdictUndecided with a short
-// sleep between probes. If all soft retries still return Undecided, the verdict
-// is promoted to VerdictIdle — sustained stable content across multiple probes
-// spanning several seconds strongly indicates idle with stale output in the pane.
+// sleep between probes. Uses a shorter activity probe (softRetryStableSec)
+// since the initial probe already confirmed content stability. If all soft
+// retries still return Undecided, the verdict is promoted to VerdictIdle —
+// sustained stable content across multiple probes strongly indicates idle
+// with stale output in the pane.
 func (bd *busyDetector) softRetryUndecided(ctx context.Context, paneTarget, agentID string) busyVerdict {
 	interval := bd.undecidedSoftRetryInterval()
+	// Use shorter activity probe; bounded by IdleStableSec for test configs.
+	stableSec := softRetryStableSec
+	if bd.config.IdleStableSec < stableSec {
+		stableSec = bd.config.IdleStableSec
+	}
 	for i := 0; i < undecidedSoftRetries; i++ {
-		bd.log("undecided_soft_retry retry=%d/%d agent_id=%s interval=%s",
-			i+1, undecidedSoftRetries, agentID, interval)
+		bd.log("undecided_soft_retry retry=%d/%d agent_id=%s interval=%s stable_sec=%d",
+			i+1, undecidedSoftRetries, agentID, interval, stableSec)
 		if err := sleepCtx(ctx, interval); err != nil {
 			bd.log("undecided_soft_retry sleep cancelled: %v", err)
 			return VerdictUndecided
 		}
-		verdict := bd.detectWithUndecidedRetry(ctx, paneTarget, agentID)
+		verdict := bd.detectBusy(ctx, paneTarget, stableSec)
 		if verdict != VerdictUndecided {
 			return verdict
 		}

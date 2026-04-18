@@ -47,6 +47,21 @@ func runDaemon(args []string) error {
 	}
 	d.SetStateReader(reader)
 	d.SetCanComplete(plan.CanComplete)
+	d.SetDeferredPlanCompleter(func(commandID string) (bool, error) {
+		result, err := plan.CompleteDeferredPublish(plan.CompleteOptions{
+			CommandID:  commandID,
+			MaestroDir: maestroDir,
+			Config:     cfg,
+			LockMap:    sharedLockMap,
+		})
+		if err != nil {
+			return false, err
+		}
+		if result == nil {
+			return false, nil // no deferred intent
+		}
+		return true, nil
+	})
 
 	// Wire phase diagnoser to avoid daemon→plan import cycle
 	d.SetPhaseDiagnoser(func(phase model.Phase, tasks []model.Task, results []model.TaskResult) string {
