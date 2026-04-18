@@ -246,15 +246,14 @@ func (qh *QueueHandler) applyPublishResultSignals(
 		if pr.Error != nil {
 			qh.log(LogLevelError, "worktree_publish_failed command=%s error=%v",
 				pr.Item.CommandID, pr.Error)
-			msg := fmt.Sprintf("[maestro] kind:publish_failed command_id:%s\nerror: %v",
-				pr.Item.CommandID, pr.Error)
-			qh.upsertPlannerSignal(signalQueue, signalsDirty, model.PlannerSignal{
-				Kind:      "publish_failed",
-				CommandID: pr.Item.CommandID,
-				Message:   msg,
-				CreatedAt: now,
-				UpdatedAt: now,
-			}, signalIndex)
+			// Do NOT emit a publish_failed signal to the Planner. The Daemon
+			// handles publish failure retries automatically via
+			// recordPublishFailure/exponential backoff. If retries are
+			// exhausted the integration is quarantined and R8
+			// (NotifyPublishQuarantined) escalates to the Planner. Sending
+			// publish_failed would cause the Planner to attempt normal task
+			// failure recovery (plan_submit / add_retry_task) which fails
+			// because the Worker task already completed successfully.
 		} else {
 			qh.log(LogLevelInfo, "worktree_published command=%s", pr.Item.CommandID)
 			// Skip the publish_completed signal if the command is already
