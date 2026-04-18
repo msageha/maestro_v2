@@ -130,7 +130,10 @@ func TestDetectBusy_JoinedCaptureError_ReturnsUndecided(t *testing.T) {
 
 // --- Context Cancellation ---
 
-func TestDetectBusy_ContextCancelled_ReturnsUndecided(t *testing.T) {
+func TestDetectBusy_ContextCancelled_ReturnsBusy(t *testing.T) {
+	// Context cancelled during the Stage 3 activity-probe sleep should return
+	// VerdictBusy (not VerdictUndecided): Claude is confirmed running from
+	// Stage 1, so the conservative "busy" verdict is more accurate.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel immediately
 
@@ -149,8 +152,8 @@ func TestDetectBusy_ContextCancelled_ReturnsUndecided(t *testing.T) {
 	bd := newTestBusyDetector(mock, nil, cfg)
 
 	verdict := bd.DetectBusy(ctx, "%0")
-	if verdict != VerdictUndecided {
-		t.Errorf("expected VerdictUndecided on cancelled context, got %s", verdict)
+	if verdict != VerdictBusy {
+		t.Errorf("expected VerdictBusy on cancelled context, got %s", verdict)
 	}
 }
 
@@ -218,6 +221,9 @@ func TestDetectBusyWithRetry_StaysBusy_ExhaustsRetries(t *testing.T) {
 }
 
 func TestDetectBusyWithRetry_ContextCancelled(t *testing.T) {
+	// Context cancelled during the busy-retry sleep should return VerdictBusy.
+	// We entered the retry loop because the agent was observed busy; the
+	// context expiring doesn't change that — return the known state.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
@@ -239,8 +245,8 @@ func TestDetectBusyWithRetry_ContextCancelled(t *testing.T) {
 	bd := newTestBusyDetector(mock, nil, cfg)
 
 	verdict := bd.DetectBusyWithRetry(ctx, "%0", "worker1")
-	if verdict != VerdictUndecided {
-		t.Errorf("expected VerdictUndecided on context cancel, got %s", verdict)
+	if verdict != VerdictBusy {
+		t.Errorf("expected VerdictBusy on context cancel during retry sleep, got %s", verdict)
 	}
 }
 
@@ -731,8 +737,10 @@ func TestSoftRetryUndecided_PersistentStableWithPattern_ReturnsIdle(t *testing.T
 }
 
 func TestSoftRetryUndecided_ContextCancelled(t *testing.T) {
-	// Context cancelled during soft retry sleep → returns VerdictUndecided.
-	// Uses capture error to trigger undecided (pattern+stable now returns idle).
+	// Context cancelled during soft-retry sleep → returns VerdictBusy.
+	// Capture errors trigger Undecided and enter the soft-retry path; when
+	// the ctx expires before the soft-retry interval elapses the caller gets
+	// VerdictBusy (conservative) instead of the ambiguous VerdictUndecided.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
@@ -751,8 +759,8 @@ func TestSoftRetryUndecided_ContextCancelled(t *testing.T) {
 	bd := newTestBusyDetector(mock, nil, cfg)
 
 	verdict := bd.DetectBusyWithRetry(ctx, "%0", "worker1")
-	if verdict != VerdictUndecided {
-		t.Errorf("expected VerdictUndecided on context cancel during soft retry, got %s", verdict)
+	if verdict != VerdictBusy {
+		t.Errorf("expected VerdictBusy on context cancel during soft retry, got %s", verdict)
 	}
 }
 

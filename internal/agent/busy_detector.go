@@ -46,7 +46,10 @@ func newBusyDetector(paneIO PaneIO, busyRegex *regexp.Regexp, cfg busyDetectorCo
 }
 
 // DetectBusy performs one round of the 3-stage busy detection algorithm.
-// Returns VerdictUndecided if ctx is cancelled during the activity probe sleep.
+// Returns VerdictBusy if ctx is cancelled during the activity probe sleep
+// (conservative: Claude is confirmed running from Stage 1, so "busy" is more
+// accurate than the ambiguous VerdictUndecided).
+// Returns VerdictUndecided only for genuine tmux capture errors.
 func (bd *busyDetector) DetectBusy(ctx context.Context, paneTarget string) busyVerdict {
 	return bd.detectBusy(ctx, paneTarget, bd.config.IdleStableSec)
 }
@@ -95,8 +98,13 @@ func (bd *busyDetector) detectBusy(ctx context.Context, paneTarget string, stabl
 	}
 	hashA := contentHash(joinedContent)
 	if err := sleepCtx(ctx, time.Duration(stableSec)*time.Second); err != nil {
-		bd.log("busy_detection activity_probe sleep cancelled: %v", err)
-		return VerdictUndecided
+		// Context cancelled during activity probe. We already confirmed Claude is
+		// running (Stage 1) and captured initial content (Stage 3a), but couldn't
+		// complete the stability comparison. Return VerdictBusy (conservative) so
+		// the caller retries with a fresh context, rather than VerdictUndecided
+		// which would surface as "undecided_after_probes" in normal delivery.
+		bd.log("busy_detection activity_probe sleep cancelled: %v → treating as busy", err)
+		return VerdictBusy
 	}
 
 	joinedContent2, err := bd.paneIO.CapturePaneJoined(paneTarget, bd.config.BusyHintLines)
@@ -162,16 +170,18 @@ func (bd *busyDetector) detectWithUndecidedRetry(ctx context.Context, paneTarget
 // DetectBusyWithRetry runs busy detection with retry loops for both
 // VerdictUndecided and VerdictBusy.
 //
-// For VerdictUndecided (from tmux errors or context cancellation):
-// soft retries with a short interval (half of BusyCheckInterval).
-// If all soft retries still yield Undecided, the verdict is promoted to
-// VerdictIdle.
+// For VerdictUndecided (from genuine tmux capture errors only): soft retries
+// with a short interval (half of BusyCheckInterval). If all soft retries still
+// yield Undecided, the verdict is promoted to VerdictIdle.
 //
 // For VerdictBusy: standard retry loop with BusyCheckInterval sleeps,
 // up to BusyCheckMaxRetries attempts.
 //
+// Context cancellation during any sleep returns VerdictBusy (not
+// VerdictUndecided) so callers receive a clear retryable "busy" signal
+// rather than the ambiguous "undecided_after_probes" condition.
+//
 // agentID is used only for log messages.
-// Returns VerdictUndecided if ctx is cancelled during retries.
 func (bd *busyDetector) DetectBusyWithRetry(ctx context.Context, paneTarget, agentID string) busyVerdict {
 	verdict := bd.detectWithUndecidedRetry(ctx, paneTarget, agentID)
 
@@ -191,8 +201,11 @@ func (bd *busyDetector) DetectBusyWithRetry(ctx context.Context, paneTarget, age
 		bd.log("busy_retry retry=%d/%d agent_id=%s verdict=%s",
 			i, bd.config.BusyCheckMaxRetries, agentID, verdict)
 		if err := sleepCtx(ctx, time.Duration(bd.config.BusyCheckInterval)*time.Second); err != nil {
-			bd.log("busy_retry sleep cancelled: %v", err)
-			return VerdictUndecided
+			// Context cancelled during retry sleep. We are in the busy retry
+			// loop because the agent was observed busy, so return VerdictBusy
+			// (not VerdictUndecided) — the state is known, not ambiguous.
+			bd.log("busy_retry sleep cancelled: %v → treating as busy", err)
+			return VerdictBusy
 		}
 
 		verdict = bd.detectWithUndecidedRetry(ctx, paneTarget, agentID)
@@ -222,8 +235,12 @@ func (bd *busyDetector) softRetryUndecided(ctx context.Context, paneTarget, agen
 		bd.log("undecided_soft_retry retry=%d/%d agent_id=%s interval=%s stable_sec=%d",
 			i+1, undecidedSoftRetries, agentID, interval, stableSec)
 		if err := sleepCtx(ctx, interval); err != nil {
-			bd.log("undecided_soft_retry sleep cancelled: %v", err)
-			return VerdictUndecided
+			// Context cancelled during soft-retry sleep. Return VerdictBusy so
+			// the caller propagates a retryable "busy" error rather than
+			// surfacing VerdictUndecided ("undecided_after_probes") in normal
+			// delivery flows where the context simply timed out.
+			bd.log("undecided_soft_retry sleep cancelled: %v → treating as busy", err)
+			return VerdictBusy
 		}
 		verdict := bd.detectBusy(ctx, paneTarget, stableSec)
 		if verdict != VerdictUndecided {

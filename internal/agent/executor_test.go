@@ -804,7 +804,10 @@ func TestExecute_ModeIsBusy_Busy(t *testing.T) {
 	}
 }
 
-func TestExecute_ModeIsBusy_Undecided(t *testing.T) {
+func TestExecute_ModeIsBusy_ContextCancelled_ReturnsBusy(t *testing.T) {
+	// Context cancelled during the Stage 3 activity-probe sleep now returns
+	// VerdictBusy (not VerdictUndecided): Claude is confirmed running from
+	// Stage 1 so "busy" is the conservative and accurate result.
 	t.Parallel()
 	mock := newExecMock()
 	mock.isShell = false
@@ -813,7 +816,7 @@ func TestExecute_ModeIsBusy_Undecided(t *testing.T) {
 	mock.joinedContents = []string{"same-content", "same-content"}
 	exec, _ := newTestExecutorWithLog(mock)
 	// Use non-zero IdleStableSec so Stage 3 has a sleep that context
-	// cancellation can interrupt, producing VerdictUndecided.
+	// cancellation can interrupt.
 	exec.busyDetector.config.IdleStableSec = 5
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -824,15 +827,12 @@ func TestExecute_ModeIsBusy_Undecided(t *testing.T) {
 		AgentID: "worker1",
 		Mode:    ModeIsBusy,
 	})
-	// VerdictUndecided: context cancelled during activity probe sleep
-	if result.Success {
-		t.Error("expected Success=false for undecided verdict")
+	// VerdictBusy from ctx cancellation → execIsBusy returns Success=true.
+	if !result.Success {
+		t.Errorf("expected Success=true (VerdictBusy) on context cancel, got error: %v", result.Error)
 	}
-	if !errors.Is(result.Error, ErrBusyUndecided) {
-		t.Errorf("expected ErrBusyUndecided, got: %v", result.Error)
-	}
-	if !result.Retryable {
-		t.Error("expected Retryable=true for undecided verdict")
+	if result.Error != nil {
+		t.Errorf("expected nil error for VerdictBusy, got: %v", result.Error)
 	}
 }
 
@@ -1166,9 +1166,12 @@ type closerFunc func() error
 
 func (f closerFunc) Close() error { return f() }
 
-// --- Fix: ErrBusyUndecided wrapping in execDeliver ---
+// --- Fix: busy timeout returns retryable error in execDeliver ---
 
-func TestExecute_ModeDeliver_Undecided_WrapsErrBusyUndecided(t *testing.T) {
+func TestExecute_ModeDeliver_ContextCancelled_ReturnsBusyError(t *testing.T) {
+	// Context cancelled during Stage 3 sleep now returns VerdictBusy (not
+	// VerdictUndecided). execDeliver should produce a retryable "busy: timeout"
+	// error so deliverPlannerSignal can retry with a fresh context.
 	t.Parallel()
 	mock := newExecMock()
 	mock.isShell = false
@@ -1177,7 +1180,7 @@ func TestExecute_ModeDeliver_Undecided_WrapsErrBusyUndecided(t *testing.T) {
 	mock.joinedContents = []string{"same-content", "same-content"}
 	exec, _ := newTestExecutorWithLog(mock)
 	// Use non-zero IdleStableSec so Stage 3 has a sleep that context
-	// cancellation can interrupt, producing VerdictUndecided.
+	// cancellation can interrupt.
 	exec.busyDetector.config.IdleStableSec = 5
 
 	// Short timeout: ensureClaudeRunning completes fast, then DetectBusy's
@@ -1192,13 +1195,14 @@ func TestExecute_ModeDeliver_Undecided_WrapsErrBusyUndecided(t *testing.T) {
 		Mode:    ModeDeliver,
 	})
 	if result.Error == nil {
-		t.Fatal("expected error for undecided verdict")
+		t.Fatal("expected error for busy verdict on context cancel")
 	}
-	if !errors.Is(result.Error, ErrBusyUndecided) {
-		t.Errorf("expected ErrBusyUndecided detectable via errors.Is(), got: %v", result.Error)
+	// VerdictBusy → "agent planner busy: timeout" (not ErrBusyUndecided).
+	if errors.Is(result.Error, ErrBusyUndecided) {
+		t.Errorf("should NOT be ErrBusyUndecided for ctx-cancel case; got: %v", result.Error)
 	}
 	if !result.Retryable {
-		t.Error("expected Retryable=true for undecided verdict")
+		t.Error("expected Retryable=true for busy verdict")
 	}
 }
 

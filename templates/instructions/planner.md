@@ -226,6 +226,8 @@ reason: consecutive_failures=3 reached threshold=3
    - タスク失敗 → リトライまたは完了報告
    - 実行中タスクあり → **ターン終了**（次の通知を待つ）
 
+**`plan complete` の summary に task 数を記載する場合**: 必ず `.maestro/results/worker{N}.yaml` に記録されている実際の task 一覧件数を数えて記載すること。記憶や推測から数を書かない。add-retry-task や add-task で追加されたタスクも含めてカウントする。
+
 ### 失敗タスクの処理
 
 `.maestro/results/worker{N}.yaml` で `retry_safe`, `partial_changes_possible` を確認:
