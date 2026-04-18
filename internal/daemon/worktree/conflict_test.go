@@ -390,13 +390,23 @@ func TestWorktreeIntegration_PublishToBaseConflict(t *testing.T) {
 		t.Fatal("PublishToBase should have returned an error due to conflict")
 	}
 
-	// Step 6: Verify integration status is "conflict"
+	// Step 6: Verify integration status is "publish_failed" (not "conflict")
+	// Publish merge conflicts are recorded as publish_failed so the existing
+	// retry mechanism (collectWorktreePublishAndCleanup) can re-attempt the
+	// publish with exponential backoff, instead of stalling permanently.
 	state, err := wm.GetCommandState(commandID)
 	if err != nil {
 		t.Fatalf("GetCommandState: %v", err)
 	}
-	if state.Integration.Status != model.IntegrationStatusConflict {
-		t.Errorf("integration status = %q, want %q", state.Integration.Status, model.IntegrationStatusConflict)
+	if state.Integration.Status != model.IntegrationStatusPublishFailed {
+		t.Errorf("integration status = %q, want %q", state.Integration.Status, model.IntegrationStatusPublishFailed)
+	}
+	// Verify publish failure tracking was incremented
+	if state.Integration.PublishFailureCount < 1 {
+		t.Errorf("PublishFailureCount = %d, want >= 1", state.Integration.PublishFailureCount)
+	}
+	if state.Integration.NextPublishRetryAt == "" {
+		t.Error("NextPublishRetryAt should be set for backoff retry")
 	}
 
 	// Step 7: Verify temp-branch is cleaned up

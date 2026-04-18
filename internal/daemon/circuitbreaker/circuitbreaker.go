@@ -2,6 +2,7 @@
 package circuitbreaker
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"time"
@@ -168,6 +169,10 @@ func (cb *Handler) CheckProgressTimeout(commandID string) (bool, string) {
 
 	cbState, err := cb.stateManager.GetCircuitBreakerState(commandID)
 	if err != nil {
+		if errors.Is(err, model.ErrStateNotFound) {
+			cb.Log(core.LogLevelDebug, "circuit_breaker_state_read command=%s state_not_found, treating as initial state", commandID)
+			return false, ""
+		}
 		cb.Log(core.LogLevelWarn, "circuit_breaker_state_read command=%s error=%v", commandID, err)
 		return false, ""
 	}

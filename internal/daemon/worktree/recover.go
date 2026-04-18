@@ -112,6 +112,8 @@ func (wm *Manager) ResumeMerge(ctx context.Context, commandID string) error {
 		model.IntegrationStatusPartialMerge,
 		model.IntegrationStatusFailed:
 		// recoverable
+	case model.IntegrationStatusPublishFailed:
+		return fmt.Errorf("%w: integration is in publish_failed state; publish retry will handle recovery automatically", ErrAlreadyResolved)
 	case model.IntegrationStatusQuarantined:
 		return fmt.Errorf("%w: integration is quarantined; use unquarantine", ErrAlreadyResolved)
 	default:
