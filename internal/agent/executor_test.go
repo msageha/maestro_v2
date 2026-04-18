@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/tmux"
@@ -1173,7 +1174,13 @@ func TestExecute_ModeDeliver_Undecided_WrapsErrBusyUndecided(t *testing.T) {
 	exec, _ := newTestExecutorWithLog(mock)
 	exec.busyDetector.busyRegex = regexp.MustCompile(`working`)
 
+	// Use a short context timeout so the soft retry sleep (1s with
+	// BusyCheckInterval=0) is cancelled, producing VerdictUndecided.
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
 	result := exec.Execute(ExecRequest{
+		Context: ctx,
 		AgentID: "planner",
 		Message: "test message",
 		Mode:    ModeDeliver,

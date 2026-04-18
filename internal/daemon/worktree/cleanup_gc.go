@@ -486,6 +486,45 @@ func (wm *Manager) cleanupCommandCore(commandID string, state *model.WorktreeCom
 	return nil
 }
 
+// CleanupTempPublishBranch deletes the maestro/{commandID}/_publish temporary
+// branch if it exists. This is a best-effort operation intended for quarantined
+// integrations where CleanupCommand is not called (worktrees are preserved for
+// operator inspection) but the temporary publish branch should not leak.
+//
+// If the branch is checked out in the integration worktree, it tries to detach
+// HEAD first to allow deletion. Errors are logged but never returned.
+func (wm *Manager) CleanupTempPublishBranch(commandID string) {
+	if err := validateIDs(commandID); err != nil {
+		return
+	}
+	publishBranch := fmt.Sprintf("maestro/%s/_publish", commandID)
+	if err := wm.gitRun("branch", "-D", publishBranch); err != nil {
+		// Branch might be checked out in the integration worktree.
+		// Try to detach HEAD first, then retry deletion.
+		integrationPath := wm.integrationWorktreePath(commandID)
+		if _, statErr := os.Stat(integrationPath); statErr == nil {
+			if detachErr := wm.gitRunInDir(integrationPath, "checkout", "--detach"); detachErr == nil {
+				if retryErr := wm.gitRun("branch", "-D", publishBranch); retryErr != nil {
+					wm.Log(core.LogLevelDebug, "cleanup_temp_publish_branch_skipped command=%s branch=%s error=%v",
+						commandID, publishBranch, retryErr)
+				} else {
+					wm.Log(core.LogLevelInfo, "cleanup_temp_publish_branch_detach_deleted command=%s branch=%s",
+						commandID, publishBranch)
+				}
+			} else {
+				wm.Log(core.LogLevelDebug, "cleanup_temp_publish_branch_detach_failed command=%s error=%v",
+					commandID, detachErr)
+			}
+		} else {
+			wm.Log(core.LogLevelDebug, "cleanup_temp_publish_branch_skipped command=%s branch=%s error=%v",
+				commandID, publishBranch, err)
+		}
+	} else {
+		wm.Log(core.LogLevelInfo, "cleanup_temp_publish_branch_deleted command=%s branch=%s",
+			commandID, publishBranch)
+	}
+}
+
 func (wm *Manager) cleanupCommandUnlocked(commandID string, state *model.WorktreeCommandState) error {
 	errs := wm.cleanupCommandCore(commandID, state, false)
 	if len(errs) > 0 {

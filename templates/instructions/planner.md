@@ -641,6 +641,62 @@ Daemon が自動で conflict resolver を dispatch（worker の状態を `confli
 
 **`maestro plan unquarantine` について:** quarantined 状態の解除はオペレーター専用の操作であり、Planner は使用できない。quarantined 状態に遭遇した場合は `plan complete` で報告する。
 
+### Publish Conflict Recovery (publish_conflict)
+
+統合ブランチを main (base) にマージ（Publish）する際、main 側が更新されていてコンフリクトが発生することがある。Daemon は自動で base を統合ブランチにフォワードマージして解消を試みるが、内容の競合がある場合は `publish_conflict` シグナルを Planner に送信する。
+
+**シグナル形式:**
+
+```
+[maestro] kind:publish_conflict command_id:cmd_xxx
+Forward-merge of base branch into integration failed due to content conflicts.
+conflict_files: path/to/file1.go, path/to/file2.go
+The Planner should dispatch a worker to resolve the conflicts on the integration branch,
+then call `maestro plan retry-publish --command-id cmd_xxx` to re-attempt publish.
+```
+
+| フィールド | 意味 |
+|----|----|
+| `conflict_type` | `publish_conflict`（シグナル内部。`task_merge_conflict` と区別） |
+| `conflict_files` | base と統合ブランチで競合したファイル一覧 |
+
+**`task_merge_conflict` との違い:**
+
+| 項目 | task_merge_conflict | publish_conflict |
+|------|-------------------|-----------------|
+| 発生箇所 | Worker → 統合ブランチ マージ | 統合ブランチ → main Publish |
+| 原因 | 並列 Worker 間のファイル競合 | main が統合ブランチ作成後に更新された |
+| 解決対象 | Worker の worktree | 統合ブランチ自体 |
+| 解決コマンド | `resume-merge` | `retry-publish` |
+
+**対応手順:**
+
+1. **状況確認**: `.maestro/dashboard.md` を Read で確認し、対象コマンドの統合ステータスを把握する
+2. **競合解決タスクの発行**: `maestro plan add-task` で統合ブランチ上の競合を解決するタスクを発行する。`content` に以下を含める:
+   - 競合ファイル一覧（シグナルの `conflict_files` から取得）
+   - 「統合ブランチ上で base の変更と統合する」という具体的な指示
+   - `acceptance_criteria` にコンパイル成功・テストパスを含める
+
+   ```
+   maestro plan add-task \
+     --command-id <command_id> \
+     --purpose "publish conflict 解決: <conflict_files>" \
+     --content "<競合ファイル・修正指示の詳細>" \
+     --acceptance-criteria "コンパイル成功・テストパス" \
+     --bloom-level 3 \
+     --persona-hint implementer
+   ```
+
+3. **再 Publish のトリガー**: Worker がタスクを完了したら `maestro plan retry-publish --command-id <command_id>` を実行する。これにより:
+   - `PublishFailureCount` がリセットされる
+   - 統合ステータスが `merged` に戻る
+   - 次回スキャンで Daemon が再度フォワードマージ + Publish を試行する
+4. **最大リトライ: 2 回**。再 Publish が再び失敗した場合は `plan complete` で報告する
+
+**自動リカバリについて:** Daemon は Publish 前に自動でフォワードマージ（base → integration）を試みる。単純なファイル追加など git が自動解決できるケースはシグナル不要で成功する。シグナルが届くのは git が自動解決できないコンテンツ競合がある場合のみ。
+
+**`publish_quarantined` 通知との関係:** `publish_conflict` シグナルは Publish 失敗の初回に送信される。Planner がリカバリに失敗し Publish 失敗が蓄積すると、最終的に quarantine に遷移し R8 経由で `publish_quarantined` 通知が届く。quarantined 状態での `retry-publish` も可能（publish 関連の quarantine のみ）。
+
 ### コミット失敗ハンドリング (commit_failed)
 
 Worker の自動コミットに失敗すると、Daemon は該当 Worker を `commit_failed_workers` に記録し、worktree を統合ブランチへマージできない状態で保留する。Planner には以下の構造化シグナルが届く:

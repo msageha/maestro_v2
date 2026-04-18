@@ -128,6 +128,7 @@ type injectParams struct {
 	PersonaHint        string   `json:"persona_hint"`
 	SkillRefs          []string `json:"skill_refs"`
 	WorkerID           string   `json:"worker_id"`
+	TargetPhase        string   `json:"target_phase,omitempty"`
 	IdempotencyKey     string   `json:"idempotency_key,omitempty"`
 }
 
@@ -147,6 +148,7 @@ func (pe *PlanExecutorImpl) AddTask(params json.RawMessage) (json.RawMessage, er
 			PersonaHint:        p.PersonaHint,
 			SkillRefs:          p.SkillRefs,
 			TargetWorkerID:     p.WorkerID,
+			TargetPhase:        p.TargetPhase,
 			IdempotencyKey:     p.IdempotencyKey,
 			MaestroDir:         pe.MaestroDir,
 			Config:             pe.Config,

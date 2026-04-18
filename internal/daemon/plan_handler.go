@@ -61,7 +61,7 @@ func (h *PlanAPI) handlePlan(req *uds.Request) *uds.Response {
 	// Note: the server-level processRequest already validates and normalizes
 	// CallerRole, but this check is defense-in-depth for direct handler calls.
 	switch params.Operation {
-	case "unquarantine", "resume_merge", "resolve_conflict":
+	case "unquarantine", "resume_merge", "resolve_conflict", "retry_publish":
 		if !uds.ValidCallerRoles[req.CallerRole] {
 			return uds.ErrorResponse(uds.ErrCodeValidation,
 				fmt.Sprintf("operation %q requires a valid caller role, got %q", params.Operation, req.CallerRole))
@@ -187,6 +187,8 @@ func (h *PlanAPI) handlePlanWorktreeRecovery(operation string, data json.RawMess
 		opErr = h.worktreeManager.Unquarantine(p.CommandID, p.Reason)
 	case "resume_merge":
 		opErr = h.worktreeManager.ResumeMerge(context.Background(), p.CommandID)
+	case "retry_publish":
+		opErr = h.worktreeManager.RetryPublish(p.CommandID)
 	case "resolve_conflict":
 		if p.PhaseID == "" {
 			return uds.ErrorResponse(uds.ErrCodeValidation, "phase_id is required")

@@ -572,3 +572,226 @@ func TestAddTask_NoIdempotencyKey_NoDedupe(t *testing.T) {
 		t.Error("calls without idempotency key should create separate tasks")
 	}
 }
+
+// setupInjectFixtureWithPhases creates a fixture with multiple phases (some terminal).
+// Returns (maestroDir, commandID, taskID in phase1, phase1 ID, phase2 ID).
+func setupInjectFixtureWithPhases(t *testing.T) (string, string, string, string, string) {
+	t.Helper()
+	maestroDir := setupMaestroDir(t)
+	commandID := "cmd_0000000050_aabbccdd"
+	taskID1 := "task_0000000050_11111111"
+	taskID2 := "task_0000000050_22222222"
+	phase1ID := "phase_001"
+	phase2ID := "phase_002"
+
+	state := &model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanVersion:   1,
+		PlanStatus:    model.PlanStatusSealed,
+		CompletionPolicy: model.CompletionPolicy{
+			Mode:                    "all_required_completed",
+			OnRequiredFailed:        "fail_command",
+			OnRequiredCancelled:     "cancel_command",
+			OnOptionalFailed:        "ignore",
+			DependencyFailurePolicy: "cancel_dependents",
+		},
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 2,
+			RequiredTaskIDs:   []string{taskID1, taskID2},
+			OptionalTaskIDs:   []string{},
+			TaskDependencies: map[string][]string{
+				taskID1: {},
+				taskID2: {taskID1},
+			},
+			TaskStates: map[string]model.Status{
+				taskID1: model.StatusCompleted,
+				taskID2: model.StatusCompleted,
+			},
+			CancelledReasons: make(map[string]string),
+			AppliedResultIDs: make(map[string]string),
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: phase1ID,
+					Name:    "phase1",
+					Type:    "concrete",
+					Status:  model.PhaseStatusCompleted,
+					TaskIDs: []string{taskID1},
+				},
+				{
+					PhaseID: phase2ID,
+					Name:    "phase2",
+					Type:    "concrete",
+					Status:  model.PhaseStatusCompleted,
+					TaskIDs: []string{taskID2},
+				},
+			},
+		},
+		RetryTracking: model.RetryTracking{
+			RetryLineage: make(map[string]string),
+		},
+		CreatedAt: "2025-01-01T00:00:00Z",
+		UpdatedAt: "2025-01-01T00:00:00Z",
+	}
+
+	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	return maestroDir, commandID, taskID1, phase1ID, phase2ID
+}
+
+func TestAddTask_TargetPhase_PlacedCorrectly(t *testing.T) {
+	maestroDir, commandID, _, _, phase2ID := setupInjectFixtureWithPhases(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	result, err := AddTask(InjectOptions{
+		CommandID:          commandID,
+		Purpose:            "resolve conflict in phase2",
+		Content:            "fix conflicting files",
+		AcceptanceCriteria: "build passes",
+		BloomLevel:         3,
+		Required:           true,
+		TargetPhase:        phase2ID,
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err != nil {
+		t.Fatalf("AddTask returned error: %v", err)
+	}
+
+	sm := NewStateManager(maestroDir, lm)
+	state, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+
+	// Task should be placed in phase2, not phase 0
+	foundInPhase2 := false
+	for _, tid := range state.Phases[1].TaskIDs {
+		if tid == result.TaskID {
+			foundInPhase2 = true
+			break
+		}
+	}
+	if !foundInPhase2 {
+		t.Errorf("task %s not in phase2 (target); phase2 TaskIDs: %v", result.TaskID, state.Phases[1].TaskIDs)
+	}
+
+	// Task should NOT be in phase1
+	for _, tid := range state.Phases[0].TaskIDs {
+		if tid == result.TaskID {
+			t.Errorf("task %s unexpectedly in phase1; should only be in target phase2", result.TaskID)
+		}
+	}
+}
+
+func TestAddTask_TargetPhase_NotFound(t *testing.T) {
+	maestroDir, commandID, _, _, _ := setupInjectFixtureWithPhases(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	_, err := AddTask(InjectOptions{
+		CommandID:          commandID,
+		Purpose:            "resolve conflict",
+		Content:            "fix conflicting files",
+		AcceptanceCriteria: "build passes",
+		BloomLevel:         3,
+		Required:           true,
+		TargetPhase:        "phase_nonexistent",
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err == nil {
+		t.Fatal("expected error for nonexistent target_phase")
+	}
+}
+
+func TestAddTask_NoTargetPhase_FallbackUnchanged(t *testing.T) {
+	maestroDir, commandID, _, _, _ := setupInjectFixtureWithPhases(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	// Both phases are terminal (completed). Without TargetPhase, fallback should
+	// place the task in phase 0 (existing behavior).
+	result, err := AddTask(InjectOptions{
+		CommandID:          commandID,
+		Purpose:            "independent task",
+		Content:            "do something",
+		AcceptanceCriteria: "done",
+		BloomLevel:         2,
+		Required:           true,
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err != nil {
+		t.Fatalf("AddTask returned error: %v", err)
+	}
+
+	sm := NewStateManager(maestroDir, lm)
+	state, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+
+	// All phases are terminal, so fallback should go to phase 0
+	foundInPhase0 := false
+	for _, tid := range state.Phases[0].TaskIDs {
+		if tid == result.TaskID {
+			foundInPhase0 = true
+			break
+		}
+	}
+	if !foundInPhase0 {
+		t.Errorf("task %s not in phase 0 (fallback); phase0 TaskIDs: %v", result.TaskID, state.Phases[0].TaskIDs)
+	}
+}
+
+func TestAddTask_TargetPhase_AllTerminal(t *testing.T) {
+	maestroDir, commandID, _, phase1ID, _ := setupInjectFixtureWithPhases(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	// With TargetPhase set, even if all phases are terminal, task goes to the specified phase
+	result, err := AddTask(InjectOptions{
+		CommandID:          commandID,
+		Purpose:            "resolve conflict in completed phase",
+		Content:            "fix conflicting files",
+		AcceptanceCriteria: "build passes",
+		BloomLevel:         3,
+		Required:           true,
+		TargetPhase:        phase1ID,
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err != nil {
+		t.Fatalf("AddTask returned error: %v", err)
+	}
+
+	sm := NewStateManager(maestroDir, lm)
+	state, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+
+	// Task should be placed in phase1 despite it being completed
+	foundInPhase1 := false
+	for _, tid := range state.Phases[0].TaskIDs {
+		if tid == result.TaskID {
+			foundInPhase1 = true
+			break
+		}
+	}
+	if !foundInPhase1 {
+		t.Errorf("task %s not in phase1 (target); phase1 TaskIDs: %v", result.TaskID, state.Phases[0].TaskIDs)
+	}
+}

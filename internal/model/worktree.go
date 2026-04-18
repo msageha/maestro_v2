@@ -96,6 +96,14 @@ type IntegrationState struct {
 	// StallSignaled is set once a worktree_stalled planner signal has been
 	// emitted for this command, to prevent re-emission on every scan.
 	StallSignaled bool `yaml:"stall_signaled,omitempty"`
+	// PublishConflictFiles lists files that conflicted during the last
+	// publish attempt (integration → base merge). Populated by
+	// PublishToBase when a forward-merge of base into integration fails.
+	// Cleared on successful publish or by RetryPublish.
+	PublishConflictFiles []string `yaml:"publish_conflict_files,omitempty"`
+	// PublishConflictSignaled guards one-shot emission of the
+	// publish_conflict planner signal per quarantine event.
+	PublishConflictSignaled bool `yaml:"publish_conflict_signaled,omitempty"`
 }
 
 // MergeConflict describes a merge conflict between a worker branch and the integration branch.

@@ -216,6 +216,7 @@ func (qh *QueueHandler) applyMergeResultSignals(
 				ConflictTheirsRef:  conflict.TheirsRef,
 				ConflictFiles:      append([]string(nil), conflict.ConflictFiles...),
 				ConflictGeneration: cg,
+				ConflictType:       "task_merge_conflict",
 				CreatedAt:          now,
 				UpdatedAt:          now,
 			}, signalIndex)
@@ -246,14 +247,20 @@ func (qh *QueueHandler) applyPublishResultSignals(
 		if pr.Error != nil {
 			qh.log(LogLevelError, "worktree_publish_failed command=%s error=%v",
 				pr.Item.CommandID, pr.Error)
-			// Do NOT emit a publish_failed signal to the Planner. The Daemon
-			// handles publish failure retries automatically via
+			// Do NOT emit a generic publish_failed signal to the Planner. The
+			// Daemon handles publish failure retries automatically via
 			// recordPublishFailure/exponential backoff. If retries are
 			// exhausted the integration is quarantined and R8
 			// (NotifyPublishQuarantined) escalates to the Planner. Sending
 			// publish_failed would cause the Planner to attempt normal task
 			// failure recovery (plan_submit / add_retry_task) which fails
 			// because the Worker task already completed successfully.
+			//
+			// However, if the failure is a publish conflict (forward-merge of
+			// base into integration failed), emit a publish_conflict signal so
+			// the Planner can proactively dispatch a resolution worker instead
+			// of waiting for quarantine.
+			qh.emitPublishConflictSignalIfNeeded(pr.Item.CommandID, signalQueue, signalsDirty, signalIndex, now)
 		} else {
 			qh.log(LogLevelInfo, "worktree_published command=%s", pr.Item.CommandID)
 			// Skip the publish_completed signal if the command is already
@@ -282,6 +289,56 @@ func (qh *QueueHandler) applyPublishResultSignals(
 				UpdatedAt: now,
 			}, signalIndex)
 		}
+	}
+}
+
+// emitPublishConflictSignalIfNeeded checks whether a publish failure was caused
+// by a forward-merge conflict (PublishConflictFiles is non-empty) and emits a
+// one-shot publish_conflict PlannerSignal so the Planner can proactively
+// dispatch resolution workers. The signal is guarded by
+// PublishConflictSignaled to avoid re-emission on every scan cycle.
+func (qh *QueueHandler) emitPublishConflictSignalIfNeeded(
+	commandID string,
+	signalQueue *model.PlannerSignalQueue,
+	signalsDirty *bool,
+	signalIndex map[signalKey]struct{},
+	now string,
+) {
+	if qh.worktreeManager == nil {
+		return
+	}
+	cmdState, err := qh.worktreeManager.GetCommandState(commandID)
+	if err != nil || cmdState == nil {
+		return
+	}
+	if len(cmdState.Integration.PublishConflictFiles) == 0 {
+		return
+	}
+	if cmdState.Integration.PublishConflictSignaled {
+		return
+	}
+
+	files := cmdState.Integration.PublishConflictFiles
+	msg := fmt.Sprintf("[maestro] kind:publish_conflict command_id:%s\n"+
+		"Forward-merge of base branch into integration failed due to content conflicts.\n"+
+		"conflict_files: %s\n"+
+		"The Planner should dispatch a worker to resolve the conflicts on the integration branch, "+
+		"then call `maestro plan retry-publish --command-id %s` to re-attempt publish.",
+		commandID, strings.Join(files, ", "), commandID)
+
+	qh.upsertPlannerSignal(signalQueue, signalsDirty, model.PlannerSignal{
+		Kind:          "merge_conflict",
+		CommandID:     commandID,
+		Message:       msg,
+		ConflictFiles: append([]string(nil), files...),
+		ConflictType:  "publish_conflict",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}, signalIndex)
+
+	// Mark as signaled to avoid re-emission.
+	if err := qh.worktreeManager.MarkPublishConflictSignaled(commandID); err != nil {
+		qh.log(LogLevelWarn, "publish_conflict_signal_mark command=%s error=%v", commandID, err)
 	}
 }
 

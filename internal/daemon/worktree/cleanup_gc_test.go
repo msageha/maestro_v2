@@ -410,6 +410,123 @@ func TestCleanupCommand_DeletesPublishBranch(t *testing.T) {
 	}
 }
 
+// TestCleanupTempPublishBranch_DeletesLeakedBranch verifies that
+// CleanupTempPublishBranch deletes the maestro/{commandID}/_publish temporary
+// branch without removing worktrees (used for quarantined integrations).
+func TestCleanupTempPublishBranch_DeletesLeakedBranch(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_quarantine_publish_leak"
+	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	// Simulate a leaked _publish branch
+	baseSHA := gitRevParse(t, projectRoot, "HEAD")
+	publishBranch := fmt.Sprintf("maestro/%s/_publish", commandID)
+	if err := wm.gitRun("branch", publishBranch, baseSHA); err != nil {
+		t.Fatalf("create publish branch: %v", err)
+	}
+
+	// Verify the branch exists
+	branchOut, err := wm.gitOutput("branch", "--list", publishBranch)
+	if err != nil {
+		t.Fatalf("list branches: %v", err)
+	}
+	if !strings.Contains(branchOut, "_publish") {
+		t.Fatalf("publish branch should exist before cleanup, got: %q", branchOut)
+	}
+
+	// CleanupTempPublishBranch should delete it
+	wm.CleanupTempPublishBranch(commandID)
+
+	// Verify the branch is gone
+	branchOut, err = wm.gitOutput("branch", "--list", publishBranch)
+	if err != nil {
+		t.Fatalf("list branches after cleanup: %v", err)
+	}
+	if strings.Contains(branchOut, "_publish") {
+		t.Errorf("publish branch should be deleted by CleanupTempPublishBranch, got: %q", branchOut)
+	}
+
+	// Verify worktrees are still intact (not cleaned up)
+	state, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	for _, ws := range state.Workers {
+		if _, statErr := os.Stat(ws.Path); os.IsNotExist(statErr) {
+			t.Errorf("worker worktree should still exist: %s", ws.Path)
+		}
+	}
+}
+
+// TestCleanupTempPublishBranch_NoBranchIsNoOp verifies that
+// CleanupTempPublishBranch is a no-op when the branch doesn't exist.
+func TestCleanupTempPublishBranch_NoBranchIsNoOp(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_no_publish_branch"
+	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	// Should not panic or error
+	wm.CleanupTempPublishBranch(commandID)
+
+	// Verify worktrees still intact
+	state, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	if len(state.Workers) == 0 {
+		t.Error("workers should still exist")
+	}
+}
+
+// TestCleanupTempPublishBranch_CheckedOutBranch verifies that
+// CleanupTempPublishBranch can delete a _publish branch that is checked out
+// in the integration worktree by detaching HEAD first.
+func TestCleanupTempPublishBranch_CheckedOutBranch(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_publish_checked_out"
+	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	// Simulate a leaked _publish branch that's checked out in the integration worktree
+	baseSHA := gitRevParse(t, projectRoot, "HEAD")
+	publishBranch := fmt.Sprintf("maestro/%s/_publish", commandID)
+	if err := wm.gitRun("branch", publishBranch, baseSHA); err != nil {
+		t.Fatalf("create publish branch: %v", err)
+	}
+
+	// Checkout the _publish branch in the integration worktree
+	integrationPath := wm.integrationWorktreePath(commandID)
+	if err := wm.gitRunInDir(integrationPath, "checkout", publishBranch); err != nil {
+		t.Fatalf("checkout publish branch in integration worktree: %v", err)
+	}
+
+	// CleanupTempPublishBranch should handle this by detaching HEAD first
+	wm.CleanupTempPublishBranch(commandID)
+
+	// Verify the branch is gone
+	branchOut, err := wm.gitOutput("branch", "--list", publishBranch)
+	if err != nil {
+		t.Fatalf("list branches after cleanup: %v", err)
+	}
+	if strings.Contains(branchOut, "_publish") {
+		t.Errorf("publish branch should be deleted even when checked out, got: %q", branchOut)
+	}
+}
+
 // --- M2 Tests: ensureWithinProjectRoot in CleanupCommand/cleanupCommandUnlocked ---
 
 // TestCleanupCommand_PathGuardRejectsEscape verifies that CleanupCommand refuses

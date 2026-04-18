@@ -293,6 +293,15 @@ func (qh *QueueHandler) isAgentBusy(ctx context.Context, agentID string) (busy, 
 		if qh.undecidedTracker != nil {
 			count = qh.undecidedTracker.Increment(agentID)
 		}
+		if count >= undecidedPromoteThreshold {
+			// Sustained undecided across multiple scan cycles: promote to idle.
+			// The agent is very likely idle with stale busy-pattern output.
+			qh.log(LogLevelInfo, "busy_probe_undecided_promote_idle agent=%s count=%d", agentID, count)
+			if qh.undecidedTracker != nil {
+				qh.undecidedTracker.Reset(agentID)
+			}
+			return false, false
+		}
 		if count >= undecidedWarnThreshold {
 			qh.log(LogLevelWarn, "busy_probe_undecided_consecutive agent=%s count=%d scheduling_health_check", agentID, count)
 		}
@@ -352,6 +361,12 @@ type undecidedTracker struct {
 }
 
 const undecidedWarnThreshold = 3
+
+// undecidedPromoteThreshold is the number of consecutive undecided results
+// after which the agent is treated as idle. Sustained undecided across
+// multiple scan cycles (each with its own probe) strongly suggests the agent
+// is idle with stale busy-pattern output in the pane.
+const undecidedPromoteThreshold = 5
 
 func newUndecidedTracker() *undecidedTracker {
 	return &undecidedTracker{counts: make(map[string]int)}
