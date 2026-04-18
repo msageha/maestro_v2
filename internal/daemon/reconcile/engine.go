@@ -92,6 +92,8 @@ func (e *Engine) ExecuteDeferredNotifications(notifications []DeferredNotificati
 			err = e.notifyPlannerOfConflictResolution(n.CommandID, n.WorkerID)
 		case NotifyConflictEscalation:
 			err = e.notifyPlannerOfConflictEscalation(n.CommandID, n.WorkerID)
+		case NotifyPublishQuarantined:
+			err = e.notifyPlannerOfPublishQuarantined(n.CommandID, n.Reason)
 		default:
 			e.deps.DL.Logf(core.LogLevelWarn, "unknown deferred notification kind=%s command=%s", n.Kind, n.CommandID)
 			continue
@@ -226,6 +228,25 @@ func (e *Engine) notifyPlannerOfConflictEscalation(commandID, workerID string) e
 		})
 		if result.Error != nil {
 			e.deps.DL.Logf(core.LogLevelWarn, "R7 notify_planner_escalation command=%s worker=%s error=%v", commandID, workerID, result.Error)
+			return result.Error
+		}
+		return nil
+	})
+}
+
+func (e *Engine) notifyPlannerOfPublishQuarantined(commandID, reason string) error {
+	return e.withExecutor("R8", func(exec core.AgentExecutor) error {
+		message := fmt.Sprintf("[maestro] kind:publish_quarantined command_id:%s\npublish failures reached quarantine threshold — operator intervention required: %s",
+			commandID, reason)
+
+		result := exec.Execute(agent.ExecRequest{
+			AgentID:   "planner",
+			Message:   message,
+			Mode:      agent.ModeDeliver,
+			CommandID: commandID,
+		})
+		if result.Error != nil {
+			e.deps.DL.Logf(core.LogLevelWarn, "R8 notify_planner_publish_quarantined command=%s error=%v", commandID, result.Error)
 			return result.Error
 		}
 		return nil

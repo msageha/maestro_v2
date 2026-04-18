@@ -35,6 +35,7 @@ func (qh *QueueHandler) executePhaseASteps(s *scanState) {
 	qh.stepPreemptiveRenewal(s)
 	qh.stepDispatchOrRecovery(s)
 	qh.stepDependencyFailures(s)
+	qh.stepIdleStatusSync(s)
 }
 
 // stepAdmissionSync resets the admission controller and records in-flight tasks

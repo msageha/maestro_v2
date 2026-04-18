@@ -301,6 +301,11 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 
 	// No failures — check integration status to decide action
 	switch cmdState.Integration.Status {
+	case model.IntegrationStatusQuarantined:
+		// Quarantined integrations must not be published; operator intervention required.
+		qh.log(LogLevelWarn, "worktree_publish_quarantined command=%s reason=%s",
+			commandID, cmdState.Integration.QuarantineReason)
+		return publishes, cleanups
 	case model.IntegrationStatusMerged:
 		// Block publish if any worker had an unresolved auto-commit failure.
 		// Otherwise, partially-committed phases would publish unmerged worker changes.
@@ -314,7 +319,30 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 			CommandID:      commandID,
 			PublishMessage: commandContent,
 		})
-		qh.log(LogLevelInfo, "worktree_publish_collected command=%s", commandID)
+		qh.log(LogLevelInfo, "worktree_publish_collected command=%s status=%s", commandID, cmdState.Integration.Status)
+	case model.IntegrationStatusPublishFailed:
+		// Block publish if any worker had an unresolved auto-commit failure.
+		if len(cmdState.CommitFailedWorkers) > 0 {
+			qh.log(LogLevelWarn, "worktree_publish_blocked_commit_failed command=%s workers=%v",
+				commandID, cmdState.CommitFailedWorkers)
+			return publishes, cleanups
+		}
+		// Respect exponential backoff — do not re-queue until the backoff period has elapsed.
+		if cmdState.Integration.NextPublishRetryAt != "" {
+			nextRetry, err := time.Parse(time.RFC3339, cmdState.Integration.NextPublishRetryAt)
+			if err == nil && qh.clock.Now().Before(nextRetry) {
+				qh.log(LogLevelDebug, "worktree_publish_backoff command=%s next_retry_at=%s",
+					commandID, cmdState.Integration.NextPublishRetryAt)
+				return publishes, cleanups
+			}
+		}
+		// Backoff elapsed — retry publish
+		publishes = append(publishes, worktreePublishItem{
+			CommandID:      commandID,
+			PublishMessage: commandContent,
+		})
+		qh.log(LogLevelInfo, "worktree_publish_retry_collected command=%s retry_count=%d",
+			commandID, cmdState.Integration.PublishFailureCount)
 	case model.IntegrationStatusPublished:
 		// Already published — collect cleanup if configured and not yet cleaned
 		if qh.config.Worktree.CleanupOnSuccess {

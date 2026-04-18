@@ -58,6 +58,7 @@ func NewReconciler(
 		reconcile.R5Notification{},
 		reconcile.R6FillTimeout{},
 		reconcile.R7MergeConflict{},
+		reconcile.R8PublishFailed{},
 	)
 
 	return &Reconciler{engine: engine}

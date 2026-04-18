@@ -272,6 +272,19 @@ func (wm *Manager) attemptResolvedMerges(
 // is reverted to conflict (not active) to prevent infinite re-merge loops.
 // Caller must hold wm.mu.
 func (wm *Manager) tryMergeWorker(ctx context.Context, integrationPath string, ws *model.WorktreeState, commandID, now string) {
+	// Ensure the worker is in "resolving" status before attempting the merge.
+	// Workers may arrive here in "conflict" status (e.g. ResumeMerge collects
+	// both conflict and resolving workers). The valid transition path is:
+	//   conflict → resolving → integrated
+	// Attempting conflict → integrated directly is invalid per the state machine.
+	if ws.Status == model.WorktreeStatusConflict {
+		if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusResolving, now); tErr != nil {
+			wm.Log(core.LogLevelWarn, "resume_merge_resolving_transition command=%s worker=%s error=%v",
+				commandID, ws.WorkerID, tErr)
+			return
+		}
+	}
+
 	// Commit any uncommitted resolution changes in the worker's worktree
 	// before attempting the merge. When a worker resolves a conflict, their
 	// edits may remain uncommitted because the resolving→committed transition

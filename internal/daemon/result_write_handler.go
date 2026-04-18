@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
 )
@@ -163,6 +164,10 @@ func (h *ResultWriteAPI) handleResultWrite(req *uds.Request) *uds.Response {
 	// Best-effort writes (learnings, skill candidates) with lease epoch guard.
 	rejectionID := h.handleBestEffortWrites(params, resultID, resultStatus)
 
+	// Set agent status to idle now that the task result is committed.
+	// Best-effort: failure to update tmux status must not fail the result write.
+	setAgentIdle(params.Reporter, h.logFn)
+
 	// Phase C: Trigger scan (best effort dependency unblocking).
 	if h.triggerScan != nil {
 		h.triggerScan(h.ctx())
@@ -177,6 +182,19 @@ func (h *ResultWriteAPI) handleResultWrite(req *uds.Request) *uds.Response {
 			"learnings/skill_candidates rejected: lease revoked; recorded as " + rejectionID
 	}
 	return uds.SuccessResponse(respPayload)
+}
+
+// setAgentIdle sets the @status tmux user variable to "idle" for the given agent.
+// This is best-effort: errors are logged but do not propagate.
+func setAgentIdle(agentID string, logFn logFunc) {
+	paneTarget, err := tmux.FindPaneByAgentID(agentID)
+	if err != nil {
+		logFn(LogLevelDebug, "set_agent_idle pane_not_found agent=%s: %v", agentID, err)
+		return
+	}
+	if err := tmux.SetUserVar(paneTarget, "status", "idle"); err != nil {
+		logFn(LogLevelWarn, "set_agent_idle_failed agent=%s: %v", agentID, err)
+	}
 }
 
 type resultWriteError struct {

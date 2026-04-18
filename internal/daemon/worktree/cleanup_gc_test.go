@@ -503,3 +503,84 @@ func TestCleanupCommandUnlocked_PathGuardRejectsEscape(t *testing.T) {
 		t.Errorf("expected path guard error, got: %v", err)
 	}
 }
+
+// --- CleanupAll (shutdown cleanup) tests ---
+
+// TestCleanupAll_RemovesAllWorktrees verifies that CleanupAll removes all
+// worktrees regardless of their integration status (both active and terminal).
+func TestCleanupAll_RemovesAllWorktrees(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	// Create two commands
+	for _, cmdID := range []string{"cmd_cleanup_all_1", "cmd_cleanup_all_2"} {
+		if err := createForCommand(wm, cmdID, []string{"worker1"}); err != nil {
+			t.Fatalf("CreateForCommand(%s): %v", cmdID, err)
+		}
+	}
+
+	// Verify both exist
+	for _, cmdID := range []string{"cmd_cleanup_all_1", "cmd_cleanup_all_2"} {
+		if _, err := wm.GetCommandState(cmdID); err != nil {
+			t.Fatalf("GetCommandState(%s): %v", cmdID, err)
+		}
+	}
+
+	// CleanupAll with generous timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := wm.CleanupAll(ctx); err != nil {
+		t.Fatalf("CleanupAll: %v", err)
+	}
+
+	// Verify both state files are removed
+	stateDir := filepath.Join(wm.maestroDir, "state", "worktrees")
+	for _, cmdID := range []string{"cmd_cleanup_all_1", "cmd_cleanup_all_2"} {
+		statePath := filepath.Join(stateDir, cmdID+".yaml")
+		if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+			t.Errorf("state file for %s should be removed after CleanupAll", cmdID)
+		}
+	}
+}
+
+// TestCleanupAll_EmptyStateDir is a no-op when no worktrees exist.
+func TestCleanupAll_EmptyStateDir(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := wm.CleanupAll(ctx); err != nil {
+		t.Fatalf("CleanupAll on empty state: %v", err)
+	}
+}
+
+// TestCleanupAll_RespectsContextCancellation verifies that CleanupAll stops
+// processing when the context is cancelled.
+func TestCleanupAll_RespectsContextCancellation(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	// Create multiple commands
+	for i := 0; i < 3; i++ {
+		cmdID := fmt.Sprintf("cmd_cancel_%d", i)
+		if err := createForCommand(wm, cmdID, []string{"worker1"}); err != nil {
+			t.Fatalf("CreateForCommand(%s): %v", cmdID, err)
+		}
+	}
+
+	// Use an already-cancelled context
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := wm.CleanupAll(ctx)
+	if err == nil {
+		t.Fatal("expected context error, got nil")
+	}
+	if !strings.Contains(err.Error(), "context canceled") {
+		t.Errorf("expected context canceled error, got: %v", err)
+	}
+}

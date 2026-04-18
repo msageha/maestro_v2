@@ -1,6 +1,7 @@
 package worktree
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,6 +59,86 @@ func (wm *Manager) CleanupCommand(commandID string) error {
 	wm.cmdLocks.Delete(commandID)
 
 	wm.Log(core.LogLevelInfo, "cleanup_complete command=%s", commandID)
+	return nil
+}
+
+// CleanupAll removes all worktrees and their branches for all commands.
+// Intended for daemon shutdown to prevent worktree accumulation across restarts.
+// Respects the provided context for timeout cancellation. Individual cleanup
+// failures are logged as warnings but do not prevent cleanup of remaining commands.
+func (wm *Manager) CleanupAll(ctx context.Context) error {
+	// Stage 1: snapshot all command states under lock
+	wm.mu.Lock()
+	stateDir := filepath.Join(wm.maestroDir, "state", "worktrees")
+	entries, err := os.ReadDir(stateDir)
+	if err != nil {
+		wm.mu.Unlock()
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("read worktree state dir: %w", err)
+	}
+
+	type target struct {
+		commandID string
+		state     *model.WorktreeCommandState
+	}
+	var targets []target
+	for _, entry := range entries {
+		if !strings.HasSuffix(entry.Name(), ".yaml") {
+			continue
+		}
+		commandID := strings.TrimSuffix(entry.Name(), ".yaml")
+		state, loadErr := wm.loadStateUnlocked(commandID)
+		if loadErr != nil {
+			wm.Log(core.LogLevelWarn, "shutdown_cleanup_load_state command=%s error=%v", commandID, loadErr)
+			continue
+		}
+		targets = append(targets, target{commandID: commandID, state: state})
+	}
+	wm.mu.Unlock()
+
+	if len(targets) == 0 {
+		return nil
+	}
+
+	wm.Log(core.LogLevelInfo, "shutdown_cleanup_start count=%d", len(targets))
+
+	// Stage 2: cleanup each command, checking context between operations
+	var cleaned, failed int
+	for _, t := range targets {
+		select {
+		case <-ctx.Done():
+			wm.Log(core.LogLevelWarn, "shutdown_cleanup_timeout cleaned=%d failed=%d remaining=%d",
+				cleaned, failed, len(targets)-cleaned-failed)
+			return ctx.Err()
+		default:
+		}
+
+		wm.mu.Lock()
+		errs := wm.cleanupCommandCore(t.commandID, t.state, false)
+		wm.mu.Unlock()
+
+		if len(errs) > 0 {
+			wm.Log(core.LogLevelWarn, "shutdown_cleanup_failed command=%s errors=%s",
+				t.commandID, strings.Join(errs, "; "))
+			failed++
+		} else {
+			wm.Log(core.LogLevelInfo, "shutdown_cleanup_done command=%s", t.commandID)
+			cleaned++
+		}
+
+		// Clean up per-command resolver lock (mirrors cleanupCommandUnlocked)
+		if v, ok := wm.cmdLocks.Load(t.commandID); ok {
+			mu, ok := v.(*sync.Mutex)
+			if ok && mu.TryLock() {
+				wm.cmdLocks.Delete(t.commandID)
+				mu.Unlock()
+			}
+		}
+	}
+
+	wm.Log(core.LogLevelInfo, "shutdown_cleanup_complete cleaned=%d failed=%d", cleaned, failed)
 	return nil
 }
 

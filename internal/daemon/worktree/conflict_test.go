@@ -135,13 +135,14 @@ func TestWorktreeIntegration_ConflictDetection(t *testing.T) {
 		t.Errorf("worker2 status after sync = %q, want %q (should remain conflict)", ws2After.Status, model.WorktreeStatusConflict)
 	}
 
-	// Verify worker1 was synced normally (status changed to active)
+	// Verify worker1 remains integrated (sync skips integrated workers to
+	// prevent incorrect status reversion from integrated back to active).
 	ws1After, err := getState(wm, "cmd_conflict", "worker1")
 	if err != nil {
 		t.Fatalf("GetState worker1 failed: %v", err)
 	}
-	if ws1After.Status != model.WorktreeStatusActive {
-		t.Errorf("worker1 status after sync = %q, want %q", ws1After.Status, model.WorktreeStatusActive)
+	if ws1After.Status != model.WorktreeStatusIntegrated {
+		t.Errorf("worker1 status after sync = %q, want %q", ws1After.Status, model.WorktreeStatusIntegrated)
 	}
 }
 
@@ -281,13 +282,14 @@ func TestWorktreeIntegration_DirtyWorktreeSkip(t *testing.T) {
 		t.Errorf("worker2 HEAD changed after sync (should have been skipped): %s → %s", w2HeadBefore, w2HeadAfter)
 	}
 
-	// Verify worker1 was synced normally
+	// Verify worker1 remains integrated (sync skips integrated workers to
+	// prevent incorrect status reversion from integrated back to active).
 	ws1After, err := getState(wm, "cmd_dirty", "worker1")
 	if err != nil {
 		t.Fatalf("GetState worker1 failed: %v", err)
 	}
-	if ws1After.Status != model.WorktreeStatusActive {
-		t.Errorf("worker1 status after sync = %q, want %q", ws1After.Status, model.WorktreeStatusActive)
+	if ws1After.Status != model.WorktreeStatusIntegrated {
+		t.Errorf("worker1 status after sync = %q, want %q", ws1After.Status, model.WorktreeStatusIntegrated)
 	}
 
 	// Verify worker2 status remains "created" (unchanged — skipped due to dirty)

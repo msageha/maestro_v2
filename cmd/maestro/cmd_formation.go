@@ -79,10 +79,13 @@ func runUp(args []string) error {
 	// `git worktree add`. If the project is not a git repo, or the base branch
 	// has no commits, every task fails before dispatch. Catch this up-front so
 	// users get a clear, actionable message instead of opaque dispatch errors.
-	projectRoot := filepath.Dir(maestroDir)
-	baseBranch := cfg.Worktree.EffectiveBaseBranch()
-	if err := precheckGitRepo(projectRoot, baseBranch); err != nil {
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro up: %v", err)}
+	// Only needed when worktree mode is enabled.
+	if cfg.Worktree.Enabled {
+		projectRoot := filepath.Dir(maestroDir)
+		baseBranch := cfg.Worktree.EffectiveBaseBranch()
+		if err := precheckGitRepo(projectRoot, baseBranch); err != nil {
+			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro up: %v", err)}
+		}
 	}
 
 	opts := formation.UpOptions{

@@ -136,6 +136,11 @@ func TestRunResolveConflict_FlagParsing(t *testing.T) {
 }
 
 func TestRunResolveConflict_PhaseIDValidation(t *testing.T) {
+	// Run in a temp directory without .maestro/ so that valid phase IDs
+	// hit the "missing .maestro dir" CLIError instead of attempting a
+	// daemon socket connection.
+	t.Chdir(t.TempDir())
+
 	tests := []struct {
 		name        string
 		phaseID     string

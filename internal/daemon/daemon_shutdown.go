@@ -81,6 +81,7 @@ func (d *Daemon) Shutdown() {
 			totalTimeout = model.DefaultShutdownTimeoutSec
 		}
 		totalDuration := time.Duration(totalTimeout) * time.Second
+		shutdownStart := time.Now()
 
 		// 1. Set advisory flag — spawners will skip new work.
 		// Hold egMu across the flag flip so any spawnTracked caller currently
@@ -159,6 +160,24 @@ func (d *Daemon) Shutdown() {
 				d.closeExecutors()
 				d.cleanup()
 				os.Exit(1)
+			}
+		}
+
+		// 5. Cleanup worktrees to prevent accumulation across restarts.
+		// Uses remaining shutdown budget as timeout so the total shutdown
+		// stays within shutdown_timeout_sec. Failures are logged but do not
+		// block shutdown.
+		if d.worktreeManager != nil {
+			remaining := totalDuration - time.Since(shutdownStart)
+			if remaining > time.Second {
+				d.log(LogLevelInfo, "shutdown worktree_cleanup_start budget=%s", remaining.Truncate(time.Millisecond))
+				wtCtx, wtCancel := context.WithTimeout(context.Background(), remaining)
+				if err := d.worktreeManager.CleanupAll(wtCtx); err != nil {
+					d.log(LogLevelWarn, "shutdown worktree_cleanup error=%v", err)
+				}
+				wtCancel()
+			} else {
+				d.log(LogLevelWarn, "shutdown worktree_cleanup_skipped no_time_remaining")
 			}
 		}
 

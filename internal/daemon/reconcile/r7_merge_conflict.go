@@ -58,7 +58,8 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 				return
 			}
 
-			if state.Integration.Status != model.IntegrationStatusConflict {
+			if state.Integration.Status != model.IntegrationStatusConflict &&
+				state.Integration.Status != model.IntegrationStatusPartialMerge {
 				return
 			}
 

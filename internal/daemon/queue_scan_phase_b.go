@@ -275,7 +275,8 @@ func (qh *QueueHandler) stepPublishWorktrees(ctx context.Context, pa *phaseAResu
 		pr := worktreePublishResult{Item: item}
 		if qh.worktreeManager != nil {
 			cmdState, err := qh.worktreeManager.GetCommandState(item.CommandID)
-			if err != nil || cmdState.Integration.Status != model.IntegrationStatusMerged {
+			if err != nil || (cmdState.Integration.Status != model.IntegrationStatusMerged &&
+				cmdState.Integration.Status != model.IntegrationStatusPublishFailed) {
 				qh.log(LogLevelInfo, "worktree_publish_skip_stale command=%s status=%v err=%v",
 					item.CommandID, func() string {
 						if cmdState != nil {
@@ -283,7 +284,7 @@ func (qh *QueueHandler) stepPublishWorktrees(ctx context.Context, pa *phaseAResu
 						}
 						return "unknown"
 					}(), err)
-				pr.Error = fmt.Errorf("integration status no longer merged")
+				pr.Error = fmt.Errorf("integration status not publishable")
 			} else {
 				pr.Error = qh.worktreeManager.PublishToBase(item.CommandID, item.PublishMessage)
 			}

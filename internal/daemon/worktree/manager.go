@@ -226,13 +226,24 @@ func (wm *Manager) EnsureWorkerWorktree(commandID, workerID string) error {
 	copy(origWorkers, state.Workers)
 	origUpdatedAt := state.UpdatedAt
 
-	// Validate persisted baseSHA before using it for git operations
-	if err := validateSHA(state.Integration.BaseSHA); err != nil {
-		return fmt.Errorf("persisted base SHA for %s: %w", commandID, err)
+	// Determine the base SHA for the new worker worktree.
+	// If the integration branch has commits from previous phases, use its
+	// current HEAD so that later-phase workers can see earlier work.
+	// Fall back to the persisted BaseSHA if rev-parse fails.
+	baseSHA := state.Integration.BaseSHA
+	if head, revErr := wm.gitOutput("rev-parse", state.Integration.Branch); revErr == nil {
+		head = strings.TrimSpace(head)
+		if validateSHA(head) == nil {
+			baseSHA = head
+		}
+	}
+
+	if err := validateSHA(baseSHA); err != nil {
+		return fmt.Errorf("base SHA for %s: %w", commandID, err)
 	}
 
 	// Add the worker to existing state
-	if err := wm.addWorkerWorktreeUnlocked(state, commandID, workerID, state.Integration.BaseSHA, now); err != nil {
+	if err := wm.addWorkerWorktreeUnlocked(state, commandID, workerID, baseSHA, now); err != nil {
 		return err
 	}
 

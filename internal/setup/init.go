@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -18,6 +19,9 @@ import (
 	atomicyaml "github.com/msageha/maestro_v2/internal/yaml"
 	"github.com/msageha/maestro_v2/templates"
 )
+
+// sanitizeProjectNameRe matches characters that are not alphanumeric, underscore, or hyphen.
+var sanitizeProjectNameRe = regexp.MustCompile(`[^A-Za-z0-9_-]+`)
 
 const maestroDir = ".maestro"
 
@@ -268,12 +272,37 @@ func generateConfig(projectDir, projectName string) (*model.Config, error) {
 	if projectName != "" {
 		cfg.Project.Name = projectName
 	} else {
-		cfg.Project.Name = filepath.Base(projectDir)
+		cfg.Project.Name = sanitizeProjectName(filepath.Base(projectDir))
 	}
 	cfg.Maestro.ProjectRoot = projectDir
 	cfg.Maestro.Created = time.Now().Format(time.RFC3339)
 
 	return &cfg, nil
+}
+
+// sanitizeProjectName converts a raw directory basename into a valid project
+// name that satisfies validate.ProjectName (alphanumeric start, only
+// alphanumeric/underscore/hyphen, max 64 chars). Characters like dots, spaces,
+// and other invalid chars are replaced with hyphens. Leading non-alphanumeric
+// characters are stripped. If the result is empty, falls back to "project".
+func sanitizeProjectName(raw string) string {
+	// Replace invalid characters with hyphens.
+	name := sanitizeProjectNameRe.ReplaceAllString(raw, "-")
+	// Trim leading/trailing hyphens and underscores.
+	name = strings.Trim(name, "-_")
+	// Strip leading non-alphanumeric characters (must start with [A-Za-z0-9]).
+	for len(name) > 0 && !((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= 'a' && name[0] <= 'z') || (name[0] >= '0' && name[0] <= '9')) {
+		name = name[1:]
+	}
+	// Truncate to 64 characters.
+	if len(name) > 64 {
+		name = name[:64]
+	}
+	// Fallback if empty after sanitization.
+	if name == "" {
+		name = "project"
+	}
+	return name
 }
 
 func writeYAMLAtomic(path string, v any) error {

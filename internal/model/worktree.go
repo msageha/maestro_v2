@@ -51,9 +51,10 @@ const (
 	IntegrationStatusPublishFailed IntegrationStatus = "publish_failed"
 	// IntegrationStatusFailed indicates the integration process failed.
 	IntegrationStatusFailed IntegrationStatus = "failed"
-	// IntegrationStatusQuarantined is a terminal state set when merge attempts
-	// have failed repeatedly (see mergeFailureQuarantineThreshold). Operator
-	// intervention via CLI is required to recover.
+	// IntegrationStatusQuarantined is a terminal state set when merge or publish
+	// attempts have failed repeatedly (see mergeFailureQuarantineThreshold /
+	// publishFailureQuarantineThreshold). Operator intervention via CLI is
+	// required to recover.
 	IntegrationStatusQuarantined IntegrationStatus = "quarantined"
 )
 
@@ -85,6 +86,13 @@ type IntegrationState struct {
 	QuarantinedAt string `yaml:"quarantined_at,omitempty"`
 	// QuarantineReason describes why the integration was quarantined.
 	QuarantineReason string `yaml:"quarantine_reason,omitempty"`
+	// PublishFailureCount counts consecutive publish attempts that failed.
+	// Reset on successful publish.
+	PublishFailureCount int `yaml:"publish_failure_count,omitempty"`
+	// NextPublishRetryAt is the earliest time the next publish retry is allowed (RFC3339).
+	// Set by recordPublishFailure with exponential backoff. Cleared on successful publish
+	// or quarantine.
+	NextPublishRetryAt string `yaml:"next_publish_retry_at,omitempty"`
 	// StallSignaled is set once a worktree_stalled planner signal has been
 	// emitted for this command, to prevent re-emission on every scan.
 	StallSignaled bool `yaml:"stall_signaled,omitempty"`

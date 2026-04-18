@@ -18,6 +18,20 @@ import (
 // Manual operator intervention is required to recover from quarantine.
 const mergeFailureQuarantineThreshold = 3
 
+// publishFailureQuarantineThreshold is the number of consecutive publish
+// failures after which the integration is quarantined. Higher than merge
+// because publish failures are more likely to be transient (ref race, dirty
+// root, temporary git issue).
+const publishFailureQuarantineThreshold = 5
+
+// Exponential backoff parameters for publish retries. The sequence with
+// default scan interval (10s) is: 10s, 20s, 40s, 80s, 160s (then quarantine).
+const (
+	publishRetryInitialBackoff = 10 * time.Second
+	publishRetryMaxBackoff     = 5 * time.Minute
+	publishRetryMultiplier     = 2
+)
+
 // errIntegrationQuarantined is returned when MergeToIntegration is called on an
 // integration that has been quarantined due to repeated unrecoverable failures.
 // Callers must surface this to operators rather than retrying.
@@ -40,6 +54,46 @@ func (wm *Manager) recordMergeFailure(state *model.WorktreeCommandState, reason 
 		return nil
 	}
 	return wm.setIntegrationStatus(state, model.IntegrationStatusFailed, now)
+}
+
+// recordPublishFailure increments the publish failure counter, sets an
+// exponential backoff for the next retry, and transitions to
+// IntegrationStatusQuarantined when the threshold is reached.
+// Callers should invoke saveState afterwards to persist the change.
+func (wm *Manager) recordPublishFailure(state *model.WorktreeCommandState, reason string, now string) error {
+	state.Integration.PublishFailureCount++
+	if state.Integration.PublishFailureCount >= publishFailureQuarantineThreshold {
+		if err := wm.setIntegrationStatus(state, model.IntegrationStatusQuarantined, now); err != nil {
+			return err
+		}
+		state.Integration.QuarantinedAt = now
+		state.Integration.QuarantineReason = fmt.Sprintf("publish: %s (failure_count=%d)", reason, state.Integration.PublishFailureCount)
+		state.Integration.NextPublishRetryAt = ""
+		wm.Log(core.LogLevelError, "integration_quarantined_publish command=%s reason=%s count=%d",
+			state.CommandID, reason, state.Integration.PublishFailureCount)
+		return nil
+	}
+
+	// Calculate exponential backoff: initial * multiplier^(count-1), capped at max.
+	backoff := publishRetryInitialBackoff
+	for i := 1; i < state.Integration.PublishFailureCount; i++ {
+		backoff *= time.Duration(publishRetryMultiplier)
+		if backoff > publishRetryMaxBackoff {
+			backoff = publishRetryMaxBackoff
+			break
+		}
+	}
+
+	nowTime, err := time.Parse(time.RFC3339, now)
+	if err != nil {
+		// Fallback: use initial backoff from current time if parse fails.
+		nowTime = wm.clock.Now().UTC()
+	}
+	state.Integration.NextPublishRetryAt = nowTime.Add(backoff).UTC().Format(time.RFC3339)
+
+	wm.Log(core.LogLevelWarn, "publish_failure_recorded command=%s count=%d next_retry_at=%s",
+		state.CommandID, state.Integration.PublishFailureCount, state.Integration.NextPublishRetryAt)
+	return wm.setIntegrationStatus(state, model.IntegrationStatusPublishFailed, now)
 }
 
 // mergeWorkerOutcome captures the result of merging a single worker branch.
@@ -475,6 +529,23 @@ func (wm *Manager) SyncFromIntegration(commandID string, workerIDs []string) err
 			continue
 		}
 
+		// Skip workers that should not be synced back to active:
+		// - integrated/published: changes already in integration branch;
+		//   reverting to active would lose post-merge progress
+		// - resolving: in conflict-resolution pipeline (same rationale as conflict skip)
+		// - failed: not syncable (failed→active is not a valid transition)
+		// - cleanup_done/cleanup_failed: terminal states
+		if ws.Status == model.WorktreeStatusIntegrated ||
+			ws.Status == model.WorktreeStatusPublished ||
+			ws.Status == model.WorktreeStatusResolving ||
+			ws.Status == model.WorktreeStatusFailed ||
+			ws.Status == model.WorktreeStatusCleanupDone ||
+			ws.Status == model.WorktreeStatusCleanupFailed {
+			wm.Log(core.LogLevelDebug, "sync_skip_non_syncable command=%s worker=%s status=%s",
+				commandID, workerID, ws.Status)
+			continue
+		}
+
 		// M3: Skip dirty worktrees (uncommitted changes)
 		statusOut, statusErr := wm.gitOutputInDir(ws.Path, "status", "--porcelain")
 		if statusErr == nil && strings.TrimSpace(statusOut) != "" {
@@ -596,7 +667,7 @@ func (wm *Manager) PublishToBase(commandID string, publishMessage string) (retur
 	// because the status is no longer "publishing" when they return.
 	defer func() {
 		if returnErr != nil && state.Integration.Status == model.IntegrationStatusPublishing {
-			if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusPublishFailed, now); tErr != nil {
+			if tErr := wm.recordPublishFailure(state, returnErr.Error(), now); tErr != nil {
 				wm.Log(core.LogLevelWarn, "publish_failed_transition command=%s error=%v", commandID, tErr)
 			}
 			state.UpdatedAt = now
@@ -722,7 +793,7 @@ func (wm *Manager) performPublishMerge(
 	// If baseBranch is checked out, we'll need to reset the working tree after update-ref.
 	// Check for uncommitted changes BEFORE update-ref to avoid data loss.
 	if baseBranchCheckedOut {
-		statusOut, err := wm.gitOutput("status", "--porcelain")
+		statusOut, err := wm.gitOutput("status", "--porcelain", "--untracked-files=no")
 		if err != nil {
 			wm.deleteTempBranch(tempBranch)
 			return "", false, fmt.Errorf("publish dirty check failed: %w", err)
@@ -814,6 +885,9 @@ func (wm *Manager) finalizePublishState(state *model.WorktreeCommandState, comma
 	if err := wm.setIntegrationStatus(state, model.IntegrationStatusPublished, now); err != nil {
 		return err
 	}
+	// Reset publish failure tracking on successful publish.
+	state.Integration.PublishFailureCount = 0
+	state.Integration.NextPublishRetryAt = ""
 	state.UpdatedAt = now
 
 	// Mark only integrated workers as published; preserve conflict/failed statuses

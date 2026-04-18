@@ -24,6 +24,8 @@ const (
 	PatternR6 RepairPatternID = "R6"
 	// PatternR7 identifies repairs produced by the R7 merge conflict reconciler.
 	PatternR7 RepairPatternID = "R7"
+	// PatternR8 identifies repairs produced by the R8 publish failed reconciler.
+	PatternR8 RepairPatternID = "R8"
 )
 
 // NotificationKind identifies the type of deferred Planner notification.
@@ -40,6 +42,9 @@ const (
 	NotifyConflictResolution NotificationKind = "conflict_resolution"
 	// NotifyConflictEscalation signals the planner that conflict resolution attempts are exhausted.
 	NotifyConflictEscalation NotificationKind = "conflict_escalation"
+	// NotifyPublishQuarantined signals the planner that publish failures have
+	// reached the quarantine threshold and operator intervention is required.
+	NotifyPublishQuarantined NotificationKind = "publish_quarantined"
 )
 
 // Repair describes a single repair action performed by a reconciliation pattern.

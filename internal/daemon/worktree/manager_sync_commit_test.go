@@ -213,8 +213,11 @@ func TestPublishToBase_RejectsUncommittedChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Create an uncommitted change in projectRoot
-	if err := os.WriteFile(filepath.Join(projectRoot, "dirty.txt"), []byte("dirty"), 0644); err != nil {
+	// Create an uncommitted change in projectRoot by modifying a tracked file.
+	// Note: untracked files are intentionally ignored by the dirty check
+	// (--untracked-files=no) because git reset --hard does not remove them.
+	readmePath := filepath.Join(projectRoot, "README.md")
+	if err := os.WriteFile(readmePath, []byte("modified content"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
