@@ -67,6 +67,23 @@ func (e *planValidationError) FormatStderr() string {
 	return fmt.Sprintf("error: %s\n", e.Msg)
 }
 
+// worktreeNotPublishedError indicates that plan completion was attempted
+// before the worktree integration branch was published. This is a distinct
+// type so Complete() can handle it as a deferral rather than a hard error.
+type worktreeNotPublishedError struct {
+	IntegrationStatus string
+}
+
+// Error returns a descriptive message including the current integration status.
+func (e *worktreeNotPublishedError) Error() string {
+	return fmt.Sprintf("cannot complete command: worktree integration status is '%s', expected 'published'", e.IntegrationStatus)
+}
+
+// FormatStderr returns the error formatted for stderr output.
+func (e *worktreeNotPublishedError) FormatStderr() string {
+	return fmt.Sprintf("error: %s\n", e.Error())
+}
+
 // ActionRequiredError indicates that the plan cannot complete because
 // a specific agent action is required first. Provides structured guidance
 // that LLM agents can parse to determine their next action.

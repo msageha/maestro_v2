@@ -795,3 +795,238 @@ func TestAddTask_TargetPhase_AllTerminal(t *testing.T) {
 		t.Errorf("task %s not in phase1 (target); phase1 TaskIDs: %v", result.TaskID, state.Phases[0].TaskIDs)
 	}
 }
+
+func TestAddTask_TargetWorkerID_FallbackToWorkerPhase(t *testing.T) {
+	// Scenario: conflict resolution task is injected with TargetWorkerID="worker1"
+	// but no TargetPhase and no BlockedBy. The worker has an existing task in
+	// phase2 (parallel-edit). The new task should land in phase2, not phase1 (setup).
+	maestroDir := setupMaestroDir(t)
+	commandID := "cmd_0000000060_aabbccdd"
+	taskID1 := "task_0000000060_11111111"
+	taskID2 := "task_0000000060_22222222"
+	phase1ID := "phase_001"
+	phase2ID := "phase_002"
+
+	state := &model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanVersion:   1,
+		PlanStatus:    model.PlanStatusSealed,
+		CompletionPolicy: model.CompletionPolicy{
+			Mode:                    "all_required_completed",
+			OnRequiredFailed:        "fail_command",
+			OnRequiredCancelled:     "cancel_command",
+			OnOptionalFailed:        "ignore",
+			DependencyFailurePolicy: "cancel_dependents",
+		},
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 2,
+			RequiredTaskIDs:   []string{taskID1, taskID2},
+			OptionalTaskIDs:   []string{},
+			TaskDependencies: map[string][]string{
+				taskID1: {},
+				taskID2: {taskID1},
+			},
+			TaskStates: map[string]model.Status{
+				taskID1: model.StatusCompleted,
+				taskID2: model.StatusInProgress,
+			},
+			CancelledReasons: make(map[string]string),
+			AppliedResultIDs: make(map[string]string),
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: phase1ID,
+					Name:    "setup",
+					Type:    "concrete",
+					Status:  model.PhaseStatusCompleted,
+					TaskIDs: []string{taskID1},
+				},
+				{
+					PhaseID: phase2ID,
+					Name:    "parallel-edit",
+					Type:    "concrete",
+					Status:  model.PhaseStatusActive,
+					TaskIDs: []string{taskID2},
+				},
+			},
+		},
+		RetryTracking: model.RetryTracking{
+			RetryLineage: make(map[string]string),
+		},
+		CreatedAt: "2025-01-01T00:00:00Z",
+		UpdatedAt: "2025-01-01T00:00:00Z",
+	}
+
+	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	// Write worker1 queue with taskID2 assigned to it (belongs to phase2)
+	tq := model.TaskQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_task",
+		Tasks: []model.Task{
+			{
+				ID:        taskID2,
+				CommandID: commandID,
+				Purpose:   "edit files",
+				Content:   "edit some files",
+				Status:    model.StatusInProgress,
+				CreatedAt: "2025-01-01T00:00:00Z",
+				UpdatedAt: "2025-01-01T00:00:00Z",
+			},
+		},
+	}
+	queueFile := filepath.Join(maestroDir, "queue", "worker1.yaml")
+	if err := yamlutil.AtomicWrite(queueFile, tq); err != nil {
+		t.Fatalf("write worker1 queue: %v", err)
+	}
+
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	result, err := AddTask(InjectOptions{
+		CommandID:          commandID,
+		Purpose:            "resolve conflict for worker1",
+		Content:            "fix conflicting files",
+		AcceptanceCriteria: "build passes",
+		BloomLevel:         3,
+		Required:           true,
+		TargetWorkerID:     "worker1",
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err != nil {
+		t.Fatalf("AddTask returned error: %v", err)
+	}
+
+	sm := NewStateManager(maestroDir, lm)
+	reloaded, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+
+	// Task should be placed in phase2 (parallel-edit), not phase1 (setup)
+	foundInPhase2 := false
+	for _, tid := range reloaded.Phases[1].TaskIDs {
+		if tid == result.TaskID {
+			foundInPhase2 = true
+			break
+		}
+	}
+	if !foundInPhase2 {
+		t.Errorf("task %s not in phase2 (parallel-edit); phase2 TaskIDs: %v", result.TaskID, reloaded.Phases[1].TaskIDs)
+	}
+
+	// Task should NOT be in phase1 (setup)
+	for _, tid := range reloaded.Phases[0].TaskIDs {
+		if tid == result.TaskID {
+			t.Errorf("task %s unexpectedly in phase1 (setup); should be in phase2 (parallel-edit)", result.TaskID)
+		}
+	}
+}
+
+func TestAddTask_TargetWorkerID_NoQueueMatch_FallsBackToFirstNonTerminal(t *testing.T) {
+	// When TargetWorkerID is set but the worker has no tasks in the queue for
+	// this command, the fallback should behave like the original logic (first
+	// non-terminal phase).
+	maestroDir := setupMaestroDir(t)
+	commandID := "cmd_0000000061_aabbccdd"
+	taskID1 := "task_0000000061_11111111"
+	phase1ID := "phase_001"
+	phase2ID := "phase_002"
+
+	state := &model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanVersion:   1,
+		PlanStatus:    model.PlanStatusSealed,
+		CompletionPolicy: model.CompletionPolicy{
+			Mode:                    "all_required_completed",
+			OnRequiredFailed:        "fail_command",
+			OnRequiredCancelled:     "cancel_command",
+			OnOptionalFailed:        "ignore",
+			DependencyFailurePolicy: "cancel_dependents",
+		},
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 1,
+			RequiredTaskIDs:   []string{taskID1},
+			OptionalTaskIDs:   []string{},
+			TaskDependencies:  map[string][]string{taskID1: {}},
+			TaskStates:        map[string]model.Status{taskID1: model.StatusCompleted},
+			CancelledReasons:  make(map[string]string),
+			AppliedResultIDs:  make(map[string]string),
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				{
+					PhaseID: phase1ID,
+					Name:    "setup",
+					Type:    "concrete",
+					Status:  model.PhaseStatusCompleted,
+					TaskIDs: []string{taskID1},
+				},
+				{
+					PhaseID: phase2ID,
+					Name:    "parallel-edit",
+					Type:    "concrete",
+					Status:  model.PhaseStatusActive,
+					TaskIDs: []string{},
+				},
+			},
+		},
+		RetryTracking: model.RetryTracking{
+			RetryLineage: make(map[string]string),
+		},
+		CreatedAt: "2025-01-01T00:00:00Z",
+		UpdatedAt: "2025-01-01T00:00:00Z",
+	}
+
+	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	result, err := AddTask(InjectOptions{
+		CommandID:          commandID,
+		Purpose:            "resolve conflict for worker2",
+		Content:            "fix conflicting files",
+		AcceptanceCriteria: "build passes",
+		BloomLevel:         3,
+		Required:           true,
+		TargetWorkerID:     "worker2",
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err != nil {
+		t.Fatalf("AddTask returned error: %v", err)
+	}
+
+	sm := NewStateManager(maestroDir, lm)
+	reloaded, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+
+	// phase2 is the first non-terminal phase (active), so fallback should place here
+	foundInPhase2 := false
+	for _, tid := range reloaded.Phases[1].TaskIDs {
+		if tid == result.TaskID {
+			foundInPhase2 = true
+			break
+		}
+	}
+	if !foundInPhase2 {
+		t.Errorf("task %s not in phase2 (first non-terminal); phase2 TaskIDs: %v", result.TaskID, reloaded.Phases[1].TaskIDs)
+	}
+}

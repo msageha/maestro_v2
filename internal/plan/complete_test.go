@@ -827,7 +827,7 @@ func writeWorktreeState(t *testing.T, maestroDir, commandID string, integrationS
 	}
 }
 
-func TestComplete_WorktreeEnabled_PartialMerge_Rejected(t *testing.T) {
+func TestComplete_WorktreeEnabled_PartialMerge_Deferred(t *testing.T) {
 	commandID := "cmd_0000000050_aabbccdd"
 	taskID1 := "task_0000000050_11111111"
 
@@ -842,21 +842,29 @@ func TestComplete_WorktreeEnabled_PartialMerge_Rejected(t *testing.T) {
 
 	writeWorktreeState(t, maestroDir, commandID, model.IntegrationStatusPartialMerge)
 
-	_, err := Complete(CompleteOptions{
+	result, err := Complete(CompleteOptions{
 		CommandID:  commandID,
-		Summary:    "should be rejected",
+		Summary:    "should be deferred",
 		MaestroDir: maestroDir,
 		Config:     cfg,
 		LockMap:    lock.NewMutexMap(),
 	})
-	if err == nil {
-		t.Fatal("Complete returned nil error, want error for partial_merge worktree status")
+	if err != nil {
+		t.Fatalf("Complete returned error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "partial_merge") {
-		t.Errorf("error = %q, want to contain %q", err.Error(), "partial_merge")
+	if result.Status != "deferred_publish" {
+		t.Errorf("Status = %q, want %q", result.Status, "deferred_publish")
 	}
-	if !strings.Contains(err.Error(), "published") {
-		t.Errorf("error = %q, want to contain %q", err.Error(), "published")
+	// Verify deferred intent was written
+	dc, err := ReadDeferredComplete(maestroDir, commandID)
+	if err != nil {
+		t.Fatalf("ReadDeferredComplete error: %v", err)
+	}
+	if dc == nil {
+		t.Fatal("expected deferred complete intent to be written")
+	}
+	if dc.Summary != "should be deferred" {
+		t.Errorf("deferred summary = %q, want %q", dc.Summary, "should be deferred")
 	}
 }
 
@@ -1045,5 +1053,161 @@ func TestComplete_WorktreeEnabled_Published_NoFailedWorkers_Allowed(t *testing.T
 	}
 	if result.Status != string(model.PlanStatusCompleted) {
 		t.Errorf("Status = %q, want %q", result.Status, model.PlanStatusCompleted)
+	}
+}
+
+// TestCompleteDeferredPublish_FullFlow tests the deferred completion flow:
+// 1. plan complete before publish → deferred_publish status
+// 2. worktree publishes
+// 3. CompleteDeferredPublish → succeeds
+func TestCompleteDeferredPublish_FullFlow(t *testing.T) {
+	commandID := "cmd_0000000060_aabbccdd"
+	taskID1 := "task_0000000060_11111111"
+
+	taskStates := map[string]model.Status{
+		taskID1: model.StatusCompleted,
+	}
+	requiredIDs := []string{taskID1}
+
+	maestroDir := setupCompleteTest(t, commandID, taskStates, requiredIDs)
+	cfg := testConfig()
+	cfg.Worktree.Enabled = true
+	lm := lock.NewMutexMap()
+
+	// Step 1: worktree not yet published → deferred
+	writeWorktreeState(t, maestroDir, commandID, model.IntegrationStatusMerged)
+
+	result, err := Complete(CompleteOptions{
+		CommandID:  commandID,
+		Summary:    "planner summary",
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lm,
+	})
+	if err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+	if result.Status != "deferred_publish" {
+		t.Fatalf("Status = %q, want deferred_publish", result.Status)
+	}
+
+	// Verify state is still sealed (not terminal)
+	sm := NewStateManager(maestroDir, lm)
+	state, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.PlanStatus != model.PlanStatusSealed {
+		t.Errorf("plan_status = %q, want sealed (not terminal yet)", state.PlanStatus)
+	}
+
+	// Step 2: simulate publish completing
+	writeWorktreeState(t, maestroDir, commandID, model.IntegrationStatusPublished)
+
+	// Step 3: daemon auto-completes via CompleteDeferredPublish
+	result, err = CompleteDeferredPublish(CompleteOptions{
+		CommandID:  commandID,
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lm,
+	})
+	if err != nil {
+		t.Fatalf("CompleteDeferredPublish error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("CompleteDeferredPublish returned nil result (no deferred intent?)")
+	}
+	if result.Status != string(model.PlanStatusCompleted) {
+		t.Errorf("Status = %q, want completed", result.Status)
+	}
+
+	// Verify state is now terminal
+	state, err = sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.PlanStatus != model.PlanStatusCompleted {
+		t.Errorf("plan_status = %q, want completed", state.PlanStatus)
+	}
+
+	// Verify deferred intent was cleaned up
+	dc, err := ReadDeferredComplete(maestroDir, commandID)
+	if err != nil {
+		t.Fatalf("ReadDeferredComplete error: %v", err)
+	}
+	if dc != nil {
+		t.Error("deferred intent should be removed after completion")
+	}
+}
+
+// TestCompleteDeferredPublish_NoDeferredIntent verifies that CompleteDeferredPublish
+// returns nil when no deferred intent exists.
+func TestCompleteDeferredPublish_NoDeferredIntent(t *testing.T) {
+	commandID := "cmd_0000000061_aabbccdd"
+	maestroDir := setupMaestroDir(t)
+
+	result, err := CompleteDeferredPublish(CompleteOptions{
+		CommandID:  commandID,
+		MaestroDir: maestroDir,
+		Config:     testConfig(),
+		LockMap:    lock.NewMutexMap(),
+	})
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if result != nil {
+		t.Errorf("result = %+v, want nil (no deferred intent)", result)
+	}
+}
+
+// TestComplete_WorktreeDeferred_Idempotent verifies that calling Complete
+// multiple times before publish overwrites the deferred intent cleanly.
+func TestComplete_WorktreeDeferred_Idempotent(t *testing.T) {
+	commandID := "cmd_0000000062_aabbccdd"
+	taskID1 := "task_0000000062_11111111"
+
+	taskStates := map[string]model.Status{
+		taskID1: model.StatusCompleted,
+	}
+	requiredIDs := []string{taskID1}
+
+	maestroDir := setupCompleteTest(t, commandID, taskStates, requiredIDs)
+	cfg := testConfig()
+	cfg.Worktree.Enabled = true
+	lm := lock.NewMutexMap()
+
+	writeWorktreeState(t, maestroDir, commandID, model.IntegrationStatusMerged)
+
+	// First call: deferred
+	result, err := Complete(CompleteOptions{
+		CommandID:  commandID,
+		Summary:    "first summary",
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lm,
+	})
+	if err != nil || result.Status != "deferred_publish" {
+		t.Fatalf("first call: err=%v status=%q", err, result.Status)
+	}
+
+	// Second call with different summary: deferred (overwrites)
+	result, err = Complete(CompleteOptions{
+		CommandID:  commandID,
+		Summary:    "updated summary",
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lm,
+	})
+	if err != nil || result.Status != "deferred_publish" {
+		t.Fatalf("second call: err=%v status=%q", err, result.Status)
+	}
+
+	// Verify the stored summary is the latest
+	dc, err := ReadDeferredComplete(maestroDir, commandID)
+	if err != nil {
+		t.Fatalf("ReadDeferredComplete: %v", err)
+	}
+	if dc.Summary != "updated summary" {
+		t.Errorf("summary = %q, want %q", dc.Summary, "updated summary")
 	}
 }

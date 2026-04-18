@@ -261,10 +261,9 @@ func TestDetectBusyWithRetry_UndecidedRetriesThenPromotedToIdle(t *testing.T) {
 	if verdict != VerdictIdle {
 		t.Errorf("expected VerdictIdle (promoted) after soft retries, got %s", verdict)
 	}
-	// Calls: initial detectWithUndecidedRetry (1+2=3) +
-	//        soft retries × detectWithUndecidedRetry (2 × 3 = 6) = 9 total
-	immediateRound := 1 + undecidedImmediateRetries
-	expectedCalls := immediateRound + undecidedSoftRetries*immediateRound
+	// Calls: initial detectWithUndecidedRetry (1+undecidedImmediateRetries=1) +
+	//        soft retries × detectBusy (undecidedSoftRetries × 1 = 2) = 3 total
+	expectedCalls := (1 + undecidedImmediateRetries) + undecidedSoftRetries
 	if callCount != expectedCalls {
 		t.Errorf("expected %d captureFn calls, got %d", expectedCalls, callCount)
 	}

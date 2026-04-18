@@ -63,8 +63,9 @@ type Daemon struct {
 
 	handler           *QueueHandler
 	stateReader       StateManager
-	canComplete       CanCompleteFunc
-	phaseDiagnoser    PhaseDiagnoserFunc
+	canComplete            CanCompleteFunc
+	deferredPlanCompleter  DeferredPlanCompleterFunc
+	phaseDiagnoser         PhaseDiagnoserFunc
 	planExecutor      PlanExecutor
 	lockMap           *lock.MutexMap
 	qualityGateDaemon *QualityGateDaemon
@@ -144,6 +145,12 @@ func (d *Daemon) SetStateReader(reader StateManager) {
 // Must be called before Run() to avoid import cycles (daemon→plan→daemon).
 func (d *Daemon) SetCanComplete(f CanCompleteFunc) {
 	d.canComplete = f
+}
+
+// SetDeferredPlanCompleter wires the function that auto-completes a plan
+// after worktree publish succeeds. Must be called before Run().
+func (d *Daemon) SetDeferredPlanCompleter(f DeferredPlanCompleterFunc) {
+	d.deferredPlanCompleter = f
 }
 
 // SetPhaseDiagnoser wires the phase diagnosis function for completed phase analysis.

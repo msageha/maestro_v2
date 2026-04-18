@@ -243,6 +243,12 @@ var ErrExecutorInit = errors.New("agent executor initialization failed")
 // CanCompleteFunc is the signature for plan.CanComplete to avoid import cycles.
 type CanCompleteFunc func(state *model.CommandState) (model.PlanStatus, error)
 
+// DeferredPlanCompleterFunc attempts to complete a plan that was deferred pending
+// worktree publish. Returns (true, nil) if a deferred intent was found and
+// completion succeeded, (false, nil) if no deferred intent exists, or
+// (false, error) if completion failed.
+type DeferredPlanCompleterFunc func(commandID string) (bool, error)
+
 // PlanExecutor executes plan operations under the daemon's file lock.
 // Implementations are wired from main.go to avoid import cycles (plan -> daemon).
 type PlanExecutor interface {
