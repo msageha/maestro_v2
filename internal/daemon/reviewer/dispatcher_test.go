@@ -64,6 +64,16 @@ func TestShouldReview_Disabled(t *testing.T) {
 	}
 }
 
+func TestShouldReview_EmptyModels(t *testing.T) {
+	t.Parallel()
+	cfg := defaultConfig()
+	cfg.Models = nil
+	d := NewReviewDispatcher(cfg)
+	if d.ShouldReview(taskWithBloom(3)) {
+		t.Error("expected ShouldReview=false when no models configured")
+	}
+}
+
 func TestShouldReview_ConcurrentLimitReached(t *testing.T) {
 	t.Parallel()
 	cfg := defaultConfig()

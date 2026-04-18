@@ -166,6 +166,18 @@ func TestComplete_AllCompleted(t *testing.T) {
 	if crf.Results[0].Summary != "all tasks done" {
 		t.Errorf("command result Summary = %q, want %q", crf.Results[0].Summary, "all tasks done")
 	}
+
+	// Verify TaskStats are auto-populated
+	stats := crf.Results[0].TaskStats
+	if stats.Total != 2 {
+		t.Errorf("TaskStats.Total = %d, want 2", stats.Total)
+	}
+	if stats.Completed != 2 {
+		t.Errorf("TaskStats.Completed = %d, want 2", stats.Completed)
+	}
+	if stats.Failed != 0 {
+		t.Errorf("TaskStats.Failed = %d, want 0", stats.Failed)
+	}
 }
 
 func TestComplete_HasFailed(t *testing.T) {
@@ -223,6 +235,30 @@ func TestComplete_HasFailed(t *testing.T) {
 	}
 	if cq.Commands[0].Status != model.StatusFailed {
 		t.Errorf("queue command Status = %q, want %q", cq.Commands[0].Status, model.StatusFailed)
+	}
+
+	// Verify TaskStats reflect mixed results
+	cmdResultPath := filepath.Join(maestroDir, "results", "planner.yaml")
+	cmdResultData, err := os.ReadFile(cmdResultPath)
+	if err != nil {
+		t.Fatalf("read command result: %v", err)
+	}
+	var crf model.CommandResultFile
+	if err := yamlv3.Unmarshal(cmdResultData, &crf); err != nil {
+		t.Fatalf("unmarshal command result: %v", err)
+	}
+	if len(crf.Results) != 1 {
+		t.Fatalf("len(Results) = %d, want 1", len(crf.Results))
+	}
+	stats := crf.Results[0].TaskStats
+	if stats.Total != 2 {
+		t.Errorf("TaskStats.Total = %d, want 2", stats.Total)
+	}
+	if stats.Completed != 1 {
+		t.Errorf("TaskStats.Completed = %d, want 1", stats.Completed)
+	}
+	if stats.Failed != 1 {
+		t.Errorf("TaskStats.Failed = %d, want 1", stats.Failed)
 	}
 }
 
@@ -658,6 +694,10 @@ func TestComplete_H3_ConflictRecovery_StateFailedIntentCompleted(t *testing.T) {
 	}
 	if crf.Results[0].Notified {
 		t.Errorf("result.Notified = true, want false (reset for re-notification)")
+	}
+	// TaskStats should be populated even after reconciliation
+	if crf.Results[0].TaskStats.Total != 1 {
+		t.Errorf("reconciled TaskStats.Total = %d, want 1", crf.Results[0].TaskStats.Total)
 	}
 
 	// queue/planner.yaml: entry should be force-updated from completed → failed.

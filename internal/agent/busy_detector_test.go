@@ -60,20 +60,21 @@ func TestDetectBusy_NoPattern_StableContent_ReturnsIdle(t *testing.T) {
 	}
 }
 
-func TestDetectBusy_PatternMatched_StableContent_ReturnsUndecided(t *testing.T) {
+func TestDetectBusy_PatternMatched_StableContent_ReturnsIdle(t *testing.T) {
+	// Stable content → idle, even when busy pattern matches stale output.
 	content := "Working on task..."
 	mock := &mockPaneIO{
 		currentCommand: "claude",
 		isShell:        false,
 		captureContent: content,
-		joinedContent:  []string{content, content}, // same hash but pattern matched
+		joinedContent:  []string{content, content}, // same hash, pattern matched but stable
 	}
 	busyRegex := regexp.MustCompile("Working|Thinking")
 	bd := newTestBusyDetector(mock, busyRegex, fastConfig())
 
 	verdict := bd.DetectBusy(context.Background(), "%0")
-	if verdict != VerdictUndecided {
-		t.Errorf("expected VerdictUndecided (pattern matched, stable), got %s", verdict)
+	if verdict != VerdictIdle {
+		t.Errorf("expected VerdictIdle (stable content, stale pattern), got %s", verdict)
 	}
 }
 
@@ -677,62 +678,43 @@ func TestDetectBusyWithRetry_AllRetriesFail_PromotedToIdle(t *testing.T) {
 // --- Soft Retry for VerdictUndecided ---
 
 func TestSoftRetryUndecided_ResolvesToIdle(t *testing.T) {
-	// Simulates: pattern matched + stable → Undecided initially,
-	// then on soft retry the pattern clears → Idle.
-	detectCount := 0
+	// With stable content, pattern match returns Idle directly (no soft retry).
+	// The stale busy pattern does not prevent idle detection.
 	busyRegex := regexp.MustCompile("Working|Thinking")
 	mock := &mockPaneIO{
 		currentCommand: "claude",
 		isShell:        false,
-		captureFn: func(paneTarget string, lastN int) (string, error) {
-			detectCount++
-			// First 3 calls (initial + immediate retries): pattern matches
-			if detectCount <= 1+undecidedImmediateRetries {
-				return "Working on task...", nil
-			}
-			// Soft retry: pattern no longer matches
-			return "❯ ", nil
-		},
-		joinedContent: []string{"stable-content", "stable-content"},
+		captureContent: "Working on task...",
+		joinedContent:  []string{"stable-content", "stable-content"},
 	}
 	bd := newTestBusyDetector(mock, busyRegex, fastConfig())
 
 	verdict := bd.DetectBusyWithRetry(context.Background(), "%0", "worker1")
 	if verdict != VerdictIdle {
-		t.Errorf("expected VerdictIdle after pattern clears on soft retry, got %s", verdict)
+		t.Errorf("expected VerdictIdle for stable content with stale pattern, got %s", verdict)
 	}
 }
 
-func TestSoftRetryUndecided_ResolvesToBusy(t *testing.T) {
-	// Simulates: undecided initially (pattern + stable), then on soft retry
-	// content starts changing → Busy.
-	detectCount := 0
+func TestSoftRetryUndecided_StableWithPattern_ReturnsIdleDirectly(t *testing.T) {
+	// When content is stable, pattern match returns Idle directly without
+	// entering the soft retry path, even if content would later change.
 	busyRegex := regexp.MustCompile("Working")
 	mock := &mockPaneIO{
 		currentCommand: "claude",
 		isShell:        false,
 		captureContent: "Working on task...",
-		joinedFn: func(paneTarget string, lastN int) (string, error) {
-			detectCount++
-			// First 6 calls (initial round 3 × 2 captures each): stable content
-			if detectCount <= 2*(1+undecidedImmediateRetries) {
-				return "Working on task...", nil
-			}
-			// Soft retry: content starts changing
-			return fmt.Sprintf("Working output %d", detectCount), nil
-		},
+		joinedContent:  []string{"Working on task...", "Working on task..."},
 	}
 	bd := newTestBusyDetector(mock, busyRegex, fastConfig())
 
 	verdict := bd.DetectBusyWithRetry(context.Background(), "%0", "worker1")
-	if verdict != VerdictBusy {
-		t.Errorf("expected VerdictBusy when content starts changing on soft retry, got %s", verdict)
+	if verdict != VerdictIdle {
+		t.Errorf("expected VerdictIdle for stable content with pattern, got %s", verdict)
 	}
 }
 
-func TestSoftRetryUndecided_PersistentUndecidedPromotedToIdle(t *testing.T) {
-	// Pattern matched + stable content persists through all soft retries
-	// → promoted to VerdictIdle.
+func TestSoftRetryUndecided_PersistentStableWithPattern_ReturnsIdle(t *testing.T) {
+	// Pattern matched + stable content returns Idle directly (no promotion needed).
 	busyRegex := regexp.MustCompile("Working")
 	mock := &mockPaneIO{
 		currentCommand: "claude",
@@ -744,28 +726,29 @@ func TestSoftRetryUndecided_PersistentUndecidedPromotedToIdle(t *testing.T) {
 
 	verdict := bd.DetectBusyWithRetry(context.Background(), "%0", "worker1")
 	if verdict != VerdictIdle {
-		t.Errorf("expected VerdictIdle (promoted) for persistent undecided, got %s", verdict)
+		t.Errorf("expected VerdictIdle for stable content with pattern, got %s", verdict)
 	}
 }
 
 func TestSoftRetryUndecided_ContextCancelled(t *testing.T) {
 	// Context cancelled during soft retry sleep → returns VerdictUndecided.
+	// Uses capture error to trigger undecided (pattern+stable now returns idle).
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
 
-	busyRegex := regexp.MustCompile("Working")
 	mock := &mockPaneIO{
 		currentCommand: "claude",
 		isShell:        false,
-		captureContent: "Working on task...",
-		joinedContent:  []string{"stable-content", "stable-content"},
+		captureFn: func(paneTarget string, lastN int) (string, error) {
+			return "", fmt.Errorf("persistent capture error")
+		},
 	}
 	cfg := busyDetectorConfig{
 		IdleStableSec:       0,
 		BusyCheckMaxRetries: 3,
 		BusyCheckInterval:   2, // soft retry interval = max(1, 2/2) = 1 second → ctx will cancel
 	}
-	bd := newTestBusyDetector(mock, busyRegex, cfg)
+	bd := newTestBusyDetector(mock, nil, cfg)
 
 	verdict := bd.DetectBusyWithRetry(ctx, "%0", "worker1")
 	if verdict != VerdictUndecided {

@@ -109,39 +109,41 @@ func (bd *busyDetector) detectBusy(ctx context.Context, paneTarget string, stabl
 	hashChanged := hashA != hashB
 
 	var verdict busyVerdict
-	switch {
-	case hashChanged:
+	if hashChanged {
 		verdict = VerdictBusy
-	case !patternMatched:
+	} else {
+		// Stable content → idle, regardless of pattern match.
+		// When content hasn't changed over the probe interval, any matching
+		// busy pattern is stale output from a previous agent turn — not
+		// evidence of current activity. This eliminates false undecided
+		// verdicts that previously caused delivery timeouts.
 		verdict = VerdictIdle
-	default:
-		verdict = VerdictUndecided
 	}
 
-	bd.log("busy_detection activity_probe hash_changed=%v verdict=%s",
-		hashChanged, verdict)
+	bd.log("busy_detection activity_probe hash_changed=%v pattern_hint=%s verdict=%s",
+		hashChanged, hintStr, verdict)
 	return verdict
 }
 
 // undecidedImmediateRetries is set to 0: each DetectBusy call includes an
 // IdleStableSec sleep for the activity probe, so "immediate" retries actually
 // take IdleStableSec seconds each — far from instant. The softRetryUndecided
-// mechanism handles both tmux error recovery and stale-pattern promotion
-// more efficiently using shorter activity probes (softRetryStableSec).
+// mechanism handles tmux error recovery more efficiently using shorter
+// activity probes (softRetryStableSec).
 const undecidedImmediateRetries = 0
 
 // undecidedSoftRetries is the number of soft retries when VerdictUndecided
-// persists after the initial probe. Each soft retry waits a short interval
-// (half of BusyCheckInterval, min 1s) before re-probing with a shorter
-// activity probe (softRetryStableSec instead of IdleStableSec), giving the
-// agent pane time to update its display during state transitions. If all soft
-// retries still return Undecided, the verdict is promoted to VerdictIdle.
+// persists after the initial probe (typically from tmux capture errors or
+// context cancellation). Each soft retry waits a short interval (half of
+// BusyCheckInterval, min 1s) before re-probing with a shorter activity probe
+// (softRetryStableSec instead of IdleStableSec). If all soft retries still
+// return Undecided, the verdict is promoted to VerdictIdle.
 const undecidedSoftRetries = 2
 
 // softRetryStableSec is the activity probe duration for soft retries.
-// Shorter than IdleStableSec because the initial probe already confirmed
-// content stability over the full interval; soft retries only need a quick
-// re-check. Bounded by IdleStableSec at runtime to respect test configurations.
+// Shorter than IdleStableSec since soft retries target error recovery
+// (transient tmux capture failures) rather than initial stability checks.
+// Bounded by IdleStableSec at runtime to respect test configurations.
 const softRetryStableSec = 1
 
 // detectWithUndecidedRetry runs DetectBusy and, if the result is
@@ -160,10 +162,10 @@ func (bd *busyDetector) detectWithUndecidedRetry(ctx context.Context, paneTarget
 // DetectBusyWithRetry runs busy detection with retry loops for both
 // VerdictUndecided and VerdictBusy.
 //
-// For VerdictUndecided: soft retries with a short interval (half of
-// BusyCheckInterval) to let pane output settle during state transitions.
+// For VerdictUndecided (from tmux errors or context cancellation):
+// soft retries with a short interval (half of BusyCheckInterval).
 // If all soft retries still yield Undecided, the verdict is promoted to
-// VerdictIdle (sustained stable content = likely idle with stale output).
+// VerdictIdle.
 //
 // For VerdictBusy: standard retry loop with BusyCheckInterval sleeps,
 // up to BusyCheckMaxRetries attempts.
@@ -206,11 +208,9 @@ func (bd *busyDetector) DetectBusyWithRetry(ctx context.Context, paneTarget, age
 }
 
 // softRetryUndecided performs soft retries for VerdictUndecided with a short
-// sleep between probes. Uses a shorter activity probe (softRetryStableSec)
-// since the initial probe already confirmed content stability. If all soft
-// retries still return Undecided, the verdict is promoted to VerdictIdle —
-// sustained stable content across multiple probes strongly indicates idle
-// with stale output in the pane.
+// sleep between probes. This handles transient tmux capture errors that cause
+// undecided verdicts. If all soft retries still return Undecided, the verdict
+// is promoted to VerdictIdle.
 func (bd *busyDetector) softRetryUndecided(ctx context.Context, paneTarget, agentID string) busyVerdict {
 	interval := bd.undecidedSoftRetryInterval()
 	// Use shorter activity probe; bounded by IdleStableSec for test configs.
