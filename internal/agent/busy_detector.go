@@ -120,6 +120,15 @@ func (bd *busyDetector) DetectBusy(ctx context.Context, paneTarget string) busyV
 // sleep delay, targeting transient tmux capture errors that resolve instantly.
 const undecidedImmediateRetries = 2
 
+// undecidedSoftRetries is the number of soft retries when VerdictUndecided
+// persists after immediate retries. Each soft retry waits a short interval
+// (half of BusyCheckInterval, min 1s) before re-probing, giving the agent
+// pane time to update its display during state transitions (e.g., awaiting_fill,
+// publish). If all soft retries still return Undecided (pattern matched + stable
+// content across multiple probes), the verdict is promoted to VerdictIdle —
+// sustained stable content strongly suggests the agent is idle with stale output.
+const undecidedSoftRetries = 2
+
 // detectWithUndecidedRetry runs DetectBusy and, if the result is
 // VerdictUndecided, retries up to undecidedImmediateRetries times with no
 // sleep delay (targeting transient tmux capture errors that resolve instantly).
@@ -133,20 +142,34 @@ func (bd *busyDetector) detectWithUndecidedRetry(ctx context.Context, paneTarget
 	return verdict
 }
 
-// DetectBusyWithRetry runs busy detection with a retry loop on VerdictBusy.
-// VerdictUndecided from transient errors gets up to undecidedImmediateRetries
-// immediate retries (no sleep) both on the initial detection and within each
-// busy-retry iteration, ensuring consistent handling. If all immediate retries
-// still yield Undecided, it is returned as-is.
+// DetectBusyWithRetry runs busy detection with retry loops for both
+// VerdictUndecided and VerdictBusy.
+//
+// For VerdictUndecided: soft retries with a short interval (half of
+// BusyCheckInterval) to let pane output settle during state transitions.
+// If all soft retries still yield Undecided, the verdict is promoted to
+// VerdictIdle (sustained stable content = likely idle with stale output).
+//
+// For VerdictBusy: standard retry loop with BusyCheckInterval sleeps,
+// up to BusyCheckMaxRetries attempts.
+//
 // agentID is used only for log messages.
 // Returns VerdictUndecided if ctx is cancelled during retries.
 func (bd *busyDetector) DetectBusyWithRetry(ctx context.Context, paneTarget, agentID string) busyVerdict {
 	verdict := bd.detectWithUndecidedRetry(ctx, paneTarget, agentID)
 
-	if verdict != VerdictBusy {
+	if verdict == VerdictIdle {
 		return verdict
 	}
 
+	// Soft retry for VerdictUndecided: short wait + re-probe.
+	// Pattern matched with stable content often resolves to idle after the
+	// pane refreshes during agent state transitions.
+	if verdict == VerdictUndecided {
+		return bd.softRetryUndecided(ctx, paneTarget, agentID)
+	}
+
+	// VerdictBusy: standard retry loop.
 	for i := 1; i <= bd.config.BusyCheckMaxRetries; i++ {
 		bd.log("busy_retry retry=%d/%d agent_id=%s verdict=%s",
 			i, bd.config.BusyCheckMaxRetries, agentID, verdict)
@@ -162,6 +185,38 @@ func (bd *busyDetector) DetectBusyWithRetry(ctx context.Context, paneTarget, age
 	}
 
 	return VerdictBusy
+}
+
+// softRetryUndecided performs soft retries for VerdictUndecided with a short
+// sleep between probes. If all soft retries still return Undecided, the verdict
+// is promoted to VerdictIdle — sustained stable content across multiple probes
+// spanning several seconds strongly indicates idle with stale output in the pane.
+func (bd *busyDetector) softRetryUndecided(ctx context.Context, paneTarget, agentID string) busyVerdict {
+	interval := bd.undecidedSoftRetryInterval()
+	for i := 0; i < undecidedSoftRetries; i++ {
+		bd.log("undecided_soft_retry retry=%d/%d agent_id=%s interval=%s",
+			i+1, undecidedSoftRetries, agentID, interval)
+		if err := sleepCtx(ctx, interval); err != nil {
+			bd.log("undecided_soft_retry sleep cancelled: %v", err)
+			return VerdictUndecided
+		}
+		verdict := bd.detectWithUndecidedRetry(ctx, paneTarget, agentID)
+		if verdict != VerdictUndecided {
+			return verdict
+		}
+	}
+	bd.log("undecided_promoted_to_idle agent_id=%s after_soft_retries=%d", agentID, undecidedSoftRetries)
+	return VerdictIdle
+}
+
+// undecidedSoftRetryInterval returns the sleep duration between soft retries.
+// Uses half of BusyCheckInterval with a minimum of 1 second.
+func (bd *busyDetector) undecidedSoftRetryInterval() time.Duration {
+	sec := bd.config.BusyCheckInterval / 2
+	if sec < 1 {
+		sec = 1
+	}
+	return time.Duration(sec) * time.Second
 }
 
 func (bd *busyDetector) log(format string, args ...any) {

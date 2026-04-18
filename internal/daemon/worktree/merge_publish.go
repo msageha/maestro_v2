@@ -96,6 +96,83 @@ func (wm *Manager) recordPublishFailure(state *model.WorktreeCommandState, reaso
 	return wm.setIntegrationStatus(state, model.IntegrationStatusPublishFailed, now)
 }
 
+// forwardMergeBaseToIntegration merges the current base branch (main) into the
+// integration branch so that subsequent publish (integration → base) succeeds
+// without conflict. This is called automatically at the start of PublishToBase.
+//
+// Returns nil if the forward-merge succeeds or is unnecessary (integration is
+// already up-to-date with base). On conflict, it collects the conflicting files,
+// stores them in state.Integration.PublishConflictFiles, aborts the merge, and
+// returns an error.
+// Caller must hold wm.mu.
+func (wm *Manager) forwardMergeBaseToIntegration(
+	state *model.WorktreeCommandState,
+	commandID, baseBranch, now string,
+) error {
+	integrationPath := wm.integrationWorktreePath(commandID)
+
+	// Check if forward-merge is needed by comparing the integration branch's
+	// merge-base with baseBranch to the current baseBranch HEAD.
+	baseSHA, err := wm.gitOutput("rev-parse", baseBranch)
+	if err != nil {
+		return fmt.Errorf("forward-merge: resolve base branch: %w", err)
+	}
+	baseSHA = strings.TrimSpace(baseSHA)
+
+	integrationSHA, err := wm.gitOutputInDir(integrationPath, "rev-parse", "HEAD")
+	if err != nil {
+		return fmt.Errorf("forward-merge: resolve integration HEAD: %w", err)
+	}
+	integrationSHA = strings.TrimSpace(integrationSHA)
+
+	mergeBaseSHA, err := wm.gitOutput("merge-base", baseSHA, integrationSHA)
+	if err != nil {
+		// merge-base can fail if there's no common ancestor (shouldn't happen
+		// in practice). Fall through to publish and let it handle the error.
+		wm.Log(core.LogLevelWarn, "forward_merge_base_check command=%s error=%v (skipping forward-merge)",
+			commandID, err)
+		return nil
+	}
+	mergeBaseSHA = strings.TrimSpace(mergeBaseSHA)
+
+	if mergeBaseSHA == baseSHA {
+		// Integration already includes base — no forward-merge needed.
+		return nil
+	}
+
+	wm.Log(core.LogLevelInfo, "forward_merge_base_to_integration command=%s base=%s integration=%s merge_base=%s",
+		commandID, baseSHA[:min(len(baseSHA), 8)], integrationSHA[:min(len(integrationSHA), 8)], mergeBaseSHA[:min(len(mergeBaseSHA), 8)])
+
+	// Attempt the forward-merge: merge baseBranch into integration.
+	mergeMsg := fmt.Sprintf("[maestro] forward-merge %s into integration for publish", baseBranch)
+	if err := wm.gitRunInDir(integrationPath, "merge", "--no-ff", "-m", mergeMsg, baseBranch); err != nil {
+		// Merge failed — likely a content conflict. Collect conflict files.
+		conflictFiles, cfErr := wm.getConflictFilesInDir(integrationPath)
+		if cfErr != nil {
+			wm.Log(core.LogLevelWarn, "forward_merge_conflict_files command=%s error=%v", commandID, cfErr)
+		}
+
+		// Abort the merge to restore clean state.
+		if abortErr := wm.gitRunInDir(integrationPath, "merge", "--abort"); abortErr != nil {
+			wm.Log(core.LogLevelWarn, "forward_merge_abort command=%s error=%v", commandID, abortErr)
+		}
+
+		// Store conflict files in state for signal emission.
+		state.Integration.PublishConflictFiles = conflictFiles
+		state.Integration.PublishConflictSignaled = false
+		state.UpdatedAt = now
+
+		wm.Log(core.LogLevelWarn, "forward_merge_conflict command=%s files=%v",
+			commandID, conflictFiles)
+		return fmt.Errorf("forward-merge %s into integration: conflict on files %v", baseBranch, conflictFiles)
+	}
+
+	// Forward-merge succeeded — clear any previous conflict files.
+	state.Integration.PublishConflictFiles = nil
+	wm.Log(core.LogLevelInfo, "forward_merge_succeeded command=%s", commandID)
+	return nil
+}
+
 // mergeWorkerOutcome captures the result of merging a single worker branch.
 type mergeWorkerOutcome struct {
 	merged          bool                 // worker was successfully merged
@@ -678,6 +755,23 @@ func (wm *Manager) PublishToBase(commandID string, publishMessage string) (retur
 	}()
 
 	baseBranch := wm.config.EffectiveBaseBranch()
+
+	// Pre-publish: forward-merge base into integration to prevent conflicts
+	// when base has advanced since integration was created. If forward-merge
+	// fails (content conflict), record the failure and return — the conflict
+	// info is stored in state for Planner signal emission.
+	if fmErr := wm.forwardMergeBaseToIntegration(state, commandID, baseBranch, now); fmErr != nil {
+		wm.Log(core.LogLevelWarn, "publish_forward_merge_failed command=%s error=%v", commandID, fmErr)
+		if tErr := wm.recordPublishFailure(state, "publish_forward_merge_conflict", now); tErr != nil {
+			wm.Log(core.LogLevelWarn, "publish_failure_transition command=%s error=%v", commandID, tErr)
+		}
+		state.UpdatedAt = now
+		if sErr := wm.saveState(commandID, state); sErr != nil {
+			wm.Log(core.LogLevelWarn, "publish_failure_save command=%s error=%v", commandID, sErr)
+		}
+		return fmErr
+	}
+
 	integrationPath := wm.integrationWorktreePath(commandID)
 
 	tempBranch, baseSHA, err := wm.createTempPublishBranch(commandID, baseBranch)
@@ -759,10 +853,15 @@ func (wm *Manager) performPublishMerge(
 			wm.Log(core.LogLevelWarn, "publish_merge_abort_failed command=%s error=%v", commandID, abortErr)
 		}
 		if checkoutErr := wm.gitRunInDir(integrationPath, "checkout", state.Integration.Branch); checkoutErr != nil {
-			// Checkout failed — branch state is indeterminate. Skip tempBranch
-			// deletion to avoid operating on an unexpected HEAD. The leaked
-			// tempBranch will be cleaned up by CleanupCommand/GC.
 			wm.Log(core.LogLevelWarn, "publish_checkout_failed command=%s branch=%s error=%v", commandID, state.Integration.Branch, checkoutErr)
+			// Best-effort cleanup: detach HEAD so the temp branch can be deleted.
+			// If this also fails, CleanupTempPublishBranch (quarantine path) or
+			// CleanupCommand/GC will handle it later.
+			if detachErr := wm.gitRunInDir(integrationPath, "checkout", "--detach"); detachErr == nil {
+				wm.deleteTempBranch(tempBranch)
+			} else {
+				wm.Log(core.LogLevelWarn, "publish_detach_failed command=%s error=%v", commandID, detachErr)
+			}
 			return "", false, fmt.Errorf("merge integration into %s: %w (checkout recovery also failed: %v)", baseBranch, err, checkoutErr)
 		}
 		wm.deleteTempBranch(tempBranch)
@@ -888,6 +987,8 @@ func (wm *Manager) finalizePublishState(state *model.WorktreeCommandState, comma
 	// Reset publish failure tracking on successful publish.
 	state.Integration.PublishFailureCount = 0
 	state.Integration.NextPublishRetryAt = ""
+	state.Integration.PublishConflictFiles = nil
+	state.Integration.PublishConflictSignaled = false
 	state.UpdatedAt = now
 
 	// Mark only integrated workers as published; preserve conflict/failed statuses

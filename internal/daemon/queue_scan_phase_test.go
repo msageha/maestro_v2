@@ -284,6 +284,69 @@ func TestCollectWorktreePublish_NoCleanupOnFailureDisabled(t *testing.T) {
 	}
 }
 
+// TestCollectWorktreePublish_QuarantinedNoPublishNoCleanup verifies that
+// quarantined integrations produce no publish and no cleanup items, and that
+// CleanupTempPublishBranch is called (best-effort) to clean up any leaked
+// _publish branch without removing worktrees.
+func TestCollectWorktreePublish_QuarantinedNoPublishNoCleanup(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{
+		Enabled:          true,
+		CleanupOnFailure: false,
+	})
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusQuarantined)
+	writeCommandState(t, maestroDir, "cmd1", map[string]model.Status{
+		"t1": model.StatusCompleted,
+	}, nil)
+
+	tqs := makeTaskQueues(map[string][]model.Task{
+		"worker1": {
+			{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
+		},
+	})
+
+	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", "", tqs)
+	if len(publishes) != 0 {
+		t.Errorf("expected 0 publish items for quarantined status, got %d", len(publishes))
+	}
+	if len(cleanups) != 0 {
+		t.Errorf("expected 0 full cleanup items for quarantined status, got %d", len(cleanups))
+	}
+}
+
+// TestCollectWorktreePublish_QuarantinedWithCleanupOnFailure verifies that
+// quarantined integrations do NOT trigger full worktree cleanup even when
+// cleanup_on_failure is true (quarantine preserves worktrees for inspection).
+func TestCollectWorktreePublish_QuarantinedWithCleanupOnFailure(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{
+		Enabled:          true,
+		CleanupOnFailure: true,
+	})
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusQuarantined)
+	writeCommandState(t, maestroDir, "cmd1", map[string]model.Status{
+		"t1": model.StatusCompleted,
+	}, nil)
+
+	tqs := makeTaskQueues(map[string][]model.Task{
+		"worker1": {
+			{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
+		},
+	})
+
+	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", "", tqs)
+	if len(publishes) != 0 {
+		t.Errorf("expected 0 publish items for quarantined status, got %d", len(publishes))
+	}
+	if len(cleanups) != 0 {
+		t.Errorf("expected 0 full cleanup items for quarantined status (worktrees preserved), got %d", len(cleanups))
+	}
+}
+
 func TestCollectWorktreePublish_SkipNotReady(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)

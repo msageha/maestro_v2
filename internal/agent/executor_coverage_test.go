@@ -837,7 +837,9 @@ func TestExecWithClear_ClearReadyTrue_BusyAfterClear(t *testing.T) {
 	}
 }
 
-// M1 supplement: clear_ready=true with VerdictUndecided returns sentinel error
+// M1 supplement: clear_ready=true with persistent VerdictUndecided → soft retry
+// fires, but context timeout triggers cancellation during the soft retry sleep,
+// causing VerdictUndecided to be returned (not promoted to idle).
 func TestExecWithClear_ClearReadyTrue_UndecidedAfterClear(t *testing.T) {
 	t.Parallel()
 	mock := newCovMock()
@@ -864,7 +866,11 @@ func TestExecWithClear_ClearReadyTrue_UndecidedAfterClear(t *testing.T) {
 	mock.isShellSeq = []bool{false, false}
 
 	exec, _ := newCovExecutor(mock)
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Use a short timeout so the context cancels during the soft retry sleep
+	// (undecidedSoftRetryInterval = 1s with BusyCheckInterval=0).
+	// The initial detectWithUndecidedRetry completes instantly (IdleStableSec=0),
+	// then the soft retry sleep of 1s is interrupted by the 500ms timeout.
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
 	defer cancel()
 
 	result := exec.execWithClear(ctx, ExecRequest{

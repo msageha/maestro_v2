@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -437,6 +438,71 @@ func TestIsAgentBusy_WithChecker_ResetsUndecided(t *testing.T) {
 
 	if qh.undecidedTracker.Count("worker1") != 0 {
 		t.Error("expected undecided count reset after definitive busy check")
+	}
+}
+
+// --- Undecided promote-to-idle tests ---
+
+// undecidedResultExecutor is a minimal AgentExecutor that always returns
+// ErrBusyUndecided, used for testing undecided promotion in isAgentBusy.
+type undecidedResultExecutor struct{}
+
+func (e *undecidedResultExecutor) Execute(_ agent.ExecRequest) agent.ExecResult {
+	return agent.ExecResult{
+		Success:   false,
+		Error:     agent.ErrBusyUndecided,
+		Retryable: true,
+	}
+}
+func (e *undecidedResultExecutor) Close() error { return nil }
+
+func TestIsAgentBusy_UndecidedPromoteToIdle(t *testing.T) {
+	t.Parallel()
+	qh := newDispatchTestQH(10)
+
+	// Pre-populate undecided count just below promote threshold
+	for i := 0; i < undecidedPromoteThreshold-1; i++ {
+		qh.undecidedTracker.Increment("worker1")
+	}
+
+	// Mock executor that always returns ErrBusyUndecided
+	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+		return &undecidedResultExecutor{}, nil
+	})
+
+	// This call should push count to promote threshold → return idle
+	busy, undecided := qh.isAgentBusy(context.Background(), "worker1")
+	if busy {
+		t.Error("expected not busy after undecided promotion")
+	}
+	if undecided {
+		t.Error("expected not undecided after promotion to idle")
+	}
+	// Tracker should be reset after promotion
+	if qh.undecidedTracker.Count("worker1") != 0 {
+		t.Error("expected undecided count reset after promotion")
+	}
+}
+
+func TestIsAgentBusy_UndecidedBelowPromoteThreshold(t *testing.T) {
+	t.Parallel()
+	qh := newDispatchTestQH(10)
+
+	// Mock executor that always returns ErrBusyUndecided
+	qh.execProvider.SetFactory(func(string, model.WatcherConfig, string) (AgentExecutor, error) {
+		return &undecidedResultExecutor{}, nil
+	})
+
+	// First call: count=1, below threshold → still undecided
+	busy, undecided := qh.isAgentBusy(context.Background(), "worker1")
+	if busy {
+		t.Error("expected not busy")
+	}
+	if !undecided {
+		t.Error("expected undecided when below promote threshold")
+	}
+	if qh.undecidedTracker.Count("worker1") != 1 {
+		t.Errorf("expected count 1, got %d", qh.undecidedTracker.Count("worker1"))
 	}
 }
 

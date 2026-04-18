@@ -204,4 +204,9 @@ type PlannerSignal struct {
 	// at the moment the conflict was detected. The resolver must echo this
 	// value back to confirm it is acting on the same generation.
 	ConflictGeneration string `yaml:"conflict_generation,omitempty"`
+	// ConflictType classifies the merge_conflict signal:
+	//   "task_merge_conflict" — worker → integration merge conflict (default/legacy)
+	//   "publish_conflict"    — integration → base (main) publish merge conflict
+	// Empty for non-conflict signals or legacy signals (treated as task_merge_conflict).
+	ConflictType string `yaml:"conflict_type,omitempty"`
 }

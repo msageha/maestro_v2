@@ -106,6 +106,30 @@ func TestRunPlanResumeMerge_FlagParsing(t *testing.T) {
 	}
 }
 
+func TestRunPlanRetryPublish_FlagParsing(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"missing command-id", []string{}},
+		{"invalid command-id", []string{"--command-id", "../bad"}},
+		{"unexpected arg", []string{"--command-id", "cmd_1", "extra"}},
+		{"unknown flag", []string{"--unknown"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := newCLIApp().runPlanRetryPublish(tt.args)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			var ce *CLIError
+			if !errors.As(err, &ce) {
+				t.Fatalf("expected CLIError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
 func TestRunResolveConflict_FlagParsing(t *testing.T) {
 	tests := []struct {
 		name string

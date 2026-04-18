@@ -902,16 +902,44 @@ func TestMarkPhaseMerged_DuplicatePhase(t *testing.T) {
 	}
 }
 
-// TestMarkPhaseMerged_NonExistentCommand tests that MarkPhaseMerged returns
-// an error for a non-existent command.
+// TestMarkPhaseMerged_NonExistentCommand tests that MarkPhaseMerged returns nil
+// for a non-existent command (state file absent = already cleaned up).
 func TestMarkPhaseMerged_NonExistentCommand(t *testing.T) {
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
 
 	err := wm.MarkPhaseMerged("nonexistent_command", "phase_001")
-	if err == nil {
-		t.Error("expected error for non-existent command")
+	if err != nil {
+		t.Errorf("expected nil for non-existent command (idempotent), got: %v", err)
+	}
+}
+
+// TestMarkPhaseMerged_AfterCleanup tests that MarkPhaseMerged returns nil
+// when the state file has been removed by CleanupCommand.
+func TestMarkPhaseMerged_AfterCleanup(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_cleanup_then_mark"
+	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand failed: %v", err)
+	}
+
+	// Verify state file exists
+	if err := wm.MarkPhaseMerged(commandID, "phase_001"); err != nil {
+		t.Fatalf("MarkPhaseMerged before cleanup failed: %v", err)
+	}
+
+	// Cleanup removes the state file
+	if err := wm.CleanupCommand(commandID); err != nil {
+		t.Fatalf("CleanupCommand failed: %v", err)
+	}
+
+	// MarkPhaseMerged after cleanup should succeed (idempotent)
+	if err := wm.MarkPhaseMerged(commandID, "phase_002"); err != nil {
+		t.Errorf("MarkPhaseMerged after cleanup should return nil, got: %v", err)
 	}
 }
 

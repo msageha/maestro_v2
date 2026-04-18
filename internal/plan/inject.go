@@ -24,6 +24,7 @@ type InjectOptions struct {
 	PersonaHint        string
 	SkillRefs          []string
 	TargetWorkerID     string
+	TargetPhase        string // phase ID to place the task in; overrides default fallback logic
 	IdempotencyKey     string
 	MaestroDir         string
 	Config             model.Config
@@ -135,9 +136,16 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 		state.TaskDependencies[newTaskID] = opts.BlockedBy
 	}
 
-	// Add to phase: if blocked_by references exist, use the first dependency's phase;
-	// otherwise, add to the current (first non-terminal) phase or phase 0.
-	if len(opts.BlockedBy) > 0 {
+	// Add to phase:
+	// 1. If TargetPhase is specified, place into that phase (conflict resolution use case).
+	// 2. If blocked_by references exist, use the first dependency's phase.
+	// 3. Otherwise, add to the current (first non-terminal) phase or phase 0.
+	if opts.TargetPhase != "" {
+		// TargetPhase is validated in validateInjectRequest, so PhaseIndex will always succeed here.
+		if phaseIdx, ok := state.PhaseIndex(opts.TargetPhase); ok {
+			state.Phases[phaseIdx].TaskIDs = append(state.Phases[phaseIdx].TaskIDs, newTaskID)
+		}
+	} else if len(opts.BlockedBy) > 0 {
 		if phase, phaseIdx := findPhaseForTask(state, opts.BlockedBy[0]); phase != nil {
 			state.Phases[phaseIdx].TaskIDs = append(state.Phases[phaseIdx].TaskIDs, newTaskID)
 		}
@@ -231,6 +239,13 @@ func validateInjectRequest(state *model.CommandState, opts InjectOptions) error 
 	for _, dep := range opts.BlockedBy {
 		if _, ok := state.TaskStates[dep]; !ok {
 			return &planValidationError{Msg: fmt.Sprintf("blocked_by task %s not found in command state", dep)}
+		}
+	}
+
+	// Validate target_phase exists in state
+	if opts.TargetPhase != "" {
+		if _, ok := state.PhaseIndex(opts.TargetPhase); !ok {
+			return &planValidationError{Msg: fmt.Sprintf("target_phase %s not found in command state", opts.TargetPhase)}
 		}
 	}
 

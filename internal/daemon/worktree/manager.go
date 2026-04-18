@@ -508,7 +508,32 @@ func (wm *Manager) MarkIntegrationStallSignaled(commandID string) error {
 	return nil
 }
 
+// MarkPublishConflictSignaled sets the PublishConflictSignaled flag so the
+// publish_conflict planner signal is emitted only once per conflict event.
+func (wm *Manager) MarkPublishConflictSignaled(commandID string) error {
+	if err := validateIDs(commandID); err != nil {
+		return err
+	}
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	state, err := wm.loadState(commandID)
+	if err != nil {
+		return fmt.Errorf("load state: %w", err)
+	}
+	if state.Integration.PublishConflictSignaled {
+		return nil
+	}
+	state.Integration.PublishConflictSignaled = true
+	state.UpdatedAt = wm.clock.Now().UTC().Format(time.RFC3339)
+	if err := wm.saveState(commandID, state); err != nil {
+		return fmt.Errorf("save state: %w", err)
+	}
+	return nil
+}
+
 // MarkPhaseMerged records that a phase has been merged so it won't be re-merged.
+// Idempotent: returns nil if the state file has already been cleaned up.
 func (wm *Manager) MarkPhaseMerged(commandID, phaseID string) error {
 	if err := validateCommandAndPhaseIDs(commandID, phaseID); err != nil {
 		return err
@@ -518,6 +543,9 @@ func (wm *Manager) MarkPhaseMerged(commandID, phaseID string) error {
 
 	state, err := wm.loadState(commandID)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // state already cleaned up; nothing to record
+		}
 		return err
 	}
 

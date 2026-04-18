@@ -164,6 +164,7 @@ type WorktreeGitOps interface {
 	SyncFromIntegration(commandID string, workerIDs []string) error
 	PublishToBase(commandID string, publishMessage string) error
 	CleanupCommand(commandID string) error
+	CleanupTempPublishBranch(commandID string)
 	DispatchConflictResolution(commandID, phaseID, workerID, conflictGen string) error
 	GC() error
 }
@@ -179,6 +180,7 @@ type WorktreeStateManager interface {
 	MarkPhaseMerged(commandID, phaseID string) error
 	AddCommitFailedWorker(commandID, workerID string) error
 	RemoveCommitFailedWorker(commandID, workerID string) error
+	MarkPublishConflictSignaled(commandID string) error
 }
 
 // QueueWorktreeManager combines WorktreeGitOps and WorktreeStateManager for backward compatibility.

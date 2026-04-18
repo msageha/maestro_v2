@@ -59,7 +59,7 @@ func (a *cliApp) runPlanAddRetryTask(args []string) error {
 // runPlanAddTask injects a new task into an existing sealed plan.
 func (a *cliApp) runPlanAddTask(args []string) error {
 	cmd := NewCommand("maestro plan add-task", "maestro plan add-task --command-id <id> --purpose <text> --content <text> --acceptance-criteria <text> --bloom-level <n> [--blocked-by <task_id>]... [--required]")
-	var commandID, purpose, content, acceptanceCriteria, personaHint, workerID, idempotencyKey string
+	var commandID, purpose, content, acceptanceCriteria, personaHint, workerID, targetPhase, idempotencyKey string
 	var bloomLevel int
 	var required bool
 	var blockedBy, toolsHint, constraints, skillRefs stringSliceFlag
@@ -76,6 +76,7 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 	cmd.StringVar(&personaHint, "persona-hint", "", "Persona hint")
 	cmd.Var(&skillRefs, "skill-refs", "Skill reference (repeatable)")
 	cmd.StringVar(&workerID, "worker-id", "", "Target worker for task assignment (optional; defaults to least-loaded)")
+	cmd.StringVar(&targetPhase, "target-phase", "", "Phase ID to place the task in (optional; overrides default phase selection)")
 	cmd.StringVar(&idempotencyKey, "idempotency-key", "", "Idempotency key to prevent duplicate task injection on retry")
 
 	cmd.AddCheck("all required flags must be set", func() bool {
@@ -92,6 +93,11 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 	if workerID != "" {
 		if err := validate.ID(workerID); err != nil {
 			return cmd.Errorf("invalid --worker-id: %v", err)
+		}
+	}
+	if targetPhase != "" {
+		if err := validate.PhaseID(targetPhase); err != nil {
+			return cmd.Errorf("invalid --target-phase: %v", err)
 		}
 	}
 
@@ -115,6 +121,7 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 			"persona_hint":        personaHint,
 			"skill_refs":          []string(skillRefs),
 			"worker_id":           workerID,
+			"target_phase":        targetPhase,
 			"idempotency_key":     idempotencyKey,
 		},
 	}

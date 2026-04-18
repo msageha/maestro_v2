@@ -143,6 +143,34 @@ func (a *cliApp) runPlanResumeMerge(args []string) error {
 	return a.sendPlanCommand("plan resume-merge", maestroDir, params, planCommandTimeout)
 }
 
+// runPlanRetryPublish resets publish failure state and transitions the
+// integration back to merged so the next scan re-attempts publish-to-base.
+func (a *cliApp) runPlanRetryPublish(args []string) error {
+	cmd := NewCommand("maestro plan retry-publish", "maestro plan retry-publish --command-id <id>")
+	var commandID string
+	cmd.RequiredString(&commandID, "command-id", "Command ID to retry publish for")
+
+	if err := cmd.Parse(args); err != nil {
+		return err
+	}
+	if err := validate.ID(commandID); err != nil {
+		return cmd.Errorf("invalid --command-id: %v", err)
+	}
+
+	maestroDir, err := requireMaestroDir("plan retry-publish")
+	if err != nil {
+		return err
+	}
+
+	params := map[string]any{
+		"operation": "retry_publish",
+		"data": map[string]any{
+			"command_id": commandID,
+		},
+	}
+	return a.sendPlanCommand("plan retry-publish", maestroDir, params, planCommandTimeout)
+}
+
 // runResolveConflict resolves a worker merge conflict by delegating to the
 // daemon's plan handler with the resolve_conflict operation.
 //
