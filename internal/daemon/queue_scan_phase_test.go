@@ -1195,7 +1195,7 @@ func TestStepPlannerSignalsDeferred_ImplicitPhaseNotOrphaned(t *testing.T) {
 
 	dirty := false
 	work := &deferredWork{}
-	qh.stepPlannerSignalsDeferred(&sq, &dirty, work)
+	qh.stepPlannerSignalsDeferred(&sq, &dirty, work, model.CommandQueue{})
 
 	// Signal must be retained (not orphaned)
 	if len(sq.Signals) != 1 {
@@ -1372,9 +1372,14 @@ func TestPeriodicScanPhaseC_PublishCompletedSignal(t *testing.T) {
 	}
 }
 
-// TestPeriodicScanPhaseC_PublishFailedSignal verifies that a failed worktree
-// publish still emits only a publish_failed signal (no publish_completed).
-func TestPeriodicScanPhaseC_PublishFailedSignal(t *testing.T) {
+// TestPeriodicScanPhaseC_PublishFailedNoSignal verifies that a failed worktree
+// publish does NOT emit any signal (neither publish_failed nor publish_completed).
+// The Daemon handles publish retries automatically via recordPublishFailure /
+// backoff, and R8 (NotifyPublishQuarantined) escalates to the Planner when
+// retries are exhausted. Emitting publish_failed would cause the Planner to
+// attempt plan_submit / add_retry_task which fails because the Worker task
+// already completed successfully.
+func TestPeriodicScanPhaseC_PublishFailedNoSignal(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
 	wtCfg := model.WorktreeConfig{Enabled: false}
@@ -1392,26 +1397,263 @@ func TestPeriodicScanPhaseC_PublishFailedSignal(t *testing.T) {
 	qh.periodicScanPhaseC(pa, pb)
 
 	signalQueue, _, _ := qh.queueStore.LoadPlannerSignalQueue()
-	var foundFailed, foundCompleted *model.PlannerSignal
-	for i := range signalQueue.Signals {
-		s := &signalQueue.Signals[i]
+	for _, s := range signalQueue.Signals {
 		if s.CommandID != commandID {
 			continue
 		}
-		switch s.Kind {
-		case "publish_failed":
-			foundFailed = s
-		case "publish_completed":
-			foundCompleted = s
+		if s.Kind == "publish_failed" {
+			t.Errorf("publish_failed signal should NOT be emitted (daemon handles retry); got: %+v", s)
+		}
+		if s.Kind == "publish_completed" {
+			t.Errorf("publish_completed signal should NOT be emitted on failure; got: %+v", s)
 		}
 	}
-	if foundFailed == nil {
-		t.Fatalf("publish_failed signal not found; signals: %+v", signalQueue.Signals)
+}
+
+// TestPeriodicScanPhaseC_PublishCompletedSuppressedWhenTerminal verifies that
+// the publish_completed signal is NOT emitted when the command is already in a
+// terminal status in the command queue. This prevents the Planner from issuing
+// a redundant second plan complete call.
+func TestPeriodicScanPhaseC_PublishCompletedSuppressedWhenTerminal(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	wtCfg := model.WorktreeConfig{Enabled: false}
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, wtCfg)
+
+	commandID := "cmd_already_done"
+
+	// Pre-populate the command queue with a terminal (completed) command so
+	// that Phase C sees the command as already finished.
+	cqPath := filepath.Join(maestroDir, "queue", "planner.yaml")
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_planner",
+		Commands: []model.Command{
+			{ID: commandID, Status: model.StatusCompleted},
+		},
 	}
-	if foundCompleted != nil {
-		t.Errorf("publish_completed signal should NOT be emitted on failure")
+	if err := yamlutil.AtomicWrite(cqPath, cq); err != nil {
+		t.Fatalf("write command queue: %v", err)
 	}
-	if !strings.Contains(foundFailed.Message, "push rejected") {
-		t.Errorf("publish_failed Message missing error detail: %q", foundFailed.Message)
+
+	pa := phaseAResult{scanStart: time.Now()}
+	pb := phaseBResult{
+		worktreePublishes: []worktreePublishResult{{
+			Item:  worktreePublishItem{CommandID: commandID, PublishMessage: "test publish"},
+			Error: nil, // success
+		}},
+	}
+
+	qh.periodicScanPhaseC(pa, pb)
+
+	signalQueue, _, _ := qh.queueStore.LoadPlannerSignalQueue()
+	for _, s := range signalQueue.Signals {
+		if s.Kind == "publish_completed" && s.CommandID == commandID {
+			t.Errorf("publish_completed signal should be suppressed for terminal command; got: %+v", s)
+		}
+	}
+}
+
+// TestStepPlannerSignalsDeferred_PublishCompletedStaleWhenTerminal verifies that
+// a publish_completed signal is removed as stale when the command is already in
+// a terminal status in the command queue. This closes the race window where plan
+// complete is called between Phase C signal creation and Phase A evaluation.
+func TestStepPlannerSignalsDeferred_PublishCompletedStaleWhenTerminal(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+
+	// Create command state so orphan check passes
+	writeCommandState(t, maestroDir, "cmd_done", map[string]model.Status{
+		"t1": model.StatusCompleted,
+	}, nil)
+
+	now := "2026-01-01T00:00:00Z"
+	sq := model.PlannerSignalQueue{
+		SchemaVersion: 1,
+		FileType:      "planner_signal_queue",
+		Signals: []model.PlannerSignal{
+			{
+				Kind:      "publish_completed",
+				CommandID: "cmd_done",
+				Message:   "integration branch published",
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}
+
+	// Command is already terminal in the queue
+	commandQueue := model.CommandQueue{
+		Commands: []model.Command{
+			{ID: "cmd_done", Status: model.StatusCompleted},
+		},
+	}
+
+	dirty := false
+	work := &deferredWork{}
+	qh.stepPlannerSignalsDeferred(&sq, &dirty, work, commandQueue)
+
+	// Signal must be removed as stale
+	if len(sq.Signals) != 0 {
+		t.Errorf("expected 0 signals (stale removed), got %d: %+v", len(sq.Signals), sq.Signals)
+	}
+	if !dirty {
+		t.Error("expected dirty=true after removing stale signal")
+	}
+	// Signal must NOT be deferred for delivery
+	if len(work.signals) != 0 {
+		t.Errorf("expected 0 deferred signals, got %d", len(work.signals))
+	}
+}
+
+// TestStepPlannerSignalsDeferred_PublishFailedSuppressed verifies that a
+// publish_failed signal is removed from the queue and NOT deferred for delivery.
+// The Daemon handles publish retries internally; delivering publish_failed to
+// the Planner would cause plan_submit / add_retry_task errors.
+func TestStepPlannerSignalsDeferred_PublishFailedSuppressed(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+
+	// Create command state so orphan check passes
+	writeCommandState(t, maestroDir, "cmd_pub", map[string]model.Status{
+		"t1": model.StatusCompleted,
+	}, nil)
+
+	now := "2026-01-01T00:00:00Z"
+	sq := model.PlannerSignalQueue{
+		SchemaVersion: 1,
+		FileType:      "planner_signal_queue",
+		Signals: []model.PlannerSignal{
+			{
+				Kind:      "publish_failed",
+				CommandID: "cmd_pub",
+				Message:   "[maestro] kind:publish_failed command_id:cmd_pub\nerror: merge conflict",
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}
+
+	dirty := false
+	work := &deferredWork{}
+	qh.stepPlannerSignalsDeferred(&sq, &dirty, work, model.CommandQueue{})
+
+	// Signal must be removed
+	if len(sq.Signals) != 0 {
+		t.Errorf("expected 0 signals (publish_failed suppressed), got %d: %+v", len(sq.Signals), sq.Signals)
+	}
+	if !dirty {
+		t.Error("expected dirty=true after suppressing publish_failed signal")
+	}
+	// Signal must NOT be deferred for delivery
+	if len(work.signals) != 0 {
+		t.Errorf("expected 0 deferred signals, got %d", len(work.signals))
+	}
+}
+
+// TestStepPlannerSignalsDeferred_PublishFailedSuppressedWithOtherSignalsRetained
+// verifies that suppressing publish_failed does not affect other signal types.
+func TestStepPlannerSignalsDeferred_PublishFailedSuppressedWithOtherSignalsRetained(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+
+	writeCommandState(t, maestroDir, "cmd_mix", map[string]model.Status{
+		"t1": model.StatusCompleted,
+	}, nil)
+
+	now := "2026-01-01T00:00:00Z"
+	sq := model.PlannerSignalQueue{
+		SchemaVersion: 1,
+		FileType:      "planner_signal_queue",
+		Signals: []model.PlannerSignal{
+			{
+				Kind:      "publish_failed",
+				CommandID: "cmd_mix",
+				Message:   "publish failed",
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+			{
+				Kind:      "circuit_breaker_tripped",
+				CommandID: "cmd_mix",
+				Message:   "progress timeout",
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}
+
+	dirty := false
+	work := &deferredWork{}
+	qh.stepPlannerSignalsDeferred(&sq, &dirty, work, model.CommandQueue{})
+
+	// Only publish_failed should be removed; circuit_breaker_tripped retained
+	if len(sq.Signals) != 1 {
+		t.Fatalf("expected 1 signal retained, got %d: %+v", len(sq.Signals), sq.Signals)
+	}
+	if sq.Signals[0].Kind != "circuit_breaker_tripped" {
+		t.Errorf("retained signal kind = %q, want circuit_breaker_tripped", sq.Signals[0].Kind)
+	}
+	// Only circuit_breaker_tripped should be deferred for delivery
+	if len(work.signals) != 1 {
+		t.Fatalf("expected 1 deferred signal, got %d", len(work.signals))
+	}
+	if work.signals[0].Kind != "circuit_breaker_tripped" {
+		t.Errorf("deferred signal kind = %q, want circuit_breaker_tripped", work.signals[0].Kind)
+	}
+}
+
+// TestStepPlannerSignalsDeferred_PublishCompletedRetainedWhenNonTerminal verifies
+// that a publish_completed signal is retained and deferred for delivery when the
+// command is not yet terminal.
+func TestStepPlannerSignalsDeferred_PublishCompletedRetainedWhenNonTerminal(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+
+	// Create command state so orphan check passes
+	writeCommandState(t, maestroDir, "cmd_active", map[string]model.Status{
+		"t1": model.StatusCompleted,
+	}, nil)
+
+	now := "2026-01-01T00:00:00Z"
+	sq := model.PlannerSignalQueue{
+		SchemaVersion: 1,
+		FileType:      "planner_signal_queue",
+		Signals: []model.PlannerSignal{
+			{
+				Kind:      "publish_completed",
+				CommandID: "cmd_active",
+				Message:   "integration branch published",
+				CreatedAt: now,
+				UpdatedAt: now,
+			},
+		},
+	}
+
+	// Command is NOT terminal in the queue
+	commandQueue := model.CommandQueue{
+		Commands: []model.Command{
+			{ID: "cmd_active", Status: model.StatusInProgress},
+		},
+	}
+
+	dirty := false
+	work := &deferredWork{}
+	qh.stepPlannerSignalsDeferred(&sq, &dirty, work, commandQueue)
+
+	// Signal must be retained
+	if len(sq.Signals) != 1 {
+		t.Fatalf("expected 1 signal retained, got %d", len(sq.Signals))
+	}
+	// Signal must be deferred for delivery
+	if len(work.signals) != 1 {
+		t.Fatalf("expected 1 deferred signal, got %d", len(work.signals))
+	}
+	if work.signals[0].Kind != "publish_completed" {
+		t.Errorf("deferred signal kind = %q, want publish_completed", work.signals[0].Kind)
 	}
 }

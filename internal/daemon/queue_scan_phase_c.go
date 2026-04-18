@@ -45,7 +45,7 @@ func (qh *QueueHandler) executeScanPhaseCBody(se *ScanPhaseExecutor, pa phaseARe
 		signalIndex := buildSignalIndex(signalQueue.Signals)
 		now := qh.clock.Now().UTC().Format(time.RFC3339)
 
-		qh.applyWorktreeResultSignals(pb, &signalQueue, &signalsDirty, signalIndex, now)
+		qh.applyWorktreeResultSignals(pb, &signalQueue, &signalsDirty, signalIndex, now, commandQueue)
 		qh.dispatchConflictsAndFlushSignals(pb, &signalQueue, signalPath, &signalsDirty, now)
 	}
 
@@ -156,9 +156,10 @@ func (qh *QueueHandler) applyWorktreeResultSignals(
 	signalsDirty *bool,
 	signalIndex map[signalKey]struct{},
 	now string,
+	commandQueue model.CommandQueue,
 ) {
 	qh.applyMergeResultSignals(pb.worktreeMerges, signalQueue, signalsDirty, signalIndex, now)
-	qh.applyPublishResultSignals(pb.worktreePublishes, signalQueue, signalsDirty, signalIndex, now)
+	qh.applyPublishResultSignals(pb.worktreePublishes, signalQueue, signalsDirty, signalIndex, now, commandQueue)
 }
 
 // applyMergeResultSignals emits commit failure signals, conflict signals, and
@@ -229,29 +230,40 @@ func (qh *QueueHandler) applyMergeResultSignals(
 }
 
 // applyPublishResultSignals emits publish_completed or publish_failed signals
-// for each worktree publish result from Phase B.
+// for each worktree publish result from Phase B. The publish_completed signal
+// is suppressed when the command is already in a terminal status (e.g. plan
+// complete was already called before publish finished), preventing the Planner
+// from issuing a redundant plan complete call.
 func (qh *QueueHandler) applyPublishResultSignals(
 	publishes []worktreePublishResult,
 	signalQueue *model.PlannerSignalQueue,
 	signalsDirty *bool,
 	signalIndex map[signalKey]struct{},
 	now string,
+	commandQueue model.CommandQueue,
 ) {
 	for _, pr := range publishes {
 		if pr.Error != nil {
 			qh.log(LogLevelError, "worktree_publish_failed command=%s error=%v",
 				pr.Item.CommandID, pr.Error)
-			msg := fmt.Sprintf("[maestro] kind:publish_failed command_id:%s\nerror: %v",
-				pr.Item.CommandID, pr.Error)
-			qh.upsertPlannerSignal(signalQueue, signalsDirty, model.PlannerSignal{
-				Kind:      "publish_failed",
-				CommandID: pr.Item.CommandID,
-				Message:   msg,
-				CreatedAt: now,
-				UpdatedAt: now,
-			}, signalIndex)
+			// Do NOT emit a publish_failed signal to the Planner. The Daemon
+			// handles publish failure retries automatically via
+			// recordPublishFailure/exponential backoff. If retries are
+			// exhausted the integration is quarantined and R8
+			// (NotifyPublishQuarantined) escalates to the Planner. Sending
+			// publish_failed would cause the Planner to attempt normal task
+			// failure recovery (plan_submit / add_retry_task) which fails
+			// because the Worker task already completed successfully.
 		} else {
 			qh.log(LogLevelInfo, "worktree_published command=%s", pr.Item.CommandID)
+			// Skip the publish_completed signal if the command is already
+			// terminal — the Planner has already called plan complete and
+			// sending the signal would cause a redundant second invocation.
+			if isCommandTerminalInQueue(commandQueue, pr.Item.CommandID) {
+				qh.log(LogLevelInfo, "publish_completed_signal_suppressed command=%s (command already terminal)",
+					pr.Item.CommandID)
+				continue
+			}
 			// Notify Planner so it can call `plan complete` now that the
 			// integration branch is published. Without this signal the
 			// command stays at plan_status:sealed when publish happens
@@ -271,6 +283,17 @@ func (qh *QueueHandler) applyPublishResultSignals(
 			}, signalIndex)
 		}
 	}
+}
+
+// isCommandTerminalInQueue returns true if the command identified by commandID
+// has a terminal status in the given command queue.
+func isCommandTerminalInQueue(cq model.CommandQueue, commandID string) bool {
+	for i := range cq.Commands {
+		if cq.Commands[i].ID == commandID {
+			return model.IsTerminal(cq.Commands[i].Status)
+		}
+	}
+	return false
 }
 
 // dispatchConflictsAndFlushSignals performs the pre-flush for C1 conflict

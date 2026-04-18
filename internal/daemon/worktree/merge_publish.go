@@ -748,7 +748,7 @@ func (wm *Manager) performPublishMerge(
 	// Merge integration branch into temp branch (at baseBranch's position)
 	mergeMsg := buildPublishMessage(publishMessage, baseBranch)
 	if err := wm.gitRunInDir(integrationPath, "merge", "--no-ff", "-m", mergeMsg, state.Integration.Branch); err != nil {
-		if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusConflict, now); tErr != nil {
+		if tErr := wm.recordPublishFailure(state, "publish_merge_conflict", now); tErr != nil {
 			wm.Log(core.LogLevelWarn, "publish_conflict_transition command=%s error=%v", commandID, tErr)
 		}
 		state.UpdatedAt = now
