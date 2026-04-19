@@ -791,6 +791,102 @@ func TestEffectiveHalfOpenDelaySec(t *testing.T) {
 	}
 }
 
+func TestUpdateCounterOnResult_WritesAppliedResultIDs(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandler(true, 3, 30)
+
+	tests := []struct {
+		name     string
+		status   model.Status
+		taskID   string
+		resultID string
+	}{
+		{"completed", model.StatusCompleted, "t_completed", "r_completed"},
+		{"failed", model.StatusFailed, "t_failed", "r_failed"},
+		{"cancelled", model.StatusCancelled, "t_cancelled", "r_cancelled"},
+		{"pending", model.StatusPending, "t_pending", "r_pending"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			state := &model.CommandState{CommandID: "cmd1"}
+
+			cb.UpdateCounterOnResult(state, tt.status, tt.taskID, tt.resultID, time.Now())
+
+			if state.AppliedResultIDs == nil {
+				t.Fatal("expected AppliedResultIDs to be initialized")
+			}
+			if got, ok := state.AppliedResultIDs[tt.taskID]; !ok || got != tt.resultID {
+				t.Errorf("AppliedResultIDs[%s] = %q, want %q", tt.taskID, got, tt.resultID)
+			}
+		})
+	}
+}
+
+func TestUpdateCounterOnResult_WritesAppliedResultIDs_HalfOpenProbe(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandler(true, 3, 30)
+	now := time.Now()
+	halfOpenAt := now.Add(-5 * time.Second).UTC().Format(time.RFC3339)
+
+	// Half-open probe success
+	state := &model.CommandState{
+		CommandID: "cmd1",
+		CircuitBreaker: model.CircuitBreakerState{
+			Tripped:             true,
+			HalfOpen:            true,
+			HalfOpenAt:          &halfOpenAt,
+			HalfOpenProbeActive: true,
+		},
+	}
+	cb.UpdateCounterOnResult(state, model.StatusCompleted, "probe_ok", "r_probe_ok", now)
+
+	if state.AppliedResultIDs == nil {
+		t.Fatal("expected AppliedResultIDs to be initialized after half-open probe success")
+	}
+	if got := state.AppliedResultIDs["probe_ok"]; got != "r_probe_ok" {
+		t.Errorf("AppliedResultIDs[probe_ok] = %q, want r_probe_ok", got)
+	}
+
+	// Half-open probe failure
+	state2 := &model.CommandState{
+		CommandID: "cmd2",
+		CircuitBreaker: model.CircuitBreakerState{
+			Tripped:             true,
+			HalfOpen:            true,
+			HalfOpenAt:          &halfOpenAt,
+			HalfOpenProbeActive: true,
+		},
+	}
+	cb.UpdateCounterOnResult(state2, model.StatusFailed, "probe_fail", "r_probe_fail", now)
+
+	if state2.AppliedResultIDs == nil {
+		t.Fatal("expected AppliedResultIDs to be initialized after half-open probe failure")
+	}
+	if got := state2.AppliedResultIDs["probe_fail"]; got != "r_probe_fail" {
+		t.Errorf("AppliedResultIDs[probe_fail] = %q, want r_probe_fail", got)
+	}
+}
+
+func TestUpdateCounterOnResult_IdempotentAfterWrite(t *testing.T) {
+	t.Parallel()
+	cb := newTestHandler(true, 3, 30)
+	state := &model.CommandState{CommandID: "cmd1"}
+
+	// First call: records the result and increments failure counter
+	cb.UpdateCounterOnResult(state, model.StatusFailed, "t1", "r1", time.Now())
+	if state.CircuitBreaker.ConsecutiveFailures != 1 {
+		t.Fatalf("expected 1 failure after first call, got %d", state.CircuitBreaker.ConsecutiveFailures)
+	}
+
+	// Second call with same taskID+resultID: should be idempotent (no double counting)
+	cb.UpdateCounterOnResult(state, model.StatusFailed, "t1", "r1", time.Now())
+	if state.CircuitBreaker.ConsecutiveFailures != 1 {
+		t.Errorf("expected 1 failure after idempotent call, got %d (double counting detected)",
+			state.CircuitBreaker.ConsecutiveFailures)
+	}
+}
+
 func TestFullHalfOpenLifecycle(t *testing.T) {
 	t.Parallel()
 	cb := newTestHandlerWithHalfOpenDelay(true, 3, 30, 5)

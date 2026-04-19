@@ -65,6 +65,14 @@ func (cb *Handler) UpdateCounterOnResult(
 		return false, ""
 	}
 
+	// Record this result ID for idempotency before processing.
+	// This ensures all code paths (Completed, Failed, Cancelled, half-open probes)
+	// mark the result as applied.
+	if state.AppliedResultIDs == nil {
+		state.AppliedResultIDs = make(map[string]string)
+	}
+	state.AppliedResultIDs[taskID] = resultID
+
 	nowStr := now.UTC().Format(time.RFC3339)
 
 	// Handle half-open probe results
