@@ -176,7 +176,7 @@ func (a *cliApp) sendQueueWrite(params map[string]any) error {
 	if !resp.Success {
 		code, msg := udsErrorInfo(resp)
 		if code == "BACKPRESSURE" {
-			return &CLIError{Code: 2, Msg: fmt.Sprintf("maestro queue write: [%s] %s", code, msg)}
+			return &CLIError{Code: ExitCodeRetryable, Msg: fmt.Sprintf("maestro queue write: [%s] %s", code, msg)}
 		}
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: [%s] %s", code, msg)}
 	}

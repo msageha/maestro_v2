@@ -90,7 +90,7 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 
 		// Cooldown period: skip tasks whose NotBefore time has not yet arrived.
 		if task.NotBefore != nil {
-			if notBefore, err := time.Parse(time.RFC3339, *task.NotBefore); err != nil {
+			if notBefore, err := qh.timeCache.ParseRFC3339(*task.NotBefore); err != nil {
 				qh.log(LogLevelWarn, "task_not_before_parse_failed task=%s not_before=%q error=%v (ignoring cooldown)", task.ID, *task.NotBefore, err)
 			} else if qh.clock.Now().Before(notBefore) {
 				qh.log(LogLevelDebug, "task_cooldown task=%s not_before=%s", task.ID, *task.NotBefore)
@@ -167,7 +167,7 @@ func (qh *QueueHandler) collectPendingNotificationDispatches(nq *model.Notificat
 	for i := range nq.Notifications {
 		ntf := &nq.Notifications[i]
 		if ntf.Status == model.StatusInProgress && ntf.LeaseExpiresAt != nil {
-			if t, err := time.Parse(time.RFC3339, *ntf.LeaseExpiresAt); err == nil && t.After(qh.clock.Now()) {
+			if t, err := qh.timeCache.ParseRFC3339(*ntf.LeaseExpiresAt); err == nil && t.After(qh.clock.Now()) {
 				return
 			}
 		}
@@ -245,7 +245,7 @@ func (qh *QueueHandler) preemptiveCommandRenewal(cq *model.CommandQueue, dirty *
 	for _, idx := range renewable {
 		cmd := &cq.Commands[idx]
 		maxMin := qh.config.Watcher.EffectiveMaxInProgressMin()
-		if isMaxInProgressTimeout(qh.clock.Now(), cmd.UpdatedAt, maxMin) {
+		if isMaxInProgressTimeout(qh.clock.Now(), cmd.UpdatedAt, maxMin, qh.timeCache) {
 			qh.log(LogLevelWarn, "command_lease_max_timeout id=%s epoch=%d max=%dm releasing (preemptive)",
 				cmd.ID, cmd.LeaseEpoch, maxMin)
 			if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {
@@ -280,7 +280,7 @@ func (qh *QueueHandler) autoExtendExpiredCommandLeases(cq *model.CommandQueue, d
 		// Check max_in_progress_min hard timeout — if exceeded, release to let
 		// Reconciler R0 handle the stuck command on next scan.
 		maxMin := qh.config.Watcher.EffectiveMaxInProgressMin()
-		if isMaxInProgressTimeout(qh.clock.Now(), cmd.UpdatedAt, maxMin) {
+		if isMaxInProgressTimeout(qh.clock.Now(), cmd.UpdatedAt, maxMin, qh.timeCache) {
 			qh.log(LogLevelWarn, "command_lease_max_timeout id=%s epoch=%d max=%dm releasing",
 				cmd.ID, cmd.LeaseEpoch, maxMin)
 			if err := qh.leaseManager.ReleaseCommandLease(cmd); err != nil {

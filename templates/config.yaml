@@ -142,6 +142,9 @@ watcher:
   # clear_second_enter_delay_ms: /clear 後の2回目 Enter 送信までの遅延 (ms)
   # type: int | default: 0 | range: >= 0
   clear_second_enter_delay_ms: 500
+  # shell_ready_timeout_sec: Agent シェル準備完了のタイムアウト (秒、0=デフォルト10秒)
+  # type: int | default: 10 (defaultShellReadyTimeoutSec) | range: >= 0
+  shell_ready_timeout_sec: 10
 
 # --- Retry ---
 # ディスパッチ・実行リトライの設定。
@@ -160,6 +163,39 @@ retry:
   # 超過すると signal は dead letter 化されキューから除去される。
   # type: int | default: 0 | range: >= 0
   signal_dispatch: 10
+  # signal_inline_retries: Signal 配送のインラインリトライ回数
+  # type: int | default: 2 (DefaultSignalInlineRetries) | range: >= 0
+  signal_inline_retries: 2
+  # signal_inline_retry_delay_sec: Signal インラインリトライの遅延 (秒)
+  # type: int | default: 3 (DefaultSignalInlineRetryDelaySec) | range: >= 0
+  signal_inline_retry_delay_sec: 3
+  # signal_delivery_timeout_sec: Signal 配送のタイムアウト (秒)
+  # type: int | default: 15 (DefaultSignalDeliveryTimeoutSec) | range: >= 0
+  signal_delivery_timeout_sec: 15
+  # result_notify_inline_retries: 結果通知のインラインリトライ回数
+  # type: int | default: 2 (DefaultResultNotifyInlineRetries) | range: >= 0
+  result_notify_inline_retries: 2
+  # result_notify_inline_retry_delay_sec: 結果通知インラインリトライの遅延 (秒)
+  # type: int | default: 3 (DefaultResultNotifyInlineRetryDelaySec) | range: >= 0
+  result_notify_inline_retry_delay_sec: 3
+  # result_notify_delivery_timeout_sec: 結果通知配送のタイムアウト (秒)
+  # type: int | default: 15 (DefaultResultNotifyDeliveryTimeoutSec) | range: >= 0
+  result_notify_delivery_timeout_sec: 15
+  # command_dispatch_inline_retries: コマンドディスパッチのインラインリトライ回数
+  # type: int | default: 2 (DefaultCommandDispatchInlineRetries) | range: >= 0
+  command_dispatch_inline_retries: 2
+  # command_dispatch_inline_retry_delay_sec: コマンドディスパッチインラインリトライの遅延 (秒)
+  # type: int | default: 2 (DefaultCommandDispatchInlineRetryDelaySec) | range: >= 0
+  command_dispatch_inline_retry_delay_sec: 2
+  # command_dispatch_timeout_sec: コマンドディスパッチのタイムアウト (秒)
+  # type: int | default: 30 (DefaultCommandDispatchTimeoutSec) | range: >= 0
+  command_dispatch_timeout_sec: 30
+  # task_dispatch_inline_retries: タスクディスパッチのインラインリトライ回数
+  # type: int | default: 5 (DefaultTaskDispatchInlineRetries) | range: >= 0
+  task_dispatch_inline_retries: 5
+  # task_dispatch_inline_retry_delay_sec: タスクディスパッチインラインリトライの遅延 (秒)
+  # type: int | default: 1 (DefaultTaskDispatchInlineRetryDelaySec) | range: >= 0
+  task_dispatch_inline_retry_delay_sec: 1
   task_execution:
     # enabled: タスク実行の自動リトライの有効化フラグ
     # type: bool | default: false | range: true/false
@@ -226,6 +262,9 @@ circuit_breaker:
   # progress_timeout_minutes: 最後の成功からのタイムアウト (分、0=無効)
   # type: *int | default: 30 (DefaultProgressTimeoutMinutes) | range: >= 0
   progress_timeout_minutes: 30
+  # half_open_delay_sec: open→half-open 遷移までの遅延 (秒)
+  # type: *int | default: 60 (DefaultCBHalfOpenDelaySec) | range: >= 0
+  half_open_delay_sec: 60
 
 # --- Learnings ---
 # 学習知見の蓄積機能。

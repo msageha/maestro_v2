@@ -30,7 +30,7 @@ type dispatchApplyOps struct {
 // dispatch results.
 func (qh *QueueHandler) applyDispatchCore(dr dispatchResult, ops dispatchApplyOps) {
 	if rej := checkResultFencing(ops.status, ops.leaseEpoch, ops.leaseExpiresAt, dr.Item.Epoch, dr.Item.ExpiresAt); rej.Stale() {
-		qh.log(LogLevelWarn, "dispatch_fence_stale kind=%s id=%s epoch=%d/%d reason=%s",
+		qh.log(LogLevelDebug, "dispatch_fence_stale kind=%s id=%s epoch=%d/%d reason=%s",
 			ops.kind, ops.id, ops.leaseEpoch, dr.Item.Epoch, rej.Reason)
 		return
 	}
@@ -156,7 +156,7 @@ func (qh *QueueHandler) applyBusyCheckCore(bc busyCheckResult, entryID string, s
 	// Still respect max_in_progress_min hard timeout to avoid infinite grace renewals.
 	if bc.Undecided {
 		maxMin := qh.config.Watcher.EffectiveMaxInProgressMin()
-		if isMaxInProgressTimeout(qh.clock.Now(), bc.Item.UpdatedAt, maxMin) {
+		if isMaxInProgressTimeout(qh.clock.Now(), bc.Item.UpdatedAt, maxMin, qh.timeCache) {
 			qh.log(LogLevelWarn, "lease_undecided_max_timeout type=%s id=%s %s max=%dm, releasing",
 				ops.kind, entryID, ops.ownerLabel, maxMin)
 			if err := ops.releaseLease(); err != nil {
@@ -170,7 +170,7 @@ func (qh *QueueHandler) applyBusyCheckCore(bc busyCheckResult, entryID string, s
 		// Grace lease limit: cumulative grace extensions must not exceed a fraction of max_in_progress_min
 		graceLimit := maxGraceLeaseDuration(maxMin, qh.config.Watcher.ScanIntervalSec)
 		dispatchDuration := time.Duration(qh.config.Watcher.DispatchLeaseSec) * time.Second
-		if isGraceLeaseExceeded(qh.clock.Now(), bc.Item.UpdatedAt, dispatchDuration, graceLimit) {
+		if isGraceLeaseExceeded(qh.clock.Now(), bc.Item.UpdatedAt, dispatchDuration, graceLimit, qh.timeCache) {
 			qh.log(LogLevelWarn, "lease_grace_limit_exceeded type=%s id=%s %s grace_limit=%s, releasing as stale",
 				ops.kind, entryID, ops.ownerLabel, graceLimit)
 			if err := ops.releaseLease(); err != nil {
@@ -194,7 +194,7 @@ func (qh *QueueHandler) applyBusyCheckCore(bc busyCheckResult, entryID string, s
 
 	if bc.Busy {
 		maxMin := qh.config.Watcher.EffectiveMaxInProgressMin()
-		if !isMaxInProgressTimeout(qh.clock.Now(), bc.Item.UpdatedAt, maxMin) {
+		if !isMaxInProgressTimeout(qh.clock.Now(), bc.Item.UpdatedAt, maxMin, qh.timeCache) {
 			qh.log(LogLevelInfo, "lease_extend_busy type=%s id=%s %s epoch=%d",
 				ops.kind, entryID, ops.ownerLabel, leaseEpoch)
 			if err := ops.extendLease(); err != nil {
