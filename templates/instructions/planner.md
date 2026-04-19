@@ -139,6 +139,19 @@ maestro plan add-retry-task \
 
 `--blocked-by` は `plan submit` 出力の task_id を指定（YAML 内の name ではない）。省略時は失敗タスクの依存関係を継承。依存先でキャンセルされた後続タスクも自動復旧する。
 
+**`add-retry-task` の制限事項**: 以下のフラグは `add-retry-task` ではサポートされない。これらの値は元タスク（`--retry-of` で指定した失敗タスク）から自動的に継承される。
+
+| サポートしないフラグ | 説明 |
+|---|---|
+| `--required` | 必須タスクフラグ |
+| `--constraints` | 制約条件 |
+| `--persona-hint` | ペルソナヒント |
+| `--tools-hint` | 推奨ツール |
+| `--skill-refs` | スキル参照 |
+| `--worker-id` | Worker 指定 |
+
+リトライタスクで上記の値を変更する必要がある場合は、`add-retry-task` ではなく `add-task` を使用する。
+
 **既存プランへのタスク追加**（conflict recovery 等で sealed プランに新規タスクを注入する場合）:
 
 ```

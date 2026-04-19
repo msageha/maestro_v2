@@ -167,11 +167,11 @@ func (qh *QueueHandler) stepWorktreeOrphanCleanup(s *scanState) {
 		if ref == "" {
 			ref = cmd.CreatedAt
 		}
-		refTime, err := time.Parse(time.RFC3339, ref)
+		refTime, err := qh.timeCache.ParseRFC3339(ref)
 		if err != nil {
 			continue
 		}
-		if intTime, ierr := time.Parse(time.RFC3339, cmdState.Integration.UpdatedAt); ierr == nil && intTime.After(refTime) {
+		if intTime, ierr := qh.timeCache.ParseRFC3339(cmdState.Integration.UpdatedAt); ierr == nil && intTime.After(refTime) {
 			refTime = intTime
 		}
 		elapsed := now.Sub(refTime)

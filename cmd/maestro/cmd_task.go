@@ -45,7 +45,7 @@ func (a *cliApp) runTaskHeartbeat(args []string) error {
 		return err
 	}
 
-	params := map[string]interface{}{
+	params := map[string]any{
 		"task_id":   taskID,
 		"worker_id": workerID,
 		"epoch":     epoch,
@@ -61,7 +61,7 @@ func (a *cliApp) runTaskHeartbeat(args []string) error {
 		if resp.Error != nil {
 			// Special handling for max runtime exceeded - exit silently with error code
 			if resp.Error.Code == uds.ErrCodeMaxRuntimeExceeded {
-				return &CLIError{Code: 2, Silent: true}
+				return &CLIError{Code: ExitCodeRetryable, Silent: true}
 			}
 			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro task heartbeat: [%s] %s", resp.Error.Code, resp.Error.Message)}
 		}

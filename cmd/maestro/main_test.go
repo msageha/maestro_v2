@@ -46,13 +46,13 @@ func TestCLIError_ExitCode(t *testing.T) {
 }
 
 func TestCLIError_ErrorsAs(t *testing.T) {
-	var wrapped error = &CLIError{Code: 2, Msg: "wrapped"}
+	var wrapped error = &CLIError{Code: ExitCodeRetryable, Msg: "wrapped"}
 	var ce *CLIError
 	if !errors.As(wrapped, &ce) {
 		t.Fatal("errors.As failed to extract CLIError")
 	}
-	if ce.Code != 2 {
-		t.Errorf("Code = %d, want 2", ce.Code)
+	if ce.Code != ExitCodeRetryable {
+		t.Errorf("Code = %d, want %d", ce.Code, ExitCodeRetryable)
 	}
 }
 

@@ -8,6 +8,13 @@ import (
 	"io"
 )
 
+// newFlagSet creates a flag.FlagSet that suppresses default output (errors are handled by callers).
+func newFlagSet(name string) *flag.FlagSet {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	return fs
+}
+
 // CommandBuilder provides common FlagSet creation, parsing, and validation
 // patterns used across all CLI commands. It eliminates the repeated
 // newFlagSet → Parse → NArg check → required check boilerplate.

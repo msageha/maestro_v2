@@ -2,9 +2,7 @@ package main
 
 import (
 	"errors"
-	"flag"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 
@@ -12,6 +10,11 @@ import (
 )
 
 const version = "2.0.0"
+
+// ExitCodeRetryable is the exit code used when the CLI operation can be retried.
+// This includes daemon-side rejections such as FENCING_REJECT, BACKPRESSURE,
+// MAX_RUNTIME_EXCEEDED, and retryable agent exec errors.
+const ExitCodeRetryable = 2
 
 // CLIError represents an error with a specific exit code.
 type CLIError struct {
@@ -40,13 +43,6 @@ func (e *CLIError) ExitCode() int {
 // stringSliceFlag is a package-level alias for [model.StringSlice],
 // kept for brevity in flag declarations within the CLI commands.
 type stringSliceFlag = model.StringSlice
-
-// newFlagSet creates a flag.FlagSet that suppresses default output (errors are handled by callers).
-func newFlagSet(name string) *flag.FlagSet {
-	fs := flag.NewFlagSet(name, flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	return fs
-}
 
 // modeSetter implements flag.Value as a boolean flag that sets a shared string variable.
 // Used for shorthand mode flags (e.g., --interrupt sets mode to "interrupt").

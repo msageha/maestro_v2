@@ -64,6 +64,7 @@ func (se *ScanPhaseExecutor) Execute(ctx context.Context) {
 	defer se.scanRunMu.Unlock()
 
 	se.qh.log(LogLevelDebug, "periodic_scan start")
+	se.qh.timeCache.Reset()
 
 	pa := se.periodicScanPhaseA()
 	pb := se.periodicScanPhaseB(ctx, pa)

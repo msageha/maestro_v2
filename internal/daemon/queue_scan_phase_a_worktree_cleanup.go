@@ -76,7 +76,7 @@ func (qh *QueueHandler) stepWorktreeFastTrackCleanup(s *scanState) {
 		if ref == "" {
 			ref = cmd.CreatedAt
 		}
-		refTime, err := time.Parse(time.RFC3339, ref)
+		refTime, err := qh.timeCache.ParseRFC3339(ref)
 		if err != nil {
 			continue
 		}
