@@ -29,7 +29,7 @@ const planPhaseFillTimeout = 120 * time.Second
 // runPlan dispatches plan subcommands (submit, complete, add-retry-task, add-task, request-cancel, rebuild).
 func (a *cliApp) runPlan(args []string) error {
 	if len(args) < 1 {
-		return &CLIError{Code: 1, Msg: "maestro plan: missing subcommand\nusage: maestro plan <submit|complete|add-retry-task|add-task|request-cancel|rebuild|unquarantine|resume-merge|resolve-conflict> [options]"}
+		return &CLIError{Code: 1, Msg: "maestro plan: missing subcommand\nusage: maestro plan <submit|complete|add-retry-task|add-task|request-cancel|rebuild|unquarantine|resume-merge|retry-publish|resolve-conflict> [options]"}
 	}
 	switch args[0] {
 	case "submit":

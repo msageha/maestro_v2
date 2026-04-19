@@ -10,6 +10,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 // stubExecutor always returns the configured error.
@@ -34,10 +35,10 @@ func (g *stubExecutorGetter) GetExecutor() (core.AgentExecutor, error) {
 func newRetryTestDispatcher(retries int, delaySec int, exec core.AgentExecutor) *Dispatcher {
 	cfg := model.Config{
 		Retry: model.RetryConfig{
-			CommandDispatchInlineRetries:       retries,
-			CommandDispatchInlineRetryDelaySec: delaySec,
-			TaskDispatchInlineRetries:          retries,
-			TaskDispatchInlineRetryDelaySec:    delaySec,
+			CommandDispatchInlineRetries:       ptr.Int(retries),
+			CommandDispatchInlineRetryDelaySec: ptr.Int(delaySec),
+			TaskDispatchInlineRetries:          ptr.Int(retries),
+			TaskDispatchInlineRetryDelaySec:    ptr.Int(delaySec),
 		},
 	}
 	return New("", cfg, log.New(log.Writer(), "", 0), core.LogLevelDebug, &stubExecutorGetter{exec: exec}, core.RealClock{})

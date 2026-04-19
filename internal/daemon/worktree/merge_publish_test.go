@@ -837,3 +837,47 @@ func TestPublishToBase_TempBranchCleanedOnMergeConflict(t *testing.T) {
 		t.Errorf("temp branch %s should not exist after publish failure", tempBranch)
 	}
 }
+
+// TestPublishToBase_NoFalsePositiveStash verifies that PublishToBase does not
+// create a spurious stash ref under refs/maestro/pre-publish-stash/. Before the
+// fix, update-ref advanced HEAD without syncing the index/working tree, causing
+// git stash create to see a false diff and accumulate orphaned stash refs.
+func TestPublishToBase_NoFalsePositiveStash(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	defer func() { _ = cleanupAll(wm) }()
+
+	commandID := "cmd_no_false_stash"
+	workers := []string{"worker1"}
+	if err := createForCommand(wm, commandID, workers); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	// Worker commits a file and merge to integration
+	wt1, err := wm.GetWorkerPath(commandID, "worker1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt1, "feature.txt"), []byte("new feature\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker1", "add feature"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Publish to base
+	if err := wm.PublishToBase(commandID, "publish feature"); err != nil {
+		t.Fatalf("PublishToBase: %v", err)
+	}
+
+	// Verify no stash ref was created (false positive eliminated)
+	stashRef := "refs/maestro/pre-publish-stash/" + commandID
+	cmd := exec.Command("git", "-C", projectRoot, "rev-parse", "--verify", "--quiet", stashRef)
+	if err := cmd.Run(); err == nil {
+		t.Errorf("stash ref %s should not exist after clean publish (false positive stash)", stashRef)
+	}
+}

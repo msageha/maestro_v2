@@ -63,6 +63,7 @@ func LoadConfig(maestroDir string) (Config, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config.yaml: %w", err)
 	}
+	NormalizeRetryConfig(&cfg)
 	NormalizeExperimentalConfig(&cfg)
 	if err := cfg.Validate(); err != nil {
 		return Config{}, fmt.Errorf("validate config: %w", err)
