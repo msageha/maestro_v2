@@ -164,3 +164,16 @@ func (m *Manager) Mode() Mode {
 	defer m.mu.Unlock()
 	return m.mode
 }
+
+// LastSuccessAt returns the time of the last successful operation for the given worker.
+// Returns the zero value if the worker has no recorded success.
+func (m *Manager) LastSuccessAt(workerID string) time.Time {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	ws, ok := m.workers[workerID]
+	if !ok {
+		return time.Time{}
+	}
+	return ws.lastSuccessAt
+}

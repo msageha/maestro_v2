@@ -42,6 +42,19 @@ func isTransientDialError(err error) bool {
 		errors.Is(err, syscall.ENOENT)
 }
 
+// isPermanentDialError returns true if the error is a permanent connection error
+// that should never be retried (permission denied, path issues, socket type mismatch, etc.).
+func isPermanentDialError(err error) bool {
+	return errors.Is(err, syscall.EACCES) ||
+		errors.Is(err, syscall.EPERM) ||
+		errors.Is(err, syscall.EADDRINUSE) ||
+		errors.Is(err, syscall.ENOTDIR) ||
+		errors.Is(err, syscall.ENAMETOOLONG) ||
+		errors.Is(err, syscall.ENOTSOCK) ||
+		errors.Is(err, syscall.EPROTOTYPE) ||
+		errors.Is(err, syscall.EAFNOSUPPORT)
+}
+
 // dialWithRetry dials the daemon with exponential backoff retry for transient errors.
 func (c *Client) dialWithRetry(ctx context.Context) (net.Conn, error) {
 	dialer := &net.Dialer{Timeout: c.timeout}
@@ -57,6 +70,12 @@ func (c *Client) dialWithRetry(ctx context.Context) (net.Conn, error) {
 			return conn, nil
 		}
 		dialErr = err
+		if isPermanentDialError(dialErr) {
+			return nil, fmt.Errorf(
+				"cannot connect to daemon at %s: %w",
+				c.socketPath, dialErr,
+			)
+		}
 		if !isTransientDialError(dialErr) {
 			break
 		}
@@ -79,10 +98,14 @@ func (c *Client) dialWithRetry(ctx context.Context) (net.Conn, error) {
 }
 
 // send dials the daemon, writes the given Request, and returns the Response.
+// A timeout context is automatically created from the client's timeout setting,
+// ensuring all CLI commands have proper context even without explicit context passing.
 // Transient dial errors (ECONNREFUSED, EAGAIN, ENOENT) are retried up to 3 times
-// with exponential backoff.
+// with exponential backoff. Permanent errors (EACCES, EPERM, etc.) fail immediately.
 func (c *Client) send(req *Request) (*Response, error) {
-	return c.sendContext(context.Background(), req)
+	ctx, cancel := context.WithTimeout(context.Background(), c.timeout)
+	defer cancel()
+	return c.sendContext(ctx, req)
 }
 
 // SendCommand is a convenience method that creates a Request from the command and params, then sends it.

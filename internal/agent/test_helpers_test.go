@@ -10,89 +10,162 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// === mockPaneIO: callback-based PaneIO mock (used by busyDetector tests) ===
+// === mockPaneIO: unified PaneIO mock for all agent package tests ===
 //
-// Design intent: mockPaneIO provides per-method callback overrides (Fn fields)
-// so each test can inject exactly the behavior it needs without a monolithic
-// fake. Default behavior (nil callback) returns zero-value success, making it
-// safe to use in tests that only care about a subset of PaneIO methods.
+// Supports three response patterns (checked in priority order):
+//  1. Callback overrides (Fn fields) — for focused tests needing custom logic
+//  2. Sequence responses (Seq fields) — for tests validating call order/patterns
+//  3. Simple defaults (field values) — for minimal test setup
 //
-// Constraints & trade-offs:
-//   - Callback-based design means mock state is scattered across test functions
-//     rather than centralized. This is acceptable for focused unit tests but
-//     makes complex integration scenarios harder to follow.
-//   - No call recording — use covMockPaneIO below when you need to assert
-//     call sequences or argument values.
-//
-// TODO: Consider consolidating mockPaneIO and covMockPaneIO into a unified
-// testutil package (e.g., testutil/mocks/pane_io.go) to reduce duplication
-// across agent package tests. The two mocks serve different patterns
-// (callback vs sequence) but share the same interface.
-
-// mockPaneIO implements PaneIO for testing busyDetector.
+// All methods record calls in the `calls` slice for order assertion.
+// Sequences clamp to the last element when exhausted (intentional for robustness).
 type mockPaneIO struct {
-	currentCommand   string
-	currentCommandFn func() (string, error)
-	captureContent   string
-	captureFn        func(paneTarget string, lastN int) (string, error)
-	joinedContent    []string // successive CapturePaneJoined results
-	joinedIdx        int
-	joinedFn         func(paneTarget string, lastN int) (string, error)
-	isShell          bool
+	// --- Call recording ---
+	calls []string
 
-	// Fn callback fields for all PaneIO methods — when non-nil, the callback
-	// is invoked instead of the default behaviour (nil return).
-	FindPaneByAgentIDFn func(agentID string) (string, error)
-	SendCtrlCFn         func(paneTarget string) error
-	SendKeysFn          func(paneTarget string, keys ...string) error
-	SendCommandFn       func(paneTarget, command string) error
-	SendTextAndSubmitFn func(ctx context.Context, paneTarget, text string) error
-	SetUserVarFn        func(paneTarget, name, value string) error
-	GetUserVarFn        func(paneTarget, name string) (string, error)
-	GetPanePIDFn        func(paneTarget string) (string, error)
-	IsShellCommandFn    func(cmd string) bool
-	RespawnPaneFn       func(paneTarget, startDir string) error
+	// --- FindPaneByAgentID ---
+	findPaneTarget string // default return (zero value returns "%0")
+	findPaneErr    error
+
+	// --- GetPaneCurrentCommand ---
+	currentCommand string     // simple default
+	getCmdSeq      []mockResp // sequence override (clamped)
+	getCmdIdx      int
+
+	// --- CapturePane ---
+	captureContent string     // simple default
+	capturePaneSeq []mockResp // sequence override (clamped)
+	capturePaneIdx int
+
+	// --- CapturePaneJoined ---
+	joinedContent    []string   // convenience rotation (wraps around)
+	joinedIdx        int
+	captureJoinedSeq []mockResp // full sequence with error support (clamped)
+	captureJoinedIdx int
+
+	// --- IsShellCommand ---
+	isShell    bool   // simple default
+	isShellSeq []bool // sequence override (clamped)
+	isShellIdx int
+
+	// --- SendCommand ---
+	sentCmds      []string
+	sendCmdErrSeq []error // sequence of errors (clamped)
+	sendCmdIdx    int
+
+	// --- SendTextAndSubmit ---
+	sentTexts   []string
+	sendTextErr error
+
+	// --- Other error injection ---
+	sendKeysErr    error
+	sendCtrlCErr   error
+	respawnPaneErr error
+
+	// --- State ---
+	userVars  map[string]string
+	panePID   string
+	getPIDErr error
+
+	// --- Callback overrides (highest priority) ---
+	FindPaneByAgentIDFn     func(agentID string) (string, error)
+	SendCtrlCFn             func(paneTarget string) error
+	SendKeysFn              func(paneTarget string, keys ...string) error
+	SendCommandFn           func(paneTarget, command string) error
+	SendTextAndSubmitFn     func(ctx context.Context, paneTarget, text string) error
+	SetUserVarFn            func(paneTarget, name, value string) error
+	GetUserVarFn            func(paneTarget, name string) (string, error)
+	GetPanePIDFn            func(paneTarget string) (string, error)
+	GetPaneCurrentCommandFn func(paneTarget string) (string, error)
+	CapturePaneFn           func(paneTarget string, lastN int) (string, error)
+	CapturePaneJoinedFn     func(paneTarget string, lastN int) (string, error)
+	IsShellCommandFn        func(cmd string) bool
+	RespawnPaneFn           func(paneTarget, startDir string) error
+}
+
+type mockResp struct {
+	val string
+	err error
+}
+
+// newMockPaneIO creates a mockPaneIO with sensible defaults for executor/coverage tests.
+// Tests that only need busyDetector can use &mockPaneIO{} directly.
+func newMockPaneIO() *mockPaneIO {
+	return &mockPaneIO{
+		userVars: make(map[string]string),
+		panePID:  "12345",
+	}
+}
+
+// seqIdx returns the clamped index for a sequence (repeats last element).
+func (m *mockPaneIO) seqIdx(idx, length int) int {
+	if idx >= length {
+		return length - 1
+	}
+	return idx
 }
 
 func (m *mockPaneIO) FindPaneByAgentID(agentID string) (string, error) {
+	m.calls = append(m.calls, "FindPaneByAgentID")
 	if m.FindPaneByAgentIDFn != nil {
 		return m.FindPaneByAgentIDFn(agentID)
+	}
+	if m.findPaneErr != nil {
+		return "", m.findPaneErr
+	}
+	if m.findPaneTarget != "" {
+		return m.findPaneTarget, nil
 	}
 	return "%0", nil
 }
 
 func (m *mockPaneIO) SendCtrlC(paneTarget string) error {
+	m.calls = append(m.calls, "SendCtrlC")
 	if m.SendCtrlCFn != nil {
 		return m.SendCtrlCFn(paneTarget)
 	}
-	return nil
+	return m.sendCtrlCErr
 }
 
 func (m *mockPaneIO) SendKeys(paneTarget string, keys ...string) error {
+	m.calls = append(m.calls, "SendKeys:"+strings.Join(keys, ","))
 	if m.SendKeysFn != nil {
 		return m.SendKeysFn(paneTarget, keys...)
 	}
-	return nil
+	return m.sendKeysErr
 }
 
 func (m *mockPaneIO) SendCommand(paneTarget, command string) error {
+	m.calls = append(m.calls, "SendCommand:"+command)
+	m.sentCmds = append(m.sentCmds, command)
 	if m.SendCommandFn != nil {
 		return m.SendCommandFn(paneTarget, command)
+	}
+	if len(m.sendCmdErrSeq) > 0 {
+		idx := m.seqIdx(m.sendCmdIdx, len(m.sendCmdErrSeq))
+		m.sendCmdIdx++
+		return m.sendCmdErrSeq[idx]
 	}
 	return nil
 }
 
 func (m *mockPaneIO) SendTextAndSubmit(ctx context.Context, paneTarget, text string) error {
+	m.calls = append(m.calls, "SendTextAndSubmit")
+	m.sentTexts = append(m.sentTexts, text)
 	if m.SendTextAndSubmitFn != nil {
 		return m.SendTextAndSubmitFn(ctx, paneTarget, text)
 	}
-	return nil
+	return m.sendTextErr
 }
 
 func (m *mockPaneIO) SetUserVar(paneTarget, name, value string) error {
 	if m.SetUserVarFn != nil {
 		return m.SetUserVarFn(paneTarget, name, value)
 	}
+	if m.userVars == nil {
+		m.userVars = make(map[string]string)
+	}
+	m.userVars[name] = value
 	return nil
 }
 
@@ -100,33 +173,54 @@ func (m *mockPaneIO) GetUserVar(paneTarget, name string) (string, error) {
 	if m.GetUserVarFn != nil {
 		return m.GetUserVarFn(paneTarget, name)
 	}
-	return "", nil
+	if m.userVars == nil {
+		return "", nil
+	}
+	return m.userVars[name], nil
 }
 
 func (m *mockPaneIO) GetPanePID(paneTarget string) (string, error) {
 	if m.GetPanePIDFn != nil {
 		return m.GetPanePIDFn(paneTarget)
 	}
-	return "12345", nil
+	return m.panePID, m.getPIDErr
 }
 
 func (m *mockPaneIO) GetPaneCurrentCommand(paneTarget string) (string, error) {
-	if m.currentCommandFn != nil {
-		return m.currentCommandFn()
+	m.calls = append(m.calls, "GetPaneCurrentCommand")
+	if m.GetPaneCurrentCommandFn != nil {
+		return m.GetPaneCurrentCommandFn(paneTarget)
+	}
+	if len(m.getCmdSeq) > 0 {
+		idx := m.seqIdx(m.getCmdIdx, len(m.getCmdSeq))
+		m.getCmdIdx++
+		return m.getCmdSeq[idx].val, m.getCmdSeq[idx].err
 	}
 	return m.currentCommand, nil
 }
 
 func (m *mockPaneIO) CapturePane(paneTarget string, lastN int) (string, error) {
-	if m.captureFn != nil {
-		return m.captureFn(paneTarget, lastN)
+	m.calls = append(m.calls, "CapturePane")
+	if m.CapturePaneFn != nil {
+		return m.CapturePaneFn(paneTarget, lastN)
+	}
+	if len(m.capturePaneSeq) > 0 {
+		idx := m.seqIdx(m.capturePaneIdx, len(m.capturePaneSeq))
+		m.capturePaneIdx++
+		return m.capturePaneSeq[idx].val, m.capturePaneSeq[idx].err
 	}
 	return m.captureContent, nil
 }
 
 func (m *mockPaneIO) CapturePaneJoined(paneTarget string, lastN int) (string, error) {
-	if m.joinedFn != nil {
-		return m.joinedFn(paneTarget, lastN)
+	m.calls = append(m.calls, "CapturePaneJoined")
+	if m.CapturePaneJoinedFn != nil {
+		return m.CapturePaneJoinedFn(paneTarget, lastN)
+	}
+	if len(m.captureJoinedSeq) > 0 {
+		idx := m.seqIdx(m.captureJoinedIdx, len(m.captureJoinedSeq))
+		m.captureJoinedIdx++
+		return m.captureJoinedSeq[idx].val, m.captureJoinedSeq[idx].err
 	}
 	if len(m.joinedContent) > 0 {
 		content := m.joinedContent[m.joinedIdx%len(m.joinedContent)]
@@ -140,14 +234,20 @@ func (m *mockPaneIO) IsShellCommand(cmd string) bool {
 	if m.IsShellCommandFn != nil {
 		return m.IsShellCommandFn(cmd)
 	}
+	if len(m.isShellSeq) > 0 {
+		idx := m.seqIdx(m.isShellIdx, len(m.isShellSeq))
+		m.isShellIdx++
+		return m.isShellSeq[idx]
+	}
 	return m.isShell
 }
 
 func (m *mockPaneIO) RespawnPane(paneTarget, startDir string) error {
+	m.calls = append(m.calls, "RespawnPane:"+startDir)
 	if m.RespawnPaneFn != nil {
 		return m.RespawnPaneFn(paneTarget, startDir)
 	}
-	return nil
+	return m.respawnPaneErr
 }
 
 // newTestBusyDetector creates a busyDetector for testing.
@@ -171,156 +271,18 @@ func fastConfig() busyDetectorConfig {
 	}
 }
 
-// === covMockPaneIO: sequence-based PaneIO mock (used by executor coverage tests) ===
-//
-// Design intent: covMockPaneIO records all calls (in the `calls` slice) and
-// returns pre-configured response sequences (e.g., capturePaneSeq, getCmdSeq).
-// This enables tests to assert both the order of PaneIO interactions and the
-// Executor's behavior under specific response patterns (errors, shell detection).
-//
-// Constraints & trade-offs:
-//   - Sequence-based responses require test authors to predict exact call order,
-//     making tests brittle if Executor internals change call patterns.
-//   - seqIdx clamps to the last element when the sequence is exhausted, which
-//     silently repeats the final response rather than failing — intentional for
-//     robustness but can mask missing sequence entries.
-//
-// TODO: Consider extracting into testutil/mocks alongside mockPaneIO for
-// reuse in other packages that depend on PaneIO.
-
-// covMockPaneIO supports sequence-based responses for thorough coverage tests.
-type covMockPaneIO struct {
-	capturePaneSeq   []mockResp
-	capturePaneIdx   int
-	captureJoinedSeq []mockResp
-	captureJoinedIdx int
-	sendCmdErrSeq    []error
-	sendCmdIdx       int
-	sentCmds         []string
-	sendKeysErr      error
-	sendCtrlCErr     error
-	respawnPaneErr   error
-	sendTextErr      error
-	sentTexts        []string
-	getCmdSeq        []mockResp
-	getCmdIdx        int
-	isShellSeq       []bool
-	isShellIdx       int
-	defaultIsShell   bool
-	userVars         map[string]string
-	panePID          string
-	getPIDErr        error
-	calls            []string
-}
-
-type mockResp struct {
-	val string
-	err error
-}
-
-func newCovMock() *covMockPaneIO {
-	return &covMockPaneIO{
-		userVars:       make(map[string]string),
-		panePID:        "12345",
-		defaultIsShell: true,
-	}
-}
-
-func (m *covMockPaneIO) seqIdx(idx, length int) int {
-	if idx >= length {
-		return length - 1
-	}
-	return idx
-}
-
-func (m *covMockPaneIO) FindPaneByAgentID(_ string) (string, error) { return "%0", nil }
-
-func (m *covMockPaneIO) SendCtrlC(_ string) error {
-	m.calls = append(m.calls, "SendCtrlC")
-	return m.sendCtrlCErr
-}
-
-func (m *covMockPaneIO) SendKeys(_ string, keys ...string) error {
-	m.calls = append(m.calls, "SendKeys:"+strings.Join(keys, ","))
-	return m.sendKeysErr
-}
-
-func (m *covMockPaneIO) SendCommand(_, cmd string) error {
-	m.calls = append(m.calls, "SendCommand:"+cmd)
-	m.sentCmds = append(m.sentCmds, cmd)
-	if len(m.sendCmdErrSeq) > 0 {
-		idx := m.seqIdx(m.sendCmdIdx, len(m.sendCmdErrSeq))
-		m.sendCmdIdx++
-		return m.sendCmdErrSeq[idx]
-	}
-	return nil
-}
-
-func (m *covMockPaneIO) SendTextAndSubmit(_ context.Context, _, text string) error {
-	m.calls = append(m.calls, "SendTextAndSubmit")
-	m.sentTexts = append(m.sentTexts, text)
-	return m.sendTextErr
-}
-
-func (m *covMockPaneIO) SetUserVar(_, name, value string) error {
-	m.userVars[name] = value
-	return nil
-}
-
-func (m *covMockPaneIO) GetUserVar(_, name string) (string, error) {
-	return m.userVars[name], nil
-}
-
-func (m *covMockPaneIO) GetPanePID(_ string) (string, error) {
-	return m.panePID, m.getPIDErr
-}
-
-func (m *covMockPaneIO) GetPaneCurrentCommand(_ string) (string, error) {
-	m.calls = append(m.calls, "GetPaneCurrentCommand")
-	if len(m.getCmdSeq) > 0 {
-		idx := m.seqIdx(m.getCmdIdx, len(m.getCmdSeq))
-		m.getCmdIdx++
-		return m.getCmdSeq[idx].val, m.getCmdSeq[idx].err
-	}
-	return "bash", nil
-}
-
-func (m *covMockPaneIO) CapturePane(_ string, _ int) (string, error) {
-	m.calls = append(m.calls, "CapturePane")
-	if len(m.capturePaneSeq) > 0 {
-		idx := m.seqIdx(m.capturePaneIdx, len(m.capturePaneSeq))
-		m.capturePaneIdx++
-		return m.capturePaneSeq[idx].val, m.capturePaneSeq[idx].err
-	}
-	return "output\n \u276f \n", nil
-}
-
-func (m *covMockPaneIO) CapturePaneJoined(_ string, _ int) (string, error) {
-	m.calls = append(m.calls, "CapturePaneJoined")
-	if len(m.captureJoinedSeq) > 0 {
-		idx := m.seqIdx(m.captureJoinedIdx, len(m.captureJoinedSeq))
-		m.captureJoinedIdx++
-		return m.captureJoinedSeq[idx].val, m.captureJoinedSeq[idx].err
-	}
-	return "output\n \u276f \n", nil
-}
-
-func (m *covMockPaneIO) IsShellCommand(_ string) bool {
-	if len(m.isShellSeq) > 0 {
-		idx := m.seqIdx(m.isShellIdx, len(m.isShellSeq))
-		m.isShellIdx++
-		return m.isShellSeq[idx]
-	}
-	return m.defaultIsShell
-}
-
-func (m *covMockPaneIO) RespawnPane(_, startDir string) error {
-	m.calls = append(m.calls, "RespawnPane:"+startDir)
-	return m.respawnPaneErr
+// newExecMock creates a mockPaneIO pre-configured for executor integration tests
+// with common defaults (shell detected, prompt ready).
+func newExecMock() *mockPaneIO {
+	m := newMockPaneIO()
+	m.currentCommand = "bash"
+	m.isShell = true
+	m.captureContent = "output\n ❯ \n"
+	return m
 }
 
 // newCovExecutor creates an Executor with fast config for coverage tests.
-func newCovExecutor(mock *covMockPaneIO) (*Executor, *bytes.Buffer) {
+func newCovExecutor(mock *mockPaneIO) (*Executor, *bytes.Buffer) {
 	var buf bytes.Buffer
 	logger := log.New(&buf, "", 0)
 
@@ -364,6 +326,55 @@ func newCovExecutor(mock *covMockPaneIO) (*Executor, *bytes.Buffer) {
 	e.processManager = newClaudeProcessManager(mock, ps, &e.config, execCfg, logger, logLevelDebug)
 	e.deliverer = newMessageDeliverer(mock, ps, &e.config, execCfg, logger, logLevelDebug)
 	return e, &buf
+}
+
+// newTestExecutorWithLog creates an Executor with a mock PaneIO and returns
+// the log buffer for verification. Uses minimal-sleep config for instant tests.
+func newTestExecutorWithLog(paneIO PaneIO) (*Executor, *bytes.Buffer) {
+	var buf bytes.Buffer
+	logger := log.New(&buf, "", 0)
+
+	cfg := model.WatcherConfig{
+		BusyCheckInterval:      1,
+		BusyCheckMaxRetries:    1,
+		IdleStableSec:          1,
+		CooldownAfterClear:     1,
+		WaitReadyIntervalSec:   1,
+		WaitReadyMaxRetries:    1,
+		ClearConfirmTimeoutSec: 1,
+		ClearConfirmPollMs:     10,
+		ClearMaxAttempts:       1,
+		ClearRetryBackoffMs:    10,
+	}
+
+	execCfg := DefaultExecutorConfig()
+	ps := newPaneStateManager(paneIO)
+
+	bd := &busyDetector{
+		paneIO: paneIO,
+		config: busyDetectorConfig{
+			IdleStableSec:       0,
+			BusyCheckMaxRetries: 1,
+			BusyCheckInterval:   0,
+			BusyHintLines:       execCfg.BusyHintLines,
+		},
+		logger:   logger,
+		logLevel: logLevelDebug,
+	}
+
+	exec := &Executor{
+		execCfg:      execCfg,
+		config:       cfg,
+		logger:       logger,
+		logLevel:     logLevelDebug,
+		paneIO:       paneIO,
+		busyDetector: bd,
+		paneState:    ps,
+	}
+	exec.processManager = newClaudeProcessManager(paneIO, ps, &exec.config, execCfg, logger, logLevelDebug)
+	exec.deliverer = newMessageDeliverer(paneIO, ps, &exec.config, execCfg, logger, logLevelDebug)
+
+	return exec, &buf
 }
 
 // callsContain checks if the call log contains a specific entry.

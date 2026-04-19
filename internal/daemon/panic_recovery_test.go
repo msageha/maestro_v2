@@ -13,6 +13,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -100,17 +101,9 @@ func TestEventBridge_PanicRecoveryCallsShutdown(t *testing.T) {
 	})
 
 	// Wait for Shutdown to set the advisory flag.
-	deadline := time.Now().Add(panicRecoveryTimeout)
-	for time.Now().Before(deadline) {
-		if d.shuttingDown.Load() {
-			break
-		}
-		time.Sleep(panicRecoveryPollInterval)
-	}
-
-	if !d.shuttingDown.Load() {
-		t.Fatal("expected shuttingDown to be true after panic recovery")
-	}
+	require.Eventually(t, func() bool {
+		return d.shuttingDown.Load()
+	}, panicRecoveryTimeout, panicRecoveryPollInterval, "expected shuttingDown to be true after panic recovery")
 
 	logOutput := logBuf.String()
 	if !strings.Contains(logOutput, "panic in event_bridge callback type=task_started") {
@@ -149,19 +142,11 @@ func TestDebounceController_PanicRecoveryCallsShutdown(t *testing.T) {
 	dc.Trigger("test_trigger")
 
 	// Wait for the debounce timer to fire and the recovery to call shutdownFn.
-	deadline := time.Now().Add(panicRecoveryTimeout)
-	for time.Now().Before(deadline) {
-		if shutdownCalled.Load() {
-			break
-		}
-		time.Sleep(panicRecoveryPollInterval)
-	}
+	require.Eventually(t, func() bool {
+		return shutdownCalled.Load()
+	}, panicRecoveryTimeout, panicRecoveryPollInterval, "expected shutdownFn to be called after panic recovery")
 
 	dc.Stop()
-
-	if !shutdownCalled.Load() {
-		t.Fatal("expected shutdownFn to be called after panic recovery")
-	}
 
 	logOutput := logBuf.String()
 	if !strings.Contains(logOutput, "panic in debounceAndScan") {

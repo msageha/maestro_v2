@@ -1,6 +1,9 @@
 package model
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestPhaseIndex_Found(t *testing.T) {
 	t.Parallel()
@@ -80,5 +83,70 @@ func TestPhaseIndex_AfterPhasesModification(t *testing.T) {
 	idx, ok = pt.PhaseIndex("phase-c")
 	if !ok || idx != 1 {
 		t.Fatalf("after removal: expected (1, true) for phase-c, got (%d, %v)", idx, ok)
+	}
+}
+
+func TestPhaseConstraints_Validate(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		pc      PhaseConstraints
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:    "valid",
+			pc:      PhaseConstraints{MaxTasks: 5, TimeoutMinutes: 30},
+			wantErr: false,
+		},
+		{
+			name:    "zero MaxTasks",
+			pc:      PhaseConstraints{MaxTasks: 0, TimeoutMinutes: 30},
+			wantErr: true,
+			errMsg:  "max_tasks",
+		},
+		{
+			name:    "negative MaxTasks",
+			pc:      PhaseConstraints{MaxTasks: -1, TimeoutMinutes: 30},
+			wantErr: true,
+			errMsg:  "max_tasks",
+		},
+		{
+			name:    "zero TimeoutMinutes",
+			pc:      PhaseConstraints{MaxTasks: 5, TimeoutMinutes: 0},
+			wantErr: true,
+			errMsg:  "timeout_minutes",
+		},
+		{
+			name:    "negative TimeoutMinutes",
+			pc:      PhaseConstraints{MaxTasks: 5, TimeoutMinutes: -10},
+			wantErr: true,
+			errMsg:  "timeout_minutes",
+		},
+		{
+			name:    "both zero",
+			pc:      PhaseConstraints{MaxTasks: 0, TimeoutMinutes: 0},
+			wantErr: true,
+			errMsg:  "max_tasks",
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.pc.Validate()
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), tt.errMsg) {
+					t.Errorf("expected error containing %q, got %q", tt.errMsg, err.Error())
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+			}
+		})
 	}
 }

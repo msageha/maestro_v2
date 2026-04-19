@@ -182,16 +182,16 @@ func (a *cliApp) sendQueueWrite(params map[string]any) error {
 	}
 
 	var result map[string]string
-	if err := json.Unmarshal(resp.Data, &result); err == nil {
-		if id, ok := result["id"]; ok {
-			fmt.Println(id)
-			return nil
-		}
-		if cid, ok := result["command_id"]; ok {
-			fmt.Println(cid)
-			return nil
-		}
-		return &CLIError{Code: 1, Msg: "maestro queue write: response missing both id and command_id"}
+	if err := json.Unmarshal(resp.Data, &result); err != nil {
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro queue write: failed to parse response: %v", err)}
 	}
-	return printJSONResponse(resp.Data, "queue write")
+	if id, ok := result["id"]; ok {
+		fmt.Println(id)
+		return nil
+	}
+	if cid, ok := result["command_id"]; ok {
+		fmt.Println(cid)
+		return nil
+	}
+	return &CLIError{Code: 1, Msg: "maestro queue write: response missing both id and command_id"}
 }

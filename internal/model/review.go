@@ -84,13 +84,13 @@ type ReviewResult struct {
 	CreatedAt     time.Time       `json:"created_at" yaml:"created_at"`
 }
 
-// NewReviewResult creates a new ReviewResult with IsAdvisory hardcoded to true.
-// Reviews are always advisory — they provide suggestions but never block.
-func NewReviewResult(requestID, reviewerModel string) *ReviewResult {
+// NewReviewResult creates a new ReviewResult with the given advisory flag.
+// When isAdvisory is true, the review provides suggestions but never blocks.
+func NewReviewResult(requestID, reviewerModel string, isAdvisory bool) *ReviewResult {
 	return &ReviewResult{
 		RequestID:     requestID,
 		ReviewerModel: reviewerModel,
-		IsAdvisory:    true,
+		IsAdvisory:    isAdvisory,
 		Status:        ReviewStatusPending,
 		CreatedAt:     time.Now(),
 	}

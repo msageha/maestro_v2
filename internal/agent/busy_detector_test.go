@@ -30,7 +30,7 @@ func TestDetectBusy_ShellCommand_ReturnsIdle(t *testing.T) {
 
 func TestDetectBusy_GetCommandError_ReturnsUndecided(t *testing.T) {
 	mock := &mockPaneIO{
-		currentCommandFn: func() (string, error) {
+		GetPaneCurrentCommandFn: func(_ string) (string, error) {
 			return "", fmt.Errorf("tmux not available")
 		},
 	}
@@ -99,7 +99,7 @@ func TestDetectBusy_CaptureError_ReturnsUndecided(t *testing.T) {
 	mock := &mockPaneIO{
 		currentCommand: "claude",
 		isShell:        false,
-		captureFn: func(paneTarget string, lastN int) (string, error) {
+		CapturePaneFn: func(paneTarget string, lastN int) (string, error) {
 			return "", fmt.Errorf("capture failed")
 		},
 	}
@@ -116,7 +116,7 @@ func TestDetectBusy_JoinedCaptureError_ReturnsUndecided(t *testing.T) {
 		currentCommand: "claude",
 		isShell:        false,
 		captureContent: "normal content",
-		joinedFn: func(paneTarget string, lastN int) (string, error) {
+		CapturePaneJoinedFn: func(paneTarget string, lastN int) (string, error) {
 			return "", fmt.Errorf("joined capture failed")
 		},
 	}
@@ -178,7 +178,7 @@ func TestDetectBusyWithRetry_BusyThenIdle(t *testing.T) {
 		currentCommand: "claude",
 		isShell:        false,
 		captureContent: "content",
-		joinedFn: func(paneTarget string, lastN int) (string, error) {
+		CapturePaneJoinedFn: func(paneTarget string, lastN int) (string, error) {
 			callCount++
 			// First 2 calls (first detect round): changing content → busy
 			// Second 2 calls (first retry): stable content → idle
@@ -202,7 +202,7 @@ func TestDetectBusyWithRetry_StaysBusy_ExhaustsRetries(t *testing.T) {
 		currentCommand: "claude",
 		isShell:        false,
 		captureContent: "content",
-		joinedFn: func(paneTarget string, lastN int) (string, error) {
+		CapturePaneJoinedFn: func(paneTarget string, lastN int) (string, error) {
 			callCount++
 			return fmt.Sprintf("changing-%d", callCount), nil
 		},
@@ -232,7 +232,7 @@ func TestDetectBusyWithRetry_ContextCancelled(t *testing.T) {
 		currentCommand: "claude",
 		isShell:        false,
 		captureContent: "content",
-		joinedFn: func(paneTarget string, lastN int) (string, error) {
+		CapturePaneJoinedFn: func(paneTarget string, lastN int) (string, error) {
 			callCount++
 			return fmt.Sprintf("changing-%d", callCount), nil
 		},
@@ -255,7 +255,7 @@ func TestDetectBusyWithRetry_UndecidedRetriesThenPromotedToIdle(t *testing.T) {
 	mock := &mockPaneIO{
 		currentCommand: "claude",
 		isShell:        false,
-		captureFn: func(paneTarget string, lastN int) (string, error) {
+		CapturePaneFn: func(paneTarget string, lastN int) (string, error) {
 			callCount++
 			// All calls fail → persistent Undecided
 			return "", fmt.Errorf("persistent capture error")
@@ -272,7 +272,7 @@ func TestDetectBusyWithRetry_UndecidedRetriesThenPromotedToIdle(t *testing.T) {
 	//        soft retries × detectBusy (undecidedSoftRetries × 1 = 2) = 3 total
 	expectedCalls := (1 + undecidedImmediateRetries) + undecidedSoftRetries
 	if callCount != expectedCalls {
-		t.Errorf("expected %d captureFn calls, got %d", expectedCalls, callCount)
+		t.Errorf("expected %d CapturePaneFn calls, got %d", expectedCalls, callCount)
 	}
 }
 
@@ -281,7 +281,7 @@ func TestDetectBusyWithRetry_UndecidedThenIdle(t *testing.T) {
 	mock := &mockPaneIO{
 		currentCommand: "claude",
 		isShell:        false,
-		captureFn: func(paneTarget string, lastN int) (string, error) {
+		CapturePaneFn: func(paneTarget string, lastN int) (string, error) {
 			callCount++
 			if callCount <= 1 {
 				return "", fmt.Errorf("transient capture error")
@@ -307,7 +307,7 @@ func TestDetectBusyWithRetry_BusyThenUndecidedThenIdle(t *testing.T) {
 		currentCommand: "claude",
 		isShell:        false,
 		captureContent: "content",
-		joinedFn: func(paneTarget string, lastN int) (string, error) {
+		CapturePaneJoinedFn: func(paneTarget string, lastN int) (string, error) {
 			detectCount++
 			// First 2 calls (detect round 1): changing content → Busy
 			if detectCount <= 2 {
@@ -320,8 +320,8 @@ func TestDetectBusyWithRetry_BusyThenUndecidedThenIdle(t *testing.T) {
 			// Subsequent calls (undecided immediate retry): stable → Idle
 			return "stable-content", nil
 		},
-		captureFn: func(paneTarget string, lastN int) (string, error) {
-			// After detect 3 triggers Undecided via joinedFn error,
+		CapturePaneFn: func(paneTarget string, lastN int) (string, error) {
+			// After detect 3 triggers Undecided via CapturePaneJoinedFn error,
 			// the immediate retry calls DetectBusy again which calls CapturePane
 			return "content", nil
 		},
@@ -549,10 +549,10 @@ func TestDetectBusy_CommandAndCaptureErrors_ReturnsUndecided(t *testing.T) {
 	// before CapturePane is ever called.
 	captureCallCount := 0
 	mock := &mockPaneIO{
-		currentCommandFn: func() (string, error) {
+		GetPaneCurrentCommandFn: func(_ string) (string, error) {
 			return "", fmt.Errorf("command error")
 		},
-		captureFn: func(paneTarget string, lastN int) (string, error) {
+		CapturePaneFn: func(paneTarget string, lastN int) (string, error) {
 			captureCallCount++
 			return "", fmt.Errorf("capture error")
 		},
@@ -574,10 +574,10 @@ func TestDetectBusy_CaptureAndJoinedErrors_ReturnsUndecided(t *testing.T) {
 	mock := &mockPaneIO{
 		currentCommand: "claude",
 		isShell:        false,
-		captureFn: func(paneTarget string, lastN int) (string, error) {
+		CapturePaneFn: func(paneTarget string, lastN int) (string, error) {
 			return "", fmt.Errorf("capture error")
 		},
-		joinedFn: func(paneTarget string, lastN int) (string, error) {
+		CapturePaneJoinedFn: func(paneTarget string, lastN int) (string, error) {
 			joinedCallCount++
 			return "", fmt.Errorf("joined error")
 		},
@@ -602,7 +602,7 @@ func TestDetectBusyWithRetry_CaptureErrorThenRecovery_ReturnsIdle(t *testing.T) 
 	mock := &mockPaneIO{
 		currentCommand: "claude",
 		isShell:        false,
-		captureFn: func(paneTarget string, lastN int) (string, error) {
+		CapturePaneFn: func(paneTarget string, lastN int) (string, error) {
 			callCount++
 			if callCount == 1 {
 				return "", fmt.Errorf("transient capture error")
@@ -627,7 +627,7 @@ func TestDetectBusyWithRetry_JoinedErrorThenRecovery_ReturnsIdle(t *testing.T) {
 		currentCommand: "claude",
 		isShell:        false,
 		captureContent: "content",
-		joinedFn: func(paneTarget string, lastN int) (string, error) {
+		CapturePaneJoinedFn: func(paneTarget string, lastN int) (string, error) {
 			callCount++
 			if callCount == 1 {
 				return "", fmt.Errorf("transient joined error")
@@ -649,7 +649,7 @@ func TestDetectBusyWithRetry_CommandErrorThenRecovery_ReturnsIdle(t *testing.T) 
 	callCount := 0
 	mock := &mockPaneIO{
 		isShell: true,
-		currentCommandFn: func() (string, error) {
+		GetPaneCurrentCommandFn: func(_ string) (string, error) {
 			callCount++
 			if callCount == 1 {
 				return "", fmt.Errorf("transient command error")
@@ -669,7 +669,7 @@ func TestDetectBusyWithRetry_AllRetriesFail_PromotedToIdle(t *testing.T) {
 	// All DetectBusy calls error → persistent Undecided → soft retries also fail
 	// → promoted to VerdictIdle (sustained undecided = likely idle with stale output).
 	mock := &mockPaneIO{
-		currentCommandFn: func() (string, error) {
+		GetPaneCurrentCommandFn: func(_ string) (string, error) {
 			return "", fmt.Errorf("persistent command error")
 		},
 	}
@@ -747,7 +747,7 @@ func TestSoftRetryUndecided_ContextCancelled(t *testing.T) {
 	mock := &mockPaneIO{
 		currentCommand: "claude",
 		isShell:        false,
-		captureFn: func(paneTarget string, lastN int) (string, error) {
+		CapturePaneFn: func(paneTarget string, lastN int) (string, error) {
 			return "", fmt.Errorf("persistent capture error")
 		},
 	}
@@ -772,7 +772,7 @@ func TestSoftRetryUndecided_BusyDetectionPreserved(t *testing.T) {
 		currentCommand: "claude",
 		isShell:        false,
 		captureContent: "content",
-		joinedFn: func(paneTarget string, lastN int) (string, error) {
+		CapturePaneJoinedFn: func(paneTarget string, lastN int) (string, error) {
 			callCount++
 			return fmt.Sprintf("changing-%d", callCount), nil
 		},
