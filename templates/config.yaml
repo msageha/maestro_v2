@@ -65,9 +65,7 @@ agents:
     base_prompt_mode: "append"
     # models: Worker ごとのモデルオーバーライド (worker_id -> model_name)
     # type: map[string]string | default: なし | range: 制限なし
-    models:
-      worker3: "opus"
-      worker4: "opus"
+    models: {}
     # boost: Worker のブースト (高速) モード有効化
     # type: bool | default: false | range: true/false
     boost: false
