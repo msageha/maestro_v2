@@ -56,6 +56,10 @@ var (
 	// ErrBusyUndecided is returned when busy detection is inconclusive.
 	// This is a transient condition safe for immediate retry.
 	ErrBusyUndecided = errors.New("agent busy: undecided_after_probes")
+
+	// ErrAgentBusy is returned when the agent is confirmed busy (actively processing).
+	// This is a normal operational state, not a failure. The caller should retry later.
+	ErrAgentBusy = errors.New("agent busy")
 )
 
 // ExecutorConfig holds tunable constants for Executor behavior.
@@ -527,15 +531,17 @@ func (e *Executor) execDeliver(ctx context.Context, req ExecRequest, paneTarget 
 		verdict := e.busyDetector.DetectBusyWithRetry(ctx, paneTarget, req.AgentID)
 		e.log(logLevelDebug, "busy_detection agent_id=orchestrator verdict=%s", verdict)
 		if verdict != VerdictIdle {
-			e.log(logLevelWarn, "delivery_failure agent_id=orchestrator reason=orchestrator_busy verdict=%s", verdict)
 			if verdict == VerdictUndecided {
+				e.log(logLevelWarn, "delivery_failure agent_id=orchestrator reason=undecided_after_probes verdict=%s", verdict)
 				return ExecResult{
 					Error:     fmt.Errorf("orchestrator busy: %w", ErrBusyUndecided),
 					Retryable: true,
 				}
 			}
+			// VerdictBusy: orchestrator is actively processing — normal operational state
+			e.log(logLevelInfo, "agent_busy_retryable agent_id=orchestrator verdict=%s", verdict)
 			return ExecResult{
-				Error:     fmt.Errorf("orchestrator busy (verdict=%s)", verdict),
+				Error:     fmt.Errorf("orchestrator busy: %w", ErrAgentBusy),
 				Retryable: true,
 			}
 		}
@@ -559,10 +565,11 @@ func (e *Executor) execDeliver(ctx context.Context, req ExecRequest, paneTarget 
 				Retryable: true,
 			}
 		}
-		e.log(logLevelWarn, "delivery_failure agent_id=%s task_id=%s reason=busy_timeout",
-			req.AgentID, req.TaskID)
+		// VerdictBusy: agent is actively processing — normal operational state, not a failure
+		e.log(logLevelInfo, "agent_busy_retryable agent_id=%s task_id=%s verdict=%s",
+			req.AgentID, req.TaskID, verdict)
 		return ExecResult{
-			Error:     fmt.Errorf("agent %s busy: timeout", req.AgentID),
+			Error:     fmt.Errorf("agent %s busy: %w", req.AgentID, ErrAgentBusy),
 			Retryable: true,
 		}
 	}
