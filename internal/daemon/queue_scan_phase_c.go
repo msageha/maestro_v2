@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -251,8 +252,13 @@ func (qh *QueueHandler) applyPublishResultSignals(
 ) {
 	for _, pr := range publishes {
 		if pr.Error != nil {
-			qh.log(LogLevelError, "worktree_publish_failed command=%s error=%v",
-				pr.Item.CommandID, pr.Error)
+			if errors.Is(pr.Error, errIntegrationNotPublishable) {
+				qh.log(LogLevelDebug, "worktree_publish_skipped command=%s error=%v",
+					pr.Item.CommandID, pr.Error)
+			} else {
+				qh.log(LogLevelError, "worktree_publish_failed command=%s error=%v",
+					pr.Item.CommandID, pr.Error)
+			}
 			// Do NOT emit a generic publish_failed signal to the Planner. The
 			// Daemon handles publish failure retries automatically via
 			// recordPublishFailure/exponential backoff. If retries are

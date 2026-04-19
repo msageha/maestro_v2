@@ -92,6 +92,11 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 
 				run.Log(core.LogLevelInfo, "R7 conflict_resolution command=%s worker=%s attempt=%d",
 					commandID, ws.WorkerID, ws.ConflictResolutionAttempts+1)
+				if err := model.ValidateWorktreeTransition(ws.Status, model.WorktreeStatusResolving); err != nil {
+					run.Log(core.LogLevelError, "R7 invalid_worktree_transition command=%s worker=%s from=%s to=%s error=%v",
+						commandID, ws.WorkerID, ws.Status, model.WorktreeStatusResolving, err)
+					continue
+				}
 				ws.ConflictResolutionAttempts++
 				ws.Status = model.WorktreeStatusResolving
 				now := run.Deps.Clock.Now().UTC().Format(time.RFC3339)
