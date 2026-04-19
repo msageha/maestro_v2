@@ -45,18 +45,16 @@ type CycleResult struct {
 
 // Engine manages evolutionary mutation planning, novelty checking, and survivor selection.
 type Engine struct {
-	strategies       []Strategy
-	strategyWeights  map[Strategy]int
-	noveltyThreshold float64
-	mu               sync.Mutex
+	strategies      []Strategy
+	strategyWeights map[Strategy]int
+	mu              sync.Mutex
 }
 
-// NewEngine creates a new evolution engine with the given strategies, novelty threshold, and optional strategy weights.
-func NewEngine(strategies []Strategy, noveltyThreshold float64, weights map[Strategy]int) *Engine {
+// NewEngine creates a new evolution engine with the given strategies and optional strategy weights.
+func NewEngine(strategies []Strategy, weights map[Strategy]int) *Engine {
 	return &Engine{
-		strategies:       strategies,
-		strategyWeights:  weights,
-		noveltyThreshold: noveltyThreshold,
+		strategies:      strategies,
+		strategyWeights: weights,
 	}
 }
 

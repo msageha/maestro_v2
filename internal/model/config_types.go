@@ -40,6 +40,8 @@ type qualityGatesConfig struct {
 	Enforcement qualityGateEnforcement `yaml:"enforcement"`
 }
 
+// TODO: Add threshold fields (e.g., MinTestCoverage, MaxLintErrors, MinCodeQualityScore)
+// when quality gate evaluation logic is implemented.
 type qualityGateThresholds struct {
 }
 

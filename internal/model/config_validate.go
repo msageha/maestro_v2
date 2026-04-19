@@ -32,6 +32,7 @@ func (c Config) Validate() error {
 	c.validateJudge(&errs)
 	c.validateQualityGates(&errs)
 	c.validateWorktree(&errs)
+	c.validateExperimental(&errs)
 	c.validateCrossFieldConstraints(&errs)
 	c.validateFloatFields(&errs)
 
@@ -288,6 +289,68 @@ func (c Config) validateWorktree(errs *[]error) {
 		if c.Worktree.GC.MaxWorktrees != nil && (*c.Worktree.GC.MaxWorktrees <= 0 || *c.Worktree.GC.MaxWorktrees > MaxMaxWorktrees) {
 			*errs = append(*errs, fmt.Errorf("worktree.gc.max_worktrees: must be between 1 and %d when gc is enabled", MaxMaxWorktrees))
 		}
+	}
+}
+
+func (c Config) validateExperimental(errs *[]error) {
+	// C-1 Evolution
+	if c.Evolution.MaxMutationsPerRound != nil && *c.Evolution.MaxMutationsPerRound <= 0 {
+		*errs = append(*errs, fmt.Errorf("evolution.max_mutations_per_round: must be > 0"))
+	}
+	if c.Evolution.NoveltyThreshold != nil && (*c.Evolution.NoveltyThreshold < 0 || *c.Evolution.NoveltyThreshold > 1) {
+		*errs = append(*errs, fmt.Errorf("evolution.novelty_threshold: must be between 0 and 1"))
+	}
+
+	// C-2 Bandit
+	if c.Bandit.ExplorationCoeff != nil && *c.Bandit.ExplorationCoeff <= 0 {
+		*errs = append(*errs, fmt.Errorf("bandit.exploration_coefficient: must be > 0"))
+	}
+	if c.Bandit.MinSamplesBeforeUse != nil && *c.Bandit.MinSamplesBeforeUse < 0 {
+		*errs = append(*errs, fmt.Errorf("bandit.min_samples_before_use: must be >= 0"))
+	}
+	if c.Bandit.DecayFactor != nil && (*c.Bandit.DecayFactor <= 0 || *c.Bandit.DecayFactor > 1) {
+		*errs = append(*errs, fmt.Errorf("bandit.decay_factor: must be in (0, 1]"))
+	}
+	if c.Bandit.TraceDataRequirement != nil && *c.Bandit.TraceDataRequirement < 0 {
+		*errs = append(*errs, fmt.Errorf("bandit.trace_data_requirement: must be >= 0"))
+	}
+
+	// C-3 Extended Verification
+	if c.ExtendedVerification.MaxAutoRetries != nil && *c.ExtendedVerification.MaxAutoRetries < 0 {
+		*errs = append(*errs, fmt.Errorf("extended_verification.max_auto_retries: must be >= 0"))
+	}
+
+	// C-4 Search
+	if c.Search.MaxDepth != nil && *c.Search.MaxDepth <= 0 {
+		*errs = append(*errs, fmt.Errorf("search.max_depth: must be > 0"))
+	}
+	if c.Search.MaxBranching != nil && *c.Search.MaxBranching <= 0 {
+		*errs = append(*errs, fmt.Errorf("search.max_branching: must be > 0"))
+	}
+	if c.Search.PruneThreshold != nil && (*c.Search.PruneThreshold < 0 || *c.Search.PruneThreshold > 1) {
+		*errs = append(*errs, fmt.Errorf("search.prune_threshold: must be between 0 and 1"))
+	}
+	if c.Search.ThompsonAlpha != nil && *c.Search.ThompsonAlpha <= 0 {
+		*errs = append(*errs, fmt.Errorf("search.thompson_alpha: must be > 0"))
+	}
+	if c.Search.ThompsonBeta != nil && *c.Search.ThompsonBeta <= 0 {
+		*errs = append(*errs, fmt.Errorf("search.thompson_beta: must be > 0"))
+	}
+
+	// C-5 Self-Improvement
+	if c.SelfImprovement.ArchiveMaxSize != nil && *c.SelfImprovement.ArchiveMaxSize < 0 {
+		*errs = append(*errs, fmt.Errorf("self_improvement.archive_max_size: must be >= 0"))
+	}
+
+	// C-6 Complexity Thresholds
+	if c.Complexity.Thresholds.SimpleMaxFiles != nil && *c.Complexity.Thresholds.SimpleMaxFiles <= 0 {
+		*errs = append(*errs, fmt.Errorf("complexity.thresholds.simple_max_files: must be > 0"))
+	}
+	if c.Complexity.Thresholds.StandardMaxFiles != nil && *c.Complexity.Thresholds.StandardMaxFiles <= 0 {
+		*errs = append(*errs, fmt.Errorf("complexity.thresholds.standard_max_files: must be > 0"))
+	}
+	if c.Complexity.Thresholds.ComplexMaxFiles != nil && *c.Complexity.Thresholds.ComplexMaxFiles <= 0 {
+		*errs = append(*errs, fmt.Errorf("complexity.thresholds.complex_max_files: must be > 0"))
 	}
 }
 

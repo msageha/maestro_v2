@@ -46,11 +46,14 @@ func ValidateSchemaHeaderFromBytes(content []byte, expectedFileType string) erro
 		return fmt.Errorf("parse yaml: %w", err)
 	}
 
-	if header.SchemaVersion < 1 {
-		return fmt.Errorf("invalid schema_version %d (must be >= 1)", header.SchemaVersion)
+	if header.SchemaVersion == 0 {
+		return fmt.Errorf("missing or zero schema_version (must be between 1 and %d)", CurrentSchemaVersion)
+	}
+	if header.SchemaVersion < 0 {
+		return fmt.Errorf("invalid negative schema_version %d (must be between 1 and %d)", header.SchemaVersion, CurrentSchemaVersion)
 	}
 	if header.SchemaVersion > CurrentSchemaVersion {
-		return fmt.Errorf("unsupported schema_version %d (max supported: %d)", header.SchemaVersion, CurrentSchemaVersion)
+		return fmt.Errorf("unsupported schema_version %d (max supported: %d; upgrade maestro to handle this file)", header.SchemaVersion, CurrentSchemaVersion)
 	}
 	if header.FileType == "" {
 		return fmt.Errorf("missing file_type")

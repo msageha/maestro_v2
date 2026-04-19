@@ -84,6 +84,14 @@ func removeSubscriber[T safeCloser](subs []T, target T) []T {
 	return subs
 }
 
+// criticalEventTypes lists event types that are always logged when dropped,
+// regardless of the exponential backoff interval used for non-critical types.
+var criticalEventTypes = map[EventType]bool{
+	EventTaskStarted:     true,
+	EventTaskCompleted:   true,
+	EventPhaseTransition: true,
+}
+
 // Bus is a non-blocking event bus using Publish/Subscribe pattern.
 // Events are delivered asynchronously via buffered channels.
 // If a subscriber's channel is full, the event is dropped and counted.
@@ -289,11 +297,18 @@ func (b *Bus) Publish(eventType EventType, data map[string]interface{}) {
 			// Event delivered successfully
 		default:
 			// Channel full, drop event and record
-			b.droppedCount.Add(1)
+			totalDropped := b.droppedCount.Add(1)
 			typeCount := b.addDroppedByType(eventType)
-			// Log on first drop per type, then at exponential intervals (powers of 2)
-			if typeCount == 1 || typeCount&(typeCount-1) == 0 {
-				slog.Warn("event_bus: event dropped", "event_type", string(eventType), "type_dropped", typeCount, "buffer_size", b.bufferSize)
+			// Always log critical event drops; log others on first drop per type,
+			// then at exponential intervals (powers of 2).
+			critical := criticalEventTypes[eventType]
+			if critical || typeCount == 1 || typeCount&(typeCount-1) == 0 {
+				slog.Warn("event_bus: event dropped",
+					"event_type", string(eventType),
+					"critical", critical,
+					"type_dropped", typeCount,
+					"total_dropped", totalDropped,
+					"buffer_size", b.bufferSize)
 			}
 		}
 	}

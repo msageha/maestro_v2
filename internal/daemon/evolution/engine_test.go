@@ -6,7 +6,7 @@ import (
 
 func TestPlanMutations_AllStrategies(t *testing.T) {
 	t.Parallel()
-	e := NewEngine([]Strategy{StrategyDiff, StrategyFull, StrategyCross}, 0.5, nil)
+	e := NewEngine([]Strategy{StrategyDiff, StrategyFull, StrategyCross}, nil)
 	slots := e.PlanMutations(2)
 
 	// diff:full:cross = 2:1:1 = 4 slots total
@@ -31,7 +31,7 @@ func TestPlanMutations_AllStrategies(t *testing.T) {
 
 func TestPlanMutations_SingleParent_NoCross(t *testing.T) {
 	t.Parallel()
-	e := NewEngine([]Strategy{StrategyDiff, StrategyFull, StrategyCross}, 0.5, nil)
+	e := NewEngine([]Strategy{StrategyDiff, StrategyFull, StrategyCross}, nil)
 	slots := e.PlanMutations(1)
 
 	// parentCount=1 → cross excluded → diff:full = 2:1 = 3 slots
@@ -48,7 +48,7 @@ func TestPlanMutations_SingleParent_NoCross(t *testing.T) {
 
 func TestPlanMutations_OnlyDiff(t *testing.T) {
 	t.Parallel()
-	e := NewEngine([]Strategy{StrategyDiff}, 0.5, nil)
+	e := NewEngine([]Strategy{StrategyDiff}, nil)
 	slots := e.PlanMutations(3)
 
 	if len(slots) != 2 {
@@ -63,7 +63,7 @@ func TestPlanMutations_OnlyDiff(t *testing.T) {
 
 func TestPlanMutations_IndicesSequential(t *testing.T) {
 	t.Parallel()
-	e := NewEngine([]Strategy{StrategyDiff, StrategyFull, StrategyCross}, 0.5, nil)
+	e := NewEngine([]Strategy{StrategyDiff, StrategyFull, StrategyCross}, nil)
 	slots := e.PlanMutations(2)
 
 	for i, s := range slots {
@@ -75,7 +75,7 @@ func TestPlanMutations_IndicesSequential(t *testing.T) {
 
 func TestCheckNovelty_NewHash(t *testing.T) {
 	t.Parallel()
-	e := NewEngine(nil, 0.5, nil)
+	e := NewEngine(nil, nil)
 	existing := []string{
 		HashContent("hello"),
 		HashContent("world"),
@@ -88,7 +88,7 @@ func TestCheckNovelty_NewHash(t *testing.T) {
 
 func TestCheckNovelty_ExistingHash(t *testing.T) {
 	t.Parallel()
-	e := NewEngine(nil, 0.5, nil)
+	e := NewEngine(nil, nil)
 	h := HashContent("hello")
 	existing := []string{h, HashContent("world")}
 
@@ -99,7 +99,7 @@ func TestCheckNovelty_ExistingHash(t *testing.T) {
 
 func TestCheckNovelty_EmptyExisting(t *testing.T) {
 	t.Parallel()
-	e := NewEngine(nil, 0.5, nil)
+	e := NewEngine(nil, nil)
 	if !e.CheckNovelty(HashContent("anything"), nil) {
 		t.Fatal("expected novel when no existing hashes")
 	}
@@ -121,7 +121,7 @@ func TestHashContent_Deterministic(t *testing.T) {
 
 func TestSelectSurvivors_TopN(t *testing.T) {
 	t.Parallel()
-	e := NewEngine(nil, 0.5, nil)
+	e := NewEngine(nil, nil)
 
 	results := []SlotResult{
 		{Index: 0, Strategy: StrategyDiff, FitnessDesc: "0.3", IsNovel: true},
@@ -146,7 +146,7 @@ func TestSelectSurvivors_TopN(t *testing.T) {
 
 func TestSelectSurvivors_OnlyNovel(t *testing.T) {
 	t.Parallel()
-	e := NewEngine(nil, 0.5, nil)
+	e := NewEngine(nil, nil)
 
 	results := []SlotResult{
 		{Index: 0, FitnessDesc: "0.9", IsNovel: false},
@@ -165,7 +165,7 @@ func TestSelectSurvivors_OnlyNovel(t *testing.T) {
 
 func TestSelectSurvivors_NoNovel(t *testing.T) {
 	t.Parallel()
-	e := NewEngine(nil, 0.5, nil)
+	e := NewEngine(nil, nil)
 
 	results := []SlotResult{
 		{Index: 0, FitnessDesc: "0.9", IsNovel: false},
@@ -179,7 +179,7 @@ func TestSelectSurvivors_NoNovel(t *testing.T) {
 
 func TestSelectSurvivors_MaxLessThanCandidates(t *testing.T) {
 	t.Parallel()
-	e := NewEngine(nil, 0.5, nil)
+	e := NewEngine(nil, nil)
 
 	results := []SlotResult{
 		{Index: 0, FitnessDesc: "0.8", IsNovel: true},

@@ -68,8 +68,10 @@ func ProjectName(name string) error {
 	return nil
 }
 
-// ContentLength checks that a text field does not exceed maxBytes when
-// encoded as UTF-8. Returns an error describing the field name and the limit.
+// ContentLength checks that a text field does not exceed maxBytes in byte length.
+// It uses len(value) which returns the number of bytes in the UTF-8 encoded
+// Go string, not the number of Unicode characters (runes).
+// Returns an error describing the field name and the limit.
 func ContentLength(field, value string, maxBytes int) error {
 	if len(value) > maxBytes {
 		return fmt.Errorf("validate: %s exceeds maximum size of %d bytes (got %d bytes)", field, maxBytes, len(value))

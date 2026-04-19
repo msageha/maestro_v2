@@ -69,9 +69,14 @@ func TestDebounceController_StopNormalCompletion(t *testing.T) {
 	var logBuf bytes.Buffer
 	dl := NewDaemonLoggerFromLegacy("test_debounce", log.New(&logBuf, "", 0), LogLevelDebug)
 
-	// scanFn completes quickly.
+	// Channel-based sync: test explicitly controls when scanFn completes,
+	// replacing non-deterministic time.Sleep with deterministic signaling.
+	scanStarted := make(chan struct{})
+	scanRelease := make(chan struct{})
+
 	dc := NewDebounceController(0.01, dl, func(_ context.Context) {
-		time.Sleep(50 * time.Millisecond) // essential: simulates scanFn processing time
+		close(scanStarted)
+		<-scanRelease
 	})
 
 	shuttingDown := atomic.Bool{}
@@ -83,10 +88,17 @@ func TestDebounceController_StopNormalCompletion(t *testing.T) {
 
 	dc.Trigger("test_trigger")
 
-	// Wait for callback to start, then finish, instead of a fixed sleep.
-	require.Eventually(t, func() bool {
-		return dc.running.Load()
-	}, 5*time.Second, 10*time.Millisecond, "callback did not start running")
+	// Wait for callback to start via channel signal.
+	select {
+	case <-scanStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("callback did not start within timeout")
+	}
+
+	// Release the callback so it completes normally.
+	close(scanRelease)
+
+	// Wait for callback to finish.
 	require.Eventually(t, func() bool {
 		return !dc.running.Load()
 	}, 5*time.Second, 10*time.Millisecond, "callback did not finish")

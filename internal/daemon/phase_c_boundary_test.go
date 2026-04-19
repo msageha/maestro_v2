@@ -233,7 +233,6 @@ func TestC1_Evolution_MutationStrategies(t *testing.T) {
 		t.Parallel()
 		engine := evolution.NewEngine(
 			[]evolution.Strategy{evolution.StrategyDiff, evolution.StrategyFull, evolution.StrategyCross},
-			0.5,
 			nil,
 		)
 		// With parentCount >= 2, cross is active. Distribution: diff:full:cross = 2:1:1.
@@ -257,7 +256,6 @@ func TestC1_Evolution_MutationStrategies(t *testing.T) {
 		t.Parallel()
 		engine := evolution.NewEngine(
 			[]evolution.Strategy{evolution.StrategyDiff, evolution.StrategyFull, evolution.StrategyCross},
-			0.5,
 			nil,
 		)
 		// parentCount < 2 → cross excluded.
@@ -271,7 +269,7 @@ func TestC1_Evolution_MutationStrategies(t *testing.T) {
 
 	t.Run("CheckNovelty", func(t *testing.T) {
 		t.Parallel()
-		engine := evolution.NewEngine(nil, 0.5, nil)
+		engine := evolution.NewEngine(nil, nil)
 		h1 := evolution.HashContent("hello")
 		h2 := evolution.HashContent("world")
 
@@ -288,7 +286,7 @@ func TestC1_Evolution_MutationStrategies(t *testing.T) {
 	t.Run("SelectSurvivors_WinnerTakesAll", func(t *testing.T) {
 		t.Parallel()
 		// §5-3: Winner-takes-all selection.
-		engine := evolution.NewEngine(nil, 0.5, nil)
+		engine := evolution.NewEngine(nil, nil)
 		results := []evolution.SlotResult{
 			{Index: 0, Strategy: evolution.StrategyDiff, FitnessDesc: "0.3", IsNovel: true},
 			{Index: 1, Strategy: evolution.StrategyFull, FitnessDesc: "0.9", IsNovel: true},

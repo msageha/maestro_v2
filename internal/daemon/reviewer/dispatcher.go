@@ -106,7 +106,7 @@ func (d *ReviewDispatcher) Dispatch(ctx context.Context, task model.Task, diffCo
 // "not built yet" from "review completed with no findings".
 func (d *ReviewDispatcher) reviewTask(ctx context.Context, req model.ReviewRequest) error {
 	start := time.Now()
-	result := model.NewReviewResult(req.ID, req.ReviewerModel)
+	result := model.NewReviewResult(req.ID, req.ReviewerModel, true)
 
 	defer func() {
 		result.Duration = time.Since(start)

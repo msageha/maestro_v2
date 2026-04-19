@@ -1,5 +1,10 @@
 package model
 
+import (
+	"errors"
+	"fmt"
+)
+
 // TaskTracking groups task state management fields within CommandState.
 // Embedded with yaml:",inline" to maintain flat YAML serialization.
 type TaskTracking struct {
@@ -131,4 +136,20 @@ type PhaseConstraints struct {
 	MaxTasks           int   `yaml:"max_tasks"`
 	AllowedBloomLevels []int `yaml:"allowed_bloom_levels"`
 	TimeoutMinutes     int   `yaml:"timeout_minutes"`
+}
+
+// Validate checks that PhaseConstraints fields are within valid ranges.
+// MaxTasks and TimeoutMinutes must be positive (> 0).
+func (pc PhaseConstraints) Validate() error {
+	var errs []error
+	if pc.MaxTasks <= 0 {
+		errs = append(errs, fmt.Errorf("phase_constraints.max_tasks: must be > 0, got %d", pc.MaxTasks))
+	}
+	if pc.TimeoutMinutes <= 0 {
+		errs = append(errs, fmt.Errorf("phase_constraints.timeout_minutes: must be > 0, got %d", pc.TimeoutMinutes))
+	}
+	if len(errs) == 0 {
+		return nil
+	}
+	return errors.Join(errs...)
 }

@@ -71,19 +71,26 @@ func createTestSession(t *testing.T, name string) string {
 }
 
 // waitForOutput polls the pane until the marker string appears or timeout expires.
-// Returns bool so callers can handle non-fatal timeouts; time.Sleep polling is
-// intentional here because require.Eventually would fatal on timeout.
+// Returns bool so callers can handle non-fatal timeouts. Uses ticker-based polling
+// for proper resource cleanup instead of time.Sleep.
 func waitForOutput(t *testing.T, paneTarget, marker string, timeout time.Duration) bool {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		content, err := CapturePane(paneTarget, 30)
-		if err == nil && strings.Contains(content, marker) {
-			return true
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-timer.C:
+			content, err := CapturePane(paneTarget, 30)
+			return err == nil && strings.Contains(content, marker)
+		case <-ticker.C:
+			content, err := CapturePane(paneTarget, 30)
+			if err == nil && strings.Contains(content, marker) {
+				return true
+			}
 		}
-		time.Sleep(200 * time.Millisecond) // polling interval for e2e tmux interaction
 	}
-	return false
 }
 
 // mustWaitForOutput polls until marker appears in the pane, fataling on timeout.
@@ -96,33 +103,49 @@ func mustWaitForOutput(t *testing.T, paneTarget, marker string, timeout time.Dur
 }
 
 // waitForCommand polls until the pane's current command matches expected.
-// Uses time.Sleep polling because this is a best-effort e2e helper that
-// logs a warning and proceeds on timeout rather than fataling.
+// Best-effort e2e helper: logs a warning and proceeds on timeout rather than fataling.
+// Uses ticker-based polling for proper resource cleanup.
 func waitForCommand(t *testing.T, paneTarget, expected string, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		cmd, err := GetPaneCurrentCommand(paneTarget)
-		if err == nil && strings.Contains(cmd, expected) {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-timer.C:
+			t.Logf("WARNING: command %q not detected in pane %s, proceeding", expected, paneTarget)
 			return
+		case <-ticker.C:
+			cmd, err := GetPaneCurrentCommand(paneTarget)
+			if err == nil && strings.Contains(cmd, expected) {
+				return
+			}
 		}
-		time.Sleep(100 * time.Millisecond) // polling interval for e2e tmux interaction
 	}
-	t.Logf("WARNING: command %q not detected in pane %s, proceeding", expected, paneTarget)
 }
 
 // waitForStableContent polls until the pane content hash is stable for stableDuration.
-// Uses time.Sleep polling because this is a best-effort e2e helper that logs a
-// warning and proceeds on timeout. The stability-check logic (comparing successive
-// hashes over a duration) does not map to require.Eventually's simple bool predicate.
+// Best-effort e2e helper: logs a warning and proceeds on timeout.
+// Uses ticker-based polling for proper resource cleanup.
 func waitForStableContent(t *testing.T, paneTarget string, stableDuration, timeout time.Duration) {
 	t.Helper()
-	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
 	var lastHash string
 	var stableSince time.Time
-	for time.Now().Before(deadline) {
-		content, err := CapturePaneJoined(paneTarget, 10)
-		if err == nil {
+	for {
+		select {
+		case <-timer.C:
+			t.Logf("WARNING: pane content not stable within %v, proceeding", timeout)
+			return
+		case <-ticker.C:
+			content, err := CapturePaneJoined(paneTarget, 10)
+			if err != nil {
+				continue
+			}
 			h := testContentHash(content)
 			if h == lastHash {
 				if time.Since(stableSince) >= stableDuration {
@@ -133,9 +156,7 @@ func waitForStableContent(t *testing.T, paneTarget string, stableDuration, timeo
 				stableSince = time.Now()
 			}
 		}
-		time.Sleep(100 * time.Millisecond) // polling interval for e2e tmux interaction
 	}
-	t.Logf("WARNING: pane content not stable within %v, proceeding", timeout)
 }
 
 // parseSubmissionLog reads the inputrecorder log file and returns parsed entries.
