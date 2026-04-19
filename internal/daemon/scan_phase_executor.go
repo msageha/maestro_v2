@@ -180,8 +180,10 @@ func (se *ScanPhaseExecutor) periodicScanPhaseC(pa phaseAResult, pb phaseBResult
 	se.scanMu.Lock()
 	defer se.scanMu.Unlock()
 
-	// Restore counters accumulated during Phase A
-	se.scanCounters = pa.counters
+	// Do NOT overwrite se.scanCounters with pa.counters here.
+	// se.scanCounters already holds Phase A values plus any increments
+	// from Phase B (e.g., SignalInlineRetrySuccesses from inline signal
+	// delivery retries). A raw assignment would discard Phase B increments.
 
 	// Delegate to QueueHandler for Phase C body (deeply coupled to handler dependencies).
 	return se.qh.executeScanPhaseCBody(se, pa, pb)
