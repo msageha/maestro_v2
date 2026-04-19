@@ -115,6 +115,8 @@ type Daemon struct {
 
 	cleanupOnce        sync.Once
 	closeExecutorsOnce sync.Once
+	watcherCloseOnce   sync.Once
+	exitFn             func(int) // os.Exit replacement; nil defaults to os.Exit
 	forceExit          atomic.Bool
 
 	// startupReconcileHook, when non-nil, is called instead of

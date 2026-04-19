@@ -1,13 +1,73 @@
 package bandit
 
 import (
+	"math"
 	"sync"
 	"testing"
 )
 
+func mustNewSelector(t *testing.T, coeff float64) *Selector {
+	t.Helper()
+	s, err := NewSelector(coeff)
+	if err != nil {
+		t.Fatalf("NewSelector(%v) unexpected error: %v", coeff, err)
+	}
+	return s
+}
+
+func TestNewSelector_InvalidCoeff(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		coeff float64
+	}{
+		{"NaN", math.NaN()},
+		{"PositiveInf", math.Inf(1)},
+		{"NegativeInf", math.Inf(-1)},
+		{"Negative", -1.0},
+		{"NegativeSmall", -0.001},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s, err := NewSelector(tt.coeff)
+			if err == nil {
+				t.Errorf("NewSelector(%v) expected error, got nil", tt.coeff)
+			}
+			if s != nil {
+				t.Errorf("NewSelector(%v) expected nil selector on error", tt.coeff)
+			}
+		})
+	}
+}
+
+func TestNewSelector_ValidCoeff(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name  string
+		coeff float64
+	}{
+		{"Zero", 0},
+		{"Positive", 1.41},
+		{"Large", 100.0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			s, err := NewSelector(tt.coeff)
+			if err != nil {
+				t.Errorf("NewSelector(%v) unexpected error: %v", tt.coeff, err)
+			}
+			if s == nil {
+				t.Errorf("NewSelector(%v) expected non-nil selector", tt.coeff)
+			}
+		})
+	}
+}
+
 func TestSelectArm_NoArms_ReturnsError(t *testing.T) {
 	t.Parallel()
-	s := NewSelector(1.0)
+	s := mustNewSelector(t, 1.0)
 	_, err := s.SelectArm()
 	if err == nil {
 		t.Fatal("expected error when no arms registered")
@@ -16,7 +76,7 @@ func TestSelectArm_NoArms_ReturnsError(t *testing.T) {
 
 func TestSelectArm_ExplorationPhase(t *testing.T) {
 	t.Parallel()
-	s := NewSelector(1.0)
+	s := mustNewSelector(t, 1.0)
 	s.AddArm("a")
 	s.AddArm("b")
 	s.AddArm("c")
@@ -41,7 +101,7 @@ func TestSelectArm_ExplorationPhase(t *testing.T) {
 
 func TestSelectArm_UCB1AfterExploration(t *testing.T) {
 	t.Parallel()
-	s := NewSelector(1.0)
+	s := mustNewSelector(t, 1.0)
 	s.AddArm("low")
 	s.AddArm("high")
 
@@ -61,7 +121,7 @@ func TestSelectArm_UCB1AfterExploration(t *testing.T) {
 
 func TestHighRewardArm_Convergence(t *testing.T) {
 	t.Parallel()
-	s := NewSelector(1.0)
+	s := mustNewSelector(t, 1.0)
 	s.AddArm("bad")
 	s.AddArm("good")
 
@@ -96,7 +156,7 @@ func TestHighRewardArm_Convergence(t *testing.T) {
 
 func TestExplorationCoeff_Zero_PureGreedy(t *testing.T) {
 	t.Parallel()
-	s := NewSelector(0)
+	s := mustNewSelector(t, 0)
 	s.AddArm("low")
 	s.AddArm("high")
 
@@ -118,7 +178,7 @@ func TestExplorationCoeff_Zero_PureGreedy(t *testing.T) {
 
 func TestExplorationCoeff_High_ExploresMore(t *testing.T) {
 	t.Parallel()
-	s := NewSelector(100.0) // Very high exploration coefficient.
+	s := mustNewSelector(t, 100.0) // Very high exploration coefficient.
 	s.AddArm("low")
 	s.AddArm("high")
 
@@ -145,7 +205,7 @@ func TestExplorationCoeff_High_ExploresMore(t *testing.T) {
 
 func TestConcurrentSafety(t *testing.T) {
 	t.Parallel()
-	s := NewSelector(1.0)
+	s := mustNewSelector(t, 1.0)
 	s.AddArm("a")
 	s.AddArm("b")
 	s.AddArm("c")
@@ -176,7 +236,7 @@ func TestConcurrentSafety(t *testing.T) {
 
 func TestBestArm_NoPulls_ReturnsError(t *testing.T) {
 	t.Parallel()
-	s := NewSelector(1.0)
+	s := mustNewSelector(t, 1.0)
 	s.AddArm("a")
 	_, _, err := s.BestArm()
 	if err == nil {
@@ -186,7 +246,7 @@ func TestBestArm_NoPulls_ReturnsError(t *testing.T) {
 
 func TestBestArm_ReturnsHighestAvg(t *testing.T) {
 	t.Parallel()
-	s := NewSelector(1.0)
+	s := mustNewSelector(t, 1.0)
 	s.AddArm("low")
 	s.AddArm("mid")
 	s.AddArm("high")
@@ -209,7 +269,7 @@ func TestBestArm_ReturnsHighestAvg(t *testing.T) {
 
 func TestReset_ClearsAllState(t *testing.T) {
 	t.Parallel()
-	s := NewSelector(1.0)
+	s := mustNewSelector(t, 1.0)
 	s.AddArm("a")
 	s.UpdateReward("a", 1.0)
 
@@ -228,7 +288,7 @@ func TestReset_ClearsAllState(t *testing.T) {
 
 func TestAddArm_Duplicate_NoOp(t *testing.T) {
 	t.Parallel()
-	s := NewSelector(1.0)
+	s := mustNewSelector(t, 1.0)
 	s.AddArm("a")
 	s.UpdateReward("a", 1.0)
 	s.AddArm("a") // duplicate add should not reset stats
@@ -241,7 +301,7 @@ func TestAddArm_Duplicate_NoOp(t *testing.T) {
 
 func TestUCB1Score_ZeroPulls_ReturnsZero(t *testing.T) {
 	t.Parallel()
-	s := NewSelector(1.0)
+	s := mustNewSelector(t, 1.0)
 	arm := &ArmStats{Name: "test", PullCount: 0}
 	score := s.UCB1Score(arm)
 	if score != 0 {

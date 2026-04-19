@@ -94,12 +94,12 @@ func (qh *QueueHandler) stepDispatchWork(ctx context.Context, pa *phaseAResult, 
 		var err error
 		switch item.Kind {
 		case "command":
-			err = qh.dispatcher.DispatchCommand(item.Command)
+			err = qh.dispatcher.DispatchCommand(ctx, item.Command)
 		case "task":
 			if qh.isTaskDispatchCancelled(item, pa) {
 				err = fmt.Errorf("dispatch blocked: command %s cancel-requested", item.Task.CommandID)
 			} else {
-				err = qh.dispatcher.DispatchTask(item.Task, item.WorkerID)
+				err = qh.dispatcher.DispatchTask(ctx, item.Task, item.WorkerID)
 			}
 		case "notification":
 			err = qh.dispatcher.DispatchNotification(item.Notification)

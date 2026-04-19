@@ -20,6 +20,11 @@ import (
 // this timeout, a warning is logged and shutdown proceeds to the next step.
 const shutdownOpTimeout = 10 * time.Second
 
+// shutdownGracePeriod is the extra time allowed after the main shutdown timeout
+// for defers and in-flight cleanup to complete before the process is forcibly
+// terminated via os.Exit.
+const shutdownGracePeriod = 5 * time.Second
+
 // waitSignals blocks until a shutdown signal or context cancellation is received.
 func (d *Daemon) waitSignals() {
 	sigCh := make(chan os.Signal, 2)
@@ -45,14 +50,10 @@ func (d *Daemon) waitSignals() {
 			case <-sigCh:
 				d.log(LogLevelWarn, "received second signal, forcing exit")
 				d.forceExit.Store(true)
-				if d.watcher != nil {
-					if err := d.watcher.Close(); err != nil {
-						d.log(LogLevelDebug, "shutdown force_exit watcher_close error=%v", err)
-					}
-				}
+				d.closeWatcher()
 				d.closeExecutors()
 				d.cleanup()
-				os.Exit(1)
+				d.doExit(1)
 			case <-shutdownDone:
 				return
 			}
@@ -102,7 +103,7 @@ func (d *Daemon) Shutdown() {
 			d.handler.Stop()
 		}
 		if d.watcher != nil {
-			d.shutdownOp("watcher_close", func() error { return d.watcher.Close() })
+			d.shutdownOp("watcher_close", func() error { return d.closeWatcher() })
 		}
 		if d.server != nil {
 			d.shutdownOp("server_stop", func() error { return d.server.Stop() })
@@ -156,10 +157,15 @@ func (d *Daemon) Shutdown() {
 				n := runtime.Stack(buf, true)
 				d.log(LogLevelWarn, "shutdown timeout after %ds, dumping %d bytes of goroutine stacks:\n%s",
 					totalTimeout, n, string(buf[:n]))
-				d.log(LogLevelWarn, "WARNING: shutdown timed out, forcing exit")
-				d.closeExecutors()
-				d.cleanup()
-				os.Exit(1)
+				d.log(LogLevelWarn, "WARNING: shutdown timed out, entering grace period for cleanup")
+				// Schedule hard exit as safety net. This goroutine is intentionally
+				// detached — it guarantees process termination if cleanup hangs.
+				go func() {
+					time.Sleep(shutdownGracePeriod)
+					d.doExit(1)
+				}()
+				// Fall through to cleanup — defers in callers will execute during
+				// the grace period before the hard exit fires.
 			}
 		}
 
@@ -211,6 +217,28 @@ func (d *Daemon) shutdownOp(name string, fn func() error) {
 		// instead of leaking due to a blocked channel send.
 		go func() { <-done }()
 	}
+}
+
+// doExit terminates the process with the given exit code.
+// Uses d.exitFn if set (for testing), otherwise falls back to os.Exit.
+func (d *Daemon) doExit(code int) {
+	fn := d.exitFn
+	if fn == nil {
+		fn = os.Exit
+	}
+	fn(code)
+}
+
+// closeWatcher closes the fsnotify watcher exactly once. Safe to call from
+// both the graceful shutdown path and the force-exit signal handler.
+func (d *Daemon) closeWatcher() error {
+	var err error
+	d.watcherCloseOnce.Do(func() {
+		if d.watcher != nil {
+			err = d.watcher.Close()
+		}
+	})
+	return err
 }
 
 // closeExecutors closes the shared executor instance to release log file handles.
