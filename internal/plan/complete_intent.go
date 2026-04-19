@@ -29,6 +29,7 @@ type completeIntent struct {
 	ResultStatus        model.Status              `yaml:"result_status"`
 	PlanStatus          model.PlanStatus          `yaml:"plan_status"`
 	TaskResults         []model.CommandResultTask `yaml:"task_results"`
+	TaskResultsVersion  uint64                    `yaml:"task_results_version,omitempty"`
 	CreatedAt           string                    `yaml:"created_at"`
 	ProcessingStartedAt string                    `yaml:"processing_started_at,omitempty"`
 }
@@ -64,7 +65,30 @@ func replayCompleteIntent(opts CompleteOptions, sm *StateManager, intent *comple
 
 	// If state is already terminal, steps 1+2 may already be done; replay is
 	// still safe because each step is idempotent.
-	if err := executeCompleteSteps(opts, sm, state, intent); err != nil {
+	err = executeCompleteSteps(opts, sm, state, intent)
+	var staleErr *staleTaskResultsError
+	if errors.As(err, &staleErr) {
+		// H3 conflict path detected stale task results — refresh from disk and retry once.
+		slog.Info("replayCompleteIntent: stale task results detected, refreshing and retrying",
+			"command_id", intent.CommandID,
+			"intent_version", staleErr.IntentVersion,
+			"current_version", staleErr.CurrentVersion)
+		freshResults, freshPartialErrs, freshErr := aggregateTaskResults(opts.MaestroDir, intent.CommandID)
+		if freshErr != nil {
+			return "", fmt.Errorf("stale recovery re-aggregate: %w", freshErr)
+		}
+		if len(freshPartialErrs) > 0 {
+			return "", fmt.Errorf("stale recovery partial results: %w", errors.Join(freshPartialErrs...))
+		}
+		intent.TaskResults = freshResults
+		intent.TaskResultsVersion = computeTaskResultsVersion(freshResults)
+		if writeErr := writeCompleteIntent(opts.MaestroDir, intent); writeErr != nil {
+			return "", fmt.Errorf("stale recovery write intent: %w", writeErr)
+		}
+		if retryErr := executeCompleteSteps(opts, sm, state, intent); retryErr != nil {
+			return "", retryErr
+		}
+	} else if err != nil {
 		return "", err
 	}
 

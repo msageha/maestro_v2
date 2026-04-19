@@ -288,7 +288,7 @@ func TestR4PlanStatus_CanCompleteNil_Skipped(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
 
 	run := newRun(&deps)
-	outcome := (&R4PlanStatus{}).Apply(run)
+	outcome := NewR4PlanStatus(nil).Apply(run)
 	if len(outcome.Repairs) != 0 {
 		t.Errorf("expected no repairs when CanComplete is nil, got %d", len(outcome.Repairs))
 	}
@@ -319,7 +319,7 @@ func TestR4PlanStatus_AlreadyTerminal_Skipped(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
 
 	run := newRun(&deps)
-	outcome := (&R4PlanStatus{}).Apply(run)
+	outcome := NewR4PlanStatus(nil).Apply(run)
 	if len(outcome.Repairs) != 0 {
 		t.Errorf("expected no repairs for already terminal state, got %d", len(outcome.Repairs))
 	}
@@ -350,7 +350,7 @@ func TestR4PlanStatus_CanCompleteSuccess(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
 
 	run := newRun(&deps)
-	outcome := (&R4PlanStatus{}).Apply(run)
+	outcome := NewR4PlanStatus(nil).Apply(run)
 	if len(outcome.Repairs) != 1 {
 		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
 	}
@@ -392,7 +392,7 @@ func TestR4PlanStatus_CanCompleteFails_QuarantineAndNotify(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd1.yaml"), state)
 
 	run := newRun(&deps)
-	outcome := (&R4PlanStatus{}).Apply(run)
+	outcome := NewR4PlanStatus(nil).Apply(run)
 	if len(outcome.Repairs) != 1 {
 		t.Fatalf("expected 1 repair, got %d", len(outcome.Repairs))
 	}
@@ -435,7 +435,7 @@ func TestR4PlanStatus_StateNotFound_NoRepair(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
 
 	run := newRun(&deps)
-	outcome := (&R4PlanStatus{}).Apply(run)
+	outcome := NewR4PlanStatus(nil).Apply(run)
 	if len(outcome.Repairs) != 0 {
 		t.Errorf("expected no repairs when state file missing, got %d", len(outcome.Repairs))
 	}
@@ -1323,7 +1323,7 @@ func TestR4PlanStatus_PlanningStatus_Skipped(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_planning.yaml"), state)
 
 	run := newRun(&deps)
-	outcome := (&R4PlanStatus{}).Apply(run)
+	outcome := NewR4PlanStatus(nil).Apply(run)
 	if len(outcome.Repairs) != 0 {
 		t.Errorf("expected no repairs for planning status, got %d", len(outcome.Repairs))
 	}
@@ -1360,7 +1360,7 @@ func TestR4PlanStatus_BackoffExponential(t *testing.T) {
 	}
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_bo.yaml"), state)
 
-	r4 := &R4PlanStatus{}
+	r4 := NewR4PlanStatus(nil)
 
 	// Cycle 1: should call CanComplete (fails), enters backoff skip=1
 	run1 := newRun(&deps)
@@ -1444,7 +1444,7 @@ func TestR4PlanStatus_BackoffClearedOnSuccess(t *testing.T) {
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
 	yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_clear.yaml"), state)
 
-	r4 := &R4PlanStatus{}
+	r4 := NewR4PlanStatus(nil)
 
 	// Cycle 1: fails, enters backoff
 	r4.Apply(newRun(&deps))
@@ -1498,6 +1498,89 @@ func TestR4BackoffCycles(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("r4BackoffCycles(%d) = %d, want %d", tt.failures, got, tt.want)
 		}
+	}
+}
+
+func TestR4PlanStatus_BackoffSurvivesEngineRebuild(t *testing.T) {
+	t.Parallel()
+	maestroDir := testutil.SetupDir(t)
+	deps := newTestDeps(t, maestroDir)
+	callCount := 0
+	deps.CanComplete = func(*model.CommandState) (model.PlanStatus, error) {
+		callCount++
+		return "", fmt.Errorf("still incomplete")
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	rf := model.CommandResultFile{
+		Results: []model.CommandResult{
+			{ID: "res1", CommandID: "cmd_rebuild", Status: model.StatusCompleted, CreatedAt: now},
+		},
+	}
+	state := model.CommandState{
+		CommandID:  "cmd_rebuild",
+		PlanStatus: model.PlanStatusSealed,
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}
+
+	writeFixtures := func() {
+		yamlutil.AtomicWrite(filepath.Join(maestroDir, "results", "planner.yaml"), rf)
+		yamlutil.AtomicWrite(filepath.Join(maestroDir, "state", "commands", "cmd_rebuild.yaml"), state)
+	}
+
+	// --- Without shared tracker: backoff resets on Engine rebuild ---
+
+	// Engine 1 with its own tracker
+	writeFixtures()
+	r4Standalone := NewR4PlanStatus(nil) // own tracker
+	engine1 := NewEngine(deps, r4Standalone)
+	engine1.Reconcile() // CanComplete called → fail, backoff state in standalone tracker
+	callsBefore := callCount
+
+	// Rebuild engine WITHOUT sharing tracker → new R4PlanStatus has empty backoffs
+	writeFixtures()
+	r4Fresh := NewR4PlanStatus(nil) // new tracker, backoff lost
+	engine2 := NewEngine(deps, r4Fresh)
+	engine2.Reconcile()
+	callsAfterFresh := callCount - callsBefore
+	// Should call CanComplete again immediately (no backoff from previous engine)
+	if callsAfterFresh < 1 {
+		t.Fatalf("fresh tracker: expected CanComplete called, got 0 additional calls")
+	}
+
+	// --- With shared tracker: backoff persists across Engine rebuild ---
+
+	callCount = 0
+	tracker := NewBackoffTracker()
+
+	// Engine A with shared tracker: run 3 cycles to accumulate failures (skip will be high)
+	for i := 0; i < 3; i++ {
+		writeFixtures()
+		r4A := NewR4PlanStatus(tracker)
+		engineA := NewEngine(deps, r4A)
+		engineA.Reconcile()
+	}
+	callsAfterA := callCount
+
+	// Rebuild engine B with same shared tracker
+	writeFixtures()
+	r4B := NewR4PlanStatus(tracker)
+	engineB := NewEngine(deps, r4B)
+	engineB.Reconcile()
+
+	// After 3 failures, backoff skip is high enough that the next cycle should
+	// still be in backoff (skipped). If tracker weren't shared, callCount would increase.
+	if callCount > callsAfterA+1 {
+		// If it called CanComplete more than once extra, the backoff is not persisting.
+		// With proper backoff after 3 failures (skip=4 on 3rd fail), the first Reconcile
+		// on engineB should tick once but still have remaining skip cycles.
+		t.Errorf("shared tracker: expected backoff to limit calls; got %d after engineA's %d", callCount, callsAfterA)
+	}
+
+	// Verify tracker is truly shared: isInBackoff should report state from engineA's runs
+	if !tracker.isInBackoff("cmd_rebuild") {
+		t.Error("shared tracker: expected cmd_rebuild to be in backoff after engine rebuild")
 	}
 }
 

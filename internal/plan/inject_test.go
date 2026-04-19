@@ -1,9 +1,11 @@
 package plan
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -714,14 +716,13 @@ func TestAddTask_TargetPhase_NotFound(t *testing.T) {
 	}
 }
 
-func TestAddTask_NoTargetPhase_FallbackUnchanged(t *testing.T) {
+func TestAddTask_NoTargetPhase_AllTerminal_ReturnsError(t *testing.T) {
 	maestroDir, commandID, _, _, _ := setupInjectFixtureWithPhases(t)
 	cfg := testConfig()
 	lm := lock.NewMutexMap()
 
-	// Both phases are terminal (completed). Without TargetPhase, fallback should
-	// place the task in phase 0 (existing behavior).
-	result, err := AddTask(InjectOptions{
+	// Both phases are terminal (completed). Without TargetPhase, should return error.
+	_, err := AddTask(InjectOptions{
 		CommandID:          commandID,
 		Purpose:            "independent task",
 		Content:            "do something",
@@ -732,26 +733,16 @@ func TestAddTask_NoTargetPhase_FallbackUnchanged(t *testing.T) {
 		Config:             cfg,
 		LockMap:            lm,
 	})
-	if err != nil {
-		t.Fatalf("AddTask returned error: %v", err)
+	if err == nil {
+		t.Fatal("expected error when all phases are terminal and no target_phase is set")
 	}
 
-	sm := NewStateManager(maestroDir, lm)
-	state, err := sm.LoadState(commandID)
-	if err != nil {
-		t.Fatalf("load state: %v", err)
+	var pve *planValidationError
+	if !errors.As(err, &pve) {
+		t.Fatalf("expected *planValidationError, got %T: %v", err, err)
 	}
-
-	// All phases are terminal, so fallback should go to phase 0
-	foundInPhase0 := false
-	for _, tid := range state.Phases[0].TaskIDs {
-		if tid == result.TaskID {
-			foundInPhase0 = true
-			break
-		}
-	}
-	if !foundInPhase0 {
-		t.Errorf("task %s not in phase 0 (fallback); phase0 TaskIDs: %v", result.TaskID, state.Phases[0].TaskIDs)
+	if !strings.Contains(pve.Msg, "all phases are terminal") {
+		t.Errorf("error message = %q, want to contain 'all phases are terminal'", pve.Msg)
 	}
 }
 
@@ -1028,5 +1019,37 @@ func TestAddTask_TargetWorkerID_NoQueueMatch_FallsBackToFirstNonTerminal(t *test
 	}
 	if !foundInPhase2 {
 		t.Errorf("task %s not in phase2 (first non-terminal); phase2 TaskIDs: %v", result.TaskID, reloaded.Phases[1].TaskIDs)
+	}
+}
+
+func TestAddTask_TargetWorkerID_AllTerminal_ReturnsError(t *testing.T) {
+	// When TargetWorkerID is set but the worker has no tasks in the queue,
+	// and all phases are terminal, should return error instead of falling back to phase 0.
+	maestroDir, commandID, _, _, _ := setupInjectFixtureWithPhases(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	_, err := AddTask(InjectOptions{
+		CommandID:          commandID,
+		Purpose:            "resolve conflict for worker2",
+		Content:            "fix conflicting files",
+		AcceptanceCriteria: "build passes",
+		BloomLevel:         3,
+		Required:           true,
+		TargetWorkerID:     "worker2",
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err == nil {
+		t.Fatal("expected error when all phases are terminal and TargetWorkerID has no queue match")
+	}
+
+	var pve *planValidationError
+	if !errors.As(err, &pve) {
+		t.Fatalf("expected *planValidationError, got %T: %v", err, err)
+	}
+	if !strings.Contains(pve.Msg, "all phases are terminal") {
+		t.Errorf("error message = %q, want to contain 'all phases are terminal'", pve.Msg)
 	}
 }

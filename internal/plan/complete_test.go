@@ -737,6 +737,126 @@ func TestComplete_H3_ConflictRecovery_StateFailedIntentCompleted(t *testing.T) {
 	_ = strings.TrimSpace
 }
 
+// TestComplete_H3_StaleTaskResults_DetectedAndRetried verifies that when
+// the H3 conflict path encounters stale task results (intent snapshot differs
+// from current on-disk results), the stale condition is detected and the
+// reconciliation retries with fresh results.
+func TestComplete_H3_StaleTaskResults_DetectedAndRetried(t *testing.T) {
+	commandID := "cmd_0000000070_aabbccdd"
+	taskID1 := "task_0000000070_11111111"
+	taskID2 := "task_0000000070_22222222"
+
+	// Setup: both tasks exist in state (task1 completed, task2 failed).
+	taskStates := map[string]model.Status{
+		taskID1: model.StatusCompleted,
+		taskID2: model.StatusFailed,
+	}
+	requiredIDs := []string{taskID1, taskID2}
+
+	maestroDir := setupCompleteTest(t, commandID, taskStates, requiredIDs)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	// Force state to failed (simulating dead-letter post-crash transition).
+	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
+	stateData, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var st model.CommandState
+	if err := yamlv3.Unmarshal(stateData, &st); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	st.PlanStatus = model.PlanStatusFailed
+	if err := yamlutil.AtomicWrite(statePath, &st); err != nil {
+		t.Fatalf("write failed state: %v", err)
+	}
+
+	// Write intent with OLD task results (only taskID1 — missing taskID2).
+	// This simulates the crash happening before all results were aggregated.
+	oldResults := []model.CommandResultTask{
+		{TaskID: taskID1, Worker: "worker0", Status: model.StatusCompleted, Summary: "done"},
+	}
+	writeManualIntent(t, maestroDir, &completeIntent{
+		SchemaVersion:      1,
+		FileType:           "intent_plan_complete",
+		CommandID:          commandID,
+		Summary:            "prior completed",
+		ResultStatus:       model.StatusCompleted,
+		PlanStatus:         model.PlanStatusCompleted,
+		TaskResults:        oldResults,
+		TaskResultsVersion: computeTaskResultsVersion(oldResults),
+		CreatedAt:          "2025-01-01T00:00:00Z",
+	})
+
+	// On-disk worker results have BOTH tasks (written by setupCompleteTest).
+	// Intent has 1 result but disk has 2 → stale!
+
+	result, err := Complete(CompleteOptions{
+		CommandID:  commandID,
+		Summary:    "caller summary (ignored on recovery)",
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lm,
+	})
+	if err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+	// Returned status should reflect the actual state (failed), not the intent.
+	if result.Status != string(model.PlanStatusFailed) {
+		t.Errorf("Status = %q, want %q", result.Status, model.PlanStatusFailed)
+	}
+
+	// Verify reconciled command result has BOTH tasks (fresh, not stale).
+	cmdResultPath := filepath.Join(maestroDir, "results", "planner.yaml")
+	cmdResultData, err := os.ReadFile(cmdResultPath)
+	if err != nil {
+		t.Fatalf("read command result: %v", err)
+	}
+	var crf model.CommandResultFile
+	if err := yamlv3.Unmarshal(cmdResultData, &crf); err != nil {
+		t.Fatalf("unmarshal command result: %v", err)
+	}
+	if len(crf.Results) != 1 {
+		t.Fatalf("len(Results) = %d, want 1", len(crf.Results))
+	}
+	// TaskStats.Total should be 2 (both tasks), not 1 (stale snapshot).
+	if crf.Results[0].TaskStats.Total != 2 {
+		t.Errorf("TaskStats.Total = %d, want 2 (fresh results used after stale detection)", crf.Results[0].TaskStats.Total)
+	}
+	if crf.Results[0].TaskStats.Completed != 1 {
+		t.Errorf("TaskStats.Completed = %d, want 1", crf.Results[0].TaskStats.Completed)
+	}
+	if crf.Results[0].TaskStats.Failed != 1 {
+		t.Errorf("TaskStats.Failed = %d, want 1", crf.Results[0].TaskStats.Failed)
+	}
+
+	// Verify reconciled status is failed (matching actual state).
+	if crf.Results[0].Status != model.StatusFailed {
+		t.Errorf("result.Status = %q, want failed (reconciled to state)", crf.Results[0].Status)
+	}
+
+	// Verify queue is reconciled to failed.
+	plannerPath := filepath.Join(maestroDir, "queue", "planner.yaml")
+	plannerData, err := os.ReadFile(plannerPath)
+	if err != nil {
+		t.Fatalf("read planner queue: %v", err)
+	}
+	var cq model.CommandQueue
+	if err := yamlv3.Unmarshal(plannerData, &cq); err != nil {
+		t.Fatalf("unmarshal planner queue: %v", err)
+	}
+	if cq.Commands[0].Status != model.StatusFailed {
+		t.Errorf("queue command status = %s, want failed (reconciled)", cq.Commands[0].Status)
+	}
+
+	// Verify intent file was removed after successful recovery.
+	intentPath := completeIntentPath(maestroDir, commandID)
+	if _, err := os.Stat(intentPath); !os.IsNotExist(err) {
+		t.Error("intent file should be removed after recovery")
+	}
+}
+
 // --- C-A2: Intent recovery stamps processing_started_at ---
 
 func TestComplete_RecoveryReplay_StampsProcessingStartedAt(t *testing.T) {

@@ -212,6 +212,192 @@ func TestEvaluate_WinnerIndexNotInSlotIndices(t *testing.T) {
 	}
 }
 
+func TestEvaluate_UnknownFields(t *testing.T) {
+	t.Parallel()
+	j := NewJudge(&mockCaller{
+		response: `{"winner_index": 0, "reasoning": "A is better", "injected": "malicious"}`,
+	}, "m", 5*time.Second)
+
+	d, err := j.Evaluate(context.Background(), twoCandidates())
+	if err == nil {
+		t.Fatal("expected error for unknown fields")
+	}
+	if d.WinnerIndex != nil {
+		t.Errorf("error fallback should return nil WinnerIndex, got %v", d.WinnerIndex)
+	}
+	if !strings.Contains(err.Error(), "parse") {
+		t.Errorf("error should mention parse failure: %v", err)
+	}
+}
+
+func TestEvaluate_EmptyReasoning(t *testing.T) {
+	t.Parallel()
+	j := NewJudge(&mockCaller{
+		response: `{"winner_index": 0, "reasoning": ""}`,
+	}, "m", 5*time.Second)
+
+	d, err := j.Evaluate(context.Background(), twoCandidates())
+	if err == nil {
+		t.Fatal("expected error for empty reasoning")
+	}
+	if d.WinnerIndex != nil {
+		t.Errorf("error fallback should return nil WinnerIndex, got %v", d.WinnerIndex)
+	}
+	if !strings.Contains(err.Error(), "reasoning must not be empty") {
+		t.Errorf("error should mention empty reasoning: %v", err)
+	}
+}
+
+func TestEvaluate_WhitespaceOnlyReasoning(t *testing.T) {
+	t.Parallel()
+	j := NewJudge(&mockCaller{
+		response: `{"winner_index": 0, "reasoning": "   \n\t  "}`,
+	}, "m", 5*time.Second)
+
+	d, err := j.Evaluate(context.Background(), twoCandidates())
+	if err == nil {
+		t.Fatal("expected error for whitespace-only reasoning")
+	}
+	if d.WinnerIndex != nil {
+		t.Errorf("error fallback should return nil WinnerIndex, got %v", d.WinnerIndex)
+	}
+	if !strings.Contains(err.Error(), "reasoning must not be empty") {
+		t.Errorf("error should mention empty reasoning: %v", err)
+	}
+}
+
+func TestEvaluate_ReasoningTooLong(t *testing.T) {
+	t.Parallel()
+	longReason := strings.Repeat("x", maxReasoningLength+1)
+	j := NewJudge(&mockCaller{
+		response: `{"winner_index": 0, "reasoning": "` + longReason + `"}`,
+	}, "m", 5*time.Second)
+
+	d, err := j.Evaluate(context.Background(), twoCandidates())
+	if err == nil {
+		t.Fatal("expected error for too-long reasoning")
+	}
+	if d.WinnerIndex != nil {
+		t.Errorf("error fallback should return nil WinnerIndex, got %v", d.WinnerIndex)
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum length") {
+		t.Errorf("error should mention length limit: %v", err)
+	}
+}
+
+func TestEvaluate_WinnerIndexAsString(t *testing.T) {
+	t.Parallel()
+	j := NewJudge(&mockCaller{
+		response: `{"winner_index": "zero", "reasoning": "A is better"}`,
+	}, "m", 5*time.Second)
+
+	d, err := j.Evaluate(context.Background(), twoCandidates())
+	if err == nil {
+		t.Fatal("expected error for string winner_index")
+	}
+	if d.WinnerIndex != nil {
+		t.Errorf("error fallback should return nil WinnerIndex, got %v", d.WinnerIndex)
+	}
+}
+
+func TestEvaluate_WinnerIndexAsFloat(t *testing.T) {
+	t.Parallel()
+	j := NewJudge(&mockCaller{
+		response: `{"winner_index": 1.5, "reasoning": "A is better"}`,
+	}, "m", 5*time.Second)
+
+	d, err := j.Evaluate(context.Background(), twoCandidates())
+	if err == nil {
+		t.Fatal("expected error for float winner_index")
+	}
+	if d.WinnerIndex != nil {
+		t.Errorf("error fallback should return nil WinnerIndex, got %v", d.WinnerIndex)
+	}
+	if !strings.Contains(err.Error(), "must be an integer") {
+		t.Errorf("error should mention integer requirement: %v", err)
+	}
+}
+
+func TestEvaluate_WinnerIndexAsNull(t *testing.T) {
+	t.Parallel()
+	j := NewJudge(&mockCaller{
+		response: `{"winner_index": null, "reasoning": "A is better"}`,
+	}, "m", 5*time.Second)
+
+	d, err := j.Evaluate(context.Background(), twoCandidates())
+	if err == nil {
+		t.Fatal("expected error for null winner_index")
+	}
+	if d.WinnerIndex != nil {
+		t.Errorf("error fallback should return nil WinnerIndex, got %v", d.WinnerIndex)
+	}
+}
+
+func TestEvaluate_MissingWinnerIndex(t *testing.T) {
+	t.Parallel()
+	j := NewJudge(&mockCaller{
+		response: `{"reasoning": "A is better"}`,
+	}, "m", 5*time.Second)
+
+	d, err := j.Evaluate(context.Background(), twoCandidates())
+	if err == nil {
+		t.Fatal("expected error for missing winner_index")
+	}
+	if d.WinnerIndex != nil {
+		t.Errorf("error fallback should return nil WinnerIndex, got %v", d.WinnerIndex)
+	}
+}
+
+func TestEvaluate_MissingReasoning(t *testing.T) {
+	t.Parallel()
+	j := NewJudge(&mockCaller{
+		response: `{"winner_index": 0}`,
+	}, "m", 5*time.Second)
+
+	d, err := j.Evaluate(context.Background(), twoCandidates())
+	if err == nil {
+		t.Fatal("expected error for missing reasoning")
+	}
+	if d.WinnerIndex != nil {
+		t.Errorf("error fallback should return nil WinnerIndex, got %v", d.WinnerIndex)
+	}
+	if !strings.Contains(err.Error(), "reasoning must not be empty") {
+		t.Errorf("error should mention empty reasoning: %v", err)
+	}
+}
+
+func TestEvaluate_TrailingContent(t *testing.T) {
+	t.Parallel()
+	j := NewJudge(&mockCaller{
+		response: `{"winner_index": 0, "reasoning": "ok"} {"extra": "json"}`,
+	}, "m", 5*time.Second)
+
+	d, err := j.Evaluate(context.Background(), twoCandidates())
+	if err == nil {
+		t.Fatal("expected error for trailing content")
+	}
+	if d.WinnerIndex != nil {
+		t.Errorf("error fallback should return nil WinnerIndex, got %v", d.WinnerIndex)
+	}
+	if !strings.Contains(err.Error(), "trailing content") {
+		t.Errorf("error should mention trailing content: %v", err)
+	}
+}
+
+func TestParseLLMResponse_ValidResponse(t *testing.T) {
+	t.Parallel()
+	resp, err := parseLLMResponse(`{"winner_index": 1, "reasoning": "B is cleaner"}`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.WinnerIndex.String() != "1" {
+		t.Errorf("want winner_index 1, got %s", resp.WinnerIndex.String())
+	}
+	if resp.Reasoning != "B is cleaner" {
+		t.Errorf("want reasoning 'B is cleaner', got %s", resp.Reasoning)
+	}
+}
+
 func TestBuildPrompt_ContainsCandidateInfo(t *testing.T) {
 	t.Parallel()
 	candidates := twoCandidates()

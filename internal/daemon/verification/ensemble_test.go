@@ -45,7 +45,7 @@ func TestAggregate_CriticalWeightFailed(t *testing.T) {
 func TestAggregate_LintOnlyFailed(t *testing.T) {
 	t.Parallel()
 	v := NewVerifier()
-	// lint has weight 0.8 — not critical
+	// lint has weight 0.8 — not critical (< 1.0), so Passed remains true
 	results := []PerspectiveResult{
 		{Name: "build", Passed: true},
 		{Name: "lint", Passed: false},
@@ -53,8 +53,8 @@ func TestAggregate_LintOnlyFailed(t *testing.T) {
 		{Name: "typecheck", Passed: true},
 	}
 	agg := v.Aggregate(results)
-	if agg.Passed {
-		t.Error("expected Passed=false when any perspective fails")
+	if !agg.Passed {
+		t.Error("expected Passed=true when only non-critical perspective (weight < 1.0) fails")
 	}
 	// TotalScore = (1.0 + 0.0 + 1.0 + 0.9) / (1.0 + 0.8 + 1.0 + 0.9) = 2.9 / 3.7
 	expected := 2.9 / 3.7
@@ -132,8 +132,96 @@ func TestAddPerspective(t *testing.T) {
 	t.Parallel()
 	v := NewVerifier()
 	initial := len(v.perspectives)
-	v.AddPerspective(Perspective{Name: "security", Commands: []string{"gosec ./..."}, Weight: 0.7})
+	if err := v.AddPerspective(Perspective{Name: "security", Commands: []string{"gosec ./..."}, Weight: 0.7}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if len(v.perspectives) != initial+1 {
 		t.Errorf("expected %d perspectives after add, got %d", initial+1, len(v.perspectives))
+	}
+}
+
+func TestAddPerspective_InvalidWeight(t *testing.T) {
+	t.Parallel()
+	v := NewVerifier()
+	tests := []struct {
+		name   string
+		weight float64
+	}{
+		{"zero weight", 0},
+		{"negative weight", -1.0},
+	}
+	for _, tt := range tests {
+		if err := v.AddPerspective(Perspective{Name: tt.name, Weight: tt.weight}); err == nil {
+			t.Errorf("%s: expected error for weight %f, got nil", tt.name, tt.weight)
+		}
+	}
+}
+
+func TestAggregate_WeightBasedPassed(t *testing.T) {
+	t.Parallel()
+	v := &Verifier{}
+	v.perspectives = []Perspective{
+		{Name: "critical", Weight: 1.0},
+		{Name: "important", Weight: 0.9},
+		{Name: "optional", Weight: 0.5},
+	}
+
+	tests := []struct {
+		name       string
+		results    []PerspectiveResult
+		wantPassed bool
+		wantScore  float64
+	}{
+		{
+			name: "all pass",
+			results: []PerspectiveResult{
+				{Name: "critical", Passed: true},
+				{Name: "important", Passed: true},
+				{Name: "optional", Passed: true},
+			},
+			wantPassed: true,
+			wantScore:  1.0,
+		},
+		{
+			name: "critical fails - Passed must be false",
+			results: []PerspectiveResult{
+				{Name: "critical", Passed: false},
+				{Name: "important", Passed: true},
+				{Name: "optional", Passed: true},
+			},
+			wantPassed: false,
+			wantScore:  1.4 / 2.4, // (0 + 0.9 + 0.5) / (1.0 + 0.9 + 0.5)
+		},
+		{
+			name: "only non-critical fail - Passed stays true",
+			results: []PerspectiveResult{
+				{Name: "critical", Passed: true},
+				{Name: "important", Passed: false},
+				{Name: "optional", Passed: false},
+			},
+			wantPassed: true,
+			wantScore:  1.0 / 2.4, // (1.0 + 0 + 0) / (1.0 + 0.9 + 0.5)
+		},
+		{
+			name: "unknown perspective fails - treated as critical (default weight 1.0)",
+			results: []PerspectiveResult{
+				{Name: "critical", Passed: true},
+				{Name: "unknown", Passed: false},
+			},
+			wantPassed: false,
+			wantScore:  1.0 / 2.0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			agg := v.Aggregate(tt.results)
+			if agg.Passed != tt.wantPassed {
+				t.Errorf("Passed = %v, want %v", agg.Passed, tt.wantPassed)
+			}
+			if diff := agg.TotalScore - tt.wantScore; diff > 0.001 || diff < -0.001 {
+				t.Errorf("TotalScore = %f, want %f", agg.TotalScore, tt.wantScore)
+			}
+		})
 	}
 }

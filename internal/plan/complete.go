@@ -3,9 +3,11 @@ package plan
 import (
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -28,6 +30,41 @@ type CompleteOptions struct {
 type CompleteResult struct {
 	CommandID string `json:"command_id"`
 	Status    string `json:"status"`
+}
+
+// staleTaskResultsError indicates that the intent's task results snapshot is
+// stale relative to the current on-disk results. Returned from the H3 conflict
+// path so the caller can refresh results and retry.
+type staleTaskResultsError struct {
+	IntentVersion  uint64
+	CurrentVersion uint64
+}
+
+func (e *staleTaskResultsError) Error() string {
+	return fmt.Sprintf("stale task results in H3 conflict path: intent_version=%d, current_version=%d", e.IntentVersion, e.CurrentVersion)
+}
+
+// computeTaskResultsVersion computes a deterministic fingerprint from
+// aggregated task results. The version changes whenever the set of results
+// or their statuses change. Returns 0 only when called with nil/empty results
+// AND no sentinel; however, the sentinel prefix ensures a non-zero value even
+// for empty inputs, so TaskResultsVersion == 0 reliably means "no version info"
+// (backward-compatible with intents written before this field existed).
+func computeTaskResultsVersion(results []model.CommandResultTask) uint64 {
+	h := fnv.New64a()
+	// Sentinel prefix so empty results produce a non-zero version,
+	// distinguishing "computed from empty" from "field not set" (0).
+	h.Write([]byte("task_results_v1"))
+
+	sorted := make([]model.CommandResultTask, len(results))
+	copy(sorted, results)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i].TaskID < sorted[j].TaskID
+	})
+	for _, r := range sorted {
+		fmt.Fprintf(h, "%s:%s:%s\n", r.TaskID, r.Worker, r.Status)
+	}
+	return h.Sum64()
 }
 
 // Complete finalises a command by writing the result, updating the queue entry,
@@ -167,15 +204,17 @@ func Complete(opts CompleteOptions) (*CompleteResult, error) {
 	}
 
 	// --- Write intent before the multi-step sequence (CR-019) ---
+	taskResultsVersion := computeTaskResultsVersion(taskResults)
 	intent = &completeIntent{
-		SchemaVersion: intentSchemaVersion,
-		FileType:      "intent_plan_complete",
-		CommandID:     opts.CommandID,
-		Summary:       opts.Summary,
-		ResultStatus:  resultStatus,
-		PlanStatus:    derivedPlanStatus,
-		TaskResults:   taskResults,
-		CreatedAt:     nowUTC(),
+		SchemaVersion:      intentSchemaVersion,
+		FileType:           "intent_plan_complete",
+		CommandID:          opts.CommandID,
+		Summary:            opts.Summary,
+		ResultStatus:       resultStatus,
+		PlanStatus:         derivedPlanStatus,
+		TaskResults:        taskResults,
+		TaskResultsVersion: taskResultsVersion,
+		CreatedAt:          nowUTC(),
 	}
 	if err := writeCompleteIntent(opts.MaestroDir, intent); err != nil {
 		return nil, fmt.Errorf("write intent: %w", err)
@@ -223,6 +262,30 @@ func executeCompleteSteps(opts CompleteOptions, sm *StateManager, state *model.C
 			}
 			if !model.IsTerminal(ts) {
 				return fmt.Errorf("conflict reconcile: required task %s is non-terminal (%s) but plan_status is %s", taskID, ts, state.PlanStatus)
+			}
+		}
+
+		// Stale task results detection: re-aggregate fresh results and compare
+		// with the intent's snapshot. If they differ, return a retryable error
+		// so the caller can refresh the intent and retry.
+		if intent.TaskResultsVersion != 0 {
+			freshResults, freshPartialErrs, freshErr := aggregateTaskResults(opts.MaestroDir, intent.CommandID)
+			if freshErr != nil {
+				return fmt.Errorf("conflict reconcile: re-aggregate task results: %w", freshErr)
+			}
+			if len(freshPartialErrs) > 0 {
+				return fmt.Errorf("conflict reconcile: partial task results: %w", errors.Join(freshPartialErrs...))
+			}
+			freshVersion := computeTaskResultsVersion(freshResults)
+			if freshVersion != intent.TaskResultsVersion {
+				slog.Warn("executeCompleteSteps: stale task results detected in H3 conflict path",
+					"command_id", intent.CommandID,
+					"intent_version", intent.TaskResultsVersion,
+					"current_version", freshVersion)
+				return &staleTaskResultsError{
+					IntentVersion:  intent.TaskResultsVersion,
+					CurrentVersion: freshVersion,
+				}
 			}
 		}
 

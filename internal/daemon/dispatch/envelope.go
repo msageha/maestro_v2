@@ -14,17 +14,18 @@ import (
 )
 
 // BuildTaskContent enriches the task content with persona, skills, and learnings.
-// Returns the enriched content or an error (only when skills policy is "error").
-func (disp *Dispatcher) BuildTaskContent(task *model.Task) (string, error) {
-	// Sanitize user-supplied content to escape DATA boundary markers BEFORE
-	// appending system-generated sections (skills, learnings) whose markers
+// Returns a SanitizedContent (boundary markers escaped, system sections appended)
+// or an error (only when skills policy is "error").
+func (disp *Dispatcher) BuildTaskContent(task *model.Task) (envelope.SanitizedContent, error) {
+	// Sanitize user-supplied content via the typestate builder to escape DATA
+	// boundary markers BEFORE appending system-generated sections whose markers
 	// must remain intact.
-	content := envelope.SanitizeUserContent(task.Content)
+	safe := envelope.NewRawContent(task.Content).Sanitize()
 
 	// Inject persona prompt (prepend)
 	if task.PersonaHint != "" {
 		if section := persona.FormatPersonaSection(task.PersonaHint, disp.maestroDir); section != "" {
-			content = section + content
+			safe = safe.Prepend(section)
 			disp.dl.Logf(core.LogLevelDebug, "persona_injected task=%s persona=%s", task.ID, task.PersonaHint)
 		}
 	}
@@ -33,9 +34,9 @@ func (disp *Dispatcher) BuildTaskContent(task *model.Task) (string, error) {
 	if disp.config.Skills.Enabled {
 		skillContent, err := disp.buildSkillsSection(task.SkillRefs, task.ID, "worker")
 		if err != nil {
-			return "", err
+			return envelope.SanitizedContent{}, err
 		}
-		content += skillContent
+		safe = safe.Append(skillContent)
 	}
 
 	// Inject learnings (append after skills)
@@ -44,30 +45,30 @@ func (disp *Dispatcher) BuildTaskContent(task *model.Task) (string, error) {
 		if err != nil {
 			disp.dl.Logf(core.LogLevelWarn, "learnings_read_failed task=%s error=%v", task.ID, err)
 		} else if section := learnings.FormatLearningsSection(lrns); section != "" {
-			content += section
+			safe = safe.Append(section)
 			disp.dl.Logf(core.LogLevelDebug, "learnings_injected task=%s count=%d", task.ID, len(lrns))
 		}
 	}
 
-	return content, nil
+	return safe, nil
 }
 
 // BuildCommandContent enriches the command content with planner skills.
 // Like BuildTaskContent, it loads command-specific skill_refs and auto-injects
 // shared skills. Skills referenced in skill_refs are loaded from the "planner"
 // role directory with fallback to "share".
-func (disp *Dispatcher) BuildCommandContent(cmd *model.Command) (string, error) {
-	content := envelope.SanitizeUserContent(cmd.Content)
+func (disp *Dispatcher) BuildCommandContent(cmd *model.Command) (envelope.SanitizedContent, error) {
+	safe := envelope.NewRawContent(cmd.Content).Sanitize()
 
 	if disp.config.Skills.Enabled {
 		skillContent, err := disp.buildSkillsSection(cmd.SkillRefs, cmd.ID, "planner")
 		if err != nil {
-			return "", err
+			return envelope.SanitizedContent{}, err
 		}
-		content += skillContent
+		safe = safe.Append(skillContent)
 	}
 
-	return content, nil
+	return safe, nil
 }
 
 // buildSkillsSection loads and formats the skills section for a task or command.

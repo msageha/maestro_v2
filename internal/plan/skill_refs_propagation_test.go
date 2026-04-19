@@ -148,10 +148,11 @@ func TestBuildWorkerEnvelope_SkillRefs_CommaSeparated(t *testing.T) {
 		SkillRefs:          []string{"go-testing", "code-review"},
 	}
 
-	envelope := envelope.BuildWorkerEnvelope(task, "worker1", 1, 1)
+	safe := envelope.NewRawContent(task.Content).Sanitize()
+	env := envelope.BuildWorkerEnvelope(task, safe, "worker1", 1, 1)
 
-	if !strings.Contains(envelope, "skill_refs: go-testing, code-review") {
-		t.Errorf("envelope should contain comma-separated skill_refs, got envelope:\n%s", envelope)
+	if !strings.Contains(env, "skill_refs: go-testing, code-review") {
+		t.Errorf("envelope should contain comma-separated skill_refs, got envelope:\n%s", env)
 	}
 }
 
@@ -164,9 +165,10 @@ func TestBuildWorkerEnvelope_SkillRefs_Empty_ShowsNashi(t *testing.T) {
 		AcceptanceCriteria: "done",
 	}
 
-	envelope := envelope.BuildWorkerEnvelope(task, "worker1", 1, 1)
+	safe := envelope.NewRawContent(task.Content).Sanitize()
+	env := envelope.BuildWorkerEnvelope(task, safe, "worker1", 1, 1)
 
-	if !strings.Contains(envelope, "skill_refs: なし") {
-		t.Errorf("envelope should show 'なし' for empty skill_refs, got envelope:\n%s", envelope)
+	if !strings.Contains(env, "skill_refs: なし") {
+		t.Errorf("envelope should show 'なし' for empty skill_refs, got envelope:\n%s", env)
 	}
 }
