@@ -3,6 +3,7 @@
 package verification
 
 import (
+	"fmt"
 	"sync"
 	"time"
 )
@@ -45,10 +46,15 @@ func NewVerifier() *Verifier {
 }
 
 // AddPerspective appends a custom perspective to the verifier.
-func (v *Verifier) AddPerspective(p Perspective) {
+// Returns an error if Weight is <= 0.
+func (v *Verifier) AddPerspective(p Perspective) error {
+	if p.Weight <= 0 {
+		return fmt.Errorf("perspective %q: weight must be positive, got %f", p.Name, p.Weight)
+	}
 	v.mu.Lock()
 	defer v.mu.Unlock()
 	v.perspectives = append(v.perspectives, p)
+	return nil
 }
 
 // DefaultPerspectives returns the four baseline verification viewpoints:
@@ -66,8 +72,8 @@ func (v *Verifier) DefaultPerspectives() []Perspective {
 //
 // Scoring rules (mechanical only, no LLM override per S5-1):
 //   - TotalScore = sum(weight * passed) / sum(weight), where passed = 1 if true, 0 otherwise
-//   - Passed = true only when every perspective passed
-//   - Any perspective with Weight >= 1.0 that failed forces Passed = false
+//   - Passed = false when any perspective with Weight >= 1.0 fails (critical perspectives)
+//   - Non-critical perspectives (Weight < 1.0) contribute to TotalScore but do not force Passed = false
 //   - Each perspective is evaluated independently (not majority-vote, per S5-2)
 //
 // Empty results yield AggregatedResult{Passed: true, TotalScore: 0}.
@@ -85,7 +91,7 @@ func (v *Verifier) Aggregate(results []PerspectiveResult) AggregatedResult {
 
 	var totalWeight float64
 	var weightedSum float64
-	allPassed := true
+	passed := true
 
 	for _, r := range results {
 		w, ok := weightMap[r.Name]
@@ -95,8 +101,8 @@ func (v *Verifier) Aggregate(results []PerspectiveResult) AggregatedResult {
 		totalWeight += w
 		if r.Passed {
 			weightedSum += w
-		} else {
-			allPassed = false
+		} else if w >= 1.0 {
+			passed = false
 		}
 	}
 
@@ -108,7 +114,7 @@ func (v *Verifier) Aggregate(results []PerspectiveResult) AggregatedResult {
 	return AggregatedResult{
 		TotalScore: score,
 		MaxScore:   totalWeight,
-		Passed:     allPassed,
+		Passed:     passed,
 		Results:    results,
 	}
 }

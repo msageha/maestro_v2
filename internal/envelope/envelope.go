@@ -131,18 +131,84 @@ func sanitizeField(s string, maxBytes int) string {
 	return SanitizeEnvelopeField(TruncateUTF8Bytes(s, maxBytes))
 }
 
+// --- Typestate types for enforced sanitization pipeline ---
+//
+// The pipeline RawContent → SanitizedContent → TruncatedContent enforces at the
+// type level that user content is sanitized (boundary markers escaped) before
+// truncation and final field sanitization. Attempting to skip a step results in
+// a compile error because the required method only exists on the preceding type.
+//
+// Example:
+//
+//	field := NewRawContent(userStr).Sanitize().Truncate(maxBytes).Build()
+//
+// Compile-time rejected (no Truncate on RawContent):
+//
+//	field := NewRawContent(userStr).Truncate(maxBytes) // does not compile
+
+// RawContent wraps raw user-supplied content. The only valid operation is Sanitize.
+type RawContent struct{ s string }
+
+// NewRawContent wraps a raw user-supplied string for type-safe sanitization.
+func NewRawContent(s string) RawContent { return RawContent{s: s} }
+
+// Sanitize escapes DATA boundary markers (LEARNINGS/SKILLS/PERSONA) and returns
+// SanitizedContent. This must be called before appending system sections or
+// building envelope fields.
+func (r RawContent) Sanitize() SanitizedContent {
+	return SanitizedContent{s: SanitizeUserContent(r.s)}
+}
+
+// SanitizedContent represents content where DATA boundary markers have been
+// escaped. System-generated sections can safely be appended or prepended.
+type SanitizedContent struct{ s string }
+
+// String returns the underlying sanitized string.
+func (sc SanitizedContent) String() string { return sc.s }
+
+// Append appends system-generated text (persona, skills, learnings) to the
+// sanitized content and returns a new SanitizedContent.
+func (sc SanitizedContent) Append(text string) SanitizedContent {
+	return SanitizedContent{s: sc.s + text}
+}
+
+// Prepend prepends system-generated text to the sanitized content.
+func (sc SanitizedContent) Prepend(text string) SanitizedContent {
+	return SanitizedContent{s: text + sc.s}
+}
+
+// Truncate enforces byte-length limits at a valid UTF-8 boundary and returns
+// TruncatedContent for the final build step.
+func (sc SanitizedContent) Truncate(maxBytes int) TruncatedContent {
+	return TruncatedContent{s: TruncateUTF8Bytes(sc.s, maxBytes)}
+}
+
+// TruncatedContent is sanitized and length-bounded content ready for final
+// envelope field processing.
+type TruncatedContent struct{ s string }
+
+// Build applies final envelope field sanitization (NFKC normalization,
+// zero-width char removal, [maestro] escaping, control char stripping) and
+// returns the safe string for use in an envelope.
+func (tc TruncatedContent) Build() string {
+	return SanitizeEnvelopeField(tc.s)
+}
+
 // --- Envelope Builders ---
 
 // BuildWorkerEnvelope creates the delivery envelope for a Worker task.
+// The enrichedContent parameter must be a SanitizedContent obtained via
+// NewRawContent(...).Sanitize(), ensuring boundary markers are escaped
+// before envelope construction.
 // Format matches spec §5.8.1 Worker 向けタスク配信エンベロープ.
-func BuildWorkerEnvelope(task model.Task, workerID string, leaseEpoch, attempt int) string {
+func BuildWorkerEnvelope(task model.Task, enrichedContent SanitizedContent, workerID string, leaseEpoch, attempt int) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "[maestro] task_id:%s command_id:%s lease_epoch:%d attempt:%d\n",
 		task.ID, task.CommandID, leaseEpoch, attempt)
 	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "agent_id: %s\n", workerID)
 	fmt.Fprintf(&sb, "purpose: %s\n", sanitizeField(task.Purpose, MaxPurposeBytes))
-	fmt.Fprintf(&sb, "content: %s\n", sanitizeField(task.Content, MaxContentBytes))
+	fmt.Fprintf(&sb, "content: %s\n", enrichedContent.Truncate(MaxContentBytes).Build())
 	fmt.Fprintf(&sb, "acceptance_criteria: %s\n", sanitizeField(task.AcceptanceCriteria, MaxAcceptanceCriteriaBytes))
 	constraintsStr := "なし"
 	if len(task.Constraints) > 0 {
@@ -184,13 +250,15 @@ func BuildWorkerEnvelope(task model.Task, workerID string, leaseEpoch, attempt i
 }
 
 // BuildPlannerEnvelope creates the delivery envelope for a Planner command.
+// The enrichedContent parameter must be a SanitizedContent obtained via
+// NewRawContent(...).Sanitize(), ensuring boundary markers are escaped.
 // Format matches spec §5.8.1 Planner 向けコマンド配信エンベロープ.
-func BuildPlannerEnvelope(cmd model.Command, leaseEpoch, attempt int) string {
+func BuildPlannerEnvelope(cmd model.Command, enrichedContent SanitizedContent, leaseEpoch, attempt int) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "[maestro] command_id:%s lease_epoch:%d attempt:%d\n",
 		cmd.ID, leaseEpoch, attempt)
 	sb.WriteString("\n")
-	fmt.Fprintf(&sb, "content: %s\n", sanitizeField(cmd.Content, MaxContentBytes))
+	fmt.Fprintf(&sb, "content: %s\n", enrichedContent.Truncate(MaxContentBytes).Build())
 	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "タスク分解後: maestro plan submit --command-id %s --tasks-file -\n", cmd.ID)
 	fmt.Fprintf(&sb, "全タスク完了後: maestro plan complete --command-id %s --summary \"...\"", cmd.ID)

@@ -2,6 +2,7 @@ package reviewer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -126,7 +127,7 @@ func TestDispatch_Async_NonBlocking(t *testing.T) {
 	d.Close()
 }
 
-func TestDispatch_ResultReceived(t *testing.T) {
+func TestDispatch_ResultReceived_Skipped(t *testing.T) {
 	t.Parallel()
 	d := NewReviewDispatcher(defaultConfig())
 	ctx := context.Background()
@@ -139,8 +140,8 @@ func TestDispatch_ResultReceived(t *testing.T) {
 
 	select {
 	case result := <-d.Results():
-		if result.Status != model.ReviewStatusCompleted {
-			t.Errorf("expected status completed, got %s", result.Status)
+		if result.Status != model.ReviewStatusSkipped {
+			t.Errorf("expected status skipped (not implemented), got %s", result.Status)
 		}
 		if !result.IsAdvisory {
 			t.Error("expected IsAdvisory=true")
@@ -249,5 +250,41 @@ func TestDispatch_MultipleReviews(t *testing.T) {
 	}
 	if count != 3 {
 		t.Errorf("expected 3 results, got %d", count)
+	}
+}
+
+// --- ErrNotImplemented tests ---
+
+func TestErrNotImplemented_IsSentinel(t *testing.T) {
+	t.Parallel()
+	if !errors.Is(ErrNotImplemented, ErrNotImplemented) {
+		t.Error("ErrNotImplemented should match itself via errors.Is")
+	}
+}
+
+func TestReviewTask_ReturnsErrNotImplemented(t *testing.T) {
+	t.Parallel()
+	d := NewReviewDispatcher(defaultConfig())
+	ctx := context.Background()
+	req := model.ReviewRequest{
+		ID:            "review-test",
+		TaskID:        "task-1",
+		CommandID:     "cmd-1",
+		ReviewerModel: "gpt-4",
+	}
+
+	err := d.reviewTask(ctx, req)
+	if !errors.Is(err, ErrNotImplemented) {
+		t.Errorf("expected ErrNotImplemented, got %v", err)
+	}
+
+	// Drain the result from the channel and verify status is skipped.
+	select {
+	case result := <-d.results:
+		if result.Status != model.ReviewStatusSkipped {
+			t.Errorf("expected status skipped, got %s", result.Status)
+		}
+	default:
+		t.Error("expected a result on the channel")
 	}
 }

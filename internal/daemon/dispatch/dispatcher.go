@@ -169,11 +169,10 @@ func (disp *Dispatcher) DispatchCommand(ctx context.Context, cmd *model.Command)
 	if err != nil {
 		return fmt.Errorf("build command envelope for %s: %w", cmd.ID, err)
 	}
-	dispatchCmd.Content = enrichedContent
 
 	req := agent.ExecRequest{
 		AgentID:    "planner",
-		Message:    envelope.BuildPlannerEnvelope(dispatchCmd, cmd.LeaseEpoch, cmd.Attempts),
+		Message:    envelope.BuildPlannerEnvelope(dispatchCmd, enrichedContent, cmd.LeaseEpoch, cmd.Attempts),
 		Mode:       agent.ModeDeliver,
 		CommandID:  cmd.ID,
 		LeaseEpoch: cmd.LeaseEpoch,
@@ -225,14 +224,13 @@ func (disp *Dispatcher) DispatchTask(ctx context.Context, task *model.Task, work
 	if err != nil {
 		return fmt.Errorf("build task envelope for %s: %w", task.ID, err)
 	}
-	dispatchTask.Content = enrichedContent
 
 	workingDir, err := disp.resolveTaskWorkingDir(task, workerID)
 	if err != nil {
 		return err
 	}
 
-	env := envelope.BuildWorkerEnvelope(dispatchTask, workerID, task.LeaseEpoch, task.Attempts)
+	env := envelope.BuildWorkerEnvelope(dispatchTask, enrichedContent, workerID, task.LeaseEpoch, task.Attempts)
 	if workingDir != "" {
 		env = fmt.Sprintf("%s\nworking_dir: %s", env, workingDir)
 	}

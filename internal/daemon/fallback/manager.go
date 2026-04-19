@@ -51,13 +51,18 @@ func (c Config) effectiveEssentialWorkerID() string {
 	return "worker1"
 }
 
-// Manager tracks consecutive failures and manages mode transitions
+// workerState holds per-worker failure and success tracking state.
+type workerState struct {
+	consecutiveFailures int
+	lastSuccessAt       time.Time
+}
+
+// Manager tracks consecutive failures per worker and manages mode transitions
 // between normal, degraded, and recovering states.
 type Manager struct {
 	mode                Mode
 	config              Config
-	consecutiveFailures int
-	lastSuccessAt       time.Time
+	workers             map[string]*workerState
 	recoveringStartedAt time.Time
 	mu                  sync.Mutex
 	nowFunc             func() time.Time
@@ -68,8 +73,20 @@ func NewManager(cfg Config) *Manager {
 	return &Manager{
 		mode:    ModeNormal,
 		config:  cfg,
+		workers: make(map[string]*workerState),
 		nowFunc: time.Now,
 	}
+}
+
+// getOrCreateWorkerState returns the workerState for the given workerID,
+// creating a new one if it does not exist. Must be called with mu held.
+func (m *Manager) getOrCreateWorkerState(workerID string) *workerState {
+	ws, ok := m.workers[workerID]
+	if !ok {
+		ws = &workerState{}
+		m.workers[workerID] = ws
+	}
+	return ws
 }
 
 // IsWorkerAllowed reports whether the given worker is allowed to operate
@@ -90,10 +107,10 @@ func (m *Manager) IsWorkerAllowed(workerID string) bool {
 }
 
 // RecordSuccess records a successful operation for the given worker.
-// It resets the consecutive failure counter, updates lastSuccessAt,
+// It resets that worker's consecutive failure counter, updates lastSuccessAt,
 // and handles mode transitions from degraded to recovering and from
 // recovering to normal.
-func (m *Manager) RecordSuccess(_ string) {
+func (m *Manager) RecordSuccess(workerID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -101,8 +118,9 @@ func (m *Manager) RecordSuccess(_ string) {
 		return
 	}
 
-	m.consecutiveFailures = 0
-	m.lastSuccessAt = m.nowFunc()
+	ws := m.getOrCreateWorkerState(workerID)
+	ws.consecutiveFailures = 0
+	ws.lastSuccessAt = m.nowFunc()
 
 	switch m.mode {
 	case ModeDegraded:
@@ -117,9 +135,9 @@ func (m *Manager) RecordSuccess(_ string) {
 }
 
 // RecordFailure records a failed operation for the given worker.
-// It increments the consecutive failure counter and handles mode
+// It increments that worker's consecutive failure counter and handles mode
 // transitions from normal to degraded and from recovering to degraded.
-func (m *Manager) RecordFailure(_ string) {
+func (m *Manager) RecordFailure(workerID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -127,11 +145,12 @@ func (m *Manager) RecordFailure(_ string) {
 		return
 	}
 
-	m.consecutiveFailures++
+	ws := m.getOrCreateWorkerState(workerID)
+	ws.consecutiveFailures++
 
 	switch m.mode {
 	case ModeNormal:
-		if m.consecutiveFailures >= m.config.ConsecutiveFailureThreshold {
+		if ws.consecutiveFailures >= m.config.ConsecutiveFailureThreshold {
 			m.mode = ModeDegraded
 		}
 	case ModeRecovering:

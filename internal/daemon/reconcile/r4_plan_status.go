@@ -17,13 +17,69 @@ type r4Backoff struct {
 	skipRemaining int // remaining cycles to skip before next retry
 }
 
+// BackoffTracker holds exponential backoff state for CanComplete failures,
+// keyed by commandID. It is designed to be owned externally (e.g. by
+// Reconciler) and injected into R4PlanStatus so that backoff state survives
+// Engine reconstruction.
+type BackoffTracker struct {
+	entries map[string]*r4Backoff
+}
+
+// NewBackoffTracker creates an empty BackoffTracker.
+func NewBackoffTracker() *BackoffTracker {
+	return &BackoffTracker{entries: make(map[string]*r4Backoff)}
+}
+
+// tick decrements all active backoff counters once per reconciliation cycle.
+func (bt *BackoffTracker) tick() {
+	for _, bo := range bt.entries {
+		if bo.skipRemaining > 0 {
+			bo.skipRemaining--
+		}
+	}
+}
+
+// isInBackoff returns true if the command should be skipped this cycle.
+func (bt *BackoffTracker) isInBackoff(commandID string) bool {
+	bo, ok := bt.entries[commandID]
+	return ok && bo.skipRemaining > 0
+}
+
+// recordFailure increments the failure count and sets the backoff skip counter.
+func (bt *BackoffTracker) recordFailure(commandID string) {
+	bo, ok := bt.entries[commandID]
+	if !ok {
+		bo = &r4Backoff{}
+		bt.entries[commandID] = bo
+	}
+	bo.failures++
+	bo.skipRemaining = r4BackoffCycles(bo.failures)
+}
+
+// clearBackoff removes backoff state for a command (on success or state resolution).
+func (bt *BackoffTracker) clearBackoff(commandID string) {
+	delete(bt.entries, commandID)
+}
+
 // R4PlanStatus detects results/planner terminal + state non-terminal plan_status.
 // Action: re-evaluate via plan.CanComplete. If OK, update plan_status. If NG, quarantine result.
 //
 // When CanComplete fails, the command enters exponential backoff (1, 2, 4, 8 cycles max)
 // to avoid repeatedly invoking a failing evaluator every scan cycle.
+//
+// The BackoffTracker is held externally so that backoff state survives Engine
+// reconstruction. Use NewR4PlanStatus to create an instance with a shared tracker.
 type R4PlanStatus struct {
-	backoffs map[string]*r4Backoff // commandID → backoff state (lazily initialized)
+	backoffs *BackoffTracker
+}
+
+// NewR4PlanStatus creates an R4PlanStatus that uses the provided BackoffTracker.
+// If tracker is nil, a new empty tracker is created (backward-compatible default).
+func NewR4PlanStatus(tracker *BackoffTracker) *R4PlanStatus {
+	if tracker == nil {
+		tracker = NewBackoffTracker()
+	}
+	return &R4PlanStatus{backoffs: tracker}
 }
 
 // r4BackoffCycles returns the number of cycles to skip after the nth consecutive failure.
@@ -39,50 +95,13 @@ func r4BackoffCycles(failures int) int {
 	return cycles
 }
 
-// tickBackoffs decrements all active backoff counters once per reconciliation cycle.
-func (r *R4PlanStatus) tickBackoffs() {
-	for _, bo := range r.backoffs {
-		if bo.skipRemaining > 0 {
-			bo.skipRemaining--
-		}
-	}
-}
-
-// isInBackoff returns true if the command should be skipped this cycle.
-func (r *R4PlanStatus) isInBackoff(commandID string) bool {
-	if r.backoffs == nil {
-		return false
-	}
-	bo, ok := r.backoffs[commandID]
-	return ok && bo.skipRemaining > 0
-}
-
-// recordFailure increments the failure count and sets the backoff skip counter.
-func (r *R4PlanStatus) recordFailure(commandID string) {
-	if r.backoffs == nil {
-		r.backoffs = make(map[string]*r4Backoff)
-	}
-	bo, ok := r.backoffs[commandID]
-	if !ok {
-		bo = &r4Backoff{}
-		r.backoffs[commandID] = bo
-	}
-	bo.failures++
-	bo.skipRemaining = r4BackoffCycles(bo.failures)
-}
-
-// clearBackoff removes backoff state for a command (on success or state resolution).
-func (r *R4PlanStatus) clearBackoff(commandID string) {
-	delete(r.backoffs, commandID)
-}
-
 // Apply detects non-terminal plan_status despite terminal planner result and updates or quarantines.
 func (r *R4PlanStatus) Apply(run *Run) Outcome {
 	var repairs []Repair
 	var notifications []DeferredNotification
 
 	// Tick backoff counters once per reconciliation cycle
-	r.tickBackoffs()
+	r.backoffs.tick()
 
 	resultPath := filepath.Join(run.Deps.MaestroDir, "results", "planner.yaml")
 	rf, err := run.loadCommandResultFile(resultPath)
@@ -104,7 +123,7 @@ func (r *R4PlanStatus) Apply(run *Run) Outcome {
 		commandID := result.CommandID
 
 		// Skip commands in exponential backoff after CanComplete failures
-		if r.isInBackoff(commandID) {
+		if r.backoffs.isInBackoff(commandID) {
 			run.Log(core.LogLevelDebug, "R4 backoff_skip command=%s", commandID)
 			continue
 		}
@@ -142,7 +161,7 @@ func (r *R4PlanStatus) Apply(run *Run) Outcome {
 
 			derivedStatus, canCompleteErr := run.Deps.CanComplete(state)
 			if canCompleteErr != nil {
-				r.recordFailure(commandID)
+				r.backoffs.recordFailure(commandID)
 				run.Log(core.LogLevelWarn, "R4 can_complete_failed command=%s error=%v → quarantine result + notify planner",
 					commandID, canCompleteErr)
 				return r4Outcome{
@@ -160,7 +179,7 @@ func (r *R4PlanStatus) Apply(run *Run) Outcome {
 				}
 			}
 
-			r.clearBackoff(commandID)
+			r.backoffs.clearBackoff(commandID)
 			state.PlanStatus = derivedStatus
 			now := run.Deps.Clock.Now().UTC().Format(time.RFC3339)
 			state.LastReconciledAt = &now
