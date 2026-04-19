@@ -234,12 +234,12 @@ func TestEnsureWorkingDir_RespawnAndRelaunch(t *testing.T) {
 	// Verify relaunch command was sent (no cd needed — respawn-pane -c handles it)
 	foundLaunch := false
 	for _, cmd := range mock.sentCmds {
-		if cmd == "maestro agent launch" {
+		if cmd == LaunchCommand {
 			foundLaunch = true
 		}
 	}
 	if !foundLaunch {
-		t.Error("expected 'maestro agent launch' to be sent")
+		t.Errorf("expected LaunchCommand (%q) to be sent", LaunchCommand)
 	}
 
 	// Verify CWD was updated
@@ -1014,7 +1014,7 @@ func TestEnsureClaudeRunning_ClaudeAlreadyRunning(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// Should not have sent any re-launch command
-	if callsContain(mock.calls, "SendCommand:maestro agent launch") {
+	if callsContain(mock.calls, "SendCommand:"+LaunchCommand) {
 		t.Error("should not re-launch when Claude is already running")
 	}
 }
@@ -1032,7 +1032,7 @@ func TestEnsureClaudeRunning_ShellDetected_Relaunch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !callsContain(mock.calls, "SendCommand:maestro agent launch") {
+	if !callsContain(mock.calls, "SendCommand:"+LaunchCommand) {
 		t.Error("should re-launch Claude when shell detected")
 	}
 	// clear_ready should be reset
@@ -1093,7 +1093,7 @@ func TestEnsureClaudeRunning_GetCmdError_ReturnsError(t *testing.T) {
 		t.Errorf("expected ErrCheckPaneCommand in error chain, got: %v", err)
 	}
 	// Should not have attempted re-launch
-	if callsContain(mock.calls, "SendCommand:maestro agent launch") {
+	if callsContain(mock.calls, "SendCommand:"+LaunchCommand) {
 		t.Error("should not re-launch on GetPaneCurrentCommand error")
 	}
 }

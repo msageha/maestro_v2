@@ -15,6 +15,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	"github.com/msageha/maestro_v2/internal/ptr"
 	"github.com/msageha/maestro_v2/internal/testutil/mocks"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
@@ -211,9 +212,9 @@ func TestResultHandler_WorkerNotification_Failure(t *testing.T) {
 	cfg := model.Config{
 		Watcher: model.WatcherConfig{NotifyLeaseSec: 120},
 		Retry: model.RetryConfig{
-			ResultNotifyInlineRetries:       1,
-			ResultNotifyInlineRetryDelaySec: 1,
-			ResultNotifyDeliveryTimeoutSec:  1,
+			ResultNotifyInlineRetries:       ptr.Int(1),
+			ResultNotifyInlineRetryDelaySec: ptr.Int(1),
+			ResultNotifyDeliveryTimeoutSec:  ptr.Int(1),
 		},
 	}
 	lockMap := lock.NewMutexMap()
@@ -642,9 +643,9 @@ func TestResultHandler_WorkerNotification_BackoffPreventsImmediateRetry(t *testi
 	cfg := model.Config{
 		Watcher: model.WatcherConfig{NotifyLeaseSec: 120},
 		Retry: model.RetryConfig{
-			ResultNotifyInlineRetries:       1, // minimize inline retries for test speed
-			ResultNotifyInlineRetryDelaySec: 1,
-			ResultNotifyDeliveryTimeoutSec:  1,
+			ResultNotifyInlineRetries:       ptr.Int(1), // minimize inline retries for test speed
+			ResultNotifyInlineRetryDelaySec: ptr.Int(1),
+			ResultNotifyDeliveryTimeoutSec:  ptr.Int(1),
 		},
 	}
 	lockMap := lock.NewMutexMap()

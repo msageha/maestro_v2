@@ -708,11 +708,12 @@ func TestMergeToIntegration_AllConflict(t *testing.T) {
 	}
 }
 
-// TestPublishToBase_DurableStashRefCreated verifies that PublishToBase creates
-// a durable stash ref before reset --hard. After update-ref moves the branch pointer,
-// the index/working tree are at the old commit while HEAD points to the new merge commit.
-// git stash create captures this divergence as a stash ref, which is saved as a durable ref.
-func TestPublishToBase_DurableStashRefCreated(t *testing.T) {
+// TestPublishToBase_NoFalsePositiveDurableStash verifies that PublishToBase does
+// NOT create a false-positive durable stash ref. After update-ref moves the branch
+// pointer, read-tree --reset -u HEAD syncs the index and working tree to match the
+// new HEAD before stash create runs, so stash create sees no divergence and returns
+// empty. This prevents orphaned refs from accumulating under refs/maestro/pre-publish-stash/.
+func TestPublishToBase_NoFalsePositiveDurableStash(t *testing.T) {
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)
 	wm := newTestWorktreeManager(t, projectRoot)
@@ -744,16 +745,11 @@ func TestPublishToBase_DurableStashRefCreated(t *testing.T) {
 		t.Fatalf("PublishToBase failed: %v", err)
 	}
 
-	// Verify durable stash ref was created (stash create captures index/HEAD divergence)
+	// Verify NO durable stash ref was created (false positive eliminated by read-tree sync)
 	refCmd := exec.Command("git", "rev-parse", "--verify", "refs/maestro/pre-publish-stash/cmd_stash_ref")
 	refCmd.Dir = projectRoot
-	out, err := refCmd.Output()
-	if err != nil {
-		t.Fatalf("durable stash ref should exist: %v", err)
-	}
-	stashSHA := strings.TrimSpace(string(out))
-	if len(stashSHA) < 7 {
-		t.Fatalf("invalid stash ref SHA: %q", stashSHA)
+	if err := refCmd.Run(); err == nil {
+		t.Error("durable stash ref should NOT exist after clean publish (false positive stash)")
 	}
 
 	// Verify the publish succeeded: base branch should have the file

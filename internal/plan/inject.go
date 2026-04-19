@@ -143,18 +143,22 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 	//    existing tasks (conflict resolution fallback — the task should land in the
 	//    same phase where the conflict originated).
 	// 4. Otherwise, add to the current (first non-terminal) phase or phase 0.
+	selectedPhaseIdx := -1
 	if opts.TargetPhase != "" {
 		// TargetPhase is validated in validateInjectRequest, so PhaseIndex will always succeed here.
 		if phaseIdx, ok := state.PhaseIndex(opts.TargetPhase); ok {
 			state.Phases[phaseIdx].TaskIDs = append(state.Phases[phaseIdx].TaskIDs, newTaskID)
+			selectedPhaseIdx = phaseIdx
 		}
 	} else if len(opts.BlockedBy) > 0 {
 		if phase, phaseIdx := findPhaseForTask(state, opts.BlockedBy[0]); phase != nil {
 			state.Phases[phaseIdx].TaskIDs = append(state.Phases[phaseIdx].TaskIDs, newTaskID)
+			selectedPhaseIdx = phaseIdx
 		}
 	} else if opts.TargetWorkerID != "" {
 		if phaseIdx := findPhaseForWorker(state, opts.MaestroDir, opts.TargetWorkerID); phaseIdx >= 0 {
 			state.Phases[phaseIdx].TaskIDs = append(state.Phases[phaseIdx].TaskIDs, newTaskID)
+			selectedPhaseIdx = phaseIdx
 		} else if len(state.Phases) > 0 {
 			// Worker has no existing tasks; fall through to generic fallback.
 			targetIdx, err := findFirstNonTerminalPhase(state.Phases)
@@ -162,6 +166,7 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 				return nil, err
 			}
 			state.Phases[targetIdx].TaskIDs = append(state.Phases[targetIdx].TaskIDs, newTaskID)
+			selectedPhaseIdx = targetIdx
 		}
 	} else if len(state.Phases) > 0 {
 		targetIdx, err := findFirstNonTerminalPhase(state.Phases)
@@ -169,6 +174,16 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 			return nil, err
 		}
 		state.Phases[targetIdx].TaskIDs = append(state.Phases[targetIdx].TaskIDs, newTaskID)
+		selectedPhaseIdx = targetIdx
+	}
+
+	// If the task was injected into a completed phase, reopen it so that
+	// the new pending task is properly tracked by the phase lifecycle.
+	if selectedPhaseIdx >= 0 && state.Phases[selectedPhaseIdx].Status == model.PhaseStatusCompleted {
+		reopenedAt := nowUTC()
+		state.Phases[selectedPhaseIdx].Status = model.PhaseStatusActive
+		state.Phases[selectedPhaseIdx].CompletedAt = nil
+		state.Phases[selectedPhaseIdx].ReopenedAt = &reopenedAt
 	}
 
 	// Record idempotency key for deduplication on retry
