@@ -81,6 +81,7 @@ gates:
 `
 
 func setupTestQualityGate(t *testing.T) (*QualityGateDaemon, string) {
+	t.Helper()
 	tmpDir := t.TempDir()
 	maestroDir := filepath.Join(tmpDir, ".maestro")
 	require.NoError(t, os.MkdirAll(maestroDir, 0755))

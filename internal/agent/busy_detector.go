@@ -247,7 +247,7 @@ func (bd *busyDetector) softRetryUndecided(ctx context.Context, paneTarget, agen
 			return verdict
 		}
 	}
-	bd.log("undecided_promoted_to_idle agent_id=%s after_soft_retries=%d", agentID, undecidedSoftRetries)
+	bd.logAt(logLevelInfo, "undecided_promoted_to_idle agent_id=%s after_soft_retries=%d", agentID, undecidedSoftRetries)
 	return VerdictIdle
 }
 
@@ -263,4 +263,10 @@ func (bd *busyDetector) undecidedSoftRetryInterval() time.Duration {
 
 func (bd *busyDetector) log(format string, args ...any) {
 	logf(bd.logger, bd.logLevel, logLevelDebug, "busy_detector", format, args...)
+}
+
+// logAt emits a log message at the specified level instead of the default Debug.
+// Use for operationally significant events (e.g., undecided→idle promotion).
+func (bd *busyDetector) logAt(level logLevel, format string, args ...any) {
+	logf(bd.logger, bd.logLevel, level, "busy_detector", format, args...)
 }

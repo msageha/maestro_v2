@@ -228,8 +228,5 @@ func copyFile(src, dst string) error {
 	}
 	tmpClosed = true
 
-	if err := os.Rename(tmpName, dst); err != nil {
-		return err
-	}
-	return syncDir(filepath.Dir(dst))
+	return os.Rename(tmpName, dst)
 }

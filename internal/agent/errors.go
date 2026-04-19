@@ -11,9 +11,13 @@ var (
 	ErrRelaunch          = errors.New("re-launch claude")
 	ErrWaitClaudeReady   = errors.New("wait for claude ready")
 	ErrCheckPaneCommand  = errors.New("check pane command")
-	ErrNotStable         = errors.New("pane content not stable")
-	ErrCapturePane       = errors.New("capture pane")
-	ErrNoPrompt          = errors.New("no prompt detected")
+	ErrNotStable   = errors.New("pane content not stable")
+	ErrCapturePane = errors.New("capture pane")
+	// ErrNoPrompt is returned by waitStable when the pane is stable but no
+	// prompt marker is found. Used in strict mode (softPromptCheck=false).
+	ErrNoPrompt = errors.New("no prompt detected")
+	// ErrPromptNotDetected is returned by waitReadyStrict when the prompt
+	// readiness polling exhausts all retries. Used after re-launching Claude.
 	ErrPromptNotDetected = errors.New("prompt not detected")
 	ErrConsecutiveErrors = errors.New("consecutive errors")
 

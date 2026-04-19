@@ -345,6 +345,8 @@ func filterEnv(environ []string, name string) []string {
 
 // sanitizeForLog truncates a string to maxLen and removes control characters
 // to prevent log injection when including untrusted values in error messages.
+// Covers ASCII control chars (0x00-0x1F, 0x7F) and Unicode line/paragraph
+// separators (U+2028, U+2029) which bypass unicode.IsControl() checks.
 func sanitizeForLog(s string) string {
 	const maxLen = 100
 	if len(s) > maxLen {
@@ -353,7 +355,7 @@ func sanitizeForLog(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
-		if r < 0x20 || r == 0x7f {
+		if r < 0x20 || r == 0x7f || r == 0x2028 || r == 0x2029 {
 			b.WriteRune('?')
 		} else {
 			b.WriteRune(r)

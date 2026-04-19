@@ -146,7 +146,7 @@ type busyCheckOps struct {
 // via busyCheckOps callbacks.
 func (qh *QueueHandler) applyBusyCheckCore(bc busyCheckResult, entryID string, status model.Status, leaseEpoch int, leaseExpiresAt *string, ops busyCheckOps) {
 	if rej := checkResultFencing(status, leaseEpoch, leaseExpiresAt, bc.Item.Epoch, bc.Item.ExpiresAt); rej.Stale() {
-		qh.log(LogLevelWarn, "busy_check_fence_stale kind=%s id=%s epoch=%d/%d reason=%s",
+		qh.log(LogLevelDebug, "busy_check_fence_stale kind=%s id=%s epoch=%d/%d reason=%s",
 			ops.kind, entryID, leaseEpoch, bc.Item.Epoch, rej.Reason)
 		return
 	}

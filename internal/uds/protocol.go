@@ -59,7 +59,17 @@ func NormalizeCallerRole(role string) string {
 }
 
 // ProtocolVersion is the current version of the UDS wire protocol.
+// This value is carried both as a wire-level version byte prefix and inside
+// the JSON Request.ProtocolVersion field. The wire-level byte enables early
+// rejection before JSON parsing; the JSON field remains for backward
+// compatibility with legacy (v0) clients that omit the version prefix.
 const ProtocolVersion = 1
+
+// WireVersion is the version byte written at the start of each client request.
+// Legacy clients (v0) omit this byte; the server detects legacy frames by
+// checking whether the first byte is 0x00 (which is always the high byte of
+// the 4-byte big-endian length for any payload ≤ 16 MB).
+const WireVersion byte = 1
 
 // Request represents an IPC request sent from a CLI client to the daemon.
 type Request struct {
@@ -215,4 +225,62 @@ func readFrame(conn net.Conn, v any) error {
 		return fmt.Errorf("unmarshal frame: %w", err)
 	}
 	return nil
+}
+
+// writeVersionedFrame writes a version-byte-prefixed, length-prefixed JSON
+// frame to the connection. The wire format is:
+//
+//	[1 byte: WireVersion][4 byte BE length][JSON payload]
+func writeVersionedFrame(conn net.Conn, v any) error {
+	if _, err := conn.Write([]byte{WireVersion}); err != nil {
+		return fmt.Errorf("write version byte: %w", err)
+	}
+	return writeFrame(conn, v)
+}
+
+// readVersionedRequest reads a request that may or may not carry a version-byte
+// prefix. It peeks at the first byte to distinguish:
+//
+//   - 0x00 → legacy (v0) client: the byte is the high byte of the 4-byte
+//     big-endian length prefix (always 0x00 for payloads ≤ 16 MB).
+//   - ≥ 1  → versioned client: the byte is the wire version number, followed
+//     by a standard length-prefixed frame.
+//
+// Returns the detected wire version (0 for legacy) and any error.
+func readVersionedRequest(conn net.Conn, v any) (byte, error) {
+	var first [1]byte
+	if _, err := io.ReadFull(conn, first[:]); err != nil {
+		return 0, fmt.Errorf("read first byte: %w", err)
+	}
+
+	if first[0] == 0x00 {
+		// Legacy v0: first byte is high byte of 4-byte BE length.
+		// Read remaining 3 bytes to reconstruct the full length.
+		var rest [3]byte
+		if _, err := io.ReadFull(conn, rest[:]); err != nil {
+			return 0, fmt.Errorf("read frame length: %w", err)
+		}
+		length := binary.BigEndian.Uint32([]byte{first[0], rest[0], rest[1], rest[2]})
+
+		if length > maxFrameSize {
+			return 0, fmt.Errorf("frame too large: %d bytes", length)
+		}
+
+		buf := make([]byte, length)
+		if _, err := io.ReadFull(conn, buf); err != nil {
+			return 0, fmt.Errorf("read frame payload: %w", err)
+		}
+
+		if err := json.Unmarshal(buf, v); err != nil {
+			return 0, fmt.Errorf("unmarshal frame: %w", err)
+		}
+		return 0, nil
+	}
+
+	// Versioned: first byte is the wire version number.
+	wireVersion := first[0]
+	if err := readFrame(conn, v); err != nil {
+		return wireVersion, err
+	}
+	return wireVersion, nil
 }

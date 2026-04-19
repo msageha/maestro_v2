@@ -87,7 +87,7 @@ func TestLearnings_BasicWrite(t *testing.T) {
 		t.Errorf("command_id = %q, want %q", lf.Learnings[0].CommandID, commandID)
 	}
 	if lf.Learnings[0].ResultID == "" {
-		t.Error("expected non-empty result_id")
+		t.Error("expected non-empty result_id after successful result write")
 	}
 }
 
@@ -394,7 +394,7 @@ func TestLearnings_WriteFailureDoesNotFailResultWrite(t *testing.T) {
 	var result map[string]string
 	json.Unmarshal(resp.Data, &result)
 	if result["result_id"] == "" {
-		t.Error("expected non-empty result_id")
+		t.Error("expected non-empty result_id despite learnings write failure")
 	}
 }
 

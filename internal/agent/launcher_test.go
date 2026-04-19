@@ -609,6 +609,8 @@ func TestSanitizeForLog(t *testing.T) {
 		{"truncate", strings.Repeat("a", 150), strings.Repeat("a", 100) + "..."},
 		{"empty", "", ""},
 		{"unicode", "日本語テスト", "日本語テスト"},
+		{"unicode_line_sep", "before\u2028after", "before?after"},
+		{"unicode_para_sep", "before\u2029after", "before?after"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
