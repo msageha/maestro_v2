@@ -313,7 +313,7 @@ func (lm *Manager) ExpireCommands(commands []model.Command) []int {
 		cmd := &commands[i]
 		if cmd.Status == model.StatusInProgress && lm.IsLeaseExpired(cmd.LeaseExpiresAt) {
 			expired = append(expired, i)
-			lm.log(core.LogLevelDebug, "lease_expired type=command id=%s epoch=%d owner=%s",
+			lm.log(core.LogLevelInfo, "lease_expired type=command id=%s epoch=%d owner=%s",
 				cmd.ID, cmd.LeaseEpoch, ptrStr(cmd.LeaseOwner))
 		}
 	}
@@ -362,7 +362,7 @@ func (lm *Manager) ExpireNotifications(notifications []model.Notification) []int
 		ntf := &notifications[i]
 		if ntf.Status == model.StatusInProgress && lm.IsLeaseExpired(ntf.LeaseExpiresAt) {
 			expired = append(expired, i)
-			lm.log(core.LogLevelWarn, "lease_expired type=notification id=%s epoch=%d owner=%s",
+			lm.log(core.LogLevelInfo, "lease_expired type=notification id=%s epoch=%d owner=%s",
 				ntf.ID, ntf.LeaseEpoch, ptrStr(ntf.LeaseOwner))
 		}
 	}

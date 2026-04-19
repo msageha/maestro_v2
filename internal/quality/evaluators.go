@@ -517,7 +517,7 @@ func (e *scriptEvaluator) Evaluate(ctx context.Context, condition *RuleCondition
 	cmd.Dir = tmpDir
 
 	// Audit log: record script execution
-	slog.Info("quality/script: executing script", "language", scriptLanguage(condition.Language), "script_len", len(condition.Script), "timeout", timeout, "dir", tmpDir)
+	slog.Info("quality/script: executing script", "language", scriptLanguage(condition.Language), "script_len", len(condition.Script), "timeout", timeout)
 
 	// Run the script
 	err := cmd.Run()

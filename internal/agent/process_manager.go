@@ -144,9 +144,9 @@ func (pm *ClaudeProcessManager) ensureWorkingDir(ctx context.Context, paneTarget
 // waitForShell polls a tmux pane until its current command is a known shell,
 // indicating the pane has returned to the shell prompt (e.g., after Claude exits).
 func (pm *ClaudeProcessManager) waitForShell(ctx context.Context, paneTarget string) error {
-	const maxAttempts = 30   // 30 x 500ms = 15s max
-	const pollInterval = 500 // milliseconds
-	const maxConsecutiveErrors = 5
+	const maxAttempts = 30          // 30 x 500ms = 15s max wait for shell to appear after respawn
+	const pollInterval = 500        // milliseconds; balances responsiveness vs tmux query overhead
+	const maxConsecutiveErrors = 5  // consecutive tmux query failures before giving up (transient error tolerance)
 
 	consecutiveErrors := 0
 	for i := 0; i < maxAttempts; i++ {

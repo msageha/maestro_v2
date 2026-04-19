@@ -231,6 +231,7 @@ func TestDashboardFormatter_CalculateStats(t *testing.T) {
 
 // Helper function to create a sample JSONL log file
 func createSampleLogFile(t *testing.T, logPath string) {
+	t.Helper()
 	file, err := os.Create(logPath)
 	require.NoError(t, err)
 	defer file.Close()

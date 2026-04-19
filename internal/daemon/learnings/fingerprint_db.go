@@ -208,8 +208,15 @@ func (db *FingerprintDB) evictOldest() {
 }
 
 // hasPrefixOverlap checks whether two strings share a common prefix of at
-// least half the length of the shorter string. This is a simple heuristic
-// placeholder for future similarity algorithms.
+// least half the length of the shorter string. This is a placeholder heuristic
+// for future similarity algorithms (e.g., edit distance or embedding-based).
+//
+// The 50% threshold balances false-positive avoidance with catching obvious
+// variants of the same error (e.g., different stack traces for the same root
+// cause). The check is bidirectional: either string's prefix may match.
+//
+// Complexity: O(min(len(a), len(b))) per call, acceptable given FingerprintDB's
+// bounded size (maxSize, default 1000).
 func hasPrefixOverlap(a, b string) bool {
 	minLen := len(a)
 	if len(b) < minLen {

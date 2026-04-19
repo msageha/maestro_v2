@@ -168,9 +168,9 @@ func isPromptReady(content string) bool {
 // Does NOT match "/clear" embedded in longer text like "Running /clear command..."
 func clearTextVisible(content string) bool {
 	lines := strings.Split(content, "\n")
-	// Check the last 6 non-blank lines (covers input line + a few status lines)
+	// Check the last maxPromptSearchLines non-blank lines (covers input line + a few status lines)
 	checked := 0
-	for i := len(lines) - 1; i >= 0 && checked < 6; i-- {
+	for i := len(lines) - 1; i >= 0 && checked < maxPromptSearchLines; i-- {
 		trimmed := strings.TrimSpace(stripANSI(lines[i]))
 		if trimmed == "" {
 			continue
@@ -220,13 +220,15 @@ func lastNonBlankLine(content string) string {
 }
 
 // containsControlChars returns true if s contains any ASCII control characters
-// (0x00-0x1F, 0x7F) except tab. This prevents injection via tmux SendCommand.
+// (0x00-0x1F, 0x7F) except tab, or Unicode line/paragraph separators (U+2028,
+// U+2029). The Unicode separators are included because they act as line breaks
+// in some contexts and could enable injection via tmux SendCommand.
 func containsControlChars(s string) bool {
 	for _, r := range s {
 		if r < 0x20 && r != '\t' {
 			return true
 		}
-		if r == 0x7F {
+		if r == 0x7F || r == 0x2028 || r == 0x2029 {
 			return true
 		}
 	}
