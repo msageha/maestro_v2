@@ -240,19 +240,19 @@ maestro plan retry-publish --command-id cmd_42
 **競合解決（Daemon 経由）**:
 
 ```
-maestro resolve-conflict \
+maestro plan resolve-conflict \
   --command-id <id> \
   --phase-id <id> \
   --worker-id <id> \
   [--conflicting-files <path>[,<path>...]]...
 ```
 
-Worker のマージ競合を Daemon の plan handler 経由で解決する（`resolve_conflict` オペレーション）。`--command-id`、`--phase-id`、`--worker-id` は必須。`--conflicting-files` は競合ファイルパスのヒント（繰り返し指定またはカンマ区切り、任意）。**注意: このコマンドは `maestro plan` サブコマンドではなくトップレベルコマンド（`maestro resolve-conflict`）である。**
+Worker のマージ競合を Daemon の plan handler 経由で解決する（`resolve_conflict` オペレーション）。`--command-id`、`--phase-id`、`--worker-id` は必須。`--conflicting-files` は競合ファイルパスのヒント（繰り返し指定またはカンマ区切り、任意）。
 
 使用例:
 
 ```
-maestro resolve-conflict --command-id cmd_42 --phase-id ph_3 \
+maestro plan resolve-conflict --command-id cmd_42 --phase-id ph_3 \
     --worker-id worker2 --conflicting-files internal/a.go,internal/b.go
 ```
 

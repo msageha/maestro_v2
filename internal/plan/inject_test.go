@@ -617,18 +617,20 @@ func setupInjectFixtureWithPhases(t *testing.T) (string, string, string, string,
 		PhaseTracking: model.PhaseTracking{
 			Phases: []model.Phase{
 				{
-					PhaseID: phase1ID,
-					Name:    "phase1",
-					Type:    "concrete",
-					Status:  model.PhaseStatusCompleted,
-					TaskIDs: []string{taskID1},
+					PhaseID:     phase1ID,
+					Name:        "phase1",
+					Type:        "concrete",
+					Status:      model.PhaseStatusCompleted,
+					TaskIDs:     []string{taskID1},
+					CompletedAt: strPtr("2025-01-01T00:10:00Z"),
 				},
 				{
-					PhaseID: phase2ID,
-					Name:    "phase2",
-					Type:    "concrete",
-					Status:  model.PhaseStatusCompleted,
-					TaskIDs: []string{taskID2},
+					PhaseID:     phase2ID,
+					Name:        "phase2",
+					Type:        "concrete",
+					Status:      model.PhaseStatusCompleted,
+					TaskIDs:     []string{taskID2},
+					CompletedAt: strPtr("2025-01-01T00:20:00Z"),
 				},
 			},
 		},
@@ -1052,4 +1054,131 @@ func TestAddTask_TargetWorkerID_AllTerminal_ReturnsError(t *testing.T) {
 	if !strings.Contains(pve.Msg, "all phases are terminal") {
 		t.Errorf("error message = %q, want to contain 'all phases are terminal'", pve.Msg)
 	}
+}
+
+func TestAddTask_CompletedPhase_ReopensOnInject(t *testing.T) {
+	maestroDir, commandID, _, phase1ID, _ := setupInjectFixtureWithPhases(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	// Verify precondition: phase1 is completed with CompletedAt set
+	sm := NewStateManager(maestroDir, lm)
+	stateBefore, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if stateBefore.Phases[0].Status != model.PhaseStatusCompleted {
+		t.Fatalf("precondition: phase1 status = %s, want completed", stateBefore.Phases[0].Status)
+	}
+	if stateBefore.Phases[0].CompletedAt == nil {
+		t.Fatal("precondition: phase1 CompletedAt should be set")
+	}
+
+	// Inject task into the completed phase
+	result, err := AddTask(InjectOptions{
+		CommandID:          commandID,
+		Purpose:            "resolve conflict in completed phase",
+		Content:            "fix conflicting files",
+		AcceptanceCriteria: "build passes",
+		BloomLevel:         3,
+		Required:           true,
+		TargetPhase:        phase1ID,
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err != nil {
+		t.Fatalf("AddTask returned error: %v", err)
+	}
+
+	stateAfter, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+
+	phase := stateAfter.Phases[0]
+
+	// Phase status should be reopened to active
+	if phase.Status != model.PhaseStatusActive {
+		t.Errorf("phase status = %s, want active", phase.Status)
+	}
+
+	// CompletedAt should be cleared
+	if phase.CompletedAt != nil {
+		t.Errorf("phase CompletedAt = %v, want nil", *phase.CompletedAt)
+	}
+
+	// ReopenedAt should be set
+	if phase.ReopenedAt == nil {
+		t.Error("phase ReopenedAt should be set after reopen")
+	}
+
+	// Task should be in the phase
+	foundInPhase := false
+	for _, tid := range phase.TaskIDs {
+		if tid == result.TaskID {
+			foundInPhase = true
+			break
+		}
+	}
+	if !foundInPhase {
+		t.Errorf("task %s not in phase1; TaskIDs: %v", result.TaskID, phase.TaskIDs)
+	}
+
+	// The other completed phase should remain unchanged
+	phase2 := stateAfter.Phases[1]
+	if phase2.Status != model.PhaseStatusCompleted {
+		t.Errorf("phase2 status = %s, want completed (should be unaffected)", phase2.Status)
+	}
+	if phase2.CompletedAt == nil {
+		t.Error("phase2 CompletedAt should remain set")
+	}
+}
+
+func TestAddTask_BlockedBy_CompletedPhase_ReopensOnInject(t *testing.T) {
+	maestroDir, commandID, taskID1, phase1ID, _ := setupInjectFixtureWithPhases(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	// Inject task with BlockedBy referencing a task in completed phase1
+	_, err := AddTask(InjectOptions{
+		CommandID:          commandID,
+		Purpose:            "resolve conflict via blocked_by",
+		Content:            "fix conflicting files",
+		AcceptanceCriteria: "build passes",
+		BloomLevel:         3,
+		Required:           true,
+		BlockedBy:          []string{taskID1},
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err != nil {
+		t.Fatalf("AddTask returned error: %v", err)
+	}
+
+	sm := NewStateManager(maestroDir, lm)
+	state, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+
+	// phase1 (containing taskID1) should be reopened
+	phase := state.Phases[0]
+	if phase.PhaseID != phase1ID {
+		t.Fatalf("unexpected phase at index 0: %s", phase.PhaseID)
+	}
+	if phase.Status != model.PhaseStatusActive {
+		t.Errorf("phase1 status = %s, want active", phase.Status)
+	}
+	if phase.CompletedAt != nil {
+		t.Errorf("phase1 CompletedAt = %v, want nil", *phase.CompletedAt)
+	}
+	if phase.ReopenedAt == nil {
+		t.Error("phase1 ReopenedAt should be set")
+	}
+}
+
+func strPtr(s string) *string {
+	return &s
 }

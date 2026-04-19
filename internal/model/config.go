@@ -186,62 +186,79 @@ type RetryConfig struct {
 	TaskDispatch                     int             `yaml:"task_dispatch"`
 	OrchestratorNotificationDispatch int             `yaml:"orchestrator_notification_dispatch"`
 	SignalDispatch                   int             `yaml:"signal_dispatch"`
-	SignalInlineRetries              int             `yaml:"signal_inline_retries"`
-	SignalInlineRetryDelaySec        int             `yaml:"signal_inline_retry_delay_sec"`
-	SignalDeliveryTimeoutSec         int             `yaml:"signal_delivery_timeout_sec"`
-	ResultNotifyInlineRetries            int             `yaml:"result_notify_inline_retries"`
-	ResultNotifyInlineRetryDelaySec      int             `yaml:"result_notify_inline_retry_delay_sec"`
-	ResultNotifyDeliveryTimeoutSec       int             `yaml:"result_notify_delivery_timeout_sec"`
-	CommandDispatchInlineRetries         int             `yaml:"command_dispatch_inline_retries"`
-	CommandDispatchInlineRetryDelaySec   int             `yaml:"command_dispatch_inline_retry_delay_sec"`
-	CommandDispatchTimeoutSec            int             `yaml:"command_dispatch_timeout_sec"`
-	TaskDispatchInlineRetries            int             `yaml:"task_dispatch_inline_retries"`
-	TaskDispatchInlineRetryDelaySec      int             `yaml:"task_dispatch_inline_retry_delay_sec"`
+	SignalInlineRetries              *int            `yaml:"signal_inline_retries"`
+	SignalInlineRetryDelaySec        *int            `yaml:"signal_inline_retry_delay_sec"`
+	SignalDeliveryTimeoutSec         *int            `yaml:"signal_delivery_timeout_sec"`
+	ResultNotifyInlineRetries            *int            `yaml:"result_notify_inline_retries"`
+	ResultNotifyInlineRetryDelaySec      *int            `yaml:"result_notify_inline_retry_delay_sec"`
+	ResultNotifyDeliveryTimeoutSec       *int            `yaml:"result_notify_delivery_timeout_sec"`
+	CommandDispatchInlineRetries         *int            `yaml:"command_dispatch_inline_retries"`
+	CommandDispatchInlineRetryDelaySec   *int            `yaml:"command_dispatch_inline_retry_delay_sec"`
+	CommandDispatchTimeoutSec            *int            `yaml:"command_dispatch_timeout_sec"`
+	TaskDispatchInlineRetries            *int            `yaml:"task_dispatch_inline_retries"`
+	TaskDispatchInlineRetryDelaySec      *int            `yaml:"task_dispatch_inline_retry_delay_sec"`
 	TaskExecution                        TaskRetryConfig `yaml:"task_execution"`
 }
 
 func (r RetryConfig) EffectiveSignalInlineRetries() int {
-	return effectiveNonZero(r.SignalInlineRetries, DefaultSignalInlineRetries)
+	return effectiveValue(r.SignalInlineRetries, DefaultSignalInlineRetries)
 }
 
 func (r RetryConfig) EffectiveSignalInlineRetryDelaySec() int {
-	return effectiveNonZero(r.SignalInlineRetryDelaySec, DefaultSignalInlineRetryDelaySec)
+	return effectiveValue(r.SignalInlineRetryDelaySec, DefaultSignalInlineRetryDelaySec)
 }
 
 func (r RetryConfig) EffectiveSignalDeliveryTimeoutSec() int {
-	return effectiveNonZero(r.SignalDeliveryTimeoutSec, DefaultSignalDeliveryTimeoutSec)
+	return effectiveValue(r.SignalDeliveryTimeoutSec, DefaultSignalDeliveryTimeoutSec)
 }
 
 func (r RetryConfig) EffectiveResultNotifyInlineRetries() int {
-	return effectiveNonZero(r.ResultNotifyInlineRetries, DefaultResultNotifyInlineRetries)
+	return effectiveValue(r.ResultNotifyInlineRetries, DefaultResultNotifyInlineRetries)
 }
 
 func (r RetryConfig) EffectiveResultNotifyInlineRetryDelaySec() int {
-	return effectiveNonZero(r.ResultNotifyInlineRetryDelaySec, DefaultResultNotifyInlineRetryDelaySec)
+	return effectiveValue(r.ResultNotifyInlineRetryDelaySec, DefaultResultNotifyInlineRetryDelaySec)
 }
 
 func (r RetryConfig) EffectiveCommandDispatchInlineRetries() int {
-	return effectiveNonZero(r.CommandDispatchInlineRetries, DefaultCommandDispatchInlineRetries)
+	return effectiveValue(r.CommandDispatchInlineRetries, DefaultCommandDispatchInlineRetries)
 }
 
 func (r RetryConfig) EffectiveCommandDispatchInlineRetryDelaySec() int {
-	return effectiveNonZero(r.CommandDispatchInlineRetryDelaySec, DefaultCommandDispatchInlineRetryDelaySec)
+	return effectiveValue(r.CommandDispatchInlineRetryDelaySec, DefaultCommandDispatchInlineRetryDelaySec)
 }
 
 func (r RetryConfig) EffectiveCommandDispatchTimeoutSec() int {
-	return effectiveNonZero(r.CommandDispatchTimeoutSec, DefaultCommandDispatchTimeoutSec)
+	return effectiveValue(r.CommandDispatchTimeoutSec, DefaultCommandDispatchTimeoutSec)
 }
 
 func (r RetryConfig) EffectiveTaskDispatchInlineRetries() int {
-	return effectiveNonZero(r.TaskDispatchInlineRetries, DefaultTaskDispatchInlineRetries)
+	return effectiveValue(r.TaskDispatchInlineRetries, DefaultTaskDispatchInlineRetries)
 }
 
 func (r RetryConfig) EffectiveTaskDispatchInlineRetryDelaySec() int {
-	return effectiveNonZero(r.TaskDispatchInlineRetryDelaySec, DefaultTaskDispatchInlineRetryDelaySec)
+	return effectiveValue(r.TaskDispatchInlineRetryDelaySec, DefaultTaskDispatchInlineRetryDelaySec)
 }
 
 func (r RetryConfig) EffectiveResultNotifyDeliveryTimeoutSec() int {
-	return effectiveNonZero(r.ResultNotifyDeliveryTimeoutSec, DefaultResultNotifyDeliveryTimeoutSec)
+	return effectiveValue(r.ResultNotifyDeliveryTimeoutSec, DefaultResultNotifyDeliveryTimeoutSec)
+}
+
+// NormalizeRetryConfig fills nil pointer fields in RetryConfig with their default values.
+// Call once after unmarshalling config.yaml so that EffectiveXxx() methods
+// are guaranteed to find non-nil values when explicitly set (including 0).
+func NormalizeRetryConfig(cfg *Config) {
+	resolvePtr(&cfg.Retry.SignalInlineRetries, DefaultSignalInlineRetries)
+	resolvePtr(&cfg.Retry.SignalInlineRetryDelaySec, DefaultSignalInlineRetryDelaySec)
+	resolvePtr(&cfg.Retry.SignalDeliveryTimeoutSec, DefaultSignalDeliveryTimeoutSec)
+	resolvePtr(&cfg.Retry.ResultNotifyInlineRetries, DefaultResultNotifyInlineRetries)
+	resolvePtr(&cfg.Retry.ResultNotifyInlineRetryDelaySec, DefaultResultNotifyInlineRetryDelaySec)
+	resolvePtr(&cfg.Retry.ResultNotifyDeliveryTimeoutSec, DefaultResultNotifyDeliveryTimeoutSec)
+	resolvePtr(&cfg.Retry.CommandDispatchInlineRetries, DefaultCommandDispatchInlineRetries)
+	resolvePtr(&cfg.Retry.CommandDispatchInlineRetryDelaySec, DefaultCommandDispatchInlineRetryDelaySec)
+	resolvePtr(&cfg.Retry.CommandDispatchTimeoutSec, DefaultCommandDispatchTimeoutSec)
+	resolvePtr(&cfg.Retry.TaskDispatchInlineRetries, DefaultTaskDispatchInlineRetries)
+	resolvePtr(&cfg.Retry.TaskDispatchInlineRetryDelaySec, DefaultTaskDispatchInlineRetryDelaySec)
 }
 
 // TaskRetryConfig holds configuration for automatic task execution retries.

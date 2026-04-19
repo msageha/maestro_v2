@@ -746,6 +746,43 @@ func TestBuildLaunchEnv_AllRoles(t *testing.T) {
 	}
 }
 
+func TestBuildLaunchEnv_FiltersExistingSandboxedValue(t *testing.T) {
+	// If CLAUDE_CODE_SANDBOXED already exists in the base env (e.g. inherited
+	// from a parent process), buildLaunchEnv must remove it before appending
+	// the correct value. On most Unix systems getenv() returns the first
+	// occurrence, so a stale "0" before our "1" would shadow the intended value.
+	base := []string{
+		"HOME=/home/test",
+		"CLAUDE_CODE_SANDBOXED=0",
+		"PATH=/usr/bin",
+	}
+	env := buildLaunchEnv(base, "worker")
+
+	var count int
+	var lastValue string
+	for _, e := range env {
+		if strings.HasPrefix(e, "CLAUDE_CODE_SANDBOXED=") {
+			count++
+			lastValue = e
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly 1 CLAUDE_CODE_SANDBOXED entry, got %d", count)
+	}
+	if lastValue != "CLAUDE_CODE_SANDBOXED=1" {
+		t.Errorf("CLAUDE_CODE_SANDBOXED = %q, want \"CLAUDE_CODE_SANDBOXED=1\"", lastValue)
+	}
+}
+
+func TestLaunchCommand_ContainsSandboxedEnvVar(t *testing.T) {
+	if !strings.Contains(LaunchCommand, "CLAUDE_CODE_SANDBOXED=1") {
+		t.Errorf("LaunchCommand should contain CLAUDE_CODE_SANDBOXED=1, got %q", LaunchCommand)
+	}
+	if !strings.Contains(LaunchCommand, "maestro agent launch") {
+		t.Errorf("LaunchCommand should contain 'maestro agent launch', got %q", LaunchCommand)
+	}
+}
+
 func TestCurrentPaneTarget_InvalidTmuxPane(t *testing.T) {
 	invalid := []string{
 		"",
