@@ -18,7 +18,10 @@ func TestC2_BanditModelSelection_NoPlannerInvolvement(t *testing.T) {
 	// §6 C-2: Model assignment is determined by Daemon UCB bandit calculation.
 	// Planner/Worker must NOT participate in model selection.
 	// No LLM tokens consumed (§5-7 alignment).
-	sel := bandit.NewSelector(1.41)
+	sel, err := bandit.NewSelector(1.41)
+	if err != nil {
+		t.Fatalf("NewSelector: %v", err)
+	}
 	sel.AddArm("sonnet")
 	sel.AddArm("opus")
 	sel.AddArm("haiku")
@@ -63,7 +66,10 @@ func TestC2_BanditFallback_InsufficientData(t *testing.T) {
 	t.Parallel()
 	// §5-7: With insufficient trace data, static config fallback applies.
 	// New selector with no data should still return an arm (exploration phase).
-	sel := bandit.NewSelector(1.41)
+	sel, err := bandit.NewSelector(1.41)
+	if err != nil {
+		t.Fatalf("NewSelector: %v", err)
+	}
 	sel.AddArm("sonnet")
 	sel.AddArm("opus")
 	sel.AddArm("haiku")

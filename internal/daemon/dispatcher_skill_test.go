@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"log"
 	"os"
 	"path/filepath"
@@ -57,7 +58,7 @@ func TestDispatchTask_SkillInjection_Success(t *testing.T) {
 		SkillRefs: []string{"go-testing"},
 	}
 
-	if err := d.DispatchTask(task, "worker1"); err != nil {
+	if err := d.DispatchTask(context.Background(), task, "worker1"); err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
@@ -97,7 +98,7 @@ func TestDispatchTask_SkillRefs_Empty_NoShared_NoInjection(t *testing.T) {
 		SkillRefs: nil, // empty
 	}
 
-	if err := d.DispatchTask(task, "worker1"); err != nil {
+	if err := d.DispatchTask(context.Background(), task, "worker1"); err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
@@ -127,7 +128,7 @@ func TestDispatchTask_SharedSkills_AutoInjected(t *testing.T) {
 		SkillRefs: nil, // no explicit skill_refs
 	}
 
-	if err := d.DispatchTask(task, "worker1"); err != nil {
+	if err := d.DispatchTask(context.Background(), task, "worker1"); err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
@@ -161,7 +162,7 @@ func TestDispatchTask_SharedSkills_DeduplicatedWithSkillRefs(t *testing.T) {
 		SkillRefs: []string{"my-skill"}, // explicitly references the skill
 	}
 
-	if err := d.DispatchTask(task, "worker1"); err != nil {
+	if err := d.DispatchTask(context.Background(), task, "worker1"); err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
@@ -198,7 +199,7 @@ func TestDispatchTask_SharedSkills_MixedWithSkillRefs(t *testing.T) {
 		SkillRefs: []string{"impl-skill"},
 	}
 
-	if err := d.DispatchTask(task, "worker1"); err != nil {
+	if err := d.DispatchTask(context.Background(), task, "worker1"); err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
@@ -230,7 +231,7 @@ func TestDispatchTask_SkillsDisabled_NoInjection(t *testing.T) {
 		SkillRefs: []string{"go-testing"},
 	}
 
-	if err := d.DispatchTask(task, "worker1"); err != nil {
+	if err := d.DispatchTask(context.Background(), task, "worker1"); err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
@@ -262,7 +263,7 @@ func TestDispatchTask_MissingRefPolicy_Warn(t *testing.T) {
 	}
 
 	// Should succeed (warn policy skips missing refs)
-	if err := d.DispatchTask(task, "worker1"); err != nil {
+	if err := d.DispatchTask(context.Background(), task, "worker1"); err != nil {
 		t.Fatalf("dispatch should succeed with warn policy, got: %v", err)
 	}
 
@@ -294,7 +295,7 @@ func TestDispatchTask_MissingRefPolicy_Error(t *testing.T) {
 	}
 
 	// Should fail with error policy
-	err := d.DispatchTask(task, "worker1")
+	err := d.DispatchTask(context.Background(), task, "worker1")
 	if err == nil {
 		t.Fatal("dispatch should fail with error policy for missing skill ref")
 	}
@@ -327,7 +328,7 @@ func TestDispatchTask_MaxRefsPerTask_Truncation(t *testing.T) {
 		SkillRefs: []string{"skill-a", "skill-b", "skill-c"},
 	}
 
-	if err := d.DispatchTask(task, "worker1"); err != nil {
+	if err := d.DispatchTask(context.Background(), task, "worker1"); err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
@@ -364,7 +365,7 @@ func TestDispatchTask_SkillInjection_MultipleSkills(t *testing.T) {
 		SkillRefs: []string{"skill-a", "skill-b"},
 	}
 
-	if err := d.DispatchTask(task, "worker1"); err != nil {
+	if err := d.DispatchTask(context.Background(), task, "worker1"); err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
@@ -411,7 +412,7 @@ func TestDispatchCommand_PlannerSkillInjection(t *testing.T) {
 		SkillRefs: []string{"plan-skill"}, // Orchestrator selects planner skills
 	}
 
-	if err := d.DispatchCommand(cmd); err != nil {
+	if err := d.DispatchCommand(context.Background(), cmd); err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
@@ -455,7 +456,7 @@ func TestDispatchCommand_NoSkillRefs_OnlySharedInjected(t *testing.T) {
 		// No SkillRefs — only shared skills should be injected
 	}
 
-	if err := d.DispatchCommand(cmd); err != nil {
+	if err := d.DispatchCommand(context.Background(), cmd); err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
@@ -484,7 +485,7 @@ func TestDispatchCommand_SkillsDisabled_NoInjection(t *testing.T) {
 		Content: "implement feature X",
 	}
 
-	if err := d.DispatchCommand(cmd); err != nil {
+	if err := d.DispatchCommand(context.Background(), cmd); err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
@@ -509,7 +510,7 @@ func TestDispatchCommand_NoSkillsDir_NoError(t *testing.T) {
 		Content: "implement feature X",
 	}
 
-	if err := d.DispatchCommand(cmd); err != nil {
+	if err := d.DispatchCommand(context.Background(), cmd); err != nil {
 		t.Fatalf("dispatch should succeed even without skills dir: %v", err)
 	}
 
@@ -537,7 +538,7 @@ func TestDispatchCommand_OnlyPlannerSkills_NotWorkerSkills(t *testing.T) {
 		SkillRefs: []string{"plan-skill"},
 	}
 
-	if err := d.DispatchCommand(cmd); err != nil {
+	if err := d.DispatchCommand(context.Background(), cmd); err != nil {
 		t.Fatalf("dispatch failed: %v", err)
 	}
 
@@ -572,7 +573,7 @@ func TestDispatchTask_MissingRefPolicy_Warn_PartialSkills(t *testing.T) {
 		SkillRefs: []string{"existing-skill", "nonexistent-skill"},
 	}
 
-	if err := d.DispatchTask(task, "worker1"); err != nil {
+	if err := d.DispatchTask(context.Background(), task, "worker1"); err != nil {
 		t.Fatalf("dispatch should succeed with warn policy, got: %v", err)
 	}
 

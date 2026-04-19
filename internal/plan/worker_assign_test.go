@@ -11,8 +11,13 @@ import (
 )
 
 // newTestBanditSelector creates a bandit.Selector for testing.
-func newTestBanditSelector(cfg model.BanditConfig) BanditSelector {
-	return bandit.NewSelector(cfg.EffectiveExplorationCoeff())
+func newTestBanditSelector(t *testing.T, cfg model.BanditConfig) BanditSelector {
+	t.Helper()
+	sel, err := bandit.NewSelector(cfg.EffectiveExplorationCoeff())
+	if err != nil {
+		t.Fatalf("NewSelector: %v", err)
+	}
+	return sel
 }
 
 func TestGetModelForBloomLevel(t *testing.T) {
@@ -281,7 +286,7 @@ func TestAdaptiveModelSelector_InsufficientData_TraceRequirement(t *testing.T) {
 		MinSamplesBeforeUse:  ptr.Int(2),
 		TraceDataRequirement: ptr.Int(10), // require 10 total pulls
 	}
-	sel := NewAdaptiveModelSelector(cfg, newTestBanditSelector(cfg))
+	sel := NewAdaptiveModelSelector(cfg, newTestBanditSelector(t, cfg))
 
 	// Seed a few observations — not enough to meet TraceDataRequirement(10)
 	for i := 0; i < 3; i++ {
@@ -302,7 +307,7 @@ func TestAdaptiveModelSelector_InsufficientData_MinSamples(t *testing.T) {
 		MinSamplesBeforeUse:  ptr.Int(5),  // each arm needs 5
 		TraceDataRequirement: ptr.Int(3),  // total trace easily met
 	}
-	sel := NewAdaptiveModelSelector(cfg, newTestBanditSelector(cfg))
+	sel := NewAdaptiveModelSelector(cfg, newTestBanditSelector(t, cfg))
 
 	// Give enough total but haiku has 0 pulls
 	for i := 0; i < 5; i++ {
@@ -323,7 +328,7 @@ func TestAdaptiveModelSelector_SufficientData_BanditSelection(t *testing.T) {
 		MinSamplesBeforeUse:  ptr.Int(2),
 		TraceDataRequirement: ptr.Int(6),
 	}
-	sel := NewAdaptiveModelSelector(cfg, newTestBanditSelector(cfg))
+	sel := NewAdaptiveModelSelector(cfg, newTestBanditSelector(t, cfg))
 
 	// Seed data: sonnet gets high reward, opus medium, haiku low
 	for i := 0; i < 5; i++ {
@@ -345,7 +350,7 @@ func TestAdaptiveModelSelector_RecordResult(t *testing.T) {
 		Enabled:          ptr.Bool(true),
 		ExplorationCoeff: ptr.Float64(1.41),
 	}
-	sel := NewAdaptiveModelSelector(cfg, newTestBanditSelector(cfg))
+	sel := NewAdaptiveModelSelector(cfg, newTestBanditSelector(t, cfg))
 
 	sel.RecordResult("sonnet", 1.0)
 	sel.RecordResult("sonnet", 0.6)
@@ -386,7 +391,7 @@ func TestAdaptiveModelSelector_FallbackOnError(t *testing.T) {
 		MinSamplesBeforeUse:  ptr.Int(0),
 		TraceDataRequirement: ptr.Int(0),
 	}
-	sel := NewAdaptiveModelSelector(cfg, newTestBanditSelector(cfg))
+	sel := NewAdaptiveModelSelector(cfg, newTestBanditSelector(t, cfg))
 
 	// Remove all arms to force SelectArm error
 	sel.bandit.Reset()

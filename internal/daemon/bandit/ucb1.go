@@ -3,6 +3,7 @@ package bandit
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"sort"
 	"sync"
@@ -25,11 +26,21 @@ type Selector struct {
 }
 
 // NewSelector creates a new UCB1 Selector with the given exploration coefficient.
-func NewSelector(explorationCoeff float64) *Selector {
+// Returns an error if explorationCoeff is NaN, Inf, or negative.
+func NewSelector(explorationCoeff float64) (*Selector, error) {
+	if math.IsNaN(explorationCoeff) {
+		return nil, fmt.Errorf("explorationCoeff must not be NaN")
+	}
+	if math.IsInf(explorationCoeff, 0) {
+		return nil, fmt.Errorf("explorationCoeff must not be Inf")
+	}
+	if explorationCoeff < 0 {
+		return nil, fmt.Errorf("explorationCoeff must not be negative, got %v", explorationCoeff)
+	}
 	return &Selector{
 		arms:             make(map[string]*ArmStats),
 		explorationCoeff: explorationCoeff,
-	}
+	}, nil
 }
 
 // AddArm registers a new arm with the given name.

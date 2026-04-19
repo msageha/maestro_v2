@@ -25,7 +25,10 @@ func TestBoundary_DeterministicDaemonProcessing(t *testing.T) {
 		t.Parallel()
 		// UCB1: same arms + same reward history → same BestArm.
 		for trial := 0; trial < 3; trial++ {
-			sel := bandit.NewSelector(1.41)
+			sel, err := bandit.NewSelector(1.41)
+			if err != nil {
+				t.Fatalf("NewSelector: %v", err)
+			}
 			sel.AddArm("a")
 			sel.AddArm("b")
 			for i := 0; i < 10; i++ {
@@ -96,7 +99,10 @@ func TestBoundary_NoLLMTokenConsumption(t *testing.T) {
 	// No external HTTP/LLM calls are made.
 
 	// Bandit: pure math.
-	sel := bandit.NewSelector(1.41)
+	sel, err := bandit.NewSelector(1.41)
+	if err != nil {
+		t.Fatalf("NewSelector: %v", err)
+	}
 	sel.AddArm("test")
 	sel.UpdateReward("test", 0.5)
 	_, _ = sel.SelectArm()
@@ -196,7 +202,10 @@ func TestBoundary_AntiRequirements(t *testing.T) {
 	t.Run("S5_7_Bandit_TraceDataPrereq", func(t *testing.T) {
 		t.Parallel()
 		// §5-7: Bandit presumes Trace data accumulation.
-		sel := bandit.NewSelector(1.41)
+		sel, err := bandit.NewSelector(1.41)
+		if err != nil {
+			t.Fatalf("NewSelector: %v", err)
+		}
 		sel.AddArm("a")
 
 		// No pulls → exploration phase (not exploitation).
