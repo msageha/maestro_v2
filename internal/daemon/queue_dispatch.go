@@ -82,7 +82,15 @@ func (qh *QueueHandler) stepPlannerSignalsDeferred(sq *model.PlannerSignalQueue,
 			// terminal. This closes the race window where plan complete is called
 			// between Phase C signal creation and Phase A signal evaluation,
 			// preventing the Planner from issuing a redundant second plan complete.
-			if sig.Kind == "publish_completed" && isCommandTerminalInQueue(commandQueue, sig.CommandID) {
+			// Reload the command queue from disk to capture concurrent plan
+			// complete calls that may have run after the Phase A queue load.
+			terminalCQ := commandQueue
+			if sig.Kind == "publish_completed" {
+				if freshCQ, _, err := qh.queueStore.LoadCommandQueue(); err == nil {
+					terminalCQ = freshCQ
+				}
+			}
+			if sig.Kind == "publish_completed" && isCommandTerminalInQueue(terminalCQ, sig.CommandID) {
 				qh.log(LogLevelInfo, "signal_stale_removed kind=%s command=%s (command already terminal)",
 					sig.Kind, sig.CommandID)
 				*dirty = true

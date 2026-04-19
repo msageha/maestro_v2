@@ -1517,6 +1517,71 @@ func TestPeriodicScanPhaseC_PublishCompletedSuppressedWhenTerminal(t *testing.T)
 	}
 }
 
+// TestPeriodicScanPhaseC_PublishCompletedSuppressedWhenTerminalOnDisk verifies
+// that a publish_completed signal is suppressed even when the in-memory command
+// queue snapshot (loaded at the start of Phase C) is stale, as long as the
+// command is terminal on disk. This exercises the race where plan complete is
+// called concurrently during Phase B and the on-disk queue is updated after
+// Phase C's initial load.
+func TestPeriodicScanPhaseC_PublishCompletedSuppressedWhenTerminalOnDisk(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	wtCfg := model.WorktreeConfig{Enabled: false}
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, wtCfg)
+
+	commandID := "cmd_race"
+
+	// Start with a NON-terminal command in the queue on disk (simulating the
+	// state at Phase C's initial queue load).
+	cqPath := filepath.Join(maestroDir, "queue", "planner.yaml")
+	cq := model.CommandQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_planner",
+		Commands: []model.Command{
+			{ID: commandID, Status: model.StatusInProgress},
+		},
+	}
+	if err := yamlutil.AtomicWrite(cqPath, cq); err != nil {
+		t.Fatalf("write command queue: %v", err)
+	}
+
+	// Wire a deferredPlanCompleter that simulates an external plan complete:
+	// it writes the terminal status to the queue file on disk (as plan.Complete
+	// would) and returns (false, nil) — no deferred intent.
+	qh.deferredPlanCompleter = func(cmdID string) (bool, error) {
+		terminalCQ := model.CommandQueue{
+			SchemaVersion: 1,
+			FileType:      "queue_planner",
+			Commands: []model.Command{
+				{ID: cmdID, Status: model.StatusCompleted},
+			},
+		}
+		if err := yamlutil.AtomicWrite(cqPath, terminalCQ); err != nil {
+			t.Fatalf("simulate plan complete: %v", err)
+		}
+		return false, nil
+	}
+
+	pa := phaseAResult{scanStart: time.Now()}
+	pb := phaseBResult{
+		worktreePublishes: []worktreePublishResult{{
+			Item:  worktreePublishItem{CommandID: commandID, PublishMessage: "test publish"},
+			Error: nil,
+		}},
+	}
+
+	qh.periodicScanPhaseC(pa, pb)
+
+	// The publish_completed signal must be suppressed because the disk reload
+	// inside applyPublishResultSignals detects the terminal status.
+	signalQueue, _, _ := qh.queueStore.LoadPlannerSignalQueue()
+	for _, s := range signalQueue.Signals {
+		if s.Kind == "publish_completed" && s.CommandID == commandID {
+			t.Errorf("publish_completed signal should be suppressed for terminal command on disk; got: %+v", s)
+		}
+	}
+}
+
 // TestStepPlannerSignalsDeferred_PublishCompletedStaleWhenTerminal verifies that
 // a publish_completed signal is removed as stale when the command is already in
 // a terminal status in the command queue. This closes the race window where plan
@@ -1546,11 +1611,18 @@ func TestStepPlannerSignalsDeferred_PublishCompletedStaleWhenTerminal(t *testing
 		},
 	}
 
-	// Command is already terminal in the queue
+	// Command is already terminal in the queue (both in-memory and on disk
+	// so the reload inside stepPlannerSignalsDeferred finds it).
 	commandQueue := model.CommandQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_planner",
 		Commands: []model.Command{
 			{ID: "cmd_done", Status: model.StatusCompleted},
 		},
+	}
+	cqPath := filepath.Join(maestroDir, "queue", "planner.yaml")
+	if err := yamlutil.AtomicWrite(cqPath, commandQueue); err != nil {
+		t.Fatalf("write command queue: %v", err)
 	}
 
 	dirty := false
