@@ -156,6 +156,62 @@ func TestEvaluate_SingleCandidate(t *testing.T) {
 	}
 }
 
+func TestEvaluate_WinnerIndexNegative(t *testing.T) {
+	t.Parallel()
+	j := NewJudge(&mockCaller{
+		response: `{"winner_index": -1, "reasoning": "bad"}`,
+	}, "m", 5*time.Second)
+
+	d, err := j.Evaluate(context.Background(), twoCandidates())
+	if err == nil {
+		t.Fatal("expected error for negative winner_index")
+	}
+	if d.WinnerIndex != nil {
+		t.Errorf("error fallback should return nil WinnerIndex, got %v", d.WinnerIndex)
+	}
+	if !strings.Contains(err.Error(), "not a valid candidate slot index") {
+		t.Errorf("error should mention invalid slot index: %v", err)
+	}
+}
+
+func TestEvaluate_WinnerIndexTooLarge(t *testing.T) {
+	t.Parallel()
+	j := NewJudge(&mockCaller{
+		response: `{"winner_index": 5, "reasoning": "bad"}`,
+	}, "m", 5*time.Second)
+
+	d, err := j.Evaluate(context.Background(), twoCandidates())
+	if err == nil {
+		t.Fatal("expected error for out-of-range winner_index")
+	}
+	if d.WinnerIndex != nil {
+		t.Errorf("error fallback should return nil WinnerIndex, got %v", d.WinnerIndex)
+	}
+	if !strings.Contains(err.Error(), "not a valid candidate slot index") {
+		t.Errorf("error should mention invalid slot index: %v", err)
+	}
+}
+
+func TestEvaluate_WinnerIndexNotInSlotIndices(t *testing.T) {
+	t.Parallel()
+	// Candidates have SlotIndex 10 and 20; LLM returns 0 which is not a valid slot index.
+	candidates := []CandidateInfo{
+		{SlotIndex: 10, DiffSummary: "diff A", FitnessDesc: "score 85", FilesChanged: []string{"a.go"}, WorkerID: "w1"},
+		{SlotIndex: 20, DiffSummary: "diff B", FitnessDesc: "score 85", FilesChanged: []string{"b.go"}, WorkerID: "w2"},
+	}
+	j := NewJudge(&mockCaller{
+		response: `{"winner_index": 0, "reasoning": "wrong index"}`,
+	}, "m", 5*time.Second)
+
+	d, err := j.Evaluate(context.Background(), candidates)
+	if err == nil {
+		t.Fatal("expected error for winner_index not matching any SlotIndex")
+	}
+	if d.WinnerIndex != nil {
+		t.Errorf("error fallback should return nil WinnerIndex, got %v", d.WinnerIndex)
+	}
+}
+
 func TestBuildPrompt_ContainsCandidateInfo(t *testing.T) {
 	t.Parallel()
 	candidates := twoCandidates()

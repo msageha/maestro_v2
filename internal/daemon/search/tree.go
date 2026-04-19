@@ -114,6 +114,7 @@ func (t *Tree) Expand(parentID string, childIDs []string) ([]*Node, error) {
 }
 
 // Backpropagate propagates a reward from the given node up to the root.
+// If an intermediate node is missing, it is skipped and propagation continues to the parent.
 func (t *Tree) Backpropagate(nodeID string, reward float64) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
@@ -122,14 +123,29 @@ func (t *Tree) Backpropagate(nodeID string, reward float64) {
 	for current != "" {
 		n, ok := t.nodes[current]
 		if !ok {
-			slog.Warn("search/tree: Backpropagate: node not found, stopping propagation", "node_id", current)
-			break
+			slog.Warn("search/tree: Backpropagate: node not found, skipping",
+				"node_id", current)
+			current = t.findParentOfLocked(current)
+			continue
 		}
 		n.Visits++
 		n.TotalReward += reward
 		n.AvgReward = n.TotalReward / float64(n.Visits)
 		current = n.ParentID
 	}
+}
+
+// findParentOfLocked searches for the parent of a node by checking children lists.
+// Must be called with t.mu held.
+func (t *Tree) findParentOfLocked(nodeID string) string {
+	for _, n := range t.nodes {
+		for _, cid := range n.Children {
+			if cid == nodeID {
+				return n.ID
+			}
+		}
+	}
+	return ""
 }
 
 // UCT computes the Upper Confidence Bound for Trees score for a node.
@@ -251,7 +267,7 @@ func (t *Tree) PruneBelow(threshold float64) {
 					break
 				}
 			}
-			if allPruned && n.Visits > 0 && n.AvgReward < threshold {
+			if allPruned {
 				n.State = NodePruned
 				changed = true
 			}

@@ -127,11 +127,64 @@ func TestLoadProfiles_CustomConfig(t *testing.T) {
 		t.Error("custom standard: cross_agent_review should be enabled")
 	}
 
-	// Critical no longer exists after LoadProfiles replaces all profiles.
+	// Critical should still exist after partial LoadProfiles (merge, not replace).
 	p := e.Evaluate(LevelCritical)
-	// Should fall back to simple (which is now the custom simple).
-	if p.Level != LevelSimple {
-		t.Errorf("expected fallback to simple, got %q", p.Level)
+	if p.Level != LevelCritical {
+		t.Errorf("expected critical to be preserved, got %q", p.Level)
+	}
+	// Default critical has all features enabled.
+	if !p.EnabledFeatures[FeatureSelfImprovement] {
+		t.Error("critical: self_improvement should still be enabled after partial load")
+	}
+}
+
+func TestLoadProfiles_NilAndEmptyPreserveExisting(t *testing.T) {
+	t.Parallel()
+	e := NewEvaluator()
+
+	// Load nil — existing profiles must be unchanged.
+	e.LoadProfiles(nil)
+	if !e.IsEnabled(LevelCritical, FeatureSelfImprovement) {
+		t.Error("after nil load: critical self_improvement should be preserved")
+	}
+
+	// Load empty map — existing profiles must be unchanged.
+	e.LoadProfiles(map[string]map[string]interface{}{})
+	if !e.IsEnabled(LevelCritical, FeatureSelfImprovement) {
+		t.Error("after empty load: critical self_improvement should be preserved")
+	}
+}
+
+func TestLoadProfiles_PartialMergePreservesOtherLevels(t *testing.T) {
+	t.Parallel()
+	e := NewEvaluator()
+
+	// Load only simple — complex and critical must survive.
+	partial := map[string]map[string]interface{}{
+		"simple": {
+			"self_improvement": true,
+		},
+	}
+	e.LoadProfiles(partial)
+
+	// simple was overridden.
+	if !e.IsEnabled(LevelSimple, FeatureSelfImprovement) {
+		t.Error("simple: self_improvement should be enabled after partial load")
+	}
+
+	// complex preserved from defaults.
+	if !e.IsEnabled(LevelComplex, FeatureAdaptiveModelSelection) {
+		t.Error("complex: adaptive_model_selection should be preserved")
+	}
+	if !e.IsEnabled(LevelComplex, FeatureCrossAgentReview) {
+		t.Error("complex: cross_agent_review should be preserved")
+	}
+
+	// critical preserved from defaults.
+	for _, feat := range allFeatures {
+		if !e.IsEnabled(LevelCritical, feat) {
+			t.Errorf("critical: feature %q should be preserved after partial load", feat)
+		}
 	}
 }
 

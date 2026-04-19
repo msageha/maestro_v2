@@ -120,8 +120,6 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 				state.UpdatedAt = now
 				if err := yamlutil.AtomicWrite(statePath, state); err != nil {
 					run.Log(core.LogLevelError, "R7 write_worktree_state command=%s error=%v", commandID, err)
-					r = commandRepairs
-					return
 				}
 			}
 
