@@ -66,6 +66,10 @@ func (wm *Manager) CleanupCommand(commandID string) error {
 // Intended for daemon shutdown to prevent worktree accumulation across restarts.
 // Respects the provided context for timeout cancellation. Individual cleanup
 // failures are logged as warnings but do not prevent cleanup of remaining commands.
+//
+// Locking: Stage 1 holds only wm.mu to snapshot state entries. Stage 2 acquires
+// cmdLocks[cmd] → wm.mu per command, matching the established hierarchy
+// (see manager.go) to serialize against in-flight resolver operations.
 func (wm *Manager) CleanupAll(ctx context.Context) error {
 	// Stage 1: snapshot all command states under lock
 	wm.mu.Lock()
@@ -104,7 +108,9 @@ func (wm *Manager) CleanupAll(ctx context.Context) error {
 
 	wm.Log(core.LogLevelInfo, "shutdown_cleanup_start count=%d", len(targets))
 
-	// Stage 2: cleanup each command, checking context between operations
+	// Stage 2: cleanup each command, checking context between operations.
+	// Acquire cmdLocks[cmd] → wm.mu to match the documented lock hierarchy
+	// and serialize against concurrent resolver operations.
 	var cleaned, failed int
 	for _, t := range targets {
 		select {
@@ -114,6 +120,9 @@ func (wm *Manager) CleanupAll(ctx context.Context) error {
 			return ctx.Err()
 		default:
 		}
+
+		cl := wm.commandLock(t.commandID)
+		cl.Lock()
 
 		wm.mu.Lock()
 		errs := wm.cleanupCommandCore(t.commandID, t.state, false)
@@ -126,16 +135,12 @@ func (wm *Manager) CleanupAll(ctx context.Context) error {
 		} else {
 			wm.Log(core.LogLevelInfo, "shutdown_cleanup_done command=%s", t.commandID)
 			cleaned++
+			// Safe to delete: we hold the per-command lock and cleanup
+			// succeeded (all worktrees/branches/state are gone).
+			wm.cmdLocks.Delete(t.commandID)
 		}
 
-		// Clean up per-command resolver lock (mirrors cleanupCommandUnlocked)
-		if v, ok := wm.cmdLocks.Load(t.commandID); ok {
-			mu, ok := v.(*sync.Mutex)
-			if ok && mu.TryLock() {
-				wm.cmdLocks.Delete(t.commandID)
-				mu.Unlock()
-			}
-		}
+		cl.Unlock()
 	}
 
 	wm.Log(core.LogLevelInfo, "shutdown_cleanup_complete cleaned=%d failed=%d", cleaned, failed)

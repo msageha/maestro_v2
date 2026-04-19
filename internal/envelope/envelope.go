@@ -7,11 +7,43 @@ import (
 	"regexp"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/msageha/maestro_v2/internal/model"
 )
+
+// Maximum byte lengths for envelope fields to prevent memory exhaustion (DoS).
+// These limits are applied before sanitization.
+const (
+	MaxPurposeBytes            = 4096   // 4 KB
+	MaxContentBytes            = 131072 // 128 KB
+	MaxAcceptanceCriteriaBytes = 16384  // 16 KB
+	MaxConstraintItemBytes     = 4096   // 4 KB per item
+	MaxToolsHintItemBytes      = 512
+	MaxPersonaHintBytes        = 512
+	MaxSkillRefItemBytes       = 512
+	MaxGenericFieldBytes       = 1024 // IDs, status strings in notification envelopes
+)
+
+// TruncateUTF8Bytes truncates s to at most maxBytes, cutting at a valid UTF-8
+// rune boundary. If truncation occurs, " [truncated]" is appended.
+// Returns s unchanged if len(s) <= maxBytes or maxBytes <= 0.
+func TruncateUTF8Bytes(s string, maxBytes int) string {
+	if maxBytes <= 0 || len(s) <= maxBytes {
+		return s
+	}
+	end := 0
+	for i, r := range s {
+		next := i + utf8.RuneLen(r)
+		if next > maxBytes {
+			break
+		}
+		end = next
+	}
+	return s[:end] + " [truncated]"
+}
 
 // zeroWidthChars contains Unicode zero-width and invisible formatting characters
 // that could be used to bypass text-based pattern matching.
@@ -94,6 +126,11 @@ func SanitizeUserContent(s string) string {
 	return s
 }
 
+// sanitizeField truncates s to maxBytes at a UTF-8 boundary, then sanitizes it.
+func sanitizeField(s string, maxBytes int) string {
+	return SanitizeEnvelopeField(TruncateUTF8Bytes(s, maxBytes))
+}
+
 // --- Envelope Builders ---
 
 // BuildWorkerEnvelope creates the delivery envelope for a Worker task.
@@ -104,14 +141,14 @@ func BuildWorkerEnvelope(task model.Task, workerID string, leaseEpoch, attempt i
 		task.ID, task.CommandID, leaseEpoch, attempt)
 	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "agent_id: %s\n", workerID)
-	fmt.Fprintf(&sb, "purpose: %s\n", SanitizeEnvelopeField(task.Purpose))
-	fmt.Fprintf(&sb, "content: %s\n", SanitizeEnvelopeField(task.Content))
-	fmt.Fprintf(&sb, "acceptance_criteria: %s\n", SanitizeEnvelopeField(task.AcceptanceCriteria))
+	fmt.Fprintf(&sb, "purpose: %s\n", sanitizeField(task.Purpose, MaxPurposeBytes))
+	fmt.Fprintf(&sb, "content: %s\n", sanitizeField(task.Content, MaxContentBytes))
+	fmt.Fprintf(&sb, "acceptance_criteria: %s\n", sanitizeField(task.AcceptanceCriteria, MaxAcceptanceCriteriaBytes))
 	constraintsStr := "なし"
 	if len(task.Constraints) > 0 {
 		sanitized := make([]string, len(task.Constraints))
 		for i, c := range task.Constraints {
-			sanitized[i] = SanitizeEnvelopeField(c)
+			sanitized[i] = sanitizeField(c, MaxConstraintItemBytes)
 		}
 		constraintsStr = strings.Join(sanitized, ", ")
 	}
@@ -120,21 +157,21 @@ func BuildWorkerEnvelope(task model.Task, workerID string, leaseEpoch, attempt i
 	if len(task.ToolsHint) > 0 {
 		sanitizedHints := make([]string, len(task.ToolsHint))
 		for i, h := range task.ToolsHint {
-			sanitizedHints[i] = SanitizeEnvelopeField(h)
+			sanitizedHints[i] = sanitizeField(h, MaxToolsHintItemBytes)
 		}
 		toolsHintStr = strings.Join(sanitizedHints, ", ")
 	}
 	fmt.Fprintf(&sb, "tools_hint: %s\n", toolsHintStr)
 	personaHintStr := "なし"
 	if task.PersonaHint != "" {
-		personaHintStr = SanitizeEnvelopeField(task.PersonaHint)
+		personaHintStr = sanitizeField(task.PersonaHint, MaxPersonaHintBytes)
 	}
 	fmt.Fprintf(&sb, "persona_hint: %s\n", personaHintStr)
 	skillRefsStr := "なし"
 	if len(task.SkillRefs) > 0 {
 		sanitizedRefs := make([]string, len(task.SkillRefs))
 		for i, r := range task.SkillRefs {
-			sanitizedRefs[i] = SanitizeEnvelopeField(r)
+			sanitizedRefs[i] = sanitizeField(r, MaxSkillRefItemBytes)
 		}
 		skillRefsStr = strings.Join(sanitizedRefs, ", ")
 	}
@@ -153,7 +190,7 @@ func BuildPlannerEnvelope(cmd model.Command, leaseEpoch, attempt int) string {
 	fmt.Fprintf(&sb, "[maestro] command_id:%s lease_epoch:%d attempt:%d\n",
 		cmd.ID, leaseEpoch, attempt)
 	sb.WriteString("\n")
-	fmt.Fprintf(&sb, "content: %s\n", SanitizeEnvelopeField(cmd.Content))
+	fmt.Fprintf(&sb, "content: %s\n", sanitizeField(cmd.Content, MaxContentBytes))
 	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "タスク分解後: maestro plan submit --command-id %s --tasks-file -\n", cmd.ID)
 	fmt.Fprintf(&sb, "全タスク完了後: maestro plan complete --command-id %s --summary \"...\"", cmd.ID)
@@ -165,8 +202,8 @@ func BuildPlannerEnvelope(cmd model.Command, leaseEpoch, attempt int) string {
 func BuildOrchestratorNotificationEnvelope(commandID string, notificationType model.NotificationType) string {
 	terminalStatus := mapNotificationTypeToStatus(notificationType)
 	return fmt.Sprintf("[maestro] kind:%s command_id:%s status:%s\nresults/planner.yaml を確認してください",
-		SanitizeEnvelopeField(string(notificationType)),
-		SanitizeEnvelopeField(commandID),
+		sanitizeField(string(notificationType), MaxGenericFieldBytes),
+		sanitizeField(commandID, MaxGenericFieldBytes),
 		terminalStatus)
 }
 
@@ -186,9 +223,9 @@ func mapNotificationTypeToStatus(nt model.NotificationType) string {
 // BuildTaskResultNotification creates a side-channel notification for the Planner.
 func BuildTaskResultNotification(commandID, taskID, workerID, taskStatus string) string {
 	return fmt.Sprintf("[maestro] kind:task_result command_id:%s task_id:%s worker_id:%s status:%s\nresults/%s.yaml を確認してください",
-		SanitizeEnvelopeField(commandID),
-		SanitizeEnvelopeField(taskID),
-		SanitizeEnvelopeField(workerID),
-		SanitizeEnvelopeField(taskStatus),
-		SanitizeEnvelopeField(workerID))
+		sanitizeField(commandID, MaxGenericFieldBytes),
+		sanitizeField(taskID, MaxGenericFieldBytes),
+		sanitizeField(workerID, MaxGenericFieldBytes),
+		sanitizeField(taskStatus, MaxGenericFieldBytes),
+		sanitizeField(workerID, MaxGenericFieldBytes))
 }

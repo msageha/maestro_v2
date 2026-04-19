@@ -49,6 +49,7 @@ func (wm *Manager) recordMergeFailure(state *model.WorktreeCommandState, reason 
 		}
 		state.Integration.QuarantinedAt = now
 		state.Integration.QuarantineReason = fmt.Sprintf("%s (failure_count=%d)", reason, state.Integration.MergeFailureCount)
+		state.Integration.QuarantineSource = model.QuarantineSourceMerge
 		wm.Log(core.LogLevelError, "integration_quarantined command=%s reason=%s count=%d",
 			state.CommandID, reason, state.Integration.MergeFailureCount)
 		return nil
@@ -68,6 +69,7 @@ func (wm *Manager) recordPublishFailure(state *model.WorktreeCommandState, reaso
 		}
 		state.Integration.QuarantinedAt = now
 		state.Integration.QuarantineReason = fmt.Sprintf("publish: %s (failure_count=%d)", reason, state.Integration.PublishFailureCount)
+		state.Integration.QuarantineSource = model.QuarantineSourcePublish
 		state.Integration.NextPublishRetryAt = ""
 		wm.Log(core.LogLevelError, "integration_quarantined_publish command=%s reason=%s count=%d",
 			state.CommandID, reason, state.Integration.PublishFailureCount)
@@ -118,12 +120,22 @@ func (wm *Manager) forwardMergeBaseToIntegration(
 		return fmt.Errorf("forward-merge: resolve base branch: %w", err)
 	}
 	baseSHA = strings.TrimSpace(baseSHA)
+	if err := validateSHA(baseSHA); err != nil {
+		return fmt.Errorf("forward-merge: invalid base SHA: %w", err)
+	}
+	// Verify the SHA exists as a commit object in the repository.
+	if err := wm.gitRun("cat-file", "-e", baseSHA+"^{commit}"); err != nil {
+		return fmt.Errorf("forward-merge: base SHA %s not found as commit in repository: %w", baseSHA, err)
+	}
 
 	integrationSHA, err := wm.gitOutputInDir(integrationPath, "rev-parse", "HEAD")
 	if err != nil {
 		return fmt.Errorf("forward-merge: resolve integration HEAD: %w", err)
 	}
 	integrationSHA = strings.TrimSpace(integrationSHA)
+	if err := validateSHA(integrationSHA); err != nil {
+		return fmt.Errorf("forward-merge: invalid integration HEAD SHA: %w", err)
+	}
 
 	mergeBaseSHA, err := wm.gitOutput("merge-base", baseSHA, integrationSHA)
 	if err != nil {
@@ -839,6 +851,20 @@ func (wm *Manager) performPublishMerge(
 		return "", false, fmt.Errorf("checkout temp publish branch: %w", err)
 	}
 
+	// Guarantee temp branch cleanup on any return path after checkout.
+	// On error paths where the worktree may still have tempBranch checked out,
+	// move off it first so that branch deletion succeeds.
+	tempBranchCleaned := false
+	defer func() {
+		if tempBranchCleaned {
+			return
+		}
+		if chkErr := wm.gitRunInDir(integrationPath, "checkout", state.Integration.Branch); chkErr != nil {
+			_ = wm.gitRunInDir(integrationPath, "checkout", "--detach")
+		}
+		wm.deleteTempBranch(tempBranch)
+	}()
+
 	// Merge integration branch into temp branch (at baseBranch's position)
 	mergeMsg := buildPublishMessage(publishMessage, baseBranch)
 	if err := wm.gitRunInDir(integrationPath, "merge", "--no-ff", "-m", mergeMsg, state.Integration.Branch); err != nil {
@@ -852,27 +878,17 @@ func (wm *Manager) performPublishMerge(
 		if abortErr := wm.gitRunInDir(integrationPath, "merge", "--abort"); abortErr != nil {
 			wm.Log(core.LogLevelWarn, "publish_merge_abort_failed command=%s error=%v", commandID, abortErr)
 		}
+		// Temp branch cleanup is handled by defer.
 		if checkoutErr := wm.gitRunInDir(integrationPath, "checkout", state.Integration.Branch); checkoutErr != nil {
 			wm.Log(core.LogLevelWarn, "publish_checkout_failed command=%s branch=%s error=%v", commandID, state.Integration.Branch, checkoutErr)
-			// Best-effort cleanup: detach HEAD so the temp branch can be deleted.
-			// If this also fails, CleanupTempPublishBranch (quarantine path) or
-			// CleanupCommand/GC will handle it later.
-			if detachErr := wm.gitRunInDir(integrationPath, "checkout", "--detach"); detachErr == nil {
-				wm.deleteTempBranch(tempBranch)
-			} else {
-				wm.Log(core.LogLevelWarn, "publish_detach_failed command=%s error=%v", commandID, detachErr)
-			}
 			return "", false, fmt.Errorf("merge integration into %s: %w (checkout recovery also failed: %v)", baseBranch, err, checkoutErr)
 		}
-		wm.deleteTempBranch(tempBranch)
 		return "", false, fmt.Errorf("merge integration into %s: %w", baseBranch, err)
 	}
 
 	// Get the merge commit SHA
 	mergeSHAOut, err := wm.gitOutputInDir(integrationPath, "rev-parse", "HEAD")
 	if err != nil {
-		_ = wm.gitRunInDir(integrationPath, "checkout", state.Integration.Branch)
-		wm.deleteTempBranch(tempBranch)
 		return "", false, fmt.Errorf("get merge commit SHA: %w", err)
 	}
 	mergeSHA = strings.TrimSpace(mergeSHAOut)
@@ -880,7 +896,6 @@ func (wm *Manager) performPublishMerge(
 	// Restore integration branch checkout before updating refs
 	if checkoutErr := wm.gitRunInDir(integrationPath, "checkout", state.Integration.Branch); checkoutErr != nil {
 		wm.Log(core.LogLevelWarn, "publish_restore_checkout_failed command=%s branch=%s error=%v", commandID, state.Integration.Branch, checkoutErr)
-		wm.deleteTempBranch(tempBranch)
 		return "", false, fmt.Errorf("restore integration branch checkout after publish: %w", checkoutErr)
 	}
 
@@ -894,11 +909,9 @@ func (wm *Manager) performPublishMerge(
 	if baseBranchCheckedOut {
 		statusOut, err := wm.gitOutput("status", "--porcelain", "--untracked-files=no")
 		if err != nil {
-			wm.deleteTempBranch(tempBranch)
 			return "", false, fmt.Errorf("publish dirty check failed: %w", err)
 		}
 		if strings.TrimSpace(statusOut) != "" {
-			wm.deleteTempBranch(tempBranch)
 			return "", false, fmt.Errorf("publish aborted: projectRoot has uncommitted changes that would be lost by reset; please commit or stash them first")
 		}
 	}
@@ -911,12 +924,13 @@ func (wm *Manager) performPublishMerge(
 	// Use compare-and-swap: update-ref will fail atomically if baseBranch
 	// has been modified since we read baseSHA, preventing TOCTOU races.
 	if err := wm.gitRun("update-ref", fmt.Sprintf("refs/heads/%s", baseBranch), mergeSHA, baseSHA); err != nil {
-		wm.deleteTempBranch(tempBranch)
 		return "", false, fmt.Errorf("update base branch ref (CAS failed — branch may have been modified concurrently): %w", err)
 	}
 
-	// Clean up temp branch
+	// Clean up temp branch (defer is the safety net, but explicit cleanup avoids
+	// leaving the branch around until function exit on the success path).
 	wm.deleteTempBranch(tempBranch)
+	tempBranchCleaned = true
 
 	return mergeSHA, baseBranchCheckedOut, nil
 }

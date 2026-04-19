@@ -1,6 +1,8 @@
 package learnings
 
 import (
+	"fmt"
+	"math"
 	"sync"
 	"testing"
 )
@@ -189,6 +191,104 @@ func TestPatterns(t *testing.T) {
 	patterns := db.Patterns()
 	if len(patterns) != 2 {
 		t.Fatalf("expected 2 patterns, got %d", len(patterns))
+	}
+}
+
+func TestStoreRecalculatesSuccessRate(t *testing.T) {
+	t.Parallel()
+	db := NewFingerprintDB(100)
+	db.Store("fp1", "cat", "strat")       // OccurrenceCount=1
+	db.Store("fp1", "cat", "strat")       // OccurrenceCount=2
+	db.RecordSuccess("fp1")               // successCount=1, SuccessRate=1/2=0.5
+	db.Store("fp1", "cat", "strat")       // OccurrenceCount=3, SuccessRate should be 1/3
+
+	p, ok := db.Query("fp1")
+	if !ok {
+		t.Fatal("expected to find fp1")
+	}
+	expected := 1.0 / 3.0
+	if math.Abs(p.SuccessRate-expected) > 1e-9 {
+		t.Errorf("expected SuccessRate≈%f after Store, got %f", expected, p.SuccessRate)
+	}
+}
+
+func TestConcurrentStoreAndRecordSuccess(t *testing.T) {
+	t.Parallel()
+	db := NewFingerprintDB(1000)
+	const storeCount = 100
+	const successCount = 50
+
+	// Pre-populate so RecordSuccess has a target.
+	db.Store("fp_race", "cat", "strat")
+
+	var wg sync.WaitGroup
+
+	// Run Store and RecordSuccess concurrently on the same fingerprint.
+	wg.Add(storeCount + successCount)
+	for i := 0; i < storeCount; i++ {
+		go func() {
+			defer wg.Done()
+			db.Store("fp_race", "cat", "strat")
+		}()
+	}
+	for i := 0; i < successCount; i++ {
+		go func() {
+			defer wg.Done()
+			db.RecordSuccess("fp_race")
+		}()
+	}
+	wg.Wait()
+
+	p, ok := db.Query("fp_race")
+	if !ok {
+		t.Fatal("expected to find fp_race")
+	}
+
+	// OccurrenceCount = 1 (initial) + storeCount
+	expectedOccurrences := 1 + storeCount
+	if p.OccurrenceCount != expectedOccurrences {
+		t.Errorf("expected OccurrenceCount=%d, got %d", expectedOccurrences, p.OccurrenceCount)
+	}
+
+	// SuccessRate must be consistent: successCount / OccurrenceCount.
+	expectedRate := float64(successCount) / float64(expectedOccurrences)
+	if math.Abs(p.SuccessRate-expectedRate) > 1e-9 {
+		t.Errorf("expected SuccessRate=%f, got %f", expectedRate, p.SuccessRate)
+	}
+}
+
+func TestConcurrentStoreRecordSuccessQuery(t *testing.T) {
+	t.Parallel()
+	db := NewFingerprintDB(1000)
+	const goroutines = 50
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines * 3)
+	for i := 0; i < goroutines; i++ {
+		fp := fmt.Sprintf("fp_%d", i%10)
+		go func() {
+			defer wg.Done()
+			db.Store(fp, "cat", "strat")
+		}()
+		go func() {
+			defer wg.Done()
+			db.RecordSuccess(fp)
+		}()
+		go func() {
+			defer wg.Done()
+			db.Query(fp)
+		}()
+	}
+	wg.Wait()
+
+	// Verify consistency: for each pattern, SuccessRate == successCount/OccurrenceCount.
+	for _, p := range db.Patterns() {
+		if p.OccurrenceCount > 0 {
+			// We can't access successCount directly, but SuccessRate must be in [0, 1].
+			if p.SuccessRate < 0 || p.SuccessRate > 1.0+1e-9 {
+				t.Errorf("pattern %s has invalid SuccessRate=%f", p.Fingerprint, p.SuccessRate)
+			}
+		}
 	}
 }
 

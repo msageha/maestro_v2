@@ -383,6 +383,87 @@ func TestSanitizeUserContent_PersonaMarkerInjection(t *testing.T) {
 	}
 }
 
+func TestTruncateUTF8Bytes(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		maxBytes int
+		want     string
+	}{
+		{"within limit", "hello", 10, "hello"},
+		{"exactly at limit", "hello", 5, "hello"},
+		{"one byte over", "hello!", 5, "hello [truncated]"},
+		{"empty string", "", 10, ""},
+		{"maxBytes zero", "hello", 0, "hello"},
+		{"maxBytes negative", "hello", -1, "hello"},
+		{"single byte truncation", "ab", 1, "a [truncated]"},
+		// Multi-byte UTF-8: "あ" is 3 bytes (U+3042 = E3 81 82)
+		{"multi-byte within limit", "あ", 3, "あ"},
+		{"multi-byte at boundary no split", "あい", 4, "あ [truncated]"},
+		{"multi-byte exactly fits two", "あい", 6, "あい"},
+		{"multi-byte one byte short", "あい", 5, "あ [truncated]"},
+		// Mixed ASCII and multi-byte
+		{"mixed ascii and multi-byte", "aあb", 4, "aあ [truncated]"},
+		{"mixed ascii and multi-byte exact", "aあb", 5, "aあb"},
+		// 4-byte UTF-8: "𠀀" (U+20000) = F0 A0 80 80
+		{"four-byte rune within limit", "𠀀", 4, "𠀀"},
+		{"four-byte rune truncated", "a𠀀", 4, "a [truncated]"},
+		{"four-byte rune exact fit", "a𠀀", 5, "a𠀀"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := TruncateUTF8Bytes(tt.input, tt.maxBytes)
+			if got != tt.want {
+				t.Errorf("TruncateUTF8Bytes(%q, %d) = %q, want %q", tt.input, tt.maxBytes, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestTruncateUTF8Bytes_LargeInput(t *testing.T) {
+	// Generate a string larger than MaxPurposeBytes
+	large := strings.Repeat("x", MaxPurposeBytes+100)
+	got := TruncateUTF8Bytes(large, MaxPurposeBytes)
+	if !strings.HasSuffix(got, " [truncated]") {
+		t.Error("expected [truncated] suffix for oversized input")
+	}
+	// The prefix (before " [truncated]") should be exactly MaxPurposeBytes long
+	prefix := strings.TrimSuffix(got, " [truncated]")
+	if len(prefix) != MaxPurposeBytes {
+		t.Errorf("truncated prefix length = %d, want %d", len(prefix), MaxPurposeBytes)
+	}
+}
+
+func TestBuildWorkerEnvelope_TruncatesOversizedFields(t *testing.T) {
+	largePurpose := strings.Repeat("p", MaxPurposeBytes+100)
+	largeContent := strings.Repeat("c", MaxContentBytes+100)
+	largeCriteria := strings.Repeat("a", MaxAcceptanceCriteriaBytes+100)
+	largeConstraint := strings.Repeat("x", MaxConstraintItemBytes+100)
+
+	task := model.Task{
+		ID:                 "task_trunc",
+		CommandID:          "cmd_trunc",
+		Purpose:            largePurpose,
+		Content:            largeContent,
+		AcceptanceCriteria: largeCriteria,
+		Constraints:        []string{largeConstraint},
+	}
+
+	envelope := BuildWorkerEnvelope(task, "worker1", 1, 1)
+
+	if !strings.Contains(envelope, "[truncated]") {
+		t.Error("expected [truncated] marker in envelope for oversized fields")
+	}
+	// Verify purpose was truncated
+	if strings.Contains(envelope, largePurpose) {
+		t.Error("purpose should have been truncated")
+	}
+	// Verify system header is still intact
+	if !strings.Contains(envelope, "[maestro] task_id:task_trunc") {
+		t.Error("system header should remain intact after truncation")
+	}
+}
+
 func TestSanitizeEnvelopeField_UnicodeNormalization(t *testing.T) {
 	tests := []struct {
 		name  string

@@ -35,16 +35,12 @@ func (wm *Manager) loadState(commandID string) (*model.WorktreeCommandState, err
 
 func (wm *Manager) loadStateUnlocked(commandID string) (*model.WorktreeCommandState, error) {
 	statePath := filepath.Join(wm.maestroDir, "state", "worktrees", commandID+".yaml")
-	fi, err := os.Stat(statePath)
-	if err != nil {
-		return nil, err
-	}
-	if fi.Size() > maxWorktreeStateBytes {
-		return nil, fmt.Errorf("worktree state file too large (%d bytes > %d max)", fi.Size(), maxWorktreeStateBytes)
-	}
 	data, err := os.ReadFile(statePath) //nolint:gosec // statePath is derived from maestroDir + commandID; caller controls path
 	if err != nil {
 		return nil, err
+	}
+	if int64(len(data)) > maxWorktreeStateBytes {
+		return nil, fmt.Errorf("worktree state file too large (%d bytes > %d max)", len(data), maxWorktreeStateBytes)
 	}
 	var state model.WorktreeCommandState
 	if err := yamlv3.Unmarshal(data, &state); err != nil {
