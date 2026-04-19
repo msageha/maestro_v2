@@ -287,7 +287,17 @@ func (qh *QueueHandler) applyPublishResultSignals(
 			// Skip the publish_completed signal if the command is already
 			// terminal — the Planner has already called plan complete and
 			// sending the signal would cause a redundant second invocation.
-			if isCommandTerminalInQueue(commandQueue, pr.Item.CommandID) {
+			//
+			// Reload the command queue from disk to capture concurrent
+			// plan complete calls that ran after Phase C's initial queue
+			// load. Without this reload the in-memory snapshot is stale
+			// and the terminal check misses commands that were completed
+			// during Phase B / early Phase C.
+			terminalCQ := commandQueue
+			if freshCQ, _, err := qh.queueStore.LoadCommandQueue(); err == nil {
+				terminalCQ = freshCQ
+			}
+			if isCommandTerminalInQueue(terminalCQ, pr.Item.CommandID) {
 				qh.log(LogLevelInfo, "publish_completed_signal_suppressed command=%s (command already terminal)",
 					pr.Item.CommandID)
 				continue
