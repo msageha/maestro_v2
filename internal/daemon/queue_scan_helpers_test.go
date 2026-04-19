@@ -274,7 +274,7 @@ func TestIsMaxInProgressTimeout(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := isMaxInProgressTimeout(now, tt.timestamp, tt.maxMin)
+			got := isMaxInProgressTimeout(now, tt.timestamp, tt.maxMin, nil)
 			if got != tt.want {
 				t.Errorf("isMaxInProgressTimeout() = %v, want %v", got, tt.want)
 			}
@@ -400,7 +400,7 @@ func TestIsGraceLeaseExceeded(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			got := isGraceLeaseExceeded(now, tt.updatedAt, tt.dispatchLease, tt.graceLimit)
+			got := isGraceLeaseExceeded(now, tt.updatedAt, tt.dispatchLease, tt.graceLimit, nil)
 			if got != tt.want {
 				t.Errorf("isGraceLeaseExceeded() = %v, want %v", got, tt.want)
 			}

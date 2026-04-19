@@ -92,6 +92,10 @@ type QueueHandler struct {
 
 	// undecidedTracker tracks consecutive undecided busy-probe results per agent.
 	undecidedTracker *undecidedTracker
+
+	// timeCache caches time.Parse(time.RFC3339, ...) results within a scan
+	// cycle to avoid repeated parsing of identical timestamp strings.
+	timeCache *timeParseCache
 }
 
 // NewQueueHandler creates a new QueueHandler with all sub-modules.
@@ -136,6 +140,7 @@ func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap
 		daemonPID:           os.Getpid(),
 	}
 	qh.undecidedTracker = newUndecidedTracker()
+	qh.timeCache = newTimeParseCache()
 	se := newScanPhaseExecutor(qh)
 	se.debounce = NewDebounceController(cfg.Watcher.DebounceSec, dl, qh.PeriodicScanWithContext)
 	qh.scanExecutor = se

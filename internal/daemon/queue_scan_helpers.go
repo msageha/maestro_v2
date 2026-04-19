@@ -66,11 +66,47 @@ func isEpochStale(leaseEpoch, expectedEpoch int) bool {
 	return leaseEpoch != expectedEpoch
 }
 
+// timeParseCache caches time.Parse(time.RFC3339, ...) results within a scan
+// cycle to avoid repeated parsing of the same timestamp strings on hot paths.
+// A nil receiver falls back to time.Parse without caching.
+type timeParseCache struct {
+	m map[string]time.Time
+}
+
+func newTimeParseCache() *timeParseCache {
+	return &timeParseCache{m: make(map[string]time.Time)}
+}
+
+// ParseRFC3339 parses an RFC3339 timestamp, returning a cached result if
+// available. A nil receiver falls back to time.Parse(time.RFC3339, s).
+func (c *timeParseCache) ParseRFC3339(s string) (time.Time, error) {
+	if c == nil {
+		return time.Parse(time.RFC3339, s)
+	}
+	if t, ok := c.m[s]; ok {
+		return t, nil
+	}
+	t, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		return t, err
+	}
+	c.m[s] = t
+	return t, nil
+}
+
+// Reset clears the cache for a new scan cycle.
+func (c *timeParseCache) Reset() {
+	if c == nil {
+		return
+	}
+	clear(c.m)
+}
+
 // isMaxInProgressTimeout checks whether the elapsed time since the given
 // RFC3339 timestamp exceeds maxMin minutes. Returns false if the timestamp
 // cannot be parsed (scan-safe: parse errors are treated as "not timed out").
-func isMaxInProgressTimeout(now time.Time, timestampRFC3339 string, maxMin int) bool {
-	t, err := time.Parse(time.RFC3339, timestampRFC3339)
+func isMaxInProgressTimeout(now time.Time, timestampRFC3339 string, maxMin int, tc *timeParseCache) bool {
+	t, err := tc.ParseRFC3339(timestampRFC3339)
 	if err != nil {
 		return false
 	}
@@ -93,8 +129,8 @@ func maxGraceLeaseDuration(maxInProgressMin, scanIntervalSec int) time.Duration 
 // isGraceLeaseExceeded checks whether the cumulative grace lease extension
 // period has exceeded the given limit. Grace period starts approximately at
 // updatedAt + dispatchLease (when the original lease first expired).
-func isGraceLeaseExceeded(now time.Time, updatedAtRFC3339 string, dispatchLease, graceLimit time.Duration) bool {
-	t, err := time.Parse(time.RFC3339, updatedAtRFC3339)
+func isGraceLeaseExceeded(now time.Time, updatedAtRFC3339 string, dispatchLease, graceLimit time.Duration, tc *timeParseCache) bool {
+	t, err := tc.ParseRFC3339(updatedAtRFC3339)
 	if err != nil {
 		return false
 	}
@@ -334,7 +370,7 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 		}
 		// Respect exponential backoff — do not re-queue until the backoff period has elapsed.
 		if cmdState.Integration.NextPublishRetryAt != "" {
-			nextRetry, err := time.Parse(time.RFC3339, cmdState.Integration.NextPublishRetryAt)
+			nextRetry, err := qh.timeCache.ParseRFC3339(cmdState.Integration.NextPublishRetryAt)
 			if err == nil && qh.clock.Now().Before(nextRetry) {
 				qh.log(LogLevelDebug, "worktree_publish_backoff command=%s next_retry_at=%s",
 					commandID, cmdState.Integration.NextPublishRetryAt)

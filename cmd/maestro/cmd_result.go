@@ -113,7 +113,7 @@ func (a *cliApp) runResultWrite(args []string) error {
 	if !resp.Success {
 		code, msg := udsErrorInfo(resp)
 		if code == "FENCING_REJECT" {
-			return &CLIError{Code: 2, Msg: fmt.Sprintf("maestro result write: [%s] %s", code, msg)}
+			return &CLIError{Code: ExitCodeRetryable, Msg: fmt.Sprintf("maestro result write: [%s] %s", code, msg)}
 		}
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro result write: [%s] %s", code, msg)}
 	}

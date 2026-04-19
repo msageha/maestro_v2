@@ -90,7 +90,7 @@ func (qh *QueueHandler) emitWorktreeStallSignal(cmd *model.Command, s *scanState
 	if ref == "" {
 		ref = cmd.CreatedAt
 	}
-	refTime, err := time.Parse(time.RFC3339, ref)
+	refTime, err := qh.timeCache.ParseRFC3339(ref)
 	if err != nil {
 		return true // skip command on parse error
 	}
@@ -194,7 +194,7 @@ func (qh *QueueHandler) stepCheckWorktreeConfigViolations(s *scanState) {
 			model.IntegrationStatusPublished:
 			continue
 		}
-		createdAt, err := time.Parse(time.RFC3339, cmdState.Integration.CreatedAt)
+		createdAt, err := qh.timeCache.ParseRFC3339(cmdState.Integration.CreatedAt)
 		if err != nil {
 			continue
 		}

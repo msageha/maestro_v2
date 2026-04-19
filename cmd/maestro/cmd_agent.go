@@ -83,7 +83,7 @@ func runAgentExec(args []string) error {
 
 	if result.Error != nil {
 		if result.Retryable {
-			return &CLIError{Code: 2, Msg: fmt.Sprintf("maestro agent exec: %v", result.Error)}
+			return &CLIError{Code: ExitCodeRetryable, Msg: fmt.Sprintf("maestro agent exec: %v", result.Error)}
 		}
 		return fmt.Errorf("maestro agent exec: %w", result.Error)
 	}

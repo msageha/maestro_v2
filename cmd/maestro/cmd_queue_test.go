@@ -211,8 +211,8 @@ func TestSendQueueWrite_UDSBackpressure(t *testing.T) {
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected CLIError, got %T: %v", err, err)
 	}
-	if ce.Code != 2 {
-		t.Errorf("expected exit code 2, got %d", ce.Code)
+	if ce.Code != ExitCodeRetryable {
+		t.Errorf("expected exit code %d, got %d", ExitCodeRetryable, ce.Code)
 	}
 }
 

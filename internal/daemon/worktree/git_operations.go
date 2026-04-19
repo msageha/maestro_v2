@@ -28,26 +28,38 @@ const (
 	gitErrorPermanent
 )
 
-// transientPatterns are substrings that indicate a transient git error.
-var transientPatterns = []string{
-	// Git lock contention
-	"lock",
-	"Unable to create",
-	".lock",
-	"Another git process seems to be running",
-	// Network transient errors
-	"Connection timed out",
-	"Connection refused",
-	"Could not resolve host",
-	"Connection reset by peer",
+// gitErrorPattern maps a substring pattern to its error classification.
+type gitErrorPattern struct {
+	pattern string
+	class   gitErrorClass
 }
 
-// permanentPatterns are substrings that indicate a permanent git error.
-var permanentPatterns = []string{
-	"bad object",
-	"corrupt",
-	"fatal: not a git repository",
-	"invalid",
+// gitErrorPatterns is the ordered error classification table.
+// The first matching pattern wins. Permanent patterns are listed first to
+// prevent false transient matches (e.g. "invalid" must not be overridden).
+// "Connection timed out" (transient) must precede generic "timeout" (permanent).
+var gitErrorPatterns = []gitErrorPattern{
+	// Permanent: repository corruption / invalid state
+	{"bad object", gitErrorPermanent},
+	{"corrupt", gitErrorPermanent},
+	{"fatal: not a git repository", gitErrorPermanent},
+	{"invalid", gitErrorPermanent},
+
+	// Transient: git lock contention
+	{"lock", gitErrorTransient},
+	{"Unable to create", gitErrorTransient},
+	{".lock", gitErrorTransient},
+	{"Another git process seems to be running", gitErrorTransient},
+
+	// Transient: network errors
+	{"Connection timed out", gitErrorTransient},
+	{"Connection refused", gitErrorTransient},
+	{"Could not resolve host", gitErrorTransient},
+	{"Connection reset by peer", gitErrorTransient},
+
+	// Permanent: generic timeout — must follow "Connection timed out" to
+	// avoid masking the more specific transient pattern.
+	{"timeout", gitErrorPermanent},
 }
 
 // classifyGitError determines whether a git error is transient (retryable) or permanent.
@@ -65,26 +77,10 @@ func classifyGitError(err error) gitErrorClass {
 	}
 
 	msg := err.Error()
-
-	// Check permanent patterns first to avoid false transient matches
-	// (e.g. "invalid" should not be overridden by a transient pattern).
-	for _, p := range permanentPatterns {
-		if strings.Contains(msg, p) {
-			return gitErrorPermanent
+	for _, p := range gitErrorPatterns {
+		if strings.Contains(msg, p.pattern) {
+			return p.class
 		}
-	}
-
-	for _, p := range transientPatterns {
-		if strings.Contains(msg, p) {
-			return gitErrorTransient
-		}
-	}
-
-	// Generic "timeout" in error message — likely a git command timeout
-	// which may leave the worktree dirty. Specific network timeouts
-	// (e.g. "Connection timed out") are handled above by transientPatterns.
-	if strings.Contains(msg, "timeout") {
-		return gitErrorPermanent
 	}
 
 	// Unknown errors default to Permanent.
