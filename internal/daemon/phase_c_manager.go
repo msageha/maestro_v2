@@ -50,11 +50,16 @@ func newPhaseCManager(cfg model.Config, availableModels []string, log logFunc) *
 
 	// C-2 Adaptive Model Selection
 	if cfg.Bandit.EffectiveEnabled() {
-		m.BanditSelector = bandit.NewSelector(cfg.Bandit.EffectiveExplorationCoeff())
-		for _, model := range availableModels {
-			m.BanditSelector.AddArm(model)
+		sel, err := bandit.NewSelector(cfg.Bandit.EffectiveExplorationCoeff())
+		if err != nil {
+			log(LogLevelError, "bandit selector initialization failed: %v", err)
+		} else {
+			m.BanditSelector = sel
+			for _, model := range availableModels {
+				m.BanditSelector.AddArm(model)
+			}
+			log(LogLevelInfo, "bandit selector initialized arms=%d", len(m.BanditSelector.GetStats()))
 		}
-		log(LogLevelInfo, "bandit selector initialized arms=%d", len(m.BanditSelector.GetStats()))
 	}
 
 	// C-3 Extended Verification

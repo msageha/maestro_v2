@@ -99,7 +99,7 @@ func TestEventHookIntegration(t *testing.T) {
 			Attempts:   1,
 		}
 
-		err := dispatcher.DispatchTask(task, "worker1")
+		err := dispatcher.DispatchTask(context.Background(), task, "worker1")
 		if err != nil {
 			t.Fatalf("DispatchTask failed: %v", err)
 		}
@@ -164,7 +164,7 @@ func TestEventHookIntegration(t *testing.T) {
 
 		// Measure dispatch time
 		start := time.Now()
-		err := dispatcher.DispatchTask(task, "worker1")
+		err := dispatcher.DispatchTask(context.Background(), task, "worker1")
 		elapsed := time.Since(start)
 
 		if err != nil {
@@ -206,7 +206,7 @@ func TestEventHookIntegration(t *testing.T) {
 			Attempts:   1,
 		}
 
-		err := dispatcher.DispatchTask(task, "worker1")
+		err := dispatcher.DispatchTask(context.Background(), task, "worker1")
 		if err != nil {
 			t.Fatalf("DispatchTask should succeed even without event bus: %v", err)
 		}

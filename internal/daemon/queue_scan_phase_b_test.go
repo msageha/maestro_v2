@@ -25,7 +25,7 @@ type mockDispatcher struct {
 	notificationCalls  int
 }
 
-func (m *mockDispatcher) DispatchCommand(cmd *model.Command) error {
+func (m *mockDispatcher) DispatchCommand(_ context.Context, cmd *model.Command) error {
 	idx := m.commandCalls
 	m.commandCalls++
 	if err, ok := m.commandErrors[idx]; ok {
@@ -34,7 +34,7 @@ func (m *mockDispatcher) DispatchCommand(cmd *model.Command) error {
 	return nil
 }
 
-func (m *mockDispatcher) DispatchTask(task *model.Task, workerID string) error {
+func (m *mockDispatcher) DispatchTask(_ context.Context, task *model.Task, workerID string) error {
 	idx := m.taskCalls
 	m.taskCalls++
 	if err, ok := m.taskErrors[idx]; ok {

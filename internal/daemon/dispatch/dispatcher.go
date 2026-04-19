@@ -1,6 +1,7 @@
 package dispatch
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"sync"
@@ -12,6 +13,20 @@ import (
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/model"
 )
+
+// maxBackoffDuration is the upper bound for exponential backoff delays.
+const maxBackoffDuration = 30 * time.Second
+
+// sleepWithContext sleeps for the given duration or returns ctx.Err() if the
+// context is canceled before the duration elapses.
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(d):
+		return nil
+	}
+}
 
 // Dispatcher handles priority sorting, agent_executor dispatch, quality gate
 // evaluation, worktree path resolution, and event publication.
@@ -142,7 +157,7 @@ func (disp *Dispatcher) executeDispatch(req agent.ExecRequest, logLabel, entityI
 // DispatchCommand dispatches a command to the planner agent with inline retry.
 // On transient failure, retries up to CommandDispatchInlineRetries times with
 // exponential backoff to avoid the full scan-cycle delay.
-func (disp *Dispatcher) DispatchCommand(cmd *model.Command) error {
+func (disp *Dispatcher) DispatchCommand(ctx context.Context, cmd *model.Command) error {
 	// Build enriched command content (planner skills injection)
 	dispatchCmd := *cmd
 	dispatchID, err := model.GenerateID(model.IDTypeDispatch)
@@ -173,8 +188,13 @@ func (disp *Dispatcher) DispatchCommand(cmd *model.Command) error {
 		if attempt > 0 {
 			disp.dl.Logf(core.LogLevelInfo, "command_dispatch_inline_retry attempt=%d/%d id=%s error=%v",
 				attempt+1, maxRetries+1, cmd.ID, lastErr)
-			time.Sleep(retryDelay)
+			if err := sleepWithContext(ctx, retryDelay); err != nil {
+				return ctx.Err()
+			}
 			retryDelay = retryDelay * 2 // exponential backoff
+			if retryDelay > maxBackoffDuration {
+				retryDelay = maxBackoffDuration
+			}
 		}
 		err := disp.executeDispatch(req, "command", cmd.ID, "")
 		if err == nil {
@@ -189,7 +209,7 @@ func (disp *Dispatcher) DispatchCommand(cmd *model.Command) error {
 }
 
 // DispatchTask dispatches a task to a worker agent.
-func (disp *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
+func (disp *Dispatcher) DispatchTask(ctx context.Context, task *model.Task, workerID string) error {
 	if err := disp.evaluateTaskQualityGate(task, workerID); err != nil {
 		return err
 	}
@@ -236,8 +256,13 @@ func (disp *Dispatcher) DispatchTask(task *model.Task, workerID string) error {
 		if attempt > 0 {
 			disp.dl.Logf(core.LogLevelInfo, "task_dispatch_inline_retry attempt=%d/%d id=%s worker=%s error=%v",
 				attempt+1, maxRetries+1, task.ID, workerID, lastErr)
-			time.Sleep(retryDelay)
+			if err := sleepWithContext(ctx, retryDelay); err != nil {
+				return ctx.Err()
+			}
 			retryDelay = retryDelay * 2 // exponential backoff
+			if retryDelay > maxBackoffDuration {
+				retryDelay = maxBackoffDuration
+			}
 		}
 		err := disp.executeDispatch(req, "task", task.ID, fmt.Sprintf(" worker=%s", workerID))
 		if err == nil {

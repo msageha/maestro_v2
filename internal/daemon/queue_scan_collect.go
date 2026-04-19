@@ -2,10 +2,29 @@ package daemon
 
 import (
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
 )
+
+// detachTaskSlices replaces slice fields on a Task with independent copies,
+// breaking shared backing arrays with the queue's in-memory data.
+// The Task pointer itself is unchanged (batch 2 pointer reference preserved);
+// only slice headers are swapped to new allocations.
+func detachTaskSlices(t *model.Task) {
+	t.DefinitionOfDone = slices.Clone(t.DefinitionOfDone)
+	t.Constraints = slices.Clone(t.Constraints)
+	t.BlockedBy = slices.Clone(t.BlockedBy)
+	t.ToolsHint = slices.Clone(t.ToolsHint)
+	t.SkillRefs = slices.Clone(t.SkillRefs)
+	t.ExpectedPaths = slices.Clone(t.ExpectedPaths)
+	if t.DefinitionOfAbort != nil && len(t.DefinitionOfAbort.ExplicitFailureConditions) > 0 {
+		doa := *t.DefinitionOfAbort
+		doa.ExplicitFailureConditions = slices.Clone(t.DefinitionOfAbort.ExplicitFailureConditions)
+		t.DefinitionOfAbort = &doa
+	}
+}
 
 // --- Collect methods for Phase A ---
 
@@ -121,6 +140,7 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 			continue
 		}
 		task.Attempts++
+		detachTaskSlices(task)
 
 		work.dispatches = append(work.dispatches, dispatchItem{
 			Kind:      "task",

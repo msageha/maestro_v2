@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
+	"golang.org/x/sync/errgroup"
 )
 
 // ---------------------------------------------------------------------------
@@ -483,5 +484,150 @@ func TestShutdown_NilComponents(t *testing.T) {
 	logOutput := buf.String()
 	if !strings.Contains(logOutput, "daemon stopped") {
 		t.Errorf("log missing 'daemon stopped':\n%s", logOutput)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 8. closeWatcher is idempotent (sync.Once)
+// ---------------------------------------------------------------------------
+
+func TestCloseWatcher_Idempotent(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	d := newShutdownTestDaemon(t, &buf)
+	t.Cleanup(func() {
+		d.ticker.Stop()
+		d.cancel()
+	})
+
+	// watcher is nil by default in test daemons — closeWatcher must not panic.
+	if err := d.closeWatcher(); err != nil {
+		t.Errorf("first closeWatcher: unexpected error: %v", err)
+	}
+
+	// Second call must be a no-op (sync.Once already fired).
+	if err := d.closeWatcher(); err != nil {
+		t.Errorf("second closeWatcher: unexpected error: %v", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// 9. closeWatcher concurrent safety
+// ---------------------------------------------------------------------------
+
+func TestCloseWatcher_ConcurrentSafety(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	d := newShutdownTestDaemon(t, &buf)
+	t.Cleanup(func() {
+		d.ticker.Stop()
+		d.cancel()
+	})
+
+	const goroutines = 20
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	barrier := make(chan struct{})
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			<-barrier
+			_ = d.closeWatcher() // must not panic
+		}()
+	}
+
+	close(barrier)
+	wg.Wait()
+}
+
+// ---------------------------------------------------------------------------
+// 10. Shutdown timeout enters grace period instead of immediate os.Exit
+// ---------------------------------------------------------------------------
+
+func TestShutdown_TimeoutEntersGracePeriod(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	d := newShutdownTestDaemon(t, &buf) // ShutdownTimeoutSec=2
+
+	// Override exitFn to prevent os.Exit during test.
+	exitCalled := make(chan int, 1)
+	d.exitFn = func(code int) {
+		select {
+		case exitCalled <- code:
+		default:
+		}
+	}
+
+	// Create an errgroup with a goroutine that deliberately ignores context
+	// cancellation so the shutdown timeout fires.
+	hangCh := make(chan struct{})
+	t.Cleanup(func() {
+		select {
+		case <-hangCh:
+		default:
+			close(hangCh) // ensure goroutine is released on test exit
+		}
+	})
+
+	g, _ := errgroup.WithContext(d.ctx)
+	d.eg = g
+
+	g.Go(func() error {
+		<-hangCh // blocks until released — ignores ctx cancellation
+		return nil
+	})
+
+	// Shutdown will timeout after 2s and enter the grace period.
+	d.Shutdown()
+
+	logOutput := buf.String()
+	if !strings.Contains(logOutput, "entering grace period") {
+		t.Errorf("expected 'entering grace period' in log, got:\n%s", logOutput)
+	}
+	// "daemon stopped" must still appear — cleanup ran normally after timeout.
+	if !strings.Contains(logOutput, "daemon stopped") {
+		t.Errorf("expected 'daemon stopped' in log, got:\n%s", logOutput)
+	}
+
+	// The grace period goroutine should eventually call exitFn.
+	select {
+	case code := <-exitCalled:
+		if code != 1 {
+			t.Errorf("expected exit code 1, got %d", code)
+		}
+	case <-time.After(10 * time.Second):
+		t.Error("grace period did not trigger exit within 10s")
+	}
+
+	close(hangCh) // release hanging goroutine for cleanup
+}
+
+// ---------------------------------------------------------------------------
+// 11. doExit defaults to os.Exit when exitFn is nil
+// ---------------------------------------------------------------------------
+
+func TestDoExit_UsesExitFn(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	d := newShutdownTestDaemon(t, &buf)
+	t.Cleanup(func() {
+		d.ticker.Stop()
+		d.cancel()
+	})
+
+	var called int
+	d.exitFn = func(code int) {
+		called = code
+	}
+
+	d.doExit(42)
+
+	if called != 42 {
+		t.Errorf("expected exitFn called with 42, got %d", called)
 	}
 }
