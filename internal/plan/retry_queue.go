@@ -58,7 +58,7 @@ func writeRetryQueueEntry(maestroDir string, task retryQueueTask, now string, lo
 	})
 }
 
-func loadOriginalTasksFromQueue(maestroDir string, commandID string) (map[string]model.Task, error) {
+func loadOriginalTasksFromQueue(maestroDir string, commandID string, lockMap *lock.MutexMap) (map[string]model.Task, error) {
 	result := make(map[string]model.Task)
 	queueDir := filepath.Join(maestroDir, "queue")
 	entries, err := os.ReadDir(queueDir)
@@ -73,8 +73,16 @@ func loadOriginalTasksFromQueue(maestroDir string, commandID string) (map[string
 		if !strings.HasPrefix(name, "worker") || !strings.HasSuffix(name, ".yaml") {
 			continue
 		}
+		workerID := strings.TrimSuffix(name, ".yaml")
+
+		if lockMap != nil {
+			lockMap.Lock("queue:" + workerID)
+		}
 		filePath := filepath.Join(queueDir, name)
 		data, err := os.ReadFile(filePath) //nolint:gosec // filePath is constructed from a controlled application queue directory
+		if lockMap != nil {
+			lockMap.Unlock("queue:" + workerID)
+		}
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				continue // file removed between ReadDir and ReadFile; race-safe

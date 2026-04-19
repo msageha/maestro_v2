@@ -363,3 +363,107 @@ func TestConcurrentSafety(t *testing.T) {
 		t.Fatalf("expected root visits=50, got %d", root.Visits)
 	}
 }
+
+func TestPruneBelow_HighScoreParentNotPruned(t *testing.T) {
+	t.Parallel()
+	tree := NewTree(5, 4, 0.0)
+	tree.AddRoot("root")
+	tree.Expand("root", []string{"parent"})
+	tree.Expand("parent", []string{"low_child", "high_child"})
+
+	tree.Backpropagate("low_child", 0.1)
+	tree.Backpropagate("high_child", 0.9)
+
+	tree.PruneBelow(0.5)
+
+	lc, _ := tree.GetNode("low_child")
+	if lc.State != NodePruned {
+		t.Fatalf("expected low_child pruned, got %q", lc.State)
+	}
+	hc, _ := tree.GetNode("high_child")
+	if hc.State == NodePruned {
+		t.Fatal("high_child should not be pruned")
+	}
+	p, _ := tree.GetNode("parent")
+	if p.State == NodePruned {
+		t.Fatal("parent with non-pruned children should not be pruned")
+	}
+}
+
+func TestPruneBelow_ParentPrunedWhenAllChildrenPruned(t *testing.T) {
+	t.Parallel()
+	tree := NewTree(5, 4, 0.0)
+	tree.AddRoot("root")
+	tree.Expand("root", []string{"parent"})
+	tree.Expand("parent", []string{"low1", "low2"})
+
+	tree.Backpropagate("low1", 0.1)
+	tree.Backpropagate("low2", 0.2)
+
+	tree.PruneBelow(0.5)
+
+	low1, _ := tree.GetNode("low1")
+	if low1.State != NodePruned {
+		t.Fatalf("expected low1 pruned, got %q", low1.State)
+	}
+	low2, _ := tree.GetNode("low2")
+	if low2.State != NodePruned {
+		t.Fatalf("expected low2 pruned, got %q", low2.State)
+	}
+	// Parent should be pruned via structural propagation (all children pruned)
+	p, _ := tree.GetNode("parent")
+	if p.State != NodePruned {
+		t.Fatalf("parent with all children pruned should be pruned, got %q", p.State)
+	}
+}
+
+func TestBackpropagate_MissingNodeContinuesPropagation(t *testing.T) {
+	t.Parallel()
+	tree := NewTree(5, 4, 0.0)
+	tree.AddRoot("root")
+	tree.Expand("root", []string{"A"})
+	tree.Expand("A", []string{"B"})
+	tree.Expand("B", []string{"C"})
+
+	// Remove B from the nodes map to simulate a missing intermediate node.
+	// B's parent (A) still has "B" in its Children list.
+	tree.mu.Lock()
+	delete(tree.nodes, "B")
+	tree.mu.Unlock()
+
+	// Backpropagate from C: C → B (missing, skip) → A → root
+	tree.Backpropagate("C", 1.0)
+
+	// C should be updated
+	c, _ := tree.GetNode("C")
+	if c.Visits != 1 || c.AvgReward != 1.0 {
+		t.Fatalf("C: visits=%d avgReward=%f, want 1 and 1.0", c.Visits, c.AvgReward)
+	}
+	// A should be updated (propagation continued past missing B)
+	a, _ := tree.GetNode("A")
+	if a.Visits != 1 || a.AvgReward != 1.0 {
+		t.Fatalf("A: visits=%d avgReward=%f, want 1 and 1.0", a.Visits, a.AvgReward)
+	}
+	// root should be updated
+	root, _ := tree.GetNode("root")
+	if root.Visits != 1 || root.AvgReward != 1.0 {
+		t.Fatalf("root: visits=%d avgReward=%f, want 1 and 1.0", root.Visits, root.AvgReward)
+	}
+}
+
+func TestBackpropagate_StartNodeMissing(t *testing.T) {
+	t.Parallel()
+	tree := NewTree(5, 4, 0.0)
+	tree.AddRoot("root")
+	tree.Expand("root", []string{"child"})
+
+	// Backpropagate from a nonexistent node that is a child of "root"
+	// Since "nonexistent" is not in any node's Children list,
+	// reverse lookup returns "" and propagation stops gracefully.
+	tree.Backpropagate("nonexistent", 1.0)
+
+	root, _ := tree.GetNode("root")
+	if root.Visits != 0 {
+		t.Fatalf("root visits: got %d, want 0 (nonexistent start node)", root.Visits)
+	}
+}

@@ -88,6 +88,18 @@ func (j *Judge) Evaluate(ctx context.Context, candidates []CandidateInfo) (Decis
 		return Decision{Model: j.model, Duration: elapsed}, fmt.Errorf("judge: failed to parse response: %w", err)
 	}
 
+	valid := false
+	for _, c := range candidates {
+		if resp.WinnerIndex == c.SlotIndex {
+			valid = true
+			break
+		}
+	}
+	if !valid {
+		return Decision{Model: j.model, Duration: elapsed},
+			fmt.Errorf("judge: winner_index %d is not a valid candidate slot index", resp.WinnerIndex)
+	}
+
 	return Decision{
 		WinnerIndex: ptr.Int(resp.WinnerIndex),
 		Reasoning:   resp.Reasoning,

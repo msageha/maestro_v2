@@ -44,7 +44,8 @@ var zeroWidthChars = strings.NewReplacer(
 //     bypass pattern matching.
 //  3. Escapes "[maestro]" → "\\[maestro]" so injected content cannot mimic
 //     system control headers.
-//  4. Replaces newline (\n) with a space to prevent header injection.
+//  4. Replaces newline (\n), U+2028 (Line Separator), and U+2029
+//     (Paragraph Separator) with a space to prevent header injection.
 //  5. Strips control characters (U+0000–U+001F) except tab (\t).
 //
 // Note: DATA boundary markers (BEGIN/END LEARNINGS/SKILLS/PERSONA) are
@@ -55,7 +56,7 @@ func SanitizeEnvelopeField(s string) string {
 	s = zeroWidthChars.Replace(s)
 	s = strings.ReplaceAll(s, "[maestro]", "\\[maestro]")
 	return strings.Map(func(r rune) rune {
-		if r == '\n' {
+		if r == '\n' || r == '\u2028' || r == '\u2029' {
 			return ' '
 		}
 		if unicode.IsControl(r) && r != '\t' {

@@ -100,14 +100,19 @@ func (e *Evaluator) DefaultProfiles() map[ProfileLevel]Profile {
 	}
 }
 
-// LoadProfiles replaces profiles from an external config map.
+// LoadProfiles merges profiles from an external config map into existing profiles.
 // The map key is the profile level string; value is a map of feature name → enabled bool.
+// Only keys present in the input are updated; existing profiles not in the input are preserved.
+// If profiles is nil or empty, existing profiles are kept unchanged.
 // Unknown levels are stored as-is; Evaluate() handles fallback to LevelSimple.
 func (e *Evaluator) LoadProfiles(profiles map[string]map[string]interface{}) {
+	if len(profiles) == 0 {
+		return
+	}
+
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	loaded := make(map[ProfileLevel]Profile, len(profiles))
 	for levelStr, featureMap := range profiles {
 		level := ProfileLevel(levelStr)
 		enabled := make(map[Feature]bool, len(featureMap))
@@ -116,9 +121,8 @@ func (e *Evaluator) LoadProfiles(profiles map[string]map[string]interface{}) {
 				enabled[Feature(feat)] = b
 			}
 		}
-		loaded[level] = Profile{Level: level, EnabledFeatures: enabled}
+		e.profiles[level] = Profile{Level: level, EnabledFeatures: enabled}
 	}
-	e.profiles = loaded
 }
 
 // Evaluate returns the profile for the given level.

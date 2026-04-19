@@ -1,6 +1,7 @@
 package reconcile
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -351,6 +352,44 @@ func TestR7MergeConflict_EmptyWorkers_NoAction(t *testing.T) {
 	}
 	if len(outcome.Notifications) != 0 {
 		t.Errorf("expected 0 notifications for empty workers, got %d: %+v", len(outcome.Notifications), outcome.Notifications)
+	}
+}
+
+func TestR7MergeConflict_StateWriteFailure_StillReturnsNotifications(t *testing.T) {
+	t.Parallel()
+	maestroDir := testutil.SetupDir(t)
+	deps := newTestDeps(t, maestroDir)
+
+	commandID := "cmd_0000000010_r7writefail"
+	state := newWorktreeCommandState(commandID, model.IntegrationStatusConflict, []model.WorktreeState{
+		newWorkerState(commandID, "worker1", model.WorktreeStatusConflict, 0),
+	})
+	writeWorktreeState(t, maestroDir, commandID, state)
+
+	// Make the worktrees directory read-only so AtomicWrite fails.
+	worktreeDir := filepath.Join(maestroDir, "state", "worktrees")
+	if err := os.Chmod(worktreeDir, 0555); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() {
+		os.Chmod(worktreeDir, 0755)
+	})
+
+	run := newRun(&deps)
+	outcome := R7MergeConflict{}.Apply(run)
+
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 repair even on state write failure, got %d: %+v", len(outcome.Repairs), outcome.Repairs)
+	}
+	if len(outcome.Notifications) != 1 {
+		t.Fatalf("expected 1 notification even on state write failure, got %d: %+v", len(outcome.Notifications), outcome.Notifications)
+	}
+	n := outcome.Notifications[0]
+	if n.Kind != NotifyConflictResolution {
+		t.Errorf("notification kind = %s, want %s", n.Kind, NotifyConflictResolution)
+	}
+	if n.WorkerID != "worker1" {
+		t.Errorf("notification workerID = %s, want worker1", n.WorkerID)
 	}
 }
 

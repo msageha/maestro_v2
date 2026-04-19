@@ -90,7 +90,7 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 		return nil, fmt.Errorf("generate task ID: %w", err)
 	}
 	now := nowUTC()
-	origTaskCache, err := loadOriginalTasksFromQueue(opts.MaestroDir, opts.CommandID)
+	origTaskCache, err := loadOriginalTasksFromQueue(opts.MaestroDir, opts.CommandID, opts.LockMap)
 	if err != nil {
 		return nil, fmt.Errorf("load original tasks from queue: %w", err)
 	}
