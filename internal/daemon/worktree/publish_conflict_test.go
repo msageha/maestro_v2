@@ -50,6 +50,7 @@ func publishQuarantinedState(commandID string) *model.WorktreeCommandState {
 			PublishFailureCount:     5,
 			QuarantinedAt:           "2026-04-18T00:05:00Z",
 			QuarantineReason:        "publish: publish_forward_merge_conflict (failure_count=5)",
+			QuarantineSource:        model.QuarantineSourcePublish,
 			StallSignaled:           true,
 			PublishConflictFiles:    []string{"conflict.go"},
 			PublishConflictSignaled: true,
@@ -115,6 +116,9 @@ func TestRetryPublish_FromPublishQuarantined(t *testing.T) {
 	if got.Integration.QuarantineReason != "" {
 		t.Errorf("QuarantineReason = %q, want empty", got.Integration.QuarantineReason)
 	}
+	if got.Integration.QuarantineSource != "" {
+		t.Errorf("QuarantineSource = %q, want empty", got.Integration.QuarantineSource)
+	}
 	if got.Integration.StallSignaled {
 		t.Errorf("StallSignaled = true, want false")
 	}
@@ -124,12 +128,32 @@ func TestRetryPublish_RejectsNonPublishQuarantine(t *testing.T) {
 	t.Parallel()
 	wm, _ := newRecoveryTestManager(t)
 	cmdID := "cmd_retry_pub_003"
-	// Non-publish quarantine (merge quarantine)
+	// Non-publish quarantine (merge quarantine with QuarantineSource=merge)
 	writeWorktreeState(t, wm, quarantinedState(cmdID))
 
 	err := wm.RetryPublish(cmdID)
 	if !errors.Is(err, ErrAlreadyResolved) {
 		t.Errorf("err = %v, want ErrAlreadyResolved", err)
+	}
+}
+
+// TestRetryPublish_QuarantineSourceDistinguishesPublishFromMerge verifies that
+// the quarantine check uses the structured QuarantineSource field rather than
+// string-matching QuarantineReason. A quarantine with reason containing "publish"
+// but QuarantineSource=merge must still be rejected.
+func TestRetryPublish_QuarantineSourceDistinguishesPublishFromMerge(t *testing.T) {
+	t.Parallel()
+	wm, _ := newRecoveryTestManager(t)
+	cmdID := "cmd_retry_pub_source_check"
+	st := quarantinedState(cmdID)
+	// Simulate a merge quarantine whose reason text happens to contain "publish"
+	st.Integration.QuarantineReason = "abort_recover_failed after publish attempt (failure_count=3)"
+	st.Integration.QuarantineSource = model.QuarantineSourceMerge
+	writeWorktreeState(t, wm, st)
+
+	err := wm.RetryPublish(cmdID)
+	if !errors.Is(err, ErrAlreadyResolved) {
+		t.Errorf("err = %v, want ErrAlreadyResolved (merge quarantine with 'publish' in reason text must be rejected)", err)
 	}
 }
 

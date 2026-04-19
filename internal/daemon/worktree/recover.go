@@ -64,6 +64,7 @@ func (wm *Manager) Unquarantine(commandID string, reason string) error {
 	state.Integration.MergeFailureCount = 0
 	state.Integration.QuarantinedAt = ""
 	state.Integration.QuarantineReason = ""
+	state.Integration.QuarantineSource = ""
 	state.Integration.StallSignaled = false
 	state.UpdatedAt = now
 
@@ -105,7 +106,7 @@ func (wm *Manager) RetryPublish(commandID string) error {
 	case model.IntegrationStatusPublishFailed:
 		// recoverable
 	case model.IntegrationStatusQuarantined:
-		if !strings.Contains(state.Integration.QuarantineReason, "publish") {
+		if state.Integration.QuarantineSource != model.QuarantineSourcePublish {
 			return fmt.Errorf("%w: quarantine is not publish-related; use unquarantine", ErrAlreadyResolved)
 		}
 		// publish-related quarantine — allow recovery
@@ -123,6 +124,7 @@ func (wm *Manager) RetryPublish(commandID string) error {
 		state.Integration.Status = model.IntegrationStatusMerged
 		state.Integration.QuarantinedAt = ""
 		state.Integration.QuarantineReason = ""
+		state.Integration.QuarantineSource = ""
 		state.Integration.StallSignaled = false
 	} else {
 		if err := wm.setIntegrationStatus(state, model.IntegrationStatusMerged, now); err != nil {

@@ -58,6 +58,16 @@ const (
 	IntegrationStatusQuarantined IntegrationStatus = "quarantined"
 )
 
+// QuarantineSource identifies what caused an integration to enter quarantine.
+type QuarantineSource string
+
+const (
+	// QuarantineSourceMerge indicates quarantine caused by repeated merge failures.
+	QuarantineSourceMerge QuarantineSource = "merge"
+	// QuarantineSourcePublish indicates quarantine caused by repeated publish failures.
+	QuarantineSourcePublish QuarantineSource = "publish"
+)
+
 // WorktreeState tracks the lifecycle of a single worker worktree.
 type WorktreeState struct {
 	CommandID string         `yaml:"command_id"`
@@ -86,6 +96,10 @@ type IntegrationState struct {
 	QuarantinedAt string `yaml:"quarantined_at,omitempty"`
 	// QuarantineReason describes why the integration was quarantined.
 	QuarantineReason string `yaml:"quarantine_reason,omitempty"`
+	// QuarantineSource identifies the subsystem that triggered quarantine
+	// (merge or publish). Used for structured quarantine-type checks in
+	// recovery operations instead of string-matching QuarantineReason.
+	QuarantineSource QuarantineSource `yaml:"quarantine_source,omitempty"`
 	// PublishFailureCount counts consecutive publish attempts that failed.
 	// Reset on successful publish.
 	PublishFailureCount int `yaml:"publish_failure_count,omitempty"`

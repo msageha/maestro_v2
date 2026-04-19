@@ -62,6 +62,10 @@ func (db *FingerprintDB) Store(fp string, category string, strategy string) {
 		if strategy != "" {
 			existing.RepairStrategy = strategy
 		}
+		// Recalculate SuccessRate to stay consistent after OccurrenceCount change.
+		if existing.OccurrenceCount > 0 {
+			existing.SuccessRate = float64(existing.successCount) / float64(existing.OccurrenceCount)
+		}
 		if fp == db.oldestKey {
 			db.oldestValid = false
 		}

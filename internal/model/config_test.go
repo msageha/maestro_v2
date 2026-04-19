@@ -1582,3 +1582,122 @@ func TestValidate_DispatchLeaseVsMaxInProgress(t *testing.T) {
 	}
 }
 
+// --- worktree.base_branch validation tests ---
+
+func TestValidate_WorktreeBaseBranch_Valid(t *testing.T) {
+	valid := []string{
+		"",          // empty uses default
+		"main",
+		"develop",
+		"feature/foo",
+		"release/v1.2.3",
+		"my-branch",
+		"my_branch",
+		"v1.0",
+	}
+	for _, branch := range valid {
+		t.Run("valid_"+branch, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Worktree.BaseBranch = branch
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("expected no error for base_branch=%q, got: %v", branch, err)
+			}
+		})
+	}
+}
+
+func TestValidate_WorktreeBaseBranch_Invalid(t *testing.T) {
+	tests := []struct {
+		name   string
+		branch string
+		errMsg string
+	}{
+		{"double_dot", "main..develop", "must not contain \"..\""},
+		{"space", "my branch", "contains invalid characters"},
+		{"control_char", "main\x00", "contains invalid characters"},
+		{"tilde", "main~1", "contains invalid characters"},
+		{"caret", "main^2", "contains invalid characters"},
+		{"colon", "refs:heads", "contains invalid characters"},
+		{"question_mark", "main?", "contains invalid characters"},
+		{"asterisk", "main*", "contains invalid characters"},
+		{"backslash", "main\\dev", "contains invalid characters"},
+		{"trailing_dot", "main.", "must not end with \".\" or \"/\""},
+		{"trailing_slash", "feature/", "must not end with \".\" or \"/\""},
+		{"dot_lock_suffix", "main.lock", "must not end with \".lock\""},
+		{"consecutive_slashes", "feature//bar", "must not contain consecutive slashes"},
+		{"starts_with_hyphen", "-branch", "contains invalid characters"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Worktree.BaseBranch = tt.branch
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("expected error for base_branch=%q", tt.branch)
+			}
+			if !strings.Contains(err.Error(), "worktree.base_branch") {
+				t.Fatalf("expected worktree.base_branch in error, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), tt.errMsg) {
+				t.Fatalf("expected %q in error, got: %v", tt.errMsg, err)
+			}
+		})
+	}
+}
+
+// --- worktree.path_prefix validation tests ---
+
+func TestValidate_WorktreePathPrefix_Valid(t *testing.T) {
+	valid := []string{
+		"",                      // empty uses default
+		".maestro/worktrees",
+		"worktrees",
+		"build/output",
+		"my-prefix",
+		"my_prefix",
+		".hidden/dir",
+	}
+	for _, prefix := range valid {
+		t.Run("valid_"+prefix, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Worktree.PathPrefix = prefix
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("expected no error for path_prefix=%q, got: %v", prefix, err)
+			}
+		})
+	}
+}
+
+func TestValidate_WorktreePathPrefix_Invalid(t *testing.T) {
+	tests := []struct {
+		name   string
+		prefix string
+		errMsg string
+	}{
+		{"absolute_path", "/tmp/worktrees", "must be a relative path"},
+		{"traversal_prefix", "../escape", "must not contain path traversal"},
+		{"traversal_middle", "foo/../bar", "must not contain path traversal"},
+		{"traversal_suffix", "foo/..", "must not contain path traversal"},
+		{"space", "my prefix", "contains invalid characters"},
+		{"control_char", "dir\x00name", "contains invalid characters"},
+		{"trailing_slash", "worktrees/", "must not end with \"/\""},
+		{"starts_with_hyphen", "-prefix", "contains invalid characters"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Worktree.PathPrefix = tt.prefix
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("expected error for path_prefix=%q", tt.prefix)
+			}
+			if !strings.Contains(err.Error(), "worktree.path_prefix") {
+				t.Fatalf("expected worktree.path_prefix in error, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), tt.errMsg) {
+				t.Fatalf("expected %q in error, got: %v", tt.errMsg, err)
+			}
+		})
+	}
+}
+
