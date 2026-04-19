@@ -6,22 +6,29 @@ import (
 	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
-func TestNewReviewResult_IsAdvisoryAlwaysTrue(t *testing.T) {
-	r := NewReviewResult("req-1", "claude-sonnet")
+func TestNewReviewResult_IsAdvisoryTrue(t *testing.T) {
+	r := NewReviewResult("req-1", "claude-sonnet", true)
 	if !r.IsAdvisory {
 		t.Fatal("expected IsAdvisory to be true")
 	}
 }
 
+func TestNewReviewResult_IsAdvisoryFalse(t *testing.T) {
+	r := NewReviewResult("req-1", "claude-sonnet", false)
+	if r.IsAdvisory {
+		t.Fatal("expected IsAdvisory to be false")
+	}
+}
+
 func TestNewReviewResult_DefaultStatus(t *testing.T) {
-	r := NewReviewResult("req-1", "claude-sonnet")
+	r := NewReviewResult("req-1", "claude-sonnet", true)
 	if r.Status != ReviewStatusPending {
 		t.Fatalf("expected status %q, got %q", ReviewStatusPending, r.Status)
 	}
 }
 
 func TestNewReviewResult_FieldsSet(t *testing.T) {
-	r := NewReviewResult("req-123", "gpt-4o")
+	r := NewReviewResult("req-123", "gpt-4o", false)
 	if r.RequestID != "req-123" {
 		t.Errorf("expected RequestID %q, got %q", "req-123", r.RequestID)
 	}

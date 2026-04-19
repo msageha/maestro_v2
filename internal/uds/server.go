@@ -21,6 +21,16 @@ const defaultMaxConcurrentConns = 64
 // maxCommandLength is the maximum allowed length for a command name in bytes.
 const maxCommandLength = 256
 
+// backpressureWriteDeadline is the write deadline applied when sending a
+// backpressure rejection response to a client.
+const backpressureWriteDeadline = 1 * time.Second
+
+// maxUnixSocketPathLen is the maximum length of a Unix domain socket path.
+// POSIX defines struct sockaddr_un.sun_path as 108 bytes on Linux and most
+// Unix-like systems. macOS uses 104 bytes; we use the more conservative 104
+// to be safe across platforms.
+const maxUnixSocketPathLen = 104
+
 // Server is a Unix Domain Socket server that dispatches incoming requests to registered handlers.
 type Server struct {
 	socketPath  string
@@ -57,6 +67,10 @@ func (s *Server) Handle(command string, handler handlerFunc) {
 
 // Start begins listening for connections on the configured Unix socket path.
 func (s *Server) Start() error {
+	if len(s.socketPath) > maxUnixSocketPathLen {
+		return fmt.Errorf("socket path too long: %d bytes exceeds %d byte limit (path: %s)", len(s.socketPath), maxUnixSocketPathLen, s.socketPath)
+	}
+
 	// Remove stale socket file
 	_ = os.Remove(s.socketPath)
 
@@ -70,6 +84,7 @@ func (s *Server) Start() error {
 	// concurrent goroutines.
 	if err := os.Chmod(s.socketPath, 0600); err != nil {
 		listener.Close()
+		_ = os.Remove(s.socketPath)
 		return fmt.Errorf("chmod socket %s: %w", s.socketPath, err)
 	}
 
@@ -142,7 +157,7 @@ func (s *Server) rejectConn(conn net.Conn) {
 		}
 	}()
 	slog.Warn("connection rejected: max concurrent connections reached", "max_conns", s.maxConns)
-	_ = conn.SetWriteDeadline(time.Now().Add(1 * time.Second))
+	_ = conn.SetWriteDeadline(time.Now().Add(backpressureWriteDeadline))
 	resp := ErrorResponse(ErrCodeBackpressure, "server at capacity, try again later")
 	if err := writeFrame(conn, resp); err != nil {
 		slog.Debug("failed to write backpressure response", "error", err)

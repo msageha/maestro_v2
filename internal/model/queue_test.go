@@ -240,7 +240,7 @@ func TestTask_GetDoneConditions(t *testing.T) {
 		{
 			name:     "neither set",
 			task:     Task{},
-			expected: nil,
+			expected: []string{},
 		},
 		{
 			name: "empty DefinitionOfDone falls back to AcceptanceCriteria",
@@ -257,11 +257,8 @@ func TestTask_GetDoneConditions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			got := tt.task.GetDoneConditions()
-			if tt.expected == nil {
-				if got != nil {
-					t.Errorf("GetDoneConditions() = %v, want nil", got)
-				}
-				return
+			if got == nil {
+				t.Fatal("GetDoneConditions() returned nil, want non-nil slice")
 			}
 			if len(got) != len(tt.expected) {
 				t.Fatalf("GetDoneConditions() length = %d, want %d", len(got), len(tt.expected))

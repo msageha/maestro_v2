@@ -1,8 +1,3 @@
-// TODO(coverage): The following agent package files lack dedicated unit tests:
-//   - message_deliverer.go: sendAndConfirm, clearAndConfirm logic (currently
-//     tested indirectly via executor coverage tests, but no isolated unit tests)
-//   - executor_core.go: Core execution orchestration
-//   - process_manager.go: Claude process lifecycle management
 package agent
 
 import (
@@ -563,173 +558,6 @@ func TestPromptReadyLinesIncreased(t *testing.T) {
 
 // === Executor Integration Tests ===
 
-// execMockPaneIO provides a configurable PaneIO mock for Executor integration tests.
-// Unlike mockPaneIO (used by busyDetector tests), this mock supports user variable
-// tracking, text delivery tracking, and configurable error injection.
-type execMockPaneIO struct {
-	// FindPaneByAgentID
-	findPaneTarget string
-	findPaneErr    error
-
-	// GetPaneCurrentCommand / IsShellCommand
-	currentCmd   string
-	isShell      bool
-	isShellSeq   []bool
-	isShellIdx   int
-
-	// CapturePane / CapturePaneJoined
-	captureContent  string
-	joinedContents  []string
-	joinedCallCount int
-
-	// SendTextAndSubmit tracking
-	sentTexts   []string
-	sendTextErr error
-
-	// SendCommand tracking
-	sentCmds   []string
-	sendCmdErr error
-
-	// User variable storage
-	userVars map[string]string
-
-	// PanePID
-	panePID string
-}
-
-func newExecMock() *execMockPaneIO {
-	return &execMockPaneIO{
-		findPaneTarget: "%0",
-		currentCmd:     "bash",
-		isShell:        true,
-		captureContent: "output\n ❯ \n",
-		panePID:        "12345",
-		userVars:       make(map[string]string),
-	}
-}
-
-func (m *execMockPaneIO) FindPaneByAgentID(agentID string) (string, error) {
-	if m.findPaneErr != nil {
-		return "", m.findPaneErr
-	}
-	return m.findPaneTarget, nil
-}
-
-func (m *execMockPaneIO) SendCtrlC(paneTarget string) error { return nil }
-func (m *execMockPaneIO) SendKeys(paneTarget string, keys ...string) error {
-	return nil
-}
-
-func (m *execMockPaneIO) SendCommand(paneTarget, command string) error {
-	m.sentCmds = append(m.sentCmds, command)
-	return m.sendCmdErr
-}
-
-func (m *execMockPaneIO) SendTextAndSubmit(ctx context.Context, paneTarget, text string) error {
-	m.sentTexts = append(m.sentTexts, text)
-	return m.sendTextErr
-}
-
-func (m *execMockPaneIO) SetUserVar(paneTarget, name, value string) error {
-	if m.userVars == nil {
-		m.userVars = make(map[string]string)
-	}
-	m.userVars[name] = value
-	return nil
-}
-
-func (m *execMockPaneIO) GetUserVar(paneTarget, name string) (string, error) {
-	if m.userVars == nil {
-		return "", nil
-	}
-	return m.userVars[name], nil
-}
-
-func (m *execMockPaneIO) GetPanePID(paneTarget string) (string, error) {
-	return m.panePID, nil
-}
-
-func (m *execMockPaneIO) GetPaneCurrentCommand(paneTarget string) (string, error) {
-	return m.currentCmd, nil
-}
-
-func (m *execMockPaneIO) CapturePane(paneTarget string, lastN int) (string, error) {
-	return m.captureContent, nil
-}
-
-func (m *execMockPaneIO) CapturePaneJoined(paneTarget string, lastN int) (string, error) {
-	if len(m.joinedContents) > 0 {
-		content := m.joinedContents[m.joinedCallCount%len(m.joinedContents)]
-		m.joinedCallCount++
-		return content, nil
-	}
-	return m.captureContent, nil
-}
-
-func (m *execMockPaneIO) IsShellCommand(cmd string) bool {
-	if len(m.isShellSeq) > 0 {
-		idx := m.isShellIdx
-		if idx >= len(m.isShellSeq) {
-			idx = len(m.isShellSeq) - 1
-		}
-		m.isShellIdx++
-		return m.isShellSeq[idx]
-	}
-	return m.isShell
-}
-
-func (m *execMockPaneIO) RespawnPane(paneTarget, startDir string) error { return nil }
-
-// newTestExecutorWithLog creates an Executor with a mock PaneIO and returns
-// the log buffer for verification. Uses zero-sleep config for instant tests.
-func newTestExecutorWithLog(paneIO PaneIO) (*Executor, *bytes.Buffer) {
-	var buf bytes.Buffer
-	logger := log.New(&buf, "", 0)
-
-	cfg := model.WatcherConfig{
-		BusyCheckInterval:      1,
-		BusyCheckMaxRetries:    1,
-		IdleStableSec:          1,
-		CooldownAfterClear:     1,
-		WaitReadyIntervalSec:   1,
-		WaitReadyMaxRetries:    1,
-		ClearConfirmTimeoutSec: 1,
-		ClearConfirmPollMs:     10,
-		ClearMaxAttempts:       1,
-		ClearRetryBackoffMs:    10,
-	}
-
-	execCfg := DefaultExecutorConfig()
-	ps := newPaneStateManager(paneIO)
-
-	// busyDetector with zero-sleep config (bypasses newBusyDetector normalization)
-	bd := &busyDetector{
-		paneIO: paneIO,
-		config: busyDetectorConfig{
-			IdleStableSec:       0,
-			BusyCheckMaxRetries: 1,
-			BusyCheckInterval:   0,
-			BusyHintLines:       execCfg.BusyHintLines,
-		},
-		logger:   logger,
-		logLevel: logLevelDebug,
-	}
-
-	exec := &Executor{
-		execCfg:      execCfg,
-		config:       cfg,
-		logger:       logger,
-		logLevel:     logLevelDebug,
-		paneIO:       paneIO,
-		busyDetector: bd,
-		paneState:    ps,
-	}
-	exec.processManager = newClaudeProcessManager(paneIO, ps, &exec.config, execCfg, logger, logLevelDebug)
-	exec.deliverer = newMessageDeliverer(paneIO, ps, &exec.config, execCfg, logger, logLevelDebug)
-
-	return exec, &buf
-}
-
 func TestExecute_UnknownMode(t *testing.T) {
 	t.Parallel()
 	mock := newExecMock()
@@ -787,9 +615,9 @@ func TestExecute_ModeIsBusy_Busy(t *testing.T) {
 	t.Parallel()
 	mock := newExecMock()
 	mock.isShell = false
-	mock.currentCmd = "claude"
+	mock.currentCommand = "claude"
 	mock.captureContent = "working..."
-	mock.joinedContents = []string{"content-1", "content-2"} // changing → busy
+	mock.joinedContent = []string{"content-1", "content-2"} // changing → busy
 	exec, _ := newTestExecutorWithLog(mock)
 
 	result := exec.Execute(ExecRequest{
@@ -811,9 +639,9 @@ func TestExecute_ModeIsBusy_ContextCancelled_ReturnsBusy(t *testing.T) {
 	t.Parallel()
 	mock := newExecMock()
 	mock.isShell = false
-	mock.currentCmd = "claude"
+	mock.currentCommand = "claude"
 	mock.captureContent = "working..."
-	mock.joinedContents = []string{"same-content", "same-content"}
+	mock.joinedContent = []string{"same-content", "same-content"}
 	exec, _ := newTestExecutorWithLog(mock)
 	// Use non-zero IdleStableSec so Stage 3 has a sleep that context
 	// cancellation can interrupt.
@@ -866,9 +694,9 @@ func TestExecute_ModeDeliver_AgentBusy(t *testing.T) {
 	t.Parallel()
 	mock := newExecMock()
 	mock.isShell = false
-	mock.currentCmd = "claude"
+	mock.currentCommand = "claude"
 	mock.captureContent = "working..."
-	mock.joinedContents = []string{"content-1", "content-2"} // changing → busy
+	mock.joinedContent = []string{"content-1", "content-2"} // changing → busy
 	exec, _ := newTestExecutorWithLog(mock)
 
 	result := exec.Execute(ExecRequest{
@@ -935,9 +763,9 @@ func TestExecute_ModeDeliver_Orchestrator_Busy(t *testing.T) {
 	t.Parallel()
 	mock := newExecMock()
 	mock.isShell = false
-	mock.currentCmd = "claude"
+	mock.currentCommand = "claude"
 	mock.captureContent = "working..."
-	mock.joinedContents = []string{"content-1", "content-2"} // changing → busy
+	mock.joinedContent = []string{"content-1", "content-2"} // changing → busy
 	exec, _ := newTestExecutorWithLog(mock)
 
 	result := exec.Execute(ExecRequest{
@@ -1112,7 +940,7 @@ func TestExecute_ModeClear_Success(t *testing.T) {
 	mock := newExecMock()
 	mock.isShell = true
 	// For clearAndConfirm: return different content to simulate /clear processing
-	mock.joinedContents = []string{"before-clear", "after-clear", "after-clear"}
+	mock.joinedContent = []string{"before-clear", "after-clear", "after-clear"}
 	exec, _ := newTestExecutorWithLog(mock)
 
 	result := exec.Execute(ExecRequest{
@@ -1175,9 +1003,9 @@ func TestExecute_ModeDeliver_ContextCancelled_ReturnsBusyError(t *testing.T) {
 	t.Parallel()
 	mock := newExecMock()
 	mock.isShell = false
-	mock.currentCmd = "claude"
+	mock.currentCommand = "claude"
 	mock.captureContent = "working..."
-	mock.joinedContents = []string{"same-content", "same-content"}
+	mock.joinedContent = []string{"same-content", "same-content"}
 	exec, _ := newTestExecutorWithLog(mock)
 	// Use non-zero IdleStableSec so Stage 3 has a sleep that context
 	// cancellation can interrupt.
@@ -1203,6 +1031,136 @@ func TestExecute_ModeDeliver_ContextCancelled_ReturnsBusyError(t *testing.T) {
 	}
 	if !result.Retryable {
 		t.Error("expected Retryable=true for busy verdict")
+	}
+}
+
+// --- DefaultExecutorConfig tests ---
+
+func TestDefaultExecutorConfig_Values(t *testing.T) {
+	t.Parallel()
+	cfg := DefaultExecutorConfig()
+
+	if cfg.PromptReadyLines != 12 {
+		t.Errorf("PromptReadyLines: got %d, want 12", cfg.PromptReadyLines)
+	}
+	if cfg.BusyHintLines != 5 {
+		t.Errorf("BusyHintLines: got %d, want 5", cfg.BusyHintLines)
+	}
+	if cfg.StableCheckRounds != 1 {
+		t.Errorf("StableCheckRounds: got %d, want 1", cfg.StableCheckRounds)
+	}
+	if cfg.DefaultExecTimeout != 5*time.Minute {
+		t.Errorf("DefaultExecTimeout: got %v, want 5m", cfg.DefaultExecTimeout)
+	}
+	if cfg.ClaudeLaunchTimeout != 60*time.Second {
+		t.Errorf("ClaudeLaunchTimeout: got %v, want 60s", cfg.ClaudeLaunchTimeout)
+	}
+}
+
+// --- applyDefaults additional tests ---
+
+func TestApplyDefaults_ClearSecondEnterDelayMs(t *testing.T) {
+	t.Parallel()
+	// Zero value gets default
+	cfg := applyDefaults(model.WatcherConfig{})
+	if cfg.ClearSecondEnterDelayMs != 500 {
+		t.Errorf("ClearSecondEnterDelayMs: got %d, want 500", cfg.ClearSecondEnterDelayMs)
+	}
+
+	// Negative value gets default
+	cfg = applyDefaults(model.WatcherConfig{ClearSecondEnterDelayMs: -1})
+	if cfg.ClearSecondEnterDelayMs != 500 {
+		t.Errorf("ClearSecondEnterDelayMs: got %d, want 500 for negative input", cfg.ClearSecondEnterDelayMs)
+	}
+
+	// Explicit positive value is preserved
+	cfg = applyDefaults(model.WatcherConfig{ClearSecondEnterDelayMs: 1000})
+	if cfg.ClearSecondEnterDelayMs != 1000 {
+		t.Errorf("ClearSecondEnterDelayMs: got %d, want 1000", cfg.ClearSecondEnterDelayMs)
+	}
+}
+
+func TestApplyDefaults_WaitReadyFields(t *testing.T) {
+	t.Parallel()
+	cfg := applyDefaults(model.WatcherConfig{})
+	if cfg.WaitReadyIntervalSec != 2 {
+		t.Errorf("WaitReadyIntervalSec: got %d, want 2", cfg.WaitReadyIntervalSec)
+	}
+	if cfg.WaitReadyMaxRetries != 15 {
+		t.Errorf("WaitReadyMaxRetries: got %d, want 15", cfg.WaitReadyMaxRetries)
+	}
+}
+
+// --- logf tests ---
+
+func TestLogf_LevelFiltering(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	logger := &buf
+
+	// Debug below Info threshold → no output
+	logf(newBufLogger(&buf), logLevelInfo, logLevelDebug, "test", "should not appear")
+	if buf.Len() != 0 {
+		t.Errorf("expected no output for debug at info level, got: %s", buf.String())
+	}
+
+	// Warn above Info threshold → output
+	buf.Reset()
+	logf(newBufLogger(&buf), logLevelInfo, logLevelWarn, "test", "warning %s", "msg")
+	output := buf.String()
+	if !strings.Contains(output, "[WARN]") {
+		t.Errorf("expected [WARN] in output, got: %s", output)
+	}
+	if !strings.Contains(output, "test:") {
+		t.Errorf("expected component 'test:' in output, got: %s", output)
+	}
+	if !strings.Contains(output, "warning msg") {
+		t.Errorf("expected formatted message in output, got: %s", output)
+	}
+	_ = logger
+}
+
+func TestLogf_AllLevelLabels(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		level logLevel
+		label string
+	}{
+		{logLevelDebug, "[DEBUG]"},
+		{logLevelInfo, "[INFO]"},
+		{logLevelWarn, "[WARN]"},
+		{logLevelError, "[ERROR]"},
+	}
+	for _, tt := range tests {
+		var buf bytes.Buffer
+		logf(newBufLogger(&buf), logLevelDebug, tt.level, "comp", "msg")
+		if !strings.Contains(buf.String(), tt.label) {
+			t.Errorf("level %d: expected %s in output, got: %s", tt.level, tt.label, buf.String())
+		}
+	}
+}
+
+func newBufLogger(buf *bytes.Buffer) *log.Logger {
+	return log.New(buf, "", 0)
+}
+
+// --- CleanupPaneMutex tests ---
+
+func TestCleanupPaneMutex(t *testing.T) {
+	t.Parallel()
+	mock := newExecMock()
+	exec, _ := newTestExecutorWithLog(mock)
+
+	// Trigger mutex creation by accessing deliverer
+	exec.deliverer.getPaneMutex("%0")
+
+	// Cleanup should remove the mutex
+	exec.CleanupPaneMutex("%0")
+
+	// After cleanup, a new mutex should be created
+	mu := exec.deliverer.getPaneMutex("%0")
+	if mu == nil {
+		t.Error("expected new mutex after cleanup")
 	}
 }
 

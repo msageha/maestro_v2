@@ -2,6 +2,7 @@
 package yaml
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -121,8 +122,8 @@ func AtomicWriteRaw(path string, content []byte) (retErr error) {
 	if err != nil {
 		return fmt.Errorf("read temp file for validation: %w", err)
 	}
-	if len(written) != len(content) {
-		return fmt.Errorf("write verification failed: wrote %d bytes, read back %d bytes", len(content), len(written))
+	if !bytes.Equal(written, content) {
+		return fmt.Errorf("write verification failed: content mismatch (wrote %d bytes, read back %d bytes)", len(content), len(written))
 	}
 	// Checksum-based conditional validation: skip full Unmarshal when content
 	// matches a previously validated checksum for this path. Periodic fallback
