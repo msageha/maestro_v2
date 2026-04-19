@@ -204,6 +204,19 @@ func rollbackFullPhaseFill(sm stateStore, state *model.CommandState, phaseIdx in
 	return nil
 }
 
+// logRollbackFailure logs a rollback failure with structured context about
+// system recovery state and recommended actions.
+func logRollbackFailure(commandID string, err error, op string, recoverable bool, suggestedAction, affectedResource string) {
+	slog.Error("rollback failed",
+		"op", op,
+		"command_id", commandID,
+		"error", err,
+		"recoverable", recoverable,
+		"suggested_action", suggestedAction,
+		"affected_resource", affectedResource,
+	)
+}
+
 func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm stateStore) (*SubmitResult, error) {
 	// Auto-complete defaults before validation
 	ApplyTaskDefaults(tasks)
@@ -247,7 +260,7 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm stateStore) (*
 
 	if err := writeQueueEntries(opts.MaestroDir, assignments, tasks, nameToID, opts.CommandID, now, opts.LockMap); err != nil {
 		if rbErr := rollbackStateAndQueue(sm, opts.MaestroDir, opts.CommandID, tasks, nameToID, assignMap, opts.LockMap); rbErr != nil {
-			slog.Error("rollback also failed", "command_id", opts.CommandID, "error", rbErr)
+			logRollbackFailure(opts.CommandID, rbErr, "initial_tasks_queue_write", false, "manual_cleanup", "command_state+queue_entries")
 		}
 		return nil, fmt.Errorf("write queue: %w", err)
 	}
@@ -258,7 +271,7 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm stateStore) (*
 	state.UpdatedAt = nowUTC()
 	if err := sm.SaveState(state); err != nil {
 		if rbErr := rollbackStateAndQueue(sm, opts.MaestroDir, opts.CommandID, tasks, nameToID, assignMap, opts.LockMap); rbErr != nil {
-			slog.Error("rollback also failed", "command_id", opts.CommandID, "error", rbErr)
+			logRollbackFailure(opts.CommandID, rbErr, "initial_tasks_seal", false, "manual_cleanup", "command_state+queue_entries")
 		}
 		return nil, fmt.Errorf("save state (sealed): %w", err)
 	}
@@ -342,7 +355,7 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm stateStore)
 	// Write queue entries for concrete phase tasks + system commit
 	if err := writeQueueEntries(opts.MaestroDir, cpd.assignments, cpd.tasks, cpd.nameToID, opts.CommandID, now, opts.LockMap); err != nil {
 		if rbErr := rollbackStateAndQueue(sm, opts.MaestroDir, opts.CommandID, cpd.tasks, cpd.nameToID, cpd.assignMap, opts.LockMap); rbErr != nil {
-			slog.Error("rollback also failed", "command_id", opts.CommandID, "error", rbErr)
+			logRollbackFailure(opts.CommandID, rbErr, "initial_phases_queue_write", false, "manual_cleanup", "command_state+queue_entries")
 		}
 		return nil, fmt.Errorf("write queue: %w", err)
 	}
@@ -353,7 +366,7 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm stateStore)
 	state.UpdatedAt = nowUTC()
 	if err := sm.SaveState(state); err != nil {
 		if rbErr := rollbackStateAndQueue(sm, opts.MaestroDir, opts.CommandID, cpd.tasks, cpd.nameToID, cpd.assignMap, opts.LockMap); rbErr != nil {
-			slog.Error("rollback also failed", "command_id", opts.CommandID, "error", rbErr)
+			logRollbackFailure(opts.CommandID, rbErr, "initial_phases_seal", false, "manual_cleanup", "command_state+queue_entries")
 		}
 		return nil, fmt.Errorf("save state (sealed): %w", err)
 	}
@@ -433,7 +446,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	nameToID, assignments, assignMap, err := resolveAndAssignTasks(opts, input.Tasks)
 	if err != nil {
 		if rbErr := rollbackPhaseFillToAwaiting(sm, state, targetPhaseIdx, opts.CommandID); rbErr != nil {
-			slog.Error("rollback also failed", "command_id", opts.CommandID, "error", rbErr)
+			logRollbackFailure(opts.CommandID, rbErr, "phase_fill_assign", true, "await_automatic_recovery", "phase_state")
 		}
 		return nil, err
 	}
@@ -442,7 +455,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	if targetPhase.Constraints != nil {
 		if len(input.Tasks) > targetPhase.Constraints.MaxTasks {
 			if rbErr := rollbackPhaseFillToAwaiting(sm, state, targetPhaseIdx, opts.CommandID); rbErr != nil {
-				slog.Error("rollback also failed", "command_id", opts.CommandID, "error", rbErr)
+				logRollbackFailure(opts.CommandID, rbErr, "phase_fill_max_tasks", true, "await_automatic_recovery", "phase_state")
 			}
 			return nil, &planValidationError{Msg: fmt.Sprintf("task count %d exceeds phase constraint max_tasks %d for phase %q",
 				len(input.Tasks), targetPhase.Constraints.MaxTasks, opts.PhaseName)}
@@ -452,7 +465,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 			for _, t := range input.Tasks {
 				if t.BloomLevel > 0 && !allowedBloom[t.BloomLevel] {
 					if rbErr := rollbackPhaseFillToAwaiting(sm, state, targetPhaseIdx, opts.CommandID); rbErr != nil {
-						slog.Error("rollback also failed", "command_id", opts.CommandID, "error", rbErr)
+						logRollbackFailure(opts.CommandID, rbErr, "phase_fill_bloom_levels", true, "await_automatic_recovery", "phase_state")
 					}
 					return nil, &planValidationError{Msg: fmt.Sprintf("bloom_level %d not in allowed levels for phase %q",
 						t.BloomLevel, opts.PhaseName)}
@@ -490,7 +503,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 
 	if err := writeQueueEntries(opts.MaestroDir, assignments, input.Tasks, nameToID, opts.CommandID, now, opts.LockMap); err != nil {
 		if rbErr := rollbackFullPhaseFill(sm, state, targetPhaseIdx, opts, input.Tasks, nameToID, assignMap); rbErr != nil {
-			slog.Error("rollback also failed", "command_id", opts.CommandID, "error", rbErr)
+			logRollbackFailure(opts.CommandID, rbErr, "phase_fill_queue_write", false, "manual_intervention", "phase_state+queue_entries")
 		}
 		return nil, fmt.Errorf("write queue: %w", err)
 	}
@@ -503,7 +516,7 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 
 	if err := sm.SaveState(state); err != nil {
 		if rbErr := rollbackFullPhaseFill(sm, state, targetPhaseIdx, opts, input.Tasks, nameToID, assignMap); rbErr != nil {
-			slog.Error("rollback also failed", "command_id", opts.CommandID, "error", rbErr)
+			logRollbackFailure(opts.CommandID, rbErr, "phase_fill_save_state", false, "manual_intervention", "phase_state+queue_entries")
 		}
 		return nil, fmt.Errorf("save state: %w", err)
 	}

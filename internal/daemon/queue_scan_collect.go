@@ -20,7 +20,8 @@ func (qh *QueueHandler) collectPendingCommandDispatches(cq *model.CommandQueue, 
 		return
 	}
 
-	for _, cmd := range cq.Commands {
+	for i := range cq.Commands {
+		cmd := &cq.Commands[i]
 		if cmd.Status == model.StatusInProgress {
 			qh.log(LogLevelDebug, "command_in_progress_guard id=%s epoch=%d blocking_dispatch", cmd.ID, cmd.LeaseEpoch)
 			return
@@ -37,10 +38,9 @@ func (qh *QueueHandler) collectPendingCommandDispatches(cq *model.CommandQueue, 
 		cmd.Attempts++
 		*dirty = true
 
-		cmdCopy := *cmd
 		work.dispatches = append(work.dispatches, dispatchItem{
 			Kind:      "command",
-			Command:   &cmdCopy,
+			Command:   cmd,
 			Epoch:     cmd.LeaseEpoch,
 			ExpiresAt: safeStr(cmd.LeaseExpiresAt),
 		})
@@ -122,10 +122,9 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 		}
 		task.Attempts++
 
-		taskCopy := *task
 		work.dispatches = append(work.dispatches, dispatchItem{
 			Kind:      "task",
-			Task:      &taskCopy,
+			Task:      task,
 			WorkerID:  workerID,
 			Epoch:     task.LeaseEpoch,
 			ExpiresAt: safeStr(task.LeaseExpiresAt),
@@ -145,7 +144,8 @@ func (qh *QueueHandler) collectPendingNotificationDispatches(nq *model.Notificat
 		return
 	}
 
-	for _, ntf := range nq.Notifications {
+	for i := range nq.Notifications {
+		ntf := &nq.Notifications[i]
 		if ntf.Status == model.StatusInProgress && ntf.LeaseExpiresAt != nil {
 			if t, err := time.Parse(time.RFC3339, *ntf.LeaseExpiresAt); err == nil && t.After(qh.clock.Now()) {
 				return
@@ -163,10 +163,9 @@ func (qh *QueueHandler) collectPendingNotificationDispatches(nq *model.Notificat
 		ntf.Attempts++
 		*dirty = true
 
-		ntfCopy := *ntf
 		work.dispatches = append(work.dispatches, dispatchItem{
 			Kind:         "notification",
-			Notification: &ntfCopy,
+			Notification: ntf,
 			Epoch:        ntf.LeaseEpoch,
 			ExpiresAt:    safeStr(ntf.LeaseExpiresAt),
 		})

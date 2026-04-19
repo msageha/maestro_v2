@@ -260,6 +260,49 @@ func TestPhaseA_A2_EvictionOnOverflow(t *testing.T) {
 	}
 }
 
+func TestPhaseA_A2_EvictionDeterministicSort(t *testing.T) {
+	t.Parallel()
+	// Verify that eviction deterministically removes the oldest entries,
+	// regardless of map iteration order. Run multiple iterations to catch
+	// non-determinism from map randomization.
+	for iter := 0; iter < 5; iter++ {
+		eval := newTestQualityGateEvaluator(false, false, func() dispatch.GateChecker { return nil })
+
+		total := dispatch.MaxGateEvaluations + 20
+		baseTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+
+		for i := 0; i < total; i++ {
+			eval.StoreEvaluation(
+				fmt.Sprintf("task_%05d", i),
+				&model.QualityGateEvaluation{
+					Passed:      true,
+					EvaluatedAt: baseTime.Add(time.Duration(i) * time.Second).Format(time.RFC3339),
+				},
+			)
+		}
+
+		// After eviction, the newest entries should survive.
+		// evictTarget = MaxGateEvaluations / 2, so count should be <= evictTarget + entries added after eviction.
+		count := eval.EvaluationCount()
+		if count > dispatch.MaxGateEvaluations {
+			t.Fatalf("iter=%d: count=%d exceeds max=%d", iter, count, dispatch.MaxGateEvaluations)
+		}
+
+		// The oldest entries (smallest indices) should have been evicted.
+		// The newest entries should remain.
+		newestID := fmt.Sprintf("task_%05d", total-1)
+		if eval.GetEvaluation(newestID) == nil {
+			t.Errorf("iter=%d: newest entry %s was evicted", iter, newestID)
+		}
+
+		// An old entry that should have been evicted.
+		oldestID := fmt.Sprintf("task_%05d", 0)
+		if eval.GetEvaluation(oldestID) != nil {
+			t.Errorf("iter=%d: oldest entry %s should have been evicted", iter, oldestID)
+		}
+	}
+}
+
 // --- A-3: 自己診断 ---
 // PhaseDiagnostics が生成され、RepairHotspot 抽出と反省メモが機能することを検証する。
 
