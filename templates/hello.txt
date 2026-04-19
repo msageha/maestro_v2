@@ -1,1 +1,3 @@
-Hello from maestro test
+WORKER_MODIFIED
+This is a test of conflict resolution
+End of file
