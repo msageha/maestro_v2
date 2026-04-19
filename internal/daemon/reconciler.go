@@ -18,10 +18,13 @@ type DeferredNotification = reconcile.DeferredNotification
 // Reconciler is a thin facade around reconcile.Engine.
 // Preserves the existing API used by QueueHandler and tests.
 type Reconciler struct {
-	engine *reconcile.Engine
+	engine         *reconcile.Engine
+	backoffTracker *reconcile.BackoffTracker
 }
 
 // NewReconciler creates a new Reconciler backed by a reconcile.Engine with all patterns.
+// The BackoffTracker is owned by the Reconciler so that backoff state survives
+// Engine reconstruction.
 func NewReconciler(
 	maestroDir string,
 	cfg model.Config,
@@ -47,6 +50,8 @@ func NewReconciler(
 		ExecutorFactory: executorFactory,
 	}
 
+	bt := reconcile.NewBackoffTracker()
+
 	engine := reconcile.NewEngine(deps,
 		reconcile.R0PlanningStuck{},
 		reconcile.R0Dispatch{},
@@ -54,14 +59,14 @@ func NewReconciler(
 		reconcile.R1ResultQueue{},
 		reconcile.R2ResultState{},
 		reconcile.R3PlannerQueue{},
-		&reconcile.R4PlanStatus{},
+		reconcile.NewR4PlanStatus(bt),
 		reconcile.R5Notification{},
 		reconcile.R6FillTimeout{},
 		reconcile.R7MergeConflict{},
 		reconcile.R8PublishFailed{},
 	)
 
-	return &Reconciler{engine: engine}
+	return &Reconciler{engine: engine, backoffTracker: bt}
 }
 
 // SetCanComplete sets the CanComplete function (wired after plan package init to avoid import cycles).

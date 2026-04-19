@@ -5,6 +5,7 @@ package reviewer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sync"
@@ -13,6 +14,10 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/model"
 )
+
+// ErrNotImplemented indicates that the review model invocation is not yet
+// implemented. Callers should treat this as a non-fatal skip.
+var ErrNotImplemented = errors.New("reviewer: not implemented")
 
 // ReviewDispatcher manages asynchronous dispatch of code reviews to
 // heterogeneous models. All reviews are advisory and non-blocking.
@@ -84,15 +89,22 @@ func (d *ReviewDispatcher) Dispatch(ctx context.Context, task model.Task, diffCo
 	go func() {
 		defer d.wg.Done()
 		defer cancel()
-		d.reviewTask(reviewCtx, req)
+		if err := d.reviewTask(reviewCtx, req); err != nil {
+			if errors.Is(err, ErrNotImplemented) {
+				slog.Info("reviewer: review not yet implemented, skipping", "review_id", req.ID, "task_id", req.TaskID)
+			} else {
+				slog.Error("reviewer: review failed", "error", err, "review_id", req.ID, "task_id", req.TaskID)
+			}
+		}
 	}()
 
 	return nil
 }
 
-// reviewTask executes the review. The actual model invocation is deferred to
-// a future implementation; for now it produces a dummy advisory result.
-func (d *ReviewDispatcher) reviewTask(ctx context.Context, req model.ReviewRequest) {
+// reviewTask executes the review. The actual model invocation is not yet
+// implemented; it returns ErrNotImplemented so callers can distinguish
+// "not built yet" from "review completed with no findings".
+func (d *ReviewDispatcher) reviewTask(ctx context.Context, req model.ReviewRequest) error {
 	start := time.Now()
 	result := model.NewReviewResult(req.ID, req.ReviewerModel)
 
@@ -112,23 +124,18 @@ func (d *ReviewDispatcher) reviewTask(ctx context.Context, req model.ReviewReque
 	select {
 	case <-ctx.Done():
 		result.Status = model.ReviewStatusSkipped
-		return
+		return nil
 	default:
 	}
 
 	// TODO(review): Implement actual model invocation for code review.
-	// Guard: the entire dispatch path is behind the review.enabled config flag.
-	//   - ShouldReview() returns false when !config.Enabled
-	//   - Dispatch() returns error when !config.Enabled
-	//   - newReviewCoordinator() returns nil when !cfg.Enabled
-	// Tracked in the review subsystem roadmap. When implemented, this should:
+	// When implemented, this should:
 	//   1. Invoke the reviewer model with the diff content from req.DiffContent
 	//   2. Parse the model response into []model.ReviewFinding
 	//   3. Populate result.Findings with the parsed findings
 	//   4. Set result.Status based on model response success/failure
-	slog.Warn("reviewer/placeholder: no analysis performed, returning empty result", "review_id", req.ID, "task_id", req.TaskID, "model", req.ReviewerModel)
-	result.Status = model.ReviewStatusCompleted
-	result.Findings = nil
+	result.Status = model.ReviewStatusSkipped
+	return ErrNotImplemented
 }
 
 // Results returns a read-only channel from which review results can be received.

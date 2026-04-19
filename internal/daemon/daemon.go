@@ -1,4 +1,20 @@
 // Package daemon implements the maestro background daemon for queue processing and orchestration.
+//
+// TODO(refactor): This package has grown into the largest in the codebase (~36% of total,
+// ~53K lines across 20+ sub-packages). While the sub-package structure provides some
+// separation, the daemon package itself acts as a monolithic composition root with
+// broad responsibilities spanning queue processing, agent lifecycle, worktree management,
+// event bridging, and API serving.
+//
+// Recommended decomposition direction (see also REVIEW_REPORT.md):
+//   - Promote high-independence sub-packages (e.g., dispatch, reconcile, search) to
+//     top-level internal packages if they have minimal back-references to daemon state.
+//   - Extract the API/UDS layer into a dedicated internal/api package.
+//   - Consider splitting agent lifecycle management (heartbeat, lease, fallback) into
+//     an internal/lifecycle or internal/agent/lifecycle package.
+//
+// This refactoring should be done incrementally, validating that each extraction
+// maintains the existing integration test coverage.
 package daemon
 
 import (

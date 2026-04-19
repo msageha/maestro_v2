@@ -66,7 +66,9 @@ func newPhaseCManager(cfg model.Config, availableModels []string, log logFunc) *
 	if cfg.ExtendedVerification.EffectiveEnabled() {
 		m.EnsembleVerifier = verification.NewVerifier()
 		for _, p := range m.EnsembleVerifier.DefaultPerspectives() {
-			m.EnsembleVerifier.AddPerspective(p)
+			if err := m.EnsembleVerifier.AddPerspective(p); err != nil {
+				log(LogLevelWarn, "skipping perspective %s: %v", p.Name, err)
+			}
 		}
 		log(LogLevelInfo, "ensemble verifier initialized")
 	}

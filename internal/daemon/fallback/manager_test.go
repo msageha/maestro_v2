@@ -189,6 +189,66 @@ func TestRecoveringModeOnlyAllowsWorker1(t *testing.T) {
 	assert.False(t, m.IsWorkerAllowed("worker2"), "recovering mode should deny worker2")
 }
 
+func TestPerWorkerIndependentFailureTracking(t *testing.T) {
+	t.Parallel()
+	cfg := defaultConfig()
+	cfg.ConsecutiveFailureThreshold = 3
+	m := NewManager(cfg)
+
+	// worker1 records 2 failures (below threshold).
+	m.RecordFailure("worker1")
+	m.RecordFailure("worker1")
+	assert.Equal(t, ModeNormal, m.Mode(), "should stay normal after 2 failures from worker1")
+
+	// worker2 records 2 failures independently — should not combine with worker1.
+	m.RecordFailure("worker2")
+	m.RecordFailure("worker2")
+	assert.Equal(t, ModeNormal, m.Mode(), "should stay normal: neither worker reached threshold individually")
+
+	// worker2 hits 3rd failure → triggers degraded.
+	m.RecordFailure("worker2")
+	assert.Equal(t, ModeDegraded, m.Mode(), "worker2 reached threshold independently")
+}
+
+func TestPerWorkerSuccessResetsOnlyThatWorker(t *testing.T) {
+	t.Parallel()
+	cfg := defaultConfig()
+	cfg.ConsecutiveFailureThreshold = 3
+	m := NewManager(cfg)
+
+	// Both workers record 2 failures.
+	m.RecordFailure("worker1")
+	m.RecordFailure("worker1")
+	m.RecordFailure("worker2")
+	m.RecordFailure("worker2")
+
+	// worker1 success resets only worker1's counter.
+	m.RecordSuccess("worker1")
+	assert.Equal(t, ModeNormal, m.Mode())
+
+	// worker2 still at 2 failures; one more triggers degraded.
+	m.RecordFailure("worker2")
+	assert.Equal(t, ModeDegraded, m.Mode(), "worker2 should reach threshold; worker1 success did not reset worker2")
+}
+
+func TestPerWorkerFailureDoesNotAffectOtherWorkerCount(t *testing.T) {
+	t.Parallel()
+	cfg := defaultConfig()
+	cfg.ConsecutiveFailureThreshold = 3
+	m := NewManager(cfg)
+
+	// Interleave failures across workers.
+	m.RecordFailure("worker1")
+	m.RecordFailure("worker2")
+	m.RecordFailure("worker1")
+	m.RecordFailure("worker2")
+	assert.Equal(t, ModeNormal, m.Mode(), "interleaved failures should track independently")
+
+	// worker1: 2 failures, worker2: 2 failures — neither at threshold.
+	m.RecordFailure("worker1") // worker1 now at 3
+	assert.Equal(t, ModeDegraded, m.Mode(), "worker1 reached threshold with interleaved recording")
+}
+
 func TestModeStringMethod(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

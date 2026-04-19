@@ -157,22 +157,16 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 			state.Phases[phaseIdx].TaskIDs = append(state.Phases[phaseIdx].TaskIDs, newTaskID)
 		} else if len(state.Phases) > 0 {
 			// Worker has no existing tasks; fall through to generic fallback.
-			targetIdx := 0
-			for i, p := range state.Phases {
-				if !model.IsPhaseTerminal(p.Status) {
-					targetIdx = i
-					break
-				}
+			targetIdx, err := findFirstNonTerminalPhase(state.Phases)
+			if err != nil {
+				return nil, err
 			}
 			state.Phases[targetIdx].TaskIDs = append(state.Phases[targetIdx].TaskIDs, newTaskID)
 		}
 	} else if len(state.Phases) > 0 {
-		targetIdx := 0
-		for i, p := range state.Phases {
-			if !model.IsPhaseTerminal(p.Status) {
-				targetIdx = i
-				break
-			}
+		targetIdx, err := findFirstNonTerminalPhase(state.Phases)
+		if err != nil {
+			return nil, err
 		}
 		state.Phases[targetIdx].TaskIDs = append(state.Phases[targetIdx].TaskIDs, newTaskID)
 	}
@@ -303,6 +297,17 @@ func findPhaseForWorker(state *model.CommandState, maestroDir string, workerID s
 		}
 	}
 	return bestIdx
+}
+
+// findFirstNonTerminalPhase returns the index of the first non-terminal phase.
+// Returns an error if all phases are terminal.
+func findFirstNonTerminalPhase(phases []model.Phase) (int, error) {
+	for i, p := range phases {
+		if !model.IsPhaseTerminal(p.Status) {
+			return i, nil
+		}
+	}
+	return -1, &planValidationError{Msg: "all phases are terminal; cannot add task without explicit target_phase"}
 }
 
 // lookupTaskAssignment finds the worker and model assigned to a task by scanning queue files.

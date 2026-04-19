@@ -213,9 +213,31 @@ if [ "$tool_name" = "Bash" ]; then
         rm|*/rm|-*) continue ;;
       esac
       # H3: Resolve symlinks for existing paths
-      # TOCTOU note: a race exists between this check and the actual rm execution.
-      # An attacker could swap the path between realpath and rm. This is a best-effort
-      # mitigation; full protection requires kernel-level enforcement (e.g., O_NOFOLLOW).
+      #
+      # TOCTOU (Time-of-Check-to-Time-of-Use) Risk Assessment:
+      #   Race condition: Between the realpath resolution below and the actual rm
+      #   execution by the shell, an attacker could swap a symlink target to point
+      #   outside the project root (symlink swap attack).
+      #
+      #   Why kernel-level mitigation is impractical here:
+      #   - O_NOFOLLOW / /proc/self/fd patterns require opening the file descriptor
+      #     first and operating on it directly, which is not applicable to a shell-level
+      #     hook intercepting an arbitrary rm command before execution.
+      #   - Go's os.OpenFile does not expose O_RESOLVE_BENEATH or similar kernel flags
+      #     that would allow atomic path-and-open verification.
+      #
+      #   Accepted risk rationale:
+      #   - This hook runs inside Claude Code's sandbox, which already restricts
+      #     filesystem access to allowed directories.
+      #   - Exploiting the TOCTOU window requires the attacker to have filesystem write
+      #     access within the sandbox, which contradicts the threat model (the hook
+      #     protects against accidental AI-generated destructive commands, not against
+      #     an attacker with local filesystem control).
+      #   - The race window is extremely narrow (microseconds between realpath and rm).
+      #
+      #   Future improvement: If Go adds O_RESOLVE_BENEATH support or an equivalent
+      #   safe path resolution API, consider replacing this realpath-based check with
+      #   an atomic resolution mechanism.
       if [ -e "$word" ] || [ -L "$word" ]; then
         resolved="$(realpath -P "$word" 2>/dev/null || realpath "$word" 2>/dev/null || echo "$word")"
       else
