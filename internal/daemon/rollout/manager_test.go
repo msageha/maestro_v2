@@ -347,6 +347,32 @@ func TestConcurrentAccess(t *testing.T) {
 	wg.Wait()
 }
 
+func TestCreateGroup_ReturnsCopy(t *testing.T) {
+	t.Parallel()
+	m := NewManager(5)
+
+	g, err := m.CreateGroup("task1", "cmd1", 3)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Mutate the returned copy.
+	g.State = GroupCancelled
+	g.Slots[0].Status = SlotFailed
+
+	// Verify internal state is unchanged.
+	orig, ok := m.GetGroup("task1")
+	if !ok {
+		t.Fatal("expected group to exist")
+	}
+	if orig.State != GroupPending {
+		t.Errorf("internal State mutated via CreateGroup return: got %q, want %q", orig.State, GroupPending)
+	}
+	if orig.Slots[0].Status != SlotPending {
+		t.Errorf("internal Slot[0].Status mutated via CreateGroup return: got %q, want %q", orig.Slots[0].Status, SlotPending)
+	}
+}
+
 func TestGetGroup_ReturnsCopy(t *testing.T) {
 	t.Parallel()
 	m := NewManager(5)

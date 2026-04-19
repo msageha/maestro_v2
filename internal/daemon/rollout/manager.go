@@ -110,7 +110,7 @@ func (m *Manager) CreateGroup(taskID, commandID string, slotCount int) (*Group, 
 	}
 
 	m.groups[taskID] = group
-	return group, nil
+	return group.shallowCopy(), nil
 }
 
 // GetGroup returns a shallow copy of the group for the given taskID.

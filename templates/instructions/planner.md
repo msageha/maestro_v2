@@ -154,10 +154,12 @@ maestro plan add-task \
   [--persona-hint "<persona>"] \
   [--tools-hint "<tool>" ...] \
   [--skill-refs "<skill>" ...] \
-  [--worker-id <worker_id>]
+  [--worker-id <worker_id>] \
+  [--target-phase <phase_id>] \
+  [--idempotency-key <key>]
 ```
 
-`--blocked-by` は既存タスクの task_id を指定。`--required` はデフォルト true。`plan submit` と異なり、既に state が存在するコマンドに対してタスクを追加できる。`add-retry-task` と異なり、既存タスクの置換ではなく新規タスクの追加。`--worker-id` は特定 worker にタスクを割り当てる（省略時は最も負荷の低い worker に自動割り当て）。
+`--blocked-by` は既存タスクの task_id を指定。`--required` はデフォルト true。`plan submit` と異なり、既に state が存在するコマンドに対してタスクを追加できる。`add-retry-task` と異なり、既存タスクの置換ではなく新規タスクの追加。`--worker-id` は特定 worker にタスクを割り当てる（省略時は最も負荷の低い worker に自動割り当て）。`--target-phase` はタスクを配置するフェーズ ID を指定する（省略時はデフォルトのフェーズ選択ロジックに従う。`validate.PhaseID` でバリデーション）。`--idempotency-key` はリトライ時の重複タスク注入を防止する冪等キー（省略時は冪等性チェックなし）。
 
 **deferred フェーズへのタスク投入**: `maestro plan submit --command-id <id> --phase <phase_name> --tasks-file - <<'PLAN'`
 
@@ -175,6 +177,71 @@ maestro plan request-cancel \
 **状態再構築（復旧用）**: `maestro plan rebuild --command-id <id>`
 
 既存の Worker 結果から command state の `task_states` / `applied_result_ids` を再構築する。`--command-id` は必須。通常運用では使用しない復旧・Reconciliation 用コマンド。
+
+**quarantine 解除**:
+
+```
+maestro plan unquarantine \
+  --command-id <id> \
+  [--reason <text>]
+```
+
+コマンドの統合ブランチの quarantine 状態を解除し、次回 queue scan でマージ再試行を可能にする。`--command-id` は必須。`--reason` は解除理由（任意）。**オペレーター専用の操作であり、通常の Planner ワークフローでは使用しない。** quarantined 状態に遭遇した場合は `plan complete` で報告する。
+
+使用例:
+
+```
+maestro plan unquarantine --command-id cmd_42 --reason "手動確認済み、再マージ可能"
+```
+
+**マージ再開**:
+
+```
+maestro plan resume-merge \
+  --command-id <id>
+```
+
+統合ブランチのマージ失敗カウンターをリセットし、conflict / partial_merge / failed 状態の統合を再マージ可能な状態に戻す。`--command-id` は必須。競合解決タスク完了後に実行する（詳細は「マージ競合解決」セクション参照）。
+
+使用例:
+
+```
+maestro plan resume-merge --command-id cmd_42
+```
+
+**Publish 再試行**:
+
+```
+maestro plan retry-publish \
+  --command-id <id>
+```
+
+Publish 失敗状態をリセットし、`PublishFailureCount` をクリアして統合ステータスを `merged` に戻す。次回スキャンで Daemon が再度フォワードマージ + Publish を試行する。`--command-id` は必須。Publish 競合解決タスク完了後に実行する（詳細は「Publish Conflict Recovery」セクション参照）。
+
+使用例:
+
+```
+maestro plan retry-publish --command-id cmd_42
+```
+
+**競合解決（Daemon 経由）**:
+
+```
+maestro resolve-conflict \
+  --command-id <id> \
+  --phase-id <id> \
+  --worker-id <id> \
+  [--conflicting-files <path>[,<path>...]]...
+```
+
+Worker のマージ競合を Daemon の plan handler 経由で解決する（`resolve_conflict` オペレーション）。`--command-id`、`--phase-id`、`--worker-id` は必須。`--conflicting-files` は競合ファイルパスのヒント（繰り返し指定またはカンマ区切り、任意）。**注意: このコマンドは `maestro plan` サブコマンドではなくトップレベルコマンド（`maestro resolve-conflict`）である。**
+
+使用例:
+
+```
+maestro resolve-conflict --command-id cmd_42 --phase-id ph_3 \
+    --worker-id worker2 --conflicting-files internal/a.go,internal/b.go
+```
 
 ---
 

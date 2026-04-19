@@ -1323,6 +1323,86 @@ func TestGetLatestDescendant_NormalResolution(t *testing.T) {
 	}
 }
 
+func TestLogSuppressor_Allow(t *testing.T) {
+	s := newLogSuppressor(100*time.Millisecond, 2)
+
+	// First call: should emit, no suppressed
+	emit, suppressed := s.allow("op1")
+	if !emit {
+		t.Error("first call should emit")
+	}
+	if suppressed != 0 {
+		t.Errorf("first call suppressed = %d, want 0", suppressed)
+	}
+
+	// Second call within burst: should emit
+	emit, suppressed = s.allow("op1")
+	if !emit {
+		t.Error("second call should emit (within burst)")
+	}
+	if suppressed != 0 {
+		t.Errorf("second call suppressed = %d, want 0", suppressed)
+	}
+
+	// Third call: over burst, should not emit
+	emit, _ = s.allow("op1")
+	if emit {
+		t.Error("third call should NOT emit (over burst)")
+	}
+
+	// Fourth call: still suppressed
+	emit, _ = s.allow("op1")
+	if emit {
+		t.Error("fourth call should NOT emit")
+	}
+
+	// Different key should still emit
+	emit, suppressed = s.allow("op2")
+	if !emit {
+		t.Error("different key should emit")
+	}
+	if suppressed != 0 {
+		t.Errorf("different key suppressed = %d, want 0", suppressed)
+	}
+
+	// Wait for window to expire
+	time.Sleep(150 * time.Millisecond)
+
+	// After window: should emit again, with suppressed count
+	emit, suppressed = s.allow("op1")
+	if !emit {
+		t.Error("after window expiry should emit")
+	}
+	if suppressed != 2 {
+		t.Errorf("after window suppressed = %d, want 2", suppressed)
+	}
+}
+
+func TestRestoreStateOrLog_NoErrorOnSuccess(t *testing.T) {
+	state := &model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     "cmd1",
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{"t1": model.StatusPending},
+		},
+	}
+
+	backup, err := copyState(state)
+	if err != nil {
+		t.Fatalf("copyState error: %v", err)
+	}
+
+	state.TaskStates["t1"] = model.StatusCompleted
+
+	// Should restore without panic
+	restoreStateOrLog(state, backup, "test_op")
+
+	if state.TaskStates["t1"] != model.StatusPending {
+		t.Errorf("state not restored: t1 = %s, want pending", state.TaskStates["t1"])
+	}
+}
+
 // sliceEqual compares two string slices for equality.
 func sliceEqual(a, b []string) bool {
 	if len(a) != len(b) {
