@@ -510,14 +510,14 @@ func (wm *Manager) hasUnmergedFiles(dir string) (bool, error) {
 
 // getConflictFilesInDir returns the list of conflicting files in a directory.
 func (wm *Manager) getConflictFilesInDir(dir string) ([]string, error) {
-	output, err := wm.gitOutputInDir(dir, "diff", "--name-only", "--diff-filter=U")
+	output, err := wm.gitOutputInDir(dir, "diff", "--name-only", "--diff-filter=U", "-z")
 	if err != nil {
 		return nil, err
 	}
 	var files []string
-	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
-		if line != "" {
-			files = append(files, line)
+	for _, name := range strings.Split(output, "\x00") {
+		if name != "" {
+			files = append(files, name)
 		}
 	}
 	return files, nil

@@ -1,6 +1,7 @@
 package yaml
 
 import (
+	"crypto/sha256"
 	"os"
 	"path/filepath"
 	"testing"
@@ -169,4 +170,164 @@ func TestAtomicWrite_StructData(t *testing.T) {
 	if result.Name != "maestro" || result.Version != 2 {
 		t.Errorf("got %+v", result)
 	}
+}
+
+func TestValidationCache_SkipsOnIdenticalContent(t *testing.T) {
+	c := &validationCache{entries: make(map[string]*validationEntry)}
+	content := []byte("key: value\n")
+
+	// First call: no cache entry, should not skip
+	if c.shouldSkipValidation("/tmp/test.yaml", content) {
+		t.Error("expected first call to not skip validation")
+	}
+
+	// Record successful validation
+	c.recordValidation("/tmp/test.yaml", content)
+
+	// Second call: same content, should skip
+	if !c.shouldSkipValidation("/tmp/test.yaml", content) {
+		t.Error("expected second call with same content to skip validation")
+	}
+}
+
+func TestValidationCache_ValidatesOnDifferentContent(t *testing.T) {
+	c := &validationCache{entries: make(map[string]*validationEntry)}
+	content1 := []byte("key: value1\n")
+	content2 := []byte("key: value2\n")
+
+	c.recordValidation("/tmp/test.yaml", content1)
+
+	// Different content should not skip validation
+	if c.shouldSkipValidation("/tmp/test.yaml", content2) {
+		t.Error("expected different content to trigger validation")
+	}
+}
+
+func TestValidationCache_FallbackInterval(t *testing.T) {
+	c := &validationCache{entries: make(map[string]*validationEntry)}
+	content := []byte("key: value\n")
+
+	c.recordValidation("/tmp/test.yaml", content)
+
+	// Cache hits should skip validation up to fallback interval
+	for i := uint32(1); i < validationFallbackInterval; i++ {
+		if !c.shouldSkipValidation("/tmp/test.yaml", content) {
+			t.Errorf("expected skip at hit %d", i)
+		}
+	}
+
+	// At the fallback interval, should force validation
+	if c.shouldSkipValidation("/tmp/test.yaml", content) {
+		t.Error("expected fallback interval to force validation")
+	}
+
+	// After fallback, re-record and cache should work again
+	c.recordValidation("/tmp/test.yaml", content)
+	if !c.shouldSkipValidation("/tmp/test.yaml", content) {
+		t.Error("expected cache to work again after re-recording")
+	}
+}
+
+func TestValidationCache_ForceValidationFlag(t *testing.T) {
+	c := &validationCache{entries: make(map[string]*validationEntry)}
+	content := []byte("key: value\n")
+
+	c.recordValidation("/tmp/test.yaml", content)
+
+	// Enable ForceValidation
+	oldVal := ForceValidation
+	ForceValidation = true
+	defer func() { ForceValidation = oldVal }()
+
+	// Should not skip even with cached entry
+	if c.shouldSkipValidation("/tmp/test.yaml", content) {
+		t.Error("expected ForceValidation=true to prevent skipping")
+	}
+}
+
+func TestValidationCache_IndependentPaths(t *testing.T) {
+	c := &validationCache{entries: make(map[string]*validationEntry)}
+	content := []byte("key: value\n")
+
+	c.recordValidation("/tmp/a.yaml", content)
+
+	// Different path with same content should not skip (no cache entry for this path)
+	if c.shouldSkipValidation("/tmp/b.yaml", content) {
+		t.Error("expected different path to not skip validation")
+	}
+}
+
+func TestValidationCache_RecordUpdatesChecksum(t *testing.T) {
+	c := &validationCache{entries: make(map[string]*validationEntry)}
+	content1 := []byte("key: value1\n")
+	content2 := []byte("key: value2\n")
+
+	c.recordValidation("/tmp/test.yaml", content1)
+
+	// Update with new content
+	c.recordValidation("/tmp/test.yaml", content2)
+
+	// Old content should not skip
+	if c.shouldSkipValidation("/tmp/test.yaml", content1) {
+		t.Error("expected old content to trigger validation after update")
+	}
+
+	// New content should skip
+	if !c.shouldSkipValidation("/tmp/test.yaml", content2) {
+		t.Error("expected new content to skip validation after update")
+	}
+}
+
+func TestAtomicWrite_DataIntegrityWithCache(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "test.yaml")
+	data := map[string]string{"key": "value"}
+
+	// Write same data multiple times (exercises cache skip path)
+	for i := 0; i < 5; i++ {
+		if err := AtomicWrite(path, data); err != nil {
+			t.Fatalf("AtomicWrite iteration %d failed: %v", i, err)
+		}
+
+		// Verify data integrity on every write
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("ReadFile iteration %d failed: %v", i, err)
+		}
+
+		var result map[string]string
+		if err := yamlv3.Unmarshal(content, &result); err != nil {
+			t.Fatalf("Unmarshal iteration %d failed: %v", i, err)
+		}
+		if result["key"] != "value" {
+			t.Errorf("iteration %d: got %q, want %q", i, result["key"], "value")
+		}
+	}
+}
+
+func TestValidationCache_RecordResetsHitCount(t *testing.T) {
+	c := &validationCache{entries: make(map[string]*validationEntry)}
+	content := []byte("key: value\n")
+	path := "/tmp/test.yaml"
+	sum := sha256.Sum256(content)
+
+	c.recordValidation(path, content)
+
+	// Accumulate some hits
+	for i := 0; i < 50; i++ {
+		c.shouldSkipValidation(path, content)
+	}
+
+	// Re-record should reset hitCount to 0
+	c.recordValidation(path, content)
+
+	c.mu.Lock()
+	e := c.entries[path]
+	if e.hitCount != 0 {
+		t.Errorf("expected hitCount=0 after re-record, got %d", e.hitCount)
+	}
+	if e.sum != sum {
+		t.Error("checksum mismatch after re-record")
+	}
+	c.mu.Unlock()
 }

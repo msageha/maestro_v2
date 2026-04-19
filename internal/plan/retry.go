@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/lock"
@@ -28,6 +29,80 @@ func saveStateWithContext(ctx context.Context, saveFn func() error) error {
 		return err
 	case <-ctx.Done():
 		return fmt.Errorf("state save timed out: %w", ctx.Err())
+	}
+}
+
+// logSuppressor limits the rate of repeated log messages within a time window.
+// It tracks emissions per key and suppresses after a burst threshold,
+// reporting the count of suppressed entries when the next emission is allowed.
+type logSuppressor struct {
+	mu     sync.Mutex
+	window time.Duration
+	burst  int
+	counts map[string]*suppressEntry
+}
+
+type suppressEntry struct {
+	windowStart time.Time
+	emitted     int
+	suppressed  int
+}
+
+func newLogSuppressor(window time.Duration, burst int) *logSuppressor {
+	return &logSuppressor{
+		window: window,
+		burst:  burst,
+		counts: make(map[string]*suppressEntry),
+	}
+}
+
+func (s *logSuppressor) allow(key string) (emit bool, suppressed int) {
+	now := time.Now()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	e, ok := s.counts[key]
+	if !ok || now.Sub(e.windowStart) >= s.window {
+		prev := 0
+		if e != nil {
+			prev = e.suppressed
+		}
+		s.counts[key] = &suppressEntry{windowStart: now, emitted: 1}
+		return true, prev
+	}
+	if e.emitted < s.burst {
+		e.emitted++
+		return true, 0
+	}
+	e.suppressed++
+	return false, 0
+}
+
+// restoreLogSuppressor rate-limits "state restore failed" error logs to prevent
+// log spam during cascade failures where multiple restore attempts fail.
+var restoreLogSuppressor = newLogSuppressor(10*time.Second, 3)
+
+// restoreStateOrLog attempts to restore state from origBytes and logs on failure
+// with rate limiting and unique operation context for diagnostics.
+func restoreStateOrLog(state *model.CommandState, origBytes []byte, op string) {
+	rsErr := restoreState(state, origBytes)
+	if rsErr == nil {
+		return
+	}
+	emit, suppressed := restoreLogSuppressor.allow(op)
+	if suppressed > 0 {
+		slog.Warn("suppressed repeated state restore errors",
+			"event", "state_restore_failed",
+			"op", op,
+			"suppressed_count", suppressed,
+		)
+	}
+	if emit {
+		slog.Error("state restore failed",
+			"event", "state_restore_failed",
+			"op", op,
+			"error", rsErr,
+		)
 	}
 }
 
@@ -172,9 +247,7 @@ func writeAndCommitRetryQueue(
 	writtenTasks := make([]retryQueueTask, 0, 1+len(cascadeRecovered))
 
 	if err := writeRetryQueueEntry(opts.MaestroDir, primaryTask, now, opts.LockMap); err != nil {
-		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-			slog.Error("state restore failed", "error", rsErr)
-		}
+		restoreStateOrLog(state, origStateBytes, "write_primary_queue_entry")
 		return fmt.Errorf("write queue entry for %s: %w", primaryTask.taskID, err)
 	}
 	writtenTasks = append(writtenTasks, primaryTask)
@@ -183,9 +256,7 @@ func writeAndCommitRetryQueue(
 		crTask := buildCascadeQueueTask(cr, opts, state, origTaskCache)
 		if err := writeRetryQueueEntry(opts.MaestroDir, crTask, now, opts.LockMap); err != nil {
 			rollbackRetryQueueEntries(opts.MaestroDir, writtenTasks, opts.LockMap)
-			if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-				slog.Error("state restore failed", "error", rsErr)
-			}
+			restoreStateOrLog(state, origStateBytes, "write_cascade_queue_entry")
 			return fmt.Errorf("write queue entry for cascade %s: %w", cr.TaskID, err)
 		}
 		writtenTasks = append(writtenTasks, crTask)
@@ -193,9 +264,7 @@ func writeAndCommitRetryQueue(
 
 	if err := updateOriginalTaskInQueue(opts.MaestroDir, opts.RetryOf, opts.CommandID, model.StatusCancelled, now, opts.LockMap); err != nil {
 		rollbackRetryQueueEntries(opts.MaestroDir, writtenTasks, opts.LockMap)
-		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-			slog.Error("state restore failed", "error", rsErr)
-		}
+		restoreStateOrLog(state, origStateBytes, "cancel_original_task")
 		return fmt.Errorf("cancel original task in queue: %w", err)
 	}
 
@@ -206,9 +275,7 @@ func writeAndCommitRetryQueue(
 			slog.Warn("failed to restore original task queue status", "task_id", opts.RetryOf, "error", restoreErr)
 		}
 		rollbackRetryQueueEntries(opts.MaestroDir, writtenTasks, opts.LockMap)
-		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-			slog.Error("state restore failed", "error", rsErr)
-		}
+		restoreStateOrLog(state, origStateBytes, "save_state")
 		return fmt.Errorf("save state: %w", err)
 	}
 
@@ -333,9 +400,7 @@ func applyRetryStateChanges(
 
 	// Replace in required/optional task IDs
 	if err := replaceInRequiredOrOptional(state, opts.RetryOf, newTaskID); err != nil {
-		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-			slog.Error("state restore failed", "error", rsErr)
-		}
+		restoreStateOrLog(state, origStateBytes, "replace_required_optional")
 		return nil, nil, fmt.Errorf("replace in required/optional: %w", err)
 	}
 
@@ -351,9 +416,7 @@ func applyRetryStateChanges(
 
 	// Re-validate DAG after dependency rewriting for the primary retry task.
 	if err := ValidateTaskDAGAfterMutation(state); err != nil {
-		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-			slog.Error("state restore failed", "error", rsErr)
-		}
+		restoreStateOrLog(state, origStateBytes, "post_rewrite_dag_validation")
 		return nil, nil, fmt.Errorf("post-rewrite DAG validation: %w", err)
 	}
 
@@ -364,9 +427,7 @@ func applyRetryStateChanges(
 		// Reopen phase if failed
 		if rc.phase.Status == model.PhaseStatusFailed {
 			if err := reopenPhase(state, rc.phaseIdx, now); err != nil {
-				if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-					slog.Error("state restore failed", "error", rsErr)
-				}
+				restoreStateOrLog(state, origStateBytes, "reopen_phase")
 				return nil, nil, fmt.Errorf("reopen phase: %w", err)
 			}
 		}
@@ -378,17 +439,13 @@ func applyRetryStateChanges(
 		opts.Config.Agents.Workers, opts.Config.Limits, workerStates, origTaskCache,
 	)
 	if err != nil {
-		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-			slog.Error("state restore failed", "error", rsErr)
-		}
+		restoreStateOrLog(state, origStateBytes, "cascade_recovery")
 		return nil, nil, fmt.Errorf("cascade recovery: %w", err)
 	}
 
 	// Post-recovery DAG validation (covers both cycle detection and cross-phase refs).
 	if err := ValidateTaskDAGAfterMutation(state); err != nil {
-		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
-			slog.Error("state restore failed", "error", rsErr)
-		}
+		restoreStateOrLog(state, origStateBytes, "post_recovery_dag_validation")
 		return nil, nil, fmt.Errorf("post-recovery DAG validation: %w", err)
 	}
 

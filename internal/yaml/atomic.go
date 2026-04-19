@@ -2,6 +2,7 @@
 package yaml
 
 import (
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -9,9 +10,69 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 
 	yamlv3 "gopkg.in/yaml.v3"
 )
+
+// ForceValidation forces full YAML Unmarshal validation on every write when true.
+// Useful for debugging and development. Default is false (checksum-based skip enabled).
+var ForceValidation bool
+
+// validationFallbackInterval forces full validation every N consecutive cache hits
+// for the same path, as a safety net against undetected data corruption.
+const validationFallbackInterval uint32 = 100
+
+type validationEntry struct {
+	sum      [32]byte
+	hitCount uint32
+}
+
+// validationCache caches successful YAML validation results keyed by file path.
+// Uses SHA-256 checksums to skip redundant full Unmarshal when content is unchanged.
+type validationCache struct {
+	mu      sync.Mutex
+	entries map[string]*validationEntry
+}
+
+var globalValidationCache = &validationCache{
+	entries: make(map[string]*validationEntry),
+}
+
+// shouldSkipValidation returns true if full YAML validation can be safely skipped.
+// Validation is skipped when the content checksum matches a previously validated value,
+// except every validationFallbackInterval hits which force revalidation.
+func (c *validationCache) shouldSkipValidation(path string, content []byte) bool {
+	if ForceValidation {
+		return false
+	}
+
+	sum := sha256.Sum256(content)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	e, ok := c.entries[path]
+	if !ok || e.sum != sum {
+		return false
+	}
+
+	// Fallback: force full validation periodically to detect silent corruption.
+	e.hitCount++
+	if e.hitCount >= validationFallbackInterval {
+		e.hitCount = 0
+		return false
+	}
+	return true
+}
+
+// recordValidation stores the checksum of successfully validated content.
+func (c *validationCache) recordValidation(path string, content []byte) {
+	sum := sha256.Sum256(content)
+	c.mu.Lock()
+	c.entries[path] = &validationEntry{sum: sum}
+	c.mu.Unlock()
+}
 
 // AtomicWrite marshals data as YAML and atomically writes it to path.
 func AtomicWrite(path string, data any) error {
@@ -63,8 +124,14 @@ func AtomicWriteRaw(path string, content []byte) (retErr error) {
 	if len(written) != len(content) {
 		return fmt.Errorf("write verification failed: wrote %d bytes, read back %d bytes", len(content), len(written))
 	}
-	if err := validateYAML(written); err != nil {
-		return fmt.Errorf("yaml validation failed: %w", err)
+	// Checksum-based conditional validation: skip full Unmarshal when content
+	// matches a previously validated checksum for this path. Periodic fallback
+	// (every validationFallbackInterval hits) ensures corruption is eventually detected.
+	if !globalValidationCache.shouldSkipValidation(path, written) {
+		if err := validateYAML(written); err != nil {
+			return fmt.Errorf("yaml validation failed: %w", err)
+		}
+		globalValidationCache.recordValidation(path, written)
 	}
 
 	// Step 3: Create .bak if original exists
