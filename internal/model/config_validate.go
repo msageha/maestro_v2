@@ -4,6 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"path/filepath"
+	"regexp"
+	"strings"
 )
 
 // Validate checks all Config fields for consistency after yaml.Unmarshal.
@@ -255,7 +258,20 @@ func (c Config) validateQualityGates(errs *[]error) {
 	}
 }
 
+// validBranchNameRe matches git branch names: letters, digits, hyphens, dots,
+// underscores, and slashes are allowed. Must start with a letter or digit.
+// Rejects control characters, spaces, tildes, carets, colons, question marks,
+// asterisks, open brackets, and backslashes.
+var validBranchNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._/-]*$`)
+
+// validPathPrefixRe matches relative directory paths: letters, digits, hyphens,
+// dots, underscores, and slashes are allowed. Must start with a letter, digit,
+// or dot. Rejects control characters, spaces, and shell-special characters.
+var validPathPrefixRe = regexp.MustCompile(`^[a-zA-Z0-9.][a-zA-Z0-9._/-]*$`)
+
 func (c Config) validateWorktree(errs *[]error) {
+	validateBaseBranch(errs, c.Worktree.BaseBranch)
+	validatePathPrefix(errs, c.Worktree.PathPrefix)
 	if ms := c.Worktree.MergeStrategy; ms != "" && ms != "ort" && ms != "ours" && ms != "theirs" && ms != "recursive" {
 		*errs = append(*errs, fmt.Errorf("worktree.merge_strategy: must be one of \"ort\", \"ours\", \"theirs\", \"recursive\""))
 	}
@@ -356,5 +372,62 @@ func validateNonNegInt(errs *[]error, field string, val int) {
 func validateIntRange(errs *[]error, field string, val, max int) {
 	if val < 0 || val > max {
 		*errs = append(*errs, fmt.Errorf("%s: must be between 0 and %d", field, max))
+	}
+}
+
+// validateBaseBranch validates the worktree.base_branch field.
+// Empty is allowed (defaults apply). When set, it must be a valid git branch name:
+// no ".." sequences, no control characters, no spaces, no trailing dots/slashes,
+// no trailing ".lock" suffix.
+func validateBaseBranch(errs *[]error, branch string) {
+	if branch == "" {
+		return
+	}
+	if strings.Contains(branch, "..") {
+		*errs = append(*errs, fmt.Errorf("worktree.base_branch: must not contain \"..\""))
+		return
+	}
+	if !validBranchNameRe.MatchString(branch) {
+		*errs = append(*errs, fmt.Errorf("worktree.base_branch: contains invalid characters (allowed: letters, digits, hyphens, dots, underscores, slashes)"))
+		return
+	}
+	if strings.HasSuffix(branch, ".") || strings.HasSuffix(branch, "/") {
+		*errs = append(*errs, fmt.Errorf("worktree.base_branch: must not end with \".\" or \"/\""))
+		return
+	}
+	if strings.HasSuffix(branch, ".lock") {
+		*errs = append(*errs, fmt.Errorf("worktree.base_branch: must not end with \".lock\""))
+		return
+	}
+	if strings.Contains(branch, "//") {
+		*errs = append(*errs, fmt.Errorf("worktree.base_branch: must not contain consecutive slashes"))
+		return
+	}
+}
+
+// validatePathPrefix validates the worktree.path_prefix field.
+// Empty is allowed (defaults apply). When set, it must be a relative path
+// without path traversal (".."), no absolute paths, and no invalid characters.
+func validatePathPrefix(errs *[]error, prefix string) {
+	if prefix == "" {
+		return
+	}
+	if filepath.IsAbs(prefix) {
+		*errs = append(*errs, fmt.Errorf("worktree.path_prefix: must be a relative path, not absolute"))
+		return
+	}
+	for _, part := range strings.Split(prefix, "/") {
+		if part == ".." {
+			*errs = append(*errs, fmt.Errorf("worktree.path_prefix: must not contain path traversal \"..\""))
+			return
+		}
+	}
+	if !validPathPrefixRe.MatchString(prefix) {
+		*errs = append(*errs, fmt.Errorf("worktree.path_prefix: contains invalid characters (allowed: letters, digits, hyphens, dots, underscores, slashes)"))
+		return
+	}
+	if strings.HasSuffix(prefix, "/") {
+		*errs = append(*errs, fmt.Errorf("worktree.path_prefix: must not end with \"/\""))
+		return
 	}
 }

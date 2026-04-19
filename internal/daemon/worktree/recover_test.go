@@ -50,6 +50,7 @@ func quarantinedState(commandID string) *model.WorktreeCommandState {
 			MergeFailureCount: 5,
 			QuarantinedAt:     "2026-01-01T00:00:00Z",
 			QuarantineReason:  "test reason",
+			QuarantineSource:  model.QuarantineSourceMerge,
 			StallSignaled:     true,
 			CreatedAt:         "2026-01-01T00:00:00Z",
 			UpdatedAt:         "2026-01-01T00:00:00Z",
@@ -96,6 +97,9 @@ func TestUnquarantine_Success(t *testing.T) {
 	}
 	if got.Integration.QuarantineReason != "" {
 		t.Errorf("QuarantineReason = %q, want empty", got.Integration.QuarantineReason)
+	}
+	if got.Integration.QuarantineSource != "" {
+		t.Errorf("QuarantineSource = %q, want empty", got.Integration.QuarantineSource)
 	}
 	if got.Integration.StallSignaled {
 		t.Errorf("StallSignaled = true, want false")

@@ -691,3 +691,149 @@ func TestMergeToIntegration_SkipConflictResolving(t *testing.T) {
 		t.Errorf("integration status after second merge = %q, want partial_merge (reverted)", cmdStateAfter.Integration.Status)
 	}
 }
+
+// --- Problem 1: SHA validation in forwardMerge ---
+
+// TestForwardMerge_RejectsDanglingBaseSHA verifies that PublishToBase returns a
+// clear error when the base branch points to a non-existent commit object.
+func TestForwardMerge_RejectsDanglingBaseSHA(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	defer func() { _ = cleanupAll(wm) }()
+
+	commandID := "cmd_dangling_sha"
+	workers := []string{"worker1"}
+	if err := createForCommand(wm, commandID, workers); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	// Worker commits something and merge to integration
+	wt1, err := wm.GetWorkerPath(commandID, "worker1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt1, "file.txt"), []byte("content\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker1", "add file"); err != nil {
+		t.Fatal(err)
+	}
+	conflicts, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(conflicts) > 0 {
+		t.Fatal("unexpected conflicts")
+	}
+
+	// Write a dangling SHA directly to the main branch ref file.
+	// git rev-parse will return this SHA (it doesn't verify object existence),
+	// but cat-file -e should reject it.
+	danglingRef := "deadbeefdeadbeefdeadbeefdeadbeefdeadbeef"
+	mainRefPath := filepath.Join(projectRoot, ".git", "refs", "heads", "main")
+	if err := os.WriteFile(mainRefPath, []byte(danglingRef+"\n"), 0644); err != nil {
+		t.Fatalf("write dangling ref: %v", err)
+	}
+
+	// PublishToBase should fail with a clear error about missing SHA
+	err = wm.PublishToBase(commandID, "test publish")
+	if err == nil {
+		t.Fatal("expected error for dangling base SHA")
+	}
+	if !strings.Contains(err.Error(), "not found as commit in repository") {
+		t.Errorf("expected clear error about SHA not found, got: %v", err)
+	}
+}
+
+// --- Problem 2: temp branch cleanup ---
+
+// TestPublishToBase_NoStaleTempBranch verifies that the temporary publish
+// branch (maestro/<cmd>/_publish) is cleaned up after a successful publish.
+func TestPublishToBase_NoStaleTempBranch(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	defer func() { _ = cleanupAll(wm) }()
+
+	commandID := "cmd_no_stale_temp"
+	workers := []string{"worker1"}
+	if err := createForCommand(wm, commandID, workers); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	wt1, err := wm.GetWorkerPath(commandID, "worker1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt1, "file.txt"), []byte("content\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker1", "add file"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := wm.PublishToBase(commandID, "test publish"); err != nil {
+		t.Fatalf("PublishToBase: %v", err)
+	}
+
+	// Verify no temp publish branch remains
+	tempBranch := "maestro/" + commandID + "/_publish"
+	cmd := exec.Command("git", "-C", projectRoot, "rev-parse", "--verify", "--quiet",
+		"refs/heads/"+tempBranch)
+	if err := cmd.Run(); err == nil {
+		t.Errorf("temp branch %s should not exist after successful publish", tempBranch)
+	}
+}
+
+// TestPublishToBase_TempBranchCleanedOnMergeConflict verifies that the
+// temporary publish branch is cleaned up when publish fails due to a merge
+// conflict within performPublishMerge (not the forward-merge path).
+func TestPublishToBase_TempBranchCleanedOnMergeConflict(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	defer func() { _ = cleanupAll(wm) }()
+
+	commandID := "cmd_temp_merge_conflict"
+	workers := []string{"worker1"}
+	if err := createForCommand(wm, commandID, workers); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	// Worker modifies README.md and merge to integration
+	wt1, err := wm.GetWorkerPath(commandID, "worker1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt1, "README.md"), []byte("worker version\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker1", "modify README.md"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Advance base with conflicting change
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("base version\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	gitAdd(t, projectRoot, "README.md")
+	gitCommit(t, projectRoot, "modify README.md on main (conflicting)")
+
+	// PublishToBase fails (forward-merge conflict — temp branch not created in this path).
+	// Even if it fails, verify no stale temp branch.
+	_ = wm.PublishToBase(commandID, "test publish")
+
+	tempBranch := "maestro/" + commandID + "/_publish"
+	cmd := exec.Command("git", "-C", projectRoot, "rev-parse", "--verify", "--quiet",
+		"refs/heads/"+tempBranch)
+	if err := cmd.Run(); err == nil {
+		t.Errorf("temp branch %s should not exist after publish failure", tempBranch)
+	}
+}
