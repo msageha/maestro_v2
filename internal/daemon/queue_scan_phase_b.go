@@ -9,6 +9,12 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
+// errIntegrationNotPublishable is a sentinel error indicating that a publish
+// was skipped because the integration status is not in a publishable state.
+// This is expected during conflict recovery (e.g. partial_merge, conflict,
+// resolving states) and should not be logged at ERROR level.
+var errIntegrationNotPublishable = errors.New("integration status not publishable")
+
 // classifyCommitError converts a CommitWorkerChanges error into a structured
 // machine-readable Reason for commit_failed signals. The Reason lets the
 // planner act on the failure category without parsing the error message.
@@ -284,7 +290,7 @@ func (qh *QueueHandler) stepPublishWorktrees(ctx context.Context, pa *phaseAResu
 						}
 						return "unknown"
 					}(), err)
-				pr.Error = fmt.Errorf("integration status not publishable")
+				pr.Error = errIntegrationNotPublishable
 			} else {
 				pr.Error = qh.worktreeManager.PublishToBase(item.CommandID, item.PublishMessage)
 			}

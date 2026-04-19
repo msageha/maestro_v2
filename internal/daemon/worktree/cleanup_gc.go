@@ -466,6 +466,13 @@ func (wm *Manager) cleanupCommandCore(commandID string, state *model.WorktreeCom
 			commandID, publishBranch, err)
 	}
 
+	// Delete pre-publish-stash durable ref created by syncProjectRootAfterPublish
+	prePublishStashRef := fmt.Sprintf("refs/maestro/pre-publish-stash/%s", commandID)
+	if err := wm.gitRun("update-ref", "-d", prePublishStashRef); err != nil {
+		wm.Log(core.LogLevelDebug, "delete_pre_publish_stash_ref_skipped command=%s ref=%s error=%v",
+			commandID, prePublishStashRef, err)
+	}
+
 	// Only remove directory and state file if all worktree removals succeeded.
 	// On failure, keep state file so GC/Reconcile can retry.
 	if len(errs) > 0 {

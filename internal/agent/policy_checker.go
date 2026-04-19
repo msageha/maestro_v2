@@ -498,6 +498,21 @@ if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ]; then
     # Best-effort mitigation; full protection requires kernel-level enforcement.
     if [ -e "$_wt_check" ] || [ -L "$_wt_check" ]; then
       _wt_check="$(realpath -P "$_wt_check" 2>/dev/null || realpath "$_wt_check" 2>/dev/null || echo "$_wt_check")"
+    else
+      # For non-existent paths (new files), walk up to the first existing
+      # ancestor directory, resolve its symlinks, and reconstruct the path.
+      # On macOS /var -> /private/var, so pwd -P gives /private/var/... but
+      # the file_path may use /var/...; without this, prefix comparison fails.
+      _remainder="$(basename "$_wt_check")"
+      _ancestor="$(dirname "$_wt_check")"
+      while [ "$_ancestor" != "/" ] && [ ! -d "$_ancestor" ]; do
+        _remainder="$(basename "$_ancestor")/$_remainder"
+        _ancestor="$(dirname "$_ancestor")"
+      done
+      if [ -d "$_ancestor" ]; then
+        _resolved_ancestor="$(cd "$_ancestor" && pwd -P 2>/dev/null || echo "$_ancestor")"
+        _wt_check="$_resolved_ancestor/$_remainder"
+      fi
     fi
     # Reject paths with unresolved traversal (..)
     if echo "$_wt_check" | grep -qF '..'; then
