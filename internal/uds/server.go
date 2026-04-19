@@ -182,8 +182,19 @@ func (s *Server) handleConn(conn net.Conn) {
 	_ = conn.SetDeadline(time.Now().Add(s.connTimeout))
 
 	var req Request
-	if err := readFrame(conn, &req); err != nil {
+	wireVersion, err := readVersionedRequest(conn, &req)
+	if err != nil {
 		slog.Error("read request error", "error", err)
+		return
+	}
+
+	// Reject wire versions newer than what we support.
+	if wireVersion > WireVersion {
+		resp := ErrorResponse(
+			ErrCodeProtocolMismatch,
+			fmt.Sprintf("unsupported wire version: got %d, max supported %d", wireVersion, WireVersion),
+		)
+		_ = writeFrame(conn, resp)
 		return
 	}
 

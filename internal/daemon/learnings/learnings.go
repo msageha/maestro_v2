@@ -17,8 +17,14 @@ import (
 )
 
 // ReadTopKLearnings reads learnings.yaml and returns the most recent K entries
-// that have not expired according to TTL. Read-only: no lock needed since
-// AtomicWrite guarantees consistent snapshots via rename.
+// that have not expired according to TTL.
+//
+// TTL filtering: entries older than cfg.EffectiveTTLHours() are excluded.
+// A TTL of 0 means unlimited (all entries pass). Truncation: if more than
+// cfg.EffectiveInjectCount() entries remain, only the most recent are kept.
+//
+// Concurrency: read-only; no lock required. AtomicWrite guarantees consistent
+// snapshots via rename.
 func ReadTopKLearnings(maestroDir string, cfg model.LearningsConfig, now time.Time) ([]model.Learning, error) {
 	learningsPath := filepath.Join(maestroDir, "state", "learnings.yaml")
 

@@ -129,11 +129,13 @@ func (d *ReviewDispatcher) reviewTask(ctx context.Context, req model.ReviewReque
 	}
 
 	// TODO(review): Implement actual model invocation for code review.
+	// Blocked on: reviewer model response schema finalization (see model/review.go).
 	// When implemented, this should:
 	//   1. Invoke the reviewer model with the diff content from req.DiffContent
 	//   2. Parse the model response into []model.ReviewFinding
 	//   3. Populate result.Findings with the parsed findings
 	//   4. Set result.Status based on model response success/failure
+	// Until then, all reviews return ErrNotImplemented (non-fatal skip).
 	result.Status = model.ReviewStatusSkipped
 	return ErrNotImplemented
 }

@@ -108,6 +108,21 @@ const (
 	logLevelError
 )
 
+func (l logLevel) String() string {
+	switch l {
+	case logLevelDebug:
+		return "debug"
+	case logLevelInfo:
+		return "info"
+	case logLevelWarn:
+		return "warn"
+	case logLevelError:
+		return "error"
+	default:
+		return "unknown"
+	}
+}
+
 func parseLogLevel(s string) logLevel {
 	switch strings.ToLower(s) {
 	case "debug":

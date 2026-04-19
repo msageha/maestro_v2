@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -462,5 +463,201 @@ func TestRun_RejectsExistingDir(t *testing.T) {
 	err := Run(projectDir, "")
 	if err == nil {
 		t.Fatal("expected error for existing .maestro/")
+	}
+}
+
+func TestRun_ExplicitProjectName(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "myproject")
+	os.Mkdir(projectDir, 0755)
+
+	if err := Run(projectDir, "custom-name"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(projectDir, ".maestro", "config.yaml"))
+	if err != nil {
+		t.Fatalf("read config.yaml: %v", err)
+	}
+
+	var cfg model.Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("parse config.yaml: %v", err)
+	}
+
+	if cfg.Project.Name != "custom-name" {
+		t.Errorf("project.name: got %q, want %q", cfg.Project.Name, "custom-name")
+	}
+}
+
+func TestRun_NonExistentProjectDir(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "does-not-exist")
+
+	err := Run(projectDir, "")
+	if err == nil {
+		t.Fatal("expected error for non-existent project directory")
+	}
+}
+
+func TestSanitizeProjectName(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{name: "simple", raw: "myproject", want: "myproject"},
+		{name: "with dots", raw: "my.project.name", want: "my-project-name"},
+		{name: "with spaces", raw: "my project", want: "my-project"},
+		{name: "leading special", raw: "---myproject", want: "myproject"},
+		{name: "trailing special", raw: "myproject---", want: "myproject"},
+		{name: "leading underscore", raw: "_myproject", want: "myproject"},
+		{name: "all special", raw: "!@#$%", want: "project"},
+		{name: "empty", raw: "", want: "project"},
+		{name: "mixed case", raw: "MyProject", want: "MyProject"},
+		{name: "with numbers", raw: "project123", want: "project123"},
+		{name: "number start", raw: "123project", want: "123project"},
+		{name: "hyphens and underscores", raw: "my-project_v2", want: "my-project_v2"},
+		{name: "unicode", raw: "プロジェクト", want: "project"},
+		{name: "mixed unicode and ascii", raw: "テストproject", want: "project"},
+		{name: "long name truncated", raw: strings.Repeat("a", 100), want: strings.Repeat("a", 64)},
+		{name: "exactly 64", raw: strings.Repeat("b", 64), want: strings.Repeat("b", 64)},
+		{name: "multiple consecutive special", raw: "a!!!b", want: "a-b"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := sanitizeProjectName(tt.raw)
+			if got != tt.want {
+				t.Errorf("sanitizeProjectName(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRun_SpecialCharProjectDirName(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "my.special project!")
+	os.Mkdir(projectDir, 0755)
+
+	if err := Run(projectDir, ""); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(projectDir, ".maestro", "config.yaml"))
+	if err != nil {
+		t.Fatalf("read config.yaml: %v", err)
+	}
+
+	var cfg model.Config
+	if err := yaml.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("parse config.yaml: %v", err)
+	}
+
+	if cfg.Project.Name == "" {
+		t.Error("project.name should not be empty for special char dir name")
+	}
+	// Should be sanitized - no dots or spaces
+	if contains(cfg.Project.Name, ".") || contains(cfg.Project.Name, " ") || contains(cfg.Project.Name, "!") {
+		t.Errorf("project.name %q contains unsanitized characters", cfg.Project.Name)
+	}
+}
+
+func TestRun_MetricsWorkerEntries(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "myproject")
+	os.Mkdir(projectDir, 0755)
+
+	if err := Run(projectDir, ""); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(projectDir, ".maestro", "state", "metrics.yaml"))
+	if err != nil {
+		t.Fatalf("read metrics.yaml: %v", err)
+	}
+
+	var metrics struct {
+		QueueDepth struct {
+			Workers map[string]int `yaml:"workers"`
+		} `yaml:"queue_depth"`
+	}
+	if err := yaml.Unmarshal(data, &metrics); err != nil {
+		t.Fatalf("unmarshal metrics: %v", err)
+	}
+
+	// Default worker count is 4
+	if len(metrics.QueueDepth.Workers) != 4 {
+		t.Errorf("metrics workers count: got %d, want 4", len(metrics.QueueDepth.Workers))
+	}
+	for i := 1; i <= 4; i++ {
+		key := fmt.Sprintf("worker%d", i)
+		val, ok := metrics.QueueDepth.Workers[key]
+		if !ok {
+			t.Errorf("metrics workers missing key %q", key)
+		} else if val != 0 {
+			t.Errorf("metrics workers[%q] = %d, want 0", key, val)
+		}
+	}
+}
+
+func TestRun_ContinuousMaxIterations(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "myproject")
+	os.Mkdir(projectDir, 0755)
+
+	if err := Run(projectDir, ""); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(projectDir, ".maestro", "state", "continuous.yaml"))
+	if err != nil {
+		t.Fatalf("read continuous.yaml: %v", err)
+	}
+
+	var continuous struct {
+		MaxIterations int `yaml:"max_iterations"`
+		Status        string `yaml:"status"`
+		SchemaVersion int    `yaml:"schema_version"`
+	}
+	if err := yaml.Unmarshal(data, &continuous); err != nil {
+		t.Fatalf("unmarshal continuous: %v", err)
+	}
+
+	if continuous.SchemaVersion != 1 {
+		t.Errorf("continuous schema_version: got %d, want 1", continuous.SchemaVersion)
+	}
+	if continuous.Status != "stopped" {
+		t.Errorf("continuous status: got %q, want %q", continuous.Status, "stopped")
+	}
+	if continuous.MaxIterations <= 0 {
+		t.Errorf("continuous max_iterations should be positive: got %d", continuous.MaxIterations)
+	}
+}
+
+func TestRun_PersonaTemplatesCopied(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "myproject")
+	os.Mkdir(projectDir, 0755)
+
+	if err := Run(projectDir, ""); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	personaDir := filepath.Join(projectDir, ".maestro", "persona")
+	info, err := os.Stat(personaDir)
+	if err != nil {
+		t.Fatalf("persona directory does not exist: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatal("persona is not a directory")
+	}
+
+	entries, err := os.ReadDir(personaDir)
+	if err != nil {
+		t.Fatalf("read persona dir: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Error("persona directory is empty, expected template files")
 	}
 }

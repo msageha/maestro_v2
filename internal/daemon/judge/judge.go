@@ -108,8 +108,12 @@ func (j *Judge) Evaluate(ctx context.Context, candidates []CandidateInfo) (Decis
 		}
 	}
 	if !valid {
+		validIndices := make([]int, len(candidates))
+		for i, c := range candidates {
+			validIndices[i] = c.SlotIndex
+		}
 		return Decision{Model: j.model, Duration: elapsed},
-			fmt.Errorf("judge: winner_index %d is not a valid candidate slot index", winnerInt)
+			fmt.Errorf("judge: winner_index %d is not a valid candidate slot index (valid: %v)", winnerInt, validIndices)
 	}
 
 	return Decision{

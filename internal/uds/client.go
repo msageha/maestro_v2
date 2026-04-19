@@ -159,7 +159,7 @@ func (c *Client) sendContext(ctx context.Context, req *Request) (*Response, erro
 		return nil, fmt.Errorf("set connection deadline: %w", err)
 	}
 
-	if err := writeFrame(conn, req); err != nil {
+	if err := writeVersionedFrame(conn, req); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
 		}

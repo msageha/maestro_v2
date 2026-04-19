@@ -1017,3 +1017,183 @@ func TestSuccessResponse_MarshalError(t *testing.T) {
 		t.Errorf("expected code %q, got %q", ErrCodeInternal, resp.Error.Code)
 	}
 }
+
+// --- Wire version negotiation tests ---
+
+func TestWireVersion_NormalOperation(t *testing.T) {
+	// v1 client ↔ v1 server should work normally.
+	server, client, _ := setupTestServer(t)
+
+	server.Handle("ping", func(req *Request) *Response {
+		return SuccessResponse(map[string]string{"status": "pong"})
+	})
+
+	if err := server.Start(); err != nil {
+		t.Fatalf("server start: %v", err)
+	}
+	defer server.Stop()
+
+	resp, err := client.SendCommand("ping", nil)
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if !resp.Success {
+		t.Errorf("expected success, got error: %v", resp.Error)
+	}
+
+	var data map[string]string
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if data["status"] != "pong" {
+		t.Errorf("expected pong, got %q", data["status"])
+	}
+}
+
+func TestWireVersion_FutureVersionRejected(t *testing.T) {
+	// A client sending a wire version byte higher than WireVersion should be
+	// rejected with PROTOCOL_MISMATCH before the command is dispatched.
+	server, _, sockPath := setupTestServer(t)
+
+	server.Handle("ping", func(req *Request) *Response {
+		return SuccessResponse(nil)
+	})
+
+	if err := server.Start(); err != nil {
+		t.Fatalf("server start: %v", err)
+	}
+	defer server.Stop()
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	// Write a future wire version byte (255), then a valid frame.
+	if _, err := conn.Write([]byte{255}); err != nil {
+		t.Fatalf("write version byte: %v", err)
+	}
+	req := &Request{
+		ProtocolVersion: ProtocolVersion,
+		Command:         "ping",
+	}
+	if err := writeFrame(conn, req); err != nil {
+		t.Fatalf("write frame: %v", err)
+	}
+
+	// Read the rejection response (standard length-prefixed frame, no version byte).
+	var resp Response
+	if err := readFrame(conn, &resp); err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+
+	if resp.Success {
+		t.Error("expected failure for future wire version")
+	}
+	if resp.Error == nil {
+		t.Fatal("expected error detail")
+	}
+	if resp.Error.Code != ErrCodeProtocolMismatch {
+		t.Errorf("expected code %q, got %q", ErrCodeProtocolMismatch, resp.Error.Code)
+	}
+	if !strings.Contains(resp.Error.Message, "unsupported wire version") {
+		t.Errorf("expected 'unsupported wire version' in message, got: %q", resp.Error.Message)
+	}
+}
+
+func TestWireVersion_LegacyClientAccepted(t *testing.T) {
+	// A legacy (v0) client that sends only the 4-byte length prefix (no
+	// version byte) should be accepted and handled normally.
+	server, _, sockPath := setupTestServer(t)
+
+	server.Handle("ping", func(req *Request) *Response {
+		return SuccessResponse(map[string]string{"status": "pong"})
+	})
+
+	if err := server.Start(); err != nil {
+		t.Fatalf("server start: %v", err)
+	}
+	defer server.Stop()
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	// Write a legacy frame: [4-byte BE length][JSON] with NO version prefix.
+	req := &Request{
+		ProtocolVersion: ProtocolVersion,
+		Command:         "ping",
+		CallerRole:      RoleCLI,
+	}
+	if err := writeFrame(conn, req); err != nil {
+		t.Fatalf("write legacy frame: %v", err)
+	}
+
+	var resp Response
+	if err := readFrame(conn, &resp); err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+
+	if !resp.Success {
+		t.Errorf("expected success for legacy client, got error: %v", resp.Error)
+	}
+
+	var data map[string]string
+	if err := json.Unmarshal(resp.Data, &data); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if data["status"] != "pong" {
+		t.Errorf("expected pong, got %q", data["status"])
+	}
+}
+
+func TestWireVersion_LegacyClientJSONVersionMismatch(t *testing.T) {
+	// A legacy (v0) client with a wrong JSON protocol_version should still be
+	// rejected at the JSON level.
+	server, _, sockPath := setupTestServer(t)
+
+	server.Handle("ping", func(req *Request) *Response {
+		return SuccessResponse(nil)
+	})
+
+	if err := server.Start(); err != nil {
+		t.Fatalf("server start: %v", err)
+	}
+	defer server.Stop()
+
+	conn, err := net.Dial("unix", sockPath)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(5 * time.Second))
+
+	// Legacy frame with wrong JSON protocol_version.
+	req := &Request{
+		ProtocolVersion: 999,
+		Command:         "ping",
+	}
+	if err := writeFrame(conn, req); err != nil {
+		t.Fatalf("write legacy frame: %v", err)
+	}
+
+	var resp Response
+	if err := readFrame(conn, &resp); err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+
+	if resp.Success {
+		t.Error("expected failure for JSON version mismatch")
+	}
+	if resp.Error == nil {
+		t.Fatal("expected error detail")
+	}
+	if resp.Error.Code != ErrCodeProtocolMismatch {
+		t.Errorf("expected code %q, got %q", ErrCodeProtocolMismatch, resp.Error.Code)
+	}
+}

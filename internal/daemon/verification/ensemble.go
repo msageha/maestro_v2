@@ -8,6 +8,12 @@ import (
 	"time"
 )
 
+// defaultPerspectiveWeight is assigned to perspectives not registered via
+// AddPerspective. Using 1.0 (critical) ensures unknown perspectives fail-safe:
+// an unregistered viewpoint that fails will block the overall result, forcing
+// operators to explicitly configure it before it can soft-fail.
+const defaultPerspectiveWeight = 1.0
+
 // Perspective defines a single verification viewpoint with associated commands
 // and a weight indicating its importance in the overall assessment.
 type Perspective struct {
@@ -96,7 +102,7 @@ func (v *Verifier) Aggregate(results []PerspectiveResult) AggregatedResult {
 	for _, r := range results {
 		w, ok := weightMap[r.Name]
 		if !ok {
-			w = 1.0 // default weight for unknown perspectives
+			w = defaultPerspectiveWeight
 		}
 		totalWeight += w
 		if r.Passed {
