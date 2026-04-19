@@ -23,6 +23,27 @@ type ScanCounters struct {
 	LeaseReleases         int
 }
 
+// Merge adds all counter values from other into c.
+// This is used to combine counters accumulated across different scan phases
+// without losing increments from any phase.
+func (c *ScanCounters) Merge(other ScanCounters) {
+	c.CommandsDispatched += other.CommandsDispatched
+	c.TasksDispatched += other.TasksDispatched
+	c.TasksCompleted += other.TasksCompleted
+	c.TasksFailed += other.TasksFailed
+	c.TasksCancelled += other.TasksCancelled
+	c.DeadLetters += other.DeadLetters
+	c.ReconciliationRepairs += other.ReconciliationRepairs
+	c.NotificationRetries += other.NotificationRetries
+	c.SignalDeliveries += other.SignalDeliveries
+	c.SignalRetries += other.SignalRetries
+	c.SignalDeadLetters += other.SignalDeadLetters
+	c.SignalInlineRetrySuccesses += other.SignalInlineRetrySuccesses
+	c.LeaseRenewals += other.LeaseRenewals
+	c.LeaseExtensions += other.LeaseExtensions
+	c.LeaseReleases += other.LeaseReleases
+}
+
 // Gauges holds snapshot (non-incremental) values computed at scan time
 // and overwritten on every UpdateMetrics call.
 type Gauges struct {
