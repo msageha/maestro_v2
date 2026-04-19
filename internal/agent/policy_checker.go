@@ -36,10 +36,15 @@ func (pc *PolicyChecker) WriteHookScript() (string, error) {
 		return "", fmt.Errorf("create hooks dir: %w", err)
 	}
 
-	projectRoot := filepath.Dir(pc.maestroDir)
-	if resolved, err := filepath.EvalSymlinks(projectRoot); err == nil {
-		projectRoot = resolved
+	// Resolve symlinks in maestroDir so all derived paths are canonical.
+	// On macOS, /tmp is a symlink to /private/tmp; without resolution,
+	// the hook script's runtime pwd -P and the embedded project root
+	// could mismatch, causing false WT001 rejections.
+	maestroDir := pc.maestroDir
+	if resolved, err := filepath.EvalSymlinks(maestroDir); err == nil {
+		maestroDir = resolved
 	}
+	projectRoot := filepath.Dir(maestroDir)
 	script := strings.ReplaceAll(hookScript, "__PROJECT_ROOT__", shellQuote(projectRoot))
 
 	scriptPath := pc.hookScriptPath()
@@ -243,7 +248,7 @@ if [ "$tool_name" = "Bash" ]; then
 
   # WT-GIT: Block git change commands in worktree mode
   # When CWD is inside .maestro/worktrees/, only read-only git commands are allowed
-  _wt_cwd="$(pwd 2>/dev/null || echo "")"
+  _wt_cwd="$(pwd -P 2>/dev/null || echo "")"
   if [ -n "$_wt_cwd" ] && echo "$_wt_cwd" | grep -qF '/.maestro/worktrees/'; then
     if echo "$cmd" | grep -qE 'git\s+(commit|add|merge|rebase|cherry-pick|revert|stash|restore|fetch|pull|worktree|tag)(\s|$)'; then
       deny "WT-GIT: Blocked git change command in worktree mode (only read-only git commands allowed)"
@@ -480,7 +485,7 @@ if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ]; then
   # operations must target paths within that CWD. This prevents the Worker
   # (Claude LLM) from writing to the repo root instead of the worktree,
   # which would cause auto_commit to see no changes and integration to stall.
-  worker_cwd="$(pwd 2>/dev/null || echo "")"
+  worker_cwd="$(pwd -P 2>/dev/null || echo "")"
   if [ -n "$worker_cwd" ] && echo "$worker_cwd" | grep -qF '/.maestro/worktrees/'; then
     # H4: Normalize file_path (resolve relative paths and symlinks)
     _wt_check="$file_path"

@@ -184,8 +184,14 @@ func (qh *QueueHandler) deliverPlannerSignal(ctx context.Context, commandID, mes
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
-			qh.log(LogLevelInfo, "signal_inline_retry attempt=%d/%d command=%s error=%v",
-				attempt+1, maxRetries+1, commandID, lastErr)
+			if errors.Is(lastErr, agent.ErrAgentBusy) {
+				// Agent is actively processing — normal state, retry quietly
+				qh.log(LogLevelDebug, "signal_delivery_agent_busy attempt=%d/%d command=%s",
+					attempt+1, maxRetries+1, commandID)
+			} else {
+				qh.log(LogLevelInfo, "signal_inline_retry attempt=%d/%d command=%s error=%v",
+					attempt+1, maxRetries+1, commandID, lastErr)
+			}
 			select {
 			case <-ctx.Done():
 				return fmt.Errorf("signal delivery cancelled: %w", ctx.Err())
