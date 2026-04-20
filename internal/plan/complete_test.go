@@ -1058,6 +1058,47 @@ func TestComplete_WorktreeEnabled_Published_Allowed(t *testing.T) {
 	}
 }
 
+func TestComplete_WorktreeEnabled_Created_NoOpAllowed(t *testing.T) {
+	// When all workers report no_changes_to_commit, the integration status
+	// remains "created" (no merge happened). This no-op command must be
+	// allowed to complete without waiting for a publish that will never happen.
+	commandID := "cmd_0000000054_aabbccdd"
+	taskID1 := "task_0000000054_11111111"
+
+	taskStates := map[string]model.Status{
+		taskID1: model.StatusCompleted,
+	}
+	requiredIDs := []string{taskID1}
+
+	maestroDir := setupCompleteTest(t, commandID, taskStates, requiredIDs)
+	cfg := testConfig()
+	cfg.Worktree.Enabled = true
+
+	writeWorktreeState(t, maestroDir, commandID, model.IntegrationStatusCreated)
+
+	result, err := Complete(CompleteOptions{
+		CommandID:  commandID,
+		Summary:    "no-op command should complete",
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
+	})
+	if err != nil {
+		t.Fatalf("Complete returned error: %v", err)
+	}
+	if result.Status != string(model.PlanStatusCompleted) {
+		t.Errorf("Status = %q, want %q", result.Status, model.PlanStatusCompleted)
+	}
+	// Verify no deferred intent was written (no publish needed)
+	dc, err := ReadDeferredComplete(maestroDir, commandID)
+	if err != nil {
+		t.Fatalf("ReadDeferredComplete error: %v", err)
+	}
+	if dc != nil {
+		t.Error("expected no deferred complete intent for no-op command")
+	}
+}
+
 func TestComplete_WorktreeDisabled_Allowed(t *testing.T) {
 	commandID := "cmd_0000000052_aabbccdd"
 	taskID1 := "task_0000000052_11111111"

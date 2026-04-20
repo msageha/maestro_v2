@@ -279,25 +279,19 @@ func buildSystemPrompt(maestroDir, role string) (string, error) {
 }
 
 // LaunchCommand is the shell command to start an agent process in a tmux pane.
-// It includes CLAUDE_CODE_SANDBOXED=1 inline so the env var is present in the
-// shell's environment before maestro starts, ensuring Claude Code's workspace
-// trust dialog is bypassed even if cmd.Env propagation fails for any reason
-// (e.g. claude CLI re-execs itself, shell wrappers strip env, etc.).
-// This is a belt-and-suspenders measure alongside buildLaunchEnv which also
-// sets the var via cmd.Env on the child process.
-const LaunchCommand = "CLAUDE_CODE_SANDBOXED=1 maestro agent launch"
+const LaunchCommand = "maestro agent launch"
 
 // buildLaunchEnv constructs the environment for the claude CLI process.
 //   - Clears CLAUDECODE to allow launching inside a parent Claude Code session
 //     (e.g. when maestro is invoked from Claude Code CLI).
-//   - Clears any existing CLAUDE_CODE_SANDBOXED to prevent duplicate entries
-//     (on most Unix systems, getenv returns the first occurrence; a stale "0"
-//     before our "1" would shadow the intended value).
-//   - Sets CLAUDE_CODE_SANDBOXED=1 to bypass the workspace trust dialog that
-//     otherwise blocks automated (headless) startup in every tmux pane. This is
-//     separate from --dangerously-skip-permissions which only skips per-tool
-//     permission checks; the trust dialog is an independent security layer that
-//     checks project-level trust state.
+//   - Strips dangerous env var prefixes to prevent library injection / path hijacking.
+//   - Sets MAESTRO_AGENT_ROLE for role-based trust boundaries.
+//
+// Note: workspace trust dialog bypass is handled at the formation level
+// (auto-accept after agent launch), not via environment variables. Claude Code
+// does not expose an env var to skip the trust dialog; --dangerously-skip-permissions
+// only covers per-tool permission checks.
+//
 // dangerousEnvPrefixes lists environment variable prefixes that must be
 // stripped from child processes to prevent library injection or path hijacking.
 var dangerousEnvPrefixes = []string{
@@ -310,10 +304,8 @@ var dangerousEnvPrefixes = []string{
 
 func buildLaunchEnv(base []string, role string) []string {
 	env := filterEnv(base, "CLAUDECODE")
-	env = filterEnv(env, "CLAUDE_CODE_SANDBOXED")
 	env = filterDangerousEnv(env)
 	env = append(env, uds.CallerRoleEnv+"="+role)
-	env = append(env, "CLAUDE_CODE_SANDBOXED=1")
 	return env
 }
 

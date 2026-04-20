@@ -57,8 +57,7 @@ func (pm *ClaudeProcessManager) ensureClaudeRunning(ctx context.Context, paneTar
 		pm.log(logLevelError, "ensure_claude_running_reset_clear_ready agent_id=%s error=%v", agentID, resetErr)
 	}
 
-	// Re-launch Claude (LaunchCommand includes CLAUDE_CODE_SANDBOXED=1 inline
-	// to ensure the env var is set in the pane's shell environment)
+	// Re-launch Claude in the pane
 	if sendErr := pm.paneIO.SendCommand(paneTarget, LaunchCommand); sendErr != nil {
 		return fmt.Errorf("%w: %w", ErrRelaunch, sendErr)
 	}
@@ -120,7 +119,7 @@ func (pm *ClaudeProcessManager) ensureWorkingDir(ctx context.Context, paneTarget
 		return fmt.Errorf("reset clear ready after respawn: %w", err)
 	}
 
-	// Step 4: Re-launch Claude (LaunchCommand includes CLAUDE_CODE_SANDBOXED=1 inline)
+	// Step 4: Re-launch Claude
 	if err := pm.paneIO.SendCommand(paneTarget, LaunchCommand); err != nil {
 		return fmt.Errorf("re-launch claude: %w", err)
 	}

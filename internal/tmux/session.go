@@ -631,6 +631,15 @@ func SetupWorkerGrid(windowTarget string, workerCount int) ([]string, error) {
 	return ListPanes(windowTarget, paneFormat)
 }
 
+// StartServer starts the tmux server without creating a session.
+// This allows server-level options (e.g., exit-empty, exit-unattached) to be
+// set before any session is created, eliminating the race window where a
+// detached session exists but protective options have not yet been applied.
+// Idempotent: if the server is already running, this is a no-op.
+func StartServer() error {
+	return run("start-server")
+}
+
 // SetServerOption sets a server-level tmux option.
 // Server options (e.g., exit-empty, exit-unattached) affect the entire tmux server,
 // not just a single session. Use this for options that must survive session destruction.

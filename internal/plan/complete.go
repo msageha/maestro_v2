@@ -480,6 +480,14 @@ func checkWorktreePublished(maestroDir, commandID string, config model.Config) e
 		return fmt.Errorf("parse worktree state: %w", err)
 	}
 
+	// "created" means the integration branch was initialized but no worker
+	// branch was ever merged (e.g., a read-only confirmation command where all
+	// workers reported no_changes_to_commit). There is nothing to publish, so
+	// the publish guard should pass.
+	if wcs.Integration.Status == model.IntegrationStatusCreated {
+		return nil
+	}
+
 	if wcs.Integration.Status != model.IntegrationStatusPublished {
 		return &worktreeNotPublishedError{
 			IntegrationStatus: string(wcs.Integration.Status),

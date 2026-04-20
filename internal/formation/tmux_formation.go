@@ -23,6 +23,27 @@ func createFormation(cfg model.Config) (retErr error) {
 		}
 	}
 
+	// Start the tmux server and apply server-level hardening BEFORE creating
+	// the session. This eliminates the race window where a detached session
+	// exists but exit-empty/exit-unattached have not been set yet — if the
+	// user's tmux.conf has exit-unattached=on, the server would otherwise
+	// exit immediately after a detached session is created.
+	slog.Debug("createFormation: starting tmux server and applying server hardening")
+
+	if err := tmux.StartServer(); err != nil {
+		return fmt.Errorf("start tmux server: %w", err)
+	}
+
+	// Harden server: prevent tmux server from exiting when the last session is destroyed.
+	if err := tmux.SetServerOption("exit-empty", "off"); err != nil {
+		return fmt.Errorf("set exit-empty: %w", err)
+	}
+
+	// Defense in depth: explicitly disable exit-unattached.
+	if err := tmux.SetServerOption("exit-unattached", "off"); err != nil {
+		return fmt.Errorf("set exit-unattached: %w", err)
+	}
+
 	// Window 0: orchestrator
 	if err := tmux.CreateSession("orchestrator"); err != nil {
 		return fmt.Errorf("create session: %w", err)
@@ -39,18 +60,6 @@ func createFormation(cfg model.Config) (retErr error) {
 			}
 		}
 	}()
-
-	slog.Debug("createFormation: applying session hardening options")
-
-	// Harden server: prevent tmux server from exiting when the last session is destroyed.
-	if err := tmux.SetServerOption("exit-empty", "off"); err != nil {
-		return fmt.Errorf("set exit-empty: %w", err)
-	}
-
-	// Defense in depth: explicitly disable exit-unattached.
-	if err := tmux.SetServerOption("exit-unattached", "off"); err != nil {
-		return fmt.Errorf("set exit-unattached: %w", err)
-	}
 
 	// Harden session: prevent user-level tmux config from destroying the detached session.
 	if err := tmux.SetSessionOption("destroy-unattached", "off"); err != nil {
@@ -136,6 +145,15 @@ func createFormation(cfg model.Config) (retErr error) {
 			return fmt.Errorf("launch agent in %s: %w", pane, err)
 		}
 	}
+
+	// Auto-accept Claude Code workspace trust dialog.
+	// Claude Code does not expose an env var or CLI flag to bypass the trust
+	// dialog in interactive mode. --dangerously-skip-permissions only covers
+	// per-tool permission checks, not project-level trust. Sending Enter after
+	// a brief delay accepts the dialog if it appears; if the project is already
+	// trusted or the dialog has not appeared, the Enter is harmless (empty input
+	// is ignored by Claude Code's interactive prompt).
+	autoAcceptTrustDialog(readyPanes)
 
 	// Select orchestrator window so `tmux attach` lands there
 	if err := tmux.SelectWindow(fmt.Sprintf("=%s:0", tmux.GetSessionName())); err != nil {
@@ -261,6 +279,26 @@ func preparePanes(
 	}
 
 	return readyPanes, nil
+}
+
+// trustDialogDelay is the time to wait for Claude Code's workspace trust dialog
+// to appear before sending the auto-accept keystroke. Claude CLI startup
+// typically takes 1-3 seconds; 4 seconds provides margin for slower machines.
+const trustDialogDelay = 4 * time.Second
+
+// autoAcceptTrustDialog sends an Enter keystroke to each pane after a brief
+// delay to automatically accept Claude Code's workspace trust dialog.
+// If the dialog is not present (project already trusted), the Enter is
+// harmless — Claude Code ignores empty input in interactive mode.
+func autoAcceptTrustDialog(panes []string) {
+	go func() {
+		time.Sleep(trustDialogDelay)
+		for _, pane := range panes {
+			if err := tmux.SendKeys(pane, "Enter"); err != nil {
+				slog.Debug("autoAcceptTrustDialog: send Enter failed", "pane", pane, "error", err)
+			}
+		}
+	}()
 }
 
 // resolveModel determines the model for a given agent.

@@ -622,7 +622,7 @@ func TestSanitizeForLog(t *testing.T) {
 	}
 }
 
-func TestBuildLaunchEnv_ContainsSandboxed(t *testing.T) {
+func TestBuildLaunchEnv_CoreBehavior(t *testing.T) {
 	base := []string{"HOME=/home/test", "PATH=/usr/bin", "CLAUDECODE=something"}
 	env := buildLaunchEnv(base, "worker")
 
@@ -632,11 +632,6 @@ func TestBuildLaunchEnv_ContainsSandboxed(t *testing.T) {
 		if len(parts) == 2 {
 			envMap[parts[0]] = parts[1]
 		}
-	}
-
-	// CLAUDE_CODE_SANDBOXED must be set to bypass workspace trust dialog.
-	if v, ok := envMap["CLAUDE_CODE_SANDBOXED"]; !ok || v != "1" {
-		t.Errorf("CLAUDE_CODE_SANDBOXED = %q (present=%v), want \"1\"", v, ok)
 	}
 
 	// CLAUDECODE must be removed.
@@ -735,49 +730,18 @@ func TestBuildLaunchEnv_AllRoles(t *testing.T) {
 			env := buildLaunchEnv([]string{}, role)
 			found := false
 			for _, e := range env {
-				if e == "CLAUDE_CODE_SANDBOXED=1" {
+				if e == "MAESTRO_AGENT_ROLE="+role {
 					found = true
 				}
 			}
 			if !found {
-				t.Errorf("role=%s: CLAUDE_CODE_SANDBOXED=1 not found in env", role)
+				t.Errorf("role=%s: MAESTRO_AGENT_ROLE=%s not found in env", role, role)
 			}
 		})
 	}
 }
 
-func TestBuildLaunchEnv_FiltersExistingSandboxedValue(t *testing.T) {
-	// If CLAUDE_CODE_SANDBOXED already exists in the base env (e.g. inherited
-	// from a parent process), buildLaunchEnv must remove it before appending
-	// the correct value. On most Unix systems getenv() returns the first
-	// occurrence, so a stale "0" before our "1" would shadow the intended value.
-	base := []string{
-		"HOME=/home/test",
-		"CLAUDE_CODE_SANDBOXED=0",
-		"PATH=/usr/bin",
-	}
-	env := buildLaunchEnv(base, "worker")
-
-	var count int
-	var lastValue string
-	for _, e := range env {
-		if strings.HasPrefix(e, "CLAUDE_CODE_SANDBOXED=") {
-			count++
-			lastValue = e
-		}
-	}
-	if count != 1 {
-		t.Errorf("expected exactly 1 CLAUDE_CODE_SANDBOXED entry, got %d", count)
-	}
-	if lastValue != "CLAUDE_CODE_SANDBOXED=1" {
-		t.Errorf("CLAUDE_CODE_SANDBOXED = %q, want \"CLAUDE_CODE_SANDBOXED=1\"", lastValue)
-	}
-}
-
-func TestLaunchCommand_ContainsSandboxedEnvVar(t *testing.T) {
-	if !strings.Contains(LaunchCommand, "CLAUDE_CODE_SANDBOXED=1") {
-		t.Errorf("LaunchCommand should contain CLAUDE_CODE_SANDBOXED=1, got %q", LaunchCommand)
-	}
+func TestLaunchCommand_Format(t *testing.T) {
 	if !strings.Contains(LaunchCommand, "maestro agent launch") {
 		t.Errorf("LaunchCommand should contain 'maestro agent launch', got %q", LaunchCommand)
 	}
