@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/tmux"
 )
@@ -131,7 +132,7 @@ func createFormation(cfg model.Config) (retErr error) {
 	}
 
 	for _, pane := range readyPanes {
-		if err := tmux.SendCommand(pane, "maestro agent launch"); err != nil {
+		if err := tmux.SendCommand(pane, agent.LaunchCommand); err != nil {
 			return fmt.Errorf("launch agent in %s: %w", pane, err)
 		}
 	}

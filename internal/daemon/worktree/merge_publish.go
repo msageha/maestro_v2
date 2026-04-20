@@ -936,9 +936,10 @@ func (wm *Manager) performPublishMerge(
 }
 
 // syncProjectRootAfterPublish syncs the projectRoot working tree and index to
-// match the updated base branch ref. It syncs the index first (to prevent
-// false-positive stash creation), creates a safety stash, runs reset --hard,
-// and rolls back the ref on failure.
+// match the updated base branch ref. It syncs the index via read-tree, checks
+// for genuine uncommitted changes (working tree vs index) to prevent
+// false-positive stash creation, runs reset --hard, and rolls back the ref on
+// failure.
 func (wm *Manager) syncProjectRootAfterPublish(commandID, baseBranch, baseSHA, mergeSHA string) error {
 	// Sync index and working tree to the new HEAD before stash create.
 	// update-ref only moves the branch pointer; the index and working tree still
@@ -949,20 +950,25 @@ func (wm *Manager) syncProjectRootAfterPublish(commandID, baseBranch, baseSHA, m
 		wm.Log(core.LogLevelWarn, "publish_read_tree_sync command=%s error=%v (falling back to reset)", commandID, err)
 	}
 
-	// Create a durable ref to preserve any working tree state before reset --hard.
-	// git stash create builds a stash commit without modifying the working tree or index.
-	// After the read-tree sync above, this should return empty (no changes).
-	stashRef, stashErr := wm.gitOutput("stash", "create")
-	if stashErr != nil {
-		wm.Log(core.LogLevelWarn, "publish_stash_create_failed command=%s error=%v (continuing)", commandID, stashErr)
-	} else if ref := strings.TrimSpace(stashRef); ref != "" {
-		// Unexpected: dirty check passed and read-tree synced, but stash create found changes.
-		// Save as a durable ref so the data survives GC and can be recovered manually.
-		durableRef := fmt.Sprintf("refs/maestro/pre-publish-stash/%s", commandID)
-		if refErr := wm.gitRun("update-ref", durableRef, ref); refErr != nil {
-			wm.Log(core.LogLevelWarn, "publish_stash_save_failed command=%s ref=%s error=%v", commandID, durableRef, refErr)
-		} else {
-			wm.Log(core.LogLevelInfo, "publish_stash_saved command=%s ref=%s sha=%s", commandID, durableRef, ref)
+	// Guard against false-positive stash creation: after update-ref advances HEAD,
+	// the index/working tree may still reflect the old commit (especially when
+	// read-tree fails above). Comparing working tree vs index (git diff --quiet)
+	// detects genuine uncommitted changes without being fooled by the ref
+	// advancement. If working tree matches index, any divergence from HEAD is
+	// solely from update-ref and stash create would produce a spurious object
+	// that accumulates as an orphaned ref under refs/maestro/pre-publish-stash/.
+	if wm.gitRun("diff", "--quiet") != nil {
+		// Working tree differs from index — preserve genuine uncommitted changes.
+		stashRef, stashErr := wm.gitOutput("stash", "create")
+		if stashErr != nil {
+			wm.Log(core.LogLevelWarn, "publish_stash_create_failed command=%s error=%v (continuing)", commandID, stashErr)
+		} else if ref := strings.TrimSpace(stashRef); ref != "" {
+			durableRef := fmt.Sprintf("refs/maestro/pre-publish-stash/%s", commandID)
+			if refErr := wm.gitRun("update-ref", durableRef, ref); refErr != nil {
+				wm.Log(core.LogLevelWarn, "publish_stash_save_failed command=%s ref=%s error=%v", commandID, durableRef, refErr)
+			} else {
+				wm.Log(core.LogLevelInfo, "publish_stash_saved command=%s ref=%s sha=%s", commandID, durableRef, ref)
+			}
 		}
 	}
 
