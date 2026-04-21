@@ -84,6 +84,9 @@ func (qh *QueueHandler) SetShutdownGuard(ctx context.Context, shuttingDown *atom
 	qh.shutdownCtx = ctx
 	qh.shuttingDown = shuttingDown
 	qh.scanExecutor.debounce.SetShutdownGuard(ctx, shuttingDown, shutdownFn)
+	// Propagate the shutdown context to the result handler so its inline
+	// notify-retry loops cancel promptly when the daemon is tearing down.
+	qh.resultHandler.SetShutdownContext(ctx)
 }
 
 // SetSessionLostFlag wires the daemon's session-lost flag so that dispatch
@@ -109,4 +112,24 @@ func (qh *QueueHandler) SetQualityGate(qg *QualityGateDaemon) {
 // SetContinuousHandler wires the continuous handler for result processing.
 func (qh *QueueHandler) SetContinuousHandler(ch *ContinuousHandler) {
 	qh.resultHandler.SetContinuousHandler(ch)
+}
+
+// SetPhaseCManager wires the Phase C component bundle (complexity, bandit,
+// feature gate, fingerprint DB, search tree, evolution) to the QueueHandler
+// so that dispatch, result processing, and reviewer flows can consult them.
+// Safe to call before or after Run(); nil-safe at consumer call sites.
+func (qh *QueueHandler) SetPhaseCManager(m *PhaseCManager) {
+	qh.initMu.Lock()
+	defer qh.initMu.Unlock()
+	qh.phaseC = m
+	qh.resultHandler.SetPhaseCManager(m)
+}
+
+// SetModelSelector wires the adaptive model selector into the result handler
+// so that task outcomes can feed rewards back into the bandit. Safe to call
+// before or after Run(); nil-safe at consumer call sites.
+func (qh *QueueHandler) SetModelSelector(s *banditModelSelector) {
+	qh.initMu.Lock()
+	defer qh.initMu.Unlock()
+	qh.resultHandler.SetModelSelector(s)
 }

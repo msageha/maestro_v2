@@ -54,7 +54,7 @@ func TestCascadeRecoverRecursive_EmptyAssignments(t *testing.T) {
 		"taskB": {ID: "taskB", BloomLevel: 2},
 	}
 
-	_, err := cascadeRecover(state, "taskA", "retryA", workerConfig, limits, workerStates, origCache)
+	_, err := cascadeRecover(state, "taskA", "retryA", workerConfig, limits, workerStates, origCache, nil)
 	if err == nil {
 		t.Fatal("expected error when workers at capacity, got nil")
 	}

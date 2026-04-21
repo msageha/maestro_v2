@@ -29,6 +29,30 @@ type WorkerAssignment struct {
 	Model    string
 }
 
+// ModelSelector is an optional hook consulted by AssignWorkers for each task
+// to potentially override the static BloomLevel→model mapping. The selector's
+// choice is only honored when at least one configured worker runs that model;
+// otherwise AssignWorkers falls back to GetModelForBloomLevel.
+//
+// Implementations must be safe for concurrent use.
+type ModelSelector interface {
+	SelectModel(bloomLevel int, taskName string) string
+}
+
+// assignConfig carries optional AssignWorkers behavior.
+type assignConfig struct {
+	selector ModelSelector
+}
+
+// AssignOption configures optional AssignWorkers behavior.
+type AssignOption func(*assignConfig)
+
+// WithModelSelector attaches an adaptive model selector to AssignWorkers.
+// Passing a nil selector is a no-op (behaves like the static path).
+func WithModelSelector(s ModelSelector) AssignOption {
+	return func(c *assignConfig) { c.selector = s }
+}
+
 // WorkerState tracks a worker's current load for assignment decisions.
 type WorkerState struct {
 	WorkerID     string
@@ -70,14 +94,23 @@ func GetWorkerModel(workerID string, config model.WorkerConfig) string {
 }
 
 // AssignWorkers distributes tasks across available workers using least-loaded selection per model.
+// Optional AssignOption values can override static model selection via WithModelSelector.
 func AssignWorkers(
 	config model.WorkerConfig,
 	limits model.LimitsConfig,
 	currentWorkerStates []WorkerState,
 	tasks []TaskAssignmentRequest,
+	opts ...AssignOption,
 ) ([]WorkerAssignment, error) {
 	if len(tasks) == 0 {
 		return []WorkerAssignment{}, nil
+	}
+
+	var ac assignConfig
+	for _, o := range opts {
+		if o != nil {
+			o(&ac)
+		}
 	}
 
 	// Build worker state map (copy to track incremental assignments)
@@ -95,6 +128,16 @@ func AssignWorkers(
 	assignments := make([]WorkerAssignment, 0, len(tasks))
 	for _, task := range tasks {
 		requiredModel := GetModelForBloomLevel(task.BloomLevel, config.Boost)
+		// Honor a bandit / adaptive selector when it picks a model that at
+		// least one worker is configured for; otherwise keep the static
+		// bloom-derived model to preserve feasibility.
+		if ac.selector != nil {
+			if pick := ac.selector.SelectModel(task.BloomLevel, task.Name); pick != "" && pick != requiredModel {
+				if workerExistsForModel(stateMap, pick) {
+					requiredModel = pick
+				}
+			}
+		}
 
 		// Find eligible workers with matching model and minimum pending
 		var bestWorker *WorkerState
@@ -197,6 +240,17 @@ func SnapshotWorkerStates(states []WorkerState) []WorkerState {
 func workerIDToQueueFile(workerID string) string {
 	// worker1 → worker1.yaml
 	return workerID + ".yaml"
+}
+
+// workerExistsForModel reports whether at least one worker in stateMap
+// is configured for the given model name.
+func workerExistsForModel(stateMap map[string]*WorkerState, modelName string) bool {
+	for _, ws := range stateMap {
+		if ws.Model == modelName {
+			return true
+		}
+	}
+	return false
 }
 
 // defaultModelArms lists the model arms registered for UCB1 selection.

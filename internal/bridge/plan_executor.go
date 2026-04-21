@@ -4,7 +4,9 @@ package bridge
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/plan"
@@ -15,6 +17,55 @@ type PlanExecutorImpl struct {
 	MaestroDir string
 	Config     model.Config
 	LockMap    *lock.MutexMap
+
+	// ModelSelector is an optional adaptive model selection hook. When set,
+	// plan operations thread it into AssignWorkers so that the selector's
+	// pick may override the static BloomLevel→model mapping. Access guarded
+	// by selectorMu to allow late binding from the daemon after startup.
+	selectorMu sync.RWMutex
+	selector   plan.ModelSelector
+}
+
+// SetModelSelector installs (or clears, with nil) the adaptive model selector.
+// Safe to call concurrently with in-flight plan operations; subsequent calls
+// take effect on the next Submit / AddRetryTask / AddTask invocation.
+//
+// The daemon invokes this via the core.PlanExecutorModelSelectorSettable
+// interface, handing us a core.ModelSelector. Since core.ModelSelector and
+// plan.ModelSelector share the same method set, any concrete impl of one
+// satisfies the other; we assert to avoid a wrapper allocation on the hot
+// path.
+func (pe *PlanExecutorImpl) SetModelSelector(s core.ModelSelector) {
+	pe.selectorMu.Lock()
+	defer pe.selectorMu.Unlock()
+	if s == nil {
+		pe.selector = nil
+		return
+	}
+	if p, ok := s.(plan.ModelSelector); ok {
+		pe.selector = p
+		return
+	}
+	// Concrete type implemented core.ModelSelector but, oddly, not
+	// plan.ModelSelector. Adapt via a thin shim so wiring still works.
+	pe.selector = coreSelectorAdapter{s}
+}
+
+// coreSelectorAdapter bridges a core.ModelSelector into plan.ModelSelector
+// when the direct interface-to-interface assertion fails (e.g., pointer vs
+// value receiver mismatch in an unusual impl). It is allocation-free per
+// call since it simply forwards to the embedded selector.
+type coreSelectorAdapter struct{ core.ModelSelector }
+
+func (c coreSelectorAdapter) SelectModel(bloomLevel int, taskName string) string {
+	return c.ModelSelector.SelectModel(bloomLevel, taskName)
+}
+
+// getSelector returns the currently-installed selector (may be nil).
+func (pe *PlanExecutorImpl) getSelector() plan.ModelSelector {
+	pe.selectorMu.RLock()
+	defer pe.selectorMu.RUnlock()
+	return pe.selector
 }
 
 // parseAndExecute is a generic helper that unmarshals JSON params, executes a
@@ -49,14 +100,15 @@ type submitParams struct {
 func (pe *PlanExecutorImpl) Submit(params json.RawMessage) (json.RawMessage, error) {
 	return parseAndExecute("submit", params, func(p submitParams) (*plan.SubmitResult, error) {
 		return plan.Submit(plan.SubmitOptions{
-			CommandID:  p.CommandID,
-			TasksFile:  p.TasksFile,
-			TasksData:  []byte(p.TasksData),
-			PhaseName:  p.PhaseName,
-			DryRun:     p.DryRun,
-			MaestroDir: pe.MaestroDir,
-			Config:     pe.Config,
-			LockMap:    pe.LockMap,
+			CommandID:     p.CommandID,
+			TasksFile:     p.TasksFile,
+			TasksData:     []byte(p.TasksData),
+			PhaseName:     p.PhaseName,
+			DryRun:        p.DryRun,
+			MaestroDir:    pe.MaestroDir,
+			Config:        pe.Config,
+			LockMap:       pe.LockMap,
+			ModelSelector: pe.getSelector(),
 		})
 	})
 }
@@ -111,6 +163,7 @@ func (pe *PlanExecutorImpl) AddRetryTask(params json.RawMessage) (json.RawMessag
 			MaestroDir:         pe.MaestroDir,
 			Config:             pe.Config,
 			LockMap:            pe.LockMap,
+			ModelSelector:      pe.getSelector(),
 		})
 	})
 }
@@ -153,6 +206,7 @@ func (pe *PlanExecutorImpl) AddTask(params json.RawMessage) (json.RawMessage, er
 			MaestroDir:         pe.MaestroDir,
 			Config:             pe.Config,
 			LockMap:            pe.LockMap,
+			ModelSelector:      pe.getSelector(),
 		})
 	})
 }

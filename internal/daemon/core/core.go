@@ -258,3 +258,19 @@ type PlanExecutor interface {
 	AddTask(params json.RawMessage) (json.RawMessage, error)
 	Rebuild(params json.RawMessage) (json.RawMessage, error)
 }
+
+// ModelSelector is the method set an adaptive model selector must expose to
+// participate in worker assignment. Kept here (rather than in plan) so the
+// daemon can hand a selector to its PlanExecutor without importing plan.
+// Any type satisfying this interface also satisfies plan.ModelSelector —
+// the bridge layer performs the cross-interface handoff.
+type ModelSelector interface {
+	SelectModel(bloomLevel int, taskName string) string
+}
+
+// PlanExecutorModelSelectorSettable is an optional extension of PlanExecutor
+// that lets the daemon inject an adaptive model selector post-startup.
+// Executors that do not implement it are left on the static mapping.
+type PlanExecutorModelSelectorSettable interface {
+	SetModelSelector(ModelSelector)
+}

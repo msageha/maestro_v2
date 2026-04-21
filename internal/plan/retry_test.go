@@ -1171,7 +1171,7 @@ func TestCascadeRecoverRecursive_MaxDepthExceeded(t *testing.T) {
 		{WorkerID: "worker2", Model: "opus"},
 	}
 
-	_, err := cascadeRecover(state, taskIDs[0], "retry_0", cfg.Agents.Workers, cfg.Limits, workerStates, nil)
+	_, err := cascadeRecover(state, taskIDs[0], "retry_0", cfg.Agents.Workers, cfg.Limits, workerStates, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for max depth exceeded, got nil")
 	}
@@ -1231,7 +1231,7 @@ func TestCascadeRecover_AllOrNothing(t *testing.T) {
 		{WorkerID: "worker2", Model: "opus"},
 	}
 
-	_, err := cascadeRecover(state, taskIDs[0], "retry_0", cfg.Agents.Workers, cfg.Limits, workerStates, nil)
+	_, err := cascadeRecover(state, taskIDs[0], "retry_0", cfg.Agents.Workers, cfg.Limits, workerStates, nil, nil)
 	if err == nil {
 		t.Fatal("expected error for max depth exceeded, got nil")
 	}

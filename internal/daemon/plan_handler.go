@@ -61,7 +61,7 @@ func (h *PlanAPI) handlePlan(req *uds.Request) *uds.Response {
 	// Note: the server-level processRequest already validates and normalizes
 	// CallerRole, but this check is defense-in-depth for direct handler calls.
 	switch params.Operation {
-	case "unquarantine", "resume_merge", "resolve_conflict", "retry_publish":
+	case "unquarantine", "resume_merge", "resolve_conflict", "retry_publish", "auto_recover":
 		if !uds.ValidCallerRoles[req.CallerRole] {
 			return uds.ErrorResponse(uds.ErrCodeValidation,
 				fmt.Sprintf("operation %q requires a valid caller role, got %q", params.Operation, req.CallerRole))
@@ -182,6 +182,7 @@ func (h *PlanAPI) handlePlanWorktreeRecovery(operation string, data json.RawMess
 	}
 
 	var opErr error
+	var autoRecoverAction worktree.AutoRecoverAction
 	switch operation {
 	case "unquarantine":
 		opErr = h.worktreeManager.Unquarantine(p.CommandID, p.Reason)
@@ -189,6 +190,8 @@ func (h *PlanAPI) handlePlanWorktreeRecovery(operation string, data json.RawMess
 		opErr = h.worktreeManager.ResumeMerge(context.Background(), p.CommandID)
 	case "retry_publish":
 		opErr = h.worktreeManager.RetryPublish(p.CommandID)
+	case "auto_recover":
+		autoRecoverAction, opErr = h.worktreeManager.AutoRecover(context.Background(), p.CommandID)
 	case "resolve_conflict":
 		if p.PhaseID == "" {
 			return uds.ErrorResponse(uds.ErrCodeValidation, "phase_id is required")
@@ -230,11 +233,21 @@ func (h *PlanAPI) handlePlanWorktreeRecovery(operation string, data json.RawMess
 	h.logFn(LogLevelInfo, "plan_%s success command=%s", operation, p.CommandID)
 	h.publishQueueWritten("plan_" + operation)
 
-	out, _ := json.Marshal(map[string]string{
+	payload := map[string]string{
 		"command_id": p.CommandID,
 		"operation":  operation,
 		"status":     "ok",
-	})
+	}
+	if operation == "auto_recover" {
+		// Surface which recovery path (if any) actually ran so the caller can
+		// distinguish "nothing to do" from "resume_merge dispatched".
+		action := string(autoRecoverAction)
+		if action == "" {
+			action = string(worktree.AutoRecoverNone)
+		}
+		payload["action"] = action
+	}
+	out, _ := json.Marshal(payload)
 	return &uds.Response{Success: true, Data: out}
 }
 

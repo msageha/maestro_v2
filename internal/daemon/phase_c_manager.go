@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"sync"
+
 	"github.com/msageha/maestro_v2/internal/daemon/bandit"
 	"github.com/msageha/maestro_v2/internal/daemon/complexity"
 	"github.com/msageha/maestro_v2/internal/daemon/evolution"
@@ -23,7 +25,41 @@ type PhaseCManager struct {
 	FingerprintDB    *learnings.FingerprintDB
 	ComplexityScorer *complexity.Scorer
 	FeatureEvaluator *featuregate.Evaluator
+
+	// searchMu protects the per-command search-tree bookkeeping below.
+	// Required because classifyAndLog* runs on the dispatch goroutine while
+	// observeTaskOutcome runs on the result-notification goroutine.
+	searchMu sync.Mutex
+	// commandRoots tracks commandIDs already added to SearchTree as root nodes.
+	// Protects against duplicate AddRoot when a command re-enters dispatch
+	// (e.g., after a retry or a partial scan).
+	commandRoots map[string]bool
+	// taskDecisions maps taskID → Thompson Sampler decision taken at dispatch.
+	// Consumed when the task terminates so sampler.Update can reward the
+	// original widen/deepen choice. Cleared after consumption to bound memory.
+	taskDecisions map[string]search.Decision
+
+	// evolutionMu protects the per-command evolutionary bookkeeping below.
+	// Separate from searchMu so the two code paths don't contend.
+	evolutionMu sync.Mutex
+	// commandNovelty tracks the set of successful-task summary hashes per
+	// command, used by the EvolutionEngine.CheckNovelty call at task
+	// completion. Bounded by evolutionNoveltyMaxPerCmd entries per command.
+	commandNovelty map[string]map[string]struct{}
+	// commandFailures tracks per-command failure counts used to decide when
+	// to trigger PlanMutations for a retry strategy plan.
+	commandFailures map[string]int
 }
+
+// evolutionNoveltyMaxPerCmd caps the per-command novelty hash set to keep
+// memory bounded for long-running commands. When the cap is reached, new
+// hashes are still checked but not stored. 256 entries per command ≈ 8 KB.
+const evolutionNoveltyMaxPerCmd = 256
+
+// evolutionFailureRetryThreshold is the failure count at which PlanMutations
+// is invoked to plan a retry strategy. Below the threshold, failures are
+// handled by the existing retry path without evolutionary mutation planning.
+const evolutionFailureRetryThreshold = 2
 
 // logFunc is a logging callback matching Daemon.log signature.
 type logFunc func(level LogLevel, format string, args ...any)
@@ -32,7 +68,12 @@ type logFunc func(level LogLevel, format string, args ...any)
 // the provided configuration. Each sub-component is conditionally initialized
 // based on its EffectiveEnabled() flag.
 func newPhaseCManager(cfg model.Config, availableModels []string, log logFunc) *PhaseCManager {
-	m := &PhaseCManager{}
+	m := &PhaseCManager{
+		commandRoots:    make(map[string]bool),
+		taskDecisions:   make(map[string]search.Decision),
+		commandNovelty:  make(map[string]map[string]struct{}),
+		commandFailures: make(map[string]int),
+	}
 
 	// C-1 Evolution Engine
 	if cfg.Evolution.EffectiveEnabled() {

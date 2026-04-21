@@ -29,6 +29,7 @@ type InjectOptions struct {
 	MaestroDir         string
 	Config             model.Config
 	LockMap            *lock.MutexMap
+	ModelSelector      ModelSelector // optional: adaptive model selection
 }
 
 // InjectResult contains the outcome of a task injection.
@@ -104,7 +105,7 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 			return nil, fmt.Errorf("build worker states: %w", err)
 		}
 		assignReqs := []TaskAssignmentRequest{{Name: "__inject", BloomLevel: opts.BloomLevel}}
-		assignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, workerStates, assignReqs)
+		assignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, workerStates, assignReqs, WithModelSelector(opts.ModelSelector))
 		if err != nil {
 			return nil, fmt.Errorf("worker assignment: %w", err)
 		}

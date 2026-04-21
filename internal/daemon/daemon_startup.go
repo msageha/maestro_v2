@@ -16,6 +16,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/daemon/admission"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/daemon/fallback"
 	"github.com/msageha/maestro_v2/internal/daemon/judge"
 	"github.com/msageha/maestro_v2/internal/daemon/rollout"
@@ -208,6 +209,24 @@ func (d *Daemon) initComponents() {
 
 	d.initPhaseB()
 	d.phaseC = newPhaseCManager(d.config, d.getAvailableModels(), d.log)
+	d.handler.SetPhaseCManager(d.phaseC)
+
+	// Wire the adaptive model selector into the PlanExecutor (if configured).
+	// The executor is set before d.Run() in cmd_daemon.go, but PhaseC state
+	// (bandit selector) is constructed here, so we perform the late binding
+	// now — after PhaseC is ready but before any plan traffic arrives.
+	d.modelSelector = newBanditModelSelector(d.phaseC.BanditSelector, d.config.Bandit)
+	if d.modelSelector != nil {
+		if settable, ok := d.planExecutor.(core.PlanExecutorModelSelectorSettable); ok {
+			settable.SetModelSelector(d.modelSelector)
+			d.log(LogLevelInfo, "adaptive model selector wired into plan executor")
+		} else {
+			d.log(LogLevelDebug, "plan executor does not support SetModelSelector; static model mapping retained")
+		}
+		// Also make it available to the result handler so task outcomes can
+		// feed back into the bandit as rewards.
+		d.handler.SetModelSelector(d.modelSelector)
+	}
 
 	d.eventBus = events.NewBus(d.ctx, 100)
 	d.handler.SetEventBus(d.eventBus)

@@ -98,6 +98,12 @@ type Daemon struct {
 	// Phase C components (grouped in PhaseCManager)
 	phaseC *PhaseCManager
 
+	// Adaptive model selector wrapping phaseC.BanditSelector. Built after
+	// phaseC init and handed to both the PlanExecutor (for SelectModel on
+	// the inbound path) and the result handler (for UpdateReward on the
+	// outbound path). Nil when the bandit feature is disabled.
+	modelSelector *banditModelSelector
+
 	// Review pipeline (grouped in ReviewCoordinator)
 	reviewCoord *ReviewCoordinator
 

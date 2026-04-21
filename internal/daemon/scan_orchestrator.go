@@ -31,8 +31,16 @@ func (qh *QueueHandler) HandleFileEvent(filePath string) {
 // holding scanMu during slow tmux I/O operations.
 // This is the backward-compatible wrapper; callers with a context should use
 // PeriodicScanWithContext.
+//
+// When the daemon's shutdown context has been wired via SetShutdownGuard,
+// it is used so a scan in progress cancels promptly on shutdown; otherwise
+// a fresh Background context is used (tests exercise this path).
 func (qh *QueueHandler) PeriodicScan() {
-	qh.PeriodicScanWithContext(context.Background())
+	ctx := qh.shutdownCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	qh.PeriodicScanWithContext(ctx)
 }
 
 // PeriodicScanWithContext delegates to ScanPhaseExecutor for the three-phase scan cycle.

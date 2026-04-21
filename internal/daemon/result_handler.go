@@ -13,6 +13,7 @@ import (
 	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/daemon/learnings"
 	"github.com/msageha/maestro_v2/internal/envelope"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
@@ -66,6 +67,13 @@ type ResultHandler struct {
 	lockMap           *lock.MutexMap
 	continuousHandler ContinuousAdvancer
 	eventBus          EventPublisher
+	phaseC            *PhaseCManager
+	// shutdownCtx is the daemon's shutdown context; when non-nil, retry
+	// loops use it as the parent so they cancel promptly on shutdown.
+	shutdownCtx context.Context
+	// modelSelector receives reward feedback when tasks complete. Nil-safe:
+	// when unset, no rewards are recorded (static selection remains in effect).
+	modelSelector *banditModelSelector
 }
 
 // NewResultHandler creates a new ResultHandler.
@@ -104,6 +112,57 @@ func (rh *ResultHandler) SetEventBus(bus EventPublisher) {
 	rh.mu.Lock()
 	defer rh.mu.Unlock()
 	rh.eventBus = bus
+}
+
+// SetPhaseCManager wires the Phase C component bundle so result processing
+// can record failure fingerprints and feed bandit reward signals. Safe to
+// call with nil (used for tests and when Phase C is disabled).
+func (rh *ResultHandler) SetPhaseCManager(m *PhaseCManager) {
+	rh.mu.Lock()
+	defer rh.mu.Unlock()
+	rh.phaseC = m
+}
+
+// getPhaseC returns the Phase C manager with proper synchronization. nil-safe.
+func (rh *ResultHandler) getPhaseC() *PhaseCManager {
+	rh.mu.RLock()
+	defer rh.mu.RUnlock()
+	return rh.phaseC
+}
+
+// SetModelSelector wires the adaptive model selector so task outcomes can
+// feed rewards back into the bandit. Safe to call with nil.
+func (rh *ResultHandler) SetModelSelector(s *banditModelSelector) {
+	rh.mu.Lock()
+	defer rh.mu.Unlock()
+	rh.modelSelector = s
+}
+
+// getModelSelector returns the adaptive model selector. nil-safe.
+func (rh *ResultHandler) getModelSelector() *banditModelSelector {
+	rh.mu.RLock()
+	defer rh.mu.RUnlock()
+	return rh.modelSelector
+}
+
+// SetShutdownContext wires the daemon's shutdown context so result-notify
+// retry loops can cancel promptly on daemon shutdown instead of running to
+// completion under context.Background.
+func (rh *ResultHandler) SetShutdownContext(ctx context.Context) {
+	rh.mu.Lock()
+	defer rh.mu.Unlock()
+	rh.shutdownCtx = ctx
+}
+
+// parentContext returns the daemon shutdown context when set, otherwise
+// context.Background(). Never returns nil.
+func (rh *ResultHandler) parentContext() context.Context {
+	rh.mu.RLock()
+	defer rh.mu.RUnlock()
+	if rh.shutdownCtx != nil {
+		return rh.shutdownCtx
+	}
+	return context.Background()
 }
 
 // getEventBus returns the event bus with proper synchronization.
@@ -366,6 +425,7 @@ func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
 			return rh.notifyPlannerOfWorkerResultWithRetry(r.CommandID, r.TaskID, workerID, string(r.Status))
 		},
 		onSuccess: func(r *model.TaskResult) {
+			rh.recordTaskResultLearning(r, workerID)
 			if bus := rh.getEventBus(); bus != nil {
 				bus.Publish(events.EventTaskCompleted, map[string]any{
 					"task_id":    r.TaskID,
@@ -413,6 +473,13 @@ func (rh *ResultHandler) processCommandResultFile() int {
 				if err := ch.CheckAndAdvance(r.CommandID, r.Status); err != nil {
 					rh.log(LogLevelWarn, "continuous_advance command=%s error=%v", r.CommandID, err)
 				}
+			}
+			// Release per-command evolution bookkeeping now that the
+			// command has reached a terminal state and the orchestrator
+			// has been notified; keeps daemon memory bounded across
+			// long-running sessions.
+			if m := rh.getPhaseC(); m != nil {
+				m.ResetEvolutionState(r.CommandID)
 			}
 		},
 		logSuccess: func(r *model.CommandResult) {
@@ -532,6 +599,110 @@ func (rh *ResultHandler) markNotifyFailure(r model.Notifiable, errMsg string) {
 	r.MarkNotifyFailure(errMsg, "backoff", expiresAt)
 }
 
+// recordTaskResultLearning feeds a completed worker task result into the
+// Phase C learning components:
+//   - FingerprintDB (C-5): failed results contribute a failure fingerprint
+//     and category derived from the result Summary.
+//   - Bandit model selector (C-2): completed/failed/dead-lettered results
+//     reward the worker's model arm.
+//   - Search tree & Thompson sampler (C-4): backpropagate the task outcome
+//     and reward the widen/deepen decision recorded at dispatch.
+//
+// Each component path is independent and nil-safe; disabling one does not
+// skip the others.
+func (rh *ResultHandler) recordTaskResultLearning(r *model.TaskResult, workerID string) {
+	if r == nil {
+		return
+	}
+	m := rh.getPhaseC()
+
+	// C-5 fingerprint capture (requires FingerprintDB).
+	if m != nil && m.FingerprintDB != nil {
+		// TaskResult encodes failure detail in Summary (no dedicated LastError
+		// field); success results typically have benign summaries we ignore.
+		errMsg := r.Summary
+		switch r.Status {
+		case model.StatusFailed, model.StatusDeadLetter:
+			fp, category := learnings.ComputeErrorFingerprint(errMsg)
+			if fp != "" {
+				// Strategy is empty at capture time; the planner/retry logic may
+				// attach one later via Store(fp, category, strategy).
+				m.FingerprintDB.Store(fp, category, "")
+				rh.log(LogLevelInfo, "fingerprint_store worker=%s task=%s command=%s category=%s fp=%s",
+					workerID, r.TaskID, r.CommandID, category, fp)
+			}
+		}
+	}
+
+	// C-2 bandit reward (requires adaptive model selector). Reward mirrors
+	// plan.AdaptiveModelSelector: Completed=1.0, Failed/DeadLetter=0.0,
+	// anything else ignored.
+	sel := rh.getModelSelector()
+	if sel != nil {
+		modelName := rh.workerModelName(workerID)
+		if modelName != "" {
+			switch r.Status {
+			case model.StatusCompleted:
+				sel.RecordResult(modelName, 1.0)
+			case model.StatusFailed, model.StatusDeadLetter:
+				sel.RecordResult(modelName, 0.0)
+			}
+		}
+	}
+
+	// C-4 search tree / Thompson sampler backpropagation (nil-safe on manager
+	// and components). Status mapping matches the bandit path above.
+	switch r.Status {
+	case model.StatusCompleted:
+		m.ObserveTaskOutcome(r.TaskID, 1.0, true)
+	case model.StatusFailed, model.StatusDeadLetter:
+		m.ObserveTaskOutcome(r.TaskID, 0.0, false)
+	}
+
+	// C-1 EvolutionEngine integration:
+	//  - Completed: check novelty of the summary against prior completions.
+	//    A non-novel signal means the daemon has converged on a repeated
+	//    solution, which is surfaced as an observability log so operators
+	//    can notice when exploration has stalled.
+	//  - Failed/DeadLetter: increment per-command failure count and, once
+	//    the threshold is crossed, run PlanMutations to emit a retry
+	//    strategy plan (observability only — the existing retry path in
+	//    plan/retry.go performs the actual retries; this log lets operators
+	//    see which mutation strategies the evolution engine would pick).
+	switch r.Status {
+	case model.StatusCompleted:
+		if novel, evaluated := m.RecordTaskCompletionNovelty(r.CommandID, r.Summary); evaluated {
+			rh.log(LogLevelInfo, "evolution_novelty command=%s task=%s novel=%t",
+				r.CommandID, r.TaskID, novel)
+		}
+	case model.StatusFailed, model.StatusDeadLetter:
+		// parentCount is bounded below by 2 so the cross-strategy slot is
+		// eligible once the threshold is crossed; the engine itself drops
+		// cross when parentCount < 2.
+		if slots, planned := m.PlanRetryMutations(r.CommandID, 2); planned {
+			rh.log(LogLevelInfo, "evolution_retry_plan command=%s task=%s slots=%d",
+				r.CommandID, r.TaskID, len(slots))
+		}
+	}
+}
+
+// workerModelName resolves the model name configured for the given worker.
+// Returns empty when the worker is unknown and no default is configured.
+// Duplicates plan.GetWorkerModel's logic to keep daemon decoupled from plan.
+func (rh *ResultHandler) workerModelName(workerID string) string {
+	cfg := rh.config.Agents.Workers
+	if cfg.Boost {
+		return "opus"
+	}
+	if m, ok := cfg.Models[workerID]; ok && m != "" {
+		return m
+	}
+	if cfg.DefaultModel != "" {
+		return cfg.DefaultModel
+	}
+	return "sonnet"
+}
+
 // --- Notification delivery ---
 
 // notifyPlannerOfWorkerResultWithRetry attempts delivery to the planner with inline retries.
@@ -544,15 +715,23 @@ func (rh *ResultHandler) notifyPlannerOfWorkerResultWithRetry(commandID, taskID,
 	retryDelay := time.Duration(rh.config.Retry.EffectiveResultNotifyInlineRetryDelaySec()) * time.Second
 	attemptTimeout := time.Duration(rh.config.Retry.EffectiveResultNotifyDeliveryTimeoutSec()) * time.Second
 
+	parent := rh.parentContext()
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		if attempt > 0 {
 			rh.log(LogLevelInfo, "result_notify_inline_retry attempt=%d/%d task=%s command=%s error=%v",
 				attempt+1, maxRetries+1, taskID, commandID, lastErr)
-			time.Sleep(retryDelay)
+			select {
+			case <-parent.Done():
+				return fmt.Errorf("result notify aborted during retry: %w", parent.Err())
+			case <-time.After(retryDelay):
+			}
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), attemptTimeout)
+		if err := parent.Err(); err != nil {
+			return fmt.Errorf("result notify aborted: %w", err)
+		}
+		ctx, cancel := context.WithTimeout(parent, attemptTimeout)
 		err := rh.notifyPlannerOfWorkerResult(ctx, commandID, taskID, workerID, taskStatus)
 		cancel()
 

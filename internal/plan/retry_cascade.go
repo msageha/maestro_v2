@@ -73,6 +73,7 @@ func cascadeRecover(
 	limits model.LimitsConfig,
 	workerStates []WorkerState,
 	origTaskCache map[string]model.Task,
+	selector ModelSelector,
 ) ([]CascadeRecoveredTask, error) {
 	// All-or-nothing: snapshot CommandState before mutations so we can
 	// restore it entirely if cascadeRecoverRecursive fails partway through.
@@ -85,7 +86,7 @@ func cascadeRecover(
 	// the caller's slice is not left in a partially-mutated state.
 	ws := SnapshotWorkerStates(workerStates)
 	var recovered []CascadeRecoveredTask
-	recovered, err = cascadeRecoverRecursive(state, failedTaskID, newRetryTaskID, workerConfig, limits, ws, recovered, origTaskCache, 0)
+	recovered, err = cascadeRecoverRecursive(state, failedTaskID, newRetryTaskID, workerConfig, limits, ws, recovered, origTaskCache, 0, selector)
 	if err != nil {
 		// Restore state to pre-cascade snapshot (all-or-nothing).
 		if rsErr := restoreState(state, stateSnapshot); rsErr != nil {
@@ -105,6 +106,7 @@ func cascadeRecoverRecursive(
 	recovered []CascadeRecoveredTask,
 	origTaskCache map[string]model.Task,
 	depth int,
+	selector ModelSelector,
 ) ([]CascadeRecoveredTask, error) {
 	if depth >= maxCascadeRecoverDepth {
 		return recovered, fmt.Errorf("cascade recovery exceeded maximum depth %d (at task %s)", maxCascadeRecoverDepth, failedTaskID)
@@ -144,7 +146,7 @@ func cascadeRecoverRecursive(
 			bloomLevel = origTask.BloomLevel
 		}
 		assignReqs := []TaskAssignmentRequest{{Name: "__cascade_recovery", BloomLevel: bloomLevel}}
-		assignments, err := AssignWorkers(workerConfig, limits, workerStates, assignReqs)
+		assignments, err := AssignWorkers(workerConfig, limits, workerStates, assignReqs, WithModelSelector(selector))
 		if err != nil {
 			return recovered, fmt.Errorf("worker assignment for cascade %s: %w", cancelledTaskID, err)
 		}
@@ -178,6 +180,7 @@ func cascadeRecoverRecursive(
 		recovered, err2 = cascadeRecoverRecursive(
 			state, cancelledTaskID, newTaskID,
 			workerConfig, limits, workerStates, recovered, origTaskCache, depth+1,
+			selector,
 		)
 		if err2 != nil {
 			return recovered, err2

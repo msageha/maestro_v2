@@ -96,6 +96,11 @@ type QueueHandler struct {
 	// timeCache caches time.Parse(time.RFC3339, ...) results within a scan
 	// cycle to avoid repeated parsing of identical timestamp strings.
 	timeCache *timeParseCache
+
+	// phaseC exposes Phase C components (complexity scoring, feature gating,
+	// bandit, fingerprint DB, etc.) to the dispatch pipeline. Wired via
+	// SetPhaseCManager after daemon startup; nil-safe at all call sites.
+	phaseC *PhaseCManager
 }
 
 // NewQueueHandler creates a new QueueHandler with all sub-modules.

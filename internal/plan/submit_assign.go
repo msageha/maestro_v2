@@ -64,7 +64,7 @@ func processConcretePhases(opts SubmitOptions, phases []PhaseInput) (*concretePh
 			assignReqs = append(assignReqs, TaskAssignmentRequest{Name: t.Name, BloomLevel: t.BloomLevel})
 		}
 
-		assignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, cpd.workerStates, assignReqs)
+		assignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, cpd.workerStates, assignReqs, WithModelSelector(opts.ModelSelector))
 		if err != nil {
 			return nil, fmt.Errorf("worker assignment for phase %s: %w", phase.Name, err)
 		}
@@ -107,7 +107,7 @@ func addSystemCommitForPhases(opts SubmitOptions, cpd *concretePhaseData) (*stri
 	cpd.nameToID[commitTask.Name] = commitID
 
 	assignReqs := []TaskAssignmentRequest{{Name: commitTask.Name, BloomLevel: commitTask.BloomLevel}}
-	commitAssignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, cpd.workerStates, assignReqs)
+	commitAssignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, cpd.workerStates, assignReqs, WithModelSelector(opts.ModelSelector))
 	if err != nil {
 		return nil, fmt.Errorf("worker assignment for system commit: %w", err)
 	}

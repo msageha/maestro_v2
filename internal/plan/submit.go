@@ -19,9 +19,10 @@ type SubmitOptions struct {
 	TasksData  []byte // inline YAML data; takes precedence over TasksFile when non-empty
 	PhaseName  string // non-empty for phase fill
 	DryRun     bool
-	MaestroDir string
-	Config     model.Config
-	LockMap    *lock.MutexMap
+	MaestroDir    string
+	Config        model.Config
+	LockMap       *lock.MutexMap
+	ModelSelector ModelSelector // optional: adaptive model selection
 }
 
 // SubmitResult contains the output of a successful plan submission.
@@ -94,7 +95,7 @@ func resolveAndAssignTasks(opts SubmitOptions, tasks []TaskInput) (nameToID map[
 		assignReqs = append(assignReqs, TaskAssignmentRequest{Name: t.Name, BloomLevel: t.BloomLevel})
 	}
 
-	assignments, err = AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, workerStates, assignReqs)
+	assignments, err = AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, workerStates, assignReqs, WithModelSelector(opts.ModelSelector))
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("worker assignment: %w", err)
 	}

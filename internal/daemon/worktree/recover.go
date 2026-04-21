@@ -555,6 +555,130 @@ func (wm *Manager) mergeResolvedWorker(
 	return nil
 }
 
+// AutoRecoverAction names the recovery path AutoRecover selected, or
+// AutoRecoverNone when no recovery applied.
+type AutoRecoverAction string
+
+const (
+	// AutoRecoverNone indicates that the integration is not in a state that
+	// any idempotent recovery path handles automatically (e.g. already merged,
+	// published, quarantined, or in an in-flight transition).
+	AutoRecoverNone AutoRecoverAction = ""
+	// AutoRecoverResumeMerge indicates that AutoRecover dispatched to
+	// ResumeMerge for a conflict / partial_merge / failed-with-workers state.
+	AutoRecoverResumeMerge AutoRecoverAction = "resume_merge"
+	// AutoRecoverRetryPublish indicates that AutoRecover dispatched to
+	// RetryPublish for a publish_failed state whose NextPublishRetryAt
+	// backoff has elapsed.
+	AutoRecoverRetryPublish AutoRecoverAction = "retry_publish"
+)
+
+// AutoRecover inspects the worktree integration status for commandID and
+// dispatches to the appropriate idempotent recovery method. It is safe to call
+// on any commandID and on any schedule — states that don't match a recovery
+// path return (AutoRecoverNone, nil), and dispatched calls that race with a
+// manual recovery are absorbed via the underlying ErrAlreadyResolved sentinel.
+//
+// Policy:
+//   - conflict, partial_merge                      → ResumeMerge
+//   - failed with conflict/resolving workers OR a non-zero MergeFailureCount
+//     → ResumeMerge
+//   - publish_failed with elapsed NextPublishRetryAt → RetryPublish
+//   - quarantined                                 → skipped (operator must
+//     unquarantine explicitly; AutoRecover never escalates a terminal state)
+//   - any other status                            → AutoRecoverNone
+//
+// The caller (plan handler, reconcile notifier, scan loop) supplies the wall
+// clock for backoff evaluation. Returns the action actually attempted plus any
+// error from the dispatched recovery. ErrAlreadyResolved is swallowed and
+// reported as AutoRecoverNone with a nil error, since by definition there is
+// nothing left to recover.
+func (wm *Manager) AutoRecover(ctx context.Context, commandID string) (AutoRecoverAction, error) {
+	if err := validateIDs(commandID); err != nil {
+		return AutoRecoverNone, err
+	}
+
+	state, err := wm.GetCommandState(commandID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return AutoRecoverNone, ErrNoWorktreeState
+		}
+		return AutoRecoverNone, fmt.Errorf("load state: %w", err)
+	}
+
+	action := wm.selectAutoRecoverAction(state)
+	switch action {
+	case AutoRecoverResumeMerge:
+		if err := wm.ResumeMerge(ctx, commandID); err != nil {
+			if errors.Is(err, ErrAlreadyResolved) {
+				return AutoRecoverNone, nil
+			}
+			return AutoRecoverResumeMerge, err
+		}
+		return AutoRecoverResumeMerge, nil
+	case AutoRecoverRetryPublish:
+		if err := wm.RetryPublish(commandID); err != nil {
+			if errors.Is(err, ErrAlreadyResolved) {
+				return AutoRecoverNone, nil
+			}
+			return AutoRecoverRetryPublish, err
+		}
+		return AutoRecoverRetryPublish, nil
+	default:
+		return AutoRecoverNone, nil
+	}
+}
+
+// selectAutoRecoverAction returns the recovery path that applies to the given
+// state, or AutoRecoverNone if no path applies. Pure function: no mutation, no
+// I/O; used directly by AutoRecover and independently unit-testable.
+func (wm *Manager) selectAutoRecoverAction(state *model.WorktreeCommandState) AutoRecoverAction {
+	if state == nil {
+		return AutoRecoverNone
+	}
+	switch state.Integration.Status {
+	case model.IntegrationStatusConflict, model.IntegrationStatusPartialMerge:
+		return AutoRecoverResumeMerge
+	case model.IntegrationStatusFailed:
+		// Only dispatch if ResumeMerge would find work to do — otherwise we'd
+		// just get ErrAlreadyResolved. Mirrors the gating logic inside
+		// ResumeMerge so AutoRecover can report AutoRecoverNone cleanly.
+		if state.Integration.MergeFailureCount > 0 {
+			return AutoRecoverResumeMerge
+		}
+		for _, ws := range state.Workers {
+			if ws.Status == model.WorktreeStatusConflict || ws.Status == model.WorktreeStatusResolving {
+				return AutoRecoverResumeMerge
+			}
+		}
+		return AutoRecoverNone
+	case model.IntegrationStatusPublishFailed:
+		if !wm.publishBackoffElapsed(state.Integration.NextPublishRetryAt) {
+			return AutoRecoverNone
+		}
+		return AutoRecoverRetryPublish
+	default:
+		// merged, publishing, published, quarantined, created, merging →
+		// never auto-recover. Quarantined in particular requires an explicit
+		// operator Unquarantine call.
+		return AutoRecoverNone
+	}
+}
+
+// publishBackoffElapsed returns true when nextRetryAt is empty (no backoff set)
+// or parses to a time at or before now. Unparseable timestamps are treated as
+// "elapsed" so a corrupted field cannot block recovery indefinitely.
+func (wm *Manager) publishBackoffElapsed(nextRetryAt string) bool {
+	if nextRetryAt == "" {
+		return true
+	}
+	t, err := time.Parse(time.RFC3339, nextRetryAt)
+	if err != nil {
+		return true
+	}
+	return !wm.clock.Now().Before(t)
+}
+
 // ResolveConflict marks a per-phase, per-worker merge conflict as resolved
 // after an operator has manually fixed up the integration branch. It removes
 // the worker from CommitFailedWorkers (the gating list that blocks

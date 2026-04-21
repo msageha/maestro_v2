@@ -20,6 +20,80 @@ func newTestBanditSelector(t *testing.T, cfg model.BanditConfig) BanditSelector 
 	return sel
 }
 
+// stubModelSelector is a test double for ModelSelector that returns a fixed
+// value from SelectModel, letting tests force a particular bandit choice.
+type stubModelSelector struct {
+	choice string
+}
+
+func (s stubModelSelector) SelectModel(_ int, _ string) string { return s.choice }
+
+func TestAssignWorkers_WithModelSelector_HonorsPick(t *testing.T) {
+	config := model.WorkerConfig{
+		Count:        2,
+		DefaultModel: "sonnet",
+		Models:       map[string]string{"worker2": "opus"},
+	}
+	limits := model.LimitsConfig{MaxPendingTasksPerWorker: 10}
+	workers := []WorkerState{
+		{WorkerID: "worker1", Model: "sonnet"},
+		{WorkerID: "worker2", Model: "opus"},
+	}
+	// Bloom level 2 statically maps to sonnet; selector overrides to opus.
+	tasks := []TaskAssignmentRequest{{Name: "t1", BloomLevel: 2}}
+
+	got, err := AssignWorkers(config, limits, workers, tasks, WithModelSelector(stubModelSelector{choice: "opus"}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 assignment, got %d", len(got))
+	}
+	if got[0].Model != "opus" {
+		t.Errorf("expected selector override to opus, got model=%q", got[0].Model)
+	}
+	if got[0].WorkerID != "worker2" {
+		t.Errorf("expected worker2 (opus), got %q", got[0].WorkerID)
+	}
+}
+
+func TestAssignWorkers_WithModelSelector_IgnoresInfeasiblePick(t *testing.T) {
+	// Selector picks "haiku" but no worker runs haiku → fall back to static.
+	config := model.WorkerConfig{
+		Count:        1,
+		DefaultModel: "sonnet",
+	}
+	limits := model.LimitsConfig{MaxPendingTasksPerWorker: 10}
+	workers := []WorkerState{
+		{WorkerID: "worker1", Model: "sonnet"},
+	}
+	tasks := []TaskAssignmentRequest{{Name: "t1", BloomLevel: 2}}
+
+	got, err := AssignWorkers(config, limits, workers, tasks, WithModelSelector(stubModelSelector{choice: "haiku"}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Model != "sonnet" {
+		t.Errorf("expected static fallback to sonnet, got %+v", got)
+	}
+}
+
+func TestAssignWorkers_NilSelectorOption_IsNoop(t *testing.T) {
+	config := model.WorkerConfig{Count: 1, DefaultModel: "sonnet"}
+	limits := model.LimitsConfig{MaxPendingTasksPerWorker: 10}
+	workers := []WorkerState{{WorkerID: "worker1", Model: "sonnet"}}
+	tasks := []TaskAssignmentRequest{{Name: "t1", BloomLevel: 2}}
+
+	// Passing nil ModelSelector must be safe and equivalent to no option.
+	got, err := AssignWorkers(config, limits, workers, tasks, WithModelSelector(nil))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].Model != "sonnet" {
+		t.Errorf("expected sonnet assignment, got %+v", got)
+	}
+}
+
 func TestGetModelForBloomLevel(t *testing.T) {
 	tests := []struct {
 		level int

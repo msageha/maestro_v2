@@ -122,6 +122,7 @@ type RetryOptions struct {
 	MaestroDir         string
 	Config             model.Config
 	LockMap            *lock.MutexMap
+	ModelSelector      ModelSelector // optional: adaptive model selection
 }
 
 // RetryResult contains the outcome of a task retry including any cascade-recovered tasks.
@@ -202,7 +203,7 @@ func assignWorkerForRetry(opts RetryOptions) (WorkerAssignment, []WorkerState, e
 		return WorkerAssignment{}, nil, fmt.Errorf("build worker states: %w", err)
 	}
 	assignReqs := []TaskAssignmentRequest{{Name: "__retry", BloomLevel: opts.BloomLevel}}
-	assignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, workerStates, assignReqs)
+	assignments, err := AssignWorkers(opts.Config.Agents.Workers, opts.Config.Limits, workerStates, assignReqs, WithModelSelector(opts.ModelSelector))
 	if err != nil {
 		return WorkerAssignment{}, nil, fmt.Errorf("worker assignment: %w", err)
 	}
@@ -437,6 +438,7 @@ func applyRetryStateChanges(
 	cascadeRecovered, err := cascadeRecover(
 		state, opts.RetryOf, newTaskID,
 		opts.Config.Agents.Workers, opts.Config.Limits, workerStates, origTaskCache,
+		opts.ModelSelector,
 	)
 	if err != nil {
 		restoreStateOrLog(state, origStateBytes, "cascade_recovery")
