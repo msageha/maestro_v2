@@ -82,6 +82,98 @@ func TestRunPlanUnquarantine_FlagParsing(t *testing.T) {
 	}
 }
 
+// TestRunPlanUnquarantine_RejectedForPlanner verifies that the CLI layer
+// rejects plan unquarantine invocations originating from the Planner role
+// before the request ever reaches the daemon. This is a multi-layer defense
+// that complements the daemon-side caller_role check in
+// internal/daemon/plan_handler.go handlePlan.
+func TestRunPlanUnquarantine_RejectedForPlanner(t *testing.T) {
+	t.Setenv(uds.CallerRoleEnv, uds.RolePlanner)
+
+	// Use a mock client so a successful regression (missing guard) would
+	// surface as "daemon was called" rather than a socket error.
+	called := false
+	app := newTestApp(&mockUDSClient{
+		sendCommandContextFunc: func(_ context.Context, _ string, _ any) (*uds.Response, error) {
+			called = true
+			return successResponse(nil), nil
+		},
+	})
+	withMaestroDir(t)
+
+	err := app.runPlanUnquarantine([]string{"--command-id", "cmd_1"})
+	if err == nil {
+		t.Fatal("expected error when invoked with Planner role")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if ce.ExitCode() == 0 {
+		t.Errorf("expected non-zero exit code, got %d", ce.ExitCode())
+	}
+	if !containsStr(ce.Msg, "planner") && !containsStr(ce.Msg, "Planner") {
+		t.Errorf("expected rejection message to mention Planner, got: %s", ce.Msg)
+	}
+	if !containsStr(ce.Msg, "multi-layer defense") {
+		t.Errorf("expected rejection message to mention 'multi-layer defense', got: %s", ce.Msg)
+	}
+	if called {
+		t.Error("daemon must not be contacted when CLI-layer guard rejects Planner")
+	}
+}
+
+// TestRunPlanUnquarantine_OperatorRoleReachesDaemon is a regression guard:
+// with the default/operator caller role (MAESTRO_AGENT_ROLE unset) the
+// unquarantine request must still be forwarded to the daemon.
+func TestRunPlanUnquarantine_OperatorRoleReachesDaemon(t *testing.T) {
+	// Explicitly clear any inherited role so the caller is treated as
+	// direct CLI / operator.
+	t.Setenv(uds.CallerRoleEnv, "")
+	withMaestroDir(t)
+
+	called := false
+	app := newTestApp(&mockUDSClient{
+		sendCommandContextFunc: func(_ context.Context, cmd string, _ any) (*uds.Response, error) {
+			called = true
+			if cmd != "plan" {
+				t.Errorf("expected cmd=plan, got %q", cmd)
+			}
+			return successResponse(nil), nil
+		},
+	})
+
+	if err := app.runPlanUnquarantine([]string{"--command-id", "cmd_1"}); err != nil {
+		t.Fatalf("unexpected error for operator role: %v", err)
+	}
+	if !called {
+		t.Fatal("expected daemon SendCommandContext to be called for operator role")
+	}
+}
+
+// TestRunPlanUnquarantine_OrchestratorRoleReachesDaemon ensures the CLI
+// guard is narrowly scoped to the Planner role and does not inadvertently
+// block other recovery-eligible roles (orchestrator, cli).
+func TestRunPlanUnquarantine_OrchestratorRoleReachesDaemon(t *testing.T) {
+	t.Setenv(uds.CallerRoleEnv, uds.RoleOrchestrator)
+	withMaestroDir(t)
+
+	called := false
+	app := newTestApp(&mockUDSClient{
+		sendCommandContextFunc: func(_ context.Context, _ string, _ any) (*uds.Response, error) {
+			called = true
+			return successResponse(nil), nil
+		},
+	})
+
+	if err := app.runPlanUnquarantine([]string{"--command-id", "cmd_1"}); err != nil {
+		t.Fatalf("unexpected error for orchestrator role: %v", err)
+	}
+	if !called {
+		t.Fatal("expected daemon to be called for orchestrator role")
+	}
+}
+
 func TestRunPlanResumeMerge_FlagParsing(t *testing.T) {
 	tests := []struct {
 		name string
