@@ -124,6 +124,86 @@ func TestGetModelForBloomLevel_Boost(t *testing.T) {
 	}
 }
 
+func TestModelFamily(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{"empty", "", ""},
+		{"short sonnet", "sonnet", "sonnet"},
+		{"short opus", "opus", "opus"},
+		{"short haiku", "haiku", "haiku"},
+		{"full sonnet 4-6", "claude-sonnet-4-6", "sonnet"},
+		{"full opus 4-6", "claude-opus-4-6", "opus"},
+		{"full opus 4-7", "claude-opus-4-7", "opus"},
+		{"full haiku dated", "claude-haiku-4-5-20251001", "haiku"},
+		{"unknown passthrough", "gemini-2.5-pro", "gemini-2.5-pro"},
+		{"unknown claude passthrough", "claude-unknown-9-9", "claude-unknown-9-9"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := modelFamily(tt.in); got != tt.want {
+				t.Errorf("modelFamily(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestAssignWorkers_FullModelIDMatchesOpusFamily(t *testing.T) {
+	// Worker configured with a full Claude ID should satisfy an "opus"
+	// requirement derived from BloomLevel 4-6.
+	config := model.WorkerConfig{
+		Count:        2,
+		DefaultModel: "sonnet",
+		Models:       map[string]string{"worker2": "claude-opus-4-7"},
+	}
+	limits := model.LimitsConfig{MaxPendingTasksPerWorker: 10}
+	workers := []WorkerState{
+		{WorkerID: "worker1", Model: "sonnet"},
+		{WorkerID: "worker2", Model: "claude-opus-4-7"},
+	}
+	tasks := []TaskAssignmentRequest{{Name: "t1", BloomLevel: 5}}
+
+	got, err := AssignWorkers(config, limits, workers, tasks)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 assignment, got %d", len(got))
+	}
+	if got[0].WorkerID != "worker2" {
+		t.Errorf("expected worker2 (claude-opus-4-7), got %q", got[0].WorkerID)
+	}
+	if got[0].Model != "claude-opus-4-7" {
+		t.Errorf("expected assignment to carry full ID, got %q", got[0].Model)
+	}
+}
+
+func TestAssignWorkers_WithModelSelector_FullIDPickMatchesFamilyWorker(t *testing.T) {
+	// Selector picks the family alias "opus"; worker is configured with the
+	// full ID "claude-opus-4-7". The pick must be honored via family match.
+	config := model.WorkerConfig{
+		Count:        2,
+		DefaultModel: "sonnet",
+		Models:       map[string]string{"worker2": "claude-opus-4-7"},
+	}
+	limits := model.LimitsConfig{MaxPendingTasksPerWorker: 10}
+	workers := []WorkerState{
+		{WorkerID: "worker1", Model: "sonnet"},
+		{WorkerID: "worker2", Model: "claude-opus-4-7"},
+	}
+	tasks := []TaskAssignmentRequest{{Name: "t1", BloomLevel: 2}}
+
+	got, err := AssignWorkers(config, limits, workers, tasks, WithModelSelector(stubModelSelector{choice: "opus"}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].WorkerID != "worker2" {
+		t.Errorf("expected selector override to land on worker2, got %+v", got)
+	}
+}
+
 func TestAssignWorkers_BasicSonnet(t *testing.T) {
 	config := model.WorkerConfig{
 		Count:        2,

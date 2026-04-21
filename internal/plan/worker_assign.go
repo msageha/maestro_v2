@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	yamlv3 "gopkg.in/yaml.v3"
 
@@ -66,9 +67,16 @@ type TaskAssignmentRequest struct {
 	BloomLevel int
 }
 
-// GetModelForBloomLevel returns the model name appropriate for the given Bloom taxonomy level.
-// BloomLevel 0 (unset/invalid) defaults to "sonnet" as a safe fallback.
-// BloomLevel 1-3 maps to "sonnet", 4-6 maps to "opus".
+// GetModelForBloomLevel returns the model family name appropriate for the
+// given Bloom taxonomy level. BloomLevel 0 (unset/invalid) defaults to
+// "sonnet" as a safe fallback. BloomLevel 1-3 maps to "sonnet", 4-6 maps to
+// "opus".
+//
+// The returned value is a canonical family alias ("sonnet" / "opus"). Workers
+// may be configured with either the same short alias or a full Claude model
+// ID that belongs to the same family (e.g. "claude-opus-4-7" satisfies an
+// "opus" requirement) — AssignWorkers compares using modelFamily so any full
+// ID in the required family is eligible.
 func GetModelForBloomLevel(bloomLevel int, boost bool) string {
 	if boost {
 		return "opus"
@@ -77,6 +85,30 @@ func GetModelForBloomLevel(bloomLevel int, boost bool) string {
 		return "opus"
 	}
 	return "sonnet"
+}
+
+// modelFamily returns the canonical family alias ("sonnet" / "opus" / "haiku")
+// for a given model identifier. Short aliases pass through unchanged; full
+// Claude model IDs such as "claude-opus-4-7" or "claude-haiku-4-5-20251001"
+// are mapped to their family. Unknown names are returned unchanged so custom
+// / third-party model names still compare equal to themselves.
+func modelFamily(name string) string {
+	switch name {
+	case "", "sonnet", "opus", "haiku":
+		return name
+	}
+	// Full Claude model IDs have the form "claude-<family>-<version>[-<suffix>]".
+	if rest, ok := strings.CutPrefix(name, "claude-"); ok {
+		family := rest
+		if i := strings.IndexByte(rest, '-'); i >= 0 {
+			family = rest[:i]
+		}
+		switch family {
+		case "sonnet", "opus", "haiku":
+			return family
+		}
+	}
+	return name
 }
 
 // GetWorkerModel returns the model configured for the given worker, falling back to the default.
@@ -139,10 +171,14 @@ func AssignWorkers(
 			}
 		}
 
-		// Find eligible workers with matching model and minimum pending
+		// Find eligible workers with matching model family and minimum pending.
+		// Workers configured with a full Claude model ID (e.g.
+		// "claude-opus-4-7") satisfy a required family alias ("opus") via
+		// modelFamily normalization.
+		requiredFamily := modelFamily(requiredModel)
 		var bestWorker *WorkerState
 		for _, ws := range stateMap {
-			if ws.Model != requiredModel {
+			if modelFamily(ws.Model) != requiredFamily {
 				continue
 			}
 			if ws.PendingCount >= maxPending {
@@ -156,10 +192,10 @@ func AssignWorkers(
 		}
 
 		if bestWorker == nil {
-			// Distinguish "no workers with matching model" from "matching workers at capacity"
+			// Distinguish "no workers with matching family" from "matching workers at capacity"
 			hasMatchingModel := false
 			for _, ws := range stateMap {
-				if ws.Model == requiredModel {
+				if modelFamily(ws.Model) == requiredFamily {
 					hasMatchingModel = true
 					break
 				}
@@ -242,11 +278,14 @@ func workerIDToQueueFile(workerID string) string {
 	return workerID + ".yaml"
 }
 
-// workerExistsForModel reports whether at least one worker in stateMap
-// is configured for the given model name.
+// workerExistsForModel reports whether at least one worker in stateMap is
+// configured for the given model name. Comparison is performed at the
+// modelFamily level so full Claude model IDs (e.g. "claude-opus-4-7") match
+// a request for the short family alias ("opus") and vice versa.
 func workerExistsForModel(stateMap map[string]*WorkerState, modelName string) bool {
+	family := modelFamily(modelName)
 	for _, ws := range stateMap {
-		if ws.Model == modelName {
+		if modelFamily(ws.Model) == family {
 			return true
 		}
 	}
@@ -254,6 +293,11 @@ func workerExistsForModel(stateMap map[string]*WorkerState, modelName string) bo
 }
 
 // defaultModelArms lists the model arms registered for UCB1 selection.
+// Arms are kept at the family level ("sonnet" / "opus" / "haiku") so that
+// UCB1 statistics remain stable across full-ID version bumps. Workers
+// configured with full Claude model IDs (e.g. "claude-opus-4-7") still
+// satisfy these arms because AssignWorkers / workerExistsForModel compare
+// via modelFamily.
 var defaultModelArms = []string{"sonnet", "opus", "haiku"}
 
 // AdaptiveModelSelector uses UCB1 bandit for model selection with static fallback.

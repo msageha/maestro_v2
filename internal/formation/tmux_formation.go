@@ -23,30 +23,19 @@ func createFormation(cfg model.Config) (retErr error) {
 		}
 	}
 
-	// Start the tmux server and apply server-level hardening BEFORE creating
-	// the session. This eliminates the race window where a detached session
-	// exists but exit-empty/exit-unattached have not been set yet — if the
-	// user's tmux.conf has exit-unattached=on, the server would otherwise
-	// exit immediately after a detached session is created.
-	slog.Debug("createFormation: starting tmux server and applying server hardening")
+	// Create the session and apply server-level hardening atomically in a
+	// single tmux invocation. Chaining avoids both:
+	//   - the "empty server exits before we can disable exit-empty" race when
+	//     set-option is issued before any session exists, and
+	//   - the "user's tmux.conf exit-unattached=on destroys the session
+	//     between new-session and the follow-up set-option" race.
+	slog.Debug("createFormation: creating session with server hardening (atomic)")
 
-	if err := tmux.StartServer(); err != nil {
-		return fmt.Errorf("start tmux server: %w", err)
-	}
-
-	// Harden server: prevent tmux server from exiting when the last session is destroyed.
-	if err := tmux.SetServerOption("exit-empty", "off"); err != nil {
-		return fmt.Errorf("set exit-empty: %w", err)
-	}
-
-	// Defense in depth: explicitly disable exit-unattached.
-	if err := tmux.SetServerOption("exit-unattached", "off"); err != nil {
-		return fmt.Errorf("set exit-unattached: %w", err)
-	}
-
-	// Window 0: orchestrator
-	if err := tmux.CreateSession("orchestrator"); err != nil {
-		return fmt.Errorf("create session: %w", err)
+	if err := tmux.CreateSessionWithServerOptions("orchestrator", map[string]string{
+		"exit-empty":      "off",
+		"exit-unattached": "off",
+	}); err != nil {
+		return fmt.Errorf("create session with server options: %w", err)
 	}
 
 	// Rollback: if any subsequent step fails, destroy the partially-created session

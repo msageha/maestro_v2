@@ -631,13 +631,39 @@ func SetupWorkerGrid(windowTarget string, workerCount int) ([]string, error) {
 	return ListPanes(windowTarget, paneFormat)
 }
 
-// StartServer starts the tmux server without creating a session.
-// This allows server-level options (e.g., exit-empty, exit-unattached) to be
-// set before any session is created, eliminating the race window where a
-// detached session exists but protective options have not yet been applied.
-// Idempotent: if the server is already running, this is a no-op.
-func StartServer() error {
-	return run("start-server")
+// CreateSessionWithServerOptions creates a new maestro tmux session and applies
+// the given server-level options atomically in a single tmux invocation.
+//
+// This avoids two competing races:
+//   - Starting an empty server first and then setting options: with the default
+//     exit-empty=on, the empty server exits before the follow-up set-option
+//     commands can reach it ("no server running on ..." error).
+//   - Creating a detached session first and then setting options: if the user's
+//     tmux.conf sets exit-unattached=on, the server may exit between new-session
+//     and the first set-option.
+//
+// Chaining `new-session` and `set-option` commands via tmux's `;` separator
+// runs them within a single client invocation, so the server stays up for the
+// entire sequence regardless of exit-empty / exit-unattached defaults.
+//
+// The iteration order of serverOptions does not affect correctness because
+// tmux applies each option synchronously within the chain.
+func CreateSessionWithServerOptions(windowName string, serverOptions map[string]string) error {
+	debugLog("CreateSessionWithServerOptions session=%s window=%s options=%v",
+		GetSessionName(), windowName, serverOptions)
+
+	args := []string{"new-session", "-d", "-s", GetSessionName(), "-n", windowName}
+	for name, value := range serverOptions {
+		args = append(args, ";", "set-option", "-s", name, value)
+	}
+
+	err := run(args...)
+	if err != nil {
+		debugLog("CreateSessionWithServerOptions FAILED session=%s error=%v", GetSessionName(), err)
+	} else {
+		debugLog("CreateSessionWithServerOptions OK session=%s", GetSessionName())
+	}
+	return err
 }
 
 // SetServerOption sets a server-level tmux option.
