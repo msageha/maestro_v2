@@ -1,3 +1,0 @@
-This is line 1 from Worker
-This is line 2 from Worker
-This is line 3 from Worker
