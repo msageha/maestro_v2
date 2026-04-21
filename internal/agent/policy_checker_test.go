@@ -2281,6 +2281,127 @@ func TestHookScript_WTGIT_NoEnforcementOutsideWorktree(t *testing.T) {
 	}
 }
 
+// TestHookScript_WTGIT_FalsePositive_MaestroResultWriteContainingGitInSummary
+// verifies that a `maestro result write` invocation whose --summary value
+// contains git command names (commit/add/merge/...) as plain substrings is
+// NOT denied by WT-GIT. The prior implementation scanned the entire command
+// string for /git\s+(commit|...)/, which fired on benign result reports
+// mentioning git in free-form text. The fix anchors the match to shell
+// statement boundaries (start-of-string or ;/|/&&).
+func TestHookScript_WTGIT_FalsePositive_MaestroResultWriteContainingGitInSummary(t *testing.T) {
+	requireJq(t)
+	base := t.TempDir()
+
+	projectDir := filepath.Join(base, "project")
+	maestroDir := filepath.Join(projectDir, ".maestro")
+	worktreeDir := filepath.Join(maestroDir, "worktrees", "cmd_123", "worker1")
+	if err := os.MkdirAll(worktreeDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// Each of these contains a git verb only as a substring inside a
+	// --summary / --learnings argument. None should be rejected by WT-GIT.
+	cases := []struct {
+		name string
+		cmd  string
+	}{
+		{
+			name: "summary mentions git commit",
+			cmd:  "maestro result write worker1 --task-id t --command-id c --lease-epoch 1 --status completed --summary '[変更理由] git commit succeeded'",
+		},
+		{
+			name: "summary mentions git add",
+			cmd:  "maestro result write worker1 --summary '... git add done ...'",
+		},
+		{
+			name: "learning mentions git merge",
+			cmd:  "maestro result write worker1 --learnings 'prefer git merge --no-ff'",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScriptInDir(t, scriptPath, input, worktreeDir)
+			if strings.Contains(output, "WT-GIT") {
+				t.Errorf("WT-GIT must not trigger on maestro CLI argument containing git-as-substring: %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+// TestHookScript_WTGIT_FalsePositive_MaestroTaskHeartbeat verifies that
+// `maestro task heartbeat` (which contains no git token at all) is not
+// blocked by WT-GIT when issued from inside a worktree CWD.
+func TestHookScript_WTGIT_FalsePositive_MaestroTaskHeartbeat(t *testing.T) {
+	requireJq(t)
+	base := t.TempDir()
+
+	projectDir := filepath.Join(base, "project")
+	maestroDir := filepath.Join(projectDir, ".maestro")
+	worktreeDir := filepath.Join(maestroDir, "worktrees", "cmd_123", "worker1")
+	if err := os.MkdirAll(worktreeDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	input := makeBashInput("maestro task heartbeat --agent-id worker1 --task-id t --lease-epoch 1")
+	output := runHookScriptInDir(t, scriptPath, input, worktreeDir)
+	if strings.Contains(output, "WT-GIT") {
+		t.Errorf("WT-GIT must not trigger on maestro task heartbeat, got: %s", output)
+	}
+}
+
+// TestHookScript_WTGIT_BlocksChainedGitAfterSeparator verifies that chained
+// shell commands where `git <mutating-verb>` appears after a shell separator
+// (`&&`, `;`, `|`) are still denied. The separator places `git` at the head
+// of the next command segment, which the anchored regex must still catch.
+func TestHookScript_WTGIT_BlocksChainedGitAfterSeparator(t *testing.T) {
+	requireJq(t)
+	base := t.TempDir()
+
+	projectDir := filepath.Join(base, "project")
+	maestroDir := filepath.Join(projectDir, ".maestro")
+	worktreeDir := filepath.Join(maestroDir, "worktrees", "cmd_123", "worker1")
+	if err := os.MkdirAll(worktreeDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	chained := []struct {
+		name string
+		cmd  string
+	}{
+		{"cd && git commit", "cd /tmp && git commit -m msg"},
+		{"cd && git add", "cd sub && git add ."},
+		{"semicolon git commit", "echo done ; git commit -am wip"},
+	}
+	for _, tc := range chained {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScriptInDir(t, scriptPath, input, worktreeDir)
+			if !strings.Contains(output, "WT-GIT") || !strings.Contains(output, "deny") {
+				t.Errorf("expected WT-GIT deny for chained %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
 // =============================================================================
 // M2: Decode command bypass prevention
 // =============================================================================

@@ -269,10 +269,22 @@ if [ "$tool_name" = "Bash" ]; then
   fi
 
   # WT-GIT: Block git change commands in worktree mode
-  # When CWD is inside .maestro/worktrees/, only read-only git commands are allowed
+  # When CWD is inside .maestro/worktrees/, only read-only git commands are allowed.
+  #
+  # Rationale: this hook blocks raw git mutations initiated from inside a
+  # worktree (commit orchestration is owned by the daemon). A naive regex
+  # scanning the entire command string matched benign invocations such as
+  #   maestro result write --summary "...git commit succeeded..."
+  # where the verb "git commit" appears only as a literal substring of a
+  # CLI argument. To prevent that false positive, we only fire when the
+  # word "git" appears as the first token of a shell command segment,
+  # anchored by start-of-string or a shell separator ( ; | && ). This
+  # mirrors the (^|;|\||&&)\s* pattern used by D005/D006/etc. and still
+  # catches chained forms like "cd worktree && git commit" because the
+  # && separator places git at the head of the next segment.
   _wt_cwd="$(pwd -P 2>/dev/null || echo "")"
   if [ -n "$_wt_cwd" ] && echo "$_wt_cwd" | grep -qF '/.maestro/worktrees/'; then
-    if echo "$cmd" | grep -qE 'git\s+(commit|add|merge|rebase|cherry-pick|revert|stash|restore|fetch|pull|worktree|tag)(\s|$)'; then
+    if echo "$cmd" | grep -qE '(^|;|\||&&)\s*git\s+(commit|add|merge|rebase|cherry-pick|revert|stash|restore|fetch|pull|worktree|tag)(\s|$)'; then
       deny "WT-GIT: Blocked git change command in worktree mode (only read-only git commands allowed)"
     fi
   fi
