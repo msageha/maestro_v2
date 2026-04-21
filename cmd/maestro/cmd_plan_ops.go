@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
+	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
 )
 
@@ -98,6 +100,18 @@ func (a *cliApp) runPlanUnquarantine(args []string) error {
 	}
 	if err := validate.ID(commandID); err != nil {
 		return cmd.Errorf("invalid --command-id: %v", err)
+	}
+
+	// Multi-layer defense: reject Planner callers at the CLI layer before
+	// contacting the daemon. The daemon's plan handler already enforces the
+	// same trust boundary (see internal/daemon/plan_handler.go handlePlan),
+	// but short-circuiting here ensures Planner-originated invocations fail
+	// deterministically even if the daemon check is bypassed or regresses.
+	if role := os.Getenv(uds.CallerRoleEnv); role == uds.RolePlanner {
+		return &CLIError{
+			Code: 1,
+			Msg:  "maestro plan unquarantine: restricted to operator role; Planner is not permitted (multi-layer defense)",
+		}
 	}
 
 	maestroDir, err := requireMaestroDir("plan unquarantine")

@@ -303,6 +303,13 @@ if [ "$tool_name" = "Bash" ]; then
   if echo "$cmd" | grep -qE 'git\s+checkout\s+--\s+\.'; then
     deny "D004: Blocked git checkout -- . (destroys uncommitted changes)"
   fi
+  # D004: "git checkout ." (no "--" separator, single dot argument) resets all
+  # tracked files in the working tree to HEAD, destroying uncommitted changes.
+  # The anchor (\s|$) ensures we only match a bare "." token, so benign forms
+  # such as "git checkout .github" or "git checkout ./path" are not affected.
+  if echo "$cmd" | grep -qE 'git\s+checkout\s+\.(\s|$)'; then
+    deny "D004: Blocked git checkout . (destroys uncommitted changes)"
+  fi
   if echo "$cmd" | grep -qE 'git\s+clean\s+-[a-zA-Z]*f' && \
      ! echo "$cmd" | grep -qE 'git\s+clean\s+-[a-zA-Z]*n'; then
     deny "D004: Blocked git clean -f (use git clean -n for dry run first)"
