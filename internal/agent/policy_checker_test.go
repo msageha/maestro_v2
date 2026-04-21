@@ -2646,6 +2646,107 @@ func TestHookScript_m5_AllowsSafePerlOperations(t *testing.T) {
 }
 
 // =============================================================================
+// D004: git checkout . (single dot, no double-dashes) destroys tracked files
+// =============================================================================
+
+// TestD004_GitCheckoutDotWithoutDashes verifies that "git checkout ." without
+// the "--" separator is blocked. This form resets all tracked files in the
+// working tree to HEAD (equivalent to wiping uncommitted changes), which is a
+// Tier 1 destructive operation. The existing D004 regex only matched
+// "git checkout -- ." so this form previously leaked through.
+func TestD004_GitCheckoutDotWithoutDashes(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	denyCases := []struct {
+		name string
+		cmd  string
+	}{
+		{"bare git checkout .", "git checkout ."},
+		{"git checkout . with trailing space", "git checkout . "},
+		{"chained after &&", "cd repo && git checkout ."},
+	}
+	for _, tc := range denyCases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "D004") || !strings.Contains(output, "deny") {
+				t.Errorf("expected D004 deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+// TestD004_GitCheckoutExistingDenyCasesStillBlocked ensures the new
+// "git checkout ." pattern does not regress the existing D004 deny cases.
+func TestD004_GitCheckoutExistingDenyCasesStillBlocked(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	denyCases := []struct {
+		name string
+		cmd  string
+	}{
+		{"git checkout -- .", "git checkout -- ."},
+		{"git reset --hard", "git reset --hard HEAD"},
+		{"git clean -f", "git clean -f"},
+		{"git clean -fd", "git clean -fd"},
+	}
+	for _, tc := range denyCases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if !strings.Contains(output, "D004") || !strings.Contains(output, "deny") {
+				t.Errorf("expected D004 deny for %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+// TestD004_GitCheckoutFalsePositives ensures benign "git checkout" forms are
+// not accidentally blocked by the new pattern. Branch switching and per-file
+// restore must remain usable for read-only inspection (Workers are allowed to
+// read git state).
+func TestD004_GitCheckoutFalsePositives(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	allowed := []struct {
+		name string
+		cmd  string
+	}{
+		{"branch switch", "git checkout main"},
+		{"per-file restore", "git checkout -- internal/foo.go"},
+		{"dotfile not single dot", "git checkout .github"},
+		{"relative path not single dot", "git checkout ./path"},
+	}
+	for _, tc := range allowed {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScript(t, scriptPath, input)
+			if strings.Contains(output, "D004") {
+				t.Errorf("should not D004-deny %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+// =============================================================================
 // Static pattern presence checks for new rules
 // =============================================================================
 
