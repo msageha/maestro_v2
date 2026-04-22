@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
@@ -270,24 +271,205 @@ func preparePanes(
 	return readyPanes, nil
 }
 
-// trustDialogDelay is the time to wait for Claude Code's workspace trust dialog
-// to appear before sending the auto-accept keystroke. Claude CLI startup
-// typically takes 1-3 seconds; 4 seconds provides margin for slower machines.
-const trustDialogDelay = 4 * time.Second
+// trustDialogPollInterval is how frequently each pane is checked for Claude
+// Code's workspace trust dialog.
+const trustDialogPollInterval = 500 * time.Millisecond
 
-// autoAcceptTrustDialog sends an Enter keystroke to each pane after a brief
-// delay to automatically accept Claude Code's workspace trust dialog.
-// If the dialog is not present (project already trusted), the Enter is
-// harmless — Claude Code ignores empty input in interactive mode.
+// trustDialogPollTimeout is the maximum time we keep polling a pane looking
+// for the trust dialog. The dialog can take well over 30s to appear on first
+// launch (Claude Code binary initialization, network auth, model handshake),
+// and a short timeout caused the automation to silently give up — leaving
+// every pane stuck on "Is this a project you created or one you trust?"
+// until the operator hit Enter manually. Five minutes covers slow starts
+// while still bounding the watcher goroutine's lifetime.
+const trustDialogPollTimeout = 5 * time.Minute
+
+// trustDialogCaptureLines controls how many lines the trust-dialog poller
+// pulls from each pane.
+//
+// This must be 0 (i.e. no `-S` flag to capture-pane). Claude Code renders
+// its workspace trust dialog on the terminal's *alternate screen*, and an
+// alt-screen has no scrollback: asking tmux for history lines via `-S -N`
+// returns content from the underlying primary screen instead, completely
+// missing the dialog that is actually visible to the operator.
+//
+// Older versions of this file set this to 80, then 200, on the theory that
+// pulling more history would catch the dialog if it had scrolled. In
+// practice the larger window just pulled more of the pre-dialog shell
+// transcript and the dialog was never detected — the poll loop ran for the
+// full 5 minutes while the dialog sat on screen. Keeping this at 0 captures
+// exactly the visible pane, which is the alt-screen when the dialog is up.
+const trustDialogCaptureLines = 0
+
+// trustDialogMarkers are substrings that reliably identify Claude Code's
+// workspace trust dialog. Across CLI versions the dialog phrasing has
+// shifted — "Do you trust the files in this folder?" on older builds,
+// "Is this a project you created or one you trust?" / "Yes, I trust this
+// folder" on newer ones. Matching any of these substrings (case-insensitive)
+// is treated as positive detection. Markers are intentionally short so they
+// survive further wording tweaks; each one is specific enough that it will
+// not false-match idle REPL output or shell prompts.
+//
+// We also match the two short menu options ("yes, proceed" / "no, exit")
+// because on narrow panes the long question line wraps in a way that — even
+// after -J joining — can get split across our capture boundary, but the
+// options almost always render on their own short lines near the prompt.
+var trustDialogMarkers = []string{
+	"trust the files",   // "Do you trust the files in this folder?"
+	"do you trust",      // older variant
+	"one you trust",     // "Is this a project you created or one you trust?"
+	"trust this folder", // "Yes, I trust this folder"
+	"yes, proceed",      // menu option on newer builds
+	"no, exit",          // menu option on newer builds
+}
+
+// trustDialogMaxEnterSends is the number of Enter keystrokes the auto-accept
+// loop sends in "fast retry" mode (one per trustDialogPollInterval = 500 ms).
+// After this many attempts the loop switches to "slow retry" mode
+// (trustDialogSlowRetryInterval between attempts) instead of giving up.
+//
+// Background: Enter keystrokes sent before Claude Code's TUI has finished
+// switching the terminal into raw/alt-screen mode and reading stdin are
+// silently discarded. On slow-starting panes (Orchestrator, workers) all fast
+// retries can be consumed before the TUI becomes stdin-ready, leaving the
+// dialog on screen. Switching to slow retries instead of abandoning the pane
+// means the loop keeps trying for the full trustDialogPollTimeout window,
+// so an Enter eventually lands once the TUI is ready.
+const trustDialogMaxEnterSends = 8
+
+// trustDialogSlowRetryInterval is the minimum gap between Enter keystrokes
+// once the fast-retry budget (trustDialogMaxEnterSends) is exhausted. Slower
+// sends reduce log noise while still retrying often enough that the dialog is
+// cleared within a few seconds of Claude Code becoming stdin-ready.
+const trustDialogSlowRetryInterval = 3 * time.Second
+
+// trustDialogPaneState tracks per-pane progress for autoAcceptTrustDialog.
+// sawDialog distinguishes "never saw the dialog" (project already trusted)
+// from "dialog appeared and we attempted Enter" — only the latter case cares
+// about whether the dialog has now cleared.
+type trustDialogPaneState struct {
+	sawDialog  bool
+	enterSent  int
+	lastSentAt time.Time
+}
+
+// autoAcceptTrustDialog watches each pane for Claude Code's workspace trust
+// dialog and sends Enter until the dialog clears. Previous versions used a
+// fixed 4s delay + single Enter, which failed when the dialog appeared later
+// than expected (slow startup, staggered pane launches). A later iteration
+// polled per-pane and deleted the pane after the first Enter, which still
+// failed when the first Enter landed before Claude Code's TUI was reading
+// stdin — the keystroke was lost during the switch to raw mode and the loop
+// never retried.
+//
+// Per-pane state machine:
+//   - "waiting":    dialog has not been seen yet — keep polling until timeout
+//     (common "no dialog appears" case when the project is already trusted).
+//   - "fast retry": dialog is currently visible — send Enter every
+//     trustDialogPollInterval until trustDialogMaxEnterSends attempts.
+//   - "slow retry": fast-retry budget exhausted but dialog still visible —
+//     send Enter every trustDialogSlowRetryInterval. This handles the race
+//     where all fast Enters land before Claude Code's TUI is stdin-ready and
+//     are silently discarded; slow retries keep trying for the full
+//     trustDialogPollTimeout window so the dialog clears once the TUI is ready.
+//   - "accepted":   dialog was seen at some point and is now gone — stop
+//     polling this pane (Enter was consumed successfully).
 func autoAcceptTrustDialog(panes []string) {
 	go func() {
-		time.Sleep(trustDialogDelay)
-		for _, pane := range panes {
-			if err := tmux.SendKeys(pane, "Enter"); err != nil {
-				slog.Debug("autoAcceptTrustDialog: send Enter failed", "pane", pane, "error", err)
+		remaining := make(map[string]*trustDialogPaneState, len(panes))
+		for _, p := range panes {
+			remaining[p] = &trustDialogPaneState{}
+		}
+
+		deadline := time.Now().Add(trustDialogPollTimeout)
+		for len(remaining) > 0 && time.Now().Before(deadline) {
+			time.Sleep(trustDialogPollInterval)
+			for pane, st := range remaining {
+				// Prefer CapturePaneJoined: Claude Code's trust dialog wraps
+				// its question across visual lines on narrow panes, and the
+				// non-joined capture would split a marker like "one you
+				// trust" into "one you" + "trust" — breaking substring
+				// matching. -J joins wrapped lines so markers survive.
+				//
+				// trustDialogCaptureLines MUST be 0 here; see its doc comment
+				// for why pulling scrollback breaks alt-screen detection.
+				content, err := tmux.CapturePaneJoined(pane, trustDialogCaptureLines)
+				if err != nil {
+					slog.Debug("autoAcceptTrustDialog: capture-pane failed",
+						"pane", pane, "error", err)
+					continue
+				}
+				if !containsTrustDialog(content) {
+					if st.sawDialog {
+						// Dialog appeared earlier and is now gone — accepted.
+						slog.Info("autoAcceptTrustDialog: accepted",
+							"pane", pane, "enter_sent", st.enterSent)
+						delete(remaining, pane)
+					}
+					// else: dialog never appeared; keep waiting until timeout.
+					continue
+				}
+
+				st.sawDialog = true
+				now := time.Now()
+				if st.enterSent >= trustDialogMaxEnterSends {
+					// Fast-retry budget exhausted. Switch to slow retry rather
+					// than giving up: Enter keystrokes sent before Claude
+					// Code's TUI is stdin-ready are silently discarded, so all
+					// fast retries may be wasted on slow-starting panes. Slow
+					// retries keep trying for the full trustDialogPollTimeout
+					// window so the dialog is eventually cleared once the TUI
+					// is ready.
+					if now.Sub(st.lastSentAt) < trustDialogSlowRetryInterval {
+						continue // still inside slow-retry cooldown
+					}
+					if st.enterSent == trustDialogMaxEnterSends {
+						// Log exactly once when switching modes.
+						slog.Warn("autoAcceptTrustDialog: switching to slow retry; dialog still visible",
+							"pane", pane, "enter_sent", st.enterSent,
+							"slow_interval", trustDialogSlowRetryInterval)
+					}
+				}
+				if err := tmux.SendKeys(pane, "Enter"); err != nil {
+					slog.Debug("autoAcceptTrustDialog: send Enter failed",
+						"pane", pane, "error", err)
+					continue
+				}
+				st.enterSent++
+				st.lastSentAt = now
+				slog.Debug("autoAcceptTrustDialog: sent Enter",
+					"pane", pane, "attempt", st.enterSent)
 			}
 		}
+		if len(remaining) > 0 {
+			leftover := make([]string, 0, len(remaining))
+			for p := range remaining {
+				leftover = append(leftover, p)
+			}
+			// Elevated to Warn so operators notice when the automation timed
+			// out. Two cases are merged here:
+			//   - project already trusted (sawDialog=false): harmless, the
+			//     dialog simply never appeared.
+			//   - dialog appeared but did not clear (sawDialog=true, slow
+			//     retry exhausted): the dialog is still on screen and the
+			//     operator must hit Enter manually.
+			slog.Warn("autoAcceptTrustDialog: timed out before all dialogs cleared",
+				"panes", leftover, "timeout", trustDialogPollTimeout)
+		}
 	}()
+}
+
+// containsTrustDialog reports whether the pane content shows Claude Code's
+// workspace trust dialog. Matching is case-insensitive so minor wording
+// variants between Claude CLI versions do not break detection.
+func containsTrustDialog(paneContent string) bool {
+	lc := strings.ToLower(paneContent)
+	for _, m := range trustDialogMarkers {
+		if strings.Contains(lc, m) {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveModel determines the model for a given agent.
