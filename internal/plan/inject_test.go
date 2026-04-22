@@ -748,6 +748,57 @@ func TestAddTask_NoTargetPhase_AllTerminal_ReturnsError(t *testing.T) {
 	}
 }
 
+// TestAddTask_RunOnMain_AllTerminal verifies that a RunOnMain task can be added
+// even when all phases are terminal (post-publish verification use case).
+// Without RunOnMain, the same call returns a "all phases are terminal" error.
+func TestAddTask_RunOnMain_AllTerminal(t *testing.T) {
+	maestroDir, commandID, _, _, _ := setupInjectFixtureWithPhases(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	// With RunOnMain=true, task can be added even when all phases are terminal.
+	result, err := AddTask(InjectOptions{
+		CommandID:          commandID,
+		Purpose:            "post-publish final verification",
+		Content:            "run go test ./... on main branch",
+		AcceptanceCriteria: "all tests pass on main",
+		BloomLevel:         3,
+		Required:           false,
+		RunOnMain:          true,
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err != nil {
+		t.Fatalf("AddTask with RunOnMain=true returned error: %v", err)
+	}
+	if result.TaskID == "" {
+		t.Error("expected non-empty TaskID")
+	}
+
+	// The last phase should be reopened (Active).
+	sm := NewStateManager(maestroDir, lm)
+	state, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	lastPhase := state.Phases[len(state.Phases)-1]
+	if lastPhase.Status != model.PhaseStatusActive {
+		t.Errorf("last phase status = %s, want active (reopened)", lastPhase.Status)
+	}
+	taskIDs := lastPhase.TaskIDs
+	found := false
+	for _, id := range taskIDs {
+		if id == result.TaskID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("task %s not found in last phase TaskIDs: %v", result.TaskID, taskIDs)
+	}
+}
+
 func TestAddTask_TargetPhase_AllTerminal(t *testing.T) {
 	maestroDir, commandID, _, phase1ID, _ := setupInjectFixtureWithPhases(t)
 	cfg := testConfig()

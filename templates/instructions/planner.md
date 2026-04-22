@@ -801,6 +801,34 @@ then call `maestro plan retry-publish --command-id cmd_xxx` to re-attempt publis
 
 **`publish_quarantined` 通知との関係:** `publish_conflict` シグナルは Publish 失敗の初回に送信される。Planner がリカバリに失敗し Publish 失敗が蓄積すると、最終的に quarantine に遷移し R8 経由で `publish_quarantined` 通知が届く。quarantined 状態での `retry-publish` も可能（publish 関連の quarantine のみ）。
 
+### Publish 完了通知 (publish_completed)
+
+統合ブランチが main に正常 publish されると、Daemon が Planner に通知を送る:
+
+```
+[maestro] kind:publish_completed command_id:cmd_xxx
+The integration branch has been successfully published to the base branch.
+Call `maestro plan complete` to finalise the command.
+```
+
+**通常の対応**: `.maestro/results/worker{N}.yaml` で成果物を最終確認し、`maestro plan complete` を呼ぶ。
+
+**post-publish verification を実施する場合**: publish 後に main 上でビルド・テストを確認したい場合は、`publish_completed` 受信後に `--run-on-main` タスクを追加できる。
+
+```
+maestro plan add-task \
+  --command-id <command_id> \
+  --purpose "post-publish final verification" \
+  --content "go test ./... を main ブランチ上で実行し、publish 後の状態を確認する" \
+  --acceptance-criteria "全テストパス" \
+  --bloom-level 3 \
+  --run-on-main
+```
+
+- `--target-phase` は不要。`--run-on-main` が指定された場合、全フェーズ terminal でも最後のフェーズに自動追加・再開される
+- `--run-on-main` なしで全フェーズ terminal の状態で `add-task` を呼ぶとエラーになる
+- verification タスク完了後に `maestro plan complete` を呼ぶ
+
 ### コミット失敗ハンドリング (commit_failed)
 
 Worker の自動コミットに失敗すると、Daemon は該当 Worker を `commit_failed_workers` に記録し、worktree を統合ブランチへマージできない状態で保留する。Planner には以下の構造化シグナルが届く:

@@ -250,6 +250,25 @@ func TestMergeConflict_RefExtraction(t *testing.T) {
 	if mc.OursRef == mc.TheirsRef {
 		t.Errorf("OursRef and TheirsRef should differ: both = %s", mc.OursRef)
 	}
+
+	// Verify the refs are commit SHAs (not blob SHAs): "git show <sha>:<file>"
+	// must succeed. If the refs were blob SHAs, this command would fail because
+	// blob SHAs cannot be used with the <sha>:<path> syntax.
+	for _, ref := range []struct {
+		name string
+		sha  string
+	}{
+		{"OursRef", mc.OursRef},
+		{"TheirsRef", mc.TheirsRef},
+		{"BaseRef", mc.BaseRef},
+	} {
+		cmd := exec.Command("git", "show", ref.sha+":README.md")
+		cmd.Dir = projectRoot
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Errorf("%s=%s is not a commit SHA: git show %s:README.md failed: %v\n%s",
+				ref.name, ref.sha, ref.sha, err, out)
+		}
+	}
 }
 
 // TestMergeConflict_BinaryFile verifies that binary file conflicts correctly
@@ -831,6 +850,103 @@ func TestResumeMerge_NoConflictAfterWorkerCommit(t *testing.T) {
 	}
 	if state.Integration.Status != model.IntegrationStatusMerged {
 		t.Errorf("integration status = %q, want merged", state.Integration.Status)
+	}
+}
+
+// TestResumeMerge_ContentMismatchDoesNotPromoteToMerged is the 2026-04 audit
+// Bug 2 regression. Scenario: worker2 is in Conflict, its resolution edits
+// are only sensitive files (e.g. *.key) that get filtered by stageNewFiles,
+// so commitResolvedWorkerChanges fails (nothing staged → `git commit` error).
+// The prior implementation treated the commit failure as non-fatal, let
+// mergeResolvedWorker early-return on an empty branch diff, marked worker2
+// Integrated, and flipped integration to Merged — all while the resolution
+// content never reached any branch and integration still had only worker1's
+// pre-conflict content. The fix must (a) keep worker2 in Conflict, and
+// (b) leave integration status in a non-Merged recovery state so publish
+// cannot be triggered.
+func TestResumeMerge_ContentMismatchDoesNotPromoteToMerged(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_resume_bad_content"
+	workers := []string{"worker1", "worker2"}
+	if err := createForCommand(wm, commandID, workers); err != nil {
+		t.Fatalf("createForCommand: %v", err)
+	}
+
+	wt1, err := wm.GetWorkerPath(commandID, "worker1")
+	if err != nil {
+		t.Fatalf("GetWorkerPath worker1: %v", err)
+	}
+	wt2, err := wm.GetWorkerPath(commandID, "worker2")
+	if err != nil {
+		t.Fatalf("GetWorkerPath worker2: %v", err)
+	}
+
+	// Both workers add the same file with different content → add/add conflict.
+	if err := os.WriteFile(filepath.Join(wt1, "SHARED.txt"), []byte("alpha\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker1", "worker1 add SHARED.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt2, "SHARED.txt"), []byte("beta\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker2", "worker2 add SHARED.txt"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Merge — worker1 integrates, worker2 conflicts.
+	conflicts, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil)
+	if err != nil {
+		t.Fatalf("MergeToIntegration: %v", err)
+	}
+	if len(conflicts) != 1 || conflicts[0].WorkerID != "worker2" {
+		t.Fatalf("expected 1 conflict on worker2, got %d: %v", len(conflicts), conflicts)
+	}
+
+	// Simulate resolver dispatch → worker2 goes to Resolving.
+	func() {
+		wm.mu.Lock()
+		defer wm.mu.Unlock()
+		st, _ := wm.loadState(commandID)
+		ws := wm.findWorker(st, "worker2")
+		now := wm.clock.Now().UTC().Format("2006-01-02T15:04:05Z")
+		_ = wm.setWorkerStatus(ws, model.WorktreeStatusResolving, now)
+		st.UpdatedAt = now
+		_ = wm.saveState(commandID, st)
+	}()
+
+	// Worker2's "resolution" is only a sensitive file — everything will be
+	// filtered out by stageNewFiles. No touch to SHARED.txt → the conflict
+	// remains unresolved on disk.
+	if err := os.WriteFile(filepath.Join(wt2, "secret.key"), []byte("DUMMY"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// ResumeMerge must refuse to promote to Merged.
+	if err := wm.ResumeMerge(context.Background(), commandID); err != nil {
+		t.Fatalf("ResumeMerge: %v", err)
+	}
+
+	state, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+
+	// Integration must NOT be Merged — Merged would unblock publish and
+	// propagate empty integration content to base.
+	if state.Integration.Status == model.IntegrationStatusMerged {
+		t.Errorf("integration status = merged (BAD: resolution content never reached the branch)")
+	}
+
+	// Worker2 must NOT be Integrated — it never actually resolved anything.
+	for _, ws := range state.Workers {
+		if ws.WorkerID == "worker2" && ws.Status == model.WorktreeStatusIntegrated {
+			t.Errorf("worker2 status = integrated (BAD: resolution commit never happened)")
+		}
 	}
 }
 

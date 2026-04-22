@@ -165,7 +165,10 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 			// Worker has no existing tasks; fall through to generic fallback.
 			targetIdx, err := findFirstNonTerminalPhase(state.Phases)
 			if err != nil {
-				return nil, err
+				if !opts.RunOnMain {
+					return nil, err
+				}
+				targetIdx = len(state.Phases) - 1
 			}
 			state.Phases[targetIdx].TaskIDs = append(state.Phases[targetIdx].TaskIDs, newTaskID)
 			selectedPhaseIdx = targetIdx
@@ -173,7 +176,13 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 	} else if len(state.Phases) > 0 {
 		targetIdx, err := findFirstNonTerminalPhase(state.Phases)
 		if err != nil {
-			return nil, err
+			if !opts.RunOnMain {
+				return nil, err
+			}
+			// RunOnMain post-publish verification: append to the last phase (it will be
+			// reopened below). This allows the Planner to add final verification tasks
+			// after receiving publish_completed without needing an explicit --target-phase.
+			targetIdx = len(state.Phases) - 1
 		}
 		state.Phases[targetIdx].TaskIDs = append(state.Phases[targetIdx].TaskIDs, newTaskID)
 		selectedPhaseIdx = targetIdx

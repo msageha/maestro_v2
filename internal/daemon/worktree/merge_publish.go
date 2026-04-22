@@ -37,6 +37,16 @@ const (
 // Callers must surface this to operators rather than retrying.
 var errIntegrationQuarantined = errors.New("integration is quarantined; manual intervention required")
 
+// errPublishDirtyRoot is returned when publish aborts because the projectRoot
+// has uncommitted changes on the base branch. This is a deterministic,
+// non-retryable failure: retries with backoff will keep hitting the same guard
+// until the quarantine threshold is reached (~5 min). Callers treat this as a
+// terminal publish failure so the integration is quarantined immediately and
+// R8 (NotifyPublishQuarantined) surfaces the condition to the Planner on the
+// next reconcile pass. Operator must commit/stash the root changes and then
+// invoke retry-publish to unblock.
+var errPublishDirtyRoot = errors.New("publish aborted: projectRoot has uncommitted changes that would be lost by reset; please commit or stash them first")
+
 // recordMergeFailure increments the merge failure counter and either persists
 // IntegrationStatusFailed (when below threshold) or transitions to
 // IntegrationStatusQuarantined (when at/above threshold). Callers should still
@@ -96,6 +106,26 @@ func (wm *Manager) recordPublishFailure(state *model.WorktreeCommandState, reaso
 	wm.Log(core.LogLevelWarn, "publish_failure_recorded command=%s count=%d next_retry_at=%s",
 		state.CommandID, state.Integration.PublishFailureCount, state.Integration.NextPublishRetryAt)
 	return wm.setIntegrationStatus(state, model.IntegrationStatusPublishFailed, now)
+}
+
+// recordPublishTerminalFailure transitions the integration straight to
+// IntegrationStatusQuarantined without consuming the retry budget. Intended
+// for deterministic, operator-required failures (e.g. dirty projectRoot)
+// where retry-with-backoff cannot make progress and only delays the eventual
+// R8 escalation. Callers should invoke saveState afterwards to persist.
+func (wm *Manager) recordPublishTerminalFailure(state *model.WorktreeCommandState, reason string, now string) error {
+	state.Integration.PublishFailureCount++
+	if err := wm.setIntegrationStatus(state, model.IntegrationStatusQuarantined, now); err != nil {
+		return err
+	}
+	state.Integration.QuarantinedAt = now
+	state.Integration.QuarantineReason = fmt.Sprintf("publish: %s (failure_count=%d, non-retryable)",
+		reason, state.Integration.PublishFailureCount)
+	state.Integration.QuarantineSource = model.QuarantineSourcePublish
+	state.Integration.NextPublishRetryAt = ""
+	wm.Log(core.LogLevelError, "integration_quarantined_publish_terminal command=%s reason=%s count=%d",
+		state.CommandID, reason, state.Integration.PublishFailureCount)
+	return nil
 }
 
 // forwardMergeBaseToIntegration merges the current base branch (main) into the
@@ -436,19 +466,25 @@ func (wm *Manager) handleWorkerMergeConflict(
 		ConflictFiles: conflictFiles,
 		Message:       fmt.Sprintf("merge conflict: %s → integration", workerID),
 	}
-	// Collect per-file base/ours/theirs refs via rev-parse of index stages
-	for _, cf := range conflictFiles {
-		baseRef, err1 := wm.gitOutputWithRetry(ctx, integrationPath, 1, "rev-parse", ":1:"+cf)
-		oursRef, err2 := wm.gitOutputWithRetry(ctx, integrationPath, 1, "rev-parse", ":2:"+cf)
-		theirsRef, err3 := wm.gitOutputWithRetry(ctx, integrationPath, 1, "rev-parse", ":3:"+cf)
-		if err1 == nil && err2 == nil && err3 == nil {
-			// Use refs from first conflict file as representative
+	// Capture commit SHAs for ours/theirs/base before aborting the merge.
+	// HEAD = integration branch tip (ours), MERGE_HEAD = worker branch tip (theirs).
+	// Using commit SHAs (not per-file blob SHAs from index stages) means workers
+	// can use "git show <sha>:<file>" for any conflict file — the natural pattern
+	// for referencing content at a specific commit. Blob SHAs from ":2:<file>" can
+	// only be used with "git show <blobSHA>" (no path), which is non-obvious and
+	// fails when workers try the commit syntax. Commit SHAs also work uniformly
+	// for new files, deleted files, and binary files regardless of index stage
+	// availability.
+	if oursRef, err := wm.gitOutputWithRetry(ctx, integrationPath, 1, "rev-parse", "HEAD"); err == nil {
+		mc.OursRef = strings.TrimSpace(oursRef)
+	}
+	if theirsRef, err := wm.gitOutputWithRetry(ctx, integrationPath, 1, "rev-parse", "MERGE_HEAD"); err == nil {
+		mc.TheirsRef = strings.TrimSpace(theirsRef)
+	}
+	if mc.OursRef != "" && mc.TheirsRef != "" {
+		if baseRef, err := wm.gitOutputWithRetry(ctx, integrationPath, 1, "merge-base", mc.OursRef, mc.TheirsRef); err == nil {
 			mc.BaseRef = strings.TrimSpace(baseRef)
-			mc.OursRef = strings.TrimSpace(oursRef)
-			mc.TheirsRef = strings.TrimSpace(theirsRef)
-			break
 		}
-		// Binary files or missing stages — continue to next file
 	}
 
 	if abortErr := wm.gitRunInDir(integrationPath, "merge", "--abort"); abortErr != nil {
@@ -558,22 +594,44 @@ func (wm *Manager) determineMergeOutcome(
 	// (recordMergeFailure was never called), so reset the consecutive failure count.
 	state.Integration.MergeFailureCount = 0
 
-	if mergedCount == 0 && len(conflicts) == 0 && skippedCount == 0 && conflictSkippedCount == 0 {
+	// Detect workers elsewhere in state.Workers that are still awaiting
+	// conflict resolution, even if they were intentionally excluded from
+	// this merge round's workerIDs. The Phase A collector skips Conflict/
+	// Resolving workers (see eligibleWorkerIDsForAutoCommit) to avoid
+	// invalid CommitWorkerChanges calls, so without this cross-check the
+	// outcome loop sees only already-Integrated workers → mergedCount>0,
+	// everything-else=0 → the "all successful" branch flips integration to
+	// Merged while the resolution pipeline is still running on the excluded
+	// workers. That false-Merged transition unblocks Phase A's merge gate
+	// (isPhaseMergeRecorded) and lets downstream phases and publish run
+	// against an integration branch that hasn't absorbed the resolution
+	// commits (2026-04 audit: integration=merged with worker=resolving).
+	statePendingResolution := 0
+	for _, ws := range state.Workers {
+		if ws.Status == model.WorktreeStatusConflict || ws.Status == model.WorktreeStatusResolving {
+			statePendingResolution++
+		}
+	}
+
+	if mergedCount == 0 && len(conflicts) == 0 && skippedCount == 0 && conflictSkippedCount == 0 && statePendingResolution == 0 {
 		// No worker had any commits to merge. Revert the Merging status to
 		// the pre-merge status to avoid a false Merged signal that would
 		// trigger a no-op publish.
 		wm.Log(core.LogLevelInfo, "no_commits_to_merge command=%s workers=%d", commandID, totalWorkers)
 		state.Integration.Status = preMergeStatus
 		state.Integration.UpdatedAt = preMergeUpdatedAt
-	} else if len(conflicts) == 0 && skippedCount == 0 && conflictSkippedCount == 0 {
+	} else if len(conflicts) == 0 && skippedCount == 0 && conflictSkippedCount == 0 && statePendingResolution == 0 {
 		if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusMerged, now); tErr != nil {
 			wm.Log(core.LogLevelWarn, "merge_merged_integration_transition command=%s error=%v", commandID, tErr)
 		}
-	} else if mergedCount == 0 && conflictSkippedCount > 0 && len(conflicts) == 0 && skippedCount == 0 {
+	} else if mergedCount == 0 && len(conflicts) == 0 && skippedCount == 0 &&
+		(conflictSkippedCount > 0 || statePendingResolution > 0) {
 		// Only conflict/resolving workers were present — nothing to merge.
 		// Revert to pre-merge status and wait for the resolution pipeline.
-		wm.Log(core.LogLevelInfo, "all_workers_conflict_skipped command=%s conflict_skipped=%d",
-			commandID, conflictSkippedCount)
+		// statePendingResolution covers workers filtered out of workerIDs
+		// by the Phase A collector but still awaiting resolution.
+		wm.Log(core.LogLevelInfo, "all_workers_conflict_skipped command=%s conflict_skipped=%d state_pending_resolution=%d",
+			commandID, conflictSkippedCount, statePendingResolution)
 		state.Integration.Status = preMergeStatus
 		state.Integration.UpdatedAt = preMergeUpdatedAt
 	} else if mergedCount > 0 {
@@ -756,7 +814,16 @@ func (wm *Manager) PublishToBase(commandID string, publishMessage string) (retur
 	// because the status is no longer "publishing" when they return.
 	defer func() {
 		if returnErr != nil && state.Integration.Status == model.IntegrationStatusPublishing {
-			if tErr := wm.recordPublishFailure(state, returnErr.Error(), now); tErr != nil {
+			// Deterministic dirty-root aborts are non-retryable: skip backoff
+			// and quarantine immediately so R8 surfaces the blocker to the
+			// Planner on the next reconcile pass.
+			var tErr error
+			if errors.Is(returnErr, errPublishDirtyRoot) {
+				tErr = wm.recordPublishTerminalFailure(state, "publish_dirty_root", now)
+			} else {
+				tErr = wm.recordPublishFailure(state, returnErr.Error(), now)
+			}
+			if tErr != nil {
 				wm.Log(core.LogLevelWarn, "publish_failed_transition command=%s error=%v", commandID, tErr)
 			}
 			state.UpdatedAt = now
@@ -912,7 +979,10 @@ func (wm *Manager) performPublishMerge(
 			return "", false, fmt.Errorf("publish dirty check failed: %w", err)
 		}
 		if strings.TrimSpace(statusOut) != "" {
-			return "", false, fmt.Errorf("publish aborted: projectRoot has uncommitted changes that would be lost by reset; please commit or stash them first")
+			// Deterministic, operator-action-required failure. Return the
+			// sentinel so PublishToBase's deferred handler can fast-path to
+			// quarantine instead of burning the retry budget.
+			return "", false, errPublishDirtyRoot
 		}
 	}
 
