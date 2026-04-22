@@ -5,6 +5,7 @@ import (
 
 	"github.com/msageha/maestro_v2/internal/bridge"
 	"github.com/msageha/maestro_v2/internal/daemon"
+	"github.com/msageha/maestro_v2/internal/formation"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/plan"
 )
@@ -79,6 +80,12 @@ func runDaemon(args []string) error {
 		LockMap:    sharedLockMap,
 	}
 	d.SetPlanExecutor(executor)
+
+	// Auto-accept Claude Code workspace trust dialog in this long-lived process.
+	// The CLI process (which calls createFormation) exits shortly after formation
+	// is complete, killing the CLI-side goroutine. This call picks up where the
+	// CLI left off, covering the full window after daemon startup.
+	formation.StartTrustDialogAcceptor(maestroDir)
 
 	if err := d.Run(); err != nil {
 		return fmt.Errorf("maestro daemon: %w", err)

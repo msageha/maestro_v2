@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -309,12 +310,14 @@ func (disp *Dispatcher) evaluateTaskQualityGate(task *model.Task, workerID strin
 
 // resolveTaskWorkingDir resolves the working directory for a task, creating
 // the worktree lazily if needed. Returns empty string when worktree mode is
-// not active or when the task requests main-branch execution.
+// not active. Returns the project root for RunOnMain tasks.
 func (disp *Dispatcher) resolveTaskWorkingDir(task *model.Task, workerID string) (string, error) {
 	// RunOnMain tasks (e.g. final verification) must run against the merged
 	// state on the main branch, not inside a worker worktree.
+	// Return the project root explicitly — "" means "no change" in ensureWorkingDir
+	// and would leave the worker in a (possibly deleted) worktree cwd.
 	if task.RunOnMain {
-		return "", nil
+		return filepath.Dir(disp.maestroDir), nil
 	}
 
 	wm := disp.getWorktreeManager()

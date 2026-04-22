@@ -1,10 +1,14 @@
 package formation
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
@@ -12,9 +16,14 @@ import (
 	"github.com/msageha/maestro_v2/internal/tmux"
 )
 
+// trustDialogPanesFile is the filename where ready pane targets are persisted
+// so the daemon process can continue auto-accepting the trust dialog after the
+// CLI process exits.
+const trustDialogPanesFile = "trust_dialog_panes.txt"
+
 // createFormation creates the tmux session with orchestrator, planner, and worker windows.
 // On partial failure, it rolls back by killing the tmux session.
-func createFormation(cfg model.Config) (retErr error) {
+func createFormation(maestroDir string, cfg model.Config) (retErr error) {
 	// Kill existing session if any
 	if tmux.SessionExists() {
 		slog.Debug("createFormation: killing pre-existing session before creation")
@@ -135,11 +144,22 @@ func createFormation(cfg model.Config) (retErr error) {
 		}
 	}
 
+	// Persist ready pane targets to file so the daemon process (which outlives
+	// this CLI process) can continue auto-accepting the trust dialog.
+	// The trust dialog often appears 30+ seconds after launch, well after the
+	// CLI process exits, so the daemon must drive the auto-accept goroutine.
+	if err := writeTrustDialogPanesFile(maestroDir, readyPanes); err != nil {
+		slog.Warn("createFormation: could not write trust dialog panes file", "error", err)
+	}
+
 	// Auto-accept Claude Code workspace trust dialog.
 	// Claude Code has no env var or CLI flag to skip the trust dialog.
 	// --dangerously-skip-permissions only covers per-tool permission checks.
 	// autoAcceptTrustDialog sends periodic Enter keystrokes for a bounded
 	// window; see its doc comment for the full rationale.
+	// NOTE: This goroutine runs in the CLI process which exits shortly after
+	// formation is complete. The daemon calls StartTrustDialogAcceptor to cover
+	// the full window after CLI exits.
 	autoAcceptTrustDialog(readyPanes)
 
 	// Select orchestrator window so `tmux attach` lands there
@@ -314,6 +334,50 @@ func autoAcceptTrustDialog(panes []string) {
 		slog.Debug("autoAcceptTrustDialog: window closed",
 			"panes_count", len(panes), "window", trustDialogWindow)
 	}()
+}
+
+// writeTrustDialogPanesFile writes pane targets to maestroDir/trust_dialog_panes.txt,
+// one pane per line. The daemon reads this file to know which panes to send Enter to.
+func writeTrustDialogPanesFile(maestroDir string, panes []string) error {
+	path := filepath.Join(maestroDir, trustDialogPanesFile)
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("create %s: %w", trustDialogPanesFile, err)
+	}
+	defer f.Close()
+	for _, p := range panes {
+		if _, err := fmt.Fprintln(f, p); err != nil {
+			return fmt.Errorf("write pane %s: %w", p, err)
+		}
+	}
+	return nil
+}
+
+// StartTrustDialogAcceptor reads the pane list from maestroDir/trust_dialog_panes.txt
+// and launches the auto-accept goroutine. Intended to be called from the long-lived
+// daemon process so that the trust dialog is accepted even after the CLI process exits.
+// No-op if the file does not exist (non-worktree mode or already handled).
+func StartTrustDialogAcceptor(maestroDir string) {
+	path := filepath.Join(maestroDir, trustDialogPanesFile)
+	f, err := os.Open(path)
+	if err != nil {
+		// File absent is expected when running without a formation (e.g. tests).
+		return
+	}
+	defer f.Close()
+
+	var panes []string
+	scanner := bufio.NewScanner(f)
+	for scanner.Scan() {
+		if p := strings.TrimSpace(scanner.Text()); p != "" {
+			panes = append(panes, p)
+		}
+	}
+	if len(panes) == 0 {
+		return
+	}
+	slog.Info("daemon: starting trust dialog acceptor", "panes_count", len(panes))
+	autoAcceptTrustDialog(panes)
 }
 
 // resolveModel determines the model for a given agent.

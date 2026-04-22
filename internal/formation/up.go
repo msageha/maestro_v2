@@ -84,7 +84,7 @@ func RunUp(opts UpOptions) (err error) {
 	}
 
 	// Create tmux formation
-	if err := createFormation(cfg); err != nil {
+	if err := createFormation(opts.MaestroDir, cfg); err != nil {
 		return fmt.Errorf("create formation: %w", err)
 	}
 
