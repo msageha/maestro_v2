@@ -56,14 +56,16 @@ var allowedToolsByRole = map[string][]string{
 }
 
 // Launch reads tmux user variables for the current pane and launches the
-// appropriate Agent CLI (claude) with the correct model and system prompt.
+// appropriate agent CLI with the correct model and system prompt.
+// The runtime is read from the @runtime pane variable (set by formation).
+// Non-claude-code runtimes are handled via RuntimeLauncher (C-7).
 func Launch(maestroDir string) error {
 	paneTarget, err := currentPaneTarget()
 	if err != nil {
 		return fmt.Errorf("determine pane: %w", err)
 	}
 
-	_, role, agentModel, err := readPaneVars(paneTarget)
+	_, role, agentModel, agentRuntime, err := readPaneVars(paneTarget)
 	if err != nil {
 		return err
 	}
@@ -73,6 +75,12 @@ func Launch(maestroDir string) error {
 		return fmt.Errorf("build system prompt: %w", err)
 	}
 
+	// For non-claude-code runtimes, delegate to RuntimeLauncher (C-7).
+	if agentRuntime != model.RuntimeClaudeCode {
+		return launchAlternativeRuntime(maestroDir, agentRuntime, agentModel, role, systemPrompt)
+	}
+
+	// claude-code path: build claude-specific args and exec.
 	basePromptMode := "append" // default
 	if cfg, err := loadBasePromptMode(maestroDir, role); err == nil {
 		basePromptMode = cfg
@@ -108,37 +116,79 @@ func Launch(maestroDir string) error {
 	return runIgnoringSIGINT(cmd)
 }
 
-// readPaneVars reads and validates the tmux user variables (agent_id, role, model)
-// from the given pane target.
-func readPaneVars(paneTarget string) (agentID, role, model string, err error) {
+// launchAlternativeRuntime handles non-claude-code runtimes via RuntimeLauncher (C-7).
+// It loads the runtime config, resolves the executable, and exec-replaces the process.
+func launchAlternativeRuntime(maestroDir, agentRuntime, agentModel, role, systemPrompt string) error {
+	cfg, err := model.LoadConfig(maestroDir)
+	if err != nil {
+		slog.Warn("load config for runtime launcher failed; using empty config", "error", err)
+		cfg = model.Config{}
+	}
+
+	rl := NewRuntimeLauncher(cfg.Runtimes)
+	execName, args, err := rl.GetCommand(agentRuntime, RuntimeLaunchOptions{
+		Model:  agentModel,
+		Prompt: systemPrompt,
+	})
+	if err != nil {
+		return fmt.Errorf("runtime %q: %w", agentRuntime, err)
+	}
+
+	execPath, err := exec.LookPath(execName)
+	if err != nil {
+		return fmt.Errorf("resolve %s executable: %w", execName, err)
+	}
+
+	cmd := exec.Command(execPath, args...) //nolint:gosec // execPath is resolved via LookPath; args are constructed from validated config
+	cmd.Env = buildLaunchEnv(os.Environ(), role)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	return runIgnoringSIGINT(cmd)
+}
+
+// readPaneVars reads and validates the tmux user variables (agent_id, role, model, runtime)
+// from the given pane target. The runtime variable is non-fatal: missing or empty values
+// fall back to model.DefaultRuntime() ("claude-code") without error.
+func readPaneVars(paneTarget string) (agentID, role, agentModel, agentRuntime string, err error) {
 	agentID, err = tmux.GetUserVar(paneTarget, "agent_id")
 	if err != nil {
-		return "", "", "", fmt.Errorf("read @agent_id: %w", err)
+		return "", "", "", "", fmt.Errorf("read @agent_id: %w", err)
 	}
 	if agentID == "" {
-		return "", "", "", fmt.Errorf("@agent_id is empty for pane %s", sanitizeForLog(paneTarget))
+		return "", "", "", "", fmt.Errorf("@agent_id is empty for pane %s", sanitizeForLog(paneTarget))
 	}
 
 	role, err = tmux.GetUserVar(paneTarget, "role")
 	if err != nil {
-		return "", "", "", fmt.Errorf("read @role: %w", err)
+		return "", "", "", "", fmt.Errorf("read @role: %w", err)
 	}
 	if role == "" {
-		return "", "", "", fmt.Errorf("@role is empty for pane %s", sanitizeForLog(paneTarget))
+		return "", "", "", "", fmt.Errorf("@role is empty for pane %s", sanitizeForLog(paneTarget))
 	}
 	if !validRoleName.MatchString(role) {
-		return "", "", "", fmt.Errorf("invalid role name %q: must be alphanumeric, underscore, or hyphen", sanitizeForLog(role))
+		return "", "", "", "", fmt.Errorf("invalid role name %q: must be alphanumeric, underscore, or hyphen", sanitizeForLog(role))
 	}
 
-	model, err = tmux.GetUserVar(paneTarget, "model")
+	agentModel, err = tmux.GetUserVar(paneTarget, "model")
 	if err != nil {
-		return "", "", "", fmt.Errorf("read @model: %w", err)
+		return "", "", "", "", fmt.Errorf("read @model: %w", err)
 	}
-	if model == "" {
-		return "", "", "", fmt.Errorf("@model is empty for pane %s", sanitizeForLog(paneTarget))
+	if agentModel == "" {
+		return "", "", "", "", fmt.Errorf("@model is empty for pane %s", sanitizeForLog(paneTarget))
 	}
 
-	return agentID, role, model, nil
+	// Runtime is optional: unset or empty falls back to the default without error.
+	agentRuntime, err = tmux.GetUserVar(paneTarget, "runtime")
+	if err != nil {
+		slog.Warn("read @runtime failed, using default", "error", err, "default", model.DefaultRuntime())
+	}
+	if agentRuntime == "" {
+		agentRuntime = model.DefaultRuntime()
+	}
+
+	return agentID, role, agentModel, agentRuntime, nil
 }
 
 // applyWorkerPolicy appends the worker-specific policy hook settings to the
