@@ -12,6 +12,18 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
+// resolvingStallTimeout is the minimum duration a worker must spend in
+// resolving status before R7 resets it back to conflict. This handles cases
+// where the conflict-resolution task fails but the Planner does not call
+// resume-merge, leaving the worker stuck in resolving indefinitely.
+// R7 only processes conflict workers (not resolving), so without this reset
+// the command would be permanently stuck.
+//
+// Set to 20 minutes — longer than a typical task dispatch round-trip (~5 min)
+// but shorter than the default task timeout (30 min), so the reset fires before
+// the hard timeout would clean up the entire command.
+const resolvingStallTimeout = 20 * time.Minute
+
 // maxConflictResolutionAttempts is the maximum number of conflict resolution
 // attempts before escalating to the Planner.
 const maxConflictResolutionAttempts = 2
@@ -67,6 +79,35 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 			var commandNotifications []DeferredNotification
 			modified := false
 
+			now := run.Deps.Clock.Now().UTC().Format(time.RFC3339)
+
+			// Pass 1: Reset stale resolving workers back to conflict.
+			// When the conflict-resolution task fails without the Planner calling
+			// resume-merge (e.g., due to worker policy violations), the worker
+			// gets stuck in resolving state indefinitely. R7 normally only
+			// processes conflict workers, so without this reset the command
+			// cannot make progress. Resetting to conflict allows the next R7
+			// cycle to re-dispatch a resolution task or escalate.
+			for i := range state.Workers {
+				ws := &state.Workers[i]
+				if ws.Status != model.WorktreeStatusResolving {
+					continue
+				}
+				updatedAt, err := time.Parse(time.RFC3339, ws.UpdatedAt)
+				if err != nil {
+					continue
+				}
+				if run.Deps.Clock.Now().Sub(updatedAt) < resolvingStallTimeout {
+					continue
+				}
+				run.Log(core.LogLevelWarn, "R7 reset_stale_resolving command=%s worker=%s stale_since=%s",
+					commandID, ws.WorkerID, ws.UpdatedAt)
+				ws.Status = model.WorktreeStatusConflict
+				ws.UpdatedAt = now
+				modified = true
+			}
+
+			// Pass 2: Process conflict workers (dispatch resolution task or escalate).
 			for i := range state.Workers {
 				ws := &state.Workers[i]
 				if ws.Status != model.WorktreeStatusConflict {
@@ -99,7 +140,6 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 				}
 				ws.ConflictResolutionAttempts++
 				ws.Status = model.WorktreeStatusResolving
-				now := run.Deps.Clock.Now().UTC().Format(time.RFC3339)
 				ws.UpdatedAt = now
 				modified = true
 
@@ -116,7 +156,6 @@ func (R7MergeConflict) Apply(run *Run) Outcome {
 			}
 
 			if modified {
-				now := run.Deps.Clock.Now().UTC().Format(time.RFC3339)
 				state.UpdatedAt = now
 				if err := yamlutil.AtomicWrite(statePath, state); err != nil {
 					run.Log(core.LogLevelError, "R7 write_worktree_state command=%s error=%v", commandID, err)
