@@ -328,8 +328,18 @@ func (qh *QueueHandler) stepCleanupWorktrees(ctx context.Context, pa *phaseAResu
 
 // handleWorkerCommit commits a single worker's changes and manages the
 // commit-failed marker. Returns true if the commit succeeded.
+//
+// Workers owned by the resume-merge pipeline (Conflict/Resolving) return
+// ErrWorkerOwnedByResumeMerge; this is treated as "skip, not a failure" so the
+// worker is excluded from the merge batch without recording a commit_failed
+// signal or feeding the commit_failed_workers publish gate.
 func (qh *QueueHandler) handleWorkerCommit(commandID, workerID, msg string, mr *worktreeMergeResult) bool {
 	if err := qh.worktreeManager.CommitWorkerChanges(commandID, workerID, msg); err != nil {
+		if errors.Is(err, worktree.ErrWorkerOwnedByResumeMerge) {
+			qh.log(LogLevelDebug, "worktree_auto_commit_skipped command=%s worker=%s reason=resume_merge_owned",
+				commandID, workerID)
+			return false
+		}
 		reason := classifyCommitError(err)
 		qh.log(LogLevelWarn, "worktree_auto_commit command=%s worker=%s reason=%s error=%v",
 			commandID, workerID, reason, err)

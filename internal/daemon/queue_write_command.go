@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 
 	yamlv3 "gopkg.in/yaml.v3"
 
@@ -16,10 +18,56 @@ func (h *QueueWriteAPI) handleQueueWriteCommand(params QueueWriteParams) *uds.Re
 	if resp := validateContentSize(params.Content, h.config.Limits.MaxEntryContentBytes); resp != nil {
 		return resp
 	}
+	if resp := h.checkContinuousGate(); resp != nil {
+		return resp
+	}
 
 	return h.withQueueLocks([]string{"queue:planner"}, func() *uds.Response {
 		return h.executeCommandWrite(params)
 	})
+}
+
+// checkContinuousGate rejects command writes when continuous mode is enabled in config
+// but the current state is paused/stopped. This provides a hard enforcement layer
+// complementing the orchestrator.md pre-generation gate: even if the Orchestrator
+// LLM ignores its instructions, the daemon will refuse to enqueue auto-generated
+// commands while continuous mode is not actively running.
+//
+// The gate is a no-op when:
+//   - continuous.enabled=false (feature not in use)
+//   - state file missing (never initialised; treated as disabled)
+//   - status == running (normal operation)
+func (h *QueueWriteAPI) checkContinuousGate() *uds.Response {
+	if h.config == nil || !h.config.Continuous.Enabled {
+		return nil
+	}
+	statePath := filepath.Join(h.maestroDir, "state", "continuous.yaml")
+	data, err := os.ReadFile(statePath) //nolint:gosec // path derived from daemon-controlled state directory
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		h.logFn(LogLevelWarn, "continuous gate: read state failed, allowing write: %v", err)
+		return nil
+	}
+	var state model.Continuous
+	if err := yamlv3.Unmarshal(data, &state); err != nil {
+		h.logFn(LogLevelWarn, "continuous gate: parse state failed, allowing write: %v", err)
+		return nil
+	}
+	switch state.Status {
+	case model.ContinuousStatusPaused:
+		reason := ""
+		if state.PausedReason != nil {
+			reason = *state.PausedReason
+		}
+		return uds.ErrorResponse(uds.ErrCodeValidation,
+			fmt.Sprintf("continuous mode is paused (reason=%q); resume before enqueueing new commands", reason))
+	case model.ContinuousStatusStopped:
+		return uds.ErrorResponse(uds.ErrCodeValidation,
+			"continuous mode is stopped; restart via 'maestro up --continuous' before enqueueing new commands")
+	}
+	return nil
 }
 
 // executeCommandWrite performs the locked portion of command queue write.

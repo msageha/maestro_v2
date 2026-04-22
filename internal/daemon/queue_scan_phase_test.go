@@ -888,6 +888,57 @@ func TestCollectImplicitWorktreeMerge_AlreadyMerged(t *testing.T) {
 	}
 }
 
+// TestCollectImplicitWorktreeMerge_FiltersConflictResolvingWorkers verifies
+// that Conflict/Resolving workers are excluded from the WorkerIDs list
+// returned by the Phase A collector. Those workers are owned by the
+// resume-merge pipeline and must not flow into Phase B's auto-commit path,
+// where the `resolving → committed` transition guard would reject them and
+// record a spurious commit_failed signal (regression of the 2026-04 audit).
+func TestCollectImplicitWorktreeMerge_FiltersConflictResolvingWorkers(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+
+	// Seed a worktree state with three workers: Active, Conflict, Resolving.
+	state := model.WorktreeCommandState{
+		SchemaVersion: 1,
+		FileType:      "state_worktree",
+		CommandID:     "cmd1",
+		Integration: model.IntegrationState{
+			CommandID: "cmd1",
+			Branch:    "maestro/cmd1/integration",
+			BaseSHA:   "abc123",
+			Status:    model.IntegrationStatusPartialMerge,
+			CreatedAt: "2026-01-01T00:00:00Z",
+			UpdatedAt: "2026-01-01T00:00:00Z",
+		},
+		Workers: []model.WorktreeState{
+			{CommandID: "cmd1", WorkerID: "worker1", Path: "/fake/w1", Branch: "maestro/cmd1/worker1", BaseSHA: "abc123", Status: model.WorktreeStatusActive, CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z"},
+			{CommandID: "cmd1", WorkerID: "worker2", Path: "/fake/w2", Branch: "maestro/cmd1/worker2", BaseSHA: "abc123", Status: model.WorktreeStatusResolving, CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z"},
+			{CommandID: "cmd1", WorkerID: "worker3", Path: "/fake/w3", Branch: "maestro/cmd1/worker3", BaseSHA: "abc123", Status: model.WorktreeStatusConflict, CreatedAt: "2026-01-01T00:00:00Z", UpdatedAt: "2026-01-01T00:00:00Z"},
+		},
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+	}
+	statePath := filepath.Join(maestroDir, "state", "worktrees", "cmd1.yaml")
+	if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+		t.Fatalf("write worktree state: %v", err)
+	}
+	writeCommandState(t, maestroDir, "cmd1", map[string]model.Status{
+		"t1": model.StatusCompleted,
+	}, nil)
+	tqs := makeTaskQueues(map[string][]model.Task{"worker1": {{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted}}})
+
+	items := qh.collectWorktreePhaseMerges("cmd1", tqs)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 implicit merge item, got %d", len(items))
+	}
+	got := items[0].WorkerIDs
+	if len(got) != 1 || got[0] != "worker1" {
+		t.Errorf("WorkerIDs = %v, want [worker1] (resolving/conflict workers must be filtered)", got)
+	}
+}
+
 // TestStepWorktreeStallDetection_NoPhasesFastPath verifies the case 5
 // fast-path: phase 0 件 + Integration.Status==created でタイムアウト経過後に
 // stall シグナルが発火する。タイムアウト前には発火しない。
@@ -1872,5 +1923,189 @@ func TestPeriodicScanPhaseC_DeferredComplete_Fallback(t *testing.T) {
 	}
 	if !found {
 		t.Error("publish_completed signal should be emitted when no deferred intent exists")
+	}
+}
+
+// --- Regression tests for conflict-skipped-worker merge gate (Bug #1) ---
+
+// TestApplyMergeResultSignals_SkipsMarkPhaseMergedOnPartialMerge verifies that
+// when a merge result has no NEW conflicts and no commit failures, but the
+// integration status is still PartialMerge (because a previous conflict worker
+// hasn't been re-merged yet), MarkPhaseMerged is NOT called. Without this gate
+// the phase merge record would race ahead of the integration branch and
+// incorrectly unblock downstream phase transitions.
+func TestApplyMergeResultSignals_SkipsMarkPhaseMergedOnPartialMerge(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+
+	// Seed integration state as PartialMerge (one worker still unresolved).
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusPartialMerge)
+
+	// Successful-looking merge result: no conflicts, no commit failures. This
+	// is exactly the shape Phase B produces on a re-merge pass when the
+	// remaining conflict worker is still in Resolving state.
+	merges := []worktreeMergeResult{{
+		Item: worktreeMergeItem{CommandID: "cmd1", PhaseID: "p1"},
+	}}
+	sq := &model.PlannerSignalQueue{SchemaVersion: 1, FileType: "planner_signal_queue"}
+	dirty := false
+	idx := buildSignalIndex(sq.Signals)
+
+	qh.applyMergeResultSignals(merges, sq, &dirty, idx, "2026-04-22T00:00:00Z")
+
+	// Reload state — MarkPhaseMerged must not have recorded p1.
+	state, err := qh.worktreeManager.GetCommandState("cmd1")
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	if _, merged := state.MergedPhases["p1"]; merged {
+		t.Errorf("phase p1 was marked merged despite integration status=partial_merge")
+	}
+}
+
+// TestApplyMergeResultSignals_MarksMergedWhenIntegrationMerged verifies that
+// the new gate does not regress the happy path: when integration status is
+// Merged (all workers integrated), MarkPhaseMerged is called as before.
+func TestApplyMergeResultSignals_MarksMergedWhenIntegrationMerged(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusMerged)
+
+	merges := []worktreeMergeResult{{
+		Item: worktreeMergeItem{CommandID: "cmd1", PhaseID: "p1"},
+	}}
+	sq := &model.PlannerSignalQueue{SchemaVersion: 1, FileType: "planner_signal_queue"}
+	dirty := false
+	idx := buildSignalIndex(sq.Signals)
+
+	qh.applyMergeResultSignals(merges, sq, &dirty, idx, "2026-04-22T00:00:00Z")
+
+	state, err := qh.worktreeManager.GetCommandState("cmd1")
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	if _, merged := state.MergedPhases["p1"]; !merged {
+		t.Errorf("phase p1 should be marked merged when integration status=merged, got MergedPhases=%v",
+			state.MergedPhases)
+	}
+}
+
+// --- Regression tests for publish-skip phase-level judgment (Bug #2) ---
+
+// TestCollectWorktreePublish_FailedPhaseBlocksPublish verifies that when a
+// phased command has any phase ending non-successfully (Failed / Cancelled /
+// TimedOut), publish is skipped even though all tasks are in terminal state.
+// This is the "phase is the authoritative unit" contract.
+func TestCollectWorktreePublish_FailedPhaseBlocksPublish(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{
+		Enabled:          true,
+		CleanupOnFailure: true,
+	})
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusMerged)
+	writeCommandState(t, maestroDir, "cmd1", map[string]model.Status{
+		"t1": model.StatusCompleted,
+		"t2": model.StatusCancelled, // was failed, got cancelled by retry handler
+	}, []model.Phase{
+		{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusFailed},
+	})
+
+	tqs := makeTaskQueues(map[string][]model.Task{
+		"worker1": {
+			{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
+			{ID: "t2", CommandID: "cmd1", Status: model.StatusCancelled},
+		},
+	})
+
+	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", "", tqs)
+	if len(publishes) != 0 {
+		t.Errorf("expected 0 publish items when a phase is failed, got %d", len(publishes))
+	}
+	if len(cleanups) != 1 {
+		t.Fatalf("expected 1 cleanup item (failure), got %d", len(cleanups))
+	}
+	if cleanups[0].Reason != "failure" {
+		t.Errorf("cleanup reason = %q, want failure", cleanups[0].Reason)
+	}
+}
+
+// TestCollectWorktreePublish_StaleFailedTaskWithCompletedPhaseStillPublishes
+// verifies the Bug #2 regression scenario: a task queue retains a Failed task
+// (e.g., the original verification task that the Planner later replaced via
+// add_retry_task) but the phase's authoritative status is Completed — which
+// means the retry ran and succeeded. Publish MUST proceed; the old behavior
+// of returning early on task-level hasFailed permanently poisoned the command.
+func TestCollectWorktreePublish_StaleFailedTaskWithCompletedPhaseStillPublishes(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{
+		Enabled:          true,
+		CleanupOnSuccess: true,
+	})
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusMerged)
+	// Phase is Completed (retry succeeded) and tasks are all terminal. The
+	// Failed task in the queue is historical — it was superseded by t2_retry.
+	writeCommandState(t, maestroDir, "cmd1", map[string]model.Status{
+		"t1":       model.StatusCompleted,
+		"t2":       model.StatusFailed, // leftover in state — not updated by old-style retry
+		"t2_retry": model.StatusCompleted,
+	}, []model.Phase{
+		{PhaseID: "p1", Name: "phase1", Status: model.PhaseStatusCompleted},
+	})
+
+	tqs := makeTaskQueues(map[string][]model.Task{
+		"worker1": {
+			{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
+			{ID: "t2", CommandID: "cmd1", Status: model.StatusFailed},
+			{ID: "t2_retry", CommandID: "cmd1", Status: model.StatusCompleted},
+		},
+	})
+
+	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", "", tqs)
+	if len(publishes) != 1 {
+		t.Fatalf("expected 1 publish item (phase completed ⇒ retry succeeded), got %d", len(publishes))
+	}
+	if len(cleanups) != 0 {
+		t.Errorf("expected 0 cleanup items when publish is queued, got %d", len(cleanups))
+	}
+}
+
+// TestCollectWorktreePublish_NoPhasesFallsBackToTaskLevelFailure preserves the
+// implicit-phase behavior: commands with no phases continue to use the task
+// queue's hasFailed signal (there is no phase-level authoritative source in
+// that case).
+func TestCollectWorktreePublish_NoPhasesFallsBackToTaskLevelFailure(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{
+		Enabled:          true,
+		CleanupOnFailure: true,
+	})
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusMerged)
+	writeCommandState(t, maestroDir, "cmd1", map[string]model.Status{
+		"t1": model.StatusCompleted,
+		"t2": model.StatusFailed,
+	}, nil) // no phases
+
+	tqs := makeTaskQueues(map[string][]model.Task{
+		"worker1": {
+			{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
+			{ID: "t2", CommandID: "cmd1", Status: model.StatusFailed},
+		},
+	})
+
+	publishes, cleanups := qh.collectWorktreePublishAndCleanup("cmd1", "", tqs)
+	if len(publishes) != 0 {
+		t.Errorf("expected 0 publish items (no phases, task failed), got %d", len(publishes))
+	}
+	if len(cleanups) != 1 {
+		t.Fatalf("expected 1 cleanup item (failure), got %d", len(cleanups))
 	}
 }

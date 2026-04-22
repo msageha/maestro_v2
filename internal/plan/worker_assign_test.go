@@ -380,6 +380,121 @@ func TestAssignWorkers_MixedBloomLevels(t *testing.T) {
 	}
 }
 
+// TestAssignWorkers_FallbackAllOpus verifies that when all workers are
+// configured for "opus" and a task maps to "sonnet" via BloomLevel, the
+// assignment falls back to opus instead of returning an error. This
+// mirrors the production deployment where operators run all-opus fleets
+// and originally saw "bloom_level=2 requires sonnet" failures.
+func TestAssignWorkers_FallbackAllOpus(t *testing.T) {
+	config := model.WorkerConfig{
+		Count:        2,
+		DefaultModel: "opus",
+	}
+	limits := model.LimitsConfig{MaxPendingTasksPerWorker: 10}
+	workers := []WorkerState{
+		{WorkerID: "worker1", Model: "opus"},
+		{WorkerID: "worker2", Model: "opus"},
+	}
+	// Bloom level 2 statically maps to sonnet — but no sonnet worker exists.
+	tasks := []TaskAssignmentRequest{{Name: "t1", BloomLevel: 2}}
+
+	got, err := AssignWorkers(config, limits, workers, tasks)
+	if err != nil {
+		t.Fatalf("expected fallback to opus, got error: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 assignment, got %d", len(got))
+	}
+	if got[0].Model != "opus" {
+		t.Errorf("expected fallback model=opus, got %q", got[0].Model)
+	}
+}
+
+// TestAssignWorkers_FallbackAllSonnet verifies the opposite direction:
+// opus-requiring task with only sonnet workers falls back to sonnet.
+func TestAssignWorkers_FallbackAllSonnet(t *testing.T) {
+	config := model.WorkerConfig{
+		Count:        1,
+		DefaultModel: "sonnet",
+	}
+	limits := model.LimitsConfig{MaxPendingTasksPerWorker: 10}
+	workers := []WorkerState{{WorkerID: "worker1", Model: "sonnet"}}
+	tasks := []TaskAssignmentRequest{{Name: "t_eval", BloomLevel: 5}}
+
+	got, err := AssignWorkers(config, limits, workers, tasks)
+	if err != nil {
+		t.Fatalf("expected fallback to sonnet, got error: %v", err)
+	}
+	if len(got) != 1 || got[0].Model != "sonnet" {
+		t.Errorf("expected sonnet fallback, got %+v", got)
+	}
+}
+
+// TestChooseFallbackFamily verifies the preference ordering and the
+// no-workers case.
+func TestChooseFallbackFamily(t *testing.T) {
+	tests := []struct {
+		name     string
+		workers  map[string]string // workerID -> model
+		required string
+		want     string
+	}{
+		{
+			name:     "sonnet required, only opus available",
+			workers:  map[string]string{"w1": "opus"},
+			required: "sonnet",
+			want:     "opus",
+		},
+		{
+			name:     "opus required, only sonnet available",
+			workers:  map[string]string{"w1": "sonnet"},
+			required: "opus",
+			want:     "sonnet",
+		},
+		{
+			name:     "sonnet required, opus preferred over haiku",
+			workers:  map[string]string{"w1": "haiku", "w2": "opus"},
+			required: "sonnet",
+			want:     "opus",
+		},
+		{
+			// chooseFallbackFamily only considers the preference list, which
+			// excludes the required family itself. If no substitute is
+			// available, it returns "" — callers must guard on this and
+			// surface the original "no workers configured" error rather
+			// than looping back to the required family.
+			name:     "no non-required family available returns empty",
+			workers:  map[string]string{"w1": "opus"},
+			required: "opus",
+			want:     "",
+		},
+		{
+			name:     "empty stateMap returns empty",
+			workers:  map[string]string{},
+			required: "sonnet",
+			want:     "",
+		},
+		{
+			name:     "unknown required family uses generic order",
+			workers:  map[string]string{"w1": "sonnet"},
+			required: "gemini-pro",
+			want:     "sonnet",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sm := make(map[string]*WorkerState, len(tt.workers))
+			for id, m := range tt.workers {
+				sm[id] = &WorkerState{WorkerID: id, Model: m}
+			}
+			if got := chooseFallbackFamily(sm, tt.required); got != tt.want {
+				t.Errorf("chooseFallbackFamily(%q) = %q, want %q", tt.required, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAssignWorkers_BoostMode(t *testing.T) {
 	config := model.WorkerConfig{
 		Count:        2,

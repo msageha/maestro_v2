@@ -73,6 +73,26 @@ func (qh *QueueHandler) stepPhaseTransitions(s *scanState) {
 		transitions = deduplicatePhaseTransitions(transitions)
 
 		for _, tr := range transitions {
+			// Gate PhaseStatusCompleted on worktree merge completion (G1).
+			// The DependencyResolver declares a phase Completed as soon as
+			// every required task finishes, but for worktree-isolated
+			// commands the integration merge (and potential conflict
+			// detection) happens in Phase B/C of the same or a later scan.
+			// Emitting phase_diagnosis before the merge recording means the
+			// Planner sees "phase done" and can dispatch verification /
+			// next-phase work while a merge_conflict signal is still in
+			// flight — producing duplicate conflict resolution cycles.
+			// We therefore defer Completed until MarkPhaseMerged has
+			// recorded the phase. Failed/Cancelled/TimedOut transitions
+			// are NOT gated: a failed task should surface immediately
+			// regardless of merge state.
+			if tr.NewStatus == model.PhaseStatusCompleted && !qh.isPhaseMergeRecorded(cmd.ID, tr.PhaseID) {
+				qh.log(LogLevelDebug,
+					"phase_transition_deferred command=%s phase=%s reason=awaiting_worktree_merge",
+					cmd.ID, tr.PhaseName)
+				continue
+			}
+
 			qh.log(LogLevelInfo, "phase_transition command=%s phase=%s %s→%s reason=%s",
 				cmd.ID, tr.PhaseName, tr.OldStatus, tr.NewStatus, tr.Reason)
 
@@ -131,6 +151,42 @@ func (qh *QueueHandler) stepPhaseTransitions(s *scanState) {
 			}
 		}
 	}
+}
+
+// isPhaseMergeRecorded reports whether the phase's worktree merge has been
+// recorded by Phase C (via MarkPhaseMerged). Used to gate PhaseStatusCompleted
+// transitions so that phase_diagnosis is not emitted before a potential
+// merge_conflict signal for the same phase.
+//
+// Returns true when the command has no worktrees (no merge to wait for) or
+// when MergedPhases already contains the phase. Returns false only when
+// worktrees are enabled but the merge is not yet recorded — in that case the
+// caller should defer the Completed transition to a future scan.
+//
+// The worktree state file may be unreadable transiently (mid-write, lock
+// contention); in that case we conservatively return true so we do not stall
+// the phase indefinitely on infrastructure flakes. The subsequent scan will
+// re-evaluate against a freshly-read state, and any real conflict will have
+// already been surfaced via merge_conflict signals from Phase C.
+func (qh *QueueHandler) isPhaseMergeRecorded(commandID, phaseID string) bool {
+	if qh.worktreeManager == nil {
+		return true
+	}
+	if !qh.worktreeManager.HasWorktrees(commandID) {
+		return true
+	}
+	cmdState, err := qh.worktreeManager.GetCommandState(commandID)
+	if err != nil || cmdState == nil {
+		qh.log(LogLevelDebug,
+			"phase_transition_gate_state_unavailable command=%s phase=%s error=%v",
+			commandID, phaseID, err)
+		return true
+	}
+	if cmdState.MergedPhases == nil {
+		return false
+	}
+	_, merged := cmdState.MergedPhases[phaseID]
+	return merged
 }
 
 // stepPlannerSignals — Step 0.8: Evaluate backoff/staleness, defer delivery.

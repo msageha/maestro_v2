@@ -249,6 +249,12 @@ type resultFileSpec[T any, PT interface {
 
 	logSuccess func(r PT)
 	logFailure func(r PT, err error)
+
+	// onDeadLetter is invoked once per entry transitioned into the notify
+	// dead-letter terminal state (NotifyAttempts >= maxNotifyAttempts). It runs
+	// outside any result-file lock so it is free to acquire other queue locks.
+	// Used to surface the loss to the orchestrator / archive the entry.
+	onDeadLetter func(r PT)
 }
 
 // phase1Result holds the outcome of processResultPhase1AcquireLease.
@@ -361,12 +367,132 @@ func processResultPhase3UpdateResult[T any, PT interface {
 	return writeFailures, success, phase3OK
 }
 
+// sweepExhaustedNotifications transitions results whose NotifyAttempts reached
+// the retry ceiling into a terminal notify-dead-letter state. Without this sweep,
+// findUnnotifiedExcluding would silently skip them forever, causing completed
+// results to be stranded in results/ with no downstream signalling.
+//
+// For each transitioned result it:
+//   - Marks NotifyDeadLettered on disk (persists via AtomicWrite).
+//   - Archives the entry into .maestro/dead_letters/.
+//   - Invokes spec.onDeadLetter (which typically emits an orchestrator notification).
+func sweepExhaustedNotifications[T any, PT interface {
+	*T
+	model.Notifiable
+}, F any](rh *ResultHandler, spec *resultFileSpec[T, PT, F]) {
+	rh.lockMap.Lock(spec.lockKey)
+	rf, err := spec.loadFile(spec.resultPath)
+	if err != nil {
+		rh.lockMap.Unlock(spec.lockKey)
+		return
+	}
+	results := spec.getResults(rf)
+
+	// Collect IDs of entries that transitioned in this pass so we can run
+	// onDeadLetter callbacks after releasing the lock.
+	transitioned := make([]string, 0)
+	now := rh.clock.Now().UTC().Format(time.RFC3339)
+	changed := false
+	for i := range results {
+		r := PT(&results[i])
+		if r.IsNotified() || r.IsNotifyDeadLettered() {
+			continue
+		}
+		if r.GetNotifyAttempts() < maxNotifyAttempts {
+			continue
+		}
+		reason := fmt.Sprintf("notify_attempts (%d) >= max_notify_attempts (%d) for %s",
+			r.GetNotifyAttempts(), maxNotifyAttempts, spec.label)
+		r.MarkNotifyDeadLetter(now, reason)
+		transitioned = append(transitioned, r.GetResultID())
+		changed = true
+		rh.log(LogLevelError, "notify_dead_letter %s result=%s reason=%s",
+			spec.label, r.GetResultID(), reason)
+	}
+	if changed {
+		if err := yamlutil.AtomicWrite(spec.resultPath, rf); err != nil {
+			rh.log(LogLevelError, "sweep_dead_letter_write %s error=%v", spec.label, err)
+			rh.lockMap.Unlock(spec.lockKey)
+			return
+		}
+	}
+	rh.lockMap.Unlock(spec.lockKey)
+
+	if len(transitioned) == 0 {
+		return
+	}
+
+	// Archive + invoke callback outside the lock. Reload once for stable snapshots.
+	rh.lockMap.Lock(spec.lockKey)
+	rf2, err := spec.loadFile(spec.resultPath)
+	rh.lockMap.Unlock(spec.lockKey)
+	if err != nil {
+		rh.log(LogLevelWarn, "sweep_dead_letter_reload %s error=%v", spec.label, err)
+		return
+	}
+	for _, id := range transitioned {
+		entry := spec.findByID(rf2, id)
+		if entry == nil {
+			continue
+		}
+		reason := ""
+		if r := entry.GetNotifyDeadLetterReason(); r != nil {
+			reason = *r
+		}
+		if err := rh.archiveNotifyDeadLetter(spec.label, id, entry, reason); err != nil {
+			rh.log(LogLevelError, "archive_notify_dead_letter %s result=%s error=%v",
+				spec.label, id, err)
+		}
+		if spec.onDeadLetter != nil {
+			spec.onDeadLetter(entry)
+		}
+	}
+}
+
+// archiveNotifyDeadLetter writes a dead-letter archive for a result whose
+// notification retries were exhausted. Mirrors DeadLetterProcessor.archiveDeadLetter
+// in file layout so operators can correlate entries from a single dead_letters/ view.
+func (rh *ResultHandler) archiveNotifyDeadLetter(label, entryID string, entry any, reason string) error {
+	archiveDir := filepath.Join(rh.maestroDir, "dead_letters")
+	if err := os.MkdirAll(archiveDir, 0755); err != nil { //nolint:gosec // 0755 matches dispatch dead-letter archive perms
+		return fmt.Errorf("create dead_letters dir: %w", err)
+	}
+	type archiveEntry struct {
+		SchemaVersion  int    `yaml:"schema_version"`
+		FileType       string `yaml:"file_type"`
+		QueueType      string `yaml:"queue_type"`
+		Entry          any    `yaml:"entry"`
+		DeadLetteredAt string `yaml:"dead_lettered_at"`
+		Reason         string `yaml:"reason"`
+	}
+	now := rh.clock.Now().UTC()
+	a := archiveEntry{
+		SchemaVersion:  1,
+		FileType:       "dead_letter",
+		QueueType:      "result:" + label,
+		Entry:          entry,
+		DeadLetteredAt: now.Format(time.RFC3339),
+		Reason:         reason,
+	}
+	filename := fmt.Sprintf("result_%s_%s_%s.yaml",
+		strings.ReplaceAll(label, "=", "_"),
+		now.Format("20060102T150405Z"),
+		entryID,
+	)
+	return yamlutil.AtomicWrite(filepath.Join(archiveDir, filename), a)
+}
+
 // processResultFile is the generic notification processing loop shared by
 // processWorkerResultFile and processCommandResultFile.
 func processResultFile[T any, PT interface {
 	*T
 	model.Notifiable
 }, F any](rh *ResultHandler, spec resultFileSpec[T, PT, F]) int {
+	// Transition exhausted entries into dead-letter terminal state before the
+	// normal scan so they no longer consume findUnnotifiedExcluding iterations
+	// and their loss is surfaced to the orchestrator.
+	sweepExhaustedNotifications[T, PT, F](rh, &spec)
+
 	notified := 0
 	attempted := make(map[string]bool)
 	writeFailures := 0
@@ -447,6 +573,17 @@ func (rh *ResultHandler) processWorkerResultFile(workerID string) int {
 					workerID, r.TaskID, notifyErr, r.NotifyAttempts, maxNotifyAttempts, rh.notifyBackoff(r.NotifyAttempts))
 			}
 		},
+		onDeadLetter: func(r *model.TaskResult) {
+			// Synthesize a command_failed notification so the Orchestrator is
+			// told that a worker task result was lost (Planner could never be
+			// notified). Using the result's ID as source keeps dedup stable.
+			content := fmt.Sprintf("task result %s (command=%s worker=%s task=%s) dead-lettered: notify retries exhausted",
+				r.ID, r.CommandID, workerID, r.TaskID)
+			if err := rh.emitResultDeadLetterNotification(r.ID, r.CommandID, content); err != nil {
+				rh.log(LogLevelError, "dead_letter_notify_failed worker=%s task=%s error=%v",
+					workerID, r.TaskID, err)
+			}
+		},
 	})
 }
 
@@ -494,6 +631,19 @@ func (rh *ResultHandler) processCommandResultFile() int {
 					r.CommandID, notifyErr, r.NotifyAttempts, maxNotifyAttempts, rh.notifyBackoff(r.NotifyAttempts))
 			}
 		},
+		onDeadLetter: func(r *model.CommandResult) {
+			// Writing to orchestrator queue is the exact path that just failed
+			// for this command. We still try once more via a dedicated
+			// notification that carries a distinct source_result_id so the
+			// Orchestrator sees it as a new entry; if this final attempt also
+			// fails, the archive under dead_letters/ remains the record.
+			content := fmt.Sprintf("command result %s (command=%s) dead-lettered: notify retries exhausted",
+				r.ID, r.CommandID)
+			if err := rh.emitResultDeadLetterNotification(r.ID, r.CommandID, content); err != nil {
+				rh.log(LogLevelError, "dead_letter_notify_failed command=%s error=%v",
+					r.CommandID, err)
+			}
+		},
 	})
 }
 
@@ -508,6 +658,10 @@ func findUnnotifiedExcluding[T any, PT interface {
 	for i := range results {
 		r := PT(&results[i])
 		if r.IsNotified() {
+			continue
+		}
+		if r.IsNotifyDeadLettered() {
+			// Terminal: notification retries exhausted; handled by sweepExhaustedNotifications.
 			continue
 		}
 		if exclude[r.GetResultID()] {
@@ -609,7 +763,14 @@ func (rh *ResultHandler) markNotifyFailure(r model.Notifiable, errMsg string) {
 //     and reward the widen/deepen decision recorded at dispatch.
 //
 // Each component path is independent and nil-safe; disabling one does not
-// skip the others.
+// skip the others. Two nil-guard styles coexist intentionally:
+//   - FingerprintDB access is a *field read* so the call site must check
+//     `m != nil` explicitly before dereferencing.
+//   - ObserveTaskOutcome / RecordTaskCompletionNovelty / PlanRetryMutations
+//     are *method calls* on *PhaseCManager that tolerate a nil receiver,
+//     so the call site omits the guard and lets the callee short-circuit.
+// Keep this split when adding new signals — do not collapse to a single
+// `if m != nil { ... }` wrapper, as that hides the callee's nil contract.
 func (rh *ResultHandler) recordTaskResultLearning(r *model.TaskResult, workerID string) {
 	if r == nil {
 		return
@@ -862,6 +1023,51 @@ func (rh *ResultHandler) writeNotificationToOrchestratorQueue(resultID, commandI
 // Used by the reconcile package via the ResultNotifier interface.
 func (rh *ResultHandler) WriteNotificationToOrchestratorQueue(resultID, commandID string, status model.Status) error {
 	return rh.writeNotificationToOrchestratorQueue(resultID, commandID, status)
+}
+
+// emitResultDeadLetterNotification writes a one-shot notification into
+// queue/orchestrator.yaml telling the Orchestrator that a result (task or
+// command) has been dead-lettered because notification retries were exhausted.
+// Dedup key: a synthetic SourceResultID derived from resultID to survive
+// repeated sweep passes without emitting duplicates.
+func (rh *ResultHandler) emitResultDeadLetterNotification(resultID, commandID, content string) error {
+	queuePath := notificationQueuePath(rh.maestroDir)
+	sourceID := "result_dl_" + resultID
+
+	rh.lockMap.Lock("queue:orchestrator")
+	defer rh.lockMap.Unlock("queue:orchestrator")
+
+	return updateYAMLFile(queuePath, func(nq *model.NotificationQueue) error {
+		if nq.SchemaVersion == 0 {
+			nq.SchemaVersion = 1
+			nq.FileType = "queue_notification"
+		}
+
+		for i := range nq.Notifications {
+			if nq.Notifications[i].SourceResultID == sourceID &&
+				nq.Notifications[i].Type == model.NotificationTypeCommandFailed {
+				return errNoUpdate
+			}
+		}
+
+		id, err := model.GenerateID(model.IDTypeNotification)
+		if err != nil {
+			return fmt.Errorf("generate notification ID: %w", err)
+		}
+		now := rh.clock.Now().UTC().Format(time.RFC3339)
+		nq.Notifications = append(nq.Notifications, model.Notification{
+			ID:             id,
+			CommandID:      commandID,
+			Type:           model.NotificationTypeCommandFailed,
+			SourceResultID: sourceID,
+			Content:        content,
+			Priority:       defaultNotificationPriority,
+			Status:         model.StatusPending,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		})
+		return nil
+	})
 }
 
 // --- File I/O helpers ---

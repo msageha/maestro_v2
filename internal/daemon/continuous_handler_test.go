@@ -485,3 +485,126 @@ func TestContinuous_MaxIterationsZero_Unlimited(t *testing.T) {
 		t.Errorf("status should remain running (unlimited), got %s", state.Status)
 	}
 }
+
+// readNotificationQueue returns orchestrator notifications, or nil if file missing.
+func readNotificationQueue(t *testing.T, maestroDir string) *model.NotificationQueue {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(maestroDir, "queue", "orchestrator.yaml"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		t.Fatal(err)
+	}
+	var nq model.NotificationQueue
+	if err := yamlv3.Unmarshal(data, &nq); err != nil {
+		t.Fatal(err)
+	}
+	return &nq
+}
+
+func TestContinuous_PauseEmitsNotification(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestMaestroDir(t)
+	if err := os.MkdirAll(filepath.Join(maestroDir, "queue"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := model.Config{
+		Continuous: model.ContinuousConfig{Enabled: true, MaxIterations: 10, PauseOnFailure: true},
+	}
+	ch := newTestContinuousHandler(maestroDir, cfg)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	writeContinuousState(t, maestroDir, &model.Continuous{
+		SchemaVersion:    1,
+		FileType:         "state_continuous",
+		CurrentIteration: 2,
+		MaxIterations:    10,
+		Status:           model.ContinuousStatusRunning,
+		UpdatedAt:        now,
+	})
+
+	if err := ch.CheckAndAdvance("cmd_500", model.StatusFailed); err != nil {
+		t.Fatal(err)
+	}
+
+	nq := readNotificationQueue(t, maestroDir)
+	if nq == nil || len(nq.Notifications) != 1 {
+		t.Fatalf("expected 1 notification on pause transition, got %+v", nq)
+	}
+	n := nq.Notifications[0]
+	if n.Type != model.NotificationTypeContinuousPaused {
+		t.Errorf("type: got %s, want %s", n.Type, model.NotificationTypeContinuousPaused)
+	}
+	if n.CommandID != "cmd_500" {
+		t.Errorf("commandID: got %s, want cmd_500", n.CommandID)
+	}
+	if n.Status != model.StatusPending {
+		t.Errorf("status: got %s, want pending", n.Status)
+	}
+}
+
+func TestContinuous_StopEmitsNotification(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestMaestroDir(t)
+	if err := os.MkdirAll(filepath.Join(maestroDir, "queue"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := model.Config{
+		Continuous: model.ContinuousConfig{Enabled: true, MaxIterations: 3},
+	}
+	ch := newTestContinuousHandler(maestroDir, cfg)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	writeContinuousState(t, maestroDir, &model.Continuous{
+		SchemaVersion:    1,
+		FileType:         "state_continuous",
+		CurrentIteration: 2,
+		MaxIterations:    3,
+		Status:           model.ContinuousStatusRunning,
+		UpdatedAt:        now,
+	})
+
+	if err := ch.CheckAndAdvance("cmd_stop", model.StatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+
+	nq := readNotificationQueue(t, maestroDir)
+	if nq == nil || len(nq.Notifications) != 1 {
+		t.Fatalf("expected 1 notification on stop transition, got %+v", nq)
+	}
+	if nq.Notifications[0].Type != model.NotificationTypeContinuousStopped {
+		t.Errorf("type: got %s, want %s", nq.Notifications[0].Type, model.NotificationTypeContinuousStopped)
+	}
+}
+
+func TestContinuous_RunningNoNotification(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestMaestroDir(t)
+	if err := os.MkdirAll(filepath.Join(maestroDir, "queue"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := model.Config{
+		Continuous: model.ContinuousConfig{Enabled: true, MaxIterations: 100},
+	}
+	ch := newTestContinuousHandler(maestroDir, cfg)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	writeContinuousState(t, maestroDir, &model.Continuous{
+		SchemaVersion:    1,
+		FileType:         "state_continuous",
+		CurrentIteration: 2,
+		MaxIterations:    100,
+		Status:           model.ContinuousStatusRunning,
+		UpdatedAt:        now,
+	})
+
+	if err := ch.CheckAndAdvance("cmd_ok", model.StatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+
+	nq := readNotificationQueue(t, maestroDir)
+	if nq != nil && len(nq.Notifications) > 0 {
+		t.Errorf("no notification should be emitted when continuing, got %+v", nq.Notifications)
+	}
+}

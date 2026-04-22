@@ -98,6 +98,43 @@ func SanitizeEnvelopeField(s string) string {
 	}, s)
 }
 
+// SanitizeEnvelopeBody neutralises prompt-injection vectors in user-supplied
+// multi-line body fields (content / acceptance_criteria / persona_hint) while
+// preserving newlines so that markdown, bullet lists, and multi-line
+// instructions reach the agent intact.
+//
+// Differences vs. SanitizeEnvelopeField:
+//   - Line terminators (\r, \r\n, U+2028, U+2029) are normalized to \n instead
+//     of being replaced with a space.
+//   - \n and \t are preserved; all other control characters are dropped.
+//
+// The other defences (NFKC normalization, zero-width character removal,
+// "[maestro]" escaping) are identical to SanitizeEnvelopeField.
+//
+// Use this only for fields whose envelope slot is textual content the agent
+// needs to read as prose. Do NOT use on header-shaped fields (IDs, purpose,
+// comma-joined lists) — those must stay on a single line to keep the
+// "key: value" envelope format parseable.
+func SanitizeEnvelopeBody(s string) string {
+	s = norm.NFKC.String(s)
+	s = zeroWidthChars.Replace(s)
+	s = strings.ReplaceAll(s, "[maestro]", "\\[maestro]")
+	// Normalize CRLF first so the \r pass below does not double-insert \n.
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	return strings.Map(func(r rune) rune {
+		switch r {
+		case '\n', '\t':
+			return r
+		case '\r', '\u2028', '\u2029':
+			return '\n'
+		}
+		if unicode.IsControl(r) {
+			return -1 // drop
+		}
+		return r
+	}, s)
+}
+
 // boundaryMarkerPatterns matches DATA boundary markers case-insensitively
 // to prevent bypass via case variations (e.g., "--- begin learnings").
 var boundaryMarkerPatterns = []struct {
@@ -129,6 +166,13 @@ func SanitizeUserContent(s string) string {
 // sanitizeField truncates s to maxBytes at a UTF-8 boundary, then sanitizes it.
 func sanitizeField(s string, maxBytes int) string {
 	return SanitizeEnvelopeField(TruncateUTF8Bytes(s, maxBytes))
+}
+
+// sanitizeBodyField is the multi-line counterpart to sanitizeField: it
+// truncates at a UTF-8 boundary and applies SanitizeEnvelopeBody so that
+// newlines in the field are preserved.
+func sanitizeBodyField(s string, maxBytes int) string {
+	return SanitizeEnvelopeBody(TruncateUTF8Bytes(s, maxBytes))
 }
 
 // --- Typestate types for enforced sanitization pipeline ---
@@ -189,9 +233,17 @@ type TruncatedContent struct{ s string }
 
 // Build applies final envelope field sanitization (NFKC normalization,
 // zero-width char removal, [maestro] escaping, control char stripping) and
-// returns the safe string for use in an envelope.
+// returns the safe string for use in a single-line envelope field.
+// Newlines are replaced with spaces — use BuildBody for multi-line slots.
 func (tc TruncatedContent) Build() string {
 	return SanitizeEnvelopeField(tc.s)
+}
+
+// BuildBody is the multi-line counterpart to Build: it applies the same
+// prompt-injection defences but preserves newlines so the field remains
+// usable as prose (markdown, bullet lists, multi-line instructions).
+func (tc TruncatedContent) BuildBody() string {
+	return SanitizeEnvelopeBody(tc.s)
 }
 
 // --- Envelope Builders ---
@@ -208,8 +260,11 @@ func BuildWorkerEnvelope(task model.Task, enrichedContent SanitizedContent, work
 	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "agent_id: %s\n", workerID)
 	fmt.Fprintf(&sb, "purpose: %s\n", sanitizeField(task.Purpose, MaxPurposeBytes))
-	fmt.Fprintf(&sb, "content: %s\n", enrichedContent.Truncate(MaxContentBytes).Build())
-	fmt.Fprintf(&sb, "acceptance_criteria: %s\n", sanitizeField(task.AcceptanceCriteria, MaxAcceptanceCriteriaBytes))
+	// content / acceptance_criteria / persona_hint are multi-line prose fields:
+	// preserve newlines so markdown, bullet lists, and multi-line instructions
+	// reach the agent intact. See SanitizeEnvelopeBody for the defence model.
+	fmt.Fprintf(&sb, "content: %s\n", enrichedContent.Truncate(MaxContentBytes).BuildBody())
+	fmt.Fprintf(&sb, "acceptance_criteria: %s\n", sanitizeBodyField(task.AcceptanceCriteria, MaxAcceptanceCriteriaBytes))
 	constraintsStr := "なし"
 	if len(task.Constraints) > 0 {
 		sanitized := make([]string, len(task.Constraints))
@@ -230,7 +285,7 @@ func BuildWorkerEnvelope(task model.Task, enrichedContent SanitizedContent, work
 	fmt.Fprintf(&sb, "tools_hint: %s\n", toolsHintStr)
 	personaHintStr := "なし"
 	if task.PersonaHint != "" {
-		personaHintStr = sanitizeField(task.PersonaHint, MaxPersonaHintBytes)
+		personaHintStr = sanitizeBodyField(task.PersonaHint, MaxPersonaHintBytes)
 	}
 	fmt.Fprintf(&sb, "persona_hint: %s\n", personaHintStr)
 	skillRefsStr := "なし"
@@ -258,7 +313,7 @@ func BuildPlannerEnvelope(cmd model.Command, enrichedContent SanitizedContent, l
 	fmt.Fprintf(&sb, "[maestro] command_id:%s lease_epoch:%d attempt:%d\n",
 		cmd.ID, leaseEpoch, attempt)
 	sb.WriteString("\n")
-	fmt.Fprintf(&sb, "content: %s\n", enrichedContent.Truncate(MaxContentBytes).Build())
+	fmt.Fprintf(&sb, "content: %s\n", enrichedContent.Truncate(MaxContentBytes).BuildBody())
 	sb.WriteString("\n")
 	fmt.Fprintf(&sb, "タスク分解後: maestro plan submit --command-id %s --tasks-file -\n", cmd.ID)
 	fmt.Fprintf(&sb, "全タスク完了後: maestro plan complete --command-id %s --summary \"...\"", cmd.ID)

@@ -14,13 +14,23 @@ import (
 // StateReader, PhaseInfo, ErrStateNotFound, ErrPhaseNotFound are defined in
 // internal/daemon/core and re-exported via core_aliases.go.
 
+// MergeGateFunc reports whether a phase's pending worktree merge has been
+// recorded. Used to gate PhaseStatusCompleted application and event publication
+// so that downstream effects (phase_diagnosis emission, pending-phase
+// activation cascades) wait for the merge to record a potential merge_conflict
+// before treating the phase as fully complete. Returning true means the gate
+// is satisfied (no worktree merge pending, or merge already recorded); false
+// means the transition must be deferred.
+type MergeGateFunc func(commandID, phaseID string) bool
+
 // DependencyResolver handles blocked_by dependency checking and phase transitions.
 type DependencyResolver struct {
 	stateManager StateManager
 	dl           *DaemonLogger
 	clock        Clock
-	mu           sync.RWMutex // protects eventBus
+	mu           sync.RWMutex // protects eventBus and mergeGate
 	eventBus     *events.Bus
+	mergeGate    MergeGateFunc
 }
 
 // NewDependencyResolver creates a new DependencyResolver.
@@ -37,6 +47,30 @@ func (dr *DependencyResolver) SetEventBus(bus *events.Bus) {
 	dr.mu.Lock()
 	defer dr.mu.Unlock()
 	dr.eventBus = bus
+}
+
+// SetMergeGate wires the worktree merge gate. When set, PhaseStatusCompleted
+// transitions for phases whose worktree merge has not yet been recorded are
+// still surfaced to the caller (so it can log/defer) but are not reflected
+// into the in-scan phase map nor published as phase_transition events. This
+// prevents premature pending-phase activation and duplicate phase_diagnosis
+// emission while the merge is in flight.
+func (dr *DependencyResolver) SetMergeGate(fn MergeGateFunc) {
+	dr.mu.Lock()
+	defer dr.mu.Unlock()
+	dr.mergeGate = fn
+}
+
+// mergeGateAllows returns true when the configured merge gate permits the
+// Completed transition to apply (no gate set → always allowed).
+func (dr *DependencyResolver) mergeGateAllows(commandID, phaseID string) bool {
+	dr.mu.RLock()
+	gate := dr.mergeGate
+	dr.mu.RUnlock()
+	if gate == nil {
+		return true
+	}
+	return gate(commandID, phaseID)
 }
 
 // IsTaskBlocked checks if a task's blocked_by dependencies are all resolved.
@@ -124,18 +158,36 @@ func (dr *DependencyResolver) CheckPhaseTransitions(commandID string) ([]PhaseTr
 	// can detect newly-eligible pending phases within the same scan cycle —
 	// preventing stepWorktreeFastTrackCleanup from killing a pending phase whose
 	// dependency phase completed in this very cycle before it could activate.
+	//
+	// Exception: if the merge gate is set and refuses a Completed transition
+	// (worktree merge not yet recorded), we must NOT reflect Completed into
+	// phaseMap nor publish a phase_transition event for it. Otherwise pass 2
+	// would activate downstream pending phases — and the event bus would leak
+	// a "completed" signal to listeners — before MergeToIntegration has had a
+	// chance to record a merge_conflict. The transition is still appended to
+	// the returned slice so that the caller can log the deferral; the caller
+	// (stepPhaseTransitions) enforces the same gate before ApplyPhaseTransition.
+	// Failed/Cancelled/TimedOut transitions are never gated: they must surface
+	// immediately regardless of merge state.
 	for _, phase := range phases {
 		switch phase.Status {
 		case model.PhaseStatusActive:
 			tr := dr.checkActivePhaseCompletion(commandID, phase)
-			if tr != nil {
-				transitions = append(transitions, *tr)
-				// Reflect the new status in phaseMap so pending dependents
-				// can detect the completion in pass 2.
-				if entry, ok := phaseMap[tr.PhaseID]; ok {
-					entry.Status = tr.NewStatus
-					phaseMap[tr.PhaseID] = entry
-				}
+			if tr == nil {
+				continue
+			}
+			transitions = append(transitions, *tr)
+			if tr.NewStatus == model.PhaseStatusCompleted && !dr.mergeGateAllows(commandID, tr.PhaseID) {
+				dr.log(LogLevelDebug,
+					"phase_transition_gate_reflect_skipped command=%s phase=%s reason=awaiting_worktree_merge",
+					commandID, tr.PhaseName)
+				continue
+			}
+			// Reflect the new status in phaseMap so pending dependents
+			// can detect the completion in pass 2.
+			if entry, ok := phaseMap[tr.PhaseID]; ok {
+				entry.Status = tr.NewStatus
+				phaseMap[tr.PhaseID] = entry
 			}
 		case model.PhaseStatusAwaitingFill:
 			tr := dr.checkAwaitingFillTimeout(phase)
@@ -225,7 +277,13 @@ func (dr *DependencyResolver) checkActivePhaseCompletion(commandID string, phase
 	}
 
 	if result != nil {
-		dr.publishPhaseTransitionEvent(commandID, *result)
+		// Suppress event publication for merge-gated Completed transitions so
+		// that downstream event consumers don't see the phase as complete
+		// before the worktree merge has had a chance to surface a
+		// merge_conflict. Failed/Cancelled transitions are always published.
+		if result.NewStatus != model.PhaseStatusCompleted || dr.mergeGateAllows(commandID, result.PhaseID) {
+			dr.publishPhaseTransitionEvent(commandID, *result)
+		}
 	}
 
 	return result

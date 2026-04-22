@@ -842,6 +842,64 @@ func TestCommitWorkerChanges_AllFilesFiltered(t *testing.T) {
 	}
 }
 
+// TestCommitWorkerChanges_WorkerOwnedByResumeMerge verifies that
+// CommitWorkerChanges refuses to auto-commit workers whose status is
+// Conflict or Resolving, returning ErrWorkerOwnedByResumeMerge so the Phase B
+// caller can distinguish "out of scope" from a genuine commit failure and
+// avoid recording a spurious commit_failed signal (regression of the 2026-04
+// audit: `resolving → committed` invalid transition).
+func TestCommitWorkerChanges_WorkerOwnedByResumeMerge(t *testing.T) {
+	t.Parallel()
+	for _, status := range []model.WorktreeStatus{
+		model.WorktreeStatusResolving,
+		model.WorktreeStatusConflict,
+	} {
+		status := status
+		t.Run(string(status), func(t *testing.T) {
+			t.Parallel()
+			projectRoot := testutil.InitTestGitRepo(t)
+			wm := newTestWorktreeManager(t, projectRoot)
+			commandID := "cmd_resume_merge_owned_" + string(status)
+			if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+				t.Fatalf("createForCommand: %v", err)
+			}
+
+			// Manually transition the worker to the target status.
+			state, err := wm.loadState(commandID)
+			if err != nil {
+				t.Fatalf("loadState: %v", err)
+			}
+			ws := &state.Workers[0]
+			// created → active → conflict (→ resolving)
+			ws.Status = model.WorktreeStatusActive
+			if status == model.WorktreeStatusResolving {
+				ws.Status = model.WorktreeStatusResolving
+			} else {
+				ws.Status = model.WorktreeStatusConflict
+			}
+			if err := wm.saveState(commandID, state); err != nil {
+				t.Fatalf("saveState: %v", err)
+			}
+
+			// Add a dirty file to the worker worktree to make sure the guard
+			// fires before the commit attempt (otherwise "no changes" would
+			// return nil before the status check).
+			wtPath := filepath.Join(projectRoot, ".maestro", "worktrees", commandID, "worker1")
+			if err := os.WriteFile(filepath.Join(wtPath, "resolved.txt"), []byte("resolved"), 0644); err != nil {
+				t.Fatalf("write dirty file: %v", err)
+			}
+
+			err = wm.CommitWorkerChanges(commandID, "worker1", "resolved conflict")
+			if err == nil {
+				t.Fatalf("expected error, got nil")
+			}
+			if !errors.Is(err, ErrWorkerOwnedByResumeMerge) {
+				t.Errorf("errors.Is(err, ErrWorkerOwnedByResumeMerge) = false, got %v", err)
+			}
+		})
+	}
+}
+
 // TestCommitWorkerChanges_PolicyViolationMaxFiles verifies that exceeding
 // CommitPolicy.MaxFiles returns *CommitPolicyViolationError detectable via errors.As.
 func TestCommitWorkerChanges_PolicyViolationMaxFiles(t *testing.T) {

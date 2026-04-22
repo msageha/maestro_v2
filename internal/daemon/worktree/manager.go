@@ -338,6 +338,20 @@ func (wm *Manager) CommitWorkerChanges(commandID, workerID, message string) erro
 		return fmt.Errorf("worker %s in command %s: %w", workerID, commandID, model.ErrWorkerNotFound)
 	}
 
+	// Defense in depth: refuse to auto-commit workers owned by the resume-merge
+	// pipeline. These are committed via commitResolvedWorkerChanges, which
+	// bypasses the `resolving → committed` transition (the latter is not in the
+	// valid state machine). Without this guard, a Phase B scan that reaches this
+	// function for a conflict/resolving worker would fail the transition check
+	// below, record a commit_failed signal, and block publishing. The Phase A
+	// collector (eligibleWorkerIDsForAutoCommit) already filters these out; this
+	// guard catches stale WorkerIDs lists and direct callers.
+	if ws.Status == model.WorktreeStatusConflict || ws.Status == model.WorktreeStatusResolving {
+		wm.Log(core.LogLevelDebug, "skip_auto_commit_resume_merge_owned command=%s worker=%s status=%s",
+			commandID, workerID, ws.Status)
+		return fmt.Errorf("worker %s in command %s (status=%s): %w", workerID, commandID, ws.Status, ErrWorkerOwnedByResumeMerge)
+	}
+
 	// Check if there are changes to commit
 	statusOut, err := wm.gitOutputInDir(ws.Path, "status", "--porcelain")
 	if err != nil {

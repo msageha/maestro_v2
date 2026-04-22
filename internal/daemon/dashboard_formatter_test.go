@@ -9,9 +9,64 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/events"
+	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// TestDashboardFormatter_WorktreeWarningsVisible is the 2026-04 audit Bug 3
+// regression. Dashboard must surface (a) integration statuses that block
+// recovery (conflict, partial_merge, failed, publish_failed, quarantined) and
+// (b) commit_failed_workers entries — previously both vanished into a "0
+// warnings" summary.
+func TestDashboardFormatter_WorktreeWarningsVisible(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	for _, sub := range []string{"logs", "state/worktrees"} {
+		require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, sub), 0755))
+	}
+	fixTestDirPerms(t, tmpDir)
+
+	// Seed a worktree state with one conflict + commit_failed_workers.
+	wtState := []byte(`schema_version: 1
+file_type: state_worktree
+command_id: cmd_stuck
+integration:
+  command_id: cmd_stuck
+  branch: maestro/cmd_stuck/integration
+  base_sha: abc123
+  status: conflict
+  merge_failure_count: 2
+  created_at: "2026-01-01T00:00:00Z"
+  updated_at: "2026-01-01T00:00:00Z"
+workers: []
+commit_failed_workers:
+  - worker2
+created_at: "2026-01-01T00:00:00Z"
+updated_at: "2026-01-01T00:00:00Z"
+`)
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "state", "worktrees", "cmd_stuck.yaml"), wtState, 0644))
+
+	f := NewDashboardFormatter(tmpDir)
+	// Call via the live-data entrypoint with empty queues — the worktree
+	// section must still render.
+	var (
+		cq model.CommandQueue
+		nq model.NotificationQueue
+	)
+	require.NoError(t, f.UpdateDashboardFileWithQueues(cq, map[string]*taskQueueEntry{}, nq))
+
+	out, err := os.ReadFile(filepath.Join(tmpDir, "dashboard.md"))
+	require.NoError(t, err)
+	content := string(out)
+
+	assert.Contains(t, content, "## Worktree Integration Status")
+	assert.Contains(t, content, "cmd_stuck")
+	assert.Contains(t, content, "conflict")
+	assert.Contains(t, content, "worker2", "commit_failed_workers must be listed")
+	assert.Contains(t, content, "worktree-integration warning",
+		"operators need an explicit warning banner so the 'Tasks: all completed, 0 warnings' line is no longer misleading")
+}
 
 func TestDashboardFormatter_FormatDashboard(t *testing.T) {
 	t.Parallel()

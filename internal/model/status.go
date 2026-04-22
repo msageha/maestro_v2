@@ -105,6 +105,14 @@ const (
 	NotificationTypeCommandFailed NotificationType = "command_failed"
 	// NotificationTypeCommandCancelled is sent when a command is cancelled before completion.
 	NotificationTypeCommandCancelled NotificationType = "command_cancelled"
+	// NotificationTypeContinuousPaused is emitted by the daemon when continuous
+	// mode transitions to Paused (e.g. pause_on_failure triggered). The Orchestrator
+	// uses this signal to surface the pause reason to the user and halt auto-generation.
+	NotificationTypeContinuousPaused NotificationType = "continuous_paused"
+	// NotificationTypeContinuousStopped is emitted by the daemon when continuous
+	// mode transitions to Stopped (max iterations / max consecutive failures reached).
+	// The Orchestrator uses this signal to finalize the run and report to the user.
+	NotificationTypeContinuousStopped NotificationType = "continuous_stopped"
 )
 
 var terminalStatuses = map[Status]bool{
@@ -140,9 +148,11 @@ var terminalIntegrationStatuses = map[IntegrationStatus]bool{
 }
 
 var validNotificationTypes = map[NotificationType]bool{
-	NotificationTypeCommandCompleted: true,
-	NotificationTypeCommandFailed:    true,
-	NotificationTypeCommandCancelled: true,
+	NotificationTypeCommandCompleted:  true,
+	NotificationTypeCommandFailed:     true,
+	NotificationTypeCommandCancelled:  true,
+	NotificationTypeContinuousPaused:  true,
+	NotificationTypeContinuousStopped: true,
 }
 
 // Queue entry status transitions for command/task: pending ↔ in_progress → terminal.

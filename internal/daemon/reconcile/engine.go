@@ -2,7 +2,6 @@ package reconcile
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/msageha/maestro_v2/internal/agent"
@@ -198,10 +197,9 @@ func (e *Engine) notifyPlannerOfTimeout(commandID string, timedOutPhases map[str
 }
 
 func (e *Engine) notifyPlannerOfConflictResolution(commandID, workerID string) error {
-	integrationPath := filepath.Join(e.deps.MaestroDir, "worktrees", commandID, "_integration")
 	return e.withExecutor("R7", func(exec core.AgentExecutor) error {
-		message := fmt.Sprintf("[maestro] kind:conflict_resolution command_id:%s worker_id:%s integration_path:%s\nmerge conflict detected — please generate a __conflict_resolution task\nThe conflict markers (<<<<<<< / ======= / >>>>>>>) are in the integration worktree at: %s\nThe conflict resolution worker must work in that directory to see and resolve the actual conflicts.",
-			commandID, workerID, integrationPath, integrationPath)
+		message := fmt.Sprintf("[maestro] kind:conflict_resolution command_id:%s worker_id:%s\nmerge conflict detected — please generate a __conflict_resolution task",
+			commandID, workerID)
 
 		result := exec.Execute(agent.ExecRequest{
 			AgentID:   "planner",

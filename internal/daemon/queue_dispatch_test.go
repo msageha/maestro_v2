@@ -347,6 +347,91 @@ func TestUpsertPlannerSignal_SchemaVersionPreserved(t *testing.T) {
 	}
 }
 
+// --- Signal priority ordering (G2) ---
+
+// TestSignalKindPriority_Ordering verifies the relative priority assignment
+// across signal kinds. Critical error signals (merge_conflict, commit_failed)
+// must outrank conflict-resolution kinds, which outrank circuit_breaker,
+// which outranks phase-level statuses, which outranks purely informational
+// kinds. Unknown kinds fall back to the lowest-priority band.
+func TestSignalKindPriority_Ordering(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		higher string
+		lower  string
+	}{
+		{"merge_conflict", "conflict_resolution_requested"},
+		{"commit_failed", "circuit_breaker_tripped"},
+		{"conflict_resolution_requested", "fill_timeout"},
+		{"circuit_breaker_tripped", "awaiting_fill"},
+		{"fill_timeout", "awaiting_fill"},
+		{"awaiting_fill", "publish_completed"},
+		{"publish_completed", "phase_diagnosis"},
+		{"phase_diagnosis", "some_unknown_kind"},
+		// Same band: both critical → priority equal
+		{"merge_conflict", "merge_conflict"},
+	}
+	for _, c := range cases {
+		h, l := signalKindPriority(c.higher), signalKindPriority(c.lower)
+		if c.higher == c.lower {
+			if h != l {
+				t.Errorf("priority(%q) must equal itself, got %d vs %d", c.higher, h, l)
+			}
+			continue
+		}
+		if h >= l {
+			t.Errorf("priority(%q)=%d should be < priority(%q)=%d", c.higher, h, c.lower, l)
+		}
+	}
+}
+
+// TestStepPlannerSignalsDeferred_PrioritySortsCriticalFirst verifies G2:
+// when a merge_conflict and a phase_diagnosis are both eligible for delivery
+// in the same scan, the deferred work batch places merge_conflict first so
+// stepDeliverSignals reaches it before consuming the inline-retry budget on
+// the phase_diagnosis.
+func TestStepPlannerSignalsDeferred_PrioritySortsCriticalFirst(t *testing.T) {
+	t.Parallel()
+	qh := newDispatchTestQH(60)
+
+	// The sort path runs after the orphan/staleness filter, which requires a
+	// state reader when PhaseID is non-empty. Use an empty PhaseID here so
+	// the signals skip the phase-level check and hit the default defer path.
+	now := "2026-01-01T00:00:00Z"
+	sq := &model.PlannerSignalQueue{
+		Signals: []model.PlannerSignal{
+			{Kind: "phase_diagnosis", CommandID: "cmd1", Message: "diag", CreatedAt: now, UpdatedAt: now},
+			{Kind: "awaiting_fill", CommandID: "cmd1", Message: "fill", CreatedAt: now, UpdatedAt: now},
+			{Kind: "merge_conflict", CommandID: "cmd1", Message: "conflict", CreatedAt: now, UpdatedAt: now},
+			{Kind: "commit_failed", CommandID: "cmd1", Message: "commit", CreatedAt: now, UpdatedAt: now},
+		},
+	}
+	dirty := false
+	work := &deferredWork{}
+
+	qh.stepPlannerSignalsDeferred(sq, &dirty, work, model.CommandQueue{})
+
+	if len(work.signals) != 4 {
+		t.Fatalf("expected all 4 signals deferred, got %d", len(work.signals))
+	}
+	// Both priority-0 kinds must come before anything else; among themselves
+	// the stable sort preserves original order (merge_conflict before
+	// commit_failed because merge_conflict was added first above).
+	gotOrder := []string{
+		work.signals[0].Kind,
+		work.signals[1].Kind,
+		work.signals[2].Kind,
+		work.signals[3].Kind,
+	}
+	wantOrder := []string{"merge_conflict", "commit_failed", "awaiting_fill", "phase_diagnosis"}
+	for i, k := range wantOrder {
+		if gotOrder[i] != k {
+			t.Errorf("order[%d] = %q, want %q (full got=%v)", i, gotOrder[i], k, gotOrder)
+		}
+	}
+}
+
 // --- isAgentBusy with busyChecker ---
 
 func TestIsAgentBusy_WithChecker(t *testing.T) {

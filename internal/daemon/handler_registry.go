@@ -17,6 +17,12 @@ func (qh *QueueHandler) SetStateReader(reader StateManager) {
 	defer qh.initMu.Unlock()
 	qh.dependencyResolver = NewDependencyResolver(reader, qh.logger, qh.logLevel)
 	qh.cancelHandler.SetStateReader(reader)
+	// If the worktree manager has already been wired, re-install the merge
+	// gate on the freshly-created resolver. Supports init orders where
+	// SetStateReader is (re-)called after SetWorktreeManager.
+	if qh.worktreeManager != nil {
+		qh.dependencyResolver.SetMergeGate(qh.isPhaseMergeRecorded)
+	}
 }
 
 // SetCanComplete wires the CanComplete function for R4 reconciliation.
@@ -72,6 +78,14 @@ func (qh *QueueHandler) SetWorktreeManager(wm *WorktreeManager) {
 	qh.worktreeManager = wm
 	qh.dispatcher.SetWorktreeManager(wm)
 	qh.cancelHandler.SetWorktreeManager(wm)
+	// Wire the worktree merge gate so the dependency resolver defers
+	// PhaseStatusCompleted reflection/publication until the merge has been
+	// recorded by Phase C. Without this, pending phases downstream of a
+	// merge-gated phase activate prematurely and verification tasks run on
+	// the worker worktree instead of the integration branch.
+	if qh.dependencyResolver != nil {
+		qh.dependencyResolver.SetMergeGate(qh.isPhaseMergeRecorded)
+	}
 }
 
 // SetShutdownGuard wires the daemon's shutdown context, advisory flag, and

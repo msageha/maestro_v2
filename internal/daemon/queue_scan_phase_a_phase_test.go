@@ -258,6 +258,342 @@ func TestStepPhaseTransitions_NoStateReader(t *testing.T) {
 	}
 }
 
+// TestStepPhaseTransitions_DefersCompletedUntilWorktreeMerge verifies G1:
+// a PhaseStatusCompleted transition is deferred (not applied, no
+// phase_diagnosis emitted) when the command has worktrees but the phase's
+// merge has not yet been recorded via MarkPhaseMerged. This prevents the
+// Planner from receiving "phase done" before a potential merge_conflict
+// signal for the same phase.
+func TestStepPhaseTransitions_DefersCompletedUntilWorktreeMerge(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
+
+	// Worktree state exists (HasWorktrees=true) but MergedPhases is empty.
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusMerging)
+
+	// Override state reader with phaseIntegrationStateReader so we can drive
+	// phase/task state directly without writing a full state_command yaml.
+	reader := newPhaseIntegrationStateReader()
+	reader.setPhases("cmd1", []PhaseInfo{
+		{
+			ID:              "p1",
+			Name:            "phase1",
+			Status:          model.PhaseStatusActive,
+			RequiredTaskIDs: []string{"t1"},
+		},
+	})
+	reader.setTaskState("cmd1", "t1", model.StatusCompleted)
+	qh.SetStateReader(reader)
+
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{
+					{ID: "cmd1", Status: model.StatusInProgress},
+				},
+			},
+		},
+		signals:     fileState[model.PlannerSignalQueue]{Data: model.PlannerSignalQueue{}},
+		signalIndex: buildSignalIndex(nil),
+	}
+
+	qh.stepPhaseTransitions(&s)
+
+	// Completed transition must be deferred until MarkPhaseMerged runs.
+	transitions := reader.getTransitions()
+	if len(transitions) != 0 {
+		t.Errorf("expected 0 transitions while worktree merge pending, got %d: %+v",
+			len(transitions), transitions)
+	}
+	// No phase_diagnosis signal should be emitted either.
+	if len(s.signals.Data.Signals) != 0 {
+		t.Errorf("expected 0 signals while worktree merge pending, got %d: %+v",
+			len(s.signals.Data.Signals), s.signals.Data.Signals)
+	}
+}
+
+// TestStepPhaseTransitions_AppliesCompletedAfterWorktreeMerge verifies G1:
+// once MarkPhaseMerged has recorded the phase, the deferred Completed
+// transition is applied on the next scan.
+func TestStepPhaseTransitions_AppliesCompletedAfterWorktreeMerge(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusMerged)
+	// Simulate Phase C having recorded the phase merge.
+	if err := qh.worktreeManager.MarkPhaseMerged("cmd1", "p1"); err != nil {
+		t.Fatalf("MarkPhaseMerged: %v", err)
+	}
+
+	reader := newPhaseIntegrationStateReader()
+	reader.setPhases("cmd1", []PhaseInfo{
+		{
+			ID:              "p1",
+			Name:            "phase1",
+			Status:          model.PhaseStatusActive,
+			RequiredTaskIDs: []string{"t1"},
+		},
+	})
+	reader.setTaskState("cmd1", "t1", model.StatusCompleted)
+	qh.SetStateReader(reader)
+
+	s := scanState{
+		commands: fileState[model.CommandQueue]{
+			Data: model.CommandQueue{
+				Commands: []model.Command{
+					{ID: "cmd1", Status: model.StatusInProgress},
+				},
+			},
+		},
+		signals:     fileState[model.PlannerSignalQueue]{Data: model.PlannerSignalQueue{}},
+		signalIndex: buildSignalIndex(nil),
+	}
+
+	qh.stepPhaseTransitions(&s)
+
+	transitions := reader.getTransitions()
+	if len(transitions) != 1 {
+		t.Fatalf("expected 1 transition after merge recorded, got %d: %+v",
+			len(transitions), transitions)
+	}
+	if transitions[0].NewStatus != model.PhaseStatusCompleted {
+		t.Errorf("transition.NewStatus = %s, want %s",
+			transitions[0].NewStatus, model.PhaseStatusCompleted)
+	}
+}
+
+// TestIsPhaseMergeRecorded_NoWorktreeManager verifies the gate is permissive
+// (returns true) when no worktree manager is configured — non-worktree
+// commands must not be blocked by the gate.
+func TestIsPhaseMergeRecorded_NoWorktreeManager(t *testing.T) {
+	t.Parallel()
+	qh := newMinimalQueueHandler(t)
+	if !qh.isPhaseMergeRecorded("cmd1", "p1") {
+		t.Error("expected isPhaseMergeRecorded=true when worktreeManager is nil")
+	}
+}
+
+// TestIsPhaseMergeRecorded_NoWorktreesForCommand verifies the gate is
+// permissive when the command has no worktrees registered.
+func TestIsPhaseMergeRecorded_NoWorktreesForCommand(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, fastTrackCleanupConfig("10m"))
+
+	if !qh.isPhaseMergeRecorded("cmd-no-worktrees", "p1") {
+		t.Error("expected isPhaseMergeRecorded=true for command with no worktrees")
+	}
+}
+
+// TestCollectWorktreePhaseMerges_ActiveAllTasksCompleted verifies that a phase
+// whose status is still Active (because stepPhaseTransitions deferred the
+// Completed transition on the merge gate) but whose required tasks are all
+// completed is still picked up for merging. Without this, merge collection
+// and stepPhaseTransitions deadlock: merge is skipped because the phase is
+// not "completed", and the phase never becomes completed because the merge is
+// not recorded.
+func TestCollectWorktreePhaseMerges_ActiveAllTasksCompleted(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusCreated)
+
+	reader := newPhaseIntegrationStateReader()
+	reader.setPhases("cmd1", []PhaseInfo{
+		{
+			ID:              "p1",
+			Name:            "phase1",
+			Status:          model.PhaseStatusActive,
+			RequiredTaskIDs: []string{"t1"},
+		},
+	})
+	reader.setTaskState("cmd1", "t1", model.StatusCompleted)
+	qh.SetStateReader(reader)
+
+	// Task queue contents don't drive eligibility now (state reader is the
+	// source of truth), but we still need a non-empty map for the iteration.
+	tqs := makeTaskQueues(map[string][]model.Task{
+		"worker1": {{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted}},
+	})
+
+	items := qh.collectWorktreePhaseMerges("cmd1", tqs)
+	if len(items) != 1 {
+		t.Fatalf("expected 1 merge item for deferred-completed phase, got %d", len(items))
+	}
+	if items[0].PhaseID != "p1" {
+		t.Errorf("items[0].PhaseID = %q, want p1", items[0].PhaseID)
+	}
+}
+
+// TestCollectWorktreePhaseMerges_ActiveTaskNotCompleted verifies that a phase
+// with status Active but at least one required task still in-progress is NOT
+// eligible for merging.
+func TestCollectWorktreePhaseMerges_ActiveTaskNotCompleted(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusCreated)
+
+	reader := newPhaseIntegrationStateReader()
+	reader.setPhases("cmd1", []PhaseInfo{
+		{
+			ID:              "p1",
+			Name:            "phase1",
+			Status:          model.PhaseStatusActive,
+			RequiredTaskIDs: []string{"t1", "t2"},
+		},
+	})
+	reader.setTaskState("cmd1", "t1", model.StatusCompleted)
+	reader.setTaskState("cmd1", "t2", model.StatusInProgress)
+	qh.SetStateReader(reader)
+
+	tqs := makeTaskQueues(map[string][]model.Task{
+		"worker1": {
+			{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
+			{ID: "t2", CommandID: "cmd1", Status: model.StatusInProgress},
+		},
+	})
+
+	items := qh.collectWorktreePhaseMerges("cmd1", tqs)
+	if len(items) != 0 {
+		t.Errorf("expected 0 merge items when a task is still in-progress, got %d: %+v",
+			len(items), items)
+	}
+}
+
+// TestCollectWorktreePhaseMerges_FailedPhaseNotMerged verifies that a failed
+// phase is never collected for merging even if its status is not "completed".
+func TestCollectWorktreePhaseMerges_FailedPhaseNotMerged(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusCreated)
+
+	reader := newPhaseIntegrationStateReader()
+	reader.setPhases("cmd1", []PhaseInfo{
+		{
+			ID:              "p1",
+			Name:            "phase1",
+			Status:          model.PhaseStatusFailed,
+			RequiredTaskIDs: []string{"t1"},
+		},
+	})
+	// A task can be "completed" in the state even if the phase is failed
+	// (e.g. phase was marked failed for a different reason); make sure the
+	// task-completion shortcut does not make the merge eligible.
+	reader.setTaskState("cmd1", "t1", model.StatusCompleted)
+	qh.SetStateReader(reader)
+
+	tqs := makeTaskQueues(map[string][]model.Task{
+		"worker1": {{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted}},
+	})
+
+	items := qh.collectWorktreePhaseMerges("cmd1", tqs)
+	if len(items) != 0 {
+		t.Errorf("expected 0 merge items for failed phase, got %d: %+v", len(items), items)
+	}
+}
+
+// TestCheckPhaseTransitions_MergeGateDefersPendingActivation verifies that a
+// pending phase whose dependency's merge has not yet been recorded does NOT
+// activate in the same scan cycle. Without the gate, pass 1 reflected the
+// deferred Completed into phaseMap and pass 2 activated the dependent phase —
+// causing verification to run on worker worktrees instead of integration.
+func TestCheckPhaseTransitions_MergeGateDefersPendingActivation(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+	// Worktree state exists so the gate is active, and MergedPhases is empty.
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusMerging)
+
+	reader := newPhaseIntegrationStateReader()
+	reader.setPhases("cmd1", []PhaseInfo{
+		{
+			ID:              "p1",
+			Name:            "setup",
+			Status:          model.PhaseStatusActive,
+			RequiredTaskIDs: []string{"t1"},
+		},
+		{
+			ID:        "p2",
+			Name:      "parallel-edits",
+			Status:    model.PhaseStatusPending,
+			DependsOn: []string{"p1"},
+		},
+	})
+	reader.setTaskState("cmd1", "t1", model.StatusCompleted)
+	qh.SetStateReader(reader)
+
+	// CheckPhaseTransitions should NOT emit an AwaitingFill transition for p2
+	// while p1's merge is pending. The Completed transition for p1 may be
+	// present in the returned slice (for deferral logging) but must not have
+	// been reflected into phaseMap — which is verified indirectly by
+	// confirming no AwaitingFill appears for p2.
+	transitions, err := qh.dependencyResolver.CheckPhaseTransitions("cmd1")
+	if err != nil {
+		t.Fatalf("CheckPhaseTransitions: %v", err)
+	}
+	for _, tr := range transitions {
+		if tr.PhaseID == "p2" && tr.NewStatus == model.PhaseStatusAwaitingFill {
+			t.Errorf("p2 should not activate while p1 merge pending, got transition: %+v", tr)
+		}
+	}
+}
+
+// TestCheckPhaseTransitions_MergeGateAllowsActivationAfterMerge verifies that
+// once the merge is recorded, the pending phase does activate normally.
+func TestCheckPhaseTransitions_MergeGateAllowsActivationAfterMerge(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusMerged)
+	if err := qh.worktreeManager.MarkPhaseMerged("cmd1", "p1"); err != nil {
+		t.Fatalf("MarkPhaseMerged: %v", err)
+	}
+
+	reader := newPhaseIntegrationStateReader()
+	reader.setPhases("cmd1", []PhaseInfo{
+		{
+			ID:              "p1",
+			Name:            "setup",
+			Status:          model.PhaseStatusActive,
+			RequiredTaskIDs: []string{"t1"},
+		},
+		{
+			ID:        "p2",
+			Name:      "parallel-edits",
+			Status:    model.PhaseStatusPending,
+			DependsOn: []string{"p1"},
+		},
+	})
+	reader.setTaskState("cmd1", "t1", model.StatusCompleted)
+	qh.SetStateReader(reader)
+
+	transitions, err := qh.dependencyResolver.CheckPhaseTransitions("cmd1")
+	if err != nil {
+		t.Fatalf("CheckPhaseTransitions: %v", err)
+	}
+
+	// Both transitions should appear: p1 → Completed, p2 → AwaitingFill.
+	var sawCompleted, sawAwaitingFill bool
+	for _, tr := range transitions {
+		if tr.PhaseID == "p1" && tr.NewStatus == model.PhaseStatusCompleted {
+			sawCompleted = true
+		}
+		if tr.PhaseID == "p2" && tr.NewStatus == model.PhaseStatusAwaitingFill {
+			sawAwaitingFill = true
+		}
+	}
+	if !sawCompleted {
+		t.Errorf("expected p1 Completed transition after merge recorded, got %+v", transitions)
+	}
+	if !sawAwaitingFill {
+		t.Errorf("expected p2 AwaitingFill transition after merge recorded, got %+v", transitions)
+	}
+}
+
 // TestStepPlannerSignals_EmptySignals verifies that stepPlannerSignals is a
 // no-op when no signals exist.
 func TestStepPlannerSignals_EmptySignals(t *testing.T) {

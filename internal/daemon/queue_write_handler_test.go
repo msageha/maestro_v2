@@ -1338,3 +1338,83 @@ func TestWriteAndNotify_SelfWriteHashMatchesFile(t *testing.T) {
 	}
 }
 
+// --- Continuous gate tests ---
+
+func writeGateContinuousState(t *testing.T, maestroDir string, status model.ContinuousStatus, reason string) {
+	t.Helper()
+	stateDir := filepath.Join(maestroDir, "state")
+	if err := os.MkdirAll(stateDir, 0755); err != nil {
+		t.Fatalf("mkdir state: %v", err)
+	}
+	state := model.Continuous{
+		SchemaVersion: 1,
+		FileType:      "state_continuous",
+		Status:        status,
+	}
+	if reason != "" {
+		state.PausedReason = &reason
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(stateDir, "continuous.yaml"), &state); err != nil {
+		t.Fatalf("write continuous.yaml: %v", err)
+	}
+}
+
+func TestQueueWriteCommand_ContinuousGate_PausedRejects(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	d.config.Continuous.Enabled = true
+	writeGateContinuousState(t, d.maestroDir, model.ContinuousStatusPaused, "max_consecutive_failures")
+
+	req := makeQueueWriteRequest(t, QueueWriteParams{Type: "command", Content: "next iter"})
+	resp := d.api.handleQueueWrite(req)
+	if resp.Success {
+		t.Fatal("expected rejection when continuous is paused, got success")
+	}
+	if resp.Error == nil || !bytes.Contains([]byte(resp.Error.Message), []byte("paused")) {
+		t.Fatalf("expected error mentioning 'paused', got: %+v", resp.Error)
+	}
+}
+
+func TestQueueWriteCommand_ContinuousGate_StoppedRejects(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	d.config.Continuous.Enabled = true
+	writeGateContinuousState(t, d.maestroDir, model.ContinuousStatusStopped, "")
+
+	req := makeQueueWriteRequest(t, QueueWriteParams{Type: "command", Content: "next iter"})
+	resp := d.api.handleQueueWrite(req)
+	if resp.Success {
+		t.Fatal("expected rejection when continuous is stopped, got success")
+	}
+	if resp.Error == nil || !bytes.Contains([]byte(resp.Error.Message), []byte("stopped")) {
+		t.Fatalf("expected error mentioning 'stopped', got: %+v", resp.Error)
+	}
+}
+
+func TestQueueWriteCommand_ContinuousGate_RunningAllows(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	d.config.Continuous.Enabled = true
+	writeGateContinuousState(t, d.maestroDir, model.ContinuousStatusRunning, "")
+
+	req := makeQueueWriteRequest(t, QueueWriteParams{Type: "command", Content: "next iter"})
+	resp := d.api.handleQueueWrite(req)
+	if !resp.Success {
+		t.Fatalf("expected success when continuous is running, got error: %+v", resp.Error)
+	}
+}
+
+func TestQueueWriteCommand_ContinuousGate_DisabledAllowsAnyStatus(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	d.config.Continuous.Enabled = false
+	// Even with paused status on disk, non-continuous config should allow writes.
+	writeGateContinuousState(t, d.maestroDir, model.ContinuousStatusPaused, "residual")
+
+	req := makeQueueWriteRequest(t, QueueWriteParams{Type: "command", Content: "manual command"})
+	resp := d.api.handleQueueWrite(req)
+	if !resp.Success {
+		t.Fatalf("expected success when continuous is disabled, got error: %+v", resp.Error)
+	}
+}
+

@@ -105,6 +105,7 @@ func TestIntegration_OrchestratorToolsConfig(t *testing.T) {
 		"Read(.maestro/dashboard.md)",
 		"Read(.maestro/results/*)",
 		"Read(.maestro/config.yaml)",
+		"Read(.maestro/state/continuous.yaml)",
 	}
 	for _, r := range expectedReads {
 		if !strings.Contains(joined, r) {

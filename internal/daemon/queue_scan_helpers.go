@@ -166,6 +166,30 @@ func (qh *QueueHandler) buildGlobalInFlightSet(taskQueues map[string]*taskQueueE
 	return inFlight
 }
 
+// phaseTasksAllCompleted reports whether every required task of the given phase
+// is in StatusCompleted according to the state reader (authoritative source).
+// Returns false if any task is missing, errored, or not completed. A phase with
+// no required tasks is treated as "not fully completed" — callers that want to
+// skip empty phases should do so explicitly (the merge collector does).
+//
+// Scoped against `stateReader` rather than the in-memory task queue snapshot so
+// that the "is this phase actually done?" check uses the same source of truth
+// as DependencyResolver.checkActivePhaseCompletion; otherwise queue/state drift
+// can cause Phase B to see a phase as mergeable while the resolver still treats
+// it as active (or vice versa).
+func phaseTasksAllCompleted(stateReader StateReader, commandID string, phase PhaseInfo) bool {
+	if stateReader == nil || len(phase.RequiredTaskIDs) == 0 {
+		return false
+	}
+	for _, taskID := range phase.RequiredTaskIDs {
+		status, err := stateReader.GetTaskState(commandID, taskID)
+		if err != nil || status != model.StatusCompleted {
+			return false
+		}
+	}
+	return true
+}
+
 // collectWorktreePhaseMerges detects phases that just completed and collects
 // merge work items for Phase B execution. Runs in Phase A under scanMu.Lock.
 // Only performs fast in-memory checks — all git I/O is deferred to Phase B.
@@ -204,28 +228,49 @@ func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string, taskQueues 
 		return qh.collectImplicitWorktreeMerge(commandID, cmdState, taskQueues, workerPurposes)
 	}
 
-	// Build workerIDs once outside the phase loop
-	workerIDs := make([]string, 0, len(cmdState.Workers))
-	for _, ws := range cmdState.Workers {
-		workerIDs = append(workerIDs, ws.WorkerID)
-	}
+	// Build workerIDs once outside the phase loop.
+	//
+	// Skip workers in Conflict/Resolving state: those are owned by the
+	// resume-merge pipeline (ResumeMerge → attemptResolvedMerges →
+	// commitResolvedWorkerChanges), which bypasses the normal transition
+	// machine to commit the resolution edits. Including them here causes the
+	// Phase B auto-commit path to call CommitWorkerChanges, which fails the
+	// `resolving → committed` transition guard, records a `commit_failed`
+	// signal, and blocks publishing even after the resolution task succeeded.
+	workerIDs := eligibleWorkerIDsForAutoCommit(cmdState.Workers)
 	if len(workerIDs) == 0 {
 		return nil
 	}
 
 	items := make([]worktreeMergeItem, 0, len(phases))
+	stateReader := qh.dependencyResolver.GetStateReader()
 	for _, phase := range phases {
-		if string(phase.Status) != "completed" {
-			continue
-		}
-		// Skip phases already merged
+		// Skip phases already merged.
 		if cmdState.MergedPhases != nil {
 			if _, merged := cmdState.MergedPhases[phase.ID]; merged {
 				continue
 			}
 		}
-		// Only merge if this phase has tasks
+		// Only merge if this phase has tasks.
 		if len(phase.RequiredTaskIDs) == 0 {
+			continue
+		}
+		// Never merge a phase that terminated unsuccessfully. Failed/cancelled/
+		// timed_out phases must not emit partial changes into integration; those
+		// are handled by publish/cleanup paths.
+		if phase.Status == model.PhaseStatusFailed ||
+			phase.Status == model.PhaseStatusCancelled ||
+			phase.Status == model.PhaseStatusTimedOut {
+			continue
+		}
+		// Accept both `phase.Status == completed` and `phase.Status == active
+		// with all required tasks completed`. The latter covers the case where
+		// stepPhaseTransitions defers the Completed transition until the
+		// worktree merge has been recorded (via isPhaseMergeRecorded): without
+		// this relaxation, the merge never starts because the phase never
+		// transitions, producing a deadlock between the merge-gate and the
+		// merge collection.
+		if phase.Status != model.PhaseStatusCompleted && !phaseTasksAllCompleted(stateReader, commandID, phase) {
 			continue
 		}
 
@@ -300,7 +345,7 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 	}
 
 	// Check if all tasks for this command are terminal
-	allTerminal, hasFailed := qh.checkCommandTasksTerminal(commandID, taskQueues)
+	allTerminal, taskHasFailed := qh.checkCommandTasksTerminal(commandID, taskQueues)
 	if !allTerminal {
 		return nil, nil
 	}
@@ -314,9 +359,25 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 		}
 		return nil, nil
 	}
-	for _, phase := range phases {
-		if !model.IsPhaseTerminal(phase.Status) {
-			return nil, nil
+	// Determine "did the command finish unsuccessfully?" via phase status rather
+	// than raw task status. Once Planner has replaced a failed task with a retry
+	// via add_retry_task, the phase reopens and — on retry success — transitions
+	// back to PhaseStatusCompleted. Judging by raw task failures instead would
+	// permanently poison the command because the original Failed task stays in
+	// the queue's history even after retry succeeds, making publish unreachable.
+	// For commands with no phases (implicit path), fall back to the task-level
+	// signal.
+	hasFailed := false
+	if len(phases) == 0 {
+		hasFailed = taskHasFailed
+	} else {
+		for _, phase := range phases {
+			if !model.IsPhaseTerminal(phase.Status) {
+				return nil, nil
+			}
+			if phase.Status != model.PhaseStatusCompleted {
+				hasFailed = true
+			}
 		}
 	}
 
@@ -324,7 +385,8 @@ func (qh *QueueHandler) collectWorktreePublishAndCleanup(
 	var cleanups []worktreeCleanupItem
 
 	if hasFailed {
-		// Don't publish if any task failed — partial results stay on integration branch
+		// Don't publish if any phase ended non-successfully — partial results
+		// stay on integration branch for operator inspection.
 		qh.log(LogLevelInfo, "worktree_publish_skip_failed command=%s", commandID)
 		if qh.config.Worktree.CleanupOnFailure {
 			cleanups = append(cleanups, worktreeCleanupItem{
@@ -499,10 +561,9 @@ func (qh *QueueHandler) collectImplicitWorktreeMerge(
 		return nil
 	}
 
-	workerIDs := make([]string, 0, len(cmdState.Workers))
-	for _, ws := range cmdState.Workers {
-		workerIDs = append(workerIDs, ws.WorkerID)
-	}
+	// See eligibleWorkerIDsForAutoCommit — Conflict/Resolving workers are owned
+	// by ResumeMerge and must not be auto-committed here.
+	workerIDs := eligibleWorkerIDsForAutoCommit(cmdState.Workers)
 	if len(workerIDs) == 0 {
 		return nil
 	}
@@ -513,4 +574,24 @@ func (qh *QueueHandler) collectImplicitWorktreeMerge(
 		WorkerIDs:      workerIDs,
 		WorkerPurposes: workerPurposes,
 	}}
+}
+
+// eligibleWorkerIDsForAutoCommit returns the worker IDs that Phase B's
+// auto-commit + merge path may operate on. Workers in Conflict or Resolving
+// status are excluded because they are owned by the resume-merge pipeline,
+// which commits their resolution edits via commitResolvedWorkerChanges
+// (bypassing the `resolving → committed` transition that the normal
+// CommitWorkerChanges would reject). Without this filter, a resolving worker
+// with dirty resolution files trips the invalid-transition guard, surfaces a
+// spurious `commit_failed` signal, and blocks publish even after the
+// resolution itself has succeeded.
+func eligibleWorkerIDsForAutoCommit(workers []model.WorktreeState) []string {
+	ids := make([]string, 0, len(workers))
+	for _, ws := range workers {
+		if ws.Status == model.WorktreeStatusConflict || ws.Status == model.WorktreeStatusResolving {
+			continue
+		}
+		ids = append(ids, ws.WorkerID)
+	}
+	return ids
 }

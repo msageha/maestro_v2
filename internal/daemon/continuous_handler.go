@@ -113,6 +113,9 @@ func (ch *ContinuousHandler) CheckAndAdvance(commandID string, commandStatus mod
 		newPausedReason = &reason
 	}
 
+	// Capture previous status to detect genuine transitions for notification emission.
+	prevStatus := state.Status
+
 	// Apply all mutations atomically
 	now := ch.clock.Now().UTC().Format(time.RFC3339)
 	state.CurrentIteration = newIteration
@@ -140,7 +143,98 @@ func (ch *ContinuousHandler) CheckAndAdvance(commandID string, commandStatus mod
 		}
 	}
 
+	// Emit an Orchestrator notification on Running -> Paused/Stopped transitions so the
+	// Orchestrator can surface the pause/stop reason to the user and halt auto-generation.
+	// Skipped when status did not actually change (e.g. already paused) to avoid duplicates.
+	if prevStatus != newStatus {
+		reason := ""
+		if newPausedReason != nil {
+			reason = *newPausedReason
+		}
+		switch newStatus {
+		case model.ContinuousStatusPaused:
+			if err := ch.writeContinuousTransitionNotification(
+				commandID, newIteration, newStatus, reason,
+			); err != nil {
+				ch.log(LogLevelWarn, "continuous_notification_failed status=paused command=%s err=%v", commandID, err)
+			}
+		case model.ContinuousStatusStopped:
+			if err := ch.writeContinuousTransitionNotification(
+				commandID, newIteration, newStatus, reason,
+			); err != nil {
+				ch.log(LogLevelWarn, "continuous_notification_failed status=stopped command=%s err=%v", commandID, err)
+			}
+		}
+	}
+
 	return nil
+}
+
+// writeContinuousTransitionNotification appends (or dedups) a notification into
+// queue/orchestrator.yaml describing a Running -> Paused/Stopped transition.
+// Dedup key: (SourceResultID, Type) where SourceResultID is synthesised from the
+// iteration + commandID so that re-entrancy (e.g. two fsnotify wakeups) does not
+// enqueue the same transition twice.
+func (ch *ContinuousHandler) writeContinuousTransitionNotification(
+	commandID string,
+	iteration int,
+	newStatus model.ContinuousStatus,
+	reason string,
+) error {
+	var notifType model.NotificationType
+	switch newStatus {
+	case model.ContinuousStatusPaused:
+		notifType = model.NotificationTypeContinuousPaused
+	case model.ContinuousStatusStopped:
+		notifType = model.NotificationTypeContinuousStopped
+	default:
+		return nil
+	}
+
+	// Synthetic source_result_id — one per (iteration, commandID, status) tuple.
+	sourceID := fmt.Sprintf("continuous:%s:%d:%s", newStatus, iteration, commandID)
+
+	queuePath := filepath.Join(ch.maestroDir, "queue", "orchestrator.yaml")
+
+	ch.lockMap.Lock("queue:orchestrator")
+	defer ch.lockMap.Unlock("queue:orchestrator")
+
+	return updateYAMLFile(queuePath, func(nq *model.NotificationQueue) error {
+		if nq.SchemaVersion == 0 {
+			nq.SchemaVersion = 1
+			nq.FileType = "queue_notification"
+		}
+
+		// Idempotency: skip if an entry with the same (SourceResultID, Type) exists.
+		for i := range nq.Notifications {
+			if nq.Notifications[i].SourceResultID == sourceID &&
+				nq.Notifications[i].Type == notifType {
+				return errNoUpdate
+			}
+		}
+
+		id, err := model.GenerateID(model.IDTypeNotification)
+		if err != nil {
+			return fmt.Errorf("generate notification ID: %w", err)
+		}
+
+		now := ch.clock.Now().UTC().Format(time.RFC3339)
+		content := fmt.Sprintf("continuous %s iteration=%d reason=%s last_command=%s",
+			newStatus, iteration, reason, commandID)
+
+		nq.Notifications = append(nq.Notifications, model.Notification{
+			ID:             id,
+			CommandID:      commandID,
+			Type:           notifType,
+			SourceResultID: sourceID,
+			Content:        content,
+			Priority:       defaultNotificationPriority,
+			Status:         model.StatusPending,
+			CreatedAt:      now,
+			UpdatedAt:      now,
+		})
+		return nil
+	})
 }
 
 func (ch *ContinuousHandler) loadContinuousState() (*model.Continuous, error) {

@@ -13,7 +13,7 @@ func TestAllowedToolsByRole(t *testing.T) {
 		wantTools []string
 		wantOK    bool
 	}{
-		{"orchestrator", []string{"Bash(maestro:*)", "Read(.maestro/dashboard.md)", "Read(.maestro/results/*)", "Read(.maestro/config.yaml)"}, true},
+		{"orchestrator", []string{"Bash(maestro:*)", "Read(.maestro/dashboard.md)", "Read(.maestro/results/*)", "Read(.maestro/config.yaml)", "Read(.maestro/state/continuous.yaml)"}, true},
 		{"planner", []string{"Bash(maestro:*)", "Read(.maestro/**)"}, true},
 		{"worker", nil, false},
 	}

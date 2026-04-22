@@ -259,15 +259,48 @@ func (wm *Manager) ResumeMerge(ctx context.Context, commandID string) error {
 	}
 
 	if allIntegrated && len(toResolve) > 0 {
-		// All workers are now integrated — transition through merging to merged.
-		if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusMerging, now); tErr == nil {
-			if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusMerged, now); tErr != nil {
-				wm.Log(core.LogLevelWarn, "resume_merge_merged_transition command=%s error=%v", commandID, tErr)
-				// Revert to failed so Phase A can retry.
-				_ = wm.setIntegrationStatus(state, model.IntegrationStatusFailed, now)
+		// Before flipping integration to Merged, cross-check git reality: every
+		// worker branch whose state says "integrated" (or later) must actually
+		// be reachable from integration HEAD. Without this, tryMergeWorker's
+		// "already merged" early-return (mergeResolvedWorker: empty
+		// preMergeHEAD..branch log) or a failed commitResolvedWorkerChanges
+		// would still flip integration to Merged while the resolution content
+		// never reached the branch — the operator then sees integration state
+		// say "merged" while the branch diff is empty (2026-04 audit Bug 2).
+		if contentOK, badWorkers := wm.verifyWorkersMerged(ctx, commandID, state); contentOK {
+			// All workers are now integrated and merged — transition through merging to merged.
+			if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusMerging, now); tErr == nil {
+				if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusMerged, now); tErr != nil {
+					wm.Log(core.LogLevelWarn, "resume_merge_merged_transition command=%s error=%v", commandID, tErr)
+					// Revert to failed so Phase A can retry.
+					_ = wm.setIntegrationStatus(state, model.IntegrationStatusFailed, now)
+				}
+			} else {
+				wm.Log(core.LogLevelWarn, "resume_merge_merging_transition command=%s error=%v", commandID, tErr)
 			}
 		} else {
-			wm.Log(core.LogLevelWarn, "resume_merge_merging_transition command=%s error=%v", commandID, tErr)
+			wm.Log(core.LogLevelError,
+				"resume_merge_content_mismatch command=%s bad_workers=%v (state says integrated but branch not reachable from integration HEAD; forcing status=failed)",
+				commandID, badWorkers)
+			// Revert the offending workers to Conflict so the resolution
+			// pipeline re-attempts on the next scan instead of leaving them
+			// wedged in a false "integrated" state that would keep producing
+			// the same false-Merged transition.
+			for _, wid := range badWorkers {
+				for i := range state.Workers {
+					if state.Workers[i].WorkerID == wid {
+						if tErr := wm.setWorkerStatus(&state.Workers[i], model.WorktreeStatusConflict, now); tErr != nil {
+							wm.Log(core.LogLevelWarn, "resume_merge_revert_bad_worker command=%s worker=%s error=%v",
+								commandID, wid, tErr)
+						}
+					}
+				}
+			}
+			// Record as a merge failure so the quarantine counter advances if
+			// this keeps happening.
+			if tErr := wm.recordMergeFailure(state, "content_mismatch", now); tErr != nil {
+				wm.Log(core.LogLevelWarn, "resume_merge_content_mismatch_record command=%s error=%v", commandID, tErr)
+			}
 		}
 	}
 
@@ -292,6 +325,59 @@ func (wm *Manager) ResumeMerge(ctx context.Context, commandID string) error {
 		return fmt.Errorf("save state: %w", err)
 	}
 	return nil
+}
+
+// verifyWorkersMerged checks whether every worker whose state says "integrated"
+// is actually reachable from the current integration HEAD. This is a safety
+// net against paths where tryMergeWorker marked a worker Integrated without
+// its content actually reaching the branch — e.g. commitResolvedWorkerChanges
+// silently failed, or mergeResolvedWorker early-returned because the worker
+// branch had no new commits to merge even though resolution edits existed.
+//
+// Returns (true, nil) when every integrated-state worker branch is an
+// ancestor of HEAD. Returns (false, badWorkerIDs) otherwise. A transient git
+// error is conservatively treated as a content mismatch so we never promote
+// integration to Merged on unverified data.
+// Caller must hold wm.mu.
+func (wm *Manager) verifyWorkersMerged(ctx context.Context, commandID string, state *model.WorktreeCommandState) (bool, []string) {
+	integrationPath := wm.integrationWorktreePath(commandID)
+	headOut, err := wm.gitOutputWithRetry(ctx, integrationPath, 2, "rev-parse", "HEAD")
+	if err != nil {
+		wm.Log(core.LogLevelWarn, "verify_workers_merged_head_failed command=%s error=%v", commandID, err)
+		return false, nil
+	}
+	head := strings.TrimSpace(headOut)
+	if err := validateSHA(head); err != nil {
+		wm.Log(core.LogLevelWarn, "verify_workers_merged_invalid_head command=%s error=%v", commandID, err)
+		return false, nil
+	}
+
+	var bad []string
+	for _, ws := range state.Workers {
+		switch ws.Status {
+		case model.WorktreeStatusIntegrated, model.WorktreeStatusPublished,
+			model.WorktreeStatusCleanupDone, model.WorktreeStatusCleanupFailed:
+			// Expected to be reachable from HEAD.
+		default:
+			continue
+		}
+		if ws.Branch == "" {
+			continue
+		}
+		// git merge-base --is-ancestor <branch> HEAD: exit 0 if ancestor, 1 if not, >1 on error.
+		err := wm.gitRunInDir(integrationPath, "merge-base", "--is-ancestor", ws.Branch, head)
+		if err == nil {
+			continue
+		}
+		// Distinguish "not an ancestor" (exit 1) from a real git error (bad
+		// ref, I/O, etc.): a not-an-ancestor result is what we flag; other
+		// errors are logged but still treated as "bad" to fail closed.
+		wm.Log(core.LogLevelWarn,
+			"verify_worker_merged command=%s worker=%s branch=%s error=%v (flagging as not-merged)",
+			commandID, ws.WorkerID, ws.Branch, err)
+		bad = append(bad, ws.WorkerID)
+	}
+	return len(bad) == 0, bad
 }
 
 // attemptResolvedMerges tries to merge each conflict/resolving worker directly
@@ -365,10 +451,23 @@ func (wm *Manager) tryMergeWorker(ctx context.Context, integrationPath string, w
 	// is not in the valid state machine. This commit ensures the worker
 	// branch HEAD reflects the resolved content so mergeResolvedWorker can
 	// use it via `git checkout <branch> -- <file>`.
+	//
+	// If the worktree had dirty files but the commit ultimately failed (e.g.
+	// every file was filtered as sensitive, or the commit command itself
+	// erred), proceeding with the merge risks a false-success: the worker
+	// branch still holds pre-resolution content and mergeResolvedWorker's
+	// "already merged" early-return would flip the worker to Integrated
+	// without propagating the real resolution. Keep the worker in Conflict so
+	// the operator can inspect rather than silently promoting the branch
+	// (2026-04 audit Bug 2).
 	if commitErr := wm.commitResolvedWorkerChanges(ws, commandID); commitErr != nil {
-		wm.Log(core.LogLevelWarn, "resume_merge_commit_resolved command=%s worker=%s error=%v",
+		wm.Log(core.LogLevelWarn, "resume_merge_commit_resolved command=%s worker=%s error=%v (reverting to conflict, skipping merge attempt)",
 			commandID, ws.WorkerID, commitErr)
-		// Non-fatal: proceed with merge attempt using existing branch content.
+		if tErr := wm.setWorkerStatus(ws, model.WorktreeStatusConflict, now); tErr != nil {
+			wm.Log(core.LogLevelWarn, "resume_merge_commit_resolved_revert command=%s worker=%s error=%v",
+				commandID, ws.WorkerID, tErr)
+		}
+		return
 	}
 
 	if mergeErr := wm.mergeResolvedWorker(ctx, integrationPath, ws, commandID); mergeErr != nil {

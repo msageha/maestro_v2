@@ -107,6 +107,7 @@ type QueueDispatcher interface {
 // QueueDependencyResolverConfigurer defines configuration/wiring operations.
 type QueueDependencyResolverConfigurer interface {
 	SetEventBus(bus *events.Bus)
+	SetMergeGate(fn MergeGateFunc)
 }
 
 // QueueDependencyResolver defines the dependency resolution operations used by QueueHandler.

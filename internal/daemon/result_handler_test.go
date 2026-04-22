@@ -745,3 +745,94 @@ func TestResultHandler_MultipleResults_ProcessedInOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestResultHandler_SweepExhaustedNotifications_Worker verifies that worker
+// results whose notification retries were exhausted are transitioned into the
+// notify-dead-letter terminal state, archived, and surfaced via an orchestrator
+// notification instead of being silently skipped forever.
+func TestResultHandler_SweepExhaustedNotifications_Worker(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupTestMaestroDir(t)
+	rh, _ := newTestResultHandler(maestroDir)
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	rf := model.TaskResultFile{
+		SchemaVersion: 1,
+		FileType:      "result_task",
+		Results: []model.TaskResult{{
+			ID:        "res_0000001000_exhaust1",
+			TaskID:    "task_0000001000_aaaaaaaa",
+			CommandID: "cmd_0000001000_bbbbbbbb",
+			Status:    model.StatusCompleted,
+			Summary:   "done",
+			NotifiableBase: model.NotifiableBase{
+				NotifyAttempts: maxNotifyAttempts, // already at the ceiling
+			},
+			CreatedAt: now,
+		}},
+	}
+	resultPath := filepath.Join(maestroDir, "results", "worker1.yaml")
+	if err := yamlutil.AtomicWrite(resultPath, rf); err != nil {
+		t.Fatalf("write result: %v", err)
+	}
+
+	// Trigger one scan — sweep should fire before the notify loop.
+	_ = rh.processWorkerResultFile("worker1")
+
+	// File should now show dead-letter state.
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	var updated model.TaskResultFile
+	if err := yamlv3.Unmarshal(data, &updated); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !updated.Results[0].NotifyDeadLettered {
+		t.Fatalf("expected NotifyDeadLettered=true, got %+v", updated.Results[0])
+	}
+	if updated.Results[0].NotifyDeadLetterReason == nil {
+		t.Error("expected NotifyDeadLetterReason to be set")
+	}
+
+	// Archive should exist under dead_letters/.
+	entries, err := os.ReadDir(filepath.Join(maestroDir, "dead_letters"))
+	if err != nil {
+		t.Fatalf("read dead_letters: %v", err)
+	}
+	found := false
+	for _, e := range entries {
+		if strings.Contains(e.Name(), "res_0000001000_exhaust1") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected archive for exhausted result, entries=%v", entries)
+	}
+
+	// Orchestrator notification queue should contain a command_failed entry.
+	nqData, err := os.ReadFile(filepath.Join(maestroDir, "queue", "orchestrator.yaml"))
+	if err != nil {
+		t.Fatalf("read orchestrator queue: %v", err)
+	}
+	var nq model.NotificationQueue
+	if err := yamlv3.Unmarshal(nqData, &nq); err != nil {
+		t.Fatalf("unmarshal nq: %v", err)
+	}
+	if len(nq.Notifications) != 1 || nq.Notifications[0].Type != model.NotificationTypeCommandFailed {
+		t.Errorf("expected one command_failed notification, got: %+v", nq.Notifications)
+	}
+	if nq.Notifications[0].SourceResultID != "result_dl_res_0000001000_exhaust1" {
+		t.Errorf("unexpected SourceResultID: %s", nq.Notifications[0].SourceResultID)
+	}
+
+	// Running the scan a second time must NOT emit a duplicate notification.
+	_ = rh.processWorkerResultFile("worker1")
+	nqData, _ = os.ReadFile(filepath.Join(maestroDir, "queue", "orchestrator.yaml"))
+	_ = yamlv3.Unmarshal(nqData, &nq)
+	if len(nq.Notifications) != 1 {
+		t.Errorf("sweep must be idempotent, got %d notifications", len(nq.Notifications))
+	}
+}
+

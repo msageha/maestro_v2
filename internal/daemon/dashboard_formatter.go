@@ -4,12 +4,15 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"text/template"
 	"time"
+
+	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -289,10 +292,70 @@ func (f *DashboardFormatter) UpdateDashboardFileWithQueues(
 		sb.WriteString("_No active commands_\n")
 	}
 
+	// Worktree Integration Status — surfaces cases where the log-based task
+	// stats would otherwise report the command as clean success while the
+	// worktree state is stalled (unresolved conflict, unpublished integration,
+	// persistent commit_failed_workers). 2026-04 audit Bug 3 showed these
+	// recovery-blocking conditions disappearing entirely from dashboard.md.
+	worktreeStates := f.loadWorktreeStatesForDashboard()
+	worktreeWarnings := 0
+	if len(worktreeStates) > 0 {
+		sb.WriteString("\n## Worktree Integration Status\n\n")
+		sb.WriteString("| Command | Integration | Commit-Failed Workers | Merge Failures |\n")
+		sb.WriteString("|---------|-------------|----------------------:|---------------:|\n")
+		// Sort for stable output
+		cmdIDs := make([]string, 0, len(worktreeStates))
+		for id := range worktreeStates {
+			cmdIDs = append(cmdIDs, id)
+		}
+		sort.Strings(cmdIDs)
+		for _, id := range cmdIDs {
+			ws := worktreeStates[id]
+			failedList := "-"
+			if n := len(ws.CommitFailedWorkers); n > 0 {
+				failedList = strings.Join(ws.CommitFailedWorkers, ",")
+				worktreeWarnings++
+			}
+			if isRecoveryStuckIntegrationStatus(ws.Integration.Status) {
+				worktreeWarnings++
+			}
+			fmt.Fprintf(&sb, "| `%s` | %s | %s | %d |\n",
+				id, ws.Integration.Status, failedList, ws.Integration.MergeFailureCount)
+		}
+		if worktreeWarnings > 0 {
+			fmt.Fprintf(&sb, "\n> ⚠ %d worktree-integration warning(s): unresolved merge/publish state. "+
+				"Publish is blocked until commit_failed_workers clear and integration reaches merged/published.\n",
+				worktreeWarnings)
+		}
+	}
+
 	// Worker tasks
 	sb.WriteString("\n## Worker Tasks\n\n")
 	for _, wID := range workerKeys {
 		fmt.Fprintf(&sb, "- **%s**: %d pending, %d in_progress\n", wID, workerPending[wID], workerInProg[wID])
+	}
+
+	// Continuous Mode state (best-effort; absent file means disabled/never started)
+	if cs, err := f.loadContinuousForDashboard(); err != nil {
+		slog.Warn("loadContinuousForDashboard failed, skipping continuous section", "error", err)
+	} else if cs != nil {
+		sb.WriteString("\n## Continuous Mode\n\n")
+		fmt.Fprintf(&sb, "- Status: `%s`\n", cs.Status)
+		if cs.MaxIterations > 0 {
+			fmt.Fprintf(&sb, "- Iteration: %d / %d\n", cs.CurrentIteration, cs.MaxIterations)
+		} else {
+			fmt.Fprintf(&sb, "- Iteration: %d (unlimited)\n", cs.CurrentIteration)
+		}
+		fmt.Fprintf(&sb, "- Consecutive Failures: %d\n", cs.ConsecutiveFailures)
+		if cs.PausedReason != nil && *cs.PausedReason != "" {
+			fmt.Fprintf(&sb, "- Paused Reason: %s\n", *cs.PausedReason)
+		}
+		if cs.LastCommandID != nil && *cs.LastCommandID != "" {
+			fmt.Fprintf(&sb, "- Last Command: `%s`\n", *cs.LastCommandID)
+		}
+		if cs.UpdatedAt != "" {
+			fmt.Fprintf(&sb, "- Updated At: %s\n", cs.UpdatedAt)
+		}
 	}
 
 	// Enrich with log-based statistics (best-effort)
@@ -304,11 +367,15 @@ func (f *DashboardFormatter) UpdateDashboardFileWithQueues(
 		if data.IsStale {
 			fmt.Fprintf(&sb, "\n> ⚠ [STALE] log data unavailable: %s\n", data.StaleReason)
 		}
-		if data.Stats.TotalTasks > 0 || data.Stats.ErrorCount > 0 {
+		if data.Stats.TotalTasks > 0 || data.Stats.ErrorCount > 0 || worktreeWarnings > 0 {
 			sb.WriteString("\n## Recent Activity\n\n")
 			fmt.Fprintf(&sb, "Tasks: %d total, %d completed, %d failed\n",
 				data.Stats.TotalTasks, data.Stats.CompletedTasks, data.Stats.FailedTasks)
-			fmt.Fprintf(&sb, "Errors: %d, Warnings: %d\n", data.Stats.ErrorCount, data.Stats.WarningCount)
+			// Fold worktree-integration warnings into the overall Warnings
+			// count so operators glancing only at the summary line see that
+			// recovery is pending instead of a false "0 warnings" signal.
+			fmt.Fprintf(&sb, "Errors: %d, Warnings: %d\n",
+				data.Stats.ErrorCount, data.Stats.WarningCount+worktreeWarnings)
 		}
 	}
 
@@ -328,6 +395,80 @@ type WorkerSummary struct {
 	ID         string
 	Pending    int
 	InProgress int
+}
+
+// isRecoveryStuckIntegrationStatus reports whether an integration status
+// represents a recovery-blocking condition (merge/publish is not moving
+// forward). These must surface as warnings on the dashboard; otherwise
+// operators see "Tasks: all completed, 0 warnings" while the integration is
+// silently wedged waiting for conflict resolution or a publish retry.
+func isRecoveryStuckIntegrationStatus(s model.IntegrationStatus) bool {
+	switch s {
+	case model.IntegrationStatusConflict,
+		model.IntegrationStatusPartialMerge,
+		model.IntegrationStatusFailed,
+		model.IntegrationStatusPublishFailed,
+		model.IntegrationStatusQuarantined:
+		return true
+	}
+	return false
+}
+
+// loadWorktreeStatesForDashboard reads all .maestro/state/worktrees/*.yaml
+// files and returns a map of commandID → WorktreeCommandState. Best-effort:
+// unreadable or malformed files are skipped with a log rather than failing
+// the entire dashboard render.
+func (f *DashboardFormatter) loadWorktreeStatesForDashboard() map[string]*model.WorktreeCommandState {
+	dir := filepath.Join(f.maestroDir, "state", "worktrees")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("loadWorktreeStatesForDashboard: readdir failed", "dir", dir, "error", err)
+		}
+		return nil
+	}
+	out := make(map[string]*model.WorktreeCommandState, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		data, err := os.ReadFile(path) //nolint:gosec // daemon-controlled state dir
+		if err != nil {
+			slog.Warn("loadWorktreeStatesForDashboard: read failed", "path", path, "error", err)
+			continue
+		}
+		var st model.WorktreeCommandState
+		if err := yamlv3.Unmarshal(data, &st); err != nil {
+			slog.Warn("loadWorktreeStatesForDashboard: unmarshal failed", "path", path, "error", err)
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".yaml")
+		if st.CommandID != "" {
+			id = st.CommandID
+		}
+		out[id] = &st
+	}
+	return out
+}
+
+// loadContinuousForDashboard reads .maestro/state/continuous.yaml for dashboard rendering.
+// Returns (nil, nil) when the file does not exist (continuous mode never initialized).
+// Returns (state, nil) on success; (nil, err) on parse/read failures.
+func (f *DashboardFormatter) loadContinuousForDashboard() (*model.Continuous, error) {
+	statePath := filepath.Join(f.maestroDir, "state", "continuous.yaml")
+	data, err := os.ReadFile(statePath) //nolint:gosec // path derived from daemon-controlled state directory
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var state model.Continuous
+	if err := yamlv3.Unmarshal(data, &state); err != nil {
+		return nil, err
+	}
+	return &state, nil
 }
 
 // UpdateDashboardFile updates the dashboard.md file using atomic write.

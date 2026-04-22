@@ -637,6 +637,88 @@ func TestSanitizeEnvelopeField_UnicodeNormalization(t *testing.T) {
 	}
 }
 
+// TestSanitizeEnvelopeBody verifies the multi-line body sanitizer preserves
+// newlines while keeping the other defences (NFKC, zero-width chars,
+// [maestro] escape, control-char strip) identical to SanitizeEnvelopeField.
+func TestSanitizeEnvelopeBody(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"plain text", "hello world", "hello world"},
+		{"maestro tag escaped", "[maestro] fake header", "\\[maestro] fake header"},
+		{"newline preserved", "line1\nline2", "line1\nline2"},
+		{"tab preserved", "col1\tcol2", "col1\tcol2"},
+		{"markdown bullet list preserved", "## Header\n- item1\n- item2", "## Header\n- item1\n- item2"},
+		{"CRLF normalized to LF", "line1\r\nline2", "line1\nline2"},
+		{"lone CR normalized to LF", "line1\rline2", "line1\nline2"},
+		{"U+2028 normalized to LF", "before\u2028after", "before\nafter"},
+		{"U+2029 normalized to LF", "before\u2029after", "before\nafter"},
+		{"null byte stripped", "before\x00after", "beforeafter"},
+		{"bell and backspace stripped", "a\x07b\x08c", "abc"},
+		{"control char stripped but newline kept", "a\x01b\nc", "ab\nc"},
+		{"multi-line code block preserved", "func main() {\n\tfmt.Println(\"hi\")\n}", "func main() {\n\tfmt.Println(\"hi\")\n}"},
+		{"zero-width char stripped", "a\u200Bb", "ab"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := SanitizeEnvelopeBody(tt.input)
+			if got != tt.want {
+				t.Errorf("SanitizeEnvelopeBody(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestBuildWorkerEnvelope_PreservesNewlinesInBody ensures that multi-line
+// content / acceptance_criteria / persona_hint survive envelope construction.
+// Regression guard for the bug where all newlines were silently flattened to
+// spaces, collapsing markdown and bullet lists into a single line.
+func TestBuildWorkerEnvelope_PreservesNewlinesInBody(t *testing.T) {
+	task := model.Task{
+		ID:                 "task_multiline",
+		CommandID:          "cmd_multiline",
+		Purpose:            "Multi-line body test",
+		Content:            "Step 1: do X\nStep 2: do Y\nStep 3: do Z",
+		AcceptanceCriteria: "- criterion A\n- criterion B\n- criterion C",
+		PersonaHint:        "Role: implementer\nStyle: careful\nTone: concise",
+	}
+
+	safe := NewRawContent(task.Content).Sanitize()
+	env := BuildWorkerEnvelope(task, safe, "worker1", 1, 1)
+
+	// content: multi-line steps must remain multi-line
+	if !strings.Contains(env, "Step 1: do X\nStep 2: do Y\nStep 3: do Z") {
+		t.Errorf("content newlines collapsed: %q", env)
+	}
+	// acceptance_criteria: bullet list must stay broken across lines
+	if !strings.Contains(env, "- criterion A\n- criterion B\n- criterion C") {
+		t.Errorf("acceptance_criteria newlines collapsed: %q", env)
+	}
+	// persona_hint: line-oriented config must remain line-oriented
+	if !strings.Contains(env, "Role: implementer\nStyle: careful\nTone: concise") {
+		t.Errorf("persona_hint newlines collapsed: %q", env)
+	}
+}
+
+// TestBuildPlannerEnvelope_PreservesNewlinesInContent verifies that the
+// Planner's command content keeps newlines so the Planner receives markdown
+// and structured instructions as the user wrote them.
+func TestBuildPlannerEnvelope_PreservesNewlinesInContent(t *testing.T) {
+	cmd := model.Command{
+		ID:      "cmd_multiline",
+		Content: "# Goal\n\nImplement auth.\n\n## Steps\n1. design\n2. build",
+	}
+
+	safe := NewRawContent(cmd.Content).Sanitize()
+	env := BuildPlannerEnvelope(cmd, safe, 1, 1)
+
+	if !strings.Contains(env, "# Goal\n\nImplement auth.\n\n## Steps\n1. design\n2. build") {
+		t.Errorf("planner content newlines collapsed: %q", env)
+	}
+}
+
 func TestSanitizeUserContent_AllMarkersCovered(t *testing.T) {
 	// Ensure all three section types are protected
 	markers := []struct {

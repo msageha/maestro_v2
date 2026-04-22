@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/testutil"
@@ -856,8 +857,21 @@ func TestMergeToIntegration_ConflictVsNonConflict(t *testing.T) {
 	}
 }
 
-// TestPublishToBase_PreservesConflictWorkerStatus verifies that PublishToBase only
-// sets integrated workers to published, preserving conflict/failed worker statuses.
+// TestPublishToBase_PreservesConflictWorkerStatus verifies that PublishToBase
+// only sets integrated workers to published, preserving conflict/failed worker
+// statuses. This is a defensive invariant of the publish loop: even if some
+// upstream inconsistency slipped a non-Integrated worker into a Merged
+// integration state, the publish step must not silently promote that worker
+// to Published.
+//
+// The test reaches this state by forcing it on disk rather than driving it
+// through MergeToIntegration, because determineMergeOutcome deliberately
+// refuses to mark integration Merged while any worker is still in
+// Conflict/Resolving (2026-04 audit: integration=merged with worker=resolving
+// Bug). Driving through the merge path would (correctly) produce PartialMerge
+// and PublishToBase would be unreachable — but the invariant this test
+// guards is the publish loop's own filter, which still matters if a future
+// bug reintroduces the bad state.
 func TestPublishToBase_PreservesConflictWorkerStatus(t *testing.T) {
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)
@@ -910,7 +924,9 @@ func TestPublishToBase_PreservesConflictWorkerStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Merge — worker1 succeeds, worker2 conflicts → partial_merge
+	// Merge — worker1 succeeds, worker2 conflicts → partial_merge.
+	// Post-fix this correctly leaves integration in PartialMerge (not Merged)
+	// because worker2 is in Conflict.
 	conflicts, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil)
 	if err != nil {
 		t.Fatalf("MergeToIntegration: %v", err)
@@ -918,20 +934,28 @@ func TestPublishToBase_PreservesConflictWorkerStatus(t *testing.T) {
 	if len(conflicts) != 1 {
 		t.Fatalf("expected 1 conflict, got %d", len(conflicts))
 	}
-
-	// Re-merge with only worker1 to transition partial_merge → merging → merged
-	// Worker1 has no new commits, so loop produces mergedCount=0, conflicts=0 → merged
-	_, err = wm.MergeToIntegration(context.Background(), commandID, []string{"worker1"}, nil)
-	if err != nil {
-		t.Fatalf("re-MergeToIntegration: %v", err)
-	}
-
-	state, err := wm.GetCommandState(commandID)
+	stateAfterMerge, err := wm.GetCommandState(commandID)
 	if err != nil {
 		t.Fatalf("GetCommandState: %v", err)
 	}
-	if state.Integration.Status != model.IntegrationStatusMerged {
-		t.Fatalf("integration status = %q, want %q", state.Integration.Status, model.IntegrationStatusMerged)
+	if stateAfterMerge.Integration.Status != model.IntegrationStatusPartialMerge {
+		t.Fatalf("post-merge integration status = %q, want %q (PartialMerge) while worker2 is in Conflict",
+			stateAfterMerge.Integration.Status, model.IntegrationStatusPartialMerge)
+	}
+
+	// Force the state onto disk as if some upstream path (incorrectly) flipped
+	// integration to Merged while worker2 is still in Conflict. This reaches
+	// the invariant the publish loop is meant to defend against.
+	st, err := wm.loadState(commandID)
+	if err != nil {
+		t.Fatalf("loadState: %v", err)
+	}
+	now := wm.clock.Now().UTC().Format(time.RFC3339)
+	st.Integration.Status = model.IntegrationStatusMerged
+	st.Integration.UpdatedAt = now
+	st.UpdatedAt = now
+	if err := wm.saveState(commandID, st); err != nil {
+		t.Fatalf("saveState: %v", err)
 	}
 
 	// Publish to base
@@ -940,7 +964,7 @@ func TestPublishToBase_PreservesConflictWorkerStatus(t *testing.T) {
 	}
 
 	// Verify worker statuses
-	state, err = wm.GetCommandState(commandID)
+	state, err := wm.GetCommandState(commandID)
 	if err != nil {
 		t.Fatalf("GetCommandState: %v", err)
 	}
@@ -958,6 +982,113 @@ func TestPublishToBase_PreservesConflictWorkerStatus(t *testing.T) {
 	}
 	if state.Integration.Status != model.IntegrationStatusPublished {
 		t.Errorf("integration status = %q, want %q", state.Integration.Status, model.IntegrationStatusPublished)
+	}
+}
+
+// TestMergeToIntegration_DoesNotFlipToMergedWhileWorkerInConflict verifies
+// the fix for the 2026-04 audit bug where a second merge round — called with
+// only already-Integrated workers after a previous conflict left one worker
+// in Conflict state — incorrectly flipped integration to Merged. That false
+// Merged transition cascaded into: (1) Phase C's MarkPhaseMerged gate passing,
+// (2) Phase A's isPhaseMergeRecorded returning true, and (3) downstream
+// phases (verification) activating against an integration branch that had
+// not actually absorbed the conflicting worker's resolution.
+//
+// Post-fix invariant: determineMergeOutcome must detect workers in state.Workers
+// that are still in Conflict/Resolving — even if they were excluded from the
+// current merge round's workerIDs — and refuse the Merged transition. The
+// correct status with a pending resolution is PartialMerge (mergedCount > 0)
+// or the pre-merge status (mergedCount == 0).
+func TestMergeToIntegration_DoesNotFlipToMergedWhileWorkerInConflict(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_no_false_merged"
+	workers := []string{"worker1", "worker2"}
+	if err := createForCommand(wm, commandID, workers); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	// Set up worker1 + worker2 with a conflicting README edit.
+	wt1, err := wm.GetWorkerPath(commandID, "worker1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt1, "README.md"), []byte("worker1 readme\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker1", "worker1 modify README"); err != nil {
+		t.Fatal(err)
+	}
+	wt2, err := wm.GetWorkerPath(commandID, "worker2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt2, "README.md"), []byte("worker2 readme\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker2", "worker2 modify README"); err != nil {
+		t.Fatal(err)
+	}
+
+	// First merge: worker1 integrates, worker2 conflicts → PartialMerge.
+	conflicts, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil)
+	if err != nil {
+		t.Fatalf("MergeToIntegration: %v", err)
+	}
+	if len(conflicts) != 1 {
+		t.Fatalf("expected 1 conflict, got %d", len(conflicts))
+	}
+	state, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	if state.Integration.Status != model.IntegrationStatusPartialMerge {
+		t.Fatalf("after first merge: integration status = %q, want %q",
+			state.Integration.Status, model.IntegrationStatusPartialMerge)
+	}
+
+	// Simulate the buggy call path: Phase A collects only non-Conflict/
+	// Resolving workers, so the next merge round is invoked with only
+	// [worker1]. Previously the outcome loop concluded "mergedCount=1,
+	// all-zero-else → Merged" because worker2 wasn't in workerIDs to be
+	// counted as conflictSkipped. The fix reads state.Workers directly and
+	// observes worker2 is still in Conflict.
+	_, err = wm.MergeToIntegration(context.Background(), commandID, []string{"worker1"}, nil)
+	if err != nil {
+		t.Fatalf("second MergeToIntegration: %v", err)
+	}
+	state, err = wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	if state.Integration.Status == model.IntegrationStatusMerged {
+		t.Fatalf("integration status = %q; must NOT be Merged while a worker is in Conflict "+
+			"(this is the 2026-04 audit bug — downstream phase activation and publish gate would break)",
+			state.Integration.Status)
+	}
+	// The expected status after the second merge is PartialMerge: worker1
+	// counts as mergedCount (already-integrated short-circuit) and
+	// statePendingResolution > 0 prevents Merged. The mergedCount>0 branch
+	// then writes PartialMerge.
+	if state.Integration.Status != model.IntegrationStatusPartialMerge {
+		t.Fatalf("integration status = %q, want %q (second merge with pending conflict worker)",
+			state.Integration.Status, model.IntegrationStatusPartialMerge)
+	}
+	// worker2 must remain in Conflict so the resume-merge pipeline can act on it.
+	var w2 *model.WorktreeState
+	for i := range state.Workers {
+		if state.Workers[i].WorkerID == "worker2" {
+			w2 = &state.Workers[i]
+			break
+		}
+	}
+	if w2 == nil {
+		t.Fatal("worker2 missing from state")
+	}
+	if w2.Status != model.WorktreeStatusConflict {
+		t.Errorf("worker2 status = %q, want %q", w2.Status, model.WorktreeStatusConflict)
 	}
 }
 

@@ -3,6 +3,7 @@ package plan
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -171,6 +172,26 @@ func AssignWorkers(
 			}
 		}
 
+		// If no workers are configured for the bloom-derived family, fall
+		// back to whichever family the operator actually provisioned. This
+		// prevents deployments with a single model family (e.g. all-opus)
+		// from failing on tasks whose Bloom level normally maps to a
+		// different family. Overqualified assignments (opus handling a
+		// sonnet-level task) are benign; underqualified assignments (sonnet
+		// handling an opus-level task) trigger an observability warning so
+		// operators can notice capability mismatches.
+		if !workerExistsForModel(stateMap, requiredModel) {
+			if fallback := chooseFallbackFamily(stateMap, requiredModel); fallback != "" {
+				slog.Warn("worker_model_fallback",
+					"task", task.Name,
+					"bloom_level", task.BloomLevel,
+					"required", requiredModel,
+					"fallback", fallback,
+					"reason", "no worker configured for required family")
+				requiredModel = fallback
+			}
+		}
+
 		// Find eligible workers with matching model family and minimum pending.
 		// Workers configured with a full Claude model ID (e.g.
 		// "claude-opus-4-7") satisfy a required family alias ("opus") via
@@ -290,6 +311,42 @@ func workerExistsForModel(stateMap map[string]*WorkerState, modelName string) bo
 		}
 	}
 	return false
+}
+
+// familyFallbackOrder defines, for each required family, the preferred
+// substitution order when no worker for that family is configured. The
+// sequence prefers equally- or over-qualified substitutes over
+// under-qualified ones so that capability is preserved when possible:
+//
+//   - sonnet → opus (upgrade — fine) → haiku (downgrade — warned)
+//   - opus   → sonnet (downgrade — warned) → haiku (larger downgrade)
+//   - haiku  → sonnet (upgrade) → opus (larger upgrade)
+//
+// Keys are the canonical family aliases returned by modelFamily().
+var familyFallbackOrder = map[string][]string{
+	"sonnet": {"opus", "haiku"},
+	"opus":   {"sonnet", "haiku"},
+	"haiku":  {"sonnet", "opus"},
+}
+
+// chooseFallbackFamily returns the preferred fallback family name when no
+// worker exists for the required family. Returns "" if none of the
+// preferred fallbacks is available in stateMap. Callers should treat the
+// empty-string result as "assignment infeasible" and surface an error —
+// this function only proposes a substitute; it does not guarantee one.
+func chooseFallbackFamily(stateMap map[string]*WorkerState, required string) string {
+	family := modelFamily(required)
+	prefs, ok := familyFallbackOrder[family]
+	if !ok {
+		// Custom / third-party model: try every known family as a last resort.
+		prefs = []string{"opus", "sonnet", "haiku"}
+	}
+	for _, candidate := range prefs {
+		if workerExistsForModel(stateMap, candidate) {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // defaultModelArms lists the model arms registered for UCB1 selection.

@@ -406,6 +406,15 @@ func (wm *Manager) unstageSensitiveFiles(dir string) error {
 // sensitive-file rules, leaving nothing to commit while the worktree is still dirty.
 var ErrAllFilesFiltered = errors.New("all changed files were filtered by sensitive-file rules; nothing to commit")
 
+// ErrWorkerOwnedByResumeMerge is returned when CommitWorkerChanges is called
+// on a worker whose state is owned by the resume-merge pipeline (Conflict or
+// Resolving). Those workers must only be committed via
+// commitResolvedWorkerChanges, which bypasses the transition machine. This
+// sentinel lets the Phase B auto-commit caller distinguish an "out of scope"
+// worker from a genuine commit failure and avoid recording a spurious
+// commit_failed signal.
+var ErrWorkerOwnedByResumeMerge = errors.New("worker is owned by resume-merge pipeline; skipping auto-commit")
+
 // CommitPolicyViolationError wraps one or more commit policy violations as a
 // structured error so callers can use errors.Is / errors.As.
 type CommitPolicyViolationError struct {

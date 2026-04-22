@@ -229,6 +229,36 @@ func (qh *QueueHandler) applyMergeResultSignals(
 			}, signalIndex)
 		}
 		if mr.Error == nil && len(mr.Conflicts) == 0 && len(mr.CommitFailures) == 0 && qh.worktreeManager != nil {
+			// Additional gate: only mark the phase as merged if the integration
+			// branch has actually reached IntegrationStatusMerged. When the
+			// first merge attempt produces a conflict and the Planner later
+			// re-triggers collection, a subsequent MergeToIntegration pass sees
+			// worker1 already integrated (counted as merged) and worker2 in
+			// conflict/resolving (counted as conflictSkipped). That produces
+			// no NEW conflicts and no commit failures, so the pre-gate
+			// conditions above are satisfied — but the integration status
+			// remains PartialMerge because worker2 has not been re-merged yet.
+			// Without this gate, MarkPhaseMerged would record the phase as
+			// fully merged while a conflict worker is still pending resolution,
+			// causing the phase transition gate (isPhaseMergeRecorded) to allow
+			// PhaseStatusCompleted and let downstream phases (e.g. verification)
+			// run against an incomplete integration branch.
+			cmdState, stateErr := qh.worktreeManager.GetCommandState(mr.Item.CommandID)
+			if stateErr != nil {
+				qh.log(LogLevelWarn, "mark_phase_merged_state_check_failed command=%s phase=%s error=%v",
+					mr.Item.CommandID, mr.Item.PhaseID, stateErr)
+				continue
+			}
+			if cmdState == nil || cmdState.Integration.Status != model.IntegrationStatusMerged {
+				status := "<nil>"
+				if cmdState != nil {
+					status = string(cmdState.Integration.Status)
+				}
+				qh.log(LogLevelDebug,
+					"mark_phase_merged_deferred command=%s phase=%s integration_status=%s reason=not_fully_merged",
+					mr.Item.CommandID, mr.Item.PhaseID, status)
+				continue
+			}
 			if err := qh.worktreeManager.MarkPhaseMerged(mr.Item.CommandID, mr.Item.PhaseID); err != nil {
 				qh.log(LogLevelWarn, "mark_phase_merged_failed command=%s phase=%s error=%v",
 					mr.Item.CommandID, mr.Item.PhaseID, err)

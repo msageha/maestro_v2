@@ -119,17 +119,29 @@ type Notifiable interface {
 	AcquireLease(owner, expiresAt string)
 	MarkNotified(at string)
 	MarkNotifyFailure(errMsg, backoffOwner, backoffExpiresAt string)
+	IsNotifyDeadLettered() bool
+	MarkNotifyDeadLetter(at, reason string)
+	GetNotifyDeadLetterReason() *string
 }
 
 // NotifiableBase holds notification lease state and implements the shared
 // methods of the Notifiable interface. Embed in TaskResult and CommandResult.
+//
+// NotifyDeadLettered* fields are set when retry attempts exceed the per-domain
+// maximum and the daemon transitions the result into a terminal "notification
+// exhausted" state. This prevents silent loss of completed results that the
+// downstream consumer (Planner for TaskResult, Orchestrator for CommandResult)
+// could never be told about.
 type NotifiableBase struct {
-	Notified             bool    `yaml:"notified"`
-	NotifyAttempts       int     `yaml:"notify_attempts"`
-	NotifyLeaseOwner     *string `yaml:"notify_lease_owner"`
-	NotifyLeaseExpiresAt *string `yaml:"notify_lease_expires_at"`
-	NotifiedAt           *string `yaml:"notified_at"`
-	NotifyLastError      *string `yaml:"notify_last_error"`
+	Notified               bool    `yaml:"notified"`
+	NotifyAttempts         int     `yaml:"notify_attempts"`
+	NotifyLeaseOwner       *string `yaml:"notify_lease_owner"`
+	NotifyLeaseExpiresAt   *string `yaml:"notify_lease_expires_at"`
+	NotifiedAt             *string `yaml:"notified_at"`
+	NotifyLastError        *string `yaml:"notify_last_error"`
+	NotifyDeadLettered     bool    `yaml:"notify_dead_lettered,omitempty"`
+	NotifyDeadLetteredAt   *string `yaml:"notify_dead_lettered_at,omitempty"`
+	NotifyDeadLetterReason *string `yaml:"notify_dead_letter_reason,omitempty"`
 }
 
 // IsNotified reports whether the notification for this result has been sent.
@@ -165,6 +177,25 @@ func (n *NotifiableBase) MarkNotifyFailure(errMsg, backoffOwner, backoffExpiresA
 	n.NotifyLeaseOwner = &backoffOwner
 	n.NotifyLeaseExpiresAt = &backoffExpiresAt
 }
+
+// IsNotifyDeadLettered reports whether notification retries were exhausted
+// and the result was transitioned into a dead-letter terminal state.
+func (n *NotifiableBase) IsNotifyDeadLettered() bool { return n.NotifyDeadLettered }
+
+// MarkNotifyDeadLetter marks the result as notify-dead-lettered and clears any
+// outstanding backoff lease so that findUnnotifiedExcluding does not waste
+// attempts re-scanning the entry.
+func (n *NotifiableBase) MarkNotifyDeadLetter(at, reason string) {
+	n.NotifyDeadLettered = true
+	n.NotifyDeadLetteredAt = &at
+	n.NotifyDeadLetterReason = &reason
+	n.NotifyLeaseOwner = nil
+	n.NotifyLeaseExpiresAt = nil
+}
+
+// GetNotifyDeadLetterReason returns the human-readable reason recorded at
+// dead-letter time, or nil if the result has not been dead-lettered.
+func (n *NotifiableBase) GetNotifyDeadLetterReason() *string { return n.NotifyDeadLetterReason }
 
 // GetResultID returns the unique identifier of the task result.
 func (r *TaskResult) GetResultID() string { return r.ID }

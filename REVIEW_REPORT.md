@@ -185,8 +185,8 @@
 | 3 | plan/inject.go:146-178 | 全phaseがterminal時にphase[0]にタスク追加される設計欠陥 |
 | 4 | reviewer/dispatcher.go:119-130 | reviewTask()がプレースホルダ実装で常に空結果返却(完了/未実装の区別不能) |
 | 5 | plan/complete.go:208-241 | H3 conflict pathでintent.TaskResultsがスナップショットのためstaleリスク |
-| 6 | fallback/manager.go:96,122 | workerIDパラメータが完全に無視。APIがper-worker追跡を示唆するが実装はグローバル |
-| 7 | verification/ensemble.go:65-114 | ドキュメント(Weight>=1.0ルール)と実装(全perspective均等扱い)が不一致 |
+| 6 | fallback/manager.go:96,122 | ~~workerIDパラメータが完全に無視~~ → **再調査の結果、誤指摘**。`workers map[string]*workerState` で per-worker に連続失敗カウンタと `lastSuccessAt` を追跡しており、`IsWorkerAllowed`/`RecordSuccess`/`RecordFailure`/`LastSuccessAt` すべてで `workerID` が正しくキーとして使用されている。 |
+| 7 | verification/ensemble.go:65-114 | ~~ドキュメント(Weight>=1.0ルール)と実装(全perspective均等扱い)が不一致~~ → **再調査の結果、誤指摘**。`Aggregate()` 内の `else if w >= 1.0 { passed = false }` が docstring/README/テスト (`TestAggregate_CriticalWeightFailed`, `TestAggregate_WeightBasedPassed`) と完全に整合。 |
 
 ---
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -122,6 +123,55 @@ func (qh *QueueHandler) stepPlannerSignalsDeferred(sq *model.PlannerSignalQueue,
 	}
 
 	sq.Signals = retained
+
+	// Priority-sort the deferred delivery batch so that critical signals
+	// (merge_conflict, commit_failed) reach the Planner before informational
+	// ones. stepDeliverSignals iterates serially and each delivery may spend
+	// the full inline-retry budget under planner_busy. Without prioritization,
+	// an awaiting_fill or phase_diagnosis at the head of the batch can delay
+	// a merge_conflict by several seconds, during which the Planner keeps
+	// progressing with a stale view (G2). sort.SliceStable preserves the
+	// original queue order among signals of equal priority so existing
+	// observability (e.g. "oldest awaiting_fill first") is unaffected.
+	sort.SliceStable(work.signals, func(i, j int) bool {
+		return signalKindPriority(work.signals[i].Kind) < signalKindPriority(work.signals[j].Kind)
+	})
+}
+
+// signalKindPriority assigns a delivery priority to a signal kind. Lower
+// numbers mean "deliver first". Critical signals that communicate an error
+// the Planner must handle before advancing (merge_conflict, commit_failed)
+// are highest priority; informational signals that only update the Planner's
+// view (phase_diagnosis, publish_completed) are lowest.
+//
+// The ordering matters because stepDeliverSignals delivers serially and each
+// call may exhaust a multi-second inline-retry budget under planner_busy; if
+// a low-priority signal is ahead of a critical one, the critical signal is
+// stalled for the full inline-retry window even though the Planner would
+// benefit from receiving it first. Conflict-resolution kinds share the
+// highest band because they advance the merge pipeline. circuit_breaker
+// tripped is command-wide and surfaces before phase-level non-errors.
+func signalKindPriority(kind string) int {
+	switch kind {
+	case "merge_conflict", "commit_failed":
+		return 0
+	case "conflict_resolution_requested",
+		"conflict_resolution_ready",
+		"conflict_resolution_failed":
+		return 1
+	case "circuit_breaker_tripped":
+		return 2
+	case "fill_timeout":
+		return 3
+	case "awaiting_fill":
+		return 4
+	case "publish_completed":
+		return 5
+	case "phase_diagnosis":
+		return 6
+	default:
+		return 10
+	}
 }
 
 // signalKey is the deduplication key for PlannerSignal.

@@ -229,6 +229,29 @@ func TestPublishToBase_RejectsUncommittedChanges(t *testing.T) {
 	if !strings.Contains(err.Error(), "uncommitted changes") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+
+	// Dirty-root is a deterministic, non-retryable failure: the integration
+	// should be quarantined immediately (bypassing the retry-with-backoff
+	// cycle) so R8 can notify the Planner on the next reconcile pass.
+	state, err := wm.loadState("cmd_dirty")
+	if err != nil {
+		t.Fatalf("loadState after dirty-root publish failed: %v", err)
+	}
+	if state.Integration.Status != model.IntegrationStatusQuarantined {
+		t.Errorf("expected integration status=quarantined after dirty-root abort, got %q",
+			state.Integration.Status)
+	}
+	if state.Integration.QuarantineSource != model.QuarantineSourcePublish {
+		t.Errorf("expected quarantine source=publish, got %q", state.Integration.QuarantineSource)
+	}
+	if !strings.Contains(state.Integration.QuarantineReason, "publish_dirty_root") {
+		t.Errorf("expected quarantine reason to mention publish_dirty_root, got %q",
+			state.Integration.QuarantineReason)
+	}
+	if state.Integration.PublishFailureCount != 1 {
+		t.Errorf("expected PublishFailureCount=1 (no retry budget consumed), got %d",
+			state.Integration.PublishFailureCount)
+	}
 }
 
 // --- M2 Test: SyncFromIntegration skips conflict workers ---
