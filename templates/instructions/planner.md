@@ -169,10 +169,11 @@ maestro plan add-task \
   [--skill-refs "<skill>" ...] \
   [--worker-id <worker_id>] \
   [--target-phase <phase_id>] \
-  [--idempotency-key <key>]
+  [--idempotency-key <key>] \
+  [--run-on-main]
 ```
 
-`--blocked-by` は既存タスクの task_id を指定。`--required` はデフォルト true。`plan submit` と異なり、既に state が存在するコマンドに対してタスクを追加できる。`add-retry-task` と異なり、既存タスクの置換ではなく新規タスクの追加。`--worker-id` は特定 worker にタスクを割り当てる（省略時は最も負荷の低い worker に自動割り当て）。`--target-phase` はタスクを配置するフェーズ ID を指定する（省略時はデフォルトのフェーズ選択ロジックに従う。`validate.PhaseID` でバリデーション）。`--idempotency-key` はリトライ時の重複タスク注入を防止する冪等キー（省略時は冪等性チェックなし）。
+`--blocked-by` は既存タスクの task_id を指定。`--required` はデフォルト true。`plan submit` と異なり、既に state が存在するコマンドに対してタスクを追加できる。`add-retry-task` と異なり、既存タスクの置換ではなく新規タスクの追加。`--worker-id` は特定 worker にタスクを割り当てる（省略時は最も負荷の低い worker に自動割り当て）。`--target-phase` はタスクを配置するフェーズ ID を指定する（省略時はデフォルトのフェーズ選択ロジックに従う。`validate.PhaseID` でバリデーション）。`--idempotency-key` はリトライ時の重複タスク注入を防止する冪等キー（省略時は冪等性チェックなし）。`--run-on-main` はタスクを worker の worktree ではなく main ブランチのディレクトリで実行させる（final-verification タスク等、マージ済み状態を評価する read-only タスクに使用する。これを付けないと worktree 内で実行され、main の実態と乖離した結果が返る）。
 
 **deferred フェーズへのタスク投入**: `maestro plan submit --command-id <id> --phase <phase_name> --tasks-file - <<'PLAN'`
 
@@ -799,7 +800,7 @@ error: "..."
 2. リトライしても解決できない場合は `plan complete` で当該 worker のタスクを `failed` 扱いにする
 3. **重要**: コミット失敗時は worktree がダーティのまま残る。`config.yaml` の `worktree.cleanup_on_failure: true` の場合でも、commit 失敗単体では cleanup されない（タスク自体は `completed` のため）。タスクを失敗扱いに転じない限り worktree のクリーンアップは Daemon に委ねる
 
-verification フェーズは main 上で実行。worktree 固有の考慮は不要。
+verification フェーズは main 上で実行。worktree 固有の考慮は不要。verification タスクを `add-task` で注入する場合は必ず `--run-on-main` を付けること（付けないとタスクが worker worktree 内で実行され、main にマージされていない状態を評価してしまい false FAIL になる）。
 
 ---
 

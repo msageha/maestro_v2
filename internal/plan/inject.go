@@ -26,6 +26,7 @@ type InjectOptions struct {
 	TargetWorkerID     string
 	TargetPhase        string // phase ID to place the task in; overrides default fallback logic
 	IdempotencyKey     string
+	RunOnMain          bool   // run task in main branch dir instead of worker worktree
 	MaestroDir         string
 	Config             model.Config
 	LockMap            *lock.MutexMap
@@ -213,6 +214,7 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 		personaHint:        opts.PersonaHint,
 		skillRefs:          opts.SkillRefs,
 		workerID:           assignedWorkerID,
+		runOnMain:          opts.RunOnMain,
 	}
 	if err := writeRetryQueueEntry(opts.MaestroDir, task, now, opts.LockMap); err != nil {
 		if rsErr := restoreState(state, origStateBytes); rsErr != nil {

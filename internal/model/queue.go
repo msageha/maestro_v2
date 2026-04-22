@@ -99,6 +99,10 @@ type Task struct {
 	ModelOverride string `yaml:"model_override,omitempty" json:"model_override,omitempty"`
 	// C-6/C-8: Complexity level (simple|standard|complex|critical)
 	ComplexityLevel string `yaml:"complexity_level,omitempty" json:"complexity_level,omitempty"`
+	// RunOnMain instructs the dispatcher to run this task in the main working
+	// directory instead of the worker's worktree. Use for read-only verification
+	// tasks that must evaluate the merged state on the main branch.
+	RunOnMain bool `yaml:"run_on_main,omitempty" json:"run_on_main,omitempty"`
 }
 
 // GetDoneConditions は完了条件を返す。

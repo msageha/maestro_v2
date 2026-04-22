@@ -28,6 +28,7 @@ type retryQueueTask struct {
 	personaHint        string
 	skillRefs          []string
 	workerID           string
+	runOnMain          bool
 }
 
 func writeRetryQueueEntry(maestroDir string, task retryQueueTask, now string, lockMap *lock.MutexMap) error {
@@ -50,6 +51,7 @@ func writeRetryQueueEntry(maestroDir string, task retryQueueTask, now string, lo
 			ToolsHint:          task.toolsHint,
 			PersonaHint:        task.personaHint,
 			SkillRefs:          task.skillRefs,
+			RunOnMain:          task.runOnMain,
 			Priority:           100,
 			Status:             model.StatusPending,
 			CreatedAt:          now,

@@ -183,6 +183,7 @@ type injectParams struct {
 	WorkerID           string   `json:"worker_id"`
 	TargetPhase        string   `json:"target_phase,omitempty"`
 	IdempotencyKey     string   `json:"idempotency_key,omitempty"`
+	RunOnMain          bool     `json:"run_on_main,omitempty"`
 }
 
 // AddTask implements core.PlanExecutor by parsing params and calling plan.AddTask.
@@ -203,6 +204,7 @@ func (pe *PlanExecutorImpl) AddTask(params json.RawMessage) (json.RawMessage, er
 			TargetWorkerID:     p.WorkerID,
 			TargetPhase:        p.TargetPhase,
 			IdempotencyKey:     p.IdempotencyKey,
+			RunOnMain:          p.RunOnMain,
 			MaestroDir:         pe.MaestroDir,
 			Config:             pe.Config,
 			LockMap:            pe.LockMap,
