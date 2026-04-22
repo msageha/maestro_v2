@@ -58,16 +58,7 @@ func (pc *PolicyChecker) WriteHookScript() (string, error) {
 // hookSettingsJSON is the settings JSON structure for hook overrides.
 // All hook types are optional; omitted keys are left unmodified by Claude Code.
 type hookSettingsJSON struct {
-	Sandbox *hookSettingsSandbox `json:"sandbox,omitempty"`
-	Hooks   hookSettingsHooks    `json:"hooks"`
-}
-
-type hookSettingsSandbox struct {
-	Network hookSettingsSandboxNetwork `json:"network"`
-}
-
-type hookSettingsSandboxNetwork struct {
-	AllowAllUnixSockets bool `json:"allowAllUnixSockets"`
+	Hooks hookSettingsHooks `json:"hooks"`
 }
 
 type hookSettingsHooks struct {
@@ -89,12 +80,13 @@ type hookEntry struct {
 // HookSettings returns the --settings JSON string that configures the
 // PreToolUse hook for Workers, with Notification hooks disabled.
 // This produces a single merged JSON so that only one --settings flag is needed.
+//
+// Sandbox settings are intentionally omitted: passing sandbox config via
+// --settings overrides the user's global sandbox.enabled:false and prevents
+// the /sandbox command from working. See launcher.go buildLaunchArgs for details.
 func (pc *PolicyChecker) HookSettings(scriptPath string) (string, error) {
 	emptyNotification := []any{}
 	settings := hookSettingsJSON{}
-	settings.Sandbox = &hookSettingsSandbox{
-		Network: hookSettingsSandboxNetwork{AllowAllUnixSockets: true},
-	}
 	settings.Hooks.Notification = &emptyNotification
 	settings.Hooks.PreToolUse = []hookMatcherGroup{
 		{

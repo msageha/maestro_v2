@@ -40,8 +40,18 @@ var knownRoles = map[string]bool{
 //
 // Workers have no tool restriction (they need full access for task execution).
 var allowedToolsByRole = map[string][]string{
-	"orchestrator": {"Bash(maestro:*)", "Read(.maestro/dashboard.md)", "Read(.maestro/results/*)", "Read(.maestro/config.yaml)"},
-	"planner":      {"Bash(maestro:*)", "Read(.maestro/**)"},
+	"orchestrator": {
+		"Bash(maestro:*)",
+		"Read(.maestro/dashboard.md)",
+		"Read(.maestro/results/*)",
+		"Read(.maestro/config.yaml)",
+		// state/continuous.yaml is needed for the Continuous Mode
+		// pre-generation gate described in templates/instructions/orchestrator.md.
+		// Without this, the Orchestrator cannot verify paused/stopped status
+		// before auto-generating the next command.
+		"Read(.maestro/state/continuous.yaml)",
+	},
+	"planner": {"Bash(maestro:*)", "Read(.maestro/**)"},
 	// worker: unrestricted (empty means all tools allowed)
 }
 
@@ -237,17 +247,23 @@ func buildLaunchArgs(role, agentModel, systemPrompt, basePromptMode string) ([]s
 	//
 	// Worker Notification hooks are disabled in HookSettings() (policy_checker.go),
 	// merged with PreToolUse hooks into a single --settings flag.
-	// allowAllUnixSockets enables the daemon UDS connection (.maestro/daemon.sock).
+	//
+	// Sandbox settings are NOT configured here by design. Passing a sandbox section
+	// via --settings overrides the user's global sandbox.enabled:false, re-enabling
+	// the sandbox and making /sandbox unusable (CLI settings take priority over
+	// the /sandbox runtime command). The needed allowAllUnixSockets for the daemon
+	// UDS connection (.maestro/daemon.sock) must be set in the user's global
+	// ~/.claude/settings.json or the project's .claude/settings.json instead.
 	switch role {
 	case "orchestrator":
-		args = append(args, "--settings", `{"sandbox":{"network":{"allowAllUnixSockets":true}}}`)
+		// Orchestrator keeps user hooks; no additional settings needed.
 	case "worker":
 		// Worker settings (Notification=[] + PreToolUse policy hook) are
 		// handled via HookSettings() in Launch() to produce a single
 		// merged --settings flag.
 	default:
-		// Planner and other internal roles: disable Notification hooks.
-		args = append(args, "--settings", `{"sandbox":{"network":{"allowAllUnixSockets":true}},"hooks":{"Notification":[]}}`)
+		// Planner and other internal roles: disable Notification hooks only.
+		args = append(args, "--settings", `{"hooks":{"Notification":[]}}`)
 	}
 
 	return args, nil
