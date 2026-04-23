@@ -77,7 +77,7 @@ func Launch(maestroDir string) error {
 
 	// For non-claude-code runtimes, delegate to RuntimeLauncher (C-7).
 	if agentRuntime != model.RuntimeClaudeCode {
-		return launchAlternativeRuntime(maestroDir, agentRuntime, agentModel, role, systemPrompt)
+		return launchAlternativeRuntime(agentRuntime, agentModel, role, systemPrompt)
 	}
 
 	// claude-code path: build claude-specific args and exec.
@@ -116,16 +116,10 @@ func Launch(maestroDir string) error {
 	return runIgnoringSIGINT(cmd)
 }
 
-// launchAlternativeRuntime handles non-claude-code runtimes via RuntimeLauncher (C-7).
-// It loads the runtime config, resolves the executable, and exec-replaces the process.
-func launchAlternativeRuntime(maestroDir, agentRuntime, agentModel, role, systemPrompt string) error {
-	cfg, err := model.LoadConfig(maestroDir)
-	if err != nil {
-		slog.Warn("load config for runtime launcher failed; using empty config", "error", err)
-		cfg = model.Config{}
-	}
-
-	rl := NewRuntimeLauncher(cfg.Runtimes)
+// launchAlternativeRuntime handles non-claude-code runtimes via RuntimeLauncher.
+// It resolves the executable and exec-replaces the process.
+func launchAlternativeRuntime(agentRuntime, agentModel, role, systemPrompt string) error {
+	rl := NewRuntimeLauncher()
 	execName, args, err := rl.GetCommand(agentRuntime, RuntimeLaunchOptions{
 		Model:  agentModel,
 		Prompt: systemPrompt,

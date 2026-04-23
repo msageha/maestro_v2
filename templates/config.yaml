@@ -589,34 +589,22 @@ quality_gates:
 #     # type: *int | default: 30 (DefaultComplexMaxFiles) | range: 制限なし
 #     complex_max_files: 30
 
-# --- C-7: Runtimes ---
-# ランタイム選択は model フィールドの値から自動推論される。
-# runtimes: セクション自体は通常不要。
+# --- C-7: Runtime 選択 ---
+# runtimes: セクションは存在しない。ランタイムは model フィールドの値から自動推論される。
 #
-# 【ランタイム選択のルール】
-#   agents.*.model / agents.workers.default_model / agents.workers.models に書く値:
+# agents.*.model / agents.workers.default_model / agents.workers.models に書く値:
 #
-#   "codex"         → codex CLI (CODEX_API_KEY 要)、codex のデフォルトモデルを使用
-#   "gemini"        → gemini CLI (GOOGLE_API_KEY 要)、gemini のデフォルトモデルを使用
+#   "codex"          → codex CLI (CODEX_API_KEY 要)、codex のデフォルトモデルを使用
+#   "gemini"         → gemini CLI (GOOGLE_API_KEY 要)、gemini のデフォルトモデルを使用
 #   "gemini-2.5-pro" など "gemini-" 始まり → gemini CLI + --model <指定値>
 #   それ以外 ("sonnet", "opus", "haiku" 等) → claude CLI (既存動作)
 #
-# 【設定例】
+# 設定例:
 #   agents:
 #     workers:
 #       default_model: "codex"        # 全 worker が codex で起動
 #       models:
 #         worker4: "gemini-2.5-pro"   # worker4 だけ gemini で起動
-#
-# 【runtimes: が必要になる唯一のケース】
-#   誤設定による意図しない codex/gemini 起動を防ぎたい場合のみ:
-# runtimes:
-#   codex:
-#     # enabled: ランタイムの有効化フラグ (false でこのランタイムを完全無効化)
-#     # type: *bool | default: true | range: true/false
-#     enabled: false
-#   gemini:
-#     enabled: false
 
 # --- C-8: Feature Profiles ---
 # 複雑度レベル別の機能フラグプロファイル (キー名がプロファイル識別子)。

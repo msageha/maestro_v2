@@ -2,8 +2,6 @@ package model
 
 import (
 	"testing"
-
-	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 func TestParseRuntimeFromModel(t *testing.T) {
@@ -68,33 +66,3 @@ func TestDefaultRuntime(t *testing.T) {
 	}
 }
 
-func TestRuntimeConfig_Defaults(t *testing.T) {
-	rc := RuntimeConfig{}
-	if rc.EffectiveEnabled() {
-		t.Error("EffectiveEnabled() should default to false")
-	}
-	if rc.EffectiveDefault() {
-		t.Error("EffectiveDefault() should default to false")
-	}
-	if rc.EffectiveDefaultModel() != "" {
-		t.Errorf("EffectiveDefaultModel() = %q, want empty", rc.EffectiveDefaultModel())
-	}
-}
-
-func TestRuntimeConfig_Configured(t *testing.T) {
-	rc := RuntimeConfig{
-		Enabled:      ptr.Bool(true),
-		Default:      ptr.Bool(true),
-		Models:       []string{"opus", "sonnet"},
-		DefaultModel: ptr.String("opus"),
-	}
-	if !rc.EffectiveEnabled() {
-		t.Error("EffectiveEnabled() should be true")
-	}
-	if !rc.EffectiveDefault() {
-		t.Error("EffectiveDefault() should be true")
-	}
-	if rc.EffectiveDefaultModel() != "opus" {
-		t.Errorf("EffectiveDefaultModel() = %q, want opus", rc.EffectiveDefaultModel())
-	}
-}

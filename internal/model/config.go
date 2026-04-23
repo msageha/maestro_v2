@@ -36,8 +36,7 @@ type Config struct {
 	SelfImprovement SelfImprovementConfig `yaml:"self_improvement,omitempty"`
 	// C-6 Complexity
 	Complexity ComplexityConfig `yaml:"complexity,omitempty"`
-	// C-7 Runtimes
-	Runtimes map[string]RuntimeConfig `yaml:"runtimes,omitempty"`
+	// C-7 (Runtime selection is inferred from model name — no separate config field.)
 	// C-8 Feature Profiles
 	FeatureProfiles map[string]FeatureProfile `yaml:"feature_profiles,omitempty"`
 }

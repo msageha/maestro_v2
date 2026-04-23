@@ -141,20 +141,6 @@ func (ct ComplexityThresholds) EffectiveSimpleMaxFiles() int   { return effectiv
 func (ct ComplexityThresholds) EffectiveStandardMaxFiles() int { return effectiveValue(ct.StandardMaxFiles, DefaultStandardMaxFiles) }
 func (ct ComplexityThresholds) EffectiveComplexMaxFiles() int  { return effectiveValue(ct.ComplexMaxFiles, DefaultComplexMaxFiles) }
 
-// --- C-7 Runtime Config ---
-
-// RuntimeConfig holds per-runtime configuration.
-type RuntimeConfig struct {
-	Enabled      *bool    `yaml:"enabled,omitempty"`
-	Default      *bool    `yaml:"default,omitempty"`
-	Models       []string `yaml:"models,omitempty"`
-	DefaultModel *string  `yaml:"default_model,omitempty"`
-}
-
-func (rc RuntimeConfig) EffectiveEnabled() bool       { return effectiveValue(rc.Enabled, false) }
-func (rc RuntimeConfig) EffectiveDefault() bool       { return effectiveValue(rc.Default, false) }
-func (rc RuntimeConfig) EffectiveDefaultModel() string { return effectiveValue(rc.DefaultModel, "") }
-
 // --- C-8 Feature Profiles ---
 
 // FeatureProfile defines feature flags per complexity level.
@@ -184,10 +170,6 @@ func NormalizeExperimentalConfig(cfg *Config) {
 	normalizeSearch(&cfg.Search)
 	normalizeSelfImprovement(&cfg.SelfImprovement)
 	normalizeComplexity(&cfg.Complexity)
-	for name, rc := range cfg.Runtimes {
-		normalizeRuntime(&rc)
-		cfg.Runtimes[name] = rc
-	}
 	for name, fp := range cfg.FeatureProfiles {
 		normalizeFeatureProfile(&fp)
 		cfg.FeatureProfiles[name] = fp
@@ -249,12 +231,6 @@ func normalizeComplexity(cc *ComplexityConfig) {
 	resolvePtr(&cc.Thresholds.SimpleMaxFiles, DefaultSimpleMaxFiles)
 	resolvePtr(&cc.Thresholds.StandardMaxFiles, DefaultStandardMaxFiles)
 	resolvePtr(&cc.Thresholds.ComplexMaxFiles, DefaultComplexMaxFiles)
-}
-
-func normalizeRuntime(rc *RuntimeConfig) {
-	resolvePtr(&rc.Enabled, false)
-	resolvePtr(&rc.Default, false)
-	resolvePtr(&rc.DefaultModel, "")
 }
 
 func normalizeFeatureProfile(fp *FeatureProfile) {
