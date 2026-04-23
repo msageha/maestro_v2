@@ -160,17 +160,29 @@ func TestBackwardCompat_NoRuntimeFieldDefaultBehavior(t *testing.T) {
 	}
 }
 
-func TestGetCommand_CodexDisabledByDefault(t *testing.T) {
+func TestGetCommand_CodexAndGeminiEnabledByDefault(t *testing.T) {
+	// codex and gemini are enabled by default so that model-name-based runtime
+	// selection (e.g. model: "codex") works without an explicit runtimes: config.
 	rl := NewRuntimeLauncher(nil)
 
 	_, _, err := rl.GetCommand(model.RuntimeCodex, RuntimeLaunchOptions{})
-	if err == nil {
-		t.Error("expected error: codex should be disabled by default")
+	if err != nil {
+		t.Errorf("codex should be enabled by default, got: %v", err)
 	}
 
 	_, _, err = rl.GetCommand(model.RuntimeGemini, RuntimeLaunchOptions{})
+	if err != nil {
+		t.Errorf("gemini should be enabled by default, got: %v", err)
+	}
+}
+
+func TestGetCommand_CanDisableCodexViaConfig(t *testing.T) {
+	rl := NewRuntimeLauncher(map[string]model.RuntimeConfig{
+		model.RuntimeCodex: {Enabled: ptr.Bool(false)},
+	})
+	_, _, err := rl.GetCommand(model.RuntimeCodex, RuntimeLaunchOptions{})
 	if err == nil {
-		t.Error("expected error: gemini should be disabled by default")
+		t.Error("expected error: codex explicitly disabled via config")
 	}
 }
 

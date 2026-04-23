@@ -175,9 +175,6 @@ func readPaneVars(paneTarget string) (agentID, role, agentModel, agentRuntime st
 	if err != nil {
 		return "", "", "", "", fmt.Errorf("read @model: %w", err)
 	}
-	if agentModel == "" {
-		return "", "", "", "", fmt.Errorf("@model is empty for pane %s", sanitizeForLog(paneTarget))
-	}
 
 	// Runtime is optional: unset or empty falls back to the default without error.
 	agentRuntime, err = tmux.GetUserVar(paneTarget, "runtime")
@@ -186,6 +183,12 @@ func readPaneVars(paneTarget string) (agentID, role, agentModel, agentRuntime st
 	}
 	if agentRuntime == "" {
 		agentRuntime = model.DefaultRuntime()
+	}
+
+	// For claude-code, the model must be non-empty.
+	// For other runtimes, empty model is allowed (the runtime uses its own default).
+	if agentModel == "" && agentRuntime == model.RuntimeClaudeCode {
+		return "", "", "", "", fmt.Errorf("@model is empty for pane %s", sanitizeForLog(paneTarget))
 	}
 
 	return agentID, role, agentModel, agentRuntime, nil

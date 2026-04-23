@@ -25,66 +25,6 @@ func writeConfig(t *testing.T, maestroDir string, cfg model.Config) {
 	}
 }
 
-func TestResolveRuntime_Default(t *testing.T) {
-	cfg := model.Config{}
-	if r := resolveRuntime(cfg); r != model.DefaultRuntime() {
-		t.Errorf("expected %s, got %s", model.DefaultRuntime(), r)
-	}
-}
-
-func TestResolveRuntime_ExplicitDefault(t *testing.T) {
-	enabled := true
-	def := true
-	cfg := model.Config{
-		Runtimes: map[string]model.RuntimeConfig{
-			model.RuntimeCodex: {Enabled: &enabled, Default: &def},
-		},
-	}
-	if r := resolveRuntime(cfg); r != model.RuntimeCodex {
-		t.Errorf("expected %s, got %s", model.RuntimeCodex, r)
-	}
-}
-
-func TestResolveRuntime_EnabledButNotDefault(t *testing.T) {
-	enabled := true
-	cfg := model.Config{
-		Runtimes: map[string]model.RuntimeConfig{
-			model.RuntimeCodex: {Enabled: &enabled},
-		},
-	}
-	// Enabled but not marked as default: should fall back to global default
-	if r := resolveRuntime(cfg); r != model.DefaultRuntime() {
-		t.Errorf("expected %s (not marked default), got %s", model.DefaultRuntime(), r)
-	}
-}
-
-func TestResolveRuntime_DefaultButDisabled(t *testing.T) {
-	disabled := false
-	def := true
-	cfg := model.Config{
-		Runtimes: map[string]model.RuntimeConfig{
-			model.RuntimeCodex: {Enabled: &disabled, Default: &def},
-		},
-	}
-	// Marked as default but disabled: should fall back to global default
-	if r := resolveRuntime(cfg); r != model.DefaultRuntime() {
-		t.Errorf("expected %s (disabled runtime), got %s", model.DefaultRuntime(), r)
-	}
-}
-
-func TestResolveRuntime_GeminiDefault(t *testing.T) {
-	enabled := true
-	def := true
-	cfg := model.Config{
-		Runtimes: map[string]model.RuntimeConfig{
-			model.RuntimeGemini: {Enabled: &enabled, Default: &def},
-		},
-	}
-	if r := resolveRuntime(cfg); r != model.RuntimeGemini {
-		t.Errorf("expected %s, got %s", model.RuntimeGemini, r)
-	}
-}
-
 func TestResolveModel_Default(t *testing.T) {
 	cfg := model.Config{}
 	if m := resolveModel(cfg, "orchestrator"); m != "sonnet" {

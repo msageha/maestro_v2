@@ -71,7 +71,8 @@ func createFormation(maestroDir string, cfg model.Config) (retErr error) {
 	}
 
 	orchPane := fmt.Sprintf("=%s:0.0", tmux.GetSessionName())
-	if err := setAgentVars(orchPane, "orchestrator", "orchestrator", resolveModel(cfg, "orchestrator"), resolveRuntime(cfg)); err != nil {
+	orchRuntime, orchModel := model.ParseRuntimeFromModel(resolveModel(cfg, "orchestrator"))
+	if err := setAgentVars(orchPane, "orchestrator", "orchestrator", orchModel, orchRuntime); err != nil {
 		return err
 	}
 
@@ -87,7 +88,8 @@ func createFormation(maestroDir string, cfg model.Config) (retErr error) {
 	}
 
 	plannerPane := fmt.Sprintf("=%s:1.0", tmux.GetSessionName())
-	if err := setAgentVars(plannerPane, "planner", "planner", resolveModel(cfg, "planner"), resolveRuntime(cfg)); err != nil {
+	plannerRuntime, plannerModel := model.ParseRuntimeFromModel(resolveModel(cfg, "planner"))
+	if err := setAgentVars(plannerPane, "planner", "planner", plannerModel, plannerRuntime); err != nil {
 		return err
 	}
 
@@ -114,11 +116,10 @@ func createFormation(maestroDir string, cfg model.Config) (retErr error) {
 		return fmt.Errorf("setup worker grid: %w", err)
 	}
 
-	agentRuntime := resolveRuntime(cfg)
 	for i, pane := range panes {
 		agentID := fmt.Sprintf("worker%d", i+1)
-		workerModel := resolveModel(cfg, agentID)
-		if err := setAgentVars(pane, agentID, "worker", workerModel, agentRuntime); err != nil {
+		workerRuntime, workerModel := model.ParseRuntimeFromModel(resolveModel(cfg, agentID))
+		if err := setAgentVars(pane, agentID, "worker", workerModel, workerRuntime); err != nil {
 			return err
 		}
 	}
@@ -380,18 +381,6 @@ func StartTrustDialogAcceptor(maestroDir string) {
 	}
 	slog.Info("daemon: starting trust dialog acceptor", "panes_count", len(panes))
 	autoAcceptTrustDialog(panes)
-}
-
-// resolveRuntime determines the active runtime from config.
-// Returns the first runtime where both Enabled and Default are true.
-// Falls back to model.DefaultRuntime() ("claude-code") if none is configured.
-func resolveRuntime(cfg model.Config) string {
-	for name, rc := range cfg.Runtimes {
-		if rc.EffectiveEnabled() && rc.EffectiveDefault() {
-			return name
-		}
-	}
-	return model.DefaultRuntime()
 }
 
 // resolveModel determines the model for a given agent.

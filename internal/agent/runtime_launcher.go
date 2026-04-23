@@ -44,21 +44,25 @@ func NewRuntimeLauncher(cfg map[string]model.RuntimeConfig) *RuntimeLauncher {
 
 	// codex: OpenAI Codex CLI.
 	// Requires CODEX_API_KEY environment variable to be set.
+	// Enabled by default: runtime selection via model name (e.g. model: "codex") implicitly
+	// enables this runtime. Can be explicitly disabled via runtimes.codex.enabled: false.
 	rl.runtimes[model.RuntimeCodex] = RuntimeDef{
 		Command: "codex",
 		Args:    []string{"exec", "-a", "never", "-s", "workspace-write"},
 		EnvVars: nil,
-		Enabled: false,
+		Enabled: true,
 	}
 
 	// gemini: Google Gemini CLI.
 	// Requires GOOGLE_API_KEY environment variable to be set.
 	// -p (prompt) is added dynamically via RuntimeLaunchOptions.Prompt in GetCommand.
+	// Enabled by default: runtime selection via model name (e.g. model: "gemini" or
+	// model: "gemini-2.5-pro") implicitly enables this runtime.
 	rl.runtimes[model.RuntimeGemini] = RuntimeDef{
 		Command: "gemini",
 		Args:    []string{"--approval-mode=yolo", "-s"},
 		EnvVars: nil,
-		Enabled: false,
+		Enabled: true,
 	}
 
 	// Apply config overrides.
