@@ -776,20 +776,30 @@ then call `maestro plan retry-publish --command-id cmd_xxx` to re-attempt publis
 **対応手順:**
 
 1. **状況確認**: `.maestro/dashboard.md` を Read で確認し、対象コマンドの統合ステータスを把握する
-2. **競合解決タスクの発行**: `maestro plan add-task` で統合ブランチ上の競合を解決するタスクを発行する。`content` に以下を含める:
+2. **競合解決タスクの発行**: `maestro plan add-task` で統合ブランチ上の競合を解決するタスクを発行する。
+
+   **重要**: publish_conflict の解消作業は Worker 自身の worktree ではなく、**integration worktree** 上で行う必要がある。`--run-on-integration` フラグを使うことで、Daemon が自動的に統合 worktree をワーキングディレクトリとして設定する。Worker は `cd` 不要で直接 integration worktree 上で作業できる。
+
+   `content` に以下を含める:
    - 競合ファイル一覧（シグナルの `conflict_files` から取得）
-   - 「統合ブランチ上で base の変更と統合する」という具体的な指示
+   - `git status` で競合状態を確認する
+   - 競合ファイルを手動で編集して解消し、`git add <files>` → `git commit -m "[maestro] resolve publish conflict"` する
+   - タスク完了を Planner に報告する（retry-publish は **Planner** が行う）
    - `acceptance_criteria` にコンパイル成功・テストパスを含める
 
    ```
    maestro plan add-task \
      --command-id <command_id> \
      --purpose "publish conflict 解決: <conflict_files>" \
-     --content "<競合ファイル・修正指示の詳細>" \
-     --acceptance-criteria "コンパイル成功・テストパス" \
+     --content "integration worktree で publish conflict を解消せよ。競合ファイル: <conflict_files>。git status で状態確認 → 競合解消 → git add → git commit を行い、完了を報告すること（retry-publish は Planner が行う）" \
+     --acceptance-criteria "コンパイル成功・テストパス・git log で解消コミットが確認できる" \
      --bloom-level 3 \
-     --persona-hint implementer
+     --persona-hint implementer \
+     --run-on-integration
    ```
+
+   - `--run-on-integration` を指定すると、全フェーズが terminal 状態でも最後のフェーズに自動追加・再開される
+   - Worker の working directory が自動的に integration worktree に設定されるため、`cd` 操作は不要
 
 3. **再 Publish のトリガー**: Worker がタスクを完了したら `maestro plan retry-publish --command-id <command_id>` を実行する。これにより:
    - `PublishFailureCount` がリセットされる

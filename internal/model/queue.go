@@ -103,6 +103,11 @@ type Task struct {
 	// directory instead of the worker's worktree. Use for read-only verification
 	// tasks that must evaluate the merged state on the main branch.
 	RunOnMain bool `yaml:"run_on_main,omitempty" json:"run_on_main,omitempty"`
+	// RunOnIntegration instructs the dispatcher to run this task in the
+	// integration worktree for the associated command. Use for publish_conflict
+	// resolution tasks that must operate directly on the integration branch to
+	// resolve forward-merge conflicts before retry-publish can succeed.
+	RunOnIntegration bool `yaml:"run_on_integration,omitempty" json:"run_on_integration,omitempty"`
 }
 
 // GetDoneConditions は完了条件を返す。

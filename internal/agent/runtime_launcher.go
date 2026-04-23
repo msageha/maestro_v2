@@ -39,13 +39,18 @@ func NewRuntimeLauncher() *RuntimeLauncher {
 		Command: "claude",
 	}
 
-	// codex: OpenAI Codex CLI. Requires CODEX_API_KEY environment variable.
+	// codex: OpenAI Codex CLI (Rust-based interactive TUI).
+	// Launched without the "exec" subcommand — "exec" is non-interactive (headless)
+	// and does not accept --full-auto. The interactive TUI mode is the top-level
+	// "codex" command. --full-auto enables fully automatic approval; --sandbox
+	// workspace-write allows writes within the current workspace directory.
+	// Requires OPENAI_API_KEY (or OPENAI_BASE_URL + compatible key) environment variable.
 	rl.runtimes[model.RuntimeCodex] = RuntimeDef{
 		Command: "codex",
-		Args:    []string{"exec", "-a", "never", "-s", "workspace-write"},
+		Args:    []string{"--full-auto", "--sandbox", "workspace-write"},
 	}
 
-	// gemini: Google Gemini CLI. Requires GOOGLE_API_KEY environment variable.
+	// gemini: Google Gemini CLI. Requires GEMINI_API_KEY environment variable.
 	// -p (prompt) is appended dynamically via RuntimeLaunchOptions.Prompt.
 	rl.runtimes[model.RuntimeGemini] = RuntimeDef{
 		Command: "gemini",
@@ -86,8 +91,21 @@ func buildRuntimeArgs(runtime string, def RuntimeDef, opts RuntimeLaunchOptions)
 		if opts.Prompt != "" {
 			args = append(args, "-p", opts.Prompt)
 		}
+	case model.RuntimeCodex:
+		if opts.Model != "" {
+			args = append(args, "--model", opts.Model)
+		}
+		// codex accepts the initial prompt as a trailing positional argument.
+		// This is the only CLI mechanism for passing system-level instructions;
+		// codex has no --system-prompt flag. The prompt is treated as the first
+		// user message that seeds the session context.
+		if opts.Prompt != "" {
+			args = append(args, opts.Prompt)
+		}
 	default:
-		// claude-code, codex, and future runtimes use --model.
+		// claude-code and future runtimes: --model only.
+		// claude-code handles system prompts via buildLaunchArgs (--system-prompt /
+		// --append-system-prompt), not via RuntimeLaunchOptions.Prompt.
 		if opts.Model != "" {
 			args = append(args, "--model", opts.Model)
 		}

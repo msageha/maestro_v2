@@ -426,13 +426,16 @@ func TestConflictTypeOnTaskMergeConflict(t *testing.T) {
 }
 
 // TestConflictTypeOnPublishConflict verifies that publish_conflict signals
-// have the correct ConflictType field.
+// have Kind="publish_conflict" (not "merge_conflict") and the correct ConflictType field.
 func TestConflictTypeOnPublishConflict(t *testing.T) {
 	t.Parallel()
 	sig := model.PlannerSignal{
-		Kind:          "merge_conflict",
+		Kind:          "publish_conflict",
 		ConflictType:  "publish_conflict",
 		ConflictFiles: []string{"file.go"},
+	}
+	if sig.Kind != "publish_conflict" {
+		t.Errorf("Kind = %q, want publish_conflict", sig.Kind)
 	}
 	if sig.ConflictType != "publish_conflict" {
 		t.Errorf("ConflictType = %q, want publish_conflict", sig.ConflictType)

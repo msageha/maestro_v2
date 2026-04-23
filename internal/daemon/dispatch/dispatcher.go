@@ -320,6 +320,23 @@ func (disp *Dispatcher) resolveTaskWorkingDir(task *model.Task, workerID string)
 		return filepath.Dir(disp.maestroDir), nil
 	}
 
+	// RunOnIntegration tasks (e.g. publish_conflict resolution) must operate
+	// directly on the integration worktree so that forward-merge conflicts can
+	// be resolved on the integration branch before retry-publish.
+	if task.RunOnIntegration {
+		wm := disp.getWorktreeManager()
+		if wm == nil {
+			return "", fmt.Errorf("RunOnIntegration task requires worktree mode")
+		}
+		intPath, err := wm.GetIntegrationPath(task.CommandID)
+		if err != nil {
+			disp.dl.Logf(core.LogLevelError, "integration_path_resolve_failed task=%s command=%s error=%v",
+				task.ID, task.CommandID, err)
+			return "", fmt.Errorf("integration worktree path resolution failed: %w", err)
+		}
+		return intPath, nil
+	}
+
 	wm := disp.getWorktreeManager()
 	if wm == nil {
 		return "", nil

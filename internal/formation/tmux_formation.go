@@ -70,7 +70,7 @@ func createFormation(maestroDir string, cfg model.Config) (retErr error) {
 		return fmt.Errorf("set remain-on-exit for orchestrator: %w", err)
 	}
 
-	orchPane := fmt.Sprintf("=%s:0.0", tmux.GetSessionName())
+	orchPane := fmt.Sprintf("%s:0.0", tmux.GetSessionName())
 	orchRuntime, orchModel := model.ParseRuntimeFromModel(resolveModel(cfg, "orchestrator"))
 	if err := setAgentVars(orchPane, "orchestrator", "orchestrator", orchModel, orchRuntime); err != nil {
 		return err
@@ -87,7 +87,7 @@ func createFormation(maestroDir string, cfg model.Config) (retErr error) {
 		return fmt.Errorf("set remain-on-exit for planner: %w", err)
 	}
 
-	plannerPane := fmt.Sprintf("=%s:1.0", tmux.GetSessionName())
+	plannerPane := fmt.Sprintf("%s:1.0", tmux.GetSessionName())
 	plannerRuntime, plannerModel := model.ParseRuntimeFromModel(resolveModel(cfg, "planner"))
 	if err := setAgentVars(plannerPane, "planner", "planner", plannerModel, plannerRuntime); err != nil {
 		return err
@@ -208,16 +208,30 @@ func waitForShellReady(ctx context.Context, pane string) error {
 }
 
 func setAgentVars(pane, agentID, role, agentModel, agentRuntime string) error {
-	vars := map[string]string{
-		"agent_id": agentID,
-		"role":     role,
-		"model":    agentModel,
-		"status":   "idle",
-		"runtime":  agentRuntime,
+	// Use a slice (not map) to guarantee deterministic set order and to ensure
+	// @runtime is always written last. Writing @runtime last is critical for
+	// non-claude-code runtimes where agentModel is empty: some tmux versions
+	// treat set-option with an empty value as an unset-option (removing the
+	// option from the pane's option table), which may disturb previously written
+	// options. Setting @runtime after @model avoids any cross-option interference.
+	vars := []struct{ k, v string }{
+		{"agent_id", agentID},
+		{"role", role},
+		{"status", "idle"},
+		{"model", agentModel},
+		{"runtime", agentRuntime},
 	}
-	for k, v := range vars {
-		if err := tmux.SetUserVar(pane, k, v); err != nil {
-			return fmt.Errorf("set @%s on %s: %w", k, pane, err)
+	for _, kv := range vars {
+		if kv.v == "" {
+			// Skip empty-value options: tmux's set-option behavior with an empty
+			// string value is version-dependent — on some builds it silently
+			// removes the option instead of storing an empty string. Skipping is
+			// safe because GetUserVar returns "" for unset options, matching the
+			// same value readPaneVars would see.
+			continue
+		}
+		if err := tmux.SetUserVar(pane, kv.k, kv.v); err != nil {
+			return fmt.Errorf("set @%s on %s: %w", kv.k, pane, err)
 		}
 	}
 	return nil

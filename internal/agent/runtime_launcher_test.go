@@ -40,8 +40,8 @@ func TestGetCommand_Codex(t *testing.T) {
 	if cmd != "codex" {
 		t.Errorf("expected codex, got %s", cmd)
 	}
-	// Verify base args: exec -a never -s workspace-write
-	expected := []string{"exec", "-a", "never", "-s", "workspace-write"}
+	// Interactive TUI mode: no "exec" subcommand; --full-auto for unattended operation.
+	expected := []string{"--full-auto", "--sandbox", "workspace-write"}
 	if len(args) != len(expected) {
 		t.Fatalf("expected args %v, got %v", expected, args)
 	}
@@ -132,7 +132,7 @@ func TestGetCommand_CodexWithModel(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// Base args + --model o3-mini
-	expected := []string{"exec", "-a", "never", "-s", "workspace-write", "--model", "o3-mini"}
+	expected := []string{"--full-auto", "--sandbox", "workspace-write", "--model", "o3-mini"}
 	if len(args) != len(expected) {
 		t.Fatalf("expected args %v, got %v", expected, args)
 	}
@@ -200,7 +200,8 @@ func TestGetCommand_GeminiPromptWithoutModel(t *testing.T) {
 }
 
 func TestGetCommand_ClaudeCodeIgnoresPromptOption(t *testing.T) {
-	// Prompt option is only used by gemini; claude-code handles prompts via buildLaunchArgs.
+	// Prompt option is only used by gemini (-p) and codex (positional arg).
+	// claude-code handles prompts via buildLaunchArgs (--system-prompt / --append-system-prompt).
 	rl := NewRuntimeLauncher()
 	_, args, err := rl.GetCommand(model.RuntimeClaudeCode, RuntimeLaunchOptions{
 		Model:  "opus",
@@ -209,8 +210,49 @@ func TestGetCommand_ClaudeCodeIgnoresPromptOption(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Should only have --model, no -p
+	// Should only have --model, no -p or positional prompt
 	expected := []string{"--model", "opus"}
+	if len(args) != len(expected) {
+		t.Fatalf("expected args %v, got %v", expected, args)
+	}
+	for i, e := range expected {
+		if args[i] != e {
+			t.Errorf("args[%d]: expected %q, got %q", i, e, args[i])
+		}
+	}
+}
+
+func TestGetCommand_CodexWithPrompt(t *testing.T) {
+	rl := NewRuntimeLauncher()
+	_, args, err := rl.GetCommand(model.RuntimeCodex, RuntimeLaunchOptions{
+		Prompt: "You are Maestro orchestrator.",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Base args + positional prompt
+	expected := []string{"--full-auto", "--sandbox", "workspace-write", "You are Maestro orchestrator."}
+	if len(args) != len(expected) {
+		t.Fatalf("expected args %v, got %v", expected, args)
+	}
+	for i, e := range expected {
+		if args[i] != e {
+			t.Errorf("args[%d]: expected %q, got %q", i, e, args[i])
+		}
+	}
+}
+
+func TestGetCommand_CodexWithModelAndPrompt(t *testing.T) {
+	rl := NewRuntimeLauncher()
+	_, args, err := rl.GetCommand(model.RuntimeCodex, RuntimeLaunchOptions{
+		Model:  "o3-mini",
+		Prompt: "System prompt here.",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Base args + --model + positional prompt (prompt must be last)
+	expected := []string{"--full-auto", "--sandbox", "workspace-write", "--model", "o3-mini", "System prompt here."}
 	if len(args) != len(expected) {
 		t.Fatalf("expected args %v, got %v", expected, args)
 	}
@@ -231,8 +273,8 @@ func TestGetCommand_CodexArgsIsolation(t *testing.T) {
 	if len(args1) == len(args2) {
 		t.Error("args should differ: one has model, the other does not")
 	}
-	// Verify base args in args2 are not mutated (exec -a never -s workspace-write = 5 elements)
-	if len(args2) != 5 {
-		t.Errorf("expected 5 base args for codex without model, got %d: %v", len(args2), args2)
+	// Verify base args in args2 are not mutated (--full-auto --sandbox workspace-write = 3 elements)
+	if len(args2) != 3 {
+		t.Errorf("expected 3 base args for codex without model, got %d: %v", len(args2), args2)
 	}
 }

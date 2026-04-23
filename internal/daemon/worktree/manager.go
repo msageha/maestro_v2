@@ -682,6 +682,28 @@ func (wm *Manager) integrationWorktreePath(commandID string) string {
 	return filepath.Join(wm.projectRoot, wm.config.EffectivePathPrefix(), commandID, "_integration")
 }
 
+// GetIntegrationPath returns the filesystem path of the integration worktree
+// for the given command. Returns an error if the command has no active
+// integration worktree (integration branch not yet created). Satisfies the
+// dispatch.WorktreeResolver interface so that the dispatcher can resolve
+// working directories for RunOnIntegration tasks (publish_conflict resolution).
+func (wm *Manager) GetIntegrationPath(commandID string) (string, error) {
+	if err := validateIDs(commandID); err != nil {
+		return "", err
+	}
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	state, err := wm.loadState(commandID)
+	if err != nil {
+		return "", fmt.Errorf("load worktree state: %w", err)
+	}
+	if state.Integration.Branch == "" {
+		return "", fmt.Errorf("no integration worktree registered for command %s", commandID)
+	}
+	return wm.integrationWorktreePath(commandID), nil
+}
+
 // rollbackWorkerWorktree removes a worker's worktree and branch.
 // Returns an error if any cleanup step fails (caller should log but
 // not abort — Reconcile can recover from partial rollback state).

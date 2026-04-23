@@ -27,6 +27,10 @@ type PreTaskGateEvaluator interface {
 type WorktreeResolver interface {
 	GetWorkerPath(commandID, workerID string) (string, error)
 	EnsureWorkerWorktree(commandID, workerID string) error
+	// GetIntegrationPath returns the filesystem path of the integration worktree
+	// for the given command. Used by the dispatcher to resolve the working
+	// directory for RunOnIntegration tasks (publish_conflict resolution).
+	GetIntegrationPath(commandID string) (string, error)
 }
 
 // ExecutorGetter provides lazy executor access.

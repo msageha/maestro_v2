@@ -27,6 +27,7 @@ type InjectOptions struct {
 	TargetPhase        string // phase ID to place the task in; overrides default fallback logic
 	IdempotencyKey     string
 	RunOnMain          bool   // run task in main branch dir instead of worker worktree
+	RunOnIntegration   bool   // run task in integration worktree (for publish_conflict resolution)
 	MaestroDir         string
 	Config             model.Config
 	LockMap            *lock.MutexMap
@@ -165,7 +166,7 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 			// Worker has no existing tasks; fall through to generic fallback.
 			targetIdx, err := findFirstNonTerminalPhase(state.Phases)
 			if err != nil {
-				if !opts.RunOnMain {
+				if !opts.RunOnMain && !opts.RunOnIntegration {
 					return nil, err
 				}
 				targetIdx = len(state.Phases) - 1
@@ -176,12 +177,13 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 	} else if len(state.Phases) > 0 {
 		targetIdx, err := findFirstNonTerminalPhase(state.Phases)
 		if err != nil {
-			if !opts.RunOnMain {
+			if !opts.RunOnMain && !opts.RunOnIntegration {
 				return nil, err
 			}
-			// RunOnMain post-publish verification: append to the last phase (it will be
-			// reopened below). This allows the Planner to add final verification tasks
-			// after receiving publish_completed without needing an explicit --target-phase.
+			// RunOnMain post-publish verification / RunOnIntegration publish_conflict
+			// resolution: append to the last phase (it will be reopened below).
+			// This allows the Planner to add recovery tasks after all phases are
+			// terminal without needing an explicit --target-phase.
 			targetIdx = len(state.Phases) - 1
 		}
 		state.Phases[targetIdx].TaskIDs = append(state.Phases[targetIdx].TaskIDs, newTaskID)
@@ -224,6 +226,7 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 		skillRefs:          opts.SkillRefs,
 		workerID:           assignedWorkerID,
 		runOnMain:          opts.RunOnMain,
+		runOnIntegration:   opts.RunOnIntegration,
 	}
 	if err := writeRetryQueueEntry(opts.MaestroDir, task, now, opts.LockMap); err != nil {
 		if rsErr := restoreState(state, origStateBytes); rsErr != nil {

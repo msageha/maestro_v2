@@ -61,7 +61,7 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 	cmd := NewCommand("maestro plan add-task", "maestro plan add-task --command-id <id> --purpose <text> --content <text> --acceptance-criteria <text> --bloom-level <n> [--blocked-by <task_id>]... [--required] [--run-on-main]")
 	var commandID, purpose, content, acceptanceCriteria, personaHint, workerID, targetPhase, idempotencyKey string
 	var bloomLevel int
-	var required, runOnMain bool
+	var required, runOnMain, runOnIntegration bool
 	var blockedBy, toolsHint, constraints, skillRefs stringSliceFlag
 
 	cmd.StringVar(&commandID, "command-id", "", "Parent command ID")
@@ -71,6 +71,7 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 	cmd.IntVar(&bloomLevel, "bloom-level", 0, "Bloom taxonomy level (1-6)")
 	cmd.BoolVar(&required, "required", true, "Whether the task is required for command completion")
 	cmd.BoolVar(&runOnMain, "run-on-main", false, "Run task in main branch directory instead of worker worktree (for read-only verification tasks)")
+	cmd.BoolVar(&runOnIntegration, "run-on-integration", false, "Run task in integration worktree instead of worker worktree (for publish_conflict resolution tasks)")
 	cmd.Var(&blockedBy, "blocked-by", "Task ID dependency (repeatable)")
 	cmd.Var(&constraints, "constraints", "Constraint (repeatable)")
 	cmd.Var(&toolsHint, "tools-hint", "Recommended tool (repeatable)")
@@ -125,6 +126,7 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 			"target_phase":        targetPhase,
 			"idempotency_key":     idempotencyKey,
 			"run_on_main":         runOnMain,
+			"run_on_integration":  runOnIntegration,
 		},
 	}
 

@@ -394,7 +394,7 @@ func (qh *QueueHandler) emitPublishConflictSignalIfNeeded(
 		commandID, strings.Join(files, ", "), commandID)
 
 	qh.upsertPlannerSignal(signalQueue, signalsDirty, model.PlannerSignal{
-		Kind:          "merge_conflict",
+		Kind:          "publish_conflict",
 		CommandID:     commandID,
 		Message:       msg,
 		ConflictFiles: append([]string(nil), files...),
