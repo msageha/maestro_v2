@@ -17,6 +17,22 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
+// addRetryTaskTest is a thin wrapper around AddRetryTask that fills in
+// ExpectedPaths and DefinitionOfAbort with valid defaults when the caller
+// leaves them blank. The schema requires both fields (REQUIREMENTS.md §S3-1)
+// so production callers must supply them, but tests focusing on unrelated
+// behavior should not be forced to repeat the boilerplate.
+func addRetryTaskTest(opts RetryOptions) (*RetryResult, error) {
+	if opts.ExpectedPaths == nil {
+		opts.ExpectedPaths = []string{"."}
+	}
+	if opts.DefinitionOfAbort == nil {
+		doa := model.DefaultDefinitionOfAbort()
+		opts.DefinitionOfAbort = &doa
+	}
+	return AddRetryTask(opts)
+}
+
 func TestFindPhaseForTask(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -428,7 +444,7 @@ func TestCopyAndRestoreState(t *testing.T) {
 }
 
 func TestAddRetryTask_NilLockMap(t *testing.T) {
-	_, err := AddRetryTask(RetryOptions{
+	_, err := addRetryTaskTest(RetryOptions{
 		CommandID:  "cmd1",
 		RetryOf:    "t1",
 		MaestroDir: t.TempDir(),
@@ -493,12 +509,76 @@ func setupRetryFixture(t *testing.T) (string, string, string) {
 	return maestroDir, commandID, taskID2
 }
 
+// TestAddRetryTask_DirectAPI_RejectsMissingSchemaFields covers review item #8
+// for the retry path: AddRetryTask must reject a missing expected_paths or
+// definition_of_abort even when called directly (without the test wrapper
+// that supplies defaults). Symmetric to TestAddTask_DirectAPI_*; this is the
+// other entry point that REQUIREMENTS.md §S3-1 must guard.
+func TestAddRetryTask_DirectAPI_RejectsMissingSchemaFields(t *testing.T) {
+	maestroDir, commandID, failedTaskID := setupRetryFixture(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	validDOA := model.DefaultDefinitionOfAbort()
+	baseOpts := func() RetryOptions {
+		return RetryOptions{
+			CommandID:          commandID,
+			RetryOf:            failedTaskID,
+			Purpose:            "retry purpose long enough to pass shell-damage minimum",
+			Content:            "retry content long enough to pass shell-damage minimum",
+			AcceptanceCriteria: "retry ac long enough to pass shell-damage minimum",
+			BloomLevel:         3,
+			MaestroDir:         maestroDir,
+			Config:             cfg,
+			LockMap:            lm,
+			ExpectedPaths:      []string{"internal/example.go"},
+			DefinitionOfAbort:  &validDOA,
+		}
+	}
+
+	cases := []struct {
+		name    string
+		mutate  func(*RetryOptions)
+		errFrag string
+	}{
+		{
+			name:    "expected_paths_nil",
+			mutate:  func(o *RetryOptions) { o.ExpectedPaths = nil },
+			errFrag: "expected_paths",
+		},
+		{
+			name:    "expected_paths_empty",
+			mutate:  func(o *RetryOptions) { o.ExpectedPaths = []string{} },
+			errFrag: "expected_paths",
+		},
+		{
+			name:    "definition_of_abort_nil",
+			mutate:  func(o *RetryOptions) { o.DefinitionOfAbort = nil },
+			errFrag: "definition_of_abort",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := baseOpts()
+			tc.mutate(&opts)
+			res, err := AddRetryTask(opts)
+			if err == nil {
+				t.Fatalf("expected error for %s, got result=%+v", tc.name, res)
+			}
+			if !strings.Contains(err.Error(), tc.errFrag) {
+				t.Errorf("error %q does not mention %q", err.Error(), tc.errFrag)
+			}
+		})
+	}
+}
+
 func TestAddRetryTask_HappyPath(t *testing.T) {
 	maestroDir, commandID, failedTaskID := setupRetryFixture(t)
 	cfg := testConfig()
 	lm := lock.NewMutexMap()
 
-	result, err := AddRetryTask(RetryOptions{
+	result, err := addRetryTaskTest(RetryOptions{
 		CommandID:          commandID,
 		RetryOf:            failedTaskID,
 		Purpose:            "retry task 2",
@@ -626,7 +706,7 @@ func TestAddRetryTask_CancelsOriginalQueueEntry(t *testing.T) {
 		t.Fatalf("write original queue: %v", err)
 	}
 
-	result, err := AddRetryTask(RetryOptions{
+	result, err := addRetryTaskTest(RetryOptions{
 		CommandID:          commandID,
 		RetryOf:            failedTaskID,
 		Purpose:            "retry task",
@@ -746,7 +826,7 @@ func TestAddRetryTask_CascadeRecover(t *testing.T) {
 		t.Fatalf("write state: %v", err)
 	}
 
-	result, err := AddRetryTask(RetryOptions{
+	result, err := addRetryTaskTest(RetryOptions{
 		CommandID:          commandID,
 		RetryOf:            taskA,
 		Purpose:            "retry A",
@@ -962,7 +1042,7 @@ func TestAddRetryTask_ValidationFailures(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, opts := tt.setup(t)
-			_, err := AddRetryTask(opts)
+			_, err := addRetryTaskTest(opts)
 			if err == nil {
 				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
 			}
@@ -984,7 +1064,7 @@ func TestAddRetryTask_Rollback_OnSaveStateFailure(t *testing.T) {
 	stateDir := filepath.Join(maestroDir, "state", "commands")
 
 	// First, do a successful retry to confirm the fixture works
-	_, err := AddRetryTask(RetryOptions{
+	_, err := addRetryTaskTest(RetryOptions{
 		CommandID:          commandID,
 		RetryOf:            failedTaskID,
 		Purpose:            "retry first",
@@ -1030,7 +1110,7 @@ func TestAddRetryTask_Rollback_OnSaveStateFailure(t *testing.T) {
 	defer os.Chmod(stateDir, 0755)
 
 	// This retry should fail due to SaveState failure
-	_, err = AddRetryTask(RetryOptions{
+	_, err = addRetryTaskTest(RetryOptions{
 		CommandID:          commandID,
 		RetryOf:            newFailedTaskID,
 		Purpose:            "retry second",

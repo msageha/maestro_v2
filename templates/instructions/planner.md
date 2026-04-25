@@ -134,10 +134,20 @@ maestro plan add-retry-task \
   --content "<作業内容>" \
   --acceptance-criteria "<完了条件>" \
   --bloom-level <1-6> \
+  --expected-paths <path> [--expected-paths <path> ...] \
+  [--max-repair-count <n>] \
+  [--max-wall-clock-sec <n>] \
+  [--explicit-failure-condition "<text>" ...] \
   [--blocked-by <task_id> ...]
 ```
 
 `--blocked-by` は `plan submit` 出力の task_id を指定（YAML 内の name ではない）。省略時は失敗タスクの依存関係を継承。依存先でキャンセルされた後続タスクも自動復旧する。
+
+**`--expected-paths` / `--max-repair-count` / `--max-wall-clock-sec` / `--explicit-failure-condition`**（REQUIREMENTS.md §S3-1）:
+
+- **`--expected-paths`**: 必須。リトライタスクが触る予定の相対パスを 1 つ以上指定する（複数指定は繰り返し）。`plan submit` の `tasks[].expected_paths` と同じ意味。元タスクと同じパスを指定するのが基本。リポジトリ全体に触れる場合は `.` を渡す
+- **`--max-repair-count` / `--max-wall-clock-sec`**: definition_of_abort の上限値。省略時は `model.DefaultDefinitionOfAbort()`（max_repair_count=3, max_wall_clock_sec=1800）を使用
+- **`--explicit-failure-condition`**: 失敗判定条件を文字列で指定（複数指定は繰り返し）。省略可
 
 **`add-retry-task` の制限事項**: 以下のフラグは `add-retry-task` ではサポートされない。これらの値は元タスク（`--retry-of` で指定した失敗タスク）から自動的に継承される。
 
@@ -161,6 +171,10 @@ maestro plan add-task \
   --content "<作業内容>" \
   --acceptance-criteria "<完了条件>" \
   --bloom-level <1-6> \
+  --expected-paths <path> [--expected-paths <path> ...] \
+  [--max-repair-count <n>] \
+  [--max-wall-clock-sec <n>] \
+  [--explicit-failure-condition "<text>" ...] \
   [--blocked-by <task_id> ...] \
   [--required] \
   [--constraints "<制約>" ...] \
@@ -174,6 +188,10 @@ maestro plan add-task \
 ```
 
 `--blocked-by` は既存タスクの task_id を指定。`--required` はデフォルト true。`plan submit` と異なり、既に state が存在するコマンドに対してタスクを追加できる。`add-retry-task` と異なり、既存タスクの置換ではなく新規タスクの追加。`--worker-id` は特定 worker にタスクを割り当てる（省略時は最も負荷の低い worker に自動割り当て）。`--target-phase` はタスクを配置するフェーズ ID を指定する（省略時はデフォルトのフェーズ選択ロジックに従う。`validate.PhaseID` でバリデーション）。`--idempotency-key` はリトライ時の重複タスク注入を防止する冪等キー（省略時は冪等性チェックなし）。`--run-on-main` はタスクを worker の worktree ではなく main ブランチのディレクトリで実行させる（final-verification タスク等、マージ済み状態を評価する read-only タスクに使用する。これを付けないと worktree 内で実行され、main の実態と乖離した結果が返る）。
+
+**`--expected-paths` / definition_of_abort 系フラグ**（REQUIREMENTS.md §S3-1）: `plan submit` で投入するタスクと同じく、`add-task` で注入するタスクも `expected_paths` と `definition_of_abort` を必ず宣言しなければならない。`--expected-paths` は必須（1 つ以上）。`--max-repair-count` / `--max-wall-clock-sec` を省略した場合は `model.DefaultDefinitionOfAbort()`（max_repair_count=3, max_wall_clock_sec=1800）が適用される。`--explicit-failure-condition` は省略可。
+
+**conflict resolution など触る範囲が広いタスクの注意**: 触れるパスが本当に広い場合は `--expected-paths .` を渡してリポジトリ全体を許可してよいが、可能な限りディレクトリ単位で絞ること（worker policy のサンドボックスが弱まるため）。
 
 **deferred フェーズへのタスク投入**: `maestro plan submit --command-id <id> --phase <phase_name> --tasks-file - <<'PLAN'`
 
@@ -783,9 +801,12 @@ Daemon が自動で conflict resolver を dispatch（worker の状態を `confli
    git add / git commit は実行しないこと（Daemon が自動コミットする）。" \
      --acceptance-criteria "競合ファイルが両側の変更を統合した内容になっており、コンパイル成功・テストパス" \
      --bloom-level 3 \
+     --expected-paths <conflict_file1> [--expected-paths <conflict_file2> ...] \
      --persona-hint implementer \
      --worker-id <worker>
    ```
+
+   `--expected-paths` には signal の `conflict_files` から取得した実際のファイルを 1 つずつ展開して渡す。`--max-repair-count` / `--max-wall-clock-sec` を省略するとデフォルト（3 / 1800）が適用される。
 
    `<worker>` は signal メッセージの `worker:` / `worker_id:` フィールドの値（例: `worker1`）をそのまま使用する。
 
@@ -850,6 +871,7 @@ then call `maestro plan retry-publish --command-id cmd_xxx` to re-attempt publis
      --purpose "publish conflict 解決: <conflict_files>" \
      --content "integration worktree で publish conflict を解消せよ。競合ファイル: <conflict_files>。git status で状態確認 → 競合解消 → git add → git commit を行い、完了を報告すること（retry-publish は Planner が行う）" \
      --acceptance-criteria "コンパイル成功・テストパス・git log で解消コミットが確認できる" \
+     --expected-paths <conflict_file1> [--expected-paths <conflict_file2> ...] \
      --bloom-level 3 \
      --persona-hint implementer \
      --run-on-integration
@@ -914,6 +936,7 @@ maestro plan add-task \
   --purpose "post-publish final verification" \
   --content "<main 上でしか確認できない具体的検証内容>" \
   --acceptance-criteria "<明確な合否基準>" \
+  --expected-paths <verification_target_path> [--expected-paths <path2> ...] \
   --bloom-level 3 \
   --run-on-main
 ```

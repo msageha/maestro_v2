@@ -485,6 +485,7 @@ func TestPlanExecutorImpl_AddRetryTaskSuccess(t *testing.T) {
 		LockMap:    lock.NewMutexMap(),
 	}
 
+	doa := model.DefaultDefinitionOfAbort()
 	params, _ := json.Marshal(retryParams{
 		CommandID:          commandID,
 		RetryOf:            taskID2,
@@ -492,6 +493,8 @@ func TestPlanExecutorImpl_AddRetryTaskSuccess(t *testing.T) {
 		Content:            "redo task 2",
 		AcceptanceCriteria: "task 2 passes",
 		BloomLevel:         2,
+		ExpectedPaths:      []string{"."},
+		DefinitionOfAbort:  &doa,
 	})
 
 	raw, err := pe.AddRetryTask(json.RawMessage(params))

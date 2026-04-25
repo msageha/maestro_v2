@@ -368,6 +368,7 @@ func TestRunPlanAddRetryTask_ValidateID(t *testing.T) {
 			"--content":             "test content",
 			"--acceptance-criteria": "test criteria",
 			"--bloom-level":         "3",
+			"--expected-paths":      "internal/example.go",
 		}
 		for k, v := range overrides {
 			defaults[k] = v
@@ -440,6 +441,7 @@ func TestRunPlanAddRetryTask_InvalidBlockedBy(t *testing.T) {
 		"--content", "c",
 		"--acceptance-criteria", "ac",
 		"--bloom-level", "3",
+		"--expected-paths", "internal/example.go",
 		"--blocked-by", "../evil",
 	}
 	err := newCLIApp().runPlanAddRetryTask(args)
@@ -522,6 +524,118 @@ func TestRunPlanComplete_SummaryTooLong(t *testing.T) {
 	}
 }
 
+// TestBuildDefinitionOfAbort_RejectsNonPositive ensures the definition_of_abort
+// CLI flags reject explicit zero or negative values. REQUIREMENTS.md §S2-2
+// makes max_repair_count / max_wall_clock_sec hard stops, so a typo such as
+// `--max-repair-count 0` must surface immediately rather than silently fall
+// through to the model defaults.
+func TestBuildDefinitionOfAbort_RejectsNonPositive(t *testing.T) {
+	cases := []struct {
+		name           string
+		maxRepairCount int
+		maxWallClock   int
+		wantErrFrag    string
+	}{
+		{"repair_zero", 0, dabUnset, "--max-repair-count must be a positive integer"},
+		{"repair_negative", -5, dabUnset, "--max-repair-count must be a positive integer"},
+		{"wallclock_zero", dabUnset, 0, "--max-wall-clock-sec must be a positive integer"},
+		{"wallclock_negative", dabUnset, -10, "--max-wall-clock-sec must be a positive integer"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doa, err := buildDefinitionOfAbort(tc.maxRepairCount, tc.maxWallClock, nil)
+			if err == nil {
+				t.Fatalf("expected error, got doa=%+v", doa)
+			}
+			if !containsStr(err.Error(), tc.wantErrFrag) {
+				t.Errorf("error %q does not contain %q", err.Error(), tc.wantErrFrag)
+			}
+		})
+	}
+}
+
+// TestBuildDefinitionOfAbort_UnsetInheritsDefaults verifies the dabUnset
+// sentinel falls through to the model defaults — this is the path taken when
+// the user does not pass the flag at all and is the contract the help text
+// promises.
+func TestBuildDefinitionOfAbort_UnsetInheritsDefaults(t *testing.T) {
+	doa, err := buildDefinitionOfAbort(dabUnset, dabUnset, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if doa.MaxRepairCount <= 0 || doa.MaxWallClockSec <= 0 {
+		t.Errorf("defaults must be positive, got %+v", doa)
+	}
+}
+
+// TestBuildDefinitionOfAbort_PositiveOverrides confirms an explicit positive
+// value flows through unchanged, so legitimate Planner-driven overrides are
+// not blocked by the new validation.
+func TestBuildDefinitionOfAbort_PositiveOverrides(t *testing.T) {
+	doa, err := buildDefinitionOfAbort(7, 1234, []string{"boom"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if doa.MaxRepairCount != 7 {
+		t.Errorf("MaxRepairCount = %d, want 7", doa.MaxRepairCount)
+	}
+	if doa.MaxWallClockSec != 1234 {
+		t.Errorf("MaxWallClockSec = %d, want 1234", doa.MaxWallClockSec)
+	}
+}
+
+// TestRunPlanAddTask_RejectsZeroMaxRepairCount drives the rejection through
+// the actual CLI entrypoint to prove the wiring (sentinel default → validation
+// → CLIError) holds end-to-end, not just at the helper level.
+func TestRunPlanAddTask_RejectsZeroMaxRepairCount(t *testing.T) {
+	args := []string{
+		"--command-id", "valid-cmd",
+		"--purpose", "p",
+		"--content", "c",
+		"--acceptance-criteria", "ac",
+		"--bloom-level", "3",
+		"--expected-paths", "internal/example.go",
+		"--max-repair-count", "0",
+	}
+	err := newCLIApp().runPlanAddTask(args)
+	if err == nil {
+		t.Fatal("expected error for --max-repair-count 0")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !containsStr(ce.Msg, "--max-repair-count must be a positive integer") {
+		t.Errorf("error message %q missing expected text", ce.Msg)
+	}
+}
+
+// TestRunPlanAddRetryTask_RejectsNegativeWallClock mirrors the above for the
+// add-retry-task path so both CLI surfaces share the safety net.
+func TestRunPlanAddRetryTask_RejectsNegativeWallClock(t *testing.T) {
+	args := []string{
+		"--command-id", "valid-cmd",
+		"--retry-of", "valid-task",
+		"--purpose", "p",
+		"--content", "c",
+		"--acceptance-criteria", "ac",
+		"--bloom-level", "3",
+		"--expected-paths", "internal/example.go",
+		"--max-wall-clock-sec=-2",
+	}
+	err := newCLIApp().runPlanAddRetryTask(args)
+	if err == nil {
+		t.Fatal("expected error for --max-wall-clock-sec -1")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !containsStr(ce.Msg, "--max-wall-clock-sec must be a positive integer") {
+		t.Errorf("error message %q missing expected text", ce.Msg)
+	}
+}
+
 func TestRunPlanAddRetryTask_ContentTooLong(t *testing.T) {
 	longContent := make([]byte, 65537)
 	for i := range longContent {
@@ -534,6 +648,7 @@ func TestRunPlanAddRetryTask_ContentTooLong(t *testing.T) {
 		"--content", string(longContent),
 		"--acceptance-criteria", "ac",
 		"--bloom-level", "3",
+		"--expected-paths", "internal/example.go",
 	})
 	if err == nil {
 		t.Fatal("expected error for oversized content")

@@ -122,7 +122,7 @@ func TestAddTask_NoBlockedBy_AddedToPhase(t *testing.T) {
 		t.Fatalf("write state: %v", err)
 	}
 
-	result, err := AddTask(InjectOptions{
+	result, err := addTaskTest(InjectOptions{
 		CommandID:          commandID,
 		Purpose:            "independent task",
 		Content:            "do something",
@@ -396,7 +396,7 @@ func TestValidateRetryRequest_ResolvedDepNotFound(t *testing.T) {
 		t.Fatalf("write state: %v", err)
 	}
 
-	_, err := AddRetryTask(RetryOptions{
+	_, err := addRetryTaskTest(RetryOptions{
 		CommandID:          commandID,
 		RetryOf:            taskB,
 		Purpose:            "retry taskB",
@@ -437,13 +437,13 @@ func TestAddTask_IdempotencyDedup_NonEmptyWorkerModel(t *testing.T) {
 	}
 
 	// First call
-	_, err := AddTask(opts)
+	_, err := addTaskTest(opts)
 	if err != nil {
 		t.Fatalf("first AddTask: %v", err)
 	}
 
 	// Second call (dedup) — Worker and Model should never be empty
-	result2, err := AddTask(opts)
+	result2, err := addTaskTest(opts)
 	if err != nil {
 		t.Fatalf("second AddTask: %v", err)
 	}

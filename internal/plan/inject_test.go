@@ -15,6 +15,22 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
+// addTaskTest is a thin wrapper around AddTask that fills in
+// ExpectedPaths and DefinitionOfAbort with valid defaults when the caller
+// leaves them blank. The schema requires both fields (REQUIREMENTS.md §S3-1)
+// so production callers must supply them, but tests focusing on unrelated
+// behavior should not be forced to repeat the boilerplate.
+func addTaskTest(opts InjectOptions) (*InjectResult, error) {
+	if opts.ExpectedPaths == nil {
+		opts.ExpectedPaths = []string{"."}
+	}
+	if opts.DefinitionOfAbort == nil {
+		doa := model.DefaultDefinitionOfAbort()
+		opts.DefinitionOfAbort = &doa
+	}
+	return AddTask(opts)
+}
+
 // setupInjectFixture creates a maestro directory with a sealed state containing
 // completed tasks suitable for injecting new tasks. Returns (maestroDir, commandID, completedTaskID).
 func setupInjectFixture(t *testing.T) (string, string, string) {
@@ -67,12 +83,81 @@ func setupInjectFixture(t *testing.T) (string, string, string) {
 	return maestroDir, commandID, taskID1
 }
 
+// TestAddTask_DirectAPI_RejectsMissingSchemaFields exercises AddTask without
+// the test wrapper that auto-fills expected_paths / definition_of_abort. This
+// closes a coverage gap (review #8): production callers other than the test
+// suite (e.g., a future non-CLI client speaking to plan layer in-process) must
+// see REQUIREMENTS.md §S3-1 enforcement applied at the API boundary, not only
+// at the CLI flag layer. Each subtest leaves exactly one field unset.
+func TestAddTask_DirectAPI_RejectsMissingSchemaFields(t *testing.T) {
+	maestroDir, commandID, completedTaskID := setupInjectFixture(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	validDOA := model.DefaultDefinitionOfAbort()
+	baseOpts := func() InjectOptions {
+		return InjectOptions{
+			CommandID:          commandID,
+			Purpose:            "p with enough length to clear shell-damage minimum",
+			Content:            "c with enough length to clear shell-damage minimum",
+			AcceptanceCriteria: "ac with enough length to clear shell-damage minimum",
+			BloomLevel:         3,
+			Required:           true,
+			BlockedBy:          []string{completedTaskID},
+			MaestroDir:         maestroDir,
+			Config:             cfg,
+			LockMap:            lm,
+			ExpectedPaths:      []string{"internal/example.go"},
+			DefinitionOfAbort:  &validDOA,
+		}
+	}
+
+	cases := []struct {
+		name    string
+		mutate  func(*InjectOptions)
+		errFrag string
+	}{
+		{
+			name:    "expected_paths_nil",
+			mutate:  func(o *InjectOptions) { o.ExpectedPaths = nil },
+			errFrag: "expected_paths",
+		},
+		{
+			name:    "expected_paths_empty",
+			mutate:  func(o *InjectOptions) { o.ExpectedPaths = []string{} },
+			errFrag: "expected_paths",
+		},
+		{
+			name:    "definition_of_abort_nil",
+			mutate:  func(o *InjectOptions) { o.DefinitionOfAbort = nil },
+			errFrag: "definition_of_abort",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			opts := baseOpts()
+			tc.mutate(&opts)
+			// Call AddTask directly — no wrapper auto-fill — so the validation
+			// gate in validateInjectedSchemaFields is the only thing between
+			// us and a queue/state mutation.
+			res, err := AddTask(opts)
+			if err == nil {
+				t.Fatalf("expected error for %s, got result=%+v", tc.name, res)
+			}
+			if !strings.Contains(err.Error(), tc.errFrag) {
+				t.Errorf("error %q does not mention %q", err.Error(), tc.errFrag)
+			}
+		})
+	}
+}
+
 func TestAddTask_HappyPath(t *testing.T) {
 	maestroDir, commandID, completedTaskID := setupInjectFixture(t)
 	cfg := testConfig()
 	lm := lock.NewMutexMap()
 
-	result, err := AddTask(InjectOptions{
+	result, err := addTaskTest(InjectOptions{
 		CommandID:          commandID,
 		Purpose:            "resolve merge conflict",
 		Content:            "fix conflicting files",
@@ -172,7 +257,7 @@ func TestAddTask_Optional(t *testing.T) {
 	cfg := testConfig()
 	lm := lock.NewMutexMap()
 
-	result, err := AddTask(InjectOptions{
+	result, err := addTaskTest(InjectOptions{
 		CommandID:          commandID,
 		Purpose:            "optional cleanup",
 		Content:            "cleanup leftover files",
@@ -218,7 +303,7 @@ func TestAddTask_Optional(t *testing.T) {
 }
 
 func TestAddTask_NilLockMap(t *testing.T) {
-	_, err := AddTask(InjectOptions{
+	_, err := addTaskTest(InjectOptions{
 		CommandID:  "cmd_0000000030_aabbccdd",
 		MaestroDir: t.TempDir(),
 		LockMap:    nil,
@@ -260,7 +345,7 @@ func TestAddTask_NotSealed(t *testing.T) {
 		t.Fatalf("write state: %v", err)
 	}
 
-	_, err := AddTask(InjectOptions{
+	_, err := addTaskTest(InjectOptions{
 		CommandID:          commandID,
 		Purpose:            "test",
 		Content:            "test",
@@ -281,7 +366,7 @@ func TestAddTask_InvalidBlockedBy(t *testing.T) {
 	cfg := testConfig()
 	lm := lock.NewMutexMap()
 
-	_, err := AddTask(InjectOptions{
+	_, err := addTaskTest(InjectOptions{
 		CommandID:          commandID,
 		Purpose:            "test",
 		Content:            "test",
@@ -303,7 +388,7 @@ func TestAddTask_InvalidBloomLevel(t *testing.T) {
 	cfg := testConfig()
 	lm := lock.NewMutexMap()
 
-	_, err := AddTask(InjectOptions{
+	_, err := addTaskTest(InjectOptions{
 		CommandID:          commandID,
 		Purpose:            "test",
 		Content:            "test",
@@ -366,7 +451,7 @@ func TestAddTask_RejectsShellDamagedContent(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := AddTask(tt.opts)
+			_, err := addTaskTest(tt.opts)
 			if err == nil {
 				t.Fatal("expected error for shell-damaged field (Bug G regression)")
 			}
@@ -414,7 +499,7 @@ func TestAddTask_MissingRequiredFields(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := AddTask(tt.opts)
+			_, err := addTaskTest(tt.opts)
 			if err == nil {
 				t.Fatalf("expected error for %s", tt.name)
 			}
@@ -427,7 +512,7 @@ func TestAddTask_NoDependencies(t *testing.T) {
 	cfg := testConfig()
 	lm := lock.NewMutexMap()
 
-	result, err := AddTask(InjectOptions{
+	result, err := addTaskTest(InjectOptions{
 		CommandID:          commandID,
 		Purpose:            "independent task",
 		Content:            "do something",
@@ -460,7 +545,7 @@ func TestAddTask_OriginalTasksUnchanged(t *testing.T) {
 	cfg := testConfig()
 	lm := lock.NewMutexMap()
 
-	_, err := AddTask(InjectOptions{
+	_, err := addTaskTest(InjectOptions{
 		CommandID:          commandID,
 		Purpose:            "new task",
 		Content:            "new content",
@@ -514,7 +599,7 @@ func TestAddTask_IdempotencyKey_Dedup(t *testing.T) {
 	}
 
 	// First call: creates a new task
-	result1, err := AddTask(opts)
+	result1, err := addTaskTest(opts)
 	if err != nil {
 		t.Fatalf("first AddTask returned error: %v", err)
 	}
@@ -526,7 +611,7 @@ func TestAddTask_IdempotencyKey_Dedup(t *testing.T) {
 	}
 
 	// Second call with same idempotency key: should return existing task
-	result2, err := AddTask(opts)
+	result2, err := addTaskTest(opts)
 	if err != nil {
 		t.Fatalf("second AddTask returned error: %v", err)
 	}
@@ -582,7 +667,7 @@ func TestAddTask_IdempotencyKey_DifferentKeys(t *testing.T) {
 	// First call with key A
 	opts1 := baseOpts
 	opts1.IdempotencyKey = "key-A"
-	result1, err := AddTask(opts1)
+	result1, err := addTaskTest(opts1)
 	if err != nil {
 		t.Fatalf("first AddTask returned error: %v", err)
 	}
@@ -590,7 +675,7 @@ func TestAddTask_IdempotencyKey_DifferentKeys(t *testing.T) {
 	// Second call with key B: should create a new task
 	opts2 := baseOpts
 	opts2.IdempotencyKey = "key-B"
-	result2, err := AddTask(opts2)
+	result2, err := addTaskTest(opts2)
 	if err != nil {
 		t.Fatalf("second AddTask returned error: %v", err)
 	}
@@ -622,11 +707,11 @@ func TestAddTask_NoIdempotencyKey_NoDedupe(t *testing.T) {
 	}
 
 	// Two calls without idempotency key: both should create tasks
-	result1, err := AddTask(opts)
+	result1, err := addTaskTest(opts)
 	if err != nil {
 		t.Fatalf("first AddTask returned error: %v", err)
 	}
-	result2, err := AddTask(opts)
+	result2, err := addTaskTest(opts)
 	if err != nil {
 		t.Fatalf("second AddTask returned error: %v", err)
 	}
@@ -715,7 +800,7 @@ func TestAddTask_TargetPhase_PlacedCorrectly(t *testing.T) {
 	cfg := testConfig()
 	lm := lock.NewMutexMap()
 
-	result, err := AddTask(InjectOptions{
+	result, err := addTaskTest(InjectOptions{
 		CommandID:          commandID,
 		Purpose:            "resolve conflict in phase2",
 		Content:            "fix conflicting files",
@@ -762,7 +847,7 @@ func TestAddTask_TargetPhase_NotFound(t *testing.T) {
 	cfg := testConfig()
 	lm := lock.NewMutexMap()
 
-	_, err := AddTask(InjectOptions{
+	_, err := addTaskTest(InjectOptions{
 		CommandID:          commandID,
 		Purpose:            "resolve conflict",
 		Content:            "fix conflicting files",
@@ -785,7 +870,7 @@ func TestAddTask_NoTargetPhase_AllTerminal_ReturnsError(t *testing.T) {
 	lm := lock.NewMutexMap()
 
 	// Both phases are terminal (completed). Without TargetPhase, should return error.
-	_, err := AddTask(InjectOptions{
+	_, err := addTaskTest(InjectOptions{
 		CommandID:          commandID,
 		Purpose:            "independent task",
 		Content:            "do something",
@@ -818,7 +903,7 @@ func TestAddTask_RunOnMain_AllTerminal(t *testing.T) {
 	lm := lock.NewMutexMap()
 
 	// With RunOnMain=true, task can be added even when all phases are terminal.
-	result, err := AddTask(InjectOptions{
+	result, err := addTaskTest(InjectOptions{
 		CommandID:          commandID,
 		Purpose:            "post-publish final verification",
 		Content:            "run go test ./... on main branch",
@@ -866,7 +951,7 @@ func TestAddTask_TargetPhase_AllTerminal(t *testing.T) {
 	lm := lock.NewMutexMap()
 
 	// With TargetPhase set, even if all phases are terminal, task goes to the specified phase
-	result, err := AddTask(InjectOptions{
+	result, err := addTaskTest(InjectOptions{
 		CommandID:          commandID,
 		Purpose:            "resolve conflict in completed phase",
 		Content:            "fix conflicting files",
@@ -994,7 +1079,7 @@ func TestAddTask_TargetWorkerID_FallbackToWorkerPhase(t *testing.T) {
 	cfg := testConfig()
 	lm := lock.NewMutexMap()
 
-	result, err := AddTask(InjectOptions{
+	result, err := addTaskTest(InjectOptions{
 		CommandID:          commandID,
 		Purpose:            "resolve conflict for worker1",
 		Content:            "fix conflicting files",
@@ -1101,7 +1186,7 @@ func TestAddTask_TargetWorkerID_NoQueueMatch_FallsBackToFirstNonTerminal(t *test
 	cfg := testConfig()
 	lm := lock.NewMutexMap()
 
-	result, err := AddTask(InjectOptions{
+	result, err := addTaskTest(InjectOptions{
 		CommandID:          commandID,
 		Purpose:            "resolve conflict for worker2",
 		Content:            "fix conflicting files",
@@ -1143,7 +1228,7 @@ func TestAddTask_TargetWorkerID_AllTerminal_ReturnsError(t *testing.T) {
 	cfg := testConfig()
 	lm := lock.NewMutexMap()
 
-	_, err := AddTask(InjectOptions{
+	_, err := addTaskTest(InjectOptions{
 		CommandID:          commandID,
 		Purpose:            "resolve conflict for worker2",
 		Content:            "fix conflicting files",
@@ -1187,7 +1272,7 @@ func TestAddTask_CompletedPhase_ReopensOnInject(t *testing.T) {
 	}
 
 	// Inject task into the completed phase
-	result, err := AddTask(InjectOptions{
+	result, err := addTaskTest(InjectOptions{
 		CommandID:          commandID,
 		Purpose:            "resolve conflict in completed phase",
 		Content:            "fix conflicting files",
@@ -1253,7 +1338,7 @@ func TestAddTask_BlockedBy_CompletedPhase_ReopensOnInject(t *testing.T) {
 	lm := lock.NewMutexMap()
 
 	// Inject task with BlockedBy referencing a task in completed phase1
-	_, err := AddTask(InjectOptions{
+	_, err := addTaskTest(InjectOptions{
 		CommandID:          commandID,
 		Purpose:            "resolve conflict via blocked_by",
 		Content:            "fix conflicting files",

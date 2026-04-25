@@ -119,10 +119,14 @@ type RetryOptions struct {
 	ToolsHint          []string
 	PersonaHint        string
 	SkillRefs          []string
-	MaestroDir         string
-	Config             model.Config
-	LockMap            *lock.MutexMap
-	ModelSelector      ModelSelector // optional: adaptive model selection
+	// REQUIREMENTS.md §S3-1: every task MUST declare expected_paths and
+	// definition_of_abort, including replacement tasks created by retry.
+	ExpectedPaths     []string
+	DefinitionOfAbort *model.DefinitionOfAbort
+	MaestroDir        string
+	Config            model.Config
+	LockMap           *lock.MutexMap
+	ModelSelector     ModelSelector // optional: adaptive model selection
 }
 
 // RetryResult contains the outcome of a task retry including any cascade-recovered tasks.
@@ -234,6 +238,8 @@ func buildPrimaryRetryTask(opts RetryOptions, taskID string, blockedBy []string,
 		toolsHint:          opts.ToolsHint,
 		personaHint:        opts.PersonaHint,
 		skillRefs:          opts.SkillRefs,
+		expectedPaths:      opts.ExpectedPaths,
+		definitionOfAbort:  opts.DefinitionOfAbort,
 		workerID:           workerID,
 	}
 }
@@ -295,6 +301,13 @@ type retryContext struct {
 func validateRetryRequest(sm *StateManager, opts RetryOptions) (*retryContext, error) {
 	if opts.BloomLevel < BloomLevelMin || opts.BloomLevel > BloomLevelMax {
 		return nil, &planValidationError{Msg: fmt.Sprintf("bloom_level must be between %d and %d, got %d", BloomLevelMin, BloomLevelMax, opts.BloomLevel)}
+	}
+
+	// REQUIREMENTS.md §S3-1: replacement tasks MUST declare expected_paths and
+	// definition_of_abort. Validate before any state mutation so a malformed
+	// retry request fails fast.
+	if err := validateInjectedSchemaFields(opts.ExpectedPaths, opts.DefinitionOfAbort); err != nil {
+		return nil, err
 	}
 
 	state, err := sm.LoadState(opts.CommandID)
@@ -469,6 +482,14 @@ func buildCascadeQueueTask(cr CascadeRecoveredTask, opts RetryOptions, state *mo
 	var toolsHint []string
 	var personaHint string
 	var skillRefs []string
+	// REQUIREMENTS.md §S3-1: cascade-recovered tasks must also declare
+	// expected_paths / definition_of_abort. Inherit from the original task when
+	// available; fall back to the values supplied for the primary retry so the
+	// replacement passes schema validation. The originals already passed
+	// validation when they were submitted, so they are guaranteed to be
+	// well-formed.
+	expectedPaths := opts.ExpectedPaths
+	definitionOfAbort := opts.DefinitionOfAbort
 
 	if orig, ok := origTaskCache[cr.Replaced]; ok {
 		purpose = orig.Purpose
@@ -479,6 +500,12 @@ func buildCascadeQueueTask(cr CascadeRecoveredTask, opts RetryOptions, state *mo
 		toolsHint = orig.ToolsHint
 		personaHint = orig.PersonaHint
 		skillRefs = orig.SkillRefs
+		if orig.ExpectedPaths != nil {
+			expectedPaths = orig.ExpectedPaths
+		}
+		if orig.DefinitionOfAbort != nil {
+			definitionOfAbort = orig.DefinitionOfAbort
+		}
 	}
 
 	return retryQueueTask{
@@ -493,6 +520,8 @@ func buildCascadeQueueTask(cr CascadeRecoveredTask, opts RetryOptions, state *mo
 		toolsHint:          toolsHint,
 		personaHint:        personaHint,
 		skillRefs:          skillRefs,
+		expectedPaths:      expectedPaths,
+		definitionOfAbort:  definitionOfAbort,
 		workerID:           cr.Worker,
 	}
 }

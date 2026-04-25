@@ -17,7 +17,7 @@ func validTask(name string) TaskInput {
 		AcceptanceCriteria: "test criteria",
 		BloomLevel:         3,
 		Required:           true,
-		ExpectedPaths:      []string{},
+		ExpectedPaths:      []string{"src/main.go"},
 		DefinitionOfAbort:  &d,
 	}
 }
@@ -147,7 +147,7 @@ func TestValidateTasksInput_DAGCycle(t *testing.T) {
 			AcceptanceCriteria: "ac",
 			BloomLevel:         1,
 			BlockedBy:          []string{"b"},
-			ExpectedPaths:      []string{},
+			ExpectedPaths:      []string{"src/main.go"},
 			DefinitionOfAbort:  &d,
 		},
 		{
@@ -157,7 +157,7 @@ func TestValidateTasksInput_DAGCycle(t *testing.T) {
 			AcceptanceCriteria: "ac",
 			BloomLevel:         1,
 			BlockedBy:          []string{"a"},
-			ExpectedPaths:      []string{},
+			ExpectedPaths:      []string{"src/main.go"},
 			DefinitionOfAbort:  &d,
 		},
 	}
@@ -182,7 +182,7 @@ func TestValidateTasksInput_CrossRef(t *testing.T) {
 			AcceptanceCriteria: "ac",
 			BloomLevel:         1,
 			BlockedBy:          []string{"nonexistent"},
-			ExpectedPaths:      []string{},
+			ExpectedPaths:      []string{"src/main.go"},
 			DefinitionOfAbort:  &d,
 		},
 	}
@@ -258,6 +258,24 @@ func TestValidateTasksInput_ExpectedPaths_NilRejected(t *testing.T) {
 	}
 	if !strings.Contains(errs.Error(), "required") {
 		t.Errorf("expected 'required' in error, got: %s", errs.Error())
+	}
+}
+
+// REQUIREMENTS §S3-1: an empty expected_paths slice is just as invalid as nil.
+// Either form prevents the Path-overlap heuristic (§A-4) from reasoning about
+// the task's footprint, so it must be rejected at submission time.
+func TestValidateTasksInput_ExpectedPaths_EmptyRejected(t *testing.T) {
+	task := validTask("ep-empty")
+	task.ExpectedPaths = []string{}
+	errs := ValidateTasksInput([]TaskInput{task})
+	if errs == nil {
+		t.Fatal("expected error for empty expected_paths slice")
+	}
+	if !strings.Contains(errs.Error(), "expected_paths") {
+		t.Errorf("expected 'expected_paths' in error, got: %s", errs.Error())
+	}
+	if !strings.Contains(errs.Error(), "at least one path") {
+		t.Errorf("expected 'at least one path' in error, got: %s", errs.Error())
 	}
 }
 

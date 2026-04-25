@@ -301,8 +301,13 @@ func validateTaskFieldsCore(task TaskInput, fieldPrefix string, errs *Validation
 	}
 
 	// Validate expected_paths (required after auto-completion).
+	// REQUIREMENTS §S3-1: every task MUST declare expected_paths. An empty
+	// slice is treated the same as a missing field — Path-overlap heuristic
+	// (§A-4) cannot reason about a task that claims to touch nothing.
 	if task.ExpectedPaths == nil {
 		errs.Add(fieldPrefix+".expected_paths", "required field is missing")
+	} else if len(task.ExpectedPaths) == 0 {
+		errs.Add(fieldPrefix+".expected_paths", "must contain at least one path")
 	} else {
 		validateExpectedPaths(task.ExpectedPaths, fieldPrefix+".expected_paths", errs)
 	}

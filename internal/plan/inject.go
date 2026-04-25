@@ -5,9 +5,10 @@ import (
 	"log/slog"
 	"os"
 
+	yaml "gopkg.in/yaml.v3"
+
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
-	yaml "gopkg.in/yaml.v3"
 )
 
 // InjectOptions holds the configuration for injecting a new task into a sealed plan.
@@ -23,15 +24,20 @@ type InjectOptions struct {
 	ToolsHint          []string
 	PersonaHint        string
 	SkillRefs          []string
-	TargetWorkerID     string
-	TargetPhase        string // phase ID to place the task in; overrides default fallback logic
-	IdempotencyKey     string
-	RunOnMain          bool // run task in main branch dir instead of worker worktree
-	RunOnIntegration   bool // run task in integration worktree (for publish_conflict resolution)
-	MaestroDir         string
-	Config             model.Config
-	LockMap            *lock.MutexMap
-	ModelSelector      ModelSelector // optional: adaptive model selection
+	// REQUIREMENTS.md §S3-1: every task MUST declare expected_paths and
+	// definition_of_abort. These are required at injection time the same as
+	// they are required for tasks introduced via plan submit.
+	ExpectedPaths     []string
+	DefinitionOfAbort *model.DefinitionOfAbort
+	TargetWorkerID    string
+	TargetPhase       string // phase ID to place the task in; overrides default fallback logic
+	IdempotencyKey    string
+	RunOnMain         bool // run task in main branch dir instead of worker worktree
+	RunOnIntegration  bool // run task in integration worktree (for publish_conflict resolution)
+	MaestroDir        string
+	Config            model.Config
+	LockMap           *lock.MutexMap
+	ModelSelector     ModelSelector // optional: adaptive model selection
 }
 
 // InjectResult contains the outcome of a task injection.
@@ -224,6 +230,8 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 		toolsHint:          opts.ToolsHint,
 		personaHint:        opts.PersonaHint,
 		skillRefs:          opts.SkillRefs,
+		expectedPaths:      opts.ExpectedPaths,
+		definitionOfAbort:  opts.DefinitionOfAbort,
 		workerID:           assignedWorkerID,
 		runOnMain:          opts.RunOnMain,
 		runOnIntegration:   opts.RunOnIntegration,
@@ -315,6 +323,42 @@ func validateInjectRequest(state *model.CommandState, opts InjectOptions) error 
 		}
 	}
 
+	// REQUIREMENTS.md §S3-1: tasks injected via add-task MUST declare
+	// expected_paths and definition_of_abort, the same as tasks submitted via
+	// plan submit. Earlier the CLI did not surface these flags so injected
+	// tasks bypassed the schema; that is now enforced here so the daemon
+	// rejects malformed input even when called from non-CLI clients.
+	if err := validateInjectedSchemaFields(opts.ExpectedPaths, opts.DefinitionOfAbort); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// validateInjectedSchemaFields enforces that expected_paths and
+// definition_of_abort are present and well-formed. Shared by add-task and
+// add-retry-task entry points.
+//
+// REQUIREMENTS.md §S3-1: an empty slice is treated the same as a missing
+// field — Path-overlap heuristic (§A-4) cannot reason about a task that
+// claims to touch nothing, so the API must reject both nil and []string{}.
+func validateInjectedSchemaFields(expectedPaths []string, doa *model.DefinitionOfAbort) error {
+	errs := &ValidationErrors{}
+	if expectedPaths == nil {
+		errs.Add("expected_paths", "required field is missing")
+	} else if len(expectedPaths) == 0 {
+		errs.Add("expected_paths", "must contain at least one path")
+	} else {
+		validateExpectedPaths(expectedPaths, "expected_paths", errs)
+	}
+	if doa == nil {
+		errs.Add("definition_of_abort", "required field is missing")
+	} else {
+		validateDefinitionOfAbort(doa, "definition_of_abort", errs)
+	}
+	if errs.HasErrors() {
+		return &planValidationError{Msg: errs.Error()}
+	}
 	return nil
 }
 

@@ -132,17 +132,19 @@ func (pe *PlanExecutorImpl) Complete(params json.RawMessage) (json.RawMessage, e
 }
 
 type retryParams struct {
-	CommandID          string   `json:"command_id"`
-	RetryOf            string   `json:"retry_of"`
-	Purpose            string   `json:"purpose"`
-	Content            string   `json:"content"`
-	AcceptanceCriteria string   `json:"acceptance_criteria"`
-	Constraints        []string `json:"constraints"`
-	BlockedBy          []string `json:"blocked_by"`
-	BloomLevel         int      `json:"bloom_level"`
-	ToolsHint          []string `json:"tools_hint"`
-	PersonaHint        string   `json:"persona_hint"`
-	SkillRefs          []string `json:"skill_refs"`
+	CommandID          string                   `json:"command_id"`
+	RetryOf            string                   `json:"retry_of"`
+	Purpose            string                   `json:"purpose"`
+	Content            string                   `json:"content"`
+	AcceptanceCriteria string                   `json:"acceptance_criteria"`
+	Constraints        []string                 `json:"constraints"`
+	BlockedBy          []string                 `json:"blocked_by"`
+	BloomLevel         int                      `json:"bloom_level"`
+	ToolsHint          []string                 `json:"tools_hint"`
+	PersonaHint        string                   `json:"persona_hint"`
+	SkillRefs          []string                 `json:"skill_refs"`
+	ExpectedPaths      []string                 `json:"expected_paths"`
+	DefinitionOfAbort  *model.DefinitionOfAbort `json:"definition_of_abort"`
 }
 
 // AddRetryTask implements core.PlanExecutor by parsing params and calling plan.AddRetryTask.
@@ -160,6 +162,8 @@ func (pe *PlanExecutorImpl) AddRetryTask(params json.RawMessage) (json.RawMessag
 			ToolsHint:          p.ToolsHint,
 			PersonaHint:        p.PersonaHint,
 			SkillRefs:          p.SkillRefs,
+			ExpectedPaths:      p.ExpectedPaths,
+			DefinitionOfAbort:  p.DefinitionOfAbort,
 			MaestroDir:         pe.MaestroDir,
 			Config:             pe.Config,
 			LockMap:            pe.LockMap,
@@ -169,22 +173,24 @@ func (pe *PlanExecutorImpl) AddRetryTask(params json.RawMessage) (json.RawMessag
 }
 
 type injectParams struct {
-	CommandID          string   `json:"command_id"`
-	Purpose            string   `json:"purpose"`
-	Content            string   `json:"content"`
-	AcceptanceCriteria string   `json:"acceptance_criteria"`
-	Constraints        []string `json:"constraints"`
-	BlockedBy          []string `json:"blocked_by"`
-	BloomLevel         int      `json:"bloom_level"`
-	Required           bool     `json:"required"`
-	ToolsHint          []string `json:"tools_hint"`
-	PersonaHint        string   `json:"persona_hint"`
-	SkillRefs          []string `json:"skill_refs"`
-	WorkerID           string   `json:"worker_id"`
-	TargetPhase        string   `json:"target_phase,omitempty"`
-	IdempotencyKey     string   `json:"idempotency_key,omitempty"`
-	RunOnMain          bool     `json:"run_on_main,omitempty"`
-	RunOnIntegration   bool     `json:"run_on_integration,omitempty"`
+	CommandID          string                   `json:"command_id"`
+	Purpose            string                   `json:"purpose"`
+	Content            string                   `json:"content"`
+	AcceptanceCriteria string                   `json:"acceptance_criteria"`
+	Constraints        []string                 `json:"constraints"`
+	BlockedBy          []string                 `json:"blocked_by"`
+	BloomLevel         int                      `json:"bloom_level"`
+	Required           bool                     `json:"required"`
+	ToolsHint          []string                 `json:"tools_hint"`
+	PersonaHint        string                   `json:"persona_hint"`
+	SkillRefs          []string                 `json:"skill_refs"`
+	ExpectedPaths      []string                 `json:"expected_paths"`
+	DefinitionOfAbort  *model.DefinitionOfAbort `json:"definition_of_abort"`
+	WorkerID           string                   `json:"worker_id"`
+	TargetPhase        string                   `json:"target_phase,omitempty"`
+	IdempotencyKey     string                   `json:"idempotency_key,omitempty"`
+	RunOnMain          bool                     `json:"run_on_main,omitempty"`
+	RunOnIntegration   bool                     `json:"run_on_integration,omitempty"`
 }
 
 // AddTask implements core.PlanExecutor by parsing params and calling plan.AddTask.
@@ -202,6 +208,8 @@ func (pe *PlanExecutorImpl) AddTask(params json.RawMessage) (json.RawMessage, er
 			ToolsHint:          p.ToolsHint,
 			PersonaHint:        p.PersonaHint,
 			SkillRefs:          p.SkillRefs,
+			ExpectedPaths:      p.ExpectedPaths,
+			DefinitionOfAbort:  p.DefinitionOfAbort,
 			TargetWorkerID:     p.WorkerID,
 			TargetPhase:        p.TargetPhase,
 			IdempotencyKey:     p.IdempotencyKey,

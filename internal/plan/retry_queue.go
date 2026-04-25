@@ -27,6 +27,8 @@ type retryQueueTask struct {
 	toolsHint          []string
 	personaHint        string
 	skillRefs          []string
+	expectedPaths      []string
+	definitionOfAbort  *model.DefinitionOfAbort
 	workerID           string
 	runOnMain          bool
 	runOnIntegration   bool
@@ -52,6 +54,8 @@ func writeRetryQueueEntry(maestroDir string, task retryQueueTask, now string, lo
 			ToolsHint:          task.toolsHint,
 			PersonaHint:        task.personaHint,
 			SkillRefs:          task.skillRefs,
+			ExpectedPaths:      task.expectedPaths,
+			DefinitionOfAbort:  task.definitionOfAbort,
 			RunOnMain:          task.runOnMain,
 			RunOnIntegration:   task.runOnIntegration,
 			Priority:           100,
