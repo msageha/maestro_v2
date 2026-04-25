@@ -41,10 +41,37 @@ type verifyFile struct {
 var dangerousChars = []string{";", "&&", "||", "`", "$(", "${", "|", "<", ">", "\n", "\r"}
 
 // DefaultVerifyConfig returns a minimal verification config with safe defaults.
+//
+// This is the Go-specific baseline kept as a non-empty fallback so that the
+// §5-6 evolution invariant ("evolution must not run with zero verification
+// commands") continues to hold for the original Go-targeted use case. New
+// production callers should prefer DefaultVerifyConfigForProject so they do
+// not blindly run `go vet ./...` against non-Go repositories — there the
+// command would always fail and mask the real issue ("no verify.yaml
+// configured").
 func DefaultVerifyConfig() *VerifyConfig {
 	return &VerifyConfig{
 		Build: []string{"go vet ./..."},
 	}
+}
+
+// DefaultVerifyConfigForProject returns a minimal verification config
+// appropriate for the project at projectRoot:
+//
+//   - Go (go.mod present at projectRoot): same as DefaultVerifyConfig — `go vet ./...`
+//   - empty projectRoot: same as DefaultVerifyConfig (legacy compatibility)
+//   - otherwise: empty config; callers MUST treat IsEmpty() as "no usable
+//     fallback" and refuse to run evolution / silent verify until verify.yaml
+//     is configured. Hard-coding `go vet ./...` here would always fail on
+//     non-Go repositories and obscure the real problem.
+func DefaultVerifyConfigForProject(projectRoot string) *VerifyConfig {
+	if projectRoot == "" {
+		return DefaultVerifyConfig()
+	}
+	if _, err := os.Stat(filepath.Join(projectRoot, "go.mod")); err == nil {
+		return DefaultVerifyConfig()
+	}
+	return &VerifyConfig{}
 }
 
 // IsEmpty reports whether the config has no commands in any category.
@@ -83,11 +110,31 @@ func (v *VerifyConfig) Validate() error {
 // LoadOrDefaultVerifyConfig reads and parses a verify.yaml file.
 // If the file does not exist, it returns DefaultVerifyConfig() as a fallback.
 // If the file exists but cannot be parsed, it returns an error.
+//
+// New production code should prefer LoadOrDefaultVerifyConfigForProject so the
+// fallback is project-aware (see DefaultVerifyConfigForProject) rather than
+// hard-coded to Go's `go vet ./...`.
 func LoadOrDefaultVerifyConfig(path string) (*VerifyConfig, error) {
 	cfg, err := LoadVerifyConfig(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return DefaultVerifyConfig(), nil
+		}
+		return nil, err
+	}
+	return cfg, nil
+}
+
+// LoadOrDefaultVerifyConfigForProject reads and parses verify.yaml at path.
+// If the file does not exist it returns the project-appropriate default from
+// DefaultVerifyConfigForProject(projectRoot) — for non-Go repositories that
+// is an empty config (signalling "no usable fallback") rather than a
+// guaranteed-failing Go command.
+func LoadOrDefaultVerifyConfigForProject(projectRoot, path string) (*VerifyConfig, error) {
+	cfg, err := LoadVerifyConfig(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return DefaultVerifyConfigForProject(projectRoot), nil
 		}
 		return nil, err
 	}

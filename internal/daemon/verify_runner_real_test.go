@@ -3,7 +3,6 @@ package daemon
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -62,6 +61,12 @@ func (rr *recordingRunner) run(_ context.Context, _ string, cmd string) (string,
 func TestRealVerifyRunner_FallbackUsesDefaultGoVet(t *testing.T) {
 	t.Parallel()
 	r := newTestRealRunner(t)
+	// DefaultVerifyConfigForProject only returns the Go fallback when go.mod
+	// exists at the project root. Without this stub the fallback would now be
+	// empty (intentional: avoid running `go vet` against non-Go repos).
+	if err := os.WriteFile(filepath.Join(r.projectDir, "go.mod"), []byte("module test\n"), 0o600); err != nil {
+		t.Fatalf("seed go.mod: %v", err)
+	}
 	rr := &recordingRunner{}
 	r.runner = rr.run
 
@@ -74,6 +79,30 @@ func TestRealVerifyRunner_FallbackUsesDefaultGoVet(t *testing.T) {
 	}
 	if len(rr.seen) != 1 || rr.seen[0] != "go vet ./..." {
 		t.Errorf("expected single fallback command 'go vet ./...', got %v", rr.seen)
+	}
+}
+
+// TestRealVerifyRunner_FallbackEmptyOnNonGoProject guards the project-aware
+// fallback behaviour added to remove the Go-only assumption: when verify.yaml
+// is missing AND the project root has no go.mod, the runner must execute
+// zero commands and report passed=true. Hard-coding `go vet ./...` here would
+// always fail on non-Go repositories and obscure the real issue (operator
+// has not authored verify.yaml).
+func TestRealVerifyRunner_FallbackEmptyOnNonGoProject(t *testing.T) {
+	t.Parallel()
+	r := newTestRealRunner(t)
+	rr := &recordingRunner{}
+	r.runner = rr.run
+
+	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !out.Passed {
+		t.Fatalf("expected pass with empty fallback (no commands to fail), got %+v", out)
+	}
+	if len(rr.seen) != 0 {
+		t.Errorf("expected zero fallback commands on non-Go project, got %v", rr.seen)
 	}
 }
 
@@ -393,5 +422,5 @@ func TestTailBytes_TrimsPartialUTF8Prefix(t *testing.T) {
 		t.Errorf("unexpected tail %q (want \"いう\" or \"う\")", got)
 	}
 	// Sanity: no surprise — printable, no error.
-	_ = fmt.Sprintf("%s", got)
+	_ = got
 }

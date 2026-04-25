@@ -128,11 +128,14 @@ func (d *Daemon) cleanStaleTmpFiles() {
 // initComponents wires all daemon sub-components: handler, quality gate,
 // circuit breaker, worktree manager, and event bus subscriptions.
 func (d *Daemon) initComponents() {
-	// Load verify config with fallback to defaults
-	vcfg, err := model.LoadOrDefaultVerifyConfig(verifyConfigPath(d.maestroDir))
+	// Load verify config with fallback to project-aware defaults so non-Go
+	// repositories do not silently inherit `go vet ./...` (which would always
+	// fail and obscure the real issue, "verify.yaml not configured").
+	projectRoot := filepath.Dir(d.maestroDir)
+	vcfg, err := model.LoadOrDefaultVerifyConfigForProject(projectRoot, verifyConfigPath(d.maestroDir))
 	if err != nil {
 		d.log(LogLevelWarn, "verify_config load error=%v, using defaults", err)
-		vcfg = model.DefaultVerifyConfig()
+		vcfg = model.DefaultVerifyConfigForProject(projectRoot)
 	}
 	d.verifyConfig = vcfg
 	d.log(LogLevelInfo, "verify_config loaded commands=%d", len(vcfg.AllCommands()))
