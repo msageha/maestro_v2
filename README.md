@@ -215,6 +215,13 @@ Orchestrator → Planner (maestro queue write planner):
 
 Worker は全ツールが使えるが、`.maestro/` の制御面（state/queue/results/locks/logs/config.yaml）への読み書きは禁止されている。
 
+### セキュリティモデルと既知の限界
+
+権限設計は **同一 UNIX ユーザー内での分離** を前提としている。同一ユーザーの権限を持つ別プロセスからの攻撃は防御対象外。
+
+- **UDS の信頼境界:** `.maestro/daemon.sock` はモード `0600` で作成される。すなわち、UDS 経由のすべての保護は OS のファイルパーミッションに帰着する。`MAESTRO_AGENT_ROLE` 環境変数は呼び出し元の役割を Daemon に伝えるための **アドバイザリヒントであって、認証された資格情報ではない**。同一ユーザーの任意のプロセスがこの環境変数を上書きできるため、悪意ある攻撃者からのなりすましは防げない（実装上の意図は `internal/uds/protocol.go` のドキュメントを参照）。役割分離は *honest mistakes*（Worker が誤って Orchestrator 専用コマンドを呼ぶなど）の予防にのみ有効。
+- **Worker の破壊的操作禁止の実装差:** `claude-code` ランタイム使用時のみ、`PreToolUse` フック (`internal/agent/policy_checker.go`) が Bash/Write/Edit を技術的に制限する。`codex` / `gemini` ランタイムには等価なフック機構が存在しないため、Worker の禁止事項は **システムプロンプトによる注意喚起のみ** で技術的に強制されない（`internal/agent/launcher.go:81-88` 参照）。マルチランタイム運用時は、本番ブランチに直接書き込むリスクを Daemon 側の防御層（worktree 強制利用、main ブランチ書込みのプッシュ拒否など）で吸収する必要がある。
+
 ---
 
 ## Worktree による並列作業の分離
