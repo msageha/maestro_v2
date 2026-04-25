@@ -29,9 +29,9 @@ func (a *cliApp) runResultWrite(args []string) error {
 
 	reporter := args[0]
 
-	cmd := NewCommand("maestro result write", "maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>] [--files-changed <file>]... [--learnings <text>]... [--skill-candidates <text>]... [--partial-changes] [--no-retry-safe]")
+	cmd := NewCommand("maestro result write", "maestro result write <reporter> --task-id <id> --command-id <id> --lease-epoch <n> --status <status> [--summary <text>] [--files-changed <file>]... [--learnings <text>]... [--skill-candidates <text>]... [--partial-changes] [--no-retry-safe] [--exit-code <n>]")
 	var taskID, commandID, resultStatus, summary string
-	var leaseEpoch int
+	var leaseEpoch, exitCode int
 	var filesChanged, learnings, skillCandidates stringSliceFlag
 	var partialChangesPossible, noRetrySafe bool
 
@@ -45,6 +45,10 @@ func (a *cliApp) runResultWrite(args []string) error {
 	cmd.Var(&skillCandidates, "skill-candidates", "Skill candidate to report (repeatable)")
 	cmd.BoolVar(&partialChangesPossible, "partial-changes", false, "Partial changes remain in repo")
 	cmd.BoolVar(&noRetrySafe, "no-retry-safe", false, "Mark task as not safe to retry")
+	// --exit-code: Worker 子プロセスの終了コード。省略時は -1 (= 未報告)。
+	// daemon の retry policy 判定 (ShouldRetryTask) は exit code を必須入力とする
+	// ため、--status failed の場合は worker が必ずこの値を渡すこと。
+	cmd.IntVar(&exitCode, "exit-code", -1, "Worker process exit code (required for failed status to drive auto-retry)")
 
 	cmd.AddCheck("--task-id, --command-id, --lease-epoch, and --status are required", func() bool {
 		return taskID != "" && commandID != "" && resultStatus != "" && leaseEpoch >= 0
@@ -52,6 +56,13 @@ func (a *cliApp) runResultWrite(args []string) error {
 
 	cmd.AddCheck("--status must be 'completed' or 'failed'", func() bool {
 		return resultStatus == "" || resultStatus == "completed" || resultStatus == "failed"
+	})
+
+	// --status failed では --exit-code が必須。自動リトライの判定は exit code に
+	// 依存するので、未指定だと daemon 側 evaluateRetry が即 return し
+	// repair pipeline が走らなくなる (silent drop) のを防ぐ。
+	cmd.AddCheck("--exit-code is required when --status=failed", func() bool {
+		return resultStatus != "failed" || exitCode >= 0
 	})
 
 	if err := cmd.Parse(args[1:]); err != nil {
@@ -96,6 +107,11 @@ func (a *cliApp) runResultWrite(args []string) error {
 	}
 	if partialChangesPossible {
 		params["partial_changes_possible"] = true
+	}
+	// exit-code が明示された (>= 0) 場合のみ daemon に渡す。-1 は「worker 未報告」
+	// の sentinel として扱い、completed の場合は省略する (daemon 側で nil 扱い)。
+	if exitCode >= 0 {
+		params["exit_code"] = exitCode
 	}
 	if len(learnings) > 0 {
 		params["learnings"] = learnings

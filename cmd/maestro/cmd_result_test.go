@@ -329,22 +329,31 @@ func TestRunResultWrite_InvalidStatus(t *testing.T) {
 }
 
 func TestRunResultWrite_ValidStatuses(t *testing.T) {
-	for _, status := range []string{"completed", "failed"} {
-		t.Run(status, func(t *testing.T) {
+	tests := []struct {
+		status   string
+		extraArg []string // failed needs --exit-code
+	}{
+		{"completed", nil},
+		{"failed", []string{"--exit-code", "1"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.status, func(t *testing.T) {
 			withMaestroDir(t)
 			app := newTestApp(&mockUDSClient{
 				sendCommandFunc: func(string, any) (*uds.Response, error) {
 					return successResponse(map[string]string{"result_id": "res1"}), nil
 				},
 			})
-			err := app.runResultWrite([]string{"worker1",
+			args := []string{"worker1",
 				"--task-id", "task_0000000001_abcdef01",
 				"--command-id", "cmd_0000000001_abcdef01",
 				"--lease-epoch", "1",
-				"--status", status,
-			})
+				"--status", tt.status,
+			}
+			args = append(args, tt.extraArg...)
+			err := app.runResultWrite(args)
 			if err != nil {
-				t.Fatalf("unexpected error for valid status %q: %v", status, err)
+				t.Fatalf("unexpected error for valid status %q: %v", tt.status, err)
 			}
 		})
 	}
@@ -363,11 +372,99 @@ func TestRunResultWrite_PartialChangesAndNoRetrySafe(t *testing.T) {
 		"--command-id", "cmd_0000000001_abcdef01",
 		"--lease-epoch", "1",
 		"--status", "failed",
+		"--exit-code", "1",
 		"--partial-changes",
 		"--no-retry-safe",
 	})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestRunResultWrite_FailedRequiresExitCode は --status failed のとき
+// --exit-code を必須化する CLI バリデーションを検証する。daemon の
+// evaluateRetry が exit code を必須入力としているため、未指定だと
+// 自動リトライが silently drop されるバグを CLI 側で防ぐ。
+func TestRunResultWrite_FailedRequiresExitCode(t *testing.T) {
+	err := newCLIApp().runResultWrite([]string{"worker1",
+		"--task-id", "task_0000000001_abcdef01",
+		"--command-id", "cmd_0000000001_abcdef01",
+		"--lease-epoch", "1",
+		"--status", "failed",
+	})
+	if err == nil {
+		t.Fatal("expected error for failed status without --exit-code")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	if !strings.Contains(ce.Msg, "--exit-code") {
+		t.Errorf("expected '--exit-code' in error, got: %s", ce.Msg)
+	}
+}
+
+// TestRunResultWrite_ExitCodeForwardedToDaemon は --exit-code が UDS
+// params に乗ることを検証する。daemon 側 evaluateRetry の入口で
+// ExitCode == nil チェックが回避されることを保証する回帰防御。
+func TestRunResultWrite_ExitCodeForwardedToDaemon(t *testing.T) {
+	withMaestroDir(t)
+	var capturedParams any
+	app := newTestApp(&mockUDSClient{
+		sendCommandFunc: func(command string, params any) (*uds.Response, error) {
+			capturedParams = params
+			return successResponse(map[string]string{"result_id": "res1"}), nil
+		},
+	})
+
+	err := app.runResultWrite([]string{"worker1",
+		"--task-id", "task_0000000001_abcdef01",
+		"--command-id", "cmd_0000000001_abcdef01",
+		"--lease-epoch", "1",
+		"--status", "failed",
+		"--exit-code", "42",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	m, ok := capturedParams.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map params, got %T", capturedParams)
+	}
+	got, ok := m["exit_code"]
+	if !ok {
+		t.Fatal("exit_code not present in params; daemon evaluateRetry will skip retry path")
+	}
+	if got != 42 {
+		t.Errorf("exit_code = %v, want 42", got)
+	}
+}
+
+// TestRunResultWrite_ExitCodeOmittedForCompleted は completed の場合に
+// --exit-code 省略可能であり、省略時は params から省かれることを検証。
+func TestRunResultWrite_ExitCodeOmittedForCompleted(t *testing.T) {
+	withMaestroDir(t)
+	var capturedParams any
+	app := newTestApp(&mockUDSClient{
+		sendCommandFunc: func(command string, params any) (*uds.Response, error) {
+			capturedParams = params
+			return successResponse(map[string]string{"result_id": "res1"}), nil
+		},
+	})
+
+	err := app.runResultWrite([]string{"worker1",
+		"--task-id", "task_0000000001_abcdef01",
+		"--command-id", "cmd_0000000001_abcdef01",
+		"--lease-epoch", "1",
+		"--status", "completed",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	m := capturedParams.(map[string]any)
+	if _, present := m["exit_code"]; present {
+		t.Errorf("exit_code should be omitted when not specified, got: %v", m["exit_code"])
 	}
 }
 
