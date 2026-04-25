@@ -93,7 +93,11 @@ type ResultWriteAPI struct {
 
 // SetVerifyRunner overrides the VerifyRunner used by this handler. Intended
 // for tests that need to exercise the verify_pending → repair_pending path
-// deterministically; production wiring sets the stub runner in newDaemon.
+// deterministically. Production wiring (cmd/maestrod) injects a
+// RealVerifyRunner that executes verify.yaml or the Fallback Verify
+// (DefaultVerifyConfig); when SetVerifyRunner is never called, the
+// fail-closed default in resolveVerifyRunner routes the task to
+// repair_pending so unverified work cannot silently flow through.
 func (h *ResultWriteAPI) SetVerifyRunner(r VerifyRunner) {
 	h.verifyRunner = r
 }

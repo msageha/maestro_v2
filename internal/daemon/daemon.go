@@ -6,7 +6,7 @@
 // broad responsibilities spanning queue processing, agent lifecycle, worktree management,
 // event bridging, and API serving.
 //
-// Recommended decomposition direction (see also REVIEW_REPORT.md):
+// Recommended decomposition direction:
 //   - Promote high-independence sub-packages (e.g., dispatch, reconcile, search) to
 //     top-level internal packages if they have minimal back-references to daemon state.
 //   - Extract the API/UDS layer into a dedicated internal/api package.
