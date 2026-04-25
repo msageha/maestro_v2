@@ -134,12 +134,18 @@ func SaveVerifyConfig(path string, config *VerifyConfig) error {
 	}()
 
 	if _, err := tmp.Write(content); err != nil {
-		tmp.Close()
-		return fmt.Errorf("save verify config: write temp: %w", err)
+		writeErr := fmt.Errorf("save verify config: write temp: %w", err)
+		if closeErr := tmp.Close(); closeErr != nil {
+			return errors.Join(writeErr, fmt.Errorf("close temp: %w", closeErr))
+		}
+		return writeErr
 	}
 	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		return fmt.Errorf("save verify config: sync temp: %w", err)
+		syncErr := fmt.Errorf("save verify config: sync temp: %w", err)
+		if closeErr := tmp.Close(); closeErr != nil {
+			return errors.Join(syncErr, fmt.Errorf("close temp: %w", closeErr))
+		}
+		return syncErr
 	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("save verify config: close temp: %w", err)

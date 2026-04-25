@@ -536,6 +536,8 @@ func (e *scriptEvaluator) Evaluate(ctx context.Context, condition *RuleCondition
 
 // validateScript checks that the script content is safe to execute.
 // It applies all patterns regardless of language (backward compatibility).
+//
+//nolint:unused // exercised from evaluators_test.go (golangci-lint runs with tests:false)
 func validateScript(script string) error {
 	return validateScriptForLanguage(script, "")
 }

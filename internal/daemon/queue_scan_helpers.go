@@ -23,6 +23,8 @@ func leaseInvalidReason(status model.Status, leaseEpoch, expectedEpoch int) stri
 // isFenceStale checks whether a queue entry has been modified since Phase A
 // by comparing lease epoch, status, and expiry. Used by Phase C apply methods
 // for both dispatch results and busy-check results.
+//
+//nolint:unused // exercised from queue_scan_helpers_test.go (golangci-lint runs with tests:false)
 func isFenceStale(status model.Status, leaseEpoch int, leaseExpiresAt *string, expectedEpoch int, expectedExpiresAt string) bool {
 	if leaseInvalidReason(status, leaseEpoch, expectedEpoch) != "" {
 		return true
@@ -62,6 +64,8 @@ func checkResultFencing(status model.Status, leaseEpoch int, leaseExpiresAt *str
 
 // isEpochStale performs epoch-only validation for cases where only the epoch
 // matters (e.g., lightweight pre-checks that don't need full fence validation).
+//
+//nolint:unused // exercised from queue_scan_helpers_test.go (golangci-lint runs with tests:false)
 func isEpochStale(leaseEpoch, expectedEpoch int) bool {
 	return leaseEpoch != expectedEpoch
 }

@@ -616,7 +616,7 @@ verification が `failed` の場合:
 - **仕様不一致**（テスト失敗等）→ `add-retry-task` で修正+再検証タスクを生成。content に問題詳細・修正方針・検証コマンドを含める
 - **実行異常**（環境要因等）→ 通常のリトライ処理
 
-**ループ上限（ハード制約、Bug G 対策）**: フェーズあたり最大 2 ラウンド（初回 verification + fix+re-verify）。ラウンド 2 でも問題が残る場合は **必ず** `plan complete` で failed 報告を行い、**これ以上 `add-task` / `add-retry-task` を呼ばない**。
+**ループ上限（ハード制約）**: フェーズあたり最大 2 ラウンド（初回 verification + fix+re-verify）。ラウンド 2 でも問題が残る場合は **必ず** `plan complete` で failed 報告を行い、**これ以上 `add-task` / `add-retry-task` を呼ばない**。
 
 **3 ラウンド目を投入してはならないケース**:
 
@@ -631,11 +631,11 @@ verification が `failed` の場合:
 `failed` が観測されたら、補修タスクを投入する前に次を必ず確認する。これを怠ると、実行されていない / 別ディレクトリで実行された検証の結果を鵜呑みにして無意味な repair loop に入る（2026-04 実ランで実測された失敗モード）。
 
 1. 失敗タスクの `.maestro/results/worker{N}.yaml` を Read し、`status` と `summary` を確認する
-2. verification の対象が main/統合ブランチなのに `run_on_main` / `run_on_integration` が付与されているか確認する（付与されていない場合、worker worktree を見た false FAIL の可能性が極めて高い — Bug F 参照）
+2. verification の対象が main/統合ブランチなのに `run_on_main` / `run_on_integration` が付与されているか確認する（付与されていない場合、worker worktree を見た false FAIL の可能性が極めて高い）
 3. `.maestro/queue/worker{N}.yaml` の該当タスク entry を Read し、`content` / `acceptance_criteria` が破損（極端に短い / 予期せぬ文字列）していないか確認する — 破損していれば補修ではなく **plan complete で failed 報告** を選ぶ
 4. 破損が疑われる場合、原因は直前の `add-task` / `add-retry-task` 呼び出しでの shell 展開事故（下記「shell quoting」参照）
 
-#### shell quoting の事故防止（Bug G 対策）
+#### shell quoting の事故防止
 
 `maestro plan add-task` / `add-retry-task` の `--content "..."` / `--acceptance-criteria "..."` 等に **動的内容を埋め込む場合、常にシングルクオート `'...'` または heredoc `<<'EOF' ... EOF` を使う**。ダブルクオート内では以下が展開され、意図したテキストが消えたり別の値に置換される:
 

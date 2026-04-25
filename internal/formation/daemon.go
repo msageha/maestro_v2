@@ -229,6 +229,8 @@ func validateDaemonPID(maestroDir string) int {
 
 // processAlive checks whether a process with the given PID is still running.
 // Delegates to the package-level processManager for testability.
+//
+//nolint:unused // exercised from up_test.go (golangci-lint runs with tests:false)
 func processAlive(pid int) bool {
 	return defaultConfig.ProcMgr.Alive(pid)
 }

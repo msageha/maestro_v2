@@ -49,16 +49,22 @@ func (qh *QueueHandler) PeriodicScanWithContext(ctx context.Context) {
 }
 
 // periodicScanPhaseA delegates to ScanPhaseExecutor for test access.
+//
+//nolint:unused // exercised from phase_a_acceptance_test.go etc (golangci-lint runs with tests:false)
 func (qh *QueueHandler) periodicScanPhaseA() phaseAResult {
 	return qh.scanExecutor.periodicScanPhaseA()
 }
 
 // periodicScanPhaseB delegates to ScanPhaseExecutor for test access.
+//
+//nolint:unused // exercised from phase_a_acceptance_test.go etc (golangci-lint runs with tests:false)
 func (qh *QueueHandler) periodicScanPhaseB(ctx context.Context, pa phaseAResult) phaseBResult {
 	return qh.scanExecutor.periodicScanPhaseB(ctx, pa)
 }
 
 // periodicScanPhaseC delegates to ScanPhaseExecutor for test access.
+//
+//nolint:unused // exercised from phase_a_acceptance_test.go etc (golangci-lint runs with tests:false)
 func (qh *QueueHandler) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []DeferredNotification {
 	return qh.scanExecutor.periodicScanPhaseC(pa, pb)
 }

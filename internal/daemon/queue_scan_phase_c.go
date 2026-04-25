@@ -373,10 +373,8 @@ func (qh *QueueHandler) applyPublishResultSignals(
 				continue
 			}
 			// Informational notification: publish has succeeded. This signal
-			// does NOT instruct the Planner to call `plan complete` because
-			// Bug B (double-fire) showed that doing so caused a redundant
-			// second invocation whenever the Planner had also followed its
-			// envelope instruction to call plan complete on task completion.
+			// does NOT instruct the Planner to call `plan complete`; that path
+			// caused redundant double-fire previously.
 			//
 			// Responsibility split:
 			//   - `plan complete` is the Planner's responsibility (envelope
@@ -391,7 +389,7 @@ func (qh *QueueHandler) applyPublishResultSignals(
 				"This is an informational notice — no action required in the default case. "+
 				"If a prior `maestro plan complete` returned `deferred_publish`, the daemon "+
 				"has already finalised it automatically. Do NOT add `--run-on-main` "+
-				"verification tasks by default (Bug C); only add them when the command's "+
+				"verification tasks by default; only add them when the command's "+
 				"original content explicitly requires post-publish verification on main.",
 				pr.Item.CommandID)
 			qh.upsertPlannerSignal(signalQueue, signalsDirty, model.PlannerSignal{

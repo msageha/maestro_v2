@@ -70,21 +70,29 @@ func (a *API) handleSkillReject(req *uds.Request) *uds.Response {
 }
 
 // notifySelfWrite delegates to the shared apiContext.
+//
+//nolint:unused // exercised from internal/daemon test files (golangci-lint runs with tests:false)
 func (a *API) notifySelfWrite(queuePath, writeType string, data any) {
 	a.shared.notifySelfWrite(queuePath, writeType, data)
 }
 
 // recordSelfWrite delegates to the shared apiContext.
+//
+//nolint:unused // exercised from internal/daemon test files (golangci-lint runs with tests:false)
 func (a *API) recordSelfWrite(path string, data any) {
 	a.shared.recordSelfWrite(path, data)
 }
 
 // publishQueueWritten delegates to the shared apiContext.
+//
+//nolint:unused // exercised from internal/daemon test files (golangci-lint runs with tests:false)
 func (a *API) publishQueueWritten(source string) {
 	a.shared.publishQueueWritten(source)
 }
 
 // writeLearnings delegates to the result write handler.
+//
+//nolint:unused // exercised from internal/daemon/learnings_test.go (golangci-lint runs with tests:false)
 func (a *API) writeLearnings(params ResultWriteParams, resultID string) error {
 	return a.result.writeLearnings(params, resultID)
 }

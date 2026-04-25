@@ -94,9 +94,9 @@ func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks 
 			SkillRefs:          t.SkillRefs,
 			ExpectedPaths:      t.ExpectedPaths,
 			DefinitionOfAbort:  t.DefinitionOfAbort,
-			// Bug F: propagate run_on_main / run_on_integration from TaskInput
-			// so that plan submit can express "main を見る verification" / "統合
-			// worktree で解決" tasks without requiring add-task.
+			// run_on_main / run_on_integration must propagate from TaskInput so
+			// that plan submit can express "main を見る verification" tasks and
+			// "統合 worktree で解決" tasks without requiring a follow-up add-task.
 			RunOnMain:        t.RunOnMain,
 			RunOnIntegration: t.RunOnIntegration,
 			Priority:         100,
