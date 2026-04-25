@@ -312,9 +312,21 @@ func aggregateCommandTaskStats(data *DashboardData, cs *commandStateSnapshot) {
 			data.Stats.CompletedTasks++
 		case model.StatusFailed, model.StatusDeadLetter:
 			data.Stats.FailedTasks++
-		case model.StatusInProgress:
+		case model.StatusInProgress,
+			// §2.1 extended lifecycle: dispatched/running/verify_pending/repair_pending
+			// are all "in flight" from the operator perspective. Without this branch
+			// the dashboard's InProgress counter silently dropped to zero between a
+			// task's lease acquisition and verify completion, hiding stuck work.
+			model.StatusDispatched,
+			model.StatusRunning,
+			model.StatusVerifyPending,
+			model.StatusRepairPending:
 			data.Stats.InProgressTasks++
-		case model.StatusPending:
+		case model.StatusPending,
+			// planned/ready precede dispatch; they belong to the pending bucket
+			// until the daemon hands the task to a worker.
+			model.StatusPlanned,
+			model.StatusReady:
 			data.Stats.PendingTasks++
 		case model.StatusCancelled:
 			data.Stats.CancelledTasks++

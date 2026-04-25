@@ -295,8 +295,8 @@ func (f *DashboardFormatter) UpdateDashboardFileWithQueues(
 	// Worktree Integration Status — surfaces cases where the log-based task
 	// stats would otherwise report the command as clean success while the
 	// worktree state is stalled (unresolved conflict, unpublished integration,
-	// persistent commit_failed_workers). 2026-04 audit Bug 3 showed these
-	// recovery-blocking conditions disappearing entirely from dashboard.md.
+	// persistent commit_failed_workers). Without this section those
+	// recovery-blocking conditions are invisible on dashboard.md.
 	worktreeStates := f.loadWorktreeStatesForDashboard()
 	worktreeWarnings := 0
 	if len(worktreeStates) > 0 {
