@@ -4,8 +4,12 @@ import (
 	"bytes"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
+
+	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/daemon/dispatch"
 	"github.com/msageha/maestro_v2/internal/lock"
@@ -408,6 +412,97 @@ func TestApplyTaskDispatchResult_DestructiveContent_Terminates(t *testing.T) {
 	if qh.scanExecutor.scanCounters.LeaseReleases != 1 {
 		t.Errorf("LeaseReleases = %d, want 1 (counter shared with terminal failure)",
 			qh.scanExecutor.scanCounters.LeaseReleases)
+	}
+}
+
+// TestApplyTaskDispatchResult_DestructiveContent_WritesSyntheticResult ensures
+// the synthetic failed result file write closes the queue→result→state loop
+// for run_on_main / run_on_integration destructive-content rejections.
+// Without it, queue is failed but result file is empty, so R2ResultState
+// (which only syncs from results) cannot move TaskStates off in_progress —
+// leaving the command state file permanently out of sync with the queue.
+func TestApplyTaskDispatchResult_DestructiveContent_WritesSyntheticResult(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2025, 1, 1, 1, 0, 0, 0, time.UTC)
+	expiresAt := now.Add(5 * time.Minute).Format(time.RFC3339)
+
+	maestroDir := testutil.SetupDirFixPerms(t)
+	cfg := model.Config{
+		Agents:  model.AgentsConfig{Workers: model.WorkerConfig{Count: 2}},
+		Watcher: model.WatcherConfig{DispatchLeaseSec: 300},
+		Queue:   model.QueueConfig{PriorityAgingSec: 60},
+	}
+	qh := NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	qh.clock = &fixedClock{now: now}
+	qh.scanExecutor.scanCounters = metrics.ScanCounters{}
+
+	owner := "worker1"
+	// queueFile only needs to provide the worker basename — the synthetic
+	// write derives the worker ID via filepath.Base + TrimSuffix.
+	queueFile := filepath.Join(maestroDir, "queue", "worker1.yaml")
+	taskQueues := map[string]*taskQueueEntry{
+		queueFile: {
+			Queue: model.TaskQueue{
+				Tasks: []model.Task{
+					{
+						ID:             "t1",
+						CommandID:      "cmd1",
+						Status:         model.StatusInProgress,
+						LeaseEpoch:     3,
+						LeaseOwner:     &owner,
+						LeaseExpiresAt: &expiresAt,
+						RunOnMain:      true,
+					},
+				},
+			},
+		},
+	}
+	taskDirty := map[string]bool{}
+
+	dr := dispatchResult{
+		Item: dispatchItem{
+			Kind:      "task",
+			Task:      &model.Task{ID: "t1"},
+			Epoch:     3,
+			ExpiresAt: expiresAt,
+		},
+		Success: false,
+		Error:   fmt.Errorf("dispatch wrapped: %w", dispatch.ErrDestructiveContentRejected),
+	}
+
+	qh.applyTaskDispatchResult(dr, taskQueues, taskDirty)
+
+	// Read the synthetic result file written by the helper.
+	resultPath := filepath.Join(maestroDir, "results", "worker1.yaml")
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read synthetic result file: %v", err)
+	}
+	var rf model.TaskResultFile
+	if err := yamlv3.Unmarshal(data, &rf); err != nil {
+		t.Fatalf("unmarshal synthetic result file: %v", err)
+	}
+	if len(rf.Results) != 1 {
+		t.Fatalf("synthetic results count = %d, want 1", len(rf.Results))
+	}
+	got := rf.Results[0]
+	if got.TaskID != "t1" {
+		t.Errorf("TaskID = %q, want t1", got.TaskID)
+	}
+	if got.CommandID != "cmd1" {
+		t.Errorf("CommandID = %q, want cmd1", got.CommandID)
+	}
+	if got.Status != model.StatusFailed {
+		t.Errorf("Status = %s, want failed", got.Status)
+	}
+	if got.PartialChangesPossible {
+		t.Errorf("PartialChangesPossible = true; destructive rejection never started a Worker so no partial changes are possible")
+	}
+	if got.RetrySafe {
+		t.Errorf("RetrySafe = true; policy violation must not be auto-retried")
+	}
+	if got.ID == "" {
+		t.Errorf("synthetic result ID empty; reconcilers need a stable id")
 	}
 }
 

@@ -3,6 +3,8 @@ package daemon
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
@@ -107,6 +109,19 @@ func (qh *QueueHandler) applyTaskDispatchResult(dr dispatchResult, taskQueues ma
 							task.LeaseExpiresAt = nil
 							task.UpdatedAt = qh.clock.Now().UTC().Format(time.RFC3339)
 							qh.scanExecutor.scanCounters.LeaseReleases++
+							// Write a synthetic failed result so the R1/R2
+							// reconcilers can propagate the terminal status
+							// to results/<worker>.yaml and state/commands/
+							// <commandID>.yaml. Without this entry, the queue
+							// is marked failed but no Worker ever wrote a
+							// result file (the worker was never started),
+							// leaving TaskStates stuck on the previous
+							// in_progress/pending value because R2 only syncs
+							// from result files. The synthetic write closes
+							// the loop using the same downstream pipeline as
+							// real worker results.
+							workerID := strings.TrimSuffix(filepath.Base(queueFile), ".yaml")
+							qh.writeSyntheticDestructiveResult(workerID, task.ID, task.CommandID, dr.Error.Error())
 							return
 						}
 						// Defensive: in_progress → failed is allowed by the queue
@@ -358,6 +373,60 @@ func (qh *QueueHandler) applySignalResults(results []signalDeliveryResult, sq *m
 	}
 
 	sq.Signals = retained
+}
+
+// writeSyntheticDestructiveResult appends a synthetic failed result entry to
+// the worker's result file when a task is rejected by the run_on_main /
+// run_on_integration destructive-content pre-flight (see
+// dispatch.ErrDestructiveContentRejected). The Worker is never started for
+// such tasks, so without a synthetic entry the result file stays empty and
+// the R2ResultState reconciler — which keys off result files alone — cannot
+// move TaskStates[<task>] off its prior pending/in_progress value, leaving
+// the command state file out of sync with the queue.
+//
+// Lock ordering: takes only "result:<workerID>". The caller has already
+// mutated the in-memory task queue and will flush via FlushQueues; the queue
+// lock is acquired by FlushQueues, never simultaneously with the result lock,
+// matching the pattern in CancelHandler.WriteSyntheticResults.
+func (qh *QueueHandler) writeSyntheticDestructiveResult(workerID, taskID, commandID, reason string) {
+	if workerID == "" {
+		qh.log(LogLevelError,
+			"synthetic_destructive_result_skipped task=%s command=%s reason=missing_worker_id",
+			taskID, commandID)
+		return
+	}
+
+	lockKey := "result:" + workerID
+	qh.lockMap.Lock(lockKey)
+	defer qh.lockMap.Unlock(lockKey)
+
+	resultPath := resultFilePath(qh.maestroDir, workerID)
+	if err := updateYAMLFile(resultPath, func(rf *model.TaskResultFile) error {
+		if rf.SchemaVersion == 0 {
+			rf.SchemaVersion = 1
+			rf.FileType = "result_task"
+		}
+		resultID, err := model.GenerateID(model.IDTypeResult)
+		if err != nil {
+			return fmt.Errorf("generate synthetic result id: %w", err)
+		}
+		rf.Results = append(rf.Results, model.TaskResult{
+			ID:                     resultID,
+			TaskID:                 taskID,
+			CommandID:              commandID,
+			Status:                 model.StatusFailed,
+			Summary:                fmt.Sprintf("dispatch_blocked_destructive_content: %s", reason),
+			PartialChangesPossible: false,
+			RetrySafe:              false,
+			CreatedAt:              qh.clock.Now().UTC().Format(time.RFC3339),
+		})
+		return nil
+	}); err != nil {
+		qh.log(LogLevelError,
+			"synthetic_destructive_result_write task=%s command=%s worker=%s error=%v "+
+				"(queue terminal but state will lag until reconciler retries)",
+			taskID, commandID, workerID, err)
+	}
 }
 
 func (qh *QueueHandler) recoverExpiredNotificationLeases(nq *model.NotificationQueue, dirty *bool) {
