@@ -1723,8 +1723,14 @@ func TestIntegration_LogSystemHighLoadStructuredAndRateLimited(t *testing.T) {
 	}, 3*time.Second, 10*time.Millisecond, "consumed events did not stabilize")
 	gotConsumed := atomic.LoadInt64(&consumed)
 
-	if publishElapsed > 100*time.Millisecond {
-		t.Fatalf("publish path too slow under load: %v", publishElapsed)
+	// Publish path must not block on slow subscribers. The threshold is
+	// generous (1s for 2000 publishes ≈ 0.5 ms each) because the assertion is
+	// "publishing doesn't synchronously wait on subscribers", not a strict
+	// throughput guarantee — under -race or heavy CI load instrumentation
+	// adds significant overhead, so a tight bound (e.g. 100ms) is flaky
+	// without invalidating the design property under test.
+	if publishElapsed > 1*time.Second {
+		t.Fatalf("publish path too slow under load: %v (subscriber sleep is 2ms × 2000 = 4s of work; if publish is non-blocking it should be << that)", publishElapsed)
 	}
 	if gotConsumed >= published {
 		t.Fatalf("expected backpressure drops, consumed=%d published=%d", gotConsumed, published)

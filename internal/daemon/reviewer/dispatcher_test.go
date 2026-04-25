@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -30,15 +31,16 @@ func taskWithBloom(level int) model.Task {
 }
 
 // stubInvoker is a test double for ClaudeInvoker. It returns the configured
-// response (or error) without launching any subprocess.
+// response (or error) without launching any subprocess. The called counter is
+// atomic because the dispatcher invokes Invoke from multiple goroutines.
 type stubInvoker struct {
 	response string
 	err      error
-	called   int
+	called   atomic.Int64
 }
 
 func (s *stubInvoker) Invoke(ctx context.Context, model, systemPrompt, userPrompt string) (string, error) {
-	s.called++
+	s.called.Add(1)
 	if s.err != nil {
 		return "", s.err
 	}
@@ -200,8 +202,8 @@ func TestDispatch_EmptyDiff_Skipped(t *testing.T) {
 	}
 	d.Close()
 
-	if stub.called != 0 {
-		t.Errorf("expected stub NOT to be invoked for empty diff, got called=%d", stub.called)
+	if got := stub.called.Load(); got != 0 {
+		t.Errorf("expected stub NOT to be invoked for empty diff, got called=%d", got)
 	}
 	select {
 	case result := <-d.Results():
@@ -362,8 +364,8 @@ func TestReviewTask_StubInvoker(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if stub.called != 1 {
-		t.Errorf("expected stub called once, got %d", stub.called)
+	if got := stub.called.Load(); got != 1 {
+		t.Errorf("expected stub called once, got %d", got)
 	}
 
 	select {
