@@ -54,13 +54,28 @@ func (h *PlanAPI) handlePlan(req *uds.Request) *uds.Response {
 	}
 
 	// Operations that route through the worktree manager rather than the
-	// plan executor (operator-recovery commands). Trust boundary: only
-	// known, authenticated roles may invoke these. Workers are explicitly
-	// blocked even if they bypass the launcher --disallowedTools and policy
-	// hook layers. Empty or unknown CallerRole is rejected to prevent
-	// unauthenticated shell invocations from reaching recovery endpoints.
+	// plan executor (operator-recovery commands). Trust boundary: same UNIX
+	// user, role advisory only — see internal/uds/protocol.go CallerRoleEnv
+	// godoc. CallerRole here is NOT an authenticated credential (the value
+	// comes from MAESTRO_AGENT_ROLE which any same-user process can set);
+	// the boundary is the UDS socket's mode 0600 which limits *who* can
+	// connect, not which role a connecting process declares. Within that
+	// boundary, role checks prevent honest mistakes (Worker accidentally
+	// invoking recovery, Planner invoking operator-only unquarantine), but
+	// they do not defend against a same-user adversary.
+	//
+	// Empty or unknown CallerRole is rejected to prevent CLI invocations
+	// without MAESTRO_AGENT_ROLE from silently reaching recovery endpoints.
 	// Note: the server-level processRequest already validates and normalizes
 	// CallerRole, but this check is defense-in-depth for direct handler calls.
+	//
+	// Per-operation role policy:
+	//   * Worker is rejected for ALL recovery operations.
+	//   * Planner is additionally rejected for unquarantine — that operation
+	//     is operator-only (mirrors cmd/maestro/cmd_plan_ops.go's CLI-side
+	//     defense and templates/instructions/planner.md §maestro plan
+	//     unquarantine について). Without this server-side check, a Planner
+	//     that bypasses the CLI (direct UDS) could clear a quarantine flag.
 	switch params.Operation {
 	case "unquarantine", "resume_merge", "resolve_conflict", "retry_publish", "auto_recover":
 		if !uds.ValidCallerRoles[req.CallerRole] {
@@ -70,6 +85,10 @@ func (h *PlanAPI) handlePlan(req *uds.Request) *uds.Response {
 		if req.CallerRole == uds.RoleWorker {
 			return uds.ErrorResponse(uds.ErrCodeValidation,
 				fmt.Sprintf("operation %q is not permitted for caller role %q", params.Operation, req.CallerRole))
+		}
+		if params.Operation == "unquarantine" && req.CallerRole == uds.RolePlanner {
+			return uds.ErrorResponse(uds.ErrCodeValidation,
+				"operation \"unquarantine\" is restricted to operator role; Planner is not permitted")
 		}
 		return h.handlePlanWorktreeRecovery(params.Operation, params.Data)
 	}

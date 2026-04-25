@@ -144,6 +144,12 @@ func TestHandlePlan_RecoveryRoleCheck(t *testing.T) {
 			})
 		}
 		for _, role := range []string{"orchestrator", "planner", "cli"} {
+			// unquarantine は Planner も拒否される (operator 専用)。
+			// CLI 層 (cmd/maestro/cmd_plan_ops.go) に加えて daemon 側でも
+			// 強制することで、CLI を迂回した直接 UDS 呼び出しでも防御できる。
+			if op == "unquarantine" && role == "planner" {
+				continue
+			}
 			t.Run("valid_role_passes_"+op+"_"+role, func(t *testing.T) {
 				t.Parallel()
 				req := makePlanRequest(t, op, map[string]string{"command_id": "cmd_x"})
@@ -156,6 +162,45 @@ func TestHandlePlan_RecoveryRoleCheck(t *testing.T) {
 				assert.Contains(t, resp.Error.Message, "worktree manager not configured")
 			})
 		}
+	}
+}
+
+// TestHandlePlan_UnquarantineRejectsPlanner verifies the Planner-rejection
+// rule for unquarantine: Planner must not be able to clear quarantine flags
+// even when calling daemon directly (bypassing the CLI's role gate).
+func TestHandlePlan_UnquarantineRejectsPlanner(t *testing.T) {
+	t.Parallel()
+	d := newPlanTestDaemon(t, &mockPlanExecutor{})
+	req := makePlanRequest(t, "unquarantine", map[string]string{"command_id": "cmd_x"})
+	req.CallerRole = uds.RolePlanner
+
+	resp := d.api.handlePlan(req)
+
+	assert.False(t, resp.Success)
+	require.NotNil(t, resp.Error)
+	assert.Equal(t, uds.ErrCodeValidation, resp.Error.Code)
+	assert.Contains(t, resp.Error.Message, "operator")
+	assert.Contains(t, resp.Error.Message, "Planner")
+}
+
+// TestHandlePlan_UnquarantineAllowsOrchestratorAndCLI verifies that
+// orchestrator and cli roles still pass the role gate for unquarantine.
+func TestHandlePlan_UnquarantineAllowsOrchestratorAndCLI(t *testing.T) {
+	t.Parallel()
+	for _, role := range []string{uds.RoleOrchestrator, uds.RoleCLI} {
+		role := role
+		t.Run(role, func(t *testing.T) {
+			t.Parallel()
+			d := newPlanTestDaemon(t, &mockPlanExecutor{})
+			req := makePlanRequest(t, "unquarantine", map[string]string{"command_id": "cmd_x"})
+			req.CallerRole = role
+			resp := d.api.handlePlan(req)
+			// Passes role check, fails at worktree manager gate.
+			assert.False(t, resp.Success)
+			require.NotNil(t, resp.Error)
+			assert.Equal(t, uds.ErrCodeInternal, resp.Error.Code)
+			assert.Contains(t, resp.Error.Message, "worktree manager not configured")
+		})
 	}
 }
 
