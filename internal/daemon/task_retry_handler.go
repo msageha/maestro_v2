@@ -230,7 +230,9 @@ func (h *TaskRetryHandler) RegisterRetryTaskInState(task *model.Task, commandID 
 		if state.TaskStates == nil {
 			state.TaskStates = make(map[string]model.Status)
 		}
-		state.TaskStates[task.ID] = model.StatusPending
+		// §2.1: daemon-side retry tasks enter the lifecycle at `planned`,
+		// matching the planner-side retry path (internal/plan/retry.go).
+		state.TaskStates[task.ID] = model.StatusPlanned
 		state.UpdatedAt = h.clock.Now().UTC().Format(time.RFC3339)
 		return nil
 	}); err != nil {

@@ -425,8 +425,10 @@ func applyRetryStateChanges(
 	// Rewrite dependencies
 	rewriteDependencies(state, opts.RetryOf, newTaskID)
 
-	// Set new task state
-	state.TaskStates[newTaskID] = model.StatusPending
+	// Set new task state. §2.1: retry tasks enter the lifecycle at `planned`
+	// just like fresh tasks; the retry distinction is captured in
+	// state.RetryLineage above, not by initialising at a different state.
+	state.TaskStates[newTaskID] = model.StatusPlanned
 	state.TaskDependencies[newTaskID] = rc.blockedBy
 
 	// Re-validate DAG after dependency rewriting for the primary retry task.

@@ -646,9 +646,9 @@ func TestAddRetryTask_HappyPath(t *testing.T) {
 		}
 	}
 
-	// New task is pending
-	if state.TaskStates[result.TaskID] != model.StatusPending {
-		t.Errorf("new task state = %s, want pending", state.TaskStates[result.TaskID])
+	// §2.1: retry tasks enter the lifecycle at `planned`.
+	if state.TaskStates[result.TaskID] != model.StatusPlanned {
+		t.Errorf("new task state = %s, want planned", state.TaskStates[result.TaskID])
 	}
 
 	// Queue entry written
@@ -868,13 +868,13 @@ func TestAddRetryTask_CascadeRecover(t *testing.T) {
 		t.Fatalf("load state: %v", err)
 	}
 
-	// All new tasks should be pending
-	if updatedState.TaskStates[result.TaskID] != model.StatusPending {
-		t.Errorf("new A state = %s, want pending", updatedState.TaskStates[result.TaskID])
+	// §2.1: all new tasks (primary + cascade) enter the lifecycle at `planned`.
+	if updatedState.TaskStates[result.TaskID] != model.StatusPlanned {
+		t.Errorf("new A state = %s, want planned", updatedState.TaskStates[result.TaskID])
 	}
 	for _, cr := range result.CascadeRecovered {
-		if updatedState.TaskStates[cr.TaskID] != model.StatusPending {
-			t.Errorf("cascade %s state = %s, want pending", cr.TaskID, updatedState.TaskStates[cr.TaskID])
+		if updatedState.TaskStates[cr.TaskID] != model.StatusPlanned {
+			t.Errorf("cascade %s state = %s, want planned", cr.TaskID, updatedState.TaskStates[cr.TaskID])
 		}
 	}
 
@@ -1086,10 +1086,12 @@ func TestAddRetryTask_Rollback_OnSaveStateFailure(t *testing.T) {
 		t.Fatalf("load state: %v", err)
 	}
 
-	// Find the new failed task to retry again
+	// Find the new task (now in §2.1 `planned`) to mark failed for the next
+	// retry attempt. This reaches into TaskStates directly because the test
+	// is exercising the retry flow, not normal task progression.
 	var newFailedTaskID string
 	for _, id := range state.RequiredTaskIDs {
-		if state.TaskStates[id] == model.StatusPending {
+		if state.TaskStates[id] == model.StatusPlanned {
 			// Manually mark it as failed for the next retry attempt
 			state.TaskStates[id] = model.StatusFailed
 			newFailedTaskID = id
@@ -1097,7 +1099,7 @@ func TestAddRetryTask_Rollback_OnSaveStateFailure(t *testing.T) {
 		}
 	}
 	if newFailedTaskID == "" {
-		t.Fatal("no pending task found to mark as failed")
+		t.Fatal("no planned task found to mark as failed")
 	}
 	if err := sm.SaveState(state); err != nil {
 		t.Fatalf("save state: %v", err)

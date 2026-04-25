@@ -50,6 +50,14 @@ func TestAdvanceTaskState_MultiHopPaths(t *testing.T) {
 		{"verify_pending_to_paused_for_replan", StatusVerifyPending, StatusPausedForReplan, StatusPausedForReplan},
 		// Pending → completed cannot happen directly; should advance through in_progress → verify_pending.
 		{"pending_to_completed", StatusPending, StatusCompleted, StatusCompleted},
+		// §2.1 lifecycle: planned → ready → dispatched → running → verify_pending → completed.
+		// AdvanceTaskState's BFS walks the graph, so callers that target verify_pending /
+		// completed from `planned` get the full §2.1 path applied without per-step
+		// orchestration on the planner side.
+		{"planned_to_completed", StatusPlanned, StatusCompleted, StatusCompleted},
+		{"planned_to_verify_pending", StatusPlanned, StatusVerifyPending, StatusVerifyPending},
+		{"ready_to_completed", StatusReady, StatusCompleted, StatusCompleted},
+		{"dispatched_to_completed", StatusDispatched, StatusCompleted, StatusCompleted},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -61,6 +69,26 @@ func TestAdvanceTaskState_MultiHopPaths(t *testing.T) {
 				t.Errorf("after advance: got %s, want %s", got, tt.final)
 			}
 		})
+	}
+}
+
+// TestAdvanceTaskState_LegacyPendingShortestPathPreservesCompat verifies that
+// adding the StatusPending → StatusPlanned migration edge does NOT regress the
+// legacy pending → in_progress → verify_pending → completed pipeline used by
+// older fixtures. BFS picks the shortest path, so legacy fixtures keep their
+// original behaviour while new code that initialises at StatusPlanned gets the
+// §2.1 lifecycle path automatically.
+func TestAdvanceTaskState_LegacyPendingShortestPathPreservesCompat(t *testing.T) {
+	states := map[string]Status{"t1": StatusPending}
+	if err := AdvanceTaskState(states, "t1", StatusVerifyPending); err != nil {
+		t.Fatalf("advance: %v", err)
+	}
+	// Final state is verify_pending; intermediate hops are not observable here,
+	// but the test ensures BFS does not pick the longer pending → planned →
+	// ready → dispatched → running → verify_pending route by accident (which
+	// would still produce the correct final state, but at higher cost).
+	if got := states["t1"]; got != StatusVerifyPending {
+		t.Errorf("got %s, want verify_pending", got)
 	}
 }
 

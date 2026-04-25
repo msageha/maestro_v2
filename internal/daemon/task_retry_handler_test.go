@@ -622,7 +622,8 @@ func TestRegisterRetryTaskInState(t *testing.T) {
 		t.Fatalf("unmarshal state: %v", err)
 	}
 
-	if updatedState.TaskStates[taskID] != model.StatusPending {
+	// §2.1: retry tasks enter the lifecycle at `planned`.
+	if updatedState.TaskStates[taskID] != model.StatusPlanned {
 		t.Errorf("retry task not registered in state: %v", updatedState.TaskStates)
 	}
 }
@@ -1530,8 +1531,8 @@ func TestRegisterRetryTaskInState_ExistingTasks(t *testing.T) {
 		t.Error("task_003 status was lost or changed")
 	}
 
-	// New retry task should be registered
-	if updatedState.TaskStates[taskID] != model.StatusPending {
+	// New retry task should be registered. §2.1: enters lifecycle at `planned`.
+	if updatedState.TaskStates[taskID] != model.StatusPlanned {
 		t.Errorf("retry task not registered: got %v", updatedState.TaskStates[taskID])
 	}
 }
@@ -1647,7 +1648,8 @@ func TestRetryTaskAtomically_Success(t *testing.T) {
 	if err := yamlv3.Unmarshal(stateData, &updated); err != nil {
 		t.Fatalf("unmarshal state: %v", err)
 	}
-	if updated.TaskStates["task_retry_atomic"] != model.StatusPending {
+	// §2.1: retry tasks enter the lifecycle at `planned`.
+	if updated.TaskStates["task_retry_atomic"] != model.StatusPlanned {
 		t.Errorf("task not registered in state: %v", updated.TaskStates)
 	}
 
@@ -1859,8 +1861,8 @@ func TestRetryTaskAtomically_QueueAndRollbackFailureMarksEnqueueFailed(t *testin
 		t.Fatalf("unmarshal state: %v", err)
 	}
 
-	// Task should remain in state (rollback failed).
-	if updated.TaskStates["task_retry_double_fail"] != model.StatusPending {
+	// Task should remain in state (rollback failed). §2.1: planned, not pending.
+	if updated.TaskStates["task_retry_double_fail"] != model.StatusPlanned {
 		t.Errorf("task should remain in state when rollback fails: %v", updated.TaskStates)
 	}
 }

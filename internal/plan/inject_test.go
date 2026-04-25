@@ -207,9 +207,10 @@ func TestAddTask_HappyPath(t *testing.T) {
 		t.Errorf("ExpectedTaskCount = %d, want 3", state.ExpectedTaskCount)
 	}
 
-	// New task should be pending
-	if state.TaskStates[result.TaskID] != model.StatusPending {
-		t.Errorf("new task state = %s, want pending", state.TaskStates[result.TaskID])
+	// §2.1: injected tasks enter the lifecycle at `planned` (the queue entry
+	// remains `pending` because queue status tracks lease, not lifecycle).
+	if state.TaskStates[result.TaskID] != model.StatusPlanned {
+		t.Errorf("new task state = %s, want planned", state.TaskStates[result.TaskID])
 	}
 
 	// Dependencies should be set

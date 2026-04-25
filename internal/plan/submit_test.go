@@ -639,8 +639,9 @@ func TestSubmit_PhaseFill_Success(t *testing.T) {
 	for _, tid := range reviewPhase.TaskIDs {
 		if s, ok := state.TaskStates[tid]; !ok {
 			t.Errorf("task %s not in TaskStates", tid)
-		} else if s != model.StatusPending {
-			t.Errorf("TaskStates[%s] = %q, want %q", tid, s, model.StatusPending)
+		} else if s != model.StatusPlanned {
+			// §2.1: tasks added via phase-fill enter the lifecycle at `planned`.
+			t.Errorf("TaskStates[%s] = %q, want %q", tid, s, model.StatusPlanned)
 		}
 	}
 }

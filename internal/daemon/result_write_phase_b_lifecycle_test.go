@@ -233,18 +233,19 @@ func TestResultWrite_FailedRetryableGoesViaRepairPending(t *testing.T) {
 			got, model.StatusRepairPending)
 	}
 
-	// A retry task is registered as pending (worker queue picks it up later).
+	// A retry task is registered at §2.1 `planned` (worker queue picks it up
+	// later). Queue entry status is independent and stays `pending`.
 	var retryTaskCount int
 	for id, status := range st.TaskStates {
 		if id == origTaskID {
 			continue
 		}
-		if status == model.StatusPending {
+		if status == model.StatusPlanned {
 			retryTaskCount++
 		}
 	}
 	if retryTaskCount != 1 {
-		t.Errorf("expected exactly 1 retry task in pending, got %d (state=%v)",
+		t.Errorf("expected exactly 1 retry task in planned, got %d (state=%v)",
 			retryTaskCount, st.TaskStates)
 	}
 }

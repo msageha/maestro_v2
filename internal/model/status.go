@@ -235,6 +235,7 @@ var validNotificationQueueTransitions = map[Status]map[Status]bool{
 var validTaskStateTransitions = map[Status]map[Status]bool{
 	StatusPending: {
 		StatusInProgress: true,
+		StatusPlanned:    true, // §2.1 migration: legacy fixtures (TaskStates=pending) auto-promote to planned
 		StatusCancelled:  true,
 		StatusDeadLetter: true, // daemon dead-letters task (symmetric with queue transitions)
 	},

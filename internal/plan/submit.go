@@ -495,7 +495,8 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 			state.OptionalTaskIDs = append(state.OptionalTaskIDs, taskID)
 		}
 
-		state.TaskStates[taskID] = model.StatusPending
+		// §2.1: phase-fill tasks enter the lifecycle at `planned`.
+		state.TaskStates[taskID] = model.StatusPlanned
 
 		if len(t.BlockedBy) > 0 {
 			depIDs := make([]string, 0, len(t.BlockedBy))
