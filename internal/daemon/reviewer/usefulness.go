@@ -12,8 +12,10 @@ import (
 	"time"
 )
 
-// ReviewResult represents the output of a code review by a model.
-// This is a local type used until the shared model type is available.
+// ReviewResult is the usefulness-tracking projection of a completed review.
+// It is intentionally narrower than model.ReviewResult: usefulness only needs
+// the reviewer/task/command identifiers and the IDs of findings produced, not
+// full finding bodies or status — those live in the canonical model type.
 type ReviewResult struct {
 	ReviewerModel string
 	TaskID        string

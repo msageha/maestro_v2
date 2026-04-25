@@ -6,8 +6,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/msageha/maestro_v2/internal/ptr"
 	"gopkg.in/yaml.v3"
+
+	"github.com/msageha/maestro_v2/internal/ptr"
 )
 
 // Loader loads and validates gate configurations

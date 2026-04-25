@@ -257,9 +257,9 @@ type resultFileSpec[T any, PT interface {
 	onDeadLetter func(r PT)
 }
 
-// phase1Result holds the outcome of processResultPhase1AcquireLease.
-type phase1Result[PT any] int
-
+// Phase 1 outcome codes returned by processResultPhase1AcquireLease.
+// They are plain ints (the function returns int) rather than a typed alias —
+// callers pattern-match against these constants with bare ==/switch.
 const (
 	// phase1Proceed indicates the lease was acquired and notification should proceed.
 	phase1Proceed = iota

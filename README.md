@@ -213,7 +213,7 @@ Orchestrator → Planner (maestro queue write planner):
 | **git push** | 不可 | 不可 | 不可 |
 | **.maestro/ 制御面** | Read のみ（限定的） | Read のみ（全体） | Read 不可（一部例外） |
 
-Worker は全ツールが使えるが、`.maestro/` の制御面（state/queues/results/locks/logs/config.yaml）への読み書きは禁止されている。
+Worker は全ツールが使えるが、`.maestro/` の制御面（state/queue/results/locks/logs/config.yaml）への読み書きは禁止されている。
 
 ---
 

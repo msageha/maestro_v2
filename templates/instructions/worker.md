@@ -46,7 +46,7 @@ L1（`--disallowedTools` による `Read` の静的拒否）と L2（PreToolUse 
 | パス | 分類 |
 |------|------|
 | `state/**` | 制御プレーン |
-| `queues/**` | 制御プレーン |
+| `queue/**` | 制御プレーン |
 | `results/**` | 制御プレーン |
 | `locks/**` | 制御プレーン |
 | `logs/**` | 制御プレーン |

@@ -58,13 +58,18 @@ func Run(projectDir, projectName string) error {
 	}
 
 	// Ensure .gitignore exists (required by commit_policy.require_gitignore)
-	if err := ensureGitignore(absDir); err != nil {
+	created, err := ensureGitignore(absDir)
+	if err != nil {
 		return fmt.Errorf("ensure .gitignore: %w", err)
 	}
 
-	// Track .gitignore in git so worktrees inherit it.
-	// Failures are non-fatal — log a warning and continue.
-	gitTrackGitignore(absDir)
+	// Only auto-commit .gitignore when maestro just created it. If the file
+	// pre-existed (possibly with uncommitted user modifications), do not stage
+	// or commit it — that would silently sweep user changes into a maestro
+	// commit. Worktrees still inherit any tracked version.
+	if created {
+		gitTrackGitignore(absDir)
+	}
 
 	// Create directory structure
 	dirs := []string{
@@ -169,17 +174,20 @@ func Run(projectDir, projectName string) error {
 
 // ensureGitignore creates a default .gitignore in projectDir if one does not
 // already exist. If the file is already present it is left untouched.
-func ensureGitignore(projectDir string) error {
+// Returns (created, err): created is true only when this call wrote a fresh
+// .gitignore. The caller uses this to decide whether it is safe to auto-commit
+// the file (see gitTrackGitignore).
+func ensureGitignore(projectDir string) (bool, error) {
 	p := filepath.Join(projectDir, ".gitignore")
 	if _, err := os.Stat(p); err == nil {
-		return nil // already exists — do not overwrite
+		return false, nil // already exists — do not overwrite
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("stat .gitignore: %w", err)
+		return false, fmt.Errorf("stat .gitignore: %w", err)
 	}
 	if err := os.WriteFile(p, []byte(defaultGitignore), 0644); err != nil { //nolint:gosec // .gitignore is user-readable
-		return fmt.Errorf("write .gitignore: %w", err)
+		return false, fmt.Errorf("write .gitignore: %w", err)
 	}
-	return nil
+	return true, nil
 }
 
 // gitTrackGitignore stages and commits .gitignore so that worktrees created

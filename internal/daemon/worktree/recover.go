@@ -604,7 +604,10 @@ func (wm *Manager) mergeResolvedWorker(
 	hasConflict, probeErr := wm.hasUnmergedFiles(integrationPath)
 	if probeErr != nil {
 		_ = wm.gitRunInDir(integrationPath, "merge", "--abort")
-		return fmt.Errorf("conflict probe: %w (merge error: %v)", probeErr, mergeErr)
+		return errors.Join(
+			fmt.Errorf("conflict probe: %w", probeErr),
+			fmt.Errorf("merge error: %w", mergeErr),
+		)
 	}
 	if !hasConflict {
 		// Non-conflict git error — abort and report.
@@ -617,7 +620,11 @@ func (wm *Manager) mergeResolvedWorker(
 	if cfErr != nil || len(conflictFiles) == 0 {
 		if abortErr := wm.gitRunInDir(integrationPath, "merge", "--abort"); abortErr != nil {
 			if recoveryErr := wm.recoverWorktreeAfterMerge(integrationPath, preMergeHEAD, commandID, ws.WorkerID); recoveryErr != nil {
-				return fmt.Errorf("get conflict files: %w; merge abort failed; worktree recovery failed: %v", cfErr, recoveryErr)
+				return errors.Join(
+					fmt.Errorf("get conflict files: %w", cfErr),
+					fmt.Errorf("merge abort failed: %w", abortErr),
+					fmt.Errorf("worktree recovery failed: %w", recoveryErr),
+				)
 			}
 		}
 		return fmt.Errorf("get conflict files: %w", cfErr)
@@ -631,7 +638,11 @@ func (wm *Manager) mergeResolvedWorker(
 				commandID, ws.WorkerID, cf, checkoutErr)
 			if abortErr := wm.gitRunInDir(integrationPath, "merge", "--abort"); abortErr != nil {
 				if recoveryErr := wm.recoverWorktreeAfterMerge(integrationPath, preMergeHEAD, commandID, ws.WorkerID); recoveryErr != nil {
-					return fmt.Errorf("checkout resolved file %s from %s: %w; merge abort failed: %v; worktree recovery failed: %v", cf, ws.Branch, checkoutErr, abortErr, recoveryErr)
+					return errors.Join(
+						fmt.Errorf("checkout resolved file %s from %s: %w", cf, ws.Branch, checkoutErr),
+						fmt.Errorf("merge abort failed: %w", abortErr),
+						fmt.Errorf("worktree recovery failed: %w", recoveryErr),
+					)
 				}
 			}
 			return fmt.Errorf("checkout resolved file %s from %s: %w", cf, ws.Branch, checkoutErr)
@@ -643,7 +654,11 @@ func (wm *Manager) mergeResolvedWorker(
 	if err := wm.gitRunInDir(integrationPath, "commit", "--no-edit"); err != nil {
 		if abortErr := wm.gitRunInDir(integrationPath, "merge", "--abort"); abortErr != nil {
 			if recoveryErr := wm.recoverWorktreeAfterMerge(integrationPath, preMergeHEAD, commandID, ws.WorkerID); recoveryErr != nil {
-				return fmt.Errorf("commit resolved merge: %w; merge abort failed: %v; worktree recovery failed: %v", err, abortErr, recoveryErr)
+				return errors.Join(
+					fmt.Errorf("commit resolved merge: %w", err),
+					fmt.Errorf("merge abort failed: %w", abortErr),
+					fmt.Errorf("worktree recovery failed: %w", recoveryErr),
+				)
 			}
 		}
 		return fmt.Errorf("commit resolved merge: %w", err)

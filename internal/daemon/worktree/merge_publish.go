@@ -1096,7 +1096,10 @@ func (wm *Manager) performPublishMerge(
 		// Temp branch cleanup is handled by defer.
 		if checkoutErr := wm.gitRunInDir(integrationPath, "checkout", state.Integration.Branch); checkoutErr != nil {
 			wm.Log(core.LogLevelWarn, "publish_checkout_failed command=%s branch=%s error=%v", commandID, state.Integration.Branch, checkoutErr)
-			return "", false, fmt.Errorf("merge integration into %s: %w (checkout recovery also failed: %v)", baseBranch, err, checkoutErr)
+			return "", false, errors.Join(
+				fmt.Errorf("merge integration into %s: %w", baseBranch, err),
+				fmt.Errorf("checkout recovery also failed: %w", checkoutErr),
+			)
 		}
 		return "", false, fmt.Errorf("merge integration into %s: %w", baseBranch, err)
 	}

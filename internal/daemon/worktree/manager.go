@@ -184,7 +184,7 @@ func (wm *Manager) EnsureWorkerWorktree(commandID, workerID string) error {
 		// Create the worker worktree; rollback integration on failure
 		if err := wm.addWorkerWorktreeUnlocked(state, commandID, workerID, baseSHA, now); err != nil {
 			if rbErr := rollbackIntegration(); rbErr != nil {
-				return fmt.Errorf("%w; rollback also failed: %v", err, rbErr)
+				return errors.Join(err, fmt.Errorf("rollback also failed: %w", rbErr))
 			}
 			return err
 		}
@@ -206,7 +206,7 @@ func (wm *Manager) EnsureWorkerWorktree(commandID, workerID string) error {
 			}
 			origErr := fmt.Errorf("save worktree state: %w", err)
 			if len(rollbackErrs) > 0 {
-				return fmt.Errorf("%w; rollback also failed: %v", origErr, errors.Join(rollbackErrs...))
+				return errors.Join(origErr, fmt.Errorf("rollback also failed: %w", errors.Join(rollbackErrs...)))
 			}
 			return origErr
 		}
@@ -264,7 +264,7 @@ func (wm *Manager) EnsureWorkerWorktree(commandID, workerID string) error {
 		}
 		origErr := fmt.Errorf("save worktree state: %w", err)
 		if len(rollbackErrs) > 0 {
-			return fmt.Errorf("%w; rollback also failed: %v", origErr, errors.Join(rollbackErrs...))
+			return errors.Join(origErr, fmt.Errorf("rollback also failed: %w", errors.Join(rollbackErrs...)))
 		}
 		return origErr
 	}

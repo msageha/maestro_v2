@@ -16,8 +16,11 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// ErrNotImplemented indicates that the review model invocation is not yet
-// implemented. Callers should treat this as a non-fatal skip.
+// ErrNotImplemented is a sentinel returned by ClaudeInvoker implementations
+// that intentionally do not support the requested review model (for example,
+// test stubs or partially-wired alternative invokers). When the dispatcher
+// observes this error it logs at info level and skips the review without
+// failing the pipeline — reviews are advisory.
 var ErrNotImplemented = errors.New("reviewer: not implemented")
 
 // ReviewDispatcher manages asynchronous dispatch of code reviews to
