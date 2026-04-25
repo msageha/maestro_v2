@@ -223,6 +223,18 @@ func (disp *Dispatcher) DispatchCommand(ctx context.Context, cmd *model.Command)
 
 // DispatchTask dispatches a task to a worker agent.
 func (disp *Dispatcher) DispatchTask(ctx context.Context, task *model.Task, workerID string) error {
+	// §S0-1 / run_on_main hardening: defense-in-depth pre-flight check that
+	// rejects destructive shell snippets in tasks targeting the main branch or
+	// integration worktree. The Bash policy hook (internal/agent/policy_checker)
+	// covers Claude Code workers, but Codex/Gemini bypass that hook entirely;
+	// this check applies to every worker regardless of agent type.
+	if err := validateRunOnMainContent(task); err != nil {
+		disp.dl.Logf(core.LogLevelError,
+			"dispatch_task_destructive_content_blocked id=%s worker=%s run_on_main=%t run_on_integration=%t error=%v",
+			task.ID, workerID, task.RunOnMain, task.RunOnIntegration, err)
+		return err
+	}
+
 	if err := disp.evaluateTaskQualityGate(task, workerID); err != nil {
 		return err
 	}
