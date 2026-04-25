@@ -80,3 +80,79 @@ func readInstruction(t *testing.T, path string) string {
 	}
 	return string(data)
 }
+
+// TestInstructions_WorkerCommitProhibition_HasIntegrationCarveOut guards
+// against a specific failure mode: a paragraph of worker.md that flatly
+// declares Worker は commit / merge / push を一切実行しない (or any equivalent
+// blanket prohibition) without naming the _integration worktree carve-out in
+// the same paragraph.
+//
+// This is an LLM-coherence test, not a syntax test. A single agent reading
+// worker.md will frequently anchor on the strongest, most-recent rule it
+// sees; if a blanket prohibition appears further down the document than the
+// publish_conflict exception, the prohibition wins and publish_conflict
+// recovery silently breaks (the worker refuses git add / git commit even
+// though planner.md explicitly told it to run them).
+//
+// The fix is to keep the carve-out *in the same paragraph as* every blanket
+// prohibition statement, so the agent cannot pick up one without the other.
+// This test enforces that invariant by:
+//
+//  1. splitting worker.md into blank-line-delimited paragraphs,
+//  2. matching paragraphs that look like a blanket commit/merge/push ban,
+//  3. requiring each such paragraph to also reference the integration
+//     worktree (so the exception travels with the rule).
+//
+// If the wording is reorganized later (e.g. the exception is moved to a
+// dedicated subsection), update the carve-out reference list below rather
+// than weakening the match — the goal is to keep the two facts adjacent.
+func TestInstructions_WorkerCommitProhibition_HasIntegrationCarveOut(t *testing.T) {
+	worker := readInstruction(t, "instructions/worker.md")
+
+	// Paragraph splitter: a paragraph is a run of non-empty lines separated
+	// by one or more blank lines. We normalize CRLF first so the test does
+	// not depend on the host's line endings.
+	normalized := strings.ReplaceAll(worker, "\r\n", "\n")
+	paragraphs := strings.Split(normalized, "\n\n")
+
+	// Patterns that constitute a "blanket prohibition" — the agent reading
+	// any one of these in isolation would conclude that git mutations are
+	// universally banned, including inside the _integration worktree.
+	blanketPatterns := []string{
+		"commit / merge / push を一切実行しない",
+		"commit/merge/push を一切実行しない",
+		"git add / git commit を実行してはならない",
+	}
+	// Tokens that demonstrate the carve-out is co-located with the rule.
+	// Any one of these is sufficient: they all unambiguously route the
+	// reader to the publish_conflict exception.
+	carveOutTokens := []string{
+		"_integration",
+		"integration worktree",
+		"publish_conflict",
+		"run-on-integration",
+	}
+
+	for _, para := range paragraphs {
+		matched := ""
+		for _, p := range blanketPatterns {
+			if strings.Contains(para, p) {
+				matched = p
+				break
+			}
+		}
+		if matched == "" {
+			continue
+		}
+		hasCarveOut := false
+		for _, tok := range carveOutTokens {
+			if strings.Contains(para, tok) {
+				hasCarveOut = true
+				break
+			}
+		}
+		if !hasCarveOut {
+			t.Errorf("worker.md paragraph contains blanket prohibition %q without referencing the integration worktree carve-out in the same paragraph; an agent that reads only this paragraph will refuse publish_conflict recovery operations.\n--- offending paragraph ---\n%s\n--- end ---", matched, para)
+		}
+	}
+}
