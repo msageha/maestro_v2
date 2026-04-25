@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/dispatch"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/metrics"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -331,6 +332,82 @@ func TestApplyTaskDispatchResult_EpochMismatch(t *testing.T) {
 	}
 	if qh.scanExecutor.scanCounters.TasksDispatched != 0 {
 		t.Errorf("TasksDispatched = %d, want 0 for stale result", qh.scanExecutor.scanCounters.TasksDispatched)
+	}
+}
+
+// TestApplyTaskDispatchResult_DestructiveContent_Terminates pins down the
+// non-retryable termination path. validateRunOnMainContent on the dispatch
+// side returns ErrDestructiveContentRejected for run_on_main/integration
+// tasks containing destructive shell snippets (`git push`, `rm -rf`, etc.);
+// without the special-case below, the queue's lease-release fallback would
+// flip the task back to pending and the next scan cycle would re-dispatch
+// it forever. The terminal Failed transition stops the loop and surfaces
+// the violation in operator logs.
+func TestApplyTaskDispatchResult_DestructiveContent_Terminates(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2025, 1, 1, 1, 0, 0, 0, time.UTC)
+	expiresAt := now.Add(5 * time.Minute).Format(time.RFC3339)
+
+	maestroDir := testutil.SetupDirFixPerms(t)
+	cfg := model.Config{
+		Agents:  model.AgentsConfig{Workers: model.WorkerConfig{Count: 2}},
+		Watcher: model.WatcherConfig{DispatchLeaseSec: 300},
+		Queue:   model.QueueConfig{PriorityAgingSec: 60},
+	}
+	qh := NewQueueHandler(maestroDir, cfg, lock.NewMutexMap(), log.New(&bytes.Buffer{}, "", 0), LogLevelDebug)
+	qh.clock = &fixedClock{now: now}
+	qh.scanExecutor.scanCounters = metrics.ScanCounters{}
+
+	owner := "worker1"
+	queueFile := "/fake/worker1.yaml"
+	taskQueues := map[string]*taskQueueEntry{
+		queueFile: {
+			Queue: model.TaskQueue{
+				Tasks: []model.Task{
+					{
+						ID:             "t1",
+						CommandID:      "cmd1",
+						Status:         model.StatusInProgress,
+						LeaseEpoch:     3,
+						LeaseOwner:     &owner,
+						LeaseExpiresAt: &expiresAt,
+						RunOnMain:      true,
+					},
+				},
+			},
+		},
+	}
+	taskDirty := map[string]bool{}
+
+	dr := dispatchResult{
+		Item: dispatchItem{
+			Kind:      "task",
+			Task:      &model.Task{ID: "t1"},
+			Epoch:     3,
+			ExpiresAt: expiresAt,
+		},
+		Success: false,
+		Error:   fmt.Errorf("dispatch wrapped: %w", dispatch.ErrDestructiveContentRejected),
+	}
+
+	qh.applyTaskDispatchResult(dr, taskQueues, taskDirty)
+
+	got := taskQueues[queueFile].Queue.Tasks[0]
+	if got.Status != model.StatusFailed {
+		t.Errorf("task.Status = %s, want failed (terminal — must not be re-dispatched)", got.Status)
+	}
+	if got.LeaseOwner != nil {
+		t.Errorf("task.LeaseOwner = %v, want nil after terminal failure", got.LeaseOwner)
+	}
+	if got.LeaseExpiresAt != nil {
+		t.Errorf("task.LeaseExpiresAt = %v, want nil after terminal failure", got.LeaseExpiresAt)
+	}
+	if !taskDirty[queueFile] {
+		t.Error("expected taskDirty[queueFile]=true so the queue write persists the terminal status")
+	}
+	if qh.scanExecutor.scanCounters.LeaseReleases != 1 {
+		t.Errorf("LeaseReleases = %d, want 1 (counter shared with terminal failure)",
+			qh.scanExecutor.scanCounters.LeaseReleases)
 	}
 }
 

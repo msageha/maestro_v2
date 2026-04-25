@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/agent"
+	"github.com/msageha/maestro_v2/internal/daemon/dispatch"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -88,6 +89,34 @@ func (qh *QueueHandler) applyTaskDispatchResult(dr dispatchResult, taskQueues ma
 				leaseEpoch:     task.LeaseEpoch,
 				leaseExpiresAt: task.LeaseExpiresAt,
 				onFailure: func(dr dispatchResult) {
+					// Destructive run_on_main/run_on_integration content is a
+					// non-retryable policy violation: re-dispatching after a lease
+					// release would hit the same validate failure on every scan
+					// cycle, causing an infinite retry loop. Terminate the queue
+					// entry directly so it stays out of subsequent scans, and log
+					// at ERROR for operator review (the matched pattern is already
+					// embedded in dr.Error).
+					if errors.Is(dr.Error, dispatch.ErrDestructiveContentRejected) {
+						qh.log(LogLevelError,
+							"dispatch_blocked_destructive_content type=task id=%s command=%s reason=%v",
+							task.ID, task.CommandID, dr.Error)
+						err := model.ValidateCommandTaskQueueTransition(task.Status, model.StatusFailed)
+						if err == nil {
+							task.Status = model.StatusFailed
+							task.LeaseOwner = nil
+							task.LeaseExpiresAt = nil
+							task.UpdatedAt = qh.clock.Now().UTC().Format(time.RFC3339)
+							qh.scanExecutor.scanCounters.LeaseReleases++
+							return
+						}
+						// Defensive: in_progress → failed is allowed by the queue
+						// graph. This branch only fires if the state machine drifts;
+						// fall through to lease release so the scanner does not get
+						// permanently stuck on the entry.
+						qh.log(LogLevelError,
+							"destructive_content_terminate_invalid task=%s from=%s to=failed reason=%v",
+							task.ID, task.Status, err)
+					}
 					qh.log(LogLevelWarn, "dispatch_failed type=task id=%s error=%v", task.ID, dr.Error)
 					if err := qh.leaseManager.ReleaseTaskLease(task); err != nil {
 						qh.log(LogLevelError, "release_task_lease task=%s error=%v", task.ID, err)
