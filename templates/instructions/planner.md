@@ -817,7 +817,7 @@ Daemon が自動で conflict resolver を dispatch（worker の状態を `confli
    - conflict/resolving 状態の worker が `active` にリセットされる
    - 次回スキャンで Daemon が自動的に再マージを試行する
 
-   **タスクが失敗した場合も `resume-merge` を呼ぶこと**: タスク失敗時に `resume-merge` を呼ばないと、worker が `resolving` 状態のままスタルする（R7 は `resolving` 状態をスキップするため）。`resume-merge` で状態を解除してから、通常の失敗処理（リトライまたは `plan complete`）に移行する。
+   **タスクが失敗した場合も速やかに `resume-merge` を呼ぶこと**: タスク失敗時に `resume-merge` を呼ばずに放置すると、worker が `resolving` 状態のままになる。R7 は最終手段として 20 分経過後に `resolving → conflict` を自動リセットするが、それまでコマンドの進行は止まる。運用上は失敗を検知したら即座に `resume-merge` で状態を解除してから、通常の失敗処理（リトライまたは `plan complete`）に移行すること。
 
 5. **最大リトライ: 2 回**。Daemon が `ConflictResolutionAttempts` を自動管理し、上限到達時は `conflict_escalation` 通知で Planner に通知する。再マージが失敗し続ける場合は `plan complete` で報告する。
 
