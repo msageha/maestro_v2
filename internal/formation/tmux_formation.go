@@ -445,7 +445,7 @@ func writeTrustDialogPanesFile(maestroDir string, panes []string) error {
 	if err != nil {
 		return fmt.Errorf("create %s: %w", trustDialogPanesFile, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // write errors above are reported; close-only failures are acceptable
 	for _, p := range panes {
 		if _, err := fmt.Fprintln(f, p); err != nil {
 			return fmt.Errorf("write pane %s: %w", p, err)
@@ -465,7 +465,7 @@ func StartTrustDialogAcceptor(maestroDir string) {
 		// File absent is expected when running without a formation (e.g. tests).
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read-only handle: close error is irrelevant
 
 	var panes []string
 	scanner := bufio.NewScanner(f)

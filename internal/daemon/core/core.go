@@ -205,30 +205,12 @@ type PhaseInfo = model.PhaseInfo
 // Executor
 // ---------------------------------------------------------------------------
 
-// Deprecated: Use model.ExecMode directly.
-type ExecMode = model.ExecMode
-
-// Deprecated: Use model constants directly.
-const (
-	ModeDeliver   = model.ModeDeliver
-	ModeWithClear = model.ModeWithClear
-	ModeInterrupt = model.ModeInterrupt
-	ModeIsBusy    = model.ModeIsBusy
-	ModeClear     = model.ModeClear
-)
-
-// Deprecated: Use model.ExecRequest directly.
-type ExecRequest = model.ExecRequest
-
-// Deprecated: Use model.ExecResult directly.
-type ExecResult = model.ExecResult
-
 // ExecutorFactory creates agent executors. Allows testing without tmux.
 type ExecutorFactory func(maestroDir string, watcherCfg model.WatcherConfig, logLevel string) (AgentExecutor, error)
 
 // AgentExecutor is the interface for agent message delivery.
 type AgentExecutor interface {
-	Execute(req ExecRequest) ExecResult
+	Execute(req model.ExecRequest) model.ExecResult
 	Close() error
 }
 

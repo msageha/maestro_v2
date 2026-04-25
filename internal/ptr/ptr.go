@@ -1,3 +1,6 @@
+// Package ptr provides convenience helpers for creating pointers to literal
+// values. Useful when populating optional struct fields whose zero value is
+// indistinguishable from "explicitly set to zero" (e.g. *bool, *int).
 package ptr
 
 // Ptr returns a pointer to the given value.

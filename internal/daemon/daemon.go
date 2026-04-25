@@ -241,13 +241,19 @@ func New(maestroDir string, cfg model.Config) (*Daemon, error) {
 
 	d, err := newDaemon(maestroDir, cfg, logFile, logFile)
 	if err != nil {
-		logFile.Close()
+		_ = logFile.Close() // best-effort cleanup on init failure
 		return nil, err
 	}
 	return d, nil
 }
 
-// newDaemon is the internal constructor accepting injectable dependencies (used by NewDaemon and tests).
+// newDaemon is the internal constructor accepting injectable dependencies
+// (used by NewDaemon and tests). The (*, error) signature mirrors NewDaemon
+// for caller symmetry even though the current internal path cannot fail —
+// future wiring (e.g. validating injected lock paths) is expected to
+// reintroduce a fallible code path here.
+//
+//nolint:unparam // signature kept symmetric with NewDaemon; future fallible setup is anticipated
 func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Closer) (*Daemon, error) {
 	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // cancel is stored in d.cancel and called on shutdown
 

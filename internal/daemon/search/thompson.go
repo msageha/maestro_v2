@@ -107,7 +107,7 @@ func gammaSample(alpha float64) float64 {
 	boost := 1.0
 	if alpha < 1 {
 		boost = math.Pow(rand.Float64(), 1.0/alpha) //nolint:gosec // math/rand is appropriate for statistical sampling
-		alpha += 1
+		alpha++
 	}
 
 	d := alpha - 1.0/3.0

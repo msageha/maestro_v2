@@ -422,10 +422,10 @@ func sortEventsByTimestampDesc(events []DashboardEvent) {
 	})
 }
 
-// truncateEvents returns events truncated to max length. If len(events) <= max, returns events unchanged.
-func truncateEvents(events []DashboardEvent, max int) []DashboardEvent {
-	if len(events) > max {
-		return events[:max]
+// truncateEvents returns events truncated to limit length. If len(events) <= limit, returns events unchanged.
+func truncateEvents(events []DashboardEvent, limit int) []DashboardEvent {
+	if len(events) > limit {
+		return events[:limit]
 	}
 	return events
 }

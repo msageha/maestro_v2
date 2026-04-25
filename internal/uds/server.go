@@ -83,7 +83,7 @@ func (s *Server) Start() error {
 	// This avoids using syscall.Umask which is process-global and affects
 	// concurrent goroutines.
 	if err := os.Chmod(s.socketPath, 0600); err != nil {
-		listener.Close()
+		_ = listener.Close()
 		_ = os.Remove(s.socketPath)
 		return fmt.Errorf("chmod socket %s: %w", s.socketPath, err)
 	}
@@ -140,7 +140,7 @@ func (s *Server) acceptLoop() {
 			s.wg.Add(1)
 			go s.handleConn(conn)
 		case <-s.ctx.Done():
-			conn.Close()
+			_ = conn.Close() // shutdown path: nothing useful to log on close error
 			return
 		default:
 			s.rejectConn(conn)

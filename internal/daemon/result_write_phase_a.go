@@ -359,7 +359,7 @@ func (h *ResultWriteAPI) writeOrphanedMarker(reporter, resultID, taskID string) 
 			reporter, resultID, taskID, err)
 		return
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // best-effort: append-only marker file
 	now := h.clock.Now().UTC().Format(time.RFC3339)
 	if _, wErr := fmt.Fprintf(f, "%s %s %s\n", resultID, taskID, now); wErr != nil {
 		h.logFn(LogLevelError,

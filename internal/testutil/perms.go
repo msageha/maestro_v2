@@ -10,11 +10,15 @@ import (
 // FixDirPerms walks root and ensures every directory has mode 0755.
 // This guards against process-wide umask changes (e.g., syscall.Umask(0177))
 // that can cause directories to be created without execute bits.
+//
+// Errors from WalkDir / Chmod are ignored intentionally: this is a best-effort
+// test-fixture repair. If a directory cannot be chmodded, the subsequent
+// test will fail with a clear message anyway.
 func FixDirPerms(t *testing.T, root string) {
 	t.Helper()
-	filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err == nil && d.IsDir() {
-			os.Chmod(path, 0755)
+			_ = os.Chmod(path, 0755) //nolint:gosec // 0755 is intentional for test-fixture dir perms
 		}
 		return nil
 	})

@@ -34,7 +34,7 @@ func SafeUnmarshal(data []byte, out any) error {
 		return err
 	}
 
-	if err := checkAliasDepth(&doc, anchors, 0); err != nil {
+	if err := checkAliasDepth(&doc, 0); err != nil {
 		return err
 	}
 
@@ -65,7 +65,7 @@ func collectAnchors(node *yamlv3.Node, anchors map[string]*yamlv3.Node) error {
 
 // checkAliasDepth walks the node tree and checks that alias references do not
 // exceed MaxAliasDepth levels of nesting.
-func checkAliasDepth(node *yamlv3.Node, anchors map[string]*yamlv3.Node, depth int) error {
+func checkAliasDepth(node *yamlv3.Node, depth int) error {
 	if node == nil {
 		return nil
 	}
@@ -77,7 +77,7 @@ func checkAliasDepth(node *yamlv3.Node, anchors map[string]*yamlv3.Node, depth i
 		}
 		// Follow the alias to its target and check depth recursively.
 		if node.Alias != nil {
-			if err := checkAliasDepth(node.Alias, anchors, depth); err != nil {
+			if err := checkAliasDepth(node.Alias, depth); err != nil {
 				return err
 			}
 		}
@@ -85,7 +85,7 @@ func checkAliasDepth(node *yamlv3.Node, anchors map[string]*yamlv3.Node, depth i
 	}
 
 	for _, child := range node.Content {
-		if err := checkAliasDepth(child, anchors, depth); err != nil {
+		if err := checkAliasDepth(child, depth); err != nil {
 			return err
 		}
 	}

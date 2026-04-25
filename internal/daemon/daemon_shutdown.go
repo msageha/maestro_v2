@@ -50,7 +50,7 @@ func (d *Daemon) waitSignals() {
 			case <-sigCh:
 				d.log(LogLevelWarn, "received second signal, forcing exit")
 				d.forceExit.Store(true)
-				d.closeWatcher()
+				_ = d.closeWatcher() // forced-exit path: log warn already emitted by closeWatcher on error
 				d.closeExecutors()
 				d.cleanup()
 				d.doExit(1)

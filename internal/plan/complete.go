@@ -62,7 +62,7 @@ func computeTaskResultsVersion(results []model.CommandResultTask) uint64 {
 		return sorted[i].TaskID < sorted[j].TaskID
 	})
 	for _, r := range sorted {
-		fmt.Fprintf(h, "%s:%s:%s\n", r.TaskID, r.Worker, r.Status)
+		_, _ = fmt.Fprintf(h, "%s:%s:%s\n", r.TaskID, r.Worker, r.Status) // hash.Hash64 never errors
 	}
 	return h.Sum64()
 }

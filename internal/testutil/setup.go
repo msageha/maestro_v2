@@ -1,3 +1,6 @@
+// Package testutil provides shared test fixtures and helpers used across the
+// maestro test suite (temp directories, git repo init, fs permission probes,
+// and minimal mock implementations).
 package testutil
 
 import (

@@ -66,36 +66,32 @@ func (qh *QueueHandler) stepWorktreeStallDetection(s *scanState) {
 				noPhases = true
 			}
 			if noPhases {
-				if qh.emitWorktreeStallSignal(cmd, s, now, threshold, "integration_stalled_no_phases:created") {
-					continue
-				}
+				qh.emitWorktreeStallSignal(cmd, s, now, threshold, "integration_stalled_no_phases:created")
 				continue
 			}
 		}
 
 		reason := fmt.Sprintf("integration_stalled:%s", cmdState.Integration.Status)
-		if qh.emitWorktreeStallSignal(cmd, s, now, threshold, reason) {
-			continue
-		}
+		qh.emitWorktreeStallSignal(cmd, s, now, threshold, reason)
 	}
 }
 
 // emitWorktreeStallSignal handles the common logic for worktree stall detection:
 // timestamp parsing from cmd.UpdatedAt/CreatedAt, threshold check, signal
 // emission, and MarkIntegrationStallSignaled with fallback to MarkIntegrationFailed.
-// Returns true if the signal was emitted or the command should be skipped
-// (caller should continue to the next command).
-func (qh *QueueHandler) emitWorktreeStallSignal(cmd *model.Command, s *scanState, now time.Time, threshold time.Time, reason string) bool {
+// All exit paths leave the caller free to advance to the next command — the
+// function is a "fire-and-forget" stall handler.
+func (qh *QueueHandler) emitWorktreeStallSignal(cmd *model.Command, s *scanState, now time.Time, threshold time.Time, reason string) {
 	ref := cmd.UpdatedAt
 	if ref == "" {
 		ref = cmd.CreatedAt
 	}
 	refTime, err := qh.timeCache.ParseRFC3339(ref)
 	if err != nil {
-		return true // skip command on parse error
+		return // skip command on parse error
 	}
 	if !refTime.Before(threshold) {
-		return false // not stalled yet
+		return // not stalled yet
 	}
 
 	stalledSince := refTime.UTC().Format(time.RFC3339)
@@ -124,11 +120,10 @@ func (qh *QueueHandler) emitWorktreeStallSignal(cmd *model.Command, s *scanState
 		} else {
 			qh.log(LogLevelWarn, "worktree_stall_integration_marked_failed command=%s", cmd.ID)
 		}
-		return true
+		return
 	}
 	qh.log(LogLevelWarn, "worktree_stall_signal_emitted command=%s reason=%s stalled_since=%s",
 		cmd.ID, reason, stalledSince)
-	return true
 }
 
 // allPhasesAndTasksTerminal returns true iff every task that belongs to the

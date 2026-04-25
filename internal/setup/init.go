@@ -299,7 +299,7 @@ func sanitizeProjectName(raw string) string {
 	// Trim leading/trailing hyphens and underscores.
 	name = strings.Trim(name, "-_")
 	// Strip leading non-alphanumeric characters (must start with [A-Za-z0-9]).
-	for len(name) > 0 && !((name[0] >= 'A' && name[0] <= 'Z') || (name[0] >= 'a' && name[0] <= 'z') || (name[0] >= '0' && name[0] <= '9')) {
+	for len(name) > 0 && (name[0] < 'A' || name[0] > 'Z') && (name[0] < 'a' || name[0] > 'z') && (name[0] < '0' || name[0] > '9') {
 		name = name[1:]
 	}
 	// Truncate to 64 characters.

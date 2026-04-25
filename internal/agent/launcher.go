@@ -271,7 +271,7 @@ func runIgnoringSIGINT(cmd *exec.Cmd) error {
 		// SIGKILL / SIGSEGV events (e.g. OOM killer, sandbox violations).
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) && exitErr.ProcessState != nil {
-			ws, ok := exitErr.ProcessState.Sys().(interface {
+			ws, ok := exitErr.Sys().(interface {
 				Signaled() bool
 				Signal() syscall.Signal
 			})
