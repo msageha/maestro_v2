@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"log/slog"
+	"os"
 
 	"github.com/msageha/maestro_v2/internal/bridge"
 	"github.com/msageha/maestro_v2/internal/daemon"
@@ -80,6 +82,26 @@ func runDaemon(args []string) error {
 		LockMap:    sharedLockMap,
 	}
 	d.SetPlanExecutor(executor)
+
+	// §S1-1 Real Verification Runner. When verify.enabled is true (default),
+	// swap the always-passing stub for the real runner that loads
+	// .maestro/verify.yaml (or DefaultVerifyConfig as Fallback) and executes
+	// each command sequentially. Operators can rollback to the stub by setting
+	// `verify.enabled: false` in config.yaml.
+	if cfg.Verify.EffectiveEnabled() {
+		projectDir := cfg.Maestro.ProjectRoot
+		if projectDir == "" {
+			// Fall back to the daemon's CWD when project_root is not pinned in
+			// config.yaml — preserves existing behaviour for older workspaces.
+			if cwd, err := os.Getwd(); err == nil {
+				projectDir = cwd
+			}
+		}
+		verifyLogger := slog.New(slog.NewTextHandler(os.Stderr, nil)).With(
+			"component", "verify_runner",
+		)
+		d.SetVerifyRunner(daemon.NewRealVerifyRunner(maestroDir, projectDir, verifyLogger))
+	}
 
 	// Auto-accept Claude Code workspace trust dialog in this long-lived process.
 	// The CLI process (which calls createFormation) exits shortly after formation

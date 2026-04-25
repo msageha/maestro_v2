@@ -183,6 +183,19 @@ func (d *Daemon) SetPhaseDiagnoser(fn PhaseDiagnoserFunc) {
 	d.phaseDiagnoser = fn
 }
 
+// SetVerifyRunner replaces the §S1-1 Verification Runner used by the
+// result-write API. Production callers wire NewRealVerifyRunner here when
+// `config.Verify.enabled` is true; tests can inject NewFixedVerifyRunner to
+// drive the verify_pending → repair_pending branch deterministically.
+// Calling with nil is a no-op (the existing runner — typically the stub set
+// by newDaemon — is preserved).
+func (d *Daemon) SetVerifyRunner(r VerifyRunner) {
+	if r == nil || d.api == nil || d.api.result == nil {
+		return
+	}
+	d.api.result.SetVerifyRunner(r)
+}
+
 // LockMap returns the daemon's shared MutexMap for coordinating state locks.
 func (d *Daemon) LockMap() *lock.MutexMap {
 	return d.lockMap
