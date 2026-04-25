@@ -944,6 +944,37 @@ func TestAddTask_RunOnMain_AllTerminal(t *testing.T) {
 	if !found {
 		t.Errorf("task %s not found in last phase TaskIDs: %v", result.TaskID, taskIDs)
 	}
+
+	// §S0-1: RunOnMain で投入された task は Admission Control の verify バケット
+	// に分類されなければならない。空の OperationType だと verify 同時実行制限が
+	// 効かず、複数の post-publish verification が並走する。
+	var injected *model.Task
+	for i := 1; i <= 4; i++ {
+		queueFile := filepath.Join(maestroDir, "queue", fmt.Sprintf("worker%d.yaml", i))
+		data, err := os.ReadFile(queueFile)
+		if err != nil {
+			continue
+		}
+		var tq model.TaskQueue
+		if yamlv3.Unmarshal(data, &tq) != nil {
+			continue
+		}
+		for j := range tq.Tasks {
+			if tq.Tasks[j].ID == result.TaskID {
+				injected = &tq.Tasks[j]
+				break
+			}
+		}
+		if injected != nil {
+			break
+		}
+	}
+	if injected == nil {
+		t.Fatalf("injected task %s not found in any worker queue", result.TaskID)
+	}
+	if got, want := injected.OperationType, model.OperationTypeVerify; got != want {
+		t.Errorf("injected RunOnMain task OperationType = %q, want %q (§S0-1 admission classification)", got, want)
+	}
 }
 
 func TestAddTask_TargetPhase_AllTerminal(t *testing.T) {

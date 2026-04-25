@@ -175,6 +175,12 @@ func TestWriteQueueEntries_PropagatesRunOnMain(t *testing.T) {
 	if tq.Tasks[0].RunOnIntegration {
 		t.Errorf("Task.RunOnIntegration should be false when only RunOnMain is set")
 	}
+	// §S0-1: RunOnMain は verification セマンティクスなので Admission Control の
+	// verify バケットに分類される必要がある。未分類 (空文字) のままだと verify
+	// 同時実行制限が効かず、複数の RunOnMain タスクが並走しうる。
+	if got, want := tq.Tasks[0].OperationType, model.OperationTypeVerify; got != want {
+		t.Errorf("Task.OperationType = %q, want %q (RunOnMain must classify as verify for §S0-1 admission)", got, want)
+	}
 }
 
 // TestWriteQueueEntries_PropagatesRunOnIntegration verifies publish_conflict
@@ -218,6 +224,11 @@ func TestWriteQueueEntries_PropagatesRunOnIntegration(t *testing.T) {
 	}
 	if tq.Tasks[0].RunOnMain {
 		t.Errorf("Task.RunOnMain should be false when only RunOnIntegration is set")
+	}
+	// §S0-1: RunOnIntegration は publish_conflict 解決タスク用なので rollout
+	// バケットに分類される必要がある。
+	if got, want := tq.Tasks[0].OperationType, model.OperationTypeRollout; got != want {
+		t.Errorf("Task.OperationType = %q, want %q (RunOnIntegration must classify as rollout for §S0-1 admission)", got, want)
 	}
 }
 

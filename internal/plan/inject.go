@@ -221,10 +221,15 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 
 	// Write queue entry. §S0-1: tasks injected to resolve publish/merge
 	// conflicts run on the integration worktree and are classified as rollout
-	// operations for admission control. Operator-injected normal tasks remain
-	// unclassified (empty OperationType) so the heuristic fallback applies.
+	// operations for admission control. RunOnMain は input.go godoc で
+	// "read-only verification tasks that must evaluate the merged state on the
+	// main branch" と定義されているため verify バケットに分類する。両方 false の
+	// オペレータ手動注入タスクは未分類のまま (OpUnknown = 常時 admit)。
 	opType := ""
-	if opts.RunOnIntegration {
+	switch {
+	case opts.RunOnMain:
+		opType = model.OperationTypeVerify
+	case opts.RunOnIntegration:
 		opType = model.OperationTypeRollout
 	}
 	task := retryQueueTask{

@@ -81,6 +81,20 @@ func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks 
 			depIDs = append(depIDs, depID)
 		}
 
+		// §S0-1 admission control classification. RunOnMain は input.go の
+		// godoc で "read-only verification tasks that must evaluate the merged
+		// state on the main branch" と定義されているため verify バケット、
+		// RunOnIntegration は publish_conflict 解決タスク用なので rollout
+		// バケットに分類する。両方 false の通常タスクは未分類のまま
+		// (OpUnknown = 常時 admit) で従来通り。
+		opType := ""
+		switch {
+		case t.RunOnMain:
+			opType = model.OperationTypeVerify
+		case t.RunOnIntegration:
+			opType = model.OperationTypeRollout
+		}
+
 		queueTask := model.Task{
 			ID:                 taskID,
 			CommandID:          commandID,
@@ -100,6 +114,7 @@ func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks 
 			// "統合 worktree で解決" tasks without requiring a follow-up add-task.
 			RunOnMain:        t.RunOnMain,
 			RunOnIntegration: t.RunOnIntegration,
+			OperationType:    opType,
 			Priority:         100,
 			Status:           model.StatusPending,
 			CreatedAt:        now,
