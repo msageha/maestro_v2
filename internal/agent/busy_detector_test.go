@@ -790,6 +790,97 @@ func TestSoftRetryUndecided_BusyDetectionPreserved(t *testing.T) {
 	}
 }
 
+// --- Bug N: claude-code fast-path skip activity probe ---
+
+// TestDetectBusy_BugN_ClaudePromptVisible_SkipsActivityProbe asserts that when
+// the runtime is claude-code, the input prompt glyph (❯) is visible, and no
+// busy pattern matched, the activity probe (CapturePaneJoined) is skipped
+// entirely — the verdict is idle without waiting IdleStableSec for hash stability.
+//
+// Bug N regression: without this fast path, the Planner/Orchestrator pane's
+// continuous TUI churn (status bar, cursor blink, "auto-update available"
+// notices) made hash unstable across the 5-second activity probe, returning
+// VerdictBusy and forcing 20+ second delivery delays via DetectBusyWithRetry.
+func TestDetectBusy_BugN_ClaudePromptVisible_SkipsActivityProbe(t *testing.T) {
+	mock := newMockPaneIO()
+	mock.userVars["runtime"] = "claude-code"
+	mock.currentCommand = "claude"
+	mock.isShell = false
+	// Prompt visible at the bottom (idle, awaiting input)
+	mock.captureContent = "previous output\nmore output\n❯ "
+	// Make activity probe captures DIFFERENT — proves the fast path skipped
+	// them (otherwise hash mismatch would cause VerdictBusy).
+	mock.joinedContent = []string{"frame-A\nspinner-◐", "frame-B\nspinner-◓"}
+
+	bd := newTestBusyDetector(mock, nil, fastConfig())
+	verdict := bd.DetectBusy(context.Background(), "%0")
+
+	if verdict != VerdictIdle {
+		t.Fatalf("expected VerdictIdle from claude fast path, got %s", verdict)
+	}
+	// Activity probe must NOT have been invoked.
+	for _, c := range mock.calls {
+		if c == "CapturePaneJoined" {
+			t.Fatalf("Bug N regression: activity probe was invoked despite claude prompt being visible (calls=%v)", mock.calls)
+		}
+	}
+}
+
+// TestDetectBusy_BugN_NonClaudeRuntime_NoFastPath asserts that the fast path
+// is gated on runtime=claude-code. For codex (no `❯` prompt convention), we
+// must fall through to the activity probe, which is the only reliable signal
+// for non-claude runtimes.
+func TestDetectBusy_BugN_NonClaudeRuntime_NoFastPath(t *testing.T) {
+	mock := newMockPaneIO()
+	mock.userVars["runtime"] = "codex"
+	mock.currentCommand = "codex"
+	mock.isShell = false
+	// Even if `❯` happens to appear (e.g., in user output), codex doesn't
+	// use it as a prompt marker — the fast path must NOT trigger.
+	mock.captureContent = "code blob\n❯ output sample"
+	mock.joinedContent = []string{"stable", "stable"} // hash stable → idle via Stage 3
+
+	bd := newTestBusyDetector(mock, nil, fastConfig())
+	verdict := bd.DetectBusy(context.Background(), "%0")
+
+	if verdict != VerdictIdle {
+		t.Fatalf("expected VerdictIdle for codex (Stage 3 stable), got %s", verdict)
+	}
+	// Activity probe MUST have been invoked for codex (proves no fast-path).
+	probed := false
+	for _, c := range mock.calls {
+		if c == "CapturePaneJoined" {
+			probed = true
+			break
+		}
+	}
+	if !probed {
+		t.Fatalf("expected activity probe to run for codex runtime, but CapturePaneJoined was never called: calls=%v", mock.calls)
+	}
+}
+
+// TestDetectBusy_BugN_ClaudeBusyPatternMatched_NoFastPath asserts that even
+// when the prompt glyph appears in old content above, an active busy pattern
+// in the recent capture window blocks the fast path so the activity probe
+// runs and correctly detects the busy state.
+func TestDetectBusy_BugN_ClaudeBusyPatternMatched_NoFastPath(t *testing.T) {
+	mock := newMockPaneIO()
+	mock.userVars["runtime"] = "claude-code"
+	mock.currentCommand = "claude"
+	mock.isShell = false
+	// Stale prompt visible above + active spinner below.
+	mock.captureContent = "❯ previous turn\n\nWorking… (esc to interrupt)"
+	mock.joinedContent = []string{"frame-A", "frame-B"} // changing → busy
+
+	busyRegex := regexp.MustCompile("Working|esc to interrupt")
+	bd := newTestBusyDetector(mock, busyRegex, fastConfig())
+	verdict := bd.DetectBusy(context.Background(), "%0")
+
+	if verdict != VerdictBusy {
+		t.Fatalf("expected VerdictBusy when busy pattern matches (fast path must not bypass), got %s", verdict)
+	}
+}
+
 func TestUndecidedSoftRetryInterval(t *testing.T) {
 	tests := []struct {
 		name              string

@@ -5,6 +5,8 @@ import (
 	"log"
 	"regexp"
 	"time"
+
+	"github.com/msageha/maestro_v2/internal/model"
 )
 
 // busyDetectorConfig holds configuration for the busyDetector.
@@ -88,6 +90,24 @@ func (bd *busyDetector) detectBusy(ctx context.Context, paneTarget string, stabl
 		hintStr = "matched"
 	}
 	bd.log("busy_detection busy_pattern_hint=%s", hintStr)
+
+	// Bug N: claude-code fast-path. When the runtime is claude-code and the
+	// input prompt glyph (❯) is visible in the recently captured content
+	// (Stage 2 window) AND no busy pattern matched, the agent is awaiting
+	// input — declare idle without running the 5s activity probe. Without
+	// this shortcut, claude-code's TUI churn (status bar tips, cursor
+	// blink, "auto-update available" notices) flips Stage 3 hash and
+	// causes 20+ second delays before Planner/Orchestrator delivery.
+	//
+	// Safety: pattern hint already guards against the spinner / "esc to
+	// interrupt" markers that appear during processing, so combining
+	// !patternMatched with prompt-visible is a strong idle signal. Other
+	// runtimes (codex, gemini) lack a stable prompt glyph and fall through
+	// to the activity probe.
+	if !patternMatched && bd.isClaudeReadyFast(paneTarget, content) {
+		bd.log("busy_detection claude_fast_path_idle prompt_visible pattern_hint=%s", hintStr)
+		return VerdictIdle
+	}
 
 	// Stage 3: Activity probe (hash comparison over stableSec).
 	// Uses CapturePaneJoined (-J) for width-independent hash stability.
@@ -259,6 +279,32 @@ func (bd *busyDetector) undecidedSoftRetryInterval() time.Duration {
 		sec = 1
 	}
 	return time.Duration(sec) * time.Second
+}
+
+// isClaudeReadyFast reports whether the pane's runtime is claude-code AND
+// the captured content shows the input prompt glyph (❯). This is the
+// fast-path idle signal used to skip the activity probe (Bug N).
+//
+// Runtime resolution is fail-closed for non-claude runtimes: when the
+// runtime user variable is missing/unreadable or set to anything other
+// than claude-code, this returns false and the caller falls through to the
+// existing activity probe. Codex and gemini lack a stable prompt glyph, so
+// the probe is the right fallback for them.
+func (bd *busyDetector) isClaudeReadyFast(paneTarget, content string) bool {
+	runtime, err := bd.paneIO.GetUserVar(paneTarget, "runtime")
+	if err != nil {
+		bd.log("claude_fast_path runtime_read_failed pane=%s error=%v (no fast-path)", paneTarget, err)
+		return false
+	}
+	// Treat empty runtime as the default (claude-code) consistent with
+	// other runtime-aware code paths in this package (process_manager.paneRuntime).
+	if runtime == "" {
+		runtime = model.DefaultRuntime()
+	}
+	if runtime != model.RuntimeClaudeCode {
+		return false
+	}
+	return isPromptReady(content)
 }
 
 func (bd *busyDetector) log(format string, args ...any) {

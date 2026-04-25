@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/testutil"
@@ -126,6 +127,28 @@ func TestBuildPublishMessage(t *testing.T) {
 			baseBranch:     "develop",
 			want:           "publish: integrate changes to develop",
 		},
+		{
+			// "publish: " (9B) + 7 × "あ" (3B each = 21B) + "x" * 50 = 80B > 72B.
+			// Cut at 72B lands inside the rune sequence of one of the trailing
+			// ASCII 'x's, but the boundary is well-defined since 'x' is 1B.
+			// Pre-fix this would be fine, but if we instead cut inside a 3B
+			// rune we must drop the partial bytes — verified separately below.
+			name:           "long japanese-ascii mix truncates cleanly",
+			publishMessage: strings.Repeat("あ", 7) + strings.Repeat("x", 50),
+			baseBranch:     "main",
+			// 9 ("publish: ") + 21 ("ああああああ あ" = 7×3) + 42 'x' = 72.
+			want: "publish: " + strings.Repeat("あ", 7) + strings.Repeat("x", 42),
+		},
+		{
+			// Cut lands mid-rune: "publish: x" (10B) + 22 × "あ" (66B) = 76B.
+			// Cut at byte 72 covers 10 + 20×3 = 70B and then 2 bytes of the
+			// 21st "あ" (partial). ToValidUTF8 must strip the trailing partial
+			// sequence to keep the commit subject valid UTF-8.
+			name:           "japanese truncation strips partial rune",
+			publishMessage: "x" + strings.Repeat("あ", 22),
+			baseBranch:     "main",
+			want:           "publish: x" + strings.Repeat("あ", 20),
+		},
 	}
 
 	for _, tt := range tests {
@@ -137,6 +160,9 @@ func TestBuildPublishMessage(t *testing.T) {
 			}
 			if len(got) > mergePublishMaxLen {
 				t.Errorf("buildPublishMessage() length %d exceeds max %d", len(got), mergePublishMaxLen)
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("buildPublishMessage() produced invalid UTF-8: %q", got)
 			}
 			if strings.Contains(got, "[maestro]") {
 				t.Errorf("buildPublishMessage() should not contain [maestro] prefix")
@@ -189,6 +215,25 @@ func TestTruncateMessage(t *testing.T) {
 			maxLen: 72,
 			want:   "p: line1",
 		},
+		{
+			// Cut lands mid-rune: "p: " (3B) + "あいう" (9B) = 12B; maxLen=7
+			// would put the cut at the 1st byte of "い", so the partial
+			// sequence must be stripped to preserve valid UTF-8.
+			name:   "japanese partial rune stripped",
+			prefix: "p: ",
+			body:   "あいう",
+			maxLen: 7,
+			want:   "p: あ",
+		},
+		{
+			// Cut lands exactly on a rune boundary: "p: " (3B) + "あいう" (9B)
+			// = 12B; maxLen=9 puts the cut right after "い" (byte 9).
+			name:   "japanese rune boundary preserved",
+			prefix: "p: ",
+			body:   "あいう",
+			maxLen: 9,
+			want:   "p: あい",
+		},
 	}
 
 	for _, tt := range tests {
@@ -200,6 +245,9 @@ func TestTruncateMessage(t *testing.T) {
 			}
 			if tt.maxLen > 0 && len(got) > tt.maxLen {
 				t.Errorf("truncateMessage() length %d exceeds max %d", len(got), tt.maxLen)
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("truncateMessage() produced invalid UTF-8: %q", got)
 			}
 		})
 	}

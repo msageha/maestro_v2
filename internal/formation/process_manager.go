@@ -252,10 +252,10 @@ type PIDQuerier func(agentID string) (pid int, startTime string, err error)
 // AgentPIDTracker records agent process PIDs and detects restarts by
 // comparing current PIDs and start times against stored records.
 type AgentPIDTracker struct {
-	mu       sync.RWMutex
-	records  map[string]pidRecord
-	getPID   PIDQuerier
-	procMgr  processManager
+	mu      sync.RWMutex
+	records map[string]pidRecord
+	getPID  PIDQuerier
+	procMgr processManager
 }
 
 // AgentPIDTrackerOption configures an AgentPIDTracker.

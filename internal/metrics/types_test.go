@@ -20,9 +20,9 @@ func TestScanCounters_Merge(t *testing.T) {
 			SignalRetries:              10,
 			SignalDeadLetters:          11,
 			SignalInlineRetrySuccesses: 12,
-			LeaseRenewals:             13,
-			LeaseExtensions:           14,
-			LeaseReleases:             15,
+			LeaseRenewals:              13,
+			LeaseExtensions:            14,
+			LeaseReleases:              15,
 		}
 		other := ScanCounters{
 			CommandsDispatched:         10,
@@ -37,9 +37,9 @@ func TestScanCounters_Merge(t *testing.T) {
 			SignalRetries:              100,
 			SignalDeadLetters:          110,
 			SignalInlineRetrySuccesses: 120,
-			LeaseRenewals:             130,
-			LeaseExtensions:           140,
-			LeaseReleases:             150,
+			LeaseRenewals:              130,
+			LeaseExtensions:            140,
+			LeaseReleases:              150,
 		}
 
 		base.Merge(other)

@@ -123,12 +123,12 @@ func TestDashboardFormatter_ParseLogFile(t *testing.T) {
 	assert.NotNil(t, data)
 
 	// Verify task statistics from state files
-	assert.Equal(t, 2, data.Stats.TotalTasks)       // task_001 and task_002
-	assert.Equal(t, 1, data.Stats.CompletedTasks)    // task_001
-	assert.Equal(t, 0, data.Stats.FailedTasks)       // none currently failed
-	assert.Equal(t, 1, data.Stats.InProgressTasks)   // task_002
-	assert.Equal(t, 1, data.Stats.ErrorCount)        // task_failed log event
-	assert.Equal(t, 2, data.Stats.WarningCount)      // lease_warning and task_retry
+	assert.Equal(t, 2, data.Stats.TotalTasks)      // task_001 and task_002
+	assert.Equal(t, 1, data.Stats.CompletedTasks)  // task_001
+	assert.Equal(t, 0, data.Stats.FailedTasks)     // none currently failed
+	assert.Equal(t, 1, data.Stats.InProgressTasks) // task_002
+	assert.Equal(t, 1, data.Stats.ErrorCount)      // task_failed log event
+	assert.Equal(t, 2, data.Stats.WarningCount)    // lease_warning and task_retry
 
 	// Verify events were collected from logs
 	assert.NotEmpty(t, data.RecentEvents)
@@ -144,11 +144,11 @@ func TestDashboardFormatter_EventFiltering(t *testing.T) {
 	formatter := &DashboardFormatter{}
 
 	testCases := []struct {
-		name         string
-		eventType    string
-		isTask       bool
-		isError      bool
-		isWarning    bool
+		name      string
+		eventType string
+		isTask    bool
+		isError   bool
+		isWarning bool
 	}{
 		{"task_created", "task_created", true, false, false},
 		{"task_completed", "task_completed", true, false, false},
@@ -271,9 +271,9 @@ func TestDashboardFormatter_CalculateStats(t *testing.T) {
 
 	data := &DashboardData{
 		Stats: DashboardStats{
-			TotalTasks:     10,
-			CompletedTasks: 7,
-			FailedTasks:    2,
+			TotalTasks:      10,
+			CompletedTasks:  7,
+			FailedTasks:     2,
 			InProgressTasks: 1,
 		},
 	}
@@ -439,11 +439,11 @@ func TestDashboardFormatter_CalculateStats_EdgeCases(t *testing.T) {
 	formatter := &DashboardFormatter{}
 
 	testCases := []struct {
-		name            string
-		total           int
-		completed       int
-		failed          int
-		expectedRate    float64
+		name         string
+		total        int
+		completed    int
+		failed       int
+		expectedRate float64
 	}{
 		{
 			name:         "zero total tasks",

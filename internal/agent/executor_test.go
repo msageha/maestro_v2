@@ -818,6 +818,74 @@ func TestExecute_ModeWithClear_FirstDispatch(t *testing.T) {
 	}
 }
 
+// TestExecute_ModeWithClear_FirstDispatch_CodexSkipsBusyDetection is a Bug J
+// regression test. Before the fix, first dispatch delegated to execDeliver
+// which ran hash-based busy detection (CapturePaneJoined x2) before sending;
+// codex's Rust TUI re-renders continuously right after launch, so the hash
+// changed between probes and busy detection looped for 15+ retries, blocking
+// delivery indefinitely. The fix uses waitReady (prompt-readiness check)
+// instead, which for codex only requires non-shell + non-blank content.
+//
+// This test exercises first dispatch with a mock that returns DIFFERENT hashes
+// on successive CapturePaneJoined calls (simulating TUI animation). If busy
+// detection were still invoked, the test would detect the animation as "busy"
+// and retry until the mock retries are exhausted. Instead, delivery succeeds
+// on the first attempt and CapturePaneJoined is never called.
+func TestExecute_ModeWithClear_FirstDispatch_CodexSkipsBusyDetection(t *testing.T) {
+	t.Parallel()
+	mock := newExecMock()
+
+	// Mark pane runtime as codex so isAgentReady takes the non-claude branch
+	// (checks non-shell command + non-blank content, not '❯' prompt glyph).
+	mock.userVars["runtime"] = "codex"
+	// clear_ready is unset → first dispatch path.
+
+	// ensureClaudeRunning (execWithClear) + isAgentReady (waitReady) both call
+	// GetPaneCurrentCommand; both must see non-shell. Subsequent IsShellCommand
+	// calls from sendAndConfirm also see non-shell.
+	mock.isShell = false
+	mock.currentCommand = "codex"
+
+	// CapturePane returns a non-blank screen so isAgentReady passes on the first
+	// poll (codex TUI has painted welcome banner).
+	mock.captureContent = "codex v1.0\n$ ready\n"
+
+	// Simulate TUI animation: each CapturePaneJoined call returns DIFFERENT
+	// content. If busy detection were still wired into first dispatch, it would
+	// hash these two snapshots, detect hashA != hashB, and return VerdictBusy.
+	// After the fix, first dispatch must not call CapturePaneJoined at all.
+	mock.joinedContent = []string{
+		"frame-A\nspinner-◐\n",
+		"frame-B\nspinner-◓\n",
+		"frame-C\nspinner-◑\n",
+		"frame-D\nspinner-◒\n",
+	}
+
+	exec, _ := newTestExecutorWithLog(mock)
+
+	result := exec.Execute(ExecRequest{
+		AgentID: "worker1",
+		Message: "task content",
+		Mode:    ModeWithClear,
+	})
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if !result.Success {
+		t.Error("expected Success=true for first dispatch even with animating TUI")
+	}
+	if len(mock.sentTexts) != 1 || mock.sentTexts[0] != "task content" {
+		t.Errorf("expected sent text 'task content', got %v", mock.sentTexts)
+	}
+	// Regression assertion: busy detection (CapturePaneJoined) must not be
+	// invoked during first dispatch. Any call here means the Bug J fix has
+	// regressed and first dispatch is once again vulnerable to TUI-animation
+	// false-positive busy verdicts.
+	if callsContain(mock.calls, "CapturePaneJoined") {
+		t.Errorf("Bug J regression: first dispatch invoked busy detection (CapturePaneJoined). calls=%v", mock.calls)
+	}
+}
+
 func TestExecute_ModeWithClear_Orchestrator_FallsToDeliver(t *testing.T) {
 	t.Parallel()
 	mock := newExecMock()

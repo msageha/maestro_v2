@@ -1022,10 +1022,10 @@ func TestClassifyCommitError(t *testing.T) {
 func TestPhaseBC_CommitFailure_FlowTable(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
-		name        string
-		mutateCfg   func(cfg *model.WorktreeConfig)
-		writeDirty  func(t *testing.T, wtPath string)
-		wantReason  string
+		name       string
+		mutateCfg  func(cfg *model.WorktreeConfig)
+		writeDirty func(t *testing.T, wtPath string)
+		wantReason string
 	}{
 		{
 			name:      "all_files_filtered",

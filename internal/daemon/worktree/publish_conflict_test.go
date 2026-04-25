@@ -352,11 +352,187 @@ func TestPublishToBase_ForwardMergeConflictRecordsFiles(t *testing.T) {
 		t.Errorf("PublishConflictFiles = %v, want to contain README.md", got.Integration.PublishConflictFiles)
 	}
 
-	// Verify integration worktree is clean (merge was aborted)
+	// Verify integration worktree RETAINS conflict markers so the Planner-
+	// dispatched worker can resolve them in place via --run-on-integration.
+	// Aborting here would erase the markers before the worker ever saw them,
+	// producing an empty resolution commit and an infinite recovery loop.
 	integrationPath := filepath.Join(projectRoot, ".maestro", "worktrees", commandID, "_integration")
 	statusOut := gitStatus(t, integrationPath)
-	if statusOut != "" {
-		t.Errorf("integration worktree should be clean after abort, got: %s", statusOut)
+	if statusOut == "" {
+		t.Errorf("integration worktree should retain conflict markers for worker resolution, got clean")
+	}
+	if !strings.Contains(statusOut, "UU README.md") &&
+		!strings.Contains(statusOut, "AA README.md") &&
+		!strings.Contains(statusOut, "DD README.md") {
+		t.Errorf("expected unmerged README.md in git status, got: %s", statusOut)
+	}
+	// Confirm MERGE_HEAD is present (mid-merge state retained).
+	if !runGitOK(t, integrationPath, "rev-parse", "--verify", "-q", "MERGE_HEAD") {
+		t.Errorf("expected MERGE_HEAD to be present in integration worktree mid-merge")
+	}
+}
+
+// TestPublishToBase_ForwardMergeConflict_WorkerResolutionCompletesPublish
+// verifies the full publish_conflict recovery loop: after a forward-merge
+// conflict leaves markers in the integration worktree, a Worker-style
+// `git add` + `git commit` (simulating the --run-on-integration resolution
+// task) completes the merge, and the next PublishToBase call succeeds
+// (forward-merge is skipped because integration already contains base).
+func TestPublishToBase_ForwardMergeConflict_WorkerResolutionCompletesPublish(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	defer func() { _ = cleanupAll(wm) }()
+
+	commandID := "cmd_fwd_merge_worker_resolves"
+	workers := []string{"worker1"}
+	if err := createForCommand(wm, commandID, workers); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	// Worker1 modifies README.md
+	wt1, err := wm.GetWorkerPath(commandID, "worker1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt1, "README.md"), []byte("worker version\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker1", "modify README.md"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil); err != nil {
+		t.Fatalf("MergeToIntegration: %v", err)
+	}
+
+	// Advance base with a conflicting change.
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("base version\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	gitAdd(t, projectRoot, "README.md")
+	gitCommit(t, projectRoot, "modify README.md on main (conflicting)")
+
+	// First PublishToBase fails and preserves conflict markers.
+	if err := wm.PublishToBase(commandID, "test publish"); err == nil {
+		t.Fatal("first PublishToBase should have failed due to forward-merge conflict")
+	}
+
+	integrationPath := filepath.Join(projectRoot, ".maestro", "worktrees", commandID, "_integration")
+	if statusOut := gitStatus(t, integrationPath); statusOut == "" {
+		t.Fatal("expected conflict markers preserved after first PublishToBase failure")
+	}
+
+	// Simulate worker resolution on the integration worktree (Planner contract:
+	// resolve → git add → git commit) via --run-on-integration.
+	if err := os.WriteFile(filepath.Join(integrationPath, "README.md"), []byte("resolved version\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	gitAdd(t, integrationPath, "README.md")
+	gitCommit(t, integrationPath, "[maestro] resolve publish conflict")
+
+	// Reset publish failure state to simulate Planner calling retry-publish.
+	if err := wm.RetryPublish(commandID); err != nil {
+		t.Fatalf("RetryPublish: %v", err)
+	}
+
+	// Second PublishToBase should succeed now that integration already contains base.
+	if err := wm.PublishToBase(commandID, "test publish retry"); err != nil {
+		t.Fatalf("PublishToBase after worker resolution: %v", err)
+	}
+
+	got, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	if got.Integration.Status != model.IntegrationStatusPublished {
+		t.Errorf("status = %s, want published", got.Integration.Status)
+	}
+	if len(got.Integration.PublishConflictFiles) != 0 {
+		t.Errorf("PublishConflictFiles = %v, want empty after successful publish", got.Integration.PublishConflictFiles)
+	}
+}
+
+// TestPublishToBase_ForwardMergeConflict_ReentryPreservesSignalFlag verifies
+// that a second PublishToBase call before the worker has resolved the
+// conflict returns the same conflict without resetting PublishConflictSignaled.
+// This prevents the publish_conflict PlannerSignal from being re-emitted on
+// every scan while the resolution task is still in flight.
+func TestPublishToBase_ForwardMergeConflict_ReentryPreservesSignalFlag(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+	defer func() { _ = cleanupAll(wm) }()
+
+	commandID := "cmd_fwd_merge_reentry"
+	workers := []string{"worker1"}
+	if err := createForCommand(wm, commandID, workers); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	wt1, err := wm.GetWorkerPath(commandID, "worker1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wt1, "README.md"), []byte("worker version\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := wm.CommitWorkerChanges(commandID, "worker1", "modify README.md"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := wm.MergeToIntegration(context.Background(), commandID, workers, nil); err != nil {
+		t.Fatalf("MergeToIntegration: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(projectRoot, "README.md"), []byte("base version\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	gitAdd(t, projectRoot, "README.md")
+	gitCommit(t, projectRoot, "modify README.md on main (conflicting)")
+
+	// First attempt — produces conflict markers.
+	if err := wm.PublishToBase(commandID, "test publish"); err == nil {
+		t.Fatal("first PublishToBase should have failed")
+	}
+
+	// Simulate the daemon marking the signal as emitted.
+	if err := wm.MarkPublishConflictSignaled(commandID); err != nil {
+		t.Fatalf("MarkPublishConflictSignaled: %v", err)
+	}
+
+	// Reset publish_failed → merged (mimicking RetryPublish before Worker
+	// resolves). This models a scenario where RetryPublish is triggered
+	// prematurely and the daemon re-enters PublishToBase while the conflict
+	// markers are still unresolved.
+	if err := wm.RetryPublish(commandID); err != nil {
+		t.Fatalf("RetryPublish: %v", err)
+	}
+
+	// Restore signaled flag because RetryPublish intentionally clears it —
+	// for this test we want to simulate a "signal already delivered, Planner
+	// task in flight" state.
+	stateBefore, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState before reentry: %v", err)
+	}
+	_ = stateBefore
+	if err := wm.MarkPublishConflictSignaled(commandID); err != nil {
+		t.Fatalf("MarkPublishConflictSignaled 2: %v", err)
+	}
+
+	// Second attempt — should fail with same conflict, preserving the signal flag.
+	if err := wm.PublishToBase(commandID, "test publish 2"); err == nil {
+		t.Fatal("second PublishToBase should still fail while conflict is unresolved")
+	}
+
+	got, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	if !got.Integration.PublishConflictSignaled {
+		t.Errorf("PublishConflictSignaled = false, want true (signal must not be re-emitted on re-entry with same conflict)")
+	}
+	if len(got.Integration.PublishConflictFiles) == 0 {
+		t.Errorf("PublishConflictFiles should still be populated on re-entry")
 	}
 }
 
@@ -474,4 +650,14 @@ func gitStatus(t *testing.T, dir string) string {
 		t.Fatalf("git status: %v", err)
 	}
 	return strings.TrimSpace(string(out))
+}
+
+// runGitOK returns true when the given git command exits with status 0 in the
+// specified directory. Used for presence checks like MERGE_HEAD probing where
+// the non-zero exit is expected and is not a test failure.
+func runGitOK(t *testing.T, dir string, args ...string) bool {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	return cmd.Run() == nil
 }

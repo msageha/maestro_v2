@@ -27,9 +27,10 @@ type stuckPhaseInfo struct {
 // Apply detects phases stuck in "filling" and reverts them to awaiting_fill.
 //
 // Uses a three-phase pattern to avoid split-brain when batchRemove fails:
-//   Phase 1: read state under lock → collect stuck phases and task IDs
-//   Phase 2: remove tasks from worker queues (no state lock held)
-//   Phase 3: re-acquire state lock → apply changes → write state
+//
+//	Phase 1: read state under lock → collect stuck phases and task IDs
+//	Phase 2: remove tasks from worker queues (no state lock held)
+//	Phase 3: re-acquire state lock → apply changes → write state
 //
 // If queue removal fails in phase 2, state is left unchanged to prevent
 // tasks lingering in worker queues while state shows awaiting_fill.

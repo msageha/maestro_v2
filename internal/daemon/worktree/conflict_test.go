@@ -446,16 +446,16 @@ func TestWorktreeIntegration_PublishToBaseConflict(t *testing.T) {
 		t.Errorf("integration worktree should be on %q, got %q", integrationBranch, currentBranch)
 	}
 
-	// Step 11: Verify no unresolved merge state in integration worktree
-	// Check MERGE_HEAD does not exist (indicates no merge-in-progress)
-	mergeHeadPath := filepath.Join(integrationPath, ".git")
-	// For worktrees, .git is a file pointing to the actual git dir; check via git rev-parse
-	cmd = exec.Command("git", "rev-parse", "MERGE_HEAD")
+	// Step 11: Verify the integration worktree retains the forward-merge
+	// conflict markers so the Planner-dispatched resolution worker
+	// (--run-on-integration) can resolve them in place. Aborting here would
+	// erase the markers before the worker ever saw them, producing an empty
+	// resolution commit and an infinite publish_conflict recovery loop.
+	cmd = exec.Command("git", "rev-parse", "--verify", "-q", "MERGE_HEAD")
 	cmd.Dir = integrationPath
-	if mergeOut, mergeErr := cmd.CombinedOutput(); mergeErr == nil {
-		t.Errorf("MERGE_HEAD should not exist in integration worktree after abort, got: %s", strings.TrimSpace(string(mergeOut)))
+	if mergeErr := cmd.Run(); mergeErr != nil {
+		t.Errorf("MERGE_HEAD should be preserved for worker resolution; got err=%v", mergeErr)
 	}
-	_ = mergeHeadPath // used for documentation; actual check via git rev-parse above
 
 	// Step 12: Verify worker branch still exists
 	cmd = exec.Command("git", "branch", "--list", "maestro/"+commandID+"/worker1")

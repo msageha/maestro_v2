@@ -27,10 +27,10 @@ func TestExecWithClear_ClearReadyTrue_FullPath(t *testing.T) {
 
 	// clearAndConfirm: pre-clear capture, then poll returns changed + stable content
 	mock.captureJoinedSeq = []mockResp{
-		{val: "before-clear-content"},          // pre-clear hash
-		{val: "after-clear-new-content"},        // poll 1 (hash changed, no /clear visible)
-		{val: "after-clear-new-content"},        // poll 2 (stable)
-		{val: "after-clear-new-content"},        // poll 3 (stable) → confirmed
+		{val: "before-clear-content"},    // pre-clear hash
+		{val: "after-clear-new-content"}, // poll 1 (hash changed, no /clear visible)
+		{val: "after-clear-new-content"}, // poll 2 (stable)
+		{val: "after-clear-new-content"}, // poll 3 (stable) → confirmed
 	}
 
 	exec, _ := newCovExecutor(mock)
@@ -231,15 +231,16 @@ func TestEnsureWorkingDir_RespawnAndRelaunch(t *testing.T) {
 		t.Error("expected RespawnPane to be called with /new/dir")
 	}
 
-	// Verify relaunch command was sent (no cd needed — respawn-pane -c handles it)
+	// Verify relaunch command was sent (no cd needed — respawn-pane -c handles it).
+	// Use isAgentLaunchCmd to match both bare and absolute-path forms.
 	foundLaunch := false
 	for _, cmd := range mock.sentCmds {
-		if cmd == LaunchCommand {
+		if isAgentLaunchCmd(cmd) {
 			foundLaunch = true
 		}
 	}
 	if !foundLaunch {
-		t.Errorf("expected LaunchCommand (%q) to be sent", LaunchCommand)
+		t.Errorf("expected an agent launch command to be sent, got cmds: %v", mock.sentCmds)
 	}
 
 	// Verify CWD was updated
@@ -315,12 +316,12 @@ func TestClearAndConfirm_NotConfirmedAfterMaxAttempts(t *testing.T) {
 	mock := newMockPaneIO()
 	// SendCommand succeeds but content always shows "/clear" (not processed)
 	mock.captureJoinedSeq = []mockResp{
-		{val: "before"},         // pre-clear hash attempt 1
-		{val: "❯ /clear\n"},     // poll: /clear still visible
-		{val: "before"},         // pre-clear hash attempt 2
-		{val: "❯ /clear\n"},     // poll: /clear still visible
-		{val: "before"},         // pre-clear hash attempt 3
-		{val: "❯ /clear\n"},     // poll: /clear still visible
+		{val: "before"},     // pre-clear hash attempt 1
+		{val: "❯ /clear\n"}, // poll: /clear still visible
+		{val: "before"},     // pre-clear hash attempt 2
+		{val: "❯ /clear\n"}, // poll: /clear still visible
+		{val: "before"},     // pre-clear hash attempt 3
+		{val: "❯ /clear\n"}, // poll: /clear still visible
 	}
 
 	exec, _ := newCovExecutor(mock)
@@ -345,8 +346,8 @@ func TestClearAndConfirm_SuccessOnFirstAttempt(t *testing.T) {
 	// Pre-clear hash, then poll returns different stable content
 	mock.captureJoinedSeq = []mockResp{
 		{val: "before-clear"},
-		{val: "after-clear"},  // poll 1: hash changed, no /clear
-		{val: "after-clear"},  // poll 2: stable → confirmed
+		{val: "after-clear"}, // poll 1: hash changed, no /clear
+		{val: "after-clear"}, // poll 2: stable → confirmed
 	}
 
 	exec, _ := newCovExecutor(mock)
@@ -557,9 +558,9 @@ func TestWaitReady_PromptDetectedAfterRetries(t *testing.T) {
 	t.Parallel()
 	mock := newMockPaneIO()
 	mock.capturePaneSeq = []mockResp{
-		{val: "not ready yet"},     // attempt 0: no prompt
-		{val: "still not ready"},   // attempt 1: no prompt
-		{val: "output\n ❯ \n"},     // attempt 2: prompt found
+		{val: "not ready yet"},   // attempt 0: no prompt
+		{val: "still not ready"}, // attempt 1: no prompt
+		{val: "output\n ❯ \n"},   // attempt 2: prompt found
 	}
 
 	exec, _ := newCovExecutor(mock)
@@ -650,6 +651,142 @@ func TestWaitReadyStrict_NoPrompt_Fails(t *testing.T) {
 	err := exec.processManager.waitReadyStrict(context.Background(), "%0")
 	if err == nil {
 		t.Fatal("expected error when prompt never detected (strict mode)")
+	}
+	if !errors.Is(err, ErrPromptNotDetected) {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestWaitReadyStrict_CodexRuntime_ReadyWhenNotShell verifies that for the
+// codex runtime (no '❯' prompt glyph), readiness is inferred from the pane's
+// current command not being a shell plus rendered content — addressing the
+// production failure `wait for claude ready: waitReadyStrict: Claude prompt
+// not detected` observed when runtime=codex.
+func TestWaitReadyStrict_CodexRuntime_ReadyWhenNotShell(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	// @runtime pane var signals codex
+	if mock.userVars == nil {
+		mock.userVars = make(map[string]string)
+	}
+	mock.userVars["runtime"] = "codex"
+	// Pane is running the codex binary (not a shell).
+	mock.currentCommand = "codex"
+	mock.isShell = false
+	// The TUI has painted at least some content (no '❯' glyph — codex does
+	// not use it).
+	mock.capturePaneSeq = []mockResp{
+		{val: "codex v0.1\nuser> \n"},
+	}
+
+	exec, _ := newCovExecutor(mock)
+
+	if err := exec.processManager.waitReadyStrict(context.Background(), "%0"); err != nil {
+		t.Fatalf("expected success for codex runtime with running TUI, got: %v", err)
+	}
+}
+
+// TestWaitReadyStrict_GeminiRuntime_ReadyWhenNotShell mirrors the codex case
+// for the gemini runtime.
+func TestWaitReadyStrict_GeminiRuntime_ReadyWhenNotShell(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	if mock.userVars == nil {
+		mock.userVars = make(map[string]string)
+	}
+	mock.userVars["runtime"] = "gemini"
+	mock.currentCommand = "gemini"
+	mock.isShell = false
+	mock.capturePaneSeq = []mockResp{
+		{val: "Gemini CLI ready\n> \n"},
+	}
+
+	exec, _ := newCovExecutor(mock)
+
+	if err := exec.processManager.waitReadyStrict(context.Background(), "%0"); err != nil {
+		t.Fatalf("expected success for gemini runtime with running TUI, got: %v", err)
+	}
+}
+
+// TestWaitReadyStrict_CodexRuntime_FailsWhenShell verifies strict-mode
+// failure when the pane is still at a shell (runtime never started) — the
+// check must NOT fall back to claude's '❯' glyph and accept any output.
+func TestWaitReadyStrict_CodexRuntime_FailsWhenShell(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	if mock.userVars == nil {
+		mock.userVars = make(map[string]string)
+	}
+	mock.userVars["runtime"] = "codex"
+	mock.currentCommand = "bash"
+	mock.isShell = true
+	mock.capturePaneSeq = []mockResp{
+		{val: "$ codex\n"},
+	}
+
+	exec, _ := newCovExecutor(mock)
+
+	err := exec.processManager.waitReadyStrict(context.Background(), "%0")
+	if err == nil {
+		t.Fatal("expected ErrPromptNotDetected when codex pane is still at shell")
+	}
+	if !errors.Is(err, ErrPromptNotDetected) {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestWaitReadyStrict_CodexRuntime_FailsWhenEmpty verifies that a
+// non-shell pane with no rendered content is not treated as ready. This
+// guards against the edge case where the runtime binary has been exec'd but
+// has not painted its TUI yet.
+func TestWaitReadyStrict_CodexRuntime_FailsWhenEmpty(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	if mock.userVars == nil {
+		mock.userVars = make(map[string]string)
+	}
+	mock.userVars["runtime"] = "codex"
+	mock.currentCommand = "codex"
+	mock.isShell = false
+	mock.capturePaneSeq = []mockResp{
+		{val: "   \n\n   \n"}, // blank content — TUI not painted
+	}
+
+	exec, _ := newCovExecutor(mock)
+
+	err := exec.processManager.waitReadyStrict(context.Background(), "%0")
+	if err == nil {
+		t.Fatal("expected ErrPromptNotDetected when codex pane is blank")
+	}
+	if !errors.Is(err, ErrPromptNotDetected) {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestWaitReady_ClaudeRuntime_ExplicitStillUsesPromptGlyph confirms that
+// setting @runtime=claude-code explicitly (not relying on the fallback)
+// still uses isPromptReady. This protects claude's stricter check from
+// accidentally being bypassed by the runtime-dispatch refactor.
+func TestWaitReady_ClaudeRuntime_ExplicitStillUsesPromptGlyph(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	if mock.userVars == nil {
+		mock.userVars = make(map[string]string)
+	}
+	mock.userVars["runtime"] = "claude-code"
+	// Non-shell process + rendered content WITHOUT '❯' — must NOT be
+	// treated as ready for claude-code.
+	mock.currentCommand = "claude"
+	mock.isShell = false
+	mock.capturePaneSeq = []mockResp{
+		{val: "Loading..."},
+	}
+
+	exec, _ := newCovExecutor(mock)
+
+	err := exec.processManager.waitReadyStrict(context.Background(), "%0")
+	if err == nil {
+		t.Fatal("expected ErrPromptNotDetected for claude-code without '❯'")
 	}
 	if !errors.Is(err, ErrPromptNotDetected) {
 		t.Errorf("unexpected error: %v", err)
@@ -923,9 +1060,9 @@ func TestClearAndConfirm_PreCaptureFailure_FallbackToStricter(t *testing.T) {
 	// Then poll returns stable content 3 times (stricter fallback requires 3 stable polls)
 	mock.captureJoinedSeq = []mockResp{
 		{err: fmt.Errorf("pre-capture error")}, // pre-clear → hash invalid
-		{val: "post-clear"},                     // poll 1
-		{val: "post-clear"},                     // poll 2
-		{val: "post-clear"},                     // poll 3 → confirmed (3 stable)
+		{val: "post-clear"},                    // poll 1
+		{val: "post-clear"},                    // poll 2
+		{val: "post-clear"},                    // poll 3 → confirmed (3 stable)
 	}
 
 	exec, _ := newCovExecutor(mock)
@@ -1014,7 +1151,7 @@ func TestEnsureClaudeRunning_ClaudeAlreadyRunning(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// Should not have sent any re-launch command
-	if callsContain(mock.calls, "SendCommand:"+LaunchCommand) {
+	if callsContainLaunchCmd(mock.calls) {
 		t.Error("should not re-launch when Claude is already running")
 	}
 }
@@ -1032,7 +1169,7 @@ func TestEnsureClaudeRunning_ShellDetected_Relaunch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !callsContain(mock.calls, "SendCommand:"+LaunchCommand) {
+	if !callsContainLaunchCmd(mock.calls) {
 		t.Error("should re-launch Claude when shell detected")
 	}
 	// clear_ready should be reset
@@ -1093,7 +1230,7 @@ func TestEnsureClaudeRunning_GetCmdError_ReturnsError(t *testing.T) {
 		t.Errorf("expected ErrCheckPaneCommand in error chain, got: %v", err)
 	}
 	// Should not have attempted re-launch
-	if callsContain(mock.calls, "SendCommand:"+LaunchCommand) {
+	if callsContainLaunchCmd(mock.calls) {
 		t.Error("should not re-launch on GetPaneCurrentCommand error")
 	}
 }

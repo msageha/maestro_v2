@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -147,11 +148,11 @@ func TestBoundary_AntiRequirements(t *testing.T) {
 			QualityScore: 0.85,
 		}
 		th := model.FitnessThresholds{
-		RepairCountMargin:   0,
-		DiffSizeMargin:      10,
-		ExecutionTimeMargin: 30 * time.Second,
-		QualityScoreMargin:  0.05,
-	}
+			RepairCountMargin:   0,
+			DiffSizeMargin:      10,
+			ExecutionTimeMargin: 30 * time.Second,
+			QualityScoreMargin:  0.05,
+		}
 
 		// Compare uses QualityScore mechanically without LLM evaluation.
 		lower := model.FitnessScore{Passed: true, QualityScore: 0.4}
@@ -168,9 +169,9 @@ func TestBoundary_AntiRequirements(t *testing.T) {
 
 		// 3 out of 4 pass, but the critical one (weight >= 1.0) fails → overall fail.
 		results := []verification.PerspectiveResult{
-			{Name: "build", Passed: false}, // weight 1.0, critical
-			{Name: "lint", Passed: true},   // weight 0.8
-			{Name: "test", Passed: true},   // weight 1.0
+			{Name: "build", Passed: false},    // weight 1.0, critical
+			{Name: "lint", Passed: true},      // weight 0.8
+			{Name: "test", Passed: true},      // weight 1.0
 			{Name: "typecheck", Passed: true}, // weight 0.9
 		}
 		agg := v.Aggregate(results)
@@ -188,14 +189,52 @@ func TestBoundary_AntiRequirements(t *testing.T) {
 	t.Run("S5_6_Evolution_VerifyConfigPrereq", func(t *testing.T) {
 		t.Parallel()
 		// §5-6: Evolution/Search presumes verify.yaml exists.
-		// VerifyConfig nil → evolution should not proceed blindly.
-		// Test at type level: model.DefinitionOfAbort has explicit conditions.
-		doa := model.DefinitionOfAbort{
-			MaxRepairCount:  3,
-			MaxWallClockSec: 1800,
+		// VerifyConfig nil/empty → evolution must not proceed blindly.
+		//
+		// Verify the actual mechanical behaviors that uphold this contract:
+		//   1. A zero-value VerifyConfig is detected as empty so callers can gate.
+		//   2. The default fallback is non-empty so the system never silently
+		//      runs evolution with zero verification commands.
+		//   3. LoadOrDefaultVerifyConfig returns the safe fallback when
+		//      verify.yaml is missing (explicit signal, not panic / nil-deref).
+		//   4. DefinitionOfAbort enforces a finite repair budget so the
+		//      verify→repair loop cannot spin forever when verify keeps failing.
+
+		// (1) Empty config is recognized as empty.
+		empty := model.VerifyConfig{}
+		if !empty.IsEmpty() {
+			t.Error("zero-value VerifyConfig should report IsEmpty()==true so callers can gate evolution")
 		}
-		if doa.MaxRepairCount == 0 {
-			t.Error("DefinitionOfAbort.MaxRepairCount should be non-zero")
+
+		// (2) Default fallback always carries at least one command.
+		def := model.DefaultVerifyConfig()
+		if def == nil {
+			t.Fatal("DefaultVerifyConfig must never return nil")
+		}
+		if def.IsEmpty() {
+			t.Error("DefaultVerifyConfig must contain at least one verification command")
+		}
+
+		// (3) Loader returns the safe fallback for a missing file rather than
+		// surfacing a not-exist error or nil pointer.
+		missing := filepath.Join(t.TempDir(), "does-not-exist", "verify.yaml")
+		cfg, err := model.LoadOrDefaultVerifyConfig(missing)
+		if err != nil {
+			t.Fatalf("LoadOrDefaultVerifyConfig(missing) returned error: %v", err)
+		}
+		if cfg == nil {
+			t.Fatal("LoadOrDefaultVerifyConfig(missing) returned nil config; evolution would proceed blindly")
+		}
+		if cfg.IsEmpty() {
+			t.Error("fallback VerifyConfig must not be empty when verify.yaml is missing")
+		}
+
+		// (4) DefinitionOfAbort caps the repair budget so verify failures cannot
+		// loop indefinitely. A zero MaxRepairCount would mean "no limit", which
+		// violates §5-6.
+		doa := model.DefinitionOfAbort{MaxRepairCount: 3, MaxWallClockSec: 1800}
+		if doa.MaxRepairCount <= 0 {
+			t.Error("DefinitionOfAbort.MaxRepairCount must be positive to bound the verify/repair loop")
 		}
 	})
 
@@ -429,8 +468,8 @@ func TestC6_Complexity_DepthEstimation(t *testing.T) {
 	scorer := complexity.NewScorer(complexity.DefaultThresholds())
 
 	tests := []struct {
-		name     string
-		input    complexity.Input
+		name      string
+		input     complexity.Input
 		wantDepth int
 	}{
 		{

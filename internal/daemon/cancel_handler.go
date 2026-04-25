@@ -421,4 +421,3 @@ func (ch *CancelHandler) interruptAgent(workerID, taskID, commandID string, leas
 	}
 	return nil
 }
-

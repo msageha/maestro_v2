@@ -71,7 +71,7 @@ func TestApplyBusyCheckCore_GraceLimitExceeded(t *testing.T) {
 				Agents: model.AgentsConfig{Workers: model.WorkerConfig{Count: 2}},
 				Watcher: model.WatcherConfig{
 					DispatchLeaseSec: 300,
-					ScanIntervalSec: 10,
+					ScanIntervalSec:  10,
 					MaxInProgressMin: ptr.Int(60),
 				},
 				Queue: model.QueueConfig{PriorityAgingSec: 60},
@@ -263,9 +263,9 @@ func TestApplyTaskDispatchResult_Success(t *testing.T) {
 
 	dr := dispatchResult{
 		Item: dispatchItem{
-			Kind:     "task",
-			Task:     &model.Task{ID: "t1"},
-			Epoch:    3,
+			Kind:      "task",
+			Task:      &model.Task{ID: "t1"},
+			Epoch:     3,
 			ExpiresAt: expiresAt,
 		},
 		Success: true,
@@ -315,9 +315,9 @@ func TestApplyTaskDispatchResult_EpochMismatch(t *testing.T) {
 
 	dr := dispatchResult{
 		Item: dispatchItem{
-			Kind:     "task",
-			Task:     &model.Task{ID: "t1"},
-			Epoch:    3, // stale epoch
+			Kind:      "task",
+			Task:      &model.Task{ID: "t1"},
+			Epoch:     3, // stale epoch
 			ExpiresAt: expiresAt,
 		},
 		Success: true,
@@ -614,7 +614,7 @@ func TestApplyBusyCheckCore_MaxTimeoutBeforeGraceLimit(t *testing.T) {
 		Agents: model.AgentsConfig{Workers: model.WorkerConfig{Count: 2}},
 		Watcher: model.WatcherConfig{
 			DispatchLeaseSec: 300,
-			ScanIntervalSec: 10,
+			ScanIntervalSec:  10,
 			MaxInProgressMin: ptr.Int(60),
 		},
 		Queue: model.QueueConfig{PriorityAgingSec: 60},

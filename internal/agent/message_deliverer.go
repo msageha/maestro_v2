@@ -88,10 +88,14 @@ func (d *messageDeliverer) sendAndConfirm(req ExecRequest, paneTarget string) Ex
 		return ExecResult{Error: fmt.Errorf("send message: %w", err), Retryable: true}
 	}
 
-	// Update @status to busy
+	// Update @status to busy. This is a best-effort post-delivery hint used by
+	// the watcher/UI; the message has already been delivered to the pane and
+	// the agent will start processing regardless. Returning an error here
+	// (Bug L) caused the dispatcher's inline retry to re-deliver the same
+	// envelope, leading to double plan_submit. Log + continue instead.
 	if err := d.paneState.SetStatus(paneTarget, "busy"); err != nil {
-		d.log(logLevelWarn, "set_status_failed agent_id=%s error=%v", req.AgentID, err)
-		return ExecResult{Error: fmt.Errorf("delivery succeeded but set_status failed: %w", err)}
+		d.log(logLevelWarn, "set_status_failed agent_id=%s error=%v (delivery already succeeded; continuing)",
+			req.AgentID, err)
 	}
 
 	d.log(logLevelInfo, "delivery_success agent_id=%s task_id=%s command_id=%s lease_epoch=%d",

@@ -228,7 +228,7 @@ func TestValidateTaskStateTransition(t *testing.T) {
 
 		// §2.1 extended transitions
 		{StatusPlanned, StatusReady},
-		{StatusPlanned, StatusCancelled},    // command cancellation
+		{StatusPlanned, StatusCancelled}, // command cancellation
 		{StatusReady, StatusDispatched},
 		{StatusReady, StatusCancelled},
 		{StatusDispatched, StatusRunning},
@@ -238,14 +238,14 @@ func TestValidateTaskStateTransition(t *testing.T) {
 		{StatusRunning, StatusCancelled},
 		{StatusVerifyPending, StatusCompleted},
 		{StatusVerifyPending, StatusRepairPending},
-		{StatusVerifyPending, StatusCancelled},   // command cancellation during verification
+		{StatusVerifyPending, StatusCancelled}, // command cancellation during verification
 		{StatusRepairPending, StatusRunning},
-		{StatusRepairPending, StatusCancelled},   // command cancellation during repair wait
+		{StatusRepairPending, StatusCancelled}, // command cancellation during repair wait
 		{StatusRepairPending, StatusPausedForReplan},
 		{StatusPausedForReplan, StatusReady},
 		{StatusPausedForReplan, StatusCancelled}, // command cancellation during replan
 		{StatusPausedForHuman, StatusReady},
-		{StatusPausedForHuman, StatusCancelled},  // command cancellation during human review
+		{StatusPausedForHuman, StatusCancelled}, // command cancellation during human review
 
 		// §2.1 wildcard: any non-terminal → paused_for_human
 		{StatusPlanned, StatusPausedForHuman},
@@ -297,15 +297,15 @@ func TestValidateTaskStateTransition(t *testing.T) {
 		{StatusDeadLetter, StatusAborted},
 
 		// Invalid non-terminal transitions
-		{StatusPlanned, StatusDispatched},   // must go through ready
-		{StatusPlanned, StatusRunning},      // must go through ready → dispatched
-		{StatusReady, StatusRunning},        // must go through dispatched
-		{StatusReady, StatusCompleted},      // must go through dispatched → running → verify_pending
-		{StatusDispatched, StatusCompleted}, // must go through running → verify_pending
-		{StatusVerifyPending, StatusRunning},       // not allowed
-		{StatusPausedForReplan, StatusRunning},      // must go through ready → dispatched
-		{StatusPausedForHuman, StatusRunning},       // must go through ready → dispatched
-		{StatusPausedForHuman, StatusCompleted},     // not allowed
+		{StatusPlanned, StatusDispatched},       // must go through ready
+		{StatusPlanned, StatusRunning},          // must go through ready → dispatched
+		{StatusReady, StatusRunning},            // must go through dispatched
+		{StatusReady, StatusCompleted},          // must go through dispatched → running → verify_pending
+		{StatusDispatched, StatusCompleted},     // must go through running → verify_pending
+		{StatusVerifyPending, StatusRunning},    // not allowed
+		{StatusPausedForReplan, StatusRunning},  // must go through ready → dispatched
+		{StatusPausedForHuman, StatusRunning},   // must go through ready → dispatched
+		{StatusPausedForHuman, StatusCompleted}, // not allowed
 	}
 	for _, tt := range invalid {
 		t.Run("invalid_"+string(tt.from)+"→"+string(tt.to), func(t *testing.T) {
@@ -322,13 +322,13 @@ func TestValidatePhaseTransition(t *testing.T) {
 	}{
 		{PhaseStatusPending, PhaseStatusAwaitingFill},
 		{PhaseStatusPending, PhaseStatusCancelled},
-		{PhaseStatusPending, PhaseStatusFailed},        // fast-track stall cleanup
+		{PhaseStatusPending, PhaseStatusFailed}, // fast-track stall cleanup
 		{PhaseStatusAwaitingFill, PhaseStatusFilling},
 		{PhaseStatusAwaitingFill, PhaseStatusTimedOut},
-		{PhaseStatusAwaitingFill, PhaseStatusFailed},   // fast-track stall cleanup
+		{PhaseStatusAwaitingFill, PhaseStatusFailed}, // fast-track stall cleanup
 		{PhaseStatusFilling, PhaseStatusActive},
 		{PhaseStatusFilling, PhaseStatusAwaitingFill},
-		{PhaseStatusFilling, PhaseStatusFailed},        // fast-track stall cleanup
+		{PhaseStatusFilling, PhaseStatusFailed}, // fast-track stall cleanup
 		{PhaseStatusActive, PhaseStatusCompleted},
 		{PhaseStatusActive, PhaseStatusFailed},
 		{PhaseStatusActive, PhaseStatusCancelled},
@@ -421,7 +421,7 @@ func TestValidateWorktreeTransition(t *testing.T) {
 		{WorktreeStatusCreated, WorktreeStatusPublished},     // bulk publish
 		{WorktreeStatusCreated, WorktreeStatusCleanupDone},   // cleanup
 		{WorktreeStatusCreated, WorktreeStatusCleanupFailed}, // cleanup failure
-		{WorktreeStatusActive, WorktreeStatusActive},      // multiple syncs
+		{WorktreeStatusActive, WorktreeStatusActive},         // multiple syncs
 		{WorktreeStatusActive, WorktreeStatusCommitted},
 		{WorktreeStatusActive, WorktreeStatusIntegrated}, // merge after sync
 		{WorktreeStatusActive, WorktreeStatusConflict},
@@ -437,8 +437,8 @@ func TestValidateWorktreeTransition(t *testing.T) {
 		{WorktreeStatusCommitted, WorktreeStatusCleanupDone},   // cleanup
 		{WorktreeStatusCommitted, WorktreeStatusCleanupFailed}, // cleanup failure
 		{WorktreeStatusIntegrated, WorktreeStatusPublished},
-		{WorktreeStatusIntegrated, WorktreeStatusActive},        // cross-phase sync
-		{WorktreeStatusIntegrated, WorktreeStatusCommitted},     // cross-phase: new commit after integration without intermediate sync
+		{WorktreeStatusIntegrated, WorktreeStatusActive},    // cross-phase sync
+		{WorktreeStatusIntegrated, WorktreeStatusCommitted}, // cross-phase: new commit after integration without intermediate sync
 		{WorktreeStatusIntegrated, WorktreeStatusFailed},
 		{WorktreeStatusIntegrated, WorktreeStatusCleanupDone},   // cleanup
 		{WorktreeStatusIntegrated, WorktreeStatusCleanupFailed}, // cleanup failure
@@ -456,7 +456,7 @@ func TestValidateWorktreeTransition(t *testing.T) {
 		{WorktreeStatusResolving, WorktreeStatusFailed},       // resolver permanent failure
 		{WorktreeStatusResolving, WorktreeStatusCleanupDone},  // cleanup
 		{WorktreeStatusResolving, WorktreeStatusCleanupFailed},
-		{WorktreeStatusFailed, WorktreeStatusPublished},       // bulk publish
+		{WorktreeStatusFailed, WorktreeStatusPublished}, // bulk publish
 		{WorktreeStatusFailed, WorktreeStatusCleanupDone},
 		{WorktreeStatusFailed, WorktreeStatusCleanupFailed},
 		{WorktreeStatusCleanupFailed, WorktreeStatusCleanupDone}, // retry cleanup
@@ -501,7 +501,7 @@ func TestValidateIntegrationTransition(t *testing.T) {
 		{IntegrationStatusMerging, IntegrationStatusConflict},
 		{IntegrationStatusMerging, IntegrationStatusPartialMerge},
 		{IntegrationStatusMerging, IntegrationStatusFailed},
-		{IntegrationStatusMerged, IntegrationStatusMerging},    // re-merge for next phase
+		{IntegrationStatusMerged, IntegrationStatusMerging}, // re-merge for next phase
 		{IntegrationStatusMerged, IntegrationStatusPublishing},
 		{IntegrationStatusMerged, IntegrationStatusFailed},
 		{IntegrationStatusPublishing, IntegrationStatusPublished},
@@ -525,11 +525,11 @@ func TestValidateIntegrationTransition(t *testing.T) {
 	invalid := []struct {
 		from, to IntegrationStatus
 	}{
-		{IntegrationStatusPublished, IntegrationStatusMerging},   // terminal
-		{IntegrationStatusPublished, IntegrationStatusFailed},    // terminal
-		{IntegrationStatusCreated, IntegrationStatusMerged},      // must go through merging
-		{IntegrationStatusCreated, IntegrationStatusPublished},   // must go through merging→merged→publishing
-		{IntegrationStatusMerging, IntegrationStatusPublishing},     // must go through merged
+		{IntegrationStatusPublished, IntegrationStatusMerging},       // terminal
+		{IntegrationStatusPublished, IntegrationStatusFailed},        // terminal
+		{IntegrationStatusCreated, IntegrationStatusMerged},          // must go through merging
+		{IntegrationStatusCreated, IntegrationStatusPublished},       // must go through merging→merged→publishing
+		{IntegrationStatusMerging, IntegrationStatusPublishing},      // must go through merged
 		{IntegrationStatusPartialMerge, IntegrationStatusPublishing}, // partial_merge cannot publish directly
 		{IntegrationStatusPartialMerge, IntegrationStatusCreated},    // invalid backward
 		{IntegrationStatusFailed, IntegrationStatusPublishing},       // can only retry to merging

@@ -33,17 +33,17 @@ const (
 	MaxMaxQuarantineFiles        = 10000
 	MaxMaxWorktrees              = 256
 	MaxMaxYAMLFileBytes          = 50 * 1024 * 1024 // 50MB
-	MaxPriorityAgingSec          = 86400             // 24 hours
+	MaxPriorityAgingSec          = 86400            // 24 hours
 	MaxCommandDispatchRetries    = 100
 	MaxTaskDispatchRetries       = 100
 )
 
 // Default values for Effective*() methods.
 // Checklist when adding a new Effective*() method:
-//   1. Add a Default* constant here
-//   2. Use effectiveValue(ptr, Default*) or effectiveNonZero(val, Default*) in the method
-//   3. Add the corresponding resolvePtr call in NormalizeExperimentalConfig if applicable
-//   4. Add test coverage for both nil/zero and configured values
+//  1. Add a Default* constant here
+//  2. Use effectiveValue(ptr, Default*) or effectiveNonZero(val, Default*) in the method
+//  3. Add the corresponding resolvePtr call in NormalizeExperimentalConfig if applicable
+//  4. Add test coverage for both nil/zero and configured values
 const (
 	// SkillsConfig
 	DefaultMaxRefsPerTask   = 3

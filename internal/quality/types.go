@@ -152,8 +152,8 @@ type RuleCondition struct {
 
 	// Compiled fields (not in YAML)
 	CompiledRegex  *regexp.Regexp `yaml:"-"`
-	CompiledScript interface{} `yaml:"-"` // Compiled script function
-	SourceFile     string      `yaml:"-"` // Source config file path for permission re-verification
+	CompiledScript interface{}    `yaml:"-"` // Compiled script function
+	SourceFile     string         `yaml:"-"` // Source config file path for permission re-verification
 }
 
 // ActionDefinition defines actions based on rule evaluation

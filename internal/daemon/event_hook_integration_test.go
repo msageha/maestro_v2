@@ -248,4 +248,3 @@ func TestEventHookPerformance(t *testing.T) {
 		t.Errorf("average iteration time %v too high, events may be blocking", avgPerIteration)
 	}
 }
-

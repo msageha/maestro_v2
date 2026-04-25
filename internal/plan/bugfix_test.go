@@ -370,8 +370,8 @@ func TestValidateRetryRequest_ResolvedDepNotFound(t *testing.T) {
 			RequiredTaskIDs:   []string{"taskA_v2", taskB},
 			OptionalTaskIDs:   []string{},
 			TaskDependencies: map[string][]string{
-				taskA:     {},
-				taskB:     {taskA},
+				taskA:      {},
+				taskB:      {taskA},
 				"taskA_v2": {},
 			},
 			TaskStates: map[string]model.Status{

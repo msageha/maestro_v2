@@ -29,11 +29,18 @@ type MutationSlot struct {
 }
 
 // SlotResult captures the outcome of a single mutation slot evaluation.
+//
+// FitnessScore is the canonical numeric fitness used by SelectSurvivors for
+// ordering. It is computed mechanically by the verifier (REQUIREMENTS.md
+// §C-3-3 — weighted aggregation, no LLM override). FitnessDesc is an optional
+// human-readable description (e.g. "0.85 (build:pass test:pass lint:warn)")
+// that is only used as a stable tiebreaker — never as the primary key.
 type SlotResult struct {
-	Index       int
-	Strategy    Strategy
-	FitnessDesc string
-	IsNovel     bool
+	Index        int
+	Strategy     Strategy
+	FitnessScore float64
+	FitnessDesc  string
+	IsNovel      bool
 }
 
 // CycleResult captures the outcome of one evolutionary cycle.
@@ -120,16 +127,35 @@ func HashContent(content string) string {
 	return fmt.Sprintf("%x", h)
 }
 
-// SelectSurvivors selects the top survivors from slot results based on FitnessDesc.
-// Only novel candidates are eligible. Uses winner-takes-all selection (§5-3).
+// SelectSurvivors selects the top survivors from slot results.
+//
+// Ordering: descending by FitnessScore (numeric, mechanically computed by the
+// verifier per §C-3-3). FitnessDesc is consulted only as a stable tiebreaker
+// when FitnessScores are equal; if FitnessDesc is also tied, the original
+// SlotResult.Index is used to make the order deterministic. Only novel
+// candidates are eligible (§5-3 winner-takes-all).
+//
+// Backwards compatibility: if FitnessScore is zero/unset and FitnessDesc
+// parses cleanly as a float, the parsed value is treated as the score. This
+// preserves behaviour for older callers that only populated FitnessDesc.
 func (e *Engine) SelectSurvivors(results []SlotResult, maxSurvivors int) []int {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	// Filter to novel results only
 	type ranked struct {
 		originalIndex int
-		fitnessDesc   string
+		score         float64
+		desc          string
+	}
+
+	scoreOf := func(r SlotResult) float64 {
+		if r.FitnessScore != 0 {
+			return r.FitnessScore
+		}
+		if v, err := strconv.ParseFloat(r.FitnessDesc, 64); err == nil {
+			return v
+		}
+		return 0
 	}
 
 	var candidates []ranked
@@ -137,19 +163,20 @@ func (e *Engine) SelectSurvivors(results []SlotResult, maxSurvivors int) []int {
 		if r.IsNovel {
 			candidates = append(candidates, ranked{
 				originalIndex: r.Index,
-				fitnessDesc:   r.FitnessDesc,
+				score:         scoreOf(r),
+				desc:          r.FitnessDesc,
 			})
 		}
 	}
 
-	// Sort by FitnessDesc descending (numeric comparison; lexicographic fallback)
-	sort.Slice(candidates, func(i, j int) bool {
-		fi, errI := strconv.ParseFloat(candidates[i].fitnessDesc, 64)
-		fj, errJ := strconv.ParseFloat(candidates[j].fitnessDesc, 64)
-		if errI == nil && errJ == nil {
-			return fi > fj
+	sort.SliceStable(candidates, func(i, j int) bool {
+		if candidates[i].score != candidates[j].score {
+			return candidates[i].score > candidates[j].score
 		}
-		return candidates[i].fitnessDesc > candidates[j].fitnessDesc
+		if candidates[i].desc != candidates[j].desc {
+			return candidates[i].desc > candidates[j].desc
+		}
+		return candidates[i].originalIndex < candidates[j].originalIndex
 	})
 
 	limit := maxSurvivors

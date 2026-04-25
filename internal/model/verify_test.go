@@ -228,6 +228,39 @@ func TestLoadVerifyConfig_FileNotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "load verify config")
 }
 
+func TestLoadVerifyConfig_RejectsDangerousChars(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "verify.yaml")
+
+	// verify.yaml whose build command contains a shell metacharacter (&&)
+	// must be rejected at load time. Otherwise, downstream consumers might
+	// pass the string to a shell and execute the second arm.
+	content := `verify:
+  build:
+    - go build ./... && rm -rf /
+`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0644))
+
+	_, err := LoadVerifyConfig(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dangerous character")
+}
+
+func TestLoadOrDefaultVerifyConfig_RejectsDangerousChars(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "verify.yaml")
+
+	content := `verify:
+  test:
+    - go test ./... | tee /tmp/out
+`
+	require.NoError(t, os.WriteFile(path, []byte(content), 0644))
+
+	_, err := LoadOrDefaultVerifyConfig(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "dangerous character")
+}
+
 func TestLoadVerifyConfig_InvalidYAML(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "verify.yaml")
@@ -317,4 +350,3 @@ func TestLoadOrDefaultVerifyConfig_ParseError(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "load verify config")
 }
-

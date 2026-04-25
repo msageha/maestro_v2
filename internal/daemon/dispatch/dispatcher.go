@@ -139,20 +139,25 @@ func (disp *Dispatcher) SortPendingNotifications(notifications []model.Notificat
 // executeDispatch obtains an executor and runs the given request.
 // On failure it logs a structured error with the provided label and entity ID.
 // On success it logs a structured info message.
-func (disp *Dispatcher) executeDispatch(req agent.ExecRequest, logLabel, entityID, logExtra string) error {
+//
+// Returns (err, retryable). When retryable is false, the caller MUST NOT retry
+// (Bug L: e.g. SetStatus failure after successful delivery — re-sending would
+// double-submit the same envelope to the planner/worker). Failures from
+// executor creation are treated as retryable since they predate any send.
+func (disp *Dispatcher) executeDispatch(req agent.ExecRequest, logLabel, entityID, logExtra string) (error, bool) {
 	exec, err := disp.execProvider.GetExecutor()
 	if err != nil {
-		return fmt.Errorf("create executor: %w", err)
+		return fmt.Errorf("create executor: %w", err), true
 	}
 	result := exec.Execute(req)
 	if result.Error != nil {
 		disp.dl.Logf(core.LogLevelError, "dispatch_%s_failed id=%s%s error=%v retryable=%v",
 			logLabel, entityID, logExtra, result.Error, result.Retryable)
-		return result.Error
+		return result.Error, result.Retryable
 	}
 	disp.dl.Logf(core.LogLevelInfo, "dispatch_%s_success id=%s%s epoch=%d",
 		logLabel, entityID, logExtra, req.LeaseEpoch)
-	return nil
+	return nil, false
 }
 
 // DispatchCommand dispatches a command to the planner agent with inline retry.
@@ -196,7 +201,7 @@ func (disp *Dispatcher) DispatchCommand(ctx context.Context, cmd *model.Command)
 				retryDelay = maxBackoffDuration
 			}
 		}
-		err := disp.executeDispatch(req, "command", cmd.ID, "")
+		err, retryable := disp.executeDispatch(req, "command", cmd.ID, "")
 		if err == nil {
 			if attempt > 0 {
 				disp.dl.Logf(core.LogLevelInfo, "command_dispatch_retry_success id=%s total_attempts=%d", cmd.ID, attempt+1)
@@ -204,6 +209,14 @@ func (disp *Dispatcher) DispatchCommand(ctx context.Context, cmd *model.Command)
 			return nil
 		}
 		lastErr = err
+		// Bug L: non-retryable failures must not be retried — the prior send may
+		// have already succeeded (e.g. SetStatus error after delivery), so a
+		// retry would re-deliver the envelope and trigger duplicate plan submit.
+		if !retryable {
+			disp.dl.Logf(core.LogLevelWarn, "command_dispatch_non_retryable id=%s attempt=%d error=%v",
+				cmd.ID, attempt+1, err)
+			return lastErr
+		}
 	}
 	return lastErr
 }
@@ -245,6 +258,7 @@ func (disp *Dispatcher) DispatchTask(ctx context.Context, task *model.Task, work
 		LeaseEpoch: task.LeaseEpoch,
 		Attempt:    task.Attempts,
 		WorkingDir: workingDir,
+		RunOnMain:  task.RunOnMain,
 	}
 
 	maxRetries := disp.config.Retry.EffectiveTaskDispatchInlineRetries()
@@ -263,7 +277,7 @@ func (disp *Dispatcher) DispatchTask(ctx context.Context, task *model.Task, work
 				retryDelay = maxBackoffDuration
 			}
 		}
-		err := disp.executeDispatch(req, "task", task.ID, fmt.Sprintf(" worker=%s", workerID))
+		err, retryable := disp.executeDispatch(req, "task", task.ID, fmt.Sprintf(" worker=%s", workerID))
 		if err == nil {
 			if attempt > 0 {
 				disp.dl.Logf(core.LogLevelInfo, "task_dispatch_retry_success id=%s worker=%s total_attempts=%d",
@@ -280,6 +294,12 @@ func (disp *Dispatcher) DispatchTask(ctx context.Context, task *model.Task, work
 			return nil
 		}
 		lastErr = err
+		// Bug L: same non-retryable abort semantics as DispatchCommand.
+		if !retryable {
+			disp.dl.Logf(core.LogLevelWarn, "task_dispatch_non_retryable id=%s worker=%s attempt=%d error=%v",
+				task.ID, workerID, attempt+1, err)
+			return lastErr
+		}
 	}
 	return lastErr
 }
@@ -328,6 +348,16 @@ func (disp *Dispatcher) resolveTaskWorkingDir(task *model.Task, workerID string)
 		if wm == nil {
 			return "", fmt.Errorf("RunOnIntegration task requires worktree mode")
 		}
+		// Defense-in-depth: verify the integration worktree is on the expected
+		// integration branch before dispatching. A detached or drifted HEAD
+		// would cause `git merge main` in the agent to create orphan commits
+		// that publish would later discard, producing a publish_conflict loop.
+		if err := wm.EnsureIntegrationBranchCheckedOut(task.CommandID); err != nil {
+			disp.dl.Logf(core.LogLevelError,
+				"integration_branch_check_failed task=%s command=%s error=%v",
+				task.ID, task.CommandID, err)
+			return "", fmt.Errorf("integration branch checkout verification failed: %w", err)
+		}
 		intPath, err := wm.GetIntegrationPath(task.CommandID)
 		if err != nil {
 			disp.dl.Logf(core.LogLevelError, "integration_path_resolve_failed task=%s command=%s error=%v",
@@ -360,9 +390,13 @@ func (disp *Dispatcher) resolveTaskWorkingDir(task *model.Task, workerID string)
 }
 
 // DispatchNotification dispatches a notification to the orchestrator agent.
+// The Retryable flag is intentionally discarded here because notification
+// dispatch has no inline retry loop — outer scan-cycle retry handles
+// transient failures, and re-delivery of an orchestrator notification is
+// safe (orchestrator side is idempotent on notification ID).
 func (disp *Dispatcher) DispatchNotification(ntf *model.Notification) error {
 	env := envelope.BuildOrchestratorNotificationEnvelope(ntf.CommandID, ntf.Type)
-	return disp.executeDispatch(agent.ExecRequest{
+	err, _ := disp.executeDispatch(agent.ExecRequest{
 		AgentID:    "orchestrator",
 		Message:    env,
 		Mode:       agent.ModeDeliver,
@@ -370,4 +404,5 @@ func (disp *Dispatcher) DispatchNotification(ntf *model.Notification) error {
 		LeaseEpoch: ntf.LeaseEpoch,
 		Attempt:    ntf.Attempts,
 	}, "notification", ntf.ID, fmt.Sprintf(" type=%s", ntf.Type))
+	return err
 }

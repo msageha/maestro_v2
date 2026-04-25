@@ -21,8 +21,12 @@ type LimitsConfig struct {
 	MaxQuarantineFiles        *int `yaml:"max_quarantine_files"`
 }
 
-func (l LimitsConfig) EffectiveMaxDeadLetterArchiveFiles() int { return effectiveValue(l.MaxDeadLetterArchiveFiles, DefaultMaxDeadLetterArchiveFiles) }
-func (l LimitsConfig) EffectiveMaxQuarantineFiles() int        { return effectiveValue(l.MaxQuarantineFiles, DefaultMaxQuarantineFiles) }
+func (l LimitsConfig) EffectiveMaxDeadLetterArchiveFiles() int {
+	return effectiveValue(l.MaxDeadLetterArchiveFiles, DefaultMaxDeadLetterArchiveFiles)
+}
+func (l LimitsConfig) EffectiveMaxQuarantineFiles() int {
+	return effectiveValue(l.MaxQuarantineFiles, DefaultMaxQuarantineFiles)
+}
 
 // --- LoggingConfig ---
 
@@ -61,11 +65,17 @@ type CircuitBreakerConfig struct {
 	HalfOpenDelaySec       *int `yaml:"half_open_delay_sec"`      // default: 60, delay before open→half-open transition
 }
 
-func (c CircuitBreakerConfig) EffectiveMaxConsecutiveFailures() int { return effectiveValue(c.MaxConsecutiveFailures, DefaultCBMaxConsecutiveFailures) }
-func (c CircuitBreakerConfig) EffectiveProgressTimeoutMinutes() int { return effectiveValue(c.ProgressTimeoutMinutes, DefaultProgressTimeoutMinutes) }
+func (c CircuitBreakerConfig) EffectiveMaxConsecutiveFailures() int {
+	return effectiveValue(c.MaxConsecutiveFailures, DefaultCBMaxConsecutiveFailures)
+}
+func (c CircuitBreakerConfig) EffectiveProgressTimeoutMinutes() int {
+	return effectiveValue(c.ProgressTimeoutMinutes, DefaultProgressTimeoutMinutes)
+}
 
 // EffectiveHalfOpenDelaySec returns the configured half-open delay or the default (60s).
-func (c CircuitBreakerConfig) EffectiveHalfOpenDelaySec() int { return effectiveValue(c.HalfOpenDelaySec, DefaultCBHalfOpenDelaySec) }
+func (c CircuitBreakerConfig) EffectiveHalfOpenDelaySec() int {
+	return effectiveValue(c.HalfOpenDelaySec, DefaultCBHalfOpenDelaySec)
+}
 
 // --- LearningsConfig ---
 
@@ -78,9 +88,15 @@ type LearningsConfig struct {
 	TTLHours         int  `yaml:"ttl_hours"`          // learning expiry in hours, default: 72, 0=unlimited
 }
 
-func (l LearningsConfig) EffectiveMaxEntries() int       { return effectiveValue(l.MaxEntries, DefaultLearningsMaxEntries) }
-func (l LearningsConfig) EffectiveMaxContentLength() int  { return effectiveValue(l.MaxContentLength, DefaultLearningsMaxContentLength) }
-func (l LearningsConfig) EffectiveInjectCount() int       { return effectiveValue(l.InjectCount, DefaultLearningsInjectCount) }
+func (l LearningsConfig) EffectiveMaxEntries() int {
+	return effectiveValue(l.MaxEntries, DefaultLearningsMaxEntries)
+}
+func (l LearningsConfig) EffectiveMaxContentLength() int {
+	return effectiveValue(l.MaxContentLength, DefaultLearningsMaxContentLength)
+}
+func (l LearningsConfig) EffectiveInjectCount() int {
+	return effectiveValue(l.InjectCount, DefaultLearningsInjectCount)
+}
 
 // EffectiveTTLHours returns the configured TTL in hours.
 // 0 means unlimited (no expiry). The template default is 72.
@@ -95,9 +111,15 @@ type AdmissionControl struct {
 	MaxConcurrentRollout int `yaml:"max_concurrent_rollout"`
 }
 
-func (a AdmissionControl) EffectiveMaxConcurrentVerify() int  { return effectiveNonZero(a.MaxConcurrentVerify, DefaultMaxConcurrentVerify) }
-func (a AdmissionControl) EffectiveMaxConcurrentRepair() int  { return effectiveNonZero(a.MaxConcurrentRepair, DefaultMaxConcurrentRepair) }
-func (a AdmissionControl) EffectiveMaxConcurrentRollout() int { return effectiveNonZero(a.MaxConcurrentRollout, DefaultMaxConcurrentRollout) }
+func (a AdmissionControl) EffectiveMaxConcurrentVerify() int {
+	return effectiveNonZero(a.MaxConcurrentVerify, DefaultMaxConcurrentVerify)
+}
+func (a AdmissionControl) EffectiveMaxConcurrentRepair() int {
+	return effectiveNonZero(a.MaxConcurrentRepair, DefaultMaxConcurrentRepair)
+}
+func (a AdmissionControl) EffectiveMaxConcurrentRollout() int {
+	return effectiveNonZero(a.MaxConcurrentRollout, DefaultMaxConcurrentRollout)
+}
 
 // --- Fallback ---
 
@@ -109,10 +131,16 @@ type Fallback struct {
 	MinHealthyDurationSec       int  `yaml:"min_healthy_duration_sec"`
 }
 
-func (f Fallback) EffectiveEnabled() bool                     { return f.Enabled }
-func (f Fallback) EffectiveConsecutiveFailureThreshold() int  { return effectiveNonZero(f.ConsecutiveFailureThreshold, DefaultConsecutiveFailureThreshold) }
-func (f Fallback) EffectiveRecoveryCheckIntervalSec() int     { return effectiveNonZero(f.RecoveryCheckIntervalSec, DefaultRecoveryCheckIntervalSec) }
-func (f Fallback) EffectiveMinHealthyDurationSec() int        { return effectiveNonZero(f.MinHealthyDurationSec, DefaultMinHealthyDurationSec) }
+func (f Fallback) EffectiveEnabled() bool { return f.Enabled }
+func (f Fallback) EffectiveConsecutiveFailureThreshold() int {
+	return effectiveNonZero(f.ConsecutiveFailureThreshold, DefaultConsecutiveFailureThreshold)
+}
+func (f Fallback) EffectiveRecoveryCheckIntervalSec() int {
+	return effectiveNonZero(f.RecoveryCheckIntervalSec, DefaultRecoveryCheckIntervalSec)
+}
+func (f Fallback) EffectiveMinHealthyDurationSec() int {
+	return effectiveNonZero(f.MinHealthyDurationSec, DefaultMinHealthyDurationSec)
+}
 
 // --- WorktreeConfig ---
 
@@ -162,12 +190,24 @@ func (w WorktreeConfig) EffectiveStallCleanupAfter() time.Duration {
 	return d
 }
 
-func (w WorktreeConfig) EffectiveBaseBranch() string                  { return effectiveNonZero(w.BaseBranch, DefaultBaseBranch) }
-func (w WorktreeConfig) EffectivePathPrefix() string                  { return effectiveNonZero(w.PathPrefix, DefaultPathPrefix) }
-func (w WorktreeConfig) EffectiveMergeStrategy() string               { return effectiveNonZero(w.MergeStrategy, DefaultMergeStrategy) }
-func (w WorktreeConfig) EffectiveGitTimeout() int                     { return effectiveValue(w.GitTimeoutSec, DefaultGitTimeoutSec) }
-func (w WorktreeConfig) EffectiveStallTimeoutMinutes() int            { return effectiveValue(w.StallTimeoutMinutes, DefaultStallTimeoutMinutes) }
-func (w WorktreeConfig) EffectiveFallbackMergeTimeoutMinutes() int    { return effectiveValue(w.FallbackMergeTimeoutMinutes, DefaultFallbackMergeTimeoutMinutes) }
+func (w WorktreeConfig) EffectiveBaseBranch() string {
+	return effectiveNonZero(w.BaseBranch, DefaultBaseBranch)
+}
+func (w WorktreeConfig) EffectivePathPrefix() string {
+	return effectiveNonZero(w.PathPrefix, DefaultPathPrefix)
+}
+func (w WorktreeConfig) EffectiveMergeStrategy() string {
+	return effectiveNonZero(w.MergeStrategy, DefaultMergeStrategy)
+}
+func (w WorktreeConfig) EffectiveGitTimeout() int {
+	return effectiveValue(w.GitTimeoutSec, DefaultGitTimeoutSec)
+}
+func (w WorktreeConfig) EffectiveStallTimeoutMinutes() int {
+	return effectiveValue(w.StallTimeoutMinutes, DefaultStallTimeoutMinutes)
+}
+func (w WorktreeConfig) EffectiveFallbackMergeTimeoutMinutes() int {
+	return effectiveValue(w.FallbackMergeTimeoutMinutes, DefaultFallbackMergeTimeoutMinutes)
+}
 
 // --- CommitPolicyConfig ---
 
@@ -181,7 +221,9 @@ type CommitPolicyConfig struct {
 	MessagePattern   string `yaml:"message_pattern"`   // regex for commit message validation; empty=no check
 }
 
-func (c CommitPolicyConfig) EffectiveMaxFiles() int { return effectiveValue(c.MaxFiles, DefaultCommitMaxFiles) }
+func (c CommitPolicyConfig) EffectiveMaxFiles() int {
+	return effectiveValue(c.MaxFiles, DefaultCommitMaxFiles)
+}
 
 // --- WorktreeGCConfig ---
 
@@ -192,8 +234,12 @@ type WorktreeGCConfig struct {
 	MaxWorktrees *int `yaml:"max_worktrees"`
 }
 
-func (w WorktreeGCConfig) EffectiveTTLHours() int     { return effectiveValue(w.TTLHours, DefaultGCTTLHours) }
-func (w WorktreeGCConfig) EffectiveMaxWorktrees() int  { return effectiveValue(w.MaxWorktrees, DefaultGCMaxWorktrees) }
+func (w WorktreeGCConfig) EffectiveTTLHours() int {
+	return effectiveValue(w.TTLHours, DefaultGCTTLHours)
+}
+func (w WorktreeGCConfig) EffectiveMaxWorktrees() int {
+	return effectiveValue(w.MaxWorktrees, DefaultGCMaxWorktrees)
+}
 
 // --- ReviewConfig ---
 
@@ -206,6 +252,12 @@ type ReviewConfig struct {
 	TimeoutSec           *int     `yaml:"timeout_sec"`
 }
 
-func (r ReviewConfig) EffectiveMinBloomLevel() int        { return effectiveValue(r.MinBloomLevel, DefaultReviewMinBloomLevel) }
-func (r ReviewConfig) EffectiveMaxConcurrentReviews() int { return effectiveValue(r.MaxConcurrentReviews, DefaultReviewMaxConcurrentReviews) }
-func (r ReviewConfig) EffectiveTimeoutSec() int           { return effectiveValue(r.TimeoutSec, DefaultReviewTimeoutSec) }
+func (r ReviewConfig) EffectiveMinBloomLevel() int {
+	return effectiveValue(r.MinBloomLevel, DefaultReviewMinBloomLevel)
+}
+func (r ReviewConfig) EffectiveMaxConcurrentReviews() int {
+	return effectiveValue(r.MaxConcurrentReviews, DefaultReviewMaxConcurrentReviews)
+}
+func (r ReviewConfig) EffectiveTimeoutSec() int {
+	return effectiveValue(r.TimeoutSec, DefaultReviewTimeoutSec)
+}

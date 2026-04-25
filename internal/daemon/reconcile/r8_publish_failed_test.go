@@ -238,4 +238,3 @@ func TestR8PublishFailed_DoesNotBreakR7(t *testing.T) {
 		t.Errorf("R8 repair commandID = %s, want %s", r8Outcome.Repairs[0].CommandID, publishCmd)
 	}
 }
-

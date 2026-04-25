@@ -465,6 +465,12 @@ func TestCleanupTempPublishBranch_DeletesLeakedBranch(t *testing.T) {
 
 // TestCleanupTempPublishBranch_NoBranchIsNoOp verifies that
 // CleanupTempPublishBranch is a no-op when the branch doesn't exist.
+//
+// Regression: this path previously detached the integration worktree whenever
+// the _publish branch was missing, because the error-handling fallback ran
+// `git checkout --detach` unconditionally. That orphaned HEAD made subsequent
+// publish attempts loop on add/add conflicts. This test asserts the
+// integration worktree remains attached to its integration branch.
 func TestCleanupTempPublishBranch_NoBranchIsNoOp(t *testing.T) {
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)
@@ -474,6 +480,13 @@ func TestCleanupTempPublishBranch_NoBranchIsNoOp(t *testing.T) {
 	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
 		t.Fatalf("CreateForCommand: %v", err)
 	}
+
+	integrationPath := wm.integrationWorktreePath(commandID)
+	beforeRef, err := wm.gitOutputInDir(integrationPath, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		t.Fatalf("read integration HEAD before cleanup: %v", err)
+	}
+	beforeRef = strings.TrimSpace(beforeRef)
 
 	// Should not panic or error
 	wm.CleanupTempPublishBranch(commandID)
@@ -486,11 +499,21 @@ func TestCleanupTempPublishBranch_NoBranchIsNoOp(t *testing.T) {
 	if len(state.Workers) == 0 {
 		t.Error("workers should still exist")
 	}
+
+	// Regression guard: integration worktree must not be detached.
+	afterRef, err := wm.gitOutputInDir(integrationPath, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		t.Fatalf("integration worktree was detached (or symbolic-ref failed) after no-op cleanup: %v", err)
+	}
+	if strings.TrimSpace(afterRef) != beforeRef {
+		t.Errorf("integration worktree HEAD changed: before=%q after=%q", beforeRef, strings.TrimSpace(afterRef))
+	}
 }
 
 // TestCleanupTempPublishBranch_CheckedOutBranch verifies that
 // CleanupTempPublishBranch can delete a _publish branch that is checked out
-// in the integration worktree by detaching HEAD first.
+// in the integration worktree. The fix restores the integration branch via
+// `git checkout <integration-branch>` rather than detaching HEAD.
 func TestCleanupTempPublishBranch_CheckedOutBranch(t *testing.T) {
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)
@@ -514,7 +537,8 @@ func TestCleanupTempPublishBranch_CheckedOutBranch(t *testing.T) {
 		t.Fatalf("checkout publish branch in integration worktree: %v", err)
 	}
 
-	// CleanupTempPublishBranch should handle this by detaching HEAD first
+	// CleanupTempPublishBranch should delete the branch and restore the
+	// integration-branch checkout (no `--detach`).
 	wm.CleanupTempPublishBranch(commandID)
 
 	// Verify the branch is gone
@@ -524,6 +548,68 @@ func TestCleanupTempPublishBranch_CheckedOutBranch(t *testing.T) {
 	}
 	if strings.Contains(branchOut, "_publish") {
 		t.Errorf("publish branch should be deleted even when checked out, got: %q", branchOut)
+	}
+
+	// Verify the integration worktree is back on the integration branch.
+	state, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	headRef, err := wm.gitOutputInDir(integrationPath, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		t.Fatalf("integration worktree is detached after cleanup (expected attached): %v", err)
+	}
+	if got, want := strings.TrimSpace(headRef), state.Integration.Branch; got != want {
+		t.Errorf("integration worktree HEAD = %q, want %q", got, want)
+	}
+}
+
+// TestCleanupTempPublishBranch_DirtyWorktreeIsNoOp verifies that
+// CleanupTempPublishBranch refuses to change the integration worktree's
+// checkout when it is dirty, even if the _publish branch is currently
+// checked out there. This prevents silent loss of in-progress edits.
+func TestCleanupTempPublishBranch_DirtyWorktreeIsNoOp(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_publish_dirty"
+	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+		t.Fatalf("CreateForCommand: %v", err)
+	}
+
+	baseSHA := gitRevParse(t, projectRoot, "HEAD")
+	publishBranch := fmt.Sprintf("maestro/%s/_publish", commandID)
+	if err := wm.gitRun("branch", publishBranch, baseSHA); err != nil {
+		t.Fatalf("create publish branch: %v", err)
+	}
+
+	integrationPath := wm.integrationWorktreePath(commandID)
+	if err := wm.gitRunInDir(integrationPath, "checkout", publishBranch); err != nil {
+		t.Fatalf("checkout publish branch: %v", err)
+	}
+	// Introduce an uncommitted edit so status is non-empty.
+	if err := os.WriteFile(filepath.Join(integrationPath, "dirty.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write dirty file: %v", err)
+	}
+
+	wm.CleanupTempPublishBranch(commandID)
+
+	// Branch should still exist — we refused to switch checkouts.
+	branchOut, err := wm.gitOutput("branch", "--list", publishBranch)
+	if err != nil {
+		t.Fatalf("list branches after cleanup: %v", err)
+	}
+	if !strings.Contains(branchOut, "_publish") {
+		t.Errorf("publish branch should be preserved when worktree is dirty, got: %q", branchOut)
+	}
+	// Worktree must still be on _publish (unchanged), not detached.
+	headRef, err := wm.gitOutputInDir(integrationPath, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		t.Fatalf("integration worktree unexpectedly detached after dirty cleanup: %v", err)
+	}
+	if got := strings.TrimSpace(headRef); got != publishBranch {
+		t.Errorf("integration worktree HEAD = %q, want %q (unchanged)", got, publishBranch)
 	}
 }
 

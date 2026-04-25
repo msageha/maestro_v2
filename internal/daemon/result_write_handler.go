@@ -147,21 +147,33 @@ func (h *ResultWriteAPI) handleResultWrite(req *uds.Request) *uds.Response {
 		return uds.ErrorResponse(uds.ErrCodeInternal, err.Error())
 	}
 	resultID := resultWritePhaseAResult.resultID
+	isDuplicate := resultWritePhaseAResult.duplicate
 
-	// Phase B: Per-command mutex (state/ updates)
-	if err := h.resultWritePhaseB(params, resultID, resultStatus, resultWritePhaseAResult.queueWriteFailed, resultWritePhaseAResult.originalTaskID); err != nil {
-		h.logFn(LogLevelError, "result_write phase_b error task=%s command=%s: %v",
-			params.TaskID, params.CommandID, err)
-		return uds.ErrorResponse(uds.ErrCodeInternal,
-			fmt.Sprintf("state update failed: %v (result %s committed, run 'maestro plan rebuild' to fix)", err, resultID))
+	// Bug H: for duplicate submissions, skip Phase B (state already reflects
+	// the prior write) and the normal "result_write result_id=..." audit log
+	// line (it would double-record a single logical write and mislead log
+	// analysis). Best-effort writes (learnings / skill_candidates) must still
+	// run so that lease-revoke rejections on stale idempotent resubmissions
+	// continue to be persisted (H4 invariant).
+	if !isDuplicate {
+		// Phase B: Per-command mutex (state/ updates)
+		if err := h.resultWritePhaseB(params, resultID, resultStatus, resultWritePhaseAResult.queueWriteFailed, resultWritePhaseAResult.originalTaskID); err != nil {
+			h.logFn(LogLevelError, "result_write phase_b error task=%s command=%s: %v",
+				params.TaskID, params.CommandID, err)
+			return uds.ErrorResponse(uds.ErrCodeInternal,
+				fmt.Sprintf("state update failed: %v (result %s committed, run 'maestro plan rebuild' to fix)", err, resultID))
+		}
+
+		h.recordFallback(params, resultStatus)
+
+		// Retry registration (state then queue — correct lock order).
+		h.handleRetryRegistration(resultWritePhaseAResult, params)
 	}
 
-	h.recordFallback(params, resultStatus)
-
-	// Retry registration (state then queue — correct lock order).
-	h.handleRetryRegistration(resultWritePhaseAResult, params)
-
 	// Best-effort writes (learnings, skill candidates) with lease epoch guard.
+	// Runs on both fresh and duplicate paths so that the lease rejection audit
+	// trail (H4) is preserved when a stale worker resubmits with new
+	// best-effort payload.
 	rejectionID := h.handleBestEffortWrites(params, resultID, resultStatus)
 
 	// Set agent status to idle now that the task result is committed.
@@ -173,9 +185,19 @@ func (h *ResultWriteAPI) handleResultWrite(req *uds.Request) *uds.Response {
 		h.triggerScan(h.ctx())
 	}
 
-	h.logFn(LogLevelInfo, "result_write result_id=%s task=%s command=%s status=%s reporter=%s",
-		resultID, params.TaskID, params.CommandID, params.Status, params.Reporter)
+	if isDuplicate {
+		h.logFn(LogLevelInfo,
+			"result_write duplicate_short_circuited result_id=%s task=%s command=%s reporter=%s "+
+				"(prior result already committed; Phase B skipped)",
+			resultID, params.TaskID, params.CommandID, params.Reporter)
+	} else {
+		h.logFn(LogLevelInfo, "result_write result_id=%s task=%s command=%s status=%s reporter=%s",
+			resultID, params.TaskID, params.CommandID, params.Status, params.Reporter)
+	}
 	respPayload := map[string]string{"result_id": resultID}
+	if isDuplicate {
+		respPayload["duplicate"] = "true"
+	}
 	if rejectionID != "" {
 		respPayload["lease_rejection_id"] = rejectionID
 		respPayload["lease_rejection_warning"] =

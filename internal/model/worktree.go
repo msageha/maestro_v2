@@ -70,11 +70,11 @@ const (
 
 // WorktreeState tracks the lifecycle of a single worker worktree.
 type WorktreeState struct {
-	CommandID string         `yaml:"command_id"`
-	WorkerID  string         `yaml:"worker_id"`
-	Path      string         `yaml:"path"`
-	Branch    string         `yaml:"branch"`
-	BaseSHA   string         `yaml:"base_sha"`
+	CommandID                  string         `yaml:"command_id"`
+	WorkerID                   string         `yaml:"worker_id"`
+	Path                       string         `yaml:"path"`
+	Branch                     string         `yaml:"branch"`
+	BaseSHA                    string         `yaml:"base_sha"`
 	Status                     WorktreeStatus `yaml:"status"`
 	ConflictResolutionAttempts int            `yaml:"conflict_resolution_attempts,omitempty"`
 	CreatedAt                  string         `yaml:"created_at"`

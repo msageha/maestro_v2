@@ -616,7 +616,7 @@ func TestRun_ContinuousMaxIterations(t *testing.T) {
 	}
 
 	var continuous struct {
-		MaxIterations int `yaml:"max_iterations"`
+		MaxIterations int    `yaml:"max_iterations"`
 		Status        string `yaml:"status"`
 		SchemaVersion int    `yaml:"schema_version"`
 	}

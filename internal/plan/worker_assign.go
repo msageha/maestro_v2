@@ -334,6 +334,12 @@ var familyFallbackOrder = map[string][]string{
 // preferred fallbacks is available in stateMap. Callers should treat the
 // empty-string result as "assignment infeasible" and surface an error —
 // this function only proposes a substitute; it does not guarantee one.
+//
+// For non-Claude deployments (e.g. a codex-only or gemini-only worker fleet),
+// the Bloom-level mapping always produces a Claude family name ("sonnet"/"opus"),
+// which never matches the provisioned workers. In that case the function falls
+// back to any model actually present in the fleet so that tasks can still be
+// assigned — a capability mismatch warning is emitted by the caller.
 func chooseFallbackFamily(stateMap map[string]*WorkerState, required string) string {
 	family := modelFamily(required)
 	prefs, ok := familyFallbackOrder[family]
@@ -344,6 +350,17 @@ func chooseFallbackFamily(stateMap map[string]*WorkerState, required string) str
 	for _, candidate := range prefs {
 		if workerExistsForModel(stateMap, candidate) {
 			return candidate
+		}
+	}
+	// Last resort: return any model actually provisioned in the fleet that
+	// is NOT the required family. This handles non-Claude deployments
+	// (e.g. all workers configured with model="codex" or model="gemini")
+	// where none of the Claude family fallbacks exist but tasks still need
+	// to be assigned. Excluding the required family avoids a circular
+	// result where we "fallback" to a family that already has no workers.
+	for _, ws := range stateMap {
+		if ws.Model != "" && modelFamily(ws.Model) != family {
+			return ws.Model
 		}
 	}
 	return ""

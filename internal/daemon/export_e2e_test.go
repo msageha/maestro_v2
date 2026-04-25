@@ -20,10 +20,10 @@ func NewE2ETestDaemon(t *testing.T) *E2EDaemon {
 	return &E2EDaemon{D: newIntegrationDaemon(t)}
 }
 
-func (e *E2EDaemon) MaestroDir() string        { return e.D.maestroDir }
-func (e *E2EDaemon) Config() model.Config       { return e.D.config }
-func (e *E2EDaemon) LockMap() *lock.MutexMap    { return e.D.handler.lockMap }
-func (e *E2EDaemon) PeriodicScan()              { e.D.handler.PeriodicScan() }
+func (e *E2EDaemon) MaestroDir() string      { return e.D.maestroDir }
+func (e *E2EDaemon) Config() model.Config    { return e.D.config }
+func (e *E2EDaemon) LockMap() *lock.MutexMap { return e.D.handler.lockMap }
+func (e *E2EDaemon) PeriodicScan()           { e.D.handler.PeriodicScan() }
 func (e *E2EDaemon) HandlePlan(req *uds.Request) *uds.Response {
 	return e.D.api.handlePlan(req)
 }

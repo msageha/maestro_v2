@@ -60,7 +60,7 @@ func TestConfigMarshalUnmarshal(t *testing.T) {
 			MaxYAMLFileBytes:         5242880,
 		},
 		ShutdownTimeoutSec: 90,
-		Logging: LoggingConfig{Level: "info"},
+		Logging:            LoggingConfig{Level: "info"},
 	}
 
 	data, err := yaml.Marshal(&cfg)

@@ -30,6 +30,21 @@ const (
 	MaxWallClockSec          = 86400 // 24 hours
 )
 
+// Minimum lengths enforced on add-task-injected fields (Bug G defence).
+// These defend against shell-quoting mishaps (e.g. “ ` “ / `$()` expansion
+// inside double quotes) that would otherwise let a malformed task land in
+// the queue. Thresholds are intentionally very conservative — they catch
+// obviously truncated payloads (1–3 byte leftovers from command
+// substitution) without rejecting the kind of terse content that appears
+// in legitimate unit test fixtures. Not applied to `plan submit` because
+// submit flows aggregate many tasks where tersely-described fixtures are
+// sometimes legitimate.
+const (
+	MinInjectedPurposeBytes            = 4
+	MinInjectedContentBytes            = 4
+	MinInjectedAcceptanceCriteriaBytes = 4
+)
+
 // validateTaskSetCommon validates a slice of task inputs for field integrity,
 // name uniqueness, reserved-name prefixes, blocked_by references, self-references,
 // and DAG constraints. It collects task names, name set, and blocked_by mappings
@@ -301,6 +316,12 @@ func validateTaskFieldsCore(task TaskInput, fieldPrefix string, errs *Validation
 
 	// Validate definition_of_done.
 	validateDefinitionOfDone(task.DefinitionOfDone, fieldPrefix+".definition_of_done", errs)
+
+	// Bug F: run_on_main and run_on_integration are mutually exclusive since
+	// the dispatcher selects exactly one target directory per task.
+	if task.RunOnMain && task.RunOnIntegration {
+		errs.Add(fieldPrefix, "run_on_main and run_on_integration are mutually exclusive; set at most one")
+	}
 }
 
 func validateNameUniqueness(names []string, fieldPrefix string, errs *ValidationErrors) {

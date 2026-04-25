@@ -319,6 +319,67 @@ func TestAddTask_InvalidBloomLevel(t *testing.T) {
 	}
 }
 
+// TestAddTask_RejectsShellDamagedContent verifies the Bug G defence: AddTask
+// must refuse payloads whose purpose / content / acceptance_criteria are so
+// short they are almost certainly the result of shell backtick or `$()`
+// expansion inside double quotes truncating the operator's intent. A
+// multi-byte leftover (e.g. "x" from a failed command substitution) should
+// be blocked before it lands in the queue as a malformed task that would
+// otherwise drive the Planner into a repair loop.
+func TestAddTask_RejectsShellDamagedContent(t *testing.T) {
+	maestroDir, commandID, _ := setupInjectFixture(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	tests := []struct {
+		name string
+		opts InjectOptions
+	}{
+		{
+			name: "shell-damaged purpose (1 byte)",
+			opts: InjectOptions{
+				CommandID: commandID, Purpose: "x",
+				Content:            "content with sufficient length for the content-min",
+				AcceptanceCriteria: "acceptance_ok", BloomLevel: 3,
+				Required: true, MaestroDir: maestroDir, Config: cfg, LockMap: lm,
+			},
+		},
+		{
+			name: "shell-damaged content (2 bytes)",
+			opts: InjectOptions{
+				CommandID: commandID, Purpose: "purpose_ok",
+				Content:            "ok",
+				AcceptanceCriteria: "acceptance_ok", BloomLevel: 3,
+				Required: true, MaestroDir: maestroDir, Config: cfg, LockMap: lm,
+			},
+		},
+		{
+			name: "shell-damaged acceptance_criteria (2 bytes)",
+			opts: InjectOptions{
+				CommandID: commandID, Purpose: "purpose_ok",
+				Content:            "content with sufficient length",
+				AcceptanceCriteria: "ok", BloomLevel: 3,
+				Required: true, MaestroDir: maestroDir, Config: cfg, LockMap: lm,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := AddTask(tt.opts)
+			if err == nil {
+				t.Fatal("expected error for shell-damaged field (Bug G regression)")
+			}
+			if !strings.Contains(err.Error(), "too short") {
+				t.Errorf("expected 'too short' in error, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), "shell quoting") {
+				t.Errorf("error should hint at shell quoting as the likely cause, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestAddTask_MissingRequiredFields(t *testing.T) {
 	maestroDir, commandID, _ := setupInjectFixture(t)
 	cfg := testConfig()

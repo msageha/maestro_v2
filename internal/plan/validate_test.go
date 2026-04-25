@@ -34,6 +34,32 @@ func TestValidateTasksInput_Valid(t *testing.T) {
 	}
 }
 
+// TestValidateTasksInput_RunOnMainAndIntegrationMutuallyExclusive verifies that
+// setting both run_on_main and run_on_integration on the same task is rejected
+// (Bug F). The dispatcher selects exactly one target directory, so the two
+// fields cannot be combined.
+func TestValidateTasksInput_RunOnMainAndIntegrationMutuallyExclusive(t *testing.T) {
+	tsk := validTask("task-a")
+	tsk.RunOnMain = true
+	tsk.RunOnIntegration = true
+
+	errs := ValidateTasksInput([]TaskInput{tsk})
+	if errs == nil {
+		t.Fatal("expected validation error for run_on_main + run_on_integration combination")
+	}
+	if !strings.Contains(errs.Error(), "mutually exclusive") {
+		t.Errorf("expected error about mutual exclusivity, got: %s", errs.Error())
+	}
+}
+
+func TestValidateTasksInput_RunOnMainAlone_Valid(t *testing.T) {
+	tsk := validTask("task-a")
+	tsk.RunOnMain = true
+	if errs := ValidateTasksInput([]TaskInput{tsk}); errs != nil {
+		t.Errorf("run_on_main alone should be valid: %v", errs)
+	}
+}
+
 func TestValidateTasksInput_MissingFields(t *testing.T) {
 	tasks := []TaskInput{
 		{

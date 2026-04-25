@@ -40,14 +40,14 @@ type RejectedSubmission struct {
 // TaskResult は単一タスクの実行結果を表す。
 // ステータス、サマリー、変更ファイル一覧、通知状態などを保持する。
 type TaskResult struct {
-	ID                     string                 `yaml:"id"`
-	TaskID                 string                 `yaml:"task_id"`
-	CommandID              string                 `yaml:"command_id"`
-	Status                 Status                 `yaml:"status"`
-	Summary                string                 `yaml:"summary"`
-	FilesChanged           []string               `yaml:"files_changed"`
-	PartialChangesPossible bool                   `yaml:"partial_changes_possible"`
-	RetrySafe              bool                   `yaml:"retry_safe"`
+	ID                     string   `yaml:"id"`
+	TaskID                 string   `yaml:"task_id"`
+	CommandID              string   `yaml:"command_id"`
+	Status                 Status   `yaml:"status"`
+	Summary                string   `yaml:"summary"`
+	FilesChanged           []string `yaml:"files_changed"`
+	PartialChangesPossible bool     `yaml:"partial_changes_possible"`
+	RetrySafe              bool     `yaml:"retry_safe"`
 	NotifiableBase         `yaml:",inline"`
 	CreatedAt              string                 `yaml:"created_at"`
 	QualityGateEvaluation  *QualityGateEvaluation `yaml:"quality_gate_evaluation,omitempty"`

@@ -458,11 +458,10 @@ func TestChooseFallbackFamily(t *testing.T) {
 			want:     "opus",
 		},
 		{
-			// chooseFallbackFamily only considers the preference list, which
-			// excludes the required family itself. If no substitute is
-			// available, it returns "" — callers must guard on this and
-			// surface the original "no workers configured" error rather
-			// than looping back to the required family.
+			// chooseFallbackFamily prefers a different family to the required one.
+			// If the only available model IS the required family (and has no workers),
+			// the last-resort excludes it to avoid a circular result, returning "".
+			// Callers must guard on "" and surface the original error.
 			name:     "no non-required family available returns empty",
 			workers:  map[string]string{"w1": "opus"},
 			required: "opus",
@@ -479,6 +478,23 @@ func TestChooseFallbackFamily(t *testing.T) {
 			workers:  map[string]string{"w1": "sonnet"},
 			required: "gemini-pro",
 			want:     "sonnet",
+		},
+		{
+			// Non-Claude deployment: all workers use "codex". The Claude
+			// preference list finds nothing, so the last resort returns the
+			// actual provisioned model so tasks can still be assigned.
+			name:     "codex-only fleet falls back to codex",
+			workers:  map[string]string{"w1": "codex", "w2": "codex"},
+			required: "sonnet",
+			want:     "codex",
+		},
+		{
+			// Gemini-only fleet: last-resort returns "gemini" when no Claude
+			// family workers are available.
+			name:     "gemini-only fleet falls back to gemini",
+			workers:  map[string]string{"w1": "gemini", "w2": "gemini"},
+			required: "opus",
+			want:     "gemini",
 		},
 	}
 
@@ -573,8 +589,8 @@ func TestAdaptiveModelSelector_InsufficientData_MinSamples(t *testing.T) {
 	cfg := model.BanditConfig{
 		Enabled:              ptr.Bool(true),
 		ExplorationCoeff:     ptr.Float64(1.41),
-		MinSamplesBeforeUse:  ptr.Int(5),  // each arm needs 5
-		TraceDataRequirement: ptr.Int(3),  // total trace easily met
+		MinSamplesBeforeUse:  ptr.Int(5), // each arm needs 5
+		TraceDataRequirement: ptr.Int(3), // total trace easily met
 	}
 	sel := NewAdaptiveModelSelector(cfg, newTestBanditSelector(t, cfg))
 

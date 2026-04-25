@@ -140,11 +140,27 @@ func createFormation(maestroDir string, cfg model.Config) (retErr error) {
 		return err
 	}
 
+	// Use the absolute path of the current binary to avoid version skew: the pane
+	// shell's PATH may resolve a different (older) maestro binary than the one
+	// that started this formation, which would break flags added in newer versions.
+	launchCmd := agent.ResolvedLaunchCommand()
 	for _, pane := range readyPanes {
-		if err := tmux.SendCommand(pane, agent.LaunchCommand); err != nil {
+		if err := tmux.SendCommand(pane, launchCmd); err != nil {
 			return fmt.Errorf("launch agent in %s: %w", pane, err)
 		}
 	}
+
+	// Best-effort post-launch liveness check: verify that agents actually started.
+	// The formation sends `maestro agent launch` and returns immediately without
+	// waiting for the agent CLI to initialise. If the agent binary crashes
+	// immediately (e.g. auth failure, permission error), the pane returns to the
+	// shell and the failure is only discovered at first dispatch. This check
+	// polls for a short window and logs a warning for any pane that reverted to
+	// a shell, giving operators earlier visibility.
+	// NOTE: This is best-effort only. Agents that take longer to initialise than
+	// the poll window (e.g. slow trust-dialog acceptance) are not falsely flagged
+	// because we check for a shell, not for prompt readiness.
+	go checkAgentsLaunched(readyPanes)
 
 	// Persist ready pane targets to file so the daemon process (which outlives
 	// this CLI process) can continue auto-accepting the trust dialog.
@@ -173,12 +189,25 @@ func createFormation(maestroDir string, cfg model.Config) (retErr error) {
 }
 
 // waitForShellReady polls a tmux pane until its current command is a known
-// shell, indicating the pane is ready to receive input.
+// shell AND the shell has confirmed readiness via a sentinel echo probe.
+//
+// Two-phase approach:
+//  1. Poll pane_current_command until a shell is detected.
+//  2. Send a sentinel echo command and wait for its output to appear.
+//
+// Phase 2 catches the common race where pane_current_command shows the shell
+// while .zshrc/.bashrc is still initialising (conda init, pyenv, NVM, etc.).
+// Without this, a send-keys with "maestro agent launch" may be queued in the
+// terminal buffer and run only after shell init completes — or, if rc init
+// reads stdin, may be silently consumed by the init script. The sentinel probe
+// guarantees the shell is accepting interactive input before the caller sends
+// the real launch command.
 func waitForShellReady(ctx context.Context, pane string) error {
 	const maxConsecutiveErrors = 5
 	consecutiveErrors := 0
 	var lastErr error
 
+	// Phase 1: wait for pane_current_command to show a shell.
 	for {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("waitForShellReady cancelled: %w", err)
@@ -194,7 +223,7 @@ func waitForShellReady(ctx context.Context, pane string) error {
 		} else {
 			consecutiveErrors = 0
 			if tmux.IsShellCommand(cmd) {
-				return nil
+				break
 			}
 		}
 		t := time.NewTimer(100 * time.Millisecond)
@@ -203,6 +232,61 @@ func waitForShellReady(ctx context.Context, pane string) error {
 		case <-ctx.Done():
 			t.Stop()
 			return fmt.Errorf("waitForShellReady cancelled: %w", ctx.Err())
+		}
+	}
+
+	// Phase 2: confirm the shell has finished rc/init by probing with a
+	// sentinel echo command. This is fail-open: if the probe cannot be
+	// confirmed before the context expires, we log a warning and proceed
+	// rather than failing formation.
+	confirmShellInteractive(ctx, pane)
+	return nil
+}
+
+// confirmShellInteractive sends a sentinel echo command to the pane and waits
+// for its output to appear, proving the shell has finished its init sequence
+// and is accepting interactive input.
+//
+// Fail-open: if the sentinel cannot be detected before ctx expires (e.g. an
+// unusually slow .zshrc), a warning is logged and the function returns without
+// error so formation can still proceed.
+func confirmShellInteractive(ctx context.Context, pane string) {
+	sentinel := fmt.Sprintf("__MAESTRO_RDY_%d__", time.Now().UnixNano())
+
+	// Send the sentinel echo. If this fails the shell is likely not ready at
+	// all; log and bail out (the subsequent LaunchCommand send will also fail,
+	// which is surfaced via the agent monitor).
+	if err := tmux.SendCommand(pane, "echo "+sentinel); err != nil {
+		slog.Warn("confirmShellInteractive: sentinel send failed, proceeding",
+			"pane", pane, "error", err)
+		return
+	}
+
+	// Poll CapturePane (primary screen) for the sentinel output.
+	const pollInterval = 150 * time.Millisecond
+	for {
+		if ctx.Err() != nil {
+			slog.Warn("confirmShellInteractive: sentinel not detected before timeout, proceeding",
+				"pane", pane)
+			return
+		}
+
+		// Capture the last 15 lines — enough to catch the sentinel output
+		// even if a PS1 prompt or MOTD follows it.
+		content, err := tmux.CapturePane(pane, 15)
+		if err == nil && strings.Contains(content, sentinel) {
+			slog.Debug("confirmShellInteractive: sentinel detected", "pane", pane)
+			return
+		}
+
+		t := time.NewTimer(pollInterval)
+		select {
+		case <-t.C:
+		case <-ctx.Done():
+			t.Stop()
+			slog.Warn("confirmShellInteractive: sentinel not detected before timeout, proceeding",
+				"pane", pane)
+			return
 		}
 	}
 }
@@ -397,6 +481,58 @@ func StartTrustDialogAcceptor(maestroDir string) {
 	autoAcceptTrustDialog(panes)
 }
 
+// checkAgentsLaunched polls panes after sending the launch command to detect
+// immediate startup failures. If an agent binary exits immediately (e.g. due
+// to an auth error, signal, or missing configuration), the pane reverts to the
+// shell prompt. This function logs a warning for each such pane.
+//
+// The check runs in a separate goroutine so it does not block formation.
+// Timing: polls start 3 s after launch (enough for the binary to start or fail
+// quickly) and continue every 2 s for up to 12 s total (6 attempts). Agents
+// that take longer to initialise are not falsely flagged because the condition
+// is "is a shell?" not "is a claude prompt?".
+//
+// The daemon's ensureClaudeRunning provides ongoing recovery; this check only
+// gives earlier visibility into failures that would otherwise surface at first
+// dispatch.
+func checkAgentsLaunched(panes []string) {
+	const (
+		initialDelay = 3 * time.Second
+		pollInterval = 2 * time.Second
+		maxAttempts  = 6
+	)
+
+	time.Sleep(initialDelay)
+
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		var deadPanes []string
+		for _, pane := range panes {
+			cmd, err := tmux.GetPaneCurrentCommand(pane)
+			if err != nil {
+				slog.Debug("checkAgentsLaunched: pane query failed", "pane", pane, "error", err)
+				continue
+			}
+			if tmux.IsShellCommand(cmd) {
+				deadPanes = append(deadPanes, pane)
+				slog.Warn("checkAgentsLaunched: agent exited immediately after launch",
+					"pane", pane,
+					"shell_command", cmd,
+					"hint", "check agent logs or run 'maestro status' for details")
+			}
+		}
+
+		if len(deadPanes) == 0 {
+			// All agents are running; no further polling needed.
+			slog.Debug("checkAgentsLaunched: all agents running", "panes_count", len(panes), "attempt", attempt)
+			return
+		}
+
+		if attempt < maxAttempts-1 {
+			time.Sleep(pollInterval)
+		}
+	}
+}
+
 // resolveModel determines the model for a given agent.
 func resolveModel(cfg model.Config, agentID string) string {
 	switch agentID {
@@ -413,4 +549,3 @@ func resolveModel(cfg model.Config, agentID string) string {
 	}
 	return "sonnet"
 }
-

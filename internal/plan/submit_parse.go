@@ -81,6 +81,11 @@ func shouldInsertSystemCommit(cfg model.Config) bool {
 }
 
 func buildSystemCommitTask(blockedByNames []string) TaskInput {
+	// REQUIREMENTS.md §S3-1: every task MUST declare expected_paths and
+	// definition_of_abort. The system-injected commit task is no exception —
+	// without explicit values here, validation will reject the auto-injected
+	// task and the whole submit will fail.
+	doa := model.DefaultDefinitionOfAbort()
 	return TaskInput{
 		Name:               "__system_commit",
 		Purpose:            "コマンド実行結果をリポジトリにコミットする",
@@ -89,6 +94,13 @@ func buildSystemCommitTask(blockedByNames []string) TaskInput {
 		BlockedBy:          blockedByNames,
 		BloomLevel:         2,
 		Required:           true,
+		// __system_commit operates on the entire working tree (it stages and
+		// commits whatever the prior tasks produced). Use the broadest single
+		// prefix permitted by validateExpectedPaths: an empty path is rejected,
+		// "/" is rejected as absolute, and ".." is rejected as traversal, so
+		// we settle on "." to declare "anywhere in the repo".
+		ExpectedPaths:     []string{"."},
+		DefinitionOfAbort: &doa,
 	}
 }
 

@@ -52,22 +52,22 @@ type QueueHandler struct {
 	logLevel   LogLevel
 	clock      Clock
 
-	execProvider        *ExecutorProvider // shared across dispatcher, resultHandler, cancelHandler
-	queueStore          QueueStore
-	leaseManager        QueueLeaseManager
-	dispatcher          QueueDispatcher
-	dependencyResolver  QueueDependencyResolver
-	cancelHandler       *CancelHandler
-	resultHandler       *ResultHandler
-	reconciler          *Reconciler
-	deadLetterProcessor *DeadLetterProcessor
-	metricsHandler      *metrics.Handler
-	circuitBreaker      *circuitbreaker.Handler
-	admissionCtrl       *admission.Controller
-	fallbackMgr         *fallback.Manager
-	worktreeManager          QueueWorktreeManager
-	deferredPlanCompleter    DeferredPlanCompleterFunc
-	lockMap                  *lock.MutexMap
+	execProvider          *ExecutorProvider // shared across dispatcher, resultHandler, cancelHandler
+	queueStore            QueueStore
+	leaseManager          QueueLeaseManager
+	dispatcher            QueueDispatcher
+	dependencyResolver    QueueDependencyResolver
+	cancelHandler         *CancelHandler
+	resultHandler         *ResultHandler
+	reconciler            *Reconciler
+	deadLetterProcessor   *DeadLetterProcessor
+	metricsHandler        *metrics.Handler
+	circuitBreaker        *circuitbreaker.Handler
+	admissionCtrl         *admission.Controller
+	fallbackMgr           *fallback.Manager
+	worktreeManager       QueueWorktreeManager
+	deferredPlanCompleter DeferredPlanCompleterFunc
+	lockMap               *lock.MutexMap
 
 	// scanExecutor handles periodic scan orchestration and scan-specific state.
 	scanExecutor *ScanPhaseExecutor

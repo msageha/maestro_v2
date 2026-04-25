@@ -251,4 +251,3 @@ func (h *Handler) computeQueueDepth(
 
 	return depth
 }
-

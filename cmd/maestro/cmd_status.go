@@ -26,7 +26,7 @@ func runStatus(args []string) error {
 	if err != nil {
 		return fmt.Errorf("maestro status: load config: %w", err)
 	}
-	if err := setupTmuxSession("status", cfg); err != nil {
+	if err := setupTmuxSession("status", maestroDir, cfg); err != nil {
 		return err
 	}
 

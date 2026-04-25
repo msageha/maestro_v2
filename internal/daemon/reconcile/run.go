@@ -12,12 +12,13 @@ import (
 //
 // Lock ordering convention for the reconcile package:
 //
-//   state and queue locks MUST NOT be held simultaneously.
+//	state and queue locks MUST NOT be held simultaneously.
 //
 // When both are needed, use a three-phase pattern:
-//   Phase 1: acquire state lock → read/snapshot → release state lock
-//   Phase 2: acquire queue lock → inspect/modify → release queue lock
-//   Phase 3: acquire state lock → verify + apply changes → release state lock
+//
+//	Phase 1: acquire state lock → read/snapshot → release state lock
+//	Phase 2: acquire queue lock → inspect/modify → release queue lock
+//	Phase 3: acquire state lock → verify + apply changes → release state lock
 //
 // This avoids deadlocks between subsystems (e.g. reconcile vs. dispatch/result
 // handlers) that may acquire these locks in different contexts.

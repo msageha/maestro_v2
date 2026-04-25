@@ -30,9 +30,9 @@ func TestNewDaemon(t *testing.T) {
 	var buf bytes.Buffer
 	maestroDir := filepath.Join(t.TempDir(), ".maestro")
 	cfg := model.Config{
-		Watcher: model.WatcherConfig{ScanIntervalSec: 5},
+		Watcher:            model.WatcherConfig{ScanIntervalSec: 5},
 		ShutdownTimeoutSec: 10,
-		Logging: model.LoggingConfig{Level: "debug"},
+		Logging:            model.LoggingConfig{Level: "debug"},
 	}
 
 	d, err := newDaemon(maestroDir, cfg, &buf, nil)
@@ -56,7 +56,7 @@ func TestDaemonShutdownIdempotent(t *testing.T) {
 	var buf bytes.Buffer
 	maestroDir := filepath.Join(t.TempDir(), ".maestro")
 	cfg := model.Config{
-		Watcher: model.WatcherConfig{ScanIntervalSec: 1},
+		Watcher:            model.WatcherConfig{ScanIntervalSec: 1},
 		ShutdownTimeoutSec: 1,
 	}
 

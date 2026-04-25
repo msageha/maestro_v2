@@ -270,4 +270,3 @@ func (cb *Handler) AllowProbe(state *model.CommandState) bool {
 	cb.Log(core.LogLevelInfo, "circuit_breaker_probe_allowed command=%s", state.CommandID)
 	return true
 }
-

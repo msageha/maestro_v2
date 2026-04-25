@@ -5,6 +5,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/admission"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -104,14 +105,14 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 			break
 		}
 
-		// Admission control: check if task type has available slots
-		if qh.admissionCtrl != nil {
-			op := qh.admissionCtrl.ClassifyTask(task)
-			if !qh.admissionCtrl.TryAcquire(op) {
-				qh.log(LogLevelDebug, "admission_blocked worker=%s task=%s op=%s", workerID, task.ID, op)
-				continue
-			}
-		}
+		// Gating order rationale:
+		// Cheap, deterministic checks (dependency, system-commit readiness,
+		// path-overlap) run BEFORE admission slot acquisition so that a
+		// blocked/conflicting task does not transiently consume a slot for the
+		// remainder of this scan, lowering effective parallelism. Admission is
+		// the last gate before lease acquisition; if the lease acquire fails
+		// after admission succeeded, the slot must be released to keep
+		// counters in sync (see Release call below).
 
 		if blocked, err := qh.dependencyResolver.IsTaskBlocked(task); err != nil {
 			qh.log(LogLevelWarn, "dependency_check_error task=%s error=%v", task.ID, err)
@@ -135,7 +136,28 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 			continue
 		}
 
+		// Admission control: now the last gate. Captures the op so we can
+		// release the slot if the subsequent lease acquire fails.
+		var (
+			admissionOp       admission.OpType
+			admissionAcquired bool
+		)
+		if qh.admissionCtrl != nil {
+			op := qh.admissionCtrl.ClassifyTask(task)
+			if !qh.admissionCtrl.TryAcquire(op) {
+				qh.log(LogLevelDebug, "admission_blocked worker=%s task=%s op=%s", workerID, task.ID, op)
+				continue
+			}
+			admissionOp = op
+			admissionAcquired = true
+		}
+
 		if err := qh.leaseManager.AcquireTaskLease(task, qh.leaseOwnerID()); err != nil {
+			// Release the admission slot we just acquired — keeping it would
+			// permanently leak capacity until daemon restart.
+			if admissionAcquired {
+				qh.admissionCtrl.Release(admissionOp)
+			}
 			qh.log(LogLevelWarn, "lease_acquire_failed type=task id=%s error=%v", task.ID, err)
 			continue
 		}

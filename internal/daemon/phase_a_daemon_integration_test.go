@@ -368,4 +368,3 @@ func (m *phaseATestStateReader) TripCircuitBreaker(commandID string, reason stri
 func (m *phaseATestStateReader) IsSystemCommitReady(commandID, taskID string) (bool, bool, error) {
 	return false, false, nil
 }
-

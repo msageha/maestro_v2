@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"syscall"
 	"testing"
@@ -15,7 +16,13 @@ import (
 	"github.com/msageha/maestro_v2/internal/testutil"
 )
 
-func TestApplyTaskDefaults_NilExpectedPaths(t *testing.T) {
+// TestApplyTaskDefaults_DoesNotFillRequiredFields verifies that
+// ApplyTaskDefaults no longer silently populates the required schema fields
+// (expected_paths, definition_of_abort) — REQUIREMENTS.md §S3-1 mandates
+// that the Planner declare them explicitly. Auto-filling used to mask
+// missing Planner output and effectively disabled Path-overlap Heuristics
+// (A-4) and Circuit Breakers (S2-2).
+func TestApplyTaskDefaults_DoesNotFillRequiredFields(t *testing.T) {
 	tasks := []TaskInput{
 		{
 			Name:               "t1",
@@ -28,15 +35,17 @@ func TestApplyTaskDefaults_NilExpectedPaths(t *testing.T) {
 
 	ApplyTaskDefaults(tasks)
 
-	if tasks[0].ExpectedPaths == nil {
-		t.Fatal("ExpectedPaths should not be nil after ApplyTaskDefaults")
+	if tasks[0].ExpectedPaths != nil {
+		t.Errorf("ExpectedPaths should remain nil to surface schema gaps, got %v", tasks[0].ExpectedPaths)
 	}
-	if len(tasks[0].ExpectedPaths) != 0 {
-		t.Errorf("ExpectedPaths should be empty, got %v", tasks[0].ExpectedPaths)
+	if tasks[0].DefinitionOfAbort != nil {
+		t.Errorf("DefinitionOfAbort should remain nil to surface schema gaps, got %+v", tasks[0].DefinitionOfAbort)
 	}
 }
 
-func TestApplyTaskDefaults_NilDefinitionOfAbort(t *testing.T) {
+// TestValidateTasksInput_RejectsNilExpectedPaths verifies that a task with
+// nil expected_paths fails validation, even after ApplyTaskDefaults has run.
+func TestValidateTasksInput_RejectsNilExpectedPaths(t *testing.T) {
 	tasks := []TaskInput{
 		{
 			Name:               "t1",
@@ -44,23 +53,48 @@ func TestApplyTaskDefaults_NilDefinitionOfAbort(t *testing.T) {
 			Content:            "c",
 			AcceptanceCriteria: "ac",
 			BloomLevel:         1,
+			DefinitionOfAbort:  func() *model.DefinitionOfAbort { d := model.DefaultDefinitionOfAbort(); return &d }(),
+			// ExpectedPaths intentionally omitted
 		},
 	}
-
 	ApplyTaskDefaults(tasks)
 
-	if tasks[0].DefinitionOfAbort == nil {
-		t.Fatal("DefinitionOfAbort should not be nil after ApplyTaskDefaults")
+	errs := ValidateTasksInput(tasks)
+	if errs == nil {
+		t.Fatal("expected validation error for nil expected_paths, got nil")
 	}
-	expected := model.DefaultDefinitionOfAbort()
-	if tasks[0].DefinitionOfAbort.MaxRepairCount != expected.MaxRepairCount {
-		t.Errorf("MaxRepairCount = %d, want %d", tasks[0].DefinitionOfAbort.MaxRepairCount, expected.MaxRepairCount)
-	}
-	if tasks[0].DefinitionOfAbort.MaxWallClockSec != expected.MaxWallClockSec {
-		t.Errorf("MaxWallClockSec = %d, want %d", tasks[0].DefinitionOfAbort.MaxWallClockSec, expected.MaxWallClockSec)
+	if !strings.Contains(errs.Error(), "expected_paths") {
+		t.Errorf("expected error mentioning expected_paths, got: %s", errs.Error())
 	}
 }
 
+// TestValidateTasksInput_RejectsNilDefinitionOfAbort verifies the same for
+// definition_of_abort.
+func TestValidateTasksInput_RejectsNilDefinitionOfAbort(t *testing.T) {
+	tasks := []TaskInput{
+		{
+			Name:               "t1",
+			Purpose:            "p",
+			Content:            "c",
+			AcceptanceCriteria: "ac",
+			BloomLevel:         1,
+			ExpectedPaths:      []string{"src/main.go"},
+			// DefinitionOfAbort intentionally omitted
+		},
+	}
+	ApplyTaskDefaults(tasks)
+
+	errs := ValidateTasksInput(tasks)
+	if errs == nil {
+		t.Fatal("expected validation error for nil definition_of_abort, got nil")
+	}
+	if !strings.Contains(errs.Error(), "definition_of_abort") {
+		t.Errorf("expected error mentioning definition_of_abort, got: %s", errs.Error())
+	}
+}
+
+// TestApplyTaskDefaults_PreservesExistingValues verifies that explicit values
+// are passed through unchanged.
 func TestApplyTaskDefaults_PreservesExistingValues(t *testing.T) {
 	customAbort := &model.DefinitionOfAbort{
 		MaxRepairCount:  10,
@@ -91,25 +125,99 @@ func TestApplyTaskDefaults_PreservesExistingValues(t *testing.T) {
 	}
 }
 
-func TestApplyTaskDefaults_MultipleTasks(t *testing.T) {
+// --- Bug F: run_on_main / run_on_integration propagation ---
+
+// TestWriteQueueEntries_PropagatesRunOnMain verifies that `run_on_main: true`
+// on a TaskInput is reflected in the resulting queue task. Without this, a
+// Planner-submitted verification task under `plan submit --phase verification`
+// silently runs in the worker's worktree instead of main, producing false
+// FAIL when the verification targets the merged/published state (Bug F).
+func TestWriteQueueEntries_PropagatesRunOnMain(t *testing.T) {
+	maestroDir := testutil.SetupDirWithQueues(t, 1)
+	lm := lock.NewMutexMap()
+
+	taskID := "task_0000000100_aaaaaaaa"
 	tasks := []TaskInput{
-		{Name: "t1", Purpose: "p", Content: "c", AcceptanceCriteria: "ac", BloomLevel: 1},
-		{Name: "t2", Purpose: "p", Content: "c", AcceptanceCriteria: "ac", BloomLevel: 2,
-			ExpectedPaths: []string{"existing.go"}},
+		{
+			Name:               "main-verify",
+			Purpose:            "verify main state",
+			Content:            "run tests on main",
+			AcceptanceCriteria: "tests pass",
+			BloomLevel:         3,
+			RunOnMain:          true,
+		},
+	}
+	assignments := []WorkerAssignment{
+		{TaskName: "main-verify", WorkerID: "worker1", Model: "sonnet"},
+	}
+	nameToID := map[string]string{"main-verify": taskID}
+
+	if err := writeQueueEntries(maestroDir, assignments, tasks, nameToID,
+		"cmd_0000000100_aabbccdd", "2025-01-01T00:00:00Z", lm); err != nil {
+		t.Fatalf("writeQueueEntries error: %v", err)
 	}
 
-	ApplyTaskDefaults(tasks)
-
-	for i, task := range tasks {
-		if task.ExpectedPaths == nil {
-			t.Errorf("tasks[%d].ExpectedPaths should not be nil", i)
-		}
-		if task.DefinitionOfAbort == nil {
-			t.Errorf("tasks[%d].DefinitionOfAbort should not be nil", i)
-		}
+	queueFile := filepath.Join(maestroDir, "queue", "worker1.yaml")
+	data, err := os.ReadFile(queueFile)
+	if err != nil {
+		t.Fatalf("read queue: %v", err)
 	}
-	if len(tasks[1].ExpectedPaths) != 1 {
-		t.Errorf("tasks[1].ExpectedPaths should be preserved with 1 item, got %d", len(tasks[1].ExpectedPaths))
+	var tq model.TaskQueue
+	if err := yamlv3.Unmarshal(data, &tq); err != nil {
+		t.Fatalf("parse queue: %v", err)
+	}
+	if len(tq.Tasks) != 1 {
+		t.Fatalf("tasks len=%d, want 1", len(tq.Tasks))
+	}
+	if !tq.Tasks[0].RunOnMain {
+		t.Errorf("Task.RunOnMain = false; Bug F regression: plan submit must propagate RunOnMain from TaskInput")
+	}
+	if tq.Tasks[0].RunOnIntegration {
+		t.Errorf("Task.RunOnIntegration should be false when only RunOnMain is set")
+	}
+}
+
+// TestWriteQueueEntries_PropagatesRunOnIntegration verifies publish_conflict
+// resolution tasks (run_on_integration) are correctly flagged on the queue task.
+func TestWriteQueueEntries_PropagatesRunOnIntegration(t *testing.T) {
+	maestroDir := testutil.SetupDirWithQueues(t, 1)
+	lm := lock.NewMutexMap()
+
+	taskID := "task_0000000101_aaaaaaaa"
+	tasks := []TaskInput{
+		{
+			Name:               "resolve-integration",
+			Purpose:            "resolve publish conflict on integration",
+			Content:            "resolve conflicts",
+			AcceptanceCriteria: "no conflict markers",
+			BloomLevel:         3,
+			RunOnIntegration:   true,
+		},
+	}
+	assignments := []WorkerAssignment{
+		{TaskName: "resolve-integration", WorkerID: "worker1", Model: "sonnet"},
+	}
+	nameToID := map[string]string{"resolve-integration": taskID}
+
+	if err := writeQueueEntries(maestroDir, assignments, tasks, nameToID,
+		"cmd_0000000101_aabbccdd", "2025-01-01T00:00:00Z", lm); err != nil {
+		t.Fatalf("writeQueueEntries error: %v", err)
+	}
+
+	queueFile := filepath.Join(maestroDir, "queue", "worker1.yaml")
+	data, err := os.ReadFile(queueFile)
+	if err != nil {
+		t.Fatalf("read queue: %v", err)
+	}
+	var tq model.TaskQueue
+	if err := yamlv3.Unmarshal(data, &tq); err != nil {
+		t.Fatalf("parse queue: %v", err)
+	}
+	if !tq.Tasks[0].RunOnIntegration {
+		t.Errorf("Task.RunOnIntegration = false; Bug F regression")
+	}
+	if tq.Tasks[0].RunOnMain {
+		t.Errorf("Task.RunOnMain should be false when only RunOnIntegration is set")
 	}
 }
 

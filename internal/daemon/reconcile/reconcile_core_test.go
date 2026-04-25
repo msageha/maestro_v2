@@ -2080,4 +2080,3 @@ func TestR6FillTimeout_NilDeadline_NoRepair(t *testing.T) {
 		t.Errorf("expected no repairs for nil deadline, got %d", len(outcome.Repairs))
 	}
 }
-

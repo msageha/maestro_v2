@@ -52,9 +52,13 @@ type SkillsConfig struct {
 	AutoCollect      autoCollectConfig `yaml:"auto_collect"`
 }
 
-func (s SkillsConfig) EffectiveMaxRefsPerTask() int      { return effectiveValue(s.MaxRefsPerTask, DefaultMaxRefsPerTask) }
-func (s SkillsConfig) EffectiveMaxBodyChars() int         { return effectiveValue(s.MaxBodyChars, 0) }
-func (s SkillsConfig) EffectiveMissingRefPolicy() string  { return effectiveNonZero(s.MissingRefPolicy, DefaultMissingRefPolicy) }
+func (s SkillsConfig) EffectiveMaxRefsPerTask() int {
+	return effectiveValue(s.MaxRefsPerTask, DefaultMaxRefsPerTask)
+}
+func (s SkillsConfig) EffectiveMaxBodyChars() int { return effectiveValue(s.MaxBodyChars, 0) }
+func (s SkillsConfig) EffectiveMissingRefPolicy() string {
+	return effectiveNonZero(s.MissingRefPolicy, DefaultMissingRefPolicy)
+}
 
 // autoCollectConfig controls automatic skill collection from learnings.
 type autoCollectConfig struct {
@@ -63,8 +67,12 @@ type autoCollectConfig struct {
 	MinCommands    *int `yaml:"min_commands"`
 }
 
-func (a autoCollectConfig) EffectiveMinOccurrences() int { return effectiveValue(a.MinOccurrences, DefaultAutoCollectMinOccurrences) }
-func (a autoCollectConfig) EffectiveMinCommands() int    { return effectiveValue(a.MinCommands, DefaultAutoCollectMinCommands) }
+func (a autoCollectConfig) EffectiveMinOccurrences() int {
+	return effectiveValue(a.MinOccurrences, DefaultAutoCollectMinOccurrences)
+}
+func (a autoCollectConfig) EffectiveMinCommands() int {
+	return effectiveValue(a.MinCommands, DefaultAutoCollectMinCommands)
+}
 
 // --- ProjectConfig / MaestroConfig ---
 
@@ -175,28 +183,30 @@ type WatcherConfig struct {
 	ShellReadyTimeoutSec int `yaml:"shell_ready_timeout_sec"`
 }
 
-func (w WatcherConfig) EffectiveMaxInProgressMin() int { return effectiveValue(w.MaxInProgressMin, DefaultMaxInProgressMin) }
+func (w WatcherConfig) EffectiveMaxInProgressMin() int {
+	return effectiveValue(w.MaxInProgressMin, DefaultMaxInProgressMin)
+}
 
 // --- RetryConfig ---
 
 // RetryConfig holds retry limits for the various dispatch and execution operations.
 type RetryConfig struct {
-	CommandDispatch                  int             `yaml:"command_dispatch"`
-	TaskDispatch                     int             `yaml:"task_dispatch"`
-	OrchestratorNotificationDispatch int             `yaml:"orchestrator_notification_dispatch"`
-	SignalDispatch                   int             `yaml:"signal_dispatch"`
-	SignalInlineRetries              *int            `yaml:"signal_inline_retries"`
-	SignalInlineRetryDelaySec        *int            `yaml:"signal_inline_retry_delay_sec"`
-	SignalDeliveryTimeoutSec         *int            `yaml:"signal_delivery_timeout_sec"`
-	ResultNotifyInlineRetries            *int            `yaml:"result_notify_inline_retries"`
-	ResultNotifyInlineRetryDelaySec      *int            `yaml:"result_notify_inline_retry_delay_sec"`
-	ResultNotifyDeliveryTimeoutSec       *int            `yaml:"result_notify_delivery_timeout_sec"`
-	CommandDispatchInlineRetries         *int            `yaml:"command_dispatch_inline_retries"`
-	CommandDispatchInlineRetryDelaySec   *int            `yaml:"command_dispatch_inline_retry_delay_sec"`
-	CommandDispatchTimeoutSec            *int            `yaml:"command_dispatch_timeout_sec"`
-	TaskDispatchInlineRetries            *int            `yaml:"task_dispatch_inline_retries"`
-	TaskDispatchInlineRetryDelaySec      *int            `yaml:"task_dispatch_inline_retry_delay_sec"`
-	TaskExecution                        TaskRetryConfig `yaml:"task_execution"`
+	CommandDispatch                    int             `yaml:"command_dispatch"`
+	TaskDispatch                       int             `yaml:"task_dispatch"`
+	OrchestratorNotificationDispatch   int             `yaml:"orchestrator_notification_dispatch"`
+	SignalDispatch                     int             `yaml:"signal_dispatch"`
+	SignalInlineRetries                *int            `yaml:"signal_inline_retries"`
+	SignalInlineRetryDelaySec          *int            `yaml:"signal_inline_retry_delay_sec"`
+	SignalDeliveryTimeoutSec           *int            `yaml:"signal_delivery_timeout_sec"`
+	ResultNotifyInlineRetries          *int            `yaml:"result_notify_inline_retries"`
+	ResultNotifyInlineRetryDelaySec    *int            `yaml:"result_notify_inline_retry_delay_sec"`
+	ResultNotifyDeliveryTimeoutSec     *int            `yaml:"result_notify_delivery_timeout_sec"`
+	CommandDispatchInlineRetries       *int            `yaml:"command_dispatch_inline_retries"`
+	CommandDispatchInlineRetryDelaySec *int            `yaml:"command_dispatch_inline_retry_delay_sec"`
+	CommandDispatchTimeoutSec          *int            `yaml:"command_dispatch_timeout_sec"`
+	TaskDispatchInlineRetries          *int            `yaml:"task_dispatch_inline_retries"`
+	TaskDispatchInlineRetryDelaySec    *int            `yaml:"task_dispatch_inline_retry_delay_sec"`
+	TaskExecution                      TaskRetryConfig `yaml:"task_execution"`
 }
 
 func (r RetryConfig) EffectiveSignalInlineRetries() int {
@@ -267,4 +277,3 @@ type TaskRetryConfig struct {
 	MaxRetries         int   `yaml:"max_retries"`
 	CooldownSec        int   `yaml:"cooldown_sec"`
 }
-

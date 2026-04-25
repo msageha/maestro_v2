@@ -7,6 +7,7 @@ import (
 	"log"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/msageha/maestro_v2/internal/daemon/dispatch"
 	"github.com/msageha/maestro_v2/internal/events"
@@ -241,6 +242,32 @@ func TestWorkerCommitMessage(t *testing.T) {
 			workerID: "w1",
 			want:     "aaaaaaaaaa" + "aaaaaaaaaa" + "aaaaaaaaaa" + "aaaaaaaaaa" + "aaaaaaaaaa" + "aaaaaaaaaa" + "aaaaaaaaaa" + "aa",
 		},
+		{
+			// "ab" (2B) + 24 × "あ" (72B) = 74B > 72B. Byte index 72 splits
+			// the 24th "あ" (cut after its 1st byte), so the partial UTF-8
+			// sequence must be stripped → "ab" + 23 × "あ" = 71B.
+			name:     "japanese_truncation_strips_partial_rune",
+			purposes: map[string]string{"w1": "ab" + strings.Repeat("あ", 24)},
+			workerID: "w1",
+			want:     "ab" + strings.Repeat("あ", 23),
+		},
+		{
+			// 25 × "あ" = 75B; cut at 72 lands exactly on a rune boundary
+			// (24 × 3 = 72), so the result is the full 24-rune prefix with
+			// no partial bytes to strip.
+			name:     "japanese_truncation_at_rune_boundary",
+			purposes: map[string]string{"w1": strings.Repeat("あ", 25)},
+			workerID: "w1",
+			want:     strings.Repeat("あ", 24),
+		},
+		{
+			// "実装" (6B) + 67 × "a" = 73B > 72B. Cut at byte 72 lands on the
+			// last 'a' (byte index 71); both prefix runes are preserved.
+			name:     "japanese_prefix_then_ascii_clean_cut",
+			purposes: map[string]string{"w1": "実装" + strings.Repeat("a", 67)},
+			workerID: "w1",
+			want:     "実装" + strings.Repeat("a", 66),
+		},
 	}
 
 	for _, tt := range tests {
@@ -249,6 +276,12 @@ func TestWorkerCommitMessage(t *testing.T) {
 			got := workerCommitMessage(tt.purposes, tt.workerID)
 			if got != tt.want {
 				t.Errorf("workerCommitMessage() = %q, want %q", got, tt.want)
+			}
+			if len(got) > 72 {
+				t.Errorf("workerCommitMessage() length %d exceeds max 72", len(got))
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("workerCommitMessage() produced invalid UTF-8: %q", got)
 			}
 		})
 	}

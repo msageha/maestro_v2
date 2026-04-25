@@ -223,16 +223,16 @@ func (e *Executor) CleanupPaneMutex(paneTarget string) {
 
 // Default values for WatcherConfig fields when unset or non-positive.
 const (
-	defaultBusyCheckInterval      = 2   // seconds between busy-detection probes
-	defaultBusyCheckMaxRetries    = 30  // max busy-detection retry attempts
-	defaultIdleStableSec          = 5   // seconds of stability before declaring idle
-	defaultCooldownAfterClear     = 3   // seconds to wait after /clear
-	defaultWaitReadyIntervalSec   = 2   // seconds between prompt-readiness polls
-	defaultWaitReadyMaxRetries    = 15  // max prompt-readiness poll attempts
-	defaultClearConfirmTimeoutSec = 5   // seconds to wait for /clear confirmation
-	defaultClearConfirmPollMs     = 250 // milliseconds between /clear confirmation polls
-	defaultClearMaxAttempts       = 3   // max /clear retry attempts
-	defaultClearRetryBackoffMs    = 500 // milliseconds backoff between /clear retries
+	defaultBusyCheckInterval       = 2   // seconds between busy-detection probes
+	defaultBusyCheckMaxRetries     = 30  // max busy-detection retry attempts
+	defaultIdleStableSec           = 5   // seconds of stability before declaring idle
+	defaultCooldownAfterClear      = 3   // seconds to wait after /clear
+	defaultWaitReadyIntervalSec    = 2   // seconds between prompt-readiness polls
+	defaultWaitReadyMaxRetries     = 15  // max prompt-readiness poll attempts
+	defaultClearConfirmTimeoutSec  = 5   // seconds to wait for /clear confirmation
+	defaultClearConfirmPollMs      = 250 // milliseconds between /clear confirmation polls
+	defaultClearMaxAttempts        = 3   // max /clear retry attempts
+	defaultClearRetryBackoffMs     = 500 // milliseconds backoff between /clear retries
 	defaultClearSecondEnterDelayMs = 500 // milliseconds delay before second Enter after /clear
 )
 
@@ -428,6 +428,22 @@ func (e *Executor) execWithClear(ctx context.Context, req ExecRequest, paneTarge
 		}
 	}
 
+	// run_on_main hard guard: stamp the pane with @run_on_main so the
+	// PreToolUse policy hook can deny Write/Edit while the Worker is
+	// pointed at the main worktree (read-only verification mode). The
+	// var must also be cleared on non-run_on_main dispatches because the
+	// same pane is reused across tasks; a stale "1" would lock out the
+	// next task. Failures here are logged but non-fatal — the hook is
+	// defense-in-depth, not a hard pre-condition for delivery.
+	runOnMainVal := ""
+	if req.RunOnMain {
+		runOnMainVal = "1"
+	}
+	if err := e.paneIO.SetUserVar(paneTarget, "run_on_main", runOnMainVal); err != nil {
+		e.log(logLevelWarn, "set_run_on_main_var_failed agent_id=%s value=%q error=%v",
+			req.AgentID, runOnMainVal, err)
+	}
+
 	// Ensure Claude is actually running (not crashed back to shell).
 	if err := e.processManager.ensureClaudeRunning(ctx, paneTarget, req.AgentID); err != nil {
 		e.log(logLevelError, "ensure_claude_running_failed agent_id=%s error=%v", req.AgentID, err)
@@ -465,9 +481,29 @@ func (e *Executor) checkProcessRestart(paneTarget, agentID string) (bool, string
 }
 
 // execFirstDispatch handles the first delivery to a worker pane (no /clear needed).
+//
+// Bug J: first dispatch intentionally bypasses busy detection. By definition,
+// !clear_ready means no prior task has been delivered to this pane, so any
+// content movement observed on screen is runtime startup (TUI animations,
+// welcome banner, status refresh) rather than actual task processing. Running
+// hash-based busy detection here interprets those animations as "busy" and
+// blocks delivery for minutes — most acutely for codex, whose Rust TUI
+// re-renders continuously right after launch.
+//
+// Use waitReady (prompt-readiness check) instead: it confirms the runtime
+// process is alive (non-shell pane command) and has painted at least one
+// non-blank line, which is the correct precondition for first delivery across
+// claude-code / codex / gemini. execWithClear already ran ensureClaudeRunning
+// before arriving here, so we do not repeat that step.
 func (e *Executor) execFirstDispatch(ctx context.Context, req ExecRequest, paneTarget, currentPID string) ExecResult {
-	e.log(logLevelDebug, "first_dispatch agent_id=%s, using deliver mode", req.AgentID)
-	result := e.execDeliver(ctx, req, paneTarget)
+	e.log(logLevelDebug, "first_dispatch agent_id=%s, using waitReady + send (no busy-detect)", req.AgentID)
+
+	if err := e.processManager.waitReady(ctx, paneTarget); err != nil {
+		e.log(logLevelWarn, "first_dispatch_wait_ready_failed agent_id=%s error=%v", req.AgentID, err)
+		return ExecResult{Error: fmt.Errorf("first dispatch wait ready: %w", err), Retryable: true}
+	}
+
+	result := e.sendAndConfirm(req, paneTarget)
 	if result.Success {
 		if err := e.paneState.SetClearReady(paneTarget, currentPID); err != nil {
 			e.log(logLevelError, "set_clear_ready_failed agent_id=%s error=%v", req.AgentID, err)

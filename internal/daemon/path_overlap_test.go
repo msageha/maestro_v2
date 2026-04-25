@@ -176,11 +176,11 @@ func TestHasTaskPathOverlap(t *testing.T) {
 func TestFindOverlappingTask(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name          string
-		candidate     *model.Task
-		inFlight      []inFlightPathEntry
-		wantTaskID    string
-		wantConflict  bool
+		name         string
+		candidate    *model.Task
+		inFlight     []inFlightPathEntry
+		wantTaskID   string
+		wantConflict bool
 	}{
 		{
 			name: "no_overlap",
@@ -207,7 +207,9 @@ func TestFindOverlappingTask(t *testing.T) {
 			wantConflict: true,
 		},
 		{
-			name: "candidate_no_paths",
+			// STRICT path: candidate with empty expected_paths is conservatively
+			// blocked when any in-flight task exists (defensive guard).
+			name: "candidate_no_paths_blocked_by_in_flight",
 			candidate: &model.Task{
 				ID:            "task-candidate",
 				ExpectedPaths: nil,
@@ -215,6 +217,17 @@ func TestFindOverlappingTask(t *testing.T) {
 			inFlight: []inFlightPathEntry{
 				{TaskID: "task-1", ExpectedPaths: []string{"internal/daemon/"}},
 			},
+			wantTaskID:   "task-1",
+			wantConflict: true,
+		},
+		{
+			// Candidate with empty paths but no in-flight: nothing to overlap.
+			name: "candidate_no_paths_no_in_flight",
+			candidate: &model.Task{
+				ID:            "task-candidate",
+				ExpectedPaths: nil,
+			},
+			inFlight:     nil,
 			wantTaskID:   "",
 			wantConflict: false,
 		},
@@ -303,23 +316,31 @@ func TestCollectInFlightPaths(t *testing.T) {
 		},
 	}
 
-	t.Run("collects_only_in_progress_with_paths", func(t *testing.T) {
+	t.Run("collects_in_progress_including_empty_paths_as_sentinel", func(t *testing.T) {
 		t.Parallel()
 		entries := collectInFlightPaths(queues, neverExpired)
-		// Should collect task-1 and task-4 (in_progress with paths)
-		// task-2 is pending, task-3 has no paths
-		if len(entries) != 2 {
-			t.Fatalf("got %d entries, want 2", len(entries))
+		// STRICT: in-flight tasks with empty expected_paths are recorded with
+		// SentinelUnknownPaths so they conflict with everything (defensive
+		// guard for legacy / corrupted state — validation should reject empty
+		// expected_paths).
+		// Expected: task-1 (concrete path), task-3 (sentinel), task-4 (concrete).
+		// task-2 is still skipped because it is pending, not in_progress.
+		if len(entries) != 3 {
+			t.Fatalf("got %d entries, want 3", len(entries))
 		}
 		ids := map[string]bool{}
+		paths := map[string][]string{}
 		for _, e := range entries {
 			ids[e.TaskID] = true
+			paths[e.TaskID] = e.ExpectedPaths
 		}
-		if !ids["task-1"] {
-			t.Error("missing task-1")
+		for _, id := range []string{"task-1", "task-3", "task-4"} {
+			if !ids[id] {
+				t.Errorf("missing %s", id)
+			}
 		}
-		if !ids["task-4"] {
-			t.Error("missing task-4")
+		if got := paths["task-3"]; len(got) != 1 || got[0] != SentinelUnknownPaths {
+			t.Errorf("task-3 paths = %v, want [%q]", got, SentinelUnknownPaths)
 		}
 	})
 

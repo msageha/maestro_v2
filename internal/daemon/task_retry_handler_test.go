@@ -1863,4 +1863,3 @@ func TestRetryTaskAtomically_QueueAndRollbackFailureMarksEnqueueFailed(t *testin
 		t.Errorf("task should remain in state when rollback fails: %v", updated.TaskStates)
 	}
 }
-

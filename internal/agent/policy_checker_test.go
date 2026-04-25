@@ -338,12 +338,12 @@ func TestHookScript_AllowsGitCleanDryRun(t *testing.T) {
 func TestHookScript_D001_BlocksAllFlagOrders(t *testing.T) {
 	// D001 regex must match rm with both r/R and f in any order
 	tests := []struct {
-		pattern string
+		pattern     string
 		shouldMatch bool
 	}{
 		// Should be blocked (contains both r/R and f)
-		{`rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f`, true},   // pattern A: r before f
-		{`rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR]`, true},    // pattern B: f before r
+		{`rm\s+-[a-zA-Z]*[rR][a-zA-Z]*f`, true}, // pattern A: r before f
+		{`rm\s+-[a-zA-Z]*f[a-zA-Z]*[rR]`, true}, // pattern B: f before r
 	}
 
 	for _, tc := range tests {
@@ -2028,11 +2028,11 @@ func TestHookScript_SEC2_BlocksPythonIndirectExecution(t *testing.T) {
 		name string
 		cmd  string
 	}{
-		{"python exec", `python3 -c "exec('import os')"` },
-		{"python eval", `python -c "eval('1+1')"` },
-		{"python compile", `python3 -c "compile('code','f','exec')"` },
-		{"python __import__", `python3 -c "__import__('os').system('ls')"` },
-		{"python getattr", `python3 -c "getattr(__builtins__,'eval')('1')"` },
+		{"python exec", `python3 -c "exec('import os')"`},
+		{"python eval", `python -c "eval('1+1')"`},
+		{"python compile", `python3 -c "compile('code','f','exec')"`},
+		{"python __import__", `python3 -c "__import__('os').system('ls')"`},
+		{"python getattr", `python3 -c "getattr(__builtins__,'eval')('1')"`},
 	}
 	for _, tc := range blocked {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2397,6 +2397,118 @@ func TestHookScript_WTGIT_BlocksChainedGitAfterSeparator(t *testing.T) {
 			output := runHookScriptInDir(t, scriptPath, input, worktreeDir)
 			if !strings.Contains(output, "WT-GIT") || !strings.Contains(output, "deny") {
 				t.Errorf("expected WT-GIT deny for chained %q, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+// TestHookScript_WTGIT_AllowsGitChangeInIntegrationWorktree verifies that git
+// change commands (fetch, merge, add, commit) are NOT blocked when the CWD is
+// an _integration worktree. Conflict resolution during publish_conflict recovery
+// requires these operations; blocking them causes an infinite recovery loop.
+func TestHookScript_WTGIT_AllowsGitChangeInIntegrationWorktree(t *testing.T) {
+	requireJq(t)
+	base := t.TempDir()
+
+	projectDir := filepath.Join(base, "project")
+	maestroDir := filepath.Join(projectDir, ".maestro")
+	// _integration worktrees always end with "_integration".
+	integrationDir := filepath.Join(maestroDir, "worktrees", "cmd_abc123_integration")
+	if err := os.MkdirAll(integrationDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// These are the operations needed for conflict resolution.
+	allowed := []struct {
+		name string
+		cmd  string
+	}{
+		{"git fetch", "git fetch origin"},
+		{"git merge", "git merge --no-ff feature"},
+		{"git add", "git add -p file.go"},
+		{"git commit", "git commit -m 'resolve conflict'"},
+		{"git rebase", "git rebase main"},
+		{"git stash", "git stash"},
+	}
+	for _, tc := range allowed {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScriptInDir(t, scriptPath, input, integrationDir)
+			if strings.Contains(output, "WT-GIT") {
+				t.Errorf("WT-GIT must NOT block %q in _integration worktree, got: %s", tc.cmd, output)
+			}
+		})
+	}
+}
+
+// TestHookScript_WTGIT_AllowsGitChangeInIntegrationWorktreeSubdir verifies the
+// exemption also holds when the CWD is a subdirectory of the _integration worktree.
+func TestHookScript_WTGIT_AllowsGitChangeInIntegrationWorktreeSubdir(t *testing.T) {
+	requireJq(t)
+	base := t.TempDir()
+
+	projectDir := filepath.Join(base, "project")
+	maestroDir := filepath.Join(projectDir, ".maestro")
+	subDir := filepath.Join(maestroDir, "worktrees", "cmd_abc123_integration", "internal", "pkg")
+	if err := os.MkdirAll(subDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	input := makeBashInput("git add . && git commit -m 'fix'")
+	output := runHookScriptInDir(t, scriptPath, input, subDir)
+	if strings.Contains(output, "WT-GIT") {
+		t.Errorf("WT-GIT must NOT block git change in _integration worktree subdir, got: %s", output)
+	}
+}
+
+// TestHookScript_WTGIT_NonIntegrationWorktreeStillBlocked is a regression test
+// confirming that regular (non-_integration) worktrees are still subject to
+// WT-GIT restrictions after the _integration exemption was added.
+func TestHookScript_WTGIT_NonIntegrationWorktreeStillBlocked(t *testing.T) {
+	requireJq(t)
+	base := t.TempDir()
+
+	projectDir := filepath.Join(base, "project")
+	maestroDir := filepath.Join(projectDir, ".maestro")
+	// A regular feature worktree (NOT ending with _integration).
+	regularDir := filepath.Join(maestroDir, "worktrees", "cmd_abc123_feature")
+	if err := os.MkdirAll(regularDir, 0755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	pc := NewPolicyChecker(maestroDir)
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	blocked := []struct {
+		name string
+		cmd  string
+	}{
+		{"git commit", "git commit -m 'test'"},
+		{"git add", "git add file.go"},
+		{"git fetch", "git fetch origin"},
+		{"git merge", "git merge main"},
+	}
+	for _, tc := range blocked {
+		t.Run(tc.name, func(t *testing.T) {
+			input := makeBashInput(tc.cmd)
+			output := runHookScriptInDir(t, scriptPath, input, regularDir)
+			if !strings.Contains(output, "WT-GIT") || !strings.Contains(output, "deny") {
+				t.Errorf("expected WT-GIT deny for %q in non-integration worktree, got: %s", tc.cmd, output)
 			}
 		})
 	}
@@ -2769,5 +2881,119 @@ func TestHookScript_ContainsNewPatternChecks(t *testing.T) {
 		if !strings.Contains(hookScript, tc.text) {
 			t.Errorf("hook script missing check for %s (expected to find %q)", tc.id, tc.text)
 		}
+	}
+}
+
+// --- RUN_ON_MAIN: hard guard against Worker writes to the main worktree ---
+
+// TestHookScript_RunOnMain_ContainsCheck verifies the hook script embeds the
+// run_on_main pattern. The Daemon stamps @run_on_main=1 on the pane before
+// dispatching a run_on_main task; this guard denies Write/Edit while it is
+// set. Without this structural check, a refactor could quietly drop the guard
+// and allow Workers to mutate the main worktree they are supposed to read.
+func TestHookScript_RunOnMain_ContainsCheck(t *testing.T) {
+	if !strings.Contains(hookScript, "@run_on_main") {
+		t.Error("hook script should reference the @run_on_main tmux user variable")
+	}
+	if !strings.Contains(hookScript, "RUN_ON_MAIN: Write/Edit blocked") {
+		t.Error("hook script should contain RUN_ON_MAIN deny message")
+	}
+}
+
+// TestHookScript_RunOnMain_DeniesWriteWhenFlagged simulates a pane stamped
+// with @run_on_main=1 by intercepting tmux via a PATH shim. Write must be
+// denied with the RUN_ON_MAIN reason.
+func TestHookScript_RunOnMain_DeniesWriteWhenFlagged(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// Build a fake tmux that returns "1" so the hook believes the pane is
+	// in run_on_main mode.
+	shimDir := t.TempDir()
+	shimPath := filepath.Join(shimDir, "tmux")
+	shim := "#!/usr/bin/env bash\n" +
+		`if [ "$1" = "display-message" ]; then echo 1; exit 0; fi` + "\n" +
+		"exit 0\n"
+	if err := os.WriteFile(shimPath, []byte(shim), 0755); err != nil { //nolint:gosec
+		t.Fatalf("write tmux shim: %v", err)
+	}
+
+	// Prepend shim dir to PATH so the hook's `command -v tmux` resolves to it.
+	jqPath, _ := exec.LookPath("jq")
+	pathEnv := shimDir
+	if jqPath != "" {
+		pathEnv += ":" + filepath.Dir(jqPath)
+	}
+	pathEnv += ":/bin:/usr/bin"
+
+	input := `{"tool_name":"Write","tool_input":{"file_path":"/tmp/foo.txt","content":"x"}}`
+	cmd := exec.Command("bash", scriptPath)
+	cmd.Stdin = strings.NewReader(input)
+	cmd.Env = []string{
+		"PATH=" + pathEnv,
+		"HOME=" + os.Getenv("HOME"),
+		"TMUX_PANE=%0",
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("hook script failed: %v, output: %s", err, out)
+	}
+	if !strings.Contains(string(out), "deny") {
+		t.Errorf("expected deny when @run_on_main=1, got: %s", out)
+	}
+	if !strings.Contains(string(out), "RUN_ON_MAIN") {
+		t.Errorf("expected RUN_ON_MAIN reason in deny output, got: %s", out)
+	}
+}
+
+// TestHookScript_RunOnMain_AllowsWriteWhenUnflagged verifies that an empty
+// @run_on_main value (the default and post-task state) does NOT trigger the
+// guard. This protects against a flag-stuck-on regression that would lock
+// Workers out of normal writes.
+func TestHookScript_RunOnMain_AllowsWriteWhenUnflagged(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	// Fake tmux returns empty (var unset).
+	shimDir := t.TempDir()
+	shimPath := filepath.Join(shimDir, "tmux")
+	shim := "#!/usr/bin/env bash\nexit 0\n"
+	if err := os.WriteFile(shimPath, []byte(shim), 0755); err != nil { //nolint:gosec
+		t.Fatalf("write tmux shim: %v", err)
+	}
+
+	jqPath, _ := exec.LookPath("jq")
+	pathEnv := shimDir
+	if jqPath != "" {
+		pathEnv += ":" + filepath.Dir(jqPath)
+	}
+	pathEnv += ":/bin:/usr/bin"
+
+	// Use a path inside the temp dir so other safety checks don't fire.
+	innocent := filepath.Join(dir, "scratch.txt")
+	input := fmt.Sprintf(`{"tool_name":"Write","tool_input":{"file_path":%q,"content":"x"}}`, innocent)
+	cmd := exec.Command("bash", scriptPath)
+	cmd.Stdin = strings.NewReader(input)
+	cmd.Env = []string{
+		"PATH=" + pathEnv,
+		"HOME=" + os.Getenv("HOME"),
+		"TMUX_PANE=%0",
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("hook script failed: %v, output: %s", err, out)
+	}
+	if strings.Contains(string(out), "RUN_ON_MAIN") {
+		t.Errorf("RUN_ON_MAIN must not fire when @run_on_main is unset, got: %s", out)
 	}
 }

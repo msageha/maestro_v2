@@ -27,7 +27,7 @@ func runDaemon(args []string) error {
 		return fmt.Errorf("maestro daemon: load config: %w", err)
 	}
 
-	if err := setupTmuxSession("daemon", cfg); err != nil {
+	if err := setupTmuxSession("daemon", maestroDir, cfg); err != nil {
 		return err
 	}
 

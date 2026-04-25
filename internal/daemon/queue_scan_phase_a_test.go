@@ -60,25 +60,29 @@ func TestStepCircuitBreaker_NilStateReader(t *testing.T) {
 // cbMockStateManager implements core.StateManager for circuit breaker tests.
 // It records TripCircuitBreaker calls and lets tests control GetCircuitBreakerState.
 type cbMockStateManager struct {
-	trippedCalls []cbTripCall                                      // recorded TripCircuitBreaker calls
-	cbStates     map[string]*model.CircuitBreakerState             // GetCircuitBreakerState results
-	getCBCalled  map[string]int                                    // tracks GetCircuitBreakerState call count
-	tripErr      error                                             // error to return from TripCircuitBreaker
+	trippedCalls []cbTripCall                          // recorded TripCircuitBreaker calls
+	cbStates     map[string]*model.CircuitBreakerState // GetCircuitBreakerState results
+	getCBCalled  map[string]int                        // tracks GetCircuitBreakerState call count
+	tripErr      error                                 // error to return from TripCircuitBreaker
 }
 
 type cbTripCall struct {
-	CommandID             string
-	Reason                string
+	CommandID              string
+	Reason                 string
 	ProgressTimeoutMinutes int
 }
 
-func (m *cbMockStateManager) GetTaskState(string, string) (model.Status, error)          { return "", nil }
-func (m *cbMockStateManager) GetCommandPhases(string) ([]model.PhaseInfo, error)         { return nil, nil }
-func (m *cbMockStateManager) GetTaskDependencies(string, string) ([]string, error)       { return nil, nil }
-func (m *cbMockStateManager) IsSystemCommitReady(string, string) (bool, bool, error)     { return false, false, nil }
-func (m *cbMockStateManager) IsCommandCancelRequested(string) (bool, error)              { return false, nil }
-func (m *cbMockStateManager) ApplyPhaseTransition(string, string, model.PhaseStatus) error { return nil }
-func (m *cbMockStateManager) UpdateTaskState(string, string, model.Status, string) error   { return nil }
+func (m *cbMockStateManager) GetTaskState(string, string) (model.Status, error)    { return "", nil }
+func (m *cbMockStateManager) GetCommandPhases(string) ([]model.PhaseInfo, error)   { return nil, nil }
+func (m *cbMockStateManager) GetTaskDependencies(string, string) ([]string, error) { return nil, nil }
+func (m *cbMockStateManager) IsSystemCommitReady(string, string) (bool, bool, error) {
+	return false, false, nil
+}
+func (m *cbMockStateManager) IsCommandCancelRequested(string) (bool, error) { return false, nil }
+func (m *cbMockStateManager) ApplyPhaseTransition(string, string, model.PhaseStatus) error {
+	return nil
+}
+func (m *cbMockStateManager) UpdateTaskState(string, string, model.Status, string) error { return nil }
 
 func (m *cbMockStateManager) GetCircuitBreakerState(commandID string) (*model.CircuitBreakerState, error) {
 	if m.getCBCalled == nil {
@@ -118,9 +122,9 @@ func TestStepCircuitBreaker_SignalEmittedAtomicallyWithTrip(t *testing.T) {
 	mock := &cbMockStateManager{
 		cbStates: map[string]*model.CircuitBreakerState{
 			"cmd1": {
-				Tripped:         false,
-				LastProgressAt:  ptr.String(qh.clock.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)),
-				TripReason:      &staleReason,
+				Tripped:        false,
+				LastProgressAt: ptr.String(qh.clock.Now().Add(-2 * time.Hour).UTC().Format(time.RFC3339)),
+				TripReason:     &staleReason,
 			},
 		},
 	}
@@ -376,11 +380,12 @@ func writeCommandStateAt(t *testing.T, maestroDir, commandID string, taskStates 
 
 // TestStepWorktreeFastTrackCleanup_TriggersWhenPhaseStallsPastThreshold
 // verifies the fast-track cleanup pathway:
-//   Given:  worktree-enabled command with all tasks terminal, one phase still
-//           pending, and cmd.UpdatedAt older than worktree.stall_cleanup_after
-//   When:   stepWorktreeFastTrackCleanup runs
-//   Then:   a worktreeCleanupItem with reason "fast_track_stall" is appended
-//           (the merge step is skipped — no publish item is generated either).
+//
+//	Given:  worktree-enabled command with all tasks terminal, one phase still
+//	        pending, and cmd.UpdatedAt older than worktree.stall_cleanup_after
+//	When:   stepWorktreeFastTrackCleanup runs
+//	Then:   a worktreeCleanupItem with reason "fast_track_stall" is appended
+//	        (the merge step is skipped — no publish item is generated either).
 func TestStepWorktreeFastTrackCleanup_TriggersWhenPhaseStallsPastThreshold(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
@@ -810,8 +815,8 @@ func TestStepDispatchOrRecovery_Boundaries(t *testing.T) {
 		t.Parallel()
 		qh := newMinimalQueueHandler(t)
 		s := scanState{
-			commands: fileState[model.CommandQueue]{Data: model.CommandQueue{}},
-			tasks:    map[string]*taskQueueEntry{},
+			commands:  fileState[model.CommandQueue]{Data: model.CommandQueue{}},
+			tasks:     map[string]*taskQueueEntry{},
 			taskDirty: map[string]bool{},
 			notifications: fileState[model.NotificationQueue]{
 				Data: model.NotificationQueue{},
@@ -863,8 +868,8 @@ func TestStepDispatchOrRecovery_Boundaries(t *testing.T) {
 		// branch (callers always go through initScanState, but the function
 		// itself must remain robust against zero values).
 		s := scanState{
-			commands: fileState[model.CommandQueue]{Data: model.CommandQueue{}},
-			tasks:    map[string]*taskQueueEntry{},
+			commands:  fileState[model.CommandQueue]{Data: model.CommandQueue{}},
+			tasks:     map[string]*taskQueueEntry{},
 			taskDirty: map[string]bool{},
 			notifications: fileState[model.NotificationQueue]{
 				Data: model.NotificationQueue{},

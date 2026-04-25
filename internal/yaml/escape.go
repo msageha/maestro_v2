@@ -137,7 +137,7 @@ func skipNonValueDoubleQuoted(data []byte, i int, out *[]byte) int {
 }
 
 // skipSingleQuoted copies bytes from inside a single-quoted scalar verbatim.
-// It returns the index after the closing '\'' (or end of data).
+// It returns the index after the closing '\” (or end of data).
 func skipSingleQuoted(data []byte, i int, out *[]byte) int {
 	n := len(data)
 	for i < n {

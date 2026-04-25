@@ -133,15 +133,42 @@ func (wm *Manager) recordPublishTerminalFailure(state *model.WorktreeCommandStat
 // without conflict. This is called automatically at the start of PublishToBase.
 //
 // Returns nil if the forward-merge succeeds or is unnecessary (integration is
-// already up-to-date with base). On conflict, it collects the conflicting files,
-// stores them in state.Integration.PublishConflictFiles, aborts the merge, and
-// returns an error.
+// already up-to-date with base). On conflict the conflicting files are stored
+// in state.Integration.PublishConflictFiles and an error is returned.
+//
+// IMPORTANT: on conflict, the merge is NOT aborted. Conflict markers are
+// preserved in the integration worktree so the Planner-dispatched worker can
+// resolve them in-place via --run-on-integration (git add + git commit). If we
+// aborted here, the worker would see a clean worktree and report "nothing to
+// do", producing an empty resolution commit while the underlying conflict
+// still blocks publish — an infinite publish_conflict recovery loop.
+//
+// Re-entry: if a prior call left MERGE_HEAD in place (worker has not yet
+// resolved, or the daemon crashed mid-merge), this function detects the
+// in-flight state and either returns the same conflict (unresolved) or
+// finalizes the merge commit (worker already added their resolution).
 // Caller must hold wm.mu.
 func (wm *Manager) forwardMergeBaseToIntegration(
 	state *model.WorktreeCommandState,
 	commandID, baseBranch, now string,
 ) error {
 	integrationPath := wm.integrationWorktreePath(commandID)
+
+	// Re-entry handling: if the integration worktree is already mid-merge from
+	// a previous forwardMergeBaseToIntegration attempt, reuse that state
+	// rather than trying to start a fresh merge (git refuses "merge" while
+	// MERGE_HEAD exists).
+	if wm.integrationHasMergeHead(integrationPath) {
+		done, err := wm.reuseInFlightForwardMerge(state, commandID, integrationPath, baseBranch, now)
+		if err != nil {
+			return err
+		}
+		if done {
+			return nil
+		}
+		// Control falls through when the in-flight merge was recovered (e.g.
+		// aborted because it had become stale) and a fresh attempt is safe.
+	}
 
 	// Check if forward-merge is needed by comparing the integration branch's
 	// merge-base with baseBranch to the current baseBranch HEAD.
@@ -179,6 +206,10 @@ func (wm *Manager) forwardMergeBaseToIntegration(
 
 	if mergeBaseSHA == baseSHA {
 		// Integration already includes base — no forward-merge needed.
+		// Clear any stale conflict files since the merge is effectively
+		// complete (worker's resolution commit on a prior attempt already
+		// pulled base in).
+		state.Integration.PublishConflictFiles = nil
 		return nil
 	}
 
@@ -194,17 +225,25 @@ func (wm *Manager) forwardMergeBaseToIntegration(
 			wm.Log(core.LogLevelWarn, "forward_merge_conflict_files command=%s error=%v", commandID, cfErr)
 		}
 
-		// Abort the merge to restore clean state.
-		if abortErr := wm.gitRunInDir(integrationPath, "merge", "--abort"); abortErr != nil {
-			wm.Log(core.LogLevelWarn, "forward_merge_abort command=%s error=%v", commandID, abortErr)
-		}
+		// DO NOT abort the merge. The conflict markers must remain in the
+		// integration worktree so the Planner-dispatched resolution worker
+		// (--run-on-integration) can resolve them in place. See function-
+		// level doc and templates/instructions/planner.md publish_conflict
+		// handler for the end-to-end contract.
 
-		// Store conflict files in state for signal emission.
+		// Store conflict files in state for signal emission. PublishConflictSignaled
+		// is reset to false only on a fresh conflict round (detected by an
+		// absence of prior conflict files, or a change in the file set) so
+		// that re-entry after an unresolved conflict does not re-emit the
+		// signal on every scan.
+		if !samePublishConflictFiles(state.Integration.PublishConflictFiles, conflictFiles) {
+			state.Integration.PublishConflictSignaled = false
+		}
 		state.Integration.PublishConflictFiles = conflictFiles
-		state.Integration.PublishConflictSignaled = false
 		state.UpdatedAt = now
 
-		wm.Log(core.LogLevelWarn, "forward_merge_conflict command=%s files=%v",
+		wm.Log(core.LogLevelWarn,
+			"forward_merge_conflict command=%s files=%v (markers preserved for worker resolution via --run-on-integration)",
 			commandID, conflictFiles)
 		return fmt.Errorf("forward-merge %s into integration: conflict on files %v", baseBranch, conflictFiles)
 	}
@@ -213,6 +252,115 @@ func (wm *Manager) forwardMergeBaseToIntegration(
 	state.Integration.PublishConflictFiles = nil
 	wm.Log(core.LogLevelInfo, "forward_merge_succeeded command=%s", commandID)
 	return nil
+}
+
+// integrationHasMergeHead returns true when the integration worktree currently
+// has an in-flight merge (MERGE_HEAD present). Transient or unexpected git
+// errors are treated as "no merge head" so this probe never wedges the
+// publish pipeline; callers that need to distinguish errors should probe
+// directly.
+func (wm *Manager) integrationHasMergeHead(integrationPath string) bool {
+	// `git rev-parse --verify -q MERGE_HEAD`: exit 0 when MERGE_HEAD exists,
+	// non-zero (silently) otherwise. Any failure mode is treated as
+	// "not merging" — the subsequent fresh `git merge` will either succeed
+	// (no conflict) or surface the real issue via its own error.
+	_, err := wm.gitOutputInDir(integrationPath, "rev-parse", "--verify", "-q", "MERGE_HEAD")
+	return err == nil
+}
+
+// reuseInFlightForwardMerge handles re-entry into forwardMergeBaseToIntegration
+// when the integration worktree still has MERGE_HEAD from a prior attempt.
+//
+// Return values:
+//   - (true, nil)  → the in-flight merge has been finalized (worker resolved
+//     and staged the conflict; we created the merge commit). Caller returns
+//     nil to proceed to publish.
+//   - (false, nil) → the in-flight merge was aborted because it was
+//     unrecoverable (e.g., worker never ran and state is stale). Caller
+//     should fall through and start a fresh merge attempt.
+//   - (_, err)     → the conflict is still unresolved (unmerged entries
+//     present) or an internal error occurred. Caller returns this error so
+//     publish records a failure without mutating the already-signaled state.
+func (wm *Manager) reuseInFlightForwardMerge(
+	state *model.WorktreeCommandState,
+	commandID, integrationPath, baseBranch, now string,
+) (bool, error) {
+	hasConflict, probeErr := wm.hasUnmergedFiles(integrationPath)
+	if probeErr != nil {
+		return false, fmt.Errorf("forward-merge re-entry probe: %w", probeErr)
+	}
+	if hasConflict {
+		// Worker has not yet resolved the conflict. Return the conflict error
+		// WITHOUT clearing PublishConflictSignaled: the signal was already
+		// emitted on the first round and the Planner has a task in flight.
+		// Re-emitting would spam the signal queue on every scan.
+		conflictFiles, cfErr := wm.getConflictFilesInDir(integrationPath)
+		if cfErr != nil {
+			wm.Log(core.LogLevelWarn, "forward_merge_reentry_conflict_files command=%s error=%v", commandID, cfErr)
+		}
+		wm.Log(core.LogLevelInfo,
+			"forward_merge_reentry_still_conflicting command=%s files=%v",
+			commandID, conflictFiles)
+		// Refresh file list in state in case it changed (conservative: don't
+		// disturb PublishConflictSignaled).
+		if len(conflictFiles) > 0 {
+			state.Integration.PublishConflictFiles = conflictFiles
+			state.UpdatedAt = now
+		}
+		return false, fmt.Errorf("forward-merge %s into integration: unresolved conflict on files %v",
+			baseBranch, conflictFiles)
+	}
+
+	// No unmerged entries but MERGE_HEAD still exists → worker staged the
+	// resolution (or the auto-merge had no real conflict on this file set).
+	// Finalize the merge commit so the integration branch absorbs base.
+	if commitErr := wm.gitRunInDir(integrationPath, "commit", "--no-edit"); commitErr != nil {
+		// A `git commit --no-edit` during an in-flight merge can fail if the
+		// worker staged no changes at all (identical content on both sides).
+		// In that case, `git commit --allow-empty --no-edit` finalises the
+		// merge without producing a content-changing commit.
+		if retryErr := wm.gitRunInDir(integrationPath, "commit", "--allow-empty", "--no-edit"); retryErr != nil {
+			wm.Log(core.LogLevelWarn,
+				"forward_merge_reentry_finalize_failed command=%s error=%v retry_error=%v",
+				commandID, commitErr, retryErr)
+			// Conservative: don't auto-abort the worker's partial state.
+			// Return an error so publish records a failure; the operator /
+			// planner can inspect via dashboard and re-dispatch if needed.
+			return false, fmt.Errorf("forward-merge re-entry finalize: %w", commitErr)
+		}
+	}
+	state.Integration.PublishConflictFiles = nil
+	wm.Log(core.LogLevelInfo, "forward_merge_reentry_finalized command=%s", commandID)
+	return true, nil
+}
+
+// samePublishConflictFiles reports whether two conflict-file sets contain the
+// same entries (order-insensitive). Used to decide whether a re-entered
+// conflict should re-emit the publish_conflict signal (different file set) or
+// suppress re-emission (same set — Planner already has a task in flight).
+func samePublishConflictFiles(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	if len(a) == 0 {
+		return true
+	}
+	counts := make(map[string]int, len(a))
+	for _, f := range a {
+		counts[f]++
+	}
+	for _, f := range b {
+		counts[f]--
+		if counts[f] < 0 {
+			return false
+		}
+	}
+	for _, c := range counts {
+		if c != 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // mergeWorkerOutcome captures the result of merging a single worker branch.
@@ -1145,7 +1293,11 @@ func truncateMessage(prefix, body string, maxLen int) string {
 	}
 	msg := prefix + body
 	if len(msg) > maxLen {
-		msg = msg[:maxLen]
+		// Cut at maxLen bytes, then strip any partial UTF-8 sequence at the
+		// tail so multi-byte runes (e.g. Japanese) are not split mid-rune.
+		// strings.ToValidUTF8 with empty replacement removes invalid trailing
+		// bytes; result is always <= maxLen bytes.
+		msg = strings.ToValidUTF8(msg[:maxLen], "")
 	}
 	return msg
 }

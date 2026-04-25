@@ -348,7 +348,6 @@ func setConditionSourceFile(condition *RuleCondition, path string) {
 	}
 }
 
-
 // validateFilePermissions checks that a config file is not writable by group or others.
 // This mitigates command injection via tampered config files (e.g., script conditions).
 func validateFilePermissions(path string) error {

@@ -304,8 +304,8 @@ func TestJudge_OnlyOnTie(t *testing.T) {
 	th := model.DefaultFitnessThresholds()
 
 	testCases := []struct {
-		name             string
-		scores           []model.FitnessScore
+		name              string
+		scores            []model.FitnessScore
 		expectJudgeCalled bool
 	}{
 		{
@@ -525,4 +525,3 @@ func (m *mockCaller) Call(ctx context.Context, prompt string) (string, error) {
 	}
 	return `{"winner_index": 0, "reasoning": "default mock"}`, nil
 }
-

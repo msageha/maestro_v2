@@ -288,6 +288,7 @@ func (h *ResultWriteAPI) recoverCorruptLearningsIfNeeded(learningsPath string) e
 	}
 	return nil
 }
+
 // writeSkillCandidates merges skill candidate entries into .maestro/state/skill_candidates.yaml.
 // Best-effort: errors are logged but do not fail the result_write.
 func (h *ResultWriteAPI) writeSkillCandidates(params ResultWriteParams) error {

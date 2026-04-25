@@ -6,13 +6,13 @@ import "errors"
 // These enable callers and tests to use errors.Is for robust error checking.
 var (
 	// Process management errors (ClaudeProcessManager)
-	ErrControlChars      = errors.New("working dir contains control characters")
-	ErrRespawnPane       = errors.New("respawn pane")
-	ErrRelaunch          = errors.New("re-launch claude")
-	ErrWaitClaudeReady   = errors.New("wait for claude ready")
-	ErrCheckPaneCommand  = errors.New("check pane command")
-	ErrNotStable   = errors.New("pane content not stable")
-	ErrCapturePane = errors.New("capture pane")
+	ErrControlChars     = errors.New("working dir contains control characters")
+	ErrRespawnPane      = errors.New("respawn pane")
+	ErrRelaunch         = errors.New("re-launch claude")
+	ErrWaitClaudeReady  = errors.New("wait for claude ready")
+	ErrCheckPaneCommand = errors.New("check pane command")
+	ErrNotStable        = errors.New("pane content not stable")
+	ErrCapturePane      = errors.New("capture pane")
 	// ErrNoPrompt is returned by waitStable when the pane is stable but no
 	// prompt marker is found. Used in strict mode (softPromptCheck=false).
 	ErrNoPrompt = errors.New("no prompt detected")

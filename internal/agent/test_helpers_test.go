@@ -38,7 +38,7 @@ type mockPaneIO struct {
 	capturePaneIdx int
 
 	// --- CapturePaneJoined ---
-	joinedContent    []string   // convenience rotation (wraps around)
+	joinedContent    []string // convenience rotation (wraps around)
 	joinedIdx        int
 	captureJoinedSeq []mockResp // full sequence with error support (clamped)
 	captureJoinedIdx int
@@ -381,6 +381,26 @@ func newTestExecutorWithLog(paneIO PaneIO) (*Executor, *bytes.Buffer) {
 func callsContain(calls []string, target string) bool {
 	for _, c := range calls {
 		if strings.Contains(c, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// isAgentLaunchCmd reports whether cmd is a maestro agent launch command,
+// regardless of whether a bare name ("maestro agent launch") or absolute path
+// ("/path/to/maestro agent launch") is used. ResolvedLaunchCommand() always
+// appends " agent launch", so checking the suffix is reliable.
+func isAgentLaunchCmd(cmd string) bool {
+	return strings.HasSuffix(cmd, " agent launch")
+}
+
+// callsContainLaunchCmd reports whether the call log contains a SendCommand
+// call that is a maestro agent launch command (bare or absolute-path form).
+func callsContainLaunchCmd(calls []string) bool {
+	const prefix = "SendCommand:"
+	for _, c := range calls {
+		if strings.HasPrefix(c, prefix) && isAgentLaunchCmd(c[len(prefix):]) {
 			return true
 		}
 	}

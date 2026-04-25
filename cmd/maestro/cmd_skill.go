@@ -217,4 +217,3 @@ func (a *cliApp) runSkillReject(args []string) error {
 	fmt.Printf("rejected %s\n", candidateID)
 	return nil
 }
-

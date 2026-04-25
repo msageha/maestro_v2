@@ -2,8 +2,8 @@ package daemon
 
 import (
 	"context"
-	"sync"
 	"runtime/debug"
+	"sync"
 	"sync/atomic"
 	"time"
 )

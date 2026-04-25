@@ -194,12 +194,15 @@ func TestValidate_ValidModelNames(t *testing.T) {
 		name  string
 		model string
 	}{
+		// NOTE: orchestrator/planner reject non-claude-code runtimes
+		// (e.g. "codex" / "gemini-*"); those are covered separately in
+		// TestValidate_OrchestratorPlannerRejectsNonClaudeCodeRuntime.
 		{"empty (default)", ""},
 		{"sonnet", "sonnet"},
 		{"opus", "opus"},
 		{"haiku", "haiku"},
 		{"full claude ID", "claude-sonnet-4-6"},
-		{"format with dots", "gemini-2.5-pro"},
+		{"format with dots", "claude-sonnet-4.5"},
 		{"format with underscore", "my_model_v2"},
 	}
 	for _, tt := range tests {
@@ -260,6 +263,66 @@ func TestValidate_InvalidModelNames(t *testing.T) {
 	}
 }
 
+// TestValidate_OrchestratorPlannerRejectsNonClaudeCodeRuntime verifies that
+// non-claude-code runtimes (codex, gemini, gemini-*) are rejected for the
+// orchestrator and planner roles. Tool-based role enforcement is only
+// available on claude-code; running these roles on codex/gemini bypasses the
+// "delegation-only" / "planning-only" contract entirely (see past incidents
+// where codex Orchestrator directly modified files on main).
+func TestValidate_OrchestratorPlannerRejectsNonClaudeCodeRuntime(t *testing.T) {
+	cases := []struct {
+		name      string
+		role      string // "orchestrator" or "planner"
+		modelName string
+	}{
+		{"orchestrator with codex", "orchestrator", "codex"},
+		{"orchestrator with gemini", "orchestrator", "gemini"},
+		{"orchestrator with gemini-2.5-pro", "orchestrator", "gemini-2.5-pro"},
+		{"planner with codex", "planner", "codex"},
+		{"planner with gemini", "planner", "gemini"},
+		{"planner with gemini-2.5-pro", "planner", "gemini-2.5-pro"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := validConfig()
+			switch tc.role {
+			case "orchestrator":
+				cfg.Agents.Orchestrator.Model = tc.modelName
+			case "planner":
+				cfg.Agents.Planner.Model = tc.modelName
+			default:
+				t.Fatalf("unknown role %q", tc.role)
+			}
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("expected validation error for %s.model=%q", tc.role, tc.modelName)
+			}
+			wantField := "agents." + tc.role + ".model"
+			if !strings.Contains(err.Error(), wantField) {
+				t.Errorf("expected %q in error, got: %v", wantField, err)
+			}
+		})
+	}
+}
+
+// TestValidate_WorkersAcceptNonClaudeCodeRuntime confirms that workers can
+// still run on codex / gemini. Workers edit files by design, so running them
+// on alternative runtimes is supported (with the L1/L2 safety hooks documented
+// as claude-code-only).
+func TestValidate_WorkersAcceptNonClaudeCodeRuntime(t *testing.T) {
+	models := []string{"codex", "gemini", "gemini-2.5-pro"}
+	for _, m := range models {
+		t.Run(m, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Agents.Workers.DefaultModel = m
+			cfg.Agents.Workers.Models = map[string]string{"worker1": m}
+			if err := cfg.Validate(); err != nil {
+				t.Errorf("expected workers to accept model %q, got error: %v", m, err)
+			}
+		})
+	}
+}
+
 func TestIsValidModelName(t *testing.T) {
 	valid := []string{"", "sonnet", "opus", "haiku", "claude-sonnet-4-6", "o3-mini", "gemini-2.5-pro"}
 	for _, name := range valid {
@@ -309,8 +372,8 @@ func TestValidate_AdmissionControl_Configured(t *testing.T) {
 
 func TestValidate_AdmissionControl_NegativeValues(t *testing.T) {
 	tests := []struct {
-		name    string
-		cfg     func(*Config)
+		name     string
+		cfg      func(*Config)
 		errField string
 	}{
 		{
@@ -1268,7 +1331,7 @@ func TestValidate_Worktree_BothTimeoutsDisabled(t *testing.T) {
 func TestValidate_Worktree_OneTimeoutEnabled_OK(t *testing.T) {
 	cfg := validConfig()
 	cfg.Worktree.Enabled = true
-	cfg.Worktree.StallTimeoutMinutes = ptr.Int(0)         // disabled
+	cfg.Worktree.StallTimeoutMinutes = ptr.Int(0)          // disabled
 	cfg.Worktree.FallbackMergeTimeoutMinutes = ptr.Int(60) // enabled
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected no error when one timeout is enabled, got: %v", err)
@@ -1553,12 +1616,12 @@ func TestValidate_DispatchLeaseVsMaxInProgress(t *testing.T) {
 		maxInProgressMin *int
 		wantErr          bool
 	}{
-		{"lease_exceeds_runtime", 3600, ptr.Int(30), true},        // 3600 >= 30*60=1800 -> true (3600 >= 1800)
-		{"lease_equals_runtime", 1800, ptr.Int(30), true},         // 1800 >= 1800 -> error
-		{"lease_below_runtime", 1799, ptr.Int(30), false},         // 1799 < 1800 -> ok
-		{"lease_zero_skips_check", 0, ptr.Int(1), false},          // dispatch_lease_sec=0 -> skip
-		{"runtime_zero_skips_check", 300, ptr.Int(0), false},      // maxInProgressSec=0 -> skip
-		{"nil_runtime_uses_default", 300, nil, false},             // default=60min=3600s, 300<3600 -> ok
+		{"lease_exceeds_runtime", 3600, ptr.Int(30), true},   // 3600 >= 30*60=1800 -> true (3600 >= 1800)
+		{"lease_equals_runtime", 1800, ptr.Int(30), true},    // 1800 >= 1800 -> error
+		{"lease_below_runtime", 1799, ptr.Int(30), false},    // 1799 < 1800 -> ok
+		{"lease_zero_skips_check", 0, ptr.Int(1), false},     // dispatch_lease_sec=0 -> skip
+		{"runtime_zero_skips_check", 300, ptr.Int(0), false}, // maxInProgressSec=0 -> skip
+		{"nil_runtime_uses_default", 300, nil, false},        // default=60min=3600s, 300<3600 -> ok
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1586,7 +1649,7 @@ func TestValidate_DispatchLeaseVsMaxInProgress(t *testing.T) {
 
 func TestValidate_WorktreeBaseBranch_Valid(t *testing.T) {
 	valid := []string{
-		"",          // empty uses default
+		"", // empty uses default
 		"main",
 		"develop",
 		"feature/foo",
@@ -1649,7 +1712,7 @@ func TestValidate_WorktreeBaseBranch_Invalid(t *testing.T) {
 
 func TestValidate_WorktreePathPrefix_Valid(t *testing.T) {
 	valid := []string{
-		"",                      // empty uses default
+		"", // empty uses default
 		".maestro/worktrees",
 		"worktrees",
 		"build/output",
@@ -1700,4 +1763,3 @@ func TestValidate_WorktreePathPrefix_Invalid(t *testing.T) {
 		})
 	}
 }
-

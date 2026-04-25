@@ -1050,3 +1050,106 @@ func TestGC_DeletesCmdLocks(t *testing.T) {
 		t.Error("cmdLocks entry should be deleted after GC cleanup")
 	}
 }
+
+// TestEnsureIntegrationBranchCheckedOut_AlreadyAttached is the fast path:
+// integration worktree already has the integration branch checked out.
+func TestEnsureIntegrationBranchCheckedOut_AlreadyAttached(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_ensure_attached"
+	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+		t.Fatalf("createForCommand: %v", err)
+	}
+
+	if err := wm.EnsureIntegrationBranchCheckedOut(commandID); err != nil {
+		t.Fatalf("expected no error for already-attached worktree, got %v", err)
+	}
+
+	// State unchanged: still on integration branch.
+	integrationPath := wm.integrationWorktreePath(commandID)
+	state, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	headRef, err := wm.gitOutputInDir(integrationPath, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		t.Fatalf("symbolic-ref: %v", err)
+	}
+	if got, want := strings.TrimSpace(headRef), state.Integration.Branch; got != want {
+		t.Errorf("HEAD = %q, want %q", got, want)
+	}
+}
+
+// TestEnsureIntegrationBranchCheckedOut_DetachedCleanReattaches is the
+// defense-in-depth path: a detached (but clean) integration worktree gets
+// reattached to state.Integration.Branch so RunOnIntegration dispatch never
+// lands in an orphaned-HEAD state. This directly prevents the publish loop
+// that triggered the investigation.
+func TestEnsureIntegrationBranchCheckedOut_DetachedCleanReattaches(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_ensure_reattach"
+	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+		t.Fatalf("createForCommand: %v", err)
+	}
+
+	integrationPath := wm.integrationWorktreePath(commandID)
+	if err := wm.gitRunInDir(integrationPath, "checkout", "--detach"); err != nil {
+		t.Fatalf("pre-detach checkout: %v", err)
+	}
+	// Sanity: symbolic-ref must fail while detached.
+	if _, err := wm.gitOutputInDir(integrationPath, "symbolic-ref", "--short", "HEAD"); err == nil {
+		t.Fatalf("pre-condition failed: expected detached HEAD")
+	}
+
+	if err := wm.EnsureIntegrationBranchCheckedOut(commandID); err != nil {
+		t.Fatalf("EnsureIntegrationBranchCheckedOut: %v", err)
+	}
+
+	state, err := wm.GetCommandState(commandID)
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	headRef, err := wm.gitOutputInDir(integrationPath, "symbolic-ref", "--short", "HEAD")
+	if err != nil {
+		t.Fatalf("symbolic-ref after reattach: %v", err)
+	}
+	if got, want := strings.TrimSpace(headRef), state.Integration.Branch; got != want {
+		t.Errorf("HEAD after reattach = %q, want %q", got, want)
+	}
+}
+
+// TestEnsureIntegrationBranchCheckedOut_DirtyWorktreeFails verifies that a
+// detached worktree with uncommitted changes is refused rather than silently
+// discarding the edits. The error surfaces to the dispatcher, which aborts
+// the RunOnIntegration task so an operator can intervene.
+func TestEnsureIntegrationBranchCheckedOut_DirtyWorktreeFails(t *testing.T) {
+	t.Parallel()
+	projectRoot := testutil.InitTestGitRepo(t)
+	wm := newTestWorktreeManager(t, projectRoot)
+
+	commandID := "cmd_ensure_dirty"
+	if err := createForCommand(wm, commandID, []string{"worker1"}); err != nil {
+		t.Fatalf("createForCommand: %v", err)
+	}
+
+	integrationPath := wm.integrationWorktreePath(commandID)
+	if err := wm.gitRunInDir(integrationPath, "checkout", "--detach"); err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(integrationPath, "dirty.txt"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("write dirty file: %v", err)
+	}
+
+	err := wm.EnsureIntegrationBranchCheckedOut(commandID)
+	if err == nil {
+		t.Fatal("expected error for dirty detached worktree, got nil")
+	}
+	if !strings.Contains(err.Error(), "uncommitted") {
+		t.Errorf("error should mention uncommitted changes, got: %v", err)
+	}
+}

@@ -199,9 +199,10 @@ func (h *TaskRetryHandler) addRetryTaskToQueueLocked(task *model.Task, workerID 
 // queue failure attempt rollback before falling back to reconciler recovery.
 //
 // Error handling strategy (C-A7):
-//   (a) Register retry task in state, then immediately attempt queue add.
-//   (b) On queue failure, rollback the state entry (delete the retry task).
-//   (c) If rollback also fails, mark as RetryEnqueueFailed for R1 reconciler.
+//
+//	(a) Register retry task in state, then immediately attempt queue add.
+//	(b) On queue failure, rollback the state entry (delete the retry task).
+//	(c) If rollback also fails, mark as RetryEnqueueFailed for R1 reconciler.
 //
 // This minimises the window where an orphaned state entry exists without
 // a corresponding queue entry.

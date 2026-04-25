@@ -40,14 +40,33 @@ func NewRuntimeLauncher() *RuntimeLauncher {
 	}
 
 	// codex: OpenAI Codex CLI (Rust-based interactive TUI).
-	// Launched without the "exec" subcommand — "exec" is non-interactive (headless)
-	// and does not accept --full-auto. The interactive TUI mode is the top-level
-	// "codex" command. --full-auto enables fully automatic approval; --sandbox
-	// workspace-write allows writes within the current workspace directory.
+	// Launched without the "exec" subcommand — "exec" is non-interactive (headless).
+	// The interactive TUI mode is the top-level "codex" command.
+	//
+	// --ask-for-approval never: auto-approve every tool call without interactive prompts.
+	//   Short form: -a never.
+	//   This replaces --full-auto, which is actually an alias for
+	//   "-a on-request --sandbox workspace-write". That alias:
+	//     (a) sets the sandbox to workspace-write (blocks all UDS connections), and
+	//     (b) uses "on-request" approval (can still prompt in some cases).
+	//   We need "never" (no prompts at all) and a sandbox that allows UDS.
+	//   NOTE: --approval-policy is NOT a valid codex flag; the correct flag name is
+	//   --ask-for-approval (or its short form -a).
+	//
+	// --sandbox danger-full-access: disable sandbox restrictions entirely. This is
+	//   required for Maestro because:
+	//     1. workspace-write (and by extension --full-auto) blocks all Unix domain
+	//        socket connections, preventing maestro commands inside the codex session
+	//        from reaching .maestro/daemon.sock. Every `maestro queue write` /
+	//        `maestro status` / `maestro plan add-task` call would fail or prompt.
+	//     2. Codex agents need full filesystem access to perform code changes,
+	//        git operations, and worktree manipulation — the same level already
+	//        granted to claude-code via --dangerously-skip-permissions.
+	//
 	// Requires OPENAI_API_KEY (or OPENAI_BASE_URL + compatible key) environment variable.
 	rl.runtimes[model.RuntimeCodex] = RuntimeDef{
 		Command: "codex",
-		Args:    []string{"--full-auto", "--sandbox", "workspace-write"},
+		Args:    []string{"--ask-for-approval", "never", "--sandbox", "danger-full-access"},
 	}
 
 	// gemini: Google Gemini CLI. Requires GEMINI_API_KEY environment variable.

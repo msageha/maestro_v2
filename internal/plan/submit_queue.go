@@ -49,20 +49,14 @@ func releaseFlock(f *os.File) {
 	_ = f.Close()
 }
 
-// ApplyTaskDefaults fills in default values for required fields that may be
-// omitted in Planner input for backward compatibility.
-// ExpectedPaths is set to an empty slice if nil; DefinitionOfAbort is set to
-// DefaultDefinitionOfAbort() if nil.
+// ApplyTaskDefaults is retained as an extension point for future per-field
+// defaults, but no longer fills required fields silently. REQUIREMENTS.md
+// §S3-1 mandates that every task explicitly declare expected_paths and
+// definition_of_abort. Auto-filling these used to mask missing Planner output
+// and disabled Path-overlap Heuristics (A-4) and Circuit Breakers (S2-2);
+// validation now rejects nil values directly so the gap is surfaced loudly.
 func ApplyTaskDefaults(tasks []TaskInput) {
-	for i := range tasks {
-		if tasks[i].ExpectedPaths == nil {
-			tasks[i].ExpectedPaths = []string{}
-		}
-		if tasks[i].DefinitionOfAbort == nil {
-			d := model.DefaultDefinitionOfAbort()
-			tasks[i].DefinitionOfAbort = &d
-		}
-	}
+	_ = tasks // currently a no-op; kept so callers compile across the change.
 }
 
 func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks []TaskInput, nameToID map[string]string, commandID string, now string, lockMap *lock.MutexMap) error {
@@ -100,10 +94,15 @@ func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks 
 			SkillRefs:          t.SkillRefs,
 			ExpectedPaths:      t.ExpectedPaths,
 			DefinitionOfAbort:  t.DefinitionOfAbort,
-			Priority:           100,
-			Status:             model.StatusPending,
-			CreatedAt:          now,
-			UpdatedAt:          now,
+			// Bug F: propagate run_on_main / run_on_integration from TaskInput
+			// so that plan submit can express "main を見る verification" / "統合
+			// worktree で解決" tasks without requiring add-task.
+			RunOnMain:        t.RunOnMain,
+			RunOnIntegration: t.RunOnIntegration,
+			Priority:         100,
+			Status:           model.StatusPending,
+			CreatedAt:        now,
+			UpdatedAt:        now,
 		}
 
 		workerTasks[a.WorkerID] = append(workerTasks[a.WorkerID], queueTask)

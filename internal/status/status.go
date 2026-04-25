@@ -78,25 +78,50 @@ func checkDaemon(sockPath string) daemonStatus {
 }
 
 func getAgentStatuses() []agentStatus {
-	lines, err := tmux.ListAllPanes("#{@agent_id}\t#{@role}\t#{@model}\t#{@status}")
+	// Include pane_current_command to detect crashed agents (pane returned to shell).
+	// Also include @runtime so the model column can fall back to the runtime name
+	// for non-claude-code runtimes that launch with no explicit model (e.g.
+	// runtime=codex, @model=""). Without this fallback the status output showed
+	// an empty model column for those agents.
+	lines, err := tmux.ListAllPanes("#{@agent_id}\t#{@role}\t#{@model}\t#{@status}\t#{pane_current_command}\t#{@runtime}")
 	if err != nil {
 		return nil
 	}
 
 	agents := make([]agentStatus, 0, len(lines))
 	for _, line := range lines {
-		parts := strings.SplitN(line, "\t", 4)
-		if len(parts) < 4 {
+		parts := strings.SplitN(line, "\t", 6)
+		if len(parts) < 5 {
 			continue
 		}
 		if parts[0] == "" {
 			continue
 		}
+		status := parts[3]
+		// Override status to "dead" if the pane's foreground command is a shell,
+		// which indicates the agent process crashed and returned to the shell prompt.
+		// @status (parts[3]) is only updated by the daemon/agent and stays "idle"
+		// even after a crash, so we must check the live process state here.
+		paneCmd := parts[4]
+		if tmux.IsShellCommand(paneCmd) && parts[0] != "" {
+			status = "dead"
+		}
+		// Model display: prefer @model, fall back to @runtime for non-claude-code
+		// runtimes that launch with no explicit model override. This keeps the
+		// `maestro status` table informative for codex/gemini agents instead of
+		// rendering a blank model column.
+		modelDisplay := parts[2]
+		if modelDisplay == "" && len(parts) >= 6 {
+			runtime := parts[5]
+			if runtime != "" && runtime != model.RuntimeClaudeCode {
+				modelDisplay = runtime
+			}
+		}
 		agents = append(agents, agentStatus{
 			ID:     parts[0],
 			Role:   parts[1],
-			Model:  parts[2],
-			Status: parts[3],
+			Model:  modelDisplay,
+			Status: status,
 		})
 	}
 	return agents

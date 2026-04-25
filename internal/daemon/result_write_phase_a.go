@@ -32,6 +32,12 @@ type resultWritePhaseAResult struct {
 	retryTask        *model.Task // non-nil if a retry should be scheduled (caller handles registration)
 	queueWriteFailed bool        // true when result was committed but queue terminal write failed (H2 sticky error)
 	originalTaskID   string      // non-empty if this task is a retry of another (for lineage update in Phase B)
+	// duplicate is set when Phase A detected an idempotent/duplicate submission
+	// (either in the result file, as a terminal queue entry, or via
+	// AppliedResultIDs). The caller must short-circuit subsequent phases to
+	// avoid emitting misleading "result_write" audit log lines as if this were
+	// a fresh write (Bug H).
+	duplicate bool
 }
 
 func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatus model.Status) (*resultWritePhaseAResult, error) {
@@ -65,7 +71,7 @@ func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatu
 	if idempotentID, err := h.checkResultIdempotency(&rf, params, resultStatus); err != nil {
 		return nil, err
 	} else if idempotentID != "" {
-		return &resultWritePhaseAResult{resultID: idempotentID}, nil
+		return &resultWritePhaseAResult{resultID: idempotentID, duplicate: true}, nil
 	}
 
 	// 2. Fencing verification
@@ -79,7 +85,7 @@ func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatu
 		return nil, err
 	}
 	if idempotentID != "" {
-		return &resultWritePhaseAResult{resultID: idempotentID}, nil
+		return &resultWritePhaseAResult{resultID: idempotentID, duplicate: true}, nil
 	}
 
 	// 3. Defensive boundary check for taskIdx
@@ -100,7 +106,7 @@ func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatu
 		if existingResultID, ok := preState.AppliedResultIDs[params.TaskID]; ok {
 			h.logFn(LogLevelWarn, "duplicate_result_skipped task=%s existing_result=%s command=%s",
 				params.TaskID, existingResultID, params.CommandID)
-			return &resultWritePhaseAResult{resultID: existingResultID}, nil
+			return &resultWritePhaseAResult{resultID: existingResultID, duplicate: true}, nil
 		}
 	}
 

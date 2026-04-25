@@ -69,6 +69,30 @@ func (c Config) validateAgents(errs *[]error) {
 			*errs = append(*errs, fmt.Errorf("agents.workers.models.%s: invalid model name %q", workerID, m))
 		}
 	}
+
+	// Orchestrator/Planner role constraints (Bash(maestro:*), Read(.maestro/**))
+	// are enforced via Claude Code's --allowedTools / --disallowedTools CLI
+	// flags. codex and gemini have no equivalent enforcement layer, so the
+	// "delegation-only" rule for Orchestrator and the "planning-only" rule for
+	// Planner cannot be technically enforced when those runtimes are used.
+	// Past incidents confirmed this is not a prompt-quality issue: codex
+	// running as Orchestrator has bypassed delegation entirely and edited
+	// files on main directly. Fail-closed at config load to make the role
+	// contract honest.
+	if r, _ := ParseRuntimeFromModel(c.Agents.Orchestrator.Model); r != RuntimeClaudeCode {
+		*errs = append(*errs, fmt.Errorf(
+			"agents.orchestrator.model: runtime %q is not supported for the orchestrator role "+
+				"(only claude-code enforces tool restrictions; codex/gemini have no equivalent guardrail). "+
+				"Set agents.orchestrator.model to a Claude model such as opus, sonnet, or haiku",
+			r))
+	}
+	if r, _ := ParseRuntimeFromModel(c.Agents.Planner.Model); r != RuntimeClaudeCode {
+		*errs = append(*errs, fmt.Errorf(
+			"agents.planner.model: runtime %q is not supported for the planner role "+
+				"(only claude-code enforces tool restrictions; codex/gemini have no equivalent guardrail). "+
+				"Set agents.planner.model to a Claude model such as opus, sonnet, or haiku",
+			r))
+	}
 }
 
 func (c Config) validateWatcher(errs *[]error) {

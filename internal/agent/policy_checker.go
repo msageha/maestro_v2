@@ -109,7 +109,7 @@ func (pc *PolicyChecker) HookSettings(scriptPath string) (string, error) {
 
 // shellQuote safely quotes a string for embedding in a shell script.
 // It wraps the string in single quotes, escaping internal single quotes
-// using the standard '\'' technique (end quote, literal quote, start quote).
+// using the standard '\” technique (end quote, literal quote, start quote).
 // Inside single quotes all shell metacharacters ($, `, ", \, etc.) are literal.
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
@@ -274,11 +274,26 @@ if [ "$tool_name" = "Bash" ]; then
   # mirrors the (^|;|\||&&)\s* pattern used by D005/D006/etc. and still
   # catches chained forms like "cd worktree && git commit" because the
   # && separator places git at the head of the next segment.
+  #
+  # Exception: _integration worktrees are exempt from WT-GIT restrictions.
+  # During publish_conflict recovery a Worker assigned to the _integration
+  # worktree must run fetch/merge/add/commit to resolve conflicts. Blocking
+  # those operations causes an infinite recovery loop (result="completed" but
+  # conflict never resolved). Integration worktrees are always named with an
+  # "_integration" suffix (e.g. .maestro/worktrees/<cmdid>_integration/).
   _wt_cwd="$(pwd -P 2>/dev/null || echo "")"
   if [ -n "$_wt_cwd" ] && echo "$_wt_cwd" | grep -qF '/.maestro/worktrees/'; then
-    if echo "$cmd" | grep -qE '(^|;|\||&&)\s*git\s+(commit|add|merge|rebase|cherry-pick|revert|stash|restore|fetch|pull|worktree|tag)(\s|$)'; then
-      deny "WT-GIT: Blocked git change command in worktree mode (only read-only git commands allowed)"
-    fi
+    case "$_wt_cwd" in
+      */.maestro/worktrees/*_integration|*/.maestro/worktrees/*_integration/*)
+        # _integration worktree: git change operations are permitted here.
+        # Conflict resolution (fetch, merge, add, commit) requires them.
+        ;;
+      *)
+        if echo "$cmd" | grep -qE '(^|;|\||&&)\s*git\s+(commit|add|merge|rebase|cherry-pick|revert|stash|restore|fetch|pull|worktree|tag)(\s|$)'; then
+          deny "WT-GIT: Blocked git change command in worktree mode (only read-only git commands allowed)"
+        fi
+        ;;
+    esac
   fi
 
   # Note: git merge --abort is not listed in this hook. Workers never run
@@ -495,6 +510,21 @@ if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ]; then
   file_path="$(echo "$input" | jq -r '.tool_input.file_path // ""')"
   # Normalize to lowercase for case-insensitive FS (macOS)
   file_path_lower="$(echo "$file_path" | tr '[:upper:]' '[:lower:]')"
+
+  # RUN_ON_MAIN: read-only verification mode. The Daemon stamps the pane
+  # with @run_on_main=1 (via tmux pane-scoped user variable) before
+  # dispatching a run_on_main task and clears it on the next regular
+  # dispatch. While the flag is set, all Write/Edit operations are
+  # denied so the Worker cannot mutate the main worktree it is reading.
+  # Reading the flag fails open: if tmux is unavailable for any reason,
+  # we let the request through rather than break Worker delivery — the
+  # WT001 worktree boundary check still fires for worktree-mode tasks.
+  if [ -n "${TMUX_PANE:-}" ] && command -v tmux >/dev/null 2>&1; then
+    _run_on_main_flag="$(tmux display-message -t "$TMUX_PANE" -p '#{@run_on_main}' 2>/dev/null || echo "")"
+    if [ "$_run_on_main_flag" = "1" ]; then
+      deny "RUN_ON_MAIN: Write/Edit blocked while task runs against main branch (read-only verification mode)"
+    fi
+  fi
 
   # Block writes to .maestro/ control plane (absolute and relative paths)
   case "$file_path_lower" in

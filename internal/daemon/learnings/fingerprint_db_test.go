@@ -197,10 +197,10 @@ func TestPatterns(t *testing.T) {
 func TestStoreRecalculatesSuccessRate(t *testing.T) {
 	t.Parallel()
 	db := NewFingerprintDB(100)
-	db.Store("fp1", "cat", "strat")       // OccurrenceCount=1
-	db.Store("fp1", "cat", "strat")       // OccurrenceCount=2
-	db.RecordSuccess("fp1")               // successCount=1, SuccessRate=1/2=0.5
-	db.Store("fp1", "cat", "strat")       // OccurrenceCount=3, SuccessRate should be 1/3
+	db.Store("fp1", "cat", "strat") // OccurrenceCount=1
+	db.Store("fp1", "cat", "strat") // OccurrenceCount=2
+	db.RecordSuccess("fp1")         // successCount=1, SuccessRate=1/2=0.5
+	db.Store("fp1", "cat", "strat") // OccurrenceCount=3, SuccessRate should be 1/3
 
 	p, ok := db.Query("fp1")
 	if !ok {

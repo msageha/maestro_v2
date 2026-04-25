@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/msageha/maestro_v2/internal/model"
@@ -40,8 +41,10 @@ func TestGetCommand_Codex(t *testing.T) {
 	if cmd != "codex" {
 		t.Errorf("expected codex, got %s", cmd)
 	}
-	// Interactive TUI mode: no "exec" subcommand; --full-auto for unattended operation.
-	expected := []string{"--full-auto", "--sandbox", "workspace-write"}
+	// --ask-for-approval never: auto-approve all tool calls (no interactive prompts).
+	// --sandbox danger-full-access: required to allow UDS connections to daemon.sock.
+	// (workspace-write and the --full-auto alias both block UDS connections.)
+	expected := []string{"--ask-for-approval", "never", "--sandbox", "danger-full-access"}
 	if len(args) != len(expected) {
 		t.Fatalf("expected args %v, got %v", expected, args)
 	}
@@ -132,7 +135,7 @@ func TestGetCommand_CodexWithModel(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// Base args + --model o3-mini
-	expected := []string{"--full-auto", "--sandbox", "workspace-write", "--model", "o3-mini"}
+	expected := []string{"--ask-for-approval", "never", "--sandbox", "danger-full-access", "--model", "o3-mini"}
 	if len(args) != len(expected) {
 		t.Fatalf("expected args %v, got %v", expected, args)
 	}
@@ -231,7 +234,7 @@ func TestGetCommand_CodexWithPrompt(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// Base args + positional prompt
-	expected := []string{"--full-auto", "--sandbox", "workspace-write", "You are Maestro orchestrator."}
+	expected := []string{"--ask-for-approval", "never", "--sandbox", "danger-full-access", "You are Maestro orchestrator."}
 	if len(args) != len(expected) {
 		t.Fatalf("expected args %v, got %v", expected, args)
 	}
@@ -252,7 +255,7 @@ func TestGetCommand_CodexWithModelAndPrompt(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	// Base args + --model + positional prompt (prompt must be last)
-	expected := []string{"--full-auto", "--sandbox", "workspace-write", "--model", "o3-mini", "System prompt here."}
+	expected := []string{"--ask-for-approval", "never", "--sandbox", "danger-full-access", "--model", "o3-mini", "System prompt here."}
 	if len(args) != len(expected) {
 		t.Fatalf("expected args %v, got %v", expected, args)
 	}
@@ -273,8 +276,40 @@ func TestGetCommand_CodexArgsIsolation(t *testing.T) {
 	if len(args1) == len(args2) {
 		t.Error("args should differ: one has model, the other does not")
 	}
-	// Verify base args in args2 are not mutated (--full-auto --sandbox workspace-write = 3 elements)
-	if len(args2) != 3 {
-		t.Errorf("expected 3 base args for codex without model, got %d: %v", len(args2), args2)
+	// Verify base args in args2 are not mutated
+	// (--approval-policy never --sandbox danger-full-access = 4 elements)
+	if len(args2) != 4 {
+		t.Errorf("expected 4 base args for codex without model, got %d: %v", len(args2), args2)
+	}
+}
+
+// TestLaunchAlternativeRuntime_RejectsOrchestratorAndPlanner verifies the
+// fail-closed defense-in-depth check that blocks codex/gemini from running
+// the orchestrator or planner role even if config validation is bypassed.
+// Tool-based role enforcement (--allowedTools, --disallowedTools) is
+// claude-code-only; without it the delegation/planning contract cannot be
+// enforced. Past incidents confirmed codex Orchestrator directly modified
+// files on main, never reaching the daemon (see launcher.go doc comment).
+func TestLaunchAlternativeRuntime_RejectsOrchestratorAndPlanner(t *testing.T) {
+	cases := []struct {
+		role    string
+		runtime string
+	}{
+		{"orchestrator", model.RuntimeCodex},
+		{"orchestrator", model.RuntimeGemini},
+		{"planner", model.RuntimeCodex},
+		{"planner", model.RuntimeGemini},
+	}
+	for _, tc := range cases {
+		t.Run(tc.role+"/"+tc.runtime, func(t *testing.T) {
+			err := launchAlternativeRuntime(tc.runtime, "", tc.role, "ignored prompt")
+			if err == nil {
+				t.Fatalf("expected error for role=%s runtime=%s", tc.role, tc.runtime)
+			}
+			// The error must mention the role so operators can act on it.
+			if !strings.Contains(err.Error(), tc.role) {
+				t.Errorf("error should mention role %q, got: %v", tc.role, err)
+			}
+		})
 	}
 }

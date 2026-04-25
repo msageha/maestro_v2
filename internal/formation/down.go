@@ -18,7 +18,7 @@ import (
 
 // RunDown executes the 'maestro down' command.
 func RunDown(maestroDir string, cfg model.Config) error {
-	tmux.SetSessionName("maestro-" + cfg.Project.Name)
+	tmux.SetSessionName(tmux.BuildMaestroSessionName(cfg.Project.Name, maestroDir))
 
 	// Initialize tmux debug logger for down process
 	tmuxLog, tmuxLogErr := initTmuxDebugLog(maestroDir)

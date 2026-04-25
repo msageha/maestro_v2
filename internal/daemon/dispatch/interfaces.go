@@ -31,6 +31,11 @@ type WorktreeResolver interface {
 	// for the given command. Used by the dispatcher to resolve the working
 	// directory for RunOnIntegration tasks (publish_conflict resolution).
 	GetIntegrationPath(commandID string) (string, error)
+	// EnsureIntegrationBranchCheckedOut verifies the integration worktree
+	// still has the expected integration branch checked out before a
+	// RunOnIntegration task runs. Detached or dirty worktrees are refused
+	// rather than silently dispatched onto (see RCA in worktree.Manager).
+	EnsureIntegrationBranchCheckedOut(commandID string) error
 }
 
 // ExecutorGetter provides lazy executor access.

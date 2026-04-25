@@ -11,10 +11,10 @@ import (
 // identical errors produce the same fingerprint regardless of
 // timestamps, PIDs, tmpfile paths, hex addresses, line numbers, etc.
 var (
-	reHex       = regexp.MustCompile(`0x[0-9a-fA-F]+`)
-	reDigits    = regexp.MustCompile(`\b\d+\b`)
-	reTmpPath   = regexp.MustCompile(`/(?:tmp|private/tmp|var/folders)/[^\s:]+`)
-	reRFC3339   = regexp.MustCompile(`\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?`)
+	reHex        = regexp.MustCompile(`0x[0-9a-fA-F]+`)
+	reDigits     = regexp.MustCompile(`\b\d+\b`)
+	reTmpPath    = regexp.MustCompile(`/(?:tmp|private/tmp|var/folders)/[^\s:]+`)
+	reRFC3339    = regexp.MustCompile(`\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?`)
 	reWhitespace = regexp.MustCompile(`\s+`)
 )
 

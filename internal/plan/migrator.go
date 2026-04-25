@@ -66,11 +66,11 @@ func (m *migrator) Migrate(data map[string]interface{}, fromVersion int) error {
 //  1. Increment currentSchemaVersion (e.g., 1 → 2).
 //  2. Register a migration function for the previous version:
 //     defaultMigrator.steps[1] = func(data map[string]interface{}) error {
-//         // Transform data from schema v1 to v2.
-//         // - Add new fields with default values.
-//         // - Rename or restructure existing fields.
-//         // - Remove deprecated fields.
-//         return nil
+//     // Transform data from schema v1 to v2.
+//     // - Add new fields with default values.
+//     // - Rename or restructure existing fields.
+//     // - Remove deprecated fields.
+//     return nil
 //     }
 //  3. Each migration function receives the raw YAML map and mutates it in place.
 //     The framework automatically updates data["schema_version"] after each step.

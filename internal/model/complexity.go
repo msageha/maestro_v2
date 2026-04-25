@@ -16,4 +16,3 @@ func ValidateComplexityLevel(s string) bool {
 	}
 	return false
 }
-

@@ -19,11 +19,11 @@ import (
 
 func TestFindPhaseForTask(t *testing.T) {
 	tests := []struct {
-		name       string
-		state      *model.CommandState
-		taskID     string
-		wantPhase  string
-		wantIdx    int
+		name      string
+		state     *model.CommandState
+		taskID    string
+		wantPhase string
+		wantIdx   int
 	}{
 		{
 			name: "task in first phase",
@@ -67,8 +67,8 @@ func TestFindPhaseForTask(t *testing.T) {
 			wantIdx:   -1,
 		},
 		{
-			name: "no phases",
-			state: &model.CommandState{},
+			name:      "no phases",
+			state:     &model.CommandState{},
 			taskID:    "t1",
 			wantPhase: "",
 			wantIdx:   -1,
@@ -96,14 +96,14 @@ func TestFindPhaseForTask(t *testing.T) {
 
 func TestReplaceInRequiredOrOptional(t *testing.T) {
 	tests := []struct {
-		name            string
-		requiredIDs     []string
-		optionalIDs     []string
-		oldID           string
-		newID           string
-		wantRequired    []string
-		wantOptional    []string
-		wantErr         bool
+		name         string
+		requiredIDs  []string
+		optionalIDs  []string
+		oldID        string
+		newID        string
+		wantRequired []string
+		wantOptional []string
+		wantErr      bool
 	}{
 		{
 			name:         "replace in required",
@@ -344,9 +344,9 @@ func TestReopenPhase(t *testing.T) {
 	now := "2024-01-01T00:00:00Z"
 
 	tests := []struct {
-		name      string
-		status    model.PhaseStatus
-		wantErr   bool
+		name       string
+		status     model.PhaseStatus
+		wantErr    bool
 		wantStatus model.PhaseStatus
 	}{
 		{

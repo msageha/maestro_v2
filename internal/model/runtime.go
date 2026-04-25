@@ -45,4 +45,3 @@ func ParseRuntimeFromModel(modelName string) (runtime, effectiveModel string) {
 		return RuntimeClaudeCode, modelName
 	}
 }
-

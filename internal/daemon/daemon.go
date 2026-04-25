@@ -77,20 +77,20 @@ type Daemon struct {
 	watcher  *fsnotify.Watcher
 	ticker   *time.Ticker
 
-	handler           *QueueHandler
-	stateReader       StateManager
-	canComplete            CanCompleteFunc
-	deferredPlanCompleter  DeferredPlanCompleterFunc
-	phaseDiagnoser         PhaseDiagnoserFunc
-	planExecutor      PlanExecutor
-	lockMap           *lock.MutexMap
-	qualityGateDaemon *QualityGateDaemon
-	circuitBreaker    *circuitbreaker.Handler
-	admissionCtrl     *admission.Controller
-	fallbackMgr       *fallback.Manager
-	worktreeManager   *WorktreeManager
-	rolloutManager    *rollout.Manager
-	judgeCaller       *judge.Judge
+	handler               *QueueHandler
+	stateReader           StateManager
+	canComplete           CanCompleteFunc
+	deferredPlanCompleter DeferredPlanCompleterFunc
+	phaseDiagnoser        PhaseDiagnoserFunc
+	planExecutor          PlanExecutor
+	lockMap               *lock.MutexMap
+	qualityGateDaemon     *QualityGateDaemon
+	circuitBreaker        *circuitbreaker.Handler
+	admissionCtrl         *admission.Controller
+	fallbackMgr           *fallback.Manager
+	worktreeManager       *WorktreeManager
+	rolloutManager        *rollout.Manager
+	judgeCaller           *judge.Judge
 
 	// Verify config loaded at startup (always non-nil due to fallback)
 	verifyConfig *model.VerifyConfig
@@ -194,11 +194,26 @@ func (d *Daemon) LockMap() *lock.MutexMap {
 // Using named methods instead of inline closures makes the initialization
 // dependency graph explicit and testable.
 
-func (d *Daemon) eventBusAccessor() *events.Bus            { return d.eventBus }
-func (d *Daemon) fallbackAccessor() fallbackRecorder       { if d.fallbackMgr != nil { return d.fallbackMgr }; return nil }
-func (d *Daemon) circuitBreakerAccessor() circuitBreakerUpdater { if d.circuitBreaker != nil { return d.circuitBreaker }; return nil }
-func (d *Daemon) reviewCoordAccessor() reviewDispatcher     { if d.reviewCoord != nil { return d.reviewCoord }; return nil }
-func (d *Daemon) contextAccessor() context.Context          { return d.ctx }
+func (d *Daemon) eventBusAccessor() *events.Bus { return d.eventBus }
+func (d *Daemon) fallbackAccessor() fallbackRecorder {
+	if d.fallbackMgr != nil {
+		return d.fallbackMgr
+	}
+	return nil
+}
+func (d *Daemon) circuitBreakerAccessor() circuitBreakerUpdater {
+	if d.circuitBreaker != nil {
+		return d.circuitBreaker
+	}
+	return nil
+}
+func (d *Daemon) reviewCoordAccessor() reviewDispatcher {
+	if d.reviewCoord != nil {
+		return d.reviewCoord
+	}
+	return nil
+}
+func (d *Daemon) contextAccessor() context.Context { return d.ctx }
 
 // New creates a new Daemon instance.
 func New(maestroDir string, cfg model.Config) (*Daemon, error) {
@@ -279,8 +294,8 @@ func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Close
 			ctx:            d.contextAccessor,
 			triggerScan:    d.triggerResultWriteScan,
 		},
-		queue:     &QueueWriteAPI{apiContext: shared},
-		plan:      &PlanAPI{apiContext: shared},
+		queue: &QueueWriteAPI{apiContext: shared},
+		plan:  &PlanAPI{apiContext: shared},
 		heartbeat: &HeartbeatAPI{
 			maestroDir: maestroDir,
 			config:     &d.config,

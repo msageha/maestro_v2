@@ -31,8 +31,10 @@ var errSessionExists = fmt.Errorf("maestro session already exists (use --force t
 
 // RunUp executes the 'maestro up' command.
 func RunUp(opts UpOptions) (err error) {
-	// Set tmux session name from project config
-	tmux.SetSessionName("maestro-" + opts.Config.Project.Name)
+	// Set tmux session name from project config. Include a hash of MaestroDir
+	// so different checkouts of the same project don't share a session slot
+	// (see tmux.BuildMaestroSessionName).
+	tmux.SetSessionName(tmux.BuildMaestroSessionName(opts.Config.Project.Name, opts.MaestroDir))
 
 	// Initialize tmux debug logger for session lifecycle diagnostics.
 	tmuxLog, tmuxLogErr := initTmuxDebugLog(opts.MaestroDir)

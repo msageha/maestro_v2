@@ -71,7 +71,7 @@ func runUp(args []string) error {
 		return fmt.Errorf("maestro up: load config: %w", err)
 	}
 
-	if err := setupTmuxSession("up", cfg); err != nil {
+	if err := setupTmuxSession("up", maestroDir, cfg); err != nil {
 		return err
 	}
 

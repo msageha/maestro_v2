@@ -65,4 +65,3 @@ func TestDefaultRuntime(t *testing.T) {
 		t.Errorf("DefaultRuntime() = %q, want claude-code", got)
 	}
 }
-

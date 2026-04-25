@@ -23,7 +23,7 @@ func TestDiagnosePhase_RepairHotspots(t *testing.T) {
 		},
 		{
 			ID: "t2", Purpose: "TaskB", Status: model.StatusCompleted,
-			Attempts: 1,
+			Attempts:  1,
 			CreatedAt: ts, UpdatedAt: ts,
 		},
 		{

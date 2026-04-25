@@ -63,7 +63,7 @@ type mockValidationError struct {
 	stderr string
 }
 
-func (e *mockValidationError) Error() string       { return e.msg }
+func (e *mockValidationError) Error() string        { return e.msg }
 func (e *mockValidationError) FormatStderr() string { return e.stderr }
 
 // --- mock codedFormatter ---
@@ -74,7 +74,7 @@ type mockCodedError struct {
 	code   string
 }
 
-func (e *mockCodedError) Error() string       { return e.msg }
+func (e *mockCodedError) Error() string        { return e.msg }
 func (e *mockCodedError) FormatStderr() string { return e.stderr }
 func (e *mockCodedError) ErrorCode() string    { return e.code }
 
@@ -781,4 +781,3 @@ func TestHandlePlan_SuccessResponseStructure(t *testing.T) {
 		})
 	}
 }
-

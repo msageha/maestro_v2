@@ -11,9 +11,13 @@ type EvolutionConfig struct {
 	StrategyWeights      map[string]int `yaml:"strategy_weights,omitempty"`
 }
 
-func (e EvolutionConfig) EffectiveEnabled() bool                { return effectiveValue(e.Enabled, false) }
-func (e EvolutionConfig) EffectiveMaxMutationsPerRound() int    { return effectiveValue(e.MaxMutationsPerRound, DefaultMaxMutationsPerRound) }
-func (e EvolutionConfig) EffectiveNoveltyThreshold() float64    { return effectiveValue(e.NoveltyThreshold, DefaultNoveltyThreshold) }
+func (e EvolutionConfig) EffectiveEnabled() bool { return effectiveValue(e.Enabled, false) }
+func (e EvolutionConfig) EffectiveMaxMutationsPerRound() int {
+	return effectiveValue(e.MaxMutationsPerRound, DefaultMaxMutationsPerRound)
+}
+func (e EvolutionConfig) EffectiveNoveltyThreshold() float64 {
+	return effectiveValue(e.NoveltyThreshold, DefaultNoveltyThreshold)
+}
 
 // EffectiveStrategyWeights returns the configured strategy weights or defaults (diff:2, full:1, cross:1).
 func (e EvolutionConfig) EffectiveStrategyWeights() map[string]int {
@@ -42,11 +46,19 @@ type BanditConfig struct {
 	TraceDataRequirement *int     `yaml:"trace_data_requirement,omitempty"`
 }
 
-func (b BanditConfig) EffectiveEnabled() bool                { return effectiveValue(b.Enabled, false) }
-func (b BanditConfig) EffectiveExplorationCoeff() float64    { return effectiveValue(b.ExplorationCoeff, DefaultExplorationCoeff) }
-func (b BanditConfig) EffectiveMinSamplesBeforeUse() int     { return effectiveValue(b.MinSamplesBeforeUse, DefaultMinSamplesBeforeUse) }
-func (b BanditConfig) EffectiveDecayFactor() float64         { return effectiveValue(b.DecayFactor, DefaultDecayFactor) }
-func (b BanditConfig) EffectiveTraceDataRequirement() int    { return effectiveValue(b.TraceDataRequirement, DefaultTraceDataRequirement) }
+func (b BanditConfig) EffectiveEnabled() bool { return effectiveValue(b.Enabled, false) }
+func (b BanditConfig) EffectiveExplorationCoeff() float64 {
+	return effectiveValue(b.ExplorationCoeff, DefaultExplorationCoeff)
+}
+func (b BanditConfig) EffectiveMinSamplesBeforeUse() int {
+	return effectiveValue(b.MinSamplesBeforeUse, DefaultMinSamplesBeforeUse)
+}
+func (b BanditConfig) EffectiveDecayFactor() float64 {
+	return effectiveValue(b.DecayFactor, DefaultDecayFactor)
+}
+func (b BanditConfig) EffectiveTraceDataRequirement() int {
+	return effectiveValue(b.TraceDataRequirement, DefaultTraceDataRequirement)
+}
 
 // --- C-3 Extended Verification Config ---
 
@@ -59,10 +71,18 @@ type ExtendedVerificationConfig struct {
 	MaxAutoRetries     *int               `yaml:"max_auto_retries,omitempty"`
 }
 
-func (ev ExtendedVerificationConfig) EffectiveEnabled() bool          { return effectiveValue(ev.Enabled, false) }
-func (ev ExtendedVerificationConfig) EffectiveSecurityCheck() bool    { return effectiveValue(ev.SecurityCheck, false) }
-func (ev ExtendedVerificationConfig) EffectivePerformanceBench() bool { return effectiveValue(ev.PerformanceBench, false) }
-func (ev ExtendedVerificationConfig) EffectiveMaxAutoRetries() int    { return effectiveValue(ev.MaxAutoRetries, DefaultMaxAutoRetries) }
+func (ev ExtendedVerificationConfig) EffectiveEnabled() bool {
+	return effectiveValue(ev.Enabled, false)
+}
+func (ev ExtendedVerificationConfig) EffectiveSecurityCheck() bool {
+	return effectiveValue(ev.SecurityCheck, false)
+}
+func (ev ExtendedVerificationConfig) EffectivePerformanceBench() bool {
+	return effectiveValue(ev.PerformanceBench, false)
+}
+func (ev ExtendedVerificationConfig) EffectiveMaxAutoRetries() int {
+	return effectiveValue(ev.MaxAutoRetries, DefaultMaxAutoRetries)
+}
 
 // EffectivePerspectiveWeights returns the configured weights or defaults.
 func (ev ExtendedVerificationConfig) EffectivePerspectiveWeights() map[string]float64 {
@@ -84,12 +104,22 @@ type SearchConfig struct {
 	ThompsonBeta   *float64 `yaml:"thompson_beta,omitempty"`
 }
 
-func (s SearchConfig) EffectiveEnabled() bool            { return effectiveValue(s.Enabled, false) }
-func (s SearchConfig) EffectiveMaxDepth() int            { return effectiveValue(s.MaxDepth, DefaultSearchMaxDepth) }
-func (s SearchConfig) EffectiveMaxBranching() int        { return effectiveValue(s.MaxBranching, DefaultMaxBranching) }
-func (s SearchConfig) EffectivePruneThreshold() float64  { return effectiveValue(s.PruneThreshold, DefaultPruneThreshold) }
-func (s SearchConfig) EffectiveThompsonAlpha() float64   { return effectiveValue(s.ThompsonAlpha, DefaultThompsonAlpha) }
-func (s SearchConfig) EffectiveThompsonBeta() float64    { return effectiveValue(s.ThompsonBeta, DefaultThompsonBeta) }
+func (s SearchConfig) EffectiveEnabled() bool { return effectiveValue(s.Enabled, false) }
+func (s SearchConfig) EffectiveMaxDepth() int {
+	return effectiveValue(s.MaxDepth, DefaultSearchMaxDepth)
+}
+func (s SearchConfig) EffectiveMaxBranching() int {
+	return effectiveValue(s.MaxBranching, DefaultMaxBranching)
+}
+func (s SearchConfig) EffectivePruneThreshold() float64 {
+	return effectiveValue(s.PruneThreshold, DefaultPruneThreshold)
+}
+func (s SearchConfig) EffectiveThompsonAlpha() float64 {
+	return effectiveValue(s.ThompsonAlpha, DefaultThompsonAlpha)
+}
+func (s SearchConfig) EffectiveThompsonBeta() float64 {
+	return effectiveValue(s.ThompsonBeta, DefaultThompsonBeta)
+}
 
 // --- C-5 Self-Improvement Config ---
 
@@ -101,8 +131,10 @@ type SelfImprovementConfig struct {
 	ArchiveMaxSize *int     `yaml:"archive_max_size,omitempty"`
 }
 
-func (si SelfImprovementConfig) EffectiveEnabled() bool     { return effectiveValue(si.Enabled, false) }
-func (si SelfImprovementConfig) EffectiveArchiveMaxSize() int { return effectiveValue(si.ArchiveMaxSize, DefaultArchiveMaxSize) }
+func (si SelfImprovementConfig) EffectiveEnabled() bool { return effectiveValue(si.Enabled, false) }
+func (si SelfImprovementConfig) EffectiveArchiveMaxSize() int {
+	return effectiveValue(si.ArchiveMaxSize, DefaultArchiveMaxSize)
+}
 
 // EffectiveTargets returns the configured targets or defaults.
 func (si SelfImprovementConfig) EffectiveTargets() []string {
@@ -137,9 +169,15 @@ type ComplexityThresholds struct {
 	ComplexMaxFiles  *int `yaml:"complex_max_files,omitempty"`
 }
 
-func (ct ComplexityThresholds) EffectiveSimpleMaxFiles() int   { return effectiveValue(ct.SimpleMaxFiles, DefaultSimpleMaxFiles) }
-func (ct ComplexityThresholds) EffectiveStandardMaxFiles() int { return effectiveValue(ct.StandardMaxFiles, DefaultStandardMaxFiles) }
-func (ct ComplexityThresholds) EffectiveComplexMaxFiles() int  { return effectiveValue(ct.ComplexMaxFiles, DefaultComplexMaxFiles) }
+func (ct ComplexityThresholds) EffectiveSimpleMaxFiles() int {
+	return effectiveValue(ct.SimpleMaxFiles, DefaultSimpleMaxFiles)
+}
+func (ct ComplexityThresholds) EffectiveStandardMaxFiles() int {
+	return effectiveValue(ct.StandardMaxFiles, DefaultStandardMaxFiles)
+}
+func (ct ComplexityThresholds) EffectiveComplexMaxFiles() int {
+	return effectiveValue(ct.ComplexMaxFiles, DefaultComplexMaxFiles)
+}
 
 // --- C-8 Feature Profiles ---
 
@@ -153,12 +191,24 @@ type FeatureProfile struct {
 	AdaptiveDepth           *bool   `yaml:"adaptive_depth,omitempty"`
 }
 
-func (fp FeatureProfile) EffectiveCrossAgentReview() string        { return effectiveValue(fp.CrossAgentReview, DefaultCrossAgentReview) }
-func (fp FeatureProfile) EffectiveExploratoryOptimization() bool   { return effectiveValue(fp.ExploratoryOptimization, false) }
-func (fp FeatureProfile) EffectiveEvolutionaryQuality() bool       { return effectiveValue(fp.EvolutionaryQuality, false) }
-func (fp FeatureProfile) EffectiveAdaptiveModelSelection() bool    { return effectiveValue(fp.AdaptiveModelSelection, false) }
-func (fp FeatureProfile) EffectiveSelfImprovement() bool           { return effectiveValue(fp.SelfImprovement, false) }
-func (fp FeatureProfile) EffectiveAdaptiveDepth() bool             { return effectiveValue(fp.AdaptiveDepth, false) }
+func (fp FeatureProfile) EffectiveCrossAgentReview() string {
+	return effectiveValue(fp.CrossAgentReview, DefaultCrossAgentReview)
+}
+func (fp FeatureProfile) EffectiveExploratoryOptimization() bool {
+	return effectiveValue(fp.ExploratoryOptimization, false)
+}
+func (fp FeatureProfile) EffectiveEvolutionaryQuality() bool {
+	return effectiveValue(fp.EvolutionaryQuality, false)
+}
+func (fp FeatureProfile) EffectiveAdaptiveModelSelection() bool {
+	return effectiveValue(fp.AdaptiveModelSelection, false)
+}
+func (fp FeatureProfile) EffectiveSelfImprovement() bool {
+	return effectiveValue(fp.SelfImprovement, false)
+}
+func (fp FeatureProfile) EffectiveAdaptiveDepth() bool {
+	return effectiveValue(fp.AdaptiveDepth, false)
+}
 
 // NormalizeExperimentalConfig fills nil pointer fields in experimental config sections (C-1 through C-8)
 // with their default values. Call once after unmarshalling config.yaml so that EffectiveXxx() methods

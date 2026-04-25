@@ -12,8 +12,21 @@ import (
 
 // CallerRoleEnv is the environment variable from which CLI clients populate
 // Request.CallerRole. The agent launcher sets this when spawning role-specific
-// claude processes so that downstream maestro CLI invocations carry an
-// authenticated role hint to the daemon.
+// claude processes so that downstream maestro CLI invocations carry the
+// caller's role to the daemon.
+//
+// SECURITY NOTE: This is an *advisory hint*, NOT an authenticated credential.
+// The value is read from a process-environment variable that any local
+// process running as the same user can set or override before invoking the
+// maestro CLI. There is no cryptographic binding between the role string and
+// the calling process — the daemon trusts the value because the UDS socket
+// is mode 0600 and so only processes running as the same UNIX user can
+// connect at all. The trust boundary is therefore "same UNIX user" — within
+// that boundary, role separation is best-effort and prevents *honest*
+// mistakes (e.g. a Worker accidentally running an Orchestrator-only command),
+// but it does not defend against a same-user adversary.
+//
+// Do not document this field as "authenticated" anywhere in the code base.
 const CallerRoleEnv = "MAESTRO_AGENT_ROLE"
 
 // CallerRole constants define the valid values for the MAESTRO_AGENT_ROLE

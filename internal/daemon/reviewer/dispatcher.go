@@ -23,9 +23,9 @@ var ErrNotImplemented = errors.New("reviewer: not implemented")
 // ReviewDispatcher manages asynchronous dispatch of code reviews to
 // heterogeneous models. All reviews are advisory and non-blocking.
 type ReviewDispatcher struct {
-	config        model.ReviewConfig
-	mu            sync.RWMutex
-	activeReviews int
+	config         model.ReviewConfig
+	mu             sync.RWMutex
+	activeReviews  int
 	results        chan model.ReviewResult
 	wg             sync.WaitGroup
 	droppedResults atomic.Int64

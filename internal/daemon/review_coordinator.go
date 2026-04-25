@@ -9,8 +9,8 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
-	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/daemon/reviewer"
+	"github.com/msageha/maestro_v2/internal/model"
 )
 
 // ReviewCoordinator owns the review dispatch pipeline: dispatching reviews for
@@ -18,12 +18,12 @@ import (
 // from Daemon groups the four review-related fields and two methods behind a
 // single composition boundary.
 type ReviewCoordinator struct {
-	dispatcher  *reviewer.ReviewDispatcher
-	tracker     *reviewer.UsefulnessTracker
-	requests    map[string]reviewTaskInfo
-	mu          sync.Mutex
-	maestroDir  string
-	log         logFunc
+	dispatcher *reviewer.ReviewDispatcher
+	tracker    *reviewer.UsefulnessTracker
+	requests   map[string]reviewTaskInfo
+	mu         sync.Mutex
+	maestroDir string
+	log        logFunc
 }
 
 // newReviewCoordinator creates a ReviewCoordinator when review is enabled.

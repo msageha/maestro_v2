@@ -36,6 +36,27 @@ func setupMaestroDir(t *testing.T) string {
 	return testutil.SetupDirWithQueues(t, 2)
 }
 
+// withDefaultRequiredFields fills in ExpectedPaths and DefinitionOfAbort with
+// safe defaults for test fixtures that don't exercise those fields. This used
+// to be applied implicitly by ApplyTaskDefaults; now that ApplyTaskDefaults no
+// longer auto-fills required schema fields (REQUIREMENTS.md §S3-1), each test
+// fixture must declare them explicitly.
+func withDefaultRequiredFields(tasks []TaskInput) []TaskInput {
+	for i := range tasks {
+		// "." survives YAML round-trip with `omitempty` (empty slices are
+		// stripped) and passes validateExpectedPaths (relative, no traversal,
+		// non-empty).
+		if tasks[i].ExpectedPaths == nil {
+			tasks[i].ExpectedPaths = []string{"."}
+		}
+		if tasks[i].DefinitionOfAbort == nil {
+			d := model.DefaultDefinitionOfAbort()
+			tasks[i].DefinitionOfAbort = &d
+		}
+	}
+	return tasks
+}
+
 func workerQueueFilename(index int) string {
 	return fmt.Sprintf("worker%d.yaml", index)
 }
@@ -66,6 +87,10 @@ func writePlannerQueue(t *testing.T, maestroDir string, commandID string, status
 
 func writeTasksFile(t *testing.T, tasks []TaskInput) string {
 	t.Helper()
+	// Auto-fill ExpectedPaths/DefinitionOfAbort for fixtures that don't
+	// exercise those fields. Validation-rejection tests for nil values do
+	// not go through this helper, so they stay unaffected.
+	tasks = withDefaultRequiredFields(tasks)
 	input := SubmitInput{Tasks: tasks}
 	data, err := yamlv3.Marshal(input)
 	if err != nil {
@@ -80,6 +105,10 @@ func writeTasksFile(t *testing.T, tasks []TaskInput) string {
 
 func writePhasesFile(t *testing.T, phases []PhaseInput) string {
 	t.Helper()
+	// Auto-fill ExpectedPaths/DefinitionOfAbort for tasks inside phases.
+	for i := range phases {
+		phases[i].Tasks = withDefaultRequiredFields(phases[i].Tasks)
+	}
 	input := SubmitInput{Phases: phases}
 	data, err := yamlv3.Marshal(input)
 	if err != nil {
@@ -472,9 +501,9 @@ func setupAwaitingFillFixture(t *testing.T) (string, *model.CommandState, string
 			TaskStates: map[string]model.Status{
 				"task_0000000001_aaaaaaaa": model.StatusCompleted,
 			},
-			CancelledReasons: make(map[string]string),
-			AppliedResultIDs: make(map[string]string),
-			RequiredTaskIDs:  []string{"task_0000000001_aaaaaaaa"},
+			CancelledReasons:  make(map[string]string),
+			AppliedResultIDs:  make(map[string]string),
+			RequiredTaskIDs:   []string{"task_0000000001_aaaaaaaa"},
 			ExpectedTaskCount: 1,
 		},
 		RetryTracking: model.RetryTracking{
@@ -681,10 +710,10 @@ func TestSubmit_PhaseFill_Preconditions(t *testing.T) {
 	}
 
 	tests := []struct {
-		name        string
-		setup       func(t *testing.T) (string, string)
-		phaseName   string
-		wantErrMsg  string
+		name       string
+		setup      func(t *testing.T) (string, string)
+		phaseName  string
+		wantErrMsg string
 	}{
 		{
 			name: "not_sealed",
@@ -1059,6 +1088,79 @@ func TestSubmit_PhasedSubmit_NoSystemCommit_InWorktreeMode(t *testing.T) {
 	}
 	if state.SystemCommitTaskID != nil {
 		t.Errorf("SystemCommitTaskID = %v, want nil in worktree mode (phased)", *state.SystemCommitTaskID)
+	}
+}
+
+// --- Bug M: empty tasks in phase-fill mode must surface as a structured
+// validation error (not a generic ErrCodeInternal), and stale awaiting_fill
+// signals against a phase that has already moved on must produce the
+// state-aware "must be awaiting_fill" diagnostic rather than the generic
+// "either tasks or phases must be specified" error. ---
+
+func TestSubmit_PhaseFill_EmptyTasks_StateAwareDiagnostic(t *testing.T) {
+	// Reproduces Bug M: a Planner with a stale awaiting_fill signal re-submits
+	// after the phase has already transitioned to "filling". The submission
+	// arrives with the phase-fill PhaseName set and (in some race variants)
+	// empty tasks. Before the fix, Submit's empty-tasks guard fired BEFORE
+	// the phase-fill router, returning a bare fmt.Errorf that surfaced as
+	// ErrCodeInternal in the daemon log. After the fix, the phase-fill router
+	// runs first and submitPhaseFill's state-aware check produces a
+	// planValidationError with "must be awaiting_fill" wording.
+	cfg := testConfig()
+	maestroDir := setupMaestroDir(t)
+	cmdID := "cmd_0000000099_bugmtest"
+	sm := NewStateManager(maestroDir, lock.NewMutexMap())
+	state := &model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     cmdID,
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			TaskStates: make(map[string]model.Status),
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{
+				// Phase has already moved past awaiting_fill: the prior submit
+				// has won the race and transitioned it to filling.
+				{PhaseID: "p1", Name: "phase_a", Type: "deferred", Status: model.PhaseStatusFilling},
+			},
+		},
+	}
+	if err := sm.SaveState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	// Empty tasks list — the duplicate signal can carry no payload.
+	tasksFile := writeTasksFile(t, []TaskInput{})
+
+	_, err := Submit(SubmitOptions{
+		CommandID:  cmdID,
+		TasksFile:  tasksFile,
+		PhaseName:  "phase_a",
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
+	})
+	if err == nil {
+		t.Fatal("expected error for stale phase-fill submission, got nil")
+	}
+
+	// Must be a planValidationError so the daemon maps it to ErrCodeValidation,
+	// not ErrCodeInternal.
+	var ve *planValidationError
+	if !errors.As(err, &ve) {
+		var verrs *ValidationErrors
+		if !errors.As(err, &verrs) {
+			t.Fatalf("error must be planValidationError or *ValidationErrors for ErrCodeValidation routing, got %T: %v", err, err)
+		}
+	}
+
+	// Must surface the state-aware diagnostic, not the generic empty-tasks message.
+	if !strings.Contains(err.Error(), "awaiting_fill") {
+		t.Errorf("expected state-aware diagnostic mentioning awaiting_fill, got %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "either tasks or phases must be specified") {
+		t.Errorf("Bug M regression: empty-tasks guard fired before phase-fill router: %q", err.Error())
 	}
 }
 

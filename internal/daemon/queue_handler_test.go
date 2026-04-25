@@ -230,7 +230,10 @@ func TestQueueHandler_CrossFileInFlight(t *testing.T) {
 	maestroDir := setupTestMaestroDir(t)
 	qh := newTestQueueHandler(maestroDir)
 
-	// worker1 has an in_progress task with valid (non-expired) lease
+	// worker1 has an in_progress task with valid (non-expired) lease.
+	// ExpectedPaths is set explicitly so the strict path-overlap gate has a
+	// concrete value to compare; missing expected_paths is treated as
+	// SentinelUnknownPaths and would block any other dispatch (§S1-1).
 	owner := qh.leaseOwnerID()
 	futureExpiry := time.Now().Add(5 * time.Minute).UTC().Format(time.RFC3339)
 	tq1 := model.TaskQueue{
@@ -244,24 +247,27 @@ func TestQueueHandler_CrossFileInFlight(t *testing.T) {
 				Status:         model.StatusInProgress,
 				LeaseOwner:     &owner,
 				LeaseExpiresAt: &futureExpiry,
+				ExpectedPaths:  []string{"src/worker1/"},
 				CreatedAt:      time.Now().UTC().Format(time.RFC3339),
 				UpdatedAt:      time.Now().UTC().Format(time.RFC3339),
 			},
 		},
 	}
 
-	// worker2 has a pending task
+	// worker2 has a pending task that touches a different subtree, so the
+	// dispatcher should be free to pick it up while task_001 is in flight.
 	tq2 := model.TaskQueue{
 		SchemaVersion: 1,
 		FileType:      "task_queue",
 		Tasks: []model.Task{
 			{
-				ID:        "task_002",
-				CommandID: "cmd_001",
-				Priority:  1,
-				Status:    model.StatusPending,
-				CreatedAt: time.Now().UTC().Format(time.RFC3339),
-				UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+				ID:            "task_002",
+				CommandID:     "cmd_001",
+				Priority:      1,
+				Status:        model.StatusPending,
+				ExpectedPaths: []string{"src/worker2/"},
+				CreatedAt:     time.Now().UTC().Format(time.RFC3339),
+				UpdatedAt:     time.Now().UTC().Format(time.RFC3339),
 			},
 		},
 	}
@@ -607,7 +613,7 @@ func TestQueueHandler_PhaseB_DoesNotBlockRLock(t *testing.T) {
 // onStart is called once per Execute invocation (use sync.Once in the closure for safety).
 type slowMockExecutor struct {
 	result  agent.ExecResult
-	onStart func()       // called at start of Execute (use sync.Once for one-shot signaling)
+	onStart func()        // called at start of Execute (use sync.Once for one-shot signaling)
 	proceed chan struct{} // if non-nil, wait for signal instead of sleeping
 	delay   time.Duration
 }
@@ -1009,4 +1015,3 @@ func TestQueueHandler_ConcurrentWriteDuringPhaseB(t *testing.T) {
 		t.Error("task_concurrent not found in final queue — Phase C clobbered the concurrent write")
 	}
 }
-

@@ -180,6 +180,45 @@ func TestBuildSystemPrompt_MissingInstructionsFile(t *testing.T) {
 	}
 }
 
+// TestAppendNonClaudeWorkerReminder verifies that when a worker runs on a
+// non-claude-code runtime, the system prompt is augmented with the critical
+// prohibition reminder that re-states D006/D009/.maestro-read rules.
+//
+// On non-claude runtimes there is no --disallowedTools flag and no PreToolUse
+// policy hook, so the prompt is the only enforcement layer. Regressing this
+// silently would leave codex/gemini workers unrestricted in practice.
+func TestAppendNonClaudeWorkerReminder(t *testing.T) {
+	base := "# Common Prompt\nbody"
+
+	for _, runtime := range []string{"codex", "gemini"} {
+		t.Run(runtime, func(t *testing.T) {
+			out := appendNonClaudeWorkerReminder(base, runtime)
+
+			if !strings.HasPrefix(out, base) {
+				t.Errorf("reminder must be appended (not replace) the base prompt")
+			}
+			if !strings.Contains(out, runtime) {
+				t.Errorf("reminder must mention runtime %q so the agent sees it", runtime)
+			}
+
+			// Critical prohibitions that must be re-stated since they cannot be
+			// enforced via --disallowedTools on this runtime.
+			mustContain := []string{
+				".maestro/state",
+				".maestro/queue",
+				"tmux kill-server",
+				"maestro plan unquarantine",
+				"git push",
+			}
+			for _, kw := range mustContain {
+				if !strings.Contains(out, kw) {
+					t.Errorf("reminder must restate prohibition keyword %q", kw)
+				}
+			}
+		})
+	}
+}
+
 // writeConfigYAML writes a minimal valid config.yaml to the given maestro dir.
 func writeConfigYAML(t *testing.T, dir string, skillsEnabled bool) {
 	t.Helper()
@@ -460,7 +499,7 @@ func TestBuildLaunchArgs_WorkerDoesNotBlockWorktreeReads(t *testing.T) {
 
 func TestBuildLaunchArgs_NotificationDisabledForNonOrchestrator(t *testing.T) {
 	tests := []struct {
-		role               string
+		role                string
 		wantNotificationOff bool
 	}{
 		{"orchestrator", false},

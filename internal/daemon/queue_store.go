@@ -211,7 +211,9 @@ func (qs *QueueStoreImpl) recoverFromBackup(path, name string) ([]byte, error) {
 //
 // Lock order (see doc.go): queue:{worker} is level 1, so all queue:* locks
 // are peers. Within FlushQueues the acquisition order is:
-//   queue:planner → queue:{worker}… → queue:orchestrator → queue:planner_signals
+//
+//	queue:planner → queue:{worker}… → queue:orchestrator → queue:planner_signals
+//
 // This is consistent with the write-handler ordering (queue_write_handler.go).
 func (qs *QueueStoreImpl) FlushQueues(
 	commandQueue model.CommandQueue, commandPath string, commandsDirty bool,

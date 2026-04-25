@@ -275,10 +275,10 @@ func TestC8_FeatureGate_StructuralMetrics(t *testing.T) {
 	// Step 1: Complexity estimation (Daemon pre-processor).
 	scorer := complexity.NewScorer(complexity.DefaultThresholds())
 	score := scorer.Estimate(complexity.Input{
-		FileCount:       25,
-		DependencyDepth: 5,
-		BloomLevel:      5,
-		PastRepairRate:  0.3,
+		FileCount:         25,
+		DependencyDepth:   5,
+		BloomLevel:        5,
+		PastRepairRate:    0.3,
 		ExpectedPathCount: 8,
 	})
 	if score.Level != complexity.LevelComplex {
@@ -369,10 +369,10 @@ func TestC8_Complexity_DepthIntegration(t *testing.T) {
 
 	// Complex input → depth 3.
 	complexScore := scorer.Estimate(complexity.Input{
-		FileCount:       25,
-		DependencyDepth: 5,
-		BloomLevel:      5,
-		PastRepairRate:  0.3,
+		FileCount:         25,
+		DependencyDepth:   5,
+		BloomLevel:        5,
+		PastRepairRate:    0.3,
 		ExpectedPathCount: 8,
 	})
 	if scorer.EstimateDepth(complexScore) != 3 {

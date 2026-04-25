@@ -116,6 +116,12 @@ func TestSendAndConfirm_SendTextFails(t *testing.T) {
 
 func TestSendAndConfirm_SetStatusFails(t *testing.T) {
 	t.Parallel()
+	// Bug L: SetStatus failure must NOT propagate as a delivery error.
+	// The message was already sent successfully, so returning an error
+	// would cause the dispatcher's inline retry to re-deliver the same
+	// envelope and trigger a duplicate plan_submit on the planner side.
+	// The failure is logged at warn level and the result is treated as
+	// success — the busy hint is best-effort.
 	mock := newMockPaneIO()
 	mock.currentCommand = "claude"
 	mock.isShell = false
@@ -133,10 +139,12 @@ func TestSendAndConfirm_SetStatusFails(t *testing.T) {
 		Message: "payload",
 	}, "%0")
 
-	if result.Error == nil {
-		t.Fatal("expected error when SetStatus fails")
+	if result.Error != nil {
+		t.Fatalf("SetStatus failure must be best-effort, got error: %v", result.Error)
 	}
-	// Message was sent before SetStatus failure
+	if !result.Success {
+		t.Fatal("expected Success=true even when SetStatus fails")
+	}
 	if len(mock.sentTexts) != 1 {
 		t.Errorf("expected text to be sent before status failure, got %v", mock.sentTexts)
 	}

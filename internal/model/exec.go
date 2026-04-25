@@ -29,6 +29,12 @@ type ExecRequest struct {
 	LeaseEpoch int
 	Attempt    int
 	WorkingDir string // Target working directory (worktree mode). Empty = no change.
+	// RunOnMain marks tasks that must run against the merged main branch
+	// (e.g. final verification). When true, the executor sets the pane-scoped
+	// tmux user variable @run_on_main=1 before delivery so the PreToolUse
+	// hook can deny Write/Edit operations — main branch is read-only for
+	// Workers in this mode (REQUIREMENTS.md §S2 / Worker safety).
+	RunOnMain bool
 }
 
 // ExecResult contains the outcome of an execution attempt.

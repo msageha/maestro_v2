@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/msageha/maestro_v2/internal/daemon/worktree"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -374,7 +375,11 @@ func workerCommitMessage(workerPurposes map[string]string, workerID string) stri
 		return autoCommitFallbackMessage
 	}
 	if len(purpose) > 72 {
-		purpose = purpose[:72]
+		// Cut at 72 bytes, then strip any partial UTF-8 sequence at the tail
+		// so multi-byte runes (e.g. Japanese task purposes) are not split
+		// mid-rune. strings.ToValidUTF8 with empty replacement removes invalid
+		// trailing bytes; result is always <= 72 bytes.
+		purpose = strings.ToValidUTF8(purpose[:72], "")
 	}
 	return purpose
 }

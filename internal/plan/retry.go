@@ -496,4 +496,3 @@ func buildCascadeQueueTask(cr CascadeRecoveredTask, opts RetryOptions, state *mo
 		workerID:           cr.Worker,
 	}
 }
-

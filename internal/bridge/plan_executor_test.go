@@ -294,6 +294,11 @@ func TestPlanExecutorImpl_SubmitSuccess(t *testing.T) {
     acceptance_criteria: feature a works
     bloom_level: 2
     required: true
+    expected_paths:
+      - "."
+    definition_of_abort:
+      max_repair_count: 3
+      max_wall_clock_sec: 600
 `
 	tasksFile := writeBridgeTasksFile(t, tasksYAML)
 

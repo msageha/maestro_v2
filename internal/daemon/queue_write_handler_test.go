@@ -631,7 +631,7 @@ func TestQueueWriteTask_BlockedByValidation(t *testing.T) {
 			t.Parallel()
 			req := makeQueueWriteRequest(t, QueueWriteParams{
 				Type:               "task",
-		SystemCaller:       string(model.TaskIDCallerSystemInternal),
+				SystemCaller:       string(model.TaskIDCallerSystemInternal),
 				CommandID:          "cmd_0000000001_abcdef01",
 				Content:            "task",
 				Purpose:            "purpose",
@@ -1417,4 +1417,3 @@ func TestQueueWriteCommand_ContinuousGate_DisabledAllowsAnyStatus(t *testing.T) 
 		t.Fatalf("expected success when continuous is disabled, got error: %+v", resp.Error)
 	}
 }
-

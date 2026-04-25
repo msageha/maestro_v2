@@ -704,6 +704,75 @@ func (wm *Manager) GetIntegrationPath(commandID string) (string, error) {
 	return wm.integrationWorktreePath(commandID), nil
 }
 
+// EnsureIntegrationBranchCheckedOut verifies that the integration worktree
+// for commandID has state.Integration.Branch checked out. If the worktree is
+// detached or on an unexpected branch, it attempts to restore the expected
+// checkout, provided the worktree is clean. Returns an error if the worktree
+// is dirty or the checkout cannot be restored; in that case the caller must
+// escalate rather than silently dispatching work into a bad state.
+//
+// This is defense-in-depth for RunOnIntegration dispatch: if a prior bug or
+// crash left the worktree detached, a worker's `git merge main` would create
+// orphan commits that do not advance the integration branch, causing publish
+// to loop forever (see CleanupTempPublishBranch RCA). Surfacing a clear error
+// up front is preferable to dispatching onto a broken worktree.
+func (wm *Manager) EnsureIntegrationBranchCheckedOut(commandID string) error {
+	if err := validateIDs(commandID); err != nil {
+		return err
+	}
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	state, err := wm.loadState(commandID)
+	if err != nil {
+		return fmt.Errorf("load worktree state: %w", err)
+	}
+	if state.Integration.Branch == "" {
+		return fmt.Errorf("no integration branch registered for command %s", commandID)
+	}
+
+	integrationPath := wm.integrationWorktreePath(commandID)
+	if _, statErr := os.Stat(integrationPath); statErr != nil {
+		return fmt.Errorf("integration worktree path: %w", statErr)
+	}
+
+	currentRef, refErr := wm.gitOutputInDir(integrationPath, "symbolic-ref", "--short", "HEAD")
+	if refErr == nil && strings.TrimSpace(currentRef) == state.Integration.Branch {
+		return nil
+	}
+
+	// Either detached HEAD (symbolic-ref failed) or on an unexpected branch.
+	// Log the anomaly so operators can see where the drift originated.
+	if refErr == nil {
+		wm.Log(core.LogLevelWarn,
+			"integration_worktree_unexpected_branch command=%s current=%s expected=%s",
+			commandID, strings.TrimSpace(currentRef), state.Integration.Branch)
+	} else {
+		wm.Log(core.LogLevelWarn,
+			"integration_worktree_detached command=%s expected=%s",
+			commandID, state.Integration.Branch)
+	}
+
+	// Guard: never silently discard work. A dirty worktree means the agent (or
+	// an operator) has in-progress edits whose provenance we cannot reconstruct.
+	dirtyOut, dirtyErr := wm.gitOutputInDir(integrationPath, "status", "--porcelain")
+	if dirtyErr != nil {
+		return fmt.Errorf("check integration worktree status: %w", dirtyErr)
+	}
+	if strings.TrimSpace(dirtyOut) != "" {
+		return fmt.Errorf("integration worktree has uncommitted changes; cannot restore %s checkout",
+			state.Integration.Branch)
+	}
+
+	if err := wm.gitRunInDir(integrationPath, "checkout", state.Integration.Branch); err != nil {
+		return fmt.Errorf("restore integration branch checkout: %w", err)
+	}
+	wm.Log(core.LogLevelInfo,
+		"integration_worktree_reattached command=%s branch=%s",
+		commandID, state.Integration.Branch)
+	return nil
+}
+
 // rollbackWorkerWorktree removes a worker's worktree and branch.
 // Returns an error if any cleanup step fails (caller should log but
 // not abort — Reconcile can recover from partial rollback state).
@@ -739,4 +808,3 @@ func (wm *Manager) AutoCommit() bool { return wm.config.AutoCommit }
 
 // AutoMerge returns whether auto-merge is enabled in the worktree config.
 func (wm *Manager) AutoMerge() bool { return wm.config.AutoMerge }
-

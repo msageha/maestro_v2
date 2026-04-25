@@ -65,7 +65,7 @@ func runAgentExec(args []string) error {
 	if err != nil {
 		return fmt.Errorf("maestro agent exec: load config: %w", err)
 	}
-	if err := setupTmuxSession("agent exec", cfg); err != nil {
+	if err := setupTmuxSession("agent exec", maestroDir, cfg); err != nil {
 		return err
 	}
 

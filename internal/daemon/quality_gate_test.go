@@ -233,9 +233,9 @@ func TestEvaluateGate_LogicalOperators(t *testing.T) {
 	qg, _ := setupTestQualityGate(t)
 
 	testCases := []struct {
-		name        string
-		context     map[string]interface{}
-		expectPass  bool
+		name       string
+		context    map[string]interface{}
+		expectPass bool
 	}{
 		{
 			name: "bloom level in range - should pass",
@@ -286,12 +286,12 @@ func TestEvaluateGate_Performance(t *testing.T) {
 	// Create a context with many fields for a realistic test
 	context := map[string]interface{}{
 		"task": map[string]interface{}{
-			"id":                 "task_perf_test",
-			"purpose":            "Performance test task",
-			"content":            "Complex task content with many lines\n" + generateLongContent(100),
-			"bloom_level":        4,
+			"id":                  "task_perf_test",
+			"purpose":             "Performance test task",
+			"content":             "Complex task content with many lines\n" + generateLongContent(100),
+			"bloom_level":         4,
 			"acceptance_criteria": "Must complete quickly",
-			"constraints":        []string{"time_limit", "memory_limit"},
+			"constraints":         []string{"time_limit", "memory_limit"},
 		},
 		"command": map[string]interface{}{
 			"id":      "cmd_perf_test",

@@ -6,21 +6,21 @@ import "github.com/msageha/maestro_v2/internal/model"
 
 // ScanCounters tracks cumulative counters during a single PeriodicScan cycle.
 type ScanCounters struct {
-	CommandsDispatched    int
-	TasksDispatched       int
-	TasksCompleted        int
-	TasksFailed           int
-	TasksCancelled        int
-	DeadLetters           int
-	ReconciliationRepairs int
-	NotificationRetries   int
+	CommandsDispatched         int
+	TasksDispatched            int
+	TasksCompleted             int
+	TasksFailed                int
+	TasksCancelled             int
+	DeadLetters                int
+	ReconciliationRepairs      int
+	NotificationRetries        int
 	SignalDeliveries           int
 	SignalRetries              int
 	SignalDeadLetters          int
 	SignalInlineRetrySuccesses int
-	LeaseRenewals         int
-	LeaseExtensions       int
-	LeaseReleases         int
+	LeaseRenewals              int
+	LeaseExtensions            int
+	LeaseReleases              int
 }
 
 // Merge adds all counter values from other into c.

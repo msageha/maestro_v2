@@ -16,7 +16,7 @@ type TaskTracking struct {
 	CancelledReasons   map[string]string   `yaml:"cancelled_reasons"`
 	AppliedResultIDs   map[string]string   `yaml:"applied_result_ids"`
 	SystemCommitTaskID *string             `yaml:"system_commit_task_id"`
-	QueueWriteFailed   map[string]string   `yaml:"queue_write_failed,omitempty"`  // task_id → "workerID:resultID"; set when result committed but queue terminal write failed (H2 sticky error)
+	QueueWriteFailed   map[string]string   `yaml:"queue_write_failed,omitempty"` // task_id → "workerID:resultID"; set when result committed but queue terminal write failed (H2 sticky error)
 	IdempotencyKeys    map[string]string   `yaml:"idempotency_keys,omitempty"`   // idempotency_key → task_id; prevents duplicate task injection on retry
 }
 

@@ -14,11 +14,11 @@ import (
 
 // SubmitOptions holds the configuration for a plan submission operation.
 type SubmitOptions struct {
-	CommandID  string
-	TasksFile  string // path or "-" for stdin
-	TasksData  []byte // inline YAML data; takes precedence over TasksFile when non-empty
-	PhaseName  string // non-empty for phase fill
-	DryRun     bool
+	CommandID     string
+	TasksFile     string // path or "-" for stdin
+	TasksData     []byte // inline YAML data; takes precedence over TasksFile when non-empty
+	PhaseName     string // non-empty for phase fill
+	DryRun        bool
 	MaestroDir    string
 	Config        model.Config
 	LockMap       *lock.MutexMap
@@ -63,16 +63,25 @@ func Submit(opts SubmitOptions) (*SubmitResult, error) {
 		return nil, fmt.Errorf("read input: %w", err)
 	}
 
-	if len(input.Tasks) > 0 && len(input.Phases) > 0 {
-		return nil, fmt.Errorf("tasks and phases are mutually exclusive")
-	}
-	if len(input.Tasks) == 0 && len(input.Phases) == 0 {
-		return nil, fmt.Errorf("either tasks or phases must be specified")
-	}
-
+	// Bug M: route phase-fill submissions BEFORE the generic empty-tasks check
+	// so that submitPhaseFill (which loads state under lock) can produce a
+	// state-aware diagnostic — e.g. "phase X status must be awaiting_fill,
+	// got filling" — when a stale awaiting_fill signal triggers a duplicate
+	// re-submit. Surfacing the structured planValidationError instead of a
+	// bare "either tasks or phases must be specified" → ErrCodeInternal lets
+	// the Planner distinguish "system error" from "request was redundant
+	// because the phase has already moved on".
 	if opts.PhaseName != "" {
 		return submitPhaseFill(opts, *input)
 	}
+
+	if len(input.Tasks) > 0 && len(input.Phases) > 0 {
+		return nil, &planValidationError{Msg: "tasks and phases are mutually exclusive"}
+	}
+	if len(input.Tasks) == 0 && len(input.Phases) == 0 {
+		return nil, &planValidationError{Msg: "either tasks or phases must be specified"}
+	}
+
 	return submitInitial(opts, *input)
 }
 
@@ -377,7 +386,7 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm stateStore)
 
 func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, error) {
 	if len(input.Phases) > 0 {
-		return nil, fmt.Errorf("phase fill only accepts tasks, not phases")
+		return nil, &planValidationError{Msg: "phase fill only accepts tasks, not phases"}
 	}
 
 	if opts.LockMap == nil {

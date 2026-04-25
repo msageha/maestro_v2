@@ -26,8 +26,8 @@ type InjectOptions struct {
 	TargetWorkerID     string
 	TargetPhase        string // phase ID to place the task in; overrides default fallback logic
 	IdempotencyKey     string
-	RunOnMain          bool   // run task in main branch dir instead of worker worktree
-	RunOnIntegration   bool   // run task in integration worktree (for publish_conflict resolution)
+	RunOnMain          bool // run task in main branch dir instead of worker worktree
+	RunOnIntegration   bool // run task in integration worktree (for publish_conflict resolution)
 	MaestroDir         string
 	Config             model.Config
 	LockMap            *lock.MutexMap
@@ -274,6 +274,31 @@ func validateInjectRequest(state *model.CommandState, opts InjectOptions) error 
 	}
 	if opts.AcceptanceCriteria == "" {
 		return &planValidationError{Msg: "acceptance_criteria is required"}
+	}
+
+	// Bug G: sanity-check minimum lengths for add-task-injected fields.
+	// An earlier incident showed the Planner submitting an add-task with
+	// content / acceptance_criteria reduced to a few bytes (or empty) by
+	// shell backtick expansion inside a broken double-quoted `--content`
+	// invocation. The CLI's non-empty check let this through, producing a
+	// corrupted queue entry. Rejecting obviously-truncated payloads here
+	// prevents the Planner from accidentally spawning a repair loop of
+	// malformed tasks. Thresholds are intentionally lax so only clearly
+	// damaged input trips them; legitimate terse descriptions still pass.
+	if len(opts.Purpose) < MinInjectedPurposeBytes {
+		return &planValidationError{Msg: fmt.Sprintf(
+			"purpose is too short (%d bytes, minimum %d): check shell quoting on the invocation — backticks and `$()` inside double quotes are expanded before being sent",
+			len(opts.Purpose), MinInjectedPurposeBytes)}
+	}
+	if len(opts.Content) < MinInjectedContentBytes {
+		return &planValidationError{Msg: fmt.Sprintf(
+			"content is too short (%d bytes, minimum %d): check shell quoting on the invocation — backticks and `$()` inside double quotes are expanded before being sent",
+			len(opts.Content), MinInjectedContentBytes)}
+	}
+	if len(opts.AcceptanceCriteria) < MinInjectedAcceptanceCriteriaBytes {
+		return &planValidationError{Msg: fmt.Sprintf(
+			"acceptance_criteria is too short (%d bytes, minimum %d): check shell quoting on the invocation — backticks and `$()` inside double quotes are expanded before being sent",
+			len(opts.AcceptanceCriteria), MinInjectedAcceptanceCriteriaBytes)}
 	}
 
 	// Validate blocked_by references exist in state

@@ -489,4 +489,3 @@ func TestProcessAlive_ZeroAndNegative(t *testing.T) {
 // be mocked without a real tmux session or interface extraction. The guard logic
 // is covered by integration tests. errSessionExists is a simple sentinel error
 // that does not require a dedicated test.
-

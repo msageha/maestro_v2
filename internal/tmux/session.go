@@ -3,11 +3,14 @@ package tmux
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -300,6 +303,33 @@ func SetSessionName(name string) {
 		sanitized = "maestro"
 	}
 	sessionName.Store(sanitized)
+}
+
+// BuildMaestroSessionName returns a stable, collision-resistant tmux session
+// name for a maestro project. The name combines the human-readable project
+// name with an 8-hex-char hash of the absolute maestroDir, so two checkouts
+// of the same project (or two repos that share a project name) get distinct
+// sessions instead of colliding on a single global "maestro-<name>" slot.
+//
+// The hash is derived from the canonical absolute path of maestroDir
+// (filepath.Abs + filepath.Clean). If absolute resolution fails, the input
+// is hashed as-is — the goal is just stable per-checkout differentiation,
+// not security.
+//
+// If maestroDir is empty, the legacy "maestro-<projectName>" form is returned
+// for backward compatibility (e.g., test code that does not have a maestro
+// directory). Callers in production paths should always supply maestroDir.
+func BuildMaestroSessionName(projectName, maestroDir string) string {
+	base := "maestro-" + projectName
+	if maestroDir == "" {
+		return base
+	}
+	canonical := maestroDir
+	if abs, err := filepath.Abs(maestroDir); err == nil {
+		canonical = filepath.Clean(abs)
+	}
+	sum := sha256.Sum256([]byte(canonical))
+	return base + "-" + hex.EncodeToString(sum[:])[:8]
 }
 
 // SessionExists checks whether the maestro tmux session exists.

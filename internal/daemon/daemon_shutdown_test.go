@@ -153,12 +153,12 @@ func TestShutdownOp_TableDriven(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		opName        string
-		fn            func() error
-		wantInLog     string   // substring that must appear (empty = no assertion)
-		wantNotInLog  []string // substrings that must NOT appear
-		maxDuration   time.Duration
+		name         string
+		opName       string
+		fn           func() error
+		wantInLog    string   // substring that must appear (empty = no assertion)
+		wantNotInLog []string // substrings that must NOT appear
+		maxDuration  time.Duration
 	}{
 		{
 			name:         "success",
@@ -168,10 +168,10 @@ func TestShutdownOp_TableDriven(t *testing.T) {
 			maxDuration:  1 * time.Second,
 		},
 		{
-			name:      "returns error",
-			opName:    "op_err",
-			fn:        func() error { return errors.New("boom") },
-			wantInLog: "boom",
+			name:        "returns error",
+			opName:      "op_err",
+			fn:          func() error { return errors.New("boom") },
+			wantInLog:   "boom",
 			maxDuration: 1 * time.Second,
 		},
 		{

@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"github.com/msageha/maestro_v2/internal/daemon/worktree"
+	"github.com/msageha/maestro_v2/internal/plan"
 	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
 )
@@ -100,7 +101,17 @@ func (h *PlanAPI) handlePlan(req *uds.Request) *uds.Response {
 	}
 
 	if err != nil {
-		h.logFn(LogLevelWarn, "plan_%s error=%v", params.Operation, err)
+		// Bug L: ErrDoubleSubmit indicates a duplicate retry of an already-
+		// committed submit (e.g., dispatcher inline retry after delivery
+		// already succeeded but a follow-up step failed). The state is
+		// consistent — the prior submit took effect — so log at INFO with a
+		// dedicated tag rather than WARN, which would mislead operators into
+		// thinking a real failure occurred.
+		if params.Operation == "submit" && errors.Is(err, plan.ErrDoubleSubmit) {
+			h.logFn(LogLevelInfo, "plan_submit_duplicate_rejected error=%v", err)
+		} else {
+			h.logFn(LogLevelWarn, "plan_%s error=%v", params.Operation, err)
+		}
 		var cf codedFormatter
 		if errors.As(err, &cf) {
 			return uds.ErrorResponse(cf.ErrorCode(), cf.FormatStderr())
@@ -250,4 +261,3 @@ func (h *PlanAPI) handlePlanWorktreeRecovery(operation string, data json.RawMess
 	out, _ := json.Marshal(payload)
 	return &uds.Response{Success: true, Data: out}
 }
-

@@ -27,19 +27,19 @@ type QueueDepth struct {
 // MetricsCounters はシステム全体の累積カウンターを保持する。
 // ディスパッチ数、完了数、失敗数、リース操作数などを追跡する。
 type MetricsCounters struct {
-	CommandsDispatched    int `yaml:"commands_dispatched"`
-	TasksDispatched       int `yaml:"tasks_dispatched"`
-	TasksCompleted        int `yaml:"tasks_completed"`
-	TasksFailed           int `yaml:"tasks_failed"`
-	TasksCancelled        int `yaml:"tasks_cancelled"`
-	DeadLetters           int `yaml:"dead_letters"`
-	ReconciliationRepairs int `yaml:"reconciliation_repairs"`
-	NotificationRetries   int `yaml:"notification_retries"`
+	CommandsDispatched         int `yaml:"commands_dispatched"`
+	TasksDispatched            int `yaml:"tasks_dispatched"`
+	TasksCompleted             int `yaml:"tasks_completed"`
+	TasksFailed                int `yaml:"tasks_failed"`
+	TasksCancelled             int `yaml:"tasks_cancelled"`
+	DeadLetters                int `yaml:"dead_letters"`
+	ReconciliationRepairs      int `yaml:"reconciliation_repairs"`
+	NotificationRetries        int `yaml:"notification_retries"`
 	SignalDeliveries           int `yaml:"signal_deliveries"`
 	SignalRetries              int `yaml:"signal_retries"`
 	SignalDeadLetters          int `yaml:"signal_dead_letters"`
 	SignalInlineRetrySuccesses int `yaml:"signal_inline_retry_successes"`
-	LeaseRenewals         int `yaml:"lease_renewals"`
-	LeaseExtensions       int `yaml:"lease_extensions"`
-	LeaseReleases         int `yaml:"lease_releases"`
+	LeaseRenewals              int `yaml:"lease_renewals"`
+	LeaseExtensions            int `yaml:"lease_extensions"`
+	LeaseReleases              int `yaml:"lease_releases"`
 }

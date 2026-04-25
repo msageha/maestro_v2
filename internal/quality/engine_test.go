@@ -836,9 +836,9 @@ func TestFeatureGateRule_DirectEvaluate(t *testing.T) {
 	}
 
 	tests := []struct {
-		name    string
-		ctx     map[string]interface{}
-		wantOK  bool
+		name   string
+		ctx    map[string]interface{}
+		wantOK bool
 	}{
 		{
 			name: "simple complexity",

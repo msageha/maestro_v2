@@ -31,8 +31,8 @@ type SessionRecoverer struct {
 	state SessionRecoveryState
 
 	maxRetries     int
-	sessionCreator func(string) error // creates a new tmux session
-	sessionChecker func() bool        // checks if session exists
+	sessionCreator func(string) error  // creates a new tmux session
+	sessionChecker func() bool         // checks if session exists
 	sleepFn        func(time.Duration) // for testing: overrides time.Sleep
 }
 

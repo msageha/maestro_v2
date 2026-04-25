@@ -363,11 +363,11 @@ func TestRunPlanAddRetryTask_ValidateID(t *testing.T) {
 	allRequiredFlags := func(overrides map[string]string) []string {
 		defaults := map[string]string{
 			"--command-id":          "valid-cmd",
-			"--retry-of":           "valid-task",
-			"--purpose":            "test purpose",
-			"--content":            "test content",
+			"--retry-of":            "valid-task",
+			"--purpose":             "test purpose",
+			"--content":             "test content",
 			"--acceptance-criteria": "test criteria",
-			"--bloom-level":        "3",
+			"--bloom-level":         "3",
 		}
 		for k, v := range overrides {
 			defaults[k] = v

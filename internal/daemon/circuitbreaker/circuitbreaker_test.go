@@ -429,7 +429,7 @@ func TestConfigEffectiveProgressTimeoutMinutes(t *testing.T) {
 		value    *int
 		expected int
 	}{
-		{nil, 30},              // nil returns default
+		{nil, 30}, // nil returns default
 		{ptr.Int(30), 30},
 		{ptr.Int(60), 60},
 	}
@@ -543,9 +543,9 @@ func TestCheckHalfOpenTransition_AlreadyHalfOpen(t *testing.T) {
 	state := &model.CommandState{
 		CommandID: "cmd1",
 		CircuitBreaker: model.CircuitBreakerState{
-			Tripped:   true,
-			TrippedAt: &trippedAt,
-			HalfOpen:  true,
+			Tripped:    true,
+			TrippedAt:  &trippedAt,
+			HalfOpen:   true,
 			HalfOpenAt: &halfOpenAt,
 		},
 	}
@@ -778,7 +778,7 @@ func TestEffectiveHalfOpenDelaySec(t *testing.T) {
 		value    *int
 		expected int
 	}{
-		{nil, 60},            // default
+		{nil, 60}, // default
 		{ptr.Int(10), 10},
 		{ptr.Int(120), 120},
 	}

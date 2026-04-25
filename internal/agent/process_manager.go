@@ -57,8 +57,9 @@ func (pm *ClaudeProcessManager) ensureClaudeRunning(ctx context.Context, paneTar
 		pm.log(logLevelError, "ensure_claude_running_reset_clear_ready agent_id=%s error=%v", agentID, resetErr)
 	}
 
-	// Re-launch Claude in the pane
-	if sendErr := pm.paneIO.SendCommand(paneTarget, LaunchCommand); sendErr != nil {
+	// Re-launch Claude in the pane using the resolved binary path to prevent
+	// version skew between the daemon binary and the pane's PATH resolution.
+	if sendErr := pm.paneIO.SendCommand(paneTarget, ResolvedLaunchCommand()); sendErr != nil {
 		return fmt.Errorf("%w: %w", ErrRelaunch, sendErr)
 	}
 
@@ -119,8 +120,8 @@ func (pm *ClaudeProcessManager) ensureWorkingDir(ctx context.Context, paneTarget
 		return fmt.Errorf("reset clear ready after respawn: %w", err)
 	}
 
-	// Step 4: Re-launch Claude
-	if err := pm.paneIO.SendCommand(paneTarget, LaunchCommand); err != nil {
+	// Step 4: Re-launch Claude using the resolved binary path to prevent version skew.
+	if err := pm.paneIO.SendCommand(paneTarget, ResolvedLaunchCommand()); err != nil {
 		return fmt.Errorf("re-launch claude: %w", err)
 	}
 
@@ -144,9 +145,9 @@ func (pm *ClaudeProcessManager) ensureWorkingDir(ctx context.Context, paneTarget
 // waitForShell polls a tmux pane until its current command is a known shell,
 // indicating the pane has returned to the shell prompt (e.g., after Claude exits).
 func (pm *ClaudeProcessManager) waitForShell(ctx context.Context, paneTarget string) error {
-	const maxAttempts = 30          // 30 x 500ms = 15s max wait for shell to appear after respawn
-	const pollInterval = 500        // milliseconds; balances responsiveness vs tmux query overhead
-	const maxConsecutiveErrors = 5  // consecutive tmux query failures before giving up (transient error tolerance)
+	const maxAttempts = 30         // 30 x 500ms = 15s max wait for shell to appear after respawn
+	const pollInterval = 500       // milliseconds; balances responsiveness vs tmux query overhead
+	const maxConsecutiveErrors = 5 // consecutive tmux query failures before giving up (transient error tolerance)
 
 	consecutiveErrors := 0
 	for i := 0; i < maxAttempts; i++ {
@@ -176,6 +177,55 @@ func (pm *ClaudeProcessManager) waitForShell(ctx context.Context, paneTarget str
 	return fmt.Errorf("waitForShell: shell not detected after %d attempts", maxAttempts)
 }
 
+// paneRuntime reads the @runtime pane user variable, falling back to the
+// default runtime (claude-code) when unset or on read error. This is a
+// fail-open read: a missing/failing runtime lookup must not break readiness
+// detection for the default runtime.
+func (pm *ClaudeProcessManager) paneRuntime(paneTarget string) string {
+	runtime, err := pm.paneIO.GetUserVar(paneTarget, "runtime")
+	if err != nil {
+		pm.log(logLevelDebug, "pane_runtime_read_failed pane=%s error=%v (defaulting)", paneTarget, err)
+		return model.DefaultRuntime()
+	}
+	if runtime == "" {
+		return model.DefaultRuntime()
+	}
+	return runtime
+}
+
+// isAgentReady reports whether the pane's agent runtime appears to be at an
+// interactive-ready state. The check is runtime-specific:
+//
+//   - claude-code: look for the '❯' prompt marker (isPromptReady on content).
+//   - codex / gemini / other non-claude runtimes: no universal prompt glyph
+//     is available, so readiness is inferred from (a) the pane's current
+//     command not being a shell (the runtime binary is actually running) and
+//     (b) the pane has rendered at least one non-blank line (the TUI has
+//     painted something). This is strictly weaker than the claude check, but
+//     it is the best reliable signal across codex (Rust TUI) and gemini
+//     (Node TUI) without coupling to private prompt characters that may
+//     change across versions.
+//
+// Callers that need stronger confirmation (e.g., post-/clear for claude) use
+// waitStable, which adds content-stability debouncing on top of this check.
+func (pm *ClaudeProcessManager) isAgentReady(paneTarget, runtime, content string) bool {
+	switch runtime {
+	case model.RuntimeClaudeCode, "":
+		return isPromptReady(content)
+	default:
+		cmd, err := pm.paneIO.GetPaneCurrentCommand(paneTarget)
+		if err != nil {
+			pm.log(logLevelDebug, "is_agent_ready current_command_failed pane=%s runtime=%s error=%v",
+				paneTarget, runtime, err)
+			return false
+		}
+		if pm.paneIO.IsShellCommand(cmd) {
+			return false
+		}
+		return lastNonBlankLine(content) != "<empty>"
+	}
+}
+
 // waitStable confirms pane content is stable over StableCheckRounds consecutive
 // rounds of hash comparison, then verifies the prompt is ready.
 // Worst-case duration: StableCheckRounds x IdleStableSec (default 1 x 5s = ~5s).
@@ -184,6 +234,7 @@ func (pm *ClaudeProcessManager) waitForShell(ctx context.Context, paneTarget str
 //   - true:  log a warning and proceed (safe when caller runs detectBusyWithRetry afterwards)
 //   - false: return an error (required when no subsequent busy detection exists)
 func (pm *ClaudeProcessManager) waitStable(ctx context.Context, paneTarget string, softPromptCheck bool) error {
+	runtime := pm.paneRuntime(paneTarget)
 	for round := 0; round < pm.execCfg.StableCheckRounds; round++ {
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("wait_stable cancelled before round %d: %w", round, err)
@@ -221,15 +272,15 @@ func (pm *ClaudeProcessManager) waitStable(ctx context.Context, paneTarget strin
 		}
 		return fmt.Errorf("%w for prompt check: %w", ErrCapturePane, err)
 	}
-	if !isPromptReady(finalContent) {
+	if !pm.isAgentReady(paneTarget, runtime, finalContent) {
 		if softPromptCheck {
-			pm.log(logLevelInfo, "wait_stable prompt_not_detected pane=%s last_line=%q (proceeding -- detectBusy will guard delivery)",
-				paneTarget, lastNonBlankLine(finalContent))
+			pm.log(logLevelInfo, "wait_stable prompt_not_detected runtime=%s pane=%s last_line=%q (proceeding -- detectBusy will guard delivery)",
+				runtime, paneTarget, lastNonBlankLine(finalContent))
 			return nil
 		}
-		return fmt.Errorf("pane stable but %w (last line: %q)", ErrNoPrompt, lastNonBlankLine(finalContent))
+		return fmt.Errorf("pane stable but %w (runtime=%s, last line: %q)", ErrNoPrompt, runtime, lastNonBlankLine(finalContent))
 	}
-	pm.log(logLevelDebug, "wait_stable prompt confirmed")
+	pm.log(logLevelDebug, "wait_stable prompt confirmed runtime=%s", runtime)
 	return nil
 }
 
@@ -257,25 +308,31 @@ func (pm *ClaudeProcessManager) waitReady(ctx context.Context, paneTarget string
 
 // waitReadyStrict is like waitReady but fail-closed: returns an error if the
 // prompt is not detected after all retries (instead of soft-proceeding).
-// Used after re-launching Claude where we must confirm the process started.
+// Used after re-launching the agent runtime where we must confirm the process started.
 func (pm *ClaudeProcessManager) waitReadyStrict(ctx context.Context, paneTarget string) error {
 	ready, err := pm.waitReadyCore(ctx, paneTarget)
 	if err != nil {
 		return err
 	}
 	if !ready {
-		return fmt.Errorf("waitReadyStrict: Claude %w after %d attempts", ErrPromptNotDetected, pm.config.WaitReadyMaxRetries+1)
+		runtime := pm.paneRuntime(paneTarget)
+		return fmt.Errorf("waitReadyStrict: runtime=%s %w after %d attempts", runtime, ErrPromptNotDetected, pm.config.WaitReadyMaxRetries+1)
 	}
 	return nil
 }
 
-// waitReadyCore is the shared retry loop for prompt detection. It returns
-// (true, nil) if the prompt was detected, (false, nil) if retries were
+// waitReadyCore is the shared retry loop for agent-runtime readiness detection.
+// Runtime is resolved once per call from the @runtime pane user variable; the
+// per-runtime readiness check (claude-code prompt glyph vs non-shell + rendered
+// content for codex/gemini) is implemented in isAgentReady.
+//
+// Returns (true, nil) if ready was detected, (false, nil) if retries were
 // exhausted without detection, or (false, err) on hard failures (context
 // cancellation, persistent capture errors).
 func (pm *ClaudeProcessManager) waitReadyCore(ctx context.Context, paneTarget string) (bool, error) {
 	maxRetries := pm.config.WaitReadyMaxRetries
 	interval := time.Duration(pm.config.WaitReadyIntervalSec) * time.Second
+	runtime := pm.paneRuntime(paneTarget)
 
 	for i := 0; i <= maxRetries; i++ {
 		if err := ctx.Err(); err != nil {
@@ -284,7 +341,7 @@ func (pm *ClaudeProcessManager) waitReadyCore(ctx context.Context, paneTarget st
 
 		content, err := pm.paneIO.CapturePane(paneTarget, pm.execCfg.PromptReadyLines)
 		if err != nil {
-			pm.log(logLevelDebug, "waitReadyCore capture error=%v attempt=%d", err, i)
+			pm.log(logLevelDebug, "waitReadyCore capture error=%v attempt=%d runtime=%s", err, i, runtime)
 			if i < maxRetries {
 				if err := sleepCtx(ctx, interval); err != nil {
 					return false, fmt.Errorf("waitReadyCore sleep cancelled: %w", err)
@@ -294,13 +351,13 @@ func (pm *ClaudeProcessManager) waitReadyCore(ctx context.Context, paneTarget st
 			return false, fmt.Errorf("waitReadyCore: %w failed after %d attempts: %w", ErrCapturePane, i+1, err)
 		}
 
-		if isPromptReady(content) {
-			pm.log(logLevelDebug, "waitReadyCore prompt detected attempt=%d", i)
+		if pm.isAgentReady(paneTarget, runtime, content) {
+			pm.log(logLevelDebug, "waitReadyCore ready detected attempt=%d runtime=%s", i, runtime)
 			return true, nil
 		}
 
 		if i < maxRetries {
-			pm.log(logLevelDebug, "waitReadyCore not ready attempt=%d/%d", i, maxRetries)
+			pm.log(logLevelDebug, "waitReadyCore not ready attempt=%d/%d runtime=%s", i, maxRetries, runtime)
 			if err := sleepCtx(ctx, interval); err != nil {
 				return false, fmt.Errorf("waitReadyCore sleep cancelled: %w", err)
 			}

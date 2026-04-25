@@ -29,10 +29,10 @@ import (
 // It supports task states, phases with depends_on, and phase transitions.
 type phaseIntegrationStateReader struct {
 	mu              sync.Mutex
-	taskStates      map[string]map[string]model.Status   // commandID -> taskID -> status
-	phases          map[string][]PhaseInfo                // commandID -> phases
-	cancelRequested map[string]bool                       // commandID -> cancelled
-	transitions     []phaseTransitionRecord               // recorded transitions
+	taskStates      map[string]map[string]model.Status // commandID -> taskID -> status
+	phases          map[string][]PhaseInfo             // commandID -> phases
+	cancelRequested map[string]bool                    // commandID -> cancelled
+	transitions     []phaseTransitionRecord            // recorded transitions
 }
 
 type phaseTransitionRecord struct {

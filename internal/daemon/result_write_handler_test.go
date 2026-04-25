@@ -339,6 +339,76 @@ func TestResultWrite_Idempotency_SameStatus(t *testing.T) {
 	}
 }
 
+// TestResultWrite_Idempotency_DuplicateShortCircuitResponse verifies the Bug H
+// fix: a second (idempotent) submission of the same result returns the same
+// result_id and carries the `duplicate=true` response marker, signalling to
+// callers (and to log-analysis tooling) that Phase B / best-effort writes were
+// skipped to avoid misleading double-recording of a single logical write.
+func TestResultWrite_Idempotency_DuplicateShortCircuitResponse(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	taskID := "task_0000000099_abcdef01"
+	commandID := "cmd_0000000099_abcdef01"
+	workerID := "worker1"
+	leaseEpoch := 1
+
+	setupWorkerQueue(t, d, workerID, taskID, commandID, leaseEpoch)
+	setupCommandState(t, d, commandID, []string{taskID})
+
+	params := ResultWriteParams{
+		Reporter:   workerID,
+		TaskID:     taskID,
+		CommandID:  commandID,
+		LeaseEpoch: leaseEpoch,
+		Status:     "completed",
+		Summary:    "done",
+	}
+
+	// First write: fresh submission, no duplicate marker.
+	resp1 := d.api.handleResultWrite(makeResultWriteRequest(t, params))
+	if !resp1.Success {
+		t.Fatalf("write 1: expected success, got error: %v", resp1.Error)
+	}
+	var r1 map[string]string
+	if err := json.Unmarshal(resp1.Data, &r1); err != nil {
+		t.Fatalf("unmarshal resp1: %v", err)
+	}
+	if r1["duplicate"] == "true" {
+		t.Errorf("first write should NOT carry duplicate=true, got payload=%v", r1)
+	}
+	firstResultID := r1["result_id"]
+
+	// Second write: must be detected as duplicate and carry duplicate=true.
+	resp2 := d.api.handleResultWrite(makeResultWriteRequest(t, params))
+	if !resp2.Success {
+		t.Fatalf("write 2: expected idempotent success, got error: %v", resp2.Error)
+	}
+	var r2 map[string]string
+	if err := json.Unmarshal(resp2.Data, &r2); err != nil {
+		t.Fatalf("unmarshal resp2: %v", err)
+	}
+	if r2["result_id"] != firstResultID {
+		t.Errorf("duplicate submission result_id = %q, want %q", r2["result_id"], firstResultID)
+	}
+	if r2["duplicate"] != "true" {
+		t.Errorf("duplicate submission should carry duplicate=true (Bug H short-circuit), got payload=%v", r2)
+	}
+
+	// Result file must still contain exactly one entry (no double-record).
+	resultPath := filepath.Join(d.maestroDir, "results", workerID+".yaml")
+	data, err := os.ReadFile(resultPath)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	var rf model.TaskResultFile
+	if err := yamlv3.Unmarshal(data, &rf); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if len(rf.Results) != 1 {
+		t.Errorf("expected 1 result (duplicate suppressed), got %d", len(rf.Results))
+	}
+}
+
 func TestResultWrite_Idempotency_DifferentStatus(t *testing.T) {
 	t.Parallel()
 	d := newTestDaemon(t)

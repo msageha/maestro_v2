@@ -167,8 +167,8 @@ func TestResultCache_DeepCopySlices(t *testing.T) {
 	c := newResultCache(10, time.Minute)
 	key := &cacheKey{GateID: "g1", GateVersionHash: "v1", ContextFingerprint: "c1"}
 	orig := &EvaluationResult{
-		GateID: "g1",
-		Passed: false,
+		GateID:      "g1",
+		Passed:      false,
 		FailedGates: []string{"gate1", "gate2"},
 		RuleResults: []RuleResult{
 			{RuleID: "r1", Passed: true, Message: "ok"},

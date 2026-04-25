@@ -177,6 +177,59 @@ func TestSelectSurvivors_NoNovel(t *testing.T) {
 	}
 }
 
+// TestSelectSurvivors_NumericScoreBeatsLexicographic verifies that ordering is
+// driven by FitnessScore (numeric), not by FitnessDesc lexicographic compare.
+// The lex-compare on plain strings would rank "9" > "11", which is wrong.
+func TestSelectSurvivors_NumericScoreBeatsLexicographic(t *testing.T) {
+	t.Parallel()
+	e := NewEngine(nil, nil)
+
+	// FitnessDesc strings are intentionally non-numeric so the parse fallback
+	// cannot rescue a string-based comparison.
+	results := []SlotResult{
+		{Index: 0, FitnessScore: 0.9, FitnessDesc: "build:fail", IsNovel: true},
+		{Index: 1, FitnessScore: 11.0, FitnessDesc: "build:pass test:pass", IsNovel: true},
+		{Index: 2, FitnessScore: 9.0, FitnessDesc: "build:pass", IsNovel: true},
+	}
+
+	survivors := e.SelectSurvivors(results, 3)
+	want := []int{1, 2, 0} // 11.0 > 9.0 > 0.9
+	if len(survivors) != len(want) {
+		t.Fatalf("expected %d survivors, got %d", len(want), len(survivors))
+	}
+	for i, w := range want {
+		if survivors[i] != w {
+			t.Fatalf("position %d: expected index=%d, got %d (full order: %v)",
+				i, w, survivors[i], survivors)
+		}
+	}
+}
+
+// TestSelectSurvivors_TieBreakerStable verifies that equal FitnessScore values
+// fall back to FitnessDesc descending, then to original index ascending. This
+// keeps ordering deterministic across runs.
+func TestSelectSurvivors_TieBreakerStable(t *testing.T) {
+	t.Parallel()
+	e := NewEngine(nil, nil)
+
+	results := []SlotResult{
+		{Index: 5, FitnessScore: 0.5, FitnessDesc: "alpha", IsNovel: true},
+		{Index: 2, FitnessScore: 0.5, FitnessDesc: "beta", IsNovel: true},
+		{Index: 8, FitnessScore: 0.5, FitnessDesc: "alpha", IsNovel: true},
+	}
+
+	survivors := e.SelectSurvivors(results, 3)
+	// All scores tie at 0.5. Descending FitnessDesc puts "beta" first.
+	// Then ties on "alpha" break by ascending Index: 5 before 8.
+	want := []int{2, 5, 8}
+	for i, w := range want {
+		if survivors[i] != w {
+			t.Fatalf("position %d: expected index=%d, got %d (full order: %v)",
+				i, w, survivors[i], survivors)
+		}
+	}
+}
+
 func TestSelectSurvivors_MaxLessThanCandidates(t *testing.T) {
 	t.Parallel()
 	e := NewEngine(nil, nil)

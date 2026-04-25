@@ -290,7 +290,7 @@ func TestReconciler_R5_NonTerminalResult_NoRepair(t *testing.T) {
 			{
 				ID: "res_r5_ip", CommandID: "cmd_r5_ip", Status: model.StatusInProgress, // non-terminal
 				NotifiableBase: model.NotifiableBase{Notified: true, NotifiedAt: &now},
-				CreatedAt: now,
+				CreatedAt:      now,
 			},
 		},
 	}
@@ -661,7 +661,7 @@ func TestReconciler_R4_CanCompleteNil_Skip(t *testing.T) {
 			{
 				ID: "res_r4_nil", CommandID: "cmd_r4_nil", Status: model.StatusCompleted,
 				NotifiableBase: model.NotifiableBase{Notified: true, NotifiedAt: &now},
-				CreatedAt: now,
+				CreatedAt:      now,
 			},
 		},
 	}

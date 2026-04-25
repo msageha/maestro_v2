@@ -769,6 +769,7 @@ func (rh *ResultHandler) markNotifyFailure(r model.Notifiable, errMsg string) {
 //   - ObserveTaskOutcome / RecordTaskCompletionNovelty / PlanRetryMutations
 //     are *method calls* on *PhaseCManager that tolerate a nil receiver,
 //     so the call site omits the guard and lets the callee short-circuit.
+//
 // Keep this split when adding new signals — do not collapse to a single
 // `if m != nil { ... }` wrapper, as that hides the callee's nil contract.
 func (rh *ResultHandler) recordTaskResultLearning(r *model.TaskResult, workerID string) {
@@ -1107,4 +1108,3 @@ func loadResultFile[F interface {
 	}
 	return rf, nil
 }
-

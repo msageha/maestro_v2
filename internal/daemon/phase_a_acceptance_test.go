@@ -349,12 +349,12 @@ func TestPhaseA_A3_HotspotExtraction_RepairCountGE2(t *testing.T) {
 			ID: "t1", Purpose: "HotTask", Status: model.StatusCompleted,
 			ExecutionRetries: 3, LastError: paStrPtr("compilation error"),
 			ExpectedPaths: []string{"internal/foo.go"},
-			CreatedAt: now, UpdatedAt: now,
+			CreatedAt:     now, UpdatedAt: now,
 		},
 		{
 			ID: "t2", Purpose: "NormalTask", Status: model.StatusCompleted,
 			ExecutionRetries: 1, // below threshold
-			CreatedAt: now, UpdatedAt: now,
+			CreatedAt:        now, UpdatedAt: now,
 		},
 		{
 			ID: "t3", Purpose: "FailedHot", Status: model.StatusFailed,

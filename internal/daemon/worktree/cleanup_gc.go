@@ -503,38 +503,111 @@ func (wm *Manager) cleanupCommandCore(commandID string, state *model.WorktreeCom
 // integrations where CleanupCommand is not called (worktrees are preserved for
 // operator inspection) but the temporary publish branch should not leak.
 //
-// If the branch is checked out in the integration worktree, it tries to detach
-// HEAD first to allow deletion. Errors are logged but never returned.
+// Historical context: a prior implementation unconditionally ran
+// `git checkout --detach` in the integration worktree whenever the initial
+// `branch -D` failed, including the overwhelmingly common case where the
+// branch did not exist at all. Once detached, subsequent publish retries
+// observed an orphaned HEAD: forward-merge read `rev-parse HEAD` and
+// incorrectly concluded no forward-merge was needed, while performPublishMerge
+// merged the stale integration-branch pointer and always conflicted — an
+// infinite publish_conflict loop. This cleanup therefore NEVER detaches the
+// integration worktree. If the branch cannot be deleted because it is checked
+// out there, we restore the integration-branch checkout explicitly; any other
+// failure mode is logged and left for the operator.
+//
+// Errors are logged but never returned. Serialized with wm.mu so it cannot
+// race in-flight publish operations that mutate the same worktree.
 func (wm *Manager) CleanupTempPublishBranch(commandID string) {
 	if err := validateIDs(commandID); err != nil {
 		return
 	}
+
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
 	publishBranch := fmt.Sprintf("maestro/%s/_publish", commandID)
-	if err := wm.gitRun("branch", "-D", publishBranch); err != nil {
-		// Branch might be checked out in the integration worktree.
-		// Try to detach HEAD first, then retry deletion.
-		integrationPath := wm.integrationWorktreePath(commandID)
-		if _, statErr := os.Stat(integrationPath); statErr == nil {
-			if detachErr := wm.gitRunInDir(integrationPath, "checkout", "--detach"); detachErr == nil {
-				if retryErr := wm.gitRun("branch", "-D", publishBranch); retryErr != nil {
-					wm.Log(core.LogLevelDebug, "cleanup_temp_publish_branch_skipped command=%s branch=%s error=%v",
-						commandID, publishBranch, retryErr)
-				} else {
-					wm.Log(core.LogLevelInfo, "cleanup_temp_publish_branch_detach_deleted command=%s branch=%s",
-						commandID, publishBranch)
-				}
-			} else {
-				wm.Log(core.LogLevelDebug, "cleanup_temp_publish_branch_detach_failed command=%s error=%v",
-					commandID, detachErr)
-			}
-		} else {
-			wm.Log(core.LogLevelDebug, "cleanup_temp_publish_branch_skipped command=%s branch=%s error=%v",
-				commandID, publishBranch, err)
-		}
-	} else {
-		wm.Log(core.LogLevelInfo, "cleanup_temp_publish_branch_deleted command=%s branch=%s",
-			commandID, publishBranch)
+
+	// Precondition: only touch anything if the branch actually exists.
+	// `branch -D` on a missing branch is the trigger that previously caused
+	// the `checkout --detach` recovery-loop bug.
+	if err := wm.gitRun("show-ref", "--verify", "--quiet",
+		fmt.Sprintf("refs/heads/%s", publishBranch)); err != nil {
+		return
 	}
+
+	// Try a direct delete first. This is the fast path when _publish is not
+	// checked out anywhere.
+	if err := wm.gitRun("branch", "-D", publishBranch); err == nil {
+		wm.Log(core.LogLevelInfo,
+			"cleanup_temp_publish_branch_deleted command=%s branch=%s",
+			commandID, publishBranch)
+		return
+	}
+
+	// Delete failed — most likely because _publish is checked out in the
+	// integration worktree (createTempPublishBranch + performPublishMerge
+	// are the only code paths that check it out, and only ever in the
+	// integration worktree). Try to restore the integration-branch checkout
+	// so deletion can succeed without orphaning HEAD.
+	integrationPath := wm.integrationWorktreePath(commandID)
+	if _, statErr := os.Stat(integrationPath); statErr != nil {
+		wm.Log(core.LogLevelWarn,
+			"cleanup_temp_publish_branch_skipped command=%s branch=%s reason=integration_worktree_missing error=%v",
+			commandID, publishBranch, statErr)
+		return
+	}
+
+	currentRef, _ := wm.gitOutputInDir(integrationPath, "symbolic-ref", "--short", "HEAD")
+	if strings.TrimSpace(currentRef) != publishBranch {
+		// _publish is not checked out in the integration worktree. Whatever
+		// prevents deletion cannot be safely resolved here without risking
+		// corruption of another worktree; leave it for the operator/GC.
+		wm.Log(core.LogLevelWarn,
+			"cleanup_temp_publish_branch_skipped command=%s branch=%s reason=not_checked_out_in_integration current=%q",
+			commandID, publishBranch, strings.TrimSpace(currentRef))
+		return
+	}
+
+	state, stateErr := wm.loadState(commandID)
+	if stateErr != nil || state == nil || state.Integration.Branch == "" {
+		wm.Log(core.LogLevelWarn,
+			"cleanup_temp_publish_branch_no_state command=%s branch=%s error=%v",
+			commandID, publishBranch, stateErr)
+		return
+	}
+
+	// Refuse to switch branches if the worktree has uncommitted work — a
+	// clean checkout is a precondition for the operator to reason about
+	// state during quarantine.
+	dirtyOut, dirtyErr := wm.gitOutputInDir(integrationPath, "status", "--porcelain")
+	if dirtyErr != nil {
+		wm.Log(core.LogLevelWarn,
+			"cleanup_temp_publish_branch_status_failed command=%s branch=%s error=%v",
+			commandID, publishBranch, dirtyErr)
+		return
+	}
+	if strings.TrimSpace(dirtyOut) != "" {
+		wm.Log(core.LogLevelWarn,
+			"cleanup_temp_publish_branch_dirty command=%s branch=%s dirty=%q",
+			commandID, publishBranch, strings.TrimSpace(dirtyOut))
+		return
+	}
+
+	if err := wm.gitRunInDir(integrationPath, "checkout", state.Integration.Branch); err != nil {
+		wm.Log(core.LogLevelWarn,
+			"cleanup_temp_publish_branch_restore_failed command=%s branch=%s error=%v",
+			commandID, publishBranch, err)
+		return
+	}
+	if err := wm.gitRun("branch", "-D", publishBranch); err != nil {
+		wm.Log(core.LogLevelWarn,
+			"cleanup_temp_publish_branch_retry_failed command=%s branch=%s error=%v",
+			commandID, publishBranch, err)
+		return
+	}
+	wm.Log(core.LogLevelInfo,
+		"cleanup_temp_publish_branch_restored_and_deleted command=%s branch=%s",
+		commandID, publishBranch)
 }
 
 func (wm *Manager) cleanupCommandUnlocked(commandID string, state *model.WorktreeCommandState) error {

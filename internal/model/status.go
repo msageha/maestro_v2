@@ -159,13 +159,14 @@ var validNotificationTypes = map[NotificationType]bool{
 // dead_letter only from pending (daemon detects attempts >= max_attempts before dispatch).
 //
 // Transition triggers:
-//   pending → in_progress:  LeaseManager.AcquireLease (daemon dispatch)
-//   pending → cancelled:    cancel handler (orchestrator cancellation request)
-//   pending → dead_letter:  daemon queue scan (attempts >= max_attempts before dispatch)
-//   in_progress → pending:  LeaseManager.ReleaseLease (lease timeout / explicit release)
-//   in_progress → completed: result_write_handler (worker/planner reports success)
-//   in_progress → failed:    result_write_handler (worker/planner reports failure)
-//   in_progress → cancelled: cancel handler (orchestrator cancellation during execution)
+//
+//	pending → in_progress:  LeaseManager.AcquireLease (daemon dispatch)
+//	pending → cancelled:    cancel handler (orchestrator cancellation request)
+//	pending → dead_letter:  daemon queue scan (attempts >= max_attempts before dispatch)
+//	in_progress → pending:  LeaseManager.ReleaseLease (lease timeout / explicit release)
+//	in_progress → completed: result_write_handler (worker/planner reports success)
+//	in_progress → failed:    result_write_handler (worker/planner reports failure)
+//	in_progress → cancelled: cancel handler (orchestrator cancellation during execution)
 //
 // Symmetry with validTaskStateTransitions:
 //   - Queue allows in_progress → pending (lease release); task state does NOT,
@@ -190,10 +191,11 @@ var validCommandTaskQueueTransitions = map[Status]map[Status]bool{
 // Notification queue transitions: terminal states are completed|dead_letter only.
 //
 // Transition triggers:
-//   pending → in_progress:  LeaseManager.AcquireNotificationLease (daemon dispatch)
-//   pending → dead_letter:  daemon queue scan (attempts >= max_attempts)
-//   in_progress → pending:  LeaseManager.ReleaseNotificationLease (lease timeout)
-//   in_progress → completed: notification delivery handler (successful delivery)
+//
+//	pending → in_progress:  LeaseManager.AcquireNotificationLease (daemon dispatch)
+//	pending → dead_letter:  daemon queue scan (attempts >= max_attempts)
+//	in_progress → pending:  LeaseManager.ReleaseNotificationLease (lease timeout)
+//	in_progress → completed: notification delivery handler (successful delivery)
 //
 // Asymmetries with command/task queue transitions (intentional):
 //   - No cancelled: notifications are not individually cancellable.
@@ -213,12 +215,13 @@ var validNotificationQueueTransitions = map[Status]map[Status]bool{
 // These track the logical task lifecycle, separate from queue entry position.
 //
 // Basic lifecycle transitions:
-//   pending → in_progress:  daemon dispatch (AcquireTaskLease)
-//   pending → cancelled:    command cancellation before dispatch
-//   pending → dead_letter:  daemon dead-letters when queue attempts >= max_attempts
-//   in_progress → completed: result_write_handler (worker reports success)
-//   in_progress → failed:    result_write_handler (worker reports failure)
-//   in_progress → cancelled: command cancellation during execution
+//
+//	pending → in_progress:  daemon dispatch (AcquireTaskLease)
+//	pending → cancelled:    command cancellation before dispatch
+//	pending → dead_letter:  daemon dead-letters when queue attempts >= max_attempts
+//	in_progress → completed: result_write_handler (worker reports success)
+//	in_progress → failed:    result_write_handler (worker reports failure)
+//	in_progress → cancelled: command cancellation during execution
 //
 // Symmetry with queue transitions (validCommandTaskQueueTransitions):
 //   - Queue allows in_progress → pending (lease release); task state does NOT
@@ -430,11 +433,11 @@ var validIntegrationTransitions = map[IntegrationStatus]map[IntegrationStatus]bo
 		IntegrationStatusQuarantined: true,
 	},
 	IntegrationStatusPublishing: {
-		IntegrationStatusPublished:      true,
-		IntegrationStatusConflict:       true,
-		IntegrationStatusPublishFailed:  true,
-		IntegrationStatusFailed:         true,
-		IntegrationStatusQuarantined:    true,
+		IntegrationStatusPublished:     true,
+		IntegrationStatusConflict:      true,
+		IntegrationStatusPublishFailed: true,
+		IntegrationStatusFailed:        true,
+		IntegrationStatusQuarantined:   true,
 	},
 	IntegrationStatusPublishFailed: {
 		IntegrationStatusPublishing:  true, // retry

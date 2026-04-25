@@ -835,4 +835,3 @@ func TestResultHandler_SweepExhaustedNotifications_Worker(t *testing.T) {
 		t.Errorf("sweep must be idempotent, got %d notifications", len(nq.Notifications))
 	}
 }
-

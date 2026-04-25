@@ -95,6 +95,9 @@ func LoadOrDefaultVerifyConfig(path string) (*VerifyConfig, error) {
 }
 
 // LoadVerifyConfig reads and parses a verify.yaml file.
+// The parsed config is validated via Validate() so that dangerous shell
+// meta-characters in command strings are rejected at load time. Callers that
+// rely on a Fallback (DefaultVerifyConfig) should use LoadOrDefaultVerifyConfig.
 func LoadVerifyConfig(path string) (*VerifyConfig, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // path is a config file path from validated inputs
 	if err != nil {
@@ -102,6 +105,9 @@ func LoadVerifyConfig(path string) (*VerifyConfig, error) {
 	}
 	var f verifyFile
 	if err := yamlv3.Unmarshal(data, &f); err != nil {
+		return nil, fmt.Errorf("load verify config: %w", err)
+	}
+	if err := f.Verify.Validate(); err != nil {
 		return nil, fmt.Errorf("load verify config: %w", err)
 	}
 	return &f.Verify, nil

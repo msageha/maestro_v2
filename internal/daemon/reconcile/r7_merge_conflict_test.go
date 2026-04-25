@@ -216,9 +216,9 @@ func TestR7MergeConflict_MultipleWorkers_MixedResolutionAndEscalation(t *testing
 
 	commandID := "cmd_0000000005_r7test05"
 	state := newWorktreeCommandState(commandID, model.IntegrationStatusConflict, []model.WorktreeState{
-		newWorkerState(commandID, "worker1", model.WorktreeStatusConflict, 0),                          // should resolve
+		newWorkerState(commandID, "worker1", model.WorktreeStatusConflict, 0),                             // should resolve
 		newWorkerState(commandID, "worker2", model.WorktreeStatusConflict, maxConflictResolutionAttempts), // should escalate
-		newWorkerState(commandID, "worker3", model.WorktreeStatusActive, 0),                            // not in conflict
+		newWorkerState(commandID, "worker3", model.WorktreeStatusActive, 0),                               // not in conflict
 	})
 	writeWorktreeState(t, maestroDir, commandID, state)
 
