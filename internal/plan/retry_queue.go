@@ -40,7 +40,8 @@ type retryQueueTask struct {
 }
 
 func writeRetryQueueEntry(maestroDir string, task retryQueueTask, now string, lockMap *lock.MutexMap) error {
-	// CRIT-02: Lock per-queue to prevent concurrent read-modify-write data loss.
+	// Lock per-queue to prevent concurrent read-modify-write data loss when
+	// multiple writers append to the same worker queue.
 	if lockMap != nil {
 		lockMap.Lock("queue:" + task.workerID)
 		defer lockMap.Unlock("queue:" + task.workerID)
@@ -134,7 +135,8 @@ func rollbackRetryQueueEntries(maestroDir string, written []retryQueueTask, lock
 		workerMap[t.workerID].taskIDs[t.taskID] = true
 	}
 
-	// CRIT-02: Lock per-queue to prevent concurrent read-modify-write data loss.
+	// Lock per-queue to prevent concurrent read-modify-write data loss when
+	// multiple writers append to the same worker queue.
 	for _, rb := range workerMap {
 		func() {
 			if lockMap != nil {

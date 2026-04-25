@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"bytes"
+	"context"
 	"log"
 	"testing"
 
@@ -152,7 +153,7 @@ func TestPhaseABC_CounterAccumulationAcrossPhases(t *testing.T) {
 	}
 
 	// Phase B adds increments
-	_ = se.periodicScanPhaseB(nil, pa)
+	_ = se.periodicScanPhaseB(context.Background(), pa)
 	se.scanCounters.SignalInlineRetrySuccesses = 5
 
 	// Phase C should preserve the Phase B value

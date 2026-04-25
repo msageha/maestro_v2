@@ -39,14 +39,14 @@ func readInput(tasksFile string) (*SubmitInput, error) {
 			return nil, fmt.Errorf("stdin input exceeds maximum size of %d bytes", model.DefaultMaxYAMLFileBytes)
 		}
 	} else {
-		// CRIT-05: Validate file path (no null bytes, clean path)
+		// Validate file path (no null bytes, clean path)
 		cleaned, pathErr := validate.FilePath(tasksFile)
 		if pathErr != nil {
 			return nil, fmt.Errorf("invalid tasks file path: %w", pathErr)
 		}
 		tasksFile = cleaned
 
-		// HIGH-05: Check file size before reading to prevent memory exhaustion
+		// Check file size before reading to prevent memory exhaustion
 		info, statErr := os.Stat(tasksFile)
 		if statErr != nil {
 			return nil, fmt.Errorf("stat tasks file: %w", statErr)

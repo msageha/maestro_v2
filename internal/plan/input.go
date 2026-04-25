@@ -27,13 +27,13 @@ type TaskInput struct {
 
 	// RunOnMain instructs the dispatcher to run this task in the main working
 	// directory instead of the worker's worktree. Use for read-only verification
-	// tasks that must evaluate the merged state on the main branch (Bug F).
+	// tasks that must evaluate the merged state on the main branch.
 	// Mutually exclusive with RunOnIntegration.
 	RunOnMain bool `yaml:"run_on_main,omitempty"`
 	// RunOnIntegration instructs the dispatcher to run this task in the
 	// integration worktree for the associated command. Use for publish_conflict
-	// resolution tasks that must operate directly on the integration branch
-	// (Bug F). Mutually exclusive with RunOnMain.
+	// resolution tasks that must operate directly on the integration branch.
+	// Mutually exclusive with RunOnMain.
 	RunOnIntegration bool `yaml:"run_on_integration,omitempty"`
 }
 

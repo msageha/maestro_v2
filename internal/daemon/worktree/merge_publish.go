@@ -753,7 +753,7 @@ func (wm *Manager) determineMergeOutcome(
 	// workers. That false-Merged transition unblocks Phase A's merge gate
 	// (isPhaseMergeRecorded) and lets downstream phases and publish run
 	// against an integration branch that hasn't absorbed the resolution
-	// commits (2026-04 audit: integration=merged with worker=resolving).
+	// commits — leaving an integration=merged state alongside worker=resolving.
 	statePendingResolution := 0
 	for _, ws := range state.Workers {
 		if ws.Status == model.WorktreeStatusConflict || ws.Status == model.WorktreeStatusResolving {

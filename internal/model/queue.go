@@ -108,11 +108,18 @@ type Task struct {
 	// resolution tasks that must operate directly on the integration branch to
 	// resolve forward-merge conflicts before retry-publish can succeed.
 	RunOnIntegration bool `yaml:"run_on_integration,omitempty" json:"run_on_integration,omitempty"`
-	// OperationType classifies the task for §S0-1 admission control. When set
-	// it takes precedence over the Purpose-substring heuristic. Permitted
+	// OperationType classifies the task for §S0-1 admission control. Permitted
 	// values are OperationTypeVerify / Repair / Rollout, or empty for normal
-	// tasks (unconstrained). Planner / retry handler should populate this
-	// explicitly so the daemon does not rely on free-form Purpose strings.
+	// (unconstrained) tasks. Classification is deterministic and explicit:
+	// when this field is empty the admission controller treats the task as
+	// OpUnknown (i.e. unconstrained), regardless of any keywords that happen
+	// to appear in Purpose. Earlier revisions inferred the type from
+	// Purpose-substring matches, but that heuristic was removed because it
+	// misclassified user tasks like "Repair broken auth flow" into the
+	// admission-controlled bucket — the contract is locked in by
+	// internal/daemon/admission/controller_test.go::TestClassifyTask_PurposeIgnored.
+	// Planner / retry handler should therefore populate this field explicitly
+	// for verify / repair / rollout tasks.
 	OperationType string `yaml:"operation_type,omitempty" json:"operation_type,omitempty"`
 }
 

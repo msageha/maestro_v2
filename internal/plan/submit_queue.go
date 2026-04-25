@@ -124,10 +124,9 @@ func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks 
 		workerTasks[a.WorkerID] = append(workerTasks[a.WorkerID], queueTask)
 	}
 
-	// CRIT-02: Write to each worker's queue file under per-queue lock
-	// to prevent concurrent read-modify-write data loss.
-	// C-A3: flock(LOCK_EX) provides cross-process protection in addition
-	// to the in-process MutexMap lock.
+	// Write to each worker's queue file under per-queue lock to prevent
+	// concurrent read-modify-write data loss. flock(LOCK_EX) provides
+	// cross-process protection in addition to the in-process MutexMap lock.
 	for workerID, newTasks := range workerTasks {
 		if err := func() error {
 			if lockMap != nil {
@@ -168,8 +167,8 @@ func rollbackQueueEntries(maestroDir string, tasks []TaskInput, nameToID map[str
 
 	var errs []error
 
-	// CRIT-02: Lock per-queue to prevent concurrent read-modify-write data loss.
-	// C-A3: flock(LOCK_EX) provides cross-process protection.
+	// Lock per-queue to prevent concurrent read-modify-write data loss.
+	// flock(LOCK_EX) provides cross-process protection.
 	for workerID := range workerFiles {
 		if err := func() error {
 			if lockMap != nil {

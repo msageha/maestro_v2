@@ -322,8 +322,8 @@ func validateTaskFieldsCore(task TaskInput, fieldPrefix string, errs *Validation
 	// Validate definition_of_done.
 	validateDefinitionOfDone(task.DefinitionOfDone, fieldPrefix+".definition_of_done", errs)
 
-	// Bug F: run_on_main and run_on_integration are mutually exclusive since
-	// the dispatcher selects exactly one target directory per task.
+	// run_on_main and run_on_integration are mutually exclusive since the
+	// dispatcher selects exactly one target directory per task.
 	if task.RunOnMain && task.RunOnIntegration {
 		errs.Add(fieldPrefix, "run_on_main and run_on_integration are mutually exclusive; set at most one")
 	}

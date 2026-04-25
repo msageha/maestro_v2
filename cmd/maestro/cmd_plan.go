@@ -79,7 +79,7 @@ func (a *cliApp) runPlanSubmit(args []string) error {
 		tasksFile = "-" // default to stdin
 	}
 
-	// CRIT-05: Validate non-stdin file path before passing to daemon
+	// Validate non-stdin file path before passing to daemon
 	if tasksFile != "-" && tasksFile != "/dev/stdin" {
 		cleaned, err := validate.FilePath(tasksFile)
 		if err != nil {

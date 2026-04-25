@@ -533,14 +533,30 @@ func toFloat64(v interface{}) (float64, error) {
 const ConditionFeatureGate ConditionType = "feature_gate"
 
 // FeatureGateRule evaluates feature gates based on task complexity.
+//
+// This rule is INTENTIONALLY non-blocking. It is a feature-profile selector,
+// not a quality gate: it computes the complexity level and resolves the
+// corresponding FeatureProfile, but its job ends there. The profile result is
+// not propagated through *RuleResult (which only carries pass/severity/
+// message), so a "fail" return would only stop the gate evaluation pipeline
+// without delivering useful information to the caller.
+//
+// Note: this evaluator is registered explicitly via RegisterFeatureGateRule;
+// the daemon does not register it today. Real gating in production is done by
+// the field-validation / script evaluators registered in NewEngine, combined
+// with quality_gates.enforcement.failure_action="block" in config.yaml.
 type FeatureGateRule struct {
 	evaluator FeatureGateEvaluator
 	scorer    ComplexityAnalyzer
 }
 
-// Evaluate determines the complexity level and returns the corresponding feature profile.
-// If task.complexity_level is explicitly set, it overrides the computed level (§C-8 req-4).
-// On any failure the Simple profile is used as fallback (§C-8 req-6).
+// Evaluate determines the complexity level and resolves the corresponding
+// feature profile. It always returns (true, nil) — see the doc comment on
+// FeatureGateRule for why this rule is intentionally non-blocking.
+//
+// If task.complexity_level is explicitly set in the evaluation context, it
+// overrides the computed level (§C-8 req-4). On any failure of the underlying
+// scorer, profileLevel falls back to ProfileLevelSimple (§C-8 req-6).
 func (r *FeatureGateRule) Evaluate(_ context.Context, _ *RuleCondition, evalCtx EvaluationContext) (bool, error) {
 	var level FeatureProfileLevel
 
@@ -558,13 +574,13 @@ func (r *FeatureGateRule) Evaluate(_ context.Context, _ *RuleCondition, evalCtx 
 		level = complexityToProfileLevel(result.Level)
 	}
 
-	// Always passes: the gate is informational, not blocking.
-	// Callers inspect the evaluation context or RuleResult.Message downstream.
-	// The evaluator is invoked for its side effects (e.g. populating context);
-	// the returned profile is intentionally unused.
-	profile := r.evaluator.Evaluate(level)
-	if len(profile.EnabledFeatures) == 0 {
-		_ = r.evaluator.Evaluate(ProfileLevelSimple)
+	// Resolve the profile. If the configured FeatureGateEvaluator returns an
+	// empty profile for the chosen level (mis-configured tier), fall back to
+	// the Simple profile so callers always see a usable definition. The
+	// returned profile is not propagated through *RuleResult today; see the
+	// FeatureGateRule doc comment.
+	if profile := r.evaluator.Evaluate(level); len(profile.EnabledFeatures) == 0 {
+		r.evaluator.Evaluate(ProfileLevelSimple)
 	}
 	return true, nil
 }

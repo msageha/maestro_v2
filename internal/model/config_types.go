@@ -47,8 +47,14 @@ type qualityGatesConfig struct {
 	Enforcement qualityGateEnforcement `yaml:"enforcement"`
 }
 
-// TODO: Add threshold fields (e.g., MinTestCoverage, MaxLintErrors, MinCodeQualityScore)
-// when quality gate evaluation logic is implemented.
+// qualityGateThresholds reserves the `quality_gates.thresholds` YAML key for
+// future numeric thresholds (e.g., MinTestCoverage, MaxLintErrors,
+// MinCodeQualityScore). The struct is intentionally empty: real gating happens
+// today through `quality_gates.enforcement` (PreTaskCheck + FailureAction) plus
+// per-gate definitions evaluated by the quality.Engine — thresholds will be
+// added field-by-field as the corresponding rule evaluators are implemented.
+// Keeping the empty struct preserves YAML compatibility for existing configs
+// that include `thresholds: {}` (see templates/config.yaml).
 type qualityGateThresholds struct {
 }
 
