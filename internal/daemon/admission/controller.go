@@ -5,7 +5,6 @@ package admission
 
 import (
 	"log"
-	"strings"
 	"sync"
 
 	"github.com/msageha/maestro_v2/internal/model"
@@ -143,8 +142,8 @@ func (c *Controller) Release(op OpType) {
 	}
 }
 
-// ClassifyTask determines the OpType for a task based on keyword matching
-// against its Purpose field (case-insensitive).
+// ClassifyTask determines the OpType for a task from its OperationType
+// structured field. See classifyTaskUnlocked for the precedence rules.
 func (c *Controller) ClassifyTask(task *model.Task) OpType {
 	return c.classifyTaskUnlocked(task)
 }
@@ -215,12 +214,17 @@ func (c *Controller) maxFor(op OpType) int {
 // This method is stateless (reads only the task argument) and is safe to
 // call with or without holding c.mu.
 //
-// Classification precedence (defense-in-depth):
-//  1. Task.OperationType (structured field) — authoritative when set.
-//  2. Task.Purpose substring — legacy fallback for tasks emitted before the
-//     OperationType field was introduced. The Planner / retry handler now
-//     populate the structured field explicitly, so production tasks should
-//     reach the substring branch only on schema migration.
+// Classification is deterministic on Task.OperationType — daemon admission
+// must not depend on free-form Purpose strings, so a normal task whose
+// Purpose happens to contain "verify"/"repair"/"rollout" is NOT misclassified
+// into a constrained bucket. Planner (initial submit, inject) and retry
+// handlers are responsible for populating OperationType explicitly when the
+// task is verify/repair/rollout. Empty OperationType means "normal" and
+// falls through to OpUnknown (always admitted).
+//
+// Unrecognized OperationType values (e.g. "bogus") also fall through to
+// OpUnknown rather than silently mapping to a known bucket; logging is left
+// to the caller so we can surface schema drift.
 func (c *Controller) classifyTaskUnlocked(task *model.Task) OpType {
 	switch task.OperationType {
 	case model.OperationTypeVerify:
@@ -228,16 +232,6 @@ func (c *Controller) classifyTaskUnlocked(task *model.Task) OpType {
 	case model.OperationTypeRepair:
 		return OpRepair
 	case model.OperationTypeRollout:
-		return OpRollout
-	}
-
-	purpose := strings.ToLower(task.Purpose)
-	switch {
-	case strings.Contains(purpose, "verify"), strings.Contains(purpose, "verification"):
-		return OpVerify
-	case strings.Contains(purpose, "repair"):
-		return OpRepair
-	case strings.Contains(purpose, "rollout"):
 		return OpRollout
 	default:
 		return OpUnknown

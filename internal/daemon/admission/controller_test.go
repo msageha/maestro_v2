@@ -78,33 +78,34 @@ func TestSnapshot_Accuracy(t *testing.T) {
 	assert.Equal(t, 2, c.ActiveCount(OpVerify))
 }
 
-func TestClassifyTask(t *testing.T) {
+// TestClassifyTask_PurposeIgnored locks in the deterministic-classification
+// invariant: even when Purpose contains verify/repair/rollout keywords, an
+// unset OperationType MUST classify as OpUnknown. This guards against the
+// pre-2026 Purpose-substring behaviour that misclassified normal user tasks
+// (e.g. "Repair broken auth flow") into the admission-controlled bucket.
+func TestClassifyTask_PurposeIgnored(t *testing.T) {
 	t.Parallel()
 	c := NewController(defaultCfg())
 
 	tests := []struct {
 		name    string
 		purpose string
-		want    OpType
 	}{
-		{name: "verify lowercase", purpose: "verify implementation", want: OpVerify},
-		{name: "verify uppercase", purpose: "VERIFY results", want: OpVerify},
-		{name: "verification", purpose: "run verification suite", want: OpVerify},
-		{name: "Verification mixed case", purpose: "Verification of output", want: OpVerify},
-		{name: "repair", purpose: "repair broken tests", want: OpRepair},
-		{name: "Repair mixed case", purpose: "Repair the module", want: OpRepair},
-		{name: "rollout", purpose: "rollout new version", want: OpRollout},
-		{name: "Rollout mixed case", purpose: "Rollout changes to prod", want: OpRollout},
-		{name: "unknown generic", purpose: "implement feature X", want: OpUnknown},
-		{name: "empty purpose", purpose: "", want: OpUnknown},
+		{name: "verify lowercase", purpose: "verify implementation"},
+		{name: "verify uppercase", purpose: "VERIFY results"},
+		{name: "verification", purpose: "run verification suite"},
+		{name: "repair", purpose: "repair broken tests"},
+		{name: "rollout", purpose: "rollout new version"},
+		{name: "unknown generic", purpose: "implement feature X"},
+		{name: "empty purpose", purpose: ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			task := &model.Task{Purpose: tt.purpose}
-			got := c.ClassifyTask(task)
-			assert.Equal(t, tt.want, got)
+			assert.Equal(t, OpUnknown, c.ClassifyTask(task),
+				"empty OperationType must yield OpUnknown regardless of Purpose")
 		})
 	}
 }
@@ -138,16 +139,16 @@ func TestClassifyTask_OperationTypeTakesPrecedence(t *testing.T) {
 			want:          OpVerify,
 		},
 		{
-			name:          "empty structured field falls back to purpose substring",
+			name:          "empty structured field classifies as unknown regardless of purpose",
 			operationType: "",
 			purpose:       "repair broken tests",
-			want:          OpRepair,
+			want:          OpUnknown,
 		},
 		{
-			name:          "unknown structured field falls back to purpose",
+			name:          "unknown structured field classifies as unknown",
 			operationType: "bogus",
 			purpose:       "rollout v2",
-			want:          OpRollout,
+			want:          OpUnknown,
 		},
 	}
 
@@ -201,11 +202,13 @@ func TestRecordInFlight(t *testing.T) {
 	// Pre-populate some slots that should be cleared.
 	c.TryAcquire(OpRollout)
 
+	// Tasks must declare OperationType structurally; Purpose is only a
+	// human-readable hint and MUST NOT influence admission classification.
 	tasks := []*model.Task{
-		{Purpose: "verify unit tests"},
-		{Purpose: "Verification of integration"},
-		{Purpose: "repair linting errors"},
-		{Purpose: "implement new feature"},
+		{OperationType: model.OperationTypeVerify, Purpose: "verify unit tests"},
+		{OperationType: model.OperationTypeVerify, Purpose: "Verification of integration"},
+		{OperationType: model.OperationTypeRepair, Purpose: "repair linting errors"},
+		{Purpose: "implement new feature"}, // OperationType empty → OpUnknown, not counted
 	}
 
 	c.RecordInFlight(tasks)
