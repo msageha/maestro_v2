@@ -140,9 +140,104 @@ deny() {
   exit 0
 }
 
+# --- RUN_ON_MAIN flag detection (shared by Bash + Write/Edit branches) ---
+#
+# The Daemon stamps @run_on_main=1 on the pane via tmux user variables before
+# dispatching a run_on_main task and clears it (sets to "") on the next
+# regular dispatch. The flag means: "this Worker is pointed at the main
+# worktree for read-only verification — block any mutation".
+#
+# Fail policy:
+#   - flag = "1"          → run_on_main mode (mutations DENY)
+#   - flag = "" or unset  → normal mode (mutations OK as long as other rules pass)
+#   - TMUX_PANE unset     → not in tmux at all; cannot be in run_on_main mode
+#                           (the daemon only dispatches via tmux)
+#   - TMUX_PANE set but tmux missing or display-message fails → fail-CLOSED:
+#                           we are clearly inside a tmux pane the daemon owns,
+#                           but cannot verify the flag, so the safe default is
+#                           to assume run_on_main is in effect.
+run_on_main="0"
+if [ -n "${TMUX_PANE:-}" ]; then
+  if command -v tmux >/dev/null 2>&1; then
+    if _flag="$(tmux display-message -t "$TMUX_PANE" -p '#{@run_on_main}' 2>/dev/null)"; then
+      if [ "$_flag" = "1" ]; then
+        run_on_main="1"
+      fi
+    else
+      # tmux is installed but display-message failed. We are inside a tmux
+      # pane managed by the daemon and cannot read the flag; fail closed
+      # so a run_on_main task cannot mutate main due to a tmux glitch.
+      run_on_main="1"
+    fi
+  else
+    # Inside a tmux pane (TMUX_PANE set) but tmux binary missing — fail closed.
+    run_on_main="1"
+  fi
+fi
+
 # --- Bash command checks ---
 if [ "$tool_name" = "Bash" ]; then
   cmd="$(echo "$input" | jq -r '.tool_input.command // ""')"
+
+  # RUN_ON_MAIN: read-only verification mode also applies to Bash. The
+  # Write/Edit hooks only catch the Claude Code Write/Edit tools -- a Worker
+  # that runs sed -i, cp, go install, package installers, or shell
+  # redirections via Bash would otherwise mutate the main worktree it is
+  # supposed to be inspecting. The list below covers the common mutation
+  # vectors; verbs already blocked elsewhere (git push, sudo, rm -rf, etc.)
+  # remain blocked by their own rules and do not need to be listed here.
+  if [ "$run_on_main" = "1" ]; then
+    # File-mutating coreutils (any form, including absolute paths).
+    if echo "$cmd" | grep -qE '(^|[;|&(])\s*(/[A-Za-z0-9_./-]+/)?(cp|mv|rm|mkdir|rmdir|touch|chmod|chown|chgrp|ln|install)\b'; then
+      deny "RUN_ON_MAIN: Bash file-mutating command blocked (read-only verification mode)"
+    fi
+    # In-place editors.
+    if echo "$cmd" | grep -qE '\b(sed|gsed)\s+(-[a-zA-Z]*i|--in-place)\b'; then
+      deny "RUN_ON_MAIN: Bash in-place edit blocked (read-only verification mode)"
+    fi
+    if echo "$cmd" | grep -qE '\bperl\s+(-[a-zA-Z]*[ip]|--in-place)\b'; then
+      deny "RUN_ON_MAIN: Bash perl in-place edit blocked (read-only verification mode)"
+    fi
+    # Output redirection that writes a file.
+    # Match >, >>, &> when followed by a path-like token (not >&N file-descriptor dup).
+    if echo "$cmd" | grep -qE '(^|[^0-9&])>{1,2}[[:space:]]*[A-Za-z0-9_./~$-]'; then
+      deny "RUN_ON_MAIN: Bash output redirection to file blocked (read-only verification mode)"
+    fi
+    if echo "$cmd" | grep -qE '\|\s*tee\b'; then
+      deny "RUN_ON_MAIN: Bash tee blocked (read-only verification mode)"
+    fi
+    # Mutating git verbs. Read-only forms (status, log, diff, show, branch -v,
+    # rev-parse, etc.) are deliberately not in this list.
+    if echo "$cmd" | grep -qE '(^|[;|&])\s*git\s+(commit|add|merge|rebase|cherry-pick|revert|stash|restore|fetch|pull|push|worktree|tag|reset|checkout|clean|am|apply|format-patch|mv|rm|init)(\s|$)'; then
+      deny "RUN_ON_MAIN: Bash git mutation blocked (read-only verification mode)"
+    fi
+    # Package / dependency installers and code generators.
+    if echo "$cmd" | grep -qE '\b(npm|pnpm|yarn)\s+(install|i|ci|add|remove|uninstall|update|upgrade)\b'; then
+      deny "RUN_ON_MAIN: Bash JS package mutation blocked (read-only verification mode)"
+    fi
+    if echo "$cmd" | grep -qE '\b(pip|pip3)\s+(install|uninstall|wheel)\b'; then
+      deny "RUN_ON_MAIN: Bash Python package mutation blocked (read-only verification mode)"
+    fi
+    if echo "$cmd" | grep -qE '\bcargo\s+(install|build|run|update|fetch|generate)\b'; then
+      deny "RUN_ON_MAIN: Bash cargo mutation blocked (read-only verification mode)"
+    fi
+    if echo "$cmd" | grep -qE '\bgo\s+(install|generate|mod\s+(tidy|download|edit|init))\b'; then
+      deny "RUN_ON_MAIN: Bash go install/generate/mod blocked (read-only verification mode)"
+    fi
+    if echo "$cmd" | grep -qE '\b(make|gmake)\b'; then
+      # Allow make -n / make --dry-run (no actual side effects).
+      if ! echo "$cmd" | grep -qE '\bmake\b.*\s(-n\b|--dry-run\b|--just-print\b)'; then
+        deny "RUN_ON_MAIN: Bash make blocked except --dry-run (read-only verification mode)"
+      fi
+    fi
+    # Archive extraction that writes files.
+    if echo "$cmd" | grep -qE '\b(tar|gtar)\s+.*-[a-zA-Z]*x'; then
+      deny "RUN_ON_MAIN: Bash archive extraction blocked (read-only verification mode)"
+    fi
+    if echo "$cmd" | grep -qE '\bunzip\b|\bgunzip\b|\b7z\s+x\b'; then
+      deny "RUN_ON_MAIN: Bash archive extraction blocked (read-only verification mode)"
+    fi
+  fi
 
   # C1: Shell expansion bypass prevention (deny-by-default + allowlist)
   # Block backtick command substitution (legacy syntax, use $() instead)
@@ -511,19 +606,11 @@ if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ]; then
   # Normalize to lowercase for case-insensitive FS (macOS)
   file_path_lower="$(echo "$file_path" | tr '[:upper:]' '[:lower:]')"
 
-  # RUN_ON_MAIN: read-only verification mode. The Daemon stamps the pane
-  # with @run_on_main=1 (via tmux pane-scoped user variable) before
-  # dispatching a run_on_main task and clears it on the next regular
-  # dispatch. While the flag is set, all Write/Edit operations are
-  # denied so the Worker cannot mutate the main worktree it is reading.
-  # Reading the flag fails open: if tmux is unavailable for any reason,
-  # we let the request through rather than break Worker delivery — the
-  # WT001 worktree boundary check still fires for worktree-mode tasks.
-  if [ -n "${TMUX_PANE:-}" ] && command -v tmux >/dev/null 2>&1; then
-    _run_on_main_flag="$(tmux display-message -t "$TMUX_PANE" -p '#{@run_on_main}' 2>/dev/null || echo "")"
-    if [ "$_run_on_main_flag" = "1" ]; then
-      deny "RUN_ON_MAIN: Write/Edit blocked while task runs against main branch (read-only verification mode)"
-    fi
+  # RUN_ON_MAIN: read-only verification mode. The shared run_on_main flag is
+  # computed at script start (see top of file). Fail-closed semantics there
+  # ensure tmux outages do not silently allow mutations.
+  if [ "$run_on_main" = "1" ]; then
+    deny "RUN_ON_MAIN: Write/Edit blocked while task runs against main branch (read-only verification mode)"
   fi
 
   # Block writes to .maestro/ control plane (absolute and relative paths)

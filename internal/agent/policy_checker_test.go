@@ -2997,3 +2997,154 @@ func TestHookScript_RunOnMain_AllowsWriteWhenUnflagged(t *testing.T) {
 		t.Errorf("RUN_ON_MAIN must not fire when @run_on_main is unset, got: %s", out)
 	}
 }
+
+// runOnMainBashEnv builds a PATH containing a tmux shim that returns the given
+// flag value, plus the real jq and standard system bins. Used by the Bash-
+// branch RUN_ON_MAIN guard tests below.
+func runOnMainBashEnv(t *testing.T, flag string) (scriptPath string, env []string) {
+	t.Helper()
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	sp, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	shimDir := t.TempDir()
+	shimPath := filepath.Join(shimDir, "tmux")
+	shim := "#!/usr/bin/env bash\n" +
+		`if [ "$1" = "display-message" ]; then echo ` + flag + `; exit 0; fi` + "\n" +
+		"exit 0\n"
+	if err := os.WriteFile(shimPath, []byte(shim), 0755); err != nil { //nolint:gosec
+		t.Fatalf("write tmux shim: %v", err)
+	}
+
+	jqPath, _ := exec.LookPath("jq")
+	pathEnv := shimDir
+	if jqPath != "" {
+		pathEnv += ":" + filepath.Dir(jqPath)
+	}
+	pathEnv += ":/bin:/usr/bin"
+
+	return sp, []string{
+		"PATH=" + pathEnv,
+		"HOME=" + os.Getenv("HOME"),
+		"TMUX_PANE=%0",
+	}
+}
+
+// TestHookScript_RunOnMain_BashDenylist verifies the Bash-branch RUN_ON_MAIN
+// guard: a Worker running in read-only verification mode must not be able to
+// mutate the main worktree via Bash even though the Write/Edit branch is
+// already locked down. Each case is a representative of one denylist family
+// (file-mutating coreutils, in-place editors, redirection, mutating git verbs,
+// package installers, make, archive extraction).
+func TestHookScript_RunOnMain_BashDenylist(t *testing.T) {
+	scriptPath, env := runOnMainBashEnv(t, "1")
+
+	cases := []struct {
+		name string
+		cmd  string
+	}{
+		{"cp", "cp src/foo.go src/bar.go"},
+		{"mv", "mv a b"},
+		{"rm", "rm tmp.txt"},
+		{"mkdir", "mkdir newdir"},
+		{"touch", "touch newfile"},
+		{"sed_in_place", "sed -i 's/a/b/' file.go"},
+		{"perl_in_place", "perl -i -pe 's/a/b/' file.go"},
+		{"redirect_overwrite", "echo hi > out.txt"},
+		{"redirect_append", "echo hi >> out.txt"},
+		{"tee_pipe", "echo hi | tee out.txt"},
+		{"git_commit", "git commit -m wip"},
+		{"git_push", "git push origin main"},
+		{"git_checkout", "git checkout -b feat"},
+		{"npm_install", "npm install lodash"},
+		{"pnpm_add", "pnpm add lodash"},
+		{"pip_install", "pip install requests"},
+		{"cargo_build", "cargo build --release"},
+		{"go_install", "go install ./cmd/foo"},
+		{"go_generate", "go generate ./..."},
+		{"go_mod_tidy", "go mod tidy"},
+		{"make_default", "make build"},
+		{"tar_extract", "tar -xzf archive.tgz"},
+		{"unzip", "unzip pkg.zip"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := fmt.Sprintf(`{"tool_name":"Bash","tool_input":{"command":%q}}`, tc.cmd)
+			cmd := exec.Command("bash", scriptPath)
+			cmd.Stdin = strings.NewReader(input)
+			cmd.Env = env
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("hook script failed: %v, output: %s", err, out)
+			}
+			if !strings.Contains(string(out), "RUN_ON_MAIN") {
+				t.Errorf("expected RUN_ON_MAIN deny for %q, got: %s", tc.cmd, out)
+			}
+		})
+	}
+}
+
+// TestHookScript_RunOnMain_BashAllows verifies that read-only Bash commands
+// remain allowed under run_on_main=1, and that make --dry-run is whitelisted
+// (a build-system inspection without side effects). Without this, the guard
+// would lock Workers out of legitimate verification work.
+func TestHookScript_RunOnMain_BashAllows(t *testing.T) {
+	scriptPath, env := runOnMainBashEnv(t, "1")
+
+	cases := []struct {
+		name string
+		cmd  string
+	}{
+		{"git_status", "git status"},
+		{"git_log", "git log -n 5"},
+		{"git_diff", "git diff HEAD~1"},
+		{"go_build", "go build ./..."},
+		{"go_test", "go test ./..."},
+		{"go_vet", "go vet ./..."},
+		{"go_list", "go list ./..."},
+		{"make_dry_run", "make build --dry-run"},
+		{"make_n", "make build -n"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := fmt.Sprintf(`{"tool_name":"Bash","tool_input":{"command":%q}}`, tc.cmd)
+			cmd := exec.Command("bash", scriptPath)
+			cmd.Stdin = strings.NewReader(input)
+			cmd.Env = env
+			out, err := cmd.CombinedOutput()
+			if err != nil {
+				t.Fatalf("hook script failed: %v, output: %s", err, out)
+			}
+			if strings.Contains(string(out), "RUN_ON_MAIN") {
+				t.Errorf("RUN_ON_MAIN must not fire for read-only %q, got: %s", tc.cmd, out)
+			}
+		})
+	}
+}
+
+// TestHookScript_RunOnMain_BashAllowsWhenUnflagged confirms the Bash denylist
+// does NOT engage when the pane is not in run_on_main mode — the guard must
+// be scoped to verification panes, not active for all Worker activity.
+func TestHookScript_RunOnMain_BashAllowsWhenUnflagged(t *testing.T) {
+	// Empty flag value → run_on_main stays "0".
+	scriptPath, env := runOnMainBashEnv(t, "")
+
+	// Pick a command that the denylist would block under run_on_main=1.
+	input := `{"tool_name":"Bash","tool_input":{"command":"go install ./cmd/foo"}}`
+	cmd := exec.Command("bash", scriptPath)
+	cmd.Stdin = strings.NewReader(input)
+	cmd.Env = env
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("hook script failed: %v, output: %s", err, out)
+	}
+	if strings.Contains(string(out), "RUN_ON_MAIN") {
+		t.Errorf("RUN_ON_MAIN must not fire when @run_on_main is unset, got: %s", out)
+	}
+}
