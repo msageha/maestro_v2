@@ -430,11 +430,21 @@ func (qh *QueueHandler) emitPublishConflictSignalIfNeeded(
 	}
 
 	files := cmdState.Integration.PublishConflictFiles
+	// The retry-publish step is normally driven by the daemon's
+	// AutoRecoverAfterResolution hook once the worker reports the resolution
+	// task as completed (see planner.md "Publish Conflict Recovery" → step 3).
+	// Calling `maestro plan retry-publish` manually is an escape hatch for the
+	// cases the auto-recover hook cannot cover (worker reported failed,
+	// AutoRecover itself errored, etc.). The signal therefore only asks the
+	// Planner to dispatch a resolution worker — it does NOT instruct an
+	// unconditional retry-publish call (older copies of this message did, and
+	// drifted out of sync with the AutoRecover behaviour).
 	msg := fmt.Sprintf("[maestro] kind:publish_conflict command_id:%s\n"+
 		"Forward-merge of base branch into integration failed due to content conflicts.\n"+
 		"conflict_files: %s\n"+
-		"The Planner should dispatch a worker to resolve the conflicts on the integration branch, "+
-		"then call `maestro plan retry-publish --command-id %s` to re-attempt publish.",
+		"The Planner should dispatch a worker (with --run-on-integration) to resolve the conflicts on the integration branch. "+
+		"After the worker reports completed, the daemon's AutoRecoverAfterResolution hook will fire `retry-publish` automatically; "+
+		"only invoke `maestro plan retry-publish --command-id %s` manually if the worker failed or AutoRecover errored.",
 		commandID, strings.Join(files, ", "), commandID)
 
 	qh.upsertPlannerSignal(signalQueue, signalsDirty, model.PlannerSignal{

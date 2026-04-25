@@ -833,8 +833,9 @@ Daemon が自動で conflict resolver を dispatch（worker の状態を `confli
 [maestro] kind:publish_conflict command_id:cmd_xxx
 Forward-merge of base branch into integration failed due to content conflicts.
 conflict_files: path/to/file1.go, path/to/file2.go
-The Planner should dispatch a worker to resolve the conflicts on the integration branch,
-then call `maestro plan retry-publish --command-id cmd_xxx` to re-attempt publish.
+The Planner should dispatch a worker (with --run-on-integration) to resolve the conflicts on the integration branch.
+After the worker reports completed, the daemon's AutoRecoverAfterResolution hook will fire `retry-publish` automatically;
+only invoke `maestro plan retry-publish --command-id cmd_xxx` manually if the worker failed or AutoRecover errored.
 ```
 
 | フィールド | 意味 |

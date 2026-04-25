@@ -120,13 +120,27 @@ func (wm *Manager) commandLock(commandID string) *sync.Mutex {
 // racing the worker state transition. This method itself acquires the
 // per-command resolver lock and then wm.mu.
 //
-// Lifecycle note: completion of the conflict resolution is driven externally
-// via the resolve_conflict CLI op (cmd_plan.runResolveConflict →
-// plan_handler.resolve_conflict → recover.ResolveConflict). That path clears
-// CommitFailedWorkers, resets MergeFailureCount, and clears the lingering
-// merge_conflict signal (H3). The daemon does not perform the integration
-// commit itself; the resolver agent (or operator) commits in the integration
-// worktree before invoking resolve_conflict.
+// Lifecycle note: for the standard task_merge_conflict path, the worker edits
+// conflict files in place inside its own worker worktree (see
+// templates/instructions/planner.md §"merge_conflict 解決の設計原則" and
+// templates/instructions/worker.md §"Worktree モード時"). After the worker
+// reports the resolution task as completed, the daemon's
+// AutoRecoverAfterResolution hook (see result_write_handler.go
+// "Post-completion auto-recovery hook") fires ResumeMerge automatically — the
+// Planner does NOT need to call resume_merge manually. ResumeMerge then runs
+// commitResolvedWorkerChanges to commit the worker's resolution edits *on the
+// worker worktree branch* and re-attempts the merge into the integration
+// branch. The daemon — not the worker, resolver agent, or operator —
+// performs that commit, and it operates on the worker worktree (not the
+// integration worktree). The resume_merge CLI op
+// (cmd_plan.runResumeMerge → plan_handler.resume_merge → recover.ResumeMerge)
+// is retained as an explicit escape hatch for the cases AutoRecover cannot
+// drive (worker reported failed, AutoRecover itself errored, R7 timeout
+// override). The separate resolve_conflict CLI op
+// (cmd_plan.runResolveConflict → plan_handler.resolve_conflict →
+// recover.ResolveConflict) is an operator-driven escape hatch that only
+// clears CommitFailedWorkers, resets MergeFailureCount, and clears the
+// lingering merge_conflict signal (H3); it never commits.
 func (wm *Manager) DispatchConflictResolution(commandID, phaseID, workerID, conflictGen string) error {
 	if err := validateCommandAndPhaseIDs(commandID, phaseID); err != nil {
 		return err
