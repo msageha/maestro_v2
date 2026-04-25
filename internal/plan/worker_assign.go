@@ -14,16 +14,6 @@ import (
 	"github.com/msageha/maestro_v2/internal/validate"
 )
 
-// BanditSelector provides multi-armed bandit arm selection.
-// Implementations must be safe for concurrent use.
-type BanditSelector interface {
-	AddArm(name string)
-	SelectArm() (string, error)
-	UpdateReward(armName string, reward float64)
-	PullCounts() map[string]int64
-	Reset()
-}
-
 // WorkerAssignment represents the result of assigning a task to a specific worker.
 type WorkerAssignment struct {
 	TaskName string
@@ -366,77 +356,12 @@ func chooseFallbackFamily(stateMap map[string]*WorkerState, required string) str
 	return ""
 }
 
-// defaultModelArms lists the model arms registered for UCB1 selection.
-// Arms are kept at the family level ("sonnet" / "opus" / "haiku") so that
-// UCB1 statistics remain stable across full-ID version bumps. Workers
-// configured with full Claude model IDs (e.g. "claude-opus-4-7") still
-// satisfy these arms because AssignWorkers / workerExistsForModel compare
-// via modelFamily.
-var defaultModelArms = []string{"sonnet", "opus", "haiku"}
-
-// AdaptiveModelSelector uses UCB1 bandit for model selection with static fallback.
-type AdaptiveModelSelector struct {
-	bandit     BanditSelector
-	config     model.BanditConfig
-	enabled    bool
-	minSamples int
-}
-
-// NewAdaptiveModelSelector creates an AdaptiveModelSelector from BanditConfig.
-// When enabled and selector is non-nil, it registers available model arms.
-func NewAdaptiveModelSelector(cfg model.BanditConfig, selector BanditSelector) *AdaptiveModelSelector {
-	s := &AdaptiveModelSelector{
-		config:     cfg,
-		enabled:    cfg.EffectiveEnabled(),
-		minSamples: cfg.EffectiveMinSamplesBeforeUse(),
-	}
-	if s.enabled && selector != nil {
-		s.bandit = selector
-		for _, arm := range defaultModelArms {
-			s.bandit.AddArm(arm)
-		}
-	}
-	return s
-}
-
-// SelectModel chooses a model via UCB1 when sufficient data exists, otherwise
-// falls back to the static GetModelForBloomLevel mapping.
-// LLM token consumption: zero — pure UCB1 math.
-func (s *AdaptiveModelSelector) SelectModel(bloomLevel int, _ string) string {
-	if !s.enabled || s.bandit == nil {
-		return GetModelForBloomLevel(bloomLevel, false)
-	}
-
-	pullCounts := s.bandit.PullCounts()
-
-	// §5-7: TraceDataRequirement — total pulls across all arms.
-	var totalPulls int64
-	for _, count := range pullCounts {
-		totalPulls += count
-	}
-	if totalPulls < int64(s.config.EffectiveTraceDataRequirement()) {
-		return GetModelForBloomLevel(bloomLevel, false)
-	}
-
-	// MinSamplesBeforeUse — every arm must have enough observations.
-	for _, count := range pullCounts {
-		if count < int64(s.minSamples) {
-			return GetModelForBloomLevel(bloomLevel, false)
-		}
-	}
-
-	selected, err := s.bandit.SelectArm()
-	if err != nil {
-		return GetModelForBloomLevel(bloomLevel, false)
-	}
-	return selected
-}
-
-// RecordResult records a task outcome for the given model.
-// Reward calculation: Pass=1.0, Fail=0.0, with 0.2 deduction per repair.
-func (s *AdaptiveModelSelector) RecordResult(modelName string, reward float64) {
-	if !s.enabled || s.bandit == nil {
-		return
-	}
-	s.bandit.UpdateReward(modelName, reward)
-}
+// AdaptiveModelSelector / BanditSelector / defaultModelArms are intentionally
+// not declared in this package. The production model-selection path lives in
+// internal/daemon (banditModelSelector) so that result_handler can record
+// rewards without taking a dependency on plan. AssignWorkers consumes the
+// daemon's selector via the small ModelSelector interface above; a return
+// value of "" means "no adaptive pick — keep the static GetModelForBloomLevel
+// mapping". See internal/daemon/model_selector.go for the production
+// implementation and internal/daemon/model_selector_test.go for warm-up /
+// fallback behavior.

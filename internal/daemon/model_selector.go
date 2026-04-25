@@ -6,9 +6,9 @@ import (
 )
 
 // banditModelSelector adapts a *bandit.Selector + BanditConfig to the
-// core.ModelSelector interface. It implements the same gated-selection
-// policy as plan.AdaptiveModelSelector but lives on the daemon side so
-// result_handler can also report rewards without depending on plan.
+// plan.ModelSelector interface. It is the sole production model-selection
+// implementation; the daemon owns it (rather than plan) so result_handler
+// can report rewards without taking a dependency on plan.
 //
 // Semantics:
 //   - When the bandit is disabled or nil, SelectModel returns "" so the

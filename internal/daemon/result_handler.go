@@ -796,9 +796,9 @@ func (rh *ResultHandler) recordTaskResultLearning(r *model.TaskResult, workerID 
 		}
 	}
 
-	// C-2 bandit reward (requires adaptive model selector). Reward mirrors
-	// plan.AdaptiveModelSelector: Completed=1.0, Failed/DeadLetter=0.0,
-	// anything else ignored.
+	// C-2 bandit reward (requires adaptive model selector). Reward policy:
+	// Completed=1.0, Failed/DeadLetter=0.0, anything else ignored. Mirrors
+	// REQUIREMENTS §5-7 — see internal/daemon/model_selector.go.
 	sel := rh.getModelSelector()
 	if sel != nil {
 		modelName := rh.workerModelName(workerID)
