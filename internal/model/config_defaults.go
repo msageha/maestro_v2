@@ -75,6 +75,12 @@ const (
 	DefaultMaxConcurrentRepair  = 1
 	DefaultMaxConcurrentRollout = 1
 
+	// VerifyDaemonConfig
+	// DefaultVerifyStallThresholdSec is the verify_pending stall window after
+	// which the R9 reconciler transitions a task to repair_pending so a fresh
+	// verification attempt can be planned (default 10 minutes).
+	DefaultVerifyStallThresholdSec = 600
+
 	// Fallback
 	DefaultConsecutiveFailureThreshold = 5
 	DefaultRecoveryCheckIntervalSec    = 60

@@ -64,6 +64,7 @@ func NewReconciler(
 		reconcile.R6FillTimeout{},
 		reconcile.R7MergeConflict{},
 		reconcile.R8PublishFailed{},
+		reconcile.R9VerifyStall{},
 	)
 
 	return &Reconciler{engine: engine, backoffTracker: bt}

@@ -19,6 +19,7 @@ type Config struct {
 	Worktree           WorktreeConfig       `yaml:"worktree"`
 	Skills             SkillsConfig         `yaml:"skills"`
 	AdmissionControl   AdmissionControl     `yaml:"admission_control"`
+	Verify             VerifyDaemonConfig   `yaml:"verify,omitempty"`
 	Fallback           Fallback             `yaml:"fallback"`
 	Review             ReviewConfig         `yaml:"review"`
 	Rollout            RolloutConfig        `yaml:"rollout"`
@@ -268,6 +269,36 @@ func NormalizeRetryConfig(cfg *Config) {
 	resolvePtr(&cfg.Retry.CommandDispatchTimeoutSec, DefaultCommandDispatchTimeoutSec)
 	resolvePtr(&cfg.Retry.TaskDispatchInlineRetries, DefaultTaskDispatchInlineRetries)
 	resolvePtr(&cfg.Retry.TaskDispatchInlineRetryDelaySec, DefaultTaskDispatchInlineRetryDelaySec)
+}
+
+// VerifyDaemonConfig holds daemon-side controls for the §S1-1 verification
+// runner and the R9 verify-pending stall reconciler. The verify.yaml schema
+// itself lives in model.VerifyConfig (see internal/model/verify.go); this
+// struct only carries operational parameters that affect daemon behaviour.
+type VerifyDaemonConfig struct {
+	// Enabled toggles the real verification runner. When false the daemon
+	// uses a stub that always reports pass; intended as an emergency rollback
+	// or for test fixtures that lack a Go module.
+	Enabled *bool `yaml:"enabled,omitempty"`
+	// StallThresholdSec is the wall-clock window after a task enters
+	// verify_pending before R9 transitions it to repair_pending. 0 ≤ value;
+	// 0 disables stall recovery. Default DefaultVerifyStallThresholdSec.
+	StallThresholdSec *int `yaml:"stall_threshold_sec,omitempty"`
+}
+
+// EffectiveEnabled returns the configured verify.enabled value or true (the
+// default — verification is on unless explicitly disabled).
+func (v VerifyDaemonConfig) EffectiveEnabled() bool {
+	if v.Enabled == nil {
+		return true
+	}
+	return *v.Enabled
+}
+
+// EffectiveStallThresholdSec returns the configured stall threshold in seconds
+// or DefaultVerifyStallThresholdSec.
+func (v VerifyDaemonConfig) EffectiveStallThresholdSec() int {
+	return effectiveValue(v.StallThresholdSec, DefaultVerifyStallThresholdSec)
 }
 
 // TaskRetryConfig holds configuration for automatic task execution retries.
