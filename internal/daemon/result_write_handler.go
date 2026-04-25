@@ -52,6 +52,20 @@ type reviewDispatcher interface {
 	DispatchIfEligible(ctx context.Context, params ResultWriteParams)
 }
 
+// VerifyWorkdirResolver resolves the working directory in which the
+// Verification Runner must execute commands for a given task. Production
+// implementations consult the worktree manager so that verify sees the
+// worker's uncommitted changes (or the integration worktree, or the project
+// root for RunOnMain) — running verify against the wrong directory would
+// either miss broken worker output or fail against unrelated main state.
+type VerifyWorkdirResolver interface {
+	// ResolveVerifyWorkdir returns the absolute directory in which to execute
+	// verification commands for the given task/worker. Implementations must
+	// honour task.RunOnMain / task.RunOnIntegration. An empty return value
+	// signals "use the runner's default" (legacy fallback for tests).
+	ResolveVerifyWorkdir(task *model.Task, workerID string) (string, error)
+}
+
 // ResultWriteAPI handles the "result_write" UDS endpoint.
 type ResultWriteAPI struct {
 	*apiContext
@@ -63,11 +77,18 @@ type ResultWriteAPI struct {
 	triggerScan    scanTriggerFunc
 	ctx            func() context.Context
 	// verifyRunner runs §S1-1 Verification after a task lands at verify_pending.
-	// Defaults to NewStubVerifyRunner (always passes) so production callers and
-	// tests both get a sensible §2.1 lifecycle progression without bespoke
-	// wiring; override via SetVerifyRunner for tests that need to drive the
-	// repair_pending branch.
+	// nil indicates no runner has been wired — resolveVerifyRunner falls back
+	// to a fail-closed "verify_runner_not_configured" runner so that a daemon
+	// startup or test wiring miss surfaces as a verify failure rather than a
+	// silent pass. Production callers MUST inject a real runner via
+	// SetVerifyRunner; tests use NewFixedVerifyRunner / SetVerifyRunner with
+	// an explicit recording stand-in.
 	verifyRunner VerifyRunner
+	// verifyWorkdirResolver returns the per-task working directory for the
+	// Verification Runner. nil falls back to the runner's own projectDir,
+	// which preserves legacy test behaviour but is unsafe in production
+	// because verify would run against main rather than the worker worktree.
+	verifyWorkdirResolver VerifyWorkdirResolver
 }
 
 // SetVerifyRunner overrides the VerifyRunner used by this handler. Intended
@@ -77,13 +98,74 @@ func (h *ResultWriteAPI) SetVerifyRunner(r VerifyRunner) {
 	h.verifyRunner = r
 }
 
-// resolveVerifyRunner returns the configured runner, falling back to a stub
-// so a misconfigured handler still produces a §2.1-valid lifecycle.
+// SetVerifyWorkdirResolver wires the per-task working-directory resolver for
+// the Verification Runner. Production startup injects the WorktreeManager so
+// that verify executes in the worker worktree (or integration worktree, or
+// project root) rather than the daemon's CWD. Tests that drive verify via
+// FixedVerifyRunner / recordingVerifyRunner do not need to wire this.
+func (h *ResultWriteAPI) SetVerifyWorkdirResolver(r VerifyWorkdirResolver) {
+	h.verifyWorkdirResolver = r
+}
+
+// resolveVerifyRunner returns the configured runner, or a fail-closed runner
+// when nothing has been wired. The fail-closed default routes the task to
+// repair_pending with reason "verify_runner_not_configured" — louder than
+// silently passing, so a wiring bug surfaces in the audit log instead of
+// letting unverified work flow through.
 func (h *ResultWriteAPI) resolveVerifyRunner() VerifyRunner {
 	if h.verifyRunner != nil {
 		return h.verifyRunner
 	}
-	return NewStubVerifyRunner()
+	h.logFn(LogLevelWarn,
+		"verify_runner_not_configured task lifecycle will be routed to repair_pending; "+
+			"production wiring must call SetVerifyRunner with a real or skip runner")
+	return newUnconfiguredVerifyRunner()
+}
+
+// resolveVerifyWorkingDir returns the working directory for the §S1-1
+// Verification Runner for the task identified by params. The result honours
+// task.RunOnMain / task.RunOnIntegration via the injected
+// VerifyWorkdirResolver. An empty string is returned when the resolver is
+// not wired (legacy test path) — RealVerifyRunner falls back to its own
+// projectDir in that case.
+//
+// The queue task is re-read here because Phase A already released the queue
+// lock before verify runs (verify executes outside the state lock per design
+// — see handleResultWrite). A best-effort read is acceptable: a stale or
+// missing entry simply causes the runner to fall back to its default dir,
+// which is no worse than the prior behaviour.
+func (h *ResultWriteAPI) resolveVerifyWorkingDir(params ResultWriteParams) string {
+	if h.verifyWorkdirResolver == nil {
+		return ""
+	}
+	tq, err := h.fileStore.LoadQueueFile(params.Reporter)
+	if err != nil {
+		h.logFn(LogLevelWarn,
+			"verify_workdir_load_queue_failed reporter=%s error=%v (falling back to runner default)",
+			params.Reporter, err)
+		return ""
+	}
+	var task *model.Task
+	for i := range tq.Tasks {
+		if tq.Tasks[i].ID == params.TaskID {
+			task = &tq.Tasks[i]
+			break
+		}
+	}
+	if task == nil {
+		h.logFn(LogLevelWarn,
+			"verify_workdir_task_missing reporter=%s task=%s (falling back to runner default)",
+			params.Reporter, params.TaskID)
+		return ""
+	}
+	wd, err := h.verifyWorkdirResolver.ResolveVerifyWorkdir(task, params.Reporter)
+	if err != nil {
+		h.logFn(LogLevelWarn,
+			"verify_workdir_resolve_failed reporter=%s task=%s error=%v (falling back to runner default)",
+			params.Reporter, params.TaskID, err)
+		return ""
+	}
+	return wd
 }
 
 // ResultWriteParams is the request payload for the result_write UDS command.
@@ -205,8 +287,14 @@ func (h *ResultWriteAPI) handleResultWrite(req *uds.Request) *uds.Response {
 	// the task has moved on, applyVerifyOutcome logs and leaves the task at
 	// verify_pending for reconcile/operator intervention.
 	if needsVerify {
+		// Resolve the per-task working directory so verify sees the worker's
+		// uncommitted changes (worker worktree), the integration branch
+		// (RunOnIntegration), or the project root (RunOnMain / no worktree
+		// mode). Falls back to "" — the runner's own projectDir — only when
+		// no resolver has been wired (legacy tests).
+		workingDir := h.resolveVerifyWorkingDir(params)
 		runner := h.resolveVerifyRunner()
-		outcome, vErr := runner.Run(h.ctx(), params.TaskID, params.CommandID, params.FilesChanged)
+		outcome, vErr := runner.Run(h.ctx(), params.TaskID, params.CommandID, workingDir, params.FilesChanged)
 		nextStatus, reason := classifyVerifyOutcome(outcome, vErr)
 		if applyErr := h.applyVerifyOutcome(params, nextStatus, reason); applyErr != nil {
 			h.logFn(LogLevelWarn,

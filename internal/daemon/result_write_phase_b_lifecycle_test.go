@@ -18,15 +18,17 @@ import (
 // was invoked with. Tests use it to confirm that Phase B routed a result
 // through verify_pending (the only path that calls the runner).
 type recordingVerifyRunner struct {
-	outcome     VerifyOutcome
-	err         error
-	invocations atomic.Int32
-	lastTaskID  string
+	outcome        VerifyOutcome
+	err            error
+	invocations    atomic.Int32
+	lastTaskID     string
+	lastWorkingDir string
 }
 
-func (r *recordingVerifyRunner) Run(_ context.Context, taskID, _ string, _ []string) (VerifyOutcome, error) {
+func (r *recordingVerifyRunner) Run(_ context.Context, taskID, _, workingDir string, _ []string) (VerifyOutcome, error) {
 	r.invocations.Add(1)
 	r.lastTaskID = taskID
+	r.lastWorkingDir = workingDir
 	return r.outcome, r.err
 }
 

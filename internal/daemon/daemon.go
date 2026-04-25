@@ -306,10 +306,14 @@ func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Close
 			reviewCoord:    d.reviewCoordAccessor,
 			ctx:            d.contextAccessor,
 			triggerScan:    d.triggerResultWriteScan,
-			// §S1-1: ship the always-passing stub Verification Runner.
-			// Production deployments can swap this for a real runner once the
-			// verify.yaml execution path lands; tests use SetVerifyRunner.
-			verifyRunner: NewStubVerifyRunner(),
+			// §S1-1: verifyRunner is left nil here on purpose. Production
+			// startup (cmd/maestro/cmd_daemon.go) calls SetVerifyRunner with
+			// either NewRealVerifyRunner or NewSkipVerifyRunner depending on
+			// cfg.Verify.EffectiveEnabled(). Tests inject FixedVerifyRunner
+			// or recording fakes. resolveVerifyRunner emits a fail-closed
+			// outcome if neither path runs, so a wiring miss surfaces as a
+			// verify failure instead of a silent pass.
+			verifyRunner: nil,
 		},
 		queue: &QueueWriteAPI{apiContext: shared},
 		plan:  &PlanAPI{apiContext: shared},

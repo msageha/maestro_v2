@@ -19,34 +19,53 @@ type VerifyOutcome struct {
 // each time a task transitions into verify_pending and uses the outcome to
 // route the task to either completed (passed) or repair_pending (failed).
 //
-// The interface is intentionally minimal; future revisions can add structured
-// VerifyResult details (per-command output, durations, etc.) without
-// rewriting all callers.
+// workingDir specifies the directory in which verification commands must run.
+// For tasks executed in a worker worktree, this is the worker worktree path
+// (so verify sees the worker's uncommitted changes). For RunOnIntegration
+// tasks, it is the integration worktree. For RunOnMain or worktree-disabled
+// modes, it is the project root. Callers MUST resolve workingDir before
+// calling Run; an empty value lets RealVerifyRunner fall back to its own
+// projectDir, preserving the legacy behaviour for tests that do not depend
+// on worktree-scoped verification.
 type VerifyRunner interface {
-	Run(ctx context.Context, taskID, commandID string, expectedPaths []string) (VerifyOutcome, error)
+	Run(ctx context.Context, taskID, commandID, workingDir string, expectedPaths []string) (VerifyOutcome, error)
 }
 
-// stubVerifyRunner is the §S1-1 minimum-viable Verification Runner. It always
-// reports Passed=true and is the runner that ships in this iteration.
+// skipVerifyRunner short-circuits verification with Passed=true. It is
+// reserved for the explicit "verify.enabled: false" rollback path — operators
+// who deliberately opt out of §S1-1 enforcement (e.g. emergency rollback
+// after a faulty verify.yaml change) wire this runner via the daemon
+// configuration loader. It MUST NOT be used as the production default.
 //
-// REQUIREMENTS.md §S1-1 mandates that the Daemon "auto-supplements and
-// executes a Fallback Verify" when verify.yaml is undefined. Until the
-// command-execution path lands in a follow-up task, the stub fulfils the
-// state-machine half of the requirement (verify_pending → completed) so the
-// §2.1 lifecycle progression is observable in TaskStates without tying every
-// E2E test to a concrete verify implementation.
-type stubVerifyRunner struct{}
+// Tests that need a deterministic pass result use NewFixedVerifyRunner
+// instead, which carries an explicit "this is a test fixture" intent.
+type skipVerifyRunner struct{}
 
-// NewStubVerifyRunner returns a VerifyRunner that always passes. Production
-// callers should replace it with a real runner once the verify-execution
-// machinery is wired in.
-func NewStubVerifyRunner() VerifyRunner {
-	return stubVerifyRunner{}
+// NewSkipVerifyRunner returns a VerifyRunner that reports pass without
+// executing any commands. Reserved for explicit `verify.enabled: false`
+// configuration; production wiring chooses between this and the real runner
+// based on cfg.Verify.EffectiveEnabled().
+func NewSkipVerifyRunner() VerifyRunner {
+	return skipVerifyRunner{}
 }
 
 // Run reports a successful verification. The arguments are ignored.
-func (stubVerifyRunner) Run(_ context.Context, _, _ string, _ []string) (VerifyOutcome, error) {
-	return VerifyOutcome{Passed: true}, nil
+func (skipVerifyRunner) Run(_ context.Context, _, _, _ string, _ []string) (VerifyOutcome, error) {
+	return VerifyOutcome{Passed: true, Reason: "verify_skipped: verify.enabled=false"}, nil
+}
+
+// unconfiguredVerifyRunner reports a §S1-1 violation reason whenever it is
+// invoked. The result-write handler falls back to this runner when no
+// VerifyRunner has been wired, so that a config bug or test wiring miss
+// surfaces as a verify failure (→ repair_pending) rather than silently
+// passing every task. Operators see "verify_runner_not_configured" in the
+// audit log and can fix the daemon wiring.
+type unconfiguredVerifyRunner struct{}
+
+func newUnconfiguredVerifyRunner() VerifyRunner { return unconfiguredVerifyRunner{} }
+
+func (unconfiguredVerifyRunner) Run(_ context.Context, _, _, _ string, _ []string) (VerifyOutcome, error) {
+	return VerifyOutcome{Passed: false, Reason: "verify_runner_not_configured"}, nil
 }
 
 // fixedVerifyRunner returns a deterministic outcome for every Run call.
@@ -66,7 +85,7 @@ func NewFixedVerifyRunner(outcome VerifyOutcome, err error) VerifyRunner {
 }
 
 // Run returns the configured outcome.
-func (r fixedVerifyRunner) Run(_ context.Context, _, _ string, _ []string) (VerifyOutcome, error) {
+func (r fixedVerifyRunner) Run(_ context.Context, _, _, _ string, _ []string) (VerifyOutcome, error) {
 	return r.outcome, r.err
 }
 

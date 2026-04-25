@@ -65,7 +65,7 @@ func TestRealVerifyRunner_FallbackUsesDefaultGoVet(t *testing.T) {
 	rr := &recordingRunner{}
 	r.runner = rr.run
 
-	out, err := r.Run(context.Background(), "task-1", "cmd-1", nil)
+	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestRealVerifyRunner_DefinedConfigExecutesCategoriesInOrder(t *testing.T) {
 	rr := &recordingRunner{}
 	r.runner = rr.run
 
-	out, err := r.Run(context.Background(), "task-1", "cmd-1", nil)
+	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestRealVerifyRunner_StopsOnFirstFailure(t *testing.T) {
 	}
 	r.runner = rr.run
 
-	out, err := r.Run(context.Background(), "task-1", "cmd-1", nil)
+	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -193,7 +193,7 @@ func TestRealVerifyRunner_RunnerErrorReportsReason(t *testing.T) {
 	}
 	r.runner = rr.run
 
-	out, err := r.Run(context.Background(), "task-1", "cmd-1", nil)
+	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestRealVerifyRunner_TruncatesLongOutputTail(t *testing.T) {
 	r.runner = rr.run
 	r.maxOutputBytes = 256 // shrink for the test
 
-	out, err := r.Run(context.Background(), "task-1", "cmd-1", nil)
+	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -251,7 +251,7 @@ func TestRealVerifyRunner_TimeoutReportsTimeoutReason(t *testing.T) {
 
 	r.commandTimeout = 50 * time.Millisecond
 
-	out, err := r.Run(context.Background(), "task-1", "cmd-1", nil)
+	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestRealVerifyRunner_AbortedContextReturnsError(t *testing.T) {
 		return "", 0, nil
 	}
 
-	out, err := r.Run(ctx, "task-1", "cmd-1", nil)
+	out, err := r.Run(ctx, "task-1", "cmd-1", "", nil)
 	if err == nil {
 		t.Fatalf("expected ctx error to propagate")
 	}
@@ -302,7 +302,7 @@ func TestRealVerifyRunner_InvalidVerifyYAMLReportsConfigError(t *testing.T) {
     - "echo a; rm -rf /"
 `)
 
-	out, err := r.Run(context.Background(), "task-1", "cmd-1", nil)
+	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -322,7 +322,7 @@ func TestRealVerifyRunner_RealExecHappyPath(t *testing.T) {
     - true
 `)
 
-	out, err := r.Run(context.Background(), "task-1", "cmd-1", nil)
+	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -339,7 +339,7 @@ func TestRealVerifyRunner_RealExecFailingCommand(t *testing.T) {
     - false
 `)
 
-	out, err := r.Run(context.Background(), "task-1", "cmd-1", nil)
+	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", nil)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}

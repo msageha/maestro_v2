@@ -199,12 +199,22 @@ func (d *Daemon) initComponents() {
 		// importing daemon-internal types.
 		d.worktreeManager.SetSignalStore(NewYAMLSignalStore(d.maestroDir, d.lockMap))
 		d.handler.SetWorktreeManager(d.worktreeManager)
+		// Wire the worktree-backed verify workdir resolver so §S1-1
+		// Verification runs inside the worker worktree (or integration
+		// worktree, or project root for RunOnMain) instead of the daemon's
+		// CWD. Without this, verify would not see worker uncommitted changes.
+		d.api.result.SetVerifyWorkdirResolver(newWorktreeVerifyWorkdirResolver(d.worktreeManager, d.maestroDir))
 		d.log(LogLevelInfo, "worktree isolation enabled base_branch=%s", d.config.Worktree.EffectiveBaseBranch())
 		// NOTE: Reconcile() is intentionally deferred to startRuntime() so it
 		// runs after the UDS server starts listening. Reconcile may spawn git
 		// subprocesses (worktree list / remove) that can take several seconds
 		// when orphaned worktrees exist, which would otherwise block the UDS
 		// server from starting and cause waitDaemonReady to time out.
+	} else {
+		// Worktree disabled: every task — including verify — runs at the
+		// project root. Wire a constant resolver so the workdir is consistent
+		// even when verify.yaml runs against a non-isolated checkout.
+		d.api.result.SetVerifyWorkdirResolver(newProjectRootVerifyWorkdirResolver(d.maestroDir))
 	}
 
 	d.initPhaseB()

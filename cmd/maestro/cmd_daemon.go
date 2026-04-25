@@ -83,11 +83,18 @@ func runDaemon(args []string) error {
 	}
 	d.SetPlanExecutor(executor)
 
-	// §S1-1 Real Verification Runner. When verify.enabled is true (default),
-	// swap the always-passing stub for the real runner that loads
-	// .maestro/verify.yaml (or DefaultVerifyConfig as Fallback) and executes
-	// each command sequentially. Operators can rollback to the stub by setting
-	// `verify.enabled: false` in config.yaml.
+	// §S1-1 Verification Runner wiring. The result-write handler is created
+	// with verifyRunner=nil so that a wiring miss surfaces as fail-closed
+	// (repair_pending). Here we always inject either:
+	//   - RealVerifyRunner: when verify.enabled is true (default) — loads
+	//     .maestro/verify.yaml or DefaultVerifyConfig and executes each
+	//     command sequentially.
+	//   - SkipVerifyRunner: when verify.enabled is explicitly false —
+	//     emergency rollback path for operators with a faulty verify.yaml
+	//     (still emits a per-task audit log entry so the rollback is visible).
+	verifyLogger := slog.New(slog.NewTextHandler(os.Stderr, nil)).With(
+		"component", "verify_runner",
+	)
 	if cfg.Verify.EffectiveEnabled() {
 		projectDir := cfg.Maestro.ProjectRoot
 		if projectDir == "" {
@@ -97,10 +104,11 @@ func runDaemon(args []string) error {
 				projectDir = cwd
 			}
 		}
-		verifyLogger := slog.New(slog.NewTextHandler(os.Stderr, nil)).With(
-			"component", "verify_runner",
-		)
 		d.SetVerifyRunner(daemon.NewRealVerifyRunner(maestroDir, projectDir, verifyLogger))
+	} else {
+		verifyLogger.Warn("verify_runner_skip_explicit",
+			"reason", "verify.enabled=false in config.yaml — verification is disabled per operator opt-out")
+		d.SetVerifyRunner(daemon.NewSkipVerifyRunner())
 	}
 
 	// Auto-accept Claude Code workspace trust dialog in this long-lived process.

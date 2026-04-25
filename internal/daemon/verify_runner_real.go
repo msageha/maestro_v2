@@ -64,18 +64,30 @@ func NewRealVerifyRunner(maestroDir, projectDir string, logger *slog.Logger) *Re
 }
 
 // Run loads verify.yaml (or DefaultVerifyConfig as fallback) and executes
-// each command sequentially under cmd.Dir = r.projectDir. The first failure
-// short-circuits the run; verifyOutcome reports the failing category and
-// command in the reason for downstream audit.
-func (r *RealVerifyRunner) Run(ctx context.Context, taskID, commandID string, expectedPaths []string) (VerifyOutcome, error) {
+// each command sequentially under cmd.Dir = workingDir (or r.projectDir when
+// workingDir is empty). The first failure short-circuits the run;
+// verifyOutcome reports the failing category and command in the reason for
+// downstream audit.
+//
+// workingDir is non-empty when the caller has resolved a task-specific path
+// (worker worktree, integration worktree, project root for RunOnMain). The
+// fallback to r.projectDir exists for legacy test paths that do not pass a
+// per-task directory; production callers always pass a resolved value so
+// that worker-uncommitted changes are visible to verify commands.
+func (r *RealVerifyRunner) Run(ctx context.Context, taskID, commandID, workingDir string, expectedPaths []string) (VerifyOutcome, error) {
 	cfg, err := model.LoadOrDefaultVerifyConfig(filepath.Join(r.maestroDir, "verify.yaml"))
 	if err != nil {
 		return VerifyOutcome{Passed: false, Reason: fmt.Sprintf("verify_config_invalid: %v", err)}, nil
 	}
 
+	runDir := workingDir
+	if runDir == "" {
+		runDir = r.projectDir
+	}
+
 	r.logger.Info("verify_runner_start",
 		"task_id", taskID, "command_id", commandID,
-		"project_dir", r.projectDir, "fallback", cfg.IsEmpty())
+		"working_dir", runDir, "fallback", cfg.IsEmpty())
 
 	categories := []struct {
 		name string
@@ -100,7 +112,7 @@ func (r *RealVerifyRunner) Run(ctx context.Context, taskID, commandID string, ex
 			}
 
 			cmdCtx, cancel := context.WithTimeout(ctx, r.commandTimeout)
-			output, exitCode, runErr := r.runner(cmdCtx, r.projectDir, cmd)
+			output, exitCode, runErr := r.runner(cmdCtx, runDir, cmd)
 			cancel()
 
 			if errors.Is(cmdCtx.Err(), context.DeadlineExceeded) {

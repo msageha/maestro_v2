@@ -53,6 +53,14 @@ func newTestDaemon(t *testing.T) *Daemon {
 		d.cancel()
 	})
 
+	// Default test wiring for the §S1-1 Verification Runner: tests that do
+	// not exercise verify behaviour directly should still see verify_pending
+	// → completed (the historical default). Tests that need to drive
+	// repair_pending or verify failures override this with SetVerifyRunner
+	// explicitly. Production wiring remains fail-closed (unconfigured ⇒
+	// repair_pending) — see daemon.go and cmd_daemon.go.
+	d.api.result.SetVerifyRunner(NewFixedVerifyRunner(VerifyOutcome{Passed: true}, nil))
+
 	// Initialize worker queue files
 	for i := 1; i <= cfg.Agents.Workers.Count; i++ {
 		tq := model.TaskQueue{SchemaVersion: 1, FileType: "queue_task"}
