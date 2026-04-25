@@ -451,8 +451,12 @@ LLM を一切使わず、純粋な数値計算のみで判定する。
 | Runtime | デフォルト | 有効化方法 |
 |---------|----------|----------|
 | `claude-code` | ✅ 常に有効 | — |
-| `codex` | ❌ | config で Enabled: true |
-| `gemini` | ❌ | config で Enabled: true |
+| `codex` | ❌ | `model: codex` を指定（worker のみ） |
+| `gemini` | ❌ | `model: gemini` または `model: gemini-*` を指定（worker のみ） |
+
+#### Orchestrator / Planner ロールの制約
+
+Orchestrator の「委譲のみ」、Planner の「計画のみ」というロール制約は、claude-code の `--allowedTools` / `--disallowedTools` CLI フラグで技術的に強制している。codex と gemini にはこの強制機構が存在せず、プロンプトに依存した運用になるため、過去には codex Orchestrator が main を直接編集する事故が発生した。これを踏まえ、Orchestrator と Planner では codex / gemini を許可しない（config 検証時に拒否する）。Worker は本来ファイル編集を行う役割なので codex / gemini も使用可能。
 
 #### フォールバック動作
 

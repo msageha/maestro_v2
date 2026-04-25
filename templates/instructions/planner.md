@@ -598,7 +598,64 @@ verification が `failed` の場合:
 - **仕様不一致**（テスト失敗等）→ `add-retry-task` で修正+再検証タスクを生成。content に問題詳細・修正方針・検証コマンドを含める
 - **実行異常**（環境要因等）→ 通常のリトライ処理
 
-**ループ上限**: フェーズあたり最大 2 ラウンド（初回 verification + fix+re-verify）。ラウンド 2 でも問題が残る場合は `plan complete` で報告。
+**ループ上限（ハード制約、Bug G 対策）**: フェーズあたり最大 2 ラウンド（初回 verification + fix+re-verify）。ラウンド 2 でも問題が残る場合は **必ず** `plan complete` で failed 報告を行い、**これ以上 `add-task` / `add-retry-task` を呼ばない**。
+
+**3 ラウンド目を投入してはならないケース**:
+
+- 同じ verification タスクが 2 回連続 `failed`
+- 失敗の原因が依然として不明（再現条件が確定していない）
+- 同一フェーズで既に repair 系タスクを 2 つ以上 inject 済み
+
+これらのいずれかを満たす場合、タスクの追加は打ち切り、`plan complete --summary "..."` で failed 理由（失敗タスク ID・観測された error・未解決の原因）を要約して渡す。Daemon は required failed を受けて command を `failed` に遷移させる。
+
+**failed の「真因」を先に確認する**:
+
+`failed` が観測されたら、補修タスクを投入する前に次を必ず確認する。これを怠ると、実行されていない / 別ディレクトリで実行された検証の結果を鵜呑みにして無意味な repair loop に入る（2026-04 実ランで実測された失敗モード）。
+
+1. 失敗タスクの `.maestro/results/worker{N}.yaml` を Read し、`status` と `summary` を確認する
+2. verification の対象が main/統合ブランチなのに `run_on_main` / `run_on_integration` が付与されているか確認する（付与されていない場合、worker worktree を見た false FAIL の可能性が極めて高い — Bug F 参照）
+3. `.maestro/queue/worker{N}.yaml` の該当タスク entry を Read し、`content` / `acceptance_criteria` が破損（極端に短い / 予期せぬ文字列）していないか確認する — 破損していれば補修ではなく **plan complete で failed 報告** を選ぶ
+4. 破損が疑われる場合、原因は直前の `add-task` / `add-retry-task` 呼び出しでの shell 展開事故（下記「shell quoting」参照）
+
+#### shell quoting の事故防止（Bug G 対策）
+
+`maestro plan add-task` / `add-retry-task` の `--content "..."` / `--acceptance-criteria "..."` 等に **動的内容を埋め込む場合、常にシングルクオート `'...'` または heredoc `<<'EOF' ... EOF` を使う**。ダブルクオート内では以下が展開され、意図したテキストが消えたり別の値に置換される:
+
+- バッククォート `` `...` `` → 内部をシェルコマンドとして実行した結果に置換
+- `$(...)` → 同上
+- `$VAR` / `${VAR}` → 環境変数展開
+- `\n` などのエスケープシーケンス → 文脈依存で変換
+
+**壊れる例（絶対に使わない）**:
+
+```bash
+maestro plan add-task \
+  --content "fix `git log --oneline -1` で発見された問題を修正" \
+  ...
+# → バッククォート内を実際に実行し、その出力で content が置換される。
+#   出力が空なら content は "fix  で発見された問題を修正" となり中途半端に残る。
+#   出力が 1 バイト程度の記号になる場合もある。
+```
+
+**安全な書き方**:
+
+```bash
+# 方法A: シングルクオート（変数展開なし、バッククォートもリテラル）
+maestro plan add-task \
+  --content 'fix `git log --oneline -1` で発見された問題を修正' \
+  ...
+
+# 方法B: heredoc を使って stdin から plan submit に流し込む（YAML が長い場合）
+maestro plan submit --command-id "$CMD" --tasks-file - <<'PLAN'
+tasks:
+  - name: "..."
+    content: |
+      fix `git log --oneline -1` で発見された問題を修正
+    ...
+PLAN
+```
+
+**サーバ側防御**: daemon は `add-task` の `purpose` / `content` / `acceptance_criteria` が極端に短い場合（shell 展開事故で欠落したと推定される長さ）拒否する（`too short (... minimum ...)` エラー）。拒否された場合は **必ず** 原因を確認してから再投入し、盲目的な再試行を繰り返さないこと。
 
 #### Wave 構造との併用
 
@@ -801,10 +858,17 @@ then call `maestro plan retry-publish --command-id cmd_xxx` to re-attempt publis
    - `--run-on-integration` を指定すると、全フェーズが terminal 状態でも最後のフェーズに自動追加・再開される
    - Worker の working directory が自動的に integration worktree に設定されるため、`cd` 操作は不要
 
-3. **再 Publish のトリガー**: Worker がタスクを完了したら `maestro plan retry-publish --command-id <command_id>` を実行する。これにより:
+3. **再 Publish のトリガー**: Worker がタスクを **`completed` ステータスで** 完了したら `maestro plan retry-publish --command-id <command_id>` を実行する。これにより:
    - `PublishFailureCount` がリセットされる
    - 統合ステータスが `merged` に戻る
    - 次回スキャンで Daemon が再度フォワードマージ + Publish を試行する
+
+   **重要 (Bug E): Worker task 成功 ≠ Publish 成功**:
+   - Worker の task が `completed` になった時点では、まだ Publish は完了していない。retry-publish は非同期トリガーであり、実際の Publish 成否は Daemon の次回スキャンまで判明しない
+   - Planner が `plan complete` を呼ぶと、Integration status が `published` でない場合は `deferred_publish` が返る。この場合 Daemon が Publish 成功後に自動で確定する
+   - Publish が結局失敗すれば `publish_conflict` または `publish_quarantined` シグナルが再度届く。その場合は上記手順をもう一度実行するか、`plan complete` で報告する
+   - Worker が `failed` ステータスで完了した場合（コンフリクト解消不能と判断した場合）は retry-publish を呼ばず、`plan complete` で失敗報告する
+
 4. **最大リトライ: 2 回**。再 Publish が再び失敗した場合は `plan complete` で報告する
 
 **自動リカバリについて:** Daemon は Publish 前に自動でフォワードマージ（base → integration）を試みる。単純なファイル追加など git が自動解決できるケースはシグナル不要で成功する。シグナルが届くのは git が自動解決できないコンテンツ競合がある場合のみ。
@@ -813,31 +877,50 @@ then call `maestro plan retry-publish --command-id cmd_xxx` to re-attempt publis
 
 ### Publish 完了通知 (publish_completed)
 
-統合ブランチが main に正常 publish されると、Daemon が Planner に通知を送る:
+統合ブランチが main に正常 publish されると、Daemon が Planner に informational な通知を送る:
 
 ```
 [maestro] kind:publish_completed command_id:cmd_xxx
 The integration branch has been successfully published to the base branch.
-Call `maestro plan complete` to finalise the command.
+This is an informational notice — no action is required; if a prior
+`maestro plan complete` returned `deferred_publish`, the daemon has
+already finalised it. Use this only to trigger post-publish verification
+(e.g. `--run-on-main` tasks) when needed.
 ```
 
-**通常の対応**: `.maestro/results/worker{N}.yaml` で成果物を最終確認し、`maestro plan complete` を呼ぶ。
+**重要**: この通知は「plan complete を呼べ」という指示ではない。`plan complete` は全タスク完了時点で Planner が一度だけ呼ぶ。publish が未完了であれば `deferred_publish` が返り、Daemon が publish 成功後に自動で確定する。二重に `plan complete` を呼ぶ必要はなく、呼んだ場合は redundant な idempotent 呼び出しとなる。
 
-**post-publish verification を実施する場合**: publish 後に main 上でビルド・テストを確認したい場合は、`publish_completed` 受信後に `--run-on-main` タスクを追加できる。
+**通常の対応**: **何もしない**。通知は informational であり、追加タスクの投入は原則不要。
+
+**`--run-on-main` verification タスクの投入基準（デフォルトは投入しない）**:
+
+以下のすべてを満たす「例外ケース」でのみ投入する:
+
+1. 元コマンドの `content` / `acceptance_criteria` に「publish 後に main 上で検証する」が明示されている、またはオペレーターから明示指示がある
+2. 既存のフェーズ内で同等の検証が実施済みでない（重複検証を避ける）
+3. main 特有の依存 (hooks, CI の副作用, system-level な状態) によって worker worktree 内の検証では再現不能な側面がある
+
+**投入禁止ケース（Bug C 対策）**:
+
+- 単なる「念のため」「safety-net」的な build/test 再実行 → すでに worker worktree 内で実行済みであり、publish 後の main でも同じ結果となる。冗長。
+- 「publish 完了したので動作確認」 → publish は base への fast-forward 相当であり、コミット内容は変わらない。動作確認は worker worktree 内で完結すべき。
+- `publish_completed` 通知の「自然な流れ」として自動投入する → **不可**。通知は informational であり、明示的な要件がない限り追加タスクを生成しない。
+
+例外ケースの例（上記基準を満たす場合のみ）:
 
 ```
 maestro plan add-task \
   --command-id <command_id> \
   --purpose "post-publish final verification" \
-  --content "go test ./... を main ブランチ上で実行し、publish 後の状態を確認する" \
-  --acceptance-criteria "全テストパス" \
+  --content "<main 上でしか確認できない具体的検証内容>" \
+  --acceptance-criteria "<明確な合否基準>" \
   --bloom-level 3 \
   --run-on-main
 ```
 
 - `--target-phase` は不要。`--run-on-main` が指定された場合、全フェーズ terminal でも最後のフェーズに自動追加・再開される
 - `--run-on-main` なしで全フェーズ terminal の状態で `add-task` を呼ぶとエラーになる
-- verification タスク完了後に `maestro plan complete` を呼ぶ
+- verification タスク完了後に `maestro plan complete` を呼ぶ（例外ケース投入時のみ）
 
 ### コミット失敗ハンドリング (commit_failed)
 
@@ -895,6 +978,40 @@ tasks:
 | `tools_hint` | 任意 | 推奨 MCP ツール名リスト |
 | `persona_hint` | 任意 | ペルソナ名（`.maestro/persona/{name}.md`） |
 | `skill_refs` | 任意 | スキル名リスト（`.maestro/skills/{role}/{name}/SKILL.md`） |
+| `run_on_main` | 任意 | `true` の場合、タスクを worker worktree ではなく main 作業ディレクトリで実行。**publish / 統合ブランチ → main マージ後の main 上での検証タスク専用**（詳細は下記「verification タスクと run_on_main」参照）。`run_on_integration` と排他 |
+| `run_on_integration` | 任意 | `true` の場合、タスクを統合ブランチの worktree 上で実行。**publish_conflict の解決タスク専用**。`run_on_main` と排他 |
+
+#### verification タスクと `run_on_main` (Bug F 対策)
+
+**原則**: main にマージ（publish）された成果物を検証する verification タスクは、`plan submit` / `plan add-task` のいずれで発行する場合でも、必ず `run_on_main: true`（または `--run-on-main`）を付けること。
+
+**理由**: Dispatcher は `run_on_main` / `run_on_integration` が両方 false のタスクを worker worktree で実行させる。worker worktree は統合ブランチやフェーズ境界の状態を反映していないため、main / 統合ブランチ側の成果物を評価するつもりの verification が **false FAIL** となり、publish が skip されたり補修ループを誘発する。
+
+**`plan submit --phase verification` 経由の verification タスク例**:
+
+```yaml
+tasks:
+  - name: "main-final-verify"
+    purpose: "統合ブランチが main に publish された状態を main 上で検証する"
+    content: |
+      以下の検証コマンドを main 上で実行:
+      go test ./... -count=1 -timeout 300s
+    acceptance_criteria: "go test が全件成功し exit code 0 で終了する"
+    blocked_by: []
+    bloom_level: 3
+    required: true
+    run_on_main: true
+```
+
+**判定フローチャート**:
+
+| 検証対象 | 指定フィールド |
+|----------|----------------|
+| 自 worker の worktree 上の成果物（ローカル単体検証） | どちらも付けない（デフォルト） |
+| 統合ブランチの全 worker 統合結果を統合 worktree 上で検証 | `run_on_integration: true` |
+| main にマージ（publish）済みの統合成果物を main 上で検証 | `run_on_main: true` |
+
+**注意**: `run_on_main: true` / `run_on_integration: true` のタスクはリポジトリ実体（main / 統合ブランチ）に対して実行されるため、**書き込み系 (変更生成) タスクは publish_conflict 解決の integration 専用**とし、それ以外では **read-only verification のみ** に限定すること。
 
 #### constraints の詳細
 
