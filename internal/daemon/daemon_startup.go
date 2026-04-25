@@ -367,17 +367,27 @@ func (d *Daemon) initPhaseB() {
 	}
 }
 
-// getAvailableModels returns the list of model names from worker config.
+// getAvailableModels returns the deduplicated set of model names referenced
+// by worker config. wc.Models maps workerID → modelName, so the model arms
+// supplied to the bandit selector come from the *values* of that map, not
+// the keys. Iterating over keys would feed worker IDs ("worker1", ...) to
+// the selector as if they were model names — every selection would then
+// reference a non-existent arm. wc.DefaultModel is included first because
+// it is the canonical fallback when a worker has no explicit override.
 func (d *Daemon) getAvailableModels() []string {
 	wc := d.config.Agents.Workers
-	models := make([]string, 0)
+	seen := make(map[string]bool, len(wc.Models)+1)
+	models := make([]string, 0, len(wc.Models)+1)
 	if wc.DefaultModel != "" {
 		models = append(models, wc.DefaultModel)
+		seen[wc.DefaultModel] = true
 	}
-	for name := range wc.Models {
-		if name != wc.DefaultModel {
-			models = append(models, name)
+	for _, m := range wc.Models {
+		if m == "" || seen[m] {
+			continue
 		}
+		models = append(models, m)
+		seen[m] = true
 	}
 	return models
 }
