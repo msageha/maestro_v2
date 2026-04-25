@@ -152,6 +152,9 @@ func validateTaskWriteParams(params QueueWriteParams, maxEntryContentBytes int) 
 	if resp := validateBlockedBy(params.BlockedBy); resp != nil {
 		return resp
 	}
+	if resp := validatePersonaAndSkillRefs(params.PersonaHint, params.SkillRefs); resp != nil {
+		return resp
+	}
 	return nil
 }
 

@@ -52,6 +52,30 @@ type QueueWriteAPI struct {
 	*apiContext
 }
 
+// validatePersonaAndSkillRefs rejects unsafe persona_hint / skill_refs values
+// at the UDS boundary. plan submit / plan add-task already enforce the same
+// rules in internal/plan/validate.go, but the queue_write entrypoints used to
+// trust their input — meaning a system-internal task or a command write could
+// land an identifier containing path separators or null bytes that the
+// dispatcher then injected into prompts and skill resolution paths. Mirroring
+// the planner-side check here closes the gap so every code path that reaches
+// the queue files goes through the same identifier sanitisation.
+func validatePersonaAndSkillRefs(personaHint string, skillRefs []string) *uds.Response {
+	if personaHint != "" {
+		if !validate.IsValidIdentifier(personaHint) {
+			return uds.ErrorResponse(uds.ErrCodeValidation,
+				fmt.Sprintf("invalid persona_hint %q: must not contain '/', '\\', or null bytes", personaHint))
+		}
+	}
+	for i, ref := range skillRefs {
+		if !validate.IsValidIdentifier(ref) {
+			return uds.ErrorResponse(uds.ErrCodeValidation,
+				fmt.Sprintf("invalid skill_refs[%d] %q: must not contain '/', '\\', or null bytes", i, ref))
+		}
+	}
+	return nil
+}
+
 func (h *QueueWriteAPI) handleQueueWrite(req *uds.Request) *uds.Response {
 	var params QueueWriteParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {

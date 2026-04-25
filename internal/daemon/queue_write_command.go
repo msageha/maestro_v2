@@ -18,6 +18,9 @@ func (h *QueueWriteAPI) handleQueueWriteCommand(params QueueWriteParams) *uds.Re
 	if resp := validateContentSize(params.Content, h.config.Limits.MaxEntryContentBytes); resp != nil {
 		return resp
 	}
+	if resp := validatePersonaAndSkillRefs(params.PersonaHint, params.SkillRefs); resp != nil {
+		return resp
+	}
 	if resp := h.checkContinuousGate(); resp != nil {
 		return resp
 	}
