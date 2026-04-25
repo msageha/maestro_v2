@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -1124,7 +1125,7 @@ func TestResultWrite_PhaseBIdempotency_ConflictRejected(t *testing.T) {
 
 	// Call Phase B directly with a different result_id.
 	incomingResultID := "res_0000000001_incoming2"
-	err := d.api.result.resultWritePhaseB(params, incomingResultID, model.StatusCompleted, false, "")
+	_, err := d.api.result.resultWritePhaseB(params, incomingResultID, model.StatusCompleted, false, "", false, false)
 	// updateYAMLFile converts errNoUpdate to nil, so no error is returned.
 	if err != nil {
 		t.Fatalf("expected nil error (errNoUpdate), got %v", err)
@@ -1440,5 +1441,133 @@ func TestSanitizeContentForLog(t *testing.T) {
 			out := sanitizeContentForLog(tt.input)
 			tt.check(t, out)
 		})
+	}
+}
+
+// testDaemonLogBuf returns the underlying bytes.Buffer attached to the daemon
+// logger by newTestDaemon, allowing tests to assert on log output.
+func testDaemonLogBuf(t *testing.T, d *Daemon) *bytes.Buffer {
+	t.Helper()
+	w, ok := d.logger.Writer().(*bytes.Buffer)
+	if !ok {
+		t.Fatalf("daemon logger writer is not a *bytes.Buffer (got %T)", d.logger.Writer())
+	}
+	return w
+}
+
+// setupCommandStateWithStatus is like setupCommandState but lets the test
+// choose the initial status — useful for forcing forbidden source states
+// (e.g., StatusPending → completed) to exercise the §2.1 validation.
+func setupCommandStateWithStatus(t *testing.T, d *Daemon, commandID string, taskIDs []string, status model.Status) {
+	t.Helper()
+	taskStates := make(map[string]model.Status)
+	for _, id := range taskIDs {
+		taskStates[id] = status
+	}
+	state := model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			TaskStates: taskStates,
+		},
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+	}
+	path := filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml")
+	if err := yamlutil.AtomicWrite(path, state); err != nil {
+		t.Fatalf("write command state: %v", err)
+	}
+}
+
+// TestResultWrite_ValidateStateTransition_LogsForbidden exercises the new
+// §2.1 validation hook: a task whose preexisting state is pending cannot
+// directly transition to completed (workers must go through in_progress).
+// The hook is in warn-mode, so the write still succeeds, but the violation
+// must be logged so operators can detect a buggy worker/planner.
+func TestResultWrite_ValidateStateTransition_LogsForbidden(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	taskID := "task_0000000002_abcdef02"
+	commandID := "cmd_0000000002_abcdef02"
+	workerID := "worker1"
+
+	setupWorkerQueue(t, d, workerID, taskID, commandID, 1)
+	// Forbidden source state: pending → completed is not in §2.1 table.
+	setupCommandStateWithStatus(t, d, commandID, []string{taskID}, model.StatusPending)
+
+	logBuf := testDaemonLogBuf(t, d)
+	logBuf.Reset()
+
+	req := makeResultWriteRequest(t, ResultWriteParams{
+		Reporter:   workerID,
+		TaskID:     taskID,
+		CommandID:  commandID,
+		LeaseEpoch: 1,
+		Status:     "completed",
+		Summary:    "done",
+	})
+	resp := d.api.handleResultWrite(req)
+	if !resp.Success {
+		t.Fatalf("expected success (warn-mode), got error: %v", resp.Error)
+	}
+
+	// The state IS still applied (warn-mode preserves the result write).
+	statePath := filepath.Join(d.maestroDir, "state", "commands", commandID+".yaml")
+	sdata, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	var st model.CommandState
+	if err := yamlv3.Unmarshal(sdata, &st); err != nil {
+		t.Fatalf("unmarshal state: %v", err)
+	}
+	if st.TaskStates[taskID] != model.StatusCompleted {
+		t.Errorf("state task_states[%s] = %q, want %q", taskID, st.TaskStates[taskID], model.StatusCompleted)
+	}
+
+	// And the violation was logged.
+	if !strings.Contains(logBuf.String(), "invalid_state_transition") {
+		t.Errorf("expected invalid_state_transition log entry, got: %s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "from=pending") {
+		t.Errorf("expected from=pending in log entry, got: %s", logBuf.String())
+	}
+	if !strings.Contains(logBuf.String(), "to=completed") {
+		t.Errorf("expected to=completed in log entry, got: %s", logBuf.String())
+	}
+}
+
+// TestResultWrite_ValidateStateTransition_AllowedTransitionSilent confirms a
+// legitimate in_progress → completed transition does NOT trip the validator
+// (no spurious warnings under the happy path).
+func TestResultWrite_ValidateStateTransition_AllowedTransitionSilent(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	taskID := "task_0000000003_abcdef03"
+	commandID := "cmd_0000000003_abcdef03"
+	workerID := "worker1"
+
+	setupWorkerQueue(t, d, workerID, taskID, commandID, 1)
+	setupCommandState(t, d, commandID, []string{taskID}) // defaults to in_progress
+
+	logBuf := testDaemonLogBuf(t, d)
+	logBuf.Reset()
+
+	req := makeResultWriteRequest(t, ResultWriteParams{
+		Reporter:   workerID,
+		TaskID:     taskID,
+		CommandID:  commandID,
+		LeaseEpoch: 1,
+		Status:     "completed",
+		Summary:    "done",
+	})
+	resp := d.api.handleResultWrite(req)
+	if !resp.Success {
+		t.Fatalf("expected success, got error: %v", resp.Error)
+	}
+	if strings.Contains(logBuf.String(), "invalid_state_transition") {
+		t.Errorf("happy-path transition must not log invalid_state_transition, got: %s", logBuf.String())
 	}
 }

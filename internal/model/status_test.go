@@ -225,6 +225,10 @@ func TestValidateTaskStateTransition(t *testing.T) {
 		{StatusInProgress, StatusCompleted},
 		{StatusInProgress, StatusFailed},
 		{StatusInProgress, StatusCancelled},
+		// §2.1: in_progress is treated as a composite of dispatched/running for the
+		// transition pipeline, so verify_pending can be entered from the legacy
+		// two-state model without rewriting the dispatch path.
+		{StatusInProgress, StatusVerifyPending},
 
 		// §2.1 extended transitions
 		{StatusPlanned, StatusReady},

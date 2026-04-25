@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1863,3 +1864,194 @@ func TestRetryTaskAtomically_QueueAndRollbackFailureMarksEnqueueFailed(t *testin
 		t.Errorf("task should remain in state when rollback fails: %v", updated.TaskStates)
 	}
 }
+
+// REQUIREMENTS §S2-2: per-task definition_of_abort thresholds MUST stop the
+// retry loop. Tests below verify the three sub-conditions.
+func TestShouldRetryTask_DefinitionOfAbort_MaxRepairCount(t *testing.T) {
+	t.Parallel()
+	cfg := model.Config{
+		Retry: model.RetryConfig{
+			TaskExecution: model.TaskRetryConfig{
+				Enabled:            true,
+				RetryableExitCodes: []int{1},
+				MaxRetries:         100, // high so global cap does not interfere
+			},
+		},
+	}
+	logger := log.New(&bytes.Buffer{}, "", 0)
+	h := NewTaskRetryHandler(t.TempDir(), cfg, lock.NewMutexMap(), logger, LogLevelDebug)
+
+	task := &model.Task{
+		ID:               "task-abort-mrc",
+		ExecutionRetries: 2,
+		DefinitionOfAbort: &model.DefinitionOfAbort{
+			MaxRepairCount:  2, // already reached
+			MaxWallClockSec: 1800,
+		},
+	}
+	shouldRetry, reason := h.ShouldRetryTask(task, 1, true)
+	if shouldRetry {
+		t.Fatalf("expected ShouldRetryTask=false when ExecutionRetries(%d) >= MaxRepairCount(%d), got true",
+			task.ExecutionRetries, task.DefinitionOfAbort.MaxRepairCount)
+	}
+	if !strings.Contains(reason, "max_repair_count exceeded") {
+		t.Errorf("expected reason to mention max_repair_count, got %q", reason)
+	}
+}
+
+func TestShouldRetryTask_DefinitionOfAbort_MaxWallClockSec(t *testing.T) {
+	t.Parallel()
+	cfg := model.Config{
+		Retry: model.RetryConfig{
+			TaskExecution: model.TaskRetryConfig{
+				Enabled:            true,
+				RetryableExitCodes: []int{1},
+				MaxRetries:         100,
+			},
+		},
+	}
+	logger := log.New(&bytes.Buffer{}, "", 0)
+	h := NewTaskRetryHandler(t.TempDir(), cfg, lock.NewMutexMap(), logger, LogLevelDebug)
+
+	// Task created 2 hours ago with a 1-hour wall-clock budget.
+	createdAt := time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339)
+	task := &model.Task{
+		ID:               "task-abort-mwc",
+		ExecutionRetries: 0,
+		CreatedAt:        createdAt,
+		DefinitionOfAbort: &model.DefinitionOfAbort{
+			MaxRepairCount:  10,
+			MaxWallClockSec: 3600,
+		},
+	}
+	shouldRetry, reason := h.ShouldRetryTask(task, 1, true)
+	if shouldRetry {
+		t.Fatalf("expected ShouldRetryTask=false when wall-clock budget exhausted, got true")
+	}
+	if !strings.Contains(reason, "max_wall_clock_sec exceeded") {
+		t.Errorf("expected reason to mention max_wall_clock_sec, got %q", reason)
+	}
+}
+
+func TestShouldRetryTask_DefinitionOfAbort_ExplicitFailureCondition(t *testing.T) {
+	t.Parallel()
+	cfg := model.Config{
+		Retry: model.RetryConfig{
+			TaskExecution: model.TaskRetryConfig{
+				Enabled:            true,
+				RetryableExitCodes: []int{1},
+				MaxRetries:         100,
+			},
+		},
+	}
+	logger := log.New(&bytes.Buffer{}, "", 0)
+	h := NewTaskRetryHandler(t.TempDir(), cfg, lock.NewMutexMap(), logger, LogLevelDebug)
+
+	lastErr := "build failed: undefined reference to symbol 'foo' (linker error)"
+	task := &model.Task{
+		ID:               "task-abort-efc",
+		ExecutionRetries: 0,
+		LastError:        &lastErr,
+		DefinitionOfAbort: &model.DefinitionOfAbort{
+			MaxRepairCount:            10,
+			MaxWallClockSec:           3600,
+			ExplicitFailureConditions: []string{"linker error", "panic:"},
+		},
+	}
+	shouldRetry, reason := h.ShouldRetryTask(task, 1, true)
+	if shouldRetry {
+		t.Fatalf("expected ShouldRetryTask=false when LastError matches explicit_failure_condition, got true")
+	}
+	if !strings.Contains(reason, "explicit_failure_condition matched") {
+		t.Errorf("expected reason to mention explicit_failure_condition, got %q", reason)
+	}
+}
+
+// Per-task max_repair_count must dominate even when global MaxRetries permits
+// more attempts. This guarantees the Planner's stop directive cannot be
+// loosened by relaxed daemon-wide retry config.
+func TestShouldRetryTask_DefinitionOfAbort_DominatesGlobalMaxRetries(t *testing.T) {
+	t.Parallel()
+	cfg := model.Config{
+		Retry: model.RetryConfig{
+			TaskExecution: model.TaskRetryConfig{
+				Enabled:            true,
+				RetryableExitCodes: []int{1},
+				MaxRetries:         100, // permissive
+			},
+		},
+	}
+	logger := log.New(&bytes.Buffer{}, "", 0)
+	h := NewTaskRetryHandler(t.TempDir(), cfg, lock.NewMutexMap(), logger, LogLevelDebug)
+
+	task := &model.Task{
+		ID:               "task-dominates",
+		ExecutionRetries: 1,
+		DefinitionOfAbort: &model.DefinitionOfAbort{
+			MaxRepairCount:  1, // strict
+			MaxWallClockSec: 1800,
+		},
+	}
+	shouldRetry, _ := h.ShouldRetryTask(task, 1, true)
+	if shouldRetry {
+		t.Fatalf("expected per-task MaxRepairCount(1) to dominate global MaxRetries(100); got ShouldRetryTask=true")
+	}
+}
+
+// Task without definition_of_abort must continue to use global retry config
+// (back-compat for tasks created before §S3-1 enforcement).
+func TestShouldRetryTask_NoDefinitionOfAbort_FallsBackToGlobal(t *testing.T) {
+	t.Parallel()
+	cfg := model.Config{
+		Retry: model.RetryConfig{
+			TaskExecution: model.TaskRetryConfig{
+				Enabled:            true,
+				RetryableExitCodes: []int{1},
+				MaxRetries:         3,
+			},
+		},
+	}
+	logger := log.New(&bytes.Buffer{}, "", 0)
+	h := NewTaskRetryHandler(t.TempDir(), cfg, lock.NewMutexMap(), logger, LogLevelDebug)
+
+	task := &model.Task{
+		ID:               "task-nodoa",
+		ExecutionRetries: 1,
+		// DefinitionOfAbort intentionally nil
+	}
+	shouldRetry, _ := h.ShouldRetryTask(task, 1, true)
+	if !shouldRetry {
+		t.Fatal("expected retry to be allowed when DefinitionOfAbort is nil and global cap not reached")
+	}
+}
+
+// TestIsAbortByMaxRepair verifies that the helper used by result_write_phase_b
+// to route paused_for_replan correctly identifies max_repair_count rejections
+// versus every other ShouldRetryTask reason.
+func TestIsAbortByMaxRepair(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		reason string
+		want   bool
+	}{
+		{"max_repair_count_exceeded", "definition_of_abort.max_repair_count exceeded (2/2)", true},
+		{"max_repair_count_exceeded_other_counts", "definition_of_abort.max_repair_count exceeded (5/3)", true},
+		{"wall_clock", "definition_of_abort.max_wall_clock_sec exceeded (1801s/1800s)", false},
+		{"explicit_failure", `definition_of_abort.explicit_failure_condition matched: "panic"`, false},
+		{"global_max_retries", "max retries exceeded (5/5)", false},
+		{"non_retryable_exit", "exit code 2 not retryable", false},
+		{"retry_disabled", "retry disabled", false},
+		{"not_retry_safe", "worker marked not retry safe", false},
+		{"empty", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := IsAbortByMaxRepair(tt.reason); got != tt.want {
+				t.Errorf("IsAbortByMaxRepair(%q) = %v, want %v", tt.reason, got, tt.want)
+			}
+		})
+	}
+}
+

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"path/filepath"
@@ -55,6 +56,13 @@ func NewTaskRetryHandler(maestroDir string, cfg model.Config, lockMap *lock.Mute
 
 // ShouldRetryTask determines if a failed task should be retried.
 // retrySafe indicates whether the worker marked the result as safe to retry.
+//
+// REQUIREMENTS §S2-2 (multi-faceted Circuit Breaker): the per-task
+// definition_of_abort thresholds (max_repair_count, max_wall_clock_sec,
+// explicit_failure_conditions) MUST force termination once exceeded. This is
+// enforced here in addition to the global Retry.TaskExecution.MaxRetries cap;
+// either limit can stop the retry loop, but per-task limits cannot be
+// loosened by global config.
 func (h *TaskRetryHandler) ShouldRetryTask(task *model.Task, exitCode int, retrySafe bool) (bool, string) {
 	retryConfig := h.config.Retry.TaskExecution
 
@@ -68,6 +76,15 @@ func (h *TaskRetryHandler) ShouldRetryTask(task *model.Task, exitCode int, retry
 		return false, "worker marked not retry safe"
 	}
 
+	// REQUIREMENTS §S2-2: enforce per-task definition_of_abort BEFORE global
+	// retry config. Task-level abort thresholds dominate so a Planner's stop
+	// condition cannot be bypassed by relaxed daemon-wide retry settings.
+	if task.DefinitionOfAbort != nil {
+		if stop, reason := h.shouldAbortByDefinition(task); stop {
+			return false, reason
+		}
+	}
+
 	// Check if max retries exceeded (use ExecutionRetries for actual retry count)
 	if retryConfig.MaxRetries > 0 && task.ExecutionRetries >= retryConfig.MaxRetries {
 		return false, fmt.Sprintf("max retries exceeded (%d/%d)", task.ExecutionRetries, retryConfig.MaxRetries)
@@ -79,6 +96,69 @@ func (h *TaskRetryHandler) ShouldRetryTask(task *model.Task, exitCode int, retry
 	}
 
 	return true, ""
+}
+
+// MaxRepairCountReasonPrefix is the leading substring of the reason string
+// returned by ShouldRetryTask when retry is rejected due to
+// definition_of_abort.max_repair_count being met or exceeded. Callers (notably
+// result_write_phase_b) match against this prefix to decide whether to route
+// the task to paused_for_replan instead of the generic failed terminal,
+// satisfying §S2-2 (Circuit Breaker → planner replan signal).
+const MaxRepairCountReasonPrefix = "definition_of_abort.max_repair_count"
+
+// IsAbortByMaxRepair reports whether reason originates from
+// definition_of_abort.max_repair_count exceeding its threshold. The string
+// prefix match is intentional — ShouldRetryTask formats the counter values
+// after the prefix and we want to match every variant.
+func IsAbortByMaxRepair(reason string) bool {
+	return strings.HasPrefix(reason, MaxRepairCountReasonPrefix)
+}
+
+// shouldAbortByDefinition evaluates a task's definition_of_abort against its
+// current execution counters and last error. Returns (stop, reason) where
+// stop=true means the retry loop must terminate. Caller must ensure
+// task.DefinitionOfAbort != nil.
+//
+// Semantics (REQUIREMENTS §2.2 / §S2-2):
+//   - max_repair_count: ExecutionRetries already reflects how many times the
+//     task has been retried. If the next retry would exceed the budget, abort.
+//   - max_wall_clock_sec: total elapsed time since the task was first created
+//     must not exceed the budget. Parse failures are non-fatal (treated as
+//     unbounded) so that older state files do not break retry.
+//   - explicit_failure_conditions: substring match against task.LastError. If
+//     any condition matches, abort immediately regardless of counters.
+func (h *TaskRetryHandler) shouldAbortByDefinition(task *model.Task) (bool, string) {
+	doa := task.DefinitionOfAbort
+
+	if doa.MaxRepairCount > 0 && task.ExecutionRetries >= doa.MaxRepairCount {
+		return true, fmt.Sprintf("%s exceeded (%d/%d)",
+			MaxRepairCountReasonPrefix, task.ExecutionRetries, doa.MaxRepairCount)
+	}
+
+	if doa.MaxWallClockSec > 0 && task.CreatedAt != "" {
+		if createdAt, err := time.Parse(time.RFC3339, task.CreatedAt); err == nil {
+			elapsed := h.clock.Now().UTC().Sub(createdAt.UTC())
+			if elapsed >= time.Duration(doa.MaxWallClockSec)*time.Second {
+				return true, fmt.Sprintf("definition_of_abort.max_wall_clock_sec exceeded (%ds/%ds)",
+					int(elapsed.Seconds()), doa.MaxWallClockSec)
+			}
+		}
+	}
+
+	if len(doa.ExplicitFailureConditions) > 0 && task.LastError != nil && *task.LastError != "" {
+		lastErr := *task.LastError
+		for _, cond := range doa.ExplicitFailureConditions {
+			cond = strings.TrimSpace(cond)
+			if cond == "" {
+				continue
+			}
+			if strings.Contains(lastErr, cond) {
+				return true, fmt.Sprintf("definition_of_abort.explicit_failure_condition matched: %q", cond)
+			}
+		}
+	}
+
+	return false, ""
 }
 
 // CreateRetryTask creates a new task for retry with cooldown.
@@ -225,7 +305,11 @@ func (h *TaskRetryHandler) RetryTaskAtomically(task *model.Task, commandID, work
 			if markErr := h.MarkRetryEnqueueFailed(task.ID, workerID, commandID); markErr != nil {
 				h.log(LogLevelError, "retry_atomic_mark_failed task=%s command=%s error=%v",
 					task.ID, commandID, markErr)
-				return fmt.Errorf("queue add failed (%w), rollback failed (%v), marking enqueue-failed also failed (%v)", err, rollbackErr, markErr)
+				return errors.Join(
+					fmt.Errorf("queue add failed: %w", err),
+					fmt.Errorf("rollback failed: %w", rollbackErr),
+					fmt.Errorf("marking enqueue-failed also failed: %w", markErr),
+				)
 			}
 			return fmt.Errorf("queue add failed (rollback failed, marked for reconciler recovery): %w", err)
 		}

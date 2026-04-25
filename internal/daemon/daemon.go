@@ -293,6 +293,10 @@ func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Close
 			reviewCoord:    d.reviewCoordAccessor,
 			ctx:            d.contextAccessor,
 			triggerScan:    d.triggerResultWriteScan,
+			// §S1-1: ship the always-passing stub Verification Runner.
+			// Production deployments can swap this for a real runner once the
+			// verify.yaml execution path lands; tests use SetVerifyRunner.
+			verifyRunner: NewStubVerifyRunner(),
 		},
 		queue: &QueueWriteAPI{apiContext: shared},
 		plan:  &PlanAPI{apiContext: shared},

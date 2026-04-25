@@ -239,9 +239,11 @@ var validTaskStateTransitions = map[Status]map[Status]bool{
 		StatusDeadLetter: true, // daemon dead-letters task (symmetric with queue transitions)
 	},
 	StatusInProgress: {
-		StatusCompleted: true,
-		StatusFailed:    true,
-		StatusCancelled: true,
+		StatusCompleted:     true,
+		StatusFailed:        true,
+		StatusCancelled:     true,
+		StatusVerifyPending: true, // §2.1: in_progress is treated as a composite of dispatched/running for the
+		// transition pipeline; verify_pending is the §2.1-mandated next step before completed/repair_pending.
 	},
 
 	// REQUIREMENTS.md §2.1: Extended task lifecycle transitions.

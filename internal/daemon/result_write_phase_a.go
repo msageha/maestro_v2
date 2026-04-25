@@ -32,6 +32,12 @@ type resultWritePhaseAResult struct {
 	retryTask        *model.Task // non-nil if a retry should be scheduled (caller handles registration)
 	queueWriteFailed bool        // true when result was committed but queue terminal write failed (H2 sticky error)
 	originalTaskID   string      // non-empty if this task is a retry of another (for lineage update in Phase B)
+	// abortByMaxRepair indicates the failed task was rejected for retry
+	// because definition_of_abort.max_repair_count was reached (§S2-2). The
+	// caller routes the task through verify_pending → repair_pending →
+	// paused_for_replan so the planner can pick up replanning, instead of
+	// landing at the generic failed terminal.
+	abortByMaxRepair bool
 	// duplicate is set when Phase A detected an idempotent/duplicate submission
 	// (either in the result file, as a terminal queue entry, or via
 	// AppliedResultIDs). The caller must short-circuit subsequent phases to
@@ -117,7 +123,7 @@ func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatu
 	}
 
 	// 6. Check for retry if task failed
-	retryTask := h.evaluateRetry(&tq.Tasks[taskIdx], params, resultStatus)
+	retryTask, abortByMaxRepair := h.evaluateRetry(&tq.Tasks[taskIdx], params, resultStatus)
 
 	// 6b. Extract original task ID for retry lineage (Pass to Phase B)
 	originalTaskID := tq.Tasks[taskIdx].OriginalTaskID
@@ -151,6 +157,7 @@ func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatu
 		retryTask:        retryTask,
 		queueWriteFailed: queueWriteFailed,
 		originalTaskID:   originalTaskID,
+		abortByMaxRepair: abortByMaxRepair,
 	}, nil
 }
 
@@ -315,25 +322,28 @@ func (h *ResultWriteAPI) rollbackResultEntry(rf *model.TaskResultFile, resultID 
 }
 
 // evaluateRetry checks whether a failed task should be retried and creates
-// the retry task if so. Returns nil if no retry is warranted.
-func (h *ResultWriteAPI) evaluateRetry(queueTask *model.Task, params ResultWriteParams, resultStatus model.Status) *model.Task {
+// the retry task if so. The second return value is true when retry was
+// rejected because definition_of_abort.max_repair_count was reached, in which
+// case the caller MUST route the task to paused_for_replan per §S2-2 instead
+// of treating it as a plain non-retryable failure.
+func (h *ResultWriteAPI) evaluateRetry(queueTask *model.Task, params ResultWriteParams, resultStatus model.Status) (*model.Task, bool) {
 	if resultStatus != model.StatusFailed || params.ExitCode == nil {
-		return nil
+		return nil, false
 	}
 	retryHandler := NewTaskRetryHandler(h.maestroDir, *h.config, h.lockMap, h.logger, h.logLevel)
 	shouldRetry, reason := retryHandler.ShouldRetryTask(queueTask, *params.ExitCode, params.RetrySafe)
 
 	if !shouldRetry {
 		h.logFn(LogLevelInfo, "task_retry_skipped task=%s reason=%s", params.TaskID, reason)
-		return nil
+		return nil, IsAbortByMaxRepair(reason)
 	}
 
 	rt, err := retryHandler.CreateRetryTask(queueTask, params.Reporter, *params.ExitCode)
 	if err != nil {
 		h.logFn(LogLevelError, "create_retry_task_failed task=%s error=%v", params.TaskID, err)
-		return nil
+		return nil, false
 	}
-	return rt
+	return rt, false
 }
 
 // writeOrphanedMarker writes a sidecar marker file when a result entry cannot

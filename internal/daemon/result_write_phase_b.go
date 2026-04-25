@@ -75,14 +75,15 @@ func (h *ResultWriteAPI) handleBestEffortWrites(params ResultWriteParams, result
 	return rejectionID
 }
 
-func (h *ResultWriteAPI) resultWritePhaseB(params ResultWriteParams, resultID string, resultStatus model.Status, queueWriteFailed bool, originalTaskID string) error {
+func (h *ResultWriteAPI) resultWritePhaseB(params ResultWriteParams, resultID string, resultStatus model.Status, queueWriteFailed bool, originalTaskID string, retryScheduled, abortByMaxRepair bool) (bool, error) {
 	cmdLockKey := "state:" + params.CommandID
 	h.lockMap.Lock(cmdLockKey)
 	defer h.lockMap.Unlock(cmdLockKey)
 
 	statePath := commandStatePath(h.maestroDir, params.CommandID)
 
-	return updateYAMLFile(statePath, func(state *model.CommandState) error {
+	var needsVerify bool
+	err := updateYAMLFile(statePath, func(state *model.CommandState) error {
 		if state.CommandID == "" && state.SchemaVersion == 0 && state.TaskStates == nil {
 			return fmt.Errorf("state not found for command %s", params.CommandID)
 		}
@@ -108,7 +109,30 @@ func (h *ResultWriteAPI) resultWritePhaseB(params ResultWriteParams, resultID st
 		}
 
 		recordedStatus := h.resolveRecordedStatus(state, params, resultStatus)
-		state.TaskStates[params.TaskID] = recordedStatus
+
+		// Audit hook: log when the worker's reported terminal status is not a
+		// direct §2.1 edge from the existing TaskStates entry. The progression
+		// pipeline below routes the task through the lifecycle anyway (so
+		// result/state stay in sync), but a planner or worker that lands at
+		// an unexpected source state (e.g., pending → completed) is a §2.1
+		// violation worth flagging.
+		if existing, hadExisting := state.TaskStates[params.TaskID]; hadExisting && existing != recordedStatus {
+			if err := model.ValidateTaskStateTransition(existing, recordedStatus); err != nil {
+				h.logFn(LogLevelError,
+					"result_write invalid_state_transition task=%s command=%s from=%s to=%s reason=%v "+
+						"(applying via §2.1 progression; investigate planner/worker for state machine violation)",
+					params.TaskID, params.CommandID, existing, recordedStatus, err)
+			}
+		}
+
+		// REQUIREMENTS.md §2.1 lifecycle progression. The recorded worker
+		// status is mapped to a sequence of intermediate states so that
+		// completed/failed/paused_for_replan are reached only via the
+		// verify_pending → repair_pending pipeline that §2.1 mandates. The
+		// VerifyRunner step is deferred to a second pass under a fresh state
+		// lock (see applyVerifyOutcome) so the runner does not block the
+		// state lock.
+		needsVerify = h.applyTaskStateProgression(state, params, recordedStatus, retryScheduled, abortByMaxRepair)
 
 		now := h.clock.Now()
 		state.UpdatedAt = now.UTC().Format(time.RFC3339)
@@ -126,6 +150,17 @@ func (h *ResultWriteAPI) resultWritePhaseB(params ResultWriteParams, resultID st
 		if originalTaskID != "" {
 			if existing, ok := state.TaskStates[originalTaskID]; ok {
 				if !model.IsTerminal(existing) {
+					// §2.1: Cancellation is allowed from every non-terminal
+					// state, so this should always validate. Log on the off
+					// chance the state machine drifts out from under us — same
+					// rationale as the main path: never block the in-flight
+					// retry result write.
+					if err := model.ValidateTaskStateTransition(existing, model.StatusCancelled); err != nil {
+						h.logFn(LogLevelError,
+							"retry_lineage_invalid_transition original_task=%s retry_task=%s command=%s from=%s to=cancelled reason=%v "+
+								"(applying anyway)",
+							originalTaskID, params.TaskID, params.CommandID, existing, err)
+					}
 					state.TaskStates[originalTaskID] = model.StatusCancelled
 					h.logFn(LogLevelInfo,
 						"retry_lineage_superseded original_task=%s retry_task=%s command=%s",
@@ -134,6 +169,142 @@ func (h *ResultWriteAPI) resultWritePhaseB(params ResultWriteParams, resultID st
 			}
 		}
 
+		return nil
+	})
+	return needsVerify, err
+}
+
+// applyTaskStateProgression maps the worker-reported recordedStatus to the
+// §2.1 task-lifecycle path and applies each step via AdvanceTaskState. The
+// `retryScheduled` and `abortByMaxRepair` flags come from Phase A's retry
+// evaluation and disambiguate the failed branches:
+//
+//   - completed              → verify_pending (caller runs VerifyRunner;
+//     final status is applied in applyVerifyOutcome).
+//   - failed + retry         → verify_pending → repair_pending (a retry task
+//     has been scheduled; planner is not asked to replan).
+//   - failed + max_repair    → verify_pending → repair_pending →
+//     paused_for_replan (§S2-2 Circuit Breaker triggers replan).
+//   - failed (non-retryable) → failed terminal (running → failed is allowed
+//     by §2.1; preserves backwards compatibility with the legacy
+//     pending → in_progress → failed pipeline used by tests).
+//   - cancelled              → cancelled (universal transition).
+//
+// Returns true if the task is parked at verify_pending awaiting the
+// VerifyRunner outcome. Idempotent re-submissions whose existing state is
+// already terminal are no-ops.
+func (h *ResultWriteAPI) applyTaskStateProgression(state *model.CommandState, params ResultWriteParams, recordedStatus model.Status, retryScheduled, abortByMaxRepair bool) bool {
+	current, ok := state.TaskStates[params.TaskID]
+	if !ok {
+		// Defensive: validateStateRegistration in Phase A ensures the task is
+		// registered, but we never want to dereference a missing key.
+		state.TaskStates[params.TaskID] = recordedStatus
+		return false
+	}
+
+	// Idempotent re-submission: nothing to advance.
+	if model.IsTerminal(current) {
+		if current != recordedStatus {
+			h.logFn(LogLevelWarn,
+				"result_write_advance_skip task=%s command=%s current=%s recorded=%s "+
+					"(state already terminal; preserving existing value)",
+				params.TaskID, params.CommandID, current, recordedStatus)
+		}
+		return false
+	}
+
+	switch recordedStatus {
+	case model.StatusCompleted:
+		// Hop to verify_pending and let the second-pass VerifyRunner outcome
+		// decide between completed and repair_pending.
+		h.advanceOrForce(state, params, model.StatusVerifyPending)
+		return true
+	case model.StatusFailed:
+		switch {
+		case retryScheduled:
+			h.advanceOrForce(state, params, model.StatusVerifyPending)
+			h.advanceOrForce(state, params, model.StatusRepairPending)
+		case abortByMaxRepair:
+			h.advanceOrForce(state, params, model.StatusVerifyPending)
+			h.advanceOrForce(state, params, model.StatusRepairPending)
+			h.advanceOrForce(state, params, model.StatusPausedForReplan)
+		default:
+			// Non-retryable failure: terminal direct write. AdvanceTaskState
+			// would also work (in_progress → failed is permitted), but a direct
+			// assignment matches the legacy expectation that no intermediate
+			// verify_pending is observed for hard failures.
+			state.TaskStates[params.TaskID] = model.StatusFailed
+		}
+		return false
+	case model.StatusCancelled:
+		// `* → cancelled` is a universal transition; AdvanceTaskState applies it
+		// directly. Falling back to a direct write keeps the late-after-plan-
+		// terminal coercion path unchanged for the idempotent case as well.
+		state.TaskStates[params.TaskID] = model.StatusCancelled
+		return false
+	default:
+		// Unexpected status (Phase A only forwards completed/failed/cancelled);
+		// fall back to direct write so we do not silently drop the result.
+		state.TaskStates[params.TaskID] = recordedStatus
+		return false
+	}
+}
+
+// advanceOrForce attempts AdvanceTaskState and falls back to a direct write
+// on error. Phase A has already committed the result file, so a hard reject
+// here would desynchronize result/state; we log at ERROR so the §2.1 state
+// machine violation is visible in audit logs without blocking the worker.
+func (h *ResultWriteAPI) advanceOrForce(state *model.CommandState, params ResultWriteParams, target model.Status) {
+	if err := model.AdvanceTaskState(state.TaskStates, params.TaskID, target); err != nil {
+		h.logFn(LogLevelError,
+			"result_write_advance_failed task=%s command=%s target=%s reason=%v "+
+				"(applying direct write; investigate planner/worker for §2.1 violation)",
+			params.TaskID, params.CommandID, target, err)
+		state.TaskStates[params.TaskID] = target
+	}
+}
+
+// applyVerifyOutcome performs the second-pass state update after the
+// VerifyRunner has finished. It is invoked outside the Phase B state lock so
+// the runner can take as long as it needs without blocking other writers.
+//
+// The function is a no-op if the task is no longer parked at verify_pending
+// (e.g., a concurrent reconcile or operator override moved it elsewhere).
+func (h *ResultWriteAPI) applyVerifyOutcome(params ResultWriteParams, nextStatus model.Status, reason string) error {
+	cmdLockKey := "state:" + params.CommandID
+	h.lockMap.Lock(cmdLockKey)
+	defer h.lockMap.Unlock(cmdLockKey)
+
+	statePath := commandStatePath(h.maestroDir, params.CommandID)
+	return updateYAMLFile(statePath, func(state *model.CommandState) error {
+		if state.TaskStates == nil {
+			h.logFn(LogLevelWarn,
+				"verify_outcome_skipped task=%s command=%s next=%s (state has no task entries)",
+				params.TaskID, params.CommandID, nextStatus)
+			return errNoUpdate
+		}
+		current, ok := state.TaskStates[params.TaskID]
+		if !ok {
+			h.logFn(LogLevelWarn,
+				"verify_outcome_skipped task=%s command=%s next=%s (task missing from state)",
+				params.TaskID, params.CommandID, nextStatus)
+			return errNoUpdate
+		}
+		if current != model.StatusVerifyPending {
+			h.logFn(LogLevelWarn,
+				"verify_outcome_skipped task=%s command=%s current=%s next=%s reason=%q "+
+					"(task no longer at verify_pending; outcome ignored)",
+				params.TaskID, params.CommandID, current, nextStatus, reason)
+			return errNoUpdate
+		}
+		if err := model.AdvanceTaskState(state.TaskStates, params.TaskID, nextStatus); err != nil {
+			return fmt.Errorf("apply verify outcome %s → %s: %w",
+				current, nextStatus, err)
+		}
+		state.UpdatedAt = h.clock.Now().UTC().Format(time.RFC3339)
+		h.logFn(LogLevelInfo,
+			"verify_outcome_applied task=%s command=%s next=%s reason=%q",
+			params.TaskID, params.CommandID, nextStatus, reason)
 		return nil
 	})
 }

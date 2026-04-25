@@ -62,6 +62,28 @@ type ResultWriteAPI struct {
 	reviewCoord    func() reviewDispatcher
 	triggerScan    scanTriggerFunc
 	ctx            func() context.Context
+	// verifyRunner runs §S1-1 Verification after a task lands at verify_pending.
+	// Defaults to NewStubVerifyRunner (always passes) so production callers and
+	// tests both get a sensible §2.1 lifecycle progression without bespoke
+	// wiring; override via SetVerifyRunner for tests that need to drive the
+	// repair_pending branch.
+	verifyRunner VerifyRunner
+}
+
+// SetVerifyRunner overrides the VerifyRunner used by this handler. Intended
+// for tests that need to exercise the verify_pending → repair_pending path
+// deterministically; production wiring sets the stub runner in newDaemon.
+func (h *ResultWriteAPI) SetVerifyRunner(r VerifyRunner) {
+	h.verifyRunner = r
+}
+
+// resolveVerifyRunner returns the configured runner, falling back to a stub
+// so a misconfigured handler still produces a §2.1-valid lifecycle.
+func (h *ResultWriteAPI) resolveVerifyRunner() VerifyRunner {
+	if h.verifyRunner != nil {
+		return h.verifyRunner
+	}
+	return NewStubVerifyRunner()
 }
 
 // ResultWriteParams is the request payload for the result_write UDS command.
@@ -155,19 +177,43 @@ func (h *ResultWriteAPI) handleResultWrite(req *uds.Request) *uds.Response {
 	// analysis). Best-effort writes (learnings / skill_candidates) must still
 	// run so that lease-revoke rejections on stale idempotent resubmissions
 	// continue to be persisted (H4 invariant).
+	var needsVerify bool
 	if !isDuplicate {
 		// Phase B: Per-command mutex (state/ updates)
-		if err := h.resultWritePhaseB(params, resultID, resultStatus, resultWritePhaseAResult.queueWriteFailed, resultWritePhaseAResult.originalTaskID); err != nil {
+		retryScheduled := resultWritePhaseAResult.retryTask != nil
+		nv, err := h.resultWritePhaseB(params, resultID, resultStatus,
+			resultWritePhaseAResult.queueWriteFailed,
+			resultWritePhaseAResult.originalTaskID,
+			retryScheduled,
+			resultWritePhaseAResult.abortByMaxRepair)
+		if err != nil {
 			h.logFn(LogLevelError, "result_write phase_b error task=%s command=%s: %v",
 				params.TaskID, params.CommandID, err)
 			return uds.ErrorResponse(uds.ErrCodeInternal,
 				fmt.Sprintf("state update failed: %v (result %s committed, run 'maestro plan rebuild' to fix)", err, resultID))
 		}
+		needsVerify = nv
 
 		h.recordFallback(params, resultStatus)
 
 		// Retry registration (state then queue — correct lock order).
 		h.handleRetryRegistration(resultWritePhaseAResult, params)
+	}
+
+	// §S1-1 Verification Runner second pass. Runs outside the Phase B state
+	// lock so the runner does not block concurrent writers; if it fails or
+	// the task has moved on, applyVerifyOutcome logs and leaves the task at
+	// verify_pending for reconcile/operator intervention.
+	if needsVerify {
+		runner := h.resolveVerifyRunner()
+		outcome, vErr := runner.Run(h.ctx(), params.TaskID, params.CommandID, params.FilesChanged)
+		nextStatus, reason := classifyVerifyOutcome(outcome, vErr)
+		if applyErr := h.applyVerifyOutcome(params, nextStatus, reason); applyErr != nil {
+			h.logFn(LogLevelWarn,
+				"verify_outcome_apply_failed task=%s command=%s next=%s reason=%q error=%v "+
+					"(task remains at verify_pending; reconcile/operator can re-drive)",
+				params.TaskID, params.CommandID, nextStatus, reason, applyErr)
+		}
 	}
 
 	// Best-effort writes (learnings, skill candidates) with lease epoch guard.
