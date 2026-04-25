@@ -357,6 +357,13 @@ func (d *Daemon) initPhaseB() {
 		stubCaller := &logOnlyCaller{logger: d.logger}
 		d.judgeCaller = judge.NewJudge(stubCaller, model, timeout)
 		d.log(LogLevelInfo, "judge initialized model=%s timeout=%s", model, timeout)
+		// Phase C is not yet wired to a real LLM caller — surface the stub
+		// status loudly so operators who enable judge in config do not assume
+		// the comparison is meaningful. Without this warning the WARN-level
+		// signal would only appear after the first prompt is dispatched.
+		d.log(LogLevelWarn,
+			"judge_stub_active: judge.Caller is a logOnlyCaller stub (always returns winner_index=0); "+
+				"rollout judging is non-functional until a real LLM caller is wired in")
 	}
 }
 
