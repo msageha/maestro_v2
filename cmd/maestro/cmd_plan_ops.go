@@ -190,7 +190,7 @@ func (a *cliApp) runPlanRetryPublish(args []string) error {
 //
 // Usage:
 //
-//	maestro resolve-conflict \
+//	maestro plan resolve-conflict \
 //	    --command-id   <id>           # parent command id
 //	    --phase-id     <id>           # phase containing the conflicting merge
 //	    --worker-id    <id>           # worker whose worktree has the conflict
@@ -198,10 +198,10 @@ func (a *cliApp) runPlanRetryPublish(args []string) error {
 //
 // Example:
 //
-//	maestro resolve-conflict --command-id cmd_42 --phase-id ph_3 \
+//	maestro plan resolve-conflict --command-id cmd_42 --phase-id ph_3 \
 //	    --worker-id worker2 --conflicting-files internal/a.go,internal/b.go
 func (a *cliApp) runResolveConflict(args []string) error {
-	cmd := NewCommand("maestro resolve-conflict", "maestro resolve-conflict --command-id <id> --phase-id <id> --worker-id <id> [--conflicting-files <path>[,<path>...]]...")
+	cmd := NewCommand("maestro plan resolve-conflict", "maestro plan resolve-conflict --command-id <id> --phase-id <id> --worker-id <id> [--conflicting-files <path>[,<path>...]]...")
 	var commandID, phaseID, workerID string
 	var conflictingFiles stringSliceFlag
 	cmd.RequiredString(&commandID, "command-id", "parent command id")

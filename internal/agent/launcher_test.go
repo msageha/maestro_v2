@@ -469,9 +469,12 @@ func TestBuildLaunchArgs_WorkerDisallowsMaestroReads(t *testing.T) {
 	}
 
 	// D009: recovery API escape hatches must be in worker disallowedTools.
+	// Both the current `plan resolve-conflict` and the legacy
+	// `resolve-conflict` spellings are blocked as defense-in-depth.
 	for _, sub := range []string{
 		"Bash(maestro plan unquarantine:*)",
 		"Bash(maestro plan resume-merge:*)",
+		"Bash(maestro plan resolve-conflict:*)",
 		"Bash(maestro resolve-conflict:*)",
 	} {
 		if !strings.Contains(joined, sub) {

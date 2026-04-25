@@ -338,6 +338,10 @@ func buildLaunchArgs(role, agentModel, systemPrompt, basePromptMode string) ([]s
 				// payload tries to embed them.
 				"Bash(maestro plan unquarantine:*)",
 				"Bash(maestro plan resume-merge:*)",
+				"Bash(maestro plan resolve-conflict:*)",
+				// Legacy form (no `plan` segment): unreachable via the current
+				// CLI router but blocked here too as defense-in-depth in case
+				// `content` reintroduces the historical spelling.
 				"Bash(maestro resolve-conflict:*)",
 				"Read(.maestro/state/**)",
 				"Read(.maestro/queue/**)",

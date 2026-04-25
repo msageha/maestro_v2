@@ -130,7 +130,7 @@ func TestHookScript_ContainsDangerousPatternChecks(t *testing.T) {
 		{"D009", "D009"},
 		{"D009 unquarantine", "maestro plan unquarantine"},
 		{"D009 resume-merge", "maestro plan resume-merge"},
-		{"D009 resolve-conflict", "maestro resolve-conflict"},
+		{"D009 resolve-conflict", "maestro\\s+(plan\\s+)?resolve-conflict"},
 		{".maestro/ bypass", ".maestro/"},
 		{"macOS system dirs", "System|Library|Applications"},
 	}

@@ -481,8 +481,12 @@ if [ "$tool_name" = "Bash" ]; then
   if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+plan\s+resume-merge(\s|$)'; then
     deny "D009: Blocked maestro plan resume-merge (operator-only recovery API)"
   fi
-  if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+resolve-conflict(\s|$)'; then
-    deny "D009: Blocked maestro resolve-conflict (operator-only recovery API)"
+  # Match both the canonical "maestro plan resolve-conflict" form (current
+  # CLI router) and the legacy "maestro resolve-conflict" spelling -- the
+  # latter is unreachable via the router today but is kept as defense-in-
+  # depth in case future content reintroduces it.
+  if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+(plan\s+)?resolve-conflict(\s|$)'; then
+    deny "D009: Blocked maestro plan resolve-conflict (operator-only recovery API)"
   fi
 
   # B004: Absolute path shell invocation (bypasses restricted mode)
