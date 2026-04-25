@@ -812,12 +812,17 @@ Daemon が自動で conflict resolver を dispatch（worker の状態を `confli
 
    **注意**: `plan submit` は既にプランが存在するコマンドには使用できない（double submit 拒否）。`add-retry-task` は失敗タスクの置換専用であり完了済みタスクには使用できない。`add-task` は sealed プランに新規タスクを追加する専用コマンドである。
 
-4. **再マージのトリガー**: worker がタスクを完了したら `maestro plan resume-merge --command-id <command_id>` を実行する。これにより:
+4. **再マージのトリガー（通常は自動）**: Worker がタスクを **`completed` ステータスで** 完了すると、Daemon の `AutoRecoverAfterResolution` フックが自動的に `ResumeMerge` を発火する。Planner は明示的に `maestro plan resume-merge` を呼ぶ必要はなく、ダッシュボードや signal で再マージ結果を待てばよい。
+
+   **`maestro plan resume-merge` を手動で呼ぶのはエスケープハッチ**: 以下のような自動リカバリが不発に終わったケースでのみ実行する:
+   - Worker が `failed` で完了した（自動フックは completed のみ発火する。失敗時は Daemon が `ResetResolvingWorkerToConflict` で `resolving → conflict` 復帰を試みるが、確実に復帰させたい場合に手動で `resume-merge` を呼ぶ）
+   - AutoRecover 時の `ResumeMerge` 自体がエラー（git ops 失敗等）になった旨が dashboard / log に出ている
+   - R7 の 20 分タイムアウトを待たずに復帰させたい
+
+   手動実行の効果は以下のとおり:
    - 統合ブランチのステータスが `failed` にリセットされる
    - conflict/resolving 状態の worker が `active` にリセットされる
-   - 次回スキャンで Daemon が自動的に再マージを試行する
-
-   **タスクが失敗した場合も速やかに `resume-merge` を呼ぶこと**: タスク失敗時に `resume-merge` を呼ばずに放置すると、worker が `resolving` 状態のままになる。R7 は最終手段として 20 分経過後に `resolving → conflict` を自動リセットするが、それまでコマンドの進行は止まる。運用上は失敗を検知したら即座に `resume-merge` で状態を解除してから、通常の失敗処理（リトライまたは `plan complete`）に移行すること。
+   - 次回スキャンで Daemon が再マージを試行する
 
 5. **最大リトライ: 2 回**。Daemon が `ConflictResolutionAttempts` を自動管理し、上限到達時は `conflict_escalation` 通知で Planner に通知する。再マージが失敗し続ける場合は `plan complete` で報告する。
 
@@ -863,8 +868,12 @@ only invoke `maestro plan retry-publish --command-id cmd_xxx` manually if the wo
    - 競合ファイル一覧（シグナルの `conflict_files` から取得）
    - `git status` で競合状態を確認する
    - 競合ファイルを手動で編集して解消し、`git add <files>` → `git commit -m "[maestro] resolve publish conflict"` する
-   - タスク完了を Planner に報告する（retry-publish は **Planner** が行う）
+   - タスク完了を Planner に報告する（その後 Daemon の AutoRecoverAfterResolution が RetryPublish を発火する）
    - `acceptance_criteria` にコンパイル成功・テストパスを含める
+
+   **task_merge_conflict との違い: なぜ publish_conflict では Worker が git commit するのか:**
+   - `task_merge_conflict` の場合、Worker は自分の worktree 上で解消する。Daemon の `ResumeMerge` が後段で worker のブランチを統合ブランチへマージし直すため、コミットは Daemon が握る。Worker 側で `git commit` してしまうと二重コミットや merge marker 残存リスクがある。
+   - `publish_conflict` の場合、Worker は最初から **integration worktree 上で直接編集する**。Daemon が後から再マージしてくれる前段は存在せず、`PublishToBase` は dirty worktree を許容しない。Worker が自分でコミットしない限り解消した内容が反映されないため、ここでは明示的に `git add` / `git commit` を依頼する。
 
    ```
    maestro plan add-task \
@@ -881,13 +890,19 @@ only invoke `maestro plan retry-publish --command-id cmd_xxx` manually if the wo
    - `--run-on-integration` を指定すると、全フェーズが terminal 状態でも最後のフェーズに自動追加・再開される
    - Worker の working directory が自動的に integration worktree に設定されるため、`cd` 操作は不要
 
-3. **再 Publish のトリガー**: Worker がタスクを **`completed` ステータスで** 完了したら `maestro plan retry-publish --command-id <command_id>` を実行する。これにより:
+3. **再 Publish のトリガー（通常は自動）**: Worker が `--run-on-integration` のタスクを **`completed` ステータスで** 完了すると、Daemon の `AutoRecoverAfterResolution` フックが自動的に `RetryPublish` を発火する（`NextPublishRetryAt` バックオフはこの経路では無視される）。Planner は明示的に `maestro plan retry-publish` を呼ぶ必要はない。
+
+   **`maestro plan retry-publish` を手動で呼ぶのはエスケープハッチ**: 以下の場合のみ実行する:
+   - Worker が `failed` で完了した（自動フックは completed のみ発火するため、復旧シナリオを切り替えるか手動 retry-publish を選択する必要がある）
+   - AutoRecover 時の `RetryPublish` 自体がエラーになった旨が dashboard / log に出ている
+
+   手動実行の効果は以下のとおり:
    - `PublishFailureCount` がリセットされる
    - 統合ステータスが `merged` に戻る
    - 次回スキャンで Daemon が再度フォワードマージ + Publish を試行する
 
-   **重要 (Bug E): Worker task 成功 ≠ Publish 成功**:
-   - Worker の task が `completed` になった時点では、まだ Publish は完了していない。retry-publish は非同期トリガーであり、実際の Publish 成否は Daemon の次回スキャンまで判明しない
+   **重要: Worker task 成功 ≠ Publish 成功**:
+   - Worker の task が `completed` になった時点では、まだ Publish は完了していない。AutoRecover も retry-publish も非同期トリガーであり、実際の Publish 成否は Daemon の次回スキャンまで判明しない
    - Planner が `plan complete` を呼ぶと、Integration status が `published` でない場合は `deferred_publish` が返る。この場合 Daemon が Publish 成功後に自動で確定する
    - Publish が結局失敗すれば `publish_conflict` または `publish_quarantined` シグナルが再度届く。その場合は上記手順をもう一度実行するか、`plan complete` で報告する
    - Worker が `failed` ステータスで完了した場合（コンフリクト解消不能と判断した場合）は retry-publish を呼ばず、`plan complete` で失敗報告する

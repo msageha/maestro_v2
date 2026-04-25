@@ -319,6 +319,70 @@ func (wm *Manager) GetWorkerPath(commandID, workerID string) (string, error) {
 	return "", fmt.Errorf("worktree not found for worker %s in command %s", workerID, commandID)
 }
 
+// MaxComputedDiffBytes caps the diff payload returned by ComputeWorkerDiff.
+// Diffs larger than this threshold are truncated with a marker line so that
+// downstream consumers (advisory review) cannot be flooded by a runaway worker.
+const MaxComputedDiffBytes = 256 * 1024
+
+// ComputeWorkerDiff returns a unified diff representing the worker's effective
+// contribution for review purposes: the working tree of the worker's worktree
+// against its merge-base with the integration branch. This captures both
+// committed and uncommitted changes attributable to this worker, while
+// excluding any commits that other workers have already merged into
+// integration since this worker branched off.
+//
+// Returns ("", nil) when the command has no worktree state (worktree mode
+// disabled or state file absent) or no integration branch yet — these cases
+// are not errors; the caller should treat them as "no diff available".
+func (wm *Manager) ComputeWorkerDiff(commandID, workerID string) (string, error) {
+	if err := validateIDs(commandID, workerID); err != nil {
+		return "", err
+	}
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	state, err := wm.loadStateUnlocked(commandID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", nil
+		}
+		return "", fmt.Errorf("load worktree state: %w", err)
+	}
+	if state.Integration.Branch == "" {
+		return "", nil
+	}
+	ws := wm.findWorker(state, workerID)
+	if ws == nil {
+		return "", fmt.Errorf("worker %s not found in command %s", workerID, commandID)
+	}
+	if _, err := os.Stat(ws.Path); err != nil {
+		// Worktree directory missing — likely already cleaned up.
+		// Treat as "no diff available" rather than failing the caller.
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", fmt.Errorf("stat worker worktree: %w", err)
+	}
+
+	mb, err := wm.gitOutputInDir(ws.Path, "merge-base", state.Integration.Branch, "HEAD")
+	if err != nil {
+		return "", fmt.Errorf("merge-base: %w", err)
+	}
+	mergeBase := strings.TrimSpace(mb)
+	if mergeBase == "" {
+		return "", fmt.Errorf("empty merge-base for worker %s in command %s", workerID, commandID)
+	}
+
+	diff, err := wm.gitOutputInDir(ws.Path, "diff", mergeBase)
+	if err != nil {
+		return "", fmt.Errorf("git diff: %w", err)
+	}
+	if len(diff) > MaxComputedDiffBytes {
+		diff = diff[:MaxComputedDiffBytes] + "\n... (diff truncated)\n"
+	}
+	return diff, nil
+}
+
 // CommitWorkerChanges commits all changes in a worker's worktree.
 // Idempotent: if there are no changes to commit, returns nil.
 func (wm *Manager) CommitWorkerChanges(commandID, workerID, message string) error {

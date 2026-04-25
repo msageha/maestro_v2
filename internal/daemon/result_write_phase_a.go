@@ -44,6 +44,14 @@ type resultWritePhaseAResult struct {
 	// avoid emitting misleading "result_write" audit log lines as if this were
 	// a fresh write (Bug H).
 	duplicate bool
+	// taskRunOnIntegration mirrors Task.RunOnIntegration of the queue entry
+	// being terminated by this result_write. It is propagated out of Phase A
+	// so the post-result AutoRecover hook (in handleResultWrite) can identify
+	// publish_conflict resolution completions without re-loading the queue
+	// file under a different lock order. Only meaningful for fresh
+	// (non-duplicate) writes; on duplicate paths Phase A returns early
+	// before this is populated.
+	taskRunOnIntegration bool
 }
 
 func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatus model.Status) (*resultWritePhaseAResult, error) {
@@ -153,11 +161,12 @@ func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatu
 	}
 
 	return &resultWritePhaseAResult{
-		resultID:         resultID,
-		retryTask:        retryTask,
-		queueWriteFailed: queueWriteFailed,
-		originalTaskID:   originalTaskID,
-		abortByMaxRepair: abortByMaxRepair,
+		resultID:             resultID,
+		retryTask:            retryTask,
+		queueWriteFailed:     queueWriteFailed,
+		originalTaskID:       originalTaskID,
+		abortByMaxRepair:     abortByMaxRepair,
+		taskRunOnIntegration: tq.Tasks[taskIdx].RunOnIntegration,
 	}, nil
 }
 

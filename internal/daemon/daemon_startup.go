@@ -207,6 +207,12 @@ func (d *Daemon) initComponents() {
 		// worktree, or project root for RunOnMain) instead of the daemon's
 		// CWD. Without this, verify would not see worker uncommitted changes.
 		d.api.result.SetVerifyWorkdirResolver(newWorktreeVerifyWorkdirResolver(d.worktreeManager, d.maestroDir))
+		// Wire the post-completion AutoRecover hook so that successful
+		// merge_conflict / publish_conflict resolution tasks immediately
+		// drive ResumeMerge / RetryPublish without the Planner agent
+		// having to issue a separate CLI op. Worktree-disabled runs skip
+		// this on purpose: there is no integration branch to advance.
+		d.api.result.SetWorktreeManager(d.worktreeManager)
 		d.log(LogLevelInfo, "worktree isolation enabled base_branch=%s", d.config.Worktree.EffectiveBaseBranch())
 		// NOTE: Reconcile() is intentionally deferred to startRuntime() so it
 		// runs after the UDS server starts listening. Reconcile may spawn git
@@ -267,6 +273,9 @@ func (d *Daemon) initComponents() {
 	// Review coordinator: groups dispatcher + usefulness tracker.
 	// Initialized after eventBus and other dependencies are ready.
 	d.reviewCoord = newReviewCoordinator(d.config.Review, d.maestroDir, d.log)
+	if d.reviewCoord.Enabled() && d.worktreeManager != nil {
+		d.reviewCoord.SetWorktreeManager(d.worktreeManager)
+	}
 
 	// Wire API handler dependencies that require initComponents artifacts.
 	d.api.shared.SetFileLockHolder(d.handler)

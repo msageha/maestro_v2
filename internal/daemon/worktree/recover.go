@@ -266,7 +266,9 @@ func (wm *Manager) ResumeMerge(ctx context.Context, commandID string) error {
 		// preMergeHEAD..branch log) or a failed commitResolvedWorkerChanges
 		// would still flip integration to Merged while the resolution content
 		// never reached the branch — the operator then sees integration state
-		// say "merged" while the branch diff is empty (2026-04 audit Bug 2).
+		// say "merged" while the branch diff is empty.
+		// Regression coverage: TestResumeMerge_ContentMismatchDoesNotPromoteToMerged
+		// in merge_conflict_test.go.
 		if contentOK, badWorkers := wm.verifyWorkersMerged(ctx, commandID, state); contentOK {
 			// All workers are now integrated and merged — transition through merging to merged.
 			if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusMerging, now); tErr == nil {
@@ -458,8 +460,7 @@ func (wm *Manager) tryMergeWorker(ctx context.Context, integrationPath string, w
 	// branch still holds pre-resolution content and mergeResolvedWorker's
 	// "already merged" early-return would flip the worker to Integrated
 	// without propagating the real resolution. Keep the worker in Conflict so
-	// the operator can inspect rather than silently promoting the branch
-	// (2026-04 audit Bug 2).
+	// the operator can inspect rather than silently promoting the branch.
 	if commitErr := wm.commitResolvedWorkerChanges(ws, commandID); commitErr != nil {
 		wm.Log(core.LogLevelWarn, "resume_merge_commit_resolved command=%s worker=%s error=%v (reverting to conflict, skipping merge attempt)",
 			commandID, ws.WorkerID, commitErr)
@@ -741,6 +742,172 @@ func (wm *Manager) AutoRecover(ctx context.Context, commandID string) (AutoRecov
 	default:
 		return AutoRecoverNone, nil
 	}
+}
+
+// AutoRecoverAfterResolution is the event-driven sibling of AutoRecover,
+// invoked when a worker has just reported successful completion of a
+// conflict-resolution task. Compared to AutoRecover this entry point:
+//
+//  1. is scoped by reporterWorkerID — ResumeMerge fires only when *that*
+//     worker is currently in WorktreeStatusResolving, so an unrelated
+//     completion cannot advance an in-flight resolver against the wrong
+//     worker's branch
+//  2. bypasses the publish backoff for IntegrationStatusPublishFailed —
+//     the worker's completion is itself a fresh "the previous blocker is
+//     addressed" signal, while NextPublishRetryAt exists only to throttle
+//     scan-driven retries
+//  3. requires taskRunOnIntegration==true to fire the publish path —
+//     only publish_conflict resolution tasks are dispatched on the
+//     integration worktree (see internal/daemon/dispatch/dispatcher.go), so
+//     other completions cannot accidentally trigger RetryPublish
+//
+// This closes the conflict / publish_conflict recovery loop without depending
+// on the Planner agent to call resume-merge or retry-publish explicitly. It
+// is intentionally narrow: callers MUST only invoke it when the task's
+// terminal status is `completed` (after VerifyRunner has run, when verify is
+// required) and MUST NOT invoke it on duplicate result_write submissions.
+//
+// Returns AutoRecoverNone with a nil error when no recovery applies.
+// Idempotent: ErrAlreadyResolved is swallowed.
+func (wm *Manager) AutoRecoverAfterResolution(
+	ctx context.Context,
+	commandID, reporterWorkerID string,
+	taskRunOnIntegration bool,
+) (AutoRecoverAction, error) {
+	if err := validateIDs(commandID); err != nil {
+		return AutoRecoverNone, err
+	}
+	if err := validate.ID(reporterWorkerID); err != nil {
+		return AutoRecoverNone, fmt.Errorf("invalid reporterWorkerID: %w", err)
+	}
+
+	state, err := wm.GetCommandState(commandID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return AutoRecoverNone, ErrNoWorktreeState
+		}
+		return AutoRecoverNone, fmt.Errorf("load state: %w", err)
+	}
+
+	// Publish-side recovery has priority: a publish_conflict resolution task
+	// is dispatched on the integration worktree (taskRunOnIntegration), and
+	// the worker status is *not* flipped to resolving for publish_conflict
+	// (only merge_conflict R7 does that). The taskRunOnIntegration +
+	// publish_failed + non-empty PublishConflictFiles triple is what
+	// distinguishes a publish_conflict completion from any other completion
+	// reported on the integration worktree.
+	if taskRunOnIntegration &&
+		state.Integration.Status == model.IntegrationStatusPublishFailed &&
+		len(state.Integration.PublishConflictFiles) > 0 {
+		// Bypass NextPublishRetryAt: a worker completion is an explicit
+		// event-driven trigger; the backoff exists to throttle scan-driven
+		// retries, not to delay event-driven resolution.
+		if err := wm.RetryPublish(commandID); err != nil {
+			if errors.Is(err, ErrAlreadyResolved) {
+				return AutoRecoverNone, nil
+			}
+			return AutoRecoverRetryPublish, err
+		}
+		return AutoRecoverRetryPublish, nil
+	}
+
+	// Merge-side recovery: the reporter worker must currently be in
+	// WorktreeStatusResolving. This is the contract that R7 enforces when it
+	// dispatches a merge_conflict resolution task — the worker is flipped
+	// from conflict to resolving before the task is sent. A resolving worker
+	// reporting completion is the exact event that should re-attempt the
+	// merge.
+	reporterResolving := false
+	for i := range state.Workers {
+		ws := &state.Workers[i]
+		if ws.WorkerID == reporterWorkerID && ws.Status == model.WorktreeStatusResolving {
+			reporterResolving = true
+			break
+		}
+	}
+	if !reporterResolving {
+		return AutoRecoverNone, nil
+	}
+	switch state.Integration.Status {
+	case model.IntegrationStatusConflict,
+		model.IntegrationStatusPartialMerge,
+		model.IntegrationStatusFailed:
+		// recoverable: ResumeMerge will commit the worker's edits via
+		// commitResolvedWorkerChanges and re-attempt the integration merge.
+	default:
+		// merged / publishing / published / quarantined / created / merging:
+		// no merge recovery applies, even if the reporter is resolving.
+		return AutoRecoverNone, nil
+	}
+	if err := wm.ResumeMerge(ctx, commandID); err != nil {
+		if errors.Is(err, ErrAlreadyResolved) {
+			return AutoRecoverNone, nil
+		}
+		return AutoRecoverResumeMerge, err
+	}
+	return AutoRecoverResumeMerge, nil
+}
+
+// ResetResolvingWorkerToConflict transitions a single worker from
+// WorktreeStatusResolving back to WorktreeStatusConflict, but only when it is
+// currently resolving. It is the fast cleanup path for the case where a
+// merge_conflict resolution task fails: without this, the worker stays in
+// resolving until R7's resolvingStallTimeout sweep (~20 minutes), blocking
+// all forward progress on the command.
+//
+// Caller contract: invoke this only when the reporter worker has reported a
+// non-completed result (failed / verify_failed / etc.) for what *was*
+// dispatched as a merge_conflict resolution task — i.e. the worker was in
+// resolving status at dispatch time. Calling this for unrelated tasks is
+// harmless because the worker will not be in resolving status (the no-op
+// branch returns nil), but the caller should still gate on the failure
+// status to avoid pointless state file IO.
+//
+// Idempotent: returns nil when the worker is not in resolving status or does
+// not exist in the state file. Returns ErrNoWorktreeState when the command
+// has no worktree state at all (already torn down).
+func (wm *Manager) ResetResolvingWorkerToConflict(commandID, workerID string) error {
+	if err := validateIDs(commandID); err != nil {
+		return err
+	}
+	if err := validate.ID(workerID); err != nil {
+		return fmt.Errorf("invalid workerID: %w", err)
+	}
+	wm.mu.Lock()
+	defer wm.mu.Unlock()
+
+	state, err := wm.loadState(commandID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return ErrNoWorktreeState
+		}
+		return fmt.Errorf("load state: %w", err)
+	}
+
+	now := wm.clock.Now().UTC().Format(time.RFC3339)
+	mutated := false
+	for i := range state.Workers {
+		ws := &state.Workers[i]
+		if ws.WorkerID != workerID {
+			continue
+		}
+		if ws.Status != model.WorktreeStatusResolving {
+			return nil // not resolving — idempotent no-op
+		}
+		ws.Status = model.WorktreeStatusConflict
+		ws.UpdatedAt = now
+		mutated = true
+		break
+	}
+	if !mutated {
+		return nil
+	}
+	state.UpdatedAt = now
+	if err := wm.saveState(commandID, state); err != nil {
+		return fmt.Errorf("save state: %w", err)
+	}
+	wm.Log(core.LogLevelInfo, "resolving_worker_reset_to_conflict command=%s worker=%s", commandID, workerID)
+	return nil
 }
 
 // selectAutoRecoverAction returns the recovery path that applies to the given

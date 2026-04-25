@@ -12,9 +12,19 @@ import (
 )
 
 // handleBestEffortWrites performs lease-epoch-guarded best-effort writes for
-// learnings, skill candidates, and review dispatch. Returns a rejection ID if
-// learnings/skill_candidates were dropped due to lease revocation.
-func (h *ResultWriteAPI) handleBestEffortWrites(params ResultWriteParams, resultID string, resultStatus model.Status) string {
+// learnings, skill candidates, and advisory review dispatch. Returns a
+// rejection ID if learnings/skill_candidates were dropped due to lease
+// revocation.
+//
+// finalStatus is the post-Verify task status (or the worker-reported status
+// when no Verify pass ran). The advisory review dispatch must gate on the
+// final status so that a Verify-failed task — which gets parked at
+// repair_pending — does not produce a review on unverified diff. Best-effort
+// learnings and skill_candidates writes are still keyed off
+// `bestEffortAllowed` (lease epoch guard) and not the status, because those
+// payloads are worker self-reports that should be preserved even if Verify
+// later overrules the worker's "completed" claim.
+func (h *ResultWriteAPI) handleBestEffortWrites(params ResultWriteParams, resultID string, finalStatus model.Status) string {
 	bestEffortAllowed := true
 	var rejectionID string
 
@@ -67,8 +77,12 @@ func (h *ResultWriteAPI) handleBestEffortWrites(params ResultWriteParams, result
 		}
 	}
 
-	// Advisory review dispatch: non-blocking, best-effort.
-	if rc := h.reviewCoord(); resultStatus == model.StatusCompleted && rc != nil && rc.Enabled() {
+	// Advisory review dispatch: non-blocking, best-effort. Gates on
+	// finalStatus (post-Verify) so a Verify-failed task does not fan out a
+	// review on an unverified diff — the worker may have reported
+	// "completed", but the VerifyRunner will have moved the task to
+	// repair_pending in that case.
+	if rc := h.reviewCoord(); finalStatus == model.StatusCompleted && rc != nil && rc.Enabled() {
 		rc.DispatchIfEligible(h.ctx(), params)
 	}
 

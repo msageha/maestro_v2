@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/worktree"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
@@ -89,6 +90,12 @@ type ResultWriteAPI struct {
 	// which preserves legacy test behaviour but is unsafe in production
 	// because verify would run against main rather than the worker worktree.
 	verifyWorkdirResolver VerifyWorkdirResolver
+	// worktreeManager drives the post-completion AutoRecover hook that
+	// closes the merge_conflict / publish_conflict recovery loop without
+	// depending on the Planner agent to call resume-merge / retry-publish
+	// explicitly. nil disables the hook (legacy tests + worktree-disabled
+	// runs); production startup wires this via SetWorktreeManager.
+	worktreeManager *WorktreeManager
 }
 
 // SetVerifyRunner overrides the VerifyRunner used by this handler. Intended
@@ -109,6 +116,91 @@ func (h *ResultWriteAPI) SetVerifyRunner(r VerifyRunner) {
 // FixedVerifyRunner / recordingVerifyRunner do not need to wire this.
 func (h *ResultWriteAPI) SetVerifyWorkdirResolver(r VerifyWorkdirResolver) {
 	h.verifyWorkdirResolver = r
+}
+
+// SetWorktreeManager wires the WorktreeManager used by the post-completion
+// AutoRecover hook (see maybeAutoRecoverAfterResolution). Production startup
+// passes the same Manager that owns the worktree state files; tests that do
+// not exercise the recovery loop may leave this nil to disable the hook.
+func (h *ResultWriteAPI) SetWorktreeManager(wm *WorktreeManager) {
+	h.worktreeManager = wm
+}
+
+// maybeAutoRecoverAfterResolution closes the conflict / publish_conflict
+// recovery loop autonomously by invoking AutoRecoverAfterResolution after a
+// fresh result_write whose terminal status is `completed`, or by resetting a
+// stuck `resolving` worker after a `failed` result so R7's 20-minute stall
+// sweep is not the only path back to forward progress.
+//
+// Caller contract:
+//
+//   - duplicate / nil-WM paths must be filtered before calling this; the
+//     handler-side gate keeps the helper itself purely concerned with the
+//     state-machine shape.
+//   - resultStatus is the worker-reported status (StatusCompleted /
+//     StatusFailed); finalStatus is the terminal task status after
+//     classifyVerifyOutcome has run (so verify-failed tasks land here as
+//     StatusRepairPending, not StatusCompleted, and are skipped).
+//   - taskRunOnIntegration is the queue task's RunOnIntegration flag,
+//     propagated from Phase A. Worktree.Manager.AutoRecoverAfterResolution
+//     uses it to disambiguate publish_conflict from merge_conflict
+//     completions.
+//
+// All errors are logged at warn level and swallowed: a failed AutoRecover
+// must never fail the result_write itself, since the result is already
+// committed and propagating the error would mislead the caller into
+// thinking their report was rejected.
+func (h *ResultWriteAPI) maybeAutoRecoverAfterResolution(
+	params ResultWriteParams,
+	resultStatus, finalStatus model.Status,
+	taskRunOnIntegration bool,
+) {
+	if h.worktreeManager == nil {
+		return
+	}
+
+	switch {
+	case finalStatus == model.StatusCompleted:
+		// Successful completion (verify pass when verify ran, or worker
+		// success when verify did not run). Try the recovery dispatch.
+		action, err := h.worktreeManager.AutoRecoverAfterResolution(
+			h.ctx(), params.CommandID, params.Reporter, taskRunOnIntegration)
+		if err != nil {
+			// AutoRecoverAfterResolution swallows ErrAlreadyResolved and
+			// returns AutoRecoverNone; anything else here is a real
+			// recovery failure (e.g. ResumeMerge git op error). Log loud
+			// enough that operators see it, but do not fail the
+			// result_write — R7 (and the next AutoRecover) can still
+			// retry.
+			h.logFn(LogLevelWarn,
+				"auto_recover_after_resolution_failed command=%s reporter=%s task=%s action=%s error=%v "+
+					"(result already committed; reconcile/scan will retry)",
+				params.CommandID, params.Reporter, params.TaskID, action, err)
+			return
+		}
+		if action != worktree.AutoRecoverNone {
+			h.logFn(LogLevelInfo,
+				"auto_recover_after_resolution command=%s reporter=%s task=%s action=%s",
+				params.CommandID, params.Reporter, params.TaskID, action)
+		}
+
+	case resultStatus == model.StatusFailed:
+		// Worker reported failure on what may have been a merge_conflict
+		// resolution task. Without a hint here the worker stays in
+		// resolving until R7's resolvingStallTimeout (~20 minutes) sweeps
+		// it back to conflict, blocking command progress for the entire
+		// interval. ResetResolvingWorkerToConflict is idempotent and
+		// no-ops when the worker is not actually in resolving status, so
+		// it is safe to call regardless of whether the failed task was
+		// genuinely a conflict resolution task.
+		if err := h.worktreeManager.ResetResolvingWorkerToConflict(
+			params.CommandID, params.Reporter); err != nil {
+			h.logFn(LogLevelWarn,
+				"reset_resolving_worker_failed command=%s worker=%s error=%v "+
+					"(R7 will sweep within resolvingStallTimeout)",
+				params.CommandID, params.Reporter, err)
+		}
+	}
 }
 
 // resolveVerifyRunner returns the configured runner, or a fail-closed runner
@@ -286,6 +378,14 @@ func (h *ResultWriteAPI) handleResultWrite(req *uds.Request) *uds.Response {
 		h.handleRetryRegistration(resultWritePhaseAResult, params)
 	}
 
+	// finalStatus tracks the terminal task status after VerifyRunner has had a
+	// chance to overrule the worker-reported status. For non-verify paths it
+	// is the worker-reported resultStatus; for verify paths it is the
+	// classifyVerifyOutcome result. The post-completion AutoRecover hook
+	// (below) reads finalStatus so it cannot fire for a verify-failed task
+	// (which would otherwise commit unverified resolution edits).
+	finalStatus := resultStatus
+
 	// §S1-1 Verification Runner second pass. Runs outside the Phase B state
 	// lock so the runner does not block concurrent writers; if it fails or
 	// the task has moved on, applyVerifyOutcome logs and leaves the task at
@@ -306,13 +406,26 @@ func (h *ResultWriteAPI) handleResultWrite(req *uds.Request) *uds.Response {
 					"(task remains at verify_pending; reconcile/operator can re-drive)",
 				params.TaskID, params.CommandID, nextStatus, reason, applyErr)
 		}
+		finalStatus = nextStatus
+	}
+
+	// Post-completion auto-recovery hook. Closes the conflict / publish_conflict
+	// recovery loop without depending on the Planner agent to call resume-merge
+	// or retry-publish explicitly. Gates ensure this never fires on a duplicate
+	// resubmission, never fires on a verify-failed task (would commit
+	// unverified resolution edits), and never fires when worktree mode is off.
+	if !isDuplicate {
+		h.maybeAutoRecoverAfterResolution(params, resultStatus, finalStatus,
+			resultWritePhaseAResult.taskRunOnIntegration)
 	}
 
 	// Best-effort writes (learnings, skill candidates) with lease epoch guard.
 	// Runs on both fresh and duplicate paths so that the lease rejection audit
 	// trail (H4) is preserved when a stale worker resubmits with new
-	// best-effort payload.
-	rejectionID := h.handleBestEffortWrites(params, resultID, resultStatus)
+	// best-effort payload. We pass finalStatus rather than the worker-reported
+	// resultStatus so that the advisory review gate inside the helper sees the
+	// post-Verify outcome — Verify-failed tasks must not trigger a review.
+	rejectionID := h.handleBestEffortWrites(params, resultID, finalStatus)
 
 	// Set agent status to idle now that the task result is committed.
 	// Best-effort: failure to update tmux status must not fail the result write.

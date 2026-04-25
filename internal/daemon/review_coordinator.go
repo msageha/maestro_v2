@@ -24,6 +24,12 @@ type ReviewCoordinator struct {
 	mu         sync.Mutex
 	maestroDir string
 	log        logFunc
+	// worktreeManager produces the unified diff sent to the reviewer. nil
+	// means worktree mode is disabled or no manager has been wired (legacy
+	// tests); in that case the dispatcher falls back to a synthetic
+	// summary+files payload, which is degraded but lets the pipeline keep
+	// flowing for non-worktree configurations.
+	worktreeManager *WorktreeManager
 }
 
 // newReviewCoordinator creates a ReviewCoordinator when review is enabled.
@@ -59,6 +65,18 @@ func newReviewCoordinator(cfg model.ReviewConfig, maestroDir string, log logFunc
 // Enabled reports whether the coordinator is initialized and reviews are active.
 func (rc *ReviewCoordinator) Enabled() bool {
 	return rc != nil && rc.dispatcher != nil
+}
+
+// SetWorktreeManager wires the WorktreeManager used to compute the unified
+// diff for review dispatch. Production startup injects the same Manager that
+// owns worktree state files; tests that do not exercise worktree-backed
+// review may leave this nil, which forces the legacy summary+files fallback
+// payload.
+func (rc *ReviewCoordinator) SetWorktreeManager(wm *WorktreeManager) {
+	if rc == nil {
+		return
+	}
+	rc.worktreeManager = wm
 }
 
 // MonitorResults drains the dispatcher's results channel and records each
@@ -133,13 +151,7 @@ func (rc *ReviewCoordinator) DispatchIfEligible(ctx context.Context, params Resu
 		return
 	}
 
-	var sb strings.Builder
-	sb.WriteString(params.Summary)
-	if len(params.FilesChanged) > 0 {
-		sb.WriteString("\n\nFiles changed: ")
-		sb.WriteString(strings.Join(params.FilesChanged, ", "))
-	}
-	diffContent := sb.String()
+	diffContent := rc.buildDiffContent(params)
 
 	rc.registerRequest(params.TaskID, reviewTaskInfo{
 		taskID:    params.TaskID,
@@ -154,6 +166,39 @@ func (rc *ReviewCoordinator) DispatchIfEligible(ctx context.Context, params Resu
 
 	rc.log(LogLevelInfo, "review_dispatched task=%s command=%s bloom_level=%d",
 		params.TaskID, params.CommandID, task.BloomLevel)
+}
+
+// buildDiffContent produces the diff payload sent to the advisory reviewer.
+// Prefers a real `git diff <merge-base>` against the integration branch
+// (computed via WorktreeManager.ComputeWorkerDiff) so that the reviewer's
+// system prompt — which expects a unified diff — receives input matching its
+// contract.
+//
+// Falls back to a synthetic "summary + files changed" payload when:
+//   - no WorktreeManager is wired (legacy tests / worktree-disabled configs),
+//   - the command has no worktree state yet,
+//   - or git diff computation fails. In each case, the dispatcher receives
+//     degraded but non-empty input rather than blocking the review pipeline.
+func (rc *ReviewCoordinator) buildDiffContent(params ResultWriteParams) string {
+	if rc.worktreeManager != nil {
+		diff, err := rc.worktreeManager.ComputeWorkerDiff(params.CommandID, params.Reporter)
+		if err != nil {
+			rc.log(LogLevelWarn,
+				"review_diff_compute_failed task=%s command=%s reporter=%s error=%v "+
+					"(falling back to summary payload)",
+				params.TaskID, params.CommandID, params.Reporter, err)
+		} else if diff != "" {
+			return diff
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString(params.Summary)
+	if len(params.FilesChanged) > 0 {
+		sb.WriteString("\n\nFiles changed: ")
+		sb.WriteString(strings.Join(params.FilesChanged, ", "))
+	}
+	return sb.String()
 }
 
 // popRequest atomically removes and returns the request info for taskID.
