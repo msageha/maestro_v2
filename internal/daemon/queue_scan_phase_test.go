@@ -1442,10 +1442,12 @@ func TestPeriodicScanPhaseC_ConflictDispatchSucceedsOnFirstCycle(t *testing.T) {
 }
 
 // TestPeriodicScanPhaseC_PublishCompletedSignal verifies that a successful
-// worktree publish emits a publish_completed signal to the Planner so it can
-// call `plan complete` to finalise the command. This is the fix for the
-// "sealed stuck" bug where, after conflict recovery, the daemon published
-// successfully but never notified the Planner.
+// worktree publish emits an *informational* publish_completed signal to the
+// Planner. The signal itself does not instruct `plan complete` (Bug B
+// double-fire fix): the Planner is the sole caller of `plan complete` via
+// its envelope instruction, and the daemon's deferredPlanCompleter
+// auto-finalises any deferred intent after publish succeeds. The signal
+// remains useful as a post-publish trigger for `--run-on-main` verification.
 func TestPeriodicScanPhaseC_PublishCompletedSignal(t *testing.T) {
 	t.Parallel()
 	maestroDir := setupScanPhaseTestDir(t)
@@ -1481,8 +1483,13 @@ func TestPeriodicScanPhaseC_PublishCompletedSignal(t *testing.T) {
 	if !strings.Contains(found.Message, "command_id:"+commandID) {
 		t.Errorf("Message missing command_id: %q", found.Message)
 	}
-	if !strings.Contains(found.Message, "plan complete") {
-		t.Errorf("Message should instruct Planner to call plan complete: %q", found.Message)
+	// Informational signal must confirm publish success but must NOT direct
+	// the Planner to call `plan complete` (double-fire guard).
+	if !strings.Contains(found.Message, "successfully published") {
+		t.Errorf("Message should confirm publish success: %q", found.Message)
+	}
+	if strings.Contains(found.Message, "Call `maestro plan complete` to finalise") {
+		t.Errorf("Message must not instruct Planner to call plan complete (Bug B regression): %q", found.Message)
 	}
 }
 
@@ -1990,6 +1997,74 @@ func TestApplyMergeResultSignals_MarksMergedWhenIntegrationMerged(t *testing.T) 
 	if _, merged := state.MergedPhases["p1"]; !merged {
 		t.Errorf("phase p1 should be marked merged when integration status=merged, got MergedPhases=%v",
 			state.MergedPhases)
+	}
+}
+
+// TestApplyMergeResultSignals_MarksMergedOnNoOpMergeWhenCreated verifies the
+// rerun2 regression: a phase whose tasks produce no code edits (e.g. a
+// research-only foundation phase) triggers a merge attempt that reports
+// `no_commits_to_merge`. `determineMergeOutcome` reverts Integration.Status
+// from Merging back to its pre-merge value (Created, for the first phase).
+// Before the fix, applyMergeResultSignals bailed out because
+// Integration.Status != Merged, leaving the phase OUT of MergedPhases and
+// causing the merge collector to re-emit a fresh merge item on every
+// subsequent scan. That retry loop eventually landed during the next phase's
+// in-flight worker edit window and silently absorbed the later phase's dirty
+// changes into the earlier phase's integration commit — exactly the
+// `_integration has only alpha` corruption observed in production.
+func TestApplyMergeResultSignals_MarksMergedOnNoOpMergeWhenCreated(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+
+	// Simulate post-no-op-merge state: integration reverted to Created because
+	// the phase had nothing to merge. No workers in Conflict/Resolving.
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusCreated)
+
+	merges := []worktreeMergeResult{{
+		Item: worktreeMergeItem{CommandID: "cmd1", PhaseID: "foundation"},
+	}}
+	sq := &model.PlannerSignalQueue{SchemaVersion: 1, FileType: "planner_signal_queue"}
+	dirty := false
+	idx := buildSignalIndex(sq.Signals)
+
+	qh.applyMergeResultSignals(merges, sq, &dirty, idx, "2026-04-25T00:00:00Z")
+
+	state, err := qh.worktreeManager.GetCommandState("cmd1")
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	if _, merged := state.MergedPhases["foundation"]; !merged {
+		t.Errorf("phase foundation must be recorded as merged on no-op merge with integration status=created; MergedPhases=%v", state.MergedPhases)
+	}
+}
+
+// TestApplyMergeResultSignals_DefersOnConflictStatus verifies the new
+// status-allowlist gate still defers when the integration is in Conflict (or
+// PartialMerge / Failed). A no-conflict no-op merge result on top of a broken
+// integration must NOT retroactively mark the phase merged.
+func TestApplyMergeResultSignals_DefersOnConflictStatus(t *testing.T) {
+	t.Parallel()
+	maestroDir := setupScanPhaseTestDir(t)
+	qh := newScanPhaseTestQueueHandler(t, maestroDir, model.WorktreeConfig{Enabled: true})
+
+	writeWorktreeState(t, maestroDir, "cmd1", model.IntegrationStatusConflict)
+
+	merges := []worktreeMergeResult{{
+		Item: worktreeMergeItem{CommandID: "cmd1", PhaseID: "p1"},
+	}}
+	sq := &model.PlannerSignalQueue{SchemaVersion: 1, FileType: "planner_signal_queue"}
+	dirty := false
+	idx := buildSignalIndex(sq.Signals)
+
+	qh.applyMergeResultSignals(merges, sq, &dirty, idx, "2026-04-25T00:00:00Z")
+
+	state, err := qh.worktreeManager.GetCommandState("cmd1")
+	if err != nil {
+		t.Fatalf("GetCommandState: %v", err)
+	}
+	if _, merged := state.MergedPhases["p1"]; merged {
+		t.Errorf("phase p1 must NOT be marked merged while integration status=conflict; MergedPhases=%v", state.MergedPhases)
 	}
 }
 

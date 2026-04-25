@@ -229,35 +229,69 @@ func (qh *QueueHandler) applyMergeResultSignals(
 			}, signalIndex)
 		}
 		if mr.Error == nil && len(mr.Conflicts) == 0 && len(mr.CommitFailures) == 0 && qh.worktreeManager != nil {
-			// Additional gate: only mark the phase as merged if the integration
-			// branch has actually reached IntegrationStatusMerged. When the
-			// first merge attempt produces a conflict and the Planner later
-			// re-triggers collection, a subsequent MergeToIntegration pass sees
-			// worker1 already integrated (counted as merged) and worker2 in
-			// conflict/resolving (counted as conflictSkipped). That produces
-			// no NEW conflicts and no commit failures, so the pre-gate
-			// conditions above are satisfied — but the integration status
-			// remains PartialMerge because worker2 has not been re-merged yet.
-			// Without this gate, MarkPhaseMerged would record the phase as
-			// fully merged while a conflict worker is still pending resolution,
-			// causing the phase transition gate (isPhaseMergeRecorded) to allow
-			// PhaseStatusCompleted and let downstream phases (e.g. verification)
-			// run against an incomplete integration branch.
+			// Gate: decide whether this phase-merge attempt is safe to record
+			// in MergedPhases. Two acceptable outcomes:
+			//
+			//   1. Integration reached IntegrationStatusMerged — the phase
+			//      contributed new commits and the merge was fully successful.
+			//
+			//   2. Integration status did NOT reach Merged but there is also
+			//      no worker in Conflict/Resolving. This is the "no-op merge"
+			//      case: the phase had no uncommitted worker changes (e.g. a
+			//      research-only phase whose tasks produced no code edits),
+			//      so `determineMergeOutcome` reverted `state.Integration.Status`
+			//      to its pre-merge value. Without case 2, an empty phase
+			//      would stay in MergedPhases=absent forever and the merge
+			//      collector would re-emit a merge item on every scan. That
+			//      retry loop is directly responsible for the production
+			//      regression where a foundation-only phase's re-attempted
+			//      merge eventually landed during the *next* phase's
+			//      in-flight worker edit window and silently absorbed the
+			//      newer phase's dirty changes, corrupting the foundation
+			//      commit and leaving the later phase with
+			//      `no_commits_to_merge` forever.
+			//
+			// We still defer when a worker is in Conflict/Resolving: those
+			// are owned by the resume-merge pipeline and MarkPhaseMerged
+			// must wait until the resolution pipeline has re-merged them.
 			cmdState, stateErr := qh.worktreeManager.GetCommandState(mr.Item.CommandID)
 			if stateErr != nil {
 				qh.log(LogLevelWarn, "mark_phase_merged_state_check_failed command=%s phase=%s error=%v",
 					mr.Item.CommandID, mr.Item.PhaseID, stateErr)
 				continue
 			}
-			if cmdState == nil || cmdState.Integration.Status != model.IntegrationStatusMerged {
-				status := "<nil>"
-				if cmdState != nil {
-					status = string(cmdState.Integration.Status)
-				}
+			if cmdState == nil {
 				qh.log(LogLevelDebug,
-					"mark_phase_merged_deferred command=%s phase=%s integration_status=%s reason=not_fully_merged",
+					"mark_phase_merged_deferred command=%s phase=%s reason=state_nil",
+					mr.Item.CommandID, mr.Item.PhaseID)
+				continue
+			}
+			status := cmdState.Integration.Status
+			// Only two statuses are safe to mark-as-merged:
+			//   - Merged: this phase merge attempt produced new commits
+			//     successfully, or a previous phase had already merged and this
+			//     phase was a no-op on top of it (determineMergeOutcome reverts
+			//     to preMergeStatus on no-op; preMergeStatus=Merged when a
+			//     prior phase has already merged).
+			//   - Created: this is the first merge attempt for the command and
+			//     it produced no commits to merge (no-op on a research-only
+			//     phase whose tasks had no edits). preMergeStatus=Created.
+			//
+			// Any other status (PartialMerge, Conflict, Failed, Quarantined,
+			// etc.) means the integration is NOT in a state where marking the
+			// phase merged is safe: a conflict/failure must be resolved first.
+			// Defer so the phase transition gate (isPhaseMergeRecorded) keeps
+			// blocking downstream phases until the integration catches up.
+			if status != model.IntegrationStatusMerged && status != model.IntegrationStatusCreated {
+				qh.log(LogLevelDebug,
+					"mark_phase_merged_deferred command=%s phase=%s integration_status=%s reason=status_not_markable",
 					mr.Item.CommandID, mr.Item.PhaseID, status)
 				continue
+			}
+			if status == model.IntegrationStatusCreated {
+				qh.log(LogLevelInfo,
+					"mark_phase_merged_no_op command=%s phase=%s integration_status=%s reason=nothing_to_merge",
+					mr.Item.CommandID, mr.Item.PhaseID, status)
 			}
 			if err := qh.worktreeManager.MarkPhaseMerged(mr.Item.CommandID, mr.Item.PhaseID); err != nil {
 				qh.log(LogLevelWarn, "mark_phase_merged_failed command=%s phase=%s error=%v",
@@ -338,15 +372,27 @@ func (qh *QueueHandler) applyPublishResultSignals(
 					pr.Item.CommandID)
 				continue
 			}
-			// Notify Planner so it can call `plan complete` now that the
-			// integration branch is published. Without this signal the
-			// command stays at plan_status:sealed when publish happens
-			// after the Planner's initial complete attempt (e.g. conflict
-			// recovery path where publish is deferred until after
-			// resume-merge succeeds).
+			// Informational notification: publish has succeeded. This signal
+			// does NOT instruct the Planner to call `plan complete` because
+			// Bug B (double-fire) showed that doing so caused a redundant
+			// second invocation whenever the Planner had also followed its
+			// envelope instruction to call plan complete on task completion.
+			//
+			// Responsibility split:
+			//   - `plan complete` is the Planner's responsibility (envelope
+			//     + planner.md instruct it after all tasks complete).
+			//   - If the Planner called plan complete before publish finished,
+			//     it received `deferred_publish` and `deferredPlanCompleter`
+			//     above auto-finalises the deferred intent.
+			//   - This signal only informs the Planner that publish succeeded
+			//     (useful for post-publish verification like `--run-on-main`).
 			msg := fmt.Sprintf("[maestro] kind:publish_completed command_id:%s\n"+
 				"The integration branch has been successfully published to the base branch. "+
-				"Call `maestro plan complete` to finalise the command.",
+				"This is an informational notice — no action required in the default case. "+
+				"If a prior `maestro plan complete` returned `deferred_publish`, the daemon "+
+				"has already finalised it automatically. Do NOT add `--run-on-main` "+
+				"verification tasks by default (Bug C); only add them when the command's "+
+				"original content explicitly requires post-publish verification on main.",
 				pr.Item.CommandID)
 			qh.upsertPlannerSignal(signalQueue, signalsDirty, model.PlannerSignal{
 				Kind:      "publish_completed",
