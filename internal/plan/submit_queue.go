@@ -29,7 +29,8 @@ func acquireFlock(lockPath string, lockType int) (*os.File, error) {
 	if err := os.MkdirAll(dir, 0755); err != nil { //nolint:gosec // 0755 is appropriate for a locks directory
 		return nil, fmt.Errorf("create lock dir: %w", err)
 	}
-	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
+	// lockPath is provided by callers from a controlled application directory.
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600) //nolint:gosec // controlled path
 	if err != nil {
 		return nil, fmt.Errorf("open flock %s: %w", lockPath, err)
 	}

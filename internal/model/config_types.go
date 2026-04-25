@@ -21,9 +21,12 @@ type LimitsConfig struct {
 	MaxQuarantineFiles        *int `yaml:"max_quarantine_files"`
 }
 
+// EffectiveMaxDeadLetterArchiveFiles returns MaxDeadLetterArchiveFiles, or DefaultMaxDeadLetterArchiveFiles when unset.
 func (l LimitsConfig) EffectiveMaxDeadLetterArchiveFiles() int {
 	return effectiveValue(l.MaxDeadLetterArchiveFiles, DefaultMaxDeadLetterArchiveFiles)
 }
+
+// EffectiveMaxQuarantineFiles returns MaxQuarantineFiles, or DefaultMaxQuarantineFiles when unset.
 func (l LimitsConfig) EffectiveMaxQuarantineFiles() int {
 	return effectiveValue(l.MaxQuarantineFiles, DefaultMaxQuarantineFiles)
 }
@@ -65,9 +68,12 @@ type CircuitBreakerConfig struct {
 	HalfOpenDelaySec       *int `yaml:"half_open_delay_sec"`      // default: 60, delay before open→half-open transition
 }
 
+// EffectiveMaxConsecutiveFailures returns MaxConsecutiveFailures, or DefaultCBMaxConsecutiveFailures when unset.
 func (c CircuitBreakerConfig) EffectiveMaxConsecutiveFailures() int {
 	return effectiveValue(c.MaxConsecutiveFailures, DefaultCBMaxConsecutiveFailures)
 }
+
+// EffectiveProgressTimeoutMinutes returns ProgressTimeoutMinutes, or DefaultProgressTimeoutMinutes when unset.
 func (c CircuitBreakerConfig) EffectiveProgressTimeoutMinutes() int {
 	return effectiveValue(c.ProgressTimeoutMinutes, DefaultProgressTimeoutMinutes)
 }
@@ -88,12 +94,17 @@ type LearningsConfig struct {
 	TTLHours         int  `yaml:"ttl_hours"`          // learning expiry in hours, default: 72, 0=unlimited
 }
 
+// EffectiveMaxEntries returns MaxEntries, or DefaultLearningsMaxEntries when unset.
 func (l LearningsConfig) EffectiveMaxEntries() int {
 	return effectiveValue(l.MaxEntries, DefaultLearningsMaxEntries)
 }
+
+// EffectiveMaxContentLength returns MaxContentLength, or DefaultLearningsMaxContentLength when unset.
 func (l LearningsConfig) EffectiveMaxContentLength() int {
 	return effectiveValue(l.MaxContentLength, DefaultLearningsMaxContentLength)
 }
+
+// EffectiveInjectCount returns InjectCount, or DefaultLearningsInjectCount when unset.
 func (l LearningsConfig) EffectiveInjectCount() int {
 	return effectiveValue(l.InjectCount, DefaultLearningsInjectCount)
 }
@@ -111,12 +122,17 @@ type AdmissionControl struct {
 	MaxConcurrentRollout int `yaml:"max_concurrent_rollout"`
 }
 
+// EffectiveMaxConcurrentVerify returns MaxConcurrentVerify, or DefaultMaxConcurrentVerify when zero.
 func (a AdmissionControl) EffectiveMaxConcurrentVerify() int {
 	return effectiveNonZero(a.MaxConcurrentVerify, DefaultMaxConcurrentVerify)
 }
+
+// EffectiveMaxConcurrentRepair returns MaxConcurrentRepair, or DefaultMaxConcurrentRepair when zero.
 func (a AdmissionControl) EffectiveMaxConcurrentRepair() int {
 	return effectiveNonZero(a.MaxConcurrentRepair, DefaultMaxConcurrentRepair)
 }
+
+// EffectiveMaxConcurrentRollout returns MaxConcurrentRollout, or DefaultMaxConcurrentRollout when zero.
 func (a AdmissionControl) EffectiveMaxConcurrentRollout() int {
 	return effectiveNonZero(a.MaxConcurrentRollout, DefaultMaxConcurrentRollout)
 }
@@ -131,13 +147,20 @@ type Fallback struct {
 	MinHealthyDurationSec       int  `yaml:"min_healthy_duration_sec"`
 }
 
+// EffectiveEnabled returns the Enabled flag.
 func (f Fallback) EffectiveEnabled() bool { return f.Enabled }
+
+// EffectiveConsecutiveFailureThreshold returns ConsecutiveFailureThreshold, or DefaultConsecutiveFailureThreshold when zero.
 func (f Fallback) EffectiveConsecutiveFailureThreshold() int {
 	return effectiveNonZero(f.ConsecutiveFailureThreshold, DefaultConsecutiveFailureThreshold)
 }
+
+// EffectiveRecoveryCheckIntervalSec returns RecoveryCheckIntervalSec, or DefaultRecoveryCheckIntervalSec when zero.
 func (f Fallback) EffectiveRecoveryCheckIntervalSec() int {
 	return effectiveNonZero(f.RecoveryCheckIntervalSec, DefaultRecoveryCheckIntervalSec)
 }
+
+// EffectiveMinHealthyDurationSec returns MinHealthyDurationSec, or DefaultMinHealthyDurationSec when zero.
 func (f Fallback) EffectiveMinHealthyDurationSec() int {
 	return effectiveNonZero(f.MinHealthyDurationSec, DefaultMinHealthyDurationSec)
 }
@@ -190,21 +213,32 @@ func (w WorktreeConfig) EffectiveStallCleanupAfter() time.Duration {
 	return d
 }
 
+// EffectiveBaseBranch returns BaseBranch, or DefaultBaseBranch when empty.
 func (w WorktreeConfig) EffectiveBaseBranch() string {
 	return effectiveNonZero(w.BaseBranch, DefaultBaseBranch)
 }
+
+// EffectivePathPrefix returns PathPrefix, or DefaultPathPrefix when empty.
 func (w WorktreeConfig) EffectivePathPrefix() string {
 	return effectiveNonZero(w.PathPrefix, DefaultPathPrefix)
 }
+
+// EffectiveMergeStrategy returns MergeStrategy, or DefaultMergeStrategy when empty.
 func (w WorktreeConfig) EffectiveMergeStrategy() string {
 	return effectiveNonZero(w.MergeStrategy, DefaultMergeStrategy)
 }
+
+// EffectiveGitTimeout returns GitTimeoutSec, or DefaultGitTimeoutSec when unset.
 func (w WorktreeConfig) EffectiveGitTimeout() int {
 	return effectiveValue(w.GitTimeoutSec, DefaultGitTimeoutSec)
 }
+
+// EffectiveStallTimeoutMinutes returns StallTimeoutMinutes, or DefaultStallTimeoutMinutes when unset.
 func (w WorktreeConfig) EffectiveStallTimeoutMinutes() int {
 	return effectiveValue(w.StallTimeoutMinutes, DefaultStallTimeoutMinutes)
 }
+
+// EffectiveFallbackMergeTimeoutMinutes returns FallbackMergeTimeoutMinutes, or DefaultFallbackMergeTimeoutMinutes when unset.
 func (w WorktreeConfig) EffectiveFallbackMergeTimeoutMinutes() int {
 	return effectiveValue(w.FallbackMergeTimeoutMinutes, DefaultFallbackMergeTimeoutMinutes)
 }
@@ -221,6 +255,7 @@ type CommitPolicyConfig struct {
 	MessagePattern   string `yaml:"message_pattern"`   // regex for commit message validation; empty=no check
 }
 
+// EffectiveMaxFiles returns MaxFiles, or DefaultCommitMaxFiles when unset.
 func (c CommitPolicyConfig) EffectiveMaxFiles() int {
 	return effectiveValue(c.MaxFiles, DefaultCommitMaxFiles)
 }
@@ -234,9 +269,12 @@ type WorktreeGCConfig struct {
 	MaxWorktrees *int `yaml:"max_worktrees"`
 }
 
+// EffectiveTTLHours returns TTLHours, or DefaultGCTTLHours when unset.
 func (w WorktreeGCConfig) EffectiveTTLHours() int {
 	return effectiveValue(w.TTLHours, DefaultGCTTLHours)
 }
+
+// EffectiveMaxWorktrees returns MaxWorktrees, or DefaultGCMaxWorktrees when unset.
 func (w WorktreeGCConfig) EffectiveMaxWorktrees() int {
 	return effectiveValue(w.MaxWorktrees, DefaultGCMaxWorktrees)
 }
@@ -252,12 +290,17 @@ type ReviewConfig struct {
 	TimeoutSec           *int     `yaml:"timeout_sec"`
 }
 
+// EffectiveMinBloomLevel returns MinBloomLevel, or DefaultReviewMinBloomLevel when unset.
 func (r ReviewConfig) EffectiveMinBloomLevel() int {
 	return effectiveValue(r.MinBloomLevel, DefaultReviewMinBloomLevel)
 }
+
+// EffectiveMaxConcurrentReviews returns MaxConcurrentReviews, or DefaultReviewMaxConcurrentReviews when unset.
 func (r ReviewConfig) EffectiveMaxConcurrentReviews() int {
 	return effectiveValue(r.MaxConcurrentReviews, DefaultReviewMaxConcurrentReviews)
 }
+
+// EffectiveTimeoutSec returns TimeoutSec, or DefaultReviewTimeoutSec when unset.
 func (r ReviewConfig) EffectiveTimeoutSec() int {
 	return effectiveValue(r.TimeoutSec, DefaultReviewTimeoutSec)
 }

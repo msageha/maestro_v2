@@ -22,17 +22,17 @@ func InitTestGitRepo(t *testing.T) string {
 	}
 
 	for _, args := range cmds {
-		cmd := exec.Command(args[0], args[1:]...)
+		cmd := exec.Command(args[0], args[1:]...) //nolint:gosec // hard-coded test commands
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git init failed: %v\n%s", err, out)
 		}
 	}
 
-	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Test\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("# Test\n"), 0644); err != nil { //nolint:gosec // test fixture
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".maestro/\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte(".maestro/\n"), 0644); err != nil { //nolint:gosec // test fixture
 		t.Fatal(err)
 	}
 
@@ -41,7 +41,7 @@ func InitTestGitRepo(t *testing.T) string {
 		{"git", "commit", "-m", "initial commit"},
 	}
 	for _, args := range cmds {
-		cmd := exec.Command(args[0], args[1:]...)
+		cmd := exec.Command(args[0], args[1:]...) //nolint:gosec // hard-coded test commands
 		cmd.Dir = dir
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git initial commit failed: %v\n%s", err, out)

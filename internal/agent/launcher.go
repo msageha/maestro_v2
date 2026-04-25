@@ -638,7 +638,8 @@ func currentPaneTarget() (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "tmux", "display-message", "-t", paneID, "-p", "#{session_name}:#{window_index}.#{pane_index}")
+	// paneID is validated above against validTmuxPane (^%[0-9]+$), so it is safe to pass as argument.
+	cmd := exec.CommandContext(ctx, "tmux", "display-message", "-t", paneID, "-p", "#{session_name}:#{window_index}.#{pane_index}") //nolint:gosec // paneID validated by regex
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() != nil {

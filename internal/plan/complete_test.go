@@ -1016,9 +1016,9 @@ func TestComplete_WorktreeEnabled_PartialMerge_Deferred(t *testing.T) {
 		t.Errorf("Status = %q, want %q", result.Status, "deferred_publish")
 	}
 	// Verify deferred intent was written
-	dc, err := ReadDeferredComplete(maestroDir, commandID)
+	dc, err := readDeferredComplete(maestroDir, commandID)
 	if err != nil {
-		t.Fatalf("ReadDeferredComplete error: %v", err)
+		t.Fatalf("readDeferredComplete error: %v", err)
 	}
 	if dc == nil {
 		t.Fatal("expected deferred complete intent to be written")
@@ -1090,9 +1090,9 @@ func TestComplete_WorktreeEnabled_Created_NoOpAllowed(t *testing.T) {
 		t.Errorf("Status = %q, want %q", result.Status, model.PlanStatusCompleted)
 	}
 	// Verify no deferred intent was written (no publish needed)
-	dc, err := ReadDeferredComplete(maestroDir, commandID)
+	dc, err := readDeferredComplete(maestroDir, commandID)
 	if err != nil {
-		t.Fatalf("ReadDeferredComplete error: %v", err)
+		t.Fatalf("readDeferredComplete error: %v", err)
 	}
 	if dc != nil {
 		t.Error("expected no deferred complete intent for no-op command")
@@ -1332,9 +1332,9 @@ func TestCompleteDeferredPublish_FullFlow(t *testing.T) {
 	}
 
 	// Verify deferred intent was cleaned up
-	dc, err := ReadDeferredComplete(maestroDir, commandID)
+	dc, err := readDeferredComplete(maestroDir, commandID)
 	if err != nil {
-		t.Fatalf("ReadDeferredComplete error: %v", err)
+		t.Fatalf("readDeferredComplete error: %v", err)
 	}
 	if dc != nil {
 		t.Error("deferred intent should be removed after completion")
@@ -1404,9 +1404,9 @@ func TestComplete_WorktreeDeferred_Idempotent(t *testing.T) {
 	}
 
 	// Verify the stored summary is the latest
-	dc, err := ReadDeferredComplete(maestroDir, commandID)
+	dc, err := readDeferredComplete(maestroDir, commandID)
 	if err != nil {
-		t.Fatalf("ReadDeferredComplete: %v", err)
+		t.Fatalf("readDeferredComplete: %v", err)
 	}
 	if dc.Summary != "updated summary" {
 		t.Errorf("summary = %q, want %q", dc.Summary, "updated summary")

@@ -129,7 +129,7 @@ func SaveVerifyConfig(path string, config *VerifyConfig) error {
 	tmpName := tmp.Name()
 	defer func() {
 		if tmpName != "" {
-			os.Remove(tmpName) //nolint:errcheck // best-effort cleanup
+			_ = os.Remove(tmpName) //nolint:errcheck,gosec // best-effort cleanup
 		}
 	}()
 

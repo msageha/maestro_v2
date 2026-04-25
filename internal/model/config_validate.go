@@ -455,10 +455,10 @@ func validateNonNegInt(errs *[]error, field string, val int) {
 	}
 }
 
-// validateIntRange appends an error if val is outside [0, max].
-func validateIntRange(errs *[]error, field string, val, max int) {
-	if val < 0 || val > max {
-		*errs = append(*errs, fmt.Errorf("%s: must be between 0 and %d", field, max))
+// validateIntRange appends an error if val is outside [0, upper].
+func validateIntRange(errs *[]error, field string, val, upper int) {
+	if val < 0 || val > upper {
+		*errs = append(*errs, fmt.Errorf("%s: must be between 0 and %d", field, upper))
 	}
 }
 

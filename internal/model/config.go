@@ -53,10 +53,15 @@ type SkillsConfig struct {
 	AutoCollect      autoCollectConfig `yaml:"auto_collect"`
 }
 
+// EffectiveMaxRefsPerTask returns MaxRefsPerTask, or DefaultMaxRefsPerTask when unset.
 func (s SkillsConfig) EffectiveMaxRefsPerTask() int {
 	return effectiveValue(s.MaxRefsPerTask, DefaultMaxRefsPerTask)
 }
+
+// EffectiveMaxBodyChars returns MaxBodyChars, or 0 (unlimited) when unset.
 func (s SkillsConfig) EffectiveMaxBodyChars() int { return effectiveValue(s.MaxBodyChars, 0) }
+
+// EffectiveMissingRefPolicy returns MissingRefPolicy, or DefaultMissingRefPolicy when empty.
 func (s SkillsConfig) EffectiveMissingRefPolicy() string {
 	return effectiveNonZero(s.MissingRefPolicy, DefaultMissingRefPolicy)
 }
@@ -184,6 +189,7 @@ type WatcherConfig struct {
 	ShellReadyTimeoutSec int `yaml:"shell_ready_timeout_sec"`
 }
 
+// EffectiveMaxInProgressMin returns MaxInProgressMin, or DefaultMaxInProgressMin when unset.
 func (w WatcherConfig) EffectiveMaxInProgressMin() int {
 	return effectiveValue(w.MaxInProgressMin, DefaultMaxInProgressMin)
 }
@@ -210,46 +216,57 @@ type RetryConfig struct {
 	TaskExecution                      TaskRetryConfig `yaml:"task_execution"`
 }
 
+// EffectiveSignalInlineRetries returns SignalInlineRetries, or DefaultSignalInlineRetries when unset.
 func (r RetryConfig) EffectiveSignalInlineRetries() int {
 	return effectiveValue(r.SignalInlineRetries, DefaultSignalInlineRetries)
 }
 
+// EffectiveSignalInlineRetryDelaySec returns SignalInlineRetryDelaySec, or DefaultSignalInlineRetryDelaySec when unset.
 func (r RetryConfig) EffectiveSignalInlineRetryDelaySec() int {
 	return effectiveValue(r.SignalInlineRetryDelaySec, DefaultSignalInlineRetryDelaySec)
 }
 
+// EffectiveSignalDeliveryTimeoutSec returns SignalDeliveryTimeoutSec, or DefaultSignalDeliveryTimeoutSec when unset.
 func (r RetryConfig) EffectiveSignalDeliveryTimeoutSec() int {
 	return effectiveValue(r.SignalDeliveryTimeoutSec, DefaultSignalDeliveryTimeoutSec)
 }
 
+// EffectiveResultNotifyInlineRetries returns ResultNotifyInlineRetries, or DefaultResultNotifyInlineRetries when unset.
 func (r RetryConfig) EffectiveResultNotifyInlineRetries() int {
 	return effectiveValue(r.ResultNotifyInlineRetries, DefaultResultNotifyInlineRetries)
 }
 
+// EffectiveResultNotifyInlineRetryDelaySec returns ResultNotifyInlineRetryDelaySec, or DefaultResultNotifyInlineRetryDelaySec when unset.
 func (r RetryConfig) EffectiveResultNotifyInlineRetryDelaySec() int {
 	return effectiveValue(r.ResultNotifyInlineRetryDelaySec, DefaultResultNotifyInlineRetryDelaySec)
 }
 
+// EffectiveCommandDispatchInlineRetries returns CommandDispatchInlineRetries, or DefaultCommandDispatchInlineRetries when unset.
 func (r RetryConfig) EffectiveCommandDispatchInlineRetries() int {
 	return effectiveValue(r.CommandDispatchInlineRetries, DefaultCommandDispatchInlineRetries)
 }
 
+// EffectiveCommandDispatchInlineRetryDelaySec returns CommandDispatchInlineRetryDelaySec, or DefaultCommandDispatchInlineRetryDelaySec when unset.
 func (r RetryConfig) EffectiveCommandDispatchInlineRetryDelaySec() int {
 	return effectiveValue(r.CommandDispatchInlineRetryDelaySec, DefaultCommandDispatchInlineRetryDelaySec)
 }
 
+// EffectiveCommandDispatchTimeoutSec returns CommandDispatchTimeoutSec, or DefaultCommandDispatchTimeoutSec when unset.
 func (r RetryConfig) EffectiveCommandDispatchTimeoutSec() int {
 	return effectiveValue(r.CommandDispatchTimeoutSec, DefaultCommandDispatchTimeoutSec)
 }
 
+// EffectiveTaskDispatchInlineRetries returns TaskDispatchInlineRetries, or DefaultTaskDispatchInlineRetries when unset.
 func (r RetryConfig) EffectiveTaskDispatchInlineRetries() int {
 	return effectiveValue(r.TaskDispatchInlineRetries, DefaultTaskDispatchInlineRetries)
 }
 
+// EffectiveTaskDispatchInlineRetryDelaySec returns TaskDispatchInlineRetryDelaySec, or DefaultTaskDispatchInlineRetryDelaySec when unset.
 func (r RetryConfig) EffectiveTaskDispatchInlineRetryDelaySec() int {
 	return effectiveValue(r.TaskDispatchInlineRetryDelaySec, DefaultTaskDispatchInlineRetryDelaySec)
 }
 
+// EffectiveResultNotifyDeliveryTimeoutSec returns ResultNotifyDeliveryTimeoutSec, or DefaultResultNotifyDeliveryTimeoutSec when unset.
 func (r RetryConfig) EffectiveResultNotifyDeliveryTimeoutSec() int {
 	return effectiveValue(r.ResultNotifyDeliveryTimeoutSec, DefaultResultNotifyDeliveryTimeoutSec)
 }

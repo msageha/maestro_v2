@@ -75,6 +75,11 @@ func (qs *QueueStoreImpl) LoadCommandQueue() (model.CommandQueue, string, error)
 }
 
 // LoadAllTaskQueues loads all worker task queues from .maestro/queue/worker*.yaml files.
+// taskQueueEntry is intentionally unexported because it is used only within the daemon
+// package; QueueStoreImpl methods are accessed through the package-internal interface
+// QueueStore (see queue_handler_deps.go).
+//
+//nolint:revive // unexported-return is intentional for package-internal type
 func (qs *QueueStoreImpl) LoadAllTaskQueues() (map[string]*taskQueueEntry, error) {
 	queueDir := queueDirPath(qs.maestroDir)
 	entries, err := os.ReadDir(queueDir)
@@ -309,7 +314,7 @@ func (qs *QueueStoreImpl) quarantineFile(data []byte, name string) {
 // entries. Invalid entries are logged via logSkip. This eliminates near-
 // identical logic previously duplicated in salvageCommandQueue and
 // salvageNotificationQueue.
-func salvageQueueEntries[T any](data []byte, listKey string, validate func(*T) bool, logSkip func(error), qs *QueueStoreImpl) []T {
+func salvageQueueEntries[T any](data []byte, listKey string, validate func(*T) bool, logSkip func(error)) []T {
 	var node yamlv3.Node
 	if err := yamlv3.Unmarshal(data, &node); err != nil {
 		return nil
@@ -359,7 +364,6 @@ func (qs *QueueStoreImpl) salvageCommandQueue(data []byte) model.CommandQueue {
 	result.Commands = salvageQueueEntries(data, "commands",
 		func(cmd *model.Command) bool { return cmd.ID != "" },
 		func(err error) { qs.log(LogLevelWarn, "salvage_command_skip error=%v", err) },
-		qs,
 	)
 	return result
 }
@@ -375,7 +379,6 @@ func (qs *QueueStoreImpl) salvageNotificationQueue(data []byte) model.Notificati
 			return ntf.ID != "" && ntf.CommandID != "" && ntf.SourceResultID != "" && model.ValidateNotificationType(ntf.Type) == nil
 		},
 		func(err error) { qs.log(LogLevelWarn, "salvage_notification_skip error=%v", err) },
-		qs,
 	)
 	return result
 }

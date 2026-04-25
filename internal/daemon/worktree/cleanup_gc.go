@@ -87,7 +87,7 @@ func (wm *Manager) CleanupAll(ctx context.Context) error {
 		commandID string
 		state     *model.WorktreeCommandState
 	}
-	var targets []target
+	targets := make([]target, 0, len(entries))
 	for _, entry := range entries {
 		if !strings.HasSuffix(entry.Name(), ".yaml") {
 			continue
@@ -167,8 +167,6 @@ func (wm *Manager) GC() error {
 		createdAt time.Time
 		state     *model.WorktreeCommandState
 	}
-	var allStates []stateEntry
-
 	wm.mu.Lock()
 	stateDir := filepath.Join(wm.maestroDir, "state", "worktrees")
 	entries, err := os.ReadDir(stateDir)
@@ -179,6 +177,7 @@ func (wm *Manager) GC() error {
 		}
 		return fmt.Errorf("read worktree state dir: %w", err)
 	}
+	allStates := make([]stateEntry, 0, len(entries))
 
 	ttl := time.Duration(wm.config.GC.EffectiveTTLHours()) * time.Hour
 	maxWorktrees := wm.config.GC.EffectiveMaxWorktrees()
@@ -209,7 +208,7 @@ func (wm *Manager) GC() error {
 	wm.mu.Unlock()
 
 	// Stage 2: cleanup without holding wm.mu for the entire duration
-	var remaining []stateEntry
+	remaining := make([]stateEntry, 0, len(allStates))
 	for _, se := range allStates {
 		if now.Sub(se.createdAt) > ttl {
 			isTerminal := model.IsIntegrationTerminal(se.state.Integration.Status)

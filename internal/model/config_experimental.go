@@ -11,10 +11,15 @@ type EvolutionConfig struct {
 	StrategyWeights      map[string]int `yaml:"strategy_weights,omitempty"`
 }
 
+// EffectiveEnabled returns Enabled, defaulting to false when unset.
 func (e EvolutionConfig) EffectiveEnabled() bool { return effectiveValue(e.Enabled, false) }
+
+// EffectiveMaxMutationsPerRound returns MaxMutationsPerRound, or DefaultMaxMutationsPerRound when unset.
 func (e EvolutionConfig) EffectiveMaxMutationsPerRound() int {
 	return effectiveValue(e.MaxMutationsPerRound, DefaultMaxMutationsPerRound)
 }
+
+// EffectiveNoveltyThreshold returns NoveltyThreshold, or DefaultNoveltyThreshold when unset.
 func (e EvolutionConfig) EffectiveNoveltyThreshold() float64 {
 	return effectiveValue(e.NoveltyThreshold, DefaultNoveltyThreshold)
 }
@@ -46,16 +51,25 @@ type BanditConfig struct {
 	TraceDataRequirement *int     `yaml:"trace_data_requirement,omitempty"`
 }
 
+// EffectiveEnabled returns Enabled, defaulting to false when unset.
 func (b BanditConfig) EffectiveEnabled() bool { return effectiveValue(b.Enabled, false) }
+
+// EffectiveExplorationCoeff returns ExplorationCoeff, or DefaultExplorationCoeff when unset.
 func (b BanditConfig) EffectiveExplorationCoeff() float64 {
 	return effectiveValue(b.ExplorationCoeff, DefaultExplorationCoeff)
 }
+
+// EffectiveMinSamplesBeforeUse returns MinSamplesBeforeUse, or DefaultMinSamplesBeforeUse when unset.
 func (b BanditConfig) EffectiveMinSamplesBeforeUse() int {
 	return effectiveValue(b.MinSamplesBeforeUse, DefaultMinSamplesBeforeUse)
 }
+
+// EffectiveDecayFactor returns DecayFactor, or DefaultDecayFactor when unset.
 func (b BanditConfig) EffectiveDecayFactor() float64 {
 	return effectiveValue(b.DecayFactor, DefaultDecayFactor)
 }
+
+// EffectiveTraceDataRequirement returns TraceDataRequirement, or DefaultTraceDataRequirement when unset.
 func (b BanditConfig) EffectiveTraceDataRequirement() int {
 	return effectiveValue(b.TraceDataRequirement, DefaultTraceDataRequirement)
 }
@@ -71,15 +85,22 @@ type ExtendedVerificationConfig struct {
 	MaxAutoRetries     *int               `yaml:"max_auto_retries,omitempty"`
 }
 
+// EffectiveEnabled returns Enabled, defaulting to false when unset.
 func (ev ExtendedVerificationConfig) EffectiveEnabled() bool {
 	return effectiveValue(ev.Enabled, false)
 }
+
+// EffectiveSecurityCheck returns SecurityCheck, defaulting to false when unset.
 func (ev ExtendedVerificationConfig) EffectiveSecurityCheck() bool {
 	return effectiveValue(ev.SecurityCheck, false)
 }
+
+// EffectivePerformanceBench returns PerformanceBench, defaulting to false when unset.
 func (ev ExtendedVerificationConfig) EffectivePerformanceBench() bool {
 	return effectiveValue(ev.PerformanceBench, false)
 }
+
+// EffectiveMaxAutoRetries returns MaxAutoRetries, or DefaultMaxAutoRetries when unset.
 func (ev ExtendedVerificationConfig) EffectiveMaxAutoRetries() int {
 	return effectiveValue(ev.MaxAutoRetries, DefaultMaxAutoRetries)
 }
@@ -104,19 +125,30 @@ type SearchConfig struct {
 	ThompsonBeta   *float64 `yaml:"thompson_beta,omitempty"`
 }
 
+// EffectiveEnabled returns Enabled, defaulting to false when unset.
 func (s SearchConfig) EffectiveEnabled() bool { return effectiveValue(s.Enabled, false) }
+
+// EffectiveMaxDepth returns MaxDepth, or DefaultSearchMaxDepth when unset.
 func (s SearchConfig) EffectiveMaxDepth() int {
 	return effectiveValue(s.MaxDepth, DefaultSearchMaxDepth)
 }
+
+// EffectiveMaxBranching returns MaxBranching, or DefaultMaxBranching when unset.
 func (s SearchConfig) EffectiveMaxBranching() int {
 	return effectiveValue(s.MaxBranching, DefaultMaxBranching)
 }
+
+// EffectivePruneThreshold returns PruneThreshold, or DefaultPruneThreshold when unset.
 func (s SearchConfig) EffectivePruneThreshold() float64 {
 	return effectiveValue(s.PruneThreshold, DefaultPruneThreshold)
 }
+
+// EffectiveThompsonAlpha returns ThompsonAlpha, or DefaultThompsonAlpha when unset.
 func (s SearchConfig) EffectiveThompsonAlpha() float64 {
 	return effectiveValue(s.ThompsonAlpha, DefaultThompsonAlpha)
 }
+
+// EffectiveThompsonBeta returns ThompsonBeta, or DefaultThompsonBeta when unset.
 func (s SearchConfig) EffectiveThompsonBeta() float64 {
 	return effectiveValue(s.ThompsonBeta, DefaultThompsonBeta)
 }
@@ -131,7 +163,10 @@ type SelfImprovementConfig struct {
 	ArchiveMaxSize *int     `yaml:"archive_max_size,omitempty"`
 }
 
+// EffectiveEnabled returns Enabled, defaulting to false when unset.
 func (si SelfImprovementConfig) EffectiveEnabled() bool { return effectiveValue(si.Enabled, false) }
+
+// EffectiveArchiveMaxSize returns ArchiveMaxSize, or DefaultArchiveMaxSize when unset.
 func (si SelfImprovementConfig) EffectiveArchiveMaxSize() int {
 	return effectiveValue(si.ArchiveMaxSize, DefaultArchiveMaxSize)
 }
@@ -160,6 +195,7 @@ type ComplexityConfig struct {
 	Thresholds ComplexityThresholds `yaml:"thresholds,omitempty"`
 }
 
+// EffectiveEnabled returns Enabled, defaulting to false when unset.
 func (cc ComplexityConfig) EffectiveEnabled() bool { return effectiveValue(cc.Enabled, false) }
 
 // ComplexityThresholds defines file count thresholds for complexity levels.
@@ -169,12 +205,17 @@ type ComplexityThresholds struct {
 	ComplexMaxFiles  *int `yaml:"complex_max_files,omitempty"`
 }
 
+// EffectiveSimpleMaxFiles returns SimpleMaxFiles, or DefaultSimpleMaxFiles when unset.
 func (ct ComplexityThresholds) EffectiveSimpleMaxFiles() int {
 	return effectiveValue(ct.SimpleMaxFiles, DefaultSimpleMaxFiles)
 }
+
+// EffectiveStandardMaxFiles returns StandardMaxFiles, or DefaultStandardMaxFiles when unset.
 func (ct ComplexityThresholds) EffectiveStandardMaxFiles() int {
 	return effectiveValue(ct.StandardMaxFiles, DefaultStandardMaxFiles)
 }
+
+// EffectiveComplexMaxFiles returns ComplexMaxFiles, or DefaultComplexMaxFiles when unset.
 func (ct ComplexityThresholds) EffectiveComplexMaxFiles() int {
 	return effectiveValue(ct.ComplexMaxFiles, DefaultComplexMaxFiles)
 }
@@ -191,21 +232,32 @@ type FeatureProfile struct {
 	AdaptiveDepth           *bool   `yaml:"adaptive_depth,omitempty"`
 }
 
+// EffectiveCrossAgentReview returns CrossAgentReview, or DefaultCrossAgentReview when unset.
 func (fp FeatureProfile) EffectiveCrossAgentReview() string {
 	return effectiveValue(fp.CrossAgentReview, DefaultCrossAgentReview)
 }
+
+// EffectiveExploratoryOptimization returns ExploratoryOptimization, defaulting to false when unset.
 func (fp FeatureProfile) EffectiveExploratoryOptimization() bool {
 	return effectiveValue(fp.ExploratoryOptimization, false)
 }
+
+// EffectiveEvolutionaryQuality returns EvolutionaryQuality, defaulting to false when unset.
 func (fp FeatureProfile) EffectiveEvolutionaryQuality() bool {
 	return effectiveValue(fp.EvolutionaryQuality, false)
 }
+
+// EffectiveAdaptiveModelSelection returns AdaptiveModelSelection, defaulting to false when unset.
 func (fp FeatureProfile) EffectiveAdaptiveModelSelection() bool {
 	return effectiveValue(fp.AdaptiveModelSelection, false)
 }
+
+// EffectiveSelfImprovement returns SelfImprovement, defaulting to false when unset.
 func (fp FeatureProfile) EffectiveSelfImprovement() bool {
 	return effectiveValue(fp.SelfImprovement, false)
 }
+
+// EffectiveAdaptiveDepth returns AdaptiveDepth, defaulting to false when unset.
 func (fp FeatureProfile) EffectiveAdaptiveDepth() bool {
 	return effectiveValue(fp.AdaptiveDepth, false)
 }

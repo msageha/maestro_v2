@@ -441,7 +441,8 @@ func autoAcceptTrustDialog(panes []string) {
 // one pane per line. The daemon reads this file to know which panes to send Enter to.
 func writeTrustDialogPanesFile(maestroDir string, panes []string) error {
 	path := filepath.Join(maestroDir, trustDialogPanesFile)
-	f, err := os.Create(path)
+	// path is built from a controlled application directory + constant filename.
+	f, err := os.Create(path) //nolint:gosec // controlled path
 	if err != nil {
 		return fmt.Errorf("create %s: %w", trustDialogPanesFile, err)
 	}
@@ -460,7 +461,8 @@ func writeTrustDialogPanesFile(maestroDir string, panes []string) error {
 // No-op if the file does not exist (non-worktree mode or already handled).
 func StartTrustDialogAcceptor(maestroDir string) {
 	path := filepath.Join(maestroDir, trustDialogPanesFile)
-	f, err := os.Open(path)
+	// path is built from a controlled application directory + constant filename.
+	f, err := os.Open(path) //nolint:gosec // controlled path
 	if err != nil {
 		// File absent is expected when running without a formation (e.g. tests).
 		return

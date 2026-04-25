@@ -45,9 +45,10 @@ func WriteDeferredComplete(maestroDir, commandID, summary string) error {
 	return yamlutil.AtomicWrite(deferredCompletePath(maestroDir, commandID), dc)
 }
 
-// ReadDeferredComplete reads a deferred plan complete intent. Returns (nil, nil)
-// if the file does not exist.
-func ReadDeferredComplete(maestroDir, commandID string) (*deferredComplete, error) {
+// readDeferredComplete reads a deferred plan complete intent. Returns (nil, nil)
+// if the file does not exist. Package-internal only — the type returned is
+// unexported because callers outside this package use CompleteDeferredPublish.
+func readDeferredComplete(maestroDir, commandID string) (*deferredComplete, error) {
 	path := deferredCompletePath(maestroDir, commandID)
 	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from a controlled application directory
 	if err != nil {
@@ -76,7 +77,7 @@ func RemoveDeferredComplete(maestroDir, commandID string) {
 // calls Complete() with the stored summary. Returns (nil, nil) when no deferred
 // intent exists for the given commandID.
 func CompleteDeferredPublish(opts CompleteOptions) (*CompleteResult, error) {
-	dc, err := ReadDeferredComplete(opts.MaestroDir, opts.CommandID)
+	dc, err := readDeferredComplete(opts.MaestroDir, opts.CommandID)
 	if err != nil {
 		return nil, fmt.Errorf("read deferred complete: %w", err)
 	}

@@ -24,7 +24,7 @@ var standardDirs = []string{
 func PopulateDirs(t *testing.T, maestroDir string) {
 	t.Helper()
 	for _, d := range standardDirs {
-		if err := os.MkdirAll(filepath.Join(maestroDir, d), 0755); err != nil {
+		if err := os.MkdirAll(filepath.Join(maestroDir, d), 0755); err != nil { //nolint:gosec // test fixture
 			t.Fatal(err)
 		}
 	}

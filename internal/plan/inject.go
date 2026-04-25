@@ -379,7 +379,8 @@ func validateInjectedSchemaFields(expectedPaths []string, doa *model.DefinitionO
 // TargetWorkerID is specified (e.g. conflict resolution tasks).
 func findPhaseForWorker(state *model.CommandState, maestroDir string, workerID string) int {
 	queueFile := fmt.Sprintf("%s/queue/%s.yaml", maestroDir, workerID)
-	data, err := os.ReadFile(queueFile)
+	// queueFile is built from a controlled application directory + worker ID.
+	data, err := os.ReadFile(queueFile) //nolint:gosec // controlled path
 	if err != nil {
 		return -1
 	}
@@ -425,7 +426,8 @@ func lookupTaskAssignment(maestroDir string, taskID string, workers model.Worker
 	for i := 1; i <= workers.Count; i++ {
 		wID := fmt.Sprintf("worker%d", i)
 		queueFile := fmt.Sprintf("%s/queue/%s.yaml", maestroDir, wID)
-		data, err := os.ReadFile(queueFile)
+		// queueFile is built from a controlled application directory + worker ID.
+		data, err := os.ReadFile(queueFile) //nolint:gosec // controlled path
 		if err != nil {
 			continue
 		}

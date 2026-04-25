@@ -22,7 +22,8 @@ type TraceWriter struct {
 // NewTraceWriter opens (or creates) path in append mode and returns a
 // ready-to-use TraceWriter. The caller must call Close when done.
 func NewTraceWriter(path string) (*TraceWriter, error) {
-	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	// path is provided by the daemon initializer from a controlled application directory.
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) //nolint:gosec // controlled path
 	if err != nil {
 		return nil, fmt.Errorf("open trace file: %w", err)
 	}

@@ -54,7 +54,8 @@ func computeTaskResultsVersion(results []model.CommandResultTask) uint64 {
 	h := fnv.New64a()
 	// Sentinel prefix so empty results produce a non-zero version,
 	// distinguishing "computed from empty" from "field not set" (0).
-	h.Write([]byte("task_results_v1"))
+	// hash.Hash.Write never returns a non-nil error, per the io.Writer contract for hashes.
+	_, _ = h.Write([]byte("task_results_v1"))
 
 	sorted := make([]model.CommandResultTask, len(results))
 	copy(sorted, results)

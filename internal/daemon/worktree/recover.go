@@ -352,7 +352,7 @@ func (wm *Manager) verifyWorkersMerged(ctx context.Context, commandID string, st
 		return false, nil
 	}
 
-	var bad []string
+	bad := make([]string, 0, len(state.Workers))
 	for _, ws := range state.Workers {
 		switch ws.Status {
 		case model.WorktreeStatusIntegrated, model.WorktreeStatusPublished,
@@ -392,7 +392,7 @@ func (wm *Manager) verifyWorkersMerged(ctx context.Context, commandID string, st
 // Caller must hold wm.mu.
 func (wm *Manager) attemptResolvedMerges(
 	ctx context.Context,
-	state *model.WorktreeCommandState,
+	_ *model.WorktreeCommandState,
 	commandID string,
 	workers []*model.WorktreeState,
 	now string,
