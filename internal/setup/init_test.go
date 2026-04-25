@@ -433,6 +433,60 @@ func TestRun_GitTracksGitignore(t *testing.T) {
 	}
 }
 
+// TestRun_GitTracksGitignore_PreservesPreExistingStagedChanges verifies that
+// gitTrackGitignore's path-scoped commit (`git commit -- .gitignore`) does not
+// silently sweep unrelated staged changes into a maestro commit. Setup is
+// supposed to be a no-op for the rest of the working tree.
+func TestRun_GitTracksGitignore_PreservesPreExistingStagedChanges(t *testing.T) {
+	dir := t.TempDir()
+	projectDir := filepath.Join(dir, "myproject")
+	if err := os.Mkdir(projectDir, 0755); err != nil {
+		t.Fatalf("create project dir: %v", err)
+	}
+	initGitRepo(t, projectDir)
+
+	// Create and stage an unrelated file before Run.
+	userFile := filepath.Join(projectDir, "user_work.txt")
+	if err := os.WriteFile(userFile, []byte("user staged work\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("git", "-C", projectDir, "add", "user_work.txt").CombinedOutput(); err != nil {
+		t.Fatalf("git add user_work.txt: %v (%s)", err, out)
+	}
+
+	// Verify the file is staged before Run.
+	stagedBefore, err := exec.Command("git", "-C", projectDir, "diff", "--cached", "--name-only").Output()
+	if err != nil {
+		t.Fatalf("git diff --cached (before): %v", err)
+	}
+	if !strings.Contains(string(stagedBefore), "user_work.txt") {
+		t.Fatalf("pre-condition: user_work.txt should be staged, got: %s", stagedBefore)
+	}
+
+	if err := Run(projectDir, ""); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// user_work.txt must STILL be staged (not committed by setup).
+	stagedAfter, err := exec.Command("git", "-C", projectDir, "diff", "--cached", "--name-only").Output()
+	if err != nil {
+		t.Fatalf("git diff --cached (after): %v", err)
+	}
+	if !strings.Contains(string(stagedAfter), "user_work.txt") {
+		t.Errorf("user_work.txt should remain staged after Run, got: %s", stagedAfter)
+	}
+
+	// HEAD's most recent commit must touch only .gitignore.
+	headFiles, err := exec.Command("git", "-C", projectDir, "show", "--name-only", "--pretty=format:", "HEAD").Output()
+	if err != nil {
+		t.Fatalf("git show HEAD: %v", err)
+	}
+	files := strings.Fields(strings.TrimSpace(string(headFiles)))
+	if len(files) != 1 || files[0] != ".gitignore" {
+		t.Errorf("HEAD commit should touch only .gitignore, got: %v", files)
+	}
+}
+
 func TestRun_GitTracksGitignoreIdempotent(t *testing.T) {
 	dir := t.TempDir()
 	projectDir := filepath.Join(dir, "myproject")
