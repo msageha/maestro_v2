@@ -83,13 +83,6 @@ func (a *API) recordSelfWrite(path string, data any) {
 	a.shared.recordSelfWrite(path, data)
 }
 
-// publishQueueWritten delegates to the shared apiContext.
-//
-//nolint:unused // exercised from internal/daemon test files (golangci-lint runs with tests:false)
-func (a *API) publishQueueWritten(source string) {
-	a.shared.publishQueueWritten(source)
-}
-
 // writeLearnings delegates to the result write handler.
 //
 //nolint:unused // exercised from internal/daemon/learnings_test.go (golangci-lint runs with tests:false)
