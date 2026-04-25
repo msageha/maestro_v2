@@ -418,6 +418,10 @@ phases:
         bloom_level: 4
         persona_hint: "researcher"
         required: true
+        expected_paths: ["auth/"]
+        definition_of_abort:
+          max_repair_count: 3
+          max_wall_clock_sec: 1800
   - name: "implementation"
     type: "deferred"
     depends_on_phases: ["research"]
@@ -550,6 +554,10 @@ phases:
         blocked_by: []
         bloom_level: 4
         required: true
+        expected_paths: ["internal/types/"]
+        definition_of_abort:
+          max_repair_count: 3
+          max_wall_clock_sec: 1800
   - name: "implementation"
     type: "deferred"
     depends_on_phases: ["foundation"]
@@ -938,7 +946,7 @@ already finalised it. Use this only to trigger post-publish verification
 2. 既存のフェーズ内で同等の検証が実施済みでない（重複検証を避ける）
 3. main 特有の依存 (hooks, CI の副作用, system-level な状態) によって worker worktree 内の検証では再現不能な側面がある
 
-**投入禁止ケース（Bug C 対策）**:
+**投入禁止ケース**:
 
 - 単なる「念のため」「safety-net」的な build/test 再実行 → すでに worker worktree 内で実行済みであり、publish 後の main でも同じ結果となる。冗長。
 - 「publish 完了したので動作確認」 → publish は base への fast-forward 相当であり、コミット内容は変わらない。動作確認は worker worktree 内で完結すべき。
@@ -1002,7 +1010,13 @@ tasks:
     tools_hint: ["context7"]
     persona_hint: "implementer"
     skill_refs: ["constraint-aware-implementation"]
+    expected_paths: ["internal/auth/", "cmd/api/"]
+    definition_of_abort:
+      max_repair_count: 3
+      max_wall_clock_sec: 1800
 ```
+
+> **必須フィールドの注意**: `expected_paths` と `definition_of_abort` は REQUIREMENTS §S3-1 によりタスク毎に必ず明示する必要がある。省略すると `maestro plan submit` がスキーマ違反として拒否し、自律実行が止まる。`ApplyTaskDefaults` は要求フィールドを自動補完しない設計のため、Planner が出力時点で値を埋めること。
 
 | フィールド | 必須 | 説明 |
 |---|---|---|
@@ -1014,13 +1028,15 @@ tasks:
 | `blocked_by` | 必須 | 先行タスクの name リスト（空配列で即時実行可能） |
 | `bloom_level` | 必須 | Bloom's Taxonomy レベル (1-6) |
 | `required` | 必須 | `true`: 失敗で command 失敗 / `false`: 影響なし |
+| `expected_paths` | 必須 | タスクが書き込む可能性のある相対パス。1 件以上必須。リポジトリ全体に触れる場合は `["."]`。Path-overlap Heuristic (§A-4) と worktree side-effect 検知に使われる |
+| `definition_of_abort` | 必須 | リトライ上限を表す map。`max_repair_count` (整数, 推奨 3) と `max_wall_clock_sec` (整数, 推奨 1800) を必ず指定する |
 | `tools_hint` | 任意 | 推奨 MCP ツール名リスト |
 | `persona_hint` | 任意 | ペルソナ名（`.maestro/persona/{name}.md`） |
 | `skill_refs` | 任意 | スキル名リスト（`.maestro/skills/{role}/{name}/SKILL.md`） |
 | `run_on_main` | 任意 | `true` の場合、タスクを worker worktree ではなく main 作業ディレクトリで実行。**publish / 統合ブランチ → main マージ後の main 上での検証タスク専用**（詳細は下記「verification タスクと run_on_main」参照）。`run_on_integration` と排他 |
 | `run_on_integration` | 任意 | `true` の場合、タスクを統合ブランチの worktree 上で実行。**publish_conflict の解決タスク専用**。`run_on_main` と排他 |
 
-#### verification タスクと `run_on_main` (Bug F 対策)
+#### verification タスクと `run_on_main`
 
 **原則**: main にマージ（publish）された成果物を検証する verification タスクは、`plan submit` / `plan add-task` のいずれで発行する場合でも、必ず `run_on_main: true`（または `--run-on-main`）を付けること。
 
@@ -1040,6 +1056,10 @@ tasks:
     bloom_level: 3
     required: true
     run_on_main: true
+    expected_paths: ["."]
+    definition_of_abort:
+      max_repair_count: 3
+      max_wall_clock_sec: 1800
 ```
 
 **判定フローチャート**:
