@@ -217,7 +217,14 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 	state.PlanVersion++
 	state.UpdatedAt = now
 
-	// Write queue entry
+	// Write queue entry. §S0-1: tasks injected to resolve publish/merge
+	// conflicts run on the integration worktree and are classified as rollout
+	// operations for admission control. Operator-injected normal tasks remain
+	// unclassified (empty OperationType) so the heuristic fallback applies.
+	opType := ""
+	if opts.RunOnIntegration {
+		opType = model.OperationTypeRollout
+	}
 	task := retryQueueTask{
 		taskID:             newTaskID,
 		commandID:          opts.CommandID,
@@ -235,6 +242,7 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 		workerID:           assignedWorkerID,
 		runOnMain:          opts.RunOnMain,
 		runOnIntegration:   opts.RunOnIntegration,
+		operationType:      opType,
 	}
 	if err := writeRetryQueueEntry(opts.MaestroDir, task, now, opts.LockMap); err != nil {
 		if rsErr := restoreState(state, origStateBytes); rsErr != nil {

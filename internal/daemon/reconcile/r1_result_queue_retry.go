@@ -318,6 +318,10 @@ func r1BuildRetryTask(original *model.Task, retryTaskID string, clock core.Clock
 	} else {
 		retryTask.OriginalTaskID = original.ID
 	}
+	// §S0-1: classify retry tasks as repair operations so admission control
+	// counts them against the repair concurrency limit, regardless of how the
+	// original task's Purpose was named.
+	retryTask.OperationType = model.OperationTypeRepair
 	retryTask.CreatedAt = now
 	retryTask.UpdatedAt = now
 	return retryTask

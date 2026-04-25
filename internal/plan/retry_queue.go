@@ -32,6 +32,11 @@ type retryQueueTask struct {
 	workerID           string
 	runOnMain          bool
 	runOnIntegration   bool
+	// operationType is the §S0-1 admission classification (verify/repair/rollout).
+	// Retry tasks should set this to model.OperationTypeRepair so admission
+	// control counts them against the repair concurrency bucket regardless of
+	// the original task's free-form Purpose string.
+	operationType string
 }
 
 func writeRetryQueueEntry(maestroDir string, task retryQueueTask, now string, lockMap *lock.MutexMap) error {
@@ -58,6 +63,7 @@ func writeRetryQueueEntry(maestroDir string, task retryQueueTask, now string, lo
 			DefinitionOfAbort:  task.definitionOfAbort,
 			RunOnMain:          task.runOnMain,
 			RunOnIntegration:   task.runOnIntegration,
+			OperationType:      task.operationType,
 			Priority:           100,
 			Status:             model.StatusPending,
 			CreatedAt:          now,

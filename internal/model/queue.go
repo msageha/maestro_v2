@@ -108,7 +108,22 @@ type Task struct {
 	// resolution tasks that must operate directly on the integration branch to
 	// resolve forward-merge conflicts before retry-publish can succeed.
 	RunOnIntegration bool `yaml:"run_on_integration,omitempty" json:"run_on_integration,omitempty"`
+	// OperationType classifies the task for §S0-1 admission control. When set
+	// it takes precedence over the Purpose-substring heuristic. Permitted
+	// values are OperationTypeVerify / Repair / Rollout, or empty for normal
+	// tasks (unconstrained). Planner / retry handler should populate this
+	// explicitly so the daemon does not rely on free-form Purpose strings.
+	OperationType string `yaml:"operation_type,omitempty" json:"operation_type,omitempty"`
 }
+
+// Operation type values used by Task.OperationType. Keep these aligned with
+// the admission Controller's OpType.String() output so YAML round-trips and
+// classifier lookups stay consistent.
+const (
+	OperationTypeVerify  = "verify"
+	OperationTypeRepair  = "repair"
+	OperationTypeRollout = "rollout"
+)
 
 // GetDoneConditions は完了条件を返す。
 // DefinitionOfDone が設定されている場合はそちらを優先し、

@@ -214,7 +214,23 @@ func (c *Controller) maxFor(op OpType) int {
 // classifyTaskUnlocked performs classification without acquiring the mutex.
 // This method is stateless (reads only the task argument) and is safe to
 // call with or without holding c.mu.
+//
+// Classification precedence (defense-in-depth):
+//  1. Task.OperationType (structured field) — authoritative when set.
+//  2. Task.Purpose substring — legacy fallback for tasks emitted before the
+//     OperationType field was introduced. The Planner / retry handler now
+//     populate the structured field explicitly, so production tasks should
+//     reach the substring branch only on schema migration.
 func (c *Controller) classifyTaskUnlocked(task *model.Task) OpType {
+	switch task.OperationType {
+	case model.OperationTypeVerify:
+		return OpVerify
+	case model.OperationTypeRepair:
+		return OpRepair
+	case model.OperationTypeRollout:
+		return OpRollout
+	}
+
 	purpose := strings.ToLower(task.Purpose)
 	switch {
 	case strings.Contains(purpose, "verify"), strings.Contains(purpose, "verification"):

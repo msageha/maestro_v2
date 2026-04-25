@@ -109,6 +109,61 @@ func TestClassifyTask(t *testing.T) {
 	}
 }
 
+func TestClassifyTask_OperationTypeTakesPrecedence(t *testing.T) {
+	t.Parallel()
+	c := NewController(defaultCfg())
+
+	tests := []struct {
+		name          string
+		operationType string
+		purpose       string
+		want          OpType
+	}{
+		{
+			name:          "structured field overrides purpose",
+			operationType: model.OperationTypeRepair,
+			purpose:       "verify implementation", // would otherwise classify as verify
+			want:          OpRepair,
+		},
+		{
+			name:          "rollout structured field",
+			operationType: model.OperationTypeRollout,
+			purpose:       "any free-form text",
+			want:          OpRollout,
+		},
+		{
+			name:          "verify structured field",
+			operationType: model.OperationTypeVerify,
+			purpose:       "implement feature",
+			want:          OpVerify,
+		},
+		{
+			name:          "empty structured field falls back to purpose substring",
+			operationType: "",
+			purpose:       "repair broken tests",
+			want:          OpRepair,
+		},
+		{
+			name:          "unknown structured field falls back to purpose",
+			operationType: "bogus",
+			purpose:       "rollout v2",
+			want:          OpRollout,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			task := &model.Task{
+				OperationType: tt.operationType,
+				Purpose:       tt.purpose,
+			}
+			got := c.ClassifyTask(task)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestOpUnknown_AlwaysPassesTryAcquire(t *testing.T) {
 	t.Parallel()
 	c := NewController(defaultCfg())

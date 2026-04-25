@@ -241,6 +241,7 @@ func buildPrimaryRetryTask(opts RetryOptions, taskID string, blockedBy []string,
 		expectedPaths:      opts.ExpectedPaths,
 		definitionOfAbort:  opts.DefinitionOfAbort,
 		workerID:           workerID,
+		operationType:      model.OperationTypeRepair,
 	}
 }
 
@@ -523,5 +524,6 @@ func buildCascadeQueueTask(cr CascadeRecoveredTask, opts RetryOptions, state *mo
 		expectedPaths:      expectedPaths,
 		definitionOfAbort:  definitionOfAbort,
 		workerID:           cr.Worker,
+		operationType:      model.OperationTypeRepair,
 	}
 }
