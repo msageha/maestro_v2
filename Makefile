@@ -13,7 +13,7 @@ all: lint test build
 
 ## ─── Deps ─────────────────────────────────────────────
 
-check-deps: ## tmux/go/claude の依存チェック
+check-deps: ## tmux/go/claude/jq の依存チェック
 	@missing=0; \
 	if ! command -v tmux >/dev/null 2>&1; then \
 		echo "error: tmux is not installed"; \
@@ -31,6 +31,12 @@ check-deps: ## tmux/go/claude の依存チェック
 	if ! command -v claude >/dev/null 2>&1; then \
 		echo "error: claude (Claude Code CLI) is not installed"; \
 		echo "  Install via: npm install -g @anthropic-ai/claude-code"; \
+		missing=1; \
+	fi; \
+	if ! command -v jq >/dev/null 2>&1; then \
+		echo "error: jq is not installed"; \
+		echo "  macOS:         brew install jq"; \
+		echo "  Ubuntu/Debian: sudo apt install jq"; \
 		missing=1; \
 	fi; \
 	if [ "$$missing" -ne 0 ]; then \

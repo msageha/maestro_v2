@@ -64,8 +64,7 @@ typecheck: [command]
 
 ### Priority S1: 客観的評価と厳格なスキーマ（Fitnessの定義）
 
-- [S1-1] verify.yaml の生成強制と Verification Runner: Plannerは Phase 0 で必ず .maestro/verify.yaml を生成する [MUST]。未定義の場
-合は、Daemonが構文チェック等のFallback Verifyを自動補完・実行する [MUST]。
+- [S1-1] command-scoped verify config の生成強制と Verification Runner: Plannerは Phase 0 で必ず対象 command_id に紐づく verify config を生成する [MUST]。未定義の場合は、Daemonが構文チェック等のFallback Verifyを自動補完・実行する [MUST]。
 - [S1-2] 機械的な Fitness（適応度）関数の定義: 勝敗や成功判定をLLMに委ねない。評価はシステムが以下の辞書式順序で機械的に決定する
 [MUST]。
     1. Pass / Fail (Failは即時不採用)
@@ -111,7 +110,7 @@ only レビュアー」としてアサインする [SHOULD]。
 
 - [B-1] 厳格な条件付き Multi-rollout: 以下の条件を すべて満たす場合のみ、同一タスクを複数の独立したWorktreeで並列実行(最大2並列から
 開始)させる [MAY]。
-    1. verify.yaml が定義され実行可能であること。
+    1. command-scoped verify config が定義され実行可能であること。
     2. 単一Worker実行またはRepairで一定回数失敗している、またはBloom Taxonomy高難度であること。
     3. expected_paths が過度に広すぎない（リポジトリ全体に及ばない）こと。
 - [B-2] Judge（裁定者）の「Tie-breaker」限定利用: Multi-rolloutの勝者はS1-2の機械的Fitnessで決定する。最優秀LLM（Judge）の介入は、
@@ -330,15 +329,15 @@ Phase A-B の基盤が安定稼働した上で、Sakana.ai の研究知見（Shi
 
 ### C-7 マルチコーディングエージェントランタイム
 
-Worker の実行バックエンドとして claude code（デフォルト）に加え、codex および gemini を動的に起動・選択する機能を導入する。
+現行実装では、すべての managed role（Orchestrator / Planner / Worker）を `claude-code` のみに限定する。codex / gemini は claude-code の `--allowedTools` / `--disallowedTools` と同等の role enforcement を提供できないため、config validation と launcher の両方で fail-closed に拒否する。
 
 #### 基本要件
 
 1. **デフォルトランタイム**: 明示的な指定がない場合、Worker は常に claude code で実行される [MUST]。
-2. **タスク単位のエージェント指定**: Planner はタスク生成時に `runtime`（claude-code / codex / gemini）および `model` を指定できる [SHOULD]。未指定時はランタイムの `default_model` が適用される [MUST]。
-3. **動的起動**: Daemon は tmux Worker セッション内でタスクに応じたエージェントプロセスを動的に起動する [MUST]。ランタイム切替時は既存セッションの安全な終了を確認後に新プロセスを起動する [MUST]。
-4. **ランタイム無効化**: `enabled: false` の設定により、特定ランタイムの使用を禁止できる [MUST]。無効化されたランタイムを指定するタスクは Planner へ差し戻す [MUST]。
-5. **縮退動作**: 指定ランタイムの起動に失敗した場合、S0-2 の Single-worker Fallback に従い claude code へ縮退する [MUST]。
+2. **非 claude-code 拒否**: managed role に codex / gemini / gemini-* を指定した config は validation で拒否する [MUST]。
+3. **launcher 側二重防御**: validation を迂回しても、launcher は managed role の non-claude-code runtime を拒否する [MUST]。
+4. **フォールバック禁止**: managed role では codex / gemini から claude-code への runtime fallback は行わない [MUST]。fallback は role enforcement の弱い runtime を一度でも起動しないため、設定時点で拒否する。
+5. **将来拡張条件**: codex / gemini を有効化する場合は、daemon が claude-code と同等の role enforcement、tool allow/deny、control-plane 書き込み制限を実装してから本節を改訂する [MUST]。
 
 #### config.yaml 設定例
 
@@ -352,22 +351,22 @@ agents:
         models: [sonnet, opus, haiku]
         default_model: sonnet
       codex:
-        enabled: true
+        enabled: false # 現行 managed role では拒否
         models: [o3, o4-mini, o4-mini-high]
         default_model: o4-mini
       gemini:
-        enabled: true
+        enabled: false # 現行 managed role では拒否
         models: [gemini-2.5-pro, gemini-2.5-flash]
         default_model: gemini-2.5-flash
 ```
 
 #### ユースケース
 
-- **MCTS 探索的実装最適化（C-4 統合）**: 複数 worktree で異なるエージェントが同一タスクの実装を並列探索し、Fitness 関数で最適解を選定する [MAY]。
-- **クロスエージェントレビュー**: 実装エージェントと異なるエージェントがレビュー・検証を担当し、異なる LLM バイアスの相互補完により品質を向上させる [SHOULD]。
+- **MCTS 探索的実装最適化（C-4 統合）**: 複数 worktree で claude-code worker が同一タスクの実装を並列探索し、Fitness 関数で最適解を選定する [MAY]。
+- **クロスモデルレビュー**: 実装 worker と異なる claude-code model がレビュー・検証を担当し、モデル差分による相互補完により品質を向上させる [SHOULD]。
     - §6-4 との整合性: クロスエージェントレビューは Worker 間の直接通信ではなく、Planner 経由の DAG 依存関係として実現する [MUST]。
-- **適応的モデル選択（C-2）統合**: UCB バンディットの選択空間を「ランタイム × モデル」の2次元に拡張し、タスク特性に応じた最適な組み合わせを学習する [SHOULD]。
-- **修正時の別エージェント担当**: Repair タスクにおいて、元の実装エージェントと異なるエージェントを割り当て、同一 LLM のバイアスによる修正失敗を回避する [MAY]。
+- **適応的モデル選択（C-2）統合**: UCB バンディットの選択空間を claude-code model に限定し、タスク特性に応じた最適な model を学習する [SHOULD]。
+- **修正時の別 worker/model 担当**: Repair タスクにおいて、元の実装 worker と異なる worker/model を割り当て、同一 model のバイアスによる修正失敗を回避する [MAY]。
 
 #### Anti-Requirements 整合性
 
@@ -391,8 +390,8 @@ task:
     max_wall_clock_sec: integer
     explicit_failure_conditions: [string]
   # Phase C 拡張フィールド
-  runtime: string            # claude-code | codex | gemini（未指定時: claude-code）[MAY]
-  model: string              # ランタイム固有のモデル名（未指定時: ランタイムの default_model）[MAY]
+  runtime: string            # 現行 managed role では claude-code のみ（未指定時: claude-code）[MAY]
+  model: string              # claude-code のモデル名（未指定時: default_model）[MAY]
   complexity_level: string   # simple | standard | complex | critical（未指定時: Planner が自動判定）[MAY]
 ```
 
@@ -496,7 +495,7 @@ Planner は以下の基準を総合的に評価し、複雑度レベルを決定
 以下の条件を満たした段階で、各フェーズの実装完了とみなす。
 
 - Phase S 完了基準:
-    - verify.yaml を持たないタスクが後段のWorkerへ絶対に流れないこと。
+    - command-scoped verify config を持たないタスクが後段のWorkerへ絶対に流れないこと。
     - 同一の Failure Fingerprint が発生した場合、Repairループが停止しPlannerへ差し戻されること。
     - 1つのタスクの全ライフサイクル（生成〜修復完了/中断）が、1本のJSONLトレースログとして完全に追跡可能であること。
 - Phase A 完了基準:
@@ -522,6 +521,6 @@ Planner は以下の基準を総合的に評価し、複雑度レベルを決定
     - 探索木管理（C-4）が worktree と統合され、Planner による展開・枝刈り判断に基づく木構造探索が機能すること。verify.yaml を持つタスクのみを対象とし、worktree 単位の独立評価で Winner-takes-all が機能すること。
     - 自己改善メカニズム（C-5）が learnings 機構経由で機能し、Fitness 関数定義・Daemon 制御ロジック・Circuit Breaker が改変対象から除外されていること。
 - Phase C-7 完了基準:
-    - 複数ランタイム（claude code / codex / gemini）の動的起動が機能し、指定ランタイム障害時に claude code への縮退が正常に動作すること。全エージェント間通信が Daemon 経由の非同期通信で行われ、Worker 間直接通信が発生しないこと。
+    - managed role の runtime が claude-code のみに fail-closed で制限され、config validation と launcher の両方で non-claude-code 指定が拒否されること。全エージェント間通信が Daemon 経由の非同期通信で行われ、Worker 間直接通信が発生しないこと。
 - Phase C-8 完了基準:
     - Planner が複雑度レベルに応じた機能プロファイルを正しく適用し、Orchestrator からの明示オーバーライドが機能すること。プロファイル適用失敗時に Simple へのフォールバックが正常に動作すること。
