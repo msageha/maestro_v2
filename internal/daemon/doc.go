@@ -56,8 +56,8 @@
 //   - state:learnings, state:skill_candidates and state:continuous are
 //     "leaf" locks: they MUST be acquired in isolation (no other state:*
 //     lock held). Today every call site obeys this — the writers in
-//     result_write_handler.go acquire each leaf lock only after Phase B has
-//     released state:{commandID}, and skill_handler.go / continuous_handler.go
+//     result_write_*.go acquire each leaf lock only after Phase B has
+//     released state:{commandID}, and daemonapi.Skill / continuous_handler.go
 //     never reach for state:{commandID} at all.
 //   - When two leaf locks must be taken together (no current call site does
 //     this), they MUST be acquired in the alphabetical order shown above:

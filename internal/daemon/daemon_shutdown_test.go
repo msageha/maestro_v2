@@ -470,7 +470,6 @@ func TestShutdown_NilComponents(t *testing.T) {
 	d.server = nil
 	d.eventBus = nil
 	d.qualityGateDaemon = nil
-	d.rolloutManager = nil
 	d.reviewCoord = nil
 	d.phaseC = nil
 	d.eg = nil

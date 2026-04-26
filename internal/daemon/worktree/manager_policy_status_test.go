@@ -259,7 +259,7 @@ func TestCheckCommitPolicy_Unit(t *testing.T) {
 		wm.config.CommitPolicy.MessagePattern = `^.+`
 
 		stagedNul := "file1.go\x00file2.go\x00"
-		violations := wm.checkCommitPolicy(projectRoot, "ログイン API を提供する", stagedNul)
+		violations := wm.checkCommitPolicy(projectRoot, "ログイン API を提供する", stagedNul, nil)
 		if len(violations) != 0 {
 			t.Errorf("expected no violations, got %d: %v", len(violations), violations)
 		}
@@ -272,7 +272,7 @@ func TestCheckCommitPolicy_Unit(t *testing.T) {
 		wm.config.CommitPolicy.MessagePattern = `^.+`
 
 		stagedNul := "a.go\x00b.go\x00c.go\x00"
-		violations := wm.checkCommitPolicy(projectRoot, "ログイン API を提供する", stagedNul)
+		violations := wm.checkCommitPolicy(projectRoot, "ログイン API を提供する", stagedNul, nil)
 		if len(violations) != 1 || violations[0].Code != "max_files_exceeded" {
 			t.Errorf("expected max_files_exceeded violation, got %v", violations)
 		}
@@ -285,9 +285,22 @@ func TestCheckCommitPolicy_Unit(t *testing.T) {
 		wm.config.CommitPolicy.MessagePattern = `^.+`
 
 		stagedNul := "file.go\x00"
-		violations := wm.checkCommitPolicy(projectRoot, "", stagedNul)
+		violations := wm.checkCommitPolicy(projectRoot, "", stagedNul, nil)
 		if len(violations) != 1 || violations[0].Code != "message_format_invalid" {
 			t.Errorf("expected message_format_invalid violation, got %v", violations)
+		}
+	})
+
+	t.Run("expected_paths_violation", func(t *testing.T) {
+		t.Parallel()
+		wm := newTestWorktreeManager(t, projectRoot)
+		wm.config.CommitPolicy.MaxFiles = ptr.Int(30)
+		wm.config.CommitPolicy.MessagePattern = `^.+`
+
+		stagedNul := "internal/ok.go\x00cmd/outside.go\x00"
+		violations := wm.checkCommitPolicy(projectRoot, "update scoped files", stagedNul, []string{"internal/"})
+		if len(violations) != 1 || violations[0].Code != "expected_paths_violation" {
+			t.Errorf("expected expected_paths_violation, got %v", violations)
 		}
 	})
 
@@ -301,7 +314,7 @@ func TestCheckCommitPolicy_Unit(t *testing.T) {
 		// Use a temp dir without .gitignore
 		tmpDir := t.TempDir()
 		stagedNul := "a.go\x00b.go\x00"
-		violations := wm.checkCommitPolicy(tmpDir, "", stagedNul)
+		violations := wm.checkCommitPolicy(tmpDir, "", stagedNul, nil)
 		if len(violations) < 3 {
 			t.Errorf("expected at least 3 violations (max_files + missing_gitignore + message_format), got %d: %v", len(violations), violations)
 		}

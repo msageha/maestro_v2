@@ -1,27 +1,22 @@
 package daemon
 
 import (
-	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/msageha/maestro_v2/internal/daemon/admission"
+	"github.com/msageha/maestro_v2/internal/daemon/apipolicy"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/daemon/fallback"
-	"github.com/msageha/maestro_v2/internal/daemon/judge"
-	"github.com/msageha/maestro_v2/internal/daemon/rollout"
 	"github.com/msageha/maestro_v2/internal/events"
-	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
 )
@@ -128,18 +123,6 @@ func (d *Daemon) cleanStaleTmpFiles() {
 // initComponents wires all daemon sub-components: handler, quality gate,
 // circuit breaker, worktree manager, and event bus subscriptions.
 func (d *Daemon) initComponents() {
-	// Load verify config with fallback to project-aware defaults so non-Go
-	// repositories do not silently inherit `go vet ./...` (which would always
-	// fail and obscure the real issue, "verify.yaml not configured").
-	projectRoot := filepath.Dir(d.maestroDir)
-	vcfg, err := model.LoadOrDefaultVerifyConfigForProject(projectRoot, verifyConfigPath(d.maestroDir))
-	if err != nil {
-		d.log(LogLevelWarn, "verify_config load error=%v, using defaults", err)
-		vcfg = model.DefaultVerifyConfigForProject(projectRoot)
-	}
-	d.verifyConfig = vcfg
-	d.log(LogLevelInfo, "verify_config loaded commands=%d", len(vcfg.AllCommands()))
-
 	d.handler = NewQueueHandler(d.maestroDir, d.config, d.lockMap, d.logger, d.logLevel)
 	d.handler.SetShutdownGuard(d.ctx, &d.shuttingDown, d.Shutdown)
 	d.handler.SetSessionLostFlag(&d.sessionLost)
@@ -169,6 +152,7 @@ func (d *Daemon) initComponents() {
 	// Admission control: always initialized (uses effective defaults if unconfigured)
 	d.admissionCtrl = admission.NewController(d.config.AdmissionControl)
 	d.handler.SetAdmissionController(d.admissionCtrl)
+	d.api.result.SetAdmissionController(d.admissionCtrl)
 	d.log(LogLevelInfo, "admission_control initialized verify=%d repair=%d rollout=%d",
 		d.config.AdmissionControl.EffectiveMaxConcurrentVerify(),
 		d.config.AdmissionControl.EffectiveMaxConcurrentRepair(),
@@ -227,7 +211,7 @@ func (d *Daemon) initComponents() {
 	}
 
 	d.initPhaseB()
-	d.phaseC = newPhaseCManager(d.config, d.getAvailableModels(), d.log)
+	d.phaseC = newPhaseCManager(d.config, d.maestroDir, d.getAvailableModels(), d.log)
 	d.handler.SetPhaseCManager(d.phaseC)
 
 	// Wire the adaptive model selector into the PlanExecutor (if configured).
@@ -280,11 +264,8 @@ func (d *Daemon) initComponents() {
 	// Wire API handler dependencies that require initComponents artifacts.
 	d.api.shared.SetFileLockHolder(d.handler)
 	d.api.shared.SetEventBus(func() *events.Bus { return d.eventBus })
-	d.api.dashboard.handlerReady = func() bool { return d.handler != nil }
-	d.api.heartbeat.leaseManager = func() QueueLeaseManager { return d.handler.leaseManager }
-	d.api.heartbeat.scanMu = func() *sync.RWMutex { return &d.handler.scanExecutor.scanMu }
-	d.api.plan.planExecutor = d.planExecutor
-	d.api.plan.worktreeManager = d.worktreeManager
+	d.api.plan.SetExecutor(d.planExecutor)
+	d.api.plan.SetWorktreeManager(d.worktreeManager)
 	// triggerScan is already wired in newDaemon; no re-assignment needed.
 
 	if d.qualityGateDaemon != nil {
@@ -296,14 +277,20 @@ func (d *Daemon) initComponents() {
 // startRuntime starts the UDS server, background loops, and quality gate.
 func (d *Daemon) startRuntime() error {
 	d.api.registerHandlers(d.server, systemHandlers{
-		scan: func(_ *uds.Request) *uds.Response {
+		scan: func(req *uds.Request) *uds.Response {
+			if resp := apipolicy.RequireCallerRole(req, "scan", uds.RoleCLI, uds.RoleOrchestrator); resp != nil {
+				return resp
+			}
 			if d.handler == nil {
 				return uds.ErrorResponse(uds.ErrCodeInternal, "handler not initialized")
 			}
 			d.handler.PeriodicScanWithContext(d.ctx)
 			return uds.SuccessResponse(map[string]string{"status": "scanned"})
 		},
-		shutdown: func(_ *uds.Request) *uds.Response {
+		shutdown: func(req *uds.Request) *uds.Response {
+			if resp := apipolicy.RequireCallerRole(req, "shutdown", uds.RoleCLI); resp != nil {
+				return resp
+			}
 			d.log(LogLevelInfo, "shutdown requested via UDS")
 			go func() { defer d.recoverPanic("shutdownHandler"); d.Shutdown() }()
 			return uds.SuccessResponse(map[string]string{"status": "shutdown_accepted"})
@@ -313,7 +300,11 @@ func (d *Daemon) startRuntime() error {
 	if err := d.server.Start(); err != nil {
 		return fmt.Errorf("start UDS server: %w", err)
 	}
-	d.log(LogLevelInfo, "UDS server listening on %s", filepath.Join(d.maestroDir, uds.DefaultSocketName))
+	socketPath, err := uds.SocketPath(d.maestroDir)
+	if err != nil {
+		return fmt.Errorf("resolve UDS socket path: %w", err)
+	}
+	d.log(LogLevelInfo, "UDS server listening on %s", socketPath)
 
 	d.eg.Go(func() error { d.watch.fsnotifyLoop(); return nil })
 	d.eg.Go(func() error { d.watch.tickerLoop(); return nil })
@@ -352,27 +343,15 @@ func (d *Daemon) startRuntime() error {
 func (d *Daemon) initPhaseB() {
 	cfg := d.config
 
-	// Rollout Manager initialization
 	if cfg.Rollout.EffectiveEnabled() {
-		maxParallel := cfg.Rollout.EffectiveMaxParallelPerTask()
-		d.rolloutManager = rollout.NewManager(maxParallel)
-		d.log(LogLevelInfo, "rollout_manager initialized maxParallel=%d", maxParallel)
+		d.log(LogLevelWarn,
+			"rollout_disabled: rollout.enabled=true should have been rejected by config validation; production multi-candidate dispatcher is not wired")
 	}
 
-	// Judge initialization
 	if cfg.Judge.EffectiveEnabled() {
-		timeout := time.Duration(cfg.Judge.EffectiveTimeoutSec()) * time.Second
-		model := cfg.Judge.EffectiveModel()
-		stubCaller := &logOnlyCaller{logger: d.logger}
-		d.judgeCaller = judge.NewJudge(stubCaller, model, timeout)
-		d.log(LogLevelInfo, "judge initialized model=%s timeout=%s", model, timeout)
-		// Phase C is not yet wired to a real LLM caller — surface the stub
-		// status loudly so operators who enable judge in config do not assume
-		// the comparison is meaningful. Without this warning the WARN-level
-		// signal would only appear after the first prompt is dispatched.
 		d.log(LogLevelWarn,
-			"judge_stub_active: judge.Caller is a logOnlyCaller stub (always returns winner_index=0); "+
-				"rollout judging is non-functional until a real LLM caller is wired in")
+			"judge_disabled: judge.enabled=true should have been rejected by config validation; no production LLM caller is wired; "+
+				"rollout tie-breaking will use deterministic fitness fallback")
 	}
 }
 
@@ -399,24 +378,6 @@ func (d *Daemon) getAvailableModels() []string {
 		seen[m] = true
 	}
 	return models
-}
-
-// logOnlyCaller is a stub implementation of judge.Caller that logs the prompt
-// and returns a fallback JSON response. It will be replaced by a real LLM
-// client in a future phase.
-type logOnlyCaller struct {
-	logger *log.Logger
-}
-
-func (c *logOnlyCaller) Call(_ context.Context, prompt string) (string, error) {
-	if c.logger != nil {
-		c.logger.Printf("[INFO] judge_stub_call prompt_len=%d", len(prompt))
-	}
-	resp, _ := json.Marshal(map[string]any{
-		"winner_index": 0,
-		"reasoning":    "stub: no LLM backend configured",
-	})
-	return string(resp), nil
 }
 
 // extractTaskIDFromRequestID extracts the taskID from a review request ID

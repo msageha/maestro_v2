@@ -39,11 +39,13 @@ func (CLIInvoker) Invoke(ctx context.Context, modelName, systemPrompt, userPromp
 	if modelName == "" {
 		modelName = defaultReviewerModel
 	}
+	if !isClaudeReviewModel(modelName) {
+		return "", fmt.Errorf("%w: CLI reviewer only supports Claude models, got %q", ErrNotImplemented, modelName)
+	}
 	args := []string{
 		"-p", userPrompt,
 		"--model", modelName,
 		"--append-system-prompt", systemPrompt,
-		"--dangerously-skip-permissions",
 		"--output-format", "text",
 	}
 	cmd := exec.CommandContext(ctx, bin, args...) //nolint:gosec // bin is resolved via LookPath; args are constructed from validated config
@@ -67,6 +69,14 @@ func (CLIInvoker) Invoke(ctx context.Context, modelName, systemPrompt, userPromp
 		return "", fmt.Errorf("claude review invocation failed: %w; stderr=%s", err, truncate(stderr.String(), 512))
 	}
 	return stdout.String(), nil
+}
+
+func isClaudeReviewModel(modelName string) bool {
+	switch modelName {
+	case "", "sonnet", "opus", "haiku":
+		return true
+	}
+	return strings.HasPrefix(modelName, "claude-")
 }
 
 const reviewSystemPrompt = `You are a senior code reviewer. Given a unified diff, return findings as a JSON array.

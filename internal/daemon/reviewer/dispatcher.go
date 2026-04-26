@@ -33,6 +33,7 @@ type ReviewDispatcher struct {
 	wg             sync.WaitGroup
 	droppedResults atomic.Int64
 	invoker        ClaudeInvoker
+	nextModel      atomic.Uint64
 }
 
 // NewReviewDispatcher creates a new ReviewDispatcher with the given config.
@@ -90,7 +91,7 @@ func (d *ReviewDispatcher) Dispatch(ctx context.Context, task model.Task, diffCo
 	if len(d.config.Models) == 0 {
 		return fmt.Errorf("review dispatch: no reviewer models configured")
 	}
-	reviewerModel := d.config.Models[0]
+	reviewerModel := d.nextReviewerModel()
 
 	req := model.ReviewRequest{
 		ID:            fmt.Sprintf("review-%s-%d", task.ID, time.Now().UnixNano()),
@@ -122,6 +123,15 @@ func (d *ReviewDispatcher) Dispatch(ctx context.Context, task model.Task, diffCo
 	}()
 
 	return nil
+}
+
+func (d *ReviewDispatcher) nextReviewerModel() string {
+	models := d.config.Models
+	if len(models) == 0 {
+		return ""
+	}
+	idx := d.nextModel.Add(1) - 1
+	return models[int(idx%uint64(len(models)))]
 }
 
 // reviewTask executes the review by invoking the configured Claude model

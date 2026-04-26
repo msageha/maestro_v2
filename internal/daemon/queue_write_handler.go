@@ -1,45 +1,20 @@
 package daemon
 
 import (
-	"encoding/json"
 	"fmt"
 	"os"
 	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
 
+	"github.com/msageha/maestro_v2/internal/daemon/daemonapi"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
-// QueueWriteParams is the request payload for the queue_write UDS command.
-type QueueWriteParams struct {
-	Target             string   `json:"target"` // "planner", "worker1", "orchestrator"
-	Type               string   `json:"type"`   // "command", "task", "notification", "cancel-request"
-	CommandID          string   `json:"command_id,omitempty"`
-	Content            string   `json:"content,omitempty"`
-	Purpose            string   `json:"purpose,omitempty"`
-	AcceptanceCriteria string   `json:"acceptance_criteria,omitempty"`
-	BloomLevel         int      `json:"bloom_level,omitempty"`
-	BlockedBy          []string `json:"blocked_by,omitempty"`
-	Constraints        []string `json:"constraints,omitempty"`
-	ToolsHint          []string `json:"tools_hint,omitempty"`
-	PersonaHint        string   `json:"persona_hint,omitempty"`
-	SkillRefs          []string `json:"skill_refs,omitempty"`
-	Priority           int      `json:"priority"`
-	SourceResultID     string   `json:"source_result_id,omitempty"`
-	NotificationType   string   `json:"notification_type,omitempty"`
-	RequestedBy        string   `json:"requested_by,omitempty"`
-	Reason             string   `json:"reason,omitempty"`
-	// SystemCaller gates the queue_write task path. Task ID minting is the
-	// Planner's responsibility; the queue_write task entrypoint is reserved
-	// for internal/test usage and is NOT exposed via the maestro CLI. Callers
-	// must set this to a recognised model.TaskIDCaller (typically
-	// TaskIDCallerSystemInternal) or the request is rejected.
-	SystemCaller string `json:"system_caller,omitempty"`
-}
+type QueueWriteParams = daemonapi.QueueWriteParams
 
 var validNotificationTypes = map[model.NotificationType]bool{
 	model.NotificationTypeCommandCompleted: true,
@@ -74,27 +49,6 @@ func validatePersonaAndSkillRefs(personaHint string, skillRefs []string) *uds.Re
 		}
 	}
 	return nil
-}
-
-func (h *QueueWriteAPI) handleQueueWrite(req *uds.Request) *uds.Response {
-	var params QueueWriteParams
-	if err := json.Unmarshal(req.Params, &params); err != nil {
-		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid params: %v", err))
-	}
-
-	switch params.Type {
-	case "command":
-		return h.handleQueueWriteCommand(params)
-	case "task":
-		return h.handleQueueWriteTask(params)
-	case "notification":
-		return h.handleQueueWriteNotification(params)
-	case "cancel-request":
-		return h.handleQueueWriteCancelRequest(params)
-	default:
-		return uds.ErrorResponse(uds.ErrCodeValidation,
-			fmt.Sprintf("invalid type: %q, must be command|task|notification|cancel-request", params.Type))
-	}
 }
 
 // --- Lock helpers ---

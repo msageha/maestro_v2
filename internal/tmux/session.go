@@ -161,7 +161,9 @@ func classifyError(op, stderr string, err error) *Error {
 	case strings.Contains(lower, "no server running") ||
 		strings.Contains(lower, "server exited") ||
 		strings.Contains(lower, "error connecting") ||
-		strings.Contains(lower, "connect failed"):
+		strings.Contains(lower, "connect failed") ||
+		strings.Contains(lower, "operation not permitted") ||
+		strings.Contains(lower, "permission denied"):
 		kind = ErrKindServer
 	case strings.Contains(lower, "session not found") ||
 		strings.Contains(lower, "can't find session") ||
@@ -312,9 +314,11 @@ func SetSessionName(name string) {
 // sessions instead of colliding on a single global "maestro-<name>" slot.
 //
 // The hash is derived from the canonical absolute path of maestroDir
-// (filepath.Abs + filepath.Clean). If absolute resolution fails, the input
-// is hashed as-is — the goal is just stable per-checkout differentiation,
-// not security.
+// (filepath.Abs + filepath.Clean + filepath.EvalSymlinks when available).
+// Resolving symlinks keeps /tmp/... and /private/tmp/... on macOS pointed at
+// the same tmux session. If absolute or symlink resolution fails, the best
+// available cleaned path is hashed — the goal is stable per-checkout
+// differentiation, not security.
 //
 // If maestroDir is empty, the legacy "maestro-<projectName>" form is returned
 // for backward compatibility (e.g., test code that does not have a maestro
@@ -327,6 +331,9 @@ func BuildMaestroSessionName(projectName, maestroDir string) string {
 	canonical := maestroDir
 	if abs, err := filepath.Abs(maestroDir); err == nil {
 		canonical = filepath.Clean(abs)
+		if resolved, err := filepath.EvalSymlinks(canonical); err == nil {
+			canonical = filepath.Clean(resolved)
+		}
 	}
 	sum := sha256.Sum256([]byte(canonical))
 	return base + "-" + hex.EncodeToString(sum[:])[:8]
@@ -525,6 +532,17 @@ func CapturePane(paneTarget string, lastN int) (string, error) {
 // lastN specifies how many lines from the bottom to capture (0 = entire visible pane).
 func CapturePaneJoined(paneTarget string, lastN int) (string, error) {
 	args := []string{"capture-pane", "-t", paneTarget, "-pJ"}
+	if lastN > 0 {
+		args = append(args, "-S", fmt.Sprintf("-%d", lastN))
+	}
+	return output(args...)
+}
+
+// CapturePaneAlternateJoined captures pane content from the alternate screen
+// with the -J flag. If no alternate screen exists, tmux returns an empty result
+// rather than an error because -q is used.
+func CapturePaneAlternateJoined(paneTarget string, lastN int) (string, error) {
+	args := []string{"capture-pane", "-a", "-q", "-t", paneTarget, "-pJ"}
 	if lastN > 0 {
 		args = append(args, "-S", fmt.Sprintf("-%d", lastN))
 	}

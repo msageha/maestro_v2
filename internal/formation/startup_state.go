@@ -118,7 +118,9 @@ func startupRecovery(maestroDir string) error {
 	// prevents another process from acquiring the lock between cleanup
 	// and unlock).
 	removeIfExists(filepath.Join(maestroDir, "daemon.pid"))
-	removeIfExists(filepath.Join(maestroDir, uds.DefaultSocketName))
+	for _, socketPath := range uds.SocketCleanupPaths(maestroDir) {
+		removeIfExists(socketPath)
+	}
 	if err := fl.Unlock(); err != nil {
 		slog.Warn("startup lock unlock failed", "error", err)
 	}

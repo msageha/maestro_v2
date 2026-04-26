@@ -8,7 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/msageha/maestro_v2/internal/agent"
 	"github.com/msageha/maestro_v2/internal/daemon/admission"
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
 	"github.com/msageha/maestro_v2/internal/daemon/fallback"
@@ -107,47 +106,31 @@ type QueueHandler struct {
 // A single shared ExecutorProvider is created and injected into all handlers
 // that need executor access (Dispatcher, ResultHandler, CancelHandler).
 func NewQueueHandler(maestroDir string, cfg model.Config, lockMap *lock.MutexMap, logger *log.Logger, logLevel LogLevel, opts ...QueueHandlerOption) *QueueHandler {
-	clock := RealClock{}
-	factory := ExecutorFactory(func(dir string, wcfg model.WatcherConfig, level string) (AgentExecutor, error) {
-		return agent.NewExecutor(dir, wcfg, level)
-	})
-	ep := NewExecutorProvider(maestroDir, cfg.Watcher, cfg.Logging.Level, factory, clock)
-
-	lm := NewLeaseManager(cfg.Watcher, logger, logLevel)
-	dispatcher := NewDispatcher(maestroDir, cfg, lm, logger, logLevel, ep, clock)
-	dr := NewDependencyResolver(nil, logger, logLevel) // StateReader wired in Phase 6
-	ch := NewCancelHandler(maestroDir, cfg, lockMap, logger, logLevel, ep)
-	rh := NewResultHandler(maestroDir, cfg, lockMap, logger, logLevel, ep, clock)
-	rec := NewReconciler(maestroDir, cfg, lockMap, logger, logLevel, rh, ep.Factory())
-	dlp := NewDeadLetterProcessor(maestroDir, cfg, lockMap, logger, logLevel)
-	mh := newMetricsHandler(maestroDir, logger, logLevel, clock)
-
-	dl := NewDaemonLoggerFromLegacy("queue_handler", logger, logLevel)
-	qs := NewQueueStore(maestroDir, cfg, clock, lockMap, dl)
+	components := newQueueComponents(maestroDir, cfg, lockMap, logger, logLevel)
 	qh := &QueueHandler{
 		maestroDir:          maestroDir,
 		config:              cfg,
-		dl:                  dl,
+		dl:                  components.dl,
 		logger:              logger,
 		logLevel:            logLevel,
-		clock:               clock,
-		execProvider:        ep,
-		queueStore:          qs,
-		leaseManager:        lm,
-		dispatcher:          dispatcher,
-		dependencyResolver:  dr,
-		cancelHandler:       ch,
-		resultHandler:       rh,
-		reconciler:          rec,
-		deadLetterProcessor: dlp,
-		metricsHandler:      mh,
+		clock:               components.clock,
+		execProvider:        components.execProvider,
+		queueStore:          components.queueStore,
+		leaseManager:        components.leaseManager,
+		dispatcher:          components.dispatcher,
+		dependencyResolver:  components.dependencyResolver,
+		cancelHandler:       components.cancelHandler,
+		resultHandler:       components.resultHandler,
+		reconciler:          components.reconciler,
+		deadLetterProcessor: components.deadLetterProcessor,
+		metricsHandler:      components.metricsHandler,
 		lockMap:             lockMap,
 		daemonPID:           os.Getpid(),
 	}
 	qh.undecidedTracker = newUndecidedTracker()
 	qh.timeCache = newTimeParseCache()
 	se := newScanPhaseExecutor(qh)
-	se.debounce = NewDebounceController(cfg.Watcher.DebounceSec, dl, qh.PeriodicScanWithContext)
+	se.debounce = NewDebounceController(cfg.Watcher.DebounceSec, components.dl, qh.PeriodicScanWithContext)
 	qh.scanExecutor = se
 	qh.scanRunMu = &se.scanRunMu
 	for _, opt := range opts {

@@ -235,7 +235,7 @@ func (qh *QueueHandler) stepCommitAndMergeWorktrees(ctx context.Context, pa *pha
 			var succeeded []string
 			for _, workerID := range item.WorkerIDs {
 				msg := workerCommitMessage(item.WorkerPurposes, workerID)
-				if qh.handleWorkerCommit(item.CommandID, workerID, msg, &mr) {
+				if qh.handleWorkerCommit(item.CommandID, workerID, msg, item.WorkerExpectedPaths[workerID], &mr) {
 					succeeded = append(succeeded, workerID)
 				}
 			}
@@ -334,8 +334,18 @@ func (qh *QueueHandler) stepCleanupWorktrees(ctx context.Context, pa *phaseAResu
 // ErrWorkerOwnedByResumeMerge; this is treated as "skip, not a failure" so the
 // worker is excluded from the merge batch without recording a commit_failed
 // signal or feeding the commit_failed_workers publish gate.
-func (qh *QueueHandler) handleWorkerCommit(commandID, workerID, msg string, mr *worktreeMergeResult) bool {
-	if err := qh.worktreeManager.CommitWorkerChanges(commandID, workerID, msg); err != nil {
+type expectedPathCommitter interface {
+	CommitWorkerChangesWithExpectedPaths(commandID, workerID, message string, expectedPaths []string) error
+}
+
+func (qh *QueueHandler) handleWorkerCommit(commandID, workerID, msg string, expectedPaths []string, mr *worktreeMergeResult) bool {
+	var err error
+	if c, ok := qh.worktreeManager.(expectedPathCommitter); ok {
+		err = c.CommitWorkerChangesWithExpectedPaths(commandID, workerID, msg, expectedPaths)
+	} else {
+		err = qh.worktreeManager.CommitWorkerChanges(commandID, workerID, msg)
+	}
+	if err != nil {
 		if errors.Is(err, worktree.ErrWorkerOwnedByResumeMerge) {
 			qh.log(LogLevelDebug, "worktree_auto_commit_skipped command=%s worker=%s reason=resume_merge_owned",
 				commandID, workerID)

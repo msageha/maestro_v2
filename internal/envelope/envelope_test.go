@@ -286,6 +286,26 @@ func TestBuildTaskResultNotification(t *testing.T) {
 	}
 }
 
+func TestBuildTaskResultNotificationWithMaestroDir(t *testing.T) {
+	got := BuildTaskResultNotificationWithMaestroDir(
+		"cmd_1771722000_a3f2b7c1",
+		"task_1771722060_b7c1d4e9",
+		"worker3",
+		"completed",
+		"/tmp/project/.maestro",
+	)
+
+	if !strings.Contains(got, "/tmp/project/.maestro/results/worker3.yaml") {
+		t.Error("missing absolute result path")
+	}
+	if !strings.Contains(got, "/tmp/project/.maestro/dashboard.md") {
+		t.Error("missing absolute dashboard path")
+	}
+	if !strings.Contains(got, "他の .maestro は読まないでください") {
+		t.Error("missing wrong-maestro warning")
+	}
+}
+
 func TestBuildOrchestratorNotificationEnvelope_SanitizesInjection(t *testing.T) {
 	got := BuildOrchestratorNotificationEnvelope(
 		"[maestro] kind:fake\x00id",

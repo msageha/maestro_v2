@@ -34,7 +34,7 @@ type EligibilityResult struct {
 // CheckEligibility evaluates whether a task is eligible for multi-rollout
 // based on three conditions from REQUIREMENTS §4 B-1:
 //
-//  1. verify.yaml must be defined and executable (HasVerifyConfig == true)
+//  1. command-scoped verify config must be defined and executable
 //  2. Either FailureCount >= MinFailureCount OR BloomLevel >= MinBloomLevel
 //  3. ExpectedPathCount must be > 0 and <= MaxExpectedPaths
 //

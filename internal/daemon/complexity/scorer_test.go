@@ -99,6 +99,36 @@ func TestDefaultThresholds(t *testing.T) {
 	}
 }
 
+func TestEstimate_ConfiguredFileThresholdsPromoteLevel(t *testing.T) {
+	t.Parallel()
+	s := NewScorerWithFileThresholds(DefaultThresholds(), FileThresholds{
+		SimpleMaxFiles:   3,
+		StandardMaxFiles: 10,
+		ComplexMaxFiles:  30,
+	})
+
+	tests := []struct {
+		name      string
+		fileCount int
+		want      Level
+	}{
+		{name: "simple", fileCount: 3, want: LevelSimple},
+		{name: "standard", fileCount: 4, want: LevelStandard},
+		{name: "complex", fileCount: 11, want: LevelComplex},
+		{name: "critical", fileCount: 31, want: LevelCritical},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			score := s.Estimate(Input{FileCount: tt.fileCount})
+			if score.Level != tt.want {
+				t.Fatalf("FileCount=%d level=%s, want %s (raw=%f)", tt.fileCount, score.Level, tt.want, score.RawScore)
+			}
+		})
+	}
+}
+
 func TestEstimate_BoundaryValues(t *testing.T) {
 	t.Parallel()
 	s := NewScorer(DefaultThresholds())

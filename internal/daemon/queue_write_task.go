@@ -83,18 +83,42 @@ func (h *QueueWriteAPI) executeTaskWrite(params QueueWriteParams) *uds.Response 
 
 	priority := resolvePriority(params.Priority)
 	now := formatNowUTC(h.clock)
+	expectedPaths := params.ExpectedPaths
+	if expectedPaths == nil {
+		expectedPaths = []string{"."}
+	}
+	definitionOfAbort := params.DefinitionOfAbort
+	if definitionOfAbort == nil {
+		defaultDOA := model.DefaultDefinitionOfAbort()
+		definitionOfAbort = &defaultDOA
+	}
+	operationType := params.OperationType
+	if operationType == "" {
+		switch {
+		case params.RunOnMain:
+			operationType = model.OperationTypeVerify
+		case params.RunOnIntegration:
+			operationType = model.OperationTypeRollout
+		}
+	}
 	tq.Tasks = append(tq.Tasks, model.Task{
 		ID:                 id,
 		CommandID:          params.CommandID,
 		Purpose:            params.Purpose,
 		Content:            params.Content,
 		AcceptanceCriteria: params.AcceptanceCriteria,
+		DefinitionOfDone:   params.DefinitionOfDone,
 		Constraints:        params.Constraints,
 		BlockedBy:          params.BlockedBy,
 		BloomLevel:         params.BloomLevel,
 		ToolsHint:          params.ToolsHint,
 		PersonaHint:        params.PersonaHint,
 		SkillRefs:          params.SkillRefs,
+		ExpectedPaths:      expectedPaths,
+		DefinitionOfAbort:  definitionOfAbort,
+		RunOnMain:          params.RunOnMain,
+		RunOnIntegration:   params.RunOnIntegration,
+		OperationType:      operationType,
 		Priority:           priority,
 		Status:             model.StatusPending,
 		CreatedAt:          now,
@@ -155,7 +179,62 @@ func validateTaskWriteParams(params QueueWriteParams, maxEntryContentBytes int) 
 	if resp := validatePersonaAndSkillRefs(params.PersonaHint, params.SkillRefs); resp != nil {
 		return resp
 	}
+	if resp := validateQueueWriteTaskSchemaParams(params); resp != nil {
+		return resp
+	}
 	return nil
+}
+
+func validateQueueWriteTaskSchemaParams(params QueueWriteParams) *uds.Response {
+	const maxDefinitionOfDoneItems = 20
+	if len(params.DefinitionOfDone) > maxDefinitionOfDoneItems {
+		return uds.ErrorResponse(uds.ErrCodeValidation,
+			fmt.Sprintf("definition_of_done exceeds maximum of %d items", maxDefinitionOfDoneItems))
+	}
+	for _, item := range params.DefinitionOfDone {
+		if strings.TrimSpace(item) == "" {
+			return uds.ErrorResponse(uds.ErrCodeValidation, "definition_of_done must not contain empty entries")
+		}
+	}
+
+	if params.ExpectedPaths != nil && len(params.ExpectedPaths) == 0 {
+		return uds.ErrorResponse(uds.ErrCodeValidation, "expected_paths must contain at least one path when provided")
+	}
+	seenPaths := make(map[string]bool, len(params.ExpectedPaths))
+	for _, p := range params.ExpectedPaths {
+		cleaned, err := validate.FilePath(p)
+		if err != nil {
+			return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid expected_paths entry: %v", err))
+		}
+		if filepath.IsAbs(cleaned) {
+			return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("expected_paths must be relative, got %q", p))
+		}
+		if seenPaths[cleaned] {
+			return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("duplicate expected_paths entry: %q", p))
+		}
+		seenPaths[cleaned] = true
+	}
+
+	if params.DefinitionOfAbort != nil {
+		if params.DefinitionOfAbort.MaxRepairCount <= 0 {
+			return uds.ErrorResponse(uds.ErrCodeValidation, "definition_of_abort.max_repair_count must be positive")
+		}
+		if params.DefinitionOfAbort.MaxWallClockSec <= 0 {
+			return uds.ErrorResponse(uds.ErrCodeValidation, "definition_of_abort.max_wall_clock_sec must be positive")
+		}
+		for _, cond := range params.DefinitionOfAbort.ExplicitFailureConditions {
+			if strings.TrimSpace(cond) == "" {
+				return uds.ErrorResponse(uds.ErrCodeValidation, "definition_of_abort.explicit_failure_conditions must not contain empty entries")
+			}
+		}
+	}
+
+	switch params.OperationType {
+	case "", model.OperationTypeVerify, model.OperationTypeRepair, model.OperationTypeRollout:
+		return nil
+	default:
+		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid operation_type: %q", params.OperationType))
+	}
 }
 
 func validateBlockedBy(blockedBy []string) *uds.Response {

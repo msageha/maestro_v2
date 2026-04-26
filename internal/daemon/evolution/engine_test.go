@@ -73,6 +73,21 @@ func TestPlanMutations_IndicesSequential(t *testing.T) {
 	}
 }
 
+func TestPlanMutations_MaxMutationsCap(t *testing.T) {
+	t.Parallel()
+	e := NewEngine([]Strategy{StrategyDiff, StrategyFull, StrategyCross}, nil)
+	e.SetMaxMutationsPerRound(3)
+	slots := e.PlanMutations(2)
+	if len(slots) != 3 {
+		t.Fatalf("expected 3 capped slots, got %d", len(slots))
+	}
+	for i, s := range slots {
+		if s.Index != i {
+			t.Fatalf("slot %d has index %d, expected %d", i, s.Index, i)
+		}
+	}
+}
+
 func TestCheckNovelty_NewHash(t *testing.T) {
 	t.Parallel()
 	e := NewEngine(nil, nil)
@@ -102,6 +117,23 @@ func TestCheckNovelty_EmptyExisting(t *testing.T) {
 	e := NewEngine(nil, nil)
 	if !e.CheckNovelty(HashContent("anything"), nil) {
 		t.Fatal("expected novel when no existing hashes")
+	}
+}
+
+func TestCheckNovelty_Threshold(t *testing.T) {
+	t.Parallel()
+	e := NewEngine(nil, nil)
+	e.SetNoveltyThreshold(0)
+	if e.CheckNovelty(HashContent("unique"), nil) {
+		t.Fatal("threshold=0 should suppress novelty for exact-hash scorer")
+	}
+
+	e.SetNoveltyThreshold(0.99)
+	if !e.CheckNovelty(HashContent("unique"), []string{HashContent("other")}) {
+		t.Fatal("different hash should be novel below default-like threshold")
+	}
+	if e.CheckNovelty(HashContent("same"), []string{HashContent("same")}) {
+		t.Fatal("same hash should not be novel")
 	}
 }
 

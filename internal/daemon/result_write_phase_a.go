@@ -3,6 +3,8 @@ package daemon
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
@@ -30,6 +32,7 @@ import (
 type resultWritePhaseAResult struct {
 	resultID         string
 	retryTask        *model.Task // non-nil if a retry should be scheduled (caller handles registration)
+	sourceTask       *model.Task // queue task snapshot used for post-verify repair scheduling
 	queueWriteFailed bool        // true when result was committed but queue terminal write failed (H2 sticky error)
 	originalTaskID   string      // non-empty if this task is a retry of another (for lineage update in Phase B)
 	// abortByMaxRepair indicates the failed task was rejected for retry
@@ -124,6 +127,12 @@ func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatu
 		}
 	}
 
+	sourceTask := tq.Tasks[taskIdx]
+	if err := validateFilesChangedWithinExpectedPaths(params.FilesChanged, sourceTask.ExpectedPaths); err != nil {
+		return nil, &resultWriteError{uds.ErrCodeValidation,
+			fmt.Sprintf("files_changed outside expected_paths for task %s: %v", params.TaskID, err)}
+	}
+
 	// 5. Append result entry
 	resultID, err := h.appendResultEntry(&rf, params, resultStatus)
 	if err != nil {
@@ -131,10 +140,10 @@ func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatu
 	}
 
 	// 6. Check for retry if task failed
-	retryTask, abortByMaxRepair := h.evaluateRetry(&tq.Tasks[taskIdx], params, resultStatus)
+	retryTask, abortByMaxRepair := h.evaluateRetry(&sourceTask, params, resultStatus)
 
 	// 6b. Extract original task ID for retry lineage (Pass to Phase B)
-	originalTaskID := tq.Tasks[taskIdx].OriginalTaskID
+	originalTaskID := sourceTask.OriginalTaskID
 
 	// 7. Update queue entry to terminal
 	now := h.clock.Now().UTC().Format(time.RFC3339)
@@ -163,11 +172,46 @@ func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatu
 	return &resultWritePhaseAResult{
 		resultID:             resultID,
 		retryTask:            retryTask,
+		sourceTask:           &sourceTask,
 		queueWriteFailed:     queueWriteFailed,
 		originalTaskID:       originalTaskID,
 		abortByMaxRepair:     abortByMaxRepair,
 		taskRunOnIntegration: tq.Tasks[taskIdx].RunOnIntegration,
 	}, nil
+}
+
+func validateFilesChangedWithinExpectedPaths(filesChanged, expectedPaths []string) error {
+	if len(filesChanged) == 0 || len(expectedPaths) == 0 {
+		return nil
+	}
+	var outside []string
+	for _, file := range filesChanged {
+		if !pathAllowedByExpectedPaths(file, expectedPaths) {
+			outside = append(outside, file)
+		}
+	}
+	if len(outside) > 0 {
+		return fmt.Errorf("%s", strings.Join(outside, ", "))
+	}
+	return nil
+}
+
+func pathAllowedByExpectedPaths(file string, expectedPaths []string) bool {
+	file = filepath.ToSlash(filepath.Clean(strings.TrimSpace(file)))
+	for _, exp := range expectedPaths {
+		exp = filepath.ToSlash(filepath.Clean(strings.TrimSpace(exp)))
+		if exp == "" {
+			continue
+		}
+		if exp == "." {
+			return true
+		}
+		exp = strings.TrimSuffix(exp, "/")
+		if file == exp || strings.HasPrefix(file, exp+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // checkResultIdempotency checks whether a result for the given task already
@@ -222,6 +266,8 @@ func (h *ResultWriteAPI) validateFencing(tq *model.TaskQueue, rf *model.TaskResu
 				}
 			}
 			// Terminal in queue but no result entry — proceed to write result
+			// and re-save the same terminal queue status below.
+			return taskIdx, "", nil
 		} else {
 			return -1, "", &resultWriteError{uds.ErrCodeDuplicate,
 				fmt.Sprintf("task %s already terminal with status %s in queue", params.TaskID, queueTask.Status)}

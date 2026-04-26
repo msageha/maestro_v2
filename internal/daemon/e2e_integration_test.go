@@ -128,6 +128,7 @@ func callPlanSubmit(t *testing.T, e *daemon.E2EDaemon, commandID, tasksFile stri
 	return e.HandlePlan(&uds.Request{
 		ProtocolVersion: 1,
 		Command:         "plan",
+		CallerRole:      uds.RolePlanner,
 		Params:          params,
 	})
 }
@@ -146,6 +147,7 @@ func callPlanSubmitPhase(t *testing.T, e *daemon.E2EDaemon, commandID, tasksFile
 	return e.HandlePlan(&uds.Request{
 		ProtocolVersion: 1,
 		Command:         "plan",
+		CallerRole:      uds.RolePlanner,
 		Params:          params,
 	})
 }
@@ -163,6 +165,7 @@ func callPlanComplete(t *testing.T, e *daemon.E2EDaemon, commandID, summary stri
 	return e.HandlePlan(&uds.Request{
 		ProtocolVersion: 1,
 		Command:         "plan",
+		CallerRole:      uds.RolePlanner,
 		Params:          params,
 	})
 }

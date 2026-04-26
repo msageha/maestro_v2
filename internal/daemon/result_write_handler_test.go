@@ -552,8 +552,8 @@ func TestResultWrite_Failed(t *testing.T) {
 	if err := yamlv3.Unmarshal(sdata, &state); err != nil {
 		t.Fatalf("unmarshal state: %v", err)
 	}
-	if state.TaskStates[taskID] != model.StatusFailed {
-		t.Errorf("state task_states[%s] = %q, want %q", taskID, state.TaskStates[taskID], model.StatusFailed)
+	if state.TaskStates[taskID] != model.StatusPausedForReplan {
+		t.Errorf("state task_states[%s] = %q, want %q", taskID, state.TaskStates[taskID], model.StatusPausedForReplan)
 	}
 }
 
@@ -599,6 +599,56 @@ func TestResultWrite_FilesChanged(t *testing.T) {
 	}
 	if !rf.Results[0].PartialChangesPossible {
 		t.Error("partial_changes_possible should be true")
+	}
+}
+
+func TestResultWrite_FilesChangedOutsideExpectedPathsRejected(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	taskID := "task_0000000001_abcdef01"
+	commandID := "cmd_0000000001_abcdef01"
+	workerID := "worker1"
+	leaseEpoch := 1
+	owner := workerID
+
+	tq := model.TaskQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_task",
+		Tasks: []model.Task{{
+			ID:            taskID,
+			CommandID:     commandID,
+			Purpose:       "test purpose",
+			Content:       "test content",
+			BloomLevel:    3,
+			Status:        model.StatusInProgress,
+			LeaseOwner:    &owner,
+			LeaseEpoch:    leaseEpoch,
+			ExpectedPaths: []string{"src/allowed/"},
+			CreatedAt:     "2026-01-01T00:00:00Z",
+			UpdatedAt:     "2026-01-01T00:00:00Z",
+		}},
+	}
+	if err := yamlutil.AtomicWrite(filepath.Join(d.maestroDir, "queue", workerID+".yaml"), tq); err != nil {
+		t.Fatalf("write worker queue: %v", err)
+	}
+	setupCommandState(t, d, commandID, []string{taskID})
+
+	req := makeResultWriteRequest(t, ResultWriteParams{
+		Reporter:     workerID,
+		TaskID:       taskID,
+		CommandID:    commandID,
+		LeaseEpoch:   leaseEpoch,
+		Status:       "completed",
+		Summary:      "changed files",
+		FilesChanged: []string{"src/allowed/main.go", "src/forbidden/main.go"},
+	})
+
+	resp := d.api.handleResultWrite(req)
+	if resp.Success {
+		t.Fatal("expected files_changed outside expected_paths to be rejected")
+	}
+	if resp.Error.Code != uds.ErrCodeValidation {
+		t.Errorf("error code = %q, want %q", resp.Error.Code, uds.ErrCodeValidation)
 	}
 }
 
@@ -1125,7 +1175,7 @@ func TestResultWrite_PhaseBIdempotency_ConflictRejected(t *testing.T) {
 
 	// Call Phase B directly with a different result_id.
 	incomingResultID := "res_0000000001_incoming2"
-	_, err := d.api.result.resultWritePhaseB(params, incomingResultID, model.StatusCompleted, false, "", false, false)
+	_, _, err := d.api.result.resultWritePhaseB(params, incomingResultID, model.StatusCompleted, false, "", false, false)
 	// updateYAMLFile converts errNoUpdate to nil, so no error is returned.
 	if err != nil {
 		t.Fatalf("expected nil error (errNoUpdate), got %v", err)
@@ -1569,5 +1619,35 @@ func TestResultWrite_ValidateStateTransition_AllowedTransitionSilent(t *testing.
 	}
 	if strings.Contains(logBuf.String(), "invalid_state_transition") {
 		t.Errorf("happy-path transition must not log invalid_state_transition, got: %s", logBuf.String())
+	}
+}
+
+func TestResultWrite_ValidateStateTransition_RunningCompletedSilent(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+	taskID := "task_0000000004_abcdef04"
+	commandID := "cmd_0000000004_abcdef04"
+	workerID := "worker1"
+
+	setupWorkerQueue(t, d, workerID, taskID, commandID, 1)
+	setupCommandStateWithStatus(t, d, commandID, []string{taskID}, model.StatusRunning)
+
+	logBuf := testDaemonLogBuf(t, d)
+	logBuf.Reset()
+
+	req := makeResultWriteRequest(t, ResultWriteParams{
+		Reporter:   workerID,
+		TaskID:     taskID,
+		CommandID:  commandID,
+		LeaseEpoch: 1,
+		Status:     "completed",
+		Summary:    "done",
+	})
+	resp := d.api.handleResultWrite(req)
+	if !resp.Success {
+		t.Fatalf("expected success, got error: %v", resp.Error)
+	}
+	if strings.Contains(logBuf.String(), "invalid_state_transition") {
+		t.Errorf("running worker completion must not log invalid_state_transition, got: %s", logBuf.String())
 	}
 }

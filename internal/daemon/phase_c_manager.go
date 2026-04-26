@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"path/filepath"
 	"sync"
 
 	"github.com/msageha/maestro_v2/internal/daemon/bandit"
@@ -25,6 +26,7 @@ type PhaseCManager struct {
 	FingerprintDB    *learnings.FingerprintDB
 	ComplexityScorer *complexity.Scorer
 	FeatureEvaluator *featuregate.Evaluator
+	fingerprintPath  string
 
 	// searchMu protects the per-command search-tree bookkeeping below.
 	// Required because classifyAndLog* runs on the dispatch goroutine while
@@ -67,7 +69,7 @@ type logFunc func(level LogLevel, format string, args ...any)
 // newPhaseCManager creates and initializes all Phase C sub-components based on
 // the provided configuration. Each sub-component is conditionally initialized
 // based on its EffectiveEnabled() flag.
-func newPhaseCManager(cfg model.Config, availableModels []string, log logFunc) *PhaseCManager {
+func newPhaseCManager(cfg model.Config, maestroDir string, availableModels []string, log logFunc) *PhaseCManager {
 	m := &PhaseCManager{
 		commandRoots:    make(map[string]bool),
 		taskDecisions:   make(map[string]search.Decision),
@@ -86,7 +88,11 @@ func newPhaseCManager(cfg model.Config, availableModels []string, log logFunc) *
 			weights[evolution.Strategy(k)] = v
 		}
 		m.EvolutionEngine = evolution.NewEngine(strategies, weights)
-		log(LogLevelInfo, "evolution engine initialized")
+		m.EvolutionEngine.SetMaxMutationsPerRound(cfg.Evolution.EffectiveMaxMutationsPerRound())
+		m.EvolutionEngine.SetNoveltyThreshold(cfg.Evolution.EffectiveNoveltyThreshold())
+		log(LogLevelInfo, "evolution engine initialized max_mutations=%d novelty_threshold=%.3f",
+			cfg.Evolution.EffectiveMaxMutationsPerRound(),
+			cfg.Evolution.EffectiveNoveltyThreshold())
 	}
 
 	// C-2 Adaptive Model Selection
@@ -106,12 +112,20 @@ func newPhaseCManager(cfg model.Config, availableModels []string, log logFunc) *
 	// C-3 Extended Verification
 	if cfg.ExtendedVerification.EffectiveEnabled() {
 		m.EnsembleVerifier = verification.NewVerifier()
-		for _, p := range m.EnsembleVerifier.DefaultPerspectives() {
-			if err := m.EnsembleVerifier.AddPerspective(p); err != nil {
-				log(LogLevelWarn, "skipping perspective %s: %v", p.Name, err)
-			}
+		perspectives := configureVerificationPerspectives(cfg.ExtendedVerification, m.EnsembleVerifier.Perspectives())
+		if err := m.EnsembleVerifier.SetPerspectives(perspectives); err != nil {
+			log(LogLevelWarn, "extended verification perspective config rejected: %v", err)
 		}
-		log(LogLevelInfo, "ensemble verifier initialized")
+		m.EnsembleVerifier.SetMaxAutoRetries(cfg.ExtendedVerification.EffectiveMaxAutoRetries())
+		log(LogLevelInfo, "ensemble verifier initialized perspectives=%d max_auto_retries=%d",
+			len(m.EnsembleVerifier.Perspectives()),
+			m.EnsembleVerifier.MaxAutoRetries())
+		if cfg.ExtendedVerification.EffectiveSecurityCheck() {
+			log(LogLevelInfo, "ensemble verifier security perspective enabled")
+		}
+		if cfg.ExtendedVerification.EffectivePerformanceBench() {
+			log(LogLevelInfo, "ensemble verifier performance perspective enabled")
+		}
 	}
 
 	// C-4 Exploratory Search
@@ -130,14 +144,31 @@ func newPhaseCManager(cfg model.Config, availableModels []string, log logFunc) *
 
 	// C-5 FingerprintDB (Self-Improvement)
 	if cfg.SelfImprovement.EffectiveEnabled() {
-		m.FingerprintDB = learnings.NewFingerprintDB(cfg.SelfImprovement.EffectiveArchiveMaxSize())
-		log(LogLevelInfo, "fingerprint DB initialized")
+		m.fingerprintPath = filepath.Join(maestroDir, "state", "fingerprint_db.json")
+		db, err := learnings.LoadFingerprintDB(m.fingerprintPath, cfg.SelfImprovement.EffectiveArchiveMaxSize())
+		if err != nil {
+			log(LogLevelWarn, "fingerprint DB load failed path=%s error=%v; starting empty", m.fingerprintPath, err)
+			db = learnings.NewFingerprintDB(cfg.SelfImprovement.EffectiveArchiveMaxSize())
+		}
+		m.FingerprintDB = db
+		log(LogLevelInfo, "fingerprint DB initialized patterns=%d targets=%v exclude_targets=%v",
+			m.FingerprintDB.Size(),
+			cfg.SelfImprovement.EffectiveTargets(),
+			cfg.SelfImprovement.EffectiveExcludeTargets())
 	}
 
 	// C-6 Complexity Scorer
 	if cfg.Complexity.EffectiveEnabled() {
-		m.ComplexityScorer = complexity.NewScorer(complexity.DefaultThresholds())
-		log(LogLevelInfo, "complexity scorer initialized")
+		fileThresholds := complexity.FileThresholds{
+			SimpleMaxFiles:   cfg.Complexity.Thresholds.EffectiveSimpleMaxFiles(),
+			StandardMaxFiles: cfg.Complexity.Thresholds.EffectiveStandardMaxFiles(),
+			ComplexMaxFiles:  cfg.Complexity.Thresholds.EffectiveComplexMaxFiles(),
+		}
+		m.ComplexityScorer = complexity.NewScorerWithFileThresholds(complexity.DefaultThresholds(), fileThresholds)
+		log(LogLevelInfo, "complexity scorer initialized simple_max_files=%d standard_max_files=%d complex_max_files=%d",
+			fileThresholds.SimpleMaxFiles,
+			fileThresholds.StandardMaxFiles,
+			fileThresholds.ComplexMaxFiles)
 	}
 
 	// C-8 Feature Gate
@@ -161,6 +192,57 @@ func newPhaseCManager(cfg model.Config, availableModels []string, log logFunc) *
 	}
 
 	return m
+}
+
+func configureVerificationPerspectives(cfg model.ExtendedVerificationConfig, base []verification.Perspective) []verification.Perspective {
+	weights := cfg.EffectivePerspectiveWeights()
+	out := make([]verification.Perspective, 0, len(base)+2)
+	seen := make(map[string]bool, len(base)+2)
+	for _, p := range base {
+		if w, ok := weights[p.Name]; ok {
+			p.Weight = w
+		}
+		out = append(out, p)
+		seen[p.Name] = true
+	}
+	if cfg.EffectiveSecurityCheck() && !seen["security"] {
+		weight := weights["security"]
+		if weight == 0 {
+			weight = 0.5
+		}
+		out = append(out, verification.Perspective{
+			Name:     "security",
+			Commands: []string{"gosec ./..."},
+			Weight:   weight,
+		})
+	}
+	if cfg.EffectivePerformanceBench() && !seen["performance"] {
+		weight := weights["performance"]
+		if weight == 0 {
+			weight = 0.5
+		}
+		out = append(out, verification.Perspective{
+			Name:     "performance",
+			Commands: []string{"go test -bench=. ./..."},
+			Weight:   weight,
+		})
+	}
+	return out
+}
+
+// SaveState persists stateful Phase C components that must survive daemon
+// restarts.
+func (m *PhaseCManager) SaveState(log logFunc) {
+	if m == nil {
+		return
+	}
+	if m.FingerprintDB != nil && m.fingerprintPath != "" {
+		if err := m.FingerprintDB.SaveJSON(m.fingerprintPath); err != nil {
+			log(LogLevelWarn, "fingerprint DB save failed path=%s error=%v", m.fingerprintPath, err)
+		} else {
+			log(LogLevelInfo, "fingerprint DB saved path=%s patterns=%d", m.fingerprintPath, m.FingerprintDB.Size())
+		}
+	}
 }
 
 // LogShutdownStats logs summary statistics for stateful Phase C components.

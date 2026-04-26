@@ -89,6 +89,40 @@ func TestValidateRunOnMainContent_RejectsDestructivePatterns(t *testing.T) {
 	}
 }
 
+func TestValidateRunOnMainContent_RejectsDestructivePatternsOutsideContent(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		task *model.Task
+	}{
+		{
+			name: "acceptance criteria",
+			task: &model.Task{RunOnMain: true, Content: "go test ./...", AcceptanceCriteria: "then run git reset --hard HEAD"},
+		},
+		{
+			name: "constraints",
+			task: &model.Task{RunOnIntegration: true, Content: "resolve conflict", Constraints: []string{"finish with git push origin main"}},
+		},
+		{
+			name: "persona hint",
+			task: &model.Task{RunOnMain: true, Content: "inspect", PersonaHint: "use rm -rf build to clean"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateRunOnMainContent(tt.task)
+			if err == nil {
+				t.Fatalf("expected destructive instruction to be rejected")
+			}
+			if !errors.Is(err, ErrDestructiveContentRejected) {
+				t.Fatalf("expected ErrDestructiveContentRejected, got: %v", err)
+			}
+		})
+	}
+}
+
 func TestValidateRunOnMainContent_WorktreeTasksUnaffected(t *testing.T) {
 	t.Parallel()
 	// Destructive content inside a worktree-isolated task is recoverable

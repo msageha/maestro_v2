@@ -138,7 +138,13 @@ func (qh *QueueHandler) applyTaskDispatchResult(dr dispatchResult, taskQueues ma
 					}
 					qh.scanExecutor.scanCounters.LeaseReleases++
 				},
-				onSuccess: func() { qh.scanExecutor.scanCounters.TasksDispatched++ },
+				onSuccess: func() {
+					if err := qh.markTaskRunning(task); err != nil {
+						qh.log(LogLevelError, "task_running_state_update_failed task=%s command=%s error=%v",
+							task.ID, task.CommandID, err)
+					}
+					qh.scanExecutor.scanCounters.TasksDispatched++
+				},
 				markDirty: func() { taskDirty[queueFile] = true },
 			})
 			return

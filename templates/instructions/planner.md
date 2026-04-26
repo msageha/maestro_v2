@@ -60,6 +60,25 @@ PLAN
 
 **検証（副作用なし）**: `maestro plan submit --dry-run --command-id <id> --tasks-file - <<'PLAN'`
 
+### verify.yaml の生成・更新（Phase 0 必須）
+
+各 command のタスク投入前に、検証基準を command-scoped verify config として必ず定義する。`plan submit` より先に、同じ `<command_id>` を指定して更新する。
+
+```
+maestro verify write --command-id <command_id> --config-file - <<'VERIFY'
+verify:
+  build:
+    - go test ./...
+  lint: []
+  test: []
+  typecheck: []
+VERIFY
+```
+
+- 少なくとも 1 つの検証コマンドを含める。空の `verify: {}` は daemon が拒否する
+- コマンドには `&&`, `;`, `|`, リダイレクト等の shell メタ文字を含めない。複数手順が必要なら category に複数行で列挙する
+- 言語固有の検証が不明な場合でも、daemon は fallback として `git diff --check` を使う。ただし Planner は可能な限り対象リポジトリに合った build/test/typecheck を明示する
+
 #### plan submit の stdout 出力形式
 
 成功時、stdout に JSON（インデント付き）が出力される。`task_id` は Daemon が採番するため、Planner が生成する必要はない。YAML 内の `blocked_by` には `name` を使用する。
@@ -621,8 +640,9 @@ bloom_level: テスト実行中心 → L3、コード分析必要 → L4-L5
 #### 問題発見時の修正ループ
 
 verification が `failed` の場合:
-- **仕様不一致**（テスト失敗等）→ `add-retry-task` で修正+再検証タスクを生成。content に問題詳細・修正方針・検証コマンドを含める
-- **実行異常**（環境要因等）→ 通常のリトライ処理
+- daemon の VerifyRunner が task を `repair_pending` に遷移させ、`retry.task_execution.enabled: true` かつ修復上限内であれば repair task を自動投入する
+- Planner は同じ失敗に対して即座に `add-retry-task` を重ねて投入しない。まず自動 repair task の有無と上限到達状態を確認する
+- `paused_for_replan` に到達した場合のみ、原因を要約して再計画するか `plan complete` で failed 報告する
 
 **ループ上限（ハード制約）**: フェーズあたり最大 2 ラウンド（初回 verification + fix+re-verify）。ラウンド 2 でも問題が残る場合は **必ず** `plan complete` で failed 報告を行い、**これ以上 `add-task` / `add-retry-task` を呼ばない**。
 
@@ -636,7 +656,7 @@ verification が `failed` の場合:
 
 **failed の「真因」を先に確認する**:
 
-`failed` が観測されたら、補修タスクを投入する前に次を必ず確認する。これを怠ると、実行されていない / 別ディレクトリで実行された検証の結果を鵜呑みにして無意味な repair loop に入る（2026-04 実ランで実測された失敗モード）。
+`failed` / `repair_pending` が観測されたら、手動で補修タスクを投入する前に次を必ず確認する。daemon の自動 repair が既に投入済みなら、Planner は追加投入せず進捗を待つ。
 
 1. 失敗タスクの `.maestro/results/worker{N}.yaml` を Read し、`status` と `summary` を確認する
 2. verification の対象が main/統合ブランチなのに `run_on_main` / `run_on_integration` が付与されているか確認する（付与されていない場合、worker worktree を見た false FAIL の可能性が極めて高い）
@@ -875,20 +895,20 @@ only invoke `maestro plan retry-publish --command-id cmd_xxx` manually if the wo
    `content` に以下を含める:
    - 競合ファイル一覧（シグナルの `conflict_files` から取得）
    - `git status` で競合状態を確認する
-   - 競合ファイルを手動で編集して解消し、`git add <files>` → `git commit -m "[maestro] resolve publish conflict"` する
+   - 競合ファイルを手動で編集して解消する。**`git add` / `git commit` は実行しない**（Daemon が解消ファイルを検査・stage し、forward-merge commit と retry-publish を自動実行する）
    - タスク完了を Planner に報告する（その後 Daemon の AutoRecoverAfterResolution が RetryPublish を発火する）
    - `acceptance_criteria` にコンパイル成功・テストパスを含める
 
-   **task_merge_conflict との違い: なぜ publish_conflict では Worker が git commit するのか:**
-   - `task_merge_conflict` の場合、Worker は自分の worktree 上で解消する。Daemon の `ResumeMerge` が後段で worker のブランチを統合ブランチへマージし直すため、コミットは Daemon が握る。Worker 側で `git commit` してしまうと二重コミットや merge marker 残存リスクがある。
-   - `publish_conflict` の場合、Worker は最初から **integration worktree 上で直接編集する**。Daemon が後から再マージしてくれる前段は存在せず、`PublishToBase` は dirty worktree を許容しない。Worker が自分でコミットしない限り解消した内容が反映されないため、ここでは明示的に `git add` / `git commit` を依頼する。
+   **task_merge_conflict との違い:**
+   - `task_merge_conflict` の場合、Worker は自分の worktree 上で解消する。Daemon の `ResumeMerge` が後段で worker のブランチを統合ブランチへマージし直すため、コミットは Daemon が握る。
+   - `publish_conflict` の場合、Worker は **integration worktree 上で直接編集する**。Worker の完了報告後、Daemon が未ステージの競合解消ファイルを検査して stage し、forward-merge commit を確定してから retry-publish を進める。Worker はどちらの場合も `git add` / `git commit` を実行しない。
 
    ```
    maestro plan add-task \
      --command-id <command_id> \
      --purpose "publish conflict 解決: <conflict_files>" \
-     --content "integration worktree で publish conflict を解消せよ。競合ファイル: <conflict_files>。git status で状態確認 → 競合解消 → git add → git commit を行い、完了を報告すること（retry-publish は Planner が行う）" \
-     --acceptance-criteria "コンパイル成功・テストパス・git log で解消コミットが確認できる" \
+     --content "integration worktree で publish conflict を解消せよ。競合ファイル: <conflict_files>。git status で状態確認 → 競合ファイルを編集して解消 → git add / git commit は実行せず、完了を報告すること（stage/commit/retry-publish は Daemon が行う）" \
+     --acceptance-criteria "コンパイル成功・テストパス・競合マーカーが残っていない" \
      --expected-paths <conflict_file1> [--expected-paths <conflict_file2> ...] \
      --bloom-level 3 \
      --persona-hint implementer \
@@ -1016,7 +1036,7 @@ tasks:
       max_wall_clock_sec: 1800
 ```
 
-> **必須フィールドの注意**: `expected_paths` と `definition_of_abort` は REQUIREMENTS §S3-1 によりタスク毎に必ず明示する必要がある。省略すると `maestro plan submit` がスキーマ違反として拒否し、自律実行が止まる。`ApplyTaskDefaults` は要求フィールドを自動補完しない設計のため、Planner が出力時点で値を埋めること。
+> **必須フィールドの注意**: `expected_paths` と `definition_of_abort` は REQUIREMENTS §S3-1 によりタスク毎に必ず明示する必要がある。省略すると `maestro plan submit` がスキーマ違反として拒否し、自律実行が止まる。Planner が出力時点で値を埋めること。
 
 | フィールド | 必須 | 説明 |
 |---|---|---|

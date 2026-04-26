@@ -171,8 +171,8 @@ func (qh *QueueHandler) classifyAndLogCommand(cmd *model.Command) {
 // The evaluated level feeds two downstream consumers (both nil-safe):
 //  1. FeatureEvaluator — gates optional features (learnings injection,
 //     cross-agent review) per profile.
-//  2. BanditSelector — when adaptive model selection is enabled for the
-//     level, the worker model override is recorded here for observability.
+//  2. Search telemetry — records the sampled widen/deepen decision for later
+//     reward accounting. Actual worker assignment is decided before dispatch.
 func (qh *QueueHandler) classifyAndLogTask(task *model.Task, workerID string) {
 	if qh == nil || qh.phaseC == nil || task == nil {
 		return

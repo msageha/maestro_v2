@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strings"
 
 	"github.com/msageha/maestro_v2/internal/model"
 )
@@ -45,7 +46,7 @@ var destructivePatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r`),
 }
 
-// validateRunOnMainContent inspects task.Content for destructive shell
+// validateRunOnMainContent inspects worker-visible task instructions for destructive shell
 // patterns. It only runs when task.RunOnMain or task.RunOnIntegration is set,
 // because those are the only paths where the worker operates against shared
 // state. For worktree-only tasks the check is skipped — destructive operations
@@ -61,11 +62,25 @@ func validateRunOnMainContent(task *model.Task) error {
 	if !task.RunOnMain && !task.RunOnIntegration {
 		return nil
 	}
+	fields := runOnMainInstructionFields(task)
 	for _, pat := range destructivePatterns {
-		if pat.MatchString(task.Content) {
-			return fmt.Errorf("%w: matched=%s run_on_main=%t run_on_integration=%t",
-				ErrDestructiveContentRejected, pat.String(), task.RunOnMain, task.RunOnIntegration)
+		for name, value := range fields {
+			if pat.MatchString(value) {
+				return fmt.Errorf("%w: field=%s matched=%s run_on_main=%t run_on_integration=%t",
+					ErrDestructiveContentRejected, name, pat.String(), task.RunOnMain, task.RunOnIntegration)
+			}
 		}
 	}
 	return nil
+}
+
+func runOnMainInstructionFields(task *model.Task) map[string]string {
+	return map[string]string{
+		"purpose":             task.Purpose,
+		"content":             task.Content,
+		"acceptance_criteria": task.AcceptanceCriteria,
+		"constraints":         strings.Join(task.Constraints, "\n"),
+		"tools_hint":          strings.Join(task.ToolsHint, "\n"),
+		"persona_hint":        task.PersonaHint,
+	}
 }

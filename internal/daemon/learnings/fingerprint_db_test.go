@@ -3,6 +3,7 @@ package learnings
 import (
 	"fmt"
 	"math"
+	"path/filepath"
 	"sync"
 	"testing"
 )
@@ -191,6 +192,45 @@ func TestPatterns(t *testing.T) {
 	patterns := db.Patterns()
 	if len(patterns) != 2 {
 		t.Fatalf("expected 2 patterns, got %d", len(patterns))
+	}
+}
+
+func TestSaveAndLoadJSON(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "fingerprints.json")
+	db := NewFingerprintDB(100)
+	db.Store("fp1", "compile", "fix imports")
+	db.RecordSuccess("fp1")
+	db.Store("fp2", "test", "run focused test")
+
+	if err := db.SaveJSON(path); err != nil {
+		t.Fatalf("SaveJSON: %v", err)
+	}
+
+	loaded, err := LoadFingerprintDB(path, 100)
+	if err != nil {
+		t.Fatalf("LoadFingerprintDB: %v", err)
+	}
+	p, ok := loaded.Query("fp1")
+	if !ok {
+		t.Fatal("expected fp1 after load")
+	}
+	if p.SuccessRate != 1.0 || p.SuccessCount != 1 {
+		t.Errorf("loaded success stats = rate %f count %d, want 1.0/1", p.SuccessRate, p.SuccessCount)
+	}
+	if got, ok := loaded.SuggestStrategy("fp1"); !ok || got != "fix imports" {
+		t.Errorf("loaded strategy = %q ok=%v, want fix imports true", got, ok)
+	}
+}
+
+func TestLoadFingerprintDB_MissingFile(t *testing.T) {
+	t.Parallel()
+	loaded, err := LoadFingerprintDB(filepath.Join(t.TempDir(), "missing.json"), 100)
+	if err != nil {
+		t.Fatalf("LoadFingerprintDB missing file: %v", err)
+	}
+	if loaded.Size() != 0 {
+		t.Errorf("missing file should produce empty DB, got size=%d", loaded.Size())
 	}
 }
 

@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"github.com/msageha/maestro_v2/internal/daemon/daemonapi"
 	"github.com/msageha/maestro_v2/internal/uds"
 )
 
@@ -9,11 +10,14 @@ import (
 type API struct {
 	shared    *apiContext
 	result    *ResultWriteAPI
+	resultUDS *daemonapi.ResultWrite
 	queue     *QueueWriteAPI
-	plan      *PlanAPI
-	heartbeat *HeartbeatAPI
-	dashboard *DashboardAPI
-	skill     *SkillAPI
+	queueUDS  *daemonapi.QueueWrite
+	plan      *daemonapi.Plan
+	heartbeat *daemonapi.Heartbeat
+	dashboard *daemonapi.Dashboard
+	skill     *daemonapi.Skill
+	verify    *daemonapi.VerifyWrite
 }
 
 // systemHandlers holds UDS handlers that require direct Daemon access.
@@ -37,36 +41,41 @@ func (a *API) registerHandlers(server *uds.Server, sysHandlers systemHandlers) {
 	server.Handle("dashboard", a.handleDashboard)
 	server.Handle("skill_approve", a.handleSkillApprove)
 	server.Handle("skill_reject", a.handleSkillReject)
+	server.Handle("verify_write", a.handleVerifyWrite)
 }
 
 // --- Delegation methods (preserve backward compatibility for tests) ---
 
 func (a *API) handleQueueWrite(req *uds.Request) *uds.Response {
-	return a.queue.handleQueueWrite(req)
+	return a.queueUDS.Handle(req)
 }
 
 func (a *API) handleResultWrite(req *uds.Request) *uds.Response {
-	return a.result.handleResultWrite(req)
+	return a.resultUDS.Handle(req)
 }
 
 func (a *API) handleTaskHeartbeat(req *uds.Request) *uds.Response {
-	return a.heartbeat.handleTaskHeartbeat(req)
+	return a.heartbeat.Handle(req)
 }
 
 func (a *API) handlePlan(req *uds.Request) *uds.Response {
-	return a.plan.handlePlan(req)
+	return a.plan.Handle(req)
 }
 
 func (a *API) handleDashboard(req *uds.Request) *uds.Response {
-	return a.dashboard.handleDashboard(req)
+	return a.dashboard.Handle(req)
 }
 
 func (a *API) handleSkillApprove(req *uds.Request) *uds.Response {
-	return a.skill.handleSkillApprove(req)
+	return a.skill.HandleApprove(req)
 }
 
 func (a *API) handleSkillReject(req *uds.Request) *uds.Response {
-	return a.skill.handleSkillReject(req)
+	return a.skill.HandleReject(req)
+}
+
+func (a *API) handleVerifyWrite(req *uds.Request) *uds.Response {
+	return a.verify.Handle(req)
 }
 
 // notifySelfWrite delegates to the shared apiContext.

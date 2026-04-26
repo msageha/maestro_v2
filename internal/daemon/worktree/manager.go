@@ -386,6 +386,12 @@ func (wm *Manager) ComputeWorkerDiff(commandID, workerID string) (string, error)
 // CommitWorkerChanges commits all changes in a worker's worktree.
 // Idempotent: if there are no changes to commit, returns nil.
 func (wm *Manager) CommitWorkerChanges(commandID, workerID, message string) error {
+	return wm.CommitWorkerChangesWithExpectedPaths(commandID, workerID, message, nil)
+}
+
+// CommitWorkerChangesWithExpectedPaths commits all changes in a worker's
+// worktree after checking the staged file set against the task's expected paths.
+func (wm *Manager) CommitWorkerChangesWithExpectedPaths(commandID, workerID, message string, expectedPaths []string) error {
 	if err := validateIDs(commandID, workerID); err != nil {
 		return err
 	}
@@ -465,7 +471,7 @@ func (wm *Manager) CommitWorkerChanges(commandID, workerID, message string) erro
 	}
 
 	// Commit policy checks
-	if violations := wm.checkCommitPolicy(ws.Path, message, stagedOut); len(violations) > 0 {
+	if violations := wm.checkCommitPolicy(ws.Path, message, stagedOut, expectedPaths); len(violations) > 0 {
 		for _, v := range violations {
 			wm.Log(core.LogLevelWarn, "commit_policy_violation command=%s worker=%s code=%s msg=%s",
 				commandID, workerID, v.Code, v.Message)

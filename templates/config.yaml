@@ -198,7 +198,7 @@ retry:
   task_dispatch_inline_retry_delay_sec: 1
   task_execution:
     # enabled: タスク実行の自動リトライの有効化フラグ
-    # type: bool | default: false | range: true/false
+    # type: bool | default: true in generated config | range: true/false
     enabled: true
     # retryable_exit_codes: リトライ対象の終了コード一覧
     # type: []int | default: [] | range: 制限なし
@@ -389,6 +389,16 @@ quality_gates:
     # type: string | default: "" | range: "warn" or "block"
     failure_action: "warn"
 
+# --- Verify Daemon ---
+# Daemon 所有の検証ランナーと verify_pending stall 復旧。
+verify:
+  # enabled: 実検証ランナーの有効化。false は緊急退避用途のみで、daemon 起動時に MAESTRO_ALLOW_VERIFY_SKIP=1 も必要。
+  # type: *bool | default: true | range: true/false
+  enabled: true
+  # stall_threshold_sec: verify_pending の stall を repair_pending に復旧する秒数。0 は復旧無効。
+  # type: *int | default: 600 (DefaultVerifyStallThresholdSec) | range: >= 0
+  stall_threshold_sec: 600
+
 # --- Admission Control ---
 # verify/repair/rollout フェーズの同時実行数制限。
 # admission_control:
@@ -404,19 +414,19 @@ quality_gates:
 
 # --- Fallback ---
 # Worker の連続失敗時の縮退動作制御。
-# fallback:
-#   # enabled: フォールバックモードの有効化フラグ
-#   # type: bool | default: false | range: true/false
-#   enabled: false
-#   # consecutive_failure_threshold: 縮退発動の連続失敗しきい値
-#   # type: int | default: 5 (DefaultConsecutiveFailureThreshold) | range: >= 0
-#   consecutive_failure_threshold: 5
-#   # recovery_check_interval_sec: 回復チェック間隔 (秒)
-#   # type: int | default: 60 (DefaultRecoveryCheckIntervalSec) | range: >= 0
-#   recovery_check_interval_sec: 60
-#   # min_healthy_duration_sec: 正常復帰に必要な最小持続時間 (秒)
-#   # type: int | default: 120 (DefaultMinHealthyDurationSec) | range: >= 0
-#   min_healthy_duration_sec: 120
+fallback:
+  # enabled: フォールバックモードの有効化フラグ。明示的に false にした場合のみ無効。
+  # type: *bool | default: true | range: true/false
+  enabled: true
+  # consecutive_failure_threshold: 縮退発動の連続失敗しきい値
+  # type: int | default: 5 (DefaultConsecutiveFailureThreshold) | range: >= 0
+  consecutive_failure_threshold: 5
+  # recovery_check_interval_sec: 回復チェック間隔 (秒)
+  # type: int | default: 60 (DefaultRecoveryCheckIntervalSec) | range: >= 0
+  recovery_check_interval_sec: 60
+  # min_healthy_duration_sec: 正常復帰に必要な最小持続時間 (秒)
+  # type: int | default: 120 (DefaultMinHealthyDurationSec) | range: >= 0
+  min_healthy_duration_sec: 120
 
 # --- Review ---
 # 非同期ヘテロジニアスモデルによるコードレビュー。
@@ -438,7 +448,8 @@ quality_gates:
 #   timeout_sec: 300
 
 # --- Rollout ---
-# 複数候補の並列実行と勝者選定。
+# 複数候補の並列実行と勝者選定。現状は production multi-candidate dispatcher が未接続のため、
+# enabled: true は config 検証で拒否される。
 # rollout:
 #   # enabled: ロールアウト機能の有効化フラグ
 #   # type: *bool | default: false | range: true/false
@@ -460,7 +471,8 @@ quality_gates:
 #   min_failure_count: 1
 
 # --- Judge ---
-# ロールアウト候補の Tie-breaking 判定。
+# ロールアウト候補の Tie-breaking 判定。現状は production LLM caller が未接続のため、
+# enabled: true は config 検証で拒否される。
 # judge:
 #   # enabled: Judge 機能の有効化フラグ
 #   # type: *bool | default: false | range: true/false

@@ -375,9 +375,8 @@ func TestPublishToBase_ForwardMergeConflictRecordsFiles(t *testing.T) {
 // TestPublishToBase_ForwardMergeConflict_WorkerResolutionCompletesPublish
 // verifies the full publish_conflict recovery loop: after a forward-merge
 // conflict leaves markers in the integration worktree, a Worker-style
-// `git add` + `git commit` (simulating the --run-on-integration resolution
-// task) completes the merge, and the next PublishToBase call succeeds
-// (forward-merge is skipped because integration already contains base).
+// edit in the --run-on-integration task leaves the files unstaged, and the
+// daemon stages/finalizes the merge on the next PublishToBase call.
 func TestPublishToBase_ForwardMergeConflict_WorkerResolutionCompletesPublish(t *testing.T) {
 	t.Parallel()
 	projectRoot := testutil.InitTestGitRepo(t)
@@ -422,13 +421,11 @@ func TestPublishToBase_ForwardMergeConflict_WorkerResolutionCompletesPublish(t *
 		t.Fatal("expected conflict markers preserved after first PublishToBase failure")
 	}
 
-	// Simulate worker resolution on the integration worktree (Planner contract:
-	// resolve → git add → git commit) via --run-on-integration.
+	// Simulate worker resolution on the integration worktree. The Worker edits
+	// the file only; staging and merge commit are daemon-owned.
 	if err := os.WriteFile(filepath.Join(integrationPath, "README.md"), []byte("resolved version\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	gitAdd(t, integrationPath, "README.md")
-	gitCommit(t, integrationPath, "[maestro] resolve publish conflict")
 
 	// Reset publish failure state to simulate Planner calling retry-publish.
 	if err := wm.RetryPublish(commandID); err != nil {

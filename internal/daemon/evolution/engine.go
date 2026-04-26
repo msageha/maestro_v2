@@ -52,17 +52,42 @@ type CycleResult struct {
 
 // Engine manages evolutionary mutation planning, novelty checking, and survivor selection.
 type Engine struct {
-	strategies      []Strategy
-	strategyWeights map[Strategy]int
-	mu              sync.Mutex
+	strategies       []Strategy
+	strategyWeights  map[Strategy]int
+	maxMutations     int
+	noveltyThreshold float64
+	mu               sync.Mutex
 }
 
 // NewEngine creates a new evolution engine with the given strategies and optional strategy weights.
 func NewEngine(strategies []Strategy, weights map[Strategy]int) *Engine {
 	return &Engine{
-		strategies:      strategies,
-		strategyWeights: weights,
+		strategies:       strategies,
+		strategyWeights:  weights,
+		noveltyThreshold: 1.0,
 	}
+}
+
+// SetMaxMutationsPerRound caps the number of mutation slots produced by
+// PlanMutations. Non-positive values disable the cap for backwards
+// compatibility with callers that construct Engine directly in tests.
+func (e *Engine) SetMaxMutationsPerRound(n int) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.maxMutations = n
+}
+
+// SetNoveltyThreshold configures the similarity threshold used by CheckNovelty.
+// With the current exact-hash implementation, identical hashes have similarity
+// 1 and different hashes have similarity 0. A candidate is novel when its max
+// similarity is below the threshold. Values outside [0,1] are ignored.
+func (e *Engine) SetNoveltyThreshold(threshold float64) {
+	if threshold < 0 || threshold > 1 {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.noveltyThreshold = threshold
 }
 
 // PlanMutations distributes mutation slots across strategies.
@@ -106,6 +131,9 @@ func (e *Engine) PlanMutations(parentCount int) []MutationSlot {
 			idx++
 		}
 	}
+	if e.maxMutations > 0 && len(slots) > e.maxMutations {
+		slots = slots[:e.maxMutations]
+	}
 
 	return slots
 }
@@ -113,12 +141,19 @@ func (e *Engine) PlanMutations(parentCount int) []MutationSlot {
 // CheckNovelty determines if a candidate is novel compared to existing candidates.
 // Currently uses SHA-256 hash exact match. Future: embedding-based similarity.
 func (e *Engine) CheckNovelty(candidateHash string, existingHashes []string) bool {
+	e.mu.Lock()
+	threshold := e.noveltyThreshold
+	e.mu.Unlock()
+
 	hashSet := make(map[string]struct{}, len(existingHashes))
 	for _, h := range existingHashes {
 		hashSet[h] = struct{}{}
 	}
 	_, found := hashSet[candidateHash]
-	return !found
+	if found {
+		return 1 < threshold
+	}
+	return 0 < threshold
 }
 
 // HashContent computes a SHA-256 hash of the given content for novelty comparison.

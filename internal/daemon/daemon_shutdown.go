@@ -121,19 +121,12 @@ func (d *Daemon) Shutdown() {
 			d.shutdownOp("quality_gate_stop", func() error { return d.qualityGateDaemon.Stop() })
 		}
 
-		// Log warning for active rollout groups that will be abandoned.
-		if d.rolloutManager != nil {
-			activeCount := d.rolloutManager.ActiveGroupCount()
-			if activeCount > 0 {
-				d.log(LogLevelWarn, "shutdown abandoning %d active rollout groups", activeCount)
-			}
-		}
-
 		// Close review coordinator: waits for in-flight reviews, then closes
 		// the results channel so MonitorResults exits cleanly.
 		d.reviewCoord.Close()
 
-		// Phase C cleanup: log stats for stateful components.
+		// Phase C cleanup: persist and log stats for stateful components.
+		d.phaseC.SaveState(d.log)
 		d.phaseC.LogShutdownStats(d.log)
 
 		// 3. Cancel context — forces loops and handlers to exit.
@@ -254,9 +247,10 @@ func (d *Daemon) closeExecutors() {
 // cleanup releases resources. Safe to call multiple times via cleanupOnce.
 func (d *Daemon) cleanup() {
 	d.cleanupOnce.Do(func() {
-		socketPath := filepath.Join(d.maestroDir, uds.DefaultSocketName)
-		if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
-			d.log(LogLevelError, "cleanup remove_socket error=%v", err)
+		for _, socketPath := range uds.SocketCleanupPaths(d.maestroDir) {
+			if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+				d.log(LogLevelError, "cleanup remove_socket path=%s error=%v", socketPath, err)
+			}
 		}
 		// Remove PID file while lock is still held so no concurrent starter
 		// reads a stale PID between lock release and PID file removal.

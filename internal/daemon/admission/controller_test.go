@@ -218,6 +218,25 @@ func TestRecordInFlight(t *testing.T) {
 	assert.Equal(t, 0, c.ActiveCount(OpRollout), "rollout should be 0 after reset by RecordInFlight")
 }
 
+func TestRecordInFlight_PreservesBackgroundSlots(t *testing.T) {
+	t.Parallel()
+	c := NewController(defaultCfg())
+
+	assert.True(t, c.TryAcquireBackground(OpVerify))
+	c.RecordInFlight([]*model.Task{
+		{OperationType: model.OperationTypeVerify},
+		{OperationType: model.OperationTypeRepair},
+	})
+
+	assert.Equal(t, 2, c.ActiveCount(OpVerify), "background verify + queue in-flight verify should both count")
+	assert.Equal(t, 1, c.ActiveCount(OpRepair))
+	assert.False(t, c.TryAcquire(OpVerify), "verify limit should include background work")
+
+	c.ReleaseBackground(OpVerify)
+	assert.Equal(t, 1, c.ActiveCount(OpVerify), "releasing background slot should leave queue in-flight slot")
+	assert.True(t, c.TryAcquire(OpVerify), "one verify slot should be available after background release")
+}
+
 func TestOpType_String(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

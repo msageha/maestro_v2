@@ -85,3 +85,37 @@ func TestValidateFencing_TaskNotFound_NonEmptyQueue(t *testing.T) {
 		t.Errorf("error code = %q, want %q", rwErr.Code, uds.ErrCodeNotFound)
 	}
 }
+
+func TestValidateFencing_TerminalQueueMissingResultAllowsRecovery(t *testing.T) {
+	t.Parallel()
+	d := newTestDaemon(t)
+
+	tq := &model.TaskQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_task",
+		Tasks: []model.Task{{
+			ID:        "task_0000000002_terminal",
+			CommandID: "cmd_0000000002_abcdef01",
+			Status:    model.StatusCompleted,
+		}},
+	}
+	rf := &model.TaskResultFile{}
+
+	params := ResultWriteParams{
+		Reporter:   "worker1",
+		TaskID:     "task_0000000002_terminal",
+		CommandID:  "cmd_0000000002_abcdef01",
+		LeaseEpoch: 1,
+	}
+
+	taskIdx, resultID, err := d.api.result.validateFencing(tq, rf, params, model.StatusCompleted)
+	if err != nil {
+		t.Fatalf("validateFencing returned error: %v", err)
+	}
+	if taskIdx != 0 {
+		t.Fatalf("taskIdx = %d, want 0", taskIdx)
+	}
+	if resultID != "" {
+		t.Fatalf("resultID = %q, want empty so caller rewrites missing result", resultID)
+	}
+}

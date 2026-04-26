@@ -1,6 +1,7 @@
 package formation
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -43,5 +44,83 @@ func TestTrustDialogSendIntervalCatchesDialogQuickly(t *testing.T) {
 			"means the operator sees the stuck pane for an unnecessarily long "+
 			"time. See the constant's doc comment.",
 			trustDialogSendInterval, maxInterval)
+	}
+}
+
+func TestStartupDialogKeys_BypassPermissionsSelectsAcceptForManagedRoles(t *testing.T) {
+	t.Parallel()
+	content := `
+  WARNING: Claude Code running in
+  Bypass Permissions mode
+
+	  ❯ 1. No, exit
+	    2. Yes, I accept
+	`
+	for _, role := range []string{"orchestrator", "planner", "worker"} {
+		role := role
+		t.Run(role, func(t *testing.T) {
+			t.Parallel()
+			got := startupDialogKeys(role, content)
+			want := []string{"2", "Enter"}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("startupDialogKeys() = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestStartupDialogKeys_DefaultTrustDialogEnterOnly(t *testing.T) {
+	t.Parallel()
+	content := `Is this a project you created or one you trust?`
+	got := startupDialogKeys("orchestrator", content)
+	want := []string{"Enter"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("startupDialogKeys() = %#v, want %#v", got, want)
+	}
+}
+
+func TestStartupDialogKeys_ManagedRoleWithoutKnownDialogSendsNothing(t *testing.T) {
+	t.Parallel()
+	for _, role := range []string{"orchestrator", "planner", "worker"} {
+		role := role
+		t.Run(role, func(t *testing.T) {
+			t.Parallel()
+			got := startupDialogKeys(role, `Claude prompt is ready`)
+			if got != nil {
+				t.Fatalf("startupDialogKeys() = %#v, want nil", got)
+			}
+		})
+	}
+}
+
+func TestStartupDialogKeys_WorkerTrustDialogEnterOnly(t *testing.T) {
+	t.Parallel()
+	content := `Is this a project you created or one you trust?`
+	got := startupDialogKeys("worker", content)
+	want := []string{"Enter"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("startupDialogKeys() = %#v, want %#v", got, want)
+	}
+}
+
+func TestStartupDialogKeys_WorkerTrustDialogWrappedText(t *testing.T) {
+	t.Parallel()
+	content := "Is this a project\n       you created or one you trust?"
+	got := startupDialogKeys("worker", content)
+	want := []string{"Enter"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("startupDialogKeys() = %#v, want %#v", got, want)
+	}
+}
+
+func TestStartupDialogVisibleDetectsWrappedMarkers(t *testing.T) {
+	t.Parallel()
+	for _, content := range []string{
+		"Bypass\nPermissions   mode",
+		"project\n       you created or one you trust",
+	} {
+		if !startupDialogVisible(content) {
+			t.Fatalf("startupDialogVisible(%q) = false, want true", content)
+		}
 	}
 }

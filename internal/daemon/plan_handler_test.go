@@ -105,7 +105,7 @@ func makePlanRequest(t *testing.T, op string, data any) *uds.Request {
 		Data:      rawData,
 	})
 	require.NoError(t, err)
-	return &uds.Request{Params: params}
+	return &uds.Request{CallerRole: uds.RolePlanner, Params: params}
 }
 
 // --- Tests ---
@@ -204,6 +204,30 @@ func TestHandlePlan_UnquarantineAllowsOrchestratorAndCLI(t *testing.T) {
 	}
 }
 
+func TestHandlePlan_ControlPlaneRejectsWorkerAndOrchestrator(t *testing.T) {
+	t.Parallel()
+	for _, op := range []string{"submit", "complete", "add_retry_task", "add_task", "rebuild"} {
+		op := op
+		for _, role := range []string{uds.RoleWorker, uds.RoleOrchestrator} {
+			role := role
+			t.Run(op+"_"+role, func(t *testing.T) {
+				t.Parallel()
+				d := newPlanTestDaemon(t, &mockPlanExecutor{})
+				req := makePlanRequest(t, op, map[string]string{"command_id": "cmd_x"})
+				req.CallerRole = role
+
+				resp := d.api.handlePlan(req)
+
+				assert.False(t, resp.Success)
+				require.NotNil(t, resp.Error)
+				assert.Equal(t, uds.ErrCodeValidation, resp.Error.Code)
+				assert.Contains(t, resp.Error.Message, "not permitted")
+				assert.Contains(t, resp.Error.Message, role)
+			})
+		}
+	}
+}
+
 func TestHandlePlan_NilExecutor(t *testing.T) {
 	t.Parallel()
 	d := newTestDaemon(t)
@@ -221,7 +245,7 @@ func TestHandlePlan_NilExecutor(t *testing.T) {
 func TestHandlePlan_InvalidJSON(t *testing.T) {
 	t.Parallel()
 	d := newPlanTestDaemon(t, &mockPlanExecutor{})
-	req := &uds.Request{Params: json.RawMessage(`{invalid`)}
+	req := &uds.Request{CallerRole: uds.RolePlanner, Params: json.RawMessage(`{invalid`)}
 
 	resp := d.api.handlePlan(req)
 
@@ -441,7 +465,7 @@ func TestHandlePlan_EmptyParams(t *testing.T) {
 	t.Parallel()
 	d := newPlanTestDaemon(t, &mockPlanExecutor{})
 	// Empty JSON object — missing operation field
-	req := &uds.Request{Params: json.RawMessage(`{}`)}
+	req := &uds.Request{CallerRole: uds.RolePlanner, Params: json.RawMessage(`{}`)}
 
 	resp := d.api.handlePlan(req)
 
@@ -454,7 +478,7 @@ func TestHandlePlan_EmptyParams(t *testing.T) {
 func TestHandlePlan_NilParams(t *testing.T) {
 	t.Parallel()
 	d := newPlanTestDaemon(t, &mockPlanExecutor{})
-	req := &uds.Request{Params: nil}
+	req := &uds.Request{CallerRole: uds.RolePlanner, Params: nil}
 
 	resp := d.api.handlePlan(req)
 

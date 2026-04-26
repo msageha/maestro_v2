@@ -30,6 +30,7 @@ type UsefulnessRecord struct {
 	CommandID     string    `json:"command_id"`
 	FindingCount  int       `json:"finding_count"`
 	AdoptedCount  int       `json:"adopted_count"`
+	AdoptionKnown bool      `json:"adoption_known"`
 	Timestamp     time.Time `json:"timestamp"`
 }
 
@@ -67,6 +68,7 @@ func NewUsefulnessTracker(dir string) (*UsefulnessTracker, error) {
 
 // RecordResult records a review result along with which findings were adopted.
 func (t *UsefulnessTracker) RecordResult(result ReviewResult, adoptedFindingIDs []string) error {
+	adoptionKnown := adoptedFindingIDs != nil
 	adoptedSet := make(map[string]struct{}, len(adoptedFindingIDs))
 	for _, id := range adoptedFindingIDs {
 		adoptedSet[id] = struct{}{}
@@ -85,6 +87,7 @@ func (t *UsefulnessTracker) RecordResult(result ReviewResult, adoptedFindingIDs 
 		CommandID:     result.CommandID,
 		FindingCount:  len(result.FindingIDs),
 		AdoptedCount:  adoptedCount,
+		AdoptionKnown: adoptionKnown,
 		Timestamp:     time.Now(),
 	}
 
@@ -108,15 +111,19 @@ func (t *UsefulnessTracker) GetModelStats(model string) ModelStats {
 	defer t.mu.Unlock()
 
 	stats := ModelStats{Model: model}
+	adoptionDenominator := 0
 	for _, r := range t.records {
 		if r.ReviewerModel == model {
 			stats.TotalFindings += r.FindingCount
-			stats.AdoptedFindings += r.AdoptedCount
+			if r.AdoptionKnown {
+				stats.AdoptedFindings += r.AdoptedCount
+				adoptionDenominator += r.FindingCount
+			}
 			stats.ReviewCount++
 		}
 	}
-	if stats.TotalFindings > 0 {
-		stats.AdoptionRate = float64(stats.AdoptedFindings) / float64(stats.TotalFindings)
+	if adoptionDenominator > 0 {
+		stats.AdoptionRate = float64(stats.AdoptedFindings) / float64(adoptionDenominator)
 	}
 	return stats
 }
@@ -127,6 +134,7 @@ func (t *UsefulnessTracker) GetAllModelStats() []ModelStats {
 	defer t.mu.Unlock()
 
 	byModel := make(map[string]*ModelStats)
+	adoptionDenominatorByModel := make(map[string]int)
 	for _, r := range t.records {
 		s, ok := byModel[r.ReviewerModel]
 		if !ok {
@@ -134,14 +142,17 @@ func (t *UsefulnessTracker) GetAllModelStats() []ModelStats {
 			byModel[r.ReviewerModel] = s
 		}
 		s.TotalFindings += r.FindingCount
-		s.AdoptedFindings += r.AdoptedCount
+		if r.AdoptionKnown {
+			s.AdoptedFindings += r.AdoptedCount
+			adoptionDenominatorByModel[r.ReviewerModel] += r.FindingCount
+		}
 		s.ReviewCount++
 	}
 
 	out := make([]ModelStats, 0, len(byModel))
 	for _, s := range byModel {
-		if s.TotalFindings > 0 {
-			s.AdoptionRate = float64(s.AdoptedFindings) / float64(s.TotalFindings)
+		if denom := adoptionDenominatorByModel[s.Model]; denom > 0 {
+			s.AdoptionRate = float64(s.AdoptedFindings) / float64(denom)
 		}
 		out = append(out, *s)
 	}

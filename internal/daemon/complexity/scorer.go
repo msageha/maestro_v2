@@ -45,14 +45,32 @@ type Thresholds struct {
 	ComplexMax  float64
 }
 
+// FileThresholds defines explicit file-count boundaries for complexity levels.
+// A configured file-count level is treated as a lower bound: other structural
+// signals may still raise the level, but they will not lower a task below the
+// operator-provided file threshold classification.
+type FileThresholds struct {
+	SimpleMaxFiles   int
+	StandardMaxFiles int
+	ComplexMaxFiles  int
+}
+
 // Scorer estimates task complexity from structural indicators.
 type Scorer struct {
-	thresholds Thresholds
+	thresholds     Thresholds
+	fileThresholds *FileThresholds
 }
 
 // NewScorer creates a Scorer with the given thresholds.
 func NewScorer(thresholds Thresholds) *Scorer {
 	return &Scorer{thresholds: thresholds}
+}
+
+// NewScorerWithFileThresholds creates a Scorer that also honors configured
+// file-count thresholds from complexity.thresholds.
+func NewScorerWithFileThresholds(thresholds Thresholds, fileThresholds FileThresholds) *Scorer {
+	ft := fileThresholds
+	return &Scorer{thresholds: thresholds, fileThresholds: &ft}
 }
 
 // DefaultThresholds returns the baseline threshold values:
@@ -102,7 +120,7 @@ func (s *Scorer) Estimate(input Input) Score {
 	}
 
 	confidence := computeConfidence(input)
-	level := s.classify(raw)
+	level := s.classifyInput(raw, input)
 
 	return Score{
 		Level:      level,
@@ -142,6 +160,50 @@ func (s *Scorer) classify(raw float64) Level {
 		return LevelComplex
 	default:
 		return LevelCritical
+	}
+}
+
+func (s *Scorer) classifyInput(raw float64, input Input) Level {
+	rawLevel := s.classify(raw)
+	if s.fileThresholds == nil || input.FileCount <= 0 {
+		return rawLevel
+	}
+	return maxLevel(rawLevel, s.classifyFileCount(input.FileCount))
+}
+
+func (s *Scorer) classifyFileCount(fileCount int) Level {
+	ft := s.fileThresholds
+	switch {
+	case fileCount <= ft.SimpleMaxFiles:
+		return LevelSimple
+	case fileCount <= ft.StandardMaxFiles:
+		return LevelStandard
+	case fileCount <= ft.ComplexMaxFiles:
+		return LevelComplex
+	default:
+		return LevelCritical
+	}
+}
+
+func maxLevel(a, b Level) Level {
+	if levelRank(b) > levelRank(a) {
+		return b
+	}
+	return a
+}
+
+func levelRank(l Level) int {
+	switch l {
+	case LevelSimple:
+		return 0
+	case LevelStandard:
+		return 1
+	case LevelComplex:
+		return 2
+	case LevelCritical:
+		return 3
+	default:
+		return 0
 	}
 }
 

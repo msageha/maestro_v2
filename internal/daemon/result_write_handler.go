@@ -2,17 +2,16 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/msageha/maestro_v2/internal/daemon/admission"
+	"github.com/msageha/maestro_v2/internal/daemon/daemonapi"
 	"github.com/msageha/maestro_v2/internal/daemon/worktree"
 	"github.com/msageha/maestro_v2/internal/model"
-	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
-	"github.com/msageha/maestro_v2/internal/validate"
 )
 
 // sanitizeContentForLog truncates a string to maxLen and replaces control
@@ -53,6 +52,11 @@ type reviewDispatcher interface {
 	DispatchIfEligible(ctx context.Context, params ResultWriteParams)
 }
 
+type autoRecoverWorktreeManager interface {
+	AutoRecoverAfterResolution(ctx context.Context, commandID, workerID string, runOnIntegration bool) (worktree.AutoRecoverAction, error)
+	ResetResolvingWorkerToConflict(commandID, workerID string) error
+}
+
 // VerifyWorkdirResolver resolves the working directory in which the
 // Verification Runner must execute commands for a given task. Production
 // implementations consult the worktree manager so that verify sees the
@@ -67,7 +71,10 @@ type VerifyWorkdirResolver interface {
 	ResolveVerifyWorkdir(task *model.Task, workerID string) (string, error)
 }
 
-// ResultWriteAPI handles the "result_write" UDS endpoint.
+// ResultWriteAPI owns result-write domain processing after daemonapi has
+// decoded and shallow-validated the UDS request. Keep transport concerns in
+// daemonapi; keep durable state transitions and their lock ordering here until
+// they can be split into dedicated phase services without widening public APIs.
 type ResultWriteAPI struct {
 	*apiContext
 	// Domain-specific deps (late-bound via closures to support test wiring
@@ -95,14 +102,25 @@ type ResultWriteAPI struct {
 	// depending on the Planner agent to call resume-merge / retry-publish
 	// explicitly. nil disables the hook (legacy tests + worktree-disabled
 	// runs); production startup wires this via SetWorktreeManager.
-	worktreeManager *WorktreeManager
+	worktreeManager autoRecoverWorktreeManager
+	// verifyAsync controls whether the Verification Runner second pass is
+	// admitted as daemon background work. Production enables this so the worker's
+	// result_write CLI does not block on a potentially long build/test command.
+	// Unit tests leave it false and keep the deterministic synchronous path.
+	verifyAsync bool
+	// admissionCtrl enforces max_concurrent_verify for daemon-owned background
+	// verification work. Queue-dispatched verify tasks are admitted in
+	// queue_scan_collect; result_write async verify is not a queue task, so it
+	// must acquire/release its own verify slot here.
+	admissionCtrl *admission.Controller
+	statusSink    AgentStatusSink
 }
 
 // SetVerifyRunner overrides the VerifyRunner used by this handler. Intended
 // for tests that need to exercise the verify_pending → repair_pending path
-// deterministically. Production wiring (cmd/maestrod) injects a
-// RealVerifyRunner that executes verify.yaml or the Fallback Verify
-// (DefaultVerifyConfig); when SetVerifyRunner is never called, the
+// deterministically. Production wiring injects a RealVerifyRunner that executes
+// the command-scoped verify snapshot or the project fallback; when
+// SetVerifyRunner is never called, the
 // fail-closed default in resolveVerifyRunner routes the task to
 // repair_pending so unverified work cannot silently flow through.
 func (h *ResultWriteAPI) SetVerifyRunner(r VerifyRunner) {
@@ -124,6 +142,16 @@ func (h *ResultWriteAPI) SetVerifyWorkdirResolver(r VerifyWorkdirResolver) {
 // not exercise the recovery loop may leave this nil to disable the hook.
 func (h *ResultWriteAPI) SetWorktreeManager(wm *WorktreeManager) {
 	h.worktreeManager = wm
+}
+
+// SetVerifyAsync enables or disables background verification after the core
+// result has been committed.
+func (h *ResultWriteAPI) SetVerifyAsync(enabled bool) {
+	h.verifyAsync = enabled
+}
+
+func (h *ResultWriteAPI) SetAdmissionController(ac *admission.Controller) {
+	h.admissionCtrl = ac
 }
 
 // maybeAutoRecoverAfterResolution closes the conflict / publish_conflict
@@ -221,25 +249,21 @@ func (h *ResultWriteAPI) resolveVerifyRunner() VerifyRunner {
 // resolveVerifyWorkingDir returns the working directory for the §S1-1
 // Verification Runner for the task identified by params. The result honours
 // task.RunOnMain / task.RunOnIntegration via the injected
-// VerifyWorkdirResolver. An empty string is returned when the resolver is
-// not wired (legacy test path) — RealVerifyRunner falls back to its own
-// projectDir in that case.
+// VerifyWorkdirResolver. An empty string is returned only when the resolver is
+// not wired (legacy test path). Once a resolver is configured, queue lookup and
+// workdir resolution failures are fail-closed so production verify cannot
+// silently run against the project root instead of the worker worktree.
 //
 // The queue task is re-read here because Phase A already released the queue
 // lock before verify runs (verify executes outside the state lock per design
-// — see handleResultWrite). A best-effort read is acceptable: a stale or
-// missing entry simply causes the runner to fall back to its default dir,
-// which is no worse than the prior behaviour.
-func (h *ResultWriteAPI) resolveVerifyWorkingDir(params ResultWriteParams) string {
+// — see handleResultWrite).
+func (h *ResultWriteAPI) resolveVerifyWorkingDir(params ResultWriteParams) (string, error) {
 	if h.verifyWorkdirResolver == nil {
-		return ""
+		return "", nil
 	}
 	tq, err := h.fileStore.LoadQueueFile(params.Reporter)
 	if err != nil {
-		h.logFn(LogLevelWarn,
-			"verify_workdir_load_queue_failed reporter=%s error=%v (falling back to runner default)",
-			params.Reporter, err)
-		return ""
+		return "", fmt.Errorf("verify_workdir_load_queue_failed reporter=%s: %w", params.Reporter, err)
 	}
 	var task *model.Task
 	for i := range tq.Tasks {
@@ -249,75 +273,19 @@ func (h *ResultWriteAPI) resolveVerifyWorkingDir(params ResultWriteParams) strin
 		}
 	}
 	if task == nil {
-		h.logFn(LogLevelWarn,
-			"verify_workdir_task_missing reporter=%s task=%s (falling back to runner default)",
-			params.Reporter, params.TaskID)
-		return ""
+		return "", fmt.Errorf("verify_workdir_task_missing reporter=%s task=%s", params.Reporter, params.TaskID)
 	}
 	wd, err := h.verifyWorkdirResolver.ResolveVerifyWorkdir(task, params.Reporter)
 	if err != nil {
-		h.logFn(LogLevelWarn,
-			"verify_workdir_resolve_failed reporter=%s task=%s error=%v (falling back to runner default)",
-			params.Reporter, params.TaskID, err)
-		return ""
+		return "", fmt.Errorf("verify_workdir_resolve_failed reporter=%s task=%s: %w", params.Reporter, params.TaskID, err)
 	}
-	return wd
+	if wd == "" {
+		return "", fmt.Errorf("verify_workdir_empty reporter=%s task=%s", params.Reporter, params.TaskID)
+	}
+	return wd, nil
 }
 
-// ResultWriteParams is the request payload for the result_write UDS command.
-type ResultWriteParams struct {
-	Reporter               string   `json:"reporter"`
-	TaskID                 string   `json:"task_id"`
-	CommandID              string   `json:"command_id"`
-	LeaseEpoch             int      `json:"lease_epoch"`
-	Status                 string   `json:"status"`
-	Summary                string   `json:"summary"`
-	FilesChanged           []string `json:"files_changed,omitempty"`
-	PartialChangesPossible bool     `json:"partial_changes_possible,omitempty"`
-	RetrySafe              bool     `json:"retry_safe,omitempty"`
-	ExitCode               *int     `json:"exit_code,omitempty"`
-	Learnings              []string `json:"learnings,omitempty"`
-	SkillCandidates        []string `json:"skill_candidates,omitempty"`
-}
-
-// validateResultWriteParams parses and validates the result_write request parameters.
-// Returns the parsed params, the terminal status, or an error response if validation fails.
-func (h *ResultWriteAPI) validateResultWriteParams(req *uds.Request) (ResultWriteParams, model.Status, *uds.Response) {
-	var params ResultWriteParams
-	if err := json.Unmarshal(req.Params, &params); err != nil {
-		return params, "", uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid params: %v", err))
-	}
-
-	if params.Reporter == "" {
-		return params, "", uds.ErrorResponse(uds.ErrCodeValidation, "reporter is required")
-	}
-	if !validate.IsValidBaseName(params.Reporter) {
-		return params, "", uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid reporter: %q", params.Reporter))
-	}
-	if params.TaskID == "" {
-		return params, "", uds.ErrorResponse(uds.ErrCodeValidation, "task_id is required")
-	}
-	if params.CommandID == "" {
-		return params, "", uds.ErrorResponse(uds.ErrCodeValidation, "command_id is required")
-	}
-	if err := validate.ID(params.CommandID); err != nil {
-		return params, "", uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid command_id: %v", err))
-	}
-	if err := validate.ID(params.TaskID); err != nil {
-		return params, "", uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid task_id: %v", err))
-	}
-
-	resultStatus := model.Status(params.Status)
-	switch resultStatus {
-	case model.StatusCompleted, model.StatusFailed:
-		// valid terminal statuses for worker result reporting
-	default:
-		return params, "", uds.ErrorResponse(uds.ErrCodeValidation,
-			fmt.Sprintf("status must be completed|failed, got %q", params.Status))
-	}
-
-	return params, resultStatus, nil
-}
+type ResultWriteParams = daemonapi.ResultWriteParams
 
 // recordFallback records worker success/failure for health monitoring.
 func (h *ResultWriteAPI) recordFallback(params ResultWriteParams, resultStatus model.Status) {
@@ -332,13 +300,16 @@ func (h *ResultWriteAPI) recordFallback(params ResultWriteParams, resultStatus m
 }
 
 func (h *ResultWriteAPI) handleResultWrite(req *uds.Request) *uds.Response {
-	params, resultStatus, errResp := h.validateResultWriteParams(req)
+	params, resultStatus, errResp := daemonapi.ValidateResultWriteRequest(req)
 	if errResp != nil {
 		return errResp
 	}
+	return h.handleValidatedResultWrite(params, resultStatus)
+}
 
+func (h *ResultWriteAPI) handleValidatedResultWrite(params ResultWriteParams, resultStatus model.Status) *uds.Response {
 	// Phase A: Shared file lock + per-worker mutex (results/ + queue/ updates)
-	resultWritePhaseAResult, err := h.resultWritePhaseA(params, resultStatus)
+	resultWritePhaseAResult, err := newResultPhaseAService(h).Run(params, resultStatus)
 	if err != nil {
 		rErr := &resultWriteError{}
 		if errors.As(err, &rErr) {
@@ -356,10 +327,11 @@ func (h *ResultWriteAPI) handleResultWrite(req *uds.Request) *uds.Response {
 	// run so that lease-revoke rejections on stale idempotent resubmissions
 	// continue to be persisted (H4 invariant).
 	var needsVerify bool
+	phaseBStatus := resultStatus
 	if !isDuplicate {
 		// Phase B: Per-command mutex (state/ updates)
 		retryScheduled := resultWritePhaseAResult.retryTask != nil
-		nv, err := h.resultWritePhaseB(params, resultID, resultStatus,
+		nv, st, err := newResultPhaseBService(h).Run(params, resultID, resultStatus,
 			resultWritePhaseAResult.queueWriteFailed,
 			resultWritePhaseAResult.originalTaskID,
 			retryScheduled,
@@ -371,11 +343,14 @@ func (h *ResultWriteAPI) handleResultWrite(req *uds.Request) *uds.Response {
 				fmt.Sprintf("state update failed: %v (result %s committed, run 'maestro plan rebuild' to fix)", err, resultID))
 		}
 		needsVerify = nv
+		phaseBStatus = st
 
-		h.recordFallback(params, resultStatus)
-
-		// Retry registration (state then queue — correct lock order).
-		h.handleRetryRegistration(resultWritePhaseAResult, params)
+		newResultPostProcessor(h).AfterPhaseB(resultPostPhaseBInput{
+			params:       params,
+			phaseA:       resultWritePhaseAResult,
+			resultStatus: resultStatus,
+			phaseBStatus: phaseBStatus,
+		})
 	}
 
 	// finalStatus tracks the terminal task status after VerifyRunner has had a
@@ -384,57 +359,24 @@ func (h *ResultWriteAPI) handleResultWrite(req *uds.Request) *uds.Response {
 	// classifyVerifyOutcome result. The post-completion AutoRecover hook
 	// (below) reads finalStatus so it cannot fire for a verify-failed task
 	// (which would otherwise commit unverified resolution edits).
-	finalStatus := resultStatus
-
-	// §S1-1 Verification Runner second pass. Runs outside the Phase B state
-	// lock so the runner does not block concurrent writers; if it fails or
-	// the task has moved on, applyVerifyOutcome logs and leaves the task at
-	// verify_pending for reconcile/operator intervention.
-	if needsVerify {
-		// Resolve the per-task working directory so verify sees the worker's
-		// uncommitted changes (worker worktree), the integration branch
-		// (RunOnIntegration), or the project root (RunOnMain / no worktree
-		// mode). Falls back to "" — the runner's own projectDir — only when
-		// no resolver has been wired (legacy tests).
-		workingDir := h.resolveVerifyWorkingDir(params)
-		runner := h.resolveVerifyRunner()
-		outcome, vErr := runner.Run(h.ctx(), params.TaskID, params.CommandID, workingDir, params.FilesChanged)
-		nextStatus, reason := classifyVerifyOutcome(outcome, vErr)
-		if applyErr := h.applyVerifyOutcome(params, nextStatus, reason); applyErr != nil {
-			h.logFn(LogLevelWarn,
-				"verify_outcome_apply_failed task=%s command=%s next=%s reason=%q error=%v "+
-					"(task remains at verify_pending; reconcile/operator can re-drive)",
-				params.TaskID, params.CommandID, nextStatus, reason, applyErr)
-		}
-		finalStatus = nextStatus
-	}
-
-	// Post-completion auto-recovery hook. Closes the conflict / publish_conflict
-	// recovery loop without depending on the Planner agent to call resume-merge
-	// or retry-publish explicitly. Gates ensure this never fires on a duplicate
-	// resubmission, never fires on a verify-failed task (would commit
-	// unverified resolution edits), and never fires when worktree mode is off.
-	if !isDuplicate {
-		h.maybeAutoRecoverAfterResolution(params, resultStatus, finalStatus,
-			resultWritePhaseAResult.taskRunOnIntegration)
-	}
+	finalStatus, verifyWillRunAsync := h.runResultVerification(params, resultWritePhaseAResult, needsVerify, phaseBStatus)
 
 	// Best-effort writes (learnings, skill candidates) with lease epoch guard.
 	// Runs on both fresh and duplicate paths so that the lease rejection audit
 	// trail (H4) is preserved when a stale worker resubmits with new
-	// best-effort payload. We pass finalStatus rather than the worker-reported
-	// resultStatus so that the advisory review gate inside the helper sees the
-	// post-Verify outcome — Verify-failed tasks must not trigger a review.
-	rejectionID := h.handleBestEffortWrites(params, resultID, finalStatus)
-
-	// Set agent status to idle now that the task result is committed.
-	// Best-effort: failure to update tmux status must not fail the result write.
-	setAgentIdle(params.Reporter, h.logFn)
-
-	// Phase C: Trigger scan (best effort dependency unblocking).
-	if h.triggerScan != nil {
-		h.triggerScan(h.ctx())
-	}
+	// best-effort payload. Advisory review is dispatched separately because
+	// asynchronous verification must pass before a review is queued.
+	rejectionID := newResultBestEffortService(h).Handle(params, resultID)
+	post := newResultPostProcessor(h)
+	post.AfterVerification(resultPostFinalizeInput{
+		params:             params,
+		phaseA:             resultWritePhaseAResult,
+		resultStatus:       resultStatus,
+		finalStatus:        finalStatus,
+		duplicate:          isDuplicate,
+		verifyWillRunAsync: verifyWillRunAsync,
+	})
+	post.AfterResponseSideEffects(params)
 
 	if isDuplicate {
 		h.logFn(LogLevelInfo,
@@ -445,29 +387,78 @@ func (h *ResultWriteAPI) handleResultWrite(req *uds.Request) *uds.Response {
 		h.logFn(LogLevelInfo, "result_write result_id=%s task=%s command=%s status=%s reporter=%s",
 			resultID, params.TaskID, params.CommandID, params.Status, params.Reporter)
 	}
-	respPayload := map[string]string{"result_id": resultID}
-	if isDuplicate {
-		respPayload["duplicate"] = "true"
-	}
-	if rejectionID != "" {
-		respPayload["lease_rejection_id"] = rejectionID
-		respPayload["lease_rejection_warning"] =
-			"learnings/skill_candidates rejected: lease revoked; recorded as " + rejectionID
-	}
-	return uds.SuccessResponse(respPayload)
+	return newResultWriteResponse(resultWriteResponse{
+		ResultID:      resultID,
+		Duplicate:     isDuplicate,
+		VerifyPending: verifyWillRunAsync,
+		LeaseRejectID: rejectionID,
+	})
 }
 
-// setAgentIdle sets the @status tmux user variable to "idle" for the given agent.
-// This is best-effort: errors are logged but do not propagate.
-func setAgentIdle(agentID string, logFn logFunc) {
-	paneTarget, err := tmux.FindPaneByAgentID(agentID)
-	if err != nil {
-		logFn(LogLevelDebug, "set_agent_idle pane_not_found agent=%s: %v", agentID, err)
-		return
+type resultVerifyInput struct {
+	params               ResultWriteParams
+	sourceTask           *model.Task
+	taskRunOnIntegration bool
+}
+
+func (h *ResultWriteAPI) runVerifySecondPass(ctx context.Context, input resultVerifyInput) model.Status {
+	params := input.params
+	workingDir, wdErr := h.resolveVerifyWorkingDir(params)
+	runner := h.resolveVerifyRunner()
+	var expectedPaths []string
+	if input.sourceTask != nil {
+		expectedPaths = input.sourceTask.ExpectedPaths
 	}
-	if err := tmux.SetUserVar(paneTarget, "status", "idle"); err != nil {
-		logFn(LogLevelWarn, "set_agent_idle_failed agent=%s: %v", agentID, err)
+	var outcome VerifyOutcome
+	var vErr error
+	if wdErr != nil {
+		h.logFn(LogLevelWarn, "verify_workdir_resolution_failed task=%s command=%s error=%v", params.TaskID, params.CommandID, wdErr)
+		outcome = VerifyOutcome{Passed: false, Reason: wdErr.Error()}
+	} else {
+		outcome, vErr = runner.Run(ctx, params.TaskID, params.CommandID, workingDir, expectedPaths)
 	}
+	nextStatus, reason := classifyVerifyOutcome(outcome, vErr)
+	if applyErr := h.applyVerifyOutcome(params, nextStatus, reason); applyErr != nil {
+		h.logFn(LogLevelWarn,
+			"verify_outcome_apply_failed task=%s command=%s next=%s reason=%q error=%v "+
+				"(task remains at verify_pending; reconcile/operator can re-drive)",
+			params.TaskID, params.CommandID, nextStatus, reason, applyErr)
+		return model.StatusVerifyPending
+	}
+
+	finalStatus := nextStatus
+	queueStatus := nextStatus
+	if nextStatus == model.StatusRepairPending {
+		repairScheduled, postRepairStatus := h.handleVerifyRepairRegistration(input.sourceTask, params, reason)
+		finalStatus = postRepairStatus
+		if repairScheduled {
+			// The retry task is now the active queue item. Keep the original task
+			// terminal in queue history so command-level queue scans do not stall
+			// on a lifecycle-only repair_pending marker.
+			queueStatus = model.StatusCancelled
+		} else {
+			// No repair producer exists; the command state carries the
+			// paused_for_replan signal while the queue history records a terminal
+			// failed result for publish/merge gating.
+			queueStatus = model.StatusFailed
+		}
+	}
+	h.syncQueueStatusAfterVerify(params, queueStatus)
+
+	h.maybeAutoRecoverAfterResolution(params, model.StatusCompleted, finalStatus,
+		input.taskRunOnIntegration)
+	h.dispatchAdvisoryReview(params, finalStatus)
+	if h.triggerScan != nil {
+		h.triggerScan(ctx)
+	}
+	return finalStatus
+}
+
+func (h *ResultWriteAPI) setAgentIdle(agentID string) {
+	if h.statusSink == nil {
+		h.statusSink = tmuxAgentStatusSink{}
+	}
+	h.statusSink.SetIdle(agentID, h.logFn)
 }
 
 type resultWriteError struct {
@@ -480,8 +471,9 @@ func (e *resultWriteError) Error() string {
 }
 
 // handleRetryRegistration registers a retry task in state and queue if phaseA
-// determined one is needed. Runs after phaseA has released queue+result locks,
-// so acquiring state(L2) then queue(L1) does not violate canonical order.
+// determined one is needed. TaskRetryHandler does not hold state and queue
+// locks at the same time, so it must not be moved under Phase A's queue/result
+// locks.
 func (h *ResultWriteAPI) handleRetryRegistration(phaseAResult *resultWritePhaseAResult, params ResultWriteParams) {
 	if phaseAResult.retryTask == nil {
 		return
@@ -497,6 +489,149 @@ func (h *ResultWriteAPI) handleRetryRegistration(phaseAResult *resultWritePhaseA
 		h.logFn(LogLevelInfo, "task_retry_scheduled task=%s retry_id=%s attempt=%d",
 			params.TaskID, retryTask.ID, retryTask.Attempts)
 	}
+}
+
+func (h *ResultWriteAPI) handleVerifyRepairRegistration(sourceTask *model.Task, params ResultWriteParams, reason string) (bool, model.Status) {
+	if sourceTask == nil {
+		replanReason := fmt.Sprintf("verify_repair_source_task_missing: %s", reason)
+		h.logFn(LogLevelError,
+			"verify_repair_not_scheduled task=%s command=%s reason=%q source_task_missing=true -> paused_for_replan",
+			params.TaskID, params.CommandID, reason)
+		h.advanceRepairPendingToPausedForReplan(params, replanReason)
+		return false, model.StatusPausedForReplan
+	}
+
+	retryHandler := NewTaskRetryHandler(h.maestroDir, *h.config, h.lockMap, h.logger, h.logLevel)
+	shouldRepair, skipReason := retryHandler.ShouldRepairTask(sourceTask, reason)
+	if !shouldRepair {
+		h.logFn(LogLevelInfo, "verify_repair_skipped task=%s command=%s reason=%s",
+			params.TaskID, params.CommandID, skipReason)
+		h.advanceRepairPendingToPausedForReplan(params, skipReason)
+		return false, model.StatusPausedForReplan
+	}
+
+	repairTask, err := retryHandler.CreateVerifyRepairTask(sourceTask, reason)
+	if err != nil {
+		h.logFn(LogLevelError,
+			"verify_repair_create_failed task=%s command=%s error=%v -> paused_for_replan",
+			params.TaskID, params.CommandID, err)
+		h.advanceRepairPendingToPausedForReplan(params,
+			fmt.Sprintf("verify_repair_create_failed: %v", err))
+		return false, model.StatusPausedForReplan
+	}
+	if err := retryHandler.RetryTaskAtomically(repairTask, params.CommandID, params.Reporter); err != nil {
+		h.logFn(LogLevelError,
+			"verify_repair_atomic_failed task=%s repair_id=%s worker=%s command=%s error=%v -> paused_for_replan",
+			params.TaskID, repairTask.ID, params.Reporter, params.CommandID, err)
+		h.advanceRepairPendingToPausedForReplan(params,
+			fmt.Sprintf("verify_repair_enqueue_failed: %v", err))
+		return false, model.StatusPausedForReplan
+	}
+	h.logFn(LogLevelInfo,
+		"verify_repair_scheduled task=%s repair_id=%s command=%s reason=%q",
+		params.TaskID, repairTask.ID, params.CommandID, reason)
+	return true, model.StatusRepairPending
+}
+
+func (h *ResultWriteAPI) syncQueueStatusAfterVerify(params ResultWriteParams, nextStatus model.Status) {
+	h.lockMap.Lock("queue:" + params.Reporter)
+	defer h.lockMap.Unlock("queue:" + params.Reporter)
+
+	tq, err := h.fileStore.LoadQueueFile(params.Reporter)
+	if err != nil {
+		h.logFn(LogLevelWarn,
+			"verify_queue_status_sync_load_failed task=%s worker=%s status=%s error=%v",
+			params.TaskID, params.Reporter, nextStatus, err)
+		return
+	}
+	for i := range tq.Tasks {
+		if tq.Tasks[i].ID != params.TaskID {
+			continue
+		}
+		if tq.Tasks[i].Status == nextStatus {
+			return
+		}
+		tq.Tasks[i].Status = nextStatus
+		tq.Tasks[i].UpdatedAt = h.clock.Now().UTC().Format(time.RFC3339)
+		if err := h.fileStore.SaveQueueFile(params.Reporter, tq); err != nil {
+			h.logFn(LogLevelWarn,
+				"verify_queue_status_sync_save_failed task=%s worker=%s status=%s error=%v",
+				params.TaskID, params.Reporter, nextStatus, err)
+			return
+		}
+		h.recordSelfWrite(h.fileStore.QueueFilePath(params.Reporter), tq)
+		return
+	}
+	h.logFn(LogLevelWarn,
+		"verify_queue_status_sync_task_missing task=%s worker=%s status=%s",
+		params.TaskID, params.Reporter, nextStatus)
+}
+
+func (h *ResultWriteAPI) advanceRepairPendingToPausedForReplan(params ResultWriteParams, reason string) {
+	cmdLockKey := "state:" + params.CommandID
+	h.lockMap.Lock(cmdLockKey)
+	defer h.lockMap.Unlock(cmdLockKey)
+
+	statePath := commandStatePath(h.maestroDir, params.CommandID)
+	if err := updateYAMLFile(statePath, func(state *model.CommandState) error {
+		if state.TaskStates == nil || state.TaskStates[params.TaskID] != model.StatusRepairPending {
+			return errNoUpdate
+		}
+		if err := model.AdvanceTaskState(state.TaskStates, params.TaskID, model.StatusPausedForReplan); err != nil {
+			return err
+		}
+		state.UpdatedAt = h.clock.Now().UTC().Format(time.RFC3339)
+		return nil
+	}); err != nil {
+		h.logFn(LogLevelWarn,
+			"verify_repair_replan_signal_failed task=%s command=%s reason=%q error=%v",
+			params.TaskID, params.CommandID, reason, err)
+		return
+	}
+	h.logFn(LogLevelWarn,
+		"verify_repair_replan_required task=%s command=%s reason=%q",
+		params.TaskID, params.CommandID, reason)
+	h.emitPausedForReplanPlannerSignal(params, reason)
+}
+
+func (h *ResultWriteAPI) emitPausedForReplanPlannerSignal(params ResultWriteParams, reason string) {
+	now := h.clock.Now().UTC().Format(time.RFC3339)
+	phaseID := "__task_" + params.TaskID
+	msg := fmt.Sprintf("[maestro] kind:paused_for_replan command_id:%s task_id:%s\nreason: %s\nnext_action: add_retry_task or fail the command",
+		params.CommandID, params.TaskID, reason)
+	sig := model.PlannerSignal{
+		Kind:      "paused_for_replan",
+		CommandID: params.CommandID,
+		PhaseID:   phaseID,
+		Message:   msg,
+		Reason:    reason,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	h.lockMap.Lock("queue:planner_signals")
+	defer h.lockMap.Unlock("queue:planner_signals")
+	if err := updateYAMLFile(signalQueuePath(h.maestroDir), func(sq *model.PlannerSignalQueue) error {
+		index := buildSignalIndex(sq.Signals)
+		key := signalDedupKey(sig)
+		if _, exists := index[key]; exists {
+			return errNoUpdate
+		}
+		if sq.SchemaVersion == 0 {
+			sq.SchemaVersion = 1
+			sq.FileType = "planner_signal_queue"
+		}
+		sq.Signals = append(sq.Signals, sig)
+		return nil
+	}); err != nil {
+		h.logFn(LogLevelWarn,
+			"paused_for_replan_signal_write_failed task=%s command=%s reason=%q error=%v",
+			params.TaskID, params.CommandID, reason, err)
+		return
+	}
+	h.logFn(LogLevelInfo,
+		"paused_for_replan_signal_queued task=%s command=%s reason=%q",
+		params.TaskID, params.CommandID, reason)
 }
 
 // truncateRunes truncates a string to at most maxRunes runes.

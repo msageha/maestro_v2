@@ -94,6 +94,7 @@ func makeQueueWriteRequest(t *testing.T, params any) *uds.Request {
 	return &uds.Request{
 		ProtocolVersion: 1,
 		Command:         "queue_write",
+		CallerRole:      uds.RoleCLI,
 		Params:          data,
 	}
 }
@@ -363,6 +364,15 @@ func TestQueueWriteTask_Basic(t *testing.T) {
 	}
 	if tq.Tasks[0].Priority != 100 {
 		t.Errorf("priority = %d, want 100 (default)", tq.Tasks[0].Priority)
+	}
+	if len(tq.Tasks[0].ExpectedPaths) != 1 || tq.Tasks[0].ExpectedPaths[0] != "." {
+		t.Errorf("expected_paths default = %v, want [.]", tq.Tasks[0].ExpectedPaths)
+	}
+	if tq.Tasks[0].DefinitionOfAbort == nil {
+		t.Fatal("definition_of_abort default should be populated")
+	}
+	if tq.Tasks[0].DefinitionOfAbort.MaxRepairCount <= 0 {
+		t.Errorf("definition_of_abort.max_repair_count = %d, want positive", tq.Tasks[0].DefinitionOfAbort.MaxRepairCount)
 	}
 }
 
@@ -1423,5 +1433,34 @@ func TestQueueWriteCommand_ContinuousGate_DisabledAllowsAnyStatus(t *testing.T) 
 	resp := d.api.handleQueueWrite(req)
 	if !resp.Success {
 		t.Fatalf("expected success when continuous is disabled, got error: %+v", resp.Error)
+	}
+}
+
+func TestQueueWrite_RolePolicyRejectsWorkerControlPlane(t *testing.T) {
+	t.Parallel()
+	for _, params := range []QueueWriteParams{
+		{Type: "command", Content: "spawn command"},
+		{Type: "notification", CommandID: "cmd_0000000001_abcdef01", Content: "done", SourceResultID: "res_0000000001_abcdef01", NotificationType: "command_completed"},
+		{Type: "cancel-request", CommandID: "cmd_0000000001_abcdef01", Reason: "stop"},
+	} {
+		params := params
+		t.Run(params.Type, func(t *testing.T) {
+			t.Parallel()
+			d := newTestDaemon(t)
+			req := makeQueueWriteRequest(t, params)
+			req.CallerRole = uds.RoleWorker
+
+			resp := d.api.handleQueueWrite(req)
+
+			if resp.Success {
+				t.Fatalf("expected worker role to be rejected for %s", params.Type)
+			}
+			if resp.Error == nil || resp.Error.Code != uds.ErrCodeValidation {
+				t.Fatalf("expected validation error, got %+v", resp.Error)
+			}
+			if !bytes.Contains([]byte(resp.Error.Message), []byte("not permitted")) {
+				t.Fatalf("expected not permitted error, got %+v", resp.Error)
+			}
+		})
 	}
 }

@@ -3,6 +3,7 @@ package formation
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -44,6 +45,9 @@ func createFormation(maestroDir string, cfg model.Config) (retErr error) {
 		"exit-empty":      "off",
 		"exit-unattached": "off",
 	}); err != nil {
+		if errors.Is(err, tmux.ErrTmuxServer) {
+			return fmt.Errorf("create session with server options: %w; tmux server is unavailable, and this often means the current sandbox or container blocks tmux socket creation", err)
+		}
 		return fmt.Errorf("create session with server options: %w", err)
 	}
 
@@ -150,18 +154,6 @@ func createFormation(maestroDir string, cfg model.Config) (retErr error) {
 		}
 	}
 
-	// Best-effort post-launch liveness check: verify that agents actually started.
-	// The formation sends `maestro agent launch` and returns immediately without
-	// waiting for the agent CLI to initialise. If the agent binary crashes
-	// immediately (e.g. auth failure, permission error), the pane returns to the
-	// shell and the failure is only discovered at first dispatch. This check
-	// polls for a short window and logs a warning for any pane that reverted to
-	// a shell, giving operators earlier visibility.
-	// NOTE: This is best-effort only. Agents that take longer to initialise than
-	// the poll window (e.g. slow trust-dialog acceptance) are not falsely flagged
-	// because we check for a shell, not for prompt readiness.
-	go checkAgentsLaunched(readyPanes)
-
 	// Persist ready pane targets to file so the daemon process (which outlives
 	// this CLI process) can continue auto-accepting the trust dialog.
 	// The trust dialog often appears 30+ seconds after launch, well after the
@@ -170,15 +162,22 @@ func createFormation(maestroDir string, cfg model.Config) (retErr error) {
 		slog.Warn("createFormation: could not write trust dialog panes file", "error", err)
 	}
 
-	// Auto-accept Claude Code workspace trust dialog.
+	// Auto-accept Claude Code startup dialogs.
 	// Claude Code has no env var or CLI flag to skip the trust dialog.
-	// --dangerously-skip-permissions only covers per-tool permission checks.
-	// autoAcceptTrustDialog sends periodic Enter keystrokes for a bounded
-	// window; see its doc comment for the full rationale.
+	// --dangerously-skip-permissions only covers per-tool permission checks
+	// and may show a Bypass Permissions confirmation. See the function doc
+	// comment for the key selection rules.
 	// NOTE: This goroutine runs in the CLI process which exits shortly after
 	// formation is complete. The daemon calls StartTrustDialogAcceptor to cover
 	// the full window after CLI exits.
 	autoAcceptTrustDialog(readyPanes)
+
+	// Verify that agents did not exit immediately after launch. This is
+	// synchronous so `maestro up --detach` does not report success when agent
+	// panes have already fallen back to the shell.
+	if err := checkAgentsLaunched(readyPanes); err != nil {
+		return err
+	}
 
 	// Select orchestrator window so `tmux attach` lands there
 	if err := tmux.SelectWindow(fmt.Sprintf("=%s:0", tmux.GetSessionName())); err != nil {
@@ -399,12 +398,13 @@ const trustDialogWindow = 2 * time.Minute
 // appearing, with minimal goroutine activity.
 const trustDialogSendInterval = 3 * time.Second
 
-// autoAcceptTrustDialog periodically sends Enter to every pane for
-// trustDialogWindow to auto-accept Claude Code's workspace trust dialog
-// ("Is this a project you created or one you trust?").
+// autoAcceptTrustDialog periodically sends startup-dialog keystrokes to every
+// pane for trustDialogWindow to auto-accept Claude Code's workspace trust dialog
+// ("Is this a project you created or one you trust?") and the Bypass
+// Permissions confirmation shown by recent Claude Code releases.
 //
-// Sends are unconditional — no pane-content detection is used — for three
-// reasons discovered through production failures:
+// Historically, workspace-trust Enter sends were unconditional — no pane-content
+// detection was used — for three reasons discovered through production failures:
 //
 //  1. Detection via tmux capture-pane is unreliable for this dialog.
 //     Claude Code's Ink-based TUI renders on the terminal's alternate screen.
@@ -420,14 +420,20 @@ const trustDialogSendInterval = 3 * time.Second
 //  3. Unconditional periodic sends guarantee acceptance within one
 //     trustDialogSendInterval of the dialog appearing, across all startup
 //     speeds and terminal rendering behaviors.
+//
+// Bypass Permissions changes that tradeoff: the confirmation's default
+// selection is "No, exit", so Enter alone terminates the agent. Managed panes
+// therefore only receive keys when a known startup dialog marker is visible:
+// "2" + Enter for Bypass Permissions, or Enter for workspace trust. This avoids
+// buffered Enter keystrokes choosing "No, exit" before detection.
 func autoAcceptTrustDialog(panes []string) {
 	go func() {
 		deadline := time.Now().Add(trustDialogWindow)
 		for time.Now().Before(deadline) {
 			time.Sleep(trustDialogSendInterval)
 			for _, pane := range panes {
-				if err := tmux.SendKeys(pane, "Enter"); err != nil {
-					slog.Debug("autoAcceptTrustDialog: send Enter failed",
+				if err := sendStartupDialogKeys(pane); err != nil {
+					slog.Debug("autoAcceptTrustDialog: send startup dialog keys failed",
 						"pane", pane, "error", err)
 				}
 			}
@@ -435,6 +441,69 @@ func autoAcceptTrustDialog(panes []string) {
 		slog.Debug("autoAcceptTrustDialog: window closed",
 			"panes_count", len(panes), "window", trustDialogWindow)
 	}()
+}
+
+const bypassPermissionsDialogMarker = "Bypass Permissions mode"
+const workspaceTrustDialogMarker = "project you created or one you trust"
+
+func sendStartupDialogKeys(pane string) error {
+	role, err := tmux.GetUserVar(pane, "role")
+	if err != nil {
+		role = ""
+	}
+	content, err := captureStartupDialogContent(pane)
+	if err != nil {
+		if isManagedAgentRole(role) {
+			return nil
+		}
+		return tmux.SendKeys(pane, "Enter")
+	}
+	keys := startupDialogKeys(role, content)
+	if len(keys) == 0 {
+		return nil
+	}
+	return tmux.SendKeys(pane, keys...)
+}
+
+func startupDialogKeys(role, content string) []string {
+	normalized := normalizeStartupDialogContent(content)
+	if strings.Contains(normalized, bypassPermissionsDialogMarker) {
+		return []string{"2", "Enter"}
+	}
+	if strings.Contains(normalized, workspaceTrustDialogMarker) {
+		return []string{"Enter"}
+	}
+	if isManagedAgentRole(role) {
+		return nil
+	}
+	// Unknown legacy panes are not expected to use Bypass Permissions, so
+	// periodic Enter preserves the previous best-effort trust-dialog behavior.
+	return []string{"Enter"}
+}
+
+func isManagedAgentRole(role string) bool {
+	return role == "orchestrator" || role == "planner" || role == "worker"
+}
+
+func startupDialogVisible(content string) bool {
+	normalized := normalizeStartupDialogContent(content)
+	return strings.Contains(normalized, bypassPermissionsDialogMarker) ||
+		strings.Contains(normalized, workspaceTrustDialogMarker)
+}
+
+func normalizeStartupDialogContent(content string) string {
+	return strings.Join(strings.Fields(content), " ")
+}
+
+func captureStartupDialogContent(pane string) (string, error) {
+	content, err := tmux.CapturePaneJoined(pane, 80)
+	if err != nil {
+		return "", err
+	}
+	if alternate, altErr := tmux.CapturePaneAlternateJoined(pane, 80); altErr == nil && alternate != "" {
+		content += "\n" + alternate
+	}
+	return content, nil
 }
 
 // writeTrustDialogPanesFile writes pane targets to maestroDir/trust_dialog_panes.txt,
@@ -486,20 +555,20 @@ func StartTrustDialogAcceptor(maestroDir string) {
 // checkAgentsLaunched polls panes after sending the launch command to detect
 // immediate startup failures. If an agent binary exits immediately (e.g. due
 // to an auth error, signal, or missing configuration), the pane reverts to the
-// shell prompt. This function logs a warning for each such pane.
+// shell prompt. This function returns an error for any pane that remains dead
+// after the polling window.
 //
-// The check runs in a separate goroutine so it does not block formation.
-// Timing: polls start 3 s after launch (enough for the binary to start or fail
-// quickly) and continue every 2 s for up to 12 s total (6 attempts). Agents
-// that take longer to initialise are not falsely flagged because the condition
-// is "is a shell?" not "is a claude prompt?".
+// Timing: polls start 5 s after launch (enough for the first startup-dialog
+// auto-accept pass to run and for fast failures to return to the shell) and
+// continue every 2 s for up to 12 s total (6 attempts). Agents that take longer
+// to initialise are not falsely flagged because the condition is "is a shell?",
+// not "is a claude prompt?".
 //
-// The daemon's ensureClaudeRunning provides ongoing recovery; this check only
-// gives earlier visibility into failures that would otherwise surface at first
-// dispatch.
-func checkAgentsLaunched(panes []string) {
+// The daemon's ensureClaudeRunning provides ongoing recovery after a healthy
+// launch; this check keeps startup fail-closed when agents exit immediately.
+func checkAgentsLaunched(panes []string) error {
 	const (
-		initialDelay = 3 * time.Second
+		initialDelay = 5 * time.Second
 		pollInterval = 2 * time.Second
 		maxAttempts  = 6
 	)
@@ -508,6 +577,7 @@ func checkAgentsLaunched(panes []string) {
 
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		var deadPanes []string
+		var startupDialogPanes []string
 		for _, pane := range panes {
 			cmd, err := tmux.GetPaneCurrentCommand(pane)
 			if err != nil {
@@ -521,18 +591,39 @@ func checkAgentsLaunched(panes []string) {
 					"shell_command", cmd,
 					"hint", "check agent logs or run 'maestro status' for details")
 			}
+			if content, err := captureStartupDialogContent(pane); err == nil && startupDialogVisible(content) {
+				startupDialogPanes = append(startupDialogPanes, pane)
+				if sendErr := sendStartupDialogKeys(pane); sendErr != nil {
+					slog.Debug("checkAgentsLaunched: startup dialog key send failed", "pane", pane, "error", sendErr)
+				}
+				slog.Warn("checkAgentsLaunched: agent still waiting at startup dialog",
+					"pane", pane,
+					"hint", "startup dialog auto-accept is still pending")
+			}
 		}
 
-		if len(deadPanes) == 0 {
+		if len(deadPanes) == 0 && len(startupDialogPanes) == 0 {
 			// All agents are running; no further polling needed.
 			slog.Debug("checkAgentsLaunched: all agents running", "panes_count", len(panes), "attempt", attempt)
-			return
+			return nil
 		}
 
 		if attempt < maxAttempts-1 {
 			time.Sleep(pollInterval)
+			continue
 		}
+
+		var reasons []string
+		if len(deadPanes) > 0 {
+			reasons = append(reasons, "returned to shell: "+strings.Join(deadPanes, ", "))
+		}
+		if len(startupDialogPanes) > 0 {
+			reasons = append(reasons, "stuck at startup dialog: "+strings.Join(startupDialogPanes, ", "))
+		}
+		return fmt.Errorf("agent launch failed: panes %s", strings.Join(reasons, "; "))
 	}
+
+	return nil
 }
 
 // resolveModel determines the model for a given agent.

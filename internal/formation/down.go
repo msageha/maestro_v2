@@ -31,13 +31,23 @@ func RunDown(maestroDir string, cfg model.Config) error {
 		}
 	}()
 
-	socketPath := filepath.Join(maestroDir, uds.DefaultSocketName)
+	socketPath, err := uds.SocketPath(maestroDir)
+	if err != nil {
+		return fmt.Errorf("resolve daemon socket path: %w", err)
+	}
+	socketCleanupPaths := uds.SocketCleanupPaths(maestroDir)
 
 	// Check if daemon socket exists
-	if _, err := os.Stat(socketPath); err != nil {
-		if !os.IsNotExist(err) {
+	socketExists := false
+	for _, path := range socketCleanupPaths {
+		if _, err := os.Stat(path); err == nil {
+			socketExists = true
+			break
+		} else if !os.IsNotExist(err) {
 			return fmt.Errorf("stat daemon socket: %w", err)
 		}
+	}
+	if !socketExists {
 		// Socket gone but PID file may linger from a crashed daemon
 		cleanupStalePID(maestroDir)
 		slog.Debug("RunDown: killing session (daemon socket missing)")
@@ -58,7 +68,9 @@ func RunDown(maestroDir string, cfg model.Config) error {
 		fmt.Printf("Warning: could not connect to daemon: %v\n", err)
 		fmt.Println("Cleaning up daemon and tmux session...")
 		cleanupStalePID(maestroDir)
-		removeIfExists(socketPath)
+		for _, path := range socketCleanupPaths {
+			removeIfExists(path)
+		}
 		slog.Debug("RunDown: killing session (daemon connection failed)")
 		if err := tmux.KillSession(); err != nil {
 			slog.Warn("KillSession failed (daemon connection failed)", "error", err)

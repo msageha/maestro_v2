@@ -36,6 +36,12 @@ func setupDaemonForStartRuntime(t *testing.T) (*Daemon, string) {
 	os.Chmod(sockDir, 0700)
 	t.Cleanup(func() { os.RemoveAll(sockDir) })
 	sockPath := filepath.Join(sockDir, "d.sock")
+	if err := uds.ProbeUnixSocket(sockPath); err != nil {
+		if uds.IsUnixSocketUnavailable(err) {
+			t.Skipf("unix domain sockets unavailable in this environment: %v", err)
+		}
+		t.Fatalf("probe unix socket support: %v", err)
+	}
 	d.server = uds.NewServer(sockPath)
 
 	watcher, err := fsnotify.NewWatcher()

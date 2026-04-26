@@ -440,9 +440,10 @@ type CommitPolicyViolation struct {
 }
 
 // checkCommitPolicy validates the staged changes and commit message against the
-// configured CommitPolicy. Returns an empty slice if all checks pass.
-// stagedNul is the NUL-separated output from `git diff --cached --name-only -z`.
-func (wm *Manager) checkCommitPolicy(worktreePath, message, stagedNul string) []CommitPolicyViolation {
+// configured CommitPolicy and the task-scoped expected paths. Returns an empty
+// slice if all checks pass. stagedNul is the NUL-separated output from
+// `git diff --cached --name-only -z`.
+func (wm *Manager) checkCommitPolicy(worktreePath, message, stagedNul string, expectedPaths []string) []CommitPolicyViolation {
 	policy := wm.config.CommitPolicy
 	var violations []CommitPolicyViolation
 
@@ -482,7 +483,24 @@ func (wm *Manager) checkCommitPolicy(worktreePath, message, stagedNul string) []
 		}
 	}
 
-	// Check 3: Commit message format
+	// Check 3: expected_paths containment
+	if len(expectedPaths) > 0 {
+		var outside []string
+		for _, file := range stagedFiles {
+			if !pathAllowedByExpectedPaths(file, expectedPaths) {
+				outside = append(outside, file)
+			}
+		}
+		if len(outside) > 0 {
+			violations = append(violations, CommitPolicyViolation{
+				Code:    "expected_paths_violation",
+				Message: fmt.Sprintf("staged files outside expected_paths: %s", strings.Join(outside, ", ")),
+				Files:   outside,
+			})
+		}
+	}
+
+	// Check 4: Commit message format
 	pattern := policy.MessagePattern
 	if pattern != "" {
 		re, err := regexp.Compile(pattern)
@@ -500,6 +518,24 @@ func (wm *Manager) checkCommitPolicy(worktreePath, message, stagedNul string) []
 	}
 
 	return violations
+}
+
+func pathAllowedByExpectedPaths(file string, expectedPaths []string) bool {
+	file = filepath.ToSlash(filepath.Clean(file))
+	for _, exp := range expectedPaths {
+		exp = filepath.ToSlash(filepath.Clean(strings.TrimSpace(exp)))
+		if exp == "" {
+			continue
+		}
+		if exp == "." {
+			return true
+		}
+		exp = strings.TrimSuffix(exp, "/")
+		if file == exp || strings.HasPrefix(file, exp+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 // hasUnmergedFiles checks if a directory has unmerged index entries (indicating a true merge conflict).

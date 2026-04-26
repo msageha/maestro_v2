@@ -3,7 +3,9 @@ package tmux
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -55,6 +57,21 @@ func useTestSession(t *testing.T) string {
 	})
 
 	return capturedName
+}
+
+func TestBuildMaestroSessionNameResolvesSymlinks(t *testing.T) {
+	realDir := t.TempDir()
+	linkParent := t.TempDir()
+	linkDir := filepath.Join(linkParent, "maestro-link")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	fromReal := BuildMaestroSessionName("proj", realDir)
+	fromLink := BuildMaestroSessionName("proj", linkDir)
+	if fromReal != fromLink {
+		t.Fatalf("session name mismatch for real and symlink paths: real=%q link=%q", fromReal, fromLink)
+	}
 }
 
 func TestSessionLifecycle(t *testing.T) {

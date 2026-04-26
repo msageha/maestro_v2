@@ -1,17 +1,20 @@
 // Package daemon implements the maestro background daemon for queue processing and orchestration.
 //
-// TODO(refactor): This package has grown into the largest in the codebase (~36% of total,
-// ~53K lines across 20+ sub-packages). While the sub-package structure provides some
-// separation, the daemon package itself acts as a monolithic composition root with
-// broad responsibilities spanning queue processing, agent lifecycle, worktree management,
-// event bridging, and API serving.
+// TODO(refactor): This package remains the daemon composition root. UDS endpoint
+// adapters live in daemonapi, and several domains already live in sub-packages
+// (worktree, reconcile, dispatch, lease, etc.), but result-write state
+// transitions and scan A/B/C still have broad dependency surfaces.
 //
 // Recommended decomposition direction:
 //   - Promote high-independence sub-packages (e.g., dispatch, reconcile, search) to
 //     top-level internal packages if they have minimal back-references to daemon state.
-//   - Extract the API/UDS layer into a dedicated internal/api package.
-//   - Consider splitting agent lifecycle management (heartbeat, lease, fallback) into
-//     an internal/lifecycle or internal/agent/lifecycle package.
+//   - Keep daemonapi limited to transport concerns: decoding, caller-role
+//     checks, shallow validation, and dispatch to injected domain services.
+//   - Split result-write internals by state transition services
+//     (phase A persistence, phase B command-state update, verification,
+//     best-effort/audit writes) before moving them out of package daemon.
+//   - Split scan A/B/C only after ScanPhaseExecutor no longer needs
+//     daemon-internal queue/result/worktree concrete types.
 //
 // This refactoring should be done incrementally, validating that each extraction
 // maintains the existing integration test coverage.
@@ -38,7 +41,6 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/circuitbreaker"
 	"github.com/msageha/maestro_v2/internal/daemon/fallback"
 	"github.com/msageha/maestro_v2/internal/daemon/judge"
-	"github.com/msageha/maestro_v2/internal/daemon/rollout"
 	"github.com/msageha/maestro_v2/internal/events"
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
@@ -89,11 +91,10 @@ type Daemon struct {
 	admissionCtrl         *admission.Controller
 	fallbackMgr           *fallback.Manager
 	worktreeManager       *WorktreeManager
-	rolloutManager        *rollout.Manager
-	judgeCaller           *judge.Judge
-
-	// Verify config loaded at startup (always non-nil due to fallback)
-	verifyConfig *model.VerifyConfig
+	// judgeCaller is intentionally nil in production until a real LLM caller is
+	// wired. Phase-B tests may inject one directly; startup must not install a
+	// stub that can influence rollout winner selection.
+	judgeCaller *judge.Judge
 
 	// Phase C components (grouped in PhaseCManager)
 	phaseC *PhaseCManager
@@ -196,6 +197,15 @@ func (d *Daemon) SetVerifyRunner(r VerifyRunner) {
 	d.api.result.SetVerifyRunner(r)
 }
 
+// SetVerifyAsync controls whether result_write returns after committing the
+// worker result and lets daemon-owned background work finish verification.
+func (d *Daemon) SetVerifyAsync(enabled bool) {
+	if d.api == nil || d.api.result == nil {
+		return
+	}
+	d.api.result.SetVerifyAsync(enabled)
+}
+
 // LockMap returns the daemon's shared MutexMap for coordinating state locks.
 func (d *Daemon) LockMap() *lock.MutexMap {
 	return d.lockMap
@@ -257,7 +267,11 @@ func New(maestroDir string, cfg model.Config) (*Daemon, error) {
 func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Closer) (*Daemon, error) {
 	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // cancel is stored in d.cancel and called on shutdown
 
-	socketPath := filepath.Join(maestroDir, uds.DefaultSocketName)
+	socketPath, err := uds.SocketPath(maestroDir)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
 	server := uds.NewServer(socketPath)
 
 	scanInterval := cfg.Watcher.ScanIntervalSec
@@ -281,60 +295,8 @@ func newDaemon(maestroDir string, cfg model.Config, w io.Writer, closer io.Close
 		cancel:     cancel,
 	}
 
-	// --- Phase 1: Shared API context ---
-	// Provides common dependencies to all API handlers. Components that are
-	// initialized later (eventBus, circuitBreaker, etc.) are accessed via
-	// late-bound methods on Daemon, not direct field references.
-	shared := &apiContext{
-		maestroDir: maestroDir,
-		config:     &d.config,
-		clock:      d.clock,
-		lockMap:    d.lockMap,
-		logFn:      d.log,
-		logger:     d.logger,
-		logLevel:   d.logLevel,
-		selfWrites: d.selfWrites,
-		fileStore:  newFSResultFileStore(maestroDir),
-		eventBus:   d.eventBusAccessor,
-	}
+	d.api = newAPI(d)
 
-	// --- Phase 2: Domain-specific API handlers ---
-	// ResultWriteAPI uses late-bound accessors because fallbackMgr,
-	// circuitBreaker, and reviewCoord are wired in initComponents()
-	// (called from Run), not here. The accessor pattern ensures test-time
-	// assignments (e.g. d.circuitBreaker = ...) are visible at call time.
-	d.api = &API{
-		shared: shared,
-		result: &ResultWriteAPI{
-			apiContext:     shared,
-			fallbackMgr:    d.fallbackAccessor,
-			circuitBreaker: d.circuitBreakerAccessor,
-			reviewCoord:    d.reviewCoordAccessor,
-			ctx:            d.contextAccessor,
-			triggerScan:    d.triggerResultWriteScan,
-			// §S1-1: verifyRunner is left nil here on purpose. Production
-			// startup (cmd/maestro/cmd_daemon.go) calls SetVerifyRunner with
-			// either NewRealVerifyRunner or NewSkipVerifyRunner depending on
-			// cfg.Verify.EffectiveEnabled(). Tests inject FixedVerifyRunner
-			// or recording fakes. resolveVerifyRunner emits a fail-closed
-			// outcome if neither path runs, so a wiring miss surfaces as a
-			// verify failure instead of a silent pass.
-			verifyRunner: nil,
-		},
-		queue: &QueueWriteAPI{apiContext: shared},
-		plan:  &PlanAPI{apiContext: shared},
-		heartbeat: &HeartbeatAPI{
-			maestroDir: maestroDir,
-			config:     &d.config,
-			logger:     d.logger,
-			logLevel:   d.logLevel,
-			lockMap:    d.lockMap,
-		},
-		dashboard: &DashboardAPI{apiContext: shared},
-		skill:     &SkillAPI{apiContext: shared},
-	}
-
-	// --- Phase 3: Watch loop and event bridge ---
 	watch := &WatchLoop{d: d}
 	watch.fsEg.SetLimit(fsSemaphoreBufferSize())
 	d.watch = watch

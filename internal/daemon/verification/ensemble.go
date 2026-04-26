@@ -40,8 +40,9 @@ type AggregatedResult struct {
 
 // Verifier manages a set of perspectives and aggregates their results.
 type Verifier struct {
-	perspectives []Perspective
-	mu           sync.RWMutex
+	perspectives   []Perspective
+	maxAutoRetries int
+	mu             sync.RWMutex
 }
 
 // NewVerifier creates a Verifier pre-loaded with DefaultPerspectives.
@@ -49,6 +50,49 @@ func NewVerifier() *Verifier {
 	v := &Verifier{}
 	v.perspectives = v.DefaultPerspectives()
 	return v
+}
+
+// SetPerspectives replaces the verifier perspective set. Invalid perspectives
+// with non-positive weights are ignored by returning an error before mutation.
+func (v *Verifier) SetPerspectives(perspectives []Perspective) error {
+	for _, p := range perspectives {
+		if p.Weight <= 0 {
+			return fmt.Errorf("perspective %q: weight must be positive, got %f", p.Name, p.Weight)
+		}
+	}
+	cp := make([]Perspective, len(perspectives))
+	copy(cp, perspectives)
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.perspectives = cp
+	return nil
+}
+
+// Perspectives returns a snapshot of configured verification perspectives.
+func (v *Verifier) Perspectives() []Perspective {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	cp := make([]Perspective, len(v.perspectives))
+	copy(cp, v.perspectives)
+	return cp
+}
+
+// SetMaxAutoRetries stores the retry budget used by callers that implement
+// extended verification retry loops. Negative values are treated as zero.
+func (v *Verifier) SetMaxAutoRetries(n int) {
+	if n < 0 {
+		n = 0
+	}
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.maxAutoRetries = n
+}
+
+// MaxAutoRetries returns the configured extended verification retry budget.
+func (v *Verifier) MaxAutoRetries() int {
+	v.mu.RLock()
+	defer v.mu.RUnlock()
+	return v.maxAutoRetries
 }
 
 // AddPerspective appends a custom perspective to the verifier.

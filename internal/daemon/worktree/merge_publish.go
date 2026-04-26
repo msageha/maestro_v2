@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -138,10 +140,9 @@ func (wm *Manager) recordPublishTerminalFailure(state *model.WorktreeCommandStat
 //
 // IMPORTANT: on conflict, the merge is NOT aborted. Conflict markers are
 // preserved in the integration worktree so the Planner-dispatched worker can
-// resolve them in-place via --run-on-integration (git add + git commit). If we
-// aborted here, the worker would see a clean worktree and report "nothing to
-// do", producing an empty resolution commit while the underlying conflict
-// still blocks publish — an infinite publish_conflict recovery loop.
+// resolve them in-place via --run-on-integration. If we aborted here, the
+// worker would see a clean worktree and report "nothing to do" while the
+// underlying conflict still blocks publish.
 //
 // Re-entry: if a prior call left MERGE_HEAD in place (worker has not yet
 // resolved, or the daemon crashed mid-merge), this function detects the
@@ -273,7 +274,7 @@ func (wm *Manager) integrationHasMergeHead(integrationPath string) bool {
 //
 // Return values:
 //   - (true, nil)  → the in-flight merge has been finalized (worker resolved
-//     and staged the conflict; we created the merge commit). Caller returns
+//     the conflict; the daemon staged and created the merge commit). Caller returns
 //     nil to proceed to publish.
 //   - (false, nil) → the in-flight merge was aborted because it was
 //     unrecoverable (e.g., worker never ran and state is stale). Caller
@@ -290,14 +291,31 @@ func (wm *Manager) reuseInFlightForwardMerge(
 		return false, fmt.Errorf("forward-merge re-entry probe: %w", probeErr)
 	}
 	if hasConflict {
-		// Worker has not yet resolved the conflict. Return the conflict error
-		// WITHOUT clearing PublishConflictSignaled: the signal was already
-		// emitted on the first round and the Planner has a task in flight.
-		// Re-emitting would spam the signal queue on every scan.
 		conflictFiles, cfErr := wm.getConflictFilesInDir(integrationPath)
 		if cfErr != nil {
 			wm.Log(core.LogLevelWarn, "forward_merge_reentry_conflict_files command=%s error=%v", commandID, cfErr)
 		}
+		staged, stageErr := wm.stageResolvedForwardMergeFiles(integrationPath, conflictFiles)
+		if stageErr != nil {
+			return false, stageErr
+		}
+		if staged {
+			hasConflict, probeErr = wm.hasUnmergedFiles(integrationPath)
+			if probeErr != nil {
+				return false, fmt.Errorf("forward-merge re-entry probe after daemon staging: %w", probeErr)
+			}
+			if !hasConflict {
+				goto finalizeMerge
+			}
+			conflictFiles, cfErr = wm.getConflictFilesInDir(integrationPath)
+			if cfErr != nil {
+				wm.Log(core.LogLevelWarn, "forward_merge_reentry_conflict_files_after_stage command=%s error=%v", commandID, cfErr)
+			}
+		}
+		// Worker has not yet resolved the conflict. Return the conflict error
+		// WITHOUT clearing PublishConflictSignaled: the signal was already
+		// emitted on the first round and the Planner has a task in flight.
+		// Re-emitting would spam the signal queue on every scan.
 		wm.Log(core.LogLevelInfo,
 			"forward_merge_reentry_still_conflicting command=%s files=%v",
 			commandID, conflictFiles)
@@ -311,14 +329,13 @@ func (wm *Manager) reuseInFlightForwardMerge(
 			baseBranch, conflictFiles)
 	}
 
-	// No unmerged entries but MERGE_HEAD still exists → worker staged the
-	// resolution (or the auto-merge had no real conflict on this file set).
-	// Finalize the merge commit so the integration branch absorbs base.
+finalizeMerge:
+	// No unmerged entries but MERGE_HEAD still exists → the daemon can finalize
+	// the merge commit so the integration branch absorbs base.
 	if commitErr := wm.gitRunInDir(integrationPath, "commit", "--no-edit"); commitErr != nil {
 		// A `git commit --no-edit` during an in-flight merge can fail if the
-		// worker staged no changes at all (identical content on both sides).
-		// In that case, `git commit --allow-empty --no-edit` finalises the
-		// merge without producing a content-changing commit.
+		// resolution produced no content changes. In that case, allow-empty
+		// finalizes the merge without producing a content-changing commit.
 		if retryErr := wm.gitRunInDir(integrationPath, "commit", "--allow-empty", "--no-edit"); retryErr != nil {
 			wm.Log(core.LogLevelWarn,
 				"forward_merge_reentry_finalize_failed command=%s error=%v retry_error=%v",
@@ -332,6 +349,44 @@ func (wm *Manager) reuseInFlightForwardMerge(
 	state.Integration.PublishConflictFiles = nil
 	wm.Log(core.LogLevelInfo, "forward_merge_reentry_finalized command=%s", commandID)
 	return true, nil
+}
+
+func (wm *Manager) stageResolvedForwardMergeFiles(integrationPath string, conflictFiles []string) (bool, error) {
+	if len(conflictFiles) == 0 {
+		return false, nil
+	}
+	if err := ensureWithinProjectRoot(wm.projectRoot, integrationPath); err != nil {
+		return false, fmt.Errorf("forward-merge daemon-stage path guard: %w", err)
+	}
+	for _, name := range conflictFiles {
+		if name == "" || filepath.IsAbs(name) || strings.HasPrefix(filepath.Clean(name), "..") {
+			return false, fmt.Errorf("forward-merge daemon-stage invalid conflict path %q", name)
+		}
+		path := filepath.Join(integrationPath, name)
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return false, fmt.Errorf("read resolved conflict file %s: %w", name, err)
+		}
+		if bytesContainConflictMarkers(data) {
+			return false, nil
+		}
+	}
+	args := append([]string{"add", "--"}, conflictFiles...)
+	if err := wm.gitRunInDir(integrationPath, args...); err != nil {
+		return false, fmt.Errorf("daemon stage publish conflict resolution: %w", err)
+	}
+	wm.Log(core.LogLevelInfo, "forward_merge_reentry_daemon_staged files=%v", conflictFiles)
+	return true, nil
+}
+
+func bytesContainConflictMarkers(data []byte) bool {
+	s := string(data)
+	return strings.Contains(s, "<<<<<<<") ||
+		strings.Contains(s, "\n=======") ||
+		strings.Contains(s, "\n>>>>>>>")
 }
 
 // samePublishConflictFiles reports whether two conflict-file sets contain the

@@ -916,7 +916,7 @@ func (rh *ResultHandler) notifyPlannerOfWorkerResult(ctx context.Context, comman
 		return fmt.Errorf("create executor: %w", err)
 	}
 
-	message := envelope.BuildTaskResultNotification(commandID, taskID, workerID, taskStatus)
+	message := envelope.BuildTaskResultNotificationWithMaestroDir(commandID, taskID, workerID, taskStatus, rh.maestroDir)
 
 	result := exec.Execute(agent.ExecRequest{
 		Context:   ctx,

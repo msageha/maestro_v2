@@ -129,6 +129,12 @@ func (qh *QueueHandler) collectPendingTaskDispatches(tq *taskQueueEntry, workerI
 			continue
 		}
 
+		if err := qh.markTaskReady(task); err != nil {
+			qh.log(LogLevelWarn, "task_ready_state_update_failed task=%s command=%s error=%v",
+				task.ID, task.CommandID, err)
+			continue
+		}
+
 		// Path overlap check: skip tasks that would touch files already being worked on
 		if conflictID, candPath, flightPath := findOverlappingTask(task, inFlightPaths); conflictID != "" {
 			qh.log(LogLevelDebug, "path_overlap: delaying task %s (conflicts with in-flight task %s on path %s vs %s)",

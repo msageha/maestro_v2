@@ -32,6 +32,7 @@ type apiContext struct {
 	logLevel   LogLevel
 	selfWrites *selfWriteTracker
 	fileStore  ResultFileStore
+	spawnTask  backgroundTaskSpawner
 
 	// Late-bound (set via setters after initComponents)
 	eventBus       func() *events.Bus // lazy accessor; reads Daemon.eventBus at call time
@@ -114,3 +115,7 @@ func (c *apiContext) recordSelfWrite(path string, data any) {
 // scanTriggerFunc is called after result_write to trigger an async queue scan.
 // It encapsulates Daemon.spawnTracked + QueueHandler.PeriodicScanWithContext.
 type scanTriggerFunc func(ctx context.Context)
+
+// backgroundTaskSpawner starts daemon-owned background work and returns false
+// when the daemon is shutting down and the task was not admitted.
+type backgroundTaskSpawner func(name string, fn func(context.Context)) bool

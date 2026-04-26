@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -37,14 +38,25 @@ type stubInvoker struct {
 	response string
 	err      error
 	called   atomic.Int64
+	modelsMu sync.Mutex
+	models   []string
 }
 
 func (s *stubInvoker) Invoke(ctx context.Context, model, systemPrompt, userPrompt string) (string, error) {
 	s.called.Add(1)
+	s.modelsMu.Lock()
+	s.models = append(s.models, model)
+	s.modelsMu.Unlock()
 	if s.err != nil {
 		return "", s.err
 	}
 	return s.response, nil
+}
+
+func (s *stubInvoker) calledModels() []string {
+	s.modelsMu.Lock()
+	defer s.modelsMu.Unlock()
+	return append([]string(nil), s.models...)
 }
 
 // newDispatcherWithStub builds a dispatcher whose model invocation is stubbed.
@@ -332,6 +344,39 @@ func TestDispatch_MultipleReviews(t *testing.T) {
 	}
 	if count != 3 {
 		t.Errorf("expected 3 results, got %d", count)
+	}
+}
+
+func TestDispatch_RoundRobinReviewerModels(t *testing.T) {
+	t.Parallel()
+	cfg := defaultConfig()
+	cfg.Models = []string{"sonnet", "opus"}
+	cfg.MaxConcurrentReviews = ptr.Int(4)
+	d, stub := newDispatcherWithStub(cfg)
+	ctx := context.Background()
+
+	for i := 0; i < 4; i++ {
+		task := model.Task{
+			ID:         fmt.Sprintf("task-%d", i),
+			CommandID:  "cmd-1",
+			BloomLevel: 3,
+		}
+		if err := d.Dispatch(ctx, task, "diff"); err != nil {
+			t.Fatalf("dispatch %d: unexpected error: %v", i, err)
+		}
+	}
+	d.Close()
+
+	models := stub.calledModels()
+	if len(models) != 4 {
+		t.Fatalf("expected 4 model calls, got %d: %v", len(models), models)
+	}
+	counts := map[string]int{}
+	for _, m := range models {
+		counts[m]++
+	}
+	if counts["sonnet"] != 2 || counts["opus"] != 2 {
+		t.Errorf("expected round-robin use of sonnet/opus twice each, got %v", counts)
 	}
 }
 

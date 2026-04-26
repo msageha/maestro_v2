@@ -51,10 +51,16 @@ func (ch *ContinuousHandler) CheckAndAdvance(commandID string, commandStatus mod
 		return nil
 	}
 
-	// Lock order: leaf lock under the state:* namespace; see daemon/doc.go.
-	// Acquired in isolation — no state:{commandID} is held on this path.
+	// Lock order: state:continuous is held only while reading and persisting
+	// continuous.yaml. Queue notifications are emitted after this lock is
+	// released so the canonical queue:* -> state:* order is never inverted.
 	ch.lockMap.Lock("state:continuous")
-	defer ch.lockMap.Unlock("state:continuous")
+	stateLocked := true
+	defer func() {
+		if stateLocked {
+			ch.lockMap.Unlock("state:continuous")
+		}
+	}()
 
 	state, err := ch.loadContinuousState()
 	if err != nil {
@@ -151,6 +157,8 @@ func (ch *ContinuousHandler) CheckAndAdvance(commandID string, commandStatus mod
 		if newPausedReason != nil {
 			reason = *newPausedReason
 		}
+		ch.lockMap.Unlock("state:continuous")
+		stateLocked = false
 		switch newStatus {
 		case model.ContinuousStatusPaused:
 			if err := ch.writeContinuousTransitionNotification(

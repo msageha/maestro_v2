@@ -236,6 +236,9 @@ func TestCreateRetryTask_FieldValidation(t *testing.T) {
 	if retryTask.Status != model.StatusPending {
 		t.Errorf("Status: got %q, want %q", retryTask.Status, model.StatusPending)
 	}
+	if retryTask.OperationType != model.OperationTypeRepair {
+		t.Errorf("OperationType: got %q, want %q", retryTask.OperationType, model.OperationTypeRepair)
+	}
 
 	// Verify Attempts is reset
 	if retryTask.Attempts != 0 {
@@ -2056,4 +2059,3 @@ func TestIsAbortByMaxRepair(t *testing.T) {
 		})
 	}
 }
-

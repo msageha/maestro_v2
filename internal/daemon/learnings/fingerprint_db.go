@@ -1,6 +1,10 @@
 package learnings
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -13,15 +17,13 @@ import (
 // thresholds are NOT subject to self-improvement. Only Planner/Worker
 // prompts, configuration, and personas may be improved.
 type FailurePattern struct {
-	Fingerprint     string
-	ErrorCategory   string
-	RepairStrategy  string
-	OccurrenceCount int
-	LastSeen        time.Time
-	SuccessRate     float64
-
-	// successCount tracks successful repairs for SuccessRate computation.
-	successCount int
+	Fingerprint     string    `json:"fingerprint"`
+	ErrorCategory   string    `json:"error_category"`
+	RepairStrategy  string    `json:"repair_strategy"`
+	OccurrenceCount int       `json:"occurrence_count"`
+	LastSeen        time.Time `json:"last_seen"`
+	SuccessRate     float64   `json:"success_rate"`
+	SuccessCount    int       `json:"success_count"`
 }
 
 // FingerprintDB is an in-memory store of failure patterns keyed by fingerprint.
@@ -64,7 +66,7 @@ func (db *FingerprintDB) Store(fp string, category string, strategy string) {
 		}
 		// Recalculate SuccessRate to stay consistent after OccurrenceCount change.
 		if existing.OccurrenceCount > 0 {
-			existing.SuccessRate = float64(existing.successCount) / float64(existing.OccurrenceCount)
+			existing.SuccessRate = float64(existing.SuccessCount) / float64(existing.OccurrenceCount)
 		}
 		if fp == db.oldestKey {
 			db.oldestValid = false
@@ -142,10 +144,10 @@ func (db *FingerprintDB) RecordSuccess(fp string) {
 	if !ok {
 		return
 	}
-	p.successCount++
+	p.SuccessCount++
 	occurrences := p.OccurrenceCount
 	if occurrences > 0 {
-		p.SuccessRate = float64(p.successCount) / float64(occurrences)
+		p.SuccessRate = float64(p.SuccessCount) / float64(occurrences)
 	}
 }
 
@@ -184,6 +186,78 @@ func (db *FingerprintDB) Patterns() []FailurePattern {
 	return result
 }
 
+// SaveJSON persists the DB snapshot to path. The write is an atomic rename so
+// daemon shutdown cannot leave a partially-written learning file behind.
+func (db *FingerprintDB) SaveJSON(path string) error {
+	db.mu.RLock()
+	patterns := make([]FailurePattern, 0, len(db.patterns))
+	for _, p := range db.patterns {
+		patterns = append(patterns, *p)
+	}
+	db.mu.RUnlock()
+
+	sort.Slice(patterns, func(i, j int) bool {
+		return patterns[i].Fingerprint < patterns[j].Fingerprint
+	})
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(patterns, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// LoadFingerprintDB loads a previously saved DB. A missing file is treated as
+// an empty DB so first-run startup needs no special handling.
+func LoadFingerprintDB(path string, maxSize int) (*FingerprintDB, error) {
+	db := NewFingerprintDB(maxSize)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return db, nil
+		}
+		return nil, err
+	}
+	if len(data) == 0 {
+		return db, nil
+	}
+	var patterns []FailurePattern
+	if err := json.Unmarshal(data, &patterns); err != nil {
+		return nil, err
+	}
+	db.mu.Lock()
+	defer db.mu.Unlock()
+	for i := range patterns {
+		p := patterns[i]
+		if p.Fingerprint == "" {
+			continue
+		}
+		if p.OccurrenceCount <= 0 {
+			p.OccurrenceCount = 1
+		}
+		if p.SuccessCount == 0 && p.SuccessRate > 0 {
+			p.SuccessCount = int(p.SuccessRate*float64(p.OccurrenceCount) + 0.5)
+		}
+		if p.OccurrenceCount > 0 {
+			p.SuccessRate = float64(p.SuccessCount) / float64(p.OccurrenceCount)
+		}
+		cp := p
+		db.patterns[p.Fingerprint] = &cp
+		if len(db.patterns) > db.maxSize {
+			db.evictOldest()
+		}
+	}
+	db.rebuildOldestLocked()
+	return db, nil
+}
+
 // evictOldest removes the entry with the oldest LastSeen timestamp.
 // Caller must hold db.mu write lock.
 func (db *FingerprintDB) evictOldest() {
@@ -204,6 +278,19 @@ func (db *FingerprintDB) evictOldest() {
 	}
 	if oldestKey != "" {
 		delete(db.patterns, oldestKey)
+	}
+}
+
+func (db *FingerprintDB) rebuildOldestLocked() {
+	db.oldestKey = ""
+	db.oldestTime = time.Time{}
+	db.oldestValid = false
+	for k, p := range db.patterns {
+		if !db.oldestValid || p.LastSeen.Before(db.oldestTime) {
+			db.oldestKey = k
+			db.oldestTime = p.LastSeen
+			db.oldestValid = true
+		}
 	}
 }
 

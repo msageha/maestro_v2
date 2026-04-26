@@ -56,6 +56,7 @@ type Controller struct {
 	maxRepair           int
 	maxRollout          int
 	slots               map[OpType]int
+	backgroundSlots     map[OpType]int
 	consecutiveRejects  map[OpType]int
 	saturationThreshold int
 	logger              *log.Logger
@@ -71,6 +72,11 @@ func NewController(cfg model.AdmissionControl, opts ...ControllerOption) *Contro
 		maxRollout:          cfg.EffectiveMaxConcurrentRollout(),
 		saturationThreshold: defaultSaturationThreshold,
 		slots: map[OpType]int{
+			OpVerify:  0,
+			OpRepair:  0,
+			OpRollout: 0,
+		},
+		backgroundSlots: map[OpType]int{
 			OpVerify:  0,
 			OpRepair:  0,
 			OpRollout: 0,
@@ -127,6 +133,34 @@ func (c *Controller) TryAcquire(op OpType) bool {
 	return true
 }
 
+// TryAcquireBackground attempts to acquire a slot for daemon-owned background
+// work that is not represented by an in-progress queue entry. Background slots
+// are preserved across RecordInFlight recalculations.
+func (c *Controller) TryAcquireBackground(op OpType) bool {
+	if op == OpUnknown {
+		return true
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	limit := c.maxFor(op)
+	if c.slots[op] >= limit {
+		c.consecutiveRejects[op]++
+		if c.saturationThreshold > 0 && c.consecutiveRejects[op]%c.saturationThreshold == 0 {
+			if c.logger != nil {
+				c.logger.Printf("[WARN] admission_persistent_saturation op=%s consecutive_rejects=%d limit=%d active=%d",
+					op, c.consecutiveRejects[op], limit, c.slots[op])
+			}
+		}
+		return false
+	}
+	c.consecutiveRejects[op] = 0
+	c.slots[op]++
+	c.backgroundSlots[op]++
+	return true
+}
+
 // Release decrements the slot count for the given operation type. The count
 // will not go below zero.
 func (c *Controller) Release(op OpType) {
@@ -137,6 +171,23 @@ func (c *Controller) Release(op OpType) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.slots[op] > 0 {
+		c.slots[op]--
+	}
+}
+
+// ReleaseBackground releases a slot acquired by TryAcquireBackground.
+func (c *Controller) ReleaseBackground(op OpType) {
+	if op == OpUnknown {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.backgroundSlots[op] > 0 {
+		c.backgroundSlots[op]--
+	}
 	if c.slots[op] > 0 {
 		c.slots[op]--
 	}
@@ -156,6 +207,9 @@ func (c *Controller) Reset() {
 	for op := range c.slots {
 		c.slots[op] = 0
 	}
+	for op := range c.backgroundSlots {
+		c.backgroundSlots[op] = 0
+	}
 }
 
 // RecordInFlight resets the slot counts and then classifies each provided task,
@@ -165,7 +219,7 @@ func (c *Controller) RecordInFlight(tasks []*model.Task) {
 	defer c.mu.Unlock()
 
 	for op := range c.slots {
-		c.slots[op] = 0
+		c.slots[op] = c.backgroundSlots[op]
 	}
 
 	for _, t := range tasks {

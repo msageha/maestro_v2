@@ -14,9 +14,9 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
-// periodicScanPhaseC has been moved to ScanPhaseExecutor (scan_phase_executor.go).
-// executeScanPhaseCBody contains Phase C's logic, called by ScanPhaseExecutor
-// after lock acquisition and counter restoration.
+// executeScanPhaseCBody contains the periodic scan apply phase. This is the
+// third scan phase (A=collect, B=execute, C=apply), unrelated to the Phase C
+// adaptive-control feature bundle in phase_c_manager.go.
 func (qh *QueueHandler) executeScanPhaseCBody(se *ScanPhaseExecutor, pa phaseAResult, pb phaseBResult) []DeferredNotification {
 	// Load queues once for the entire phase (reused by metrics step below)
 	commandQueue, commandPath, err := qh.queueStore.LoadCommandQueue()

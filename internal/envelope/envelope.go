@@ -4,6 +4,7 @@ package envelope
 
 import (
 	"fmt"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"unicode"
@@ -351,4 +352,21 @@ func BuildTaskResultNotification(commandID, taskID, workerID, taskStatus string)
 		sanitizeField(workerID, MaxGenericFieldBytes),
 		sanitizeField(taskStatus, MaxGenericFieldBytes),
 		sanitizeField(workerID, MaxGenericFieldBytes))
+}
+
+// BuildTaskResultNotificationWithMaestroDir creates a Planner notification that
+// includes absolute .maestro paths. Planner panes can run shell commands from
+// arbitrary directories, so relative .maestro paths are ambiguous after a tool
+// changes cwd.
+func BuildTaskResultNotificationWithMaestroDir(commandID, taskID, workerID, taskStatus, maestroDir string) string {
+	base := BuildTaskResultNotification(commandID, taskID, workerID, taskStatus)
+	if maestroDir == "" {
+		return base
+	}
+	resultPath := filepath.ToSlash(filepath.Join(maestroDir, "results", workerID+".yaml"))
+	dashboardPath := filepath.ToSlash(filepath.Join(maestroDir, "dashboard.md"))
+	return fmt.Sprintf("%s\n\n確認に使う .maestro は次の絶対パスです。他の .maestro は読まないでください。\n- result: %s\n- dashboard: %s",
+		base,
+		sanitizeField(resultPath, MaxGenericFieldBytes),
+		sanitizeField(dashboardPath, MaxGenericFieldBytes))
 }

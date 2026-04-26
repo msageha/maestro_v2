@@ -1,4 +1,4 @@
-package daemon
+package daemonapi
 
 import (
 	"context"
@@ -7,44 +7,74 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/msageha/maestro_v2/internal/daemon/apipolicy"
+	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/daemon/worktree"
 	"github.com/msageha/maestro_v2/internal/plan"
 	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
 )
 
-// validationFormatter is satisfied by plan.ValidationErrors without importing plan.
 type validationFormatter interface {
 	error
 	FormatStderr() string
 }
 
-// codedFormatter extends validationFormatter with a custom error code.
-// Satisfied by plan.ActionRequiredError.
 type codedFormatter interface {
 	error
 	FormatStderr() string
 	ErrorCode() string
 }
 
-// PlanExecutor is defined in internal/daemon/core and re-exported via core_aliases.go.
-
-// PlanAPI handles the "plan" UDS endpoint.
-type PlanAPI struct {
-	*apiContext
-	planExecutor    PlanExecutor
-	worktreeManager *WorktreeManager
+type PlanRecoveryWorktreeManager interface {
+	Unquarantine(commandID string, reason string) error
+	ResumeMerge(ctx context.Context, commandID string) error
+	RetryPublish(commandID string) error
+	AutoRecover(ctx context.Context, commandID string) (worktree.AutoRecoverAction, error)
+	ResolveConflict(commandID, phaseID, workerID string) error
 }
 
-// SetPlanExecutor wires the plan executor for UDS plan handlers.
-func (d *Daemon) SetPlanExecutor(pe PlanExecutor) {
-	d.planExecutor = pe
-	if d.api != nil && d.api.plan != nil {
-		d.api.plan.planExecutor = pe
+type Plan struct {
+	maestroDir       string
+	executor         core.PlanExecutor
+	worktreeManager  PlanRecoveryWorktreeManager
+	lock             func()
+	unlock           func()
+	commandStatePath func(maestroDir, commandID string) string
+	publishQueue     func(source string)
+	logInfof         Logf
+	logWarnf         Logf
+}
+
+func NewPlan(
+	maestroDir string,
+	lock func(),
+	unlock func(),
+	commandStatePath func(maestroDir, commandID string) string,
+	publishQueue func(source string),
+	logInfof Logf,
+	logWarnf Logf,
+) *Plan {
+	return &Plan{
+		maestroDir:       maestroDir,
+		lock:             lock,
+		unlock:           unlock,
+		commandStatePath: commandStatePath,
+		publishQueue:     publishQueue,
+		logInfof:         logInfof,
+		logWarnf:         logWarnf,
 	}
 }
 
-func (h *PlanAPI) handlePlan(req *uds.Request) *uds.Response {
+func (h *Plan) SetExecutor(pe core.PlanExecutor) {
+	h.executor = pe
+}
+
+func (h *Plan) SetWorktreeManager(wm PlanRecoveryWorktreeManager) {
+	h.worktreeManager = wm
+}
+
+func (h *Plan) Handle(req *uds.Request) *uds.Response {
 	var params struct {
 		Operation string          `json:"operation"`
 		Data      json.RawMessage `json:"data"`
@@ -53,29 +83,6 @@ func (h *PlanAPI) handlePlan(req *uds.Request) *uds.Response {
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid params: %v", err))
 	}
 
-	// Operations that route through the worktree manager rather than the
-	// plan executor (operator-recovery commands). Trust boundary: same UNIX
-	// user, role advisory only — see internal/uds/protocol.go CallerRoleEnv
-	// godoc. CallerRole here is NOT an authenticated credential (the value
-	// comes from MAESTRO_AGENT_ROLE which any same-user process can set);
-	// the boundary is the UDS socket's mode 0600 which limits *who* can
-	// connect, not which role a connecting process declares. Within that
-	// boundary, role checks prevent honest mistakes (Worker accidentally
-	// invoking recovery, Planner invoking operator-only unquarantine), but
-	// they do not defend against a same-user adversary.
-	//
-	// Empty or unknown CallerRole is rejected to prevent CLI invocations
-	// without MAESTRO_AGENT_ROLE from silently reaching recovery endpoints.
-	// Note: the server-level processRequest already validates and normalizes
-	// CallerRole, but this check is defense-in-depth for direct handler calls.
-	//
-	// Per-operation role policy:
-	//   * Worker is rejected for ALL recovery operations.
-	//   * Planner is additionally rejected for unquarantine — that operation
-	//     is operator-only (mirrors cmd/maestro/cmd_plan_ops.go's CLI-side
-	//     defense and templates/instructions/planner.md §maestro plan
-	//     unquarantine について). Without this server-side check, a Planner
-	//     that bypasses the CLI (direct UDS) could clear a quarantine flag.
 	switch params.Operation {
 	case "unquarantine", "resume_merge", "resolve_conflict", "retry_publish", "auto_recover":
 		if !uds.ValidCallerRoles[req.CallerRole] {
@@ -90,46 +97,55 @@ func (h *PlanAPI) handlePlan(req *uds.Request) *uds.Response {
 			return uds.ErrorResponse(uds.ErrCodeValidation,
 				"operation \"unquarantine\" is restricted to operator role; Planner is not permitted")
 		}
-		return h.handlePlanWorktreeRecovery(params.Operation, params.Data)
+		return h.handleWorktreeRecovery(params.Operation, params.Data)
 	}
 
-	if h.planExecutor == nil {
+	if h.executor == nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, "plan executor not configured")
 	}
 
-	h.acquireFileLock()
-	defer h.releaseFileLock()
+	h.lock()
+	defer h.unlock()
 
 	var result json.RawMessage
 	var err error
 
 	switch params.Operation {
 	case "submit":
-		result, err = h.planExecutor.Submit(params.Data)
+		if resp := apipolicy.RequireCallerRole(req, "plan submit", uds.RolePlanner, uds.RoleCLI); resp != nil {
+			return resp
+		}
+		result, err = h.executor.Submit(params.Data)
 	case "complete":
-		result, err = h.planExecutor.Complete(params.Data)
+		if resp := apipolicy.RequireCallerRole(req, "plan complete", uds.RolePlanner, uds.RoleCLI); resp != nil {
+			return resp
+		}
+		result, err = h.executor.Complete(params.Data)
 	case "add_retry_task":
-		result, err = h.planExecutor.AddRetryTask(params.Data)
+		if resp := apipolicy.RequireCallerRole(req, "plan add_retry_task", uds.RolePlanner, uds.RoleCLI); resp != nil {
+			return resp
+		}
+		result, err = h.executor.AddRetryTask(params.Data)
 	case "add_task":
-		result, err = h.planExecutor.AddTask(params.Data)
+		if resp := apipolicy.RequireCallerRole(req, "plan add_task", uds.RolePlanner, uds.RoleCLI); resp != nil {
+			return resp
+		}
+		result, err = h.executor.AddTask(params.Data)
 	case "rebuild":
-		result, err = h.planExecutor.Rebuild(params.Data)
+		if resp := apipolicy.RequireCallerRole(req, "plan rebuild", uds.RolePlanner, uds.RoleCLI); resp != nil {
+			return resp
+		}
+		result, err = h.executor.Rebuild(params.Data)
 	default:
 		return uds.ErrorResponse(uds.ErrCodeValidation,
 			fmt.Sprintf("unknown plan operation: %q", params.Operation))
 	}
 
 	if err != nil {
-		// Bug L: ErrDoubleSubmit indicates a duplicate retry of an already-
-		// committed submit (e.g., dispatcher inline retry after delivery
-		// already succeeded but a follow-up step failed). The state is
-		// consistent — the prior submit took effect — so log at INFO with a
-		// dedicated tag rather than WARN, which would mislead operators into
-		// thinking a real failure occurred.
 		if params.Operation == "submit" && errors.Is(err, plan.ErrDoubleSubmit) {
-			h.logFn(LogLevelInfo, "plan_submit_duplicate_rejected error=%v", err)
+			h.logInfof("plan_submit_duplicate_rejected error=%v", err)
 		} else {
-			h.logFn(LogLevelWarn, "plan_%s error=%v", params.Operation, err)
+			h.logWarnf("plan_%s error=%v", params.Operation, err)
 		}
 		var cf codedFormatter
 		if errors.As(err, &cf) {
@@ -142,7 +158,6 @@ func (h *PlanAPI) handlePlan(req *uds.Request) *uds.Response {
 		return uds.ErrorResponse(uds.ErrCodeInternal, err.Error())
 	}
 
-	// Detect dry-run submissions to distinguish log output and skip unnecessary queue scan.
 	isDryRun := false
 	if params.Operation == "submit" {
 		var hint struct {
@@ -154,27 +169,18 @@ func (h *PlanAPI) handlePlan(req *uds.Request) *uds.Response {
 	}
 
 	if isDryRun {
-		h.logFn(LogLevelInfo, "plan_%s_dry_run success", params.Operation)
+		h.logInfof("plan_%s_dry_run success", params.Operation)
 	} else {
-		h.logFn(LogLevelInfo, "plan_%s success", params.Operation)
+		h.logInfof("plan_%s success", params.Operation)
 	}
-
-	// Trigger an immediate queue scan for operations that write to worker/planner
-	// queue files. Without this, the daemon relies on fsnotify (which may miss
-	// AtomicWrite's os.Rename on macOS) or the 60-second periodic scan, causing
-	// significant dispatch delay. "rebuild" only updates state and needs no scan.
-	// Dry-run submissions don't write queue entries, so skip scan for them too.
 	if params.Operation != "rebuild" && !isDryRun {
-		h.publishQueueWritten("plan_" + params.Operation)
+		h.publishQueue("plan_" + params.Operation)
 	}
 
 	return &uds.Response{Success: true, Data: result}
 }
 
-// handlePlanWorktreeRecovery serves the operator-recovery plan operations
-// (unquarantine, resume_merge). Both delegate to the worktree manager rather
-// than the plan executor and produce uniform error mapping for the CLI.
-func (h *PlanAPI) handlePlanWorktreeRecovery(operation string, data json.RawMessage) *uds.Response {
+func (h *Plan) handleWorktreeRecovery(operation string, data json.RawMessage) *uds.Response {
 	if h.worktreeManager == nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, "worktree manager not configured (worktree.enabled=false?)")
 	}
@@ -196,15 +202,10 @@ func (h *PlanAPI) handlePlanWorktreeRecovery(operation string, data json.RawMess
 		return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid command_id: %v", err))
 	}
 
-	h.acquireFileLock()
-	defer h.releaseFileLock()
+	h.lock()
+	defer h.unlock()
 
-	// Check that the command itself exists (state/commands/<id>.yaml) under
-	// the file lock to avoid a TOCTOU window with concurrent queue scans.
-	// This distinguishes "no such command" from "command exists but never
-	// used worktree mode" so the CLI can surface accurate error messages.
-	cmdStatePath := commandStatePath(h.maestroDir, p.CommandID)
-	if _, err := os.Stat(cmdStatePath); err != nil {
+	if _, err := os.Stat(h.commandStatePath(h.maestroDir, p.CommandID)); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return uds.ErrorResponse(uds.ErrCodeNotFound, fmt.Sprintf("command not found: %s", p.CommandID))
 		}
@@ -235,20 +236,15 @@ func (h *PlanAPI) handlePlanWorktreeRecovery(operation string, data json.RawMess
 		if err := validate.ID(p.WorkerID); err != nil {
 			return uds.ErrorResponse(uds.ErrCodeValidation, fmt.Sprintf("invalid worker_id: %v", err))
 		}
-		// conflicting_files is an optional operator-supplied hint about which
-		// paths are in conflict. It is recorded in the daemon log so that the
-		// resolution can be correlated with the operator's intent, but the
-		// underlying worktree.ResolveConflict signature is intentionally not
-		// extended here (out of scope for this task).
 		if len(p.ConflictingFiles) > 0 {
-			h.logFn(LogLevelInfo, "plan_resolve_conflict command=%s phase=%s worker=%s conflicting_files=%v",
+			h.logInfof("plan_resolve_conflict command=%s phase=%s worker=%s conflicting_files=%v",
 				p.CommandID, p.PhaseID, p.WorkerID, p.ConflictingFiles)
 		}
 		opErr = h.worktreeManager.ResolveConflict(p.CommandID, p.PhaseID, p.WorkerID)
 	}
 
 	if opErr != nil {
-		h.logFn(LogLevelWarn, "plan_%s error=%v", operation, opErr)
+		h.logWarnf("plan_%s error=%v", operation, opErr)
 		switch {
 		case errors.Is(opErr, worktree.ErrNoWorktreeState):
 			return uds.ErrorResponse(uds.ErrCodeNotFound,
@@ -260,8 +256,8 @@ func (h *PlanAPI) handlePlanWorktreeRecovery(operation string, data json.RawMess
 		}
 	}
 
-	h.logFn(LogLevelInfo, "plan_%s success command=%s", operation, p.CommandID)
-	h.publishQueueWritten("plan_" + operation)
+	h.logInfof("plan_%s success command=%s", operation, p.CommandID)
+	h.publishQueue("plan_" + operation)
 
 	payload := map[string]string{
 		"command_id": p.CommandID,
@@ -269,8 +265,6 @@ func (h *PlanAPI) handlePlanWorktreeRecovery(operation string, data json.RawMess
 		"status":     "ok",
 	}
 	if operation == "auto_recover" {
-		// Surface which recovery path (if any) actually ran so the caller can
-		// distinguish "nothing to do" from "resume_merge dispatched".
 		action := string(autoRecoverAction)
 		if action == "" {
 			action = string(worktree.AutoRecoverNone)

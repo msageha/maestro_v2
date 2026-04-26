@@ -98,6 +98,32 @@ func (h *TaskRetryHandler) ShouldRetryTask(task *model.Task, exitCode int, retry
 	return true, ""
 }
 
+// ShouldRepairTask determines whether a verification failure should create an
+// automatic repair task. Verification failures are semantic failures, not
+// worker process exits, so retryable_exit_codes is intentionally not consulted.
+func (h *TaskRetryHandler) ShouldRepairTask(task *model.Task, failureReason string) (bool, string) {
+	retryConfig := h.config.Retry.TaskExecution
+	if !retryConfig.Enabled {
+		return false, "retry disabled"
+	}
+
+	taskForAbort := *task
+	if failureReason != "" {
+		taskForAbort.LastError = &failureReason
+	}
+	if taskForAbort.DefinitionOfAbort != nil {
+		if stop, reason := h.shouldAbortByDefinition(&taskForAbort); stop {
+			return false, reason
+		}
+	}
+
+	if retryConfig.MaxRetries > 0 && task.ExecutionRetries >= retryConfig.MaxRetries {
+		return false, fmt.Sprintf("max retries exceeded (%d/%d)", task.ExecutionRetries, retryConfig.MaxRetries)
+	}
+
+	return true, ""
+}
+
 // MaxRepairCountReasonPrefix is the leading substring of the reason string
 // returned by ShouldRetryTask when retry is rejected due to
 // definition_of_abort.max_repair_count being met or exceeded. Callers (notably
@@ -189,6 +215,7 @@ func (h *TaskRetryHandler) CreateRetryTask(originalTask *model.Task, _ string, e
 	retryTask.LeaseExpiresAt = nil
 	retryTask.LeaseEpoch = 0
 	retryTask.InProgressAt = nil // Reset so new dispatch sets fresh timestamp
+	retryTask.OperationType = model.OperationTypeRepair
 
 	now := h.clock.Now().UTC()
 	retryTask.CreatedAt = now.Format(time.RFC3339)
@@ -217,6 +244,27 @@ func (h *TaskRetryHandler) CreateRetryTask(originalTask *model.Task, _ string, e
 	retryTask.Constraints = withCappedRetryMeta(retryTask.Constraints, retryMeta)
 
 	return &retryTask, nil
+}
+
+// CreateVerifyRepairTask creates a repair task that carries the verification
+// failure reason into the worker prompt instead of replaying the original task
+// blindly.
+func (h *TaskRetryHandler) CreateVerifyRepairTask(originalTask *model.Task, failureReason string) (*model.Task, error) {
+	const verifyRepairExitCode = 1
+	repairTask, err := h.CreateRetryTask(originalTask, "", verifyRepairExitCode)
+	if err != nil {
+		return nil, err
+	}
+	reason := strings.TrimSpace(failureReason)
+	if reason == "" {
+		reason = "verify_failed"
+	}
+	repairTask.Content = fmt.Sprintf(
+		"Repair the previous implementation because daemon verification failed.\n\nVerification failure reason:\n%s\n\nOriginal task:\n%s",
+		reason,
+		originalTask.Content,
+	)
+	return repairTask, nil
 }
 
 // RegisterRetryTaskInState registers a retry task in the command state.

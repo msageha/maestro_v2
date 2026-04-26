@@ -3,7 +3,6 @@ package daemon
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"time"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -11,85 +10,16 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
-// handleBestEffortWrites performs lease-epoch-guarded best-effort writes for
-// learnings, skill candidates, and advisory review dispatch. Returns a
-// rejection ID if learnings/skill_candidates were dropped due to lease
-// revocation.
-//
-// finalStatus is the post-Verify task status (or the worker-reported status
-// when no Verify pass ran). The advisory review dispatch must gate on the
-// final status so that a Verify-failed task — which gets parked at
-// repair_pending — does not produce a review on unverified diff. Best-effort
-// learnings and skill_candidates writes are still keyed off
-// `bestEffortAllowed` (lease epoch guard) and not the status, because those
-// payloads are worker self-reports that should be preserved even if Verify
-// later overrules the worker's "completed" claim.
-func (h *ResultWriteAPI) handleBestEffortWrites(params ResultWriteParams, resultID string, finalStatus model.Status) string {
-	bestEffortAllowed := true
-	var rejectionID string
-
-	// Only treat advisory skip as a "rejected drop" when at least one
-	// best-effort write would actually have occurred.
-	hasMeaningfulBestEffort := (len(params.Learnings) > 0 && h.config.Learnings.Enabled) ||
-		len(params.SkillCandidates) > 0
-	if hasMeaningfulBestEffort {
-		if skip, reason := h.checkLeaseEpochForBestEffort(params); skip {
-			h.logFn(LogLevelWarn, "best_effort_writes_skipped task=%s command=%s reason=%s",
-				params.TaskID, params.CommandID, reason)
-			bestEffortAllowed = false
-			if id, persisted, perr := h.persistLeaseRejection(params, reason); perr != nil {
-				h.logFn(LogLevelError,
-					"lease_rejection_persist_failed task=%s command=%s reporter=%s error=%v "+
-						"(learnings/skill_candidates lost; not recorded in audit trail)",
-					params.TaskID, params.CommandID, params.Reporter, perr)
-			} else if !persisted {
-				h.logFn(LogLevelInfo,
-					"lease_rejection_recheck_cleared task=%s command=%s reporter=%s "+
-						"(advisory mismatch resolved under lock; best-effort writes re-enabled)",
-					params.TaskID, params.CommandID, params.Reporter)
-				bestEffortAllowed = true
-			} else {
-				rejectionID = id
-				h.logFn(LogLevelWarn,
-					"lease_rejection_persisted rejection_id=%s task=%s command=%s reporter=%s reason=%s "+
-						"learnings_count=%d skill_candidate_count=%d",
-					rejectionID, params.TaskID, params.CommandID, params.Reporter, reason,
-					len(params.Learnings), len(params.SkillCandidates))
-			}
-		}
+func (h *ResultWriteAPI) dispatchAdvisoryReview(params ResultWriteParams, finalStatus model.Status) {
+	if finalStatus != model.StatusCompleted {
+		return
 	}
-
-	if bestEffortAllowed && len(params.Learnings) > 0 && h.config.Learnings.Enabled {
-		learningsPath := learningsFilePath(h.maestroDir)
-		if err := h.writeLearnings(params, resultID); err != nil {
-			h.logFn(LogLevelWarn, "learnings_write_failed result=%s task=%s command=%s path=%s count=%d error=%v "+
-				"(learnings data lost; core result already committed; manual recovery: re-submit result with same learnings)",
-				resultID, params.TaskID, params.CommandID, learningsPath, len(params.Learnings), err)
-		}
-	}
-
-	if bestEffortAllowed && len(params.SkillCandidates) > 0 {
-		candidatesPath := filepath.Join(h.maestroDir, "state", "skill_candidates.yaml")
-		if err := h.writeSkillCandidates(params); err != nil {
-			h.logFn(LogLevelWarn, "skill_candidates_write_failed result=%s task=%s command=%s path=%s count=%d error=%v "+
-				"(skill candidates lost; core result already committed; manual recovery: re-submit result with same skill_candidates)",
-				resultID, params.TaskID, params.CommandID, candidatesPath, len(params.SkillCandidates), err)
-		}
-	}
-
-	// Advisory review dispatch: non-blocking, best-effort. Gates on
-	// finalStatus (post-Verify) so a Verify-failed task does not fan out a
-	// review on an unverified diff — the worker may have reported
-	// "completed", but the VerifyRunner will have moved the task to
-	// repair_pending in that case.
-	if rc := h.reviewCoord(); finalStatus == model.StatusCompleted && rc != nil && rc.Enabled() {
+	if rc := h.reviewCoord(); rc != nil && rc.Enabled() {
 		rc.DispatchIfEligible(h.ctx(), params)
 	}
-
-	return rejectionID
 }
 
-func (h *ResultWriteAPI) resultWritePhaseB(params ResultWriteParams, resultID string, resultStatus model.Status, queueWriteFailed bool, originalTaskID string, retryScheduled, abortByMaxRepair bool) (bool, error) {
+func (h *ResultWriteAPI) resultWritePhaseB(params ResultWriteParams, resultID string, resultStatus model.Status, queueWriteFailed bool, originalTaskID string, retryScheduled, abortByMaxRepair bool) (bool, model.Status, error) {
 	cmdLockKey := "state:" + params.CommandID
 	h.lockMap.Lock(cmdLockKey)
 	defer h.lockMap.Unlock(cmdLockKey)
@@ -97,6 +27,7 @@ func (h *ResultWriteAPI) resultWritePhaseB(params ResultWriteParams, resultID st
 	statePath := commandStatePath(h.maestroDir, params.CommandID)
 
 	var needsVerify bool
+	finalStateStatus := resultStatus
 	err := updateYAMLFile(statePath, func(state *model.CommandState) error {
 		if state.CommandID == "" && state.SchemaVersion == 0 && state.TaskStates == nil {
 			return fmt.Errorf("state not found for command %s", params.CommandID)
@@ -131,7 +62,7 @@ func (h *ResultWriteAPI) resultWritePhaseB(params ResultWriteParams, resultID st
 		// an unexpected source state (e.g., pending → completed) is a §2.1
 		// violation worth flagging.
 		if existing, hadExisting := state.TaskStates[params.TaskID]; hadExisting && existing != recordedStatus {
-			if err := model.ValidateTaskStateTransition(existing, recordedStatus); err != nil {
+			if err := validateReportedResultTransition(existing, recordedStatus); err != nil {
 				h.logFn(LogLevelError,
 					"result_write invalid_state_transition task=%s command=%s from=%s to=%s reason=%v "+
 						"(applying via §2.1 progression; investigate planner/worker for state machine violation)",
@@ -147,6 +78,7 @@ func (h *ResultWriteAPI) resultWritePhaseB(params ResultWriteParams, resultID st
 		// lock (see applyVerifyOutcome) so the runner does not block the
 		// state lock.
 		needsVerify = h.applyTaskStateProgression(state, params, recordedStatus, retryScheduled, abortByMaxRepair)
+		finalStateStatus = state.TaskStates[params.TaskID]
 
 		now := h.clock.Now()
 		state.UpdatedAt = now.UTC().Format(time.RFC3339)
@@ -185,7 +117,17 @@ func (h *ResultWriteAPI) resultWritePhaseB(params ResultWriteParams, resultID st
 
 		return nil
 	})
-	return needsVerify, err
+	return needsVerify, finalStateStatus, err
+}
+
+func validateReportedResultTransition(existing, recorded model.Status) error {
+	// A running worker reports a logical terminal result. Phase B then routes
+	// running -> verify_pending -> completed via AdvanceTaskState, so the direct
+	// running -> completed edge is expected at the result-write boundary.
+	if existing == model.StatusRunning && recorded == model.StatusCompleted {
+		return nil
+	}
+	return model.ValidateTaskStateTransition(existing, recorded)
 }
 
 // applyTaskStateProgression maps the worker-reported recordedStatus to the
@@ -199,9 +141,8 @@ func (h *ResultWriteAPI) resultWritePhaseB(params ResultWriteParams, resultID st
 //     has been scheduled; planner is not asked to replan).
 //   - failed + max_repair    → verify_pending → repair_pending →
 //     paused_for_replan (§S2-2 Circuit Breaker triggers replan).
-//   - failed (non-retryable) → failed terminal (running → failed is allowed
-//     by §2.1; preserves backwards compatibility with the legacy
-//     pending → in_progress → failed pipeline used by tests).
+//   - failed (non-retryable) → verify_pending → repair_pending →
+//     paused_for_replan (no repair producer exists, so Planner must replan).
 //   - cancelled              → cancelled (universal transition).
 //
 // Returns true if the task is parked at verify_pending awaiting the
@@ -243,11 +184,13 @@ func (h *ResultWriteAPI) applyTaskStateProgression(state *model.CommandState, pa
 			h.advanceOrForce(state, params, model.StatusRepairPending)
 			h.advanceOrForce(state, params, model.StatusPausedForReplan)
 		default:
-			// Non-retryable failure: terminal direct write. AdvanceTaskState
-			// would also work (in_progress → failed is permitted), but a direct
-			// assignment matches the legacy expectation that no intermediate
-			// verify_pending is observed for hard failures.
-			state.TaskStates[params.TaskID] = model.StatusFailed
+			// Non-retryable worker failures still pass through the §2.1
+			// repair pipeline. No retry producer exists for this branch, so
+			// the task is paused for replanning instead of landing directly
+			// at the generic failed terminal.
+			h.advanceOrForce(state, params, model.StatusVerifyPending)
+			h.advanceOrForce(state, params, model.StatusRepairPending)
+			h.advanceOrForce(state, params, model.StatusPausedForReplan)
 		}
 		return false
 	case model.StatusCancelled:

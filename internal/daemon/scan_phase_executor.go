@@ -5,15 +5,26 @@ import (
 	"sync"
 
 	"github.com/msageha/maestro_v2/internal/metrics"
-	"github.com/msageha/maestro_v2/internal/model"
 )
+
+type scanPhaseHost interface {
+	log(level LogLevel, format string, args ...any)
+	resetScanTimeCache()
+	newScanState(counters *metrics.ScanCounters) scanState
+	executePhaseASteps(s *scanState)
+	flushScanState(s scanState)
+	executePhaseBSteps(ctx context.Context, pa *phaseAResult, result *phaseBResult)
+	executeScanPhaseCBody(se *ScanPhaseExecutor, pa phaseAResult, pb phaseBResult) []DeferredNotification
+	executeDeferredReconcileNotifications(notifications []DeferredNotification)
+	runPeriodicWorktreeGC()
+}
 
 // ScanPhaseExecutor orchestrates the three-phase periodic scan cycle (A → B → C)
 // and holds scan-specific state that was previously part of QueueHandler.
 // This extraction reduces QueueHandler's field and method count by separating
 // scan coordination from queue management.
 type ScanPhaseExecutor struct {
-	qh *QueueHandler // access to shared dependencies (handlers, managers, config)
+	host scanPhaseHost
 
 	// scanCounters accumulates counters during a single PeriodicScan cycle.
 	scanCounters metrics.ScanCounters
@@ -46,9 +57,9 @@ type ScanPhaseExecutor struct {
 	worktreeStallMarkFn func(commandID string) error
 }
 
-// newScanPhaseExecutor creates a ScanPhaseExecutor wired to the given QueueHandler.
+// newScanPhaseExecutor creates a ScanPhaseExecutor wired to the given scan host.
 func newScanPhaseExecutor(qh *QueueHandler) *ScanPhaseExecutor {
-	return &ScanPhaseExecutor{qh: qh}
+	return &ScanPhaseExecutor{host: qh}
 }
 
 // Execute runs the three-phase periodic scan cycle with context support for
@@ -63,8 +74,8 @@ func (se *ScanPhaseExecutor) Execute(ctx context.Context) {
 	se.scanRunMu.Lock()
 	defer se.scanRunMu.Unlock()
 
-	se.qh.log(LogLevelDebug, "periodic_scan start")
-	se.qh.timeCache.Reset()
+	se.host.log(LogLevelDebug, "periodic_scan start")
+	se.host.resetScanTimeCache()
 
 	pa := se.periodicScanPhaseA()
 	pb := se.periodicScanPhaseB(ctx, pa)
@@ -72,15 +83,7 @@ func (se *ScanPhaseExecutor) Execute(ctx context.Context) {
 
 	// Execute deferred reconciler notifications outside scanMu.Lock
 	// to avoid blocking queue writes during slow tmux I/O.
-	if se.qh.reconciler != nil && len(deferredNotifs) > 0 {
-		failed := se.qh.reconciler.ExecuteDeferredNotifications(deferredNotifs)
-		if len(failed) > 0 {
-			for _, n := range failed {
-				se.qh.log(LogLevelWarn, "reconciler_notification_failed kind=%s command_id=%s", n.Kind, n.CommandID)
-			}
-			se.qh.log(LogLevelWarn, "reconciler_notifications_failed count=%d", len(failed))
-		}
-	}
+	se.host.executeDeferredReconcileNotifications(deferredNotifs)
 
 	// Run worktree GC periodically as a safety net complementing the
 	// immediate cleanup triggered by CleanupOnSuccess/CleanupOnFailure.
@@ -88,13 +91,11 @@ func (se *ScanPhaseExecutor) Execute(ctx context.Context) {
 	// freshness against the I/O cost of scanning worktree directories.
 	const gcInterval uint64 = 60
 	se.gcScanCounter++
-	if se.gcScanCounter%gcInterval == 0 && se.qh.worktreeManager != nil {
-		if err := se.qh.worktreeManager.GC(); err != nil {
-			se.qh.log(LogLevelWarn, "worktree_gc error=%v", err)
-		}
+	if se.gcScanCounter%gcInterval == 0 {
+		se.host.runPeriodicWorktreeGC()
 	}
 
-	se.qh.log(LogLevelDebug, "periodic_scan complete")
+	se.host.log(LogLevelDebug, "periodic_scan complete")
 }
 
 // periodicScanPhaseA runs under scanMu.Lock. It loads queues, delegates all
@@ -106,13 +107,10 @@ func (se *ScanPhaseExecutor) periodicScanPhaseA() phaseAResult {
 	s := se.initScanState()
 
 	// Delegate all Phase A steps to QueueHandler's single entry point.
-	se.qh.executePhaseASteps(&s)
+	se.host.executePhaseASteps(&s)
 
 	// Flush dirty queues to disk
-	se.qh.queueStore.FlushQueues(s.commands.Data, s.commands.Path, s.commands.Dirty,
-		s.tasks, s.taskDirty,
-		s.notifications.Data, s.notifications.Path, s.notifications.Dirty,
-		s.signals.Data, s.signals.Path, s.signals.Dirty)
+	se.host.flushScanState(s)
 
 	return phaseAResult{
 		work:      s.work,
@@ -123,36 +121,8 @@ func (se *ScanPhaseExecutor) periodicScanPhaseA() phaseAResult {
 
 // initScanState loads all queue files and initializes a scanState.
 func (se *ScanPhaseExecutor) initScanState() scanState {
-	qh := se.qh
-	scanStart := qh.clock.Now()
 	se.scanCounters = metrics.ScanCounters{}
-
-	commandQueue, commandPath, err := qh.queueStore.LoadCommandQueue()
-	if err != nil {
-		qh.log(LogLevelError, "load_command_queue_failed error=%v", err)
-	}
-	taskQueues, err := qh.queueStore.LoadAllTaskQueues()
-	if err != nil {
-		qh.log(LogLevelError, "load_task_queues_failed error=%v", err)
-	}
-	notificationQueue, notificationPath, err := qh.queueStore.LoadNotificationQueue()
-	if err != nil {
-		qh.log(LogLevelError, "load_notification_queue_failed error=%v", err)
-	}
-	signalQueue, signalPath, err := qh.queueStore.LoadPlannerSignalQueue()
-	if err != nil {
-		qh.log(LogLevelError, "load_signal_queue_failed error=%v", err)
-	}
-
-	return scanState{
-		commands:      fileState[model.CommandQueue]{Data: commandQueue, Path: commandPath},
-		tasks:         taskQueues,
-		taskDirty:     make(map[string]bool),
-		notifications: fileState[model.NotificationQueue]{Data: notificationQueue, Path: notificationPath},
-		signals:       fileState[model.PlannerSignalQueue]{Data: signalQueue, Path: signalPath},
-		signalIndex:   buildSignalIndex(signalQueue.Signals),
-		scanStart:     scanStart,
-	}
+	return se.host.newScanState(&se.scanCounters)
 }
 
 // periodicScanPhaseB executes all slow tmux I/O operations without holding any lock.
@@ -169,13 +139,14 @@ func (se *ScanPhaseExecutor) periodicScanPhaseB(ctx context.Context, pa phaseARe
 	}
 
 	// Delegate all Phase B steps to QueueHandler's single entry point.
-	se.qh.executePhaseBSteps(ctx, &pa, &result)
+	se.host.executePhaseBSteps(ctx, &pa, &result)
 
 	return result
 }
 
-// periodicScanPhaseC runs under scanMu.Lock. It reloads queues from disk,
-// applies Phase B results with epoch fencing, flushes, and runs post-flush steps.
+// periodicScanPhaseC is the scan apply phase. It runs under scanMu.Lock,
+// reloads queues from disk, applies Phase B results with epoch fencing,
+// flushes, and runs post-flush steps.
 // Returns deferred notifications from reconciliation that must be executed outside the lock.
 func (se *ScanPhaseExecutor) periodicScanPhaseC(pa phaseAResult, pb phaseBResult) []DeferredNotification {
 	se.scanMu.Lock()
@@ -186,8 +157,8 @@ func (se *ScanPhaseExecutor) periodicScanPhaseC(pa phaseAResult, pb phaseBResult
 	// from Phase B (e.g., SignalInlineRetrySuccesses from inline signal
 	// delivery retries). A raw assignment would discard Phase B increments.
 
-	// Delegate to QueueHandler for Phase C body (deeply coupled to handler dependencies).
-	return se.qh.executeScanPhaseCBody(se, pa, pb)
+	// Delegate to QueueHandler for the apply body, which depends on handler wiring.
+	return se.host.executeScanPhaseCBody(se, pa, pb)
 }
 
 // LockFiles acquires a shared (read) lock for queue write handlers.

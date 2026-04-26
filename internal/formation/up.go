@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
@@ -96,7 +95,14 @@ func RunUp(opts UpOptions) (err error) {
 	}
 
 	// Wait for daemon to become ready (UDS ping)
-	socketPath := filepath.Join(opts.MaestroDir, uds.DefaultSocketName)
+	socketPath, err := uds.SocketPath(opts.MaestroDir)
+	if err != nil {
+		_ = stopDaemon(opts.MaestroDir)
+		if killErr := tmux.KillSession(); killErr != nil {
+			slog.Warn("KillSession failed during socket path cleanup", "error", killErr)
+		}
+		return fmt.Errorf("resolve daemon socket path: %w", err)
+	}
 	if err := waitDaemonReady(socketPath, 10*time.Second); err != nil {
 		// Daemon failed to start — clean up
 		_ = stopDaemon(opts.MaestroDir)

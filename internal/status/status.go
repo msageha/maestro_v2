@@ -46,7 +46,10 @@ func Run(maestroDir string, jsonOutput bool) error {
 	status := formationStatus{}
 
 	// Check daemon status via UDS ping
-	sockPath := filepath.Join(maestroDir, uds.DefaultSocketName)
+	sockPath, err := uds.SocketPath(maestroDir)
+	if err != nil {
+		return fmt.Errorf("resolve daemon socket path: %w", err)
+	}
 	status.Daemon = checkDaemon(sockPath)
 
 	// Get agent status from tmux

@@ -26,9 +26,11 @@ func removeIfExists(path string) {
 // cleanupWithLock removes stale PID and socket files while holding the daemon
 // lock, then releases the lock. Used by stopDaemon to deduplicate the
 // lock-acquire-then-cleanup pattern.
-func cleanupWithLock(fl *lock.FileLock, pidPath, socketPath string) error {
+func cleanupWithLock(fl *lock.FileLock, pidPath string, socketPaths []string) error {
 	removeIfExists(pidPath)
-	removeIfExists(socketPath)
+	for _, socketPath := range socketPaths {
+		removeIfExists(socketPath)
+	}
 	if err := fl.Unlock(); err != nil {
 		slog.Warn("daemon lock unlock failed", "error", err)
 	}
@@ -63,13 +65,26 @@ func startDaemon() error {
 // the PID file. Falls back to SIGTERM → SIGKILL if the daemon does not exit.
 // Returns an error if daemon death could not be confirmed.
 func (c *Config) stopDaemon(maestroDir string) error {
-	socketPath := filepath.Join(maestroDir, uds.DefaultSocketName)
+	socketPath, err := uds.SocketPath(maestroDir)
+	if err != nil {
+		return fmt.Errorf("resolve daemon socket path: %w", err)
+	}
 	pidPath := filepath.Join(maestroDir, "daemon.pid")
+	socketCleanupPaths := uds.SocketCleanupPaths(maestroDir)
 
-	// Quick check: if neither socket nor PID file exists, no daemon to stop
-	_, socketErr := os.Stat(socketPath)
+	// Quick check: if neither socket nor PID file exists, no daemon to stop.
+	socketExists := false
+	for _, path := range socketCleanupPaths {
+		if _, err := os.Stat(path); err == nil {
+			socketExists = true
+			break
+		} else if !os.IsNotExist(err) {
+			socketExists = true
+			break
+		}
+	}
 	_, pidErr := os.Stat(pidPath)
-	if os.IsNotExist(socketErr) && os.IsNotExist(pidErr) {
+	if !socketExists && os.IsNotExist(pidErr) {
 		return nil
 	}
 
@@ -118,7 +133,9 @@ func (c *Config) stopDaemon(maestroDir string) error {
 	if _, err := os.Stat(lockDir); err != nil {
 		if os.IsNotExist(err) {
 			removeIfExists(pidPath)
-			removeIfExists(socketPath)
+			for _, path := range socketCleanupPaths {
+				removeIfExists(path)
+			}
 			return nil
 		}
 		return fmt.Errorf("stat locks directory: %w", err)
@@ -127,14 +144,14 @@ func (c *Config) stopDaemon(maestroDir string) error {
 	fl := lock.NewFileLock(lockPath)
 	if err := fl.TryLock(); err == nil {
 		// Lock acquired → no daemon holds it.
-		return cleanupWithLock(fl, pidPath, socketPath)
+		return cleanupWithLock(fl, pidPath, socketCleanupPaths)
 	}
 
 	// Lock held but no valid PID: poll for daemon exit via lock release
 	deadline := time.Now().Add(c.DaemonPollTimeout)
 	for time.Now().Before(deadline) {
 		if err := fl.TryLock(); err == nil {
-			return cleanupWithLock(fl, pidPath, socketPath)
+			return cleanupWithLock(fl, pidPath, socketCleanupPaths)
 		}
 		time.Sleep(c.DaemonPollInterval)
 	}

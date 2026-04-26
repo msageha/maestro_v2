@@ -71,10 +71,11 @@ type signalDeliveryItem struct {
 
 // worktreeMergeItem captures a phase-boundary worktree merge for Phase B execution.
 type worktreeMergeItem struct {
-	CommandID      string
-	PhaseID        string
-	WorkerIDs      []string
-	WorkerPurposes map[string]string // workerID -> task purpose (for commit messages)
+	CommandID           string
+	PhaseID             string
+	WorkerIDs           []string
+	WorkerPurposes      map[string]string   // workerID -> task purpose (for commit messages)
+	WorkerExpectedPaths map[string][]string // workerID -> allowed changed paths
 }
 
 // commitFailure records a worker whose CommitWorkerChanges failed.

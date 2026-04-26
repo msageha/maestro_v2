@@ -2,6 +2,8 @@ package daemon
 
 import (
 	"errors"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/model"
@@ -224,6 +226,7 @@ func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string, taskQueues 
 
 	// Build workerID → task purpose map from task queues
 	workerPurposes := buildWorkerPurposes(commandID, taskQueues)
+	workerExpectedPaths := buildWorkerExpectedPaths(commandID, taskQueues)
 
 	// Phase 0 件フォールバック: phases が一切定義されていない command でも
 	// worker worktree への書き込みは発生しうる。この場合、全タスク終了かつ
@@ -279,10 +282,11 @@ func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string, taskQueues 
 		}
 
 		items = append(items, worktreeMergeItem{
-			CommandID:      commandID,
-			PhaseID:        phase.ID,
-			WorkerIDs:      workerIDs,
-			WorkerPurposes: workerPurposes,
+			CommandID:           commandID,
+			PhaseID:             phase.ID,
+			WorkerIDs:           workerIDs,
+			WorkerPurposes:      workerPurposes,
+			WorkerExpectedPaths: workerExpectedPaths,
 		})
 	}
 
@@ -305,6 +309,36 @@ func buildWorkerPurposes(_ string, taskQueues map[string]*taskQueueEntry) map[st
 		return nil
 	}
 	return purposes
+}
+
+func buildWorkerExpectedPaths(commandID string, taskQueues map[string]*taskQueueEntry) map[string][]string {
+	pathsByWorker := make(map[string][]string)
+	seenByWorker := make(map[string]map[string]struct{})
+	for queueFile, tqEntry := range taskQueues {
+		workerID := strings.TrimSuffix(filepath.Base(queueFile), ".yaml")
+		if workerID == "" {
+			continue
+		}
+		for _, task := range tqEntry.Queue.Tasks {
+			if task.CommandID != commandID || task.Status != model.StatusCompleted {
+				continue
+			}
+			if seenByWorker[workerID] == nil {
+				seenByWorker[workerID] = make(map[string]struct{})
+			}
+			for _, p := range task.ExpectedPaths {
+				if _, ok := seenByWorker[workerID][p]; ok {
+					continue
+				}
+				seenByWorker[workerID][p] = struct{}{}
+				pathsByWorker[workerID] = append(pathsByWorker[workerID], p)
+			}
+		}
+	}
+	if len(pathsByWorker) == 0 {
+		return nil
+	}
+	return pathsByWorker
 }
 
 // hasExpiredLeases checks whether any queue entry has an expired lease.
@@ -573,10 +607,11 @@ func (qh *QueueHandler) collectImplicitWorktreeMerge(
 	}
 
 	return []worktreeMergeItem{{
-		CommandID:      commandID,
-		PhaseID:        "__implicit_phase",
-		WorkerIDs:      workerIDs,
-		WorkerPurposes: workerPurposes,
+		CommandID:           commandID,
+		PhaseID:             "__implicit_phase",
+		WorkerIDs:           workerIDs,
+		WorkerPurposes:      workerPurposes,
+		WorkerExpectedPaths: buildWorkerExpectedPaths(commandID, taskQueues),
 	}}
 }
 
