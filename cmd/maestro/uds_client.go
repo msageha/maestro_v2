@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"path/filepath"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/uds"
@@ -35,5 +34,23 @@ func newCLIApp() *cliApp {
 
 // newDaemonClient creates a UDS client connected to the daemon socket in the given .maestro directory.
 func (a *cliApp) newDaemonClient(maestroDir string) udsClientIface {
-	return a.createClient(filepath.Join(maestroDir, uds.DefaultSocketName))
+	socketPath, err := uds.SocketPath(maestroDir)
+	if err != nil {
+		return errorUDSClient{err: err}
+	}
+	return a.createClient(socketPath)
 }
+
+type errorUDSClient struct {
+	err error
+}
+
+func (c errorUDSClient) SendCommand(string, any) (*uds.Response, error) {
+	return nil, c.err
+}
+
+func (c errorUDSClient) SendCommandContext(context.Context, string, any) (*uds.Response, error) {
+	return nil, c.err
+}
+
+func (c errorUDSClient) SetTimeout(time.Duration) {}

@@ -10,6 +10,7 @@ import (
 )
 
 const version = "2.0.0"
+const maestroDirEnv = "MAESTRO_DIR"
 
 // ExitCodeRetryable is the exit code used when the CLI operation can be retried.
 // This includes daemon-side rejections such as FENCING_REJECT, BACKPRESSURE,
@@ -121,6 +122,23 @@ func (a *cliApp) run(args []string) int {
 // findMaestroDir searches for .maestro/ in the current directory and ancestors.
 // Returns ("", nil) if not found, or ("", error) if the working directory cannot be determined.
 func findMaestroDir() (string, error) {
+	if envDir := os.Getenv(maestroDirEnv); envDir != "" {
+		dir, err := filepath.Abs(envDir)
+		if err != nil {
+			return "", fmt.Errorf("%s: resolve %q: %w", maestroDirEnv, envDir, err)
+		}
+		if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+			dir = resolved
+		}
+		info, err := os.Stat(dir)
+		if err != nil {
+			return "", fmt.Errorf("%s: stat %q: %w", maestroDirEnv, dir, err)
+		}
+		if !info.IsDir() {
+			return "", fmt.Errorf("%s: %q is not a directory", maestroDirEnv, dir)
+		}
+		return dir, nil
+	}
 	dir, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("get working directory: %w", err)

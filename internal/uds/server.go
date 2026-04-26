@@ -8,7 +8,9 @@ import (
 	"net"
 	"os"
 	"runtime/debug"
+	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -30,6 +32,37 @@ const backpressureWriteDeadline = 1 * time.Second
 // Unix-like systems. macOS uses 104 bytes; we use the more conservative 104
 // to be safe across platforms.
 const maxUnixSocketPathLen = 104
+
+// ErrUnixSocketUnavailable marks environments where AF_UNIX sockets cannot be
+// created, usually because a sandbox or container blocks socket bind.
+var ErrUnixSocketUnavailable = errors.New("unix domain sockets unavailable")
+
+// UnixSocketUnavailableError preserves the original listen error while letting
+// callers use errors.Is(err, ErrUnixSocketUnavailable).
+type UnixSocketUnavailableError struct {
+	Path string
+	Err  error
+}
+
+func (e *UnixSocketUnavailableError) Error() string {
+	return fmt.Sprintf(
+		"listen on %s: %v (unix domain socket creation is blocked by OS permissions; run Maestro in an environment that permits AF_UNIX sockets)",
+		e.Path,
+		e.Err,
+	)
+}
+
+func (e *UnixSocketUnavailableError) Unwrap() error { return e.Err }
+
+func (e *UnixSocketUnavailableError) Is(target error) bool {
+	return target == ErrUnixSocketUnavailable
+}
+
+// IsUnixSocketUnavailable reports whether err indicates the process cannot
+// create Unix domain sockets in the current environment.
+func IsUnixSocketUnavailable(err error) bool {
+	return errors.Is(err, ErrUnixSocketUnavailable)
+}
 
 // Server is a Unix Domain Socket server that dispatches incoming requests to registered handlers.
 type Server struct {
@@ -67,8 +100,8 @@ func (s *Server) Handle(command string, handler handlerFunc) {
 
 // Start begins listening for connections on the configured Unix socket path.
 func (s *Server) Start() error {
-	if len(s.socketPath) > maxUnixSocketPathLen {
-		return fmt.Errorf("socket path too long: %d bytes exceeds %d byte limit (path: %s)", len(s.socketPath), maxUnixSocketPathLen, s.socketPath)
+	if err := validateSocketPath(s.socketPath); err != nil {
+		return err
 	}
 
 	// Remove stale socket file
@@ -76,7 +109,7 @@ func (s *Server) Start() error {
 
 	listener, err := net.Listen("unix", s.socketPath)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", s.socketPath, err)
+		return wrapListenError(s.socketPath, err)
 	}
 
 	// Set socket permissions to 0600 after creation.
@@ -95,6 +128,53 @@ func (s *Server) Start() error {
 	go s.acceptLoop()
 
 	return nil
+}
+
+// ProbeUnixSocket verifies that the current process can bind a Unix socket at
+// socketPath, then removes the probe socket. It is intended for preflight checks
+// and tests that need to distinguish code failures from sandbox restrictions.
+func ProbeUnixSocket(socketPath string) error {
+	if err := validateSocketPath(socketPath); err != nil {
+		return err
+	}
+	_ = os.Remove(socketPath)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		return wrapListenError(socketPath, err)
+	}
+	if err := listener.Close(); err != nil {
+		_ = os.Remove(socketPath)
+		return fmt.Errorf("close probe socket %s: %w", socketPath, err)
+	}
+	if err := os.Remove(socketPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove probe socket %s: %w", socketPath, err)
+	}
+	return nil
+}
+
+func validateSocketPath(socketPath string) error {
+	if len(socketPath) > maxUnixSocketPathLen {
+		return fmt.Errorf("socket path too long: %d bytes exceeds %d byte limit (path: %s)", len(socketPath), maxUnixSocketPathLen, socketPath)
+	}
+	return nil
+}
+
+func wrapListenError(socketPath string, err error) error {
+	if isUnixSocketPermissionError(err) {
+		return &UnixSocketUnavailableError{Path: socketPath, Err: err}
+	}
+	return fmt.Errorf("listen on %s: %w", socketPath, err)
+}
+
+func isUnixSocketPermissionError(err error) bool {
+	if errors.Is(err, os.ErrPermission) ||
+		errors.Is(err, syscall.EPERM) ||
+		errors.Is(err, syscall.EACCES) {
+		return true
+	}
+	lower := strings.ToLower(err.Error())
+	return strings.Contains(lower, "operation not permitted") ||
+		strings.Contains(lower, "permission denied")
 }
 
 // Stop gracefully shuts down the server, closing the listener and waiting for active connections to finish.
@@ -223,12 +303,15 @@ func (s *Server) processRequest(req *Request) *Response {
 		)
 	}
 
-	// Validate and normalize CallerRole before dispatching to handlers.
-	// Empty CallerRole (direct CLI invocation) is normalized to "cli".
+	// Validate CallerRole before dispatching to handlers. Current CLI clients
+	// always populate it via ResolveCallerRole; a missing value means the
+	// request bypassed the client-side role resolution path.
 	if err := ValidateCallerRole(req.CallerRole); err != nil {
 		return ErrorResponse(ErrCodeValidation, err.Error())
 	}
-	req.CallerRole = NormalizeCallerRole(req.CallerRole)
+	if req.CallerRole == "" {
+		return ErrorResponse(ErrCodeValidation, "caller_role is required")
+	}
 
 	s.mu.RLock()
 	handler, ok := s.handlers[req.Command]

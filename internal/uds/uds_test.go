@@ -14,6 +14,7 @@ import (
 
 func setupTestServer(t *testing.T) (*Server, *Client, string) {
 	t.Helper()
+	requireUnixSocketSupport(t)
 	// Use os.MkdirTemp with empty dir to respect $TMPDIR (sandbox-friendly).
 	// Keep prefix short to stay within Unix socket 108-byte path limit.
 	dir, err := os.MkdirTemp("", "m-uds-*")
@@ -33,12 +34,31 @@ func setupTestServer(t *testing.T) (*Server, *Client, string) {
 
 func shortTempSockPath(t *testing.T, name string) string {
 	t.Helper()
+	requireUnixSocketSupport(t)
 	dir, err := os.MkdirTemp("", "m-uds-*")
 	if err != nil {
 		t.Fatalf("create temp dir: %v", err)
 	}
 	t.Cleanup(func() { os.RemoveAll(dir) })
 	return filepath.Join(dir, name)
+}
+
+func requireUnixSocketSupport(t *testing.T) {
+	t.Helper()
+
+	dir, err := os.MkdirTemp("", "m-uds-probe-*")
+	if err != nil {
+		t.Fatalf("create probe temp dir: %v", err)
+	}
+	defer os.RemoveAll(dir)
+
+	path := filepath.Join(dir, "p.sock")
+	if err := ProbeUnixSocket(path); err != nil {
+		if IsUnixSocketUnavailable(err) {
+			t.Skipf("unix domain sockets unavailable in this environment: %v", err)
+		}
+		t.Fatalf("probe unix socket support: %v", err)
+	}
 }
 
 func TestFraming_RoundTrip(t *testing.T) {
@@ -633,6 +653,8 @@ func TestSendContext_ServerNotRunning(t *testing.T) {
 // --- Server lifecycle tests ---
 
 func TestServer_StartStopStart(t *testing.T) {
+	requireUnixSocketSupport(t)
+
 	dir, err := os.MkdirTemp("", "m-uds-*")
 	if err != nil {
 		t.Fatalf("create temp dir: %v", err)
@@ -735,6 +757,8 @@ func TestServer_HandlerPanicRecovery(t *testing.T) {
 }
 
 func TestServer_Backpressure(t *testing.T) {
+	requireUnixSocketSupport(t)
+
 	dir, err := os.MkdirTemp("", "m-uds-*")
 	if err != nil {
 		t.Fatalf("create temp dir: %v", err)
@@ -805,6 +829,8 @@ func TestServer_Backpressure(t *testing.T) {
 }
 
 func TestClient_SendRetryOnTransientError(t *testing.T) {
+	requireUnixSocketSupport(t)
+
 	dir, err := os.MkdirTemp("", "m-uds-*")
 	if err != nil {
 		t.Fatalf("create temp dir: %v", err)
@@ -866,7 +892,7 @@ func TestValidateCallerRole(t *testing.T) {
 		{"planner", false},
 		{"worker", false},
 		{"cli", false},
-		{"", false}, // empty is allowed (normalized to "cli" by NormalizeCallerRole)
+		{"", false}, // empty is accepted at validation; server requests must still carry a resolved role.
 		{"admin", true},
 		{"superuser", true},
 		{"ORCHESTRATOR", true}, // case-sensitive
@@ -950,12 +976,10 @@ func TestProcessRequest_InvalidCallerRole(t *testing.T) {
 	}
 }
 
-func TestProcessRequest_EmptyCallerRoleNormalized(t *testing.T) {
+func TestProcessRequest_EmptyCallerRoleRejected(t *testing.T) {
 	server, client, _ := setupTestServer(t)
 
-	var receivedRole string
 	server.Handle("ping", func(req *Request) *Response {
-		receivedRole = req.CallerRole
 		return SuccessResponse(nil)
 	})
 
@@ -964,7 +988,6 @@ func TestProcessRequest_EmptyCallerRoleNormalized(t *testing.T) {
 	}
 	defer server.Stop()
 
-	// Send request with empty CallerRole — should be normalized to "cli"
 	req := &Request{
 		ProtocolVersion: ProtocolVersion,
 		Command:         "ping",
@@ -974,11 +997,14 @@ func TestProcessRequest_EmptyCallerRoleNormalized(t *testing.T) {
 	if err != nil {
 		t.Fatalf("send: %v", err)
 	}
-	if !resp.Success {
-		t.Errorf("expected success, got error: %v", resp.Error)
+	if resp.Success {
+		t.Fatal("expected failure for empty caller role")
 	}
-	if receivedRole != RoleCLI {
-		t.Errorf("expected CallerRole to be normalized to %q, got %q", RoleCLI, receivedRole)
+	if resp.Error == nil || resp.Error.Code != ErrCodeValidation {
+		t.Fatalf("expected validation error, got: %+v", resp.Error)
+	}
+	if !strings.Contains(resp.Error.Message, "caller_role is required") {
+		t.Errorf("expected caller_role required message, got: %q", resp.Error.Message)
 	}
 }
 
@@ -995,12 +1021,48 @@ func TestNewRequest_InvalidEnvRole(t *testing.T) {
 
 func TestNewRequest_EmptyEnvRoleNormalized(t *testing.T) {
 	t.Setenv(CallerRoleEnv, "")
+	t.Setenv("TMUX_PANE", "")
 	req, err := newRequest("test", nil)
 	if err != nil {
 		t.Fatalf("newRequest: %v", err)
 	}
 	if req.CallerRole != RoleCLI {
 		t.Errorf("expected CallerRole %q, got %q", RoleCLI, req.CallerRole)
+	}
+}
+
+func TestNewRequest_InfersRoleFromTmuxPaneWhenEnvUnset(t *testing.T) {
+	t.Setenv(CallerRoleEnv, "")
+	t.Setenv("TMUX_PANE", "%42")
+
+	dir := t.TempDir()
+	tmuxPath := filepath.Join(dir, "tmux")
+	script := "#!/bin/sh\nprintf '%s\\n' worker\n"
+	if err := os.WriteFile(tmuxPath, []byte(script), 0755); err != nil {
+		t.Fatalf("write fake tmux: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	req, err := newRequest("test", nil)
+	if err != nil {
+		t.Fatalf("newRequest: %v", err)
+	}
+	if req.CallerRole != RoleWorker {
+		t.Errorf("CallerRole = %q, want %q", req.CallerRole, RoleWorker)
+	}
+}
+
+func TestExtractCallerRoleFromProcessListing(t *testing.T) {
+	listing := "PID COMMAND\n123 /opt/homebrew/bin/claude --model haiku PATH=/usr/bin MAESTRO_AGENT_ROLE=planner OTHER=1\n"
+	if got := extractCallerRoleFromProcessListing(listing); got != RolePlanner {
+		t.Fatalf("extractCallerRoleFromProcessListing() = %q, want %q", got, RolePlanner)
+	}
+}
+
+func TestExtractCallerRoleFromProcessListing_IgnoresInvalidRole(t *testing.T) {
+	listing := "PID COMMAND\n123 cmd MAESTRO_AGENT_ROLE=admin MAESTRO_AGENT_ROLE=workerish\n"
+	if got := extractCallerRoleFromProcessListing(listing); got != "" {
+		t.Fatalf("extractCallerRoleFromProcessListing() = %q, want empty", got)
 	}
 }
 

@@ -8,12 +8,15 @@ import (
 	"io"
 	"net"
 	"os"
+	"os/exec"
+	"strconv"
+	"strings"
 )
 
-// CallerRoleEnv is the environment variable from which CLI clients populate
-// Request.CallerRole. The agent launcher sets this when spawning role-specific
-// claude processes so that downstream maestro CLI invocations carry the
-// caller's role to the daemon.
+// CallerRoleEnv is the primary environment variable from which CLI clients
+// resolve Request.CallerRole. The agent launcher sets this when spawning
+// role-specific claude processes. If it is absent inside a managed tmux pane,
+// ResolveCallerRole falls back to the pane-local @role value.
 //
 // SECURITY NOTE: This is an *advisory hint*, NOT an authenticated credential.
 // The value is read from a process-environment variable that any local
@@ -48,12 +51,12 @@ var ValidCallerRoles = map[string]bool{
 	RoleCLI:          true,
 }
 
-// ValidateCallerRole checks that role is either empty (treated as RoleCLI for
-// direct CLI invocations where MAESTRO_AGENT_ROLE is unset) or a known role in
-// ValidCallerRoles. Returns an error for unknown or improperly-cased roles.
+// ValidateCallerRole checks that role is either empty or a known role in
+// ValidCallerRoles. Empty is accepted for direct CLI invocations and is
+// resolved by ResolveCallerRole.
 func ValidateCallerRole(role string) error {
 	if role == "" {
-		return nil // empty is allowed; normalized to RoleCLI by NormalizeCallerRole
+		return nil
 	}
 	if !ValidCallerRoles[role] {
 		return fmt.Errorf("invalid caller role %q: must be one of orchestrator, planner, worker, cli", role)
@@ -61,14 +64,115 @@ func ValidateCallerRole(role string) error {
 	return nil
 }
 
-// NormalizeCallerRole returns RoleCLI for an empty string (direct CLI
-// invocation without MAESTRO_AGENT_ROLE set), otherwise returns the role
-// unchanged. Call ValidateCallerRole first to reject unknown roles.
+// NormalizeCallerRole returns RoleCLI for an empty string, otherwise returns
+// the role unchanged. Call ValidateCallerRole first to reject unknown roles.
 func NormalizeCallerRole(role string) string {
 	if role == "" {
 		return RoleCLI
 	}
 	return role
+}
+
+// ResolveCallerRole returns the most reliable caller role available to a CLI
+// process. MAESTRO_AGENT_ROLE is the primary signal set by the launcher. When
+// it is absent but the process is still inside a Maestro-managed tmux pane,
+// the pane-local @role option is used so `env -u MAESTRO_AGENT_ROLE maestro ...`
+// does not accidentally regain operator/CLI privileges. Claude Code's Bash
+// sandbox can strip both variables from tool subprocesses, so as a final
+// best-effort fallback we walk the parent process chain and read the launcher-set
+// role from the ancestor Claude process environment.
+func ResolveCallerRole() (string, error) {
+	role := os.Getenv(CallerRoleEnv)
+	if role == "" {
+		role = inferCallerRoleFromTmuxPane()
+	}
+	if role == "" {
+		role = inferCallerRoleFromProcessAncestors()
+	}
+	if err := ValidateCallerRole(role); err != nil {
+		return "", err
+	}
+	return NormalizeCallerRole(role), nil
+}
+
+func inferCallerRoleFromTmuxPane() string {
+	paneID := os.Getenv("TMUX_PANE")
+	if paneID == "" {
+		return ""
+	}
+	if !validTmuxPaneID(paneID) {
+		return ""
+	}
+	out, err := exec.Command("tmux", "display-message", "-t", paneID, "-p", "#{@role}").Output() //nolint:gosec // paneID is constrained to tmux's %<digits> form.
+	if err != nil {
+		return ""
+	}
+	role := strings.TrimSpace(string(out))
+	if !ValidCallerRoles[role] {
+		return ""
+	}
+	return role
+}
+
+func validTmuxPaneID(s string) bool {
+	if len(s) < 2 || s[0] != '%' {
+		return false
+	}
+	for _, r := range s[1:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func inferCallerRoleFromProcessAncestors() string {
+	pid := os.Getppid()
+	for depth := 0; depth < 12 && pid > 1; depth++ {
+		if role := callerRoleFromProcessEnv(pid); role != "" {
+			return role
+		}
+		next, ok := parentPID(pid)
+		if !ok || next == pid {
+			return ""
+		}
+		pid = next
+	}
+	return ""
+}
+
+func callerRoleFromProcessEnv(pid int) string {
+	out, err := exec.Command("ps", "eww", "-p", strconv.Itoa(pid)).Output() //nolint:gosec // pid comes from os.Getppid/ps and is rendered as a decimal.
+	if err != nil {
+		return ""
+	}
+	return extractCallerRoleFromProcessListing(string(out))
+}
+
+func parentPID(pid int) (int, bool) {
+	out, err := exec.Command("ps", "-o", "ppid=", "-p", strconv.Itoa(pid)).Output() //nolint:gosec // pid comes from os.Getppid/ps and is rendered as a decimal.
+	if err != nil {
+		return 0, false
+	}
+	ppid, err := strconv.Atoi(strings.TrimSpace(string(out)))
+	if err != nil || ppid <= 0 {
+		return 0, false
+	}
+	return ppid, true
+}
+
+func extractCallerRoleFromProcessListing(listing string) string {
+	marker := CallerRoleEnv + "="
+	for _, field := range strings.Fields(listing) {
+		if !strings.HasPrefix(field, marker) {
+			continue
+		}
+		role := strings.TrimPrefix(field, marker)
+		if ValidCallerRoles[role] {
+			return role
+		}
+	}
+	return ""
 }
 
 // ProtocolVersion is the current version of the UDS wire protocol.
@@ -141,17 +245,17 @@ const (
 )
 
 // newRequest creates a new Request with the given command and optional params marshalled to JSON.
-// The CallerRole is read from the MAESTRO_AGENT_ROLE environment variable,
-// validated against ValidCallerRoles, and normalized (empty → "cli").
+// The CallerRole is resolved from MAESTRO_AGENT_ROLE or, inside managed tmux
+// panes, from the pane-local @role value. Plain shells resolve to "cli".
 func newRequest(command string, params any) (*Request, error) {
-	role := os.Getenv(CallerRoleEnv)
-	if err := ValidateCallerRole(role); err != nil {
+	role, err := ResolveCallerRole()
+	if err != nil {
 		return nil, err
 	}
 	req := &Request{
 		ProtocolVersion: ProtocolVersion,
 		Command:         command,
-		CallerRole:      NormalizeCallerRole(role),
+		CallerRole:      role,
 	}
 	if params != nil {
 		data, err := json.Marshal(params)

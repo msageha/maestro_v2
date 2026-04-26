@@ -130,6 +130,7 @@ func TestRunPlanUnquarantine_OperatorRoleReachesDaemon(t *testing.T) {
 	// Explicitly clear any inherited role so the caller is treated as
 	// direct CLI / operator.
 	t.Setenv(uds.CallerRoleEnv, "")
+	t.Setenv("TMUX_PANE", "")
 	withMaestroDir(t)
 
 	called := false

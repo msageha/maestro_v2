@@ -192,6 +192,44 @@ func TestFindMaestroDir_InCurrentDir(t *testing.T) {
 	}
 }
 
+func TestFindMaestroDir_UsesEnvOverCwd(t *testing.T) {
+	cwdRoot := t.TempDir()
+	cwdMaestroPath := filepath.Join(cwdRoot, ".maestro")
+	if err := os.MkdirAll(cwdMaestroPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	envRoot := t.TempDir()
+	envMaestroPath := filepath.Join(envRoot, ".maestro")
+	if err := os.MkdirAll(envMaestroPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Chdir(cwdRoot)
+	t.Setenv(maestroDirEnv, envMaestroPath)
+
+	got, err := findMaestroDir()
+	if err != nil {
+		t.Fatalf("findMaestroDir() returned error: %v", err)
+	}
+	wantResolved, _ := filepath.EvalSymlinks(envMaestroPath)
+	gotResolved, _ := filepath.EvalSymlinks(got)
+	if gotResolved != wantResolved {
+		t.Errorf("findMaestroDir() = %q, want %q", gotResolved, wantResolved)
+	}
+}
+
+func TestFindMaestroDir_EnvMissingReturnsError(t *testing.T) {
+	t.Setenv(maestroDirEnv, filepath.Join(t.TempDir(), ".maestro"))
+
+	got, err := findMaestroDir()
+	if err == nil {
+		t.Fatal("expected error for missing MAESTRO_DIR")
+	}
+	if got != "" {
+		t.Errorf("findMaestroDir() = %q, want empty string on error", got)
+	}
+}
+
 func TestRun_UnknownCommand(t *testing.T) {
 	t.Parallel()
 	code := newCLIApp().run([]string{"nonexistent-command"})
