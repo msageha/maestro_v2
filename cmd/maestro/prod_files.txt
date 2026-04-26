@@ -18,4 +18,5 @@ cmd_skill.go
 cmd_status.go
 cmd_task
 cmd_task.go
+cmd_verify.go
 cmd_worker.go

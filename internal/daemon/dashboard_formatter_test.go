@@ -99,6 +99,25 @@ func TestDashboardFormatter_FormatDashboard(t *testing.T) {
 	assert.Contains(t, output, "## Recent Activity")
 }
 
+func TestDashboardFormatter_VerifySkipVisible(t *testing.T) {
+	t.Parallel()
+
+	tmpDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "logs"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(tmpDir, "state"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, "state", "verify_status.yaml"), []byte(`
+schema_version: 1
+file_type: verify_status
+mode: skipped
+reason: verify.enabled=false with MAESTRO_ALLOW_VERIFY_SKIP=1
+`), 0o644))
+	fixTestDirPerms(t, tmpDir)
+
+	output, err := NewDashboardFormatter(tmpDir).FormatDashboard()
+	require.NoError(t, err)
+	assert.Contains(t, output, "| Verify    | skipped (verify.enabled=false with MAESTRO_ALLOW_VERIFY_SKIP=1) |")
+}
+
 func TestDashboardFormatter_ParseLogFile(t *testing.T) {
 	t.Parallel()
 	// Create temp directory

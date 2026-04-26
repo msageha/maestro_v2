@@ -54,8 +54,3 @@ func quarantineDirPath(maestroDir string) string {
 func learningsFilePath(maestroDir string) string {
 	return filepath.Join(maestroDir, "state", "learnings.yaml")
 }
-
-// verifyConfigPath returns the path to the verify.yaml file.
-func verifyConfigPath(maestroDir string) string {
-	return filepath.Join(maestroDir, "verify.yaml")
-}

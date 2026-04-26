@@ -32,19 +32,16 @@ type VerifyRunner interface {
 }
 
 // skipVerifyRunner short-circuits verification with Passed=true. It is
-// reserved for the explicit "verify.enabled: false" rollback path — operators
-// who deliberately opt out of §S1-1 enforcement (e.g. emergency rollback
-// after a faulty verify.yaml change) wire this runner via the daemon
-// configuration loader. It MUST NOT be used as the production default.
+// reserved for the explicit "verify.enabled: false" rollback path guarded by
+// MAESTRO_ALLOW_VERIFY_SKIP=1. It MUST NOT be used as the production default.
 //
 // Tests that need a deterministic pass result use NewFixedVerifyRunner
 // instead, which carries an explicit "this is a test fixture" intent.
 type skipVerifyRunner struct{}
 
 // NewSkipVerifyRunner returns a VerifyRunner that reports pass without
-// executing any commands. Reserved for explicit `verify.enabled: false`
-// configuration; production wiring chooses between this and the real runner
-// based on cfg.Verify.EffectiveEnabled().
+// executing any commands. Reserved for the explicit emergency skip path; normal
+// production wiring uses NewRealVerifyRunner.
 func NewSkipVerifyRunner() VerifyRunner {
 	return skipVerifyRunner{}
 }

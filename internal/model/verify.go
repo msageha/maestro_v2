@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -37,8 +38,16 @@ type verifyFile struct {
 	Verify VerifyConfig `yaml:"verify"`
 }
 
-// dangerousChars are shell meta-characters that are rejected by Validate.
-var dangerousChars = []string{";", "&&", "||", "`", "$(", "${", "|", "<", ">", "\n", "\r"}
+var (
+	unsupportedCommandChars = []string{";", "&&", "||", "`", "$(", "${", "|", "<", ">", "\n", "\r"}
+	envAssignmentName       = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+)
+
+// VerifyCommand is a parsed direct-exec verify command.
+type VerifyCommand struct {
+	Env  []string
+	Args []string
+}
 
 // DefaultVerifyConfig returns a minimal verification config with safe defaults.
 //
@@ -60,10 +69,9 @@ func DefaultVerifyConfig() *VerifyConfig {
 //
 //   - Go (go.mod present at projectRoot): same as DefaultVerifyConfig — `go vet ./...`
 //   - empty projectRoot: same as DefaultVerifyConfig (legacy compatibility)
-//   - otherwise: empty config; callers MUST treat IsEmpty() as "no usable
-//     fallback" and refuse to run evolution / silent verify until verify.yaml
-//     is configured. Hard-coding `go vet ./...` here would always fail on
-//     non-Go repositories and obscure the real problem.
+//   - otherwise: a repository-generic fallback, `git diff --check`. It is not
+//     a language-specific test suite, but it is a real command with a real exit
+//     code and avoids the previous unsafe "zero commands means pass" behaviour.
 func DefaultVerifyConfigForProject(projectRoot string) *VerifyConfig {
 	if projectRoot == "" {
 		return DefaultVerifyConfig()
@@ -71,7 +79,9 @@ func DefaultVerifyConfigForProject(projectRoot string) *VerifyConfig {
 	if _, err := os.Stat(filepath.Join(projectRoot, "go.mod")); err == nil {
 		return DefaultVerifyConfig()
 	}
-	return &VerifyConfig{}
+	return &VerifyConfig{
+		Build: []string{"git diff --check"},
+	}
 }
 
 // IsEmpty reports whether the config has no commands in any category.
@@ -92,19 +102,141 @@ func (v *VerifyConfig) AllCommands() []string {
 	return cmds
 }
 
-// Validate checks that all commands are safe (no shell meta-characters).
+// Validate checks that all commands are simple direct-exec invocations.
 func (v *VerifyConfig) Validate() error {
 	for _, cmd := range v.AllCommands() {
 		if strings.TrimSpace(cmd) == "" {
 			return fmt.Errorf("verify config: empty command")
 		}
-		for _, ch := range dangerousChars {
+		for _, ch := range unsupportedCommandChars {
 			if strings.Contains(cmd, ch) {
-				return fmt.Errorf("verify config: dangerous character %q in command %q", ch, cmd)
+				return fmt.Errorf("verify config: unsupported character %q in command %q", ch, cmd)
 			}
+		}
+		parsed, err := ParseVerifyCommand(cmd)
+		if err != nil {
+			return fmt.Errorf("verify config: invalid command %q: %w", cmd, err)
+		}
+		if isShellCInvocation(parsed.Args) {
+			return fmt.Errorf("verify config: shell -c is not supported in command %q", cmd)
 		}
 	}
 	return nil
+}
+
+func isShellCInvocation(args []string) bool {
+	if len(args) < 2 {
+		return false
+	}
+	exe := filepath.Base(args[0])
+	if exe != "sh" && exe != "bash" {
+		return false
+	}
+	return strings.HasPrefix(args[1], "-") && strings.Contains(args[1], "c")
+}
+
+// ParseVerifyCommand parses the limited verify command grammar used for direct
+// exec: optional leading KEY=VALUE environment assignments followed by argv.
+func ParseVerifyCommand(command string) (VerifyCommand, error) {
+	fields, err := splitVerifyFields(command)
+	if err != nil {
+		return VerifyCommand{}, err
+	}
+	var parsed VerifyCommand
+	i := 0
+	for ; i < len(fields); i++ {
+		name, ok := envAssignmentNameOf(fields[i])
+		if !ok {
+			break
+		}
+		if !envAssignmentName.MatchString(name) {
+			return VerifyCommand{}, fmt.Errorf("invalid env assignment name %q", name)
+		}
+		parsed.Env = append(parsed.Env, fields[i])
+	}
+	if i >= len(fields) {
+		return VerifyCommand{}, fmt.Errorf("missing executable")
+	}
+	parsed.Args = fields[i:]
+	return parsed, nil
+}
+
+func envAssignmentNameOf(field string) (string, bool) {
+	idx := strings.IndexByte(field, '=')
+	if idx <= 0 {
+		return "", false
+	}
+	return field[:idx], true
+}
+
+func splitVerifyFields(command string) ([]string, error) {
+	var fields []string
+	var b strings.Builder
+	inSingle := false
+	inDouble := false
+	haveToken := false
+
+	flush := func() {
+		if haveToken {
+			fields = append(fields, b.String())
+			b.Reset()
+			haveToken = false
+		}
+	}
+
+	for i := 0; i < len(command); i++ {
+		ch := command[i]
+		switch {
+		case inSingle:
+			if ch == '\'' {
+				inSingle = false
+			} else {
+				b.WriteByte(ch)
+				haveToken = true
+			}
+		case inDouble:
+			switch ch {
+			case '"':
+				inDouble = false
+			case '\\':
+				i++
+				if i >= len(command) {
+					return nil, fmt.Errorf("trailing escape")
+				}
+				b.WriteByte(command[i])
+				haveToken = true
+			default:
+				b.WriteByte(ch)
+				haveToken = true
+			}
+		default:
+			switch {
+			case ch == '\'':
+				inSingle = true
+				haveToken = true
+			case ch == '"':
+				inDouble = true
+				haveToken = true
+			case ch == '\\':
+				i++
+				if i >= len(command) {
+					return nil, fmt.Errorf("trailing escape")
+				}
+				b.WriteByte(command[i])
+				haveToken = true
+			case ch == ' ' || ch == '\t':
+				flush()
+			default:
+				b.WriteByte(ch)
+				haveToken = true
+			}
+		}
+	}
+	if inSingle || inDouble {
+		return nil, fmt.Errorf("unterminated quote")
+	}
+	flush()
+	return fields, nil
 }
 
 // LoadOrDefaultVerifyConfig reads and parses a verify.yaml file.
@@ -127,9 +259,9 @@ func LoadOrDefaultVerifyConfig(path string) (*VerifyConfig, error) {
 
 // LoadOrDefaultVerifyConfigForProject reads and parses verify.yaml at path.
 // If the file does not exist it returns the project-appropriate default from
-// DefaultVerifyConfigForProject(projectRoot) — for non-Go repositories that
-// is an empty config (signalling "no usable fallback") rather than a
-// guaranteed-failing Go command.
+// DefaultVerifyConfigForProject(projectRoot). Non-Go repositories receive a
+// repository-generic fallback (`git diff --check`) rather than a guaranteed-
+// failing Go command or an empty command set.
 func LoadOrDefaultVerifyConfigForProject(projectRoot, path string) (*VerifyConfig, error) {
 	cfg, err := LoadVerifyConfig(path)
 	if err != nil {
@@ -142,8 +274,8 @@ func LoadOrDefaultVerifyConfigForProject(projectRoot, path string) (*VerifyConfi
 }
 
 // LoadVerifyConfig reads and parses a verify.yaml file.
-// The parsed config is validated via Validate() so that dangerous shell
-// meta-characters in command strings are rejected at load time. Callers that
+// The parsed config is validated via Validate() so that unsupported shell
+// syntax in command strings is rejected at load time. Callers that
 // rely on a Fallback (DefaultVerifyConfig) should use LoadOrDefaultVerifyConfig.
 func LoadVerifyConfig(path string) (*VerifyConfig, error) {
 	data, err := os.ReadFile(path) //nolint:gosec // path is a config file path from validated inputs
@@ -169,6 +301,9 @@ func SaveVerifyConfig(path string, config *VerifyConfig) error {
 	}
 
 	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil { //nolint:gosec // config directories are user-readable application state
+		return fmt.Errorf("save verify config: create dir: %w", err)
+	}
 	tmp, err := os.CreateTemp(dir, ".verify-tmp-*.yaml")
 	if err != nil {
 		return fmt.Errorf("save verify config: create temp: %w", err)

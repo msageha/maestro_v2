@@ -38,6 +38,27 @@ func TestDefaultVerifyConfig(t *testing.T) {
 	assert.NoError(t, cfg.Validate())
 }
 
+func TestDefaultVerifyConfigForProject_NonGoUsesGitDiffCheck(t *testing.T) {
+	dir := t.TempDir()
+
+	cfg := DefaultVerifyConfigForProject(dir)
+	require.NotNil(t, cfg)
+	assert.Equal(t, []string{"git diff --check"}, cfg.Build)
+	assert.False(t, cfg.IsEmpty())
+	assert.NoError(t, cfg.Validate())
+}
+
+func TestDefaultVerifyConfigForProject_GoUsesGoVet(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module test\n"), 0o644))
+
+	cfg := DefaultVerifyConfigForProject(dir)
+	require.NotNil(t, cfg)
+	assert.Equal(t, []string{"go vet ./..."}, cfg.Build)
+	assert.False(t, cfg.IsEmpty())
+	assert.NoError(t, cfg.Validate())
+}
+
 func TestVerifyConfig_IsEmpty(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -108,6 +129,16 @@ func TestVerifyConfig_Validate(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name:    "valid quoted argument",
+			config:  VerifyConfig{Build: []string{`printf "hello world"`}},
+			wantErr: false,
+		},
+		{
+			name:    "valid env assignment",
+			config:  VerifyConfig{Build: []string{`CGO_ENABLED=0 go test ./...`}},
+			wantErr: false,
+		},
+		{
 			name:    "empty config is valid",
 			config:  VerifyConfig{},
 			wantErr: false,
@@ -116,37 +147,37 @@ func TestVerifyConfig_Validate(t *testing.T) {
 			name:    "semicolon rejected",
 			config:  VerifyConfig{Build: []string{"go build; rm -rf /"}},
 			wantErr: true,
-			errMsg:  "dangerous character \";\"",
+			errMsg:  "unsupported character \";\"",
 		},
 		{
 			name:    "double ampersand rejected",
 			config:  VerifyConfig{Lint: []string{"true && rm -rf /"}},
 			wantErr: true,
-			errMsg:  "dangerous character \"&&\"",
+			errMsg:  "unsupported character \"&&\"",
 		},
 		{
 			name:    "double pipe rejected",
 			config:  VerifyConfig{Test: []string{"false || rm -rf /"}},
 			wantErr: true,
-			errMsg:  "dangerous character \"||\"",
+			errMsg:  "unsupported character \"||\"",
 		},
 		{
 			name:    "backtick rejected",
 			config:  VerifyConfig{Build: []string{"echo `whoami`"}},
 			wantErr: true,
-			errMsg:  "dangerous character \"`\"",
+			errMsg:  "unsupported character \"`\"",
 		},
 		{
 			name:    "dollar paren rejected",
 			config:  VerifyConfig{Build: []string{"echo $(whoami)"}},
 			wantErr: true,
-			errMsg:  "dangerous character \"$(\"",
+			errMsg:  "unsupported character \"$(\"",
 		},
 		{
 			name:    "dollar brace rejected",
 			config:  VerifyConfig{Build: []string{"echo ${HOME}"}},
 			wantErr: true,
-			errMsg:  "dangerous character \"${\"",
+			errMsg:  "unsupported character \"${\"",
 		},
 		{
 			name:    "empty command rejected",
@@ -164,31 +195,43 @@ func TestVerifyConfig_Validate(t *testing.T) {
 			name:    "pipe rejected",
 			config:  VerifyConfig{Build: []string{"cmd1 | cmd2"}},
 			wantErr: true,
-			errMsg:  `dangerous character "|"`,
+			errMsg:  `unsupported character "|"`,
 		},
 		{
 			name:    "less-than rejected",
 			config:  VerifyConfig{Build: []string{"cmd < input.txt"}},
 			wantErr: true,
-			errMsg:  `dangerous character "<"`,
+			errMsg:  `unsupported character "<"`,
 		},
 		{
 			name:    "greater-than rejected",
 			config:  VerifyConfig{Build: []string{"cmd > output.txt"}},
 			wantErr: true,
-			errMsg:  `dangerous character ">"`,
+			errMsg:  `unsupported character ">"`,
 		},
 		{
 			name:    "newline rejected",
 			config:  VerifyConfig{Build: []string{"cmd1\ncmd2"}},
 			wantErr: true,
-			errMsg:  "dangerous character",
+			errMsg:  "unsupported character",
 		},
 		{
 			name:    "carriage return rejected",
 			config:  VerifyConfig{Build: []string{"cmd1\rcmd2"}},
 			wantErr: true,
-			errMsg:  "dangerous character",
+			errMsg:  "unsupported character",
+		},
+		{
+			name:    "unterminated quote rejected",
+			config:  VerifyConfig{Build: []string{`printf "unterminated`}},
+			wantErr: true,
+			errMsg:  "unterminated quote",
+		},
+		{
+			name:    "shell c rejected",
+			config:  VerifyConfig{Build: []string{`sh -c "go test ./..."`}},
+			wantErr: true,
+			errMsg:  "shell -c is not supported",
 		},
 	}
 	for _, tt := range tests {
@@ -202,6 +245,14 @@ func TestVerifyConfig_Validate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestParseVerifyCommand(t *testing.T) {
+	t.Parallel()
+	got, err := ParseVerifyCommand(`CGO_ENABLED=0 go test -run "Test With Space" ./...`)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"CGO_ENABLED=0"}, got.Env)
+	assert.Equal(t, []string{"go", "test", "-run", "Test With Space", "./..."}, got.Args)
 }
 
 func TestLoadSaveVerifyConfig_RoundTrip(t *testing.T) {
@@ -228,11 +279,11 @@ func TestLoadVerifyConfig_FileNotFound(t *testing.T) {
 	assert.Contains(t, err.Error(), "load verify config")
 }
 
-func TestLoadVerifyConfig_RejectsDangerousChars(t *testing.T) {
+func TestLoadVerifyConfig_RejectsUnsupportedChars(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "verify.yaml")
 
-	// verify.yaml whose build command contains a shell metacharacter (&&)
+	// verify.yaml whose build command contains a shell syntax character (&&)
 	// must be rejected at load time. Otherwise, downstream consumers might
 	// pass the string to a shell and execute the second arm.
 	content := `verify:
@@ -243,10 +294,10 @@ func TestLoadVerifyConfig_RejectsDangerousChars(t *testing.T) {
 
 	_, err := LoadVerifyConfig(path)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "dangerous character")
+	assert.Contains(t, err.Error(), "unsupported character")
 }
 
-func TestLoadOrDefaultVerifyConfig_RejectsDangerousChars(t *testing.T) {
+func TestLoadOrDefaultVerifyConfig_RejectsUnsupportedChars(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "verify.yaml")
 
@@ -258,7 +309,7 @@ func TestLoadOrDefaultVerifyConfig_RejectsDangerousChars(t *testing.T) {
 
 	_, err := LoadOrDefaultVerifyConfig(path)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "dangerous character")
+	assert.Contains(t, err.Error(), "unsupported character")
 }
 
 func TestLoadVerifyConfig_InvalidYAML(t *testing.T) {

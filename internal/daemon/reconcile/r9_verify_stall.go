@@ -58,7 +58,9 @@ func (R9VerifyStall) Apply(run *Run) Outcome {
 		commandID := strings.TrimSuffix(name, ".yaml")
 		statePath := filepath.Join(stateDir, name)
 
-		commandRepairs := r9ApplyForCommand(run, statePath, commandID, resultTimestamps[commandID], now, threshold)
+		commandThreshold := r9EffectiveVerifyStallThreshold(run, commandID, threshold)
+		commandRepairs := r9ApplyForCommand(run, statePath, commandID, resultTimestamps[commandID], now, commandThreshold)
+		r9ScheduleVerifyRepairs(run, statePath, commandID, commandRepairs)
 		repairs = append(repairs, commandRepairs...)
 	}
 
@@ -133,6 +135,306 @@ func r9ApplyForCommand(run *Run, statePath, commandID string, resultsForCommand 
 	})
 
 	return commandRepairs
+}
+
+func r9ScheduleVerifyRepairs(run *Run, statePath, commandID string, repairs []Repair) {
+	if len(repairs) == 0 {
+		return
+	}
+	for _, repair := range repairs {
+		if !run.Deps.Config.Retry.TaskExecution.Enabled {
+			run.Log(core.LogLevelWarn,
+				"R9 verify_repair_retry_disabled command=%s task=%s -> paused_for_replan",
+				commandID, repair.TaskID)
+			r9AdvanceRepairPendingToReplan(run, statePath, commandID, repair.TaskID, "verify_repair_retry_disabled")
+			continue
+		}
+		sourceTask, workerID := r9FindQueueTaskByID(run, commandID, repair.TaskID)
+		if sourceTask == nil {
+			run.Log(core.LogLevelWarn,
+				"R9 verify_repair_source_missing command=%s task=%s -> paused_for_replan",
+				commandID, repair.TaskID)
+			r9AdvanceRepairPendingToReplan(run, statePath, commandID, repair.TaskID, "verify_repair_source_missing")
+			continue
+		}
+		if !r9RepairBudgetAllows(run, sourceTask) {
+			r9SetQueueTaskTerminalStatus(run, workerID, repair.TaskID, model.StatusFailed)
+			r9AdvanceRepairPendingToReplan(run, statePath, commandID, repair.TaskID, "verify_repair_budget_exhausted")
+			continue
+		}
+
+		repairTaskID, err := model.NewTaskID(model.TaskIDCallerDaemonRetry)
+		if err != nil {
+			run.Log(core.LogLevelError,
+				"R9 verify_repair_id_failed command=%s task=%s error=%v -> paused_for_replan",
+				commandID, repair.TaskID, err)
+			r9SetQueueTaskTerminalStatus(run, workerID, repair.TaskID, model.StatusFailed)
+			r9AdvanceRepairPendingToReplan(run, statePath, commandID, repair.TaskID, fmt.Sprintf("verify_repair_id_failed: %v", err))
+			continue
+		}
+		repairTask := r1BuildRetryTask(sourceTask, repairTaskID, run.Deps.Clock)
+		repairTask.Content = fmt.Sprintf(
+			"Repair the previous implementation because daemon verification stalled.\n\nStall detail:\n%s\n\nOriginal task:\n%s",
+			repair.Detail,
+			sourceTask.Content,
+		)
+
+		if err := r9RegisterRepairTask(run, statePath, commandID, workerID, &repairTask); err != nil {
+			run.Log(core.LogLevelError,
+				"R9 verify_repair_schedule_failed command=%s task=%s repair_id=%s error=%v -> paused_for_replan",
+				commandID, repair.TaskID, repairTask.ID, err)
+			r9SetQueueTaskTerminalStatus(run, workerID, repair.TaskID, model.StatusFailed)
+			r9AdvanceRepairPendingToReplan(run, statePath, commandID, repair.TaskID, fmt.Sprintf("verify_repair_schedule_failed: %v", err))
+			continue
+		}
+		r9SetQueueTaskTerminalStatus(run, workerID, repair.TaskID, model.StatusCancelled)
+		run.Log(core.LogLevelInfo,
+			"R9 verify_repair_scheduled command=%s task=%s repair_id=%s worker=%s",
+			commandID, repair.TaskID, repairTask.ID, workerID)
+	}
+}
+
+func r9FindQueueTaskByID(run *Run, commandID, taskID string) (*model.Task, string) {
+	queueDir := filepath.Join(run.Deps.MaestroDir, "queue")
+	entries, err := run.cachedReadDir(queueDir)
+	if err != nil {
+		return nil, ""
+	}
+	for _, entry := range entries {
+		workerID := extractWorkerID(entry.Name())
+		if workerID == "" {
+			continue
+		}
+		queuePath := filepath.Join(queueDir, entry.Name())
+		run.Deps.LockMap.Lock("queue:" + workerID)
+		data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is in a controlled queue directory
+		run.Deps.LockMap.Unlock("queue:" + workerID)
+		if err != nil {
+			continue
+		}
+		var tq model.TaskQueue
+		if err := yamlv3.Unmarshal(data, &tq); err != nil {
+			continue
+		}
+		for i := range tq.Tasks {
+			task := tq.Tasks[i]
+			if task.CommandID == commandID && task.ID == taskID {
+				return &task, workerID
+			}
+		}
+	}
+	return nil, ""
+}
+
+func r9RepairBudgetAllows(run *Run, task *model.Task) bool {
+	if task.DefinitionOfAbort != nil && task.DefinitionOfAbort.MaxRepairCount > 0 &&
+		task.ExecutionRetries >= task.DefinitionOfAbort.MaxRepairCount {
+		return false
+	}
+	maxRetries := run.Deps.Config.Retry.TaskExecution.MaxRetries
+	return maxRetries <= 0 || task.ExecutionRetries < maxRetries
+}
+
+func r9EffectiveVerifyStallThreshold(run *Run, commandID string, configured time.Duration) time.Duration {
+	const perCommandTimeout = 5 * time.Minute
+	const verifyStallGrace = 30 * time.Second
+
+	path := filepath.Join(run.Deps.MaestroDir, "state", "verify", commandID+".yaml")
+	cfg, err := model.LoadVerifyConfig(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			run.Log(core.LogLevelWarn,
+				"R9 verify_config_load_failed command=%s path=%s error=%v (using configured threshold)",
+				commandID, path, err)
+		}
+		return configured
+	}
+	count := len(cfg.AllCommands())
+	if count == 0 {
+		return configured
+	}
+	minimum := time.Duration(count)*perCommandTimeout + verifyStallGrace
+	if minimum > configured {
+		return minimum
+	}
+	return configured
+}
+
+func r9RegisterRepairTask(run *Run, statePath, commandID, workerID string, task *model.Task) error {
+	if err := r9RegisterRepairTaskInState(run, statePath, commandID, task.ID); err != nil {
+		return err
+	}
+	if err := r1AddTaskToQueue(run, workerID, task); err != nil {
+		if rollbackErr := r9RollbackRepairTaskState(run, statePath, commandID, task.ID); rollbackErr != nil {
+			if markErr := r9MarkRetryEnqueueFailed(run, statePath, commandID, workerID, task.ID); markErr != nil {
+				return fmt.Errorf("queue add failed: %w; state rollback failed: %v; mark retry enqueue failed: %v", err, rollbackErr, markErr)
+			}
+			return fmt.Errorf("queue add failed: %w; state rollback failed: %v; marked retry_enqueue_failed", err, rollbackErr)
+		}
+		return err
+	}
+	return nil
+}
+
+func r9RegisterRepairTaskInState(run *Run, statePath, commandID, taskID string) error {
+	var writeErr error
+	run.Deps.LockMap.WithLock("state:"+commandID, func() {
+		state, err := run.loadState(statePath)
+		if err != nil {
+			writeErr = err
+			return
+		}
+		if state.TaskStates == nil {
+			state.TaskStates = make(map[string]model.Status)
+		}
+		state.TaskStates[taskID] = model.StatusPlanned
+		nowStr := run.Deps.Clock.Now().UTC().Format(time.RFC3339)
+		state.UpdatedAt = nowStr
+		writeErr = yamlutil.AtomicWrite(statePath, state)
+	})
+	return writeErr
+}
+
+func r9RollbackRepairTaskState(run *Run, statePath, commandID, taskID string) error {
+	var rollbackErr error
+	run.Deps.LockMap.WithLock("state:"+commandID, func() {
+		state, err := run.loadState(statePath)
+		if err != nil {
+			rollbackErr = err
+			return
+		}
+		if state.TaskStates == nil {
+			rollbackErr = fmt.Errorf("task_states missing")
+			return
+		}
+		delete(state.TaskStates, taskID)
+		state.UpdatedAt = run.Deps.Clock.Now().UTC().Format(time.RFC3339)
+		if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+			rollbackErr = err
+			run.Log(core.LogLevelError,
+				"R9 verify_repair_state_rollback_failed command=%s repair_id=%s error=%v",
+				commandID, taskID, err)
+		}
+	})
+	return rollbackErr
+}
+
+func r9MarkRetryEnqueueFailed(run *Run, statePath, commandID, workerID, taskID string) error {
+	var markErr error
+	run.Deps.LockMap.WithLock("state:"+commandID, func() {
+		state, err := run.loadState(statePath)
+		if err != nil {
+			markErr = err
+			return
+		}
+		if state.RetryEnqueueFailed == nil {
+			state.RetryEnqueueFailed = make(map[string]string)
+		}
+		state.RetryEnqueueFailed[taskID] = formatRetryEnqueueValue(workerID, 0)
+		state.UpdatedAt = run.Deps.Clock.Now().UTC().Format(time.RFC3339)
+		markErr = yamlutil.AtomicWrite(statePath, state)
+	})
+	return markErr
+}
+
+func r9AdvanceRepairPendingToReplan(run *Run, statePath, commandID, taskID, reason string) {
+	advanced := false
+	run.Deps.LockMap.WithLock("state:"+commandID, func() {
+		state, err := run.loadState(statePath)
+		if err != nil || state.TaskStates == nil || state.TaskStates[taskID] != model.StatusRepairPending {
+			return
+		}
+		state.TaskStates[taskID] = model.StatusPausedForReplan
+		state.UpdatedAt = run.Deps.Clock.Now().UTC().Format(time.RFC3339)
+		if err := yamlutil.AtomicWrite(statePath, state); err != nil {
+			run.Log(core.LogLevelWarn,
+				"R9 verify_repair_replan_signal_failed command=%s task=%s error=%v",
+				commandID, taskID, err)
+			return
+		}
+		advanced = true
+	})
+	if advanced {
+		r9QueuePausedForReplanSignal(run, commandID, taskID, reason)
+	}
+}
+
+func r9QueuePausedForReplanSignal(run *Run, commandID, taskID, reason string) {
+	now := run.Deps.Clock.Now().UTC().Format(time.RFC3339)
+	phaseID := "__task_" + taskID
+	sig := model.PlannerSignal{
+		Kind:      "paused_for_replan",
+		CommandID: commandID,
+		PhaseID:   phaseID,
+		Reason:    reason,
+		Message: fmt.Sprintf("[maestro] kind:paused_for_replan command_id:%s task_id:%s\nreason: %s\nnext_action: add_retry_task or fail the command",
+			commandID, taskID, reason),
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+	signalPath := filepath.Join(run.Deps.MaestroDir, "queue", "planner_signals.yaml")
+	run.Deps.LockMap.WithLock("queue:planner_signals", func() {
+		if err := yamlutil.ReadModifyWrite(signalPath, func(sq *model.PlannerSignalQueue) error {
+			for _, existing := range sq.Signals {
+				if existing.Kind == sig.Kind && existing.CommandID == sig.CommandID &&
+					existing.PhaseID == sig.PhaseID && existing.WorkerID == sig.WorkerID &&
+					existing.ConflictGeneration == sig.ConflictGeneration {
+					return yamlutil.ErrNoUpdate
+				}
+			}
+			if sq.SchemaVersion == 0 {
+				sq.SchemaVersion = 1
+				sq.FileType = "planner_signal_queue"
+			}
+			sq.Signals = append(sq.Signals, sig)
+			return nil
+		}); err != nil {
+			run.Log(core.LogLevelWarn,
+				"R9 paused_for_replan_signal_write_failed command=%s task=%s reason=%q error=%v",
+				commandID, taskID, reason, err)
+		}
+	})
+}
+
+func r9SetQueueTaskTerminalStatus(run *Run, workerID, taskID string, status model.Status) {
+	if workerID == "" || taskID == "" || !model.IsTerminal(status) {
+		return
+	}
+	queuePath := filepath.Join(run.Deps.MaestroDir, "queue", workerID+".yaml")
+	run.Deps.LockMap.WithLock("queue:"+workerID, func() {
+		data, err := os.ReadFile(queuePath) //nolint:gosec // queuePath is in a controlled queue directory
+		if err != nil {
+			if !os.IsNotExist(err) {
+				run.Log(core.LogLevelWarn,
+					"R9 verify_queue_status_load_failed worker=%s task=%s status=%s error=%v",
+					workerID, taskID, status, err)
+			}
+			return
+		}
+		var tq model.TaskQueue
+		if err := yamlv3.Unmarshal(data, &tq); err != nil {
+			run.Log(core.LogLevelWarn,
+				"R9 verify_queue_status_parse_failed worker=%s task=%s status=%s error=%v",
+				workerID, taskID, status, err)
+			return
+		}
+		for i := range tq.Tasks {
+			if tq.Tasks[i].ID != taskID {
+				continue
+			}
+			if model.IsTerminal(tq.Tasks[i].Status) {
+				return
+			}
+			tq.Tasks[i].Status = status
+			tq.Tasks[i].UpdatedAt = run.Deps.Clock.Now().UTC().Format(time.RFC3339)
+			if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
+				run.Log(core.LogLevelWarn,
+					"R9 verify_queue_status_write_failed worker=%s task=%s status=%s error=%v",
+					workerID, taskID, status, err)
+			}
+			return
+		}
+	})
 }
 
 // r9LoadResultTimestamps walks results/worker*.yaml and returns the most

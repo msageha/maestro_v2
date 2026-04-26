@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -14,7 +15,7 @@ import (
 )
 
 // newTestRealRunner constructs a RealVerifyRunner with a discard logger and a
-// configurable command runner. maestroDir is created on disk so verify.yaml
+// configurable command runner. maestroDir is created on disk so verify config
 // can be loaded (or absent for the Fallback path); projectDir is unused by
 // the mock runner but must be non-empty to mirror production wiring.
 func newTestRealRunner(t *testing.T) *RealVerifyRunner {
@@ -25,12 +26,24 @@ func newTestRealRunner(t *testing.T) *RealVerifyRunner {
 	return r
 }
 
-// writeVerifyYAML writes the given verify.yaml body into r.maestroDir.
+// writeVerifyYAML writes the given verify config body into r.maestroDir.
 func writeVerifyYAML(t *testing.T, r *RealVerifyRunner, body string) {
 	t.Helper()
 	path := filepath.Join(r.maestroDir, "verify.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write verify.yaml: %v", err)
+	}
+	writeVerifySnapshotYAML(t, r, "cmd-1", body)
+}
+
+func writeVerifySnapshotYAML(t *testing.T, r *RealVerifyRunner, commandID, body string) {
+	t.Helper()
+	path := verifySnapshotPath(r.maestroDir, commandID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("create verify snapshot dir: %v", err)
+	}
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write verify snapshot: %v", err)
 	}
 }
 
@@ -82,13 +95,12 @@ func TestRealVerifyRunner_FallbackUsesDefaultGoVet(t *testing.T) {
 	}
 }
 
-// TestRealVerifyRunner_FallbackEmptyOnNonGoProject guards the project-aware
-// fallback behaviour added to remove the Go-only assumption: when verify.yaml
-// is missing AND the project root has no go.mod, the runner must execute
-// zero commands and report passed=true. Hard-coding `go vet ./...` here would
-// always fail on non-Go repositories and obscure the real issue (operator
-// has not authored verify.yaml).
-func TestRealVerifyRunner_FallbackEmptyOnNonGoProject(t *testing.T) {
+// TestRealVerifyRunner_FallbackUsesGitDiffOnNonGoProject guards the
+// project-aware fallback behaviour added to remove the Go-only assumption:
+// when verify.yaml is missing and the project root has no go.mod, the runner
+// must still execute a real repository-generic check. A zero-command fallback
+// would silently pass unverified work.
+func TestRealVerifyRunner_FallbackUsesGitDiffOnNonGoProject(t *testing.T) {
 	t.Parallel()
 	r := newTestRealRunner(t)
 	rr := &recordingRunner{}
@@ -99,10 +111,10 @@ func TestRealVerifyRunner_FallbackEmptyOnNonGoProject(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	if !out.Passed {
-		t.Fatalf("expected pass with empty fallback (no commands to fail), got %+v", out)
+		t.Fatalf("expected pass with successful fallback command, got %+v", out)
 	}
-	if len(rr.seen) != 0 {
-		t.Errorf("expected zero fallback commands on non-Go project, got %v", rr.seen)
+	if len(rr.seen) != 1 || rr.seen[0] != "git diff --check" {
+		t.Errorf("expected single fallback command 'git diff --check', got %v", rr.seen)
 	}
 }
 
@@ -147,6 +159,76 @@ func TestRealVerifyRunner_DefinedConfigExecutesCategoriesInOrder(t *testing.T) {
 		if rr.seen[i] != want[i] {
 			t.Errorf("seen[%d]=%q want %q (full order=%v)", i, rr.seen[i], want[i], rr.seen)
 		}
+	}
+}
+
+func TestRealVerifyRunner_CommandSnapshotOverridesGlobalConfig(t *testing.T) {
+	t.Parallel()
+	r := newTestRealRunner(t)
+	writeVerifyYAML(t, r, `verify:
+  build:
+    - echo global
+`)
+	writeVerifySnapshotYAML(t, r, "cmd_0000000001_snapshot", `verify:
+  build:
+    - echo snapshot
+`)
+	rr := &recordingRunner{}
+	r.runner = rr.run
+
+	out, err := r.Run(context.Background(), "task-1", "cmd_0000000001_snapshot", "", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !out.Passed {
+		t.Fatalf("expected pass, got %+v", out)
+	}
+	if len(rr.seen) != 1 || rr.seen[0] != "echo snapshot" {
+		t.Fatalf("expected command snapshot to be used, got %v", rr.seen)
+	}
+}
+
+func TestRealVerifyRunner_CommandWithoutSnapshotIgnoresMutableGlobal(t *testing.T) {
+	t.Parallel()
+	r := newTestRealRunner(t)
+	writeVerifyYAML(t, r, `verify:
+  build:
+    - echo global
+`)
+	rr := &recordingRunner{}
+	r.runner = rr.run
+
+	out, err := r.Run(context.Background(), "task-1", "cmd_0000000002_nosnap", "", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !out.Passed {
+		t.Fatalf("expected pass, got %+v", out)
+	}
+	if len(rr.seen) != 1 || rr.seen[0] != "git diff --check" {
+		t.Fatalf("expected project fallback for missing command snapshot, got %v", rr.seen)
+	}
+}
+
+func TestRealVerifyRunner_EmptyVerifyConfigFailsClosed(t *testing.T) {
+	t.Parallel()
+	r := newTestRealRunner(t)
+	rr := &recordingRunner{}
+	r.runner = rr.run
+	writeVerifyYAML(t, r, "verify: {}\n")
+
+	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out.Passed {
+		t.Fatalf("expected fail-closed outcome for empty verify config, got %+v", out)
+	}
+	if !strings.Contains(out.Reason, "verify_config_empty") {
+		t.Fatalf("expected verify_config_empty reason, got %q", out.Reason)
+	}
+	if len(rr.seen) != 0 {
+		t.Fatalf("empty verify config should not execute commands, got %v", rr.seen)
 	}
 }
 
@@ -325,7 +407,7 @@ func TestRealVerifyRunner_AbortedContextReturnsError(t *testing.T) {
 func TestRealVerifyRunner_InvalidVerifyYAMLReportsConfigError(t *testing.T) {
 	t.Parallel()
 	r := newTestRealRunner(t)
-	// `;` is in dangerousChars — Validate() will reject this command.
+	// `;` is unsupported shell syntax, so Validate rejects this command.
 	writeVerifyYAML(t, r, `verify:
   build:
     - "echo a; rm -rf /"
@@ -340,6 +422,49 @@ func TestRealVerifyRunner_InvalidVerifyYAMLReportsConfigError(t *testing.T) {
 	}
 	if !strings.Contains(out.Reason, "verify_config_invalid") {
 		t.Errorf("reason should report config error, got %q", out.Reason)
+	}
+}
+
+func TestRealVerifyRunner_RejectsDirtyFilesOutsideExpectedPaths(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	r := newTestRealRunner(t)
+	if out, err := exec.Command("git", "-C", r.projectDir, "init").CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v output=%s", err, out)
+	}
+	if err := os.MkdirAll(filepath.Join(r.projectDir, "src", "allowed"), 0o755); err != nil {
+		t.Fatalf("mkdir allowed: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(r.projectDir, "src", "forbidden"), 0o755); err != nil {
+		t.Fatalf("mkdir forbidden: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(r.projectDir, "src", "allowed", "main.go"), []byte("package allowed\n"), 0o600); err != nil {
+		t.Fatalf("write allowed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(r.projectDir, "src", "forbidden", "main.go"), []byte("package forbidden\n"), 0o600); err != nil {
+		t.Fatalf("write forbidden: %v", err)
+	}
+	writeVerifyYAML(t, r, `verify:
+  build:
+    - true
+`)
+	rr := &recordingRunner{}
+	r.runner = rr.run
+
+	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", []string{"src/allowed/"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out.Passed {
+		t.Fatalf("expected expected_paths violation, got pass")
+	}
+	if !strings.Contains(out.Reason, "verify_expected_paths_violation") {
+		t.Fatalf("reason = %q, want verify_expected_paths_violation", out.Reason)
+	}
+	if len(rr.seen) != 0 {
+		t.Fatalf("verify commands should not run after expected_paths violation, got %v", rr.seen)
 	}
 }
 
@@ -380,6 +505,25 @@ func TestRealVerifyRunner_RealExecFailingCommand(t *testing.T) {
 	}
 	if !strings.Contains(out.Reason, "exit=1") {
 		t.Errorf("reason should include exit=1, got %q", out.Reason)
+	}
+}
+
+func TestExecVerifyCommand_SupportsQuotesAndEnvAssignments(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	out, exitCode, err := execVerifyCommand(context.Background(), dir, `printf "hello world"`)
+	if err != nil {
+		t.Fatalf("execVerifyCommand quotes: output=%q exit=%d err=%v", out, exitCode, err)
+	}
+	if exitCode != 0 || out != "hello world" {
+		t.Fatalf("quotes exit=%d output=%q, want 0 and hello world", exitCode, out)
+	}
+	out, exitCode, err = execVerifyCommand(context.Background(), dir, `VERIFY_SAMPLE=value printenv VERIFY_SAMPLE`)
+	if err != nil {
+		t.Fatalf("execVerifyCommand env: output=%q exit=%d err=%v", out, exitCode, err)
+	}
+	if exitCode != 0 || strings.TrimSpace(out) != "value" {
+		t.Fatalf("env exit=%d output=%q, want 0 and value", exitCode, out)
 	}
 }
 

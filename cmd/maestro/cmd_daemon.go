@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 
 	"github.com/msageha/maestro_v2/internal/bridge"
 	"github.com/msageha/maestro_v2/internal/daemon"
@@ -11,6 +12,8 @@ import (
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/plan"
 )
+
+const allowVerifySkipEnv = "MAESTRO_ALLOW_VERIFY_SKIP"
 
 // runDaemon starts the maestro daemon process.
 func runDaemon(args []string) error {
@@ -85,17 +88,15 @@ func runDaemon(args []string) error {
 
 	// §S1-1 Verification Runner wiring. The result-write handler is created
 	// with verifyRunner=nil so that a wiring miss surfaces as fail-closed
-	// (repair_pending). Here we always inject either:
-	//   - RealVerifyRunner: when verify.enabled is true (default) — loads
-	//     .maestro/verify.yaml or DefaultVerifyConfig and executes each
-	//     command sequentially.
-	//   - SkipVerifyRunner: when verify.enabled is explicitly false —
-	//     emergency rollback path for operators with a faulty verify.yaml
-	//     (still emits a per-task audit log entry so the rollback is visible).
+	// (repair_pending). Production injects RealVerifyRunner by default. The
+	// skip runner is only available behind an explicit emergency env gate.
 	verifyLogger := slog.New(slog.NewTextHandler(os.Stderr, nil)).With(
 		"component", "verify_runner",
 	)
 	if cfg.Verify.EffectiveEnabled() {
+		if err := clearVerifyStatusWarning(maestroDir); err != nil {
+			verifyLogger.Warn("verify_status_warning_clear_failed", "error", err)
+		}
 		projectDir := cfg.Maestro.ProjectRoot
 		if projectDir == "" {
 			// Fall back to the daemon's CWD when project_root is not pinned in
@@ -106,10 +107,17 @@ func runDaemon(args []string) error {
 		}
 		d.SetVerifyRunner(daemon.NewRealVerifyRunner(maestroDir, projectDir, verifyLogger))
 	} else {
+		if os.Getenv(allowVerifySkipEnv) != "1" {
+			return fmt.Errorf("maestro daemon: verify.enabled=false requires %s=1; refusing to start with silent verification skip", allowVerifySkipEnv)
+		}
 		verifyLogger.Warn("verify_runner_skip_explicit",
-			"reason", "verify.enabled=false in config.yaml — verification is disabled per operator opt-out")
+			"reason", "verify.enabled=false with MAESTRO_ALLOW_VERIFY_SKIP=1 — verification is disabled by explicit emergency opt-out")
+		if err := writeVerifyStatusWarning(maestroDir); err != nil {
+			verifyLogger.Warn("verify_status_warning_write_failed", "error", err)
+		}
 		d.SetVerifyRunner(daemon.NewSkipVerifyRunner())
 	}
+	d.SetVerifyAsync(true)
 
 	// Auto-accept Claude Code workspace trust dialog in this long-lived process.
 	// The CLI process (which calls createFormation) exits shortly after formation
@@ -121,4 +129,21 @@ func runDaemon(args []string) error {
 		return fmt.Errorf("maestro daemon: %w", err)
 	}
 	return nil
+}
+
+func writeVerifyStatusWarning(maestroDir string) error {
+	stateDir := filepath.Join(maestroDir, "state")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		return err
+	}
+	data := []byte("schema_version: 1\nfile_type: verify_status\nmode: skipped\nreason: verify.enabled=false with MAESTRO_ALLOW_VERIFY_SKIP=1\n")
+	return os.WriteFile(filepath.Join(stateDir, "verify_status.yaml"), data, 0o644)
+}
+
+func clearVerifyStatusWarning(maestroDir string) error {
+	err := os.Remove(filepath.Join(maestroDir, "state", "verify_status.yaml"))
+	if err == nil || os.IsNotExist(err) {
+		return nil
+	}
+	return err
 }

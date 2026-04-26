@@ -3,6 +3,7 @@ package plan
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -23,6 +24,9 @@ type SubmitOptions struct {
 	Config        model.Config
 	LockMap       *lock.MutexMap
 	ModelSelector ModelSelector // optional: adaptive model selection
+	// RequireVerifySnapshot enforces the daemon contract that Planner writes a
+	// command-scoped verify config before submitting executable work.
+	RequireVerifySnapshot bool
 }
 
 // SubmitResult contains the output of a successful plan submission.
@@ -72,6 +76,9 @@ func Submit(opts SubmitOptions) (*SubmitResult, error) {
 	// the Planner distinguish "system error" from "request was redundant
 	// because the phase has already moved on".
 	if opts.PhaseName != "" {
+		if err := validateRequiredVerifySnapshot(opts); err != nil {
+			return nil, err
+		}
 		return submitPhaseFill(opts, *input)
 	}
 
@@ -81,8 +88,31 @@ func Submit(opts SubmitOptions) (*SubmitResult, error) {
 	if len(input.Tasks) == 0 && len(input.Phases) == 0 {
 		return nil, &planValidationError{Msg: "either tasks or phases must be specified"}
 	}
+	if err := validateRequiredVerifySnapshot(opts); err != nil {
+		return nil, err
+	}
 
 	return submitInitial(opts, *input)
+}
+
+func validateRequiredVerifySnapshot(opts SubmitOptions) error {
+	if opts.DryRun || !opts.RequireVerifySnapshot || !opts.Config.Verify.EffectiveEnabled() {
+		return nil
+	}
+	path := filepath.Join(opts.MaestroDir, "state", "verify", opts.CommandID+".yaml")
+	cfg, err := model.LoadVerifyConfig(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return &planValidationError{Msg: fmt.Sprintf(
+				"verify config snapshot is required before plan submit for command %s; run maestro verify write --command-id %s first",
+				opts.CommandID, opts.CommandID)}
+		}
+		return &planValidationError{Msg: fmt.Sprintf("verify config snapshot is invalid for command %s: %v", opts.CommandID, err)}
+	}
+	if cfg.IsEmpty() {
+		return &planValidationError{Msg: fmt.Sprintf("verify config snapshot for command %s must contain at least one command", opts.CommandID)}
+	}
+	return nil
 }
 
 // resolveAndAssignTasks generates task IDs, builds worker states, and assigns
@@ -123,24 +153,6 @@ func submitInitial(opts SubmitOptions, input SubmitInput) (*SubmitResult, error)
 	}
 	sm := NewStateManager(opts.MaestroDir, opts.LockMap)
 
-	// QA-014: Acquire queue:planner lock BEFORE state lock to maintain the
-	// global lock ordering (queue:planner → state:<cmd>) used by other code
-	// paths (complete.go, reconciler.go, queue_write_handler.go).
-	// Hold queue:planner through state lock acquisition to close the TOCTOU
-	// window where cancellation could arrive between unlock and state lock.
-	opts.LockMap.Lock("queue:planner")
-	cancelErr := checkCommandNotCancelled(opts.MaestroDir, opts.CommandID)
-	if cancelErr != nil {
-		opts.LockMap.Unlock("queue:planner")
-		return nil, cancelErr
-	}
-
-	// Lock command state while still holding queue:planner (canonical order)
-	sm.LockCommand(opts.CommandID)
-	// Release queue:planner now that state lock is held — ordering satisfied
-	opts.LockMap.Unlock("queue:planner")
-	defer sm.UnlockCommand(opts.CommandID)
-
 	// TOCTOU fix: Acquire file-level lock for cross-process double-submit
 	// prevention. The in-process MutexMap above protects within a single daemon;
 	// this flock protects against concurrent CLI invocations submitting the
@@ -151,16 +163,6 @@ func submitInitial(opts SubmitOptions, input SubmitInput) (*SubmitResult, error)
 	}
 	defer releaseFlock(stateFlock)
 
-	// Re-check cancellation under state lock to close any remaining race
-	if cancelErr := checkCommandNotCancelled(opts.MaestroDir, opts.CommandID); cancelErr != nil {
-		return nil, cancelErr
-	}
-
-	// Double submit prevention (now under both in-process lock and flock)
-	if sm.StateExists(opts.CommandID) {
-		return nil, fmt.Errorf("%w: state already exists for command %s", ErrDoubleSubmit, opts.CommandID)
-	}
-
 	// Route by input type
 	if len(input.Phases) > 0 {
 		return submitInitialPhases(opts, input.Phases, sm)
@@ -168,12 +170,29 @@ func submitInitial(opts SubmitOptions, input SubmitInput) (*SubmitResult, error)
 	return submitInitialTasks(opts, input.Tasks, sm)
 }
 
+func lockInitialStateForWrite(opts SubmitOptions, sm *StateManager) (func(), error) {
+	if err := checkCommandNotCancelled(opts.MaestroDir, opts.CommandID); err != nil {
+		return nil, err
+	}
+	sm.LockCommand(opts.CommandID)
+	unlock := func() { sm.UnlockCommand(opts.CommandID) }
+	if err := checkCommandNotCancelled(opts.MaestroDir, opts.CommandID); err != nil {
+		unlock()
+		return nil, err
+	}
+	if sm.StateExists(opts.CommandID) {
+		unlock()
+		return nil, fmt.Errorf("%w: state already exists for command %s", ErrDoubleSubmit, opts.CommandID)
+	}
+	return unlock, nil
+}
+
 // rollbackStateAndQueue performs the common rollback sequence for initial submissions:
 // remove partial queue entries, then delete the state file.
 // Returns a combined error if any rollback step fails.
-func rollbackStateAndQueue(sm stateStore, maestroDir string, commandID string, tasks []TaskInput, nameToID map[string]string, assignMap map[string]WorkerAssignment, lockMap *lock.MutexMap) error {
+func rollbackStateAndQueueLocked(sm stateStore, maestroDir string, commandID string, tasks []TaskInput, nameToID map[string]string, assignMap map[string]WorkerAssignment) error {
 	var errs []error
-	if queueErr := rollbackQueueEntries(maestroDir, tasks, nameToID, assignMap, lockMap); queueErr != nil {
+	if queueErr := rollbackQueueEntriesLocked(maestroDir, tasks, nameToID, assignMap); queueErr != nil {
 		errs = append(errs, fmt.Errorf("rollback queue entries: %w", queueErr))
 	}
 	if delErr := sm.DeleteState(commandID); delErr != nil {
@@ -227,10 +246,7 @@ func logRollbackFailure(commandID string, err error, op string, recoverable bool
 	)
 }
 
-func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm stateStore) (*SubmitResult, error) {
-	// Auto-complete defaults before validation
-	ApplyTaskDefaults(tasks)
-
+func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm *StateManager) (*SubmitResult, error) {
 	// Validation
 	if verrs := ValidateTasksInput(tasks); verrs != nil {
 		return nil, verrs
@@ -254,6 +270,17 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm stateStore) (*
 	if err != nil {
 		return nil, err
 	}
+	queueKeys := []string{"queue:planner"}
+	for _, workerID := range workerIDsFromAssignments(assignments) {
+		queueKeys = append(queueKeys, "queue:"+workerID)
+	}
+	unlockQueues := lockQueueKeys(opts.LockMap, queueKeys)
+	defer unlockQueues()
+	unlockState, err := lockInitialStateForWrite(opts, sm)
+	if err != nil {
+		return nil, err
+	}
+	defer unlockState()
 
 	// Build state
 	now := nowUTC()
@@ -268,8 +295,8 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm stateStore) (*
 		return nil, fmt.Errorf("save state (planning): %w", err)
 	}
 
-	if err := writeQueueEntries(opts.MaestroDir, assignments, tasks, nameToID, opts.CommandID, now, opts.LockMap); err != nil {
-		if rbErr := rollbackStateAndQueue(sm, opts.MaestroDir, opts.CommandID, tasks, nameToID, assignMap, opts.LockMap); rbErr != nil {
+	if err := writeQueueEntriesLocked(opts.MaestroDir, assignments, tasks, nameToID, opts.CommandID, now); err != nil {
+		if rbErr := rollbackStateAndQueueLocked(sm, opts.MaestroDir, opts.CommandID, tasks, nameToID, assignMap); rbErr != nil {
 			logRollbackFailure(opts.CommandID, rbErr, "initial_tasks_queue_write", false, "manual_cleanup", "command_state+queue_entries")
 		}
 		return nil, fmt.Errorf("write queue: %w", err)
@@ -280,7 +307,7 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm stateStore) (*
 	state.PlanVersion = 1
 	state.UpdatedAt = nowUTC()
 	if err := sm.SaveState(state); err != nil {
-		if rbErr := rollbackStateAndQueue(sm, opts.MaestroDir, opts.CommandID, tasks, nameToID, assignMap, opts.LockMap); rbErr != nil {
+		if rbErr := rollbackStateAndQueueLocked(sm, opts.MaestroDir, opts.CommandID, tasks, nameToID, assignMap); rbErr != nil {
 			logRollbackFailure(opts.CommandID, rbErr, "initial_tasks_seal", false, "manual_cleanup", "command_state+queue_entries")
 		}
 		return nil, fmt.Errorf("save state (sealed): %w", err)
@@ -303,12 +330,7 @@ func submitInitialTasks(opts SubmitOptions, tasks []TaskInput, sm stateStore) (*
 	return result, nil
 }
 
-func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm stateStore) (*SubmitResult, error) {
-	// Auto-complete defaults for tasks within phases before validation
-	for i := range phases {
-		ApplyTaskDefaults(phases[i].Tasks)
-	}
-
+func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm *StateManager) (*SubmitResult, error) {
 	// Validation
 	if verrs := ValidatePhasesInput(phases); verrs != nil {
 		return nil, verrs
@@ -356,6 +378,17 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm stateStore)
 	if err != nil {
 		return nil, fmt.Errorf("build phase state: %w", err)
 	}
+	queueKeys := []string{"queue:planner"}
+	for _, workerID := range workerIDsFromAssignments(cpd.assignments) {
+		queueKeys = append(queueKeys, "queue:"+workerID)
+	}
+	unlockQueues := lockQueueKeys(opts.LockMap, queueKeys)
+	defer unlockQueues()
+	unlockState, err := lockInitialStateForWrite(opts, sm)
+	if err != nil {
+		return nil, err
+	}
+	defer unlockState()
 
 	// Save state (planning)
 	if err := sm.SaveState(state); err != nil {
@@ -363,8 +396,8 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm stateStore)
 	}
 
 	// Write queue entries for concrete phase tasks + system commit
-	if err := writeQueueEntries(opts.MaestroDir, cpd.assignments, cpd.tasks, cpd.nameToID, opts.CommandID, now, opts.LockMap); err != nil {
-		if rbErr := rollbackStateAndQueue(sm, opts.MaestroDir, opts.CommandID, cpd.tasks, cpd.nameToID, cpd.assignMap, opts.LockMap); rbErr != nil {
+	if err := writeQueueEntriesLocked(opts.MaestroDir, cpd.assignments, cpd.tasks, cpd.nameToID, opts.CommandID, now); err != nil {
+		if rbErr := rollbackStateAndQueueLocked(sm, opts.MaestroDir, opts.CommandID, cpd.tasks, cpd.nameToID, cpd.assignMap); rbErr != nil {
 			logRollbackFailure(opts.CommandID, rbErr, "initial_phases_queue_write", false, "manual_cleanup", "command_state+queue_entries")
 		}
 		return nil, fmt.Errorf("write queue: %w", err)
@@ -375,7 +408,7 @@ func submitInitialPhases(opts SubmitOptions, phases []PhaseInput, sm stateStore)
 	state.PlanVersion = 1
 	state.UpdatedAt = nowUTC()
 	if err := sm.SaveState(state); err != nil {
-		if rbErr := rollbackStateAndQueue(sm, opts.MaestroDir, opts.CommandID, cpd.tasks, cpd.nameToID, cpd.assignMap, opts.LockMap); rbErr != nil {
+		if rbErr := rollbackStateAndQueueLocked(sm, opts.MaestroDir, opts.CommandID, cpd.tasks, cpd.nameToID, cpd.assignMap); rbErr != nil {
 			logRollbackFailure(opts.CommandID, rbErr, "initial_phases_seal", false, "manual_cleanup", "command_state+queue_entries")
 		}
 		return nil, fmt.Errorf("save state (sealed): %w", err)
@@ -395,7 +428,12 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	sm := NewStateManager(opts.MaestroDir, opts.LockMap)
 
 	sm.LockCommand(opts.CommandID)
-	defer sm.UnlockCommand(opts.CommandID)
+	stateLocked := true
+	defer func() {
+		if stateLocked {
+			sm.UnlockCommand(opts.CommandID)
+		}
+	}()
 
 	state, err := sm.LoadState(opts.CommandID)
 	if err != nil {
@@ -429,9 +467,6 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	if targetPhase.Status != model.PhaseStatusAwaitingFill {
 		return nil, &planValidationError{Msg: fmt.Sprintf("phase %q status must be awaiting_fill, got %s", opts.PhaseName, targetPhase.Status)}
 	}
-
-	// Auto-complete defaults before validation
-	ApplyTaskDefaults(input.Tasks)
 
 	// Validate input against constraints
 	if verrs := ValidatePhaseFillInput(input.Tasks, *targetPhase); verrs != nil {
@@ -485,38 +520,30 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	}
 
 	now := nowUTC()
-	for _, t := range input.Tasks {
-		taskID := nameToID[t.Name]
-		state.Phases[targetPhaseIdx].TaskIDs = append(state.Phases[targetPhaseIdx].TaskIDs, taskID)
-
-		if t.Required {
-			state.RequiredTaskIDs = append(state.RequiredTaskIDs, taskID)
-		} else {
-			state.OptionalTaskIDs = append(state.OptionalTaskIDs, taskID)
-		}
-
-		// §2.1: phase-fill tasks enter the lifecycle at `planned`.
-		state.TaskStates[taskID] = model.StatusPlanned
-
-		if len(t.BlockedBy) > 0 {
-			depIDs := make([]string, 0, len(t.BlockedBy))
-			for _, depName := range t.BlockedBy {
-				depID, ok := nameToID[depName]
-				if !ok {
-					return nil, fmt.Errorf("blocked_by %q not found in fill tasks for phase %q (cross-phase references are not supported in phase fill)", depName, opts.PhaseName)
-				}
-				depIDs = append(depIDs, depID)
-			}
-			state.TaskDependencies[taskID] = depIDs
-		}
-	}
-	state.ExpectedTaskCount = len(state.RequiredTaskIDs) + len(state.OptionalTaskIDs)
-
-	if err := writeQueueEntries(opts.MaestroDir, assignments, input.Tasks, nameToID, opts.CommandID, now, opts.LockMap); err != nil {
+	sm.UnlockCommand(opts.CommandID)
+	stateLocked = false
+	queueErr := writeQueueEntries(opts.MaestroDir, assignments, input.Tasks, nameToID, opts.CommandID, now, opts.LockMap)
+	sm.LockCommand(opts.CommandID)
+	stateLocked = true
+	if queueErr != nil {
 		if rbErr := rollbackFullPhaseFill(sm, state, targetPhaseIdx, opts, input.Tasks, nameToID, assignMap); rbErr != nil {
 			logRollbackFailure(opts.CommandID, rbErr, "phase_fill_queue_write", false, "manual_intervention", "phase_state+queue_entries")
 		}
-		return nil, fmt.Errorf("write queue: %w", err)
+		return nil, fmt.Errorf("write queue: %w", queueErr)
+	}
+
+	state, targetPhaseIdx, err = reloadPhaseFillState(sm, opts, targetPhaseIdx, nowStr)
+	if err != nil {
+		if rbErr := rollbackQueueEntries(opts.MaestroDir, input.Tasks, nameToID, assignMap, opts.LockMap); rbErr != nil {
+			logRollbackFailure(opts.CommandID, rbErr, "phase_fill_reload_queue_rollback", false, "manual_intervention", "queue_entries")
+		}
+		return nil, err
+	}
+	if err := applyPhaseFillTasks(state, targetPhaseIdx, opts, input.Tasks, nameToID); err != nil {
+		if rbErr := rollbackQueueEntries(opts.MaestroDir, input.Tasks, nameToID, assignMap, opts.LockMap); rbErr != nil {
+			logRollbackFailure(opts.CommandID, rbErr, "phase_fill_apply_queue_rollback", false, "manual_intervention", "queue_entries")
+		}
+		return nil, err
 	}
 
 	// Activate phase
@@ -547,6 +574,60 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 		})
 	}
 	return result, nil
+}
+
+func reloadPhaseFillState(sm *StateManager, opts SubmitOptions, _ int, fillingStartedAt string) (*model.CommandState, int, error) {
+	state, err := sm.LoadState(opts.CommandID)
+	if err != nil {
+		return nil, 0, fmt.Errorf("reload state after queue write: %w", err)
+	}
+	if state.PlanStatus != model.PlanStatusSealed {
+		return nil, 0, &planValidationError{Msg: fmt.Sprintf("plan_status changed during phase fill: %s", state.PlanStatus)}
+	}
+	targetPhaseIdx := -1
+	for i := range state.Phases {
+		if state.Phases[i].Name == opts.PhaseName {
+			targetPhaseIdx = i
+			break
+		}
+	}
+	if targetPhaseIdx == -1 {
+		return nil, 0, &planValidationError{Msg: fmt.Sprintf("phase %q not found after queue write", opts.PhaseName)}
+	}
+	phase := state.Phases[targetPhaseIdx]
+	if phase.Status != model.PhaseStatusFilling {
+		return nil, 0, &planValidationError{Msg: fmt.Sprintf("phase %q status changed during fill: %s", opts.PhaseName, phase.Status)}
+	}
+	if phase.FillingStartedAt == nil || *phase.FillingStartedAt != fillingStartedAt {
+		return nil, 0, &planValidationError{Msg: fmt.Sprintf("phase %q filling epoch changed during fill", opts.PhaseName)}
+	}
+	return state, targetPhaseIdx, nil
+}
+
+func applyPhaseFillTasks(state *model.CommandState, targetPhaseIdx int, opts SubmitOptions, tasks []TaskInput, nameToID map[string]string) error {
+	for _, t := range tasks {
+		taskID := nameToID[t.Name]
+		state.Phases[targetPhaseIdx].TaskIDs = append(state.Phases[targetPhaseIdx].TaskIDs, taskID)
+		if t.Required {
+			state.RequiredTaskIDs = append(state.RequiredTaskIDs, taskID)
+		} else {
+			state.OptionalTaskIDs = append(state.OptionalTaskIDs, taskID)
+		}
+		state.TaskStates[taskID] = model.StatusPlanned
+		if len(t.BlockedBy) > 0 {
+			depIDs := make([]string, 0, len(t.BlockedBy))
+			for _, depName := range t.BlockedBy {
+				depID, ok := nameToID[depName]
+				if !ok {
+					return fmt.Errorf("blocked_by %q not found in fill tasks for phase %q (cross-phase references are not supported in phase fill)", depName, opts.PhaseName)
+				}
+				depIDs = append(depIDs, depID)
+			}
+			state.TaskDependencies[taskID] = depIDs
+		}
+	}
+	state.ExpectedTaskCount = len(state.RequiredTaskIDs) + len(state.OptionalTaskIDs)
+	return nil
 }
 
 // acquireStateFlock acquires a file-level exclusive lock for a command's state,

@@ -89,6 +89,7 @@ func (f *DashboardFormatter) collectDashboardData() (*DashboardData, error) {
 		AgentStatus:     make(map[string]AgentInfo),
 		FormationStatus: "Active",
 		DaemonStatus:    "Running",
+		VerifyStatus:    f.readVerifyStatus(),
 		LastUpdated:     f.clock.Now(),
 	}
 
@@ -122,6 +123,33 @@ func (f *DashboardFormatter) collectDashboardData() (*DashboardData, error) {
 	f.limitEvents(data)
 
 	return data, nil
+}
+
+type verifyStatusSnapshot struct {
+	Mode   string `yaml:"mode"`
+	Reason string `yaml:"reason"`
+}
+
+func (f *DashboardFormatter) readVerifyStatus() string {
+	path := filepath.Join(f.maestroDir, "state", "verify_status.yaml")
+	data, err := os.ReadFile(path) //nolint:gosec // path is constructed from the controlled maestro state directory
+	if err != nil {
+		return "enabled"
+	}
+	var snap verifyStatusSnapshot
+	if err := yaml.Unmarshal(data, &snap); err != nil {
+		return "unknown"
+	}
+	if snap.Mode == "skipped" {
+		if snap.Reason != "" {
+			return "skipped (" + snap.Reason + ")"
+		}
+		return "skipped"
+	}
+	if snap.Mode == "" {
+		return "unknown"
+	}
+	return snap.Mode
 }
 
 // parseLogFile reads and parses the JSONL log file.

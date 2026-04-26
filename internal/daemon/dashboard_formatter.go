@@ -55,6 +55,7 @@ type DashboardData struct {
 	WorkerSummaries []WorkerSummary
 	FormationStatus string
 	DaemonStatus    string
+	VerifyStatus    string
 	LastUpdated     time.Time
 	IsStale         bool
 	StaleReason     string
@@ -135,8 +136,9 @@ func (f *DashboardFormatter) getDashboardTemplate() (*template.Template, error) 
 
 | Component | Status |
 |-----------|--------|
-| Daemon    | {{ .DaemonStatus }} |
-| Formation | {{ .FormationStatus }} |
+	| Daemon    | {{ .DaemonStatus }} |
+	| Formation | {{ .FormationStatus }} |
+	| Verify    | {{ if .VerifyStatus }}{{ .VerifyStatus }}{{ else }}enabled{{ end }} |
 
 ## Queue Status
 

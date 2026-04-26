@@ -1,9 +1,12 @@
 package reconcile
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	yamlv3 "gopkg.in/yaml.v3"
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/testutil"
@@ -51,7 +54,20 @@ func writeR9Fixture(t *testing.T, maestroDir, commandID, taskID, workerID, resul
 	}
 }
 
-func TestR9VerifyStall_TransitionsAfterThreshold(t *testing.T) {
+func writeR9QueueTask(t *testing.T, maestroDir, workerID string, task model.Task) {
+	t.Helper()
+	tq := model.TaskQueue{
+		SchemaVersion: 1,
+		FileType:      "queue_task",
+		Tasks:         []model.Task{task},
+	}
+	queuePath := filepath.Join(maestroDir, "queue", workerID+".yaml")
+	if err := yamlutil.AtomicWrite(queuePath, tq); err != nil {
+		t.Fatalf("write queue: %v", err)
+	}
+}
+
+func TestR9VerifyStall_TransitionsToReplanWhenRetryDisabled(t *testing.T) {
 	t.Parallel()
 	maestroDir := testutil.SetupDir(t)
 	deps := newTestDeps(t, maestroDir)
@@ -84,11 +100,212 @@ func TestR9VerifyStall_TransitionsAfterThreshold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload state: %v", err)
 	}
-	if got.TaskStates[taskID] != model.StatusRepairPending {
-		t.Errorf("expected repair_pending, got %s", got.TaskStates[taskID])
+	if got.TaskStates[taskID] != model.StatusPausedForReplan {
+		t.Errorf("expected paused_for_replan, got %s", got.TaskStates[taskID])
 	}
 	if got.LastReconciledAt == nil {
 		t.Error("expected LastReconciledAt to be set")
+	}
+
+	signalPath := filepath.Join(maestroDir, "queue", "planner_signals.yaml")
+	data, err := os.ReadFile(signalPath)
+	if err != nil {
+		t.Fatalf("read planner signal queue: %v", err)
+	}
+	var sq model.PlannerSignalQueue
+	if err := yamlv3.Unmarshal(data, &sq); err != nil {
+		t.Fatalf("unmarshal planner signal queue: %v", err)
+	}
+	if len(sq.Signals) != 1 {
+		t.Fatalf("planner signals = %d, want 1", len(sq.Signals))
+	}
+	if sig := sq.Signals[0]; sig.Kind != "paused_for_replan" || sig.CommandID != commandID || sig.PhaseID != "__task_"+taskID {
+		t.Fatalf("unexpected planner signal: %+v", sig)
+	}
+}
+
+func TestR9VerifyStall_SchedulesRepairWhenRetryEnabled(t *testing.T) {
+	t.Parallel()
+	maestroDir := testutil.SetupDir(t)
+	deps := newTestDeps(t, maestroDir)
+	deps.Config.Verify = model.VerifyDaemonConfig{}
+	deps.Config.Retry.TaskExecution = model.TaskRetryConfig{Enabled: true, MaxRetries: 2}
+
+	commandID := "cmd_0000000007_r9repair"
+	taskID := "task_0000000007_r9repair"
+	workerID := "worker1"
+
+	resultAt := time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC)
+	now := resultAt.Add(20 * time.Minute)
+	setClock(&deps, now)
+
+	writeR9Fixture(t, maestroDir, commandID, taskID, workerID,
+		resultAt.Format(time.RFC3339), model.StatusVerifyPending)
+	writeR9QueueTask(t, maestroDir, workerID, model.Task{
+		ID:                 taskID,
+		CommandID:          commandID,
+		Purpose:            "r9 source",
+		Content:            "implement source",
+		AcceptanceCriteria: "verified",
+		ExpectedPaths:      []string{"source.go"},
+		Status:             model.StatusCompleted,
+		CreatedAt:          "2026-01-01T00:00:00Z",
+		UpdatedAt:          "2026-01-01T00:00:00Z",
+	})
+
+	run := newRun(&deps)
+	outcome := R9VerifyStall{}.Apply(run)
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 R9 repair, got %d", len(outcome.Repairs))
+	}
+
+	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
+	state, err := run.loadState(statePath)
+	if err != nil {
+		t.Fatalf("reload state: %v", err)
+	}
+
+	queuePath := filepath.Join(maestroDir, "queue", workerID+".yaml")
+	data, err := os.ReadFile(queuePath)
+	if err != nil {
+		t.Fatalf("read queue: %v", err)
+	}
+	var tq model.TaskQueue
+	if err := yamlv3.Unmarshal(data, &tq); err != nil {
+		t.Fatalf("unmarshal queue: %v", err)
+	}
+	var repair *model.Task
+	for i := range tq.Tasks {
+		if tq.Tasks[i].OriginalTaskID == taskID {
+			repair = &tq.Tasks[i]
+			break
+		}
+	}
+	if repair == nil {
+		t.Fatalf("expected repair task in queue, queue=%+v", tq.Tasks)
+	}
+	if repair.OperationType != model.OperationTypeRepair {
+		t.Errorf("repair OperationType = %q, want %q", repair.OperationType, model.OperationTypeRepair)
+	}
+	if state.TaskStates[repair.ID] != model.StatusPlanned {
+		t.Errorf("repair state = %q, want %q", state.TaskStates[repair.ID], model.StatusPlanned)
+	}
+}
+
+func TestR9VerifyStall_ExtendsThresholdForMultiCommandVerifySnapshot(t *testing.T) {
+	t.Parallel()
+	maestroDir := testutil.SetupDir(t)
+	deps := newTestDeps(t, maestroDir)
+	deps.Config.Verify = model.VerifyDaemonConfig{}
+
+	commandID := "cmd_0000000011_multiver"
+	taskID := "task_0000000011_multiver"
+	workerID := "worker1"
+
+	resultAt := time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC)
+	now := resultAt.Add(12 * time.Minute)
+	setClock(&deps, now)
+
+	writeR9Fixture(t, maestroDir, commandID, taskID, workerID,
+		resultAt.Format(time.RFC3339), model.StatusVerifyPending)
+	verifyPath := filepath.Join(maestroDir, "state", "verify", commandID+".yaml")
+	if err := model.SaveVerifyConfig(verifyPath, &model.VerifyConfig{
+		Build:     []string{"go test ./pkg/a"},
+		Lint:      []string{"go test ./pkg/b"},
+		Typecheck: []string{"go test ./pkg/c"},
+	}); err != nil {
+		t.Fatalf("write verify snapshot: %v", err)
+	}
+
+	outcome := R9VerifyStall{}.Apply(newRun(&deps))
+	if len(outcome.Repairs) != 0 {
+		t.Fatalf("expected no repairs while multi-command verify can still be running, got %+v", outcome.Repairs)
+	}
+	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
+	got, err := newRun(&deps).loadState(statePath)
+	if err != nil {
+		t.Fatalf("reload state: %v", err)
+	}
+	if got.TaskStates[taskID] != model.StatusVerifyPending {
+		t.Fatalf("task state = %q, want verify_pending", got.TaskStates[taskID])
+	}
+}
+
+func TestR9VerifyStall_SourceMissingPausesForReplanWhenRetryEnabled(t *testing.T) {
+	t.Parallel()
+	maestroDir := testutil.SetupDir(t)
+	deps := newTestDeps(t, maestroDir)
+	deps.Config.Verify = model.VerifyDaemonConfig{}
+	deps.Config.Retry.TaskExecution = model.TaskRetryConfig{Enabled: true, MaxRetries: 2}
+
+	commandID := "cmd_0000000008_r9nosrc1"
+	taskID := "task_0000000008_r9nosrc1"
+	workerID := "worker1"
+
+	resultAt := time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC)
+	now := resultAt.Add(20 * time.Minute)
+	setClock(&deps, now)
+
+	writeR9Fixture(t, maestroDir, commandID, taskID, workerID,
+		resultAt.Format(time.RFC3339), model.StatusVerifyPending)
+
+	run := newRun(&deps)
+	outcome := R9VerifyStall{}.Apply(run)
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 R9 repair, got %d", len(outcome.Repairs))
+	}
+
+	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
+	state, err := run.loadState(statePath)
+	if err != nil {
+		t.Fatalf("reload state: %v", err)
+	}
+	if got := state.TaskStates[taskID]; got != model.StatusPausedForReplan {
+		t.Fatalf("task state = %q, want %q when source queue task is missing", got, model.StatusPausedForReplan)
+	}
+}
+
+func TestR9VerifyStall_MaxRetriesPausesForReplanWhenRetryEnabled(t *testing.T) {
+	t.Parallel()
+	maestroDir := testutil.SetupDir(t)
+	deps := newTestDeps(t, maestroDir)
+	deps.Config.Verify = model.VerifyDaemonConfig{}
+	deps.Config.Retry.TaskExecution = model.TaskRetryConfig{Enabled: true, MaxRetries: 1}
+
+	commandID := "cmd_0000000009_r9maxret"
+	taskID := "task_0000000009_r9maxret"
+	workerID := "worker1"
+
+	resultAt := time.Date(2026, 4, 25, 10, 0, 0, 0, time.UTC)
+	now := resultAt.Add(20 * time.Minute)
+	setClock(&deps, now)
+
+	writeR9Fixture(t, maestroDir, commandID, taskID, workerID,
+		resultAt.Format(time.RFC3339), model.StatusVerifyPending)
+	writeR9QueueTask(t, maestroDir, workerID, model.Task{
+		ID:               taskID,
+		CommandID:        commandID,
+		Purpose:          "r9 exhausted source",
+		Content:          "implement source",
+		Status:           model.StatusCompleted,
+		ExecutionRetries: 1,
+		CreatedAt:        "2026-01-01T00:00:00Z",
+		UpdatedAt:        "2026-01-01T00:00:00Z",
+	})
+
+	run := newRun(&deps)
+	outcome := R9VerifyStall{}.Apply(run)
+	if len(outcome.Repairs) != 1 {
+		t.Fatalf("expected 1 R9 repair, got %d", len(outcome.Repairs))
+	}
+
+	statePath := filepath.Join(maestroDir, "state", "commands", commandID+".yaml")
+	state, err := run.loadState(statePath)
+	if err != nil {
+		t.Fatalf("reload state: %v", err)
+	}
+	if got := state.TaskStates[taskID]; got != model.StatusPausedForReplan {
+		t.Fatalf("task state = %q, want %q when repair budget is exhausted", got, model.StatusPausedForReplan)
 	}
 }
 
@@ -216,8 +433,8 @@ func TestR9VerifyStall_FallsBackToStateUpdatedAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload state: %v", err)
 	}
-	if got.TaskStates[taskID] != model.StatusRepairPending {
-		t.Errorf("expected repair_pending fallback, got %s", got.TaskStates[taskID])
+	if got.TaskStates[taskID] != model.StatusPausedForReplan {
+		t.Errorf("expected paused_for_replan fallback, got %s", got.TaskStates[taskID])
 	}
 }
 

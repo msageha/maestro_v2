@@ -6,3 +6,4 @@ cmd_result
 cmd_setup
 cmd_skill
 cmd_task
+cmd_verify

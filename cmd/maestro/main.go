@@ -93,6 +93,8 @@ func (a *cliApp) run(args []string) int {
 		err = runWorker(args[1:])
 	case "skill":
 		err = a.runSkill(args[1:])
+	case "verify":
+		err = a.runVerify(args[1:])
 	case "dashboard":
 		err = a.runDashboard(args[1:])
 	case "version":
@@ -189,6 +191,7 @@ Agent Commands (CLI → Daemon):
   plan request-cancel [options]    Request cancellation
   plan rebuild [options]           Rebuild state from results
   plan resolve-conflict [options]  Resolve a worker merge conflict
+  verify write [options]           Write command-scoped verify config
 
 Internal:
   daemon            Run daemon process
