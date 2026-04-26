@@ -5,8 +5,6 @@ import (
 	"io"
 	"os"
 
-	yamlv3 "gopkg.in/yaml.v3"
-
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/validate"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
@@ -23,7 +21,7 @@ func parseInput(data []byte) (*SubmitInput, error) {
 	data = yamlutil.SanitizeDoubleQuoteEscapes(data)
 
 	var input SubmitInput
-	if err := yamlv3.Unmarshal(data, &input); err != nil {
+	if err := yamlutil.SafeUnmarshalStrict(data, &input); err != nil {
 		return nil, fmt.Errorf("parse tasks YAML: %w", err)
 	}
 	return &input, nil

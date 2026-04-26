@@ -1,7 +1,9 @@
 package yaml
 
 import (
+	"bytes"
 	"fmt"
+	"io"
 
 	yamlv3 "gopkg.in/yaml.v3"
 )
@@ -24,6 +26,16 @@ const (
 // The function first decodes the YAML into a yaml.Node tree to inspect the
 // structure, then unmarshals into the target type only if limits are satisfied.
 func SafeUnmarshal(data []byte, out any) error {
+	return safeUnmarshal(data, out, false)
+}
+
+// SafeUnmarshalStrict unmarshals YAML content like SafeUnmarshal, but rejects
+// unknown mapping fields when decoding into structs.
+func SafeUnmarshalStrict(data []byte, out any) error {
+	return safeUnmarshal(data, out, true)
+}
+
+func safeUnmarshal(data []byte, out any, strict bool) error {
 	var doc yamlv3.Node
 	if err := yamlv3.Unmarshal(data, &doc); err != nil {
 		return err
@@ -38,7 +50,15 @@ func SafeUnmarshal(data []byte, out any) error {
 		return err
 	}
 
-	return yamlv3.Unmarshal(data, out)
+	dec := yamlv3.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(strict)
+	if err := dec.Decode(out); err != nil {
+		if err == io.EOF {
+			return nil
+		}
+		return err
+	}
+	return nil
 }
 
 // collectAnchors walks the node tree and collects all anchors, returning

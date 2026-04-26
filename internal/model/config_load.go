@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
 // configCacheEntry holds a cached Config along with the file mtime used to detect staleness.
@@ -60,7 +60,7 @@ func LoadConfig(maestroDir string) (Config, error) {
 			CleanupOnFailure: false,
 		},
 	}
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
+	if err := yamlutil.SafeUnmarshalStrict(data, &cfg); err != nil {
 		return Config{}, fmt.Errorf("parse config.yaml: %w", err)
 	}
 	NormalizeRetryConfig(&cfg)

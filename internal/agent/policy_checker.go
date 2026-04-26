@@ -370,25 +370,13 @@ if [ "$tool_name" = "Bash" ]; then
   # catches chained forms like "cd worktree && git commit" because the
   # && separator places git at the head of the next segment.
   #
-  # Exception: _integration worktrees are exempt from WT-GIT restrictions.
-  # During publish_conflict recovery a Worker assigned to the _integration
-  # worktree must run fetch/merge/add/commit to resolve conflicts. Blocking
-  # those operations causes an infinite recovery loop (result="completed" but
-  # conflict never resolved). Integration worktrees are always named with an
-  # "_integration" suffix (e.g. .maestro/worktrees/<cmdid>_integration/).
+  # Integration worktrees are not exempt: Workers may edit conflict files, but
+  # staging and merge commits remain daemon-owned.
   _wt_cwd="$(pwd -P 2>/dev/null || echo "")"
   if [ -n "$_wt_cwd" ] && echo "$_wt_cwd" | grep -qF '/.maestro/worktrees/'; then
-    case "$_wt_cwd" in
-      */.maestro/worktrees/*_integration|*/.maestro/worktrees/*_integration/*)
-        # _integration worktree: git change operations are permitted here.
-        # Conflict resolution (fetch, merge, add, commit) requires them.
-        ;;
-      *)
-        if echo "$cmd" | grep -qE '(^|;|\||&&)\s*git\s+(commit|add|merge|rebase|cherry-pick|revert|stash|restore|fetch|pull|worktree|tag)(\s|$)'; then
-          deny "WT-GIT: Blocked git change command in worktree mode (only read-only git commands allowed)"
-        fi
-        ;;
-    esac
+    if echo "$cmd" | grep -qE '(^|;|\||&&)\s*git\s+(commit|add|merge|rebase|cherry-pick|revert|stash|restore|fetch|pull|worktree|tag)(\s|$)'; then
+      deny "WT-GIT: Blocked git change command in worktree mode (daemon owns staging, commits, merges, and publish recovery)"
+    fi
   fi
 
   # Note: git merge --abort is not listed in this hook. Workers never run
@@ -475,18 +463,34 @@ if [ "$tool_name" = "Bash" ]; then
   # Workers must never invoke these even if launcher --disallowedTools is
   # bypassed; the daemon enforces an additional role check, but rejecting
   # at the hook layer gives a faster, clearer failure.
+  if echo "$cmd" | grep -qE '(^|;|\||&&)\s*(env(\s+[^;|&[:space:]]+)*\s+(-u\s+)?(MAESTRO_AGENT_ROLE|TMUX_PANE)|unset\s+(MAESTRO_AGENT_ROLE|TMUX_PANE)|((MAESTRO_AGENT_ROLE|TMUX_PANE)=))' && \
+     echo "$cmd" | grep -qE '(^|;|\||&&).*maestro\s+'; then
+    deny "D009: Blocked maestro invocation with caller-role environment manipulation"
+  fi
   if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+plan\s+unquarantine(\s|$)'; then
     deny "D009: Blocked maestro plan unquarantine (operator-only recovery API)"
   fi
   if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+plan\s+resume-merge(\s|$)'; then
     deny "D009: Blocked maestro plan resume-merge (operator-only recovery API)"
   fi
+  if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+plan\s+retry-publish(\s|$)'; then
+    deny "D009: Blocked maestro plan retry-publish (operator-only recovery API)"
+  fi
   # Match both the canonical "maestro plan resolve-conflict" form (current
   # CLI router) and the legacy "maestro resolve-conflict" spelling -- the
-  # latter is unreachable via the router today but is kept as defense-in-
-  # depth in case future content reintroduces it.
+  # latter is unreachable via the router today but is kept as defense-in-depth
+  # in case future content reintroduces it.
   if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+(plan\s+)?resolve-conflict(\s|$)'; then
     deny "D009: Blocked maestro plan resolve-conflict (operator-only recovery API)"
+  fi
+  if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+plan\s+(submit|complete|add-retry-task|add-task|request-cancel|rebuild)(\s|$)'; then
+    deny "D010: Blocked maestro plan control-plane API (Planner/operator-owned)"
+  fi
+  if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+queue\s+write(\s|$)'; then
+    deny "D011: Blocked maestro queue write (Orchestrator/operator control plane)"
+  fi
+  if echo "$cmd" | grep -qE '(^|;|\||&&)\s*maestro\s+verify\s+write(\s|$)'; then
+    deny "D012: Blocked maestro verify write (Planner-owned verification control plane)"
   fi
 
   # B004: Absolute path shell invocation (bypasses restricted mode)
@@ -574,14 +578,14 @@ if [ "$tool_name" = "Bash" ]; then
   fi
 
   # .maestro/ access via Bash (bypass prevention, case-insensitive for macOS)
-  if echo "$cmd" | grep -qiE '(cat|head|tail|less|more|vim|nano|sed|awk)\s+.*\.maestro/(state|queue|results|locks|logs|config|dashboard)'; then
+  if echo "$cmd" | grep -qiE '(cat|head|tail|less|more|vim|nano|sed|awk)\s+.*\.maestro/(state|queue|results|locks|logs|config|dashboard|verify\.yaml)'; then
     deny "Blocked .maestro/ control-plane access via Bash"
   fi
-  if echo "$cmd" | grep -qiE '(ls|find|grep|rg)\s+.*\.maestro/(state|queue|results|locks|logs|config|dashboard)'; then
+  if echo "$cmd" | grep -qiE '(ls|find|grep|rg)\s+.*\.maestro/(state|queue|results|locks|logs|config|dashboard|verify\.yaml)'; then
     deny "Blocked .maestro/ control-plane access via Bash"
   fi
   # M-AGT2: File manipulation commands accessing .maestro/ control-plane
-  if echo "$cmd" | grep -qiE '(cp|mv|rsync|ln|install|tar|zip)\s+.*\.maestro/(state|queue|results|locks|logs|config|dashboard)'; then
+  if echo "$cmd" | grep -qiE '(cp|mv|rsync|ln|install|tar|zip)\s+.*\.maestro/(state|queue|results|locks|logs|config|dashboard|verify\.yaml)'; then
     deny "Blocked .maestro/ control-plane access via Bash"
   fi
   # M-AGT2: Write operations targeting .maestro/ directory
@@ -619,10 +623,10 @@ if [ "$tool_name" = "Write" ] || [ "$tool_name" = "Edit" ]; then
 
   # Block writes to .maestro/ control plane (absolute and relative paths)
   case "$file_path_lower" in
-    */.maestro/state/*|*/.maestro/queue/*|*/.maestro/results/*|*/.maestro/locks/*|*/.maestro/logs/*|*/.maestro/hooks/*|*/.maestro/config.yaml|*/.maestro/dashboard.md)
+    */.maestro/state/*|*/.maestro/queue/*|*/.maestro/results/*|*/.maestro/locks/*|*/.maestro/logs/*|*/.maestro/hooks/*|*/.maestro/config.yaml|*/.maestro/dashboard.md|*/.maestro/verify.yaml)
       deny "Blocked write to .maestro/ control-plane path"
       ;;
-    .maestro/state/*|.maestro/queue/*|.maestro/results/*|.maestro/locks/*|.maestro/logs/*|.maestro/hooks/*|.maestro/config.yaml|.maestro/dashboard.md)
+    .maestro/state/*|.maestro/queue/*|.maestro/results/*|.maestro/locks/*|.maestro/logs/*|.maestro/hooks/*|.maestro/config.yaml|.maestro/dashboard.md|.maestro/verify.yaml)
       deny "Blocked write to .maestro/ control-plane path (relative)"
       ;;
   esac

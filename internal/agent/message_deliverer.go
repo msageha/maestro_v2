@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,6 +23,13 @@ type messageDeliverer struct {
 	logLevel  logLevel
 	paneMu    sync.Map // map[string]*sync.Mutex — per-pane delivery lock
 }
+
+const (
+	submitRetryProbeDelay   = 750 * time.Millisecond
+	maxSubmitProbeAttempts  = 8
+	pastedTextPlaceholder   = "Pasted text #"
+	submitPromptSearchLines = 8
+)
 
 func newMessageDeliverer(paneIO PaneIO, paneState *paneStateManager, cfg *model.WatcherConfig, execCfg ExecutorConfig, logger *log.Logger, ll logLevel) *messageDeliverer {
 	return &messageDeliverer{
@@ -87,6 +95,11 @@ func (d *messageDeliverer) sendAndConfirm(req ExecRequest, paneTarget string) Ex
 			req.AgentID, req.TaskID, err)
 		return ExecResult{Error: fmt.Errorf("send message: %w", err), Retryable: true}
 	}
+	if err := d.confirmSubmittedOrRetry(ctx, paneTarget, req); err != nil {
+		d.log(logLevelError, "delivery_error agent_id=%s task_id=%s error=submit_confirm: %v",
+			req.AgentID, req.TaskID, err)
+		return ExecResult{Error: fmt.Errorf("confirm submitted: %w", err), Retryable: true}
+	}
 
 	// Update @status to busy. This is a best-effort post-delivery hint used by
 	// the watcher/UI; the message has already been delivered to the pane and
@@ -101,6 +114,66 @@ func (d *messageDeliverer) sendAndConfirm(req ExecRequest, paneTarget string) Ex
 	d.log(logLevelInfo, "delivery_success agent_id=%s task_id=%s command_id=%s lease_epoch=%d",
 		req.AgentID, req.TaskID, req.CommandID, req.LeaseEpoch)
 	return ExecResult{Success: true}
+}
+
+func (d *messageDeliverer) confirmSubmittedOrRetry(ctx context.Context, paneTarget string, req ExecRequest) error {
+	if !needsSubmitConfirmation(req.Message) {
+		return nil
+	}
+	for attempt := 1; attempt <= maxSubmitProbeAttempts; attempt++ {
+		if err := sleepCtx(ctx, submitRetryProbeDelay); err != nil {
+			return fmt.Errorf("wait for submit probe: %w", err)
+		}
+		content, err := d.paneIO.CapturePaneJoined(paneTarget, d.execCfg.PromptReadyLines)
+		if err != nil {
+			d.log(logLevelWarn, "submit_confirm capture_failed agent_id=%s task_id=%s error=%v",
+				req.AgentID, req.TaskID, err)
+			return nil
+		}
+		if pastedTextPlaceholderAtPrompt(content) {
+			d.log(logLevelWarn, "submit_confirm pasted_text_still_at_prompt agent_id=%s task_id=%s attempt=%d/%d",
+				req.AgentID, req.TaskID, attempt, maxSubmitProbeAttempts)
+			if err := d.paneIO.SendKeys(paneTarget, "Enter"); err != nil {
+				return fmt.Errorf("send retry enter: %w", err)
+			}
+			continue
+		}
+		if submittedActivityVisible(content) {
+			return nil
+		}
+	}
+	return nil
+}
+
+func needsSubmitConfirmation(message string) bool {
+	return strings.Contains(message, "\n")
+}
+
+func submittedActivityVisible(content string) bool {
+	clean := stripANSI(content)
+	for _, marker := range []string{"Thinking", "Working", "Running", "Bash(", "⏺"} {
+		if strings.Contains(clean, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func pastedTextPlaceholderAtPrompt(content string) bool {
+	lines := strings.Split(content, "\n")
+	checked := 0
+	for i := len(lines) - 1; i >= 0 && checked < submitPromptSearchLines; i-- {
+		trimmed := strings.TrimSpace(stripANSI(lines[i]))
+		if trimmed == "" {
+			continue
+		}
+		if strings.Contains(trimmed, pastedTextPlaceholder) &&
+			(strings.Contains(trimmed, "❯") || strings.HasPrefix(trimmed, ">")) {
+			return true
+		}
+		checked++
+	}
+	return false
 }
 
 // clearAndConfirm sends /clear and confirms it was processed by the target application.

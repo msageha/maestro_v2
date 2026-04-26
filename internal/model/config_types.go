@@ -147,14 +147,17 @@ func (a AdmissionControl) EffectiveMaxConcurrentRollout() int {
 
 // Fallback controls degraded-mode behavior when workers experience consecutive failures.
 type Fallback struct {
-	Enabled                     bool `yaml:"enabled"`
-	ConsecutiveFailureThreshold int  `yaml:"consecutive_failure_threshold"`
-	RecoveryCheckIntervalSec    int  `yaml:"recovery_check_interval_sec"`
-	MinHealthyDurationSec       int  `yaml:"min_healthy_duration_sec"`
+	Enabled                     *bool `yaml:"enabled"`
+	ConsecutiveFailureThreshold int   `yaml:"consecutive_failure_threshold"`
+	RecoveryCheckIntervalSec    int   `yaml:"recovery_check_interval_sec"`
+	MinHealthyDurationSec       int   `yaml:"min_healthy_duration_sec"`
 }
 
-// EffectiveEnabled returns the Enabled flag.
-func (f Fallback) EffectiveEnabled() bool { return f.Enabled }
+// EffectiveEnabled returns Enabled, defaulting to true so degraded-mode
+// protection is active unless operators explicitly disable it.
+func (f Fallback) EffectiveEnabled() bool {
+	return effectiveValue(f.Enabled, true)
+}
 
 // EffectiveConsecutiveFailureThreshold returns ConsecutiveFailureThreshold, or DefaultConsecutiveFailureThreshold when zero.
 func (f Fallback) EffectiveConsecutiveFailureThreshold() int {

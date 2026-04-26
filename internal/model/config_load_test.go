@@ -3,6 +3,7 @@ package model
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -154,5 +155,42 @@ func TestLoadConfig_FileNotFound(t *testing.T) {
 	_, err := LoadConfig(t.TempDir())
 	if err == nil {
 		t.Fatal("expected error for missing config.yaml")
+	}
+}
+
+func TestLoadConfig_RejectsUnknownField(t *testing.T) {
+	t.Cleanup(ResetConfigCache)
+
+	dir := t.TempDir()
+	data := []byte(`
+project:
+  name: test
+maestro:
+  version: 2.0.0
+agents:
+  orchestrator:
+    model: opus
+  planner:
+    model: opus
+  workers:
+    count: 1
+    default_model: haiku
+worktree:
+  enabled: true
+  cleanup_on_success: true
+  cleanup_on_failure: false
+verfiy:
+  enabled: true
+`)
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadConfig(dir)
+	if err == nil {
+		t.Fatal("expected unknown field error")
+	}
+	if !strings.Contains(err.Error(), "field verfiy not found") {
+		t.Fatalf("expected strict YAML unknown-field error, got: %v", err)
 	}
 }

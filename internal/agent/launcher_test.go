@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -13,8 +14,8 @@ func TestAllowedToolsByRole(t *testing.T) {
 		wantTools []string
 		wantOK    bool
 	}{
-		{"orchestrator", []string{"Bash(maestro:*)", "Read(.maestro/dashboard.md)", "Read(.maestro/results/*)", "Read(.maestro/config.yaml)", "Read(.maestro/state/continuous.yaml)"}, true},
-		{"planner", []string{"Bash(maestro:*)", "Read(.maestro/**)"}, true},
+		{"orchestrator", []string{"Bash(maestro queue write planner --type command:*)", "Bash(maestro skill list:*)", "Bash(maestro plan request-cancel:*)", "Read(.maestro/dashboard.md)", "Read(.maestro/results/planner.yaml)", "Read(.maestro/config.yaml)", "Read(.maestro/state/continuous.yaml)"}, true},
+		{"planner", []string{"Bash(maestro:*)", "Read(.maestro/**)", "Read(.maestro/dashboard.md)", "Read(.maestro/config.yaml)", "Read(.maestro/results/*)"}, true},
 		{"worker", nil, false},
 	}
 
@@ -42,12 +43,21 @@ func TestAllowedToolsByRole_OrchestratorCannotUseBashFreely(t *testing.T) {
 	tools := allowedToolsByRole["orchestrator"]
 	joined := strings.Join(tools, ",")
 
-	// Must have Bash(maestro:*), not bare "Bash"
+	// Must have narrow maestro Bash patterns, not bare "Bash" or Bash(maestro:*).
 	if strings.Contains(joined, ",Bash,") || joined == "Bash" || strings.HasPrefix(joined, "Bash,") {
-		t.Error("orchestrator must use Bash(maestro:*), not bare Bash")
+		t.Error("orchestrator must use narrow maestro Bash patterns, not bare Bash")
 	}
-	if !strings.Contains(joined, "Bash(maestro:*)") {
-		t.Error("orchestrator must have Bash(maestro:*)")
+	if strings.Contains(joined, "Bash(maestro:*)") {
+		t.Error("orchestrator must not have broad Bash(maestro:*)")
+	}
+	for _, want := range []string{
+		"Bash(maestro queue write planner --type command:*)",
+		"Bash(maestro skill list:*)",
+		"Bash(maestro plan request-cancel:*)",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("orchestrator must have %s", want)
+		}
 	}
 }
 
@@ -70,7 +80,7 @@ func TestAllowedToolsByRole_OrchestratorReadHasPathRestriction(t *testing.T) {
 	// Orchestrator Read is scoped to specific files only
 	expectedReads := []string{
 		"Read(.maestro/dashboard.md)",
-		"Read(.maestro/results/*)",
+		"Read(.maestro/results/planner.yaml)",
 		"Read(.maestro/config.yaml)",
 	}
 	for _, r := range expectedReads {
@@ -95,6 +105,15 @@ func TestAllowedToolsByRole_PlannerReadHasPathRestriction(t *testing.T) {
 
 	if !strings.Contains(joined, "Read(.maestro/**)") {
 		t.Error("planner must have Read(.maestro/**)")
+	}
+	for _, want := range []string{
+		"Read(.maestro/dashboard.md)",
+		"Read(.maestro/config.yaml)",
+		"Read(.maestro/results/*)",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("planner must have %q", want)
+		}
 	}
 	for _, tool := range tools {
 		if tool == "Read" {
@@ -177,45 +196,6 @@ func TestBuildSystemPrompt_MissingInstructionsFile(t *testing.T) {
 	_, err := buildSystemPrompt(dir, "nonexistent")
 	if err == nil {
 		t.Error("expected error for missing instructions file")
-	}
-}
-
-// TestAppendNonClaudeWorkerReminder verifies that when a worker runs on a
-// non-claude-code runtime, the system prompt is augmented with the critical
-// prohibition reminder that re-states D006/D009/.maestro-read rules.
-//
-// On non-claude runtimes there is no --disallowedTools flag and no PreToolUse
-// policy hook, so the prompt is the only enforcement layer. Regressing this
-// silently would leave codex/gemini workers unrestricted in practice.
-func TestAppendNonClaudeWorkerReminder(t *testing.T) {
-	base := "# Common Prompt\nbody"
-
-	for _, runtime := range []string{"codex", "gemini"} {
-		t.Run(runtime, func(t *testing.T) {
-			out := appendNonClaudeWorkerReminder(base, runtime)
-
-			if !strings.HasPrefix(out, base) {
-				t.Errorf("reminder must be appended (not replace) the base prompt")
-			}
-			if !strings.Contains(out, runtime) {
-				t.Errorf("reminder must mention runtime %q so the agent sees it", runtime)
-			}
-
-			// Critical prohibitions that must be re-stated since they cannot be
-			// enforced via --disallowedTools on this runtime.
-			mustContain := []string{
-				".maestro/state",
-				".maestro/queue",
-				"tmux kill-server",
-				"maestro plan unquarantine",
-				"git push",
-			}
-			for _, kw := range mustContain {
-				if !strings.Contains(out, kw) {
-					t.Errorf("reminder must restate prohibition keyword %q", kw)
-				}
-			}
-		})
 	}
 }
 
@@ -420,23 +400,181 @@ func TestBuildLaunchArgs_PlannerAllowsNormalCommands(t *testing.T) {
 	}
 }
 
-func TestBuildLaunchArgs_OrchestratorNoDisallowedOperatorCommands(t *testing.T) {
+func TestBuildLaunchArgs_OrchestratorDelegationSurfaceOnly(t *testing.T) {
 	args, err := buildLaunchArgs("orchestrator", "sonnet", "system-prompt", "")
 	if err != nil {
 		t.Fatalf("buildLaunchArgs: %v", err)
 	}
 	joined := strings.Join(args, " ")
 
-	// Orchestrator should NOT block operator-only commands (it IS the operator)
-	for _, sub := range []string{
-		"maestro plan unquarantine",
-		"maestro plan resume-merge",
-		"maestro plan add-retry-task",
+	for _, allowed := range []string{
+		"Bash(maestro queue write planner --type command:*)",
+		"Bash(maestro skill list:*)",
+		"Bash(maestro plan request-cancel:*)",
 	} {
-		if strings.Contains(joined, sub) {
-			t.Errorf("orchestrator should NOT block %q", sub)
+		if !strings.Contains(joined, allowed) {
+			t.Errorf("orchestrator allowedTools missing %q", allowed)
 		}
 	}
+	if strings.Contains(joined, "Bash(maestro:*)") {
+		t.Errorf("orchestrator must not allow broad maestro CLI access: %s", joined)
+	}
+	for _, blockedByOmission := range []string{
+		"Bash(maestro plan unquarantine:*)",
+		"Bash(maestro plan resume-merge:*)",
+		"Bash(maestro plan add-retry-task:*)",
+	} {
+		if strings.Contains(joined, blockedByOmission) {
+			t.Errorf("orchestrator should not include %q in allowedTools", blockedByOmission)
+		}
+	}
+}
+
+func TestBuildLaunchArgs_DangerousPermissionBypassForAllManagedRoles(t *testing.T) {
+	for _, role := range []string{"orchestrator", "planner", "worker"} {
+		t.Run(role, func(t *testing.T) {
+			args, err := buildLaunchArgs(role, "sonnet", "system-prompt", "")
+			if err != nil {
+				t.Fatalf("buildLaunchArgs: %v", err)
+			}
+			if !slices.Contains(args, dangerousPermissionBypassFlag) {
+				t.Fatalf("role=%s missing %s; args=%v", role, dangerousPermissionBypassFlag, args)
+			}
+		})
+	}
+}
+
+func TestAppendWorkspaceReadAllowances_PlannerAddsAbsoluteMaestroDir(t *testing.T) {
+	maestroDir := filepath.Join(t.TempDir(), ".maestro")
+	if err := os.MkdirAll(maestroDir, 0o755); err != nil {
+		t.Fatalf("mkdir maestro dir: %v", err)
+	}
+	args, err := buildLaunchArgs("planner", "sonnet", "system-prompt", "")
+	if err != nil {
+		t.Fatalf("buildLaunchArgs: %v", err)
+	}
+	args = appendWorkspaceReadAllowances(args, maestroDir, "planner")
+
+	allowedTools := launchArgValue(t, args, "--allowedTools")
+	for _, want := range []string{
+		"Read(" + filepath.ToSlash(filepath.Join(maestroDir, "dashboard.md")) + ")",
+		"Read(" + filepath.ToSlash(filepath.Join(maestroDir, "config.yaml")) + ")",
+		"Read(" + filepath.ToSlash(filepath.Join(maestroDir, "results")) + "/*)",
+		"Read(" + filepath.ToSlash(maestroDir) + "/**)",
+	} {
+		if !strings.Contains(allowedTools, want) {
+			t.Fatalf("allowedTools missing %q: %s", want, allowedTools)
+		}
+	}
+}
+
+func TestAppendWorkspaceReadAllowances_OrchestratorAddsExactAbsoluteFiles(t *testing.T) {
+	maestroDir := filepath.Join(t.TempDir(), ".maestro")
+	if err := os.MkdirAll(filepath.Join(maestroDir, "results"), 0o755); err != nil {
+		t.Fatalf("mkdir maestro results dir: %v", err)
+	}
+	args, err := buildLaunchArgs("orchestrator", "sonnet", "system-prompt", "")
+	if err != nil {
+		t.Fatalf("buildLaunchArgs: %v", err)
+	}
+	args = appendWorkspaceReadAllowances(args, maestroDir, "orchestrator")
+
+	allowedTools := launchArgValue(t, args, "--allowedTools")
+	for _, rel := range []string{
+		"dashboard.md",
+		"results/planner.yaml",
+		"config.yaml",
+		"state/continuous.yaml",
+	} {
+		want := "Read(" + filepath.ToSlash(filepath.Join(maestroDir, rel)) + ")"
+		if !strings.Contains(allowedTools, want) {
+			t.Fatalf("allowedTools missing %q: %s", want, allowedTools)
+		}
+	}
+}
+
+func TestAppendWorkspaceReadAllowances_ResolvesSymlinkedMaestroDir(t *testing.T) {
+	realDir := filepath.Join(t.TempDir(), ".maestro")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatalf("mkdir real maestro dir: %v", err)
+	}
+	linkDir := filepath.Join(t.TempDir(), "maestro-link")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	args, err := buildLaunchArgs("planner", "sonnet", "system-prompt", "")
+	if err != nil {
+		t.Fatalf("buildLaunchArgs: %v", err)
+	}
+	args = appendWorkspaceReadAllowances(args, linkDir, "planner")
+
+	allowedTools := launchArgValue(t, args, "--allowedTools")
+	resolvedRealDir, err := filepath.EvalSymlinks(realDir)
+	if err != nil {
+		t.Fatalf("resolve real maestro dir: %v", err)
+	}
+	want := "Read(" + filepath.ToSlash(resolvedRealDir) + "/**)"
+	if !strings.Contains(allowedTools, want) {
+		t.Fatalf("allowedTools missing resolved path %q: %s", want, allowedTools)
+	}
+}
+
+func TestAppendResolvedMaestroBashAllowances_Orchestrator(t *testing.T) {
+	args, err := buildLaunchArgs("orchestrator", "sonnet", "system-prompt", "")
+	if err != nil {
+		t.Fatalf("buildLaunchArgs: %v", err)
+	}
+	args = appendResolvedMaestroBashAllowances(args, "orchestrator", "/tmp/current/maestro")
+
+	allowedTools := launchArgValue(t, args, "--allowedTools")
+	for _, want := range []string{
+		"Bash(/tmp/current/maestro queue write planner --type command:*)",
+		"Bash(/tmp/current/maestro skill list:*)",
+		"Bash(/tmp/current/maestro plan request-cancel:*)",
+	} {
+		if !strings.Contains(allowedTools, want) {
+			t.Fatalf("allowedTools missing %q: %s", want, allowedTools)
+		}
+	}
+}
+
+func TestAppendResolvedMaestroBashAllowances_Planner(t *testing.T) {
+	args, err := buildLaunchArgs("planner", "sonnet", "system-prompt", "")
+	if err != nil {
+		t.Fatalf("buildLaunchArgs: %v", err)
+	}
+	args = appendResolvedMaestroBashAllowances(args, "planner", "/tmp/current/maestro")
+
+	allowedTools := launchArgValue(t, args, "--allowedTools")
+	want := "Bash(/tmp/current/maestro:*)"
+	if !strings.Contains(allowedTools, want) {
+		t.Fatalf("allowedTools missing %q: %s", want, allowedTools)
+	}
+}
+
+func TestAppendRuntimeCLIPathInstruction(t *testing.T) {
+	maestroDir := t.TempDir()
+	got := appendRuntimeCLIPathInstruction("base prompt", "/tmp/current/maestro", maestroDir)
+	if !strings.Contains(got, "/tmp/current/maestro") {
+		t.Fatalf("runtime CLI path instruction missing path: %s", got)
+	}
+	if !strings.Contains(got, filepath.ToSlash(maestroDir)) {
+		t.Fatalf("runtime CLI path instruction missing maestro dir: %s", got)
+	}
+	if !strings.Contains(got, "Do not rely on the shell `PATH`") {
+		t.Fatalf("runtime CLI path instruction missing PATH warning: %s", got)
+	}
+}
+
+func launchArgValue(t *testing.T, args []string, flag string) string {
+	t.Helper()
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] == flag {
+			return args[i+1]
+		}
+	}
+	t.Fatalf("flag %s not found in args: %v", flag, args)
+	return ""
 }
 
 func TestBuildLaunchArgs_WorkerDisallowsMaestroReads(t *testing.T) {
@@ -684,6 +822,72 @@ func TestBuildLaunchEnv_CoreBehavior(t *testing.T) {
 	// MAESTRO_AGENT_ROLE must be set.
 	if v, ok := envMap["MAESTRO_AGENT_ROLE"]; !ok || v != "worker" {
 		t.Errorf("MAESTRO_AGENT_ROLE = %q (present=%v), want \"worker\"", v, ok)
+	}
+}
+
+func TestBuildLaunchEnvForAgent_PrependsRoleWrapper(t *testing.T) {
+	maestroDir := t.TempDir()
+	env, err := buildLaunchEnvForAgent([]string{"PATH=/usr/bin"}, "orchestrator", maestroDir)
+	if err != nil {
+		t.Fatalf("buildLaunchEnvForAgent: %v", err)
+	}
+
+	envMap := make(map[string]string)
+	for _, e := range env {
+		parts := strings.SplitN(e, "=", 2)
+		if len(parts) == 2 {
+			envMap[parts[0]] = parts[1]
+		}
+	}
+
+	wrapperDir := filepath.Join(maestroDir, "bin", "roles", "orchestrator")
+	pathParts := strings.Split(envMap["PATH"], string(os.PathListSeparator))
+	if len(pathParts) == 0 || pathParts[0] != wrapperDir {
+		t.Fatalf("PATH first entry = %q, want %q (PATH=%q)", pathParts[0], wrapperDir, envMap["PATH"])
+	}
+	if envMap["MAESTRO_DIR"] == "" {
+		t.Fatal("MAESTRO_DIR must be set for launched agents")
+	}
+
+	wrapperPath := filepath.Join(wrapperDir, "maestro")
+	info, err := os.Stat(wrapperPath)
+	if err != nil {
+		t.Fatalf("stat wrapper: %v", err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Fatalf("wrapper is not executable: mode=%v", info.Mode().Perm())
+	}
+	content, err := os.ReadFile(wrapperPath)
+	if err != nil {
+		t.Fatalf("read wrapper: %v", err)
+	}
+	body := string(content)
+	if !strings.Contains(body, "export MAESTRO_AGENT_ROLE='orchestrator'") {
+		t.Fatalf("wrapper missing role export:\n%s", body)
+	}
+	if !strings.Contains(body, "export MAESTRO_DIR=") {
+		t.Fatalf("wrapper missing MAESTRO_DIR export:\n%s", body)
+	}
+	if !strings.Contains(body, "exec ") || !strings.Contains(body, " \"$@\"") {
+		t.Fatalf("wrapper must exec real maestro with original args:\n%s", body)
+	}
+}
+
+func TestBuildLaunchEnvForAgent_RejectsUnknownRole(t *testing.T) {
+	_, err := buildLaunchEnvForAgent([]string{"PATH=/usr/bin"}, "admin", t.TempDir())
+	if err == nil {
+		t.Fatal("expected unknown role error")
+	}
+	if !strings.Contains(err.Error(), "unknown role") {
+		t.Fatalf("expected unknown role error, got: %v", err)
+	}
+}
+
+func TestShellSingleQuote(t *testing.T) {
+	got := shellSingleQuote("/tmp/a'b/maestro")
+	want := "'/tmp/a'\"'\"'b/maestro'"
+	if got != want {
+		t.Fatalf("shellSingleQuote() = %q, want %q", got, want)
 	}
 }
 

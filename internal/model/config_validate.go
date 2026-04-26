@@ -70,11 +70,12 @@ func (c Config) validateAgents(errs *[]error) {
 		}
 	}
 
-	// Orchestrator/Planner role constraints (Bash(maestro:*), Read(.maestro/**))
-	// are enforced via Claude Code's --allowedTools / --disallowedTools CLI
-	// flags. codex and gemini have no equivalent enforcement layer, so the
-	// "delegation-only" rule for Orchestrator and the "planning-only" rule for
-	// Planner cannot be technically enforced when those runtimes are used.
+	// Agent role constraints are enforced via Claude Code's
+	// --allowedTools / --disallowedTools CLI flags. codex and gemini have no
+	// equivalent enforcement layer, so the
+	// "delegation-only" rule for Orchestrator, the "planning-only" rule for
+	// Planner, and the Worker control-plane restrictions cannot be technically
+	// enforced when those runtimes are used.
 	// Past incidents confirmed this is not a prompt-quality issue: codex
 	// running as Orchestrator has bypassed delegation entirely and edited
 	// files on main directly. Fail-closed at config load to make the role
@@ -92,6 +93,22 @@ func (c Config) validateAgents(errs *[]error) {
 				"(only claude-code enforces tool restrictions; codex/gemini have no equivalent guardrail). "+
 				"Set agents.planner.model to a Claude model such as opus, sonnet, or haiku",
 			r))
+	}
+	if r, _ := ParseRuntimeFromModel(c.Agents.Workers.DefaultModel); r != RuntimeClaudeCode {
+		*errs = append(*errs, fmt.Errorf(
+			"agents.workers.default_model: runtime %q is not supported for worker roles "+
+				"(only claude-code enforces worker tool restrictions and policy hooks). "+
+				"Set agents.workers.default_model to a Claude model such as sonnet, opus, or haiku",
+			r))
+	}
+	for workerID, m := range c.Agents.Workers.Models {
+		if r, _ := ParseRuntimeFromModel(m); r != RuntimeClaudeCode {
+			*errs = append(*errs, fmt.Errorf(
+				"agents.workers.models.%s: runtime %q is not supported for worker roles "+
+					"(only claude-code enforces worker tool restrictions and policy hooks). "+
+					"Set the worker model to a Claude model such as sonnet, opus, or haiku",
+				workerID, r))
+		}
 	}
 }
 
@@ -254,6 +271,9 @@ func (c Config) validateReview(errs *[]error) {
 }
 
 func (c Config) validateRollout(errs *[]error) {
+	if c.Rollout.Enabled != nil && *c.Rollout.Enabled {
+		*errs = append(*errs, fmt.Errorf("rollout.enabled: production rollout dispatcher is not wired; leave disabled"))
+	}
 	if c.Rollout.MaxConcurrent != nil && *c.Rollout.MaxConcurrent < 0 {
 		*errs = append(*errs, fmt.Errorf("rollout.max_concurrent: must be >= 0"))
 	}
@@ -272,6 +292,9 @@ func (c Config) validateRollout(errs *[]error) {
 }
 
 func (c Config) validateJudge(errs *[]error) {
+	if c.Judge.Enabled != nil && *c.Judge.Enabled {
+		*errs = append(*errs, fmt.Errorf("judge.enabled: production LLM judge is not wired; leave disabled"))
+	}
 	if c.Judge.TimeoutSec != nil && *c.Judge.TimeoutSec < 0 {
 		*errs = append(*errs, fmt.Errorf("judge.timeout_sec: must be >= 0"))
 	}
@@ -376,6 +399,15 @@ func (c Config) validateExperimental(errs *[]error) {
 	if c.Complexity.Thresholds.ComplexMaxFiles != nil && *c.Complexity.Thresholds.ComplexMaxFiles <= 0 {
 		*errs = append(*errs, fmt.Errorf("complexity.thresholds.complex_max_files: must be > 0"))
 	}
+	simpleMax := c.Complexity.Thresholds.EffectiveSimpleMaxFiles()
+	standardMax := c.Complexity.Thresholds.EffectiveStandardMaxFiles()
+	complexMax := c.Complexity.Thresholds.EffectiveComplexMaxFiles()
+	if simpleMax > standardMax {
+		*errs = append(*errs, fmt.Errorf("complexity.thresholds: simple_max_files (%d) must be <= standard_max_files (%d)", simpleMax, standardMax))
+	}
+	if standardMax > complexMax {
+		*errs = append(*errs, fmt.Errorf("complexity.thresholds: standard_max_files (%d) must be <= complex_max_files (%d)", standardMax, complexMax))
+	}
 }
 
 func (c Config) validateCrossFieldConstraints(errs *[]error) {
@@ -444,6 +476,8 @@ func (c Config) validateFloatFields(errs *[]error) {
 	for k, v := range c.ExtendedVerification.PerspectiveWeights {
 		if math.IsNaN(v) || math.IsInf(v, 0) {
 			*errs = append(*errs, fmt.Errorf("extended_verification.perspective_weights.%s: must be a finite value", k))
+		} else if v <= 0 {
+			*errs = append(*errs, fmt.Errorf("extended_verification.perspective_weights.%s: must be > 0", k))
 		}
 	}
 }

@@ -37,10 +37,9 @@ func setupMaestroDir(t *testing.T) string {
 }
 
 // withDefaultRequiredFields fills in ExpectedPaths and DefinitionOfAbort with
-// safe defaults for test fixtures that don't exercise those fields. This used
-// to be applied implicitly by ApplyTaskDefaults; now that ApplyTaskDefaults no
-// longer auto-fills required schema fields (REQUIREMENTS.md §S3-1), each test
-// fixture must declare them explicitly.
+// safe defaults for test fixtures that don't exercise those fields. Production
+// validation rejects missing values, so tests that need valid tasks must declare
+// them explicitly or use this helper.
 func withDefaultRequiredFields(tasks []TaskInput) []TaskInput {
 	for i := range tasks {
 		// "." survives YAML round-trip with `omitempty` (empty slices are
@@ -119,6 +118,29 @@ func writePhasesFile(t *testing.T, phases []PhaseInput) string {
 		t.Fatalf("write phases file: %v", err)
 	}
 	return path
+}
+
+func TestParseInput_RejectsUnknownField(t *testing.T) {
+	_, err := parseInput([]byte(`
+tasks:
+  - name: task_a
+    purpose: do task a
+    content: implement feature a
+    acceptance_criteria: feature a works
+    bloom_level: 2
+    required: true
+    expected_paths: ["."]
+    definition_of_abort:
+      max_repair_count: 2
+      max_wall_clock_sec: 300
+    acceptence_criteria: typo should be rejected
+`))
+	if err == nil {
+		t.Fatal("expected unknown field error")
+	}
+	if !strings.Contains(err.Error(), "field acceptence_criteria not found") {
+		t.Fatalf("expected strict YAML unknown-field error, got: %v", err)
+	}
 }
 
 func TestSubmit_BasicTasks(t *testing.T) {

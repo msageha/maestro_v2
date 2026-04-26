@@ -305,19 +305,24 @@ func TestValidate_OrchestratorPlannerRejectsNonClaudeCodeRuntime(t *testing.T) {
 	}
 }
 
-// TestValidate_WorkersAcceptNonClaudeCodeRuntime confirms that workers can
-// still run on codex / gemini. Workers edit files by design, so running them
-// on alternative runtimes is supported (with the L1/L2 safety hooks documented
-// as claude-code-only).
-func TestValidate_WorkersAcceptNonClaudeCodeRuntime(t *testing.T) {
+// TestValidate_WorkersRejectNonClaudeCodeRuntime confirms that workers fail
+// closed on runtimes that cannot enforce Maestro's worker policy hooks.
+func TestValidate_WorkersRejectNonClaudeCodeRuntime(t *testing.T) {
 	models := []string{"codex", "gemini", "gemini-2.5-pro"}
 	for _, m := range models {
 		t.Run(m, func(t *testing.T) {
 			cfg := validConfig()
 			cfg.Agents.Workers.DefaultModel = m
 			cfg.Agents.Workers.Models = map[string]string{"worker1": m}
-			if err := cfg.Validate(); err != nil {
-				t.Errorf("expected workers to accept model %q, got error: %v", m, err)
+			err := cfg.Validate()
+			if err == nil {
+				t.Fatalf("expected workers to reject model %q", m)
+			}
+			if !strings.Contains(err.Error(), "agents.workers.default_model") {
+				t.Errorf("expected default_model in error, got: %v", err)
+			}
+			if !strings.Contains(err.Error(), "agents.workers.models.worker1") {
+				t.Errorf("expected worker override in error, got: %v", err)
 			}
 		})
 	}
@@ -1382,6 +1387,32 @@ func TestValidate_RetryVsCircuitBreaker_RetryDisabled_OK(t *testing.T) {
 	cfg.Retry.TaskExecution.MaxRetries = 10 // doesn't matter when disabled
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("expected no error when retry disabled, got: %v", err)
+	}
+}
+
+func TestValidate_ExtendedVerificationPerspectiveWeightPositive(t *testing.T) {
+	cfg := validConfig()
+	cfg.ExtendedVerification.PerspectiveWeights = map[string]float64{"security": 0}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for zero perspective weight")
+	}
+	if !strings.Contains(err.Error(), "extended_verification.perspective_weights.security") {
+		t.Fatalf("expected extended verification perspective weight in error, got: %v", err)
+	}
+}
+
+func TestValidate_ComplexityThresholdOrdering(t *testing.T) {
+	cfg := validConfig()
+	cfg.Complexity.Thresholds.SimpleMaxFiles = ptr.Int(10)
+	cfg.Complexity.Thresholds.StandardMaxFiles = ptr.Int(3)
+	cfg.Complexity.Thresholds.ComplexMaxFiles = ptr.Int(30)
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected error for unordered complexity thresholds")
+	}
+	if !strings.Contains(err.Error(), "complexity.thresholds") {
+		t.Fatalf("expected complexity.thresholds in error, got: %v", err)
 	}
 }
 

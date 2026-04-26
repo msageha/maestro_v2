@@ -289,13 +289,13 @@ func NormalizeRetryConfig(cfg *Config) {
 }
 
 // VerifyDaemonConfig holds daemon-side controls for the §S1-1 verification
-// runner and the R9 verify-pending stall reconciler. The verify.yaml schema
+// runner and the R9 verify-pending stall reconciler. The verify config schema
 // itself lives in model.VerifyConfig (see internal/model/verify.go); this
 // struct only carries operational parameters that affect daemon behaviour.
 type VerifyDaemonConfig struct {
-	// Enabled toggles the real verification runner. When false the daemon
-	// uses a stub that always reports pass; intended as an emergency rollback
-	// or for test fixtures that lack a Go module.
+	// Enabled toggles the real verification runner. False is an emergency
+	// rollback setting and daemon startup additionally requires
+	// MAESTRO_ALLOW_VERIFY_SKIP=1 to prevent accidental silent pass.
 	Enabled *bool `yaml:"enabled,omitempty"`
 	// StallThresholdSec is the wall-clock window after a task enters
 	// verify_pending before R9 transitions it to repair_pending. 0 ≤ value;

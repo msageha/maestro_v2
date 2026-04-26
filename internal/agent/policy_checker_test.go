@@ -131,6 +131,8 @@ func TestHookScript_ContainsDangerousPatternChecks(t *testing.T) {
 		{"D009 unquarantine", "maestro plan unquarantine"},
 		{"D009 resume-merge", "maestro plan resume-merge"},
 		{"D009 resolve-conflict", "maestro\\s+(plan\\s+)?resolve-conflict"},
+		{"D009 role env manipulation", "caller-role environment manipulation"},
+		{"D010 verify write", "maestro verify write"},
 		{".maestro/ bypass", ".maestro/"},
 		{"macOS system dirs", "System|Library|Applications"},
 	}
@@ -872,6 +874,31 @@ func runHookScriptInDir(t *testing.T, scriptPath, inputJSON, dir string) string 
 		t.Fatalf("hook script failed: %v, output: %s", err, out)
 	}
 	return string(out)
+}
+
+func TestHookScript_D009_BlocksMaestroRoleEnvironmentBypass(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	cases := []string{
+		"env -u MAESTRO_AGENT_ROLE maestro plan submit --command-id cmd_1",
+		"env MAESTRO_AGENT_ROLE=cli maestro queue write --type command",
+		"MAESTRO_AGENT_ROLE=cli maestro verify write --command-id cmd_1",
+		"unset TMUX_PANE; maestro plan retry-publish --command-id cmd_1",
+	}
+	for _, cmd := range cases {
+		t.Run(cmd, func(t *testing.T) {
+			output := runHookScriptInDir(t, scriptPath, makeBashInput(cmd), dir)
+			if !strings.Contains(output, "caller-role environment manipulation") || !strings.Contains(output, "deny") {
+				t.Errorf("expected D009 role-env deny for %q, got: %s", cmd, output)
+			}
+		})
+	}
 }
 
 // --- WT001: Worktree boundary enforcement ---
@@ -2402,11 +2429,11 @@ func TestHookScript_WTGIT_BlocksChainedGitAfterSeparator(t *testing.T) {
 	}
 }
 
-// TestHookScript_WTGIT_AllowsGitChangeInIntegrationWorktree verifies that git
-// change commands (fetch, merge, add, commit) are NOT blocked when the CWD is
-// an _integration worktree. Conflict resolution during publish_conflict recovery
-// requires these operations; blocking them causes an infinite recovery loop.
-func TestHookScript_WTGIT_AllowsGitChangeInIntegrationWorktree(t *testing.T) {
+// TestHookScript_WTGIT_BlocksGitChangeInIntegrationWorktree verifies that git
+// change commands remain daemon-owned even when the CWD is an _integration
+// worktree. Workers may edit conflict files there, but staging/commits are
+// performed by the daemon after result_write.
+func TestHookScript_WTGIT_BlocksGitChangeInIntegrationWorktree(t *testing.T) {
 	requireJq(t)
 	base := t.TempDir()
 
@@ -2424,8 +2451,7 @@ func TestHookScript_WTGIT_AllowsGitChangeInIntegrationWorktree(t *testing.T) {
 		t.Fatalf("WriteHookScript: %v", err)
 	}
 
-	// These are the operations needed for conflict resolution.
-	allowed := []struct {
+	blocked := []struct {
 		name string
 		cmd  string
 	}{
@@ -2436,20 +2462,20 @@ func TestHookScript_WTGIT_AllowsGitChangeInIntegrationWorktree(t *testing.T) {
 		{"git rebase", "git rebase main"},
 		{"git stash", "git stash"},
 	}
-	for _, tc := range allowed {
+	for _, tc := range blocked {
 		t.Run(tc.name, func(t *testing.T) {
 			input := makeBashInput(tc.cmd)
 			output := runHookScriptInDir(t, scriptPath, input, integrationDir)
-			if strings.Contains(output, "WT-GIT") {
-				t.Errorf("WT-GIT must NOT block %q in _integration worktree, got: %s", tc.cmd, output)
+			if !strings.Contains(output, "WT-GIT") || !strings.Contains(output, "deny") {
+				t.Errorf("expected WT-GIT deny for %q in _integration worktree, got: %s", tc.cmd, output)
 			}
 		})
 	}
 }
 
-// TestHookScript_WTGIT_AllowsGitChangeInIntegrationWorktreeSubdir verifies the
-// exemption also holds when the CWD is a subdirectory of the _integration worktree.
-func TestHookScript_WTGIT_AllowsGitChangeInIntegrationWorktreeSubdir(t *testing.T) {
+// TestHookScript_WTGIT_BlocksGitChangeInIntegrationWorktreeSubdir verifies the
+// same rule when the CWD is a subdirectory of the _integration worktree.
+func TestHookScript_WTGIT_BlocksGitChangeInIntegrationWorktreeSubdir(t *testing.T) {
 	requireJq(t)
 	base := t.TempDir()
 
@@ -2468,14 +2494,13 @@ func TestHookScript_WTGIT_AllowsGitChangeInIntegrationWorktreeSubdir(t *testing.
 
 	input := makeBashInput("git add . && git commit -m 'fix'")
 	output := runHookScriptInDir(t, scriptPath, input, subDir)
-	if strings.Contains(output, "WT-GIT") {
-		t.Errorf("WT-GIT must NOT block git change in _integration worktree subdir, got: %s", output)
+	if !strings.Contains(output, "WT-GIT") || !strings.Contains(output, "deny") {
+		t.Errorf("expected WT-GIT deny in _integration worktree subdir, got: %s", output)
 	}
 }
 
-// TestHookScript_WTGIT_NonIntegrationWorktreeStillBlocked is a regression test
-// confirming that regular (non-_integration) worktrees are still subject to
-// WT-GIT restrictions after the _integration exemption was added.
+// TestHookScript_WTGIT_NonIntegrationWorktreeStillBlocked confirms that regular
+// worktrees are also subject to WT-GIT restrictions.
 func TestHookScript_WTGIT_NonIntegrationWorktreeStillBlocked(t *testing.T) {
 	requireJq(t)
 	base := t.TempDir()

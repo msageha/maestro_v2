@@ -172,6 +172,158 @@ func TestSendAndConfirm_GetCommandError_ProceedsToSend(t *testing.T) {
 	}
 }
 
+func TestSendAndConfirm_MultilinePastedPlaceholderRetriesEnter(t *testing.T) {
+	mock := newMockPaneIO()
+	mock.currentCommand = "claude"
+	mock.isShell = false
+	mock.captureJoinedSeq = []mockResp{
+		{val: "Welcome\n❯ [Pasted text #1 +248 lines]\n"},
+		{val: "Working...\n"},
+	}
+	d := newTestDeliverer(mock)
+
+	result := d.sendAndConfirm(ExecRequest{
+		AgentID: "worker1",
+		TaskID:  "task_001",
+		Message: "line one\nline two",
+		Context: context.Background(),
+	}, "%0")
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if !result.Success {
+		t.Error("expected Success=true")
+	}
+	if !callsContain(mock.calls, "SendKeys:Enter") {
+		t.Fatalf("expected retry Enter after pasted-text placeholder, calls=%v", mock.calls)
+	}
+}
+
+func TestSendAndConfirm_MultilinePromptThenPastedPlaceholderRetriesEnter(t *testing.T) {
+	mock := newMockPaneIO()
+	mock.currentCommand = "claude"
+	mock.isShell = false
+	mock.captureJoinedSeq = []mockResp{
+		{val: "Welcome\n❯ \n"},
+		{val: "Welcome\n❯ [Pasted text #1 +257 lines]\n"},
+		{val: "Thinking\n"},
+	}
+	d := newTestDeliverer(mock)
+
+	result := d.sendAndConfirm(ExecRequest{
+		AgentID: "worker1",
+		TaskID:  "task_001",
+		Message: "line one\nline two",
+		Context: context.Background(),
+	}, "%0")
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if !callsContain(mock.calls, "SendKeys:Enter") {
+		t.Fatalf("expected retry Enter after delayed pasted-text placeholder, calls=%v", mock.calls)
+	}
+}
+
+func TestSendAndConfirm_MultilineStartupThenPastedPlaceholderRetriesEnter(t *testing.T) {
+	mock := newMockPaneIO()
+	mock.currentCommand = "claude"
+	mock.isShell = false
+	mock.captureJoinedSeq = []mockResp{
+		{val: "Claude Code\nWelcome back\n"},
+		{val: "Claude Code\nStill starting\n"},
+		{val: "Welcome\n❯ [Pasted text #1 +247 lines]\n"},
+		{val: "Working\n"},
+	}
+	d := newTestDeliverer(mock)
+
+	result := d.sendAndConfirm(ExecRequest{
+		AgentID: "worker1",
+		TaskID:  "task_001",
+		Message: "line one\nline two",
+		Context: context.Background(),
+	}, "%0")
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if !callsContain(mock.calls, "SendKeys:Enter") {
+		t.Fatalf("expected retry Enter after startup-delayed pasted-text placeholder, calls=%v", mock.calls)
+	}
+}
+
+func TestSubmittedActivityVisible(t *testing.T) {
+	t.Parallel()
+	if !submittedActivityVisible("Thinking\n") {
+		t.Fatal("expected Thinking marker to indicate submitted activity")
+	}
+	if submittedActivityVisible("Claude Code\n❯ [Pasted text #1 +247 lines]\n") {
+		t.Fatal("pasted placeholder alone should not indicate submitted activity")
+	}
+}
+
+func TestSendAndConfirm_SingleLineSkipsSubmitConfirmation(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	mock.currentCommand = "claude"
+	mock.isShell = false
+	d := newTestDeliverer(mock)
+
+	result := d.sendAndConfirm(ExecRequest{
+		AgentID: "worker1",
+		TaskID:  "task_001",
+		Message: "single line",
+		Context: context.Background(),
+	}, "%0")
+
+	if result.Error != nil {
+		t.Fatalf("unexpected error: %v", result.Error)
+	}
+	if callsContain(mock.calls, "CapturePaneJoined") {
+		t.Fatalf("single-line delivery should not probe pane content, calls=%v", mock.calls)
+	}
+}
+
+func TestPastedTextPlaceholderAtPrompt(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		content string
+		want    bool
+	}{
+		{
+			name:    "claude prompt placeholder",
+			content: "header\n❯ [Pasted text #1 +248 lines]\n",
+			want:    true,
+		},
+		{
+			name:    "ascii prompt placeholder",
+			content: "header\n> [Pasted text #2 +12 lines]\n",
+			want:    true,
+		},
+		{
+			name:    "agent output mention is ignored",
+			content: "I saw [Pasted text #1 +248 lines] in logs\n",
+			want:    false,
+		},
+		{
+			name:    "plain prompt without placeholder",
+			content: "Thinking...\n❯ \n",
+			want:    false,
+		},
+	}
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := pastedTextPlaceholderAtPrompt(tt.content); got != tt.want {
+				t.Fatalf("pastedTextPlaceholderAtPrompt() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 // --- clearConfirmationPoller tests ---
 
 func TestClearConfirmationPoller_IsConfirmed_WithValidPreClearHash(t *testing.T) {

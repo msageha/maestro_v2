@@ -49,7 +49,6 @@ func runOrchestratorQuery(t *testing.T, query, workDir string) string {
 		"-p", query,
 		"--model", "claude-sonnet-4-6",
 		"--append-system-prompt", systemPrompt,
-		"--dangerously-skip-permissions",
 		"--allowedTools", tools,
 		"--output-format", "text",
 	}
@@ -103,7 +102,7 @@ func TestIntegration_OrchestratorToolsConfig(t *testing.T) {
 
 	expectedReads := []string{
 		"Read(.maestro/dashboard.md)",
-		"Read(.maestro/results/*)",
+		"Read(.maestro/results/planner.yaml)",
 		"Read(.maestro/config.yaml)",
 		"Read(.maestro/state/continuous.yaml)",
 	}
@@ -112,13 +111,22 @@ func TestIntegration_OrchestratorToolsConfig(t *testing.T) {
 			t.Errorf("orchestrator allowedTools must include %s, got: %s", r, joined)
 		}
 	}
-	if !strings.Contains(joined, "Bash(maestro:*)") {
-		t.Errorf("orchestrator allowedTools must include Bash(maestro:*), got: %s", joined)
+	expectedBash := []string{
+		"Bash(maestro queue write planner --type command:*)",
+		"Bash(maestro skill list:*)",
+		"Bash(maestro plan request-cancel:*)",
+	}
+	for _, b := range expectedBash {
+		if !strings.Contains(joined, b) {
+			t.Errorf("orchestrator allowedTools must include %s, got: %s", b, joined)
+		}
+	}
+	if strings.Contains(joined, "Bash(maestro:*)") {
+		t.Errorf("orchestrator allowedTools must not include broad Bash(maestro:*), got: %s", joined)
 	}
 }
 
-// NOTE: Tool restriction verification is not possible in -p (non-interactive) mode because
-// all tools are auto-approved. Actual enforcement is guaranteed by the allowedToolsByRole
-// unit test (TestIntegration_OrchestratorToolsConfig) and the production --allowedTools whitelist.
-// A proper tool restriction integration test would require interactive mode with a test harness
-// that can observe tool approval/denial events.
+// NOTE: Tool restriction verification is not possible in -p (non-interactive)
+// mode because all tools are auto-approved. These tests verify the configured
+// whitelist; end-to-end denial would require an interactive harness that can
+// observe tool approval/denial events.
