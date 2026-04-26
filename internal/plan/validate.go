@@ -322,6 +322,8 @@ func validateTaskFieldsCore(task TaskInput, fieldPrefix string, errs *Validation
 	// Validate definition_of_done.
 	validateDefinitionOfDone(task.DefinitionOfDone, fieldPrefix+".definition_of_done", errs)
 
+	validateOperationType(task.OperationType, fieldPrefix+".operation_type", errs)
+
 	// run_on_main and run_on_integration are mutually exclusive since the
 	// dispatcher selects exactly one target directory per task.
 	if task.RunOnMain && task.RunOnIntegration {
@@ -400,6 +402,16 @@ func validateDefinitionOfDone(items []string, fieldPath string, errs *Validation
 		if strings.TrimSpace(item) == "" {
 			errs.Add(fmt.Sprintf("%s[%d]", fieldPath, i), "must not be empty")
 		}
+	}
+}
+
+func validateOperationType(op string, fieldPath string, errs *ValidationErrors) {
+	switch op {
+	case "", model.OperationTypeVerify, model.OperationTypeRepair, model.OperationTypeRollout:
+		return
+	default:
+		errs.Add(fieldPath, fmt.Sprintf("must be one of %q, %q, %q, got %q",
+			model.OperationTypeVerify, model.OperationTypeRepair, model.OperationTypeRollout, op))
 	}
 }
 

@@ -16,35 +16,8 @@ import (
 	"github.com/msageha/maestro_v2/internal/testutil"
 )
 
-// TestApplyTaskDefaults_DoesNotFillRequiredFields verifies that
-// ApplyTaskDefaults no longer silently populates the required schema fields
-// (expected_paths, definition_of_abort) — REQUIREMENTS.md §S3-1 mandates
-// that the Planner declare them explicitly. Auto-filling used to mask
-// missing Planner output and effectively disabled Path-overlap Heuristics
-// (A-4) and Circuit Breakers (S2-2).
-func TestApplyTaskDefaults_DoesNotFillRequiredFields(t *testing.T) {
-	tasks := []TaskInput{
-		{
-			Name:               "t1",
-			Purpose:            "p",
-			Content:            "c",
-			AcceptanceCriteria: "ac",
-			BloomLevel:         1,
-		},
-	}
-
-	ApplyTaskDefaults(tasks)
-
-	if tasks[0].ExpectedPaths != nil {
-		t.Errorf("ExpectedPaths should remain nil to surface schema gaps, got %v", tasks[0].ExpectedPaths)
-	}
-	if tasks[0].DefinitionOfAbort != nil {
-		t.Errorf("DefinitionOfAbort should remain nil to surface schema gaps, got %+v", tasks[0].DefinitionOfAbort)
-	}
-}
-
 // TestValidateTasksInput_RejectsNilExpectedPaths verifies that a task with
-// nil expected_paths fails validation, even after ApplyTaskDefaults has run.
+// nil expected_paths fails validation.
 func TestValidateTasksInput_RejectsNilExpectedPaths(t *testing.T) {
 	tasks := []TaskInput{
 		{
@@ -57,8 +30,6 @@ func TestValidateTasksInput_RejectsNilExpectedPaths(t *testing.T) {
 			// ExpectedPaths intentionally omitted
 		},
 	}
-	ApplyTaskDefaults(tasks)
-
 	errs := ValidateTasksInput(tasks)
 	if errs == nil {
 		t.Fatal("expected validation error for nil expected_paths, got nil")
@@ -82,46 +53,12 @@ func TestValidateTasksInput_RejectsNilDefinitionOfAbort(t *testing.T) {
 			// DefinitionOfAbort intentionally omitted
 		},
 	}
-	ApplyTaskDefaults(tasks)
-
 	errs := ValidateTasksInput(tasks)
 	if errs == nil {
 		t.Fatal("expected validation error for nil definition_of_abort, got nil")
 	}
 	if !strings.Contains(errs.Error(), "definition_of_abort") {
 		t.Errorf("expected error mentioning definition_of_abort, got: %s", errs.Error())
-	}
-}
-
-// TestApplyTaskDefaults_PreservesExistingValues verifies that explicit values
-// are passed through unchanged.
-func TestApplyTaskDefaults_PreservesExistingValues(t *testing.T) {
-	customAbort := &model.DefinitionOfAbort{
-		MaxRepairCount:  10,
-		MaxWallClockSec: 7200,
-	}
-	tasks := []TaskInput{
-		{
-			Name:               "t1",
-			Purpose:            "p",
-			Content:            "c",
-			AcceptanceCriteria: "ac",
-			BloomLevel:         1,
-			ExpectedPaths:      []string{"src/main.go"},
-			DefinitionOfAbort:  customAbort,
-		},
-	}
-
-	ApplyTaskDefaults(tasks)
-
-	if len(tasks[0].ExpectedPaths) != 1 || tasks[0].ExpectedPaths[0] != "src/main.go" {
-		t.Errorf("ExpectedPaths should be preserved, got %v", tasks[0].ExpectedPaths)
-	}
-	if tasks[0].DefinitionOfAbort.MaxRepairCount != 10 {
-		t.Errorf("MaxRepairCount should be preserved, got %d", tasks[0].DefinitionOfAbort.MaxRepairCount)
-	}
-	if tasks[0].DefinitionOfAbort.MaxWallClockSec != 7200 {
-		t.Errorf("MaxWallClockSec should be preserved, got %d", tasks[0].DefinitionOfAbort.MaxWallClockSec)
 	}
 }
 
@@ -143,6 +80,7 @@ func TestWriteQueueEntries_PropagatesRunOnMain(t *testing.T) {
 			Purpose:            "verify main state",
 			Content:            "run tests on main",
 			AcceptanceCriteria: "tests pass",
+			DefinitionOfDone:   []string{"all command-scoped verify commands pass", "no files outside expected paths change"},
 			BloomLevel:         3,
 			RunOnMain:          true,
 		},
@@ -171,6 +109,9 @@ func TestWriteQueueEntries_PropagatesRunOnMain(t *testing.T) {
 	}
 	if !tq.Tasks[0].RunOnMain {
 		t.Errorf("Task.RunOnMain = false; Bug F regression: plan submit must propagate RunOnMain from TaskInput")
+	}
+	if got := tq.Tasks[0].DefinitionOfDone; len(got) != 2 || got[0] != "all command-scoped verify commands pass" {
+		t.Errorf("Task.DefinitionOfDone = %#v; plan submit must preserve explicit done conditions", got)
 	}
 	if tq.Tasks[0].RunOnIntegration {
 		t.Errorf("Task.RunOnIntegration should be false when only RunOnMain is set")
@@ -229,6 +170,45 @@ func TestWriteQueueEntries_PropagatesRunOnIntegration(t *testing.T) {
 	// バケットに分類される必要がある。
 	if got, want := tq.Tasks[0].OperationType, model.OperationTypeRollout; got != want {
 		t.Errorf("Task.OperationType = %q, want %q (RunOnIntegration must classify as rollout for §S0-1 admission)", got, want)
+	}
+}
+
+func TestWriteQueueEntries_UsesExplicitOperationType(t *testing.T) {
+	maestroDir := testutil.SetupDirWithQueues(t, 1)
+	lm := lock.NewMutexMap()
+
+	taskID := "task_0000000102_aaaaaaaa"
+	tasks := []TaskInput{
+		{
+			Name:               "repair-without-run-flags",
+			Purpose:            "repair failed implementation",
+			Content:            "fix the failing task",
+			AcceptanceCriteria: "verification passes",
+			BloomLevel:         3,
+			OperationType:      model.OperationTypeRepair,
+		},
+	}
+	assignments := []WorkerAssignment{
+		{TaskName: "repair-without-run-flags", WorkerID: "worker1", Model: "sonnet"},
+	}
+	nameToID := map[string]string{"repair-without-run-flags": taskID}
+
+	if err := writeQueueEntries(maestroDir, assignments, tasks, nameToID,
+		"cmd_0000000102_aabbccdd", "2025-01-01T00:00:00Z", lm); err != nil {
+		t.Fatalf("writeQueueEntries error: %v", err)
+	}
+
+	queueFile := filepath.Join(maestroDir, "queue", "worker1.yaml")
+	data, err := os.ReadFile(queueFile)
+	if err != nil {
+		t.Fatalf("read queue: %v", err)
+	}
+	var tq model.TaskQueue
+	if err := yamlv3.Unmarshal(data, &tq); err != nil {
+		t.Fatalf("parse queue: %v", err)
+	}
+	if got, want := tq.Tasks[0].OperationType, model.OperationTypeRepair; got != want {
+		t.Errorf("Task.OperationType = %q, want %q", got, want)
 	}
 }
 

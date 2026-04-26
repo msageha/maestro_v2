@@ -24,6 +24,7 @@ type TaskInput struct {
 	ExpectedPaths      []string                 `yaml:"expected_paths,omitempty"`
 	DefinitionOfAbort  *model.DefinitionOfAbort `yaml:"definition_of_abort,omitempty"`
 	DefinitionOfDone   []string                 `yaml:"definition_of_done,omitempty"`
+	OperationType      string                   `yaml:"operation_type,omitempty"`
 
 	// RunOnMain instructs the dispatcher to run this task in the main working
 	// directory instead of the worker's worktree. Use for read-only verification

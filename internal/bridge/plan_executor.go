@@ -100,15 +100,16 @@ type submitParams struct {
 func (pe *PlanExecutorImpl) Submit(params json.RawMessage) (json.RawMessage, error) {
 	return parseAndExecute("submit", params, func(p submitParams) (*plan.SubmitResult, error) {
 		return plan.Submit(plan.SubmitOptions{
-			CommandID:     p.CommandID,
-			TasksFile:     p.TasksFile,
-			TasksData:     []byte(p.TasksData),
-			PhaseName:     p.PhaseName,
-			DryRun:        p.DryRun,
-			MaestroDir:    pe.MaestroDir,
-			Config:        pe.Config,
-			LockMap:       pe.LockMap,
-			ModelSelector: pe.getSelector(),
+			CommandID:             p.CommandID,
+			TasksFile:             p.TasksFile,
+			TasksData:             []byte(p.TasksData),
+			PhaseName:             p.PhaseName,
+			DryRun:                p.DryRun,
+			MaestroDir:            pe.MaestroDir,
+			Config:                pe.Config,
+			LockMap:               pe.LockMap,
+			ModelSelector:         pe.getSelector(),
+			RequireVerifySnapshot: true,
 		})
 	})
 }
@@ -137,6 +138,7 @@ type retryParams struct {
 	Purpose            string                   `json:"purpose"`
 	Content            string                   `json:"content"`
 	AcceptanceCriteria string                   `json:"acceptance_criteria"`
+	DefinitionOfDone   []string                 `json:"definition_of_done,omitempty"`
 	Constraints        []string                 `json:"constraints"`
 	BlockedBy          []string                 `json:"blocked_by"`
 	BloomLevel         int                      `json:"bloom_level"`
@@ -156,6 +158,7 @@ func (pe *PlanExecutorImpl) AddRetryTask(params json.RawMessage) (json.RawMessag
 			Purpose:            p.Purpose,
 			Content:            p.Content,
 			AcceptanceCriteria: p.AcceptanceCriteria,
+			DefinitionOfDone:   p.DefinitionOfDone,
 			Constraints:        p.Constraints,
 			BlockedBy:          p.BlockedBy,
 			BloomLevel:         p.BloomLevel,
@@ -177,6 +180,7 @@ type injectParams struct {
 	Purpose            string                   `json:"purpose"`
 	Content            string                   `json:"content"`
 	AcceptanceCriteria string                   `json:"acceptance_criteria"`
+	DefinitionOfDone   []string                 `json:"definition_of_done,omitempty"`
 	Constraints        []string                 `json:"constraints"`
 	BlockedBy          []string                 `json:"blocked_by"`
 	BloomLevel         int                      `json:"bloom_level"`
@@ -201,6 +205,7 @@ func (pe *PlanExecutorImpl) AddTask(params json.RawMessage) (json.RawMessage, er
 			Purpose:            p.Purpose,
 			Content:            p.Content,
 			AcceptanceCriteria: p.AcceptanceCriteria,
+			DefinitionOfDone:   p.DefinitionOfDone,
 			Constraints:        p.Constraints,
 			BlockedBy:          p.BlockedBy,
 			BloomLevel:         p.BloomLevel,

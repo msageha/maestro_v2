@@ -17,6 +17,7 @@ type InjectOptions struct {
 	Purpose            string
 	Content            string
 	AcceptanceCriteria string
+	DefinitionOfDone   []string
 	Constraints        []string
 	BlockedBy          []string // task IDs
 	BloomLevel         int
@@ -125,6 +126,36 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 	newTaskID, err := model.NewTaskID(model.TaskIDCallerPlannerInject)
 	if err != nil {
 		return nil, fmt.Errorf("generate task ID: %w", err)
+	}
+
+	sm.UnlockCommand(opts.CommandID)
+	unlockQueues := lockWorkerQueues(opts.LockMap, []string{assignedWorkerID})
+	defer unlockQueues()
+	sm.LockCommand(opts.CommandID)
+
+	state, err = sm.LoadState(opts.CommandID)
+	if err != nil {
+		return nil, fmt.Errorf("reload state: %w", err)
+	}
+	if err := validateInjectRequest(state, opts); err != nil {
+		return nil, err
+	}
+	if opts.IdempotencyKey != "" && state.IdempotencyKeys != nil {
+		if existingTaskID, ok := state.IdempotencyKeys[opts.IdempotencyKey]; ok {
+			worker, mdl := lookupTaskAssignment(opts.MaestroDir, existingTaskID, opts.Config.Agents.Workers)
+			if worker == "" {
+				worker = "unknown"
+			}
+			if mdl == "" {
+				mdl = GetModelForBloomLevel(opts.BloomLevel, opts.Config.Agents.Workers.Boost)
+			}
+			return &InjectResult{
+				TaskID:       existingTaskID,
+				Worker:       worker,
+				Model:        mdl,
+				Deduplicated: true,
+			}, nil
+		}
 	}
 
 	// Snapshot state for rollback
@@ -238,6 +269,7 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 		purpose:            opts.Purpose,
 		content:            opts.Content,
 		acceptanceCriteria: opts.AcceptanceCriteria,
+		definitionOfDone:   opts.DefinitionOfDone,
 		constraints:        opts.Constraints,
 		blockedBy:          opts.BlockedBy,
 		bloomLevel:         opts.BloomLevel,
@@ -251,7 +283,7 @@ func AddTask(opts InjectOptions) (*InjectResult, error) {
 		runOnIntegration:   opts.RunOnIntegration,
 		operationType:      opType,
 	}
-	if err := writeRetryQueueEntry(opts.MaestroDir, task, now, opts.LockMap); err != nil {
+	if err := writeRetryQueueEntry(opts.MaestroDir, task, now, nil); err != nil {
 		if rsErr := restoreState(state, origStateBytes); rsErr != nil {
 			slog.Error("state restore failed", "error", rsErr)
 		}
@@ -343,7 +375,7 @@ func validateInjectRequest(state *model.CommandState, opts InjectOptions) error 
 	// plan submit. Earlier the CLI did not surface these flags so injected
 	// tasks bypassed the schema; that is now enforced here so the daemon
 	// rejects malformed input even when called from non-CLI clients.
-	if err := validateInjectedSchemaFields(opts.ExpectedPaths, opts.DefinitionOfAbort); err != nil {
+	if err := validateInjectedSchemaFields(opts.ExpectedPaths, opts.DefinitionOfAbort, opts.DefinitionOfDone); err != nil {
 		return err
 	}
 
@@ -357,7 +389,7 @@ func validateInjectRequest(state *model.CommandState, opts InjectOptions) error 
 // REQUIREMENTS.md §S3-1: an empty slice is treated the same as a missing
 // field — Path-overlap heuristic (§A-4) cannot reason about a task that
 // claims to touch nothing, so the API must reject both nil and []string{}.
-func validateInjectedSchemaFields(expectedPaths []string, doa *model.DefinitionOfAbort) error {
+func validateInjectedSchemaFields(expectedPaths []string, doa *model.DefinitionOfAbort, definitionOfDone []string) error {
 	errs := &ValidationErrors{}
 	if expectedPaths == nil {
 		errs.Add("expected_paths", "required field is missing")
@@ -371,6 +403,7 @@ func validateInjectedSchemaFields(expectedPaths []string, doa *model.DefinitionO
 	} else {
 		validateDefinitionOfAbort(doa, "definition_of_abort", errs)
 	}
+	validateDefinitionOfDone(definitionOfDone, "definition_of_done", errs)
 	if errs.HasErrors() {
 		return &planValidationError{Msg: errs.Error()}
 	}

@@ -113,6 +113,7 @@ type RetryOptions struct {
 	Purpose            string
 	Content            string
 	AcceptanceCriteria string
+	DefinitionOfDone   []string
 	Constraints        []string
 	BlockedBy          []string // task IDs (not names)
 	BloomLevel         int
@@ -152,13 +153,6 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 		return nil, ErrLockMapRequired
 	}
 	sm := NewStateManager(opts.MaestroDir, opts.LockMap)
-	sm.LockCommand(opts.CommandID)
-	defer sm.UnlockCommand(opts.CommandID)
-
-	rc, err := validateRetryRequest(sm, opts)
-	if err != nil {
-		return nil, fmt.Errorf("validate retry: %w", err)
-	}
 
 	assignment, workerStates, err := assignWorkerForRetry(opts)
 	if err != nil {
@@ -170,7 +164,17 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 		return nil, fmt.Errorf("generate task ID: %w", err)
 	}
 	now := nowUTC()
-	origTaskCache, err := loadOriginalTasksFromQueue(opts.MaestroDir, opts.CommandID, opts.LockMap)
+	unlockQueues := lockWorkerQueues(opts.LockMap, allConfiguredWorkerIDs(opts.Config.Agents.Workers))
+	defer unlockQueues()
+	sm.LockCommand(opts.CommandID)
+	defer sm.UnlockCommand(opts.CommandID)
+
+	rc, err := validateRetryRequest(sm, opts)
+	if err != nil {
+		return nil, fmt.Errorf("validate retry: %w", err)
+	}
+
+	origTaskCache, err := loadOriginalTasksFromQueue(opts.MaestroDir, opts.CommandID, nil)
 	if err != nil {
 		return nil, fmt.Errorf("load original tasks from queue: %w", err)
 	}
@@ -183,8 +187,10 @@ func AddRetryTask(opts RetryOptions) (*RetryResult, error) {
 	}
 
 	primaryTask := buildPrimaryRetryTask(opts, newTaskID, rc.blockedBy, assignment.WorkerID)
+	queueLockedOpts := opts
+	queueLockedOpts.LockMap = nil
 	if err := writeAndCommitRetryQueue(
-		sm, opts, rc.state, primaryTask, cascadeRecovered, origTaskCache, origStateBytes, now,
+		sm, queueLockedOpts, rc.state, primaryTask, cascadeRecovered, origTaskCache, origStateBytes, now,
 	); err != nil {
 		return nil, err
 	}
@@ -232,6 +238,7 @@ func buildPrimaryRetryTask(opts RetryOptions, taskID string, blockedBy []string,
 		purpose:            opts.Purpose,
 		content:            opts.Content,
 		acceptanceCriteria: opts.AcceptanceCriteria,
+		definitionOfDone:   opts.DefinitionOfDone,
 		constraints:        opts.Constraints,
 		blockedBy:          blockedBy,
 		bloomLevel:         opts.BloomLevel,
@@ -307,7 +314,7 @@ func validateRetryRequest(sm *StateManager, opts RetryOptions) (*retryContext, e
 	// REQUIREMENTS.md §S3-1: replacement tasks MUST declare expected_paths and
 	// definition_of_abort. Validate before any state mutation so a malformed
 	// retry request fails fast.
-	if err := validateInjectedSchemaFields(opts.ExpectedPaths, opts.DefinitionOfAbort); err != nil {
+	if err := validateInjectedSchemaFields(opts.ExpectedPaths, opts.DefinitionOfAbort, opts.DefinitionOfDone); err != nil {
 		return nil, err
 	}
 
@@ -328,8 +335,8 @@ func validateRetryRequest(sm *StateManager, opts RetryOptions) (*retryContext, e
 	if !ok {
 		return nil, &planValidationError{Msg: fmt.Sprintf("task %s not found in state", opts.RetryOf)}
 	}
-	if retryOfStatus != model.StatusFailed {
-		return nil, &planValidationError{Msg: fmt.Sprintf("retry-of task %s must be failed, got %s", opts.RetryOf, retryOfStatus)}
+	if retryOfStatus != model.StatusFailed && retryOfStatus != model.StatusPausedForReplan {
+		return nil, &planValidationError{Msg: fmt.Sprintf("retry-of task %s must be failed or paused_for_replan, got %s", opts.RetryOf, retryOfStatus)}
 	}
 
 	// Find phase membership
@@ -430,6 +437,13 @@ func applyRetryStateChanges(
 	// state.RetryLineage above, not by initialising at a different state.
 	state.TaskStates[newTaskID] = model.StatusPlanned
 	state.TaskDependencies[newTaskID] = rc.blockedBy
+	if state.TaskStates[opts.RetryOf] == model.StatusPausedForReplan {
+		state.TaskStates[opts.RetryOf] = model.StatusCancelled
+		if state.CancelledReasons == nil {
+			state.CancelledReasons = make(map[string]string)
+		}
+		state.CancelledReasons[opts.RetryOf] = "superseded_by_retry:" + newTaskID
+	}
 
 	// Re-validate DAG after dependency rewriting for the primary retry task.
 	if err := ValidateTaskDAGAfterMutation(state); err != nil {
@@ -480,6 +494,7 @@ func buildCascadeQueueTask(cr CascadeRecoveredTask, opts RetryOptions, state *mo
 	purpose := "cascade recovery of " + cr.Replaced
 	content := purpose
 	acceptanceCriteria := purpose
+	var definitionOfDone []string
 	bloomLevel := opts.BloomLevel
 	var constraints []string
 	var toolsHint []string
@@ -498,6 +513,7 @@ func buildCascadeQueueTask(cr CascadeRecoveredTask, opts RetryOptions, state *mo
 		purpose = orig.Purpose
 		content = orig.Content
 		acceptanceCriteria = orig.AcceptanceCriteria
+		definitionOfDone = orig.DefinitionOfDone
 		bloomLevel = orig.BloomLevel
 		constraints = orig.Constraints
 		toolsHint = orig.ToolsHint
@@ -517,6 +533,7 @@ func buildCascadeQueueTask(cr CascadeRecoveredTask, opts RetryOptions, state *mo
 		purpose:            purpose,
 		content:            content,
 		acceptanceCriteria: acceptanceCriteria,
+		definitionOfDone:   definitionOfDone,
 		constraints:        constraints,
 		blockedBy:          state.TaskDependencies[cr.TaskID],
 		bloomLevel:         bloomLevel,

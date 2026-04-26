@@ -93,9 +93,10 @@ type Task struct {
 	CreatedAt          string             `yaml:"created_at"`
 	UpdatedAt          string             `yaml:"updated_at"`
 
-	// C-7: Runtime selection (claude-code|codex|gemini)
+	// Runtime selection is retained for schema compatibility. Managed roles
+	// currently accept claude-code only; config/launcher reject codex/gemini.
 	Runtime string `yaml:"runtime,omitempty" json:"runtime,omitempty"`
-	// C-7: Runtime-specific model override
+	// Runtime-specific model override.
 	ModelOverride string `yaml:"model_override,omitempty" json:"model_override,omitempty"`
 	// C-6/C-8: Complexity level (simple|standard|complex|critical)
 	ComplexityLevel string `yaml:"complexity_level,omitempty" json:"complexity_level,omitempty"`

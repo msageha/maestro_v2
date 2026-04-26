@@ -750,6 +750,83 @@ func TestAddRetryTask_CancelsOriginalQueueEntry(t *testing.T) {
 	}
 }
 
+func TestAddRetryTask_PausedForReplanSupersedesOriginal(t *testing.T) {
+	maestroDir, commandID, taskID := setupRetryFixture(t)
+	cfg := testConfig()
+	lm := lock.NewMutexMap()
+
+	sm := NewStateManager(maestroDir, lm)
+	state, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	state.TaskStates[taskID] = model.StatusPausedForReplan
+	state.Phases = []model.Phase{{
+		PhaseID: "phase_0000000020_replan",
+		Name:    "implementation",
+		Status:  model.PhaseStatusActive,
+		TaskIDs: []string{"task_0000000020_11111111", taskID},
+	}}
+	if err := sm.SaveState(state); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	result, err := addRetryTaskTest(RetryOptions{
+		CommandID:          commandID,
+		RetryOf:            taskID,
+		Purpose:            "retry paused task",
+		Content:            "redo paused task",
+		AcceptanceCriteria: "paused task passes",
+		BloomLevel:         2,
+		MaestroDir:         maestroDir,
+		Config:             cfg,
+		LockMap:            lm,
+	})
+	if err != nil {
+		t.Fatalf("AddRetryTask returned error: %v", err)
+	}
+
+	updated, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("reload state: %v", err)
+	}
+	if got := updated.TaskStates[taskID]; got != model.StatusCancelled {
+		t.Fatalf("original task state = %q, want cancelled", got)
+	}
+	if got := updated.TaskStates[result.TaskID]; got != model.StatusPlanned {
+		t.Fatalf("retry task state = %q, want planned", got)
+	}
+
+	status, err := CanComplete(&model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			ExpectedTaskCount: 1,
+			RequiredTaskIDs:   []string{result.TaskID},
+			TaskStates: map[string]model.Status{
+				taskID:        model.StatusCancelled,
+				result.TaskID: model.StatusCompleted,
+			},
+		},
+		PhaseTracking: model.PhaseTracking{
+			Phases: []model.Phase{{
+				PhaseID: "phase_0000000020_replan",
+				Name:    "implementation",
+				Status:  model.PhaseStatusCompleted,
+				TaskIDs: []string{taskID, result.TaskID},
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CanComplete should accept superseded paused task as terminal: %v", err)
+	}
+	if status != model.PlanStatusCompleted {
+		t.Fatalf("CanComplete status = %q, want completed", status)
+	}
+}
+
 func TestAddRetryTask_CascadeRecover(t *testing.T) {
 	// Setup: A→B→C chain where A failed and B,C were cancelled due to dependency failure
 	maestroDir := setupMaestroDir(t)

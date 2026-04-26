@@ -21,6 +21,7 @@ type retryQueueTask struct {
 	purpose            string
 	content            string
 	acceptanceCriteria string
+	definitionOfDone   []string
 	constraints        []string
 	blockedBy          []string
 	bloomLevel         int
@@ -54,6 +55,7 @@ func writeRetryQueueEntry(maestroDir string, task retryQueueTask, now string, lo
 			Purpose:            task.purpose,
 			Content:            task.content,
 			AcceptanceCriteria: task.acceptanceCriteria,
+			DefinitionOfDone:   task.definitionOfDone,
 			Constraints:        task.constraints,
 			BlockedBy:          task.blockedBy,
 			BloomLevel:         task.bloomLevel,

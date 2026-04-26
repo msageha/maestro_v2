@@ -60,6 +60,23 @@ func TestValidateTasksInput_RunOnMainAlone_Valid(t *testing.T) {
 	}
 }
 
+func TestValidateTasksInput_OperationType(t *testing.T) {
+	tsk := validTask("task-a")
+	tsk.OperationType = model.OperationTypeRepair
+	if errs := ValidateTasksInput([]TaskInput{tsk}); errs != nil {
+		t.Fatalf("operation_type repair should be valid: %v", errs)
+	}
+
+	tsk.OperationType = "deploy"
+	errs := ValidateTasksInput([]TaskInput{tsk})
+	if errs == nil {
+		t.Fatal("expected validation error for invalid operation_type")
+	}
+	if !strings.Contains(errs.Error(), "operation_type") {
+		t.Errorf("expected operation_type error, got: %s", errs.Error())
+	}
+}
+
 func TestValidateTasksInput_MissingFields(t *testing.T) {
 	tasks := []TaskInput{
 		{

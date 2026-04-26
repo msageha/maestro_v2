@@ -74,6 +74,14 @@ func writeBridgeTasksFile(t *testing.T, yamlContent string) string {
 	return path
 }
 
+func writeBridgeVerifySnapshot(t *testing.T, maestroDir, commandID string) {
+	t.Helper()
+	path := filepath.Join(maestroDir, "state", "verify", commandID+".yaml")
+	if err := model.SaveVerifyConfig(path, &model.VerifyConfig{Build: []string{"git diff --check"}}); err != nil {
+		t.Fatalf("write verify snapshot: %v", err)
+	}
+}
+
 // writeBridgeState writes a CommandState YAML to the state directory.
 func writeBridgeState(t *testing.T, maestroDir string, state *model.CommandState) {
 	t.Helper()
@@ -286,6 +294,7 @@ func TestPlanExecutorImpl_SubmitSuccess(t *testing.T) {
 	commandID := "cmd_0000000001_aabbccdd"
 
 	writeBridgePlannerQueue(t, maestroDir, commandID, model.StatusInProgress)
+	writeBridgeVerifySnapshot(t, maestroDir, commandID)
 
 	tasksYAML := `tasks:
   - name: task_a
@@ -344,6 +353,45 @@ func TestPlanExecutorImpl_SubmitSuccess(t *testing.T) {
 	}
 	if result.Tasks[0].Worker == "" {
 		t.Error("Tasks[0].Worker is empty")
+	}
+}
+
+func TestPlanExecutorImpl_SubmitRequiresVerifySnapshot(t *testing.T) {
+	maestroDir := setupBridgeMaestroDir(t)
+	cfg := bridgeTestConfig()
+	commandID := "cmd_0000000099_needvfy"
+
+	writeBridgePlannerQueue(t, maestroDir, commandID, model.StatusInProgress)
+	tasksFile := writeBridgeTasksFile(t, `tasks:
+  - name: task_a
+    purpose: do task a
+    content: implement feature a
+    acceptance_criteria: feature a works
+    bloom_level: 2
+    required: true
+    expected_paths:
+      - "."
+    definition_of_abort:
+      max_repair_count: 3
+      max_wall_clock_sec: 600
+`)
+
+	pe := &PlanExecutorImpl{
+		MaestroDir: maestroDir,
+		Config:     cfg,
+		LockMap:    lock.NewMutexMap(),
+	}
+	params, _ := json.Marshal(submitParams{
+		CommandID: commandID,
+		TasksFile: tasksFile,
+	})
+
+	_, err := pe.Submit(json.RawMessage(params))
+	if err == nil {
+		t.Fatal("expected missing verify snapshot to be rejected")
+	}
+	if !strings.Contains(err.Error(), "verify config snapshot is required") {
+		t.Fatalf("expected verify snapshot error, got %v", err)
 	}
 }
 

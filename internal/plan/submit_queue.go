@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"syscall"
 
 	yamlv3 "gopkg.in/yaml.v3"
@@ -50,18 +51,25 @@ func releaseFlock(f *os.File) {
 	_ = f.Close()
 }
 
-// ApplyTaskDefaults is retained as an extension point for future per-field
-// defaults, but no longer fills required fields silently. REQUIREMENTS.md
-// §S3-1 mandates that every task explicitly declare expected_paths and
-// definition_of_abort. Auto-filling these used to mask missing Planner output
-// and disabled Path-overlap Heuristics (A-4) and Circuit Breakers (S2-2);
-// validation now rejects nil values directly so the gap is surfaced loudly.
-func ApplyTaskDefaults(tasks []TaskInput) {
-	_ = tasks // currently a no-op; kept so callers compile across the change.
+func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks []TaskInput, nameToID map[string]string, commandID string, now string, lockMap *lock.MutexMap) error {
+	workerTasks, err := buildQueueTasksByWorker(assignments, tasks, nameToID, commandID, now)
+	if err != nil {
+		return err
+	}
+	unlock := lockWorkerQueues(lockMap, workerIDsFromAssignments(assignments))
+	defer unlock()
+	return appendQueueTasksByWorker(maestroDir, workerTasks)
 }
 
-func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks []TaskInput, nameToID map[string]string, commandID string, now string, lockMap *lock.MutexMap) error {
-	// Group tasks by worker
+func writeQueueEntriesLocked(maestroDir string, assignments []WorkerAssignment, tasks []TaskInput, nameToID map[string]string, commandID string, now string) error {
+	workerTasks, err := buildQueueTasksByWorker(assignments, tasks, nameToID, commandID, now)
+	if err != nil {
+		return err
+	}
+	return appendQueueTasksByWorker(maestroDir, workerTasks)
+}
+
+func buildQueueTasksByWorker(assignments []WorkerAssignment, tasks []TaskInput, nameToID map[string]string, commandID string, now string) (map[string][]model.Task, error) {
 	workerTasks := make(map[string][]model.Task)
 	taskMap := make(map[string]TaskInput)
 	for _, t := range tasks {
@@ -76,24 +84,12 @@ func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks 
 		for _, depName := range t.BlockedBy {
 			depID, ok := nameToID[depName]
 			if !ok {
-				return fmt.Errorf("blocked_by references unknown task %q in queue entry for task %q", depName, a.TaskName)
+				return nil, fmt.Errorf("blocked_by references unknown task %q in queue entry for task %q", depName, a.TaskName)
 			}
 			depIDs = append(depIDs, depID)
 		}
 
-		// §S0-1 admission control classification. RunOnMain は input.go の
-		// godoc で "read-only verification tasks that must evaluate the merged
-		// state on the main branch" と定義されているため verify バケット、
-		// RunOnIntegration は publish_conflict 解決タスク用なので rollout
-		// バケットに分類する。両方 false の通常タスクは未分類のまま
-		// (OpUnknown = 常時 admit) で従来通り。
-		opType := ""
-		switch {
-		case t.RunOnMain:
-			opType = model.OperationTypeVerify
-		case t.RunOnIntegration:
-			opType = model.OperationTypeRollout
-		}
+		opType := taskOperationType(t)
 
 		queueTask := model.Task{
 			ID:                 taskID,
@@ -101,6 +97,7 @@ func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks 
 			Purpose:            t.Purpose,
 			Content:            t.Content,
 			AcceptanceCriteria: t.AcceptanceCriteria,
+			DefinitionOfDone:   t.DefinitionOfDone,
 			Constraints:        t.Constraints,
 			BlockedBy:          depIDs,
 			BloomLevel:         t.BloomLevel,
@@ -123,16 +120,32 @@ func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks 
 
 		workerTasks[a.WorkerID] = append(workerTasks[a.WorkerID], queueTask)
 	}
+	return workerTasks, nil
+}
 
-	// Write to each worker's queue file under per-queue lock to prevent
-	// concurrent read-modify-write data loss. flock(LOCK_EX) provides
-	// cross-process protection in addition to the in-process MutexMap lock.
-	for workerID, newTasks := range workerTasks {
+func taskOperationType(t TaskInput) string {
+	if t.OperationType != "" {
+		return t.OperationType
+	}
+	switch {
+	case t.RunOnMain:
+		return model.OperationTypeVerify
+	case t.RunOnIntegration:
+		return model.OperationTypeRollout
+	default:
+		return ""
+	}
+}
+
+func appendQueueTasksByWorker(maestroDir string, workerTasks map[string][]model.Task) error {
+	workerIDs := make([]string, 0, len(workerTasks))
+	for workerID := range workerTasks {
+		workerIDs = append(workerIDs, workerID)
+	}
+	sort.Strings(workerIDs)
+	for _, workerID := range workerIDs {
+		newTasks := workerTasks[workerID]
 		if err := func() error {
-			if lockMap != nil {
-				lockMap.Lock("queue:" + workerID)
-				defer lockMap.Unlock("queue:" + workerID)
-			}
 			flockFile, flockErr := acquireFlock(
 				queueFlockPath(maestroDir, workerIDToQueueFile(workerID)),
 				syscall.LOCK_EX,
@@ -154,6 +167,12 @@ func writeQueueEntries(maestroDir string, assignments []WorkerAssignment, tasks 
 }
 
 func rollbackQueueEntries(maestroDir string, tasks []TaskInput, nameToID map[string]string, assignMap map[string]WorkerAssignment, lockMap *lock.MutexMap) error {
+	unlock := lockWorkerQueues(lockMap, workerIDsFromAssignMap(assignMap))
+	defer unlock()
+	return rollbackQueueEntriesLocked(maestroDir, tasks, nameToID, assignMap)
+}
+
+func rollbackQueueEntriesLocked(maestroDir string, tasks []TaskInput, nameToID map[string]string, assignMap map[string]WorkerAssignment) error {
 	taskIDs := make(map[string]bool)
 	for _, t := range tasks {
 		taskIDs[nameToID[t.Name]] = true
@@ -167,14 +186,8 @@ func rollbackQueueEntries(maestroDir string, tasks []TaskInput, nameToID map[str
 
 	var errs []error
 
-	// Lock per-queue to prevent concurrent read-modify-write data loss.
-	// flock(LOCK_EX) provides cross-process protection.
 	for workerID := range workerFiles {
 		if err := func() error {
-			if lockMap != nil {
-				lockMap.Lock("queue:" + workerID)
-				defer lockMap.Unlock("queue:" + workerID)
-			}
 			flockFile, flockErr := acquireFlock(
 				queueFlockPath(maestroDir, workerIDToQueueFile(workerID)),
 				syscall.LOCK_EX,
@@ -217,6 +230,14 @@ func rollbackQueueEntries(maestroDir string, tasks []TaskInput, nameToID map[str
 		return errors.Join(errs...)
 	}
 	return nil
+}
+
+func workerIDsFromAssignMap(assignMap map[string]WorkerAssignment) []string {
+	workerIDs := make([]string, 0, len(assignMap))
+	for _, a := range assignMap {
+		workerIDs = append(workerIDs, a.WorkerID)
+	}
+	return workerIDs
 }
 
 func rollbackPhaseFillState(state *model.CommandState, phaseIdx int, tasks []TaskInput, nameToID map[string]string) {

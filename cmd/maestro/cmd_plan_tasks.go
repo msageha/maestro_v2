@@ -22,7 +22,7 @@ func (a *cliApp) runPlanAddRetryTask(args []string) error {
 	cmd := NewCommand("maestro plan add-retry-task", "maestro plan add-retry-task --command-id <id> --retry-of <task_id> --purpose <text> --content <text> --acceptance-criteria <text> --bloom-level <n> --expected-paths <path> [--expected-paths <path>...] [--max-repair-count <n>] [--max-wall-clock-sec <n>] [--explicit-failure-condition <text>...] [--blocked-by <task_id>]...")
 	var commandID, retryOf, purpose, content, acceptanceCriteria string
 	var bloomLevel, maxRepairCount, maxWallClockSec int
-	var blockedBy, expectedPaths, explicitFailureConditions stringSliceFlag
+	var blockedBy, expectedPaths, definitionOfDone, explicitFailureConditions stringSliceFlag
 
 	cmd.StringVar(&commandID, "command-id", "", "Parent command ID")
 	cmd.StringVar(&retryOf, "retry-of", "", "Task ID of the failed task to retry")
@@ -32,6 +32,7 @@ func (a *cliApp) runPlanAddRetryTask(args []string) error {
 	cmd.IntVar(&bloomLevel, "bloom-level", 0, "Bloom taxonomy level (1-6)")
 	cmd.Var(&blockedBy, "blocked-by", "Task ID dependency (repeatable)")
 	cmd.Var(&expectedPaths, "expected-paths", "Expected file path(s) the task is allowed to modify (repeatable, required by REQUIREMENTS.md §S3-1)")
+	cmd.Var(&definitionOfDone, "definition-of-done", "definition_of_done entry (repeatable; overrides acceptance_criteria as done conditions)")
 	cmd.IntVar(&maxRepairCount, "max-repair-count", dabUnset, "definition_of_abort.max_repair_count (positive integer; omit to inherit model.DefaultDefinitionOfAbort)")
 	cmd.IntVar(&maxWallClockSec, "max-wall-clock-sec", dabUnset, "definition_of_abort.max_wall_clock_sec (positive integer; omit to inherit model.DefaultDefinitionOfAbort)")
 	cmd.Var(&explicitFailureConditions, "explicit-failure-condition", "definition_of_abort.explicit_failure_conditions entry (repeatable)")
@@ -68,6 +69,7 @@ func (a *cliApp) runPlanAddRetryTask(args []string) error {
 			"purpose":             purpose,
 			"content":             content,
 			"acceptance_criteria": acceptanceCriteria,
+			"definition_of_done":  []string(definitionOfDone),
 			"blocked_by":          blockedBy,
 			"bloom_level":         bloomLevel,
 			"expected_paths":      []string(expectedPaths),
@@ -84,7 +86,7 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 	var commandID, purpose, content, acceptanceCriteria, personaHint, workerID, targetPhase, idempotencyKey string
 	var bloomLevel, maxRepairCount, maxWallClockSec int
 	var required, runOnMain, runOnIntegration bool
-	var blockedBy, toolsHint, constraints, skillRefs, expectedPaths, explicitFailureConditions stringSliceFlag
+	var blockedBy, toolsHint, constraints, skillRefs, expectedPaths, definitionOfDone, explicitFailureConditions stringSliceFlag
 
 	cmd.StringVar(&commandID, "command-id", "", "Parent command ID")
 	cmd.StringVar(&purpose, "purpose", "", "Purpose description for the task")
@@ -103,6 +105,7 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 	cmd.StringVar(&targetPhase, "target-phase", "", "Phase ID to place the task in (optional; overrides default phase selection)")
 	cmd.StringVar(&idempotencyKey, "idempotency-key", "", "Idempotency key to prevent duplicate task injection on retry")
 	cmd.Var(&expectedPaths, "expected-paths", "Expected file path(s) the task is allowed to modify (repeatable, required by REQUIREMENTS.md §S3-1)")
+	cmd.Var(&definitionOfDone, "definition-of-done", "definition_of_done entry (repeatable; overrides acceptance_criteria as done conditions)")
 	cmd.IntVar(&maxRepairCount, "max-repair-count", dabUnset, "definition_of_abort.max_repair_count (positive integer; omit to inherit model.DefaultDefinitionOfAbort)")
 	cmd.IntVar(&maxWallClockSec, "max-wall-clock-sec", dabUnset, "definition_of_abort.max_wall_clock_sec (positive integer; omit to inherit model.DefaultDefinitionOfAbort)")
 	cmd.Var(&explicitFailureConditions, "explicit-failure-condition", "definition_of_abort.explicit_failure_conditions entry (repeatable)")
@@ -145,6 +148,7 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 			"purpose":             purpose,
 			"content":             content,
 			"acceptance_criteria": acceptanceCriteria,
+			"definition_of_done":  []string(definitionOfDone),
 			"constraints":         []string(constraints),
 			"blocked_by":          []string(blockedBy),
 			"bloom_level":         bloomLevel,
