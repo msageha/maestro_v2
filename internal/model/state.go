@@ -47,11 +47,10 @@ func (pt *PhaseTracking) PhaseIndex(phaseID string) (int, bool) {
 	return -1, false
 }
 
-// CommandState は単一コマンドの実行状態を表す。
-// プランバージョン、フェーズ構成、タスク依存関係、完了ポリシーなど
-// コマンドのライフサイクル全体を管理する。
-// サブ構造体は yaml:",inline" で埋め込まれ、YAML シリアライゼーションの
-// フラット構造を維持する。
+// CommandState represents the lifecycle state for a single command.
+// It tracks plan versioning, phases, task dependencies, cancellation,
+// circuit-breaker state, and completion policy. Embedded sub-structures use
+// yaml:",inline" to preserve the flat YAML layout.
 type CommandState struct {
 	SchemaVersion    int                 `yaml:"schema_version"`
 	FileType         string              `yaml:"file_type"`
@@ -81,8 +80,8 @@ type CircuitBreakerState struct {
 	HalfOpenProbeActive bool    `yaml:"half_open_probe_active,omitempty"`
 }
 
-// CompletionPolicy はコマンドの完了判定ポリシーを定義する。
-// 必須・任意タスクの失敗時の挙動や依存関係失敗時のポリシーを指定する。
+// CompletionPolicy defines how command completion is evaluated, including
+// required/optional task failure behavior and dependency-failure handling.
 type CompletionPolicy struct {
 	Mode                    string `yaml:"mode"`
 	AllowDynamicTasks       bool   `yaml:"allow_dynamic_tasks"`
@@ -92,7 +91,7 @@ type CompletionPolicy struct {
 	DependencyFailurePolicy string `yaml:"dependency_failure_policy"`
 }
 
-// CancelState はコマンドのキャンセル要求の状態を保持する。
+// CancelState tracks a command cancellation request.
 type CancelState struct {
 	Requested   bool    `yaml:"requested"`
 	RequestedAt *string `yaml:"requested_at"`
@@ -100,8 +99,9 @@ type CancelState struct {
 	Reason      *string `yaml:"reason"`
 }
 
-// Phase はコマンド実行計画内の単一フェーズを表す。
-// タスクのグルーピングと実行順序の制御に使用され、フェーズ間の依存関係を持つ。
+// Phase represents one execution phase in a command plan.
+// It groups tasks, controls execution order, and records inter-phase
+// dependencies.
 type Phase struct {
 	PhaseID          string            `yaml:"phase_id"`
 	Name             string            `yaml:"name"`
@@ -130,8 +130,8 @@ type PhaseInfo struct {
 	SystemCommitTask bool
 }
 
-// PhaseConstraints はフェーズに適用される制約条件を定義する。
-// 最大タスク数、許可される Bloom レベル、タイムアウトを指定する。
+// PhaseConstraints defines limits applied to a phase, including maximum task
+// count, allowed Bloom levels, and timeout.
 type PhaseConstraints struct {
 	MaxTasks           int   `yaml:"max_tasks"`
 	AllowedBloomLevels []int `yaml:"allowed_bloom_levels"`

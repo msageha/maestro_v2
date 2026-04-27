@@ -23,6 +23,12 @@
 
 ---
 
+## 修正対応メモ
+
+2026-04-27 の修正で H-1〜H-7、M-1〜M-3、L-1/L-2/L-3/L-4/L-5 を局所修正済み。Agent 向け日本語エンベロープ文言は出力仕様として残し、`EnvelopeNoneLabel` に集約した。
+
+---
+
 ## High (言語混在等)
 
 ### H-1. internal/daemon/quality_gate.go:17-18
@@ -299,7 +305,7 @@
 | Critical | 0 件 |
 | High | 7 件 (H-1 〜 H-7) |
 | Medium | 3 件 (M-1 〜 M-3) |
-| Low | 5 件 (L-1, L-2, L-4, L-5a, L-5b, L-5c) ※L-3 / L-5d は別計上 |
+| Low | 6 件 (L-1, L-2, L-4, L-5a, L-5b, L-5c) ※L-3 / L-5d は別計上 |
 | 検証時点で解消済み | 0 件 (Read で確認した全 High/Medium 項目は現存) |
 | 未検証 (パス不一致・特定不能) | 2 件 (L-3 resolver.go テンプレ参照 / L-5 TODO 件数の乖離) |
 

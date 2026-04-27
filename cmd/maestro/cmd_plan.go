@@ -29,7 +29,7 @@ const planPhaseFillTimeout = 120 * time.Second
 // runPlan dispatches plan subcommands (submit, complete, add-retry-task, add-task, request-cancel, rebuild).
 func (a *cliApp) runPlan(args []string) error {
 	if len(args) < 1 {
-		return &CLIError{Code: 1, Msg: "maestro plan: missing subcommand\nusage: maestro plan <submit|complete|add-retry-task|add-task|request-cancel|rebuild|unquarantine|resume-merge|retry-publish|resolve-conflict> [options]"}
+		return &CLIError{Code: 1, Msg: "maestro plan: missing subcommand\nusage: maestro plan <submit|complete|add-retry-task|add-task|request-cancel|rebuild|recover|unquarantine|resume-merge|retry-publish|resolve-conflict> [options]"}
 	}
 	switch args[0] {
 	case "submit":
@@ -44,6 +44,8 @@ func (a *cliApp) runPlan(args []string) error {
 		return a.runPlanRequestCancel(args[1:])
 	case "rebuild":
 		return a.runPlanRebuild(args[1:])
+	case "recover":
+		return a.runPlanRecover(args[1:])
 	case "unquarantine":
 		return a.runPlanUnquarantine(args[1:])
 	case "resume-merge":
@@ -53,7 +55,7 @@ func (a *cliApp) runPlan(args []string) error {
 	case "resolve-conflict":
 		return a.runResolveConflict(args[1:])
 	default:
-		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan: unknown subcommand: %s\nusage: maestro plan <submit|complete|add-retry-task|add-task|request-cancel|rebuild|unquarantine|resume-merge|retry-publish|resolve-conflict> [options]", args[0])}
+		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro plan: unknown subcommand: %s\nusage: maestro plan <submit|complete|add-retry-task|add-task|request-cancel|rebuild|recover|unquarantine|resume-merge|retry-publish|resolve-conflict> [options]", args[0])}
 	}
 }
 

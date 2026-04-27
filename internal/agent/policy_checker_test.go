@@ -2352,6 +2352,27 @@ func TestHookScript_WTGIT_NoEnforcementOutsideWorktree(t *testing.T) {
 	}
 }
 
+func TestHookScript_BlocksGitAddAllOutsideWorktree(t *testing.T) {
+	requireJq(t)
+	dir := t.TempDir()
+	pc := NewPolicyChecker(filepath.Join(dir, ".maestro"))
+	scriptPath, err := pc.WriteHookScript()
+	if err != nil {
+		t.Fatalf("WriteHookScript: %v", err)
+	}
+
+	cases := []string{"git add -A", "git add --all", "git add .", "cd sub && git add ."}
+	for _, cmd := range cases {
+		t.Run(cmd, func(t *testing.T) {
+			input := makeBashInput(cmd)
+			output := runHookScriptInDir(t, scriptPath, input, dir)
+			if !strings.Contains(output, "git add all") || !strings.Contains(output, "deny") {
+				t.Fatalf("expected git add all deny for %q, got: %s", cmd, output)
+			}
+		})
+	}
+}
+
 // TestHookScript_WTGIT_FalsePositive_MaestroResultWriteContainingGitInSummary
 // verifies that a `maestro result write` invocation whose --summary value
 // contains git command names (commit/add/merge/...) as plain substrings is

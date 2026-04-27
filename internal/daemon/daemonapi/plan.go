@@ -6,13 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/msageha/maestro_v2/internal/daemon/apipolicy"
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/daemon/worktree"
+	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/plan"
 	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
+	yamlv3 "gopkg.in/yaml.v3"
 )
 
 type validationFormatter interface {
@@ -125,9 +128,15 @@ func (h *Plan) Handle(req *uds.Request) *uds.Response {
 		if resp := apipolicy.RequireCallerRole(req, "plan add_retry_task", uds.RolePlanner, uds.RoleCLI); resp != nil {
 			return resp
 		}
+		if resp := h.rejectPlanMutationWhenQuarantined(params.Operation, params.Data); resp != nil {
+			return resp
+		}
 		result, err = h.executor.AddRetryTask(params.Data)
 	case "add_task":
 		if resp := apipolicy.RequireCallerRole(req, "plan add_task", uds.RolePlanner, uds.RoleCLI); resp != nil {
+			return resp
+		}
+		if resp := h.rejectPlanMutationWhenQuarantined(params.Operation, params.Data); resp != nil {
 			return resp
 		}
 		result, err = h.executor.AddTask(params.Data)
@@ -178,6 +187,40 @@ func (h *Plan) Handle(req *uds.Request) *uds.Response {
 	}
 
 	return &uds.Response{Success: true, Data: result}
+}
+
+func (h *Plan) rejectPlanMutationWhenQuarantined(operation string, data json.RawMessage) *uds.Response {
+	var p struct {
+		CommandID string `json:"command_id"`
+	}
+	if err := json.Unmarshal(data, &p); err != nil {
+		return nil
+	}
+	if p.CommandID == "" {
+		return nil
+	}
+	if err := validate.ID(p.CommandID); err != nil {
+		return nil
+	}
+
+	path := filepath.Join(h.maestroDir, "state", "worktrees", p.CommandID+".yaml")
+	dataBytes, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("read worktree state: %v", err))
+	}
+	var state model.WorktreeCommandState
+	if err := yamlv3.Unmarshal(dataBytes, &state); err != nil {
+		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("parse worktree state: %v", err))
+	}
+	if state.Integration.Status != model.IntegrationStatusQuarantined {
+		return nil
+	}
+	return uds.ErrorResponse(uds.ErrCodeActionRequired,
+		fmt.Sprintf("plan %s rejected: command %s is quarantined; operator unquarantine is required before adding tasks",
+			operation, p.CommandID))
 }
 
 func (h *Plan) handleWorktreeRecovery(operation string, data json.RawMessage) *uds.Response {

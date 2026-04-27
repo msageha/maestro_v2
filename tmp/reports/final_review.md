@@ -2,7 +2,19 @@
 
 統合日: 2026-04-27 / cmd_1777266360_04348655d3e7a8d4 / Worker `worker1` (implementer persona)
 
-本レポートは先行 3 タスクの成果物を構造のみ整えて統合したものである。各セクションの記述は入力ファイルからの引用であり、要約・改変は行っていない。
+本レポートは先行レビュー成果物を統合し、2026-04-27 時点の再確認で見つかった集計・深刻度の整合性修正を反映したものである。
+
+---
+
+## 修正対応サマリ
+
+2026-04-27 の修正で、Critical/High を優先して実装対応し、Medium/Low は安全に局所修正できるものから反映した。
+
+- Critical: `confirmSubmittedOrRetry` の silent success を非 retryable な不確定エラーとして返すよう修正。
+- High: Phase C の Load 失敗時 early return、ResumeMerge の状態遷移エラー伝播と save 確実化、High コメント混在の英語化、`maestro plan recover` 追加、quarantine 中の `add-task` / `add-retry-task` 拒否を実装。
+- Medium/Low: `ensureWorkingDir` 失敗時の tracked cwd リセット、Planner signal retry の cancel 確認、dependency resolver nil 防御、`clearAndConfirm` capture error budget、`--content-file`、Worker hook の `git add -A|--all|.` 拒否、コメント/TODO 整理、`resultWriteError` の root cause unwrap を追加。
+
+大規模ファイル分割や Planner 指令書の全面分割のような構造変更は、挙動変更リスクが高いため今回の局所修正からは外し、実装ガードと CLI 集約で先にリスクを下げた。
 
 ---
 
@@ -10,17 +22,17 @@
 
 | 重点項目 | Critical | High | Medium | Low | 計 |
 |---------|---------:|-----:|-------:|----:|---:|
-| (1) コードコメント | 0 | 7 | 3 | 5 | 15 |
+| (1) コードコメント | 0 | 7 | 3 | 6 | 16 |
 | (2) Agent 責務 | 0 | 3 | 6 | 4 | 13 |
 | (3) 設計整合性 | 0 | 0 | 1 | 6 | 7 |
-| (4) Go コード品質 | 2 | 5 | 11 | 10 | 28 |
-| **計** | **2** | **15** | **21** | **25** | **63** |
+| (4) Go コード品質 | 1 | 3 | 16 | 8 | 28 |
+| **計** | **1** | **13** | **26** | **24** | **64** |
 
 注記:
 - (1) は H-1〜H-7 / M-1〜M-3 / L-1, L-2, L-4, L-5a, L-5b, L-5c を本計上 (L-3 / L-5d は別計上の未検証扱い)。
 - (2) は「該当なし」5 件（観点 2/3 等）を計に含めない。
 - (3) は Critical / High ともに 0 件。Medium 1 件 (commit_failed 通知書式の表現乖離) と Low 6 件のみ。
-- (4) は冗長コード 4 / デッドコード 1 / リファクタリング候補 7 / バグの可能性 16 の合計 28。
+- (4) は冗長コード 4 / デッドコード 1 / リファクタリング候補 7 / バグの可能性 16 の合計 28。4.1 は nil panic ではなく「Load 失敗キューを空として扱う状態反映リスク」として High に補正済み。
 
 ---
 
@@ -317,7 +329,7 @@
 | Critical | 0 件 |
 | High | 7 件 (H-1 〜 H-7) |
 | Medium | 3 件 (M-1 〜 M-3) |
-| Low | 5 件 (L-1, L-2, L-4, L-5a, L-5b, L-5c) ※L-3 / L-5d は別計上 |
+| Low | 6 件 (L-1, L-2, L-4, L-5a, L-5b, L-5c) ※L-3 / L-5d は別計上 |
 | 検証時点で解消済み | 0 件 (Read で確認した全 High/Medium 項目は現存) |
 | 未検証 (パス不一致・特定不能) | 2 件 (L-3 resolver.go テンプレ参照 / L-5 TODO 件数の乖離) |
 
@@ -976,7 +988,7 @@ Critical / High はゼロ。merge_conflict / publish_conflict / circuit_breaker_
 
 ### 4. バグの可能性
 
-#### 4.1 Phase C scan: Load エラー時の zero/nil 値で後続処理続行
+#### 4.1 Phase C scan: Load エラー時に zero 値で後続処理続行
 - **ファイル**: `internal/daemon/queue_scan_phase_c.go:22-50`
 - **関数**: `executeScanPhaseCBody`
 - **現状の概要**:
@@ -990,15 +1002,15 @@ Critical / High はゼロ。merge_conflict / publish_conflict / circuit_breaker_
   signalQueue, signalPath, err := qh.queueStore.LoadPlannerSignalQueue()
   if err != nil { qh.log(...); /* 同上 */ }
   ...
-  signalIndex := buildSignalIndex(signalQueue.Signals) // signalQueue が zero 値で .Signals アクセス
+  signalIndex := buildSignalIndex(signalQueue.Signals) // Load 失敗時は空の signalQueue で処理継続
   qh.applyCancelDispatchAndBusyChecks(..., commandQueue, commandPath, taskQueues, notificationQueue, notificationPath)
   qh.syncIdleAfterPhaseC(commandQueue, taskQueues, notificationQueue)
   ```
 - **問題**:
-  - Load エラー時、戻り値の zero 値 (struct or nil map/slice) で applyCancelDispatch/sync/buildSignalIndex を呼ぶ。`signalQueue.Signals` 等で nil panic の可能性
-  - エラーログのみで `err` を上位に返さない設計のため、復帰判断が呼び出し側にできない
-- **推奨対応**: 各 Load エラーで early return か、zero 値受領時の defensive nil check
-- **深刻度**: Critical (nil panic ルート)
+  - Load エラー時、戻り値の zero 値 (struct / nil map / nil slice) のまま applyCancelDispatch/sync/buildSignalIndex を呼ぶ。Go の nil slice/map range は安全なため `signalQueue.Signals` 自体は panic しないが、キュー内容が「空」として扱われ、dispatch / busy / signal / metrics / dashboard の反映が欠落または誤反映される可能性がある。
+  - エラーログのみで `err` を上位に返さない設計のため、呼び出し側が Phase C を失敗扱いにできない。
+- **推奨対応**: 各 Load エラーで early return し、その scan cycle の apply / metrics / dashboard 更新を中止する。部分継続する場合でも、ロード成功したキューだけを処理対象にする明示的な success flag を持たせる。
+- **深刻度**: High (panic ではなく、失敗キューを空として扱う状態反映リスク)
 
 #### 4.2 confirmSubmittedOrRetry のサイレント失敗
 - **ファイル**: `internal/agent/message_deliverer.go:147-182`
@@ -1011,10 +1023,10 @@ Critical / High はゼロ。merge_conflict / publish_conflict / circuit_breaker_
 #### 4.3 ensureWorkingDir の partial failure による state 不整合
 - **ファイル**: `internal/agent/process_manager.go:84-143`
 - **関数**: `(*processManager) ensureWorkingDir`
-- **現状の概要**: Step 4 (RespawnPane) → Step 5 (ResetClearReady) → Step 6 (Claude relaunch + waitReadyStrict) の各段階で error 時に return するが、paneState (clear_ready_pid, cwd) と実 pane 状態が乖離
-- **問題**: 次回 `detect_restart()` が古い PID と比較して誤検知。`ensure_working_dir()` が cwd 一致と誤判定
-- **推奨対応**: try-finally 形の rollback、または state machine で step 完了状態を track
-- **深刻度**: High (rare だが state corruption)
+- **現状の概要**: `RespawnPane` → `waitForShell` → `ResetClearReady` → Claude relaunch → `waitReadyStrict` → `SetCWD` の段階実行。途中 error 時はその場で return する。
+- **問題**: `RespawnPane` 後かつ `SetCWD` 前に失敗すると、実 pane は新しい workingDir 側へ移動している一方で paneState の `cwd` は旧値のまま残る。次回配送で不要な respawn が再実行される可能性がある。ただし `cwd` が旧値のため「一致と誤判定して配送する」経路ではない。
+- **推奨対応**: step 完了状態を track し、失敗時に paneState を明示的に unknown/dirty 扱いへ更新する。`SetCWD` 失敗は warning のみで握りつぶさず、再同期可能な状態にする。
+- **深刻度**: Medium (state corruption というより再同期不全 / 不要 respawn リスク)
 
 #### 4.4 deliverPlannerSignal の retry ループでの cancel/context 取り扱い
 - **ファイル**: `internal/daemon/queue_dispatch.go:237-274`
@@ -1032,10 +1044,10 @@ Critical / High はゼロ。merge_conflict / publish_conflict / circuit_breaker_
   }
   ```
 - **問題**:
-  - `cancel()` を即時呼び出ししているが defer ではないため、deliverPlannerSignalOnce 内で起動した goroutine が attemptCtx を保持しているとリーク懸念
-  - ループ先頭で `ctx.Err()` 確認なし → 外側 ctx キャンセル直後の attempt 0 でも 1 回試行が走る
-- **推奨対応**: `defer cancel()` をクロージャ内に閉じ込める / ループ先頭で `ctx.Err()` チェック
-- **深刻度**: High
+  - `cancel()` の即時呼び出し自体は timer 解放として妥当だが、panic 時には実行されない。
+  - ループ先頭で `ctx.Err()` 確認がないため、外側 ctx キャンセル直後の attempt 0 でも `deliverPlannerSignalOnce` まで進む。
+- **推奨対応**: ループ先頭で `ctx.Err()` を確認する。panic-safe にするなら attempt 本体を小さなクロージャに閉じ込めて `defer cancel()` するが、通常経路では現在の即時 `cancel()` を遅らせない。
+- **深刻度**: Medium
 
 #### 4.5 dependencyResolver.GetStateManager() の nil 戻り値リスク
 - **ファイル**: `internal/daemon/queue_scan_collect.go:362-365` 付近 (`checkInProgressDependencyFailuresDeferred`)
@@ -1066,13 +1078,13 @@ Critical / High はゼロ。merge_conflict / publish_conflict / circuit_breaker_
 - **推奨対応**: トランザクション的アプローチ (snapshot+rollback)、または saveState を `defer` で確実化
 - **深刻度**: High
 
-#### 4.8 clearAndConfirm の連続キャプチャエラーで無限ループ可能性
+#### 4.8 clearAndConfirm の連続キャプチャエラーで timeout まで待ち続ける
 - **ファイル**: `internal/agent/message_deliverer.go:225-300, 365-399`
 - **関数**: `clearAndConfirm`, `clearConfirmationPoller.poll`
 - **現状の概要**: poll 内のキャプチャエラーは `p.reset()` のみで stableCount を 0 にリセットして続行
-- **問題**: 同じキャプチャエラーが連続発生する状況では timeout まで loop が抜けない
+- **問題**: 同じキャプチャエラーが連続発生する状況では、無限ループではないが timeout まで成功不能な poll を続ける。`ClearMaxAttempts` 分だけ遅延が積み上がる可能性がある。
 - **推奨対応**: 連続 N 回のキャプチャエラーで early abort (max error budget)
-- **深刻度**: High
+- **深刻度**: Medium
 
 #### 4.9 daemon_shutdown.go の defer 順序と goroutine 連携
 - **ファイル**: `internal/daemon/daemon_shutdown.go:44-60`
@@ -1156,18 +1168,18 @@ Critical / High はゼロ。merge_conflict / publish_conflict / circuit_breaker_
 
 | 深刻度 | 件数 | 主な対象 |
 |--------|------|---------|
-| **Critical** | 2 | 4.1 Phase C Load nil panic ルート / 4.2 confirmSubmittedOrRetry silent failure |
-| **High** | 5 | 4.3 ensureWorkingDir state 乖離 / 4.4 deliverPlannerSignal retry / 4.6 リカバリ err 無視 / 4.7 ResumeMerge partial state / 4.8 clear ループ無限化 |
-| **Medium** | 11 | リファクタ候補 6 件、バグ可能性 5 件 |
-| **Low** | 10 | 軽微な冗長・スタイル・nil 経路 |
+| **Critical** | 1 | 4.2 confirmSubmittedOrRetry silent failure |
+| **High** | 3 | 4.1 Phase C Load error 継続 / 4.6 リカバリ err 無視 / 4.7 ResumeMerge partial state |
+| **Medium** | 16 | 冗長コード 2 件、リファクタ候補 6 件、バグ可能性 8 件 |
+| **Low** | 8 | 冗長コード 2 件、デッドコード 1 件、リファクタ候補 1 件、バグ可能性 4 件 |
 
-#### 最優先対応 (Critical/High から)
+#### 最優先対応 (Critical/High 優先、Medium から 1 件補足)
 
-1. `internal/daemon/queue_scan_phase_c.go:22-50` — Load エラー時の zero 値続行を early return か defensive nil-check
-2. `internal/agent/message_deliverer.go:147-182` — confirmSubmittedOrRetry に SubmitProbeResult を導入
-3. `internal/agent/process_manager.go:84-143` — ensureWorkingDir に rollback / try-finally
-4. `internal/daemon/queue_dispatch.go:237-274` — deliverPlannerSignal の defer cancel + ctx.Err() 先頭判定
-5. `internal/daemon/worktree/recover_resume.go:129-193` — リカバリ err の無視を解消、saveState の確実化
+1. `internal/agent/message_deliverer.go:147-182` — confirmSubmittedOrRetry に SubmitProbeResult を導入
+2. `internal/daemon/queue_scan_phase_c.go:22-50` — Load エラー時は early return し、空キュー扱いでの後続反映を止める
+3. `internal/daemon/worktree/recover_resume.go:129-193` — リカバリ err の無視を解消
+4. `internal/daemon/worktree/recover_resume.go:116-143` — ResumeMerge の partial state / saveState 漏れを解消
+5. `internal/agent/process_manager.go:84-143` — ensureWorkingDir の再同期不全リスクを低減 (Medium)
 
 ### エビデンス注記
 
@@ -1204,30 +1216,27 @@ Critical / High はゼロ。merge_conflict / publish_conflict / circuit_breaker_
 
 | 重点項目 | Critical | High | Medium | Low | 計 |
 |---------|---------:|-----:|-------:|----:|---:|
-| (1) コードコメント | 0 | 7 | 3 | 5 | 15 |
+| (1) コードコメント | 0 | 7 | 3 | 6 | 16 |
 | (2) Agent 責務 | 0 | 3 | 6 | 4 | 13 |
 | (3) 設計整合性 | 0 | 0 | 1 | 6 | 7 |
-| (4) Go コード品質 | 2 | 5 | 11 | 10 | 28 |
-| **計** | **2** | **15** | **21** | **25** | **63** |
+| (4) Go コード品質 | 1 | 3 | 16 | 8 | 28 |
+| **計** | **1** | **13** | **26** | **24** | **64** |
 
 ### 最優先対応 (Critical / High 抽出)
 
 | 出典 | ID | 内容 |
 |------|----|------|
-| (4) | 4.1 | `internal/daemon/queue_scan_phase_c.go:22-50` Load エラー時の zero 値続行 → nil panic ルート (Critical) |
 | (4) | 4.2 | `internal/agent/message_deliverer.go:147-182` `confirmSubmittedOrRetry` の silent failure (Critical) |
+| (4) | 4.1 | `internal/daemon/queue_scan_phase_c.go:22-50` Load エラー時の zero 値続行 → 空キュー扱いの状態反映リスク (High) |
 | (1) | H-1〜H-7 | godoc / コメントの日英混在 7 件 (`quality_gate.go`, `queue_scan_helpers.go` x2, `queue_scan_phase_a_worktree_stall.go`, `lock_order_enabled.go`, `model/state.go`, `envelope/envelope.go`) |
 | (2) | 1-1, 4-1, 6-1 | Planner 進行管理ロジックが指令書ナラティブ依存 / recovery 分岐爆発 / `planner.md` 1193 行肥大 — `maestro plan recover` 集約 CLI と planner.md 構造分割でまとめて改善可能 |
-| (4) | 4.3 | `internal/agent/process_manager.go:84-143` `ensureWorkingDir` の partial failure による state 不整合 |
-| (4) | 4.4 | `internal/daemon/queue_dispatch.go:237-274` `deliverPlannerSignal` retry ループの defer cancel / ctx.Err() 先頭判定 |
 | (4) | 4.6 | `internal/daemon/worktree/recover_resume.go:129-193` リカバリ err 無視 |
 | (4) | 4.7 | `internal/daemon/worktree/recover_resume.go:116-143` `ResumeMerge` partial state / saveState 漏れ |
-| (4) | 4.8 | `internal/agent/message_deliverer.go:225-300, 365-399` `clearAndConfirm` 無限ループ可能性 |
 
 ### 整合度総評
 
 - 設計整合性 (V1〜V5) においては Critical / High 0 件。設計意図はおおむね実装と指令書の双方で技術的に強制されている。改善余地は文書整備 (Low 6 件) と `commit_failed` 通知書式の文書統一 (Medium 1 件) に集中。
-- Go コード品質 (Critical 2 / High 5) と Agent 責務の Planner 集中肥大 (High 3) が最優先対応すべき領域。
+- Go コード品質 (Critical 1 / High 3) と Agent 責務の Planner 集中肥大 (High 3) が最優先対応すべき領域。
 - コードコメント品質は High 7 / Medium 3 と件数は多いが、いずれも godoc / コメントの言語ポリシー統一で機械的に解消可能であり、低リスク改善としてまとめて着手しやすい。
 
 ---

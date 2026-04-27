@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/validate"
@@ -19,8 +20,8 @@ const dabUnset = -1
 
 // runPlanAddRetryTask replaces a failed task with a new retry task.
 func (a *cliApp) runPlanAddRetryTask(args []string) error {
-	cmd := NewCommand("maestro plan add-retry-task", "maestro plan add-retry-task --command-id <id> --retry-of <task_id> --purpose <text> --content <text> --acceptance-criteria <text> --bloom-level <n> --expected-paths <path> [--expected-paths <path>...] [--max-repair-count <n>] [--max-wall-clock-sec <n>] [--explicit-failure-condition <text>...] [--blocked-by <task_id>]...")
-	var commandID, retryOf, purpose, content, acceptanceCriteria string
+	cmd := NewCommand("maestro plan add-retry-task", "maestro plan add-retry-task --command-id <id> --retry-of <task_id> --purpose <text> (--content <text>|--content-file <path>) --acceptance-criteria <text> --bloom-level <n> --expected-paths <path> [--expected-paths <path>...] [--max-repair-count <n>] [--max-wall-clock-sec <n>] [--explicit-failure-condition <text>...] [--blocked-by <task_id>]...")
+	var commandID, retryOf, purpose, content, contentFile, acceptanceCriteria string
 	var bloomLevel, maxRepairCount, maxWallClockSec int
 	var blockedBy, expectedPaths, definitionOfDone, explicitFailureConditions stringSliceFlag
 
@@ -28,6 +29,7 @@ func (a *cliApp) runPlanAddRetryTask(args []string) error {
 	cmd.StringVar(&retryOf, "retry-of", "", "Task ID of the failed task to retry")
 	cmd.StringVar(&purpose, "purpose", "", "Purpose description for the retry task")
 	cmd.StringVar(&content, "content", "", "Task content for the retry task")
+	cmd.StringVar(&contentFile, "content-file", "", "Read task content for the retry task from a file")
 	cmd.StringVar(&acceptanceCriteria, "acceptance-criteria", "", "Acceptance criteria for the retry task")
 	cmd.IntVar(&bloomLevel, "bloom-level", 0, "Bloom taxonomy level (1-6)")
 	cmd.Var(&blockedBy, "blocked-by", "Task ID dependency (repeatable)")
@@ -38,10 +40,13 @@ func (a *cliApp) runPlanAddRetryTask(args []string) error {
 	cmd.Var(&explicitFailureConditions, "explicit-failure-condition", "definition_of_abort.explicit_failure_conditions entry (repeatable)")
 
 	cmd.AddCheck("all required flags must be set", func() bool {
-		return commandID != "" && retryOf != "" && purpose != "" && content != "" && acceptanceCriteria != "" && bloomLevel != 0 && len(expectedPaths) > 0
+		return commandID != "" && retryOf != "" && purpose != "" && (content != "" || contentFile != "") && acceptanceCriteria != "" && bloomLevel != 0 && len(expectedPaths) > 0
 	})
 
 	if err := cmd.Parse(args); err != nil {
+		return err
+	}
+	if err := resolveContentFile(cmd, &content, contentFile); err != nil {
 		return err
 	}
 
@@ -82,8 +87,8 @@ func (a *cliApp) runPlanAddRetryTask(args []string) error {
 
 // runPlanAddTask injects a new task into an existing sealed plan.
 func (a *cliApp) runPlanAddTask(args []string) error {
-	cmd := NewCommand("maestro plan add-task", "maestro plan add-task --command-id <id> --purpose <text> --content <text> --acceptance-criteria <text> --bloom-level <n> --expected-paths <path>... [--max-repair-count <n>] [--max-wall-clock-sec <n>] [--explicit-failure-condition <text>...] [--blocked-by <task_id>]... [--required] [--run-on-main]")
-	var commandID, purpose, content, acceptanceCriteria, personaHint, workerID, targetPhase, idempotencyKey string
+	cmd := NewCommand("maestro plan add-task", "maestro plan add-task --command-id <id> --purpose <text> (--content <text>|--content-file <path>) --acceptance-criteria <text> --bloom-level <n> --expected-paths <path>... [--max-repair-count <n>] [--max-wall-clock-sec <n>] [--explicit-failure-condition <text>...] [--blocked-by <task_id>]... [--required] [--run-on-main]")
+	var commandID, purpose, content, contentFile, acceptanceCriteria, personaHint, workerID, targetPhase, idempotencyKey string
 	var bloomLevel, maxRepairCount, maxWallClockSec int
 	var required, runOnMain, runOnIntegration bool
 	var blockedBy, toolsHint, constraints, skillRefs, expectedPaths, definitionOfDone, explicitFailureConditions stringSliceFlag
@@ -91,6 +96,7 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 	cmd.StringVar(&commandID, "command-id", "", "Parent command ID")
 	cmd.StringVar(&purpose, "purpose", "", "Purpose description for the task")
 	cmd.StringVar(&content, "content", "", "Task content")
+	cmd.StringVar(&contentFile, "content-file", "", "Read task content from a file")
 	cmd.StringVar(&acceptanceCriteria, "acceptance-criteria", "", "Acceptance criteria for the task")
 	cmd.IntVar(&bloomLevel, "bloom-level", 0, "Bloom taxonomy level (1-6)")
 	cmd.BoolVar(&required, "required", true, "Whether the task is required for command completion")
@@ -111,10 +117,13 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 	cmd.Var(&explicitFailureConditions, "explicit-failure-condition", "definition_of_abort.explicit_failure_conditions entry (repeatable)")
 
 	cmd.AddCheck("all required flags must be set", func() bool {
-		return commandID != "" && purpose != "" && content != "" && acceptanceCriteria != "" && bloomLevel != 0 && len(expectedPaths) > 0
+		return commandID != "" && purpose != "" && (content != "" || contentFile != "") && acceptanceCriteria != "" && bloomLevel != 0 && len(expectedPaths) > 0
 	})
 
 	if err := cmd.Parse(args); err != nil {
+		return err
+	}
+	if err := resolveContentFile(cmd, &content, contentFile); err != nil {
 		return err
 	}
 
@@ -170,6 +179,23 @@ func (a *cliApp) runPlanAddTask(args []string) error {
 	// PeriodicScan exclusive lock (scanMu), same as plan submit --phase.
 	// Use the extended timeout to avoid spurious timeouts under contention.
 	return a.sendPlanCommand("plan add-task", maestroDir, params, planPhaseFillTimeout)
+}
+
+// resolveContentFile resolves --content-file into content. It rejects mixed
+// sources so the value sent to the daemon has a single obvious origin.
+func resolveContentFile(cmd *CommandBuilder, content *string, contentFile string) error {
+	if contentFile == "" {
+		return nil
+	}
+	if *content != "" {
+		return cmd.Errorf("--content and --content-file are mutually exclusive")
+	}
+	b, err := os.ReadFile(contentFile)
+	if err != nil {
+		return cmd.Errorf("read --content-file: %v", err)
+	}
+	*content = string(b)
+	return nil
 }
 
 // buildDefinitionOfAbort assembles a *model.DefinitionOfAbort from the

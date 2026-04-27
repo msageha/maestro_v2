@@ -6,6 +6,12 @@
 
 ---
 
+## 修正対応メモ
+
+2026-04-27 の修正で 4.1 / 4.2 / 4.6 / 4.7 を実装対応済み。追加で 4.3 / 4.4 / 4.5 / 4.8 / 4.12 / 4.16 と、1.2 / 3.6 の局所リファクタを反映した。大型ファイル分割などの構造変更は別作業向けに残す。
+
+---
+
 ## 1. 冗長コード
 
 ### 1.1 worktree manager のエラーハンドリングパターン重複
@@ -122,7 +128,7 @@
 
 ## 4. バグの可能性
 
-### 4.1 Phase C scan: Load エラー時の zero/nil 値で後続処理続行
+### 4.1 Phase C scan: Load エラー時に zero 値で後続処理続行
 - **ファイル**: `internal/daemon/queue_scan_phase_c.go:22-50`
 - **関数**: `executeScanPhaseCBody`
 - **現状の概要**:
@@ -136,15 +142,15 @@
   signalQueue, signalPath, err := qh.queueStore.LoadPlannerSignalQueue()
   if err != nil { qh.log(...); /* 同上 */ }
   ...
-  signalIndex := buildSignalIndex(signalQueue.Signals) // signalQueue が zero 値で .Signals アクセス
+  signalIndex := buildSignalIndex(signalQueue.Signals) // Load 失敗時は空の signalQueue で処理継続
   qh.applyCancelDispatchAndBusyChecks(..., commandQueue, commandPath, taskQueues, notificationQueue, notificationPath)
   qh.syncIdleAfterPhaseC(commandQueue, taskQueues, notificationQueue)
   ```
 - **問題**:
-  - Load エラー時、戻り値の zero 値 (struct or nil map/slice) で applyCancelDispatch/sync/buildSignalIndex を呼ぶ。`signalQueue.Signals` 等で nil panic の可能性
-  - エラーログのみで `err` を上位に返さない設計のため、復帰判断が呼び出し側にできない
-- **推奨対応**: 各 Load エラーで early return か、zero 値受領時の defensive nil check
-- **深刻度**: Critical (nil panic ルート)
+  - Load エラー時、戻り値の zero 値 (struct / nil map / nil slice) のまま applyCancelDispatch/sync/buildSignalIndex を呼ぶ。Go の nil slice/map range は安全なため `signalQueue.Signals` 自体は panic しないが、キュー内容が「空」として扱われ、dispatch / busy / signal / metrics / dashboard の反映が欠落または誤反映される可能性がある。
+  - エラーログのみで `err` を上位に返さない設計のため、呼び出し側が Phase C を失敗扱いにできない。
+- **推奨対応**: 各 Load エラーで early return し、その scan cycle の apply / metrics / dashboard 更新を中止する。部分継続する場合でも、ロード成功したキューだけを処理対象にする明示的な success flag を持たせる。
+- **深刻度**: High (panic ではなく、失敗キューを空として扱う状態反映リスク)
 
 ### 4.2 confirmSubmittedOrRetry のサイレント失敗
 - **ファイル**: `internal/agent/message_deliverer.go:147-182`
@@ -157,10 +163,10 @@
 ### 4.3 ensureWorkingDir の partial failure による state 不整合
 - **ファイル**: `internal/agent/process_manager.go:84-143`
 - **関数**: `(*processManager) ensureWorkingDir`
-- **現状の概要**: Step 4 (RespawnPane) → Step 5 (ResetClearReady) → Step 6 (Claude relaunch + waitReadyStrict) の各段階で error 時に return するが、paneState (clear_ready_pid, cwd) と実 pane 状態が乖離
-- **問題**: 次回 `detect_restart()` が古い PID と比較して誤検知。`ensure_working_dir()` が cwd 一致と誤判定
-- **推奨対応**: try-finally 形の rollback、または state machine で step 完了状態を track
-- **深刻度**: High (rare だが state corruption)
+- **現状の概要**: `RespawnPane` → `waitForShell` → `ResetClearReady` → Claude relaunch → `waitReadyStrict` → `SetCWD` の段階実行。途中 error 時はその場で return する。
+- **問題**: `RespawnPane` 後かつ `SetCWD` 前に失敗すると、実 pane は新しい workingDir 側へ移動している一方で paneState の `cwd` は旧値のまま残る。次回配送で不要な respawn が再実行される可能性がある。ただし `cwd` が旧値のため「一致と誤判定して配送する」経路ではない。
+- **推奨対応**: step 完了状態を track し、失敗時に paneState を明示的に unknown/dirty 扱いへ更新する。`SetCWD` 失敗は warning のみで握りつぶさず、再同期可能な状態にする。
+- **深刻度**: Medium (state corruption というより再同期不全 / 不要 respawn リスク)
 
 ### 4.4 deliverPlannerSignal の retry ループでの cancel/context 取り扱い
 - **ファイル**: `internal/daemon/queue_dispatch.go:237-274`
@@ -178,10 +184,10 @@
   }
   ```
 - **問題**:
-  - `cancel()` を即時呼び出ししているが defer ではないため、deliverPlannerSignalOnce 内で起動した goroutine が attemptCtx を保持しているとリーク懸念
-  - ループ先頭で `ctx.Err()` 確認なし → 外側 ctx キャンセル直後の attempt 0 でも 1 回試行が走る
-- **推奨対応**: `defer cancel()` をクロージャ内に閉じ込める / ループ先頭で `ctx.Err()` チェック
-- **深刻度**: High
+  - `cancel()` の即時呼び出し自体は timer 解放として妥当だが、panic 時には実行されない。
+  - ループ先頭で `ctx.Err()` 確認がないため、外側 ctx キャンセル直後の attempt 0 でも `deliverPlannerSignalOnce` まで進む。
+- **推奨対応**: ループ先頭で `ctx.Err()` を確認する。panic-safe にするなら attempt 本体を小さなクロージャに閉じ込めて `defer cancel()` するが、通常経路では現在の即時 `cancel()` を遅らせない。
+- **深刻度**: Medium
 
 ### 4.5 dependencyResolver.GetStateManager() の nil 戻り値リスク
 - **ファイル**: `internal/daemon/queue_scan_collect.go:362-365` 付近 (`checkInProgressDependencyFailuresDeferred`)
@@ -212,13 +218,13 @@
 - **推奨対応**: トランザクション的アプローチ (snapshot+rollback)、または saveState を `defer` で確実化
 - **深刻度**: High
 
-### 4.8 clearAndConfirm の連続キャプチャエラーで無限ループ可能性
+### 4.8 clearAndConfirm の連続キャプチャエラーで timeout まで待ち続ける
 - **ファイル**: `internal/agent/message_deliverer.go:225-300, 365-399`
 - **関数**: `clearAndConfirm`, `clearConfirmationPoller.poll`
 - **現状の概要**: poll 内のキャプチャエラーは `p.reset()` のみで stableCount を 0 にリセットして続行
-- **問題**: 同じキャプチャエラーが連続発生する状況では timeout まで loop が抜けない
+- **問題**: 同じキャプチャエラーが連続発生する状況では、無限ループではないが timeout まで成功不能な poll を続ける。`ClearMaxAttempts` 分だけ遅延が積み上がる可能性がある。
 - **推奨対応**: 連続 N 回のキャプチャエラーで early abort (max error budget)
-- **深刻度**: High
+- **深刻度**: Medium
 
 ### 4.9 daemon_shutdown.go の defer 順序と goroutine 連携
 - **ファイル**: `internal/daemon/daemon_shutdown.go:44-60`
@@ -304,18 +310,18 @@
 
 | 深刻度 | 件数 | 主な対象 |
 |--------|------|---------|
-| **Critical** | 2 | 4.1 Phase C Load nil panic ルート / 4.2 confirmSubmittedOrRetry silent failure |
-| **High** | 5 | 4.3 ensureWorkingDir state 乖離 / 4.4 deliverPlannerSignal retry / 4.6 リカバリ err 無視 / 4.7 ResumeMerge partial state / 4.8 clear ループ無限化 |
-| **Medium** | 11 | リファクタ候補 6 件、バグ可能性 5 件 |
-| **Low** | 10 | 軽微な冗長・スタイル・nil 経路 |
+| **Critical** | 1 | 4.2 confirmSubmittedOrRetry silent failure |
+| **High** | 3 | 4.1 Phase C Load error 継続 / 4.6 リカバリ err 無視 / 4.7 ResumeMerge partial state |
+| **Medium** | 16 | 冗長コード 2 件、リファクタ候補 6 件、バグ可能性 8 件 |
+| **Low** | 8 | 冗長コード 2 件、デッドコード 1 件、リファクタ候補 1 件、バグ可能性 4 件 |
 
-### 最優先対応 (Critical/High から)
+### 最優先対応 (Critical/High 優先、Medium から 1 件補足)
 
-1. `internal/daemon/queue_scan_phase_c.go:22-50` — Load エラー時の zero 値続行を early return か defensive nil-check
-2. `internal/agent/message_deliverer.go:147-182` — confirmSubmittedOrRetry に SubmitProbeResult を導入
-3. `internal/agent/process_manager.go:84-143` — ensureWorkingDir に rollback / try-finally
-4. `internal/daemon/queue_dispatch.go:237-274` — deliverPlannerSignal の defer cancel + ctx.Err() 先頭判定
-5. `internal/daemon/worktree/recover_resume.go:129-193` — リカバリ err の無視を解消、saveState の確実化
+1. `internal/agent/message_deliverer.go:147-182` — confirmSubmittedOrRetry に SubmitProbeResult を導入
+2. `internal/daemon/queue_scan_phase_c.go:22-50` — Load エラー時は early return し、空キュー扱いでの後続反映を止める
+3. `internal/daemon/worktree/recover_resume.go:129-193` — リカバリ err の無視を解消
+4. `internal/daemon/worktree/recover_resume.go:116-143` — ResumeMerge の partial state / saveState 漏れを解消
+5. `internal/agent/process_manager.go:84-143` — ensureWorkingDir の再同期不全リスクを低減 (Medium)
 
 ---
 

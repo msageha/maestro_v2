@@ -28,6 +28,10 @@ const (
 	MaxGenericFieldBytes       = 1024 // IDs, status strings in notification envelopes
 )
 
+// EnvelopeNoneLabel is the Japanese "none" label used in agent-facing
+// envelopes. Keep this centralized so future locale changes touch one place.
+const EnvelopeNoneLabel = "なし"
+
 // TruncateUTF8Bytes truncates s to at most maxBytes, cutting at a valid UTF-8
 // rune boundary. If truncation occurs, " [truncated]" is appended.
 // Returns s unchanged if len(s) <= maxBytes or maxBytes <= 0.
@@ -253,7 +257,7 @@ func (tc TruncatedContent) BuildBody() string {
 // The enrichedContent parameter must be a SanitizedContent obtained via
 // NewRawContent(...).Sanitize(), ensuring boundary markers are escaped
 // before envelope construction.
-// Format matches spec §5.8.1 Worker 向けタスク配信エンベロープ.
+// Format matches spec §5.8.1 (Worker task envelope).
 func BuildWorkerEnvelope(task model.Task, enrichedContent SanitizedContent, workerID string, leaseEpoch, attempt int) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "[maestro] task_id:%s command_id:%s lease_epoch:%d attempt:%d\n",
@@ -266,7 +270,7 @@ func BuildWorkerEnvelope(task model.Task, enrichedContent SanitizedContent, work
 	// reach the agent intact. See SanitizeEnvelopeBody for the defence model.
 	fmt.Fprintf(&sb, "content: %s\n", enrichedContent.Truncate(MaxContentBytes).BuildBody())
 	fmt.Fprintf(&sb, "acceptance_criteria: %s\n", sanitizeBodyField(task.AcceptanceCriteria, MaxAcceptanceCriteriaBytes))
-	constraintsStr := "なし"
+	constraintsStr := EnvelopeNoneLabel
 	if len(task.Constraints) > 0 {
 		sanitized := make([]string, len(task.Constraints))
 		for i, c := range task.Constraints {
@@ -275,7 +279,7 @@ func BuildWorkerEnvelope(task model.Task, enrichedContent SanitizedContent, work
 		constraintsStr = strings.Join(sanitized, ", ")
 	}
 	fmt.Fprintf(&sb, "constraints: %s\n", constraintsStr)
-	toolsHintStr := "なし"
+	toolsHintStr := EnvelopeNoneLabel
 	if len(task.ToolsHint) > 0 {
 		sanitizedHints := make([]string, len(task.ToolsHint))
 		for i, h := range task.ToolsHint {
@@ -284,12 +288,12 @@ func BuildWorkerEnvelope(task model.Task, enrichedContent SanitizedContent, work
 		toolsHintStr = strings.Join(sanitizedHints, ", ")
 	}
 	fmt.Fprintf(&sb, "tools_hint: %s\n", toolsHintStr)
-	personaHintStr := "なし"
+	personaHintStr := EnvelopeNoneLabel
 	if task.PersonaHint != "" {
 		personaHintStr = sanitizeBodyField(task.PersonaHint, MaxPersonaHintBytes)
 	}
 	fmt.Fprintf(&sb, "persona_hint: %s\n", personaHintStr)
-	skillRefsStr := "なし"
+	skillRefsStr := EnvelopeNoneLabel
 	if len(task.SkillRefs) > 0 {
 		sanitizedRefs := make([]string, len(task.SkillRefs))
 		for i, r := range task.SkillRefs {
@@ -308,7 +312,7 @@ func BuildWorkerEnvelope(task model.Task, enrichedContent SanitizedContent, work
 // BuildPlannerEnvelope creates the delivery envelope for a Planner command.
 // The enrichedContent parameter must be a SanitizedContent obtained via
 // NewRawContent(...).Sanitize(), ensuring boundary markers are escaped.
-// Format matches spec §5.8.1 Planner 向けコマンド配信エンベロープ.
+// Format matches spec §5.8.1 (Planner command envelope).
 func BuildPlannerEnvelope(cmd model.Command, enrichedContent SanitizedContent, leaseEpoch, attempt int) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "[maestro] command_id:%s lease_epoch:%d attempt:%d\n",
@@ -322,7 +326,7 @@ func BuildPlannerEnvelope(cmd model.Command, enrichedContent SanitizedContent, l
 }
 
 // BuildOrchestratorNotificationEnvelope creates the envelope for an Orchestrator notification.
-// Format matches spec §5.8.1 Orchestrator 向け通知配信エンベロープ.
+// Format matches spec §5.8.1 (Orchestrator notification envelope).
 func BuildOrchestratorNotificationEnvelope(commandID string, notificationType model.NotificationType) string {
 	terminalStatus := mapNotificationTypeToStatus(notificationType)
 	return fmt.Sprintf("[maestro] kind:%s command_id:%s status:%s\nresults/planner.yaml を確認してください",

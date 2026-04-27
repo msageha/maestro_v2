@@ -22,14 +22,28 @@ func (qh *QueueHandler) executeScanPhaseCBody(se *ScanPhaseExecutor, pa phaseARe
 	commandQueue, commandPath, err := qh.queueStore.LoadCommandQueue()
 	if err != nil {
 		qh.log(LogLevelError, "phase_c_load_command_queue error=%v", err)
+		return nil
 	}
 	taskQueues, err := qh.queueStore.LoadAllTaskQueues()
 	if err != nil {
 		qh.log(LogLevelError, "phase_c_load_task_queues error=%v", err)
+		return nil
 	}
 	notificationQueue, notificationPath, err := qh.queueStore.LoadNotificationQueue()
 	if err != nil {
 		qh.log(LogLevelError, "phase_c_load_notification_queue error=%v", err)
+		return nil
+	}
+
+	hasSignalWork := len(pb.worktreeMerges) > 0 || len(pb.worktreePublishes) > 0 || len(pb.signals) > 0
+	var signalQueue model.PlannerSignalQueue
+	var signalPath string
+	if hasSignalWork {
+		signalQueue, signalPath, err = qh.queueStore.LoadPlannerSignalQueue()
+		if err != nil {
+			qh.log(LogLevelError, "phase_c_load_signal_queue error=%v", err)
+			return nil
+		}
 	}
 
 	// --- Apply cancel marks + dispatch + busy check results (single load/flush) ---
@@ -42,12 +56,7 @@ func (qh *QueueHandler) executeScanPhaseCBody(se *ScanPhaseExecutor, pa phaseARe
 	qh.syncIdleAfterPhaseC(commandQueue, taskQueues, notificationQueue)
 
 	// --- Apply worktree merge, publish, and signal delivery results (single load/flush) ---
-	hasSignalWork := len(pb.worktreeMerges) > 0 || len(pb.worktreePublishes) > 0 || len(pb.signals) > 0
 	if hasSignalWork {
-		signalQueue, signalPath, err := qh.queueStore.LoadPlannerSignalQueue()
-		if err != nil {
-			qh.log(LogLevelError, "phase_c_load_signal_queue error=%v", err)
-		}
 		signalsDirty := false
 		signalIndex := buildSignalIndex(signalQueue.Signals)
 		now := qh.clock.Now().UTC().Format(time.RFC3339)
@@ -96,13 +105,7 @@ func (qh *QueueHandler) applyCancelDispatchAndBusyChecks(
 					m.QueueFile, m.TaskID)
 				continue
 			}
-			var target *model.Task
-			for i := range tq.Queue.Tasks {
-				if tq.Queue.Tasks[i].ID == m.TaskID {
-					target = &tq.Queue.Tasks[i]
-					break
-				}
-			}
+			target := findTaskInQueue(tq, m.TaskID)
 			if target == nil {
 				qh.log(LogLevelInfo, "cancel_mark_skip_missing_task task=%s", m.TaskID)
 				continue
@@ -152,6 +155,18 @@ func (qh *QueueHandler) applyCancelDispatchAndBusyChecks(
 	for wID, results := range syntheticByWorker {
 		qh.cancelHandler.WriteSyntheticResults(results, wID)
 	}
+}
+
+func findTaskInQueue(tq *taskQueueEntry, taskID string) *model.Task {
+	if tq == nil {
+		return nil
+	}
+	for i := range tq.Queue.Tasks {
+		if tq.Queue.Tasks[i].ID == taskID {
+			return &tq.Queue.Tasks[i]
+		}
+	}
+	return nil
 }
 
 // applyWorktreeResultSignals processes worktree merge results and publish
@@ -267,22 +282,7 @@ func (qh *QueueHandler) applyMergeResultSignals(
 				continue
 			}
 			status := cmdState.Integration.Status
-			// Only two statuses are safe to mark-as-merged:
-			//   - Merged: this phase merge attempt produced new commits
-			//     successfully, or a previous phase had already merged and this
-			//     phase was a no-op on top of it (determineMergeOutcome reverts
-			//     to preMergeStatus on no-op; preMergeStatus=Merged when a
-			//     prior phase has already merged).
-			//   - Created: this is the first merge attempt for the command and
-			//     it produced no commits to merge (no-op on a research-only
-			//     phase whose tasks had no edits). preMergeStatus=Created.
-			//
-			// Any other status (PartialMerge, Conflict, Failed, Quarantined,
-			// etc.) means the integration is NOT in a state where marking the
-			// phase merged is safe: a conflict/failure must be resolved first.
-			// Defer so the phase transition gate (isPhaseMergeRecorded) keeps
-			// blocking downstream phases until the integration catches up.
-			if status != model.IntegrationStatusMerged && status != model.IntegrationStatusCreated {
+			if !isStatusSafeForMarkMerged(status) {
 				qh.log(LogLevelDebug,
 					"mark_phase_merged_deferred command=%s phase=%s integration_status=%s reason=status_not_markable",
 					mr.Item.CommandID, mr.Item.PhaseID, status)
@@ -299,6 +299,13 @@ func (qh *QueueHandler) applyMergeResultSignals(
 			}
 		}
 	}
+}
+
+func isStatusSafeForMarkMerged(status model.IntegrationStatus) bool {
+	// Merged means the phase produced new commits, or a no-op phase ran after
+	// an earlier phase had already merged. Created means the first phase was a
+	// no-op. Other statuses require recovery before downstream phases proceed.
+	return status == model.IntegrationStatusMerged || status == model.IntegrationStatusCreated
 }
 
 // applyPublishResultSignals emits publish_completed or publish_failed signals

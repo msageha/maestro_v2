@@ -87,6 +87,11 @@ func (m *paneStateManager) SetCWD(paneTarget, cwd string) error {
 	return m.paneIO.SetUserVar(paneTarget, "cwd", cwd)
 }
 
+// ResetCWD clears the @cwd tracking variable so the next delivery re-syncs.
+func (m *paneStateManager) ResetCWD(paneTarget string) error {
+	return m.paneIO.SetUserVar(paneTarget, "cwd", "")
+}
+
 // GetCWD returns the current tracked working directory.
 func (m *paneStateManager) GetCWD(paneTarget string) string {
 	v, _ := m.paneIO.GetUserVar(paneTarget, "cwd")

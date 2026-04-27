@@ -241,6 +241,9 @@ func (qh *QueueHandler) deliverPlannerSignal(ctx context.Context, commandID, mes
 
 	var lastErr error
 	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("signal delivery cancelled: %w", err)
+		}
 		if attempt > 0 {
 			if errors.Is(lastErr, agent.ErrAgentBusy) {
 				// Agent is actively processing — normal state, retry quietly
@@ -258,8 +261,10 @@ func (qh *QueueHandler) deliverPlannerSignal(ctx context.Context, commandID, mes
 		}
 
 		attemptCtx, cancel := context.WithTimeout(ctx, attemptTimeout)
-		err := qh.deliverPlannerSignalOnce(attemptCtx, commandID, message)
-		cancel()
+		err := func() error {
+			defer cancel()
+			return qh.deliverPlannerSignalOnce(attemptCtx, commandID, message)
+		}()
 
 		if err == nil {
 			if attempt > 0 {

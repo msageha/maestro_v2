@@ -122,8 +122,8 @@ func (wm *Manager) commandLock(commandID string) *sync.Mutex {
 //
 // Lifecycle note: for the standard task_merge_conflict path, the worker edits
 // conflict files in place inside its own worker worktree (see
-// templates/instructions/planner.md §"merge_conflict 解決の設計原則" and
-// templates/instructions/worker.md §"Worktree モード時"). After the worker
+// templates/instructions/planner.md conflict recovery rules and
+// templates/instructions/worker.md worktree-mode rules). After the worker
 // reports the resolution task as completed, the daemon's
 // AutoRecoverAfterResolution hook (see result_write_handler.go
 // "Post-completion auto-recovery hook") fires ResumeMerge automatically — the

@@ -182,6 +182,34 @@ func (a *cliApp) runPlanResumeMerge(args []string) error {
 	return a.sendPlanCommand("plan resume-merge", maestroDir, params, planCommandTimeout)
 }
 
+// runPlanRecover asks the daemon to choose the appropriate recovery action for
+// the command's current worktree integration state.
+func (a *cliApp) runPlanRecover(args []string) error {
+	cmd := NewCommand("maestro plan recover", "maestro plan recover --command-id <id>")
+	var commandID string
+	cmd.RequiredString(&commandID, "command-id", "Command ID to recover")
+
+	if err := cmd.Parse(args); err != nil {
+		return err
+	}
+	if err := validate.ID(commandID); err != nil {
+		return cmd.Errorf("invalid --command-id: %v", err)
+	}
+
+	maestroDir, err := requireMaestroDir("plan recover")
+	if err != nil {
+		return err
+	}
+
+	params := map[string]any{
+		"operation": "auto_recover",
+		"data": map[string]any{
+			"command_id": commandID,
+		},
+	}
+	return a.sendPlanCommand("plan recover", maestroDir, params, planCommandTimeout)
+}
+
 // runPlanRetryPublish resets publish failure state and transitions the
 // integration back to merged so the next scan re-attempts publish-to-base.
 func (a *cliApp) runPlanRetryPublish(args []string) error {

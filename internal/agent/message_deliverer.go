@@ -57,7 +57,26 @@ const (
 	// case where Claude Code has wrapped the placeholder onto a couple of
 	// lines plus trailing UI chrome.
 	submitPromptSearchLines = 8
+	// maxClearConfirmCaptureErrors aborts a /clear confirmation attempt when
+	// tmux capture repeatedly fails; continuing until timeout cannot confirm
+	// success and only delays the next recovery action.
+	maxClearConfirmCaptureErrors = 3
 )
+
+type submitProbeStatus string
+
+const (
+	submitProbeNotNeeded     submitProbeStatus = "not_needed"
+	submitProbeConfirmed     submitProbeStatus = "confirmed"
+	submitProbeRetried       submitProbeStatus = "retried"
+	submitProbeCaptureFailed submitProbeStatus = "capture_failed"
+	submitProbeExhausted     submitProbeStatus = "exhausted"
+)
+
+type submitProbeResult struct {
+	Status   submitProbeStatus
+	Attempts int
+}
 
 func newMessageDeliverer(paneIO PaneIO, paneState *paneStateManager, cfg *model.WatcherConfig, execCfg ExecutorConfig, logger *log.Logger, ll logLevel) *messageDeliverer {
 	return &messageDeliverer{
@@ -123,10 +142,17 @@ func (d *messageDeliverer) sendAndConfirm(req ExecRequest, paneTarget string) Ex
 			req.AgentID, req.TaskID, err)
 		return ExecResult{Error: fmt.Errorf("send message: %w", err), Retryable: true}
 	}
-	if err := d.confirmSubmittedOrRetry(ctx, paneTarget, req); err != nil {
+	probe, err := d.confirmSubmittedOrRetry(ctx, paneTarget, req)
+	if err != nil {
 		d.log(logLevelError, "delivery_error agent_id=%s task_id=%s error=submit_confirm: %v",
 			req.AgentID, req.TaskID, err)
 		return ExecResult{Error: fmt.Errorf("confirm submitted: %w", err), Retryable: true}
+	}
+	if probe.Uncertain() {
+		err := fmt.Errorf("%w: status=%s attempts=%d", ErrSubmitConfirmUncertain, probe.Status, probe.Attempts)
+		d.log(logLevelWarn, "delivery_submit_unconfirmed agent_id=%s task_id=%s command_id=%s status=%s attempts=%d (non-retryable to avoid duplicate submit)",
+			req.AgentID, req.TaskID, req.CommandID, probe.Status, probe.Attempts)
+		return ExecResult{Error: err, Retryable: false}
 	}
 
 	// Update @status to busy. This is a best-effort post-delivery hint used by
@@ -144,30 +170,40 @@ func (d *messageDeliverer) sendAndConfirm(req ExecRequest, paneTarget string) Ex
 	return ExecResult{Success: true}
 }
 
-func (d *messageDeliverer) confirmSubmittedOrRetry(ctx context.Context, paneTarget string, req ExecRequest) error {
+func (r submitProbeResult) Uncertain() bool {
+	return r.Status == submitProbeCaptureFailed || r.Status == submitProbeExhausted
+}
+
+func (d *messageDeliverer) confirmSubmittedOrRetry(ctx context.Context, paneTarget string, req ExecRequest) (submitProbeResult, error) {
 	if !needsSubmitConfirmation(req.Message) {
-		return nil
+		return submitProbeResult{Status: submitProbeNotNeeded}, nil
 	}
+	retried := false
 	for attempt := 1; attempt <= maxSubmitProbeAttempts; attempt++ {
 		if err := sleepCtx(ctx, submitRetryProbeDelay); err != nil {
-			return fmt.Errorf("wait for submit probe: %w", err)
+			return submitProbeResult{Status: submitProbeExhausted, Attempts: attempt - 1}, fmt.Errorf("wait for submit probe: %w", err)
 		}
 		content, err := d.paneIO.CapturePaneJoined(paneTarget, d.execCfg.PromptReadyLines)
 		if err != nil {
 			d.log(logLevelWarn, "submit_confirm capture_failed agent_id=%s task_id=%s error=%v",
 				req.AgentID, req.TaskID, err)
-			return nil
+			return submitProbeResult{Status: submitProbeCaptureFailed, Attempts: attempt}, nil
 		}
 		if pastedTextPlaceholderAtPrompt(content) {
 			d.log(logLevelWarn, "submit_confirm pasted_text_still_at_prompt agent_id=%s task_id=%s attempt=%d/%d",
 				req.AgentID, req.TaskID, attempt, maxSubmitProbeAttempts)
 			if err := d.paneIO.SendKeys(paneTarget, "Enter"); err != nil {
-				return fmt.Errorf("send retry enter: %w", err)
+				return submitProbeResult{Status: submitProbeRetried, Attempts: attempt}, fmt.Errorf("send retry enter: %w", err)
 			}
+			retried = true
 			continue
 		}
 		if submittedActivityVisible(content) {
-			return nil
+			status := submitProbeConfirmed
+			if retried {
+				status = submitProbeRetried
+			}
+			return submitProbeResult{Status: status, Attempts: attempt}, nil
 		}
 	}
 	// F-016: probe budget exhausted without seeing either the pasted-text
@@ -176,9 +212,9 @@ func (d *messageDeliverer) confirmSubmittedOrRetry(ctx context.Context, paneTarg
 	// envelope risks double plan_submit (Bug L). Surface the situation as a
 	// warn so operators can correlate post-hoc with worker progress.
 	d.log(logLevelWarn,
-		"submit_confirm probe_budget_exhausted agent_id=%s task_id=%s attempts=%d (no error returned to avoid double-submit; check worker progress manually if stalled)",
+		"submit_confirm probe_budget_exhausted agent_id=%s task_id=%s attempts=%d (non-retryable error returned to avoid double-submit; check worker progress manually if stalled)",
 		req.AgentID, req.TaskID, maxSubmitProbeAttempts)
-	return nil
+	return submitProbeResult{Status: submitProbeExhausted, Attempts: maxSubmitProbeAttempts}, nil
 }
 
 func needsSubmitConfirmation(message string) bool {
@@ -324,9 +360,10 @@ type clearConfirmationPoller struct {
 	logLevel          logLevel
 
 	// internal state
-	stableCount  int
-	hashChanged  bool
-	prevPollHash string
+	stableCount              int
+	hashChanged              bool
+	prevPollHash             string
+	consecutiveCaptureErrors int
 }
 
 func newClearConfirmationPoller(
@@ -354,7 +391,11 @@ func (p *clearConfirmationPoller) pollUntilTimeout(ctx context.Context, timeout,
 			return false, fmt.Errorf("clear_confirm poll cancelled: %w", err)
 		}
 
-		if p.poll() {
+		confirmed, err := p.poll()
+		if err != nil {
+			return false, err
+		}
+		if confirmed {
 			return true, nil
 		}
 	}
@@ -364,13 +405,18 @@ func (p *clearConfirmationPoller) pollUntilTimeout(ctx context.Context, timeout,
 
 // poll captures the current pane state and evaluates confirmation criteria.
 // Returns true if /clear has been confirmed processed.
-func (p *clearConfirmationPoller) poll() bool {
+func (p *clearConfirmationPoller) poll() (bool, error) {
 	content, err := p.paneIO.CapturePaneJoined(p.paneTarget, p.promptReadyLines)
 	if err != nil {
+		p.consecutiveCaptureErrors++
 		p.log(logLevelDebug, "clear_confirm poll capture error=%v", err)
 		p.reset()
-		return false
+		if p.consecutiveCaptureErrors >= maxClearConfirmCaptureErrors {
+			return false, fmt.Errorf("clear_confirm: capture failed %d consecutive times: %w", p.consecutiveCaptureErrors, err)
+		}
+		return false, nil
 	}
+	p.consecutiveCaptureErrors = 0
 
 	currentHash := contentHash(content)
 
@@ -379,7 +425,7 @@ func (p *clearConfirmationPoller) poll() bool {
 		p.log(logLevelDebug, "clear_confirm /clear text still visible")
 		p.stableCount = 0
 		p.prevPollHash = currentHash
-		return false
+		return false, nil
 	}
 
 	// Check 2 (mandatory when valid): hash must differ from pre-clear state.
@@ -395,7 +441,7 @@ func (p *clearConfirmationPoller) poll() bool {
 	}
 	p.prevPollHash = currentHash
 
-	return p.isConfirmed()
+	return p.isConfirmed(), nil
 }
 
 // isConfirmed evaluates whether the confirmation criteria are met.

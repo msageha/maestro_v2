@@ -258,7 +258,9 @@ func (bd *busyDetector) softRetryUndecided(ctx context.Context, paneTarget, agen
 			// Context cancelled during soft-retry sleep. Return VerdictBusy so
 			// the caller propagates a retryable "busy" error rather than
 			// surfacing VerdictUndecided ("undecided_after_probes") in normal
-			// delivery flows where the context simply timed out.
+			// delivery flows where the context simply timed out. Shutdown and
+			// delivery timeouts share this ctx in this layer, so cancellation is
+			// treated as a conservative fail-closed busy verdict.
 			bd.log("undecided_soft_retry sleep cancelled: %v → treating as busy", err)
 			return VerdictBusy
 		}

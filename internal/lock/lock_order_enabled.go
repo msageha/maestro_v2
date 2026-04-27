@@ -159,27 +159,22 @@ func (c *debugOrderChecker) violate(msg string) {
 
 // currentGID extracts the goroutine ID from a runtime.Stack snapshot.
 //
-// ⚠ Go バージョン依存リスク:
+// Caveat: runtime.Stack's leading line ("goroutine <id> [<status>]:") is an
+// implementation detail, not a Go language or standard-library compatibility
+// guarantee. It has been stable throughout Go 1.x, but a future release could
+// change the format.
 //
-// runtime.Stack() の出力形式 "goroutine <id> [<status>]:\n..." は Go の公式仕様
-// (言語仕様・標準ライブラリのドキュメント) で保証されていない実装詳細である。
-// Go 1.0 以降 Go 1.x 系では事実上安定しているが、将来のバージョン（特にメジャー
-// バージョン変更時）に形式が変更される可能性がある。
+// Impact: a parse failure returns 0 and effectively disables lock-order
+// checking for that goroutine. This affects only lockorder-tagged debug builds;
+// production builds do not include this code.
 //
-// 変更時の影響: goroutine ID の取得に失敗し 0 が返る → lock ordering 検出が
-// 事実上無効化される（ただし lockorder ビルドタグ有効時のデバッグ機能のみに
-// 影響し、本番動作には影響しない）。
+// Alternatives considered:
+//   - runtime.GoID(): proposed but not accepted by the Go team.
+//   - Goroutine-local storage libraries such as github.com/petermattis/goid.
+//   - A different caller identity scheme in the mutex wrapper.
 //
-// 代替手段の候補:
-//   - runtime.GoID(): Go チームで提案中だが未採用 (proposal #69321 等)
-//   - goroutine-local storage ライブラリ (github.com/petermattis/goid 等)
-//   - sync.Mutex のラッパーで caller の識別に別手法を使用
-//
-// 現時点での許容判断:
-//   - Go 1.x 系では形式が安定しており実績がある
-//   - lockorder ビルドタグによるデバッグ専用コードであり本番には含まれない
-//   - パース失敗時は 0 を返して安全に縮退する (lock order 検出をスキップ)
-//   - Go バージョンアップ時のテスト (go test -tags lockorder) で形式変更を検出可能
+// This is acceptable because the checker is debug-only, fails closed by
+// skipping detection, and go test -tags lockorder catches format drift.
 func currentGID() uint64 {
 	var buf [64]byte
 	n := runtime.Stack(buf[:], false) // "goroutine 123 [running]:\n..."

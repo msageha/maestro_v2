@@ -6,28 +6,28 @@ import (
 	"time"
 )
 
-// FitnessScore はタスク実行結果の機械的評価スコアを表す。
-// 辞書式順序で比較され、候補の勝敗判定に使用される。
+// FitnessScore is the mechanical evaluation score for a task result.
+// Scores are compared lexicographically to select the best candidate.
 type FitnessScore struct {
 	Passed           bool
 	RepairCount      int
 	DiffFilesChanged int
 	DiffLinesChanged int
-	PathDeviation    bool // expected_paths からの逸脱有無
+	PathDeviation    bool // whether changes deviated from expected_paths
 	ExecutionTime    time.Duration
-	QualityScore     float64 // C-1: 0.0-1.0, 静的解析ベース (lint警告数, 循環的複雑度)
+	QualityScore     float64 // C-1: 0.0-1.0, based on static analysis metrics
 }
 
-// FitnessThresholds は Fitness 比較時のマージン閾値を定義する。
-// 各軸の差がマージン以内であれば同等と見なす。
+// FitnessThresholds defines per-axis margins for FitnessScore comparisons.
+// Axis differences within the margin are treated as equivalent.
 type FitnessThresholds struct {
 	RepairCountMargin   int
 	DiffSizeMargin      int
 	ExecutionTimeMargin time.Duration
-	QualityScoreMargin  float64 // C-1: QualityScore 差のマージン
+	QualityScoreMargin  float64 // C-1: margin for QualityScore differences
 }
 
-// DefaultFitnessThresholds はデフォルトの閾値を返す。
+// DefaultFitnessThresholds returns the default FitnessScore comparison margins.
 func DefaultFitnessThresholds() FitnessThresholds {
 	return FitnessThresholds{
 		RepairCountMargin:   0,
@@ -37,15 +37,15 @@ func DefaultFitnessThresholds() FitnessThresholds {
 	}
 }
 
-// IsFailed は Passed が false かどうかを返す。
+// IsFailed reports whether the score failed the primary pass/fail axis.
 func (a FitnessScore) IsFailed() bool {
 	return !a.Passed
 }
 
-// Compare は a と b を辞書式4軸で比較する。
-// a が勝ちなら -1、b が勝ちなら +1、同等なら 0 を返す。
+// Compare compares a and b lexicographically across the configured axes.
+// It returns -1 when a wins, +1 when b wins, and 0 when they are equivalent.
 func (a FitnessScore) Compare(b FitnessScore, th FitnessThresholds) int {
-	// 軸1: Pass / Fail
+	// Axis 1: Pass / Fail
 	if a.Passed != b.Passed {
 		if a.Passed {
 			return -1
@@ -53,7 +53,7 @@ func (a FitnessScore) Compare(b FitnessScore, th FitnessThresholds) int {
 		return 1
 	}
 
-	// 軸2: RepairCount（少ない方が勝ち）
+	// Axis 2: RepairCount (lower wins)
 	repairDiff := a.RepairCount - b.RepairCount
 	if abs(repairDiff) > th.RepairCountMargin {
 		if repairDiff < 0 {
@@ -62,7 +62,7 @@ func (a FitnessScore) Compare(b FitnessScore, th FitnessThresholds) int {
 		return 1
 	}
 
-	// 軸3: PathDeviation（逸脱なしが勝ち）
+	// Axis 3: PathDeviation (no deviation wins)
 	if a.PathDeviation != b.PathDeviation {
 		if !a.PathDeviation {
 			return -1
@@ -70,7 +70,7 @@ func (a FitnessScore) Compare(b FitnessScore, th FitnessThresholds) int {
 		return 1
 	}
 
-	// 軸4: DiffLinesChanged（少ない方が勝ち）
+	// Axis 4: DiffLinesChanged (lower wins)
 	diffLinesDiff := a.DiffLinesChanged - b.DiffLinesChanged
 	if abs(diffLinesDiff) > th.DiffSizeMargin {
 		if diffLinesDiff < 0 {
@@ -79,7 +79,7 @@ func (a FitnessScore) Compare(b FitnessScore, th FitnessThresholds) int {
 		return 1
 	}
 
-	// 軸5: ExecutionTime（短い方が勝ち）
+	// Axis 5: ExecutionTime (shorter wins)
 	timeDiff := a.ExecutionTime - b.ExecutionTime
 	if timeDiff < 0 {
 		timeDiff = -timeDiff
@@ -91,7 +91,7 @@ func (a FitnessScore) Compare(b FitnessScore, th FitnessThresholds) int {
 		return 1
 	}
 
-	// 軸6: QualityScore（高い方が勝ち、C-1 静的解析ベース）
+	// Axis 6: QualityScore (higher wins, C-1 static-analysis based)
 	qualDiff := a.QualityScore - b.QualityScore
 	if qualDiff < 0 {
 		qualDiff = -qualDiff
@@ -106,9 +106,9 @@ func (a FitnessScore) Compare(b FitnessScore, th FitnessThresholds) int {
 	return 0
 }
 
-// SelectWinner は候補群から勝者インデックスを返す。
-// 全候補が同等の場合は isTie=true, winnerIndex=0 を返す。
-// 空の候補群の場合は winnerIndex=-1, isTie=false を返す。
+// SelectWinner returns the winning candidate index.
+// If all candidates are equivalent, it returns isTie=true and winnerIndex=0.
+// For an empty candidate set, it returns winnerIndex=-1 and isTie=false.
 func SelectWinner(candidates []FitnessScore, th FitnessThresholds) (winnerIndex int, isTie bool) {
 	if len(candidates) == 0 {
 		return -1, false
@@ -123,11 +123,11 @@ func SelectWinner(candidates []FitnessScore, th FitnessThresholds) (winnerIndex 
 	for i := 1; i < len(candidates); i++ {
 		cmp := candidates[best].Compare(candidates[i], th)
 		if cmp > 0 {
-			// candidates[i] が勝ち
+			// candidates[i] wins.
 			best = i
 			allTie = false
 		} else if cmp < 0 {
-			// candidates[best] が勝ち
+			// candidates[best] wins.
 			allTie = false
 		}
 	}
@@ -136,15 +136,16 @@ func SelectWinner(candidates []FitnessScore, th FitnessThresholds) (winnerIndex 
 		return 0, true
 	}
 
-	// best が本当に全候補に対して勝ちまたは同等かを再検証
+	// Re-check that best wins or ties against every candidate.
 	for i := 0; i < len(candidates); i++ {
 		if i == best {
 			continue
 		}
 		cmp := candidates[best].Compare(candidates[i], th)
 		if cmp > 0 {
-			// best より強い候補がある → トーナメント結果と矛盾
-			// 推移律が成立するため本来起こらないが安全策
+			// Per-axis margin comparisons are non-strict, so boundary inputs
+			// can break transitivity. Treat the inconsistency as a tie instead
+			// of panicking and let the judge resolve it.
 			return 0, true
 		}
 	}
@@ -152,10 +153,9 @@ func SelectWinner(candidates []FitnessScore, th FitnessThresholds) (winnerIndex 
 	return best, allTie
 }
 
-// ResolveWinner は SelectWinner を呼び出し、Tie 時に judge を使って勝者を決定する。
-// isTie=false の場合は judge を呼ばない（機械的 Fitness が第一判断基準）。
-// isTie=true かつ judge=nil の場合は index 0 にフォールバックする。
-// isTie=true かつ judge がエラーを返した場合は index 0 にフォールバックし error を返す。
+// ResolveWinner calls SelectWinner and uses judge only when the mechanical
+// FitnessScore comparison ties. Without a judge, or when judge returns an
+// error, index 0 remains the deterministic fallback.
 func ResolveWinner(scores []FitnessScore, thresholds FitnessThresholds, judge JudgeFunc) (winnerIdx int, judgeUsed bool, err error) {
 	winner, isTie := SelectWinner(scores, thresholds)
 

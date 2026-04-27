@@ -476,6 +476,15 @@ func (e *resultWriteError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
 
+type resultWriteWrappedError struct {
+	*resultWriteError
+	err error
+}
+
+func (e *resultWriteWrappedError) Unwrap() []error {
+	return []error{e.resultWriteError, e.err}
+}
+
 // resultWriteFencingError extends resultWriteError with structured fencing
 // context for F-019. handleValidatedResultWrite branches on this type via
 // errors.As to attach the Details payload to the UDS error response so the

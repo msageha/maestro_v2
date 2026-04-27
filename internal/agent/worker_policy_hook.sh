@@ -314,6 +314,13 @@ if [ "$tool_name" = "Bash" ]; then
     fi
   fi
 
+  # Worker: broad git add forms are prohibited in every directory. Worktree
+  # mode is handled above with the more specific WT-GIT reason; this catches
+  # the especially dangerous repository-wide forms elsewhere.
+  if echo "$cmd" | grep -qE '(^|;|\||&&)\s*git\s+add\s+(-A|--all|\.)(\s|$)'; then
+    deny "Worker git add all is prohibited (use daemon-owned commit flow; never stage the repository wholesale)"
+  fi
+
   # Note: git merge --abort is not listed in this hook. Workers never run
   # git merge themselves -- merge orchestration (and any abort) is performed
   # by the daemon via the worktree manager (resolve_conflict / resume_merge

@@ -22,7 +22,8 @@ var (
 	ErrConsecutiveErrors = errors.New("consecutive errors")
 
 	// Message delivery errors (messageDeliverer)
-	ErrClearSendFailed   = errors.New("send /clear failed")
-	ErrClearNotConfirmed = errors.New("/clear not confirmed")
-	ErrSecondEnterFailed = errors.New("send second Enter failed")
+	ErrClearSendFailed        = errors.New("send /clear failed")
+	ErrClearNotConfirmed      = errors.New("/clear not confirmed")
+	ErrSecondEnterFailed      = errors.New("send second Enter failed")
+	ErrSubmitConfirmUncertain = errors.New("submit confirmation uncertain")
 )

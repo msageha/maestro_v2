@@ -110,16 +110,21 @@ func (wm *Manager) ResumeMerge(ctx context.Context, commandID string) error {
 			anyResolved = true
 		}
 	}
+	var transitionErr error
 	if anyResolved || len(toResolve) == 0 || legacyFallback {
 		state.Integration.MergeFailureCount = 0
 	} else {
 		// All per-worker merge attempts failed — count toward quarantine.
 		if err := wm.recordMergeFailure(state, "resume_merge_all_failed", now); err != nil {
 			wm.Log(core.LogLevelWarn, "resume_merge_failure_record command=%s error=%v", commandID, err)
+			transitionErr = errors.Join(transitionErr, fmt.Errorf("record merge failure: %w", err))
 		}
 	}
 
-	wm.finalizeResumeMergeIntegrationStatus(ctx, state, commandID, len(toResolve), now)
+	if err := wm.finalizeResumeMergeIntegrationStatus(ctx, state, commandID, len(toResolve), now); err != nil {
+		wm.Log(core.LogLevelWarn, "resume_merge_finalize_status command=%s error=%v", commandID, err)
+		transitionErr = errors.Join(transitionErr, err)
+	}
 
 	// If not merged (and not quarantined by recordMergeFailure), ensure we
 	// end in failed state so Phase A can re-enqueue merge attempts.
@@ -127,7 +132,8 @@ func (wm *Manager) ResumeMerge(ctx context.Context, commandID string) error {
 		state.Integration.Status != model.IntegrationStatusQuarantined {
 		if state.Integration.Status != model.IntegrationStatusFailed {
 			if err := wm.setIntegrationStatus(state, model.IntegrationStatusFailed, now); err != nil {
-				return err
+				wm.Log(core.LogLevelWarn, "resume_merge_failed_transition command=%s error=%v", commandID, err)
+				transitionErr = errors.Join(transitionErr, fmt.Errorf("transition integration to failed: %w", err))
 			}
 		} else {
 			state.Integration.UpdatedAt = now
@@ -139,9 +145,9 @@ func (wm *Manager) ResumeMerge(ctx context.Context, commandID string) error {
 	wm.Log(core.LogLevelInfo, "resume_merge command=%s prev_status=%s resolved_workers=%d",
 		commandID, s, len(toResolve))
 	if err := wm.saveState(commandID, state); err != nil {
-		return fmt.Errorf("save state: %w", err)
+		return errors.Join(transitionErr, fmt.Errorf("save state: %w", err))
 	}
-	return nil
+	return transitionErr
 }
 
 // finalizeResumeMergeIntegrationStatus drives the post-merge integration
@@ -166,9 +172,9 @@ func (wm *Manager) finalizeResumeMergeIntegrationStatus(
 	commandID string,
 	resolveCount int,
 	now string,
-) {
+) error {
 	if !allWorkersMergeTerminal(state) || resolveCount == 0 {
-		return
+		return nil
 	}
 
 	contentOK, badWorkers := wm.verifyWorkersMerged(ctx, commandID, state)
@@ -179,19 +185,25 @@ func (wm *Manager) finalizeResumeMergeIntegrationStatus(
 		wm.revertContentMismatchedWorkers(state, badWorkers, commandID, now)
 		if tErr := wm.recordMergeFailure(state, "content_mismatch", now); tErr != nil {
 			wm.Log(core.LogLevelWarn, "resume_merge_content_mismatch_record command=%s error=%v", commandID, tErr)
+			return fmt.Errorf("record content mismatch merge failure: %w", tErr)
 		}
-		return
+		return nil
 	}
 
 	if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusMerging, now); tErr != nil {
 		wm.Log(core.LogLevelWarn, "resume_merge_merging_transition command=%s error=%v", commandID, tErr)
-		return
+		return fmt.Errorf("transition integration to merging: %w", tErr)
 	}
 	if tErr := wm.setIntegrationStatus(state, model.IntegrationStatusMerged, now); tErr != nil {
 		wm.Log(core.LogLevelWarn, "resume_merge_merged_transition command=%s error=%v", commandID, tErr)
 		// Revert to Failed so Phase A can retry.
-		_ = wm.setIntegrationStatus(state, model.IntegrationStatusFailed, now)
+		if revertErr := wm.setIntegrationStatus(state, model.IntegrationStatusFailed, now); revertErr != nil {
+			wm.Log(core.LogLevelError, "resume_merge_failed_revert_transition command=%s error=%v", commandID, revertErr)
+			return errors.Join(fmt.Errorf("transition integration to merged: %w", tErr), fmt.Errorf("revert integration to failed: %w", revertErr))
+		}
+		return fmt.Errorf("transition integration to merged: %w", tErr)
 	}
+	return nil
 }
 
 // allWorkersMergeTerminal reports whether every worker is in a status that

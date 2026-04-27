@@ -4,9 +4,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/uds"
+	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -315,6 +319,34 @@ func TestHandlePlan_AddRetryTaskSuccess(t *testing.T) {
 
 	assert.True(t, resp.Success)
 	assert.Contains(t, string(resp.Data), "task_retry_001")
+}
+
+func TestHandlePlan_AddTaskRejectsQuarantinedCommand(t *testing.T) {
+	pe := &mockPlanExecutor{
+		addTaskFunc: func(data json.RawMessage) (json.RawMessage, error) {
+			t.Fatal("AddTask must not be called for quarantined commands")
+			return nil, nil
+		},
+	}
+	d := newPlanTestDaemon(t, pe)
+	commandID := "cmd_quarantined"
+	path := filepath.Join(d.maestroDir, "state", "worktrees", commandID+".yaml")
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o755))
+	require.NoError(t, yamlutil.AtomicWrite(path, model.WorktreeCommandState{
+		SchemaVersion: 1,
+		FileType:      "state_worktree",
+		CommandID:     commandID,
+		Integration: model.IntegrationState{
+			Status: model.IntegrationStatusQuarantined,
+		},
+	}))
+	req := makePlanRequest(t, "add_task", map[string]string{"command_id": commandID})
+
+	resp := d.api.handlePlan(req)
+
+	require.False(t, resp.Success)
+	assert.Equal(t, uds.ErrCodeActionRequired, resp.Error.Code)
+	assert.Contains(t, resp.Error.Message, "quarantined")
 }
 
 func TestHandlePlan_RebuildSuccess(t *testing.T) {

@@ -105,10 +105,21 @@ func (pm *ClaudeProcessManager) ensureWorkingDir(ctx context.Context, paneTarget
 	if err := pm.paneIO.RespawnPane(paneTarget, workingDir); err != nil {
 		return fmt.Errorf("%w: %w", ErrRespawnPane, err)
 	}
+	markCWDUnknownOnError := func(err error) error {
+		if err == nil {
+			return err
+		}
+		if resetErr := pm.paneState.ResetCWD(paneTarget); resetErr != nil {
+			pm.log(logLevelWarn, "reset_cwd_after_working_dir_failure_failed cwd=%s reset_error=%v original_error=%v", workingDir, resetErr, err)
+			return fmt.Errorf("%w; also failed to reset tracked cwd: %v", err, resetErr)
+		}
+		pm.log(logLevelWarn, "working_dir_change_incomplete cwd=%s error=%v tracked_cwd_reset=true", workingDir, err)
+		return err
+	}
 
 	// Step 2: Wait for the fresh shell to be ready
 	if err := pm.waitForShell(ctx, paneTarget); err != nil {
-		return fmt.Errorf("wait for shell after respawn: %w", err)
+		return markCWDUnknownOnError(fmt.Errorf("wait for shell after respawn: %w", err))
 	}
 
 	// Step 3: Reset clear_ready state before re-launching Claude.
@@ -117,12 +128,12 @@ func (pm *ClaudeProcessManager) ensureWorkingDir(ctx context.Context, paneTarget
 	// from seeing a stale PID between here and the launch.
 	if err := pm.paneState.ResetClearReady(paneTarget); err != nil {
 		pm.log(logLevelError, "reset_clear_ready_after_respawn_failed error=%v", err)
-		return fmt.Errorf("reset clear ready after respawn: %w", err)
+		return markCWDUnknownOnError(fmt.Errorf("reset clear ready after respawn: %w", err))
 	}
 
 	// Step 4: Re-launch Claude using the resolved binary path to prevent version skew.
 	if err := pm.paneIO.SendCommand(paneTarget, ResolvedLaunchCommand()); err != nil {
-		return fmt.Errorf("re-launch claude: %w", err)
+		return markCWDUnknownOnError(fmt.Errorf("re-launch claude: %w", err))
 	}
 
 	// Step 5: Wait for Claude prompt readiness (fail-closed: error on timeout)
@@ -130,12 +141,13 @@ func (pm *ClaudeProcessManager) ensureWorkingDir(ctx context.Context, paneTarget
 	launchCtx, cancel := context.WithTimeout(ctx, pm.execCfg.ClaudeLaunchTimeout)
 	defer cancel()
 	if err := pm.waitReadyStrict(launchCtx, paneTarget); err != nil {
-		return fmt.Errorf("wait for claude ready: %w", err)
+		return markCWDUnknownOnError(fmt.Errorf("wait for claude ready: %w", err))
 	}
 
 	// Step 6: Update CWD tracking (clear_ready was already reset in Step 3)
 	if err := pm.paneState.SetCWD(paneTarget, workingDir); err != nil {
 		pm.log(logLevelWarn, "set_cwd_failed cwd=%s error=%v", workingDir, err)
+		return fmt.Errorf("set tracked cwd after working dir change: %w", err)
 	}
 
 	pm.log(logLevelInfo, "working_dir_changed cwd=%s", workingDir)

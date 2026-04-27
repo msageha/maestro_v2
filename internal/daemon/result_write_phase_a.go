@@ -82,7 +82,10 @@ func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatu
 	// 1. Load result file and check idempotency
 	rf, err := h.fileStore.LoadResultFile(params.Reporter)
 	if err != nil {
-		return nil, &resultWriteError{uds.ErrCodeInternal, err.Error()}
+		return nil, &resultWriteWrappedError{
+			resultWriteError: &resultWriteError{uds.ErrCodeInternal, fmt.Sprintf("load result file: %v", err)},
+			err:              err,
+		}
 	}
 
 	if idempotentID, err := h.checkResultIdempotency(&rf, params, resultStatus); err != nil {

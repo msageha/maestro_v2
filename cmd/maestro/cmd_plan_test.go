@@ -223,6 +223,30 @@ func TestRunPlanRetryPublish_FlagParsing(t *testing.T) {
 	}
 }
 
+func TestRunPlanRecover_FlagParsing(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+	}{
+		{"missing command-id", []string{}},
+		{"invalid command-id", []string{"--command-id", "../bad"}},
+		{"unexpected arg", []string{"--command-id", "cmd_1", "extra"}},
+		{"unknown flag", []string{"--unknown"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := newCLIApp().runPlanRecover(tt.args)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			var ce *CLIError
+			if !errors.As(err, &ce) {
+				t.Fatalf("expected CLIError, got %T: %v", err, err)
+			}
+		})
+	}
+}
+
 func TestRunResolveConflict_FlagParsing(t *testing.T) {
 	tests := []struct {
 		name string
@@ -299,7 +323,7 @@ func TestRunResolveConflict_PhaseIDValidation(t *testing.T) {
 func TestRunPlan_RecoverySubcommandsRouted(t *testing.T) {
 	// Sanity: runPlan should accept the new subcommand names without
 	// returning "unknown subcommand". They will fail flag parsing instead.
-	for _, sub := range []string{"unquarantine", "resume-merge"} {
+	for _, sub := range []string{"unquarantine", "resume-merge", "recover"} {
 		err := newCLIApp().runPlan([]string{sub})
 		if err == nil {
 			t.Fatalf("%s: expected error", sub)
@@ -660,6 +684,37 @@ func TestRunPlanAddRetryTask_ContentTooLong(t *testing.T) {
 	}
 	if !containsStr(ce.Msg, "exceeds maximum size") {
 		t.Errorf("expected 'exceeds maximum size' in error, got: %s", ce.Msg)
+	}
+}
+
+func TestResolveContentFile_ReadsFile(t *testing.T) {
+	path := t.TempDir() + "/content.txt"
+	if err := os.WriteFile(path, []byte("file content\nsecond line"), 0644); err != nil {
+		t.Fatalf("write content file: %v", err)
+	}
+	cmd := NewCommand("maestro plan add-task", "maestro plan add-task")
+	content := ""
+	if err := resolveContentFile(cmd, &content, path); err != nil {
+		t.Fatalf("resolveContentFile: %v", err)
+	}
+	if content != "file content\nsecond line" {
+		t.Fatalf("content = %q", content)
+	}
+}
+
+func TestResolveContentFile_RejectsMixedSources(t *testing.T) {
+	path := t.TempDir() + "/content.txt"
+	if err := os.WriteFile(path, []byte("file content"), 0644); err != nil {
+		t.Fatalf("write content file: %v", err)
+	}
+	cmd := NewCommand("maestro plan add-task", "maestro plan add-task")
+	content := "inline"
+	err := resolveContentFile(cmd, &content, path)
+	if err == nil {
+		t.Fatal("expected mixed source error")
+	}
+	if !containsStr(err.Error(), "mutually exclusive") {
+		t.Fatalf("error = %q", err.Error())
 	}
 }
 

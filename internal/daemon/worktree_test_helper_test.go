@@ -11,7 +11,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/testutil"
 )
 
-// TODO(DRY): initTestGitRepo, newTestWorktreeManager are duplicated.
+// DRY backlog: initTestGitRepo, newTestWorktreeManager are duplicated.
 // Duplicated in: worktree/worktree_test_helper_test.go (same helpers, different package)
 // Target: internal/testutil/worktree.go (shared across packages)
 // Trigger: promote to testutil when WorktreeManager no longer requires the

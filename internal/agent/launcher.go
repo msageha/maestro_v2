@@ -39,15 +39,9 @@ var knownRoles = map[string]bool{
 //
 // Workers have no tool restriction (they need full access for task execution).
 //
-// MAINTENANCE INVARIANT (F-002):
-//   - Whenever a `Bash(maestro …)` subcommand is added or removed here, the
-//     corresponding role's `templates/instructions/*.md` (orchestrator.md /
-//     planner.md / worker.md / maestro.md) MUST be updated in the same
-//     commit. The CLI surface and the prompt-side capability list are kept
-//     in lockstep so that an agent's prompt cannot reference a command the
-//     CLI rejects, and vice versa.
-//   - The same applies to the role-specific deny lists in
-//     `appendDisallowedTools` / `workerDisallowedTools` below.
+// F-002 invariant: changes to allowedToolsByRole or the sibling deny lists
+// (appendDisallowedTools / workerDisallowedTools) must ship with matching
+// templates/instructions/{orchestrator,planner,worker,maestro}.md updates.
 var allowedToolsByRole = map[string][]string{
 	"orchestrator": {
 		"Bash(maestro queue write planner --type command:*)",

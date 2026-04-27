@@ -21,7 +21,7 @@ import (
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
-// TODO(DRY): setupTestMaestroDir, newTestExecutorProvider, newTestQueueHandler are duplicated.
+// DRY backlog: setupTestMaestroDir, newTestExecutorProvider, newTestQueueHandler are duplicated.
 // Duplicated in: daemon/*_test.go (multiple files)
 // Target: internal/daemon/testhelper_test.go
 // Trigger: extract once a third caller appears OR after the

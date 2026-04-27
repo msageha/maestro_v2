@@ -231,6 +231,15 @@ maestro plan request-cancel \
 
 既存の Worker 結果から command state の `task_states` / `applied_result_ids` を再構築する。`--command-id` は必須。通常運用では使用しない復旧・Reconciliation 用コマンド。
 
+**自動リカバリ（推奨）**:
+
+```
+maestro plan recover \
+  --command-id <id>
+```
+
+Daemon が command の現在状態を判定し、必要な worktree recovery（resume-merge / retry-publish / no-op）を選択して実行する。`--command-id` は必須。状態別の手動コマンドを選ぶ前にこの単一エントリを使う。ただし quarantined は operator unquarantine が必要で、recover は解除しない。
+
 **quarantine 解除**:
 
 ```
@@ -254,7 +263,7 @@ maestro plan resume-merge \
   --command-id <id>
 ```
 
-統合ブランチのマージ失敗カウンターをリセットし、conflict / partial_merge / failed 状態の統合を再マージ可能な状態に戻す。`--command-id` は必須。競合解決タスク完了後に実行する（詳細は「マージ競合解決」セクション参照）。
+統合ブランチのマージ失敗カウンターをリセットし、conflict / partial_merge / failed 状態の統合を再マージ可能な状態に戻す。`--command-id` は必須。通常は `maestro plan recover --command-id <id>` を使い、このコマンドは recover が使えない場合の手動エスケープハッチとする。
 
 使用例:
 
@@ -269,7 +278,7 @@ maestro plan retry-publish \
   --command-id <id>
 ```
 
-Publish 失敗状態をリセットし、`PublishFailureCount` をクリアして統合ステータスを `merged` に戻す。次回スキャンで Daemon が再度フォワードマージ + Publish を試行する。`--command-id` は必須。Publish 競合解決タスク完了後に実行する（詳細は「Publish Conflict Recovery」セクション参照）。
+Publish 失敗状態をリセットし、`PublishFailureCount` をクリアして統合ステータスを `merged` に戻す。次回スキャンで Daemon が再度フォワードマージ + Publish を試行する。`--command-id` は必須。通常は `maestro plan recover --command-id <id>` を使い、このコマンドは recover が使えない場合の手動エスケープハッチとする。
 
 使用例:
 
@@ -672,7 +681,7 @@ verification が `failed` の場合:
 
 #### shell quoting の事故防止
 
-`maestro plan add-task` / `add-retry-task` の `--content "..."` / `--acceptance-criteria "..."` 等に **動的内容を埋め込む場合、常にシングルクオート `'...'` または heredoc `<<'EOF' ... EOF` を使う**。ダブルクオート内では以下が展開され、意図したテキストが消えたり別の値に置換される:
+`maestro plan add-task` / `add-retry-task` の長い `content` は、可能な限り一時ファイルに書いて `--content-file <path>` で渡す。インライン指定が必要な場合のみ、`--content '...'` のようにシングルクオートで囲む。ダブルクオート内では以下が展開され、意図したテキストが消えたり別の値に置換される:
 
 - バッククォート `` `...` `` → 内部をシェルコマンドとして実行した結果に置換
 - `$(...)` → 同上
@@ -693,12 +702,17 @@ maestro plan add-task \
 **安全な書き方**:
 
 ```bash
-# 方法A: シングルクオート（変数展開なし、バッククォートもリテラル）
+# 方法A: content をファイルから渡す（推奨）
+maestro plan add-task \
+  --content-file /tmp/maestro-task-content.txt \
+  ...
+
+# 方法B: シングルクオート（短文のみ）
 maestro plan add-task \
   --content 'fix `git log --oneline -1` で発見された問題を修正' \
   ...
 
-# 方法B: heredoc を使って stdin から plan submit に流し込む（YAML が長い場合）
+# 方法C: heredoc を使って stdin から plan submit に流し込む（YAML が長い場合）
 maestro plan submit --command-id "$CMD" --tasks-file - <<'PLAN'
 tasks:
   - name: "..."
@@ -849,7 +863,7 @@ Daemon が自動で conflict resolver を dispatch（worker の状態を `confli
 
 4. **再マージのトリガー（通常は自動）**: Worker がタスクを **`completed` ステータスで** 完了すると、Daemon の `AutoRecoverAfterResolution` フックが自動的に `ResumeMerge` を発火する。Planner は明示的に `maestro plan resume-merge` を呼ぶ必要はなく、ダッシュボードや signal で再マージ結果を待てばよい。
 
-   **`maestro plan resume-merge` を手動で呼ぶのはエスケープハッチ**: 以下のような自動リカバリが不発に終わったケースでのみ実行する:
+   **`maestro plan recover --command-id <id>` が手動復旧の第一選択**。Daemon が現在状態から必要な recovery を選ぶ。`resume-merge` を直接呼ぶのは、recover が使えない場合のエスケープハッチに限定する:
    - Worker が `failed` で完了した（自動フックは completed のみ発火する。失敗時は Daemon が `ResetResolvingWorkerToConflict` で `resolving → conflict` 復帰を試みるが、確実に復帰させたい場合に手動で `resume-merge` を呼ぶ）
    - AutoRecover 時の `ResumeMerge` 自体がエラー（git ops 失敗等）になった旨が dashboard / log に出ている
    - R7 の 20 分タイムアウトを待たずに復帰させたい
@@ -927,7 +941,7 @@ only invoke `maestro plan retry-publish --command-id cmd_xxx` manually if the wo
 
 3. **再 Publish のトリガー（通常は自動）**: Worker が `--run-on-integration` のタスクを **`completed` ステータスで** 完了すると、Daemon の `AutoRecoverAfterResolution` フックが自動的に `RetryPublish` を発火する（`NextPublishRetryAt` バックオフはこの経路では無視される）。Planner は明示的に `maestro plan retry-publish` を呼ぶ必要はない。
 
-   **`maestro plan retry-publish` を手動で呼ぶのはエスケープハッチ**: 以下の場合のみ実行する:
+   **`maestro plan recover --command-id <id>` が手動復旧の第一選択**。Daemon が現在状態から必要な recovery を選ぶ。`retry-publish` を直接呼ぶのは、recover が使えない場合のエスケープハッチに限定する:
    - Worker が `failed` で完了した（自動フックは completed のみ発火するため、復旧シナリオを切り替えるか手動 retry-publish を選択する必要がある）
    - AutoRecover 時の `RetryPublish` 自体がエラーになった旨が dashboard / log に出ている
 

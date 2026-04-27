@@ -228,6 +228,7 @@ Agent Commands (CLI → Daemon):
   plan add-retry-task [options]    Replace failed task
   plan request-cancel [options]    Request cancellation
   plan rebuild [options]           Rebuild state from results
+  plan recover [options]           Auto-select worktree recovery action
   plan resolve-conflict [options]  Resolve a worker merge conflict
   verify write [options]           Write command-scoped verify config
 

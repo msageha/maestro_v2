@@ -14,8 +14,8 @@ import (
 )
 
 const (
-	qualityGateEventBufferSize = 100                    // eventChan のバッファサイズ
-	defaultEvaluationTimeout   = 100 * time.Millisecond // ゲート評価のタイムアウト
+	qualityGateEventBufferSize = 100                    // eventChan buffer size
+	defaultEvaluationTimeout   = 100 * time.Millisecond // gate evaluation timeout
 )
 
 // QualityGateEvent represents an event that triggers quality gate evaluation.
@@ -32,10 +32,10 @@ type TaskStartEvent struct {
 	StartedAt time.Time
 }
 
-// EventType returns the event type identifier for task start events.
+// EventType implements QualityGateEvent.
 func (e TaskStartEvent) EventType() string { return "task_start" }
 
-// Timestamp returns the time when the task started.
+// Timestamp implements QualityGateEvent.
 func (e TaskStartEvent) Timestamp() time.Time { return e.StartedAt }
 
 // TaskCompleteEvent is emitted when a task completes (success or failure).
@@ -47,10 +47,10 @@ type TaskCompleteEvent struct {
 	CompletedAt time.Time
 }
 
-// EventType returns the event type identifier for task complete events.
+// EventType implements QualityGateEvent.
 func (e TaskCompleteEvent) EventType() string { return "task_complete" }
 
-// Timestamp returns the time when the task completed.
+// Timestamp implements QualityGateEvent.
 func (e TaskCompleteEvent) Timestamp() time.Time { return e.CompletedAt }
 
 // PhaseTransitionEvent is emitted when a phase changes status.
@@ -62,10 +62,10 @@ type PhaseTransitionEvent struct {
 	TransitionedAt time.Time
 }
 
-// EventType returns the event type identifier for phase transition events.
+// EventType implements QualityGateEvent.
 func (e PhaseTransitionEvent) EventType() string { return "phase_transition" }
 
-// Timestamp returns the time when the phase transition occurred.
+// Timestamp implements QualityGateEvent.
 func (e PhaseTransitionEvent) Timestamp() time.Time { return e.TransitionedAt }
 
 // QualityGateMetrics tracks quality gate evaluation metrics.

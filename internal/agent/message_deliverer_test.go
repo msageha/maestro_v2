@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"testing"
@@ -253,6 +254,37 @@ func TestSendAndConfirm_MultilineStartupThenPastedPlaceholderRetriesEnter(t *tes
 	}
 }
 
+func TestSendAndConfirm_SubmitProbeCaptureFailureIsNonRetryable(t *testing.T) {
+	mock := newMockPaneIO()
+	mock.currentCommand = "claude"
+	mock.isShell = false
+	mock.captureJoinedSeq = []mockResp{{err: fmt.Errorf("capture failed")}}
+	d := newTestDeliverer(mock)
+
+	result := d.sendAndConfirm(ExecRequest{
+		AgentID: "worker1",
+		TaskID:  "task_001",
+		Message: "line one\nline two",
+		Context: context.Background(),
+	}, "%0")
+
+	if result.Error == nil {
+		t.Fatal("expected non-retryable error for uncertain submit confirmation")
+	}
+	if !errors.Is(result.Error, ErrSubmitConfirmUncertain) {
+		t.Fatalf("expected ErrSubmitConfirmUncertain, got %v", result.Error)
+	}
+	if result.Retryable {
+		t.Fatal("submit confirmation uncertainty must not be retryable")
+	}
+	if result.Success {
+		t.Fatal("uncertain submit confirmation must not report success")
+	}
+	if len(mock.sentTexts) != 1 {
+		t.Fatalf("expected exactly one send attempt, got %d", len(mock.sentTexts))
+	}
+}
+
 func TestSubmittedActivityVisible(t *testing.T) {
 	t.Parallel()
 	if !submittedActivityVisible("Thinking\n") {
@@ -404,7 +436,10 @@ func TestClearConfirmationPoller_Poll_CaptureError_Resets(t *testing.T) {
 	p.stableCount = 3
 	p.hashChanged = true
 
-	result := p.poll()
+	result, err := p.poll()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if result {
 		t.Error("expected poll to return false on capture error")
 	}
@@ -426,7 +461,10 @@ func TestClearConfirmationPoller_Poll_ClearTextVisible_ResetsStable(t *testing.T
 	)
 	p.stableCount = 3
 
-	result := p.poll()
+	result, err := p.poll()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	if result {
 		t.Error("expected poll to return false when /clear text visible")
 	}
@@ -451,6 +489,35 @@ func TestClearConfirmationPoller_PollUntilTimeout_ContextCancelled(t *testing.T)
 	_, err := p.pollUntilTimeout(ctx, 5*time.Second, 10*time.Millisecond)
 	if err == nil {
 		t.Fatal("expected error for cancelled context")
+	}
+}
+
+func TestClearConfirmationPoller_Poll_CaptureErrorBudget(t *testing.T) {
+	t.Parallel()
+	mock := newMockPaneIO()
+	mock.CapturePaneJoinedFn = func(_ string, _ int) (string, error) {
+		return "", fmt.Errorf("capture error")
+	}
+
+	p := newClearConfirmationPoller(
+		mock, "%0", "prehash", true, 12,
+		log.New(&bytes.Buffer{}, "", 0), logLevelDebug,
+	)
+	for i := 1; i < maxClearConfirmCaptureErrors; i++ {
+		confirmed, err := p.poll()
+		if err != nil {
+			t.Fatalf("attempt %d returned unexpected error: %v", i, err)
+		}
+		if confirmed {
+			t.Fatalf("attempt %d unexpectedly confirmed", i)
+		}
+	}
+	confirmed, err := p.poll()
+	if err == nil {
+		t.Fatal("expected error after capture error budget is exhausted")
+	}
+	if confirmed {
+		t.Fatal("capture errors must not confirm clear")
 	}
 }
 

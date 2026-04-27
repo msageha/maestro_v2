@@ -228,9 +228,9 @@ func (qh *QueueHandler) collectWorktreePhaseMerges(commandID string, taskQueues 
 	workerPurposes := buildWorkerPurposes(commandID, taskQueues)
 	workerExpectedPaths := buildWorkerExpectedPaths(commandID, taskQueues)
 
-	// Phase 0 件フォールバック: phases が一切定義されていない command でも
-	// worker worktree への書き込みは発生しうる。この場合、全タスク終了かつ
-	// 失敗なしの条件で暗黙の単一フェーズとして merge を集約する。
+	// Fallback for commands that declare no phases: worker worktree writes
+	// can still occur, so collect a single implicit-phase merge once all
+	// tasks terminate without failures.
 	if len(phases) == 0 {
 		return qh.collectImplicitWorktreeMerge(commandID, cmdState, taskQueues, workerPurposes)
 	}
@@ -532,11 +532,11 @@ func (qh *QueueHandler) checkCommandTasksTerminal(
 	return true, hasFailed
 }
 
-// collectImplicitWorktreeMerge は phases が一切定義されていない command 向けに
-// 暗黙の単一フェーズ ("__implicit_phase") として worktree merge を集約する。
-// 全タスク terminal かつ failed なしかつ Integration.Status==created で
-// worker が登録されている場合のみ 1 件返す。それ以外は nil。
-// collectWorktreePhaseMerges の phases==0 経路から呼ばれる。
+// collectImplicitWorktreeMerge aggregates a single implicit-phase worktree
+// merge for commands that declare no phases. It returns one item only when all
+// tasks are terminal, no task failed, Integration.Status is created, and at
+// least one worker is registered. It is called from the phases==0 branch of
+// collectWorktreePhaseMerges.
 func (qh *QueueHandler) collectImplicitWorktreeMerge(
 	commandID string,
 	cmdState *model.WorktreeCommandState,

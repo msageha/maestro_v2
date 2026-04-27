@@ -359,7 +359,9 @@ func (qh *QueueHandler) checkPendingDependencyFailuresDeferred(tq *taskQueueEntr
 		dirty = true
 
 		if qh.dependencyResolver.HasStateReader() {
-			if err := qh.dependencyResolver.GetStateManager().UpdateTaskState(task.CommandID, task.ID, model.StatusCancelled, reason); err != nil {
+			if stateManager := qh.dependencyResolver.GetStateManager(); stateManager == nil {
+				qh.log(LogLevelWarn, "dep_failure_state_manager_missing task=%s", task.ID)
+			} else if err := stateManager.UpdateTaskState(task.CommandID, task.ID, model.StatusCancelled, reason); err != nil {
 				qh.log(LogLevelWarn, "dep_failure_state_update task=%s error=%v", task.ID, err)
 			}
 		}
@@ -443,7 +445,9 @@ func (qh *QueueHandler) checkInProgressDependencyFailuresDeferred(tq *taskQueueE
 		dirty = true
 
 		if qh.dependencyResolver.HasStateReader() {
-			if err := qh.dependencyResolver.GetStateManager().UpdateTaskState(task.CommandID, task.ID, model.StatusCancelled, reason); err != nil {
+			if stateManager := qh.dependencyResolver.GetStateManager(); stateManager == nil {
+				qh.log(LogLevelWarn, "dep_failure_state_manager_missing task=%s", task.ID)
+			} else if err := stateManager.UpdateTaskState(task.CommandID, task.ID, model.StatusCancelled, reason); err != nil {
 				qh.log(LogLevelWarn, "dep_failure_state_update task=%s error=%v", task.ID, err)
 			}
 		}
