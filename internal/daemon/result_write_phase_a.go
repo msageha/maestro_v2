@@ -88,7 +88,11 @@ func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatu
 	if idempotentID, err := h.checkResultIdempotency(&rf, params, resultStatus); err != nil {
 		return nil, err
 	} else if idempotentID != "" {
-		return &resultWritePhaseAResult{resultID: idempotentID, duplicate: true}, nil
+		// taskRunOnIntegration is explicitly false on duplicate paths: the
+		// post-result AutoRecover hook short-circuits when phaseA.duplicate is
+		// true, so the value is unused. Setting it explicitly guards against
+		// silent regressions if a future caller forgets that gate.
+		return &resultWritePhaseAResult{resultID: idempotentID, duplicate: true, taskRunOnIntegration: false}, nil
 	}
 
 	// 2. Fencing verification
@@ -102,7 +106,7 @@ func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatu
 		return nil, err
 	}
 	if idempotentID != "" {
-		return &resultWritePhaseAResult{resultID: idempotentID, duplicate: true}, nil
+		return &resultWritePhaseAResult{resultID: idempotentID, duplicate: true, taskRunOnIntegration: false}, nil
 	}
 
 	// 3. Defensive boundary check for taskIdx
@@ -123,7 +127,7 @@ func (h *ResultWriteAPI) resultWritePhaseA(params ResultWriteParams, resultStatu
 		if existingResultID, ok := preState.AppliedResultIDs[params.TaskID]; ok {
 			h.logFn(LogLevelWarn, "duplicate_result_skipped task=%s existing_result=%s command=%s",
 				params.TaskID, existingResultID, params.CommandID)
-			return &resultWritePhaseAResult{resultID: existingResultID, duplicate: true}, nil
+			return &resultWritePhaseAResult{resultID: existingResultID, duplicate: true, taskRunOnIntegration: false}, nil
 		}
 	}
 
@@ -274,23 +278,49 @@ func (h *ResultWriteAPI) validateFencing(tq *model.TaskQueue, rf *model.TaskResu
 		}
 	}
 
-	// Fencing: task must be in_progress
+	// Fencing: task must be in_progress.
+	// F-019: attach FencingDetails so the CLI / Worker shell wrapper can
+	// branch on a stable schema instead of grepping the message string.
 	if queueTask.Status != model.StatusInProgress {
-		return -1, "", &resultWriteError{uds.ErrCodeFencingReject,
-			fmt.Sprintf("task %s status is %s, expected in_progress", params.TaskID, queueTask.Status)}
+		return -1, "", newFencingError(uds.ErrCodeFencingReject,
+			fmt.Sprintf("task %s status is %s, expected in_progress", params.TaskID, queueTask.Status),
+			uds.FencingDetails{
+				Kind:          "fencing_status_mismatch",
+				TaskID:        params.TaskID,
+				WorkerID:      params.Reporter,
+				CurrentStatus: string(queueTask.Status),
+				CurrentEpoch:  queueTask.LeaseEpoch,
+				RequestEpoch:  params.LeaseEpoch,
+			})
 	}
 
 	// Fencing: lease epoch must match
 	if queueTask.LeaseEpoch != params.LeaseEpoch {
-		return -1, "", &resultWriteError{uds.ErrCodeFencingReject,
+		return -1, "", newFencingError(uds.ErrCodeFencingReject,
 			fmt.Sprintf("task %s lease_epoch mismatch: queue=%d, request=%d",
-				params.TaskID, queueTask.LeaseEpoch, params.LeaseEpoch)}
+				params.TaskID, queueTask.LeaseEpoch, params.LeaseEpoch),
+			uds.FencingDetails{
+				Kind:          "fencing_epoch_mismatch",
+				TaskID:        params.TaskID,
+				WorkerID:      params.Reporter,
+				CurrentEpoch:  queueTask.LeaseEpoch,
+				RequestEpoch:  params.LeaseEpoch,
+				CurrentStatus: string(queueTask.Status),
+			})
 	}
 
 	// Fencing: lease must be held
 	if queueTask.LeaseOwner == nil {
-		return -1, "", &resultWriteError{uds.ErrCodeFencingReject,
-			fmt.Sprintf("task %s has no lease_owner (not dispatched)", params.TaskID)}
+		return -1, "", newFencingError(uds.ErrCodeFencingReject,
+			fmt.Sprintf("task %s has no lease_owner (not dispatched)", params.TaskID),
+			uds.FencingDetails{
+				Kind:          "fencing_status_mismatch",
+				TaskID:        params.TaskID,
+				WorkerID:      params.Reporter,
+				CurrentStatus: string(queueTask.Status),
+				CurrentEpoch:  queueTask.LeaseEpoch,
+				RequestEpoch:  params.LeaseEpoch,
+			})
 	}
 
 	return taskIdx, "", nil
@@ -426,8 +456,37 @@ func (h *ResultWriteAPI) writeOrphanedMarker(reporter, resultID, taskID string) 
 // updateQueueState transitions the queue task to its terminal status and
 // persists the queue file. Returns true if the queue write failed (H2 sticky
 // error scenario).
+//
+// F-035: Phase A intentionally bypasses lease.Manager.releaseLease here. The
+// canonical release path transitions in_progress→pending, but a worker
+// result is committing a terminal status (completed/failed/cancelled/
+// dead_letter), so the lease lifecycle is collapsed in-place. We keep
+// LeaseEpoch as-is (it is the fencing key for any late heartbeat) and only
+// clear the owner/expiry that lose meaning at terminal. Routing this through
+// releaseLease would require a separate intermediate write and an extra
+// fencing edge for no observable gain.
 func (h *ResultWriteAPI) updateQueueState(tq *model.TaskQueue, taskIdx int, params ResultWriteParams, resultStatus model.Status, resultID string, now string) bool {
 	queueTask := &tq.Tasks[taskIdx]
+
+	// F-036: validate the in_progress→terminal transition before mutating.
+	// validateFencing has already accepted the result, but a parallel
+	// reconciler (e.g. R1 clearing queue_write_failed) may have moved the
+	// task back to pending or another non-in_progress state between the
+	// fencing check and now. ValidateCommandTaskQueueTransition rejects
+	// completed/failed/cancelled/dead_letter from non-in_progress origins;
+	// when that happens we leave the queue file alone and let the
+	// reconciler converge — the result file is already committed so the
+	// command-level invariant is preserved.
+	if err := model.ValidateCommandTaskQueueTransition(queueTask.Status, resultStatus); err != nil {
+		h.logFn(LogLevelWarn,
+			"result_write_invalid_transition task=%s from=%s to=%s result=%s error=%v (queue write skipped; reconciler will repair)",
+			params.TaskID, queueTask.Status, resultStatus, resultID, err)
+		// Surface as queueWriteFailed so the H2 sticky-error machinery picks
+		// it up; R1 reconciler is the authoritative repair path for this
+		// race window.
+		return true
+	}
+
 	queueTask.Status = resultStatus
 	queueTask.LeaseOwner = nil
 	queueTask.LeaseExpiresAt = nil

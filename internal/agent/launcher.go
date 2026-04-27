@@ -38,6 +38,16 @@ var knownRoles = map[string]bool{
 // CLI commands and .maestro status files.
 //
 // Workers have no tool restriction (they need full access for task execution).
+//
+// MAINTENANCE INVARIANT (F-002):
+//   - Whenever a `Bash(maestro …)` subcommand is added or removed here, the
+//     corresponding role's `templates/instructions/*.md` (orchestrator.md /
+//     planner.md / worker.md / maestro.md) MUST be updated in the same
+//     commit. The CLI surface and the prompt-side capability list are kept
+//     in lockstep so that an agent's prompt cannot reference a command the
+//     CLI rejects, and vice versa.
+//   - The same applies to the role-specific deny lists in
+//     `appendDisallowedTools` / `workerDisallowedTools` below.
 var allowedToolsByRole = map[string][]string{
 	"orchestrator": {
 		"Bash(maestro queue write planner --type command:*)",
@@ -198,8 +208,18 @@ func readPaneVars(paneTarget string) (agentID, role, agentModel, agentRuntime st
 // CLI args. HookSettings produces merged JSON containing both Notification
 // disablement and PreToolUse policy hook.
 func applyWorkerPolicy(maestroDir string, args []string) ([]string, error) {
+	implementation := model.PolicyHookImplementationBash
+	if cfg, err := model.LoadConfig(maestroDir); err == nil {
+		implementation = cfg.Agents.Workers.EffectivePolicyHookImplementation()
+	} else {
+		slog.Warn("load worker policy hook implementation failed, using bash", "error", err, "default", implementation)
+	}
+
 	pc := NewPolicyChecker(maestroDir)
-	scriptPath, err := pc.WriteHookScript()
+	scriptPath, err := pc.WriteHookScriptWithOptions(HookScriptOptions{
+		Implementation: implementation,
+		MaestroBinary:  ResolvedBinaryPath(),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("write policy hook script: %w", err)
 	}
@@ -252,95 +272,112 @@ func buildLaunchArgs(role, agentModel, systemPrompt, basePromptMode string) ([]s
 		return nil, fmt.Errorf("unknown role %q: rejected (fail-closed)", role)
 	}
 
+	args := launchArgsCore(role, agentModel, systemPrompt, basePromptMode)
+	args = appendAllowedTools(args, role)
+	args = appendDisallowedTools(args, role)
+	args = appendNotificationSettings(args, role)
+	return args, nil
+}
+
+// launchArgsCore returns the common positional flags shared by every role:
+// model, system-prompt (replace or append mode per basePromptMode), and the
+// dangerously-skip-permissions bypass.
+func launchArgsCore(role, agentModel, systemPrompt, basePromptMode string) []string {
+	_ = role // role currently does not influence core flags but kept for symmetry
 	promptFlag := "--append-system-prompt"
 	if basePromptMode == "replace" {
 		promptFlag = "--system-prompt"
 	}
-	args := []string{
+	return []string{
 		"--model", agentModel,
 		promptFlag, systemPrompt,
 		dangerousPermissionBypassFlag,
 	}
+}
 
-	// Apply tool restrictions for non-worker roles
-	if tools, ok := allowedToolsByRole[role]; ok && len(tools) > 0 {
-		args = append(args, "--allowedTools", strings.Join(tools, ","))
+// appendAllowedTools applies the role-specific allow-list when one is
+// configured. Workers pass through without an allow-list because the worker
+// surface is intentionally unrestricted.
+func appendAllowedTools(args []string, role string) []string {
+	tools, ok := allowedToolsByRole[role]
+	if !ok || len(tools) == 0 {
+		return args
 	}
+	return append(args, "--allowedTools", strings.Join(tools, ","))
+}
 
-	// Planners: block operator-only recovery API commands.
-	// Planner has Bash(maestro:*) in allowedTools, which permits all maestro
-	// subcommands. These disallowedTools carve out the operator-only escape
-	// hatches that only Orchestrator should invoke.
-	// Note: resume-merge is intentionally NOT blocked for Planner — it is the
-	// Planner's primary mechanism for triggering re-merge after a worker has
-	// resolved a conflict (hybrid b+c conflict recovery path).
-	// Note: add-retry-task is intentionally NOT blocked for Planner — it is
-	// the Planner's standard mechanism for retrying failed tasks (see
-	// planner.md "失敗タスクの処理" and verification loop sections).
-	if role == "planner" {
-		args = append(args, "--disallowedTools",
-			"Bash(maestro plan unquarantine:*)")
-	}
-
-	// Workers: block destructive tmux commands and .maestro/ reads at the tool level.
-	// The textual prohibitions in worker.md (D006, .maestro/ access) are not
-	// enforced by Claude CLI; --disallowedTools provides a hard technical block.
-	if role == "worker" {
-		args = append(args, "--disallowedTools",
-			strings.Join([]string{
-				"Bash(tmux kill-server:*)",
-				"Bash(tmux kill-session:*)",
-				"Bash(tmux kill-pane:*)",
-				"Bash(tmux kill-window:*)",
-				// D009: recovery API escape hatches are operator-only.
-				// Workers must never invoke these even if a future content
-				// payload tries to embed them.
-				"Bash(maestro plan unquarantine:*)",
-				"Bash(maestro plan resume-merge:*)",
-				"Bash(maestro plan resolve-conflict:*)",
-				// Legacy form (no `plan` segment): unreachable via the current
-				// CLI router but blocked here too as defense-in-depth in case
-				// `content` reintroduces the historical spelling.
-				"Bash(maestro resolve-conflict:*)",
-				"Read(.maestro/state/**)",
-				"Read(.maestro/queue/**)",
-				"Read(.maestro/results/**)",
-				"Read(.maestro/locks/**)",
-				"Read(.maestro/logs/**)",
-				"Read(.maestro/config.yaml)",
-				"Read(.maestro/dashboard.md)",
-			}, ","))
-	}
-
-	// Notification hooks: user-configured scripts that fire on Claude Code
-	// events (tool calls, errors, etc.). For internal agents (planner, worker),
-	// these are disabled to prevent interference with automated operation:
-	//   - User notification scripts may block or produce side effects
-	//   - Internal agents run autonomously and don't need user-facing alerts
-	//   - Orchestrator keeps user-configured hooks since it's the user-facing agent
-	//
-	// Worker Notification hooks are disabled in HookSettings() (policy_checker.go),
-	// merged with PreToolUse hooks into a single --settings flag.
-	//
-	// Sandbox settings are NOT configured here by design. Passing a sandbox section
-	// via --settings overrides the user's global sandbox.enabled:false, re-enabling
-	// the sandbox and making /sandbox unusable (CLI settings take priority over
-	// the /sandbox runtime command). The needed allowAllUnixSockets for the daemon
-	// UDS connection (.maestro/daemon.sock) must be set in the user's global
-	// ~/.claude/settings.json or the project's .claude/settings.json instead.
+// appendDisallowedTools applies role-scoped tool blocks. Currently:
+//   - planner: blocks operator-only recovery commands while keeping the
+//     standard maestro Bash surface available.
+//   - worker:  blocks destructive tmux subcommands, recovery API escape
+//     hatches (D009), and direct reads under .maestro/.
+//
+// Notes preserved from the original implementation:
+//   - Planner intentionally retains `plan resume-merge` and `plan
+//     add-retry-task` (primary recovery / retry mechanisms).
+//   - Workers also block the legacy `maestro resolve-conflict` spelling as
+//     defense-in-depth in case `content` reintroduces it.
+func appendDisallowedTools(args []string, role string) []string {
 	switch role {
-	case "orchestrator":
-		// Orchestrator keeps user hooks; no additional settings needed.
+	case "planner":
+		return append(args, "--disallowedTools", "Bash(maestro plan unquarantine:*)")
 	case "worker":
-		// Worker settings (Notification=[] + PreToolUse policy hook) are
-		// handled via HookSettings() in Launch() to produce a single
-		// merged --settings flag.
+		return append(args, "--disallowedTools", strings.Join(workerDisallowedTools, ","))
 	default:
-		// Planner and other internal roles: disable Notification hooks only.
-		args = append(args, "--settings", `{"hooks":{"Notification":[]}}`)
+		return args
 	}
+}
 
-	return args, nil
+// workerDisallowedTools lists the tool patterns Claude CLI must hard-block
+// for Workers. The textual prohibitions in worker.md (D006, .maestro/ access)
+// are not enforced by the CLI; this list provides the technical guardrail.
+var workerDisallowedTools = []string{
+	"Bash(tmux kill-server:*)",
+	"Bash(tmux kill-session:*)",
+	"Bash(tmux kill-pane:*)",
+	"Bash(tmux kill-window:*)",
+	// D009: recovery API escape hatches are operator-only. Workers must
+	// never invoke these even if a future content payload tries to embed
+	// them.
+	"Bash(maestro plan unquarantine:*)",
+	"Bash(maestro plan resume-merge:*)",
+	"Bash(maestro plan resolve-conflict:*)",
+	// Legacy form (no `plan` segment): unreachable via the current CLI
+	// router but blocked here too as defense-in-depth in case `content`
+	// reintroduces the historical spelling.
+	"Bash(maestro resolve-conflict:*)",
+	"Read(.maestro/state/**)",
+	"Read(.maestro/queue/**)",
+	"Read(.maestro/results/**)",
+	"Read(.maestro/locks/**)",
+	"Read(.maestro/logs/**)",
+	"Read(.maestro/config.yaml)",
+	"Read(.maestro/dashboard.md)",
+}
+
+// appendNotificationSettings disables Claude Code Notification hooks for
+// internal autonomous agents.
+//
+// Behaviour by role:
+//   - orchestrator: user-facing agent — keep user hooks intact.
+//   - worker:       Notification=[] is merged with the PreToolUse policy hook
+//     into a single --settings flag by HookSettings()
+//     (policy_checker.go); we add nothing here.
+//   - planner / other internal roles: emit a Notification=[] only.
+//
+// Sandbox settings are intentionally NOT injected here. Passing a sandbox
+// section via --settings overrides the user's global sandbox.enabled:false
+// and disables the /sandbox runtime command. The
+// allowAllUnixSockets entry required for the daemon UDS connection
+// (.maestro/daemon.sock) must live in the user's global
+// ~/.claude/settings.json or the project's .claude/settings.json instead.
+func appendNotificationSettings(args []string, role string) []string {
+	switch role {
+	case "orchestrator", "worker":
+		return args
+	default:
+		return append(args, "--settings", `{"hooks":{"Notification":[]}}`)
+	}
 }
 
 func appendWorkspaceReadAllowances(args []string, maestroDir, role string) []string {

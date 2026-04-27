@@ -62,7 +62,7 @@ func (h *Skill) HandleApprove(req *uds.Request) *uds.Response {
 
 	skillName := params.SkillName
 	if skillName == "" {
-		skillName = slugify(candidate.Content)
+		skillName = skillSlugify(candidate.Content)
 	}
 	if skillName == "" {
 		return uds.ErrorResponse(uds.ErrCodeValidation, "could not auto-generate skill name from content; provide skill_name")
@@ -91,7 +91,7 @@ func (h *Skill) HandleApprove(req *uds.Request) *uds.Response {
 		}
 	}()
 
-	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(formatSkillMD(skillName, candidate.Content)), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(formatSkillMarkdown(skillName, candidate.Content)), 0o644); err != nil {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("write SKILL.md: %v", err))
 	}
 
@@ -155,7 +155,7 @@ func (h *Skill) findPendingCandidate(candidateID string) ([]model.SkillCandidate
 	return nil, "", -1, uds.ErrorResponse(uds.ErrCodeNotFound, fmt.Sprintf("candidate not found: %s", candidateID))
 }
 
-func slugify(content string) string {
+func skillSlugify(content string) string {
 	line := strings.SplitN(content, "\n", 2)[0]
 	line = strings.TrimSpace(line)
 	line = strings.TrimLeft(line, "# ")
@@ -169,7 +169,7 @@ func slugify(content string) string {
 	return s
 }
 
-func formatSkillMD(name, content string) string {
+func formatSkillMarkdown(name, content string) string {
 	var sb strings.Builder
 	sb.WriteString("---\n")
 	fmt.Fprintf(&sb, "name: %s\n", name)

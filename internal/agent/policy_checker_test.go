@@ -64,6 +64,60 @@ func TestPolicyChecker_WriteHookScript_Idempotent(t *testing.T) {
 	}
 }
 
+func TestPolicyChecker_WriteHookScriptWithOptions_ShadowMode(t *testing.T) {
+	dir := t.TempDir()
+	pc := NewPolicyChecker(dir)
+
+	path, err := pc.WriteHookScriptWithOptions(HookScriptOptions{
+		Implementation: policyHookImplementationShadow,
+		MaestroBinary:  "/tmp/maestro-test",
+	})
+	if err != nil {
+		t.Fatalf("WriteHookScriptWithOptions failed: %v", err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read hook script: %v", err)
+	}
+	script := string(content)
+	if !strings.Contains(script, "MAESTRO_POLICY_SHADOW:-1") {
+		t.Error("shadow mode should enable shadow comparison by default")
+	}
+	if !strings.Contains(script, "default_policy_bin='/tmp/maestro-test'") {
+		t.Error("shadow mode should embed the selected maestro binary")
+	}
+	if !strings.Contains(script, "maestro_policy_shadow_divergence") {
+		t.Error("shadow mode should log divergences")
+	}
+}
+
+func TestPolicyChecker_WriteHookScriptWithOptions_GoWrapper(t *testing.T) {
+	dir := t.TempDir()
+	pc := NewPolicyChecker(dir)
+
+	path, err := pc.WriteHookScriptWithOptions(HookScriptOptions{
+		Implementation: policyHookImplementationGo,
+		MaestroBinary:  "/tmp/maestro-test",
+	})
+	if err != nil {
+		t.Fatalf("WriteHookScriptWithOptions failed: %v", err)
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read hook script: %v", err)
+	}
+	script := string(content)
+	if !strings.Contains(script, "args=(\"hook\" \"policy-check\"") {
+		t.Error("go wrapper should delegate to maestro hook policy-check")
+	}
+	if strings.Contains(script, "Blocked command containing backtick") {
+		t.Error("go wrapper should not contain legacy bash policy rules")
+	}
+	if !strings.Contains(script, "Policy hook Go checker failed. Denying for safety.") {
+		t.Error("go wrapper should fail closed if the checker cannot run")
+	}
+}
+
 func TestPolicyChecker_HookSettings_ValidJSON(t *testing.T) {
 	dir := t.TempDir()
 	pc := NewPolicyChecker(dir)
@@ -287,28 +341,18 @@ func TestHookScript_ContainsRestrictedModeBypassChecks(t *testing.T) {
 }
 
 func TestHookScript_BlocksPipeToShell(t *testing.T) {
-	// These patterns should be detected by the B001 grep patterns in the hook script
-	blocked := []string{
-		`echo cmd | bash`,
-		`cat script.sh | sh`,
-		`printf 'cmd' | /bin/bash`,
-		`echo test | /bin/sh`,
-		`echo test | /usr/bin/bash`,
-		`echo test | bash -`,
+	// B001 covers pipe-to-shell patterns. The dynamic per-command check is
+	// kept as a sanity reminder of the inputs the hook is supposed to block;
+	// the actual matching is exercised end-to-end by S-series tests
+	// (TestPolicyChecker_*) that run the hook script against each payload.
+	if !strings.Contains(hookScript, "B001") {
+		t.Fatal("hook script missing B001 section")
 	}
-	for _, cmd := range blocked {
-		// Verify the hook script has grep patterns that would match these
-		// We check that B001 section exists and contains pipe-to-shell patterns
-		if !strings.Contains(hookScript, "B001") {
-			t.Errorf("hook script missing B001 check for: %s", cmd)
-		}
-	}
-
-	// Verify safe commands would NOT be blocked by B001 patterns
-	// "bash_completion" should not match \b(bash|sh)\b word boundary
+	// Word-boundary anchored bash/sh detection prevents false positives like
+	// `bash_completion` from triggering B001. F-053 dropped a stale empty-if
+	// branch that had the same intent but no assertion.
 	if !strings.Contains(hookScript, `\b(bash|sh)\s`) {
-		// The script uses patterns with word boundaries or specific suffixes
-		// to avoid matching variable names like bash_completion
+		t.Error("hook script should anchor bash/sh detection on a word boundary")
 	}
 }
 

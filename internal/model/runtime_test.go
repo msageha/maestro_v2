@@ -25,7 +25,7 @@ func TestParseRuntimeFromModel(t *testing.T) {
 		// edge cases
 		{"", RuntimeClaudeCode, ""},
 		{"claude-code", RuntimeClaudeCode, "claude-code"},
-		{"geminiXXX", RuntimeClaudeCode, "geminiXXX"}, // not "gemini-" prefix
+		{"geminiZZZ", RuntimeClaudeCode, "geminiZZZ"}, // not "gemini-" prefix; "ZZZ" suffix avoids being mistaken for an XXX-style TODO marker (F-066)
 	}
 	for _, tt := range tests {
 		t.Run(tt.model, func(t *testing.T) {

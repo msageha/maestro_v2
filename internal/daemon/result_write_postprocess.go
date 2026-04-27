@@ -35,15 +35,32 @@ func (p resultPostProcessor) AfterPhaseB(input resultPostPhaseBInput) {
 	}
 }
 
+// AfterVerification routes the post-verification side effects
+// (auto-recover-after-resolution, advisory review dispatch) to the sync
+// path. F-012: the prior implementation guarded each side effect with the
+// same condition (`!duplicate && !verifyWillRunAsync`); this version
+// extracts the predicate into shouldRunAfterVerificationSync so the
+// invariant is unit-testable AND removes the duplicated condition that
+// previously made it possible (in principle) to forget one of the two
+// guards when a third side effect was added.
 func (p resultPostProcessor) AfterVerification(input resultPostFinalizeInput) {
+	if !shouldRunAfterVerificationSync(input) {
+		return
+	}
 	h := p.api
-	if !input.duplicate && !input.verifyWillRunAsync {
-		h.maybeAutoRecoverAfterResolution(input.params, input.resultStatus, input.finalStatus,
-			input.phaseA.taskRunOnIntegration)
-	}
-	if !input.duplicate && !input.verifyWillRunAsync {
-		h.dispatchAdvisoryReview(input.params, input.finalStatus)
-	}
+	h.maybeAutoRecoverAfterResolution(input.params, input.resultStatus, input.finalStatus,
+		input.phaseA.taskRunOnIntegration)
+	h.dispatchAdvisoryReview(input.params, input.finalStatus)
+}
+
+// shouldRunAfterVerificationSync reports whether the sync-path
+// AfterVerification side effects must run. Both side effects share the same
+// gate: skip when the result is a duplicate (state already reflects the
+// prior write — Bug H), or when verification was scheduled to run async (in
+// which case the async completion path invokes the same side effects
+// directly to preserve the exactly-once contract). F-012.
+func shouldRunAfterVerificationSync(input resultPostFinalizeInput) bool {
+	return !input.duplicate && !input.verifyWillRunAsync
 }
 
 func (p resultPostProcessor) AfterResponseSideEffects(params ResultWriteParams) {

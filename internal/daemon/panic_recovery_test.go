@@ -47,10 +47,12 @@ func (sb *syncBuffer) String() string {
 // TestEventBridge_PanicRecoveryCallsShutdown verifies that a panic inside an
 // EventBridge callback is recovered, a stack trace is logged, and
 // Daemon.Shutdown is invoked (shuttingDown flag becomes true).
+//
+// F-054: no testing.Short() gate. The test relies on require.Eventually with
+// a 5s ceiling and 5ms poll interval; under normal CI load it completes in
+// well under 200ms and exercises a critical resilience path. Skipping it in
+// short mode would leave panic-recovery wiring uncovered on every -short run.
 func TestEventBridge_PanicRecoveryCallsShutdown(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping panic recovery test in short mode")
-	}
 	t.Parallel()
 
 	var logBuf syncBuffer
@@ -117,10 +119,10 @@ func TestEventBridge_PanicRecoveryCallsShutdown(t *testing.T) {
 // TestDebounceController_PanicRecoveryCallsShutdown verifies that a panic in
 // the debounced scanFn is recovered, a stack trace is logged, and the
 // configured shutdownFn is called.
+//
+// F-054: no testing.Short() gate (see TestEventBridge_PanicRecoveryCallsShutdown
+// for the rationale).
 func TestDebounceController_PanicRecoveryCallsShutdown(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping panic recovery test in short mode")
-	}
 	t.Parallel()
 
 	var logBuf bytes.Buffer

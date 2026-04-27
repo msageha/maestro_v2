@@ -30,6 +30,7 @@ type TaskHeartbeatHandler struct {
 	logLevel     LogLevel
 	scanMu       *sync.RWMutex
 	lockMap      *lock.MutexMap
+	selfWrites   *selfWriteTracker
 }
 
 // TaskHeartbeatHandlerOption configures a TaskHeartbeatHandler.
@@ -38,6 +39,12 @@ type TaskHeartbeatHandlerOption func(*TaskHeartbeatHandler)
 // WithHeartbeatClock sets a custom Clock for the TaskHeartbeatHandler.
 func WithHeartbeatClock(c Clock) TaskHeartbeatHandlerOption {
 	return func(h *TaskHeartbeatHandler) { h.clock = c }
+}
+
+// WithHeartbeatSelfWrites wires the self-write tracker so that heartbeat
+// queue writes are filtered out of fsnotify event processing.
+func WithHeartbeatSelfWrites(tr *selfWriteTracker) TaskHeartbeatHandlerOption {
+	return func(h *TaskHeartbeatHandler) { h.selfWrites = tr }
 }
 
 // NewTaskHeartbeatHandler creates a new task heartbeat handler.
@@ -151,18 +158,37 @@ func (h *TaskHeartbeatHandler) Handle(params json.RawMessage) *uds.Response {
 		return uds.ErrorResponse(uds.ErrCodeNotFound, fmt.Sprintf("task %s not found in queue %s", p.TaskID, queueFile))
 	}
 
-	// Validate lease: task must be in_progress with matching epoch
+	// Validate lease: task must be in_progress with matching epoch.
+	// F-019: attach a structured FencingDetails payload so CLI consumers
+	// (and the Worker shell wrapper through it) can branch on machine-
+	// readable fields instead of grepping the message string.
 	if reason := leaseInvalidReason(task.Status, task.LeaseEpoch, p.Epoch); reason != "" {
 		switch reason {
 		case "status":
 			h.log(LogLevelWarn, "heartbeat_rejected task=%s status=%s (not in_progress)", p.TaskID, task.Status)
-			return uds.ErrorResponse(uds.ErrCodeFencingRejectStatus,
-				fmt.Sprintf("task %s is %s, not in_progress", p.TaskID, task.Status))
+			return uds.ErrorResponseWithDetails(uds.ErrCodeFencingRejectStatus,
+				fmt.Sprintf("task %s is %s, not in_progress", p.TaskID, task.Status),
+				uds.FencingDetails{
+					Kind:          "fencing_status_mismatch",
+					TaskID:        p.TaskID,
+					WorkerID:      p.WorkerID,
+					CurrentStatus: string(task.Status),
+					CurrentEpoch:  task.LeaseEpoch,
+					RequestEpoch:  p.Epoch,
+				})
 		case "epoch":
 			h.log(LogLevelWarn, "heartbeat_rejected task=%s epoch_mismatch queue=%d request=%d",
 				p.TaskID, task.LeaseEpoch, p.Epoch)
-			return uds.ErrorResponse(uds.ErrCodeFencingRejectEpoch,
-				fmt.Sprintf("task %s epoch mismatch: queue=%d, request=%d", p.TaskID, task.LeaseEpoch, p.Epoch))
+			return uds.ErrorResponseWithDetails(uds.ErrCodeFencingRejectEpoch,
+				fmt.Sprintf("task %s epoch mismatch: queue=%d, request=%d", p.TaskID, task.LeaseEpoch, p.Epoch),
+				uds.FencingDetails{
+					Kind:          "fencing_epoch_mismatch",
+					TaskID:        p.TaskID,
+					WorkerID:      p.WorkerID,
+					CurrentEpoch:  task.LeaseEpoch,
+					RequestEpoch:  p.Epoch,
+					CurrentStatus: string(task.Status),
+				})
 		}
 	}
 
@@ -188,8 +214,19 @@ func (h *TaskHeartbeatHandler) Handle(params json.RawMessage) *uds.Response {
 	if elapsed >= time.Duration(maxMin)*time.Minute {
 		h.log(LogLevelWarn, "heartbeat_rejected task=%s max_runtime_exceeded elapsed=%v max=%dm",
 			p.TaskID, elapsed, maxMin)
-		return uds.ErrorResponse(uds.ErrCodeMaxRuntimeExceeded,
-			fmt.Sprintf("task %s exceeded max runtime of %d minutes", p.TaskID, maxMin))
+		// F-019: attach machine-readable fencing details. current_status
+		// reflects the queue's view (still in_progress at this point — the
+		// max_runtime guard fires before any state mutation).
+		return uds.ErrorResponseWithDetails(uds.ErrCodeMaxRuntimeExceeded,
+			fmt.Sprintf("task %s exceeded max runtime of %d minutes", p.TaskID, maxMin),
+			uds.FencingDetails{
+				Kind:          "max_runtime_exceeded",
+				TaskID:        p.TaskID,
+				WorkerID:      p.WorkerID,
+				CurrentStatus: string(task.Status),
+				CurrentEpoch:  task.LeaseEpoch,
+				RequestEpoch:  p.Epoch,
+			})
 	}
 
 	// Extend the lease
@@ -198,6 +235,13 @@ func (h *TaskHeartbeatHandler) Handle(params json.RawMessage) *uds.Response {
 		return uds.ErrorResponse(uds.ErrCodeInternal, fmt.Sprintf("extend lease: %v", err))
 	}
 
+	// Record this write with the self-write tracker before writing so the
+	// fsnotify event bridge ignores the resulting WRITE/CREATE event. Without
+	// this, the daemon's own heartbeat-driven queue update is mistaken for an
+	// external edit and triggers a redundant scan (F-018).
+	if h.selfWrites != nil {
+		h.selfWrites.Record(queuePath, &queue)
+	}
 	// Write updated queue back
 	if err := yaml.AtomicWrite(queuePath, &queue); err != nil {
 		h.log(LogLevelError, "queue_write_failed file=%s error=%v", queueFile, err)

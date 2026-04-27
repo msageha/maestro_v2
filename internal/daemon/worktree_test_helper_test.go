@@ -14,7 +14,12 @@ import (
 // TODO(DRY): initTestGitRepo, newTestWorktreeManager are duplicated.
 // Duplicated in: worktree/worktree_test_helper_test.go (same helpers, different package)
 // Target: internal/testutil/worktree.go (shared across packages)
-// Prerequisite: worktree test structure stabilization
+// Trigger: promote to testutil when WorktreeManager no longer requires the
+// daemon-internal config wiring inlined below (i.e. once
+// `internal/daemon/worktree` exposes a config builder reusable from both
+// daemon-level and worktree-level tests). Until then the daemon-level
+// helper has slightly different defaults from the worktree-package twin
+// and merging them prematurely loses test fidelity.
 
 // initTestGitRepo delegates to testutil.InitTestGitRepo.
 func initTestGitRepo(t *testing.T) string {

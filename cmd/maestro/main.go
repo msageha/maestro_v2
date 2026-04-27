@@ -17,6 +17,42 @@ const maestroDirEnv = "MAESTRO_DIR"
 // MAX_RUNTIME_EXCEEDED, and retryable agent exec errors.
 const ExitCodeRetryable = 2
 
+// Fencing exit codes (F-019 step 2).
+//
+// These let the Worker shell wrapper (templates/instructions/worker.md) and
+// any other downstream consumer branch on `$?` instead of grepping the
+// stderr Message string. The codes are stable across heartbeat / result
+// write / future fencing-aware subcommands so a single dispatch table at
+// the call site covers every entry point.
+//
+// Range 10–19 was chosen to avoid collisions with:
+//   - 0   success
+//   - 1   generic CLI error
+//   - 2   ExitCodeRetryable (legacy alias kept for backwards compat)
+//   - 64-78  sysexits.h convention
+//   - 126/127 shell "command invoked / not found" semantics
+//   - 128+N  signal-terminated processes
+//
+// Worker shell wrappers MUST read `$?` directly after the maestro call —
+// piping into another command (e.g. `maestro task heartbeat … | tee log`)
+// reports the pipe's exit code, which would clobber these.
+const (
+	// ExitCodeFencingEpoch (10) — heartbeat / result_write rejected because
+	// the request's lease_epoch differs from the queue's. The task has
+	// been reassigned to a newer lease and the calling Worker must end its
+	// current turn without retrying.
+	ExitCodeFencingEpoch = 10
+	// ExitCodeMaxRuntimeExceeded (11) — heartbeat rejected because the
+	// task has been in_progress longer than the configured cap. The task
+	// is being torn down server-side; the Worker should also end its turn.
+	ExitCodeMaxRuntimeExceeded = 11
+	// ExitCodeFencingStatus (12) — fencing rejected because the task is
+	// no longer in_progress (already completed / cancelled / dead-letter
+	// from another path). Same shape as fencing_epoch from the Worker's
+	// perspective: stop the turn.
+	ExitCodeFencingStatus = 12
+)
+
 // CLIError represents an error with a specific exit code.
 type CLIError struct {
 	Code   int
@@ -95,6 +131,8 @@ func (a *cliApp) run(args []string) int {
 		err = a.runSkill(args[1:])
 	case "verify":
 		err = a.runVerify(args[1:])
+	case "hook":
+		err = a.runHook(args[1:])
 	case "dashboard":
 		err = a.runDashboard(args[1:])
 	case "version":
@@ -197,6 +235,7 @@ Internal:
   daemon            Run daemon process
   agent launch      Launch agent in tmux pane
   agent exec        Send message to agent
+  hook policy-check Evaluate Worker PreToolUse policy JSON
   task heartbeat    Send heartbeat for an active task
 
 Skill Management:

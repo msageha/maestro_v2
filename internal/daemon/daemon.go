@@ -1,23 +1,11 @@
-// Package daemon implements the maestro background daemon for queue processing and orchestration.
+// Package daemon implements the maestro background daemon for queue
+// processing and orchestration. It is the composition root: UDS endpoint
+// adapters live in daemonapi, and the major domains (worktree, reconcile,
+// dispatch, lease, …) live in sub-packages.
 //
-// TODO(refactor): This package remains the daemon composition root. UDS endpoint
-// adapters live in daemonapi, and several domains already live in sub-packages
-// (worktree, reconcile, dispatch, lease, etc.), but result-write state
-// transitions and scan A/B/C still have broad dependency surfaces.
-//
-// Recommended decomposition direction:
-//   - Promote high-independence sub-packages (e.g., dispatch, reconcile, search) to
-//     top-level internal packages if they have minimal back-references to daemon state.
-//   - Keep daemonapi limited to transport concerns: decoding, caller-role
-//     checks, shallow validation, and dispatch to injected domain services.
-//   - Split result-write internals by state transition services
-//     (phase A persistence, phase B command-state update, verification,
-//     best-effort/audit writes) before moving them out of package daemon.
-//   - Split scan A/B/C only after ScanPhaseExecutor no longer needs
-//     daemon-internal queue/result/worktree concrete types.
-//
-// This refactoring should be done incrementally, validating that each extraction
-// maintains the existing integration test coverage.
+// Outstanding decomposition work — incremental, do not attempt en masse —
+// is tracked in docs/maestro-review/FINAL_REPORT.md (F-014/F-040..F-043
+// at the time of writing). See those entries for current priorities.
 package daemon
 
 import (

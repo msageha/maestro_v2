@@ -404,6 +404,18 @@ func (qh *QueueHandler) checkInProgressDependencyFailuresDeferred(tq *taskQueueE
 		qh.log(LogLevelWarn, "dependency_failure task=%s dep=%s dep_status=%s",
 			task.ID, failedDep, failedStatus)
 
+		// F-033: validate the in_progress→cancelled transition before mutating
+		// the queue entry. The scanMu is not held here, so a parallel goroutine
+		// may have already transitioned this task (e.g. R1 reconciler clearing
+		// queue_write_failed). Skipping invalid transitions prevents this code
+		// path from clobbering a freshly-terminal entry with cancelled.
+		if err := model.ValidateCommandTaskQueueTransition(task.Status, model.StatusCancelled); err != nil {
+			qh.log(LogLevelWarn,
+				"dependency_failure_invalid_transition task=%s from=%s to=cancelled error=%v",
+				task.ID, task.Status, err)
+			continue
+		}
+
 		// Defer interrupt to Phase B
 		if workerID != "" {
 			interrupts = append(interrupts, interruptItem{
@@ -414,6 +426,16 @@ func (qh *QueueHandler) checkInProgressDependencyFailuresDeferred(tq *taskQueueE
 			})
 		}
 
+		// F-032: this code path intentionally bypasses lease.Manager.ReleaseTaskLease.
+		// The canonical release path transitions in_progress→pending, but a
+		// dependency-cancelled task is committing a TERMINAL status, so the
+		// lease lifecycle is collapsed in-place — same pattern as Phase A
+		// updateQueueState (see F-035 godoc). LeaseEpoch is retained so any
+		// late heartbeat from the prior holder still fences correctly via the
+		// canonical mismatch path. Routing through ReleaseTaskLease would
+		// require an extra intermediate write (in_progress→pending→cancelled)
+		// for no observable gain — `lease.Manager` tracks no per-release
+		// metrics today (no counters / no audit ledger entry on release).
 		task.Status = model.StatusCancelled
 		task.LeaseOwner = nil
 		task.LeaseExpiresAt = nil

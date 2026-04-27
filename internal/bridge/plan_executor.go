@@ -30,35 +30,14 @@ type PlanExecutorImpl struct {
 // Safe to call concurrently with in-flight plan operations; subsequent calls
 // take effect on the next Submit / AddRetryTask / AddTask invocation.
 //
-// The daemon invokes this via the core.PlanExecutorModelSelectorSettable
-// interface, handing us a core.ModelSelector. Since core.ModelSelector and
-// plan.ModelSelector share the same method set, any concrete impl of one
-// satisfies the other; we assert to avoid a wrapper allocation on the hot
-// path.
+// The daemon invokes this via core.PlanExecutorModelSelectorSettable. Since
+// F-039 unified `core.ModelSelector` and `plan.ModelSelector` as type
+// aliases of `contract.ModelSelector`, the selector flows through with a
+// direct assignment — no adapter shim required.
 func (pe *PlanExecutorImpl) SetModelSelector(s core.ModelSelector) {
 	pe.selectorMu.Lock()
 	defer pe.selectorMu.Unlock()
-	if s == nil {
-		pe.selector = nil
-		return
-	}
-	if p, ok := s.(plan.ModelSelector); ok {
-		pe.selector = p
-		return
-	}
-	// Concrete type implemented core.ModelSelector but, oddly, not
-	// plan.ModelSelector. Adapt via a thin shim so wiring still works.
-	pe.selector = coreSelectorAdapter{s}
-}
-
-// coreSelectorAdapter bridges a core.ModelSelector into plan.ModelSelector
-// when the direct interface-to-interface assertion fails (e.g., pointer vs
-// value receiver mismatch in an unusual impl). It is allocation-free per
-// call since it simply forwards to the embedded selector.
-type coreSelectorAdapter struct{ core.ModelSelector }
-
-func (c coreSelectorAdapter) SelectModel(bloomLevel int, taskName string) string {
-	return c.ModelSelector.SelectModel(bloomLevel, taskName)
+	pe.selector = s
 }
 
 // getSelector returns the currently-installed selector (may be nil).

@@ -103,14 +103,27 @@ func validateRequiredVerifySnapshot(opts SubmitOptions) error {
 	cfg, err := model.LoadVerifyConfig(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
+			// F-023: include both the exact CLI form and a stdin form so the
+			// planner's recovery path doesn't require operator lookups. The
+			// stdin variant matches the daemonapi VerifyWrite contract.
 			return &planValidationError{Msg: fmt.Sprintf(
-				"verify config snapshot is required before plan submit for command %s; run maestro verify write --command-id %s first",
-				opts.CommandID, opts.CommandID)}
+				"verify config snapshot is required before plan submit for command %s.\n"+
+					"  Quick fix: maestro verify write --command-id %s --config-file <verify.yaml>\n"+
+					"  Or via stdin: cat verify.yaml | maestro verify write --command-id %s --config-file -\n"+
+					"  See templates/verify.yaml.example for a minimal valid config.",
+				opts.CommandID, opts.CommandID, opts.CommandID)}
 		}
-		return &planValidationError{Msg: fmt.Sprintf("verify config snapshot is invalid for command %s: %v", opts.CommandID, err)}
+		return &planValidationError{Msg: fmt.Sprintf(
+			"verify config snapshot is invalid for command %s: %v\n"+
+				"  Re-run: maestro verify write --command-id %s --config-file <verify.yaml>",
+			opts.CommandID, err, opts.CommandID)}
 	}
 	if cfg.IsEmpty() {
-		return &planValidationError{Msg: fmt.Sprintf("verify config snapshot for command %s must contain at least one command", opts.CommandID)}
+		return &planValidationError{Msg: fmt.Sprintf(
+			"verify config snapshot for command %s must contain at least one command.\n"+
+				"  Add at least one entry under verify.build / verify.lint / verify.typecheck / verify.test\n"+
+				"  then re-run: maestro verify write --command-id %s --config-file <verify.yaml>",
+			opts.CommandID, opts.CommandID)}
 	}
 	return nil
 }
@@ -528,6 +541,14 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	if queueErr != nil {
 		if rbErr := rollbackFullPhaseFill(sm, state, targetPhaseIdx, opts, input.Tasks, nameToID, assignMap); rbErr != nil {
 			logRollbackFailure(opts.CommandID, rbErr, "phase_fill_queue_write", false, "manual_intervention", "phase_state+queue_entries")
+			// F-005: rollback itself failed — disk state is now ambiguous.
+			// Drop the state lock before emit_paused_for_replan_signal so
+			// canonical lock order (queue → state → result) is preserved.
+			sm.UnlockCommand(opts.CommandID)
+			stateLocked = false
+			emitPausedForReplanSignal(opts.MaestroDir, opts.CommandID,
+				phaseSignalID(opts.PhaseName),
+				"phase_fill_queue_write_rollback_failed", opts.LockMap)
 		}
 		return nil, fmt.Errorf("write queue: %w", queueErr)
 	}
@@ -536,12 +557,22 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	if err != nil {
 		if rbErr := rollbackQueueEntries(opts.MaestroDir, input.Tasks, nameToID, assignMap, opts.LockMap); rbErr != nil {
 			logRollbackFailure(opts.CommandID, rbErr, "phase_fill_reload_queue_rollback", false, "manual_intervention", "queue_entries")
+			sm.UnlockCommand(opts.CommandID)
+			stateLocked = false
+			emitPausedForReplanSignal(opts.MaestroDir, opts.CommandID,
+				phaseSignalID(opts.PhaseName),
+				"phase_fill_reload_queue_rollback_failed", opts.LockMap)
 		}
 		return nil, err
 	}
 	if err := applyPhaseFillTasks(state, targetPhaseIdx, opts, input.Tasks, nameToID); err != nil {
 		if rbErr := rollbackQueueEntries(opts.MaestroDir, input.Tasks, nameToID, assignMap, opts.LockMap); rbErr != nil {
 			logRollbackFailure(opts.CommandID, rbErr, "phase_fill_apply_queue_rollback", false, "manual_intervention", "queue_entries")
+			sm.UnlockCommand(opts.CommandID)
+			stateLocked = false
+			emitPausedForReplanSignal(opts.MaestroDir, opts.CommandID,
+				phaseSignalID(opts.PhaseName),
+				"phase_fill_apply_queue_rollback_failed", opts.LockMap)
 		}
 		return nil, err
 	}
@@ -555,6 +586,11 @@ func submitPhaseFill(opts SubmitOptions, input SubmitInput) (*SubmitResult, erro
 	if err := sm.SaveState(state); err != nil {
 		if rbErr := rollbackFullPhaseFill(sm, state, targetPhaseIdx, opts, input.Tasks, nameToID, assignMap); rbErr != nil {
 			logRollbackFailure(opts.CommandID, rbErr, "phase_fill_save_state", false, "manual_intervention", "phase_state+queue_entries")
+			sm.UnlockCommand(opts.CommandID)
+			stateLocked = false
+			emitPausedForReplanSignal(opts.MaestroDir, opts.CommandID,
+				phaseSignalID(opts.PhaseName),
+				"phase_fill_save_state_rollback_failed", opts.LockMap)
 		}
 		return nil, fmt.Errorf("save state: %w", err)
 	}

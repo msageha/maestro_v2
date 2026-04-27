@@ -17,6 +17,7 @@ import (
 	"github.com/msageha/maestro_v2/internal/daemon/core"
 	"github.com/msageha/maestro_v2/internal/daemon/fallback"
 	"github.com/msageha/maestro_v2/internal/events"
+	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/tmux"
 	"github.com/msageha/maestro_v2/internal/uds"
 )
@@ -56,6 +57,28 @@ func (d *Daemon) prepareStartup() error {
 	// P4: Validate command state YAMLs and recover any corrupted file from
 	// its sibling .bak. Failures are logged as warnings; startup continues.
 	d.recoverStateFiles()
+
+	// F-034: Same recovery for queue YAMLs. A truncated planner.yaml /
+	// worker{N}.yaml / planner_signals.yaml / orchestrator.yaml would
+	// otherwise look "empty" and the daemon would silently lose the
+	// in-flight lease_epoch history.
+	d.recoverQueueFiles()
+
+	// F-037: GC stale flock files in .maestro/locks/. Run exactly once,
+	// here at startup, before any other lock acquisition begins. Concurrent
+	// GC is unsafe (inode-split race after unlink + recreate). daemon.lock
+	// is excluded because the running daemon holds it.
+	locksDir := filepath.Join(d.maestroDir, "locks")
+	stats, gcErr := lock.GCStaleLockFiles(locksDir, lock.DefaultLockGCAge,
+		[]string{"daemon.lock"},
+		func(format string, args ...any) { d.log(LogLevelInfo, format, args...) })
+	if gcErr != nil {
+		d.log(LogLevelWarn, "lock_gc failed dir=%s error=%v", locksDir, gcErr)
+	} else if stats.Removed > 0 || stats.SkippedHeld > 0 || stats.SkippedRaced > 0 {
+		d.log(LogLevelInfo,
+			"lock_gc summary scanned=%d removed=%d skipped_young=%d skipped_held=%d skipped_raced=%d skipped_other=%d",
+			stats.Scanned, stats.Removed, stats.SkippedYoung, stats.SkippedHeld, stats.SkippedRaced, stats.SkippedOther)
+	}
 
 	// Init fsnotify watcher
 	watcher, err := fsnotify.NewWatcher()

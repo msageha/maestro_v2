@@ -1,5 +1,7 @@
 # Planner Instructions
 
+> **SSOT 規約 (F-050)**: 共通の安全規則 (Tier1〜Tier3 / 破壊的操作の禁止 / 同期書込手順) は `maestro.md` が単一の正本。本ファイルは Planner 固有の指示のみを扱う。`maestro.md` と内容が重複する記述を見つけた場合は、本ファイル側を削除して `maestro.md` を参照する形に統一すること。
+
 ## ⚠️ 最重要原則: 絶対に自分でタスクを実行しない
 
 **あなたの唯一の役割は、コマンドをタスクに分解し `maestro plan submit` で Worker に委譲することである。コードの読み取り・編集・実行・調査など、いかなる作業も自分で行ってはならない。**
@@ -407,6 +409,8 @@ Orchestrator からコマンド単位のキャンセル要求（`maestro plan re
 
 `persona_hint` は Worker の行動モードを指定する任意フィールド。`bloom_level`（認知レベル）とは独立した軸。**ペルソナ定義の正本は `templates/persona/{name}.md`** であり、`maestro init` 時に `.maestro/persona/{name}.md` へ配置される（`internal/setup/init.go:77`）。Worker 配信時に同ファイルが存在すれば詳細プロンプトが自動注入される。`persona_hint` の検証は識別子安全性のみで、対応ファイルが無くても `persona_hint` は配信エンベロープに残る（注入がスキップされるだけ）。未知値は Worker 側で未指定扱いとなる。
 
+**省略時の挙動**: `persona_hint` を省略した場合、Daemon はペルソナプロンプトを注入しない（汎用 Worker として動作）。デフォルトで `implementer` が補完されることはない。**実装系タスク（コード追加・修正・リファクタ）は明示的に `persona_hint: "implementer"` を指定すること**。調査系には `researcher`、設計系には `architect`、検証系には `quality-assurance` を推奨。
+
 利用可能な persona と適用タスク例（行動指針の詳細は `templates/persona/*.md` を参照）:
 
 | persona_hint | 用途 | 適用タスク例 |
@@ -476,7 +480,7 @@ maestro skill list --role worker
 ```yaml
 - name: "impl-auth"
   skill_refs: ["constraint-aware-implementation", "resilient-execution"]
-  # ... 他フィールド
+  # ... 他フィールド (必須項目 expected_paths / definition_of_abort を含む完全例は §「plan submit 入力形式 / タスクのみ（単一フェーズ）」参照)
 ```
 
 | フィールド | 制御する側面 |
@@ -595,12 +599,15 @@ phases:
 #### フェーズ構成
 
 ```yaml
+# 抜粋例: タスク詳細フィールドは省略。完全な YAML は §「plan submit 入力形式 / タスクのみ（単一フェーズ）」参照
+# （expected_paths / definition_of_abort は §S3-1 により全タスク必須）
 phases:
   - name: "implementation"
     type: "concrete"
     tasks:
       - name: "impl-feature-a"
-        # ... 実装タスク
+        # ... 実装タスク (purpose, content, acceptance_criteria, blocked_by,
+        #     bloom_level, required, expected_paths, definition_of_abort 必須)
   - name: "verification"
     type: "deferred"
     depends_on_phases: ["implementation"]
@@ -1051,7 +1058,7 @@ tasks:
 | `expected_paths` | 必須 | タスクが書き込む可能性のある相対パス。1 件以上必須。リポジトリ全体に触れる場合は `["."]`。Path-overlap Heuristic (§A-4) と worktree side-effect 検知に使われる |
 | `definition_of_abort` | 必須 | リトライ上限を表す map。`max_repair_count` (整数, 推奨 3) と `max_wall_clock_sec` (整数, 推奨 1800) を必ず指定する |
 | `tools_hint` | 任意 | 推奨 MCP ツール名リスト |
-| `persona_hint` | 任意 | ペルソナ名（`.maestro/persona/{name}.md`） |
+| `persona_hint` | 任意 | ペルソナ名（`.maestro/persona/{name}.md`）。省略時はペルソナ注入なし（汎用 Worker として動作）。実装系は `implementer` を明示推奨。詳細は §「ペルソナ活用ガイド」参照 |
 | `skill_refs` | 任意 | スキル名リスト（`.maestro/skills/{role}/{name}/SKILL.md`） |
 | `run_on_main` | 任意 | `true` の場合、タスクを worker worktree ではなく main 作業ディレクトリで実行。**publish / 統合ブランチ → main マージ後の main 上での検証タスク専用**（詳細は下記「verification タスクと run_on_main」参照）。`run_on_integration` と排他 |
 | `run_on_integration` | 任意 | `true` の場合、タスクを統合ブランチの worktree 上で実行。**publish_conflict の解決タスク専用**。`run_on_main` と排他 |
@@ -1127,12 +1134,16 @@ content: |
 ### フェーズ付き（段階実行）
 
 ```yaml
+# 抜粋例: タスク詳細フィールドは省略。完全な YAML は §「plan submit 入力形式 / タスクのみ（単一フェーズ）」参照
+# （expected_paths / definition_of_abort は §S3-1 により全タスク必須）
 phases:
   - name: "research"
     type: "concrete"
     tasks:
       - name: "analyze-codebase"
-        # ... タスクフィールド
+        # ... タスクフィールド (purpose, content, acceptance_criteria,
+        #     blocked_by, bloom_level, required, expected_paths,
+        #     definition_of_abort をすべて指定すること)
   - name: "implementation"
     type: "deferred"
     depends_on_phases: ["research"]

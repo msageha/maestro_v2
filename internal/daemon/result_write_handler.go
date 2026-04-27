@@ -311,6 +311,12 @@ func (h *ResultWriteAPI) handleValidatedResultWrite(params ResultWriteParams, re
 	// Phase A: Shared file lock + per-worker mutex (results/ + queue/ updates)
 	resultWritePhaseAResult, err := newResultPhaseAService(h).Run(params, resultStatus)
 	if err != nil {
+		// F-019: prefer the fencing-typed error first so the structured
+		// Details payload is forwarded to the UDS response.
+		fencingErr := &resultWriteFencingError{}
+		if errors.As(err, &fencingErr) {
+			return uds.ErrorResponseWithDetails(fencingErr.Code, fencingErr.Message, fencingErr.Details)
+		}
 		rErr := &resultWriteError{}
 		if errors.As(err, &rErr) {
 			return uds.ErrorResponse(rErr.Code, rErr.Message)
@@ -470,6 +476,28 @@ func (e *resultWriteError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Message)
 }
 
+// resultWriteFencingError extends resultWriteError with structured fencing
+// context for F-019. handleValidatedResultWrite branches on this type via
+// errors.As to attach the Details payload to the UDS error response so the
+// CLI / Worker can read machine-readable fields without grepping Message.
+//
+// resultWriteError is embedded by pointer so existing `errors.As(err, &rErr)`
+// call sites that target *resultWriteError continue to work unchanged.
+type resultWriteFencingError struct {
+	*resultWriteError
+	Details uds.FencingDetails
+}
+
+// newFencingError is a small convenience to keep the fencing call sites
+// readable. The double allocation (outer + inner) is negligible compared to
+// the I/O the rejecting path is about to skip.
+func newFencingError(code, message string, details uds.FencingDetails) *resultWriteFencingError {
+	return &resultWriteFencingError{
+		resultWriteError: &resultWriteError{Code: code, Message: message},
+		Details:          details,
+	}
+}
+
 // handleRetryRegistration registers a retry task in state and queue if phaseA
 // determined one is needed. TaskRetryHandler does not hold state and queue
 // locks at the same time, so it must not be moved under Phase A's queue/result
@@ -568,12 +596,15 @@ func (h *ResultWriteAPI) syncQueueStatusAfterVerify(params ResultWriteParams, ne
 }
 
 func (h *ResultWriteAPI) advanceRepairPendingToPausedForReplan(params ResultWriteParams, reason string) {
+	// Lock ordering: state and queue locks are never held simultaneously.
+	// We update state under the state lock, release it, then acquire the
+	// queue:planner_signals lock to emit the signal. This preserves the
+	// canonical queue→state→result lock ordering documented in
+	// internal/daemon/doc.go.
 	cmdLockKey := "state:" + params.CommandID
 	h.lockMap.Lock(cmdLockKey)
-	defer h.lockMap.Unlock(cmdLockKey)
-
 	statePath := commandStatePath(h.maestroDir, params.CommandID)
-	if err := updateYAMLFile(statePath, func(state *model.CommandState) error {
+	updateErr := updateYAMLFile(statePath, func(state *model.CommandState) error {
 		if state.TaskStates == nil || state.TaskStates[params.TaskID] != model.StatusRepairPending {
 			return errNoUpdate
 		}
@@ -582,10 +613,12 @@ func (h *ResultWriteAPI) advanceRepairPendingToPausedForReplan(params ResultWrit
 		}
 		state.UpdatedAt = h.clock.Now().UTC().Format(time.RFC3339)
 		return nil
-	}); err != nil {
+	})
+	h.lockMap.Unlock(cmdLockKey)
+	if updateErr != nil {
 		h.logFn(LogLevelWarn,
 			"verify_repair_replan_signal_failed task=%s command=%s reason=%q error=%v",
-			params.TaskID, params.CommandID, reason, err)
+			params.TaskID, params.CommandID, reason, updateErr)
 		return
 	}
 	h.logFn(LogLevelWarn,

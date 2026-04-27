@@ -150,15 +150,21 @@ func TestRunTaskHeartbeat_UDSMaxRuntimeExceeded(t *testing.T) {
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected CLIError, got %T: %v", err, err)
 	}
-	if ce.Code != ExitCodeRetryable {
-		t.Errorf("expected exit code %d, got %d", ExitCodeRetryable, ce.Code)
+	// F-019 step 2: max_runtime_exceeded now uses the dedicated exit code 11.
+	if ce.Code != ExitCodeMaxRuntimeExceeded {
+		t.Errorf("expected exit code %d (ExitCodeMaxRuntimeExceeded), got %d", ExitCodeMaxRuntimeExceeded, ce.Code)
 	}
 	if !ce.Silent {
 		t.Error("expected silent error for MAX_RUNTIME_EXCEEDED")
 	}
 }
 
-func TestRunTaskHeartbeat_UDSOtherError(t *testing.T) {
+// TestRunTaskHeartbeat_UDSFencingReject pins F-019 step 2: a generic
+// FENCING_REJECT (no structured Details — older daemons) maps to the
+// status-mismatch exit code via the legacy-code fallback in
+// classifyFencingExitCode. Renamed from `_UDSOtherError` because the prior
+// behaviour (exit 1) was the F-019 step 2 target to fix.
+func TestRunTaskHeartbeat_UDSFencingReject(t *testing.T) {
 	withMaestroDir(t)
 	app := newTestApp(&mockUDSClient{
 		sendCommandFunc: func(string, any) (*uds.Response, error) {
@@ -174,8 +180,34 @@ func TestRunTaskHeartbeat_UDSOtherError(t *testing.T) {
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected CLIError, got %T: %v", err, err)
 	}
+	if ce.Code != ExitCodeFencingStatus {
+		t.Errorf("expected exit code %d (ExitCodeFencingStatus, F-019 fallback), got %d", ExitCodeFencingStatus, ce.Code)
+	}
+	if ce.Silent {
+		t.Error("FENCING_REJECT must NOT be silent (operator visibility)")
+	}
+}
+
+func TestRunTaskHeartbeat_UDSGenericInternalError(t *testing.T) {
+	withMaestroDir(t)
+	app := newTestApp(&mockUDSClient{
+		sendCommandFunc: func(string, any) (*uds.Response, error) {
+			return errorResponse(uds.ErrCodeInternal, "boom"), nil
+		},
+	})
+
+	err := app.runTaskHeartbeat([]string{"--task-id", "t1", "--worker-id", "w1", "--epoch", "1"})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var ce *CLIError
+	if !errors.As(err, &ce) {
+		t.Fatalf("expected CLIError, got %T: %v", err, err)
+	}
+	// Non-fencing UDS errors still fall through to the generic exit code 1
+	// path so operators can distinguish them from fencing rejects.
 	if ce.Code != 1 {
-		t.Errorf("expected exit code 1, got %d", ce.Code)
+		t.Errorf("expected exit code 1 for INTERNAL_ERROR, got %d", ce.Code)
 	}
 }
 

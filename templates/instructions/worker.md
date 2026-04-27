@@ -1,5 +1,7 @@
 # Worker Instructions
 
+> **SSOT 規約 (F-050)**: 共通の安全規則 (Tier1〜Tier3 / 破壊的操作の禁止 / 同期書込手順) は `maestro.md` が単一の正本。本ファイルは Worker 固有の指示 (タスク実行・lease_epoch ライフサイクル・worktree 運用) のみを扱う。`maestro.md` と内容が重複する記述を見つけた場合は、本ファイル側を削除して `maestro.md` を参照する形に統一すること。
+
 ## ⚠️ 最重要原則: 配信されたタスクのスコープのみに集中する
 
 **あなたは配信されたタスクの `content` と `acceptance_criteria` に記載された範囲のみを実行する。スコープ外の改善・リファクタリング・追加機能の実装は一切行わない。これは例外のない絶対的なルールである。**
@@ -238,8 +240,17 @@ maestro task heartbeat \
 | `--epoch` | 配信時の `lease_epoch` をそのまま渡す（必須） |
 
 - 成功時: 出力なし（終了コード 0）
-- `FENCING_REJECT`: リースが失効済み（epoch 不一致）。即座に作業を中断しターンを終了する
-- `MAX_RUNTIME_EXCEEDED`: 最大実行時間超過（終了コード 2）。即座に作業を中断する
+- 失敗時の終了コード（F-019 段階2 で導入された機械可読 exit code を **`$?` で読む**こと。pipe を介すると pipe の終了コードに置き換わるので注意）:
+
+| 終了コード | 種別 | Worker のアクション |
+|---|---|---|
+| `10` | `fencing_epoch_mismatch` (lease_epoch 不一致) | 即座に作業中断・ターン終了 |
+| `11` | `max_runtime_exceeded` (最大実行時間超過) | 即座に作業中断・ターン終了 |
+| `12` | `fencing_status_mismatch` (タスクが in_progress でない) | 即座に作業中断・ターン終了 |
+| `2` (legacy) | 古い daemon 互換 (一般的な再試行可能) | 旧仕様。基本は 10/11/12 で判定し fallback でのみ参照 |
+| `1` | その他のエラー | stderr のメッセージを確認し、修正して再試行可能なら再試行 |
+
+stderr には併せて構造化 JSON 1 行が出力される（`{"maestro_error":"FENCING_REJECT_EPOCH","details":{"kind":"fencing_epoch_mismatch","current_epoch":N,"current_status":"...",...}}`）。識別キーは `maestro_error`、値は UDS error code（`FENCING_REJECT_EPOCH` / `FENCING_REJECT_STATUS` / `MAX_RUNTIME_EXCEEDED` 等）。`jq -r .maestro_error` で UDS code を、`jq -r .details.kind` で fencing 種別を取得できる。判定の主軸は `$?` であり、本 JSON は補助情報。
 
 ### lease_epoch ライフサイクル
 
@@ -252,17 +263,39 @@ maestro task heartbeat \
 | **不変な操作** | `ExtendTaskLease`（heartbeat による延長）、`ReleaseTaskLease`（pending 戻し）では epoch は変化しない |
 | **失効条件** | リース TTL 超過後、queue scan の collect/apply フェーズが Worker の状態を判定する。busy/undecided と判定されればリースが延長されるが、non-busy/no-agent/max-runtime 超過と判定されると `ReleaseTaskLease` で pending に戻り、次の dispatch で再 `AcquireTaskLease` されたとき epoch が `+1` される。これにより旧 Worker が保持する epoch は永久に stale になる |
 | **検証点** | Daemon は `task_heartbeat` と `result write` の両エンドポイントで、リクエスト epoch と queue 上の epoch を厳密一致比較する |
-| **不一致時の応答** | `FENCING_REJECT` エラーコードを返却。stderr の文言は heartbeat が `task <id> epoch mismatch: queue=<N>, request=<M>`、result write が `task <id> lease_epoch mismatch: queue=<N>, request=<M>` と微妙に異なる（どちらも同じ意味） |
+| **不一致時の応答** | `FENCING_REJECT_EPOCH` / `FENCING_REJECT_STATUS` / `MAX_RUNTIME_EXCEEDED` エラーコードを返却。F-019 段階1 以降は UDS error の `details` に `{kind, current_epoch, request_epoch, current_status, task_id, worker_id}` の構造化情報が同梱される |
 
 ### Worker 側の epoch 失効検知
 
-現状、能動的に lease 状態を照会する API は提供されていない（必要性が出れば fencing エラー側に `current_epoch` を載せる拡張が推奨方針として残されている）。Worker は以下のいずれかで失効を検知する:
+F-019 段階2 以降、Worker は CLI の **終了コード `$?`** で fencing 状態を判定する。stderr の文字列マッチに依存しないこと（フォーマットは互換のため残るが、grep ベースの判定は将来のリファクタで壊れやすい）。
 
-1. **heartbeat 応答**: 長時間タスクで heartbeat を送る場合、`FENCING_REJECT` が返ったら即座に作業を中断する。同じ task_id を別 Worker が再取得済みであり、ファイルシステムへの書き込みを継続するとデータ競合を起こす
-2. **result write 応答**: タスク完了時に `maestro result write` の stderr に `lease_epoch mismatch` が出た場合、その結果は破棄される。Worker は `--status failed --no-retry-safe --partial-changes` での再報告を試みず、ターンを終了する（Daemon 側で既に新しい dispatch が走っているため）
-3. **MAX_RUNTIME_EXCEEDED の副作用**: heartbeat 時にこのエラーが返った場合、queue scan が次サイクルで Worker のリースを release する可能性が高い。受領したら作業を中断する
+| 終了コード | 意味 | Worker のアクション |
+|---|---|---|
+| `0` | 成功 | 続行 |
+| `10` | `fencing_epoch_mismatch` | 即座に作業中断、ターン終了。同じ task_id を別 Worker が再取得済み |
+| `11` | `max_runtime_exceeded` | 即座に作業中断、ターン終了。queue scan が次サイクルでリースを release する |
+| `12` | `fencing_status_mismatch` | 即座に作業中断、ターン終了。タスクは既に terminal status に到達済み |
+| `2` (legacy) | 古い daemon (F-019 段階1 未満) | 上記 10/11/12 と同じ扱い。新仕様への移行猶予期間のみ参照 |
+| `1` | その他のエラー | stderr を確認し、再試行可能なエラーなら再試行 |
 
-epoch 不一致は Worker 側のバグではなく**正常系**である（リース TTL を超えるほど作業が長引いた、または Daemon が Worker の停止を検知したケース）。Worker は黙ってターンを終了し、Daemon 側で再 dispatch されるのを待つ。
+判定の擬似シェル例（pipe 越しは `$?` がパイプの最後のコマンドのものになるので、必ず単独行で実行する）:
+
+```bash
+maestro task heartbeat --task-id "$TASK_ID" --worker-id "$WORKER_ID" --epoch "$LEASE_EPOCH"
+ec=$?
+case "$ec" in
+  0)         : ;;                       # 続行
+  10|11|12)  echo "fencing_terminate $ec" >&2; exit 0 ;;  # ターン終了 (Worker から見ると正常系)
+  2)         echo "legacy_retryable" >&2; exit 0 ;;       # 旧 daemon 互換 (下記注記参照)
+  *)         echo "unexpected $ec" >&2; exit 1 ;;
+esac
+```
+
+> **`2` (legacy) の取扱い**: F-019 段階1 未満の旧 daemon は fencing 由来の reject も汎用 retryable code `2` で返していたため、本テンプレートでは `2` も「ターン終了」に倒している。本来 `2` は再試行可能な一時エラーを示すコードでもあるため、新 daemon (F-019 段階2 以降) のみを対象とする環境では `case 2)` を `*)` 側に倒し、再試行ロジック側で扱ってもよい。`result write` も同じ exit code 規約 (10/11/12) を共有するため、上記 `case` ブロックを heartbeat 専用と誤解しないこと。
+
+epoch 不一致 / max_runtime / status mismatch は Worker 側のバグではなく**正常系**である（リース TTL を超えるほど作業が長引いた、または Daemon が Worker の停止を検知したケース）。Worker は黙ってターンを終了し、Daemon 側で再 dispatch されるのを待つ。
+
+**禁止**: stderr 文字列に対する `grep "epoch mismatch"` / `grep "FENCING_REJECT"` 等のテキストマッチ判定 (F-021 で deprecated)。`$?` のみを判定軸とすること。
 
 | フラグ | 用途 |
 |---|---|

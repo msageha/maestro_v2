@@ -10,8 +10,9 @@ import (
 	"log"
 	"log/slog"
 	"strings"
-	"time"
 
+	"github.com/msageha/maestro_v2/internal/clock"
+	"github.com/msageha/maestro_v2/internal/contract"
 	"github.com/msageha/maestro_v2/internal/model"
 )
 
@@ -145,16 +146,12 @@ func (m *LogMixin) Log(level LogLevel, format string, args ...any) {
 // Clock
 // ---------------------------------------------------------------------------
 
-// Clock abstracts time.Now() for deterministic testing.
-type Clock interface {
-	Now() time.Time
-}
+// Clock is an alias for clock.Clock kept here for backwards compatibility.
+// New code should import internal/clock directly. F-038.
+type Clock = clock.Clock
 
-// RealClock is the production Clock that delegates to time.Now().
-type RealClock struct{}
-
-// Now returns the current time.
-func (RealClock) Now() time.Time { return time.Now() }
+// RealClock is an alias for clock.RealClock kept here for backwards compatibility.
+type RealClock = clock.RealClock
 
 // ---------------------------------------------------------------------------
 // State
@@ -242,13 +239,10 @@ type PlanExecutor interface {
 }
 
 // ModelSelector is the method set an adaptive model selector must expose to
-// participate in worker assignment. Kept here (rather than in plan) so the
-// daemon can hand a selector to its PlanExecutor without importing plan.
-// Any type satisfying this interface also satisfies plan.ModelSelector —
-// the bridge layer performs the cross-interface handoff.
-type ModelSelector interface {
-	SelectModel(bloomLevel int, taskName string) string
-}
+// participate in worker assignment. Aliased to contract.ModelSelector so
+// daemon/core and plan share a single definition; the bridge layer can
+// then hand a selector across the boundary without an adapter shim. F-039.
+type ModelSelector = contract.ModelSelector
 
 // PlanExecutorModelSelectorSettable is an optional extension of PlanExecutor
 // that lets the daemon inject an adaptive model selector post-startup.

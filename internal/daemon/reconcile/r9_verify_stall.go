@@ -236,8 +236,21 @@ func r9RepairBudgetAllows(run *Run, task *model.Task) bool {
 }
 
 func r9EffectiveVerifyStallThreshold(run *Run, commandID string, configured time.Duration) time.Duration {
-	const perCommandTimeout = 5 * time.Minute
-	const verifyStallGrace = 30 * time.Second
+	const (
+		perCommandTimeout = 5 * time.Minute
+		verifyStallGrace  = 30 * time.Second
+		// verifyStallSaneMinimum guards against operator misconfiguration
+		// (e.g. config yaml with verify_stall_sec=0) that would otherwise
+		// flag every in-flight verify as stalled the moment R9 runs.
+		verifyStallSaneMinimum = 60 * time.Second
+	)
+
+	if configured <= 0 {
+		run.Log(core.LogLevelWarn,
+			"R9 verify_stall_threshold_clamped command=%s configured=%v floor=%v",
+			commandID, configured, verifyStallSaneMinimum)
+		configured = verifyStallSaneMinimum
+	}
 
 	path := filepath.Join(run.Deps.MaestroDir, "state", "verify", commandID+".yaml")
 	cfg, err := model.LoadVerifyConfig(path)
@@ -361,6 +374,13 @@ func r9AdvanceRepairPendingToReplan(run *Run, statePath, commandID, taskID, reas
 
 func r9QueuePausedForReplanSignal(run *Run, commandID, taskID, reason string) {
 	now := run.Deps.Clock.Now().UTC().Format(time.RFC3339)
+	// F-004: dedup is keyed on (Kind, CommandID, PhaseID, WorkerID,
+	// ConflictGeneration) — see plannerSignalDuplicate / signalDedupKey for
+	// the canonical definition. paused_for_replan signals embed the task ID
+	// in PhaseID via the "__task_" prefix so each task gets its own
+	// dedup slot even when multiple tasks under the same command stall in
+	// the same scan cycle. WorkerID and ConflictGeneration are zero-valued
+	// for this signal kind, which is intentional.
 	phaseID := "__task_" + taskID
 	sig := model.PlannerSignal{
 		Kind:      "paused_for_replan",

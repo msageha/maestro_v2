@@ -568,3 +568,38 @@ func TestTailBytes_TrimsPartialUTF8Prefix(t *testing.T) {
 	// Sanity: no surprise — printable, no error.
 	_ = got
 }
+
+// TestRealVerifyRunner_RejectsExpectedPathsCheckOutsideGitRepo asserts that
+// when a non-empty expected_paths is supplied but `git status` fails (e.g.
+// the working directory is not a git repository), the verify outcome reports
+// the failure as expected_paths-derived rather than a generic verify failure.
+// F-008: ensure operators can disambiguate worktree-resolution bugs from
+// command failures.
+func TestRealVerifyRunner_RejectsExpectedPathsCheckOutsideGitRepo(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not available")
+	}
+	// projectDir is t.TempDir() and intentionally NOT initialised as a git repo.
+	r := newTestRealRunner(t)
+	writeVerifyYAML(t, r, `verify:
+  build:
+    - true
+`)
+	rr := &recordingRunner{}
+	r.runner = rr.run
+
+	out, err := r.Run(context.Background(), "task-1", "cmd-1", "", []string{"src/"})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if out.Passed {
+		t.Fatalf("expected fail when expected_paths check runs outside a git repo, got pass")
+	}
+	if !strings.Contains(out.Reason, "verify_expected_paths_check_failed") {
+		t.Fatalf("reason = %q, want it to mention verify_expected_paths_check_failed (F-008)", out.Reason)
+	}
+	if len(rr.seen) != 0 {
+		t.Fatalf("verify commands should not run after expected_paths check failure, got %v", rr.seen)
+	}
+}

@@ -89,6 +89,31 @@ func (a *cliApp) runPlanRebuild(args []string) error {
 
 // runPlanUnquarantine clears quarantine state on a command's integration
 // branch so the next queue scan can re-enqueue merge attempts.
+//
+// F-017 / F-020 design decision (intentionally NOT exposed to Orchestrator
+// / Planner agents):
+//
+// Quarantine is the daemon's last-resort backstop for "3+ consecutive merge
+// failures" or "publish_failed past the retry budget". Reaching quarantine
+// means the automated retry loop has converged on a failure mode the
+// agents themselves did not resolve, so handing the unquarantine button
+// back to those same agents would defeat the safety semantics. The reviewer
+// suggested either (a) opening unquarantine to Planner or (b) adding a
+// high-level Orchestrator wrapper; both options reintroduce the
+// "self-healing loop on the very surface that already failed" failure mode
+// that the operator-only gate exists to prevent.
+//
+// What IS available to the agents:
+//   - `maestro plan resume-merge`   (Planner / operator) — replays merge
+//     attempts after a worker has resolved a conflict.
+//   - `maestro plan retry-publish`  (Planner / operator) — retries publish
+//     after the cooldown elapses or after a worker resolves a publish_conflict.
+//   - `maestro plan resolve-conflict` (Planner / operator) — drives the
+//     conflict resolution worker dispatch.
+//
+// `unquarantine` remains operator-only, with the reasoning that an operator
+// looking at the quarantine state can decide whether the underlying root
+// cause has actually been addressed before resetting the failure counters.
 func (a *cliApp) runPlanUnquarantine(args []string) error {
 	cmd := NewCommand("maestro plan unquarantine", "maestro plan unquarantine --command-id <id> [--reason <text>]")
 	var commandID, reason string

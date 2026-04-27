@@ -32,7 +32,7 @@ func FuzzReadFrame(f *testing.F) {
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if len(data) > maxFrameSize+4 {
-			t.Skip()
+			t.Skip("seed exceeds maxFrameSize+4 envelope budget — out of fuzz scope")
 		}
 
 		// Create an in-memory connection pair with deadlines to prevent stalls

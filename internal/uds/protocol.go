@@ -211,9 +211,39 @@ type Response struct {
 }
 
 // errorDetail contains a machine-readable error code and a human-readable message.
+//
+// Details (F-019): an optional structured payload that lets the daemon
+// surface fencing context (e.g. current_epoch, current_status) without the
+// CLI having to parse it back out of Message. Older daemons leave this nil
+// and existing CLI consumers ignore it, so the addition is backwards
+// compatible.
 type errorDetail struct {
-	Code    string `json:"code"`
-	Message string `json:"message"`
+	Code    string          `json:"code"`
+	Message string          `json:"message"`
+	Details json.RawMessage `json:"details,omitempty"`
+}
+
+// FencingDetails is the canonical schema for the `details` payload of
+// fencing-related error responses (F-019). Embedding this lets CLI consumers
+// branch on machine-readable fields instead of grepping the message string.
+//
+// Field semantics:
+//   - Kind: short stable token; one of "fencing_epoch_mismatch",
+//     "fencing_status_mismatch", "max_runtime_exceeded".
+//   - CurrentEpoch / RequestEpoch: lease_epoch values from the queue and
+//     from the rejected request respectively. Always populated for epoch
+//     mismatches; omitted (zero) for non-epoch fencing kinds.
+//   - CurrentStatus: the queue task's current status (e.g. "completed",
+//     "cancelled", "in_progress"); populated for status mismatches.
+//   - TaskID / WorkerID: helps the CLI / worker.md flow correlate the
+//     reject with its own pending request without re-parsing the message.
+type FencingDetails struct {
+	Kind          string `json:"kind"`
+	TaskID        string `json:"task_id,omitempty"`
+	WorkerID      string `json:"worker_id,omitempty"`
+	CurrentEpoch  int    `json:"current_epoch,omitempty"`
+	RequestEpoch  int    `json:"request_epoch,omitempty"`
+	CurrentStatus string `json:"current_status,omitempty"`
 }
 
 // Error code constants used in errorDetail.Code to classify failures.
@@ -289,6 +319,42 @@ func ErrorResponse(code, message string) *Response {
 			Message: message,
 		},
 	}
+}
+
+// ErrorResponseWithDetails is the structured-payload variant of ErrorResponse.
+// `details` is marshalled as JSON and stored in errorDetail.Details. On
+// marshal failure the function falls back to ErrorResponse so the caller
+// always observes a well-formed error.
+//
+// Use this for fencing-related rejects (heartbeat / result_write epoch or
+// status mismatch, max_runtime_exceeded) so the CLI / Worker can branch on
+// machine-readable fields without grepping Message. F-019.
+func ErrorResponseWithDetails(code, message string, details any) *Response {
+	if details == nil {
+		return ErrorResponse(code, message)
+	}
+	raw, err := json.Marshal(details)
+	if err != nil {
+		return ErrorResponse(code, message)
+	}
+	return &Response{
+		Success: false,
+		Error: &errorDetail{
+			Code:    code,
+			Message: message,
+			Details: raw,
+		},
+	}
+}
+
+// ErrorDetails returns the marshalled details payload of an error response,
+// or nil if no details were attached. Helper for CLI / test consumers that
+// want to read the F-019 structured payload without exporting errorDetail.
+func (r *Response) ErrorDetails() json.RawMessage {
+	if r == nil || r.Error == nil {
+		return nil
+	}
+	return r.Error.Details
 }
 
 // DefaultSocketName is the conventional socket filename inside .maestro/.

@@ -2,13 +2,17 @@ package plan
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/msageha/maestro_v2/internal/lock"
 	"github.com/msageha/maestro_v2/internal/model"
+	yamlv3 "gopkg.in/yaml.v3"
 )
 
 // stateSaveTimeout is the maximum duration allowed for a SaveState call
@@ -19,17 +23,54 @@ const stateSaveTimeout = 30 * time.Second
 // or returns an error if ctx is cancelled/expired before saveFn completes.
 // This prevents a hung filesystem from blocking the caller indefinitely
 // while holding locks.
+//
+// F-029: when ctx fires before saveFn returns, saveFn keeps running. AtomicWrite
+// cannot be cancelled mid-rename, so any persistence side effect from a late
+// completion is still observable on disk. We can't prevent that here, but we
+// flip an atomic flag so the goroutine logs a `state_save_late_completion`
+// warning (vs silently leaking a goroutine and racing with rollback writes).
+// Callers MUST treat stateSaveTimeoutError as "state on disk is now
+// ambiguous" and recover by re-saving the rolled-back snapshot after the late
+// completion has been observed.
 func saveStateWithContext(ctx context.Context, saveFn func() error) error {
+	var timedOut atomic.Bool
 	done := make(chan error, 1)
 	go func() {
-		done <- saveFn()
+		err := saveFn()
+		if timedOut.Load() {
+			slog.Warn("state save completed after context timeout (late write)",
+				"event", "state_save_late_completion",
+				"error", err,
+			)
+		}
+		done <- err
 	}()
 	select {
 	case err := <-done:
 		return err
 	case <-ctx.Done():
-		return fmt.Errorf("state save timed out: %w", ctx.Err())
+		timedOut.Store(true)
+		return &stateSaveTimeoutError{cause: ctx.Err(), done: done}
 	}
+}
+
+// stateSaveTimeoutError carries the late completion handle for a timed-out
+// SaveState call. errors.Is still matches the wrapped context error.
+type stateSaveTimeoutError struct {
+	cause error
+	done  <-chan error
+}
+
+func (e *stateSaveTimeoutError) Error() string {
+	return fmt.Sprintf("state save timed out: %v", e.cause)
+}
+
+func (e *stateSaveTimeoutError) Unwrap() error {
+	return e.cause
+}
+
+func (e *stateSaveTimeoutError) wait() error {
+	return <-e.done
 }
 
 // logSuppressor limits the rate of repeated log messages within a time window.
@@ -40,6 +81,11 @@ type logSuppressor struct {
 	window time.Duration
 	burst  int
 	counts map[string]*suppressEntry
+	// nowFn lets tests inject a fake clock so window-expiry behaviour can be
+	// asserted without `time.Sleep` (F-060). Production paths use
+	// newLogSuppressor which leaves nowFn nil; allow() then defaults to
+	// time.Now.
+	nowFn func() time.Time
 }
 
 type suppressEntry struct {
@@ -56,8 +102,21 @@ func newLogSuppressor(window time.Duration, burst int) *logSuppressor {
 	}
 }
 
+// newLogSuppressorWithClock is the test-only constructor that injects a
+// custom now() function. Mirrors newLogSuppressor in every other respect.
+func newLogSuppressorWithClock(window time.Duration, burst int, nowFn func() time.Time) *logSuppressor {
+	s := newLogSuppressor(window, burst)
+	s.nowFn = nowFn
+	return s
+}
+
 func (s *logSuppressor) allow(key string) (emit bool, suppressed int) {
-	now := time.Now()
+	var now time.Time
+	if s.nowFn != nil {
+		now = s.nowFn()
+	} else {
+		now = time.Now()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -285,16 +344,97 @@ func writeAndCommitRetryQueue(
 
 	saveCtx, saveCancel := context.WithTimeout(context.Background(), stateSaveTimeout)
 	defer saveCancel()
+	attemptedStateBytes, copyErr := copyState(state)
+	if copyErr != nil {
+		rollbackRetryQueueEntries(opts.MaestroDir, writtenTasks, opts.LockMap)
+		restoreStateOrLog(state, origStateBytes, "copy_attempted_state")
+		return fmt.Errorf("copy attempted state for rollback guard: %w", copyErr)
+	}
 	if err := saveStateWithContext(saveCtx, func() error { return sm.SaveState(state) }); err != nil {
 		if restoreErr := updateOriginalTaskInQueue(opts.MaestroDir, opts.RetryOf, opts.CommandID, model.StatusFailed, now, opts.LockMap); restoreErr != nil {
 			slog.Warn("failed to restore original task queue status", "task_id", opts.RetryOf, "error", restoreErr)
 		}
 		rollbackRetryQueueEntries(opts.MaestroDir, writtenTasks, opts.LockMap)
 		restoreStateOrLog(state, origStateBytes, "save_state")
+		var timeoutErr *stateSaveTimeoutError
+		if errors.As(err, &timeoutErr) {
+			scheduleRollbackResaveAfterLateStateSave(sm, opts.CommandID, origStateBytes, attemptedStateBytes, timeoutErr)
+		}
 		return fmt.Errorf("save state: %w", err)
 	}
 
 	return nil
+}
+
+// scheduleRollbackResaveAfterLateStateSave waits for a timed-out SaveState to
+// finish, then repairs the on-disk state if that late save actually installed
+// the attempted snapshot. The current-state guard prevents this recovery path
+// from clobbering a newer legitimate state transition that landed after the
+// caller returned its timeout error.
+func scheduleRollbackResaveAfterLateStateSave(
+	sm *StateManager,
+	commandID string,
+	origStateBytes, attemptedStateBytes []byte,
+	timeoutErr *stateSaveTimeoutError,
+) {
+	origStateBytes = append([]byte(nil), origStateBytes...)
+	attemptedStateBytes = append([]byte(nil), attemptedStateBytes...)
+	go func() {
+		lateErr := timeoutErr.wait()
+		if outcome, err := resaveRollbackSnapshotIfCurrentMatches(sm, commandID, origStateBytes, attemptedStateBytes); err != nil {
+			slog.Error("state rollback resave after late completion failed",
+				"event", "state_save_rollback_resave_failed",
+				"command_id", commandID,
+				"late_save_error", lateErr,
+				"error", err,
+			)
+		} else {
+			slog.Warn("state rollback resave after late completion finished",
+				"event", "state_save_rollback_resave_finished",
+				"command_id", commandID,
+				"late_save_error", lateErr,
+				"outcome", outcome,
+			)
+		}
+	}()
+}
+
+func resaveRollbackSnapshotIfCurrentMatches(sm *StateManager, commandID string, origStateBytes, attemptedStateBytes []byte) (string, error) {
+	origState, err := decodeStateSnapshot(origStateBytes)
+	if err != nil {
+		return "", fmt.Errorf("decode original snapshot: %w", err)
+	}
+	attemptedState, err := decodeStateSnapshot(attemptedStateBytes)
+	if err != nil {
+		return "", fmt.Errorf("decode attempted snapshot: %w", err)
+	}
+
+	sm.LockCommand(commandID)
+	defer sm.UnlockCommand(commandID)
+
+	current, err := sm.LoadState(commandID)
+	if err != nil {
+		return "", fmt.Errorf("load current state: %w", err)
+	}
+	switch {
+	case reflect.DeepEqual(*current, *attemptedState):
+		if err := sm.SaveState(origState); err != nil {
+			return "", fmt.Errorf("save rollback snapshot: %w", err)
+		}
+		return "resaved_rollback_snapshot", nil
+	case reflect.DeepEqual(*current, *origState):
+		return "already_rolled_back", nil
+	default:
+		return "skipped_current_state_changed", nil
+	}
+}
+
+func decodeStateSnapshot(data []byte) (*model.CommandState, error) {
+	var state model.CommandState
+	if err := yamlv3.Unmarshal(data, &state); err != nil {
+		return nil, err
+	}
+	return &state, nil
 }
 
 // retryContext holds validated state and metadata for a retry operation.

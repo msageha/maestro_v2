@@ -98,6 +98,7 @@ func taskHeartbeatFactory(d *Daemon) daemonapi.HandlerFactory {
 			d.logLevel,
 			&d.handler.scanExecutor.scanMu,
 			d.lockMap,
+			WithHeartbeatSelfWrites(d.selfWrites),
 		)
 	}
 }

@@ -9,14 +9,15 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
+	"github.com/msageha/maestro_v2/internal/clock"
 	"github.com/msageha/maestro_v2/internal/model"
 	yamlutil "github.com/msageha/maestro_v2/internal/yaml"
 )
 
-// Clock abstracts time.Now() for deterministic testing.
-type Clock interface {
-	Now() time.Time
-}
+// Clock is an alias for clock.Clock kept here so that existing
+// metrics.NewHandler / metrics.Clock call sites continue to compile. New code
+// should depend on internal/clock directly. F-038.
+type Clock = clock.Clock
 
 // Logger provides warning-level logging for the metrics handler.
 type Logger interface {

@@ -1,4 +1,5 @@
-// Package model defines the data structures for Maestro's configuration, state, and queue entries.
+// Package-level documentation lives in doc.go (including the F-049 naming
+// convention for Status / State / Phase).
 package model
 
 // Config is the root configuration structure loaded from config.yaml.
@@ -127,17 +128,39 @@ func (a AgentConfig) EffectiveBasePromptMode() string {
 
 // WorkerConfig holds configuration for worker agents.
 type WorkerConfig struct {
-	Count          int               `yaml:"count"`
-	DefaultModel   string            `yaml:"default_model"`
-	Models         map[string]string `yaml:"models,omitempty"`
-	Boost          bool              `yaml:"boost"`
-	BasePromptMode string            `yaml:"base_prompt_mode"`
+	Count                    int               `yaml:"count"`
+	DefaultModel             string            `yaml:"default_model"`
+	Models                   map[string]string `yaml:"models,omitempty"`
+	Boost                    bool              `yaml:"boost"`
+	BasePromptMode           string            `yaml:"base_prompt_mode"`
+	PolicyHookImplementation string            `yaml:"policy_hook_implementation,omitempty"`
 }
+
+const (
+	// PolicyHookImplementationBash keeps the existing bash hook as the
+	// authoritative Worker PreToolUse policy.
+	PolicyHookImplementationBash = "bash"
+	// PolicyHookImplementationShadow keeps bash enforcement and compares the
+	// Go policy result in stderr-only shadow mode.
+	PolicyHookImplementationShadow = "shadow"
+	// PolicyHookImplementationGo writes the thin wrapper that delegates
+	// directly to `maestro hook policy-check`.
+	PolicyHookImplementationGo = "go"
+)
 
 // EffectiveBasePromptMode returns the configured base prompt mode or "append" as default.
 // Valid values: "replace" (--system-prompt), "append" (--append-system-prompt).
 func (w WorkerConfig) EffectiveBasePromptMode() string {
 	return effectiveBasePromptMode(w.BasePromptMode)
+}
+
+// EffectivePolicyHookImplementation returns the selected worker policy hook
+// implementation, defaulting to bash for migration safety.
+func (w WorkerConfig) EffectivePolicyHookImplementation() string {
+	if w.PolicyHookImplementation == "" {
+		return PolicyHookImplementationBash
+	}
+	return w.PolicyHookImplementation
 }
 
 // --- ContinuousConfig ---

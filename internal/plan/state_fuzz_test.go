@@ -46,7 +46,7 @@ task_states:
 
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if len(data) > 1<<20 {
-			t.Skip()
+			t.Skip("seed exceeds 1MiB YAML budget — out of fuzz scope")
 		}
 
 		// The fuzz target verifies that parsing never panics.

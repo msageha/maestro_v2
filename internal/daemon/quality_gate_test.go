@@ -99,7 +99,6 @@ func setupTestQualityGate(t *testing.T) (*QualityGateDaemon, string) {
 
 	qg := NewQualityGateDaemon(maestroDir, cfg, lockMap, logger, LogLevelDebug, context.Background())
 
-	// Initialize the gate engine
 	err := qg.loadGateDefinitions()
 	require.NoError(t, err)
 
@@ -110,11 +109,9 @@ func TestQualityGateDaemon_Start_Stop(t *testing.T) {
 	t.Parallel()
 	qg, _ := setupTestQualityGate(t)
 
-	// Start the daemon
 	err := qg.Start()
 	assert.NoError(t, err)
 
-	// Stop the daemon
 	err = qg.Stop()
 	assert.NoError(t, err)
 }
@@ -476,7 +473,6 @@ func BenchmarkEvaluateGate_Simple(b *testing.B) {
 
 	qg := NewQualityGateDaemon(maestroDir, cfg, lockMap, logger, LogLevelError, context.Background())
 
-	// Initialize the gate engine
 	err := qg.loadGateDefinitions()
 	require.NoError(b, err)
 
@@ -511,7 +507,6 @@ func BenchmarkEvaluateGate_Complex(b *testing.B) {
 
 	qg := NewQualityGateDaemon(maestroDir, cfg, lockMap, logger, LogLevelError, context.Background())
 
-	// Initialize the gate engine
 	err := qg.loadGateDefinitions()
 	require.NoError(b, err)
 

@@ -1,12 +1,8 @@
-// TODO(coverage): The following daemon package files lack unit test coverage.
-// Priority order (highest first):
-//   - handler_registry.go: Handler registration system; verify correct routing
-//   - queue_store.go, queue_state_manager.go: State persistence layer; verify YAML round-trip
-//   - executor_provider.go: Executor provisioning; verify factory and caching
-//   - result_file_store.go: Result persistence; verify atomic writes
-//   - skill_handler.go: Skill execution pipeline; verify dispatch and error handling
-//   - yaml_update.go: YAML mutation helpers; verify partial update correctness
-//   - base_handler.go: Base handler; verify common validation logic
+// Coverage gaps for the daemon package are tracked in
+// docs/maestro-review/FINAL_REPORT.md (F-056). The previous in-source
+// priority list lacked owners and dates, drifted out of sync, and tended
+// to mask the fact that several listed files had since gained tests; the
+// review report is the canonical roadmap.
 package daemon
 
 import (

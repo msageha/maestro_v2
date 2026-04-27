@@ -597,3 +597,13 @@ make lint-fix     # 自動修正付き lint
 make install      # ビルド + インストール
 make clean        # 成果物削除
 ```
+
+### コード規約
+
+- **コメント言語の使い分け** (F-062):
+  - **godoc に出る公開 API のコメント (パッケージ doc, 公開 type/func の直前)**: 英語で記述する。`go doc` 出力と外部読み手 (LLM コードレビューを含む) の双方を想定。
+  - **実装ノート / 内部設計判断 / レビュー指摘への応答コメント**: 日本語または英語のいずれでも可。プロジェクトレビューが日本語で行われる経緯から、コンテキスト保持の観点で日本語が選択されることが多い。
+  - **既存コードに合わせる**: ファイル単位で混在を避ける。同一ファイル内で関数 doc が英語なら、その上下のコメントも原則英語。やむを得ず混ぜる場合は `// 補足:` で日本語ブロックを明示。
+  - **段階的統一を許容**: 一度に全ファイルを揃えるより、触るたびにファイル単位で揃えていく方針。
+- **Status / State / Phase の使い分け**: `internal/model/doc.go` を参照。
+- **公開 API の追加・削除**: `templates/instructions/*.md` (Orchestrator/Planner/Worker/maestro 共通) との整合を同一コミットで保つこと (`internal/agent/launcher.go` の `allowedToolsByRole` MAINTENANCE INVARIANT 参照)。

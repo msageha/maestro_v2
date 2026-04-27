@@ -4,10 +4,19 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 )
+
+// PolicyHookGoEscapeHatchEnv guards `policy_hook_implementation: "go"` until
+// the Go policy validator (internal/validate/policy.go) reaches full corpus
+// parity with worker_policy_hook.sh. Setting this variable to "1" allows the
+// `"go"` value to pass config validation; it MUST only be set by parity-test
+// drivers and operators who accept the regression risk documented in
+// docs/maestro-review/F-025-migration-plan.md (Step 7 / Step 8 gating).
+const PolicyHookGoEscapeHatchEnv = "MAESTRO_POLICY_HOOK_ALLOW_GO_UNSAFE"
 
 // Validate checks all Config fields for consistency after yaml.Unmarshal.
 // Returns a joined error containing all validation failures with field paths.
@@ -54,6 +63,37 @@ func (c Config) validateProject(errs *[]error) {
 func (c Config) validateAgents(errs *[]error) {
 	if c.Agents.Workers.Count < MinWorkers || c.Agents.Workers.Count > MaxWorkers {
 		*errs = append(*errs, fmt.Errorf("agents.workers.count: must be between %d and %d", MinWorkers, MaxWorkers))
+	}
+	switch c.Agents.Workers.PolicyHookImplementation {
+	case "", PolicyHookImplementationBash, PolicyHookImplementationShadow:
+		// always accepted
+	case PolicyHookImplementationGo:
+		// `go` is gated behind an explicit unsafe-override env var until the
+		// Go policy validator reaches full parity with worker_policy_hook.sh.
+		// Without the gate, selecting `go` silently disables the majority of
+		// Tier1/Tier2 safety rules that are not yet translated to Go (see
+		// docs/maestro-review/F-025-migration-plan.md). Default `bash` and
+		// `shadow` cover the production-safe operating modes; the gate exists
+		// for parity-test drivers, not end users.
+		if os.Getenv(PolicyHookGoEscapeHatchEnv) != "1" {
+			*errs = append(*errs, fmt.Errorf(
+				"agents.workers.policy_hook_implementation: %q is gated until the Go validator reaches parity with worker_policy_hook.sh "+
+					"(only ~10 of the bash hook's rules are translated; selecting it would silently disable the rest). "+
+					"Use %q (default) or %q for production. "+
+					"Parity-test drivers may set %s=1 to bypass this check; see docs/maestro-review/F-025-migration-plan.md",
+				PolicyHookImplementationGo,
+				PolicyHookImplementationBash,
+				PolicyHookImplementationShadow,
+				PolicyHookGoEscapeHatchEnv,
+			))
+		}
+	default:
+		*errs = append(*errs, fmt.Errorf(
+			"agents.workers.policy_hook_implementation: must be one of %q, %q, or %q",
+			PolicyHookImplementationBash,
+			PolicyHookImplementationShadow,
+			PolicyHookImplementationGo,
+		))
 	}
 	if !isValidModelName(c.Agents.Orchestrator.Model) {
 		*errs = append(*errs, fmt.Errorf("agents.orchestrator.model: invalid model name %q", c.Agents.Orchestrator.Model))

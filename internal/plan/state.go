@@ -169,6 +169,13 @@ func (sm *StateManager) SaveState(state *model.CommandState) error {
 }
 
 // DeleteState removes the state file for a command.
+//
+// This also removes the sibling <state>.bak rotation that yaml.AtomicWriteRaw
+// produces. Without this, recoverStateDir would treat the stale .bak as a
+// valid prior generation if a new state file is later created at the same
+// path (commandID reuse) and then becomes corrupt — the ORC-3 epoch floor
+// clamp would then re-inject a stale lease_epoch derived from the old
+// generation. See F-030 / F-031 in docs/maestro-review/FINAL_REPORT.md.
 func (sm *StateManager) DeleteState(commandID string) error {
 	path, err := sm.StatePath(commandID)
 	if err != nil {
@@ -176,6 +183,12 @@ func (sm *StateManager) DeleteState(commandID string) error {
 	}
 	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("delete state %s: %w", commandID, err)
+	}
+	// Best-effort .bak cleanup: a missing .bak is the common case (the file is
+	// only written after the second SaveState), so swallow ErrNotExist.
+	bakPath := path + ".bak"
+	if err := os.Remove(bakPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("delete state bak %s: %w", commandID, err)
 	}
 	return nil
 }

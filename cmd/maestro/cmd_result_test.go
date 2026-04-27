@@ -254,8 +254,12 @@ func TestRunResultWrite_UDSFencingReject(t *testing.T) {
 	if !errors.As(err, &ce) {
 		t.Fatalf("expected CLIError, got %T: %v", err, err)
 	}
-	if ce.Code != ExitCodeRetryable {
-		t.Errorf("expected exit code %d for FENCING_REJECT, got %d", ExitCodeRetryable, ce.Code)
+	// F-019 step 2: FENCING_REJECT now maps to the structured exit code 12
+	// (status mismatch) via the legacy-code fallback in
+	// classifyFencingExitCode. Pre-F-019 builds returned the generic 2
+	// (ExitCodeRetryable); this test pins the new contract.
+	if ce.Code != ExitCodeFencingStatus {
+		t.Errorf("expected exit code %d (ExitCodeFencingStatus) for FENCING_REJECT, got %d", ExitCodeFencingStatus, ce.Code)
 	}
 }
 

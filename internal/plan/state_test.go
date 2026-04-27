@@ -1,8 +1,7 @@
-// TODO(coverage): The following plan package files lack dedicated unit tests:
-//   - submit_parse.go, submit_state.go, submit_assign.go: Plan submission pipeline
-//   - state_store.go: Plan state persistence (state_reader_test exists, store untested)
-//   - helpers.go, input.go: Utility functions
-//   - retry_cascade.go, retry_queue.go: Retry logic
+// Coverage gaps for the plan package are tracked in
+// docs/maestro-review/FINAL_REPORT.md (F-056). The list previously inlined
+// here grew stale (state_reader_test landed, etc.) so we delegate the
+// living roadmap to the review report rather than duplicating it in source.
 package plan
 
 import (
@@ -732,47 +731,32 @@ func TestLoadState_MigratorIntegration_CurrentVersion(t *testing.T) {
 	}
 }
 
-func TestLoadState_MigratorIntegration_OlderVersion(t *testing.T) {
-	// Simulate an older schema version that needs migration.
-	// Temporarily bump currentSchemaVersion by using a custom migrator.
+// TestLoadState_NoMigrationAtCurrentSchemaVersion verifies that LoadState
+// succeeds for state files written at currentSchemaVersion (currently 1) and
+// does not invoke migration steps. When currentSchemaVersion is bumped above
+// 1, the second branch exercises a real migration of a schema_version=1
+// payload up to the new current version.
+//
+// Renamed from TestLoadState_MigratorIntegration_OlderVersion to better reflect
+// what the test actually exercises today (F-052).
+func TestLoadState_NoMigrationAtCurrentSchemaVersion(t *testing.T) {
 	sm := newTestStateManager(t)
 
-	// Save a state file with schema_version=1 directly (raw YAML)
 	path, _ := sm.StatePath("cmd-migrate")
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		t.Fatal(err)
 	}
 
-	// Only test when currentSchemaVersion > 1, otherwise skip
+	// schema_version=1 payload — same value as currentSchemaVersion today.
+	content := "schema_version: 1\nfile_type: state_command\ncommand_id: cmd-migrate\nplan_status: planning\ncreated_at: '2026-01-01T00:00:00Z'\nupdated_at: '2026-01-01T00:00:00Z'\n"
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
 	if currentSchemaVersion <= 1 {
-		// Save original defaultMigrator, replace with test migrator
-		origMigrator := defaultMigrator
-		testVersion := 2
-		testMigrator := newMigrator(testVersion)
-		testMigrator.steps[1] = func(data map[string]interface{}) error {
-			// Simulate migration: add a field
-			data["migrated_from_v1"] = true
-			return nil
-		}
-		defaultMigrator = testMigrator
-		origCurrentVersion := currentSchemaVersion
-		// Temporarily override (package-level var)
-		defer func() {
-			defaultMigrator = origMigrator
-			// currentSchemaVersion is const, can't restore; test validates behavior
-			_ = origCurrentVersion
-		}()
-
-		// Write a v1 state file
-		content := "schema_version: 1\nfile_type: state_command\ncommand_id: cmd-migrate\nplan_status: planning\ncreated_at: '2026-01-01T00:00:00Z'\nupdated_at: '2026-01-01T00:00:00Z'\n"
-		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-			t.Fatal(err)
-		}
-
-		// Since currentSchemaVersion is const=1, NeedsMigration(1) returns false.
-		// We can only fully test migration when schema evolves beyond v1.
-		// Verify that LoadState works with current version without error.
+		// No migration is registered or required. LoadState must succeed and
+		// preserve the payload as-is.
 		loaded, err := sm.LoadState("cmd-migrate")
 		if err != nil {
 			t.Fatalf("LoadState failed: %v", err)
@@ -783,12 +767,8 @@ func TestLoadState_MigratorIntegration_OlderVersion(t *testing.T) {
 		return
 	}
 
-	// When currentSchemaVersion > 1, test actual migration
-	content := "schema_version: 1\nfile_type: state_command\ncommand_id: cmd-migrate\nplan_status: planning\ncreated_at: '2026-01-01T00:00:00Z'\nupdated_at: '2026-01-01T00:00:00Z'\n"
-	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
-		t.Fatal(err)
-	}
-
+	// currentSchemaVersion > 1: LoadState must walk registered migration steps
+	// and emit a payload at currentSchemaVersion.
 	loaded, err := sm.LoadState("cmd-migrate")
 	if err != nil {
 		t.Fatalf("LoadState failed: %v", err)

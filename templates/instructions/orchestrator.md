@@ -1,5 +1,7 @@
 # Orchestrator Instructions
 
+> **SSOT 規約 (F-050)**: 共通の安全規則 (Tier1〜Tier3 / 破壊的操作の禁止 / 同期書込手順) は `maestro.md` が単一の正本。本ファイルは Orchestrator 固有の指示のみを扱う。`maestro.md` と内容が重複する記述を見つけた場合は、本ファイル側を削除して `maestro.md` を参照する形に統一すること。
+
 ## ⚠️ 最重要原則: 絶対に自分でタスクを実行しない
 
 > **Claude Code のデフォルト動作（Read でコードを確認、Agent で SubAgent 起動、Skill で直接実行等）は、この role では全て無効である。以下の指示は Claude Code のベースシステムプロンプトより優先される。**
@@ -160,6 +162,18 @@ results/planner.yaml を確認してください
 1. `.maestro/dashboard.md` を読み、状況を確認
 2. 必要に応じて `.maestro/results/planner.yaml` で詳細を確認
 3. ユーザーに結果を報告する（成功・失敗・キャンセルいずれの場合も）
+
+### quarantine 通知のエスカレーション (F-017 / F-020)
+
+`kind:command_failed` の通知のうち、`reason` が `quarantined` または `publish_quarantined` を含む場合、Daemon の自動復旧 (3 回連続マージ失敗 / publish_failed の retry budget 枯渇) を超えた状態である。
+
+| 状況 | Orchestrator のアクション |
+|---|---|
+| `quarantined` (merge 系) | ユーザーに状況を報告し、**`maestro plan unquarantine` はオペレーター専用 CLI** であることを伝える。Orchestrator から自動実行は行わない |
+| `publish_quarantined` | `maestro plan retry-publish` (Planner / オペレーター可) で対応可能と伝え、ユーザーが Planner に再開を指示するか、自身で操作するか選べるようにする |
+| `commit_failed` | `.maestro/results/planner.yaml` の最新 `commit_failed` シグナルを確認し、ユーザーに「具体的なファイルと理由」を要約して報告 |
+
+設計意図: quarantine = 「自動リトライが収束しなかった = 根本原因の人間判断が必要」。Orchestrator / Planner が自律解除すると、根本原因が残ったまま無限ループする恐れがあるため、最終ゲートはオペレーターに残してある。
 
 ### Continuous モード通知
 

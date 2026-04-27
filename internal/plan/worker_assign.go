@@ -10,6 +10,7 @@ import (
 
 	yamlv3 "gopkg.in/yaml.v3"
 
+	"github.com/msageha/maestro_v2/internal/contract"
 	"github.com/msageha/maestro_v2/internal/model"
 	"github.com/msageha/maestro_v2/internal/validate"
 )
@@ -27,9 +28,10 @@ type WorkerAssignment struct {
 // otherwise AssignWorkers falls back to GetModelForBloomLevel.
 //
 // Implementations must be safe for concurrent use.
-type ModelSelector interface {
-	SelectModel(bloomLevel int, taskName string) string
-}
+//
+// Aliased to contract.ModelSelector so plan and daemon/core share a single
+// definition. F-039.
+type ModelSelector = contract.ModelSelector
 
 // assignConfig carries optional AssignWorkers behavior.
 type assignConfig struct {

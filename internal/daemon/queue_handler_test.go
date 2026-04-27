@@ -24,7 +24,11 @@ import (
 // TODO(DRY): setupTestMaestroDir, newTestExecutorProvider, newTestQueueHandler are duplicated.
 // Duplicated in: daemon/*_test.go (multiple files)
 // Target: internal/daemon/testhelper_test.go
-// Prerequisite: daemon test suite structure stabilization
+// Trigger: extract once a third caller appears OR after the
+// `internal/daemon` test split (F-040..F-043) lands and stabilises file
+// boundaries — extracting earlier risks churning helper signatures while
+// the split moves call sites. Safe to revisit when neither condition has
+// changed for two consecutive sprints.
 func setupTestMaestroDir(t *testing.T) string {
 	t.Helper()
 	return testutil.SetupDirFixPerms(t)

@@ -84,6 +84,20 @@ func recoverStateDir(stateDir string, logger stateLogger) {
 			continue
 		}
 
+		// F-031: ensure the .bak belongs to the same commandID as the file
+		// being recovered. DeleteState now removes the sibling .bak (F-030),
+		// but on older daemons (or after manual intervention) a stale .bak
+		// from a prior generation could still be present. Restoring it would
+		// resurrect a logically dead state and combine with the ORC-3 epoch
+		// floor clamp below to re-inject a stale lease_epoch.
+		expectedCommandID := strings.TrimSuffix(name, ".yaml")
+		if bakCommandID, err := extractCommandID(bakContent); err == nil && bakCommandID != "" && bakCommandID != expectedCommandID {
+			logger.logf(LogLevelWarn,
+				"state_recovery bak_command_id_mismatch path=%s expected=%s found=%s (ignored)",
+				bakPath, expectedCommandID, bakCommandID)
+			continue
+		}
+
 		// ORC-3: Clamp lease_epoch values in restored content to the floor.
 		bakContent = clampLeaseEpoch(bakContent, epochFloor, logger, path)
 
@@ -211,4 +225,17 @@ func parseYAMLFile(path string) error {
 		return fmt.Errorf("unmarshal: %w", err)
 	}
 	return nil
+}
+
+// extractCommandID returns the command_id value from a state YAML payload.
+// Returns "" when the field is missing or unparseable, which lets the caller
+// skip the integrity check rather than abort recovery.
+func extractCommandID(content []byte) (string, error) {
+	var probe struct {
+		CommandID string `yaml:"command_id"`
+	}
+	if err := yamlv3.Unmarshal(content, &probe); err != nil {
+		return "", err
+	}
+	return probe.CommandID, nil
 }

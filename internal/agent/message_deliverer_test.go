@@ -464,14 +464,42 @@ func TestSleepWithBackoff_NormalCompletion(t *testing.T) {
 	}
 }
 
+// TestBackoffDuration_ExactSchedule asserts the exponential schedule directly
+// against the pure function so the test does not depend on scheduler latency.
+// F-057 replaced the prior wall-clock check (`elapsed < 3ms`) which was
+// vulnerable to single-millisecond jitter.
+func TestBackoffDuration_ExactSchedule(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		baseMs  int
+		attempt int
+		want    time.Duration
+	}{
+		{1, 1, 1 * time.Millisecond},
+		{1, 2, 2 * time.Millisecond},
+		{1, 3, 4 * time.Millisecond},
+		{1, 4, 8 * time.Millisecond},
+		{50, 1, 50 * time.Millisecond},
+		{50, 4, 400 * time.Millisecond},
+	}
+	for _, tc := range cases {
+		got := backoffDuration(tc.baseMs, tc.attempt)
+		if got != tc.want {
+			t.Errorf("backoffDuration(base=%dms, attempt=%d) = %v, want %v", tc.baseMs, tc.attempt, got, tc.want)
+		}
+	}
+}
+
 func TestSleepWithBackoff_ExponentialIncrease(t *testing.T) {
 	t.Parallel()
-	// Attempt 1: 1ms, Attempt 2: 2ms, Attempt 3: 4ms
+	// Coarse smoke test: a 50ms base attempt 3 schedules 200ms, well above
+	// scheduler jitter. Strict equality is covered by
+	// TestBackoffDuration_ExactSchedule.
 	start := time.Now()
-	_ = sleepWithBackoff(context.Background(), 1, 3) // 4ms
+	_ = sleepWithBackoff(context.Background(), 50, 3) // expect ~200ms
 	elapsed := time.Since(start)
-	if elapsed < 3*time.Millisecond {
-		t.Errorf("expected at least 3ms sleep for attempt 3 (2^2 * 1ms), got %v", elapsed)
+	if elapsed < 150*time.Millisecond {
+		t.Errorf("expected at least 150ms sleep for attempt 3 (2^2 * 50ms), got %v", elapsed)
 	}
 }
 

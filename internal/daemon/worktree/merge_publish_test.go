@@ -929,3 +929,36 @@ func TestPublishToBase_NoFalsePositiveStash(t *testing.T) {
 		t.Errorf("stash ref %s should not exist after clean publish (false positive stash)", stashRef)
 	}
 }
+
+// TestBytesContainConflictMarkers covers the F-013 edge cases that the
+// original strings.Contains-based detector silently missed.
+func TestBytesContainConflictMarkers(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		data []byte
+		want bool
+	}{
+		{"empty", []byte(""), false},
+		{"clean text", []byte("hello\nworld\n"), false},
+		{"opening marker", []byte("a\n<<<<<<< HEAD\nx\n"), true},
+		{"divider after newline", []byte("a\n=======\nx\n"), true},
+		{"closing marker after newline", []byte("a\n>>>>>>> branch\n"), true},
+		// F-013: pathological files that begin with the divider/closing marker
+		// without a leading newline must still be flagged.
+		{"divider at file head", []byte("=======\nrest\n"), true},
+		{"closing at file head", []byte(">>>>>>> branch\nrest\n"), true},
+		// Lone "=======" inside the body without a preceding newline must NOT
+		// be treated as a conflict marker (false positive guard).
+		{"divider mid-line no newline", []byte("foo=======bar"), false},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := bytesContainConflictMarkers(tc.data); got != tc.want {
+				t.Errorf("bytesContainConflictMarkers(%q) = %v, want %v", tc.data, got, tc.want)
+			}
+		})
+	}
+}

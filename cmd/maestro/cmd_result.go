@@ -127,10 +127,13 @@ func (a *cliApp) runResultWrite(args []string) error {
 	}
 
 	if !resp.Success {
-		code, msg := udsErrorInfo(resp)
-		if code == "FENCING_REJECT" {
-			return &CLIError{Code: ExitCodeRetryable, Msg: fmt.Sprintf("maestro result write: [%s] %s", code, msg)}
+		// F-019 step 2: structured fencing exit codes when the daemon
+		// surfaced FencingDetails. Unknown error codes still fall through
+		// to the legacy generic handler.
+		if exit := classifyFencingExitCode(resp); exit != 0 {
+			return fencingCLIError(resp, false, "maestro result write")
 		}
+		code, msg := udsErrorInfo(resp)
 		return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro result write: [%s] %s", code, msg)}
 	}
 

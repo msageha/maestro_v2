@@ -24,10 +24,38 @@ type messageDeliverer struct {
 	paneMu    sync.Map // map[string]*sync.Mutex — per-pane delivery lock
 }
 
+// Submit-probe tuning — F-015.
+//
+// These constants govern how aggressively the deliverer polls a tmux pane
+// after sending a multi-line message to confirm that Claude Code actually
+// submitted (vs. leaving the text dangling at the prompt as a paste
+// placeholder). They are intentionally NOT routed through model.WatcherConfig
+// today because:
+//   - They are tuned against Claude Code's pasted-text UX timing, not user
+//     workflow knobs;
+//   - Both the cap (8 attempts) and the cadence (750ms) are stable across
+//     all currently-supported runtimes.
+//
+// Promote them to WatcherConfig when a runtime emerges that needs different
+// values; the existing call sites already read these constants by name so
+// the migration is mechanical.
 const (
-	submitRetryProbeDelay   = 750 * time.Millisecond
-	maxSubmitProbeAttempts  = 8
-	pastedTextPlaceholder   = "Pasted text #"
+	// submitRetryProbeDelay is how long the deliverer waits between probes
+	// of pane content after sending Enter, giving Claude Code time to
+	// reflect submission.
+	submitRetryProbeDelay = 750 * time.Millisecond
+	// maxSubmitProbeAttempts caps the probe retry loop to keep delivery
+	// latency bounded even when the pane is genuinely stuck. Tuned to
+	// `8 * submitRetryProbeDelay = 6s` — long enough for slow paste flows
+	// without blocking the dispatcher when the worker is wedged.
+	maxSubmitProbeAttempts = 8
+	// pastedTextPlaceholder is the marker Claude Code shows in lieu of the
+	// actual pasted content while it waits for an explicit submit.
+	pastedTextPlaceholder = "Pasted text #"
+	// submitPromptSearchLines is the number of bottom lines of the pane
+	// joined together when looking for the placeholder. Matches the worst
+	// case where Claude Code has wrapped the placeholder onto a couple of
+	// lines plus trailing UI chrome.
 	submitPromptSearchLines = 8
 )
 
@@ -142,6 +170,14 @@ func (d *messageDeliverer) confirmSubmittedOrRetry(ctx context.Context, paneTarg
 			return nil
 		}
 	}
+	// F-016: probe budget exhausted without seeing either the pasted-text
+	// placeholder OR an activity marker. We deliberately fall through to a
+	// non-error return rather than escalating to Retryable: re-delivering the
+	// envelope risks double plan_submit (Bug L). Surface the situation as a
+	// warn so operators can correlate post-hoc with worker progress.
+	d.log(logLevelWarn,
+		"submit_confirm probe_budget_exhausted agent_id=%s task_id=%s attempts=%d (no error returned to avoid double-submit; check worker progress manually if stalled)",
+		req.AgentID, req.TaskID, maxSubmitProbeAttempts)
 	return nil
 }
 
@@ -383,11 +419,19 @@ func (p *clearConfirmationPoller) log(level logLevel, format string, args ...any
 	logf(p.logger, p.logLevel, level, "clear_poller", format, args...)
 }
 
+// backoffDuration returns the exponential delay used by sleepWithBackoff.
+// Extracted as a pure function so unit tests can assert the algebra
+// (`base * 2^(attempt-1)`) without paying the wall-clock cost of an actual
+// Sleep — which previously made the timing-based assertion (F-057) flaky on
+// loaded CI runners.
+func backoffDuration(baseMs, attempt int) time.Duration {
+	return time.Duration(baseMs*(1<<(attempt-1))) * time.Millisecond
+}
+
 // sleepWithBackoff sleeps for an exponentially increasing duration based on the
 // attempt number (1-indexed). baseMs is the base delay in milliseconds.
 func sleepWithBackoff(ctx context.Context, baseMs, attempt int) error {
-	backoff := time.Duration(baseMs*(1<<(attempt-1))) * time.Millisecond
-	if err := sleepCtx(ctx, backoff); err != nil {
+	if err := sleepCtx(ctx, backoffDuration(baseMs, attempt)); err != nil {
 		return fmt.Errorf("clear_confirm backoff cancelled: %w", err)
 	}
 	return nil

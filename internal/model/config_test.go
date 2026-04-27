@@ -96,6 +96,62 @@ func TestValidate_WorkerCountExceedsMax(t *testing.T) {
 	}
 }
 
+func TestValidate_WorkerPolicyHookImplementation(t *testing.T) {
+	// These three values are always accepted: empty (defaults to bash), bash,
+	// and shadow. `go` is gated behind PolicyHookGoEscapeHatchEnv until parity
+	// is reached, so it is exercised separately below.
+	for _, implementation := range []string{
+		"",
+		PolicyHookImplementationBash,
+		PolicyHookImplementationShadow,
+	} {
+		t.Run("valid_"+implementation, func(t *testing.T) {
+			cfg := validConfig()
+			cfg.Agents.Workers.PolicyHookImplementation = implementation
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+		})
+	}
+
+	t.Run("go_rejected_without_escape_hatch", func(t *testing.T) {
+		t.Setenv(PolicyHookGoEscapeHatchEnv, "")
+		cfg := validConfig()
+		cfg.Agents.Workers.PolicyHookImplementation = PolicyHookImplementationGo
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected error for go without escape hatch")
+		}
+		if !strings.Contains(err.Error(), "agents.workers.policy_hook_implementation") {
+			t.Fatalf("expected policy_hook_implementation in error, got: %v", err)
+		}
+		if !strings.Contains(err.Error(), PolicyHookGoEscapeHatchEnv) {
+			t.Fatalf("expected escape hatch env name in error, got: %v", err)
+		}
+	})
+
+	t.Run("go_accepted_with_escape_hatch", func(t *testing.T) {
+		t.Setenv(PolicyHookGoEscapeHatchEnv, "1")
+		cfg := validConfig()
+		cfg.Agents.Workers.PolicyHookImplementation = PolicyHookImplementationGo
+		if err := cfg.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+	})
+
+	t.Run("invalid_value_rejected", func(t *testing.T) {
+		cfg := validConfig()
+		cfg.Agents.Workers.PolicyHookImplementation = "python"
+		err := cfg.Validate()
+		if err == nil {
+			t.Fatal("expected error for invalid policy hook implementation")
+		}
+		if !strings.Contains(err.Error(), "agents.workers.policy_hook_implementation") {
+			t.Fatalf("expected policy_hook_implementation in error, got: %v", err)
+		}
+	})
+}
+
 func TestValidate_NegativeRetryFields(t *testing.T) {
 	cfg := validConfig()
 	cfg.Retry.CommandDispatch = -1

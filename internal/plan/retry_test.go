@@ -1249,7 +1249,6 @@ func TestSaveStateWithContext_Timeout(t *testing.T) {
 	defer cancel()
 
 	blocker := make(chan struct{})
-	t.Cleanup(func() { close(blocker) })
 	err := saveStateWithContext(ctx, func() error {
 		// Simulate a hung filesystem by blocking until context timeout
 		<-blocker
@@ -1263,6 +1262,14 @@ func TestSaveStateWithContext_Timeout(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "state save timed out") {
 		t.Errorf("error should contain 'state save timed out', got: %q", err)
+	}
+	var timeoutErr *stateSaveTimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatalf("expected stateSaveTimeoutError, got %T", err)
+	}
+	close(blocker)
+	if lateErr := timeoutErr.wait(); lateErr != nil {
+		t.Fatalf("late save error = %v", lateErr)
 	}
 }
 
@@ -1281,6 +1288,98 @@ func TestSaveStateWithContext_CancelledContext(t *testing.T) {
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Errorf("expected context.Canceled, got: %v", err)
+	}
+}
+
+func TestResaveRollbackSnapshotIfCurrentMatches(t *testing.T) {
+	maestroDir := setupMaestroDir(t)
+	commandID := "cmd_0000000099_aabbccdd"
+	sm := NewStateManager(maestroDir, lock.NewMutexMap())
+
+	orig := retryRollbackTestState(commandID, model.StatusFailed, "2025-01-01T00:00:00Z")
+	attempted := retryRollbackTestState(commandID, model.StatusCancelled, "2025-01-01T00:01:00Z")
+	origBytes, err := copyState(orig)
+	if err != nil {
+		t.Fatalf("copy orig: %v", err)
+	}
+	attemptedBytes, err := copyState(attempted)
+	if err != nil {
+		t.Fatalf("copy attempted: %v", err)
+	}
+	if err := sm.SaveState(attempted); err != nil {
+		t.Fatalf("save attempted: %v", err)
+	}
+
+	outcome, err := resaveRollbackSnapshotIfCurrentMatches(sm, commandID, origBytes, attemptedBytes)
+	if err != nil {
+		t.Fatalf("resaveRollbackSnapshotIfCurrentMatches: %v", err)
+	}
+	if outcome != "resaved_rollback_snapshot" {
+		t.Fatalf("outcome = %q, want resaved_rollback_snapshot", outcome)
+	}
+	got, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if got.TaskStates["task_0000000099_11111111"] != model.StatusFailed {
+		t.Fatalf("task state = %s, want failed", got.TaskStates["task_0000000099_11111111"])
+	}
+}
+
+func TestResaveRollbackSnapshotIfCurrentChangedSkips(t *testing.T) {
+	maestroDir := setupMaestroDir(t)
+	commandID := "cmd_0000000100_aabbccdd"
+	sm := NewStateManager(maestroDir, lock.NewMutexMap())
+
+	orig := retryRollbackTestState(commandID, model.StatusFailed, "2025-01-01T00:00:00Z")
+	attempted := retryRollbackTestState(commandID, model.StatusCancelled, "2025-01-01T00:01:00Z")
+	newer := retryRollbackTestState(commandID, model.StatusCompleted, "2025-01-01T00:02:00Z")
+	origBytes, err := copyState(orig)
+	if err != nil {
+		t.Fatalf("copy orig: %v", err)
+	}
+	attemptedBytes, err := copyState(attempted)
+	if err != nil {
+		t.Fatalf("copy attempted: %v", err)
+	}
+	if err := sm.SaveState(newer); err != nil {
+		t.Fatalf("save newer: %v", err)
+	}
+
+	outcome, err := resaveRollbackSnapshotIfCurrentMatches(sm, commandID, origBytes, attemptedBytes)
+	if err != nil {
+		t.Fatalf("resaveRollbackSnapshotIfCurrentMatches: %v", err)
+	}
+	if outcome != "skipped_current_state_changed" {
+		t.Fatalf("outcome = %q, want skipped_current_state_changed", outcome)
+	}
+	got, err := sm.LoadState(commandID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if got.TaskStates["task_0000000099_11111111"] != model.StatusCompleted {
+		t.Fatalf("task state = %s, want completed", got.TaskStates["task_0000000099_11111111"])
+	}
+}
+
+func retryRollbackTestState(commandID string, status model.Status, updatedAt string) *model.CommandState {
+	return &model.CommandState{
+		SchemaVersion: 1,
+		FileType:      "state_command",
+		CommandID:     commandID,
+		PlanVersion:   1,
+		PlanStatus:    model.PlanStatusSealed,
+		TaskTracking: model.TaskTracking{
+			TaskStates: map[string]model.Status{
+				"task_0000000099_11111111": status,
+			},
+			RequiredTaskIDs: []string{"task_0000000099_11111111"},
+		},
+		RetryTracking: model.RetryTracking{
+			RetryLineage: map[string]string{},
+		},
+		CreatedAt: "2025-01-01T00:00:00Z",
+		UpdatedAt: updatedAt,
 	}
 }
 
@@ -1483,7 +1582,13 @@ func TestGetLatestDescendant_NormalResolution(t *testing.T) {
 }
 
 func TestLogSuppressor_Allow(t *testing.T) {
-	s := newLogSuppressor(100*time.Millisecond, 2)
+	t.Parallel()
+	// F-060: drive window expiry through a fake clock instead of time.Sleep.
+	// The previous version slept 150ms for window=100ms which made the test
+	// load-sensitive on slow CI runners. The fake clock keeps the assertions
+	// the same but eliminates wall-clock cost.
+	now := time.Date(2026, 4, 26, 0, 0, 0, 0, time.UTC)
+	s := newLogSuppressorWithClock(100*time.Millisecond, 2, func() time.Time { return now })
 
 	// First call: should emit, no suppressed
 	emit, suppressed := s.allow("op1")
@@ -1524,8 +1629,8 @@ func TestLogSuppressor_Allow(t *testing.T) {
 		t.Errorf("different key suppressed = %d, want 0", suppressed)
 	}
 
-	// Wait for window to expire
-	time.Sleep(150 * time.Millisecond)
+	// Advance the fake clock past the window for op1.
+	now = now.Add(150 * time.Millisecond)
 
 	// After window: should emit again, with suppressed count
 	emit, suppressed = s.allow("op1")

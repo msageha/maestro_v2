@@ -24,131 +24,122 @@ import (
 
 // --- checkCommandTasksTerminal tests ---
 
-func TestCheckCommandTasksTerminal_AllCompleted(t *testing.T) {
+// TestCheckCommandTasksTerminal exercises the (allTerminal, hasFailed) outputs
+// of checkCommandTasksTerminal across the matrix of task statuses. F-058
+// table-driven consolidation of seven previously-duplicated test functions.
+func TestCheckCommandTasksTerminal(t *testing.T) {
 	t.Parallel()
-	qh := newMinimalQueueHandler(t)
-	tqs := makeTaskQueues(map[string][]model.Task{
-		"worker1": {
-			{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
-			{ID: "t2", CommandID: "cmd1", Status: model.StatusCompleted},
+	cases := []struct {
+		name             string
+		queues           map[string][]model.Task
+		commandID        string
+		wantAllTerminal  bool
+		wantHasFailed    bool
+		ignoreHasFailed  bool // some legacy cases only assert allTerminal
+	}{
+		{
+			name: "all completed",
+			queues: map[string][]model.Task{
+				"worker1": {
+					{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
+					{ID: "t2", CommandID: "cmd1", Status: model.StatusCompleted},
+				},
+			},
+			commandID:       "cmd1",
+			wantAllTerminal: true,
+			wantHasFailed:   false,
 		},
-	})
-
-	allTerminal, hasFailed := qh.checkCommandTasksTerminal("cmd1", tqs)
-	if !allTerminal {
-		t.Error("expected allTerminal=true")
-	}
-	if hasFailed {
-		t.Error("expected hasFailed=false")
-	}
-}
-
-func TestCheckCommandTasksTerminal_HasFailed(t *testing.T) {
-	t.Parallel()
-	qh := newMinimalQueueHandler(t)
-	tqs := makeTaskQueues(map[string][]model.Task{
-		"worker1": {
-			{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
-			{ID: "t2", CommandID: "cmd1", Status: model.StatusFailed},
+		{
+			name: "has failed",
+			queues: map[string][]model.Task{
+				"worker1": {
+					{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
+					{ID: "t2", CommandID: "cmd1", Status: model.StatusFailed},
+				},
+			},
+			commandID:       "cmd1",
+			wantAllTerminal: true,
+			wantHasFailed:   true,
 		},
-	})
-
-	allTerminal, hasFailed := qh.checkCommandTasksTerminal("cmd1", tqs)
-	if !allTerminal {
-		t.Error("expected allTerminal=true")
-	}
-	if !hasFailed {
-		t.Error("expected hasFailed=true")
-	}
-}
-
-func TestCheckCommandTasksTerminal_HasDeadLetter(t *testing.T) {
-	t.Parallel()
-	qh := newMinimalQueueHandler(t)
-	tqs := makeTaskQueues(map[string][]model.Task{
-		"worker1": {
-			{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
-			{ID: "t2", CommandID: "cmd1", Status: model.StatusDeadLetter},
+		{
+			name: "has dead_letter",
+			queues: map[string][]model.Task{
+				"worker1": {
+					{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
+					{ID: "t2", CommandID: "cmd1", Status: model.StatusDeadLetter},
+				},
+			},
+			commandID:       "cmd1",
+			wantAllTerminal: true,
+			wantHasFailed:   true,
 		},
-	})
-
-	allTerminal, hasFailed := qh.checkCommandTasksTerminal("cmd1", tqs)
-	if !allTerminal {
-		t.Error("expected allTerminal=true")
-	}
-	if !hasFailed {
-		t.Error("expected hasFailed=true for dead_letter")
-	}
-}
-
-func TestCheckCommandTasksTerminal_NotAllTerminal(t *testing.T) {
-	t.Parallel()
-	qh := newMinimalQueueHandler(t)
-	tqs := makeTaskQueues(map[string][]model.Task{
-		"worker1": {
-			{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
-			{ID: "t2", CommandID: "cmd1", Status: model.StatusInProgress},
+		{
+			name: "in_progress blocks terminal",
+			queues: map[string][]model.Task{
+				"worker1": {
+					{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
+					{ID: "t2", CommandID: "cmd1", Status: model.StatusInProgress},
+				},
+			},
+			commandID:       "cmd1",
+			wantAllTerminal: false,
+			ignoreHasFailed: true,
 		},
-	})
-
-	allTerminal, _ := qh.checkCommandTasksTerminal("cmd1", tqs)
-	if allTerminal {
-		t.Error("expected allTerminal=false")
+		{
+			name: "no tasks for command",
+			queues: map[string][]model.Task{
+				"worker1": {
+					{ID: "t1", CommandID: "other_cmd", Status: model.StatusCompleted},
+				},
+			},
+			commandID:       "cmd1",
+			wantAllTerminal: false,
+			ignoreHasFailed: true,
+		},
+		{
+			name: "mixed commands — only cmd1 evaluated",
+			queues: map[string][]model.Task{
+				"worker1": {
+					{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
+					{ID: "t2", CommandID: "cmd2", Status: model.StatusInProgress},
+				},
+				"worker2": {
+					{ID: "t3", CommandID: "cmd1", Status: model.StatusCancelled},
+				},
+			},
+			commandID:       "cmd1",
+			wantAllTerminal: true,
+			wantHasFailed:   false,
+		},
+		{
+			name: "across workers — pending blocks terminal",
+			queues: map[string][]model.Task{
+				"worker1": {
+					{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
+				},
+				"worker2": {
+					{ID: "t2", CommandID: "cmd1", Status: model.StatusPending},
+				},
+			},
+			commandID:       "cmd1",
+			wantAllTerminal: false,
+			ignoreHasFailed: true,
+		},
 	}
-}
-
-func TestCheckCommandTasksTerminal_NoTasks(t *testing.T) {
-	t.Parallel()
-	qh := newMinimalQueueHandler(t)
-	tqs := makeTaskQueues(map[string][]model.Task{
-		"worker1": {
-			{ID: "t1", CommandID: "other_cmd", Status: model.StatusCompleted},
-		},
-	})
-
-	allTerminal, _ := qh.checkCommandTasksTerminal("cmd1", tqs)
-	if allTerminal {
-		t.Error("expected allTerminal=false when no tasks for command")
-	}
-}
-
-func TestCheckCommandTasksTerminal_MixedCommands(t *testing.T) {
-	t.Parallel()
-	qh := newMinimalQueueHandler(t)
-	tqs := makeTaskQueues(map[string][]model.Task{
-		"worker1": {
-			{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
-			{ID: "t2", CommandID: "cmd2", Status: model.StatusInProgress},
-		},
-		"worker2": {
-			{ID: "t3", CommandID: "cmd1", Status: model.StatusCancelled},
-		},
-	})
-
-	allTerminal, hasFailed := qh.checkCommandTasksTerminal("cmd1", tqs)
-	if !allTerminal {
-		t.Error("expected allTerminal=true for cmd1")
-	}
-	if hasFailed {
-		t.Error("expected hasFailed=false for cmd1")
-	}
-}
-
-func TestCheckCommandTasksTerminal_AcrossWorkers(t *testing.T) {
-	t.Parallel()
-	qh := newMinimalQueueHandler(t)
-	tqs := makeTaskQueues(map[string][]model.Task{
-		"worker1": {
-			{ID: "t1", CommandID: "cmd1", Status: model.StatusCompleted},
-		},
-		"worker2": {
-			{ID: "t2", CommandID: "cmd1", Status: model.StatusPending},
-		},
-	})
-
-	allTerminal, _ := qh.checkCommandTasksTerminal("cmd1", tqs)
-	if allTerminal {
-		t.Error("expected allTerminal=false when worker2 task is pending")
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			qh := newMinimalQueueHandler(t)
+			tqs := makeTaskQueues(tc.queues)
+			allTerminal, hasFailed := qh.checkCommandTasksTerminal(tc.commandID, tqs)
+			if allTerminal != tc.wantAllTerminal {
+				t.Errorf("allTerminal = %v, want %v", allTerminal, tc.wantAllTerminal)
+			}
+			if !tc.ignoreHasFailed && hasFailed != tc.wantHasFailed {
+				t.Errorf("hasFailed = %v, want %v", hasFailed, tc.wantHasFailed)
+			}
+		})
 	}
 }
 

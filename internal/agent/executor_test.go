@@ -38,67 +38,80 @@ func TestContentHash(t *testing.T) {
 
 func TestApplyDefaults(t *testing.T) {
 	t.Parallel()
-	// Zero values get defaults
-	cfg := applyDefaults(model.WatcherConfig{})
-	if cfg.BusyCheckInterval != 2 {
-		t.Errorf("BusyCheckInterval: got %d, want 2", cfg.BusyCheckInterval)
-	}
-	if cfg.BusyCheckMaxRetries != 30 {
-		t.Errorf("BusyCheckMaxRetries: got %d, want 30", cfg.BusyCheckMaxRetries)
-	}
-	if cfg.IdleStableSec != 5 {
-		t.Errorf("IdleStableSec: got %d, want 5", cfg.IdleStableSec)
-	}
-	if cfg.CooldownAfterClear != 3 {
-		t.Errorf("CooldownAfterClear: got %d, want 3", cfg.CooldownAfterClear)
-	}
-	if cfg.ClearConfirmTimeoutSec != 5 {
-		t.Errorf("ClearConfirmTimeoutSec: got %d, want 5", cfg.ClearConfirmTimeoutSec)
-	}
-	if cfg.ClearConfirmPollMs != 250 {
-		t.Errorf("ClearConfirmPollMs: got %d, want 250", cfg.ClearConfirmPollMs)
-	}
-	if cfg.ClearMaxAttempts != 3 {
-		t.Errorf("ClearMaxAttempts: got %d, want 3", cfg.ClearMaxAttempts)
-	}
-	if cfg.ClearRetryBackoffMs != 500 {
-		t.Errorf("ClearRetryBackoffMs: got %d, want 500", cfg.ClearRetryBackoffMs)
+
+	// F-059: each row pins one (input cfg) → (expected post-applyDefaults
+	// cfg) mapping for the 8 watcher knobs we care about. The two scenarios
+	// the original 16-if expansion exercised are kept as separate rows
+	// ("zero" → defaults applied, "non-zero" → values preserved verbatim);
+	// the field-by-field assertion is then a single deep equal so adding a
+	// new field requires updating expectations once instead of twice.
+	tests := []struct {
+		name     string
+		input    model.WatcherConfig
+		expected model.WatcherConfig
+	}{
+		{
+			name:  "zero values get defaults",
+			input: model.WatcherConfig{},
+			expected: model.WatcherConfig{
+				BusyCheckInterval:      2,
+				BusyCheckMaxRetries:    30,
+				IdleStableSec:          5,
+				CooldownAfterClear:     3,
+				ClearConfirmTimeoutSec: 5,
+				ClearConfirmPollMs:     250,
+				ClearMaxAttempts:       3,
+				ClearRetryBackoffMs:    500,
+			},
+		},
+		{
+			name: "non-zero values preserved",
+			input: model.WatcherConfig{
+				BusyCheckInterval:      10,
+				BusyCheckMaxRetries:    50,
+				IdleStableSec:          8,
+				CooldownAfterClear:     5,
+				ClearConfirmTimeoutSec: 10,
+				ClearConfirmPollMs:     500,
+				ClearMaxAttempts:       5,
+				ClearRetryBackoffMs:    1000,
+			},
+			expected: model.WatcherConfig{
+				BusyCheckInterval:      10,
+				BusyCheckMaxRetries:    50,
+				IdleStableSec:          8,
+				CooldownAfterClear:     5,
+				ClearConfirmTimeoutSec: 10,
+				ClearConfirmPollMs:     500,
+				ClearMaxAttempts:       5,
+				ClearRetryBackoffMs:    1000,
+			},
+		},
 	}
 
-	// Non-zero values preserved
-	cfg = applyDefaults(model.WatcherConfig{
-		BusyCheckInterval:      10,
-		BusyCheckMaxRetries:    50,
-		IdleStableSec:          8,
-		CooldownAfterClear:     5,
-		ClearConfirmTimeoutSec: 10,
-		ClearConfirmPollMs:     500,
-		ClearMaxAttempts:       5,
-		ClearRetryBackoffMs:    1000,
-	})
-	if cfg.BusyCheckInterval != 10 {
-		t.Errorf("BusyCheckInterval: got %d, want 10", cfg.BusyCheckInterval)
+	checks := []struct {
+		name string
+		get  func(c model.WatcherConfig) int
+	}{
+		{"BusyCheckInterval", func(c model.WatcherConfig) int { return c.BusyCheckInterval }},
+		{"BusyCheckMaxRetries", func(c model.WatcherConfig) int { return c.BusyCheckMaxRetries }},
+		{"IdleStableSec", func(c model.WatcherConfig) int { return c.IdleStableSec }},
+		{"CooldownAfterClear", func(c model.WatcherConfig) int { return c.CooldownAfterClear }},
+		{"ClearConfirmTimeoutSec", func(c model.WatcherConfig) int { return c.ClearConfirmTimeoutSec }},
+		{"ClearConfirmPollMs", func(c model.WatcherConfig) int { return c.ClearConfirmPollMs }},
+		{"ClearMaxAttempts", func(c model.WatcherConfig) int { return c.ClearMaxAttempts }},
+		{"ClearRetryBackoffMs", func(c model.WatcherConfig) int { return c.ClearRetryBackoffMs }},
 	}
-	if cfg.BusyCheckMaxRetries != 50 {
-		t.Errorf("BusyCheckMaxRetries: got %d, want 50", cfg.BusyCheckMaxRetries)
-	}
-	if cfg.IdleStableSec != 8 {
-		t.Errorf("IdleStableSec: got %d, want 8", cfg.IdleStableSec)
-	}
-	if cfg.CooldownAfterClear != 5 {
-		t.Errorf("CooldownAfterClear: got %d, want 5", cfg.CooldownAfterClear)
-	}
-	if cfg.ClearConfirmTimeoutSec != 10 {
-		t.Errorf("ClearConfirmTimeoutSec: got %d, want 10", cfg.ClearConfirmTimeoutSec)
-	}
-	if cfg.ClearConfirmPollMs != 500 {
-		t.Errorf("ClearConfirmPollMs: got %d, want 500", cfg.ClearConfirmPollMs)
-	}
-	if cfg.ClearMaxAttempts != 5 {
-		t.Errorf("ClearMaxAttempts: got %d, want 5", cfg.ClearMaxAttempts)
-	}
-	if cfg.ClearRetryBackoffMs != 1000 {
-		t.Errorf("ClearRetryBackoffMs: got %d, want 1000", cfg.ClearRetryBackoffMs)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := applyDefaults(tc.input)
+			for _, ck := range checks {
+				if g, w := ck.get(got), ck.get(tc.expected); g != w {
+					t.Errorf("%s: got %d, want %d", ck.name, g, w)
+				}
+			}
+		})
 	}
 }
 

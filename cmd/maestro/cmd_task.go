@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 
-	"github.com/msageha/maestro_v2/internal/uds"
 	"github.com/msageha/maestro_v2/internal/validate"
 )
 
@@ -59,9 +58,15 @@ func (a *cliApp) runTaskHeartbeat(args []string) error {
 
 	if !resp.Success {
 		if resp.Error != nil {
-			// Special handling for max runtime exceeded - exit silently with error code
-			if resp.Error.Code == uds.ErrCodeMaxRuntimeExceeded {
-				return &CLIError{Code: ExitCodeRetryable, Silent: true}
+			// F-019 step 2: surface fencing rejects with structured exit
+			// codes (10/11/12). max_runtime_exceeded keeps the legacy
+			// silent-exit behaviour so existing Worker scripts that
+			// blanket-tolerate `$?==2` continue to terminate cleanly; we
+			// just map it to the more specific code 11 so callers that DO
+			// want to differentiate can.
+			if exit := classifyFencingExitCode(resp); exit != 0 {
+				silent := exit == ExitCodeMaxRuntimeExceeded
+				return fencingCLIError(resp, silent, "maestro task heartbeat")
 			}
 			return &CLIError{Code: 1, Msg: fmt.Sprintf("maestro task heartbeat: [%s] %s", resp.Error.Code, resp.Error.Message)}
 		}

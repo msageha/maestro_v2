@@ -3,11 +3,15 @@ package testutil
 import (
 	"sync"
 	"time"
+
+	"github.com/msageha/maestro_v2/internal/clock"
 )
 
-// Clock abstracts time.Now and time.Since for deterministic testing.
+// Clock is the testutil-flavoured clock interface. It embeds clock.Clock
+// (Now()) and adds Since() so test helpers can compute durations without
+// allocating a wall-clock baseline. F-038.
 type Clock interface {
-	Now() time.Time
+	clock.Clock
 	Since(time.Time) time.Duration
 }
 

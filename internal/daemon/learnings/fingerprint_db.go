@@ -16,6 +16,14 @@ import (
 // Safety invariant (C-5): Fitness function definitions, weights, and
 // thresholds are NOT subject to self-improvement. Only Planner/Worker
 // prompts, configuration, and personas may be improved.
+//
+// Field invariants — F-011:
+//   - SuccessCount and SuccessRate are derived metrics maintained together
+//     by FingerprintDB.RecordOutcome (and equivalents). External callers
+//     MUST NOT mutate either field independently; doing so leaves the pair
+//     inconsistent (e.g. SuccessRate=1.0 with SuccessCount=0 misleads the
+//     evolution scoring path). Treat both fields as read-only outside the
+//     learnings package and update via the package's own methods only.
 type FailurePattern struct {
 	Fingerprint     string    `json:"fingerprint"`
 	ErrorCategory   string    `json:"error_category"`
